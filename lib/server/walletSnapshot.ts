@@ -116,6 +116,13 @@ type WalletFacts = {
     noClosedLotPnL: boolean
     reason: string
   }
+  estimatedPnl: {
+    method: 'average_cost_estimate'
+    status: 'ok' | 'partial' | 'unavailable' | 'error' | 'open_check'
+    confidence: 'high' | 'medium' | 'low' | 'open_check' | null
+    realizedPnlUsd: number | null
+    coveragePercent: number
+  }
 }
 
 export type WalletSnapshot = {
@@ -344,6 +351,20 @@ export type WalletSnapshot = {
   walletScanCostMode?: 'basic' | 'basic_cached' | 'deep_cached' | 'deep_live' | 'historical_cached' | 'historical_live' | 'blocked_by_cooldown' | 'blocked_by_cost_guard'
   walletScanCacheNote?: string
   walletFacts?: WalletFacts
+  _debug?: {
+    walletFactsShapeIssues?: string[]
+    walletScannerDiagnostics?: {
+      swapCandidates: number
+      pricedEvents: number
+      closedLots: number
+      activityEvents: number
+      flowReadBuilt: boolean
+      classificationBuilt: boolean
+      pnlStatus: string
+      missingFields: string[]
+    }
+    [key: string]: unknown
+  }
   _diagnostics?: {
     providers?: {
       zerion: { configured: boolean; attempted: boolean; succeeded: boolean }
@@ -757,7 +778,7 @@ export type WalletSnapshotOptions = { refresh?: boolean; chain?: 'eth' | 'base';
 
 const SNAPSHOT_TTL_MS         = 5  * 60 * 1000
 const SNAPSHOT_HISTORY_TTL_MS = 15 * 60 * 1000
-const SNAPSHOT_SCHEMA_VERSION = 'v7'
+const SNAPSHOT_SCHEMA_VERSION = 'v8'
 type SnapshotCacheEntry = { snapshot: WalletSnapshot; cachedAt: number; ttlMs: number }
 const snapshotMemCache = new Map<string, SnapshotCacheEntry>()
 
@@ -3227,6 +3248,13 @@ function buildWalletFacts(
           ? 'No closed FIFO lots found. Portfolio and activity data only.'
           : `${closedLotCount} closed lot(s) available for PnL.`,
       },
+      estimatedPnl: {
+        method: 'average_cost_estimate',
+        status: closedLotCount === 0 ? 'open_check' : 'ok',
+        confidence: closedLotCount === 0 ? 'open_check' : 'medium',
+        realizedPnlUsd: null,
+        coveragePercent: closedLotCount === 0 ? 0 : 100,
+      },
     },
     debug: {
       built: true,
@@ -3247,6 +3275,166 @@ function buildWalletFacts(
   }
 }
 
+
+function stripUndefinedDeep<T>(value: T): T {
+  if (Array.isArray(value)) return value.map((v) => stripUndefinedDeep(v)).filter((v) => v !== undefined) as T
+  if (value && typeof value === 'object') {
+    for (const key of Object.keys(value as Record<string, unknown>)) {
+      const current = (value as Record<string, unknown>)[key]
+      if (current === undefined) {
+        delete (value as Record<string, unknown>)[key]
+      } else {
+        ;(value as Record<string, unknown>)[key] = stripUndefinedDeep(current)
+      }
+    }
+  }
+  return value
+}
+
+export function validateWalletFactsShape(snapshot: WalletSnapshot): WalletSnapshot {
+  const missingFields: string[] = []
+  const noteMissing = (path: string) => { if (!missingFields.includes(path)) missingFields.push(path) }
+  const snapAny = snapshot as any
+
+  if (!snapAny.walletFacts || typeof snapAny.walletFacts !== 'object') {
+    noteMissing('walletFacts')
+    snapAny.walletFacts = {}
+  }
+  const walletFacts = snapAny.walletFacts
+  const totalValueUsd = Number.isFinite(snapshot.totalValue) ? Math.round(snapshot.totalValue * 100) / 100 : 0
+  const holdings = Array.isArray(snapshot.holdings) ? snapshot.holdings : []
+
+  if (!walletFacts.summary || typeof walletFacts.summary !== 'object') {
+    noteMissing('walletFacts.summary')
+    walletFacts.summary = {
+      totalValueUsd,
+      holdingsCount: holdings.length,
+      chainExposure: [],
+      topHoldings: [],
+      largestHolding: null,
+      concentrationLabel: holdings.length > 0 ? 'balanced' : 'none',
+      stablecoinExposurePercent: 0,
+      nativeExposurePercent: 0,
+    }
+  }
+
+  if (!walletFacts.activity || typeof walletFacts.activity !== 'object') {
+    noteMissing('walletFacts.activity')
+    walletFacts.activity = {
+      eventCount: snapshot.walletEvidenceSummary?.totalEvents ?? 0,
+      groupedTxCount: snapshot.walletSwapSummary?.groupedTxCount ?? 0,
+      walletInitiatedTxCount: 0,
+      inboundCount: 0,
+      outboundCount: 0,
+      unknownCount: snapshot.walletSwapSummary?.unknownEvents ?? 0,
+      firstSeenAt: null,
+      lastSeenAt: null,
+      recentActivityWindowDays: null,
+      latestEvents: [],
+    }
+  }
+  const activity = walletFacts.activity as WalletFacts['activity'] & Record<string, unknown>
+  const activityDefaults: WalletFacts['activity'] = {
+    eventCount: snapshot.walletEvidenceSummary?.totalEvents ?? 0,
+    groupedTxCount: snapshot.walletSwapSummary?.groupedTxCount ?? 0,
+    walletInitiatedTxCount: 0,
+    inboundCount: 0,
+    outboundCount: 0,
+    unknownCount: snapshot.walletSwapSummary?.unknownEvents ?? 0,
+    firstSeenAt: null,
+    lastSeenAt: null,
+    recentActivityWindowDays: null,
+    latestEvents: [],
+  }
+  for (const [key, fallback] of Object.entries(activityDefaults)) {
+    if (activity[key] === undefined) { noteMissing(`walletFacts.activity.${key}`); activity[key] = fallback }
+  }
+  if (!Array.isArray(activity.latestEvents)) { noteMissing('walletFacts.activity.latestEvents'); activity.latestEvents = [] }
+
+  if (!walletFacts.flowRead || typeof walletFacts.flowRead !== 'object') {
+    noteMissing('walletFacts.flowRead')
+    walletFacts.flowRead = { sentTokens: [], receivedTokens: [], topCounterparties: [], accumulationSignals: [], distributionSignals: [] }
+  }
+  const flowRead = walletFacts.flowRead as WalletFacts['flowRead'] & Record<string, unknown>
+  const mergeArrayField = (targetKey: keyof WalletFacts['flowRead'], continuedKey: string) => {
+    const base = Array.isArray(flowRead[targetKey]) ? flowRead[targetKey] as unknown[] : []
+    const continued = Array.isArray(flowRead[continuedKey]) ? flowRead[continuedKey] as unknown[] : []
+    if (!Array.isArray(flowRead[targetKey])) noteMissing(`walletFacts.flowRead.${String(targetKey)}`)
+    if (continued.length > 0) noteMissing(`walletFacts.flowRead.${continuedKey}`)
+    ;(flowRead as Record<string, unknown>)[targetKey] = [...base, ...continued]
+    delete flowRead[continuedKey]
+  }
+  mergeArrayField('sentTokens', 'sentTokensContinued')
+  mergeArrayField('receivedTokens', 'receivedTokensContinued')
+  mergeArrayField('topCounterparties', 'topCounterpartiesContinued')
+  mergeArrayField('accumulationSignals', 'accumulationSignalsContinued')
+  mergeArrayField('distributionSignals', 'distributionSignalsContinued')
+
+  if (!walletFacts.sourceClassification || typeof walletFacts.sourceClassification !== 'object') {
+    noteMissing('walletFacts.sourceClassification')
+    walletFacts.sourceClassification = { transferOnlyTxs: 0, claimOrAirdropLikeTxs: 0, swapLikeTxs: 0, bridgeLikeTxs: 0, unknownTxs: activity.unknownCount ?? 0, notes: [] }
+  }
+  const sourceClassification = walletFacts.sourceClassification as WalletFacts['sourceClassification'] & Record<string, unknown>
+  const classificationDefaults: WalletFacts['sourceClassification'] = {
+    transferOnlyTxs: 0,
+    claimOrAirdropLikeTxs: 0,
+    swapLikeTxs: 0,
+    bridgeLikeTxs: 0,
+    unknownTxs: typeof activity.unknownCount === 'number' ? activity.unknownCount : 0,
+    notes: [],
+  }
+  for (const [key, fallback] of Object.entries(classificationDefaults)) {
+    if (sourceClassification[key] === undefined) { noteMissing(`walletFacts.sourceClassification.${key}`); sourceClassification[key] = fallback }
+  }
+  if (!Array.isArray(sourceClassification.notes)) { noteMissing('walletFacts.sourceClassification.notes'); sourceClassification.notes = [] }
+
+  if (!walletFacts.limits || typeof walletFacts.limits !== 'object') {
+    noteMissing('walletFacts.limits')
+    walletFacts.limits = { sampleBased: false, maxEventsUsed: activity.eventCount ?? 0, noClosedLotPnL: (snapshot.walletLotSummary?.closedLots ?? 0) === 0, reason: 'Wallet facts shape fallback applied.' }
+  }
+
+  if (!walletFacts.estimatedPnl || typeof walletFacts.estimatedPnl !== 'object') {
+    noteMissing('walletFacts.estimatedPnl')
+    walletFacts.estimatedPnl = { method: 'average_cost_estimate', status: 'open_check', confidence: 'open_check', realizedPnlUsd: null, coveragePercent: 0 }
+  }
+  const factsPnl = walletFacts.estimatedPnl as WalletFacts['estimatedPnl'] & Record<string, unknown>
+  const hasSwapEvidence = (snapshot.walletSwapSummary?.swapCandidateEvents ?? 0) > 0 || (snapshot.walletPriceEvidenceSummary?.swapCandidateEvents ?? 0) > 0
+  const pnlDefaults: WalletFacts['estimatedPnl'] = {
+    method: 'average_cost_estimate',
+    status: hasSwapEvidence ? (snapshot.estimatedPnl?.status ?? 'open_check') : 'open_check',
+    confidence: hasSwapEvidence ? (snapshot.estimatedPnl?.confidence ?? 'open_check') : 'open_check',
+    realizedPnlUsd: hasSwapEvidence ? (snapshot.estimatedPnl?.realizedPnlUsd ?? null) : null,
+    coveragePercent: hasSwapEvidence ? (snapshot.estimatedPnl?.coveragePercent ?? 0) : 0,
+  }
+  for (const [key, fallback] of Object.entries(pnlDefaults)) {
+    const shouldNormalizePnlValue = key === 'status' || key === 'confidence' || key === 'realizedPnlUsd' || key === 'coveragePercent'
+    if (factsPnl[key] === undefined || shouldNormalizePnlValue) {
+      if (factsPnl[key] === undefined) noteMissing(`walletFacts.estimatedPnl.${key}`)
+      factsPnl[key] = fallback
+    }
+  }
+
+  snapshot._debug = { ...(snapshot._debug ?? {}) }
+  snapshot._debug.walletFactsShapeIssues = missingFields
+  snapshot._debug.walletScannerDiagnostics = {
+    swapCandidates: snapshot.walletSwapSummary?.swapCandidateEvents ?? 0,
+    pricedEvents: snapshot.walletPriceEvidenceSummary?.pricedEvents ?? 0,
+    closedLots: snapshot.walletLotSummary?.closedLots ?? 0,
+    activityEvents: activity.eventCount ?? snapshot.walletEvidenceSummary?.totalEvents ?? 0,
+    flowReadBuilt: Boolean(walletFacts.flowRead),
+    classificationBuilt: Boolean(walletFacts.sourceClassification),
+    pnlStatus: String(factsPnl.status ?? 'open_check'),
+    missingFields,
+  }
+  const existingFactsDebug = snapshot._diagnostics?.walletFactsDebug
+  if (existingFactsDebug) {
+    existingFactsDebug.missingFields = Array.from(new Set([...(existingFactsDebug.missingFields ?? []), ...missingFields]))
+  }
+
+  stripUndefinedDeep(snapshot)
+  return snapshot
+}
+
 export async function fetchWalletSnapshot(address: string, options: WalletSnapshotOptions = {}): Promise<WalletSnapshot> {
   const { refresh = false, chain: requestedChain = 'base', deepScan = false, deepActivity = false, chainMode = 'auto', historicalCoverage = false, maxHistoricalPages: rawMaxHistoricalPages, maxFallbackPages: rawMaxFallbackPages } = options
   const clampedMaxHistoricalPages = Math.max(1, Math.min(5, rawMaxHistoricalPages ?? 3))
@@ -3264,7 +3452,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       const ageMs = Date.now() - cached.cachedAt
       if (ageMs <= cached.ttlMs) {
         const cacheAgeSeconds = Math.floor(ageMs / 1000)
-        return {
+        const cachedSnapshot: WalletSnapshot = {
           ...cached.snapshot,
           dataFreshness: 'cached',
           cacheAgeSeconds,
@@ -3276,6 +3464,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
             },
           } : undefined,
         }
+        return validateWalletFactsShape(cachedSnapshot)
       }
       snapshotMemCache.delete(cacheKey)
     }
@@ -4217,6 +4406,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       walletFactsDebug: _walletFactsDebug,
     },
   }
+  validateWalletFactsShape(snapshot)
   if (/^0x[0-9a-fA-F]{40}$/i.test(addrNorm)) snapshotMemCache.set(cacheKey, { snapshot, cachedAt: Date.now(), ttlMs: snapshotTtlMs })
   return snapshot
 }

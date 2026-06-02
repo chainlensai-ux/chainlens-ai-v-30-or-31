@@ -13,7 +13,7 @@ import {
 const WALLET_BASIC_CACHE_TTL_MS  = 5  * 60 * 1000  // 5 min for basic scans
 const WALLET_DEEP_CACHE_TTL_MS   = 15 * 60 * 1000  // 15 min for deep scans
 const WALLET_DEEP_COOLDOWN_MS    = 10 * 60 * 1000  // 10 min cooldown per wallet after deep live scan
-const WALLET_SNAPSHOT_SCHEMA_VERSION = 'v7'
+const WALLET_SNAPSHOT_SCHEMA_VERSION = 'v8'
 const walletCache = new Map<string, { exp: number; payload: unknown; cachedAt: number }>()
 const walletRate = new Map<string, { count: number; resetAt: number }>()
 const WALLET_RATE_BY_PLAN: Record<string, number> = { free: 20, pro: 60, elite: 180 }
@@ -27,6 +27,42 @@ const walletCostHints = new Map<string, { rawLogEvents: number; requestDurationM
 const walletDeepInFlight = new Map<string, Promise<unknown>>() // inFlightKey -> live scan promise
 
 const WALLET_DEEP_DEBUG_ENABLED = process.env.WALLET_DEEP_DEBUG_ENABLED === 'true'
+
+function stripUndefinedInPlace(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    for (let i = value.length - 1; i >= 0; i--) {
+      if (value[i] === undefined) value.splice(i, 1)
+      else stripUndefinedInPlace(value[i])
+    }
+    return value
+  }
+  if (value && typeof value === 'object') {
+    for (const key of Object.keys(value as Record<string, unknown>)) {
+      const current = (value as Record<string, unknown>)[key]
+      if (current === undefined) delete (value as Record<string, unknown>)[key]
+      else stripUndefinedInPlace(current)
+    }
+  }
+  return value
+}
+
+function pruneWalletScannerDebug(payload: any, debug: boolean) {
+  if (!payload || typeof payload !== 'object') return
+  if (!debug) {
+    const walletScannerDiagnostics = payload._debug?.walletScannerDiagnostics
+    const walletFactsShapeIssues = payload._debug?.walletFactsShapeIssues
+    if (walletScannerDiagnostics || walletFactsShapeIssues) {
+      payload._debug = {
+        ...(walletFactsShapeIssues ? { walletFactsShapeIssues } : {}),
+        ...(walletScannerDiagnostics ? { walletScannerDiagnostics } : {}),
+      }
+    } else {
+      delete payload._debug
+    }
+  }
+  delete payload._diagnostics
+  stripUndefinedInPlace(payload)
+}
 
 function buildWalletModuleCoverage(snap: any) {
   const ev = snap.walletEvidenceSummary
@@ -282,8 +318,7 @@ export async function POST(req: Request) {
           reason: 'route_cache_hit',
         },
       }
-      if (cp && typeof cp === 'object' && !debug) delete cp._debug
-      if (cp && typeof cp === 'object') delete cp._diagnostics
+      pruneWalletScannerDebug(cp, debug)
       return NextResponse.json(cp)
     }
 
@@ -297,7 +332,7 @@ export async function POST(req: Request) {
           cp.walletScanCostMode = 'blocked_by_cooldown'
           cp.walletScanCacheNote = 'Enhanced scan cooling down. Try again later.'
         }
-        if (cp && typeof cp === 'object') delete cp._diagnostics
+        pruneWalletScannerDebug(cp, debug)
         return NextResponse.json(cp)
       }
       return NextResponse.json({ error: 'Enhanced historical scan is cooling down. Try again in a few minutes.', walletScanCostMode: 'blocked_by_cooldown' }, { status: 429 })
@@ -313,7 +348,7 @@ export async function POST(req: Request) {
           cp.walletScanCostMode = 'blocked_by_cost_guard'
           cp.walletScanCacheNote = 'Historical scan served from cache — wallet has heavy history.'
         }
-        if (cp && typeof cp === 'object') delete cp._diagnostics
+        pruneWalletScannerDebug(cp, debug)
         return NextResponse.json(cp)
       }
       // No cache available — fall through to live scan without historical
@@ -329,8 +364,7 @@ export async function POST(req: Request) {
           cp.walletScanCostMode = 'deep_cached'
           cp.walletScanCacheNote = 'Deep scan cooling down — serving recent result to protect API budget.'
         }
-        if (cp && typeof cp === 'object' && !debug) delete cp._debug
-        if (cp && typeof cp === 'object') delete cp._diagnostics
+        pruneWalletScannerDebug(cp, debug)
         return NextResponse.json(cp)
       }
       // No memory stale — fall through to persistent cooldown check below
@@ -399,8 +433,7 @@ export async function POST(req: Request) {
               reason: 'persistent_cache_hit',
             },
           }
-          if (cp && typeof cp === 'object' && !debug) delete cp._debug
-          if (cp && typeof cp === 'object') delete cp._diagnostics
+          pruneWalletScannerDebug(cp, debug)
           return NextResponse.json(cp)
         }
       }
@@ -424,8 +457,7 @@ export async function POST(req: Request) {
             cp.walletScanCostMode = 'deep_cached'
             cp.walletScanCacheNote = 'Deep scan cooling down — serving recent result to protect API budget.'
           }
-          if (cp && typeof cp === 'object' && !debug) delete cp._debug
-          if (cp && typeof cp === 'object') delete cp._diagnostics
+          pruneWalletScannerDebug(cp, debug)
           return NextResponse.json(cp)
         }
         return NextResponse.json({ error: 'Deep scan is cooling down. Try again in a few minutes.', walletScanCostMode: 'deep_cached' }, { status: 429 })
@@ -506,8 +538,7 @@ export async function POST(req: Request) {
     if (_cacheWriteAttempted && deepActivity && !effectiveHistoricalCoverage && !inFlightDeduped && _persistentAvailable) {
       _persistentCacheWriteAttempted = true
       const _ppayload: any = { ...snapshot }
-      delete _ppayload._diagnostics
-      delete _ppayload._debug
+      pruneWalletScannerDebug(_ppayload, false)
       const [cacheResult] = await Promise.allSettled([
         writePersistentWalletCache(cacheKey, key, scanModeKey, chainKey, _ppayload, WALLET_DEEP_CACHE_TTL_MS),
         writePersistentCooldown(deepCooldownKey, key, chainKey, WALLET_DEEP_COOLDOWN_MS),
@@ -729,7 +760,7 @@ export async function POST(req: Request) {
     if (_budgetDbg?.budgetCapped) {
       snapshot.walletScanBudgetNote = `Activity scan capped at ${_budgetDbg.capLimit} events (${_budgetDbg.dedupRemoved} duplicates removed from ${_budgetDbg.eventsBefore} raw).`
     }
-    delete snapshot._diagnostics
+    pruneWalletScannerDebug(snapshot, debug)
     // Write to cache after every live scan (including refresh=true) so subsequent normal requests benefit.
     // Only allowDebugFresh (explicit admin override) skips the write.
     if (_cacheWriteAttempted) walletCache.set(cacheKey, { exp: Date.now() + _cacheTtlMs, payload: snapshot, cachedAt: Date.now() })
