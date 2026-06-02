@@ -359,24 +359,28 @@ function deriveTradeBehavior(data: WalletResult): WalletIntelligence['tradeBehav
 function derivePnlOverview(data: WalletResult): WalletIntelligence['pnl'] {
   const backend = data.walletIntelligence?.pnl
   const estimated = data.estimatedPnl
-  const estimatedUsable = estimated?.status === 'ok' || estimated?.status === 'partial'
   const ls = data.walletLotSummary
   const ts = data.walletTradeStatsSummary
-  // Only expose PnL numbers when there is actual closed-lot or estimated evidence.
-  // Without this gate, numeric 0 from the backend renders as +$0.00 despite open_check status.
   const hasClosedLotEvidence = (ls?.closedLots ?? ts?.closedLots ?? 0) > 0
+  // Require real token coverage — ignore estimatedPnl with 0 tokens or 0 coverage
+  const estimatedUsable = (estimated?.status === 'ok' || estimated?.status === 'partial')
+    && (estimated?.tokens?.length ?? 0) > 0
+    && (estimated?.coveragePercent ?? 0) > 0
   const pnlEvidenceReady = hasClosedLotEvidence || estimatedUsable
+  // No closed lots + null realized PnL → force total/realized/unrealized open check
+  const noLotsNullPnl = (ts?.closedLots ?? 0) === 0 && (ls?.realizedPnlUsd ?? null) === null
+  const coreReady = pnlEvidenceReady && !noLotsNullPnl
   return {
-    total:      pnlEvidenceReady ? (safeNum(backend?.total)     ?? (estimatedUsable ? safeNum(estimated?.totalEstimatedPnlUsd) : null)) : null,
-    sevenDay:   pnlEvidenceReady ? safeNum(backend?.sevenDay)   : null,
-    thirtyDay:  pnlEvidenceReady ? safeNum(backend?.thirtyDay)  : null,
-    thisMonth:  pnlEvidenceReady ? safeNum(backend?.thisMonth)  : null,
-    realized:   pnlEvidenceReady ? (safeNum(backend?.realized)  ?? (estimatedUsable ? safeNum(estimated?.realizedPnlUsd)       : null)) : null,
-    unrealized: pnlEvidenceReady ? (safeNum(backend?.unrealized)?? (estimatedUsable ? safeNum(estimated?.unrealizedPnlUsd)     : null)) : null,
-    biggestWin: pnlEvidenceReady ? safeNum(backend?.biggestWin) : null,
-    biggestLoss:pnlEvidenceReady ? safeNum(backend?.biggestLoss): null,
-    avgWin:     pnlEvidenceReady ? safeNum(backend?.avgWin)     : null,
-    avgLoss:    pnlEvidenceReady ? safeNum(backend?.avgLoss)    : null,
+    total:      coreReady ? (safeNum(backend?.total)      ?? (estimatedUsable ? safeNum(estimated?.totalEstimatedPnlUsd) : null)) : null,
+    sevenDay:   pnlEvidenceReady ? safeNum(backend?.sevenDay)    : null,
+    thirtyDay:  pnlEvidenceReady ? safeNum(backend?.thirtyDay)   : null,
+    thisMonth:  pnlEvidenceReady ? safeNum(backend?.thisMonth)   : null,
+    realized:   coreReady ? (safeNum(backend?.realized)   ?? (estimatedUsable ? safeNum(estimated?.realizedPnlUsd)       : null)) : null,
+    unrealized: coreReady ? (safeNum(backend?.unrealized) ?? (estimatedUsable ? safeNum(estimated?.unrealizedPnlUsd)     : null)) : null,
+    biggestWin: pnlEvidenceReady ? safeNum(backend?.biggestWin)  : null,
+    biggestLoss:pnlEvidenceReady ? safeNum(backend?.biggestLoss) : null,
+    avgWin:     pnlEvidenceReady ? safeNum(backend?.avgWin)      : null,
+    avgLoss:    pnlEvidenceReady ? safeNum(backend?.avgLoss)     : null,
   }
 }
 
@@ -1405,6 +1409,23 @@ export default function WalletScannerPage() {
                       </div>
                     )}
 
+                    {wf.activity.latestEvents.length > 0 && (
+                      <div style={{ marginBottom: '12px' }}>
+                        <div style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.14em', color: 'rgba(255,255,255,0.30)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '6px' }}>Recent Events</div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                          {wf.activity.latestEvents.map((ev, i) => (
+                            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '10px', color: 'rgba(255,255,255,0.55)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', padding: '4px 8px', background: 'rgba(255,255,255,0.02)', borderRadius: '6px' }}>
+                              <span style={{ color: ev.direction === 'buy' ? '#4ade80' : ev.direction === 'sell' ? '#f87171' : '#94a3b8', fontWeight: 700, minWidth: '20px' }}>{ev.direction === 'buy' ? '↓' : ev.direction === 'sell' ? '↑' : '?'}</span>
+                              <span style={{ color: '#e2e8f0', fontWeight: 600 }}>{ev.symbol}</span>
+                              <span style={{ color: 'rgba(255,255,255,0.30)' }}>{ev.chain.toUpperCase()}</span>
+                              {ev.valueUsdKnown && <span style={{ color: '#7dd3fc' }}>USD known</span>}
+                              <span style={{ marginLeft: 'auto', color: 'rgba(255,255,255,0.25)', fontSize: '9px' }}>{new Date(ev.timestamp).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
                     {(wf.flowRead.receivedTokens.length > 0 || wf.flowRead.sentTokens.length > 0) && (
                       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '12px' }}>
                         {wf.flowRead.receivedTokens.length > 0 && (
@@ -1446,10 +1467,13 @@ export default function WalletScannerPage() {
                     )}
 
                     {wf.sourceClassification.notes.length > 0 && (
-                      <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.30)', lineHeight: 1.5, fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                      <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.30)', lineHeight: 1.5, fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '8px' }}>
                         {wf.sourceClassification.notes.join(' — ')}
                       </div>
                     )}
+                    <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.22)', lineHeight: 1.5, fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', background: 'rgba(45,212,191,0.03)', border: '1px solid rgba(45,212,191,0.08)', borderRadius: '7px', padding: '7px 10px' }}>
+                      {wf.limits.reason}
+                    </div>
                   </div>
                 )
               })()}

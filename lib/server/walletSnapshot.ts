@@ -734,9 +734,16 @@ export type WalletSnapshot = {
       enrichedTxHashes: string[]
     }
     walletFactsDebug?: {
-      eventsUsed: number
-      holdingsUsed: number
-      durationMs: number
+      built: boolean
+      eventCount: number
+      groupedTxCount: number
+      latestEventsCount: number
+      receivedTokenCount: number
+      sentTokenCount: number
+      topCounterpartyCount: number
+      classificationCounts: { swapLike: number; transferOnly: number; claimOrAirdrop: number; bridge: number; unknown: number }
+      missingFields: string[]
+      reason: string
     }
   }
 }
@@ -3222,9 +3229,20 @@ function buildWalletFacts(
       },
     },
     debug: {
-      eventsUsed: maxEventsUsed,
-      holdingsUsed: pricedHoldings.length,
-      durationMs: Date.now() - t0,
+      built: true,
+      eventCount: maxEventsUsed,
+      groupedTxCount,
+      latestEventsCount: latestEvents.length,
+      receivedTokenCount: receivedTokens.length,
+      sentTokenCount: sentTokens.length,
+      topCounterpartyCount: topCounterparties.length,
+      classificationCounts: { swapLike: swapLikeTxs, transferOnly: transferOnlyTxs, claimOrAirdrop: claimOrAirdropLikeTxs, bridge: bridgeLikeTxs, unknown: unknownTxs },
+      missingFields: [
+        ...(pricedHoldings.length === 0 ? ['holdings'] : []),
+        ...(events.length === 0 ? ['activity_events'] : []),
+        ...(totalVal === 0 ? ['totalValueUsd'] : []),
+      ],
+      reason: `Built from ${pricedHoldings.length} holdings and ${maxEventsUsed} activity events`,
     },
   }
 }
