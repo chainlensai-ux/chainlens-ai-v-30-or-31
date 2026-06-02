@@ -400,6 +400,38 @@ function deriveWalletPersonality(data: WalletResult): string {
   return sentences.slice(0, 4).join(' ')
 }
 
+function derivePortfolioIntelligence(data: WalletResult) {
+  const holdings = [...data.holdings].sort((a, b) => b.value - a.value)
+  const totalValue = data.totalValue > 0 ? data.totalValue : holdings.reduce((sum, h) => sum + (Number.isFinite(h.value) ? h.value : 0), 0)
+  const top3 = holdings.slice(0, 3)
+  const topHolding = holdings[0] ?? null
+  const topShare = totalValue > 0 && topHolding ? (topHolding.value / totalValue) * 100 : null
+  const concentration: 'high' | 'medium' | 'balanced' | null = topShare === null ? null : topShare >= 50 ? 'high' : topShare >= 25 ? 'medium' : 'balanced'
+  const chainSet = new Set<string>()
+  for (const h of holdings) {
+    if (h.chain) {
+      const c = h.chain.replace(/-mainnet$/, '')
+      if (c === 'base') chainSet.add('BASE')
+      else if (c === 'ethereum' || c === 'eth') chainSet.add('ETH')
+      else chainSet.add(c.toUpperCase().replace(/-/g, ' '))
+    }
+  }
+  const STABLE_SYMBOLS = new Set(['USDC', 'USDT', 'DAI', 'BUSD', 'FRAX', 'LUSD', 'USDC.E', 'USDBC'])
+  const stableValue = holdings.filter(h => STABLE_SYMBOLS.has(h.symbol.toUpperCase())).reduce((s, h) => s + h.value, 0)
+  const stablePercent = totalValue > 0 ? (stableValue / totalValue) * 100 : 0
+  const ETH_SYMBOLS = new Set(['ETH', 'WETH'])
+  const ethValue = holdings.filter(h => ETH_SYMBOLS.has(h.symbol.toUpperCase())).reduce((s, h) => s + h.value, 0)
+  const ethPercent = totalValue > 0 ? (ethValue / totalValue) * 100 : 0
+  let portfolioType: string
+  if (holdings.length === 0) portfolioType = 'No visible holdings'
+  else if (ethPercent >= 50) portfolioType = 'ETH-heavy wallet'
+  else if (stablePercent >= 50) portfolioType = 'Stablecoin-heavy wallet'
+  else if (topShare !== null && topShare >= 50) portfolioType = 'Concentrated portfolio'
+  else if (holdings.length >= 3) portfolioType = 'Multi-token portfolio'
+  else portfolioType = 'Small visible portfolio'
+  return { totalValue, top3, topHolding, topShare, concentration, chains: [...chainSet], stablePercent, ethPercent, portfolioType, holdingsCount: holdings.length }
+}
+
 function buildWalletIntelligence(data: WalletResult): WalletIntelligence {
   const tradeBehavior = deriveTradeBehavior(data)
   const pnl = derivePnlOverview(data)
@@ -981,7 +1013,94 @@ export default function WalletScannerPage() {
                 </div>
               </div>
 
-              {/* Instant Wallet Score + PnL Intelligence */}
+              {/* Portfolio Intelligence — always visible when holdings exist */}
+              {(() => {
+                const pi = derivePortfolioIntelligence(result)
+                if (pi.holdingsCount === 0 && pi.totalValue === 0) return null
+                const mc = result.walletModuleCoverage
+                const totalEvents = result.walletEvidenceSummary?.totalEvents ?? 0
+                const swapCandidates = mc?.swapDetection.candidateCount ?? 0
+                const concentrationLabel = pi.concentration === 'high' ? 'High concentration' : pi.concentration === 'medium' ? 'Medium concentration' : pi.concentration === 'balanced' ? 'Balanced spread' : null
+                const concentrationColor = pi.concentration === 'high' ? '#fbbf24' : pi.concentration === 'medium' ? '#a78bfa' : '#4ade80'
+                return (
+                  <div style={{ background: '#080c14', border: '1px solid rgba(45,212,191,0.18)', borderRadius: '16px', padding: '20px 22px', position: 'relative', overflow: 'hidden' }}>
+                    <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: '2px', background: 'linear-gradient(90deg, #2DD4BF 0%, #4ade80 100%)' }} />
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px', flexWrap: 'wrap', gap: '8px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <div style={{ fontSize: '10px', fontWeight: 800, letterSpacing: '0.18em', color: '#2DD4BF', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Portfolio Intelligence</div>
+                        <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', color: '#4ade80', border: '1px solid rgba(74,222,128,0.25)', background: 'rgba(74,222,128,0.07)', borderRadius: '999px', padding: '2px 7px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Portfolio Read Active</span>
+                      </div>
+                      <span style={{ fontSize: '10px', color: 'rgba(255,255,255,0.40)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{pi.portfolioType}</span>
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px', marginBottom: '14px' }}>
+                      <div style={{ background: 'rgba(45,212,191,0.05)', border: '1px solid rgba(45,212,191,0.12)', borderRadius: '10px', padding: '12px' }}>
+                        <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.30)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '6px' }}>Total Value</div>
+                        <div style={{ fontSize: '20px', fontWeight: 800, color: '#2DD4BF', fontFamily: 'var(--font-inter, Inter, sans-serif)', letterSpacing: '-0.02em' }}>{pi.totalValue > 0 ? fmtUSD(pi.totalValue) : '—'}</div>
+                      </div>
+                      <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '10px', padding: '12px' }}>
+                        <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.30)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '6px' }}>Visible Tokens</div>
+                        <div style={{ fontSize: '20px', fontWeight: 800, color: '#e2e8f0', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{pi.holdingsCount}</div>
+                      </div>
+                      <div style={{ background: concentrationLabel ? `${concentrationColor}0d` : 'rgba(255,255,255,0.03)', border: `1px solid ${concentrationLabel ? `${concentrationColor}28` : 'rgba(255,255,255,0.07)'}`, borderRadius: '10px', padding: '12px' }}>
+                        <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.30)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '6px' }}>Concentration</div>
+                        <div style={{ fontSize: '15px', fontWeight: 800, color: concentrationLabel ? concentrationColor : 'rgba(255,255,255,0.35)', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{concentrationLabel ?? '—'}</div>
+                        {pi.topShare !== null && <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.28)', marginTop: '3px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>top holding {pi.topShare.toFixed(0)}% of portfolio</div>}
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: '14px', marginBottom: '12px', flexWrap: 'wrap', alignItems: 'flex-start' }}>
+                      {pi.top3.length > 0 && (
+                        <div>
+                          <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.30)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '6px' }}>Top Holdings</div>
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                            {pi.top3.map((h, i) => {
+                              const pct = pi.totalValue > 0 ? ((h.value / pi.totalValue) * 100).toFixed(0) : null
+                              return (
+                                <span key={i} style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '11px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', color: '#e2e8f0', border: '1px solid rgba(255,255,255,0.10)', background: 'rgba(255,255,255,0.03)', borderRadius: '6px', padding: '4px 9px' }}>
+                                  <span style={{ fontWeight: 700 }}>{h.symbol || h.name}</span>
+                                  {pct && <span style={{ color: 'rgba(255,255,255,0.38)', fontSize: '9px' }}>{pct}%</span>}
+                                </span>
+                              )
+                            })}
+                          </div>
+                        </div>
+                      )}
+                      {pi.chains.length > 0 && (
+                        <div>
+                          <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.30)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '6px' }}>Chain Exposure</div>
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                            {pi.chains.map(c => (
+                              <span key={c} style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.07em', padding: '3px 8px', borderRadius: '6px', background: c === 'BASE' ? 'rgba(0,82,255,0.14)' : 'rgba(98,126,234,0.14)', border: c === 'BASE' ? '1px solid rgba(0,82,255,0.28)' : '1px solid rgba(98,126,234,0.28)', color: c === 'BASE' ? '#6ea8ff' : '#a5b4fc', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{c}</span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                    {(pi.stablePercent > 5 || pi.ethPercent > 5) && (
+                      <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '12px' }}>
+                        {pi.stablePercent > 5 && <span style={{ fontSize: '10px', color: '#4ade80', border: '1px solid rgba(74,222,128,0.22)', background: 'rgba(74,222,128,0.05)', borderRadius: '6px', padding: '3px 8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Stablecoin exposure {pi.stablePercent.toFixed(0)}%</span>}
+                        {pi.ethPercent > 5 && <span style={{ fontSize: '10px', color: '#a78bfa', border: '1px solid rgba(167,139,250,0.22)', background: 'rgba(139,92,246,0.05)', borderRadius: '6px', padding: '3px 8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>ETH exposure {pi.ethPercent.toFixed(0)}%</span>}
+                      </div>
+                    )}
+                    <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: '10px' }}>
+                      {totalEvents > 0 ? (
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', alignItems: 'center' }}>
+                          <span style={{ fontSize: '10px', color: '#4ade80', border: '1px solid rgba(74,222,128,0.20)', background: 'rgba(74,222,128,0.05)', borderRadius: '6px', padding: '3px 8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Activity indexed</span>
+                          <span style={{ fontSize: '10px', color: 'rgba(255,255,255,0.45)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{totalEvents} indexed transfer events</span>
+                          {swapCandidates === 0 ? (
+                            <span style={{ fontSize: '10px', color: '#7dd3fc', border: '1px solid rgba(125,211,252,0.18)', background: 'rgba(56,189,248,0.05)', borderRadius: '6px', padding: '3px 8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>No reconstructable swap pairs in checked sample</span>
+                          ) : (
+                            <span style={{ fontSize: '10px', color: '#a78bfa', border: '1px solid rgba(167,139,250,0.20)', background: 'rgba(139,92,246,0.05)', borderRadius: '6px', padding: '3px 8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{swapCandidates} swap pair{swapCandidates !== 1 ? 's' : ''} found</span>
+                          )}
+                        </div>
+                      ) : (
+                        <span style={{ fontSize: '10px', color: 'rgba(255,255,255,0.30)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Activity not available in checked sample</span>
+                      )}
+                    </div>
+                  </div>
+                )
+              })()}
+
+              {/* Wallet Score + PnL Intelligence */}
               <div className="wallet-score-grid" style={{ display: 'grid', gridTemplateColumns: 'minmax(280px, 1.05fr) minmax(280px, 1.6fr)', gap: '14px' }}>
                 <div style={{
                   background: 'radial-gradient(circle at top right, rgba(45,212,191,0.16), transparent 34%), #080c14',
@@ -990,46 +1109,70 @@ export default function WalletScannerPage() {
                   boxShadow: '0 18px 50px rgba(0,0,0,0.28)',
                 }}>
                   <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', borderTop: '2px solid rgba(45,212,191,0.55)' }} />
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', marginBottom: '18px' }}>
-                    <div style={{ fontSize: '10px', fontWeight: 800, letterSpacing: '0.18em', color: '#2DD4BF', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
-                      Instant Wallet Score
-                    </div>
-                    {walletIntel.walletTier !== 'Open Check' && (
-                      <span style={{ padding: '5px 10px', borderRadius: '999px', background: tierTone.bg, border: `1px solid ${tierTone.border}`, color: tierTone.color, fontSize: '10px', fontWeight: 800, letterSpacing: '0.10em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
-                        {walletIntel.walletTier}
-                      </span>
-                    )}
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'flex-end', gap: '10px', marginBottom: '14px' }}>
-                    <div style={{ fontSize: walletIntel.walletScore === null ? '40px' : '56px', lineHeight: 0.9, fontWeight: 950, letterSpacing: '-0.06em', color: walletIntel.walletScore === null ? '#7dd3fc' : '#f8fafc', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
-                      {walletIntel.walletScore === null
-                        ? ((result.walletTradeStatsSummary?.closedLots ?? 0) > 0 ? 'Partial Trade Read' : 'Open Check')
-                        : walletIntel.walletScore}
-                    </div>
-                    {walletIntel.walletScore !== null && <div style={{ fontSize: '14px', color: 'rgba(255,255,255,0.35)', marginBottom: '4px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>/100</div>}
-                  </div>
                   {(() => {
                     const ts = result.walletTradeStatsSummary
                     const closedLots = ts?.closedLots ?? 0
-                    const winRateNote = walletIntel.winRate !== null
-                      ? 'Closed lots only'
-                      : closedLots > 0
-                        ? 'Locked — 10+ closed lots needed'
-                        : 'No closed lots yet'
-                    const confidenceNote = walletIntel.confidence === 'open check'
-                      ? closedLots > 0
-                        ? `${closedLots} closed lots reconstructed`
-                        : 'Evidence pending'
-                      : 'Evidence weighted'
+                    const portfolioActive = result.walletModuleCoverage?.portfolio.status === 'ok' || result.totalValue > 0 || result.holdings.length > 0
+                    const tradeOpenCheck = closedLots === 0
+                    if (portfolioActive && tradeOpenCheck) {
+                      return (
+                        <>
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', marginBottom: '16px' }}>
+                            <div style={{ fontSize: '10px', fontWeight: 800, letterSpacing: '0.18em', color: '#2DD4BF', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                              Wallet Status
+                            </div>
+                          </div>
+                          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '16px' }}>
+                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', fontSize: '13px', fontWeight: 800, color: '#4ade80', border: '1px solid rgba(74,222,128,0.30)', background: 'rgba(74,222,128,0.08)', borderRadius: '8px', padding: '7px 14px', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
+                              <span style={{ fontSize: '10px' }}>●</span> Portfolio Active
+                            </span>
+                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', fontSize: '13px', fontWeight: 800, color: '#7dd3fc', border: '1px solid rgba(125,211,252,0.25)', background: 'rgba(56,189,248,0.07)', borderRadius: '8px', padding: '7px 14px', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
+                              <span style={{ fontSize: '10px' }}>○</span> Trading Open Check
+                            </span>
+                          </div>
+                          <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.45)', lineHeight: 1.55, fontFamily: 'var(--font-inter, Inter, sans-serif)', marginBottom: '16px' }}>
+                            CORTEX can read current holdings and exposure. Trading skill needs matched swap exits.
+                          </div>
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '10px' }}>
+                            <div style={{ background: 'rgba(255,255,255,0.035)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '12px', padding: '12px' }}>
+                              <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.28)', letterSpacing: '0.13em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '6px' }}>Win Rate</div>
+                              <div style={{ fontSize: '14px', color: '#7dd3fc', fontWeight: 800, fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', lineHeight: 1.3 }}>Trading Open Check</div>
+                              <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.28)', marginTop: '4px' }}>No closed lots yet</div>
+                            </div>
+                            <div style={{ background: 'rgba(255,255,255,0.035)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '12px', padding: '12px' }}>
+                              <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.28)', letterSpacing: '0.13em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '6px' }}>Wallet Score</div>
+                              <div style={{ fontSize: '14px', color: '#7dd3fc', fontWeight: 800, fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', lineHeight: 1.3 }}>Trading Open Check</div>
+                              <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.28)', marginTop: '4px' }}>Requires closed-lot evidence</div>
+                            </div>
+                          </div>
+                        </>
+                      )
+                    }
+                    const winRateNote = walletIntel.winRate !== null ? 'Closed lots only' : closedLots > 0 ? 'Locked — 10+ closed lots needed' : 'No closed lots yet'
+                    const confidenceNote = walletIntel.confidence === 'open check' ? (closedLots > 0 ? `${closedLots} closed lots reconstructed` : 'Closed-lot stats not available yet') : 'Evidence weighted'
                     const scoreReason = walletIntel.walletScore === null
                       ? closedLots >= 10 && ts?.economicSignificance === 'micro_sample'
                         ? 'Score not calculated — matched trade sample is too small financially to grade this wallet.'
-                        : closedLots > 0
-                          ? 'Score not calculated until 10+ verified closed lots.'
-                          : 'Needs closed lot evidence to score.'
+                        : closedLots > 0 ? 'Score not calculated until 10+ verified closed lots.' : 'Needs closed lot evidence to score.'
                       : null
                     return (
                       <>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', marginBottom: '18px' }}>
+                          <div style={{ fontSize: '10px', fontWeight: 800, letterSpacing: '0.18em', color: '#2DD4BF', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                            Instant Wallet Score
+                          </div>
+                          {walletIntel.walletTier !== 'Open Check' && (
+                            <span style={{ padding: '5px 10px', borderRadius: '999px', background: tierTone.bg, border: `1px solid ${tierTone.border}`, color: tierTone.color, fontSize: '10px', fontWeight: 800, letterSpacing: '0.10em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                              {walletIntel.walletTier}
+                            </span>
+                          )}
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'flex-end', gap: '10px', marginBottom: '14px' }}>
+                          <div style={{ fontSize: walletIntel.walletScore === null ? '40px' : '56px', lineHeight: 0.9, fontWeight: 950, letterSpacing: '-0.06em', color: walletIntel.walletScore === null ? '#7dd3fc' : '#f8fafc', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
+                            {walletIntel.walletScore === null ? (closedLots > 0 ? 'Partial Trade Read' : 'Open Check') : walletIntel.walletScore}
+                          </div>
+                          {walletIntel.walletScore !== null && <div style={{ fontSize: '14px', color: 'rgba(255,255,255,0.35)', marginBottom: '4px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>/100</div>}
+                        </div>
                         {scoreReason && (
                           <div style={{ fontSize: '11px', color: '#7dd3fc', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '12px', lineHeight: 1.4 }}>
                             {scoreReason}
@@ -1103,15 +1246,15 @@ export default function WalletScannerPage() {
                         {(() => {
                           const mc = result.walletModuleCoverage
                           if (mc?.activity && mc.activity.eventCount > 0 && mc.swapDetection.candidateCount === 0) {
-                            return `${mc.activity.eventCount} transfer events indexed — Open Check for PnL — no priced swap lot pairs found in this sample.`
+                            return `${mc.activity.eventCount} transfer events indexed — no reconstructable swap pairs found. Closed-lot PnL not available yet.`
                           }
                           if (mc?.activity?.reason === 'provider_unavailable') {
-                            return 'Activity provider unavailable in this scan. PnL stays Open Check until transfer evidence is indexed.'
+                            return 'Activity provider unavailable in this scan. PnL stays open check until transfer evidence is indexed.'
                           }
                           if (mc?.swapDetection && mc.swapDetection.candidateCount > 0 && mc.fifoPnL.closedLots === 0) {
-                            return 'Swap candidates found but no matched buy/sell lot pairs yet. PnL stays Open Check until FIFO lots close.'
+                            return 'Swap candidates found but no matched buy/sell lot pairs yet. Closed-lot PnL not available until FIFO lots close.'
                           }
-                          return 'Missing periods stay Open Check. Current PnL values only appear when the scan exposes indexed transfer/cost-basis evidence.'
+                          return 'Closed-lot stats not available yet. PnL values only appear when priced buy/sell lot pairs are reconstructed.'
                         })()}
                       </div>
                     </div>
@@ -1136,7 +1279,7 @@ export default function WalletScannerPage() {
                 return (
                   <div style={{ background: '#080c14', border: '1px solid rgba(139,92,246,0.22)', borderRadius: '16px', padding: '20px 22px' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px', flexWrap: 'wrap' }}>
-                      <div style={{ fontSize: '10px', fontWeight: 800, letterSpacing: '0.18em', color: '#a78bfa', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Real Trade Evidence</div>
+                      <div style={{ fontSize: '10px', fontWeight: 800, letterSpacing: '0.18em', color: '#a78bfa', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Trading Intelligence</div>
                       <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', color: '#a78bfa', border: '1px solid rgba(139,92,246,0.25)', background: 'rgba(139,92,246,0.07)', borderRadius: '999px', padding: '2px 7px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>FIFO lots</span>
                       <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', color: ts.confidence === 'high' ? '#4ade80' : ts.confidence === 'medium' ? '#fbbf24' : '#94a3b8', border: `1px solid ${ts.confidence === 'high' ? 'rgba(74,222,128,0.22)' : ts.confidence === 'medium' ? 'rgba(251,191,36,0.22)' : 'rgba(148,163,184,0.18)'}`, background: ts.confidence === 'high' ? 'rgba(74,222,128,0.06)' : ts.confidence === 'medium' ? 'rgba(251,191,36,0.06)' : 'rgba(148,163,184,0.06)', borderRadius: '999px', padding: '2px 7px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{ts.confidence === 'open_check' ? 'open check' : `${ts.confidence} confidence`}</span>
                       <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', color: '#94a3b8', border: '1px solid rgba(148,163,184,0.15)', background: 'rgba(148,163,184,0.05)', borderRadius: '999px', padding: '2px 7px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{ts.sampleSizeLabel}</span>
@@ -1160,15 +1303,20 @@ export default function WalletScannerPage() {
                     )}
 
                     {isOpenCheck ? (
-                      <div style={{ color: '#7dd3fc', fontSize: '13px', lineHeight: 1.6, fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
-                        {(() => {
-                          const mc = result.walletModuleCoverage
-                          if (ls && (ls.pricedSwapEvents ?? 0) > 0) return 'CORTEX found priced activity, but buys and sells did not match inside the indexed window yet.'
-                          if (mc?.activity && mc.activity.eventCount > 0 && mc.swapDetection.candidateCount === 0) return `${mc.activity.eventCount} transfer events indexed — no matched swap pairs found in checked sample. PnL requires priced buy/sell lot pairs.`
-                          if (mc?.swapDetection && mc.swapDetection.candidateCount > 0 && (mc.priceEvidence?.pricedEvents ?? 0) === 0) return 'Swap candidates found but price evidence was unavailable at time of trade. FIFO lot matching requires entry and exit price data.'
-                          if (mc?.activity?.reason === 'provider_unavailable') return 'Activity provider unavailable. No FIFO lot matching was possible in this scan.'
-                          return 'No matched priced closed lots yet. More on-chain swap activity needed for FIFO reconstruction.'
-                        })()}
+                      <div style={{ fontSize: '13px', lineHeight: 1.6, fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
+                        <div style={{ color: '#7dd3fc', marginBottom: '10px' }}>
+                          {(() => {
+                            const mc = result.walletModuleCoverage
+                            if (ls && (ls.pricedSwapEvents ?? 0) > 0) return 'CORTEX found priced activity, but buys and sells did not match inside the indexed window yet.'
+                            if (mc?.activity && mc.activity.eventCount > 0 && mc.swapDetection.candidateCount === 0) return `${mc.activity.eventCount} transfer events indexed — no reconstructable swap pairs found in checked sample.`
+                            if (mc?.swapDetection && mc.swapDetection.candidateCount > 0 && (mc.priceEvidence?.pricedEvents ?? 0) === 0) return 'Swap candidates found but price evidence was unavailable at time of trade. FIFO lot matching requires entry and exit price data.'
+                            if (mc?.activity?.reason === 'provider_unavailable') return 'Activity provider unavailable. No FIFO lot matching was possible in this scan.'
+                            return 'No matched priced closed lots yet.'
+                          })()}
+                        </div>
+                        <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.35)', lineHeight: 1.5, fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', background: 'rgba(125,211,252,0.04)', border: '1px solid rgba(125,211,252,0.10)', borderRadius: '8px', padding: '8px 10px' }}>
+                          Requires matched buys and sells with price evidence. Current scan found transfers but no reconstructable swap pairs. Closed-lot stats not available yet.
+                        </div>
                       </div>
                     ) : (
                       <>
@@ -1320,6 +1468,7 @@ export default function WalletScannerPage() {
               {(() => {
                 const ts = result.walletTradeStatsSummary
                 const closedLots = ts?.closedLots ?? 0
+                if (!ts || closedLots === 0) return null
                 const hasEnough = closedLots >= 10 && ts?.economicSignificance === 'meaningful'
                 const closedTradesDisplay = closedLots > 0
                   ? `${closedLots} reconstructed`
