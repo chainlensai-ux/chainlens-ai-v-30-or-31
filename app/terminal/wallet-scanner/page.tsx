@@ -296,17 +296,23 @@ function derivePnlOverview(data: WalletResult): WalletIntelligence['pnl'] {
   const backend = data.walletIntelligence?.pnl
   const estimated = data.estimatedPnl
   const estimatedUsable = estimated?.status === 'ok' || estimated?.status === 'partial'
+  const ls = data.walletLotSummary
+  const ts = data.walletTradeStatsSummary
+  // Only expose PnL numbers when there is actual closed-lot or estimated evidence.
+  // Without this gate, numeric 0 from the backend renders as +$0.00 despite open_check status.
+  const hasClosedLotEvidence = (ls?.closedLots ?? ts?.closedLots ?? 0) > 0
+  const pnlEvidenceReady = hasClosedLotEvidence || estimatedUsable
   return {
-    total: safeNum(backend?.total) ?? (estimatedUsable ? safeNum(estimated?.totalEstimatedPnlUsd) : null),
-    sevenDay: safeNum(backend?.sevenDay),
-    thirtyDay: safeNum(backend?.thirtyDay),
-    thisMonth: safeNum(backend?.thisMonth),
-    realized: safeNum(backend?.realized) ?? (estimatedUsable ? safeNum(estimated?.realizedPnlUsd) : null),
-    unrealized: safeNum(backend?.unrealized) ?? (estimatedUsable ? safeNum(estimated?.unrealizedPnlUsd) : null),
-    biggestWin: safeNum(backend?.biggestWin),
-    biggestLoss: safeNum(backend?.biggestLoss),
-    avgWin: safeNum(backend?.avgWin),
-    avgLoss: safeNum(backend?.avgLoss),
+    total:      pnlEvidenceReady ? (safeNum(backend?.total)     ?? (estimatedUsable ? safeNum(estimated?.totalEstimatedPnlUsd) : null)) : null,
+    sevenDay:   pnlEvidenceReady ? safeNum(backend?.sevenDay)   : null,
+    thirtyDay:  pnlEvidenceReady ? safeNum(backend?.thirtyDay)  : null,
+    thisMonth:  pnlEvidenceReady ? safeNum(backend?.thisMonth)  : null,
+    realized:   pnlEvidenceReady ? (safeNum(backend?.realized)  ?? (estimatedUsable ? safeNum(estimated?.realizedPnlUsd)       : null)) : null,
+    unrealized: pnlEvidenceReady ? (safeNum(backend?.unrealized)?? (estimatedUsable ? safeNum(estimated?.unrealizedPnlUsd)     : null)) : null,
+    biggestWin: pnlEvidenceReady ? safeNum(backend?.biggestWin) : null,
+    biggestLoss:pnlEvidenceReady ? safeNum(backend?.biggestLoss): null,
+    avgWin:     pnlEvidenceReady ? safeNum(backend?.avgWin)     : null,
+    avgLoss:    pnlEvidenceReady ? safeNum(backend?.avgLoss)    : null,
   }
 }
 
