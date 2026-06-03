@@ -1,8 +1,78 @@
 'use client'
 
-import { useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { usePlanWithLoading, LockedPanel, canAccessFeature } from '@/lib/usePlan'
 import { supabase } from '@/lib/supabaseClient'
+import { motion } from 'framer-motion'
+
+
+const fadeInUpInitial = { opacity: 0, y: 10 }
+const fadeInUpAnimate = { opacity: 1, y: 0 }
+const fadeInUpTransition = { duration: 0.25, ease: 'easeOut' as const }
+
+const scanGridVariants = {
+  hidden: {},
+  show: {
+    transition: {
+      staggerChildren: 0.07,
+    },
+  },
+}
+
+const scanResultVariants = {
+  hidden: fadeInUpInitial,
+  show: fadeInUpAnimate,
+}
+
+function useAnimatedNumber(value: number | null | undefined, duration = 420): number | null {
+  const [displayValue, setDisplayValue] = useState(value ?? null)
+  const displayValueRef = useRef(value ?? null)
+
+  useEffect(() => {
+    displayValueRef.current = displayValue
+  }, [displayValue])
+
+  useEffect(() => {
+    if (value === null || value === undefined || !Number.isFinite(value)) {
+      const emptyValue = value ?? null
+      const frameId = window.requestAnimationFrame(() => {
+        displayValueRef.current = emptyValue
+        setDisplayValue(emptyValue)
+      })
+      return () => window.cancelAnimationFrame(frameId)
+    }
+
+    const startValue = typeof displayValueRef.current === 'number' && Number.isFinite(displayValueRef.current) ? displayValueRef.current : value
+    const delta = value - startValue
+    if (delta === 0) return
+
+    let frameId = 0
+    let startTime: number | null = null
+    const run = (timestamp: number) => {
+      if (startTime === null) startTime = timestamp
+      const progress = Math.min((timestamp - startTime) / duration, 1)
+      const eased = 1 - Math.pow(1 - progress, 3)
+      const nextValue = startValue + delta * eased
+      displayValueRef.current = nextValue
+      setDisplayValue(nextValue)
+      if (progress < 1) frameId = window.requestAnimationFrame(run)
+    }
+
+    frameId = window.requestAnimationFrame(run)
+    return () => window.cancelAnimationFrame(frameId)
+  }, [duration, value])
+
+  return displayValue
+}
+
+function animatedBadgeClass(label: string): string {
+  const normalized = label.toLowerCase().replace('_', ' ')
+  if (normalized.includes('early')) return 'animate-pulse shadow-[0_0_18px_rgba(245,158,11,0.32)]'
+  if (normalized.includes('high')) return 'ring-1 ring-green-300/40 shadow-[0_0_18px_rgba(16,185,129,0.36)]'
+  if (normalized.includes('medium')) return 'animate-pulse opacity-90 [animation-duration:2.6s]'
+  if (normalized.includes('low')) return 'animate-[ping_0.8s_ease-out_1] shadow-[0_0_18px_rgba(239,68,68,0.34)]'
+  return ''
+}
 
 // ── Types ────────────────────────────────────────────────────────────────────────────
 
@@ -648,7 +718,7 @@ const accentClasses: Record<NonNullable<CardProps['accent']>, string> = {
 
 function DashboardCard({ title, eyebrow, children, accent = 'teal', className = '' }: CardProps) {
   return (
-    <section className={`relative overflow-hidden rounded-xl border border-white/[0.06] bg-[#111827] p-5 shadow-[0_0_20px_rgba(0,0,0,0.3)] transition-all duration-200 before:absolute before:left-0 before:top-0 before:h-px before:w-full before:opacity-70 hover:shadow-[0_0_30px_rgba(0,0,0,0.45)] md:p-6 ${accentClasses[accent]} ${className}`}>
+    <section className={`relative overflow-hidden rounded-xl border border-white/[0.06] bg-[#111827] p-5 shadow-[0_0_20px_rgba(0,0,0,0.3)] transition-all duration-200 before:absolute before:left-0 before:top-0 before:h-px before:w-full before:opacity-70 hover:border-[#3B82F6]/40 hover:shadow-[0_0_30px_rgba(0,0,0,0.45)] md:p-6 ${accentClasses[accent]} ${className}`}>
       <div className="relative mb-5 flex items-center justify-between gap-3">
         <div>
           {eyebrow && <p className="mb-1 font-mono text-xs font-semibold uppercase tracking-[0.18em] text-[#9CA3AF]">{eyebrow}</p>}
@@ -673,7 +743,7 @@ type HeaderBarProps = {
 
 function HeaderBar({ input, setInput, loading, handleScan, result, deepActivity, setDeepActivity }: HeaderBarProps) {
   return (
-    <header className="rounded-xl border border-white/[0.06] bg-[#111827] p-5 shadow-[0_0_20px_rgba(0,0,0,0.3)] transition-all duration-200 hover:shadow-[0_0_30px_rgba(0,0,0,0.45)] md:p-6">
+    <header className="rounded-xl border border-white/[0.06] bg-[#111827] p-5 shadow-[0_0_20px_rgba(0,0,0,0.3)] transition-all duration-200 hover:border-[#3B82F6]/40 hover:shadow-[0_0_30px_rgba(0,0,0,0.45)] md:p-6">
       <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <div className="mb-2 flex flex-wrap items-center gap-3">
@@ -716,7 +786,7 @@ function HeaderBar({ input, setInput, loading, handleScan, result, deepActivity,
               type="button"
               onClick={handleScan}
               disabled={loading || !input.trim()}
-              className="inline-flex items-center justify-center gap-2 rounded-xl bg-[#3B82F6] px-6 py-3 font-mono text-xs font-bold uppercase tracking-[0.16em] text-white shadow-[0_0_24px_rgba(59,130,246,0.28)] transition hover:bg-blue-400 disabled:cursor-not-allowed disabled:bg-blue-500/20 disabled:text-white/35 disabled:shadow-none"
+              className="inline-flex items-center justify-center gap-2 rounded-xl bg-[#3B82F6] px-6 py-3 font-mono text-xs font-bold uppercase tracking-[0.16em] text-white shadow-[0_0_24px_rgba(59,130,246,0.28)] transition-all duration-200 hover:bg-blue-400 disabled:cursor-not-allowed disabled:bg-blue-500/20 disabled:text-white/35 disabled:shadow-none"
             >
               {loading ? 'Scanning…' : 'Scan'}
               {!loading && <span aria-hidden="true">→</span>}
@@ -728,7 +798,7 @@ function HeaderBar({ input, setInput, loading, handleScan, result, deepActivity,
               onClick={() => setDeepActivity(v => !v)}
               disabled={loading}
               title="Fetches transfer history for estimated PnL and future trade reconstruction. Slower scan."
-              className={`rounded-lg border px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-[0.14em] transition disabled:cursor-not-allowed disabled:opacity-60 ${deepActivity ? 'border-green-500/30 bg-green-500/20 text-green-400' : 'border-white/[0.06] bg-[#0B0F19]/60 text-[#9CA3AF] hover:border-blue-500/30 hover:text-blue-400'}`}
+              className={`rounded-lg border px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-[0.14em] transition-all duration-200 disabled:cursor-not-allowed disabled:opacity-60 ${deepActivity ? 'border-green-500/30 bg-green-500/20 text-green-400' : 'border-white/[0.06] bg-[#0B0F19]/60 text-[#9CA3AF] hover:border-blue-500/30 hover:text-blue-400'}`}
             >
               {deepActivity ? 'Deep Activity Scan On' : 'Run Deep Activity Scan'}
             </button>
@@ -746,22 +816,26 @@ function SummaryRow({ data, quality }: { data: WalletResult; quality: string }) 
   const portfolio = derivePortfolioIntelligence(data)
   const ts = data.walletTradeStatsSummary
   const pnl = ts?.realizedPnlUsd ?? data.walletLotSummary?.realizedPnlUsd ?? data.estimatedPnl?.totalEstimatedPnlUsd ?? null
+  const closedLots = ts?.closedLots ?? data.walletLotSummary?.closedLots ?? 0
   const activity = data.walletFacts?.activity?.eventCount ?? data.walletBehavior?.txCount ?? data.txCount
-  const items = [
-    { label: 'Portfolio Value', value: portfolio.totalValue > 0 ? fmtUSD(portfolio.totalValue) : 'Value pending', sub: `${portfolio.holdingsCount} visible holding${portfolio.holdingsCount === 1 ? '' : 's'}`, tone: 'text-[#10B981]' },
+  const animatedPortfolioValue = useAnimatedNumber(portfolio.totalValue)
+  const animatedPnl = useAnimatedNumber(pnl)
+  const animatedClosedLots = useAnimatedNumber(closedLots)
+  const items: Array<{ label: string; value: ReactNode; sub: ReactNode; tone: string }> = [
+    { label: 'Portfolio Value', value: portfolio.totalValue > 0 ? fmtUSD(animatedPortfolioValue ?? portfolio.totalValue) : 'Value pending', sub: `${portfolio.holdingsCount} visible holding${portfolio.holdingsCount === 1 ? '' : 's'}`, tone: 'text-[#10B981]' },
     { label: 'Concentration', value: portfolio.concentration ? portfolio.concentration.toUpperCase() : 'Open Check', sub: portfolio.topShare !== null ? `Top asset ${portfolio.topShare.toFixed(1)}%` : 'Top asset pending', tone: 'text-[#3B82F6]' },
     { label: 'Activity', value: activity !== null && activity !== undefined ? activity.toLocaleString() : 'Open Check', sub: quality, tone: 'text-[#3B82F6]' },
-    { label: 'PnL', value: fmtSignedUSD(pnl), sub: data.pnlCoverageReason ?? data.estimatedPnl?.reason ?? 'Matched evidence only', tone: pnl !== null && pnl >= 0 ? 'text-[#10B981]' : pnl !== null ? 'text-[#EF4444]' : 'text-[#9CA3AF]' },
-    { label: 'Closed Lots', value: `${ts?.closedLots ?? data.walletLotSummary?.closedLots ?? 0}`, sub: ts?.sampleSizeLabel ? `Sample: ${ts.sampleSizeLabel}` : 'Requires matched exits', tone: 'text-[#F59E0B]' },
+    { label: 'PnL', value: fmtSignedUSD(animatedPnl ?? pnl), sub: data.pnlCoverageReason ?? data.estimatedPnl?.reason ?? 'Matched evidence only', tone: pnl !== null && pnl >= 0 ? 'text-[#10B981]' : pnl !== null ? 'text-[#EF4444]' : 'text-[#9CA3AF]' },
+    { label: 'Closed Lots', value: Math.round(animatedClosedLots ?? closedLots).toLocaleString(), sub: ts?.sampleSizeLabel ? <span className={`inline-flex rounded-full border border-amber-500/30 bg-amber-500/15 px-2 py-0.5 font-mono text-[10px] font-bold uppercase tracking-[0.14em] text-amber-300 transition-all duration-200 ${animatedBadgeClass(ts.sampleSizeLabel)}`}>Sample: {ts.sampleSizeLabel}</span> : 'Requires matched exits', tone: 'text-[#F59E0B]' },
   ]
 
   return (
     <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
       {items.map(item => (
-        <div key={item.label} className="rounded-xl border border-white/[0.06] bg-[#111827] p-5 shadow-[0_0_20px_rgba(0,0,0,0.3)] transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_0_30px_rgba(0,0,0,0.45)]">
+        <div key={item.label} className="rounded-xl border border-white/[0.06] bg-[#111827] p-5 shadow-[0_0_20px_rgba(0,0,0,0.3)] transition-all duration-200 hover:-translate-y-0.5 hover:border-[#3B82F6]/40 hover:shadow-[0_0_30px_rgba(0,0,0,0.45)]">
           <p className="font-mono text-xs font-semibold uppercase tracking-[0.16em] text-[#9CA3AF]">{item.label}</p>
           <p className={`mt-2 font-mono text-2xl font-semibold tracking-tight ${item.tone}`}>{item.value}</p>
-          <p className="mt-2 line-clamp-2 text-xs leading-5 text-[#9CA3AF]">{item.sub}</p>
+          <div className="mt-2 line-clamp-2 text-xs leading-5 text-[#9CA3AF]">{item.sub}</div>
         </div>
       ))}
     </section>
@@ -782,8 +856,8 @@ function AIVerdictCard({ clarkVerdict, clarkLoading, clarkError }: { clarkVerdic
       {!clarkLoading && clarkVerdict && (
         <div className="space-y-4">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="rounded-full border border-blue-500/30 bg-blue-500/20 px-3 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-blue-400">{clarkVerdict.verdict}</span>
-            <span className={`rounded-full px-3 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.16em] ${clarkVerdict.confidence.toLowerCase().includes('high') ? 'border border-green-500/30 bg-green-500/20 text-green-400' : clarkVerdict.confidence.toLowerCase().includes('medium') ? 'border border-amber-500/30 bg-amber-500/20 text-amber-400' : 'border border-red-500/30 bg-red-500/20 text-red-400'}`}>Confidence: {clarkVerdict.confidence}</span>
+            <span className="rounded-full border border-blue-500/30 bg-blue-500/20 px-3 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-blue-400 transition-all duration-200">{clarkVerdict.verdict}</span>
+            <span className={`rounded-full px-3 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.16em] transition-all duration-200 ${clarkVerdict.confidence.toLowerCase().includes('high') ? 'border border-green-500/30 bg-green-500/20 text-green-400' : clarkVerdict.confidence.toLowerCase().includes('medium') ? 'border border-amber-500/30 bg-amber-500/20 text-amber-400' : 'border border-red-500/30 bg-red-500/20 text-red-400'} ${animatedBadgeClass(`${clarkVerdict.confidence} confidence`)}`}>Confidence: {clarkVerdict.confidence}</span>
           </div>
           <p className="text-sm leading-6 text-[#F3F4F6]/80">{clarkVerdict.read}</p>
           <div className="space-y-3">
@@ -812,15 +886,15 @@ function PortfolioExposureCard({ data, showAllHoldings, setShowAllHoldings }: { 
   return (
     <DashboardCard title="Portfolio Exposure" eyebrow={portfolio.holdingsScope} accent="blue">
       <div className="mb-4 grid gap-3 sm:grid-cols-3">
-        <div className="rounded-lg border border-white/[0.06] bg-white/[0.04] p-3">
+        <div className="rounded-lg border border-white/[0.06] bg-white/[0.04] p-3 transition-all duration-200 hover:border-[#3B82F6]/30">
           <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#9CA3AF]">Type</p>
           <p className="mt-1 text-sm font-bold text-[#F3F4F6]">{portfolio.portfolioType}</p>
         </div>
-        <div className="rounded-lg border border-white/[0.06] bg-white/[0.04] p-3">
+        <div className="rounded-lg border border-white/[0.06] bg-white/[0.04] p-3 transition-all duration-200 hover:border-[#3B82F6]/30">
           <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#9CA3AF]">Stable</p>
           <p className="mt-1 text-sm font-bold text-[#10B981]">{portfolio.stablePercent.toFixed(1)}%</p>
         </div>
-        <div className="rounded-lg border border-white/[0.06] bg-white/[0.04] p-3">
+        <div className="rounded-lg border border-white/[0.06] bg-white/[0.04] p-3 transition-all duration-200 hover:border-[#3B82F6]/30">
           <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#9CA3AF]">Native</p>
           <p className="mt-1 text-sm font-bold text-[#3B82F6]">{portfolio.ethPercent.toFixed(1)}%</p>
         </div>
@@ -828,9 +902,9 @@ function PortfolioExposureCard({ data, showAllHoldings, setShowAllHoldings }: { 
       <div className="mb-4 flex flex-wrap gap-2">
         {portfolio.top3.map(h => {
           const pct = portfolio.totalValue > 0 ? (h.value / portfolio.totalValue) * 100 : null
-          return <span key={`${h.symbol}-${h.chain}`} className="rounded-full border border-white/[0.06] bg-white/[0.04] px-3 py-1 font-mono text-[11px] text-[#F3F4F6]/80">{h.symbol || h.name}{pct !== null ? ` · ${pct.toFixed(0)}%` : ''}</span>
+          return <span key={`${h.symbol}-${h.chain}`} className="rounded-full border border-white/[0.06] bg-white/[0.04] px-3 py-1 font-mono text-[11px] text-[#F3F4F6]/80 transition-all duration-200">{h.symbol || h.name}{pct !== null ? ` · ${pct.toFixed(0)}%` : ''}</span>
         })}
-        {portfolio.chains.map(chain => <span key={chain} className="rounded-full border border-blue-400/25 bg-blue-500/10 px-3 py-1 font-mono text-[11px] uppercase tracking-wide text-[#3B82F6]">{chain}</span>)}
+        {portfolio.chains.map(chain => <span key={chain} className="rounded-full border border-blue-400/25 bg-blue-500/10 px-3 py-1 font-mono text-[11px] uppercase tracking-wide text-[#3B82F6] transition-all duration-200">{chain}</span>)}
       </div>
       <div className="overflow-hidden rounded-xl border border-white/[0.06]">
         <div className="grid grid-cols-[1.4fr_1fr_1fr] bg-white/[0.04] px-3 py-2 font-mono text-[10px] uppercase tracking-[0.16em] text-[#9CA3AF]">
@@ -839,7 +913,7 @@ function PortfolioExposureCard({ data, showAllHoldings, setShowAllHoldings }: { 
         {preview.length === 0 ? (
           <p className="p-4 text-sm text-[#9CA3AF]">No visible holdings in the checked window.</p>
         ) : preview.map(h => (
-          <div key={`${h.symbol}-${h.name}-${h.chain}`} className="grid grid-cols-[1.4fr_1fr_1fr] items-center border-t border-white/[0.06] px-3 py-3 text-sm">
+          <div key={`${h.symbol}-${h.name}-${h.chain}`} className="grid grid-cols-[1.4fr_1fr_1fr] items-center border-t border-white/[0.06] px-3 py-3 text-sm transition-all duration-150 hover:bg-white/10">
             <div className="min-w-0">
               <p className="truncate font-bold text-[#F3F4F6]">{h.symbol || h.name}</p>
               <p className="truncate text-xs text-[#9CA3AF]">{h.name}{h.chain ? ` · ${h.chain}` : ''}</p>
@@ -850,7 +924,7 @@ function PortfolioExposureCard({ data, showAllHoldings, setShowAllHoldings }: { 
         ))}
       </div>
       {sorted.length > 5 && (
-        <button type="button" onClick={() => setShowAllHoldings(v => !v)} className="mt-3 rounded-lg border border-white/[0.06] px-3 py-2 font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-[#9CA3AF] transition hover:border-blue-500/30 hover:text-[#10B981]">
+        <button type="button" onClick={() => setShowAllHoldings(v => !v)} className="mt-3 rounded-lg border border-white/[0.06] px-3 py-2 font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-[#9CA3AF] transition-all duration-200 hover:border-blue-500/30 hover:text-[#10B981]">
           {showAllHoldings ? 'Show fewer holdings' : `Show all ${sorted.length} holdings`}
         </button>
       )}
@@ -868,15 +942,15 @@ function ActivityIndexCard({ data }: { data: WalletResult }) {
   return (
     <DashboardCard title="Activity Index" eyebrow="Base behavior" accent="violet">
       <div className="grid gap-3 sm:grid-cols-3">
-        <div className="rounded-lg border border-white/[0.06] bg-white/[0.04] p-3">
+        <div className="rounded-lg border border-white/[0.06] bg-white/[0.04] p-3 transition-all duration-200 hover:border-[#3B82F6]/30">
           <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#9CA3AF]">Events</p>
           <p className="mt-1 text-xl font-black text-[#3B82F6]">{totalEvents !== null && totalEvents !== undefined ? totalEvents.toLocaleString() : 'Open'}</p>
         </div>
-        <div className="rounded-lg border border-white/[0.06] bg-white/[0.04] p-3">
+        <div className="rounded-lg border border-white/[0.06] bg-white/[0.04] p-3 transition-all duration-200 hover:border-[#3B82F6]/30">
           <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#9CA3AF]">Inbound</p>
           <p className="mt-1 text-xl font-black text-[#10B981]">{activity?.inboundCount ?? behavior?.inboundCount ?? '—'}</p>
         </div>
-        <div className="rounded-lg border border-white/[0.06] bg-white/[0.04] p-3">
+        <div className="rounded-lg border border-white/[0.06] bg-white/[0.04] p-3 transition-all duration-200 hover:border-[#3B82F6]/30">
           <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#9CA3AF]">Outbound</p>
           <p className="mt-1 text-xl font-black text-[#F59E0B]">{activity?.outboundCount ?? behavior?.outboundCount ?? '—'}</p>
         </div>
@@ -891,7 +965,7 @@ function ActivityIndexCard({ data }: { data: WalletResult }) {
       {latestEvents.length > 0 && (
         <div className="mt-4 space-y-2">
           {latestEvents.slice(0, 3).map(event => (
-            <div key={`${event.txHash}-${event.timestamp}-${event.symbol}`} className="rounded-lg border border-white/[0.06] bg-white/[0.04] p-3">
+            <div key={`${event.txHash}-${event.timestamp}-${event.symbol}`} className="rounded-lg border border-white/[0.06] bg-white/[0.04] p-3 transition-all duration-200 hover:border-[#3B82F6]/30">
               <div className="flex items-center justify-between gap-3">
                 <p className="font-mono text-xs font-bold text-[#F3F4F6]">{event.symbol}</p>
                 <p className="font-mono text-[10px] uppercase tracking-wide text-[#9CA3AF]">{event.direction}</p>
@@ -910,18 +984,21 @@ function TradingIntelligenceCard({ data }: { data: WalletResult }) {
   const ts = data.walletTradeStatsSummary
   const closedLots = ts?.closedLots ?? 0
   const pnl = walletIntel.pnl
-  const stats = [
+  const animatedWinRate = useAnimatedNumber(walletIntel.winRate)
+  const animatedRealizedPnl = useAnimatedNumber(pnl.realized)
+  const animatedClosedLots = useAnimatedNumber(closedLots)
+  const stats: Array<{ label: string; value: ReactNode; tone: string }> = [
     { label: 'Wallet Tier', value: walletIntel.walletTier, tone: 'text-[#10B981]' },
     { label: 'Score', value: walletIntel.walletScore !== null ? `${walletIntel.walletScore}/100` : 'Open Check', tone: 'text-[#3B82F6]' },
-    { label: 'Win Rate', value: walletIntel.winRate !== null ? fmtOpenPct(walletIntel.winRate) : officialWinRateLockCopy(ts), tone: 'text-[#10B981]' },
-    { label: 'Realized PnL', value: fmtSignedUSD(pnl.realized), tone: pnl.realized !== null && pnl.realized >= 0 ? 'text-[#10B981]' : pnl.realized !== null ? 'text-[#EF4444]' : 'text-[#F3F4F6]/80' },
+    { label: 'Win Rate', value: walletIntel.winRate !== null ? fmtOpenPct(animatedWinRate ?? walletIntel.winRate) : officialWinRateLockCopy(ts), tone: 'text-[#10B981]' },
+    { label: 'Realized PnL', value: fmtSignedUSD(animatedRealizedPnl ?? pnl.realized), tone: pnl.realized !== null && pnl.realized >= 0 ? 'text-[#10B981]' : pnl.realized !== null ? 'text-[#EF4444]' : 'text-[#F3F4F6]/80' },
   ]
 
   return (
     <DashboardCard title="Trading Intelligence" eyebrow="Closed-lot evidence" accent="amber">
       <div className="grid gap-3 md:grid-cols-2">
         {stats.map(item => (
-          <div key={item.label} className="rounded-lg border border-white/[0.06] bg-white/[0.04] p-4">
+          <div key={item.label} className="rounded-lg border border-white/[0.06] bg-white/[0.04] p-4 transition-all duration-200 hover:border-[#3B82F6]/40 hover:bg-white/[0.06]">
             <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#9CA3AF]">{item.label}</p>
             <p className={`mt-2 text-lg font-black ${item.tone}`}>{item.value}</p>
           </div>
@@ -932,9 +1009,9 @@ function TradingIntelligenceCard({ data }: { data: WalletResult }) {
         <p className="mt-2 text-sm leading-6 text-[#F3F4F6]/80">{walletIntel.personalitySummary}</p>
       </div>
       <div className="mt-4 grid gap-3 sm:grid-cols-3">
-        <div className="rounded-lg border border-white/[0.06] bg-white/[0.04] p-3"><p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#9CA3AF]">Closed Lots</p><p className="mt-1 text-xl font-black text-[#F59E0B]">{closedLots}</p></div>
-        <div className="rounded-lg border border-white/[0.06] bg-white/[0.04] p-3"><p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#9CA3AF]">Avg Win</p><p className="mt-1 text-xl font-black text-[#10B981]">{fmtSignedUSD(pnl.avgWin)}</p></div>
-        <div className="rounded-lg border border-white/[0.06] bg-white/[0.04] p-3"><p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#9CA3AF]">Avg Loss</p><p className="mt-1 text-xl font-black text-[#EF4444]">{fmtSignedUSD(pnl.avgLoss)}</p></div>
+        <div className="rounded-lg border border-white/[0.06] bg-white/[0.04] p-3 transition-all duration-200 hover:border-[#3B82F6]/30"><p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#9CA3AF]">Closed Lots</p><p className="mt-1 text-xl font-black text-[#F59E0B]">{Math.round(animatedClosedLots ?? closedLots).toLocaleString()}</p></div>
+        <div className="rounded-lg border border-white/[0.06] bg-white/[0.04] p-3 transition-all duration-200 hover:border-[#3B82F6]/30"><p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#9CA3AF]">Avg Win</p><p className="mt-1 text-xl font-black text-[#10B981]">{fmtSignedUSD(pnl.avgWin)}</p></div>
+        <div className="rounded-lg border border-white/[0.06] bg-white/[0.04] p-3 transition-all duration-200 hover:border-[#3B82F6]/30"><p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#9CA3AF]">Avg Loss</p><p className="mt-1 text-xl font-black text-[#EF4444]">{fmtSignedUSD(pnl.avgLoss)}</p></div>
       </div>
     </DashboardCard>
   )
@@ -959,7 +1036,7 @@ function MatchedTradesTable({ data }: { data: WalletResult }) {
           </thead>
           <tbody className="divide-y divide-white/[0.06]">
             {samples.length > 0 ? samples.slice(0, 8).map((sample, index) => (
-              <tr key={`${sample.tokenAddress}-${sample.openedAt}-${sample.closedAt}`} className={`text-[#F3F4F6]/80 transition hover:bg-white/10 ${index % 2 === 1 ? 'bg-white/5' : 'bg-transparent'}`}>
+              <tr key={`${sample.tokenAddress}-${sample.openedAt}-${sample.closedAt}`} className={`text-[#F3F4F6]/80 transition-all duration-150 hover:scale-[1.01] hover:bg-white/10 ${index % 2 === 1 ? 'bg-white/5' : 'bg-transparent'}`}>
                 <td className="px-3 py-3 font-bold text-[#F3F4F6]">{sample.tokenSymbol}</td>
                 <td className="px-3 py-3 text-right font-mono text-xs">{sample.entryPriceUsd !== null ? fmtUSD(sample.entryPriceUsd) : '—'}</td>
                 <td className="px-3 py-3 text-right font-mono text-xs">{sample.exitPriceUsd !== null ? fmtUSD(sample.exitPriceUsd) : '—'}</td>
@@ -967,7 +1044,7 @@ function MatchedTradesTable({ data }: { data: WalletResult }) {
                 <td className="px-3 py-3 text-right font-mono text-xs text-[#9CA3AF]">{sample.holdingTimeSeconds !== null ? `${Math.round(sample.holdingTimeSeconds / 3600)}h` : '—'}</td>
               </tr>
             )) : backendTrades.length > 0 ? backendTrades.slice(0, 8).map((trade, index) => (
-              <tr key={`${trade.token}-${index}`} className={`text-[#F3F4F6]/80 transition hover:bg-white/10 ${index % 2 === 1 ? 'bg-white/5' : 'bg-transparent'}`}>
+              <tr key={`${trade.token}-${index}`} className={`text-[#F3F4F6]/80 transition-all duration-150 hover:scale-[1.01] hover:bg-white/10 ${index % 2 === 1 ? 'bg-white/5' : 'bg-transparent'}`}>
                 <td className="px-3 py-3 font-bold text-[#F3F4F6]">{trade.token}</td>
                 <td className="px-3 py-3 text-right font-mono text-xs">{trade.entry !== null ? fmtUSD(trade.entry) : '—'}</td>
                 <td className="px-3 py-3 text-right font-mono text-xs">{trade.exit !== null ? fmtUSD(trade.exit) : '—'}</td>
@@ -989,7 +1066,13 @@ function WalletScannerLayout({
 }: {
   children: ReactNode
 }) {
-  return <main className="h-full overflow-y-auto overflow-x-hidden bg-[#0B0F19] px-4 py-6 text-[#F3F4F6] sm:px-6 lg:px-10 lg:py-8">{children}</main>
+  return (
+    <main className="h-full overflow-y-auto overflow-x-hidden bg-[#0B0F19] px-4 py-6 text-[#F3F4F6] sm:px-6 lg:px-10 lg:py-8">
+      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.25, ease: 'easeOut' }}>
+        {children}
+      </motion.div>
+    </main>
+  )
 }
 
 // ── Main page ────────────────────────────────────────────────────────────────────────────
@@ -1133,20 +1216,37 @@ export default function WalletScannerPage() {
 
         {result && (
           <>
-            <SummaryRow data={result} quality={dataQualityForWallet(result)} />
+            <motion.div initial={fadeInUpInitial} animate={fadeInUpAnimate} transition={fadeInUpTransition}>
+              <SummaryRow data={result} quality={dataQualityForWallet(result)} />
+            </motion.div>
 
-            <section className="grid gap-5 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.25fr)]">
-              <div className="flex min-w-0 flex-col gap-5">
-                <AIVerdictCard clarkVerdict={clarkVerdict} clarkLoading={clarkLoading} clarkError={clarkError} />
-                <PortfolioExposureCard data={result} showAllHoldings={showAllHoldings} setShowAllHoldings={setShowAllHoldings} />
-                <ActivityIndexCard data={result} />
-              </div>
+            <motion.section
+              className="grid gap-5 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.25fr)]"
+              variants={scanGridVariants}
+              initial="hidden"
+              animate="show"
+            >
+              <motion.div className="flex min-w-0 flex-col gap-5" variants={scanGridVariants}>
+                <motion.div variants={scanResultVariants} transition={fadeInUpTransition}>
+                  <AIVerdictCard clarkVerdict={clarkVerdict} clarkLoading={clarkLoading} clarkError={clarkError} />
+                </motion.div>
+                <motion.div variants={scanResultVariants} transition={fadeInUpTransition}>
+                  <PortfolioExposureCard data={result} showAllHoldings={showAllHoldings} setShowAllHoldings={setShowAllHoldings} />
+                </motion.div>
+                <motion.div variants={scanResultVariants} transition={fadeInUpTransition}>
+                  <ActivityIndexCard data={result} />
+                </motion.div>
+              </motion.div>
 
-              <div className="flex min-w-0 flex-col gap-5">
-                <TradingIntelligenceCard data={result} />
-                <MatchedTradesTable data={result} />
-              </div>
-            </section>
+              <motion.div className="flex min-w-0 flex-col gap-5" variants={scanGridVariants}>
+                <motion.div variants={scanResultVariants} transition={fadeInUpTransition}>
+                  <TradingIntelligenceCard data={result} />
+                </motion.div>
+                <motion.div variants={scanResultVariants} transition={fadeInUpTransition}>
+                  <MatchedTradesTable data={result} />
+                </motion.div>
+              </motion.div>
+            </motion.section>
           </>
         )}
       </div>
