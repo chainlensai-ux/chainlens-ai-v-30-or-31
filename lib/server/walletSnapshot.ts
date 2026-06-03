@@ -782,6 +782,30 @@ const ALCHEMY_ETH_KEY  = process.env.ALCHEMY_ETHEREUM_KEY!
 const ALCHEMY_BASE_KEY = process.env.ALCHEMY_BASE_KEY!
 const GOLDRUSH_KEY     = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY ?? ''
 
+// Static credit costs per provider:endpoint — used by the per-request audit wrapper
+const CREDIT_TABLE: Record<string, number> = {
+  'moralis:erc20_holdings': 1,
+  'moralis:erc20_transfers': 1,
+  'goldrush:balances_v2': 1,
+  'goldrush:transactions_v3': 1,
+  'goldrush:log_events_by_address': 1,
+  'goldrush:historical_by_addresses_v2': 1,
+  'alchemy:alchemy_getAssetTransfers': 0,
+  'alchemy:eth_getTransactionCount': 0,
+  'alchemy:eth_getTransactionReceipt': 0,
+  'alchemy:getFirstTx': 0,
+  'alchemy:behavior_getAssetTransfers': 0,
+}
+
+type _ApiCallEntry = {
+  provider: 'moralis' | 'goldrush' | 'alchemy'
+  endpoint: string
+  credits: number
+  cacheHit: boolean
+  duplicate: boolean
+  dupKey: string
+}
+
 export type WalletSnapshotOptions = { refresh?: boolean; chain?: 'eth' | 'base'; deepScan?: boolean; deepActivity?: boolean; chainMode?: 'auto' | 'base' | 'eth' | 'base_eth' | 'all_supported'; historicalCoverage?: boolean; maxHistoricalPages?: number; maxFallbackPages?: number }
 
 const SNAPSHOT_TTL_MS         = 5  * 60 * 1000
@@ -3458,6 +3482,25 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // Per-request price cache: prevents duplicate GoldRush historical price calls within a single scan
   // when the same contract/date appears in both base evidence and historical coverage pipelines.
   const _reqPriceCache = new Map<string, number | null>()
+
+  // Per-request API call tracker — instrumented at each provider call site
+  const _apiCallLog: _ApiCallEntry[] = []
+  const _dupKeysSeen = new Set<string>()
+  const _trackCall = (
+    provider: 'moralis' | 'goldrush' | 'alchemy',
+    endpoint: string,
+    cacheHit: boolean,
+    dupKey: string,
+  ): boolean => {
+    const duplicate = _dupKeysSeen.has(dupKey)
+    if (!duplicate) _dupKeysSeen.add(dupKey)
+    const credits = cacheHit || duplicate ? 0 : (CREDIT_TABLE[`${provider}:${endpoint}`] ?? 1)
+    _apiCallLog.push({ provider, endpoint, credits, cacheHit, duplicate, dupKey })
+    return duplicate
+  }
+
+  // Unified Alchemy dedup — tracks (method, address, chain) to catch redundant concurrent calls
+  const _alchemyDedup = new Set<string>()
   // activityRequested: true when either deepScan (full holdings+activity) or deepActivity (activity-only) is set
   const activityRequested = deepScan || deepActivity
   // Separate address normalisation from cache key so regex validation always checks the address portion only
@@ -3577,6 +3620,26 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _moralisHoldingsUsable = _moralisResult.usable && _moralisResult.holdings.length > 0
   const _moralisAttempted = Boolean(process.env.MORALIS_API_KEY)
 
+  // ── Track Phase 1 provider calls ──
+  if (_moralisAttempted) _trackCall('moralis', 'erc20_holdings', _moralisResult.cacheHit, `moralis:holdings:${_moralisChain}:${addrNorm}`)
+  if (activityRequested && Boolean(GOLDRUSH_KEY)) _trackCall('goldrush', 'transactions_v3', false, `gr:tx3:base:${addrNorm}`)
+  if (activityRequested && Boolean(GOLDRUSH_KEY) && useEthAlchemy) _trackCall('goldrush', 'transactions_v3', false, `gr:tx3:eth:${addrNorm}`)
+  if (activityRequested && Boolean(ALCHEMY_BASE_KEY)) {
+    const _ak1 = `alchemy:transfers:from:base:${addrNorm}`; if (!_alchemyDedup.has(_ak1)) { _alchemyDedup.add(_ak1); _trackCall('alchemy', 'alchemy_getAssetTransfers', false, _ak1) }
+    const _ak2 = `alchemy:transfers:to:base:${addrNorm}`;   if (!_alchemyDedup.has(_ak2)) { _alchemyDedup.add(_ak2); _trackCall('alchemy', 'alchemy_getAssetTransfers', false, _ak2) }
+  }
+  if (Boolean(ALCHEMY_BASE_KEY)) {
+    const _ak3 = `alchemy:firstTx:base:${addrNorm}`; if (!_alchemyDedup.has(_ak3)) { _alchemyDedup.add(_ak3); _trackCall('alchemy', 'getFirstTx', false, _ak3) }
+    _trackCall('alchemy', 'eth_getTransactionCount', false, `alchemy:nonce:${addrNorm}`)
+  }
+  if (useEthAlchemy) {
+    const _ak4 = `alchemy:firstTx:eth:${addrNorm}`; if (!_alchemyDedup.has(_ak4)) { _alchemyDedup.add(_ak4); _trackCall('alchemy', 'getFirstTx', false, _ak4) }
+  }
+  if (deepScan && Boolean(ALCHEMY_BASE_KEY)) {
+    const _ak5 = `alchemy:behavior:from:base:${addrNorm}`; if (!_alchemyDedup.has(_ak5)) { _alchemyDedup.add(_ak5); _trackCall('alchemy', 'behavior_getAssetTransfers', false, _ak5) }
+    const _ak6 = `alchemy:behavior:to:base:${addrNorm}`;   if (!_alchemyDedup.has(_ak6)) { _alchemyDedup.add(_ak6); _trackCall('alchemy', 'behavior_getAssetTransfers', false, _ak6) }
+  }
+
   // ── Provider selection: Moralis (primary) → Zerion positions (fallback) → GoldRush ──
   let holdings: Holding[] = []
   let totalValue = 0
@@ -3665,7 +3728,12 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _moralisByChain = new Map<MoralisChain, MoralisFetchResult>()
   let _moralisUsed = false
   if (Boolean(process.env.MORALIS_API_KEY)) {
-    for (const c of activeChains) _moralisByChain.set(c, await fetchMoralisBalances(addr, c))
+    for (const c of activeChains) {
+      const _mbRes = await fetchMoralisBalances(addr, c)
+      _moralisByChain.set(c, _mbRes)
+      // Skip tracking if this chain was already tracked in Phase 1
+      if (c !== _moralisChain) _trackCall('moralis', 'erc20_holdings', _mbRes.cacheHit, `moralis:holdings:${c}:${addrNorm}`)
+    }
     const moralisHoldings = [..._moralisByChain.values()].flatMap((r) => r.holdings).sort((a, b) => b.value - a.value)
 
     if (moralisHoldings.length > 0) {
@@ -3686,6 +3754,10 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       GOLDRUSH_KEY && (deepScan || !_moralisUsed) ? fetchGoldrushBalances(addr, 'eth-mainnet', GOLDRUSH_KEY) : Promise.resolve([] as Holding[]),
       GOLDRUSH_KEY && (deepScan || !_moralisUsed) ? fetchGoldrushBalances(addr, 'base-mainnet', GOLDRUSH_KEY) : Promise.resolve([] as Holding[]),
     ])
+    if (Boolean(GOLDRUSH_KEY) && (deepScan || !_moralisUsed)) {
+      _trackCall('goldrush', 'balances_v2', false, `gr:balances:eth:${addrNorm}`)
+      _trackCall('goldrush', 'balances_v2', false, `gr:balances:base:${addrNorm}`)
+    }
   }
   const _grPrimaryAttempted = Boolean(GOLDRUSH_KEY) && (deepScan || !_moralisUsed)
   const _preFallbackReason = reason
@@ -3779,6 +3851,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _shouldTryMoralisFallback = activityRequested && !historicalCoverage && events.length === 0 && Boolean(process.env.MORALIS_API_KEY)
   if (_shouldTryMoralisFallback) {
     const fbResult = await fetchMoralisTransfers(addr, _fbChain, 100)
+    _trackCall('moralis', 'erc20_transfers', fbResult.cacheHit, `moralis:transfers:p1:${_fbChain}:${addrNorm}`)
     _fbNextCursor = fbResult.nextCursor
     const { events: fbEvents, debug: fbNormDebug } = (fbResult.usable && fbResult.items.length > 0)
       ? normalizeMoralisTransfers(fbResult.items, addr, _fbChainName)
@@ -3909,6 +3982,13 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     const enrichResult = await enrichSwapCandidatesFromReceipts(_swapEvidenceWithDetection, addrNorm, _enrichAlchemyUrl, activityRequested)
     _swapEvidenceWithDetection = enrichResult.enrichedEvidence
     _swapEnrichmentDebug = enrichResult.debug
+    // Track each live receipt fetch (excluding cache hits) via Alchemy dedup set
+    const _liveReceipts = enrichResult.debug.receiptsFetched - enrichResult.debug.cacheHits
+    for (let _ri = 0; _ri < _liveReceipts; _ri++) {
+      const _rk = `alchemy:receipt:${enrichResult.debug.enrichedTxHashes[_ri] ?? _ri}:${addrNorm}`
+      if (!_alchemyDedup.has(_rk)) { _alchemyDedup.add(_rk); _trackCall('alchemy', 'eth_getTransactionReceipt', false, _rk) }
+      else _trackCall('alchemy', 'eth_getTransactionReceipt', false, _rk) // dedup records it
+    }
     if (enrichResult.debug.enrichedTxCount > 0) {
       walletSwapSummary = { ...walletSwapSummary, swapCandidateEvents: walletSwapSummary.swapCandidateEvents + enrichResult.debug.enrichedTxCount, readyForPriceAtTime: true }
     }
@@ -3917,6 +3997,10 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     _swapEnrichmentDebug = { skipped: true, reason: _skipReason, candidateTxCount: 0, receiptsFetched: 0, enrichedTxCount: 0, cacheHits: 0, errors: 0, enrichedTxHashes: [] }
   }
   let { evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache)
+  // Track base evidence historical price calls
+  for (let _pp = 0; _pp < (_priceAtTimeDebug?.providerAttempts ?? 0); _pp++) {
+    _trackCall('goldrush', 'historical_by_addresses_v2', false, `gr:price:base:${_pp}:${addrNorm}`)
+  }
   let { summary: walletLotSummary, debug: _lotEngineDebug, closedLots: _closedLots } = buildFifoLotEngine(_pricedEvidence, activityRequested)
   let { summary: walletTradeStatsSummary, debug: _tradeStatsDebug } = buildTradeStatsSummary(_closedLots, activityRequested)
 
@@ -3979,6 +4063,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       fbPagesAttempted++
       fbCursorsSeen++
       const pageResult = await fetchMoralisTransfers(addr, _fbChain, 100, fbCursor)
+      _trackCall('moralis', 'erc20_transfers', pageResult.cacheHit, `moralis:transfers:p${fbPagesAttempted}:${_fbChain}:${addrNorm}`)
       if (!pageResult.usable || pageResult.items.length === 0) {
         fbPaginationStoppedReason = pageResult.usable ? 'no_cursor' : 'provider_error_keep_existing'
         break
@@ -4071,6 +4156,11 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       walletHistoricalCoverageSummary = hcResult!.summary
       _historicalCoverageDebug = hcResult!.debug
       _hcEvents = hcResult!.events
+      // Track historical coverage page calls (one entry per page per chain attempted)
+      const _hcPages = _historicalCoverageDebug?.pagesAttempted ?? 0
+      for (let _hp = 0; _hp < _hcPages; _hp++) {
+        _trackCall('goldrush', 'log_events_by_address', false, `gr:hc:p${_hp}:${addrNorm}`)
+      }
     }
   } else {
     walletHistoricalCoverageSummary = { status: 'not_requested', requested: false, pagesAttempted: 0, maxPages: 0, rawTransactions: 0, rawLogEvents: 0, normalizedEvents: 0, walletSideEvents: 0, swapLikeTransactions: 0, pricedSwapCandidates: null, matchedClosedLotsBefore: null, matchedClosedLotsAfter: null, addedClosedLots: null, coverageLevel: 'none', missing: [], reason: null }
@@ -4088,6 +4178,10 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     _runHistoricalCoverage && _hcNewCandidateEvidence.length > 0
       ? await buildHistoricalPricingPreview(_hcNewCandidateEvidence, _hcAllHistoricalEvidence, _reqPriceCache)
       : { summary: { status: 'not_requested' as const, requested: false, newSwapCandidateEvents: 0, pricedHistoricalCandidates: 0, unpricedHistoricalCandidates: 0, stableLegPricedEvents: 0, wethLegPricedEvents: 0, historicalPricedEvents: 0, priceAttemptLimitReached: false, readyForHistoricalFifoPreview: false, missing: ['historical_coverage_not_requested'], reason: null }, debug: undefined, pricedEvidence: [] as WalletTxEvidence[] }
+  // Track historical pricing preview price calls
+  for (let _hp2 = 0; _hp2 < (_historicalPricingPreviewDebug?.priceAttempts ?? 0); _hp2++) {
+    _trackCall('goldrush', 'historical_by_addresses_v2', false, `gr:price:hc:${_hp2}:${addrNorm}`)
+  }
 
   // Phase 6D: Historical FIFO preview — run FIFO on baseline + new priced historical candidates
   const { summary: walletHistoricalFifoPreviewSummary, debug: _historicalFifoPreviewDebug, previewClosedLots: _hcPreviewClosedLots } =
@@ -4250,57 +4344,37 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const snapshotTtlMs = hasHistory ? SNAPSHOT_HISTORY_TTL_MS : SNAPSHOT_TTL_MS
   const { facts: walletFacts, debug: _walletFactsDebug } = buildWalletFacts(holdings, totalValue, _swapEvidenceWithDetection, addrNorm, _closedLots.length)
 
-  // Build unified apiAudit from collected diagnostic data
-  const _grBalanceCalls = (!_goldrushBalancesSkipped && Boolean(GOLDRUSH_KEY)) ? 2 : 0
-  const _grActivityBase = activityRequested && Boolean(GOLDRUSH_KEY) ? 1 : 0
-  const _grActivityEth = _grEthAttempted ? 1 : 0
-  const _grHcPages = _historicalCoverageDebug?.pagesAttempted ?? 0
-  const _grPriceProviderAttempts = (_priceAtTimeDebug?.providerAttempts ?? 0) + (_historicalPricingPreviewDebug?.priceAttempts ?? 0)
-  const _grTotalCalls = _grBalanceCalls + _grActivityBase + _grActivityEth + _grHcPages + _grPriceProviderAttempts
-  const _moralisLiveBalanceCalls = [..._moralisByChain.values()].filter(r => r.attempted && !r.cacheHit).length + (_moralisResult.attempted && !_moralisResult.cacheHit ? 1 : 0)
-  const _moralisFbLiveCalls = _moralisFbDebug.fallbackActivityAttempted ? _moralisFbDebug.fallbackPagesAttempted : 0
-  const _moralisTotalCalls = _moralisLiveBalanceCalls + _moralisFbLiveCalls
-  const _alchemyReceiptCalls = _swapEnrichmentDebug.skipped ? 0 : (_swapEnrichmentDebug.receiptsFetched - _swapEnrichmentDebug.cacheHits)
-  const _alchemyBaseCalls = (useEthAlchemy ? 1 : 0) + 1 + 1 + (Boolean(ALCHEMY_BASE_KEY) ? 2 : 0) + (deepScan && Boolean(ALCHEMY_BASE_KEY) ? 2 : 0) + _alchemyReceiptCalls
-  const _apiTotalCredits = _grTotalCalls + _moralisTotalCalls
+  // Build unified apiAudit from the per-request _apiCallLog (instrumented at each provider call site)
+  const _logByProvider = (p: 'moralis' | 'goldrush' | 'alchemy') => _apiCallLog.filter(e => e.provider === p)
+  const _liveCalls = (p: 'moralis' | 'goldrush' | 'alchemy') => _logByProvider(p).filter(e => !e.cacheHit && !e.duplicate)
+  const _dupEntries = _apiCallLog.filter(e => e.duplicate)
+  const _apiTotalCredits = _apiCallLog.reduce((s, e) => s + e.credits, 0)
   const _apiWarnings: string[] = []
+  const _moralisLiveCount = _liveCalls('moralis').length
+  const _grLiveCount = _liveCalls('goldrush').length
+  const _alchemyCount = _logByProvider('alchemy').length
   if (_apiTotalCredits > 5) _apiWarnings.push(`total_credits_${_apiTotalCredits}_exceeds_target_5`)
-  if (_moralisTotalCalls > 3) _apiWarnings.push(`moralis_${_moralisTotalCalls}_calls_expected_3`)
-  if (_grTotalCalls > 4) _apiWarnings.push(`goldrush_${_grTotalCalls}_calls_expected_4`)
-  if (_alchemyBaseCalls > 8) _apiWarnings.push(`alchemy_${_alchemyBaseCalls}_calls_expected_8`)
+  if (_moralisLiveCount > 3) _apiWarnings.push(`moralis_${_moralisLiveCount}_calls_expected_3`)
+  if (_grLiveCount > 4) _apiWarnings.push(`goldrush_${_grLiveCount}_calls_expected_4`)
+  if (_alchemyCount > 8) _apiWarnings.push(`alchemy_${_alchemyCount}_calls_expected_8`)
+  if (_dupEntries.length > 0) _apiWarnings.push(`${_dupEntries.length}_duplicate_call(s)_detected`)
   const _apiAudit = {
     moralis: {
-      calls: _moralisTotalCalls,
-      endpoints: [
-        ...Array(_moralisLiveBalanceCalls).fill('erc20_holdings'),
-        ...Array(_moralisFbLiveCalls).fill('erc20_transfers'),
-      ],
-      credits: _moralisTotalCalls,
+      calls: _moralisLiveCount,
+      endpoints: _liveCalls('moralis').map(e => e.endpoint),
+      credits: _logByProvider('moralis').reduce((s, e) => s + e.credits, 0),
     },
     goldrush: {
-      calls: _grTotalCalls,
-      endpoints: [
-        ...Array(_grBalanceCalls).fill('balances_v2'),
-        ...(_grActivityBase ? ['transactions_v3_base'] : []),
-        ...(_grActivityEth ? ['transactions_v3_eth'] : []),
-        ...Array(_grHcPages).fill('log_events_by_address'),
-        ...Array(_grPriceProviderAttempts).fill('historical_by_addresses_v2'),
-      ],
-      credits: _grTotalCalls,
+      calls: _grLiveCount,
+      endpoints: _liveCalls('goldrush').map(e => e.endpoint),
+      credits: _logByProvider('goldrush').reduce((s, e) => s + e.credits, 0),
     },
     alchemy: {
-      calls: _alchemyBaseCalls,
-      endpoints: [
-        ...(useEthAlchemy ? ['getFirstTx_eth'] : []),
-        'getFirstTx_base',
-        'eth_getTransactionCount',
-        ...(Boolean(ALCHEMY_BASE_KEY) ? ['alchemy_getAssetTransfers_from', 'alchemy_getAssetTransfers_to'] : []),
-        ...(deepScan && Boolean(ALCHEMY_BASE_KEY) ? ['behavior_getAssetTransfers_from', 'behavior_getAssetTransfers_to'] : []),
-        ...Array(_alchemyReceiptCalls).fill('eth_getTransactionReceipt'),
-      ],
+      calls: _alchemyCount,
+      endpoints: _logByProvider('alchemy').map(e => e.endpoint),
       credits: 0,
     },
-    duplicates: [] as string[],
+    duplicates: _dupEntries.map(e => `${e.provider}:${e.endpoint}:${e.dupKey}`),
     warnings: _apiWarnings,
     totalCredits: _apiTotalCredits,
   }
@@ -4480,6 +4554,10 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       walletFactsDebug: _walletFactsDebug,
       apiAudit: _apiAudit,
     },
+  }
+  // Requirement 8: validate audit before returning — if unhealthy, surface warnings prominently
+  if (_apiAudit.warnings.length > 0 && snapshot._diagnostics?.apiAudit) {
+    snapshot._diagnostics.apiAudit.warnings = _apiAudit.warnings
   }
   validateWalletFactsShape(snapshot)
   if (/^0x[0-9a-fA-F]{40}$/i.test(addrNorm)) snapshotMemCache.set(cacheKey, { snapshot, cachedAt: Date.now(), ttlMs: snapshotTtlMs })
