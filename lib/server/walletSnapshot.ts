@@ -1160,7 +1160,7 @@ export type PriceAtTimeEvidence = {
   tokenSymbol?: string | null
   timestamp: string
   priceUsd: number | null
-  source: 'stable_leg' | 'weth_leg' | 'historical_price' | 'current_price_fallback_not_used' | 'unavailable'
+  source: 'stable_leg' | 'weth_leg' | 'historical_price' | 'swap_derived' | 'current_price_fallback_not_used' | 'unavailable'
   confidence: 'high' | 'medium' | 'low' | 'open_check'
   reason: string
 }
@@ -1891,6 +1891,39 @@ async function buildHistoricalPricingPreview(
 
     unpricedHistoricalCandidates++
     if (sampleUnpricedRaw.length < 5) sampleUnpricedRaw.push({ txHash: abbr(e.txHash), contract: abbr(e.contract), symbol: e.symbol, direction: e.direction, reason: 'no_price_evidence' })
+  }
+
+  // Swap-derived pricing pass: 0 extra API credits.
+  // For any unpriced historical swap candidate, derive price from an already-priced counterpart.
+  {
+    const LP_TAGS = ['LP', 'UNI-V2', 'SLP', 'BAL', 'CRV']
+    const isLPSym = (s: string) => LP_TAGS.some(t => s.includes(t))
+    const pricedByTx = new Map<string, WalletTxEvidence[]>()
+    for (const ev of pricedEvidenceItems) {
+      if (ev.txHash && ev.priceAtTime?.status === 'priced' && ev.priceAtTime.priceUsd) {
+        pricedByTx.set(ev.txHash, [...(pricedByTx.get(ev.txHash) ?? []), ev])
+      }
+    }
+    const alreadyPricedKeys = new Set(pricedEvidenceItems.map(p => `${p.txHash}:${p.contract}:${p.direction}`))
+    for (const e of newCandidateEvidence) {
+      if (e.swapDetection?.isSwapCandidate !== true) continue
+      if (alreadyPricedKeys.has(`${e.txHash}:${e.contract}:${e.direction}`)) continue
+      if (isLPSym(e.symbol ?? '')) continue
+      const thisAmt = parseRawAmount(e.amountRaw, e.tokenDecimals) ?? e.amount
+      if (!thisAmt || thisAmt <= 0) continue
+      const cp = (pricedByTx.get(e.txHash) ?? []).find(c =>
+        c.direction !== 'unknown' && c.direction !== e.direction && !isLPSym(c.symbol ?? '')
+      )
+      if (!cp?.priceAtTime?.priceUsd) continue
+      const cpAmt = parseRawAmount(cp.amountRaw, cp.tokenDecimals) ?? cp.amount
+      if (!cpAmt || cpAmt <= 0) continue
+      const syntheticPrice = (cpAmt * cp.priceAtTime.priceUsd) / thisAmt
+      if (syntheticPrice <= 0 || !isFinite(syntheticPrice)) continue
+      pricedHistoricalCandidates++
+      unpricedHistoricalCandidates--
+      pricedEvidenceItems.push(markPriced(e, syntheticPrice, 'swap_derived', 'low',
+        `Swap-derived from ${cp.symbol} leg (${cpAmt.toFixed(4)} × $${cp.priceAtTime.priceUsd.toFixed(4)} / ${thisAmt.toFixed(4)})`))
+    }
   }
 
   const status: WalletSnapshot['walletHistoricalPricingPreviewSummary']['status'] =
@@ -2965,6 +2998,41 @@ async function buildPriceAtTimeEvidence(
 
     // No price evidence found
     evidenceWithPricing.push(openCheck(e, 'No reliable price-at-time evidence available'))
+  }
+
+  // Swap-derived pricing pass: 0 extra API credits.
+  // For any open_check swap candidate, look for a counterpart in the same tx that was
+  // priced in the main pass and back-derive this token's USD price from the swap ratio.
+  {
+    const LP_TAGS = ['LP', 'UNI-V2', 'SLP', 'BAL', 'CRV']
+    const isLPSym = (s: string) => LP_TAGS.some(t => s.includes(t))
+    const pricedByTx = new Map<string, WalletTxEvidence[]>()
+    for (const ev of evidenceWithPricing) {
+      if (ev.txHash && ev.priceAtTime?.status === 'priced' && ev.priceAtTime.priceUsd) {
+        pricedByTx.set(ev.txHash, [...(pricedByTx.get(ev.txHash) ?? []), ev])
+      }
+    }
+    for (let i = 0; i < evidenceWithPricing.length; i++) {
+      const e = evidenceWithPricing[i]
+      if (!e.swapDetection?.isSwapCandidate) continue
+      if (e.priceAtTime?.status === 'priced') continue
+      if (isLPSym(e.symbol ?? '')) continue
+      const thisAmt = parseRawAmount(e.amountRaw, e.tokenDecimals) ?? e.amount
+      if (!thisAmt || thisAmt <= 0) continue
+      const cp = (pricedByTx.get(e.txHash) ?? []).find(c =>
+        c.direction !== 'unknown' && c.direction !== e.direction && !isLPSym(c.symbol ?? '')
+      )
+      if (!cp?.priceAtTime?.priceUsd) continue
+      const cpAmt = parseRawAmount(cp.amountRaw, cp.tokenDecimals) ?? cp.amount
+      if (!cpAmt || cpAmt <= 0) continue
+      const syntheticPrice = (cpAmt * cp.priceAtTime.priceUsd) / thisAmt
+      if (syntheticPrice <= 0 || !isFinite(syntheticPrice)) continue
+      if (e.priceAtTime?.status === 'open_check') openCheckEvents--
+      evidenceWithPricing[i] = priced(
+        e, syntheticPrice, 'swap_derived', 'low',
+        `Swap-derived from ${cp.symbol} leg (${cpAmt.toFixed(4)} × $${cp.priceAtTime.priceUsd.toFixed(4)} / ${thisAmt.toFixed(4)})`
+      )
+    }
   }
 
   const pricedInbound = evidenceWithPricing.filter(e => e.swapDetection?.isSwapCandidate && e.priceAtTime?.status === 'priced' && e.direction === 'buy' && e.txHash && e.contract && e.amount > 0).length
