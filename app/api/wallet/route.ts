@@ -142,29 +142,29 @@ async function walletPlan(req: Request): Promise<'free' | 'pro' | 'elite'> {
 function walletIp(req: Request): string { return req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown' }
 async function walletAllowed(req: Request): Promise<boolean> { const plan=await walletPlan(req); const key=`${plan}:${walletIp(req)}`; const now=Date.now(); const cur=walletRate.get(key); const lim=WALLET_RATE_BY_PLAN[plan]; if(!cur||cur.resetAt<=now){walletRate.set(key,{count:1,resetAt:now+60000}); return true} if(cur.count>=lim)return false; cur.count+=1; return true }
 
-function vercelPreviewCorsHeaders(req: Request): Record<string, string> | null {
-  const origin = req.headers.get('origin') ?? ''
-  if (!origin.endsWith('.vercel.app')) return null
-  return {
-    'Access-Control-Allow-Origin': origin,
-    'Access-Control-Allow-Methods': 'POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-    'Access-Control-Max-Age': '86400',
+function corsHeaders(origin: string | null): Record<string, string> {
+  const headers: Record<string, string> = {}
+  if (origin && origin.endsWith('.vercel.app')) {
+    headers['Access-Control-Allow-Origin'] = origin
+    headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+    headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+    headers['Access-Control-Max-Age'] = '86400'
   }
+  return headers
 }
 
 export async function OPTIONS(req: Request) {
-  const cors = vercelPreviewCorsHeaders(req)
-  if (!cors) return new Response(null, { status: 204 })
-  return new Response(null, { status: 200, headers: cors })
+  const origin = req.headers.get('origin')
+  return new Response(null, { status: 200, headers: corsHeaders(origin) })
 }
 
 export async function POST(req: Request) {
-  const _cors = vercelPreviewCorsHeaders(req)
-  const json = (...args: Parameters<typeof NextResponse.json>): NextResponse => {
-    const r = NextResponse.json(...args)
-    if (_cors) for (const [k, v] of Object.entries(_cors)) r.headers.set(k, v)
-    return r
+  const _origin = req.headers.get('origin')
+  const json = (data: unknown, init?: { status?: number }): Response => {
+    return new Response(JSON.stringify(data), {
+      status: init?.status ?? 200,
+      headers: { 'Content-Type': 'application/json', ...corsHeaders(_origin) },
+    })
   }
   const plan = await walletPlan(req)
   if (plan === 'free') return json({ error: 'Included in Pro and Elite.' }, { status: 403 })
