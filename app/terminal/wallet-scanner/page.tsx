@@ -640,21 +640,21 @@ type CardProps = {
 }
 
 const accentClasses: Record<NonNullable<CardProps['accent']>, string> = {
-  teal: 'border-teal-300/20 from-teal-400/10',
-  blue: 'border-blue-400/20 from-blue-500/10',
-  violet: 'border-violet-400/20 from-violet-500/10',
-  amber: 'border-amber-300/20 from-amber-400/10',
+  teal: 'before:bg-[#10B981]',
+  blue: 'before:bg-[#3B82F6]',
+  violet: 'before:bg-[#3B82F6]',
+  amber: 'before:bg-[#F59E0B]',
 }
 
 function DashboardCard({ title, eyebrow, children, accent = 'teal', className = '' }: CardProps) {
   return (
-    <section className={`rounded-xl border bg-slate-950/75 bg-gradient-to-br ${accentClasses[accent]} to-transparent p-5 shadow-2xl shadow-black/25 ${className}`}>
-      <div className="mb-4 flex items-center justify-between gap-3">
+    <section className={`relative overflow-hidden rounded-xl border border-white/[0.06] bg-[#111827] p-5 shadow-[0_0_20px_rgba(0,0,0,0.3)] transition-all duration-200 before:absolute before:left-0 before:top-0 before:h-px before:w-full before:opacity-70 hover:shadow-[0_0_30px_rgba(0,0,0,0.45)] md:p-6 ${accentClasses[accent]} ${className}`}>
+      <div className="relative mb-5 flex items-center justify-between gap-3">
         <div>
-          {eyebrow && <p className="mb-1 font-mono text-[10px] font-bold uppercase tracking-[0.22em] text-slate-500">{eyebrow}</p>}
-          <h2 className="text-base font-bold tracking-tight text-slate-100">{title}</h2>
+          {eyebrow && <p className="mb-1 font-mono text-xs font-semibold uppercase tracking-[0.18em] text-[#9CA3AF]">{eyebrow}</p>}
+          <h2 className="text-lg font-semibold tracking-tight text-[#F3F4F6]">{title}</h2>
         </div>
-        <div className="h-2 w-2 rounded-full bg-teal-300 shadow-[0_0_16px_rgba(45,212,191,0.75)]" />
+        <div className="h-2 w-2 rounded-full bg-[#3B82F6] shadow-[0_0_18px_rgba(59,130,246,0.8)]" />
       </div>
       {children}
     </section>
@@ -673,16 +673,16 @@ type HeaderBarProps = {
 
 function HeaderBar({ input, setInput, loading, handleScan, result, deepActivity, setDeepActivity }: HeaderBarProps) {
   return (
-    <header className="rounded-xl border border-white/10 bg-[#050816]/90 p-5 shadow-2xl shadow-black/30">
+    <header className="rounded-xl border border-white/[0.06] bg-[#111827] p-5 shadow-[0_0_20px_rgba(0,0,0,0.3)] transition-all duration-200 hover:shadow-[0_0_30px_rgba(0,0,0,0.45)] md:p-6">
       <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <div className="mb-2 flex flex-wrap items-center gap-3">
-            <h1 className="text-3xl font-black tracking-tight text-white">Wallet Scanner</h1>
-            <span className="rounded-full border border-blue-400/30 bg-blue-500/10 px-3 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-blue-200">Base native</span>
-            <span className="rounded-full border border-violet-400/30 bg-violet-500/10 px-3 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-violet-200">Elite</span>
+            <h1 className="text-xl font-semibold tracking-tight text-[#F3F4F6] md:text-2xl">Wallet Scanner</h1>
+            <span className="rounded-full border border-blue-500/30 bg-blue-500/20 px-3 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-blue-400">Base native</span>
+            <span className="rounded-full border border-green-500/30 bg-green-500/20 px-3 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-green-400">Elite</span>
           </div>
-          <p className="max-w-2xl text-sm text-slate-400">Advanced on-chain intelligence and AI-powered wallet analysis.</p>
-          <p className="mt-2 font-mono text-xs text-slate-500">
+          <p className="max-w-2xl text-sm text-[#9CA3AF]">Advanced on-chain intelligence and AI-powered wallet analysis.</p>
+          <p className="mt-2 font-mono text-xs text-[#9CA3AF]/75">
             {result?.address ? `Scanned wallet: ${shortAddr(result.address)}` : 'Paste any 0x wallet address to start a scan.'}
           </p>
         </div>
@@ -694,7 +694,7 @@ function HeaderBar({ input, setInput, loading, handleScan, result, deepActivity,
                 type="button"
                 onClick={() => navigator.clipboard.readText().then(t => setInput(t)).catch(() => {})}
                 title="Paste from clipboard"
-                className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 transition hover:text-teal-300"
+                className="absolute left-3 top-1/2 -translate-y-1/2 text-[#9CA3AF] transition hover:text-[#3B82F6]"
               >
                 <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                   <rect x="9" y="2" width="6" height="4" rx="1" />
@@ -709,14 +709,14 @@ function HeaderBar({ input, setInput, loading, handleScan, result, deepActivity,
                 disabled={loading}
                 placeholder="0x… wallet address"
                 spellCheck={false}
-                className="w-full rounded-xl border border-white/10 bg-white/[0.04] py-3 pl-10 pr-4 font-mono text-sm text-slate-100 outline-none transition placeholder:text-slate-600 focus:border-teal-300/50 disabled:cursor-not-allowed disabled:opacity-60"
+                className="w-full rounded-xl border border-white/[0.06] bg-[#0B0F19]/80 py-3 pl-10 pr-4 font-mono text-sm text-[#F3F4F6] outline-none transition placeholder:text-[#9CA3AF]/45 focus:border-[#3B82F6]/60 focus:bg-[#0B0F19] disabled:cursor-not-allowed disabled:opacity-60"
               />
             </div>
             <button
               type="button"
               onClick={handleScan}
               disabled={loading || !input.trim()}
-              className="inline-flex items-center justify-center gap-2 rounded-xl bg-teal-300 px-6 py-3 font-mono text-xs font-black uppercase tracking-[0.16em] text-[#04101a] shadow-[0_0_24px_rgba(45,212,191,0.28)] transition hover:bg-teal-200 disabled:cursor-not-allowed disabled:bg-teal-300/20 disabled:text-white/35 disabled:shadow-none"
+              className="inline-flex items-center justify-center gap-2 rounded-xl bg-[#3B82F6] px-6 py-3 font-mono text-xs font-bold uppercase tracking-[0.16em] text-white shadow-[0_0_24px_rgba(59,130,246,0.28)] transition hover:bg-blue-400 disabled:cursor-not-allowed disabled:bg-blue-500/20 disabled:text-white/35 disabled:shadow-none"
             >
               {loading ? 'Scanning…' : 'Scan'}
               {!loading && <span aria-hidden="true">→</span>}
@@ -728,11 +728,11 @@ function HeaderBar({ input, setInput, loading, handleScan, result, deepActivity,
               onClick={() => setDeepActivity(v => !v)}
               disabled={loading}
               title="Fetches transfer history for estimated PnL and future trade reconstruction. Slower scan."
-              className={`rounded-lg border px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-[0.14em] transition disabled:cursor-not-allowed disabled:opacity-60 ${deepActivity ? 'border-teal-300/50 bg-teal-300/10 text-teal-200' : 'border-white/10 bg-transparent text-slate-500 hover:border-teal-300/30 hover:text-teal-200'}`}
+              className={`rounded-lg border px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-[0.14em] transition disabled:cursor-not-allowed disabled:opacity-60 ${deepActivity ? 'border-green-500/30 bg-green-500/20 text-green-400' : 'border-white/[0.06] bg-[#0B0F19]/60 text-[#9CA3AF] hover:border-blue-500/30 hover:text-blue-400'}`}
             >
               {deepActivity ? 'Deep Activity Scan On' : 'Run Deep Activity Scan'}
             </button>
-            <span className="font-mono text-[10px] tracking-wide text-slate-600">
+            <span className="font-mono text-[10px] tracking-wide text-[#9CA3AF]/60">
               {deepActivity ? 'Heavier analysis · cached between runs' : 'Fetches transfer history · slower scan'}
             </span>
           </div>
@@ -748,20 +748,20 @@ function SummaryRow({ data, quality }: { data: WalletResult; quality: string }) 
   const pnl = ts?.realizedPnlUsd ?? data.walletLotSummary?.realizedPnlUsd ?? data.estimatedPnl?.totalEstimatedPnlUsd ?? null
   const activity = data.walletFacts?.activity?.eventCount ?? data.walletBehavior?.txCount ?? data.txCount
   const items = [
-    { label: 'Portfolio Value', value: portfolio.totalValue > 0 ? fmtUSD(portfolio.totalValue) : 'Value pending', sub: `${portfolio.holdingsCount} visible holding${portfolio.holdingsCount === 1 ? '' : 's'}`, tone: 'text-teal-200' },
-    { label: 'Concentration', value: portfolio.concentration ? portfolio.concentration.toUpperCase() : 'Open Check', sub: portfolio.topShare !== null ? `Top asset ${portfolio.topShare.toFixed(1)}%` : 'Top asset pending', tone: 'text-blue-200' },
-    { label: 'Activity', value: activity !== null && activity !== undefined ? activity.toLocaleString() : 'Open Check', sub: quality, tone: 'text-violet-200' },
-    { label: 'PnL', value: fmtSignedUSD(pnl), sub: data.pnlCoverageReason ?? data.estimatedPnl?.reason ?? 'Matched evidence only', tone: pnl !== null && pnl >= 0 ? 'text-emerald-300' : pnl !== null ? 'text-rose-300' : 'text-slate-300' },
-    { label: 'Closed Lots', value: `${ts?.closedLots ?? data.walletLotSummary?.closedLots ?? 0}`, sub: ts?.sampleSizeLabel ? `Sample: ${ts.sampleSizeLabel}` : 'Requires matched exits', tone: 'text-amber-200' },
+    { label: 'Portfolio Value', value: portfolio.totalValue > 0 ? fmtUSD(portfolio.totalValue) : 'Value pending', sub: `${portfolio.holdingsCount} visible holding${portfolio.holdingsCount === 1 ? '' : 's'}`, tone: 'text-[#10B981]' },
+    { label: 'Concentration', value: portfolio.concentration ? portfolio.concentration.toUpperCase() : 'Open Check', sub: portfolio.topShare !== null ? `Top asset ${portfolio.topShare.toFixed(1)}%` : 'Top asset pending', tone: 'text-[#3B82F6]' },
+    { label: 'Activity', value: activity !== null && activity !== undefined ? activity.toLocaleString() : 'Open Check', sub: quality, tone: 'text-[#3B82F6]' },
+    { label: 'PnL', value: fmtSignedUSD(pnl), sub: data.pnlCoverageReason ?? data.estimatedPnl?.reason ?? 'Matched evidence only', tone: pnl !== null && pnl >= 0 ? 'text-[#10B981]' : pnl !== null ? 'text-[#EF4444]' : 'text-[#9CA3AF]' },
+    { label: 'Closed Lots', value: `${ts?.closedLots ?? data.walletLotSummary?.closedLots ?? 0}`, sub: ts?.sampleSizeLabel ? `Sample: ${ts.sampleSizeLabel}` : 'Requires matched exits', tone: 'text-[#F59E0B]' },
   ]
 
   return (
-    <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+    <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
       {items.map(item => (
-        <div key={item.label} className="rounded-xl border border-white/10 bg-slate-950/70 p-4 shadow-xl shadow-black/20">
-          <p className="font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">{item.label}</p>
-          <p className={`mt-2 text-2xl font-black tracking-tight ${item.tone}`}>{item.value}</p>
-          <p className="mt-2 line-clamp-2 text-xs leading-5 text-slate-500">{item.sub}</p>
+        <div key={item.label} className="rounded-xl border border-white/[0.06] bg-[#111827] p-5 shadow-[0_0_20px_rgba(0,0,0,0.3)] transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_0_30px_rgba(0,0,0,0.45)]">
+          <p className="font-mono text-xs font-semibold uppercase tracking-[0.16em] text-[#9CA3AF]">{item.label}</p>
+          <p className={`mt-2 font-mono text-2xl font-semibold tracking-tight ${item.tone}`}>{item.value}</p>
+          <p className="mt-2 line-clamp-2 text-xs leading-5 text-[#9CA3AF]">{item.sub}</p>
         </div>
       ))}
     </section>
@@ -777,27 +777,27 @@ function AIVerdictCard({ clarkVerdict, clarkLoading, clarkError }: { clarkVerdic
           <p className="font-mono text-xs text-cyan-200">CORTEX is reading wallet activity…</p>
         </div>
       )}
-      {!clarkLoading && clarkError && <p className="text-sm leading-6 text-rose-300">{clarkError}</p>}
-      {!clarkLoading && !clarkError && !clarkVerdict && <p className="text-sm leading-6 text-slate-500">Scan a wallet to generate a CORTEX wallet read.</p>}
+      {!clarkLoading && clarkError && <p className="text-sm leading-6 text-[#EF4444]">{clarkError}</p>}
+      {!clarkLoading && !clarkError && !clarkVerdict && <p className="text-sm leading-6 text-[#9CA3AF]">Scan a wallet to generate a CORTEX wallet read.</p>}
       {!clarkLoading && clarkVerdict && (
         <div className="space-y-4">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="rounded-full border border-teal-300/30 bg-teal-300/10 px-3 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-teal-200">{clarkVerdict.verdict}</span>
-            <span className="rounded-full border border-white/10 bg-white/[0.03] px-3 py-1 font-mono text-[10px] uppercase tracking-[0.16em] text-slate-400">Confidence: {clarkVerdict.confidence}</span>
+            <span className="rounded-full border border-blue-500/30 bg-blue-500/20 px-3 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-blue-400">{clarkVerdict.verdict}</span>
+            <span className={`rounded-full px-3 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.16em] ${clarkVerdict.confidence.toLowerCase().includes('high') ? 'border border-green-500/30 bg-green-500/20 text-green-400' : clarkVerdict.confidence.toLowerCase().includes('medium') ? 'border border-amber-500/30 bg-amber-500/20 text-amber-400' : 'border border-red-500/30 bg-red-500/20 text-red-400'}`}>Confidence: {clarkVerdict.confidence}</span>
           </div>
-          <p className="text-sm leading-6 text-slate-300">{clarkVerdict.read}</p>
+          <p className="text-sm leading-6 text-[#F3F4F6]/80">{clarkVerdict.read}</p>
           <div className="space-y-3">
             {clarkVerdict.keySignals.slice(0, 4).map((line, i) => (
-              <p key={i} className="rounded-lg border border-white/10 bg-white/[0.03] p-3 text-xs leading-5 text-slate-300">{line}</p>
+              <p key={i} className="rounded-lg border border-white/[0.06] bg-white/[0.04] p-3 text-xs leading-5 text-[#F3F4F6]/80">{line}</p>
             ))}
           </div>
           <div>
-            <p className="mb-2 font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-rose-300/80">Missing checks</p>
+            <p className="mb-2 font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-[#EF4444]/80">Missing checks</p>
             <ul className="space-y-2">
               {clarkVerdict.risks.slice(0, 3).map((line, i) => <li key={i} className="text-xs leading-5 text-rose-200/80">— {line}</li>)}
             </ul>
           </div>
-          <p className="border-t border-white/10 pt-3 text-xs leading-5 text-slate-400">{clarkVerdict.nextAction}</p>
+          <p className="border-t border-white/[0.06] pt-3 text-xs leading-5 text-[#9CA3AF]">{clarkVerdict.nextAction}</p>
         </div>
       )}
     </DashboardCard>
@@ -812,45 +812,45 @@ function PortfolioExposureCard({ data, showAllHoldings, setShowAllHoldings }: { 
   return (
     <DashboardCard title="Portfolio Exposure" eyebrow={portfolio.holdingsScope} accent="blue">
       <div className="mb-4 grid gap-3 sm:grid-cols-3">
-        <div className="rounded-lg border border-white/10 bg-white/[0.03] p-3">
-          <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-slate-500">Type</p>
-          <p className="mt-1 text-sm font-bold text-slate-100">{portfolio.portfolioType}</p>
+        <div className="rounded-lg border border-white/[0.06] bg-white/[0.04] p-3">
+          <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#9CA3AF]">Type</p>
+          <p className="mt-1 text-sm font-bold text-[#F3F4F6]">{portfolio.portfolioType}</p>
         </div>
-        <div className="rounded-lg border border-white/10 bg-white/[0.03] p-3">
-          <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-slate-500">Stable</p>
-          <p className="mt-1 text-sm font-bold text-emerald-300">{portfolio.stablePercent.toFixed(1)}%</p>
+        <div className="rounded-lg border border-white/[0.06] bg-white/[0.04] p-3">
+          <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#9CA3AF]">Stable</p>
+          <p className="mt-1 text-sm font-bold text-[#10B981]">{portfolio.stablePercent.toFixed(1)}%</p>
         </div>
-        <div className="rounded-lg border border-white/10 bg-white/[0.03] p-3">
-          <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-slate-500">Native</p>
-          <p className="mt-1 text-sm font-bold text-violet-300">{portfolio.ethPercent.toFixed(1)}%</p>
+        <div className="rounded-lg border border-white/[0.06] bg-white/[0.04] p-3">
+          <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#9CA3AF]">Native</p>
+          <p className="mt-1 text-sm font-bold text-[#3B82F6]">{portfolio.ethPercent.toFixed(1)}%</p>
         </div>
       </div>
       <div className="mb-4 flex flex-wrap gap-2">
         {portfolio.top3.map(h => {
           const pct = portfolio.totalValue > 0 ? (h.value / portfolio.totalValue) * 100 : null
-          return <span key={`${h.symbol}-${h.chain}`} className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 font-mono text-[11px] text-slate-300">{h.symbol || h.name}{pct !== null ? ` · ${pct.toFixed(0)}%` : ''}</span>
+          return <span key={`${h.symbol}-${h.chain}`} className="rounded-full border border-white/[0.06] bg-white/[0.04] px-3 py-1 font-mono text-[11px] text-[#F3F4F6]/80">{h.symbol || h.name}{pct !== null ? ` · ${pct.toFixed(0)}%` : ''}</span>
         })}
-        {portfolio.chains.map(chain => <span key={chain} className="rounded-full border border-blue-400/25 bg-blue-500/10 px-3 py-1 font-mono text-[11px] uppercase tracking-wide text-blue-200">{chain}</span>)}
+        {portfolio.chains.map(chain => <span key={chain} className="rounded-full border border-blue-400/25 bg-blue-500/10 px-3 py-1 font-mono text-[11px] uppercase tracking-wide text-[#3B82F6]">{chain}</span>)}
       </div>
-      <div className="overflow-hidden rounded-xl border border-white/10">
-        <div className="grid grid-cols-[1.4fr_1fr_1fr] bg-white/[0.03] px-3 py-2 font-mono text-[10px] uppercase tracking-[0.16em] text-slate-500">
+      <div className="overflow-hidden rounded-xl border border-white/[0.06]">
+        <div className="grid grid-cols-[1.4fr_1fr_1fr] bg-white/[0.04] px-3 py-2 font-mono text-[10px] uppercase tracking-[0.16em] text-[#9CA3AF]">
           <span>Token</span><span className="text-right">Balance</span><span className="text-right">Value</span>
         </div>
         {preview.length === 0 ? (
-          <p className="p-4 text-sm text-slate-500">No visible holdings in the checked window.</p>
+          <p className="p-4 text-sm text-[#9CA3AF]">No visible holdings in the checked window.</p>
         ) : preview.map(h => (
-          <div key={`${h.symbol}-${h.name}-${h.chain}`} className="grid grid-cols-[1.4fr_1fr_1fr] items-center border-t border-white/10 px-3 py-3 text-sm">
+          <div key={`${h.symbol}-${h.name}-${h.chain}`} className="grid grid-cols-[1.4fr_1fr_1fr] items-center border-t border-white/[0.06] px-3 py-3 text-sm">
             <div className="min-w-0">
-              <p className="truncate font-bold text-slate-100">{h.symbol || h.name}</p>
-              <p className="truncate text-xs text-slate-500">{h.name}{h.chain ? ` · ${h.chain}` : ''}</p>
+              <p className="truncate font-bold text-[#F3F4F6]">{h.symbol || h.name}</p>
+              <p className="truncate text-xs text-[#9CA3AF]">{h.name}{h.chain ? ` · ${h.chain}` : ''}</p>
             </div>
-            <p className="text-right font-mono text-xs text-slate-400">{fmtBalance(h.balance)}</p>
-            <p className="text-right font-mono text-xs font-bold text-teal-200">{fmtUSD(h.value)}</p>
+            <p className="text-right font-mono text-xs text-[#9CA3AF]">{fmtBalance(h.balance)}</p>
+            <p className="text-right font-mono text-xs font-bold text-[#10B981]">{fmtUSD(h.value)}</p>
           </div>
         ))}
       </div>
       {sorted.length > 5 && (
-        <button type="button" onClick={() => setShowAllHoldings(v => !v)} className="mt-3 rounded-lg border border-white/10 px-3 py-2 font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400 transition hover:border-teal-300/30 hover:text-teal-200">
+        <button type="button" onClick={() => setShowAllHoldings(v => !v)} className="mt-3 rounded-lg border border-white/[0.06] px-3 py-2 font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-[#9CA3AF] transition hover:border-blue-500/30 hover:text-[#10B981]">
           {showAllHoldings ? 'Show fewer holdings' : `Show all ${sorted.length} holdings`}
         </button>
       )}
@@ -868,20 +868,20 @@ function ActivityIndexCard({ data }: { data: WalletResult }) {
   return (
     <DashboardCard title="Activity Index" eyebrow="Base behavior" accent="violet">
       <div className="grid gap-3 sm:grid-cols-3">
-        <div className="rounded-lg border border-white/10 bg-white/[0.03] p-3">
-          <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-slate-500">Events</p>
-          <p className="mt-1 text-xl font-black text-violet-200">{totalEvents !== null && totalEvents !== undefined ? totalEvents.toLocaleString() : 'Open'}</p>
+        <div className="rounded-lg border border-white/[0.06] bg-white/[0.04] p-3">
+          <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#9CA3AF]">Events</p>
+          <p className="mt-1 text-xl font-black text-[#3B82F6]">{totalEvents !== null && totalEvents !== undefined ? totalEvents.toLocaleString() : 'Open'}</p>
         </div>
-        <div className="rounded-lg border border-white/10 bg-white/[0.03] p-3">
-          <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-slate-500">Inbound</p>
-          <p className="mt-1 text-xl font-black text-emerald-300">{activity?.inboundCount ?? behavior?.inboundCount ?? '—'}</p>
+        <div className="rounded-lg border border-white/[0.06] bg-white/[0.04] p-3">
+          <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#9CA3AF]">Inbound</p>
+          <p className="mt-1 text-xl font-black text-[#10B981]">{activity?.inboundCount ?? behavior?.inboundCount ?? '—'}</p>
         </div>
-        <div className="rounded-lg border border-white/10 bg-white/[0.03] p-3">
-          <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-slate-500">Outbound</p>
-          <p className="mt-1 text-xl font-black text-amber-200">{activity?.outboundCount ?? behavior?.outboundCount ?? '—'}</p>
+        <div className="rounded-lg border border-white/[0.06] bg-white/[0.04] p-3">
+          <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#9CA3AF]">Outbound</p>
+          <p className="mt-1 text-xl font-black text-[#F59E0B]">{activity?.outboundCount ?? behavior?.outboundCount ?? '—'}</p>
         </div>
       </div>
-      <p className="mt-4 text-sm leading-6 text-slate-400">
+      <p className="mt-4 text-sm leading-6 text-[#9CA3AF]">
         {activity && activity.eventCount > 0
           ? `${activity.eventCount} indexed transfer events across ${activity.groupedTxCount} tx groups — ${activity.walletInitiatedTxCount} wallet-initiated.`
           : unavailable
@@ -891,12 +891,12 @@ function ActivityIndexCard({ data }: { data: WalletResult }) {
       {latestEvents.length > 0 && (
         <div className="mt-4 space-y-2">
           {latestEvents.slice(0, 3).map(event => (
-            <div key={`${event.txHash}-${event.timestamp}-${event.symbol}`} className="rounded-lg border border-white/10 bg-white/[0.03] p-3">
+            <div key={`${event.txHash}-${event.timestamp}-${event.symbol}`} className="rounded-lg border border-white/[0.06] bg-white/[0.04] p-3">
               <div className="flex items-center justify-between gap-3">
-                <p className="font-mono text-xs font-bold text-slate-200">{event.symbol}</p>
-                <p className="font-mono text-[10px] uppercase tracking-wide text-slate-500">{event.direction}</p>
+                <p className="font-mono text-xs font-bold text-[#F3F4F6]">{event.symbol}</p>
+                <p className="font-mono text-[10px] uppercase tracking-wide text-[#9CA3AF]">{event.direction}</p>
               </div>
-              <p className="mt-1 text-xs text-slate-500">{event.timestamp} · {fmtBalance(event.amount)} units</p>
+              <p className="mt-1 text-xs text-[#9CA3AF]">{event.timestamp} · {fmtBalance(event.amount)} units</p>
             </div>
           ))}
         </div>
@@ -911,30 +911,30 @@ function TradingIntelligenceCard({ data }: { data: WalletResult }) {
   const closedLots = ts?.closedLots ?? 0
   const pnl = walletIntel.pnl
   const stats = [
-    { label: 'Wallet Tier', value: walletIntel.walletTier, tone: 'text-teal-200' },
-    { label: 'Score', value: walletIntel.walletScore !== null ? `${walletIntel.walletScore}/100` : 'Open Check', tone: 'text-blue-200' },
-    { label: 'Win Rate', value: walletIntel.winRate !== null ? fmtOpenPct(walletIntel.winRate) : officialWinRateLockCopy(ts), tone: 'text-emerald-300' },
-    { label: 'Realized PnL', value: fmtSignedUSD(pnl.realized), tone: pnl.realized !== null && pnl.realized >= 0 ? 'text-emerald-300' : pnl.realized !== null ? 'text-rose-300' : 'text-slate-300' },
+    { label: 'Wallet Tier', value: walletIntel.walletTier, tone: 'text-[#10B981]' },
+    { label: 'Score', value: walletIntel.walletScore !== null ? `${walletIntel.walletScore}/100` : 'Open Check', tone: 'text-[#3B82F6]' },
+    { label: 'Win Rate', value: walletIntel.winRate !== null ? fmtOpenPct(walletIntel.winRate) : officialWinRateLockCopy(ts), tone: 'text-[#10B981]' },
+    { label: 'Realized PnL', value: fmtSignedUSD(pnl.realized), tone: pnl.realized !== null && pnl.realized >= 0 ? 'text-[#10B981]' : pnl.realized !== null ? 'text-[#EF4444]' : 'text-[#F3F4F6]/80' },
   ]
 
   return (
     <DashboardCard title="Trading Intelligence" eyebrow="Closed-lot evidence" accent="amber">
       <div className="grid gap-3 md:grid-cols-2">
         {stats.map(item => (
-          <div key={item.label} className="rounded-lg border border-white/10 bg-white/[0.03] p-4">
-            <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-slate-500">{item.label}</p>
+          <div key={item.label} className="rounded-lg border border-white/[0.06] bg-white/[0.04] p-4">
+            <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#9CA3AF]">{item.label}</p>
             <p className={`mt-2 text-lg font-black ${item.tone}`}>{item.value}</p>
           </div>
         ))}
       </div>
-      <div className="mt-4 rounded-xl border border-white/10 bg-black/20 p-4">
-        <p className="font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Personality Summary</p>
-        <p className="mt-2 text-sm leading-6 text-slate-300">{walletIntel.personalitySummary}</p>
+      <div className="mt-4 rounded-xl border border-white/[0.06] bg-black/20 p-4">
+        <p className="font-mono text-xs font-semibold uppercase tracking-[0.16em] text-[#9CA3AF]">Personality Summary</p>
+        <p className="mt-2 text-sm leading-6 text-[#F3F4F6]/80">{walletIntel.personalitySummary}</p>
       </div>
       <div className="mt-4 grid gap-3 sm:grid-cols-3">
-        <div className="rounded-lg border border-white/10 bg-white/[0.03] p-3"><p className="font-mono text-[10px] uppercase tracking-[0.16em] text-slate-500">Closed Lots</p><p className="mt-1 text-xl font-black text-amber-200">{closedLots}</p></div>
-        <div className="rounded-lg border border-white/10 bg-white/[0.03] p-3"><p className="font-mono text-[10px] uppercase tracking-[0.16em] text-slate-500">Avg Win</p><p className="mt-1 text-xl font-black text-emerald-300">{fmtSignedUSD(pnl.avgWin)}</p></div>
-        <div className="rounded-lg border border-white/10 bg-white/[0.03] p-3"><p className="font-mono text-[10px] uppercase tracking-[0.16em] text-slate-500">Avg Loss</p><p className="mt-1 text-xl font-black text-rose-300">{fmtSignedUSD(pnl.avgLoss)}</p></div>
+        <div className="rounded-lg border border-white/[0.06] bg-white/[0.04] p-3"><p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#9CA3AF]">Closed Lots</p><p className="mt-1 text-xl font-black text-[#F59E0B]">{closedLots}</p></div>
+        <div className="rounded-lg border border-white/[0.06] bg-white/[0.04] p-3"><p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#9CA3AF]">Avg Win</p><p className="mt-1 text-xl font-black text-[#10B981]">{fmtSignedUSD(pnl.avgWin)}</p></div>
+        <div className="rounded-lg border border-white/[0.06] bg-white/[0.04] p-3"><p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#9CA3AF]">Avg Loss</p><p className="mt-1 text-xl font-black text-[#EF4444]">{fmtSignedUSD(pnl.avgLoss)}</p></div>
       </div>
     </DashboardCard>
   )
@@ -946,9 +946,9 @@ function MatchedTradesTable({ data }: { data: WalletResult }) {
 
   return (
     <DashboardCard title="Matched Trades" eyebrow="FIFO samples" accent="violet">
-      <div className="overflow-x-auto rounded-xl border border-white/10">
-        <table className="min-w-full divide-y divide-white/10 text-left text-sm">
-          <thead className="bg-white/[0.03] font-mono text-[10px] uppercase tracking-[0.16em] text-slate-500">
+      <div className="overflow-x-auto rounded-xl border border-white/[0.06]">
+        <table className="min-w-full overflow-hidden text-left text-sm">
+          <thead className="bg-white/[0.04] font-mono text-xs uppercase tracking-[0.16em] text-[#9CA3AF]">
             <tr>
               <th className="px-3 py-3">Token</th>
               <th className="px-3 py-3 text-right">Entry</th>
@@ -957,25 +957,25 @@ function MatchedTradesTable({ data }: { data: WalletResult }) {
               <th className="px-3 py-3 text-right">Hold</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-white/10">
-            {samples.length > 0 ? samples.slice(0, 8).map(sample => (
-              <tr key={`${sample.tokenAddress}-${sample.openedAt}-${sample.closedAt}`} className="text-slate-300">
-                <td className="px-3 py-3 font-bold text-slate-100">{sample.tokenSymbol}</td>
+          <tbody className="divide-y divide-white/[0.06]">
+            {samples.length > 0 ? samples.slice(0, 8).map((sample, index) => (
+              <tr key={`${sample.tokenAddress}-${sample.openedAt}-${sample.closedAt}`} className={`text-[#F3F4F6]/80 transition hover:bg-white/10 ${index % 2 === 1 ? 'bg-white/5' : 'bg-transparent'}`}>
+                <td className="px-3 py-3 font-bold text-[#F3F4F6]">{sample.tokenSymbol}</td>
                 <td className="px-3 py-3 text-right font-mono text-xs">{sample.entryPriceUsd !== null ? fmtUSD(sample.entryPriceUsd) : '—'}</td>
                 <td className="px-3 py-3 text-right font-mono text-xs">{sample.exitPriceUsd !== null ? fmtUSD(sample.exitPriceUsd) : '—'}</td>
-                <td className={`px-3 py-3 text-right font-mono text-xs font-bold ${sample.realizedPnlUsd !== null && sample.realizedPnlUsd >= 0 ? 'text-emerald-300' : sample.realizedPnlUsd !== null ? 'text-rose-300' : 'text-slate-500'}`}>{fmtSignedUSD(sample.realizedPnlUsd)}</td>
-                <td className="px-3 py-3 text-right font-mono text-xs text-slate-500">{sample.holdingTimeSeconds !== null ? `${Math.round(sample.holdingTimeSeconds / 3600)}h` : '—'}</td>
+                <td className={`px-3 py-3 text-right font-mono text-xs font-bold ${sample.realizedPnlUsd !== null && sample.realizedPnlUsd >= 0 ? 'text-[#10B981]' : sample.realizedPnlUsd !== null ? 'text-[#EF4444]' : 'text-[#9CA3AF]'}`}>{fmtSignedUSD(sample.realizedPnlUsd)}</td>
+                <td className="px-3 py-3 text-right font-mono text-xs text-[#9CA3AF]">{sample.holdingTimeSeconds !== null ? `${Math.round(sample.holdingTimeSeconds / 3600)}h` : '—'}</td>
               </tr>
             )) : backendTrades.length > 0 ? backendTrades.slice(0, 8).map((trade, index) => (
-              <tr key={`${trade.token}-${index}`} className="text-slate-300">
-                <td className="px-3 py-3 font-bold text-slate-100">{trade.token}</td>
+              <tr key={`${trade.token}-${index}`} className={`text-[#F3F4F6]/80 transition hover:bg-white/10 ${index % 2 === 1 ? 'bg-white/5' : 'bg-transparent'}`}>
+                <td className="px-3 py-3 font-bold text-[#F3F4F6]">{trade.token}</td>
                 <td className="px-3 py-3 text-right font-mono text-xs">{trade.entry !== null ? fmtUSD(trade.entry) : '—'}</td>
                 <td className="px-3 py-3 text-right font-mono text-xs">{trade.exit !== null ? fmtUSD(trade.exit) : '—'}</td>
-                <td className={`px-3 py-3 text-right font-mono text-xs font-bold ${trade.pnl !== null && trade.pnl >= 0 ? 'text-emerald-300' : trade.pnl !== null ? 'text-rose-300' : 'text-slate-500'}`}>{fmtSignedUSD(trade.pnl)}</td>
-                <td className="px-3 py-3 text-right font-mono text-xs text-slate-500">{trade.holdTime ?? '—'}</td>
+                <td className={`px-3 py-3 text-right font-mono text-xs font-bold ${trade.pnl !== null && trade.pnl >= 0 ? 'text-[#10B981]' : trade.pnl !== null ? 'text-[#EF4444]' : 'text-[#9CA3AF]'}`}>{fmtSignedUSD(trade.pnl)}</td>
+                <td className="px-3 py-3 text-right font-mono text-xs text-[#9CA3AF]">{trade.holdTime ?? '—'}</td>
               </tr>
             )) : (
-              <tr><td colSpan={5} className="px-3 py-8 text-center text-sm text-slate-500">No matched closed trades available in the checked sample.</td></tr>
+              <tr><td colSpan={5} className="px-3 py-8 text-center text-sm text-[#9CA3AF]">No matched closed trades available in the checked sample.</td></tr>
             )}
           </tbody>
         </table>
@@ -989,7 +989,7 @@ function WalletScannerLayout({
 }: {
   children: ReactNode
 }) {
-  return <main className="h-full overflow-y-auto overflow-x-hidden bg-[#030712] px-4 py-6 text-slate-100 sm:px-6 lg:px-10 lg:py-8">{children}</main>
+  return <main className="h-full overflow-y-auto overflow-x-hidden bg-[#0B0F19] px-4 py-6 text-[#F3F4F6] sm:px-6 lg:px-10 lg:py-8">{children}</main>
 }
 
 // ── Main page ────────────────────────────────────────────────────────────────────────────
@@ -1089,7 +1089,7 @@ export default function WalletScannerPage() {
   const clarkVerdict = result ? buildWalletVerdict(result) : null
   const clarkError = !loading && error ? 'Wallet read could not be completed. Check the address and try again.' : null
 
-  if (planLoading) return <div className="flex min-h-[60vh] flex-1 items-center justify-center font-mono text-slate-400">Loading plan access…</div>
+  if (planLoading) return <div className="flex min-h-[60vh] flex-1 items-center justify-center font-mono text-[#9CA3AF]">Loading plan access…</div>
   if (!betaEliteActive && !canAccessFeature(plan, 'wallet-scanner')) return <LockedPanel feature="wallet-scanner" />
 
   return (
@@ -1106,7 +1106,7 @@ export default function WalletScannerPage() {
         />
 
         {loading && (
-          <section className="rounded-xl border border-white/10 bg-slate-950/70 p-5 shadow-xl shadow-black/20">
+          <section className="rounded-xl border border-white/[0.06] bg-slate-950/70 p-5 shadow-xl shadow-black/20">
             <div className="space-y-3">
               {['w-8/12', 'w-11/12', 'w-7/12', 'w-10/12'].map((widthClass, index) => (
                 <div key={index} className={`h-3 animate-pulse rounded-full bg-white/10 ${widthClass}`} />
@@ -1122,10 +1122,10 @@ export default function WalletScannerPage() {
         )}
 
         {!result && !loading && (
-          <section className="rounded-xl border border-dashed border-white/10 bg-slate-950/40 p-8 text-center">
+          <section className="rounded-xl border border-dashed border-white/[0.06] bg-slate-950/40 p-8 text-center">
             <p className="font-mono text-[10px] font-bold uppercase tracking-[0.22em] text-teal-300">Ready for scan</p>
             <h2 className="mt-3 text-2xl font-black tracking-tight text-white">Three-section wallet intelligence dashboard</h2>
-            <p className="mx-auto mt-3 max-w-2xl text-sm leading-6 text-slate-500">
+            <p className="mx-auto mt-3 max-w-2xl text-sm leading-6 text-[#9CA3AF]">
               Scan a wallet to populate the Summary Header, AI Verdict + Portfolio cards, and Trading Intelligence + matched trade tables.
             </p>
           </section>
