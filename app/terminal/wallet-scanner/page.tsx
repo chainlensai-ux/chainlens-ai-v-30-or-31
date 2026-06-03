@@ -887,34 +887,45 @@ export default function WalletScannerPage() {
         .ws-card-hover:hover { border-color: rgba(45,212,191,0.25) !important; box-shadow: 0 0 20px rgba(45,212,191,0.06) !important; transition: border-color 0.2s, box-shadow 0.2s; }
         .ws-result-fade { animation: fadeUp 0.3s ease both; }
         .ws-chip-hover:hover { background: rgba(45,212,191,0.14) !important; border-color: rgba(45,212,191,0.35) !important; color: #2DD4BF !important; transition: all 0.15s; }
+        .ws-section-divider { height: 1px; background: linear-gradient(90deg, rgba(255,255,255,0.07) 0%, transparent 80%); margin: 4px 0; }
+        .ws-stat-value { font-size: 22px; font-weight: 800; color: #e2e8f0; font-family: var(--font-inter, Inter, sans-serif); letter-spacing: -0.02em; line-height: 1.15; }
+        .ws-stat-label { font-size: 9px; font-weight: 700; letter-spacing: 0.13em; text-transform: uppercase; color: rgba(255,255,255,0.28); font-family: var(--font-plex-mono, IBM Plex Mono, monospace); margin-bottom: 5px; }
+        .ws-card { background: rgba(6,10,18,0.95); border: 1px solid rgba(255,255,255,0.07); border-radius: 16px; }
+        .ws-card-teal { background: rgba(6,10,18,0.95); border: 1px solid rgba(45,212,191,0.14); border-radius: 16px; }
+        .ws-card-purple { background: rgba(6,10,18,0.95); border: 1px solid rgba(139,92,246,0.18); border-radius: 16px; }
+        .ws-section-header { font-size: 11px; font-weight: 800; letter-spacing: 0.16em; text-transform: uppercase; font-family: var(--font-plex-mono, IBM Plex Mono, monospace); }
+        .ws-facts-flow-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
         @media (max-width: 768px) {
-          .wallet-main { padding: 60px 14px 120px !important; }
+          .wallet-main { padding: 52px 16px 100px !important; }
           .wallet-input-row { flex-direction: column; max-width: 100% !important; }
           .wallet-input-row button { width: 100%; justify-content: center; }
           .ws-stat-grid     { grid-template-columns: repeat(2, 1fr) !important; }
           .ws-behavior-grid { grid-template-columns: repeat(2, 1fr) !important; }
           .wallet-intel-grid, .wallet-score-grid { grid-template-columns: 1fr !important; }
           .wallet-trade-table { overflow-x: auto !important; }
-          .ws-val-52        { font-size: 32px !important; letter-spacing: -0.02em !important; }
+          .ws-val-52        { font-size: 36px !important; letter-spacing: -0.025em !important; }
           .ws-holdings-header { display: none !important; }
           .ws-holdings-row {
             display: flex !important; flex-wrap: wrap !important;
-            padding: 12px 14px !important; gap: 6px 0 !important; align-items: center !important;
+            padding: 12px 16px !important; gap: 6px 0 !important; align-items: center !important;
           }
-          .ws-col-token { flex: 0 0 100% !important; padding-bottom: 8px !important; border-bottom: 1px solid rgba(255,255,255,0.04) !important; }
+          .ws-col-token { flex: 0 0 100% !important; padding-bottom: 8px !important; border-bottom: 1px solid rgba(255,255,255,0.05) !important; }
           .ws-col-balance, .ws-col-value, .ws-col-change {
-            flex: 1 1 33% !important; text-align: left !important; font-size: 12px !important;
+            flex: 1 1 33% !important; text-align: left !important; font-size: 13px !important;
           }
           .ws-col-balance::before { content: "Balance"; display: block; font-size: 8px; color: rgba(255,255,255,0.25); font-family: var(--font-plex-mono, monospace); text-transform: uppercase; letter-spacing: 0.10em; margin-bottom: 2px; }
           .ws-col-value::before   { content: "Value";   display: block; font-size: 8px; color: rgba(255,255,255,0.25); font-family: var(--font-plex-mono, monospace); text-transform: uppercase; letter-spacing: 0.10em; margin-bottom: 2px; }
           .ws-col-change::before  { content: "24h";     display: block; font-size: 8px; color: rgba(255,255,255,0.25); font-family: var(--font-plex-mono, monospace); text-transform: uppercase; letter-spacing: 0.10em; margin-bottom: 2px; }
+          .ws-facts-flow-grid { grid-template-columns: 1fr !important; }
+          .ws-portfolio-grid { grid-template-columns: 1fr !important; }
+          .ws-pi-bottom { flex-direction: column !important; }
         }
       `}</style>
 
       <div className="flex h-full overflow-hidden" style={{ color: '#e2e8f0' }}>
 
         {/* ── Left: scrollable main area ─────────────────────────────────── */}
-        <div className="mob-scan-main wallet-main" style={{ flex: 1, minWidth: 0, overflowY: 'auto', overflowX: 'hidden', padding: '40px 48px 120px', background: 'radial-gradient(ellipse 70% 40% at 50% 0%, rgba(45,212,191,0.04) 0%, transparent 70%)' }}>
+        <div className="mob-scan-main wallet-main" style={{ flex: 1, minWidth: 0, overflowY: 'auto', overflowX: 'hidden', padding: '36px 40px 120px', background: 'radial-gradient(ellipse 80% 35% at 50% 0%, rgba(45,212,191,0.035) 0%, transparent 65%)' }}>
 
           {/* Header */}
           <div style={{ marginBottom: '36px' }}>
@@ -1155,7 +1166,7 @@ export default function WalletScannerPage() {
             const hasCortexFacts = Boolean(result.walletFacts)
             const showLegacyPortfolioCards = !(hasPortfolioIntelligence && hasCortexFacts)
             return (
-            <div className="ws-result-fade" style={{ maxWidth: '100%', width: '100%', display: 'flex', flexDirection: 'column', gap: '14px', marginTop: '24px' }}>
+            <div className="ws-result-fade" style={{ maxWidth: '100%', width: '100%', display: 'flex', flexDirection: 'column', gap: '20px', marginTop: '28px' }}>
 
               {/* Scan cost / cache note banner */}
               {result.walletScanCacheNote && (result.walletScanCostMode === 'blocked_by_cooldown' || result.walletScanCostMode === 'blocked_by_cost_guard' || result.walletScanCostMode === 'historical_cached' || result.walletScanCostMode === 'deep_cached') && (
@@ -1180,13 +1191,14 @@ export default function WalletScannerPage() {
                   { label: 'Trade stats', note: mc.tradeStats.closedLots > 0 ? `${mc.tradeStats.closedLots} lots` + (mc.tradeStats.readyForWinRate ? '' : ' — below threshold') : 'no closed lots', status: mc.tradeStats.status },
                 ]
                 return (
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', padding: '10px 14px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '10px' }}>
-                    <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.14em', color: 'rgba(255,255,255,0.28)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', alignSelf: 'center', marginRight: '2px' }}>CORTEX checks</span>
+                  <div style={{ padding: '12px 16px', background: 'rgba(255,255,255,0.015)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '12px', display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+                    <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.16em', color: 'rgba(255,255,255,0.22)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', flexShrink: 0 }}>Checks</span>
+                    <span style={{ width: '1px', height: '14px', background: 'rgba(255,255,255,0.08)', flexShrink: 0 }} />
                     {chips.map(chip => (
-                      <span key={chip.label} style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '10px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', color: statusColor(chip.status), border: `1px solid ${statusColor(chip.status)}30`, background: `${statusColor(chip.status)}0a`, borderRadius: '6px', padding: '3px 8px' }}>
-                        <span style={{ opacity: 0.8 }}>{statusIcon(chip.status)}</span>
-                        <span style={{ color: 'rgba(255,255,255,0.55)', fontWeight: 600 }}>{chip.label}</span>
-                        <span style={{ opacity: 0.65 }}>{chip.note}</span>
+                      <span key={chip.label} style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', fontSize: '10px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', color: statusColor(chip.status), borderRadius: '6px', padding: '3px 0' }}>
+                        <span style={{ fontSize: '9px', opacity: 0.9 }}>{statusIcon(chip.status)}</span>
+                        <span style={{ color: '#e2e8f0', fontWeight: 600 }}>{chip.label}</span>
+                        <span style={{ color: 'rgba(255,255,255,0.35)', fontWeight: 400 }}>{chip.note}</span>
                       </span>
                     ))}
                   </div>
@@ -1257,79 +1269,96 @@ export default function WalletScannerPage() {
                 const concentrationLabel = pi.concentration === 'high' ? 'High concentration' : pi.concentration === 'medium' ? 'Medium concentration' : pi.concentration === 'balanced' ? 'Balanced spread' : null
                 const concentrationColor = pi.concentration === 'high' ? '#fbbf24' : pi.concentration === 'medium' ? '#a78bfa' : '#4ade80'
                 return (
-                  <div style={{ background: '#080c14', border: '1px solid rgba(45,212,191,0.18)', borderRadius: '16px', padding: '20px 22px', position: 'relative', overflow: 'hidden' }}>
-                    <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: '2px', background: 'linear-gradient(90deg, #2DD4BF 0%, #4ade80 100%)' }} />
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px', flexWrap: 'wrap', gap: '8px' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        <div style={{ fontSize: '10px', fontWeight: 800, letterSpacing: '0.18em', color: '#2DD4BF', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Portfolio Intelligence</div>
-                        <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', color: '#4ade80', border: '1px solid rgba(74,222,128,0.25)', background: 'rgba(74,222,128,0.07)', borderRadius: '999px', padding: '2px 7px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Portfolio Read Active</span>
+                  <div style={{ background: 'rgba(6,10,18,0.95)', border: '1px solid rgba(45,212,191,0.14)', borderRadius: '18px', overflow: 'hidden' }}>
+                    {/* Section header */}
+                    <div style={{ padding: '18px 24px 16px', borderBottom: '1px solid rgba(255,255,255,0.06)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                        <div style={{ width: '3px', height: '16px', borderRadius: '2px', background: 'linear-gradient(180deg, #2DD4BF, #4ade80)', flexShrink: 0 }} />
+                        <span className="ws-section-header" style={{ color: '#e2e8f0' }}>Portfolio Intelligence</span>
+                        <span style={{ fontSize: '9px', fontWeight: 600, color: '#4ade80', background: 'rgba(74,222,128,0.06)', border: '1px solid rgba(74,222,128,0.18)', borderRadius: '999px', padding: '2px 8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Active</span>
                       </div>
-                      <span style={{ fontSize: '10px', color: 'rgba(255,255,255,0.40)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{pi.holdingsScope}</span>
+                      <span style={{ fontSize: '11px', color: 'rgba(255,255,255,0.30)', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{pi.holdingsScope}</span>
                     </div>
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px', marginBottom: '14px' }}>
-                      <div style={{ background: 'rgba(45,212,191,0.05)', border: '1px solid rgba(45,212,191,0.12)', borderRadius: '10px', padding: '12px' }}>
-                        <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.30)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '6px' }}>Total Value</div>
-                        <div style={{ fontSize: '20px', fontWeight: 800, color: '#2DD4BF', fontFamily: 'var(--font-inter, Inter, sans-serif)', letterSpacing: '-0.02em' }}>{pi.totalValue > 0 ? fmtUSD(pi.totalValue) : '—'}</div>
-                      </div>
-                      <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '10px', padding: '12px' }}>
-                        <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.30)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '6px' }}>Visible Tokens</div>
-                        <div style={{ fontSize: '20px', fontWeight: 800, color: '#e2e8f0', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{pi.holdingsCount}</div>
-                      </div>
-                      <div style={{ background: concentrationLabel ? `${concentrationColor}0d` : 'rgba(255,255,255,0.03)', border: `1px solid ${concentrationLabel ? `${concentrationColor}28` : 'rgba(255,255,255,0.07)'}`, borderRadius: '10px', padding: '12px' }}>
-                        <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.30)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '6px' }}>Concentration</div>
-                        <div style={{ fontSize: '15px', fontWeight: 800, color: concentrationLabel ? concentrationColor : 'rgba(255,255,255,0.35)', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{concentrationLabel ?? '—'}</div>
-                        {pi.topHolding && pi.topShare !== null && <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.28)', marginTop: '3px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Largest visible holding: {pi.topHolding.symbol || pi.topHolding.name} at ~{pi.topShare.toFixed(0)}%.</div>}
-                        {pi.top3Share !== null && pi.top3.length > 1 && <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.28)', marginTop: '3px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Top 3 holdings make up ~{pi.top3Share.toFixed(0)}% of visible portfolio value.</div>}
-                      </div>
-                    </div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: '14px', marginBottom: '12px', flexWrap: 'wrap', alignItems: 'flex-start' }}>
-                      {pi.top3.length > 0 && (
-                        <div>
-                          <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.30)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '6px' }}>Top Holdings</div>
-                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                            {pi.top3.map((h, i) => {
-                              const pct = pi.totalValue > 0 ? ((h.value / pi.totalValue) * 100).toFixed(0) : null
-                              return (
-                                <span key={i} style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '11px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', color: '#e2e8f0', border: '1px solid rgba(255,255,255,0.10)', background: 'rgba(255,255,255,0.03)', borderRadius: '6px', padding: '4px 9px' }}>
-                                  <span style={{ fontWeight: 700 }}>{h.symbol || h.name}</span>
-                                  {pct && <span style={{ color: 'rgba(255,255,255,0.38)', fontSize: '9px' }}>{pct}%</span>}
-                                </span>
-                              )
-                            })}
-                          </div>
+
+                    <div style={{ padding: '20px 24px' }}>
+                      {/* Top stats row */}
+                      <div className="ws-portfolio-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '12px', marginBottom: '20px' }}>
+                        <div style={{ background: 'rgba(45,212,191,0.04)', border: '1px solid rgba(45,212,191,0.10)', borderRadius: '12px', padding: '16px' }}>
+                          <div className="ws-stat-label">Total Value</div>
+                          <div style={{ fontSize: '24px', fontWeight: 800, color: '#2DD4BF', fontFamily: 'var(--font-inter, Inter, sans-serif)', letterSpacing: '-0.025em', lineHeight: 1.1 }}>{pi.totalValue > 0 ? fmtUSD(pi.totalValue) : '—'}</div>
                         </div>
-                      )}
-                      {pi.chains.length > 0 && (
-                        <div>
-                          <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.30)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '6px' }}>Chain Exposure</div>
-                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
-                            {pi.chains.map(c => (
-                              <span key={c} style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.07em', padding: '3px 8px', borderRadius: '6px', background: c === 'base' ? 'rgba(0,82,255,0.14)' : 'rgba(98,126,234,0.14)', border: c === 'base' ? '1px solid rgba(0,82,255,0.28)' : '1px solid rgba(98,126,234,0.28)', color: c === 'base' ? '#6ea8ff' : '#a5b4fc', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{c === 'base' ? 'Base' : c === 'ethereum' ? 'Ethereum' : c.toUpperCase().replace(/-/g, ' ')}</span>
-                            ))}
-                          </div>
+                        <div style={{ background: 'rgba(255,255,255,0.025)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '12px', padding: '16px' }}>
+                          <div className="ws-stat-label">Visible Tokens</div>
+                          <div className="ws-stat-value">{pi.holdingsCount}</div>
+                          <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.30)', fontFamily: 'var(--font-inter, Inter, sans-serif)', marginTop: '4px' }}>{pi.portfolioType}</div>
                         </div>
-                      )}
-                    </div>
-                    {(pi.stablePercent > 5 || pi.ethPercent > 5) && (
-                      <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '12px' }}>
-                        {pi.stablePercent > 5 && <span style={{ fontSize: '10px', color: '#4ade80', border: '1px solid rgba(74,222,128,0.22)', background: 'rgba(74,222,128,0.05)', borderRadius: '6px', padding: '3px 8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Stablecoin exposure {pi.stablePercent.toFixed(0)}%</span>}
-                        {pi.ethPercent > 5 && <span style={{ fontSize: '10px', color: '#a78bfa', border: '1px solid rgba(167,139,250,0.22)', background: 'rgba(139,92,246,0.05)', borderRadius: '6px', padding: '3px 8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>ETH exposure {pi.ethPercent.toFixed(0)}%</span>}
-                      </div>
-                    )}
-                    <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: '10px' }}>
-                      {totalEvents > 0 ? (
-                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', alignItems: 'center' }}>
-                          <span style={{ fontSize: '10px', color: '#4ade80', border: '1px solid rgba(74,222,128,0.20)', background: 'rgba(74,222,128,0.05)', borderRadius: '6px', padding: '3px 8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Activity indexed</span>
-                          <span style={{ fontSize: '10px', color: 'rgba(255,255,255,0.45)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{totalEvents} indexed transfer events</span>
-                          {swapCandidates === 0 ? (
-                            <span style={{ fontSize: '10px', color: '#7dd3fc', border: '1px solid rgba(125,211,252,0.18)', background: 'rgba(56,189,248,0.05)', borderRadius: '6px', padding: '3px 8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>No reconstructable swap pairs in checked sample</span>
-                          ) : (
-                            <span style={{ fontSize: '10px', color: '#a78bfa', border: '1px solid rgba(167,139,250,0.20)', background: 'rgba(139,92,246,0.05)', borderRadius: '6px', padding: '3px 8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{swapCandidates} swap pair{swapCandidates !== 1 ? 's' : ''} found</span>
+                        <div style={{ background: concentrationLabel ? `${concentrationColor}09` : 'rgba(255,255,255,0.025)', border: `1px solid ${concentrationLabel ? `${concentrationColor}22` : 'rgba(255,255,255,0.06)'}`, borderRadius: '12px', padding: '16px' }}>
+                          <div className="ws-stat-label">Concentration</div>
+                          <div style={{ fontSize: '18px', fontWeight: 800, color: concentrationLabel ? concentrationColor : 'rgba(255,255,255,0.30)', fontFamily: 'var(--font-inter, Inter, sans-serif)', letterSpacing: '-0.01em', lineHeight: 1.2 }}>{concentrationLabel ?? '—'}</div>
+                          {pi.topHolding && pi.topShare !== null && (
+                            <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.35)', fontFamily: 'var(--font-inter, Inter, sans-serif)', marginTop: '5px', lineHeight: 1.4 }}>
+                              {pi.topHolding.symbol || pi.topHolding.name} · {pi.topShare.toFixed(0)}% of portfolio
+                            </div>
                           )}
                         </div>
-                      ) : (
-                        <span style={{ fontSize: '10px', color: 'rgba(255,255,255,0.30)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Activity not available in checked sample</span>
-                      )}
+                      </div>
+
+                      {/* Holdings + chains row */}
+                      <div className="ws-pi-bottom" style={{ display: 'flex', gap: '20px', marginBottom: '16px', alignItems: 'flex-start', flexWrap: 'wrap' }}>
+                        {pi.top3.length > 0 && (
+                          <div style={{ flex: '1 1 auto', minWidth: '160px' }}>
+                            <div className="ws-stat-label" style={{ marginBottom: '8px' }}>Top Holdings</div>
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '7px' }}>
+                              {pi.top3.map((h, i) => {
+                                const pct = pi.totalValue > 0 ? ((h.value / pi.totalValue) * 100).toFixed(0) : null
+                                const isTop = i === 0
+                                return (
+                                  <span key={i} style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', fontSize: '12px', fontFamily: 'var(--font-inter, Inter, sans-serif)', color: isTop ? '#f1f5f9' : '#94a3b8', border: `1px solid ${isTop ? 'rgba(45,212,191,0.20)' : 'rgba(255,255,255,0.08)'}`, background: isTop ? 'rgba(45,212,191,0.05)' : 'rgba(255,255,255,0.025)', borderRadius: '8px', padding: '5px 10px' }}>
+                                    <span style={{ fontWeight: 700 }}>{h.symbol || h.name}</span>
+                                    {pct && <span style={{ color: isTop ? 'rgba(45,212,191,0.65)' : 'rgba(255,255,255,0.30)', fontSize: '10px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{pct}%</span>}
+                                  </span>
+                                )
+                              })}
+                            </div>
+                          </div>
+                        )}
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', flexShrink: 0 }}>
+                          {pi.chains.length > 0 && (
+                            <div>
+                              <div className="ws-stat-label" style={{ marginBottom: '7px' }}>Chain Exposure</div>
+                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px' }}>
+                                {pi.chains.map(c => (
+                                  <span key={c} style={{ fontSize: '11px', fontWeight: 700, letterSpacing: '0.06em', padding: '4px 10px', borderRadius: '7px', background: c === 'base' ? 'rgba(0,82,255,0.12)' : 'rgba(98,126,234,0.12)', border: c === 'base' ? '1px solid rgba(0,82,255,0.24)' : '1px solid rgba(98,126,234,0.24)', color: c === 'base' ? '#6ea8ff' : '#a5b4fc', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{c === 'base' ? 'Base' : c === 'ethereum' ? 'Ethereum' : c.toUpperCase().replace(/-/g, ' ')}</span>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          {(pi.stablePercent > 5 || pi.ethPercent > 5) && (
+                            <div style={{ display: 'flex', gap: '5px', flexWrap: 'wrap' }}>
+                              {pi.stablePercent > 5 && <span style={{ fontSize: '10px', color: '#4ade80', border: '1px solid rgba(74,222,128,0.18)', background: 'rgba(74,222,128,0.04)', borderRadius: '7px', padding: '3px 9px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Stablecoins {pi.stablePercent.toFixed(0)}%</span>}
+                              {pi.ethPercent > 5 && <span style={{ fontSize: '10px', color: '#a78bfa', border: '1px solid rgba(167,139,250,0.18)', background: 'rgba(139,92,246,0.04)', borderRadius: '7px', padding: '3px 9px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>ETH {pi.ethPercent.toFixed(0)}%</span>}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Activity row */}
+                      <div style={{ borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '14px' }}>
+                        {totalEvents > 0 ? (
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
+                            <span style={{ fontSize: '11px', fontWeight: 600, color: '#4ade80', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>Activity indexed</span>
+                            <span style={{ fontSize: '11px', color: 'rgba(255,255,255,0.40)', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>·</span>
+                            <span style={{ fontSize: '11px', color: 'rgba(255,255,255,0.40)', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{totalEvents} transfer events</span>
+                            {swapCandidates === 0 ? (
+                              <span style={{ fontSize: '10px', color: '#7dd3fc', border: '1px solid rgba(125,211,252,0.15)', background: 'rgba(56,189,248,0.04)', borderRadius: '6px', padding: '2px 8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>no swap pairs in sample</span>
+                            ) : (
+                              <span style={{ fontSize: '10px', color: '#a78bfa', border: '1px solid rgba(167,139,250,0.18)', background: 'rgba(139,92,246,0.04)', borderRadius: '6px', padding: '2px 8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{swapCandidates} swap pair{swapCandidates !== 1 ? 's' : ''}</span>
+                            )}
+                          </div>
+                        ) : (
+                          <span style={{ fontSize: '11px', color: 'rgba(255,255,255,0.28)', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>Activity not available in checked sample</span>
+                        )}
+                      </div>
                     </div>
                   </div>
                 )
@@ -1497,149 +1526,150 @@ export default function WalletScannerPage() {
               {result.walletFacts && (() => {
                 const wf = result.walletFacts!
                 const statusColor = wf.status === 'ok' ? '#4ade80' : wf.status === 'partial' ? '#fbbf24' : '#7dd3fc'
-                const statusBg = wf.status === 'ok' ? 'rgba(74,222,128,0.08)' : wf.status === 'partial' ? 'rgba(251,191,36,0.08)' : 'rgba(125,211,252,0.08)'
-                const statusBorder = wf.status === 'ok' ? 'rgba(74,222,128,0.22)' : wf.status === 'partial' ? 'rgba(251,191,36,0.22)' : 'rgba(125,211,252,0.22)'
+                const statusBg = wf.status === 'ok' ? 'rgba(74,222,128,0.06)' : wf.status === 'partial' ? 'rgba(251,191,36,0.06)' : 'rgba(125,211,252,0.06)'
+                const statusBorder = wf.status === 'ok' ? 'rgba(74,222,128,0.18)' : wf.status === 'partial' ? 'rgba(251,191,36,0.18)' : 'rgba(125,211,252,0.18)'
                 const fmtDate = (ts: string | null) => ts ? new Date(ts).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—'
                 return (
-                  <div style={{ background: '#080c14', border: '1px solid rgba(45,212,191,0.18)', borderRadius: '16px', padding: '20px 22px' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px', flexWrap: 'wrap' }}>
-                      <div style={{ fontSize: '10px', fontWeight: 800, letterSpacing: '0.18em', color: '#2DD4BF', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>CORTEX Facts</div>
-                      <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', color: statusColor, border: `1px solid ${statusBorder}`, background: statusBg, borderRadius: '999px', padding: '2px 7px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                  <div style={{ background: 'rgba(6,10,18,0.95)', border: '1px solid rgba(45,212,191,0.12)', borderRadius: '18px', overflow: 'hidden' }}>
+                    {/* Header */}
+                    <div style={{ padding: '18px 24px 16px', borderBottom: '1px solid rgba(255,255,255,0.06)', display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                      <div style={{ width: '3px', height: '16px', borderRadius: '2px', background: 'linear-gradient(180deg, #2DD4BF, rgba(45,212,191,0.3))', flexShrink: 0 }} />
+                      <span className="ws-section-header" style={{ color: '#e2e8f0' }}>CORTEX Facts</span>
+                      <span style={{ fontSize: '9px', fontWeight: 600, color: statusColor, background: statusBg, border: `1px solid ${statusBorder}`, borderRadius: '999px', padding: '2px 8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
                         {wf.status === 'ok' ? 'full read' : wf.status === 'partial' ? 'partial read' : 'open check'}
                       </span>
                       {wf.limits.noClosedLotPnL && (
-                        <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', color: '#7dd3fc', border: '1px solid rgba(125,211,252,0.18)', background: 'rgba(125,211,252,0.06)', borderRadius: '999px', padding: '2px 7px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>no closed lots</span>
+                        <span style={{ fontSize: '9px', fontWeight: 600, color: '#7dd3fc', border: '1px solid rgba(125,211,252,0.15)', background: 'rgba(125,211,252,0.04)', borderRadius: '999px', padding: '2px 8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>no closed lots</span>
                       )}
                     </div>
 
-                    <div className="wallet-intel-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: '10px', marginBottom: '14px' }}>
-                      {[
-                        { label: 'Portfolio Value', value: wf.summary.totalValueUsd > 0 ? fmtUSD(wf.summary.totalValueUsd) : '—' },
-                        { label: 'Visible Tokens', value: String(wf.summary.holdingsCount) },
-                        { label: 'Concentration', value: wf.summary.concentrationLabel === 'none' ? '—' : wf.summary.concentrationLabel.charAt(0).toUpperCase() + wf.summary.concentrationLabel.slice(1) },
-                      ].map(c => (
-                        <div key={c.label} style={{ background: 'rgba(45,212,191,0.04)', border: '1px solid rgba(45,212,191,0.10)', borderRadius: '10px', padding: '10px 12px' }}>
-                          <div style={{ fontSize: '9px', color: 'rgba(45,212,191,0.55)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '5px' }}>{c.label}</div>
-                          <div style={{ fontSize: '15px', fontWeight: 700, color: '#e2e8f0', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{c.value}</div>
-                        </div>
-                      ))}
-                    </div>
-
-                    {wf.summary.topHoldings.length > 0 && (
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '12px', alignItems: 'center' }}>
-                        <span style={{ fontSize: '9px', color: 'rgba(255,255,255,0.28)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', letterSpacing: '0.10em', textTransform: 'uppercase' }}>Top</span>
-                        {wf.summary.topHoldings.map((h, i) => (
-                          <span key={i} style={{ fontSize: '11px', fontWeight: 600, color: '#2DD4BF', background: 'rgba(45,212,191,0.08)', border: '1px solid rgba(45,212,191,0.18)', borderRadius: '999px', padding: '3px 9px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
-                            {h.symbol} <span style={{ color: 'rgba(45,212,191,0.55)' }}>{h.percent}%</span>
-                          </span>
-                        ))}
-                      </div>
-                    )}
-
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '14px', alignItems: 'center' }}>
-                      {wf.summary.chainExposure.map((ce, i) => (
-                        <span key={i} style={{ fontSize: '10px', fontWeight: 700, color: '#7dd3fc', background: 'rgba(56,189,248,0.07)', border: '1px solid rgba(56,189,248,0.18)', borderRadius: '6px', padding: '3px 8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
-                          {ce.chain.toUpperCase()} {ce.percent}%
-                        </span>
-                      ))}
-                      {wf.summary.stablecoinExposurePercent > 5 && (
-                        <span style={{ fontSize: '10px', color: 'rgba(255,255,255,0.40)', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '6px', padding: '3px 8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
-                          Stablecoins {wf.summary.stablecoinExposurePercent}%
-                        </span>
-                      )}
-                      {wf.summary.nativeExposurePercent > 5 && (
-                        <span style={{ fontSize: '10px', color: 'rgba(255,255,255,0.40)', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '6px', padding: '3px 8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
-                          ETH/WETH {wf.summary.nativeExposurePercent}%
-                        </span>
-                      )}
-                    </div>
-
-                    {wf.activity.eventCount > 0 && (
-                      <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '10px', padding: '12px 14px', marginBottom: '12px' }}>
-                        <div style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.14em', color: 'rgba(45,212,191,0.55)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '8px' }}>Activity Index</div>
-                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px 24px' }}>
-                          {[
-                            { label: 'Events', val: String(wf.activity.eventCount) },
-                            { label: 'Tx Groups', val: String(wf.activity.groupedTxCount) },
-                            { label: 'Wallet-Init', val: String(wf.activity.walletInitiatedTxCount) },
-                            { label: 'Inbound', val: String(wf.activity.inboundCount) },
-                            { label: 'Outbound', val: String(wf.activity.outboundCount) },
-                            { label: 'First Seen', val: fmtDate(wf.activity.firstSeenAt) },
-                            { label: 'Last Seen', val: fmtDate(wf.activity.lastSeenAt) },
-                          ].map(item => (
-                            <div key={item.label}>
-                              <div style={{ fontSize: '8px', color: 'rgba(255,255,255,0.28)', letterSpacing: '0.10em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '2px' }}>{item.label}</div>
-                              <div style={{ fontSize: '12px', fontWeight: 600, color: '#e2e8f0', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{item.val}</div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    {wf.activity.latestEvents.length > 0 && (
-                      <div style={{ marginBottom: '12px' }}>
-                        <div style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.14em', color: 'rgba(255,255,255,0.30)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '6px' }}>Recent Events</div>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                          {wf.activity.latestEvents.map((ev, i) => (
-                            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '10px', color: 'rgba(255,255,255,0.55)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', padding: '4px 8px', background: 'rgba(255,255,255,0.02)', borderRadius: '6px' }}>
-                              <span style={{ color: ev.direction === 'buy' ? '#4ade80' : ev.direction === 'sell' ? '#f87171' : '#94a3b8', fontWeight: 700, minWidth: '20px' }}>{ev.direction === 'buy' ? '↓' : ev.direction === 'sell' ? '↑' : '?'}</span>
-                              <span style={{ color: '#e2e8f0', fontWeight: 600 }}>{ev.symbol}</span>
-                              <span style={{ color: 'rgba(255,255,255,0.30)' }}>{ev.chain.toUpperCase()}</span>
-                              {ev.valueUsdKnown && <span style={{ color: '#7dd3fc' }}>USD known</span>}
-                              <span style={{ marginLeft: 'auto', color: 'rgba(255,255,255,0.25)', fontSize: '9px' }}>{new Date(ev.timestamp).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    {(wf.flowRead.receivedTokens.length > 0 || wf.flowRead.sentTokens.length > 0) && (
-                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '12px' }}>
-                        {wf.flowRead.receivedTokens.length > 0 && (
-                          <div style={{ background: 'rgba(74,222,128,0.03)', border: '1px solid rgba(74,222,128,0.10)', borderRadius: '8px', padding: '10px 12px' }}>
-                            <div style={{ fontSize: '9px', color: 'rgba(74,222,128,0.55)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '6px' }}>Received</div>
-                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 8px' }}>
-                              {wf.flowRead.receivedTokens.slice(0, 5).map((t, i) => (
-                                <span key={i} style={{ fontSize: '10px', color: '#4ade80', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
-                                  {t.symbol}<span style={{ color: 'rgba(74,222,128,0.45)', fontSize: '9px' }}>×{t.count}</span>
+                    <div style={{ padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: '18px' }}>
+                      {/* Top holdings row */}
+                      {wf.summary.topHoldings.length > 0 && (
+                        <div style={{ display: 'flex', alignItems: 'flex-start', gap: '16px', flexWrap: 'wrap' }}>
+                          <div style={{ flex: '1 1 auto' }}>
+                            <div className="ws-stat-label" style={{ marginBottom: '8px' }}>Top Holdings</div>
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                              {wf.summary.topHoldings.map((h, i) => (
+                                <span key={i} style={{ fontSize: '12px', fontWeight: 700, color: i === 0 ? '#2DD4BF' : '#94a3b8', background: i === 0 ? 'rgba(45,212,191,0.07)' : 'rgba(255,255,255,0.03)', border: `1px solid ${i === 0 ? 'rgba(45,212,191,0.20)' : 'rgba(255,255,255,0.08)'}`, borderRadius: '8px', padding: '5px 11px', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
+                                  {h.symbol} <span style={{ fontWeight: 400, fontSize: '10px', opacity: 0.6, fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{h.percent}%</span>
                                 </span>
                               ))}
                             </div>
                           </div>
-                        )}
-                        {wf.flowRead.sentTokens.length > 0 && (
-                          <div style={{ background: 'rgba(248,113,113,0.03)', border: '1px solid rgba(248,113,113,0.10)', borderRadius: '8px', padding: '10px 12px' }}>
-                            <div style={{ fontSize: '9px', color: 'rgba(248,113,113,0.55)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '6px' }}>Sent</div>
-                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 8px' }}>
-                              {wf.flowRead.sentTokens.slice(0, 5).map((t, i) => (
-                                <span key={i} style={{ fontSize: '10px', color: '#f87171', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
-                                  {t.symbol}<span style={{ color: 'rgba(248,113,113,0.45)', fontSize: '9px' }}>×{t.count}</span>
+                          <div style={{ flexShrink: 0 }}>
+                            <div className="ws-stat-label" style={{ marginBottom: '8px' }}>Chain</div>
+                            <div style={{ display: 'flex', gap: '5px', flexWrap: 'wrap' }}>
+                              {wf.summary.chainExposure.map((ce, i) => (
+                                <span key={i} style={{ fontSize: '11px', fontWeight: 700, color: '#7dd3fc', background: 'rgba(56,189,248,0.06)', border: '1px solid rgba(56,189,248,0.15)', borderRadius: '7px', padding: '4px 10px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                                  {ce.chain.toUpperCase()} <span style={{ opacity: 0.6 }}>{ce.percent}%</span>
                                 </span>
                               ))}
+                              {wf.summary.stablecoinExposurePercent > 5 && <span style={{ fontSize: '10px', color: '#4ade80', background: 'rgba(74,222,128,0.04)', border: '1px solid rgba(74,222,128,0.15)', borderRadius: '7px', padding: '4px 9px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Stable {wf.summary.stablecoinExposurePercent}%</span>}
+                              {wf.summary.nativeExposurePercent > 5 && <span style={{ fontSize: '10px', color: '#a78bfa', background: 'rgba(139,92,246,0.04)', border: '1px solid rgba(139,92,246,0.15)', borderRadius: '7px', padding: '4px 9px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>ETH {wf.summary.nativeExposurePercent}%</span>}
                             </div>
                           </div>
+                        </div>
+                      )}
+
+                      {/* Activity stats grid */}
+                      {wf.activity.eventCount > 0 && (
+                        <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '12px', padding: '14px 18px' }}>
+                          <div className="ws-stat-label" style={{ marginBottom: '12px', color: 'rgba(45,212,191,0.50)' }}>Activity Index</div>
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(90px, 1fr))', gap: '12px 20px' }}>
+                            {[
+                              { label: 'Events', val: String(wf.activity.eventCount) },
+                              { label: 'Tx Groups', val: String(wf.activity.groupedTxCount) },
+                              { label: 'Wallet-Init', val: String(wf.activity.walletInitiatedTxCount) },
+                              { label: 'Inbound', val: String(wf.activity.inboundCount) },
+                              { label: 'Outbound', val: String(wf.activity.outboundCount) },
+                              { label: 'First Seen', val: fmtDate(wf.activity.firstSeenAt) },
+                              { label: 'Last Seen', val: fmtDate(wf.activity.lastSeenAt) },
+                            ].map(item => (
+                              <div key={item.label}>
+                                <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.28)', letterSpacing: '0.10em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '3px' }}>{item.label}</div>
+                                <div style={{ fontSize: '14px', fontWeight: 700, color: '#e2e8f0', fontFamily: 'var(--font-inter, Inter, sans-serif)', letterSpacing: '-0.01em' }}>{item.val}</div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Latest events */}
+                      {wf.activity.latestEvents.length > 0 && (
+                        <div>
+                          <div className="ws-stat-label" style={{ marginBottom: '8px' }}>Recent Events</div>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                            {wf.activity.latestEvents.map((ev, i) => (
+                              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 12px', background: 'rgba(255,255,255,0.018)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '9px' }}>
+                                <span style={{ width: '22px', height: '22px', borderRadius: '6px', background: ev.direction === 'buy' ? 'rgba(74,222,128,0.10)' : ev.direction === 'sell' ? 'rgba(248,113,113,0.10)' : 'rgba(255,255,255,0.04)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, fontSize: '11px', color: ev.direction === 'buy' ? '#4ade80' : ev.direction === 'sell' ? '#f87171' : '#94a3b8', fontWeight: 700 }}>
+                                  {ev.direction === 'buy' ? '↓' : ev.direction === 'sell' ? '↑' : '·'}
+                                </span>
+                                <span style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0', fontFamily: 'var(--font-inter, Inter, sans-serif)', minWidth: '40px' }}>{ev.symbol}</span>
+                                <span style={{ fontSize: '10px', color: 'rgba(255,255,255,0.30)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', letterSpacing: '0.06em' }}>{ev.chain.toUpperCase()}</span>
+                                {ev.valueUsdKnown && <span style={{ fontSize: '10px', color: '#7dd3fc', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>USD known</span>}
+                                <span style={{ marginLeft: 'auto', fontSize: '11px', color: 'rgba(255,255,255,0.28)', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{new Date(ev.timestamp).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Received / Sent panels */}
+                      {(wf.flowRead.receivedTokens.length > 0 || wf.flowRead.sentTokens.length > 0) && (
+                        <div className="ws-facts-flow-grid">
+                          {wf.flowRead.receivedTokens.length > 0 && (
+                            <div style={{ background: 'rgba(74,222,128,0.02)', border: '1px solid rgba(74,222,128,0.09)', borderRadius: '12px', padding: '14px 16px' }}>
+                              <div className="ws-stat-label" style={{ color: 'rgba(74,222,128,0.55)', marginBottom: '10px' }}>Received Tokens</div>
+                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                                {wf.flowRead.receivedTokens.slice(0, 5).map((t, i) => (
+                                  <span key={i} style={{ fontSize: '12px', color: '#4ade80', fontFamily: 'var(--font-inter, Inter, sans-serif)', fontWeight: 600 }}>
+                                    {t.symbol}<span style={{ color: 'rgba(74,222,128,0.40)', fontSize: '10px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', fontWeight: 400 }}> ×{t.count}</span>
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          {wf.flowRead.sentTokens.length > 0 && (
+                            <div style={{ background: 'rgba(248,113,113,0.02)', border: '1px solid rgba(248,113,113,0.09)', borderRadius: '12px', padding: '14px 16px' }}>
+                              <div className="ws-stat-label" style={{ color: 'rgba(248,113,113,0.55)', marginBottom: '10px' }}>Sent Tokens</div>
+                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                                {wf.flowRead.sentTokens.slice(0, 5).map((t, i) => (
+                                  <span key={i} style={{ fontSize: '12px', color: '#f87171', fontFamily: 'var(--font-inter, Inter, sans-serif)', fontWeight: 600 }}>
+                                    {t.symbol}<span style={{ color: 'rgba(248,113,113,0.40)', fontSize: '10px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', fontWeight: 400 }}> ×{t.count}</span>
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Signals */}
+                      {(wf.flowRead.accumulationSignals.length > 0 || wf.flowRead.distributionSignals.length > 0) && (
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                          {wf.flowRead.accumulationSignals.slice(0, 3).map((s, i) => (
+                            <span key={`acc-${i}`} style={{ fontSize: '11px', color: '#4ade80', background: 'rgba(74,222,128,0.05)', border: '1px solid rgba(74,222,128,0.14)', borderRadius: '7px', padding: '4px 10px', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>↑ {s}</span>
+                          ))}
+                          {wf.flowRead.distributionSignals.slice(0, 3).map((s, i) => (
+                            <span key={`dist-${i}`} style={{ fontSize: '11px', color: '#f87171', background: 'rgba(248,113,113,0.05)', border: '1px solid rgba(248,113,113,0.14)', borderRadius: '7px', padding: '4px 10px', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>↓ {s}</span>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Source classification + limits */}
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                        {wf.sourceClassification.notes.length > 0 && (
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                            {wf.sourceClassification.notes.map((n, i) => (
+                              <span key={i} style={{ fontSize: '10px', color: 'rgba(255,255,255,0.35)', background: 'rgba(255,255,255,0.025)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '6px', padding: '3px 9px', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{n}</span>
+                            ))}
+                          </div>
                         )}
+                        <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.25)', lineHeight: 1.55, fontFamily: 'var(--font-inter, Inter, sans-serif)', background: 'rgba(255,255,255,0.015)', borderRadius: '9px', padding: '9px 12px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                          {wf.limits.reason}
+                        </div>
                       </div>
-                    )}
-
-                    {(wf.flowRead.accumulationSignals.length > 0 || wf.flowRead.distributionSignals.length > 0) && (
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '10px' }}>
-                        {wf.flowRead.accumulationSignals.slice(0, 3).map((s, i) => (
-                          <span key={`acc-${i}`} style={{ fontSize: '10px', color: '#4ade80', background: 'rgba(74,222,128,0.06)', border: '1px solid rgba(74,222,128,0.15)', borderRadius: '6px', padding: '3px 8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>↑ {s}</span>
-                        ))}
-                        {wf.flowRead.distributionSignals.slice(0, 3).map((s, i) => (
-                          <span key={`dist-${i}`} style={{ fontSize: '10px', color: '#f87171', background: 'rgba(248,113,113,0.06)', border: '1px solid rgba(248,113,113,0.15)', borderRadius: '6px', padding: '3px 8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>↓ {s}</span>
-                        ))}
-                      </div>
-                    )}
-
-                    {wf.sourceClassification.notes.length > 0 && (
-                      <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.30)', lineHeight: 1.5, fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '8px' }}>
-                        {wf.sourceClassification.notes.join(' — ')}
-                      </div>
-                    )}
-                    <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.22)', lineHeight: 1.5, fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', background: 'rgba(45,212,191,0.03)', border: '1px solid rgba(45,212,191,0.08)', borderRadius: '7px', padding: '7px 10px' }}>
-                      {wf.limits.reason}
                     </div>
                   </div>
                 )
@@ -1660,16 +1690,19 @@ export default function WalletScannerPage() {
                   return `${Math.floor(seconds / 60)}m`
                 }
                 return (
-                  <div style={{ background: '#080c14', border: '1px solid rgba(139,92,246,0.22)', borderRadius: '16px', padding: '20px 22px' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px', flexWrap: 'wrap' }}>
-                      <div style={{ fontSize: '10px', fontWeight: 800, letterSpacing: '0.18em', color: '#a78bfa', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Trading Intelligence</div>
-                      <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', color: '#a78bfa', border: '1px solid rgba(139,92,246,0.25)', background: 'rgba(139,92,246,0.07)', borderRadius: '999px', padding: '2px 7px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>FIFO lots</span>
-                      <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', color: ts.confidence === 'high' ? '#4ade80' : ts.confidence === 'medium' ? '#fbbf24' : '#94a3b8', border: `1px solid ${ts.confidence === 'high' ? 'rgba(74,222,128,0.22)' : ts.confidence === 'medium' ? 'rgba(251,191,36,0.22)' : 'rgba(148,163,184,0.18)'}`, background: ts.confidence === 'high' ? 'rgba(74,222,128,0.06)' : ts.confidence === 'medium' ? 'rgba(251,191,36,0.06)' : 'rgba(148,163,184,0.06)', borderRadius: '999px', padding: '2px 7px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{ts.confidence === 'open_check' ? 'open check' : `${ts.confidence} confidence`}</span>
-                      <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', color: '#94a3b8', border: '1px solid rgba(148,163,184,0.15)', background: 'rgba(148,163,184,0.05)', borderRadius: '999px', padding: '2px 7px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{ts.sampleSizeLabel}</span>
+                  <div style={{ background: 'rgba(6,10,18,0.95)', border: '1px solid rgba(139,92,246,0.18)', borderRadius: '18px', overflow: 'hidden' }}>
+                    {/* Header */}
+                    <div style={{ padding: '18px 24px 16px', borderBottom: '1px solid rgba(255,255,255,0.06)', display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                      <div style={{ width: '3px', height: '16px', borderRadius: '2px', background: 'linear-gradient(180deg, #a78bfa, rgba(139,92,246,0.3))', flexShrink: 0 }} />
+                      <span className="ws-section-header" style={{ color: '#e2e8f0' }}>Trading Intelligence</span>
+                      <span style={{ fontSize: '9px', fontWeight: 600, color: '#a78bfa', border: '1px solid rgba(139,92,246,0.22)', background: 'rgba(139,92,246,0.06)', borderRadius: '999px', padding: '2px 8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>FIFO lots</span>
+                      <span style={{ fontSize: '9px', fontWeight: 600, color: ts.confidence === 'high' ? '#4ade80' : ts.confidence === 'medium' ? '#fbbf24' : '#94a3b8', border: `1px solid ${ts.confidence === 'high' ? 'rgba(74,222,128,0.20)' : ts.confidence === 'medium' ? 'rgba(251,191,36,0.20)' : 'rgba(148,163,184,0.15)'}`, background: ts.confidence === 'high' ? 'rgba(74,222,128,0.05)' : ts.confidence === 'medium' ? 'rgba(251,191,36,0.05)' : 'rgba(148,163,184,0.04)', borderRadius: '999px', padding: '2px 8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{ts.confidence === 'open_check' ? 'open check' : `${ts.confidence} confidence`}</span>
+                      <span style={{ fontSize: '9px', color: 'rgba(255,255,255,0.30)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{ts.sampleSizeLabel}</span>
                     </div>
 
+                    <div style={{ padding: '20px 24px' }}>
                     {!isOpenCheck && (
-                      <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.30)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: ts.economicSignificance === 'micro_sample' || ts.sampleSizeLabel === 'insufficient' ? '6px' : '14px', lineHeight: 1.4 }}>
+                      <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.35)', fontFamily: 'var(--font-inter, Inter, sans-serif)', marginBottom: ts.economicSignificance === 'micro_sample' || ts.sampleSizeLabel === 'insufficient' ? '8px' : '16px', lineHeight: 1.5 }}>
                         Closed-lot sample only — does not include current open holdings.
                       </div>
                     )}
@@ -1844,6 +1877,7 @@ export default function WalletScannerPage() {
                         })()}
                       </>
                     )}
+                    </div>{/* end padding wrapper */}
                   </div>
                 )
               })()}
@@ -1890,8 +1924,12 @@ export default function WalletScannerPage() {
                     : 'Open Check'
                 const avgHoldDisplay = walletIntel.tradeBehavior?.avgHoldTime ?? 'Open Check'
                 return (
-                  <div style={{ background: '#080c14', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '16px', padding: '20px 22px' }}>
-                    <div style={{ fontSize: '10px', fontWeight: 800, letterSpacing: '0.18em', color: '#2DD4BF', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '14px' }}>Trade Behavior</div>
+                  <div style={{ background: 'rgba(6,10,18,0.95)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '18px', overflow: 'hidden' }}>
+                    <div style={{ padding: '18px 24px 16px', borderBottom: '1px solid rgba(255,255,255,0.06)', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <div style={{ width: '3px', height: '16px', borderRadius: '2px', background: 'linear-gradient(180deg, #2DD4BF, rgba(45,212,191,0.3))', flexShrink: 0 }} />
+                      <span className="ws-section-header" style={{ color: '#e2e8f0' }}>Trade Behavior</span>
+                    </div>
+                    <div style={{ padding: '20px 24px' }}>
                     <div className="wallet-intel-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: '10px' }}>
                       {[
                         { label: winRateLabel, value: winRateDisplay, early: !hasEnough && closedLots > 0 },
@@ -1903,17 +1941,18 @@ export default function WalletScannerPage() {
                         { label: 'Avg Hold Time', value: avgHoldDisplay },
                         { label: 'Closed Trades', value: closedTradesDisplay },
                       ].map(card => (
-                        <div key={card.label} style={{ background: ('early' in card && card.early) ? 'rgba(167,139,250,0.06)' : ('noLoss' in card && card.noLoss) ? 'rgba(45,212,191,0.06)' : 'rgba(255,255,255,0.03)', border: `1px solid ${('early' in card && card.early) ? 'rgba(167,139,250,0.20)' : ('noLoss' in card && card.noLoss) ? 'rgba(45,212,191,0.20)' : 'rgba(255,255,255,0.07)'}`, borderRadius: '12px', padding: '12px' }}>
-                          <div style={{ fontSize: '9px', color: ('early' in card && card.early) ? 'rgba(167,139,250,0.65)' : ('noLoss' in card && card.noLoss) ? 'rgba(45,212,191,0.65)' : 'rgba(255,255,255,0.28)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '7px' }}>{card.label}</div>
-                          <div style={{ fontSize: '16px', fontWeight: 800, color: ('early' in card && card.early) ? '#a78bfa' : ('noLoss' in card && card.noLoss) ? '#2DD4BF' : String(card.value).includes('Open Check') || String(card.value).includes('Locked') || String(card.value).includes('No closed') ? '#7dd3fc' : '#e2e8f0', lineHeight: 1.25 }}>{card.value}</div>
+                        <div key={card.label} style={{ background: ('early' in card && card.early) ? 'rgba(167,139,250,0.06)' : ('noLoss' in card && card.noLoss) ? 'rgba(45,212,191,0.05)' : 'rgba(255,255,255,0.025)', border: `1px solid ${('early' in card && card.early) ? 'rgba(167,139,250,0.18)' : ('noLoss' in card && card.noLoss) ? 'rgba(45,212,191,0.18)' : 'rgba(255,255,255,0.06)'}`, borderRadius: '12px', padding: '14px' }}>
+                          <div className="ws-stat-label" style={{ color: ('early' in card && card.early) ? 'rgba(167,139,250,0.60)' : ('noLoss' in card && card.noLoss) ? 'rgba(45,212,191,0.60)' : undefined }}>{card.label}</div>
+                          <div style={{ fontSize: '17px', fontWeight: 800, fontFamily: 'var(--font-inter, Inter, sans-serif)', letterSpacing: '-0.01em', lineHeight: 1.25, color: ('early' in card && card.early) ? '#a78bfa' : ('noLoss' in card && card.noLoss) ? '#2DD4BF' : String(card.value).includes('Open Check') || String(card.value).includes('Locked') || String(card.value).includes('No closed') ? '#7dd3fc' : '#e2e8f0' }}>{card.value}</div>
                         </div>
                       ))}
                     </div>
                     {!hasEnough && closedLots > 0 && (
-                      <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.30)', marginTop: '10px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', lineHeight: 1.5 }}>
+                      <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.28)', marginTop: '14px', fontFamily: 'var(--font-inter, Inter, sans-serif)', lineHeight: 1.6 }}>
                         Not calculated yet — requires 10+ verified closed lots. This does not prove the wallet has never lost money.
                       </div>
                     )}
+                    </div>
                   </div>
                 )
               })()}
@@ -2089,45 +2128,89 @@ export default function WalletScannerPage() {
                 const PREVIEW = 10
                 const visible = showAllHoldings ? sorted : sorted.slice(0, PREVIEW)
                 const hidden  = sorted.length - PREVIEW
+                const chainAbbr = (raw: string | null): string => {
+                  if (!raw) return ''
+                  const n = raw.replace(/-mainnet$/, '').replace(/-/g, ' ').toLowerCase().trim()
+                  if (n === 'base') return 'BASE'
+                  if (n === 'ethereum') return 'ETH'
+                  if (n === 'arbitrum one' || n === 'arbitrum') return 'ARB'
+                  if (n === 'optimism' || n === 'op mainnet') return 'OP'
+                  if (n === 'polygon') return 'POLY'
+                  if (n === 'avalanche') return 'AVAX'
+                  if (n === 'bsc' || n === 'binance smart chain') return 'BSC'
+                  if (n === 'solana') return 'SOL'
+                  if (n === 'zksync' || n === 'zksync era') return 'ZKS'
+                  if (n === 'linea') return 'LINEA'
+                  if (n === 'scroll') return 'SCRL'
+                  return n.slice(0, 5).toUpperCase()
+                }
+                const chainStyle = (raw: string | null): { bg: string; border: string; color: string } => {
+                  const abbr = chainAbbr(raw)
+                  if (abbr === 'BASE')  return { bg: 'rgba(0,82,255,0.12)',    border: '1px solid rgba(0,82,255,0.28)',    color: '#6ea8ff' }
+                  if (abbr === 'ETH')   return { bg: 'rgba(98,126,234,0.12)',  border: '1px solid rgba(98,126,234,0.28)',  color: '#a3b4f7' }
+                  if (abbr === 'ARB')   return { bg: 'rgba(40,160,240,0.12)',  border: '1px solid rgba(40,160,240,0.28)',  color: '#7dd3fc' }
+                  if (abbr === 'OP')    return { bg: 'rgba(255,4,32,0.10)',    border: '1px solid rgba(255,4,32,0.25)',    color: '#fca5a5' }
+                  if (abbr === 'POLY')  return { bg: 'rgba(130,71,229,0.12)', border: '1px solid rgba(130,71,229,0.28)', color: '#c4b5fd' }
+                  return { bg: 'rgba(139,92,246,0.10)', border: '1px solid rgba(139,92,246,0.24)', color: '#c4b5fd' }
+                }
                 return (
                   <div style={{
-                    background: '#080c14',
-                    border: '1px solid rgba(255,255,255,0.08)',
-                    borderRadius: '16px', overflow: 'hidden',
+                    background: 'rgba(6,10,18,0.95)',
+                    border: '1px solid rgba(45,212,191,0.12)',
+                    borderRadius: '18px', overflow: 'hidden',
                   }}>
-                    <div className="md:hidden" style={{ display: 'flex', flexDirection: 'column', gap: '10px', padding: '12px' }}>
+                    {/* Section header */}
+                    <div style={{ padding: '18px 24px 16px', borderBottom: '1px solid rgba(255,255,255,0.06)', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <div style={{ width: '3px', height: '16px', borderRadius: '2px', background: 'linear-gradient(180deg, #2DD4BF, rgba(45,212,191,0.3))', flexShrink: 0 }} />
+                      <span className="ws-section-header" style={{ color: '#e2e8f0' }}>Holdings</span>
+                      <span style={{ fontSize: '10px', fontWeight: 600, color: 'rgba(255,255,255,0.28)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', padding: '2px 8px', borderRadius: '99px', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)' }}>{sorted.length} tokens</span>
+                      {result.totalValue > 0 && (
+                        <span style={{ fontSize: '13px', fontWeight: 700, color: '#2DD4BF', fontFamily: 'var(--font-inter, Inter, sans-serif)', marginLeft: 'auto', letterSpacing: '-0.01em' }}>
+                          {fmtUSD(result.totalValue)}
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Mobile cards */}
+                    <div className="md:hidden" style={{ display: 'flex', flexDirection: 'column', gap: '8px', padding: '16px' }}>
                       {visible.map((h, i) => {
                         const up = (h.change24h ?? 0) >= 0
-                        const chainLabel = h.chain ? h.chain.replace(/-mainnet$/, '').replace(/-/g, ' ') : null
+                        const abbr = chainAbbr(h.chain)
+                        const cs = chainStyle(h.chain)
                         return (
-                          <div key={`m-${i}`} style={{ border: '1px solid rgba(255,255,255,0.08)', borderRadius: '12px', padding: '12px', background: 'rgba(255,255,255,0.01)', width: '100%', maxWidth: '100%', minWidth: 0 }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, minWidth: 0 }}>
-                              <div style={{ display: 'flex', gap: 10, minWidth: 0 }}>
-                                {h.icon ? <img src={h.icon} alt={h.symbol} width={30} height={30} style={{ borderRadius: '50%', flexShrink: 0 }} /> : <div style={{ width: 30, height: 30, borderRadius: '50%', background: 'linear-gradient(135deg,#2DD4BF,#8b5cf6)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 800, color: '#04101a', flexShrink: 0 }}>{h.symbol.slice(0,2).toUpperCase()}</div>}
+                          <div key={`m-${i}`} style={{ border: '1px solid rgba(255,255,255,0.07)', borderRadius: '12px', padding: '14px', background: 'rgba(255,255,255,0.015)' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+                                {h.icon
+                                  ? <img src={h.icon} alt={h.symbol} width={32} height={32} style={{ borderRadius: '50%', flexShrink: 0 }} onError={e => { (e.currentTarget as HTMLImageElement).style.display = 'none' }} />
+                                  : <div style={{ width: 32, height: 32, borderRadius: '50%', background: 'linear-gradient(135deg,#2DD4BF,#8b5cf6)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 800, color: '#04101a', flexShrink: 0 }}>{h.symbol.slice(0,2).toUpperCase()}</div>
+                                }
                                 <div style={{ minWidth: 0 }}>
-                                  <div style={{ fontSize: 13, fontWeight: 700, color: '#f8fafc', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{h.symbol || h.name}</div>
-                                  {h.name && <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.45)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{h.name}</div>}
+                                  <div style={{ fontSize: 14, fontWeight: 700, color: '#f1f5f9', fontFamily: 'var(--font-inter, Inter, sans-serif)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{h.symbol}</div>
+                                  {h.name && <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.35)', fontFamily: 'var(--font-inter, Inter, sans-serif)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '120px' }}>{h.name}</div>}
                                 </div>
                               </div>
-                              {chainLabel && <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.07em', padding: '2px 6px', borderRadius: 999, background: 'rgba(0,82,255,0.14)', border: '1px solid rgba(0,82,255,0.28)', color: '#6ea8ff', textTransform: 'uppercase', height: 'fit-content', flexShrink: 0 }}>{chainLabel}</span>}
+                              {abbr && <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.08em', padding: '2px 7px', borderRadius: 999, background: cs.bg, border: cs.border, color: cs.color, flexShrink: 0, fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{abbr}</span>}
                             </div>
-                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', marginTop: 10 }}>
-                              <div><div style={{ fontSize: 10, color: 'rgba(255,255,255,0.35)' }}>Balance</div><div style={{ fontSize: 13 }}>{fmtBalance(h.balance)}</div></div>
-                              <div><div style={{ fontSize: 10, color: 'rgba(255,255,255,0.35)' }}>Value</div><div style={{ fontSize: 13 }}>{h.value > 0 ? fmtUSD(h.value) : 'Unverified'}</div></div>
-                              <div><div style={{ fontSize: 10, color: 'rgba(255,255,255,0.35)' }}>24h</div><div style={{ fontSize: 13, color: h.change24h === null ? 'rgba(255,255,255,0.30)' : up ? '#2DD4BF' : '#ef4444' }}>{h.change24h === null ? '—' : fmtPct(h.change24h)}</div></div>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '8px' }}>
+                              <div><div style={{ fontSize: 9, color: 'rgba(255,255,255,0.28)', fontFamily: 'var(--font-plex-mono, monospace)', textTransform: 'uppercase', letterSpacing: '0.10em', marginBottom: 3 }}>Balance</div><div style={{ fontSize: 13, fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', color: 'rgba(255,255,255,0.55)' }}>{fmtBalance(h.balance)}</div></div>
+                              <div><div style={{ fontSize: 9, color: 'rgba(255,255,255,0.28)', fontFamily: 'var(--font-plex-mono, monospace)', textTransform: 'uppercase', letterSpacing: '0.10em', marginBottom: 3 }}>Value</div><div style={{ fontSize: 13, fontWeight: 600, fontFamily: 'var(--font-inter, Inter, sans-serif)', color: '#e2e8f0' }}>{h.value > 0 ? fmtUSD(h.value) : '—'}</div></div>
+                              <div><div style={{ fontSize: 9, color: 'rgba(255,255,255,0.28)', fontFamily: 'var(--font-plex-mono, monospace)', textTransform: 'uppercase', letterSpacing: '0.10em', marginBottom: 3 }}>24h</div><div style={{ fontSize: 13, fontWeight: 600, fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', color: h.change24h === null ? 'rgba(255,255,255,0.22)' : up ? '#2DD4BF' : '#ef4444' }}>{h.change24h === null ? '—' : fmtPct(h.change24h)}</div></div>
                             </div>
                           </div>
                         )
                       })}
                     </div>
+
                     {/* Table header */}
                     <div className="ws-holdings-header" style={{
                       display: 'grid', gridTemplateColumns: '1fr 110px 120px 88px',
-                      padding: '12px 20px',
-                      borderBottom: '1px solid rgba(255,255,255,0.06)',
-                      fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em',
-                      color: 'rgba(255,255,255,0.25)', textTransform: 'uppercase',
+                      padding: '10px 24px',
+                      borderBottom: '1px solid rgba(255,255,255,0.05)',
+                      fontSize: '9px', fontWeight: 700, letterSpacing: '0.14em',
+                      color: 'rgba(255,255,255,0.22)', textTransform: 'uppercase',
                       fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+                      background: 'rgba(255,255,255,0.01)',
                     }}>
                       <span>Token</span>
                       <span style={{ textAlign: 'right' }}>Balance</span>
@@ -2138,9 +2221,8 @@ export default function WalletScannerPage() {
                     {/* Rows */}
                     {visible.map((h, i) => {
                       const up = (h.change24h ?? 0) >= 0
-                      const chainLabel = h.chain
-                        ? h.chain.replace(/-mainnet$/, '').replace(/-/g, ' ')
-                        : null
+                      const abbr = chainAbbr(h.chain)
+                      const cs = chainStyle(h.chain)
                       const isLast = i === visible.length - 1 && (showAllHoldings || sorted.length <= PREVIEW)
                       return (
                         <div
@@ -2148,23 +2230,22 @@ export default function WalletScannerPage() {
                           className="ws-row ws-holdings-row"
                           style={{
                             display: 'grid', gridTemplateColumns: '1fr 110px 120px 88px',
-                            padding: '14px 20px',
-                            borderBottom: isLast ? 'none' : '1px solid rgba(255,255,255,0.04)',
+                            padding: '13px 24px',
+                            borderBottom: isLast ? 'none' : '1px solid rgba(255,255,255,0.035)',
                             alignItems: 'center',
                             transition: 'background 0.12s',
                           }}
                         >
                           {/* Token col */}
-                          <div className="ws-col-token" style={{ display: 'flex', alignItems: 'center', gap: '11px', minWidth: 0 }}>
-                            {/* Logo */}
+                          <div className="ws-col-token" style={{ display: 'flex', alignItems: 'center', gap: '12px', minWidth: 0 }}>
                             {h.icon ? (
-                              <img src={h.icon} alt={h.symbol} width={34} height={34}
+                              <img src={h.icon} alt={h.symbol} width={32} height={32}
                                 style={{ borderRadius: '50%', flexShrink: 0 }}
                                 onError={e => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}
                               />
                             ) : (
                               <div style={{
-                                width: '34px', height: '34px', borderRadius: '50%', flexShrink: 0,
+                                width: '32px', height: '32px', borderRadius: '50%', flexShrink: 0,
                                 background: 'linear-gradient(135deg,#2DD4BF,#8b5cf6)',
                                 display: 'flex', alignItems: 'center', justifyContent: 'center',
                                 fontSize: '11px', fontWeight: 800, color: '#04101a',
@@ -2172,57 +2253,42 @@ export default function WalletScannerPage() {
                                 {h.symbol.slice(0, 2).toUpperCase()}
                               </div>
                             )}
-                            {/* Name + chain pill */}
                             <div style={{ minWidth: 0 }}>
-                              <div style={{
-                                fontSize: '14px', fontWeight: 600, color: '#f1f5f9',
-                                fontFamily: 'var(--font-inter, Inter, sans-serif)',
-                                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                                marginBottom: '3px',
-                              }}>
-                                {h.symbol}
-                              </div>
-                              <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '2px' }}>
                                 <span style={{
-                                  fontSize: '11px', color: 'rgba(255,255,255,0.28)',
-                                  fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+                                  fontSize: '14px', fontWeight: 600, color: '#f1f5f9',
+                                  fontFamily: 'var(--font-inter, Inter, sans-serif)',
                                   overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                                  maxWidth: '80px',
                                 }}>
-                                  {h.name}
+                                  {h.symbol}
                                 </span>
-                                {chainLabel && (
+                                {abbr && (
                                   <span style={{
-                                    fontSize: '9px', fontWeight: 700, letterSpacing: '0.07em',
-                                    padding: '2px 6px', borderRadius: '99px', flexShrink: 0,
-                                    background: chainLabel === 'base'
-                                      ? 'rgba(0,82,255,0.14)'
-                                      : chainLabel === 'ethereum'
-                                        ? 'rgba(98,126,234,0.14)'
-                                        : 'rgba(139,92,246,0.14)',
-                                    border: chainLabel === 'base'
-                                      ? '1px solid rgba(0,82,255,0.28)'
-                                      : chainLabel === 'ethereum'
-                                        ? '1px solid rgba(98,126,234,0.28)'
-                                        : '1px solid rgba(139,92,246,0.28)',
-                                    color: chainLabel === 'base'
-                                      ? '#6ea8ff'
-                                      : chainLabel === 'ethereum'
-                                        ? '#a3b4f7'
-                                        : '#c4b5fd',
-                                    textTransform: 'uppercase',
+                                    fontSize: '9px', fontWeight: 700, letterSpacing: '0.08em',
+                                    padding: '1px 6px', borderRadius: '99px', flexShrink: 0,
+                                    background: cs.bg, border: cs.border, color: cs.color,
                                     fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
                                   }}>
-                                    {chainLabel}
+                                    {abbr}
                                   </span>
                                 )}
                               </div>
+                              {h.name && (
+                                <span style={{
+                                  fontSize: '11px', color: 'rgba(255,255,255,0.28)',
+                                  fontFamily: 'var(--font-inter, Inter, sans-serif)',
+                                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                                  display: 'block', maxWidth: '120px',
+                                }}>
+                                  {h.name}
+                                </span>
+                              )}
                             </div>
                           </div>
 
                           {/* Balance */}
                           <div className="ws-col-balance" style={{
-                            textAlign: 'right', fontSize: '13px', color: 'rgba(255,255,255,0.50)',
+                            textAlign: 'right', fontSize: '13px', color: 'rgba(255,255,255,0.45)',
                             fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
                           }}>
                             {fmtBalance(h.balance)}
@@ -2255,9 +2321,9 @@ export default function WalletScannerPage() {
                       <button
                         onClick={() => setShowAllHoldings(v => !v)}
                         style={{
-                          width: '100%', padding: '14px 20px',
+                          width: '100%', padding: '14px 24px',
                           background: 'rgba(255,255,255,0.01)',
-                          border: 'none', borderTop: '1px solid rgba(255,255,255,0.055)',
+                          border: 'none', borderTop: '1px solid rgba(255,255,255,0.05)',
                           cursor: 'pointer', display: 'flex', alignItems: 'center',
                           justifyContent: 'center', gap: '7px',
                           fontSize: '11px', fontWeight: 700, letterSpacing: '0.09em',
@@ -2296,14 +2362,14 @@ export default function WalletScannerPage() {
               })() : (
                 <div style={{
                   padding: '40px 24px', textAlign: 'center',
-                  background: '#080c14', border: '1px solid rgba(255,255,255,0.07)',
-                  borderRadius: '14px', color: 'rgba(255,255,255,0.30)',
+                  background: 'rgba(6,10,18,0.95)', border: '1px solid rgba(45,212,191,0.10)',
+                  borderRadius: '18px', color: 'rgba(255,255,255,0.30)',
                   fontSize: '13px', fontFamily: 'var(--font-inter, Inter, sans-serif)',
                 }}>
                   {result.reason
                     ? result.reason
                     : 'No token balances found for this wallet.'}
-                  <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.18)', marginTop: '6px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                  <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.15)', marginTop: '8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', letterSpacing: '0.05em' }}>
                     ChainLens intelligence checks complete · Try a different wallet or check back later
                   </div>
                 </div>
