@@ -62,28 +62,67 @@ export type WalletBehavior = {
   reason: string
 }
 
-export type WalletLotSummary = {
-  status: 'ok' | 'partial' | 'unavailable'
-  method: 'fifo'
-  closedLots: number
-  openLots: number
-  totalRealizedPnlUsd: number | null
-  coveragePercent: number
-  reason: string
-}
-
-export type WalletTradeStatsSummary = {
-  status: 'ok' | 'partial' | 'unavailable'
-  source: 'fifo' | 'per_swap_fallback' | 'none'
-  tradesAnalyzed: number
-  winRate: number | null
-  avgWinUsd: number | null
-  avgLossUsd: number | null
-  totalRealizedPnlUsd: number | null
-  bestTradeUsd: number | null
-  worstTradeUsd: number | null
-  confidence: 'high' | 'medium' | 'low' | null
-  reason: string
+type WalletFacts = {
+  status: 'ok' | 'partial' | 'open_check'
+  summary: {
+    totalValueUsd: number
+    holdingsCount: number
+    chainExposure: Array<{ chain: string; valueUsd: number; percent: number }>
+    topHoldings: Array<{ symbol: string; chain: string; valueUsd: number; percent: number }>
+    largestHolding: string | null
+    concentrationLabel: 'high' | 'medium' | 'balanced' | 'none'
+    stablecoinExposurePercent: number
+    nativeExposurePercent: number
+  }
+  activity: {
+    eventCount: number
+    groupedTxCount: number
+    walletInitiatedTxCount: number
+    inboundCount: number
+    outboundCount: number
+    unknownCount: number
+    firstSeenAt: string | null
+    lastSeenAt: string | null
+    recentActivityWindowDays: number | null
+    latestEvents: Array<{
+      timestamp: string
+      txHash: string
+      direction: string
+      symbol: string
+      chain: string
+      amount: number
+      valueUsdKnown: boolean
+      counterparty: string | null
+    }>
+  }
+  flowRead: {
+    receivedTokens: Array<{ symbol: string; count: number; totalAmountApprox: number; latestAt: string | null }>
+    sentTokens: Array<{ symbol: string; count: number; totalAmountApprox: number; latestAt: string | null }>
+    topCounterparties: Array<{ address: string; direction: string; count: number; latestAt: string | null }>
+    accumulationSignals: string[]
+    distributionSignals: string[]
+  }
+  sourceClassification: {
+    swapLikeTxs: number
+    transferOnlyTxs: number
+    claimOrAirdropLikeTxs: number
+    bridgeLikeTxs: number
+    unknownTxs: number
+    notes: string[]
+  }
+  limits: {
+    sampleBased: boolean
+    maxEventsUsed: number
+    noClosedLotPnL: boolean
+    reason: string
+  }
+  estimatedPnl: {
+    method: 'average_cost_estimate'
+    status: 'ok' | 'partial' | 'unavailable' | 'error' | 'open_check'
+    confidence: 'high' | 'medium' | 'low' | 'open_check' | null
+    realizedPnlUsd: number | null
+    coveragePercent: number
+  }
 }
 
 export type WalletSnapshot = {
@@ -106,8 +145,6 @@ export type WalletSnapshot = {
   hiddenDustCount: number
   unpricedHoldingsCount: number
   walletBehavior: WalletBehavior
-  walletLotSummary?: WalletLotSummary
-  walletTradeStatsSummary?: WalletTradeStatsSummary
   estimatedPnl: {
     status: 'ok' | 'partial' | 'unavailable' | 'error'
     confidence: 'high' | 'medium' | 'low' | null
@@ -788,6 +825,90 @@ const FIFO_QUOTE_ASSETS = new Set<string>([
   '0xd9aaec86b65d86f6a7b5b1b0c42ffa531710b6ca', // USDbC Base
 ])
 
+const CREDIT_TABLE: Record<string, number> = {
+  'moralis:erc20_holdings': 1,
+  'moralis:erc20_transfers': 1,
+  'goldrush:balances_v2': 1,
+  'goldrush:transactions_v3': 1,
+  'goldrush:log_events_by_address': 1,
+  'goldrush:historical_by_addresses_v2': 1,
+  'alchemy:alchemy_getAssetTransfers': 0,
+  'alchemy:eth_getTransactionCount': 0,
+  'alchemy:eth_getTransactionReceipt': 0,
+  'alchemy:getFirstTx': 0,
+  'alchemy:behavior_getAssetTransfers': 0,
+}
+
+type _ApiCallEntry = {
+  provider: 'moralis' | 'goldrush' | 'alchemy'
+  endpoint: string
+  credits: number
+  cacheHit: boolean
+  duplicate: boolean
+  dupKey: string
+}
+
+export type WalletSnapshotOptions = { refresh?: boolean; chain?: 'eth' | 'base'; deepScan?: boolean; deepActivity?: boolean; chainMode?: 'auto' | 'base' | 'eth' | 'base_eth' | 'all_supported'; historicalCoverage?: boolean; maxHistoricalPages?: number; maxFallbackPages?: number }
+
+const SNAPSHOT_TTL_MS         = 5  * 60 * 1000
+const SNAPSHOT_HISTORY_TTL_MS = 15 * 60 * 1000
+const SNAPSHOT_SCHEMA_VERSION = 'v8'
+type SnapshotCacheEntry = { snapshot: WalletSnapshot; cachedAt: number; ttlMs: number }
+const snapshotMemCache = new Map<string, SnapshotCacheEntry>()
+
+const HISTORICAL_COVERAGE_TTL_MS = 10 * 60 * 1000
+type WalletHistoricalCoverageOutput = {
+  summary: WalletSnapshot['walletHistoricalCoverageSummary']
+  debug: NonNullable<WalletSnapshot['_diagnostics']>['walletHistoricalCoverageDebug']
+  events: PnlEvent[]
+}
+const historicalCoverageCache = new Map<string, { data: WalletHistoricalCoverageOutput; cachedAt: number }>()
+const historicalCoverageInFlight = new Map<string, Promise<WalletHistoricalCoverageOutput>>()
+
+const KNOWN_STABLE_WETH_CONTRACTS: Record<string, string> = {
+  '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2': 'WETH_ETH',
+  '0x4200000000000000000000000000000000000006': 'WETH_BASE',
+  '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48': 'USDC_ETH',
+  '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913': 'USDC_BASE',
+  '0xdac17f958d2ee523a2206206994597c13d831ec7': 'USDT_ETH',
+  '0x6b175474e89094c44da98b954eedeac495271d0f': 'DAI_ETH',
+}
+
+const KNOWN_DEX_ROUTERS: Record<string, string> = {
+  '0x7a250d5630b4cf539739df2c5dacb4c659f2488d': 'UniswapV2Router',
+  '0xe592427a0aece92de3edee1f18e0157c05861564': 'UniswapV3Router',
+  '0x3fc91a3afd70395cd496c647d5a6cc9d4b2b7fad': 'UniswapUniversalRouter_ETH',
+  '0x198ef79f1f515f02dfe9e3115ed9fc07183f02fc': 'UniswapUniversalRouter_Base',
+  '0xcf77a3ba9a5ca399b7c97c74d54e5b1beb874e43': 'Aerodrome',
+}
+
+const SWAP_ENRICHMENT_TTL_MS = 45 * 60 * 1000
+const swapEnrichmentReceiptCache = new Map<string, { data: { isSwap: boolean; reason: string }; exp: number }>()
+
+const ERC20_TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef'
+
+const STABLE_USD_CONTRACTS: Record<string, true> = {
+  '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48': true,
+  '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913': true,
+  '0xdac17f958d2ee523a2206206994597c13d831ec7': true,
+  '0x6b175474e89094c44da98b954eedeac495271d0f': true,
+}
+
+const WETH_CONTRACTS_PRICE: Record<string, true> = {
+  '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2': true,
+  '0x4200000000000000000000000000000000000006': true,
+}
+
+const PRICE_AT_TIME_TTL_MS = 60 * 60 * 1000
+const priceAtTimeMemCache = new Map<string, { exp: number; priceUsd: number | null }>()
+
+function parseRawAmount(amountRaw: string | null, decimals: number | null): number | null {
+  if (!amountRaw || decimals === null || decimals < 0) return null
+  try {
+    return parseFloat(amountRaw) / Math.pow(10, decimals)
+  } catch { return null }
+}
+
 function zerionAuth(): string | null {
   if (!ZERION_KEY) return null
   return `Basic ${Buffer.from(`${ZERION_KEY}:`).toString('base64')}`
@@ -881,9 +1002,9 @@ async function enrichSwapCandidatesFromReceipts(
       let isSwap = false
       let enrichReason = 'no_swap_evidence'
       const txTo = ((receipt.to as string) ?? '').toLowerCase()
-      if (txTo && EXTENDED_DEX_ROUTERS[txTo]) {
+      if (txTo && EXTENDED_DEX_ROUTERS.has(txTo)) {
         isSwap = true
-        enrichReason = `router_match:${EXTENDED_DEX_ROUTERS[txTo]}`
+        enrichReason = 'router_match:known_dex_router'
       }
       if (!isSwap && Array.isArray(receipt.logs)) {
         for (const log of receipt.logs as Array<{ topics?: string[]; address?: string }>) {
@@ -997,11 +1118,100 @@ async function fetchGoldrushBalances(address: string, chainName: string, apiKey:
   }
 }
 
+export type WalletSwapDetection = {
+  isSwapCandidate: boolean
+  confidence: 'high' | 'medium' | 'low'
+  eventKind: 'swap_candidate' | 'transfer' | 'airdrop_candidate' | 'bridge_candidate' | 'contract_interaction' | 'unknown'
+  reason: string
+  matchedProtocol: string | null
+  matchedAddress: string | null
+}
+
+export type WalletTxEvidence = {
+  txHash: string
+  timestamp: string | null
+  fromAddress: string | null
+  toAddress: string | null
+  contract: string
+  symbol: string
+  amountRaw: string | null
+  tokenDecimals: number | null
+  amount: number
+  usdValue: number | null
+  direction: 'buy' | 'sell' | 'unknown'
+  chain: string
+  // transaction-level context (from tx item, not log event)
+  txFromAddress?: string | null
+  txToAddress?: string | null
+  txSucceeded?: boolean | null
+  txToKnownRouter?: boolean
+  txMatchedRouterProtocol?: string | null
+  swapDetection?: WalletSwapDetection
+  priceAtTime?: PriceAtTimeEvidence
+}
+
+export type WalletLotOpen = {
+  tokenAddress: string
+  tokenSymbol?: string | null
+  chain: string
+  openedTxHash: string
+  openedAt: string
+  amountOpened: number
+  amountRemaining: number
+  entryPriceUsd: number
+  entryValueUsd: number
+  priceSource: string
+  confidence: 'high' | 'medium' | 'low'
+}
+
+export type WalletClosedLot = {
+  tokenAddress: string
+  tokenSymbol?: string | null
+  chain: string
+  openedTxHash: string
+  closedTxHash: string
+  openedAt: string
+  closedAt: string
+  amountClosed: number
+  entryPriceUsd: number
+  exitPriceUsd: number
+  costBasisUsd: number
+  proceedsUsd: number
+  realizedPnlUsd: number
+  realizedPnlPercent: number | null
+  holdingTimeSeconds: number | null
+  confidence: 'high' | 'medium' | 'low'
+  evidence: { entrySource: string; exitSource: string; method: 'fifo' }
+}
+
+export type PriceAtTimeEvidence = {
+  status: 'priced' | 'open_check' | 'unavailable'
+  tokenAddress: string
+  tokenSymbol?: string | null
+  timestamp: string
+  priceUsd: number | null
+  source: 'stable_leg' | 'weth_leg' | 'historical_price' | 'swap_derived' | 'current_price_fallback_not_used' | 'unavailable'
+  confidence: 'high' | 'medium' | 'low' | 'open_check'
+  reason: string
+}
+
 type PnlEvent = {
-  contract: string; symbol: string; direction: 'buy' | 'sell' | 'unknown'
-  amount: number; usdValue: number | null
-  txHash?: string; timestamp?: string; txToAddress?: string; txFromAddress?: string
-  chain?: string; isSwapCandidate?: boolean
+  contract: string
+  symbol: string
+  direction: 'buy' | 'sell' | 'unknown'
+  amount: number
+  amountRaw: string | null
+  tokenDecimals: number | null
+  usdValue: number | null
+  txHash: string | null
+  timestamp: string | null
+  fromAddress: string | null
+  toAddress: string | null
+  chain: string
+  txFromAddress?: string | null
+  txToAddress?: string | null
+  txSucceeded?: boolean | null
+  isSwapCandidate?: boolean
 }
 type GoldrushHistoryDiag = {
   endpointKind: 'transfers_v2' | 'transactions_v3'
@@ -1195,7 +1405,7 @@ async function fetchGoldrushPnlEvents(address: string, chainName: string, apiKey
           const to = String(tr.to_address ?? '').toLowerCase()
           const direction: 'buy' | 'sell' | 'unknown' = to === lower ? 'buy' : from === lower ? 'sell' : 'unknown'
           const quote = typeof tr.delta_quote === 'number' ? Math.abs(tr.delta_quote) : null
-          return { contract, symbol, direction, amount, usdValue: quote, txHash, timestamp, txToAddress, txFromAddress, chain: chainUsed }
+          return { contract, symbol, direction, amount, amountRaw: delta, tokenDecimals: decimals, usdValue: quote, txHash, timestamp, fromAddress: from, toAddress: to, txToAddress, txFromAddress, chain: chainUsed }
         })
       }).filter(e => e.contract.startsWith('0x') && e.amount > 0)
       diag.transferArrayCount = transferArrayCount
@@ -1303,125 +1513,6 @@ function normalizeSingleLegs(events: PnlEvent[]): PnlEvent[] {
     if (partner?.usdValue) return { ...e, usdValue: partner.usdValue }
     return e
   })
-}
-
-function buildFifoLotEngine(events: PnlEvent[]): { closedLots: FifoClosedLot[]; openLots: number; realizedPnlUsd: number } {
-  const eligible = events.filter(e =>
-    e.isSwapCandidate && e.txHash && e.timestamp &&
-    (e.direction === 'buy' || e.direction === 'sell') &&
-    (e.usdValue ?? 0) > 0 && e.amount > 0
-  ) as Array<PnlEvent & { txHash: string; timestamp: string; usdValue: number }>
-
-  eligible.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
-
-  type OpenLot = { buyTxHash: string; buyTimestamp: string; amount: number; costPerUnit: number; chain: string }
-  const openByToken = new Map<string, OpenLot[]>()
-  const closedLots: FifoClosedLot[] = []
-
-  for (const e of eligible) {
-    const key = e.contract.toLowerCase()
-    if (e.direction === 'buy') {
-      const costPerUnit = e.usdValue / e.amount
-      if (!openByToken.has(key)) openByToken.set(key, [])
-      openByToken.get(key)!.push({ buyTxHash: e.txHash, buyTimestamp: e.timestamp, amount: e.amount, costPerUnit, chain: e.chain ?? 'unknown' })
-    } else {
-      const lots = openByToken.get(key) ?? []
-      let remaining = e.amount
-      const procPerUnit = e.usdValue / e.amount
-      while (remaining > 1e-9 && lots.length > 0) {
-        const lot = lots[0]
-        const closed = Math.min(lot.amount, remaining)
-        closedLots.push({
-          contract: key, symbol: e.symbol,
-          buyTxHash: lot.buyTxHash, sellTxHash: e.txHash,
-          buyTimestamp: lot.buyTimestamp, sellTimestamp: e.timestamp,
-          buyAmount: closed, sellAmount: closed,
-          buyCostUsd: closed * lot.costPerUnit,
-          sellProceedsUsd: closed * procPerUnit,
-          realizedPnlUsd: closed * (procPerUnit - lot.costPerUnit),
-          chain: e.chain ?? lot.chain,
-        })
-        remaining -= closed
-        lot.amount -= closed
-        if (lot.amount <= 1e-9) lots.shift()
-      }
-    }
-  }
-
-  const openLots = [...openByToken.values()].reduce((s, lots) => s + lots.length, 0)
-  const realizedPnlUsd = closedLots.reduce((s, l) => s + l.realizedPnlUsd, 0)
-  return { closedLots, openLots, realizedPnlUsd }
-}
-
-function buildTradeStatsSummary(closedLots: FifoClosedLot[], swapCandidateCount: number): WalletTradeStatsSummary {
-  if (closedLots.length === 0) {
-    return { status: 'unavailable', source: 'fifo', tradesAnalyzed: 0, winRate: null, avgWinUsd: null, avgLossUsd: null, totalRealizedPnlUsd: null, bestTradeUsd: null, worstTradeUsd: null, confidence: null, reason: 'No closed FIFO lots found.' }
-  }
-  const wins   = closedLots.filter(l => l.realizedPnlUsd > 0)
-  const losses = closedLots.filter(l => l.realizedPnlUsd <= 0)
-  const total  = closedLots.length
-  const allPnls = closedLots.map(l => l.realizedPnlUsd)
-  const coverage = swapCandidateCount > 0 ? (total / swapCandidateCount) * 100 : 0
-  return {
-    status: total >= 3 ? 'ok' : 'partial',
-    source: 'fifo',
-    tradesAnalyzed: total,
-    winRate: Math.round((wins.length / total) * 100) / 100,
-    avgWinUsd:  wins.length   > 0 ? wins.reduce((s, l) => s + l.realizedPnlUsd, 0)   / wins.length   : null,
-    avgLossUsd: losses.length > 0 ? losses.reduce((s, l) => s + l.realizedPnlUsd, 0) / losses.length : null,
-    totalRealizedPnlUsd: allPnls.reduce((s, v) => s + v, 0),
-    bestTradeUsd:  Math.max(...allPnls),
-    worstTradeUsd: Math.min(...allPnls),
-    confidence: coverage >= 60 ? 'high' : coverage >= 30 ? 'medium' : 'low',
-    reason: `FIFO lot matching across ${total} closed trade(s).`,
-  }
-}
-
-function buildPerSwapTradeStats(events: PnlEvent[]): WalletTradeStatsSummary {
-  const byTx = new Map<string, PnlEvent[]>()
-  for (const e of events) {
-    if (!e.isSwapCandidate || !e.txHash || (e.usdValue ?? 0) <= 0) continue
-    const k = e.txHash.toLowerCase()
-    if (!byTx.has(k)) byTx.set(k, [])
-    byTx.get(k)!.push(e)
-  }
-  const trades: Array<{ pnl: number }> = []
-  for (const [, txEvents] of byTx) {
-    const buys  = txEvents.filter(e => e.direction === 'buy')
-    const sells = txEvents.filter(e => e.direction === 'sell')
-    if (buys.length === 0 || sells.length === 0) continue
-    const buyUsd  = buys.reduce((s, e)  => s + (e.usdValue ?? 0), 0)
-    const sellUsd = sells.reduce((s, e) => s + (e.usdValue ?? 0), 0)
-    trades.push({ pnl: sellUsd - buyUsd })
-  }
-  if (trades.length === 0) {
-    return { status: 'unavailable', source: 'per_swap_fallback', tradesAnalyzed: 0, winRate: null, avgWinUsd: null, avgLossUsd: null, totalRealizedPnlUsd: null, bestTradeUsd: null, worstTradeUsd: null, confidence: null, reason: 'No priced swap pairs found for per-swap fallback.' }
-  }
-  const wins   = trades.filter(t => t.pnl > 0)
-  const losses = trades.filter(t => t.pnl <= 0)
-  const allPnls = trades.map(t => t.pnl)
-  return {
-    status: trades.length >= 3 ? 'ok' : 'partial',
-    source: 'per_swap_fallback',
-    tradesAnalyzed: trades.length,
-    winRate: Math.round((wins.length / trades.length) * 100) / 100,
-    avgWinUsd:  wins.length   > 0 ? wins.reduce((s, t) => s + t.pnl, 0)   / wins.length   : null,
-    avgLossUsd: losses.length > 0 ? losses.reduce((s, t) => s + t.pnl, 0) / losses.length : null,
-    totalRealizedPnlUsd: allPnls.reduce((s, v) => s + v, 0),
-    bestTradeUsd:  Math.max(...allPnls),
-    worstTradeUsd: Math.min(...allPnls),
-    confidence: trades.length >= 10 ? 'medium' : 'low',
-    reason: `Per-swap fallback: ${trades.length} priced swap pair(s) analyzed.`,
-  }
-}
-
-function confidenceFromCoverage(c: number): 'high' | 'medium' | 'low' { return c >= 85 ? 'high' : c >= 60 ? 'medium' : 'low' }
-
-const BEHAVIOR_EMPTY: WalletBehavior = {
-  status: 'unavailable', source: 'unavailable',
-  txCount: null, activeDays: null, topTokens: [], topContracts: [],
-  inboundCount: null, outboundCount: null, stablecoinActivity: false,
-  recentActivitySummary: 'Activity data unavailable.', reason: '',
 }
 
 function normalizeMoralisTransfers(
@@ -4298,8 +4389,147 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       || /fetch failed|network|timeout|before response|did not expose an HTTP response/i.test(`${(baseTransferDiag as GoldrushHistoryDiag | undefined)?.fetchErrorMessage ?? ''} ${baseTransferDiag?.reason ?? ''}`)
   )
   const valuedGrEvents = grEvents.filter((e) => (e.usdValue ?? 0) > 0)
-  const rawEvents = grEvents.length > 0 ? grEvents : alchemyEvents
-  const pnlSource: 'goldrush' | 'alchemy' | 'none' = grEvents.length > 0 ? 'goldrush' : alchemyEvents.length > 0 ? 'alchemy' : 'none'
+  let events: PnlEvent[] = grEvents.length > 0 ? grEvents : alchemyEvents
+
+  // Moralis activity fallback: runs only when deepActivity requested and all primary providers returned nothing.
+  // One request max, cached 5 min, in-flight deduped inside fetchMoralisTransfers, 8 s timeout, no pagination.
+  const _grBaseFetchFailed = !GOLDRUSH_KEY
+    || Boolean((grBase.diag as GoldrushHistoryDiag).fetchFailed)
+    || ((grBase.diag as GoldrushHistoryDiag).httpStatus != null && ((grBase.diag as GoldrushHistoryDiag).httpStatus as number) >= 400)
+    || (grBase.diag as GoldrushHistoryDiag).failureStage === 'timeout'
+  // Outer vars for Moralis fallback chain/cursor — needed by both page-1 block and multi-page loop
+  const _fbChain: 'eth' | 'base' = requestedChain === 'eth' ? 'eth' : 'base'
+  const _fbChainName: string = _fbChain === 'base' ? 'base-mainnet' : 'eth-mainnet'
+  let _fbNextCursor: string | null = null
+  type _MoralisFbDebug = {
+    primaryActivityAttempted: boolean; primaryActivityFailed: boolean; primaryActivityStatusCode: number | null
+    primaryActivityErrorKind: string | null; fallbackActivityAttempted: boolean; fallbackActivityUsed: boolean
+    fallbackActivityProvider: 'moralis' | null; fallbackActivityStatusCode: number | null
+    fallbackActivityRawCount: number; fallbackActivityNormalizedEvents: number
+    fallbackActivityReason: string; finalEvidenceStatus: string
+    fallbackNormalizationDebug: NormalizeMoralisDebug | null
+    fallbackActivitySampleShape: { keys: string[]; sample: Record<string, unknown>[] } | null
+    fallbackPagesAttempted: number; fallbackPagesUsed: number; fallbackCursorsSeen: number
+    fallbackRawTotal: number; fallbackNormalizedTotal: number; fallbackDedupeRemoved: number
+    fallbackPaginationReason: string; fallbackPaginationStoppedReason: string
+    fallbackClosedLotsAfterPage1: number; fallbackClosedCostBasisAfterPage1: number | null
+    fallbackRealizedPnlAfterPage1: number | null
+    fallbackMeaningfulEvidenceReached: boolean; fallbackMeaningfulEvidenceReason: string
+  }
+  const _grDiag = grBase.diag as GoldrushHistoryDiag
+  let _moralisFbDebug: _MoralisFbDebug = {
+    primaryActivityAttempted: activityRequested && Boolean(GOLDRUSH_KEY),
+    primaryActivityFailed: _grBaseFetchFailed,
+    primaryActivityStatusCode: _grDiag.httpStatus ?? null,
+    primaryActivityErrorKind: !GOLDRUSH_KEY ? 'not_configured'
+      : _grDiag.fetchFailed ? (_grDiag.fetchErrorKind ?? 'fetch_failed')
+      : _grDiag.httpStatus != null && _grDiag.httpStatus >= 400 ? `http_${_grDiag.httpStatus}`
+      : null,
+    fallbackActivityAttempted: false,
+    fallbackActivityUsed: false,
+    fallbackActivityProvider: null,
+    fallbackActivityStatusCode: null,
+    fallbackActivityRawCount: 0,
+    fallbackActivityNormalizedEvents: 0,
+    fallbackActivityReason: events.length > 0 ? 'primary_ok' : !activityRequested ? 'not_requested' : 'not_attempted',
+    finalEvidenceStatus: 'pending',
+    fallbackNormalizationDebug: null,
+    fallbackActivitySampleShape: null,
+    fallbackPagesAttempted: 0, fallbackPagesUsed: 0, fallbackCursorsSeen: 0,
+    fallbackRawTotal: 0, fallbackNormalizedTotal: 0, fallbackDedupeRemoved: 0,
+    fallbackPaginationReason: 'not_attempted', fallbackPaginationStoppedReason: 'not_attempted',
+    fallbackClosedLotsAfterPage1: 0, fallbackClosedCostBasisAfterPage1: null, fallbackRealizedPnlAfterPage1: null,
+    fallbackMeaningfulEvidenceReached: false, fallbackMeaningfulEvidenceReason: 'not_attempted',
+  }
+  const _shouldTryMoralisFallback = activityRequested && !historicalCoverage && events.length === 0 && Boolean(process.env.MORALIS_API_KEY)
+  if (_shouldTryMoralisFallback) {
+    const fbResult = await fetchMoralisTransfers(addr, _fbChain, 100)
+    _trackCall('moralis', 'erc20_transfers', fbResult.cacheHit, `moralis:transfers:p1:${_fbChain}:${addrNorm}`)
+    _fbNextCursor = fbResult.nextCursor
+    const { events: fbEvents, debug: fbNormDebug } = (fbResult.usable && fbResult.items.length > 0)
+      ? normalizeMoralisTransfers(fbResult.items, addr, _fbChainName)
+      : { events: [] as PnlEvent[], debug: { rawCount: 0, normalizedCount: 0, skippedNotWalletSide: 0, skippedMissingHash: 0, skippedMissingTimestamp: 0, skippedMissingTokenAddress: 0, skippedMissingAmount: 0, skippedInvalidAmount: 0, skippedSpam: 0, sampleNormalizedEvents: [], sampleSkippedReasons: [] } as NormalizeMoralisDebug }
+    const fbUsed = fbEvents.length > 0
+    if (fbUsed) events = fbEvents
+    // Build sanitized sample shape from raw API rows (keys + safe excerpts, no huge payloads)
+    const fbSampleShape: _MoralisFbDebug['fallbackActivitySampleShape'] = fbResult.rawSample.length > 0
+      ? (() => {
+          const first = fbResult.rawSample[0] as Record<string, unknown>
+          return {
+            keys: Object.keys(first).slice(0, 25),
+            sample: fbResult.rawSample.map(r => {
+              const row = r as Record<string, unknown>
+              const shorten = (v: unknown) => typeof v === 'string' ? (v.length > 20 ? v.slice(0, 12) + '…' : v) : v
+              return {
+                transaction_hash: shorten(row.transaction_hash) ?? null,
+                block_timestamp: row.block_timestamp ?? null,
+                address: shorten(row.address) ?? null,
+                token_address: shorten(row.token_address) ?? null,
+                from_address: shorten(row.from_address) ?? null,
+                to_address: shorten(row.to_address) ?? null,
+                value: typeof row.value === 'string' ? row.value.slice(0, 30) : null,
+                value_decimal: row.value_decimal ?? null,
+                possible_spam: row.possible_spam ?? null,
+                verified_contract: row.verified_contract ?? null,
+                symbol: row.symbol ?? row.token_symbol ?? null,
+                name: row.name ?? row.token_name ?? null,
+                decimals: row.decimals ?? row.token_decimals ?? null,
+              } as Record<string, unknown>
+            }),
+          }
+        })()
+      : null
+    const fbFailReason = fbNormDebug.skippedMissingTokenAddress > 0 ? 'normalization_failed_missing_token_address'
+      : fbNormDebug.skippedInvalidAmount > 0 ? 'normalization_failed_invalid_amount'
+      : fbNormDebug.skippedNotWalletSide > 0 && fbNormDebug.normalizedCount === 0 ? 'normalization_failed_not_wallet_side'
+      : fbResult.reason || 'no_events_normalized'
+    _moralisFbDebug = {
+      ..._moralisFbDebug,
+      fallbackActivityAttempted: fbResult.attempted || fbResult.cacheHit,
+      fallbackActivityUsed: fbUsed,
+      fallbackActivityProvider: 'moralis',
+      fallbackActivityStatusCode: fbResult.httpStatus ?? null,
+      fallbackActivityRawCount: fbResult.rawCount,
+      fallbackActivityNormalizedEvents: fbEvents.length,
+      fallbackActivityReason: fbUsed ? 'fallback_used' : fbFailReason,
+      fallbackNormalizationDebug: fbNormDebug,
+      fallbackActivitySampleShape: fbSampleShape,
+      fallbackPagesAttempted: 1, fallbackPagesUsed: fbUsed ? 1 : 0,
+      fallbackCursorsSeen: _fbNextCursor != null ? 1 : 0,
+      fallbackRawTotal: fbResult.rawCount,
+      fallbackNormalizedTotal: fbEvents.length,
+      fallbackDedupeRemoved: 0,
+      fallbackPaginationReason: 'page1_complete',
+      fallbackPaginationStoppedReason: 'pending',
+    }
+  }
+
+  const _pnlSourceRaw: 'goldrush' | 'alchemy' | 'moralis_fallback' | 'none' =
+    grEvents.length > 0 ? 'goldrush'
+    : alchemyEvents.length > 0 ? 'alchemy'
+    : _moralisFbDebug.fallbackActivityUsed ? 'moralis_fallback'
+    : 'none'
+  const pnlSource: 'activity_layer' | 'fallback_layer' | 'none' =
+    _pnlSourceRaw === 'goldrush' ? 'activity_layer'
+    : _pnlSourceRaw === 'none' ? 'none'
+    : 'fallback_layer'
+  const fallbackActivityAttempted = _moralisFbDebug.fallbackActivityAttempted
+  const fallbackActivityUsed = _moralisFbDebug.fallbackActivityUsed
+  const fallbackActivityReason = _moralisFbDebug.fallbackActivityReason
+  const activityProviderUnavailable = activityRequested && primaryActivityFailed && events.length === 0
+  // Budget guard: dedup + cap events before pipeline to limit credit burn on large wallets
+  const _ACTIVITY_MAX_EVENTS = 500
+  const _budgetEventsBefore = events.length
+  const _seenBudgetKeys = new Set<string>()
+  const _dedupedBudgetEvents: PnlEvent[] = []
+  for (const e of events) {
+    const k = `${e.txHash ?? ''}|${e.contract}|${e.direction}|${e.amountRaw ?? String(e.amount)}`
+    if (!_seenBudgetKeys.has(k)) { _seenBudgetKeys.add(k); _dedupedBudgetEvents.push(e) }
+  }
+  const _budgetEventsAfterDedup = _dedupedBudgetEvents.length
+  const _budgetCapped = _dedupedBudgetEvents.length > _ACTIVITY_MAX_EVENTS
+  events = _dedupedBudgetEvents.slice(0, _ACTIVITY_MAX_EVENTS)
+  const _budgetEventsAfterCap = events.length
 
   // Build a current-price map from holdings so events without usdValue can be enriched.
   // Using current price as a proxy is imprecise for historical trades but is consistent
@@ -4310,63 +4540,12 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       priceByContract.set(h.contract.toLowerCase(), h.price)
     }
   }
-  const events: PnlEvent[] = rawEvents.map(e => {
+  events = events.map(e => {
     if ((e.usdValue ?? 0) > 0) return e
     const cp = priceByContract.get(e.contract.toLowerCase())
     if (cp && cp > 0 && e.amount > 0) return { ...e, usdValue: e.amount * cp }
     return e
   })
-
-  // FIFO pipeline
-  const swapTagged      = buildFifoSwapDetection(events, addr)
-  const normalizedEvents = normalizeSingleLegs(swapTagged)
-  const { closedLots, openLots: openFifoLots, realizedPnlUsd: fifoRealizedPnl } = buildFifoLotEngine(normalizedEvents)
-
-  const swapCandidateCount = normalizedEvents.filter(e => e.isSwapCandidate).length
-  let walletTradeStatsSummary: WalletTradeStatsSummary
-  if (closedLots.length > 0) {
-    walletTradeStatsSummary = buildTradeStatsSummary(closedLots, swapCandidateCount)
-  } else {
-    walletTradeStatsSummary = buildPerSwapTradeStats(normalizedEvents)
-  }
-
-  const fifoCoveragePercent = swapCandidateCount > 0
-    ? Math.round(Math.min(100, (closedLots.length / swapCandidateCount) * 100))
-    : 0
-  const walletLotSummary: WalletLotSummary = {
-    status: closedLots.length > 0 ? 'ok' : walletTradeStatsSummary.status !== 'unavailable' ? 'partial' : 'unavailable',
-    method: 'fifo',
-    closedLots: closedLots.length,
-    openLots: openFifoLots,
-    totalRealizedPnlUsd: closedLots.length > 0 ? fifoRealizedPnl : null,
-    coveragePercent: fifoCoveragePercent,
-    reason: closedLots.length > 0
-      ? `FIFO: ${closedLots.length} closed lot(s), ${openFifoLots} open.`
-      : swapCandidateCount > 0
-        ? 'Swap candidates found but no matchable buy/sell pairs for FIFO.'
-        : 'No swap-classified events found.',
-  }
-
-  if (process.env.NODE_ENV !== 'production') {
-    const rawValued      = rawEvents.filter(e => (e.usdValue ?? 0) > 0).length
-    const enrichedValued = events.filter(e => (e.usdValue ?? 0) > 0).length
-    const pricedSwaps    = normalizedEvents.filter(e => e.isSwapCandidate && (e.usdValue ?? 0) > 0).length
-    console.log('coverageReport', {
-      wallet: addr,
-      pnlSource,
-      rawEvents: rawEvents.length,
-      rawValued,
-      enrichedValued,
-      inferredViaCurrentPrice: enrichedValued - rawValued,
-      holdingsPriced: priceByContract.size,
-      swapCandidates: swapCandidateCount,
-      pricedSwaps,
-      normalizedBuys:  normalizedEvents.filter(e => e.isSwapCandidate && e.direction === 'buy').length,
-      normalizedSells: normalizedEvents.filter(e => e.isSwapCandidate && e.direction === 'sell').length,
-      fifoClosedLots: closedLots.length,
-      perSwapFallbackTrades: walletTradeStatsSummary.source === 'per_swap_fallback' ? walletTradeStatsSummary.tradesAnalyzed : 0,
-    })
-  }
 
   const byToken = new Map<string, PnlEvent[]>()
   for (const e of events.slice(0, 250)) byToken.set(e.contract, [...(byToken.get(e.contract) ?? []), e])
@@ -4435,8 +4614,13 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   }
   _pricedEvidence = normalizeSwapEventsForFifo(_pricedEvidence)
   _pricedEvidence = normalizeSingleLegEventsForFifo(_pricedEvidence)
-  let { summary: walletLotSummary, debug: _lotEngineDebug, closedLots: _closedLots } = buildFifoLotEngine(_pricedEvidence, activityRequested)
-  let { summary: walletTradeStatsSummary, debug: _tradeStatsDebug } = buildTradeStatsSummary(_closedLots, activityRequested)
+  const fifoResult = buildFifoLotEngine(_pricedEvidence, activityRequested)
+  let walletLotSummary = fifoResult.summary
+  let _lotEngineDebug = fifoResult.debug
+  let _closedLots = fifoResult.closedLots
+  const tradeStatsResult = buildTradeStatsSummary(_closedLots, activityRequested)
+  let walletTradeStatsSummary = tradeStatsResult.summary
+  let _tradeStatsDebug = tradeStatsResult.debug
   if (_closedLots.length === 0 && activityRequested) {
     const _perSwap = buildPerSwapTradeStats(_pricedEvidence, activityRequested)
     if (_perSwap.summary.closedLots > 0) {
@@ -4528,8 +4712,13 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       ;({ evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache))
       _pricedEvidence = normalizeSwapEventsForFifo(_pricedEvidence)
       _pricedEvidence = normalizeSingleLegEventsForFifo(_pricedEvidence)
-      ;({ summary: walletLotSummary, debug: _lotEngineDebug, closedLots: _closedLots } = buildFifoLotEngine(_pricedEvidence, activityRequested))
-      ;({ summary: walletTradeStatsSummary, debug: _tradeStatsDebug } = buildTradeStatsSummary(_closedLots, activityRequested))
+      const fifoPageResult = buildFifoLotEngine(_pricedEvidence, activityRequested)
+      walletLotSummary = fifoPageResult.summary
+      _lotEngineDebug = fifoPageResult.debug
+      _closedLots = fifoPageResult.closedLots
+      const tradeStatsPageResult = buildTradeStatsSummary(_closedLots, activityRequested)
+      walletTradeStatsSummary = tradeStatsPageResult.summary
+      _tradeStatsDebug = tradeStatsPageResult.debug
       if (_closedLots.length === 0 && activityRequested) {
         const _perSwap = buildPerSwapTradeStats(_pricedEvidence, activityRequested)
         if (_perSwap.summary.closedLots > 0) {
@@ -4848,8 +5037,6 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     hiddenDustCount,
     unpricedHoldingsCount,
     walletBehavior,
-    walletLotSummary,
-    walletTradeStatsSummary,
     estimatedPnl,
     walletEvidenceSummary,
     walletSwapSummary,
