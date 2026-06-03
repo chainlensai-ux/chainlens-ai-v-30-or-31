@@ -142,10 +142,33 @@ async function walletPlan(req: Request): Promise<'free' | 'pro' | 'elite'> {
 function walletIp(req: Request): string { return req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown' }
 async function walletAllowed(req: Request): Promise<boolean> { const plan=await walletPlan(req); const key=`${plan}:${walletIp(req)}`; const now=Date.now(); const cur=walletRate.get(key); const lim=WALLET_RATE_BY_PLAN[plan]; if(!cur||cur.resetAt<=now){walletRate.set(key,{count:1,resetAt:now+60000}); return true} if(cur.count>=lim)return false; cur.count+=1; return true }
 
+function vercelPreviewCorsHeaders(req: Request): Record<string, string> | null {
+  const origin = req.headers.get('origin') ?? ''
+  if (!origin.endsWith('.vercel.app')) return null
+  return {
+    'Access-Control-Allow-Origin': origin,
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    'Access-Control-Max-Age': '86400',
+  }
+}
+
+export async function OPTIONS(req: Request) {
+  const cors = vercelPreviewCorsHeaders(req)
+  if (!cors) return new Response(null, { status: 204 })
+  return new Response(null, { status: 200, headers: cors })
+}
+
 export async function POST(req: Request) {
+  const _cors = vercelPreviewCorsHeaders(req)
+  const json = (...args: Parameters<typeof NextResponse.json>): NextResponse => {
+    const r = NextResponse.json(...args)
+    if (_cors) for (const [k, v] of Object.entries(_cors)) r.headers.set(k, v)
+    return r
+  }
   const plan = await walletPlan(req)
-  if (plan === 'free') return NextResponse.json({ error: 'Included in Pro and Elite.' }, { status: 403 })
-  if (!(await walletAllowed(req))) return NextResponse.json({ error: "Rate limit reached. Try again shortly." }, { status: 429 })
+  if (plan === 'free') return json({ error: 'Included in Pro and Elite.' }, { status: 403 })
+  if (!(await walletAllowed(req))) return json({ error: "Rate limit reached. Try again shortly." }, { status: 429 })
   try {
     const startedAt = Date.now()
     const requestUrl = new URL(req.url)
@@ -178,7 +201,7 @@ export async function POST(req: Request) {
     const allowDebugFresh = debugFresh && (process.env.NODE_ENV !== 'production' || hasBearerToken)
     const key = String(address ?? '').toLowerCase()
     if (!/^0x[a-fA-F0-9]{40}$/.test(key)) {
-      return NextResponse.json({ error: 'Invalid wallet address' }, { status: 400 })
+      return json({ error: 'Invalid wallet address' }, { status: 400 })
     }
 
     // Historical cooldown — 10 min per wallet after a live historical scan
@@ -327,7 +350,7 @@ export async function POST(req: Request) {
         },
       }
       pruneWalletScannerDebug(cp, debug)
-      return NextResponse.json(cp)
+      return json(cp)
     }
 
     // Blocked by cooldown — try to serve stale cache or return a safe blocked response
@@ -341,9 +364,9 @@ export async function POST(req: Request) {
           cp.walletScanCacheNote = 'Enhanced scan cooling down. Try again later.'
         }
         pruneWalletScannerDebug(cp, debug)
-        return NextResponse.json(cp)
+        return json(cp)
       }
-      return NextResponse.json({ error: 'Enhanced historical scan is cooling down. Try again in a few minutes.', walletScanCostMode: 'blocked_by_cooldown' }, { status: 429 })
+      return json({ error: 'Enhanced historical scan is cooling down. Try again in a few minutes.', walletScanCostMode: 'blocked_by_cooldown' }, { status: 429 })
     }
 
     // Blocked by cost guard — serve from cache if available
@@ -357,7 +380,7 @@ export async function POST(req: Request) {
           cp.walletScanCacheNote = 'Historical scan served from cache — wallet has heavy history.'
         }
         pruneWalletScannerDebug(cp, debug)
-        return NextResponse.json(cp)
+        return json(cp)
       }
       // No cache available — fall through to live scan without historical
     }
@@ -373,7 +396,7 @@ export async function POST(req: Request) {
           cp.walletScanCacheNote = 'Deep scan cooling down — serving recent result to protect API budget.'
         }
         pruneWalletScannerDebug(cp, debug)
-        return NextResponse.json(cp)
+        return json(cp)
       }
       // No memory stale — fall through to persistent cooldown check below
     }
@@ -442,7 +465,7 @@ export async function POST(req: Request) {
             },
           }
           pruneWalletScannerDebug(cp, debug)
-          return NextResponse.json(cp)
+          return json(cp)
         }
       }
 
@@ -466,15 +489,15 @@ export async function POST(req: Request) {
             cp.walletScanCacheNote = 'Deep scan cooling down — serving recent result to protect API budget.'
           }
           pruneWalletScannerDebug(cp, debug)
-          return NextResponse.json(cp)
+          return json(cp)
         }
-        return NextResponse.json({ error: 'Deep scan is cooling down. Try again in a few minutes.', walletScanCostMode: 'deep_cached' }, { status: 429 })
+        return json({ error: 'Deep scan is cooling down. Try again in a few minutes.', walletScanCostMode: 'deep_cached' }, { status: 429 })
       }
 
       _cacheMissReason = _persistentAvailable ? 'persistent_cache_miss' : 'persistent_cache_unavailable'
     } else if (deepCooldownActive) {
       // Fell through memory cooldown with no memory stale — final 429 guard
-      return NextResponse.json({ error: 'Deep scan is cooling down. Try again in a few minutes.', walletScanCostMode: 'deep_cached' }, { status: 429 })
+      return json({ error: 'Deep scan is cooling down. Try again in a few minutes.', walletScanCostMode: 'deep_cached' }, { status: 429 })
     }
 
     // In-flight dedup for deep/historical scans
@@ -773,10 +796,10 @@ export async function POST(req: Request) {
     // Write to cache after every live scan (including refresh=true) so subsequent normal requests benefit.
     // Only allowDebugFresh (explicit admin override) skips the write.
     if (_cacheWriteAttempted) walletCache.set(cacheKey, { exp: Date.now() + _cacheTtlMs, payload: snapshot, cachedAt: Date.now() })
-    return NextResponse.json(snapshot)
+    return json(snapshot)
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Wallet scan failed'
     const status = msg === 'Invalid wallet address' ? 400 : 500
-    return NextResponse.json({ error: status === 400 ? 'Invalid wallet address' : 'Wallet scan unavailable right now.' }, { status })
+    return json({ error: status === 400 ? 'Invalid wallet address' : 'Wallet scan unavailable right now.' }, { status })
   }
 }
