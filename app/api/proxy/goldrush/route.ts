@@ -8,6 +8,16 @@ const limiter = createRateLimiter({ windowMs: 60_000, max: 30 });
 const SAFE_PATH = /^[a-zA-Z0-9/_\-:.?=&%+]+$/;
 
 export async function GET(request: NextRequest) {
+  // Require a bearer token in production — this proxy exposes server API credits.
+  // Balances.tsx (the only client that calls this) is dead code, so in production
+  // we block unauthenticated access entirely.
+  if (process.env.NODE_ENV === "production") {
+    const auth = request.headers.get("authorization") ?? "";
+    if (!auth.startsWith("Bearer ") || auth.length < 20) {
+      return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+    }
+  }
+
   if (!limiter.check(getClientIp(request))) {
     return NextResponse.json({ ok: false, error: "Too many requests" }, { status: 429 });
   }

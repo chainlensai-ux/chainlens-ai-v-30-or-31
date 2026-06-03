@@ -138,6 +138,21 @@ async function getClarkVerdicts(tokens: Omit<RadarToken, 'clarkVerdict'>[]): Pro
 
 const EMPTY_STATS: RadarStats = { totalNewTokens: 0, averageLiquidity: 0, mostCommonRisk: 'SAFE', dangerCount: 0, cautionCount: 0, safeCount: 0 }
 
+const HONEYPOT_CACHE_TTL_MS = 5 * 60 * 1000
+const RADAR_CACHE_TTL_MS = 5 * 60 * 1000
+const radarPayloadCache = new Map<string, { cachedAt: number; payload: { tokens: RadarToken[]; stats: RadarStats; fetchedAt: string; limitedLiveFeed: boolean; _debug?: Record<string, unknown> } }>()
+const honeypotCache = new Map<string, { result: HoneypotResult | null; cachedAt: number }>()
+
+async function getCachedHoneypot(contract: string): Promise<HoneypotResult | null> {
+  const key = contract.toLowerCase()
+  const now = Date.now()
+  const cached = honeypotCache.get(key)
+  if (cached && now - cached.cachedAt <= HONEYPOT_CACHE_TTL_MS) return cached.result
+  const result = await fetchHoneypot(contract)
+  honeypotCache.set(key, { result, cachedAt: Date.now() })
+  return result
+}
+
 export async function GET(req: NextRequest) {
   if (!limiter.check(getClientIp(req))) {
     return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
@@ -149,43 +164,67 @@ export async function GET(req: NextRequest) {
     try { plan = (await getCurrentUserPlanFromBearerToken(token)).plan } catch { plan = 'free' }
   }
   if (plan === 'free') return NextResponse.json({ error: 'Included in Pro and Elite.' }, { status: 403 })
-
-  // Fetch new Base pools (shared cache for beta traffic)
-  let gtResult: Awaited<ReturnType<typeof getOrFetchCached<Record<string, unknown>>>>
-  try {
-    gtResult = await getOrFetchCached<Record<string, unknown>>({
-      key: 'coingecko:base-radar',
-      ttlMs: 60_000,
-      onLog: msg => console.info(`[radar] ${msg}`),
-      fetcher: async () => {
-        const ac = new AbortController()
-        const tid = setTimeout(() => ac.abort(), 6000)
-        try {
-          const gtRes = await fetch(
-            'https://api.geckoterminal.com/api/v2/networks/base/new_pools?page=1&include=base_token%2Cquote_token',
-            { headers: { Accept: 'application/json;version=20230302' }, cache: 'no-store', signal: ac.signal }
-          )
-          if (!gtRes.ok) throw new Error(`GeckoTerminal unavailable (${gtRes.status})`)
-          return gtRes.json() as Promise<Record<string, unknown>>
-        } finally {
-          clearTimeout(tid)
-        }
-      },
+  const debug = req.nextUrl.searchParams.get('debug') === 'true'
+  const now = Date.now()
+  const cacheKey = `plan:${plan}`
+  const cachedPayload = radarPayloadCache.get(cacheKey)
+  if (cachedPayload && now - cachedPayload.cachedAt <= RADAR_CACHE_TTL_MS) {
+    const payload = cachedPayload.payload
+    return NextResponse.json({
+      ...payload,
+      ...(debug ? { _debug: { ...(payload._debug ?? {}), cacheHit: true, effectivePlan: plan, upsellVisible: false } } : {}),
     })
-  } catch (err) {
-    console.error('[radar] data source unavailable:', err)
-    return NextResponse.json({ tokens: [], stats: EMPTY_STATS, fetchedAt: new Date().toISOString() })
+  }
+
+  const sourceSpecs = [
+    { key: 'new_p1', url: 'https://api.geckoterminal.com/api/v2/networks/base/new_pools?page=1&include=base_token%2Cquote_token&per_page=20' },
+    { key: 'new_p2', url: 'https://api.geckoterminal.com/api/v2/networks/base/new_pools?page=2&include=base_token%2Cquote_token&per_page=20' },
+    { key: 'trending_p1', url: 'https://api.geckoterminal.com/api/v2/networks/base/trending_pools?page=1&include=base_token%2Cquote_token&per_page=20' },
+  ] as const
+  const sourceCounts: Record<string, number> = {}
+  let sourcesSucceeded = 0
+  const sourcesAttempted = sourceSpecs.length
+  const sourcePayloads: Record<string, unknown>[] = []
+  for (const spec of sourceSpecs) {
+    try {
+      const result = await getOrFetchCached<Record<string, unknown>>({
+        key: `coingecko:base-radar:${spec.key}`,
+        ttlMs: RADAR_CACHE_TTL_MS,
+        onLog: msg => console.info(`[radar] ${msg}`),
+        fetcher: async () => {
+          const ac = new AbortController()
+          const tid = setTimeout(() => ac.abort(), 6000)
+          try {
+            const gtRes = await fetch(spec.url, { headers: { Accept: 'application/json;version=20230302' }, cache: 'no-store', signal: ac.signal })
+            if (!gtRes.ok) throw new Error(`market_source_unavailable_${gtRes.status}`)
+            return gtRes.json() as Promise<Record<string, unknown>>
+          } finally { clearTimeout(tid) }
+        },
+      })
+      const count = Array.isArray(result.data?.data) ? result.data.data.length : 0
+      sourceCounts[spec.key] = count
+      if (count > 0) {
+        sourcesSucceeded += 1
+        sourcePayloads.push(result.data)
+      }
+    } catch {
+      sourceCounts[spec.key] = 0
+    }
   }
 
   try {
-
-    const gtData = gtResult.data
-    const pools    = Array.isArray(gtData?.data)     ? (gtData.data     as Record<string, unknown>[]) : []
-    const included = Array.isArray(gtData?.included) ? (gtData.included as Record<string, unknown>[]) : []
+    const pooled: Record<string, unknown>[] = []
+    const includedAll: Record<string, unknown>[] = []
+    for (const src of sourcePayloads) {
+      const pools = Array.isArray(src?.data) ? (src.data as Record<string, unknown>[]) : []
+      const included = Array.isArray(src?.included) ? (src.included as Record<string, unknown>[]) : []
+      pooled.push(...pools)
+      includedAll.push(...included)
+    }
 
     // Build token lookup from ?include= entities
     const tokenMap = new Map<string, { name: string; symbol: string; address: string }>()
-    for (const item of included) {
+    for (const item of includedAll) {
       const attrs = item.attributes as Record<string, string> | undefined
       if (item.type === 'token' && attrs?.address) {
         tokenMap.set(item.id as string, {
@@ -203,9 +242,13 @@ export async function GET(req: NextRequest) {
     type Candidate = Omit<RadarToken, 'clarkVerdict'>
     const candidates: Candidate[] = []
     const allDay24h:  number[]    = []
-    const seen = new Set<string>()
+    const seenContracts = new Set<string>()
+    const seenPools = new Set<string>()
 
-    for (const pool of pools) {
+    for (const pool of pooled) {
+      const poolId = String(pool.id ?? '').toLowerCase()
+      if (poolId && seenPools.has(poolId)) continue
+      if (poolId) seenPools.add(poolId)
       const attrs = pool.attributes  as Record<string, unknown>         | undefined
       const rels  = pool.relationships as Record<string, unknown>       | undefined
       const volObj = attrs?.volume_usd as Record<string, string>        | undefined
@@ -219,7 +262,7 @@ export async function GET(req: NextRequest) {
 
       if (ageMs < DAY_MS && liquidityUsd >= 1000) allDay24h.push(liquidityUsd)
 
-      if (ageMs  >= TWO_HOURS) continue
+      if (ageMs  >= 6 * 60 * 60 * 1000) continue
       if (liquidityUsd < 1000) continue
 
       const baseData    = ((rels?.base_token as Record<string, unknown>)?.data) as Record<string, string> | undefined
@@ -229,8 +272,8 @@ export async function GET(req: NextRequest) {
       if (EXCLUDED.has(baseToken.symbol.toUpperCase())) continue
 
       const key = baseToken.address.toLowerCase()
-      if (seen.has(key)) continue
-      seen.add(key)
+      if (seenContracts.has(key)) continue
+      seenContracts.add(key)
 
       const fdvUsd = parseFloat(String(attrs?.fdv_usd ?? '0')) || null
       candidates.push({
@@ -239,13 +282,20 @@ export async function GET(req: NextRequest) {
       })
     }
 
-    // Sort by liquidity to prioritise honeypot checks on biggest pools
-    candidates.sort((a, b) => b.liquidityUsd - a.liquidityUsd)
-    const toCheck = candidates.slice(0, 10)
+    // Sort by blend of momentum/liquidity/volume/freshness
+    candidates.sort((a, b) => {
+      const mA = a.liquidityUsd > 0 ? a.volume24h / a.liquidityUsd : 0
+      const mB = b.liquidityUsd > 0 ? b.volume24h / b.liquidityUsd : 0
+      const sA = (mA * 40) + Math.log10(Math.max(a.liquidityUsd, 1)) * 18 + Math.log10(Math.max(a.volume24h, 1)) * 18 + (a.ageMinutes <= 120 ? 12 : 0) + (a.fdvUsd && a.fdvUsd > 0 ? 6 : 0)
+      const sB = (mB * 40) + Math.log10(Math.max(b.liquidityUsd, 1)) * 18 + Math.log10(Math.max(b.volume24h, 1)) * 18 + (b.ageMinutes <= 120 ? 12 : 0) + (b.fdvUsd && b.fdvUsd > 0 ? 6 : 0)
+      return sB - sA
+    })
+    const toCheck = candidates.slice(0, 50)
 
     // 2. Honeypot checks in parallel with 5s timeout each
+    const hpCacheHitFlags = toCheck.map(t => { const c = honeypotCache.get(t.contract.toLowerCase()); return !!(c && Date.now() - c.cachedAt <= HONEYPOT_CACHE_TTL_MS) })
     const hpResults = await Promise.allSettled(
-      toCheck.map(t => withTimeout(fetchHoneypot(t.contract), 5000, null))
+      toCheck.map(t => withTimeout(getCachedHoneypot(t.contract), 5000, null))
     )
 
     const scored: Candidate[] = toCheck.map((token, i) => {
@@ -278,9 +328,26 @@ export async function GET(req: NextRequest) {
       dangerCount, cautionCount, safeCount,
     }
 
-    return NextResponse.json({ tokens, stats, fetchedAt: new Date().toISOString(), warning: gtResult.warning })
+    const limitedLiveFeed = tokens.length > 0 && tokens.length < 5
+    const hpHitCount = hpCacheHitFlags.filter(Boolean).length
+    const payload = { tokens, stats, fetchedAt: new Date().toISOString(), limitedLiveFeed }
+    const debugPayload = {
+      sourcesAttempted,
+      sourcesSucceeded,
+      sourceCounts,
+      mergedCount: candidates.length,
+      finalTokenCount: tokens.length,
+      cacheHit: false,
+      effectivePlan: plan,
+      upsellVisible: false,
+      honeypotCacheHits: hpHitCount,
+      honeypotCacheMisses: hpCacheHitFlags.length - hpHitCount,
+    }
+    radarPayloadCache.set(cacheKey, { cachedAt: Date.now(), payload: { ...payload, _debug: debugPayload } })
+    return NextResponse.json({ ...payload, ...(debug ? { _debug: debugPayload } : {}) })
   } catch (err) {
     console.error('[radar] processing error:', err)
-    return NextResponse.json({ tokens: [], stats: EMPTY_STATS, fetchedAt: new Date().toISOString() })
+    if (cachedPayload) return NextResponse.json(cachedPayload.payload)
+    return NextResponse.json({ tokens: [], stats: EMPTY_STATS, fetchedAt: new Date().toISOString(), limitedLiveFeed: false })
   }
 }

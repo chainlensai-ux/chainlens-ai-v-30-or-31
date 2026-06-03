@@ -25,6 +25,14 @@ export type UserSettings = {
   lemon_variant_id?: string | null;
   subscription_status?: string | null;
   current_period_end?: string | null;
+  trial_started_at?: string | null;
+  trial_ends_at?: string | null;
+  trial_plan?: 'elite' | null;
+  trial_used?: boolean;
+  trial_granted_reason?: string | null;
+  trial_email_hash?: string | null;
+  trial_claim_ip_hash?: string | null;
+  trial_claim_user_agent_hash?: string | null;
 };
 
 export type UserSettingsUpdate = Partial<Pick<
@@ -240,6 +248,19 @@ const PLAN_CACHE_TTL_MS = 60_000
 const PLAN_CACHE_MAX = 500
 const BETA_ALL_ELITE = process.env.BETA_ALL_ELITE === 'true'
 
+export function resolveEffectivePlan(settings: Partial<UserSettings> | null | undefined, nowMs = Date.now()): 'free' | 'pro' | 'elite' {
+  const paidPlan: 'free' | 'pro' | 'elite' = settings?.plan === 'elite' ? 'elite' : settings?.plan === 'pro' ? 'pro' : 'free'
+  const paidEliteActive = paidPlan === 'elite' && settings?.subscription_status === 'active'
+  if (paidEliteActive) return 'elite'
+  const trialActive =
+    settings?.trial_plan === 'elite' &&
+    Boolean(settings?.trial_ends_at) &&
+    Number.isFinite(Date.parse(settings?.trial_ends_at ?? '')) &&
+    Date.parse(settings?.trial_ends_at ?? '') > nowMs
+  if (trialActive) return 'elite'
+  return paidPlan
+}
+
 export async function getVerifiedUserPlan(request: Request): Promise<'free' | 'pro' | 'elite'> {
   const authHeader = request.headers.get('authorization') ?? ''
   if (!authHeader.toLowerCase().startsWith('bearer ')) return 'free'
@@ -262,11 +283,10 @@ export async function getVerifiedUserPlan(request: Request): Promise<'free' | 'p
     const authedSb = createAuthedSupabaseClient(token) ?? sb
     const { data: row } = await authedSb
       .from('user_settings')
-      .select('plan')
+      .select('plan,subscription_status,trial_plan,trial_ends_at')
       .eq('user_id', userData.user.id)
       .maybeSingle()
-    const raw = (row as Record<string, unknown> | null)?.plan
-    const plan: 'free' | 'pro' | 'elite' = raw === 'elite' ? 'elite' : raw === 'pro' ? 'pro' : 'free'
+    const plan = resolveEffectivePlan(row as Partial<UserSettings> | null)
     if (_planCache.size >= PLAN_CACHE_MAX) _planCache.clear()
     _planCache.set(token, { plan, exp: now + PLAN_CACHE_TTL_MS })
     return plan

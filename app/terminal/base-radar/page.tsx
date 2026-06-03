@@ -548,7 +548,7 @@ function PulseStrip({ summary }: { summary: RadarSummary }) {
   )
 }
 
-function StatsPanel({ summary, fetchedAt, loading }: { summary: RadarSummary; fetchedAt: string | null; loading: boolean }) {
+function StatsPanel({ summary, fetchedAt, loading, showUpsell }: { summary: RadarSummary; fetchedAt: string | null; loading: boolean; showUpsell: boolean }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
       <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '12px', padding: '14px' }}>
@@ -600,7 +600,7 @@ function StatsPanel({ summary, fetchedAt, loading }: { summary: RadarSummary; fe
         ))}
       </div>
 
-      <div style={{
+      {showUpsell && <div style={{
         background: 'linear-gradient(180deg, rgba(168,85,247,0.10), rgba(45,212,191,0.08))',
         border: '1px solid rgba(255,255,255,0.10)',
         borderRadius: '12px',
@@ -630,7 +630,7 @@ function StatsPanel({ summary, fetchedAt, loading }: { summary: RadarSummary; fe
         }}>
           Upgrade Now
         </Link>
-      </div>
+      </div>}
     </div>
   )
 }
@@ -648,12 +648,12 @@ function Stat({ label, value, loading }: { label: string; value: string; loading
   )
 }
 
-function EmptyFeed() {
+function EmptyFeed({ limited }: { limited: boolean }) {
   return (
     <div style={{ textAlign: 'center', padding: '42px 20px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>
       <div style={{ fontSize: '30px', marginBottom: '12px', opacity: 0.4 }}>◈</div>
       <p style={{ fontSize: '13px', fontWeight: 600, margin: '0 0 8px' }}>
-        No new Base pools detected right now. Radar will refresh shortly.
+        {limited ? 'Limited live feed right now. Radar will refresh shortly.' : 'No new Base pools detected right now. Radar will refresh shortly.'}
       </p>
     </div>
   )
@@ -670,16 +670,19 @@ function LowActivityPanel() {
 }
 
 export default function BaseRadarPage() {
-  const { plan, loading: planLoading } = usePlanWithLoading()
+  const { plan, loading: planLoading, elitePass } = usePlanWithLoading()
   const router = useRouter()
   const [data, setData] = useState<RadarData | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [countdown, setCountdown] = useState(60)
+  const [countdown, setCountdown] = useState(120)
   const [refreshKey, setRefreshKey] = useState(0)
   const [activeFilter, setActiveFilter] = useState<RadarFilter>('ALL')
   const [sortMode, setSortMode] = useState<SortMode>('NEWEST')
   const [trackedContracts, setTrackedContracts] = useState<Record<string, boolean>>({})
+
+  const effectivePlan = elitePass.active ? 'elite' : plan
+  const showUpsell = effectivePlan === 'free'
 
   const fetchData = useCallback(async () => {
     setLoading(true)
@@ -702,15 +705,15 @@ export default function BaseRadarPage() {
   }, [])
 
   useEffect(() => {
-    if (!planLoading && canAccessFeature(plan, 'base-radar')) fetchData()
-  }, [fetchData, plan, planLoading])
+    if (!planLoading && canAccessFeature(effectivePlan, 'base-radar')) fetchData()
+  }, [effectivePlan, fetchData, planLoading])
 
   useEffect(() => {
     const id = setInterval(() => {
       setCountdown(c => {
         if (c <= 1) {
           setRefreshKey(k => k + 1)
-          return 60
+          return 120
         }
         return c - 1
       })
@@ -719,14 +722,14 @@ export default function BaseRadarPage() {
   }, [])
 
   useEffect(() => {
-    if (refreshKey > 0 && canAccessFeature(plan, 'base-radar')) {
+    if (refreshKey > 0 && canAccessFeature(effectivePlan, 'base-radar')) {
       fetchData()
-      setCountdown(60)
+      setCountdown(120)
     }
-  }, [refreshKey, fetchData, plan])
+  }, [effectivePlan, refreshKey, fetchData])
 
   function handleManualRefresh() {
-    setCountdown(60)
+    setCountdown(120)
     fetchData()
   }
 
@@ -805,7 +808,7 @@ export default function BaseRadarPage() {
   }, [activeFilter, intelTokens, sortMode])
 
   if (planLoading) return <div style={{ display: 'flex', flex: 1, alignItems: 'center', justifyContent: 'center', minHeight: '60vh', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)' }}>Loading plan access…</div>
-  if (!canAccessFeature(plan, 'base-radar')) return <LockedPanel feature="base-radar" />
+  if (!canAccessFeature(effectivePlan, 'base-radar')) return <LockedPanel feature="base-radar" />
 
   return (
     <>
@@ -943,7 +946,7 @@ export default function BaseRadarPage() {
               </div>
             )}
 
-            {!loading && tokens.length === 0 && !error && <EmptyFeed />}
+            {!loading && tokens.length === 0 && !error && <EmptyFeed limited={Boolean((data as { limitedLiveFeed?: boolean } | null)?.limitedLiveFeed)} />}
 
             {!loading && tokens.length > 0 && filteredAndSortedTokens.length === 0 && (
               <div style={{ borderRadius: '12px', border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(255,255,255,0.02)', padding: '16px', fontFamily: 'var(--font-plex-mono)', fontSize: '12px', color: '#64748b' }}>
@@ -972,7 +975,7 @@ export default function BaseRadarPage() {
             <p style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#3a5268', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', margin: '0 0 10px' }}>
               Radar Stats
             </p>
-            <StatsPanel summary={summary} fetchedAt={data?.fetchedAt ?? null} loading={loading} />
+            <StatsPanel summary={summary} fetchedAt={data?.fetchedAt ?? null} loading={loading} showUpsell={showUpsell} />
           </div>
         </div>
       </div>

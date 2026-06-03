@@ -4,10 +4,16 @@ import { useState } from "react";
 
 export default function TokenScanner() {
   const [token, setToken] = useState("");
+  const [chain, setChain] = useState<"base" | "eth">("base");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<any>(null);
 
   const scanToken = async () => {
+    const contract = token.trim();
+    if (!contract) {
+      setResult({ error: "Please enter a token contract address before scanning." });
+      return;
+    }
     setLoading(true);
     setResult(null);
 
@@ -15,10 +21,19 @@ export default function TokenScanner() {
       const res = await fetch(`/api/token`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ contract: token }),
+        body: JSON.stringify({ contract, chain }),
       });
 
       const data = await res.json();
+      if (process.env.NODE_ENV !== "production") console.log("[scanner] /api/token response", data);
+      if (!res.ok || data?.error) {
+        if (data?.status === "invalid_address") setResult({ error: data.error ?? "Invalid address format." });
+        else if (data?.status === "wrong_chain" || data?.status === "chain_mismatch") setResult({ error: `Token not found on ${chain === "eth" ? "Ethereum" : "Base"}. Try switching chains.` });
+        else if (data?.status === "no_pool_found" || data?.marketStatus === "no_pool_found") setResult({ error: `No active liquidity pools found on ${chain === "eth" ? "Ethereum" : "Base"} for this token.` });
+        else setResult({ error: data?.error ?? "Couldn't resolve this token." });
+        setLoading(false);
+        return;
+      }
       setResult(data);
     } catch (err) {
       setResult({ error: "Something went wrong" });
@@ -37,6 +52,13 @@ export default function TokenScanner() {
         placeholder="Enter token contract address"
         className="w-full p-3 rounded-lg bg-white/5 border border-white/10 mb-4"
       />
+      <div className="mb-4 flex gap-2">
+        {(["base", "eth"] as const).map((c) => (
+          <button key={c} type="button" onClick={() => setChain(c)} className={`px-3 py-1 rounded-full border text-xs ${chain === c ? "border-cyan-300 text-cyan-300" : "border-white/20 text-white/70"}`}>
+            {c.toUpperCase()}
+          </button>
+        ))}
+      </div>
 
       <button
         onClick={scanToken}
@@ -68,8 +90,8 @@ export default function TokenScanner() {
           <div className="p-6 bg-white/5 border border-white/10 rounded-xl">
             <p className="text-white/60 text-sm">Price (top pool)</p>
             <p className="text-2xl font-bold">
-              {result.gtPools?.[0]?.attributes?.base_token_price_usd
-                ? `$${Number(result.gtPools[0].attributes.base_token_price_usd).toFixed(6)}`
+              {result.priceUsd
+                ? `$${Number(result.priceUsd).toFixed(6)}`
                 : "N/A"}
             </p>
           </div>
@@ -77,10 +99,18 @@ export default function TokenScanner() {
           <div className="p-6 bg-white/5 border border-white/10 rounded-xl">
             <p className="text-white/60 text-sm">Liquidity (top pool)</p>
             <p className="text-2xl font-bold">
-              {result.liquidity
-                ? `$${Number(result.liquidity).toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+              {result.liquidityUsd
+                ? `$${Number(result.liquidityUsd).toLocaleString(undefined, { maximumFractionDigits: 0 })}`
                 : "N/A"}
             </p>
+          </div>
+          <div className="p-6 bg-white/5 border border-white/10 rounded-xl">
+            <p className="text-white/60 text-sm">Market Cap</p>
+            <p className="text-2xl font-bold">{result.marketCapUsd ? `$${Number(result.marketCapUsd).toLocaleString(undefined, { maximumFractionDigits: 0 })}` : "N/A"}</p>
+          </div>
+          <div className="p-6 bg-white/5 border border-white/10 rounded-xl">
+            <p className="text-white/60 text-sm">Top Holders</p>
+            <p className="text-white/80 text-sm">{Array.isArray(result.holderDistribution?.topHolders) ? `${result.holderDistribution.topHolders.length} holders loaded` : "N/A"}</p>
           </div>
 
           {result.aiSummary && (

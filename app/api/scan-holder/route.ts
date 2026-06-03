@@ -24,6 +24,7 @@ async function getContractCode(address: string): Promise<string | null> {
       params: [address, "latest"],
     }),
     cache: "no-store",
+    signal: AbortSignal.timeout(5_000),
   });
 
   if (!res.ok) return null;
@@ -176,6 +177,12 @@ function analyzeContract(bytecode: string) {
   };
 }
 
+// ─── Bytecode cache ───────────────────────────────────────────────────────────
+const BYTECODE_CACHE_TTL_MS = 10 * 60 * 1000
+const EOA_DATA = { is_proxy: false, is_upgradeable: false, is_router: false, is_locker: false, is_lp_manager: false, has_withdraw: false, has_sweep: false, has_mint: false, has_burn: false, has_rescue: false, has_external_calls: false, note: "EOA or undeployed address — no bytecode." } as const
+type BytecacheEntry = { result: ReturnType<typeof analyzeContract> | null; cachedAt: number }
+const bytecodeCache = new Map<string, BytecacheEntry>()
+
 // ─── Handler ──────────────────────────────────────────────────────────────────
 
 export async function GET(req: NextRequest) {
@@ -192,30 +199,38 @@ export async function GET(req: NextRequest) {
     );
   }
 
+  const cacheKey = address.toLowerCase()
+  const debug = req.nextUrl.searchParams.get('debug') === 'true'
+  const now = Date.now()
+  const cached = bytecodeCache.get(cacheKey)
+  if (cached && now - cached.cachedAt <= BYTECODE_CACHE_TTL_MS) {
+    const cacheAgeSeconds = Math.floor((now - cached.cachedAt) / 1000)
+    return NextResponse.json({
+      ok: true,
+      data: cached.result ?? EOA_DATA,
+      ...(debug ? { _debug: { cacheHit: true, cacheTtlSeconds: BYTECODE_CACHE_TTL_MS / 1000, cacheAgeSeconds, providerFetchNeeded: false } } : {}),
+    })
+  }
+
   try {
     const bytecode = await getContractCode(address);
 
     if (!bytecode) {
+      bytecodeCache.set(cacheKey, { result: null, cachedAt: Date.now() })
       return NextResponse.json({
         ok: true,
-        data: {
-          is_proxy: false,
-          is_upgradeable: false,
-          is_router: false,
-          is_locker: false,
-          is_lp_manager: false,
-          has_withdraw: false,
-          has_sweep: false,
-          has_mint: false,
-          has_burn: false,
-          has_rescue: false,
-          has_external_calls: false,
-          note: "EOA or undeployed address — no bytecode.",
-        },
+        data: EOA_DATA,
+        ...(debug ? { _debug: { cacheHit: false, cacheTtlSeconds: BYTECODE_CACHE_TTL_MS / 1000, cacheAgeSeconds: null, providerFetchNeeded: true } } : {}),
       });
     }
 
-    return NextResponse.json({ ok: true, data: analyzeContract(bytecode) });
+    const analysis = analyzeContract(bytecode)
+    bytecodeCache.set(cacheKey, { result: analysis, cachedAt: Date.now() })
+    return NextResponse.json({
+      ok: true,
+      data: analysis,
+      ...(debug ? { _debug: { cacheHit: false, cacheTtlSeconds: BYTECODE_CACHE_TTL_MS / 1000, cacheAgeSeconds: null, providerFetchNeeded: true } } : {}),
+    });
   } catch {
     return NextResponse.json(
       { ok: false, error: "Contract analysis failed." },
