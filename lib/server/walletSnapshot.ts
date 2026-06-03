@@ -1424,8 +1424,29 @@ const BEHAVIOR_EMPTY: WalletBehavior = {
   recentActivitySummary: 'Activity data unavailable.', reason: '',
 }
 
+function normalizeMoralisTransfers(
+  items: MoralisTransferItem[],
+  address: string,
+  chainName: string,
+): { events: PnlEvent[]; debug: NormalizeMoralisDebug } {
+  const lower = address.toLowerCase()
+  const out: PnlEvent[] = []
+  let skippedNotWalletSide = 0
+  let skippedMissingHash = 0
+  let skippedMissingTimestamp = 0
+  let skippedMissingTokenAddress = 0
+  let skippedMissingAmount = 0
+  let skippedInvalidAmount = 0
+  let skippedSpam = 0
+  const skippedReasons: Array<{ reason: string; idx: number }> = []
+
   for (let idx = 0; idx < items.length; idx++) {
     const it = items[idx]
+    if (it.possible_spam === true) {
+      skippedSpam++
+      if (skippedReasons.length < 5) skippedReasons.push({ reason: 'possible_spam', idx })
+      continue
+    }
     if (!it.transaction_hash) {
       skippedMissingHash++
       if (skippedReasons.length < 5) skippedReasons.push({ reason: 'missing_hash', idx })
