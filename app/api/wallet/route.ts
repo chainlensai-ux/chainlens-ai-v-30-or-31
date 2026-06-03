@@ -10,6 +10,22 @@ import {
   writePersistentCooldown,
 } from '@/lib/server/walletScanPersistentCache'
 
+function corsHeaders(origin: string | null): Record<string, string> {
+  const headers: Record<string, string> = {}
+  if (origin && origin.endsWith('.vercel.app')) {
+    headers['Access-Control-Allow-Origin'] = origin
+    headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+    headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+    headers['Access-Control-Max-Age'] = '86400'
+  }
+  return headers
+}
+
+export async function OPTIONS(req: Request) {
+  const origin = req.headers.get('origin')
+  return new Response(null, { status: 200, headers: corsHeaders(origin) })
+}
+
 const WALLET_BASIC_CACHE_TTL_MS  = 5  * 60 * 1000  // 5 min for basic scans
 const WALLET_DEEP_CACHE_TTL_MS   = 15 * 60 * 1000  // 15 min for deep scans
 const WALLET_DEEP_COOLDOWN_MS    = 10 * 60 * 1000  // 10 min cooldown per wallet after deep live scan
@@ -141,22 +157,6 @@ async function walletPlan(req: Request): Promise<'free' | 'pro' | 'elite'> {
 }
 function walletIp(req: Request): string { return req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown' }
 async function walletAllowed(req: Request): Promise<boolean> { const plan=await walletPlan(req); const key=`${plan}:${walletIp(req)}`; const now=Date.now(); const cur=walletRate.get(key); const lim=WALLET_RATE_BY_PLAN[plan]; if(!cur||cur.resetAt<=now){walletRate.set(key,{count:1,resetAt:now+60000}); return true} if(cur.count>=lim)return false; cur.count+=1; return true }
-
-function corsHeaders(origin: string | null): Record<string, string> {
-  const headers: Record<string, string> = {}
-  if (origin && origin.endsWith('.vercel.app')) {
-    headers['Access-Control-Allow-Origin'] = origin
-    headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
-    headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
-    headers['Access-Control-Max-Age'] = '86400'
-  }
-  return headers
-}
-
-export async function OPTIONS(req: Request) {
-  const origin = req.headers.get('origin')
-  return new Response(null, { status: 200, headers: corsHeaders(origin) })
-}
 
 export async function POST(req: Request) {
   const _origin = req.headers.get('origin')
