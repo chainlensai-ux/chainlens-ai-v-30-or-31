@@ -3034,6 +3034,211 @@ function buildTradeStatsSummary(
   }
 }
 
+// buildPerSwapTradeStats: fallback trade stats when FIFO closedLots === 0.
+// Groups priced events by txHash; treats every tx that has both a priced buy
+// and a priced sell as a single closed "trade" and computes per-swap PnL.
+function buildPerSwapTradeStats(
+  pricedEvidence: WalletTxEvidence[],
+  activityRequested: boolean
+): {
+  summary: WalletSnapshot['walletTradeStatsSummary']
+  debug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['walletTradeStatsDebug']>
+} {
+  const WIN_RATE_THRESHOLD = 10
+  const DUST_LOT_THRESHOLD = 25
+  const BREAK_EVEN_EPSILON = 0.01
+
+  const emptyResult = (missing: string[]) => ({
+    summary: {
+      status: 'open_check' as const, closedLots: 0, uniqueTokensTraded: 0,
+      realizedPnlUsd: null, realizedPnlPercent: null,
+      winningClosedLots: 0, losingClosedLots: 0, breakEvenClosedLots: 0,
+      winRatePercent: null, avgPnlUsdPerClosedLot: null,
+      avgReturnPercentPerClosedLot: null, medianReturnPercentPerClosedLot: null,
+      avgHoldingTimeSeconds: null, medianHoldingTimeSeconds: null,
+      largestWinUsd: null, largestLossUsd: null,
+      confidence: 'open_check' as const, sampleSizeLabel: 'insufficient' as const,
+      readyForWalletScore: false,
+      meaningfulClosedLots: 0, dustClosedLots: 0, meaningfulCostBasisUsd: 0,
+      avgCostBasisPerClosedLot: null,
+      economicSignificance: 'open_check' as const, economicSignificanceReason: 'no_closed_lots',
+      missing,
+    },
+    debug: {
+      closedLots: 0, uniqueTokensTraded: 0, winningClosedLots: 0, losingClosedLots: 0,
+      breakEvenClosedLots: 0, winRateComputed: false, winRateThreshold: WIN_RATE_THRESHOLD,
+      avgPnlUsdPerClosedLot: null, avgReturnPercentPerClosedLot: null,
+      medianReturnPercentPerClosedLot: null, avgHoldingTimeSeconds: null,
+      medianHoldingTimeSeconds: null, largestWinUsd: null, largestLossUsd: null,
+      confidence: 'open_check', sampleSizeLabel: 'insufficient',
+      sampleWinningLots: [] as Array<{ tokenAddress: string; symbol: string; realizedPnlUsd: number; realizedPnlPercent: number | null; confidence: string }>,
+      sampleLosingLots: [] as Array<{ tokenAddress: string; symbol: string; realizedPnlUsd: number; realizedPnlPercent: number | null; confidence: string }>,
+      reasons: missing,
+      economicSignificance: {
+        meaningfulClosedLots: 0, dustClosedLots: 0, meaningfulCostBasisUsd: 0,
+        dustCostBasisUsd: 0, avgCostBasisPerClosedLot: null,
+        economicallyMeaningful: false, reason: 'no_closed_lots',
+      },
+    },
+  })
+
+  if (!activityRequested) return emptyResult(['activity_not_requested'])
+
+  // Group priced events by txHash — skip quote assets as PnL-side tokens
+  type TxBucket = { buys: WalletTxEvidence[]; sells: WalletTxEvidence[]; timestamp: string | null }
+  const tradesByTx = new Map<string, TxBucket>()
+
+  for (const e of pricedEvidence) {
+    if (e.priceAtTime?.status !== 'priced' || !e.priceAtTime.priceUsd) continue
+    if (!e.txHash) continue
+    if (e.direction !== 'buy' && e.direction !== 'sell') continue
+    if (QUOTE_ASSET_CONTRACTS[e.contract.toLowerCase()]) continue
+
+    let bucket = tradesByTx.get(e.txHash)
+    if (!bucket) {
+      bucket = { buys: [], sells: [], timestamp: e.timestamp }
+      tradesByTx.set(e.txHash, bucket)
+    }
+    if (!bucket.timestamp && e.timestamp) bucket.timestamp = e.timestamp
+    if (e.direction === 'buy') bucket.buys.push(e)
+    else bucket.sells.push(e)
+  }
+
+  type PerSwapTrade = {
+    txHash: string
+    pnlUsd: number
+    costBasisUsd: number
+    returnPercent: number | null
+    timestamp: string | null
+    symbols: string[]
+  }
+
+  const closedTrades: PerSwapTrade[] = []
+
+  for (const [txHash, bucket] of tradesByTx) {
+    if (bucket.buys.length === 0 || bucket.sells.length === 0) continue
+
+    const buyUsd = bucket.buys.reduce((sum, e) => {
+      const amt = parseRawAmount(e.amountRaw, e.tokenDecimals) ?? e.amount
+      return sum + amt * e.priceAtTime!.priceUsd!
+    }, 0)
+    const sellUsd = bucket.sells.reduce((sum, e) => {
+      const amt = parseRawAmount(e.amountRaw, e.tokenDecimals) ?? e.amount
+      return sum + amt * e.priceAtTime!.priceUsd!
+    }, 0)
+
+    if (!isFinite(buyUsd) || !isFinite(sellUsd) || buyUsd <= 0) continue
+
+    const pnlUsd = sellUsd - buyUsd
+    const returnPercent = buyUsd > 0 ? (pnlUsd / buyUsd) * 100 : null
+    const symbols = [...new Set([...bucket.buys.map(e => e.symbol), ...bucket.sells.map(e => e.symbol)])]
+    closedTrades.push({ txHash, pnlUsd, costBasisUsd: buyUsd, returnPercent, timestamp: bucket.timestamp, symbols })
+  }
+
+  if (closedTrades.length === 0) return emptyResult(['no_per_swap_trades'])
+
+  const n = closedTrades.length
+  const winning = closedTrades.filter(t => t.pnlUsd > BREAK_EVEN_EPSILON)
+  const losing  = closedTrades.filter(t => t.pnlUsd < -BREAK_EVEN_EPSILON)
+  const breakEven = closedTrades.filter(t => Math.abs(t.pnlUsd) <= BREAK_EVEN_EPSILON)
+
+  const totalRealizedPnl = closedTrades.reduce((s, t) => s + t.pnlUsd, 0)
+  const totalCostBasis   = closedTrades.reduce((s, t) => s + t.costBasisUsd, 0)
+  const realizedPnlPercent = totalCostBasis > 0 ? (totalRealizedPnl / totalCostBasis) * 100 : null
+  const avgCostBasisPerClosedLot = n > 0 ? totalCostBasis / n : null
+
+  const uniqueTokensTraded = new Set(closedTrades.flatMap(t => t.symbols)).size
+
+  const meaningfulTrades = closedTrades.filter(t => t.costBasisUsd >= DUST_LOT_THRESHOLD)
+  const dustTrades        = closedTrades.filter(t => t.costBasisUsd < DUST_LOT_THRESHOLD)
+  const meaningfulClosedLots   = meaningfulTrades.length
+  const dustClosedLots         = dustTrades.length
+  const meaningfulCostBasisUsd = meaningfulTrades.reduce((s, t) => s + t.costBasisUsd, 0)
+  const dustCostBasisUsd       = dustTrades.reduce((s, t) => s + t.costBasisUsd, 0)
+
+  let economicallyMeaningful = false
+  let economicSignificanceReason = ''
+  if (meaningfulClosedLots >= 5 && meaningfulCostBasisUsd >= 500) {
+    economicallyMeaningful = true; economicSignificanceReason = 'meaningful_lots_gte_5_and_basis_gte_500'
+  } else if (totalCostBasis >= 1000 && meaningfulClosedLots >= 3) {
+    economicallyMeaningful = true; economicSignificanceReason = 'total_basis_gte_1000_and_meaningful_lots_gte_3'
+  } else if (Math.abs(totalRealizedPnl) >= 50 && totalCostBasis >= 250) {
+    economicallyMeaningful = true; economicSignificanceReason = 'realized_pnl_gte_50_and_basis_gte_250'
+  } else {
+    economicSignificanceReason = meaningfulClosedLots === 0
+      ? 'no_meaningful_lots'
+      : `meaningful_lots_${meaningfulClosedLots}_basis_${Math.round(meaningfulCostBasisUsd)}`
+  }
+
+  const economicSignificance: 'meaningful' | 'micro_sample' | 'open_check' =
+    economicallyMeaningful ? 'meaningful' : 'micro_sample'
+
+  type Status = 'ok' | 'partial' | 'open_check'
+  type Confidence = 'high' | 'medium' | 'low' | 'open_check'
+  type SampleLabel = 'insufficient' | 'early' | 'developing' | 'strong' | 'micro_sample'
+  let summaryStatus: Status
+  let confidence: Confidence
+  let sampleSizeLabel: SampleLabel
+  if      (n >= 25 && economicallyMeaningful) { summaryStatus = 'ok';      confidence = 'medium'; sampleSizeLabel = 'strong' }
+  else if (n >= 10 && economicallyMeaningful) { summaryStatus = 'ok';      confidence = 'medium'; sampleSizeLabel = 'developing' }
+  else if (n >= 5  && economicallyMeaningful) { summaryStatus = 'partial'; confidence = 'low';    sampleSizeLabel = 'early' }
+  else if (!economicallyMeaningful)           { summaryStatus = 'partial'; confidence = 'low';    sampleSizeLabel = 'micro_sample' }
+  else                                        { summaryStatus = 'partial'; confidence = 'low';    sampleSizeLabel = 'insufficient' }
+
+  const winRateComputed = n >= WIN_RATE_THRESHOLD && economicallyMeaningful
+  const winRatePercent = winRateComputed ? (winning.length / n) * 100 : null
+  const avgPnlUsdPerClosedLot = totalRealizedPnl / n
+
+  const returnPcts = closedTrades.map(t => t.returnPercent).filter((v): v is number => v !== null)
+  const avgReturnPercentPerClosedLot = returnPcts.length > 0 ? returnPcts.reduce((s, v) => s + v, 0) / returnPcts.length : null
+  const medianReturnPercentPerClosedLot = numMedian(returnPcts)
+
+  const largestWinUsd  = winning.length > 0 ? Math.max(...winning.map(t => t.pnlUsd)) : null
+  const largestLossUsd = losing.length  > 0 ? Math.min(...losing.map(t => t.pnlUsd))  : null
+
+  const missing: string[] = ['per_swap_fallback_mode']
+  if (!winRateComputed)          missing.push('sample_size_below_win_rate_threshold')
+  if (!economicallyMeaningful)   missing.push('micro_trade_sample')
+
+  const abbr = (h: string) => `${h.slice(0, 8)}...${h.slice(-6)}`
+
+  return {
+    summary: {
+      status: summaryStatus, closedLots: n, uniqueTokensTraded,
+      realizedPnlUsd: totalRealizedPnl, realizedPnlPercent,
+      winningClosedLots: winning.length, losingClosedLots: losing.length, breakEvenClosedLots: breakEven.length,
+      winRatePercent, avgPnlUsdPerClosedLot, avgReturnPercentPerClosedLot,
+      medianReturnPercentPerClosedLot, avgHoldingTimeSeconds: null, medianHoldingTimeSeconds: null,
+      largestWinUsd, largestLossUsd, confidence, sampleSizeLabel,
+      readyForWalletScore: n >= WIN_RATE_THRESHOLD && economicallyMeaningful,
+      meaningfulClosedLots, dustClosedLots, meaningfulCostBasisUsd,
+      avgCostBasisPerClosedLot, economicSignificance, economicSignificanceReason,
+      missing,
+    },
+    debug: {
+      closedLots: n, uniqueTokensTraded,
+      winningClosedLots: winning.length, losingClosedLots: losing.length, breakEvenClosedLots: breakEven.length,
+      winRateComputed, winRateThreshold: WIN_RATE_THRESHOLD,
+      avgPnlUsdPerClosedLot, avgReturnPercentPerClosedLot, medianReturnPercentPerClosedLot,
+      avgHoldingTimeSeconds: null, medianHoldingTimeSeconds: null,
+      largestWinUsd, largestLossUsd, confidence, sampleSizeLabel,
+      sampleWinningLots: winning.slice(0, 5).map(t => ({
+        tokenAddress: abbr(t.txHash), symbol: t.symbols.join('/'),
+        realizedPnlUsd: t.pnlUsd, realizedPnlPercent: t.returnPercent, confidence,
+      })),
+      sampleLosingLots: losing.slice(0, 5).map(t => ({
+        tokenAddress: abbr(t.txHash), symbol: t.symbols.join('/'),
+        realizedPnlUsd: t.pnlUsd, realizedPnlPercent: t.returnPercent, confidence,
+      })),
+      reasons: missing,
+      economicSignificance: {
+        meaningfulClosedLots, dustClosedLots, meaningfulCostBasisUsd, dustCostBasisUsd,
+        avgCostBasisPerClosedLot, economicallyMeaningful, reason: economicSignificanceReason,
+      },
+    },
+  }
+}
+
 async function fetchGoldrushHistoricalPrice(chain: string, contractAddress: string, timestamp: string, reqCache?: Map<string, number | null>): Promise<{ priceUsd: number | null; cacheHit: boolean; providerAttempted: boolean; error: boolean }> {
   if (!GOLDRUSH_KEY || !contractAddress.startsWith('0x')) return { priceUsd: null, cacheHit: false, providerAttempted: false, error: false }
   const dateStr = timestamp.slice(0, 10)
@@ -4313,6 +4518,13 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   _pricedEvidence = normalizeSingleLegEventsForFifo(_pricedEvidence)
   let { summary: walletLotSummary, debug: _lotEngineDebug, closedLots: _closedLots } = buildFifoLotEngine(_pricedEvidence, activityRequested)
   let { summary: walletTradeStatsSummary, debug: _tradeStatsDebug } = buildTradeStatsSummary(_closedLots, activityRequested)
+  if (_closedLots.length === 0 && activityRequested) {
+    const _perSwap = buildPerSwapTradeStats(_pricedEvidence, activityRequested)
+    if (_perSwap.summary.closedLots > 0) {
+      walletTradeStatsSummary = _perSwap.summary
+      _tradeStatsDebug = _perSwap.debug
+    }
+  }
 
   // Capture page-1 FIFO state for pagination debug telemetry
   if (_moralisFbDebug.fallbackActivityUsed) {
@@ -4399,6 +4611,13 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       _pricedEvidence = normalizeSingleLegEventsForFifo(_pricedEvidence)
       ;({ summary: walletLotSummary, debug: _lotEngineDebug, closedLots: _closedLots } = buildFifoLotEngine(_pricedEvidence, activityRequested))
       ;({ summary: walletTradeStatsSummary, debug: _tradeStatsDebug } = buildTradeStatsSummary(_closedLots, activityRequested))
+      if (_closedLots.length === 0 && activityRequested) {
+        const _perSwap = buildPerSwapTradeStats(_pricedEvidence, activityRequested)
+        if (_perSwap.summary.closedLots > 0) {
+          walletTradeStatsSummary = _perSwap.summary
+          _tradeStatsDebug = _perSwap.debug
+        }
+      }
       const meaningfulCheck = hasMeaningfulClosedLotEvidence(walletLotSummary, _closedLots)
       if (meaningfulCheck.result) {
         fbPaginationStoppedReason = 'meaningful_closed_lot_evidence_found'
