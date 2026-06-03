@@ -766,6 +766,14 @@ export type WalletSnapshot = {
       missingFields: string[]
       reason: string
     }
+    apiAudit?: {
+      moralis: { calls: number; endpoints: string[]; credits: number }
+      goldrush: { calls: number; endpoints: string[]; credits: number }
+      alchemy: { calls: number; endpoints: string[]; credits: number }
+      duplicates: string[]
+      warnings: string[]
+      totalCredits: number
+    }
   }
 }
 
@@ -1725,6 +1733,7 @@ function buildHistoricalCandidateComparison(
 async function buildHistoricalPricingPreview(
   newCandidateEvidence: WalletTxEvidence[],
   allHistoricalEvidence: WalletTxEvidence[],
+  reqCache?: Map<string, number | null>
 ): Promise<{
   summary: WalletSnapshot['walletHistoricalPricingPreviewSummary']
   debug: NonNullable<WalletSnapshot['_diagnostics']>['walletHistoricalPricingPreviewDebug']
@@ -1825,7 +1834,7 @@ async function buildHistoricalPricingPreview(
           continue
         }
         priceAttempts++
-        const result = await fetchGoldrushHistoricalPrice(wl.chain, wl.contract, e.timestamp)
+        const result = await fetchGoldrushHistoricalPrice(wl.chain, wl.contract, e.timestamp, reqCache)
         if (result.priceUsd !== null) {
           const wethAmt = parseRawAmount(wl.amountRaw, wl.tokenDecimals) ?? wl.amount
           if (wethAmt > 0) {
@@ -1848,7 +1857,7 @@ async function buildHistoricalPricingPreview(
       continue
     }
     priceAttempts++
-    const histResult = await fetchGoldrushHistoricalPrice(e.chain, e.contract, e.timestamp)
+    const histResult = await fetchGoldrushHistoricalPrice(e.chain, e.contract, e.timestamp, reqCache)
     if (histResult.priceUsd !== null) {
       pricedHistoricalCandidates++; historicalPricedEventsCount++
       pricedEvidenceItems.push(markPriced(e, histResult.priceUsd, 'historical_price', 'medium', 'Historical token price from on-chain pricing data'))
@@ -2728,13 +2737,15 @@ function buildTradeStatsSummary(
   }
 }
 
-async function fetchGoldrushHistoricalPrice(chain: string, contractAddress: string, timestamp: string): Promise<{ priceUsd: number | null; cacheHit: boolean; providerAttempted: boolean; error: boolean }> {
+async function fetchGoldrushHistoricalPrice(chain: string, contractAddress: string, timestamp: string, reqCache?: Map<string, number | null>): Promise<{ priceUsd: number | null; cacheHit: boolean; providerAttempted: boolean; error: boolean }> {
   if (!GOLDRUSH_KEY || !contractAddress.startsWith('0x')) return { priceUsd: null, cacheHit: false, providerAttempted: false, error: false }
   const dateStr = timestamp.slice(0, 10)
   if (!dateStr || dateStr.length !== 10) return { priceUsd: null, cacheHit: false, providerAttempted: false, error: false }
+  const reqKey = `${chain}:${contractAddress.toLowerCase()}:${dateStr}`
+  if (reqCache?.has(reqKey)) return { priceUsd: reqCache.get(reqKey) ?? null, cacheHit: true, providerAttempted: false, error: false }
   const cacheKey = `pat:${chain}:${contractAddress.toLowerCase()}:${dateStr}`
   const cached = priceAtTimeMemCache.get(cacheKey)
-  if (cached && cached.exp > Date.now()) return { priceUsd: cached.priceUsd, cacheHit: true, providerAttempted: false, error: false }
+  if (cached && cached.exp > Date.now()) { reqCache?.set(reqKey, cached.priceUsd); return { priceUsd: cached.priceUsd, cacheHit: true, providerAttempted: false, error: false } }
   const toDate = new Date(new Date(dateStr).getTime() + 2 * 24 * 3600 * 1000).toISOString().slice(0, 10)
   const url = `https://api.covalenthq.com/v1/pricing/historical_by_addresses_v2/${chain}/USD/${contractAddress.toLowerCase()}/?from=${dateStr}&to=${toDate}`
   try {
@@ -2745,6 +2756,7 @@ async function fetchGoldrushHistoricalPrice(chain: string, contractAddress: stri
     })
     if (!res.ok) {
       priceAtTimeMemCache.set(cacheKey, { exp: Date.now() + 5 * 60 * 1000, priceUsd: null })
+      reqCache?.set(reqKey, null)
       return { priceUsd: null, cacheHit: false, providerAttempted: true, error: true }
     }
     const json = await res.json() as Record<string, unknown>
@@ -2754,16 +2766,19 @@ async function fetchGoldrushHistoricalPrice(chain: string, contractAddress: stri
     const priceEntry = prices.find((p: unknown) => typeof (p as Record<string, unknown>).date === 'string' && ((p as Record<string, unknown>).date as string).slice(0, 10) === dateStr) ?? prices[0]
     const priceUsd = typeof (priceEntry as Record<string, unknown>)?.price === 'number' ? (priceEntry as Record<string, unknown>).price as number : null
     priceAtTimeMemCache.set(cacheKey, { exp: Date.now() + PRICE_AT_TIME_TTL_MS, priceUsd })
+    reqCache?.set(reqKey, priceUsd)
     return { priceUsd, cacheHit: false, providerAttempted: true, error: false }
   } catch {
     priceAtTimeMemCache.set(cacheKey, { exp: Date.now() + 5 * 60 * 1000, priceUsd: null })
+    reqCache?.set(reqKey, null)
     return { priceUsd: null, cacheHit: false, providerAttempted: true, error: true }
   }
 }
 
 async function buildPriceAtTimeEvidence(
   evidenceWithDetection: WalletTxEvidence[],
-  activityRequested: boolean
+  activityRequested: boolean,
+  reqCache?: Map<string, number | null>
 ): Promise<{
   evidenceWithPricing: WalletTxEvidence[]
   summary: WalletSnapshot['walletPriceEvidenceSummary']
@@ -2891,7 +2906,7 @@ async function buildPriceAtTimeEvidence(
           continue
         }
         priceAttempts++
-        const result = await fetchGoldrushHistoricalPrice(wl.chain, wl.contract, e.timestamp)
+        const result = await fetchGoldrushHistoricalPrice(wl.chain, wl.contract, e.timestamp, reqCache)
         if (result.cacheHit) cacheHits++; else cacheMisses++
         if (result.providerAttempted) providerAttempts++
         if (result.error) providerErrors++
@@ -2915,7 +2930,7 @@ async function buildPriceAtTimeEvidence(
       continue
     }
     priceAttempts++
-    const histResult = await fetchGoldrushHistoricalPrice(e.chain, e.contract, e.timestamp)
+    const histResult = await fetchGoldrushHistoricalPrice(e.chain, e.contract, e.timestamp, reqCache)
     if (histResult.cacheHit) cacheHits++; else cacheMisses++
     if (histResult.providerAttempted) providerAttempts++
     if (histResult.error) providerErrors++
@@ -3438,7 +3453,11 @@ export function validateWalletFactsShape(snapshot: WalletSnapshot): WalletSnapsh
 export async function fetchWalletSnapshot(address: string, options: WalletSnapshotOptions = {}): Promise<WalletSnapshot> {
   const { refresh = false, chain: requestedChain = 'base', deepScan = false, deepActivity = false, chainMode = 'auto', historicalCoverage = false, maxHistoricalPages: rawMaxHistoricalPages, maxFallbackPages: rawMaxFallbackPages } = options
   const clampedMaxHistoricalPages = Math.max(1, Math.min(5, rawMaxHistoricalPages ?? 3))
-  const clampedMaxFallbackPages = Math.max(1, Math.min(3, rawMaxFallbackPages ?? 2))
+  const MAX_MORALIS_FALLBACK_PAGES = 5
+  const clampedMaxFallbackPages = Math.max(1, Math.min(MAX_MORALIS_FALLBACK_PAGES, rawMaxFallbackPages ?? 2))
+  // Per-request price cache: prevents duplicate GoldRush historical price calls within a single scan
+  // when the same contract/date appears in both base evidence and historical coverage pipelines.
+  const _reqPriceCache = new Map<string, number | null>()
   // activityRequested: true when either deepScan (full holdings+activity) or deepActivity (activity-only) is set
   const activityRequested = deepScan || deepActivity
   // Separate address normalisation from cache key so regex validation always checks the address portion only
@@ -3897,7 +3916,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     const _skipReason = !activityRequested ? 'activity_not_requested' : walletSwapSummary.swapCandidateEvents > 0 ? 'swap_candidates_already_present' : 'no_events'
     _swapEnrichmentDebug = { skipped: true, reason: _skipReason, candidateTxCount: 0, receiptsFetched: 0, enrichedTxCount: 0, cacheHits: 0, errors: 0, enrichedTxHashes: [] }
   }
-  let { evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested)
+  let { evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache)
   let { summary: walletLotSummary, debug: _lotEngineDebug, closedLots: _closedLots } = buildFifoLotEngine(_pricedEvidence, activityRequested)
   let { summary: walletTradeStatsSummary, debug: _tradeStatsDebug } = buildTradeStatsSummary(_closedLots, activityRequested)
 
@@ -3980,7 +3999,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       // Re-run pipeline on merged events
       ;({ evidenceList, summary: walletEvidenceSummary, debug: _txEvidenceDebugBase } = buildTxEvidenceFromEvents(allFbEvents, activityRequested, activityProviderUnavailable))
       ;({ evidenceWithDetection: _swapEvidenceWithDetection, summary: walletSwapSummary, debug: _swapDetectionDebug } = buildSwapDetection(evidenceList, activityRequested, addrNorm))
-      ;({ evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested))
+      ;({ evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache))
       ;({ summary: walletLotSummary, debug: _lotEngineDebug, closedLots: _closedLots } = buildFifoLotEngine(_pricedEvidence, activityRequested))
       ;({ summary: walletTradeStatsSummary, debug: _tradeStatsDebug } = buildTradeStatsSummary(_closedLots, activityRequested))
       const meaningfulCheck = hasMeaningfulClosedLotEvidence(walletLotSummary, _closedLots)
@@ -4067,7 +4086,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // Phase 6C: Historical pricing preview — price only the Phase 6B new swap candidates
   const { summary: walletHistoricalPricingPreviewSummary, debug: _historicalPricingPreviewDebug, pricedEvidence: _hcNewPricedEvidence } =
     _runHistoricalCoverage && _hcNewCandidateEvidence.length > 0
-      ? await buildHistoricalPricingPreview(_hcNewCandidateEvidence, _hcAllHistoricalEvidence)
+      ? await buildHistoricalPricingPreview(_hcNewCandidateEvidence, _hcAllHistoricalEvidence, _reqPriceCache)
       : { summary: { status: 'not_requested' as const, requested: false, newSwapCandidateEvents: 0, pricedHistoricalCandidates: 0, unpricedHistoricalCandidates: 0, stableLegPricedEvents: 0, wethLegPricedEvents: 0, historicalPricedEvents: 0, priceAttemptLimitReached: false, readyForHistoricalFifoPreview: false, missing: ['historical_coverage_not_requested'], reason: null }, debug: undefined, pricedEvidence: [] as WalletTxEvidence[] }
 
   // Phase 6D: Historical FIFO preview — run FIFO on baseline + new priced historical candidates
@@ -4230,6 +4249,61 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const hasHistory = estimatedPnl.status !== 'unavailable'
   const snapshotTtlMs = hasHistory ? SNAPSHOT_HISTORY_TTL_MS : SNAPSHOT_TTL_MS
   const { facts: walletFacts, debug: _walletFactsDebug } = buildWalletFacts(holdings, totalValue, _swapEvidenceWithDetection, addrNorm, _closedLots.length)
+
+  // Build unified apiAudit from collected diagnostic data
+  const _grBalanceCalls = (!_goldrushBalancesSkipped && Boolean(GOLDRUSH_KEY)) ? 2 : 0
+  const _grActivityBase = activityRequested && Boolean(GOLDRUSH_KEY) ? 1 : 0
+  const _grActivityEth = _grEthAttempted ? 1 : 0
+  const _grHcPages = _historicalCoverageDebug?.pagesAttempted ?? 0
+  const _grPriceProviderAttempts = (_priceAtTimeDebug?.providerAttempts ?? 0) + (_historicalPricingPreviewDebug?.priceAttempts ?? 0)
+  const _grTotalCalls = _grBalanceCalls + _grActivityBase + _grActivityEth + _grHcPages + _grPriceProviderAttempts
+  const _moralisLiveBalanceCalls = [..._moralisByChain.values()].filter(r => r.attempted && !r.cacheHit).length + (_moralisResult.attempted && !_moralisResult.cacheHit ? 1 : 0)
+  const _moralisFbLiveCalls = _moralisFbDebug.fallbackActivityAttempted ? _moralisFbDebug.fallbackPagesAttempted : 0
+  const _moralisTotalCalls = _moralisLiveBalanceCalls + _moralisFbLiveCalls
+  const _alchemyReceiptCalls = _swapEnrichmentDebug.skipped ? 0 : (_swapEnrichmentDebug.receiptsFetched - _swapEnrichmentDebug.cacheHits)
+  const _alchemyBaseCalls = (useEthAlchemy ? 1 : 0) + 1 + 1 + (Boolean(ALCHEMY_BASE_KEY) ? 2 : 0) + (deepScan && Boolean(ALCHEMY_BASE_KEY) ? 2 : 0) + _alchemyReceiptCalls
+  const _apiTotalCredits = _grTotalCalls + _moralisTotalCalls
+  const _apiWarnings: string[] = []
+  if (_apiTotalCredits > 5) _apiWarnings.push(`total_credits_${_apiTotalCredits}_exceeds_target_5`)
+  if (_moralisTotalCalls > 3) _apiWarnings.push(`moralis_${_moralisTotalCalls}_calls_expected_3`)
+  if (_grTotalCalls > 4) _apiWarnings.push(`goldrush_${_grTotalCalls}_calls_expected_4`)
+  if (_alchemyBaseCalls > 8) _apiWarnings.push(`alchemy_${_alchemyBaseCalls}_calls_expected_8`)
+  const _apiAudit = {
+    moralis: {
+      calls: _moralisTotalCalls,
+      endpoints: [
+        ...Array(_moralisLiveBalanceCalls).fill('erc20_holdings'),
+        ...Array(_moralisFbLiveCalls).fill('erc20_transfers'),
+      ],
+      credits: _moralisTotalCalls,
+    },
+    goldrush: {
+      calls: _grTotalCalls,
+      endpoints: [
+        ...Array(_grBalanceCalls).fill('balances_v2'),
+        ...(_grActivityBase ? ['transactions_v3_base'] : []),
+        ...(_grActivityEth ? ['transactions_v3_eth'] : []),
+        ...Array(_grHcPages).fill('log_events_by_address'),
+        ...Array(_grPriceProviderAttempts).fill('historical_by_addresses_v2'),
+      ],
+      credits: _grTotalCalls,
+    },
+    alchemy: {
+      calls: _alchemyBaseCalls,
+      endpoints: [
+        ...(useEthAlchemy ? ['getFirstTx_eth'] : []),
+        'getFirstTx_base',
+        'eth_getTransactionCount',
+        ...(Boolean(ALCHEMY_BASE_KEY) ? ['alchemy_getAssetTransfers_from', 'alchemy_getAssetTransfers_to'] : []),
+        ...(deepScan && Boolean(ALCHEMY_BASE_KEY) ? ['behavior_getAssetTransfers_from', 'behavior_getAssetTransfers_to'] : []),
+        ...Array(_alchemyReceiptCalls).fill('eth_getTransactionReceipt'),
+      ],
+      credits: 0,
+    },
+    duplicates: [] as string[],
+    warnings: _apiWarnings,
+    totalCredits: _apiTotalCredits,
+  }
   const snapshot: WalletSnapshot = {
     address: addr,
     totalValue,
@@ -4404,6 +4478,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       },
       walletSwapEnrichmentDebug: _swapEnrichmentDebug,
       walletFactsDebug: _walletFactsDebug,
+      apiAudit: _apiAudit,
     },
   }
   validateWalletFactsShape(snapshot)

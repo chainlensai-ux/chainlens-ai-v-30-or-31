@@ -586,6 +586,7 @@ export async function POST(req: Request) {
         walletHistoricalFifoPreviewDebug: snapshot._diagnostics?.walletHistoricalFifoPreviewDebug ?? null,
         walletBudgetDebug: snapshot._diagnostics?.walletBudgetDebug ?? null,
         walletFactsDebug: snapshot._diagnostics?.walletFactsDebug ?? null,
+        apiAudit: snapshot._diagnostics?.apiAudit ?? null,
         walletModuleCoverageRaw: {
           portfolioProvider: providers.goldrush?.configured ? 'goldrush' : providers.zerion?.configured ? 'zerion' : 'none',
           activityProvider: snapshot._diagnostics?.walletActivityFallbackDebug?.fallbackActivityProvider ?? (providers.goldrush?.configured ? 'goldrush' : 'none'),
