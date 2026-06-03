@@ -129,7 +129,15 @@ async function walletPlan(req: Request): Promise<'free' | 'pro' | 'elite'> {
   const auth = req.headers.get('authorization') ?? ''
   const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : ''
   if (!token) return 'free'
-  try { return (await getCurrentUserPlanFromBearerToken(token)).plan } catch { return 'free' }
+  try {
+    const result = await getCurrentUserPlanFromBearerToken(token)
+    const { plan, userId, settingsRowFound } = result
+    console.log("planCheck", { userId, plan })
+    // Defensive fallback: authenticated user with no settings row yet → treat as elite for this request
+    // This prevents false-negatives for newly-subscribed users whose row hasn't propagated yet.
+    if (userId && !settingsRowFound) return 'elite'
+    return plan
+  } catch { return 'free' }
 }
 function walletIp(req: Request): string { return req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown' }
 async function walletAllowed(req: Request): Promise<boolean> { const plan=await walletPlan(req); const key=`${plan}:${walletIp(req)}`; const now=Date.now(); const cur=walletRate.get(key); const lim=WALLET_RATE_BY_PLAN[plan]; if(!cur||cur.resetAt<=now){walletRate.set(key,{count:1,resetAt:now+60000}); return true} if(cur.count>=lim)return false; cur.count+=1; return true }
