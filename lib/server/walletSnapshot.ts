@@ -997,7 +997,7 @@ export type WalletSnapshotOptions = {
 
 const SNAPSHOT_TTL_MS         = 5  * 60 * 1000
 const SNAPSHOT_HISTORY_TTL_MS = 15 * 60 * 1000
-const SNAPSHOT_SCHEMA_VERSION = 'v8'
+const SNAPSHOT_SCHEMA_VERSION = 'v9'
 type SnapshotCacheEntry = { snapshot: WalletSnapshot; cachedAt: number; ttlMs: number }
 const snapshotMemCache = new Map<string, SnapshotCacheEntry>()
 
@@ -5094,9 +5094,12 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     skippedNoPaymentLeg: 0, skippedNoInboundToken: 0, skippedNoPriceEvidence: 0, skippedBudgetCap: 0,
     providerErrors: 0, sampleMatches: [],
   }
+  // Run Base recon when: (a) not using ETH Alchemy, OR (b) chainMode includes Base (base_eth/all_supported)
+  // so that Base-leg events from multi-chain scans also get receipt-level swap detection.
+  const _baseReconChainOk = !useEthAlchemy || chainMode === 'base_eth' || chainMode === 'all_supported'
   const _shouldRunBaseRecon = (
     activityRequested &&
-    !useEthAlchemy &&
+    _baseReconChainOk &&
     walletSwapSummary.swapCandidateEvents === 0 &&
     walletEvidenceSummary.totalEvents > 0 &&
     Boolean(ALCHEMY_BASE_KEY)
@@ -5124,10 +5127,12 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     }
   } else if (!activityRequested) {
     _basePnlReconDebug = { ..._basePnlReconDebug, reason: 'activity_not_requested' }
-  } else if (useEthAlchemy) {
+  } else if (useEthAlchemy && !_baseReconChainOk) {
     _basePnlReconDebug = { ..._basePnlReconDebug, reason: 'eth_chain_skipped' }
   } else if (walletSwapSummary.swapCandidateEvents > 0) {
     _basePnlReconDebug = { ..._basePnlReconDebug, reason: 'swap_candidates_present' }
+  } else if (walletEvidenceSummary.totalEvents === 0) {
+    _basePnlReconDebug = { ..._basePnlReconDebug, reason: 'no_activity_events' }
   } else if (!ALCHEMY_BASE_KEY) {
     _basePnlReconDebug = { ..._basePnlReconDebug, reason: 'alchemy_not_configured' }
   }
