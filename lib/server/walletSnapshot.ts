@@ -387,7 +387,7 @@ async function fetchGoldrushPnlEvents(address: string, chainName: string, apiKey
       const events = items.flatMap((it) => {
         const t = it as Record<string, unknown>
         const transfers: unknown[] = Array.isArray(t.transfers) ? t.transfers : []
-        return transfers.slice(0, 4).map((x) => {
+        return transfers.slice(0, 12).map((x) => {
           const tr = x as Record<string, unknown>
           const contract = String(tr.contract_address ?? '').toLowerCase()
           const symbol = String(tr.contract_ticker_symbol ?? '?')
@@ -646,8 +646,39 @@ export async function fetchWalletSnapshot(address: string): Promise<WalletSnapsh
   const grEvents = [...grEth.events, ...grBase.events]
   const alchemyEvents = alchemyPnlRes.status === 'fulfilled' ? alchemyPnlRes.value : []
   const valuedGrEvents = grEvents.filter((e) => (e.usdValue ?? 0) > 0)
-  const events = grEvents.length > 0 ? grEvents : alchemyEvents
+  const rawEvents = grEvents.length > 0 ? grEvents : alchemyEvents
   const pnlSource: 'goldrush' | 'alchemy' | 'none' = grEvents.length > 0 ? 'goldrush' : alchemyEvents.length > 0 ? 'alchemy' : 'none'
+
+  // Build a current-price map from holdings so events without usdValue can be enriched.
+  // Using current price as a proxy is imprecise for historical trades but is consistent
+  // with the average_cost_estimate method and prevents valid wallets from returning "unavailable".
+  const priceByContract = new Map<string, number>()
+  for (const h of holdings) {
+    if (h.contract && h.price && h.price > 0) {
+      priceByContract.set(h.contract.toLowerCase(), h.price)
+    }
+  }
+  const events: PnlEvent[] = rawEvents.map(e => {
+    if ((e.usdValue ?? 0) > 0) return e
+    const cp = priceByContract.get(e.contract.toLowerCase())
+    if (cp && cp > 0 && e.amount > 0) return { ...e, usdValue: e.amount * cp }
+    return e
+  })
+
+  if (process.env.NODE_ENV !== 'production') {
+    const rawValued = rawEvents.filter(e => (e.usdValue ?? 0) > 0).length
+    const enrichedValued = events.filter(e => (e.usdValue ?? 0) > 0).length
+    console.log('coverageReport', {
+      wallet: addr,
+      pnlSource,
+      rawEvents: rawEvents.length,
+      rawValued,
+      enrichedValued,
+      inferredViaCurrentPrice: enrichedValued - rawValued,
+      holdingsPriced: priceByContract.size,
+    })
+  }
+
   const byToken = new Map<string, PnlEvent[]>()
   for (const e of events.slice(0, 250)) byToken.set(e.contract, [...(byToken.get(e.contract) ?? []), e])
   const pnlTokens: WalletSnapshot['estimatedPnl']['tokens'] = []
@@ -670,13 +701,14 @@ export async function fetchWalletSnapshot(address: string): Promise<WalletSnapsh
     const withUsd = tokenEvents.filter(e => (e.usdValue ?? 0) > 0).length
     const coverage = tokenEvents.length > 0 ? Math.max(0, Math.min(100, Math.round((withUsd / tokenEvents.length) * 100 - unexplained * 5))) : 0
     const conf = confidenceFromCoverage(coverage)
-    if (estimatedUnrealized !== null && coverage >= 60) unrealized += estimatedUnrealized
-    if (estimatedRealized !== null && coverage >= 60) realized += estimatedRealized
+    const COV_THRESHOLD = 40
+    if (estimatedUnrealized !== null && coverage >= COV_THRESHOLD) unrealized += estimatedUnrealized
+    if (estimatedRealized !== null && coverage >= COV_THRESHOLD) realized += estimatedRealized
     coverageNum += coverage
-    pnlTokens.push({ symbol: h.symbol, contract: (h.contract ?? '').toLowerCase(), currentValueUsd: h.value, estimatedCostBasisUsd, estimatedUnrealizedPnlUsd: coverage >= 60 ? estimatedUnrealized : null, estimatedRealizedPnlUsd: coverage >= 60 ? estimatedRealized : null, buysDetected: buys.length, sellsDetected: sells.length, unexplainedTransfers: unexplained, coveragePercent: coverage, confidence: conf, reason: coverage < 60 ? 'PnL partial/unavailable: historical cost basis coverage too low.' : 'Estimated from average-cost using indexed transfers.' })
+    pnlTokens.push({ symbol: h.symbol, contract: (h.contract ?? '').toLowerCase(), currentValueUsd: h.value, estimatedCostBasisUsd, estimatedUnrealizedPnlUsd: coverage >= COV_THRESHOLD ? estimatedUnrealized : null, estimatedRealizedPnlUsd: coverage >= COV_THRESHOLD ? estimatedRealized : null, buysDetected: buys.length, sellsDetected: sells.length, unexplainedTransfers: unexplained, coveragePercent: coverage, confidence: conf, reason: coverage < COV_THRESHOLD ? 'PnL partial/unavailable: historical cost basis coverage too low.' : 'Estimated from average-cost using indexed transfers.' })
   }
   const coveragePercent = pnlTokens.length ? Math.round(coverageNum / pnlTokens.length) : 0
-  const status: WalletSnapshot['estimatedPnl']['status'] = pnlTokens.length === 0 || pnlSource === 'none' ? 'unavailable' : coveragePercent >= 60 ? 'ok' : 'partial'
+  const status: WalletSnapshot['estimatedPnl']['status'] = pnlTokens.length === 0 || pnlSource === 'none' ? 'unavailable' : coveragePercent >= 40 ? 'ok' : 'partial'
   const filteredPnlTokens = pnlTokens.filter((t) => t.coveragePercent > 0).sort((a, b) => (b.currentValueUsd - a.currentValueUsd)).slice(0, 10)
   const pnlCoverageReason = status === 'unavailable'
     ? (pnlSource === 'none' ? 'Need decoded buys/sells with USD values from GoldRush/Covalent or supported transfer history.' : 'Historical cost basis coverage is too low for a reliable estimate.')
