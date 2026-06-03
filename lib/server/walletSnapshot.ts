@@ -2621,6 +2621,121 @@ function buildFifoLotEngine(
   }
 }
 
+// normalizeSwapEventsForFifo: promotes outbound-only transfer events into swap candidates
+// so the FIFO engine can match them against previously-opened lots and compute realized PnL.
+// Runs AFTER all pricing passes (including swap_derived), BEFORE buildFifoLotEngine.
+function normalizeSwapEventsForFifo(pricedEvidence: WalletTxEvidence[]): WalletTxEvidence[] {
+  const LP_TAGS = ['LP', 'UNI-V2', 'SLP', 'BAL', 'CRV']
+  const isLPSym = (s: string) => LP_TAGS.some(t => s.toUpperCase().includes(t))
+
+  // Index priced events by txHash for same-tx counterpart lookup
+  const pricedByTx = new Map<string, WalletTxEvidence[]>()
+  // Track most-recently-priced event per chain:contract for cross-tx fallback
+  const latestPricedByToken = new Map<string, WalletTxEvidence>()
+
+  for (const ev of pricedEvidence) {
+    if (ev.priceAtTime?.status !== 'priced' || !ev.priceAtTime.priceUsd) continue
+    if (isLPSym(ev.symbol ?? '')) continue
+    if (ev.txHash) {
+      const existing = pricedByTx.get(ev.txHash) ?? []
+      existing.push(ev)
+      pricedByTx.set(ev.txHash, existing)
+    }
+    const tokenKey = `${ev.chain}:${ev.contract.toLowerCase()}`
+    const prev = latestPricedByToken.get(tokenKey)
+    if (!prev || (ev.timestamp ?? '') > (prev.timestamp ?? '')) {
+      latestPricedByToken.set(tokenKey, ev)
+    }
+  }
+
+  const synthetic: WalletTxEvidence[] = []
+
+  for (const e of pricedEvidence) {
+    // Only promote non-swap-candidate sells (outbound-only transfers)
+    if (e.swapDetection?.isSwapCandidate) continue
+    if (e.direction !== 'sell') continue
+    if (isLPSym(e.symbol ?? '')) continue
+    if (!e.contract || !e.contract.startsWith('0x')) continue
+    if (!e.amount || e.amount <= 0) continue
+    if (!e.txHash || !e.timestamp) continue
+    if (QUOTE_ASSET_CONTRACTS[e.contract.toLowerCase()]) continue
+
+    const tokenKey = `${e.chain}:${e.contract.toLowerCase()}`
+    // Only promote if this token was previously bought via a swap (avoids promoting random withdrawals)
+    if (!latestPricedByToken.has(tokenKey)) continue
+
+    const thisAmt = parseRawAmount(e.amountRaw, e.tokenDecimals) ?? e.amount
+    if (!thisAmt || thisAmt <= 0) continue
+
+    let syntheticPriceUsd: number | null = null
+    let priceReason = ''
+    let cpSymbol: string | null = null
+    let cpAmt: number | null = null
+
+    // 1. Same-tx priced counterpart (opposite direction)
+    const txPeers = (pricedByTx.get(e.txHash) ?? []).filter(cp =>
+      cp.direction !== e.direction && cp.direction !== 'unknown' && !isLPSym(cp.symbol ?? '')
+    )
+    if (txPeers.length > 0) {
+      const cp = txPeers[0]
+      const peerAmt = parseRawAmount(cp.amountRaw, cp.tokenDecimals) ?? cp.amount
+      if (peerAmt && peerAmt > 0 && cp.priceAtTime?.priceUsd) {
+        syntheticPriceUsd = (peerAmt * cp.priceAtTime.priceUsd) / thisAmt
+        priceReason = `Swap-derived from same-tx ${cp.symbol} leg`
+        cpSymbol = cp.symbol
+        cpAmt = peerAmt
+      }
+    }
+
+    // 2. Cross-tx fallback: use latest priced event for same token
+    if (!syntheticPriceUsd) {
+      const latestForToken = latestPricedByToken.get(tokenKey)
+      if (latestForToken?.priceAtTime?.priceUsd) {
+        syntheticPriceUsd = latestForToken.priceAtTime.priceUsd
+        priceReason = `Price proxy from nearest priced event for ${e.symbol}`
+      }
+    }
+
+    if (!syntheticPriceUsd || !isFinite(syntheticPriceUsd) || syntheticPriceUsd <= 0) continue
+
+    console.log('swapToBuySellNormalization', {
+      txHash: e.txHash,
+      tokenIn: e.symbol,
+      tokenOut: cpSymbol ?? 'NATIVE',
+      amountIn: thisAmt,
+      amountOut: cpAmt,
+    })
+
+    synthetic.push({
+      ...e,
+      swapDetection: {
+        isSwapCandidate: true,
+        confidence: 'low',
+        eventKind: 'swap_candidate',
+        reason: `Normalized outbound transfer → swap candidate (${priceReason})`,
+        matchedProtocol: e.swapDetection?.matchedProtocol ?? null,
+        matchedAddress: e.swapDetection?.matchedAddress ?? null,
+      },
+      priceAtTime: {
+        status: 'priced',
+        tokenAddress: e.contract,
+        tokenSymbol: e.symbol,
+        timestamp: e.timestamp ?? '',
+        priceUsd: syntheticPriceUsd,
+        source: 'swap_derived',
+        confidence: 'low',
+        reason: priceReason,
+      },
+    })
+  }
+
+  if (synthetic.length > 0) {
+    console.log(`normalizeSwapEventsForFifo: promoted ${synthetic.length} outbound transfers to swap candidates`)
+  }
+
+  return [...pricedEvidence, ...synthetic]
+}
+
 function numMedian(nums: number[]): number | null {
   if (nums.length === 0) return null
   const s = [...nums].sort((a, b) => a - b)
@@ -4069,6 +4184,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   for (let _pp = 0; _pp < (_priceAtTimeDebug?.providerAttempts ?? 0); _pp++) {
     _trackCall('goldrush', 'historical_by_addresses_v2', false, `gr:price:base:${_pp}:${addrNorm}`)
   }
+  _pricedEvidence = normalizeSwapEventsForFifo(_pricedEvidence)
   let { summary: walletLotSummary, debug: _lotEngineDebug, closedLots: _closedLots } = buildFifoLotEngine(_pricedEvidence, activityRequested)
   let { summary: walletTradeStatsSummary, debug: _tradeStatsDebug } = buildTradeStatsSummary(_closedLots, activityRequested)
 
@@ -4153,6 +4269,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       ;({ evidenceList, summary: walletEvidenceSummary, debug: _txEvidenceDebugBase } = buildTxEvidenceFromEvents(allFbEvents, activityRequested, activityProviderUnavailable))
       ;({ evidenceWithDetection: _swapEvidenceWithDetection, summary: walletSwapSummary, debug: _swapDetectionDebug } = buildSwapDetection(evidenceList, activityRequested, addrNorm))
       ;({ evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache))
+      _pricedEvidence = normalizeSwapEventsForFifo(_pricedEvidence)
       ;({ summary: walletLotSummary, debug: _lotEngineDebug, closedLots: _closedLots } = buildFifoLotEngine(_pricedEvidence, activityRequested))
       ;({ summary: walletTradeStatsSummary, debug: _tradeStatsDebug } = buildTradeStatsSummary(_closedLots, activityRequested))
       const meaningfulCheck = hasMeaningfulClosedLotEvidence(walletLotSummary, _closedLots)
