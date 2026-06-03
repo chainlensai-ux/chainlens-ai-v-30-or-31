@@ -204,6 +204,14 @@ export async function POST(req: Request) {
       return json({ error: 'Invalid wallet address' }, { status: 400 })
     }
 
+    // ETH scan gating fix: force ETH into activeChains for deep/debug scans.
+    // walletSnapshot derives activeChains from chainMode; 'base_eth' guarantees both chains are activated.
+    // Only upgrades 'auto' or 'base' — explicit 'eth', 'base_eth', or 'all_supported' already include ETH.
+    const resolvedChainMode: typeof chainMode =
+      (debug || deepScan) && (chainMode === 'auto' || chainMode === 'base')
+        ? 'base_eth'
+        : chainMode
+
     // Historical cooldown — 10 min per wallet after a live historical scan
     const hcCooldownKey = `${key}:historical:${plan}`
     const cooldownActive = historicalCoverageRequested && (walletHistoricalCooldown.get(hcCooldownKey) ?? 0) > Date.now()
@@ -226,7 +234,7 @@ export async function POST(req: Request) {
     // Stable, deterministic cache key: address + logical scan mode + chain + schema version
     // Does NOT include volatile fields (debug, refresh, request id, body order)
     const scanModeKey = effectiveHistoricalCoverage ? 'historical' : deepActivity ? 'deep' : 'basic'
-    const chainKey = chainMode !== 'auto' ? chainMode : chain
+    const chainKey = resolvedChainMode !== 'auto' ? resolvedChainMode : chain
     const cacheKey = `${key}:${scanModeKey}:${chainKey}:${WALLET_SNAPSHOT_SCHEMA_VERSION}${hcSuffix}`
 
     // Cache bypass: only explicit debugFresh bypasses — refresh=true does NOT bypass when cooldown active
@@ -515,7 +523,7 @@ export async function POST(req: Request) {
         chain,
         deepScan,
         deepActivity,
-        chainMode,
+        chainMode: resolvedChainMode,
         historicalCoverage: effectiveHistoricalCoverage,
         maxHistoricalPages,
         maxFallbackPages,
