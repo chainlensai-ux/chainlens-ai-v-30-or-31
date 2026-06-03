@@ -11,9 +11,10 @@ type TokenUsage = {
   tradeStats: number
   debugLogging: number
   total: number
+  debugLimit: number
 }
 
-type TokenUsageStage = Exclude<keyof TokenUsage, 'total'>
+type TokenUsageStage = Exclude<keyof TokenUsage, 'total' | 'debugLimit'>
 
 const TOKEN_USAGE_STAGES: TokenUsageStage[] = [
   'providerFetch',
@@ -26,7 +27,9 @@ const TOKEN_USAGE_STAGES: TokenUsageStage[] = [
   'debugLogging',
 ]
 
-const EMPTY_TOKEN_USAGE = (): TokenUsage => ({
+const DEFAULT_MAX_DEBUG_TOKENS = 40
+
+const EMPTY_TOKEN_USAGE = (debugLimit = DEFAULT_MAX_DEBUG_TOKENS): TokenUsage => ({
   providerFetch: 0,
   swapDetection: 0,
   normalization: 0,
@@ -36,6 +39,7 @@ const EMPTY_TOKEN_USAGE = (): TokenUsage => ({
   tradeStats: 0,
   debugLogging: 0,
   total: 0,
+  debugLimit,
 })
 
 const estimateTokenMeterChars = (value: unknown, depth = 0, seen?: WeakSet<object>): number => {
@@ -64,10 +68,21 @@ const estimateTokenMeterChars = (value: unknown, depth = 0, seen?: WeakSet<objec
   return chars
 }
 
-const createTokenMeter = (debug = false) => {
-  const usage = EMPTY_TOKEN_USAGE()
+const createTokenMeter = (debug = false, maxDebugTokens = DEFAULT_MAX_DEBUG_TOKENS) => {
+  const debugLimit = Number.isFinite(maxDebugTokens) && maxDebugTokens >= 0
+    ? Math.floor(maxDebugTokens)
+    : DEFAULT_MAX_DEBUG_TOKENS
+  const usage = EMPTY_TOKEN_USAGE(debugLimit)
   const active = new Set<TokenUsageStage>()
+  let debugEnabled = debug
+  let debugAutoDisabled = false
   const toTokens = (chars: number) => Math.ceil(Math.max(0, chars) / 4)
+  const disableDebug = () => {
+    if (debugEnabled) debugAutoDisabled = true
+    debugEnabled = false
+  }
+  const isDebugEnabled = () => debugEnabled
+  const wasDebugAutoDisabled = () => debugAutoDisabled
   const startTokenMeter = (label: TokenUsageStage) => {
     active.add(label)
   }
@@ -75,16 +90,20 @@ const createTokenMeter = (debug = false) => {
     active.delete(label)
   }
   const measure = (label: TokenUsageStage, ...values: unknown[]) => {
+    if (label === 'debugLogging' && !debugEnabled) return
     let chars = 0
     for (const value of values) chars += estimateTokenMeterChars(value)
     usage[label] += toTokens(chars)
+    if (label === 'debugLogging' && usage.debugLogging > debugLimit) {
+      disableDebug()
+    }
   }
   const snapshot = (): TokenUsage => {
-    const tokenUsage = { ...usage, total: TOKEN_USAGE_STAGES.reduce((sum, stage) => sum + usage[stage], 0) }
-    if (debug) console.debug('[walletSnapshot] tokenUsage', tokenUsage)
+    const tokenUsage = { ...usage, total: TOKEN_USAGE_STAGES.reduce((sum, stage) => sum + usage[stage], 0), debugLimit }
+    if (debugEnabled) console.debug('[walletSnapshot] tokenUsage', tokenUsage)
     return tokenUsage
   }
-  return { startTokenMeter, endTokenMeter, measure, snapshot }
+  return { startTokenMeter, endTokenMeter, measure, snapshot, disableDebug, isDebugEnabled, wasDebugAutoDisabled }
 }
 
 type Holding = {
@@ -343,6 +362,7 @@ export type WalletSnapshot = {
   }
   walletTradeStatsSource: 'base_sample' | 'historical_promoted_preview'
   tokenUsage: TokenUsage
+  debugAutoDisabled?: true
   walletClosedTradeSamples: Array<{
     tokenSymbol: string
     tokenAddress: string
@@ -936,7 +956,18 @@ type _ApiCallEntry = {
   dupKey: string
 }
 
-export type WalletSnapshotOptions = { refresh?: boolean; chain?: 'eth' | 'base'; deepScan?: boolean; deepActivity?: boolean; chainMode?: 'auto' | 'base' | 'eth' | 'base_eth' | 'all_supported'; historicalCoverage?: boolean; maxHistoricalPages?: number; maxFallbackPages?: number; debug?: boolean }
+export type WalletSnapshotOptions = {
+  refresh?: boolean
+  chain?: 'eth' | 'base'
+  deepScan?: boolean
+  deepActivity?: boolean
+  chainMode?: 'auto' | 'base' | 'eth' | 'base_eth' | 'all_supported'
+  historicalCoverage?: boolean
+  maxHistoricalPages?: number
+  maxFallbackPages?: number
+  debug?: boolean
+  maxDebugTokens?: number
+}
 
 const SNAPSHOT_TTL_MS         = 5  * 60 * 1000
 const SNAPSHOT_HISTORY_TTL_MS = 15 * 60 * 1000
@@ -4162,11 +4193,11 @@ export function validateWalletFactsShape(snapshot: WalletSnapshot): WalletSnapsh
 }
 
 export async function fetchWalletSnapshot(address: string, options: WalletSnapshotOptions = {}): Promise<WalletSnapshot> {
-  const { refresh = false, chain: requestedChain = 'base', deepScan = false, deepActivity = false, chainMode = 'auto', historicalCoverage = false, maxHistoricalPages: rawMaxHistoricalPages, maxFallbackPages: rawMaxFallbackPages, debug = false } = options
+  const { refresh = false, chain: requestedChain = 'base', deepScan = false, deepActivity = false, chainMode = 'auto', historicalCoverage = false, maxHistoricalPages: rawMaxHistoricalPages, maxFallbackPages: rawMaxFallbackPages, debug = false, maxDebugTokens = DEFAULT_MAX_DEBUG_TOKENS } = options
   const clampedMaxHistoricalPages = Math.max(1, Math.min(5, rawMaxHistoricalPages ?? 3))
   const MAX_MORALIS_FALLBACK_PAGES = 5
   const clampedMaxFallbackPages = Math.max(1, Math.min(MAX_MORALIS_FALLBACK_PAGES, rawMaxFallbackPages ?? 2))
-  const tokenMeter = createTokenMeter(debug)
+  const tokenMeter = createTokenMeter(debug, maxDebugTokens)
   // Per-request price cache: prevents duplicate GoldRush historical price calls within a single scan
   // when the same contract/date appears in both base evidence and historical coverage pipelines.
   const _reqPriceCache = new Map<string, number | null>()
@@ -4273,8 +4304,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     deepScan ? fetchWalletBehavior(addr, baseUrl) : Promise.resolve(BEHAVIOR_EMPTY),
     // ETH mainnet PnL transfers only when activity is requested AND ETH chain is selected.
     // Default (base) scans skip this to avoid a wasted transactions_v3 call.
-    activityRequested && GOLDRUSH_KEY && useEthAlchemy ? fetchGoldrushPnlEvents(addr, 'eth-mainnet', GOLDRUSH_KEY, debug) : Promise.resolve({ events: [] as PnlEvent[], diag: { endpointKind: 'transactions_v3' as const, chainUsed: 'eth-mainnet', urlTemplate: 'https://api.covalenthq.com/v1/eth-mainnet/address/{wallet}/transactions_v3/?page-size=50&page-number=0&with-logs=true&no-spam=true', httpStatus: null, fetchFailed: true, failureStage: 'build_url' as const, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], transferArrayCount: 0, firstTransferKeys: [], reason: activityRequested ? 'ETH chain not requested — skipped to reduce API usage.' : 'Activity scan not requested — skipped.' } }),
-    activityRequested && GOLDRUSH_KEY ? fetchGoldrushPnlEvents(addr, 'base-mainnet', GOLDRUSH_KEY, debug) : Promise.resolve({ events: [] as PnlEvent[], diag: { endpointKind: 'transactions_v3' as const, chainUsed: 'base-mainnet', urlTemplate: 'https://api.covalenthq.com/v1/base-mainnet/address/{wallet}/transactions_v3/?page-size=50&page-number=0&with-logs=true&no-spam=true', httpStatus: null, fetchFailed: true, failureStage: 'build_url' as const, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], transferArrayCount: 0, firstTransferKeys: [], reason: activityRequested ? 'GoldRush activity fetch skipped — provider not configured.' : 'Activity scan not requested — skipped.' } }),
+    activityRequested && GOLDRUSH_KEY && useEthAlchemy ? fetchGoldrushPnlEvents(addr, 'eth-mainnet', GOLDRUSH_KEY, tokenMeter.isDebugEnabled()) : Promise.resolve({ events: [] as PnlEvent[], diag: { endpointKind: 'transactions_v3' as const, chainUsed: 'eth-mainnet', urlTemplate: 'https://api.covalenthq.com/v1/eth-mainnet/address/{wallet}/transactions_v3/?page-size=50&page-number=0&with-logs=true&no-spam=true', httpStatus: null, fetchFailed: true, failureStage: 'build_url' as const, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], transferArrayCount: 0, firstTransferKeys: [], reason: activityRequested ? 'ETH chain not requested — skipped to reduce API usage.' : 'Activity scan not requested — skipped.' } }),
+    activityRequested && GOLDRUSH_KEY ? fetchGoldrushPnlEvents(addr, 'base-mainnet', GOLDRUSH_KEY, tokenMeter.isDebugEnabled()) : Promise.resolve({ events: [] as PnlEvent[], diag: { endpointKind: 'transactions_v3' as const, chainUsed: 'base-mainnet', urlTemplate: 'https://api.covalenthq.com/v1/base-mainnet/address/{wallet}/transactions_v3/?page-size=50&page-number=0&with-logs=true&no-spam=true', httpStatus: null, fetchFailed: true, failureStage: 'build_url' as const, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], transferArrayCount: 0, firstTransferKeys: [], reason: activityRequested ? 'GoldRush activity fetch skipped — provider not configured.' : 'Activity scan not requested — skipped.' } }),
     activityRequested && Boolean(ALCHEMY_BASE_KEY) ? fetchAlchemyPnlEvents(addr, baseUrl) : Promise.resolve([] as PnlEvent[]),
   ])
 
@@ -4746,8 +4777,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   tokenMeter.endTokenMeter('priceInference')
 
   tokenMeter.startTokenMeter('fifoEngine')
-  _pricedEvidence = normalizeSwapEventsForFifo(_pricedEvidence, debug)
-  _pricedEvidence = normalizeSingleLegEventsForFifo(_pricedEvidence, debug)
+  _pricedEvidence = normalizeSwapEventsForFifo(_pricedEvidence, tokenMeter.isDebugEnabled())
+  _pricedEvidence = normalizeSingleLegEventsForFifo(_pricedEvidence, tokenMeter.isDebugEnabled())
   tokenMeter.measure('fifoEngine', _pricedEvidence)
   const fifoResult = buildFifoLotEngine(_pricedEvidence, activityRequested)
   let walletLotSummary = fifoResult.summary
@@ -4857,8 +4888,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       tokenMeter.measure('swapDetection', evidenceList, _swapEvidenceWithDetection, walletSwapSummary, _swapDetectionDebug)
       ;({ evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache))
       tokenMeter.measure('priceInference', _swapEvidenceWithDetection, _pricedEvidence, walletPriceEvidenceSummary, _priceAtTimeDebug)
-      _pricedEvidence = normalizeSwapEventsForFifo(_pricedEvidence, debug)
-      _pricedEvidence = normalizeSingleLegEventsForFifo(_pricedEvidence, debug)
+      _pricedEvidence = normalizeSwapEventsForFifo(_pricedEvidence, tokenMeter.isDebugEnabled())
+      _pricedEvidence = normalizeSingleLegEventsForFifo(_pricedEvidence, tokenMeter.isDebugEnabled())
       const fifoPageResult = buildFifoLotEngine(_pricedEvidence, activityRequested)
       walletLotSummary = fifoPageResult.summary
       _lotEngineDebug = fifoPageResult.debug
@@ -5114,7 +5145,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         : ''
   const alchemyConfigured = Boolean(ALCHEMY_BASE_KEY)
   const _zerionSucceeded = _zerionValueUsable || _zerionPositionsUsable
-  if (process.env.NODE_ENV !== 'production') {
+  if (process.env.NODE_ENV !== 'production' && tokenMeter.isDebugEnabled()) {
     console.log('[wallet-diag] route=/api/wallet deepScan=', deepScan, 'requestedChain=', requestedChain, 'zerionValueUsable=', _zerionValueUsable, 'zerionPositionsUsable=', _zerionPositionsUsable, 'moralisHoldingsUsable=', _moralisHoldingsUsable, 'goldrushBalancesSkipped=', _goldrushBalancesSkipped, 'goldrushEventsReturned=', grEvents.length, 'pnlSource=', pnlSource, 'providerUsed=', providerUsed, 'totalMs=', Date.now() - startedAt)
   }
 
@@ -5362,6 +5393,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   tokenMeter.startTokenMeter('debugLogging')
   tokenMeter.measure('debugLogging', snapshot._debug, snapshot._diagnostics, walletFacts)
   tokenMeter.endTokenMeter('debugLogging')
+  if (tokenMeter.wasDebugAutoDisabled()) snapshot.debugAutoDisabled = true
   snapshot.tokenUsage = tokenMeter.snapshot()
 
   // Requirement 8: validate audit before returning — if unhealthy, surface warnings prominently
