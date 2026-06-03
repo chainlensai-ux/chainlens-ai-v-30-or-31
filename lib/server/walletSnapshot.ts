@@ -49,6 +49,30 @@ export type WalletBehavior = {
   reason: string
 }
 
+export type WalletLotSummary = {
+  status: 'ok' | 'partial' | 'unavailable'
+  method: 'fifo'
+  closedLots: number
+  openLots: number
+  totalRealizedPnlUsd: number | null
+  coveragePercent: number
+  reason: string
+}
+
+export type WalletTradeStatsSummary = {
+  status: 'ok' | 'partial' | 'unavailable'
+  source: 'fifo' | 'per_swap_fallback' | 'none'
+  tradesAnalyzed: number
+  winRate: number | null
+  avgWinUsd: number | null
+  avgLossUsd: number | null
+  totalRealizedPnlUsd: number | null
+  bestTradeUsd: number | null
+  worstTradeUsd: number | null
+  confidence: 'high' | 'medium' | 'low' | null
+  reason: string
+}
+
 export type WalletSnapshot = {
   address: string
   totalValue: number
@@ -69,6 +93,8 @@ export type WalletSnapshot = {
   hiddenDustCount: number
   unpricedHoldingsCount: number
   walletBehavior: WalletBehavior
+  walletLotSummary?: WalletLotSummary
+  walletTradeStatsSummary?: WalletTradeStatsSummary
   estimatedPnl: {
     status: 'ok' | 'partial' | 'unavailable' | 'error'
     confidence: 'high' | 'medium' | 'low' | null
@@ -131,6 +157,49 @@ const ZERION_KEY       = process.env.ZERION_KEY ?? ''
 const ALCHEMY_ETH_KEY  = process.env.ALCHEMY_ETHEREUM_KEY!
 const ALCHEMY_BASE_KEY = process.env.ALCHEMY_BASE_KEY!
 const GOLDRUSH_KEY     = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY ?? ''
+
+const EXTENDED_DEX_ROUTERS = new Set<string>([
+  // Uniswap
+  '0x7a250d5630b4cf539739df2c5dacb4c659f2488d',
+  '0xe592427a0aece92de3edee1f18e0157c05861564',
+  '0x68b3465833fb72a70ecdf485e0e4c7bd8665fc45',
+  '0xef1c6e67703c7bd7107eed8303fbe6ec2554bf6b',
+  '0x3fc91a3afd70395cd496c647d5a6cc9d4b2b7fad',
+  // 1inch
+  '0x1111111254fb6c44bac0bed2854e76f90643097d',
+  '0x1111111254eeb25477b68fb85ed929f73a960582',
+  '0x111111125421ca6dc452d289314280a0f8842a65',
+  // 0x Protocol
+  '0xdef1c0ded9bec7f1a1670819833240f027b25eff',
+  '0x55dc0e69ec00debcebdc25fe6f7cad62e63c8f81',
+  // Paraswap
+  '0x216b4b4ba9f3e719726886d34a177484278bfcae',
+  '0xdef171fe48cf0115b1d80b88dc8eab59176fee57',
+  // SushiSwap
+  '0xd9e1ce17f2641f24ae83637ab66a2cca9c378b9f',
+  '0x1b02da8cb0d097eb8d57a175b88c7d8b47997506',
+  // Aerodrome (Base)
+  '0xcf77a3ba9a5ca399b7c97c74d54e5b1beb874e43',
+  '0x6cb442acf35158d68425b2a89f7e7b02fb5e42d5',
+  // Balancer
+  '0xba12222222228d8ba445958a75a0704d566bf2c8',
+  // Curve
+  '0x99a58482bd75cbab83b27ec03ca68ff489b5788f',
+  '0xf0d4c12a5768d806021f80a262b4d39d26c58b8d',
+  // BaseSwap
+  '0x327df1e6de05895d2ab08513aadd9313fe505d86',
+])
+
+const FIFO_QUOTE_ASSETS = new Set<string>([
+  '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48', // USDC ETH
+  '0xdac17f958d2ee523a2206206994597c13d831ec7', // USDT ETH
+  '0x6b175474e89094c44da98b954eedeac495271d0f', // DAI ETH
+  '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2', // WETH ETH
+  '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', // USDC Base
+  '0x50c5725949a6f0c72e6c4a641f24049a917db0cb', // DAI Base
+  '0x4200000000000000000000000000000000000006', // WETH Base
+  '0xd9aaec86b65d86f6a7b5b1b0c42ffa531710b6ca', // USDbC Base
+])
 
 function zerionAuth(): string | null {
   if (!ZERION_KEY) return null
@@ -224,7 +293,12 @@ async function fetchGoldrushBalances(address: string, chainName: string, apiKey:
   }
 }
 
-type PnlEvent = { contract: string; symbol: string; direction: 'buy' | 'sell' | 'unknown'; amount: number; usdValue: number | null }
+type PnlEvent = {
+  contract: string; symbol: string; direction: 'buy' | 'sell' | 'unknown'
+  amount: number; usdValue: number | null
+  txHash?: string; timestamp?: string; txToAddress?: string; txFromAddress?: string
+  chain?: string; isSwapCandidate?: boolean
+}
 type GoldrushHistoryDiag = {
   endpointKind: 'transfers_v2'
   chainUsed: string
@@ -386,6 +460,10 @@ async function fetchGoldrushPnlEvents(address: string, chainName: string, apiKey
       const lower = address.toLowerCase()
       const events = items.flatMap((it) => {
         const t = it as Record<string, unknown>
+        const txHash = String(t.tx_hash ?? '')
+        const timestamp = String(t.block_signed_at ?? '')
+        const txToAddress = String(t.to_address ?? '').toLowerCase()
+        const txFromAddress = String(t.from_address ?? '').toLowerCase()
         const transfers: unknown[] = Array.isArray(t.transfers) ? t.transfers : []
         return transfers.slice(0, 12).map((x) => {
           const tr = x as Record<string, unknown>
@@ -398,7 +476,7 @@ async function fetchGoldrushPnlEvents(address: string, chainName: string, apiKey
           const to = String(tr.to_address ?? '').toLowerCase()
           const direction: 'buy' | 'sell' | 'unknown' = to === lower ? 'buy' : from === lower ? 'sell' : 'unknown'
           const quote = typeof tr.delta_quote === 'number' ? Math.abs(tr.delta_quote) : null
-          return { contract, symbol, direction, amount, usdValue: quote }
+          return { contract, symbol, direction, amount, usdValue: quote, txHash, timestamp, txToAddress, txFromAddress, chain: chainUsed }
         })
       }).filter(e => e.contract.startsWith('0x') && e.amount > 0)
       diag.normalizedEventCount = events.length
@@ -444,6 +522,167 @@ async function fetchAlchemyPnlEvents(address: string, baseUrl: string): Promise<
     }))
     return [...outgoing, ...incoming].filter(e => e.contract.startsWith('0x') && Number.isFinite(e.amount) && e.amount > 0)
   } catch { return [] }
+}
+
+type FifoClosedLot = {
+  contract: string; symbol: string
+  buyTxHash: string; sellTxHash: string
+  buyTimestamp: string; sellTimestamp: string
+  buyAmount: number; sellAmount: number
+  buyCostUsd: number; sellProceedsUsd: number
+  realizedPnlUsd: number; chain: string
+}
+
+function buildFifoSwapDetection(events: PnlEvent[], walletAddr: string): PnlEvent[] {
+  const lower = walletAddr.toLowerCase()
+  const byTx = new Map<string, PnlEvent[]>()
+  for (const e of events) {
+    if (!e.txHash) continue
+    const k = e.txHash.toLowerCase()
+    if (!byTx.has(k)) byTx.set(k, [])
+    byTx.get(k)!.push(e)
+  }
+  const swapHashes = new Set<string>()
+  for (const [txHash, txEvents] of byTx) {
+    const hasIn  = txEvents.some(e => e.direction === 'buy')
+    const hasOut = txEvents.some(e => e.direction === 'sell')
+    const toRouter   = txEvents.some(e => e.txToAddress   && EXTENDED_DEX_ROUTERS.has(e.txToAddress.toLowerCase()))
+    const fromRouter = txEvents.some(e => e.txFromAddress && EXTENDED_DEX_ROUTERS.has(e.txFromAddress.toLowerCase()))
+    // If tx touches a quote asset (stable/WETH) alongside another token, classify as swap
+    const hasQuoteAsset    = txEvents.some(e => FIFO_QUOTE_ASSETS.has(e.contract.toLowerCase()))
+    const hasNonQuoteAsset = txEvents.some(e => !FIFO_QUOTE_ASSETS.has(e.contract.toLowerCase()))
+    const quoteSwap = hasQuoteAsset && hasNonQuoteAsset && (hasIn || hasOut)
+    if ((hasIn && hasOut) || toRouter || fromRouter || quoteSwap) swapHashes.add(txHash)
+  }
+  void lower
+  return events.map(e => ({ ...e, isSwapCandidate: e.txHash ? swapHashes.has(e.txHash.toLowerCase()) : false }))
+}
+
+function normalizeSingleLegs(events: PnlEvent[]): PnlEvent[] {
+  const byTx = new Map<string, PnlEvent[]>()
+  for (const e of events) {
+    if (!e.txHash) continue
+    const k = e.txHash.toLowerCase()
+    if (!byTx.has(k)) byTx.set(k, [])
+    byTx.get(k)!.push(e)
+  }
+  return events.map(e => {
+    if (!e.txHash || (e.usdValue ?? 0) > 0) return e
+    const txEvents = byTx.get(e.txHash.toLowerCase()) ?? []
+    const partner = txEvents.find(p => p !== e && (p.usdValue ?? 0) > 0 && p.amount > 0)
+    if (partner?.usdValue) return { ...e, usdValue: partner.usdValue }
+    return e
+  })
+}
+
+function buildFifoLotEngine(events: PnlEvent[]): { closedLots: FifoClosedLot[]; openLots: number; realizedPnlUsd: number } {
+  const eligible = events.filter(e =>
+    e.isSwapCandidate && e.txHash && e.timestamp &&
+    (e.direction === 'buy' || e.direction === 'sell') &&
+    (e.usdValue ?? 0) > 0 && e.amount > 0
+  ) as Array<PnlEvent & { txHash: string; timestamp: string; usdValue: number }>
+
+  eligible.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+
+  type OpenLot = { buyTxHash: string; buyTimestamp: string; amount: number; costPerUnit: number; chain: string }
+  const openByToken = new Map<string, OpenLot[]>()
+  const closedLots: FifoClosedLot[] = []
+
+  for (const e of eligible) {
+    const key = e.contract.toLowerCase()
+    if (e.direction === 'buy') {
+      const costPerUnit = e.usdValue / e.amount
+      if (!openByToken.has(key)) openByToken.set(key, [])
+      openByToken.get(key)!.push({ buyTxHash: e.txHash, buyTimestamp: e.timestamp, amount: e.amount, costPerUnit, chain: e.chain ?? 'unknown' })
+    } else {
+      const lots = openByToken.get(key) ?? []
+      let remaining = e.amount
+      const procPerUnit = e.usdValue / e.amount
+      while (remaining > 1e-9 && lots.length > 0) {
+        const lot = lots[0]
+        const closed = Math.min(lot.amount, remaining)
+        closedLots.push({
+          contract: key, symbol: e.symbol,
+          buyTxHash: lot.buyTxHash, sellTxHash: e.txHash,
+          buyTimestamp: lot.buyTimestamp, sellTimestamp: e.timestamp,
+          buyAmount: closed, sellAmount: closed,
+          buyCostUsd: closed * lot.costPerUnit,
+          sellProceedsUsd: closed * procPerUnit,
+          realizedPnlUsd: closed * (procPerUnit - lot.costPerUnit),
+          chain: e.chain ?? lot.chain,
+        })
+        remaining -= closed
+        lot.amount -= closed
+        if (lot.amount <= 1e-9) lots.shift()
+      }
+    }
+  }
+
+  const openLots = [...openByToken.values()].reduce((s, lots) => s + lots.length, 0)
+  const realizedPnlUsd = closedLots.reduce((s, l) => s + l.realizedPnlUsd, 0)
+  return { closedLots, openLots, realizedPnlUsd }
+}
+
+function buildTradeStatsSummary(closedLots: FifoClosedLot[], swapCandidateCount: number): WalletTradeStatsSummary {
+  if (closedLots.length === 0) {
+    return { status: 'unavailable', source: 'fifo', tradesAnalyzed: 0, winRate: null, avgWinUsd: null, avgLossUsd: null, totalRealizedPnlUsd: null, bestTradeUsd: null, worstTradeUsd: null, confidence: null, reason: 'No closed FIFO lots found.' }
+  }
+  const wins   = closedLots.filter(l => l.realizedPnlUsd > 0)
+  const losses = closedLots.filter(l => l.realizedPnlUsd <= 0)
+  const total  = closedLots.length
+  const allPnls = closedLots.map(l => l.realizedPnlUsd)
+  const coverage = swapCandidateCount > 0 ? (total / swapCandidateCount) * 100 : 0
+  return {
+    status: total >= 3 ? 'ok' : 'partial',
+    source: 'fifo',
+    tradesAnalyzed: total,
+    winRate: Math.round((wins.length / total) * 100) / 100,
+    avgWinUsd:  wins.length   > 0 ? wins.reduce((s, l) => s + l.realizedPnlUsd, 0)   / wins.length   : null,
+    avgLossUsd: losses.length > 0 ? losses.reduce((s, l) => s + l.realizedPnlUsd, 0) / losses.length : null,
+    totalRealizedPnlUsd: allPnls.reduce((s, v) => s + v, 0),
+    bestTradeUsd:  Math.max(...allPnls),
+    worstTradeUsd: Math.min(...allPnls),
+    confidence: coverage >= 60 ? 'high' : coverage >= 30 ? 'medium' : 'low',
+    reason: `FIFO lot matching across ${total} closed trade(s).`,
+  }
+}
+
+function buildPerSwapTradeStats(events: PnlEvent[]): WalletTradeStatsSummary {
+  const byTx = new Map<string, PnlEvent[]>()
+  for (const e of events) {
+    if (!e.isSwapCandidate || !e.txHash || (e.usdValue ?? 0) <= 0) continue
+    const k = e.txHash.toLowerCase()
+    if (!byTx.has(k)) byTx.set(k, [])
+    byTx.get(k)!.push(e)
+  }
+  const trades: Array<{ pnl: number }> = []
+  for (const [, txEvents] of byTx) {
+    const buys  = txEvents.filter(e => e.direction === 'buy')
+    const sells = txEvents.filter(e => e.direction === 'sell')
+    if (buys.length === 0 || sells.length === 0) continue
+    const buyUsd  = buys.reduce((s, e)  => s + (e.usdValue ?? 0), 0)
+    const sellUsd = sells.reduce((s, e) => s + (e.usdValue ?? 0), 0)
+    trades.push({ pnl: sellUsd - buyUsd })
+  }
+  if (trades.length === 0) {
+    return { status: 'unavailable', source: 'per_swap_fallback', tradesAnalyzed: 0, winRate: null, avgWinUsd: null, avgLossUsd: null, totalRealizedPnlUsd: null, bestTradeUsd: null, worstTradeUsd: null, confidence: null, reason: 'No priced swap pairs found for per-swap fallback.' }
+  }
+  const wins   = trades.filter(t => t.pnl > 0)
+  const losses = trades.filter(t => t.pnl <= 0)
+  const allPnls = trades.map(t => t.pnl)
+  return {
+    status: trades.length >= 3 ? 'ok' : 'partial',
+    source: 'per_swap_fallback',
+    tradesAnalyzed: trades.length,
+    winRate: Math.round((wins.length / trades.length) * 100) / 100,
+    avgWinUsd:  wins.length   > 0 ? wins.reduce((s, t) => s + t.pnl, 0)   / wins.length   : null,
+    avgLossUsd: losses.length > 0 ? losses.reduce((s, t) => s + t.pnl, 0) / losses.length : null,
+    totalRealizedPnlUsd: allPnls.reduce((s, v) => s + v, 0),
+    bestTradeUsd:  Math.max(...allPnls),
+    worstTradeUsd: Math.min(...allPnls),
+    confidence: trades.length >= 10 ? 'medium' : 'low',
+    reason: `Per-swap fallback: ${trades.length} priced swap pair(s) analyzed.`,
+  }
 }
 
 function confidenceFromCoverage(c: number): 'high' | 'medium' | 'low' { return c >= 85 ? 'high' : c >= 60 ? 'medium' : 'low' }
@@ -665,9 +904,40 @@ export async function fetchWalletSnapshot(address: string): Promise<WalletSnapsh
     return e
   })
 
+  // FIFO pipeline
+  const swapTagged      = buildFifoSwapDetection(events, addr)
+  const normalizedEvents = normalizeSingleLegs(swapTagged)
+  const { closedLots, openLots: openFifoLots, realizedPnlUsd: fifoRealizedPnl } = buildFifoLotEngine(normalizedEvents)
+
+  const swapCandidateCount = normalizedEvents.filter(e => e.isSwapCandidate).length
+  let walletTradeStatsSummary: WalletTradeStatsSummary
+  if (closedLots.length > 0) {
+    walletTradeStatsSummary = buildTradeStatsSummary(closedLots, swapCandidateCount)
+  } else {
+    walletTradeStatsSummary = buildPerSwapTradeStats(normalizedEvents)
+  }
+
+  const fifoCoveragePercent = swapCandidateCount > 0
+    ? Math.round(Math.min(100, (closedLots.length / swapCandidateCount) * 100))
+    : 0
+  const walletLotSummary: WalletLotSummary = {
+    status: closedLots.length > 0 ? 'ok' : walletTradeStatsSummary.status !== 'unavailable' ? 'partial' : 'unavailable',
+    method: 'fifo',
+    closedLots: closedLots.length,
+    openLots: openFifoLots,
+    totalRealizedPnlUsd: closedLots.length > 0 ? fifoRealizedPnl : null,
+    coveragePercent: fifoCoveragePercent,
+    reason: closedLots.length > 0
+      ? `FIFO: ${closedLots.length} closed lot(s), ${openFifoLots} open.`
+      : swapCandidateCount > 0
+        ? 'Swap candidates found but no matchable buy/sell pairs for FIFO.'
+        : 'No swap-classified events found.',
+  }
+
   if (process.env.NODE_ENV !== 'production') {
-    const rawValued = rawEvents.filter(e => (e.usdValue ?? 0) > 0).length
+    const rawValued      = rawEvents.filter(e => (e.usdValue ?? 0) > 0).length
     const enrichedValued = events.filter(e => (e.usdValue ?? 0) > 0).length
+    const pricedSwaps    = normalizedEvents.filter(e => e.isSwapCandidate && (e.usdValue ?? 0) > 0).length
     console.log('coverageReport', {
       wallet: addr,
       pnlSource,
@@ -676,6 +946,12 @@ export async function fetchWalletSnapshot(address: string): Promise<WalletSnapsh
       enrichedValued,
       inferredViaCurrentPrice: enrichedValued - rawValued,
       holdingsPriced: priceByContract.size,
+      swapCandidates: swapCandidateCount,
+      pricedSwaps,
+      normalizedBuys:  normalizedEvents.filter(e => e.isSwapCandidate && e.direction === 'buy').length,
+      normalizedSells: normalizedEvents.filter(e => e.isSwapCandidate && e.direction === 'sell').length,
+      fifoClosedLots: closedLots.length,
+      perSwapFallbackTrades: walletTradeStatsSummary.source === 'per_swap_fallback' ? walletTradeStatsSummary.tradesAnalyzed : 0,
     })
   }
 
@@ -756,6 +1032,8 @@ export async function fetchWalletSnapshot(address: string): Promise<WalletSnapsh
     hiddenDustCount,
     unpricedHoldingsCount,
     walletBehavior,
+    walletLotSummary,
+    walletTradeStatsSummary,
     estimatedPnl,
     _diagnostics: {
       providers: {
