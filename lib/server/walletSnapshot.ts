@@ -3238,7 +3238,15 @@ function buildTradeStatsSummary(
   const largestLossUsd = losing.length > 0 ? Math.min(...losing.map(l => l.realizedPnlUsd)) : null
 
   const missing: string[] = []
-  if (!winRateComputed) missing.push('sample_size_below_win_rate_threshold')
+  if (!winRateComputed) {
+    if (n < WIN_RATE_THRESHOLD) {
+      missing.push('win_rate_locked_below_threshold')
+    } else {
+      missing.push('economic_quality_gate_failed')
+    }
+    missing.push('sample_size_below_win_rate_threshold')
+  }
+  if (breakEven.length > 0) missing.push('break_even_lots_excluded_from_win_rate')
   if (!economicallyMeaningful) missing.push('micro_trade_sample')
   if (returnPcts.length < n) missing.push('some_lots_missing_return_percent')
   if (holdingTimes.length < n) missing.push('some_lots_missing_holding_time')
@@ -3445,7 +3453,15 @@ function buildPerSwapTradeStats(
   const largestLossUsd = losing.length  > 0 ? Math.min(...losing.map(t => t.pnlUsd))  : null
 
   const missing: string[] = ['per_swap_fallback_mode']
-  if (!winRateComputed)          missing.push('sample_size_below_win_rate_threshold')
+  if (!winRateComputed) {
+    if (n < WIN_RATE_THRESHOLD) {
+      missing.push('win_rate_locked_below_threshold')
+    } else {
+      missing.push('economic_quality_gate_failed')
+    }
+    missing.push('sample_size_below_win_rate_threshold')
+  }
+  if (breakEven.length > 0) missing.push('break_even_lots_excluded_from_win_rate')
   if (!economicallyMeaningful)   missing.push('micro_trade_sample')
 
   const abbr = (h: string) => `${h.slice(0, 8)}...${h.slice(-6)}`
