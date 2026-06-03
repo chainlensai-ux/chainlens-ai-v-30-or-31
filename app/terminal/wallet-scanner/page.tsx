@@ -856,14 +856,37 @@ export default function WalletScannerPage() {
           30%          { transform:translateY(-5px); opacity:1; }
         }
         @keyframes clarkPulse {
-          0%,100% { opacity:1; box-shadow:0 0 6px rgba(45,212,191,0.70); }
-          50%      { opacity:0.4; box-shadow:0 0 2px rgba(45,212,191,0.20); }
+          0%,100% { opacity:1; box-shadow:0 0 8px rgba(45,212,191,0.80); }
+          50%      { opacity:0.4; box-shadow:0 0 3px rgba(45,212,191,0.25); }
         }
-        .ws-row:hover { background: rgba(255,255,255,0.025) !important; }
+        @keyframes shimmer {
+          0%   { background-position: -400px 0; }
+          100% { background-position: 400px 0; }
+        }
+        @keyframes scanLine {
+          0%   { transform: translateY(-100%); opacity: 0; }
+          10%  { opacity: 0.6; }
+          90%  { opacity: 0.6; }
+          100% { transform: translateY(100vh); opacity: 0; }
+        }
+        @keyframes fadeUp {
+          from { opacity: 0; transform: translateY(8px); }
+          to   { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes glowPulse {
+          0%,100% { box-shadow: 0 0 20px rgba(45,212,191,0.08); }
+          50%      { box-shadow: 0 0 32px rgba(45,212,191,0.18); }
+        }
+        .ws-row:hover { background: rgba(255,255,255,0.030) !important; }
         .ws-scan-btn:hover:not(:disabled) {
-          background: #25c0a8 !important;
-          box-shadow: 0 0 24px rgba(45,212,191,0.40) !important;
+          background: linear-gradient(135deg, #2DD4BF, #22c5ae) !important;
+          box-shadow: 0 0 28px rgba(45,212,191,0.50), 0 4px 16px rgba(0,0,0,0.30) !important;
+          transform: translateY(-1px);
         }
+        .ws-scan-btn { transition: background 0.15s, box-shadow 0.18s, color 0.15s, transform 0.12s !important; }
+        .ws-card-hover:hover { border-color: rgba(45,212,191,0.25) !important; box-shadow: 0 0 20px rgba(45,212,191,0.06) !important; transition: border-color 0.2s, box-shadow 0.2s; }
+        .ws-result-fade { animation: fadeUp 0.3s ease both; }
+        .ws-chip-hover:hover { background: rgba(45,212,191,0.14) !important; border-color: rgba(45,212,191,0.35) !important; color: #2DD4BF !important; transition: all 0.15s; }
         @media (max-width: 768px) {
           .wallet-main { padding: 60px 14px 120px !important; }
           .wallet-input-row { flex-direction: column; max-width: 100% !important; }
@@ -891,53 +914,58 @@ export default function WalletScannerPage() {
       <div className="flex h-full overflow-hidden" style={{ color: '#e2e8f0' }}>
 
         {/* ── Left: scrollable main area ─────────────────────────────────── */}
-        <div className="mob-scan-main wallet-main" style={{ flex: 1, minWidth: 0, overflowY: 'auto', overflowX: 'hidden', padding: '40px 48px 120px' }}>
+        <div className="mob-scan-main wallet-main" style={{ flex: 1, minWidth: 0, overflowY: 'auto', overflowX: 'hidden', padding: '40px 48px 120px', background: 'radial-gradient(ellipse 70% 40% at 50% 0%, rgba(45,212,191,0.04) 0%, transparent 70%)' }}>
 
           {/* Header */}
-          <div style={{ marginBottom: '32px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '10px' }}>
+          <div style={{ marginBottom: '36px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '14px', marginBottom: '12px' }}>
               <h1 style={{
-                fontSize: '30px', fontWeight: 800, color: '#f8fafc', lineHeight: 1.1,
+                fontSize: '32px', fontWeight: 900, lineHeight: 1.05,
                 margin: 0, fontFamily: 'var(--font-inter, Inter, sans-serif)',
-                letterSpacing: '-0.02em',
+                letterSpacing: '-0.03em',
+                background: 'linear-gradient(135deg, #f1f5f9 0%, #94a3b8 100%)',
+                WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent',
+                backgroundClip: 'text',
               }}>
                 Wallet Scanner
               </h1>
               <span style={{
-                fontSize: '11px', fontWeight: 700, letterSpacing: '0.12em',
+                fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em',
                 padding: '4px 12px', borderRadius: '99px',
-                background: 'rgba(139,92,246,0.18)',
-                border: '1px solid rgba(139,92,246,0.40)',
+                background: 'linear-gradient(135deg, rgba(139,92,246,0.22), rgba(168,85,247,0.14))',
+                border: '1px solid rgba(139,92,246,0.45)',
                 color: '#c4b5fd',
                 fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
                 textTransform: 'uppercase', flexShrink: 0,
+                boxShadow: '0 0 16px rgba(139,92,246,0.15)',
               }}>
                 Elite
               </span>
             </div>
             <p style={{
-              fontSize: '14px', color: '#94a3b8', margin: 0,
+              fontSize: '14px', color: 'rgba(148,163,184,0.80)', margin: 0,
               fontFamily: 'var(--font-inter, Inter, sans-serif)',
+              letterSpacing: '0.01em',
             }}>
-              Advanced on-chain intelligence and AI-powered wallet analysis
+              Advanced on-chain intelligence · AI-powered wallet analysis
             </p>
           </div>
 
           {/* Input */}
-          <div className="wallet-input-row" style={{ display: 'flex', gap: '10px', maxWidth: '680px', marginBottom: '32px' }}>
+          <div className="wallet-input-row" style={{ display: 'flex', gap: '10px', maxWidth: '700px', marginBottom: '20px' }}>
             <div style={{ flex: 1, position: 'relative' }}>
               {/* Paste icon */}
               <button
                 onClick={() => navigator.clipboard.readText().then(t => setInput(t)).catch(() => {})}
                 title="Paste from clipboard"
                 style={{
-                  position: 'absolute', left: '13px', top: '50%', transform: 'translateY(-50%)',
+                  position: 'absolute', left: '14px', top: '50%', transform: 'translateY(-50%)',
                   background: 'none', border: 'none', padding: '0', cursor: 'pointer',
-                  display: 'flex', alignItems: 'center', color: 'rgba(255,255,255,0.32)',
-                  transition: 'color 0.15s',
+                  display: 'flex', alignItems: 'center', color: 'rgba(255,255,255,0.30)',
+                  transition: 'color 0.15s', zIndex: 1,
                 }}
                 onMouseEnter={e => (e.currentTarget.style.color = '#2DD4BF')}
-                onMouseLeave={e => (e.currentTarget.style.color = 'rgba(255,255,255,0.32)')}
+                onMouseLeave={e => (e.currentTarget.style.color = 'rgba(255,255,255,0.30)')}
               >
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                   <rect x="9" y="2" width="6" height="4" rx="1"/>
@@ -953,15 +981,24 @@ export default function WalletScannerPage() {
                 placeholder="0x… wallet address"
                 spellCheck={false}
                 style={{
-                  width: '100%', padding: '13px 16px 13px 40px',
-                  background: 'rgba(255,255,255,0.04)',
-                  border: '1px solid rgba(255,255,255,0.10)',
-                  borderRadius: '11px', color: '#e2e8f0',
-                  fontSize: '16px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
-                  outline: 'none', transition: 'border-color 0.15s', boxSizing: 'border-box',
+                  width: '100%', padding: '14px 16px 14px 42px',
+                  background: 'rgba(255,255,255,0.035)',
+                  border: '1px solid rgba(255,255,255,0.09)',
+                  borderRadius: '13px', color: '#e2e8f0',
+                  fontSize: '15px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+                  outline: 'none',
+                  transition: 'border-color 0.18s, box-shadow 0.18s',
+                  boxSizing: 'border-box',
+                  boxShadow: 'inset 0 1px 3px rgba(0,0,0,0.18)',
                 }}
-                onFocus={e => (e.currentTarget.style.borderColor = 'rgba(45,212,191,0.45)')}
-                onBlur={e  => (e.currentTarget.style.borderColor = 'rgba(255,255,255,0.10)')}
+                onFocus={e => {
+                  e.currentTarget.style.borderColor = 'rgba(45,212,191,0.50)'
+                  e.currentTarget.style.boxShadow = '0 0 0 3px rgba(45,212,191,0.08), inset 0 1px 3px rgba(0,0,0,0.18)'
+                }}
+                onBlur={e => {
+                  e.currentTarget.style.borderColor = 'rgba(255,255,255,0.09)'
+                  e.currentTarget.style.boxShadow = 'inset 0 1px 3px rgba(0,0,0,0.18)'
+                }}
               />
             </div>
             <button
@@ -969,22 +1006,25 @@ export default function WalletScannerPage() {
               onClick={handleScan}
               disabled={loading || !input.trim()}
               style={{
-                padding: '13px 22px', borderRadius: '11px', border: 'none',
-                background: (loading || !input.trim()) ? 'rgba(45,212,191,0.25)' : '#2DD4BF',
-                color: (loading || !input.trim()) ? 'rgba(255,255,255,0.35)' : '#04101a',
-                fontSize: '12px', fontWeight: 800,
-                letterSpacing: '0.10em', textTransform: 'uppercase',
+                padding: '14px 24px', borderRadius: '13px', border: 'none',
+                background: (loading || !input.trim())
+                  ? 'rgba(45,212,191,0.20)'
+                  : 'linear-gradient(135deg, #2DD4BF, #22c5ae)',
+                color: (loading || !input.trim()) ? 'rgba(255,255,255,0.30)' : '#03121e',
+                fontSize: '11px', fontWeight: 900,
+                letterSpacing: '0.12em', textTransform: 'uppercase',
                 cursor: (loading || !input.trim()) ? 'not-allowed' : 'pointer',
                 fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
-                boxShadow: (!loading && input.trim()) ? '0 0 20px rgba(45,212,191,0.25)' : 'none',
-                transition: 'background 0.15s, box-shadow 0.15s, color 0.15s',
+                boxShadow: (!loading && input.trim())
+                  ? '0 0 24px rgba(45,212,191,0.30), 0 4px 12px rgba(0,0,0,0.25)'
+                  : 'none',
                 whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: '8px',
               }}
             >
               {loading ? 'Scanning…' : (
                 <>
                   Scan
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M5 12h14M13 6l6 6-6 6"/>
                   </svg>
                 </>
@@ -993,63 +1033,76 @@ export default function WalletScannerPage() {
           </div>
 
           {/* Deep Activity Scan toggle */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '8px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginTop: '12px', flexWrap: 'wrap' }}>
             <button
               onClick={() => setDeepActivity(v => !v)}
               disabled={loading}
               title="Fetches transfer history for estimated PnL and future trade reconstruction. Slower scan."
               style={{
                 display: 'inline-flex', alignItems: 'center', gap: '6px',
-                padding: '5px 11px', borderRadius: '7px',
-                border: `1px solid ${deepActivity ? 'rgba(45,212,191,0.50)' : 'rgba(255,255,255,0.09)'}`,
-                background: deepActivity ? 'rgba(45,212,191,0.07)' : 'transparent',
-                color: deepActivity ? '#2DD4BF' : 'rgba(255,255,255,0.38)',
-                fontSize: '10px', fontWeight: 700, letterSpacing: '0.09em', textTransform: 'uppercase',
+                padding: '6px 13px', borderRadius: '8px',
+                border: `1px solid ${deepActivity ? 'rgba(45,212,191,0.45)' : 'rgba(255,255,255,0.08)'}`,
+                background: deepActivity ? 'rgba(45,212,191,0.08)' : 'rgba(255,255,255,0.02)',
+                color: deepActivity ? '#2DD4BF' : 'rgba(255,255,255,0.35)',
+                fontSize: '10px', fontWeight: 700, letterSpacing: '0.10em', textTransform: 'uppercase',
                 cursor: loading ? 'not-allowed' : 'pointer',
                 fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
-                transition: 'all 0.15s',
+                transition: 'all 0.18s',
+                boxShadow: deepActivity ? '0 0 14px rgba(45,212,191,0.12)' : 'none',
               }}
             >
-              {deepActivity && (
+              {deepActivity ? (
                 <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
                   <polyline points="20 6 9 17 4 12"/>
                 </svg>
+              ) : (
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/>
+                </svg>
               )}
-              {deepActivity ? 'Deep Activity Scan On' : 'Run Deep Activity Scan'}
+              {deepActivity ? 'Deep Activity On' : 'Deep Activity Scan'}
             </button>
-            <span style={{ fontSize: '10px', color: 'rgba(255,255,255,0.28)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', letterSpacing: '0.05em' }}>
+            <span style={{ fontSize: '10px', color: 'rgba(255,255,255,0.22)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', letterSpacing: '0.04em' }}>
               {deepActivity
-                ? 'Deep Activity uses heavier analysis and is cached. Re-running too often will return the cached result.'
+                ? 'Heavier analysis · cached · rerun returns cached result'
                 : 'Fetches transfer history · slower scan'}
             </span>
           </div>
 
           {/* Loading skeleton */}
           {loading && (
-            <div style={{ maxWidth: '680px' }}>
-              {[180, 80, 120, 100, 110, 90].map((w, i) => (
-                <div key={i} style={{
-                  height: '14px', borderRadius: '6px', marginBottom: '14px',
-                  width: `${w + i * 20}px`,
-                  background: 'linear-gradient(90deg, rgba(255,255,255,0.05) 25%, rgba(255,255,255,0.10) 50%, rgba(255,255,255,0.05) 75%)',
-                  backgroundSize: '200% 100%',
-                  animation: 'shimmer 1.5s infinite',
-                }} />
-              ))}
+            <div style={{ maxWidth: '700px', marginTop: '24px' }}>
+              <div style={{ background: 'rgba(255,255,255,0.025)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '16px', padding: '24px', marginBottom: '12px' }}>
+                {[220, 140, 180, 110, 160, 90].map((w, i) => (
+                  <div key={i} style={{
+                    height: '12px', borderRadius: '6px', marginBottom: i === 5 ? 0 : '14px',
+                    width: `${w + i * 12}px`, maxWidth: '100%',
+                    background: 'linear-gradient(90deg, rgba(255,255,255,0.04) 0%, rgba(255,255,255,0.09) 50%, rgba(255,255,255,0.04) 100%)',
+                    backgroundSize: '600px 100%',
+                    animation: `shimmer 1.6s ease-in-out ${i * 0.1}s infinite`,
+                  }} />
+                ))}
+              </div>
+              <div style={{ display: 'flex', gap: '10px' }}>
+                {[1,2,3].map(i => (
+                  <div key={i} style={{ flex: 1, height: '70px', borderRadius: '12px', background: 'linear-gradient(90deg, rgba(255,255,255,0.03) 0%, rgba(255,255,255,0.07) 50%, rgba(255,255,255,0.03) 100%)', backgroundSize: '600px 100%', animation: `shimmer 1.6s ease-in-out ${i * 0.15}s infinite` }} />
+                ))}
+              </div>
             </div>
           )}
 
           {/* Error */}
           {error && (
             <div style={{
-              display: 'flex', alignItems: 'flex-start', gap: '8px',
-              padding: '12px 14px', borderRadius: '10px', maxWidth: '680px',
-              background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.20)',
-              color: '#fca5a5', fontSize: '13px', lineHeight: 1.5,
+              display: 'flex', alignItems: 'flex-start', gap: '10px',
+              padding: '14px 16px', borderRadius: '12px', maxWidth: '700px', marginTop: '16px',
+              background: 'rgba(239,68,68,0.07)', border: '1px solid rgba(239,68,68,0.18)',
+              color: '#fca5a5', fontSize: '13px', lineHeight: 1.55,
               fontFamily: 'var(--font-inter, Inter, sans-serif)',
+              boxShadow: '0 0 24px rgba(239,68,68,0.06)',
             }}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" style={{ flexShrink: 0, marginTop: '1px' }}>
-                <circle cx="12" cy="12" r="10" stroke="#fca5a5" strokeWidth="2"/>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" style={{ flexShrink: 0, marginTop: '1px' }}>
+                <circle cx="12" cy="12" r="10" stroke="#fca5a5" strokeWidth="1.8"/>
                 <path d="M12 8v4M12 16h.01" stroke="#fca5a5" strokeWidth="2" strokeLinecap="round"/>
               </svg>
               {error}
@@ -1058,16 +1111,21 @@ export default function WalletScannerPage() {
 
           {/* CORTEX idle placeholder — shown before first scan */}
           {!result && !loading && (
-            <div style={{ maxWidth: '720px', marginTop: '8px' }}>
-              <div style={{ background: '#080c14', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '14px', padding: '18px 22px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '9px', marginBottom: '8px' }}>
-                  <div style={{ width: '7px', height: '7px', borderRadius: '50%', background: 'rgba(45,212,191,0.22)' }} />
-                  <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.18em', color: 'rgba(255,255,255,0.35)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
-                    CORTEX Wallet Read
+            <div style={{ maxWidth: '700px', marginTop: '16px' }}>
+              <div style={{
+                background: 'rgba(8,12,20,0.80)',
+                border: '1px solid rgba(45,212,191,0.10)',
+                borderRadius: '16px', padding: '22px 26px',
+                boxShadow: '0 0 40px rgba(45,212,191,0.03)',
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '10px' }}>
+                  <div style={{ width: '7px', height: '7px', borderRadius: '50%', background: 'rgba(45,212,191,0.25)', boxShadow: '0 0 6px rgba(45,212,191,0.20)' }} />
+                  <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.18em', color: 'rgba(45,212,191,0.45)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                    CORTEX · Wallet Intelligence
                   </span>
                 </div>
-                <p style={{ margin: 0, fontSize: '13px', color: 'rgba(255,255,255,0.28)', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
-                  Scan a wallet to generate a CORTEX wallet read.
+                <p style={{ margin: 0, fontSize: '13px', color: 'rgba(255,255,255,0.25)', fontFamily: 'var(--font-inter, Inter, sans-serif)', lineHeight: 1.6 }}>
+                  Enter a wallet address above to generate an AI-powered CORTEX wallet read — portfolio value, trading intelligence, and on-chain behavior.
                 </p>
               </div>
             </div>
@@ -1097,11 +1155,12 @@ export default function WalletScannerPage() {
             const hasCortexFacts = Boolean(result.walletFacts)
             const showLegacyPortfolioCards = !(hasPortfolioIntelligence && hasCortexFacts)
             return (
-            <div style={{ maxWidth: '100%', width: '100%', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            <div className="ws-result-fade" style={{ maxWidth: '100%', width: '100%', display: 'flex', flexDirection: 'column', gap: '14px', marginTop: '24px' }}>
 
               {/* Scan cost / cache note banner */}
               {result.walletScanCacheNote && (result.walletScanCostMode === 'blocked_by_cooldown' || result.walletScanCostMode === 'blocked_by_cost_guard' || result.walletScanCostMode === 'historical_cached' || result.walletScanCostMode === 'deep_cached') && (
-                <div style={{ fontSize: '11px', color: '#7dd3fc', background: 'rgba(56,189,248,0.06)', border: '1px solid rgba(56,189,248,0.15)', borderRadius: '8px', padding: '8px 12px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', lineHeight: 1.5 }}>
+                <div style={{ fontSize: '11px', color: '#7dd3fc', background: 'rgba(56,189,248,0.05)', border: '1px solid rgba(56,189,248,0.12)', borderRadius: '10px', padding: '10px 14px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', lineHeight: 1.6, display: 'flex', alignItems: 'flex-start', gap: '8px' }}>
+                  <span style={{ flexShrink: 0, marginTop: '1px' }}>ℹ</span>
                   {result.walletScanCacheNote}
                 </div>
               )}
@@ -1134,41 +1193,56 @@ export default function WalletScannerPage() {
                 )
               })()}
 
-              {/* Portfolio value card */}
+              {/* Portfolio value hero */}
               <div style={{
-                background: '#080c14',
-                border: '1px solid rgba(255,255,255,0.08)',
-                borderRadius: '18px',
+                background: 'linear-gradient(135deg, #060c18 0%, #080f1c 60%, rgba(45,212,191,0.04) 100%)',
+                border: '1px solid rgba(45,212,191,0.15)',
+                borderRadius: '20px',
                 position: 'relative', overflow: 'hidden',
+                boxShadow: '0 0 60px rgba(45,212,191,0.06), 0 20px 60px rgba(0,0,0,0.30)',
               }}>
                 <div style={{
                   position: 'absolute', top: 0, left: 0, right: 0, height: '2px',
-                  background: 'linear-gradient(90deg, #2DD4BF 0%, #8b5cf6 100%)',
+                  background: 'linear-gradient(90deg, transparent 0%, #2DD4BF 30%, #8b5cf6 70%, transparent 100%)',
+                  opacity: 0.9,
                 }} />
-                <div style={{ padding: '28px 32px' }}>
+                <div style={{
+                  position: 'absolute', top: '20px', right: '20px', width: '200px', height: '200px',
+                  background: 'radial-gradient(circle, rgba(45,212,191,0.07) 0%, transparent 70%)',
+                  pointerEvents: 'none',
+                }} />
+                <div style={{ padding: '30px 34px', position: 'relative' }}>
                   <div style={{
-                    fontSize: '10px', fontWeight: 700, letterSpacing: '0.18em',
-                    color: '#2DD4BF', textTransform: 'uppercase',
+                    fontSize: '10px', fontWeight: 700, letterSpacing: '0.20em',
+                    color: 'rgba(45,212,191,0.70)', textTransform: 'uppercase',
                     fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
-                    marginBottom: '10px',
+                    marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '7px',
                   }}>
+                    <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#2DD4BF', display: 'inline-block', boxShadow: '0 0 6px #2DD4BF' }} />
                     Portfolio Value
                   </div>
                   <div className="ws-val-52" style={{
-                    fontSize: '52px', fontWeight: 900, color: '#f1f5f9',
+                    fontSize: '54px', fontWeight: 900, color: '#f8fafc',
                     fontFamily: 'var(--font-inter, Inter, sans-serif)',
-                    letterSpacing: '-0.03em', lineHeight: 1,
-                    marginBottom: '14px',
+                    letterSpacing: '-0.035em', lineHeight: 1,
+                    marginBottom: '16px',
+                    textShadow: result.totalValue > 0 ? '0 0 40px rgba(45,212,191,0.15)' : 'none',
                   }}>
-                    {result.totalValue > 0 ? fmtUSD(result.totalValue) : result.holdings.length > 0 ? 'Value pending in current checks' : 'No signal in checked window'}
+                    {result.totalValue > 0 ? fmtUSD(result.totalValue) : result.holdings.length > 0 ? 'Value pending' : 'No signal'}
                   </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap' }}>
                     <span style={{
-                      fontSize: '12px', color: 'rgba(255,255,255,0.32)',
+                      fontSize: '12px', color: 'rgba(255,255,255,0.28)',
                       fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+                      letterSpacing: '0.04em',
                     }}>
                       {shortAddr(result.address)}
                     </span>
+                    {result.holdings.length > 0 && (
+                      <span style={{ fontSize: '10px', color: 'rgba(45,212,191,0.55)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', letterSpacing: '0.10em' }}>
+                        {result.holdings.length} token{result.holdings.length !== 1 ? 's' : ''} indexed
+                      </span>
+                    )}
                   </div>
                 </div>
               </div>
@@ -1844,18 +1918,23 @@ export default function WalletScannerPage() {
                 )
               })()}
 
-              <div style={{ background: '#080c14', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '16px', padding: '20px 22px' }}>
-                <div style={{ fontSize: '10px', fontWeight: 800, letterSpacing: '0.18em', color: '#2DD4BF', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '10px' }}>AI Wallet Personality</div>
-                <p style={{ margin: 0, color: '#cbd5e1', fontSize: '13px', lineHeight: 1.75, fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{walletIntel.personalitySummary}</p>
+              <div style={{ background: 'linear-gradient(135deg, #080c14 0%, rgba(45,212,191,0.02) 100%)', border: '1px solid rgba(45,212,191,0.12)', borderRadius: '18px', padding: '22px 26px', boxShadow: '0 0 30px rgba(45,212,191,0.04)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '14px' }}>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#2DD4BF" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.7 }}>
+                    <path d="M12 2a10 10 0 1 0 10 10"/><path d="M12 6v6l4 2"/>
+                  </svg>
+                  <div style={{ fontSize: '10px', fontWeight: 800, letterSpacing: '0.18em', color: 'rgba(45,212,191,0.80)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>AI Wallet Personality</div>
+                </div>
+                <p style={{ margin: 0, color: '#cbd5e1', fontSize: '13px', lineHeight: 1.80, fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{walletIntel.personalitySummary}</p>
                 {(result.walletTradeStatsSummary?.closedLots ?? 0) > 0 && (
-                  <p style={{ margin: '10px 0 0', color: 'rgba(255,255,255,0.38)', fontSize: '11px', lineHeight: 1.55, fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                  <p style={{ margin: '12px 0 0', color: 'rgba(255,255,255,0.32)', fontSize: '11px', lineHeight: 1.60, fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', background: 'rgba(255,255,255,0.02)', borderRadius: '8px', padding: '8px 10px', border: '1px solid rgba(255,255,255,0.05)' }}>
                     Portfolio value reflects current holdings; trade stats only reflect reconstructed closed lots, so large open holdings are not included in realized PnL.
                   </p>
                 )}
                 {walletIntel.openChecks.length > 0 && (
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginTop: '14px' }}>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '7px', marginTop: '16px' }}>
                     {walletIntel.openChecks.map(check => (
-                      <span key={check} style={{ fontSize: '10px', color: '#7dd3fc', border: '1px solid rgba(125,211,252,0.18)', background: 'rgba(56,189,248,0.06)', borderRadius: 999, padding: '5px 9px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{check}</span>
+                      <span key={check} style={{ fontSize: '10px', color: '#7dd3fc', border: '1px solid rgba(125,211,252,0.16)', background: 'rgba(56,189,248,0.05)', borderRadius: '8px', padding: '5px 10px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', lineHeight: 1.4 }}>{check}</span>
                     ))}
                   </div>
                 )}
@@ -1924,14 +2003,14 @@ export default function WalletScannerPage() {
               </div>}
 
 
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', gap: '7px', flexWrap: 'wrap', alignItems: 'center' }}>
                 {[
-                  'Portfolio read: CORTEX',
-                  ...(hasUsefulActivity ? ['Base activity: CORTEX'] : []),
-                  'Release view',
+                  { label: 'Portfolio read: CORTEX', color: 'rgba(45,212,191,0.50)', bg: 'rgba(45,212,191,0.04)', border: 'rgba(45,212,191,0.14)' },
+                  ...(hasUsefulActivity ? [{ label: 'Base activity: CORTEX', color: 'rgba(45,212,191,0.50)', bg: 'rgba(45,212,191,0.04)', border: 'rgba(45,212,191,0.14)' }] : []),
+                  { label: 'Release view', color: 'rgba(148,163,184,0.50)', bg: 'rgba(148,163,184,0.03)', border: 'rgba(148,163,184,0.12)' },
                 ].map((chip) => (
-                  <span key={chip} style={{ fontSize: 11, color: '#94a3b8', border: '1px solid rgba(148,163,184,0.25)', borderRadius: 999, padding: '5px 10px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
-                    {chip}
+                  <span key={chip.label} style={{ fontSize: '10px', color: chip.color, background: chip.bg, border: `1px solid ${chip.border}`, borderRadius: '999px', padding: '4px 10px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', letterSpacing: '0.06em' }}>
+                    {chip.label}
                   </span>
                 ))}
               </div>
@@ -2176,30 +2255,36 @@ export default function WalletScannerPage() {
                       <button
                         onClick={() => setShowAllHoldings(v => !v)}
                         style={{
-                          width: '100%', padding: '13px 20px',
-                          background: 'none',
-                          border: 'none', borderTop: '1px solid rgba(255,255,255,0.06)',
+                          width: '100%', padding: '14px 20px',
+                          background: 'rgba(255,255,255,0.01)',
+                          border: 'none', borderTop: '1px solid rgba(255,255,255,0.055)',
                           cursor: 'pointer', display: 'flex', alignItems: 'center',
-                          justifyContent: 'center', gap: '6px',
-                          fontSize: '12px', fontWeight: 700, letterSpacing: '0.08em',
-                          color: 'rgba(255,255,255,0.40)',
+                          justifyContent: 'center', gap: '7px',
+                          fontSize: '11px', fontWeight: 700, letterSpacing: '0.09em',
+                          color: 'rgba(255,255,255,0.35)',
                           fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
-                          transition: 'color 0.15s',
+                          transition: 'color 0.15s, background 0.15s',
                         }}
-                        onMouseEnter={e => (e.currentTarget.style.color = '#2DD4BF')}
-                        onMouseLeave={e => (e.currentTarget.style.color = 'rgba(255,255,255,0.40)')}
+                        onMouseEnter={e => {
+                          e.currentTarget.style.color = '#2DD4BF'
+                          e.currentTarget.style.background = 'rgba(45,212,191,0.04)'
+                        }}
+                        onMouseLeave={e => {
+                          e.currentTarget.style.color = 'rgba(255,255,255,0.35)'
+                          e.currentTarget.style.background = 'rgba(255,255,255,0.01)'
+                        }}
                       >
                         {showAllHoldings ? (
                           <>
                             Show less
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                               <path d="M18 15l-6-6-6 6"/>
                             </svg>
                           </>
                         ) : (
                           <>
-                            View all tokens ({hidden} more)
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                            View all {sorted.length} tokens ({hidden} more)
+                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                               <path d="M6 9l6 6 6-6"/>
                             </svg>
                           </>
@@ -2226,29 +2311,30 @@ export default function WalletScannerPage() {
 
               {/* ── CORTEX Wallet Read (inline — visible on mobile where sidebar is hidden) ── */}
               <div style={{
-                background: '#080c14',
-                border: '1px solid rgba(45,212,191,0.18)',
-                borderRadius: '16px', overflow: 'hidden',
+                background: 'linear-gradient(135deg, #070b14 0%, #060a11 100%)',
+                border: '1px solid rgba(45,212,191,0.14)',
+                borderRadius: '18px', overflow: 'hidden',
+                boxShadow: '0 0 40px rgba(45,212,191,0.05)',
               }}>
-                <div style={{ height: '2px', background: 'linear-gradient(90deg,#2DD4BF,#8b5cf6)', opacity: clarkVerdict ? 1 : 0.25 }} />
-                <div style={{ padding: '18px 22px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '9px', marginBottom: '16px' }}>
+                <div style={{ height: '2px', background: 'linear-gradient(90deg, transparent, #2DD4BF 40%, #8b5cf6 70%, transparent)', opacity: clarkVerdict ? 0.85 : 0.20, transition: 'opacity 0.5s' }} />
+                <div style={{ padding: '20px 24px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '18px' }}>
                     <div style={{
                       width: '7px', height: '7px', borderRadius: '50%', flexShrink: 0,
-                      background: (clarkLoading || clarkVerdict) ? '#2DD4BF' : 'rgba(45,212,191,0.22)',
-                      boxShadow: (clarkLoading || clarkVerdict) ? '0 0 8px rgba(45,212,191,0.70)' : 'none',
+                      background: (clarkLoading || clarkVerdict) ? '#2DD4BF' : 'rgba(45,212,191,0.20)',
+                      boxShadow: (clarkLoading || clarkVerdict) ? '0 0 10px rgba(45,212,191,0.80)' : 'none',
                       animation: clarkLoading ? 'clarkPulse 1.2s ease-in-out infinite' : 'none',
                     }} />
-                    <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.18em', color: 'rgba(255,255,255,0.55)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
-                      CORTEX Wallet Read
+                    <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.18em', color: 'rgba(45,212,191,0.65)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                      CORTEX · Wallet Read
                     </span>
                   </div>
 
                   {clarkLoading && (
                     <div>
                       <ClarkDots />
-                      <p style={{ marginTop: '8px', fontSize: '12px', color: 'rgba(255,255,255,0.35)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
-                        CORTEX is reading wallet activity…
+                      <p style={{ marginTop: '10px', fontSize: '12px', color: 'rgba(45,212,191,0.55)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', letterSpacing: '0.03em' }}>
+                        CORTEX reading wallet activity…
                       </p>
                     </div>
                   )}
@@ -2260,47 +2346,47 @@ export default function WalletScannerPage() {
                   )}
 
                   {!clarkLoading && !clarkVerdict && (
-                    <p style={{ margin: 0, fontSize: '12px', color: 'rgba(255,255,255,0.28)', lineHeight: 1.7, fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
+                    <p style={{ margin: 0, fontSize: '12px', color: 'rgba(255,255,255,0.22)', lineHeight: 1.7, fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
                       Scan a wallet to generate a CORTEX wallet read.
                     </p>
                   )}
 
                   {!clarkLoading && clarkVerdict && (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
                       <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                        <span style={{ padding: '3px 10px', borderRadius: '99px', fontSize: '10px', fontWeight: 700, letterSpacing: '0.12em', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', background: 'rgba(45,212,191,0.12)', border: '1px solid rgba(45,212,191,0.28)', color: '#2DD4BF' }}>
+                        <span style={{ padding: '4px 12px', borderRadius: '99px', fontSize: '10px', fontWeight: 700, letterSpacing: '0.12em', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', background: 'rgba(45,212,191,0.10)', border: '1px solid rgba(45,212,191,0.25)', color: '#2DD4BF', boxShadow: '0 0 12px rgba(45,212,191,0.10)' }}>
                           {clarkVerdict.verdict}
                         </span>
-                        <span style={{ padding: '3px 10px', borderRadius: '99px', fontSize: '10px', fontWeight: 700, letterSpacing: '0.12em', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', background: 'rgba(251,191,36,0.10)', border: '1px solid rgba(251,191,36,0.25)', color: '#fbbf24' }}>
+                        <span style={{ padding: '4px 12px', borderRadius: '99px', fontSize: '10px', fontWeight: 700, letterSpacing: '0.12em', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.22)', color: '#fbbf24' }}>
                           {clarkVerdict.confidence} confidence
                         </span>
                       </div>
 
-                      <p style={{ margin: 0, fontSize: '13px', color: '#f1f5f9', lineHeight: 1.6, fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
+                      <p style={{ margin: 0, fontSize: '13px', color: '#e2e8f0', lineHeight: 1.65, fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
                         {clarkVerdict.read}
                       </p>
 
-                      <div>
-                        <p style={{ margin: '0 0 6px', fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#3a5268', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Activity Read</p>
+                      <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '10px', padding: '12px 14px' }}>
+                        <p style={{ margin: '0 0 8px', fontSize: '9px', fontWeight: 700, letterSpacing: '0.14em', color: '#334155', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Activity Read</p>
                         {clarkVerdict.keySignals.slice(0, 4).map((line, i) => (
-                          <p key={i} style={{ margin: '0 0 4px', fontSize: '12px', color: i === 3 ? '#a78bfa' : '#cbd5e1' }}>— {line}</p>
+                          <p key={i} style={{ margin: '0 0 5px', fontSize: '12px', color: i === 3 ? '#a78bfa' : '#94a3b8', lineHeight: 1.5 }}>— {line}</p>
                         ))}
                       </div>
 
                       <div>
-                        <p style={{ margin: '0 0 6px', fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#3a5268', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Missing Checks</p>
+                        <p style={{ margin: '0 0 8px', fontSize: '9px', fontWeight: 700, letterSpacing: '0.14em', color: '#334155', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Missing Checks</p>
                         {clarkVerdict.risks.slice(0, 3).map((line, i) => (
-                          <p key={i} style={{ margin: '0 0 4px', fontSize: '12px', color: '#fca5a5' }}>— {line}</p>
+                          <p key={i} style={{ margin: '0 0 5px', fontSize: '12px', color: '#fca5a5', lineHeight: 1.5 }}>— {line}</p>
                         ))}
                       </div>
 
                       <div>
-                        <p style={{ margin: '0 0 4px', fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#3a5268', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Next action</p>
-                        <p style={{ margin: 0, fontSize: '12px', color: '#94a3b8' }}>{clarkVerdict.nextAction}</p>
+                        <p style={{ margin: '0 0 6px', fontSize: '9px', fontWeight: 700, letterSpacing: '0.14em', color: '#334155', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Next action</p>
+                        <p style={{ margin: 0, fontSize: '12px', color: '#94a3b8', lineHeight: 1.6 }}>{clarkVerdict.nextAction}</p>
                       </div>
 
-                      <p style={{ margin: 0, fontSize: '10px', color: 'rgba(255,255,255,0.20)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
-                        Powered by CORTEX — verified on-chain data only
+                      <p style={{ margin: 0, fontSize: '10px', color: 'rgba(255,255,255,0.15)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', letterSpacing: '0.05em' }}>
+                        CORTEX · Verified on-chain data only
                       </p>
                     </div>
                   )}
@@ -2314,45 +2400,45 @@ export default function WalletScannerPage() {
 
         {/* ── Right: Clark verdict panel ────────────────────────────────────────────── */}
         <aside className="mob-verdict-panel hidden md:flex" style={{
-          width: '380px', flexShrink: 0,
-          borderLeft: '1px solid rgba(255,255,255,0.08)',
-          background: '#080c14',
+          width: '360px', flexShrink: 0,
+          borderLeft: '1px solid rgba(255,255,255,0.07)',
+          background: 'linear-gradient(180deg, #070b14 0%, #060a12 100%)',
           display: 'flex', flexDirection: 'column',
         }}>
           {/* Top gradient accent */}
           <div style={{
             height: '2px', flexShrink: 0,
-            background: 'linear-gradient(90deg, #2DD4BF, #8b5cf6)',
-            opacity: false ? 1 : 0.18,
-            transition: 'opacity 0.4s',
+            background: 'linear-gradient(90deg, transparent 0%, #2DD4BF 40%, #8b5cf6 70%, transparent 100%)',
+            opacity: clarkVerdict ? 0.85 : 0.15,
+            transition: 'opacity 0.5s',
           }} />
 
           {/* Header */}
           <div style={{
-            padding: '20px 24px 16px', flexShrink: 0,
-            borderBottom: '1px solid rgba(255,255,255,0.06)',
+            padding: '22px 24px 16px', flexShrink: 0,
+            borderBottom: '1px solid rgba(255,255,255,0.055)',
           }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '9px', marginBottom: result ? '10px' : 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: result ? '10px' : 0 }}>
               <div style={{
                 width: '8px', height: '8px', borderRadius: '50%', flexShrink: 0,
-                background: false ? '#2DD4BF' : 'rgba(45,212,191,0.22)',
-                boxShadow: false ? '0 0 8px rgba(45,212,191,0.70)' : 'none',
-                animation: 'none',
-                transition: 'background 0.3s, box-shadow 0.3s',
+                background: clarkVerdict ? '#2DD4BF' : 'rgba(45,212,191,0.20)',
+                boxShadow: clarkVerdict ? '0 0 10px rgba(45,212,191,0.70)' : 'none',
+                transition: 'background 0.4s, box-shadow 0.4s',
               }} />
               <span style={{
-                fontSize: '11px', fontWeight: 700, letterSpacing: '0.18em',
-                color: 'rgba(255,255,255,0.55)', textTransform: 'uppercase',
+                fontSize: '10px', fontWeight: 700, letterSpacing: '0.18em',
+                color: 'rgba(255,255,255,0.50)', textTransform: 'uppercase',
                 fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
               }}>
-                Clark AI Verdict
+                CORTEX · Wallet Read
               </span>
             </div>
             {result && (
               <div style={{
-                fontSize: '11px', color: 'rgba(255,255,255,0.28)',
+                fontSize: '10px', color: 'rgba(255,255,255,0.22)',
                 fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
                 overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                letterSpacing: '0.04em',
               }}>
                 {result.address.slice(0, 10)}…{result.address.slice(-8)}
               </div>
@@ -2360,49 +2446,69 @@ export default function WalletScannerPage() {
           </div>
 
           {/* Body */}
-          <div style={{ flex: 1, overflowY: 'auto', padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+          <div style={{ flex: 1, overflowY: 'auto', padding: '20px 22px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
             {clarkLoading && (
               <div>
                 <ClarkDots />
-                <p style={{ marginTop: '8px', fontSize: '12px', color: '#67e8f9', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
-                  CORTEX is reading wallet activity…
+                <p style={{ marginTop: '10px', fontSize: '12px', color: 'rgba(45,212,191,0.60)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', letterSpacing: '0.03em' }}>
+                  CORTEX reading wallet activity…
                 </p>
               </div>
             )}
             {!clarkLoading && clarkError && (
-              <p style={{ fontSize: '13px', color: '#fca5a5', lineHeight: 1.7, fontFamily: 'var(--font-inter, Inter, sans-serif)', margin: 0 }}>
+              <p style={{ fontSize: '12px', color: '#fca5a5', lineHeight: 1.7, fontFamily: 'var(--font-inter, Inter, sans-serif)', margin: 0 }}>
                 {clarkError}
               </p>
             )}
             {!clarkLoading && !clarkError && !clarkVerdict && (
-              <p style={{ fontSize: '13px', color: 'rgba(255,255,255,0.22)', lineHeight: 1.7, fontFamily: 'var(--font-inter, Inter, sans-serif)', margin: 0 }}>
+              <p style={{ fontSize: '13px', color: 'rgba(255,255,255,0.18)', lineHeight: 1.7, fontFamily: 'var(--font-inter, Inter, sans-serif)', margin: 0 }}>
                 Scan a wallet to generate a CORTEX wallet read.
               </p>
             )}
             {!clarkLoading && clarkVerdict && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                  <span style={{ padding: '3px 10px', borderRadius: '99px', fontSize: '10px', fontWeight: 700, letterSpacing: '0.12em', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', background: 'rgba(45,212,191,0.12)', border: '1px solid rgba(45,212,191,0.28)', color: '#2DD4BF' }}>{clarkVerdict.verdict}</span>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                <div style={{ display: 'flex', gap: '7px', flexWrap: 'wrap' }}>
+                  <span style={{ padding: '4px 11px', borderRadius: '99px', fontSize: '10px', fontWeight: 700, letterSpacing: '0.12em', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', background: 'rgba(45,212,191,0.10)', border: '1px solid rgba(45,212,191,0.25)', color: '#2DD4BF', boxShadow: '0 0 12px rgba(45,212,191,0.10)' }}>{clarkVerdict.verdict}</span>
                 </div>
-                <div><p style={{ margin: '0 0 4px', fontSize: '10px', color: '#64748b', letterSpacing: '0.10em', textTransform: 'uppercase' }}>Portfolio Read</p><p style={{ margin: 0, fontSize: '12px', color: '#e2e8f0', lineHeight: 1.6 }}>{clarkVerdict.read}</p></div>
-                <div><p style={{ margin: '0 0 4px', fontSize: '10px', color: '#64748b', letterSpacing: '0.10em', textTransform: 'uppercase' }}>Activity Read</p>{clarkVerdict.keySignals.slice(0, 2).map((line, i) => <p key={i} style={{ margin: '0 0 4px', fontSize: '12px', color: '#cbd5e1' }}>— {line}</p>)}</div>
-                <div><p style={{ margin: '0 0 4px', fontSize: '10px', color: '#64748b', letterSpacing: '0.10em', textTransform: 'uppercase' }}>Risk / Concentration</p><p style={{ margin: 0, fontSize: '12px', color: '#fcd34d' }}>— {clarkVerdict.keySignals[2]}</p></div>
-                {clarkVerdict.keySignals[3] && <div><p style={{ margin: '0 0 4px', fontSize: '10px', color: '#64748b', letterSpacing: '0.10em', textTransform: 'uppercase' }}>Real Trade Evidence</p><p style={{ margin: 0, fontSize: '12px', color: '#a78bfa' }}>— {clarkVerdict.keySignals[3]}</p></div>}
-                <div><p style={{ margin: '0 0 4px', fontSize: '10px', color: '#64748b', letterSpacing: '0.10em', textTransform: 'uppercase' }}>Missing Checks</p>{clarkVerdict.risks.slice(0, 3).map((line, i) => <p key={i} style={{ margin: '0 0 4px', fontSize: '12px', color: '#fca5a5' }}>— {line}</p>)}</div>
-                <div><p style={{ margin: '0 0 4px', fontSize: '10px', color: '#64748b', letterSpacing: '0.10em', textTransform: 'uppercase' }}>Next Action</p><p style={{ margin: 0, fontSize: '12px', color: '#94a3b8' }}>{clarkVerdict.nextAction}</p></div>
+                <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '10px', padding: '10px 12px' }}>
+                  <p style={{ margin: '0 0 5px', fontSize: '9px', color: '#475569', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Portfolio Read</p>
+                  <p style={{ margin: 0, fontSize: '12px', color: '#e2e8f0', lineHeight: 1.65 }}>{clarkVerdict.read}</p>
+                </div>
+                <div>
+                  <p style={{ margin: '0 0 6px', fontSize: '9px', color: '#475569', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Activity Read</p>
+                  {clarkVerdict.keySignals.slice(0, 2).map((line, i) => <p key={i} style={{ margin: '0 0 5px', fontSize: '12px', color: '#94a3b8', lineHeight: 1.5 }}>— {line}</p>)}
+                </div>
+                <div>
+                  <p style={{ margin: '0 0 6px', fontSize: '9px', color: '#475569', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Risk / Concentration</p>
+                  <p style={{ margin: 0, fontSize: '12px', color: '#fbbf24', lineHeight: 1.5 }}>— {clarkVerdict.keySignals[2]}</p>
+                </div>
+                {clarkVerdict.keySignals[3] && (
+                  <div>
+                    <p style={{ margin: '0 0 6px', fontSize: '9px', color: '#475569', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Real Trade Evidence</p>
+                    <p style={{ margin: 0, fontSize: '12px', color: '#a78bfa', lineHeight: 1.5 }}>— {clarkVerdict.keySignals[3]}</p>
+                  </div>
+                )}
+                <div>
+                  <p style={{ margin: '0 0 6px', fontSize: '9px', color: '#475569', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Missing Checks</p>
+                  {clarkVerdict.risks.slice(0, 3).map((line, i) => <p key={i} style={{ margin: '0 0 5px', fontSize: '12px', color: '#fca5a5', lineHeight: 1.5 }}>— {line}</p>)}
+                </div>
+                <div>
+                  <p style={{ margin: '0 0 6px', fontSize: '9px', color: '#475569', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Next Action</p>
+                  <p style={{ margin: 0, fontSize: '12px', color: '#94a3b8', lineHeight: 1.6 }}>{clarkVerdict.nextAction}</p>
+                </div>
               </div>
             )}
           </div>
 
           {/* Footer */}
           <div style={{
-            flexShrink: 0, padding: '12px 24px',
-            borderTop: '1px solid rgba(255,255,255,0.06)',
-            fontSize: '10px', color: 'rgba(255,255,255,0.20)',
-            letterSpacing: '0.05em', lineHeight: 1.5,
+            flexShrink: 0, padding: '12px 22px',
+            borderTop: '1px solid rgba(255,255,255,0.05)',
+            fontSize: '10px', color: 'rgba(255,255,255,0.16)',
+            letterSpacing: '0.06em', lineHeight: 1.5,
             fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
           }}>
-            Powered by CORTEX — Real-time onchain analysis
+            CORTEX · Verified on-chain analysis only
           </div>
         </aside>
       </div>
