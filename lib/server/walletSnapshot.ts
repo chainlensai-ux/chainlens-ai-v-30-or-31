@@ -1,5 +1,92 @@
 import { fetchMoralisBalances, fetchMoralisTransfers, type MoralisFetchResult, type MoralisChain, type MoralisTransferItem } from './moralis'
 
+
+type TokenUsage = {
+  providerFetch: number
+  swapDetection: number
+  normalization: number
+  priceInference: number
+  fifoEngine: number
+  fallbackEngine: number
+  tradeStats: number
+  debugLogging: number
+  total: number
+}
+
+type TokenUsageStage = Exclude<keyof TokenUsage, 'total'>
+
+const TOKEN_USAGE_STAGES: TokenUsageStage[] = [
+  'providerFetch',
+  'swapDetection',
+  'normalization',
+  'priceInference',
+  'fifoEngine',
+  'fallbackEngine',
+  'tradeStats',
+  'debugLogging',
+]
+
+const EMPTY_TOKEN_USAGE = (): TokenUsage => ({
+  providerFetch: 0,
+  swapDetection: 0,
+  normalization: 0,
+  priceInference: 0,
+  fifoEngine: 0,
+  fallbackEngine: 0,
+  tradeStats: 0,
+  debugLogging: 0,
+  total: 0,
+})
+
+const estimateTokenMeterChars = (value: unknown, depth = 0, seen?: WeakSet<object>): number => {
+  if (value == null) return 0
+  if (typeof value === 'string') return value.length
+  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') return String(value).length
+  if (value instanceof Date) return value.toISOString().length
+  if (depth >= 4) return 0
+  if (typeof value !== 'object') return 0
+  const obj = value as object
+  const visited = seen ?? new WeakSet<object>()
+  if (visited.has(obj)) return 0
+  visited.add(obj)
+  if (Array.isArray(value)) {
+    let chars = 0
+    const limit = Math.min(value.length, 50)
+    for (let i = 0; i < limit; i++) chars += estimateTokenMeterChars(value[i], depth + 1, visited)
+    chars += String(value.length).length
+    return chars
+  }
+  let chars = 0
+  const entries = Object.entries(value as Record<string, unknown>).slice(0, 50)
+  for (const [key, entryValue] of entries) {
+    chars += key.length + estimateTokenMeterChars(entryValue, depth + 1, visited)
+  }
+  return chars
+}
+
+const createTokenMeter = (debug = false) => {
+  const usage = EMPTY_TOKEN_USAGE()
+  const active = new Set<TokenUsageStage>()
+  const toTokens = (chars: number) => Math.ceil(Math.max(0, chars) / 4)
+  const startTokenMeter = (label: TokenUsageStage) => {
+    active.add(label)
+  }
+  const endTokenMeter = (label: TokenUsageStage) => {
+    active.delete(label)
+  }
+  const measure = (label: TokenUsageStage, ...values: unknown[]) => {
+    let chars = 0
+    for (const value of values) chars += estimateTokenMeterChars(value)
+    usage[label] += toTokens(chars)
+  }
+  const snapshot = (): TokenUsage => {
+    const tokenUsage = { ...usage, total: TOKEN_USAGE_STAGES.reduce((sum, stage) => sum + usage[stage], 0) }
+    if (debug) console.debug('[walletSnapshot] tokenUsage', tokenUsage)
+    return tokenUsage
+  }
+  return { startTokenMeter, endTokenMeter, measure, snapshot }
+}
+
 type Holding = {
   contract?: string
   name: string
@@ -255,6 +342,7 @@ export type WalletSnapshot = {
     missing: string[]
   }
   walletTradeStatsSource: 'base_sample' | 'historical_promoted_preview'
+  tokenUsage: TokenUsage
   walletClosedTradeSamples: Array<{
     tokenSymbol: string
     tokenAddress: string
@@ -848,7 +936,7 @@ type _ApiCallEntry = {
   dupKey: string
 }
 
-export type WalletSnapshotOptions = { refresh?: boolean; chain?: 'eth' | 'base'; deepScan?: boolean; deepActivity?: boolean; chainMode?: 'auto' | 'base' | 'eth' | 'base_eth' | 'all_supported'; historicalCoverage?: boolean; maxHistoricalPages?: number; maxFallbackPages?: number }
+export type WalletSnapshotOptions = { refresh?: boolean; chain?: 'eth' | 'base'; deepScan?: boolean; deepActivity?: boolean; chainMode?: 'auto' | 'base' | 'eth' | 'base_eth' | 'all_supported'; historicalCoverage?: boolean; maxHistoricalPages?: number; maxFallbackPages?: number; debug?: boolean }
 
 const SNAPSHOT_TTL_MS         = 5  * 60 * 1000
 const SNAPSHOT_HISTORY_TTL_MS = 15 * 60 * 1000
@@ -1263,7 +1351,7 @@ function buildGoldrushTransfersRequest(chain: string, wallet: string, host: stri
   }
 }
 
-async function fetchGoldrushPnlEvents(address: string, chainName: string, apiKey: string): Promise<{ events: PnlEvent[]; diag: GoldrushHistoryDiag }> {
+async function fetchGoldrushPnlEvents(address: string, chainName: string, apiKey: string, debug = false): Promise<{ events: PnlEvent[]; diag: GoldrushHistoryDiag }> {
   const baseDiag = (chain: string): GoldrushHistoryDiag => ({ endpointKind: 'transactions_v3', chainUsed: chain, urlTemplate: `https://api.covalenthq.com/v1/${chain}/address/{wallet}/transactions_v3/?page-size=50&page-number=0&with-logs=true&no-spam=true`, httpStatus: null, fetchFailed: false, failureStage: null, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], transferArrayCount: 0, firstTransferKeys: [], reason: '', fetchErrorKind: null, fetchErrorMessage: null, hasApiKey: Boolean(apiKey), requestHost: 'api.covalenthq.com', requestUrlValid: true, requestPathTemplate: '/v1/{chain}/address/{wallet}/transactions_v3/', authMode: apiKey ? 'bearer' : 'none', attemptedHosts: [] })
   const hostCandidates = ['api.covalenthq.com', 'api.goldrush.dev'] as const
   const sanitizeMessage = (msg: string): string => {
@@ -1286,7 +1374,7 @@ async function fetchGoldrushPnlEvents(address: string, chainName: string, apiKey
     return { kind: 'unknown', message: compact, isTimeout }
   }
   const devLog = (diag: GoldrushHistoryDiag) => {
-    if (process.env.NODE_ENV !== 'production') {
+    if (debug) {
       console.info('[goldrush-fetch]', { chainUsed: diag.chainUsed, requestHost: diag.requestHost ?? null, hasApiKey: diag.hasApiKey ?? false, urlTemplate: diag.urlTemplate, httpStatus: diag.httpStatus, fetchFailed: diag.fetchFailed, failureStage: diag.failureStage, fetchErrorKind: diag.fetchErrorKind ?? null })
     }
   }
@@ -1385,7 +1473,10 @@ async function fetchGoldrushPnlEvents(address: string, chainName: string, apiKey
         return { events: [], diag: out }
       }
       const lower = address.toLowerCase()
-      let transferArrayCount = 0
+      const transferArrayCount = (items as unknown[]).reduce<number>((count, it) => {
+        const tx = it as Record<string, unknown>
+        return count + (Array.isArray(tx.transfers) ? tx.transfers.length : 0)
+      }, 0)
       const firstTransferKeysCapture: string[] = []
       const events = items.flatMap((it) => {
         const t = it as Record<string, unknown>
@@ -2704,7 +2795,7 @@ function buildFifoLotEngine(
 // normalizeSwapEventsForFifo: promotes outbound-only transfer events into swap candidates
 // so the FIFO engine can match them against previously-opened lots and compute realized PnL.
 // Runs AFTER all pricing passes (including swap_derived), BEFORE buildFifoLotEngine.
-function normalizeSwapEventsForFifo(pricedEvidence: WalletTxEvidence[]): WalletTxEvidence[] {
+function normalizeSwapEventsForFifo(pricedEvidence: WalletTxEvidence[], debug = false): WalletTxEvidence[] {
   const LP_TAGS = ['LP', 'UNI-V2', 'SLP', 'BAL', 'CRV']
   const isLPSym = (s: string) => LP_TAGS.some(t => s.toUpperCase().includes(t))
 
@@ -2778,7 +2869,7 @@ function normalizeSwapEventsForFifo(pricedEvidence: WalletTxEvidence[]): WalletT
 
     if (!syntheticPriceUsd || !isFinite(syntheticPriceUsd) || syntheticPriceUsd <= 0) continue
 
-    console.log('swapToBuySellNormalization', {
+    if (debug) console.log('swapToBuySellNormalization', {
       txHash: e.txHash,
       tokenIn: e.symbol,
       tokenOut: cpSymbol ?? 'NATIVE',
@@ -2810,7 +2901,7 @@ function normalizeSwapEventsForFifo(pricedEvidence: WalletTxEvidence[]): WalletT
   }
 
   if (synthetic.length > 0) {
-    console.log(`normalizeSwapEventsForFifo: promoted ${synthetic.length} outbound transfers to swap candidates`)
+    if (debug) console.log(`normalizeSwapEventsForFifo: promoted ${synthetic.length} outbound transfers to swap candidates`)
   }
 
   return [...pricedEvidence, ...synthetic]
@@ -2820,7 +2911,7 @@ function normalizeSwapEventsForFifo(pricedEvidence: WalletTxEvidence[]): WalletT
 // single-leg buys (ETH→TOKEN with no ERC20 outbound) and any remaining single-leg sells
 // that the previous pass missed (e.g., events without a priced buy anywhere in history).
 // Runs immediately after normalizeSwapEventsForFifo, before buildFifoLotEngine.
-function normalizeSingleLegEventsForFifo(pricedEvidence: WalletTxEvidence[]): WalletTxEvidence[] {
+function normalizeSingleLegEventsForFifo(pricedEvidence: WalletTxEvidence[], debug = false): WalletTxEvidence[] {
   const LP_TAGS = ['LP', 'UNI-V2', 'SLP', 'BAL', 'CRV']
   const isLPSym = (s: string) => LP_TAGS.some(t => s.toUpperCase().includes(t))
   const STABLE_SYMS = new Set(['USDC', 'USDT', 'DAI', 'FDUSD', 'TUSD', 'USDE', 'USDS', 'BUSD', 'USDP', 'FRAX', 'LUSD', 'PYUSD'])
@@ -2904,11 +2995,13 @@ function normalizeSingleLegEventsForFifo(pricedEvidence: WalletTxEvidence[]): Wa
 
     if (!syntheticPriceUsd || !isFinite(syntheticPriceUsd) || syntheticPriceUsd <= 0) continue
 
-    console.log('singleLegPromotion', {
+    if (debug) console.log('singleLegPromotion', {
       txHash: e.txHash,
       symbol: e.symbol,
       direction: e.direction,
       syntheticPrice: syntheticPriceUsd,
+      counterpartSymbol: cpSymbol,
+      counterpartAmount: cpAmt,
     })
 
     synthetic.push({
@@ -2935,7 +3028,7 @@ function normalizeSingleLegEventsForFifo(pricedEvidence: WalletTxEvidence[]): Wa
   }
 
   if (synthetic.length > 0) {
-    console.log(`normalizeSingleLegEventsForFifo: promoted ${synthetic.length} single-leg events`)
+    if (debug) console.log(`normalizeSingleLegEventsForFifo: promoted ${synthetic.length} single-leg events`)
   }
 
   return [...pricedEvidence, ...synthetic]
@@ -3400,7 +3493,7 @@ async function buildPriceAtTimeEvidence(
   let priceAttempts = 0
   let pricedEvents = 0
   let openCheckEvents = 0
-  let unavailableEvents = 0
+  const unavailableEvents = 0
   let stableLegPricedEvents = 0
   let wethLegPricedEvents = 0
   let historicalPricedEvents = 0
@@ -3926,13 +4019,14 @@ function stripUndefinedDeep<T>(value: T): T {
 export function validateWalletFactsShape(snapshot: WalletSnapshot): WalletSnapshot {
   const missingFields: string[] = []
   const noteMissing = (path: string) => { if (!missingFields.includes(path)) missingFields.push(path) }
-  const snapAny = snapshot as any
+  type MutableWalletFacts = Partial<WalletFacts> & Record<string, unknown>
+  const snapAny = snapshot as Omit<WalletSnapshot, 'walletFacts'> & { walletFacts?: MutableWalletFacts }
 
   if (!snapAny.walletFacts || typeof snapAny.walletFacts !== 'object') {
     noteMissing('walletFacts')
-    snapAny.walletFacts = {}
+    snapAny.walletFacts = {} as MutableWalletFacts
   }
-  const walletFacts = snapAny.walletFacts
+  const walletFacts = snapAny.walletFacts as MutableWalletFacts
   const totalValueUsd = Number.isFinite(snapshot.totalValue) ? Math.round(snapshot.totalValue * 100) / 100 : 0
   const holdings = Array.isArray(snapshot.holdings) ? snapshot.holdings : []
 
@@ -4068,10 +4162,11 @@ export function validateWalletFactsShape(snapshot: WalletSnapshot): WalletSnapsh
 }
 
 export async function fetchWalletSnapshot(address: string, options: WalletSnapshotOptions = {}): Promise<WalletSnapshot> {
-  const { refresh = false, chain: requestedChain = 'base', deepScan = false, deepActivity = false, chainMode = 'auto', historicalCoverage = false, maxHistoricalPages: rawMaxHistoricalPages, maxFallbackPages: rawMaxFallbackPages } = options
+  const { refresh = false, chain: requestedChain = 'base', deepScan = false, deepActivity = false, chainMode = 'auto', historicalCoverage = false, maxHistoricalPages: rawMaxHistoricalPages, maxFallbackPages: rawMaxFallbackPages, debug = false } = options
   const clampedMaxHistoricalPages = Math.max(1, Math.min(5, rawMaxHistoricalPages ?? 3))
   const MAX_MORALIS_FALLBACK_PAGES = 5
   const clampedMaxFallbackPages = Math.max(1, Math.min(MAX_MORALIS_FALLBACK_PAGES, rawMaxFallbackPages ?? 2))
+  const tokenMeter = createTokenMeter(debug)
   // Per-request price cache: prevents duplicate GoldRush historical price calls within a single scan
   // when the same contract/date appears in both base evidence and historical coverage pipelines.
   const _reqPriceCache = new Map<string, number | null>()
@@ -4141,6 +4236,9 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // Determine Moralis chain before Phase 1 so it can run in the parallel batch.
   const _moralisChain: 'eth' | 'base' = requestedChain === 'eth' ? 'eth' : 'base'
 
+  tokenMeter.startTokenMeter('providerFetch')
+  tokenMeter.measure('providerFetch', addr, requestedChain, chainMode, activityRequested ? 'activity' : 'holdings')
+
   // Phase 1 (parallel): Zerion portfolio value + Moralis holdings (primary) + Alchemy metadata.
   // Zerion positions are fetched in parallel as a fallback_layer — used only if Moralis fails.
   // GoldRush excluded — runs only in Phase 3 (both primary/fallback fail) or deepScan=true.
@@ -4175,8 +4273,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     deepScan ? fetchWalletBehavior(addr, baseUrl) : Promise.resolve(BEHAVIOR_EMPTY),
     // ETH mainnet PnL transfers only when activity is requested AND ETH chain is selected.
     // Default (base) scans skip this to avoid a wasted transactions_v3 call.
-    activityRequested && GOLDRUSH_KEY && useEthAlchemy ? fetchGoldrushPnlEvents(addr, 'eth-mainnet', GOLDRUSH_KEY) : Promise.resolve({ events: [] as PnlEvent[], diag: { endpointKind: 'transactions_v3' as const, chainUsed: 'eth-mainnet', urlTemplate: 'https://api.covalenthq.com/v1/eth-mainnet/address/{wallet}/transactions_v3/?page-size=50&page-number=0&with-logs=true&no-spam=true', httpStatus: null, fetchFailed: true, failureStage: 'build_url' as const, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], transferArrayCount: 0, firstTransferKeys: [], reason: activityRequested ? 'ETH chain not requested — skipped to reduce API usage.' : 'Activity scan not requested — skipped.' } }),
-    activityRequested && GOLDRUSH_KEY ? fetchGoldrushPnlEvents(addr, 'base-mainnet', GOLDRUSH_KEY) : Promise.resolve({ events: [] as PnlEvent[], diag: { endpointKind: 'transactions_v3' as const, chainUsed: 'base-mainnet', urlTemplate: 'https://api.covalenthq.com/v1/base-mainnet/address/{wallet}/transactions_v3/?page-size=50&page-number=0&with-logs=true&no-spam=true', httpStatus: null, fetchFailed: true, failureStage: 'build_url' as const, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], transferArrayCount: 0, firstTransferKeys: [], reason: activityRequested ? 'GoldRush activity fetch skipped — provider not configured.' : 'Activity scan not requested — skipped.' } }),
+    activityRequested && GOLDRUSH_KEY && useEthAlchemy ? fetchGoldrushPnlEvents(addr, 'eth-mainnet', GOLDRUSH_KEY, debug) : Promise.resolve({ events: [] as PnlEvent[], diag: { endpointKind: 'transactions_v3' as const, chainUsed: 'eth-mainnet', urlTemplate: 'https://api.covalenthq.com/v1/eth-mainnet/address/{wallet}/transactions_v3/?page-size=50&page-number=0&with-logs=true&no-spam=true', httpStatus: null, fetchFailed: true, failureStage: 'build_url' as const, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], transferArrayCount: 0, firstTransferKeys: [], reason: activityRequested ? 'ETH chain not requested — skipped to reduce API usage.' : 'Activity scan not requested — skipped.' } }),
+    activityRequested && GOLDRUSH_KEY ? fetchGoldrushPnlEvents(addr, 'base-mainnet', GOLDRUSH_KEY, debug) : Promise.resolve({ events: [] as PnlEvent[], diag: { endpointKind: 'transactions_v3' as const, chainUsed: 'base-mainnet', urlTemplate: 'https://api.covalenthq.com/v1/base-mainnet/address/{wallet}/transactions_v3/?page-size=50&page-number=0&with-logs=true&no-spam=true', httpStatus: null, fetchFailed: true, failureStage: 'build_url' as const, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], transferArrayCount: 0, firstTransferKeys: [], reason: activityRequested ? 'GoldRush activity fetch skipped — provider not configured.' : 'Activity scan not requested — skipped.' } }),
     activityRequested && Boolean(ALCHEMY_BASE_KEY) ? fetchAlchemyPnlEvents(addr, baseUrl) : Promise.resolve([] as PnlEvent[]),
   ])
 
@@ -4379,6 +4477,22 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const baseTransferDiag = goldrushTransferDiags.find((d) => d.chainUsed === '8453' || d.chainUsed === 'base-mainnet') ?? goldrushTransferDiags[0]
   const grEvents = [...grEth.events, ...grBase.events]
   const alchemyEvents = alchemyPnlRes.status === 'fulfilled' ? alchemyPnlRes.value : []
+  tokenMeter.measure('providerFetch', {
+    portfolioRes,
+    positionsRes,
+    moralisResult: _moralisResult,
+    moralisByChain: [..._moralisByChain.entries()],
+    goldrushBalances: [grEthRes, grBaseRes],
+    holdings,
+    totalValue,
+    providerUsed,
+    providerStatus,
+    reason,
+    grEvents,
+    alchemyEvents,
+  })
+  tokenMeter.endTokenMeter('providerFetch')
+
   const primaryActivityAttempted = activityRequested && Boolean(GOLDRUSH_KEY)
   const primaryActivityStatusCode = primaryActivityAttempted ? (baseTransferDiag?.httpStatus ?? null) : null
   const primaryActivityErrorKind = primaryActivityAttempted
@@ -4441,6 +4555,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     fallbackClosedLotsAfterPage1: 0, fallbackClosedCostBasisAfterPage1: null, fallbackRealizedPnlAfterPage1: null,
     fallbackMeaningfulEvidenceReached: false, fallbackMeaningfulEvidenceReason: 'not_attempted',
   }
+  tokenMeter.startTokenMeter('fallbackEngine')
+  tokenMeter.measure('fallbackEngine', { activityRequested, historicalCoverage, initialEventCount: events.length, fallbackChain: _fbChain, primaryActivityFailed })
   const _shouldTryMoralisFallback = activityRequested && !historicalCoverage && events.length === 0 && Boolean(process.env.MORALIS_API_KEY)
   if (_shouldTryMoralisFallback) {
     const fbResult = await fetchMoralisTransfers(addr, _fbChain, 100)
@@ -4449,6 +4565,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     const { events: fbEvents, debug: fbNormDebug } = (fbResult.usable && fbResult.items.length > 0)
       ? normalizeMoralisTransfers(fbResult.items, addr, _fbChainName)
       : { events: [] as PnlEvent[], debug: { rawCount: 0, normalizedCount: 0, skippedNotWalletSide: 0, skippedMissingHash: 0, skippedMissingTimestamp: 0, skippedMissingTokenAddress: 0, skippedMissingAmount: 0, skippedInvalidAmount: 0, skippedSpam: 0, sampleNormalizedEvents: [], sampleSkippedReasons: [] } as NormalizeMoralisDebug }
+    tokenMeter.measure('fallbackEngine', fbResult, fbEvents, fbNormDebug)
     const fbUsed = fbEvents.length > 0
     if (fbUsed) events = fbEvents
     // Build sanitized sample shape from raw API rows (keys + safe excerpts, no huge payloads)
@@ -4517,6 +4634,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const fallbackActivityUsed = _moralisFbDebug.fallbackActivityUsed
   const fallbackActivityReason = _moralisFbDebug.fallbackActivityReason
   const activityProviderUnavailable = activityRequested && primaryActivityFailed && events.length === 0
+  tokenMeter.startTokenMeter('normalization')
+  tokenMeter.measure('normalization', events, holdings)
   // Budget guard: dedup + cap events before pipeline to limit credit burn on large wallets
   const _ACTIVITY_MAX_EVENTS = 500
   const _budgetEventsBefore = events.length
@@ -4584,6 +4703,11 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const pnlSourcePublic: 'activity_layer' | 'fallback_layer' | 'unavailable' = pnlSource === 'none' ? 'unavailable' : pnlSource
   const estimatedPnl: WalletSnapshot['estimatedPnl'] = { status, confidence: status === 'unavailable' ? null : confidenceFromCoverage(coveragePercent), coveragePercent, source: pnlSourcePublic === 'unavailable' ? 'none' : pnlSourcePublic, totalEstimatedPnlUsd: status === 'unavailable' ? null : realized + unrealized, unrealizedPnlUsd: status === 'unavailable' ? null : unrealized, realizedPnlUsd: status === 'unavailable' ? null : realized, method: 'average_cost_estimate', tokens: filteredPnlTokens, reason: status === 'unavailable' ? (activityProviderUnavailable ? 'Activity source did not return usable history. No PnL was calculated.' : 'PnL unavailable — historical cost basis coverage is too low.') : 'Estimated PnL Beta derived from indexed wallet transfer history.' }
   let { evidenceList, summary: walletEvidenceSummary, debug: _txEvidenceDebugBase } = buildTxEvidenceFromEvents(events, activityRequested, activityProviderUnavailable)
+  tokenMeter.measure('normalization', { events, evidenceList, walletEvidenceSummary, txEvidenceDebug: _txEvidenceDebugBase, estimatedPnl })
+  tokenMeter.endTokenMeter('normalization')
+
+  tokenMeter.startTokenMeter('swapDetection')
+  tokenMeter.measure('swapDetection', evidenceList)
   let { evidenceWithDetection: _swapEvidenceWithDetection, summary: walletSwapSummary, debug: _swapDetectionDebug } = buildSwapDetection(evidenceList, activityRequested, addrNorm)
   // Receipt enrichment: runs only when swap detection found nothing and events exist
   const _shouldEnrich = activityRequested && walletSwapSummary.swapCandidateEvents === 0 && walletEvidenceSummary.totalEvents > 0
@@ -4593,6 +4717,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     const enrichResult = await enrichSwapCandidatesFromReceipts(_swapEvidenceWithDetection, addrNorm, _enrichAlchemyUrl, activityRequested)
     _swapEvidenceWithDetection = enrichResult.enrichedEvidence
     _swapEnrichmentDebug = enrichResult.debug
+    tokenMeter.measure('swapDetection', enrichResult)
     // Track each live receipt fetch (excluding cache hits) via Alchemy dedup set
     const _liveReceipts = enrichResult.debug.receiptsFetched - enrichResult.debug.cacheHits
     for (let _ri = 0; _ri < _liveReceipts; _ri++) {
@@ -4607,17 +4732,32 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     const _skipReason = !activityRequested ? 'activity_not_requested' : walletSwapSummary.swapCandidateEvents > 0 ? 'swap_candidates_already_present' : 'no_events'
     _swapEnrichmentDebug = { skipped: true, reason: _skipReason, candidateTxCount: 0, receiptsFetched: 0, enrichedTxCount: 0, cacheHits: 0, errors: 0, enrichedTxHashes: [] }
   }
+  tokenMeter.measure('swapDetection', _swapEvidenceWithDetection, walletSwapSummary, _swapDetectionDebug, _swapEnrichmentDebug)
+  tokenMeter.endTokenMeter('swapDetection')
+
+  tokenMeter.startTokenMeter('priceInference')
+  tokenMeter.measure('priceInference', _swapEvidenceWithDetection)
   let { evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache)
   // Track base evidence historical price calls
   for (let _pp = 0; _pp < (_priceAtTimeDebug?.providerAttempts ?? 0); _pp++) {
     _trackCall('goldrush', 'historical_by_addresses_v2', false, `gr:price:base:${_pp}:${addrNorm}`)
   }
-  _pricedEvidence = normalizeSwapEventsForFifo(_pricedEvidence)
-  _pricedEvidence = normalizeSingleLegEventsForFifo(_pricedEvidence)
+  tokenMeter.measure('priceInference', _pricedEvidence, walletPriceEvidenceSummary, _priceAtTimeDebug)
+  tokenMeter.endTokenMeter('priceInference')
+
+  tokenMeter.startTokenMeter('fifoEngine')
+  _pricedEvidence = normalizeSwapEventsForFifo(_pricedEvidence, debug)
+  _pricedEvidence = normalizeSingleLegEventsForFifo(_pricedEvidence, debug)
+  tokenMeter.measure('fifoEngine', _pricedEvidence)
   const fifoResult = buildFifoLotEngine(_pricedEvidence, activityRequested)
   let walletLotSummary = fifoResult.summary
   let _lotEngineDebug = fifoResult.debug
   let _closedLots = fifoResult.closedLots
+  tokenMeter.measure('fifoEngine', walletLotSummary, _lotEngineDebug, _closedLots)
+  tokenMeter.endTokenMeter('fifoEngine')
+
+  tokenMeter.startTokenMeter('tradeStats')
+  tokenMeter.measure('tradeStats', _closedLots)
   const tradeStatsResult = buildTradeStatsSummary(_closedLots, activityRequested)
   let walletTradeStatsSummary = tradeStatsResult.summary
   let _tradeStatsDebug = tradeStatsResult.debug
@@ -4626,8 +4766,11 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     if (_perSwap.summary.closedLots > 0) {
       walletTradeStatsSummary = _perSwap.summary
       _tradeStatsDebug = _perSwap.debug
+      tokenMeter.measure('tradeStats', _perSwap)
     }
   }
+  tokenMeter.measure('tradeStats', walletTradeStatsSummary, _tradeStatsDebug)
+  tokenMeter.endTokenMeter('tradeStats')
 
   // Capture page-1 FIFO state for pagination debug telemetry
   if (_moralisFbDebug.fallbackActivityUsed) {
@@ -4695,6 +4838,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       }
       fbRawTotal += pageResult.rawCount
       const { events: pageEvents } = normalizeMoralisTransfers(pageResult.items, addr, _fbChainName)
+      tokenMeter.measure('fallbackEngine', pageResult, pageEvents)
       fbNormalizedTotal += pageEvents.length
       const newEvents: PnlEvent[] = []
       for (const e of pageEvents) {
@@ -4708,22 +4852,28 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       fbCursor = pageResult.nextCursor
       // Re-run pipeline on merged events
       ;({ evidenceList, summary: walletEvidenceSummary, debug: _txEvidenceDebugBase } = buildTxEvidenceFromEvents(allFbEvents, activityRequested, activityProviderUnavailable))
+      tokenMeter.measure('normalization', allFbEvents, evidenceList, walletEvidenceSummary, _txEvidenceDebugBase)
       ;({ evidenceWithDetection: _swapEvidenceWithDetection, summary: walletSwapSummary, debug: _swapDetectionDebug } = buildSwapDetection(evidenceList, activityRequested, addrNorm))
+      tokenMeter.measure('swapDetection', evidenceList, _swapEvidenceWithDetection, walletSwapSummary, _swapDetectionDebug)
       ;({ evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache))
-      _pricedEvidence = normalizeSwapEventsForFifo(_pricedEvidence)
-      _pricedEvidence = normalizeSingleLegEventsForFifo(_pricedEvidence)
+      tokenMeter.measure('priceInference', _swapEvidenceWithDetection, _pricedEvidence, walletPriceEvidenceSummary, _priceAtTimeDebug)
+      _pricedEvidence = normalizeSwapEventsForFifo(_pricedEvidence, debug)
+      _pricedEvidence = normalizeSingleLegEventsForFifo(_pricedEvidence, debug)
       const fifoPageResult = buildFifoLotEngine(_pricedEvidence, activityRequested)
       walletLotSummary = fifoPageResult.summary
       _lotEngineDebug = fifoPageResult.debug
       _closedLots = fifoPageResult.closedLots
+      tokenMeter.measure('fifoEngine', _pricedEvidence, walletLotSummary, _lotEngineDebug, _closedLots)
       const tradeStatsPageResult = buildTradeStatsSummary(_closedLots, activityRequested)
       walletTradeStatsSummary = tradeStatsPageResult.summary
       _tradeStatsDebug = tradeStatsPageResult.debug
+      tokenMeter.measure('tradeStats', _closedLots, walletTradeStatsSummary, _tradeStatsDebug)
       if (_closedLots.length === 0 && activityRequested) {
         const _perSwap = buildPerSwapTradeStats(_pricedEvidence, activityRequested)
         if (_perSwap.summary.closedLots > 0) {
           walletTradeStatsSummary = _perSwap.summary
           _tradeStatsDebug = _perSwap.debug
+          tokenMeter.measure('tradeStats', _perSwap)
         }
       }
       const meaningfulCheck = hasMeaningfulClosedLotEvidence(walletLotSummary, _closedLots)
@@ -4764,6 +4914,9 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       fallbackMeaningfulEvidenceReason: p1Meaningful.result ? p1Meaningful.reason : 'not_reached',
     }
   }
+
+  tokenMeter.measure('fallbackEngine', _moralisFbDebug, events)
+  tokenMeter.endTokenMeter('fallbackEngine')
 
   // Phase 6A: Historical coverage diagnostics — runs only when activityRequested + historicalCoverage requested
   const _runHistoricalCoverage = activityRequested && historicalCoverage
@@ -4806,17 +4959,22 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     _historicalCoverageDebug = undefined
   }
 
+  tokenMeter.measure('normalization', walletHistoricalCoverageSummary, _historicalCoverageDebug, _hcEvents)
+
   // Phase 6B: Historical candidate comparison — compare historical events against base swap candidates
   const { summary: walletHistoricalCandidateSummary, debug: _historicalCandidateDebug, newCandidateEvidence: _hcNewCandidateEvidence, allHistoricalEvidence: _hcAllHistoricalEvidence } =
     _runHistoricalCoverage && _hcEvents.length > 0
       ? buildHistoricalCandidateComparison(_hcEvents, _swapEvidenceWithDetection, addrNorm)
       : { summary: { status: 'not_requested' as const, requested: false, baseEvidenceEvents: 0, historicalNormalizedEvents: 0, historicalWalletSideEvents: 0, existingSwapCandidates: 0, historicalSwapCandidates: 0, newSwapCandidateEvents: 0, duplicateSwapCandidateEvents: 0, candidateTransactions: 0, newCandidateTransactions: 0, candidateTokens: 0, newCandidateTokens: 0, earliestCandidateAt: null, latestCandidateAt: null, readyForHistoricalPricing: false, readyForHistoricalFifoPreview: false, missing: ['historical_coverage_not_requested'], reason: null }, debug: undefined, newCandidateEvidence: [] as WalletTxEvidence[], allHistoricalEvidence: [] as WalletTxEvidence[] }
 
+  tokenMeter.measure('swapDetection', walletHistoricalCandidateSummary, _historicalCandidateDebug, _hcNewCandidateEvidence, _hcAllHistoricalEvidence)
+
   // Phase 6C: Historical pricing preview — price only the Phase 6B new swap candidates
   const { summary: walletHistoricalPricingPreviewSummary, debug: _historicalPricingPreviewDebug, pricedEvidence: _hcNewPricedEvidence } =
     _runHistoricalCoverage && _hcNewCandidateEvidence.length > 0
       ? await buildHistoricalPricingPreview(_hcNewCandidateEvidence, _hcAllHistoricalEvidence, _reqPriceCache)
       : { summary: { status: 'not_requested' as const, requested: false, newSwapCandidateEvents: 0, pricedHistoricalCandidates: 0, unpricedHistoricalCandidates: 0, stableLegPricedEvents: 0, wethLegPricedEvents: 0, historicalPricedEvents: 0, priceAttemptLimitReached: false, readyForHistoricalFifoPreview: false, missing: ['historical_coverage_not_requested'], reason: null }, debug: undefined, pricedEvidence: [] as WalletTxEvidence[] }
+  tokenMeter.measure('priceInference', walletHistoricalPricingPreviewSummary, _historicalPricingPreviewDebug, _hcNewPricedEvidence)
   // Track historical pricing preview price calls
   for (let _hp2 = 0; _hp2 < (_historicalPricingPreviewDebug?.priceAttempts ?? 0); _hp2++) {
     _trackCall('goldrush', 'historical_by_addresses_v2', false, `gr:price:hc:${_hp2}:${addrNorm}`)
@@ -4827,6 +4985,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     _runHistoricalCoverage && _hcNewPricedEvidence.length > 0
       ? buildHistoricalFifoPreview(_pricedEvidence, _hcNewPricedEvidence, _closedLots, walletTradeStatsSummary.realizedPnlUsd, walletTradeStatsSummary.realizedPnlPercent ?? null, walletHistoricalPricingPreviewSummary.unpricedHistoricalCandidates)
       : { summary: { status: 'not_requested' as const, requested: false, baselineClosedLots: 0, previewClosedLots: 0, addedClosedLots: 0, baselineRealizedPnlUsd: null, previewRealizedPnlUsd: null, addedRealizedPnlUsd: null, baselineRealizedPnlPercent: null, previewRealizedPnlPercent: null, winningClosedLotsPreview: 0, losingClosedLotsPreview: 0, breakEvenClosedLotsPreview: 0, uniqueTokensPreview: 0, previewConfidence: 'low' as const, readyForHistoricalTradeStatsPreview: false, safeToPromoteToPublicStats: false, missing: ['historical_coverage_not_requested'], reason: null }, debug: undefined, previewClosedLots: [] as WalletClosedLot[] }
+
+  tokenMeter.measure('fifoEngine', walletHistoricalFifoPreviewSummary, _historicalFifoPreviewDebug, _hcPreviewClosedLots)
 
   // Phase 6E: Safe historical stats promotion
   const _shouldPromote =
@@ -4842,6 +5002,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   let promotedLotSummary = walletLotSummary
   let promotedTradeStatsSummary = walletTradeStatsSummary
   if (_shouldPromote && _hcPreviewClosedLots.length > 0) {
+    tokenMeter.startTokenMeter('tradeStats')
+    tokenMeter.measure('tradeStats', _hcPreviewClosedLots)
     const { summary: previewTradeStats } = buildTradeStatsSummary(_hcPreviewClosedLots, activityRequested)
     // Fix 3: deduplicate missing — buildTradeStatsSummary already adds sample_size_below_win_rate_threshold
     const promotedMissing = Array.from(new Set([...(previewTradeStats.missing ?? []), 'sample_size_below_win_rate_threshold']))
@@ -4856,6 +5018,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     // Fix 1: compute preview totals from the actual preview closed lots
     const previewTotalCostBasisClosedUsd = _hcPreviewClosedLots.reduce((s, l) => s + l.costBasisUsd, 0)
     const previewTotalProceedsClosedUsd = _hcPreviewClosedLots.reduce((s, l) => s + l.proceedsUsd, 0)
+    tokenMeter.measure('tradeStats', previewTradeStats)
+    tokenMeter.endTokenMeter('tradeStats')
     promotedLotSummary = {
       ...walletLotSummary,
       closedLots: walletHistoricalFifoPreviewSummary.previewClosedLots,
@@ -5044,6 +5208,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     walletLotSummary: promotedLotSummary,
     walletTradeStatsSummary: promotedTradeStatsSummary,
     walletTradeStatsSource,
+    tokenUsage: EMPTY_TOKEN_USAGE(),
     walletClosedTradeSamples,
     walletHistoricalCoverageSummary,
     walletHistoricalCandidateSummary,
@@ -5194,6 +5359,11 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       apiAudit: _apiAudit,
     },
   }
+  tokenMeter.startTokenMeter('debugLogging')
+  tokenMeter.measure('debugLogging', snapshot._debug, snapshot._diagnostics, walletFacts)
+  tokenMeter.endTokenMeter('debugLogging')
+  snapshot.tokenUsage = tokenMeter.snapshot()
+
   // Requirement 8: validate audit before returning — if unhealthy, surface warnings prominently
   if (_apiAudit.warnings.length > 0 && snapshot._diagnostics?.apiAudit) {
     snapshot._diagnostics.apiAudit.warnings = _apiAudit.warnings
