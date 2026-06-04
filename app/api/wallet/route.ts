@@ -29,7 +29,7 @@ export async function OPTIONS(req: Request) {
 const WALLET_BASIC_CACHE_TTL_MS  = 5  * 60 * 1000  // 5 min for basic scans
 const WALLET_DEEP_CACHE_TTL_MS   = 15 * 60 * 1000  // 15 min for deep scans
 const WALLET_DEEP_COOLDOWN_MS    = 10 * 60 * 1000  // 10 min cooldown per wallet after deep live scan
-const WALLET_SNAPSHOT_SCHEMA_VERSION = 'v18'
+const WALLET_SNAPSHOT_SCHEMA_VERSION = 'v19'
 const walletCache = new Map<string, { exp: number; payload: unknown; cachedAt: number }>()
 const walletRate = new Map<string, { count: number; resetAt: number }>()
 const WALLET_RATE_BY_PLAN: Record<string, number> = { free: 20, pro: 60, elite: 180 }
@@ -208,11 +208,12 @@ export async function POST(req: Request) {
       return json({ error: 'Invalid wallet address' }, { status: 400 })
     }
 
-    // ETH scan gating fix: force ETH into activeChains for deep/debug scans.
+    // ETH scan gating fix: force ETH into activeChains for deep/debug/activity scans.
     // walletSnapshot derives activeChains from chainMode; 'base_eth' guarantees both chains are activated.
     // Only upgrades 'auto' or 'base' — explicit 'eth', 'base_eth', or 'all_supported' already include ETH.
+    // deepActivity also triggers upgrade so ETH-heavy wallets get ETH activity on activity-only scans.
     const resolvedChainMode: typeof chainMode =
-      (debug || deepScan) && (chainMode === 'auto' || chainMode === 'base')
+      (debug || deepScan || deepActivity) && (chainMode === 'auto' || chainMode === 'base')
         ? 'base_eth'
         : chainMode
 
@@ -481,6 +482,7 @@ export async function POST(req: Request) {
               basePnlReconstructionDebug: _slim.basePnlReconstructionDebug ?? null,
               baseFifoCoverageDebug: _slim.baseFifoCoverageDebug ?? null,
               walletActivityRoutingDebug: _slim.walletActivityRoutingDebug ?? null,
+              walletChainActivityMergeDebug: _slim.walletChainActivityMergeDebug ?? null,
               baseFifoMatchDebug: _slim.baseFifoMatchDebug ?? null,
               walletCacheQualityDebug: _slim.walletCacheQualityDebug ?? null,
             }
@@ -616,6 +618,7 @@ export async function POST(req: Request) {
         basePnlReconstructionDebug: snapshot._diagnostics?.basePnlReconstructionDebug ?? null,
         baseFifoCoverageDebug: snapshot._diagnostics?.baseFifoCoverageDebug ?? null,
         walletActivityRoutingDebug: snapshot._diagnostics?.walletActivityRoutingDebug ?? null,
+        walletChainActivityMergeDebug: snapshot._diagnostics?.walletChainActivityMergeDebug ?? null,
         walletCacheQualityDebug: {
           cacheQuality: _cacheQuality, writeAllowed: !_cacheWriteBlocked,
           blockedWriteReason: _blockedWriteReason, holdingsCount: _snapHoldingsCount,
@@ -683,6 +686,7 @@ export async function POST(req: Request) {
         basePnlReconstructionDebug: snapshot._diagnostics?.basePnlReconstructionDebug ?? null,
         baseFifoCoverageDebug: snapshot._diagnostics?.baseFifoCoverageDebug ?? null,
         walletActivityRoutingDebug: snapshot._diagnostics?.walletActivityRoutingDebug ?? null,
+        walletChainActivityMergeDebug: snapshot._diagnostics?.walletChainActivityMergeDebug ?? null,
         walletHistoricalCoverageDebug: snapshot._diagnostics?.walletHistoricalCoverageDebug ?? null,
         walletHistoricalCandidateDebug: snapshot._diagnostics?.walletHistoricalCandidateDebug ?? null,
         walletHistoricalPricingPreviewDebug: snapshot._diagnostics?.walletHistoricalPricingPreviewDebug ?? null,

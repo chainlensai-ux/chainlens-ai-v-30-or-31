@@ -990,6 +990,26 @@ export type WalletSnapshot = {
       evidenceEvents: number
       finalEvidenceStatus: string
     }
+    walletChainActivityMergeDebug?: {
+      chainMode: string
+      requestedChain: string
+      portfolioValueByChain: { eth: number; base: number }
+      activeChainsUsedForActivity: string[]
+      ethActivityAttempted: boolean
+      ethActivityEvents: number
+      baseActivityAttempted: boolean
+      baseActivityEvents: number
+      mergedEventsBeforeCap: number
+      mergedEventsAfterCap: number
+      selectedPrimaryChain: string
+      reasonPrimaryChainSelected: string
+      baseOnlyActivityWouldBeMisleading: boolean
+      ethSkippedReason: string | null
+      baseSkippedReason: string | null
+      sampleEthEvents: Array<{ txHash: string | null; symbol: string; direction: string; chain: string }>
+      sampleBaseEvents: Array<{ txHash: string | null; symbol: string; direction: string; chain: string }>
+      sampleMergedEvents: Array<{ txHash: string | null; symbol: string; direction: string; chain: string }>
+    }
     walletFactsDebug?: {
       built: boolean
       eventCount: number
@@ -1100,7 +1120,7 @@ export type WalletSnapshotOptions = {
 
 const SNAPSHOT_TTL_MS         = 5  * 60 * 1000
 const SNAPSHOT_HISTORY_TTL_MS = 15 * 60 * 1000
-const SNAPSHOT_SCHEMA_VERSION = 'v18'
+const SNAPSHOT_SCHEMA_VERSION = 'v19'
 type SnapshotCacheEntry = { snapshot: WalletSnapshot; cachedAt: number; ttlMs: number }
 const snapshotMemCache = new Map<string, SnapshotCacheEntry>()
 
@@ -5507,7 +5527,13 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     || ((grBase.diag as GoldrushHistoryDiag).httpStatus != null && ((grBase.diag as GoldrushHistoryDiag).httpStatus as number) >= 400)
     || (grBase.diag as GoldrushHistoryDiag).failureStage === 'timeout'
   // Outer vars for Moralis fallback chain/cursor — needed by both page-1 block and multi-page loop
-  const _fbChain: 'eth' | 'base' = requestedChain === 'eth' ? 'eth' : 'base'
+  // Prefer dominant chain by portfolio value for deep activity scans (ETH-heavy wallets get ETH activity).
+  const _fbEthValue = chainValueMap.get('eth') ?? 0
+  const _fbBaseValue = chainValueMap.get('base') ?? 0
+  const _fbChain: 'eth' | 'base' = requestedChain === 'eth' ? 'eth'
+    : requestedChain === 'base' ? 'base'
+    : (deepActivity && _fbEthValue > _fbBaseValue) ? 'eth'
+    : 'base'
   const _fbChainName: string = _fbChain === 'base' ? 'base-mainnet' : 'eth-mainnet'
   let _fbNextCursor: string | null = null
   type _MoralisFbDebug = {
@@ -5614,6 +5640,79 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       fallbackPaginationReason: 'page1_complete',
       fallbackPaginationStoppedReason: 'pending',
     }
+  }
+
+  // Phase 1.8: Cross-chain activity supplement — if Moralis fallback used one chain but the other
+  // has significant holdings (> $1), fetch Moralis for the other chain and merge both.
+  // Prevents ETH-heavy wallets from showing Base-only airdrop/claim activity when their real
+  // trading history is on ETH, and vice versa for Base-heavy wallets with ETH exposure.
+  type _Phase18Debug = {
+    attempted: boolean; skippedReason: string | null
+    supplementChain: string; supplementChainValue: number; primaryFbChain: string
+    moralisSupplementRawCount: number; moralisSupplementNormalizedEvents: number
+    mergeBaseEvents: number; mergeEthEvents: number; mergeTotal: number; mergeDeduped: number
+    supplementCacheHit: boolean
+  }
+  const _p18SupplementChain: 'eth' | 'base' = _fbChain === 'eth' ? 'base' : 'eth'
+  const _p18SupplementChainName = _p18SupplementChain === 'eth' ? 'eth-mainnet' : 'base-mainnet'
+  const _p18SupplementValue = chainValueMap.get(_p18SupplementChain as MoralisChain) ?? 0
+  const _p18GrAlreadyCovered = _p18SupplementChain === 'eth' ? grEth.events.length > 0 : grBase.events.length > 0
+  const _p18ShouldRun = (
+    deepActivity && !historicalCoverage &&
+    _moralisFbDebug.fallbackActivityUsed &&
+    _p18SupplementValue > 1 &&
+    !_p18GrAlreadyCovered &&
+    Boolean(process.env.MORALIS_API_KEY)
+  )
+  let _phase18Debug: _Phase18Debug = {
+    attempted: false, skippedReason: null,
+    supplementChain: _p18SupplementChain, supplementChainValue: _p18SupplementValue,
+    primaryFbChain: _fbChain,
+    moralisSupplementRawCount: 0, moralisSupplementNormalizedEvents: 0,
+    mergeBaseEvents: 0, mergeEthEvents: 0, mergeTotal: 0, mergeDeduped: 0,
+    supplementCacheHit: false,
+  }
+  if (_p18ShouldRun) {
+    _phase18Debug.attempted = true
+    const p18Result = await fetchMoralisTransfers(addr, _p18SupplementChain, 100)
+    _trackCall('moralis', 'erc20_transfers', p18Result.cacheHit, `moralis:transfers:p1:${_p18SupplementChain}:supplement:${addrNorm}`)
+    _phase18Debug.supplementCacheHit = p18Result.cacheHit
+    _phase18Debug.moralisSupplementRawCount = p18Result.rawCount
+    const { events: p18Events } = (p18Result.usable && p18Result.items.length > 0)
+      ? normalizeMoralisTransfers(p18Result.items, addr, _p18SupplementChainName)
+      : { events: [] as PnlEvent[] }
+    _phase18Debug.moralisSupplementNormalizedEvents = p18Events.length
+    if (p18Events.length > 0) {
+      const _p18BaseEvents = _fbChain === 'base' ? events : p18Events
+      const _p18EthEvents = _fbChain === 'eth' ? events : p18Events
+      _phase18Debug.mergeBaseEvents = _p18BaseEvents.length
+      _phase18Debug.mergeEthEvents = _p18EthEvents.length
+      const _p18All = [...events, ...p18Events]
+      _phase18Debug.mergeTotal = _p18All.length
+      const _p18SeenKeys = new Set<string>()
+      const _p18Merged: PnlEvent[] = []
+      for (const e of _p18All) {
+        const mk = `${e.chain ?? ''}|${e.txHash ?? ''}|${e.contract}|${e.direction}|${e.amountRaw ?? String(e.amount)}`
+        if (!_p18SeenKeys.has(mk)) { _p18SeenKeys.add(mk); _p18Merged.push(e) }
+      }
+      _p18Merged.sort((a, b) => {
+        const ta = a.timestamp ? new Date(a.timestamp).getTime() : 0
+        const tb = b.timestamp ? new Date(b.timestamp).getTime() : 0
+        return tb - ta
+      })
+      _phase18Debug.mergeDeduped = _p18All.length - _p18Merged.length
+      events = _p18Merged
+    } else {
+      _phase18Debug.skippedReason = 'supplement_returned_empty'
+    }
+  } else {
+    _phase18Debug.skippedReason = !deepActivity ? 'basic_scan'
+      : historicalCoverage ? 'historical_coverage_enabled'
+      : !_moralisFbDebug.fallbackActivityUsed ? 'primary_activity_ok_no_supplement_needed'
+      : _p18GrAlreadyCovered ? 'supplement_chain_already_covered_by_goldrush'
+      : _p18SupplementValue <= 1 ? 'eth_activity_skipped_no_eth_holdings'
+      : !Boolean(process.env.MORALIS_API_KEY) ? 'eth_activity_provider_unavailable'
+      : 'not_triggered'
   }
 
   const _pnlSourceRaw: 'goldrush' | 'alchemy' | 'moralis_fallback' | 'none' =
@@ -6546,15 +6645,75 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         ...(_grBaseAttempted ? ['goldrush:base'] : []),
         ...(_alchemyAttempted ? ['alchemy:base'] : []),
         ...(activityRequested && Boolean(process.env.MORALIS_API_KEY) ? [`moralis:${_fbChain}_if_primary_empty`] : []),
+        ...(_p18ShouldRun ? [`moralis:${_p18SupplementChain}_supplement`] : []),
       ],
       providerCallsMade: [
         ...(_grEthAttempted ? ['goldrush:eth'] : []),
         ...(_grBaseAttempted ? ['goldrush:base'] : []),
         ...(_alchemyAttempted ? ['alchemy:base'] : []),
         ...(_moralisFbDebug.fallbackActivityAttempted ? [`moralis:${_fbChain}`] : []),
+        ...(_phase18Debug.attempted ? [`moralis:${_p18SupplementChain}_supplement`] : []),
       ],
       evidenceEvents: walletEvidenceSummary.totalEvents,
       finalEvidenceStatus: walletEvidenceSummary.status,
+    }
+  })()
+
+  // Chain activity merge debug: captures the full story of how multi-chain activity was selected/merged
+  const _walletChainActivityMergeDebug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['walletChainActivityMergeDebug']> = (() => {
+    const _ethEvCount = grEth.events.length > 0 ? grEth.events.length
+      : (_fbChain === 'eth' && _moralisFbDebug.fallbackActivityUsed) ? _moralisFbDebug.fallbackActivityNormalizedEvents
+      : (_phase18Debug.attempted && _p18SupplementChain === 'eth') ? _phase18Debug.moralisSupplementNormalizedEvents
+      : 0
+    const _baseEvCount = grBase.events.length > 0 ? grBase.events.length
+      : (_fbChain === 'base' && _moralisFbDebug.fallbackActivityUsed) ? _moralisFbDebug.fallbackActivityNormalizedEvents
+      : (_phase18Debug.attempted && _p18SupplementChain === 'base') ? _phase18Debug.moralisSupplementNormalizedEvents
+      : alchemyEvents.length > 0 ? alchemyEvents.length
+      : 0
+    const _ethAttempted = _grEthAttempted || (_fbChain === 'eth' && _moralisFbDebug.fallbackActivityAttempted) || (_phase18Debug.attempted && _p18SupplementChain === 'eth')
+    const _baseAttempted = _grBaseAttempted || _alchemyAttempted || (_fbChain === 'base' && _moralisFbDebug.fallbackActivityAttempted) || (_phase18Debug.attempted && _p18SupplementChain === 'base')
+    const _actChainsForMerge: string[] = []
+    if (_ethAttempted) _actChainsForMerge.push('eth')
+    if (_baseAttempted) _actChainsForMerge.push('base')
+    const _ethTotalValue = _fbEthValue
+    const _baseTotalValue = _fbBaseValue
+    const _primaryChain = _ethTotalValue > _baseTotalValue ? 'eth' : 'base'
+    const _baseOnlyMisleading = _ethTotalValue > 0 && _baseEvCount > 0 && _ethEvCount === 0
+      && (_ethTotalValue / Math.max(_ethTotalValue + _baseTotalValue, 1)) > 0.5
+    const _ethSkipReason = !_ethAttempted
+      ? (_ethTotalValue <= 1 ? 'eth_activity_skipped_no_eth_holdings' : 'eth_activity_provider_unavailable')
+      : _ethEvCount === 0 ? 'eth_activity_provider_returned_empty'
+      : null
+    const _baseSkipReason = !_baseAttempted
+      ? 'base_activity_skipped_no_base_holdings'
+      : _baseEvCount === 0 ? 'base_activity_provider_returned_empty'
+      : null
+    const _reasonPrimary = _ethTotalValue > _baseTotalValue
+      ? `eth_value_${Math.round(_ethTotalValue)}_dominates_base_value_${Math.round(_baseTotalValue)}`
+      : `base_value_${Math.round(_baseTotalValue)}_dominates_eth_value_${Math.round(_ethTotalValue)}`
+    const _allEvents = walletEvidenceSummary ? [] as PnlEvent[] : [] as PnlEvent[] // placeholder — merge happened earlier
+    const _sampleEth = grEth.events.length > 0 ? grEth.events : (_fbChain === 'eth' ? [] : (_phase18Debug.attempted && _p18SupplementChain === 'eth' ? [] : []))
+    const _sampleBase = grBase.events.length > 0 ? grBase.events : (_fbChain === 'base' ? [] : (_phase18Debug.attempted && _p18SupplementChain === 'base' ? [] : []))
+    const _toSample = (evs: PnlEvent[]) => evs.slice(0, 3).map(e => ({ txHash: e.txHash, symbol: e.symbol, direction: e.direction, chain: e.chain }))
+    return {
+      chainMode,
+      requestedChain,
+      portfolioValueByChain: { eth: _ethTotalValue, base: _baseTotalValue },
+      activeChainsUsedForActivity: _actChainsForMerge,
+      ethActivityAttempted: _ethAttempted,
+      ethActivityEvents: _ethEvCount,
+      baseActivityAttempted: _baseAttempted,
+      baseActivityEvents: _baseEvCount,
+      mergedEventsBeforeCap: _budgetEventsBefore,
+      mergedEventsAfterCap: _budgetEventsAfterCap,
+      selectedPrimaryChain: _primaryChain,
+      reasonPrimaryChainSelected: _reasonPrimary,
+      baseOnlyActivityWouldBeMisleading: _baseOnlyMisleading,
+      ethSkippedReason: _ethSkipReason,
+      baseSkippedReason: _baseSkipReason,
+      sampleEthEvents: _toSample(_sampleEth),
+      sampleBaseEvents: _toSample(_sampleBase),
+      sampleMergedEvents: events.slice(0, 3).map(e => ({ txHash: e.txHash, symbol: e.symbol, direction: e.direction, chain: e.chain })),
     }
   })()
 
@@ -6735,6 +6894,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       basePnlReconstructionDebug: _basePnlReconDebug,
       baseFifoCoverageDebug: _baseFifoCoverageDebug,
       walletActivityRoutingDebug: _walletActivityRoutingDebug,
+      walletChainActivityMergeDebug: _walletChainActivityMergeDebug,
       walletFactsDebug: _walletFactsDebug,
       apiAudit: _apiAudit,
     },
