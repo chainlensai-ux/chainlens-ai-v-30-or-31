@@ -1010,6 +1010,20 @@ export type WalletSnapshot = {
       sampleBaseEvents: Array<{ txHash: string | null; symbol: string; direction: string; chain: string }>
       sampleMergedEvents: Array<{ txHash: string | null; symbol: string; direction: string; chain: string }>
     }
+    walletEthNormalizationDebug?: {
+      attempted: boolean
+      rawCount: number
+      normalizedCount: number
+      transfersPath: boolean
+      logEventsPath: boolean
+      logEventCount: number
+      logEventNormalizedCount: number
+      skippedCounts: { zeroAmount: number; nonContractAddress: number; unknownDirection: number }
+      rawShapeKeys: string[]
+      sampleRawEvents: Array<Record<string, unknown>>
+      sampleNormalizedEvents: Array<{ txHash: string | null; symbol: string; direction: string; contract: string; amount: number; chain: string }>
+      sampleSkippedReasons: string[]
+    }
     walletFactsDebug?: {
       built: boolean
       eventCount: number
@@ -1120,7 +1134,7 @@ export type WalletSnapshotOptions = {
 
 const SNAPSHOT_TTL_MS         = 5  * 60 * 1000
 const SNAPSHOT_HISTORY_TTL_MS = 15 * 60 * 1000
-const SNAPSHOT_SCHEMA_VERSION = 'v19'
+const SNAPSHOT_SCHEMA_VERSION = 'v20'
 type SnapshotCacheEntry = { snapshot: WalletSnapshot; cachedAt: number; ttlMs: number }
 const snapshotMemCache = new Map<string, SnapshotCacheEntry>()
 
@@ -1551,6 +1565,8 @@ type GoldrushHistoryDiag = {
   firstEventShapeKeys: string[]
   transferArrayCount: number
   firstTransferKeys: string[]
+  logEventCount?: number
+  logEventNormalizedCount?: number
   reason: string
   fetchErrorKind?: 'invalid_url' | 'network' | 'timeout' | 'unknown' | null
   fetchErrorMessage?: string | null
@@ -1715,6 +1731,9 @@ async function fetchGoldrushPnlEvents(address: string, chainName: string, apiKey
         const tx = it as Record<string, unknown>
         return count + (Array.isArray(tx.transfers) ? tx.transfers.length : 0)
       }, 0)
+      // Count total decoded Transfer entries across all log_events arrays
+      let _logEventRawCount = 0
+      let _logEventNormalizedCount = 0
       const firstTransferKeysCapture: string[] = []
       const events = items.flatMap((it) => {
         const t = it as Record<string, unknown>
@@ -1723,25 +1742,60 @@ async function fetchGoldrushPnlEvents(address: string, chainName: string, apiKey
         const txToAddress = String(t.to_address ?? '').toLowerCase()
         const txFromAddress = String(t.from_address ?? '').toLowerCase()
         const transfers: unknown[] = Array.isArray(t.transfers) ? t.transfers : []
-        return transfers.slice(0, 12).map((x) => {
-          const tr = x as Record<string, unknown>
-          const contract = String(tr.contract_address ?? '').toLowerCase()
-          const symbol = String(tr.contract_ticker_symbol ?? '?')
-          const decimals = typeof tr.contract_decimals === 'number' ? tr.contract_decimals : 18
-          const delta = String(tr.delta ?? '0')
-          const amount = Math.abs(parseFloat(delta) / Math.pow(10, decimals))
-          const from = String(tr.from_address ?? '').toLowerCase()
-          const to = String(tr.to_address ?? '').toLowerCase()
+        // Primary path: t.transfers (present on Base and some ETH API plans)
+        if (transfers.length > 0) {
+          return transfers.slice(0, 12).map((x) => {
+            const tr = x as Record<string, unknown>
+            const contract = String(tr.contract_address ?? '').toLowerCase()
+            const symbol = String(tr.contract_ticker_symbol ?? '?')
+            const decimals = typeof tr.contract_decimals === 'number' ? tr.contract_decimals : 18
+            const delta = String(tr.delta ?? '0')
+            const amount = Math.abs(parseFloat(delta) / Math.pow(10, decimals))
+            const from = String(tr.from_address ?? '').toLowerCase()
+            const to = String(tr.to_address ?? '').toLowerCase()
+            const direction: 'buy' | 'sell' | 'unknown' = to === lower ? 'buy' : from === lower ? 'sell' : 'unknown'
+            const quote = typeof tr.delta_quote === 'number' ? Math.abs(tr.delta_quote) : null
+            return { contract, symbol, direction, amount, amountRaw: delta, tokenDecimals: decimals, usdValue: quote, txHash, timestamp, fromAddress: from, toAddress: to, txToAddress, txFromAddress, chain: chainUsed }
+          })
+        }
+        // Fallback path: parse decoded Transfer events from log_events (ETH mainnet commonly returns
+        // events here instead of the transfers array, especially on the standard API plan)
+        const logEvents: unknown[] = Array.isArray(t.log_events) ? t.log_events : []
+        const leResults: Array<{ contract: string; symbol: string; direction: 'buy' | 'sell' | 'unknown'; amount: number; amountRaw: string | null; tokenDecimals: number; usdValue: number | null; txHash: string; timestamp: string; fromAddress: string; toAddress: string; txToAddress: string; txFromAddress: string; chain: string }> = []
+        for (const logEvent of logEvents.slice(0, 12)) {
+          const le = logEvent as Record<string, unknown>
+          const decoded = le.decoded as Record<string, unknown> | null | undefined
+          if (!decoded || decoded.name !== 'Transfer') continue
+          const params = Array.isArray(decoded.params) ? (decoded.params as Array<Record<string, unknown>>) : []
+          const fromParam = params.find(p => p.name === 'from')
+          const toParam = params.find(p => p.name === 'to')
+          const valueParam = params.find(p => p.name === 'value')
+          if (!fromParam || !toParam || !valueParam) continue
+          _logEventRawCount++
+          const contract = String(le.sender_address ?? '').toLowerCase()
+          const symbol = String(le.sender_contract_ticker_symbol ?? '?')
+          const decimals = typeof le.sender_contract_decimals === 'number' ? le.sender_contract_decimals : 18
+          const from = String(fromParam.value ?? '').toLowerCase()
+          const to = String(toParam.value ?? '').toLowerCase()
+          const rawValue = String(valueParam.value ?? '0')
+          const amount = Math.abs(parseFloat(rawValue) / Math.pow(10, decimals))
           const direction: 'buy' | 'sell' | 'unknown' = to === lower ? 'buy' : from === lower ? 'sell' : 'unknown'
-          const quote = typeof tr.delta_quote === 'number' ? Math.abs(tr.delta_quote) : null
-          return { contract, symbol, direction, amount, amountRaw: delta, tokenDecimals: decimals, usdValue: quote, txHash, timestamp, fromAddress: from, toAddress: to, txToAddress, txFromAddress, chain: chainUsed }
-        })
+          if (contract.startsWith('0x') && amount > 0) {
+            leResults.push({ contract, symbol, direction, amount, amountRaw: rawValue !== '0' ? rawValue : null, tokenDecimals: decimals, usdValue: null, txHash, timestamp, fromAddress: from, toAddress: to, txToAddress, txFromAddress, chain: chainUsed })
+            _logEventNormalizedCount++
+          }
+        }
+        return leResults
       }).filter(e => e.contract.startsWith('0x') && e.amount > 0)
       diag.transferArrayCount = transferArrayCount
       diag.firstTransferKeys = firstTransferKeysCapture
+      diag.logEventCount = _logEventRawCount
+      diag.logEventNormalizedCount = _logEventNormalizedCount
       diag.normalizedEventCount = events.length
-      if (items.length > 0 && transferArrayCount === 0) {
+      if (items.length > 0 && transferArrayCount === 0 && _logEventRawCount === 0) {
         diag.reason = 'Transactions returned but no decoded ERC20 Transfer log events found (logs may be unavailable for this API plan).'
+      } else if (items.length > 0 && transferArrayCount === 0 && _logEventNormalizedCount === 0 && _logEventRawCount > 0) {
+        diag.reason = 'Decoded Transfer log events found but all filtered out (non-wallet-side, zero amount, or non-contract).'
       } else {
         diag.reason = events.length > 0 ? '' : 'Transfer events parsed but all filtered out (zero amount or non-contract addresses).'
       }
@@ -5380,9 +5434,10 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const maxChainsBasicScan = 5
   const supportedMoralisChains: MoralisChain[] = ['eth', 'base', 'polygon', 'bsc', 'arbitrum', 'optimism', 'avalanche', 'fantom', 'cronos', 'gnosis']
   const mapChain = (raw: string): MoralisChain | null => {
-    const c = raw.toLowerCase()
+    // Strip common suffixes before matching so 'eth-mainnet', 'base-mainnet', etc. resolve correctly
+    const c = raw.toLowerCase().replace(/-mainnet$/, '').replace(/-mainnet$/, '')
     if (c === 'eth' || c.includes('ethereum')) return 'eth'
-    if (c.includes('base')) return 'base'
+    if (c === 'base' || c.includes('base')) return 'base'
     if (c.includes('polygon') || c === 'matic') return 'polygon'
     if (c.includes('binance') || c.includes('bsc')) return 'bsc'
     if (c.includes('arbitrum')) return 'arbitrum'
@@ -5491,6 +5546,36 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const goldrushTransferDiags = [grEth.diag, grBase.diag]
   const baseTransferDiag = goldrushTransferDiags.find((d) => d.chainUsed === '8453' || d.chainUsed === 'base-mainnet') ?? goldrushTransferDiags[0]
   const grEvents = [...grEth.events, ...grBase.events]
+  // ETH normalization debug: surface raw shape and parse results for the GoldRush ETH provider
+  const _walletEthNormalizationDebug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['walletEthNormalizationDebug']> = (() => {
+    const grEthDiag = grEth.diag as GoldrushHistoryDiag
+    const _rawCount = grEthDiag.rawItemCount ?? 0
+    const _normCount = grEthDiag.normalizedEventCount ?? 0
+    const _logEvCount = grEthDiag.logEventCount ?? 0
+    const _logEvNorm = grEthDiag.logEventNormalizedCount ?? 0
+    const _usedLogPath = grEthDiag.transferArrayCount === 0 && _logEvCount > 0
+    const _usedTransferPath = (grEthDiag.transferArrayCount ?? 0) > 0
+    const _skippedReasons: string[] = []
+    if (_rawCount > 0 && _normCount === 0 && _logEvCount === 0 && grEthDiag.transferArrayCount === 0) {
+      _skippedReasons.push(`eth_raw_events_unparsed: ${grEthDiag.reason || 'no_transfers_and_no_log_events'}`)
+    } else if (_rawCount > 0 && _normCount === 0 && _logEvCount > 0) {
+      _skippedReasons.push(`eth_log_events_all_filtered: ${grEthDiag.reason || 'non_wallet_side_or_zero_amount'}`)
+    }
+    return {
+      attempted: _shouldFetchGrEth,
+      rawCount: _rawCount,
+      normalizedCount: _normCount,
+      transfersPath: _usedTransferPath,
+      logEventsPath: _usedLogPath,
+      logEventCount: _logEvCount,
+      logEventNormalizedCount: _logEvNorm,
+      skippedCounts: { zeroAmount: 0, nonContractAddress: 0, unknownDirection: 0 },
+      rawShapeKeys: grEthDiag.firstEventShapeKeys ?? [],
+      sampleRawEvents: [],
+      sampleNormalizedEvents: grEth.events.slice(0, 3).map(e => ({ txHash: e.txHash, symbol: e.symbol, direction: e.direction, contract: e.contract, amount: e.amount, chain: e.chain })),
+      sampleSkippedReasons: _skippedReasons,
+    }
+  })()
   const alchemyEvents = alchemyPnlRes.status === 'fulfilled' ? alchemyPnlRes.value : []
   tokenMeter.measure('providerFetch', {
     portfolioRes,
@@ -5528,8 +5613,13 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     || (grBase.diag as GoldrushHistoryDiag).failureStage === 'timeout'
   // Outer vars for Moralis fallback chain/cursor — needed by both page-1 block and multi-page loop
   // Prefer dominant chain by portfolio value for deep activity scans (ETH-heavy wallets get ETH activity).
-  const _fbEthValue = chainValueMap.get('eth') ?? 0
-  const _fbBaseValue = chainValueMap.get('base') ?? 0
+  // Use same strip logic as walletFacts so 'eth-mainnet', 'ethereum', etc. all resolve to correct chain.
+  let _fbEthValue = 0, _fbBaseValue = 0
+  for (const h of holdings) {
+    const _hc = (h.chain ?? '').toLowerCase().replace(/-mainnet$/, '')
+    if (_hc === 'eth' || _hc.includes('ethereum')) _fbEthValue += h.value ?? 0
+    else if (_hc === 'base' || _hc.includes('base')) _fbBaseValue += h.value ?? 0
+  }
   const _fbChain: 'eth' | 'base' = requestedChain === 'eth' ? 'eth'
     : requestedChain === 'base' ? 'base'
     : (deepActivity && _fbEthValue > _fbBaseValue) ? 'eth'
@@ -6675,10 +6765,16 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     const _actChainsForMerge: string[] = []
     if (_ethAttempted) _actChainsForMerge.push('eth')
     if (_baseAttempted) _actChainsForMerge.push('base')
-    const _ethTotalValue = _fbEthValue
-    const _baseTotalValue = _fbBaseValue
+    // Compute portfolio value by chain directly from holdings using the same strip logic as walletFacts
+    // so 'eth-mainnet' → 'eth', 'ethereum' → 'eth', etc. — avoids mapChain returning null for some formats
+    let _ethTotalValue = 0, _baseTotalValue = 0
+    for (const h of holdings) {
+      const _hc = (h.chain ?? '').toLowerCase().replace(/-mainnet$/, '')
+      if (_hc === 'eth' || _hc.includes('ethereum')) _ethTotalValue += h.value ?? 0
+      else if (_hc === 'base' || _hc.includes('base')) _baseTotalValue += h.value ?? 0
+    }
     const _primaryChain = _ethTotalValue > _baseTotalValue ? 'eth' : 'base'
-    const _baseOnlyMisleading = _ethTotalValue > 0 && _baseEvCount > 0 && _ethEvCount === 0
+    const _baseOnlyMisleading = _ethTotalValue > 1 && _baseEvCount > 0 && _ethEvCount === 0
       && (_ethTotalValue / Math.max(_ethTotalValue + _baseTotalValue, 1)) > 0.5
     const _ethSkipReason = !_ethAttempted
       ? (_ethTotalValue <= 1 ? 'eth_activity_skipped_no_eth_holdings' : 'eth_activity_provider_unavailable')
@@ -6895,6 +6991,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       baseFifoCoverageDebug: _baseFifoCoverageDebug,
       walletActivityRoutingDebug: _walletActivityRoutingDebug,
       walletChainActivityMergeDebug: _walletChainActivityMergeDebug,
+      walletEthNormalizationDebug: _walletEthNormalizationDebug,
       walletFactsDebug: _walletFactsDebug,
       apiAudit: _apiAudit,
     },
