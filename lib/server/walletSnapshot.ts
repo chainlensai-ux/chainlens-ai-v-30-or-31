@@ -936,6 +936,34 @@ export type WalletSnapshot = {
       outboundTokenMatches?: number
       sampleUnpricedAfterReceipt?: Array<{ txHash: string; symbol: string; finalReason: string }>
     }
+    baseFifoCoverageDebug?: {
+      attempted: boolean
+      reason: string
+      extraPagesAttempted: number
+      extraEventsFetched: number
+      extraEventsNormalized: number
+      candidateTxsQueued: number
+      receiptsFetched: number
+      transactionsFetched: number
+      receiptCacheHits: number
+      quoteLegsFound: number
+      nativeEthQuoteLegs: number
+      usdcQuoteLegs: number
+      wethQuoteLegs: number
+      syntheticSwapEventsAdded: number
+      pricedEventsBefore: number
+      pricedEventsAfter: number
+      closedLotsBefore: number
+      closedLotsAfter: number
+      openedLotsAfter: number
+      unmatchedBuysAfter: number
+      unmatchedSellsAfter: number
+      stopReason: string
+      sampleTxsChecked: Array<{ txHash: string; symbol: string; direction: string }>
+      sampleQuoteLegs: Array<{ txHash: string; symbol: string; quoteType: string }>
+      sampleStillUnpriced: Array<{ txHash: string; symbol: string; finalReason: string }>
+      sampleNoMatchReasons: string[]
+    }
     walletFactsDebug?: {
       built: boolean
       eventCount: number
@@ -1046,7 +1074,7 @@ export type WalletSnapshotOptions = {
 
 const SNAPSHOT_TTL_MS         = 5  * 60 * 1000
 const SNAPSHOT_HISTORY_TTL_MS = 15 * 60 * 1000
-const SNAPSHOT_SCHEMA_VERSION = 'v16'
+const SNAPSHOT_SCHEMA_VERSION = 'v17'
 type SnapshotCacheEntry = { snapshot: WalletSnapshot; cachedAt: number; ttlMs: number }
 const snapshotMemCache = new Map<string, SnapshotCacheEntry>()
 
@@ -6002,6 +6030,162 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     }
   }
 
+  // ── Phase 5C: Base FIFO Coverage Pass ───────────────────────────────────────────────────
+  // Runs when: deepActivity + Base chain + 0 closed lots after primary pipeline + swap candidates
+  // exist + primary providers (GoldRush/Alchemy) were used (Moralis fallback not already tried).
+  // Fetches up to 3 pages of older Moralis Base transfers to find historical BUY evidence for
+  // tokens where only SELLs appeared in the sample window. Each page merges new unique events,
+  // then re-runs evidence → swap detection → price evidence → FIFO → trade stats.
+  // Hard budget: max 3 pages, stop when meaningful lots found or no cursor.
+  // Does NOT run on basic scans, historical coverage mode, or when Moralis fallback already ran.
+  const _BASE_FIFO_COVERAGE_MAX_PAGES = 3
+  let _baseFifoCoverageDebug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['baseFifoCoverageDebug']> = {
+    attempted: false,
+    reason: 'not_attempted',
+    extraPagesAttempted: 0,
+    extraEventsFetched: 0,
+    extraEventsNormalized: 0,
+    candidateTxsQueued: walletSwapSummary.swapCandidateEvents,
+    receiptsFetched: 0,
+    transactionsFetched: 0,
+    receiptCacheHits: 0,
+    quoteLegsFound: 0,
+    nativeEthQuoteLegs: 0,
+    usdcQuoteLegs: 0,
+    wethQuoteLegs: 0,
+    syntheticSwapEventsAdded: 0,
+    pricedEventsBefore: walletPriceEvidenceSummary.pricedEvents,
+    pricedEventsAfter: walletPriceEvidenceSummary.pricedEvents,
+    closedLotsBefore: walletLotSummary.closedLots,
+    closedLotsAfter: walletLotSummary.closedLots,
+    openedLotsAfter: walletLotSummary.openedLots ?? 0,
+    unmatchedBuysAfter: walletLotSummary.unmatchedBuys ?? 0,
+    unmatchedSellsAfter: walletLotSummary.unmatchedSells ?? 0,
+    stopReason: 'not_attempted',
+    sampleTxsChecked: [],
+    sampleQuoteLegs: [],
+    sampleStillUnpriced: [],
+    sampleNoMatchReasons: [],
+  }
+  const _shouldRunBaseFifoCoverage = (
+    deepActivity &&
+    activityRequested &&
+    _baseReconChainOk &&
+    walletLotSummary.closedLots === 0 &&
+    walletSwapSummary.swapCandidateEvents > 0 &&
+    Boolean(process.env.MORALIS_API_KEY) &&
+    !historicalCoverage &&
+    !_moralisFbDebug.fallbackActivityUsed
+  )
+  if (_shouldRunBaseFifoCoverage) {
+    _baseFifoCoverageDebug.attempted = true
+    _baseFifoCoverageDebug.reason = 'triggered'
+    let bfcPagesAttempted = 0
+    let bfcCursor: string | null = null
+    let bfcStopReason = 'max_pages_reached'
+    const bfcSeenKeys = new Set<string>(events.map(e => `${e.txHash ?? ''}|${e.contract}|${e.direction}|${e.amountRaw ?? String(e.amount)}`))
+    let bfcAllEvents: PnlEvent[] = [...events]
+
+    while (bfcPagesAttempted < _BASE_FIFO_COVERAGE_MAX_PAGES) {
+      bfcPagesAttempted++
+      _baseFifoCoverageDebug.extraPagesAttempted = bfcPagesAttempted
+      const bfcPageResult = await fetchMoralisTransfers(addr, 'base', 100, bfcCursor ?? undefined)
+      _trackCall('moralis', 'erc20_transfers', bfcPageResult.cacheHit, `moralis:transfers:bfc_p${bfcPagesAttempted}:base:${addrNorm}`)
+      if (!bfcPageResult.usable || bfcPageResult.items.length === 0) {
+        bfcStopReason = bfcPageResult.usable ? 'no_more_pages' : 'provider_error'
+        break
+      }
+      _baseFifoCoverageDebug.extraEventsFetched += bfcPageResult.rawCount
+      const { events: bfcPageEvents } = normalizeMoralisTransfers(bfcPageResult.items, addr, 'base-mainnet')
+      tokenMeter.measure('fallbackEngine', bfcPageResult, bfcPageEvents)
+      _baseFifoCoverageDebug.extraEventsNormalized += bfcPageEvents.length
+      const bfcNewEvents: PnlEvent[] = []
+      for (const e of bfcPageEvents) {
+        const k = `${e.txHash ?? ''}|${e.contract}|${e.direction}|${e.amountRaw ?? String(e.amount)}`
+        if (!bfcSeenKeys.has(k)) { bfcSeenKeys.add(k); bfcNewEvents.push(e) }
+      }
+      bfcCursor = bfcPageResult.nextCursor
+      // Page 1 often overlaps entirely with GoldRush — skip pipeline re-run but continue to page 2
+      if (bfcNewEvents.length === 0) {
+        if (bfcPagesAttempted >= 2 || bfcCursor == null) { bfcStopReason = 'no_new_events'; break }
+        continue
+      }
+      bfcAllEvents = [...bfcAllEvents, ...bfcNewEvents]
+      // Re-run pipeline on merged events
+      ;({ evidenceList, summary: walletEvidenceSummary, debug: _txEvidenceDebugBase } = buildTxEvidenceFromEvents(bfcAllEvents, activityRequested, activityProviderUnavailable))
+      tokenMeter.measure('normalization', bfcAllEvents, evidenceList, walletEvidenceSummary)
+      ;({ evidenceWithDetection: _swapEvidenceWithDetection, summary: walletSwapSummary, debug: _swapDetectionDebug } = buildSwapDetection(evidenceList, activityRequested, addrNorm))
+      tokenMeter.measure('swapDetection', _swapEvidenceWithDetection, walletSwapSummary)
+      ;({ evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache, priceByContract))
+      tokenMeter.measure('priceInference', _pricedEvidence, walletPriceEvidenceSummary)
+      for (let _pp = 0; _pp < (_priceAtTimeDebug?.providerAttempts ?? 0); _pp++) {
+        _trackCall('goldrush', 'historical_by_addresses_v2', false, `gr:price:bfc:p${bfcPagesAttempted}_${_pp}:${addrNorm}`)
+      }
+      _pricedEvidence = normalizeSwapEventsForFifo(_pricedEvidence, tokenMeter.isDebugEnabled())
+      _pricedEvidence = normalizeSingleLegEventsForFifo(_pricedEvidence, tokenMeter.isDebugEnabled())
+      const bfcFifo = buildFifoLotEngine(_pricedEvidence, activityRequested)
+      walletLotSummary = bfcFifo.summary
+      _lotEngineDebug = bfcFifo.debug
+      _closedLots = bfcFifo.closedLots
+      if (walletPriceEvidenceSummary.missing.some(r => r.endsWith('_swap_candidates_unpriced')) && walletLotSummary.closedLots === 0) {
+        walletLotSummary = { ...walletLotSummary, missing: [...walletLotSummary.missing, 'swap_candidates_unpriced_no_fifo'] }
+      }
+      tokenMeter.measure('fifoEngine', walletLotSummary, _lotEngineDebug)
+      const bfcStats = buildTradeStatsSummary(_closedLots, activityRequested)
+      walletTradeStatsSummary = bfcStats.summary
+      _tradeStatsDebug = bfcStats.debug
+      if (walletLotSummary.missing.includes('swap_candidates_unpriced_no_fifo') && walletTradeStatsSummary.closedLots === 0) {
+        walletTradeStatsSummary = { ...walletTradeStatsSummary, missing: [...walletTradeStatsSummary.missing, 'swap_candidates_unpriced_no_closed_lots'] }
+      }
+      if (_closedLots.length === 0 && activityRequested) {
+        const _ps = buildPerSwapTradeStats(_pricedEvidence, activityRequested)
+        if (_ps.summary.closedLots > 0) { walletTradeStatsSummary = _ps.summary; _tradeStatsDebug = _ps.debug }
+      }
+      tokenMeter.measure('tradeStats', walletTradeStatsSummary)
+      _baseFifoCoverageDebug.pricedEventsAfter = walletPriceEvidenceSummary.pricedEvents
+      _baseFifoCoverageDebug.closedLotsAfter = walletLotSummary.closedLots
+      _baseFifoCoverageDebug.openedLotsAfter = walletLotSummary.openedLots ?? 0
+      _baseFifoCoverageDebug.unmatchedBuysAfter = walletLotSummary.unmatchedBuys ?? 0
+      _baseFifoCoverageDebug.unmatchedSellsAfter = walletLotSummary.unmatchedSells ?? 0
+      if (walletLotSummary.closedLots >= 10 || walletPriceEvidenceSummary.pricedEvents >= 20) {
+        bfcStopReason = walletLotSummary.closedLots >= 10 ? 'closedLots_gte_10' : 'pricedEvents_gte_20'; break
+      }
+      if (bfcCursor == null) { bfcStopReason = 'no_cursor'; break }
+      if (hasMeaningfulClosedLotEvidence(walletLotSummary, _closedLots).result) {
+        bfcStopReason = 'meaningful_closed_lot_evidence'; break
+      }
+    }
+    events = bfcAllEvents
+    _baseFifoCoverageDebug.stopReason = bfcStopReason
+    _baseFifoCoverageDebug.sampleNoMatchReasons = (_lotEngineDebug?.sampleUnmatchedReasons ?? []).slice(0, 5)
+    _baseFifoCoverageDebug.sampleStillUnpriced = (_priceAtTimeDebug?.sampleUnpricedReasons ?? []).slice(0, 3).map(r => ({
+      txHash: r.txHash, symbol: r.tokenSymbol, finalReason: r.finalReason,
+    }))
+    if (walletLotSummary.closedLots === 0) {
+      const _uBuyKeys = _lotEngineDebug?.uniqueBuyTokenKeys ?? 0
+      const _uSellKeys = _lotEngineDebug?.uniqueSellTokenKeys ?? 0
+      const _mKeys = _lotEngineDebug?.matchedTokenKeys ?? 0
+      if (_uSellKeys > 0 && _uBuyKeys === 0) _baseFifoCoverageDebug.reason = 'only_sells_found_no_prior_buys'
+      else if (_uBuyKeys > 0 && _uSellKeys === 0) _baseFifoCoverageDebug.reason = 'only_buys_found_no_sells'
+      else if (_uBuyKeys > 0 && _uSellKeys > 0 && _mKeys === 0) _baseFifoCoverageDebug.reason = 'token_key_no_overlap'
+      else if (walletPriceEvidenceSummary.pricedEvents === 0 && walletSwapSummary.swapCandidateEvents > 0) _baseFifoCoverageDebug.reason = 'all_candidates_unpriced'
+      else if (bfcStopReason === 'provider_error') _baseFifoCoverageDebug.reason = 'price_provider_unavailable'
+      else if (bfcStopReason === 'max_pages_reached') _baseFifoCoverageDebug.reason = 'historical_depth_insufficient'
+      else _baseFifoCoverageDebug.reason = 'historical_depth_insufficient'
+    }
+  } else {
+    _baseFifoCoverageDebug.reason = !deepActivity ? 'basic_scan'
+      : !activityRequested ? 'activity_not_requested'
+      : !_baseReconChainOk ? 'eth_chain'
+      : walletLotSummary.closedLots > 0 ? 'already_has_closed_lots'
+      : walletSwapSummary.swapCandidateEvents === 0 ? 'no_swap_candidates'
+      : !Boolean(process.env.MORALIS_API_KEY) ? 'moralis_not_configured'
+      : historicalCoverage ? 'historical_coverage_enabled'
+      : _moralisFbDebug.fallbackActivityUsed ? 'moralis_fallback_already_used'
+      : 'not_triggered'
+  }
+  // ── End Phase 5C ─────────────────────────────────────────────────────────────────────────
+
   tokenMeter.measure('fallbackEngine', _moralisFbDebug, events)
   tokenMeter.endTokenMeter('fallbackEngine')
 
@@ -6443,6 +6627,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       },
       walletSwapEnrichmentDebug: _swapEnrichmentDebug,
       basePnlReconstructionDebug: _basePnlReconDebug,
+      baseFifoCoverageDebug: _baseFifoCoverageDebug,
       walletFactsDebug: _walletFactsDebug,
       apiAudit: _apiAudit,
     },
