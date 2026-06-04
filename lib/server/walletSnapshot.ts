@@ -907,6 +907,8 @@ export type WalletSnapshot = {
     basePnlReconstructionDebug?: {
       attempted: boolean
       reason: string
+      rpcSource?: 'alchemy' | 'public_base_rpc' | 'none'
+      rpcConfigured?: boolean
       candidateTxCount: number
       receiptsFetched: number
       receiptCacheHits: number
@@ -960,6 +962,7 @@ export type WalletSnapshot = {
 const ZERION_KEY       = process.env.ZERION_KEY ?? ''
 const ALCHEMY_ETH_KEY  = process.env.ALCHEMY_ETHEREUM_KEY!
 const ALCHEMY_BASE_KEY = process.env.ALCHEMY_BASE_KEY!
+const PUBLIC_BASE_RPC  = 'https://mainnet.base.org'  // fallback for receipt-only calls when Alchemy is not configured
 const GOLDRUSH_KEY     = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY ?? ''
 
 const EXTENDED_DEX_ROUTERS = new Set<string>([
@@ -1043,7 +1046,7 @@ export type WalletSnapshotOptions = {
 
 const SNAPSHOT_TTL_MS         = 5  * 60 * 1000
 const SNAPSHOT_HISTORY_TTL_MS = 15 * 60 * 1000
-const SNAPSHOT_SCHEMA_VERSION = 'v15'
+const SNAPSHOT_SCHEMA_VERSION = 'v16'
 type SnapshotCacheEntry = { snapshot: WalletSnapshot; cachedAt: number; ttlMs: number }
 const snapshotMemCache = new Map<string, SnapshotCacheEntry>()
 
@@ -4779,7 +4782,8 @@ async function buildUnpricedCandidateReceiptPass(
   evidenceWithDetection: WalletTxEvidence[],
   unpricedTxHashes: string[],
   walletAddress: string,
-  alchemyBaseUrl: string,
+  rpcUrl: string,
+  rpcSource: 'alchemy' | 'public_base_rpc' | 'none',
   closedLotsBefore: number,
   realizedPnlBefore: number | null,
 ): Promise<{
@@ -4787,8 +4791,9 @@ async function buildUnpricedCandidateReceiptPass(
   debug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['basePnlReconstructionDebug']>
 }> {
   const walletLower = walletAddress.toLowerCase()
+  const rpcConfigured = rpcSource !== 'none'
   const emptyDebug = (reason: string): NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['basePnlReconstructionDebug']> => ({
-    attempted: true, reason,
+    attempted: true, reason, rpcSource, rpcConfigured,
     candidateTxCount: 0, receiptsFetched: 0, receiptCacheHits: 0, transactionsFetched: 0,
     decodedTransferLogs: 0, walletInboundLegs: 0, walletOutboundLegs: 0,
     inboundTokenMatches: 0, outboundTokenMatches: 0,
@@ -4800,7 +4805,7 @@ async function buildUnpricedCandidateReceiptPass(
     providerErrors: 0, sampleMatches: [], sampleUnpricedAfterReceipt: [],
   })
 
-  if (!alchemyBaseUrl) return { enrichedEvidence: evidenceWithDetection, debug: emptyDebug('no_alchemy_base_url') }
+  if (!rpcUrl || rpcSource === 'none') return { enrichedEvidence: evidenceWithDetection, debug: emptyDebug('no_rpc_available') }
   if (unpricedTxHashes.length === 0) return { enrichedEvidence: evidenceWithDetection, debug: emptyDebug('no_unpriced_tx_hashes') }
 
   const toFetch = unpricedTxHashes.slice(0, 8)
@@ -4817,6 +4822,7 @@ async function buildUnpricedCandidateReceiptPass(
   let wethMatches = 0
   let inboundTokenMatches = 0
   let outboundTokenMatches = 0
+  const _rpcUrl = rpcUrl  // local alias to distinguish from buildBasePnlReconstructionPass scope
 
   const txDecodes = new Map<string, BasePnlReceiptDecode>()
   const txNativeValues = new Map<string, string>()  // txHash → raw hex tx.value
@@ -4831,7 +4837,7 @@ async function buildUnpricedCandidateReceiptPass(
       continue
     }
     try {
-      const receipt = await alchemyRpc(alchemyBaseUrl, 'eth_getTransactionReceipt', [txHash])
+      const receipt = await alchemyRpc(_rpcUrl, 'eth_getTransactionReceipt', [txHash])
       receiptsFetched++
       if (!receipt) {
         const d: BasePnlReceiptDecode = { txFrom: null, txTo: null, walletInbound: [], walletOutbound: [], isKnownRouter: false, routerProtocol: null, hasStableLeg: false, hasWethLeg: false, totalTransferLogs: 0, decodeStatus: 'no_receipt', reason: 'receipt_null' }
@@ -4898,7 +4904,7 @@ async function buildUnpricedCandidateReceiptPass(
       continue
     }
     try {
-      const txData = await alchemyRpc(alchemyBaseUrl, 'eth_getTransactionByHash', [txHash])
+      const txData = await alchemyRpc(_rpcUrl, 'eth_getTransactionByHash', [txHash])
       transactionsFetched++
       const val: string = (txData && typeof txData.value === 'string') ? txData.value : '0x0'
       basePnlTxCache.set(txCacheKey, { value: val, exp: now + BASE_PNL_RECON_TTL_MS })
@@ -5041,6 +5047,8 @@ async function buildUnpricedCandidateReceiptPass(
     debug: {
       attempted: true,
       reason: 'unpriced_candidates_receipt_reconstruction',
+      rpcSource,
+      rpcConfigured,
       candidateTxCount: toFetch.length,
       receiptsFetched,
       receiptCacheHits,
@@ -5138,6 +5146,9 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
 
   const ethUrl  = `https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_ETH_KEY}`
   const baseUrl = `https://base-mainnet.g.alchemy.com/v2/${ALCHEMY_BASE_KEY}`
+  // Effective Base RPC for receipt-only calls: prefer Alchemy, fall back to public node
+  const baseRpcUrl  = ALCHEMY_BASE_KEY ? baseUrl : PUBLIC_BASE_RPC
+  const _baseRpcSource: 'alchemy' | 'public_base_rpc' | 'none' = ALCHEMY_BASE_KEY ? 'alchemy' : 'public_base_rpc'
 
   // ETH Alchemy calls only when explicitly requested — default is Base only
   const useEthAlchemy = requestedChain === 'eth' && Boolean(ALCHEMY_ETH_KEY)
@@ -5673,13 +5684,13 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     _baseReconChainOk &&
     walletSwapSummary.swapCandidateEvents === 0 &&
     walletEvidenceSummary.totalEvents > 0 &&
-    Boolean(ALCHEMY_BASE_KEY)
+    Boolean(baseRpcUrl)
   )
   if (_shouldRunBaseRecon) {
     const reconResult = await buildBasePnlReconstructionPass(
       _swapEvidenceWithDetection,
       addrNorm,
-      baseUrl,
+      baseRpcUrl,
       _closedLotsBeforeRecon,
       _realizedPnlBeforeRecon,
     )
@@ -5704,8 +5715,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     _basePnlReconDebug = { ..._basePnlReconDebug, reason: 'swap_candidates_present' }
   } else if (walletEvidenceSummary.totalEvents === 0) {
     _basePnlReconDebug = { ..._basePnlReconDebug, reason: 'no_activity_events' }
-  } else if (!ALCHEMY_BASE_KEY) {
-    _basePnlReconDebug = { ..._basePnlReconDebug, reason: 'alchemy_not_configured' }
+  } else if (!baseRpcUrl) {
+    _basePnlReconDebug = { ..._basePnlReconDebug, reason: 'no_rpc_available' }
   }
   // ── End Base PnL Reconstruction Pass ────────────────────────────────────────────────────
 
@@ -5729,7 +5740,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     const _shouldRunUnpricedReceiptPass = (
       activityRequested &&
       _baseReconChainOk &&
-      Boolean(ALCHEMY_BASE_KEY) &&
+      Boolean(baseRpcUrl) &&
       walletPriceEvidenceSummary.pricedEvents === 0 &&
       walletPriceEvidenceSummary.swapCandidateEvents > 0 &&
       _hasUnpricedCandReasons
@@ -5749,7 +5760,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         _swapEvidenceWithDetection,
         _unpricedCandTxHashes,
         addrNorm,
-        baseUrl,
+        baseRpcUrl,
+        _baseRpcSource,
         _closedLotsBeforeRecon,
         _realizedPnlBeforeRecon,
       )
