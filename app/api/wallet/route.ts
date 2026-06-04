@@ -29,7 +29,7 @@ export async function OPTIONS(req: Request) {
 const WALLET_BASIC_CACHE_TTL_MS  = 5  * 60 * 1000  // 5 min for basic scans
 const WALLET_DEEP_CACHE_TTL_MS   = 15 * 60 * 1000  // 15 min for deep scans
 const WALLET_DEEP_COOLDOWN_MS    = 10 * 60 * 1000  // 10 min cooldown per wallet after deep live scan
-const WALLET_SNAPSHOT_SCHEMA_VERSION = 'v21'
+const WALLET_SNAPSHOT_SCHEMA_VERSION = 'v22'
 const walletCache = new Map<string, { exp: number; payload: unknown; cachedAt: number }>()
 const walletRate = new Map<string, { count: number; resetAt: number }>()
 const WALLET_RATE_BY_PLAN: Record<string, number> = { free: 20, pro: 60, elite: 180 }
@@ -479,6 +479,7 @@ export async function POST(req: Request) {
                 reason: 'persistent_cache_hit',
               },
               walletPriceAtTimeDebug: _slim.walletPriceAtTimeDebug ?? null,
+              unmatchedSellBackfillDebug: _slim.unmatchedSellBackfillDebug ?? null,
               ethSwapReconstructionDebug: _slim.ethSwapReconstructionDebug ?? null,
               basePnlReconstructionDebug: _slim.basePnlReconstructionDebug ?? null,
               baseFifoCoverageDebug: _slim.baseFifoCoverageDebug ?? null,
@@ -617,6 +618,7 @@ export async function POST(req: Request) {
       const _priceDbgForSlim = snapshot._diagnostics?.walletPriceAtTimeDebug ?? null
       const _slimDiag: Record<string, unknown> = {
         walletPriceAtTimeDebug: _priceDbgForSlim,
+        unmatchedSellBackfillDebug: snapshot._diagnostics?.unmatchedSellBackfillDebug ?? null,
         ethSwapReconstructionDebug: snapshot._diagnostics?.ethSwapReconstructionDebug ?? null,
         basePnlReconstructionDebug: snapshot._diagnostics?.basePnlReconstructionDebug ?? null,
         baseFifoCoverageDebug: snapshot._diagnostics?.baseFifoCoverageDebug ?? null,
@@ -685,6 +687,7 @@ export async function POST(req: Request) {
         walletTxEvidenceDebug: snapshot._diagnostics?.walletTxEvidenceDebug ?? null,
         walletSwapDetectionDebug: snapshot._diagnostics?.walletSwapDetectionDebug ?? null,
         walletPriceAtTimeDebug: snapshot._diagnostics?.walletPriceAtTimeDebug ?? null,
+        unmatchedSellBackfillDebug: snapshot._diagnostics?.unmatchedSellBackfillDebug ?? null,
         walletLotEngineDebug: snapshot._diagnostics?.walletLotEngineDebug ?? null,
         walletTradeStatsDebug: snapshot._diagnostics?.walletTradeStatsDebug ?? null,
         ethSwapReconstructionDebug: snapshot._diagnostics?.ethSwapReconstructionDebug ?? null,
