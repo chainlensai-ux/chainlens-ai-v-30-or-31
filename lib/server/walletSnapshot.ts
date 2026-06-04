@@ -904,6 +904,34 @@ export type WalletSnapshot = {
       errors: number
       enrichedTxHashes: string[]
     }
+    ethSwapReconstructionDebug?: {
+      attempted: boolean
+      reason: string
+      candidateTxCount: number
+      walletInitiatedTxs: number
+      txGroupsWithInboundToken: number
+      knownRouterTxs: number
+      receiptsFetched: number
+      transactionsFetched?: number
+      quoteLogsFound: number
+      nativeEthValueMatches: number
+      wethQuoteMatches: number
+      usdcQuoteMatches: number
+      usdtQuoteMatches: number
+      daiQuoteMatches: number
+      syntheticSwapEventsAdded: number
+      pricedEventsBefore: number
+      pricedEventsAfter: number
+      swapCandidatesBefore: number
+      swapCandidatesAfter: number
+      closedLotsBefore: number
+      closedLotsAfter: number
+      sampleCandidateTxs: Array<{ txHash: string; inboundSymbols: string[]; txToKnownRouter: boolean; walletInitiated: boolean }>
+      sampleQuoteMatches: Array<{ txHash: string; quoteSymbol: string; quoteType: string; amount: number }>
+      sampleSyntheticEvents: Array<{ txHash: string; symbol: string; direction: string; source: string }>
+      sampleStillUnmatched: Array<{ txHash: string; reason: string }>
+      stopReason: string
+    }
     basePnlReconstructionDebug?: {
       attempted: boolean
       reason: string
@@ -1106,6 +1134,7 @@ const CREDIT_TABLE: Record<string, number> = {
   'alchemy:alchemy_getAssetTransfers': 0,
   'alchemy:eth_getTransactionCount': 0,
   'alchemy:eth_getTransactionReceipt': 0,
+  'alchemy:eth_getTransactionByHash': 0,
   'alchemy:getFirstTx': 0,
   'alchemy:behavior_getAssetTransfers': 0,
 }
@@ -1134,7 +1163,7 @@ export type WalletSnapshotOptions = {
 
 const SNAPSHOT_TTL_MS         = 5  * 60 * 1000
 const SNAPSHOT_HISTORY_TTL_MS = 15 * 60 * 1000
-const SNAPSHOT_SCHEMA_VERSION = 'v20'
+const SNAPSHOT_SCHEMA_VERSION = 'v21'
 type SnapshotCacheEntry = { snapshot: WalletSnapshot; cachedAt: number; ttlMs: number }
 const snapshotMemCache = new Map<string, SnapshotCacheEntry>()
 
@@ -1159,8 +1188,11 @@ const KNOWN_STABLE_WETH_CONTRACTS: Record<string, string> = {
 const KNOWN_DEX_ROUTERS: Record<string, string> = {
   '0x7a250d5630b4cf539739df2c5dacb4c659f2488d': 'UniswapV2Router',
   '0xe592427a0aece92de3edee1f18e0157c05861564': 'UniswapV3Router',
-  '0x3fc91a3afd70395cd496c647d5a6cc9d4b2b7fad': 'UniswapUniversalRouter_ETH',
+  '0xef1c6e67703c7bd7107eed8303fbe6ec2554bf6b': 'UniswapUniversalRouter_ETH',
+  '0x3fc91a3afd70395cd496c647d5a6cc9d4b2b7fad': 'UniswapUniversalRouter_ETH_CommandRouter',
   '0x198ef79f1f515f02dfe9e3115ed9fc07183f02fc': 'UniswapUniversalRouter_Base',
+  '0x1111111254eeb25477b68fb85ed929f73a960582': 'OneInchRouter',
+  '0xdef1c0ded9bec7f1a1670819833240f027b25eff': 'ZeroExExchangeProxy',
   '0xcf77a3ba9a5ca399b7c97c74d54e5b1beb874e43': 'Aerodrome',
 }
 
@@ -1213,6 +1245,38 @@ const STABLE_SYMBOL: Record<string, string> = {
   '0xdac17f958d2ee523a2206206994597c13d831ec7': 'USDT',
   '0x6b175474e89094c44da98b954eedeac495271d0f': 'DAI',
 }
+
+const ETH_WETH_CONTRACT = '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2'
+const ETH_QUOTE_ASSETS: Record<string, { symbol: 'WETH' | 'USDC' | 'USDT' | 'DAI'; decimals: number }> = {
+  [ETH_WETH_CONTRACT]: { symbol: 'WETH', decimals: 18 },
+  '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48': { symbol: 'USDC', decimals: 6 },
+  '0xdac17f958d2ee523a2206206994597c13d831ec7': { symbol: 'USDT', decimals: 6 },
+  '0x6b175474e89094c44da98b954eedeac495271d0f': { symbol: 'DAI', decimals: 18 },
+}
+
+type EthRouterQuoteLog = {
+  contract: string
+  symbol: 'WETH' | 'USDC' | 'USDT' | 'DAI'
+  amountHex: string
+  amount: number
+  from: string | null
+  to: string | null
+  walletSide: boolean
+}
+
+type EthRouterReceiptDecode = {
+  txFrom: string | null
+  txTo: string | null
+  isKnownRouter: boolean
+  routerProtocol: string | null
+  quoteLogs: EthRouterQuoteLog[]
+  totalTransferLogs: number
+  decodeStatus: 'ok' | 'no_receipt' | 'error'
+  reason: string
+}
+
+const ethRouterReceiptCache = new Map<string, { data: EthRouterReceiptDecode; exp: number }>()
+const ethRouterTxValueCache = new Map<string, { value: string; exp: number }>()
 
 function hexAmountToDecimal(amountHex: string, decimals: number): number {
   try {
@@ -1530,7 +1594,7 @@ export type PriceAtTimeEvidence = {
   tokenSymbol?: string | null
   timestamp: string
   priceUsd: number | null
-  source: 'stable_leg' | 'weth_leg' | 'historical_price' | 'swap_derived' | 'provider_event_usd' | 'current_holding_price_open_lot_estimate' | 'current_price_fallback_not_used' | 'unavailable'
+  source: 'stable_leg' | 'weth_leg' | 'historical_price' | 'swap_derived' | 'provider_event_usd' | 'current_holding_price_open_lot_estimate' | 'eth_native_value_router_reconstruction' | 'current_price_fallback_not_used' | 'unavailable'
   confidence: 'high' | 'medium' | 'low' | 'open_check'
   reason: string
 }
@@ -3097,7 +3161,7 @@ function buildFifoLotEngine(
   const missing: string[] = []
   if (closedLots.length === 0 && pricedSwapEvents > 0) {
     if (buyEvents === 0 && sellEvents > 0) missing.push('priced_events_only_sells')
-    else if (sellEvents === 0 && buyEvents > 0) missing.push('priced_events_only_buys')
+    else if (sellEvents === 0 && buyEvents > 0) missing.push('only_buys_found_no_sells')
     else if (matchedTokenKeySet.size === 0 && buyEvents > 0 && sellEvents > 0) missing.push('no_overlapping_buy_sell_tokens')
     else if (unmatchedSells > 0 && openedLots > 0 && closedLots.length === 0) missing.push('sell_before_buy')
     else missing.push('no_closed_lots')
@@ -4653,6 +4717,316 @@ export function validateWalletFactsShape(snapshot: WalletSnapshot): WalletSnapsh
   return snapshot
 }
 
+
+function emptyEthSwapReconstructionDebug(
+  reason: string,
+  pricedEventsBefore: number,
+  swapCandidatesBefore: number,
+  closedLotsBefore: number,
+  attempted = false,
+): NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['ethSwapReconstructionDebug']> {
+  return {
+    attempted,
+    reason,
+    candidateTxCount: 0,
+    walletInitiatedTxs: 0,
+    txGroupsWithInboundToken: 0,
+    knownRouterTxs: 0,
+    receiptsFetched: 0,
+    transactionsFetched: 0,
+    quoteLogsFound: 0,
+    nativeEthValueMatches: 0,
+    wethQuoteMatches: 0,
+    usdcQuoteMatches: 0,
+    usdtQuoteMatches: 0,
+    daiQuoteMatches: 0,
+    syntheticSwapEventsAdded: 0,
+    pricedEventsBefore,
+    pricedEventsAfter: pricedEventsBefore,
+    swapCandidatesBefore,
+    swapCandidatesAfter: swapCandidatesBefore,
+    closedLotsBefore,
+    closedLotsAfter: closedLotsBefore,
+    sampleCandidateTxs: [],
+    sampleQuoteMatches: [],
+    sampleSyntheticEvents: [],
+    sampleStillUnmatched: [],
+    stopReason: reason,
+  }
+}
+
+async function buildEthRouterSwapReconstructionPass(
+  evidenceWithDetection: WalletTxEvidence[],
+  walletAddress: string,
+  ethRpcUrl: string,
+  activityRequested: boolean,
+  pricedEventsBefore: number,
+  swapCandidatesBefore: number,
+  closedLotsBefore: number,
+): Promise<{
+  enrichedEvidence: WalletTxEvidence[]
+  debug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['ethSwapReconstructionDebug']>
+}> {
+  const walletLower = walletAddress.toLowerCase()
+  const emptyDebug = (reason: string, attempted = false) => emptyEthSwapReconstructionDebug(reason, pricedEventsBefore, swapCandidatesBefore, closedLotsBefore, attempted)
+  if (!activityRequested) return { enrichedEvidence: evidenceWithDetection, debug: emptyDebug('activity_not_requested') }
+  if (!ethRpcUrl) return { enrichedEvidence: evidenceWithDetection, debug: emptyDebug('eth_receipt_fetch_failed', true) }
+
+  const ethEvents = evidenceWithDetection.filter(e => (e.chain ?? '').toLowerCase() === 'eth' && e.txHash)
+  if (ethEvents.length === 0) return { enrichedEvidence: evidenceWithDetection, debug: emptyDebug('no_eth_activity_events') }
+
+  const byTx = new Map<string, WalletTxEvidence[]>()
+  for (const e of ethEvents) byTx.set(e.txHash, [...(byTx.get(e.txHash) ?? []), e])
+
+  let walletInitiatedTxs = 0
+  let txGroupsWithInboundToken = 0
+  let knownRouterTxs = 0
+  const candidates: Array<{ txHash: string; group: WalletTxEvidence[]; inboundTargets: WalletTxEvidence[]; walletInitiated: boolean; txToKnownRouter: boolean; txFrom: string | null; txTo: string | null }> = []
+  const sampleCandidateTxs: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['ethSwapReconstructionDebug']>['sampleCandidateTxs'] = []
+
+  for (const [txHash, group] of byTx) {
+    const txFrom = (group.find(e => e.txFromAddress)?.txFromAddress ?? group.find(e => e.fromAddress)?.fromAddress ?? null)?.toLowerCase() ?? null
+    const txTo = (group.find(e => e.txToAddress)?.txToAddress ?? group.find(e => e.toAddress)?.toAddress ?? null)?.toLowerCase() ?? null
+    const walletInitiated = txFrom === walletLower
+    const txToKnownRouter = Boolean(txTo && EXTENDED_DEX_ROUTERS.has(txTo))
+    const inboundTargets = group.filter(e => e.direction === 'buy' && e.toAddress?.toLowerCase() === walletLower && !ETH_QUOTE_ASSETS[e.contract.toLowerCase()] && e.amount > 0)
+    const hasUnknownQuote = group.some(e => e.direction === 'unknown' && Boolean(ETH_QUOTE_ASSETS[e.contract.toLowerCase()]))
+    if (walletInitiated) walletInitiatedTxs++
+    if (inboundTargets.length > 0) txGroupsWithInboundToken++
+    if (txToKnownRouter) knownRouterTxs++
+    if (inboundTargets.length === 0) continue
+    if (!walletInitiated && !txToKnownRouter) continue
+    if (!hasUnknownQuote && !txToKnownRouter && !walletInitiated) continue
+    candidates.push({ txHash, group, inboundTargets, walletInitiated, txToKnownRouter, txFrom, txTo })
+    if (sampleCandidateTxs.length < 5) {
+      sampleCandidateTxs.push({ txHash, inboundSymbols: inboundTargets.map(e => e.symbol).slice(0, 4), txToKnownRouter, walletInitiated })
+    }
+    if (candidates.length >= 10) break
+  }
+
+  if (candidates.length === 0) {
+    const reason = walletInitiatedTxs === 0 ? 'eth_only_inbound_airdrop_like_transfers'
+      : txGroupsWithInboundToken === 0 ? 'eth_wallet_initiated_but_no_token_receive'
+      : 'eth_no_known_router_or_native_value'
+    return { enrichedEvidence: evidenceWithDetection, debug: { ...emptyDebug(reason, true), walletInitiatedTxs, txGroupsWithInboundToken, knownRouterTxs, sampleCandidateTxs } }
+  }
+
+  const toFetch = candidates.slice(0, 8)
+  const now = Date.now()
+  let receiptsFetched = 0
+  let transactionsFetched = 0
+  let providerErrors = 0
+  let quoteLogsFound = 0
+  let nativeEthValueMatches = 0
+  let wethQuoteMatches = 0
+  let usdcQuoteMatches = 0
+  let usdtQuoteMatches = 0
+  let daiQuoteMatches = 0
+  const receiptDecodes = new Map<string, EthRouterReceiptDecode>()
+  const txNativeValues = new Map<string, string>()
+  const sampleQuoteMatches: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['ethSwapReconstructionDebug']>['sampleQuoteMatches'] = []
+  const sampleStillUnmatched: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['ethSwapReconstructionDebug']>['sampleStillUnmatched'] = []
+
+  for (const cand of toFetch) {
+    const cacheKey = `eth_router_recon:${cand.txHash}`
+    const cached = ethRouterReceiptCache.get(cacheKey)
+    if (cached && cached.exp > now) {
+      receiptDecodes.set(cand.txHash, cached.data)
+    } else {
+      try {
+        const receipt = await alchemyRpc(ethRpcUrl, 'eth_getTransactionReceipt', [cand.txHash])
+        receiptsFetched++
+        if (!receipt) {
+          const d: EthRouterReceiptDecode = { txFrom: null, txTo: null, isKnownRouter: false, routerProtocol: null, quoteLogs: [], totalTransferLogs: 0, decodeStatus: 'no_receipt', reason: 'receipt_null' }
+          ethRouterReceiptCache.set(cacheKey, { data: d, exp: now + BASE_PNL_RECON_TTL_MS })
+          receiptDecodes.set(cand.txHash, d)
+          continue
+        }
+        const txFrom = typeof receipt.from === 'string' ? (receipt.from as string).toLowerCase() : cand.txFrom
+        const txTo = typeof receipt.to === 'string' ? (receipt.to as string).toLowerCase() : cand.txTo
+        const isKnownRouter = Boolean(txTo && EXTENDED_DEX_ROUTERS.has(txTo))
+        const routerProtocol = txTo ? (KNOWN_DEX_ROUTERS[txTo] ?? (isKnownRouter ? 'known_dex_router' : null)) : null
+        const logs: Array<{ topics?: string[]; address?: string; data?: string }> = Array.isArray(receipt.logs) ? receipt.logs : []
+        const quoteLogs: EthRouterQuoteLog[] = []
+        let totalTransferLogs = 0
+        for (const log of logs) {
+          if (!log.topics || log.topics[0]?.toLowerCase() !== ERC20_TRANSFER_TOPIC) continue
+          if (log.topics.length < 3) continue
+          totalTransferLogs++
+          const contract = (log.address ?? '').toLowerCase()
+          const meta = ETH_QUOTE_ASSETS[contract]
+          if (!meta) continue
+          const amountHex = typeof log.data === 'string' ? log.data : '0x0'
+          const amount = hexAmountToDecimal(amountHex, meta.decimals)
+          if (!amount || amount <= 0) continue
+          const fromAddr = '0x' + (log.topics[1]?.toLowerCase() ?? '').slice(-40)
+          const toAddr = '0x' + (log.topics[2]?.toLowerCase() ?? '').slice(-40)
+          const walletSide = fromAddr === walletLower || toAddr === walletLower
+          quoteLogs.push({ contract, symbol: meta.symbol, amountHex, amount, from: fromAddr, to: toAddr, walletSide })
+        }
+        const d: EthRouterReceiptDecode = { txFrom, txTo, isKnownRouter, routerProtocol, quoteLogs, totalTransferLogs, decodeStatus: 'ok', reason: 'decoded' }
+        ethRouterReceiptCache.set(cacheKey, { data: d, exp: now + BASE_PNL_RECON_TTL_MS })
+        receiptDecodes.set(cand.txHash, d)
+      } catch {
+        providerErrors++
+      }
+    }
+
+    const txValueCacheKey = `eth_router_tx_value:${cand.txHash}`
+    const cachedValue = ethRouterTxValueCache.get(txValueCacheKey)
+    if (cachedValue && cachedValue.exp > now) {
+      txNativeValues.set(cand.txHash, cachedValue.value)
+    } else if (cand.walletInitiated) {
+      try {
+        const tx = await alchemyRpc(ethRpcUrl, 'eth_getTransactionByHash', [cand.txHash])
+        transactionsFetched++
+        const value = typeof tx?.value === 'string' ? tx.value : '0x0'
+        ethRouterTxValueCache.set(txValueCacheKey, { value, exp: now + BASE_PNL_RECON_TTL_MS })
+        txNativeValues.set(cand.txHash, value)
+      } catch {
+        providerErrors++
+      }
+    }
+  }
+
+  const syntheticEvents: WalletTxEvidence[] = []
+  const sampleSyntheticEvents: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['ethSwapReconstructionDebug']>['sampleSyntheticEvents'] = []
+  const existingKey = new Set(evidenceWithDetection.map(e => `${e.txHash}|${e.contract.toLowerCase()}|${e.direction}|${e.amountRaw ?? e.amount}`))
+
+  for (const cand of toFetch) {
+    const d = receiptDecodes.get(cand.txHash)
+    const refEvent = cand.inboundTargets[0]
+    const txFrom = d?.txFrom ?? cand.txFrom
+    const txTo = d?.txTo ?? cand.txTo
+    const isWalletInitiated = txFrom === walletLower || cand.walletInitiated
+    const isKnownRouter = Boolean(d?.isKnownRouter || cand.txToKnownRouter)
+    const routerProtocol = d?.routerProtocol ?? (txTo ? KNOWN_DEX_ROUTERS[txTo] ?? null : null)
+
+    const nativeHex = txNativeValues.get(cand.txHash)
+    const nativeAmount = nativeHex ? hexAmountToDecimal(nativeHex, 18) : 0
+    if (isWalletInitiated && nativeAmount > 0) {
+      const key = `${cand.txHash}|${ETH_WETH_CONTRACT}|sell|native:${nativeHex}`
+      if (!existingKey.has(key)) {
+        syntheticEvents.push({
+          txHash: cand.txHash, timestamp: refEvent.timestamp, fromAddress: walletLower, toAddress: txTo,
+          contract: ETH_WETH_CONTRACT, symbol: 'WETH', amountRaw: nativeHex ?? null, tokenDecimals: 18,
+          amount: nativeAmount, usdValue: null, direction: 'sell', chain: 'eth', txFromAddress: txFrom, txToAddress: txTo,
+          swapDetection: { isSwapCandidate: true, confidence: isKnownRouter ? 'high' : 'medium', eventKind: 'swap_candidate', reason: 'ETH router reconstruction: native tx.value quote leg for wallet-initiated token receipt', matchedProtocol: routerProtocol, matchedAddress: txTo },
+          priceAtTime: { status: 'open_check', tokenAddress: ETH_WETH_CONTRACT, tokenSymbol: 'WETH', timestamp: refEvent.timestamp ?? '', priceUsd: null, source: 'eth_native_value_router_reconstruction', confidence: 'medium', reason: 'Synthetic native ETH quote leg from tx.value for router reconstruction' },
+        })
+        existingKey.add(key)
+        nativeEthValueMatches++
+        if (sampleQuoteMatches.length < 5) sampleQuoteMatches.push({ txHash: cand.txHash, quoteSymbol: 'WETH', quoteType: 'native_tx_value', amount: nativeAmount })
+      }
+    }
+
+    const normalizedQuoteLegs = cand.group.filter(e => e.direction === 'unknown' && Boolean(ETH_QUOTE_ASSETS[e.contract.toLowerCase()]) && e.amount > 0)
+    for (const nq of normalizedQuoteLegs) {
+      const qContract = nq.contract.toLowerCase()
+      const qMeta = ETH_QUOTE_ASSETS[qContract]
+      const key = `${cand.txHash}|${qContract}|sell|normalized:${nq.amountRaw ?? nq.amount}`
+      if (!qMeta || existingKey.has(key)) continue
+      syntheticEvents.push({
+        txHash: cand.txHash, timestamp: refEvent.timestamp, fromAddress: nq.fromAddress, toAddress: nq.toAddress,
+        contract: qContract, symbol: qMeta.symbol, amountRaw: nq.amountRaw, tokenDecimals: nq.tokenDecimals ?? qMeta.decimals,
+        amount: nq.amount, usdValue: STABLE_USD_CONTRACTS[qContract] ? nq.amount : null, direction: 'sell', chain: 'eth', txFromAddress: txFrom, txToAddress: txTo,
+        swapDetection: { isSwapCandidate: true, confidence: 'medium', eventKind: 'swap_candidate', reason: 'ETH router reconstruction: normalized same-tx quote leg in wallet-initiated token receipt', matchedProtocol: routerProtocol, matchedAddress: txTo },
+      })
+      existingKey.add(key)
+      quoteLogsFound++
+      if (qMeta.symbol === 'WETH') wethQuoteMatches++
+      else if (qMeta.symbol === 'USDC') usdcQuoteMatches++
+      else if (qMeta.symbol === 'USDT') usdtQuoteMatches++
+      else if (qMeta.symbol === 'DAI') daiQuoteMatches++
+      if (sampleQuoteMatches.length < 5) sampleQuoteMatches.push({ txHash: cand.txHash, quoteSymbol: qMeta.symbol, quoteType: 'normalized_router_leg', amount: nq.amount })
+    }
+
+    const quoteLogs = d?.quoteLogs ?? []
+    for (const q of quoteLogs) {
+      quoteLogsFound++
+      if (q.symbol === 'WETH') wethQuoteMatches++
+      else if (q.symbol === 'USDC') usdcQuoteMatches++
+      else if (q.symbol === 'USDT') usdtQuoteMatches++
+      else if (q.symbol === 'DAI') daiQuoteMatches++
+      if (!isKnownRouter && !isWalletInitiated) continue
+      const quoteDirection: 'buy' | 'sell' = q.to === walletLower ? 'buy' : 'sell'
+      const key = `${cand.txHash}|${q.contract}|${quoteDirection}|${q.amountHex}`
+      if (existingKey.has(key)) continue
+      syntheticEvents.push({
+        txHash: cand.txHash, timestamp: refEvent.timestamp, fromAddress: q.from, toAddress: q.to,
+        contract: q.contract, symbol: q.symbol, amountRaw: q.amountHex, tokenDecimals: ETH_QUOTE_ASSETS[q.contract].decimals,
+        amount: q.amount, usdValue: STABLE_USD_CONTRACTS[q.contract] ? q.amount : null, direction: quoteDirection, chain: 'eth', txFromAddress: txFrom, txToAddress: txTo,
+        swapDetection: { isSwapCandidate: true, confidence: q.walletSide ? 'high' : 'medium', eventKind: 'swap_candidate', reason: q.walletSide ? 'ETH router reconstruction: direct wallet-side quote transfer' : 'ETH router reconstruction: same-tx router quote evidence', matchedProtocol: routerProtocol, matchedAddress: txTo },
+      })
+      existingKey.add(key)
+      if (sampleQuoteMatches.length < 5) sampleQuoteMatches.push({ txHash: cand.txHash, quoteSymbol: q.symbol, quoteType: q.walletSide ? 'wallet_side_log' : 'router_context_log', amount: q.amount })
+    }
+
+    const hasQuote = nativeAmount > 0 || quoteLogs.length > 0 || cand.group.some(e => e.direction === 'unknown' && Boolean(ETH_QUOTE_ASSETS[e.contract.toLowerCase()]))
+    if (!hasQuote && sampleStillUnmatched.length < 5) sampleStillUnmatched.push({ txHash: cand.txHash, reason: d?.decodeStatus === 'no_receipt' ? 'eth_receipt_fetch_failed' : 'eth_router_quote_leg_not_found' })
+  }
+
+  let targetEventsMarked = 0
+  const syntheticTxs = new Set(syntheticEvents.map(e => e.txHash))
+  const enrichedEvidence = evidenceWithDetection.map(e => {
+    if (!syntheticTxs.has(e.txHash)) return e
+    if ((e.chain ?? '').toLowerCase() !== 'eth') return e
+    if (e.direction !== 'buy') return e
+    if (ETH_QUOTE_ASSETS[e.contract.toLowerCase()]) return e
+    targetEventsMarked++
+    const confidence: 'high' | 'medium' = (e.txToAddress && EXTENDED_DEX_ROUTERS.has(e.txToAddress.toLowerCase())) ? 'high' : 'medium'
+    return {
+      ...e,
+      swapDetection: { isSwapCandidate: true, confidence, eventKind: 'swap_candidate', reason: 'ETH router reconstruction: wallet received token in wallet-initiated router transaction with quote evidence', matchedProtocol: e.txToAddress ? (KNOWN_DEX_ROUTERS[e.txToAddress.toLowerCase()] ?? null) : null, matchedAddress: e.txToAddress ?? null } satisfies WalletSwapDetection,
+    }
+  })
+  const mergedEvidence = syntheticEvents.length > 0 ? [...enrichedEvidence, ...syntheticEvents] : enrichedEvidence
+  const syntheticSwapEventsAdded = syntheticEvents.length + targetEventsMarked
+  for (const e of syntheticEvents.slice(0, 5)) sampleSyntheticEvents.push({ txHash: e.txHash, symbol: e.symbol, direction: e.direction, source: e.priceAtTime?.source ?? 'eth_router_quote_log' })
+
+  let stopReason = 'reconstructed'
+  if (syntheticSwapEventsAdded === 0) {
+    stopReason = providerErrors > 0 && receiptsFetched === 0 ? 'eth_receipt_fetch_failed'
+      : quoteLogsFound === 0 ? 'eth_router_quote_leg_not_found'
+      : 'eth_quote_asset_logs_not_wallet_relevant'
+  } else if (candidates.length > toFetch.length) {
+    stopReason = 'eth_budget_cap_reached'
+  }
+
+  const swapCandidatesAfter = mergedEvidence.filter(e => e.swapDetection?.isSwapCandidate).length
+  return {
+    enrichedEvidence: mergedEvidence,
+    debug: {
+      attempted: true,
+      reason: syntheticSwapEventsAdded > 0 ? 'eth_router_reconstruction_added_swap_evidence' : stopReason,
+      candidateTxCount: toFetch.length,
+      walletInitiatedTxs,
+      txGroupsWithInboundToken,
+      knownRouterTxs,
+      receiptsFetched,
+      transactionsFetched,
+      quoteLogsFound,
+      nativeEthValueMatches,
+      wethQuoteMatches,
+      usdcQuoteMatches,
+      usdtQuoteMatches,
+      daiQuoteMatches,
+      syntheticSwapEventsAdded,
+      pricedEventsBefore,
+      pricedEventsAfter: pricedEventsBefore,
+      swapCandidatesBefore,
+      swapCandidatesAfter,
+      closedLotsBefore,
+      closedLotsAfter: closedLotsBefore,
+      sampleCandidateTxs,
+      sampleQuoteMatches,
+      sampleSyntheticEvents,
+      sampleStillUnmatched,
+      stopReason,
+    },
+  }
+}
+
 async function buildBasePnlReconstructionPass(
   evidenceWithDetection: WalletTxEvidence[],
   walletAddress: string,
@@ -5983,6 +6357,69 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   }
   // ── End Base PnL Reconstruction Pass ────────────────────────────────────────────────────
 
+  let _ethSwapReconstructionDebug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['ethSwapReconstructionDebug']> = emptyEthSwapReconstructionDebug(
+    'not_attempted',
+    0,
+    walletSwapSummary.swapCandidateEvents,
+    _closedLotsBeforeRecon,
+    false,
+  )
+  const _ethReconChainOk = requestedChain === 'eth' || chainMode === 'eth' || chainMode === 'base_eth' || chainMode === 'all_supported'
+  const _ethActivityEvents = _swapEvidenceWithDetection.filter(e => (e.chain ?? '').toLowerCase() === 'eth').length
+  const _ethHasWalletInitiatedOrRouterInbound = _swapEvidenceWithDetection.some(e =>
+    (e.chain ?? '').toLowerCase() === 'eth' &&
+    e.direction === 'buy' &&
+    e.toAddress?.toLowerCase() === addrNorm &&
+    (e.txFromAddress?.toLowerCase() === addrNorm || Boolean(e.txToAddress && EXTENDED_DEX_ROUTERS.has(e.txToAddress.toLowerCase())))
+  )
+  const _shouldRunEthRouterRecon = (
+    activityRequested && deepActivity && _ethReconChainOk && _ethActivityEvents > 0 &&
+    walletSwapSummary.swapCandidateEvents === 0 &&
+    _ethHasWalletInitiatedOrRouterInbound
+  )
+  if (_shouldRunEthRouterRecon) {
+    const ethReconResult = await buildEthRouterSwapReconstructionPass(
+      _swapEvidenceWithDetection,
+      addrNorm,
+      ALCHEMY_ETH_KEY ? ethUrl : '',
+      activityRequested,
+      0,
+      walletSwapSummary.swapCandidateEvents,
+      _closedLotsBeforeRecon,
+    )
+    _ethSwapReconstructionDebug = ethReconResult.debug
+    tokenMeter.measure('swapDetection', ethReconResult)
+    for (let _ri = 0; _ri < ethReconResult.debug.receiptsFetched; _ri++) {
+      const _rk = `alchemy:ethrouterrecon:receipt:${_ri}:${addrNorm}`
+      if (!_alchemyDedup.has(_rk)) { _alchemyDedup.add(_rk); _trackCall('alchemy', 'eth_getTransactionReceipt', false, _rk) }
+    }
+    for (let _ti = 0; _ti < (ethReconResult.debug.transactionsFetched ?? 0); _ti++) {
+      const _rk = `alchemy:ethrouterrecon:tx:${_ti}:${addrNorm}`
+      if (!_alchemyDedup.has(_rk)) { _alchemyDedup.add(_rk); _trackCall('alchemy', 'eth_getTransactionByHash', false, _rk) }
+    }
+    if (ethReconResult.debug.syntheticSwapEventsAdded > 0) {
+      evidenceList = ethReconResult.enrichedEvidence
+      ;({ evidenceWithDetection: _swapEvidenceWithDetection, summary: walletSwapSummary, debug: _swapDetectionDebug } = buildSwapDetection(evidenceList, activityRequested, addrNorm))
+      _ethSwapReconstructionDebug = {
+        ..._ethSwapReconstructionDebug,
+        swapCandidatesAfter: walletSwapSummary.swapCandidateEvents,
+      }
+      tokenMeter.measure('swapDetection', _swapEvidenceWithDetection, walletSwapSummary, _swapDetectionDebug)
+    }
+  } else if (!activityRequested) {
+    _ethSwapReconstructionDebug = { ..._ethSwapReconstructionDebug, reason: 'activity_not_requested', stopReason: 'activity_not_requested' }
+  } else if (!deepActivity) {
+    _ethSwapReconstructionDebug = { ..._ethSwapReconstructionDebug, reason: 'basic_scan', stopReason: 'basic_scan' }
+  } else if (!_ethReconChainOk) {
+    _ethSwapReconstructionDebug = { ..._ethSwapReconstructionDebug, reason: 'eth_chain_not_requested', stopReason: 'eth_chain_not_requested' }
+  } else if (_ethActivityEvents === 0) {
+    _ethSwapReconstructionDebug = { ..._ethSwapReconstructionDebug, reason: 'no_eth_activity_events', stopReason: 'no_eth_activity_events' }
+  } else if (walletSwapSummary.swapCandidateEvents > 0) {
+    _ethSwapReconstructionDebug = { ..._ethSwapReconstructionDebug, reason: 'swap_candidates_present', stopReason: 'swap_candidates_present' }
+  } else if (!_ethHasWalletInitiatedOrRouterInbound) {
+    _ethSwapReconstructionDebug = { ..._ethSwapReconstructionDebug, reason: 'eth_wallet_initiated_but_no_token_receive', stopReason: 'eth_wallet_initiated_but_no_token_receive' }
+  }
+
   tokenMeter.startTokenMeter('priceInference')
   tokenMeter.measure('priceInference', _swapEvidenceWithDetection)
   let { evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache, priceByContract)
@@ -6079,6 +6516,12 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   let walletLotSummary = fifoResult.summary
   let _lotEngineDebug = fifoResult.debug
   let _closedLots = fifoResult.closedLots
+  _ethSwapReconstructionDebug = {
+    ..._ethSwapReconstructionDebug,
+    pricedEventsAfter: walletPriceEvidenceSummary.pricedEvents,
+    closedLotsAfter: walletLotSummary.closedLots,
+    swapCandidatesAfter: walletSwapSummary.swapCandidateEvents,
+  }
   // Propagate swap_candidates_unpriced through FIFO and trade-stats missing reasons for better traceability
   if (walletPriceEvidenceSummary.missing.some(r => r.endsWith('_swap_candidates_unpriced')) && walletLotSummary.closedLots === 0) {
     walletLotSummary = { ...walletLotSummary, missing: [...walletLotSummary.missing, 'swap_candidates_unpriced_no_fifo'] }
@@ -6987,6 +7430,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         capLimit: _ACTIVITY_MAX_EVENTS,
       },
       walletSwapEnrichmentDebug: _swapEnrichmentDebug,
+      ethSwapReconstructionDebug: _ethSwapReconstructionDebug,
       basePnlReconstructionDebug: _basePnlReconDebug,
       baseFifoCoverageDebug: _baseFifoCoverageDebug,
       walletActivityRoutingDebug: _walletActivityRoutingDebug,
