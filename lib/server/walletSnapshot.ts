@@ -313,6 +313,7 @@ export type WalletSnapshot = {
     stableLegPricedEvents: number
     wethLegPricedEvents: number
     historicalPricedEvents: number
+    providerEventUsdPricedEvents: number
     priceAttemptLimitReached: boolean
     readyForLotMatching: boolean
     missing: string[]
@@ -668,10 +669,15 @@ export type WalletSnapshot = {
       stableLegPricedEvents: number
       wethLegPricedEvents: number
       historicalPricedEvents: number
+      providerEventUsdAttempts: number
+      providerEventUsdPricedEvents: number
       priceAttemptLimitReached: boolean
       skippedNoTimestamp: number
       skippedNoTokenAddress: number
       skippedNoAmount: number
+      skippedNoStableOrWethLeg: number
+      skippedProviderUsdMissing: number
+      skippedHistoricalUnavailable: number
       cacheHits: number
       cacheMisses: number
       providerAttempts: number
@@ -997,7 +1003,7 @@ export type WalletSnapshotOptions = {
 
 const SNAPSHOT_TTL_MS         = 5  * 60 * 1000
 const SNAPSHOT_HISTORY_TTL_MS = 15 * 60 * 1000
-const SNAPSHOT_SCHEMA_VERSION = 'v9'
+const SNAPSHOT_SCHEMA_VERSION = 'v10'
 type SnapshotCacheEntry = { snapshot: WalletSnapshot; cachedAt: number; ttlMs: number }
 const snapshotMemCache = new Map<string, SnapshotCacheEntry>()
 
@@ -1353,7 +1359,7 @@ export type PriceAtTimeEvidence = {
   tokenSymbol?: string | null
   timestamp: string
   priceUsd: number | null
-  source: 'stable_leg' | 'weth_leg' | 'historical_price' | 'swap_derived' | 'current_price_fallback_not_used' | 'unavailable'
+  source: 'stable_leg' | 'weth_leg' | 'historical_price' | 'swap_derived' | 'provider_event_usd' | 'current_price_fallback_not_used' | 'unavailable'
   confidence: 'high' | 'medium' | 'low' | 'open_check'
   reason: string
 }
@@ -3558,13 +3564,16 @@ async function buildPriceAtTimeEvidence(
       status: 'open_check' as const, swapCandidateEvents: 0, pricedEvents: 0,
       openCheckEvents: 0, unavailableEvents: 0,
       stableLegPricedEvents: 0, wethLegPricedEvents: 0, historicalPricedEvents: 0,
+      providerEventUsdPricedEvents: 0,
       priceAttemptLimitReached: false, readyForLotMatching: false, missing,
     },
     debug: {
       swapCandidateEvents: 0, priceAttempts: 0, pricedEvents: 0, openCheckEvents: 0,
       unavailableEvents: 0, stableLegPricedEvents: 0, wethLegPricedEvents: 0,
-      historicalPricedEvents: 0, priceAttemptLimitReached: false,
+      historicalPricedEvents: 0, providerEventUsdAttempts: 0, providerEventUsdPricedEvents: 0,
+      priceAttemptLimitReached: false,
       skippedNoTimestamp: 0, skippedNoTokenAddress: 0, skippedNoAmount: 0,
+      skippedNoStableOrWethLeg: 0, skippedProviderUsdMissing: 0, skippedHistoricalUnavailable: 0,
       cacheHits: 0, cacheMisses: 0, providerAttempts: 0, providerErrors: 0,
       samplePricedEvents: [], sampleOpenCheckEvents: [], reasons: missing,
     },
@@ -3588,10 +3597,15 @@ async function buildPriceAtTimeEvidence(
   let stableLegPricedEvents = 0
   let wethLegPricedEvents = 0
   let historicalPricedEvents = 0
+  let providerEventUsdAttempts = 0
+  let providerEventUsdPricedEvents = 0
   let priceAttemptLimitReached = false
   let skippedNoTimestamp = 0
   let skippedNoTokenAddress = 0
   let skippedNoAmount = 0
+  let skippedNoStableOrWethLeg = 0
+  let skippedProviderUsdMissing = 0
+  let skippedHistoricalUnavailable = 0
   let cacheHits = 0
   let cacheMisses = 0
   let providerAttempts = 0
@@ -3612,6 +3626,7 @@ async function buildPriceAtTimeEvidence(
     if (source === 'stable_leg') stableLegPricedEvents++
     else if (source === 'weth_leg') wethLegPricedEvents++
     else if (source === 'historical_price') historicalPricedEvents++
+    else if (source === 'provider_event_usd') providerEventUsdPricedEvents++
     if (samplePricedRaw.length < 5) samplePricedRaw.push(ev)
     return ev
   }
@@ -3658,12 +3673,14 @@ async function buildPriceAtTimeEvidence(
     }
 
     // Try WETH leg: find WETH movement in same tx with opposite direction
+    let _resolvedFromWethOrStable = stableLegs.length > 0
     if (!isWeth) {
       const wethLegs = txGroup.filter(ev => {
         const c = ev.contract?.toLowerCase() ?? ''
         return Boolean(WETH_CONTRACTS_PRICE[c]) && ev.direction !== 'unknown' && ev.direction !== e.direction
       })
       if (wethLegs.length > 0) {
+        _resolvedFromWethOrStable = true
         const wl = wethLegs[0]
         // Need WETH's USD price at this timestamp
         if (priceAttempts >= MAX_PRICE_ATTEMPTS) {
@@ -3688,6 +3705,22 @@ async function buildPriceAtTimeEvidence(
         }
       }
     }
+    if (!_resolvedFromWethOrStable) skippedNoStableOrWethLeg++
+
+    // Try provider event USD: derive unit price from provider-reported total USD value.
+    // No API call needed. Uses GoldRush usdValue field populated during event normalization.
+    // Confidence is medium — value is at event time but not independently verified per-token.
+    providerEventUsdAttempts++
+    const _provUsd = e.usdValue
+    if (_provUsd && _provUsd > 0 && isFinite(_provUsd) && tokenAmount > 0) {
+      const _provDerivedPrice = _provUsd / tokenAmount
+      if (_provDerivedPrice > 0 && isFinite(_provDerivedPrice) && _provDerivedPrice < 1_000_000) {
+        evidenceWithPricing.push(priced(e, _provDerivedPrice, 'provider_event_usd', 'medium',
+          `Derived from provider event USD value ($${_provUsd.toFixed(4)} / ${tokenAmount.toFixed(6)} tokens)`))
+        continue
+      }
+    }
+    skippedProviderUsdMissing++
 
     // Try direct historical price via GoldRush
     if (priceAttempts >= MAX_PRICE_ATTEMPTS) {
@@ -3704,9 +3737,17 @@ async function buildPriceAtTimeEvidence(
       evidenceWithPricing.push(priced(e, histResult.priceUsd, 'historical_price', 'medium', `Historical token price from on-chain pricing data`))
       continue
     }
+    skippedHistoricalUnavailable++
 
-    // No price evidence found
-    evidenceWithPricing.push(openCheck(e, 'No reliable price-at-time evidence available'))
+    // No price evidence found — record specific reason for debug
+    const _openCheckReason = !_resolvedFromWethOrStable
+      ? 'no_stable_or_weth_leg'
+      : !_provUsd || _provUsd <= 0
+        ? 'provider_event_usd_missing'
+        : histResult.error
+          ? 'historical_price_unavailable'
+          : 'no_reliable_price_evidence'
+    evidenceWithPricing.push(openCheck(e, _openCheckReason))
   }
 
   // Swap-derived pricing pass: 0 extra API credits.
@@ -3765,13 +3806,16 @@ async function buildPriceAtTimeEvidence(
     evidenceWithPricing,
     summary: {
       status: summaryStatus, swapCandidateEvents, pricedEvents, openCheckEvents, unavailableEvents,
-      stableLegPricedEvents, wethLegPricedEvents, historicalPricedEvents,
+      stableLegPricedEvents, wethLegPricedEvents, historicalPricedEvents, providerEventUsdPricedEvents,
       priceAttemptLimitReached, readyForLotMatching, missing,
     },
     debug: {
       swapCandidateEvents, priceAttempts, pricedEvents, openCheckEvents, unavailableEvents,
-      stableLegPricedEvents, wethLegPricedEvents, historicalPricedEvents, priceAttemptLimitReached,
+      stableLegPricedEvents, wethLegPricedEvents, historicalPricedEvents,
+      providerEventUsdAttempts, providerEventUsdPricedEvents,
+      priceAttemptLimitReached,
       skippedNoTimestamp, skippedNoTokenAddress, skippedNoAmount,
+      skippedNoStableOrWethLeg, skippedProviderUsdMissing, skippedHistoricalUnavailable,
       cacheHits, cacheMisses, providerAttempts, providerErrors,
       samplePricedEvents: samplePricedRaw.slice(0, 5).map(ev => ({
         txHash: abbr(ev.txHash), contract: abbr(ev.contract), symbol: ev.symbol,
