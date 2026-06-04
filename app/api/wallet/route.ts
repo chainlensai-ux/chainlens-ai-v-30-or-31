@@ -29,7 +29,7 @@ export async function OPTIONS(req: Request) {
 const WALLET_BASIC_CACHE_TTL_MS  = 5  * 60 * 1000  // 5 min for basic scans
 const WALLET_DEEP_CACHE_TTL_MS   = 15 * 60 * 1000  // 15 min for deep scans
 const WALLET_DEEP_COOLDOWN_MS    = 10 * 60 * 1000  // 10 min cooldown per wallet after deep live scan
-const WALLET_SNAPSHOT_SCHEMA_VERSION = 'v13'
+const WALLET_SNAPSHOT_SCHEMA_VERSION = 'v14'
 const walletCache = new Map<string, { exp: number; payload: unknown; cachedAt: number }>()
 const walletRate = new Map<string, { count: number; resetAt: number }>()
 const WALLET_RATE_BY_PLAN: Record<string, number> = { free: 20, pro: 60, elite: 180 }
@@ -77,6 +77,7 @@ function pruneWalletScannerDebug(payload: any, debug: boolean) {
     }
   }
   delete payload._diagnostics
+  delete payload._cachedDiagnosticsSlim  // slim debug is surfaced in _debug if debug=true; always remove from payload
   stripUndefinedInPlace(payload)
 }
 
@@ -449,28 +450,35 @@ export async function POST(req: Request) {
           }
           const _dce = walletDeepCooldown.get(deepCooldownKey) ?? 0
           const _dces = _dce > Date.now() ? Math.floor((_dce - Date.now()) / 1000) : null
-          if (cp && typeof cp === 'object' && debug) cp._debug = {
-            routeName: '/api/wallet', cacheHit: true, cacheMode,
-            requestDurationMs: Date.now() - startedAt,
-            walletSnapshotCache: { memoryHit: false, persistentHit: true, providerFetchNeeded: false, refreshBypassedCache: false, cacheAgeSeconds, cacheTtlSeconds: WALLET_DEEP_CACHE_TTL_MS / 1000 },
-            providerFlow: null,
-            walletScanCostDebug: {
-              scanId: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-              address: key, scanMode: scanModeKey, dataFreshness: 'cached' as const,
-              cacheKey, cacheReadAttempted: _cacheReadAttempted,
-              cacheWriteAttempted: false, cacheWriteSucceeded: false,
-              cooldownKey: deepCooldownKey, cooldownHit: deepCooldownActive,
-              cooldownExpiresInSeconds: _dces,
-              cacheBackend: 'persistent' as const,
-              persistentCacheReadAttempted: true, persistentCacheHit: true,
-              persistentCacheWriteAttempted: false, persistentCacheWriteSucceeded: false,
-              persistentCooldownReadAttempted: false, persistentCooldownHit: false,
-              cacheMissReason: null,
-              servedFromCacheReason: 'persistent_cache_hit', blockedLiveFetchReason: 'persistent_cache_hit',
-              cacheHit: true, inFlightDeduped: false, providerCalls: [],
-              totals: { liveProviderCalls: 0, cachedProviderCalls: 1, pagesFetched: 0, rawItems: 0, rawLogEvents: 0, normalizedEvents: 0, estimatedCreditUnits: 0, durationMs: Date.now() - startedAt },
-              reason: 'persistent_cache_hit',
-            },
+          if (cp && typeof cp === 'object' && debug) {
+            const _slim: any = cp._cachedDiagnosticsSlim ?? {}
+            cp._debug = {
+              routeName: '/api/wallet', cacheHit: true, cacheMode,
+              requestDurationMs: Date.now() - startedAt,
+              walletSnapshotCache: { memoryHit: false, persistentHit: true, providerFetchNeeded: false, refreshBypassedCache: false, cacheAgeSeconds, cacheTtlSeconds: WALLET_DEEP_CACHE_TTL_MS / 1000 },
+              providerFlow: null,
+              walletScanCostDebug: {
+                scanId: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+                address: key, scanMode: scanModeKey, dataFreshness: 'cached' as const,
+                cacheKey, cacheReadAttempted: _cacheReadAttempted,
+                cacheWriteAttempted: false, cacheWriteSucceeded: false,
+                cooldownKey: deepCooldownKey, cooldownHit: deepCooldownActive,
+                cooldownExpiresInSeconds: _dces,
+                cacheBackend: 'persistent' as const,
+                persistentCacheReadAttempted: true, persistentCacheHit: true,
+                persistentCacheWriteAttempted: false, persistentCacheWriteSucceeded: false,
+                persistentCooldownReadAttempted: false, persistentCooldownHit: false,
+                cacheMissReason: null,
+                servedFromCacheReason: 'persistent_cache_hit', blockedLiveFetchReason: 'persistent_cache_hit',
+                cacheHit: true, inFlightDeduped: false, providerCalls: [],
+                totals: { liveProviderCalls: 0, cachedProviderCalls: 1, pagesFetched: 0, rawItems: 0, rawLogEvents: 0, normalizedEvents: 0, estimatedCreditUnits: 0, durationMs: Date.now() - startedAt },
+                reason: 'persistent_cache_hit',
+              },
+              walletPriceAtTimeDebug: _slim.walletPriceAtTimeDebug ?? null,
+              basePnlReconstructionDebug: _slim.basePnlReconstructionDebug ?? null,
+              baseFifoMatchDebug: _slim.baseFifoMatchDebug ?? null,
+              walletCacheQualityDebug: _slim.walletCacheQualityDebug ?? null,
+            }
           }
           pruneWalletScannerDebug(cp, debug)
           return json(cp)
@@ -595,7 +603,35 @@ export async function POST(req: Request) {
     if (_cacheWriteAttempted && deepActivity && !effectiveHistoricalCoverage && !inFlightDeduped && _persistentAvailable && !_cacheWriteBlocked) {
       _persistentCacheWriteAttempted = true
       const _ppayload: any = { ...snapshot }
+      // Extract slim diagnostics before pruning so cached responses can surface them with debug=true
+      const _lotDbgForSlim = snapshot._diagnostics?.walletLotEngineDebug ?? null
+      const _priceDbgForSlim = snapshot._diagnostics?.walletPriceAtTimeDebug ?? null
+      const _slimDiag: Record<string, unknown> = {
+        walletPriceAtTimeDebug: _priceDbgForSlim,
+        basePnlReconstructionDebug: snapshot._diagnostics?.basePnlReconstructionDebug ?? null,
+        walletCacheQualityDebug: {
+          cacheQuality: _cacheQuality, writeAllowed: !_cacheWriteBlocked,
+          blockedWriteReason: _blockedWriteReason, holdingsCount: _snapHoldingsCount,
+          totalValue: _snapTotalValue, activityEvents: _snapActivityEvents,
+          providerStatus: _snapProviderStatus,
+        },
+        baseFifoMatchDebug: (_lotDbgForSlim || _priceDbgForSlim) ? {
+          baseCandidateEvents: snapshot.walletSwapSummary?.swapCandidateEvents ?? 0,
+          pricedEvents: snapshot.walletPriceEvidenceSummary?.pricedEvents ?? 0,
+          fifoBuyEvents: _lotDbgForSlim?.buyEvents ?? 0,
+          fifoSellEvents: _lotDbgForSlim?.sellEvents ?? 0,
+          closedLots: _lotDbgForSlim?.closedLots ?? 0,
+          openedLots: _lotDbgForSlim?.openedLots ?? 0,
+          unmatchedBuys: _lotDbgForSlim?.unmatchedBuys ?? 0,
+          unmatchedSells: _lotDbgForSlim?.unmatchedSells ?? 0,
+          skippedUnpriced: _lotDbgForSlim?.skippedUnpricedEvents ?? 0,
+          sampleUnpricedReasons: _priceDbgForSlim?.sampleUnpricedReasons ?? [],
+          priceAtTimeReasons: _priceDbgForSlim?.reasons ?? [],
+          fifoReasons: _lotDbgForSlim?.reasons ?? [],
+        } : null,
+      }
       pruneWalletScannerDebug(_ppayload, false)
+      _ppayload._cachedDiagnosticsSlim = _slimDiag
       const [cacheResult] = await Promise.allSettled([
         writePersistentWalletCache(cacheKey, key, scanModeKey, chainKey, _ppayload, WALLET_DEEP_CACHE_TTL_MS),
         writePersistentCooldown(deepCooldownKey, key, chainKey, WALLET_DEEP_COOLDOWN_MS),
