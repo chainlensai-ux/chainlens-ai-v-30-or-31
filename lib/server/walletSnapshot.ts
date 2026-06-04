@@ -929,6 +929,10 @@ export type WalletSnapshot = {
       skippedBudgetCap: number
       providerErrors: number
       sampleMatches: Array<{ txHash: string; direction: string; symbol: string; paymentType: string }>
+      transactionsFetched?: number
+      inboundTokenMatches?: number
+      outboundTokenMatches?: number
+      sampleUnpricedAfterReceipt?: Array<{ txHash: string; symbol: string; finalReason: string }>
     }
     walletFactsDebug?: {
       built: boolean
@@ -1039,7 +1043,7 @@ export type WalletSnapshotOptions = {
 
 const SNAPSHOT_TTL_MS         = 5  * 60 * 1000
 const SNAPSHOT_HISTORY_TTL_MS = 15 * 60 * 1000
-const SNAPSHOT_SCHEMA_VERSION = 'v14'
+const SNAPSHOT_SCHEMA_VERSION = 'v15'
 type SnapshotCacheEntry = { snapshot: WalletSnapshot; cachedAt: number; ttlMs: number }
 const snapshotMemCache = new Map<string, SnapshotCacheEntry>()
 
@@ -1089,6 +1093,7 @@ type BasePnlReceiptDecode = {
 }
 
 const basePnlReceiptCache = new Map<string, { data: BasePnlReceiptDecode; exp: number }>()
+const basePnlTxCache = new Map<string, { value: string; exp: number }>()
 
 const ERC20_TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef'
 
@@ -1102,6 +1107,45 @@ const STABLE_USD_CONTRACTS: Record<string, true> = {
 const WETH_CONTRACTS_PRICE: Record<string, true> = {
   '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2': true,
   '0x4200000000000000000000000000000000000006': true,
+}
+
+const STABLE_DECIMALS: Record<string, number> = {
+  '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48': 6,   // USDC ETH
+  '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913': 6,   // USDC Base
+  '0xdac17f958d2ee523a2206206994597c13d831ec7': 6,   // USDT ETH
+  '0x6b175474e89094c44da98b954eedeac495271d0f': 18,  // DAI
+}
+
+const STABLE_SYMBOL: Record<string, string> = {
+  '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48': 'USDC',
+  '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913': 'USDC',
+  '0xdac17f958d2ee523a2206206994597c13d831ec7': 'USDT',
+  '0x6b175474e89094c44da98b954eedeac495271d0f': 'DAI',
+}
+
+function hexAmountToDecimal(amountHex: string, decimals: number): number {
+  try {
+    const hex = (amountHex ?? '').replace(/^0x/i, '').replace(/^0+/, '') || '0'
+    if (hex === '0') return 0
+    // Convert hex to decimal digit array via string arithmetic (no BigInt needed)
+    const digits: number[] = [0]
+    for (let i = 0; i < hex.length; i++) {
+      const h = parseInt(hex[i], 16)
+      if (isNaN(h)) return 0
+      let carry = h
+      for (let j = digits.length - 1; j >= 0; j--) {
+        const v = digits[j] * 16 + carry
+        digits[j] = v % 10
+        carry = Math.floor(v / 10)
+      }
+      while (carry > 0) { digits.unshift(carry % 10); carry = Math.floor(carry / 10) }
+    }
+    const decLen = digits.length
+    if (decimals >= decLen) {
+      return parseFloat('0.' + Array(decimals - decLen).fill(0).concat(digits).join('')) || 0
+    }
+    return parseFloat(digits.slice(0, decLen - decimals).join('') + '.' + digits.slice(decLen - decimals).join('')) || 0
+  } catch { return 0 }
 }
 
 const PRICE_AT_TIME_TTL_MS = 60 * 60 * 1000
@@ -4726,6 +4770,307 @@ async function buildBasePnlReconstructionPass(
   }
 }
 
+// ── Unpriced Candidate Receipt Pass ──────────────────────────────────────────────────────
+// Runs AFTER buildPriceAtTimeEvidence when swap candidates exist but all are unpriced.
+// Fetches receipts for those specific tx hashes to find WETH/USDC quote legs that were
+// not present in the normalized activity feed (e.g. router internal legs, native ETH).
+// Creates synthetic WalletTxEvidence legs so re-running buildPriceAtTimeEvidence can price them.
+async function buildUnpricedCandidateReceiptPass(
+  evidenceWithDetection: WalletTxEvidence[],
+  unpricedTxHashes: string[],
+  walletAddress: string,
+  alchemyBaseUrl: string,
+  closedLotsBefore: number,
+  realizedPnlBefore: number | null,
+): Promise<{
+  enrichedEvidence: WalletTxEvidence[]
+  debug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['basePnlReconstructionDebug']>
+}> {
+  const walletLower = walletAddress.toLowerCase()
+  const emptyDebug = (reason: string): NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['basePnlReconstructionDebug']> => ({
+    attempted: true, reason,
+    candidateTxCount: 0, receiptsFetched: 0, receiptCacheHits: 0, transactionsFetched: 0,
+    decodedTransferLogs: 0, walletInboundLegs: 0, walletOutboundLegs: 0,
+    inboundTokenMatches: 0, outboundTokenMatches: 0,
+    nativeEthPaymentMatches: 0, stablecoinMatches: 0, wethMatches: 0, routerMatches: 0,
+    enrichedSwapEvents: 0, pricedEnrichedEvents: 0,
+    closedLotsBefore, closedLotsAfter: closedLotsBefore,
+    realizedPnlBefore, realizedPnlAfter: realizedPnlBefore,
+    skippedNoPaymentLeg: 0, skippedNoInboundToken: 0, skippedNoPriceEvidence: 0, skippedBudgetCap: 0,
+    providerErrors: 0, sampleMatches: [], sampleUnpricedAfterReceipt: [],
+  })
+
+  if (!alchemyBaseUrl) return { enrichedEvidence: evidenceWithDetection, debug: emptyDebug('no_alchemy_base_url') }
+  if (unpricedTxHashes.length === 0) return { enrichedEvidence: evidenceWithDetection, debug: emptyDebug('no_unpriced_tx_hashes') }
+
+  const toFetch = unpricedTxHashes.slice(0, 8)
+  const now = Date.now()
+  let receiptsFetched = 0
+  let receiptCacheHits = 0
+  let transactionsFetched = 0
+  let providerErrors = 0
+  let totalTransferLogs = 0
+  let walletInboundLegs = 0
+  let walletOutboundLegs = 0
+  let nativeEthPaymentMatches = 0
+  let stablecoinMatches = 0
+  let wethMatches = 0
+  let inboundTokenMatches = 0
+  let outboundTokenMatches = 0
+
+  const txDecodes = new Map<string, BasePnlReceiptDecode>()
+  const txNativeValues = new Map<string, string>()  // txHash → raw hex tx.value
+
+  // Fetch receipts — reuse the same module-level cache as buildBasePnlReconstructionPass
+  for (const txHash of toFetch) {
+    const cacheKey = `base_recon:${txHash}`
+    const cached = basePnlReceiptCache.get(cacheKey)
+    if (cached && cached.exp > now) {
+      receiptCacheHits++
+      txDecodes.set(txHash, cached.data)
+      continue
+    }
+    try {
+      const receipt = await alchemyRpc(alchemyBaseUrl, 'eth_getTransactionReceipt', [txHash])
+      receiptsFetched++
+      if (!receipt) {
+        const d: BasePnlReceiptDecode = { txFrom: null, txTo: null, walletInbound: [], walletOutbound: [], isKnownRouter: false, routerProtocol: null, hasStableLeg: false, hasWethLeg: false, totalTransferLogs: 0, decodeStatus: 'no_receipt', reason: 'receipt_null' }
+        basePnlReceiptCache.set(cacheKey, { data: d, exp: now + BASE_PNL_RECON_TTL_MS })
+        txDecodes.set(txHash, d)
+        continue
+      }
+      const txFrom = typeof receipt.from === 'string' ? (receipt.from as string).toLowerCase() : null
+      const txTo = typeof receipt.to === 'string' ? (receipt.to as string).toLowerCase() : null
+      const isKnownRouter = Boolean(txTo && EXTENDED_DEX_ROUTERS.has(txTo))
+      const routerProtocol = txTo ? (KNOWN_DEX_ROUTERS[txTo] ?? (isKnownRouter ? 'known_dex_router' : null)) : null
+      const logs: Array<{ topics?: string[]; address?: string }> = Array.isArray(receipt.logs) ? receipt.logs : []
+      const inbound: BasePnlReceiptDecode['walletInbound'] = []
+      const outbound: BasePnlReceiptDecode['walletOutbound'] = []
+      let hasStable = false
+      let hasWeth = false
+      let logCount = 0
+      for (const log of logs) {
+        if (!log.topics || log.topics[0]?.toLowerCase() !== ERC20_TRANSFER_TOPIC) continue
+        if (log.topics.length < 3) continue
+        logCount++
+        const fromAddr = '0x' + (log.topics[1]?.toLowerCase() ?? '').slice(-40)
+        const toAddr = '0x' + (log.topics[2]?.toLowerCase() ?? '').slice(-40)
+        const contractAddr = (log.address ?? '').toLowerCase()
+        const amountHex = typeof (log as Record<string, unknown>).data === 'string' ? (log as Record<string, unknown>).data as string : '0x0'
+        if (toAddr === walletLower) {
+          inbound.push({ contract: contractAddr, amountHex })
+          if (STABLE_USD_CONTRACTS[contractAddr]) hasStable = true
+          if (WETH_CONTRACTS_PRICE[contractAddr]) hasWeth = true
+        }
+        if (fromAddr === walletLower) {
+          outbound.push({ contract: contractAddr, amountHex })
+          if (STABLE_USD_CONTRACTS[contractAddr]) hasStable = true
+          if (WETH_CONTRACTS_PRICE[contractAddr]) hasWeth = true
+        }
+      }
+      const d: BasePnlReceiptDecode = {
+        txFrom, txTo, walletInbound: inbound, walletOutbound: outbound,
+        isKnownRouter, routerProtocol, hasStableLeg: hasStable, hasWethLeg: hasWeth,
+        totalTransferLogs: logCount, decodeStatus: 'ok', reason: 'decoded',
+      }
+      basePnlReceiptCache.set(cacheKey, { data: d, exp: now + BASE_PNL_RECON_TTL_MS })
+      txDecodes.set(txHash, d)
+      totalTransferLogs += logCount
+      walletInboundLegs += inbound.length
+      walletOutboundLegs += outbound.length
+    } catch {
+      providerErrors++
+    }
+  }
+
+  // For txs where wallet initiated and has no ERC20 quote leg outbound, fetch tx.value for native ETH
+  for (const txHash of toFetch) {
+    const d = txDecodes.get(txHash)
+    if (!d || d.decodeStatus !== 'ok') continue
+    if (d.walletOutbound.some(o => WETH_CONTRACTS_PRICE[o.contract] || STABLE_USD_CONTRACTS[o.contract])) continue
+    if (d.txFrom !== walletLower) continue
+    const txCacheKey = `base_recon_tx:${txHash}`
+    const txCached = basePnlTxCache.get(txCacheKey)
+    if (txCached && txCached.exp > now) {
+      if (txCached.value && txCached.value !== '0x0' && txCached.value !== '0x') {
+        txNativeValues.set(txHash, txCached.value)
+      }
+      continue
+    }
+    try {
+      const txData = await alchemyRpc(alchemyBaseUrl, 'eth_getTransactionByHash', [txHash])
+      transactionsFetched++
+      const val: string = (txData && typeof txData.value === 'string') ? txData.value : '0x0'
+      basePnlTxCache.set(txCacheKey, { value: val, exp: now + BASE_PNL_RECON_TTL_MS })
+      if (val && val !== '0x0' && val !== '0x' && hexAmountToDecimal(val, 0) > 0) {
+        txNativeValues.set(txHash, val)
+      }
+    } catch {
+      providerErrors++
+    }
+  }
+
+  // Build synthetic evidence legs and per-tx receipt failure reasons
+  const syntheticLegs: WalletTxEvidence[] = []
+  const sampleMatches: Array<{ txHash: string; direction: string; symbol: string; paymentType: string }> = []
+  const sampleUnpricedAfterReceipt: Array<{ txHash: string; symbol: string; finalReason: string }> = []
+
+  for (const txHash of toFetch) {
+    const d = txDecodes.get(txHash)
+    const refEvent = evidenceWithDetection.find(e => e.txHash === txHash && e.swapDetection?.isSwapCandidate)
+    const candidatesInTx = evidenceWithDetection.filter(e => e.txHash === txHash && e.swapDetection?.isSwapCandidate)
+    if (!d || d.decodeStatus !== 'ok') {
+      for (const cand of candidatesInTx) {
+        sampleUnpricedAfterReceipt.push({ txHash: txHash.slice(0, 10) + '…', symbol: cand.symbol, finalReason: 'receipt_checked_no_quote_leg' })
+      }
+      continue
+    }
+    if (!refEvent) continue
+
+    let addedAnyLeg = false
+
+    // WETH inbound to wallet (e.g. wallet sold token and received WETH)
+    for (const leg of d.walletInbound) {
+      if (!WETH_CONTRACTS_PRICE[leg.contract]) continue
+      const alreadyPresent = evidenceWithDetection.some(e => e.txHash === txHash && WETH_CONTRACTS_PRICE[e.contract.toLowerCase()] && e.direction === 'buy')
+      if (alreadyPresent) continue
+      const amt = hexAmountToDecimal(leg.amountHex, 18)
+      if (!amt || amt <= 0) continue
+      syntheticLegs.push({
+        txHash, timestamp: refEvent.timestamp, fromAddress: d.txTo, toAddress: walletLower,
+        contract: leg.contract, symbol: 'WETH', amountRaw: null, tokenDecimals: null,
+        amount: amt, usdValue: null, direction: 'buy', chain: refEvent.chain ?? 'base',
+      })
+      wethMatches++; inboundTokenMatches++; addedAnyLeg = true
+      if (sampleMatches.length < 5) sampleMatches.push({ txHash: txHash.slice(0, 10) + '…', direction: 'buy', symbol: 'WETH', paymentType: 'weth_inbound' })
+    }
+
+    // Stable inbound to wallet (e.g. wallet sold token and received USDC)
+    for (const leg of d.walletInbound) {
+      if (!STABLE_USD_CONTRACTS[leg.contract]) continue
+      const alreadyPresent = evidenceWithDetection.some(e => e.txHash === txHash && STABLE_USD_CONTRACTS[e.contract.toLowerCase()] && e.direction === 'buy')
+      if (alreadyPresent) continue
+      const decimals = STABLE_DECIMALS[leg.contract] ?? 6
+      const amt = hexAmountToDecimal(leg.amountHex, decimals)
+      if (!amt || amt <= 0) continue
+      const sym = STABLE_SYMBOL[leg.contract] ?? 'USDC'
+      syntheticLegs.push({
+        txHash, timestamp: refEvent.timestamp, fromAddress: d.txTo, toAddress: walletLower,
+        contract: leg.contract, symbol: sym, amountRaw: null, tokenDecimals: null,
+        amount: amt, usdValue: amt, direction: 'buy', chain: refEvent.chain ?? 'base',
+      })
+      stablecoinMatches++; inboundTokenMatches++; addedAnyLeg = true
+      if (sampleMatches.length < 5) sampleMatches.push({ txHash: txHash.slice(0, 10) + '…', direction: 'buy', symbol: sym, paymentType: 'stable_inbound' })
+    }
+
+    // WETH outbound from wallet (e.g. wallet bought token by paying WETH)
+    for (const leg of d.walletOutbound) {
+      if (!WETH_CONTRACTS_PRICE[leg.contract]) continue
+      const alreadyPresent = evidenceWithDetection.some(e => e.txHash === txHash && WETH_CONTRACTS_PRICE[e.contract.toLowerCase()] && e.direction === 'sell')
+      if (alreadyPresent) continue
+      const amt = hexAmountToDecimal(leg.amountHex, 18)
+      if (!amt || amt <= 0) continue
+      syntheticLegs.push({
+        txHash, timestamp: refEvent.timestamp, fromAddress: walletLower, toAddress: d.txTo,
+        contract: leg.contract, symbol: 'WETH', amountRaw: null, tokenDecimals: null,
+        amount: amt, usdValue: null, direction: 'sell', chain: refEvent.chain ?? 'base',
+      })
+      wethMatches++; outboundTokenMatches++; addedAnyLeg = true
+      if (sampleMatches.length < 5) sampleMatches.push({ txHash: txHash.slice(0, 10) + '…', direction: 'sell', symbol: 'WETH', paymentType: 'weth_outbound' })
+    }
+
+    // Stable outbound from wallet (e.g. wallet bought token by paying USDC)
+    for (const leg of d.walletOutbound) {
+      if (!STABLE_USD_CONTRACTS[leg.contract]) continue
+      const alreadyPresent = evidenceWithDetection.some(e => e.txHash === txHash && STABLE_USD_CONTRACTS[e.contract.toLowerCase()] && e.direction === 'sell')
+      if (alreadyPresent) continue
+      const decimals = STABLE_DECIMALS[leg.contract] ?? 6
+      const amt = hexAmountToDecimal(leg.amountHex, decimals)
+      if (!amt || amt <= 0) continue
+      const sym = STABLE_SYMBOL[leg.contract] ?? 'USDC'
+      syntheticLegs.push({
+        txHash, timestamp: refEvent.timestamp, fromAddress: walletLower, toAddress: d.txTo,
+        contract: leg.contract, symbol: sym, amountRaw: null, tokenDecimals: null,
+        amount: amt, usdValue: amt, direction: 'sell', chain: refEvent.chain ?? 'base',
+      })
+      stablecoinMatches++; outboundTokenMatches++; addedAnyLeg = true
+      if (sampleMatches.length < 5) sampleMatches.push({ txHash: txHash.slice(0, 10) + '…', direction: 'sell', symbol: sym, paymentType: 'stable_outbound' })
+    }
+
+    // Native ETH payment (wallet paid native ETH when initiating a buy tx)
+    const nativeValHex = txNativeValues.get(txHash)
+    if (nativeValHex) {
+      const BASE_WETH = '0x4200000000000000000000000000000000000006'
+      const alreadyEthPresent = evidenceWithDetection.some(e => e.txHash === txHash && WETH_CONTRACTS_PRICE[e.contract.toLowerCase()] && e.direction === 'sell')
+      const alreadySynthetic = syntheticLegs.some(e => e.txHash === txHash && WETH_CONTRACTS_PRICE[e.contract.toLowerCase()] && e.direction === 'sell')
+      if (!alreadyEthPresent && !alreadySynthetic) {
+        const ethAmt = hexAmountToDecimal(nativeValHex, 18)
+        if (ethAmt > 0) {
+          syntheticLegs.push({
+            txHash, timestamp: refEvent.timestamp, fromAddress: walletLower, toAddress: d.txTo,
+            contract: BASE_WETH, symbol: 'WETH', amountRaw: null, tokenDecimals: null,
+            amount: ethAmt, usdValue: null, direction: 'sell', chain: refEvent.chain ?? 'base',
+          })
+          nativeEthPaymentMatches++; outboundTokenMatches++; addedAnyLeg = true
+          if (sampleMatches.length < 5) sampleMatches.push({ txHash: txHash.slice(0, 10) + '…', direction: 'sell', symbol: 'ETH', paymentType: 'native_eth_payment' })
+        }
+      }
+    }
+
+    // If nothing added for this tx, record receipt-level failure reason
+    if (!addedAnyLeg) {
+      let receiptFailReason: string
+      if (d.walletInbound.length === 0 && d.walletOutbound.length === 0) {
+        receiptFailReason = 'receipt_checked_no_wallet_quote_transfer'
+      } else if (!d.hasStableLeg && !d.hasWethLeg && !txNativeValues.get(txHash)) {
+        receiptFailReason = 'receipt_checked_no_counter_asset'
+      } else {
+        receiptFailReason = 'receipt_checked_no_native_value'
+      }
+      for (const cand of candidatesInTx) {
+        sampleUnpricedAfterReceipt.push({ txHash: txHash.slice(0, 10) + '…', symbol: cand.symbol, finalReason: receiptFailReason })
+      }
+    }
+  }
+
+  const enrichedSwapEvents = syntheticLegs.length
+  const enrichedEvidence = enrichedSwapEvents > 0 ? [...evidenceWithDetection, ...syntheticLegs] : evidenceWithDetection
+
+  return {
+    enrichedEvidence,
+    debug: {
+      attempted: true,
+      reason: 'unpriced_candidates_receipt_reconstruction',
+      candidateTxCount: toFetch.length,
+      receiptsFetched,
+      receiptCacheHits,
+      transactionsFetched,
+      decodedTransferLogs: totalTransferLogs,
+      walletInboundLegs,
+      walletOutboundLegs,
+      inboundTokenMatches,
+      outboundTokenMatches,
+      nativeEthPaymentMatches,
+      stablecoinMatches,
+      wethMatches,
+      routerMatches: 0,
+      enrichedSwapEvents,
+      pricedEnrichedEvents: 0,
+      closedLotsBefore,
+      closedLotsAfter: closedLotsBefore,
+      realizedPnlBefore,
+      realizedPnlAfter: realizedPnlBefore,
+      skippedNoPaymentLeg: 0,
+      skippedNoInboundToken: 0,
+      skippedNoPriceEvidence: 0,
+      skippedBudgetCap: Math.max(0, unpricedTxHashes.length - toFetch.length),
+      providerErrors,
+      sampleMatches,
+      sampleUnpricedAfterReceipt,
+    },
+  }
+}
+
 export async function fetchWalletSnapshot(address: string, options: WalletSnapshotOptions = {}): Promise<WalletSnapshot> {
   const { refresh = false, chain: requestedChain = 'base', deepScan = false, deepActivity = false, chainMode = 'auto', historicalCoverage = false, maxHistoricalPages: rawMaxHistoricalPages, maxFallbackPages: rawMaxFallbackPages, debug = false, maxDebugTokens = DEFAULT_MAX_DEBUG_TOKENS } = options
   const clampedMaxHistoricalPages = Math.max(1, Math.min(5, rawMaxHistoricalPages ?? 3))
@@ -5373,6 +5718,83 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   }
   tokenMeter.measure('priceInference', _pricedEvidence, walletPriceEvidenceSummary, _priceAtTimeDebug)
   tokenMeter.endTokenMeter('priceInference')
+
+  // ── Unpriced Candidate Receipt Pass ─────────────────────────────────────────────────────
+  // When swap candidates exist but none were priced (no stable/WETH leg in activity feed,
+  // historical price failed), fetch receipts for those exact tx hashes to find hidden quote
+  // legs (WETH/USDC/native ETH not captured in normalized events). If found, re-run price evidence.
+  {
+    const _unpricedReasonSet = new Set(['no_stable_or_weth_leg', 'sell_candidate_missing_exit_price', 'historical_price_unavailable', 'provider_event_usd_missing'])
+    const _hasUnpricedCandReasons = (_priceAtTimeDebug?.sampleUnpricedReasons ?? []).some(r => _unpricedReasonSet.has(r.finalReason))
+    const _shouldRunUnpricedReceiptPass = (
+      activityRequested &&
+      _baseReconChainOk &&
+      Boolean(ALCHEMY_BASE_KEY) &&
+      walletPriceEvidenceSummary.pricedEvents === 0 &&
+      walletPriceEvidenceSummary.swapCandidateEvents > 0 &&
+      _hasUnpricedCandReasons
+    )
+    if (_shouldRunUnpricedReceiptPass) {
+      // Collect unpriced candidate tx hashes (prioritised: only swap candidates, deduplicated)
+      const _unpricedTxSet = new Set<string>()
+      const _unpricedCandTxHashes: string[] = []
+      for (const e of _swapEvidenceWithDetection) {
+        if (!e.swapDetection?.isSwapCandidate || !e.txHash) continue
+        if (_unpricedTxSet.has(e.txHash)) continue
+        _unpricedTxSet.add(e.txHash)
+        _unpricedCandTxHashes.push(e.txHash)
+        if (_unpricedCandTxHashes.length >= 10) break
+      }
+      const _unpricedReceiptResult = await buildUnpricedCandidateReceiptPass(
+        _swapEvidenceWithDetection,
+        _unpricedCandTxHashes,
+        addrNorm,
+        baseUrl,
+        _closedLotsBeforeRecon,
+        _realizedPnlBeforeRecon,
+      )
+      _basePnlReconDebug = _unpricedReceiptResult.debug
+      // Track API calls
+      for (let _ri = 0; _ri < _unpricedReceiptResult.debug.receiptsFetched; _ri++) {
+        const _rk = `alchemy:unpricedrecon:receipt:${_ri}:${addrNorm}`
+        if (!_alchemyDedup.has(_rk)) { _alchemyDedup.add(_rk); _trackCall('alchemy', 'eth_getTransactionReceipt', false, _rk) }
+      }
+      for (let _ri = 0; _ri < (_unpricedReceiptResult.debug.transactionsFetched ?? 0); _ri++) {
+        const _rk = `alchemy:unpricedrecon:tx:${_ri}:${addrNorm}`
+        if (!_alchemyDedup.has(_rk)) { _alchemyDedup.add(_rk); _trackCall('alchemy', 'eth_getTransactionByHash', false, _rk) }
+      }
+      tokenMeter.measure('priceInference', _unpricedReceiptResult)
+      if (_unpricedReceiptResult.debug.enrichedSwapEvents > 0) {
+        // Synthetic WETH/stable legs were injected — re-run price evidence to price the candidates
+        _swapEvidenceWithDetection = _unpricedReceiptResult.enrichedEvidence
+        tokenMeter.startTokenMeter('priceInference')
+        tokenMeter.measure('priceInference', _swapEvidenceWithDetection)
+        const _rePriceResult = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache, priceByContract)
+        for (let _pp = 0; _pp < (_rePriceResult.debug?.providerAttempts ?? 0); _pp++) {
+          _trackCall('goldrush', 'historical_by_addresses_v2', false, `gr:price:unpriced_recon:${_pp}:${addrNorm}`)
+        }
+        _pricedEvidence = _rePriceResult.evidenceWithPricing
+        walletPriceEvidenceSummary = _rePriceResult.summary
+        _priceAtTimeDebug = _rePriceResult.debug
+        tokenMeter.measure('priceInference', _pricedEvidence, walletPriceEvidenceSummary, _priceAtTimeDebug)
+        tokenMeter.endTokenMeter('priceInference')
+      }
+      // Capture post-receipt unpriced reasons (from re-run if synthetic legs were added, else from original)
+      const _afterUnpricedReasons = (_priceAtTimeDebug?.sampleUnpricedReasons ?? []).map(r => ({
+        txHash: r.txHash, symbol: r.tokenSymbol, finalReason: r.finalReason,
+      }))
+      // Merge with receipt-level reasons (receipt_checked_*) — receipt reasons go first
+      const _existingReceiptReasons = _basePnlReconDebug.sampleUnpricedAfterReceipt ?? []
+      _basePnlReconDebug = {
+        ..._basePnlReconDebug,
+        sampleUnpricedAfterReceipt: [
+          ..._existingReceiptReasons,
+          ..._afterUnpricedReasons.filter(r => !_existingReceiptReasons.some(er => er.txHash === r.txHash && er.symbol === r.symbol)),
+        ],
+      }
+    }
+  }
+  // ── End Unpriced Candidate Receipt Pass ─────────────────────────────────────────────────
 
   tokenMeter.startTokenMeter('fifoEngine')
   _pricedEvidence = normalizeSwapEventsForFifo(_pricedEvidence, tokenMeter.isDebugEnabled())
