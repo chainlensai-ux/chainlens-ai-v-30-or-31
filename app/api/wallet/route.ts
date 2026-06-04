@@ -29,7 +29,7 @@ export async function OPTIONS(req: Request) {
 const WALLET_BASIC_CACHE_TTL_MS  = 5  * 60 * 1000  // 5 min for basic scans
 const WALLET_DEEP_CACHE_TTL_MS   = 15 * 60 * 1000  // 15 min for deep scans
 const WALLET_DEEP_COOLDOWN_MS    = 10 * 60 * 1000  // 10 min cooldown per wallet after deep live scan
-const WALLET_SNAPSHOT_SCHEMA_VERSION = 'v17'
+const WALLET_SNAPSHOT_SCHEMA_VERSION = 'v18'
 const walletCache = new Map<string, { exp: number; payload: unknown; cachedAt: number }>()
 const walletRate = new Map<string, { count: number; resetAt: number }>()
 const WALLET_RATE_BY_PLAN: Record<string, number> = { free: 20, pro: 60, elite: 180 }
@@ -167,6 +167,8 @@ export async function POST(req: Request) {
       headers: { 'Content-Type': 'application/json', ...corsHeaders(_origin) },
     })
   }
+  // Dev-only auth bypass: NODE_ENV check guarantees this NEVER activates in production.
+  // In production NODE_ENV is always 'production' so _devBypass evaluates to false unconditionally.
   const _devBypass = process.env.NODE_ENV !== 'production' && req.headers.get('x-dev-test') === 'chainlens-local'
   const plan = _devBypass ? 'elite' : await walletPlan(req)
   if (plan === 'free') return json({ error: 'Included in Pro and Elite.' }, { status: 403 })
@@ -478,6 +480,7 @@ export async function POST(req: Request) {
               walletPriceAtTimeDebug: _slim.walletPriceAtTimeDebug ?? null,
               basePnlReconstructionDebug: _slim.basePnlReconstructionDebug ?? null,
               baseFifoCoverageDebug: _slim.baseFifoCoverageDebug ?? null,
+              walletActivityRoutingDebug: _slim.walletActivityRoutingDebug ?? null,
               baseFifoMatchDebug: _slim.baseFifoMatchDebug ?? null,
               walletCacheQualityDebug: _slim.walletCacheQualityDebug ?? null,
             }
@@ -612,6 +615,7 @@ export async function POST(req: Request) {
         walletPriceAtTimeDebug: _priceDbgForSlim,
         basePnlReconstructionDebug: snapshot._diagnostics?.basePnlReconstructionDebug ?? null,
         baseFifoCoverageDebug: snapshot._diagnostics?.baseFifoCoverageDebug ?? null,
+        walletActivityRoutingDebug: snapshot._diagnostics?.walletActivityRoutingDebug ?? null,
         walletCacheQualityDebug: {
           cacheQuality: _cacheQuality, writeAllowed: !_cacheWriteBlocked,
           blockedWriteReason: _blockedWriteReason, holdingsCount: _snapHoldingsCount,
@@ -678,6 +682,7 @@ export async function POST(req: Request) {
         walletTradeStatsDebug: snapshot._diagnostics?.walletTradeStatsDebug ?? null,
         basePnlReconstructionDebug: snapshot._diagnostics?.basePnlReconstructionDebug ?? null,
         baseFifoCoverageDebug: snapshot._diagnostics?.baseFifoCoverageDebug ?? null,
+        walletActivityRoutingDebug: snapshot._diagnostics?.walletActivityRoutingDebug ?? null,
         walletHistoricalCoverageDebug: snapshot._diagnostics?.walletHistoricalCoverageDebug ?? null,
         walletHistoricalCandidateDebug: snapshot._diagnostics?.walletHistoricalCandidateDebug ?? null,
         walletHistoricalPricingPreviewDebug: snapshot._diagnostics?.walletHistoricalPricingPreviewDebug ?? null,

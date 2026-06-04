@@ -963,6 +963,32 @@ export type WalletSnapshot = {
       sampleQuoteLegs: Array<{ txHash: string; symbol: string; quoteType: string }>
       sampleStillUnpriced: Array<{ txHash: string; symbol: string; finalReason: string }>
       sampleNoMatchReasons: string[]
+      fallbackActivityUsed: boolean
+      fallbackActivityEvents: number
+      allowedBecauseFallbackHadEvents: boolean
+      skippedReason: string | null
+    }
+    walletActivityRoutingDebug?: {
+      deepActivityRequested: boolean
+      chainMode: string
+      requestedChain: string
+      discoveredChains: Array<{ chain: string; usdValue: number }>
+      activeChainsBeforeValueGate: string[]
+      activeChainsAfterValueGate: string[]
+      activeChainsUsedForActivity: string[]
+      minChainValueUsd: number
+      skippedDustChains: string[]
+      portfolioStatus: string
+      holdingsCount: number
+      totalValue: number
+      activityAttempted: boolean
+      activitySkippedReason: string | null
+      lowBalanceOverrideUsed: boolean
+      fallbackChainsUsed: string[]
+      providerCallsPlanned: string[]
+      providerCallsMade: string[]
+      evidenceEvents: number
+      finalEvidenceStatus: string
     }
     walletFactsDebug?: {
       built: boolean
@@ -1074,7 +1100,7 @@ export type WalletSnapshotOptions = {
 
 const SNAPSHOT_TTL_MS         = 5  * 60 * 1000
 const SNAPSHOT_HISTORY_TTL_MS = 15 * 60 * 1000
-const SNAPSHOT_SCHEMA_VERSION = 'v17'
+const SNAPSHOT_SCHEMA_VERSION = 'v18'
 type SnapshotCacheEntry = { snapshot: WalletSnapshot; cachedAt: number; ttlMs: number }
 const snapshotMemCache = new Map<string, SnapshotCacheEntry>()
 
@@ -5181,6 +5207,10 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // ETH Alchemy calls only when explicitly requested — default is Base only
   const useEthAlchemy = requestedChain === 'eth' && Boolean(ALCHEMY_ETH_KEY)
   const nonceUrl = useEthAlchemy ? ethUrl : baseUrl
+  // GoldRush ETH activity: gated on chain being ETH, NOT on Alchemy ETH key availability.
+  // Previously tied to useEthAlchemy, which caused ETH wallets without ALCHEMY_ETH_KEY to silently
+  // skip GoldRush ETH and rely solely on Moralis fallback for activity data.
+  const _shouldFetchGrEth = activityRequested && Boolean(GOLDRUSH_KEY) && (requestedChain === 'eth' || chainMode === 'eth' || chainMode === 'base_eth')
 
   // Determine Moralis chain before Phase 1 so it can run in the parallel batch.
   const _moralisChain: 'eth' | 'base' = requestedChain === 'eth' ? 'eth' : 'base'
@@ -5222,7 +5252,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     deepScan ? fetchWalletBehavior(addr, baseUrl) : Promise.resolve(BEHAVIOR_EMPTY),
     // ETH mainnet PnL transfers only when activity is requested AND ETH chain is selected.
     // Default (base) scans skip this to avoid a wasted transactions_v3 call.
-    activityRequested && GOLDRUSH_KEY && useEthAlchemy ? fetchGoldrushPnlEvents(addr, 'eth-mainnet', GOLDRUSH_KEY, tokenMeter.isDebugEnabled()) : Promise.resolve({ events: [] as PnlEvent[], diag: { endpointKind: 'transactions_v3' as const, chainUsed: 'eth-mainnet', urlTemplate: 'https://api.covalenthq.com/v1/eth-mainnet/address/{wallet}/transactions_v3/?page-size=50&page-number=0&with-logs=true&no-spam=true', httpStatus: null, fetchFailed: true, failureStage: 'build_url' as const, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], transferArrayCount: 0, firstTransferKeys: [], reason: activityRequested ? 'ETH chain not requested — skipped to reduce API usage.' : 'Activity scan not requested — skipped.' } }),
+    _shouldFetchGrEth ? fetchGoldrushPnlEvents(addr, 'eth-mainnet', GOLDRUSH_KEY, tokenMeter.isDebugEnabled()) : Promise.resolve({ events: [] as PnlEvent[], diag: { endpointKind: 'transactions_v3' as const, chainUsed: 'eth-mainnet', urlTemplate: 'https://api.covalenthq.com/v1/eth-mainnet/address/{wallet}/transactions_v3/?page-size=50&page-number=0&with-logs=true&no-spam=true', httpStatus: null, fetchFailed: true, failureStage: 'build_url' as const, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], transferArrayCount: 0, firstTransferKeys: [], reason: activityRequested ? 'ETH chain not requested — skipped to reduce API usage.' : 'Activity scan not requested — skipped.' } }),
     activityRequested && GOLDRUSH_KEY ? fetchGoldrushPnlEvents(addr, 'base-mainnet', GOLDRUSH_KEY, tokenMeter.isDebugEnabled()) : Promise.resolve({ events: [] as PnlEvent[], diag: { endpointKind: 'transactions_v3' as const, chainUsed: 'base-mainnet', urlTemplate: 'https://api.covalenthq.com/v1/base-mainnet/address/{wallet}/transactions_v3/?page-size=50&page-number=0&with-logs=true&no-spam=true', httpStatus: null, fetchFailed: true, failureStage: 'build_url' as const, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], transferArrayCount: 0, firstTransferKeys: [], reason: activityRequested ? 'GoldRush activity fetch skipped — provider not configured.' : 'Activity scan not requested — skipped.' } }),
     activityRequested && Boolean(ALCHEMY_BASE_KEY) ? fetchAlchemyPnlEvents(addr, baseUrl) : Promise.resolve([] as PnlEvent[]),
   ])
@@ -5263,7 +5293,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // ── Track Phase 1 provider calls ──
   if (_moralisAttempted) _trackCall('moralis', 'erc20_holdings', _moralisResult.cacheHit, `moralis:holdings:${_moralisChain}:${addrNorm}`)
   if (activityRequested && Boolean(GOLDRUSH_KEY)) _trackCall('goldrush', 'transactions_v3', false, `gr:tx3:base:${addrNorm}`)
-  if (activityRequested && Boolean(GOLDRUSH_KEY) && useEthAlchemy) _trackCall('goldrush', 'transactions_v3', false, `gr:tx3:eth:${addrNorm}`)
+  if (_shouldFetchGrEth) _trackCall('goldrush', 'transactions_v3', false, `gr:tx3:eth:${addrNorm}`)
   if (activityRequested && Boolean(ALCHEMY_BASE_KEY)) {
     const _ak1 = `alchemy:transfers:from:base:${addrNorm}`; if (!_alchemyDedup.has(_ak1)) { _alchemyDedup.add(_ak1); _trackCall('alchemy', 'alchemy_getAssetTransfers', false, _ak1) }
     const _ak2 = `alchemy:transfers:to:base:${addrNorm}`;   if (!_alchemyDedup.has(_ak2)) { _alchemyDedup.add(_ak2); _trackCall('alchemy', 'alchemy_getAssetTransfers', false, _ak2) }
@@ -5361,6 +5391,22 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   if (activeChains.length === 0 && (requestedChain === 'base' || requestedChain === 'eth')) activeChains = [requestedChain]
   if (activeChains.length === 0) activeChains = ['base', 'eth']
   activeChains = activeChains.filter((c, i, a) => supportedMoralisChains.includes(c) && a.indexOf(c) === i).slice(0, chainMode === 'all_supported' && deepScan ? supportedMoralisChains.length : maxChainsBasicScan)
+
+  // Activity routing debug: capture chain selection state before and after value gate
+  const _activeChainsBeforeValueGate: MoralisChain[] = (() => {
+    if (chainMode === 'base') return ['base' as MoralisChain]
+    if (chainMode === 'eth') return ['eth' as MoralisChain]
+    if (chainMode === 'base_eth') return ['base' as MoralisChain, 'eth' as MoralisChain]
+    if (chainMode === 'all_supported') return [...supportedMoralisChains]
+    return discoveredChains.map(c => c.chain)
+  })()
+  const _activeChainsAfterValueGate: MoralisChain[] = (() => {
+    if (chainMode !== 'auto') return _activeChainsBeforeValueGate
+    return discoveredChains.filter(c => c.usdValue >= minChainValueUsd).map(c => c.chain)
+  })()
+  // lowBalanceOverrideUsed: auto mode fell through to requestedChain/base+eth fallback due to empty/dust holdings
+  const _lowBalanceOverrideUsed = chainMode === 'auto' && _activeChainsAfterValueGate.length === 0
+  const _fallbackChainsUsed: MoralisChain[] = _lowBalanceOverrideUsed ? [...activeChains] : []
 
   // Moralis holdings layer for active chains.
   let grEthRes: PromiseSettledResult<Holding[]>
@@ -6039,6 +6085,10 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // Hard budget: max 3 pages, stop when meaningful lots found or no cursor.
   // Does NOT run on basic scans, historical coverage mode, or when Moralis fallback already ran.
   const _BASE_FIFO_COVERAGE_MAX_PAGES = 3
+  // If Moralis fallback was attempted but returned 0 events, Phase 5C can't improve the result.
+  // If fallback was used AND returned events, Phase 5C is allowed — it fetches additional pages.
+  const _bfcFallbackBlocked = _moralisFbDebug.fallbackActivityAttempted && _moralisFbDebug.fallbackActivityNormalizedEvents === 0
+  const _bfcAllowedBecauseFallbackHadEvents = _moralisFbDebug.fallbackActivityUsed && !_bfcFallbackBlocked
   let _baseFifoCoverageDebug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['baseFifoCoverageDebug']> = {
     attempted: false,
     reason: 'not_attempted',
@@ -6066,6 +6116,10 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     sampleQuoteLegs: [],
     sampleStillUnpriced: [],
     sampleNoMatchReasons: [],
+    fallbackActivityUsed: _moralisFbDebug.fallbackActivityUsed,
+    fallbackActivityEvents: _moralisFbDebug.fallbackActivityNormalizedEvents,
+    allowedBecauseFallbackHadEvents: _bfcAllowedBecauseFallbackHadEvents,
+    skippedReason: null as string | null,
   }
   const _shouldRunBaseFifoCoverage = (
     deepActivity &&
@@ -6073,9 +6127,10 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     _baseReconChainOk &&
     walletLotSummary.closedLots === 0 &&
     walletSwapSummary.swapCandidateEvents > 0 &&
+    walletEvidenceSummary.totalEvents > 0 &&
     Boolean(process.env.MORALIS_API_KEY) &&
     !historicalCoverage &&
-    !_moralisFbDebug.fallbackActivityUsed
+    !_bfcFallbackBlocked
   )
   if (_shouldRunBaseFifoCoverage) {
     _baseFifoCoverageDebug.attempted = true
@@ -6174,15 +6229,18 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       else _baseFifoCoverageDebug.reason = 'historical_depth_insufficient'
     }
   } else {
-    _baseFifoCoverageDebug.reason = !deepActivity ? 'basic_scan'
+    const _bfcSkipReason = !deepActivity ? 'basic_scan'
       : !activityRequested ? 'activity_not_requested'
       : !_baseReconChainOk ? 'eth_chain'
       : walletLotSummary.closedLots > 0 ? 'already_has_closed_lots'
       : walletSwapSummary.swapCandidateEvents === 0 ? 'no_swap_candidates'
+      : walletEvidenceSummary.totalEvents === 0 ? 'no_activity_events'
       : !Boolean(process.env.MORALIS_API_KEY) ? 'moralis_not_configured'
       : historicalCoverage ? 'historical_coverage_enabled'
-      : _moralisFbDebug.fallbackActivityUsed ? 'moralis_fallback_already_used'
+      : _bfcFallbackBlocked ? 'fallback_activity_returned_empty'
       : 'not_triggered'
+    _baseFifoCoverageDebug.reason = _bfcSkipReason
+    _baseFifoCoverageDebug.skippedReason = _bfcSkipReason
   }
   // ── End Phase 5C ─────────────────────────────────────────────────────────────────────────
 
@@ -6329,7 +6387,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     }
   })
 
-  const _grEthAttempted = activityRequested && Boolean(GOLDRUSH_KEY) && useEthAlchemy
+  const _grEthAttempted = _shouldFetchGrEth
   const _grBaseAttempted = activityRequested && Boolean(GOLDRUSH_KEY)
   const _alchemyAttempted = activityRequested && Boolean(ALCHEMY_BASE_KEY)
   const _txSkippedReasons: string[] = []
@@ -6337,7 +6395,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     _txSkippedReasons.push('activity_not_requested')
   } else {
     if (!GOLDRUSH_KEY) _txSkippedReasons.push('goldrush_not_configured')
-    if (!useEthAlchemy) _txSkippedReasons.push('goldrush_eth_skipped_chain_not_eth')
+    if (!_shouldFetchGrEth && Boolean(GOLDRUSH_KEY)) _txSkippedReasons.push('goldrush_eth_skipped_chain_not_eth')
     if (!ALCHEMY_BASE_KEY) _txSkippedReasons.push('alchemy_not_configured')
   }
   const _txProviderErrors: string[] = []
@@ -6452,6 +6510,54 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     warnings: _apiWarnings,
     totalCredits: _apiTotalCredits,
   }
+  // Activity routing debug: summarises all chain/activity routing decisions for observability
+  const _walletActivityRoutingDebug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['walletActivityRoutingDebug']> = (() => {
+    const _actChainsUsed: MoralisChain[] = []
+    if (_grEthAttempted) _actChainsUsed.push('eth')
+    if (_grBaseAttempted && !_actChainsUsed.includes('base')) _actChainsUsed.push('base')
+    if (_alchemyAttempted && !_actChainsUsed.includes('base')) _actChainsUsed.push('base')
+    if (_moralisFbDebug.fallbackActivityAttempted && !_actChainsUsed.includes(_fbChain as MoralisChain)) _actChainsUsed.push(_fbChain as MoralisChain)
+    const _actSkipReason = !activityRequested
+      ? 'deep_activity_not_requested'
+      : !Boolean(GOLDRUSH_KEY) && !Boolean(ALCHEMY_BASE_KEY) && !Boolean(process.env.MORALIS_API_KEY)
+      ? 'provider_unavailable'
+      : walletEvidenceSummary.totalEvents === 0 && activityProviderUnavailable
+      ? 'activity_provider_returned_empty'
+      : null
+    return {
+      deepActivityRequested: deepActivity,
+      chainMode,
+      requestedChain,
+      discoveredChains: discoveredChains.slice(0, 10).map(c => ({ chain: c.chain as string, usdValue: c.usdValue })),
+      activeChainsBeforeValueGate: _activeChainsBeforeValueGate as string[],
+      activeChainsAfterValueGate: _activeChainsAfterValueGate as string[],
+      activeChainsUsedForActivity: _actChainsUsed as string[],
+      minChainValueUsd,
+      skippedDustChains: skippedDustChains as string[],
+      portfolioStatus: providerStatus,
+      holdingsCount: holdings.length,
+      totalValue,
+      activityAttempted: activityRequested,
+      activitySkippedReason: _actSkipReason,
+      lowBalanceOverrideUsed: _lowBalanceOverrideUsed,
+      fallbackChainsUsed: _fallbackChainsUsed as string[],
+      providerCallsPlanned: [
+        ...(_shouldFetchGrEth ? ['goldrush:eth'] : []),
+        ...(_grBaseAttempted ? ['goldrush:base'] : []),
+        ...(_alchemyAttempted ? ['alchemy:base'] : []),
+        ...(activityRequested && Boolean(process.env.MORALIS_API_KEY) ? [`moralis:${_fbChain}_if_primary_empty`] : []),
+      ],
+      providerCallsMade: [
+        ...(_grEthAttempted ? ['goldrush:eth'] : []),
+        ...(_grBaseAttempted ? ['goldrush:base'] : []),
+        ...(_alchemyAttempted ? ['alchemy:base'] : []),
+        ...(_moralisFbDebug.fallbackActivityAttempted ? [`moralis:${_fbChain}`] : []),
+      ],
+      evidenceEvents: walletEvidenceSummary.totalEvents,
+      finalEvidenceStatus: walletEvidenceSummary.status,
+    }
+  })()
+
   const snapshot: WalletSnapshot = {
     address: addr,
     totalValue,
@@ -6628,6 +6734,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       walletSwapEnrichmentDebug: _swapEnrichmentDebug,
       basePnlReconstructionDebug: _basePnlReconDebug,
       baseFifoCoverageDebug: _baseFifoCoverageDebug,
+      walletActivityRoutingDebug: _walletActivityRoutingDebug,
       walletFactsDebug: _walletFactsDebug,
       apiAudit: _apiAudit,
     },
