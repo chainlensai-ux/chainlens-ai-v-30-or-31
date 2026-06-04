@@ -713,6 +713,7 @@ export type WalletSnapshot = {
       }>
       reasons: string[]
     }
+    unmatchedSellBackfillDebug?: UnmatchedSellBackfillDebug
     walletLotEngineDebug?: {
       pricedSwapEvents: number
       buyEvents: number
@@ -1163,7 +1164,7 @@ export type WalletSnapshotOptions = {
 
 const SNAPSHOT_TTL_MS         = 5  * 60 * 1000
 const SNAPSHOT_HISTORY_TTL_MS = 15 * 60 * 1000
-const SNAPSHOT_SCHEMA_VERSION = 'v21'
+const SNAPSHOT_SCHEMA_VERSION = 'v22'
 type SnapshotCacheEntry = { snapshot: WalletSnapshot; cachedAt: number; ttlMs: number }
 const snapshotMemCache = new Map<string, SnapshotCacheEntry>()
 
@@ -1173,6 +1174,58 @@ type WalletHistoricalCoverageOutput = {
   debug: NonNullable<WalletSnapshot['_diagnostics']>['walletHistoricalCoverageDebug']
   events: PnlEvent[]
 }
+
+type UnmatchedSellBackfillReason =
+  | 'not_eligible'
+  | 'prior_buy_not_found_for_sold_token'
+  | 'prior_buy_found_but_unpriced'
+  | 'prior_buy_outside_checked_window'
+  | 'provider_history_depth_insufficient'
+  | 'token_contract_filter_unavailable'
+  | 'cost_budget_reached'
+  | 'sell_before_first_indexed_buy'
+  | 'prior_buy_found'
+
+type UnmatchedSellBackfillTarget = {
+  chain: string
+  tokenContract: string
+  symbol: string | null
+  sellTxHash: string
+  sellTimestamp: string
+  sellAmount: number
+  exitPriceUsd: number | null
+}
+
+type UnmatchedSellBackfillDebug = {
+  attempted: boolean
+  reason: UnmatchedSellBackfillReason | string
+  unmatchedSellCount: number
+  targetTokens: Array<{ chain: string; tokenContract: string; symbol: string | null }>
+  pagesAttempted: number
+  rawEventsFetched: number
+  normalizedEvents: number
+  priorBuysFound: number
+  priorBuysPriced: number
+  eventsAddedToFifo: number
+  closedLotsBefore: number
+  closedLotsAfter: number
+  realizedPnlBefore: number | null
+  realizedPnlAfter: number | null
+  stopReason: UnmatchedSellBackfillReason | string
+  sampleTargets: UnmatchedSellBackfillTarget[]
+  samplePriorBuys: Array<{ chain: string; tokenContract: string; symbol: string | null; txHash: string; timestamp: string; amount: number; priceUsd: number | null }>
+  sampleStillUnmatched: string[]
+  sampleSkippedReasons: Array<{ reason: string; chain?: string; tokenContract?: string; page?: number }>
+}
+
+type UnmatchedSellBackfillOutput = {
+  events: PnlEvent[]
+  targetBuyKeys: Set<string>
+  debug: UnmatchedSellBackfillDebug
+}
+
+const UNMATCHED_SELL_BACKFILL_TTL_MS = 10 * 60 * 1000
+const unmatchedSellBackfillCache = new Map<string, { data: { events: PnlEvent[]; targetBuyKeys: string[]; debug: UnmatchedSellBackfillDebug }; cachedAt: number }>()
 const historicalCoverageCache = new Map<string, { data: WalletHistoricalCoverageOutput; cachedAt: number }>()
 const historicalCoverageInFlight = new Map<string, Promise<WalletHistoricalCoverageOutput>>()
 
@@ -2085,6 +2138,23 @@ async function fetchGoldrushHistoricalPage(
       const txToAddress = typeof t.to_address === 'string' ? t.to_address.toLowerCase() : null
       const txSucceeded = typeof t.successful === 'boolean' ? t.successful : null
       if (timestamp && !result.newestTimestamp) result.newestTimestamp = timestamp
+      const transfers: unknown[] = Array.isArray(t.transfers) ? t.transfers : []
+      for (const transfer of transfers.slice(0, 24)) {
+        const tr = transfer as Record<string, unknown>
+        const contract = String(tr.contract_address ?? '').toLowerCase()
+        const symbol = String(tr.contract_ticker_symbol ?? '?')
+        const decimals = typeof tr.contract_decimals === 'number' ? tr.contract_decimals : 18
+        const delta = String(tr.delta ?? '0')
+        const amount = Math.abs(parseFloat(delta) / Math.pow(10, decimals))
+        const from = String(tr.from_address ?? '').toLowerCase()
+        const to = String(tr.to_address ?? '').toLowerCase()
+        const direction: 'buy' | 'sell' | 'unknown' = to === lower ? 'buy' : from === lower ? 'sell' : 'unknown'
+        const quote = typeof tr.delta_quote === 'number' ? Math.abs(tr.delta_quote) : null
+        if (contract.startsWith('0x') && amount > 0) {
+          result.transferLogs++
+          result.events.push({ contract, symbol, direction, amount, amountRaw: delta !== '0' ? delta : null, tokenDecimals: decimals, usdValue: quote, txHash, timestamp, fromAddress: from, toAddress: to, chain: chainName, txFromAddress, txToAddress, txSucceeded })
+        }
+      }
       const logEvents: unknown[] = Array.isArray(t.log_events) ? t.log_events : []
       for (const logEvent of logEvents) {
         const le = logEvent as Record<string, unknown>
@@ -2191,6 +2261,134 @@ async function buildWalletHistoricalCoverage(
     debug: { requested: true, providersAttempted: ['goldrush'], pagesAttempted, pageSize, maxPages, cursorUsed: false, stoppedReason, rawTransactions: totalRawTx, rawLogEvents: totalTransferLogs, decodedTransferLogs: totalTransferLogs, walletSideEvents, candidateSwapTxs: swapLikeTxs, candidateSwapEvents: swapLikeEvents, duplicateTxHashes: 0, duplicateEvents: dupEvents, oldestTimestamp, newestTimestamp, chainCoverage, providerErrorSamples: errorSamples.slice(0, 4), skippedReasons: [], sampleTxHashes: [...allTxHashes].slice(0, 5), sampleSwapLikeTransactions: [], moralisHistoricalConfigured: false, moralisHistoricalAttempted: false, moralisReason: 'moralis_history_not_wired_yet' },
     events: uniqueEvents,
   }
+}
+
+
+function buildUnmatchedSellBackfillTargets(
+  pricedEvidence: WalletTxEvidence[],
+  unmatchedSellTokenKeys: string[],
+): UnmatchedSellBackfillTarget[] {
+  const unmatched = new Set(unmatchedSellTokenKeys.map(k => k.split(/\s+/)[0]?.toLowerCase()).filter(Boolean))
+  const targets = new Map<string, UnmatchedSellBackfillTarget>()
+  for (const e of pricedEvidence) {
+    if (e.direction !== 'sell') continue
+    if (!e.txHash || !e.timestamp || !e.contract?.startsWith('0x')) continue
+    const chain = normalizeChain(e.chain)
+    const tokenContract = e.contract.toLowerCase()
+    const key = `${chain}:${tokenContract}`
+    if (!unmatched.has(key)) continue
+    const amount = parseRawAmount(e.amountRaw, e.tokenDecimals) ?? e.amount
+    if (!amount || amount <= 0) continue
+    targets.set(key, { chain, tokenContract, symbol: e.symbol ?? null, sellTxHash: e.txHash, sellTimestamp: e.timestamp, sellAmount: amount, exitPriceUsd: e.priceAtTime?.priceUsd ?? null })
+  }
+  return [...targets.values()].slice(0, 4)
+}
+
+async function fetchAlchemyBasePriorBuysForToken(address: string, baseUrl: string, target: UnmatchedSellBackfillTarget): Promise<{ events: PnlEvent[]; raw: number; error: string | null }> {
+  if (!ALCHEMY_BASE_KEY || !baseUrl) return { events: [], raw: 0, error: 'alchemy_not_configured' }
+  try {
+    const result = await alchemyRpc(baseUrl, 'alchemy_getAssetTransfers', [{ fromBlock: '0x0', category: ['erc20'], withMetadata: true, maxCount: '0x64', order: 'desc', toAddress: address, contractAddresses: [target.tokenContract] }])
+    const transfers: Record<string, unknown>[] = Array.isArray(result?.transfers) ? result.transfers : []
+    const sellTime = new Date(target.sellTimestamp).getTime()
+    const lower = address.toLowerCase()
+    const events = transfers.map((t): PnlEvent => {
+      const meta = t.metadata as Record<string, unknown> | undefined
+      const rawContract = t.rawContract as Record<string, unknown> | undefined
+      const timestamp = typeof meta?.blockTimestamp === 'string' ? meta.blockTimestamp : null
+      const contract = String(rawContract?.address ?? target.tokenContract).toLowerCase()
+      const from = typeof t.from === 'string' ? t.from.toLowerCase() : null
+      const to = typeof t.to === 'string' ? t.to.toLowerCase() : null
+      return { contract, symbol: String(t.asset ?? target.symbol ?? '?'), direction: to === lower ? 'buy' : from === lower ? 'sell' : 'unknown', amount: Number(t.value ?? 0), amountRaw: String(rawContract?.value ?? '') || null, tokenDecimals: null, usdValue: null, txHash: typeof t.hash === 'string' ? t.hash : null, timestamp, fromAddress: from, toAddress: to, chain: 'base' }
+    }).filter(e => {
+      const ts = e.timestamp ? new Date(e.timestamp).getTime() : NaN
+      return e.contract === target.tokenContract && e.direction === 'buy' && e.txHash && Number.isFinite(ts) && ts < sellTime && e.amount > 0
+    })
+    return { events, raw: transfers.length, error: null }
+  } catch {
+    return { events: [], raw: 0, error: 'alchemy_provider_error' }
+  }
+}
+
+async function runTargetedUnmatchedSellBackfill(address: string, targets: UnmatchedSellBackfillTarget[], apiKey: string, baseUrl: string, closedLotsBefore: number, realizedPnlBefore: number | null): Promise<UnmatchedSellBackfillOutput> {
+  const empty = (attempted: boolean, reason: UnmatchedSellBackfillReason | string): UnmatchedSellBackfillOutput => ({ events: [], targetBuyKeys: new Set<string>(), debug: { attempted, reason, unmatchedSellCount: targets.length, targetTokens: targets.map(t => ({ chain: t.chain, tokenContract: t.tokenContract, symbol: t.symbol })), pagesAttempted: 0, rawEventsFetched: 0, normalizedEvents: 0, priorBuysFound: 0, priorBuysPriced: 0, eventsAddedToFifo: 0, closedLotsBefore, closedLotsAfter: closedLotsBefore, realizedPnlBefore, realizedPnlAfter: realizedPnlBefore, stopReason: reason, sampleTargets: targets.slice(0, 5), samplePriorBuys: [], sampleStillUnmatched: targets.map(t => `${t.chain}:${t.tokenContract}`).slice(0, 5), sampleSkippedReasons: [] } })
+  if (targets.length === 0) return empty(false, 'not_eligible')
+  const cacheKey = `${address.toLowerCase()}:${targets.map(t => `${t.chain}:${t.tokenContract}:${t.sellTimestamp}`).join('|')}:v1`
+  const cached = unmatchedSellBackfillCache.get(cacheKey)
+  if (cached && Date.now() - cached.cachedAt <= UNMATCHED_SELL_BACKFILL_TTL_MS) return { events: cached.data.events, targetBuyKeys: new Set(cached.data.targetBuyKeys), debug: { ...cached.data.debug, attempted: true, reason: cached.data.debug.reason || 'cache_hit' } }
+
+  const debug = empty(true, 'prior_buy_not_found_for_sold_token').debug
+  const eventsToAdd: PnlEvent[] = []
+  const targetBuyKeys = new Set<string>()
+  const seenEvents = new Set<string>()
+  let stopReason: UnmatchedSellBackfillReason | string = 'prior_buy_not_found_for_sold_token'
+  const maxPagesPerToken = 2
+  const maxPagesTotal = 4
+
+  for (const target of targets) {
+    if (debug.pagesAttempted >= maxPagesTotal) { stopReason = 'cost_budget_reached'; debug.sampleSkippedReasons.push({ reason: 'cost_budget_reached', chain: target.chain, tokenContract: target.tokenContract }); break }
+    const chainName = normalizeChainForGoldrush(target.chain)
+    const sellTime = new Date(target.sellTimestamp).getTime()
+    let foundForTarget = false
+    let sawOlderEvents = false
+    let providerFailed = false
+    if (!apiKey) {
+      providerFailed = true
+      debug.sampleSkippedReasons.push({ reason: 'provider_history_depth_insufficient', chain: target.chain, tokenContract: target.tokenContract })
+    } else {
+      debug.sampleSkippedReasons.push({ reason: 'token_contract_filter_unavailable', chain: target.chain, tokenContract: target.tokenContract })
+      for (let page = 0; page < maxPagesPerToken && debug.pagesAttempted < maxPagesTotal; page++) {
+        debug.pagesAttempted++
+        const pageResult = await fetchGoldrushHistoricalPage(address, chainName, apiKey, page)
+        if (pageResult.error) { providerFailed = true; debug.sampleSkippedReasons.push({ reason: 'provider_history_depth_insufficient', chain: target.chain, tokenContract: target.tokenContract, page }); break }
+        debug.rawEventsFetched += pageResult.rawItems
+        debug.normalizedEvents += pageResult.events.length
+        const older = pageResult.events.filter(e => { const ts = e.timestamp ? new Date(e.timestamp).getTime() : NaN; return Number.isFinite(ts) && ts < sellTime })
+        if (older.length > 0) sawOlderEvents = true
+        const priorBuys = older.filter(e => normalizeChain(e.chain) === target.chain && e.contract.toLowerCase() === target.tokenContract && e.direction === 'buy' && e.txHash && e.amount > 0)
+        if (priorBuys.length === 0) continue
+        foundForTarget = true
+        debug.priorBuysFound += priorBuys.length
+        const buyTxHashes = new Set(priorBuys.map(e => e.txHash).filter(Boolean) as string[])
+        const txEvents = pageResult.events.filter(e => e.txHash && buyTxHashes.has(e.txHash))
+        for (const ev of txEvents.length > 0 ? txEvents : priorBuys) {
+          const k = `${ev.txHash}|${ev.contract}|${ev.direction}|${Math.round(ev.amount * 1e9)}`
+          if (seenEvents.has(k)) continue
+          seenEvents.add(k)
+          eventsToAdd.push(ev)
+          if (ev.direction === 'buy' && normalizeChain(ev.chain) === target.chain && ev.contract.toLowerCase() === target.tokenContract) {
+            targetBuyKeys.add(`${ev.txHash}:${ev.contract.toLowerCase()}:buy`)
+            if (debug.samplePriorBuys.length < 5) debug.samplePriorBuys.push({ chain: target.chain, tokenContract: target.tokenContract, symbol: ev.symbol ?? target.symbol, txHash: ev.txHash!, timestamp: ev.timestamp!, amount: ev.amount, priceUsd: ev.usdValue && ev.amount > 0 ? ev.usdValue / ev.amount : null })
+          }
+        }
+        break
+      }
+    }
+    if (!foundForTarget && target.chain === 'base') {
+      const alchemy = await fetchAlchemyBasePriorBuysForToken(address, baseUrl, target)
+      debug.rawEventsFetched += alchemy.raw
+      debug.normalizedEvents += alchemy.events.length
+      if (alchemy.error) debug.sampleSkippedReasons.push({ reason: alchemy.error, chain: target.chain, tokenContract: target.tokenContract })
+      if (alchemy.events.length > 0) {
+        foundForTarget = true
+        debug.priorBuysFound += alchemy.events.length
+        for (const ev of alchemy.events.slice(0, 2)) {
+          const k = `${ev.txHash}|${ev.contract}|${ev.direction}|${Math.round(ev.amount * 1e9)}`
+          if (seenEvents.has(k)) continue
+          seenEvents.add(k)
+          eventsToAdd.push(ev)
+          targetBuyKeys.add(`${ev.txHash}:${ev.contract.toLowerCase()}:buy`)
+          if (debug.samplePriorBuys.length < 5) debug.samplePriorBuys.push({ chain: target.chain, tokenContract: target.tokenContract, symbol: ev.symbol ?? target.symbol, txHash: ev.txHash!, timestamp: ev.timestamp!, amount: ev.amount, priceUsd: null })
+        }
+      }
+    }
+    if (!foundForTarget) { const reason: UnmatchedSellBackfillReason = providerFailed ? 'provider_history_depth_insufficient' : sawOlderEvents ? 'prior_buy_not_found_for_sold_token' : 'prior_buy_outside_checked_window'; debug.sampleSkippedReasons.push({ reason, chain: target.chain, tokenContract: target.tokenContract }); stopReason = reason } else { stopReason = 'prior_buy_found' }
+  }
+  debug.eventsAddedToFifo = eventsToAdd.length
+  debug.stopReason = stopReason
+  debug.reason = eventsToAdd.length > 0 ? 'prior_buy_found' : stopReason
+  debug.sampleStillUnmatched = targets.filter(t => !debug.samplePriorBuys.some(b => b.chain === t.chain && b.tokenContract === t.tokenContract)).map(t => `${t.chain}:${t.tokenContract}`).slice(0, 5)
+  unmatchedSellBackfillCache.set(cacheKey, { data: { events: eventsToAdd, targetBuyKeys: [...targetBuyKeys], debug }, cachedAt: Date.now() })
+  return { events: eventsToAdd, targetBuyKeys, debug }
 }
 
 function buildHistoricalCandidateComparison(
@@ -6526,6 +6724,82 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   if (walletPriceEvidenceSummary.missing.some(r => r.endsWith('_swap_candidates_unpriced')) && walletLotSummary.closedLots === 0) {
     walletLotSummary = { ...walletLotSummary, missing: [...walletLotSummary.missing, 'swap_candidates_unpriced_no_fifo'] }
   }
+  let _unmatchedSellBackfillDebug: UnmatchedSellBackfillDebug = {
+    attempted: false,
+    reason: 'not_eligible',
+    unmatchedSellCount: _lotEngineDebug.unmatchedSells,
+    targetTokens: [],
+    pagesAttempted: 0,
+    rawEventsFetched: 0,
+    normalizedEvents: 0,
+    priorBuysFound: 0,
+    priorBuysPriced: 0,
+    eventsAddedToFifo: 0,
+    closedLotsBefore: walletLotSummary.closedLots,
+    closedLotsAfter: walletLotSummary.closedLots,
+    realizedPnlBefore: walletLotSummary.realizedPnlUsd,
+    realizedPnlAfter: walletLotSummary.realizedPnlUsd,
+    stopReason: 'not_eligible',
+    sampleTargets: [],
+    samplePriorBuys: [],
+    sampleStillUnmatched: _lotEngineDebug.unmatchedSellTokenKeys.slice(0, 5),
+    sampleSkippedReasons: [],
+  }
+  const _shouldRunUnmatchedSellBackfill =
+    deepActivity === true &&
+    historicalCoverage !== true &&
+    walletLotSummary.closedLots === 0 &&
+    walletLotSummary.unmatchedSells > 0 &&
+    _lotEngineDebug.unmatchedSellTokenKeys.length > 0
+
+  if (_shouldRunUnmatchedSellBackfill) {
+    const _targets = buildUnmatchedSellBackfillTargets(_pricedEvidence, _lotEngineDebug.unmatchedSellTokenKeys)
+    const _backfill = await runTargetedUnmatchedSellBackfill(addrNorm, _targets, GOLDRUSH_KEY, baseUrl, walletLotSummary.closedLots, walletLotSummary.realizedPnlUsd)
+    _unmatchedSellBackfillDebug = _backfill.debug
+    if (_backfill.events.length > 0) {
+      const _mergedBackfillEvents = [...events, ..._backfill.events]
+      ;({ evidenceList, summary: walletEvidenceSummary, debug: _txEvidenceDebugBase } = buildTxEvidenceFromEvents(_mergedBackfillEvents, activityRequested, activityProviderUnavailable))
+      ;({ evidenceWithDetection: _swapEvidenceWithDetection, summary: walletSwapSummary, debug: _swapDetectionDebug } = buildSwapDetection(evidenceList, activityRequested, addrNorm))
+      if (_backfill.targetBuyKeys.size > 0) {
+        _swapEvidenceWithDetection = _swapEvidenceWithDetection.map(ev => {
+          const k = `${ev.txHash}:${ev.contract.toLowerCase()}:${ev.direction}`
+          if (!_backfill.targetBuyKeys.has(k)) return ev
+          return {
+            ...ev,
+            swapDetection: {
+              ...(ev.swapDetection ?? { reason: '', confidence: 'medium' as const, isSwapCandidate: false, eventKind: 'unknown' as const, matchedProtocol: null, matchedAddress: null }),
+              isSwapCandidate: true,
+              confidence: ev.swapDetection?.confidence ?? 'medium',
+              eventKind: 'swap_candidate' as const,
+              reason: ev.swapDetection?.reason || 'targeted_unmatched_sell_prior_buy_backfill',
+            },
+          }
+        })
+      }
+      ;({ evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache, priceByContract))
+      _pricedEvidence = normalizeSwapEventsForFifo(_pricedEvidence, tokenMeter.isDebugEnabled())
+      _pricedEvidence = normalizeSingleLegEventsForFifo(_pricedEvidence, tokenMeter.isDebugEnabled())
+      const _rerunFifo = buildFifoLotEngine(_pricedEvidence, activityRequested)
+      walletLotSummary = _rerunFifo.summary
+      _lotEngineDebug = _rerunFifo.debug
+      _closedLots = _rerunFifo.closedLots
+      _unmatchedSellBackfillDebug.priorBuysPriced = _pricedEvidence.filter(ev => {
+        const k = `${ev.txHash}:${ev.contract.toLowerCase()}:${ev.direction}`
+        return _backfill.targetBuyKeys.has(k) && ev.priceAtTime?.status === 'priced'
+      }).length
+      if (walletLotSummary.closedLots === 0 && _unmatchedSellBackfillDebug.priorBuysFound > 0 && _unmatchedSellBackfillDebug.priorBuysPriced === 0) {
+        _unmatchedSellBackfillDebug.reason = 'prior_buy_found_but_unpriced'
+        _unmatchedSellBackfillDebug.stopReason = 'prior_buy_found_but_unpriced'
+        walletLotSummary = { ...walletLotSummary, missing: Array.from(new Set([...walletLotSummary.missing, 'prior_buy_found_but_unpriced'])) }
+      }
+      _unmatchedSellBackfillDebug.closedLotsAfter = walletLotSummary.closedLots
+      _unmatchedSellBackfillDebug.realizedPnlAfter = walletLotSummary.realizedPnlUsd
+      _unmatchedSellBackfillDebug.sampleStillUnmatched = _lotEngineDebug.unmatchedSellTokenKeys.slice(0, 5)
+      events = _mergedBackfillEvents
+      tokenMeter.measure('fifoEngine', _unmatchedSellBackfillDebug, _closedLots)
+    }
+  }
+
   tokenMeter.measure('fifoEngine', walletLotSummary, _lotEngineDebug, _closedLots)
   tokenMeter.endTokenMeter('fifoEngine')
 
@@ -7414,6 +7688,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       walletTxEvidenceDebug: _txEvidenceDebug,
       walletSwapDetectionDebug: _swapDetectionDebug,
       walletPriceAtTimeDebug: _priceAtTimeDebug,
+      unmatchedSellBackfillDebug: _unmatchedSellBackfillDebug,
       walletLotEngineDebug: _lotEngineDebug,
       walletTradeStatsDebug: _tradeStatsDebug,
       walletHistoricalCoverageDebug: _historicalCoverageDebug,
