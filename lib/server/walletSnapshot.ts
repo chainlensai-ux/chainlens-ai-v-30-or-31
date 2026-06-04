@@ -1164,7 +1164,7 @@ export type WalletSnapshotOptions = {
 
 const SNAPSHOT_TTL_MS         = 5  * 60 * 1000
 const SNAPSHOT_HISTORY_TTL_MS = 15 * 60 * 1000
-const SNAPSHOT_SCHEMA_VERSION = 'v22'
+const SNAPSHOT_SCHEMA_VERSION = 'v23'
 type SnapshotCacheEntry = { snapshot: WalletSnapshot; cachedAt: number; ttlMs: number }
 const snapshotMemCache = new Map<string, SnapshotCacheEntry>()
 
@@ -1182,6 +1182,8 @@ type UnmatchedSellBackfillReason =
   | 'prior_buy_outside_checked_window'
   | 'provider_history_depth_insufficient'
   | 'token_contract_filter_unavailable'
+  | 'base_provider_unavailable'
+  | 'base_contract_filter_unavailable'
   | 'cost_budget_reached'
   | 'sell_before_first_indexed_buy'
   | 'prior_buy_found'
@@ -1194,6 +1196,20 @@ type UnmatchedSellBackfillTarget = {
   sellTimestamp: string
   sellAmount: number
   exitPriceUsd: number | null
+}
+
+type UnmatchedSellBackfillPerTargetResult = {
+  chain: string
+  tokenContract: string
+  symbol: string | null
+  attempted: boolean
+  pagesAttempted: number
+  rawEventsFetched: number
+  normalizedEvents: number
+  priorBuysFound: number
+  priorBuysPriced: number
+  eventsAddedToFifo: number
+  reason: UnmatchedSellBackfillReason | string
 }
 
 type UnmatchedSellBackfillDebug = {
@@ -1212,6 +1228,7 @@ type UnmatchedSellBackfillDebug = {
   realizedPnlBefore: number | null
   realizedPnlAfter: number | null
   stopReason: UnmatchedSellBackfillReason | string
+  perTargetResults: UnmatchedSellBackfillPerTargetResult[]
   sampleTargets: UnmatchedSellBackfillTarget[]
   samplePriorBuys: Array<{ chain: string; tokenContract: string; symbol: string | null; txHash: string; timestamp: string; amount: number; priceUsd: number | null }>
   sampleStillUnmatched: string[]
@@ -2264,28 +2281,58 @@ async function buildWalletHistoricalCoverage(
 }
 
 
+function parseUnmatchedSellTokenKey(key: string): { chain: string; tokenContract: string } | null {
+  const [rawChain, rawContract] = key.split(/\s+/)[0]?.split(':') ?? []
+  const chain = normalizeChain(rawChain ?? '')
+  const tokenContract = (rawContract ?? '').toLowerCase()
+  if (!chain || !/^0x[a-f0-9]{40}$/.test(tokenContract)) return null
+  return { chain, tokenContract }
+}
+
 function buildUnmatchedSellBackfillTargets(
   pricedEvidence: WalletTxEvidence[],
   unmatchedSellTokenKeys: string[],
 ): UnmatchedSellBackfillTarget[] {
-  const unmatched = new Set(unmatchedSellTokenKeys.map(k => k.split(/\s+/)[0]?.toLowerCase()).filter(Boolean))
-  const targets = new Map<string, UnmatchedSellBackfillTarget>()
+  const orderedKeys: string[] = []
+  const wanted = new Set<string>()
+  for (const rawKey of unmatchedSellTokenKeys) {
+    const parsed = parseUnmatchedSellTokenKey(rawKey)
+    if (!parsed) continue
+    const key = `${parsed.chain}:${parsed.tokenContract}`
+    if (wanted.has(key)) continue
+    wanted.add(key)
+    orderedKeys.push(key)
+  }
+
+  const sellMetadata = new Map<string, UnmatchedSellBackfillTarget>()
   for (const e of pricedEvidence) {
     if (e.direction !== 'sell') continue
     if (!e.txHash || !e.timestamp || !e.contract?.startsWith('0x')) continue
     const chain = normalizeChain(e.chain)
     const tokenContract = e.contract.toLowerCase()
     const key = `${chain}:${tokenContract}`
-    if (!unmatched.has(key)) continue
+    if (!wanted.has(key)) continue
     const amount = parseRawAmount(e.amountRaw, e.tokenDecimals) ?? e.amount
     if (!amount || amount <= 0) continue
-    targets.set(key, { chain, tokenContract, symbol: e.symbol ?? null, sellTxHash: e.txHash, sellTimestamp: e.timestamp, sellAmount: amount, exitPriceUsd: e.priceAtTime?.priceUsd ?? null })
+    const target = {
+      chain,
+      tokenContract,
+      symbol: e.symbol ?? null,
+      sellTxHash: e.txHash,
+      sellTimestamp: e.timestamp,
+      sellAmount: amount,
+      exitPriceUsd: e.priceAtTime?.priceUsd ?? null,
+    }
+    const existing = sellMetadata.get(key)
+    if (!existing || target.sellTimestamp < existing.sellTimestamp) sellMetadata.set(key, target)
   }
-  return [...targets.values()].slice(0, 4)
+
+  // Preserve FIFO's unmatched key order and require exact normalized chain + lowercase contract matches.
+  return orderedKeys.map(key => sellMetadata.get(key)).filter((target): target is UnmatchedSellBackfillTarget => Boolean(target))
 }
 
 async function fetchAlchemyBasePriorBuysForToken(address: string, baseUrl: string, target: UnmatchedSellBackfillTarget): Promise<{ events: PnlEvent[]; raw: number; error: string | null }> {
-  if (!ALCHEMY_BASE_KEY || !baseUrl) return { events: [], raw: 0, error: 'alchemy_not_configured' }
+  if (!ALCHEMY_BASE_KEY || !baseUrl) return { events: [], raw: 0, error: 'base_contract_filter_unavailable' }
   try {
     const result = await alchemyRpc(baseUrl, 'alchemy_getAssetTransfers', [{ fromBlock: '0x0', category: ['erc20'], withMetadata: true, maxCount: '0x64', order: 'desc', toAddress: address, contractAddresses: [target.tokenContract] }])
     const transfers: Record<string, unknown>[] = Array.isArray(result?.transfers) ? result.transfers : []
@@ -2301,92 +2348,165 @@ async function fetchAlchemyBasePriorBuysForToken(address: string, baseUrl: strin
       return { contract, symbol: String(t.asset ?? target.symbol ?? '?'), direction: to === lower ? 'buy' : from === lower ? 'sell' : 'unknown', amount: Number(t.value ?? 0), amountRaw: String(rawContract?.value ?? '') || null, tokenDecimals: null, usdValue: null, txHash: typeof t.hash === 'string' ? t.hash : null, timestamp, fromAddress: from, toAddress: to, chain: 'base' }
     }).filter(e => {
       const ts = e.timestamp ? new Date(e.timestamp).getTime() : NaN
-      return e.contract === target.tokenContract && e.direction === 'buy' && e.txHash && Number.isFinite(ts) && ts < sellTime && e.amount > 0
+      return normalizeChain(e.chain) === 'base' && e.contract.toLowerCase() === target.tokenContract && e.direction === 'buy' && e.txHash && Number.isFinite(ts) && ts < sellTime && e.amount > 0
     })
     return { events, raw: transfers.length, error: null }
   } catch {
-    return { events: [], raw: 0, error: 'alchemy_provider_error' }
+    return { events: [], raw: 0, error: 'base_contract_filter_unavailable' }
   }
 }
 
 async function runTargetedUnmatchedSellBackfill(address: string, targets: UnmatchedSellBackfillTarget[], apiKey: string, baseUrl: string, closedLotsBefore: number, realizedPnlBefore: number | null): Promise<UnmatchedSellBackfillOutput> {
-  const empty = (attempted: boolean, reason: UnmatchedSellBackfillReason | string): UnmatchedSellBackfillOutput => ({ events: [], targetBuyKeys: new Set<string>(), debug: { attempted, reason, unmatchedSellCount: targets.length, targetTokens: targets.map(t => ({ chain: t.chain, tokenContract: t.tokenContract, symbol: t.symbol })), pagesAttempted: 0, rawEventsFetched: 0, normalizedEvents: 0, priorBuysFound: 0, priorBuysPriced: 0, eventsAddedToFifo: 0, closedLotsBefore, closedLotsAfter: closedLotsBefore, realizedPnlBefore, realizedPnlAfter: realizedPnlBefore, stopReason: reason, sampleTargets: targets.slice(0, 5), samplePriorBuys: [], sampleStillUnmatched: targets.map(t => `${t.chain}:${t.tokenContract}`).slice(0, 5), sampleSkippedReasons: [] } })
+  const makePerTarget = (target: UnmatchedSellBackfillTarget, attempted: boolean, reason: UnmatchedSellBackfillReason | string): UnmatchedSellBackfillPerTargetResult => ({
+    chain: target.chain,
+    tokenContract: target.tokenContract,
+    symbol: target.symbol,
+    attempted,
+    pagesAttempted: 0,
+    rawEventsFetched: 0,
+    normalizedEvents: 0,
+    priorBuysFound: 0,
+    priorBuysPriced: 0,
+    eventsAddedToFifo: 0,
+    reason,
+  })
+  const empty = (attempted: boolean, reason: UnmatchedSellBackfillReason | string): UnmatchedSellBackfillOutput => ({
+    events: [],
+    targetBuyKeys: new Set<string>(),
+    debug: {
+      attempted,
+      reason,
+      unmatchedSellCount: targets.length,
+      targetTokens: targets.map(t => ({ chain: t.chain, tokenContract: t.tokenContract, symbol: t.symbol })),
+      pagesAttempted: 0,
+      rawEventsFetched: 0,
+      normalizedEvents: 0,
+      priorBuysFound: 0,
+      priorBuysPriced: 0,
+      eventsAddedToFifo: 0,
+      closedLotsBefore,
+      closedLotsAfter: closedLotsBefore,
+      realizedPnlBefore,
+      realizedPnlAfter: realizedPnlBefore,
+      stopReason: reason,
+      perTargetResults: targets.map(t => makePerTarget(t, attempted, reason)),
+      sampleTargets: targets.slice(0, 5),
+      samplePriorBuys: [],
+      sampleStillUnmatched: targets.map(t => `${t.chain}:${t.tokenContract}`).slice(0, 5),
+      sampleSkippedReasons: [],
+    },
+  })
   if (targets.length === 0) return empty(false, 'not_eligible')
-  const cacheKey = `${address.toLowerCase()}:${targets.map(t => `${t.chain}:${t.tokenContract}:${t.sellTimestamp}`).join('|')}:v1`
+  const cacheKey = `${address.toLowerCase()}:${targets.map(t => `${t.chain}:${t.tokenContract}:${t.sellTimestamp}`).join('|')}:v2`
   const cached = unmatchedSellBackfillCache.get(cacheKey)
   if (cached && Date.now() - cached.cachedAt <= UNMATCHED_SELL_BACKFILL_TTL_MS) return { events: cached.data.events, targetBuyKeys: new Set(cached.data.targetBuyKeys), debug: { ...cached.data.debug, attempted: true, reason: cached.data.debug.reason || 'cache_hit' } }
 
   const debug = empty(true, 'prior_buy_not_found_for_sold_token').debug
+  const perTarget = new Map<string, UnmatchedSellBackfillPerTargetResult>()
+  for (const target of targets) perTarget.set(`${target.chain}:${target.tokenContract}`, makePerTarget(target, true, 'prior_buy_not_found_for_sold_token'))
+  debug.perTargetResults = targets.map(t => perTarget.get(`${t.chain}:${t.tokenContract}`)!)
+
   const eventsToAdd: PnlEvent[] = []
   const targetBuyKeys = new Set<string>()
   const seenEvents = new Set<string>()
+  const foundTargetKeys = new Set<string>()
   let stopReason: UnmatchedSellBackfillReason | string = 'prior_buy_not_found_for_sold_token'
   const maxPagesPerToken = 2
   const maxPagesTotal = 4
 
-  for (const target of targets) {
-    if (debug.pagesAttempted >= maxPagesTotal) { stopReason = 'cost_budget_reached'; debug.sampleSkippedReasons.push({ reason: 'cost_budget_reached', chain: target.chain, tokenContract: target.tokenContract }); break }
-    const chainName = normalizeChainForGoldrush(target.chain)
-    const sellTime = new Date(target.sellTimestamp).getTime()
-    let foundForTarget = false
-    let sawOlderEvents = false
-    let providerFailed = false
-    if (!apiKey) {
-      providerFailed = true
-      debug.sampleSkippedReasons.push({ reason: 'provider_history_depth_insufficient', chain: target.chain, tokenContract: target.tokenContract })
-    } else {
-      debug.sampleSkippedReasons.push({ reason: 'token_contract_filter_unavailable', chain: target.chain, tokenContract: target.tokenContract })
-      for (let page = 0; page < maxPagesPerToken && debug.pagesAttempted < maxPagesTotal; page++) {
-        debug.pagesAttempted++
-        const pageResult = await fetchGoldrushHistoricalPage(address, chainName, apiKey, page)
-        if (pageResult.error) { providerFailed = true; debug.sampleSkippedReasons.push({ reason: 'provider_history_depth_insufficient', chain: target.chain, tokenContract: target.tokenContract, page }); break }
-        debug.rawEventsFetched += pageResult.rawItems
-        debug.normalizedEvents += pageResult.events.length
-        const older = pageResult.events.filter(e => { const ts = e.timestamp ? new Date(e.timestamp).getTime() : NaN; return Number.isFinite(ts) && ts < sellTime })
-        if (older.length > 0) sawOlderEvents = true
-        const priorBuys = older.filter(e => normalizeChain(e.chain) === target.chain && e.contract.toLowerCase() === target.tokenContract && e.direction === 'buy' && e.txHash && e.amount > 0)
-        if (priorBuys.length === 0) continue
-        foundForTarget = true
-        debug.priorBuysFound += priorBuys.length
-        const buyTxHashes = new Set(priorBuys.map(e => e.txHash).filter(Boolean) as string[])
-        const txEvents = pageResult.events.filter(e => e.txHash && buyTxHashes.has(e.txHash))
-        for (const ev of txEvents.length > 0 ? txEvents : priorBuys) {
-          const k = `${ev.txHash}|${ev.contract}|${ev.direction}|${Math.round(ev.amount * 1e9)}`
-          if (seenEvents.has(k)) continue
-          seenEvents.add(k)
-          eventsToAdd.push(ev)
-          if (ev.direction === 'buy' && normalizeChain(ev.chain) === target.chain && ev.contract.toLowerCase() === target.tokenContract) {
-            targetBuyKeys.add(`${ev.txHash}:${ev.contract.toLowerCase()}:buy`)
-            if (debug.samplePriorBuys.length < 5) debug.samplePriorBuys.push({ chain: target.chain, tokenContract: target.tokenContract, symbol: ev.symbol ?? target.symbol, txHash: ev.txHash!, timestamp: ev.timestamp!, amount: ev.amount, priceUsd: ev.usdValue && ev.amount > 0 ? ev.usdValue / ev.amount : null })
-          }
-        }
-        break
+  const addEventsForTarget = (target: UnmatchedSellBackfillTarget, candidateEvents: PnlEvent[], priorBuys: PnlEvent[]) => {
+    const targetKey = `${target.chain}:${target.tokenContract}`
+    const result = perTarget.get(targetKey)
+    if (!result || priorBuys.length === 0) return
+    foundTargetKeys.add(targetKey)
+    result.priorBuysFound += priorBuys.length
+    debug.priorBuysFound += priorBuys.length
+    const beforeCount = eventsToAdd.length
+    const buyTxHashes = new Set(priorBuys.map(e => e.txHash).filter(Boolean) as string[])
+    const txEvents = candidateEvents.filter(e => e.txHash && buyTxHashes.has(e.txHash))
+    for (const ev of txEvents.length > 0 ? txEvents : priorBuys) {
+      const k = `${ev.txHash}|${ev.contract}|${ev.direction}|${Math.round(ev.amount * 1e9)}`
+      if (seenEvents.has(k)) continue
+      seenEvents.add(k)
+      eventsToAdd.push(ev)
+      if (ev.direction === 'buy' && normalizeChain(ev.chain) === target.chain && ev.contract.toLowerCase() === target.tokenContract) {
+        targetBuyKeys.add(`${ev.txHash}:${ev.contract.toLowerCase()}:buy`)
+        if (debug.samplePriorBuys.length < 5) debug.samplePriorBuys.push({ chain: target.chain, tokenContract: target.tokenContract, symbol: ev.symbol ?? target.symbol, txHash: ev.txHash!, timestamp: ev.timestamp!, amount: ev.amount, priceUsd: ev.usdValue && ev.amount > 0 ? ev.usdValue / ev.amount : null })
       }
     }
-    if (!foundForTarget && target.chain === 'base') {
-      const alchemy = await fetchAlchemyBasePriorBuysForToken(address, baseUrl, target)
-      debug.rawEventsFetched += alchemy.raw
-      debug.normalizedEvents += alchemy.events.length
-      if (alchemy.error) debug.sampleSkippedReasons.push({ reason: alchemy.error, chain: target.chain, tokenContract: target.tokenContract })
-      if (alchemy.events.length > 0) {
-        foundForTarget = true
-        debug.priorBuysFound += alchemy.events.length
-        for (const ev of alchemy.events.slice(0, 2)) {
-          const k = `${ev.txHash}|${ev.contract}|${ev.direction}|${Math.round(ev.amount * 1e9)}`
-          if (seenEvents.has(k)) continue
-          seenEvents.add(k)
-          eventsToAdd.push(ev)
-          targetBuyKeys.add(`${ev.txHash}:${ev.contract.toLowerCase()}:buy`)
-          if (debug.samplePriorBuys.length < 5) debug.samplePriorBuys.push({ chain: target.chain, tokenContract: target.tokenContract, symbol: ev.symbol ?? target.symbol, txHash: ev.txHash!, timestamp: ev.timestamp!, amount: ev.amount, priceUsd: null })
-        }
-      }
-    }
-    if (!foundForTarget) { const reason: UnmatchedSellBackfillReason = providerFailed ? 'provider_history_depth_insufficient' : sawOlderEvents ? 'prior_buy_not_found_for_sold_token' : 'prior_buy_outside_checked_window'; debug.sampleSkippedReasons.push({ reason, chain: target.chain, tokenContract: target.tokenContract }); stopReason = reason } else { stopReason = 'prior_buy_found' }
+    result.eventsAddedToFifo += eventsToAdd.length - beforeCount
+    result.reason = 'prior_buy_found'
   }
+
+  for (let page = 0; page < maxPagesPerToken; page++) {
+    for (const target of targets) {
+      const targetKey = `${target.chain}:${target.tokenContract}`
+      const result = perTarget.get(targetKey)!
+      if (foundTargetKeys.has(targetKey)) continue
+      if (debug.pagesAttempted >= maxPagesTotal) {
+        if (result.reason !== 'prior_buy_found') result.reason = 'cost_budget_reached'
+        debug.sampleSkippedReasons.push({ reason: 'cost_budget_reached', chain: target.chain, tokenContract: target.tokenContract, page })
+        stopReason = 'cost_budget_reached'
+        continue
+      }
+      const chainName = normalizeChainForGoldrush(target.chain)
+      const sellTime = new Date(target.sellTimestamp).getTime()
+      result.attempted = true
+      if (!apiKey) {
+        const reason: UnmatchedSellBackfillReason = target.chain === 'base' ? 'base_provider_unavailable' : 'provider_history_depth_insufficient'
+        result.reason = reason
+        debug.sampleSkippedReasons.push({ reason, chain: target.chain, tokenContract: target.tokenContract, page })
+      } else {
+        debug.pagesAttempted++
+        result.pagesAttempted++
+        const pageResult = await fetchGoldrushHistoricalPage(address, chainName, apiKey, page)
+        if (pageResult.error) {
+          const reason: UnmatchedSellBackfillReason = target.chain === 'base' ? 'base_provider_unavailable' : 'provider_history_depth_insufficient'
+          result.reason = reason
+          debug.sampleSkippedReasons.push({ reason, chain: target.chain, tokenContract: target.tokenContract, page })
+        } else {
+          debug.rawEventsFetched += pageResult.rawItems
+          debug.normalizedEvents += pageResult.events.length
+          result.rawEventsFetched += pageResult.rawItems
+          result.normalizedEvents += pageResult.events.length
+          const older = pageResult.events.filter(e => { const ts = e.timestamp ? new Date(e.timestamp).getTime() : NaN; return Number.isFinite(ts) && ts < sellTime })
+          const priorBuys = older.filter(e => normalizeChain(e.chain) === target.chain && e.contract.toLowerCase() === target.tokenContract && e.direction === 'buy' && e.txHash && e.amount > 0)
+          if (priorBuys.length > 0) addEventsForTarget(target, pageResult.events, priorBuys)
+        }
+      }
+    }
+  }
+
+  for (const target of targets) {
+    const targetKey = `${target.chain}:${target.tokenContract}`
+    const result = perTarget.get(targetKey)!
+    if (foundTargetKeys.has(targetKey) || target.chain !== 'base') continue
+    const alchemy = await fetchAlchemyBasePriorBuysForToken(address, baseUrl, target)
+    debug.rawEventsFetched += alchemy.raw
+    debug.normalizedEvents += alchemy.events.length
+    result.rawEventsFetched += alchemy.raw
+    result.normalizedEvents += alchemy.events.length
+    if (alchemy.error) {
+      result.reason = result.reason === 'cost_budget_reached' ? 'cost_budget_reached' : 'base_contract_filter_unavailable'
+      debug.sampleSkippedReasons.push({ reason: 'base_contract_filter_unavailable', chain: target.chain, tokenContract: target.tokenContract })
+    } else if (alchemy.events.length === 0 && result.reason !== 'cost_budget_reached') {
+      result.reason = 'prior_buy_not_found_for_sold_token'
+    }
+    if (alchemy.events.length > 0) addEventsForTarget(target, alchemy.events, alchemy.events)
+  }
+
+  for (const target of targets) {
+    const targetKey = `${target.chain}:${target.tokenContract}`
+    const result = perTarget.get(targetKey)!
+    if (result.reason === 'prior_buy_found' || result.reason === 'cost_budget_reached' || result.reason === 'base_provider_unavailable' || result.reason === 'base_contract_filter_unavailable' || result.reason === 'provider_history_depth_insufficient') continue
+    result.reason = 'prior_buy_not_found_for_sold_token'
+    debug.sampleSkippedReasons.push({ reason: 'prior_buy_not_found_for_sold_token', chain: target.chain, tokenContract: target.tokenContract })
+  }
+
   debug.eventsAddedToFifo = eventsToAdd.length
-  debug.stopReason = stopReason
-  debug.reason = eventsToAdd.length > 0 ? 'prior_buy_found' : stopReason
-  debug.sampleStillUnmatched = targets.filter(t => !debug.samplePriorBuys.some(b => b.chain === t.chain && b.tokenContract === t.tokenContract)).map(t => `${t.chain}:${t.tokenContract}`).slice(0, 5)
+  debug.stopReason = eventsToAdd.length > 0 ? 'prior_buy_found' : (debug.perTargetResults.find(r => r.reason === 'cost_budget_reached')?.reason ?? debug.perTargetResults[debug.perTargetResults.length - 1]?.reason ?? stopReason)
+  debug.reason = eventsToAdd.length > 0 ? 'prior_buy_found' : debug.stopReason
+  debug.sampleStillUnmatched = targets.filter(t => !foundTargetKeys.has(`${t.chain}:${t.tokenContract}`)).map(t => `${t.chain}:${t.tokenContract}`).slice(0, 5)
   unmatchedSellBackfillCache.set(cacheKey, { data: { events: eventsToAdd, targetBuyKeys: [...targetBuyKeys], debug }, cachedAt: Date.now() })
   return { events: eventsToAdd, targetBuyKeys, debug }
 }
@@ -6740,6 +6860,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     realizedPnlBefore: walletLotSummary.realizedPnlUsd,
     realizedPnlAfter: walletLotSummary.realizedPnlUsd,
     stopReason: 'not_eligible',
+    perTargetResults: [],
     sampleTargets: [],
     samplePriorBuys: [],
     sampleStillUnmatched: _lotEngineDebug.unmatchedSellTokenKeys.slice(0, 5),
@@ -6787,6 +6908,17 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         const k = `${ev.txHash}:${ev.contract.toLowerCase()}:${ev.direction}`
         return _backfill.targetBuyKeys.has(k) && ev.priceAtTime?.status === 'priced'
       }).length
+      _unmatchedSellBackfillDebug.perTargetResults = _unmatchedSellBackfillDebug.perTargetResults.map(result => {
+        const priorBuysPriced = _pricedEvidence.filter(ev => {
+          const k = `${ev.txHash}:${ev.contract.toLowerCase()}:${ev.direction}`
+          return _backfill.targetBuyKeys.has(k) && ev.direction === 'buy' && normalizeChain(ev.chain) === result.chain && ev.contract.toLowerCase() === result.tokenContract && ev.priceAtTime?.status === 'priced'
+        }).length
+        return {
+          ...result,
+          priorBuysPriced,
+          reason: result.priorBuysFound > 0 && priorBuysPriced === 0 ? 'prior_buy_found_but_unpriced' : result.reason,
+        }
+      })
       if (walletLotSummary.closedLots === 0 && _unmatchedSellBackfillDebug.priorBuysFound > 0 && _unmatchedSellBackfillDebug.priorBuysPriced === 0) {
         _unmatchedSellBackfillDebug.reason = 'prior_buy_found_but_unpriced'
         _unmatchedSellBackfillDebug.stopReason = 'prior_buy_found_but_unpriced'
