@@ -29,7 +29,7 @@ export async function OPTIONS(req: Request) {
 const WALLET_BASIC_CACHE_TTL_MS  = 5  * 60 * 1000  // 5 min for basic scans
 const WALLET_DEEP_CACHE_TTL_MS   = 15 * 60 * 1000  // 15 min for deep scans
 const WALLET_DEEP_COOLDOWN_MS    = 10 * 60 * 1000  // 10 min cooldown per wallet after deep live scan
-const WALLET_SNAPSHOT_SCHEMA_VERSION = 'v10'
+const WALLET_SNAPSHOT_SCHEMA_VERSION = 'v11'
 const walletCache = new Map<string, { exp: number; payload: unknown; cachedAt: number }>()
 const walletRate = new Map<string, { count: number; resetAt: number }>()
 const WALLET_RATE_BY_PLAN: Record<string, number> = { free: 20, pro: 60, elite: 180 }
@@ -573,8 +573,26 @@ export async function POST(req: Request) {
     const walletModuleCoverage = buildWalletModuleCoverage(snapshot)
     snapshot.walletModuleCoverage = walletModuleCoverage
 
+    // Cache quality gate — block writes when portfolio clearly failed while activity succeeded
+    const _snapHoldingsCount = (snapshot as any).holdings?.length ?? (snapshot as any).holdingsCount ?? 0
+    const _snapTotalValue = (snapshot as any).totalValue ?? 0
+    const _snapActivityEvents = (snapshot as any).walletEvidenceSummary?.totalEvents ?? 0
+    const _snapProviderStatus = (snapshot as any).providerStatus ?? null
+    let _cacheQuality: 'good' | 'portfolio_failed' | 'activity_only' = 'good'
+    let _cacheWriteBlocked = false
+    let _blockedWriteReason: string | null = null
+    if (_snapHoldingsCount === 0 && _snapTotalValue === 0 && _snapActivityEvents > 0) {
+      _cacheQuality = 'portfolio_failed'
+      _cacheWriteBlocked = true
+      _blockedWriteReason = `portfolio_empty_with_${_snapActivityEvents}_activity_events`
+    } else if (_snapHoldingsCount === 0 && _snapTotalValue === 0 && (_snapProviderStatus === 'failed' || _snapProviderStatus === 'partial')) {
+      _cacheQuality = 'portfolio_failed'
+      _cacheWriteBlocked = true
+      _blockedWriteReason = `portfolio_provider_${_snapProviderStatus}`
+    }
+
     // Persistent cache + cooldown writes — cross-instance, survives Vercel cold-starts
-    if (_cacheWriteAttempted && deepActivity && !effectiveHistoricalCoverage && !inFlightDeduped && _persistentAvailable) {
+    if (_cacheWriteAttempted && deepActivity && !effectiveHistoricalCoverage && !inFlightDeduped && _persistentAvailable && !_cacheWriteBlocked) {
       _persistentCacheWriteAttempted = true
       const _ppayload: any = { ...snapshot }
       pruneWalletScannerDebug(_ppayload, false)
@@ -626,6 +644,15 @@ export async function POST(req: Request) {
         walletHistoricalFifoPreviewDebug: snapshot._diagnostics?.walletHistoricalFifoPreviewDebug ?? null,
         walletBudgetDebug: snapshot._diagnostics?.walletBudgetDebug ?? null,
         walletFactsDebug: snapshot._diagnostics?.walletFactsDebug ?? null,
+        walletCacheQualityDebug: {
+          cacheQuality: _cacheQuality,
+          writeAllowed: !_cacheWriteBlocked,
+          blockedWriteReason: _blockedWriteReason,
+          holdingsCount: _snapHoldingsCount,
+          totalValue: _snapTotalValue,
+          activityEvents: _snapActivityEvents,
+          providerStatus: _snapProviderStatus,
+        },
         apiAudit: snapshot._diagnostics?.apiAudit ?? null,
         walletModuleCoverageRaw: {
           portfolioProvider: providers.goldrush?.configured ? 'goldrush' : providers.zerion?.configured ? 'zerion' : 'none',
@@ -803,8 +830,8 @@ export async function POST(req: Request) {
     }
     pruneWalletScannerDebug(snapshot, debug)
     // Write to cache after every live scan (including refresh=true) so subsequent normal requests benefit.
-    // Only allowDebugFresh (explicit admin override) skips the write.
-    if (_cacheWriteAttempted) walletCache.set(cacheKey, { exp: Date.now() + _cacheTtlMs, payload: snapshot, cachedAt: Date.now() })
+    // Only allowDebugFresh (explicit admin override) or a poisoned result skips the write.
+    if (_cacheWriteAttempted && !_cacheWriteBlocked) walletCache.set(cacheKey, { exp: Date.now() + _cacheTtlMs, payload: snapshot, cachedAt: Date.now() })
     return json(snapshot)
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Wallet scan failed'
