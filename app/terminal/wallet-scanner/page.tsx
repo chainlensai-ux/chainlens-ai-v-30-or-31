@@ -277,9 +277,23 @@ type WalletResult = {
       reason: string
     }
   }
+  _debug?: {
+    basePnlReconstructionDebug?: {
+      sampleUnpricedAfterReceipt?: Array<{ txHash: string; symbol: string; finalReason: string }>
+    } | null
+  }
 }
 
 // ── Formatters ───────────────────────────────────────────────────────────────────────────
+
+function unpricedReasonLabel(finalReason: string): string {
+  if (finalReason === 'receipt_checked_no_counter_asset') return 'No quote asset found in checked receipt'
+  if (finalReason === 'receipt_checked_no_quote_leg') return 'No quote leg found'
+  if (finalReason === 'receipt_checked_no_native_value') return 'No native ETH payment found'
+  if (finalReason === 'receipt_checked_no_wallet_quote_transfer') return 'No wallet-side quote transfer found'
+  if (/^\d+_swap_candidates_unpriced$/.test(finalReason)) return 'Swap candidates unpriced'
+  return finalReason.replace(/_/g, ' ')
+}
 
 function fmtUSD(v: number): string {
   if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(2)}M`
@@ -1191,8 +1205,8 @@ export default function WalletScannerPage() {
                   { label: 'Portfolio', note: mc.portfolio.status === 'ok' ? `${(mc.portfolio.evidence.includes('total_value') ? 'value + ' : '')}holdings` : mc.portfolio.reason.replace(/_/g, ' '), status: mc.portfolio.status },
                   { label: 'Activity', note: mc.activity.eventCount > 0 ? `${mc.activity.eventCount} events indexed` : mc.activity.status === 'open_check' && mc.activity.reason === 'provider_unavailable' ? 'unavailable' : 'not checked', status: mc.activity.status },
                   { label: 'Swap pairs', note: mc.swapDetection.candidateCount > 0 ? `${mc.swapDetection.candidateCount} candidates` : mc.activity.eventCount > 0 ? 'none found in sample' : 'no activity', status: mc.swapDetection.status },
-                  { label: 'FIFO PnL', note: mc.fifoPnL.closedLots > 0 ? `${mc.fifoPnL.closedLots} closed lots` : mc.swapDetection.candidateCount > 0 ? 'no matched lots' : 'no swap evidence', status: mc.fifoPnL.status },
-                  { label: 'Trade stats', note: mc.tradeStats.closedLots > 0 ? `${mc.tradeStats.closedLots} lots` + (mc.tradeStats.readyForWinRate ? '' : ' — below threshold') : 'no closed lots', status: mc.tradeStats.status },
+                  { label: 'FIFO PnL', note: mc.fifoPnL.closedLots > 0 ? `${mc.fifoPnL.closedLots} closed lots` : mc.swapDetection.candidateCount > 0 && (mc.priceEvidence?.pricedEvents ?? 0) === 0 ? 'candidates unpriced' : mc.swapDetection.candidateCount > 0 ? 'no matched lots' : 'no swap evidence', status: mc.fifoPnL.status },
+                  { label: 'Trade stats', note: mc.tradeStats.closedLots > 0 ? `${mc.tradeStats.closedLots} lots` + (mc.tradeStats.readyForWinRate ? '' : ' — below threshold') : mc.swapDetection.candidateCount > 0 && (mc.priceEvidence?.pricedEvents ?? 0) === 0 ? 'no verified closed lots' : 'no closed lots', status: mc.tradeStats.status },
                 ]
                 return (
                   <div style={{ padding: '12px 16px', background: 'rgba(255,255,255,0.015)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '12px', display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
@@ -1399,7 +1413,9 @@ export default function WalletScannerPage() {
                             </span>
                           </div>
                           <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.45)', lineHeight: 1.55, fontFamily: 'var(--font-inter, Inter, sans-serif)', marginBottom: '16px' }}>
-                            CORTEX can read current holdings and exposure. Trading skill needs matched swap exits.
+                            {(result.walletModuleCoverage?.swapDetection?.candidateCount ?? 0) > 0 && (result.walletModuleCoverage?.priceEvidence?.pricedEvents ?? 0) === 0
+                              ? 'CORTEX found swap-like movement, but could not verify quote-side price evidence from the available sample.'
+                              : 'CORTEX can read current holdings and exposure. Trading skill needs matched swap exits.'}
                           </div>
                           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '10px' }}>
                             <div style={{ background: 'rgba(255,255,255,0.035)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '12px', padding: '12px' }}>
@@ -1514,6 +1530,9 @@ export default function WalletScannerPage() {
                           }
                           if (mc?.activity?.reason === 'provider_unavailable') {
                             return 'Activity provider unavailable in this scan. PnL stays open check until transfer evidence is indexed.'
+                          }
+                          if (mc?.swapDetection && mc.swapDetection.candidateCount > 0 && (mc.priceEvidence?.pricedEvents ?? 0) === 0 && mc.fifoPnL.closedLots === 0) {
+                            return 'Swap candidates found, but price evidence was unavailable at trade time. FIFO lot matching requires priced entry and exit legs.'
                           }
                           if (mc?.swapDetection && mc.swapDetection.candidateCount > 0 && mc.fifoPnL.closedLots === 0) {
                             return 'Swap candidates found but no matched buy/sell lot pairs yet. Closed-lot PnL not available until FIFO lots close.'
@@ -1729,13 +1748,26 @@ export default function WalletScannerPage() {
                             const mc = result.walletModuleCoverage
                             if (ls && (ls.pricedSwapEvents ?? 0) > 0) return 'CORTEX found priced activity, but buys and sells did not match inside the indexed window yet.'
                             if (mc?.activity && mc.activity.eventCount > 0 && mc.swapDetection.candidateCount === 0) return `${mc.activity.eventCount} transfer events indexed — no reconstructable swap pairs found in checked sample.`
-                            if (mc?.swapDetection && mc.swapDetection.candidateCount > 0 && (mc.priceEvidence?.pricedEvents ?? 0) === 0) return 'Swap candidates found but price evidence was unavailable at time of trade. FIFO lot matching requires entry and exit price data.'
+                            if (mc?.swapDetection && mc.swapDetection.candidateCount > 0 && (mc.priceEvidence?.pricedEvents ?? 0) === 0) return 'CORTEX found swap-like movement, but could not verify quote-side price evidence from the available sample.'
                             if (mc?.activity?.reason === 'provider_unavailable') return 'Activity provider unavailable. No FIFO lot matching was possible in this scan.'
                             return 'No matched priced closed lots yet.'
                           })()}
                         </div>
                         <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.35)', lineHeight: 1.5, fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', background: 'rgba(125,211,252,0.04)', border: '1px solid rgba(125,211,252,0.10)', borderRadius: '8px', padding: '8px 10px' }}>
-                          Requires matched buys and sells with price evidence. Current scan found transfers but no reconstructable swap pairs. Closed-lot stats not available yet.
+                          {(() => {
+                            const _mc = result.walletModuleCoverage
+                            const _unpricedWithCandidates = (_mc?.swapDetection?.candidateCount ?? 0) > 0 && (_mc?.priceEvidence?.pricedEvents ?? 0) === 0
+                            if (_unpricedWithCandidates) {
+                              const _reasons = result._debug?.basePnlReconstructionDebug?.sampleUnpricedAfterReceipt ?? []
+                              if (_reasons.some(r => r.finalReason === 'receipt_checked_no_counter_asset')) {
+                                return 'Receipt checked: no USDC/WETH/native ETH quote leg found.'
+                              }
+                              const _firstReason = _reasons[0]?.finalReason
+                              if (_firstReason) return unpricedReasonLabel(_firstReason) + '.'
+                              return 'Price evidence unavailable at trade time. Closed-lot PnL requires priced entry and exit legs.'
+                            }
+                            return 'Requires matched buys and sells with price evidence. Current scan found transfers but no reconstructable swap pairs. Closed-lot stats not available yet.'
+                          })()}
                         </div>
                       </div>
                     ) : (
