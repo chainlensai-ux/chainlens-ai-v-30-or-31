@@ -314,6 +314,7 @@ export type WalletSnapshot = {
     wethLegPricedEvents: number
     historicalPricedEvents: number
     providerEventUsdPricedEvents: number
+    currentHoldingPricedEvents: number
     priceAttemptLimitReached: boolean
     readyForLotMatching: boolean
     missing: string[]
@@ -676,8 +677,15 @@ export type WalletSnapshot = {
       skippedNoTokenAddress: number
       skippedNoAmount: number
       skippedNoStableOrWethLeg: number
+      skippedNoQuoteLeg: number
       skippedProviderUsdMissing: number
+      skippedProviderUsdInvalid: number
       skippedHistoricalUnavailable: number
+      currentHoldingPriceAttempts: number
+      currentHoldingPriceOpenLotEvents: number
+      skippedCurrentPriceNotAllowedForRealized: number
+      historicalPriceAttempts: number
+      historicalPricePricedEvents: number
       cacheHits: number
       cacheMisses: number
       providerAttempts: number
@@ -1012,7 +1020,7 @@ export type WalletSnapshotOptions = {
 
 const SNAPSHOT_TTL_MS         = 5  * 60 * 1000
 const SNAPSHOT_HISTORY_TTL_MS = 15 * 60 * 1000
-const SNAPSHOT_SCHEMA_VERSION = 'v12'
+const SNAPSHOT_SCHEMA_VERSION = 'v13'
 type SnapshotCacheEntry = { snapshot: WalletSnapshot; cachedAt: number; ttlMs: number }
 const snapshotMemCache = new Map<string, SnapshotCacheEntry>()
 
@@ -1368,7 +1376,7 @@ export type PriceAtTimeEvidence = {
   tokenSymbol?: string | null
   timestamp: string
   priceUsd: number | null
-  source: 'stable_leg' | 'weth_leg' | 'historical_price' | 'swap_derived' | 'provider_event_usd' | 'current_price_fallback_not_used' | 'unavailable'
+  source: 'stable_leg' | 'weth_leg' | 'historical_price' | 'swap_derived' | 'provider_event_usd' | 'current_holding_price_open_lot_estimate' | 'current_price_fallback_not_used' | 'unavailable'
   confidence: 'high' | 'medium' | 'low' | 'open_check'
   reason: string
 }
@@ -2752,6 +2760,8 @@ function buildFifoLotEngine(
   // Open lots keyed by normalizedChain:contract (FIFO queue — oldest first)
   // Using normalizeChain() prevents base-mainnet/8453/base mismatches from breaking lot matching.
   const openLotsMap = new Map<string, WalletLotOpen[]>()
+  // Estimate-only lots (current_holding_price_open_lot_estimate): counted in openedLots but NEVER matched against sells.
+  const estimateLotsMap = new Map<string, WalletLotOpen[]>()
   const closedLots: WalletClosedLot[] = []
   let unmatchedBuys = 0
   let unmatchedSells = 0
@@ -2784,11 +2794,18 @@ function buildFifoLotEngine(
         entryPriceUsd: priceUsd,
         entryValueUsd: e.amount * priceUsd,
         priceSource,
-        confidence: priceSource === 'stable_leg' ? 'high' : 'medium',
+        confidence: priceSource === 'stable_leg' ? 'high' : priceSource === 'current_holding_price_open_lot_estimate' ? 'low' : 'medium',
       }
-      const queue = openLotsMap.get(lotKey) ?? []
-      queue.push(lot)
-      openLotsMap.set(lotKey, queue)
+      if (priceSource === 'current_holding_price_open_lot_estimate') {
+        // Estimate lots are open-position records only — never matched against sells to prevent fake realized PnL
+        const estimateQueue = estimateLotsMap.get(lotKey) ?? []
+        estimateQueue.push(lot)
+        estimateLotsMap.set(lotKey, estimateQueue)
+      } else {
+        const queue = openLotsMap.get(lotKey) ?? []
+        queue.push(lot)
+        openLotsMap.set(lotKey, queue)
+      }
 
     } else if (e.direction === 'sell') {
       sellTokenKeySet.add(lotKey)
@@ -2850,6 +2867,10 @@ function buildFifoLotEngine(
       if (lot.amountRemaining < lot.amountOpened - LOT_EPSILON) partiallyClosedLots++
     }
   }
+  // Estimate lots count as opened positions but are never matched against sells
+  for (const queue of estimateLotsMap.values()) {
+    for (const _lot of queue) { openedLots++ }
+  }
   unmatchedBuys = Array.from(openLotsMap.values()).flatMap(q => q).filter(lot => lot.amountRemaining >= lot.amountOpened - LOT_EPSILON).length
 
   const totalCostBasisClosedUsd = closedLots.length > 0 ? closedLots.reduce((s, l) => s + l.costBasisUsd, 0) : null
@@ -2883,7 +2904,10 @@ function buildFifoLotEngine(
 
   const abbr = (addr: string) => `${addr.slice(0, 8)}...${addr.slice(-6)}`
 
-  const allOpenLots = Array.from(openLotsMap.values()).flatMap(q => q)
+  const allOpenLots = [
+    ...Array.from(openLotsMap.values()).flatMap(q => q),
+    ...Array.from(estimateLotsMap.values()).flatMap(q => q),
+  ]
 
   return {
     summary: {
@@ -3615,7 +3639,8 @@ async function fetchGoldrushHistoricalPrice(chain: string, contractAddress: stri
 async function buildPriceAtTimeEvidence(
   evidenceWithDetection: WalletTxEvidence[],
   activityRequested: boolean,
-  reqCache?: Map<string, number | null>
+  reqCache?: Map<string, number | null>,
+  priceByContract?: Map<string, number>
 ): Promise<{
   evidenceWithPricing: WalletTxEvidence[]
   summary: WalletSnapshot['walletPriceEvidenceSummary']
@@ -3629,7 +3654,7 @@ async function buildPriceAtTimeEvidence(
       status: 'open_check' as const, swapCandidateEvents: 0, pricedEvents: 0,
       openCheckEvents: 0, unavailableEvents: 0,
       stableLegPricedEvents: 0, wethLegPricedEvents: 0, historicalPricedEvents: 0,
-      providerEventUsdPricedEvents: 0,
+      providerEventUsdPricedEvents: 0, currentHoldingPricedEvents: 0,
       priceAttemptLimitReached: false, readyForLotMatching: false, missing,
     },
     debug: {
@@ -3638,7 +3663,11 @@ async function buildPriceAtTimeEvidence(
       historicalPricedEvents: 0, providerEventUsdAttempts: 0, providerEventUsdPricedEvents: 0,
       priceAttemptLimitReached: false,
       skippedNoTimestamp: 0, skippedNoTokenAddress: 0, skippedNoAmount: 0,
-      skippedNoStableOrWethLeg: 0, skippedProviderUsdMissing: 0, skippedHistoricalUnavailable: 0,
+      skippedNoStableOrWethLeg: 0, skippedNoQuoteLeg: 0,
+      skippedProviderUsdMissing: 0, skippedProviderUsdInvalid: 0, skippedHistoricalUnavailable: 0,
+      currentHoldingPriceAttempts: 0, currentHoldingPriceOpenLotEvents: 0,
+      skippedCurrentPriceNotAllowedForRealized: 0,
+      historicalPriceAttempts: 0, historicalPricePricedEvents: 0,
       cacheHits: 0, cacheMisses: 0, providerAttempts: 0, providerErrors: 0,
       samplePricedEvents: [], sampleOpenCheckEvents: [], reasons: missing,
     },
@@ -3669,8 +3698,15 @@ async function buildPriceAtTimeEvidence(
   let skippedNoTokenAddress = 0
   let skippedNoAmount = 0
   let skippedNoStableOrWethLeg = 0
+  let skippedNoQuoteLeg = 0
   let skippedProviderUsdMissing = 0
+  let skippedProviderUsdInvalid = 0
   let skippedHistoricalUnavailable = 0
+  let currentHoldingPriceAttempts = 0
+  let currentHoldingPriceOpenLotEvents = 0
+  let skippedCurrentPriceNotAllowedForRealized = 0
+  let historicalPriceAttempts = 0
+  let historicalPricePricedEvents = 0
   let cacheHits = 0
   let cacheMisses = 0
   let providerAttempts = 0
@@ -3770,22 +3806,25 @@ async function buildPriceAtTimeEvidence(
         }
       }
     }
-    if (!_resolvedFromWethOrStable) skippedNoStableOrWethLeg++
+    if (!_resolvedFromWethOrStable) { skippedNoStableOrWethLeg++; skippedNoQuoteLeg++ }
 
     // Try provider event USD: derive unit price from provider-reported total USD value.
     // No API call needed. Uses GoldRush usdValue field populated during event normalization.
     // Confidence is medium — value is at event time but not independently verified per-token.
     providerEventUsdAttempts++
     const _provUsd = e.usdValue
-    if (_provUsd && _provUsd > 0 && isFinite(_provUsd) && tokenAmount > 0) {
+    if (_provUsd !== null && _provUsd !== undefined && !isFinite(_provUsd)) {
+      skippedProviderUsdInvalid++
+    } else if (_provUsd && _provUsd > 0 && isFinite(_provUsd) && tokenAmount > 0) {
       const _provDerivedPrice = _provUsd / tokenAmount
       if (_provDerivedPrice > 0 && isFinite(_provDerivedPrice) && _provDerivedPrice < 1_000_000) {
         evidenceWithPricing.push(priced(e, _provDerivedPrice, 'provider_event_usd', 'medium',
           `Derived from provider event USD value ($${_provUsd.toFixed(4)} / ${tokenAmount.toFixed(6)} tokens)`))
         continue
       }
+    } else {
+      skippedProviderUsdMissing++
     }
-    skippedProviderUsdMissing++
 
     // Try direct historical price via GoldRush
     if (priceAttempts >= MAX_PRICE_ATTEMPTS) {
@@ -3794,15 +3833,31 @@ async function buildPriceAtTimeEvidence(
       continue
     }
     priceAttempts++
+    historicalPriceAttempts++
     const histResult = await fetchGoldrushHistoricalPrice(e.chain, e.contract, e.timestamp, reqCache)
     if (histResult.cacheHit) cacheHits++; else cacheMisses++
     if (histResult.providerAttempted) providerAttempts++
     if (histResult.error) providerErrors++
     if (histResult.priceUsd !== null) {
+      historicalPricePricedEvents++
       evidenceWithPricing.push(priced(e, histResult.priceUsd, 'historical_price', 'medium', `Historical token price from on-chain pricing data`))
       continue
     }
     skippedHistoricalUnavailable++
+
+    // Current holding price fallback: only for BUY events, creates open lots only (never realized PnL)
+    if (e.direction === 'buy' && priceByContract) {
+      currentHoldingPriceAttempts++
+      const currentPrice = priceByContract.get(contractLower)
+      if (currentPrice && currentPrice > 0 && isFinite(currentPrice)) {
+        currentHoldingPriceOpenLotEvents++
+        evidenceWithPricing.push(priced(e, currentPrice, 'current_holding_price_open_lot_estimate', 'low',
+          `Current holding price ($${currentPrice.toFixed(4)}) — open-lot estimate only, not for realized PnL`))
+        continue
+      }
+    } else if (e.direction === 'sell') {
+      skippedCurrentPriceNotAllowedForRealized++
+    }
 
     // No price evidence found — record specific reason for debug
     const _openCheckReason = !_resolvedFromWethOrStable
@@ -3861,7 +3916,7 @@ async function buildPriceAtTimeEvidence(
     : 'partial'
 
   const missing: string[] = []
-  if (pricedEvents === 0 && swapCandidateEvents > 0) missing.push('no_price_evidence')
+  if (pricedEvents === 0 && swapCandidateEvents > 0) missing.push('swap_candidates_unpriced')
   if (priceAttemptLimitReached) missing.push('price_attempt_limit_reached')
   if (!readyForLotMatching && pricedEvents > 0) missing.push(pricedInbound === 0 ? 'no_priced_inbound_swaps' : 'no_priced_outbound_swaps')
 
@@ -3872,6 +3927,7 @@ async function buildPriceAtTimeEvidence(
     summary: {
       status: summaryStatus, swapCandidateEvents, pricedEvents, openCheckEvents, unavailableEvents,
       stableLegPricedEvents, wethLegPricedEvents, historicalPricedEvents, providerEventUsdPricedEvents,
+      currentHoldingPricedEvents: currentHoldingPriceOpenLotEvents,
       priceAttemptLimitReached, readyForLotMatching, missing,
     },
     debug: {
@@ -3880,7 +3936,11 @@ async function buildPriceAtTimeEvidence(
       providerEventUsdAttempts, providerEventUsdPricedEvents,
       priceAttemptLimitReached,
       skippedNoTimestamp, skippedNoTokenAddress, skippedNoAmount,
-      skippedNoStableOrWethLeg, skippedProviderUsdMissing, skippedHistoricalUnavailable,
+      skippedNoStableOrWethLeg, skippedNoQuoteLeg,
+      skippedProviderUsdMissing, skippedProviderUsdInvalid, skippedHistoricalUnavailable,
+      currentHoldingPriceAttempts, currentHoldingPriceOpenLotEvents,
+      skippedCurrentPriceNotAllowedForRealized,
+      historicalPriceAttempts, historicalPricePricedEvents,
       cacheHits, cacheMisses, providerAttempts, providerErrors,
       samplePricedEvents: samplePricedRaw.slice(0, 5).map(ev => ({
         txHash: abbr(ev.txHash), contract: abbr(ev.contract), symbol: ev.symbol,
@@ -5249,7 +5309,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
 
   tokenMeter.startTokenMeter('priceInference')
   tokenMeter.measure('priceInference', _swapEvidenceWithDetection)
-  let { evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache)
+  let { evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache, priceByContract)
   // Track base evidence historical price calls
   for (let _pp = 0; _pp < (_priceAtTimeDebug?.providerAttempts ?? 0); _pp++) {
     _trackCall('goldrush', 'historical_by_addresses_v2', false, `gr:price:base:${_pp}:${addrNorm}`)
@@ -5265,6 +5325,10 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   let walletLotSummary = fifoResult.summary
   let _lotEngineDebug = fifoResult.debug
   let _closedLots = fifoResult.closedLots
+  // Propagate swap_candidates_unpriced through FIFO and trade-stats missing reasons for better traceability
+  if (walletPriceEvidenceSummary.missing.includes('swap_candidates_unpriced') && walletLotSummary.closedLots === 0) {
+    walletLotSummary = { ...walletLotSummary, missing: [...walletLotSummary.missing, 'swap_candidates_unpriced_no_fifo'] }
+  }
   tokenMeter.measure('fifoEngine', walletLotSummary, _lotEngineDebug, _closedLots)
   tokenMeter.endTokenMeter('fifoEngine')
 
@@ -5273,6 +5337,9 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const tradeStatsResult = buildTradeStatsSummary(_closedLots, activityRequested)
   let walletTradeStatsSummary = tradeStatsResult.summary
   let _tradeStatsDebug = tradeStatsResult.debug
+  if (walletLotSummary.missing.includes('swap_candidates_unpriced_no_fifo') && walletTradeStatsSummary.closedLots === 0) {
+    walletTradeStatsSummary = { ...walletTradeStatsSummary, missing: [...walletTradeStatsSummary.missing, 'swap_candidates_unpriced_no_closed_lots'] }
+  }
   if (_closedLots.length === 0 && activityRequested) {
     const _perSwap = buildPerSwapTradeStats(_pricedEvidence, activityRequested)
     if (_perSwap.summary.closedLots > 0) {
@@ -5378,7 +5445,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       tokenMeter.measure('normalization', allFbEvents, evidenceList, walletEvidenceSummary, _txEvidenceDebugBase)
       ;({ evidenceWithDetection: _swapEvidenceWithDetection, summary: walletSwapSummary, debug: _swapDetectionDebug } = buildSwapDetection(evidenceList, activityRequested, addrNorm))
       tokenMeter.measure('swapDetection', evidenceList, _swapEvidenceWithDetection, walletSwapSummary, _swapDetectionDebug)
-      ;({ evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache))
+      ;({ evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache, priceByContract))
       tokenMeter.measure('priceInference', _swapEvidenceWithDetection, _pricedEvidence, walletPriceEvidenceSummary, _priceAtTimeDebug)
       _pricedEvidence = normalizeSwapEventsForFifo(_pricedEvidence, tokenMeter.isDebugEnabled())
       _pricedEvidence = normalizeSingleLegEventsForFifo(_pricedEvidence, tokenMeter.isDebugEnabled())
@@ -5386,10 +5453,16 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       walletLotSummary = fifoPageResult.summary
       _lotEngineDebug = fifoPageResult.debug
       _closedLots = fifoPageResult.closedLots
+      if (walletPriceEvidenceSummary.missing.includes('swap_candidates_unpriced') && walletLotSummary.closedLots === 0) {
+        walletLotSummary = { ...walletLotSummary, missing: [...walletLotSummary.missing, 'swap_candidates_unpriced_no_fifo'] }
+      }
       tokenMeter.measure('fifoEngine', _pricedEvidence, walletLotSummary, _lotEngineDebug, _closedLots)
       const tradeStatsPageResult = buildTradeStatsSummary(_closedLots, activityRequested)
       walletTradeStatsSummary = tradeStatsPageResult.summary
       _tradeStatsDebug = tradeStatsPageResult.debug
+      if (walletLotSummary.missing.includes('swap_candidates_unpriced_no_fifo') && walletTradeStatsSummary.closedLots === 0) {
+        walletTradeStatsSummary = { ...walletTradeStatsSummary, missing: [...walletTradeStatsSummary.missing, 'swap_candidates_unpriced_no_closed_lots'] }
+      }
       tokenMeter.measure('tradeStats', _closedLots, walletTradeStatsSummary, _tradeStatsDebug)
       if (_closedLots.length === 0 && activityRequested) {
         const _perSwap = buildPerSwapTradeStats(_pricedEvidence, activityRequested)
