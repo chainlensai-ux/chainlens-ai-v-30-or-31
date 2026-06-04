@@ -696,8 +696,14 @@ export type WalletSnapshot = {
       unmatchedBuys: number
       unmatchedSells: number
       skippedUnpricedEvents: number
+      skippedUnknownSide: number
       skippedStableQuoteAssets: number
       skippedMissingFields: number
+      uniqueBuyTokenKeys: number
+      uniqueSellTokenKeys: number
+      matchedTokenKeys: number
+      unmatchedBuyTokenKeys: string[]
+      unmatchedSellTokenKeys: string[]
       totalCostBasisClosedUsd: number | null
       totalProceedsClosedUsd: number | null
       realizedPnlUsd: number | null
@@ -705,6 +711,9 @@ export type WalletSnapshot = {
       sampleOpenLots: Array<{ tokenAddress: string; symbol: string; chain: string; openedAt: string; amountRemaining: number; entryPriceUsd: number; confidence: string }>
       sampleClosedLots: Array<{ tokenAddress: string; symbol: string; openedAt: string; closedAt: string; amountClosed: number; entryPriceUsd: number; exitPriceUsd: number; realizedPnlUsd: number; confidence: string }>
       sampleUnmatchedSells: Array<{ txHash: string; tokenAddress: string; symbol: string; amount: number; exitPriceUsd: number }>
+      sampleBuyEvents: Array<{ tokenAddress: string; symbol: string; chain: string; amount: number; priceUsd: number }>
+      sampleSellEvents: Array<{ tokenAddress: string; symbol: string; chain: string; amount: number; priceUsd: number }>
+      sampleUnmatchedReasons: string[]
       reasons: string[]
     }
     walletTradeStatsDebug?: {
@@ -1003,7 +1012,7 @@ export type WalletSnapshotOptions = {
 
 const SNAPSHOT_TTL_MS         = 5  * 60 * 1000
 const SNAPSHOT_HISTORY_TTL_MS = 15 * 60 * 1000
-const SNAPSHOT_SCHEMA_VERSION = 'v11'
+const SNAPSHOT_SCHEMA_VERSION = 'v12'
 type SnapshotCacheEntry = { snapshot: WalletSnapshot; cachedAt: number; ttlMs: number }
 const snapshotMemCache = new Map<string, SnapshotCacheEntry>()
 
@@ -2661,6 +2670,15 @@ const QUOTE_ASSET_CONTRACTS: Record<string, true> = {
   ...WETH_CONTRACTS_PRICE,
 }
 
+// Normalize provider-specific chain identifiers to canonical short names for lot key stability.
+// GoldRush emits 'base-mainnet' or '8453'; Alchemy emits 'base'; all map to 'base'.
+function normalizeChain(chain: string): string {
+  const c = (chain ?? '').toLowerCase()
+  if (c === 'base-mainnet' || c === '8453' || c === 'base') return 'base'
+  if (c === 'eth-mainnet' || c === '1' || c === 'eth' || c.includes('ethereum')) return 'eth'
+  return c
+}
+
 const LOT_EPSILON = 1e-9
 
 function lotConfidence(entrySource: string, exitSource: string): 'high' | 'medium' | 'low' {
@@ -2689,10 +2707,16 @@ function buildFifoLotEngine(
     debug: {
       pricedSwapEvents: 0, buyEvents: 0, sellEvents: 0, openedLots: 0, closedLots: 0,
       partiallyClosedLots: 0, unmatchedBuys: 0, unmatchedSells: 0,
-      skippedUnpricedEvents: 0, skippedStableQuoteAssets: 0, skippedMissingFields: 0,
+      skippedUnpricedEvents: 0, skippedUnknownSide: 0, skippedStableQuoteAssets: 0, skippedMissingFields: 0,
+      uniqueBuyTokenKeys: 0, uniqueSellTokenKeys: 0, matchedTokenKeys: 0,
+      unmatchedBuyTokenKeys: [] as string[], unmatchedSellTokenKeys: [] as string[],
       totalCostBasisClosedUsd: null, totalProceedsClosedUsd: null,
       realizedPnlUsd: null, realizedPnlPercent: null,
-      sampleOpenLots: [], sampleClosedLots: [], sampleUnmatchedSells: [], reasons: missing,
+      sampleOpenLots: [], sampleClosedLots: [], sampleUnmatchedSells: [],
+      sampleBuyEvents: [] as Array<{ tokenAddress: string; symbol: string; chain: string; amount: number; priceUsd: number }>,
+      sampleSellEvents: [] as Array<{ tokenAddress: string; symbol: string; chain: string; amount: number; priceUsd: number }>,
+      sampleUnmatchedReasons: [] as string[],
+      reasons: missing,
     },
     closedLots: [] as WalletClosedLot[],
     openLots: [] as WalletLotOpen[],
@@ -2702,12 +2726,14 @@ function buildFifoLotEngine(
 
   // ── Filter to eligible events ──
   let skippedUnpricedEvents = 0
+  let skippedUnknownSide = 0
   let skippedStableQuoteAssets = 0
   let skippedMissingFields = 0
 
   const eligible: WalletTxEvidence[] = []
   for (const e of evidenceWithPricing) {
     if (!e.swapDetection?.isSwapCandidate) continue
+    if (e.direction === 'unknown') { skippedUnknownSide++; continue }
     if (e.priceAtTime?.status !== 'priced' || !e.priceAtTime.priceUsd || !isFinite(e.priceAtTime.priceUsd) || e.priceAtTime.priceUsd <= 0) { skippedUnpricedEvents++; continue }
     if (!e.txHash || !e.timestamp || !e.contract || !e.contract.startsWith('0x') || !e.amount || e.amount <= 0) { skippedMissingFields++; continue }
     if (QUOTE_ASSET_CONTRACTS[e.contract.toLowerCase()]) { skippedStableQuoteAssets++; continue }
@@ -2723,23 +2749,34 @@ function buildFifoLotEngine(
   const buyEvents = eligible.filter(e => e.direction === 'buy').length
   const sellEvents = eligible.filter(e => e.direction === 'sell').length
 
-  // Open lots keyed by chain:contract (FIFO queue — oldest first)
+  // Open lots keyed by normalizedChain:contract (FIFO queue — oldest first)
+  // Using normalizeChain() prevents base-mainnet/8453/base mismatches from breaking lot matching.
   const openLotsMap = new Map<string, WalletLotOpen[]>()
   const closedLots: WalletClosedLot[] = []
   let unmatchedBuys = 0
   let unmatchedSells = 0
 
+  const buyTokenKeySet = new Set<string>()
+  const sellTokenKeySet = new Set<string>()
+  const sampleBuyEvents: Array<{ tokenAddress: string; symbol: string; chain: string; amount: number; priceUsd: number }> = []
+  const sampleSellEvents: Array<{ tokenAddress: string; symbol: string; chain: string; amount: number; priceUsd: number }> = []
+  const sampleUnmatchedReasons: string[] = []
+  const _abbr = (addr: string) => `${addr.slice(0, 8)}...${addr.slice(-6)}`
+
   for (const e of eligible) {
-    const lotKey = `${e.chain}:${e.contract.toLowerCase()}`
+    const normalChain = normalizeChain(e.chain)
+    const lotKey = `${normalChain}:${e.contract.toLowerCase()}`
     const priceUsd = e.priceAtTime!.priceUsd!
     const priceSource = e.priceAtTime!.source
 
     if (e.direction === 'buy') {
+      buyTokenKeySet.add(lotKey)
+      if (sampleBuyEvents.length < 5) sampleBuyEvents.push({ tokenAddress: _abbr(e.contract), symbol: e.symbol ?? '?', chain: normalChain, amount: e.amount, priceUsd })
       // Open a new lot
       const lot: WalletLotOpen = {
         tokenAddress: e.contract.toLowerCase(),
         tokenSymbol: e.symbol ?? null,
-        chain: e.chain,
+        chain: normalChain,
         openedTxHash: e.txHash,
         openedAt: e.timestamp!,
         amountOpened: e.amount,
@@ -2754,8 +2791,14 @@ function buildFifoLotEngine(
       openLotsMap.set(lotKey, queue)
 
     } else if (e.direction === 'sell') {
+      sellTokenKeySet.add(lotKey)
+      if (sampleSellEvents.length < 5) sampleSellEvents.push({ tokenAddress: _abbr(e.contract), symbol: e.symbol ?? '?', chain: normalChain, amount: e.amount, priceUsd })
       const queue = openLotsMap.get(lotKey)
-      if (!queue || queue.length === 0) { unmatchedSells++; continue }
+      if (!queue || queue.length === 0) {
+        unmatchedSells++
+        if (sampleUnmatchedReasons.length < 10) sampleUnmatchedReasons.push(`no_prior_buy:${_abbr(e.contract)}(${e.symbol ?? '?'})`)
+        continue
+      }
 
       let sellRemaining = e.amount
       while (sellRemaining > LOT_EPSILON && queue.length > 0) {
@@ -2771,7 +2814,7 @@ function buildFifoLotEngine(
         closedLots.push({
           tokenAddress: e.contract.toLowerCase(),
           tokenSymbol: e.symbol ?? null,
-          chain: e.chain,
+          chain: normalChain,
           openedTxHash: lot.openedTxHash,
           closedTxHash: e.txHash,
           openedAt: lot.openedAt,
@@ -2821,8 +2864,20 @@ function buildFifoLotEngine(
     : pricedSwapEvents > 0 ? 'partial'
     : 'open_check'
 
+  // ── Token key overlap analysis ──
+  const matchedTokenKeySet = new Set<string>([...buyTokenKeySet].filter(k => sellTokenKeySet.has(k)))
+  const unmatchedBuyTokenKeys = [...buyTokenKeySet].filter(k => !sellTokenKeySet.has(k)).slice(0, 10)
+  const unmatchedSellTokenKeys = [...sellTokenKeySet].filter(k => !buyTokenKeySet.has(k)).slice(0, 10)
+
+  // ── Enhanced reason when lots = 0 but events were priced ──
   const missing: string[] = []
-  if (closedLots.length === 0 && pricedSwapEvents > 0) missing.push('no_closed_lots')
+  if (closedLots.length === 0 && pricedSwapEvents > 0) {
+    if (buyEvents === 0 && sellEvents > 0) missing.push('priced_events_only_sells')
+    else if (sellEvents === 0 && buyEvents > 0) missing.push('priced_events_only_buys')
+    else if (matchedTokenKeySet.size === 0 && buyEvents > 0 && sellEvents > 0) missing.push('no_overlapping_buy_sell_tokens')
+    else if (unmatchedSells > 0 && openedLots > 0 && closedLots.length === 0) missing.push('sell_before_buy')
+    else missing.push('no_closed_lots')
+  }
   if (unmatchedSells > 0) missing.push('unmatched_sells')
   if (unmatchedBuys > 0) missing.push('unmatched_buys')
 
@@ -2849,7 +2904,12 @@ function buildFifoLotEngine(
     debug: {
       pricedSwapEvents, buyEvents, sellEvents, openedLots,
       closedLots: closedLots.length, partiallyClosedLots, unmatchedBuys, unmatchedSells,
-      skippedUnpricedEvents, skippedStableQuoteAssets, skippedMissingFields,
+      skippedUnpricedEvents, skippedUnknownSide, skippedStableQuoteAssets, skippedMissingFields,
+      uniqueBuyTokenKeys: buyTokenKeySet.size,
+      uniqueSellTokenKeys: sellTokenKeySet.size,
+      matchedTokenKeys: matchedTokenKeySet.size,
+      unmatchedBuyTokenKeys,
+      unmatchedSellTokenKeys,
       totalCostBasisClosedUsd, totalProceedsClosedUsd, realizedPnlUsd, realizedPnlPercent,
       sampleOpenLots: allOpenLots.slice(0, 5).map(l => ({
         tokenAddress: abbr(l.tokenAddress), symbol: l.tokenSymbol ?? '', chain: l.chain,
@@ -2866,6 +2926,9 @@ function buildFifoLotEngine(
         txHash: abbr(e.txHash), tokenAddress: abbr(e.contract),
         symbol: e.symbol, amount: e.amount, exitPriceUsd: e.priceAtTime!.priceUsd!,
       })),
+      sampleBuyEvents,
+      sampleSellEvents,
+      sampleUnmatchedReasons,
       reasons: missing,
     },
     closedLots,
@@ -2893,7 +2956,7 @@ function normalizeSwapEventsForFifo(pricedEvidence: WalletTxEvidence[], debug = 
       existing.push(ev)
       pricedByTx.set(ev.txHash, existing)
     }
-    const tokenKey = `${ev.chain}:${ev.contract.toLowerCase()}`
+    const tokenKey = `${normalizeChain(ev.chain)}:${ev.contract.toLowerCase()}`
     const prev = latestPricedByToken.get(tokenKey)
     if (!prev || (ev.timestamp ?? '') > (prev.timestamp ?? '')) {
       latestPricedByToken.set(tokenKey, ev)
@@ -2912,7 +2975,7 @@ function normalizeSwapEventsForFifo(pricedEvidence: WalletTxEvidence[], debug = 
     if (!e.txHash || !e.timestamp) continue
     if (QUOTE_ASSET_CONTRACTS[e.contract.toLowerCase()]) continue
 
-    const tokenKey = `${e.chain}:${e.contract.toLowerCase()}`
+    const tokenKey = `${normalizeChain(e.chain)}:${e.contract.toLowerCase()}`
     // Only promote if this token was previously bought via a swap (avoids promoting random withdrawals)
     if (!latestPricedByToken.has(tokenKey)) continue
 
@@ -3019,7 +3082,7 @@ function normalizeSingleLegEventsForFifo(pricedEvidence: WalletTxEvidence[], deb
       arr.push(ev)
       pricedByTx.set(ev.txHash, arr)
     }
-    const tokenKey = `${ev.chain}:${ev.contract.toLowerCase()}`
+    const tokenKey = `${normalizeChain(ev.chain)}:${ev.contract.toLowerCase()}`
     const prev = latestPricedByToken.get(tokenKey)
     if (!prev || (ev.timestamp ?? '') > (prev.timestamp ?? '')) {
       latestPricedByToken.set(tokenKey, ev)
@@ -3032,7 +3095,9 @@ function normalizeSingleLegEventsForFifo(pricedEvidence: WalletTxEvidence[], deb
     if (e.swapDetection?.isSwapCandidate) continue
     if (e.direction !== 'sell' && e.direction !== 'buy') continue
     if (isLPSym(e.symbol ?? '')) continue
-    if (STABLE_SYMS.has((e.symbol ?? '').toUpperCase())) continue
+    // Skip events whose symbol looks like a known stablecoin BUT whose contract is NOT a known stable
+    // (protects against Cyrillic/unicode spoofed symbols — if symbol matches but contract doesn't, skip)
+    if (STABLE_SYMS.has((e.symbol ?? '').toUpperCase()) && !STABLE_USD_CONTRACTS[e.contract.toLowerCase()]) continue
     if (!e.contract || !e.contract.startsWith('0x')) continue
     if (!e.amount || e.amount <= 0) continue
     if (!e.txHash || !e.timestamp) continue
@@ -3066,7 +3131,7 @@ function normalizeSingleLegEventsForFifo(pricedEvidence: WalletTxEvidence[], deb
 
     // 2. Cross-tx fallback: latest priced event for same token
     if (!syntheticPriceUsd) {
-      const tokenKey = `${e.chain}:${e.contract.toLowerCase()}`
+      const tokenKey = `${normalizeChain(e.chain)}:${e.contract.toLowerCase()}`
       const latestForToken = latestPricedByToken.get(tokenKey)
       if (latestForToken?.priceAtTime?.priceUsd) {
         syntheticPriceUsd = latestForToken.priceAtTime.priceUsd

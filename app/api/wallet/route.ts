@@ -29,7 +29,7 @@ export async function OPTIONS(req: Request) {
 const WALLET_BASIC_CACHE_TTL_MS  = 5  * 60 * 1000  // 5 min for basic scans
 const WALLET_DEEP_CACHE_TTL_MS   = 15 * 60 * 1000  // 15 min for deep scans
 const WALLET_DEEP_COOLDOWN_MS    = 10 * 60 * 1000  // 10 min cooldown per wallet after deep live scan
-const WALLET_SNAPSHOT_SCHEMA_VERSION = 'v11'
+const WALLET_SNAPSHOT_SCHEMA_VERSION = 'v12'
 const walletCache = new Map<string, { exp: number; payload: unknown; cachedAt: number }>()
 const walletRate = new Map<string, { count: number; resetAt: number }>()
 const WALLET_RATE_BY_PLAN: Record<string, number> = { free: 20, pro: 60, elite: 180 }
@@ -644,6 +644,36 @@ export async function POST(req: Request) {
         walletHistoricalFifoPreviewDebug: snapshot._diagnostics?.walletHistoricalFifoPreviewDebug ?? null,
         walletBudgetDebug: snapshot._diagnostics?.walletBudgetDebug ?? null,
         walletFactsDebug: snapshot._diagnostics?.walletFactsDebug ?? null,
+        baseFifoMatchDebug: (() => {
+          const lotDbg = snapshot._diagnostics?.walletLotEngineDebug ?? null
+          const priceDbg = snapshot._diagnostics?.walletPriceAtTimeDebug ?? null
+          return {
+            baseCandidateEvents: snapshot.walletSwapSummary?.swapCandidateEvents ?? 0,
+            pricedEvents: snapshot.walletPriceEvidenceSummary?.pricedEvents ?? 0,
+            fifoBuyEvents: lotDbg?.buyEvents ?? 0,
+            fifoSellEvents: lotDbg?.sellEvents ?? 0,
+            closedLots: lotDbg?.closedLots ?? 0,
+            openedLots: lotDbg?.openedLots ?? 0,
+            unmatchedBuys: lotDbg?.unmatchedBuys ?? 0,
+            unmatchedSells: lotDbg?.unmatchedSells ?? 0,
+            uniqueBuyTokenKeys: lotDbg?.uniqueBuyTokenKeys ?? 0,
+            uniqueSellTokenKeys: lotDbg?.uniqueSellTokenKeys ?? 0,
+            matchedTokenKeys: lotDbg?.matchedTokenKeys ?? 0,
+            unmatchedBuyTokenKeys: lotDbg?.unmatchedBuyTokenKeys ?? [],
+            unmatchedSellTokenKeys: lotDbg?.unmatchedSellTokenKeys ?? [],
+            skippedUnknownSide: lotDbg?.skippedUnknownSide ?? 0,
+            skippedMissingTokenKey: lotDbg?.skippedMissingFields ?? 0,
+            skippedQuoteAssetOnly: lotDbg?.skippedStableQuoteAssets ?? 0,
+            skippedUnpriced: lotDbg?.skippedUnpricedEvents ?? 0,
+            samplePricedEvents: priceDbg?.samplePricedEvents ?? [],
+            sampleBuyEvents: lotDbg?.sampleBuyEvents ?? [],
+            sampleSellEvents: lotDbg?.sampleSellEvents ?? [],
+            sampleClosedLots: lotDbg?.sampleClosedLots ?? [],
+            sampleUnmatchedReasons: lotDbg?.sampleUnmatchedReasons ?? [],
+            fifoReasons: lotDbg?.reasons ?? [],
+            priceAtTimeReasons: priceDbg?.reasons ?? [],
+          }
+        })(),
         walletCacheQualityDebug: {
           cacheQuality: _cacheQuality,
           writeAllowed: !_cacheWriteBlocked,
