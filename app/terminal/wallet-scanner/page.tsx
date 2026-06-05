@@ -1944,7 +1944,9 @@ export default function WalletScannerPage() {
                 const avgMatchedLoss = deriveAverageMatchedLossUsd(result)
                 const avgProfitDisplay = avgMatchedWin !== null
                   ? fmtSignedUSD(avgMatchedWin)
-                  : hasEnough ? fmtSignedUSD(walletIntel.pnl.avgWin) : 'Open Check'
+                  : hasEnough ? fmtSignedUSD(walletIntel.pnl.avgWin)
+                  : closedLots > 0 && ts.winningClosedLots === 0 ? 'No winning closed lots yet'
+                  : 'Open Check'
                 const avgLossDisplay = ts && closedLots > 0 && ts.losingClosedLots === 0
                   ? 'No matched losing closed lots found'
                   : avgMatchedLoss !== null ? fmtSignedUSD(avgMatchedLoss) : 'Open Check'
@@ -1952,6 +1954,7 @@ export default function WalletScannerPage() {
                   ? (ts?.largestWinUsd !== null && ts?.largestWinUsd !== undefined ? fmtSignedUSD(ts.largestWinUsd) : fmtSignedUSD(walletIntel.pnl.biggestWin))
                   : ts?.largestWinUsd !== null && ts?.largestWinUsd !== undefined && closedLots > 0
                     ? fmtSignedUSD(ts.largestWinUsd)
+                    : closedLots > 0 && ts.winningClosedLots === 0 ? 'No winning closed lots yet'
                     : 'Open Check'
                 const biggestLossDisplay = ts && closedLots > 0 && ts.losingClosedLots === 0
                   ? 'No matched losing closed lots found'
@@ -1979,7 +1982,7 @@ export default function WalletScannerPage() {
                       ].map(card => (
                         <div key={card.label} style={{ background: ('early' in card && card.early) ? 'rgba(167,139,250,0.06)' : ('noLoss' in card && card.noLoss) ? 'rgba(45,212,191,0.05)' : 'rgba(255,255,255,0.025)', border: `1px solid ${('early' in card && card.early) ? 'rgba(167,139,250,0.18)' : ('noLoss' in card && card.noLoss) ? 'rgba(45,212,191,0.18)' : 'rgba(255,255,255,0.06)'}`, borderRadius: '12px', padding: '14px' }}>
                           <div className="ws-stat-label" style={{ color: ('early' in card && card.early) ? 'rgba(167,139,250,0.60)' : ('noLoss' in card && card.noLoss) ? 'rgba(45,212,191,0.60)' : undefined }}>{card.label}</div>
-                          <div style={{ fontSize: '17px', fontWeight: 800, fontFamily: 'var(--font-inter, Inter, sans-serif)', letterSpacing: '-0.01em', lineHeight: 1.25, color: ('early' in card && card.early) ? '#a78bfa' : ('noLoss' in card && card.noLoss) ? '#2DD4BF' : String(card.value).includes('Open Check') || String(card.value).includes('Locked') || String(card.value).includes('No closed') ? '#7dd3fc' : '#e2e8f0' }}>{card.value}</div>
+                          <div style={{ fontSize: '17px', fontWeight: 800, fontFamily: 'var(--font-inter, Inter, sans-serif)', letterSpacing: '-0.01em', lineHeight: 1.25, color: ('early' in card && card.early) ? '#a78bfa' : ('noLoss' in card && card.noLoss) ? '#2DD4BF' : String(card.value).includes('Open Check') || String(card.value).includes('Locked') || String(card.value).includes('No closed') || String(card.value).includes('No winning') ? '#7dd3fc' : '#e2e8f0' }}>{card.value}</div>
                         </div>
                       ))}
                     </div>
