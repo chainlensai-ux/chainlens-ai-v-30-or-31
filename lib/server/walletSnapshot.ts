@@ -1082,6 +1082,13 @@ export type WalletSnapshot = {
       selectedEthKeyName: string | null
       reason: string
     }
+    tradeStatsInputDebug?: {
+      closedLotsInputCount: number
+      walletLotSummaryClosedLots: number
+      source: string
+      computedAfterSupplementalBackfill: boolean
+      mismatchFixed: boolean
+    }
     walletPerformanceDebug?: {
       totalDurationMs: number
       phaseDurations: Record<string, number>
@@ -1227,7 +1234,7 @@ export type WalletSnapshotOptions = {
 
 const SNAPSHOT_TTL_MS         = 5  * 60 * 1000
 const SNAPSHOT_HISTORY_TTL_MS = 15 * 60 * 1000
-const SNAPSHOT_SCHEMA_VERSION = 'v27'
+const SNAPSHOT_SCHEMA_VERSION = 'v28'
 type SnapshotCacheEntry = { snapshot: WalletSnapshot; cachedAt: number; ttlMs: number }
 const snapshotMemCache = new Map<string, SnapshotCacheEntry>()
 
@@ -7107,6 +7114,13 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   }
   tokenMeter.measure('tradeStats', walletTradeStatsSummary, _tradeStatsDebug)
   tokenMeter.endTokenMeter('tradeStats')
+  let _tradeStatsInputDebug: { closedLotsInputCount: number; walletLotSummaryClosedLots: number; source: string; computedAfterSupplementalBackfill: boolean; mismatchFixed: boolean } = {
+    closedLotsInputCount: _closedLots.length,
+    walletLotSummaryClosedLots: walletLotSummary.closedLots,
+    source: 'initial_fifo',
+    computedAfterSupplementalBackfill: false,
+    mismatchFixed: false,
+  }
 
   // Update Base recon debug with post-FIFO/trade-stats values
   if (_basePnlReconDebug.attempted && _basePnlReconDebug.enrichedSwapEvents > 0) {
@@ -7501,6 +7515,24 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         walletLotSummary = _suppRerunFifo.summary
         _lotEngineDebug = _suppRerunFifo.debug
         _closedLots = _suppRerunFifo.closedLots
+        // Rebuild trade stats from the updated _closedLots — previous build used pre-supplemental lots
+        const _suppTradeStats = buildTradeStatsSummary(_closedLots, activityRequested)
+        walletTradeStatsSummary = _suppTradeStats.summary
+        _tradeStatsDebug = _suppTradeStats.debug
+        if (walletLotSummary.missing.includes('swap_candidates_unpriced_no_fifo') && walletTradeStatsSummary.closedLots === 0) {
+          walletTradeStatsSummary = { ...walletTradeStatsSummary, missing: [...walletTradeStatsSummary.missing, 'swap_candidates_unpriced_no_closed_lots'] }
+        }
+        if (_closedLots.length === 0 && activityRequested) {
+          const _ps = buildPerSwapTradeStats(_pricedEvidence, activityRequested)
+          if (_ps.summary.closedLots > 0) { walletTradeStatsSummary = _ps.summary; _tradeStatsDebug = _ps.debug }
+        }
+        _tradeStatsInputDebug = {
+          closedLotsInputCount: _closedLots.length,
+          walletLotSummaryClosedLots: walletLotSummary.closedLots,
+          source: 'supplemental_fifo_rerun',
+          computedAfterSupplementalBackfill: true,
+          mismatchFixed: true,
+        }
 
         // Update pricing counts across all supplemental per-target results
         const _suppPriorBuysPriced = _pricedEvidence.filter(ev => {
@@ -8111,6 +8143,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       walletFactsDebug: _walletFactsDebug,
       apiAudit: _apiAudit,
       alchemyEnvDebug: _alchemyEnvDebug,
+      tradeStatsInputDebug: _tradeStatsInputDebug,
       walletPerformanceDebug: (() => {
         const now = Date.now()
         _perfPhaseTs.total_end = now
