@@ -1073,7 +1073,26 @@ export type WalletSnapshot = {
       warnings: string[]
       totalCredits: number
     }
+    walletPerformanceDebug?: {
+      totalDurationMs: number
+      phaseDurations: Record<string, number>
+      providerDurations: Record<string, number>
+      parallelizedCalls: string[]
+      reusedCachedActivity: boolean
+      duplicateCallsAvoided: number
+      timedOutModules: string[]
+      modulesSkippedBecauseNotNeeded: string[]
+      deepBudgetHit: boolean
+      bottleneck: string | null
+    }
   }
+}
+
+// Race a promise against a deadline; resolves with fallback if deadline fires first.
+function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>
+  const timeout = new Promise<T>(resolve => { timer = setTimeout(() => resolve(fallback), ms) })
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer))
 }
 
 const ZERION_KEY       = process.env.ZERION_KEY ?? ''
@@ -5191,12 +5210,15 @@ async function buildEthRouterSwapReconstructionPass(
   const sampleQuoteMatches: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['ethSwapReconstructionDebug']>['sampleQuoteMatches'] = []
   const sampleStillUnmatched: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['ethSwapReconstructionDebug']>['sampleStillUnmatched'] = []
 
-  for (const cand of toFetch) {
-    const cacheKey = `eth_router_recon:${cand.txHash}`
-    const cached = ethRouterReceiptCache.get(cacheKey)
-    if (cached && cached.exp > now) {
-      receiptDecodes.set(cand.txHash, cached.data)
-    } else {
+  // Fetch all receipts AND tx values in parallel — up to 16 concurrent RPC calls instead of 16 sequential.
+  await Promise.allSettled(toFetch.flatMap((cand) => {
+    const receiptTask = (async () => {
+      const cacheKey = `eth_router_recon:${cand.txHash}`
+      const cached = ethRouterReceiptCache.get(cacheKey)
+      if (cached && cached.exp > now) {
+        receiptDecodes.set(cand.txHash, cached.data)
+        return
+      }
       try {
         const receipt = await alchemyRpc(ethRpcUrl, 'eth_getTransactionReceipt', [cand.txHash])
         receiptsFetched++
@@ -5204,7 +5226,7 @@ async function buildEthRouterSwapReconstructionPass(
           const d: EthRouterReceiptDecode = { txFrom: null, txTo: null, isKnownRouter: false, routerProtocol: null, quoteLogs: [], totalTransferLogs: 0, decodeStatus: 'no_receipt', reason: 'receipt_null' }
           ethRouterReceiptCache.set(cacheKey, { data: d, exp: now + BASE_PNL_RECON_TTL_MS })
           receiptDecodes.set(cand.txHash, d)
-          continue
+          return
         }
         const txFrom = typeof receipt.from === 'string' ? (receipt.from as string).toLowerCase() : cand.txFrom
         const txTo = typeof receipt.to === 'string' ? (receipt.to as string).toLowerCase() : cand.txTo
@@ -5234,13 +5256,16 @@ async function buildEthRouterSwapReconstructionPass(
       } catch {
         providerErrors++
       }
-    }
+    })()
 
-    const txValueCacheKey = `eth_router_tx_value:${cand.txHash}`
-    const cachedValue = ethRouterTxValueCache.get(txValueCacheKey)
-    if (cachedValue && cachedValue.exp > now) {
-      txNativeValues.set(cand.txHash, cachedValue.value)
-    } else if (cand.walletInitiated) {
+    const txValueTask = (async () => {
+      const txValueCacheKey = `eth_router_tx_value:${cand.txHash}`
+      const cachedValue = ethRouterTxValueCache.get(txValueCacheKey)
+      if (cachedValue && cachedValue.exp > now) {
+        txNativeValues.set(cand.txHash, cachedValue.value)
+        return
+      }
+      if (!cand.walletInitiated) return
       try {
         const tx = await alchemyRpc(ethRpcUrl, 'eth_getTransactionByHash', [cand.txHash])
         transactionsFetched++
@@ -5250,8 +5275,10 @@ async function buildEthRouterSwapReconstructionPass(
       } catch {
         providerErrors++
       }
-    }
-  }
+    })()
+
+    return [receiptTask, txValueTask]
+  }))
 
   const syntheticEvents: WalletTxEvidence[] = []
   const sampleSyntheticEvents: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['ethSwapReconstructionDebug']>['sampleSyntheticEvents'] = []
@@ -5458,13 +5485,15 @@ async function buildBasePnlReconstructionPass(
 
   const txDecodes = new Map<string, BasePnlReceiptDecode>()
 
-  for (const txHash of toFetch) {
+  // Fetch all receipts in parallel — safe because JS is single-threaded; counter increments
+  // within async callbacks are interleaved via the microtask queue, never truly concurrent.
+  await Promise.allSettled(toFetch.map(async (txHash) => {
     const cacheKey = `base_recon:${txHash}`
     const cached = basePnlReceiptCache.get(cacheKey)
     if (cached && cached.exp > now) {
       receiptCacheHits++
       txDecodes.set(txHash, cached.data)
-      continue
+      return
     }
     try {
       const receipt = await alchemyRpc(alchemyBaseUrl, 'eth_getTransactionReceipt', [txHash])
@@ -5473,7 +5502,7 @@ async function buildBasePnlReconstructionPass(
         const d: BasePnlReceiptDecode = { txFrom: null, txTo: null, walletInbound: [], walletOutbound: [], isKnownRouter: false, routerProtocol: null, hasStableLeg: false, hasWethLeg: false, totalTransferLogs: 0, decodeStatus: 'no_receipt', reason: 'receipt_null' }
         basePnlReceiptCache.set(cacheKey, { data: d, exp: now + BASE_PNL_RECON_TTL_MS })
         txDecodes.set(txHash, d)
-        continue
+        return
       }
       const txFrom = typeof receipt.from === 'string' ? (receipt.from as string).toLowerCase() : null
       const txTo = typeof receipt.to === 'string' ? (receipt.to as string).toLowerCase() : null
@@ -5517,7 +5546,7 @@ async function buildBasePnlReconstructionPass(
     } catch {
       providerErrors++
     }
-  }
+  }))
 
   // Classify each decoded tx as swap or not
   const swapTxHashes = new Set<string>()
@@ -5693,14 +5722,14 @@ async function buildUnpricedCandidateReceiptPass(
   const txDecodes = new Map<string, BasePnlReceiptDecode>()
   const txNativeValues = new Map<string, string>()  // txHash → raw hex tx.value
 
-  // Fetch receipts — reuse the same module-level cache as buildBasePnlReconstructionPass
-  for (const txHash of toFetch) {
+  // Fetch all receipts in parallel — reuse the same module-level cache as buildBasePnlReconstructionPass
+  await Promise.allSettled(toFetch.map(async (txHash) => {
     const cacheKey = `base_recon:${txHash}`
     const cached = basePnlReceiptCache.get(cacheKey)
     if (cached && cached.exp > now) {
       receiptCacheHits++
       txDecodes.set(txHash, cached.data)
-      continue
+      return
     }
     try {
       const receipt = await alchemyRpc(_rpcUrl, 'eth_getTransactionReceipt', [txHash])
@@ -5709,7 +5738,7 @@ async function buildUnpricedCandidateReceiptPass(
         const d: BasePnlReceiptDecode = { txFrom: null, txTo: null, walletInbound: [], walletOutbound: [], isKnownRouter: false, routerProtocol: null, hasStableLeg: false, hasWethLeg: false, totalTransferLogs: 0, decodeStatus: 'no_receipt', reason: 'receipt_null' }
         basePnlReceiptCache.set(cacheKey, { data: d, exp: now + BASE_PNL_RECON_TTL_MS })
         txDecodes.set(txHash, d)
-        continue
+        return
       }
       const txFrom = typeof receipt.from === 'string' ? (receipt.from as string).toLowerCase() : null
       const txTo = typeof receipt.to === 'string' ? (receipt.to as string).toLowerCase() : null
@@ -5753,21 +5782,21 @@ async function buildUnpricedCandidateReceiptPass(
     } catch {
       providerErrors++
     }
-  }
+  }))
 
-  // For txs where wallet initiated and has no ERC20 quote leg outbound, fetch tx.value for native ETH
-  for (const txHash of toFetch) {
+  // Fetch tx.value for native-ETH-paid candidates in parallel
+  await Promise.allSettled(toFetch.map(async (txHash) => {
     const d = txDecodes.get(txHash)
-    if (!d || d.decodeStatus !== 'ok') continue
-    if (d.walletOutbound.some(o => WETH_CONTRACTS_PRICE[o.contract] || STABLE_USD_CONTRACTS[o.contract])) continue
-    if (d.txFrom !== walletLower) continue
+    if (!d || d.decodeStatus !== 'ok') return
+    if (d.walletOutbound.some(o => WETH_CONTRACTS_PRICE[o.contract] || STABLE_USD_CONTRACTS[o.contract])) return
+    if (d.txFrom !== walletLower) return
     const txCacheKey = `base_recon_tx:${txHash}`
     const txCached = basePnlTxCache.get(txCacheKey)
     if (txCached && txCached.exp > now) {
       if (txCached.value && txCached.value !== '0x0' && txCached.value !== '0x') {
         txNativeValues.set(txHash, txCached.value)
       }
-      continue
+      return
     }
     try {
       const txData = await alchemyRpc(_rpcUrl, 'eth_getTransactionByHash', [txHash])
@@ -5780,7 +5809,7 @@ async function buildUnpricedCandidateReceiptPass(
     } catch {
       providerErrors++
     }
-  }
+  }))
 
   // Build synthetic evidence legs and per-tx receipt failure reasons
   const syntheticLegs: WalletTxEvidence[] = []
@@ -6005,6 +6034,10 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   }
 
   const startedAt = Date.now()
+  const _perfPhaseTs: Record<string, number> = { start: startedAt }
+  const _perfTimedOut: string[] = []
+  const _perfSkipped: string[] = []
+  const _perfParallelized: string[] = ['phase1_holdings_activity', 'receipt_fetches_base_recon', 'receipt_fetches_eth_router_recon', 'receipt_fetches_unpriced_pass', 'moralis_chain_balances']
   const addr: string = (address ?? '').trim()
   if (!addr || !/^0x[0-9a-fA-F]{40}$/i.test(addr)) {
     throw new Error('Invalid wallet address')
@@ -6069,6 +6102,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     activityRequested && Boolean(ALCHEMY_BASE_KEY) ? fetchAlchemyPnlEvents(addr, baseUrl) : Promise.resolve([] as PnlEvent[]),
   ])
 
+  _perfPhaseTs.phase1_done = Date.now()
   // ── Tx / age / nonce ──
   const firstCandidates: Date[] = []
   if (ethFirst.status === 'fulfilled' && ethFirst.value) firstCandidates.push(ethFirst.value)
@@ -6227,12 +6261,12 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _moralisByChain = new Map<MoralisChain, MoralisFetchResult>()
   let _moralisUsed = false
   if (Boolean(process.env.MORALIS_API_KEY)) {
-    for (const c of activeChains) {
+    // Fetch all active chain balances in parallel instead of sequentially
+    await Promise.allSettled(activeChains.map(async (c) => {
       const _mbRes = await fetchMoralisBalances(addr, c)
       _moralisByChain.set(c, _mbRes)
-      // Skip tracking if this chain was already tracked in Phase 1
       if (c !== _moralisChain) _trackCall('moralis', 'erc20_holdings', _mbRes.cacheHit, `moralis:holdings:${c}:${addrNorm}`)
-    }
+    }))
     const moralisHoldings = [..._moralisByChain.values()].flatMap((r) => r.holdings).sort((a, b) => b.value - a.value)
 
     if (moralisHoldings.length > 0) {
@@ -6330,6 +6364,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     alchemyEvents,
   })
   tokenMeter.endTokenMeter('providerFetch')
+  _perfPhaseTs.provider_fetch_done = Date.now()
 
   const primaryActivityAttempted = activityRequested && Boolean(GOLDRUSH_KEY)
   const primaryActivityStatusCode = primaryActivityAttempted ? (baseTransferDiag?.httpStatus ?? null) : null
@@ -6926,7 +6961,22 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     const _buildResult = buildUnmatchedSellBackfillTargets(_pricedEvidence, _initialFifoKeys, _lotEngineDebug.sampleUnmatchedSells)
     const _targets = _buildResult.targets
     for (const t of _targets) _phase5dTargetedKeys.add(`${t.chain}:${t.tokenContract}`)
-    const _backfill = await runTargetedUnmatchedSellBackfill(addrNorm, _targets, GOLDRUSH_KEY, baseUrl, walletLotSummary.closedLots, walletLotSummary.realizedPnlUsd)
+    const _backfillTimeoutSentinel = Symbol('backfill_timeout')
+    const _backfill = await (async () => {
+      const result = await withTimeout<UnmatchedSellBackfillOutput | typeof _backfillTimeoutSentinel>(
+        runTargetedUnmatchedSellBackfill(addrNorm, _targets, GOLDRUSH_KEY, baseUrl, walletLotSummary.closedLots, walletLotSummary.realizedPnlUsd),
+        5000,
+        _backfillTimeoutSentinel,
+      )
+      if (result === _backfillTimeoutSentinel) {
+        _perfTimedOut.push('unmatched_sell_backfill')
+        return {
+          events: [] as PnlEvent[], targetBuyKeys: new Set<string>(),
+          debug: { attempted: true, reason: 'backfill_timeout' as const, unmatchedSellCount: _initialFifoKeys.length, targetTokens: _targets.map(t => ({ chain: t.chain, tokenContract: t.tokenContract, symbol: t.symbol })), pagesAttempted: 0, rawEventsFetched: 0, normalizedEvents: 0, priorBuysFound: 0, priorBuysPriced: 0, eventsAddedToFifo: 0, closedLotsBefore: walletLotSummary.closedLots, closedLotsAfter: walletLotSummary.closedLots, realizedPnlBefore: walletLotSummary.realizedPnlUsd, realizedPnlAfter: walletLotSummary.realizedPnlUsd, stopReason: 'backfill_timeout' as const, perTargetResults: [], sampleTargets: _targets.slice(0, 5), samplePriorBuys: [], sampleStillUnmatched: _initialFifoKeys.slice(0, 5), sampleSkippedReasons: [] },
+        } as UnmatchedSellBackfillOutput
+      }
+      return result
+    })()
     _unmatchedSellBackfillDebug = _backfill.debug
     _unmatchedSellBackfillDebug.targetExtractionDebug = _buildResult.extractionDebug
     _unmatchedSellBackfillDebug.inputSourceDebug = {
@@ -6993,6 +7043,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
 
   tokenMeter.measure('fifoEngine', walletLotSummary, _lotEngineDebug, _closedLots)
   tokenMeter.endTokenMeter('fifoEngine')
+  _perfPhaseTs.fifo_done = Date.now()
 
   tokenMeter.startTokenMeter('tradeStats')
   tokenMeter.measure('tradeStats', _closedLots)
@@ -7947,6 +7998,32 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       walletEthNormalizationDebug: _walletEthNormalizationDebug,
       walletFactsDebug: _walletFactsDebug,
       apiAudit: _apiAudit,
+      walletPerformanceDebug: (() => {
+        const now = Date.now()
+        _perfPhaseTs.total_end = now
+        const phaseDurations: Record<string, number> = {}
+        const keys = Object.keys(_perfPhaseTs)
+        for (let i = 1; i < keys.length; i++) {
+          const label = keys[i].replace(/_done$|_end$/, '')
+          phaseDurations[label] = (_perfPhaseTs[keys[i]] ?? now) - (_perfPhaseTs[keys[i - 1]] ?? startedAt)
+        }
+        const totalDurationMs = now - startedAt
+        const bottleneckEntry = Object.entries(phaseDurations).sort((a, b) => b[1] - a[1])[0]
+        return {
+          totalDurationMs,
+          phaseDurations,
+          providerDurations: {
+            phase1_providers: (_perfPhaseTs.provider_fetch_done ?? now) - startedAt,
+          },
+          parallelizedCalls: _perfParallelized,
+          reusedCachedActivity: false,
+          duplicateCallsAvoided: 0,
+          timedOutModules: _perfTimedOut,
+          modulesSkippedBecauseNotNeeded: _perfSkipped,
+          deepBudgetHit: totalDurationMs > 20000,
+          bottleneck: bottleneckEntry ? `${bottleneckEntry[0]}: ${bottleneckEntry[1]}ms` : null,
+        }
+      })(),
     },
   }
   tokenMeter.startTokenMeter('debugLogging')
