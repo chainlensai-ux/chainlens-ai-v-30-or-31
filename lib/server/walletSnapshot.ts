@@ -1227,7 +1227,7 @@ export type WalletSnapshotOptions = {
 
 const SNAPSHOT_TTL_MS         = 5  * 60 * 1000
 const SNAPSHOT_HISTORY_TTL_MS = 15 * 60 * 1000
-const SNAPSHOT_SCHEMA_VERSION = 'v26'
+const SNAPSHOT_SCHEMA_VERSION = 'v27'
 type SnapshotCacheEntry = { snapshot: WalletSnapshot; cachedAt: number; ttlMs: number }
 const snapshotMemCache = new Map<string, SnapshotCacheEntry>()
 
@@ -7009,7 +7009,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     const _backfill = await (async () => {
       const result = await withTimeout<UnmatchedSellBackfillOutput | typeof _backfillTimeoutSentinel>(
         runTargetedUnmatchedSellBackfill(addrNorm, _targets, GOLDRUSH_KEY, baseUrl, walletLotSummary.closedLots, walletLotSummary.realizedPnlUsd),
-        5000,
+        10000,
         _backfillTimeoutSentinel,
       )
       if (result === _backfillTimeoutSentinel) {
@@ -7437,7 +7437,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // ── End Phase 5C ─────────────────────────────────────────────────────────────────────────
 
   // Phase 5D-Supplemental: After 5B/5C may have surfaced new unmatched sell keys not seen at
-  // initial FIFO time, run a targeted backfill for those new keys and merge per-target results.
+  // initial FIFO time, run a targeted backfill for those new keys, pipeline found events through
+  // pricing and FIFO rerun (same as the main Phase 5D block does), and merge all debug.
   if (_shouldRunUnmatchedSellBackfill && _unmatchedSellBackfillDebug.attempted) {
     const _finalKeys = _lotEngineDebug.unmatchedSellTokenKeys
     const _finalSamples = (_lotEngineDebug.sampleUnmatchedSells ?? []).map(s => ({ txHash: s.txHash, tokenAddress: s.tokenAddress, symbol: s.symbol }))
@@ -7445,6 +7446,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     if (_newKeys.length > 0) {
       const _suppBuild = buildUnmatchedSellBackfillTargets(_pricedEvidence, _newKeys, _lotEngineDebug.sampleUnmatchedSells)
       const _suppBackfill = await runTargetedUnmatchedSellBackfill(addrNorm, _suppBuild.targets, GOLDRUSH_KEY, baseUrl, walletLotSummary.closedLots, walletLotSummary.realizedPnlUsd)
+
+      // Merge debug metadata
       _unmatchedSellBackfillDebug.perTargetResults = [
         ..._unmatchedSellBackfillDebug.perTargetResults,
         ..._suppBackfill.debug.perTargetResults,
@@ -7468,6 +7471,71 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         keysPassedToTargetBuilder: _finalKeys,
         sampleSellsPassedToTargetBuilder: _finalSamples,
         sourceUsed: 'supplemental_final_fifo',
+      }
+
+      // Pipeline found events through pricing + FIFO (same as Phase 5D main block)
+      if (_suppBackfill.events.length > 0) {
+        const _suppMergedEvents = [...events, ..._suppBackfill.events]
+        ;({ evidenceList, summary: walletEvidenceSummary, debug: _txEvidenceDebugBase } = buildTxEvidenceFromEvents(_suppMergedEvents, activityRequested, activityProviderUnavailable))
+        ;({ evidenceWithDetection: _swapEvidenceWithDetection, summary: walletSwapSummary, debug: _swapDetectionDebug } = buildSwapDetection(evidenceList, activityRequested, addrNorm))
+        if (_suppBackfill.targetBuyKeys.size > 0) {
+          _swapEvidenceWithDetection = _swapEvidenceWithDetection.map(ev => {
+            const k = `${ev.txHash}:${ev.contract.toLowerCase()}:${ev.direction}`
+            if (!_suppBackfill.targetBuyKeys.has(k)) return ev
+            return {
+              ...ev,
+              swapDetection: {
+                ...(ev.swapDetection ?? { reason: '', confidence: 'medium' as const, isSwapCandidate: false, eventKind: 'unknown' as const, matchedProtocol: null, matchedAddress: null }),
+                isSwapCandidate: true,
+                confidence: ev.swapDetection?.confidence ?? 'medium',
+                eventKind: 'swap_candidate' as const,
+                reason: ev.swapDetection?.reason || 'targeted_unmatched_sell_prior_buy_backfill',
+              },
+            }
+          })
+        }
+        ;({ evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache, priceByContract))
+        _pricedEvidence = normalizeSwapEventsForFifo(_pricedEvidence, tokenMeter.isDebugEnabled())
+        _pricedEvidence = normalizeSingleLegEventsForFifo(_pricedEvidence, tokenMeter.isDebugEnabled())
+        const _suppRerunFifo = buildFifoLotEngine(_pricedEvidence, activityRequested)
+        walletLotSummary = _suppRerunFifo.summary
+        _lotEngineDebug = _suppRerunFifo.debug
+        _closedLots = _suppRerunFifo.closedLots
+
+        // Update pricing counts across all supplemental per-target results
+        const _suppPriorBuysPriced = _pricedEvidence.filter(ev => {
+          const k = `${ev.txHash}:${ev.contract.toLowerCase()}:${ev.direction}`
+          return _suppBackfill.targetBuyKeys.has(k) && ev.priceAtTime?.status === 'priced'
+        }).length
+        _unmatchedSellBackfillDebug.priorBuysPriced = (_unmatchedSellBackfillDebug.priorBuysPriced ?? 0) + _suppPriorBuysPriced
+        _unmatchedSellBackfillDebug.perTargetResults = _unmatchedSellBackfillDebug.perTargetResults.map(result => {
+          if (!_suppBuild.targets.some(t => t.chain === result.chain && t.tokenContract === result.tokenContract)) return result
+          const priorBuysPriced = _pricedEvidence.filter(ev => {
+            const k = `${ev.txHash}:${ev.contract.toLowerCase()}:${ev.direction}`
+            return _suppBackfill.targetBuyKeys.has(k) && ev.direction === 'buy' && normalizeChain(ev.chain) === result.chain && ev.contract.toLowerCase() === result.tokenContract && ev.priceAtTime?.status === 'priced'
+          }).length
+          return {
+            ...result,
+            priorBuysPriced,
+            reason: result.priorBuysFound > 0 && priorBuysPriced === 0 ? 'prior_buy_found_but_unpriced' : result.reason,
+          }
+        })
+        if (_unmatchedSellBackfillDebug.priorBuysFound > 0 && _unmatchedSellBackfillDebug.priorBuysPriced === 0) {
+          _unmatchedSellBackfillDebug.reason = 'prior_buy_found_but_unpriced'
+          _unmatchedSellBackfillDebug.stopReason = 'prior_buy_found_but_unpriced'
+          walletLotSummary = { ...walletLotSummary, missing: Array.from(new Set([...walletLotSummary.missing, 'prior_buy_found_but_unpriced'])) }
+        } else if (walletLotSummary.closedLots > 0) {
+          _unmatchedSellBackfillDebug.reason = 'closed_lots_found_via_supplemental'
+          _unmatchedSellBackfillDebug.stopReason = 'closed_lots_found_via_supplemental'
+        }
+        _unmatchedSellBackfillDebug.closedLotsAfter = walletLotSummary.closedLots
+        _unmatchedSellBackfillDebug.realizedPnlAfter = walletLotSummary.realizedPnlUsd
+        _unmatchedSellBackfillDebug.sampleStillUnmatched = _lotEngineDebug.unmatchedSellTokenKeys.slice(0, 5)
+        events = _suppMergedEvents
+      } else if (_suppBackfill.debug.priorBuysFound > 0) {
+        // Events found but empty after dedup — still upgrade reason from generic timeout
+        _unmatchedSellBackfillDebug.reason = 'prior_buy_found_but_unpriced'
+        _unmatchedSellBackfillDebug.stopReason = 'prior_buy_found_but_unpriced'
       }
     } else if (_unmatchedSellBackfillDebug.inputSourceDebug) {
       // No new keys; update to reflect final FIFO was checked
