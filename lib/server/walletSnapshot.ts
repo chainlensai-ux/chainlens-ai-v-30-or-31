@@ -1073,6 +1073,15 @@ export type WalletSnapshot = {
       warnings: string[]
       totalCredits: number
     }
+    alchemyEnvDebug?: {
+      checkedNames: string[]
+      configuredNames: string[]
+      baseKeyConfigured: boolean
+      ethKeyConfigured: boolean
+      selectedBaseKeyName: string | null
+      selectedEthKeyName: string | null
+      reason: string
+    }
     walletPerformanceDebug?: {
       totalDurationMs: number
       phaseDurations: Record<string, number>
@@ -1096,8 +1105,43 @@ function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T
 }
 
 const ZERION_KEY       = process.env.ZERION_KEY ?? ''
-const ALCHEMY_ETH_KEY  = process.env.ALCHEMY_ETHEREUM_KEY!
-const ALCHEMY_BASE_KEY = process.env.ALCHEMY_BASE_KEY!
+
+// ── Alchemy key resolution ────────────────────────────────────────────────────────────────────
+// Support multiple env var names in priority order (server-only first, NEXT_PUBLIC last).
+// Never log key values — only names and booleans.
+const _ALCHEMY_ETH_NAMES = ['ALCHEMY_ETHEREUM_KEY', 'ALCHEMY_ETH_KEY', 'ALCHEMY_ETH_API_KEY', 'ALCHEMY_API_KEY']
+const _ALCHEMY_BASE_NAMES = ['ALCHEMY_BASE_KEY', 'ALCHEMY_BASE_API_KEY', 'BASE_ALCHEMY_API_KEY', 'ALCHEMY_API_KEY', 'NEXT_PUBLIC_ALCHEMY_BASE_KEY']
+
+function _resolveAlchemyKey(names: string[]): { key: string; name: string | null } {
+  for (const name of names) {
+    const val = process.env[name]
+    if (val && val.trim().length > 0) return { key: val.trim(), name }
+  }
+  return { key: '', name: null }
+}
+
+const _ethKeyResolution  = _resolveAlchemyKey(_ALCHEMY_ETH_NAMES)
+const _baseKeyResolution = _resolveAlchemyKey(_ALCHEMY_BASE_NAMES)
+const ALCHEMY_ETH_KEY    = _ethKeyResolution.key
+const ALCHEMY_BASE_KEY   = _baseKeyResolution.key
+
+const _alchemyEnvDebug = {
+  checkedNames: [..._ALCHEMY_ETH_NAMES, ..._ALCHEMY_BASE_NAMES],
+  configuredNames: [
+    ..._ALCHEMY_ETH_NAMES.filter(n => Boolean(process.env[n]?.trim())),
+    ..._ALCHEMY_BASE_NAMES.filter(n => Boolean(process.env[n]?.trim())),
+  ],
+  baseKeyConfigured: Boolean(ALCHEMY_BASE_KEY),
+  ethKeyConfigured: Boolean(ALCHEMY_ETH_KEY),
+  selectedBaseKeyName: _baseKeyResolution.name,
+  selectedEthKeyName: _ethKeyResolution.name,
+  reason: !ALCHEMY_BASE_KEY && !ALCHEMY_ETH_KEY
+    ? 'no_alchemy_key_found_in_any_checked_name'
+    : !ALCHEMY_BASE_KEY
+    ? 'base_key_not_found'
+    : 'ok',
+}
+
 const PUBLIC_BASE_RPC  = 'https://mainnet.base.org'  // fallback for receipt-only calls when Alchemy is not configured
 const GOLDRUSH_KEY     = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY ?? ''
 
@@ -1183,7 +1227,7 @@ export type WalletSnapshotOptions = {
 
 const SNAPSHOT_TTL_MS         = 5  * 60 * 1000
 const SNAPSHOT_HISTORY_TTL_MS = 15 * 60 * 1000
-const SNAPSHOT_SCHEMA_VERSION = 'v25'
+const SNAPSHOT_SCHEMA_VERSION = 'v26'
 type SnapshotCacheEntry = { snapshot: WalletSnapshot; cachedAt: number; ttlMs: number }
 const snapshotMemCache = new Map<string, SnapshotCacheEntry>()
 
@@ -7998,6 +8042,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       walletEthNormalizationDebug: _walletEthNormalizationDebug,
       walletFactsDebug: _walletFactsDebug,
       apiAudit: _apiAudit,
+      alchemyEnvDebug: _alchemyEnvDebug,
       walletPerformanceDebug: (() => {
         const now = Date.now()
         _perfPhaseTs.total_end = now
