@@ -933,6 +933,20 @@ export type WalletSnapshot = {
       sampleStillUnmatched: Array<{ txHash: string; reason: string }>
       stopReason: string
     }
+    baseUnknownSwapReconstructionDebug?: {
+      attempted: boolean
+      reason: string
+      candidateTxsChecked: number
+      receiptsFetched: number
+      decodedTransferLogs: number
+      walletSideLegsFound: number
+      wethLegsFound: number
+      stableLegsFound: number
+      syntheticSwapEventsAdded: number
+      sampleTxs: Array<{ txHash: string; swapReason: string }>
+      sampleSyntheticEvents: Array<{ txHash: string; symbol: string; direction: string }>
+      skippedReasons: string[]
+    }
     basePnlReconstructionDebug?: {
       attempted: boolean
       reason: string
@@ -1234,7 +1248,7 @@ export type WalletSnapshotOptions = {
 
 const SNAPSHOT_TTL_MS         = 5  * 60 * 1000
 const SNAPSHOT_HISTORY_TTL_MS = 15 * 60 * 1000
-const SNAPSHOT_SCHEMA_VERSION = 'v28'
+const SNAPSHOT_SCHEMA_VERSION = 'v29'
 type SnapshotCacheEntry = { snapshot: WalletSnapshot; cachedAt: number; ttlMs: number }
 const snapshotMemCache = new Map<string, SnapshotCacheEntry>()
 
@@ -5719,6 +5733,199 @@ async function buildBasePnlReconstructionPass(
   }
 }
 
+// ── Base Unknown-Direction Swap Reconstruction Pass ───────────────────────────────────────
+// Runs when activity events exist but ALL have direction='unknown', so the primary base recon
+// pass collected zero candidate txs. Fetches receipts for unknown-direction txs, determines
+// wallet-side inbound/outbound legs from ERC20 Transfer logs, and promotes those events to
+// buy/sell direction when a confirmed swap pattern is found (router, token↔WETH/stable, native ETH).
+async function buildBaseUnknownDirectionSwapReconstructionPass(
+  evidenceWithDetection: WalletTxEvidence[],
+  walletAddress: string,
+  rpcUrl: string,
+): Promise<{
+  enrichedEvidence: WalletTxEvidence[]
+  debug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['baseUnknownSwapReconstructionDebug']>
+}> {
+  const walletLower = walletAddress.toLowerCase()
+  const emptyDebug = (reason: string, attempted = false): NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['baseUnknownSwapReconstructionDebug']> => ({
+    attempted, reason, candidateTxsChecked: 0, receiptsFetched: 0, decodedTransferLogs: 0,
+    walletSideLegsFound: 0, wethLegsFound: 0, stableLegsFound: 0, syntheticSwapEventsAdded: 0,
+    sampleTxs: [], sampleSyntheticEvents: [], skippedReasons: [],
+  })
+
+  if (!rpcUrl) return { enrichedEvidence: evidenceWithDetection, debug: emptyDebug('no_rpc_available') }
+  const existingSwapCount = evidenceWithDetection.filter(e => e.swapDetection?.isSwapCandidate).length
+  if (existingSwapCount > 0) return { enrichedEvidence: evidenceWithDetection, debug: emptyDebug('swap_candidates_already_present') }
+
+  // Collect tx hashes from unknown-direction events, newest first, deduplicated
+  const seen = new Set<string>()
+  const candidateTxHashes: string[] = []
+  const sorted = [...evidenceWithDetection].sort((a, b) => (b.timestamp ?? '').localeCompare(a.timestamp ?? ''))
+  for (const e of sorted) {
+    if (!e.txHash || seen.has(e.txHash)) continue
+    if (e.direction !== 'unknown') continue
+    seen.add(e.txHash)
+    candidateTxHashes.push(e.txHash)
+    if (candidateTxHashes.length >= 12) break
+  }
+  if (candidateTxHashes.length === 0) return { enrichedEvidence: evidenceWithDetection, debug: emptyDebug('no_unknown_direction_events', true) }
+
+  const toFetch = candidateTxHashes.slice(0, 10)
+  const now = Date.now()
+  let receiptsFetched = 0
+  let totalTransferLogs = 0
+  let walletSideLegsFound = 0
+  let wethLegsFound = 0
+  let stableLegsFound = 0
+  const skippedReasons: string[] = []
+  const txDecodes = new Map<string, BasePnlReceiptDecode>()
+
+  await Promise.allSettled(toFetch.map(async (txHash) => {
+    const cacheKey = `base_recon:${txHash}`
+    const cached = basePnlReceiptCache.get(cacheKey)
+    if (cached && cached.exp > now) { txDecodes.set(txHash, cached.data); return }
+    try {
+      const receipt = await alchemyRpc(rpcUrl, 'eth_getTransactionReceipt', [txHash])
+      receiptsFetched++
+      if (!receipt) {
+        const d: BasePnlReceiptDecode = { txFrom: null, txTo: null, walletInbound: [], walletOutbound: [], isKnownRouter: false, routerProtocol: null, hasStableLeg: false, hasWethLeg: false, totalTransferLogs: 0, decodeStatus: 'no_receipt', reason: 'receipt_null' }
+        basePnlReceiptCache.set(cacheKey, { data: d, exp: now + BASE_PNL_RECON_TTL_MS })
+        txDecodes.set(txHash, d)
+        return
+      }
+      const txFrom = typeof receipt.from === 'string' ? (receipt.from as string).toLowerCase() : null
+      const txTo = typeof receipt.to === 'string' ? (receipt.to as string).toLowerCase() : null
+      const isKnownRouter = Boolean(txTo && EXTENDED_DEX_ROUTERS.has(txTo))
+      const routerProtocol = txTo ? (KNOWN_DEX_ROUTERS[txTo] ?? (isKnownRouter ? 'known_dex_router' : null)) : null
+      const logs: Array<{ topics?: string[]; address?: string }> = Array.isArray(receipt.logs) ? receipt.logs : []
+      const inbound: BasePnlReceiptDecode['walletInbound'] = []
+      const outbound: BasePnlReceiptDecode['walletOutbound'] = []
+      let hasStable = false
+      let hasWeth = false
+      let logCount = 0
+      for (const log of logs) {
+        if (!log.topics || log.topics[0]?.toLowerCase() !== ERC20_TRANSFER_TOPIC) continue
+        if (log.topics.length < 3) continue
+        logCount++
+        const fromAddr = '0x' + (log.topics[1]?.toLowerCase() ?? '').slice(-40)
+        const toAddr = '0x' + (log.topics[2]?.toLowerCase() ?? '').slice(-40)
+        const contractAddr = (log.address ?? '').toLowerCase()
+        const amountHex = typeof (log as Record<string, unknown>).data === 'string' ? (log as Record<string, unknown>).data as string : '0x0'
+        if (toAddr === walletLower) {
+          inbound.push({ contract: contractAddr, amountHex })
+          if (STABLE_USD_CONTRACTS[contractAddr]) hasStable = true
+          if (WETH_CONTRACTS_PRICE[contractAddr]) hasWeth = true
+        }
+        if (fromAddr === walletLower) {
+          outbound.push({ contract: contractAddr, amountHex })
+          if (STABLE_USD_CONTRACTS[contractAddr]) hasStable = true
+          if (WETH_CONTRACTS_PRICE[contractAddr]) hasWeth = true
+        }
+      }
+      const d: BasePnlReceiptDecode = {
+        txFrom, txTo, walletInbound: inbound, walletOutbound: outbound,
+        isKnownRouter, routerProtocol, hasStableLeg: hasStable, hasWethLeg: hasWeth,
+        totalTransferLogs: logCount, decodeStatus: 'ok', reason: 'decoded',
+      }
+      basePnlReceiptCache.set(cacheKey, { data: d, exp: now + BASE_PNL_RECON_TTL_MS })
+      txDecodes.set(txHash, d)
+      totalTransferLogs += logCount
+      walletSideLegsFound += inbound.length + outbound.length
+      if (hasWeth) wethLegsFound++
+      if (hasStable) stableLegsFound++
+    } catch {
+      skippedReasons.push(`receipt_error:${txHash.slice(0, 10)}`)
+    }
+  }))
+
+  // Classify each tx: is it a swap?
+  const swapTxHashes = new Set<string>()
+  const swapReasons = new Map<string, string>()
+  const sampleTxs: Array<{ txHash: string; swapReason: string }> = []
+
+  for (const [txHash, d] of txDecodes) {
+    if (d.decodeStatus !== 'ok') continue
+    const hasInboundToken = d.walletInbound.some(i => !STABLE_USD_CONTRACTS[i.contract] && !WETH_CONTRACTS_PRICE[i.contract])
+    const hasInboundStableOrWeth = d.walletInbound.some(i => STABLE_USD_CONTRACTS[i.contract] || WETH_CONTRACTS_PRICE[i.contract])
+    const hasOutboundToken = d.walletOutbound.some(o => !STABLE_USD_CONTRACTS[o.contract] && !WETH_CONTRACTS_PRICE[o.contract])
+    const hasOutboundStableOrWeth = d.walletOutbound.some(o => STABLE_USD_CONTRACTS[o.contract] || WETH_CONTRACTS_PRICE[o.contract])
+    const txFromIsWallet = d.txFrom === walletLower
+
+    let swapReason: string | null = null
+    if (d.isKnownRouter) {
+      swapReason = `router:${d.routerProtocol ?? d.txTo ?? 'unknown'}`
+    } else if (hasInboundToken && hasOutboundStableOrWeth) {
+      swapReason = 'token_in_stable_weth_out'
+    } else if (hasOutboundToken && hasInboundStableOrWeth) {
+      swapReason = 'token_out_stable_weth_in'
+    } else if (hasInboundToken && txFromIsWallet && d.walletOutbound.length === 0) {
+      swapReason = 'native_eth_buy'
+    } else if (hasInboundToken && hasOutboundToken) {
+      swapReason = 'token_to_token_swap'
+    } else {
+      skippedReasons.push(`no_swap_pattern:${txHash.slice(0, 10)}`)
+    }
+
+    if (swapReason !== null) {
+      swapTxHashes.add(txHash)
+      swapReasons.set(txHash, swapReason)
+      if (sampleTxs.length < 5) sampleTxs.push({ txHash: txHash.slice(0, 12) + '…', swapReason })
+    }
+  }
+
+  if (swapTxHashes.size === 0) {
+    return {
+      enrichedEvidence: evidenceWithDetection,
+      debug: { ...emptyDebug('no_swap_txs_found', true), candidateTxsChecked: toFetch.length, receiptsFetched, decodedTransferLogs: totalTransferLogs, walletSideLegsFound, wethLegsFound, stableLegsFound, skippedReasons: skippedReasons.slice(0, 10) },
+    }
+  }
+
+  // Promote unknown-direction events: determine buy/sell from per-contract receipt leg lookup
+  let syntheticSwapEventsAdded = 0
+  const sampleSyntheticEvents: Array<{ txHash: string; symbol: string; direction: string }> = []
+
+  const enrichedEvidence: WalletTxEvidence[] = evidenceWithDetection.map(e => {
+    if (!e.txHash || !swapTxHashes.has(e.txHash) || e.direction !== 'unknown') return e
+    const d = txDecodes.get(e.txHash)
+    if (!d || d.decodeStatus !== 'ok') return e
+    const contractLower = (e.contract ?? '').toLowerCase()
+    const isInbound = d.walletInbound.some(leg => leg.contract === contractLower)
+    const isOutbound = d.walletOutbound.some(leg => leg.contract === contractLower)
+    let direction: 'buy' | 'sell' | null = isInbound ? 'buy' : isOutbound ? 'sell' : null
+    // For router txs where contract not found in logs: infer from payment leg direction
+    if (direction === null && d.isKnownRouter) {
+      const hasOutboundPayment = d.walletOutbound.some(o => STABLE_USD_CONTRACTS[o.contract] || WETH_CONTRACTS_PRICE[o.contract])
+      direction = hasOutboundPayment ? 'buy' : null
+    }
+    if (direction === null) return e
+    syntheticSwapEventsAdded++
+    const swapReason = swapReasons.get(e.txHash) ?? 'base_unknown_recon'
+    if (sampleSyntheticEvents.length < 5) sampleSyntheticEvents.push({ txHash: e.txHash.slice(0, 12) + '…', symbol: e.symbol, direction })
+    return {
+      ...e, direction,
+      swapDetection: {
+        isSwapCandidate: true,
+        confidence: d.isKnownRouter ? 'high' : 'medium',
+        eventKind: 'swap_candidate' as const,
+        reason: `Base unknown-dir recon: ${swapReason}`,
+        matchedProtocol: d.routerProtocol,
+        matchedAddress: null,
+      } satisfies WalletSwapDetection,
+    }
+  })
+
+  return {
+    enrichedEvidence,
+    debug: {
+      attempted: true,
+      reason: syntheticSwapEventsAdded > 0 ? `promoted_${syntheticSwapEventsAdded}_from_${swapTxHashes.size}_swap_txs` : 'swap_txs_found_but_no_events_promoted',
+      candidateTxsChecked: toFetch.length, receiptsFetched, decodedTransferLogs: totalTransferLogs,
+      walletSideLegsFound, wethLegsFound, stableLegsFound, syntheticSwapEventsAdded,
+      sampleTxs, sampleSyntheticEvents, skippedReasons: skippedReasons.slice(0, 10),
+    },
+  }
+}
+
 // ── Unpriced Candidate Receipt Pass ──────────────────────────────────────────────────────
 // Runs AFTER buildPriceAtTimeEvidence when swap candidates exist but all are unpriced.
 // Fetches receipts for those specific tx hashes to find WETH/USDC quote legs that were
@@ -6806,6 +7013,53 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     _basePnlReconDebug = { ..._basePnlReconDebug, reason: 'no_rpc_available' }
   }
   // ── End Base PnL Reconstruction Pass ────────────────────────────────────────────────────
+
+  // ── Base Unknown-Direction Swap Reconstruction Pass ──────────────────────────────────────
+  // Runs when existing base recon found 0 swap candidates AND unknown-direction events exist.
+  // The primary base recon skips unknown-direction events; this pass explicitly targets them.
+  let _baseUnknownSwapReconDebug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['baseUnknownSwapReconstructionDebug']> = {
+    attempted: false, reason: 'not_attempted',
+    candidateTxsChecked: 0, receiptsFetched: 0, decodedTransferLogs: 0,
+    walletSideLegsFound: 0, wethLegsFound: 0, stableLegsFound: 0, syntheticSwapEventsAdded: 0,
+    sampleTxs: [], sampleSyntheticEvents: [], skippedReasons: [],
+  }
+  const _hasUnknownDirEvents = _swapEvidenceWithDetection.some(e => e.direction === 'unknown')
+  const _shouldRunUnknownDirRecon = (
+    activityRequested &&
+    _baseReconChainOk &&
+    walletSwapSummary.swapCandidateEvents === 0 &&
+    _hasUnknownDirEvents &&
+    Boolean(baseRpcUrl)
+  )
+  if (_shouldRunUnknownDirRecon) {
+    const unknownReconResult = await buildBaseUnknownDirectionSwapReconstructionPass(
+      _swapEvidenceWithDetection,
+      addrNorm,
+      baseRpcUrl,
+    )
+    _baseUnknownSwapReconDebug = unknownReconResult.debug
+    tokenMeter.measure('swapDetection', unknownReconResult)
+    if (unknownReconResult.debug.syntheticSwapEventsAdded > 0) {
+      evidenceList = unknownReconResult.enrichedEvidence
+      ;({ evidenceWithDetection: _swapEvidenceWithDetection, summary: walletSwapSummary, debug: _swapDetectionDebug } = buildSwapDetection(evidenceList, activityRequested, addrNorm))
+      tokenMeter.measure('swapDetection', _swapEvidenceWithDetection, walletSwapSummary)
+      for (let _ri = 0; _ri < unknownReconResult.debug.receiptsFetched; _ri++) {
+        const _rk = `alchemy:unknownrecon:receipt:${_ri}:${addrNorm}`
+        if (!_alchemyDedup.has(_rk)) { _alchemyDedup.add(_rk); _trackCall('alchemy', 'eth_getTransactionReceipt', false, _rk) }
+      }
+    }
+  } else if (!activityRequested) {
+    _baseUnknownSwapReconDebug = { ..._baseUnknownSwapReconDebug, reason: 'activity_not_requested' }
+  } else if (!_baseReconChainOk) {
+    _baseUnknownSwapReconDebug = { ..._baseUnknownSwapReconDebug, reason: 'eth_chain_skipped' }
+  } else if (walletSwapSummary.swapCandidateEvents > 0) {
+    _baseUnknownSwapReconDebug = { ..._baseUnknownSwapReconDebug, reason: 'swap_candidates_present' }
+  } else if (!_hasUnknownDirEvents) {
+    _baseUnknownSwapReconDebug = { ..._baseUnknownSwapReconDebug, reason: 'no_unknown_direction_events' }
+  } else if (!baseRpcUrl) {
+    _baseUnknownSwapReconDebug = { ..._baseUnknownSwapReconDebug, reason: 'no_rpc_available' }
+  }
+  // ── End Base Unknown-Direction Swap Reconstruction Pass ──────────────────────────────────
 
   let _ethSwapReconstructionDebug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['ethSwapReconstructionDebug']> = emptyEthSwapReconstructionDebug(
     'not_attempted',
@@ -8136,6 +8390,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       walletSwapEnrichmentDebug: _swapEnrichmentDebug,
       ethSwapReconstructionDebug: _ethSwapReconstructionDebug,
       basePnlReconstructionDebug: _basePnlReconDebug,
+      baseUnknownSwapReconstructionDebug: _baseUnknownSwapReconDebug,
       baseFifoCoverageDebug: _baseFifoCoverageDebug,
       walletActivityRoutingDebug: _walletActivityRoutingDebug,
       walletChainActivityMergeDebug: _walletChainActivityMergeDebug,
