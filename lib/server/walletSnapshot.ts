@@ -1164,7 +1164,7 @@ export type WalletSnapshotOptions = {
 
 const SNAPSHOT_TTL_MS         = 5  * 60 * 1000
 const SNAPSHOT_HISTORY_TTL_MS = 15 * 60 * 1000
-const SNAPSHOT_SCHEMA_VERSION = 'v24'
+const SNAPSHOT_SCHEMA_VERSION = 'v25'
 type SnapshotCacheEntry = { snapshot: WalletSnapshot; cachedAt: number; ttlMs: number }
 const snapshotMemCache = new Map<string, SnapshotCacheEntry>()
 
@@ -1218,6 +1218,13 @@ type UnmatchedSellBackfillDebug = {
   reason: UnmatchedSellBackfillReason | string
   unmatchedSellCount: number
   targetTokens: Array<{ chain: string; tokenContract: string; symbol: string | null }>
+  inputSourceDebug?: {
+    fifoUnmatchedSellKeysAvailable: string[]
+    fifoSampleUnmatchedSellsAvailable: Array<{ txHash: string; tokenAddress: string; symbol: string }>
+    keysPassedToTargetBuilder: string[]
+    sampleSellsPassedToTargetBuilder: Array<{ txHash: string; tokenAddress: string; symbol: string }>
+    sourceUsed: string
+  }
   targetExtractionDebug?: {
     unmatchedSellKeysInput: string[]
     sampleUnmatchedSellsInput: Array<{ txHash: string; tokenAddress: string; symbol: string }>
@@ -6912,12 +6919,23 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     walletLotSummary.unmatchedSells > 0 &&
     _lotEngineDebug.unmatchedSellTokenKeys.length > 0
 
+  let _phase5dTargetedKeys = new Set<string>()
   if (_shouldRunUnmatchedSellBackfill) {
-    const _buildResult = buildUnmatchedSellBackfillTargets(_pricedEvidence, _lotEngineDebug.unmatchedSellTokenKeys, _lotEngineDebug.sampleUnmatchedSells)
+    const _initialFifoKeys = _lotEngineDebug.unmatchedSellTokenKeys
+    const _initialFifoSamples = (_lotEngineDebug.sampleUnmatchedSells ?? []).map(s => ({ txHash: s.txHash, tokenAddress: s.tokenAddress, symbol: s.symbol }))
+    const _buildResult = buildUnmatchedSellBackfillTargets(_pricedEvidence, _initialFifoKeys, _lotEngineDebug.sampleUnmatchedSells)
     const _targets = _buildResult.targets
+    for (const t of _targets) _phase5dTargetedKeys.add(`${t.chain}:${t.tokenContract}`)
     const _backfill = await runTargetedUnmatchedSellBackfill(addrNorm, _targets, GOLDRUSH_KEY, baseUrl, walletLotSummary.closedLots, walletLotSummary.realizedPnlUsd)
     _unmatchedSellBackfillDebug = _backfill.debug
     _unmatchedSellBackfillDebug.targetExtractionDebug = _buildResult.extractionDebug
+    _unmatchedSellBackfillDebug.inputSourceDebug = {
+      fifoUnmatchedSellKeysAvailable: _initialFifoKeys,
+      fifoSampleUnmatchedSellsAvailable: _initialFifoSamples,
+      keysPassedToTargetBuilder: _initialFifoKeys,
+      sampleSellsPassedToTargetBuilder: _initialFifoSamples,
+      sourceUsed: 'initial_fifo',
+    }
     if (_backfill.events.length > 0) {
       const _mergedBackfillEvents = [...events, ..._backfill.events]
       ;({ evidenceList, summary: walletEvidenceSummary, debug: _txEvidenceDebugBase } = buildTxEvidenceFromEvents(_mergedBackfillEvents, activityRequested, activityProviderUnavailable))
@@ -7322,6 +7340,49 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     _baseFifoCoverageDebug.skippedReason = _bfcSkipReason
   }
   // ── End Phase 5C ─────────────────────────────────────────────────────────────────────────
+
+  // Phase 5D-Supplemental: After 5B/5C may have surfaced new unmatched sell keys not seen at
+  // initial FIFO time, run a targeted backfill for those new keys and merge per-target results.
+  if (_shouldRunUnmatchedSellBackfill && _unmatchedSellBackfillDebug.attempted) {
+    const _finalKeys = _lotEngineDebug.unmatchedSellTokenKeys
+    const _finalSamples = (_lotEngineDebug.sampleUnmatchedSells ?? []).map(s => ({ txHash: s.txHash, tokenAddress: s.tokenAddress, symbol: s.symbol }))
+    const _newKeys = _finalKeys.filter(k => !_phase5dTargetedKeys.has(k))
+    if (_newKeys.length > 0) {
+      const _suppBuild = buildUnmatchedSellBackfillTargets(_pricedEvidence, _newKeys, _lotEngineDebug.sampleUnmatchedSells)
+      const _suppBackfill = await runTargetedUnmatchedSellBackfill(addrNorm, _suppBuild.targets, GOLDRUSH_KEY, baseUrl, walletLotSummary.closedLots, walletLotSummary.realizedPnlUsd)
+      _unmatchedSellBackfillDebug.perTargetResults = [
+        ..._unmatchedSellBackfillDebug.perTargetResults,
+        ..._suppBackfill.debug.perTargetResults,
+      ]
+      _unmatchedSellBackfillDebug.targetTokens = [
+        ..._unmatchedSellBackfillDebug.targetTokens,
+        ..._suppBackfill.debug.targetTokens,
+      ]
+      _unmatchedSellBackfillDebug.priorBuysFound += _suppBackfill.debug.priorBuysFound
+      _unmatchedSellBackfillDebug.rawEventsFetched += _suppBackfill.debug.rawEventsFetched
+      if (_unmatchedSellBackfillDebug.targetExtractionDebug) {
+        _unmatchedSellBackfillDebug.targetExtractionDebug = {
+          ..._unmatchedSellBackfillDebug.targetExtractionDebug,
+          unmatchedSellKeysInput: [..._unmatchedSellBackfillDebug.targetExtractionDebug.unmatchedSellKeysInput, ..._newKeys],
+          finalTargets: [..._unmatchedSellBackfillDebug.targetExtractionDebug.finalTargets, ..._suppBuild.extractionDebug.finalTargets],
+        }
+      }
+      _unmatchedSellBackfillDebug.inputSourceDebug = {
+        fifoUnmatchedSellKeysAvailable: _finalKeys,
+        fifoSampleUnmatchedSellsAvailable: _finalSamples,
+        keysPassedToTargetBuilder: _finalKeys,
+        sampleSellsPassedToTargetBuilder: _finalSamples,
+        sourceUsed: 'supplemental_final_fifo',
+      }
+    } else if (_unmatchedSellBackfillDebug.inputSourceDebug) {
+      // No new keys; update to reflect final FIFO was checked
+      _unmatchedSellBackfillDebug.inputSourceDebug = {
+        ..._unmatchedSellBackfillDebug.inputSourceDebug,
+        fifoUnmatchedSellKeysAvailable: _finalKeys,
+        fifoSampleUnmatchedSellsAvailable: _finalSamples,
+      }
+    }
+  }
 
   tokenMeter.measure('fallbackEngine', _moralisFbDebug, events)
   tokenMeter.endTokenMeter('fallbackEngine')
