@@ -1164,7 +1164,7 @@ export type WalletSnapshotOptions = {
 
 const SNAPSHOT_TTL_MS         = 5  * 60 * 1000
 const SNAPSHOT_HISTORY_TTL_MS = 15 * 60 * 1000
-const SNAPSHOT_SCHEMA_VERSION = 'v23'
+const SNAPSHOT_SCHEMA_VERSION = 'v24'
 type SnapshotCacheEntry = { snapshot: WalletSnapshot; cachedAt: number; ttlMs: number }
 const snapshotMemCache = new Map<string, SnapshotCacheEntry>()
 
@@ -1192,10 +1192,11 @@ type UnmatchedSellBackfillTarget = {
   chain: string
   tokenContract: string
   symbol: string | null
-  sellTxHash: string
-  sellTimestamp: string
+  sellTxHash: string | null
+  sellTimestamp: string | null
   sellAmount: number
   exitPriceUsd: number | null
+  _metadataMissing?: boolean
 }
 
 type UnmatchedSellBackfillPerTargetResult = {
@@ -1217,6 +1218,14 @@ type UnmatchedSellBackfillDebug = {
   reason: UnmatchedSellBackfillReason | string
   unmatchedSellCount: number
   targetTokens: Array<{ chain: string; tokenContract: string; symbol: string | null }>
+  targetExtractionDebug?: {
+    unmatchedSellKeysInput: string[]
+    sampleUnmatchedSellsInput: Array<{ txHash: string; tokenAddress: string; symbol: string }>
+    targetsFromSamples: string[]
+    targetsFromKeys: string[]
+    droppedTargets: string[]
+    finalTargets: string[]
+  }
   pagesAttempted: number
   rawEventsFetched: number
   normalizedEvents: number
@@ -2292,7 +2301,8 @@ function parseUnmatchedSellTokenKey(key: string): { chain: string; tokenContract
 function buildUnmatchedSellBackfillTargets(
   pricedEvidence: WalletTxEvidence[],
   unmatchedSellTokenKeys: string[],
-): UnmatchedSellBackfillTarget[] {
+  sampleUnmatchedSells?: Array<{ txHash: string; tokenAddress: string; symbol: string; amount: number; exitPriceUsd: number }>,
+): { targets: UnmatchedSellBackfillTarget[]; extractionDebug: NonNullable<UnmatchedSellBackfillDebug['targetExtractionDebug']> } {
   const orderedKeys: string[] = []
   const wanted = new Set<string>()
   for (const rawKey of unmatchedSellTokenKeys) {
@@ -2304,31 +2314,59 @@ function buildUnmatchedSellBackfillTargets(
     orderedKeys.push(key)
   }
 
+  // Source A: pricedEvidence — find sell metadata for wanted keys
   const sellMetadata = new Map<string, UnmatchedSellBackfillTarget>()
   for (const e of pricedEvidence) {
-    if (e.direction !== 'sell') continue
-    if (!e.txHash || !e.timestamp || !e.contract?.startsWith('0x')) continue
+    if (e.direction !== 'sell' || !e.contract?.startsWith('0x')) continue
     const chain = normalizeChain(e.chain)
     const tokenContract = e.contract.toLowerCase()
     const key = `${chain}:${tokenContract}`
     if (!wanted.has(key)) continue
+    if (!e.txHash || !e.timestamp) continue
     const amount = parseRawAmount(e.amountRaw, e.tokenDecimals) ?? e.amount
     if (!amount || amount <= 0) continue
-    const target = {
-      chain,
-      tokenContract,
-      symbol: e.symbol ?? null,
-      sellTxHash: e.txHash,
-      sellTimestamp: e.timestamp,
-      sellAmount: amount,
-      exitPriceUsd: e.priceAtTime?.priceUsd ?? null,
-    }
+    const candidate: UnmatchedSellBackfillTarget = { chain, tokenContract, symbol: e.symbol ?? null, sellTxHash: e.txHash, sellTimestamp: e.timestamp, sellAmount: amount, exitPriceUsd: e.priceAtTime?.priceUsd ?? null }
     const existing = sellMetadata.get(key)
-    if (!existing || target.sellTimestamp < existing.sellTimestamp) sellMetadata.set(key, target)
+    if (!existing || candidate.sellTimestamp! < existing.sellTimestamp!) sellMetadata.set(key, candidate)
   }
 
-  // Preserve FIFO's unmatched key order and require exact normalized chain + lowercase contract matches.
-  return orderedKeys.map(key => sellMetadata.get(key)).filter((target): target is UnmatchedSellBackfillTarget => Boolean(target))
+  // Source B: sampleUnmatchedSells — enrich symbol/amount for keys without pricedEvidence metadata
+  const sampleByContract = new Map<string, { txHash: string; symbol: string; amount: number; exitPriceUsd: number }>()
+  for (const s of sampleUnmatchedSells ?? []) {
+    const addr = (s.tokenAddress ?? '').toLowerCase()
+    if (!addr.startsWith('0x')) continue
+    if (!sampleByContract.has(addr)) sampleByContract.set(addr, { txHash: s.txHash, symbol: s.symbol, amount: s.amount, exitPriceUsd: s.exitPriceUsd })
+  }
+
+  const targetsFromSamples: string[] = []
+  const targetsFromKeys: string[] = [...orderedKeys]
+
+  // Keep ALL ordered keys; enrich from samples when pricedEvidence metadata is missing
+  const targets = orderedKeys.map((key): UnmatchedSellBackfillTarget => {
+    const meta = sellMetadata.get(key)
+    if (meta) return meta
+    const colonIdx = key.indexOf(':')
+    const chain = key.slice(0, colonIdx)
+    const tokenContract = key.slice(colonIdx + 1)
+    const sample = sampleByContract.get(tokenContract)
+    if (sample) {
+      targetsFromSamples.push(key)
+      const validTxHash = typeof sample.txHash === 'string' && sample.txHash.startsWith('0x') && sample.txHash.length === 66 ? sample.txHash : null
+      return { chain, tokenContract, symbol: sample.symbol ?? null, sellTxHash: validTxHash, sellTimestamp: null, sellAmount: sample.amount > 0 ? sample.amount : 0, exitPriceUsd: sample.exitPriceUsd > 0 ? sample.exitPriceUsd : null, _metadataMissing: true }
+    }
+    return { chain, tokenContract, symbol: null, sellTxHash: null, sellTimestamp: null, sellAmount: 0, exitPriceUsd: null, _metadataMissing: true }
+  })
+
+  const extractionDebug: NonNullable<UnmatchedSellBackfillDebug['targetExtractionDebug']> = {
+    unmatchedSellKeysInput: unmatchedSellTokenKeys,
+    sampleUnmatchedSellsInput: (sampleUnmatchedSells ?? []).map(s => ({ txHash: s.txHash, tokenAddress: s.tokenAddress, symbol: s.symbol })),
+    targetsFromSamples,
+    targetsFromKeys,
+    droppedTargets: [],
+    finalTargets: targets.map(t => `${t.chain}:${t.tokenContract}`),
+  }
+
+  return { targets, extractionDebug }
 }
 
 async function fetchAlchemyBasePriorBuysForToken(address: string, baseUrl: string, target: UnmatchedSellBackfillTarget): Promise<{ events: PnlEvent[]; raw: number; error: string | null }> {
@@ -2336,7 +2374,7 @@ async function fetchAlchemyBasePriorBuysForToken(address: string, baseUrl: strin
   try {
     const result = await alchemyRpc(baseUrl, 'alchemy_getAssetTransfers', [{ fromBlock: '0x0', category: ['erc20'], withMetadata: true, maxCount: '0x64', order: 'desc', toAddress: address, contractAddresses: [target.tokenContract] }])
     const transfers: Record<string, unknown>[] = Array.isArray(result?.transfers) ? result.transfers : []
-    const sellTime = new Date(target.sellTimestamp).getTime()
+    const sellTime = target.sellTimestamp ? new Date(target.sellTimestamp).getTime() : null
     const lower = address.toLowerCase()
     const events = transfers.map((t): PnlEvent => {
       const meta = t.metadata as Record<string, unknown> | undefined
@@ -2348,7 +2386,8 @@ async function fetchAlchemyBasePriorBuysForToken(address: string, baseUrl: strin
       return { contract, symbol: String(t.asset ?? target.symbol ?? '?'), direction: to === lower ? 'buy' : from === lower ? 'sell' : 'unknown', amount: Number(t.value ?? 0), amountRaw: String(rawContract?.value ?? '') || null, tokenDecimals: null, usdValue: null, txHash: typeof t.hash === 'string' ? t.hash : null, timestamp, fromAddress: from, toAddress: to, chain: 'base' }
     }).filter(e => {
       const ts = e.timestamp ? new Date(e.timestamp).getTime() : NaN
-      return normalizeChain(e.chain) === 'base' && e.contract.toLowerCase() === target.tokenContract && e.direction === 'buy' && e.txHash && Number.isFinite(ts) && ts < sellTime && e.amount > 0
+      const timeOk = sellTime === null ? true : (Number.isFinite(ts) && ts < sellTime)
+      return normalizeChain(e.chain) === 'base' && e.contract.toLowerCase() === target.tokenContract && e.direction === 'buy' && e.txHash && timeOk && e.amount > 0
     })
     return { events, raw: transfers.length, error: null }
   } catch {
@@ -2450,7 +2489,7 @@ async function runTargetedUnmatchedSellBackfill(address: string, targets: Unmatc
         continue
       }
       const chainName = normalizeChainForGoldrush(target.chain)
-      const sellTime = new Date(target.sellTimestamp).getTime()
+      const sellTime = target.sellTimestamp ? new Date(target.sellTimestamp).getTime() : null
       result.attempted = true
       if (!apiKey) {
         const reason: UnmatchedSellBackfillReason = target.chain === 'base' ? 'base_provider_unavailable' : 'provider_history_depth_insufficient'
@@ -2469,7 +2508,7 @@ async function runTargetedUnmatchedSellBackfill(address: string, targets: Unmatc
           debug.normalizedEvents += pageResult.events.length
           result.rawEventsFetched += pageResult.rawItems
           result.normalizedEvents += pageResult.events.length
-          const older = pageResult.events.filter(e => { const ts = e.timestamp ? new Date(e.timestamp).getTime() : NaN; return Number.isFinite(ts) && ts < sellTime })
+          const older = sellTime === null ? pageResult.events : pageResult.events.filter(e => { const ts = e.timestamp ? new Date(e.timestamp).getTime() : NaN; return Number.isFinite(ts) && ts < sellTime })
           const priorBuys = older.filter(e => normalizeChain(e.chain) === target.chain && e.contract.toLowerCase() === target.tokenContract && e.direction === 'buy' && e.txHash && e.amount > 0)
           if (priorBuys.length > 0) addEventsForTarget(target, pageResult.events, priorBuys)
         }
@@ -6874,9 +6913,11 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     _lotEngineDebug.unmatchedSellTokenKeys.length > 0
 
   if (_shouldRunUnmatchedSellBackfill) {
-    const _targets = buildUnmatchedSellBackfillTargets(_pricedEvidence, _lotEngineDebug.unmatchedSellTokenKeys)
+    const _buildResult = buildUnmatchedSellBackfillTargets(_pricedEvidence, _lotEngineDebug.unmatchedSellTokenKeys, _lotEngineDebug.sampleUnmatchedSells)
+    const _targets = _buildResult.targets
     const _backfill = await runTargetedUnmatchedSellBackfill(addrNorm, _targets, GOLDRUSH_KEY, baseUrl, walletLotSummary.closedLots, walletLotSummary.realizedPnlUsd)
     _unmatchedSellBackfillDebug = _backfill.debug
+    _unmatchedSellBackfillDebug.targetExtractionDebug = _buildResult.extractionDebug
     if (_backfill.events.length > 0) {
       const _mergedBackfillEvents = [...events, ..._backfill.events]
       ;({ evidenceList, summary: walletEvidenceSummary, debug: _txEvidenceDebugBase } = buildTxEvidenceFromEvents(_mergedBackfillEvents, activityRequested, activityProviderUnavailable))
