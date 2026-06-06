@@ -168,6 +168,7 @@ type WalletResult = {
   walletTradeStatsSummary?: {
     status: 'ok' | 'partial' | 'open_check'
     closedLots: number
+    openedLots?: number
     uniqueTokensTraded: number
     realizedPnlUsd: number | null
     realizedPnlPercent: number | null
@@ -1437,8 +1438,67 @@ export default function WalletScannerPage() {
                   {(() => {
                     const ts = result.walletTradeStatsSummary
                     const closedLots = ts?.closedLots ?? 0
+                    const openedLots = ts?.openedLots ?? result.walletLotSummary?.openedLots ?? 0
                     const portfolioActive = result.walletModuleCoverage?.portfolio.status === 'ok' || result.totalValue > 0 || result.holdings.length > 0
+                    const hasOpenLots = openedLots > 0 && closedLots === 0
                     const tradeOpenCheck = closedLots === 0
+                    const openPos = result.walletModuleCoverage?.walletOpenPositionSummary ?? result.walletOpenPositionSummary ?? null
+                    if (portfolioActive && hasOpenLots) {
+                      const costBasis = openPos?.totalOpenCostBasisUsd ?? null
+                      const uniqueTokens = openPos?.uniqueTokens ?? 0
+                      const tokenPills = openPos?.tokens ?? []
+                      return (
+                        <>
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', marginBottom: '16px' }}>
+                            <div style={{ fontSize: '10px', fontWeight: 800, letterSpacing: '0.18em', color: '#2DD4BF', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                              Wallet Status
+                            </div>
+                          </div>
+                          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '16px' }}>
+                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', fontSize: '13px', fontWeight: 800, color: '#4ade80', border: '1px solid rgba(74,222,128,0.30)', background: 'rgba(74,222,128,0.08)', borderRadius: '8px', padding: '7px 14px', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
+                              <span style={{ fontSize: '10px' }}>●</span> Portfolio Active
+                            </span>
+                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', fontSize: '13px', fontWeight: 800, color: '#fbbf24', border: '1px solid rgba(251,191,36,0.30)', background: 'rgba(251,191,36,0.08)', borderRadius: '8px', padding: '7px 14px', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
+                              <span style={{ fontSize: '10px' }}>◑</span> Trading Active Entries
+                            </span>
+                          </div>
+                          <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.45)', lineHeight: 1.55, fontFamily: 'var(--font-inter, Inter, sans-serif)', marginBottom: '16px' }}>
+                            {`CORTEX tracked ${openedLots} open lot${openedLots !== 1 ? 's' : ''} across ${uniqueTokens > 0 ? uniqueTokens : 'multiple'} token${uniqueTokens !== 1 ? 's' : ''}. Win rate and score unlock after sell exits are detected.`}
+                          </div>
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '10px', marginBottom: tokenPills.length > 0 ? '14px' : '0' }}>
+                            <div style={{ background: 'rgba(251,191,36,0.04)', border: '1px solid rgba(251,191,36,0.15)', borderRadius: '12px', padding: '12px' }}>
+                              <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.28)', letterSpacing: '0.13em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '6px' }}>Win Rate</div>
+                              <div style={{ fontSize: '14px', color: '#fbbf24', fontWeight: 800, fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', lineHeight: 1.3 }}>Pending exits</div>
+                              <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.32)', marginTop: '4px' }}>{openedLots} open lot{openedLots !== 1 ? 's' : ''} tracked — win rate unlocks after closed trades.</div>
+                            </div>
+                            <div style={{ background: 'rgba(251,191,36,0.04)', border: '1px solid rgba(251,191,36,0.15)', borderRadius: '12px', padding: '12px' }}>
+                              <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.28)', letterSpacing: '0.13em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '6px' }}>Wallet Score</div>
+                              <div style={{ fontSize: '14px', color: '#fbbf24', fontWeight: 800, fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', lineHeight: 1.3 }}>Pending realized score</div>
+                              <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.32)', marginTop: '4px' }}>Open-position evidence found. Score unlocks after closed-lot evidence.</div>
+                            </div>
+                          </div>
+                          {(tokenPills.length > 0 || costBasis !== null) && (
+                            <div style={{ background: 'rgba(251,191,36,0.03)', border: '1px solid rgba(251,191,36,0.12)', borderRadius: '10px', padding: '10px 12px' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px', flexWrap: 'wrap' }}>
+                                <span style={{ fontSize: '9px', color: 'rgba(255,255,255,0.35)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Open Position</span>
+                                {costBasis !== null && (
+                                  <span style={{ fontSize: '10px', fontWeight: 700, color: '#fbbf24', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>~${costBasis.toFixed(2)} tracked cost basis</span>
+                                )}
+                              </div>
+                              {tokenPills.length > 0 && (
+                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px' }}>
+                                  {tokenPills.map((t, i) => (
+                                    <span key={i} style={{ fontSize: '11px', fontWeight: 700, color: '#fbbf24', background: 'rgba(251,191,36,0.07)', border: '1px solid rgba(251,191,36,0.20)', borderRadius: '6px', padding: '3px 9px', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
+                                      {t.symbol} <span style={{ fontWeight: 400, fontSize: '9px', opacity: 0.7, fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{t.openLots}L</span>
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </>
+                      )
+                    }
                     if (portfolioActive && tradeOpenCheck) {
                       return (
                         <>
@@ -1520,6 +1580,9 @@ export default function WalletScannerPage() {
 
                 {(() => {
                   const hasRealTrade = (result.walletTradeStatsSummary?.closedLots ?? 0) > 0
+                  const _openedLotsForPnl = (result.walletTradeStatsSummary?.openedLots ?? result.walletLotSummary?.openedLots ?? 0)
+                  const _openPosForPnl = result.walletModuleCoverage?.walletOpenPositionSummary ?? result.walletOpenPositionSummary ?? null
+                  const hasOpenLotsForPnl = _openedLotsForPnl > 0 && !hasRealTrade
                   if (hasRealTrade) {
                     const legacyVal = fmtSignedUSD(walletIntel.pnl.total)
                     return (
@@ -1540,6 +1603,43 @@ export default function WalletScannerPage() {
                         </div>
                         <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.22)', lineHeight: 1.4, marginTop: '10px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
                           Average-cost position estimate. Matched closed-lot evidence is shown separately below.
+                        </div>
+                      </div>
+                    )
+                  }
+                  if (hasOpenLotsForPnl) {
+                    const costBasis = _openPosForPnl?.totalOpenCostBasisUsd ?? null
+                    const uniqueTokens = _openPosForPnl?.uniqueTokens ?? 0
+                    const tokenPills = _openPosForPnl?.tokens ?? []
+                    return (
+                      <div style={{ background: '#080c14', border: '1px solid rgba(251,191,36,0.15)', borderRadius: '18px', padding: '22px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '14px' }}>
+                          <div style={{ fontSize: '10px', fontWeight: 800, letterSpacing: '0.18em', color: '#fbbf24', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Position Estimate</div>
+                          <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', color: '#fbbf24', border: '1px solid rgba(251,191,36,0.25)', background: 'rgba(251,191,36,0.06)', borderRadius: '999px', padding: '2px 7px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>open entries</span>
+                        </div>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: '10px', marginBottom: '12px' }}>
+                          {[
+                            { label: 'Open Lots', value: String(_openedLotsForPnl) },
+                            { label: 'Active Tokens', value: uniqueTokens > 0 ? String(uniqueTokens) : '—' },
+                            { label: 'Tracked Cost Basis', value: costBasis !== null ? `~$${costBasis.toFixed(2)}` : '—' },
+                          ].map(card => (
+                            <div key={card.label} style={{ background: 'rgba(251,191,36,0.04)', border: '1px solid rgba(251,191,36,0.12)', borderRadius: '12px', padding: '12px' }}>
+                              <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.28)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '7px' }}>{card.label}</div>
+                              <div style={{ fontSize: '18px', fontWeight: 800, color: '#fbbf24', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{card.value}</div>
+                            </div>
+                          ))}
+                        </div>
+                        {tokenPills.length > 0 && (
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px', marginBottom: '12px' }}>
+                            {tokenPills.map((t, i) => (
+                              <span key={i} style={{ fontSize: '11px', fontWeight: 700, color: '#fbbf24', background: 'rgba(251,191,36,0.07)', border: '1px solid rgba(251,191,36,0.20)', borderRadius: '6px', padding: '3px 9px', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
+                                {t.symbol} <span style={{ fontWeight: 400, fontSize: '9px', opacity: 0.7, fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{t.openLots}L</span>
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                        <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.32)', lineHeight: 1.5, fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                          Open entries found, but no sell exits yet. Realized PnL unlocks after FIFO lots close.
                         </div>
                       </div>
                     )
