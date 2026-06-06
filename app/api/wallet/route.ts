@@ -123,9 +123,45 @@ function buildWalletModuleCoverage(snap: any) {
 
   // Trade stats
   const tradeClosedLots: number = ts?.closedLots ?? 0
+  const openedLots: number = ls?.openedLots ?? 0
   const readyForWinRate = tradeClosedLots >= 10 && ts?.economicSignificance === 'meaningful'
-  const tradeStatus = readyForWinRate ? (ts?.status ?? 'ok') : tradeClosedLots > 0 ? 'partial' : 'open_check'
-  const tradeReason = tradeClosedLots >= 10 ? `${tradeClosedLots}_closed_lots_ready` : tradeClosedLots > 0 ? `${tradeClosedLots}_closed_lots_below_threshold` : 'no_closed_lots'
+  const tradeStatus = readyForWinRate ? (ts?.status ?? 'ok') : tradeClosedLots > 0 ? 'partial' : openedLots > 0 ? 'partial' : 'open_check'
+  const tradeReason = tradeClosedLots >= 10 ? `${tradeClosedLots}_closed_lots_ready` : tradeClosedLots > 0 ? `${tradeClosedLots}_closed_lots_below_threshold` : openedLots > 0 ? 'open_lots_tracked_no_closed_trades' : 'no_closed_lots'
+
+  // Open position summary — derived from FIFO debug sampleOpenLots (up to 5 lots)
+  const _sampleOpenLots = (snap._diagnostics?.walletLotEngineDebug?.sampleOpenLots ?? []) as Array<{ tokenAddress: string; symbol: string; chain: string; openedAt: string; amountRemaining: number; entryPriceUsd: number; confidence: string }>
+  const walletOpenPositionSummary = openedLots > 0 ? (() => {
+    const tokenMap = new Map<string, { symbol: string; chain: string; openLots: number; totalAmount: number; totalCostBasis: number; firstOpenedAt: string; latestOpenedAt: string }>()
+    for (const lot of _sampleOpenLots) {
+      const key = lot.tokenAddress.toLowerCase()
+      const existing = tokenMap.get(key)
+      const costBasis = lot.amountRemaining * lot.entryPriceUsd
+      if (existing) {
+        existing.openLots++
+        existing.totalAmount += lot.amountRemaining
+        existing.totalCostBasis += costBasis
+        if (lot.openedAt < existing.firstOpenedAt) existing.firstOpenedAt = lot.openedAt
+        if (lot.openedAt > existing.latestOpenedAt) existing.latestOpenedAt = lot.openedAt
+      } else {
+        tokenMap.set(key, { symbol: lot.symbol, chain: lot.chain, openLots: 1, totalAmount: lot.amountRemaining, totalCostBasis: costBasis, firstOpenedAt: lot.openedAt, latestOpenedAt: lot.openedAt })
+      }
+    }
+    const tokens = Array.from(tokenMap.entries()).map(([addr, t]) => ({
+      symbol: t.symbol, chain: t.chain, openLots: t.openLots,
+      totalAmount: t.totalAmount,
+      avgEntryPriceUsd: t.totalAmount > 0 ? t.totalCostBasis / t.totalAmount : null,
+      totalCostBasisUsd: t.totalCostBasis,
+      firstOpenedAt: t.firstOpenedAt, latestOpenedAt: t.latestOpenedAt,
+    }))
+    const totalOpenCostBasisUsd = tokens.reduce((s, t) => s + t.totalCostBasisUsd, 0)
+    const uniqueTokens = tokenMap.size
+    return {
+      status: 'partial' as const,
+      openLots: openedLots, uniqueTokens,
+      totalOpenCostBasisUsd: totalOpenCostBasisUsd > 0 ? totalOpenCostBasisUsd : null,
+      tokens, missing: [], reason: 'open_lots_tracked_no_closed_trades',
+    }
+  })() : null
 
   // Behavior
   const txCount: number = bh?.txCount ?? 0
@@ -137,8 +173,9 @@ function buildWalletModuleCoverage(snap: any) {
     swapDetection: { status: swapStatus, evidence: swapCandidates > 0 ? ['same_tx_in_out', 'router_match', 'wallet_initiated_multi_token'] : [], candidateCount: swapCandidates, reason: swapReason },
     priceEvidence: { status: priceStatus, pricedEvents, reason: priceReason },
     fifoPnL: { status: fifoStatus, closedLots, reason: fifoReason },
-    tradeStats: { status: tradeStatus, closedLots: tradeClosedLots, readyForWinRate, reason: tradeReason },
+    tradeStats: { status: tradeStatus, closedLots: tradeClosedLots, openedLots, readyForWinRate, reason: tradeReason },
     behavior: { status: bhStatus, reason: bhStatus === 'ok' ? 'activity_detected' : bhStatus === 'partial' ? 'limited_activity_signal' : 'no_activity_data' },
+    walletOpenPositionSummary,
   }
 }
 
@@ -590,6 +627,9 @@ export async function POST(req: Request) {
     // Build module coverage from public snapshot fields (always, not just debug)
     const walletModuleCoverage = buildWalletModuleCoverage(snapshot)
     snapshot.walletModuleCoverage = walletModuleCoverage
+    if (walletModuleCoverage.walletOpenPositionSummary) {
+      snapshot.walletOpenPositionSummary = walletModuleCoverage.walletOpenPositionSummary
+    }
 
     // Cache quality gate — block writes when portfolio clearly failed while activity succeeded
     const _snapHoldingsCount = (snapshot as any).holdings?.length ?? (snapshot as any).holdingsCount ?? 0
