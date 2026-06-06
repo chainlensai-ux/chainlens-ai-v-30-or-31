@@ -943,6 +943,8 @@ export type WalletSnapshot = {
       dedupRemoved: number
       capLimit: number
     }
+    walletScanBudgetDebug?: Record<string, unknown>
+    walletHistoricalScanDebug?: Record<string, unknown>
     walletSwapEnrichmentDebug?: {
       skipped: boolean
       reason: string
@@ -1352,6 +1354,16 @@ export type WalletSnapshotOptions = {
   chainMode?: 'auto' | 'base' | 'eth' | 'base_eth' | 'all_supported'
   historicalCoverage?: boolean
   maxHistoricalPages?: number
+  walletScanBudget?: {
+    scanMode: string
+    requestedHistoricalScan: boolean
+    walletValueTier?: 'micro' | 'small' | 'standard' | 'high_value' | 'whale'
+    totalCreditTarget: number
+    totalCreditHardCap: number
+    creditsUsed?: number
+    budgetByPhase?: { portfolio: number; activity: number; pricing: number; historicalRecovery: number }
+    adminOverrideUsed?: boolean
+  }
   maxFallbackPages?: number
   debug?: boolean
   maxDebugTokens?: number
@@ -1364,7 +1376,7 @@ const SNAPSHOT_SCHEMA_VERSION = 'v39'
 type SnapshotCacheEntry = { snapshot: WalletSnapshot; cachedAt: number; ttlMs: number }
 const snapshotMemCache = new Map<string, SnapshotCacheEntry>()
 
-const HISTORICAL_COVERAGE_TTL_MS = 10 * 60 * 1000
+const HISTORICAL_COVERAGE_TTL_MS = 24 * 60 * 60 * 1000
 type WalletHistoricalCoverageOutput = {
   summary: WalletSnapshot['walletHistoricalCoverageSummary']
   debug: NonNullable<WalletSnapshot['_diagnostics']>['walletHistoricalCoverageDebug']
@@ -2466,6 +2478,7 @@ async function buildWalletHistoricalCoverage(
   apiKey: string,
   maxPages: number,
   matchedClosedLotsBefore: number,
+  targetContracts?: Set<string>,
 ): Promise<WalletHistoricalCoverageOutput> {
   const emptyDebug = (reason: string): WalletHistoricalCoverageOutput => ({
     summary: { status: 'open_check', requested: true, pagesAttempted: 0, maxPages, rawTransactions: 0, rawLogEvents: 0, normalizedEvents: 0, walletSideEvents: 0, swapLikeTransactions: 0, pricedSwapCandidates: null, matchedClosedLotsBefore, matchedClosedLotsAfter: null, addedClosedLots: null, coverageLevel: 'none', missing: ['provider_not_configured'], reason },
@@ -2502,11 +2515,16 @@ async function buildWalletHistoricalCoverage(
     }
   }
 
+  // Targeted historical recovery: keep exact contracts chosen by the budget planner.
+  const preFilterEvents = targetContracts && targetContracts.size > 0
+    ? allEvents.filter(ev => targetContracts.has((ev.contract ?? '').toLowerCase()))
+    : allEvents
+
   // Deduplicate by txHash+contract+direction+rounded-amount
   const seen = new Set<string>()
   let dupEvents = 0
   const uniqueEvents: PnlEvent[] = []
-  for (const ev of allEvents) {
+  for (const ev of preFilterEvents) {
     const k = `${ev.txHash}|${ev.contract}|${ev.direction}|${Math.round(ev.amount * 1e6)}`
     if (seen.has(k)) { dupEvents++; continue }
     seen.add(k)
@@ -2532,7 +2550,7 @@ async function buildWalletHistoricalCoverage(
 
   return {
     summary: { status, requested: true, pagesAttempted, maxPages, rawTransactions: totalRawTx, rawLogEvents: totalTransferLogs, normalizedEvents: uniqueEvents.length, walletSideEvents, swapLikeTransactions: swapLikeTxs, pricedSwapCandidates: null, matchedClosedLotsBefore, matchedClosedLotsAfter: null, addedClosedLots: null, coverageLevel, missing: errorSamples.length > 0 ? ['provider_errors'] : [], reason: errorSamples.length > 0 ? 'One or more provider pages failed.' : null },
-    debug: { requested: true, providersAttempted: ['goldrush'], pagesAttempted, pageSize, maxPages, cursorUsed: false, stoppedReason, rawTransactions: totalRawTx, rawLogEvents: totalTransferLogs, decodedTransferLogs: totalTransferLogs, walletSideEvents, candidateSwapTxs: swapLikeTxs, candidateSwapEvents: swapLikeEvents, duplicateTxHashes: 0, duplicateEvents: dupEvents, oldestTimestamp, newestTimestamp, chainCoverage, providerErrorSamples: errorSamples.slice(0, 4), skippedReasons: [], sampleTxHashes: [...allTxHashes].slice(0, 5), sampleSwapLikeTransactions: [], moralisHistoricalConfigured: false, moralisHistoricalAttempted: false, moralisReason: 'moralis_history_not_wired_yet' },
+    debug: { requested: true, providersAttempted: ['goldrush'], pagesAttempted, pageSize, maxPages, cursorUsed: false, stoppedReason, rawTransactions: totalRawTx, rawLogEvents: totalTransferLogs, decodedTransferLogs: totalTransferLogs, walletSideEvents, candidateSwapTxs: swapLikeTxs, candidateSwapEvents: swapLikeEvents, duplicateTxHashes: 0, duplicateEvents: dupEvents, oldestTimestamp, newestTimestamp, chainCoverage, providerErrorSamples: errorSamples.slice(0, 4), skippedReasons: targetContracts && targetContracts.size > 0 ? ['target_contract_filter_applied'] : [], sampleTxHashes: [...allTxHashes].slice(0, 5), sampleSwapLikeTransactions: [], moralisHistoricalConfigured: false, moralisHistoricalAttempted: false, moralisReason: 'moralis_history_not_wired_yet' },
     events: uniqueEvents,
   }
 }
@@ -4719,7 +4737,7 @@ async function buildPriceAtTimeEvidence(
   reqCache?: Map<string, number | null>,
   priceByContract?: Map<string, number>,
   totalValueUsd?: number | null,
-  walletValueTier?: WalletValueTier | null
+  maxBudgetOverride?: number | null
 ): Promise<{
   evidenceWithPricing: WalletTxEvidence[]
   summary: WalletSnapshot['walletPriceEvidenceSummary']
@@ -4730,7 +4748,8 @@ async function buildPriceAtTimeEvidence(
   const _tierBudget = walletValueTier ? TIER_PRICE_BUDGET[walletValueTier] : null
   const BASE_BUDGET     = _tierBudget ?? Math.max(1, parseInt(process.env.CHAINLENS_WALLET_PRICE_ATTEMPT_BASE     ?? '6',  10) || 6)
   const EXPANDED_BUDGET = Math.max(BASE_BUDGET + 1, parseInt(process.env.CHAINLENS_WALLET_PRICE_ATTEMPT_EXPANDED ?? '10', 10) || 10)
-  const MAX_BUDGET      = _tierBudget ?? Math.max(EXPANDED_BUDGET + 1, parseInt(process.env.CHAINLENS_WALLET_PRICE_ATTEMPT_MAX  ?? '12', 10) || 12)
+  const PUBLIC_MAX_PRICE_BUDGET = Math.max(EXPANDED_BUDGET + 1, parseInt(process.env.CHAINLENS_WALLET_PRICE_ATTEMPT_MAX  ?? '12', 10) || 12)
+  const MAX_BUDGET      = Math.max(BASE_BUDGET, Math.min(PUBLIC_MAX_PRICE_BUDGET, maxBudgetOverride ?? PUBLIC_MAX_PRICE_BUDGET))
   let activeBudget = BASE_BUDGET  // raised between passes when expansion criteria met
 
   const _emptyBudgetDebug = (): NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['walletPriceBudgetDebug']> => ({
@@ -6880,7 +6899,7 @@ async function buildUnpricedCandidateReceiptPass(
 }
 
 export async function fetchWalletSnapshot(address: string, options: WalletSnapshotOptions = {}): Promise<WalletSnapshot> {
-  const { refresh = false, chain: requestedChain = 'base', deepScan = false, deepActivity = false, chainMode = 'auto', historicalCoverage = false, maxHistoricalPages: rawMaxHistoricalPages, maxFallbackPages: rawMaxFallbackPages, debug = false, maxDebugTokens = DEFAULT_MAX_DEBUG_TOKENS, historicalScan = false } = options
+  const { refresh = false, chain: requestedChain = 'base', deepScan = false, deepActivity = false, chainMode = 'auto', historicalCoverage = false, maxHistoricalPages: rawMaxHistoricalPages, maxFallbackPages: rawMaxFallbackPages, walletScanBudget, debug = false, maxDebugTokens = DEFAULT_MAX_DEBUG_TOKENS } = options
   const clampedMaxHistoricalPages = Math.max(1, Math.min(5, rawMaxHistoricalPages ?? 3))
   const MAX_MORALIS_FALLBACK_PAGES = 5
   const clampedMaxFallbackPages = Math.max(1, Math.min(MAX_MORALIS_FALLBACK_PAGES, rawMaxFallbackPages ?? 2))
@@ -7880,7 +7899,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
 
   tokenMeter.startTokenMeter('priceInference')
   tokenMeter.measure('priceInference', _swapEvidenceWithDetection)
-  let { evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug, budgetDebug: _priceBudgetDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache, priceByContract, totalValue, _walletValueTier)
+  let { evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug, budgetDebug: _priceBudgetDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache, priceByContract, totalValue, historicalCoverage ? 6 : null)
   // Track base evidence historical price calls
   for (let _pp = 0; _pp < (_priceAtTimeDebug?.providerAttempts ?? 0); _pp++) {
     _trackCall('goldrush', 'historical_by_addresses_v2', false, `gr:price:base:${_pp}:${addrNorm}`)
@@ -7993,7 +8012,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         _swapEvidenceWithDetection = _unpricedReceiptResult.enrichedEvidence
         tokenMeter.startTokenMeter('priceInference')
         tokenMeter.measure('priceInference', _swapEvidenceWithDetection)
-        const _rePriceResult = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache, priceByContract)
+        const _rePriceResult = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache, priceByContract, totalValue, historicalCoverage ? 6 : null)
         for (let _pp = 0; _pp < (_rePriceResult.debug?.providerAttempts ?? 0); _pp++) {
           _trackCall('goldrush', 'historical_by_addresses_v2', false, `gr:price:unpriced_recon:${_pp}:${addrNorm}`)
         }
@@ -8128,7 +8147,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
           }
         })
       }
-      ;({ evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache, priceByContract))
+      ;({ evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache, priceByContract, totalValue, historicalCoverage ? 6 : null))
       _pricedEvidence = normalizeSwapEventsForFifo(_pricedEvidence, tokenMeter.isDebugEnabled())
       _pricedEvidence = normalizeSingleLegEventsForFifo(_pricedEvidence, tokenMeter.isDebugEnabled())
       const _rerunFifo = buildFifoLotEngine(_pricedEvidence, activityRequested)
@@ -8289,7 +8308,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       tokenMeter.measure('normalization', allFbEvents, evidenceList, walletEvidenceSummary, _txEvidenceDebugBase)
       ;({ evidenceWithDetection: _swapEvidenceWithDetection, summary: walletSwapSummary, debug: _swapDetectionDebug } = buildSwapDetection(evidenceList, activityRequested, addrNorm))
       tokenMeter.measure('swapDetection', evidenceList, _swapEvidenceWithDetection, walletSwapSummary, _swapDetectionDebug)
-      ;({ evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache, priceByContract))
+      ;({ evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache, priceByContract, totalValue, historicalCoverage ? 6 : null))
       tokenMeter.measure('priceInference', _swapEvidenceWithDetection, _pricedEvidence, walletPriceEvidenceSummary, _priceAtTimeDebug)
       _pricedEvidence = normalizeSwapEventsForFifo(_pricedEvidence, tokenMeter.isDebugEnabled())
       _pricedEvidence = normalizeSingleLegEventsForFifo(_pricedEvidence, tokenMeter.isDebugEnabled())
@@ -8452,7 +8471,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       tokenMeter.measure('normalization', bfcAllEvents, evidenceList, walletEvidenceSummary)
       ;({ evidenceWithDetection: _swapEvidenceWithDetection, summary: walletSwapSummary, debug: _swapDetectionDebug } = buildSwapDetection(evidenceList, activityRequested, addrNorm))
       tokenMeter.measure('swapDetection', _swapEvidenceWithDetection, walletSwapSummary)
-      ;({ evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache, priceByContract))
+      ;({ evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache, priceByContract, totalValue, historicalCoverage ? 6 : null))
       tokenMeter.measure('priceInference', _pricedEvidence, walletPriceEvidenceSummary)
       for (let _pp = 0; _pp < (_priceAtTimeDebug?.providerAttempts ?? 0); _pp++) {
         _trackCall('goldrush', 'historical_by_addresses_v2', false, `gr:price:bfc:p${bfcPagesAttempted}_${_pp}:${addrNorm}`)
@@ -8585,7 +8604,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
             }
           })
         }
-        ;({ evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache, priceByContract))
+        ;({ evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache, priceByContract, totalValue, historicalCoverage ? 6 : null))
         _pricedEvidence = normalizeSwapEventsForFifo(_pricedEvidence, tokenMeter.isDebugEnabled())
         _pricedEvidence = normalizeSingleLegEventsForFifo(_pricedEvidence, tokenMeter.isDebugEnabled())
         const _suppRerunFifo = buildFifoLotEngine(_pricedEvidence, activityRequested)
@@ -8661,229 +8680,64 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   tokenMeter.measure('fallbackEngine', _moralisFbDebug, events)
   tokenMeter.endTokenMeter('fallbackEngine')
 
-  // ── Phase 5E: Targeted Historical Scan (manual opt-in via historicalScan=true) ─────────────
-  // Cost-safe: only runs when explicitly requested, uses Alchemy contract-filtered transfers,
-  // per-tier page and token limits, 24h cache key includes wallet + tier + targets + version.
-  const _tierHistoricalPages = TIER_HISTORICAL_PAGES[_walletValueTier]
-  const _tierHistoricalMaxTokens = TIER_HISTORICAL_MAX_TOKENS[_walletValueTier]
+  // Phase 6A: Historical coverage diagnostics — capped, eligible, targeted recovery only.
+  type WalletValueTier = 'micro' | 'small' | 'standard' | 'high_value' | 'whale'
+  const _walletValueTier: WalletValueTier = totalValue >= 1_000_000 ? 'whale' : totalValue >= 2_500 ? 'high_value' : totalValue >= 500 ? 'standard' : totalValue >= 100 ? 'small' : 'micro'
+  const _adminOverrideUsed = walletScanBudget?.adminOverrideUsed === true
+  const _tierTarget = _walletValueTier === 'micro' ? 6 : _walletValueTier === 'small' ? 12 : 15
+  const _totalCreditTarget = _adminOverrideUsed ? (walletScanBudget?.totalCreditTarget ?? 15) : Math.min(walletScanBudget?.totalCreditTarget ?? _tierTarget, _tierTarget)
+  const _totalCreditHardCap = _adminOverrideUsed ? (walletScanBudget?.totalCreditHardCap ?? 18) : Math.min(walletScanBudget?.totalCreditHardCap ?? 18, _walletValueTier === 'micro' ? 6 : 18)
+  const _pricingCreditsUsed = _priceBudgetDebug.finalPriceAttempts ?? _priceAtTimeDebug.priceAttempts ?? 0
+  const _portfolioCreditsUsed = 1
+  const _activityCreditsUsed = activityRequested ? 1 : 0
+  const _creditsBeforeHistorical = _portfolioCreditsUsed + _activityCreditsUsed + _pricingCreditsUsed
+  const _historicalPhaseBudget = Math.max(0, Math.min(6, _totalCreditHardCap - _creditsBeforeHistorical))
+  const _defaultPagesByTier = _walletValueTier === 'micro' ? 0 : _walletValueTier === 'small' ? 1 : _walletValueTier === 'standard' ? 2 : _walletValueTier === 'high_value' ? 3 : 5
+  const _pagesAllowed = _adminOverrideUsed
+    ? Math.max(0, Math.min(clampedMaxHistoricalPages, _historicalPhaseBudget))
+    : Math.max(0, Math.min(clampedMaxHistoricalPages, _defaultPagesByTier, _historicalPhaseBudget, _totalCreditHardCap - _creditsBeforeHistorical))
 
-  const _hsEligibilityReasons: string[] = []
-  if (!historicalScan) _hsEligibilityReasons.push('not_requested')
-  if (!deepActivity) _hsEligibilityReasons.push('deep_activity_not_enabled')
-  if (_walletValueTier === 'micro') _hsEligibilityReasons.push('tier_micro_not_eligible')
-  if (!ALCHEMY_BASE_KEY) _hsEligibilityReasons.push('alchemy_not_configured')
-  const _hsEligible = historicalScan && deepActivity && _walletValueTier !== 'micro' && Boolean(ALCHEMY_BASE_KEY)
-
-  let _walletHistoricalScanDebug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['walletHistoricalScanDebug']> = {
-    requested: historicalScan,
-    eligible: _hsEligible,
-    eligibilityReasons: _hsEligibilityReasons,
-    walletValueTier: _walletValueTier,
-    targetTokens: [],
-    pagesAllowed: _tierHistoricalPages,
-    pagesAttempted: 0,
-    rawEventsFetched: 0,
-    normalizedEvents: 0,
-    priorBuysFound: 0,
-    priorSellsFound: 0,
-    closedLotsBefore: walletLotSummary.closedLots,
-    closedLotsAfter: walletLotSummary.closedLots,
-    openedLotsBefore: walletLotSummary.openedLots ?? 0,
-    openedLotsAfter: walletLotSummary.openedLots ?? 0,
-    realizedPnlBefore: walletLotSummary.realizedPnlUsd,
-    realizedPnlAfter: walletLotSummary.realizedPnlUsd,
-    addedClosedLots: 0,
-    addedOpenedLots: 0,
-    estimatedCreditUnits: 0,
-    cacheHit: false,
-    budgetCapHit: false,
-    stopReason: _hsEligible ? null : (_hsEligibilityReasons[0] ?? 'not_eligible'),
-    skippedReasons: _hsEligibilityReasons,
-    sampleTargets: [],
-    sampleRecoveredEvents: [],
-  }
-
-  if (_hsEligible) {
-    // Build target contract list: unmatched sells, open lots, top held tokens
-    const _hsTargetContracts = new Set<string>()
-    const _hsTargetInfo = new Map<string, { symbol: string; reason: string }>()
-
-    // Unmatched sell token contracts
-    for (const key of (_lotEngineDebug.unmatchedSellTokenKeys ?? []).slice(0, _tierHistoricalMaxTokens)) {
-      const contractMatch = key.match(/^base:(.+)$/)
-      if (contractMatch) {
-        const c = contractMatch[1].toLowerCase()
-        _hsTargetContracts.add(c)
-        _hsTargetInfo.set(c, { symbol: '', reason: 'unmatched_sell' })
-      }
+  const _rankedHistoricalTargets = (() => {
+    const byContract = new Map<string, { contract: string; symbol: string; chain: string; score: number; reasons: string[]; estimatedUsd: number }>()
+    const add = (contract: string | null | undefined, symbol: string | null | undefined, chain: string | null | undefined, score: number, reason: string, estimatedUsd = 0) => {
+      const c = (contract ?? '').toLowerCase()
+      if (!/^0x[a-f0-9]{40}$/.test(c)) return
+      const cur = byContract.get(c) ?? { contract: c, symbol: symbol ?? 'TOKEN', chain: normalizeChain(chain ?? '') || 'unknown', score: 0, reasons: [], estimatedUsd: 0 }
+      cur.score += score
+      cur.estimatedUsd = Math.max(cur.estimatedUsd, estimatedUsd)
+      if (!cur.reasons.includes(reason)) cur.reasons.push(reason)
+      byContract.set(c, cur)
     }
-
-    // Open lot token contracts (unmatched buys)
-    if (_hsTargetContracts.size < _tierHistoricalMaxTokens) {
-      const _openLots = _lotEngineDebug.sampleOpenLots ?? []
-      for (const lot of _openLots) {
-        if (_hsTargetContracts.size >= _tierHistoricalMaxTokens) break
-        const c = (lot.tokenAddress ?? '').toLowerCase()
-        if (c && c.startsWith('0x') && !_hsTargetContracts.has(c)) {
-          _hsTargetContracts.add(c)
-          _hsTargetInfo.set(c, { symbol: lot.symbol ?? '', reason: 'open_lot' })
-        }
-      }
+    for (const s of _lotEngineDebug.sampleUnmatchedSells ?? []) add(s.tokenAddress, s.symbol, 'base', 1000 + Math.abs((s.amount ?? 0) * (s.exitPriceUsd ?? 0)), 'biggest_unmatched_sells', Math.abs((s.amount ?? 0) * (s.exitPriceUsd ?? 0)))
+    for (const l of _lotEngineDebug.sampleOpenLots ?? []) add(l.tokenAddress, l.symbol, l.chain, 650 + Math.abs((l.amountRemaining ?? 0) * (l.entryPriceUsd ?? 0)), 'open_buys', Math.abs((l.amountRemaining ?? 0) * (l.entryPriceUsd ?? 0)))
+    for (const h of holdings.slice().sort((a, b) => (b.value ?? 0) - (a.value ?? 0)).slice(0, 8)) add(h.contract, h.symbol, h.chain, 500 + (h.value ?? 0) / 100, 'top_holdings_by_value', h.value ?? 0)
+    for (const ev of _swapEvidenceWithDetection) {
+      if (!ev.swapDetection?.isSwapCandidate) continue
+      const c = (ev.contract ?? '').toLowerCase()
+      const quoteBoost = STABLE_USD_CONTRACTS[c] || WETH_CONTRACTS_PRICE[c] ? 250 : 0
+      add(ev.contract, ev.symbol, ev.chain, 300 + quoteBoost + ((ev.usdValue ?? 0) / 100), quoteBoost ? 'stablecoin_weth_eth_quote_leg_trades' : 'high_value_swap_candidates', ev.usdValue ?? 0)
     }
-
-    // Top holdings with swap evidence (held tokens not yet priced)
-    if (_hsTargetContracts.size < _tierHistoricalMaxTokens) {
-      const _unpricedSwapContracts = _pricedEvidence
-        .filter(e => e.swapDetection?.isSwapCandidate && e.priceAtTime?.status !== 'priced' && e.contract && e.direction === 'buy')
-        .map(e => e.contract.toLowerCase())
-        .filter((c, i, arr) => arr.indexOf(c) === i)
-      for (const c of _unpricedSwapContracts) {
-        if (_hsTargetContracts.size >= _tierHistoricalMaxTokens) break
-        if (!_hsTargetContracts.has(c)) {
-          _hsTargetContracts.add(c)
-          _hsTargetInfo.set(c, { symbol: '', reason: 'unpriced_swap_candidate' })
-        }
-      }
-    }
-
-    const _hsTargetList = Array.from(_hsTargetContracts)
-    _walletHistoricalScanDebug.targetTokens = _hsTargetList
-    _walletHistoricalScanDebug.sampleTargets = _hsTargetList.slice(0, 5).map(c => ({
-      contract: c,
-      symbol: _hsTargetInfo.get(c)?.symbol ?? '',
-      reason: _hsTargetInfo.get(c)?.reason ?? 'unknown',
-    }))
-
-    if (_hsTargetList.length > 0) {
-      // 24h cache key: wallet + chainMode + targets + version + schema
-      const _hsSortedTargets = [..._hsTargetList].sort().join(',')
-      const _hsCacheKey = `ths:${addrNorm}:base:${_hsSortedTargets}:${TARGETED_HISTORICAL_SCAN_VERSION}:${SNAPSHOT_SCHEMA_VERSION}`
-      const _hsCached = targetedHistoricalScanCache.get(_hsCacheKey)
-
-      if (_hsCached && Date.now() - _hsCached.cachedAt < TARGETED_HISTORICAL_SCAN_TTL_MS) {
-        _walletHistoricalScanDebug = { ..._hsCached.debug, requested: true, eligible: true, cacheHit: true }
-        // Merge cached events into pipeline if they add value
-        if (_hsCached.events.length > 0) {
-          const _hsSeenKeys = new Set<string>(events.map(e => `${e.txHash ?? ''}|${e.contract}|${e.direction}|${e.amountRaw ?? String(e.amount)}`))
-          const _hsNewEvents = _hsCached.events.filter(e => {
-            const k = `${e.txHash ?? ''}|${e.contract}|${e.direction}|${e.amountRaw ?? String(e.amount)}`
-            return !_hsSeenKeys.has(k)
-          })
-          if (_hsNewEvents.length > 0) {
-            const _hsMergedEvents = [...events, ..._hsNewEvents]
-            ;({ evidenceList, summary: walletEvidenceSummary, debug: _txEvidenceDebugBase } = buildTxEvidenceFromEvents(_hsMergedEvents, activityRequested, activityProviderUnavailable))
-            ;({ evidenceWithDetection: _swapEvidenceWithDetection, summary: walletSwapSummary, debug: _swapDetectionDebug } = buildSwapDetection(evidenceList, activityRequested, addrNorm))
-            ;({ evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache, priceByContract, totalValue, _walletValueTier))
-            _pricedEvidence = normalizeSwapEventsForFifo(_pricedEvidence, tokenMeter.isDebugEnabled())
-            _pricedEvidence = normalizeSingleLegEventsForFifo(_pricedEvidence, tokenMeter.isDebugEnabled())
-            const _hsRerunFifo = buildFifoLotEngine(_pricedEvidence, activityRequested)
-            walletLotSummary = _hsRerunFifo.summary
-            _lotEngineDebug = _hsRerunFifo.debug
-            _closedLots = _hsRerunFifo.closedLots
-            const _hsTradeStats = buildTradeStatsSummary(_closedLots, activityRequested, totalValue)
-            walletTradeStatsSummary = _hsTradeStats.summary
-            _tradeStatsDebug = _hsTradeStats.debug
-            _outlierDebug = _hsTradeStats.outlierDebug
-            _outlierNote = _hsTradeStats.outlierNote
-            events = _hsMergedEvents
-          }
-        }
-      } else {
-        // Live targeted fetch via Alchemy
-        const _hsAllNewEvents: PnlEvent[] = []
-        let _hsRawTotal = 0
-        let _hsPriorBuys = 0
-        let _hsPriorSells = 0
-        let _hsPagesAttempted = 0
-        let _hsBudgetCapHit = false
-        let _hsStopReason = 'completed'
-        const _hsSeenKeysBefore = new Set<string>(events.map(e => `${e.txHash ?? ''}|${e.contract}|${e.direction}|${e.amountRaw ?? String(e.amount)}`))
-
-        for (const contract of _hsTargetList) {
-          if (_hsPagesAttempted >= _tierHistoricalPages) { _hsBudgetCapHit = true; _hsStopReason = 'budget_cap_hit'; break }
-          const target: UnmatchedSellBackfillTarget = {
-            chain: 'base',
-            tokenContract: contract,
-            symbol: _hsTargetInfo.get(contract)?.symbol ?? null,
-            sellTxHash: null,
-            sellTimestamp: null,
-            sellAmount: 0,
-            exitPriceUsd: null,
-          }
-          _hsPagesAttempted++
-          const fetchResult = await fetchAlchemyBasePriorBuysForToken(addrNorm, baseUrl, target)
-          _trackCall('alchemy', 'alchemy_getAssetTransfers', false, `alchemy:ths:${contract}:${addrNorm}`)
-          _walletHistoricalScanDebug.estimatedCreditUnits++
-          _hsRawTotal += fetchResult.raw
-          if (fetchResult.error) continue
-          const newBuys = fetchResult.events.filter(e => {
-            const k = `${e.txHash ?? ''}|${e.contract}|${e.direction}|${e.amountRaw ?? String(e.amount)}`
-            return !_hsSeenKeysBefore.has(k)
-          })
-          _hsPriorBuys += newBuys.length
-          _hsAllNewEvents.push(...newBuys)
-          if (newBuys.length > 0) {
-            _walletHistoricalScanDebug.sampleRecoveredEvents.push(...newBuys.slice(0, 2).map(e => ({
-              txHash: e.txHash ?? '',
-              symbol: e.symbol ?? '',
-              direction: e.direction,
-              amount: e.amount,
-            })))
-          }
-        }
-
-        _walletHistoricalScanDebug.pagesAttempted = _hsPagesAttempted
-        _walletHistoricalScanDebug.rawEventsFetched = _hsRawTotal
-        _walletHistoricalScanDebug.normalizedEvents = _hsAllNewEvents.length
-        _walletHistoricalScanDebug.priorBuysFound = _hsPriorBuys
-        _walletHistoricalScanDebug.priorSellsFound = _hsPriorSells
-        _walletHistoricalScanDebug.budgetCapHit = _hsBudgetCapHit
-        _walletHistoricalScanDebug.stopReason = _hsStopReason
-
-        // Cache raw events for 24h regardless of whether they improved results
-        targetedHistoricalScanCache.set(_hsCacheKey, {
-          events: _hsAllNewEvents,
-          debug: { ..._walletHistoricalScanDebug },
-          cachedAt: Date.now(),
-        })
-
-        if (_hsAllNewEvents.length > 0) {
-          const _hsMergedEvents = [...events, ..._hsAllNewEvents]
-          const _closedLotsBefore = walletLotSummary.closedLots
-          const _openedLotsBefore = walletLotSummary.openedLots ?? 0
-          ;({ evidenceList, summary: walletEvidenceSummary, debug: _txEvidenceDebugBase } = buildTxEvidenceFromEvents(_hsMergedEvents, activityRequested, activityProviderUnavailable))
-          ;({ evidenceWithDetection: _swapEvidenceWithDetection, summary: walletSwapSummary, debug: _swapDetectionDebug } = buildSwapDetection(evidenceList, activityRequested, addrNorm))
-          ;({ evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache, priceByContract, totalValue, _walletValueTier))
-          _pricedEvidence = normalizeSwapEventsForFifo(_pricedEvidence, tokenMeter.isDebugEnabled())
-          _pricedEvidence = normalizeSingleLegEventsForFifo(_pricedEvidence, tokenMeter.isDebugEnabled())
-          const _hsRerunFifo = buildFifoLotEngine(_pricedEvidence, activityRequested)
-          walletLotSummary = _hsRerunFifo.summary
-          _lotEngineDebug = _hsRerunFifo.debug
-          _closedLots = _hsRerunFifo.closedLots
-          const _hsTradeStats = buildTradeStatsSummary(_closedLots, activityRequested, totalValue)
-          walletTradeStatsSummary = _hsTradeStats.summary
-          _tradeStatsDebug = _hsTradeStats.debug
-          _outlierDebug = _hsTradeStats.outlierDebug
-          _outlierNote = _hsTradeStats.outlierNote
-          events = _hsMergedEvents
-          _walletHistoricalScanDebug.closedLotsAfter = walletLotSummary.closedLots
-          _walletHistoricalScanDebug.openedLotsAfter = walletLotSummary.openedLots ?? 0
-          _walletHistoricalScanDebug.realizedPnlAfter = walletLotSummary.realizedPnlUsd
-          _walletHistoricalScanDebug.addedClosedLots = walletLotSummary.closedLots - _closedLotsBefore
-          _walletHistoricalScanDebug.addedOpenedLots = (walletLotSummary.openedLots ?? 0) - _openedLotsBefore
-        }
-      }
-    }
-  }
-  // ── End Phase 5E ─────────────────────────────────────────────────────────────────────────
-
-  // Phase 6A: Historical coverage diagnostics — runs only when activityRequested + historicalCoverage requested
-  const _runHistoricalCoverage = activityRequested && historicalCoverage
+    const ranked = [...byContract.values()].sort((a, b) => b.score - a.score || b.estimatedUsd - a.estimatedUsd)
+    const maxTokens = _walletValueTier === 'micro' ? 0 : _walletValueTier === 'small' ? 2 : _walletValueTier === 'standard' ? 3 : _walletValueTier === 'high_value' ? 4 : 5
+    return ranked.slice(0, maxTokens)
+  })()
+  const _targetContracts = new Set(_rankedHistoricalTargets.map(t => t.contract))
+  const _eligibilityReasons: string[] = []
+  const _skipReasons: string[] = []
+  if (totalValue >= 100 || _adminOverrideUsed) _eligibilityReasons.push('wallet_value_meets_threshold'); else _skipReasons.push('wallet_value_below_100')
+  if (deepActivity) _eligibilityReasons.push('deep_scan_requested'); else _skipReasons.push('deep_scan_not_requested')
+  if (walletTradeStatsSummary.closedLots < 10) _eligibilityReasons.push('closed_lots_below_score_threshold'); else _skipReasons.push('already_has_10_closed_lots')
+  if ((_lotEngineDebug.unmatchedSells ?? 0) > 0 || (_lotEngineDebug.openedLots ?? 0) > 0 || (walletSwapSummary.swapCandidateEvents ?? 0) > 0) _eligibilityReasons.push('fifo_or_swap_evidence_needs_recovery'); else _skipReasons.push('no_swap_or_lot_evidence')
+  if (_targetContracts.size > 0) _eligibilityReasons.push('exact_token_contracts_known'); else _skipReasons.push('no_useful_token_contracts')
+  if (_pagesAllowed > 0) _eligibilityReasons.push('scan_budget_has_room'); else _skipReasons.push('budget_remaining_too_low')
+  if (GOLDRUSH_KEY) _eligibilityReasons.push('provider_daily_soft_cap_available'); else _skipReasons.push('provider_not_configured')
+  const _historicalEligible = Boolean(historicalCoverage && activityRequested && (_adminOverrideUsed || totalValue >= 100) && walletTradeStatsSummary.closedLots < 10 && ((_lotEngineDebug.unmatchedSells ?? 0) > 0 || (_lotEngineDebug.openedLots ?? 0) > 0 || (walletSwapSummary.swapCandidateEvents ?? 0) > 0) && _targetContracts.size > 0 && _pagesAllowed > 0 && GOLDRUSH_KEY)
+  const _runHistoricalCoverage = _historicalEligible
   let walletHistoricalCoverageSummary: WalletSnapshot['walletHistoricalCoverageSummary']
   let _historicalCoverageDebug: NonNullable<WalletSnapshot['_diagnostics']>['walletHistoricalCoverageDebug']
   let _hcEvents: PnlEvent[] = []
   if (_runHistoricalCoverage) {
-    const hcCacheKey = `wallet:historicalCoverage:v1:${addrNorm}:${clampedMaxHistoricalPages}`
+    const hcCacheKey = `wallet:historicalCoverage:v2:${addrNorm}:${chainMode}:${_walletValueTier}:${_rankedHistoricalTargets.map(t => t.contract).join(',')}:${_pagesAllowed}`
     const hcCached = historicalCoverageCache.get(hcCacheKey)
     if (hcCached && Date.now() - hcCached.cachedAt < HISTORICAL_COVERAGE_TTL_MS) {
       walletHistoricalCoverageSummary = hcCached.data.summary
@@ -8895,7 +8749,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       if (existingInFlight) {
         hcResult = await existingInFlight
       } else {
-        const hcPromise = buildWalletHistoricalCoverage(addrNorm, GOLDRUSH_KEY, clampedMaxHistoricalPages, walletTradeStatsSummary.closedLots)
+        const hcPromise = buildWalletHistoricalCoverage(addrNorm, GOLDRUSH_KEY, _pagesAllowed, walletTradeStatsSummary.closedLots, _targetContracts)
         historicalCoverageInFlight.set(hcCacheKey, hcPromise)
         try {
           hcResult = await hcPromise
@@ -8909,12 +8763,12 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       _hcEvents = hcResult!.events
       // Track historical coverage page calls (one entry per page per chain attempted)
       const _hcPages = _historicalCoverageDebug?.pagesAttempted ?? 0
-      for (let _hp = 0; _hp < _hcPages; _hp++) {
+      for (let _hp = 0; _hp < Math.min(_hcPages, Math.max(0, _totalCreditHardCap - _creditsBeforeHistorical)); _hp++) {
         _trackCall('goldrush', 'log_events_by_address', false, `gr:hc:p${_hp}:${addrNorm}`)
       }
     }
   } else {
-    walletHistoricalCoverageSummary = { status: 'not_requested', requested: false, pagesAttempted: 0, maxPages: 0, rawTransactions: 0, rawLogEvents: 0, normalizedEvents: 0, walletSideEvents: 0, swapLikeTransactions: 0, pricedSwapCandidates: null, matchedClosedLotsBefore: null, matchedClosedLotsAfter: null, addedClosedLots: null, coverageLevel: 'none', missing: [], reason: null }
+    walletHistoricalCoverageSummary = { status: historicalCoverage ? 'open_check' : 'not_requested', requested: historicalCoverage, pagesAttempted: 0, maxPages: _pagesAllowed, rawTransactions: 0, rawLogEvents: 0, normalizedEvents: 0, walletSideEvents: 0, swapLikeTransactions: 0, pricedSwapCandidates: null, matchedClosedLotsBefore: null, matchedClosedLotsAfter: null, addedClosedLots: null, coverageLevel: 'none', missing: [], reason: historicalCoverage ? _skipReasons.join('; ') || 'not_eligible' : null }
     _historicalCoverageDebug = undefined
   }
 
@@ -9242,6 +9096,59 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _logByProvider = (p: 'moralis' | 'goldrush' | 'alchemy') => _apiCallLog.filter(e => e.provider === p)
   const _liveCalls = (p: 'moralis' | 'goldrush' | 'alchemy') => _logByProvider(p).filter(e => !e.cacheHit && !e.duplicate)
   const _dupEntries = _apiCallLog.filter(e => e.duplicate)
+  const _historicalCreditsUsedFinal = _historicalCoverageDebug?.pagesAttempted ?? 0
+  const _creditsUsedFinal = _portfolioCreditsUsed + _activityCreditsUsed + (_priceBudgetDebug.finalPriceAttempts ?? 0) + _historicalCreditsUsedFinal
+  const _budgetCapHitFinal = _creditsUsedFinal >= _totalCreditHardCap || (_runHistoricalCoverage && _historicalCreditsUsedFinal >= _pagesAllowed && walletHistoricalCoverageSummary.coverageLevel !== 'none')
+  const _walletScanBudgetDebug = {
+    scanMode: historicalCoverage ? 'historical' : activityRequested ? 'deep' : 'basic',
+    requestedHistoricalScan: historicalCoverage,
+    walletValueTier: _walletValueTier,
+    totalCreditTarget: _totalCreditTarget,
+    totalCreditHardCap: _totalCreditHardCap,
+    creditsUsed: _creditsUsedFinal,
+    creditsRemaining: Math.max(0, _totalCreditHardCap - _creditsUsedFinal),
+    budgetByPhase: { portfolio: 2, activity: 3, pricing: historicalCoverage ? 6 : (_priceBudgetDebug.maxBudget ?? 12), historicalRecovery: 6 },
+    portfolioCreditsUsed: _portfolioCreditsUsed,
+    activityCreditsUsed: _activityCreditsUsed,
+    pricingCreditsUsed: _priceBudgetDebug.finalPriceAttempts ?? 0,
+    historicalCreditsUsed: _historicalCreditsUsedFinal,
+    budgetCapHit: _budgetCapHitFinal,
+    budgetCapReason: _creditsUsedFinal >= _totalCreditHardCap ? 'total_hard_cap_reached' : _historicalCreditsUsedFinal >= _pagesAllowed && historicalCoverage ? 'historical_phase_cap_reached' : null,
+    callsSkippedAfterBudgetCap: Math.max(0, clampedMaxHistoricalPages - _pagesAllowed),
+    estimatedCreditsSavedByCache: 0,
+    whalePrioritisationUsed: _walletValueTier === 'whale',
+    adminOverrideUsed: _adminOverrideUsed,
+  }
+  const _walletHistoricalScanDebug = {
+    requested: historicalCoverage,
+    eligible: _historicalEligible,
+    eligibilityReasons: _eligibilityReasons,
+    walletValueTier: _walletValueTier,
+    targetTokens: _rankedHistoricalTargets.map(t => t.contract),
+    targetTokenRankingReason: _rankedHistoricalTargets.map(t => ({ contract: t.contract, symbol: t.symbol, reasons: t.reasons, estimatedUsd: t.estimatedUsd })),
+    pagesAllowed: _pagesAllowed,
+    pagesAttempted: _historicalCoverageDebug?.pagesAttempted ?? 0,
+    rawEventsFetched: _historicalCoverageDebug?.rawLogEvents ?? 0,
+    normalizedEvents: walletHistoricalCoverageSummary.normalizedEvents ?? 0,
+    priorBuysFound: (_historicalCandidateDebug?.sampleNewSwapCandidates ?? []).filter(e => e.direction === 'buy').length,
+    priorSellsFound: (_historicalCandidateDebug?.sampleNewSwapCandidates ?? []).filter(e => e.direction === 'sell').length,
+    closedLotsBefore: walletHistoricalFifoPreviewSummary.baselineClosedLots ?? walletTradeStatsSummary.closedLots,
+    closedLotsAfter: walletHistoricalFifoPreviewSummary.previewClosedLots ?? walletTradeStatsSummary.closedLots,
+    openedLotsBefore: _lotEngineDebug.openedLots ?? 0,
+    openedLotsAfter: walletLotSummary.openedLots ?? 0,
+    realizedPnlBefore: walletHistoricalFifoPreviewSummary.baselineRealizedPnlUsd ?? walletTradeStatsSummary.realizedPnlUsd,
+    realizedPnlAfter: walletHistoricalFifoPreviewSummary.previewRealizedPnlUsd ?? walletTradeStatsSummary.realizedPnlUsd,
+    addedClosedLots: walletHistoricalFifoPreviewSummary.addedClosedLots ?? 0,
+    addedOpenedLots: Math.max(0, (walletLotSummary.openedLots ?? 0) - (_lotEngineDebug.openedLots ?? 0)),
+    estimatedCreditUnits: _historicalCreditsUsedFinal,
+    cacheHit: false,
+    budgetCapHit: _walletScanBudgetDebug.budgetCapHit,
+    stopReason: _historicalCoverageDebug?.stoppedReason ?? (_skipReasons[0] ?? null),
+    skippedReasons: _skipReasons,
+    sampleTargets: _rankedHistoricalTargets.slice(0, 5),
+    sampleRecoveredEvents: _historicalCandidateDebug?.sampleNewSwapCandidates ?? [],
+  }
+
   const _apiTotalCredits = _apiCallLog.reduce((s, e) => s + e.credits, 0)
   const _apiWarnings: string[] = []
   const _moralisLiveCount = _liveCalls('moralis').length
@@ -9564,6 +9471,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       walletSwapDetectionDebug: _swapDetectionDebug,
       walletPriceAtTimeDebug: _priceAtTimeDebug,
       walletPriceBudgetDebug: _priceBudgetDebug,
+      walletScanBudgetDebug: _walletScanBudgetDebug,
+      walletHistoricalScanDebug: _walletHistoricalScanDebug,
       unmatchedSellBackfillDebug: _unmatchedSellBackfillDebug,
       walletHistoricalScanDebug: _walletHistoricalScanDebug,
       walletLotEngineDebug: _lotEngineDebug,

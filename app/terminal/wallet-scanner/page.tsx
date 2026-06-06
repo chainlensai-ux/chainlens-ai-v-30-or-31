@@ -219,6 +219,28 @@ type WalletResult = {
   }>
   walletScanCostMode?: 'basic' | 'basic_cached' | 'deep_cached' | 'deep_live' | 'historical_cached' | 'historical_live' | 'blocked_by_cooldown' | 'blocked_by_cost_guard'
   walletScanCacheNote?: string
+  walletScanBudget?: {
+    scanMode: string
+    requestedHistoricalScan: boolean
+    walletValueTier: 'micro' | 'small' | 'standard' | 'high_value' | 'whale'
+    totalCreditTarget: number
+    totalCreditHardCap: number
+    creditsUsed: number
+    creditsRemaining: number
+    budgetCapHit: boolean
+    budgetCapReason: string | null
+    skippedAfterBudgetCap: number
+    estimatedCreditsSavedByCache: number
+  }
+  walletHistoricalCoverage?: {
+    checked: boolean
+    olderEntriesRecovered: number
+    cappedForCostSafety: boolean
+    highValueWalletPrioritised: boolean
+    coverageLevel: 'none' | 'light' | 'medium' | 'deep'
+    reason: string | null
+    cacheHit?: boolean
+  }
   walletModuleCoverage?: {
     portfolio:     { status: 'ok' | 'partial' | 'open_check'; evidence: string[]; reason: string }
     activity:      { status: 'ok' | 'partial' | 'open_check'; evidence: string[]; eventCount: number; reason: string }
@@ -1982,6 +2004,32 @@ export default function WalletScannerPage() {
                         </div>
                       </div>
                     )}
+                    {result.walletHistoricalCoverage && (
+                      <div style={{ fontSize: '12px', color: 'rgba(148,163,184,0.84)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '12px', lineHeight: 1.55, background: 'rgba(148,163,184,0.045)', border: '1px solid rgba(148,163,184,0.16)', borderRadius: '10px', padding: '10px 13px' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'center', marginBottom: '6px' }}>
+                          <div style={{ fontWeight: 800, fontSize: '11px', letterSpacing: '0.08em', textTransform: 'uppercase', color: 'rgba(226,232,240,0.92)' }}>Historical Coverage</div>
+                          <div style={{ fontSize: '10px', color: 'rgba(148,163,184,0.60)' }}>
+                            {result.walletHistoricalCoverage.checked ? 'Full historical scan checked' : 'Historical scan not run'}
+                          </div>
+                        </div>
+                        <div style={{ fontSize: '11px', color: 'rgba(148,163,184,0.68)' }}>
+                          Older entries recovered: {result.walletHistoricalCoverage.olderEntriesRecovered}.{' '}
+                          {result.walletHistoricalCoverage.cappedForCostSafety && 'Historical scan capped for cost safety. '}
+                          This scan used a capped evidence budget to keep wallet analysis cost-safe.
+                        </div>
+                        {(ls?.unmatchedSells ?? 0) > 0 && (
+                          <div style={{ marginTop: '6px', fontSize: '11px', color: 'rgba(203,213,225,0.62)' }}>
+                            Some exits could not be graded because earlier entries were not found in the indexed history.
+                          </div>
+                        )}
+                        {result.walletHistoricalCoverage.highValueWalletPrioritised && (
+                          <div style={{ marginTop: '6px', fontSize: '11px', color: 'rgba(167,139,250,0.78)' }}>
+                            High-value wallet detected — ChainLens prioritised the highest-impact trade evidence first.
+                          </div>
+                        )}
+                      </div>
+                    )}
+
                     {result.walletPricingCoverageNote && (
                       <div style={{ fontSize: '12px', color: 'rgba(148,163,184,0.80)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '12px', lineHeight: 1.55, background: 'rgba(148,163,184,0.05)', border: '1px solid rgba(148,163,184,0.18)', borderRadius: '10px', padding: '10px 13px' }}>
                         <div style={{ fontWeight: 700, fontSize: '11px', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: '5px', color: 'rgba(148,163,184,0.90)' }}>Pricing coverage</div>
