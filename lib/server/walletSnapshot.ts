@@ -1297,7 +1297,7 @@ export type WalletSnapshotOptions = {
 
 const SNAPSHOT_TTL_MS         = 5  * 60 * 1000
 const SNAPSHOT_HISTORY_TTL_MS = 15 * 60 * 1000
-const SNAPSHOT_SCHEMA_VERSION = 'v37'
+const SNAPSHOT_SCHEMA_VERSION = 'v38'
 type SnapshotCacheEntry = { snapshot: WalletSnapshot; cachedAt: number; ttlMs: number }
 const snapshotMemCache = new Map<string, SnapshotCacheEntry>()
 
@@ -1441,22 +1441,32 @@ const basePnlTxCache = new Map<string, { value: string; exp: number }>()
 const ERC20_TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef'
 
 const STABLE_USD_CONTRACTS: Record<string, true> = {
-  '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48': true,
-  '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913': true,
-  '0xdac17f958d2ee523a2206206994597c13d831ec7': true,
-  '0x6b175474e89094c44da98b954eedeac495271d0f': true,
+  '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48': true,  // USDC ETH
+  '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913': true,  // USDC Base
+  '0xdac17f958d2ee523a2206206994597c13d831ec7': true,  // USDT ETH
+  '0x6b175474e89094c44da98b954eedeac495271d0f': true,  // DAI ETH
+  // BSC stablecoins (18 decimals on BSC)
+  '0x55d398326f99059ff775485246999027b3197955': true,  // USDT BSC
+  '0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d': true,  // USDC BSC
+  '0xe9e7cea3dedca5984780bafc599bd69add087d56': true,  // BUSD BSC
+  '0x1af3f329e8be154074d8769d1ffa4ee058b1dbc3': true,  // DAI BSC
 }
 
 const WETH_CONTRACTS_PRICE: Record<string, true> = {
-  '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2': true,
-  '0x4200000000000000000000000000000000000006': true,
+  '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2': true,  // WETH ETH
+  '0x4200000000000000000000000000000000000006': true,  // WETH Base
+  '0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c': true,  // WBNB BSC
 }
 
 const STABLE_DECIMALS: Record<string, number> = {
   '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48': 6,   // USDC ETH
   '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913': 6,   // USDC Base
   '0xdac17f958d2ee523a2206206994597c13d831ec7': 6,   // USDT ETH
-  '0x6b175474e89094c44da98b954eedeac495271d0f': 18,  // DAI
+  '0x6b175474e89094c44da98b954eedeac495271d0f': 18,  // DAI ETH
+  '0x55d398326f99059ff775485246999027b3197955': 18,  // USDT BSC
+  '0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d': 18,  // USDC BSC
+  '0xe9e7cea3dedca5984780bafc599bd69add087d56': 18,  // BUSD BSC
+  '0x1af3f329e8be154074d8769d1ffa4ee058b1dbc3': 18,  // DAI BSC
 }
 
 const STABLE_SYMBOL: Record<string, string> = {
@@ -1464,6 +1474,10 @@ const STABLE_SYMBOL: Record<string, string> = {
   '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913': 'USDC',
   '0xdac17f958d2ee523a2206206994597c13d831ec7': 'USDT',
   '0x6b175474e89094c44da98b954eedeac495271d0f': 'DAI',
+  '0x55d398326f99059ff775485246999027b3197955': 'USDT',
+  '0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d': 'USDC',
+  '0xe9e7cea3dedca5984780bafc599bd69add087d56': 'BUSD',
+  '0x1af3f329e8be154074d8769d1ffa4ee058b1dbc3': 'DAI',
 }
 
 const ETH_WETH_CONTRACT = '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2'
@@ -7090,6 +7104,66 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       : 'not_triggered'
   }
 
+  // Phase 19: deep-scan multi-chain supplement — scans high-value non-ETH/BASE chains via Moralis
+  // independently of whether GoldRush found ETH/BASE events (unlike the Moralis fallback which only
+  // runs when events.length === 0). Page-1 only (100 transfers max) for cost safety.
+  type _Phase19ChainResult = { chain: string; rawCount: number; normalizedEvents: number; cacheHit: boolean; skippedReason: string | null }
+  type _Phase19Debug = { attempted: boolean; skippedReason: string | null; chainsConsidered: Array<{ chain: string; usdValue: number }>; chainResults: _Phase19ChainResult[]; totalNewEvents: number; mergeTotal: number; mergeDeduped: number }
+  const _p19MaxAdditionalChains = 2
+  const _p19EligibleChains = discoveredChains.filter(c =>
+    supportedMoralisChains.includes(c.chain) &&
+    c.chain !== 'eth' && c.chain !== 'base' &&
+    c.usdValue >= minChainValueUsd
+  ).slice(0, _p19MaxAdditionalChains)
+  const _p19ShouldRun = deepActivity && !historicalCoverage && _p19EligibleChains.length > 0 && Boolean(process.env.MORALIS_API_KEY)
+  let _phase19Debug: _Phase19Debug = {
+    attempted: _p19ShouldRun,
+    skippedReason: _p19ShouldRun ? null
+      : !deepActivity ? 'basic_scan'
+      : historicalCoverage ? 'historical_coverage_enabled'
+      : _p19EligibleChains.length === 0 ? 'no_eligible_non_eth_base_chains'
+      : 'moralis_unavailable',
+    chainsConsidered: _p19EligibleChains.map(c => ({ chain: c.chain as string, usdValue: c.usdValue })),
+    chainResults: [], totalNewEvents: 0, mergeTotal: 0, mergeDeduped: 0,
+  }
+  const _p19ScannedChains: MoralisChain[] = []
+  if (_p19ShouldRun) {
+    let p19NewEvents: PnlEvent[] = []
+    for (const eligible of _p19EligibleChains) {
+      const p19ChainName = eligible.chain  // 'bsc', 'polygon', etc.
+      const p19Result = await fetchMoralisTransfers(addr, eligible.chain, 100)
+      _trackCall('moralis', 'erc20_transfers', p19Result.cacheHit, `moralis:transfers:p1:${eligible.chain}:p19:${addrNorm}`)
+      const { events: p19ChainEvents } = (p19Result.usable && p19Result.items.length > 0)
+        ? normalizeMoralisTransfers(p19Result.items, addr, p19ChainName)
+        : { events: [] as PnlEvent[] }
+      _phase19Debug.chainResults.push({
+        chain: eligible.chain as string,
+        rawCount: p19Result.rawCount,
+        normalizedEvents: p19ChainEvents.length,
+        cacheHit: p19Result.cacheHit,
+        skippedReason: p19ChainEvents.length === 0 ? (p19Result.usable ? 'no_transfers_returned' : 'provider_error') : null,
+      })
+      if (p19ChainEvents.length > 0) {
+        p19NewEvents = [...p19NewEvents, ...p19ChainEvents]
+        _p19ScannedChains.push(eligible.chain)
+      }
+    }
+    if (p19NewEvents.length > 0) {
+      _phase19Debug.totalNewEvents = p19NewEvents.length
+      const _p19All = [...events, ...p19NewEvents]
+      _phase19Debug.mergeTotal = _p19All.length
+      const _p19SeenKeys = new Set<string>()
+      const _p19Merged: PnlEvent[] = []
+      for (const e of _p19All) {
+        const mk = `${e.chain ?? ''}|${e.txHash ?? ''}|${e.contract}|${e.direction}|${e.amountRaw ?? String(e.amount)}`
+        if (!_p19SeenKeys.has(mk)) { _p19SeenKeys.add(mk); _p19Merged.push(e) }
+      }
+      _p19Merged.sort((a, b) => (a.timestamp ? new Date(a.timestamp).getTime() : 0) - (b.timestamp ? new Date(b.timestamp).getTime() : 0))
+      _phase19Debug.mergeDeduped = _p19All.length - _p19Merged.length
+      events = _p19Merged
+    }
+  }
+
   const _pnlSourceRaw: 'goldrush' | 'alchemy' | 'moralis_fallback' | 'none' =
     grEvents.length > 0 ? 'goldrush'
     : alchemyEvents.length > 0 ? 'alchemy'
@@ -8486,6 +8560,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     if (_grBaseAttempted && !_actChainsUsed.includes('base')) _actChainsUsed.push('base')
     if (_alchemyAttempted && !_actChainsUsed.includes('base')) _actChainsUsed.push('base')
     if (_moralisFbDebug.fallbackActivityAttempted && !_actChainsUsed.includes(_fbChain as MoralisChain)) _actChainsUsed.push(_fbChain as MoralisChain)
+    for (const c of _p19ScannedChains) { if (!(_actChainsUsed as string[]).includes(c as string)) _actChainsUsed.push(c) }
     const _actSkipReason = !activityRequested
       ? 'deep_activity_not_requested'
       : !Boolean(GOLDRUSH_KEY) && !Boolean(ALCHEMY_BASE_KEY) && !Boolean(process.env.MORALIS_API_KEY)
@@ -8499,9 +8574,10 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     const _unsupported = _significantDiscovered.filter(c => !supportedMoralisChains.includes(c.chain)).map(c => c.chain as string)
     // Supported chains cut by the activeChains cap (chains that were in discoveredChains but not in activeChains)
     const _excByCap = _significantDiscovered.filter(c => supportedMoralisChains.includes(c.chain) && !activeChains.includes(c.chain)).map(c => c.chain as string)
-    // Supported, in activeChains for portfolio, but no dedicated activity provider and not chosen as Moralis fb chain
+    // Supported, in activeChains for portfolio, but no dedicated activity provider and not scanned in any phase
     const _excByProviderSafety = _significantDiscovered.filter(c =>
-      supportedMoralisChains.includes(c.chain) && !_activityOnlyChains.has(c.chain) && c.chain !== _fbChain
+      supportedMoralisChains.includes(c.chain) && !_activityOnlyChains.has(c.chain) &&
+      c.chain !== _fbChain && !(_p19ScannedChains as string[]).includes(c.chain as string)
     ).map(c => c.chain as string)
     const _notScannedForActivity = _significantDiscovered.filter(c => !(_actChainsUsed as string[]).includes(c.chain as string)).map(c => c.chain as string)
     return {
@@ -8531,6 +8607,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         ...(_alchemyAttempted ? ['alchemy:base'] : []),
         ...(activityRequested && Boolean(process.env.MORALIS_API_KEY) ? [`moralis:${_fbChain}_if_primary_empty`] : []),
         ...(_p18ShouldRun ? [`moralis:${_p18SupplementChain}_supplement`] : []),
+        ...(_p19ShouldRun ? _p19EligibleChains.map(c => `moralis:${c.chain}_p19_supplement`) : []),
       ],
       providerCallsMade: [
         ...(_grEthAttempted ? ['goldrush:eth'] : []),
@@ -8538,6 +8615,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         ...(_alchemyAttempted ? ['alchemy:base'] : []),
         ...(_moralisFbDebug.fallbackActivityAttempted ? [`moralis:${_fbChain}`] : []),
         ...(_phase18Debug.attempted ? [`moralis:${_p18SupplementChain}_supplement`] : []),
+        ..._p19ScannedChains.map(c => `moralis:${c}_p19`),
       ],
       evidenceEvents: walletEvidenceSummary.totalEvents,
       finalEvidenceStatus: walletEvidenceSummary.status,
@@ -8824,6 +8902,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       })(),
     },
   }
+  // Attach Phase 19 debug (typed as any — not in the strict diagnostics type)
+  if (snapshot._diagnostics) (snapshot._diagnostics as Record<string, unknown>).phase19MultiChainSupplementDebug = _phase19Debug
   tokenMeter.startTokenMeter('debugLogging')
   tokenMeter.measure('debugLogging', snapshot._debug, snapshot._diagnostics, walletFacts)
   tokenMeter.endTokenMeter('debugLogging')
