@@ -189,7 +189,7 @@ type WalletResult = {
     readyForWalletScore: boolean
     rawStatsAvailable?: boolean
     scoreUnlocked?: boolean
-    confidenceLabel?: 'open_check' | 'very_small_sample' | 'small_sample' | 'early_confidence' | 'developing' | 'high'
+    confidenceLabel?: 'open_check' | 'break_even_only' | 'very_small_sample' | 'small_sample' | 'early_confidence' | 'developing' | 'high'
     sampleWarning?: string | null
     meaningfulClosedLots: number
     dustClosedLots: number
@@ -446,9 +446,12 @@ function deriveAverageMatchedWinUsd(data: WalletResult): number | null {
 
 
 function isTradeStatsGradeable(ts: WalletResult['walletTradeStatsSummary'] | undefined): boolean {
+  const decisiveClosedLots = (ts?.winningClosedLots ?? 0) + (ts?.losingClosedLots ?? 0)
   return Boolean(
     ts &&
     ts.closedLots >= 10 &&
+    decisiveClosedLots >= 1 &&
+    ts.isBreakEvenOnly !== true &&
     ts.economicSignificance === 'meaningful' &&
     ts.confidence !== 'low' &&
     ts.confidence !== 'open_check' &&
@@ -456,16 +459,26 @@ function isTradeStatsGradeable(ts: WalletResult['walletTradeStatsSummary'] | und
   )
 }
 
+function hasNoDecisiveClosedLots(ts: WalletResult['walletTradeStatsSummary'] | undefined): boolean {
+  return Boolean(
+    ts &&
+    ts.closedLots > 0 &&
+    ((ts.winningClosedLots ?? 0) + (ts.losingClosedLots ?? 0)) === 0
+  )
+}
+
 function isMicroSampleLocked(ts: WalletResult['walletTradeStatsSummary'] | undefined): boolean {
   return Boolean(
     ts &&
     ts.closedLots >= 10 &&
+    !hasNoDecisiveClosedLots(ts) &&
     (ts.economicSignificance === 'micro_sample' || ts.confidence === 'low' || !ts.readyForWalletScore)
   )
 }
 
 function officialWinRateLockCopy(ts: WalletResult['walletTradeStatsSummary'] | undefined): string {
   if (!ts || ts.closedLots === 0) return 'Requires closed-lot evidence.'
+  if (hasNoDecisiveClosedLots(ts)) return 'Break-even only — official win rate needs at least one decisive winning or losing closed lot.'
   if (ts.closedLots < 10) return `Raw rate from ${ts.closedLots} closed lot${ts.closedLots !== 1 ? 's' : ''} — official rate unlocks at 10+.`
   if (isMicroSampleLocked(ts)) return 'Matched sample is too small financially to grade.'
   return 'Requires gradeable matched closed-lot evidence.'
@@ -473,9 +486,10 @@ function officialWinRateLockCopy(ts: WalletResult['walletTradeStatsSummary'] | u
 
 function walletScoreLockCopy(ts: WalletResult['walletTradeStatsSummary'] | undefined): string {
   if (!ts || ts.closedLots === 0) return 'Needs closed lot evidence to score.'
+  if (hasNoDecisiveClosedLots(ts)) return 'Score locked: break-even-only samples need at least one decisive winning or losing closed lot.'
   if (ts.closedLots < 10) return 'Score not calculated until 10+ verified closed lots.'
   if (isMicroSampleLocked(ts)) return 'Matched sample is too small financially to grade.'
-  return 'Score not calculated until matched evidence passes wallet-score gates.'
+  return 'Score not calculated until 10+ gradeable closed lots include a decisive win or loss.'
 }
 
 function normalizeChainName(chain: string | null | undefined): string | null {
@@ -528,9 +542,11 @@ function deriveTradeBehavior(data: WalletResult): WalletIntelligence['tradeBehav
     avgHoldTime,
     reason: hasEnoughClosedTrades
       ? 'Closed lots reconstructed from indexed entry and exit evidence.'
-      : closedTrades > 0
-        ? `${closedTrades} lots reconstructed — 10+ needed for full stats.`
-        : 'No reconstructed closed lots yet.',
+      : ts && hasNoDecisiveClosedLots(ts)
+        ? `${closedTrades} lots reconstructed, but all are break-even — score needs at least one decisive win or loss.`
+        : closedTrades > 0
+          ? `${closedTrades} lots reconstructed — 10+ needed for full stats.`
+          : 'No reconstructed closed lots yet.',
     winRate,
     lossRate,
     avgWin: deriveAverageMatchedWinUsd(data) ?? safeNum(backend?.pnl?.avgWin),
@@ -654,8 +670,12 @@ function deriveWalletPersonality(data: WalletResult): string {
     const _beNote = ts.breakEvenClosedLots > 0 ? `, ${ts.breakEvenClosedLots} break-even` : ''
     sentences.push(`Matched closed-lot sample shows ${ts.winningClosedLots} positive lot${ts.winningClosedLots !== 1 ? 's' : ''}${_beNote} and ${ts.losingClosedLots === 0 ? 'no matched losing closed lots' : `${ts.losingClosedLots} matched losing closed lot${ts.losingClosedLots !== 1 ? 's' : ''}`}. This is not a full wallet win rate. Official win rate is not calculated until 10+ verified closed lots.`)
   } else if (ts && ts.closedLots >= 10 && ts.winRatePercent === null) {
-    const _beNote = ts.breakEvenClosedLots > 0 ? `, ${ts.breakEvenClosedLots} break-even` : ''
-    sentences.push(`Matched closed-lot sample shows ${ts.winningClosedLots} positive lot${ts.winningClosedLots !== 1 ? 's' : ''}${_beNote} and ${ts.losingClosedLots} losing lots across ${ts.closedLots} reconstructed lots. Win rate is not calculated — the matched sample did not meet economic quality gates.`)
+    if (hasNoDecisiveClosedLots(ts)) {
+      sentences.push(`Matched closed-lot sample shows ${ts.closedLots} reconstructed lots, all break-even. Win rate and wallet score stay locked until at least one decisive winning or losing closed lot appears.`)
+    } else {
+      const _beNote = ts.breakEvenClosedLots > 0 ? `, ${ts.breakEvenClosedLots} break-even` : ''
+      sentences.push(`Matched closed-lot sample shows ${ts.winningClosedLots} positive lot${ts.winningClosedLots !== 1 ? 's' : ''}${_beNote} and ${ts.losingClosedLots} losing lots across ${ts.closedLots} reconstructed lots. Win rate is not calculated — the matched sample did not meet economic quality gates.`)
+    }
   } else if (!ts || ts.closedLots === 0) {
     if (behavior.closedTrades < 10) {
       sentences.push('Not enough closed lots have been reconstructed to classify trading skill yet.')
@@ -1623,7 +1643,7 @@ export default function WalletScannerPage() {
                       )
                     }
                     const winRateNote = walletIntel.winRate !== null ? 'Closed lots only' : closedLots > 0 ? officialWinRateLockCopy(ts) : 'No closed lots yet'
-                    const confidenceNote = walletIntel.confidence === 'open check' ? (closedLots > 0 ? `${closedLots} closed lots reconstructed` : 'Closed-lot stats not available yet') : 'Evidence weighted'
+                    const confidenceNote = hasNoDecisiveClosedLots(ts) ? 'break-even only' : walletIntel.confidence === 'open check' ? (closedLots > 0 ? `${closedLots} closed lots reconstructed` : 'Closed-lot stats not available yet') : 'Evidence weighted'
                     const scoreReason = walletIntel.walletScore === null ? walletScoreLockCopy(ts) : null
                     return (
                       <>
@@ -1651,13 +1671,13 @@ export default function WalletScannerPage() {
                         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '10px' }}>
                           {[
                             (() => {
-                              const rawRate = ts && closedLots > 0 && walletIntel.winRate === null ? (ts.winRatePercent ?? (ts.winningClosedLots / closedLots) * 100) : null
+                              const rawRate = ts && closedLots > 0 && walletIntel.winRate === null && !hasNoDecisiveClosedLots(ts) ? (ts.winRatePercent ?? (ts.winningClosedLots / closedLots) * 100) : null
                               const label = walletIntel.winRate !== null ? 'Win Rate' : closedLots > 0 && closedLots < 10 ? 'Win Rate (raw)' : closedLots > 0 ? 'Official Win Rate' : 'Win Rate'
-                              const value = walletIntel.winRate !== null ? fmtOpenPct(walletIntel.winRate) : rawRate !== null ? `${rawRate.toFixed(1)}%` : fmtOpenPct(null)
-                              const note = walletIntel.winRate !== null ? winRateNote : rawRate !== null ? officialWinRateLockCopy(ts) : 'No closed lots yet'
+                              const value = hasNoDecisiveClosedLots(ts) ? 'Break-even only' : walletIntel.winRate !== null ? fmtOpenPct(walletIntel.winRate) : rawRate !== null ? `${rawRate.toFixed(1)}%` : fmtOpenPct(null)
+                              const note = walletIntel.winRate !== null ? winRateNote : closedLots > 0 ? officialWinRateLockCopy(ts) : 'No closed lots yet'
                               return { label, value, note }
                             })(),
-                            { label: 'Confidence', value: ts ? (ts.confidence === 'open_check' ? 'open check' : ts.confidence) : walletIntel.confidence, note: confidenceNote },
+                            { label: 'Confidence', value: hasNoDecisiveClosedLots(ts) ? 'break-even only' : ts ? (ts.confidence === 'open_check' ? 'open check' : ts.confidence) : walletIntel.confidence, note: confidenceNote },
                           ].map(item => (
                             <div key={item.label} style={{ background: 'rgba(255,255,255,0.035)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '12px', padding: '12px' }}>
                               <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.28)', letterSpacing: '0.13em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '6px' }}>{item.label}</div>
@@ -2215,7 +2235,7 @@ export default function WalletScannerPage() {
                         </div>
 
                         {(() => {
-                          const rawWinRate = ts.closedLots > 0 ? ts.winRatePercent ?? (ts.winningClosedLots / ts.closedLots) * 100 : null
+                          const rawWinRate = ts.closedLots > 0 && !hasNoDecisiveClosedLots(ts) ? ts.winRatePercent ?? (ts.winningClosedLots / ts.closedLots) * 100 : null
                           const isBreakEvenOnly = ts.isBreakEvenOnly === true || (ts.closedLots > 0 && ts.winningClosedLots === 0 && ts.losingClosedLots === 0 && ts.breakEvenClosedLots === ts.closedLots)
                           const isSmallSample = ts.closedLots > 0 && !hasEnough
                           const earlyCards: Array<{ label: string; value: string | null; locked?: boolean; lockNote?: string; pnl?: number | null; raw?: boolean; breakEven?: boolean }> = [
@@ -2370,15 +2390,17 @@ export default function WalletScannerPage() {
                 const closedTradesDisplay = closedLots > 0
                   ? `${closedLots} reconstructed`
                   : 'No closed lots yet'
-                const earlyWinPct = closedLots > 0 && ts ? Math.round((ts.winningClosedLots / ts.closedLots) * 100) : null
-                const earlyLossPct = closedLots > 0 && ts ? Math.round((ts.losingClosedLots / ts.closedLots) * 100) : null
+                const earlyWinPct = closedLots > 0 && ts && !hasNoDecisiveClosedLots(ts) ? Math.round((ts.winningClosedLots / ts.closedLots) * 100) : null
+                const earlyLossPct = closedLots > 0 && ts && !hasNoDecisiveClosedLots(ts) ? Math.round((ts.losingClosedLots / ts.closedLots) * 100) : null
                 const winRateLabel = !hasEnough && closedLots > 0 ? 'Matched Closed-Lot Read' : 'Win Rate'
                 const lossRateLabel = !hasEnough && closedLots > 0 ? 'Matched Losing Lots' : 'Loss Rate'
-                const winRateDisplay = hasEnough && ts?.winRatePercent !== null && ts?.winRatePercent !== undefined
-                  ? `${ts.winRatePercent.toFixed(1)}%`
-                  : !hasEnough && ts && closedLots > 0
-                    ? `${ts.winningClosedLots} matched positive lot${ts.winningClosedLots !== 1 ? 's' : ''}${ts.breakEvenClosedLots > 0 ? `, ${ts.breakEvenClosedLots} break-even` : ''}`
-                    : 'Open Check'
+                const winRateDisplay = hasNoDecisiveClosedLots(ts)
+                  ? 'Break-even only'
+                  : hasEnough && ts?.winRatePercent !== null && ts?.winRatePercent !== undefined
+                    ? `${ts.winRatePercent.toFixed(1)}%`
+                    : !hasEnough && ts && closedLots > 0
+                      ? `${ts.winningClosedLots} matched positive lot${ts.winningClosedLots !== 1 ? 's' : ''}${ts.breakEvenClosedLots > 0 ? `, ${ts.breakEvenClosedLots} break-even` : ''}`
+                      : 'Open Check'
                 const lossRateDisplay = hasEnough
                   ? fmtOpenPct(walletIntel.lossRate)
                   : !hasEnough && ts && closedLots > 0
