@@ -959,6 +959,19 @@ export type WalletSnapshot = {
       sampleSyntheticEvents: Array<{ txHash: string; symbol: string; direction: string }>
       skippedReasons: string[]
     }
+    finalSummarySourceDebug?: {
+      swapSummarySource: string
+      priceSummarySource: string
+      lotSummarySource: string
+      tradeStatsSource: string
+      reconstructedPricedEvents: number
+      finalPublicPricedEvents: number
+      finalPublicSwapCandidates: number
+      finalOpenedLots: number
+      finalClosedLots: number
+      summaryOverwriteApplied: boolean
+      mismatchReason: string
+    }
     baseUnknownSwapPricingDebug?: {
       attempted: boolean
       reconstructedEventsAvailable: boolean
@@ -1274,7 +1287,7 @@ export type WalletSnapshotOptions = {
 
 const SNAPSHOT_TTL_MS         = 5  * 60 * 1000
 const SNAPSHOT_HISTORY_TTL_MS = 15 * 60 * 1000
-const SNAPSHOT_SCHEMA_VERSION = 'v32'
+const SNAPSHOT_SCHEMA_VERSION = 'v33'
 type SnapshotCacheEntry = { snapshot: WalletSnapshot; cachedAt: number; ttlMs: number }
 const snapshotMemCache = new Map<string, SnapshotCacheEntry>()
 
@@ -7357,6 +7370,17 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     }
   }
 
+  // Save reconstruction state so later pipeline phases (BFC, fallback) cannot permanently
+  // overwrite it. We restore it in the final summary overwrite step before snapshot build.
+  let _reconSavedSwapSummary: typeof walletSwapSummary | null = null
+  let _reconSavedPriceSummary: typeof walletPriceEvidenceSummary | null = null
+  let _reconSavedPricedEvidence: WalletTxEvidence[] | null = null
+  if (_baseUnknownSwapReconDebug.syntheticSwapEventsAdded > 0 && walletPriceEvidenceSummary.pricedEvents > 0) {
+    _reconSavedSwapSummary = walletSwapSummary
+    _reconSavedPriceSummary = walletPriceEvidenceSummary
+    _reconSavedPricedEvidence = [..._pricedEvidence]
+  }
+
   // ── Unpriced Candidate Receipt Pass ─────────────────────────────────────────────────────
   // When swap candidates exist but none were priced (no stable/WETH leg in activity feed,
   // historical price failed), fetch receipts for those exact tx hashes to find hidden quote
@@ -8140,6 +8164,56 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
 
   const walletTradeStatsSource: WalletSnapshot['walletTradeStatsSource'] = _shouldPromote ? 'historical_promoted_preview' : 'base_sample'
 
+  // ── Final Summary Overwrite: restore reconstruction results if later pipeline phases overwrote them ──
+  // BFC (Phase 5C), fallback, and supplemental loops all re-run buildSwapDetection on raw provider
+  // events, wiping the manually-promoted isSwapCandidate values from unknown-dir reconstruction.
+  // If reconstruction produced priced events but the final summaries show 0, restore and re-run FIFO.
+  const _reconOverwriteNeeded = (
+    _reconSavedPricedEvidence !== null &&
+    _baseUnknownSwapPricingDebug.pricedAfterReconstruction > 0 &&
+    (walletSwapSummary.swapCandidateEvents === 0 || walletPriceEvidenceSummary.pricedEvents === 0)
+  )
+  let _finalSummarySourceDebug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['finalSummarySourceDebug']> = {
+    swapSummarySource: 'pipeline',
+    priceSummarySource: 'pipeline',
+    lotSummarySource: 'pipeline',
+    tradeStatsSource: 'pipeline',
+    reconstructedPricedEvents: _baseUnknownSwapPricingDebug.pricedAfterReconstruction,
+    finalPublicPricedEvents: walletPriceEvidenceSummary.pricedEvents,
+    finalPublicSwapCandidates: walletSwapSummary.swapCandidateEvents,
+    finalOpenedLots: walletLotSummary.openedLots ?? 0,
+    finalClosedLots: walletLotSummary.closedLots,
+    summaryOverwriteApplied: false,
+    mismatchReason: _reconOverwriteNeeded ? 'pipeline_phase_overwrote_reconstruction' : 'none',
+  }
+  if (_reconOverwriteNeeded) {
+    walletSwapSummary = _reconSavedSwapSummary!
+    walletPriceEvidenceSummary = _reconSavedPriceSummary!
+    let _reconFifoEvidence = normalizeSwapEventsForFifo(_reconSavedPricedEvidence!, tokenMeter.isDebugEnabled())
+    _reconFifoEvidence = normalizeSingleLegEventsForFifo(_reconFifoEvidence, tokenMeter.isDebugEnabled())
+    const _reconFifoResult = buildFifoLotEngine(_reconFifoEvidence, activityRequested)
+    walletLotSummary = _reconFifoResult.summary
+    _lotEngineDebug = _reconFifoResult.debug
+    _closedLots = _reconFifoResult.closedLots
+    const _reconTradeStats = buildTradeStatsSummary(_closedLots, activityRequested)
+    walletTradeStatsSummary = _reconTradeStats.summary
+    _tradeStatsDebug = _reconTradeStats.debug
+    _pricedEvidence = _reconFifoEvidence
+    _finalSummarySourceDebug = {
+      swapSummarySource: 'base_unknown_reconstruction',
+      priceSummarySource: 'base_unknown_reconstruction',
+      lotSummarySource: 'base_unknown_reconstruction_fifo',
+      tradeStatsSource: 'base_unknown_reconstruction_fifo',
+      reconstructedPricedEvents: _baseUnknownSwapPricingDebug.pricedAfterReconstruction,
+      finalPublicPricedEvents: walletPriceEvidenceSummary.pricedEvents,
+      finalPublicSwapCandidates: walletSwapSummary.swapCandidateEvents,
+      finalOpenedLots: walletLotSummary.openedLots ?? 0,
+      finalClosedLots: walletLotSummary.closedLots,
+      summaryOverwriteApplied: true,
+      mismatchReason: 'pipeline_phase_overwrote_reconstruction',
+    }
+  }
+
   let promotedLotSummary = walletLotSummary
   let promotedTradeStatsSummary = walletTradeStatsSummary
   if (_shouldPromote && _hcPreviewClosedLots.length > 0) {
@@ -8615,6 +8689,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       basePnlReconstructionDebug: _basePnlReconDebug,
       baseUnknownSwapReconstructionDebug: _baseUnknownSwapReconDebug,
       baseUnknownSwapPricingDebug: _baseUnknownSwapPricingDebug,
+      finalSummarySourceDebug: _finalSummarySourceDebug,
       baseFifoCoverageDebug: _baseFifoCoverageDebug,
       walletActivityRoutingDebug: _walletActivityRoutingDebug,
       walletChainActivityMergeDebug: _walletChainActivityMergeDebug,

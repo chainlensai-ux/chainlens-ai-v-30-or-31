@@ -29,7 +29,7 @@ export async function OPTIONS(req: Request) {
 const WALLET_BASIC_CACHE_TTL_MS  = 5  * 60 * 1000  // 5 min for basic scans
 const WALLET_DEEP_CACHE_TTL_MS   = 15 * 60 * 1000  // 15 min for deep scans
 const WALLET_DEEP_COOLDOWN_MS    = 10 * 60 * 1000  // 10 min cooldown per wallet after deep live scan
-const WALLET_SNAPSHOT_SCHEMA_VERSION = 'v32'
+const WALLET_SNAPSHOT_SCHEMA_VERSION = 'v33'
 const walletCache = new Map<string, { exp: number; payload: unknown; cachedAt: number }>()
 const walletRate = new Map<string, { count: number; resetAt: number }>()
 const WALLET_RATE_BY_PLAN: Record<string, number> = { free: 20, pro: 60, elite: 180 }
@@ -623,6 +623,7 @@ export async function POST(req: Request) {
         basePnlReconstructionDebug: snapshot._diagnostics?.basePnlReconstructionDebug ?? null,
         baseUnknownSwapReconstructionDebug: snapshot._diagnostics?.baseUnknownSwapReconstructionDebug ?? null,
         baseUnknownSwapPricingDebug: snapshot._diagnostics?.baseUnknownSwapPricingDebug ?? null,
+        finalSummarySourceDebug: snapshot._diagnostics?.finalSummarySourceDebug ?? null,
         baseFifoCoverageDebug: snapshot._diagnostics?.baseFifoCoverageDebug ?? null,
         walletActivityRoutingDebug: snapshot._diagnostics?.walletActivityRoutingDebug ?? null,
         walletChainActivityMergeDebug: snapshot._diagnostics?.walletChainActivityMergeDebug ?? null,
@@ -696,6 +697,7 @@ export async function POST(req: Request) {
         basePnlReconstructionDebug: snapshot._diagnostics?.basePnlReconstructionDebug ?? null,
         baseUnknownSwapReconstructionDebug: snapshot._diagnostics?.baseUnknownSwapReconstructionDebug ?? null,
         baseUnknownSwapPricingDebug: snapshot._diagnostics?.baseUnknownSwapPricingDebug ?? null,
+        finalSummarySourceDebug: snapshot._diagnostics?.finalSummarySourceDebug ?? null,
         baseFifoCoverageDebug: snapshot._diagnostics?.baseFifoCoverageDebug ?? null,
         walletActivityRoutingDebug: snapshot._diagnostics?.walletActivityRoutingDebug ?? null,
         walletChainActivityMergeDebug: snapshot._diagnostics?.walletChainActivityMergeDebug ?? null,
