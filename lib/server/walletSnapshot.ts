@@ -1297,7 +1297,7 @@ export type WalletSnapshotOptions = {
 
 const SNAPSHOT_TTL_MS         = 5  * 60 * 1000
 const SNAPSHOT_HISTORY_TTL_MS = 15 * 60 * 1000
-const SNAPSHOT_SCHEMA_VERSION = 'v38'
+const SNAPSHOT_SCHEMA_VERSION = 'v39'
 type SnapshotCacheEntry = { snapshot: WalletSnapshot; cachedAt: number; ttlMs: number }
 const snapshotMemCache = new Map<string, SnapshotCacheEntry>()
 
@@ -2591,7 +2591,7 @@ async function runTargetedUnmatchedSellBackfill(address: string, targets: Unmatc
     },
   })
   if (targets.length === 0) return empty(false, 'not_eligible')
-  const cacheKey = `${address.toLowerCase()}:${targets.map(t => `${t.chain}:${t.tokenContract}:${t.sellTimestamp}`).join('|')}:v2`
+  const cacheKey = `${address.toLowerCase()}:${targets.map(t => `${t.chain}:${t.tokenContract}:${t.sellTimestamp}`).join('|')}:v3`
   const cached = unmatchedSellBackfillCache.get(cacheKey)
   if (cached && Date.now() - cached.cachedAt <= UNMATCHED_SELL_BACKFILL_TTL_MS) return { events: cached.data.events, targetBuyKeys: new Set(cached.data.targetBuyKeys), debug: { ...cached.data.debug, attempted: true, reason: cached.data.debug.reason || 'cache_hit' } }
 
@@ -2687,6 +2687,56 @@ async function runTargetedUnmatchedSellBackfill(address: string, targets: Unmatc
       result.reason = 'prior_buy_not_found_for_sold_token'
     }
     if (alchemy.events.length > 0) addEventsForTarget(target, alchemy.events, alchemy.events)
+  }
+
+  // Moralis backfill for non-ETH/BASE chains (BSC, Polygon, etc.)
+  // Page-1 is typically a cache hit from Phase 19; page-2 costs one extra call.
+  const _moralisBkApiKey = process.env.MORALIS_API_KEY ?? ''
+  const _supportedMoralisBackfillChains: string[] = ['bsc', 'polygon', 'arbitrum', 'optimism', 'avalanche', 'fantom', 'cronos', 'gnosis']
+  if (_moralisBkApiKey) {
+    for (const target of targets) {
+      const targetKey = `${target.chain}:${target.tokenContract}`
+      if (foundTargetKeys.has(targetKey)) continue
+      if (!_supportedMoralisBackfillChains.includes(target.chain)) continue  // ETH/BASE handled above
+      const result = perTarget.get(targetKey)!
+      const sellTime = target.sellTimestamp ? new Date(target.sellTimestamp).getTime() : null
+      let moralisBuysFound = false
+      let moralisNextCursor: string | null = null
+      for (let mp = 0; mp < 2 && !moralisBuysFound; mp++) {
+        result.pagesAttempted++
+        debug.pagesAttempted++
+        const mResult = await fetchMoralisTransfers(address, target.chain as MoralisChain, 100, moralisNextCursor ?? undefined)
+        if (!mResult.usable) {
+          result.reason = 'provider_history_depth_insufficient'
+          debug.sampleSkippedReasons.push({ reason: 'provider_history_depth_insufficient', chain: target.chain, tokenContract: target.tokenContract, page: mp })
+          break
+        }
+        debug.rawEventsFetched += mResult.rawCount
+        result.rawEventsFetched += mResult.rawCount
+        moralisNextCursor = mResult.nextCursor
+        if (!mResult.items.length) break
+        const { events: mEvents } = normalizeMoralisTransfers(mResult.items, address, target.chain)
+        debug.normalizedEvents += mEvents.length
+        result.normalizedEvents += mEvents.length
+        const olderBuys = mEvents.filter(e => {
+          const ts = e.timestamp ? new Date(e.timestamp).getTime() : NaN
+          const timeOk = sellTime === null || (Number.isFinite(ts) && ts < sellTime)
+          return normalizeChain(e.chain) === normalizeChain(target.chain) &&
+                 e.contract.toLowerCase() === target.tokenContract &&
+                 e.direction === 'buy' && e.txHash && timeOk && e.amount > 0
+        })
+        if (olderBuys.length > 0) {
+          addEventsForTarget(target, mEvents, olderBuys)
+          moralisBuysFound = true
+        } else if (!moralisNextCursor) {
+          break
+        }
+      }
+      if (!moralisBuysFound && result.reason !== 'cost_budget_reached') {
+        result.reason = 'prior_buy_not_found_for_sold_token'
+        debug.sampleSkippedReasons.push({ reason: 'prior_buy_not_found_for_sold_token', chain: target.chain, tokenContract: target.tokenContract })
+      }
+    }
   }
 
   for (const target of targets) {
@@ -7637,7 +7687,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _shouldRunUnmatchedSellBackfill =
     deepActivity === true &&
     historicalCoverage !== true &&
-    walletLotSummary.closedLots === 0 &&
+    walletLotSummary.closedLots < 10 &&
     walletLotSummary.unmatchedSells > 0 &&
     _lotEngineDebug.unmatchedSellTokenKeys.length > 0
 
@@ -7646,7 +7696,14 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     const _initialFifoKeys = _lotEngineDebug.unmatchedSellTokenKeys
     const _initialFifoSamples = (_lotEngineDebug.sampleUnmatchedSells ?? []).map(s => ({ txHash: s.txHash, tokenAddress: s.tokenAddress, symbol: s.symbol }))
     const _buildResult = buildUnmatchedSellBackfillTargets(_pricedEvidence, _initialFifoKeys, _lotEngineDebug.sampleUnmatchedSells)
+    // Prioritize by sell USD value descending, cap at 5 target tokens
     const _targets = _buildResult.targets
+      .sort((a, b) => {
+        const aV = (a.exitPriceUsd ?? 0) * a.sellAmount
+        const bV = (b.exitPriceUsd ?? 0) * b.sellAmount
+        return bV - aV
+      })
+      .slice(0, 5)
     for (const t of _targets) _phase5dTargetedKeys.add(`${t.chain}:${t.tokenContract}`)
     const _backfillTimeoutSentinel = Symbol('backfill_timeout')
     const _backfill = await (async () => {

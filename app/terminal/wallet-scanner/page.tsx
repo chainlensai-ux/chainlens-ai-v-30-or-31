@@ -2182,6 +2182,11 @@ export default function WalletScannerPage() {
                             {ls.unmatchedSells > 0 && <span>{ls.unmatchedSells} sell{ls.unmatchedSells !== 1 ? 's have' : ' has'} no matched buy inside the indexed window, so CORTEX does not score them as wins/losses.</span>}
                           </div>
                         )}
+                        {ls && ls.unmatchedSells > 0 && (
+                          <div style={{ fontSize: '11px', color: 'rgba(148,163,184,0.65)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', lineHeight: 1.55, background: 'rgba(148,163,184,0.03)', border: '1px solid rgba(148,163,184,0.10)', borderRadius: '8px', padding: '7px 11px', marginTop: '8px' }}>
+                            Some exits were detected without matching entries inside the indexed window. Deeper history may unlock more realized PnL.
+                          </div>
+                        )}
 
                         {(result.walletClosedTradeSamples?.length ?? 0) > 0 && (() => {
                           const samples = result.walletClosedTradeSamples!
