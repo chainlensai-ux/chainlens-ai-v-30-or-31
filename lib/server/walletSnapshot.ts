@@ -4652,7 +4652,7 @@ async function buildPriceAtTimeEvidence(
   summary: WalletSnapshot['walletPriceEvidenceSummary']
   debug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['walletPriceAtTimeDebug']>
 }> {
-  const MAX_PRICE_ATTEMPTS = 25
+  const MAX_PRICE_ATTEMPTS = 6  // hard cap: max 6 live GoldRush pricing calls per scan
 
   const emptyResult = (missing: string[]) => ({
     evidenceWithPricing: evidenceWithDetection,

@@ -27,8 +27,16 @@ export async function OPTIONS(req: Request) {
 }
 
 const WALLET_BASIC_CACHE_TTL_MS  = 5  * 60 * 1000  // 5 min for basic scans
-const WALLET_DEEP_CACHE_TTL_MS   = 15 * 60 * 1000  // 15 min for deep scans
-const WALLET_DEEP_COOLDOWN_MS    = 10 * 60 * 1000  // 10 min cooldown per wallet after deep live scan
+const WALLET_DEEP_CACHE_TTL_MS   = 60 * 60 * 1000  // 60 min for deep scans — reduces repeat GoldRush burns
+const WALLET_DEEP_COOLDOWN_MS    = 30 * 60 * 1000  // 30 min cooldown per wallet after deep live scan
+
+// Credit-saving env flags
+// CHAINLENS_WALLET_TEST_CACHE_ONLY=true — blocks all live GoldRush calls (dev/testing only)
+const WALLET_TEST_CACHE_ONLY = process.env.CHAINLENS_WALLET_TEST_CACHE_ONLY === 'true'
+// CHAINLENS_GOLDRUSH_DAILY_SOFT_CAP — daily credit soft cap (informational, logged when exceeded)
+const GOLDRUSH_DAILY_SOFT_CAP = parseInt(process.env.CHAINLENS_GOLDRUSH_DAILY_SOFT_CAP ?? '0', 10) || 0
+let _goldrushDailyCreditsUsed = 0
+let _goldrushDailyCreditsResetAt = 0
 const WALLET_SNAPSHOT_SCHEMA_VERSION = 'v39'
 const walletCache = new Map<string, { exp: number; payload: unknown; cachedAt: number }>()
 const walletRate = new Map<string, { count: number; resetAt: number }>()
@@ -346,12 +354,11 @@ export async function POST(req: Request) {
       return json({ error: 'Invalid wallet address' }, { status: 400 })
     }
 
-    // ETH scan gating fix: force ETH into activeChains for deep/debug/activity scans.
-    // walletSnapshot derives activeChains from chainMode; 'base_eth' guarantees both chains are activated.
-    // Only upgrades 'auto' or 'base' — explicit 'eth', 'base_eth', or 'all_supported' already include ETH.
-    // deepActivity also triggers upgrade so ETH-heavy wallets get ETH activity on activity-only scans.
+    // ETH scan gating: only upgrade to 'base_eth' for debug or explicit ETH scans.
+    // Do NOT auto-upgrade every deep scan — that fires GR ETH transactions for Base-only wallets,
+    // burning 1 extra credit per scan. deepActivity alone does NOT trigger the upgrade.
     const resolvedChainMode: typeof chainMode =
-      (debug || deepScan || deepActivity) && (chainMode === 'auto' || chainMode === 'base')
+      debug && (chainMode === 'auto' || chainMode === 'base')
         ? 'base_eth'
         : chainMode
 
@@ -659,6 +666,11 @@ export async function POST(req: Request) {
       }
 
       _cacheMissReason = _persistentAvailable ? 'persistent_cache_miss' : 'persistent_cache_unavailable'
+
+      // Hard block for cache-only test mode
+      if (WALLET_TEST_CACHE_ONLY) {
+        return json({ error: 'No cached result available (CHAINLENS_WALLET_TEST_CACHE_ONLY=true — live GoldRush calls blocked)', walletScanCostMode: 'deep_cached' }, { status: 503 })
+      }
     } else if (deepCooldownActive) {
       // Fell through memory cooldown with no memory stale — final 429 guard
       return json({ error: 'Deep scan is cooling down. Try again in a few minutes.', walletScanCostMode: 'deep_cached' }, { status: 429 })
@@ -695,6 +707,20 @@ export async function POST(req: Request) {
     const snapshot: any = rawSnapshot
     const providers: any = snapshot._diagnostics?.providers ?? {}
     const snapshotCacheDebug = snapshot._diagnostics?.snapshotCache ?? null
+
+    // Daily credit soft cap tracking (in-memory, resets at midnight UTC)
+    if (GOLDRUSH_DAILY_SOFT_CAP > 0 && !inFlightDeduped) {
+      const nowUtcDay = Math.floor(Date.now() / 86_400_000)
+      if (_goldrushDailyCreditsResetAt !== nowUtcDay) {
+        _goldrushDailyCreditsUsed = 0
+        _goldrushDailyCreditsResetAt = nowUtcDay
+      }
+      // Each deep scan costs ~2-6 GR credits (1 balances + 1 tx + up to 6 price calls)
+      _goldrushDailyCreditsUsed += deepActivity ? 3 : 1
+      if (_goldrushDailyCreditsUsed > GOLDRUSH_DAILY_SOFT_CAP) {
+        console.warn(`[wallet-route] GOLDRUSH DAILY SOFT CAP EXCEEDED: ${_goldrushDailyCreditsUsed}/${GOLDRUSH_DAILY_SOFT_CAP} credits used today`)
+      }
+    }
 
     // Capture cost hints from diagnostics before they're deleted
     const diagRawLogEvents: number = snapshot._diagnostics?.walletHistoricalCoverageDebug?.rawLogEvents
@@ -1020,6 +1046,10 @@ export async function POST(req: Request) {
             requestedMaxHistoricalPages: body?.maxHistoricalPages ?? null,
             effectiveMaxHistoricalPages: maxHistoricalPages,
             scanMode: scanModeKey,
+            resolvedChainMode,
+            testCacheOnly: WALLET_TEST_CACHE_ONLY,
+            goldrushDailyCreditsUsed: GOLDRUSH_DAILY_SOFT_CAP > 0 ? _goldrushDailyCreditsUsed : null,
+            goldrushDailySoftCap: GOLDRUSH_DAILY_SOFT_CAP > 0 ? GOLDRUSH_DAILY_SOFT_CAP : null,
             dataFreshness: 'live' as const,
             cacheKey,
             cacheReadAttempted: _cacheReadAttempted,
