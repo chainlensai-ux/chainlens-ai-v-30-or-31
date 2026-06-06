@@ -171,7 +171,7 @@ function buildWalletModuleCoverage(snap: any) {
   // Open position summary — derived from FIFO debug sampleOpenLots (up to 5 lots)
   const _sampleOpenLots = (snap._diagnostics?.walletLotEngineDebug?.sampleOpenLots ?? []) as Array<{ tokenAddress: string; symbol: string; chain: string; openedAt: string; amountRemaining: number; entryPriceUsd: number; confidence: string }>
   const walletOpenPositionSummary = openedLots > 0 ? (() => {
-    const tokenMap = new Map<string, { symbol: string; chain: string; openLots: number; totalAmount: number; totalCostBasis: number; firstOpenedAt: string; latestOpenedAt: string }>()
+    const tokenMap = new Map<string, { contract: string; symbol: string; chain: string; openLots: number; totalAmount: number; totalCostBasis: number; firstOpenedAt: string; latestOpenedAt: string }>()
     for (const lot of _sampleOpenLots) {
       const key = lot.tokenAddress.toLowerCase()
       const existing = tokenMap.get(key)
@@ -183,11 +183,11 @@ function buildWalletModuleCoverage(snap: any) {
         if (lot.openedAt < existing.firstOpenedAt) existing.firstOpenedAt = lot.openedAt
         if (lot.openedAt > existing.latestOpenedAt) existing.latestOpenedAt = lot.openedAt
       } else {
-        tokenMap.set(key, { symbol: lot.symbol, chain: lot.chain, openLots: 1, totalAmount: lot.amountRemaining, totalCostBasis: costBasis, firstOpenedAt: lot.openedAt, latestOpenedAt: lot.openedAt })
+        tokenMap.set(key, { contract: key, symbol: lot.symbol, chain: lot.chain, openLots: 1, totalAmount: lot.amountRemaining, totalCostBasis: costBasis, firstOpenedAt: lot.openedAt, latestOpenedAt: lot.openedAt })
       }
     }
-    const tokens = Array.from(tokenMap.entries()).map(([addr, t]) => ({
-      symbol: t.symbol, chain: t.chain, openLots: t.openLots,
+    const tokens = Array.from(tokenMap.values()).map(t => ({
+      contract: t.contract, symbol: t.symbol, chain: t.chain, openLots: t.openLots,
       totalAmount: t.totalAmount,
       avgEntryPriceUsd: t.totalAmount > 0 ? t.totalCostBasis / t.totalAmount : null,
       totalCostBasisUsd: t.totalCostBasis,
@@ -203,12 +203,12 @@ function buildWalletModuleCoverage(snap: any) {
     }
   })() : null
 
-  // Open position performance — match open lots against holdings by exact chain + contract
+  // Open position performance — compute unrealized PnL only when open-lot contract + chain exactly match a priced current holding
   const _snapHoldings: Array<{ contract?: string; symbol?: string; chain?: string | null; price?: number | null; value?: number; balance?: number }> =
     snap.holdings ?? []
   const openPositionPerformanceSummary = walletOpenPositionSummary ? (() => {
     type PerfToken = {
-      symbol: string; chain: string; openLots: number
+      contract: string; symbol: string; chain: string; openLots: number
       amountRemaining: number
       avgEntryPriceUsd: number | null
       currentPriceUsd: number | null
@@ -217,23 +217,13 @@ function buildWalletModuleCoverage(snap: any) {
       unrealizedPnlUsd: number | null
       unrealizedPnlPercent: number | null
     }
-    // Build a symbol+chain → tokenAddress map from _sampleOpenLots for contract-based matching
-    const _lotAddressMap = new Map<string, string>()
-    for (const lot of _sampleOpenLots) {
-      const k = `${(lot.chain ?? '').toLowerCase()}:${lot.symbol.toUpperCase()}`
-      if (!_lotAddressMap.has(k)) _lotAddressMap.set(k, lot.tokenAddress.toLowerCase())
-    }
-
     const perfTokens: PerfToken[] = walletOpenPositionSummary.tokens.map(t => {
-      const lotKey = `${(t.chain ?? '').toLowerCase()}:${t.symbol.toUpperCase()}`
-      const lotAddressKey = _lotAddressMap.get(lotKey) ?? null
+      const tokenContract = t.contract.toLowerCase()
+      const tokenChain = (t.chain ?? '').toLowerCase()
       const matchedHolding = _snapHoldings.find(h => {
-        if (!h) return false
+        if (!h?.contract) return false
         const hChain = (h.chain ?? '').toLowerCase()
-        const tChain = (t.chain ?? '').toLowerCase()
-        if (lotAddressKey && h.contract && h.contract.toLowerCase() === lotAddressKey && hChain === tChain) return true
-        // fallback: same chain + same symbol (only if no contract ambiguity)
-        return hChain === tChain && (h.symbol ?? '').toUpperCase() === t.symbol.toUpperCase()
+        return h.contract.toLowerCase() === tokenContract && hChain === tokenChain
       })
       const currentPriceUsd = matchedHolding?.price ?? null
       const currentValueUsd = currentPriceUsd !== null ? t.totalAmount * currentPriceUsd : null
@@ -241,7 +231,7 @@ function buildWalletModuleCoverage(snap: any) {
       const unrealizedPnlUsd = currentValueUsd !== null ? currentValueUsd - costBasisUsd : null
       const unrealizedPnlPercent = unrealizedPnlUsd !== null && costBasisUsd > 0 ? (unrealizedPnlUsd / costBasisUsd) * 100 : null
       return {
-        symbol: t.symbol, chain: t.chain, openLots: t.openLots,
+        contract: t.contract, symbol: t.symbol, chain: t.chain, openLots: t.openLots,
         amountRemaining: t.totalAmount,
         avgEntryPriceUsd: t.avgEntryPriceUsd,
         currentPriceUsd, currentValueUsd, costBasisUsd,

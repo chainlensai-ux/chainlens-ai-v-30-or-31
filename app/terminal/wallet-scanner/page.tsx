@@ -7,6 +7,7 @@ import { supabase } from '@/lib/supabaseClient'
 // ── Types ────────────────────────────────────────────────────────────────────────────
 
 type Holding = {
+  contract?: string
   name: string
   symbol: string
   icon: string | null
@@ -83,6 +84,35 @@ type WalletIntelligence = {
   recentTrades: WalletRecentTrade[]
   openChecks: string[]
 }
+
+type OpenPositionPerformanceSummary = {
+    status: 'partial'
+    openLots: number
+    uniqueTokens: number
+    totalOpenCostBasisUsd: number | null
+    totalCurrentValueUsd: number | null
+    totalUnrealizedPnlUsd: number | null
+    totalUnrealizedPnlPercent: number | null
+    allTokensMatched: boolean
+    matchedTokenCount: number
+    unmatchedTokenCount: number
+    matchedOpenCostBasisUsd: number | null
+    matchedCurrentOpenValueUsd: number | null
+    matchedUnrealizedPnlUsd: number | null
+    matchedUnrealizedPnlPercent: number | null
+    coverageLabel: 'full' | 'partial' | 'cost_basis_only'
+    unmatchedSymbols: string[]
+    tokens: Array<{
+      contract: string; symbol: string; chain: string; openLots: number
+      amountRemaining: number
+      avgEntryPriceUsd: number | null
+      currentPriceUsd: number | null
+      currentValueUsd: number | null
+      costBasisUsd: number
+      unrealizedPnlUsd: number | null
+      unrealizedPnlPercent: number | null
+    }>
+  } | null
 
 type WalletResult = {
   address: string
@@ -254,48 +284,22 @@ type WalletResult = {
       openLots: number
       uniqueTokens: number
       totalOpenCostBasisUsd: number | null
-      tokens: Array<{ symbol: string; chain: string; openLots: number; totalAmount: number; avgEntryPriceUsd: number | null; totalCostBasisUsd: number; firstOpenedAt: string; latestOpenedAt: string }>
+      tokens: Array<{ contract: string; symbol: string; chain: string; openLots: number; totalAmount: number; avgEntryPriceUsd: number | null; totalCostBasisUsd: number; firstOpenedAt: string; latestOpenedAt: string }>
       missing: string[]
       reason: string
     } | null
+    openPositionPerformanceSummary?: OpenPositionPerformanceSummary
   }
   walletOpenPositionSummary?: {
     status: 'partial' | 'open_check'
     openLots: number
     uniqueTokens: number
     totalOpenCostBasisUsd: number | null
-    tokens: Array<{ symbol: string; chain: string; openLots: number; totalAmount: number; avgEntryPriceUsd: number | null; totalCostBasisUsd: number; firstOpenedAt: string; latestOpenedAt: string }>
+    tokens: Array<{ contract: string; symbol: string; chain: string; openLots: number; totalAmount: number; avgEntryPriceUsd: number | null; totalCostBasisUsd: number; firstOpenedAt: string; latestOpenedAt: string }>
     missing: string[]
     reason: string
   } | null
-  openPositionPerformanceSummary?: {
-    status: 'partial'
-    openLots: number
-    uniqueTokens: number
-    totalOpenCostBasisUsd: number | null
-    totalCurrentValueUsd: number | null
-    totalUnrealizedPnlUsd: number | null
-    totalUnrealizedPnlPercent: number | null
-    allTokensMatched: boolean
-    matchedTokenCount: number
-    unmatchedTokenCount: number
-    matchedOpenCostBasisUsd: number | null
-    matchedCurrentOpenValueUsd: number | null
-    matchedUnrealizedPnlUsd: number | null
-    matchedUnrealizedPnlPercent: number | null
-    coverageLabel: 'full' | 'partial' | 'cost_basis_only'
-    unmatchedSymbols: string[]
-    tokens: Array<{
-      symbol: string; chain: string; openLots: number
-      amountRemaining: number
-      avgEntryPriceUsd: number | null
-      currentPriceUsd: number | null
-      currentValueUsd: number | null
-      costBasisUsd: number
-      unrealizedPnlUsd: number | null
-      unrealizedPnlPercent: number | null
-    }>
-  } | null
+  openPositionPerformanceSummary?: OpenPositionPerformanceSummary
   walletFacts?: {
     status: 'ok' | 'partial' | 'open_check'
     summary: {
@@ -2097,7 +2101,7 @@ export default function WalletScannerPage() {
                           <>
                             {/* Open Position Performance */}
                             {(() => {
-                              const perf = result.openPositionPerformanceSummary
+                              const perf = result.openPositionPerformanceSummary ?? result.walletModuleCoverage?.openPositionPerformanceSummary ?? null
                               const coverage = perf?.coverageLabel ?? 'cost_basis_only'
                               const openLotsCount = result.walletLotSummary?.openedLots ?? openPos?.openLots ?? 0
                               const costBasis = perf?.totalOpenCostBasisUsd ?? openPos?.totalOpenCostBasisUsd ?? null
@@ -2105,8 +2109,8 @@ export default function WalletScannerPage() {
                               const fmtPct2 = (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`
 
                               // Pick display values based on coverage tier
-                              const currentValueLabel = coverage === 'full' ? 'Current Open Value' : coverage === 'partial' ? 'Matched Open Value' : null
-                              const unrealizedLabel = coverage === 'full' ? 'Unrealized Est.' : coverage === 'partial' ? 'Matched Unrealized Est.' : null
+                              const currentValueLabel = coverage === 'full' ? 'Current Open Value' : coverage === 'partial' ? 'Matched Open Value (Partial)' : null
+                              const unrealizedLabel = coverage === 'full' ? 'Open Position PnL' : coverage === 'partial' ? 'Open Position PnL (Partial)' : null
                               const displayCurrentValue = coverage === 'full' ? (perf?.totalCurrentValueUsd ?? null) : coverage === 'partial' ? (perf?.matchedCurrentOpenValueUsd ?? null) : null
                               const displayUnrealizedPnl = coverage === 'full' ? (perf?.totalUnrealizedPnlUsd ?? null) : coverage === 'partial' ? (perf?.matchedUnrealizedPnlUsd ?? null) : null
                               const displayUnrealizedPct = coverage === 'full' ? (perf?.totalUnrealizedPnlPercent ?? null) : coverage === 'partial' ? (perf?.matchedUnrealizedPnlPercent ?? null) : null
@@ -2119,16 +2123,16 @@ export default function WalletScannerPage() {
 
                               const perfTokens = perf?.tokens ?? []
                               const footerNote = coverage === 'full'
-                                ? 'Unrealized estimate based on current holdings price. Not realized PnL — still open.'
+                                ? 'Unrealized. Still open — not banked profit. Not realized PnL.'
                                 : coverage === 'partial'
-                                  ? `Partial coverage — ${perf!.unmatchedSymbols.join(', ')} current value unavailable, excluded from matched unrealized estimate.`
-                                  : 'Current value unavailable for open tokens — showing tracked entry cost only.'
+                                  ? `Partial coverage — Unrealized matched open lots only. ${perf!.unmatchedSymbols.join(', ')} current value unavailable, excluded from Open Position PnL.`
+                                  : 'Current value unavailable for open tokens — showing tracked cost basis only.'
 
                               return (
                                 <div style={{ marginBottom: '14px' }}>
                                   {/* Header row */}
                                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
-                                    <span style={{ fontSize: '10px', fontWeight: 800, letterSpacing: '0.14em', color: '#fbbf24', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Open Position Performance</span>
+                                    <span style={{ fontSize: '10px', fontWeight: 800, letterSpacing: '0.14em', color: '#fbbf24', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Open Position PnL</span>
                                     <span style={{ fontSize: '9px', color: 'rgba(251,191,36,0.55)', border: '1px solid rgba(251,191,36,0.18)', background: 'rgba(251,191,36,0.04)', borderRadius: '999px', padding: '1px 7px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
                                       {openLotsCount} open entr{openLotsCount !== 1 ? 'ies' : 'y'}
                                     </span>
@@ -2172,7 +2176,7 @@ export default function WalletScannerPage() {
                                   )}
                                   {/* Footer note */}
                                   <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.28)', lineHeight: 1.5, fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', background: 'rgba(251,191,36,0.03)', border: '1px solid rgba(251,191,36,0.08)', borderRadius: '7px', padding: '7px 10px' }}>
-                                    {footerNote} Still open — realized stats unlock after sell exits.
+                                    {footerNote} Still open — not banked profit. Realized PnL locked until matched buy → sell closed lots exist.
                                   </div>
                                 </div>
                               )
