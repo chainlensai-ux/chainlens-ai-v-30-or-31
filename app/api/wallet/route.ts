@@ -210,13 +210,38 @@ function buildWalletModuleCoverage(snap: any) {
     })
     const totalCostBasis = perfTokens.reduce((s, t) => s + t.costBasisUsd, 0)
     const matchedTokens = perfTokens.filter(t => t.currentValueUsd !== null)
-    const totalCurrentValueUsd = matchedTokens.length === perfTokens.length
-      ? perfTokens.reduce((s, t) => s + (t.currentValueUsd ?? 0), 0)
+    const unmatchedTokens = perfTokens.filter(t => t.currentValueUsd === null)
+    const matchedTokenCount = matchedTokens.length
+    const unmatchedTokenCount = unmatchedTokens.length
+
+    // Full-coverage totals — only set when every token is matched
+    const totalCurrentValueUsd = matchedTokenCount === perfTokens.length
+      ? matchedTokens.reduce((s, t) => s + (t.currentValueUsd ?? 0), 0)
       : null
     const totalUnrealizedPnlUsd = totalCurrentValueUsd !== null ? totalCurrentValueUsd - totalCostBasis : null
     const totalUnrealizedPnlPercent = totalUnrealizedPnlUsd !== null && totalCostBasis > 0
       ? (totalUnrealizedPnlUsd / totalCostBasis) * 100
       : null
+
+    // Partial-coverage matched-only aggregates
+    const matchedOpenCostBasisUsd = matchedTokens.reduce((s, t) => s + t.costBasisUsd, 0)
+    const matchedCurrentOpenValueUsd = matchedTokenCount > 0
+      ? matchedTokens.reduce((s, t) => s + (t.currentValueUsd ?? 0), 0)
+      : null
+    const matchedUnrealizedPnlUsd = matchedCurrentOpenValueUsd !== null
+      ? matchedCurrentOpenValueUsd - matchedOpenCostBasisUsd
+      : null
+    const matchedUnrealizedPnlPercent = matchedUnrealizedPnlUsd !== null && matchedOpenCostBasisUsd > 0
+      ? (matchedUnrealizedPnlUsd / matchedOpenCostBasisUsd) * 100
+      : null
+
+    const coverageLabel: 'full' | 'partial' | 'cost_basis_only' =
+      matchedTokenCount === perfTokens.length && perfTokens.length > 0 ? 'full'
+      : matchedTokenCount > 0 ? 'partial'
+      : 'cost_basis_only'
+
+    const unmatchedSymbols = unmatchedTokens.map(t => t.symbol)
+
     return {
       status: 'partial' as const,
       openLots: walletOpenPositionSummary.openLots,
@@ -225,7 +250,15 @@ function buildWalletModuleCoverage(snap: any) {
       totalCurrentValueUsd,
       totalUnrealizedPnlUsd,
       totalUnrealizedPnlPercent,
-      allTokensMatched: matchedTokens.length === perfTokens.length,
+      allTokensMatched: matchedTokenCount === perfTokens.length,
+      matchedTokenCount,
+      unmatchedTokenCount,
+      matchedOpenCostBasisUsd: matchedOpenCostBasisUsd > 0 ? matchedOpenCostBasisUsd : null,
+      matchedCurrentOpenValueUsd,
+      matchedUnrealizedPnlUsd,
+      matchedUnrealizedPnlPercent,
+      coverageLabel,
+      unmatchedSymbols,
       tokens: perfTokens,
     }
   })() : null

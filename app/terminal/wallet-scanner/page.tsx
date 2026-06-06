@@ -254,6 +254,14 @@ type WalletResult = {
     totalUnrealizedPnlUsd: number | null
     totalUnrealizedPnlPercent: number | null
     allTokensMatched: boolean
+    matchedTokenCount: number
+    unmatchedTokenCount: number
+    matchedOpenCostBasisUsd: number | null
+    matchedCurrentOpenValueUsd: number | null
+    matchedUnrealizedPnlUsd: number | null
+    matchedUnrealizedPnlPercent: number | null
+    coverageLabel: 'full' | 'partial' | 'cost_basis_only'
+    unmatchedSymbols: string[]
     tokens: Array<{
       symbol: string; chain: string; openLots: number
       amountRemaining: number
@@ -1946,14 +1954,32 @@ export default function WalletScannerPage() {
                             {/* Open Position Performance */}
                             {(() => {
                               const perf = result.openPositionPerformanceSummary
+                              const coverage = perf?.coverageLabel ?? 'cost_basis_only'
                               const openLotsCount = result.walletLotSummary?.openedLots ?? openPos?.openLots ?? 0
                               const costBasis = perf?.totalOpenCostBasisUsd ?? openPos?.totalOpenCostBasisUsd ?? null
-                              const currentValue = perf?.totalCurrentValueUsd ?? null
-                              const unrealizedPnl = perf?.totalUnrealizedPnlUsd ?? null
-                              const unrealizedPct = perf?.totalUnrealizedPnlPercent ?? null
-                              const perfTokens = perf?.tokens ?? openPos?.tokens ?? []
                               const fmtUsd2 = (v: number) => `$${Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
                               const fmtPct2 = (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`
+
+                              // Pick display values based on coverage tier
+                              const currentValueLabel = coverage === 'full' ? 'Current Open Value' : coverage === 'partial' ? 'Matched Open Value' : null
+                              const unrealizedLabel = coverage === 'full' ? 'Unrealized Est.' : coverage === 'partial' ? 'Matched Unrealized Est.' : null
+                              const displayCurrentValue = coverage === 'full' ? (perf?.totalCurrentValueUsd ?? null) : coverage === 'partial' ? (perf?.matchedCurrentOpenValueUsd ?? null) : null
+                              const displayUnrealizedPnl = coverage === 'full' ? (perf?.totalUnrealizedPnlUsd ?? null) : coverage === 'partial' ? (perf?.matchedUnrealizedPnlUsd ?? null) : null
+                              const displayUnrealizedPct = coverage === 'full' ? (perf?.totalUnrealizedPnlPercent ?? null) : coverage === 'partial' ? (perf?.matchedUnrealizedPnlPercent ?? null) : null
+
+                              const summaryCards = [
+                                { label: 'Tracked Entry Cost', value: costBasis != null ? `~${fmtUsd2(costBasis)}` : '—', color: '#e2e8f0', dim: false },
+                                ...(currentValueLabel ? [{ label: currentValueLabel, value: displayCurrentValue != null ? fmtUsd2(displayCurrentValue) : '—', color: '#e2e8f0', dim: displayCurrentValue == null }] : []),
+                                ...(unrealizedLabel ? [{ label: unrealizedLabel, value: displayUnrealizedPnl != null ? `${displayUnrealizedPnl >= 0 ? '+' : '-'}${fmtUsd2(displayUnrealizedPnl)}${displayUnrealizedPct != null ? ` (${fmtPct2(displayUnrealizedPct)})` : ''}` : '—', color: displayUnrealizedPnl == null ? '#94a3b8' : displayUnrealizedPnl >= 0 ? '#4ade80' : '#f87171', dim: displayUnrealizedPnl == null }] : []),
+                              ]
+
+                              const perfTokens = perf?.tokens ?? []
+                              const footerNote = coverage === 'full'
+                                ? 'Unrealized estimate based on current holdings price. Not realized PnL — still open.'
+                                : coverage === 'partial'
+                                  ? `Partial coverage — ${perf!.unmatchedSymbols.join(', ')} current value unavailable, excluded from matched unrealized estimate.`
+                                  : 'Current value unavailable for open tokens — showing tracked entry cost only.'
+
                               return (
                                 <div style={{ marginBottom: '14px' }}>
                                   {/* Header row */}
@@ -1962,14 +1988,13 @@ export default function WalletScannerPage() {
                                     <span style={{ fontSize: '9px', color: 'rgba(251,191,36,0.55)', border: '1px solid rgba(251,191,36,0.18)', background: 'rgba(251,191,36,0.04)', borderRadius: '999px', padding: '1px 7px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
                                       {openLotsCount} open entr{openLotsCount !== 1 ? 'ies' : 'y'}
                                     </span>
+                                    {coverage === 'partial' && (
+                                      <span style={{ fontSize: '9px', color: 'rgba(251,191,36,0.45)', border: '1px solid rgba(251,191,36,0.12)', background: 'rgba(251,191,36,0.03)', borderRadius: '999px', padding: '1px 7px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>partial coverage</span>
+                                    )}
                                   </div>
                                   {/* Summary stat grid */}
-                                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0,1fr))', gap: '8px', marginBottom: '10px' }}>
-                                    {[
-                                      { label: 'Tracked Entry Cost', value: costBasis != null ? `~${fmtUsd2(costBasis)}` : '—', color: '#e2e8f0' },
-                                      { label: 'Current Open Value', value: currentValue != null ? fmtUsd2(currentValue) : '—', color: '#e2e8f0', dim: currentValue == null },
-                                      { label: 'Unrealized Est.', value: unrealizedPnl != null ? `${unrealizedPnl >= 0 ? '+' : '-'}${fmtUsd2(unrealizedPnl)}${unrealizedPct != null ? ` (${fmtPct2(unrealizedPct)})` : ''}` : '—', color: unrealizedPnl == null ? '#94a3b8' : unrealizedPnl >= 0 ? '#4ade80' : '#f87171' },
-                                    ].map(card => (
+                                  <div style={{ display: 'grid', gridTemplateColumns: `repeat(${summaryCards.length}, minmax(0,1fr))`, gap: '8px', marginBottom: '10px' }}>
+                                    {summaryCards.map(card => (
                                       <div key={card.label} style={{ background: 'rgba(251,191,36,0.04)', border: '1px solid rgba(251,191,36,0.12)', borderRadius: '10px', padding: '10px 11px' }}>
                                         <div style={{ fontSize: '8px', color: 'rgba(255,255,255,0.28)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '5px' }}>{card.label}</div>
                                         <div style={{ fontSize: '13px', fontWeight: 800, color: card.dim ? '#94a3b8' : card.color, fontFamily: 'var(--font-inter, Inter, sans-serif)', lineHeight: 1.2 }}>{card.value}</div>
@@ -1980,21 +2005,22 @@ export default function WalletScannerPage() {
                                   {perfTokens.length > 0 && (
                                     <div style={{ display: 'flex', flexDirection: 'column', gap: '5px', marginBottom: '10px' }}>
                                       {perfTokens.map((t, i) => {
-                                        const tPerf = perf?.tokens?.[i]
-                                        const tUnrealized = tPerf?.unrealizedPnlUsd ?? null
-                                        const tUnrealizedPct = tPerf?.unrealizedPnlPercent ?? null
-                                        const tCurrent = tPerf?.currentValueUsd ?? null
+                                        const tUnrealized = t.unrealizedPnlUsd
+                                        const tUnrealizedPct = t.unrealizedPnlPercent
+                                        const tCurrent = t.currentValueUsd
+                                        const isUnmatched = tCurrent == null
                                         return (
-                                          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '8px', padding: '8px 10px' }}>
-                                            <span style={{ fontSize: '12px', fontWeight: 700, color: '#fbbf24', fontFamily: 'var(--font-inter, Inter, sans-serif)', minWidth: '56px' }}>{t.symbol}</span>
-                                            <span style={{ fontSize: '10px', color: 'rgba(255,255,255,0.35)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{(t as any).openLots ?? (t as any).openLots} lot{((t as any).openLots ?? 1) !== 1 ? 's' : ''}</span>
-                                            <span style={{ fontSize: '10px', color: 'rgba(255,255,255,0.35)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>cost {fmtUsd2((t as any).totalCostBasisUsd ?? (t as any).costBasisUsd ?? 0)}</span>
+                                          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', background: isUnmatched ? 'rgba(255,255,255,0.01)' : 'rgba(255,255,255,0.02)', border: `1px solid ${isUnmatched ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.05)'}`, borderRadius: '8px', padding: '8px 10px', opacity: isUnmatched ? 0.6 : 1 }}>
+                                            <span style={{ fontSize: '12px', fontWeight: 700, color: isUnmatched ? '#94a3b8' : '#fbbf24', fontFamily: 'var(--font-inter, Inter, sans-serif)', minWidth: '56px' }}>{t.symbol}</span>
+                                            <span style={{ fontSize: '10px', color: 'rgba(255,255,255,0.35)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{t.openLots} lot{t.openLots !== 1 ? 's' : ''}</span>
+                                            <span style={{ fontSize: '10px', color: 'rgba(255,255,255,0.35)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>cost {fmtUsd2(t.costBasisUsd)}</span>
                                             {tCurrent != null && <span style={{ fontSize: '10px', color: 'rgba(255,255,255,0.45)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>now {fmtUsd2(tCurrent)}</span>}
                                             {tUnrealized != null && (
                                               <span style={{ fontSize: '11px', fontWeight: 700, color: tUnrealized >= 0 ? '#4ade80' : '#f87171', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
                                                 {tUnrealized >= 0 ? '+' : '-'}{fmtUsd2(tUnrealized)}{tUnrealizedPct != null ? ` (${fmtPct2(tUnrealizedPct)})` : ''}
                                               </span>
                                             )}
+                                            {isUnmatched && <span style={{ fontSize: '9px', color: 'rgba(255,255,255,0.25)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>current price unavailable</span>}
                                           </div>
                                         )
                                       })}
@@ -2002,10 +2028,7 @@ export default function WalletScannerPage() {
                                   )}
                                   {/* Footer note */}
                                   <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.28)', lineHeight: 1.5, fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', background: 'rgba(251,191,36,0.03)', border: '1px solid rgba(251,191,36,0.08)', borderRadius: '7px', padding: '7px 10px' }}>
-                                    {currentValue != null
-                                      ? 'Unrealized estimate based on current holdings price. Not realized PnL — still open.'
-                                      : 'Current value unavailable for some tokens — showing tracked entry cost only.'}
-                                    {' '}Still open — realized stats unlock after sell exits.
+                                    {footerNote} Still open — realized stats unlock after sell exits.
                                   </div>
                                 </div>
                               )
