@@ -71,7 +71,7 @@ export default function AffiliatePage() {
       const res = await fetch('/api/affiliate/apply', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...form, promotion_plan: form.promo_plan }),
+        body: JSON.stringify({ ...form, audience_type: form.audience_type, promotion_plan: form.promo_plan }),
       })
       const data = await res.json().catch(() => null)
       if (!res.ok) {
