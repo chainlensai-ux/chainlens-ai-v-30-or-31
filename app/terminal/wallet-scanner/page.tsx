@@ -1492,10 +1492,14 @@ export default function WalletScannerPage() {
                   <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', borderTop: '2px solid rgba(45,212,191,0.55)' }} />
                   {(() => {
                     const ts = result.walletTradeStatsSummary
-                    const closedLots = ts?.closedLots ?? 0
-                    const openedLots = ts?.openedLots ?? result.walletLotSummary?.openedLots ?? 0
+                    const _ls = result.walletLotSummary
+                    // Use walletLotSummary as source of truth for lot counts
+                    const closedLots = _ls?.closedLots ?? ts?.closedLots ?? 0
+                    const openedLots = _ls?.openedLots ?? ts?.openedLots ?? 0
                     const portfolioActive = result.walletModuleCoverage?.portfolio.status === 'ok' || result.totalValue > 0 || result.holdings.length > 0
-                    const hasOpenLots = openedLots > 0 && closedLots === 0
+                    // Priority: closedLots > 0 wins over openedLots > 0
+                    const hasClosedTradeEvidence = closedLots > 0
+                    const hasOpenLots = openedLots > 0 && !hasClosedTradeEvidence
                     const tradeOpenCheck = closedLots === 0
                     const openPos = result.walletModuleCoverage?.walletOpenPositionSummary ?? result.walletOpenPositionSummary ?? null
                     if (portfolioActive && hasOpenLots) {
@@ -1906,9 +1910,13 @@ export default function WalletScannerPage() {
                 const ts = result.walletTradeStatsSummary
                 const ls = result.walletLotSummary
                 if (!ts) return null
-                const isOpenCheck = ts.status === 'open_check' || ts.closedLots === 0
+                // Use walletLotSummary as source of truth; closedLots > 0 wins
+                const _tiClosedLots = ls?.closedLots ?? ts.closedLots ?? 0
+                const _tiOpenedLots = ls?.openedLots ?? ts.openedLots ?? 0
+                const hasClosedTradeEvidence = _tiClosedLots > 0
+                const hasOpenLots = _tiOpenedLots > 0 && !hasClosedTradeEvidence
+                const isOpenCheck = !hasClosedTradeEvidence
                 const openPos = result.walletModuleCoverage?.walletOpenPositionSummary ?? result.walletOpenPositionSummary ?? null
-                const hasOpenLots = (result.walletLotSummary?.openedLots ?? 0) > 0 && ts.closedLots === 0
                 const hasEnough = isTradeStatsGradeable(ts)
                 function fmtHoldTime(seconds: number | null): string {
                   if (seconds === null || !Number.isFinite(seconds)) return '—'
@@ -1926,7 +1934,7 @@ export default function WalletScannerPage() {
                       <span className="ws-section-header" style={{ color: '#e2e8f0' }}>Trading Intelligence</span>
                       <span style={{ fontSize: '9px', fontWeight: 600, color: '#a78bfa', border: '1px solid rgba(139,92,246,0.22)', background: 'rgba(139,92,246,0.06)', borderRadius: '999px', padding: '2px 8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>FIFO lots</span>
                       {/* Trade Evidence State badge */}
-                      {ts.closedLots > 0 ? (
+                      {hasClosedTradeEvidence ? (
                         <span style={{ fontSize: '9px', fontWeight: 700, color: '#4ade80', border: '1px solid rgba(74,222,128,0.22)', background: 'rgba(74,222,128,0.06)', borderRadius: '999px', padding: '2px 8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Closed Trade Evidence</span>
                       ) : hasOpenLots ? (
                         <span style={{ fontSize: '9px', fontWeight: 700, color: '#fbbf24', border: '1px solid rgba(251,191,36,0.22)', background: 'rgba(251,191,36,0.06)', borderRadius: '999px', padding: '2px 8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Open Position Evidence</span>
@@ -1939,13 +1947,13 @@ export default function WalletScannerPage() {
 
                     <div style={{ padding: '20px 24px' }}>
                     {/* Evidence state context block */}
-                    {ts.closedLots > 0 ? (
+                    {hasClosedTradeEvidence ? (
                       <div style={{ fontSize: '12px', color: 'rgba(74,222,128,0.70)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '14px', lineHeight: 1.5, background: 'rgba(74,222,128,0.04)', border: '1px solid rgba(74,222,128,0.10)', borderRadius: '8px', padding: '8px 11px' }}>
-                        CORTEX reconstructed {ts.closedLots} closed buy → sell lot{ts.closedLots !== 1 ? 's' : ''}.
+                        CORTEX reconstructed {_tiClosedLots} closed buy → sell lot{_tiClosedLots !== 1 ? 's' : ''}.
                       </div>
                     ) : hasOpenLots ? (
                       <div style={{ fontSize: '12px', color: 'rgba(251,191,36,0.70)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '14px', lineHeight: 1.5, background: 'rgba(251,191,36,0.04)', border: '1px solid rgba(251,191,36,0.10)', borderRadius: '8px', padding: '8px 11px' }}>
-                        CORTEX found {result.walletLotSummary?.openedLots ?? openPos?.openLots ?? 0} open entr{(result.walletLotSummary?.openedLots ?? 1) !== 1 ? 'ies' : 'y'} but no sell exits yet. Win rate and realized PnL unlock after closed trades.{' '}
+                        CORTEX found {_tiOpenedLots} open entr{_tiOpenedLots !== 1 ? 'ies' : 'y'} but no sell exits yet. Win rate and realized PnL unlock after closed trades.{' '}
                         <span style={{ color: 'rgba(255,255,255,0.35)' }}>Rescan later after exits, or use deeper history when available.</span>
                       </div>
                     ) : (
