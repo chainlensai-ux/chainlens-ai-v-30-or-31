@@ -2004,7 +2004,7 @@ export default function WalletScannerPage() {
                         </div>
                       </div>
                     )}
-                    {result.walletHistoricalCoverage && (
+                    {!result.walletHistoricalScanNote && result.walletHistoricalCoverage && (
                       <div style={{ fontSize: '12px', color: 'rgba(148,163,184,0.84)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '12px', lineHeight: 1.55, background: 'rgba(148,163,184,0.045)', border: '1px solid rgba(148,163,184,0.16)', borderRadius: '10px', padding: '10px 13px' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'center', marginBottom: '6px' }}>
                           <div style={{ fontWeight: 800, fontSize: '11px', letterSpacing: '0.08em', textTransform: 'uppercase', color: 'rgba(226,232,240,0.92)' }}>Historical Coverage</div>
