@@ -5979,7 +5979,16 @@ async function buildBaseUnknownDirectionSwapReconstructionPass(
       // Provider confirmed token buy in this tx even if no WETH/stable in wallet-side logs
       swapReason = 'provider_confirmed_buy_no_erc20_outbound'
     } else if (hasInboundToken && hasOutboundToken) {
-      swapReason = 'token_to_token_swap'
+      // Reject same-token round-trips (e.g. FIRE self-routing: same contract in and out)
+      const inboundTokenContracts = new Set(d.walletInbound.filter(i => !STABLE_USD_CONTRACTS[i.contract] && !WETH_CONTRACTS_PRICE[i.contract]).map(i => i.contract))
+      const outboundTokenContracts = new Set(d.walletOutbound.filter(o => !STABLE_USD_CONTRACTS[o.contract] && !WETH_CONTRACTS_PRICE[o.contract]).map(o => o.contract))
+      const distinctIn = [...inboundTokenContracts].filter(c => !outboundTokenContracts.has(c))
+      const distinctOut = [...outboundTokenContracts].filter(c => !inboundTokenContracts.has(c))
+      if (distinctIn.length > 0 || distinctOut.length > 0) {
+        swapReason = 'token_to_token_swap'
+      } else {
+        skippedReasons.push(`same_token_roundtrip(${txHash.slice(0, 10)})`)
+      }
     } else if (rawHasQuote && rawHasNonQuote && receiptHasQuote && (receiptHasRawNonQuote || rawAllUnknown)) {
       // Raw normalized evidence/receipt both show quote + token in the same Base tx, even if all provider directions are unknown.
       swapReason = rawAllUnknown ? 'raw_all_unknown_quote_token_receipt_confirmed' : 'raw_quote_token_receipt_confirmed'
@@ -7205,7 +7214,9 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     tokenMeter.measure('swapDetection', unknownReconResult)
     if (unknownReconResult.debug.syntheticSwapEventsAdded > 0) {
       evidenceList = unknownReconResult.enrichedEvidence
-      ;({ evidenceWithDetection: _swapEvidenceWithDetection, summary: walletSwapSummary, debug: _swapDetectionDebug } = buildSwapDetection(evidenceList, activityRequested, addrNorm))
+      _swapEvidenceWithDetection = unknownReconResult.enrichedEvidence
+      const reconSwapCount = _swapEvidenceWithDetection.filter(e => e.swapDetection?.isSwapCandidate).length
+      walletSwapSummary = { ...walletSwapSummary, swapCandidateEvents: reconSwapCount, readyForPriceAtTime: reconSwapCount > 0 }
       tokenMeter.measure('swapDetection', _swapEvidenceWithDetection, walletSwapSummary)
       for (let _ri = 0; _ri < unknownReconResult.debug.receiptsFetched; _ri++) {
         const _rk = `alchemy:unknownrecon:receipt:${_ri}:${addrNorm}`
