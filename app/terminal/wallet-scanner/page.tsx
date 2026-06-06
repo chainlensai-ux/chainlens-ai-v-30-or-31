@@ -330,6 +330,7 @@ type WalletResult = {
     }
   }
   walletActivityCoverageNote?: string | null
+  walletPnlOutlierNote?: string | null
   _debug?: {
     basePnlReconstructionDebug?: {
       sampleUnpricedAfterReceipt?: Array<{ txHash: string; symbol: string; finalReason: string }>
@@ -1967,6 +1968,15 @@ export default function WalletScannerPage() {
                     {result.walletActivityCoverageNote && (
                       <div style={{ fontSize: '11px', color: 'rgba(251,191,36,0.65)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '10px', lineHeight: 1.55, background: 'rgba(251,191,36,0.03)', border: '1px solid rgba(251,191,36,0.10)', borderRadius: '8px', padding: '7px 11px' }}>
                         <span style={{ fontWeight: 700, color: 'rgba(251,191,36,0.80)' }}>Partial chain coverage:</span>{' '}{result.walletActivityCoverageNote}
+                      </div>
+                    )}
+                    {result.walletPnlOutlierNote && (
+                      <div style={{ fontSize: '12px', color: 'rgba(148,163,184,0.80)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '12px', lineHeight: 1.55, background: 'rgba(148,163,184,0.05)', border: '1px solid rgba(148,163,184,0.18)', borderRadius: '10px', padding: '10px 13px' }}>
+                        <div style={{ fontWeight: 700, fontSize: '11px', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: '5px', color: 'rgba(148,163,184,0.90)' }}>Pricing outliers excluded</div>
+                        <div style={{ fontSize: '11px', color: 'rgba(148,163,184,0.65)' }}>
+                          CORTEX excluded abnormal trade lots so wallet stats are not inflated by bad pricing or decimal evidence.{' '}
+                          {result.walletPnlOutlierNote}
+                        </div>
                       </div>
                     )}
                     {!isOpenCheck && isBreakEvenOnly && (ls?.unmatchedSells ?? 0) > 0 && (

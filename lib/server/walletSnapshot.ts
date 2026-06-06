@@ -466,6 +466,7 @@ export type WalletSnapshot = {
   walletScanCostMode?: 'basic' | 'basic_cached' | 'deep_cached' | 'deep_live' | 'historical_cached' | 'historical_live' | 'blocked_by_cooldown' | 'blocked_by_cost_guard'
   walletScanCacheNote?: string
   walletActivityCoverageNote?: string | null
+  walletPnlOutlierNote?: string | null
   walletFacts?: WalletFacts
   _debug?: {
     walletFactsShapeIssues?: string[]
@@ -749,6 +750,18 @@ export type WalletSnapshot = {
       sampleSellEvents: Array<{ tokenAddress: string; symbol: string; chain: string; amount: number; priceUsd: number }>
       sampleUnmatchedReasons: string[]
       reasons: string[]
+    }
+    walletPnlOutlierDebug?: {
+      attempted: boolean
+      closedLotsBefore: number
+      closedLotsAfter: number
+      quarantinedLots: number
+      quarantineReasons: string[]
+      sampleQuarantinedLots: Array<{ symbol: string; realizedPnlUsd: number; realizedPnlPercent: number | null; reason: string }>
+      maxReturnSeen: number | null
+      maxPnlSeen: number | null
+      scoreBlockedByOutliers: boolean
+      publicStatsBlockedByOutliers: boolean
     }
     walletTradeStatsDebug?: {
       closedLots: number
@@ -4043,12 +4056,86 @@ function numMedian(nums: number[]): number | null {
   return s.length % 2 === 0 ? (s[m - 1] + s[m]) / 2 : s[m]
 }
 
+// ── PnL outlier quarantine ────────────────────────────────────────────────────
+// Removes lots whose pricing is implausible before they reach trade-stats logic.
+// Returns clean lots, quarantined lots, and reasons for audit.
+function quarantinePnlOutliers(
+  lots: WalletClosedLot[],
+  walletTotalValueUsd: number | null,
+): {
+  cleanLots: WalletClosedLot[]
+  quarantinedLots: WalletClosedLot[]
+  quarantineReasons: string[]
+  sampleQuarantinedLots: Array<{ symbol: string; realizedPnlUsd: number; realizedPnlPercent: number | null; reason: string }>
+  maxReturnSeen: number | null
+  maxPnlSeen: number | null
+  publicStatsBlockedByOutliers: boolean
+  scoreBlockedByOutliers: boolean
+} {
+  const MAX_RETURN_PCT = 10_000      // 100x = 10,000%
+  const MAX_PRICE_RATIO = 500        // exit/entry or entry/exit
+  // Large-PnL gate: block if |pnl| > max(walletValue * 100, $5M) per lot
+  const PNL_USD_HARD_CAP = 5_000_000
+  const walletValueCap = walletTotalValueUsd !== null && walletTotalValueUsd > 0
+    ? walletTotalValueUsd * 100
+    : PNL_USD_HARD_CAP
+
+  const cleanLots: WalletClosedLot[] = []
+  const quarantinedLots: WalletClosedLot[] = []
+  const reasons: string[] = []
+  const sampleQ: Array<{ symbol: string; realizedPnlUsd: number; realizedPnlPercent: number | null; reason: string }> = []
+
+  let maxReturnSeen: number | null = null
+  let maxPnlSeen: number | null = null
+
+  for (const lot of lots) {
+    const pnlAbs = Math.abs(lot.realizedPnlUsd)
+    const retAbs = lot.realizedPnlPercent !== null ? Math.abs(lot.realizedPnlPercent) : null
+
+    if (maxPnlSeen === null || pnlAbs > maxPnlSeen) maxPnlSeen = pnlAbs
+    if (retAbs !== null && (maxReturnSeen === null || retAbs > maxReturnSeen)) maxReturnSeen = retAbs
+
+    let reason: string | null = null
+
+    if (lot.costBasisUsd <= 0)      reason = 'cost_basis_lte_zero'
+    else if (lot.proceedsUsd <= 0)  reason = 'proceeds_lte_zero'
+    else if (lot.entryPriceUsd <= 0) reason = 'entry_price_lte_zero'
+    else if (lot.exitPriceUsd <= 0)  reason = 'exit_price_lte_zero'
+    else if (lot.amountClosed <= 0)  reason = 'amount_closed_lte_zero'
+    else if (retAbs !== null && retAbs > MAX_RETURN_PCT) reason = `return_pct_${Math.round(retAbs)}_exceeds_${MAX_RETURN_PCT}`
+    else if (lot.exitPriceUsd / lot.entryPriceUsd > MAX_PRICE_RATIO) reason = `exit_entry_ratio_${(lot.exitPriceUsd / lot.entryPriceUsd).toFixed(0)}x_exceeds_${MAX_PRICE_RATIO}x`
+    else if (lot.entryPriceUsd / lot.exitPriceUsd > MAX_PRICE_RATIO) reason = `entry_exit_ratio_${(lot.entryPriceUsd / lot.exitPriceUsd).toFixed(0)}x_exceeds_${MAX_PRICE_RATIO}x`
+    else if (pnlAbs > Math.min(walletValueCap, PNL_USD_HARD_CAP)) reason = `pnl_usd_${Math.round(pnlAbs)}_exceeds_cap`
+
+    if (reason) {
+      quarantinedLots.push(lot)
+      reasons.push(reason)
+      if (sampleQ.length < 10) {
+        sampleQ.push({ symbol: lot.tokenSymbol ?? lot.tokenAddress.slice(0, 8), realizedPnlUsd: lot.realizedPnlUsd, realizedPnlPercent: lot.realizedPnlPercent, reason })
+      }
+    } else {
+      cleanLots.push(lot)
+    }
+  }
+
+  // Block public stats if > 50% of lots quarantined (or at least 5 quarantined for small wallets)
+  const quarantineFraction = lots.length > 0 ? quarantinedLots.length / lots.length : 0
+  const publicStatsBlockedByOutliers = quarantinedLots.length >= 5 || quarantineFraction >= 0.5
+  // Block score if any quarantined lots touched aggregate stats
+  const scoreBlockedByOutliers = quarantinedLots.length > 0
+
+  return { cleanLots, quarantinedLots, quarantineReasons: [...new Set(reasons)], sampleQuarantinedLots: sampleQ, maxReturnSeen, maxPnlSeen, publicStatsBlockedByOutliers, scoreBlockedByOutliers }
+}
+
 function buildTradeStatsSummary(
   closedLots: WalletClosedLot[],
-  activityRequested: boolean
+  activityRequested: boolean,
+  walletTotalValueUsd?: number | null,
 ): {
   summary: WalletSnapshot['walletTradeStatsSummary']
   debug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['walletTradeStatsDebug']>
+  outlierDebug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['walletPnlOutlierDebug']>
+  outlierNote: string | null
 } {
   const WIN_RATE_THRESHOLD = 10
   const BREAK_EVEN_EPSILON = 0.01
@@ -4086,30 +4173,63 @@ function buildTradeStatsSummary(
         economicallyMeaningful: false, reason: 'no_closed_lots',
       },
     },
+    outlierDebug: {
+      attempted: false, closedLotsBefore: 0, closedLotsAfter: 0, quarantinedLots: 0,
+      quarantineReasons: [], sampleQuarantinedLots: [], maxReturnSeen: null, maxPnlSeen: null,
+      scoreBlockedByOutliers: false, publicStatsBlockedByOutliers: false,
+    },
+    outlierNote: null,
   })
 
   if (!activityRequested) return emptyResult(['activity_not_requested'])
   if (closedLots.length === 0) return emptyResult(['no_closed_lots'])
 
-  const n = closedLots.length
+  // ── Outlier quarantine ──
+  const _oq = quarantinePnlOutliers(closedLots, walletTotalValueUsd ?? null)
+  const _outlierDebug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['walletPnlOutlierDebug']> = {
+    attempted: true,
+    closedLotsBefore: closedLots.length,
+    closedLotsAfter: _oq.cleanLots.length,
+    quarantinedLots: _oq.quarantinedLots.length,
+    quarantineReasons: _oq.quarantineReasons,
+    sampleQuarantinedLots: _oq.sampleQuarantinedLots,
+    maxReturnSeen: _oq.maxReturnSeen,
+    maxPnlSeen: _oq.maxPnlSeen,
+    scoreBlockedByOutliers: _oq.scoreBlockedByOutliers,
+    publicStatsBlockedByOutliers: _oq.publicStatsBlockedByOutliers,
+  }
+  const _outlierNote: string | null = _oq.quarantinedLots.length > 0
+    ? `CORTEX excluded ${_oq.quarantinedLots.length} trade lot${_oq.quarantinedLots.length !== 1 ? 's' : ''} because their pricing looked abnormal. Remaining stats reflect ${_oq.cleanLots.length} verified lot${_oq.cleanLots.length !== 1 ? 's' : ''}.`
+    : null
+
+  // If ALL lots are quarantined, return open_check with outlier info
+  if (_oq.cleanLots.length === 0) {
+    const r = emptyResult(['all_lots_quarantined_as_outliers'])
+    return { ...r, outlierDebug: _outlierDebug, outlierNote: _outlierNote }
+  }
+
+  // Use only clean lots from here on
+  const allLots = _oq.cleanLots
+
+  const n = allLots.length
 
   // ── Per-lot classification ──
-  const winning = closedLots.filter(l => l.realizedPnlUsd > BREAK_EVEN_EPSILON)
-  const losing  = closedLots.filter(l => l.realizedPnlUsd < -BREAK_EVEN_EPSILON)
-  const breakEven = closedLots.filter(l => Math.abs(l.realizedPnlUsd) <= BREAK_EVEN_EPSILON)
-  const uniqueTokensTraded = new Set(closedLots.map(l => `${l.chain}:${l.tokenAddress}`)).size
+  const winning = allLots.filter(l => l.realizedPnlUsd > BREAK_EVEN_EPSILON)
+  const losing  = allLots.filter(l => l.realizedPnlUsd < -BREAK_EVEN_EPSILON)
+  const breakEven = allLots.filter(l => Math.abs(l.realizedPnlUsd) <= BREAK_EVEN_EPSILON)
+  const uniqueTokensTraded = new Set(allLots.map(l => `${l.chain}:${l.tokenAddress}`)).size
 
   // ── Aggregates ──
-  const totalRealizedPnl = closedLots.reduce((s, l) => s + l.realizedPnlUsd, 0)
-  const totalCostBasis = closedLots.reduce((s, l) => s + l.costBasisUsd, 0)
+  const totalRealizedPnl = allLots.reduce((s, l) => s + l.realizedPnlUsd, 0)
+  const totalCostBasis = allLots.reduce((s, l) => s + l.costBasisUsd, 0)
   const realizedPnlPercent = totalCostBasis > 0 ? (totalRealizedPnl / totalCostBasis) * 100 : null
   const avgCostBasisPerClosedLot = n > 0 ? totalCostBasis / n : null
 
   // ── Economic significance ──
   // Lots with costBasis >= DUST_LOT_THRESHOLD are considered meaningful.
   // Status/confidence/winRate/score are gated on BOTH count AND economic significance.
-  const meaningfulLots = closedLots.filter(l => l.costBasisUsd >= DUST_LOT_THRESHOLD)
-  const dustLots = closedLots.filter(l => l.costBasisUsd < DUST_LOT_THRESHOLD)
+  const meaningfulLots = allLots.filter(l => l.costBasisUsd >= DUST_LOT_THRESHOLD)
+  const dustLots = allLots.filter(l => l.costBasisUsd < DUST_LOT_THRESHOLD)
   const meaningfulClosedLots = meaningfulLots.length
   const dustClosedLots = dustLots.length
   const meaningfulCostBasisUsd = meaningfulLots.reduce((s, l) => s + l.costBasisUsd, 0)
@@ -4178,11 +4298,11 @@ function buildTradeStatsSummary(
   const rawStatsAvailable = n >= 1
 
   const avgPnlUsdPerClosedLot = totalRealizedPnl / n
-  const returnPcts = closedLots.map(l => l.realizedPnlPercent).filter((v): v is number => v !== null)
+  const returnPcts = allLots.map(l => l.realizedPnlPercent).filter((v): v is number => v !== null)
   const avgReturnPercentPerClosedLot = returnPcts.length > 0 ? returnPcts.reduce((s, v) => s + v, 0) / returnPcts.length : null
   const medianReturnPercentPerClosedLot = numMedian(returnPcts)
 
-  const holdingTimes = closedLots.map(l => l.holdingTimeSeconds).filter((v): v is number => v !== null)
+  const holdingTimes = allLots.map(l => l.holdingTimeSeconds).filter((v): v is number => v !== null)
   const avgHoldingTimeSeconds = holdingTimes.length > 0 ? holdingTimes.reduce((s, v) => s + v, 0) / holdingTimes.length : null
   const medianHoldingTimeSeconds = numMedian(holdingTimes)
 
@@ -4241,6 +4361,8 @@ function buildTradeStatsSummary(
         avgCostBasisPerClosedLot, economicallyMeaningful, reason: economicSignificanceReason,
       },
     },
+    outlierDebug: _outlierDebug,
+    outlierNote: _outlierNote,
   }
 }
 
@@ -7791,9 +7913,11 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
 
   tokenMeter.startTokenMeter('tradeStats')
   tokenMeter.measure('tradeStats', _closedLots)
-  const tradeStatsResult = buildTradeStatsSummary(_closedLots, activityRequested)
+  const tradeStatsResult = buildTradeStatsSummary(_closedLots, activityRequested, totalValue)
   let walletTradeStatsSummary = tradeStatsResult.summary
   let _tradeStatsDebug = tradeStatsResult.debug
+  let _outlierDebug = tradeStatsResult.outlierDebug
+  let _outlierNote: string | null = tradeStatsResult.outlierNote
   if (walletLotSummary.missing.includes('swap_candidates_unpriced_no_fifo') && walletTradeStatsSummary.closedLots === 0) {
     walletTradeStatsSummary = { ...walletTradeStatsSummary, missing: [...walletTradeStatsSummary.missing, 'swap_candidates_unpriced_no_closed_lots'] }
   }
@@ -7921,9 +8045,11 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         walletLotSummary = { ...walletLotSummary, missing: [...walletLotSummary.missing, 'swap_candidates_unpriced_no_fifo'] }
       }
       tokenMeter.measure('fifoEngine', _pricedEvidence, walletLotSummary, _lotEngineDebug, _closedLots)
-      const tradeStatsPageResult = buildTradeStatsSummary(_closedLots, activityRequested)
+      const tradeStatsPageResult = buildTradeStatsSummary(_closedLots, activityRequested, totalValue)
       walletTradeStatsSummary = tradeStatsPageResult.summary
       _tradeStatsDebug = tradeStatsPageResult.debug
+      _outlierDebug = tradeStatsPageResult.outlierDebug
+      _outlierNote = tradeStatsPageResult.outlierNote
       if (walletLotSummary.missing.includes('swap_candidates_unpriced_no_fifo') && walletTradeStatsSummary.closedLots === 0) {
         walletTradeStatsSummary = { ...walletTradeStatsSummary, missing: [...walletTradeStatsSummary.missing, 'swap_candidates_unpriced_no_closed_lots'] }
       }
@@ -8085,9 +8211,11 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         walletLotSummary = { ...walletLotSummary, missing: [...walletLotSummary.missing, 'swap_candidates_unpriced_no_fifo'] }
       }
       tokenMeter.measure('fifoEngine', walletLotSummary, _lotEngineDebug)
-      const bfcStats = buildTradeStatsSummary(_closedLots, activityRequested)
+      const bfcStats = buildTradeStatsSummary(_closedLots, activityRequested, totalValue)
       walletTradeStatsSummary = bfcStats.summary
       _tradeStatsDebug = bfcStats.debug
+      _outlierDebug = bfcStats.outlierDebug
+      _outlierNote = bfcStats.outlierNote
       if (walletLotSummary.missing.includes('swap_candidates_unpriced_no_fifo') && walletTradeStatsSummary.closedLots === 0) {
         walletTradeStatsSummary = { ...walletTradeStatsSummary, missing: [...walletTradeStatsSummary.missing, 'swap_candidates_unpriced_no_closed_lots'] }
       }
@@ -8209,9 +8337,11 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         _lotEngineDebug = _suppRerunFifo.debug
         _closedLots = _suppRerunFifo.closedLots
         // Rebuild trade stats from the updated _closedLots — previous build used pre-supplemental lots
-        const _suppTradeStats = buildTradeStatsSummary(_closedLots, activityRequested)
+        const _suppTradeStats = buildTradeStatsSummary(_closedLots, activityRequested, totalValue)
         walletTradeStatsSummary = _suppTradeStats.summary
         _tradeStatsDebug = _suppTradeStats.debug
+        _outlierDebug = _suppTradeStats.outlierDebug
+        _outlierNote = _suppTradeStats.outlierNote
         if (walletLotSummary.missing.includes('swap_candidates_unpriced_no_fifo') && walletTradeStatsSummary.closedLots === 0) {
           walletTradeStatsSummary = { ...walletTradeStatsSummary, missing: [...walletTradeStatsSummary.missing, 'swap_candidates_unpriced_no_closed_lots'] }
         }
@@ -8387,9 +8517,11 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     walletLotSummary = _reconFifoResult.summary
     _lotEngineDebug = _reconFifoResult.debug
     _closedLots = _reconFifoResult.closedLots
-    const _reconTradeStats = buildTradeStatsSummary(_closedLots, activityRequested)
+    const _reconTradeStats = buildTradeStatsSummary(_closedLots, activityRequested, totalValue)
     walletTradeStatsSummary = _reconTradeStats.summary
     _tradeStatsDebug = _reconTradeStats.debug
+    _outlierDebug = _reconTradeStats.outlierDebug
+    _outlierNote = _reconTradeStats.outlierNote
     _pricedEvidence = _reconFifoEvidence
     _finalSummarySourceDebug = {
       swapSummarySource: 'base_unknown_reconstruction',
@@ -8903,6 +9035,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       walletPriceAtTimeDebug: _priceAtTimeDebug,
       unmatchedSellBackfillDebug: _unmatchedSellBackfillDebug,
       walletLotEngineDebug: _lotEngineDebug,
+      walletPnlOutlierDebug: _outlierDebug,
       walletTradeStatsDebug: _tradeStatsDebug,
       walletHistoricalCoverageDebug: _historicalCoverageDebug,
       walletHistoricalCandidateDebug: _historicalCandidateDebug,
@@ -8987,6 +9120,9 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       snapshot.walletActivityCoverageNote = `Trading evidence covers ${_scannedStr} activity. ${_skippedNames.join(', ')} activity was detected but not included in this scan — trade stats may be incomplete.`
     }
   }
+
+  // Outlier note: surface if any lots were quarantined
+  if (_outlierNote) snapshot.walletPnlOutlierNote = _outlierNote
 
   // Requirement 8: validate audit before returning — if unhealthy, surface warnings prominently
   if (_apiAudit.warnings.length > 0 && snapshot._diagnostics?.apiAudit) {
