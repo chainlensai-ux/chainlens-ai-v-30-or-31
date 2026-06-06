@@ -788,6 +788,7 @@ export async function POST(req: Request) {
       const _priceDbgForSlim = snapshot._diagnostics?.walletPriceAtTimeDebug ?? null
       const _slimDiag: Record<string, unknown> = {
         walletPriceAtTimeDebug: _priceDbgForSlim,
+        walletPriceBudgetDebug: snapshot._diagnostics?.walletPriceBudgetDebug ?? null,
         unmatchedSellBackfillDebug: snapshot._diagnostics?.unmatchedSellBackfillDebug ?? null,
         ethSwapReconstructionDebug: snapshot._diagnostics?.ethSwapReconstructionDebug ?? null,
         basePnlReconstructionDebug: snapshot._diagnostics?.basePnlReconstructionDebug ?? null,
@@ -1038,6 +1039,9 @@ export async function POST(req: Request) {
           const totalCu = calls.reduce((s, c) => s + (c.estimatedCreditUnits ?? 0), 0)
           const liveCalls = inFlightDeduped ? 0 : calls.filter(c => c.attempted && !c.cacheHit).length
           const cachedCalls = calls.filter(c => c.cacheHit).length
+          const _budgetDbgForCost = snapshot._diagnostics?.walletPriceBudgetDebug ?? null
+          const _priceAttemptsUsed = _budgetDbgForCost?.finalPriceAttempts ?? snapshot._diagnostics?.walletPriceAtTimeDebug?.priceAttempts ?? 0
+          const _priceAttemptsPlanned = _budgetDbgForCost?.maxBudget ?? 12
           return {
             scanId: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
             address: key,
@@ -1071,6 +1075,11 @@ export async function POST(req: Request) {
             cacheHit: false,
             inFlightDeduped,
             providerCalls: calls,
+            priceAttemptsPlanned: _priceAttemptsPlanned,
+            priceAttemptsUsed: _priceAttemptsUsed,
+            priceAttemptsSavedByBudget: Math.max(0, _priceAttemptsPlanned - _priceAttemptsUsed),
+            priceBudgetExpanded: (_budgetDbgForCost?.expansionEligible) ?? false,
+            priceBudgetExpansionReason: (_budgetDbgForCost?.expansionReason) ?? null,
             totals: {
               liveProviderCalls: liveCalls,
               cachedProviderCalls: cachedCalls,

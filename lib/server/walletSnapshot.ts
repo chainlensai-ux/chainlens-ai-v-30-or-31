@@ -467,6 +467,7 @@ export type WalletSnapshot = {
   walletScanCacheNote?: string
   walletActivityCoverageNote?: string | null
   walletPnlOutlierNote?: string | null
+  walletPricingCoverageNote?: string | null
   walletFacts?: WalletFacts
   _debug?: {
     walletFactsShapeIssues?: string[]
@@ -719,6 +720,17 @@ export type WalletSnapshot = {
         finalReason: string
       }>
       reasons: string[]
+    }
+    walletPriceBudgetDebug?: {
+      baseBudget: number; expandedBudget: number; maxBudget: number
+      initialCandidates: number; prioritizedCandidates: number
+      pass1Attempts: number; pass1PricedEvents: number; pass1ClosedLots: number
+      expansionEligible: boolean; expansionReason: string | null
+      pass2Attempts: number; pass2PricedEvents: number
+      finalPriceAttempts: number; finalPricedEvents: number; finalClosedLots: number
+      budgetCapHit: boolean; skippedBecauseEnoughEvidence: boolean
+      skippedBecauseDailyCap: boolean; estimatedExtraCredits: number
+      samplePrioritizedCandidates: Array<{ symbol: string | null; priority: number; hasStableLeg: boolean; hasWethLeg: boolean; usdValue: number | null }>
     }
     unmatchedSellBackfillDebug?: UnmatchedSellBackfillDebug
     walletLotEngineDebug?: {
@@ -4646,13 +4658,31 @@ async function buildPriceAtTimeEvidence(
   evidenceWithDetection: WalletTxEvidence[],
   activityRequested: boolean,
   reqCache?: Map<string, number | null>,
-  priceByContract?: Map<string, number>
+  priceByContract?: Map<string, number>,
+  totalValueUsd?: number | null
 ): Promise<{
   evidenceWithPricing: WalletTxEvidence[]
   summary: WalletSnapshot['walletPriceEvidenceSummary']
   debug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['walletPriceAtTimeDebug']>
+  budgetDebug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['walletPriceBudgetDebug']>
 }> {
-  const MAX_PRICE_ATTEMPTS = 6  // hard cap: max 6 live GoldRush pricing calls per scan
+  // Dynamic budget tiers — configurable via env vars; hard normal-scan cap at 12 credits
+  const BASE_BUDGET     = Math.max(1, parseInt(process.env.CHAINLENS_WALLET_PRICE_ATTEMPT_BASE     ?? '6',  10) || 6)
+  const EXPANDED_BUDGET = Math.max(BASE_BUDGET + 1, parseInt(process.env.CHAINLENS_WALLET_PRICE_ATTEMPT_EXPANDED ?? '10', 10) || 10)
+  const MAX_BUDGET      = Math.max(EXPANDED_BUDGET + 1, parseInt(process.env.CHAINLENS_WALLET_PRICE_ATTEMPT_MAX  ?? '12', 10) || 12)
+  let activeBudget = BASE_BUDGET  // raised between passes when expansion criteria met
+
+  const _emptyBudgetDebug = (): NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['walletPriceBudgetDebug']> => ({
+    baseBudget: BASE_BUDGET, expandedBudget: EXPANDED_BUDGET, maxBudget: MAX_BUDGET,
+    initialCandidates: 0, prioritizedCandidates: 0,
+    pass1Attempts: 0, pass1PricedEvents: 0, pass1ClosedLots: 0,
+    expansionEligible: false, expansionReason: null,
+    pass2Attempts: 0, pass2PricedEvents: 0,
+    finalPriceAttempts: 0, finalPricedEvents: 0, finalClosedLots: 0,
+    budgetCapHit: false, skippedBecauseEnoughEvidence: false,
+    skippedBecauseDailyCap: false, estimatedExtraCredits: 0,
+    samplePrioritizedCandidates: [],
+  })
 
   const emptyResult = (missing: string[]) => ({
     evidenceWithPricing: evidenceWithDetection,
@@ -4677,6 +4707,7 @@ async function buildPriceAtTimeEvidence(
       cacheHits: 0, cacheMisses: 0, providerAttempts: 0, providerErrors: 0,
       samplePricedEvents: [], sampleOpenCheckEvents: [], sampleUnpricedReasons: [], reasons: missing,
     },
+    budgetDebug: _emptyBudgetDebug(),
   })
 
   if (!activityRequested) return emptyResult(['activity_not_requested'])
@@ -4688,6 +4719,32 @@ async function buildPriceAtTimeEvidence(
   const allByTx = new Map<string, WalletTxEvidence[]>()
   for (const e of evidenceWithDetection) {
     if (e.txHash) allByTx.set(e.txHash, [...(allByTx.get(e.txHash) ?? []), e])
+  }
+
+  // Priority scorer: lower tier = processed first (cheap/reliable candidates first)
+  // Tier 0: stablecoin (free, exact)
+  // Tier 1: has stable quote leg in same tx (free, derived)
+  // Tier 2: has WETH quote leg in same tx (1 credit, reliable)
+  // Tier 3: has provider USD value (free, medium confidence)
+  // Tier 4: currently held token — buy direction (free, open-lot only)
+  // Tier 5: other (direct historical lookup, 1 credit, may fail)
+  const getCandidatePriority = (e: WalletTxEvidence): [number, number] => {
+    const cl = (e.contract ?? '').toLowerCase()
+    if (Boolean(STABLE_USD_CONTRACTS[cl])) return [0, 0]
+    const txGroup = allByTx.get(e.txHash) ?? []
+    const hasStableLeg = txGroup.some(ev => {
+      const c = (ev.contract ?? '').toLowerCase()
+      return Boolean(STABLE_USD_CONTRACTS[c]) && ev.direction !== 'unknown' && ev.direction !== e.direction
+    })
+    if (hasStableLeg) return [1, -(e.usdValue ?? 0)]
+    const hasWethLeg = txGroup.some(ev => {
+      const c = (ev.contract ?? '').toLowerCase()
+      return Boolean(WETH_CONTRACTS_PRICE[c]) && ev.direction !== 'unknown' && ev.direction !== e.direction
+    })
+    if (hasWethLeg) return [2, -(e.usdValue ?? 0)]
+    if ((e.usdValue ?? 0) > 0) return [3, -(e.usdValue ?? 0)]
+    if (priceByContract?.has(cl)) return [4, 0]
+    return [5, -(e.usdValue ?? 0)]
   }
 
   let priceAttempts = 0
@@ -4745,32 +4802,34 @@ async function buildPriceAtTimeEvidence(
     return ev
   }
 
-  const evidenceWithPricing: WalletTxEvidence[] = []
+  // ── Candidate sorting: separate swap candidates, sort by pricing priority ──────────────────
+  const _indexedCandidates = evidenceWithDetection
+    .map((e, i) => ({ e, i }))
+    .filter(({ e }) => e.swapDetection?.isSwapCandidate)
 
-  for (const e of evidenceWithDetection) {
-    // Only price swap candidates
-    if (!e.swapDetection?.isSwapCandidate) { evidenceWithPricing.push(e); continue }
+  const _sortedCandidates = [..._indexedCandidates].sort((a, b) => {
+    const [pa, sa] = getCandidatePriority(a.e)
+    const [pb, sb] = getCandidatePriority(b.e)
+    return pa !== pb ? pa - pb : sa - sb  // by tier, then by USD value desc
+  })
 
-    if (!e.timestamp) { skippedNoTimestamp++; evidenceWithPricing.push(openCheck(e, 'No timestamp available')); continue }
-    if (!e.contract || !e.contract.startsWith('0x')) { skippedNoTokenAddress++; evidenceWithPricing.push(openCheck(e, 'Missing token contract address')); continue }
+  // Per-candidate pricing logic (extracted from the original flat loop)
+  async function _priceOneCandidate(e: WalletTxEvidence): Promise<WalletTxEvidence> {
+    if (!e.timestamp) { skippedNoTimestamp++; return openCheck(e, 'No timestamp available') }
+    if (!e.contract || !e.contract.startsWith('0x')) { skippedNoTokenAddress++; return openCheck(e, 'Missing token contract address') }
 
     const contractLower = e.contract.toLowerCase()
     const isStable = Boolean(STABLE_USD_CONTRACTS[contractLower])
     const isWeth = Boolean(WETH_CONTRACTS_PRICE[contractLower])
-    let _hadWethLeg = false  // set when WETH leg is detected in this tx
+    let _hadWethLeg = false
 
-    // Stablecoins are $1 by definition
-    if (isStable) {
-      evidenceWithPricing.push(priced(e, 1.0, 'stable_leg', 'high', 'Stablecoin — price is $1 USD by definition'))
-      continue
-    }
+    if (isStable) return priced(e, 1.0, 'stable_leg', 'high', 'Stablecoin — price is $1 USD by definition')
 
     const tokenAmount = parseRawAmount(e.amountRaw, e.tokenDecimals) ?? e.amount
-    if (!tokenAmount || tokenAmount <= 0) { skippedNoAmount++; evidenceWithPricing.push(openCheck(e, 'Token amount is zero or unavailable')); continue }
+    if (!tokenAmount || tokenAmount <= 0) { skippedNoAmount++; return openCheck(e, 'Token amount is zero or unavailable') }
 
     const txGroup = allByTx.get(e.txHash) ?? []
 
-    // Try stable leg: find a stable movement in same tx with opposite direction
     const stableLegs = txGroup.filter(ev => {
       const c = ev.contract?.toLowerCase() ?? ''
       return Boolean(STABLE_USD_CONTRACTS[c]) && ev.direction !== 'unknown' && ev.direction !== e.direction
@@ -4781,13 +4840,11 @@ async function buildPriceAtTimeEvidence(
       if (stableAmt > 0) {
         const derivedPrice = stableAmt / tokenAmount
         if (derivedPrice > 0 && isFinite(derivedPrice)) {
-          evidenceWithPricing.push(priced(e, derivedPrice, 'stable_leg', 'high', `Derived from ${sl.symbol} leg in same tx (${sl.symbol} amount / token amount)`))
-          continue
+          return priced(e, derivedPrice, 'stable_leg', 'high', `Derived from ${sl.symbol} leg in same tx (${sl.symbol} amount / token amount)`)
         }
       }
     }
 
-    // Try WETH leg: find WETH movement in same tx with opposite direction
     let _resolvedFromWethOrStable = stableLegs.length > 0
     if (!isWeth) {
       const wethLegs = txGroup.filter(ev => {
@@ -4798,11 +4855,9 @@ async function buildPriceAtTimeEvidence(
         _resolvedFromWethOrStable = true
         _hadWethLeg = true
         const wl = wethLegs[0]
-        // Need WETH's USD price at this timestamp
-        if (priceAttempts >= MAX_PRICE_ATTEMPTS) {
+        if (priceAttempts >= activeBudget) {
           priceAttemptLimitReached = true
-          evidenceWithPricing.push(openCheck(e, 'price_attempt_limit_reached'))
-          continue
+          return openCheck(e, 'price_attempt_limit_reached')
         }
         priceAttempts++
         const result = await fetchGoldrushHistoricalPrice(wl.chain, wl.contract, e.timestamp, reqCache)
@@ -4814,8 +4869,7 @@ async function buildPriceAtTimeEvidence(
           if (wethAmt > 0) {
             const derivedPrice = (wethAmt * result.priceUsd) / tokenAmount
             if (derivedPrice > 0 && isFinite(derivedPrice)) {
-              evidenceWithPricing.push(priced(e, derivedPrice, 'weth_leg', 'medium', `Derived from WETH leg (WETH×${result.priceUsd.toFixed(0)} × WETH amount / token amount)`))
-              continue
+              return priced(e, derivedPrice, 'weth_leg', 'medium', `Derived from WETH leg (WETH×${result.priceUsd.toFixed(0)} × WETH amount / token amount)`)
             }
           }
         }
@@ -4823,9 +4877,6 @@ async function buildPriceAtTimeEvidence(
     }
     if (!_resolvedFromWethOrStable) { skippedNoStableOrWethLeg++; skippedNoQuoteLeg++ }
 
-    // Try provider event USD: derive unit price from provider-reported total USD value.
-    // No API call needed. Uses GoldRush usdValue field populated during event normalization.
-    // Confidence is medium — value is at event time but not independently verified per-token.
     providerEventUsdAttempts++
     const _provUsd = e.usdValue
     if (_provUsd !== null && _provUsd !== undefined && !isFinite(_provUsd)) {
@@ -4833,19 +4884,16 @@ async function buildPriceAtTimeEvidence(
     } else if (_provUsd && _provUsd > 0 && isFinite(_provUsd) && tokenAmount > 0) {
       const _provDerivedPrice = _provUsd / tokenAmount
       if (_provDerivedPrice > 0 && isFinite(_provDerivedPrice) && _provDerivedPrice < 1_000_000) {
-        evidenceWithPricing.push(priced(e, _provDerivedPrice, 'provider_event_usd', 'medium',
-          `Derived from provider event USD value ($${_provUsd.toFixed(4)} / ${tokenAmount.toFixed(6)} tokens)`))
-        continue
+        return priced(e, _provDerivedPrice, 'provider_event_usd', 'medium',
+          `Derived from provider event USD value ($${_provUsd.toFixed(4)} / ${tokenAmount.toFixed(6)} tokens)`)
       }
     } else {
       skippedProviderUsdMissing++
     }
 
-    // Try direct historical price via GoldRush
-    if (priceAttempts >= MAX_PRICE_ATTEMPTS) {
+    if (priceAttempts >= activeBudget) {
       priceAttemptLimitReached = true
-      evidenceWithPricing.push(openCheck(e, 'price_attempt_limit_reached'))
-      continue
+      return openCheck(e, 'price_attempt_limit_reached')
     }
     priceAttempts++
     historicalPriceAttempts++
@@ -4855,26 +4903,22 @@ async function buildPriceAtTimeEvidence(
     if (histResult.error) providerErrors++
     if (histResult.priceUsd !== null) {
       historicalPricePricedEvents++
-      evidenceWithPricing.push(priced(e, histResult.priceUsd, 'historical_price', 'medium', `Historical token price from on-chain pricing data`))
-      continue
+      return priced(e, histResult.priceUsd, 'historical_price', 'medium', `Historical token price from on-chain pricing data`)
     }
     skippedHistoricalUnavailable++
 
-    // Current holding price fallback: only for BUY events, creates open lots only (never realized PnL)
     if (e.direction === 'buy' && priceByContract) {
       currentHoldingPriceAttempts++
       const currentPrice = priceByContract.get(contractLower)
       if (currentPrice && currentPrice > 0 && isFinite(currentPrice)) {
         currentHoldingPriceOpenLotEvents++
-        evidenceWithPricing.push(priced(e, currentPrice, 'current_holding_price_open_lot_estimate', 'low',
-          `Current holding price ($${currentPrice.toFixed(4)}) — open-lot estimate only, not for realized PnL`))
-        continue
+        return priced(e, currentPrice, 'current_holding_price_open_lot_estimate', 'low',
+          `Current holding price ($${currentPrice.toFixed(4)}) — open-lot estimate only, not for realized PnL`)
       }
     } else if (e.direction === 'sell') {
       skippedCurrentPriceNotAllowedForRealized++
     }
 
-    // No price evidence found — record specific reason for debug
     const _openCheckReason = !_resolvedFromWethOrStable
       ? (e.direction === 'sell' ? 'sell_candidate_missing_exit_price' : 'no_stable_or_weth_leg')
       : !_provUsd || _provUsd <= 0
@@ -4882,7 +4926,6 @@ async function buildPriceAtTimeEvidence(
         : histResult.error
           ? 'historical_price_unavailable'
           : 'no_reliable_price_evidence'
-    // Collect per-candidate unpriced diagnostic for debug visibility
     if (sampleUnpricedRaw.length < 10) {
       const _chPrice = priceByContract?.get(contractLower) ?? null
       sampleUnpricedRaw.push({
@@ -4899,8 +4942,85 @@ async function buildPriceAtTimeEvidence(
         finalReason: _openCheckReason,
       })
     }
-    evidenceWithPricing.push(openCheck(e, _openCheckReason))
+    return openCheck(e, _openCheckReason)
   }
+
+  // ── Pass 1: price sorted candidates up to BASE_BUDGET provider calls ─────────────────────
+  activeBudget = BASE_BUDGET
+  const _pass1ResultByIdx = new Map<number, WalletTxEvidence>()
+
+  for (const { e, i } of _sortedCandidates) {
+    if (priceAttempts >= BASE_BUDGET) break  // budget exhausted — stop and evaluate expansion
+    const result = await _priceOneCandidate(e)
+    _pass1ResultByIdx.set(i, result)
+  }
+  const _pass1Attempts = priceAttempts
+  const _pass1Priced = pricedEvents
+
+  // Lightweight FIFO preview using pass-1 results (no normalization — just for closed-lot count)
+  const _pass1PreviewEvidence: WalletTxEvidence[] = evidenceWithDetection.map((ev, i) => {
+    if (!ev.swapDetection?.isSwapCandidate) return ev
+    const processed = _pass1ResultByIdx.get(i)
+    if (processed) return processed
+    return { ...ev, priceAtTime: { status: 'open_check' as const, tokenAddress: ev.contract, tokenSymbol: ev.symbol, timestamp: ev.timestamp ?? '', priceUsd: null, source: 'unavailable' as const, confidence: 'open_check' as const, reason: 'pending_pass2' } }
+  })
+  const _fifoPreview1 = buildFifoLotEngine(_pass1PreviewEvidence, true)
+  const _pass1ClosedLots = _fifoPreview1.summary.closedLots ?? 0
+  const _pass1UnmatchedSells = _fifoPreview1.debug.unmatchedSells ?? 0
+  const _pass1OpenedLots = _fifoPreview1.debug.openedLots ?? 0
+
+  // ── Dynamic expansion decision ────────────────────────────────────────────────────────────
+  const _walletValue = totalValueUsd ?? 0
+  const _enoughClosed = _pass1ClosedLots >= 5
+  const _budgetExhausted = _pass1Attempts >= BASE_BUDGET
+  const _unprocessedCount = _sortedCandidates.length - _pass1ResultByIdx.size
+  let _finalBudget = BASE_BUDGET
+  let _expansionEligible = false
+  let _expansionReason: string | null = null
+  let _skippedEnough = false
+
+  if (_enoughClosed) {
+    _skippedEnough = true  // already have enough closed lots — no need to expand
+  } else if (_budgetExhausted && _unprocessedCount > 0) {
+    // Basic expansion: active wallet with insufficient coverage
+    if (swapCandidateEvents > 10 && (_pass1Priced < 4 || _pass1ClosedLots < 3) && _walletValue >= 500) {
+      _expansionEligible = true
+      _finalBudget = EXPANDED_BUDGET
+      _expansionReason = `expand10:swaps=${swapCandidateEvents},priced1=${_pass1Priced},closed1=${_pass1ClosedLots},value=${Math.round(_walletValue)}`
+      // Further expansion to MAX_BUDGET for high-value active wallets with open/unmatched activity
+      if (_walletValue >= 2500 && swapCandidateEvents >= 20 && (_pass1UnmatchedSells > 0 || _pass1OpenedLots > 0) && _pass1ClosedLots < 5) {
+        _finalBudget = MAX_BUDGET
+        _expansionReason = `expand12:swaps=${swapCandidateEvents},unmatched=${_pass1UnmatchedSells},opened=${_pass1OpenedLots},value=${Math.round(_walletValue)}`
+      }
+    }
+  }
+  activeBudget = _finalBudget
+
+  // ── Pass 2 (only when expansion eligible) ────────────────────────────────────────────────
+  const _pass2ResultByIdx = new Map<number, WalletTxEvidence>()
+  if (_expansionEligible) {
+    for (const { e, i } of _sortedCandidates) {
+      if (_pass1ResultByIdx.has(i)) continue  // already priced in pass 1
+      if (priceAttempts >= _finalBudget) break
+      const result = await _priceOneCandidate(e)
+      _pass2ResultByIdx.set(i, result)
+    }
+  }
+  const _pass2Attempts = priceAttempts - _pass1Attempts
+  const _pass2Priced = pricedEvents - _pass1Priced
+
+  // ── Assemble final evidence in original order ─────────────────────────────────────────────
+  // Any remaining unprocessed swap candidates get open_check (budget exhausted)
+  const evidenceWithPricing: WalletTxEvidence[] = evidenceWithDetection.map((e, i) => {
+    if (!e.swapDetection?.isSwapCandidate) return e
+    const r1 = _pass1ResultByIdx.get(i)
+    if (r1) return r1
+    const r2 = _pass2ResultByIdx.get(i)
+    if (r2) return r2
+    // Not processed — budget exhausted
+    priceAttemptLimitReached = true
+    return openCheck(e, 'price_attempt_limit_reached')
+  })
 
   // Swap-derived pricing pass: 0 extra API credits.
   // For any open_check swap candidate, look for a counterpart in the same tx that was
@@ -4988,6 +5108,33 @@ async function buildPriceAtTimeEvidence(
       })),
       sampleUnpricedReasons: sampleUnpricedRaw,
       reasons: missing,
+    },
+    budgetDebug: {
+      baseBudget: BASE_BUDGET, expandedBudget: EXPANDED_BUDGET, maxBudget: MAX_BUDGET,
+      initialCandidates: _indexedCandidates.length,
+      prioritizedCandidates: _sortedCandidates.length,
+      pass1Attempts: _pass1Attempts,
+      pass1PricedEvents: _pass1Priced,
+      pass1ClosedLots: _pass1ClosedLots,
+      expansionEligible: _expansionEligible,
+      expansionReason: _expansionReason,
+      pass2Attempts: _pass2Attempts,
+      pass2PricedEvents: _pass2Priced,
+      finalPriceAttempts: priceAttempts,
+      finalPricedEvents: pricedEvents,
+      finalClosedLots: _fifoPreview1.summary.closedLots ?? 0,  // post-pass1 preview (pass2 will update downstream FIFO)
+      budgetCapHit: priceAttemptLimitReached,
+      skippedBecauseEnoughEvidence: _skippedEnough,
+      skippedBecauseDailyCap: false,
+      estimatedExtraCredits: _pass2Attempts,
+      samplePrioritizedCandidates: _sortedCandidates.slice(0, 8).map(({ e }) => {
+        const [tier] = getCandidatePriority(e)
+        const cl = (e.contract ?? '').toLowerCase()
+        const txGroup = allByTx.get(e.txHash) ?? []
+        const hasSL = txGroup.some(ev => Boolean(STABLE_USD_CONTRACTS[(ev.contract ?? '').toLowerCase()]) && ev.direction !== 'unknown' && ev.direction !== e.direction)
+        const hasWL = txGroup.some(ev => Boolean(WETH_CONTRACTS_PRICE[(ev.contract ?? '').toLowerCase()]) && ev.direction !== 'unknown' && ev.direction !== e.direction)
+        return { symbol: e.symbol ?? null, priority: tier, hasStableLeg: hasSL, hasWethLeg: hasWL, usdValue: e.usdValue ?? null }
+      }),
     },
   }
 }
@@ -7669,7 +7816,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
 
   tokenMeter.startTokenMeter('priceInference')
   tokenMeter.measure('priceInference', _swapEvidenceWithDetection)
-  let { evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache, priceByContract)
+  let { evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug, budgetDebug: _priceBudgetDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache, priceByContract, totalValue)
   // Track base evidence historical price calls
   for (let _pp = 0; _pp < (_priceAtTimeDebug?.providerAttempts ?? 0); _pp++) {
     _trackCall('goldrush', 'historical_by_addresses_v2', false, `gr:price:base:${_pp}:${addrNorm}`)
@@ -9066,6 +9213,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       walletTxEvidenceDebug: _txEvidenceDebug,
       walletSwapDetectionDebug: _swapDetectionDebug,
       walletPriceAtTimeDebug: _priceAtTimeDebug,
+      walletPriceBudgetDebug: _priceBudgetDebug,
       unmatchedSellBackfillDebug: _unmatchedSellBackfillDebug,
       walletLotEngineDebug: _lotEngineDebug,
       walletPnlOutlierDebug: _outlierDebug,
@@ -9156,6 +9304,16 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
 
   // Outlier note: surface if any lots were quarantined
   if (_outlierNote) snapshot.walletPnlOutlierNote = _outlierNote
+
+  // Pricing coverage note: show when budget cap limited coverage or expansion improved results
+  if (_priceBudgetDebug) {
+    if (_priceBudgetDebug.budgetCapHit && (_priceBudgetDebug.finalPriceAttempts ?? 0) > 0) {
+      snapshot.walletPricingCoverageNote = `Some older or lower-confidence trades were left unpriced to keep the scan cost-safe.`
+    }
+    if (_priceBudgetDebug.expansionEligible && _priceBudgetDebug.pass2PricedEvents > 0) {
+      snapshot.walletPricingCoverageNote = `Extra pricing pass recovered ${_priceBudgetDebug.pass2PricedEvents} additional matched lot${_priceBudgetDebug.pass2PricedEvents !== 1 ? 's' : ''}.`
+    }
+  }
 
   // Requirement 8: validate audit before returning — if unhealthy, surface warnings prominently
   if (_apiAudit.warnings.length > 0 && snapshot._diagnostics?.apiAudit) {
