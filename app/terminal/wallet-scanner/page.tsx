@@ -1205,7 +1205,25 @@ export default function WalletScannerPage() {
                   { label: 'Portfolio', note: mc.portfolio.status === 'ok' ? `${(mc.portfolio.evidence.includes('total_value') ? 'value + ' : '')}holdings` : mc.portfolio.reason.replace(/_/g, ' '), status: mc.portfolio.status },
                   { label: 'Activity', note: mc.activity.eventCount > 0 ? `${mc.activity.eventCount} events indexed` : mc.activity.status === 'open_check' && mc.activity.reason === 'provider_unavailable' ? 'unavailable' : 'not checked', status: mc.activity.status },
                   { label: 'Swap pairs', note: mc.swapDetection.candidateCount > 0 ? `${mc.swapDetection.candidateCount} candidates` : mc.activity.eventCount > 0 ? 'none found in sample' : 'no activity', status: mc.swapDetection.status },
-                  { label: 'FIFO PnL', note: mc.fifoPnL.closedLots > 0 ? `${mc.fifoPnL.closedLots} closed lots` : mc.swapDetection.candidateCount > 0 && (mc.priceEvidence?.pricedEvents ?? 0) === 0 ? 'candidates unpriced' : mc.swapDetection.candidateCount > 0 ? 'no matched lots' : 'no swap evidence', status: mc.fifoPnL.status },
+                  { label: 'FIFO PnL', note: (() => {
+                    const closedLots = mc.fifoPnL.closedLots
+                    const openedLots = result.walletLotSummary?.openedLots ?? 0
+                    const pricedEvents = mc.priceEvidence?.pricedEvents ?? 0
+                    const candidates = mc.swapDetection.candidateCount
+                    if (closedLots > 0) return `${closedLots} closed lots`
+                    if (openedLots > 0 && pricedEvents > 0) return `${openedLots} open lot${openedLots !== 1 ? 's' : ''} tracked, no closed sells yet`
+                    if (pricedEvents > 0 && openedLots === 0) return 'priced swaps found, no lots opened'
+                    if (candidates > 0 && pricedEvents === 0) return 'candidates unpriced'
+                    if (candidates > 0) return 'no swap evidence priced'
+                    return 'no swap evidence'
+                  })(), status: (() => {
+                    const closedLots = mc.fifoPnL.closedLots
+                    const openedLots = result.walletLotSummary?.openedLots ?? 0
+                    const pricedEvents = mc.priceEvidence?.pricedEvents ?? 0
+                    if (closedLots > 0) return mc.fifoPnL.status
+                    if (openedLots > 0 && pricedEvents > 0) return 'partial' as const
+                    return mc.fifoPnL.status
+                  })() },
                   { label: 'Trade stats', note: mc.tradeStats.closedLots > 0 ? `${mc.tradeStats.closedLots} lots` + (mc.tradeStats.readyForWinRate ? '' : ' — below threshold') : mc.swapDetection.candidateCount > 0 && (mc.priceEvidence?.pricedEvents ?? 0) === 0 ? 'no verified closed lots' : 'no closed lots', status: mc.tradeStats.status },
                 ]
                 return (
