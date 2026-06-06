@@ -357,7 +357,7 @@ export type WalletSnapshot = {
     readyForWalletScore: boolean
     rawStatsAvailable: boolean
     scoreUnlocked: boolean
-    confidenceLabel: 'open_check' | 'very_small_sample' | 'small_sample' | 'early_confidence' | 'developing' | 'high'
+    confidenceLabel: 'open_check' | 'break_even_only' | 'very_small_sample' | 'small_sample' | 'early_confidence' | 'developing' | 'high'
     sampleWarning: string | null
     meaningfulClosedLots: number
     dustClosedLots: number
@@ -4423,7 +4423,7 @@ function buildTradeStatsSummary(
   else                                        { summaryStatus = 'partial'; confidence = 'low';    sampleSizeLabel = 'insufficient' }
 
   // Sub-threshold labels for small-sample raw display
-  type ConfidenceLabel = 'open_check' | 'very_small_sample' | 'small_sample' | 'early_confidence' | 'developing' | 'high'
+  type ConfidenceLabel = 'open_check' | 'break_even_only' | 'very_small_sample' | 'small_sample' | 'early_confidence' | 'developing' | 'high'
   let confidenceLabel: ConfidenceLabel
   let sampleWarning: string | null = null
   if (n >= 25 && economicallyMeaningful) {
@@ -4443,12 +4443,17 @@ function buildTradeStatsSummary(
     sampleSizeLabel = 'very_small_sample'
   }
 
-  // ── Win rate: raw rate always computed when n >= 1; official rate requires threshold ──
-  const isBreakEvenOnly = n > 0 && winning.length === 0 && losing.length === 0 && breakEven.length === n
-  const winRateComputed = n >= WIN_RATE_THRESHOLD && economicallyMeaningful
-  const winRatePercent = n >= 1 ? (winning.length / n) * 100 : null
+  // ── Win rate: raw rate always computed when n >= 1; official rate requires decisive lots ──
+  const decisiveClosedLots = winning.length + losing.length
+  const isBreakEvenOnly = n > 0 && decisiveClosedLots === 0 && breakEven.length === n
+  const winRateComputed = n >= WIN_RATE_THRESHOLD && decisiveClosedLots >= 1 && !isBreakEvenOnly && economicallyMeaningful
+  const winRatePercent = n >= 1 && decisiveClosedLots >= 1 ? (winning.length / n) * 100 : null
   const scoreUnlocked = winRateComputed
   const rawStatsAvailable = n >= 1
+  if (isBreakEvenOnly) {
+    confidenceLabel = 'break_even_only'
+    sampleWarning = 'Closed lots reconstructed, but every matched lot is break-even. Score and official win rate need at least one decisive winning or losing closed lot.'
+  }
 
   const avgPnlUsdPerClosedLot = totalRealizedPnl / n
   const returnPcts = allLots.map(l => l.realizedPnlPercent).filter((v): v is number => v !== null)
@@ -4466,10 +4471,14 @@ function buildTradeStatsSummary(
   if (!winRateComputed) {
     if (n < WIN_RATE_THRESHOLD) {
       missing.push('win_rate_locked_below_threshold')
-    } else {
+      missing.push('sample_size_below_win_rate_threshold')
+    }
+    if (decisiveClosedLots === 0) {
+      missing.push('no_decisive_closed_lots')
+    }
+    if (n >= WIN_RATE_THRESHOLD && decisiveClosedLots >= 1 && !economicallyMeaningful) {
       missing.push('economic_quality_gate_failed')
     }
-    missing.push('sample_size_below_win_rate_threshold')
   }
   if (breakEven.length > 0) missing.push('break_even_lots_excluded_from_win_rate')
   if (!economicallyMeaningful) missing.push('micro_trade_sample')
@@ -4671,7 +4680,7 @@ function buildPerSwapTradeStats(
   else if (!economicallyMeaningful)           { summaryStatus = 'partial'; confidence = 'low';    sampleSizeLabel = 'micro_sample' }
   else                                        { summaryStatus = 'partial'; confidence = 'low';    sampleSizeLabel = 'insufficient' }
 
-  type ConfidenceLabel = 'open_check' | 'very_small_sample' | 'small_sample' | 'early_confidence' | 'developing' | 'high'
+  type ConfidenceLabel = 'open_check' | 'break_even_only' | 'very_small_sample' | 'small_sample' | 'early_confidence' | 'developing' | 'high'
   let confidenceLabel: ConfidenceLabel
   let sampleWarning: string | null = null
   if (n >= 10 && economicallyMeaningful) { confidenceLabel = 'developing' }
@@ -4679,11 +4688,16 @@ function buildPerSwapTradeStats(
   else if (n >= 3) { confidenceLabel = 'small_sample'; sampleWarning = `Only ${n} closed trades found. Use as early evidence, not a full wallet score.`; sampleSizeLabel = 'small_sample' }
   else { confidenceLabel = 'very_small_sample'; sampleWarning = `Only ${n} closed trade${n === 1 ? '' : 's'} found. Use as early evidence, not a full wallet score.`; sampleSizeLabel = 'very_small_sample' }
 
-  const isBreakEvenOnly = n > 0 && winning.length === 0 && losing.length === 0 && breakEven.length === n
-  const winRateComputed = n >= WIN_RATE_THRESHOLD && economicallyMeaningful
-  const winRatePercent = n >= 1 ? (winning.length / n) * 100 : null
+  const decisiveClosedLots = winning.length + losing.length
+  const isBreakEvenOnly = n > 0 && decisiveClosedLots === 0 && breakEven.length === n
+  const winRateComputed = n >= WIN_RATE_THRESHOLD && decisiveClosedLots >= 1 && !isBreakEvenOnly && economicallyMeaningful
+  const winRatePercent = n >= 1 && decisiveClosedLots >= 1 ? (winning.length / n) * 100 : null
   const scoreUnlocked = winRateComputed
   const rawStatsAvailable = n >= 1
+  if (isBreakEvenOnly) {
+    confidenceLabel = 'break_even_only'
+    sampleWarning = 'Closed lots reconstructed, but every matched trade is break-even. Score and official win rate need at least one decisive winning or losing closed lot.'
+  }
   const avgPnlUsdPerClosedLot = totalRealizedPnl / n
 
   const returnPcts = closedTrades.map(t => t.returnPercent).filter((v): v is number => v !== null)
@@ -4697,10 +4711,14 @@ function buildPerSwapTradeStats(
   if (!winRateComputed) {
     if (n < WIN_RATE_THRESHOLD) {
       missing.push('win_rate_locked_below_threshold')
-    } else {
+      missing.push('sample_size_below_win_rate_threshold')
+    }
+    if (decisiveClosedLots === 0) {
+      missing.push('no_decisive_closed_lots')
+    }
+    if (n >= WIN_RATE_THRESHOLD && decisiveClosedLots >= 1 && !economicallyMeaningful) {
       missing.push('economic_quality_gate_failed')
     }
-    missing.push('sample_size_below_win_rate_threshold')
   }
   if (breakEven.length > 0) missing.push('break_even_lots_excluded_from_win_rate')
   if (!economicallyMeaningful)   missing.push('micro_trade_sample')
