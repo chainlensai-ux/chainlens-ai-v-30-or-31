@@ -693,6 +693,7 @@ export async function POST(req: Request) {
         walletTradeStatsDebug: snapshot._diagnostics?.walletTradeStatsDebug ?? null,
         ethSwapReconstructionDebug: snapshot._diagnostics?.ethSwapReconstructionDebug ?? null,
         basePnlReconstructionDebug: snapshot._diagnostics?.basePnlReconstructionDebug ?? null,
+        baseUnknownSwapReconstructionDebug: snapshot._diagnostics?.baseUnknownSwapReconstructionDebug ?? null,
         baseFifoCoverageDebug: snapshot._diagnostics?.baseFifoCoverageDebug ?? null,
         walletActivityRoutingDebug: snapshot._diagnostics?.walletActivityRoutingDebug ?? null,
         walletChainActivityMergeDebug: snapshot._diagnostics?.walletChainActivityMergeDebug ?? null,

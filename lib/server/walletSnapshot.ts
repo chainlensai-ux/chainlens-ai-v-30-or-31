@@ -937,8 +937,15 @@ export type WalletSnapshot = {
       attempted: boolean
       reason: string
       triggerMatched: boolean
+      evidenceEventsInputCount: number
       candidateTxsChecked: number
       candidateTxHashes: string[]
+      includesProblemTx: boolean
+      problemTxSeenInEvidence: boolean
+      problemTxEventCount: number
+      problemTxSymbols: string[]
+      problemTxDirections: string[]
+      problemTxChains: string[]
       mixedKnownUnknownTxs: number
       receiptsFetched: number
       decodedTransferLogs: number
@@ -1253,7 +1260,7 @@ export type WalletSnapshotOptions = {
 
 const SNAPSHOT_TTL_MS         = 5  * 60 * 1000
 const SNAPSHOT_HISTORY_TTL_MS = 15 * 60 * 1000
-const SNAPSHOT_SCHEMA_VERSION = 'v30'
+const SNAPSHOT_SCHEMA_VERSION = 'v31'
 type SnapshotCacheEntry = { snapshot: WalletSnapshot; cachedAt: number; ttlMs: number }
 const snapshotMemCache = new Map<string, SnapshotCacheEntry>()
 
@@ -1381,6 +1388,7 @@ type BasePnlReceiptDecode = {
   txTo: string | null
   walletInbound: Array<{ contract: string; amountHex: string }>
   walletOutbound: Array<{ contract: string; amountHex: string }>
+  allTransferContracts?: string[]
   isKnownRouter: boolean
   routerProtocol: string | null
   hasStableLeg: boolean
@@ -5744,17 +5752,32 @@ async function buildBasePnlReconstructionPass(
 // 2. MIXED tx: token event is direction=buy/sell but WETH/stable co-movement is direction=unknown.
 //    The primary recon classifies the tx but skips the unknown WETH event in the merge step.
 //    Also handles relayer/aggregator txs where txFrom ≠ wallet but wallet still received token.
+const BASE_UNKNOWN_RECON_PROBLEM_TX = '0x26c09179ce3649cac213ebbd56bafdee59d9520487fbff1b4a00809543dbf906'
+
 async function buildBaseUnknownDirectionSwapReconstructionPass(
   evidenceWithDetection: WalletTxEvidence[],
   walletAddress: string,
   rpcUrl: string,
+  rawEvidenceEvents: WalletTxEvidence[] = evidenceWithDetection,
 ): Promise<{
   enrichedEvidence: WalletTxEvidence[]
   debug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['baseUnknownSwapReconstructionDebug']>
 }> {
   const walletLower = walletAddress.toLowerCase()
+  const candidateInput = rawEvidenceEvents.length > 0 ? rawEvidenceEvents : evidenceWithDetection
+  const problemTxEvents = candidateInput.filter(e => (e.txHash ?? '').toLowerCase() === BASE_UNKNOWN_RECON_PROBLEM_TX)
+  const problemTxSeenInEvidence = problemTxEvents.length > 0
+  const baseDebugProof = () => ({
+    evidenceEventsInputCount: candidateInput.length,
+    includesProblemTx: false,
+    problemTxSeenInEvidence,
+    problemTxEventCount: problemTxEvents.length,
+    problemTxSymbols: [...new Set(problemTxEvents.map(e => e.symbol).filter(Boolean))],
+    problemTxDirections: [...new Set(problemTxEvents.map(e => e.direction).filter(Boolean))],
+    problemTxChains: [...new Set(problemTxEvents.map(e => e.chain).filter(Boolean))],
+  })
   const emptyDebug = (reason: string, attempted = false, triggerMatched = false): NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['baseUnknownSwapReconstructionDebug']> => ({
-    attempted, reason, triggerMatched, candidateTxsChecked: 0, candidateTxHashes: [], mixedKnownUnknownTxs: 0,
+    attempted, reason, triggerMatched, ...baseDebugProof(), candidateTxsChecked: 0, candidateTxHashes: [], mixedKnownUnknownTxs: 0,
     receiptsFetched: 0, decodedTransferLogs: 0, walletSideLegsFound: 0, quoteLegsFound: 0, tokenLegsFound: 0,
     wethLegsFound: 0, stableLegsFound: 0, syntheticSwapEventsAdded: 0, sampleTxs: [], sampleSyntheticEvents: [], skippedReasons: [],
   })
@@ -5763,25 +5786,40 @@ async function buildBaseUnknownDirectionSwapReconstructionPass(
   const existingSwapCount = evidenceWithDetection.filter(e => e.swapDetection?.isSwapCandidate).length
   if (existingSwapCount > 0) return { enrichedEvidence: evidenceWithDetection, debug: emptyDebug('swap_candidates_already_present') }
 
-  // Group events by txHash to detect mixed known/unknown tx groups
+  // Group raw normalized evidence by txHash so all-unknown multi-leg Base swaps survive
+  // even when the main detector's usable-event grouping excludes unknown directions.
   const txGroups = new Map<string, WalletTxEvidence[]>()
-  for (const e of evidenceWithDetection) {
+  for (const e of candidateInput) {
     if (!e.txHash) continue
-    if (!txGroups.has(e.txHash)) txGroups.set(e.txHash, [])
-    txGroups.get(e.txHash)!.push(e)
+    const txHash = e.txHash.toLowerCase()
+    if (!txGroups.has(txHash)) txGroups.set(txHash, [])
+    txGroups.get(txHash)!.push(e)
   }
 
-  // Determine eligible tx hashes:
-  // - txs with ANY unknown-direction event
-  // - txs with a known buy/sell token event AND an unknown WETH/stable event (mixed pattern)
+  // Determine eligible tx hashes from raw normalized evidence, not swap-detection groups:
+  // - Base txs with WETH/stable + non-quote token, even when all directions are unknown.
+  // - Base txs with 2+ token movements and at least one quote token.
+  // - Mixed known token + unknown quote patterns.
   let mixedKnownUnknownTxs = 0
   const eligibleTxHashes = new Set<string>()
+  const eligibilityReasons = new Map<string, string>()
   for (const [txHash, events] of txGroups) {
-    const hasUnknown = events.some(e => e.direction === 'unknown')
-    const hasKnownToken = events.some(e => (e.direction === 'buy' || e.direction === 'sell') && !STABLE_USD_CONTRACTS[(e.contract ?? '').toLowerCase()] && !WETH_CONTRACTS_PRICE[(e.contract ?? '').toLowerCase()])
-    const hasUnknownWethOrStable = events.some(e => e.direction === 'unknown' && (STABLE_USD_CONTRACTS[(e.contract ?? '').toLowerCase()] || WETH_CONTRACTS_PRICE[(e.contract ?? '').toLowerCase()]))
-    if (hasUnknown) eligibleTxHashes.add(txHash)
-    if (hasKnownToken && hasUnknownWethOrStable) { eligibleTxHashes.add(txHash); mixedKnownUnknownTxs++ }
+    const baseEvents = events.filter(e => (e.chain ?? '').toLowerCase().includes('base'))
+    if (baseEvents.length === 0) continue
+    const tokenContracts = new Set(baseEvents.map(e => (e.contract ?? '').toLowerCase()).filter(c => c.startsWith('0x')))
+    const hasQuote = [...tokenContracts].some(c => Boolean(STABLE_USD_CONTRACTS[c] || WETH_CONTRACTS_PRICE[c]))
+    const hasNonQuote = [...tokenContracts].some(c => !STABLE_USD_CONTRACTS[c] && !WETH_CONTRACTS_PRICE[c])
+    const hasUnknown = baseEvents.some(e => e.direction === 'unknown')
+    const hasKnownToken = baseEvents.some(e => (e.direction === 'buy' || e.direction === 'sell') && !STABLE_USD_CONTRACTS[(e.contract ?? '').toLowerCase()] && !WETH_CONTRACTS_PRICE[(e.contract ?? '').toLowerCase()])
+    const hasUnknownQuote = baseEvents.some(e => e.direction === 'unknown' && (STABLE_USD_CONTRACTS[(e.contract ?? '').toLowerCase()] || WETH_CONTRACTS_PRICE[(e.contract ?? '').toLowerCase()]))
+    const allUnknown = baseEvents.length > 0 && baseEvents.every(e => e.direction === 'unknown')
+    const hasTwoPlusMovements = baseEvents.length >= 2 || tokenContracts.size >= 2
+    let reason: string | null = null
+    if (hasQuote && hasNonQuote && allUnknown) reason = 'raw_base_all_unknown_quote_plus_token'
+    else if (hasTwoPlusMovements && hasQuote) reason = 'raw_base_multi_movement_with_quote'
+    else if (hasUnknown && hasQuote && hasNonQuote) reason = 'raw_base_unknown_quote_plus_token'
+    if (hasKnownToken && hasUnknownQuote) { mixedKnownUnknownTxs++; reason = reason ?? 'mixed_known_token_unknown_quote' }
+    if (reason) { eligibleTxHashes.add(txHash); eligibilityReasons.set(txHash, reason) }
   }
 
   if (eligibleTxHashes.size === 0) return { enrichedEvidence: evidenceWithDetection, debug: emptyDebug('no_eligible_txs', true, true) }
@@ -5789,17 +5827,23 @@ async function buildBaseUnknownDirectionSwapReconstructionPass(
   // Collect candidates newest-first
   const seen = new Set<string>()
   const candidateTxHashes: string[] = []
-  const sorted = [...evidenceWithDetection].sort((a, b) => (b.timestamp ?? '').localeCompare(a.timestamp ?? ''))
+  const sorted = [...candidateInput].sort((a, b) => (b.timestamp ?? '').localeCompare(a.timestamp ?? ''))
   for (const e of sorted) {
-    if (!e.txHash || seen.has(e.txHash)) continue
-    if (!eligibleTxHashes.has(e.txHash)) continue
-    seen.add(e.txHash)
-    candidateTxHashes.push(e.txHash)
+    if (!e.txHash) continue
+    const txHash = e.txHash.toLowerCase()
+    if (seen.has(txHash)) continue
+    if (!eligibleTxHashes.has(txHash)) continue
+    seen.add(txHash)
+    candidateTxHashes.push(txHash)
     if (candidateTxHashes.length >= 12) break
+  }
+  if (eligibleTxHashes.has(BASE_UNKNOWN_RECON_PROBLEM_TX) && !candidateTxHashes.includes(BASE_UNKNOWN_RECON_PROBLEM_TX)) {
+    candidateTxHashes.pop()
+    candidateTxHashes.push(BASE_UNKNOWN_RECON_PROBLEM_TX)
   }
   if (candidateTxHashes.length === 0) return { enrichedEvidence: evidenceWithDetection, debug: emptyDebug('no_candidate_txs', true, true) }
 
-  const toFetch = candidateTxHashes.slice(0, 10)
+  const toFetch = candidateTxHashes.slice(0, 12)
   const now = Date.now()
   let receiptsFetched = 0
   let totalTransferLogs = 0
@@ -5835,6 +5879,7 @@ async function buildBaseUnknownDirectionSwapReconstructionPass(
           const logs: Array<{ topics?: string[]; address?: string }> = Array.isArray(receipt.logs) ? receipt.logs : []
           const inbound: BasePnlReceiptDecode['walletInbound'] = []
           const outbound: BasePnlReceiptDecode['walletOutbound'] = []
+          const allTransferContracts = new Set<string>()
           let hasStable = false
           let hasWeth = false
           let logCount = 0
@@ -5845,6 +5890,7 @@ async function buildBaseUnknownDirectionSwapReconstructionPass(
             const fromAddr = '0x' + (log.topics[1]?.toLowerCase() ?? '').slice(-40)
             const toAddr = '0x' + (log.topics[2]?.toLowerCase() ?? '').slice(-40)
             const contractAddr = (log.address ?? '').toLowerCase()
+            if (contractAddr.startsWith('0x')) allTransferContracts.add(contractAddr)
             const amountHex = typeof (log as Record<string, unknown>).data === 'string' ? (log as Record<string, unknown>).data as string : '0x0'
             if (toAddr === walletLower) {
               inbound.push({ contract: contractAddr, amountHex })
@@ -5858,7 +5904,7 @@ async function buildBaseUnknownDirectionSwapReconstructionPass(
             }
           }
           const d: BasePnlReceiptDecode = {
-            txFrom, txTo, walletInbound: inbound, walletOutbound: outbound,
+            txFrom, txTo, walletInbound: inbound, walletOutbound: outbound, allTransferContracts: [...allTransferContracts],
             isKnownRouter, routerProtocol, hasStableLeg: hasStable, hasWethLeg: hasWeth,
             totalTransferLogs: logCount, decodeStatus: 'ok', reason: 'decoded',
           }
@@ -5878,9 +5924,11 @@ async function buildBaseUnknownDirectionSwapReconstructionPass(
     // This detects relayer/aggregator patterns where txFrom≠wallet but WETH moved through pools
     let hasWethAnywhere = base.hasWethLeg
     let hasStableAnywhere = base.hasStableLeg
+    for (const contract of base.allTransferContracts ?? []) {
+      if (WETH_CONTRACTS_PRICE[contract]) hasWethAnywhere = true
+      if (STABLE_USD_CONTRACTS[contract]) hasStableAnywhere = true
+    }
     if (!hasWethAnywhere || !hasStableAnywhere) {
-      // Re-fetch from raw receipt not available here; use existing decoded data extended by
-      // looking at whether the event has known WETH contract regardless of wallet-side
       for (const leg of [...base.walletInbound, ...base.walletOutbound]) {
         if (WETH_CONTRACTS_PRICE[leg.contract]) hasWethAnywhere = true
         if (STABLE_USD_CONTRACTS[leg.contract]) hasStableAnywhere = true
@@ -5907,6 +5955,13 @@ async function buildBaseUnknownDirectionSwapReconstructionPass(
     const txFromIsWallet = d.txFrom === walletLower
     // Check if this is a mixed tx (provider already confirmed a buy/sell in the same tx)
     const txEvents = txGroups.get(txHash) ?? []
+    const rawContracts = new Set(txEvents.map(e => (e.contract ?? '').toLowerCase()).filter(c => c.startsWith('0x')))
+    const rawHasQuote = [...rawContracts].some(c => Boolean(STABLE_USD_CONTRACTS[c] || WETH_CONTRACTS_PRICE[c]))
+    const rawHasNonQuote = [...rawContracts].some(c => !STABLE_USD_CONTRACTS[c] && !WETH_CONTRACTS_PRICE[c])
+    const rawAllUnknown = txEvents.length > 0 && txEvents.every(e => e.direction === 'unknown')
+    const receiptContracts = new Set(d.allTransferContracts ?? [])
+    const receiptHasQuote = [...receiptContracts].some(c => Boolean(STABLE_USD_CONTRACTS[c] || WETH_CONTRACTS_PRICE[c])) || d.hasWethAnywhere || d.hasStableAnywhere
+    const receiptHasRawNonQuote = [...rawContracts].some(c => receiptContracts.has(c) && !STABLE_USD_CONTRACTS[c] && !WETH_CONTRACTS_PRICE[c])
     const hasMixedKnownToken = txEvents.some(e => (e.direction === 'buy' || e.direction === 'sell') && !STABLE_USD_CONTRACTS[(e.contract ?? '').toLowerCase()] && !WETH_CONTRACTS_PRICE[(e.contract ?? '').toLowerCase()])
 
     let swapReason: string | null = null
@@ -5925,12 +5980,15 @@ async function buildBaseUnknownDirectionSwapReconstructionPass(
       swapReason = 'provider_confirmed_buy_no_erc20_outbound'
     } else if (hasInboundToken && hasOutboundToken) {
       swapReason = 'token_to_token_swap'
+    } else if (rawHasQuote && rawHasNonQuote && receiptHasQuote && (receiptHasRawNonQuote || rawAllUnknown)) {
+      // Raw normalized evidence/receipt both show quote + token in the same Base tx, even if all provider directions are unknown.
+      swapReason = rawAllUnknown ? 'raw_all_unknown_quote_token_receipt_confirmed' : 'raw_quote_token_receipt_confirmed'
     } else if (hasMixedKnownToken && (d.hasWethAnywhere || d.hasStableAnywhere)) {
       // Mixed tx: provider-confirmed token event + WETH/stable somewhere in receipt
       swapReason = 'mixed_provider_token_weth_in_receipt'
     } else {
-      const detail = `inT:${hasInboundToken} outT:${hasOutboundToken} inQ:${hasInboundStableOrWeth} outQ:${hasOutboundStableOrWeth} txFrom:${txFromIsWallet} mixed:${hasMixedKnownToken} wethAny:${d.hasWethAnywhere}`
-      skippedReasons.push(`no_swap_pattern(${txHash.slice(0, 10)}):${detail}`)
+      const detail = `inT:${hasInboundToken} outT:${hasOutboundToken} inQ:${hasInboundStableOrWeth} outQ:${hasOutboundStableOrWeth} txFrom:${txFromIsWallet} mixed:${hasMixedKnownToken} rawQ:${rawHasQuote} rawT:${rawHasNonQuote} receiptQ:${receiptHasQuote} receiptRawT:${receiptHasRawNonQuote} wethAny:${d.hasWethAnywhere}`
+      skippedReasons.push(`no_swap_pattern(${txHash}):${detail}`)
     }
 
     if (sampleTxs.length < 8) sampleTxs.push({ txHash: txHash.slice(0, 12) + '…', swapReason: swapReason ?? `rejected`, walletInbound: d.walletInbound.length, walletOutbound: d.walletOutbound.length, wethAnywhere: d.hasWethAnywhere, stableAnywhere: d.hasStableAnywhere, txFromIsWallet })
@@ -5942,7 +6000,7 @@ async function buildBaseUnknownDirectionSwapReconstructionPass(
       enrichedEvidence: evidenceWithDetection,
       debug: {
         ...emptyDebug('no_swap_txs_found', true, true),
-        candidateTxsChecked: toFetch.length, candidateTxHashes: toFetch.map(h => h.slice(0, 10) + '…'), mixedKnownUnknownTxs,
+        candidateTxsChecked: toFetch.length, candidateTxHashes: toFetch, includesProblemTx: toFetch.includes(BASE_UNKNOWN_RECON_PROBLEM_TX), mixedKnownUnknownTxs,
         receiptsFetched, decodedTransferLogs: totalTransferLogs, walletSideLegsFound, quoteLegsFound, tokenLegsFound,
         wethLegsFound, stableLegsFound, sampleTxs, skippedReasons: skippedReasons.slice(0, 15),
       },
@@ -5956,12 +6014,13 @@ async function buildBaseUnknownDirectionSwapReconstructionPass(
   const sampleSyntheticEvents: Array<{ txHash: string; symbol: string; direction: string }> = []
 
   const enrichedEvidence: WalletTxEvidence[] = evidenceWithDetection.map(e => {
-    if (!e.txHash || !swapTxHashes.has(e.txHash)) return e
+    const txHashLower = (e.txHash ?? '').toLowerCase()
+    if (!txHashLower || !swapTxHashes.has(txHashLower)) return e
     if (e.swapDetection?.isSwapCandidate) return e
-    const d = txDecodes.get(e.txHash)
+    const d = txDecodes.get(txHashLower)
     if (!d || d.decodeStatus !== 'ok') return e
     const contractLower = (e.contract ?? '').toLowerCase()
-    const swapReason = swapReasons.get(e.txHash) ?? 'base_unknown_recon'
+    const swapReason = swapReasons.get(txHashLower) ?? 'base_unknown_recon'
     const confidence: 'high' | 'medium' = d.isKnownRouter ? 'high' : 'medium'
 
     if (e.direction !== 'unknown') {
@@ -5989,7 +6048,16 @@ async function buildBaseUnknownDirectionSwapReconstructionPass(
       direction = hasOutboundPayment ? 'buy' : null
     }
 
-    if (direction === null) return e
+    // Last-resort raw Base proof: same receipt/evidence tx has quote + non-quote legs, all provider
+    // directions were unknown. Promote quote as payment and non-quote as acquired token.
+    if (direction === null && swapReason.includes('raw_all_unknown_quote_token_receipt_confirmed')) {
+      direction = (WETH_CONTRACTS_PRICE[contractLower] || STABLE_USD_CONTRACTS[contractLower]) ? 'sell' : 'buy'
+    }
+
+    if (direction === null) {
+      if (e.txHash.toLowerCase() === BASE_UNKNOWN_RECON_PROBLEM_TX) skippedReasons.push(`problem_tx_event_not_promoted:${contractLower}:${e.symbol}:no_direction_inferred`)
+      return e
+    }
     syntheticSwapEventsAdded++
     if (sampleSyntheticEvents.length < 5) sampleSyntheticEvents.push({ txHash: e.txHash.slice(0, 12) + '…', symbol: e.symbol, direction })
     return {
@@ -6003,8 +6071,9 @@ async function buildBaseUnknownDirectionSwapReconstructionPass(
     debug: {
       attempted: true,
       triggerMatched: true,
+      ...baseDebugProof(),
       reason: syntheticSwapEventsAdded > 0 ? `promoted_${syntheticSwapEventsAdded}_from_${swapTxHashes.size}_swap_txs` : 'swap_txs_found_but_no_events_promoted',
-      candidateTxsChecked: toFetch.length, candidateTxHashes: toFetch.map(h => h.slice(0, 10) + '…'), mixedKnownUnknownTxs,
+      candidateTxsChecked: toFetch.length, candidateTxHashes: toFetch, includesProblemTx: toFetch.includes(BASE_UNKNOWN_RECON_PROBLEM_TX), mixedKnownUnknownTxs,
       receiptsFetched, decodedTransferLogs: totalTransferLogs, walletSideLegsFound, quoteLegsFound, tokenLegsFound,
       wethLegsFound, stableLegsFound, syntheticSwapEventsAdded, sampleTxs, sampleSyntheticEvents, skippedReasons: skippedReasons.slice(0, 15),
     },
@@ -7102,9 +7171,17 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // ── Base Unknown-Direction Swap Reconstruction Pass ──────────────────────────────────────
   // Runs when existing base recon found 0 swap candidates AND unknown-direction events exist.
   // The primary base recon skips unknown-direction events; this pass explicitly targets them.
+  const _baseUnknownProblemTxEvents = evidenceList.filter(e => (e.txHash ?? '').toLowerCase() === BASE_UNKNOWN_RECON_PROBLEM_TX)
   let _baseUnknownSwapReconDebug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['baseUnknownSwapReconstructionDebug']> = {
     attempted: false, reason: 'not_attempted', triggerMatched: false,
-    candidateTxsChecked: 0, candidateTxHashes: [], mixedKnownUnknownTxs: 0,
+    evidenceEventsInputCount: evidenceList.length,
+    candidateTxsChecked: 0, candidateTxHashes: [], includesProblemTx: false,
+    problemTxSeenInEvidence: _baseUnknownProblemTxEvents.length > 0,
+    problemTxEventCount: _baseUnknownProblemTxEvents.length,
+    problemTxSymbols: [...new Set(_baseUnknownProblemTxEvents.map(e => e.symbol).filter(Boolean))],
+    problemTxDirections: [...new Set(_baseUnknownProblemTxEvents.map(e => e.direction).filter(Boolean))],
+    problemTxChains: [...new Set(_baseUnknownProblemTxEvents.map(e => e.chain).filter(Boolean))],
+    mixedKnownUnknownTxs: 0,
     receiptsFetched: 0, decodedTransferLogs: 0, walletSideLegsFound: 0, quoteLegsFound: 0, tokenLegsFound: 0,
     wethLegsFound: 0, stableLegsFound: 0, syntheticSwapEventsAdded: 0,
     sampleTxs: [], sampleSyntheticEvents: [], skippedReasons: [],
@@ -7122,6 +7199,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       _swapEvidenceWithDetection,
       addrNorm,
       baseRpcUrl,
+      evidenceList,
     )
     _baseUnknownSwapReconDebug = unknownReconResult.debug
     tokenMeter.measure('swapDetection', unknownReconResult)
