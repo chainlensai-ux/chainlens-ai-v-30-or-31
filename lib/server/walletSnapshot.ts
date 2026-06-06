@@ -8214,6 +8214,28 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     }
   }
 
+  // ── Stale summary status cleanup ─────────────────────────────────────────────────────────
+  // buildSwapDetection runs before reconstruction and may record status/missing from an empty
+  // pre-reconstruction state. After the final summary overwrite, patch both summaries so they
+  // reflect the actual final candidate counts rather than the stale pre-reconstruction values.
+  if (walletSwapSummary.swapCandidateEvents > 0) {
+    const _swapMissingClean = walletSwapSummary.missing.filter(m => m !== 'no_swap_candidates_detected')
+    const _swapStatusClean: 'ok' | 'partial' | 'open_check' = 'ok'
+    if (walletSwapSummary.status !== _swapStatusClean || _swapMissingClean.length !== walletSwapSummary.missing.length) {
+      walletSwapSummary = { ...walletSwapSummary, status: _swapStatusClean, missing: _swapMissingClean }
+    }
+  }
+  if (walletTradeStatsSummary.closedLots === 0 && (walletLotSummary.openedLots ?? 0) > 0) {
+    const _tradeMissingClean = walletTradeStatsSummary.missing
+      .filter(m => m !== 'no_closed_lots' && m !== 'activity_not_requested')
+      .concat('no_closed_trades_yet')
+    walletTradeStatsSummary = {
+      ...walletTradeStatsSummary,
+      status: 'partial',
+      missing: _tradeMissingClean,
+    }
+  }
+
   let promotedLotSummary = walletLotSummary
   let promotedTradeStatsSummary = walletTradeStatsSummary
   if (_shouldPromote && _hcPreviewClosedLots.length > 0) {
