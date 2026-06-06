@@ -530,14 +530,24 @@ function buildWalletOpenCheck(data: WalletResult): string[] {
   const estimated = data.estimatedPnl
   const ts = data.walletTradeStatsSummary
   const hasEstimatedPnl = estimated?.status === 'ok' || estimated?.status === 'partial'
-  if (!hasEstimatedPnl && (!ts || ts.closedLots === 0)) {
+  const openedLots = ts?.openedLots ?? data.walletLotSummary?.openedLots ?? 0
+  const closedLots = ts?.closedLots ?? 0
+  const openPos = data.walletModuleCoverage?.walletOpenPositionSummary ?? data.walletOpenPositionSummary ?? null
+  const hasOpenPosition = openedLots > 0 && closedLots === 0
+  if (!hasEstimatedPnl && (!ts || closedLots === 0) && !hasOpenPosition) {
     checks.push(hasActivityProviderUnavailable(data)
       ? ACTIVITY_UNAVAILABLE_COPY
       : 'PnL remains Open Check until indexed transfer history has enough cost-basis coverage.')
   }
-  if (ts && ts.closedLots > 0 && !isTradeStatsGradeable(ts)) {
+  if (ts && closedLots > 0 && !isTradeStatsGradeable(ts)) {
     checks.push(isMicroSampleLocked(ts) ? 'Wallet score locked — matched sample is too small financially to grade.' : 'Wallet score locked — sample below 10 closed lots.')
-  } else if (!ts || ts.closedLots === 0) {
+  } else if (hasOpenPosition) {
+    checks.push('Open entries tracked — realized stats unlock after sell exits.')
+    const uniqueTokens = openPos?.uniqueTokens ?? 0
+    if (openedLots > 0 && uniqueTokens > 0) {
+      checks.push(`${openedLots} open lot${openedLots !== 1 ? 's' : ''} across ${uniqueTokens} token${uniqueTokens !== 1 ? 's' : ''}`)
+    }
+  } else if (!ts || closedLots === 0) {
     checks.push('Win rate requires matched closed lots with priced entry and exit evidence.')
   }
   checks.push('Recent trade rows require matched entries, exits, and price evidence.')
@@ -552,6 +562,18 @@ function deriveWalletPersonality(data: WalletResult): string {
   const ts = data.walletTradeStatsSummary
   const holdingCount = data.holdings.length
   const activity = data.walletBehavior
+
+  // Open-position branch: has priced open lots but no closed lots yet
+  const openedLots = ts?.openedLots ?? data.walletLotSummary?.openedLots ?? 0
+  const closedLots = ts?.closedLots ?? 0
+  const openPos = data.walletModuleCoverage?.walletOpenPositionSummary ?? data.walletOpenPositionSummary ?? null
+  if (openedLots > 0 && closedLots === 0) {
+    const openLots = openPos?.openLots ?? openedLots
+    const uniqueTokens = openPos?.uniqueTokens ?? 0
+    const tokenStr = uniqueTokens > 0 ? `${uniqueTokens} token${uniqueTokens !== 1 ? 's' : ''}` : 'tracked tokens'
+    return `This wallet shows ${holdingCount} visible holding${holdingCount !== 1 ? 's' : ''} and ${openLots} tracked open entry lot${openLots !== 1 ? 's' : ''} across ${tokenStr}. CORTEX found priced swap evidence and can read active exposure, but no sell exits have closed yet. Realized PnL, win rate, and wallet score unlock once matched closed lots are detected.`
+  }
+
   const sentences: string[] = []
   if (holdingCount > 0) {
     sentences.push(`This wallet currently shows ${holdingCount} visible token holding${holdingCount === 1 ? '' : 's'}, so the scanner can describe portfolio exposure but not trading skill by balance alone.`)
