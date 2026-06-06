@@ -352,8 +352,12 @@ export type WalletSnapshot = {
     largestWinUsd: number | null
     largestLossUsd: number | null
     confidence: 'high' | 'medium' | 'low' | 'open_check'
-    sampleSizeLabel: 'insufficient' | 'early' | 'developing' | 'strong' | 'micro_sample'
+    sampleSizeLabel: 'insufficient' | 'very_small_sample' | 'small_sample' | 'early_confidence' | 'early' | 'developing' | 'strong' | 'micro_sample'
     readyForWalletScore: boolean
+    rawStatsAvailable: boolean
+    scoreUnlocked: boolean
+    confidenceLabel: 'open_check' | 'very_small_sample' | 'small_sample' | 'early_confidence' | 'developing' | 'high'
+    sampleWarning: string | null
     meaningfulClosedLots: number
     dustClosedLots: number
     meaningfulCostBasisUsd: number
@@ -3991,7 +3995,8 @@ function buildTradeStatsSummary(
       avgHoldingTimeSeconds: null, medianHoldingTimeSeconds: null,
       largestWinUsd: null, largestLossUsd: null,
       confidence: 'open_check' as const, sampleSizeLabel: 'insufficient' as const,
-      readyForWalletScore: false,
+      readyForWalletScore: false, rawStatsAvailable: false, scoreUnlocked: false,
+      confidenceLabel: 'open_check' as const, sampleWarning: null,
       meaningfulClosedLots: 0, dustClosedLots: 0, meaningfulCostBasisUsd: 0,
       avgCostBasisPerClosedLot: null,
       economicSignificance: 'open_check' as const, economicSignificanceReason: 'no_closed_lots',
@@ -4064,7 +4069,7 @@ function buildTradeStatsSummary(
   // Requires BOTH count thresholds AND economic significance for high labels.
   type Status = 'ok' | 'partial' | 'open_check'
   type Confidence = 'high' | 'medium' | 'low' | 'open_check'
-  type SampleLabel = 'insufficient' | 'early' | 'developing' | 'strong' | 'micro_sample'
+  type SampleLabel = 'insufficient' | 'very_small_sample' | 'small_sample' | 'early_confidence' | 'early' | 'developing' | 'strong' | 'micro_sample'
   let summaryStatus: Status
   let confidence: Confidence
   let sampleSizeLabel: SampleLabel
@@ -4074,9 +4079,32 @@ function buildTradeStatsSummary(
   else if (!economicallyMeaningful)           { summaryStatus = 'partial'; confidence = 'low';    sampleSizeLabel = 'micro_sample' }
   else                                        { summaryStatus = 'partial'; confidence = 'low';    sampleSizeLabel = 'insufficient' }
 
-  // ── Win rate: requires count AND economic significance ──
+  // Sub-threshold labels for small-sample raw display
+  type ConfidenceLabel = 'open_check' | 'very_small_sample' | 'small_sample' | 'early_confidence' | 'developing' | 'high'
+  let confidenceLabel: ConfidenceLabel
+  let sampleWarning: string | null = null
+  if (n >= 25 && economicallyMeaningful) {
+    confidenceLabel = 'high'
+  } else if (n >= 10 && economicallyMeaningful) {
+    confidenceLabel = 'developing'
+  } else if (n >= 5) {
+    confidenceLabel = 'early_confidence'
+    sampleWarning = `Only ${n} closed trades found. Use as early evidence — score unlocks after 10 closed lots.`
+  } else if (n >= 3) {
+    confidenceLabel = 'small_sample'
+    sampleWarning = `Only ${n} closed trades found. Use as early evidence, not a full wallet score.`
+    sampleSizeLabel = 'small_sample'
+  } else {
+    confidenceLabel = 'very_small_sample'
+    sampleWarning = `Only ${n} closed trade${n === 1 ? '' : 's'} found. Use as early evidence, not a full wallet score.`
+    sampleSizeLabel = 'very_small_sample'
+  }
+
+  // ── Win rate: raw rate always computed when n >= 1; official rate requires threshold ──
   const winRateComputed = n >= WIN_RATE_THRESHOLD && economicallyMeaningful
-  const winRatePercent = winRateComputed ? (winning.length / n) * 100 : null
+  const winRatePercent = n >= 1 ? (winning.length / n) * 100 : null
+  const scoreUnlocked = winRateComputed
+  const rawStatsAvailable = n >= 1
 
   const avgPnlUsdPerClosedLot = totalRealizedPnl / n
   const returnPcts = closedLots.map(l => l.realizedPnlPercent).filter((v): v is number => v !== null)
@@ -4114,7 +4142,9 @@ function buildTradeStatsSummary(
       winRatePercent, avgPnlUsdPerClosedLot, avgReturnPercentPerClosedLot,
       medianReturnPercentPerClosedLot, avgHoldingTimeSeconds, medianHoldingTimeSeconds,
       largestWinUsd, largestLossUsd, confidence, sampleSizeLabel,
-      readyForWalletScore: n >= WIN_RATE_THRESHOLD && economicallyMeaningful,
+      readyForWalletScore: winRateComputed,
+      rawStatsAvailable, scoreUnlocked,
+      confidenceLabel, sampleWarning,
       meaningfulClosedLots, dustClosedLots, meaningfulCostBasisUsd,
       avgCostBasisPerClosedLot, economicSignificance, economicSignificanceReason,
       missing,
@@ -4167,7 +4197,8 @@ function buildPerSwapTradeStats(
       avgHoldingTimeSeconds: null, medianHoldingTimeSeconds: null,
       largestWinUsd: null, largestLossUsd: null,
       confidence: 'open_check' as const, sampleSizeLabel: 'insufficient' as const,
-      readyForWalletScore: false,
+      readyForWalletScore: false, rawStatsAvailable: false, scoreUnlocked: false,
+      confidenceLabel: 'open_check' as const, sampleWarning: null,
       meaningfulClosedLots: 0, dustClosedLots: 0, meaningfulCostBasisUsd: 0,
       avgCostBasisPerClosedLot: null,
       economicSignificance: 'open_check' as const, economicSignificanceReason: 'no_closed_lots',
@@ -4284,7 +4315,7 @@ function buildPerSwapTradeStats(
 
   type Status = 'ok' | 'partial' | 'open_check'
   type Confidence = 'high' | 'medium' | 'low' | 'open_check'
-  type SampleLabel = 'insufficient' | 'early' | 'developing' | 'strong' | 'micro_sample'
+  type SampleLabel = 'insufficient' | 'very_small_sample' | 'small_sample' | 'early_confidence' | 'early' | 'developing' | 'strong' | 'micro_sample'
   let summaryStatus: Status
   let confidence: Confidence
   let sampleSizeLabel: SampleLabel
@@ -4294,8 +4325,18 @@ function buildPerSwapTradeStats(
   else if (!economicallyMeaningful)           { summaryStatus = 'partial'; confidence = 'low';    sampleSizeLabel = 'micro_sample' }
   else                                        { summaryStatus = 'partial'; confidence = 'low';    sampleSizeLabel = 'insufficient' }
 
+  type ConfidenceLabel = 'open_check' | 'very_small_sample' | 'small_sample' | 'early_confidence' | 'developing' | 'high'
+  let confidenceLabel: ConfidenceLabel
+  let sampleWarning: string | null = null
+  if (n >= 10 && economicallyMeaningful) { confidenceLabel = 'developing' }
+  else if (n >= 5) { confidenceLabel = 'early_confidence'; sampleWarning = `Only ${n} closed trades found. Use as early evidence — score unlocks after 10 closed lots.`; sampleSizeLabel = 'early_confidence' }
+  else if (n >= 3) { confidenceLabel = 'small_sample'; sampleWarning = `Only ${n} closed trades found. Use as early evidence, not a full wallet score.`; sampleSizeLabel = 'small_sample' }
+  else { confidenceLabel = 'very_small_sample'; sampleWarning = `Only ${n} closed trade${n === 1 ? '' : 's'} found. Use as early evidence, not a full wallet score.`; sampleSizeLabel = 'very_small_sample' }
+
   const winRateComputed = n >= WIN_RATE_THRESHOLD && economicallyMeaningful
-  const winRatePercent = winRateComputed ? (winning.length / n) * 100 : null
+  const winRatePercent = n >= 1 ? (winning.length / n) * 100 : null
+  const scoreUnlocked = winRateComputed
+  const rawStatsAvailable = n >= 1
   const avgPnlUsdPerClosedLot = totalRealizedPnl / n
 
   const returnPcts = closedTrades.map(t => t.returnPercent).filter((v): v is number => v !== null)
@@ -4327,7 +4368,9 @@ function buildPerSwapTradeStats(
       winRatePercent, avgPnlUsdPerClosedLot, avgReturnPercentPerClosedLot,
       medianReturnPercentPerClosedLot, avgHoldingTimeSeconds: null, medianHoldingTimeSeconds: null,
       largestWinUsd, largestLossUsd, confidence, sampleSizeLabel,
-      readyForWalletScore: n >= WIN_RATE_THRESHOLD && economicallyMeaningful,
+      readyForWalletScore: winRateComputed,
+      rawStatsAvailable, scoreUnlocked,
+      confidenceLabel, sampleWarning,
       meaningfulClosedLots, dustClosedLots, meaningfulCostBasisUsd,
       avgCostBasisPerClosedLot, economicSignificance, economicSignificanceReason,
       missing,
