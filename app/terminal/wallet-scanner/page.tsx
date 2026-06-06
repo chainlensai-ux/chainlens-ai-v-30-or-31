@@ -1925,11 +1925,34 @@ export default function WalletScannerPage() {
                       <div style={{ width: '3px', height: '16px', borderRadius: '2px', background: 'linear-gradient(180deg, #a78bfa, rgba(139,92,246,0.3))', flexShrink: 0 }} />
                       <span className="ws-section-header" style={{ color: '#e2e8f0' }}>Trading Intelligence</span>
                       <span style={{ fontSize: '9px', fontWeight: 600, color: '#a78bfa', border: '1px solid rgba(139,92,246,0.22)', background: 'rgba(139,92,246,0.06)', borderRadius: '999px', padding: '2px 8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>FIFO lots</span>
+                      {/* Trade Evidence State badge */}
+                      {ts.closedLots > 0 ? (
+                        <span style={{ fontSize: '9px', fontWeight: 700, color: '#4ade80', border: '1px solid rgba(74,222,128,0.22)', background: 'rgba(74,222,128,0.06)', borderRadius: '999px', padding: '2px 8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Closed Trade Evidence</span>
+                      ) : hasOpenLots ? (
+                        <span style={{ fontSize: '9px', fontWeight: 700, color: '#fbbf24', border: '1px solid rgba(251,191,36,0.22)', background: 'rgba(251,191,36,0.06)', borderRadius: '999px', padding: '2px 8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Open Position Evidence</span>
+                      ) : (
+                        <span style={{ fontSize: '9px', fontWeight: 700, color: '#94a3b8', border: '1px solid rgba(148,163,184,0.15)', background: 'rgba(148,163,184,0.04)', borderRadius: '999px', padding: '2px 8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Portfolio / Activity Only</span>
+                      )}
                       <span style={{ fontSize: '9px', fontWeight: 600, color: ts.confidence === 'high' ? '#4ade80' : ts.confidence === 'medium' ? '#fbbf24' : '#94a3b8', border: `1px solid ${ts.confidence === 'high' ? 'rgba(74,222,128,0.20)' : ts.confidence === 'medium' ? 'rgba(251,191,36,0.20)' : 'rgba(148,163,184,0.15)'}`, background: ts.confidence === 'high' ? 'rgba(74,222,128,0.05)' : ts.confidence === 'medium' ? 'rgba(251,191,36,0.05)' : 'rgba(148,163,184,0.04)', borderRadius: '999px', padding: '2px 8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{ts.confidence === 'open_check' ? 'open check' : `${ts.confidence} confidence`}</span>
                       <span style={{ fontSize: '9px', color: 'rgba(255,255,255,0.30)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{ts.sampleSizeLabel}</span>
                     </div>
 
                     <div style={{ padding: '20px 24px' }}>
+                    {/* Evidence state context block */}
+                    {ts.closedLots > 0 ? (
+                      <div style={{ fontSize: '12px', color: 'rgba(74,222,128,0.70)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '14px', lineHeight: 1.5, background: 'rgba(74,222,128,0.04)', border: '1px solid rgba(74,222,128,0.10)', borderRadius: '8px', padding: '8px 11px' }}>
+                        CORTEX reconstructed {ts.closedLots} closed buy → sell lot{ts.closedLots !== 1 ? 's' : ''}.
+                      </div>
+                    ) : hasOpenLots ? (
+                      <div style={{ fontSize: '12px', color: 'rgba(251,191,36,0.70)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '14px', lineHeight: 1.5, background: 'rgba(251,191,36,0.04)', border: '1px solid rgba(251,191,36,0.10)', borderRadius: '8px', padding: '8px 11px' }}>
+                        CORTEX found {result.walletLotSummary?.openedLots ?? openPos?.openLots ?? 0} open entr{(result.walletLotSummary?.openedLots ?? 1) !== 1 ? 'ies' : 'y'} but no sell exits yet. Win rate and realized PnL unlock after closed trades.{' '}
+                        <span style={{ color: 'rgba(255,255,255,0.35)' }}>Rescan later after exits, or use deeper history when available.</span>
+                      </div>
+                    ) : (
+                      <div style={{ fontSize: '12px', color: 'rgba(148,163,184,0.60)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '14px', lineHeight: 1.5, background: 'rgba(148,163,184,0.03)', border: '1px solid rgba(148,163,184,0.08)', borderRadius: '8px', padding: '8px 11px' }}>
+                        No matched trade pairs found in the indexed window.
+                      </div>
+                    )}
                     {!isOpenCheck && (
                       <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.35)', fontFamily: 'var(--font-inter, Inter, sans-serif)', marginBottom: ts.economicSignificance === 'micro_sample' || ts.sampleSizeLabel === 'insufficient' ? '8px' : '16px', lineHeight: 1.5 }}>
                         Closed-lot sample only — does not include current open holdings.
@@ -2033,6 +2056,10 @@ export default function WalletScannerPage() {
                                 </div>
                               )
                             })()}
+                            {/* Win Rate helper for open-lot wallets */}
+                            <div style={{ fontSize: '11px', color: 'rgba(251,191,36,0.55)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', lineHeight: 1.55, background: 'rgba(251,191,36,0.03)', border: '1px solid rgba(251,191,36,0.08)', borderRadius: '8px', padding: '9px 12px' }}>
+                              <span style={{ fontWeight: 700, color: 'rgba(251,191,36,0.80)' }}>Win rate needs closed buy → sell pairs.</span>{' '}This wallet has open entries only — no sell exits have been detected yet. Win rate and wallet score unlock once matched closed lots are reconstructed.
+                            </div>
                           </>
                         ) : (
                           <>
