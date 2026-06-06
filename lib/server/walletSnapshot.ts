@@ -959,6 +959,20 @@ export type WalletSnapshot = {
       sampleSyntheticEvents: Array<{ txHash: string; symbol: string; direction: string }>
       skippedReasons: string[]
     }
+    baseUnknownSwapPricingDebug?: {
+      attempted: boolean
+      reconstructedEventsAvailable: boolean
+      reconstructedSwapCandidatesInput: number
+      staleSwapCandidatesBefore: number
+      activeSwapCandidateSource: string
+      finalSwapCandidateSymbols: string[]
+      finalSwapCandidateTxHashes: string[]
+      fireCandidatesFiltered: number
+      quoteLegsAvailableForPricing: number
+      pricedAfterReconstruction: number
+      unpricedAfterReconstruction: number
+      reasons: string[]
+    }
     basePnlReconstructionDebug?: {
       attempted: boolean
       reason: string
@@ -1260,7 +1274,7 @@ export type WalletSnapshotOptions = {
 
 const SNAPSHOT_TTL_MS         = 5  * 60 * 1000
 const SNAPSHOT_HISTORY_TTL_MS = 15 * 60 * 1000
-const SNAPSHOT_SCHEMA_VERSION = 'v31'
+const SNAPSHOT_SCHEMA_VERSION = 'v32'
 type SnapshotCacheEntry = { snapshot: WalletSnapshot; cachedAt: number; ttlMs: number }
 const snapshotMemCache = new Map<string, SnapshotCacheEntry>()
 
@@ -3292,9 +3306,12 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
     } else if (hasInboundOutbound && txHasStableOrWeth) {
       detection = { isSwapCandidate: true, confidence: 'medium', eventKind: 'swap_candidate', reason: 'Inbound+outbound in same tx with stable/WETH leg', matchedProtocol: thisContractLabel, matchedAddress: e.contract?.toLowerCase() ?? null }
       sameTxInboundOutboundCandidatesCount++
-    } else if (hasInboundOutbound) {
+    } else if (hasInboundOutbound && hasMultipleDistinctTokens) {
       detection = { isSwapCandidate: true, confidence: 'medium', eventKind: 'swap_candidate', reason: 'Inbound+outbound token transfers in same tx', matchedProtocol: null, matchedAddress: null }
       sameTxInboundOutboundCandidatesCount++
+    } else if (hasInboundOutbound) {
+      // Same-token round-trip (e.g. rebasing/self-routing): same contract both in+out, no quote leg — not a swap
+      detection = { isSwapCandidate: false, confidence: 'low', eventKind: 'unknown', reason: 'Inbound+outbound same contract with no quote leg — self-routing or rebasing', matchedProtocol: null, matchedAddress: null }
     } else if (walletIsInitiator && hasMultipleDistinctTokens && (hasBuy || hasSell) && txHasStableOrWeth) {
       // Medium confidence: wallet-initiated multi-token tx with stable/WETH — likely swap via aggregator or indirect router
       detection = {
@@ -7309,6 +7326,37 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   tokenMeter.measure('priceInference', _pricedEvidence, walletPriceEvidenceSummary, _priceAtTimeDebug)
   tokenMeter.endTokenMeter('priceInference')
 
+  // ── Base Unknown Swap Pricing Debug ─────────────────────────────────────────────────────
+  let _baseUnknownSwapPricingDebug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['baseUnknownSwapPricingDebug']> = {
+    attempted: false, reconstructedEventsAvailable: false, reconstructedSwapCandidatesInput: 0,
+    staleSwapCandidatesBefore: 0, activeSwapCandidateSource: 'original_swap_detection',
+    finalSwapCandidateSymbols: [], finalSwapCandidateTxHashes: [], fireCandidatesFiltered: 0,
+    quoteLegsAvailableForPricing: 0, pricedAfterReconstruction: 0, unpricedAfterReconstruction: 0, reasons: [],
+  }
+  if (_baseUnknownSwapReconDebug.syntheticSwapEventsAdded > 0) {
+    const _reconCandidates = _swapEvidenceWithDetection.filter(e => e.swapDetection?.isSwapCandidate)
+    const _reconQuoteLegs = _reconCandidates.filter(e => {
+      const cl = (e.contract ?? '').toLowerCase()
+      return Boolean(WETH_CONTRACTS_PRICE[cl]) || Boolean(STABLE_USD_CONTRACTS[cl])
+    })
+    const _reconUnpricedCount = _reconCandidates.filter(e => !e.priceAtTime?.priceUsd).length
+    _baseUnknownSwapPricingDebug = {
+      attempted: true, reconstructedEventsAvailable: true,
+      reconstructedSwapCandidatesInput: _reconCandidates.length,
+      staleSwapCandidatesBefore: _baseUnknownSwapReconDebug.syntheticSwapEventsAdded,
+      activeSwapCandidateSource: 'base_unknown_reconstruction',
+      finalSwapCandidateSymbols: [...new Set(_reconCandidates.map(e => e.symbol).filter(Boolean))].slice(0, 10) as string[],
+      finalSwapCandidateTxHashes: [...new Set(_reconCandidates.map(e => e.txHash).filter(Boolean))].slice(0, 5).map(h => h.slice(0, 10) + '…'),
+      fireCandidatesFiltered: 0,
+      quoteLegsAvailableForPricing: _reconQuoteLegs.length,
+      pricedAfterReconstruction: walletPriceEvidenceSummary.pricedEvents,
+      unpricedAfterReconstruction: _reconUnpricedCount,
+      reasons: walletPriceEvidenceSummary.pricedEvents > 0
+        ? ['priced_ok']
+        : _reconQuoteLegs.length > 0 ? ['quote_legs_present_but_unpriced'] : ['no_quote_legs_for_pricing'],
+    }
+  }
+
   // ── Unpriced Candidate Receipt Pass ─────────────────────────────────────────────────────
   // When swap candidates exist but none were priced (no stable/WETH leg in activity feed,
   // historical price failed), fetch receipts for those exact tx hashes to find hidden quote
@@ -8566,6 +8614,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       ethSwapReconstructionDebug: _ethSwapReconstructionDebug,
       basePnlReconstructionDebug: _basePnlReconDebug,
       baseUnknownSwapReconstructionDebug: _baseUnknownSwapReconDebug,
+      baseUnknownSwapPricingDebug: _baseUnknownSwapPricingDebug,
       baseFifoCoverageDebug: _baseFifoCoverageDebug,
       walletActivityRoutingDebug: _walletActivityRoutingDebug,
       walletChainActivityMergeDebug: _walletChainActivityMergeDebug,
