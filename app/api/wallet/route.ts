@@ -1140,6 +1140,12 @@ export async function POST(req: Request) {
             priceAttemptsSavedByBudget: Math.max(0, _priceAttemptsPlanned - _priceAttemptsUsed),
             priceBudgetExpanded: (_budgetDbgForCost?.expansionEligible) ?? false,
             priceBudgetExpansionReason: (_budgetDbgForCost?.expansionReason) ?? null,
+            historicalScanRequested: historicalScanRequested,
+            historicalCreditBudget: (snapshot as any)?._diagnostics?.walletHistoricalScanDebug?.pagesAllowed ?? 0,
+            historicalCreditsUsed: (snapshot as any)?._diagnostics?.walletHistoricalScanDebug?.estimatedCreditUnits ?? 0,
+            historicalCreditsSavedByCache: (snapshot as any)?._diagnostics?.walletHistoricalScanDebug?.cacheHit ? ((snapshot as any)?._diagnostics?.walletHistoricalScanDebug?.pagesAllowed ?? 0) : 0,
+            historicalBudgetCapHit: (snapshot as any)?._diagnostics?.walletHistoricalScanDebug?.budgetCapHit ?? false,
+            historicalSkippedReason: (snapshot as any)?._diagnostics?.walletHistoricalScanDebug?.stopReason ?? null,
             totals: {
               liveProviderCalls: liveCalls,
               cachedProviderCalls: cachedCalls,
