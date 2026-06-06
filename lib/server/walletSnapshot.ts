@@ -343,6 +343,7 @@ export type WalletSnapshot = {
     winningClosedLots: number
     losingClosedLots: number
     breakEvenClosedLots: number
+    isBreakEvenOnly: boolean
     winRatePercent: number | null
     avgPnlUsdPerClosedLot: number | null
     avgReturnPercentPerClosedLot: number | null
@@ -464,6 +465,7 @@ export type WalletSnapshot = {
   cacheAgeSeconds?: number | null
   walletScanCostMode?: 'basic' | 'basic_cached' | 'deep_cached' | 'deep_live' | 'historical_cached' | 'historical_live' | 'blocked_by_cooldown' | 'blocked_by_cost_guard'
   walletScanCacheNote?: string
+  walletActivityCoverageNote?: string | null
   walletFacts?: WalletFacts
   _debug?: {
     walletFactsShapeIssues?: string[]
@@ -1062,6 +1064,10 @@ export type WalletSnapshot = {
       activeChainsBeforeValueGate: string[]
       activeChainsAfterValueGate: string[]
       activeChainsUsedForActivity: string[]
+      chainsDiscoveredNotScannedForActivity: string[]
+      chainsExcludedByCap: string[]
+      chainsExcludedByUnsupported: string[]
+      chainsExcludedByProviderSafety: string[]
       minChainValueUsd: number
       skippedDustChains: string[]
       portfolioStatus: string
@@ -1291,7 +1297,7 @@ export type WalletSnapshotOptions = {
 
 const SNAPSHOT_TTL_MS         = 5  * 60 * 1000
 const SNAPSHOT_HISTORY_TTL_MS = 15 * 60 * 1000
-const SNAPSHOT_SCHEMA_VERSION = 'v36'
+const SNAPSHOT_SCHEMA_VERSION = 'v37'
 type SnapshotCacheEntry = { snapshot: WalletSnapshot; cachedAt: number; ttlMs: number }
 const snapshotMemCache = new Map<string, SnapshotCacheEntry>()
 
@@ -3989,7 +3995,7 @@ function buildTradeStatsSummary(
     summary: {
       status: 'open_check' as const, closedLots: 0, uniqueTokensTraded: 0,
       realizedPnlUsd: null, realizedPnlPercent: null,
-      winningClosedLots: 0, losingClosedLots: 0, breakEvenClosedLots: 0,
+      winningClosedLots: 0, losingClosedLots: 0, breakEvenClosedLots: 0, isBreakEvenOnly: false,
       winRatePercent: null, avgPnlUsdPerClosedLot: null,
       avgReturnPercentPerClosedLot: null, medianReturnPercentPerClosedLot: null,
       avgHoldingTimeSeconds: null, medianHoldingTimeSeconds: null,
@@ -4101,6 +4107,7 @@ function buildTradeStatsSummary(
   }
 
   // ── Win rate: raw rate always computed when n >= 1; official rate requires threshold ──
+  const isBreakEvenOnly = n > 0 && winning.length === 0 && losing.length === 0 && breakEven.length === n
   const winRateComputed = n >= WIN_RATE_THRESHOLD && economicallyMeaningful
   const winRatePercent = n >= 1 ? (winning.length / n) * 100 : null
   const scoreUnlocked = winRateComputed
@@ -4138,7 +4145,7 @@ function buildTradeStatsSummary(
     summary: {
       status: summaryStatus, closedLots: n, uniqueTokensTraded,
       realizedPnlUsd: totalRealizedPnl, realizedPnlPercent,
-      winningClosedLots: winning.length, losingClosedLots: losing.length, breakEvenClosedLots: breakEven.length,
+      winningClosedLots: winning.length, losingClosedLots: losing.length, breakEvenClosedLots: breakEven.length, isBreakEvenOnly,
       winRatePercent, avgPnlUsdPerClosedLot, avgReturnPercentPerClosedLot,
       medianReturnPercentPerClosedLot, avgHoldingTimeSeconds, medianHoldingTimeSeconds,
       largestWinUsd, largestLossUsd, confidence, sampleSizeLabel,
@@ -4191,7 +4198,7 @@ function buildPerSwapTradeStats(
     summary: {
       status: 'open_check' as const, closedLots: 0, uniqueTokensTraded: 0,
       realizedPnlUsd: null, realizedPnlPercent: null,
-      winningClosedLots: 0, losingClosedLots: 0, breakEvenClosedLots: 0,
+      winningClosedLots: 0, losingClosedLots: 0, breakEvenClosedLots: 0, isBreakEvenOnly: false,
       winRatePercent: null, avgPnlUsdPerClosedLot: null,
       avgReturnPercentPerClosedLot: null, medianReturnPercentPerClosedLot: null,
       avgHoldingTimeSeconds: null, medianHoldingTimeSeconds: null,
@@ -4333,6 +4340,7 @@ function buildPerSwapTradeStats(
   else if (n >= 3) { confidenceLabel = 'small_sample'; sampleWarning = `Only ${n} closed trades found. Use as early evidence, not a full wallet score.`; sampleSizeLabel = 'small_sample' }
   else { confidenceLabel = 'very_small_sample'; sampleWarning = `Only ${n} closed trade${n === 1 ? '' : 's'} found. Use as early evidence, not a full wallet score.`; sampleSizeLabel = 'very_small_sample' }
 
+  const isBreakEvenOnly = n > 0 && winning.length === 0 && losing.length === 0 && breakEven.length === n
   const winRateComputed = n >= WIN_RATE_THRESHOLD && economicallyMeaningful
   const winRatePercent = n >= 1 ? (winning.length / n) * 100 : null
   const scoreUnlocked = winRateComputed
@@ -4364,7 +4372,7 @@ function buildPerSwapTradeStats(
     summary: {
       status: summaryStatus, closedLots: n, uniqueTokensTraded,
       realizedPnlUsd: totalRealizedPnl, realizedPnlPercent,
-      winningClosedLots: winning.length, losingClosedLots: losing.length, breakEvenClosedLots: breakEven.length,
+      winningClosedLots: winning.length, losingClosedLots: losing.length, breakEvenClosedLots: breakEven.length, isBreakEvenOnly,
       winRatePercent, avgPnlUsdPerClosedLot, avgReturnPercentPerClosedLot,
       medianReturnPercentPerClosedLot, avgHoldingTimeSeconds: null, medianHoldingTimeSeconds: null,
       largestWinUsd, largestLossUsd, confidence, sampleSizeLabel,
@@ -6887,11 +6895,19 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     if (_hc === 'eth' || _hc.includes('ethereum')) _fbEthValue += h.value ?? 0
     else if (_hc === 'base' || _hc.includes('base')) _fbBaseValue += h.value ?? 0
   }
-  const _fbChain: 'eth' | 'base' = requestedChain === 'eth' ? 'eth'
+  // Deep activity scans: pick the highest-portfolio-value supported chain for Moralis transfers.
+  // Normal scans: keep eth/base-only behavior. Explicit requestedChain always wins.
+  const _fbChain: MoralisChain = requestedChain === 'eth' ? 'eth'
     : requestedChain === 'base' ? 'base'
-    : (deepActivity && _fbEthValue > _fbBaseValue) ? 'eth'
-    : 'base'
-  const _fbChainName: string = _fbChain === 'base' ? 'base-mainnet' : 'eth-mainnet'
+    : deepActivity
+      ? (() => {
+          const topSupported = discoveredChains.find(c => supportedMoralisChains.includes(c.chain) && c.usdValue >= minChainValueUsd)
+          return topSupported?.chain ?? (_fbEthValue > _fbBaseValue ? 'eth' : 'base')
+        })()
+      : (_fbEthValue > _fbBaseValue ? 'eth' : 'base')
+  const _fbChainName: string = _fbChain === 'base' ? 'base-mainnet'
+    : _fbChain === 'eth' ? 'eth-mainnet'
+    : _fbChain
   let _fbNextCursor: string | null = null
   type _MoralisFbDebug = {
     primaryActivityAttempted: boolean; primaryActivityFailed: boolean; primaryActivityStatusCode: number | null
@@ -7010,7 +7026,9 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     mergeBaseEvents: number; mergeEthEvents: number; mergeTotal: number; mergeDeduped: number
     supplementCacheHit: boolean
   }
-  const _p18SupplementChain: 'eth' | 'base' = _fbChain === 'eth' ? 'base' : 'eth'
+  const _p18SupplementChain: 'eth' | 'base' = _fbChain === 'eth' ? 'base'
+    : _fbChain === 'base' ? 'eth'
+    : (_fbEthValue >= _fbBaseValue ? 'eth' : 'base')
   const _p18SupplementChainName = _p18SupplementChain === 'eth' ? 'eth-mainnet' : 'base-mainnet'
   const _p18SupplementValue = chainValueMap.get(_p18SupplementChain as MoralisChain) ?? 0
   const _p18GrAlreadyCovered = _p18SupplementChain === 'eth' ? grEth.events.length > 0 : grBase.events.length > 0
@@ -8475,6 +8493,17 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       : walletEvidenceSummary.totalEvents === 0 && activityProviderUnavailable
       ? 'activity_provider_returned_empty'
       : null
+    // Chains discovered with significant value but no activity provider covers them
+    const _activityOnlyChains = new Set(['eth', 'base'])  // chains with dedicated activity providers
+    const _significantDiscovered = discoveredChains.filter(c => c.usdValue >= minChainValueUsd)
+    const _unsupported = _significantDiscovered.filter(c => !supportedMoralisChains.includes(c.chain)).map(c => c.chain as string)
+    // Supported chains cut by the activeChains cap (chains that were in discoveredChains but not in activeChains)
+    const _excByCap = _significantDiscovered.filter(c => supportedMoralisChains.includes(c.chain) && !activeChains.includes(c.chain)).map(c => c.chain as string)
+    // Supported, in activeChains for portfolio, but no dedicated activity provider and not chosen as Moralis fb chain
+    const _excByProviderSafety = _significantDiscovered.filter(c =>
+      supportedMoralisChains.includes(c.chain) && !_activityOnlyChains.has(c.chain) && c.chain !== _fbChain
+    ).map(c => c.chain as string)
+    const _notScannedForActivity = _significantDiscovered.filter(c => !(_actChainsUsed as string[]).includes(c.chain as string)).map(c => c.chain as string)
     return {
       deepActivityRequested: deepActivity,
       chainMode,
@@ -8483,6 +8512,10 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       activeChainsBeforeValueGate: _activeChainsBeforeValueGate as string[],
       activeChainsAfterValueGate: _activeChainsAfterValueGate as string[],
       activeChainsUsedForActivity: _actChainsUsed as string[],
+      chainsDiscoveredNotScannedForActivity: _notScannedForActivity,
+      chainsExcludedByCap: _excByCap,
+      chainsExcludedByUnsupported: _unsupported,
+      chainsExcludedByProviderSafety: _excByProviderSafety,
       minChainValueUsd,
       skippedDustChains: skippedDustChains as string[],
       portfolioStatus: providerStatus,
@@ -8796,6 +8829,27 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   tokenMeter.endTokenMeter('debugLogging')
   if (tokenMeter.wasDebugAutoDisabled()) snapshot.debugAutoDisabled = true
   snapshot.tokenUsage = tokenMeter.snapshot()
+
+  // Public activity coverage note: surface when meaningful chains were discovered but not scanned
+  const _chainDisplayName: Partial<Record<MoralisChain, string>> = {
+    bsc: 'BNB Smart Chain', polygon: 'Polygon', arbitrum: 'Arbitrum',
+    optimism: 'Optimism', avalanche: 'Avalanche', fantom: 'Fantom',
+    cronos: 'Cronos', gnosis: 'Gnosis',
+  }
+  const _actRoutingDbg = snapshot._diagnostics?.walletActivityRoutingDebug
+  if (_actRoutingDbg && activityRequested) {
+    const _notScanned = (_actRoutingDbg.chainsDiscoveredNotScannedForActivity ?? []).filter(c => c !== 'eth' && c !== 'base')
+    if (_notScanned.length > 0) {
+      const _scannedNames = (_actRoutingDbg.activeChainsUsedForActivity ?? []).map(c => {
+        if (c === 'eth') return 'ETH'
+        if (c === 'base') return 'Base'
+        return _chainDisplayName[c as MoralisChain] ?? c.toUpperCase()
+      })
+      const _skippedNames = _notScanned.map(c => _chainDisplayName[c as MoralisChain] ?? c.toUpperCase())
+      const _scannedStr = _scannedNames.length > 0 ? _scannedNames.join(' and ') : 'detected chains'
+      snapshot.walletActivityCoverageNote = `Trading evidence covers ${_scannedStr} activity. ${_skippedNames.join(', ')} activity was detected but not included in this scan — trade stats may be incomplete.`
+    }
+  }
 
   // Requirement 8: validate audit before returning — if unhealthy, surface warnings prominently
   if (_apiAudit.warnings.length > 0 && snapshot._diagnostics?.apiAudit) {

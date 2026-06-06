@@ -175,6 +175,7 @@ type WalletResult = {
     winningClosedLots: number
     losingClosedLots: number
     breakEvenClosedLots: number
+    isBreakEvenOnly?: boolean
     winRatePercent: number | null
     avgPnlUsdPerClosedLot: number | null
     avgReturnPercentPerClosedLot: number | null
@@ -328,6 +329,7 @@ type WalletResult = {
       reason: string
     }
   }
+  walletActivityCoverageNote?: string | null
   _debug?: {
     basePnlReconstructionDebug?: {
       sampleUnpricedAfterReceipt?: Array<{ txHash: string; symbol: string; finalReason: string }>
@@ -1961,6 +1963,11 @@ export default function WalletScannerPage() {
                         No matched trade pairs found in the indexed window.
                       </div>
                     )}
+                    {result.walletActivityCoverageNote && (
+                      <div style={{ fontSize: '11px', color: 'rgba(251,191,36,0.65)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '10px', lineHeight: 1.55, background: 'rgba(251,191,36,0.03)', border: '1px solid rgba(251,191,36,0.10)', borderRadius: '8px', padding: '7px 11px' }}>
+                        <span style={{ fontWeight: 700, color: 'rgba(251,191,36,0.80)' }}>Partial chain coverage:</span>{' '}{result.walletActivityCoverageNote}
+                      </div>
+                    )}
                     {!isOpenCheck && (
                       <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.35)', fontFamily: 'var(--font-inter, Inter, sans-serif)', marginBottom: ts.economicSignificance === 'micro_sample' || ts.sampleSizeLabel === 'insufficient' ? '8px' : '16px', lineHeight: 1.5 }}>
                         Closed-lot sample only — does not include current open holdings.
@@ -2120,14 +2127,16 @@ export default function WalletScannerPage() {
 
                         {(() => {
                           const rawWinRate = ts.closedLots > 0 ? ts.winRatePercent ?? (ts.winningClosedLots / ts.closedLots) * 100 : null
+                          const isBreakEvenOnly = ts.isBreakEvenOnly === true || (ts.closedLots > 0 && ts.winningClosedLots === 0 && ts.losingClosedLots === 0 && ts.breakEvenClosedLots === ts.closedLots)
                           const isSmallSample = ts.closedLots > 0 && !hasEnough
-                          const earlyCards: Array<{ label: string; value: string | null; locked?: boolean; lockNote?: string; pnl?: number | null; raw?: boolean }> = [
+                          const earlyCards: Array<{ label: string; value: string | null; locked?: boolean; lockNote?: string; pnl?: number | null; raw?: boolean; breakEven?: boolean }> = [
                             {
                               label: hasEnough ? 'Win Rate' : isSmallSample ? 'Win Rate (raw)' : 'Win Rate',
-                              value: rawWinRate !== null ? `${rawWinRate.toFixed(1)}%` : null,
-                              locked: rawWinRate === null,
+                              value: isBreakEvenOnly ? 'Break-even only' : rawWinRate !== null ? `${rawWinRate.toFixed(1)}%` : null,
+                              locked: !isBreakEvenOnly && rawWinRate === null,
                               lockNote: officialWinRateLockCopy(ts),
-                              raw: isSmallSample && rawWinRate !== null,
+                              raw: !isBreakEvenOnly && isSmallSample && rawWinRate !== null,
+                              breakEven: isBreakEvenOnly,
                             },
                             { label: 'Avg PnL / Lot', value: ts.avgPnlUsdPerClosedLot !== null ? fmtSignedUSD(ts.avgPnlUsdPerClosedLot) : '—', pnl: ts.avgPnlUsdPerClosedLot },
                             { label: 'Avg Return / Lot', value: ts.avgReturnPercentPerClosedLot !== null ? `${ts.avgReturnPercentPerClosedLot >= 0 ? '+' : ''}${ts.avgReturnPercentPerClosedLot.toFixed(1)}%` : '—', pnl: ts.avgReturnPercentPerClosedLot },
@@ -2138,17 +2147,18 @@ export default function WalletScannerPage() {
                           return (
                             <div className="wallet-intel-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: '10px', marginBottom: '14px' }}>
                               {earlyCards.map(card => (
-                                <div key={card.label} style={{ background: card.raw ? 'rgba(251,191,36,0.05)' : 'rgba(255,255,255,0.03)', border: `1px solid ${card.raw ? 'rgba(251,191,36,0.20)' : 'rgba(255,255,255,0.07)'}`, borderRadius: '12px', padding: '12px' }}>
-                                  <div style={{ fontSize: '9px', color: card.raw ? 'rgba(251,191,36,0.65)' : 'rgba(255,255,255,0.28)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '7px' }}>{card.label}</div>
+                                <div key={card.label} style={{ background: card.breakEven ? 'rgba(148,163,184,0.05)' : card.raw ? 'rgba(251,191,36,0.05)' : 'rgba(255,255,255,0.03)', border: `1px solid ${card.breakEven ? 'rgba(148,163,184,0.18)' : card.raw ? 'rgba(251,191,36,0.20)' : 'rgba(255,255,255,0.07)'}`, borderRadius: '12px', padding: '12px' }}>
+                                  <div style={{ fontSize: '9px', color: card.breakEven ? 'rgba(148,163,184,0.65)' : card.raw ? 'rgba(251,191,36,0.65)' : 'rgba(255,255,255,0.28)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '7px' }}>{card.label}</div>
                                   {card.locked ? (
                                     <div style={{ fontSize: '11px', color: '#7dd3fc', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', lineHeight: 1.4 }}>
                                       Not calculated yet
                                       <div style={{ fontSize: '9px', color: 'rgba(125,211,252,0.55)', marginTop: '3px' }}>{card.lockNote}</div>
                                     </div>
                                   ) : (
-                                    <div style={{ fontSize: '16px', fontWeight: 800, fontFamily: 'var(--font-inter, Inter, sans-serif)', color: card.raw ? '#fbbf24' : ('pnl' in card && card.pnl !== null && card.pnl !== undefined ? (card.pnl >= 0 ? '#4ade80' : '#f87171') : '#e2e8f0') }}>{card.value}</div>
+                                    <div style={{ fontSize: card.breakEven ? '13px' : '16px', fontWeight: 800, fontFamily: 'var(--font-inter, Inter, sans-serif)', color: card.breakEven ? 'rgba(148,163,184,0.80)' : card.raw ? '#fbbf24' : ('pnl' in card && card.pnl !== null && card.pnl !== undefined ? (card.pnl >= 0 ? '#4ade80' : '#f87171') : '#e2e8f0') }}>{card.value}</div>
                                   )}
-                                  {card.raw && <div style={{ fontSize: '9px', color: 'rgba(251,191,36,0.50)', marginTop: '3px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>raw · score unlocks at 10+</div>}
+                                  {card.breakEven && <div style={{ fontSize: '9px', color: 'rgba(148,163,184,0.50)', marginTop: '3px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>no decisive trades · score unlocks at 10+</div>}
+                                  {card.raw && !card.breakEven && <div style={{ fontSize: '9px', color: 'rgba(251,191,36,0.50)', marginTop: '3px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>raw · score unlocks at 10+</div>}
                                 </div>
                               ))}
                             </div>
