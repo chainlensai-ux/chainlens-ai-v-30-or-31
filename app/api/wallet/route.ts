@@ -163,6 +163,73 @@ function buildWalletModuleCoverage(snap: any) {
     }
   })() : null
 
+  // Open position performance — match open lots against holdings by exact chain + contract
+  const _snapHoldings: Array<{ contract?: string; symbol?: string; chain?: string | null; price?: number | null; value?: number; balance?: number }> =
+    snap.holdings ?? []
+  const openPositionPerformanceSummary = walletOpenPositionSummary ? (() => {
+    type PerfToken = {
+      symbol: string; chain: string; openLots: number
+      amountRemaining: number
+      avgEntryPriceUsd: number | null
+      currentPriceUsd: number | null
+      currentValueUsd: number | null
+      costBasisUsd: number
+      unrealizedPnlUsd: number | null
+      unrealizedPnlPercent: number | null
+    }
+    // Build a symbol+chain → tokenAddress map from _sampleOpenLots for contract-based matching
+    const _lotAddressMap = new Map<string, string>()
+    for (const lot of _sampleOpenLots) {
+      const k = `${(lot.chain ?? '').toLowerCase()}:${lot.symbol.toUpperCase()}`
+      if (!_lotAddressMap.has(k)) _lotAddressMap.set(k, lot.tokenAddress.toLowerCase())
+    }
+
+    const perfTokens: PerfToken[] = walletOpenPositionSummary.tokens.map(t => {
+      const lotKey = `${(t.chain ?? '').toLowerCase()}:${t.symbol.toUpperCase()}`
+      const lotAddressKey = _lotAddressMap.get(lotKey) ?? null
+      const matchedHolding = _snapHoldings.find(h => {
+        if (!h) return false
+        const hChain = (h.chain ?? '').toLowerCase()
+        const tChain = (t.chain ?? '').toLowerCase()
+        if (lotAddressKey && h.contract && h.contract.toLowerCase() === lotAddressKey && hChain === tChain) return true
+        // fallback: same chain + same symbol (only if no contract ambiguity)
+        return hChain === tChain && (h.symbol ?? '').toUpperCase() === t.symbol.toUpperCase()
+      })
+      const currentPriceUsd = matchedHolding?.price ?? null
+      const currentValueUsd = currentPriceUsd !== null ? t.totalAmount * currentPriceUsd : null
+      const costBasisUsd = t.totalCostBasisUsd
+      const unrealizedPnlUsd = currentValueUsd !== null ? currentValueUsd - costBasisUsd : null
+      const unrealizedPnlPercent = unrealizedPnlUsd !== null && costBasisUsd > 0 ? (unrealizedPnlUsd / costBasisUsd) * 100 : null
+      return {
+        symbol: t.symbol, chain: t.chain, openLots: t.openLots,
+        amountRemaining: t.totalAmount,
+        avgEntryPriceUsd: t.avgEntryPriceUsd,
+        currentPriceUsd, currentValueUsd, costBasisUsd,
+        unrealizedPnlUsd, unrealizedPnlPercent,
+      }
+    })
+    const totalCostBasis = perfTokens.reduce((s, t) => s + t.costBasisUsd, 0)
+    const matchedTokens = perfTokens.filter(t => t.currentValueUsd !== null)
+    const totalCurrentValueUsd = matchedTokens.length === perfTokens.length
+      ? perfTokens.reduce((s, t) => s + (t.currentValueUsd ?? 0), 0)
+      : null
+    const totalUnrealizedPnlUsd = totalCurrentValueUsd !== null ? totalCurrentValueUsd - totalCostBasis : null
+    const totalUnrealizedPnlPercent = totalUnrealizedPnlUsd !== null && totalCostBasis > 0
+      ? (totalUnrealizedPnlUsd / totalCostBasis) * 100
+      : null
+    return {
+      status: 'partial' as const,
+      openLots: walletOpenPositionSummary.openLots,
+      uniqueTokens: walletOpenPositionSummary.uniqueTokens,
+      totalOpenCostBasisUsd: totalCostBasis > 0 ? totalCostBasis : null,
+      totalCurrentValueUsd,
+      totalUnrealizedPnlUsd,
+      totalUnrealizedPnlPercent,
+      allTokensMatched: matchedTokens.length === perfTokens.length,
+      tokens: perfTokens,
+    }
+  })() : null
+
   // Behavior
   const txCount: number = bh?.txCount ?? 0
   const bhStatus = bh?.status === 'ok' && txCount > 0 ? 'ok' : bh?.status === 'ok' || bh?.status === 'partial' ? 'partial' : 'open_check'
@@ -176,6 +243,7 @@ function buildWalletModuleCoverage(snap: any) {
     tradeStats: { status: tradeStatus, closedLots: tradeClosedLots, openedLots, readyForWinRate, reason: tradeReason },
     behavior: { status: bhStatus, reason: bhStatus === 'ok' ? 'activity_detected' : bhStatus === 'partial' ? 'limited_activity_signal' : 'no_activity_data' },
     walletOpenPositionSummary,
+    openPositionPerformanceSummary,
   }
 }
 
@@ -629,6 +697,9 @@ export async function POST(req: Request) {
     snapshot.walletModuleCoverage = walletModuleCoverage
     if (walletModuleCoverage.walletOpenPositionSummary) {
       snapshot.walletOpenPositionSummary = walletModuleCoverage.walletOpenPositionSummary
+    }
+    if (walletModuleCoverage.openPositionPerformanceSummary) {
+      snapshot.openPositionPerformanceSummary = walletModuleCoverage.openPositionPerformanceSummary
     }
 
     // Cache quality gate — block writes when portfolio clearly failed while activity succeeded
