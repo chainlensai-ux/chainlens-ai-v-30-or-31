@@ -1920,6 +1920,7 @@ export default function WalletScannerPage() {
                 const isOpenCheck = !hasClosedTradeEvidence
                 const openPos = result.walletModuleCoverage?.walletOpenPositionSummary ?? result.walletOpenPositionSummary ?? null
                 const hasEnough = isTradeStatsGradeable(ts)
+                const isBreakEvenOnly = ts.isBreakEvenOnly === true || ((_tiClosedLots > 0) && ts.winningClosedLots === 0 && ts.losingClosedLots === 0 && (ts.breakEvenClosedLots ?? 0) === _tiClosedLots)
                 function fmtHoldTime(seconds: number | null): string {
                   if (seconds === null || !Number.isFinite(seconds)) return '—'
                   const h = Math.floor(seconds / 3600)
@@ -1968,9 +1969,21 @@ export default function WalletScannerPage() {
                         <span style={{ fontWeight: 700, color: 'rgba(251,191,36,0.80)' }}>Partial chain coverage:</span>{' '}{result.walletActivityCoverageNote}
                       </div>
                     )}
+                    {!isOpenCheck && isBreakEvenOnly && (ls?.unmatchedSells ?? 0) > 0 && (
+                      <div style={{ fontSize: '12px', color: 'rgba(251,191,36,0.80)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '12px', lineHeight: 1.55, background: 'rgba(251,191,36,0.05)', border: '1px solid rgba(251,191,36,0.18)', borderRadius: '10px', padding: '10px 13px' }}>
+                        <div style={{ fontWeight: 700, fontSize: '11px', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: '5px' }}>Missing Entry History</div>
+                        <div style={{ fontSize: '11px', color: 'rgba(251,191,36,0.70)' }}>
+                          {ls!.unmatchedSells} exit{ls!.unmatchedSells !== 1 ? 's were' : ' was'} found with no matching buy inside the indexed window.
+                          These exits are excluded from the FIFO score — they cannot be graded as wins or losses without knowing the original entry cost.
+                          If earlier buy transactions exist on-chain, deeper history would allow CORTEX to match them and unlock a full realized PnL picture.
+                        </div>
+                      </div>
+                    )}
                     {!isOpenCheck && (
                       <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.35)', fontFamily: 'var(--font-inter, Inter, sans-serif)', marginBottom: ts.economicSignificance === 'micro_sample' || ts.sampleSizeLabel === 'insufficient' ? '8px' : '16px', lineHeight: 1.5 }}>
-                        Closed-lot sample only — does not include current open holdings.
+                        {isBreakEvenOnly
+                          ? 'Break-even sample only — no decisive winning or losing closed lots yet.'
+                          : 'Closed-lot sample only — does not include current open holdings.'}
                       </div>
                     )}
                     {!isOpenCheck && ts.economicSignificance === 'micro_sample' && (
@@ -2110,19 +2123,22 @@ export default function WalletScannerPage() {
                     ) : (
                       <>
                         <div className="wallet-intel-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: '10px', marginBottom: '10px' }}>
-                          {[
-                            { label: 'Closed Lots', value: String(ts.closedLots) },
-                            { label: 'Matched Realized PnL', value: ts.realizedPnlUsd !== null ? fmtSignedUSD(ts.realizedPnlUsd) : '—', pnl: ts.realizedPnlUsd },
-                            { label: 'Return', value: ts.realizedPnlPercent !== null ? `${ts.realizedPnlPercent >= 0 ? '+' : ''}${ts.realizedPnlPercent.toFixed(1)}%` : '—', pnl: ts.realizedPnlPercent },
-                            { label: 'Tokens Traded', value: String(ts.uniqueTokensTraded) },
-                            { label: 'Wins', value: String(ts.winningClosedLots) },
-                            { label: 'Losses', value: String(ts.losingClosedLots) },
-                          ].map(card => (
-                            <div key={card.label} style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '12px', padding: '12px' }}>
-                              <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.28)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '7px' }}>{card.label}</div>
-                              <div style={{ fontSize: '18px', fontWeight: 800, fontFamily: 'var(--font-inter, Inter, sans-serif)', color: 'pnl' in card && card.pnl !== null && card.pnl !== undefined ? (card.pnl >= 0 ? '#4ade80' : '#f87171') : '#e2e8f0' }}>{card.value}</div>
-                            </div>
-                          ))}
+                          {(() => {
+                            const pnlBreakEven = isBreakEvenOnly && ts.realizedPnlUsd !== null && ts.realizedPnlUsd === 0
+                            return [
+                              { label: 'Closed Lots', value: String(ts.closedLots), neutral: false },
+                              { label: 'Matched Realized PnL', value: pnlBreakEven ? '$0.00 break-even' : (ts.realizedPnlUsd !== null ? fmtSignedUSD(ts.realizedPnlUsd) : '—'), pnl: pnlBreakEven ? undefined : ts.realizedPnlUsd, neutral: pnlBreakEven },
+                              { label: 'Return', value: ts.realizedPnlPercent !== null ? `${ts.realizedPnlPercent >= 0 ? '+' : ''}${ts.realizedPnlPercent.toFixed(1)}%` : '—', pnl: isBreakEvenOnly ? undefined : ts.realizedPnlPercent, neutral: isBreakEvenOnly },
+                              { label: 'Tokens Traded', value: String(ts.uniqueTokensTraded), neutral: false },
+                              { label: 'Wins', value: isBreakEvenOnly ? 'No decisive winning lots yet' : String(ts.winningClosedLots), neutral: isBreakEvenOnly },
+                              { label: 'Losses', value: isBreakEvenOnly ? 'No decisive losing lots yet' : String(ts.losingClosedLots), neutral: isBreakEvenOnly },
+                            ].map(card => (
+                              <div key={card.label} style={{ background: card.neutral ? 'rgba(148,163,184,0.04)' : 'rgba(255,255,255,0.03)', border: `1px solid ${card.neutral ? 'rgba(148,163,184,0.14)' : 'rgba(255,255,255,0.07)'}`, borderRadius: '12px', padding: '12px' }}>
+                                <div style={{ fontSize: '9px', color: card.neutral ? 'rgba(148,163,184,0.55)' : 'rgba(255,255,255,0.28)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '7px' }}>{card.label}</div>
+                                <div style={{ fontSize: card.neutral ? '12px' : '18px', fontWeight: 800, fontFamily: 'var(--font-inter, Inter, sans-serif)', color: card.neutral ? 'rgba(148,163,184,0.70)' : ('pnl' in card && card.pnl !== null && card.pnl !== undefined ? (card.pnl >= 0 ? '#4ade80' : '#f87171') : '#e2e8f0') }}>{card.value}</div>
+              </div>
+                            ))
+                          })()}
                         </div>
 
                         {(() => {
