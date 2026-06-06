@@ -338,6 +338,8 @@ export async function POST(req: Request) {
 
     // Historical coverage: ONLY when explicitly requested — debug=true no longer auto-triggers it
     const historicalCoverageRequested = (body?.historicalCoverage === true || body?.historicalCoverage === 'true') && deepActivity
+    // Targeted historical scan: manual opt-in, cost-safe targeted Alchemy fetch
+    const historicalScanRequested = (body?.historicalScan === true || body?.historicalScan === 'true') && deepActivity
 
     // Production page cap: max 2 in prod unless WALLET_DEEP_DEBUG_ENABLED=true, default 1
     const isProd = process.env.NODE_ENV === 'production'
@@ -345,7 +347,7 @@ export async function POST(req: Request) {
     const maxHistoricalPages = Math.max(1, Math.min(hcPageLimit, Number(body?.maxHistoricalPages ?? 1) || 1))
     const maxFallbackPages = debug ? Math.max(1, Math.min(3, Number(body?.maxFallbackPages ?? 2) || 2)) : 2
 
-    const hcSuffix = historicalCoverageRequested ? `:hcv1p${maxHistoricalPages}` : ''
+    const hcSuffix = historicalCoverageRequested ? `:hcv1p${maxHistoricalPages}` : historicalScanRequested ? ':hs1' : ''
     const debugFresh = requestUrl.searchParams.get('debugFresh') === 'true' || body?.debugFresh === true || body?.debugFresh === 'true'
     const hasBearerToken = (req.headers.get('authorization') ?? '').startsWith('Bearer ')
     const allowDebugFresh = debugFresh && (process.env.NODE_ENV !== 'production' || hasBearerToken)
@@ -695,6 +697,7 @@ export async function POST(req: Request) {
         historicalCoverage: effectiveHistoricalCoverage,
         maxHistoricalPages,
         maxFallbackPages,
+        historicalScan: historicalScanRequested,
       } satisfies WalletSnapshotOptions)
       if (inFlightKey) walletDeepInFlight.set(inFlightKey, scanPromise)
       try {
@@ -1080,6 +1083,12 @@ export async function POST(req: Request) {
             priceAttemptsSavedByBudget: Math.max(0, _priceAttemptsPlanned - _priceAttemptsUsed),
             priceBudgetExpanded: (_budgetDbgForCost?.expansionEligible) ?? false,
             priceBudgetExpansionReason: (_budgetDbgForCost?.expansionReason) ?? null,
+            historicalScanRequested: historicalScanRequested,
+            historicalCreditBudget: (snapshot as any)?._diagnostics?.walletHistoricalScanDebug?.pagesAllowed ?? 0,
+            historicalCreditsUsed: (snapshot as any)?._diagnostics?.walletHistoricalScanDebug?.estimatedCreditUnits ?? 0,
+            historicalCreditsSavedByCache: (snapshot as any)?._diagnostics?.walletHistoricalScanDebug?.cacheHit ? ((snapshot as any)?._diagnostics?.walletHistoricalScanDebug?.pagesAllowed ?? 0) : 0,
+            historicalBudgetCapHit: (snapshot as any)?._diagnostics?.walletHistoricalScanDebug?.budgetCapHit ?? false,
+            historicalSkippedReason: (snapshot as any)?._diagnostics?.walletHistoricalScanDebug?.stopReason ?? null,
             totals: {
               liveProviderCalls: liveCalls,
               cachedProviderCalls: cachedCalls,
