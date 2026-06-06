@@ -1942,6 +1942,59 @@ export type PriceAtTimeEvidence = {
   reason: string
 }
 
+type StableQuoteLegSelection = {
+  symbol: string
+  amountUsd: number
+  legsCount: number
+  reason: string
+}
+
+function selectSameTxStableQuoteLeg(txGroup: WalletTxEvidence[], target: WalletTxEvidence): StableQuoteLegSelection | null {
+  const stableLegs = txGroup
+    .filter(ev => {
+      const c = ev.contract?.toLowerCase() ?? ''
+      return Boolean(STABLE_USD_CONTRACTS[c]) && ev.direction !== 'unknown' && ev.direction !== target.direction
+    })
+    .map(ev => ({
+      ev,
+      amount: parseRawAmount(ev.amountRaw, ev.tokenDecimals) ?? ev.amount,
+    }))
+    .filter(({ amount }) => amount > 0 && isFinite(amount))
+
+  if (stableLegs.length === 0) return null
+
+  const totalAmount = stableLegs.reduce((sum, leg) => sum + leg.amount, 0)
+  if (!(totalAmount > 0) || !isFinite(totalAmount)) return null
+
+  const legsBySymbol = new Map<string, number>()
+  for (const { ev, amount } of stableLegs) {
+    const symbol = ev.symbol || STABLE_SYMBOL[ev.contract?.toLowerCase() ?? ''] || 'stable'
+    legsBySymbol.set(symbol, (legsBySymbol.get(symbol) ?? 0) + amount)
+  }
+  const dominant = [...legsBySymbol.entries()].sort((a, b) => b[1] - a[1])[0]
+  const symbol = dominant?.[0] ?? stableLegs[0]?.ev.symbol ?? 'stable'
+
+  if (stableLegs.length === 1) {
+    return {
+      symbol,
+      amountUsd: totalAmount,
+      legsCount: 1,
+      reason: `Derived from ${symbol} leg in same tx (${symbol} amount / token amount)`,
+    }
+  }
+
+  const amountList = stableLegs
+    .map(({ ev, amount }) => `${ev.symbol || STABLE_SYMBOL[ev.contract?.toLowerCase() ?? 'stable'] || 'stable'} ${amount.toFixed(6)}`)
+    .join(' + ')
+
+  return {
+    symbol,
+    amountUsd: totalAmount,
+    legsCount: stableLegs.length,
+    reason: `Derived from summed same-tx stable quote legs (${amountList} = ${totalAmount.toFixed(6)} USD / token amount); multiple quote legs present, summed same-direction stable legs to avoid dust-leg pricing`,
+  }
+}
+
 type PnlEvent = {
   contract: string
   symbol: string
@@ -3035,19 +3088,17 @@ async function buildHistoricalPricingPreview(
 
     const txGroup = allByTx.get(e.txHash) ?? []
 
-    // Stable leg: find a stable counterpart in same tx with opposite direction
-    const stableLegs = txGroup.filter(ev => Boolean(STABLE_USD_CONTRACTS[ev.contract?.toLowerCase() ?? '']) && ev.direction !== 'unknown' && ev.direction !== e.direction)
-    if (stableLegs.length > 0) {
-      const sl = stableLegs[0]
-      const stableAmt = parseRawAmount(sl.amountRaw, sl.tokenDecimals) ?? sl.amount
-      if (stableAmt > 0) {
-        const derivedPrice = stableAmt / tokenAmount
-        if (derivedPrice > 0 && isFinite(derivedPrice)) {
-          pricedHistoricalCandidates++; stableLegPricedEvents++
-          pricedEvidenceItems.push(markPriced(e, derivedPrice, 'stable_leg', 'high', `Derived from ${sl.symbol} leg in same tx`))
-          if (samplePricedRaw.length < 5) samplePricedRaw.push({ txHash: abbr(e.txHash), contract: abbr(e.contract), symbol: e.symbol, direction: e.direction, priceUsd: derivedPrice, source: 'stable_leg' })
-          continue
-        }
+    // Stable leg: use the full same-tx stable quote side. Aggregators can emit multiple
+    // same-direction stable transfers for one swap; selecting stableLegs[0] lets tiny
+    // dust legs set an artificially low token price.
+    const stableQuote = selectSameTxStableQuoteLeg(txGroup, e)
+    if (stableQuote) {
+      const derivedPrice = stableQuote.amountUsd / tokenAmount
+      if (derivedPrice > 0 && isFinite(derivedPrice)) {
+        pricedHistoricalCandidates++; stableLegPricedEvents++
+        pricedEvidenceItems.push(markPriced(e, derivedPrice, 'stable_leg', 'high', stableQuote.reason))
+        if (samplePricedRaw.length < 5) samplePricedRaw.push({ txHash: abbr(e.txHash), contract: abbr(e.contract), symbol: e.symbol, direction: e.direction, priceUsd: derivedPrice, source: 'stable_leg' })
+        continue
       }
     }
 
@@ -4916,22 +4967,15 @@ async function buildPriceAtTimeEvidence(
 
     const txGroup = allByTx.get(e.txHash) ?? []
 
-    const stableLegs = txGroup.filter(ev => {
-      const c = ev.contract?.toLowerCase() ?? ''
-      return Boolean(STABLE_USD_CONTRACTS[c]) && ev.direction !== 'unknown' && ev.direction !== e.direction
-    })
-    if (stableLegs.length > 0) {
-      const sl = stableLegs[0]
-      const stableAmt = parseRawAmount(sl.amountRaw, sl.tokenDecimals) ?? sl.amount
-      if (stableAmt > 0) {
-        const derivedPrice = stableAmt / tokenAmount
-        if (derivedPrice > 0 && isFinite(derivedPrice)) {
-          return priced(e, derivedPrice, 'stable_leg', 'high', `Derived from ${sl.symbol} leg in same tx (${sl.symbol} amount / token amount)`)
-        }
+    const stableQuote = selectSameTxStableQuoteLeg(txGroup, e)
+    if (stableQuote) {
+      const derivedPrice = stableQuote.amountUsd / tokenAmount
+      if (derivedPrice > 0 && isFinite(derivedPrice)) {
+        return priced(e, derivedPrice, 'stable_leg', 'high', stableQuote.reason)
       }
     }
 
-    let _resolvedFromWethOrStable = stableLegs.length > 0
+    let _resolvedFromWethOrStable = Boolean(stableQuote)
     if (!isWeth) {
       const wethLegs = txGroup.filter(ev => {
         const c = ev.contract?.toLowerCase() ?? ''
@@ -5023,7 +5067,7 @@ async function buildPriceAtTimeEvidence(
         hasCurrentHoldingPrice: _chPrice !== null && _chPrice > 0,
         currentHoldingPrice: _chPrice,
         isCurrentlyHeld: _chPrice !== null && _chPrice > 0,
-        hasStableLeg: stableLegs.length > 0, hasWethLeg: _hadWethLeg,
+        hasStableLeg: Boolean(stableQuote), hasWethLeg: _hadWethLeg,
         historicalAttempted: true, historicalPriceFound: (histResult.priceUsd ?? null) !== null,
         finalReason: _openCheckReason,
       })
