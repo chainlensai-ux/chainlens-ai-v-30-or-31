@@ -1804,7 +1804,14 @@ async function enrichSwapCandidatesFromReceipts(
   }
 }
 
+const FIRST_TX_CACHE_TTL_MS = 24 * 60 * 60 * 1000
+const firstTxOnChainCache = new Map<string, { date: Date | null; exp: number }>()
+
 async function getFirstTxOnChain(address: string, alchemyUrl: string): Promise<Date | null> {
+  // First-tx date is immutable — safe to cache long-term to avoid repeat alchemy_getAssetTransfers burns.
+  const cacheKey = `${alchemyUrl.slice(-24)}:${address.toLowerCase()}`
+  const cached = firstTxOnChainCache.get(cacheKey)
+  if (cached && cached.exp > Date.now()) return cached.date
   const baseParams = {
     fromBlock: '0x0',
     category: ['external', 'internal', 'erc20'],
@@ -1821,7 +1828,9 @@ async function getFirstTxOnChain(address: string, alchemyUrl: string): Promise<D
     const ts = r.status === 'fulfilled' && r.value?.transfers?.[0]?.metadata?.blockTimestamp
     if (ts) dates.push(new Date(ts as string))
   }
-  return dates.length > 0 ? new Date(Math.min(...dates.map(d => d.getTime()))) : null
+  const result = dates.length > 0 ? new Date(Math.min(...dates.map(d => d.getTime()))) : null
+  firstTxOnChainCache.set(cacheKey, { date: result, exp: Date.now() + FIRST_TX_CACHE_TTL_MS })
+  return result
 }
 
 async function fetchGoldrushBalances(address: string, chainName: string, apiKey: string): Promise<Holding[]> {
