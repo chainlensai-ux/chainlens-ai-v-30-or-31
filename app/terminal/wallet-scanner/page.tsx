@@ -483,6 +483,73 @@ function hasNoDecisiveClosedLots(ts: WalletResult['walletTradeStatsSummary'] | u
   )
 }
 
+type DataModeRead = {
+  dataMode: 'strict' | 'minimal' | 'fallback' | 'insufficient'
+  dataConfidence: 'verified' | 'high' | 'medium' | 'low' | 'estimated' | 'minimal' | 'insufficient'
+  dataConfidenceReasons: string[]
+  rawClosedLots: number
+  rawRealizedPnlUsd: number | null
+  rawWinningLots: number
+  rawLosingLots: number
+  rawBreakEvenLots: number
+  rawWinRatePercent: number | null
+  rawSampleLabel: 'single trade' | 'very small sample' | 'early sample' | 'break-even only' | null
+}
+
+function deriveDataModeAndConfidence(data: WalletResult): DataModeRead {
+  const ts = data.walletTradeStatsSummary
+  const openPos = data.walletModuleCoverage?.walletOpenPositionSummary ?? data.walletOpenPositionSummary ?? null
+  const closedLots = ts?.closedLots ?? 0
+  const winningLots = ts?.winningClosedLots ?? 0
+  const losingLots = ts?.losingClosedLots ?? 0
+  const breakEvenLots = ts?.breakEvenClosedLots ?? Math.max(0, closedLots - winningLots - losingLots)
+  const decisiveClosedLots = winningLots + losingLots
+  const breakEvenOnly = hasNoDecisiveClosedLots(ts)
+  const reasons: string[] = []
+
+  let dataMode: DataModeRead['dataMode']
+  if (ts?.scoreUnlocked === true || (ts?.readyForWalletScore === true && closedLots >= 10)) {
+    dataMode = 'strict'
+    reasons.push(`${closedLots} verified closed lots support a full official read`)
+  } else if (closedLots >= 1 || !!openPos) {
+    dataMode = 'minimal'
+    if (closedLots >= 1) reasons.push(`${closedLots} reconstructed closed lot${closedLots !== 1 ? 's' : ''} found — below the 10-lot threshold for an official read`)
+    if (openPos) reasons.push('open-position evidence found from indexed buy-side activity')
+    if (breakEvenOnly) reasons.push('all matched closed lots are break-even — no decisive win or loss yet')
+  } else if ((data.walletModuleCoverage?.activity?.eventCount ?? 0) > 0) {
+    dataMode = 'fallback'
+    reasons.push('activity indexed, but no closed lots or open-position evidence could be reconstructed')
+  } else {
+    dataMode = 'insufficient'
+    reasons.push('no usable trading or open-position evidence indexed for this wallet')
+  }
+
+  let dataConfidence: DataModeRead['dataConfidence']
+  if (dataMode === 'strict') dataConfidence = ts?.confidence === 'high' ? 'verified' : 'high'
+  else if (dataMode === 'minimal') dataConfidence = breakEvenOnly ? 'minimal' : decisiveClosedLots > 0 ? 'low' : 'estimated'
+  else if (dataMode === 'fallback') dataConfidence = 'estimated'
+  else dataConfidence = 'insufficient'
+
+  let rawSampleLabel: DataModeRead['rawSampleLabel'] = null
+  if (breakEvenOnly && closedLots > 0) rawSampleLabel = 'break-even only'
+  else if (decisiveClosedLots === 1) rawSampleLabel = 'single trade'
+  else if (decisiveClosedLots > 1 && decisiveClosedLots < 5) rawSampleLabel = 'very small sample'
+  else if (decisiveClosedLots >= 5 && decisiveClosedLots < 10) rawSampleLabel = 'early sample'
+
+  return {
+    dataMode,
+    dataConfidence,
+    dataConfidenceReasons: reasons,
+    rawClosedLots: closedLots,
+    rawRealizedPnlUsd: ts?.realizedPnlUsd ?? null,
+    rawWinningLots: winningLots,
+    rawLosingLots: losingLots,
+    rawBreakEvenLots: breakEvenLots,
+    rawWinRatePercent: decisiveClosedLots >= 1 ? (ts?.winRatePercent ?? (winningLots / decisiveClosedLots) * 100) : null,
+    rawSampleLabel,
+  }
+}
+
 function isMicroSampleLocked(ts: WalletResult['walletTradeStatsSummary'] | undefined): boolean {
   return Boolean(
     ts &&
@@ -2357,6 +2424,29 @@ export default function WalletScannerPage() {
                             ))
                           })()}
                         </div>
+
+                        {(() => {
+                          const dm = deriveDataModeAndConfidence(result)
+                          if (dm.dataMode === 'strict') return null
+                          return (
+                            <div style={{ background: 'rgba(125,211,252,0.04)', border: '1px solid rgba(125,211,252,0.14)', borderRadius: '10px', padding: '10px 12px', marginBottom: '12px' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+                                <span style={{ fontSize: '9px', fontWeight: 800, letterSpacing: '0.14em', color: '#7dd3fc', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Raw Early Read</span>
+                                <span style={{ fontSize: '8px', fontWeight: 700, color: 'rgba(125,211,252,0.55)', border: '1px solid rgba(125,211,252,0.18)', background: 'rgba(125,211,252,0.04)', borderRadius: '999px', padding: '1px 6px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{dm.dataMode}</span>
+                              </div>
+                              <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.45)', lineHeight: 1.6, fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                                {dm.rawSampleLabel === 'break-even only'
+                                  ? `Break-even sample only — ${dm.rawClosedLots} closed lot${dm.rawClosedLots !== 1 ? 's' : ''}, $0.00 matched realized PnL, no decisive win or loss.`
+                                  : dm.rawSampleLabel
+                                    ? `${dm.rawSampleLabel.charAt(0).toUpperCase()}${dm.rawSampleLabel.slice(1)} — ${dm.rawWinningLots}W / ${dm.rawLosingLots}L${dm.rawBreakEvenLots > 0 ? ` / ${dm.rawBreakEvenLots} break-even` : ''}${dm.rawWinRatePercent !== null ? `, raw win rate ~${dm.rawWinRatePercent.toFixed(1)}%` : ''}.`
+                                    : 'Limited evidence indexed for this wallet.'}
+                              </div>
+                              <div style={{ fontSize: '10px', color: 'rgba(125,211,252,0.55)', marginTop: '6px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', lineHeight: 1.5 }}>
+                                Official win rate locked · Score locked until enough verified closed lots · This does not prove the wallet has never lost money.
+                              </div>
+                            </div>
+                          )
+                        })()}
 
                         {(() => {
                           const rawWinRate = ts.closedLots > 0 && !hasNoDecisiveClosedLots(ts) ? ts.winRatePercent ?? (ts.winningClosedLots / ts.closedLots) * 100 : null
