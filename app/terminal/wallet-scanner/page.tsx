@@ -1405,6 +1405,7 @@ export default function WalletScannerPage() {
                     if (openedLots > 0 && pricedEvents > 0) return `${openedLots} open lot${openedLots !== 1 ? 's' : ''} tracked, no closed sells yet`
                     if (pricedEvents > 0 && openedLots === 0) return 'priced swaps found, no lots opened'
                     if (candidates > 0 && pricedEvents === 0) return 'candidates unpriced'
+                    if (mc.walletOpenPositionSummary) return 'Open position detected — no matched sells yet'
                     if (candidates > 0) return 'no swap evidence priced'
                     return 'no swap evidence'
                   })(), status: (() => {
@@ -1616,9 +1617,9 @@ export default function WalletScannerPage() {
                     const portfolioActive = result.walletModuleCoverage?.portfolio.status === 'ok' || result.totalValue > 0 || result.holdings.length > 0
                     // Priority: closedLots > 0 wins over openedLots > 0
                     const hasClosedTradeEvidence = closedLots > 0
-                    const hasOpenLots = openedLots > 0 && !hasClosedTradeEvidence
-                    const tradeOpenCheck = closedLots === 0
                     const openPos = result.walletModuleCoverage?.walletOpenPositionSummary ?? result.walletOpenPositionSummary ?? null
+                    const hasOpenLots = (openedLots > 0 || !!openPos) && !hasClosedTradeEvidence
+                    const tradeOpenCheck = closedLots === 0
                     if (portfolioActive && hasOpenLots) {
                       const costBasis = openPos?.totalOpenCostBasisUsd ?? null
                       const uniqueTokens = openPos?.uniqueTokens ?? 0
@@ -1764,7 +1765,7 @@ export default function WalletScannerPage() {
                   const hasRealTrade = (result.walletTradeStatsSummary?.closedLots ?? 0) > 0
                   const _openedLotsForPnl = (result.walletTradeStatsSummary?.openedLots ?? result.walletLotSummary?.openedLots ?? 0)
                   const _openPosForPnl = result.walletModuleCoverage?.walletOpenPositionSummary ?? result.walletOpenPositionSummary ?? null
-                  const hasOpenLotsForPnl = _openedLotsForPnl > 0 && !hasRealTrade
+                  const hasOpenLotsForPnl = (_openedLotsForPnl > 0 || !!_openPosForPnl) && !hasRealTrade
                   if (hasRealTrade) {
                     const legacyVal = fmtSignedUSD(walletIntel.pnl.total)
                     return (
@@ -2031,9 +2032,9 @@ export default function WalletScannerPage() {
                 const _tiClosedLots = ls?.closedLots ?? ts.closedLots ?? 0
                 const _tiOpenedLots = ls?.openedLots ?? ts.openedLots ?? 0
                 const hasClosedTradeEvidence = _tiClosedLots > 0
-                const hasOpenLots = _tiOpenedLots > 0 && !hasClosedTradeEvidence
-                const isOpenCheck = !hasClosedTradeEvidence
                 const openPos = result.walletModuleCoverage?.walletOpenPositionSummary ?? result.walletOpenPositionSummary ?? null
+                const hasOpenLots = (_tiOpenedLots > 0 || !!openPos) && !hasClosedTradeEvidence
+                const isOpenCheck = !hasClosedTradeEvidence
                 const hasEnough = isTradeStatsGradeable(ts)
                 const isBreakEvenOnly = ts.isBreakEvenOnly === true || ((_tiClosedLots > 0) && ts.winningClosedLots === 0 && ts.losingClosedLots === 0 && (ts.breakEvenClosedLots ?? 0) === _tiClosedLots)
                 function fmtHoldTime(seconds: number | null): string {

@@ -203,19 +203,35 @@ function buildWalletModuleCoverage(snap: any) {
   // FIFO PnL
   const closedLots: number = ls?.closedLots ?? 0
   const pricedSwapEvents: number = ls?.pricedSwapEvents ?? pricedEvents
+  const openedLots: number = ls?.openedLots ?? 0
+  // Open-position evidence also covers the estimatedPnl-derived fallback (unsold buy-side tokens),
+  // so fifoPnL doesn't claim "no evidence" when a cost-basis-only open position was found.
+  const _estPnlOpenCandidateCount = ((snap.estimatedPnl?.tokens ?? []) as Array<{ buysDetected: number; sellsDetected: number; estimatedCostBasisUsd: number | null }>)
+    .filter(t => t.buysDetected > 0 && t.sellsDetected === 0 && (t.estimatedCostBasisUsd ?? 0) > 0).length
+  const _hasOpenPositionEvidence = openedLots > 0 || _estPnlOpenCandidateCount > 0
   const fifoStatus = closedLots > 0 ? (ls?.status ?? 'ok') : pricedSwapEvents > 0 ? 'open_check' : 'open_check'
-  const fifoReason = closedLots > 0 ? `${closedLots}_closed_lots_matched` : pricedSwapEvents > 0 ? 'priced_events_found_no_matched_lots' : 'no_priced_swap_events'
+  const fifoReason = closedLots > 0 ? `${closedLots}_closed_lots_matched` : pricedSwapEvents > 0 ? 'priced_events_found_no_matched_lots' : _hasOpenPositionEvidence ? 'open_position_evidence_no_closed_trades' : 'no_priced_swap_events'
 
   // Trade stats
   const tradeClosedLots: number = ts?.closedLots ?? 0
-  const openedLots: number = ls?.openedLots ?? 0
   const readyForWinRate = tradeClosedLots >= 10 && ts?.economicSignificance === 'meaningful'
   const tradeStatus = readyForWinRate ? (ts?.status ?? 'ok') : tradeClosedLots > 0 ? 'partial' : openedLots > 0 ? 'partial' : 'open_check'
   const tradeReason = tradeClosedLots >= 10 ? `${tradeClosedLots}_closed_lots_ready` : tradeClosedLots > 0 ? `${tradeClosedLots}_closed_lots_below_threshold` : openedLots > 0 ? 'open_lots_tracked_no_closed_trades' : 'no_closed_lots'
 
-  // Open position summary — derived from FIFO debug sampleOpenLots (up to 5 lots)
+  // Open position summary — derived from FIFO debug sampleOpenLots (up to 5 lots).
+  // Fallback: when FIFO produced zero opened lots but the average-cost estimate layer
+  // (estimatedPnl.tokens) found buy-side evidence with no matching sells, surface that
+  // as a cost-basis-only open-position read instead of showing "no evidence".
+  type _OpenPosToken = {
+    contract: string; symbol: string; chain: string; openLots: number
+    totalAmount: number; avgEntryPriceUsd: number | null; totalCostBasisUsd: number
+    firstOpenedAt: string | null; latestOpenedAt: string | null
+  }
   const _sampleOpenLots = (snap._diagnostics?.walletLotEngineDebug?.sampleOpenLots ?? []) as Array<{ tokenAddress: string; symbol: string; chain: string; openedAt: string; amountRemaining: number; entryPriceUsd: number; confidence: string }>
-  const walletOpenPositionSummary = openedLots > 0 ? (() => {
+  const _snapHoldings: Array<{ contract?: string; symbol?: string; chain?: string | null; price?: number | null; value?: number; balance?: number }> =
+    snap.holdings ?? []
+  let walletOpenPositionSummary: { status: 'partial'; openLots: number; uniqueTokens: number; totalOpenCostBasisUsd: number | null; tokens: _OpenPosToken[]; missing: string[]; reason: string } | null =
+    openedLots > 0 ? (() => {
     const tokenMap = new Map<string, { contract: string; symbol: string; chain: string; openLots: number; totalAmount: number; totalCostBasis: number; firstOpenedAt: string; latestOpenedAt: string }>()
     for (const lot of _sampleOpenLots) {
       const key = lot.tokenAddress.toLowerCase()
@@ -231,7 +247,7 @@ function buildWalletModuleCoverage(snap: any) {
         tokenMap.set(key, { contract: key, symbol: lot.symbol, chain: lot.chain, openLots: 1, totalAmount: lot.amountRemaining, totalCostBasis: costBasis, firstOpenedAt: lot.openedAt, latestOpenedAt: lot.openedAt })
       }
     }
-    const tokens = Array.from(tokenMap.values()).map(t => ({
+    const tokens: _OpenPosToken[] = Array.from(tokenMap.values()).map(t => ({
       contract: t.contract, symbol: t.symbol, chain: t.chain, openLots: t.openLots,
       totalAmount: t.totalAmount,
       avgEntryPriceUsd: t.totalAmount > 0 ? t.totalCostBasis / t.totalAmount : null,
@@ -248,9 +264,37 @@ function buildWalletModuleCoverage(snap: any) {
     }
   })() : null
 
+  // Fallback path — no FIFO open lots, but average-cost estimate layer found unsold buy-side evidence
+  if (!walletOpenPositionSummary) {
+    const _estTokens = (snap.estimatedPnl?.tokens ?? []) as Array<{ symbol: string; contract: string; estimatedCostBasisUsd: number | null; buysDetected: number; sellsDetected: number }>
+    const _estCandidates = _estTokens.filter(t => t.buysDetected > 0 && t.sellsDetected === 0 && (t.estimatedCostBasisUsd ?? 0) > 0)
+    if (_estCandidates.length > 0) {
+      const tokens: _OpenPosToken[] = _estCandidates.map(t => {
+        const holding = _snapHoldings.find(h => (h.contract ?? '').toLowerCase() === t.contract.toLowerCase())
+        const totalAmount = holding?.balance ?? 0
+        const costBasis = t.estimatedCostBasisUsd ?? 0
+        return {
+          contract: t.contract, symbol: t.symbol, chain: (holding?.chain ?? '').toLowerCase(),
+          openLots: t.buysDetected, totalAmount,
+          avgEntryPriceUsd: totalAmount > 0 ? costBasis / totalAmount : null,
+          totalCostBasisUsd: costBasis,
+          firstOpenedAt: null, latestOpenedAt: null,
+        }
+      })
+      const totalOpenCostBasisUsd = tokens.reduce((s, t) => s + t.totalCostBasisUsd, 0)
+      walletOpenPositionSummary = {
+        status: 'partial',
+        openLots: tokens.reduce((s, t) => s + t.openLots, 0),
+        uniqueTokens: tokens.length,
+        totalOpenCostBasisUsd: totalOpenCostBasisUsd > 0 ? totalOpenCostBasisUsd : null,
+        tokens,
+        missing: ['fifo_lot_confirmation'],
+        reason: 'open_lots_tracked_no_closed_trades',
+      }
+    }
+  }
+
   // Open position performance — compute unrealized PnL only when open-lot contract + chain exactly match a priced current holding
-  const _snapHoldings: Array<{ contract?: string; symbol?: string; chain?: string | null; price?: number | null; value?: number; balance?: number }> =
-    snap.holdings ?? []
   const openPositionPerformanceSummary = walletOpenPositionSummary ? (() => {
     type PerfToken = {
       contract: string; symbol: string; chain: string; openLots: number
