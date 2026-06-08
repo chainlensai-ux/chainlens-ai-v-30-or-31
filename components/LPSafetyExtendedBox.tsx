@@ -47,31 +47,11 @@ function deriveVolatility(pools: LiquiditySafetyResult["pool_breakdown"]) {
   return                      { label: "Highly Unstable",color: "#f43f5e", bg: "rgba(244,63,94,0.08)",   border: "rgba(244,63,94,0.20)",  score: 12, maxAbs };
 }
 
-function fmtUnlock(ts: number | null): string {
-  if (!ts) return "";
-  const now = Date.now() / 1000;
-  const diff = ts - now;
-  if (diff <= 0) return "Expired";
-  const days = Math.floor(diff / 86400);
-  if (days > 365) return `${Math.floor(days / 365)}y ${Math.floor((days % 365) / 30)}mo`;
-  if (days > 30) return `${Math.floor(days / 30)}mo ${days % 30}d`;
-  return `${days}d`;
-}
-
-function fmtAddr(addr: string | null): string {
-  if (!addr) return "";
-  return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
-}
-
 function deriveRugSignals(data: LiquiditySafetyResult): string[] {
   const sigs: string[] = [];
   const liq = data.lp_total_liquidity_usd;
 
-  if (!data.lp_lock_pct || data.lp_lock_pct === 0) {
-    sigs.push("No lock data surfaced — treat as unlocked until proven otherwise. Verify via a lock explorer before trading.");
-  } else if (data.lp_lock_pct < 80) {
-    sigs.push(`Only ${data.lp_lock_pct}% of LP is locked — remaining liquidity is freely removable.`);
-  }
+  sigs.push("Lock status is unverified — no active lock-proof provider confirmed whether this LP is locked. Treat as unlocked until proven otherwise.");
 
   if (data.lp_fragments > 5)
     sigs.push(`LP split across ${data.lp_fragments} pools — fragmented depth increases rug-exit ease.`);
@@ -123,11 +103,7 @@ function deriveExpandedNegatives(data: LiquiditySafetyResult): string[] {
   const neg: string[] = [];
   const liq = data.lp_total_liquidity_usd;
 
-  if (!data.lp_lock_pct || data.lp_lock_pct === 0) {
-    neg.push("No lock data surfaced — liquidity is either unlocked or not using a standard lock provider. Treat as high-risk until verified.");
-  } else if (data.lp_lock_pct < 80) {
-    neg.push(`Only ${data.lp_lock_pct}% of LP locked via ${data.lp_lock_provider ?? "unknown provider"} — remaining portion is withdrawable.`);
-  }
+  neg.push("Lock status is unverified — no active lock-proof provider confirmed whether this LP is locked or burned. Treat as high-risk until verified.");
 
   if (liq != null && liq < 100_000)
     neg.push(`LP depth of ${liq < 1_000 ? `$${liq.toFixed(0)}` : `$${(liq / 1_000).toFixed(1)}K`} is below the $100K safety threshold.`);
@@ -255,45 +231,6 @@ function SubScoreBar({ label, score, color, unavailable }: { label: string; scor
   );
 }
 
-function TimelineBar({ pct, color }: { pct: number; color: string }) {
-  const filled = Math.max(0, Math.min(100, pct));
-  return (
-    <div>
-      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
-        <span style={{ fontSize: "9px", color: "#3a5268", fontFamily: "var(--font-plex-mono)", letterSpacing: "0.12em", textTransform: "uppercase" }}>
-          Lock Progress
-        </span>
-        <span style={{ fontSize: "9px", color: filled > 0 ? color : "#2a3f50", fontFamily: "var(--font-plex-mono)" }}>
-          {filled > 0 ? `${filled}% locked` : "No data"}
-        </span>
-      </div>
-      <div style={{
-        height: "8px", borderRadius: "99px",
-        background: "rgba(255,255,255,0.05)", overflow: "hidden",
-        position: "relative",
-      }}>
-        {filled > 0 && (
-          <div style={{
-            height: "100%", borderRadius: "99px",
-            width: `${filled}%`,
-            background: `linear-gradient(90deg, ${color}77 0%, ${color} 100%)`,
-            boxShadow: `0 0 10px ${color}55`,
-            transition: "width 0.8s cubic-bezier(0.4,0,0.2,1)",
-          }} />
-        )}
-      </div>
-      {filled === 0 && (
-        <p style={{
-          fontSize: "10px", color: "#fb923c", fontFamily: "var(--font-plex-mono)",
-          marginTop: "6px", opacity: 0.75,
-        }}>
-          No lock data surfaced — treat as unlocked until verified via a lock explorer. Cannot confirm safety without manual check.
-        </p>
-      )}
-    </div>
-  );
-}
-
 // ─── Check / Warning icons ────────────────────────────────────────────────────
 
 function IconCheck() {
@@ -370,67 +307,22 @@ export default function LPSafetyExtendedBox({ data }: Props) {
             {/* LP Lock Status */}
             <IndicatorCard
               label="LP Lock Status"
-              badge={
-                data.lp_lock_pct != null && data.lp_lock_pct > 0 ? (
-                  <StatusBadge
-                    label={`${data.lp_lock_pct}% Locked`}
-                    color={data.lp_lock_pct >= 80 ? "#34d399" : "#fbbf24"}
-                    bg={data.lp_lock_pct >= 80 ? "rgba(52,211,153,0.08)" : "rgba(251,191,36,0.08)"}
-                    border={data.lp_lock_pct >= 80 ? "rgba(52,211,153,0.22)" : "rgba(251,191,36,0.22)"}
-                  />
-                ) : (
-                  <RiskReasonBadge label="Not Detected" />
-                )
-              }
-              note={
-                data.lp_lock_pct != null && data.lp_lock_pct > 0
-                  ? `Locked via ${data.lp_lock_provider ?? "lock contract"}${data.lp_lock_pct < 100 ? ` — ${100 - data.lp_lock_pct}% freely withdrawable` : ""}`
-                  : "No lock data surfaced — treat as unlocked until proven otherwise. Verify via a lock explorer."
-              }
+              badge={<RiskReasonBadge label="Unverified" />}
+              note="No active lock-proof provider is wired up for this scan — lock status is unverified. Verify via a lock explorer before trusting any lock claims."
             />
 
-            {/* LP Owner */}
+            {/* Controller */}
             <IndicatorCard
-              label="LP Owner"
-              badge={
-                data.lp_owner ? (
-                  <StatusBadge
-                    label={fmtAddr(data.lp_owner)}
-                    color="#94a3b8"
-                    bg="rgba(148,163,184,0.08)"
-                    border="rgba(148,163,184,0.20)"
-                  />
-                ) : (
-                  <RiskReasonBadge label="Unverified" />
-                )
-              }
-              note={
-                data.lp_owner
-                  ? "Largest unlocked LP holder — monitor for removal activity."
-                  : "Owner not surfaced — likely EOA or unverified contract. Increases rug-exit risk."
-              }
+              label="Controller"
+              badge={<RiskReasonBadge label="Unknown" />}
+              note="Contract owner / controller is not confirmed by this scan. Check the contract source for owner functions."
             />
 
-            {/* LP Unlock Countdown */}
+            {/* Burn Proof */}
             <IndicatorCard
-              label="Unlock Countdown"
-              badge={
-                data.lp_unlock_ts ? (
-                  <StatusBadge
-                    label={fmtUnlock(data.lp_unlock_ts) === "Expired" ? "Expired" : `${fmtUnlock(data.lp_unlock_ts)} left`}
-                    color={fmtUnlock(data.lp_unlock_ts) === "Expired" ? "#f43f5e" : "#2DD4BF"}
-                    bg={fmtUnlock(data.lp_unlock_ts) === "Expired" ? "rgba(244,63,94,0.08)" : "rgba(45,212,191,0.08)"}
-                    border={fmtUnlock(data.lp_unlock_ts) === "Expired" ? "rgba(244,63,94,0.22)" : "rgba(45,212,191,0.22)"}
-                  />
-                ) : (
-                  <RiskReasonBadge label="No Timestamp" />
-                )
-              }
-              note={
-                data.lp_unlock_ts
-                  ? `Lock expires ${new Date(data.lp_unlock_ts * 1000).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}`
-                  : "No unlock timestamp — either unlocked, burned, or not using a known lock provider."
-              }
+              label="Burn Proof"
+              badge={<RiskReasonBadge label="Unconfirmed" />}
+              note="Whether LP tokens were sent to a burn address has not been confirmed. Check the LP token holder list on-chain."
             />
 
             {/* Depth */}
@@ -497,18 +389,18 @@ export default function LPSafetyExtendedBox({ data }: Props) {
             <SectionLabel>Pool Activity · {data.pool_breakdown.length}</SectionLabel>
             <div style={{
               display: "grid",
-              gridTemplateColumns: "1fr 90px 100px 70px",
+              gridTemplateColumns: "1fr 70px 90px 100px 70px 60px 70px",
               padding: "0 12px 8px",
               borderBottom: "1px solid rgba(255,255,255,0.06)",
               marginBottom: "4px",
               gap: "6px",
             }}>
-              {["Pool / DEX", "Buys / Sells (24h)", "Vol H1 / H6", "Status"].map(h => (
+              {["Pool / DEX", "Share", "Buys / Sells (24h)", "Vol H1 / H6", "1h Δ", "Vol/Liq", "Status"].map(h => (
                 <span key={h} style={{
                   fontSize: "9px", fontWeight: 700, letterSpacing: "0.12em",
                   color: "#3a5268", textTransform: "uppercase",
                   fontFamily: "var(--font-plex-mono)",
-                  textAlign: h === "Status" ? "right" : "left",
+                  textAlign: h === "Status" || h === "Vol/Liq" || h === "1h Δ" ? "right" : "left",
                 }}>
                   {h}
                 </span>
@@ -516,11 +408,10 @@ export default function LPSafetyExtendedBox({ data }: Props) {
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
               {data.pool_breakdown.slice(0, 8).map((pool, i) => {
-                const isInactive = (pool.volume24h ?? 0) === 0 && (pool.buys24 ?? 0) === 0 && (pool.sells24 ?? 0) === 0
                 return (
                   <div key={i} style={{
                     display: "grid",
-                    gridTemplateColumns: "1fr 90px 100px 70px",
+                    gridTemplateColumns: "1fr 70px 90px 100px 70px 60px 70px",
                     alignItems: "center",
                     gap: "6px",
                     padding: "10px 12px",
@@ -536,6 +427,18 @@ export default function LPSafetyExtendedBox({ data }: Props) {
                           {pool.dexName}
                         </span>
                       )}
+                      {pool.isPrimary && (
+                        <span style={{
+                          marginLeft: "6px", fontSize: "8px", fontWeight: 700, letterSpacing: "0.10em",
+                          color: "#2DD4BF", background: "rgba(45,212,191,0.10)", border: "1px solid rgba(45,212,191,0.25)",
+                          borderRadius: "99px", padding: "1px 6px", textTransform: "uppercase",
+                        }}>
+                          Primary
+                        </span>
+                      )}
+                    </span>
+                    <span style={{ color: "#94a3b8", whiteSpace: "nowrap" }}>
+                      {pool.liquidityShare != null ? `${pool.liquidityShare}%` : "—"}
                     </span>
                     <span style={{ color: "#94a3b8", whiteSpace: "nowrap" }}>
                       {pool.buys24 != null || pool.sells24 != null ? `${pool.buys24 ?? "—"} / ${pool.sells24 ?? "—"}` : "—"}
@@ -543,15 +446,21 @@ export default function LPSafetyExtendedBox({ data }: Props) {
                     <span style={{ color: "#4a6272", whiteSpace: "nowrap" }}>
                       {pool.volumeH1 != null ? `$${Math.round(pool.volumeH1).toLocaleString()}` : "—"} / {pool.volumeH6 != null ? `$${Math.round(pool.volumeH6).toLocaleString()}` : "—"}
                     </span>
+                    <span style={{ color: pool.priceChange1h == null ? "#4a6272" : pool.priceChange1h >= 0 ? "#2DD4BF" : "#f43f5e", whiteSpace: "nowrap", textAlign: "right" }}>
+                      {pool.priceChange1h != null ? `${pool.priceChange1h >= 0 ? "+" : ""}${pool.priceChange1h.toFixed(1)}%` : "—"}
+                    </span>
+                    <span style={{ color: "#4a6272", whiteSpace: "nowrap", textAlign: "right" }}>
+                      {pool.volLiqRatio != null ? pool.volLiqRatio.toFixed(2) : "—"}
+                    </span>
                     <span style={{
                       textAlign: "right",
                       display: "inline-block",
                       fontSize: "9px", fontWeight: 700, letterSpacing: "0.10em",
                       textTransform: "uppercase",
-                      color: isInactive ? "#fb923c" : "#34d399",
+                      color: pool.isStale ? "#fb923c" : "#34d399",
                       whiteSpace: "nowrap",
                     }}>
-                      {isInactive ? "Inactive" : "Active"}
+                      {pool.isStale ? "Stale" : "Active"}
                     </span>
                   </div>
                 )
@@ -568,38 +477,36 @@ export default function LPSafetyExtendedBox({ data }: Props) {
           <SubScoreBar label="LP Depth Score"         score={depth.score}      color={depth.color}      />
           <SubScoreBar label="Fragmentation Score"    score={frag.score}       color={frag.color}       />
           <SubScoreBar label="Volatility Score"       score={volatility.score} color={volatility.color} />
-          <SubScoreBar
-            label="Lock Score"
-            score={data.lp_lock_pct ?? 0}
-            color={
-              (data.lp_lock_pct ?? 0) >= 80 ? "#34d399"
-              : (data.lp_lock_pct ?? 0) > 0 ? "#fbbf24"
-              : "#4a6272"
-            }
-            unavailable={data.lp_lock_pct == null}
-          />
-          <SubScoreBar
-            label="Owner Score"
-            score={data.lp_owner ? 50 : 0}
-            color="#94a3b8"
-            unavailable={data.lp_owner == null}
-          />
         </div>
 
         <Divider />
 
-        {/* ── LP Unlock Timeline Bar ───────────────────────────────────── */}
-        <div>
-          <SectionLabel>LP Unlock Timeline</SectionLabel>
-          <TimelineBar
-            pct={data.lp_lock_pct ?? 0}
-            color={
-              (data.lp_lock_pct ?? 0) >= 80 ? "#34d399"
-              : (data.lp_lock_pct ?? 0) > 0 ? "#fbbf24"
-              : "#4a6272"
-            }
-          />
-        </div>
+        {/* ── Evidence Gaps ────────────────────────────────────────────── */}
+        {data.lp_evidence_gaps.length > 0 && (
+          <div>
+            <SectionLabel>Evidence Gaps · {data.lp_evidence_gaps.length}</SectionLabel>
+            <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+              {data.lp_evidence_gaps.map((gap) => (
+                <div key={gap.id} style={{
+                  display: "flex", flexDirection: "column", gap: "4px",
+                  background: "rgba(251,146,60,0.04)",
+                  border: "1px solid rgba(251,146,60,0.14)",
+                  borderRadius: "10px", padding: "10px 14px",
+                }}>
+                  <span style={{ fontSize: "10px", fontWeight: 700, letterSpacing: "0.12em", color: "#fb923c", fontFamily: "var(--font-plex-mono)" }}>
+                    {gap.label}
+                  </span>
+                  <p style={{ fontSize: "11px", lineHeight: 1.6, color: "#94a3b8", fontFamily: "var(--font-plex-mono)", margin: 0 }}>
+                    {gap.explanation}
+                  </p>
+                  <p style={{ fontSize: "10px", lineHeight: 1.6, color: "#3a5268", fontFamily: "var(--font-plex-mono)", margin: 0 }}>
+                    Next: {gap.nextAction}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         <Divider />
 

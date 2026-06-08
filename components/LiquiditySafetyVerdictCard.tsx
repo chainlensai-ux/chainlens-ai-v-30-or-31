@@ -18,23 +18,48 @@ export interface LiquiditySafetyResult {
     liquidity: number | null;
     volume24h: number | null;
     priceChange24h: number | null;
+    priceChange1h: number | null;
     dexName: string | null;
     buys24: number | null;
     sells24: number | null;
     volumeH1: number | null;
     volumeH6: number | null;
+    liquidityShare: number | null;
+    isPrimary: boolean;
+    volLiqRatio: number | null;
+    isStale: boolean;
   }>;
-  // GoPlus LP lock fields
-  lp_lock_pct: number | null;
-  lp_owner: string | null;
-  lp_lock_provider: string | null;
-  lp_unlock_ts: number | null;
-  // Explicit lock-status read derived from GoPlus lp_holders
+  // No active lock-proof provider is wired up — always "unverified"
   lockStatus: "locked" | "unlocked" | "unverified";
-  // Minimal evidence-gap codes — facts we could not verify, not risk findings
-  evidenceGaps: string[];
-  // Raw GoPlus security payload (facts only — never rendered as fabricated signals)
-  goplus: Record<string, unknown> | null;
+  lp_data_mode: "strict" | "minimal" | "fallback" | "insufficient";
+  lp_data_confidence: "high" | "medium" | "low" | "unverified";
+  lp_evidence_gaps: Array<{ id: string; label: string; explanation: string; nextAction: string }>;
+  lp_model_proof: {
+    model: "constant_product" | "concentrated" | "stableswap" | "unknown";
+    dexName: string | null;
+    standardLockApplies: boolean;
+  };
+  lp_migration_proof: {
+    status: "low" | "watch" | "flagged" | "unknown";
+    confidence: "high" | "medium" | "low" | "unverified";
+    reason: string;
+    dexsUsed: string[];
+    primaryDex: string | null;
+    liquidityDistribution: string;
+    signals: string[];
+    missingEvidence: string[];
+    nextAction: string;
+  };
+  cortex_lp_read: {
+    mode: string;
+    confidence: string;
+    riskSummary: string;
+    liquidityAnalysis: string;
+    poolStructureAnalysis: string;
+    migrationAnalysis: string;
+    evidenceGaps: string[];
+    nextActions: string[];
+  };
 }
 
 interface Props {
@@ -76,31 +101,19 @@ function pctColor(v: number | null | undefined): string {
   return v >= 0 ? "#2DD4BF" : "#f43f5e";
 }
 
-const EVIDENCE_GAP_LABEL: Record<string, string> = {
-  LOCK_PROOF_UNAVAILABLE: "LOCK PROOF UNAVAILABLE",
-  MINTABILITY_UNVERIFIED: "MINTABILITY UNVERIFIED",
-  CONTROLLER_UNVERIFIED: "CONTROLLER UNVERIFIED",
-};
-
 const LOCK_CHIP: Record<LiquiditySafetyResult["lockStatus"], { label: string; color: string; bg: string; border: string }> = {
-  locked:     { label: "LP LOCKED",              color: "#34d399", bg: "rgba(52,211,153,0.10)", border: "rgba(52,211,153,0.30)" },
-  unlocked:   { label: "LP UNLOCKED",            color: "#f43f5e", bg: "rgba(244,63,94,0.10)",  border: "rgba(244,63,94,0.30)" },
-  unverified: { label: "LOCK PROOF UNAVAILABLE", color: "#fb923c", bg: "rgba(251,146,60,0.10)", border: "rgba(251,146,60,0.30)" },
+  locked:     { label: "LP LOCKED",   color: "#34d399", bg: "rgba(52,211,153,0.10)", border: "rgba(52,211,153,0.30)" },
+  unlocked:   { label: "LP UNLOCKED", color: "#f43f5e", bg: "rgba(244,63,94,0.10)",  border: "rgba(244,63,94,0.30)" },
+  unverified: { label: "LOCK STATUS UNVERIFIED", color: "#fb923c", bg: "rgba(251,146,60,0.10)", border: "rgba(251,146,60,0.30)" },
 };
 
-function buildFactualLpSummary(result: LiquiditySafetyResult): string[] {
-  const lines: string[] = [];
-  if (result.lockStatus === "unlocked") {
-    lines.push("Liquidity is unlocked and controlled by a wallet. Treat exit risk as elevated until lock or burn proof is confirmed.");
-  } else if (result.lockStatus === "unverified") {
-    lines.push("No LP lock proof was found via indexed data. This does not confirm the LP is unlocked — lock status is unverified.");
-  }
-  const isMintable = result.goplus?.["is_mintable"];
-  if (isMintable === "1" || isMintable === 1 || isMintable === true) {
-    lines.push("Token appears mintable. The owner can increase supply, which can impact price without touching LP directly.");
-  }
-  return lines;
-}
+const MODE_LABEL: Record<LiquiditySafetyResult["lp_data_mode"], string> = {
+  strict: "STRICT", minimal: "MINIMAL", fallback: "FALLBACK", insufficient: "INSUFFICIENT",
+};
+
+const CONFIDENCE_COLOR: Record<LiquiditySafetyResult["lp_data_confidence"], string> = {
+  high: "#34d399", medium: "#fbbf24", low: "#fb923c", unverified: "#4a6272",
+};
 
 function shorten(addr: string): string {
   if (addr.length <= 12) return addr;
@@ -335,11 +348,31 @@ export default function LiquiditySafetyVerdictCard({ result, loading, error }: P
 
       <div style={{ padding: "32px", display: "flex", flexDirection: "column", gap: "28px" }}>
 
+        {/* ── Data mode / confidence ───────────────────────────────── */}
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", alignItems: "center" }}>
+          <span style={{
+            display: "inline-block", padding: "5px 12px", borderRadius: "99px",
+            background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.10)",
+            fontSize: "9px", fontWeight: 700, letterSpacing: "0.12em",
+            color: "#94a3b8", fontFamily: "var(--font-plex-mono)",
+          }}>
+            SCAN MODE: {MODE_LABEL[result.lp_data_mode]}
+          </span>
+          <span style={{
+            display: "inline-block", padding: "5px 12px", borderRadius: "99px",
+            background: "rgba(255,255,255,0.04)", border: `1px solid ${CONFIDENCE_COLOR[result.lp_data_confidence]}40`,
+            fontSize: "9px", fontWeight: 700, letterSpacing: "0.12em",
+            color: CONFIDENCE_COLOR[result.lp_data_confidence], fontFamily: "var(--font-plex-mono)",
+          }}>
+            EVIDENCE CONFIDENCE: {result.lp_data_confidence.toUpperCase()}
+          </span>
+        </div>
+
         {/* ── Evidence gap chips ───────────────────────────────────── */}
-        {result.evidenceGaps.length > 0 && (
-          <div style={{ display: "flex", gap: "8px", overflowX: "auto", paddingBottom: "2px" }}>
-            {result.evidenceGaps.map((gap) => (
-              <span key={gap} style={{
+        {result.lp_evidence_gaps.length > 0 && (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", paddingBottom: "2px" }}>
+            {result.lp_evidence_gaps.map((gap) => (
+              <span key={gap.id} title={gap.explanation} style={{
                 flexShrink: 0,
                 display: "inline-block",
                 padding: "5px 12px",
@@ -351,7 +384,7 @@ export default function LiquiditySafetyVerdictCard({ result, loading, error }: P
                 fontFamily: "var(--font-plex-mono)",
                 whiteSpace: "nowrap",
               }}>
-                {EVIDENCE_GAP_LABEL[gap] ?? gap.replace(/_/g, " ")}
+                {gap.label}
               </span>
             ))}
           </div>
@@ -366,7 +399,7 @@ export default function LiquiditySafetyVerdictCard({ result, loading, error }: P
               lineHeight: 1.5, marginTop: "10px", maxWidth: "128px",
               fontFamily: "var(--font-plex-mono)",
             }}>
-              Based on liquidity depth &amp; fragmentation only — does not include lock, mintability, or honeypot checks.
+              Liquidity depth &amp; pool structure only — not a security audit.
             </p>
           </div>
 
@@ -377,6 +410,12 @@ export default function LiquiditySafetyVerdictCard({ result, loading, error }: P
               textTransform: "uppercase", marginBottom: "6px",
             }}>
               LIQUIDITY DEPTH SCORE
+            </p>
+            <p style={{
+              fontSize: "10px", color: "#4a6272", lineHeight: 1.6,
+              fontFamily: "var(--font-plex-mono)", marginTop: "-2px", marginBottom: "8px", maxWidth: "420px",
+            }}>
+              This score measures liquidity depth and pool structure only. Lock, burn, ownership, mintability, honeypot and tax proof are not confirmed by this scan.
             </p>
             <p style={{
               fontSize: "11px", color: "#4a6272",
@@ -423,35 +462,32 @@ export default function LiquiditySafetyVerdictCard({ result, loading, error }: P
           </div>
         </div>
 
-        {/* ── Factual LP summary ───────────────────────────────────── */}
-        {(() => {
-          const summary = buildFactualLpSummary(result)
-          if (summary.length === 0) return null
-          return (
-            <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-              <SectionLabel>CORTEX LP Read</SectionLabel>
-              {summary.map((line, i) => (
-                <p key={i} style={{
-                  fontSize: "12px", lineHeight: 1.6, color: "#94a3b8",
-                  fontFamily: "var(--font-plex-mono)", margin: 0,
-                  background: "rgba(255,255,255,0.02)",
-                  border: "1px solid rgba(255,255,255,0.06)",
-                  borderRadius: "10px", padding: "12px 14px",
-                }}>
-                  {line}
-                </p>
-              ))}
-            </div>
-          )
-        })()}
-
         <Divider />
 
-        {/* ── Stats ───────────────────────────────────────────────── */}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
-          <StatCard label="Total Liquidity" value={fmtLarge(result.lp_total_liquidity_usd)} accent="#2DD4BF" />
-          <StatCard label="Pool Count"       value={String(result.lp_fragments)} />
+        {/* ── LP status row ────────────────────────────────────────── */}
+        <div>
+          <SectionLabel>LP Status</SectionLabel>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
+            <StatCard label="Liquidity Depth"    value={fmtLarge(result.lp_total_liquidity_usd)} accent="#2DD4BF" />
+            <StatCard label="Pool Count"         value={String(result.lp_fragments)} />
+            <StatCard label="Primary DEX"        value={result.lp_model_proof.dexName ?? "Unverified"} />
+            <StatCard label="LP Model"           value={result.lp_model_proof.model === "unknown" ? "Unverified" : result.lp_model_proof.model.replace("_", " ")} />
+            <StatCard label="Concentration"      value={result.lp_migration_proof.liquidityDistribution === "unknown" ? "Not checked" : result.lp_migration_proof.liquidityDistribution} />
+            <StatCard label="Lock Status"        value={result.lockStatus === "unverified" ? "Unverified" : result.lockStatus} accent={result.lockStatus === "unverified" ? "#fb923c" : undefined} />
+            <StatCard label="Evidence Confidence" value={result.lp_data_confidence === "unverified" ? "Unverified" : result.lp_data_confidence} accent={CONFIDENCE_COLOR[result.lp_data_confidence]} />
+          </div>
         </div>
+
+        {result.lp_model_proof.model === "concentrated" && (
+          <p style={{
+            fontSize: "11px", lineHeight: 1.6, color: "#fb923c",
+            fontFamily: "var(--font-plex-mono)", margin: 0,
+            background: "rgba(251,146,60,0.06)", border: "1px solid rgba(251,146,60,0.20)",
+            borderRadius: "10px", padding: "12px 14px",
+          }}>
+            This token trades on a concentrated-liquidity pool. Standard LP lock proofs may not apply — lock verification methods differ for this AMM model.
+          </p>
+        )}
 
         <Divider />
 
@@ -575,6 +611,46 @@ export default function LiquiditySafetyVerdictCard({ result, loading, error }: P
             </div>
           </div>
         )}
+
+        <Divider />
+
+        {/* ── CORTEX LP Read ───────────────────────────────────────── */}
+        <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+          <SectionLabel>CORTEX LP Read</SectionLabel>
+          {[
+            result.cortex_lp_read.riskSummary,
+            result.cortex_lp_read.liquidityAnalysis,
+            result.cortex_lp_read.poolStructureAnalysis,
+            result.cortex_lp_read.migrationAnalysis,
+          ].map((line, i) => (
+            <p key={i} style={{
+              fontSize: "12px", lineHeight: 1.6, color: "#94a3b8",
+              fontFamily: "var(--font-plex-mono)", margin: 0,
+              background: "rgba(255,255,255,0.02)",
+              border: "1px solid rgba(255,255,255,0.06)",
+              borderRadius: "10px", padding: "12px 14px",
+            }}>
+              {line}
+            </p>
+          ))}
+          {result.cortex_lp_read.nextActions.length > 0 && (
+            <div style={{
+              background: "rgba(45,212,191,0.03)", border: "1px solid rgba(45,212,191,0.10)",
+              borderRadius: "10px", padding: "12px 14px",
+            }}>
+              <p style={{ fontSize: "9px", fontWeight: 700, letterSpacing: "0.14em", color: "#2DD4BF", fontFamily: "var(--font-plex-mono)", margin: "0 0 8px 0", textTransform: "uppercase" }}>
+                Next Actions
+              </p>
+              <ul style={{ margin: 0, paddingLeft: "16px", display: "flex", flexDirection: "column", gap: "6px" }}>
+                {result.cortex_lp_read.nextActions.map((action, i) => (
+                  <li key={i} style={{ fontSize: "11px", lineHeight: 1.6, color: "#94a3b8", fontFamily: "var(--font-plex-mono)" }}>
+                    {action}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
 
         {/* ── Disclaimer ───────────────────────────────────────────── */}
         <p style={{
