@@ -1768,6 +1768,48 @@ export default function WalletScannerPage() {
                   const hasOpenLotsForPnl = (_openedLotsForPnl > 0 || !!_openPosForPnl) && !hasRealTrade
                   if (hasRealTrade) {
                     const legacyVal = fmtSignedUSD(walletIntel.pnl.total)
+                    const ts = result.walletTradeStatsSummary
+                    const isBreakEvenOnly = !!(ts && hasNoDecisiveClosedLots(ts))
+                    const totalIsZeroish = walletIntel.pnl.total == null || Math.abs(walletIntel.pnl.total) < 0.005
+                    const perfForExposure = result.openPositionPerformanceSummary ?? result.walletModuleCoverage?.openPositionPerformanceSummary ?? null
+                    const openPosTokenContracts = new Set((_openPosForPnl?.tokens ?? []).map((t: any) => String(t.contract ?? '').toLowerCase()).filter(Boolean))
+                    const matchingHoldings = result.holdings.filter(h => h.value > 0 && openPosTokenContracts.has(String(h.contract ?? '').toLowerCase()))
+                    const exposureUsd = (perfForExposure?.totalCurrentValueUsd ?? perfForExposure?.matchedCurrentOpenValueUsd ?? null)
+                      ?? (matchingHoldings.length > 0 ? matchingHoldings.reduce((s, h) => s + h.value, 0) : null)
+                    const costBasisRaw = _openPosForPnl?.totalOpenCostBasisUsd ?? perfForExposure?.totalOpenCostBasisUsd ?? null
+                    const costBasisIsDust = costBasisRaw != null && costBasisRaw > 0 && costBasisRaw < 0.01
+                    const costBasisKnown = costBasisRaw != null && costBasisRaw >= 0.01
+                    const showOpenExposureCard = isBreakEvenOnly && totalIsZeroish && exposureUsd != null && exposureUsd > 0 && !costBasisKnown
+
+                    if (showOpenExposureCard) {
+                      const fmtUsd2 = (v: number) => `$${v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                      return (
+                        <div style={{ background: '#080c14', border: '1px solid rgba(251,191,36,0.15)', borderRadius: '18px', padding: '16px 20px' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+                            <div style={{ fontSize: '9px', fontWeight: 800, letterSpacing: '0.18em', color: '#fbbf24', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Open Position Read</div>
+                            <span style={{ fontSize: '8px', fontWeight: 700, color: 'rgba(251,191,36,0.55)', border: '1px solid rgba(251,191,36,0.2)', background: 'rgba(251,191,36,0.05)', borderRadius: '999px', padding: '1px 6px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>PnL open check</span>
+                          </div>
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0,1fr))', gap: '8px' }}>
+                            <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '10px', padding: '10px' }}>
+                              <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.22)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '5px' }}>Current Open Exposure</div>
+                              <div style={{ fontSize: '15px', fontWeight: 700, color: '#e2e8f0', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{fmtUsd2(exposureUsd)}</div>
+                            </div>
+                            <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '10px', padding: '10px' }}>
+                              <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.22)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '5px' }}>Cost Basis</div>
+                              <div style={{ fontSize: '13px', fontWeight: 700, color: 'rgba(255,255,255,0.45)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{costBasisIsDust ? 'Dust / incomplete' : 'Open Check / incomplete'}</div>
+                            </div>
+                            <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '10px', padding: '10px' }}>
+                              <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.22)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '5px' }}>Unrealized PnL</div>
+                              <div style={{ fontSize: '13px', fontWeight: 700, color: 'rgba(255,255,255,0.45)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Not calculated</div>
+                            </div>
+                          </div>
+                          <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.28)', lineHeight: 1.4, marginTop: '10px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                            Current holding detected, but cost basis is incomplete from indexed activity. Closed-lot realized PnL ({legacyVal === 'Open Check' ? '—' : legacyVal} break-even sample) is shown separately below.
+                          </div>
+                        </div>
+                      )
+                    }
+
                     return (
                       <div style={{ background: '#080c14', border: '1px solid rgba(255,255,255,0.04)', borderRadius: '18px', padding: '16px 20px', opacity: 0.62 }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
