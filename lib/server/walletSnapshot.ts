@@ -7071,6 +7071,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
 
   const startedAt = Date.now()
   const _perfPhaseTs: Record<string, number> = { start: startedAt }
+  const _perfWalletTimings = { portfolioMs: 0, activityMs: 0, swapDetectionMs: 0, pricingMs: 0, fifoMs: 0, tradeStatsMs: 0, historicalMs: 0 }
   const _perfTimedOut: string[] = []
   const _perfSkipped: string[] = []
   const _perfParallelized: string[] = ['phase1_holdings_activity', 'receipt_fetches_base_recon', 'receipt_fetches_eth_router_recon', 'receipt_fetches_unpriced_pass', 'moralis_chain_balances']
@@ -7135,6 +7136,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   ])
 
   _perfPhaseTs.phase1_done = Date.now()
+  _perfWalletTimings.portfolioMs = _perfPhaseTs.phase1_done - startedAt
   // ── Tx / age / nonce ──
   const firstCandidates: Date[] = []
   if (ethFirst.status === 'fulfilled' && ethFirst.value) firstCandidates.push(ethFirst.value)
@@ -7419,6 +7421,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   })
   tokenMeter.endTokenMeter('providerFetch')
   _perfPhaseTs.provider_fetch_done = Date.now()
+  _perfWalletTimings.activityMs = _perfPhaseTs.provider_fetch_done - startedAt
 
   const primaryActivityAttempted = activityRequested && Boolean(GOLDRUSH_KEY)
   const primaryActivityStatusCode = primaryActivityAttempted ? (baseTransferDiag?.httpStatus ?? null) : null
@@ -7788,6 +7791,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   tokenMeter.endTokenMeter('normalization')
 
   tokenMeter.startTokenMeter('swapDetection')
+  const _swapDetectionStartedAt = Date.now()
   tokenMeter.measure('swapDetection', evidenceList)
   let { evidenceWithDetection: _swapEvidenceWithDetection, summary: walletSwapSummary, debug: _swapDetectionDebug } = buildSwapDetection(evidenceList, activityRequested, addrNorm)
   // Receipt enrichment: runs only when swap detection found nothing and events exist
@@ -7815,6 +7819,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   }
   tokenMeter.measure('swapDetection', _swapEvidenceWithDetection, walletSwapSummary, _swapDetectionDebug, _swapEnrichmentDebug)
   tokenMeter.endTokenMeter('swapDetection')
+  _perfWalletTimings.swapDetectionMs += Date.now() - _swapDetectionStartedAt
 
   // ── Base PnL Reconstruction Pass ────────────────────────────────────────────────────────
   // Runs when: Base chain scan, activity requested, events exist, still 0 swap candidates.
@@ -8025,6 +8030,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   }
 
   tokenMeter.startTokenMeter('priceInference')
+  const _pricingStartedAt = Date.now()
   tokenMeter.measure('priceInference', _swapEvidenceWithDetection)
   let { evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug, budgetDebug: _priceBudgetDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache, priceByContract, totalValue, historicalCoverage ? 6 : null)
   // Track base evidence historical price calls
@@ -8033,6 +8039,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   }
   tokenMeter.measure('priceInference', _pricedEvidence, walletPriceEvidenceSummary, _priceAtTimeDebug)
   tokenMeter.endTokenMeter('priceInference')
+  _perfWalletTimings.pricingMs += Date.now() - _pricingStartedAt
 
   // Save ETH reconstruction results AFTER pricing so BFC/fallback phases cannot permanently wipe them.
   // Even when pricedEvents = 0 (all buys unpriced), we preserve swapCandidates so open-position
@@ -8167,6 +8174,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // ── End Unpriced Candidate Receipt Pass ─────────────────────────────────────────────────
 
   tokenMeter.startTokenMeter('fifoEngine')
+  const _fifoStartedAt = Date.now()
   _pricedEvidence = normalizeSwapEventsForFifo(_pricedEvidence, tokenMeter.isDebugEnabled())
   _pricedEvidence = normalizeSingleLegEventsForFifo(_pricedEvidence, tokenMeter.isDebugEnabled())
   tokenMeter.measure('fifoEngine', _pricedEvidence)
@@ -8312,8 +8320,10 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   tokenMeter.measure('fifoEngine', walletLotSummary, _lotEngineDebug, _closedLots)
   tokenMeter.endTokenMeter('fifoEngine')
   _perfPhaseTs.fifo_done = Date.now()
+  _perfWalletTimings.fifoMs += _perfPhaseTs.fifo_done - _fifoStartedAt
 
   tokenMeter.startTokenMeter('tradeStats')
+  const _tradeStatsStartedAt = Date.now()
   tokenMeter.measure('tradeStats', _closedLots)
   const tradeStatsResult = buildTradeStatsSummary(_closedLots, activityRequested, totalValue)
   let walletTradeStatsSummary = tradeStatsResult.summary
@@ -8333,6 +8343,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   }
   tokenMeter.measure('tradeStats', walletTradeStatsSummary, _tradeStatsDebug)
   tokenMeter.endTokenMeter('tradeStats')
+  _perfWalletTimings.tradeStatsMs += Date.now() - _tradeStatsStartedAt
   let _tradeStatsInputDebug: { closedLotsInputCount: number; walletLotSummaryClosedLots: number; source: string; computedAfterSupplementalBackfill: boolean; mismatchFixed: boolean } = {
     closedLotsInputCount: _closedLots.length,
     walletLotSummaryClosedLots: walletLotSummary.closedLots,
@@ -8860,6 +8871,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _historicalEligible = Boolean(historicalCoverage && activityRequested && (_adminOverrideUsed || totalValue >= 100) && walletTradeStatsSummary.closedLots < 10 && ((_lotEngineDebug.unmatchedSells ?? 0) > 0 || (_lotEngineDebug.openedLots ?? 0) > 0 || (walletSwapSummary.swapCandidateEvents ?? 0) > 0) && _targetContracts.size > 0 && _pagesAllowed > 0 && GOLDRUSH_KEY)
   const _runHistoricalCoverage = _historicalEligible
   let walletHistoricalCoverageSummary: WalletSnapshot['walletHistoricalCoverageSummary']
+  const _historicalStartedAt = Date.now()
   let _historicalCoverageDebug: NonNullable<WalletSnapshot['_diagnostics']>['walletHistoricalCoverageDebug']
   let _hcEvents: PnlEvent[] = []
   if (_runHistoricalCoverage) {
@@ -8926,6 +8938,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       : { summary: { status: 'not_requested' as const, requested: false, baselineClosedLots: 0, previewClosedLots: 0, addedClosedLots: 0, baselineRealizedPnlUsd: null, previewRealizedPnlUsd: null, addedRealizedPnlUsd: null, baselineRealizedPnlPercent: null, previewRealizedPnlPercent: null, winningClosedLotsPreview: 0, losingClosedLotsPreview: 0, breakEvenClosedLotsPreview: 0, uniqueTokensPreview: 0, previewConfidence: 'low' as const, readyForHistoricalTradeStatsPreview: false, safeToPromoteToPublicStats: false, missing: ['historical_coverage_not_requested'], reason: null }, debug: undefined, previewClosedLots: [] as WalletClosedLot[] }
 
   tokenMeter.measure('fifoEngine', walletHistoricalFifoPreviewSummary, _historicalFifoPreviewDebug, _hcPreviewClosedLots)
+  _perfWalletTimings.historicalMs += Date.now() - _historicalStartedAt
 
   // Phase 6E: Safe historical stats promotion
   const _shouldPromote =
@@ -9645,6 +9658,13 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         const bottleneckEntry = Object.entries(phaseDurations).sort((a, b) => b[1] - a[1])[0]
         return {
           totalDurationMs,
+          portfolioMs: _perfWalletTimings.portfolioMs,
+          activityMs: _perfWalletTimings.activityMs,
+          swapDetectionMs: _perfWalletTimings.swapDetectionMs,
+          pricingMs: _perfWalletTimings.pricingMs,
+          fifoMs: _perfWalletTimings.fifoMs,
+          tradeStatsMs: _perfWalletTimings.tradeStatsMs,
+          historicalMs: _perfWalletTimings.historicalMs,
           phaseDurations,
           providerDurations: {
             phase1_providers: (_perfPhaseTs.provider_fetch_done ?? now) - startedAt,

@@ -271,6 +271,18 @@ type WalletResult = {
     reason: string | null
     cacheHit?: boolean
   }
+  walletDeepScanTiming?: {
+    portfolioMs: number
+    activityMs: number
+    swapDetectionMs: number
+    pricingMs: number
+    fifoMs: number
+    tradeStatsMs: number
+    historicalMs: number
+    totalMs: number
+    cacheReadMs: number
+    cacheWriteMs: number
+  }
   walletModuleCoverage?: {
     portfolio:     { status: 'ok' | 'partial' | 'open_check'; evidence: string[]; reason: string }
     activity:      { status: 'ok' | 'partial' | 'open_check'; evidence: string[]; eventCount: number; reason: string }
@@ -837,6 +849,52 @@ function ClarkDots() {
   )
 }
 
+function WalletScanProgress({ hasPreviousResult }: { hasPreviousResult: boolean }) {
+  const modules = [
+    { label: 'Portfolio loading', detail: 'Reading visible holdings and value first.' },
+    { label: 'Activity indexing', detail: 'Indexing wallet-side transfer history.' },
+    { label: 'Swap pairs', detail: 'Grouping token legs into CORTEX candidates.' },
+    { label: 'Pricing evidence', detail: 'Resolving cost-basis evidence without synthetic numbers.' },
+    { label: 'FIFO matching', detail: 'Matching buys and sells with existing safety rules.' },
+    { label: 'Trade stats', detail: 'Unlocking stats only after verified closed lots.' },
+  ]
+  return (
+    <div style={{ maxWidth: '760px', marginTop: hasPreviousResult ? '0' : '24px' }}>
+      <div style={{
+        background: 'rgba(8,12,20,0.86)', border: '1px solid rgba(45,212,191,0.14)', borderRadius: '16px', padding: '16px 18px',
+        boxShadow: '0 0 36px rgba(45,212,191,0.04)',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px' }}>
+          <ClarkDots />
+          <div>
+            <div style={{ fontSize: '10px', fontWeight: 800, letterSpacing: '0.16em', color: '#7dd3fc', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+              {hasPreviousResult ? 'Refreshing CORTEX read…' : 'CORTEX deep scan in progress'}
+            </div>
+            <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.42)', marginTop: '3px', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
+              {hasPreviousResult
+                ? 'Keeping the previous verified read visible while the refreshed scan completes.'
+                : 'Modules appear as soon as verified evidence is returned or served from cache.'}
+            </div>
+          </div>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: '8px' }}>
+          {modules.map((m, i) => (
+            <div key={m.label} style={{ border: '1px solid rgba(255,255,255,0.07)', borderRadius: '10px', padding: '10px 11px', background: 'rgba(255,255,255,0.018)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '7px', color: i < 2 ? '#7dd3fc' : 'rgba(255,255,255,0.48)', fontSize: '10px', fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                <span style={{ width: '6px', height: '6px', borderRadius: '999px', background: i < 2 ? '#7dd3fc' : 'rgba(125,211,252,0.28)', boxShadow: i < 2 ? '0 0 10px rgba(125,211,252,0.35)' : 'none' }} />
+                {m.label}
+              </div>
+              <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.32)', marginTop: '5px', lineHeight: 1.45, fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
+                {m.detail}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Main page ────────────────────────────────────────────────────────────────────────────
 
 export default function WalletScannerPage() {
@@ -854,7 +912,6 @@ export default function WalletScannerPage() {
     if (!q) return
     setLoading(true)
     setError(null)
-    setResult(null)
     setShowAllHoldings(false)
 
     try {
@@ -1224,9 +1281,9 @@ export default function WalletScannerPage() {
             </span>
           </div>
 
-          {/* Loading skeleton */}
-          {loading && (
-            <div style={{ maxWidth: '700px', marginTop: '24px' }}>
+          {/* Progressive loading state */}
+          {loading && !result && (
+            <><WalletScanProgress hasPreviousResult={false} /><div style={{ maxWidth: '700px', marginTop: '12px' }}>
               <div style={{ background: 'rgba(255,255,255,0.025)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '16px', padding: '24px', marginBottom: '12px' }}>
                 {[220, 140, 180, 110, 160, 90].map((w, i) => (
                   <div key={i} style={{
@@ -1243,8 +1300,9 @@ export default function WalletScannerPage() {
                   <div key={i} style={{ flex: 1, height: '70px', borderRadius: '12px', background: 'linear-gradient(90deg, rgba(255,255,255,0.03) 0%, rgba(255,255,255,0.07) 50%, rgba(255,255,255,0.03) 100%)', backgroundSize: '600px 100%', animation: `shimmer 1.6s ease-in-out ${i * 0.15}s infinite` }} />
                 ))}
               </div>
-            </div>
+            </div></>
           )}
+          {loading && result && <WalletScanProgress hasPreviousResult />}
 
           {/* Error */}
           {error && (
@@ -1287,7 +1345,7 @@ export default function WalletScannerPage() {
           )}
 
           {/* Results */}
-          {result && !loading && (() => {
+          {result && (() => {
             const sorted = [...result.holdings].sort((a, b) => b.value - a.value)
             const largest = sorted[0] ?? null
             const quality = dataQualityForWallet(result)
@@ -1311,6 +1369,13 @@ export default function WalletScannerPage() {
             const showLegacyPortfolioCards = !(hasPortfolioIntelligence && hasCortexFacts)
             return (
             <div className="ws-result-fade" style={{ maxWidth: '100%', width: '100%', display: 'flex', flexDirection: 'column', gap: '20px', marginTop: '28px' }}>
+
+              {loading && (
+                <div style={{ fontSize: '11px', color: '#7dd3fc', background: 'rgba(56,189,248,0.05)', border: '1px solid rgba(56,189,248,0.14)', borderRadius: '10px', padding: '10px 14px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', lineHeight: 1.6, display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <ClarkDots />
+                  <span>Refreshing CORTEX read… previous verified modules remain visible until the new scan is ready.</span>
+                </div>
+              )}
 
               {/* Scan cost / cache note banner */}
               {result.walletScanCacheNote && (result.walletScanCostMode === 'blocked_by_cooldown' || result.walletScanCostMode === 'blocked_by_cost_guard' || result.walletScanCostMode === 'historical_cached' || result.walletScanCostMode === 'deep_cached') && (
