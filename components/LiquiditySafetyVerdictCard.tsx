@@ -29,8 +29,11 @@ export interface LiquiditySafetyResult {
     volLiqRatio: number | null;
     isStale: boolean;
   }>;
-  // No active lock-proof provider is wired up — always "unverified"
-  lockStatus: "locked" | "unlocked" | "unverified";
+  lpLockStatus: "locked" | "burned" | "unlocked" | "unverified";
+  lpLockAmount: number | null;
+  lpUnlockTime: number | null;
+  lpLockProvider: "PinkLock" | null;
+  lpController: "wallet" | "contract" | "burn" | "lockContract" | "unknown";
   lp_data_mode: "strict" | "minimal" | "fallback" | "insufficient";
   lp_data_confidence: "high" | "medium" | "low" | "unverified";
   lp_evidence_gaps: Array<{ id: string; label: string; explanation: string; nextAction: string }>;
@@ -101,8 +104,9 @@ function pctColor(v: number | null | undefined): string {
   return v >= 0 ? "#2DD4BF" : "#f43f5e";
 }
 
-const LOCK_CHIP: Record<LiquiditySafetyResult["lockStatus"], { label: string; color: string; bg: string; border: string }> = {
+const LOCK_CHIP: Record<LiquiditySafetyResult["lpLockStatus"], { label: string; color: string; bg: string; border: string }> = {
   locked:     { label: "LP LOCKED",   color: "#34d399", bg: "rgba(52,211,153,0.10)", border: "rgba(52,211,153,0.30)" },
+  burned:     { label: "LP BURNED",   color: "#34d399", bg: "rgba(52,211,153,0.10)", border: "rgba(52,211,153,0.30)" },
   unlocked:   { label: "LP UNLOCKED", color: "#f43f5e", bg: "rgba(244,63,94,0.10)",  border: "rgba(244,63,94,0.30)" },
   unverified: { label: "LOCK STATUS UNVERIFIED", color: "#fb923c", bg: "rgba(251,146,60,0.10)", border: "rgba(251,146,60,0.30)" },
 };
@@ -415,7 +419,7 @@ export default function LiquiditySafetyVerdictCard({ result, loading, error }: P
               fontSize: "10px", color: "#4a6272", lineHeight: 1.6,
               fontFamily: "var(--font-plex-mono)", marginTop: "-2px", marginBottom: "8px", maxWidth: "420px",
             }}>
-              This score measures liquidity depth and pool structure only. Lock, burn, ownership, mintability, honeypot and tax proof are not confirmed by this scan.
+              This score measures liquidity depth only. Lock, burn, ownership, mintability, honeypot, and tax proof are not confirmed.
             </p>
             <p style={{
               fontSize: "11px", color: "#4a6272",
@@ -441,7 +445,7 @@ export default function LiquiditySafetyVerdictCard({ result, loading, error }: P
                 {tierLabel}
               </span>
               {(() => {
-                const lc = LOCK_CHIP[result.lockStatus]
+                const lc = LOCK_CHIP[result.lpLockStatus]
                 return (
                   <span style={{
                     display: "inline-block",
@@ -473,9 +477,16 @@ export default function LiquiditySafetyVerdictCard({ result, loading, error }: P
             <StatCard label="Primary DEX"        value={result.lp_model_proof.dexName ?? "Unverified"} />
             <StatCard label="LP Model"           value={result.lp_model_proof.model === "unknown" ? "Unverified" : result.lp_model_proof.model.replace("_", " ")} />
             <StatCard label="Concentration"      value={result.lp_migration_proof.liquidityDistribution === "unknown" ? "Not checked" : result.lp_migration_proof.liquidityDistribution} />
-            <StatCard label="Lock Status"        value={result.lockStatus === "unverified" ? "Unverified" : result.lockStatus} accent={result.lockStatus === "unverified" ? "#fb923c" : undefined} />
+            <StatCard label="Lock Status"        value={result.lpLockStatus === "unverified" ? "Unverified" : result.lpLockStatus} accent={result.lpLockStatus === "unverified" ? "#fb923c" : "#34d399"} />
+            <StatCard label="LP Controller"      value={result.lpController === "unknown" ? "Unverified" : result.lpController} />
             <StatCard label="Evidence Confidence" value={result.lp_data_confidence === "unverified" ? "Unverified" : result.lp_data_confidence} accent={CONFIDENCE_COLOR[result.lp_data_confidence]} />
           </div>
+          {result.lpLockStatus === "locked" && result.lpUnlockTime != null && (
+            <p style={{ marginTop: "8px", fontSize: "11px", color: "#8aa2af", fontFamily: "var(--font-plex-mono)" }}>
+              LP unlock time: {new Date(result.lpUnlockTime * 1000).toUTCString()}
+              {result.lpLockAmount != null ? ` · Locked amount: ${result.lpLockAmount.toLocaleString()}` : ""}
+            </p>
+          )}
         </div>
 
         {result.lp_model_proof.model === "concentrated" && (
