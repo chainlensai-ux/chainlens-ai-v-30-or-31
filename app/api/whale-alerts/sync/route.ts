@@ -29,7 +29,9 @@ type CovalentTx = {
 }
 
 const COVALENT_BASE = 'https://api.covalenthq.com/v1/base-mainnet'
-const PROVIDER_ENDPOINT_PATH = '/v1/base-mainnet/address/{wallet}/transactions_v3/?page-number=0&page-size=100'
+const PROVIDER_CHAIN = 'base'
+const PROVIDER_PAGE_SIZE = 100
+const PROVIDER_ENDPOINT_PATH = `/v1/base-mainnet/address/{wallet}/transactions_v3/?page-number=0&page-size=${PROVIDER_PAGE_SIZE}`
 const DEFAULT_LIMIT = 10
 const MAX_LIMIT = 10
 const AUTO_BATCH_MAX_TOTAL = 25
@@ -40,6 +42,7 @@ const CONCURRENCY = 8
 const PRO_SYNC_COOLDOWN_MS = 60 * 1000
 const ELITE_SYNC_COOLDOWN_MS = 30 * 1000
 const DEV_SYNC_COOLDOWN_MS = 10 * 1000
+const WALLET_TX_SYNC_CACHE_TTL_MS = 60 * 1000
 const syncRate = new Map<string, { count: number; resetAt: number; lastRunAt: number }>()
 const SYNC_RATE_BY_PLAN: Record<string, number> = { free: 2, pro: 6, elite: 15 }
 function syncIp(req: Request): string { return req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown' }
@@ -200,6 +203,40 @@ function makeFinalPipelineSummary(): FinalPipelineSummary {
   }
 }
 
+
+type ProviderPayload = {
+  data?: {
+    items?: CovalentTx[]
+  }
+}
+
+type WalletFetchOutcome =
+  | { ok: true; payload: ProviderPayload }
+  | { ok: false; error: ProviderRequestError }
+
+type WalletTransactionCacheEntry = {
+  payload: ProviderPayload
+  expiresAt: number
+}
+
+type SyncProviderDebug = {
+  walletsProcessed: number
+  providerCallsAttempted: number
+  providerCallsSavedByCache: number
+  providerCallsSavedByDedupe: number
+  cacheHits: number
+  cacheMisses: number
+  errorCount: number
+  providerErrorSamples: ProviderErrorSample[]
+}
+
+const walletTransactionCache = new Map<string, WalletTransactionCacheEntry>()
+const walletTransactionInFlight = new Map<string, Promise<WalletFetchOutcome>>()
+
+function walletTransactionCacheKey(address: string) {
+  return `${PROVIDER_CHAIN}:${address.toLowerCase()}:page-size=${PROVIDER_PAGE_SIZE}`
+}
+
 class ProviderRequestError extends Error {
   statusCode: number | null
   responseKeys: string[]
@@ -221,10 +258,59 @@ function classifyProviderError(statusCode: number | null): string {
   return 'network_error'
 }
 
-async function fetchWalletTransactions(address: string, apiKey: string) {
+async function fetchWalletTransactions(
+  address: string,
+  apiKey: string,
+  syncDebug: SyncProviderDebug,
+): Promise<WalletFetchOutcome> {
+  const cacheKey = walletTransactionCacheKey(address)
+  const now = Date.now()
+  const cached = walletTransactionCache.get(cacheKey)
+
+  if (cached && cached.expiresAt > now) {
+    syncDebug.cacheHits += 1
+    syncDebug.providerCallsSavedByCache += 1
+    return { ok: true, payload: cached.payload }
+  }
+
+  if (cached) walletTransactionCache.delete(cacheKey)
+  syncDebug.cacheMisses += 1
+
+  const activeFetch = walletTransactionInFlight.get(cacheKey)
+  if (activeFetch) {
+    syncDebug.providerCallsSavedByDedupe += 1
+    return activeFetch
+  }
+
+  syncDebug.providerCallsAttempted += 1
+  const fetchPromise = fetchWalletTransactionsFromProvider(address, apiKey)
+    .then((payload): WalletFetchOutcome => {
+      walletTransactionCache.set(cacheKey, {
+        payload,
+        expiresAt: Date.now() + WALLET_TX_SYNC_CACHE_TTL_MS,
+      })
+      return { ok: true, payload }
+    })
+    .catch((error): WalletFetchOutcome => ({
+      ok: false,
+      error: error instanceof ProviderRequestError
+        ? error
+        : new ProviderRequestError(null, 'provider_fetch_failed', []),
+    }))
+    .finally(() => {
+      if (walletTransactionInFlight.get(cacheKey) === fetchPromise) {
+        walletTransactionInFlight.delete(cacheKey)
+      }
+    })
+
+  walletTransactionInFlight.set(cacheKey, fetchPromise)
+  return fetchPromise
+}
+
+async function fetchWalletTransactionsFromProvider(address: string, apiKey: string): Promise<ProviderPayload> {
   const url = new URL(`${COVALENT_BASE}/address/${address}/transactions_v3/`)
   url.searchParams.set('page-number', '0')
-  url.searchParams.set('page-size', '100')
+  url.searchParams.set('page-size', String(PROVIDER_PAGE_SIZE))
 
   let response: Response
   try {
@@ -254,7 +340,11 @@ async function fetchWalletTransactions(address: string, apiKey: string) {
     throw new ProviderRequestError(response.status, classifyProviderError(response.status), responseKeys)
   }
 
-  return response.json()
+  try {
+    return (await response.json()) as ProviderPayload
+  } catch {
+    throw new ProviderRequestError(null, 'invalid_provider_json', [])
+  }
 }
 
 // Parse ERC-20 Transfer events from Covalent log_events.
@@ -462,6 +552,16 @@ export async function POST(request: Request) {
   let newestAlertAtTs = 0
   const insertedSymbols = new Set<string>()
   const providerErrorSamples: ProviderErrorSample[] = []
+  const syncDebug: SyncProviderDebug = {
+    walletsProcessed: 0,
+    providerCallsAttempted: 0,
+    providerCallsSavedByCache: 0,
+    providerCallsSavedByDedupe: 0,
+    cacheHits: 0,
+    cacheMisses: 0,
+    errorCount: 0,
+    providerErrorSamples,
+  }
   const skipSummary = makeSkipSummary()
   const skipSamples: SkipSample[] = []
   const finalPipelineSummary = makeFinalPipelineSummary()
@@ -483,13 +583,15 @@ export async function POST(request: Request) {
 
     const settled = await Promise.allSettled(
       chunk.map(wallet =>
-        fetchWalletTransactions(wallet.address, providerKey)
-          .then(payload => ({
-            wallet,
-            txItems: (payload?.data?.items ?? []) as CovalentTx[],
-            ok: true as const,
-          }))
-          .catch(error => ({ wallet, error, ok: false as const }))
+        fetchWalletTransactions(wallet.address, providerKey, syncDebug)
+          .then(result => result.ok
+            ? {
+                wallet,
+                txItems: (result.payload.data?.items ?? []) as CovalentTx[],
+                ok: true as const,
+              }
+            : { wallet, error: result.error, ok: false as const }
+          )
       )
     )
 
@@ -509,6 +611,7 @@ export async function POST(request: Request) {
     if (!result.ok) {
       const err = (result as { wallet: TrackedWallet; error: unknown; ok: false }).error
       providerErrors += 1
+      syncDebug.errorCount += 1
       const statusCode = err instanceof ProviderRequestError ? err.statusCode : null
       const reason     = err instanceof ProviderRequestError ? err.message : 'provider_fetch_failed'
       const responseKeys = err instanceof ProviderRequestError ? err.responseKeys : []
@@ -626,6 +729,7 @@ export async function POST(request: Request) {
 
   // walletsChecked = actual wallets attempted; equals walletBatch.length unless safety timeout fired
   const walletsChecked = processed
+  syncDebug.walletsProcessed = walletsChecked
   const processedTotal = offset + walletsChecked
   const done = processedTotal >= trackedWalletsTotal
   const nextOffset = done ? null : processedTotal
@@ -688,8 +792,28 @@ export async function POST(request: Request) {
       skippedReason: 'route_uses_goldrush_not_alchemy',
       fallbackUsed: false,
       requestDurationMs: Date.now() - startedAt,
+      whaleSync: {
+        walletsProcessed: syncDebug.walletsProcessed,
+        providerCallsAttempted: syncDebug.providerCallsAttempted,
+        providerCallsSavedByCache: syncDebug.providerCallsSavedByCache,
+        providerCallsSavedByDedupe: syncDebug.providerCallsSavedByDedupe,
+        cacheHits: syncDebug.cacheHits,
+        cacheMisses: syncDebug.cacheMisses,
+        errorCount: syncDebug.errorCount,
+        providerErrorSamples: providerErrorSamples.slice(0, 5),
+      },
     }
     response._diagnostics = {
+      syncProvider: {
+        walletsProcessed: syncDebug.walletsProcessed,
+        providerCallsAttempted: syncDebug.providerCallsAttempted,
+        providerCallsSavedByCache: syncDebug.providerCallsSavedByCache,
+        providerCallsSavedByDedupe: syncDebug.providerCallsSavedByDedupe,
+        cacheHits: syncDebug.cacheHits,
+        cacheMisses: syncDebug.cacheMisses,
+        errorCount: syncDebug.errorCount,
+        providerErrorSamples: providerErrorSamples.slice(0, 5),
+      },
       providerErrorCount: providerErrors,
       providerErrorSamples: providerErrorSamples.slice(0, 5).map(s => ({
         statusCode: s.statusCode ?? null,
