@@ -1473,6 +1473,7 @@ export default function WalletScannerPage() {
                     if (pricedEvents > 0 && openedLots === 0) return 'priced swaps found, no lots opened'
                     if (candidates > 0 && pricedEvents === 0) return 'candidates unpriced'
                     if (mc.walletOpenPositionSummary) return 'Open position detected — no matched sells yet'
+                    if ((result.walletLotSummary?.unmatchedSells ?? 0) > 0) return 'Exit detected — entry missing from indexed window'
                     if (candidates > 0) return 'no swap evidence priced'
                     return 'no swap evidence'
                   })(), status: (() => {
@@ -2253,6 +2254,12 @@ export default function WalletScannerPage() {
                         <div style={{ fontSize: '11px', color: 'rgba(148,163,184,0.65)' }}>{result.walletHistoricalScanNote}</div>
                       </div>
                     )}
+                    {(ls?.unmatchedSells ?? 0) > 0 && (
+                      <div style={{ fontSize: '11px', color: 'rgba(251,191,36,0.65)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '10px', lineHeight: 1.5, background: 'rgba(251,191,36,0.04)', border: '1px solid rgba(251,191,36,0.14)', borderRadius: '8px', padding: '8px 12px' }}>
+                        <span style={{ fontWeight: 800, color: 'rgba(251,191,36,0.85)' }}>Exit detected — entry missing from indexed window.</span>{' '}
+                        Exit detected, but entry is outside the indexed window. PnL Open Check — prior buy not found.
+                      </div>
+                    )}
                     {!isOpenCheck && isBreakEvenOnly && (ls?.unmatchedSells ?? 0) > 0 && (
                       <div style={{ fontSize: '12px', color: 'rgba(251,191,36,0.80)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '12px', lineHeight: 1.55, background: 'rgba(251,191,36,0.05)', border: '1px solid rgba(251,191,36,0.18)', borderRadius: '10px', padding: '10px 13px' }}>
                         <div style={{ fontWeight: 700, fontSize: '11px', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: '5px' }}>Missing Entry History</div>
@@ -2378,10 +2385,12 @@ export default function WalletScannerPage() {
                             <div style={{ color: '#7dd3fc', marginBottom: '10px' }}>
                               {(() => {
                                 const mc = result.walletModuleCoverage
-                                if (ls && (ls.pricedSwapEvents ?? 0) > 0) return 'CORTEX found priced activity, but buys and sells did not match inside the indexed window yet.'
-                                if (mc?.activity && mc.activity.eventCount > 0 && mc.swapDetection.candidateCount === 0) return `${mc.activity.eventCount} transfer events indexed — no reconstructable swap pairs found in checked sample.`
-                                if (mc?.swapDetection && mc.swapDetection.candidateCount > 0 && (mc.priceEvidence?.pricedEvents ?? 0) === 0) return 'CORTEX found swap-like movement, but could not verify quote-side price evidence from the available sample.'
-                                if (mc?.activity?.reason === 'provider_unavailable') return 'Activity provider unavailable. No FIFO lot matching was possible in this scan.'
+                                if ((ls?.unmatchedSells ?? 0) > 0) return `No closed lots — ${ls!.unmatchedSells} exit${ls!.unmatchedSells !== 1 ? 's were' : ' was'} detected, but the matching entry is outside the indexed window. PnL Open Check — prior buy not found.`
+                                if (mc?.walletOpenPositionSummary) return 'No closed lots — open position detected from indexed buy-side activity, but no matched sells yet.'
+                                if (ls && (ls.pricedSwapEvents ?? 0) > 0) return 'No closed lots — CORTEX found priced activity, but buys and sells did not match inside the indexed window yet (open holding only).'
+                                if (mc?.activity && mc.activity.eventCount > 0 && mc.swapDetection.candidateCount === 0) return `No closed lots — ${mc.activity.eventCount} transfer events indexed but no reconstructable swap pairs found in checked sample (no matched exit yet).`
+                                if (mc?.swapDetection && mc.swapDetection.candidateCount > 0 && (mc.priceEvidence?.pricedEvents ?? 0) === 0) return 'No closed lots — swap-like movement found, but pricing is incomplete: quote-side price evidence could not be verified from the available sample.'
+                                if (mc?.activity?.reason === 'provider_unavailable') return 'No closed lots — activity layer unavailable. No FIFO lot matching was possible in this scan.'
                                 return 'No matched priced closed lots yet.'
                               })()}
                             </div>
@@ -2681,7 +2690,7 @@ export default function WalletScannerPage() {
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#2DD4BF" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.7 }}>
                     <path d="M12 2a10 10 0 1 0 10 10"/><path d="M12 6v6l4 2"/>
                   </svg>
-                  <div style={{ fontSize: '10px', fontWeight: 800, letterSpacing: '0.18em', color: 'rgba(45,212,191,0.80)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>AI Wallet Personality</div>
+                  <div style={{ fontSize: '10px', fontWeight: 800, letterSpacing: '0.18em', color: 'rgba(45,212,191,0.80)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>CORTEX Wallet Read</div>
                 </div>
                 <p style={{ margin: 0, color: '#cbd5e1', fontSize: '13px', lineHeight: 1.80, fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{walletIntel.personalitySummary}</p>
                 {(result.walletTradeStatsSummary?.closedLots ?? 0) > 0 && (
