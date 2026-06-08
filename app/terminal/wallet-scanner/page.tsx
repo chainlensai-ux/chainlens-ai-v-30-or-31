@@ -1774,8 +1774,15 @@ export default function WalletScannerPage() {
                     const perfForExposure = result.openPositionPerformanceSummary ?? result.walletModuleCoverage?.openPositionPerformanceSummary ?? null
                     const openPosTokenContracts = new Set((_openPosForPnl?.tokens ?? []).map((t: any) => String(t.contract ?? '').toLowerCase()).filter(Boolean))
                     const matchingHoldings = result.holdings.filter(h => h.value > 0 && openPosTokenContracts.has(String(h.contract ?? '').toLowerCase()))
+                    const totalHoldingsValue = result.holdings.reduce((s, h) => s + (h.value > 0 ? h.value : 0), 0)
+                    // Fallback: no open-position summary at all — use the largest non-dust holding as exposure evidence
+                    const _topHolding = [...result.holdings].sort((a, b) => b.value - a.value)[0] ?? null
+                    const fallbackExposureHolding = (!_openPosForPnl && !perfForExposure && _topHolding && _topHolding.value >= 1) ? _topHolding : null
                     const exposureUsd = (perfForExposure?.totalCurrentValueUsd ?? perfForExposure?.matchedCurrentOpenValueUsd ?? null)
                       ?? (matchingHoldings.length > 0 ? matchingHoldings.reduce((s, h) => s + h.value, 0) : null)
+                      ?? (fallbackExposureHolding ? fallbackExposureHolding.value : null)
+                    const exposureTokenSymbol = matchingHoldings.length > 0 ? null : (fallbackExposureHolding ? (fallbackExposureHolding.symbol || fallbackExposureHolding.name) : null)
+                    const exposureWalletPercent = (fallbackExposureHolding && totalHoldingsValue > 0) ? (fallbackExposureHolding.value / totalHoldingsValue) * 100 : null
                     const costBasisRaw = _openPosForPnl?.totalOpenCostBasisUsd ?? perfForExposure?.totalOpenCostBasisUsd ?? null
                     const costBasisIsDust = costBasisRaw != null && costBasisRaw > 0 && costBasisRaw < 0.01
                     const costBasisKnown = costBasisRaw != null && costBasisRaw >= 0.01
@@ -1793,6 +1800,11 @@ export default function WalletScannerPage() {
                             <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '10px', padding: '10px' }}>
                               <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.22)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '5px' }}>Current Open Exposure</div>
                               <div style={{ fontSize: '15px', fontWeight: 700, color: '#e2e8f0', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{fmtUsd2(exposureUsd)}</div>
+                              {exposureTokenSymbol && (
+                                <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.32)', marginTop: '3px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                                  {exposureTokenSymbol}{exposureWalletPercent != null ? ` · ${exposureWalletPercent.toFixed(0)}% of wallet` : ''}
+                                </div>
+                              )}
                             </div>
                             <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '10px', padding: '10px' }}>
                               <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.22)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '5px' }}>Cost Basis</div>
