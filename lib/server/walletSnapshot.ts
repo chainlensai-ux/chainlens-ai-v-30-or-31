@@ -625,6 +625,11 @@ export type WalletSnapshot = {
       goldrushEthRawCount?: number
       goldrushBaseRawCount?: number
       alchemyRawCount?: number
+      goldrushEthSkippedReason?: string | null
+      ethValueUsd?: number
+      ethActivityThresholdUsd?: number
+      ethActivityEligible?: boolean
+      ethActivitySkippedReason?: string | null
       normalizedPnlEventCount?: number
       totalEvidenceEvents?: number
       eventsWithTxHash?: number
@@ -1141,6 +1146,10 @@ export type WalletSnapshot = {
       totalValue: number
       activityAttempted: boolean
       activitySkippedReason: string | null
+      ethActivityEligible: boolean
+      ethActivitySkippedReason: string | null
+      ethValueUsd: number
+      ethActivityThresholdUsd: number
       lowBalanceOverrideUsed: boolean
       fallbackChainsUsed: string[]
       providerCallsPlanned: string[]
@@ -1184,6 +1193,8 @@ export type WalletSnapshot = {
       goldrushEthSkippedReason?: string | null
       ethValueUsd?: number
       ethActivityThresholdUsd?: number
+      ethActivityEligible?: boolean
+      ethActivitySkippedReason?: string | null
     }
     walletFactsDebug?: {
       built: boolean
@@ -7457,9 +7468,13 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _ethActivityThresholdUsd = Math.max(10, totalValue * 0.02)
   const _ethIsDominantChain = discoveredChains.length > 0 && discoveredChains[0].chain === 'eth'
   const _ethClearsActivityGate = _ethDiscoveredValue >= _ethActivityThresholdUsd || _ethIsDominantChain
-  const _grEthDeferredEligible = activityRequested && Boolean(GOLDRUSH_KEY) && !_shouldFetchGrEthEager
+  const _ethDeferredActivityCandidate = activityRequested && Boolean(GOLDRUSH_KEY) && !_shouldFetchGrEthEager
     && (chainMode === 'base_eth' || chainMode === 'all_supported')
-    && _ethClearsActivityGate
+  const _ethActivityEligible = _shouldFetchGrEthEager || (_ethDeferredActivityCandidate && _ethClearsActivityGate)
+  const _ethActivitySkippedReason = _ethDeferredActivityCandidate && !_ethClearsActivityGate
+    ? 'eth_below_activity_value_gate'
+    : null
+  const _grEthDeferredEligible = _ethDeferredActivityCandidate && _ethClearsActivityGate
   if (_grEthDeferredEligible) {
     _trackCall('goldrush', 'transactions_v3', false, `gr:tx3:eth:${addrNorm}`)
     try {
@@ -7467,8 +7482,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     } catch {
       // keep placeholder grEth on failure
     }
-  } else if (activityRequested && Boolean(GOLDRUSH_KEY) && !_shouldFetchGrEthEager) {
-    _goldrushEthSkippedReason = 'eth_below_activity_value_gate'
+  } else if (_ethActivitySkippedReason) {
+    _goldrushEthSkippedReason = _ethActivitySkippedReason
   }
   const _shouldFetchGrEth = _shouldFetchGrEthEager || _grEthDeferredEligible
   const grPnlBaseOut = grPnlBaseRes.status === 'fulfilled' ? grPnlBaseRes.value : { events: [] as PnlEvent[], diag: { endpointKind: 'transactions_v3' as const, chainUsed: 'base-mainnet', urlTemplate: 'https://api.covalenthq.com/v1/base-mainnet/address/{wallet}/transactions_v3/?page-size=50&page-number=0&with-logs=true&no-spam=true', httpStatus: null, fetchFailed: true, failureStage: 'fetch' as const, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], transferArrayCount: 0, firstTransferKeys: [], reason: 'GoldRush transaction history request failed before response.' } }
@@ -7507,6 +7522,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       goldrushEthSkippedReason: _goldrushEthSkippedReason,
       ethValueUsd: _ethDiscoveredValue,
       ethActivityThresholdUsd: _ethActivityThresholdUsd,
+      ethActivityEligible: _ethActivityEligible,
+      ethActivitySkippedReason: _ethActivitySkippedReason,
     }
   })()
   let alchemyEvents: PnlEvent[] = []
@@ -9277,7 +9294,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     _txSkippedReasons.push('activity_not_requested')
   } else {
     if (!GOLDRUSH_KEY) _txSkippedReasons.push('goldrush_not_configured')
-    if (!_shouldFetchGrEth && Boolean(GOLDRUSH_KEY)) _txSkippedReasons.push('goldrush_eth_skipped_chain_not_eth')
+    if (_goldrushEthSkippedReason) _txSkippedReasons.push(_goldrushEthSkippedReason)
+    else if (!_shouldFetchGrEth && Boolean(GOLDRUSH_KEY)) _txSkippedReasons.push('goldrush_eth_not_selected_for_activity')
     if (!ALCHEMY_BASE_KEY) _txSkippedReasons.push('alchemy_not_configured')
   }
   const _txProviderErrors: string[] = []
@@ -9296,6 +9314,11 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     goldrushEthRawCount: grEth.diag.rawItemCount ?? 0,
     goldrushBaseRawCount: grBase.diag.rawItemCount ?? 0,
     alchemyRawCount: alchemyEvents.length,
+    goldrushEthSkippedReason: _goldrushEthSkippedReason,
+    ethValueUsd: _ethDiscoveredValue,
+    ethActivityThresholdUsd: _ethActivityThresholdUsd,
+    ethActivityEligible: _ethActivityEligible,
+    ethActivitySkippedReason: _ethActivitySkippedReason,
     normalizedPnlEventCount: events.length,
     totalEvidenceEvents: _txEvidenceDebugBase.totalRawEvents,
     eventsWithTxHash: _txEvidenceDebugBase.eventsWithHash,
@@ -9493,6 +9516,10 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       totalValue,
       activityAttempted: activityRequested,
       activitySkippedReason: _actSkipReason,
+      ethActivityEligible: _ethActivityEligible,
+      ethActivitySkippedReason: _ethActivitySkippedReason,
+      ethValueUsd: _ethDiscoveredValue,
+      ethActivityThresholdUsd: _ethActivityThresholdUsd,
       lowBalanceOverrideUsed: _lowBalanceOverrideUsed,
       fallbackChainsUsed: _fallbackChainsUsed as string[],
       providerCallsPlanned: [
@@ -9543,8 +9570,19 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     const _primaryChain = _ethTotalValue > _baseTotalValue ? 'eth' : 'base'
     const _baseOnlyMisleading = _ethTotalValue > 1 && _baseEvCount > 0 && _ethEvCount === 0
       && (_ethTotalValue / Math.max(_ethTotalValue + _baseTotalValue, 1)) > 0.5
+    const _ethGateSkippedReason = (
+      _ethActivitySkippedReason === 'eth_below_activity_value_gate' ||
+      _goldrushEthSkippedReason === 'eth_below_activity_value_gate'
+    )
+      ? 'eth_below_activity_value_gate'
+      : null
     const _ethSkipReason = !_ethAttempted
-      ? (_ethTotalValue <= 1 ? 'eth_activity_skipped_no_eth_holdings' : 'eth_activity_provider_unavailable')
+      ? (
+        _ethGateSkippedReason ??
+        _ethActivitySkippedReason ??
+        _goldrushEthSkippedReason ??
+        (_ethTotalValue <= 1 ? 'eth_activity_skipped_no_eth_holdings' : 'eth_activity_provider_unavailable')
+      )
       : _ethEvCount === 0 ? 'eth_activity_provider_returned_empty'
       : null
     const _baseSkipReason = !_baseAttempted
