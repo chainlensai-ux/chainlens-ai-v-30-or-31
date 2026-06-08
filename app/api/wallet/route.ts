@@ -397,7 +397,15 @@ export async function POST(req: Request) {
 
     // Historical cooldown — 10 min per wallet after a live historical scan
     const hcCooldownKey = `${key}:historical:${plan}`
-    const cooldownActive = historicalCoverageRequested && (walletHistoricalCooldown.get(hcCooldownKey) ?? 0) > Date.now()
+    let cooldownActive = historicalCoverageRequested && (walletHistoricalCooldown.get(hcCooldownKey) ?? 0) > Date.now()
+    // prevents cold-start re-burn of historical scans — fall back to persistent cooldown if memory was reset
+    if (historicalCoverageRequested && !cooldownActive && walletScanPersistentCacheAvailable()) {
+      const persHcCooldown = await readPersistentCooldown(hcCooldownKey)
+      if (persHcCooldown && persHcCooldown.expiresAt.getTime() > Date.now()) {
+        walletHistoricalCooldown.set(hcCooldownKey, persHcCooldown.expiresAt.getTime())
+        cooldownActive = true
+      }
+    }
 
     // Cost guard — skip live re-run if previous scan was very expensive
     const costHintKey = `${key}:${cacheMode}`  // cacheMode kept for costHints (separate map)
@@ -772,6 +780,10 @@ export async function POST(req: Request) {
     // Set cooldown after a live historical scan
     if (effectiveHistoricalCoverage) {
       walletHistoricalCooldown.set(hcCooldownKey, Date.now() + WALLET_HC_COOLDOWN_MS)
+      // prevents cold-start re-burn of historical scans — persist so cooldown survives Vercel cold starts
+      if (_persistentAvailable) {
+        void writePersistentCooldown(hcCooldownKey, key, chainKey, WALLET_HC_COOLDOWN_MS)
+      }
     }
     // Set deep scan cooldown after a live deep scan
     if (deepActivity && !effectiveHistoricalCoverage && !inFlightDeduped) {
