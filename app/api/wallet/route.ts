@@ -893,7 +893,10 @@ export async function POST(req: Request) {
     }
 
     // Persistent cache + cooldown writes — cross-instance, survives Vercel cold-starts
-    if (_cacheWriteAttempted && deepActivity && !effectiveHistoricalCoverage && !inFlightDeduped && _persistentAvailable && !_cacheWriteBlocked) {
+    // Historical scans now persist under their own 'historical' scanMode/cacheKey + WALLET_HISTORICAL_CACHE_TTL_MS
+    // (via cacheKey/_cacheTtlMs, which already resolve to the historical variants when effectiveHistoricalCoverage
+    // is true) so expensive historical scans can be served from persistent cache instead of rerunning live.
+    if (_cacheWriteAttempted && deepActivity && !inFlightDeduped && _persistentAvailable && !_cacheWriteBlocked) {
       _persistentCacheWriteAttempted = true
       const _ppayload: any = { ...snapshot }
       // Extract slim diagnostics before pruning so cached responses can surface them with debug=true
@@ -936,10 +939,13 @@ export async function POST(req: Request) {
       pruneWalletScannerDebug(_ppayload, false)
       _ppayload._cachedDiagnosticsSlim = _slimDiag
       const _persistentCacheWriteStartedAt = Date.now()
-      const [cacheResult] = await Promise.allSettled([
-        writePersistentWalletCache(cacheKey, key, scanModeKey, chainKey, _ppayload, _cacheTtlMs),
-        writePersistentCooldown(deepCooldownKey, key, chainKey, WALLET_DEEP_COOLDOWN_MS),
-      ])
+      // Deep cooldown persistence is scoped to non-historical deep scans only — historical scans
+      // already persist their own cooldown via writePersistentCooldown(hcCooldownKey, ...) above.
+      const _persistentWrites: Promise<unknown>[] = [writePersistentWalletCache(cacheKey, key, scanModeKey, chainKey, _ppayload, _cacheTtlMs)]
+      if (!effectiveHistoricalCoverage) {
+        _persistentWrites.push(writePersistentCooldown(deepCooldownKey, key, chainKey, WALLET_DEEP_COOLDOWN_MS))
+      }
+      const [cacheResult] = await Promise.allSettled(_persistentWrites)
       _cacheWriteMs += Date.now() - _persistentCacheWriteStartedAt
       _persistentCacheWriteSucceeded = cacheResult.status === 'fulfilled' && cacheResult.value === true
     }
