@@ -9570,8 +9570,19 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     const _primaryChain = _ethTotalValue > _baseTotalValue ? 'eth' : 'base'
     const _baseOnlyMisleading = _ethTotalValue > 1 && _baseEvCount > 0 && _ethEvCount === 0
       && (_ethTotalValue / Math.max(_ethTotalValue + _baseTotalValue, 1)) > 0.5
+    const _ethGateSkippedReason = (
+      _ethActivitySkippedReason === 'eth_below_activity_value_gate' ||
+      _goldrushEthSkippedReason === 'eth_below_activity_value_gate'
+    )
+      ? 'eth_below_activity_value_gate'
+      : null
     const _ethSkipReason = !_ethAttempted
-      ? (_ethActivitySkippedReason ?? (_ethTotalValue <= 1 ? 'eth_activity_skipped_no_eth_holdings' : 'eth_activity_provider_unavailable'))
+      ? (
+        _ethGateSkippedReason ??
+        _ethActivitySkippedReason ??
+        _goldrushEthSkippedReason ??
+        (_ethTotalValue <= 1 ? 'eth_activity_skipped_no_eth_holdings' : 'eth_activity_provider_unavailable')
+      )
       : _ethEvCount === 0 ? 'eth_activity_provider_returned_empty'
       : null
     const _baseSkipReason = !_baseAttempted
