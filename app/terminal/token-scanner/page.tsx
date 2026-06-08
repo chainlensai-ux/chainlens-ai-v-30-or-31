@@ -144,6 +144,18 @@ type ScanResult = {
     couldNotVerify?: string[]
     nextAction?: string
   } | null
+  lpEvidenceGaps?: Array<{ id: string; label: string; explanation: string; nextAction: string }>
+  lpDataMode?: 'strict' | 'minimal' | 'fallback' | 'insufficient'
+  lpDataConfidence?: 'high' | 'medium' | 'low' | 'unverified'
+  cortexLpRead?: {
+    mode: string
+    confidence: string
+    lpSummary: string
+    liquidityRead: string
+    poolStructure: string
+    evidenceGaps: string[]
+    nextAction: string
+  } | null
   poolActivity?: {
     transactions24h: number | null
     buys24h: number | null
@@ -4247,6 +4259,33 @@ export default function TerminalTokenScanner() {
                     )
                   })()}
 
+                  {/* ── Data mode / confidence + Evidence Gaps ────────── */}
+                  {(result.lpDataMode || (result.lpEvidenceGaps && result.lpEvidenceGaps.length > 0)) && (
+                    <div style={{ marginBottom: '14px' }}>
+                      {result.lpDataMode && (
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '10px' }}>
+                          <span style={{ display: 'inline-block', padding: '5px 12px', borderRadius: '999px', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.10)', fontSize: '9px', fontWeight: 700, letterSpacing: '0.12em', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)' }}>
+                            SCAN MODE: {result.lpDataMode.toUpperCase()}
+                          </span>
+                          {result.lpDataConfidence && (
+                            <span style={{ display: 'inline-block', padding: '5px 12px', borderRadius: '999px', background: 'rgba(255,255,255,0.04)', border: `1px solid ${result.lpDataConfidence === 'high' ? '#34d39940' : result.lpDataConfidence === 'medium' ? '#fbbf2440' : result.lpDataConfidence === 'low' ? '#fb923c40' : '#4a627240'}`, fontSize: '9px', fontWeight: 700, letterSpacing: '0.12em', color: result.lpDataConfidence === 'high' ? '#34d399' : result.lpDataConfidence === 'medium' ? '#fbbf24' : result.lpDataConfidence === 'low' ? '#fb923c' : '#4a6272', fontFamily: 'var(--font-plex-mono)' }}>
+                              EVIDENCE CONFIDENCE: {result.lpDataConfidence.toUpperCase()}
+                            </span>
+                          )}
+                        </div>
+                      )}
+                      {result.lpEvidenceGaps && result.lpEvidenceGaps.length > 0 && (
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                          {result.lpEvidenceGaps.map((gap) => (
+                            <span key={gap.id} title={gap.explanation} style={{ display: 'inline-block', padding: '5px 12px', borderRadius: '999px', background: 'rgba(251,146,60,0.08)', border: '1px solid rgba(251,146,60,0.25)', fontSize: '9px', fontWeight: 700, letterSpacing: '0.12em', color: '#fb923c', fontFamily: 'var(--font-plex-mono)' }}>
+                              {gap.label}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   {/* ── LP Risk Summary ───────────────────────────────── */}
                   {(() => {
                     const rs = getLpRiskSummary(result)
@@ -4288,6 +4327,34 @@ export default function TerminalTokenScanner() {
                     <p style={{ margin: '0 0 7px', fontSize: '9px', fontWeight: 800, letterSpacing: '.15em', color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Next Action</p>
                     <p style={{ margin: 0, fontSize: '11px', color: '#67e8f9', lineHeight: 1.7, fontFamily: 'var(--font-plex-mono)' }}>{getLpNextAction(result)}</p>
                   </div>
+                  {/* ── CORTEX LP Read ────────────────────────────────── */}
+                  {result.cortexLpRead && (
+                    <div style={{ marginBottom: '20px' }}>
+                      <p style={{ margin: '0 0 10px', fontSize: '9px', fontWeight: 800, letterSpacing: '.15em', color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>CORTEX LP Read</p>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                        {[
+                          { label: 'LP Summary', text: result.cortexLpRead.lpSummary },
+                          { label: 'Liquidity Read', text: result.cortexLpRead.liquidityRead },
+                          { label: 'LP Model / Pool Structure', text: result.cortexLpRead.poolStructure },
+                        ].map((sec) => (
+                          <div key={sec.label} style={{ padding: '12px 14px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '10px' }}>
+                            <p style={{ margin: '0 0 5px', fontSize: '9px', fontWeight: 700, letterSpacing: '0.12em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{sec.label}</p>
+                            <p style={{ margin: 0, fontSize: '12px', lineHeight: 1.6, color: '#94a3b8', fontFamily: 'var(--font-plex-mono)' }}>{sec.text}</p>
+                          </div>
+                        ))}
+                        {result.cortexLpRead.evidenceGaps.length > 0 && (
+                          <div style={{ padding: '12px 14px', background: 'rgba(251,146,60,0.04)', border: '1px solid rgba(251,146,60,0.14)', borderRadius: '10px' }}>
+                            <p style={{ margin: '0 0 5px', fontSize: '9px', fontWeight: 700, letterSpacing: '0.12em', color: '#fb923c', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Evidence Gaps</p>
+                            <p style={{ margin: 0, fontSize: '12px', lineHeight: 1.6, color: '#94a3b8', fontFamily: 'var(--font-plex-mono)' }}>{result.cortexLpRead.evidenceGaps.join(' · ')}</p>
+                          </div>
+                        )}
+                        <div style={{ padding: '12px 14px', background: 'rgba(45,212,191,0.04)', border: '1px solid rgba(45,212,191,0.14)', borderRadius: '10px' }}>
+                          <p style={{ margin: '0 0 5px', fontSize: '9px', fontWeight: 700, letterSpacing: '0.12em', color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Next Action</p>
+                          <p style={{ margin: 0, fontSize: '12px', lineHeight: 1.6, color: '#67e8f9', fontFamily: 'var(--font-plex-mono)' }}>{result.cortexLpRead.nextAction}</p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                   {!planLoading && !isFullAccess && (
                     <div style={{ padding: '24px', border: '1px solid rgba(139,92,246,0.28)', borderRadius: '16px', background: 'rgba(139,92,246,0.06)', textAlign: 'center', marginBottom: '18px' }}>
                       <div style={{ fontSize: '22px', marginBottom: '10px' }}>🔒</div>

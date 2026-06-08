@@ -1960,46 +1960,6 @@ async function fetchDexScreenerFallback(tokenAddress: string, chain: ChainKey = 
 // This function checks the single-pair endpoint for any chart/ohlcv fields that may appear in
 // future API versions, and returns null cleanly if none are found. The trade reconstruction
 // fallback runs immediately after if this returns null.
-async function fetchDexScreenerPairChart(
-  pairAddress: string,
-  chain: ChainKey,
-): Promise<ChartPoint[] | null> {
-  if (!pairAddress) return null
-  const dexChainIdMap: Record<ChainKey, string> = { eth: 'ethereum', base: 'base', polygon: 'polygon', bnb: 'bsc' }
-  const dexChainId = dexChainIdMap[chain] ?? 'base'
-  const _dsBase = (process.env.DEXSCREENER_BASE_URL ?? 'https://api.dexscreener.com').replace(/\/$/, '')
-  try {
-    const ctrl = new AbortController()
-    const timer = setTimeout(() => ctrl.abort(), 4000)
-    let res: Response
-    try {
-      res = await fetch(
-        `${_dsBase}/latest/dex/pairs/${dexChainId}/${pairAddress}`,
-        { signal: ctrl.signal, cache: 'no-store' }
-      )
-    } finally {
-      clearTimeout(timer)
-    }
-    if (!res.ok) return null
-    const ct = res.headers.get('content-type') ?? ''
-    if (!ct.includes('json')) return null
-    const json: unknown = await res.json().catch(() => null)
-    if (!json) return null
-    const raw = json as Record<string, unknown>
-    const pair = (Array.isArray(raw.pairs) && raw.pairs.length > 0
-      ? raw.pairs[0]
-      : (raw.pair ?? null)) as Record<string, unknown> | null
-    if (!pair) return null
-    // Check for OHLCV/chart history fields (forward-compatible with future DS API versions)
-    const ohlcv = pair.ohlcv ?? pair.chartData ?? pair.priceHistory ?? pair.candles
-    if (!Array.isArray(ohlcv) || ohlcv.length < 2) return null
-    const normalized = normalizeOhlcvRows(ohlcv)
-    return normalized.points.length >= 2 ? normalized.points : null
-  } catch {
-    return null
-  }
-}
-
 async function fetchCoinGeckoToken(chain: ChainKey, contract: string): Promise<any> {
   try {
     const platform = chain === 'eth' ? 'ethereum' : chain === 'base' ? 'base' : chain
@@ -2076,7 +2036,29 @@ async function fetchTokenMetadata(chain: ChainKey, contract: string): Promise<an
 }
 
 
+const TOKEN_HOLDERS_CACHE_TTL_MS = 45_000
+const tokenHoldersCache = new Map<string, { exp: number; data: any }>()
+const tokenHoldersInFlight = new Map<string, Promise<any>>()
+
 async function fetchTokenHolders(_chain: ChainKey, contract: string): Promise<any> {
+  const cacheKey = `${_chain}:${contract.toLowerCase()}`
+  const cached = tokenHoldersCache.get(cacheKey)
+  if (cached && cached.exp > Date.now()) return cached.data
+  const inFlight = tokenHoldersInFlight.get(cacheKey)
+  if (inFlight) return inFlight
+  const p = fetchTokenHoldersUncached(_chain, contract).then((data) => {
+    tokenHoldersCache.set(cacheKey, { exp: Date.now() + TOKEN_HOLDERS_CACHE_TTL_MS, data })
+    tokenHoldersInFlight.delete(cacheKey)
+    return data
+  }).catch((err) => {
+    tokenHoldersInFlight.delete(cacheKey)
+    throw err
+  })
+  tokenHoldersInFlight.set(cacheKey, p)
+  return p
+}
+
+async function fetchTokenHoldersUncached(_chain: ChainKey, contract: string): Promise<any> {
   const CHAIN_SLUG_MAP: Record<ChainKey, string> = {
     eth: 'eth-mainnet',
     base: 'base-mainnet',
@@ -4351,16 +4333,11 @@ export async function POST(req: Request) {
         }
       }
 
-      // Phase 4: DexScreener OHLCV (forward-compatible; currently returns null)
+      // Phase 4: DexScreener OHLCV — gated off. The DexScreener pairs endpoint does not
+      // currently return chart/candle data, so this phase would only waste a request.
+      // Diagnostics are preserved as a placeholder for forward-compatibility.
       if (priceChart.sourceStatus !== 'ok' && _dexFb?.pairAddress) {
-        dexScreenerChartAttempted = true
-        const _dsCandles = await fetchDexScreenerPairChart(_dexFb.pairAddress, chain)
-        if (_dsCandles && _dsCandles.length >= 2) {
-          priceChart = { timeframe: '24h', points: _dsCandles, sourceStatus: 'ok' }
-          chartFailureReason = null
-          chartUsedDexScreener = true
-          dexScreenerChartSuccess = true
-        }
+        dexScreenerChartAttempted = false
       }
 
       // Phase 5: trade reconstruction, max 2 pools
@@ -4938,14 +4915,13 @@ export async function POST(req: Request) {
       if (_lpStatus === 'no_pool' || noActivePools) {
         return { status: 'not_applicable', lockTime: null, lockTimeSeconds: null, migrationRisk: 'inferred', mintAuthority: 'not_applicable', depth: 'none', volatility: 'inferred', liquidityDecay: 'critical', poolType: lpPoolType ?? 'none', note: 'No active LP pool found — LP intelligence not applicable.' }
       }
-      const _unlockAt = goldrush?.lock?.unlockAt ?? null
-      const _unlockEpoch = _unlockAt ? Date.parse(String(_unlockAt)) : NaN
-      const _lockSecs = Number.isFinite(_unlockEpoch) ? Math.max(0, Math.floor((_unlockEpoch - Date.now()) / 1000)) : null
-      const _lockTimeLabel = _lockSecs == null ? null : _lockSecs > 86400 * 365 ? `${Math.round(_lockSecs / (86400 * 365))} year(s)` : _lockSecs > 86400 ? `${Math.round(_lockSecs / 86400)} day(s)` : _lockSecs > 3600 ? `${Math.round(_lockSecs / 3600)} hour(s)` : `${Math.round(_lockSecs / 60)} min(s)`
+      // No lock-duration provider is wired up — lock time is always unverified.
+      const _lockSecs: number | null = null
+      const _lockTimeLabel: string | null = null
       // Migration risk: high when team-controlled or no lock proof
       const migrationRisk: RiskEngine["lpIntelligence"]["migrationRisk"] = _lpStatus === 'team_controlled' ? 'high'
         : _lpStatus === 'burned' ? 'low'
-        : _lpStatus === 'locked' ? (_lockSecs != null && _lockSecs < 86400 * 30 ? 'medium' : 'low')
+        : _lpStatus === 'locked' ? 'low'
         : _lpStatus === 'protocol' || _lpStatus === 'concentrated_liquidity' ? 'medium'
         : 'inferred'
       // Mint authority: active if mint flag detected, renounced if ownership renounced
@@ -5018,6 +4994,70 @@ export async function POST(req: Request) {
       }
     })()
 
+    // ── LP evidence gaps, scan mode/confidence, CORTEX LP Read — derived only from
+    // existing /api/token LP evidence (pools, lpControl, liquidity). No new provider calls,
+    // no fabricated lock/burn/controller/age proof. ──
+    const lpEvidenceGaps: Array<{ id: string; label: string; explanation: string; nextAction: string }> = (() => {
+      const gaps: Array<{ id: string; label: string; explanation: string; nextAction: string }> = []
+      const _status = lpControl.status
+      if (_status !== 'burned' && _status !== 'locked') {
+        gaps.push({ id: 'LOCK_STATUS_UNVERIFIED', label: 'LOCK STATUS UNVERIFIED', explanation: 'LP lock could not be confirmed from available evidence.', nextAction: 'Verify LP lock directly on-chain or via a lock-proof explorer.' })
+      }
+      if (_status !== 'burned') {
+        gaps.push({ id: 'BURN_PROOF_UNCONFIRMED', label: 'BURN PROOF UNCONFIRMED', explanation: 'Whether LP tokens were burned to a dead address has not been confirmed.', nextAction: 'Check the LP token holder list on-chain for burn-address transfers.' })
+      }
+      if (!ownerAddr || ownerAddr === '0x0000000000000000000000000000000000000000') {
+        gaps.push({ id: 'CONTROLLER_UNKNOWN', label: 'CONTROLLER UNKNOWN', explanation: 'The contract owner / controller address has not been confirmed.', nextAction: "Inspect the token contract's owner functions on a block explorer." })
+      }
+      if (_pairAgeDays == null) {
+        gaps.push({ id: 'POOL_AGE_UNKNOWN', label: 'POOL AGE UNKNOWN', explanation: 'Pool creation date is not available from the data used in this scan.', nextAction: 'Check the pool creation transaction on a block explorer.' })
+      }
+      return gaps
+    })()
+
+    const { lp_data_mode: lpDataMode, lp_data_confidence: lpDataConfidence } = (() => {
+      const _status = lpControl.status
+      if (_status === 'no_pool' || noActivePools) return { lp_data_mode: 'insufficient' as const, lp_data_confidence: 'unverified' as const }
+      const hasProof = _status === 'burned' || _status === 'locked'
+      const hasPartialControl = _status === 'team_controlled' || _status === 'protocol' || _status === 'concentrated_liquidity'
+      const hasLiquidity = liquidityUsd != null && liquidityUsd > 0
+      if (hasProof && hasLiquidity) return { lp_data_mode: 'strict' as const, lp_data_confidence: 'high' as const }
+      if ((hasProof || hasPartialControl) && hasLiquidity) return { lp_data_mode: 'fallback' as const, lp_data_confidence: 'medium' as const }
+      if (hasLiquidity) return { lp_data_mode: 'fallback' as const, lp_data_confidence: 'low' as const }
+      return { lp_data_mode: 'minimal' as const, lp_data_confidence: 'low' as const }
+    })()
+
+    const cortexLpRead = (() => {
+      const _status = lpControl.status
+      const liqStr = liquidityUsd != null ? `$${Math.round(liquidityUsd).toLocaleString()}` : 'an unverified amount'
+      const lpSummary = `Primary pool liquidity is approximately ${liqStr}${lpControl.dexName ? ` on ${lpControl.dexName}` : ''}. LP control status: ${_status === 'burned' ? 'burned (proof found)' : _status === 'locked' ? 'locked (proof found)' : _status === 'team_controlled' ? 'team-controlled (no lock/burn proof)' : _status === 'protocol' ? 'protocol-owned' : _status === 'concentrated_liquidity' ? 'concentrated liquidity (standard lock proofs may not apply)' : 'unconfirmed — open check'}.`
+      const liquidityRead = liquidityUsd == null
+        ? 'Liquidity depth could not be determined from available pool data.'
+        : liquidityUsd > 500_000 ? `Deep liquidity (${liqStr}) provides a meaningful buffer against single-trade slippage.`
+        : liquidityUsd > 50_000 ? `Moderate liquidity (${liqStr}) — adequate for small-to-mid size trades, but watch for slippage on larger orders.`
+        : liquidityUsd > 1_000 ? `Shallow liquidity (${liqStr}) — trades of meaningful size will face significant slippage.`
+        : `Very thin liquidity (${liqStr}) — this pool is highly susceptible to manipulation and rapid drains.`
+      const poolStructure = lpPoolType === 'v3' || lpPoolType === 'concentrated' || _status === 'concentrated_liquidity'
+        ? 'This pool uses a concentrated-liquidity (V3-style) model. Standard LP lock/burn proofs typically do not apply to concentrated positions — verification requires a different method.'
+        : lpPoolType === 'aerodrome' || _status === 'protocol'
+          ? 'This pool is protocol-owned / gauge-managed rather than a standard ERC-20 LP token — standard lock/burn checks are not directly applicable.'
+          : `This pool follows a ${lpPoolType === 'v2' ? 'standard V2 constant-product' : 'pool'} structure${lpControl.dexName ? ` on ${lpControl.dexName}` : ''}.`
+      const nextAction = _status === 'burned' || _status === 'locked'
+        ? 'LP control proof was found — independently confirm the burn/lock address and duration before relying on it.'
+        : _status === 'team_controlled'
+          ? 'Liquidity appears team-controlled with no lock/burn proof — treat exit risk as elevated and verify the controlling wallet on-chain.'
+          : 'LP lock/burn status is an open check — verify directly on-chain (lock explorer, LP token holder list) before trusting any safety claim.'
+      return {
+        mode: lpDataMode,
+        confidence: lpDataConfidence,
+        lpSummary,
+        liquidityRead,
+        poolStructure,
+        evidenceGaps: lpEvidenceGaps.map((g) => g.label),
+        nextAction,
+      }
+    })()
+
     // ── Data Fill Score: 0-100. Inferred values count at half weight ──
     const _fillMarket = (liquidityUsd != null || marketCapFromGt != null || fdv != null) ? 20 : 0
     const _fillHolder = holderDistributionStatus.status === 'ok' ? 20 : holderDistributionStatus.status === 'partial' ? 12 : holderIntelligence.status === 'inferred' ? 5 : 0
@@ -5057,9 +5097,9 @@ export async function POST(req: Request) {
       lpIntelligence,
       clarkInterpretation,
     }
-    const lpUnlockAt = goldrush?.lock?.unlockAt ?? null
-    const unlockEpoch = lpUnlockAt ? Date.parse(String(lpUnlockAt)) : NaN
-    const lpCountdownSeconds = Number.isFinite(unlockEpoch) ? Math.max(0, Math.floor((unlockEpoch - Date.now()) / 1000)) : null
+    // No lock-duration provider is wired up — never fabricate an unlock timestamp/countdown.
+    const lpUnlockAt: string | null = null
+    const lpCountdownSeconds: number | null = null
     const rugRisk: RugRiskReport = {
       lp_safety: {
         status: lpControl.status === "burned" || lpControl.status === "locked"
@@ -5833,6 +5873,10 @@ export async function POST(req: Request) {
       lpControl: { ...lpControl, canonicalStatus: toCanonical(lpControl.status), rawLpState: lpControl.status, rawState: lpControl.status },
       lpStatus: (lpControl.status === 'error' || lpControl.status === 'insufficient_data') ? 'partial' : lpControl.status,
       lpControlRead: computeLpControlRead(lpControl, String(lpPool?.pairName ?? "")),
+      lpEvidenceGaps,
+      lpDataMode,
+      lpDataConfidence,
+      cortexLpRead,
       lpMeta: {
         v2PoolCandidatesCount: lpDiagnostics.v2PoolCandidatesCount,
         protocolPoolCandidatesCount: lpDiagnostics.protocolPoolCandidatesCount,
