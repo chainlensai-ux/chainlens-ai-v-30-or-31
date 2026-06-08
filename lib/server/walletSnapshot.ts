@@ -1687,6 +1687,50 @@ async function alchemyRpc(url: string, method: string, params: unknown[]) {
   return json.result ?? null
 }
 
+// Shared cross-pass receipt cache — same chain+txHash receipt is fetched at most once per scan/cache window,
+// preventing duplicate eth_getTransactionReceipt calls across reconstruction passes.
+const SHARED_RECEIPT_CACHE_TTL_MS = 15 * 60 * 1000
+const sharedReceiptCache = new Map<string, { data: any; exp: number }>()
+const sharedReceiptInFlight = new Map<string, Promise<any>>()
+const sharedReceiptCacheCounters = {
+  sharedReceiptCacheHits: 0,
+  sharedReceiptCacheMisses: 0,
+  sharedReceiptCallsSavedByCache: 0,
+  sharedReceiptCallsSavedByDedupe: 0,
+}
+
+function sharedReceiptCacheKey(rpcUrl: string, txHash: string): string {
+  return `${rpcUrl.slice(-12)}:${txHash.toLowerCase()}`
+}
+
+async function getSharedTxReceipt(rpcUrl: string, txHash: string): Promise<any> {
+  const key = sharedReceiptCacheKey(rpcUrl, txHash)
+  const now = Date.now()
+  const cached = sharedReceiptCache.get(key)
+  if (cached && cached.exp > now) {
+    sharedReceiptCacheCounters.sharedReceiptCacheHits++
+    sharedReceiptCacheCounters.sharedReceiptCallsSavedByCache++
+    return cached.data
+  }
+  const inFlight = sharedReceiptInFlight.get(key)
+  if (inFlight) {
+    sharedReceiptCacheCounters.sharedReceiptCallsSavedByDedupe++
+    return inFlight
+  }
+  sharedReceiptCacheCounters.sharedReceiptCacheMisses++
+  const promise = (async () => {
+    try {
+      const receipt = await alchemyRpc(rpcUrl, 'eth_getTransactionReceipt', [txHash])
+      sharedReceiptCache.set(key, { data: receipt, exp: Date.now() + SHARED_RECEIPT_CACHE_TTL_MS })
+      return receipt
+    } finally {
+      sharedReceiptInFlight.delete(key)
+    }
+  })()
+  sharedReceiptInFlight.set(key, promise)
+  return promise
+}
+
 async function enrichSwapCandidatesFromReceipts(
   evidenceWithDetection: WalletTxEvidence[],
   walletAddress: string,
@@ -1740,7 +1784,7 @@ async function enrichSwapCandidatesFromReceipts(
       continue
     }
     try {
-      const receipt = await alchemyRpc(alchemyUrl, 'eth_getTransactionReceipt', [txHash])
+      const receipt = await getSharedTxReceipt(alchemyUrl, txHash)
       receiptsFetched++
       if (!receipt) {
         swapEnrichmentReceiptCache.set(cacheKey, { data: { isSwap: false, reason: 'no_receipt' }, exp: now + SWAP_ENRICHMENT_TTL_MS })
@@ -5922,7 +5966,7 @@ async function buildEthRouterSwapReconstructionPass(
         return
       }
       try {
-        const receipt = await alchemyRpc(ethRpcUrl, 'eth_getTransactionReceipt', [cand.txHash])
+        const receipt = await getSharedTxReceipt(ethRpcUrl, cand.txHash)
         receiptsFetched++
         if (!receipt) {
           const d: EthRouterReceiptDecode = { txFrom: null, txTo: null, isKnownRouter: false, routerProtocol: null, quoteLogs: [], totalTransferLogs: 0, decodeStatus: 'no_receipt', reason: 'receipt_null' }
@@ -6198,7 +6242,7 @@ async function buildBasePnlReconstructionPass(
       return
     }
     try {
-      const receipt = await alchemyRpc(alchemyBaseUrl, 'eth_getTransactionReceipt', [txHash])
+      const receipt = await getSharedTxReceipt(alchemyBaseUrl, txHash)
       receiptsFetched++
       if (!receipt) {
         const d: BasePnlReceiptDecode = { txFrom: null, txTo: null, walletInbound: [], walletOutbound: [], isKnownRouter: false, routerProtocol: null, hasStableLeg: false, hasWethLeg: false, totalTransferLogs: 0, decodeStatus: 'no_receipt', reason: 'receipt_null' }
@@ -6489,7 +6533,7 @@ async function buildBaseUnknownDirectionSwapReconstructionPass(
     if (cached && cached.exp > now) { base = cached.data }
     else {
       try {
-        const receipt = await alchemyRpc(rpcUrl, 'eth_getTransactionReceipt', [txHash])
+        const receipt = await getSharedTxReceipt(rpcUrl, txHash)
         receiptsFetched++
         if (!receipt) {
           const d: BasePnlReceiptDecode = { txFrom: null, txTo: null, walletInbound: [], walletOutbound: [], isKnownRouter: false, routerProtocol: null, hasStableLeg: false, hasWethLeg: false, totalTransferLogs: 0, decodeStatus: 'no_receipt', reason: 'receipt_null' }
@@ -6777,7 +6821,7 @@ async function buildUnpricedCandidateReceiptPass(
       return
     }
     try {
-      const receipt = await alchemyRpc(_rpcUrl, 'eth_getTransactionReceipt', [txHash])
+      const receipt = await getSharedTxReceipt(_rpcUrl, txHash)
       receiptsFetched++
       if (!receipt) {
         const d: BasePnlReceiptDecode = { txFrom: null, txTo: null, walletInbound: [], walletOutbound: [], isKnownRouter: false, routerProtocol: null, hasStableLeg: false, hasWethLeg: false, totalTransferLogs: 0, decodeStatus: 'no_receipt', reason: 'receipt_null' }
