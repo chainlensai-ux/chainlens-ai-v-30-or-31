@@ -55,6 +55,51 @@ const walletDeepInFlight = new Map<string, Promise<unknown>>() // inFlightKey ->
 
 const WALLET_DEEP_DEBUG_ENABLED = process.env.WALLET_DEEP_DEBUG_ENABLED === 'true'
 
+type WalletDeepScanTiming = {
+  portfolioMs: number
+  activityMs: number
+  swapDetectionMs: number
+  pricingMs: number
+  fifoMs: number
+  tradeStatsMs: number
+  historicalMs: number
+  totalMs: number
+  cacheReadMs: number
+  cacheWriteMs: number
+}
+
+const zeroWalletDeepScanTiming = (): WalletDeepScanTiming => ({
+  portfolioMs: 0, activityMs: 0, swapDetectionMs: 0, pricingMs: 0, fifoMs: 0, tradeStatsMs: 0, historicalMs: 0,
+  totalMs: 0, cacheReadMs: 0, cacheWriteMs: 0,
+})
+
+function buildWalletDeepScanTiming(snapshot: any, startedAt: number, cacheReadMs: number, cacheWriteMs: number, totalOverrideMs?: number): WalletDeepScanTiming {
+  const perf = snapshot?._diagnostics?.walletPerformanceDebug ?? snapshot?._debug?.walletPerformanceDebug ?? null
+  const phases = perf?.phaseDurations ?? {}
+  const provider = perf?.providerDurations ?? {}
+  const routeTotal = Math.max(0, totalOverrideMs ?? Date.now() - startedAt)
+  return {
+    portfolioMs: Math.max(0, Number(perf?.portfolioMs ?? provider?.portfolioMs ?? phases?.portfolio ?? phases?.phase1 ?? 0) || 0),
+    activityMs: Math.max(0, Number(perf?.activityMs ?? provider?.activityMs ?? phases?.activity ?? phases?.normalization ?? 0) || 0),
+    swapDetectionMs: Math.max(0, Number(perf?.swapDetectionMs ?? phases?.swapDetection ?? 0) || 0),
+    pricingMs: Math.max(0, Number(perf?.pricingMs ?? phases?.pricing ?? phases?.priceInference ?? 0) || 0),
+    fifoMs: Math.max(0, Number(perf?.fifoMs ?? phases?.fifo ?? phases?.fifoEngine ?? 0) || 0),
+    tradeStatsMs: Math.max(0, Number(perf?.tradeStatsMs ?? phases?.tradeStats ?? 0) || 0),
+    historicalMs: Math.max(0, Number(perf?.historicalMs ?? phases?.historical ?? 0) || 0),
+    totalMs: routeTotal,
+    cacheReadMs: Math.max(0, cacheReadMs),
+    cacheWriteMs: Math.max(0, cacheWriteMs),
+  }
+}
+
+function attachWalletDeepScanTiming(payload: any, timing: WalletDeepScanTiming, debug: boolean) {
+  if (!payload || typeof payload !== 'object') return
+  payload.walletDeepScanTiming = timing
+  if (debug) {
+    payload._debug = { ...(payload._debug ?? {}), walletDeepScanTiming: timing }
+  }
+}
+
 function stripUndefinedInPlace(value: unknown): unknown {
   if (Array.isArray(value)) {
     for (let i = value.length - 1; i >= 0; i--) {
@@ -171,7 +216,7 @@ function buildWalletModuleCoverage(snap: any) {
   // Open position summary — derived from FIFO debug sampleOpenLots (up to 5 lots)
   const _sampleOpenLots = (snap._diagnostics?.walletLotEngineDebug?.sampleOpenLots ?? []) as Array<{ tokenAddress: string; symbol: string; chain: string; openedAt: string; amountRemaining: number; entryPriceUsd: number; confidence: string }>
   const walletOpenPositionSummary = openedLots > 0 ? (() => {
-    const tokenMap = new Map<string, { symbol: string; chain: string; openLots: number; totalAmount: number; totalCostBasis: number; firstOpenedAt: string; latestOpenedAt: string }>()
+    const tokenMap = new Map<string, { contract: string; symbol: string; chain: string; openLots: number; totalAmount: number; totalCostBasis: number; firstOpenedAt: string; latestOpenedAt: string }>()
     for (const lot of _sampleOpenLots) {
       const key = lot.tokenAddress.toLowerCase()
       const existing = tokenMap.get(key)
@@ -183,11 +228,11 @@ function buildWalletModuleCoverage(snap: any) {
         if (lot.openedAt < existing.firstOpenedAt) existing.firstOpenedAt = lot.openedAt
         if (lot.openedAt > existing.latestOpenedAt) existing.latestOpenedAt = lot.openedAt
       } else {
-        tokenMap.set(key, { symbol: lot.symbol, chain: lot.chain, openLots: 1, totalAmount: lot.amountRemaining, totalCostBasis: costBasis, firstOpenedAt: lot.openedAt, latestOpenedAt: lot.openedAt })
+        tokenMap.set(key, { contract: key, symbol: lot.symbol, chain: lot.chain, openLots: 1, totalAmount: lot.amountRemaining, totalCostBasis: costBasis, firstOpenedAt: lot.openedAt, latestOpenedAt: lot.openedAt })
       }
     }
-    const tokens = Array.from(tokenMap.entries()).map(([addr, t]) => ({
-      symbol: t.symbol, chain: t.chain, openLots: t.openLots,
+    const tokens = Array.from(tokenMap.values()).map(t => ({
+      contract: t.contract, symbol: t.symbol, chain: t.chain, openLots: t.openLots,
       totalAmount: t.totalAmount,
       avgEntryPriceUsd: t.totalAmount > 0 ? t.totalCostBasis / t.totalAmount : null,
       totalCostBasisUsd: t.totalCostBasis,
@@ -203,12 +248,12 @@ function buildWalletModuleCoverage(snap: any) {
     }
   })() : null
 
-  // Open position performance — match open lots against holdings by exact chain + contract
+  // Open position performance — compute unrealized PnL only when open-lot contract + chain exactly match a priced current holding
   const _snapHoldings: Array<{ contract?: string; symbol?: string; chain?: string | null; price?: number | null; value?: number; balance?: number }> =
     snap.holdings ?? []
   const openPositionPerformanceSummary = walletOpenPositionSummary ? (() => {
     type PerfToken = {
-      symbol: string; chain: string; openLots: number
+      contract: string; symbol: string; chain: string; openLots: number
       amountRemaining: number
       avgEntryPriceUsd: number | null
       currentPriceUsd: number | null
@@ -217,23 +262,13 @@ function buildWalletModuleCoverage(snap: any) {
       unrealizedPnlUsd: number | null
       unrealizedPnlPercent: number | null
     }
-    // Build a symbol+chain → tokenAddress map from _sampleOpenLots for contract-based matching
-    const _lotAddressMap = new Map<string, string>()
-    for (const lot of _sampleOpenLots) {
-      const k = `${(lot.chain ?? '').toLowerCase()}:${lot.symbol.toUpperCase()}`
-      if (!_lotAddressMap.has(k)) _lotAddressMap.set(k, lot.tokenAddress.toLowerCase())
-    }
-
     const perfTokens: PerfToken[] = walletOpenPositionSummary.tokens.map(t => {
-      const lotKey = `${(t.chain ?? '').toLowerCase()}:${t.symbol.toUpperCase()}`
-      const lotAddressKey = _lotAddressMap.get(lotKey) ?? null
+      const tokenContract = t.contract.toLowerCase()
+      const tokenChain = (t.chain ?? '').toLowerCase()
       const matchedHolding = _snapHoldings.find(h => {
-        if (!h) return false
+        if (!h?.contract) return false
         const hChain = (h.chain ?? '').toLowerCase()
-        const tChain = (t.chain ?? '').toLowerCase()
-        if (lotAddressKey && h.contract && h.contract.toLowerCase() === lotAddressKey && hChain === tChain) return true
-        // fallback: same chain + same symbol (only if no contract ambiguity)
-        return hChain === tChain && (h.symbol ?? '').toUpperCase() === t.symbol.toUpperCase()
+        return h.contract.toLowerCase() === tokenContract && hChain === tokenChain
       })
       const currentPriceUsd = matchedHolding?.price ?? null
       const currentValueUsd = currentPriceUsd !== null ? t.totalAmount * currentPriceUsd : null
@@ -241,7 +276,7 @@ function buildWalletModuleCoverage(snap: any) {
       const unrealizedPnlUsd = currentValueUsd !== null ? currentValueUsd - costBasisUsd : null
       const unrealizedPnlPercent = unrealizedPnlUsd !== null && costBasisUsd > 0 ? (unrealizedPnlUsd / costBasisUsd) * 100 : null
       return {
-        symbol: t.symbol, chain: t.chain, openLots: t.openLots,
+        contract: t.contract, symbol: t.symbol, chain: t.chain, openLots: t.openLots,
         amountRemaining: t.totalAmount,
         avgEntryPriceUsd: t.avgEntryPriceUsd,
         currentPriceUsd, currentValueUsd, costBasisUsd,
@@ -428,10 +463,13 @@ export async function POST(req: Request) {
     const chainKey = resolvedChainMode !== 'auto' ? resolvedChainMode : chain
     const cacheKey = `${key}:${scanModeKey}:${chainKey}:${WALLET_SNAPSHOT_SCHEMA_VERSION}${hcSuffix}`
 
-    // Cache bypass: only explicit debugFresh bypasses — refresh=true does NOT bypass when cooldown active
-    // refresh=true outside cooldown: still bypasses hot cache (user wants fresh data)
-    const _cacheReadAttempted = !(allowDebugFresh || refresh)
+    // Cache bypass: only explicit debugFresh bypasses deep scan cache.
+    // refresh=true can bypass basic cache, but deep cache stays authoritative to prevent provider spam.
+    const _cacheReadAttempted = !(allowDebugFresh || (refresh && !deepActivity))
+    const _cacheReadStartedAt = Date.now()
     const cachedRaw = _cacheReadAttempted ? walletCache.get(cacheKey) : null
+    let _cacheReadMs = Date.now() - _cacheReadStartedAt
+    let _cacheWriteMs = 0
     // Simplified validation: cache key includes schema version (v7), so stale-schema entries
     // have different keys and need no aggressive field-based invalidation that could delete good entries
     const cached = cachedRaw ?? null
@@ -552,6 +590,7 @@ export async function POST(req: Request) {
           reason: 'route_cache_hit',
         },
       }
+      attachWalletDeepScanTiming(cp, { ...zeroWalletDeepScanTiming(), totalMs: Date.now() - startedAt, cacheReadMs: _cacheReadMs }, debug)
       pruneWalletScannerDebug(cp, debug)
       return json(cp)
     }
@@ -623,7 +662,9 @@ export async function POST(req: Request) {
       // --- Persistent cache read (same bypass rules as memory cache: skip for refresh/debugFresh) ---
       if (_cacheReadAttempted) {
         _persistentCacheReadAttempted = _persistentAvailable
+        const _persistentCacheReadStartedAt = Date.now()
         const persCache = _persistentAvailable ? await readPersistentWalletCache(cacheKey) : null
+        _cacheReadMs += Date.now() - _persistentCacheReadStartedAt
 
         if (persCache) {
           _persistentCacheHit = true
@@ -680,6 +721,7 @@ export async function POST(req: Request) {
               walletCacheQualityDebug: _slim.walletCacheQualityDebug ?? null,
             }
           }
+          attachWalletDeepScanTiming(cp, { ...zeroWalletDeepScanTiming(), totalMs: Date.now() - startedAt, cacheReadMs: _cacheReadMs }, debug)
           pruneWalletScannerDebug(cp, debug)
           return json(cp)
         }
@@ -704,6 +746,7 @@ export async function POST(req: Request) {
             cp.walletScanCostMode = 'deep_cached'
             cp.walletScanCacheNote = 'Deep scan cooling down — serving recent result to protect API budget.'
           }
+          attachWalletDeepScanTiming(cp, { ...zeroWalletDeepScanTiming(), totalMs: Date.now() - startedAt, cacheReadMs: _cacheReadMs }, debug)
           pruneWalletScannerDebug(cp, debug)
           return json(cp)
         }
@@ -892,10 +935,12 @@ export async function POST(req: Request) {
       }
       pruneWalletScannerDebug(_ppayload, false)
       _ppayload._cachedDiagnosticsSlim = _slimDiag
+      const _persistentCacheWriteStartedAt = Date.now()
       const [cacheResult] = await Promise.allSettled([
         writePersistentWalletCache(cacheKey, key, scanModeKey, chainKey, _ppayload, _cacheTtlMs),
         writePersistentCooldown(deepCooldownKey, key, chainKey, WALLET_DEEP_COOLDOWN_MS),
       ])
+      _cacheWriteMs += Date.now() - _persistentCacheWriteStartedAt
       _persistentCacheWriteSucceeded = cacheResult.status === 'fulfilled' && cacheResult.value === true
     }
 
@@ -1183,10 +1228,15 @@ export async function POST(req: Request) {
     if (_budgetDbg?.budgetCapped) {
       snapshot.walletScanBudgetNote = `Activity scan capped at ${_budgetDbg.capLimit} events (${_budgetDbg.dedupRemoved} duplicates removed from ${_budgetDbg.eventsBefore} raw).`
     }
-    pruneWalletScannerDebug(snapshot, debug)
     // Write to cache after every live scan (including refresh=true) so subsequent normal requests benefit.
     // Only allowDebugFresh (explicit admin override) or a poisoned result skips the write.
-    if (_cacheWriteAttempted && !_cacheWriteBlocked) walletCache.set(cacheKey, { exp: Date.now() + _cacheTtlMs, payload: snapshot, cachedAt: Date.now() })
+    if (_cacheWriteAttempted && !_cacheWriteBlocked) {
+      const _memoryCacheWriteStartedAt = Date.now()
+      walletCache.set(cacheKey, { exp: Date.now() + _cacheTtlMs, payload: snapshot, cachedAt: Date.now() })
+      _cacheWriteMs += Date.now() - _memoryCacheWriteStartedAt
+    }
+    attachWalletDeepScanTiming(snapshot, buildWalletDeepScanTiming(snapshot, startedAt, _cacheReadMs, _cacheWriteMs), debug)
+    pruneWalletScannerDebug(snapshot, debug)
     return json(snapshot)
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Wallet scan failed'

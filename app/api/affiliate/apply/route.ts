@@ -11,12 +11,13 @@ type AffiliatePayload = {
   telegram?: string
   x_handle?: string
   audience_size?: string
+  audience_type?: string
   promotion_plan?: string
   payout_wallet?: string
   website?: string
 }
 
-const MAX = { name: 100, email: 200, telegram: 100, x_handle: 100, audience_size: 120, payout_wallet: 120, promotion_plan: 1200, website: 300 }
+const MAX = { name: 100, email: 200, telegram: 100, x_handle: 100, audience_size: 120, audience_type: 160, payout_wallet: 120, promotion_plan: 1200, website: 300 }
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
 function sanitize(value: unknown, max: number): string {
@@ -43,6 +44,7 @@ export async function POST(req: Request) {
     const telegram = sanitize(body.telegram, MAX.telegram)
     const xHandle = sanitize(body.x_handle, MAX.x_handle)
     const audienceSize = sanitize(body.audience_size, MAX.audience_size)
+    const audienceType = sanitize(body.audience_type, MAX.audience_type)
     const payoutWallet = sanitize(body.payout_wallet, MAX.payout_wallet)
     const promotionPlan = sanitize(body.promotion_plan, MAX.promotion_plan)
 
@@ -66,6 +68,7 @@ export async function POST(req: Request) {
       telegram: telegram || null,
       x_handle: xHandle,
       audience_size: audienceSize,
+      audience_type: audienceType || null,
       promotion_plan: promotionPlan,
       payout_wallet: payoutWallet || null,
       referral_code: code,
@@ -81,6 +84,7 @@ export async function POST(req: Request) {
         telegram: telegram || null,
         x_handle: xHandle,
         audience_size: audienceSize,
+        audience_type: audienceType || null,
         promotion_plan: promotionPlan,
         payout_wallet: payoutWallet || null,
         referral_code: code,

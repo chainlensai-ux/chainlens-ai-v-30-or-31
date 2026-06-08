@@ -17,6 +17,7 @@ create table if not exists public.affiliates (
   x_handle       text,
   telegram       text,
   audience_size  text,
+  audience_type  text,
   promotion_plan text,
   payout_wallet  text,
   referral_code  text        unique not null,
@@ -26,7 +27,8 @@ create table if not exists public.affiliates (
   created_at     timestamptz not null default now()
 );
 
--- Back-fill approved_at column for installs that ran v1
+-- Back-fill new columns for installs that ran v1
+alter table public.affiliates add column if not exists audience_type text;
 alter table public.affiliates add column if not exists approved_at timestamptz;
 -- Correct the commission rate default from the old 0.30
 alter table public.affiliates alter column commission_rate set default 0.20;

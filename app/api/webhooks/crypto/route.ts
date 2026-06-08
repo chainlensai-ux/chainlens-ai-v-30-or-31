@@ -66,7 +66,12 @@ export async function POST(req: NextRequest) {
       const amount = Number(pay.amount_usd ?? PLAN_AMOUNTS[parsed.plan])
       // referral_code may be null for recurring payments with no active referral link
       const referralCode = (pay as Record<string, unknown>).referral_code ?? null
-      await supabase.from('affiliate_commissions').insert({ affiliate_id: pay.affiliate_id, crypto_payment_id: pay.id ?? null, buyer_user_id: parsed.userId, buyer_email: (pay as Record<string, unknown>).user_email ?? null, payment_id: paymentId, referral_code: referralCode, plan: parsed.plan, payment_amount_usd: amount, commission_rate: rate, commission_amount: amount * rate, status: 'pending' })
+      const { error: commissionInsertError } = await supabase.from('affiliate_commissions').insert({ affiliate_id: pay.affiliate_id, crypto_payment_id: pay.id ?? null, buyer_user_id: parsed.userId, buyer_email: (pay as Record<string, unknown>).user_email ?? null, payment_id: paymentId, referral_code: referralCode, plan: parsed.plan, payment_amount_usd: amount, commission_rate: rate, commission_amount: amount * rate, status: 'pending' })
+      if (commissionInsertError?.code === '23505') {
+        console.warn('commission_insert_duplicate')
+      } else if (commissionInsertError) {
+        console.error('commission_insert_failed', { code: commissionInsertError.code })
+      }
     }
     // Safety net: persist original affiliate to buyer account.
     // activateUserPlanServerSide (called above) guarantees user_settings row exists.
