@@ -1731,6 +1731,49 @@ async function getSharedTxReceipt(rpcUrl: string, txHash: string): Promise<any> 
   return promise
 }
 
+// Shared cross-pass tx-by-hash cache — mirrors getSharedTxReceipt to dedupe eth_getTransactionByHash calls.
+const SHARED_TX_CACHE_TTL_MS = 15 * 60 * 1000
+const sharedTxByHashCache = new Map<string, { data: any; exp: number }>()
+const sharedTxByHashInFlight = new Map<string, Promise<any>>()
+const sharedTxCacheCounters = {
+  sharedTxCacheHits: 0,
+  sharedTxCacheMisses: 0,
+  sharedTxCallsSavedByCache: 0,
+  sharedTxCallsSavedByDedupe: 0,
+}
+
+function sharedTxByHashCacheKey(rpcUrl: string, txHash: string): string {
+  return `${rpcUrl.slice(-12)}:${txHash.toLowerCase()}`
+}
+
+async function getSharedTxByHash(rpcUrl: string, txHash: string): Promise<any> {
+  const key = sharedTxByHashCacheKey(rpcUrl, txHash)
+  const now = Date.now()
+  const cached = sharedTxByHashCache.get(key)
+  if (cached && cached.exp > now) {
+    sharedTxCacheCounters.sharedTxCacheHits++
+    sharedTxCacheCounters.sharedTxCallsSavedByCache++
+    return cached.data
+  }
+  const inFlight = sharedTxByHashInFlight.get(key)
+  if (inFlight) {
+    sharedTxCacheCounters.sharedTxCallsSavedByDedupe++
+    return inFlight
+  }
+  sharedTxCacheCounters.sharedTxCacheMisses++
+  const promise = (async () => {
+    try {
+      const tx = await alchemyRpc(rpcUrl, 'eth_getTransactionByHash', [txHash])
+      sharedTxByHashCache.set(key, { data: tx, exp: Date.now() + SHARED_TX_CACHE_TTL_MS })
+      return tx
+    } finally {
+      sharedTxByHashInFlight.delete(key)
+    }
+  })()
+  sharedTxByHashInFlight.set(key, promise)
+  return promise
+}
+
 async function enrichSwapCandidatesFromReceipts(
   evidenceWithDetection: WalletTxEvidence[],
   walletAddress: string,
@@ -6013,7 +6056,7 @@ async function buildEthRouterSwapReconstructionPass(
       }
       if (!cand.walletInitiated) return
       try {
-        const tx = await alchemyRpc(ethRpcUrl, 'eth_getTransactionByHash', [cand.txHash])
+        const tx = await getSharedTxByHash(ethRpcUrl, cand.txHash)
         transactionsFetched++
         const value = typeof tx?.value === 'string' ? tx.value : '0x0'
         ethRouterTxValueCache.set(txValueCacheKey, { value, exp: now + BASE_PNL_RECON_TTL_MS })
@@ -6888,7 +6931,7 @@ async function buildUnpricedCandidateReceiptPass(
       return
     }
     try {
-      const txData = await alchemyRpc(_rpcUrl, 'eth_getTransactionByHash', [txHash])
+      const txData = await getSharedTxByHash(_rpcUrl, txHash)
       transactionsFetched++
       const val: string = (txData && typeof txData.value === 'string') ? txData.value : '0x0'
       basePnlTxCache.set(txCacheKey, { value: val, exp: now + BASE_PNL_RECON_TTL_MS })
