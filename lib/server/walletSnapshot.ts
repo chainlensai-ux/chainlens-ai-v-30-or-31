@@ -1181,6 +1181,7 @@ export type WalletSnapshot = {
       sampleRawEvents: Array<Record<string, unknown>>
       sampleNormalizedEvents: Array<{ txHash: string | null; symbol: string; direction: string; contract: string; amount: number; chain: string }>
       sampleSkippedReasons: string[]
+      goldrushEthSkippedReason?: string | null
     }
     walletFactsDebug?: {
       built: boolean
@@ -7188,7 +7189,10 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // GoldRush ETH activity: gated on chain being ETH, NOT on Alchemy ETH key availability.
   // Previously tied to useEthAlchemy, which caused ETH wallets without ALCHEMY_ETH_KEY to silently
   // skip GoldRush ETH and rely solely on Moralis fallback for activity data.
-  const _shouldFetchGrEth = activityRequested && Boolean(GOLDRUSH_KEY) && (requestedChain === 'eth' || chainMode === 'eth' || chainMode === 'base_eth')
+  // Eager fetch only when ETH is explicitly the requested chain — base_eth/all_supported defer
+  // until discovered chain holdings confirm meaningful ETH value, so Base-only wallets that
+  // merely default to base_eth mode don't burn an extra GoldRush credit on ETH.
+  const _shouldFetchGrEthEager = activityRequested && Boolean(GOLDRUSH_KEY) && (requestedChain === 'eth' || chainMode === 'eth')
 
   // Determine Moralis chain before Phase 1 so it can run in the parallel batch.
   const _moralisChain: 'eth' | 'base' = requestedChain === 'eth' ? 'eth' : 'base'
@@ -7227,7 +7231,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     deepScan && !(activityRequested && Boolean(ALCHEMY_BASE_KEY)) ? fetchWalletBehavior(addr, baseUrl) : Promise.resolve(BEHAVIOR_EMPTY),
     // ETH mainnet PnL transfers only when activity is requested AND ETH chain is selected.
     // Default (base) scans skip this to avoid a wasted transactions_v3 call.
-    _shouldFetchGrEth ? fetchGoldrushPnlEvents(addr, 'eth-mainnet', GOLDRUSH_KEY, tokenMeter.isDebugEnabled()) : Promise.resolve({ events: [] as PnlEvent[], diag: { endpointKind: 'transactions_v3' as const, chainUsed: 'eth-mainnet', urlTemplate: 'https://api.covalenthq.com/v1/eth-mainnet/address/{wallet}/transactions_v3/?page-size=50&page-number=0&with-logs=true&no-spam=true', httpStatus: null, fetchFailed: true, failureStage: 'build_url' as const, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], transferArrayCount: 0, firstTransferKeys: [], reason: activityRequested ? 'ETH chain not requested — skipped to reduce API usage.' : 'Activity scan not requested — skipped.' } }),
+    _shouldFetchGrEthEager ? fetchGoldrushPnlEvents(addr, 'eth-mainnet', GOLDRUSH_KEY, tokenMeter.isDebugEnabled()) : Promise.resolve({ events: [] as PnlEvent[], diag: { endpointKind: 'transactions_v3' as const, chainUsed: 'eth-mainnet', urlTemplate: 'https://api.covalenthq.com/v1/eth-mainnet/address/{wallet}/transactions_v3/?page-size=50&page-number=0&with-logs=true&no-spam=true', httpStatus: null, fetchFailed: true, failureStage: 'build_url' as const, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], transferArrayCount: 0, firstTransferKeys: [], reason: activityRequested ? 'ETH chain not requested — skipped to reduce API usage.' : 'Activity scan not requested — skipped.' } }),
     activityRequested && GOLDRUSH_KEY ? fetchGoldrushPnlEvents(addr, 'base-mainnet', GOLDRUSH_KEY, tokenMeter.isDebugEnabled()) : Promise.resolve({ events: [] as PnlEvent[], diag: { endpointKind: 'transactions_v3' as const, chainUsed: 'base-mainnet', urlTemplate: 'https://api.covalenthq.com/v1/base-mainnet/address/{wallet}/transactions_v3/?page-size=50&page-number=0&with-logs=true&no-spam=true', httpStatus: null, fetchFailed: true, failureStage: 'build_url' as const, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], transferArrayCount: 0, firstTransferKeys: [], reason: activityRequested ? 'GoldRush activity fetch skipped — provider not configured.' : 'Activity scan not requested — skipped.' } }),
   ])
 
@@ -7265,7 +7269,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
 
   // ── Track Phase 1 provider calls ──
   if (activityRequested && Boolean(GOLDRUSH_KEY)) _trackCall('goldrush', 'transactions_v3', false, `gr:tx3:base:${addrNorm}`)
-  if (_shouldFetchGrEth) _trackCall('goldrush', 'transactions_v3', false, `gr:tx3:eth:${addrNorm}`)
+  if (_shouldFetchGrEthEager) _trackCall('goldrush', 'transactions_v3', false, `gr:tx3:eth:${addrNorm}`)
   if (activityRequested && Boolean(ALCHEMY_BASE_KEY)) {
     // Alchemy Base activity is intentionally deferred until GoldRush returns no activity.
   }
@@ -7442,7 +7446,26 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // Compute wallet value tier early so pricing budget and historical scan can use it
   const _walletValueTier = computeWalletValueTier(totalValue)
 
-  const grEth = grPnlEthRes.status === 'fulfilled' ? grPnlEthRes.value : { events: [] as PnlEvent[], diag: { endpointKind: 'transactions_v3' as const, chainUsed: 'eth-mainnet', urlTemplate: 'https://api.covalenthq.com/v1/eth-mainnet/address/{wallet}/transactions_v3/?page-size=50&page-number=0&with-logs=true&no-spam=true', httpStatus: null, fetchFailed: true, failureStage: 'fetch' as const, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], transferArrayCount: 0, firstTransferKeys: [], reason: 'GoldRush transaction history request failed before response.' } }
+  let grEth = grPnlEthRes.status === 'fulfilled' ? grPnlEthRes.value : { events: [] as PnlEvent[], diag: { endpointKind: 'transactions_v3' as const, chainUsed: 'eth-mainnet', urlTemplate: 'https://api.covalenthq.com/v1/eth-mainnet/address/{wallet}/transactions_v3/?page-size=50&page-number=0&with-logs=true&no-spam=true', httpStatus: null, fetchFailed: true, failureStage: 'fetch' as const, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], transferArrayCount: 0, firstTransferKeys: [], reason: 'GoldRush transaction history request failed before response.' } }
+  // Deferred ETH GoldRush fetch — only when chainMode is ambiguous about ETH (base_eth/all_supported)
+  // and discovered chain holdings show meaningful ETH value. Skips the credit burn for Base-only
+  // wallets that merely default to base_eth mode without holding any ETH.
+  let _goldrushEthSkippedReason: string | null = null
+  const _ethDiscoveredValue = discoveredChains.find(c => c.chain === 'eth')?.usdValue ?? 0
+  const _grEthDeferredEligible = activityRequested && Boolean(GOLDRUSH_KEY) && !_shouldFetchGrEthEager
+    && (chainMode === 'base_eth' || chainMode === 'all_supported')
+    && _ethDiscoveredValue >= minChainValueUsd
+  if (_grEthDeferredEligible) {
+    _trackCall('goldrush', 'transactions_v3', false, `gr:tx3:eth:${addrNorm}`)
+    try {
+      grEth = await fetchGoldrushPnlEvents(addr, 'eth-mainnet', GOLDRUSH_KEY, tokenMeter.isDebugEnabled())
+    } catch {
+      // keep placeholder grEth on failure
+    }
+  } else if (activityRequested && Boolean(GOLDRUSH_KEY) && !_shouldFetchGrEthEager) {
+    _goldrushEthSkippedReason = 'eth_chain_not_active_or_below_value_gate'
+  }
+  const _shouldFetchGrEth = _shouldFetchGrEthEager || _grEthDeferredEligible
   const grPnlBaseOut = grPnlBaseRes.status === 'fulfilled' ? grPnlBaseRes.value : { events: [] as PnlEvent[], diag: { endpointKind: 'transactions_v3' as const, chainUsed: 'base-mainnet', urlTemplate: 'https://api.covalenthq.com/v1/base-mainnet/address/{wallet}/transactions_v3/?page-size=50&page-number=0&with-logs=true&no-spam=true', httpStatus: null, fetchFailed: true, failureStage: 'fetch' as const, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], transferArrayCount: 0, firstTransferKeys: [], reason: 'GoldRush transaction history request failed before response.' } }
   const grBase = grPnlBaseOut
   const goldrushTransferDiags = [grEth.diag, grBase.diag]
@@ -7476,6 +7499,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       sampleRawEvents: [],
       sampleNormalizedEvents: grEth.events.slice(0, 3).map(e => ({ txHash: e.txHash, symbol: e.symbol, direction: e.direction, contract: e.contract, amount: e.amount, chain: e.chain })),
       sampleSkippedReasons: _skippedReasons,
+      goldrushEthSkippedReason: _goldrushEthSkippedReason,
     }
   })()
   let alchemyEvents: PnlEvent[] = []
