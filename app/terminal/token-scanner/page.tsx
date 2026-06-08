@@ -144,17 +144,23 @@ type ScanResult = {
     couldNotVerify?: string[]
     nextAction?: string
   } | null
+  lpLockStatus?: 'locked' | 'burned' | 'unlocked' | 'unverified'
+  lpLockAmount?: number | null
+  lpUnlockTime?: number | null
+  lpLockProvider?: 'PinkLock' | null
+  lpController?: 'wallet' | 'contract' | 'burn' | 'lockContract' | 'unknown'
   lpEvidenceGaps?: Array<{ id: string; label: string; explanation: string; nextAction: string }>
   lpDataMode?: 'strict' | 'minimal' | 'fallback' | 'insufficient'
   lpDataConfidence?: 'high' | 'medium' | 'low' | 'unverified'
   cortexLpRead?: {
     mode: string
     confidence: string
-    lpSummary: string
-    liquidityRead: string
-    poolStructure: string
+    riskSummary: string
+    liquidityAnalysis: string
+    poolStructureAnalysis: string
+    migrationAnalysis: string
     evidenceGaps: string[]
-    nextAction: string
+    nextActions: string[]
   } | null
   poolActivity?: {
     transactions24h: number | null
@@ -2100,7 +2106,6 @@ function deriveLpMode(result: ScanResult): LpMode {
 // ─── LP Safety Helpers ────────────────────────────────────────────────────
 
 function getLpLockLabel(result: ScanResult): { label: string; color: string; bg: string; border: string; description: string } {
-  const status = result.lpControl?.status
   const dm = result.lpControl?.displayLpModel
   const lpMode = getLpMode(result)
   const hasLiquidity = (result.liquidity ?? 0) > 0 || result.lpControl?.poolAddressPresent
@@ -2108,31 +2113,39 @@ function getLpLockLabel(result: ScanResult): { label: string; color: string; bg:
   if (dm === 'concentrated_liquidity') return { label: 'Concentrated', color: '#c084fc', bg: 'rgba(192,132,252,0.07)', border: 'rgba(192,132,252,0.22)', description: 'V3/V4-style pool — standard ERC-20 LP lock/burn proof does not apply.' }
   if (dm === 'protocol_or_gauge') return { label: 'Protocol / Gauge', color: '#a78bfa', bg: 'rgba(167,139,250,0.07)', border: 'rgba(167,139,250,0.22)', description: 'Protocol-managed liquidity pool. LP lock/burn proof does not apply in this model.' }
   if (lpMode === 'protocol') return { label: 'Protocol-Owned', color: '#c084fc', bg: 'rgba(192,132,252,0.07)', border: 'rgba(192,132,252,0.22)', description: 'Protocol-managed concentrated liquidity. Standard LP lock/burn proof does not apply.' }
-  if (status === 'burned') return { label: 'Burned', color: '#34d399', bg: 'rgba(52,211,153,0.07)', border: 'rgba(52,211,153,0.22)', description: 'LP tokens sent to a burn address — exit liquidity is permanently locked.' }
-  if (status === 'locked') return { label: 'Locked', color: '#60a5fa', bg: 'rgba(96,165,250,0.07)', border: 'rgba(96,165,250,0.22)', description: 'LP tokens locked in a verified locker contract for a defined duration.' }
-  if (status === 'team_controlled') return { label: 'Unlocked', color: '#f87171', bg: 'rgba(248,113,113,0.07)', border: 'rgba(248,113,113,0.22)', description: 'LP appears controlled by a wallet. Exit liquidity can be removed at any time.' }
-  if (status === 'partial') return { label: 'LP Proof Open', color: '#fbbf24', bg: 'rgba(251,191,36,0.07)', border: 'rgba(251,191,36,0.22)', description: 'Pool detected but lock, burn, or ownership could not be confirmed this scan.' }
-  if (status === 'no_pool' && !hasLiquidity) return { label: 'No Active Pool', color: '#94a3b8', bg: 'rgba(148,163,184,0.07)', border: 'rgba(148,163,184,0.20)', description: 'No usable liquidity pool found for this token.' }
-  if (hasLiquidity) return { label: 'LP Proof Open', color: '#fbbf24', bg: 'rgba(251,191,36,0.06)', border: 'rgba(251,191,36,0.20)', description: 'Pool detected, but lock, burn, or protocol ownership has not been confirmed.' }
-  return { label: 'Open Check', color: '#fbbf24', bg: 'rgba(251,191,36,0.06)', border: 'rgba(251,191,36,0.20)', description: 'LP ownership proof not confirmed. Treat exit liquidity as unprotected.' }
+
+  // Real LP proof (PinkLock + on-chain burn scan) takes priority over legacy inference.
+  const lockStatus = result.lpLockStatus
+  if (lockStatus === 'locked') {
+    const unlockStr = result.lpUnlockTime ? ` Unlocks ${new Date(result.lpUnlockTime * 1000).toUTCString()}.` : ''
+    return { label: 'Locked', color: '#34d399', bg: 'rgba(52,211,153,0.07)', border: 'rgba(52,211,153,0.22)', description: `Active LP lock proof found${result.lpLockProvider ? ` via ${result.lpLockProvider}` : ''}.${unlockStr}` }
+  }
+  if (lockStatus === 'burned') return { label: 'Burned', color: '#34d399', bg: 'rgba(52,211,153,0.07)', border: 'rgba(52,211,153,0.22)', description: 'On-chain data shows LP tokens sent to a burn address — exit liquidity is permanently locked.' }
+  if (lockStatus === 'unlocked') return { label: 'Unlocked', color: '#f87171', bg: 'rgba(248,113,113,0.07)', border: 'rgba(248,113,113,0.22)', description: 'On-chain evidence shows the LP is held by a removable wallet with no lock or burn proof.' }
+  if (result.noActivePools && !hasLiquidity) return { label: 'No Active Pool', color: '#94a3b8', bg: 'rgba(148,163,184,0.07)', border: 'rgba(148,163,184,0.20)', description: 'No usable liquidity pool found for this token.' }
+  if (hasLiquidity) return { label: 'Unverified', color: '#fbbf24', bg: 'rgba(251,191,36,0.06)', border: 'rgba(251,191,36,0.20)', description: 'Pool detected, but lock or burn proof has not been confirmed. Open check — verify on-chain.' }
+  return { label: 'Unverified', color: '#fbbf24', bg: 'rgba(251,191,36,0.06)', border: 'rgba(251,191,36,0.20)', description: 'LP lock/burn proof not confirmed. Treat exit liquidity as unprotected until verified.' }
 }
 
 function getLpExitRiskInfo(result: ScanResult): { label: string; color: string; description: string } {
-  const status = result.lpControl?.status
   const dm = result.lpControl?.displayLpModel
   const lpMode = getLpMode(result)
   const liqDepth = result.liquidity ?? null
   const hasLiquidity = (liqDepth ?? 0) > 0 || result.lpControl?.poolAddressPresent
-  if ((result.noActivePools || status === 'no_pool') && !hasLiquidity) return { label: 'Critical', color: '#f87171', description: 'No active pool — exit liquidity is entirely unavailable.' }
-  if (status === 'burned') return { label: liqDepth != null && liqDepth < 50_000 ? 'Medium' : 'Low', color: liqDepth != null && liqDepth < 50_000 ? '#a78bfa' : '#34d399', description: 'LP burned — exit liquidity permanently locked. Pool depth is the main variable.' }
-  if (status === 'locked') return { label: liqDepth != null && liqDepth < 50_000 ? 'Medium' : 'Low', color: liqDepth != null && liqDepth < 50_000 ? '#a78bfa' : '#34d399', description: 'LP locked — protected for the lock duration. Pool depth is the main variable.' }
+  if (result.noActivePools && !hasLiquidity) return { label: 'Critical', color: '#f87171', description: 'No active pool — exit liquidity is entirely unavailable.' }
   if (dm === 'concentrated_liquidity') return { label: 'Open Check', color: '#c084fc', description: 'V3/V4 pool — LP lock/burn proof does not apply. Assess pool depth and age.' }
   if (dm === 'protocol_or_gauge') return { label: 'Open Check', color: '#a78bfa', description: 'Protocol/gauge-managed — LP lock model does not apply. Monitor pool depth and activity.' }
   if (lpMode === 'protocol') return { label: 'Open Check', color: '#c084fc', description: 'Protocol-managed liquidity. LP lock model does not apply — assess pool depth and age.' }
-  if (status === 'team_controlled') return { label: 'High', color: '#fb923c', description: 'LP appears team-controlled. Liquidity can be withdrawn without lock proof.' }
-  if (liqDepth != null && liqDepth < 10_000) return { label: 'Critical', color: '#f87171', description: 'LP proof unconfirmed and liquidity is very thin. Extreme exit risk.' }
-  if (liqDepth != null && liqDepth < 50_000) return { label: 'High', color: '#fb923c', description: 'LP proof unconfirmed and liquidity is thin. Exit risk is elevated.' }
-  return { label: 'Elevated', color: '#fbbf24', description: 'Liquidity cannot be treated as protected until lock, burn, or protocol proof is confirmed.' }
+
+  const lockStatus = result.lpLockStatus
+  if (lockStatus === 'burned') return { label: liqDepth != null && liqDepth < 50_000 ? 'Medium' : 'Low', color: liqDepth != null && liqDepth < 50_000 ? '#a78bfa' : '#34d399', description: 'LP burned — exit liquidity permanently locked. Pool depth is the main remaining variable.' }
+  if (lockStatus === 'locked') return { label: liqDepth != null && liqDepth < 50_000 ? 'Medium' : 'Low', color: liqDepth != null && liqDepth < 50_000 ? '#a78bfa' : '#34d399', description: 'LP locked with confirmed proof — protected for the lock duration. Pool depth is the main remaining variable.' }
+  if (lockStatus === 'unlocked') return { label: 'High', color: '#fb923c', description: 'On-chain evidence shows the LP is held by a removable wallet — liquidity can be withdrawn without lock proof.' }
+
+  // No proven lock/burn/wallet-control state — open check, not an inferred "High".
+  if (liqDepth != null && liqDepth < 10_000) return { label: 'Watch', color: '#fbbf24', description: 'LP proof unconfirmed and liquidity is very thin — open check with elevated caution warranted.' }
+  if (liqDepth != null && liqDepth < 50_000) return { label: 'Watch', color: '#fbbf24', description: 'LP proof unconfirmed and liquidity is thin — open check, monitor closely.' }
+  return { label: 'Open Check', color: '#fbbf24', description: 'Exit risk cannot be rated until lock, burn, or controller proof is confirmed — verify on-chain.' }
 }
 
 function getLpRiskSummary(result: ScanResult): { goodSigns: string[]; riskSigns: string[]; missingProofs: string[] } {
@@ -2145,20 +2158,23 @@ function getLpRiskSummary(result: ScanResult): { goodSigns: string[]; riskSigns:
   const goodSigns: string[] = []
   const riskSigns: string[] = []
   const missingProofs: string[] = []
-  if (status === 'burned') goodSigns.push('LP tokens permanently burned — exit liquidity is protected.')
-  if (status === 'locked') goodSigns.push('LP tokens verified as locked in a locker contract.')
+  const lockStatus = result.lpLockStatus
+  if (lockStatus === 'burned') goodSigns.push('On-chain proof: LP tokens sent to a burn address — exit liquidity is permanently locked.')
+  if (lockStatus === 'locked') goodSigns.push(`Active LP lock proof found${result.lpLockProvider ? ` via ${result.lpLockProvider}` : ''}.`)
+  else if (status === 'burned') goodSigns.push('LP tokens permanently burned — exit liquidity is protected.')
+  else if (status === 'locked') goodSigns.push('LP tokens verified as locked in a locker contract.')
   if (dm === 'concentrated_liquidity') goodSigns.push('Concentrated liquidity — standard V3/V4 pool model.')
   else if (dm === 'protocol_or_gauge') goodSigns.push('Protocol/gauge liquidity — standard for this pool model.')
   else if (lpMode === 'protocol') goodSigns.push('Protocol-owned liquidity is standard for this pool model.')
   if (liqDepth != null && liqDepth > 500_000) goodSigns.push(`Deep liquidity — ${fmtLarge(liqDepth)} pool depth.`)
   else if (liqDepth != null && liqDepth > 100_000) goodSigns.push(`Moderate liquidity — ${fmtLarge(liqDepth)} pool depth.`)
   if (lp?.poolAddressPresent) goodSigns.push('Liquidity pool detected and indexed.')
-  if (status === 'team_controlled') riskSigns.push('LP controller is a normal wallet — liquidity can be removed.')
+  if (lockStatus === 'unlocked') riskSigns.push('On-chain evidence shows the LP is held by a removable wallet with no lock or burn proof.')
   if ((result.noActivePools || status === 'no_pool') && !hasLiquidity) riskSigns.push('No active liquidity pool — token may be illiquid.')
   if (liqDepth != null && liqDepth < 10_000 && !result.noActivePools) riskSigns.push(`Very thin liquidity — ${fmtLarge(liqDepth)} depth.`)
   else if (liqDepth != null && liqDepth < 50_000 && !result.noActivePools) riskSigns.push(`Thin liquidity — ${fmtLarge(liqDepth)}.`)
   const lockBurnApplicable = lp?.lockBurnApplicable ?? (lpMode !== 'protocol' && dm !== 'concentrated_liquidity' && dm !== 'protocol_or_gauge')
-  if (lockBurnApplicable && status !== 'burned' && status !== 'locked') missingProofs.push('LP lock or burn proof not confirmed.')
+  if (lockBurnApplicable && lockStatus !== 'burned' && lockStatus !== 'locked' && status !== 'burned' && status !== 'locked') missingProofs.push('LP lock or burn proof not confirmed.')
   if (!lockBurnApplicable && dm !== 'concentrated_liquidity' && dm !== 'protocol_or_gauge' && lpMode === 'unknown' && !result.noActivePools) missingProofs.push('LP token model could not be classified.')
   if (!lp?.poolAddressPresent && !result.noActivePools && liqDepth == null) missingProofs.push('Pool address not yet indexed.')
   return { goodSigns: goodSigns.slice(0, 3), riskSigns: riskSigns.slice(0, 3), missingProofs: missingProofs.slice(0, 3) }
@@ -2171,17 +2187,15 @@ function getLpNextAction(result: ScanResult): string {
   const status = lp?.status
   const liqDepth = result.liquidity ?? null
   const hasLiquidity = (liqDepth ?? 0) > 0 || result.lpControl?.poolAddressPresent
+  const lockStatus = result.lpLockStatus
   if ((result.noActivePools || status === 'no_pool') && !hasLiquidity) return 'No active pool found. Verify the contract address and chain before trading.'
-  if (status === 'burned') return liqDepth != null && liqDepth < 50_000 ? 'LP is burned — good sign. Pool depth is thin, so monitor liquidity before committing size.' : 'LP appears burned — exit liquidity is protected. Still monitor holder concentration and trading taxes.'
-  if (status === 'locked') return 'LP is locked — verify the lock duration and expiry. Monitor holder concentration before assuming permanent protection.'
+  if (lockStatus === 'burned') return liqDepth != null && liqDepth < 50_000 ? 'LP is burned (on-chain proof) — good sign. Pool depth is thin, so monitor liquidity before committing size.' : 'LP is burned (on-chain proof) — exit liquidity is permanently locked. Still monitor holder concentration and trading taxes.'
+  if (lockStatus === 'locked') return `LP lock proof was found${result.lpLockProvider ? ` via ${result.lpLockProvider}` : ''} — independently confirm the lock duration and expiry before assuming permanent protection.`
   if (dm === 'concentrated_liquidity') return 'V3/V4-style liquidity does not use standard LP lock/burn proof. Monitor pool depth, age, volume, and holder concentration.'
   if (dm === 'protocol_or_gauge') return 'Protocol or gauge-based liquidity can be normal. Monitor depth, pool age, and whether liquidity is moving.'
   if (lpMode === 'protocol') return 'V3/V4-style pools do not use standard ERC-20 LP lock/burn proof. Monitor pool depth, age, and holder concentration.'
-  if (status === 'team_controlled') return 'LP control is not locked. Treat exit risk as elevated and avoid large positions until lock or burn proof is indexed.'
-  if (dm === 'erc20_lp_token' && status === 'partial') return 'LP token exists, but lock/burn ownership could not be verified. Treat exit liquidity as unprotected until proof is indexed.'
-  if (status === 'partial') return 'LP proof is an open check. Some liquidity may be protected but full coverage is not confirmed. Proceed with caution.'
-  if (hasLiquidity && (status === 'no_pool' || dm === 'no_pool' || dm === 'open_check')) return 'Liquidity exists, but LP protection is still an open check. Treat exit liquidity as unprotected until lock, burn, or protocol ownership is confirmed.'
-  return 'LP protection is still an open check. Treat exit liquidity as unprotected until lock, burn, or protocol ownership is confirmed.'
+  if (lockStatus === 'unlocked') return 'On-chain evidence shows the LP is held by a removable wallet with no lock or burn proof — treat exit risk as elevated and avoid large positions.'
+  return 'LP lock/burn proof is an open check — verify directly on-chain (lock explorer, LP token holder list) before trusting any safety claim.'
 }
 
 // ─── CORTEX Score Engine ──────────────────────────────────────────────────
@@ -2518,8 +2532,8 @@ function getLiquidityRead(result: ScanResult): string {
   if (result.noActivePools || poolCount === 0) return `No active liquidity pool detected on ${result.chain === 'eth' ? 'Ethereum' : 'Base'}.`
   const depth = liq > 1_000_000 ? 'Deep' : liq > 200_000 ? 'Moderate' : liq > 50_000 ? 'Limited' : liq > 0 ? 'Thin' : 'Not indexed'
   const poolStr = poolCount > 1 ? `${poolCount} pools found.` : 'Primary pool found.'
-  const lpStatus = result.lpControl?.status
-  const lpStr = lpStatus === 'burned' || lpStatus === 'locked' ? 'LP locked or burned.' : lpStatus === 'team_controlled' ? 'LP appears team-controlled.' : 'LP lock not confirmed.'
+  const lpLockStatus = result.lpLockStatus
+  const lpStr = lpLockStatus === 'locked' ? 'LP lock proof found.' : lpLockStatus === 'burned' ? 'LP burn proof found.' : lpLockStatus === 'unlocked' ? 'LP held by removable wallet — no lock/burn proof.' : 'LP lock/burn status unverified.'
   return `${depth} liquidity (${fmtLarge(liq)}). ${poolStr} ${lpStr}`
 }
 
@@ -4179,7 +4193,7 @@ export default function TerminalTokenScanner() {
                       : effectiveDm === 'no_pool' ? 'No Active Pool'
                       : lpModeVal === 'protocol' ? 'Concentrated'
                       : lpModeVal === 'lp_token' ? 'ERC-20 LP Token'
-                      : hasPool ? 'LP Model Open'
+                      : hasPool ? 'Model Open Check'
                       : 'Unverified'
                     const modelColor = effectiveDm === 'concentrated_liquidity' ? '#c084fc'
                       : effectiveDm === 'protocol_or_gauge' ? '#a78bfa'
@@ -4333,9 +4347,10 @@ export default function TerminalTokenScanner() {
                       <p style={{ margin: '0 0 10px', fontSize: '9px', fontWeight: 800, letterSpacing: '.15em', color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>CORTEX LP Read</p>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                         {[
-                          { label: 'LP Summary', text: result.cortexLpRead.lpSummary },
-                          { label: 'Liquidity Read', text: result.cortexLpRead.liquidityRead },
-                          { label: 'LP Model / Pool Structure', text: result.cortexLpRead.poolStructure },
+                          { label: 'Risk Summary', text: result.cortexLpRead.riskSummary },
+                          { label: 'Liquidity Analysis', text: result.cortexLpRead.liquidityAnalysis },
+                          { label: 'Pool Structure', text: result.cortexLpRead.poolStructureAnalysis },
+                          { label: 'Migration Analysis', text: result.cortexLpRead.migrationAnalysis },
                         ].map((sec) => (
                           <div key={sec.label} style={{ padding: '12px 14px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '10px' }}>
                             <p style={{ margin: '0 0 5px', fontSize: '9px', fontWeight: 700, letterSpacing: '0.12em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{sec.label}</p>
@@ -4350,7 +4365,7 @@ export default function TerminalTokenScanner() {
                         )}
                         <div style={{ padding: '12px 14px', background: 'rgba(45,212,191,0.04)', border: '1px solid rgba(45,212,191,0.14)', borderRadius: '10px' }}>
                           <p style={{ margin: '0 0 5px', fontSize: '9px', fontWeight: 700, letterSpacing: '0.12em', color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Next Action</p>
-                          <p style={{ margin: 0, fontSize: '12px', lineHeight: 1.6, color: '#67e8f9', fontFamily: 'var(--font-plex-mono)' }}>{result.cortexLpRead.nextAction}</p>
+                          <p style={{ margin: 0, fontSize: '12px', lineHeight: 1.6, color: '#67e8f9', fontFamily: 'var(--font-plex-mono)' }}>{result.cortexLpRead.nextActions.join(' ')}</p>
                         </div>
                       </div>
                     </div>

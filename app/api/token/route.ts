@@ -5,6 +5,7 @@ import { fetchHoneypotSecurity } from "@/lib/server/honeypotSecurity";
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { type CanonicalStatus, toCanonical } from '@/lib/canonicalStatus'
 import { buildClusterMap } from '@/lib/clusterMap'
+import { resolveLpProof, buildEvidenceGaps as buildLpEvidenceGaps, deriveDataModeAndConfidence as deriveLpDataModeAndConfidence, buildCortexLpRead as buildSharedCortexLpRead } from '@/lib/server/lpProof'
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -4994,69 +4995,43 @@ export async function POST(req: Request) {
       }
     })()
 
-    // ── LP evidence gaps, scan mode/confidence, CORTEX LP Read — derived only from
-    // existing /api/token LP evidence (pools, lpControl, liquidity). No new provider calls,
-    // no fabricated lock/burn/controller/age proof. ──
-    const lpEvidenceGaps: Array<{ id: string; label: string; explanation: string; nextAction: string }> = (() => {
-      const gaps: Array<{ id: string; label: string; explanation: string; nextAction: string }> = []
-      const _status = lpControl.status
-      if (_status !== 'burned' && _status !== 'locked') {
-        gaps.push({ id: 'LOCK_STATUS_UNVERIFIED', label: 'LOCK STATUS UNVERIFIED', explanation: 'LP lock could not be confirmed from available evidence.', nextAction: 'Verify LP lock directly on-chain or via a lock-proof explorer.' })
-      }
-      if (_status !== 'burned') {
-        gaps.push({ id: 'BURN_PROOF_UNCONFIRMED', label: 'BURN PROOF UNCONFIRMED', explanation: 'Whether LP tokens were burned to a dead address has not been confirmed.', nextAction: 'Check the LP token holder list on-chain for burn-address transfers.' })
-      }
-      if (!ownerAddr || ownerAddr === '0x0000000000000000000000000000000000000000') {
-        gaps.push({ id: 'CONTROLLER_UNKNOWN', label: 'CONTROLLER UNKNOWN', explanation: 'The contract owner / controller address has not been confirmed.', nextAction: "Inspect the token contract's owner functions on a block explorer." })
-      }
-      if (_pairAgeDays == null) {
-        gaps.push({ id: 'POOL_AGE_UNKNOWN', label: 'POOL AGE UNKNOWN', explanation: 'Pool creation date is not available from the data used in this scan.', nextAction: 'Check the pool creation transaction on a block explorer.' })
-      }
-      return gaps
-    })()
+    // ── Real LP proof: PinkLock lock-proof lookup + minimal on-chain burn/holder
+    // scan, shared with the standalone Liquidity Safety route. No fabricated
+    // lock/burn/controller status — unknowns are reported as "unverified". ──
+    const lpProof = (chain === 'eth' || chain === 'base')
+      ? await resolveLpProof(chain, _lpProofAddress)
+      : { lpLockStatus: 'unverified' as const, lpLockAmount: null, lpUnlockTime: null, lpLockProvider: null, lpController: 'unknown' as const }
+    const { lpLockStatus, lpLockAmount, lpUnlockTime, lpLockProvider, lpController } = lpProof
 
-    const { lp_data_mode: lpDataMode, lp_data_confidence: lpDataConfidence } = (() => {
-      const _status = lpControl.status
-      if (_status === 'no_pool' || noActivePools) return { lp_data_mode: 'insufficient' as const, lp_data_confidence: 'unverified' as const }
-      const hasProof = _status === 'burned' || _status === 'locked'
-      const hasPartialControl = _status === 'team_controlled' || _status === 'protocol' || _status === 'concentrated_liquidity'
-      const hasLiquidity = liquidityUsd != null && liquidityUsd > 0
-      if (hasProof && hasLiquidity) return { lp_data_mode: 'strict' as const, lp_data_confidence: 'high' as const }
-      if ((hasProof || hasPartialControl) && hasLiquidity) return { lp_data_mode: 'fallback' as const, lp_data_confidence: 'medium' as const }
-      if (hasLiquidity) return { lp_data_mode: 'fallback' as const, lp_data_confidence: 'low' as const }
-      return { lp_data_mode: 'minimal' as const, lp_data_confidence: 'low' as const }
-    })()
+    const lpEvidenceGaps = buildLpEvidenceGaps({ lpLockStatus, lpController })
 
-    const cortexLpRead = (() => {
-      const _status = lpControl.status
-      const liqStr = liquidityUsd != null ? `$${Math.round(liquidityUsd).toLocaleString()}` : 'an unverified amount'
-      const lpSummary = `Primary pool liquidity is approximately ${liqStr}${lpControl.dexName ? ` on ${lpControl.dexName}` : ''}. LP control status: ${_status === 'burned' ? 'burned (proof found)' : _status === 'locked' ? 'locked (proof found)' : _status === 'team_controlled' ? 'team-controlled (no lock/burn proof)' : _status === 'protocol' ? 'protocol-owned' : _status === 'concentrated_liquidity' ? 'concentrated liquidity (standard lock proofs may not apply)' : 'unconfirmed — open check'}.`
-      const liquidityRead = liquidityUsd == null
-        ? 'Liquidity depth could not be determined from available pool data.'
-        : liquidityUsd > 500_000 ? `Deep liquidity (${liqStr}) provides a meaningful buffer against single-trade slippage.`
-        : liquidityUsd > 50_000 ? `Moderate liquidity (${liqStr}) — adequate for small-to-mid size trades, but watch for slippage on larger orders.`
-        : liquidityUsd > 1_000 ? `Shallow liquidity (${liqStr}) — trades of meaningful size will face significant slippage.`
-        : `Very thin liquidity (${liqStr}) — this pool is highly susceptible to manipulation and rapid drains.`
-      const poolStructure = lpPoolType === 'v3' || lpPoolType === 'concentrated' || _status === 'concentrated_liquidity'
-        ? 'This pool uses a concentrated-liquidity (V3-style) model. Standard LP lock/burn proofs typically do not apply to concentrated positions — verification requires a different method.'
-        : lpPoolType === 'aerodrome' || _status === 'protocol'
-          ? 'This pool is protocol-owned / gauge-managed rather than a standard ERC-20 LP token — standard lock/burn checks are not directly applicable.'
-          : `This pool follows a ${lpPoolType === 'v2' ? 'standard V2 constant-product' : 'pool'} structure${lpControl.dexName ? ` on ${lpControl.dexName}` : ''}.`
-      const nextAction = _status === 'burned' || _status === 'locked'
-        ? 'LP control proof was found — independently confirm the burn/lock address and duration before relying on it.'
-        : _status === 'team_controlled'
-          ? 'Liquidity appears team-controlled with no lock/burn proof — treat exit risk as elevated and verify the controlling wallet on-chain.'
-          : 'LP lock/burn status is an open check — verify directly on-chain (lock explorer, LP token holder list) before trusting any safety claim.'
-      return {
-        mode: lpDataMode,
-        confidence: lpDataConfidence,
-        lpSummary,
-        liquidityRead,
-        poolStructure,
-        evidenceGaps: lpEvidenceGaps.map((g) => g.label),
-        nextAction,
-      }
-    })()
+    const { lp_data_mode: lpDataMode, lp_data_confidence: lpDataConfidence } = deriveLpDataModeAndConfidence(
+      !noActivePools && (liquidityUsd != null && liquidityUsd > 0),
+      lpLockStatus
+    )
+
+    const lpModelForCortex = {
+      model: (lpPoolType === 'v3' || lpPoolType === 'concentrated' ? 'concentrated' : lpPoolType === 'v2' ? 'constant_product' as const : 'unknown') as 'constant_product' | 'concentrated' | 'stableswap' | 'unknown',
+      dexName: lpControl.dexName ?? null,
+      standardLockApplies: !(lpPoolType === 'v3' || lpPoolType === 'concentrated' || lpControl.status === 'concentrated_liquidity'),
+    }
+    const migrationSummaryForCortex = `Pool count: ${gtAllPools.length}. ${noActivePools ? 'No active pools were detected for this token.' : 'Pool creation date is unavailable, so pool age cannot be factored into this assessment.'}`
+
+    const cortexLpRead = buildSharedCortexLpRead({
+      name: resolvedName ?? resolvedSymbol ?? 'This token',
+      symbol: resolvedSymbol ?? '?',
+      totalLiq: liquidityUsd,
+      fragments: Array.isArray(gtAllPools) ? gtAllPools.length : (liquidityUsd != null ? 1 : 0),
+      riskTier: rugRiskLabel,
+      lpModel: lpModelForCortex,
+      migrationSummary: migrationSummaryForCortex,
+      mode: lpDataMode,
+      confidence: lpDataConfidence,
+      gaps: lpEvidenceGaps,
+      lpLockStatus,
+      lpLockProvider,
+      lpUnlockTime,
+    })
 
     // ── Data Fill Score: 0-100. Inferred values count at half weight ──
     const _fillMarket = (liquidityUsd != null || marketCapFromGt != null || fdv != null) ? 20 : 0
@@ -5873,6 +5848,11 @@ export async function POST(req: Request) {
       lpControl: { ...lpControl, canonicalStatus: toCanonical(lpControl.status), rawLpState: lpControl.status, rawState: lpControl.status },
       lpStatus: (lpControl.status === 'error' || lpControl.status === 'insufficient_data') ? 'partial' : lpControl.status,
       lpControlRead: computeLpControlRead(lpControl, String(lpPool?.pairName ?? "")),
+      lpLockStatus,
+      lpLockAmount,
+      lpUnlockTime,
+      lpLockProvider,
+      lpController,
       lpEvidenceGaps,
       lpDataMode,
       lpDataConfidence,
