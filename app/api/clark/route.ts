@@ -4115,7 +4115,7 @@ async function executeClarkToolPlan(input: {
           token: liqRes.ok ? { name: String(l.name ?? "Unknown"), symbol: String(l.symbol ?? "?"), address: String(l.contract ?? address) } : null,
           liquidityUsd: typeof l.lp_total_liquidity_usd === "number" ? l.lp_total_liquidity_usd : null,
           riskTier: typeof l.lp_risk_tier === "string" ? l.lp_risk_tier : null,
-          stabilityScore: typeof l.lp_stability_score === "number" ? l.lp_stability_score : null,
+          stabilityScore: typeof l.liquidity_depth_score === "number" ? l.liquidity_depth_score : (typeof l.lp_stability_score === "number" ? l.lp_stability_score : null),
           volume24h: topPoolVolume,
           primaryPool: primaryPoolLabel,
           warnings: liqRes.ok ? [] : ["Liquidity data is currently limited."],

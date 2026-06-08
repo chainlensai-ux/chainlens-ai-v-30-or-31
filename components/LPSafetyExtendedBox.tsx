@@ -491,6 +491,77 @@ export default function LPSafetyExtendedBox({ data }: Props) {
 
         <Divider />
 
+        {/* ── Pool activity table ───────────────────────────────────────── */}
+        {data.pool_breakdown.length > 0 && (
+          <div>
+            <SectionLabel>Pool Activity · {data.pool_breakdown.length}</SectionLabel>
+            <div style={{
+              display: "grid",
+              gridTemplateColumns: "1fr 90px 100px 70px",
+              padding: "0 12px 8px",
+              borderBottom: "1px solid rgba(255,255,255,0.06)",
+              marginBottom: "4px",
+              gap: "6px",
+            }}>
+              {["Pool / DEX", "Buys / Sells (24h)", "Vol H1 / H6", "Status"].map(h => (
+                <span key={h} style={{
+                  fontSize: "9px", fontWeight: 700, letterSpacing: "0.12em",
+                  color: "#3a5268", textTransform: "uppercase",
+                  fontFamily: "var(--font-plex-mono)",
+                  textAlign: h === "Status" ? "right" : "left",
+                }}>
+                  {h}
+                </span>
+              ))}
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
+              {data.pool_breakdown.slice(0, 8).map((pool, i) => {
+                const isInactive = (pool.volume24h ?? 0) === 0 && (pool.buys24 ?? 0) === 0 && (pool.sells24 ?? 0) === 0
+                return (
+                  <div key={i} style={{
+                    display: "grid",
+                    gridTemplateColumns: "1fr 90px 100px 70px",
+                    alignItems: "center",
+                    gap: "6px",
+                    padding: "10px 12px",
+                    borderRadius: "8px",
+                    background: i % 2 === 0 ? "rgba(255,255,255,0.02)" : "transparent",
+                    fontFamily: "var(--font-plex-mono)",
+                    fontSize: "11px",
+                  }}>
+                    <span style={{ color: "#64748b", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", paddingRight: "8px" }}>
+                      {pool.name ?? pool.address}
+                      {pool.dexName && (
+                        <span style={{ color: "#3a5268", marginLeft: "6px", fontSize: "9px", textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                          {pool.dexName}
+                        </span>
+                      )}
+                    </span>
+                    <span style={{ color: "#94a3b8", whiteSpace: "nowrap" }}>
+                      {pool.buys24 != null || pool.sells24 != null ? `${pool.buys24 ?? "—"} / ${pool.sells24 ?? "—"}` : "—"}
+                    </span>
+                    <span style={{ color: "#4a6272", whiteSpace: "nowrap" }}>
+                      {pool.volumeH1 != null ? `$${Math.round(pool.volumeH1).toLocaleString()}` : "—"} / {pool.volumeH6 != null ? `$${Math.round(pool.volumeH6).toLocaleString()}` : "—"}
+                    </span>
+                    <span style={{
+                      textAlign: "right",
+                      display: "inline-block",
+                      fontSize: "9px", fontWeight: 700, letterSpacing: "0.10em",
+                      textTransform: "uppercase",
+                      color: isInactive ? "#fb923c" : "#34d399",
+                      whiteSpace: "nowrap",
+                    }}>
+                      {isInactive ? "Inactive" : "Active"}
+                    </span>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )}
+
+        <Divider />
+
         {/* ── Safety Sub-Scores ───────────────────────────────────────── */}
         <div>
           <SectionLabel>Safety Breakdown</SectionLabel>

@@ -188,10 +188,10 @@ async function fetchGoPlusLockData(contract: string): Promise<GoPlusLockData> {
 
 // ─── LP scoring heuristics ────────────────────────────────────────────────────
 
-function scoreLiquidity(pools: GTPool[]): {
+function scoreLiquidityDepth(pools: GTPool[]): {
   lp_total_liquidity_usd: number | null;
   lp_fragments: number;
-  lp_stability_score: number;
+  liquidity_depth_score: number;
   lp_risk_tier: "low" | "medium" | "high" | "extreme";
   positives: string[];
   negatives: string[];
@@ -201,6 +201,11 @@ function scoreLiquidity(pools: GTPool[]): {
     liquidity: number | null;
     volume24h: number | null;
     priceChange24h: number | null;
+    dexName: string | null;
+    buys24: number | null;
+    sells24: number | null;
+    volumeH1: number | null;
+    volumeH6: number | null;
   }>;
 } {
   const sorted = [...pools].sort(
@@ -311,7 +316,7 @@ function scoreLiquidity(pools: GTPool[]): {
   return {
     lp_total_liquidity_usd: totalLiq,
     lp_fragments: fragments,
-    lp_stability_score: score,
+    liquidity_depth_score: score,
     lp_risk_tier,
     positives,
     negatives,
@@ -321,8 +326,37 @@ function scoreLiquidity(pools: GTPool[]): {
       liquidity: toNum(p.attributes.reserve_in_usd),
       volume24h: toNum(p.attributes.volume_usd?.h24),
       priceChange24h: toNum(p.attributes.price_change_percentage?.h24),
+      dexName: p.relationships?.dex?.data?.id ?? null,
+      buys24: p.attributes.transactions?.h24?.buys ?? null,
+      sells24: p.attributes.transactions?.h24?.sells ?? null,
+      volumeH1: toNum(p.attributes.volume_usd?.h1),
+      volumeH6: toNum(p.attributes.volume_usd?.h6),
     })),
   };
+}
+
+// ─── Lock status & evidence gaps from GoPlus security data ───────────────────
+
+interface GoPlusLpHolderEntry {
+  is_locked?: number | string | boolean | null;
+}
+
+function deriveLockStatus(rawHolders: unknown): "locked" | "unlocked" | "unverified" {
+  if (!Array.isArray(rawHolders) || rawHolders.length === 0) return "unverified";
+  const holders = rawHolders as GoPlusLpHolderEntry[];
+  const isLocked = (h: GoPlusLpHolderEntry) => h.is_locked === 1 || h.is_locked === "1" || h.is_locked === true;
+  if (holders.some(isLocked)) return "locked";
+  return "unlocked";
+}
+
+function deriveEvidenceGaps(lockStatus: string, goplusData: Record<string, unknown> | null): string[] {
+  const gaps: string[] = [];
+  if (lockStatus === "unverified") gaps.push("LOCK_PROOF_UNAVAILABLE");
+  const isMintable = goplusData?.["is_mintable"];
+  if (isMintable === null || isMintable === undefined) gaps.push("MINTABILITY_UNVERIFIED");
+  const ownerAddress = goplusData?.["owner_address"];
+  if (ownerAddress === null || ownerAddress === undefined || ownerAddress === "") gaps.push("CONTROLLER_UNVERIFIED");
+  return gaps;
 }
 
 // ─── Handler ──────────────────────────────────────────────────────────────────
@@ -416,7 +450,14 @@ export async function POST(req: NextRequest) {
     const name = tokenMeta?.attributes?.name ?? pools[0]?.attributes?.name?.split(" / ")[0] ?? "Unknown";
     const symbol = tokenMeta?.attributes?.symbol ?? "?";
 
-    const analysis = scoreLiquidity(pools);
+    const analysis = scoreLiquidityDepth(pools);
+
+    const goplusData = goPlusRes.ok ? goPlusRes.data : null;
+    const goplusToken = goplusData
+      ? ((goplusData[norm] ?? goplusData[Object.keys(goplusData)[0] ?? '']) as Record<string, unknown> | undefined) ?? null
+      : null;
+    const lockStatus = deriveLockStatus(goplusToken?.["lp_holders"]);
+    const evidenceGaps = deriveEvidenceGaps(lockStatus, goplusToken);
 
     const payload = {
       ok: true,
@@ -426,7 +467,9 @@ export async function POST(req: NextRequest) {
         contract: resolvedContract,
         ...analysis,
         ...lockData,
-        goplus: goPlusRes.ok ? goPlusRes.data : null,
+        lockStatus,
+        evidenceGaps,
+        goplus: goplusData,
       },
       diagnostics: process.env.NODE_ENV === 'development' ? { cacheHit: false, providerStatus: 'ok', rateLimited: false } : undefined,
     };

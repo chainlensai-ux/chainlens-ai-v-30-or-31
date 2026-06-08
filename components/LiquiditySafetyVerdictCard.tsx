@@ -8,7 +8,7 @@ export interface LiquiditySafetyResult {
   contract: string;
   lp_total_liquidity_usd: number | null;
   lp_fragments: number;
-  lp_stability_score: number;
+  liquidity_depth_score: number;
   lp_risk_tier: "low" | "medium" | "high" | "extreme";
   positives: string[];
   negatives: string[];
@@ -18,12 +18,23 @@ export interface LiquiditySafetyResult {
     liquidity: number | null;
     volume24h: number | null;
     priceChange24h: number | null;
+    dexName: string | null;
+    buys24: number | null;
+    sells24: number | null;
+    volumeH1: number | null;
+    volumeH6: number | null;
   }>;
   // GoPlus LP lock fields
   lp_lock_pct: number | null;
   lp_owner: string | null;
   lp_lock_provider: string | null;
   lp_unlock_ts: number | null;
+  // Explicit lock-status read derived from GoPlus lp_holders
+  lockStatus: "locked" | "unlocked" | "unverified";
+  // Minimal evidence-gap codes — facts we could not verify, not risk findings
+  evidenceGaps: string[];
+  // Raw GoPlus security payload (facts only — never rendered as fabricated signals)
+  goplus: Record<string, unknown> | null;
 }
 
 interface Props {
@@ -63,6 +74,32 @@ function fmtPct(v: number | null | undefined): string {
 function pctColor(v: number | null | undefined): string {
   if (v == null) return "#4a6272";
   return v >= 0 ? "#2DD4BF" : "#f43f5e";
+}
+
+const EVIDENCE_GAP_LABEL: Record<string, string> = {
+  LOCK_PROOF_UNAVAILABLE: "LOCK PROOF UNAVAILABLE",
+  MINTABILITY_UNVERIFIED: "MINTABILITY UNVERIFIED",
+  CONTROLLER_UNVERIFIED: "CONTROLLER UNVERIFIED",
+};
+
+const LOCK_CHIP: Record<LiquiditySafetyResult["lockStatus"], { label: string; color: string; bg: string; border: string }> = {
+  locked:     { label: "LP LOCKED",              color: "#34d399", bg: "rgba(52,211,153,0.10)", border: "rgba(52,211,153,0.30)" },
+  unlocked:   { label: "LP UNLOCKED",            color: "#f43f5e", bg: "rgba(244,63,94,0.10)",  border: "rgba(244,63,94,0.30)" },
+  unverified: { label: "LOCK PROOF UNAVAILABLE", color: "#fb923c", bg: "rgba(251,146,60,0.10)", border: "rgba(251,146,60,0.30)" },
+};
+
+function buildFactualLpSummary(result: LiquiditySafetyResult): string[] {
+  const lines: string[] = [];
+  if (result.lockStatus === "unlocked") {
+    lines.push("Liquidity is unlocked and controlled by a wallet. Treat exit risk as elevated until lock or burn proof is confirmed.");
+  } else if (result.lockStatus === "unverified") {
+    lines.push("No LP lock proof was found via indexed data. This does not confirm the LP is unlocked — lock status is unverified.");
+  }
+  const isMintable = result.goplus?.["is_mintable"];
+  if (isMintable === "1" || isMintable === 1 || isMintable === true) {
+    lines.push("Token appears mintable. The owner can increase supply, which can impact price without touching LP directly.");
+  }
+  return lines;
 }
 
 function shorten(addr: string): string {
@@ -298,9 +335,40 @@ export default function LiquiditySafetyVerdictCard({ result, loading, error }: P
 
       <div style={{ padding: "32px", display: "flex", flexDirection: "column", gap: "28px" }}>
 
+        {/* ── Evidence gap chips ───────────────────────────────────── */}
+        {result.evidenceGaps.length > 0 && (
+          <div style={{ display: "flex", gap: "8px", overflowX: "auto", paddingBottom: "2px" }}>
+            {result.evidenceGaps.map((gap) => (
+              <span key={gap} style={{
+                flexShrink: 0,
+                display: "inline-block",
+                padding: "5px 12px",
+                borderRadius: "99px",
+                background: "rgba(251,146,60,0.08)",
+                border: "1px solid rgba(251,146,60,0.25)",
+                fontSize: "9px", fontWeight: 700, letterSpacing: "0.12em",
+                color: "#fb923c",
+                fontFamily: "var(--font-plex-mono)",
+                whiteSpace: "nowrap",
+              }}>
+                {EVIDENCE_GAP_LABEL[gap] ?? gap.replace(/_/g, " ")}
+              </span>
+            ))}
+          </div>
+        )}
+
         {/* ── Score + identity ────────────────────────────────────── */}
         <div style={{ display: "flex", gap: "32px", alignItems: "center" }}>
-          <ScoreRing score={result.lp_stability_score} tier={result.lp_risk_tier} />
+          <div>
+            <ScoreRing score={result.liquidity_depth_score} tier={result.lp_risk_tier} />
+            <p style={{
+              fontSize: "8px", color: "#3a5268", textAlign: "center",
+              lineHeight: 1.5, marginTop: "10px", maxWidth: "128px",
+              fontFamily: "var(--font-plex-mono)",
+            }}>
+              Based on liquidity depth &amp; fragmentation only — does not include lock, mintability, or honeypot checks.
+            </p>
+          </div>
 
           <div style={{ flex: 1 }}>
             <p style={{
@@ -308,18 +376,18 @@ export default function LiquiditySafetyVerdictCard({ result, loading, error }: P
               color: "#2DD4BF", fontFamily: "var(--font-plex-mono)",
               textTransform: "uppercase", marginBottom: "6px",
             }}>
-              LP SAFETY ANALYSIS
+              LIQUIDITY DEPTH SCORE
             </p>
             <p style={{
               fontSize: "11px", color: "#4a6272",
               fontFamily: "var(--font-plex-mono)",
               marginBottom: "16px",
             }}>
-              On-chain liquidity risk assessment · not financial advice
+              On-chain liquidity depth assessment · not financial advice
             </p>
 
-            {/* Tier badge */}
-            <div style={{ display: "inline-flex", alignItems: "center", gap: "7px" }}>
+            {/* Tier + lock-status badges */}
+            <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "7px" }}>
               <span style={{
                 display: "inline-block",
                 padding: "5px 14px",
@@ -333,9 +401,49 @@ export default function LiquiditySafetyVerdictCard({ result, loading, error }: P
               }}>
                 {tierLabel}
               </span>
+              {(() => {
+                const lc = LOCK_CHIP[result.lockStatus]
+                return (
+                  <span style={{
+                    display: "inline-block",
+                    padding: "5px 14px",
+                    borderRadius: "99px",
+                    background: lc.bg,
+                    border: `1px solid ${lc.border}`,
+                    fontSize: "10px", fontWeight: 700, letterSpacing: "0.14em",
+                    color: lc.color,
+                    fontFamily: "var(--font-plex-mono)",
+                    textTransform: "uppercase",
+                  }}>
+                    {lc.label}
+                  </span>
+                )
+              })()}
             </div>
           </div>
         </div>
+
+        {/* ── Factual LP summary ───────────────────────────────────── */}
+        {(() => {
+          const summary = buildFactualLpSummary(result)
+          if (summary.length === 0) return null
+          return (
+            <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+              <SectionLabel>CORTEX LP Read</SectionLabel>
+              {summary.map((line, i) => (
+                <p key={i} style={{
+                  fontSize: "12px", lineHeight: 1.6, color: "#94a3b8",
+                  fontFamily: "var(--font-plex-mono)", margin: 0,
+                  background: "rgba(255,255,255,0.02)",
+                  border: "1px solid rgba(255,255,255,0.06)",
+                  borderRadius: "10px", padding: "12px 14px",
+                }}>
+                  {line}
+                </p>
+              ))}
+            </div>
+          )
+        })()}
 
         <Divider />
 
