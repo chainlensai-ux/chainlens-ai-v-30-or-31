@@ -5,7 +5,7 @@ import { fetchHoneypotSecurity } from "@/lib/server/honeypotSecurity";
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { type CanonicalStatus, toCanonical } from '@/lib/canonicalStatus'
 import { buildClusterMap } from '@/lib/clusterMap'
-import { resolveLpProof, buildEvidenceGaps as buildLpEvidenceGaps, deriveDataModeAndConfidence as deriveLpDataModeAndConfidence, buildCortexLpRead as buildSharedCortexLpRead } from '@/lib/server/lpProof'
+import { resolveLpProof, buildEvidenceGaps as buildLpEvidenceGaps, deriveDataModeAndConfidence as deriveLpDataModeAndConfidence, buildCortexLpRead as buildSharedCortexLpRead, deriveLpModelProof, deriveMigrationProof } from '@/lib/server/lpProof'
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -2711,7 +2711,7 @@ function computeRiskEngine(input: {
 
   if (lpTeam) {
     score += 25;
-    drivers.push('LP controlled by a team wallet — liquidity can be removed at any time');
+    missingChecks.push('LP lock or burn proof not confirmed — controller unverified');
     confirmedDataPoints++;
   } else if (lpUnverified) {
     score += 15;
@@ -5010,12 +5010,10 @@ export async function POST(req: Request) {
       lpLockStatus
     )
 
-    const lpModelForCortex = {
-      model: (lpPoolType === 'v3' || lpPoolType === 'concentrated' ? 'concentrated' : lpPoolType === 'v2' ? 'constant_product' as const : 'unknown') as 'constant_product' | 'concentrated' | 'stableswap' | 'unknown',
-      dexName: lpControl.dexName ?? null,
-      standardLockApplies: !(lpPoolType === 'v3' || lpPoolType === 'concentrated' || lpControl.status === 'concentrated_liquidity'),
-    }
-    const migrationSummaryForCortex = `Pool count: ${gtAllPools.length}. ${noActivePools ? 'No active pools were detected for this token.' : 'Pool creation date is unavailable, so pool age cannot be factored into this assessment.'}`
+    const lpModelProof = deriveLpModelProof(gtAllPools)
+    const lpMigrationProof = deriveMigrationProof(gtAllPools, liquidityUsd)
+    const lpModelForCortex = lpModelProof
+    const migrationSummaryForCortex = lpMigrationProof.reason + (noActivePools ? ' No active pools were detected for this token.' : '')
 
     const cortexLpRead = buildSharedCortexLpRead({
       name: resolvedName ?? resolvedSymbol ?? 'This token',
@@ -5857,6 +5855,8 @@ export async function POST(req: Request) {
       lpDataMode,
       lpDataConfidence,
       cortexLpRead,
+      lpModelProof,
+      lpMigrationProof,
       lpMeta: {
         v2PoolCandidatesCount: lpDiagnostics.v2PoolCandidatesCount,
         protocolPoolCandidatesCount: lpDiagnostics.protocolPoolCandidatesCount,

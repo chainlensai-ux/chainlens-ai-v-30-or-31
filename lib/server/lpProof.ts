@@ -4,6 +4,16 @@
 
 export type LpChain = "eth" | "base";
 
+export interface GTPool {
+  id: string;
+  attributes: { reserve_in_usd?: string | number | null; [key: string]: unknown };
+  relationships?: {
+    base_token?: { data?: { id: string } };
+    network?: { data?: { id: string } };
+    dex?: { data?: { id: string } };
+  };
+}
+
 export type LpLockStatus = "locked" | "burned" | "unlocked" | "unverified";
 export type LpController = "wallet" | "contract" | "burn" | "lockContract" | "unknown";
 export type LpDataMode = "strict" | "minimal" | "fallback" | "insufficient";
@@ -257,6 +267,80 @@ export function buildCortexLpRead(params: {
       "Run a honeypot and tax simulation prior to trading.",
       ...(lpModel.standardLockApplies ? [] : ["Use a concentrated-liquidity-aware lock verification method for this pool."]),
     ],
+  };
+}
+
+function _toNum(v: string | number | null | undefined): number | null {
+  if (v == null) return null;
+  const n = typeof v === "number" ? v : parseFloat(v as string);
+  return isNaN(n) ? null : n;
+}
+
+export interface LpModelProof {
+  model: "constant_product" | "concentrated" | "stableswap" | "unknown";
+  dexName: string | null;
+  standardLockApplies: boolean;
+}
+
+export function deriveLpModelProof(pools: GTPool[]): LpModelProof {
+  const primary = pools[0];
+  const dexId = (primary?.relationships?.dex?.data?.id ?? "").toLowerCase();
+  let model: LpModelProof["model"] = "unknown";
+  if (dexId.includes("curve")) model = "stableswap";
+  else if (dexId.includes("v3") || dexId.includes("slipstream") || dexId.includes("concentrated")) model = "concentrated";
+  else if (dexId.includes("uniswap") || dexId.includes("aerodrome") || dexId.includes("sushiswap") || dexId.includes("v2")) model = "constant_product";
+  return {
+    model,
+    dexName: primary?.relationships?.dex?.data?.id ?? null,
+    standardLockApplies: model !== "concentrated",
+  };
+}
+
+export interface LpMigrationProof {
+  status: "low" | "watch" | "flagged" | "unknown";
+  confidence: "high" | "medium" | "low" | "unverified";
+  reason: string;
+  dexsUsed: string[];
+  primaryDex: string | null;
+  liquidityDistribution: string;
+  signals: string[];
+  missingEvidence: string[];
+  nextAction: string;
+}
+
+export function deriveMigrationProof(pools: GTPool[], totalLiq: number | null): LpMigrationProof {
+  const dexsUsed = Array.from(new Set(pools.map((p) => p.relationships?.dex?.data?.id).filter((d): d is string => !!d)));
+  const primaryDex = pools[0]?.relationships?.dex?.data?.id ?? null;
+  const liquidities = pools.map((p) => _toNum(p.attributes.reserve_in_usd as string | number | null | undefined) ?? 0);
+  const topShare = totalLiq && totalLiq > 0 ? (liquidities[0] ?? 0) / totalLiq : null;
+
+  const signals: string[] = [];
+  let status: LpMigrationProof["status"] = "unknown";
+  let confidence: LpMigrationProof["confidence"] = "unverified";
+  let reason = "Not enough pool data to assess migration risk.";
+  let liquidityDistribution = "unknown";
+
+  if (pools.length > 0 && topShare != null) {
+    liquidityDistribution = topShare >= 0.7 ? "concentrated in primary pool" : topShare >= 0.4 ? "moderately distributed" : "spread thinly across pools";
+    if (dexsUsed.length > 1) signals.push(`Liquidity is split across ${dexsUsed.length} different DEXs.`);
+    if (pools.length > 1 && topShare < 0.4) signals.push("No single pool holds a clear majority of liquidity.");
+    if (pools.length === 1) signals.push("All observed liquidity sits in a single pool.");
+    if (dexsUsed.length > 1 && topShare < 0.4) {
+      status = "watch"; confidence = "low";
+      reason = "Liquidity is fragmented across multiple DEXs with no dominant pool — could indicate an in-progress or past migration.";
+    } else if (dexsUsed.length === 1 && topShare >= 0.7) {
+      status = "low"; confidence = "medium";
+      reason = "Liquidity is concentrated in a single DEX and primary pool — no migration signal observed.";
+    } else {
+      status = "watch"; confidence = "low";
+      reason = "Pool distribution shows mixed signals — insufficient evidence to rule out migration activity.";
+    }
+  }
+
+  return {
+    status, confidence, reason, dexsUsed, primaryDex, liquidityDistribution, signals,
+    missingEvidence: ["pool_creation_date_unavailable"],
+    nextAction: "Confirm pool creation dates and historical liquidity moves on a block explorer before drawing migration conclusions.",
   };
 }
 
