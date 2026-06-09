@@ -7181,10 +7181,10 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
 
   const startedAt = Date.now()
   const _perfPhaseTs: Record<string, number> = { start: startedAt }
-  const _perfWalletTimings = { portfolioMs: 0, activityMs: 0, swapDetectionMs: 0, pricingMs: 0, fifoMs: 0, tradeStatsMs: 0, historicalMs: 0 }
+  const _perfWalletTimings = { chainDiscoveryMs: 0, holdingsMs: 0, activityMs: 0, swapDetectionMs: 0, pricingMs: 0, fifoMs: 0, tradeStatsMs: 0, historicalMs: 0 }
   const _perfTimedOut: string[] = []
   const _perfSkipped: string[] = []
-  const _perfParallelized: string[] = ['phase1_holdings_activity', 'receipt_fetches_base_recon', 'receipt_fetches_eth_router_recon', 'receipt_fetches_unpriced_pass', 'moralis_chain_balances']
+  const _perfParallelized: string[] = ['phase1_holdings_activity', 'receipt_fetches_base_recon', 'receipt_fetches_eth_router_recon', 'receipt_fetches_unpriced_pass', 'moralis_chain_balances', 'moralis_multichain_activity_supplement']
   const addr: string = (address ?? '').trim()
   if (!addr || !/^0x[0-9a-fA-F]{40}$/i.test(addr)) {
     throw new Error('Invalid wallet address')
@@ -7249,7 +7249,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   ])
 
   _perfPhaseTs.phase1_done = Date.now()
-  _perfWalletTimings.portfolioMs = _perfPhaseTs.phase1_done - startedAt
+  _perfWalletTimings.holdingsMs = _perfPhaseTs.phase1_done - startedAt
   // ── Tx / age / nonce ──
   const firstCandidates: Date[] = []
   if (ethFirst.status === 'fulfilled' && ethFirst.value) firstCandidates.push(ethFirst.value)
@@ -7380,6 +7380,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   if (activeChains.length === 0 && (requestedChain === 'base' || requestedChain === 'eth')) activeChains = [requestedChain]
   if (activeChains.length === 0) activeChains = ['base', 'eth']
   activeChains = activeChains.filter((c, i, a) => supportedMoralisChains.includes(c) && a.indexOf(c) === i).slice(0, chainMode === 'all_supported' && deepScan ? supportedMoralisChains.length : maxChainsBasicScan)
+  _perfPhaseTs.chain_discovery_done = Date.now()
+  _perfWalletTimings.chainDiscoveryMs = _perfPhaseTs.chain_discovery_done - _perfPhaseTs.phase1_done
 
   // Activity routing debug: capture chain selection state before and after value gate
   const _activeChainsBeforeValueGate: MoralisChain[] = (() => {
@@ -7565,7 +7567,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   })
   tokenMeter.endTokenMeter('providerFetch')
   _perfPhaseTs.provider_fetch_done = Date.now()
-  _perfWalletTimings.activityMs = _perfPhaseTs.provider_fetch_done - startedAt
+  _perfWalletTimings.activityMs = _perfPhaseTs.provider_fetch_done - (_perfPhaseTs.chain_discovery_done ?? _perfPhaseTs.phase1_done ?? startedAt)
 
   const primaryActivityAttempted = activityRequested && Boolean(GOLDRUSH_KEY)
   const primaryActivityStatusCode = primaryActivityAttempted ? (baseTransferDiag?.httpStatus ?? null) : null
@@ -7814,13 +7816,18 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _p19ScannedChains: MoralisChain[] = []
   if (_p19ShouldRun) {
     let p19NewEvents: PnlEvent[] = []
-    for (const eligible of _p19EligibleChains) {
+    const p19Results = await Promise.allSettled(_p19EligibleChains.map(async (eligible) => {
       const p19ChainName = eligible.chain  // 'bsc', 'polygon', etc.
       const p19Result = await fetchMoralisTransfers(addr, eligible.chain, 100)
       _trackCall('moralis', 'erc20_transfers', p19Result.cacheHit, `moralis:transfers:p1:${eligible.chain}:p19:${addrNorm}`)
       const { events: p19ChainEvents } = (p19Result.usable && p19Result.items.length > 0)
         ? normalizeMoralisTransfers(p19Result.items, addr, p19ChainName)
         : { events: [] as PnlEvent[] }
+      return { eligible, p19Result, p19ChainEvents }
+    }))
+    for (const settled of p19Results) {
+      if (settled.status === 'rejected') continue
+      const { eligible, p19Result, p19ChainEvents } = settled.value
       _phase19Debug.chainResults.push({
         chain: eligible.chain as string,
         rawCount: p19Result.rawCount,
@@ -9823,7 +9830,9 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         const bottleneckEntry = Object.entries(phaseDurations).sort((a, b) => b[1] - a[1])[0]
         return {
           totalDurationMs,
-          portfolioMs: _perfWalletTimings.portfolioMs,
+          chainDiscoveryMs: _perfWalletTimings.chainDiscoveryMs,
+          holdingsMs: _perfWalletTimings.holdingsMs,
+          portfolioMs: _perfWalletTimings.holdingsMs,
           activityMs: _perfWalletTimings.activityMs,
           swapDetectionMs: _perfWalletTimings.swapDetectionMs,
           pricingMs: _perfWalletTimings.pricingMs,
@@ -9832,7 +9841,9 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
           historicalMs: _perfWalletTimings.historicalMs,
           phaseDurations,
           providerDurations: {
-            phase1_providers: (_perfPhaseTs.provider_fetch_done ?? now) - startedAt,
+            phase1_providers: (_perfPhaseTs.phase1_done ?? now) - startedAt,
+            chain_discovery: _perfWalletTimings.chainDiscoveryMs,
+            activity_fetch: _perfWalletTimings.activityMs,
           },
           parallelizedCalls: _perfParallelized,
           reusedCachedActivity: false,
