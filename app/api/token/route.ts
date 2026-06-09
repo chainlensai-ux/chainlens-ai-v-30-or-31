@@ -6569,15 +6569,64 @@ export async function POST(req: Request) {
 
 export async function GET(req: Request) {
   const url = new URL(req.url)
-  const body = {
-    contract: url.searchParams.get('contract') ?? '',
-    chain: url.searchParams.get('chain') ?? 'base',
-    debug: url.searchParams.get('debug') === 'true',
+  const contract = url.searchParams.get('address') ?? url.searchParams.get('contract') ?? ''
+  const chain = url.searchParams.get('chain') ?? 'base'
+
+  if (!/^0x[a-fA-F0-9]{40}$/.test(contract)) {
+    return NextResponse.json({ error: 'Invalid or missing address parameter.' }, { status: 400 })
   }
+
   const mockReq = new Request(req.url, {
     method: 'POST',
     headers: req.headers,
-    body: JSON.stringify(body),
+    body: JSON.stringify({ contract, chain, debug: url.searchParams.get('debug') === 'true' }),
   })
-  return POST(mockReq)
+  const scanRes = await POST(mockReq)
+  const scan = await scanRes.json().catch(() => null) as Record<string, any> | null
+  if (!scanRes.ok || scan?.error) {
+    return NextResponse.json({ error: scan?.error ?? 'Token metadata unavailable.' }, { status: scanRes.ok ? 502 : scanRes.status })
+  }
+  if (!scan) return NextResponse.json(null)
+
+  const socials = (scan.projectSocials && typeof scan.projectSocials === 'object') ? scan.projectSocials as Record<string, unknown> : {}
+  const explorerBase = chain === 'eth' || chain === 'ethereum' ? 'https://etherscan.io' : 'https://basescan.org'
+  const gtNetwork = chain === 'eth' || chain === 'ethereum' ? 'eth' : 'base'
+  const normalizedChain = chain === 'ethereum' ? 'eth' : chain
+  const links = {
+    dexscreener: `https://dexscreener.com/${normalizedChain === 'eth' ? 'ethereum' : normalizedChain}/${contract}`,
+    geckoterminal: `https://www.geckoterminal.com/${gtNetwork}/tokens/${contract}`,
+    explorer: `${explorerBase}/token/${contract}`,
+  }
+
+  const metadata = {
+    name: scan.name ?? scan.tokenInfo?.name ?? null,
+    symbol: scan.symbol ?? scan.tokenInfo?.symbol ?? null,
+    decimals: scan.decimals ?? scan.tokenInfo?.decimals ?? null,
+    website: socials.website ?? null,
+    twitter: socials.twitter ?? null,
+    telegram: socials.telegram ?? null,
+    links,
+    deployer: scan.deployerAddress ?? scan.devIntel?.deployerAddress ?? null,
+    deployerAddress: scan.deployerAddress ?? scan.devIntel?.deployerAddress ?? null,
+    creationTx: scan.creationTxHash ?? scan.devIntel?.creationTxHash ?? null,
+    creationTxHash: scan.creationTxHash ?? scan.devIntel?.creationTxHash ?? null,
+    creationTime: scan.poolActivity?.pairCreatedAt ?? null,
+    chain: scan.chain ?? normalizedChain,
+    projectSocials: {
+      ...socials,
+      website: socials.website ?? null,
+      twitter: socials.twitter ?? null,
+      telegram: socials.telegram ?? null,
+    },
+    holderDistribution: scan.holderDistribution ?? null,
+    holderResolver: scan.holderResolver ?? null,
+    priceChart: scan.priceChart ?? null,
+    sections: scan.sections ?? null,
+  }
+
+  if (metadata.name == null && metadata.symbol == null && metadata.decimals == null && metadata.website == null && metadata.twitter == null && metadata.telegram == null) {
+    return NextResponse.json(null)
+  }
+
+  return NextResponse.json(metadata)
 }

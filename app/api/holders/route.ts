@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server'
 
 export const dynamic = 'force-dynamic'
 
-type HolderRow = { rank?: number | null; address?: string | null; percent?: number | null; pctOfSupply?: number | null; isContract?: boolean | null; walletType?: string | null }
+type HolderRow = { rank?: number | null; address?: string | null; balance?: string | number | null; percent?: number | null; pctOfSupply?: number | null; isContract?: boolean | null; isEOA?: boolean | null; walletType?: string | null; label?: string | null; tags?: string[] | null }
 
 type TokenScanPayload = {
   holderDistribution?: { topHolders?: HolderRow[]; top1?: number | null; top10?: number | null; top20?: number | null; holderCount?: number | null } | null
@@ -31,12 +31,15 @@ export async function GET(req: Request) {
   }
 
   const tokenUrl = new URL('/api/token', url.origin)
-  tokenUrl.searchParams.set('contract', address)
-  tokenUrl.searchParams.set('chain', chain)
 
   const res = await fetch(tokenUrl, {
+    method: 'POST',
     cache: 'no-store',
-    headers: { authorization: req.headers.get('authorization') ?? '' },
+    headers: {
+      'content-type': 'application/json',
+      authorization: req.headers.get('authorization') ?? '',
+    },
+    body: JSON.stringify({ contract: address, chain }),
   })
   const json = await res.json().catch(() => ({})) as TokenScanPayload & { error?: string }
   if (!res.ok || json.error) {
@@ -44,13 +47,25 @@ export async function GET(req: Request) {
   }
 
   const topHolders = json.holderDistribution?.topHolders ?? json.holderResolver?.holders ?? []
-  const contractCount = topHolders.filter((holder) => holder.isContract === true || holder.walletType === 'contract').length
-  const eoaCount = topHolders.length > 0 ? topHolders.length - contractCount : 0
+  const holders = topHolders.map((holder, index) => {
+    const isContract = holder.isContract === true || holder.walletType === 'contract'
+    return {
+      address: holder.address ?? null,
+      balance: holder.balance ?? null,
+      percent: holderPercent(holder),
+      isContract,
+      isEOA: holder.isEOA ?? (holder.address ? !isContract : null),
+      rank: holder.rank ?? index + 1,
+    }
+  })
+  const contractCount = holders.filter((holder) => holder.isContract === true).length
+  const eoaCount = holders.filter((holder) => holder.isEOA === true).length
   const top10 = json.holderDistribution?.top10 ?? json.sections?.holders?.top10 ?? null
   const concentrationStatus = top10 == null ? 'unknown' : top10 >= 50 ? 'high' : top10 >= 25 ? 'moderate' : 'healthy'
 
   return NextResponse.json({
-    topHolders: topHolders.map((holder, index) => ({ ...holder, rank: holder.rank ?? index + 1, percent: holderPercent(holder) })),
+    holders,
+    topHolders: holders,
     concentration: {
       top1: json.holderDistribution?.top1 ?? json.sections?.holders?.top1 ?? null,
       top10,
@@ -60,8 +75,8 @@ export async function GET(req: Request) {
     },
     contractCount,
     eoaCount,
-    smartWallets: contractCount,
-    snipers: 0,
+    smartWallets: topHolders.filter((holder) => String(holder.label ?? '').toLowerCase().includes('smart') || (holder.tags ?? []).some((tag) => /smart/i.test(tag))).map((holder) => holder.address).filter(Boolean),
+    snipers: topHolders.filter((holder) => String(holder.label ?? '').toLowerCase().includes('sniper') || (holder.tags ?? []).some((tag) => /sniper/i.test(tag))).map((holder) => holder.address).filter(Boolean),
     status: statusFrom(json.holderDistributionStatus) ?? json.sections?.holders?.status ?? 'partial',
     reason: json.sections?.holders?.reason ?? json.holderResolver?.reason ?? null,
   })
