@@ -5031,6 +5031,36 @@ export async function POST(req: Request) {
       lpUnlockTime,
     })
 
+    // ── LP proof applicability and structured exit risk fields ──────────────
+    const isConcentratedPool = !lpModelProof.standardLockApplies || lpControl.status === 'concentrated_liquidity' || lpControl.status === 'protocol'
+    const lpProofApplicability: 'applicable' | 'not_applicable' | 'unknown' =
+      isConcentratedPool ? 'not_applicable' : (_lpProofAddress ? 'applicable' : 'unknown')
+    const lpProofStatusNew: 'confirmed' | 'partial' | 'missing' | 'not_applicable' | 'unknown' =
+      lpProofApplicability === 'not_applicable' ? 'not_applicable' :
+      (lpLockStatus === 'locked' || lpLockStatus === 'burned') ? 'confirmed' :
+      lpLockStatus === 'unlocked' ? 'partial' :
+      noActivePools ? 'unknown' : 'missing'
+    const _liqForRisk = liquidityUsd
+    const lpExitRisk: 'low' | 'monitor' | 'medium' | 'high' | 'open_check' =
+      isConcentratedPool
+        ? (_liqForRisk != null && _liqForRisk > 50_000 ? 'monitor' : _liqForRisk != null && _liqForRisk > 0 ? 'watch' as 'monitor' : 'open_check')
+        : (lpLockStatus === 'burned' || lpLockStatus === 'locked') ? (_liqForRisk != null && _liqForRisk < 50_000 ? 'medium' : 'low')
+        : lpLockStatus === 'unlocked' ? 'high'
+        : (_liqForRisk != null && _liqForRisk < 10_000 ? 'monitor' : _liqForRisk != null && _liqForRisk < 50_000 ? 'monitor' : 'open_check')
+    const lpExitRiskReason =
+      isConcentratedPool ? `${lpModelProof.model === 'concentrated' ? 'V3/V4 concentrated' : 'Protocol-managed'} pool — standard LP lock/burn proof does not apply. Exit risk based on pool depth${_liqForRisk != null ? ` ($${_liqForRisk.toLocaleString(undefined, {maximumFractionDigits:0})})` : ''}.`
+      : lpLockStatus === 'burned' ? 'LP tokens sent to a burn address — exit liquidity permanently locked.'
+      : lpLockStatus === 'locked' ? 'Active LP lock proof found — protected for the lock duration.'
+      : lpLockStatus === 'unlocked' ? 'On-chain evidence shows LP is held by a removable wallet with no lock or burn proof.'
+      : 'LP lock/burn proof not confirmed — exit risk is an open check.'
+    const lpEvidenceSummary = [
+      `Pool model: ${lpModelProof.model}`,
+      `Liquidity: ${_liqForRisk != null ? '$' + _liqForRisk.toLocaleString(undefined, {maximumFractionDigits:0}) : 'unknown'}`,
+      `Proof applicability: ${lpProofApplicability}`,
+      `Proof status: ${lpProofStatusNew}`,
+      `Migration: ${lpMigrationProof.status}`,
+    ].join(' | ')
+
     // ── Data Fill Score: 0-100. Inferred values count at half weight ──
     const _fillMarket = (liquidityUsd != null || marketCapFromGt != null || fdv != null) ? 20 : 0
     const _fillHolder = holderDistributionStatus.status === 'ok' ? 20 : holderDistributionStatus.status === 'partial' ? 12 : holderIntelligence.status === 'inferred' ? 5 : 0
@@ -5857,6 +5887,11 @@ export async function POST(req: Request) {
       cortexLpRead,
       lpModelProof,
       lpMigrationProof,
+      lpProofApplicability,
+      lpProofStatus: lpProofStatusNew,
+      lpExitRisk,
+      lpExitRiskReason,
+      lpEvidenceSummary,
       lpMeta: {
         v2PoolCandidatesCount: lpDiagnostics.v2PoolCandidatesCount,
         protocolPoolCandidatesCount: lpDiagnostics.protocolPoolCandidatesCount,
