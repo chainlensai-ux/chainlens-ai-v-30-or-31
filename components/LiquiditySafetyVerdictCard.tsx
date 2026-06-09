@@ -34,6 +34,7 @@ export interface LiquiditySafetyResult {
   lpUnlockTime: number | null;
   lpLockProvider: "PinkLock" | null;
   lpController: "wallet" | "contract" | "burn" | "lockContract" | "unknown";
+  lpProofApplicability?: "applicable" | "not_applicable" | "unknown";
   lp_data_mode: "strict" | "minimal" | "fallback" | "insufficient";
   lp_data_confidence: "high" | "medium" | "low" | "unverified";
   lp_evidence_gaps: Array<{ id: string; label: string; explanation: string; nextAction: string }>;

@@ -51,7 +51,10 @@ function deriveRugSignals(data: LiquiditySafetyResult): string[] {
   const sigs: string[] = [];
   const liq = data.lp_total_liquidity_usd;
 
-  sigs.push("Lock status is unverified — no active lock-proof provider confirmed whether this LP is locked. Treat as unlocked until proven otherwise.");
+  // Only warn about unverified lock when proof was applicable but came back unverified.
+  if (data.lpProofApplicability !== "not_applicable" && data.lpLockStatus === "unverified") {
+    sigs.push("LP lock status is unverified — no active lock proof confirmed whether this LP is locked or burned. Treat as withdrawable until proven otherwise.");
+  }
 
   if (data.lp_fragments > 5)
     sigs.push(`LP split across ${data.lp_fragments} pools — fragmented depth increases rug-exit ease.`);
@@ -103,7 +106,10 @@ function deriveExpandedNegatives(data: LiquiditySafetyResult): string[] {
   const neg: string[] = [];
   const liq = data.lp_total_liquidity_usd;
 
-  neg.push("Lock status is unverified — no active lock-proof provider confirmed whether this LP is locked or burned. Treat as high-risk until verified.");
+  // Only add lock warning when proof is applicable and unverified — not for concentrated pools.
+  if (data.lpProofApplicability !== "not_applicable" && data.lpLockStatus === "unverified") {
+    neg.push("LP lock/burn status is unverified — no on-chain proof confirmed whether this LP is protected. Treat as withdrawable until verified.");
+  }
 
   if (liq != null && liq < 100_000)
     neg.push(`LP depth of ${liq < 1_000 ? `$${liq.toFixed(0)}` : `$${(liq / 1_000).toFixed(1)}K`} is below the $100K safety threshold.`);
@@ -307,22 +313,59 @@ export default function LPSafetyExtendedBox({ data }: Props) {
             {/* LP Lock Status */}
             <IndicatorCard
               label="LP Lock Status"
-              badge={<RiskReasonBadge label="Unverified" />}
-              note="No active lock-proof provider is wired up for this scan — lock status is unverified. Verify via a lock explorer before trusting any lock claims."
+              badge={(() => {
+                const notApplicable = data.lpProofApplicability === "not_applicable";
+                if (notApplicable) return <StatusBadge label="Not Applicable" color="#c084fc" bg="rgba(192,132,252,0.07)" border="rgba(192,132,252,0.22)" />;
+                if (data.lpLockStatus === "locked") return <StatusBadge label={`Locked${data.lpLockProvider ? ` · ${data.lpLockProvider}` : ""}`} color="#34d399" bg="rgba(52,211,153,0.07)" border="rgba(52,211,153,0.22)" />;
+                if (data.lpLockStatus === "burned") return <StatusBadge label="Burned" color="#34d399" bg="rgba(52,211,153,0.07)" border="rgba(52,211,153,0.22)" />;
+                if (data.lpLockStatus === "unlocked") return <RiskReasonBadge label="Unlocked" />;
+                return <RiskReasonBadge label="Unverified" />;
+              })()}
+              note={(() => {
+                if (data.lpProofApplicability === "not_applicable") return `${data.lp_model_proof.model !== "unknown" ? data.lp_model_proof.model.replace("_", "-") : "Concentrated"} pool — standard ERC-20 LP lock/burn proof does not apply to this pool type.`;
+                if (data.lpLockStatus === "locked") return data.lpUnlockTime ? `Unlocks ${new Date(data.lpUnlockTime * 1000).toUTCString()}.` : "Active lock proof found. Confirm lock duration on-chain.";
+                if (data.lpLockStatus === "burned") return "On-chain data shows LP tokens sent to a burn address — exit liquidity is permanently locked.";
+                if (data.lpLockStatus === "unlocked") return "On-chain evidence shows the LP is held by a removable wallet with no lock or burn proof.";
+                return "LP lock status not confirmed by this scan. Verify via a lock explorer before trusting any lock claims.";
+              })()}
             />
 
             {/* Controller */}
             <IndicatorCard
               label="Controller"
-              badge={<RiskReasonBadge label="Unknown" />}
-              note="Contract owner / controller is not confirmed by this scan. Check the contract source for owner functions."
+              badge={(() => {
+                if (data.lpProofApplicability === "not_applicable") return <StatusBadge label="Not Applicable" color="#c084fc" bg="rgba(192,132,252,0.07)" border="rgba(192,132,252,0.22)" />;
+                if (data.lpController === "lockContract") return <StatusBadge label="Lock Contract" color="#34d399" bg="rgba(52,211,153,0.07)" border="rgba(52,211,153,0.22)" />;
+                if (data.lpController === "burn") return <StatusBadge label="Burn Address" color="#34d399" bg="rgba(52,211,153,0.07)" border="rgba(52,211,153,0.22)" />;
+                if (data.lpController === "wallet") return <RiskReasonBadge label="Wallet" />;
+                if (data.lpController === "contract") return <StatusBadge label="Contract" color="#fbbf24" bg="rgba(251,191,36,0.07)" border="rgba(251,191,36,0.22)" />;
+                return <RiskReasonBadge label="Unknown" />;
+              })()}
+              note={(() => {
+                if (data.lpProofApplicability === "not_applicable") return "Controller check not applicable for this pool model.";
+                if (data.lpController === "lockContract") return "LP tokens are held by a confirmed lock contract.";
+                if (data.lpController === "burn") return "LP tokens are held at a burn address — permanently locked.";
+                if (data.lpController === "wallet") return "LP tokens are held by a wallet — liquidity can be removed.";
+                if (data.lpController === "contract") return "LP tokens are held by a contract — review the contract source.";
+                return "LP token controller not confirmed. Check the LP token holder list on-chain.";
+              })()}
             />
 
             {/* Burn Proof */}
             <IndicatorCard
               label="Burn Proof"
-              badge={<RiskReasonBadge label="Unconfirmed" />}
-              note="Whether LP tokens were sent to a burn address has not been confirmed. Check the LP token holder list on-chain."
+              badge={(() => {
+                if (data.lpProofApplicability === "not_applicable") return <StatusBadge label="Not Applicable" color="#c084fc" bg="rgba(192,132,252,0.07)" border="rgba(192,132,252,0.22)" />;
+                if (data.lpLockStatus === "burned") return <StatusBadge label="Confirmed" color="#34d399" bg="rgba(52,211,153,0.07)" border="rgba(52,211,153,0.22)" />;
+                if (data.lpLockStatus === "locked") return <StatusBadge label="N/A — Locked" color="#fbbf24" bg="rgba(251,191,36,0.07)" border="rgba(251,191,36,0.22)" />;
+                return <RiskReasonBadge label="Unconfirmed" />;
+              })()}
+              note={(() => {
+                if (data.lpProofApplicability === "not_applicable") return "Burn proof not applicable for this pool model.";
+                if (data.lpLockStatus === "burned") return "On-chain scan confirmed LP tokens sent to a burn address.";
+                if (data.lpLockStatus === "locked") return "LP is confirmed locked — burn proof not separately required.";
+                return "Whether LP tokens were sent to a burn address has not been confirmed. Check the LP token holder list on-chain.";
+              })()}
             />
 
             {/* Depth */}

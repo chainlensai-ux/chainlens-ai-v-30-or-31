@@ -179,18 +179,30 @@ const EVIDENCE_GAP_DEFS: Record<string, LpEvidenceGap> = {
 export function buildEvidenceGaps(params: {
   lpLockStatus: LpLockStatus;
   lpController: LpController;
+  /** When false, LP lock/burn/controller gaps are suppressed (e.g. concentrated pool where proof is N/A). Default true. */
+  proofApplicable?: boolean;
+  /** When false, token-level gaps (mintability/honeypot/tax/renounce) are omitted. Default true. */
+  includeTokenGaps?: boolean;
 }): LpEvidenceGap[] {
+  const applicable = params.proofApplicable !== false;
+  const tokenGaps = params.includeTokenGaps !== false;
   const ids: string[] = [];
-  if (params.lpLockStatus !== "locked") ids.push("LOCK_STATUS_UNVERIFIED");
-  if (params.lpLockStatus !== "burned") ids.push("BURN_PROOF_UNCONFIRMED");
-  if (params.lpController === "unknown") ids.push("CONTROLLER_UNKNOWN");
-  ids.push(
-    "POOL_AGE_UNKNOWN",
-    "MINTABILITY_UNAVAILABLE",
-    "HONEYPOT_CHECK_UNAVAILABLE",
-    "TAX_CHECK_UNAVAILABLE",
-    "RENOUNCE_STATUS_UNKNOWN",
-  );
+  if (applicable) {
+    // Only show lock-status unverified when LP is neither locked nor burned.
+    if (params.lpLockStatus !== "locked" && params.lpLockStatus !== "burned") ids.push("LOCK_STATUS_UNVERIFIED");
+    // Only show burn-proof unconfirmed when LP is neither burned nor locked.
+    if (params.lpLockStatus !== "burned" && params.lpLockStatus !== "locked") ids.push("BURN_PROOF_UNCONFIRMED");
+    if (params.lpController === "unknown") ids.push("CONTROLLER_UNKNOWN");
+  }
+  ids.push("POOL_AGE_UNKNOWN");
+  if (tokenGaps) {
+    ids.push(
+      "MINTABILITY_UNAVAILABLE",
+      "HONEYPOT_CHECK_UNAVAILABLE",
+      "TAX_CHECK_UNAVAILABLE",
+      "RENOUNCE_STATUS_UNKNOWN",
+    );
+  }
   return ids.map((id) => EVIDENCE_GAP_DEFS[id]);
 }
 

@@ -429,13 +429,38 @@ export async function POST(req: NextRequest) {
     const lpModelProof = deriveLpModelProof(pools);
     const migrationProof = deriveMigrationProof(pools, analysis.lp_total_liquidity_usd);
 
-    // ─── LP Proof: PinkLock first, then on-chain burn/holder scan as fallback ─
-    const lpTokenAddress = idToAddress(pools[0]?.id ?? "");
-    const lpProof = await resolveLpProof("base", lpTokenAddress);
+    // ─── LP Proof: only run ERC-20 LP lock/burn checks on constant-product pools ─
+    // Concentrated/V3/Slipstream/Aerodrome CL pools have no ERC-20 LP token —
+    // PinkLock and burn-address scans would always fail on these. Only attempt proof
+    // on constant-product (V2-style) pools where the pool address == LP token.
+    const lpProofApplicable = lpModelProof.standardLockApplies;
+    let lpProof: { lpLockStatus: "locked" | "burned" | "unlocked" | "unverified"; lpLockAmount: number | null; lpUnlockTime: number | null; lpLockProvider: "PinkLock" | null; lpController: "wallet" | "contract" | "burn" | "lockContract" | "unknown" };
+    let lpProofSkipReason: string | null = null;
+
+    if (!lpProofApplicable) {
+      // Standard ERC-20 LP proof does not apply to this pool model.
+      lpProof = { lpLockStatus: "unverified", lpLockAmount: null, lpUnlockTime: null, lpLockProvider: null, lpController: "unknown" };
+      lpProofSkipReason = `Pool model is ${lpModelProof.model} (DEX: ${lpModelProof.dexName ?? "unknown"}) — standard ERC-20 LP lock/burn proof does not apply.`;
+    } else {
+      // Select best constant-product pool for proof: prefer explicit v2/sushi pools,
+      // fall back to primary pool if none found.
+      const v2Pool = pools.find((p) => {
+        const dex = (p.relationships?.dex?.data?.id ?? "").toLowerCase();
+        return !dex.includes("v3") && !dex.includes("slipstream") && !dex.includes("concentrated");
+      }) ?? pools[0];
+      const lpTokenAddress = idToAddress(v2Pool?.id ?? "");
+      lpProof = await resolveLpProof("base", lpTokenAddress);
+    }
+
     const { lpLockStatus, lpLockAmount, lpUnlockTime, lpLockProvider, lpController } = lpProof;
+    const lpProofApplicability: "applicable" | "not_applicable" = lpProofApplicable ? "applicable" : "not_applicable";
 
     const { lp_data_mode, lp_data_confidence } = deriveDataModeAndConfidence(pools.length > 0, lpLockStatus);
-    const evidenceGaps = buildEvidenceGaps({ lpLockStatus, lpController });
+    const evidenceGaps = buildEvidenceGaps({
+      lpLockStatus, lpController,
+      proofApplicable: lpProofApplicable,
+      includeTokenGaps: false, // LP safety scan does not run token-level checks
+    });
     const cortexLpRead = buildCortexLpRead({
       name, symbol,
       totalLiq: analysis.lp_total_liquidity_usd,
@@ -463,6 +488,7 @@ export async function POST(req: NextRequest) {
         lpUnlockTime,
         lpLockProvider,
         lpController,
+        lpProofApplicability,
         lp_data_mode,
         lp_data_confidence,
         lp_evidence_gaps: evidenceGaps,
@@ -470,7 +496,7 @@ export async function POST(req: NextRequest) {
         lp_migration_proof: migrationProof,
         cortex_lp_read: cortexLpRead,
       },
-      diagnostics: process.env.NODE_ENV === 'development' ? { cacheHit: false, providerStatus: 'ok', rateLimited: false } : undefined,
+      diagnostics: process.env.NODE_ENV === 'development' ? { cacheHit: false, providerStatus: 'ok', rateLimited: false, lpProofSkipReason } : undefined,
     };
     liqCache.set(cacheKey, { exp: Date.now() + LIQ_CACHE_TTL_MS, payload })
     return NextResponse.json(payload);
