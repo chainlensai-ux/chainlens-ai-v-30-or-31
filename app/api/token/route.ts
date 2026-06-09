@@ -2893,7 +2893,8 @@ function _buildDeterministicSummary(
   holderCount: number | null,
   top10Pct: number | null,
   ownerStatus: string,
-  lpPoolType: string | null | undefined
+  lpPoolType: string | null | undefined,
+  lpControlStatus?: string | null
 ): string {
   const confirmed: string[] = []
   const risks: string[] = []
@@ -2927,10 +2928,16 @@ function _buildDeterministicSummary(
   }
   if (ownerStatus === 'renounced') {
     confirmed.push('Ownership is renounced.')
-  } else if (ownerStatus === 'inferred_active' || ownerStatus === 'inferred') {
-    inferred.push('ownership status inferred as active — treat as potentially upgradeable or mintable until confirmed on-chain')
+  } else if (ownerStatus !== 'renounced') {
+    risks.push('contract ownership is active — owner retains admin control')
   }
-  if (!lpPoolType || lpPoolType === 'unknown') {
+  if (lpControlStatus === 'team_controlled') {
+    risks.push('LP is team-controlled — liquidity can be removed at any time without warning')
+  } else if (lpControlStatus === 'burned') {
+    confirmed.push('LP is burned — liquidity is permanently locked.')
+  } else if (lpControlStatus === 'locked') {
+    confirmed.push('LP is locked via a time-lock contract.')
+  } else if (!lpPoolType || lpPoolType === 'unknown') {
     inferred.push('LP lock status inferred as partial — assume exit liquidity risk until burn or locker address is confirmed')
   }
 
@@ -4721,8 +4728,11 @@ export async function POST(req: Request) {
     const lpState = lpControl.status
     const top10Pct = holderDistribution.top10
     const top20Pct = holderDistribution.top20
-    // aiSummary deferred here so it has access to resolved holder data (holderDataComplete, holderCount, top10Pct)
-    const aiSummary: string = _aiTextEarly ?? _buildDeterministicSummary(_chainName, noActivePools, hpResult, analysis, holderDataComplete, holderCount ?? null, top10Pct ?? null, _ownerStatusEarly, lpPoolType ?? lpVerifyPoolType)
+    // Always use deterministic summary when holder data is complete — AI prompt is built before
+    // holder data resolves so AI text can contain stale "holders not indexed" wording.
+    // Fall back to AI text only when holder data is incomplete.
+    const _deterministicSummary = _buildDeterministicSummary(_chainName, noActivePools, hpResult, analysis, holderDataComplete, holderCount ?? null, top10Pct ?? null, _ownerStatusEarly, lpPoolType ?? lpVerifyPoolType, lpControl.status)
+    const aiSummary: string = holderDataComplete ? _deterministicSummary : (_aiTextEarly ?? _deterministicSummary)
 
     if (marketCapFromGt != null) riskVerifiedSignals.push('Market data verified: market cap is available.')
     else if (fdv != null) {
@@ -5075,7 +5085,17 @@ export async function POST(req: Request) {
     } else {
       lpProof = { lpLockStatus: 'unverified', lpLockAmount: null, lpUnlockTime: null, lpLockProvider: null, lpController: 'unknown' }
     }
-    const { lpLockStatus, lpLockAmount, lpUnlockTime, lpLockProvider, lpController } = lpProof
+    const { lpLockStatus, lpLockAmount, lpUnlockTime, lpLockProvider, lpController: _lpControllerFromProof } = lpProof
+    // Synthesize lpController from lpControl evidence when the proof scan returned 'unknown'.
+    // lpControl independently detects who holds the LP tokens (team wallet, burn address, etc.)
+    // and should be the authoritative source for controller identity when proof has no data.
+    const lpController: 'wallet' | 'contract' | 'burn' | 'lockContract' | 'unknown' = (() => {
+      if (_lpControllerFromProof !== 'unknown') return _lpControllerFromProof
+      if (lpControl.status === 'team_controlled') return 'wallet'
+      if (lpControl.status === 'burned') return 'burn'
+      if (lpControl.status === 'locked') return 'lockContract'
+      return _lpControllerFromProof
+    })()
     if (_lpProofSkipReason) lpDiagnostics.lpProofSkipReason = _lpProofSkipReason
 
     // proofApplicable: false for concentrated/protocol pools (no standard ERC-20 LP token)
