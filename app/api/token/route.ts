@@ -8,6 +8,54 @@ import { buildClusterMap } from '@/lib/clusterMap'
 import { resolveLpProof, buildEvidenceGaps as buildLpEvidenceGaps, deriveDataModeAndConfidence as deriveLpDataModeAndConfidence, buildCortexLpRead as buildSharedCortexLpRead } from '@/lib/server/lpProof'
 import { calculateCortexScoreV2 } from '@/lib/token/scoring'
 
+// Local LP model/migration proof helpers — pure functions derived from GeckoTerminal pool data.
+// Kept inline so this route compiles regardless of shared-module export state.
+function _deriveLpModelProof(pools: Array<{ relationships?: { dex?: { data?: { id: string } } } }>): {
+  model: 'constant_product' | 'concentrated' | 'stableswap' | 'unknown'
+  dexName: string | null
+  standardLockApplies: boolean
+} {
+  const dexId = (pools[0]?.relationships?.dex?.data?.id ?? '').toLowerCase()
+  let model: 'constant_product' | 'concentrated' | 'stableswap' | 'unknown' = 'unknown'
+  if (dexId.includes('curve')) model = 'stableswap'
+  else if (dexId.includes('v3') || dexId.includes('slipstream') || dexId.includes('concentrated')) model = 'concentrated'
+  else if (dexId.includes('uniswap') || dexId.includes('aerodrome') || dexId.includes('sushiswap') || dexId.includes('v2')) model = 'constant_product'
+  return { model, dexName: pools[0]?.relationships?.dex?.data?.id ?? null, standardLockApplies: model !== 'concentrated' }
+}
+
+function _deriveMigrationProof(pools: Array<{ attributes: { reserve_in_usd?: string | number | null }; relationships?: { dex?: { data?: { id: string } } } }>, totalLiq: number | null): {
+  status: 'low' | 'watch' | 'flagged' | 'unknown'
+  confidence: 'high' | 'medium' | 'low' | 'unverified'
+  reason: string
+  dexsUsed: string[]
+  primaryDex: string | null
+  liquidityDistribution: string
+  signals: string[]
+  missingEvidence: string[]
+  nextAction: string
+} {
+  const dexsUsed = Array.from(new Set(pools.map((p) => p.relationships?.dex?.data?.id).filter((d): d is string => !!d)))
+  const primaryDex = pools[0]?.relationships?.dex?.data?.id ?? null
+  const toN = (v: string | number | null | undefined): number | null => { if (v == null) return null; const n = typeof v === 'number' ? v : parseFloat(v as string); return isNaN(n) ? null : n }
+  const liquidities = pools.map((p) => toN(p.attributes.reserve_in_usd) ?? 0)
+  const topShare = totalLiq && totalLiq > 0 ? (liquidities[0] ?? 0) / totalLiq : null
+  const signals: string[] = []
+  let status: 'low' | 'watch' | 'flagged' | 'unknown' = 'unknown'
+  let confidence: 'high' | 'medium' | 'low' | 'unverified' = 'unverified'
+  let reason = 'Not enough pool data to assess migration risk.'
+  let liquidityDistribution = 'unknown'
+  if (pools.length > 0 && topShare != null) {
+    liquidityDistribution = topShare >= 0.7 ? 'concentrated in primary pool' : topShare >= 0.4 ? 'moderately distributed' : 'spread thinly across pools'
+    if (dexsUsed.length > 1) signals.push(`Liquidity is split across ${dexsUsed.length} different DEXs.`)
+    if (pools.length > 1 && topShare < 0.4) signals.push('No single pool holds a clear majority of liquidity.')
+    if (pools.length === 1) signals.push('All observed liquidity sits in a single pool.')
+    if (dexsUsed.length > 1 && topShare < 0.4) { status = 'watch'; confidence = 'low'; reason = 'Liquidity is fragmented across multiple DEXs with no dominant pool — could indicate an in-progress or past migration.' }
+    else if (dexsUsed.length === 1 && topShare >= 0.7) { status = 'low'; confidence = 'medium'; reason = 'Liquidity is concentrated in a single DEX and primary pool — no migration signal observed.' }
+    else { status = 'watch'; confidence = 'low'; reason = 'Pool distribution shows mixed signals — insufficient evidence to rule out migration activity.' }
+  }
+  return { status, confidence, reason, dexsUsed, primaryDex, liquidityDistribution, signals, missingEvidence: ['pool_creation_date_unavailable'], nextAction: 'Confirm pool creation dates and historical liquidity moves on a block explorer before drawing migration conclusions.' }
+}
+
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
 });
@@ -5011,8 +5059,8 @@ export async function POST(req: Request) {
       lpLockStatus
     )
 
-    const lpModelProof = deriveLpModelProof(gtAllPools)
-    const lpMigrationProof = deriveMigrationProof(gtAllPools, liquidityUsd)
+    const lpModelProof = _deriveLpModelProof(gtAllPools)
+    const lpMigrationProof = _deriveMigrationProof(gtAllPools, liquidityUsd)
     const lpModelForCortex = lpModelProof
     const migrationSummaryForCortex = lpMigrationProof.reason + (noActivePools ? ' No active pools were detected for this token.' : '')
 
