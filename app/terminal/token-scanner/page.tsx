@@ -149,6 +149,11 @@ type ScanResult = {
   lpUnlockTime?: number | null
   lpLockProvider?: 'PinkLock' | null
   lpController?: 'wallet' | 'contract' | 'burn' | 'lockContract' | 'unknown'
+  lpProofApplicability?: 'applicable' | 'not_applicable' | 'unknown'
+  lpProofStatus?: 'confirmed' | 'partial' | 'missing' | 'not_applicable' | 'unknown'
+  lpExitRisk?: 'low' | 'monitor' | 'medium' | 'high' | 'open_check'
+  lpExitRiskReason?: string
+  lpEvidenceSummary?: string
   lpEvidenceGaps?: Array<{ id: string; label: string; explanation: string; nextAction: string }>
   lpDataMode?: 'strict' | 'minimal' | 'fallback' | 'insufficient'
   lpDataConfidence?: 'high' | 'medium' | 'low' | 'unverified'
@@ -2156,9 +2161,16 @@ function getLpExitRiskInfo(result: ScanResult): { label: string; color: string; 
   const liqDepth = result.liquidity ?? null
   const hasLiquidity = (liqDepth ?? 0) > 0 || result.lpControl?.poolAddressPresent
   if (result.noActivePools && !hasLiquidity) return { label: 'Critical', color: '#f87171', description: 'No active pool — exit liquidity is entirely unavailable.' }
-  if (dm === 'concentrated_liquidity') return { label: 'Open Check', color: '#c084fc', description: 'V3/V4 pool — LP lock/burn proof does not apply. Assess pool depth and age.' }
-  if (dm === 'protocol_or_gauge') return { label: 'Open Check', color: '#a78bfa', description: 'Protocol/gauge-managed — LP lock model does not apply. Monitor pool depth and activity.' }
-  if (lpMode === 'protocol') return { label: 'Open Check', color: '#c084fc', description: 'Protocol-managed liquidity. LP lock model does not apply — assess pool depth and age.' }
+  if (dm === 'concentrated_liquidity' || dm === 'protocol_or_gauge' || lpMode === 'protocol') {
+    const isProtocol = dm === 'protocol_or_gauge' || lpMode === 'protocol'
+    const baseDesc = isProtocol
+      ? 'Protocol/gauge-managed — LP lock model does not apply.'
+      : 'V3/V4 pool — LP lock/burn proof does not apply.'
+    if (liqDepth != null && liqDepth > 500_000) return { label: 'Monitor', color: '#a78bfa', description: `${baseDesc} Pool depth is strong — monitor liquidity concentration and position migration.` }
+    if (liqDepth != null && liqDepth > 50_000) return { label: 'Monitor', color: '#a78bfa', description: `${baseDesc} Monitor pool depth, volume, and holder concentration.` }
+    if (liqDepth != null && liqDepth > 0) return { label: 'Watch', color: '#fbbf24', description: `${baseDesc} Liquidity is thin — monitor closely before committing size.` }
+    return { label: 'Open Check', color: '#c084fc', description: `${baseDesc} Insufficient pool depth data — verify on-chain before trading.` }
+  }
 
   const lockStatus = result.lpLockStatus
   if (lockStatus === 'burned') return { label: liqDepth != null && liqDepth < 50_000 ? 'Medium' : 'Low', color: liqDepth != null && liqDepth < 50_000 ? '#a78bfa' : '#34d399', description: 'LP burned — exit liquidity permanently locked. Pool depth is the main remaining variable.' }
@@ -2186,9 +2198,7 @@ function getLpRiskSummary(result: ScanResult): { goodSigns: string[]; riskSigns:
   if (lockStatus === 'locked') goodSigns.push(`Active LP lock proof found${result.lpLockProvider ? ` via ${result.lpLockProvider}` : ''}.`)
   else if (status === 'burned') goodSigns.push('LP tokens permanently burned — exit liquidity is protected.')
   else if (status === 'locked') goodSigns.push('LP tokens verified as locked in a locker contract.')
-  if (dm === 'concentrated_liquidity') goodSigns.push('Concentrated liquidity — standard V3/V4 pool model.')
-  else if (dm === 'protocol_or_gauge') goodSigns.push('Protocol/gauge liquidity — standard for this pool model.')
-  else if (lpMode === 'protocol') goodSigns.push('Protocol-owned liquidity is standard for this pool model.')
+  // concentrated/protocol pools: informational note only — not a "good sign" since ERC-20 LP lock/burn proof was never checked
   if (liqDepth != null && liqDepth > 500_000) goodSigns.push(`Deep liquidity — ${fmtLarge(liqDepth)} pool depth.`)
   else if (liqDepth != null && liqDepth > 100_000) goodSigns.push(`Moderate liquidity — ${fmtLarge(liqDepth)} pool depth.`)
   if (lp?.poolAddressPresent) goodSigns.push('Liquidity pool detected and indexed.')
@@ -4356,7 +4366,14 @@ export default function TerminalTokenScanner() {
                               <span style={{ color: '#fbbf24', flexShrink: 0, fontWeight: 800, fontSize: '11px', lineHeight: '16px' }}>—</span>
                               <p style={{ margin: 0, fontSize: '11px', color: '#fde68a', lineHeight: 1.5, fontFamily: 'var(--font-plex-mono)' }}>{s}</p>
                             </div>
-                          )) : <p style={{ margin: 0, fontSize: '11px', color: '#34d399', fontFamily: 'var(--font-plex-mono)' }}>All key LP proofs passed.</p>}
+                          )) : (() => {
+                            const dmInner = result.lpControl?.displayLpModel
+                            const lpModeInner = getLpMode(result)
+                            const isNotApplicable = dmInner === 'concentrated_liquidity' || dmInner === 'protocol_or_gauge' || lpModeInner === 'protocol'
+                            return isNotApplicable
+                              ? <p style={{ margin: 0, fontSize: '11px', color: '#c084fc', fontFamily: 'var(--font-plex-mono)' }}>Standard lock/burn proof does not apply to this pool model.</p>
+                              : <p style={{ margin: 0, fontSize: '11px', color: '#34d399', fontFamily: 'var(--font-plex-mono)' }}>All key LP proofs passed.</p>
+                          })()}
                         </div>
                       </div>
                     )
