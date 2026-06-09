@@ -5,7 +5,8 @@ import { fetchHoneypotSecurity } from "@/lib/server/honeypotSecurity";
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { type CanonicalStatus, toCanonical } from '@/lib/canonicalStatus'
 import { buildClusterMap } from '@/lib/clusterMap'
-import { resolveLpProof, buildEvidenceGaps as buildLpEvidenceGaps, deriveDataModeAndConfidence as deriveLpDataModeAndConfidence, buildCortexLpRead as buildSharedCortexLpRead, deriveLpModelProof, deriveMigrationProof } from '@/lib/server/lpProof'
+import { resolveLpProof, buildEvidenceGaps as buildLpEvidenceGaps, deriveDataModeAndConfidence as deriveLpDataModeAndConfidence, buildCortexLpRead as buildSharedCortexLpRead } from '@/lib/server/lpProof'
+import { calculateCortexScoreV2 } from '@/lib/token/scoring'
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -6025,6 +6026,28 @@ export async function POST(req: Request) {
         },
       },
     }
+    const cortexScoreResult = calculateCortexScoreV2(responsePayload)
+    ;(responsePayload as any).cortexScore = cortexScoreResult.cortexScore
+    ;(responsePayload as any).cortexVerdict = cortexScoreResult.cortexVerdict
+    ;(responsePayload as any).cortexConfidence = cortexScoreResult.cortexConfidence
+    ;(responsePayload as any).scoreReasons = cortexScoreResult.scoreReasons
+    ;(responsePayload as any).missingScoreInputs = cortexScoreResult.missingScoreInputs
+    ;(responsePayload as any).scoreCoveragePercent = cortexScoreResult.scoreCoveragePercent
+    ;(responsePayload as any).cortexScoreDebug = cortexScoreResult.cortexScoreDebug
+    ;(responsePayload as any).riskEngine = {
+      ...(responsePayload as any).riskEngine,
+      cortexScore: cortexScoreResult.cortexScore,
+      cortexVerdict: cortexScoreResult.cortexVerdict,
+      cortexConfidence: cortexScoreResult.cortexConfidence,
+      scoreReasons: cortexScoreResult.scoreReasons,
+      missingScoreInputs: cortexScoreResult.missingScoreInputs,
+      scoreCoveragePercent: cortexScoreResult.scoreCoveragePercent,
+      cortexScoreDebug: cortexScoreResult.cortexScoreDebug,
+      cortexRead: cortexScoreResult.cortexConfidence === 'insufficient'
+        ? 'CORTEX needs more evidence across core categories before calculating a score.'
+        : `Score calculated from available evidence. Missing checks reduce confidence. Coverage ${cortexScoreResult.scoreCoveragePercent}%.`,
+    }
+
     if (process.env.NODE_ENV === 'development') {
       const _totalMs = Date.now() - _t0
       console.log('[token-timing] totalMs', _totalMs, 'contract', contract)
