@@ -6,6 +6,16 @@ export type CortexCategoryKey =
   | 'volatilityPenalty'
   | 'devScore'
 
+export type CortexWeightedCategoryKey =
+  | 'marketLiquidity'
+  | 'holderDistribution'
+  | 'lpControl'
+  | 'securityRiskChecks'
+  | 'devControl'
+
+export type CortexVerdict = 'Strong' | 'Watch' | 'Caution' | 'High Risk' | 'Open Check'
+export type CortexConfidence = 'high' | 'medium' | 'low' | 'insufficient'
+
 export type CortexScoreResultV2 = {
   score: number | null
   mainScore: number | null
@@ -19,6 +29,23 @@ export type CortexScoreResultV2 = {
   breakdown: Record<CortexCategoryKey, { status: string; score: number | null; weight: number; reason: string }>
   devBreakdown: Array<{ label: string; score: number | null; weight: number; reason: string }>
   normalization: { k: number; medians: Record<string, number> }
+  cortexScore: number | null
+  cortexVerdict: CortexVerdict
+  cortexConfidence: CortexConfidence
+  scoreReasons: string[]
+  missingScoreInputs: string[]
+  scoreCoveragePercent: number
+  cortexScoreDebug: {
+    categoryInputs: Record<CortexWeightedCategoryKey, unknown>
+    categoryStatuses: Record<CortexWeightedCategoryKey, string>
+    categoryWeights: Record<CortexWeightedCategoryKey, number>
+    scoreCoveragePercent: number
+    missingInputs: string[]
+    capsApplied: string[]
+    finalScore: number | null
+    finalVerdict: CortexVerdict
+    confidence: CortexConfidence
+  }
 }
 
 type AnyRecord = Record<string, unknown>
@@ -50,6 +77,14 @@ const MAIN_WEIGHTS = {
   volatilityPenalty: 0.10,
   devScore: 0.05,
 } satisfies Record<CortexCategoryKey, number>
+
+const CORTEX_WEIGHTED_WEIGHTS = {
+  marketLiquidity: 0.25,
+  holderDistribution: 0.25,
+  lpControl: 0.25,
+  securityRiskChecks: 0.15,
+  devControl: 0.10,
+} satisfies Record<CortexWeightedCategoryKey, number>
 
 const DEV_WEIGHTS = {
   ownership: 0.20,
@@ -120,6 +155,13 @@ function includesAny(values: string[], pattern: RegExp): boolean {
   return values.some((value) => pattern.test(value))
 }
 
+
+function getContractFlagStatus(result: AnyRecord, key: 'mint' | 'pause' | 'blacklist' | 'proxy' | 'withdraw'): string | null {
+  const contractFlags = asRecord(result.contractFlags)
+  const flag = asRecord(contractFlags?.[key])
+  return str(flag?.status)
+}
+
 function getContractFlag(result: AnyRecord, key: 'mint' | 'pause' | 'blacklist' | 'proxy' | 'withdraw'): boolean | null {
   const security = asRecord(result.security)
   const securityFlags = asRecord(security?.contractFlags)
@@ -176,7 +218,7 @@ function getPoolAgeDays(result: AnyRecord): number | null {
 }
 
 function calculateLiquidityScore(result: AnyRecord): Factor {
-  const liquidity = num(result.liquidity)
+  const liquidity = firstPresent(num(result.liquidity), num(result.liquidityUsd))
   if (liquidity == null || liquidity <= 0) return { score: null, status: 'open_check', reason: 'Liquidity depth is missing or zero.' }
   const depth = logNorm(liquidity, MEDIANS.liquidityUsd)
   if (depth == null) return { score: null, status: 'open_check', reason: 'Liquidity depth could not be normalized.' }
@@ -243,8 +285,8 @@ function calculateVolatilityPenalty(result: AnyRecord): Factor {
 }
 
 function calculateMarketHealthScore(result: AnyRecord, volatilityPenalty: number | null): Factor {
-  const liquidity = num(result.liquidity)
-  const volume = num(result.volume24h)
+  const liquidity = firstPresent(num(result.liquidity), num(result.liquidityUsd))
+  const volume = firstPresent(num(result.volume24h), num(result.volume24hUsd))
   const poolAgeDays = getPoolAgeDays(result)
   const pools = Array.isArray(result.pools) ? result.pools : []
   const holders = getHolderDistribution(result)
@@ -342,6 +384,96 @@ function categoryLabel(key: CortexCategoryKey): string {
   }
 }
 
+function weightedCategoryLabel(key: CortexWeightedCategoryKey): string {
+  switch (key) {
+    case 'marketLiquidity': return 'Market / Liquidity'
+    case 'holderDistribution': return 'Holder Distribution'
+    case 'lpControl': return 'LP Control / LP Proof'
+    case 'securityRiskChecks': return 'Security / Risk Checks'
+    case 'devControl': return 'Dev Control'
+  }
+}
+
+type WeightedCategory = Factor & { coverage: 0 | 0.5 | 1; input: unknown }
+
+function coverageForStatus(status: Factor['status'], score: number | null): 0 | 0.5 | 1 {
+  if (score == null) return 0
+  if (status === 'open_check' || status === 'partial') return 0.5
+  return 1
+}
+
+function calculateMarketLiquidityCategory(result: AnyRecord, liquidity: Factor, marketHealth: Factor, volatility: Factor): WeightedCategory {
+  const price = firstPresent(num(result.price), num(result.priceUsd))
+  const liquidityUsd = firstPresent(num(result.liquidity), num(result.liquidityUsd))
+  const volume24h = firstPresent(num(result.volume24h), num(result.volume24hUsd))
+  const marketCap = firstPresent(num(result.marketCapUsd), num(result.marketCap), num(result.market_cap), num(result.fdvUsd), num(result.fdv))
+  const hasUsableMarket = price != null || liquidityUsd != null || volume24h != null || marketCap != null
+  if (!hasUsableMarket) return { score: null, status: 'open_check', coverage: 0, input: { price, liquidityUsd, volume24h, marketCap }, reason: 'Market and liquidity fields are missing.' }
+
+  const parts = [liquidity.score, marketHealth.score, volatility.score].filter((value): value is number => value != null)
+  const fallbackParts = [
+    liquidityUsd != null ? logNorm(liquidityUsd, MEDIANS.liquidityUsd) : null,
+    volume24h != null ? logNorm(volume24h, MEDIANS.volumeUsd) : null,
+    marketCap != null ? logNorm(marketCap, MEDIANS.marketValueUsd) : null,
+    price != null ? 55 : null,
+  ].filter((value): value is number => value != null)
+  const allParts = parts.length > 0 ? parts : fallbackParts
+  const score = allParts.length > 0 ? roundScore(allParts.reduce((sum, value) => sum + value, 0) / allParts.length) : null
+  const partial = [price, liquidityUsd, volume24h, marketCap].filter((value) => value != null).length < 3 || marketHealth.score == null
+  const noActivePools = bool(result.noActivePools) === true
+  const status: Factor['status'] = noActivePools || (liquidityUsd != null && liquidityUsd <= 0) || (score != null && score < 35) ? 'risk' : partial ? 'partial' : 'ok'
+  return {
+    score,
+    status,
+    coverage: coverageForStatus(status, score),
+    input: { price, liquidityUsd, volume24h, marketCap, noActivePools },
+    reason: partial ? 'Score calculated from available market evidence; missing market fields reduce confidence.' : 'Market/liquidity evidence includes price, liquidity, volume, valuation, and volatility context.',
+  }
+}
+
+function calculateLpControlCategory(result: AnyRecord): WeightedCategory {
+  const lpStatus = getLpStatus(result)
+  const lp = asRecord(result.lpControl)
+  const proofStatus = str(lp?.proofStatus)
+  const lockStatus = str(lp?.lockStatus)
+  const burnStatus = str(lp?.burnStatus)
+  const poolPresent = bool(lp?.poolAddressPresent) === true || firstPresent(num(result.liquidity), num(result.liquidityUsd)) != null || (Array.isArray(result.pools) && result.pools.length > 0)
+  if (!lpStatus && !poolPresent) return { score: null, status: 'open_check', coverage: 0, input: { lpStatus, proofStatus, lockStatus, burnStatus, poolPresent }, reason: 'LP pool/control evidence is missing.' }
+
+  let score: number | null = 45
+  let status: Factor['status'] = 'partial'
+  let reason = 'LP pool exists, but lock/burn/controller proof is partial.'
+  if (lpStatus === 'burned') { score = 100; status = 'ok'; reason = 'LP burn proof is available.' }
+  else if (lpStatus === 'locked') { score = 88; status = 'ok'; reason = 'LP lock proof is available.' }
+  else if (lpStatus === 'protocol' || lpStatus === 'concentrated_liquidity') { score = 70; status = 'partial'; reason = 'Protocol/concentrated liquidity model detected; lock/burn proof is not the applicable certainty model.' }
+  else if (lpStatus === 'team_controlled' || lpStatus === 'risky') { score = 15; status = 'critical'; reason = 'LP appears removable or team-controlled.' }
+  else if (lpStatus === 'partial' || lpStatus === 'unavailable_with_reason' || lpStatus === 'insufficient_data' || lpStatus === 'error' || lpStatus === 'no_pool') { score = poolPresent ? 35 : null; status = poolPresent ? 'partial' : 'open_check'; reason = poolPresent ? 'Pool detected, but LP proof is incomplete.' : 'No usable LP control evidence.' }
+
+  return { score, status, coverage: coverageForStatus(status, score), input: { lpStatus, proofStatus, lockStatus, burnStatus, poolPresent }, reason }
+}
+
+function hasUsableDevEvidence(result: AnyRecord, dev: Factor & { devBreakdown: CortexScoreResultV2['devBreakdown'] }): boolean {
+  const security = asRecord(result.security)
+  const devOwnership = asRecord(security?.devOwnership)
+  const rugRisk = asRecord(result.rugRisk)
+  const deployerReputation = asRecord(rugRisk?.deployer_reputation)
+  const devIntel = asRecord(result.devIntel)
+  const lpStatus = getLpStatus(result)
+  const hasConcreteFlag = (['mint', 'pause', 'blacklist', 'proxy', 'withdraw'] as const).some((key) => {
+    const status = getContractFlagStatus(result, key)
+    return status === 'verified' || status === 'possible' || status === 'not_detected'
+  })
+  return bool(devOwnership?.isRenounced) != null || deployerReputation != null || devIntel != null || hasConcreteFlag || (lpStatus != null && !['no_pool', 'partial', 'unavailable_with_reason', 'insufficient_data', 'error'].includes(lpStatus)) || dev.devBreakdown.some((item) => item.score != null && item.score !== 55 && !/unavailable|missing|neutral assumed/i.test(item.reason))
+}
+
+function verdictForScore(score: number | null, confidence: CortexConfidence): CortexVerdict {
+  if (score == null || confidence === 'insufficient') return 'Open Check'
+  if (score >= 85) return 'Strong'
+  if (score >= 70) return 'Watch'
+  if (score >= 50) return 'Caution'
+  return 'High Risk'
+}
+
 export function calculateCortexScoreV2(rawResult: unknown): CortexScoreResultV2 {
   const result = asRecord(rawResult) ?? {}
   const liquidity = calculateLiquidityScore(result)
@@ -350,6 +482,86 @@ export function calculateCortexScoreV2(rawResult: unknown): CortexScoreResultV2 
   const volatility = calculateVolatilityPenalty(result)
   const marketHealth = calculateMarketHealthScore(result, volatility.score)
   const dev = calculateDevScore(result)
+  const lpControl = calculateLpControlCategory(result)
+  const marketLiquidity = calculateMarketLiquidityCategory(result, liquidity, marketHealth, volatility)
+
+  const holderStatus = asRecord(result.holderDistributionStatus)
+  const holderHasRows = str(holderStatus?.status) === 'partial'
+  const holderCategory: WeightedCategory = holders.score != null
+    ? { ...holders, coverage: coverageForStatus(holders.status, holders.score), input: { top1: num(getHolderDistribution(result)?.top1), top10: num(getHolderDistribution(result)?.top10), top20: num(getHolderDistribution(result)?.top20), holderCount: num(getHolderDistribution(result)?.holderCount) } }
+    : holderHasRows
+      ? { score: 45, status: 'partial', coverage: 0.5, input: { status: holderStatus?.status, itemCount: holderStatus?.itemCount }, reason: 'Holder rows are available, but concentration percentages are incomplete.' }
+      : { ...holders, coverage: 0, input: { status: holderStatus?.status ?? null } }
+
+  const securityKnown = getHoneypot(result) != null || getTax(result, 'buyTax') != null || getTax(result, 'sellTax') != null || (['mint', 'pause', 'blacklist', 'proxy', 'withdraw'] as const).some((key) => {
+    const status = getContractFlagStatus(result, key)
+    return status === 'verified' || status === 'possible' || status === 'not_detected'
+  })
+  const securityCategory: WeightedCategory = security.score != null
+    ? { ...security, coverage: coverageForStatus(security.status, security.score), input: { honeypot: getHoneypot(result), buyTax: getTax(result, 'buyTax'), sellTax: getTax(result, 'sellTax'), mint: getContractFlag(result, 'mint'), proxy: getContractFlag(result, 'proxy') } }
+    : securityKnown
+      ? { score: 50, status: 'partial', coverage: 0.5, input: { honeypot: getHoneypot(result), buyTax: getTax(result, 'buyTax'), sellTax: getTax(result, 'sellTax') }, reason: 'Partial risk-check evidence available; missing security flags reduce confidence.' }
+      : { ...security, coverage: 0, input: { honeypot: null } }
+
+  const devCategory: WeightedCategory = dev.score != null
+    ? { score: dev.score, status: dev.status, coverage: coverageForStatus(dev.status, dev.score), input: dev.devBreakdown.map((item) => ({ label: item.label, score: item.score })) , reason: dev.reason }
+    : hasUsableDevEvidence(result, dev)
+      ? { score: 50, status: 'partial', coverage: 0.5, input: dev.devBreakdown.map((item) => ({ label: item.label, score: item.score })), reason: 'Partial dev-control evidence available; missing ownership/admin inputs reduce confidence.' }
+      : { score: null, status: 'open_check', coverage: 0, input: dev.devBreakdown.map((item) => ({ label: item.label, score: item.score })), reason: dev.reason }
+
+  const weightedCategories: Record<CortexWeightedCategoryKey, WeightedCategory> = {
+    marketLiquidity,
+    holderDistribution: holderCategory,
+    lpControl,
+    securityRiskChecks: securityCategory,
+    devControl: devCategory,
+  }
+
+  const usableKeys = (Object.entries(weightedCategories) as Array<[CortexWeightedCategoryKey, WeightedCategory]>).filter(([, category]) => category.coverage > 0).map(([key]) => key)
+  const hasMinimumEvidence = usableKeys.length >= 2 || (usableKeys.includes('marketLiquidity') && usableKeys.includes('holderDistribution')) || (usableKeys.includes('marketLiquidity') && usableKeys.includes('lpControl'))
+  const scoreCoveragePercent = Math.round((Object.entries(weightedCategories) as Array<[CortexWeightedCategoryKey, WeightedCategory]>).reduce((sum, [key, category]) => sum + (CORTEX_WEIGHTED_WEIGHTS[key] * category.coverage), 0) * 100)
+  const missingScoreInputs = (Object.entries(weightedCategories) as Array<[CortexWeightedCategoryKey, WeightedCategory]>).filter(([, category]) => category.coverage === 0).map(([key]) => weightedCategoryLabel(key))
+  const scoreReasons = (Object.entries(weightedCategories) as Array<[CortexWeightedCategoryKey, WeightedCategory]>).filter(([, category]) => category.coverage > 0).map(([key, category]) => `${weightedCategoryLabel(key)}: ${category.reason}`)
+
+  let score: number | null = hasMinimumEvidence
+    ? roundScore((Object.entries(weightedCategories) as Array<[CortexWeightedCategoryKey, WeightedCategory]>).reduce((sum, [key, category]) => sum + ((category.score ?? 0) * CORTEX_WEIGHTED_WEIGHTS[key] * category.coverage), 0))
+    : null
+
+  const capsApplied: string[] = []
+  const applyCap = (cap: number, reason: string) => {
+    if (score != null && score > cap) {
+      score = cap
+      capsApplied.push(reason)
+    }
+  }
+
+  const honeypot = getHoneypot(result)
+  const maxTax = Math.max(getTax(result, 'buyTax') ?? 0, getTax(result, 'sellTax') ?? 0)
+  const top1 = num(getHolderDistribution(result)?.top1)
+  const top10 = num(getHolderDistribution(result)?.top10)
+  const mint = getContractFlag(result, 'mint')
+  const proxy = getContractFlag(result, 'proxy')
+  const lpStatus = getLpStatus(result)
+  if (honeypot === true) applyCap(24, 'Honeypot-like sell-path flag capped score below High Risk threshold.')
+  if (maxTax >= 20) applyCap(35, 'Very high tax flag capped score.')
+  if (mint === true || proxy === true) applyCap(69, 'Critical mint/admin capability capped score at Caution.')
+  if (lpStatus === 'team_controlled' || lpStatus === 'risky') applyCap(49, 'LP confirmed removable/team-controlled capped score at High Risk.')
+  if ((top1 != null && top1 >= 25) || (top10 != null && top10 >= 65)) applyCap(49, 'Extreme holder concentration capped score at High Risk.')
+
+  const confidence: CortexConfidence = !hasMinimumEvidence
+    ? 'insufficient'
+    : scoreCoveragePercent >= 85 ? 'high'
+      : scoreCoveragePercent >= 55 ? 'medium'
+        : 'low'
+  const cortexVerdict = verdictForScore(score, confidence)
+
+  const legacyVerdict: CortexScoreResultV2['verdict'] = cortexVerdict === 'Open Check'
+    ? 'OPEN CHECK'
+    : cortexVerdict === 'Strong'
+      ? 'CLEAN LOOKING'
+      : cortexVerdict === 'High Risk'
+        ? 'AVOID'
+        : cortexVerdict.toUpperCase() as CortexScoreResultV2['verdict']
 
   const categories: Record<CortexCategoryKey, Factor> = {
     liquidityScore: liquidity,
@@ -360,50 +572,54 @@ export function calculateCortexScoreV2(rawResult: unknown): CortexScoreResultV2 
     devScore: dev,
   }
 
-  const openChecks = (Object.entries(categories) as Array<[CortexCategoryKey, Factor]>)
-    .filter(([, value]) => value.score == null)
-    .map(([key, value]) => `${categoryLabel(key)}: ${value.reason}`)
-
-  const allPresent = openChecks.length === 0
-  const weighted = allPresent
-    ? (Object.entries(categories) as Array<[CortexCategoryKey, Factor]>).reduce((sum, [key, value]) => sum + (value.score! * MAIN_WEIGHTS[key]), 0)
-    : null
-  const mainScore = weighted == null ? null : roundScore(weighted)
-
-  const score = mainScore
-  const noData = Object.values(categories).every((category) => category.score == null)
-  const hasCritical = security.status === 'critical' || getHoneypot(result) === true
-  const hasRisk = Object.values(categories).some((category) => category.status === 'risk' || category.status === 'critical')
-
-  const verdict: CortexScoreResultV2['verdict'] = !allPresent
-    ? 'OPEN CHECK'
-    : noData ? 'UNKNOWN'
-      : hasCritical || (score ?? 0) < 40 ? 'AVOID'
-        : (score ?? 0) >= 82 && !hasRisk ? 'CLEAN LOOKING'
-          : (score ?? 0) >= 60 ? 'WATCH'
-            : 'CAUTION'
-
-  const presentCount = Object.values(categories).filter((category) => category.score != null).length
-  const confidence: CortexScoreResultV2['confidence'] = allPresent && score != null && score >= 70 ? 'HIGH' : presentCount >= 4 ? 'MEDIUM' : 'LOW'
-  const scanQuality: CortexScoreResultV2['scanQuality'] = allPresent ? 'FULL' : presentCount >= 3 ? 'PARTIAL' : 'LIMITED'
+  const openChecks = missingScoreInputs.map((label) => `${label}: evidence unavailable for this scan.`)
+  const presentCount = usableKeys.length
+  const scanQuality: CortexScoreResultV2['scanQuality'] = confidence === 'high' ? 'FULL' : presentCount >= 2 ? 'PARTIAL' : 'LIMITED'
+  const legacyConfidence: CortexScoreResultV2['confidence'] = confidence === 'high' ? 'HIGH' : confidence === 'medium' ? 'MEDIUM' : 'LOW'
 
   const breakdown = (Object.entries(categories) as Array<[CortexCategoryKey, Factor]>).reduce((acc, [key, value]) => {
     acc[key] = { status: value.status, score: value.score, weight: MAIN_WEIGHTS[key], reason: value.reason }
     return acc
   }, {} as CortexScoreResultV2['breakdown'])
 
+  const categoryInputs = (Object.entries(weightedCategories) as Array<[CortexWeightedCategoryKey, WeightedCategory]>).reduce((acc, [key, category]) => {
+    acc[key] = category.input
+    return acc
+  }, {} as Record<CortexWeightedCategoryKey, unknown>)
+  const categoryStatuses = (Object.entries(weightedCategories) as Array<[CortexWeightedCategoryKey, WeightedCategory]>).reduce((acc, [key, category]) => {
+    acc[key] = category.status
+    return acc
+  }, {} as Record<CortexWeightedCategoryKey, string>)
+
   return {
     score,
-    mainScore,
+    mainScore: score,
     displayScore: score == null ? 'Open Check' : String(score),
-    isOpenCheck: !allPresent,
-    verdict,
-    confidence,
+    isOpenCheck: confidence === 'insufficient',
+    verdict: legacyVerdict,
+    confidence: legacyConfidence,
     scanQuality,
-    capReason: !allPresent ? 'Open Check fallback: one or more major Cortex V2 categories is missing.' : null,
+    capReason: capsApplied.length > 0 ? capsApplied[0] : confidence === 'insufficient' ? 'Insufficient evidence across core CORTEX categories.' : null,
     openChecks,
     breakdown,
     devBreakdown: dev.devBreakdown,
     normalization: { k: K, medians: MEDIANS },
+    cortexScore: score,
+    cortexVerdict,
+    cortexConfidence: confidence,
+    scoreReasons,
+    missingScoreInputs,
+    scoreCoveragePercent,
+    cortexScoreDebug: {
+      categoryInputs,
+      categoryStatuses,
+      categoryWeights: CORTEX_WEIGHTED_WEIGHTS,
+      scoreCoveragePercent,
+      missingInputs: missingScoreInputs,
+      capsApplied,
+      finalScore: score,
+      finalVerdict: cortexVerdict,
+      confidence,
+    },
   }
 }

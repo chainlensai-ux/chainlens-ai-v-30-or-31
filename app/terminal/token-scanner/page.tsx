@@ -202,6 +202,23 @@ type ScanResult = {
     symbol?: string
     confidence: 'high' | 'medium' | 'low'
   } | null
+  cortexScore?: number | null
+  cortexVerdict?: 'Strong' | 'Watch' | 'Caution' | 'High Risk' | 'Open Check'
+  cortexConfidence?: 'high' | 'medium' | 'low' | 'insufficient'
+  scoreReasons?: string[]
+  missingScoreInputs?: string[]
+  scoreCoveragePercent?: number
+  cortexScoreDebug?: {
+    categoryInputs?: Record<string, unknown>
+    categoryStatuses?: Record<string, string>
+    categoryWeights?: Record<string, number>
+    scoreCoveragePercent?: number
+    missingInputs?: string[]
+    capsApplied?: string[]
+    finalScore?: number | null
+    finalVerdict?: string
+    confidence?: string
+  }
   riskEngine?: {
     rugRiskScore: number | null
     rugRiskLabel: "low_visible_risk" | "watch" | "high" | "critical" | "partial_data"
@@ -210,6 +227,12 @@ type ScanResult = {
     verifiedSignals: string[]
     riskDrivers: string[]
     openChecks: string[]
+    cortexScore?: number | null
+    cortexVerdict?: 'Strong' | 'Watch' | 'Caution' | 'High Risk' | 'Open Check'
+    cortexConfidence?: 'high' | 'medium' | 'low' | 'insufficient'
+    scoreReasons?: string[]
+    missingScoreInputs?: string[]
+    scoreCoveragePercent?: number
     sniperActivity: {
       status: "low_signal" | "watch" | "high" | "not_applicable"
       confidence: "high" | "medium" | "low"
@@ -2472,12 +2495,15 @@ function calculateCortexScore(result: ScanResult): CortexScoreResult {
   }
 }
 
-function getVerdictStyle(verdict: CortexScoreResult['verdict'] | CortexScoreResultV2['verdict']): { label: string; color: string; bg: string; border: string } {
+function getVerdictStyle(verdict: CortexScoreResult['verdict'] | CortexScoreResultV2['verdict'] | 'Strong' | 'High Risk' | 'Open Check'): { label: string; color: string; bg: string; border: string } {
   switch (verdict) {
-    case 'AVOID':        return { label: 'AVOID',         color: '#f87171', bg: 'rgba(248,113,113,0.10)', border: 'rgba(248,113,113,0.35)' }
-    case 'CLEAN LOOKING':return { label: 'CLEAN LOOKING', color: '#2DD4BF', bg: 'rgba(45,212,191,0.10)',  border: 'rgba(45,212,191,0.35)'  }
+    case 'High Risk':
+    case 'AVOID':        return { label: verdict === 'High Risk' ? 'HIGH RISK' : 'AVOID', color: '#f87171', bg: 'rgba(248,113,113,0.10)', border: 'rgba(248,113,113,0.35)' }
+    case 'Strong':
+    case 'CLEAN LOOKING':return { label: verdict === 'Strong' ? 'STRONG' : 'CLEAN LOOKING', color: '#2DD4BF', bg: 'rgba(45,212,191,0.10)',  border: 'rgba(45,212,191,0.35)'  }
     case 'WATCH':        return { label: 'WATCH',         color: '#fbbf24', bg: 'rgba(251,191,36,0.10)',  border: 'rgba(251,191,36,0.35)'  }
     case 'CAUTION':      return { label: 'CAUTION',       color: '#f59e0b', bg: 'rgba(245,158,11,0.10)',  border: 'rgba(245,158,11,0.30)'  }
+    case 'Open Check':
     case 'OPEN CHECK':   return { label: 'OPEN CHECK',    color: '#fbbf24', bg: 'rgba(251,191,36,0.10)',  border: 'rgba(251,191,36,0.35)'  }
     default:             return { label: 'UNKNOWN',       color: '#94a3b8', bg: 'rgba(148,163,184,0.08)', border: 'rgba(148,163,184,0.25)' }
   }
@@ -4450,10 +4476,13 @@ export default function TerminalTokenScanner() {
                     const ownerState = deriveHolderFallbackEvidence(result).ownerStatus
                     const missing2 = getMissingChecks(result)
                     const next2 = getNextAction(result)
-                    const rugLabelMap: Record<string, string> = { low_visible_risk:'Low visible risk', watch:'Watch', high:'High', critical:'Critical', unavailable_with_reason:'Open check', unverified:'Open check' }
+                    const rugLabelMap: Record<string, string> = { low_visible_risk:'Low visible risk', watch:'Watch', high:'High', critical:'Critical', partial_data:'Open check', unavailable_with_reason:'Open check', unverified:'Open check' }
                     const lpLabelMap: Record<string, string> = { burned:'Burned', locked:'Locked', protocol:'Not applicable', concentrated_liquidity:'Not applicable', team_controlled:'Team controlled', partial:'Partial', no_pool:'Open check', unavailable_with_reason:'Open check', unverified:'Open check', insufficient_data:'Open check', error:'Open check' }
-                    const gaugeColor = engine?.rugRiskScore == null ? '#94a3b8' : engine.rugRiskScore >= 70 ? '#f43f5e' : engine.rugRiskScore >= 40 ? '#fbbf24' : '#34d399'
-                    const confColor = engine?.confidence === 'high' ? '#34d399' : engine?.confidence === 'medium' ? '#fbbf24' : '#94a3b8'
+                    const displayCortexScore = result.cortexScore ?? engine?.cortexScore ?? (engine?.rugRiskScore != null ? Math.max(0, 100 - engine.rugRiskScore) : null)
+                    const displayCortexVerdict = result.cortexVerdict ?? engine?.cortexVerdict ?? null
+                    const displayCortexConfidence = result.cortexConfidence ?? engine?.cortexConfidence ?? (engine?.confidence ?? 'low')
+                    const gaugeColor = displayCortexScore == null ? '#94a3b8' : displayCortexScore >= 85 ? '#34d399' : displayCortexScore >= 70 ? '#fbbf24' : displayCortexScore >= 50 ? '#f59e0b' : '#f43f5e'
+                    const confColor = displayCortexConfidence === 'high' ? '#34d399' : displayCortexConfidence === 'medium' ? '#fbbf24' : displayCortexConfidence === 'low' ? '#94a3b8' : '#fbbf24'
                     const cardBase: React.CSSProperties = { padding:'14px 16px', background:'linear-gradient(145deg,rgba(6,12,24,.94),rgba(14,16,32,.84))', borderRadius:'14px' }
                     const cardTitle: React.CSSProperties = { margin:'0 0 10px',fontSize:'10px',fontWeight:700,letterSpacing:'.14em',textTransform:'uppercase',fontFamily:'var(--font-plex-mono)' }
                     return (
@@ -4462,16 +4491,16 @@ export default function TerminalTokenScanner() {
                         <div style={{ padding:'20px 22px', background:'linear-gradient(160deg,rgba(8,16,32,.98),rgba(4,8,18,.95))', border:`1px solid ${gaugeColor}35`, borderRadius:'18px', boxShadow:`0 0 44px ${gaugeColor}0c` }}>
                           <div style={{ display:'flex', alignItems:'flex-start', gap:'22px', flexWrap:'wrap', marginBottom: engine?.cortexRead ? '16px' : '0' }}>
                             <div style={{ flexShrink:0 }}>
-                              <RiskGaugeCircle score={engine?.rugRiskScore ?? null} color={gaugeColor} />
+                              <RiskGaugeCircle score={displayCortexScore} color={gaugeColor} />
                             </div>
                             <div style={{ flex:1, minWidth:'160px', paddingTop:'4px' }}>
                               <div style={{ fontSize:'9px',letterSpacing:'.18em',color:'#3a5268',fontFamily:'var(--font-plex-mono)',marginBottom:'8px' }}>CORTEX RISK ENGINE</div>
                               <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', marginBottom:'12px' }}>
                                 <span style={{ padding:'5px 14px',borderRadius:'999px',fontSize:'11px',fontWeight:800,letterSpacing:'.10em',color:gaugeColor,background:`${gaugeColor}14`,border:`1px solid ${gaugeColor}44`,fontFamily:'var(--font-plex-mono)' }}>
-                                  {rugLabelMap[engine?.rugRiskLabel ?? 'unavailable_with_reason'] ?? 'OPEN CHECK'}
+                                  {displayCortexVerdict ?? (rugLabelMap[engine?.rugRiskLabel ?? 'unavailable_with_reason'] ?? 'OPEN CHECK')}
                                 </span>
                                 <span style={{ padding:'5px 10px',borderRadius:'999px',fontSize:'9px',fontWeight:700,letterSpacing:'.10em',color:confColor,background:`${confColor}12`,border:`1px solid ${confColor}38`,fontFamily:'var(--font-plex-mono)' }}>
-                                  {(engine?.confidence ?? 'low').toUpperCase()} CONFIDENCE
+                                  {displayCortexConfidence === 'insufficient' ? 'Insufficient confidence' : displayCortexConfidence === 'low' ? 'Partial confidence' : `${displayCortexConfidence.toUpperCase()} CONFIDENCE`}
                                 </span>
                               </div>
                               {engine?.cortexRead ? (
@@ -5097,9 +5126,9 @@ export default function TerminalTokenScanner() {
             const top10 = result.holderDistribution?.top10
             const top20 = result.holderDistribution?.top20
             const taxesHigh = (buyTax != null && buyTax > 8) || (sellTax != null && sellTax > 8)
-            const scx = calculateCortexScore(result)
-            const verdict = scx.verdict
-            const verdictColor = verdict === 'AVOID' ? '#f87171' : verdict === 'CLEAN LOOKING' ? '#2DD4BF' : verdict === 'WATCH' ? '#fbbf24' : verdict === 'CAUTION' ? '#f59e0b' : '#94a3b8'
+            const scx = calculateCortexScoreV2(result)
+            const verdict = result.cortexVerdict ?? scx.cortexVerdict
+            const verdictColor = verdict === 'High Risk' ? '#f87171' : verdict === 'Strong' ? '#2DD4BF' : verdict === 'Watch' ? '#fbbf24' : verdict === 'Caution' ? '#f59e0b' : '#94a3b8'
             const bull = [
               liq > 1_000_000 ? `Deep liquidity — ${fmtLarge(liq)} pool depth.` : liq > 200_000 ? `Moderate liquidity — ${fmtLarge(liq)} pool depth.` : liq > 0 ? 'Liquidity present.' : '',
               d.hasMarketData ? 'Live market data confirmed.' : '',
@@ -5122,8 +5151,8 @@ export default function TerminalTokenScanner() {
               result.marketCapUsd == null ? 'Market cap' : '',
             ].filter(Boolean)
             // Score from data-driven engine
-            const sidebarScore = scx.score
-            const sidebarScoreColor = sidebarScore >= 75 ? '#34d399' : sidebarScore >= 50 ? '#fbbf24' : '#f87171'
+            const sidebarScore = result.cortexScore ?? scx.cortexScore
+            const sidebarScoreColor = sidebarScore == null ? '#94a3b8' : sidebarScore >= 85 ? '#34d399' : sidebarScore >= 70 ? '#fbbf24' : sidebarScore >= 50 ? '#f59e0b' : '#f87171'
             // Critical risks (top 3 actionable)
             const criticalRisks: string[] = [
               hp?.isHoneypot === true ? 'HONEYPOT detected — do not trade.' : null,
@@ -5144,12 +5173,12 @@ export default function TerminalTokenScanner() {
                   <div style={{display:'flex',alignItems:'center',gap:'12px',flexWrap:'wrap'}}>
                     <div style={{flexShrink:0}}>
                       <div style={{fontSize:'9px',color:'#3a5268',fontFamily:'var(--font-plex-mono)',marginBottom:'2px'}}>SCORE</div>
-                      <div style={{fontSize:'28px',fontWeight:800,color:sidebarScoreColor,fontFamily:'var(--font-plex-mono)',lineHeight:1}}>{sidebarScore}<span style={{fontSize:'12px',color:`${sidebarScoreColor}55`}}>/100</span></div>
+                      <div style={{fontSize:'28px',fontWeight:800,color:sidebarScoreColor,fontFamily:'var(--font-plex-mono)',lineHeight:1}}>{sidebarScore ?? 'Open Check'}{sidebarScore != null && <span style={{fontSize:'12px',color:`${sidebarScoreColor}55`}}>/100</span>}</div>
                     </div>
                     <div style={{flex:1}}>
                       <div style={{display:'inline-flex',padding:'5px 14px',borderRadius:'999px',border:`1px solid ${verdictColor}55`,color:verdictColor,fontWeight:800,fontSize:'11px',letterSpacing:'.10em',background:`${verdictColor}12`,fontFamily:'var(--font-plex-mono)',marginBottom:'6px'}}>{verdict}</div>
                       <div style={{height:'4px',borderRadius:'999px',background:'rgba(255,255,255,0.06)',overflow:'hidden'}}>
-                        <div style={{height:'100%',width:`${sidebarScore}%`,borderRadius:'999px',background:`linear-gradient(90deg,${sidebarScoreColor},${sidebarScoreColor}70)`,transition:'width 0.6s ease'}} />
+                        <div style={{height:'100%',width:`${sidebarScore ?? 0}%`,borderRadius:'999px',background:`linear-gradient(90deg,${sidebarScoreColor},${sidebarScoreColor}70)`,transition:'width 0.6s ease'}} />
                       </div>
                     </div>
                   </div>
