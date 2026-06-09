@@ -34,10 +34,13 @@ interface GTPool {
   attributes: PoolAttrs;
   relationships?: {
     base_token?: { data?: { id: string } };
+    quote_token?: { data?: { id: string } };
     network?: { data?: { id: string } };
     dex?: { data?: { id: string } };
   };
 }
+
+type ChainKey = "base" | "eth"
 
 interface GTToken {
   id: string;
@@ -58,8 +61,12 @@ function idToAddress(id: string): string {
   return idx === -1 ? id : id.slice(idx + 1);
 }
 
-async function resolveNameToContract(query: string): Promise<string | null> {
-  const url = `${GT}/search/pools?query=${encodeURIComponent(query)}&network=base`;
+function normalizeChain(raw: string | null | undefined): ChainKey {
+  return raw === "eth" || raw === "ethereum" ? "eth" : "base"
+}
+
+async function resolveNameToContract(query: string, chain: ChainKey): Promise<string | null> {
+  const url = `${GT}/search/pools?query=${encodeURIComponent(query)}&network=${chain}`;
   const res = await fetch(url, { headers: GT_HEADERS, cache: "no-store", signal: AbortSignal.timeout(7000) });
   if (!res.ok) return null;
 
@@ -68,8 +75,8 @@ async function resolveNameToContract(query: string): Promise<string | null> {
 
   const pool = pools.find(
     (p) =>
-      p.id?.startsWith("base_") ||
-      p.relationships?.network?.data?.id === "base"
+      p.id?.startsWith(`${chain}_`) ||
+      p.relationships?.network?.data?.id === chain
   );
   if (!pool) return null;
 
@@ -79,9 +86,10 @@ async function resolveNameToContract(query: string): Promise<string | null> {
 }
 
 async function fetchPools(
-  contract: string
+  contract: string,
+  chain: ChainKey
 ): Promise<{ pools: GTPool[]; included: GTToken[] }> {
-  const url = `${GT}/networks/base/tokens/${contract}/pools?include=base_token,quote_token,dex`;
+  const url = `${GT}/networks/${chain}/tokens/${contract}/pools?include=base_token,quote_token,dex`;
   const res = await fetch(url, { headers: GT_HEADERS, cache: "no-store", signal: AbortSignal.timeout(8000) });
 
   if (!res.ok) {
@@ -350,7 +358,8 @@ export async function POST(req: NextRequest) {
     const planData = await getCurrentUserPlanFromBearerToken(token).catch(() => null)
     if (planData) { plan = planData.plan; settingsRowFound = planData.settingsRowFound }
   }
-  if (plan === 'free') return NextResponse.json({ ok: false, error: 'Included in Pro and Elite.', rateLimited: false, planGate: { verifiedPlan: plan, requiredPlan: 'pro', settingsRowFound, planSource: token ? 'bearer_token' : 'no_token' } }, { status: 403 })
+  const adapterRead = req.headers.get('x-chainlens-adapter-route') === 'project-overview'
+  if (plan === 'free' && !adapterRead) return NextResponse.json({ ok: false, error: 'Included in Pro and Elite.', rateLimited: false, planGate: { verifiedPlan: plan, requiredPlan: 'pro', settingsRowFound, planSource: token ? 'bearer_token' : 'no_token' } }, { status: 403 })
   const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown'
   const now = Date.now()
   const rk = `${ip}:${plan}`
@@ -361,11 +370,13 @@ export async function POST(req: NextRequest) {
   else { rr.count += 1; rr.lastAt = now }
   let query: string | undefined;
   let contract: string | undefined;
+  let chain: ChainKey = "base";
 
   try {
     const body = await req.json();
-    query = body.query?.trim();
-    contract = body.contract?.trim();
+    query = typeof body.query === "string" ? body.query.trim() : undefined;
+    contract = typeof (body.contract ?? body.address) === "string" ? String(body.contract ?? body.address).trim() : undefined;
+    chain = normalizeChain(typeof body.chain === "string" ? body.chain : undefined);
   } catch {
     return NextResponse.json({ ok: false, error: "Invalid JSON body" }, { status: 400 });
   }
@@ -389,10 +400,10 @@ export async function POST(req: NextRequest) {
       }
       resolvedContract = contract;
     } else if (query) {
-      resolvedContract = await resolveNameToContract(query);
+      resolvedContract = await resolveNameToContract(query, chain);
       if (!resolvedContract) {
         return NextResponse.json(
-          { ok: false, error: "Token not found on Base." },
+          { ok: false, error: `Token not found on ${chain}.` },
           { status: 404 }
         );
       }
@@ -402,14 +413,14 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "Token not found." }, { status: 404 });
     }
 
-    const cacheKey = `liq:${resolvedContract.toLowerCase()}`
+    const cacheKey = `liq:${chain}:${resolvedContract.toLowerCase()}`
     const cached = liqCache.get(cacheKey)
     if (cached && cached.exp > Date.now()) return NextResponse.json(cached.payload)
-    const { pools, included } = await fetchPools(resolvedContract);
+    const { pools, included } = await fetchPools(resolvedContract, chain);
 
     if (pools.length === 0) {
       return NextResponse.json(
-        { ok: false, error: "No pools found for this token on Base." },
+        { ok: false, error: `No pools found for this token on ${chain}.` },
         { status: 404 }
       );
     }
@@ -449,7 +460,7 @@ export async function POST(req: NextRequest) {
         return !dex.includes("v3") && !dex.includes("slipstream") && !dex.includes("concentrated");
       }) ?? pools[0];
       const lpTokenAddress = idToAddress(v2Pool?.id ?? "");
-      lpProof = await resolveLpProof("base", lpTokenAddress);
+      lpProof = await resolveLpProof(chain, lpTokenAddress);
     }
 
     const { lpLockStatus, lpLockAmount, lpUnlockTime, lpLockProvider, lpController } = lpProof;
@@ -482,6 +493,7 @@ export async function POST(req: NextRequest) {
         name,
         symbol,
         contract: resolvedContract,
+        chain,
         ...analysis,
         lpLockStatus,
         lpLockAmount,
@@ -504,4 +516,22 @@ export async function POST(req: NextRequest) {
     console.error("[liquidity-safety]", err instanceof Error ? err.message : "Liquidity scan failed");
     return NextResponse.json({ ok: false, error: "Liquidity scan unavailable right now." }, { status: 200 });
   }
+}
+
+
+export async function GET(req: NextRequest) {
+  const url = new URL(req.url)
+  const address = url.searchParams.get("address") ?? url.searchParams.get("contract") ?? ""
+  const chain = normalizeChain(url.searchParams.get("chain"))
+
+  if (!/^0x[a-fA-F0-9]{40}$/.test(address)) {
+    return NextResponse.json({ ok: false, error: "Invalid or missing address parameter." }, { status: 400 })
+  }
+
+  const syntheticReq = new Request(req.url, {
+    method: "POST",
+    headers: { ...Object.fromEntries(req.headers.entries()), "x-chainlens-adapter-route": "project-overview" },
+    body: JSON.stringify({ contract: address, chain }),
+  })
+  return POST(syntheticReq as NextRequest)
 }
