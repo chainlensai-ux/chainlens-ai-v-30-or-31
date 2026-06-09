@@ -916,7 +916,7 @@ function ClarkDots() {
   )
 }
 
-function WalletScanProgress({ hasPreviousResult }: { hasPreviousResult: boolean }) {
+function WalletScanProgress({ hasPreviousResult, deepScan }: { hasPreviousResult: boolean; deepScan: boolean }) {
   const modules = [
     { label: 'Portfolio loading', detail: 'Reading visible holdings and value first.' },
     { label: 'Activity indexing', detail: 'Indexing wallet-side transfer history.' },
@@ -935,12 +935,14 @@ function WalletScanProgress({ hasPreviousResult }: { hasPreviousResult: boolean 
           <ClarkDots />
           <div>
             <div style={{ fontSize: '10px', fontWeight: 800, letterSpacing: '0.16em', color: '#7dd3fc', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
-              {hasPreviousResult ? 'Refreshing CORTEX read…' : 'CORTEX deep scan in progress'}
+              {hasPreviousResult ? 'Deep Scan running — refreshing CORTEX read…' : deepScan ? 'Deep Scan running' : 'CORTEX scan in progress'}
             </div>
             <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.42)', marginTop: '3px', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
               {hasPreviousResult
-                ? 'Keeping the previous verified read visible while the refreshed scan completes.'
-                : 'Modules appear as soon as verified evidence is returned or served from cache.'}
+                ? 'Keeping the previous verified read visible while slower trade stats finish.'
+                : deepScan
+                  ? 'Portfolio, activity, swap candidates, pricing evidence, and trade stats resolve in order without blocking the whole page.'
+                  : 'Modules appear as soon as verified evidence is returned or served from cache.'}
             </div>
           </div>
         </div>
@@ -1300,7 +1302,7 @@ export default function WalletScannerPage() {
                 whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: '8px',
               }}
             >
-              {loading ? 'Scanning…' : (
+              {loading ? (deepActivity ? 'Deep Scan running…' : 'Scanning…') : (
                 <>
                   Scan
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round">
@@ -1350,7 +1352,7 @@ export default function WalletScannerPage() {
 
           {/* Progressive loading state */}
           {loading && !result && (
-            <><WalletScanProgress hasPreviousResult={false} /><div style={{ maxWidth: '700px', marginTop: '12px' }}>
+            <><WalletScanProgress hasPreviousResult={false} deepScan={deepActivity} /><div style={{ maxWidth: '700px', marginTop: '12px' }}>
               <div style={{ background: 'rgba(255,255,255,0.025)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '16px', padding: '24px', marginBottom: '12px' }}>
                 {[220, 140, 180, 110, 160, 90].map((w, i) => (
                   <div key={i} style={{
@@ -1369,7 +1371,7 @@ export default function WalletScannerPage() {
               </div>
             </div></>
           )}
-          {loading && result && <WalletScanProgress hasPreviousResult />}
+          {loading && result && <WalletScanProgress hasPreviousResult deepScan={deepActivity} />}
 
           {/* Error */}
           {error && (

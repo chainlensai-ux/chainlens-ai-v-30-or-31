@@ -55,48 +55,88 @@ const walletDeepInFlight = new Map<string, Promise<unknown>>() // inFlightKey ->
 
 const WALLET_DEEP_DEBUG_ENABLED = process.env.WALLET_DEEP_DEBUG_ENABLED === 'true'
 
-type WalletDeepScanTiming = {
-  portfolioMs: number
+type WalletDeepScanTimings = {
+  totalMs: number
+  chainDiscoveryMs: number
+  holdingsMs: number
   activityMs: number
   swapDetectionMs: number
+  priceEvidenceMs: number
+  lotEngineMs: number
+  tradeStatsMs: number
+  cacheHit: boolean
+  dedupeHit: boolean
+  chainsAttempted: number
+  chainsSkipped: number
+}
+
+type LegacyWalletDeepScanTiming = WalletDeepScanTimings & {
+  portfolioMs: number
   pricingMs: number
   fifoMs: number
-  tradeStatsMs: number
   historicalMs: number
-  totalMs: number
   cacheReadMs: number
   cacheWriteMs: number
 }
 
-const zeroWalletDeepScanTiming = (): WalletDeepScanTiming => ({
-  portfolioMs: 0, activityMs: 0, swapDetectionMs: 0, pricingMs: 0, fifoMs: 0, tradeStatsMs: 0, historicalMs: 0,
-  totalMs: 0, cacheReadMs: 0, cacheWriteMs: 0,
+const zeroWalletDeepScanTiming = (): LegacyWalletDeepScanTiming => ({
+  totalMs: 0, chainDiscoveryMs: 0, holdingsMs: 0, activityMs: 0, swapDetectionMs: 0, priceEvidenceMs: 0, lotEngineMs: 0, tradeStatsMs: 0,
+  cacheHit: false, dedupeHit: false, chainsAttempted: 0, chainsSkipped: 0,
+  portfolioMs: 0, pricingMs: 0, fifoMs: 0, historicalMs: 0, cacheReadMs: 0, cacheWriteMs: 0,
 })
 
-function buildWalletDeepScanTiming(snapshot: any, startedAt: number, cacheReadMs: number, cacheWriteMs: number, totalOverrideMs?: number): WalletDeepScanTiming {
+function buildWalletDeepScanTiming(snapshot: any, startedAt: number, cacheReadMs: number, cacheWriteMs: number, opts: { totalOverrideMs?: number; cacheHit?: boolean; dedupeHit?: boolean } = {}): LegacyWalletDeepScanTiming {
   const perf = snapshot?._diagnostics?.walletPerformanceDebug ?? snapshot?._debug?.walletPerformanceDebug ?? null
   const phases = perf?.phaseDurations ?? {}
   const provider = perf?.providerDurations ?? {}
-  const routeTotal = Math.max(0, totalOverrideMs ?? Date.now() - startedAt)
+  const routing = snapshot?._diagnostics?.walletActivityRoutingDebug ?? snapshot?._debug?.walletActivityRoutingDebug ?? null
+  const flow = routing?.providerFlow ?? {}
+  const chainUsage = routing?.chainUsage ?? {}
+  const chainsAttempted = Array.isArray(routing?.activeChainsUsedForActivity) ? routing.activeChainsUsedForActivity.length
+    : Array.isArray(flow?.moralisChainsAttempted) ? flow.moralisChainsAttempted.length
+    : Array.isArray(chainUsage?.activeChains) ? chainUsage.activeChains.length
+    : 0
+  const chainsSkipped = [
+    ...(Array.isArray(routing?.chainsDiscoveredNotScannedForActivity) ? routing.chainsDiscoveredNotScannedForActivity : []),
+    ...(Array.isArray(routing?.skippedDustChains) ? routing.skippedDustChains : []),
+    ...(Array.isArray(routing?.chainsExcludedByCap) ? routing.chainsExcludedByCap : []),
+    ...(Array.isArray(routing?.chainsExcludedByUnsupported) ? routing.chainsExcludedByUnsupported : []),
+    ...(Array.isArray(routing?.chainsExcludedByProviderSafety) ? routing.chainsExcludedByProviderSafety : []),
+  ].filter((v, i, a) => typeof v === 'string' && a.indexOf(v) === i).length
+  const routeTotal = Math.max(0, opts.totalOverrideMs ?? Date.now() - startedAt)
+  const chainDiscoveryMs = Math.max(0, Number(perf?.chainDiscoveryMs ?? provider?.chain_discovery ?? phases?.chain_discovery ?? 0) || 0)
+  const holdingsMs = Math.max(0, Number(perf?.holdingsMs ?? perf?.portfolioMs ?? provider?.phase1_providers ?? phases?.phase1 ?? 0) || 0)
+  const priceEvidenceMs = Math.max(0, Number(perf?.pricingMs ?? phases?.pricing ?? phases?.priceInference ?? 0) || 0)
+  const lotEngineMs = Math.max(0, Number(perf?.fifoMs ?? phases?.fifo ?? phases?.fifoEngine ?? 0) || 0)
   return {
-    portfolioMs: Math.max(0, Number(perf?.portfolioMs ?? provider?.portfolioMs ?? phases?.portfolio ?? phases?.phase1 ?? 0) || 0),
-    activityMs: Math.max(0, Number(perf?.activityMs ?? provider?.activityMs ?? phases?.activity ?? phases?.normalization ?? 0) || 0),
-    swapDetectionMs: Math.max(0, Number(perf?.swapDetectionMs ?? phases?.swapDetection ?? 0) || 0),
-    pricingMs: Math.max(0, Number(perf?.pricingMs ?? phases?.pricing ?? phases?.priceInference ?? 0) || 0),
-    fifoMs: Math.max(0, Number(perf?.fifoMs ?? phases?.fifo ?? phases?.fifoEngine ?? 0) || 0),
-    tradeStatsMs: Math.max(0, Number(perf?.tradeStatsMs ?? phases?.tradeStats ?? 0) || 0),
-    historicalMs: Math.max(0, Number(perf?.historicalMs ?? phases?.historical ?? 0) || 0),
     totalMs: routeTotal,
+    chainDiscoveryMs,
+    holdingsMs,
+    activityMs: Math.max(0, Number(perf?.activityMs ?? provider?.activity_fetch ?? phases?.activity ?? phases?.normalization ?? 0) || 0),
+    swapDetectionMs: Math.max(0, Number(perf?.swapDetectionMs ?? phases?.swapDetection ?? 0) || 0),
+    priceEvidenceMs,
+    lotEngineMs,
+    tradeStatsMs: Math.max(0, Number(perf?.tradeStatsMs ?? phases?.tradeStats ?? 0) || 0),
+    cacheHit: Boolean(opts.cacheHit),
+    dedupeHit: Boolean(opts.dedupeHit),
+    chainsAttempted,
+    chainsSkipped,
+    portfolioMs: holdingsMs,
+    pricingMs: priceEvidenceMs,
+    fifoMs: lotEngineMs,
+    historicalMs: Math.max(0, Number(perf?.historicalMs ?? phases?.historical ?? 0) || 0),
     cacheReadMs: Math.max(0, cacheReadMs),
     cacheWriteMs: Math.max(0, cacheWriteMs),
   }
 }
 
-function attachWalletDeepScanTiming(payload: any, timing: WalletDeepScanTiming, debug: boolean) {
+function attachWalletDeepScanTiming(payload: any, timing: LegacyWalletDeepScanTiming, debug: boolean) {
   if (!payload || typeof payload !== 'object') return
-  payload.walletDeepScanTiming = timing
+  const publicTiming = { portfolioMs: timing.portfolioMs, activityMs: timing.activityMs, swapDetectionMs: timing.swapDetectionMs, pricingMs: timing.pricingMs, fifoMs: timing.fifoMs, tradeStatsMs: timing.tradeStatsMs, historicalMs: timing.historicalMs, totalMs: timing.totalMs, cacheReadMs: timing.cacheReadMs, cacheWriteMs: timing.cacheWriteMs }
+  payload.walletDeepScanTiming = publicTiming
   if (debug) {
-    payload._debug = { ...(payload._debug ?? {}), walletDeepScanTiming: timing }
+    const { portfolioMs: _portfolioMs, pricingMs: _pricingMs, fifoMs: _fifoMs, historicalMs: _historicalMs, cacheReadMs: _cacheReadMs, cacheWriteMs: _cacheWriteMs, ...walletDeepScanTimings } = timing
+    payload._debug = { ...(payload._debug ?? {}), walletDeepScanTiming: publicTiming, walletDeepScanTimings }
   }
 }
 
@@ -634,7 +674,7 @@ export async function POST(req: Request) {
           reason: 'route_cache_hit',
         },
       }
-      attachWalletDeepScanTiming(cp, { ...zeroWalletDeepScanTiming(), totalMs: Date.now() - startedAt, cacheReadMs: _cacheReadMs }, debug)
+      attachWalletDeepScanTiming(cp, { ...zeroWalletDeepScanTiming(), totalMs: Date.now() - startedAt, cacheHit: true, cacheReadMs: _cacheReadMs }, debug)
       pruneWalletScannerDebug(cp, debug)
       return json(cp)
     }
@@ -765,7 +805,7 @@ export async function POST(req: Request) {
               walletCacheQualityDebug: _slim.walletCacheQualityDebug ?? null,
             }
           }
-          attachWalletDeepScanTiming(cp, { ...zeroWalletDeepScanTiming(), totalMs: Date.now() - startedAt, cacheReadMs: _cacheReadMs }, debug)
+          attachWalletDeepScanTiming(cp, { ...zeroWalletDeepScanTiming(), totalMs: Date.now() - startedAt, cacheHit: true, cacheReadMs: _cacheReadMs }, debug)
           pruneWalletScannerDebug(cp, debug)
           return json(cp)
         }
@@ -790,7 +830,7 @@ export async function POST(req: Request) {
             cp.walletScanCostMode = 'deep_cached'
             cp.walletScanCacheNote = 'Deep scan cooling down — serving recent result to protect API budget.'
           }
-          attachWalletDeepScanTiming(cp, { ...zeroWalletDeepScanTiming(), totalMs: Date.now() - startedAt, cacheReadMs: _cacheReadMs }, debug)
+          attachWalletDeepScanTiming(cp, { ...zeroWalletDeepScanTiming(), totalMs: Date.now() - startedAt, cacheHit: true, cacheReadMs: _cacheReadMs }, debug)
           pruneWalletScannerDebug(cp, debug)
           return json(cp)
         }
@@ -1285,7 +1325,7 @@ export async function POST(req: Request) {
       walletCache.set(cacheKey, { exp: Date.now() + _cacheTtlMs, payload: snapshot, cachedAt: Date.now() })
       _cacheWriteMs += Date.now() - _memoryCacheWriteStartedAt
     }
-    attachWalletDeepScanTiming(snapshot, buildWalletDeepScanTiming(snapshot, startedAt, _cacheReadMs, _cacheWriteMs), debug)
+    attachWalletDeepScanTiming(snapshot, buildWalletDeepScanTiming(snapshot, startedAt, _cacheReadMs, _cacheWriteMs, { cacheHit: false, dedupeHit: inFlightDeduped }), debug)
     pruneWalletScannerDebug(snapshot, debug)
     return json(snapshot)
   } catch (err: unknown) {
