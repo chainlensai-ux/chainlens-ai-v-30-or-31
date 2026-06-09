@@ -5047,10 +5047,24 @@ export async function POST(req: Request) {
     // ── Real LP proof: PinkLock lock-proof lookup + minimal on-chain burn/holder
     // scan, shared with the standalone Liquidity Safety route. No fabricated
     // lock/burn/controller status — unknowns are reported as "unverified". ──
-    const lpProof = (chain === 'eth' || chain === 'base')
-      ? await resolveLpProof(chain, _lpProofAddress)
-      : { lpLockStatus: 'unverified' as const, lpLockAmount: null, lpUnlockTime: null, lpLockProvider: null, lpController: 'unknown' as const }
+    // Compute applicability first so we skip ERC-20 proof calls for concentrated
+    // pools where no LP token exists. Unknown pool model still attempts proof.
+    const lpModelProof = _deriveLpModelProof(gtAllPools)
+    const lpMigrationProof = _deriveMigrationProof(gtAllPools, liquidityUsd)
+    const _proofApplicableEarly = lpModelProof.standardLockApplies &&
+      lpControl.status !== 'concentrated_liquidity' && lpControl.status !== 'protocol'
+    let lpProof: { lpLockStatus: 'locked' | 'burned' | 'unlocked' | 'unverified'; lpLockAmount: number | null; lpUnlockTime: number | null; lpLockProvider: 'PinkLock' | null; lpController: 'wallet' | 'contract' | 'burn' | 'lockContract' | 'unknown' }
+    let _lpProofSkipReason: string | null = null
+    if (!_proofApplicableEarly) {
+      lpProof = { lpLockStatus: 'unverified', lpLockAmount: null, lpUnlockTime: null, lpLockProvider: null, lpController: 'unknown' }
+      _lpProofSkipReason = `LP proof skipped: pool model is ${lpModelProof.model} / status ${lpControl.status} — standard ERC-20 LP proof does not apply.`
+    } else if (chain === 'eth' || chain === 'base') {
+      lpProof = await resolveLpProof(chain, _lpProofAddress)
+    } else {
+      lpProof = { lpLockStatus: 'unverified', lpLockAmount: null, lpUnlockTime: null, lpLockProvider: null, lpController: 'unknown' }
+    }
     const { lpLockStatus, lpLockAmount, lpUnlockTime, lpLockProvider, lpController } = lpProof
+    if (_lpProofSkipReason) lpDiagnostics.lpProofSkipReason = _lpProofSkipReason
 
     const lpEvidenceGaps = buildLpEvidenceGaps({ lpLockStatus, lpController })
 
@@ -5059,8 +5073,6 @@ export async function POST(req: Request) {
       lpLockStatus
     )
 
-    const lpModelProof = _deriveLpModelProof(gtAllPools)
-    const lpMigrationProof = _deriveMigrationProof(gtAllPools, liquidityUsd)
     const lpModelForCortex = lpModelProof
     const migrationSummaryForCortex = lpMigrationProof.reason + (noActivePools ? ' No active pools were detected for this token.' : '')
 

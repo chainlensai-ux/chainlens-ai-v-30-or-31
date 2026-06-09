@@ -2207,7 +2207,7 @@ function getLpRiskSummary(result: ScanResult): { goodSigns: string[]; riskSigns:
   if (liqDepth != null && liqDepth < 10_000 && !result.noActivePools) riskSigns.push(`Very thin liquidity — ${fmtLarge(liqDepth)} depth.`)
   else if (liqDepth != null && liqDepth < 50_000 && !result.noActivePools) riskSigns.push(`Thin liquidity — ${fmtLarge(liqDepth)}.`)
   const lockBurnApplicable = lp?.lockBurnApplicable ?? (lpMode !== 'protocol' && dm !== 'concentrated_liquidity' && dm !== 'protocol_or_gauge')
-  if (lockBurnApplicable && lockStatus !== 'burned' && lockStatus !== 'locked' && status !== 'burned' && status !== 'locked') missingProofs.push('LP lock or burn proof not confirmed.')
+  if (lockBurnApplicable && lockStatus !== 'burned' && lockStatus !== 'locked' && status !== 'burned' && status !== 'locked') missingProofs.push('V2-style LP token detected — lock and burn proof were checked, but no confirmed evidence was found.')
   if (!lockBurnApplicable && dm !== 'concentrated_liquidity' && dm !== 'protocol_or_gauge' && lpMode === 'unknown' && !result.noActivePools) missingProofs.push('LP token model could not be classified.')
   if (!lp?.poolAddressPresent && !result.noActivePools && liqDepth == null) missingProofs.push('Pool address not yet indexed.')
   return { goodSigns: goodSigns.slice(0, 3), riskSigns: riskSigns.slice(0, 3), missingProofs: missingProofs.slice(0, 3) }
