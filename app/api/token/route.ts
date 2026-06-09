@@ -5055,7 +5055,8 @@ export async function POST(req: Request) {
       // Summary sentence
       const _riskSuffix = rugRiskLabel === 'critical' ? 'Multiple critical rug vectors confirmed — avoid exposure.' : rugRiskLabel === 'high' ? 'High risk flags present — verify before any position.' : rugRiskLabel === 'watch' ? 'Watch-level signals — monitor closely.' : rugRiskLabel === 'partial_data' ? 'Partial data scan — score is conservative baseline pending full verification.' : 'Low visible risk across verified checks.'
       const _topDriver = riskDrivers.length > 0 ? ` Primary risk: ${riskDrivers[0]}` : ''
-      const summary = `${_chain} token. Score: ${rugRiskScore}/100. ${_riskSuffix}${_topDriver}`
+      // Use "Rug-risk pressure" label to avoid confusion with CORTEX Score (different scale/direction)
+      const summary = `${_chain} token. Rug-risk pressure: ${rugRiskScore}/100. ${_riskSuffix}${_topDriver}`
       return {
         summary,
         riskDrivers: [...riskDrivers],
