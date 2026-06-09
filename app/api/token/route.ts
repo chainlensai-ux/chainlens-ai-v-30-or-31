@@ -2889,7 +2889,9 @@ function _buildDeterministicSummary(
   noActivePools: boolean,
   hpResult: { ok: boolean | null; honeypot?: boolean | null; buyTax?: number | null; sellTax?: number | null; simulationSuccess?: boolean | null },
   analysis: { suspiciousFunctions: string[] },
-  holderItemsEarly: any[],
+  holderDataComplete: boolean,
+  holderCount: number | null,
+  top10Pct: number | null,
   ownerStatus: string,
   lpPoolType: string | null | undefined
 ): string {
@@ -2915,7 +2917,12 @@ function _buildDeterministicSummary(
   if (analysis.suspiciousFunctions.length > 0) {
     risks.push(`bytecode contains suspicious selectors: ${analysis.suspiciousFunctions.slice(0, 3).join(', ')}`)
   }
-  if (holderItemsEarly.length === 0) {
+  if (holderDataComplete && top10Pct != null) {
+    const countNote = holderCount != null ? ` across ${holderCount.toLocaleString()} holders` : ''
+    if (top10Pct > 70) risks.push(`top-10 holder concentration is very high (${top10Pct.toFixed(1)}%${countNote}) — strong centralization risk`)
+    else if (top10Pct > 50) risks.push(`top-10 holder concentration is elevated (${top10Pct.toFixed(1)}%${countNote}) — monitor for large dump risk`)
+    else confirmed.push(`Holder distribution verified: top-10 at ${top10Pct.toFixed(1)}%${countNote}.`)
+  } else {
     inferred.push('holder concentration inferred as moderate-to-high — cross-check top wallets before sizing a position')
   }
   if (ownerStatus === 'renounced') {
@@ -3743,13 +3750,12 @@ export async function POST(req: Request) {
     // AI summary from parallel phase 2
     const _chainName = chain === 'eth' ? 'Ethereum' : 'Base'
     const _aiResult = _aiSettled.status === 'fulfilled' ? _aiSettled.value : null
-    let aiSummary: string
+    // Extract AI text early; aiSummary is computed later (after holder data resolves) to avoid stale holder wording
+    let _aiTextEarly: string | null = null
     if (_aiResult && typeof _aiResult === 'object' && 'content' in _aiResult) {
       const _aiContent = (_aiResult as { content: Array<{type: string; text?: string}> }).content
       const _aiText = _aiContent?.[0]
-      aiSummary = (_aiText?.type === 'text' && _aiText.text) ? _aiText.text : _buildDeterministicSummary(_chainName, noActivePools, hpResult, analysis, _holderItemsEarly, _ownerStatusEarly, lpPoolType ?? lpVerifyPoolType)
-    } else {
-      aiSummary = _buildDeterministicSummary(_chainName, noActivePools, hpResult, analysis, _holderItemsEarly, _ownerStatusEarly, lpPoolType ?? lpVerifyPoolType)
+      if (_aiText?.type === 'text' && _aiText.text) _aiTextEarly = _aiText.text
     }
 
     // ------------------------------
@@ -4715,6 +4721,8 @@ export async function POST(req: Request) {
     const lpState = lpControl.status
     const top10Pct = holderDistribution.top10
     const top20Pct = holderDistribution.top20
+    // aiSummary deferred here so it has access to resolved holder data (holderDataComplete, holderCount, top10Pct)
+    const aiSummary: string = _aiTextEarly ?? _buildDeterministicSummary(_chainName, noActivePools, hpResult, analysis, holderDataComplete, holderCount ?? null, top10Pct ?? null, _ownerStatusEarly, lpPoolType ?? lpVerifyPoolType)
 
     if (marketCapFromGt != null) riskVerifiedSignals.push('Market data verified: market cap is available.')
     else if (fdv != null) {
@@ -4737,10 +4745,11 @@ export async function POST(req: Request) {
       riskScore += 15
     }
     // lpProofStatus: never "unverified" — use "partial" or "inferred" instead
+    // team_controlled = LP holder identity confirmed, but lock/burn proof is NOT verified → 'partial'
     const lpProofStatus: 'not_applicable' | 'verified' | 'partial' | 'inferred' =
       (lpState === 'protocol' || lpState === 'concentrated_liquidity') ? 'not_applicable' :
       (lpState === 'burned' || lpState === 'locked') ? 'verified' :
-      (lpState === 'team_controlled') ? 'verified' :
+      (lpState === 'team_controlled') ? 'partial' :
       (lpState === 'partial') ? 'partial' : 'inferred'
     if (lpState === 'burned' || lpState === 'locked') { riskVerifiedSignals.push(`LP Control shows ${lpState}.`); riskScore -= 12 }
     else if (lpState === 'protocol' || lpState === 'concentrated_liquidity') { riskVerifiedSignals.push('LP Control indicates protocol-managed liquidity structure.'); riskScore += 3 }
@@ -4976,10 +4985,11 @@ export async function POST(req: Request) {
         : _lpStatus === 'locked' ? 'low'
         : _lpStatus === 'protocol' || _lpStatus === 'concentrated_liquidity' ? 'medium'
         : 'inferred'
-      // Mint authority: active if mint flag detected, renounced if ownership renounced
+      // Mint authority: active = mint bytecode detected; renounced = ownership provably renounced;
+      // not_applicable = mint bytecode not detected (no authority to yield); inferred = unknown.
       const mintAuthority: RiskEngine["lpIntelligence"]["mintAuthority"] = cortexContractFlags.mint.status === 'verified' ? 'active'
         : isRenounced ? 'renounced'
-        : cortexContractFlags.mint.status === 'not_detected' || cortexContractFlags.mint.status === 'inferred' ? 'renounced'
+        : cortexContractFlags.mint.status === 'not_detected' ? 'not_applicable'
         : 'inferred'
       // Depth from liquidity
       const depth: RiskEngine["lpIntelligence"]["depth"] = liquidityUsd == null ? 'inferred'
@@ -5068,12 +5078,25 @@ export async function POST(req: Request) {
     const { lpLockStatus, lpLockAmount, lpUnlockTime, lpLockProvider, lpController } = lpProof
     if (_lpProofSkipReason) lpDiagnostics.lpProofSkipReason = _lpProofSkipReason
 
-    const lpEvidenceGaps = buildLpEvidenceGaps({ lpLockStatus, lpController })
+    // proofApplicable: false for concentrated/protocol pools (no standard ERC-20 LP token)
+    // includeTokenGaps: false — token scanner has its own security section for tax/honeypot/renounce
+    const _lpProofApplicableForGaps = lpModelProof.standardLockApplies &&
+      lpControl.status !== 'concentrated_liquidity' && lpControl.status !== 'protocol'
+    const lpEvidenceGaps = buildLpEvidenceGaps({
+      lpLockStatus,
+      lpController,
+      proofApplicable: _lpProofApplicableForGaps,
+      includeTokenGaps: false,
+    })
 
-    const { lp_data_mode: lpDataMode, lp_data_confidence: lpDataConfidence } = deriveLpDataModeAndConfidence(
+    const { lp_data_mode: lpDataMode, lp_data_confidence: _lpDataConfRaw } = deriveLpDataModeAndConfidence(
       !noActivePools && (liquidityUsd != null && liquidityUsd > 0),
       lpLockStatus
     )
+    // Upgrade confidence from 'low' to 'medium' when LP control status is confirmed (not unknown/no_pool).
+    // Pool/control evidence can be high-confidence even when lock/burn proof is unverified.
+    const _lpControlKnown = lpControl.status !== 'no_pool' && lpControl.status !== 'error' && lpControl.status !== 'insufficient_data'
+    const lpDataConfidence = (_lpDataConfRaw === 'low' && _lpControlKnown) ? 'medium' : _lpDataConfRaw
 
     const lpModelForCortex = lpModelProof
     const migrationSummaryForCortex = lpMigrationProof.reason + (noActivePools ? ' No active pools were detected for this token.' : '')
