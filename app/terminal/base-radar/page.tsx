@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
+import ProjectOverviewDrawer from './ProjectOverviewDrawer'
 import { usePlanWithLoading, LockedPanel, canAccessFeature } from '@/lib/usePlan'
 import { supabase } from '@/lib/supabaseClient'
 
@@ -294,6 +295,7 @@ function TokenCard({
   index,
   onScan,
   onAskClark,
+  onOpenOverview,
   onTrackToggle,
   tracking,
 }: {
@@ -301,6 +303,7 @@ function TokenCard({
   index: number
   onScan: () => void
   onAskClark: () => void
+  onOpenOverview: () => void
   onTrackToggle: () => void
   tracking: boolean
 }) {
@@ -316,7 +319,7 @@ function TokenCard({
 
   return (
     <div
-      onClick={onScan}
+      onClick={onOpenOverview}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{
@@ -680,6 +683,8 @@ export default function BaseRadarPage() {
   const [activeFilter, setActiveFilter] = useState<RadarFilter>('ALL')
   const [sortMode, setSortMode] = useState<SortMode>('NEWEST')
   const [trackedContracts, setTrackedContracts] = useState<Record<string, boolean>>({})
+  const [selectedToken, setSelectedToken] = useState<TokenIntel | null>(null)
+  const [drawerOpen, setDrawerOpen] = useState(false)
 
   const effectivePlan = elitePass.active ? 'elite' : plan
   const showUpsell = effectivePlan === 'free'
@@ -705,7 +710,11 @@ export default function BaseRadarPage() {
   }, [])
 
   useEffect(() => {
-    if (!planLoading && canAccessFeature(effectivePlan, 'base-radar')) fetchData()
+    if (!planLoading && canAccessFeature(effectivePlan, 'base-radar')) {
+      queueMicrotask(() => {
+        void fetchData()
+      })
+    }
   }, [effectivePlan, fetchData, planLoading])
 
   useEffect(() => {
@@ -723,8 +732,10 @@ export default function BaseRadarPage() {
 
   useEffect(() => {
     if (refreshKey > 0 && canAccessFeature(effectivePlan, 'base-radar')) {
-      fetchData()
-      setCountdown(120)
+      queueMicrotask(() => {
+        void fetchData()
+        setCountdown(120)
+      })
     }
   }, [effectivePlan, refreshKey, fetchData])
 
@@ -735,6 +746,11 @@ export default function BaseRadarPage() {
 
   function openToken(contract: string) {
     router.push(`/terminal/token-scanner?contract=${contract}`)
+  }
+
+  function openProjectOverview(token: TokenIntel) {
+    setSelectedToken(token)
+    setDrawerOpen(true)
   }
 
   function toggleTrack(contract: string) {
@@ -766,7 +782,7 @@ export default function BaseRadarPage() {
     router.push(`/terminal/clark-ai?prompt=${encodeURIComponent(prompt)}`)
   }
 
-  const tokens = data?.tokens ?? []
+  const tokens = useMemo(() => data?.tokens ?? [], [data?.tokens])
 
   const intelTokens = useMemo(() => tokens.map(enrichToken), [tokens])
 
@@ -962,6 +978,7 @@ export default function BaseRadarPage() {
                   index={i}
                   onScan={() => openToken(token.contract)}
                   onAskClark={() => askClark(token)}
+                  onOpenOverview={() => openProjectOverview(token)}
                   onTrackToggle={() => toggleTrack(token.contract)}
                   tracking={Boolean(trackedContracts[token.contract])}
                 />
@@ -979,6 +996,12 @@ export default function BaseRadarPage() {
           </div>
         </div>
       </div>
+
+      <ProjectOverviewDrawer
+        token={selectedToken}
+        open={drawerOpen}
+        onClose={() => setDrawerOpen(false)}
+      />
     </>
   )
 }
