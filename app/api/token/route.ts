@@ -3161,7 +3161,9 @@ export async function POST(req: Request) {
       _dsFbPoolSynthesized = true
     }
     const selectedLpPool = selectLpVerificationPool(normalizedPools, String(contract));
-    const noActivePools = matchingPools.length === 0;
+    // Use normalizedPools (post-DS-fallback-synthesis) so noActivePools is false
+    // when a DexScreener fallback pool was successfully synthesized.
+    const noActivePools = normalizedPools.length === 0;
     const mainPoolAttr = (mainPool?.attributes ?? {}) as Record<string, unknown>;
     const _mpAddrRaw = String(mainPoolAttr.address ?? '').trim().toLowerCase()
     const _mpIdHex = String(mainPool?.id ?? '').match(/0x[a-f0-9]{40}/i)?.[0]?.toLowerCase() ?? null
@@ -5552,7 +5554,7 @@ export async function POST(req: Request) {
       decimals: resolvedDecimals,
 
       // Pool state — reflects both primary and fallback market reads
-      noActivePools: noActivePools && _dexFb == null,
+      noActivePools: noActivePools,
 
       // Market source flags
       marketDataSource,
