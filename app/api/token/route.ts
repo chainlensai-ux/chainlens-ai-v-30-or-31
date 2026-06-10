@@ -2955,6 +2955,13 @@ function _buildDeterministicSummary(
 export async function POST(req: Request) {
   if (!(await checkRate(req))) return NextResponse.json({ error: "Rate limit reached. Try again shortly." }, { status: 429 })
 
+  // Hoisted outside the main try block so the fatal-error handler can still
+  // report accurate resolver diagnostics for address-based scans.
+  let _diagOriginalInput = ''
+  let _diagIsAddressInput = false
+  let _diagSelectedChain: ChainKey = 'base'
+  let _diagDebugMode = false
+
   try {
     const _t0 = Date.now()
 
@@ -2969,6 +2976,10 @@ export async function POST(req: Request) {
     const originalInput = String(contractInput ?? '').trim()
     const normalizedInput = originalInput.toUpperCase()
     const isAddressInput = /^0x[a-fA-F0-9]{40}$/.test(originalInput)
+    _diagOriginalInput = originalInput
+    _diagIsAddressInput = isAddressInput
+    _diagSelectedChain = chain
+    _diagDebugMode = debugMode === true
     const aliasHit = !isAddressInput && chain === 'base' ? BASE_TOKEN_ALIAS_MAP[normalizedInput] : null
     const resolvedAddress = isAddressInput ? originalInput : (aliasHit?.address ?? null)
     const resolvedInput = resolvedAddress ? {
@@ -2985,7 +2996,18 @@ export async function POST(req: Request) {
     if (!resolvedAddress && /^0x[a-fA-F0-9]+$/i.test(originalInput) && originalInput.length !== 42) {
       return NextResponse.json({
         status: 'invalid_address',
-        error: `Invalid EVM address: expected 0x + 40 hex chars, got ${originalInput.length - 2}. Check for typos.`,
+        error: 'Invalid contract address.',
+        ...(debugMode === true ? {
+          _diagnostics: {
+            originalInput,
+            selectedChain: chain,
+            detectedInputType: 'address_like',
+            addressValid: false,
+            resolverStageFailed: 'address_format_check',
+            resolverFailureReason: `expected 0x + 40 hex chars, got ${originalInput.length - 2}`,
+            fallbackAttempted: false,
+          },
+        } : {}),
       }, { status: 400 })
     }
 
@@ -2994,7 +3016,16 @@ export async function POST(req: Request) {
         status: 'not_found',
         error: "Couldn't resolve that token. Paste the contract address or try a verified symbol.",
         ...(debugMode === true ? {
-          _diagnostics: { resolverInput: originalInput, resolverType: 'none', resolverCandidatesCount: 0, resolverSelectedAddress: null, resolverReason: 'not_in_alias_map' },
+          _diagnostics: {
+            resolverInput: originalInput, resolverType: 'none', resolverCandidatesCount: 0, resolverSelectedAddress: null, resolverReason: 'not_in_alias_map',
+            originalInput,
+            selectedChain: chain,
+            detectedInputType: isAddressInput ? 'address' : 'symbol_or_alias',
+            addressValid: isAddressInput,
+            resolverStageFailed: 'alias_lookup',
+            resolverFailureReason: 'not_in_alias_map',
+            fallbackAttempted: false,
+          },
           _debug: {
             resolverStatus: 'not_found',
             resolverDiagnostics: { original: originalInput, type: 'none', resolvedAddress: null, confidence: 'none', reason: 'not_in_alias_map' },
@@ -3019,6 +3050,7 @@ export async function POST(req: Request) {
         }
       }
     }
+    _diagSelectedChain = chain
 
     console.log("Incoming scan request:", contract);
 
@@ -6560,8 +6592,52 @@ export async function POST(req: Request) {
     return NextResponse.json(responsePayload)
   } catch (err) {
     console.error("Fatal backend error:", err);
+    const _failureReason = err instanceof Error ? err.message : 'unknown_error'
+    if (_diagIsAddressInput) {
+      // The input was a valid contract address — accept it rather than telling
+      // the user the address itself couldn't be resolved. The scan pipeline
+      // failed partway through; surface an open-check / no-data state instead.
+      return NextResponse.json({
+        status: 'address_scan_failed',
+        marketStatus: 'no_data',
+        contract: _diagOriginalInput,
+        chain: _diagSelectedChain,
+        resolvedInput: {
+          original: _diagOriginalInput,
+          type: 'address',
+          resolvedAddress: _diagOriginalInput,
+          requestedChain: _diagSelectedChain,
+          confidence: 'high',
+        },
+        error: "Token address accepted, but CORTEX could not find enough live data yet.",
+        ..._diagDebugMode ? {
+          _diagnostics: {
+            originalInput: _diagOriginalInput,
+            selectedChain: _diagSelectedChain,
+            detectedInputType: 'address',
+            addressValid: true,
+            resolverStageFailed: 'scan_pipeline',
+            resolverFailureReason: _failureReason,
+            fallbackAttempted: true,
+          },
+        } : {},
+      }, { status: 200 });
+    }
     return NextResponse.json(
-      { error: "Internal server error" },
+      {
+        error: "Internal server error",
+        ..._diagDebugMode ? {
+          _diagnostics: {
+            originalInput: _diagOriginalInput,
+            selectedChain: _diagSelectedChain,
+            detectedInputType: _diagIsAddressInput ? 'address' : 'symbol_or_alias',
+            addressValid: _diagIsAddressInput,
+            resolverStageFailed: 'scan_pipeline',
+            resolverFailureReason: _failureReason,
+            fallbackAttempted: false,
+          },
+        } : {},
+      },
       { status: 500 }
     );
   }

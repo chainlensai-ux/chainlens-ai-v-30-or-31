@@ -2973,11 +2973,25 @@ export default function TerminalTokenScanner() {
         })
       }
       if (!res.ok || json.error) {
-        if (json?.status === 'invalid_address') setError(json.error ?? 'Invalid address format. Expected 0x followed by 40 hex characters.')
+        const isAddrInput = isContractAddress(scanContract)
+        if (json?.status === 'invalid_address') setError(json.error ?? 'Invalid contract address.')
+        else if (json?.status === 'address_scan_failed') setError(json.error ?? "Token address accepted, but CORTEX could not find enough live data yet.")
         else if (json?.status === 'wrong_chain' || json?.status === 'chain_mismatch') setError(`Token not found on ${scanChain === 'eth' ? 'Ethereum' : 'Base'}. Try switching chains.`)
         else if (json?.status === 'ambiguous') setError('Multiple tokens match this. Paste the contract address or choose one.')
         else if (json?.status === 'no_pool_found' || json?.marketStatus === 'no_pool_found') setError(`No active liquidity pools found on ${scanChain === 'eth' ? 'Ethereum' : 'Base'} for this token.`)
+        else if (isAddrInput) setError("Token address accepted, but CORTEX could not find enough live data yet.")
         else setError("Couldn't resolve that token. Paste the contract address or try a verified symbol.")
+        if (process.env.NODE_ENV !== 'production') {
+          console.log('[scanner] resolver diagnostics', {
+            originalInput: q,
+            selectedChain: effectiveChain,
+            detectedInputType: isAddrInput ? 'address' : 'symbol_or_alias',
+            addressValid: isAddrInput,
+            resolverStageFailed: json?._diagnostics?.resolverStageFailed ?? json?.status ?? 'unknown',
+            resolverFailureReason: json?._diagnostics?.resolverFailureReason ?? json?.error ?? null,
+            fallbackAttempted: json?._diagnostics?.fallbackAttempted ?? false,
+          })
+        }
         setClarkLoading(false)
       } else {
         const pairs: Array<Record<string, unknown>> = Array.isArray(json.pairs) ? json.pairs : []
