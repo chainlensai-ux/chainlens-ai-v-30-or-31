@@ -3862,6 +3862,14 @@ export async function POST(req: Request) {
       gmgnItem?.symbol ||
       "?";
 
+    const rpcName = await rpcTokenString(chain, contract, '0x06fdde03')
+    const rpcSymbol = await rpcTokenString(chain, contract, '0x95d89b41')
+
+    // Upgrade name/symbol with RPC fallback when all API sources returned nothing.
+    // CORTEX wording should use the same normalized identity as the final response.
+    const finalResolvedName = (resolvedName && resolvedName !== 'Unknown') ? resolvedName : (rpcName ?? 'Unknown')
+    const finalResolvedSymbol = (resolvedSymbol && resolvedSymbol !== '?') ? resolvedSymbol : (rpcSymbol ?? '?')
+
     const resolvedDecimals =
       gtToken?.decimals ||
       metaItem?.contract_decimals ||
@@ -5195,8 +5203,8 @@ export async function POST(req: Request) {
     const migrationSummaryForCortex = lpMigrationProof.reason + (noActivePools ? ' No active pools were detected for this token.' : '')
 
     const cortexLpRead = buildSharedCortexLpRead({
-      name: resolvedName ?? resolvedSymbol ?? 'This token',
-      symbol: resolvedSymbol ?? '?',
+      name: finalResolvedName !== 'Unknown' ? finalResolvedName : (finalResolvedSymbol !== '?' ? finalResolvedSymbol : 'This token'),
+      symbol: finalResolvedSymbol,
       totalLiq: liquidityUsd,
       fragments: Array.isArray(gtAllPools) ? gtAllPools.length : (liquidityUsd != null ? 1 : 0),
       observedPoolPresent,
@@ -5222,17 +5230,24 @@ export async function POST(req: Request) {
       lpLockStatus === 'unlocked' ? 'partial' :
       noActivePools ? 'unknown' : 'missing'
     const _liqForRisk = liquidityUsd
+    const _lpControlEvidence = Array.isArray(lpControl.evidence) ? lpControl.evidence : []
+    const _teamControlledLpWallet = lpControl.status === 'team_controlled' && (
+      lpController === 'wallet' ||
+      _lpControlEvidence.some((item) => typeof item === 'string' && /(?:^|\b)(?:top_holder|owner|wallet)=0x[a-fA-F0-9]{40}(?:\b|$)/.test(item)) ||
+      _lpControlEvidence.some((item) => typeof item === 'string' && /(?:^|\b)(?:top_share|owner_lp_share)=([8-9]\d|100)(?:\.\d+)?%/.test(item))
+    )
+    const _hasConfirmedLockBurnProof = lpLockStatus === 'burned' || lpLockStatus === 'locked'
     const lpExitRisk: 'low' | 'monitor' | 'medium' | 'high' | 'open_check' =
       isConcentratedPool
         ? (_liqForRisk != null && _liqForRisk > 50_000 ? 'monitor' : _liqForRisk != null && _liqForRisk > 0 ? 'watch' as 'monitor' : 'open_check')
-        : (lpLockStatus === 'burned' || lpLockStatus === 'locked') ? (_liqForRisk != null && _liqForRisk < 50_000 ? 'medium' : 'low')
-        : lpLockStatus === 'unlocked' ? 'high'
+        : _hasConfirmedLockBurnProof ? (_liqForRisk != null && _liqForRisk < 50_000 ? 'medium' : 'low')
+        : lpLockStatus === 'unlocked' || _teamControlledLpWallet ? 'high'
         : (_liqForRisk != null && _liqForRisk < 10_000 ? 'monitor' : _liqForRisk != null && _liqForRisk < 50_000 ? 'monitor' : 'open_check')
     const lpExitRiskReason =
       isConcentratedPool ? `${lpModelProof.model === 'concentrated' ? 'V3/V4 concentrated' : 'Protocol-managed'} pool — standard LP lock/burn proof does not apply. Exit risk based on pool depth${_liqForRisk != null ? ` ($${_liqForRisk.toLocaleString(undefined, {maximumFractionDigits:0})})` : ''}.`
       : lpLockStatus === 'burned' ? 'LP tokens sent to a burn address — exit liquidity permanently locked.'
       : lpLockStatus === 'locked' ? 'Active LP lock proof found — protected for the lock duration.'
-      : lpLockStatus === 'unlocked' ? 'On-chain evidence shows LP is held by a removable wallet with no lock or burn proof.'
+      : lpLockStatus === 'unlocked' || _teamControlledLpWallet ? 'A single wallet appears to control the detected LP position. Lock/burn proof is not confirmed.'
       : 'LP lock/burn proof not confirmed — exit risk is an open check.'
     const lpEvidenceSummary = [
       `Pool model: ${lpModelProof.model}`,
@@ -5417,13 +5432,6 @@ export async function POST(req: Request) {
     }
     holderSanityDebug.finalPercentSource = percentSource
 
-
-    const rpcName = await rpcTokenString(chain, contract, '0x06fdde03')
-    const rpcSymbol = await rpcTokenString(chain, contract, '0x95d89b41')
-
-    // Upgrade name/symbol with RPC fallback when all API sources returned nothing
-    const finalResolvedName = (resolvedName && resolvedName !== 'Unknown') ? resolvedName : (rpcName ?? 'Unknown')
-    const finalResolvedSymbol = (resolvedSymbol && resolvedSymbol !== '?') ? resolvedSymbol : (rpcSymbol ?? '?')
 
     const ethOriginDiscovery = chain === 'eth' ? await discoverTokenOrigin(chain, contract) : null
 
