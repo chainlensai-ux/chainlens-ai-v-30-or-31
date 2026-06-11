@@ -40,6 +40,10 @@ type DrawerEnrichmentPayload = {
     marketCapUsd?: number | null
     marketStatus?: string | null
     marketConfidence?: string | null
+    poolCount?: number | null
+    observedPoolPresent?: boolean | null
+    observedPoolCount?: number | null
+    poolCountStatus?: "confirmed" | "inferred_from_primary_pool" | "unknown" | string | null
   } | null
   lp?: {
     lpLockStatus?: string | null
@@ -54,6 +58,8 @@ type DrawerEnrichmentPayload = {
     lpExitRisk?: string | null
     lpExitRiskReason?: string | null
     lpEvidenceSummary?: string | null
+    lockBurnReason?: string | null
+    cortexLpRead?: { liquidityAnalysis?: string | null } | null
   } | null
   holders?: {
     top1?: number | null
@@ -176,6 +182,7 @@ function proofLabel(status: string | null | undefined, applicability: string | n
   if (status === 'confirmed') return 'Confirmed'
   if (status === 'partial') return 'Partial evidence'
   if (status === 'missing') return 'Open Check'
+  if (applicability === 'unknown') return 'Pool model open check'
   return 'Open Check'
 }
 
@@ -313,8 +320,14 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
   const holderStatusLabel = holderStatus(concentration.status, concentration.confidence, concentration.reason)
   const securityTax = security?.honeypot?.simulationSuccess ? `${percent(security.honeypot.buyTax)} buy · ${percent(security.honeypot.sellTax)} sell` : 'Open Check'
 
+  const poolDistributionLine = lp?.cortexLpRead?.liquidityAnalysis ?? (market?.observedPoolPresent
+    ? (market?.poolCountStatus === 'confirmed' && market?.observedPoolCount != null
+      ? `Observed liquidity is ${fmtUSD(market?.liquidityUsd ?? token?.liquidityUsd)} across ${market.observedPoolCount} tracked pool${market.observedPoolCount === 1 ? '' : 's'}.`
+      : 'A primary liquidity pool was detected, but full pool distribution is not fully indexed.')
+    : 'No active liquidity pool was confirmed from current evidence.')
+
   const cortexRead = [
-    `Liquidity is ${fmtUSD(market?.liquidityUsd ?? token?.liquidityUsd)} with ${token?.momentum ?? 'unknown'} momentum and a radar score of ${token?.radarScore ?? 'N/A'}.`,
+    `${poolDistributionLine} Momentum is ${token?.momentum ?? 'unknown'} and radar score is ${token?.radarScore ?? 'N/A'}.`,
     `LP control is ${lpControlStatus ? publicStatus(lpControlStatus) : 'Open Check'}; ${lpRiskLabel}`,
     deployer?.deployerAddress ? `Deployer ${shortAddr(deployer.deployerAddress)} is ${publicStatus(deployer.deployerStatus ?? 'reviewed')} at ${deployer.deployerConfidence ?? 'open-check'} confidence.` : 'Deployer is Open Check in the current evidence.',
     `Top holder concentration is ${percent(concentration.top10)} for top 10 holders; holder evidence is ${holderStatusLabel}.`,

@@ -20,7 +20,7 @@ function _deriveLpModelProof(pools: Array<{ relationships?: { dex?: { data?: { i
   if (dexId.includes('curve')) model = 'stableswap'
   else if (dexId.includes('v3') || dexId.includes('slipstream') || dexId.includes('concentrated')) model = 'concentrated'
   else if (dexId.includes('uniswap') || dexId.includes('aerodrome') || dexId.includes('sushiswap') || dexId.includes('v2')) model = 'constant_product'
-  return { model, dexName: pools[0]?.relationships?.dex?.data?.id ?? null, standardLockApplies: model !== 'concentrated' }
+  return { model, dexName: pools[0]?.relationships?.dex?.data?.id ?? null, standardLockApplies: model === 'constant_product' }
 }
 
 function _deriveMigrationProof(pools: Array<{ attributes: { reserve_in_usd?: string | number | null }; relationships?: { dex?: { data?: { id: string } } } }>, totalLiq: number | null): {
@@ -3530,17 +3530,17 @@ export async function POST(req: Request) {
       if (grProvedUnknown) {
         // GoldRush returned usable holder data — classify from it
         if (unknownBurnPct >= 50) {
-          lpControl = { status: "burned", confidence: confidenceFor(unknownBurnPct), poolType: "v2", source: "geckoterminal+goldrush", reason: "Dominant LP share appears in burn/dead addresses.", evidence: [`burn_share=${unknownBurnPct.toFixed(2)}%`, `pool=${_lpAddrSnippet}`], poolAddressPresent: true, dexId: dexId || undefined };
+          lpControl = { status: "burned", confidence: confidenceFor(unknownBurnPct), poolType: "unknown", source: "geckoterminal+goldrush", reason: "Dominant LP share appears in burn/dead addresses, but the pool model is not fully classified.", evidence: [`burn_share=${unknownBurnPct.toFixed(2)}%`, `pool=${_lpAddrSnippet}`], poolAddressPresent: true, dexId: dexId || undefined };
         } else if (unknownLockerPct >= 50) {
-          lpControl = { status: "locked", confidence: confidenceFor(unknownLockerPct), poolType: "v2", source: "geckoterminal+goldrush", reason: "Dominant LP share appears in known lockers.", evidence: [`locker_share=${unknownLockerPct.toFixed(2)}%`, `pool=${_lpAddrSnippet}`], poolAddressPresent: true, dexId: dexId || undefined };
+          lpControl = { status: "locked", confidence: confidenceFor(unknownLockerPct), poolType: "unknown", source: "geckoterminal+goldrush", reason: "Dominant LP share appears in known lockers, but the pool model is not fully classified.", evidence: [`locker_share=${unknownLockerPct.toFixed(2)}%`, `pool=${_lpAddrSnippet}`], poolAddressPresent: true, dexId: dexId || undefined };
         } else if (unknownTopHolder && (unknownTopHolder.pct ?? 0) >= 80 && !DEAD.has(unknownTopHolder.address) && !KNOWN_LOCKERS.has(unknownTopHolder.address)) {
-          lpControl = { status: "team_controlled", confidence: "high", poolType: "v2", source: "geckoterminal+goldrush", reason: "Single normal wallet holds dominant LP share.", evidence: [`top_holder=${unknownTopHolder.address}`, `top_share=${(unknownTopHolder.pct ?? 0).toFixed(2)}%`], poolAddressPresent: true, dexId: dexId || undefined };
+          lpControl = { status: "team_controlled", confidence: "high", poolType: "unknown", source: "geckoterminal+goldrush", reason: "Single normal wallet holds dominant LP share, but the pool model is not fully classified.", evidence: [`top_holder=${unknownTopHolder.address}`, `top_share=${(unknownTopHolder.pct ?? 0).toFixed(2)}%`], poolAddressPresent: true, dexId: dexId || undefined };
         } else {
           const partialEv2 = [
             unknownBurnPct > 0.5 ? `burn_share=${unknownBurnPct.toFixed(2)}%` : null,
             unknownLockerPct > 0.5 ? `locker_share=${unknownLockerPct.toFixed(2)}%` : null,
           ].filter(Boolean) as string[]
-          lpControl = { status: partialEv2.length ? "partial" : "partial", confidence: "low", poolType: "v2", source: "geckoterminal+goldrush", reason: "LP holder check inconclusive — no dominant burn/lock pattern.", evidence: [`top_rows=${unknownTop.length}`, ...partialEv2, `pool=${_lpAddrSnippet}`], poolAddressPresent: true, dexId: dexId || undefined };
+          lpControl = { status: partialEv2.length ? "partial" : "partial", confidence: "low", poolType: "unknown", source: "geckoterminal+goldrush", reason: "LP holder check inconclusive — no dominant burn/lock pattern and pool model is not fully classified.", evidence: [`top_rows=${unknownTop.length}`, ...partialEv2, `pool=${_lpAddrSnippet}`], poolAddressPresent: true, dexId: dexId || undefined };
         }
       } else {
         // Step 2: GoldRush failed or empty — probe pool via RPC to classify
@@ -3751,8 +3751,8 @@ export async function POST(req: Request) {
         _lockBurnReason = 'V2-style verification pool with LP token — lock/burn proof applies.'
       } else if (_lpProofPresent) {
         _displayLpModel = 'open_check'
-        _lockBurnApplicable = true
-        _lockBurnReason = 'Pool detected but LP model could not be fully classified.'
+        _lockBurnApplicable = false
+        _lockBurnReason = 'Pool detected, but LP model could not be fully classified.'
       } else {
         _displayLpModel = 'open_check'
         _lockBurnApplicable = false
@@ -4580,6 +4580,13 @@ export async function POST(req: Request) {
     const pairCreatedAt = String(mainPoolAttr.pool_created_at ?? '').trim() || null
     const pairAgeLabel = pairCreatedAt ? computePairAge(pairCreatedAt) : null
     const poolCount = matchingPools.length
+    const observedPoolPresent = Boolean(lpDiagnostics.poolDetected || lpDiagnostics.primaryMarketPoolAddress || lpDiagnostics.lpVerificationPoolAddress)
+    const observedPoolCount: number | null = poolCount > 0 ? poolCount : (observedPoolPresent ? null : 0)
+    const poolCountStatus: 'confirmed' | 'inferred_from_primary_pool' | 'unknown' = poolCount > 0
+      ? 'confirmed'
+      : observedPoolPresent
+        ? 'inferred_from_primary_pool'
+        : 'unknown'
 
     // marketTrendSnapshot — real market change fields, never fake candles.
     // Built from indexed pool price_change_percentage and existing market fields.
@@ -5159,6 +5166,7 @@ export async function POST(req: Request) {
       symbol: resolvedSymbol ?? '?',
       totalLiq: liquidityUsd,
       fragments: Array.isArray(gtAllPools) ? gtAllPools.length : (liquidityUsd != null ? 1 : 0),
+      observedPoolPresent,
       riskTier: rugRiskLabel,
       lpModel: lpModelForCortex,
       migrationSummary: migrationSummaryForCortex,
@@ -5171,9 +5179,10 @@ export async function POST(req: Request) {
     })
 
     // ── LP proof applicability and structured exit risk fields ──────────────
-    const isConcentratedPool = !lpModelProof.standardLockApplies || lpControl.status === 'concentrated_liquidity' || lpControl.status === 'protocol'
+    const isConcentratedPool = lpControl.status === 'concentrated_liquidity' || lpControl.status === 'protocol' || lpModelProof.model === 'concentrated'
+    const isConfirmedStandardLp = lpModelProof.model === 'constant_product' || lpControl.poolType === 'v2' || lpControl.probeV2Like === true
     const lpProofApplicability: 'applicable' | 'not_applicable' | 'unknown' =
-      isConcentratedPool ? 'not_applicable' : (_lpProofAddress ? 'applicable' : 'unknown')
+      isConcentratedPool ? 'not_applicable' : (isConfirmedStandardLp && _lpProofAddress ? 'applicable' : 'unknown')
     const lpProofStatusNew: 'confirmed' | 'partial' | 'missing' | 'not_applicable' | 'unknown' =
       lpProofApplicability === 'not_applicable' ? 'not_applicable' :
       (lpLockStatus === 'locked' || lpLockStatus === 'burned') ? 'confirmed' :
@@ -5704,7 +5713,10 @@ export async function POST(req: Request) {
       priceSource: _priceSource,
       liquidityUsd: _el,
       volume24hUsd: _ev,
-      poolCount,
+      poolCount: observedPoolCount,
+      observedPoolPresent,
+      observedPoolCount,
+      poolCountStatus,
       primaryDexName,
       // Legacy pool-level field kept for frontend pair display
       liquidity: mainPool?.attributes?.reserve_in_usd ?? _dexFb?.liquidityUsd ?? null,
@@ -6390,6 +6402,9 @@ export async function POST(req: Request) {
           primaryPoolSelected: lpDiagnostics.primaryPoolSelected,
           poolSource: lpDiagnostics.poolSource,
           poolCount: lpDiagnostics.poolCount,
+          observedPoolPresent,
+          observedPoolCount,
+          poolCountStatus,
           selectedPoolAddress: lpDiagnostics.selectedPoolAddress,
           selectedPoolDex: lpDiagnostics.selectedPoolDex,
           selectedPoolType: lpDiagnostics.selectedPoolType,
@@ -6515,6 +6530,9 @@ export async function POST(req: Request) {
             poolDetected: lpDiagnostics.poolDetected,
             poolSource: lpDiagnostics.poolSource,
             poolCount: lpDiagnostics.poolCount,
+          observedPoolPresent,
+          observedPoolCount,
+          poolCountStatus,
             goldrushLpAttempted: lpSafetyAttempted,
             goldrushLpUsable: lpSafetyUsable,
             rpcLpAttempted: lpDiagnostics.rpcAttempted,

@@ -103,6 +103,70 @@ function missingFields(payload: Record<string, any>): string[] {
   return missing
 }
 
+function publicEvidenceLabel(value: unknown): string | null {
+  if (typeof value !== 'string' || !value.trim()) return null
+  const normalized = value.toLowerCase()
+  if (normalized.includes('moralis_transfer_fallback')) return 'Transfer inference'
+  if (normalized.includes('geckoterminal') || normalized.includes('goldrush')) return 'Market + holder evidence'
+  if (normalized.includes('honeypot_is') || normalized.includes('honeypot.is') || normalized.includes('honeypot')) return 'Simulation evidence'
+  if (normalized.includes('transfer')) return 'Transfer inference'
+  if (normalized.includes('simulation')) return 'Simulation evidence'
+  if (normalized.includes('market') || normalized.includes('holder')) return 'Market + holder evidence'
+  if (normalized.includes('dex_data') || normalized.includes('rpc')) return 'Market + on-chain evidence'
+  return value.trim()
+}
+
+function sanitizeProviderText(value: string): string {
+  return value
+    .replace(/geckoterminal\+goldrush/gi, 'Market + holder evidence')
+    .replace(/moralis_transfer_fallback/gi, 'Transfer inference')
+    .replace(/honeypot(?:\.is|_is)?/gi, 'Simulation evidence')
+    .replace(/goldrush/gi, 'holder index')
+    .replace(/geckoterminal/gi, 'market index')
+}
+
+function sanitizeProviderNames<T>(value: T): T {
+  if (typeof value === 'string') return sanitizeProviderText(value) as T
+  if (Array.isArray(value)) return value.map((item) => sanitizeProviderNames(item)) as T
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, entry]) => [key, sanitizeProviderNames(entry)]),
+    ) as T
+  }
+  return value
+}
+
+function publicLpControl(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object') return null
+  const raw = value as Record<string, unknown>
+  const sourceLabel = publicEvidenceLabel(raw.source)
+  return sanitizeProviderNames({
+    ...raw,
+    source: sourceLabel,
+    sourceLabel,
+  })
+}
+
+function observedPoolFields(scan: Record<string, any>) {
+  const rawPoolCount = finiteNumber(scan.poolCount)
+  const lpControl = scan.lpControl && typeof scan.lpControl === 'object' ? scan.lpControl as Record<string, unknown> : {}
+  const hasPoolEvidence = Boolean(
+    publicAddress(lpControl.primaryMarketPool) ||
+    publicAddress(lpControl.verificationPool) ||
+    publicAddress(scan.lpMeta?.primaryMarketPoolAddress) ||
+    publicAddress(scan.lpMeta?.lpVerificationPoolAddress) ||
+    scan.lpMeta?.poolDetected === true,
+  )
+  const observedPoolPresent = Boolean((rawPoolCount != null && rawPoolCount > 0) || hasPoolEvidence)
+  const observedPoolCount = rawPoolCount != null && rawPoolCount > 0 ? rawPoolCount : (observedPoolPresent ? null : 0)
+  const poolCountStatus: 'confirmed' | 'inferred_from_primary_pool' | 'unknown' = rawPoolCount != null && rawPoolCount > 0
+    ? 'confirmed'
+    : observedPoolPresent
+      ? 'inferred_from_primary_pool'
+      : 'unknown'
+  return { observedPoolPresent, observedPoolCount, poolCountStatus }
+}
+
 function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract: string): Record<string, unknown> {
   const holderDistribution = scan.holderDistribution ?? {}
   const holderResolver = scan.holderResolver ?? {}
@@ -120,6 +184,8 @@ function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract
   const socialsRaw = scan.projectSocials && typeof scan.projectSocials === 'object' ? scan.projectSocials : {}
   const security = scan.security && typeof scan.security === 'object' ? scan.security : {}
   const simulation = security.simulation ?? scan.honeypot ?? null
+  const observedPools = observedPoolFields(scan)
+  const sanitizedLpControl = publicLpControl(scan.lpControl)
 
   return {
     chain,
@@ -134,7 +200,10 @@ function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract
       marketCapUsd: finiteNumber(scan.marketCapUsd ?? scan.market_cap),
       marketStatus: scan.marketStatus ?? null,
       marketConfidence: scan.marketConfidence ?? null,
-      poolCount: finiteNumber(scan.poolCount),
+      poolCount: observedPools.observedPoolCount,
+      observedPoolPresent: observedPools.observedPoolPresent,
+      observedPoolCount: observedPools.observedPoolCount,
+      poolCountStatus: observedPools.poolCountStatus,
       primaryDexName: scan.primaryDexName ?? null,
       poolActivity: scan.poolActivity ?? null,
       valuationContext: scan.valuationContext ?? null,
@@ -146,14 +215,15 @@ function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract
       lpController: publicAddress(scan.lpController) ?? publicAddress(security.devOwnership?.ownerAddress) ?? publicAddress(scan.lpControl?.owner) ?? null,
       lpProofStatus: scan.lpProofStatus ?? null,
       lpProofApplicability: scan.lpProofApplicability ?? null,
-      lpControl: scan.lpControl ?? null,
-      lpControlRead: scan.lpControlRead ?? null,
+      lockBurnReason: sanitizedLpControl?.lockBurnReason ?? scan.lpMeta?.lpModelDecision?.lockBurnReason ?? null,
+      lpControl: sanitizedLpControl,
+      lpControlRead: sanitizeProviderNames(scan.lpControlRead ?? null),
       lpLockProvider: scan.lpLockStatus === 'locked' ? (scan.lpLockProvider ?? null) : null,
       lpDataMode: scan.lpDataMode ?? null,
       lpDataConfidence: scan.lpDataConfidence ?? null,
       lpExitRisk: scan.lpExitRisk ?? null,
       lpExitRiskReason: scan.lpExitRiskReason ?? null,
-      lpEvidenceSummary: scan.lpEvidenceSummary ?? null,
+      lpEvidenceSummary: sanitizeProviderNames(scan.lpEvidenceSummary ?? null),
       lpModelProof: scan.lpModelProof ?? null,
       lpMigrationProof: scan.lpMigrationProof ?? null,
       cortexLpRead: scan.cortexLpRead ?? null,
@@ -164,7 +234,7 @@ function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract
       top20: finiteNumber(holderDistribution.top20),
       holderCount,
       status: scan.holderDistributionStatus?.status ?? scan.holderStatus ?? null,
-      reason: scan.holderDistributionStatus?.reason ?? holderResolver.reason ?? null,
+      reason: sanitizeProviderNames(scan.holderDistributionStatus?.reason ?? holderResolver.reason ?? null),
       confidence: holderResolver.confidence ?? scan.holderDistributionStatus?.confidence ?? null,
       topHolders: holderRows.slice(0, 20).map((h: Record<string, any>, index: number) => ({
         rank: finiteNumber(h.rank) ?? index + 1,
@@ -180,7 +250,7 @@ function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract
       deployerAddress: scan.deployerAddress ?? scan.devIntel?.deployerAddress ?? null,
       deployerStatus: scan.deployerStatus ?? scan.devIntel?.deployerStatus ?? null,
       deployerConfidence: scan.deployerConfidence ?? scan.devIntel?.deployerConfidence ?? null,
-      methodLabel: scan.methodUsed ?? scan.devIntel?.methodUsed ?? null,
+      methodLabel: publicEvidenceLabel(scan.methodUsed ?? scan.devIntel?.methodUsed) ?? null,
       creationTxHash: scan.creationTxHash ?? scan.devIntel?.creationTxHash ?? null,
       pastLaunches: scan.deployerProfile?.rugHistory != null ? null : null,
       rugHistoryVerified: null,
@@ -192,33 +262,33 @@ function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract
         linkedWalletSupplyPercent: linkedWalletSupply,
         matchedLinkedWallets: Array.isArray(scan.matchedLinkedWallets) ? scan.matchedLinkedWallets.length : null,
       },
-      supplyControl: scan.supplyControl ?? scan.devIntel?.supplyControl ?? null,
+      supplyControl: sanitizeProviderNames(scan.supplyControl ?? scan.devIntel?.supplyControl ?? null),
       linkedWallets: Array.isArray(scan.linkedWallets) ? scan.linkedWallets : [],
       creatorInTopHolders: typeof scan.creatorInTopHolders === 'boolean' ? scan.creatorInTopHolders : null,
-      reason: scan.devIntel?.reason ?? null,
+      reason: sanitizeProviderNames(scan.devIntel?.reason ?? null),
     },
     security: {
-      honeypot: simulation,
+      honeypot: sanitizeProviderNames(simulation),
       contractFlags: security.contractFlags ?? null,
       devOwnership: security.devOwnership ?? null,
-      riskDrivers: scan.cortexRiskEngine?.riskDrivers ?? scan.riskDrivers ?? [],
-      openChecks: scan.cortexRiskEngine?.openChecks ?? scan.openChecks ?? [],
+      riskDrivers: sanitizeProviderNames(scan.cortexRiskEngine?.riskDrivers ?? scan.riskDrivers ?? []),
+      openChecks: sanitizeProviderNames(scan.cortexRiskEngine?.openChecks ?? scan.openChecks ?? []),
     },
     socials: {
       website: socialsRaw.website ?? null,
       twitter: socialsRaw.twitter ?? null,
       telegram: socialsRaw.telegram ?? null,
     },
-    priceChart: scan.priceChart ?? null,
+    priceChart: sanitizeProviderNames(scan.priceChart ?? null),
     fetchedAt: new Date().toISOString(),
   }
 }
 
-async function scanToken(req: Request, chain: ChainKey, contract: string): Promise<Record<string, unknown>> {
+async function scanToken(req: Request, chain: ChainKey, contract: string, debug: boolean): Promise<Record<string, unknown>> {
   const scanReq = new Request(req.url, {
     method: 'POST',
     headers: req.headers,
-    body: JSON.stringify({ contract, chain, debug: false }),
+    body: JSON.stringify({ contract, chain, debug }),
   })
   const scanRes = await tokenScannerPost(scanReq)
   const scan = await scanRes.json().catch(() => null) as Record<string, any> | null
@@ -244,7 +314,7 @@ function storeCache(key: string, payload: Record<string, unknown>, now: number) 
     deployer: { value: payload.deployer ?? null, expiresAt: now + STATIC_TTL_MS },
     security: { value: payload.security ?? null, expiresAt: now + STATIC_TTL_MS },
     socials: { value: payload.socials ?? null, expiresAt: now + STATIC_TTL_MS },
-    priceChart: { value: payload.priceChart ?? null, expiresAt: now + MARKET_TTL_MS },
+    priceChart: { value: sanitizeProviderNames(payload.priceChart ?? null), expiresAt: now + MARKET_TTL_MS },
     fetchedAt: String(payload.fetchedAt ?? new Date(now).toISOString()),
   })
 }
@@ -274,7 +344,8 @@ async function enrich(req: Request, chain: ChainKey, contract: string, dedupeHit
     }
   }
 
-  const payload = await scanToken(req, chain, contract)
+  const debug = new URL(req.url).searchParams.get('debug') === '1' || new URL(req.url).searchParams.get('debug') === 'true'
+  const payload = await scanToken(req, chain, contract, debug)
   storeCache(key, payload, Date.now())
   const missingDrawerFields = missingFields(payload as Record<string, any>)
   return {
@@ -300,6 +371,7 @@ export async function GET(req: Request) {
   const url = new URL(req.url)
   const contract = String(url.searchParams.get('contract') ?? url.searchParams.get('address') ?? '').trim()
   const chain = normalizeChain(url.searchParams.get('chain'))
+  const debug = url.searchParams.get('debug') === '1' || url.searchParams.get('debug') === 'true'
 
   if (!chain) return NextResponse.json({ error: 'Unsupported chain.' }, { status: 400 })
   if (!/^0x[a-fA-F0-9]{40}$/.test(contract)) return NextResponse.json({ error: 'Invalid or missing contract address.' }, { status: 400 })
@@ -308,9 +380,7 @@ export async function GET(req: Request) {
   const cached = fromCache(cache.get(key), Date.now())
   if (cached) {
     const missingDrawerFields = missingFields(cached)
-    return NextResponse.json({
-      ...cached,
-      diagnostics: {
+    const diagnostics = {
         drawerEnrichmentAttempted: true,
         drawerEnrichmentCacheHit: true,
         drawerEnrichmentDedupeHit: false,
@@ -323,21 +393,21 @@ export async function GET(req: Request) {
         socialsEnriched: !missingDrawerFields.includes('socials.projectLinks'),
         missingDrawerFields,
         enrichmentDurationMs: 0,
-      },
-    })
+      }
+    return NextResponse.json(debug ? { ...cached, diagnostics, _debug: diagnostics } : cached)
   }
 
   const existing = inFlight.get(key)
   if (existing) {
     const result = await existing.then((value) => ({ payload: value.payload, diagnostics: { ...value.diagnostics, drawerEnrichmentDedupeHit: true } }))
-    return NextResponse.json({ ...result.payload, diagnostics: result.diagnostics })
+    return NextResponse.json(debug ? { ...result.payload, diagnostics: result.diagnostics, _debug: result.diagnostics } : result.payload)
   }
 
   const promise = enrich(req, chain, contract, false)
   inFlight.set(key, promise)
   try {
     const result = await promise
-    return NextResponse.json({ ...result.payload, diagnostics: result.diagnostics })
+    return NextResponse.json(debug ? { ...result.payload, diagnostics: result.diagnostics, _debug: result.diagnostics } : result.payload)
   } finally {
     inFlight.delete(key)
   }
