@@ -1851,6 +1851,29 @@ async function resolveSimulation(chain: string, address: string): Promise<{
   }
 }
 
+// Public-safe labels for internal data-source/method identifiers. The normal /api/token
+// response must never name third-party providers (GoldRush, Moralis, Dexscreener, etc.) —
+// only when debug=1/true is requested does the raw provider identifier pass through, for
+// private diagnostics.
+const PUBLIC_SOURCE_LABELS: Record<string, string> = {
+  goldrush_token_holders: 'Holder evidence',
+  moralis_token_owners: 'Holder evidence',
+  moralis_token_transfers: 'Transfer evidence',
+  moralis_transfer_fallback: 'Transfer inference',
+  rpc_selector: 'On-chain verification',
+  dexscreener: 'Market data',
+  geckoterminal: 'Market data',
+  coingecko_terminal: 'Market data',
+  coingecko: 'Market data',
+  fdv_derived: 'Derived market data',
+  honeypot_is: 'Simulation evidence',
+}
+function publicSourceLabel<T extends string | null | undefined>(value: T, debugMode: boolean): T | string {
+  if (value == null) return value
+  if (debugMode) return value
+  return PUBLIC_SOURCE_LABELS[value] ?? value
+}
+
 // Resolves contract flags from ABI scan (GoldRush Contract Intel) with bytecode fallback.
 // Returns boolean|null per flag: true = detected, false = not detected, null = not analyzed.
 function resolveContractFlags(
@@ -2291,6 +2314,10 @@ type LpDiagnostics = {
   lockerRegistryEmpty: boolean;
   rpcConfigured: boolean;
   rpcSkippedReason: string | null;
+  // Selection rule 6: documents which strategy chose the canonical primary pool
+  // (lpPool) used for lpControl/lpModelProof — currently always the
+  // highest-liquidity pool among canonical market pools.
+  selectedPrimaryPoolStrategy: 'highest_liquidity_canonical_market_pool';
 };
 
 type LpControlRead = {
@@ -2302,7 +2329,7 @@ type LpControlRead = {
   nextAction: string;
 };
 
-function computeLpControlRead(lp: LpControlResult, pairName?: string | null): LpControlRead {
+function computeLpControlRead(lp: LpControlResult, pairName?: string | null, controllerAddress?: string | null): LpControlRead {
   const pair = pairName ? `Pair: ${pairName}` : null;
   const poolLine = pair ? ["Verification pool found", pair] : lp.poolAddressPresent ? ["Verification pool found"] : [];
   switch (lp.status) {
@@ -2329,7 +2356,7 @@ function computeLpControlRead(lp: LpControlResult, pairName?: string | null): Lp
         title: "LP controlled by wallet",
         meaning: "A single wallet holds dominant LP share and can remove liquidity at any time.",
         riskLevel: "High",
-        whatWasFound: [...poolLine, "Single wallet holds dominant LP share"],
+        whatWasFound: [...poolLine, controllerAddress ? `Single wallet (${controllerAddress}) holds dominant LP share` : "Single wallet holds dominant LP share"],
         couldNotVerify: [],
         nextAction: "Liquidity removal risk exists. Treat with caution until LP is locked or burned.",
       };
@@ -3539,6 +3566,7 @@ export async function POST(req: Request) {
       lockerRegistryEmpty: _lockerRegistryEmpty,
       rpcConfigured: _rpcConfigured,
       rpcSkippedReason: _rpcSkippedReason,
+      selectedPrimaryPoolStrategy: 'highest_liquidity_canonical_market_pool',
     };
     let lpControl: LpControlResult = {
       status: "partial",
@@ -4819,6 +4847,15 @@ export async function POST(req: Request) {
     // isRenounced requires BOTH ownershipVerified AND a confirmed zero owner address —
     // never inferred from a missing/unresolved owner() call.
     const isRenounced = ownershipVerified && _ownerConfirmedZero
+    // Canonical ownership status — single source of truth for aiSummary, riskEngine,
+    // sections.ownership, and CORTEX/Clark text. 'open_check' (not 'inferred_active')
+    // when ownership was never verified, so wording never implies an unverified active owner.
+    const _ownershipStatusFinal: 'renounced' | 'held' | 'open_check' = isRenounced ? 'renounced' : (ownershipVerified ? 'held' : 'open_check')
+    // Canonical owner address for display: shows the confirmed zero address when renounced
+    // is verified (proof of renouncement), null only when ownership is an open check.
+    const _ownerAddressForDisplay = _ownerConfirmedZero ? _ZERO_ADDR : (ownerAddr ?? null)
+    const ownershipStatus: 'renounced' | 'open_check' = isRenounced ? 'renounced' : 'open_check'
+    const ownershipLabel = isRenounced ? 'Ownership renounced / verified zero address' : 'Ownership not verified'
     const rpcSupply = await countedRpcCall('eth_call', [{ to: contract, data: '0x18160ddd' }, 'latest'], 'totalSupplyCheck', true)
     const rpcDecimalsHex = await countedRpcCall('eth_call', [{ to: contract, data: '0x313ce567' }, 'latest'], 'decimalsCheck', true)
 
@@ -4863,7 +4900,7 @@ export async function POST(req: Request) {
       // Structural inference: most ERC20 tokens do not have these functions
       return {
         status: 'inferred', confidence: 'low',
-        note: `No bytecode, GoldRush, or simulation available. ${flagName} inferred absent based on standard ERC20 pattern — manual on-chain check recommended.`,
+        note: `No bytecode, indexed contract data, or simulation available. ${flagName} inferred absent based on standard ERC20 pattern — manual on-chain check recommended.`,
       }
     }
     const _resolveFlag = (
@@ -4873,22 +4910,22 @@ export async function POST(req: Request) {
       rpcConfirm?: boolean,
     ): FlagStatus => {
       if (rpcConfirm) return { status: 'verified', confidence: 'high', note: 'RPC call confirmed' }
-      if (grValue === true) return { status: 'verified', confidence: 'high', note: 'GoldRush Contract Intel confirmed' }
-      if (grValue === false) return { status: 'not_detected', confidence: 'high', note: 'GoldRush Contract Intel: not present' }
-      // GoldRush returned null — fall back to ABI/bytecode signature scan
+      if (grValue === true) return { status: 'verified', confidence: 'high', note: 'Indexed contract intel confirmed' }
+      if (grValue === false) return { status: 'not_detected', confidence: 'high', note: 'Indexed contract intel: not present' }
+      // Indexed contract intel returned null — fall back to ABI/bytecode signature scan
       if (!_hasBytecode) return _inferFlagAbsent(bytecodeNote.split(' ')[0])
       if (bytecodeSel) return { status: 'verified', confidence: 'high', note: bytecodeNote }
-      return { status: 'not_detected', confidence: 'medium', note: `ABI signature scan: not detected (GoldRush fallback)` }
+      return { status: 'not_detected', confidence: 'medium', note: `ABI signature scan: not detected (indexed fallback)` }
     }
     const cortexContractFlags: CortexContractFlagsResult = {
       mint: _resolveFlag(_grCI?.mint, _cortexMintSel, 'Mint selector in ABI/bytecode (40c10f19 or a0712d68)'),
       proxy: (() => {
         if (_isVerifiedProxy) return { status: 'verified' as const, confidence: 'high' as const, note: 'EIP-1967 implementation slot is non-zero (RPC confirmed)' }
-        if (_grCI?.proxy === true || _grCI?.upgradeable === true) return { status: 'verified' as const, confidence: 'high' as const, note: 'GoldRush Contract Intel: proxy/upgradeable confirmed' }
-        if (_grCI?.proxy === false && _grCI?.upgradeable === false) return { status: 'not_detected' as const, confidence: 'high' as const, note: 'GoldRush Contract Intel: not proxy' }
+        if (_grCI?.proxy === true || _grCI?.upgradeable === true) return { status: 'verified' as const, confidence: 'high' as const, note: 'Indexed contract intel: proxy/upgradeable confirmed' }
+        if (_grCI?.proxy === false && _grCI?.upgradeable === false) return { status: 'not_detected' as const, confidence: 'high' as const, note: 'Indexed contract intel: not proxy' }
         if (!_hasBytecode) return _inferFlagAbsent('Proxy/upgradeable') as { status: 'verified' | 'possible' | 'not_detected' | 'inferred' | 'partial'; confidence: 'high' | 'medium' | 'low'; note: string }
         if (_cortexProxySel) return { status: 'possible' as const, confidence: 'medium' as const, note: 'Upgrade selector in ABI/bytecode; EIP-1967 slot not confirmed' }
-        return { status: 'not_detected' as const, confidence: 'medium' as const, note: 'ABI signature scan: no proxy selector or EIP-1967 slot (GoldRush fallback)' }
+        return { status: 'not_detected' as const, confidence: 'medium' as const, note: 'ABI signature scan: no proxy selector or EIP-1967 slot (indexed fallback)' }
       })(),
       pause: (() => {
         if (_pauseFunctionExists) return { status: 'verified' as const, confidence: 'high' as const, note: 'paused() RPC call responded' }
@@ -4911,7 +4948,7 @@ export async function POST(req: Request) {
     // Always use deterministic summary when holder data is complete — AI prompt is built before
     // holder data resolves so AI text can contain stale "holders not indexed" wording.
     // Fall back to AI text only when holder data is incomplete.
-    const _deterministicSummary = _buildDeterministicSummary(_chainName, noActivePools, hpResult, analysis, holderDataComplete, holderCount ?? null, top10Pct ?? null, _ownerStatusEarly, lpPoolType ?? lpVerifyPoolType, lpControl.status)
+    const _deterministicSummary = _buildDeterministicSummary(_chainName, noActivePools, hpResult, analysis, holderDataComplete, holderCount ?? null, top10Pct ?? null, _ownershipStatusFinal, lpPoolType ?? lpVerifyPoolType, lpControl.status)
     const aiSummary: string = holderDataComplete ? _deterministicSummary : (_aiTextEarly ?? _deterministicSummary)
 
     if (marketCapFromGt != null) riskVerifiedSignals.push('Market data verified: market cap is available.')
@@ -4947,10 +4984,10 @@ export async function POST(req: Request) {
     else if (lpProofStatus === 'inferred') { openChecks.push('LP lock/burn not confirmed — liquidity exit risk should be assumed.'); riskScore += 10 }
     else { riskScore += 5 }
 
-    const riskOwnerStatus = isRenounced ? 'renounced' : (ownershipVerified ? 'held' : 'inferred_active')
+    const riskOwnerStatus = _ownershipStatusFinal
     if (riskOwnerStatus === 'renounced') { riskVerifiedSignals.push('Dev Control: ownership appears renounced.'); riskScore -= 6 }
     else if (riskOwnerStatus === 'held') { riskDrivers.push('Dev Control: ownership is held by a wallet.'); riskScore += 10 }
-    // inferred_active: ownership source not found — assume active (conservative)
+    // open_check: ownership source not found — treat as potentially active (conservative)
     else if (rpcOwnershipAttempted && !ownerAddr && !adminAddr && !proxyImplAddr) { openChecks.push('Dev Control: ownership not resolved — treat as potentially active (conservative).') }
     if (proxyImplAddr && !isRenounced) { riskDrivers.push('Proxy contract with active owner — upgrade risk present.'); riskScore += 5 }
 
@@ -5098,26 +5135,17 @@ export async function POST(req: Request) {
     })()
 
     // ── Deployer Profile — always produces a value with rug history inference ──
+    // `deployer` and `method`/`note` are reconciled later (once devIntel.deployerAddress
+    // is resolved) so the deployer/origin wallet is never confused with the (possibly
+    // renounced/zero) owner address. This placeholder only fixes deployPattern early.
     const deployerProfile: RiskEngine["deployerProfile"] = (() => {
-      const _rugHistory: number | null = null // live lookup not available; inferred below
       const _isProxy = cortexContractFlags.proxy.status === 'verified' || cortexContractFlags.proxy.status === 'possible'
       const _deployPattern: RiskEngine["deployerProfile"]["deployPattern"] = _isProxy ? 'proxy'
         : proxyImplAddr ? 'proxy'
         : chain === 'base' && !ownerAddr ? 'factory'
         : ownerAddr ? 'eoa'
         : 'inferred'
-      const _clusterRisk: RiskEngine["deployerProfile"]["clusterRisk"] = 'inferred'
-      if (ownerAddr && ownerAddr !== '0x0000000000000000000000000000000000000000') {
-        const _src = _ownerFromTransfer ? 'moralis_transfer_fallback' : 'rpc_selector'
-        return { status: 'verified', deployer: ownerAddr, method: _src, rugHistory: _rugHistory, clusterRisk: _clusterRisk, deployPattern: _deployPattern, note: `Deployer wallet identified via ${_src === 'rpc_selector' ? 'on-chain owner() call' : 'Moralis mint transfer event'}. Rug history lookup requires Etherscan/DeBank cross-reference.` }
-      }
-      if (ownerAddr === '0x0000000000000000000000000000000000000000' || isRenounced) {
-        return { status: 'verified', deployer: '0x0000000000000000000000000000000000000000', method: 'rpc_selector', rugHistory: 0, clusterRisk: 'clean', deployPattern: _deployPattern, note: 'Ownership renounced — zero address confirmed as current owner. No active deployer control.' }
-      }
-      const _chainCtx = chain === 'base'
-        ? 'Base: factory or CL pool deployer pattern likely — verify on Basescan.'
-        : 'Ethereum: EOA deployment expected — verify on Etherscan.'
-      return { status: 'inferred', deployer: null, method: 'inference', rugHistory: null, clusterRisk: _clusterRisk, deployPattern: _deployPattern, note: `Deployer not resolved from RPC or transfer events. ${_chainCtx}` }
+      return { status: 'inferred', deployer: null, method: 'inference', rugHistory: null, clusterRisk: 'inferred', deployPattern: _deployPattern, note: 'Deployer/origin wallet resolution pending.' }
     })()
 
     // ── Holder Intelligence — concentration, churn, velocity, early buyer, whale ──
@@ -5278,16 +5306,30 @@ export async function POST(req: Request) {
       lpProof = { lpLockStatus: 'unverified', lpLockAmount: null, lpUnlockTime: null, lpLockProvider: null, lpController: 'unknown', reasonCode: 'proofNotApplicable' }
     }
     const { lpLockStatus, lpLockAmount, lpUnlockTime, lpLockProvider, lpController: _lpControllerFromProof } = lpProof
-    // Synthesize lpController from lpControl evidence when the proof scan returned 'unknown'.
+    // Synthesize lpControllerType from lpControl evidence when the proof scan returned 'unknown'.
     // lpControl independently detects who holds the LP tokens (team wallet, burn address, etc.)
     // and should be the authoritative source for controller identity when proof has no data.
-    const lpController: 'wallet' | 'contract' | 'burn' | 'lockContract' | 'unknown' = (() => {
+    const lpControllerType: 'wallet' | 'contract' | 'burn' | 'lockContract' | 'unknown' = (() => {
       if (_lpControllerFromProof !== 'unknown') return _lpControllerFromProof
       if (lpControl.status === 'team_controlled') return 'wallet'
       if (lpControl.status === 'burned') return 'burn'
       if (lpControl.status === 'locked') return 'lockContract'
       return _lpControllerFromProof
     })()
+    // The actual controlling address (when known) — never collapse this to the literal
+    // string "wallet"/"burn"/etc. lpController exposes the address (or null), while
+    // lpControllerType retains the enum classification for UI labeling.
+    const lpControllerAddress: string | null = (() => {
+      if (lpControllerType !== 'wallet') return null
+      const _topHolderEv = lpControl.evidence.find((e) => e.startsWith('top_holder='))
+      if (_topHolderEv) {
+        const _addr = _topHolderEv.split('=')[1]?.toLowerCase()
+        return _addr && /^0x[a-f0-9]{40}$/.test(_addr) ? _addr : null
+      }
+      if (lpControl.evidence.some((e) => e.startsWith('owner_lp_share='))) return ownerAddr ?? null
+      return null
+    })()
+    const lpController: string = lpControllerAddress ?? lpControllerType
     if (_lpProofSkipReason) lpDiagnostics.lpProofSkipReason = _lpProofSkipReason
 
     // proofApplicability: shared classification — "not_applicable"/"not_available" suppress
@@ -5295,7 +5337,7 @@ export async function POST(req: Request) {
     // includeTokenGaps: false — token scanner has its own security section for tax/honeypot/renounce
     const lpEvidenceGaps = buildLpEvidenceGaps({
       lpLockStatus,
-      lpController,
+      lpController: lpControllerType,
       proofApplicability: lpProofApplicability,
       controllerProofAttempted: _proofApplicableEarly,
       includeTokenGaps: false,
@@ -5312,6 +5354,13 @@ export async function POST(req: Request) {
 
     const lpModelForCortex = lpModelProof
     const migrationSummaryForCortex = lpMigrationProof.reason + (noActivePools ? ' No active pools were detected for this token.' : '')
+
+    // "Established token" heuristic (problem 5): high liquidity, broad holder base, and a
+    // verified market cap together indicate a mature/established token, so wallet-controlled
+    // LP is described as a liquidity-control signal rather than implied rug risk.
+    const isEstablishedToken = (liquidityUsd != null && liquidityUsd >= 500_000)
+      && (holderCount != null && holderCount >= 1000)
+      && (marketCapFromGt != null && marketCapFromGt > 0)
 
     const cortexLpRead = buildSharedCortexLpRead({
       name: finalResolvedName !== 'Unknown' ? finalResolvedName : (finalResolvedSymbol !== '?' ? finalResolvedSymbol : 'This token'),
@@ -5331,6 +5380,9 @@ export async function POST(req: Request) {
       secondaryLpSignal: lpControl.secondaryLpControlSignals
         ? { status: lpControl.secondaryLpControlSignals.status, poolDex: lpControl.secondaryLpControlSignals.poolDex }
         : null,
+      lpController: lpControllerType,
+      lpControllerAddress,
+      isEstablishedToken,
     })
 
     // ── Structured exit risk fields (problem 6): liquidityDepthRisk separated from
@@ -5345,13 +5397,15 @@ export async function POST(req: Request) {
     const _lpExitRiskResult = computeLpExitRisk({
       proofApplicability: lpProofApplicability,
       lpLockStatus,
-      lpController,
+      lpController: lpControllerType,
       liquidityUsd: _liqForRisk,
       poolModel: lpModelProof.model === 'concentrated' && lpDexId && /aerodrome|velodrome/i.test(lpDexId) ? 'concentrated' : lpModelProof.model,
       hasPool: !noActivePools && _lpProofPresent,
       secondaryLpSignal: lpControl.secondaryLpControlSignals
         ? { status: lpControl.secondaryLpControlSignals.status, poolDex: lpControl.secondaryLpControlSignals.poolDex }
         : null,
+      lpControllerAddress,
+      isEstablishedToken,
     })
     const lpExitRisk = _lpExitRiskResult.lpExitRisk
     const lpExitRiskReason = _lpExitRiskResult.lpExitRiskReason
@@ -5576,6 +5630,39 @@ export async function POST(req: Request) {
     const devOriginReason = chain === 'eth'
       ? (ethOrigin?.reason ?? 'No ETH origin candidate found from Token Scanner checks')
       : (deployerAddress ? (_ownerFromTransfer ? 'Deployer inferred from earliest mint transfer recipient.' : 'Deployer resolved from ownership/control checks.') : 'Deployer not resolved from token scan data.')
+
+    // Reconcile deployerProfile with the resolved deployer/origin wallet (devIntel.deployerAddress).
+    // The zero address only ever represents a renounced *owner* — it must never appear as
+    // `deployer`. When no deployer/origin wallet is resolved, report null/inferred (open check).
+    if (deployerAddress) {
+      const _deployerMethod = devMethodUsed === 'unknown' ? 'inference' : devMethodUsed
+      riskEngine.deployerProfile = {
+        ...riskEngine.deployerProfile,
+        status: 'verified',
+        deployer: deployerAddress,
+        method: publicSourceLabel(_deployerMethod, debugMode),
+        rugHistory: 0,
+        clusterRisk: isRenounced ? 'clean' : riskEngine.deployerProfile.clusterRisk,
+        note: `Deployer/origin wallet identified via ${_deployerMethod === 'rpc_selector' ? 'on-chain owner() call' : _deployerMethod === 'moralis_transfer_fallback' ? 'on-chain mint transfer event' : 'on-chain origin discovery'}.${isRenounced ? ' Current owner is separately confirmed renounced (zero address) — this address is the deployer/origin wallet, not the current owner.' : ''} Rug history lookup requires manual on-chain/explorer cross-reference.`,
+      }
+    } else if (isRenounced) {
+      riskEngine.deployerProfile = {
+        ...riskEngine.deployerProfile,
+        status: 'inferred',
+        deployer: null,
+        method: 'inference',
+        rugHistory: null,
+        note: 'Ownership renounced — zero address confirmed as current owner. Deployer/origin wallet not resolved from RPC or transfer events.',
+      }
+    }
+    // Reconcile rugRisk.deployer_reputation with the same resolved deployer/origin wallet —
+    // never report the (possibly renounced/zero) owner address as the deployer wallet.
+    rugRisk.deployer_reputation = {
+      score: deployerAddress ? (rugRiskScore != null ? Math.max(0, 100 - rugRiskScore) : 50) : null,
+      rug_history: null,
+      deploy_patterns: deployerAddress ? [`deployer_wallet=${deployerAddress}`] : [`inferred: no deployer wallet resolved — factory or anonymous deployment assumed`],
+      source_status: deployerAddress ? "ok" : "partial",
+    }
     const linkedAddressSet = new Set(linkedWallets.map((wallet) => wallet.address))
     const holderRows = holderDistribution.topHolders ?? []
     const transferResolverResult = await resolveTokenTransfers({
@@ -5721,7 +5808,7 @@ export async function POST(req: Request) {
       deployerAddress,
       deployerStatus: devDeployerStatus,
       deployerConfidence: devDeployerConfidence,
-      methodUsed: devMethodUsed,
+      methodUsed: publicSourceLabel(devMethodUsed, debugMode),
       creationTxHash: devCreationTxHash,
       linkedWallets,
       creatorInTopHolders,
@@ -5740,14 +5827,14 @@ export async function POST(req: Request) {
         transferCount: transferResolverResult.transfers.length,
         insufficientEvidence: transferResolverResult.insufficientEvidence,
         reason: transferResolverResult.reason ?? null,
-        fallbackUsed: transferResolverResult.fallbackUsed ?? null,
+        fallbackUsed: publicSourceLabel(transferResolverResult.fallbackUsed, debugMode) ?? null,
         confidence: transferResolverResult.confidence,
       },
       holderEvidence: {
         holderCount: holderResolverResult.holders.length,
         insufficientEvidence: holderResolverResult.insufficientEvidence,
         reason: holderResolverResult.reason ?? null,
-        fallbackUsed: holderResolverResult.fallbackUsed ?? null,
+        fallbackUsed: publicSourceLabel(holderResolverResult.fallbackUsed, debugMode) ?? null,
         confidence: holderResolverResult.confidence,
       },
       insufficientEvidence: holderResolverResult.insufficientEvidence && transferResolverResult.insufficientEvidence,
@@ -5801,38 +5888,38 @@ export async function POST(req: Request) {
       holderDistributionStatus,
       holderStatus: holdersStatus,
       holderResolver: {
-        holders: holderResolverResult.holders,
+        holders: holderResolverResult.holders.map((h) => ({ ...h, source: publicSourceLabel(h.source, debugMode) })),
         insufficientEvidence: holderResolverResult.insufficientEvidence,
         reason: holderResolverResult.reason ?? null,
-        fallbackUsed: holderResolverResult.fallbackUsed ?? null,
+        fallbackUsed: publicSourceLabel(holderResolverResult.fallbackUsed, debugMode) ?? null,
         confidence: holderResolverResult.confidence,
       },
       transferResolver: {
-        transfers: transferResolverResult.transfers,
+        transfers: transferResolverResult.transfers.map((t) => ({ ...t, source: publicSourceLabel(t.source, debugMode) })),
         insufficientEvidence: transferResolverResult.insufficientEvidence,
         reason: transferResolverResult.reason ?? null,
-        fallbackUsed: transferResolverResult.fallbackUsed ?? null,
+        fallbackUsed: publicSourceLabel(transferResolverResult.fallbackUsed, debugMode) ?? null,
         confidence: transferResolverResult.confidence,
       },
       suspiciousFlows: {
-        transfers: transferResolverResult.transfers,
+        transfers: transferResolverResult.transfers.map((t) => ({ ...t, source: publicSourceLabel(t.source, debugMode) })),
         insufficientEvidence: transferResolverResult.insufficientEvidence,
         reason: transferResolverResult.insufficientEvidence ? (transferResolverResult.reason ?? 'Transfer evidence unavailable in this pass.') : 'Transfer evidence available from resolver.',
-        fallbackUsed: transferResolverResult.fallbackUsed ?? 'none',
+        fallbackUsed: publicSourceLabel(transferResolverResult.fallbackUsed ?? 'none', debugMode),
         confidence: transferResolverResult.confidence,
       },
       earlyBuyers: {
         wallets: [],
         insufficientEvidence: transferResolverResult.insufficientEvidence,
         reason: transferResolverResult.insufficientEvidence ? (transferResolverResult.reason ?? 'Transfer evidence unavailable in this pass.') : 'Early-buyer labelling is not derived without trade records containing real wallet addresses.',
-        fallbackUsed: transferResolverResult.fallbackUsed ?? 'none',
+        fallbackUsed: publicSourceLabel(transferResolverResult.fallbackUsed ?? 'none', debugMode),
         confidence: transferResolverResult.insufficientEvidence ? 'low' : 'medium',
       },
       devIntel,
       deployerAddress,
       deployerStatus: devDeployerStatus,
       deployerConfidence: devDeployerConfidence,
-      methodUsed: devMethodUsed,
+      methodUsed: publicSourceLabel(devMethodUsed, debugMode),
       creationTxHash: devCreationTxHash,
       linkedWallets,
       supplyControl,
@@ -5859,7 +5946,7 @@ export async function POST(req: Request) {
       } : {}),
       // Normalized top-level market fields
       priceUsd: _ep,
-      priceSource: _priceSource,
+      priceSource: publicSourceLabel(_priceSource, debugMode),
       liquidityUsd: _el,
       volume24hUsd: _ev,
       poolCount: observedPoolCount,
@@ -5872,7 +5959,7 @@ export async function POST(req: Request) {
       market_cap: marketCapFromGt,
       marketCapUsd: marketCapFromGt,
       marketCapStatus: marketCapFromGt != null ? 'verified' : (_efdv != null ? 'inferred' : 'partial'),
-      marketCapSource,
+      marketCapSource: publicSourceLabel(marketCapSource, debugMode),
       marketCapReason: marketCapFromGt != null
         ? ((tokenEndpointMarketCap != null && tokenEndpointMarketCap > 0) ? 'Verified live market data' : 'Verified live pool market data')
         : _efdv != null ? 'FDV used as market cap proxy — circulating supply not confirmed'
@@ -5880,7 +5967,7 @@ export async function POST(req: Request) {
       circulating_supply: circulatingSupply,
       fdv: _efdv,
       fdvUsd: _efdv,
-      fdvSource: _efdv != null ? (fdv != null ? fdvSource : 'fallback') : 'partial',
+      fdvSource: publicSourceLabel(_efdv != null ? (fdv != null ? fdvSource : 'fallback') : 'partial', debugMode),
       displayMarketValue,
       displayMarketValueLabel,
       displayMarketValueConfidence,
@@ -5923,15 +6010,19 @@ export async function POST(req: Request) {
       contractSecurity: null,
 
       security: {
-        // resolveSimulation result — null when Honeypot.is is unavailable
-        simulation: _simResult,
-        // resolveContractFlags: ABI scan (GoldRush) with bytecode fallback
+        // resolveSimulation result — null when simulation provider is unavailable
+        simulation: _simResult ? { ..._simResult, source: publicSourceLabel(_simResult.source, debugMode) } : _simResult,
+        // resolveContractFlags: ABI scan with bytecode fallback
         contractFlags: resolveContractFlags(grContractIntel, cortexContractFlags),
         devOwnership: {
-          ownerAddress: (ownerAddr && ownerAddr !== _ZERO_ADDR) ? ownerAddr : null,
+          // Confirmed-zero address is shown (proof of renouncement); null only means
+          // ownership was never verified — never conflate "renounced" with "unknown".
+          ownerAddress: _ownerAddressForDisplay,
           adminAddress: adminAddr ?? null,
           isRenounced,
           ownershipVerified,
+          ownershipStatus,
+          ownershipLabel,
         },
       },
 
@@ -6173,14 +6264,15 @@ export async function POST(req: Request) {
 
       // Contract analysis
       analysis,
-      lpControl: { ...lpControl, canonicalStatus: toCanonical(lpControl.status), rawLpState: lpControl.status, rawState: lpControl.status },
+      lpControl: { ...lpControl, canonicalStatus: toCanonical(lpControl.status), rawLpState: lpControl.status, rawState: lpControl.status, lpController, lpControllerType },
       lpStatus: (lpControl.status === 'error' || lpControl.status === 'insufficient_data') ? 'partial' : lpControl.status,
-      lpControlRead: computeLpControlRead(lpControl, String(lpPool?.pairName ?? "")),
+      lpControlRead: computeLpControlRead(lpControl, String(lpPool?.pairName ?? ""), lpControllerAddress),
       lpLockStatus,
       lpLockAmount,
       lpUnlockTime,
       lpLockProvider,
       lpController,
+      lpControllerType,
       lpEvidenceGaps,
       lpDataMode,
       lpDataConfidence,
@@ -6201,6 +6293,7 @@ export async function POST(req: Request) {
         primaryMarketDex: lpDiagnostics.primaryMarketDex,
         lpVerificationPoolSelected: lpDiagnostics.lpVerificationPoolSelected,
         proofStatus: lpDiagnostics.lpState ?? null,
+        selectedPrimaryPoolStrategy: lpDiagnostics.selectedPrimaryPoolStrategy,
         // Base LP-locker registry coverage (problem 5): the registry is intentionally
         // empty for Base until verified locker addresses are confirmed on-chain, so
         // "locked" can never fire for Base V2 pools via holder-balance detection.
@@ -6288,8 +6381,10 @@ export async function POST(req: Request) {
             canonicalStatus: toCanonical(lpControl.status),
             rawLpState: lpControl.status,
             rawState: lpControl.status,
+            lpController,
+            lpControllerType,
           },
-          lpControlRead: computeLpControlRead(lpControl, String(lpPool?.pairName ?? "")),
+          lpControlRead: computeLpControlRead(lpControl, String(lpPool?.pairName ?? ""), lpControllerAddress),
           lpMeta: {
             v2PoolCandidatesCount: lpDiagnostics.v2PoolCandidatesCount,
             protocolPoolCandidatesCount: lpDiagnostics.protocolPoolCandidatesCount,
@@ -6298,6 +6393,7 @@ export async function POST(req: Request) {
             primaryMarketDex: lpDiagnostics.primaryMarketDex,
             lpVerificationPoolSelected: lpDiagnostics.lpVerificationPoolSelected,
             proofStatus: lpDiagnostics.lpState ?? null,
+            selectedPrimaryPoolStrategy: lpDiagnostics.selectedPrimaryPoolStrategy,
           },
         },
         ownership: {
@@ -6578,6 +6674,9 @@ export async function POST(req: Request) {
           lockerRegistryEmpty: lpDiagnostics.lockerRegistryEmpty,
           rpcConfigured: lpDiagnostics.rpcConfigured,
           rpcSkippedReason: lpDiagnostics.rpcSkippedReason,
+          selectedPrimaryPoolStrategy: lpDiagnostics.selectedPrimaryPoolStrategy,
+          // Debug-only raw GeckoTerminal pool ordering (problem 6) — never exposed publicly.
+          gtRawFirstPool: gtAllPools[0] ?? null,
           rpcAttempted: lpDiagnostics.rpcAttempted,
           totalSupplyChecked: lpDiagnostics.totalSupplyChecked,
           burnAddressesChecked: lpDiagnostics.burnAddressesChecked,

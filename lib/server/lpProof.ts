@@ -279,8 +279,11 @@ export function buildCortexLpRead(params: {
   lpLockProvider: "PinkLock" | null;
   lpUnlockTime: number | null;
   secondaryLpSignal?: { status: string; poolDex: string | null } | null;
+  lpController?: LpController;
+  lpControllerAddress?: string | null;
+  isEstablishedToken?: boolean;
 }): CortexLpRead {
-  const { name, symbol, totalLiq, fragments, observedPoolPresent, riskTier, lpModel, migrationSummary, mode, confidence, gaps, lpLockStatus, lpLockProvider, lpUnlockTime, secondaryLpSignal } = params;
+  const { name, symbol, totalLiq, fragments, observedPoolPresent, riskTier, lpModel, migrationSummary, mode, confidence, gaps, lpLockStatus, lpLockProvider, lpUnlockTime, secondaryLpSignal, lpController, lpControllerAddress, isEstablishedToken } = params;
   const liqStr = totalLiq != null ? `$${totalLiq.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : "an unknown amount";
 
   // Secondary signal wording (selection rule 4): only describes a SECONDARY V2/Aerodrome ERC-20 LP
@@ -301,7 +304,9 @@ export function buildCortexLpRead(params: {
       ? "On-chain data shows the dominant share of LP tokens sent to a burn address."
       : !lpModel.standardLockApplies
         ? `Standard ERC-20 LP lock/burn proof does not apply to this concentrated-liquidity pool. Liquidity control requires protocol-specific position checks.${secondaryClause}`
-        : "No lock or burn proof was confirmed for this LP — treat liquidity as potentially withdrawable.";
+        : (lpController === "wallet" && isEstablishedToken)
+          ? `Selected LP position appears wallet-controlled${lpControllerAddress ? ` (${lpControllerAddress})` : ""}. This is a liquidity-control signal, not proof of malicious behavior. Verify the controlling wallet and any lock/burn evidence before relying on liquidity safety.`
+          : "No lock or burn proof was confirmed for this LP — treat liquidity as potentially withdrawable.";
 
   const riskSummary = `${name} (${symbol}) shows a "${riskTier}" liquidity-depth risk tier based on observed pool data. This reflects liquidity depth and pool structure only — ownership, mintability, simulation and tax status remain unconfirmed (data mode: ${mode}, confidence: ${confidence}). ${lockClause}`;
 
@@ -494,8 +499,10 @@ export function computeLpExitRisk(params: {
   poolModel: PoolModel;
   hasPool: boolean;
   secondaryLpSignal?: { status: string; poolDex: string | null } | null;
+  lpControllerAddress?: string | null;
+  isEstablishedToken?: boolean;
 }): LpExitRiskResult {
-  const { proofApplicability, lpLockStatus, lpController, liquidityUsd, poolModel, hasPool, secondaryLpSignal } = params;
+  const { proofApplicability, lpLockStatus, lpController, liquidityUsd, poolModel, hasPool, secondaryLpSignal, lpControllerAddress, isEstablishedToken } = params;
 
   const liquidityDepthRisk: LpExitRiskResult["liquidityDepthRisk"] =
     liquidityUsd == null ? "unknown" :
@@ -541,9 +548,12 @@ export function computeLpExitRisk(params: {
 
   // proofApplicability === "applicable" but no lock/burn proof found
   if (lpController === "wallet") {
+    const reason = isEstablishedToken
+      ? `Selected LP position appears wallet-controlled${lpControllerAddress ? ` (${lpControllerAddress})` : ""}. This is a liquidity-control signal, not proof of malicious behavior. Verify the controlling wallet and any lock/burn evidence before relying on liquidity safety. Pool depth ${liqStr}.`
+      : `A wallet controls the LP with no lock or burn proof — liquidity can be withdrawn at any time. Pool depth ${liqStr}.`;
     return {
       lpExitRisk: liquidityDepthRisk === "low" ? "watch" : "high",
-      lpExitRiskReason: `A wallet controls the LP with no lock or burn proof — liquidity can be withdrawn at any time. Pool depth ${liqStr}.`,
+      lpExitRiskReason: reason,
       liquidityDepthRisk,
     };
   }
