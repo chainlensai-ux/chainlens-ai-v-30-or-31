@@ -5265,21 +5265,17 @@ export async function POST(req: Request) {
       (lpLockStatus === 'locked' || lpLockStatus === 'burned') ? 'confirmed' :
       lpLockStatus === 'unlocked' ? 'partial' :
       noActivePools ? 'unknown' : 'missing'
-    const _liqForRisk = liquidityUsd
-    const teamWalletControlsLp = lpControl.status === 'team_controlled' && lpController === 'wallet' && lpLockStatus !== 'locked' && lpLockStatus !== 'burned'
-    const lpExitRisk: 'low' | 'monitor' | 'medium' | 'high' | 'open_check' =
-      isConcentratedPool
-        ? (_liqForRisk != null && _liqForRisk > 50_000 ? 'monitor' : _liqForRisk != null && _liqForRisk > 0 ? 'monitor' : 'open_check')
-        : (lpLockStatus === 'burned' || lpLockStatus === 'locked') ? (_liqForRisk != null && _liqForRisk < 50_000 ? 'medium' : 'low')
-        : teamWalletControlsLp || lpLockStatus === 'unlocked' ? 'high'
-        : (_liqForRisk != null && _liqForRisk < 10_000 ? 'monitor' : _liqForRisk != null && _liqForRisk < 50_000 ? 'monitor' : 'open_check')
-    const lpExitRiskReason =
-      isConcentratedPool ? `${lpModelProof.model === 'concentrated' ? 'V3/V4 concentrated' : 'Protocol-managed'} pool — standard LP lock/burn proof does not apply. Exit risk based on pool depth${_liqForRisk != null ? ` ($${_liqForRisk.toLocaleString(undefined, {maximumFractionDigits:0})})` : ''}.`
-      : lpLockStatus === 'burned' ? 'LP tokens sent to a burn address — exit liquidity permanently locked.'
-      : lpLockStatus === 'locked' ? 'Active LP lock proof found — protected for the lock duration.'
-      : teamWalletControlsLp ? 'High exit risk — Single wallet controls the detected LP position. No verified lock or burn proof was found.'
-      : lpLockStatus === 'unlocked' ? 'On-chain evidence shows LP is held by a removable wallet with no lock or burn proof.'
-      : 'Open Check — LP lock, burn, and controller evidence are not confirmed.'
+    const _lpExitRiskResult = computeLpExitRisk({
+      proofApplicability: lpProofApplicability,
+      lpLockStatus,
+      lpController,
+      liquidityUsd: _liqForRisk,
+      poolModel: lpModelProof.model === 'concentrated' && lpDexId && /aerodrome|velodrome/i.test(lpDexId) ? 'concentrated' : lpModelProof.model,
+      hasPool: !noActivePools && _lpProofPresent,
+    })
+    const lpExitRisk = _lpExitRiskResult.lpExitRisk
+    const lpExitRiskReason = _lpExitRiskResult.lpExitRiskReason
+    const liquidityDepthRisk = _lpExitRiskResult.liquidityDepthRisk
     const lpEvidenceSummary = [
       `Pool model: ${lpModelProof.model}`,
       `Liquidity: ${_liqForRisk != null ? '$' + _liqForRisk.toLocaleString(undefined, {maximumFractionDigits:0}) : 'unknown'}`,
