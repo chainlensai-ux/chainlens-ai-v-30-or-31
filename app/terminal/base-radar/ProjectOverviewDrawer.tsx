@@ -89,6 +89,7 @@ type DrawerEnrichmentPayload = {
       devClusterSupplyPercent?: number | null
       linkedWalletSupplyPercent?: number | null
       matchedLinkedWallets?: number | null
+      reason?: string | null
     } | null
     supplyControl?: { status?: string | null; reason?: string | null; linkedWalletSupplyPercent?: number | null } | null
     linkedWallets?: unknown[]
@@ -249,7 +250,7 @@ function publicMethodLabel(method: string | null | undefined): string {
 }
 
 function clusterEvidenceLabel(cluster: NonNullable<DrawerEnrichmentPayload['deployer']>['clusterEvidence']): string {
-  if (!cluster?.confirmed) return 'No confirmed cluster links in current evidence'
+  if (!cluster?.confirmed) return cluster?.reason ?? 'No confirmed cluster links in current evidence'
   const supply = percent(cluster.devClusterSupplyPercent ?? null)
   return `Confirmed evidence · ${supply}`
 }
