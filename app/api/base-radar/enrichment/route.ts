@@ -230,12 +230,15 @@ function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract
   const clusterNodes = Array.isArray(clusterMap?.nodes) ? clusterMap.nodes : []
   const devClusterSupply = finiteNumber(scan.devIntel?.devClusterSupplyPercent ?? scan.devClusterSupplyPercent ?? scan.devIntel?.devClusterSupply)
   const linkedWalletSupply = finiteNumber(scan.devIntel?.linkedWalletSupplyPercent ?? scan.linkedWalletSupplyPercent ?? scan.devIntel?.linkedWalletSupply)
+  const creatorHolderPercent = finiteNumber(scan.supplyControl?.creatorHolderPercent ?? scan.creatorHolderPercent)
   const socialsRaw = scan.projectSocials && typeof scan.projectSocials === 'object' ? scan.projectSocials : {}
   const security = scan.security && typeof scan.security === 'object' ? scan.security : {}
   const simulation = security.simulation ?? scan.honeypot ?? null
   const observedPools = observedPoolFields(scan)
   const sanitizedLpControl = publicLpControl(scan.lpControl)
   const derivedLpController = teamControlledLpController(scan.lpControl)
+  const publicLpController = firstPublicAddress(scan.lpController, derivedLpController, scan.lpControl?.controller, scan.lpControl?.topHolder, scan.lpControl?.owner)
+  const teamControlledUnlockedLp = sanitizedLpControl?.status === 'team_controlled' && publicLpController && scan.lpLockStatus !== 'locked' && scan.lpLockStatus !== 'burned'
   const devOwnership = ownershipSummary(security.devOwnership)
   const deployerStatus = scan.deployerStatus ?? scan.devIntel?.deployerStatus ?? null
   const matchedLinkedWallets = Array.isArray(scan.matchedLinkedWallets)
@@ -280,7 +283,7 @@ function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract
       lpLockStatus: scan.lpLockStatus ?? null,
       lpLockAmount: finiteNumber(scan.lpLockAmount),
       lpUnlockTime: scan.lpUnlockTime ?? null,
-      lpController: firstPublicAddress(scan.lpController, derivedLpController, scan.lpControl?.controller, scan.lpControl?.topHolder, scan.lpControl?.owner) ?? null,
+      lpController: publicLpController ?? null,
       lpProofStatus: scan.lpProofStatus ?? null,
       lpProofApplicability: scan.lpProofApplicability ?? null,
       lockBurnReason: sanitizedLpControl?.lockBurnReason ?? scan.lpMeta?.lpModelDecision?.lockBurnReason ?? null,
@@ -289,8 +292,8 @@ function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract
       lpLockProvider: scan.lpLockStatus === 'locked' ? (scan.lpLockProvider ?? null) : null,
       lpDataMode: scan.lpDataMode ?? null,
       lpDataConfidence: scan.lpDataConfidence ?? null,
-      lpExitRisk: scan.lpExitRisk ?? null,
-      lpExitRiskReason: scan.lpExitRiskReason ?? null,
+      lpExitRisk: teamControlledUnlockedLp ? 'high' : scan.lpExitRisk ?? null,
+      lpExitRiskReason: teamControlledUnlockedLp ? 'High exit risk — Single wallet controls the detected LP position. No verified lock or burn proof was found.' : scan.lpExitRiskReason ?? null,
       lpEvidenceSummary: sanitizeProviderNames(scan.lpEvidenceSummary ?? null),
       lpModelProof: scan.lpModelProof ?? null,
       lpMigrationProof: scan.lpMigrationProof ?? null,
@@ -313,6 +316,7 @@ function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract
       })),
       concentration: scan.cortexRiskEngine?.holderIntelligence?.concentration ?? scan.holderIntelligence?.concentration ?? null,
       creatorInTopHolders: typeof scan.creatorInTopHolders === 'boolean' ? scan.creatorInTopHolders : null,
+      creatorHolderPercent,
     },
     deployer: {
       deployerAddress: scan.deployerAddress ?? scan.devIntel?.deployerAddress ?? null,
@@ -334,6 +338,7 @@ function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract
       supplyControl: sanitizeProviderNames(scan.supplyControl ?? scan.devIntel?.supplyControl ?? null),
       linkedWallets: Array.isArray(scan.linkedWallets) ? scan.linkedWallets : [],
       creatorInTopHolders: typeof scan.creatorInTopHolders === 'boolean' ? scan.creatorInTopHolders : null,
+      creatorHolderPercent,
       reason: sanitizeProviderNames(scan.devIntel?.reason ?? null),
     },
     security: {

@@ -72,6 +72,7 @@ type DrawerEnrichmentPayload = {
     topHolders?: HolderRow[]
     concentration?: string | null
     creatorInTopHolders?: boolean | null
+    creatorHolderPercent?: number | null
   } | null
   deployer?: {
     deployerAddress?: string | null
@@ -93,6 +94,7 @@ type DrawerEnrichmentPayload = {
     supplyControl?: { status?: string | null; reason?: string | null; linkedWalletSupplyPercent?: number | null } | null
     linkedWallets?: unknown[]
     creatorInTopHolders?: boolean | null
+    creatorHolderPercent?: number | null
     reason?: string | null
   } | null
   security?: {
@@ -162,6 +164,14 @@ function percent(v: number | null | undefined): string {
   return v == null || !Number.isFinite(v) ? 'N/A' : `${v.toFixed(1)}%`
 }
 
+function precisePercent(v: number | null | undefined): string {
+  if (v == null || !Number.isFinite(v)) return 'N/A'
+  const abs = Math.abs(v)
+  if (abs > 0 && abs < 0.01) return `${v.toFixed(4)}%`
+  if (abs > 0 && abs < 0.1) return `${v.toFixed(3)}%`
+  return `${v.toFixed(1)}%`
+}
+
 function getHolderPercent(holder: HolderRow): number | null {
   const value = holder.percent ?? holder.pctOfSupply ?? null
   return typeof value === 'number' && Number.isFinite(value) ? value : null
@@ -186,20 +196,48 @@ function controllerLabel(controller: string | null | undefined, lpStatus: string
   return controller ? shortAddr(controller) : 'Open Check'
 }
 
-function proofLabel(status: string | null | undefined, applicability: string | null | undefined): string {
-  if (applicability === 'not_applicable') return 'Not applicable for this pool type'
-  if (status === 'confirmed') return 'Confirmed'
-  if (status === 'partial') return 'Partial evidence'
-  if (status === 'missing') return 'Open Check'
-  if (applicability === 'unknown') return 'Pool model open check'
+function hasVerifiedLock(lockStatus: string | null | undefined): boolean {
+  return lockStatus === 'locked' || lockStatus === 'burned'
+}
+
+function lockStatusLabel(status: string | null | undefined, proofStatus: string | null | undefined): string {
+  if (status === 'locked') return 'Locked'
+  if (status === 'burned') return 'Burned'
+  if (status === 'unlocked' || status === 'unverified' || proofStatus === 'missing' || proofStatus === 'partial') return 'No verified lock'
   return 'Open Check'
 }
 
-function lpRiskFallback(lpStatus: string | null, lockStatus: string | null | undefined): string {
-  if (lpStatus === 'team_controlled') return 'Risk: Liquidity can likely be removed unless lock/burn proof is confirmed.'
-  if (lockStatus === 'locked' || lockStatus === 'burned') return 'Risk: Lower exit-liquidity risk from current LP proof.'
-  if (lpStatus === 'concentrated_liquidity') return 'Risk: Standard LP token lock proof may not apply; check position controls.'
-  return 'Risk: Open Check until LP lock, burn, or controller evidence is confirmed.'
+function proofLabel(status: string | null | undefined, applicability: string | null | undefined): string {
+  if (applicability === 'not_applicable') return 'Not applicable for this pool type'
+  if (status === 'confirmed') return 'Confirmed lock/burn proof'
+  if (status === 'partial') return 'No verified lock/burn proof'
+  if (status === 'missing') return 'No verified lock/burn proof'
+  if (applicability === 'unknown') return 'Open Check · proof model unavailable'
+  return 'Open Check'
+}
+
+function lockAmountLabel(amount: number | null | undefined, lockStatus: string | null | undefined, proofStatus: string | null | undefined): string {
+  if (amount != null && Number.isFinite(amount)) return String(amount)
+  if (!hasVerifiedLock(lockStatus) && (lockStatus || proofStatus === 'missing' || proofStatus === 'partial')) return 'No verified lock'
+  return 'Open Check'
+}
+
+function unlockTimeLabel(value: string | number | null | undefined, lockStatus?: string | null, proofStatus?: string | null): string {
+  if (!hasVerifiedLock(lockStatus) && (lockStatus || proofStatus === 'missing' || proofStatus === 'partial')) return 'Not applicable until lock is verified'
+  if (value == null) return 'Open Check'
+  const millis = typeof value === 'number' ? (value > 10_000_000_000 ? value : value * 1000) : Date.parse(value)
+  return Number.isFinite(millis) ? new Date(millis).toUTCString() : 'Open Check'
+}
+
+function lpRiskLabel(lpStatus: string | null, controller: string | null | undefined, lockStatus: string | null | undefined, providedReason?: string | null): string {
+  if (lpStatus === 'team_controlled' && controller && !hasVerifiedLock(lockStatus)) {
+    return 'High exit risk — Single wallet controls the detected LP position. No verified lock or burn proof was found.'
+  }
+  if (providedReason && !(/open check/i.test(providedReason) && lpStatus === 'team_controlled' && controller)) return providedReason
+  if (lpStatus === 'team_controlled') return 'High exit risk — LP appears wallet controlled and no verified lock or burn proof was found.'
+  if (lockStatus === 'locked' || lockStatus === 'burned') return 'Lower exit-liquidity risk from current LP proof.'
+  if (lpStatus === 'concentrated_liquidity') return 'Monitor — standard LP token lock proof may not apply; check position controls.'
+  return 'Open Check — LP lock, burn, and controller evidence are not confirmed.'
 }
 
 function publicMethodLabel(method: string | null | undefined): string {
@@ -224,10 +262,26 @@ function holderStatus(status: string | null | undefined, confidence: string | nu
   return 'Open Check'
 }
 
-function unlockTimeLabel(value: string | number | null | undefined): string {
-  if (value == null) return 'Open Check'
-  const millis = typeof value === 'number' ? (value > 10_000_000_000 ? value : value * 1000) : Date.parse(value)
-  return Number.isFinite(millis) ? new Date(millis).toUTCString() : 'Open Check'
+function concentrationRiskLabel(top10: number | null | undefined, top20: number | null | undefined, fallback: string | null | undefined): string {
+  const hasTop10 = top10 != null && Number.isFinite(top10)
+  const hasTop20 = top20 != null && Number.isFinite(top20)
+  if (hasTop10 || hasTop20) {
+    if ((hasTop10 && top10 >= 80) || (hasTop20 && top20 >= 90)) return 'Extreme'
+    if (hasTop10 && top10 >= 60) return 'High'
+    if (hasTop10 && top10 >= 40) return 'Medium'
+    return 'Lower'
+  }
+  return fallback ? publicStatus(fallback) : 'Open Check'
+}
+
+function creatorTopHolderLabel(inTopHolders: boolean | null | undefined, creatorPercent: number | null | undefined): string {
+  if (inTopHolders === true) return creatorPercent != null && Number.isFinite(creatorPercent) ? `Yes · ${precisePercent(creatorPercent)}` : 'Yes'
+  if (inTopHolders === false) return 'No'
+  return 'Open Check'
+}
+
+function lpDataModeLabel(mode: string | null | undefined, confidence: string | null | undefined): string {
+  return `${mode ? publicStatus(mode) : 'Fallback'} · ${confidence ?? 'limited'}`
 }
 
 function Section({ title, state, children }: { title: string; state?: ApiState<unknown>; children: React.ReactNode }) {
@@ -321,9 +375,10 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
 
   const lpControlStatus = lp?.lpControl?.status ?? null
   const lpControllerLabel = controllerLabel(lp?.lpController, lpControlStatus)
-  const lpLockStatusLabel = evidenceLabel(lp?.lpLockStatus, 'Unverified')
+  const lpLockStatusLabel = lockStatusLabel(lp?.lpLockStatus, lp?.lpProofStatus)
   const lpProofLabel = proofLabel(lp?.lpProofStatus, lp?.lpProofApplicability)
-  const lpRiskLabel = lp?.lpExitRiskReason ?? lpRiskFallback(lpControlStatus, lp?.lpLockStatus)
+  const lpRiskLabelValue = lpRiskLabel(lpControlStatus, lp?.lpController, lp?.lpLockStatus, lp?.lpExitRiskReason)
+  const concentrationRisk = concentrationRiskLabel(concentration.top10, concentration.top20, concentration.concentration)
   const clusterLabel = clusterEvidenceLabel(deployer?.clusterEvidence)
   const deployerMethod = publicMethodLabel(deployer?.methodLabel)
   const holderStatusLabel = holderStatus(concentration.status, concentration.confidence, concentration.reason)
@@ -336,11 +391,17 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
       : 'A primary liquidity pool was detected, but full pool distribution is not fully indexed.')
     : 'No active liquidity pool was confirmed from current evidence.')
 
+  const lpCortexLine = lpControlStatus === 'team_controlled' && lp?.lpController && !hasVerifiedLock(lp?.lpLockStatus)
+    ? 'LP holder evidence indicates a single wallet controls the LP position, and no verified lock or burn proof was found.'
+    : `LP control is ${lpControlStatus ? publicStatus(lpControlStatus) : 'Open Check'}; ${lpRiskLabelValue}`
+  const holderCortexLine = concentration.top10 != null && Number.isFinite(concentration.top10)
+    ? `${concentrationRisk === 'Extreme' ? 'Holder concentration is extreme' : `Holder concentration is ${concentrationRisk.toLowerCase()}`}, with the top 10 holders controlling ${concentration.top10 >= 95 ? 'nearly all indexed supply' : percent(concentration.top10) + ' of indexed supply'}.`
+    : `Top holder concentration is ${percent(concentration.top10)} for top 10 holders; holder evidence is ${holderStatusLabel}.`
   const cortexRead = [
-    `${poolDistributionLine} Momentum is ${token?.momentum ?? 'unknown'} and radar score is ${token?.radarScore ?? 'N/A'}.`,
-    `LP control is ${lpControlStatus ? publicStatus(lpControlStatus) : 'Open Check'}; ${lpRiskLabel}`,
+    `${poolDistributionLine} Momentum is ${(token?.momentum ?? 'unknown').toLowerCase()} and radar score is ${token?.radarScore ?? 'N/A'}.`,
+    lpCortexLine,
+    holderCortexLine,
     deployer?.deployerAddress ? `Deployer ${shortAddr(deployer.deployerAddress)} is ${publicStatus(deployer.deployerStatus ?? 'reviewed')} at ${deployer.deployerConfidence ?? 'open-check'} confidence.` : 'Deployer is Open Check in the current evidence.',
-    `Top holder concentration is ${percent(concentration.top10)} for top 10 holders; holder evidence is ${holderStatusLabel}.`,
     token?.flags?.length ? `Risk context: ${token.flags.join(', ')}.` : 'Risk context: no radar flags on this card.',
   ]
 
@@ -400,10 +461,10 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
           <DataRow label="LP proof" value={lpProofLabel} />
           <DataRow label="Controller" value={lpControllerLabel} />
           <DataRow label="Control" value={`${lpControlStatus ? publicStatus(lpControlStatus) : 'Open Check'} · ${lp?.lpControl?.confidence ?? lp?.lpDataConfidence ?? 'open-check'}`} />
-          <DataRow label="Lock amount" value={lp?.lpLockAmount == null ? 'Open Check' : String(lp.lpLockAmount)} />
-          <DataRow label="Unlock time" value={unlockTimeLabel(lp?.lpUnlockTime)} />
-          <DataRow label="Data mode" value={`${lp?.lpDataMode ?? 'open-check'} · ${lp?.lpDataConfidence ?? 'limited'}`} />
-          <DataRow label="Risk" value={lpRiskLabel} mono={false} />
+          <DataRow label="Lock amount" value={lockAmountLabel(lp?.lpLockAmount, lp?.lpLockStatus, lp?.lpProofStatus)} />
+          <DataRow label="Unlock time" value={unlockTimeLabel(lp?.lpUnlockTime, lp?.lpLockStatus, lp?.lpProofStatus)} />
+          <DataRow label="Data mode" value={lpDataModeLabel(lp?.lpDataMode, lp?.lpDataConfidence)} />
+          <DataRow label="Risk" value={lpRiskLabelValue} mono={false} />
           <a href={`/terminal/liquidity?address=${token.contract}&chain=${chain}`} style={{ ...buttonStyle, display: 'inline-flex', marginTop: '10px', textDecoration: 'none' }}>Open full LP Safety</a>
         </Section>
 
@@ -415,7 +476,7 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
           <DataRow label="Rug history" value={deployer?.rugHistoryVerified === true ? 'Verified rug history' : deployer?.rugHistoryVerified === false ? 'No verified rug flags' : 'Open Check'} />
           <DataRow label="Cluster detection" value={clusterLabel} />
           <DataRow label="Linked wallet supply" value={percent(deployer?.clusterEvidence?.linkedWalletSupplyPercent ?? deployer?.supplyControl?.linkedWalletSupplyPercent ?? null)} />
-          <DataRow label="Creator in top holders" value={deployer?.creatorInTopHolders === true ? 'Yes' : deployer?.creatorInTopHolders === false ? 'No' : 'Open Check'} />
+          <DataRow label="Creator in top holders" value={creatorTopHolderLabel(deployer?.creatorInTopHolders, deployer?.creatorHolderPercent)} />
           <DataRow label="Ownership" value={ownershipLabel} mono={false} />
         </Section>
 
@@ -423,8 +484,8 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
           <DataRow label="Top 1 / 10 / 20" value={`${percent(concentration.top1)} / ${percent(concentration.top10)} / ${percent(concentration.top20)}`} />
           <DataRow label="Holder count" value={concentration.holderCount == null ? 'Open Check' : String(concentration.holderCount)} />
           <DataRow label="Evidence status" value={holderStatusLabel} />
-          <DataRow label="Concentration risk" value={concentration.concentration ? publicStatus(concentration.concentration) : 'Open Check'} />
-          <DataRow label="Creator in top holders" value={concentration.creatorInTopHolders === true ? 'Yes' : concentration.creatorInTopHolders === false ? 'No' : 'Open Check'} />
+          <DataRow label="Concentration risk" value={concentrationRisk} />
+          <DataRow label="Creator in top holders" value={creatorTopHolderLabel(concentration.creatorInTopHolders, concentration.creatorHolderPercent)} />
           <DataRow label="Trading taxes" value={securityTax} />
           <div style={{ marginTop: '8px', display: 'grid', gap: '6px' }}>{topHolders.slice(0, 5).map((h, idx) => <DataRow key={`${h.address}-${idx}`} label={`#${h.rank ?? idx + 1}`} value={`${shortAddr(h.address)} · ${percent(getHolderPercent(h))}`} />)}</div>
         </Section>
