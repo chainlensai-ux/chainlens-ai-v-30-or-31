@@ -238,6 +238,7 @@ export function buildCortexLpRead(params: {
   symbol: string;
   totalLiq: number | null;
   fragments: number;
+  observedPoolPresent?: boolean;
   riskTier: string;
   lpModel: { model: "constant_product" | "concentrated" | "stableswap" | "unknown"; dexName: string | null; standardLockApplies: boolean };
   migrationSummary: string;
@@ -248,7 +249,7 @@ export function buildCortexLpRead(params: {
   lpLockProvider: "PinkLock" | null;
   lpUnlockTime: number | null;
 }): CortexLpRead {
-  const { name, symbol, totalLiq, fragments, riskTier, lpModel, migrationSummary, mode, confidence, gaps, lpLockStatus, lpLockProvider, lpUnlockTime } = params;
+  const { name, symbol, totalLiq, fragments, observedPoolPresent, riskTier, lpModel, migrationSummary, mode, confidence, gaps, lpLockStatus, lpLockProvider, lpUnlockTime } = params;
   const liqStr = totalLiq != null ? `$${totalLiq.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : "an unknown amount";
 
   const lockClause = lpLockStatus === "locked"
@@ -259,7 +260,12 @@ export function buildCortexLpRead(params: {
 
   const riskSummary = `${name} (${symbol}) shows a "${riskTier}" liquidity-depth risk tier based on observed pool data. This reflects liquidity depth and pool structure only — ownership, mintability, honeypot and tax status remain unconfirmed (data mode: ${mode}, confidence: ${confidence}). ${lockClause}`;
 
-  const liquidityAnalysis = `Total observed liquidity across tracked pools is approximately ${liqStr}, spread across ${fragments} pool${fragments === 1 ? "" : "s"}.`;
+  const poolDetected = observedPoolPresent ?? fragments > 0;
+  const liquidityAnalysis = poolDetected
+    ? totalLiq != null
+      ? `Observed liquidity is approximately ${liqStr} in the detected primary pool.`
+      : "A primary liquidity pool was detected, but full pool distribution is not fully indexed."
+    : "No active liquidity pool was confirmed from current evidence.";
 
   const poolStructureAnalysis = lpModel.model === "unknown"
     ? "The AMM model could not be determined from the available DEX data."
@@ -304,7 +310,7 @@ export function deriveLpModelProof(pools: GTPool[]): LpModelProof {
   return {
     model,
     dexName: primary?.relationships?.dex?.data?.id ?? null,
-    standardLockApplies: model !== "concentrated",
+    standardLockApplies: model === "constant_product",
   };
 }
 
