@@ -1,7 +1,7 @@
 'use client'
 
 import { useMemo } from 'react'
-import { useQueries } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 
 type ChainKey = 'base' | 'eth'
 
@@ -30,46 +30,79 @@ type DrawerProps = {
 
 type ApiState<T> = { data?: T; isLoading: boolean; error?: unknown }
 
-type TokenMetadata = {
+type DrawerEnrichmentPayload = {
   name?: string | null
   symbol?: string | null
-  projectSocials?: Record<string, unknown> | null
-  priceChart?: { points?: ChartPoint[]; timeframe?: string | null } | null
-  holderDistribution?: HolderDistribution | null
-  holderResolver?: { holders?: HolderRow[]; confidence?: string | null; reason?: string | null } | null
-  sections?: { holders?: Record<string, unknown>; liquidity?: Record<string, unknown> } | null
-}
-
-type LiquiditySafetyPayload = {
-  ok?: boolean
-  data?: {
+  market?: {
+    liquidityUsd?: number | null
+    volume24hUsd?: number | null
+    fdvUsd?: number | null
+    marketCapUsd?: number | null
+    marketStatus?: string | null
+    marketConfidence?: string | null
+  } | null
+  lp?: {
     lpLockStatus?: string | null
     lpLockAmount?: number | null
-    lpUnlockTime?: number | null
+    lpUnlockTime?: string | number | null
     lpController?: string | null
-    lp_data_mode?: string | null
-    lp_data_confidence?: string | null
-  }
-  error?: string
-}
-
-type WalletScannerPayload = {
-  deployerAddress?: string | null
-  previousProjects?: Array<{ contractAddress?: string | null; symbol?: string | null; rugFlag?: boolean | null; rugReason?: string | null; createdAt?: string | null }>
-  suspiciousTransfers?: boolean | null
-  suspiciousTransferReasons?: string[]
-  clarkVerdict?: { label?: string | null; confidence?: string | null; summary?: string | null } | null
-  clusterMap?: unknown
-  devClusterSupply?: number | null
-  linkedWallets?: Array<unknown>
-  supplyControlStatus?: string | null
+    lpProofStatus?: string | null
+    lpProofApplicability?: string | null
+    lpControl?: { status?: string | null; confidence?: string | null; reason?: string | null } | null
+    lpDataMode?: string | null
+    lpDataConfidence?: string | null
+    lpExitRisk?: string | null
+    lpExitRiskReason?: string | null
+    lpEvidenceSummary?: string | null
+  } | null
+  holders?: {
+    top1?: number | null
+    top10?: number | null
+    top20?: number | null
+    holderCount?: number | null
+    status?: string | null
+    reason?: string | null
+    confidence?: string | null
+    topHolders?: HolderRow[]
+    concentration?: string | null
+    creatorInTopHolders?: boolean | null
+  } | null
+  deployer?: {
+    deployerAddress?: string | null
+    deployerStatus?: string | null
+    deployerConfidence?: string | null
+    methodLabel?: string | null
+    creationTxHash?: string | null
+    pastLaunches?: number | null
+    rugHistoryVerified?: boolean | null
+    clusterEvidence?: {
+      confirmed?: boolean | null
+      edgeCount?: number | null
+      nodeCount?: number | null
+      devClusterSupplyPercent?: number | null
+      linkedWalletSupplyPercent?: number | null
+      matchedLinkedWallets?: number | null
+    } | null
+    supplyControl?: { status?: string | null; reason?: string | null; linkedWalletSupplyPercent?: number | null } | null
+    linkedWallets?: unknown[]
+    creatorInTopHolders?: boolean | null
+    reason?: string | null
+  } | null
+  security?: {
+    honeypot?: { isHoneypot?: boolean | null; buyTax?: number | null; sellTax?: number | null; simulationSuccess?: boolean | null } | null
+    contractFlags?: Record<string, unknown> | null
+    riskDrivers?: string[]
+    openChecks?: string[]
+  } | null
+  socials?: Record<string, unknown> | null
+  priceChart?: { points?: ChartPoint[]; timeframe?: string | null } | null
+  status?: string | null
+  error?: string | null
+  diagnostics?: Record<string, unknown>
 }
 
 type HolderRow = { rank?: number | null; address?: string | null; percent?: number | null; pctOfSupply?: number | null; isContract?: boolean | null; walletType?: string | null }
-type HolderDistribution = { topHolders?: HolderRow[]; top1?: number | null; top10?: number | null; top20?: number | null; holderCount?: number | null }
-type HoldersPayload = { topHolders?: HolderRow[]; concentration?: { top1?: number | null; top10?: number | null; top20?: number | null; holderCount?: number | null; status?: string | null }; contractCount?: number; eoaCount?: number; smartWallets?: number; snipers?: number; status?: string | null; reason?: string | null }
 type ChartPoint = { timestamp: number | string; price?: number | null; close?: number | null; value?: number | null }
-type OhlcvPayload = { points?: ChartPoint[]; timeframe?: string | null; source?: string | null; status?: string | null; reason?: string | null }
 
 const EXPLORER: Record<ChainKey, string> = {
   base: 'https://basescan.org',
@@ -117,6 +150,68 @@ function percent(v: number | null | undefined): string {
 function getHolderPercent(holder: HolderRow): number | null {
   const value = holder.percent ?? holder.pctOfSupply ?? null
   return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+function evidenceLabel(value: string | null | undefined, fallback = 'Open Check'): string {
+  if (!value) return fallback
+  return publicStatus(value)
+}
+
+function publicStatus(value: string): string {
+  return value
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (char) => char.toUpperCase())
+}
+
+function controllerLabel(controller: string | null | undefined, lpStatus: string | null): string {
+  if (lpStatus === 'team_controlled') return controller ? `Wallet controlled · ${shortAddr(controller)}` : 'Wallet controlled'
+  if (lpStatus === 'burned') return 'Burn controlled'
+  if (lpStatus === 'locked') return controller ? `Lock controlled · ${shortAddr(controller)}` : 'Lock controlled'
+  if (lpStatus === 'protocol' || lpStatus === 'concentrated_liquidity') return 'Protocol / pool controlled'
+  return controller ? shortAddr(controller) : 'Open Check'
+}
+
+function proofLabel(status: string | null | undefined, applicability: string | null | undefined): string {
+  if (applicability === 'not_applicable') return 'Not applicable for this pool type'
+  if (status === 'confirmed') return 'Confirmed'
+  if (status === 'partial') return 'Partial evidence'
+  if (status === 'missing') return 'Open Check'
+  return 'Open Check'
+}
+
+function lpRiskFallback(lpStatus: string | null, lockStatus: string | null | undefined): string {
+  if (lpStatus === 'team_controlled') return 'Risk: Liquidity can likely be removed unless lock/burn proof is confirmed.'
+  if (lockStatus === 'locked' || lockStatus === 'burned') return 'Risk: Lower exit-liquidity risk from current LP proof.'
+  if (lpStatus === 'concentrated_liquidity') return 'Risk: Standard LP token lock proof may not apply; check position controls.'
+  return 'Risk: Open Check until LP lock, burn, or controller evidence is confirmed.'
+}
+
+function publicMethodLabel(method: string | null | undefined): string {
+  if (!method) return 'Open Check'
+  const normalized = method.toLowerCase()
+  if (normalized.includes('creation')) return 'Contract creation evidence'
+  if (normalized.includes('initial')) return 'Initial supply-flow evidence'
+  if (normalized.includes('activity')) return 'Earliest contract-activity evidence'
+  return 'On-chain evidence'
+}
+
+function clusterEvidenceLabel(cluster: NonNullable<DrawerEnrichmentPayload['deployer']>['clusterEvidence']): string {
+  if (!cluster?.confirmed) return 'No confirmed cluster links in current evidence'
+  const supply = percent(cluster.devClusterSupplyPercent ?? null)
+  return `Confirmed evidence · ${supply}`
+}
+
+function holderStatus(status: string | null | undefined, confidence: string | null | undefined, reason: string | null | undefined): string {
+  if (status === 'ok') return confidence ? `Verified · ${confidence}` : 'Verified'
+  if (status === 'partial') return confidence ? `Limited Evidence · ${confidence}` : 'Limited Evidence'
+  if (reason) return 'Limited Evidence'
+  return 'Open Check'
+}
+
+function unlockTimeLabel(value: string | number | null | undefined): string {
+  if (value == null) return 'Open Check'
+  const millis = typeof value === 'number' ? (value > 10_000_000_000 ? value : value * 1000) : Date.parse(value)
+  return Number.isFinite(millis) ? new Date(millis).toUTCString() : 'Open Check'
 }
 
 function Section({ title, state, children }: { title: string; state?: ApiState<unknown>; children: React.ReactNode }) {
@@ -181,34 +276,48 @@ function MiniChart({ points }: { points: ChartPoint[] }) {
 export default function ProjectOverviewDrawer({ token, open, chain = 'base', onClose }: DrawerProps) {
   const address = token?.contract ?? ''
   const enabled = open && Boolean(address)
-  const query = address ? `address=${encodeURIComponent(address)}&chain=${chain}` : ''
-  const contractQuery = address ? `contract=${encodeURIComponent(address)}&chain=${chain}` : ''
+  const query = address ? `contract=${encodeURIComponent(address)}&chain=${chain}` : ''
 
-  const [tokenMeta, lpSafety, walletIntel, holders, ohlcv] = useQueries({
-    queries: [
-      { queryKey: ['project-overview-token', chain, address], queryFn: () => fetchJson<TokenMetadata>(`/api/token?${contractQuery}`), enabled, staleTime: 60_000 },
-      { queryKey: ['project-overview-lp', chain, address], queryFn: () => fetchJson<LiquiditySafetyPayload>(`/api/liquidity-safety?${query}`), enabled, staleTime: 60_000, retry: false },
-      { queryKey: ['project-overview-wallet', chain, address], queryFn: () => fetchJson<WalletScannerPayload>(`/api/wallet-scanner?${query}`), enabled, staleTime: 60_000, retry: false },
-      { queryKey: ['project-overview-holders', chain, address], queryFn: () => fetchJson<HoldersPayload>(`/api/holders?${query}`), enabled, staleTime: 60_000, retry: false },
-      { queryKey: ['project-overview-ohlcv', chain, address], queryFn: () => fetchJson<OhlcvPayload>(`/api/ohlcv?${query}`), enabled, staleTime: 60_000, retry: false },
-    ],
+  const enrichment = useQuery({
+    queryKey: ['base-radar-drawer-enrichment', chain, address],
+    queryFn: () => fetchJson<DrawerEnrichmentPayload>(`/api/base-radar/enrichment?${query}`),
+    enabled,
+    staleTime: 60_000,
+    gcTime: 5 * 60_000,
+    retry: 1,
+    refetchOnWindowFocus: false,
   })
 
-  const socials = tokenMeta.data?.projectSocials ?? {}
+  const enrichmentState: ApiState<unknown> = { data: enrichment.data, isLoading: enrichment.isLoading, error: enrichment.error }
+  const enriched = enrichment.data
+  const socials = enriched?.socials ?? {}
   const dexScreener = address ? `https://dexscreener.com/${chain}/${address}` : null
   const geckoTerminal = address ? `https://www.geckoterminal.com/${GT_NETWORK[chain]}/tokens/${address}` : null
   const explorer = address ? `${EXPLORER[chain]}/token/${address}` : null
   const socialLinks = [asLink(socials.website), asLink(socials.twitter), asLink(socials.telegram), dexScreener, geckoTerminal, explorer].filter((link): link is string => Boolean(link))
-  const chartPoints = ohlcv.data?.points ?? tokenMeta.data?.priceChart?.points ?? []
-  const lp = lpSafety.data?.data
-  const concentration = holders.data?.concentration ?? tokenMeta.data?.holderDistribution ?? {}
-  const topHolders = holders.data?.topHolders ?? tokenMeta.data?.holderDistribution?.topHolders ?? tokenMeta.data?.holderResolver?.holders ?? []
+  const chartPoints = enriched?.priceChart?.points ?? []
+  const lp = enriched?.lp
+  const market = enriched?.market
+  const concentration = enriched?.holders ?? {}
+  const topHolders = enriched?.holders?.topHolders ?? []
+  const deployer = enriched?.deployer
+  const security = enriched?.security
+
+  const lpControlStatus = lp?.lpControl?.status ?? null
+  const lpControllerLabel = controllerLabel(lp?.lpController, lpControlStatus)
+  const lpLockStatusLabel = evidenceLabel(lp?.lpLockStatus, 'Unverified')
+  const lpProofLabel = proofLabel(lp?.lpProofStatus, lp?.lpProofApplicability)
+  const lpRiskLabel = lp?.lpExitRiskReason ?? lpRiskFallback(lpControlStatus, lp?.lpLockStatus)
+  const clusterLabel = clusterEvidenceLabel(deployer?.clusterEvidence)
+  const deployerMethod = publicMethodLabel(deployer?.methodLabel)
+  const holderStatusLabel = holderStatus(concentration.status, concentration.confidence, concentration.reason)
+  const securityTax = security?.honeypot?.simulationSuccess ? `${percent(security.honeypot.buyTax)} buy · ${percent(security.honeypot.sellTax)} sell` : 'Open Check'
 
   const cortexRead = [
-    `Liquidity is ${fmtUSD(token?.liquidityUsd)} with ${token?.momentum ?? 'unknown'} momentum and a radar score of ${token?.radarScore ?? 'N/A'}.`,
-    `LP status is ${lp?.lpLockStatus ?? 'unverified'} at ${lp?.lp_data_confidence ?? 'unverified'} confidence; unverified fields are intentionally not inferred.`,
-    walletIntel.data?.deployerAddress ? `Deployer ${shortAddr(walletIntel.data.deployerAddress)} has ${walletIntel.data.previousProjects?.length ?? 0} indexed prior launch(es).` : 'Deployer is not confirmed by the current wallet scanner pass.',
-    `Top holder concentration is ${percent(concentration.top10)} for top 10 holders; contract/EOA and sniper labels depend on indexed holder coverage.`,
+    `Liquidity is ${fmtUSD(market?.liquidityUsd ?? token?.liquidityUsd)} with ${token?.momentum ?? 'unknown'} momentum and a radar score of ${token?.radarScore ?? 'N/A'}.`,
+    `LP control is ${lpControlStatus ? publicStatus(lpControlStatus) : 'Open Check'}; ${lpRiskLabel}`,
+    deployer?.deployerAddress ? `Deployer ${shortAddr(deployer.deployerAddress)} is ${publicStatus(deployer.deployerStatus ?? 'reviewed')} at ${deployer.deployerConfidence ?? 'open-check'} confidence.` : 'Deployer is Open Check in the current evidence.',
+    `Top holder concentration is ${percent(concentration.top10)} for top 10 holders; holder evidence is ${holderStatusLabel}.`,
     token?.flags?.length ? `Risk context: ${token.flags.join(', ')}.` : 'Risk context: no radar flags on this card.',
   ]
 
@@ -241,9 +350,9 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
 
         <Section title="Quick Stats">
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '0 12px' }}>
-            <DataRow label="Liquidity" value={fmtUSD(token.liquidityUsd)} />
-            <DataRow label="Volume 24h" value={fmtUSD(token.volume24h)} />
-            <DataRow label="FDV" value={fmtUSD(token.fdvUsd ?? null)} />
+            <DataRow label="Liquidity" value={fmtUSD(market?.liquidityUsd ?? token.liquidityUsd)} />
+            <DataRow label="Volume 24h" value={fmtUSD(market?.volume24hUsd ?? token.volume24h)} />
+            <DataRow label="FDV" value={fmtUSD(market?.fdvUsd ?? token.fdvUsd ?? null)} />
             <DataRow label="Score" value={`${token.radarScore}/100`} />
             <DataRow label="Momentum" value={token.momentum} />
             <DataRow label="Age" value={fmtAge(token.ageMinutes)} />
@@ -251,45 +360,52 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
           <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginTop: '10px' }}>{(token.flags.length ? token.flags : ['No radar tags']).map((flag) => <span key={flag} style={tagStyle}>{flag}</span>)}</div>
         </Section>
 
-        <Section title="Socials" state={tokenMeta as ApiState<unknown>}>
+        <Section title="Socials" state={enrichmentState}>
           <div style={{ display: 'grid', gap: '8px', fontSize: '11px', fontFamily: 'var(--font-plex-mono)' }}>
             <DrawerLink href={asLink(socials.website)} label="Website" />
             <DrawerLink href={asLink(socials.twitter)} label="Twitter" />
             <DrawerLink href={asLink(socials.telegram)} label="Telegram" />
-            <DrawerLink href={dexScreener} label="DexScreener" />
-            <DrawerLink href={geckoTerminal} label="GeckoTerminal" />
-            <DrawerLink href={explorer} label={chain === 'base' ? 'BaseScan' : 'Etherscan'} />
+            <DrawerLink href={dexScreener} label="Market chart" />
+            <DrawerLink href={geckoTerminal} label="Pool explorer" />
+            <DrawerLink href={explorer} label="Block explorer" />
             <button onClick={() => copyText(socialLinks.join('\n'))} disabled={socialLinks.length === 0} style={{ ...buttonStyle, width: 'fit-content', opacity: socialLinks.length ? 1 : 0.45 }}>Copy all links</button>
           </div>
         </Section>
 
-        <Section title="LP Safety Snapshot" state={lpSafety as ApiState<unknown>}>
-          <DataRow label="Lock status" value={lp?.lpLockStatus ?? 'Unverified'} />
-          <DataRow label="Lock amount" value={lp?.lpLockAmount == null ? 'N/A' : String(lp.lpLockAmount)} />
-          <DataRow label="Unlock time" value={lp?.lpUnlockTime ? new Date(lp.lpUnlockTime * 1000).toUTCString() : 'N/A'} />
-          <DataRow label="Controller" value={lp?.lpController ?? 'Unknown'} />
-          <DataRow label="Data mode" value={`${lp?.lp_data_mode ?? 'unknown'} · ${lp?.lp_data_confidence ?? 'unverified'}`} />
+        <Section title="LP Safety Snapshot" state={enrichmentState}>
+          <DataRow label="Lock status" value={lpLockStatusLabel} />
+          <DataRow label="LP proof" value={lpProofLabel} />
+          <DataRow label="Controller" value={lpControllerLabel} />
+          <DataRow label="Control" value={`${lpControlStatus ? publicStatus(lpControlStatus) : 'Open Check'} · ${lp?.lpControl?.confidence ?? lp?.lpDataConfidence ?? 'open-check'}`} />
+          <DataRow label="Lock amount" value={lp?.lpLockAmount == null ? 'Open Check' : String(lp.lpLockAmount)} />
+          <DataRow label="Unlock time" value={unlockTimeLabel(lp?.lpUnlockTime)} />
+          <DataRow label="Data mode" value={`${lp?.lpDataMode ?? 'open-check'} · ${lp?.lpDataConfidence ?? 'limited'}`} />
+          <DataRow label="Risk" value={lpRiskLabel} mono={false} />
           <a href={`/terminal/liquidity?address=${token.contract}&chain=${chain}`} style={{ ...buttonStyle, display: 'inline-flex', marginTop: '10px', textDecoration: 'none' }}>Open full LP Safety</a>
         </Section>
 
-        <Section title="Deployer Intelligence" state={walletIntel as ApiState<unknown>}>
-          <DataRow label="Deployer" value={shortAddr(walletIntel.data?.deployerAddress)} />
-          <DataRow label="Past launches" value={String(walletIntel.data?.previousProjects?.length ?? 0)} />
-          <DataRow label="Rug history" value={(walletIntel.data?.previousProjects ?? []).some((p) => p.rugFlag) ? 'Flagged' : 'No verified rug flags'} />
-          <DataRow label="Profit history" value="Unavailable in current scanner payload" />
-          <DataRow label="Cluster detection" value={walletIntel.data?.clusterMap ? `Detected · ${percent(walletIntel.data.devClusterSupply ?? null)}` : 'Not confirmed'} />
+        <Section title="Deployer Intelligence" state={enrichmentState}>
+          <DataRow label="Deployer" value={shortAddr(deployer?.deployerAddress)} />
+          <DataRow label="Status" value={`${deployer?.deployerStatus ? publicStatus(deployer.deployerStatus) : 'Open Check'} · ${deployer?.deployerConfidence ?? 'limited'}`} />
+          <DataRow label="Method" value={deployerMethod} />
+          <DataRow label="Past launches" value={deployer?.pastLaunches == null ? 'Open Check' : String(deployer.pastLaunches)} />
+          <DataRow label="Rug history" value={deployer?.rugHistoryVerified === true ? 'Verified rug history' : deployer?.rugHistoryVerified === false ? 'No verified rug flags' : 'Open Check'} />
+          <DataRow label="Cluster detection" value={clusterLabel} />
+          <DataRow label="Linked wallet supply" value={percent(deployer?.clusterEvidence?.linkedWalletSupplyPercent ?? deployer?.supplyControl?.linkedWalletSupplyPercent ?? null)} />
+          <DataRow label="Creator in top holders" value={deployer?.creatorInTopHolders === true ? 'Yes' : deployer?.creatorInTopHolders === false ? 'No' : 'Open Check'} />
         </Section>
 
-        <Section title="Holder Distribution" state={holders as ApiState<unknown>}>
+        <Section title="Holder Distribution" state={enrichmentState}>
           <DataRow label="Top 1 / 10 / 20" value={`${percent(concentration.top1)} / ${percent(concentration.top10)} / ${percent(concentration.top20)}`} />
-          <DataRow label="Holder count" value={String(concentration.holderCount ?? topHolders.length ?? 'N/A')} />
-          <DataRow label="Contract vs EOA" value={`${holders.data?.contractCount ?? 0} contracts · ${holders.data?.eoaCount ?? 0} EOAs`} />
-          <DataRow label="Smart wallets" value={String(holders.data?.smartWallets ?? 0)} />
-          <DataRow label="Snipers" value={String(holders.data?.snipers ?? 0)} />
+          <DataRow label="Holder count" value={concentration.holderCount == null ? 'Open Check' : String(concentration.holderCount)} />
+          <DataRow label="Evidence status" value={holderStatusLabel} />
+          <DataRow label="Concentration risk" value={concentration.concentration ? publicStatus(concentration.concentration) : 'Open Check'} />
+          <DataRow label="Creator in top holders" value={concentration.creatorInTopHolders === true ? 'Yes' : concentration.creatorInTopHolders === false ? 'No' : 'Open Check'} />
+          <DataRow label="Trading taxes" value={securityTax} />
           <div style={{ marginTop: '8px', display: 'grid', gap: '6px' }}>{topHolders.slice(0, 5).map((h, idx) => <DataRow key={`${h.address}-${idx}`} label={`#${h.rank ?? idx + 1}`} value={`${shortAddr(h.address)} · ${percent(getHolderPercent(h))}`} />)}</div>
         </Section>
 
-        <Section title="Mini Chart" state={ohlcv as ApiState<unknown>}>
+        <Section title="Mini Chart" state={enrichmentState}>
           <div style={{ display: 'flex', gap: '6px', marginBottom: '10px' }}>{['1h', '6h', '24h'].map((tf) => <span key={tf} style={tagStyle}>{tf}</span>)}</div>
           <MiniChart points={chartPoints} />
         </Section>
