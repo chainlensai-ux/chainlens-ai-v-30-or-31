@@ -2591,12 +2591,16 @@ function detectPoolType(pool: Record<string, unknown> | null, dexIdHint?: string
   // distinguish them from Aerodrome V2 (volatile/stable) pools, which ARE ERC-20 LP tokens.
   const isAerodromeFamily = (s: string) => /aerodrome|velodrome/.test(s)
   const isConcentratedMarker = (s: string) => /slipstream|concentrated|algebra|\bcl\b|[-_]cl[-_]?|[-_]cl$/.test(s)
+  // CLMM / Infinity CLMM (e.g. PancakeSwap Infinity CLMM, any future "*-clmm-*" naming) and
+  // Uniswap V3/V4 are concentrated-liquidity models — LP positions are NFTs, never ERC-20 V2
+  // LP tokens, so they must never fall through to the generic "^pancakeswap|^sushiswap" → v2 default.
+  const isConcentratedDex = (s: string) => /clmm|infinity[-_]?clmm|slipstream|concentrated/.test(s)
   const idSignals = [dexIdHint ?? '', relDexId, String(a.dex_id ?? a.dex ?? '').toLowerCase().trim()]
   for (const s of idSignals) {
     if (!s) continue
     if (isAerodromeFamily(s) && isConcentratedMarker(s)) return "concentrated"
     if (isAerodromeFamily(s)) return "aerodrome"
-    if (/^slipstream/.test(s)) return "concentrated"
+    if (isConcentratedDex(s)) return "concentrated"
     if (/^uniswap_v4|^uniswap-v4/.test(s)) return "v3"  // treat V4 as concentrated
     if (/^uniswap_v3|^uniswap-v3|^pancakeswap_v3|^sushiswap_v3|^algebra/.test(s)) return "v3"
     if (/^uniswap_v2|^uniswap-v2|^pancakeswap_v2|^sushiswap_v2|^baseswap|^alienbase|^swapbased|^shibaswap/.test(s)) return "v2"
@@ -2606,6 +2610,7 @@ function detectPoolType(pool: Record<string, unknown> | null, dexIdHint?: string
   const has = (re: RegExp) => re.test(text);
   if (has(/\baerodrome\b|\bvelodrome\b/) && has(/slipstream|concentrated|\bcl\b/)) return "concentrated";
   if (has(/\baerodrome\b|\bvelodrome\b/)) return "aerodrome";
+  if (has(/clmm|infinity[-_]?clmm/)) return "concentrated";
   if (has(/\bslipstream\b/)) return "concentrated";
   if (has(/\bconcentrated\b|\bcl pool\b|\balgebra\b/)) return "concentrated";
   // Use (?:_|-) instead of \b after version number to match "uniswap_v3_eth" etc.
@@ -3828,9 +3833,12 @@ export async function POST(req: Request) {
         : 'unknown'
 
       lpControl.primaryMarketPool = lpDiagnostics.primaryMarketPoolAddress ?? null
-      lpControl.verificationPool = lpDiagnostics.lpVerificationPoolAddress ?? null
-      lpControl.verificationPoolDex = lpDiagnostics.lpVerificationDex ?? null
-      lpControl.verificationPoolType = lpDiagnostics.lpVerificationType ?? null
+      // For concentrated/no-pool models there is no ERC-20 LP verification pool — report
+      // these as null rather than surfacing a CLMM/V3 pool that was only used to confirm
+      // "no LP token here", which would otherwise look like a (misleading) V2 proof source.
+      lpControl.verificationPool = _notApplicable ? null : (lpDiagnostics.lpVerificationPoolAddress ?? null)
+      lpControl.verificationPoolDex = _notApplicable ? null : (lpDiagnostics.lpVerificationDex ?? null)
+      lpControl.verificationPoolType = _notApplicable ? null : (lpDiagnostics.lpVerificationType ?? null)
       lpControl.primaryPoolDex = lpDiagnostics.primaryMarketDex ?? null
       lpControl.primaryPoolType = lpPoolType
       lpControl.displayLpModel = _displayLpModel
@@ -5106,7 +5114,7 @@ export async function POST(req: Request) {
       const migrationRisk: RiskEngine["lpIntelligence"]["migrationRisk"] = _lpStatus === 'team_controlled' ? 'high'
         : _lpStatus === 'burned' ? 'low'
         : _lpStatus === 'locked' ? 'low'
-        : _lpStatus === 'protocol' || _lpStatus === 'concentrated_liquidity' ? 'medium'
+        : _lpStatus === 'protocol' || _lpStatus === 'concentrated_liquidity' || lpControl.proofApplicability === 'not_applicable' ? 'medium'
         : 'inferred'
       // Mint authority: active = mint bytecode detected; renounced = ownership provably renounced;
       // not_applicable = mint bytecode not detected (no authority to yield); inferred = unknown.
@@ -5146,7 +5154,10 @@ export async function POST(req: Request) {
         volatility,
         liquidityDecay,
         poolType: _typeLabel,
-        note: `LP ${_lpStatus === 'burned' ? 'is burned — permanent lock' : _lpStatus === 'locked' ? `is locked (${_lockTimeLabel ?? 'duration unknown'})` : _lpStatus === 'team_controlled' ? 'is team-controlled — exit risk active' : _lpStatus === 'protocol' ? 'is protocol-owned — follows protocol governance' : _lpStatus === 'concentrated_liquidity' ? 'uses concentrated liquidity — standard V3/CL format' : 'control status inferred — lock or burn proof not confirmed'}. Depth: ${depth}. Migration risk: ${migrationRisk}.`
+        note: `${lpControl.proofApplicability === 'not_applicable'
+          ? 'Standard ERC-20 LP lock/burn proof does not apply to this concentrated-liquidity pool. Use protocol-specific position checks to assess liquidity control'
+          : `LP ${_lpStatus === 'burned' ? 'is burned — permanent lock' : _lpStatus === 'locked' ? `is locked (${_lockTimeLabel ?? 'duration unknown'})` : _lpStatus === 'team_controlled' ? 'is team-controlled — exit risk active' : _lpStatus === 'protocol' ? 'is protocol-owned — follows protocol governance' : 'control status inferred — lock or burn proof not confirmed'}`
+        }. Depth: ${depth}. Migration risk: ${migrationRisk}.`
       }
     })()
 
@@ -5161,7 +5172,11 @@ export async function POST(req: Request) {
       if (!holderDataComplete) nextActions.push(`Verify holder concentration via ${chain === 'eth' ? 'Etherscan token holders' : 'Basescan'}.`)
       if (!hpResult.ok) nextActions.push('Run a manual trade simulation to confirm buy/sell taxes and honeypot status.')
       if (deployerProfile.deployer == null) nextActions.push(`Trace deployer wallet via ${chain === 'eth' ? 'Etherscan contract creation' : 'Basescan'} before taking a position.`)
-      if (lpIntelligence.migrationRisk === 'high' || lpIntelligence.migrationRisk === 'inferred') nextActions.push('Verify LP lock status — team-controlled liquidity can be removed at any time.')
+      if (lpControl.proofApplicability === 'not_applicable') {
+        nextActions.push('Standard ERC-20 LP lock/burn proof does not apply to this concentrated-liquidity pool. Use protocol-specific position checks to assess liquidity control.')
+      } else if (lpIntelligence.migrationRisk === 'high' || lpIntelligence.migrationRisk === 'inferred') {
+        nextActions.push('Verify LP lock status — team-controlled liquidity can be removed at any time.')
+      }
       if (cortexContractFlags.mint.status === 'inferred') nextActions.push('Confirm mint function absence via contract source code or bytecode audit.')
       if (lpIntelligence.depth === 'shallow' || lpIntelligence.depth === 'none') nextActions.push('Caution: shallow liquidity — large trades will face significant slippage.')
       if (nextActions.length === 0) nextActions.push('All major checks passed — continue monitoring for holder changes and LP movements.')

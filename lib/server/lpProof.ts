@@ -286,7 +286,9 @@ export function buildCortexLpRead(params: {
     ? `An active LP lock was found${lpLockProvider ? ` via ${lpLockProvider}` : ""}${lpUnlockTime ? `, unlocking at ${new Date(lpUnlockTime * 1000).toISOString()}` : ""}.`
     : lpLockStatus === "burned"
       ? "On-chain data shows the dominant share of LP tokens sent to a burn address."
-      : "No lock or burn proof was confirmed for this LP — treat liquidity as potentially withdrawable.";
+      : !lpModel.standardLockApplies
+        ? "Standard ERC-20 LP lock/burn proof does not apply to this concentrated-liquidity pool. Use protocol-specific position checks to assess liquidity control."
+        : "No lock or burn proof was confirmed for this LP — treat liquidity as potentially withdrawable.";
 
   const riskSummary = `${name} (${symbol}) shows a "${riskTier}" liquidity-depth risk tier based on observed pool data. This reflects liquidity depth and pool structure only — ownership, mintability, honeypot and tax status remain unconfirmed (data mode: ${mode}, confidence: ${confidence}). ${lockClause}`;
 
@@ -310,10 +312,11 @@ export function buildCortexLpRead(params: {
     migrationAnalysis: migrationSummary,
     evidenceGaps: gaps.map((g) => g.label),
     nextActions: [
-      "Confirm LP lock and burn status directly on-chain before trusting any safety claims.",
+      ...(lpModel.standardLockApplies
+        ? ["Confirm LP lock and burn status directly on-chain before trusting any safety claims."]
+        : ["Standard ERC-20 LP lock/burn proof does not apply to this concentrated-liquidity pool. Use protocol-specific position checks to assess liquidity control."]),
       "Verify contract ownership/renouncement and mintability via the contract source code.",
       "Run a honeypot and tax simulation prior to trading.",
-      ...(lpModel.standardLockApplies ? [] : ["Use a concentrated-liquidity-aware lock verification method for this pool."]),
     ],
   };
 }
