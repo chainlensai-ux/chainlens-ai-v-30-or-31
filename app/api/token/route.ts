@@ -695,6 +695,14 @@ function buildClusterInfluence(params: {
   }
 }
 
+// Safely parses an `eth_call` result hex string to a BigInt. Returns null for
+// empty/invalid results (e.g. "0x" from a revert or non-standard contract),
+// which would otherwise throw a SyntaxError from BigInt("0x").
+function hexToBigInt(hex: string | null | undefined): bigint | null {
+  if (!hex || hex === '0x' || hex === '0x0') return hex === '0x0' ? BigInt(0) : null
+  try { return BigInt(hex) } catch { return null }
+}
+
 // BigInt-safe percentage: avoids float precision loss on 18-decimal ERC-20 balances.
 // Returns e.g. 5.23 for 5.23%. Uses BigInt() constructor (not literals) for ES2017 compat.
 function bigIntPct(balanceRaw: unknown, supplyRaw: unknown): number | null {
@@ -2961,6 +2969,15 @@ export async function POST(req: Request) {
   let _diagIsAddressInput = false
   let _diagSelectedChain: ChainKey = 'base'
   let _diagDebugMode = false
+  let _diagResolvedAddress: string | null = null
+  // Coarse stage tracker so a fatal error mid-pipeline can report exactly
+  // where it happened (debug-only, never shown in public UI).
+  let _scanStage = 'init'
+  let _diagMarketAttempted = false
+  let _diagPoolAttempted = false
+  let _diagFallbackAttempted = false
+  let _diagPoolCount = 0
+  let _diagMetadataResolved = false
 
   try {
     const _t0 = Date.now()
@@ -3036,17 +3053,22 @@ export async function POST(req: Request) {
       }, { status: 404 })
     }
     const contract = resolvedAddress
+    _diagResolvedAddress = contract
+    _scanStage = 'chain_detection'
     // Chain auto-detection for address inputs: if selected chain has no pools,
     // try the opposite chain before continuing full scan.
     if (isAddressInput) {
+      _diagPoolAttempted = true
       const selectedPools = await fetchGeckoTerminal(contract, chain)
       const selectedCount = Array.isArray(selectedPools?.data) ? selectedPools.data.length : 0
+      _diagPoolCount = selectedCount
       if (selectedCount === 0) {
         const altChain: ChainKey = chain === 'eth' ? 'base' : 'eth'
         const altPools = await fetchGeckoTerminal(contract, altChain)
         const altCount = Array.isArray(altPools?.data) ? altPools.data.length : 0
         if (altCount > 0) {
           chain = altChain
+          _diagPoolCount = altCount
         }
       }
     }
@@ -3095,6 +3117,8 @@ export async function POST(req: Request) {
       return out
     }
 
+    _scanStage = 'phase1_provider_fetch'
+    _diagMarketAttempted = true
     const bytecodePromise = (async () => {
       const t0 = Date.now()
       const out = await fetchBytecode(chain, contract)
@@ -3151,6 +3175,9 @@ export async function POST(req: Request) {
       countedRpcCall('eth_call', [{ to: contract, data: '0x18160ddd' }, 'latest'], 'totalSupplyCheck.mandatory', true),
     ])
     if (process.env.NODE_ENV === 'development') console.log('[token-timing] phase1Ms', Date.now() - _t0)
+    _diagMetadataResolved = Boolean(metadata) || Boolean(goldrush) || Boolean(gtTokenInfo)
+    _diagFallbackAttempted = Boolean(dexFbEarly)
+    _scanStage = 'phase1_analysis'
 
     const analysis = analyzeContract(bytecode);
 
@@ -3342,6 +3369,7 @@ export async function POST(req: Request) {
     ].filter(Boolean).join('\n')
 
     // Phase 2: LP holder fetch + AI summary + onchain supply all in parallel
+    _scanStage = 'phase2_lp_holder_fetch'
     const _t2 = Date.now()
     const [_lpHoldersSettled, _aiSettled, _onchainSettled] = await Promise.allSettled([
       needsLpHolderFetch
@@ -3475,6 +3503,7 @@ export async function POST(req: Request) {
     let _lpGrPctDerived = false
     let _lpRpcFallbackRan = false
     let _lpGrItemCount = 0
+    _scanStage = 'lp_control_evaluation'
     if (!_lpProofPresent) {
       // No pool at all — not even a market pool with a usable address
       lpControl = { ...lpControl, status: "no_pool", reason: "No pool address found from provider for LP-holder verification." };
@@ -3548,15 +3577,17 @@ export async function POST(req: Request) {
         const probe = await probePoolTypeViaRpc(chain, _lpProofAddress!);
         if (probe.v2Like) {
           const totalSupplyHex = await countedRpcCall("eth_call", [{ to: _lpProofAddress!, data: "0x18160ddd" }, "latest"], "lpControlCheck.totalSupply", false);
-          const totalSupply = totalSupplyHex ? Number(BigInt(totalSupplyHex)) : null;
+          const totalSupplyBigInt = hexToBigInt(totalSupplyHex);
+          const totalSupply = totalSupplyBigInt != null ? Number(totalSupplyBigInt) : null;
           if (!totalSupply || totalSupply <= 0) {
             lpControl = { status: "partial", confidence: "low", poolType: "v2", source: "dex_data+rpc", reason: "Pool probed as V2-like but RPC totalSupply read returned no data.", evidence: [`Verification pool: ${lpPair}`, "RPC probe: V2-like interface detected"], poolAddressPresent: true, probeV2Like: true, probeV3Like: false, dexId: dexId || undefined };
           } else {
             const readPct = async (addr: string) => {
               const data = `0x70a08231${pad32HexAddress(addr)}`;
               const balHex = await countedRpcCall("eth_call", [{ to: _lpProofAddress!, data }, "latest"], "lpControlCheck.balanceOf", false);
-              if (!balHex) return 0;
-              return (Number(BigInt(balHex)) / totalSupply) * 100;
+              const balBigInt = hexToBigInt(balHex);
+              if (balBigInt == null) return 0;
+              return (Number(balBigInt) / totalSupply) * 100;
             };
             const _ownerForLpProbe = ownerAddrEarlyForLp && !DEAD.has(ownerAddrEarlyForLp) && !KNOWN_LOCKERS.has(ownerAddrEarlyForLp) ? ownerAddrEarlyForLp : null
             const [burn0, burnDead, _lockerPcts, _ownerLpPctProbe] = await Promise.all([
@@ -3616,15 +3647,17 @@ export async function POST(req: Request) {
         // Alchemy RPC fallback when GoldRush holder percentages are unavailable
         _lpRpcFallbackRan = true
         const totalSupplyHex = await countedRpcCall("eth_call", [{ to: _lpProofAddress!, data: "0x18160ddd" }, "latest"], "lpControlCheck.totalSupply", false);
-        const totalSupply = totalSupplyHex ? Number(BigInt(totalSupplyHex)) : null;
+        const totalSupplyBigInt = hexToBigInt(totalSupplyHex);
+        const totalSupply = totalSupplyBigInt != null ? Number(totalSupplyBigInt) : null;
         if (!totalSupply || totalSupply <= 0) {
           lpControl = { status: "partial", confidence: "low", poolType: _lpProofType, source: "dex_data+rpc", reason: "LP holder percentages not indexed; RPC totalSupply read returned no data.", evidence: [`pool=${_lpAddrSnippet}`] };
         } else {
           const readPct = async (addr: string) => {
             const data = `0x70a08231${pad32HexAddress(addr)}`;
             const balHex = await countedRpcCall("eth_call", [{ to: _lpProofAddress!, data }, "latest"], "lpControlCheck.balanceOf", false);
-            if (!balHex) return 0;
-            return (Number(BigInt(balHex)) / totalSupply) * 100;
+            const balBigInt = hexToBigInt(balHex);
+            if (balBigInt == null) return 0;
+            return (Number(balBigInt) / totalSupply) * 100;
           };
           const _ownerForLpFallback = ownerAddrEarlyForLp && !DEAD.has(ownerAddrEarlyForLp) && !KNOWN_LOCKERS.has(ownerAddrEarlyForLp) ? ownerAddrEarlyForLp : null
           const [burn0, burnDead, _lockerPcts, _ownerLpPctFallback] = await Promise.all([
@@ -5628,6 +5661,7 @@ export async function POST(req: Request) {
     const { _foundKeys: _psFoundKeys, _rejectedCount: _psRejectedCount, ...projectSocials } =
       extractProjectSocials(gtToken, coingeckoRaw, gmgnItem, _dexFb)
 
+    _scanStage = 'response_assembly'
     const responsePayload = {
       chain,
       contract,
@@ -6630,13 +6664,22 @@ export async function POST(req: Request) {
         error: "Token address accepted, but CORTEX could not find enough live data yet.",
         ..._diagDebugMode ? {
           _diagnostics: {
+            input: _diagOriginalInput,
             originalInput: _diagOriginalInput,
+            chain: _diagSelectedChain,
             selectedChain: _diagSelectedChain,
+            resolvedAddress: _diagResolvedAddress,
             detectedInputType: 'address',
             addressValid: true,
+            scanStageFailed: _scanStage,
             resolverStageFailed: 'scan_pipeline',
             resolverFailureReason: _failureReason,
-            fallbackAttempted: true,
+            exactErrorMessage: _failureReason,
+            marketAttempted: _diagMarketAttempted,
+            poolAttempted: _diagPoolAttempted,
+            poolCount: _diagPoolCount,
+            metadataResolved: _diagMetadataResolved,
+            fallbackAttempted: _diagFallbackAttempted,
           },
         } : {},
       }, { status: 200 });
@@ -6646,13 +6689,22 @@ export async function POST(req: Request) {
         error: "Internal server error",
         ..._diagDebugMode ? {
           _diagnostics: {
+            input: _diagOriginalInput,
             originalInput: _diagOriginalInput,
+            chain: _diagSelectedChain,
             selectedChain: _diagSelectedChain,
+            resolvedAddress: _diagResolvedAddress,
             detectedInputType: _diagIsAddressInput ? 'address' : 'symbol_or_alias',
             addressValid: _diagIsAddressInput,
+            scanStageFailed: _scanStage,
             resolverStageFailed: 'scan_pipeline',
             resolverFailureReason: _failureReason,
-            fallbackAttempted: false,
+            exactErrorMessage: _failureReason,
+            marketAttempted: _diagMarketAttempted,
+            poolAttempted: _diagPoolAttempted,
+            poolCount: _diagPoolCount,
+            metadataResolved: _diagMetadataResolved,
+            fallbackAttempted: _diagFallbackAttempted,
           },
         } : {},
       },
