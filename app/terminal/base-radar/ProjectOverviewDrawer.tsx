@@ -391,11 +391,13 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
       : 'A primary liquidity pool was detected, but full pool distribution is not fully indexed.')
     : 'No active liquidity pool was confirmed from current evidence.')
 
-  const lpCortexLine = lpControlStatus === 'team_controlled' && lp?.lpController && !hasVerifiedLock(lp?.lpLockStatus)
+  const lpCortexLine = lp?.lpProofApplicability === 'not_applicable'
+    ? 'The primary pool uses a concentrated-liquidity model, so standard ERC-20 LP lock/burn proof does not apply.'
+    : lpControlStatus === 'team_controlled' && lp?.lpController && !hasVerifiedLock(lp?.lpLockStatus)
     ? 'LP holder evidence indicates a single wallet controls the LP position, and no verified lock or burn proof was found.'
     : `LP control is ${lpControlStatus ? publicStatus(lpControlStatus) : 'Open Check'}; ${lpRiskLabelValue}`
   const holderCortexLine = concentration.top10 != null && Number.isFinite(concentration.top10)
-    ? `${concentrationRisk === 'Extreme' ? 'Holder concentration is extreme' : `Holder concentration is ${concentrationRisk.toLowerCase()}`}, with the top 10 holders controlling ${concentration.top10 >= 95 ? 'nearly all indexed supply' : percent(concentration.top10) + ' of indexed supply'}.`
+    ? `${concentrationRisk === 'Extreme' ? 'Holder concentration is extreme' : `Holder concentration is ${concentrationRisk.toLowerCase()}`}, with the top 10 holders controlling ${concentration.top10 >= 95 ? 'nearly all indexed supply' : `about ${percent(concentration.top10)} of indexed supply`}.`
     : `Top holder concentration is ${percent(concentration.top10)} for top 10 holders; holder evidence is ${holderStatusLabel}.`
   const cortexRead = [
     `${poolDistributionLine} Momentum is ${(token?.momentum ?? 'unknown').toLowerCase()} and radar score is ${token?.radarScore ?? 'N/A'}.`,
@@ -484,7 +486,7 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
           <DataRow label="Top 1 / 10 / 20" value={`${percent(concentration.top1)} / ${percent(concentration.top10)} / ${percent(concentration.top20)}`} />
           <DataRow label="Holder count" value={concentration.holderCount == null ? 'Open Check' : String(concentration.holderCount)} />
           <DataRow label="Evidence status" value={holderStatusLabel} />
-          <DataRow label="Concentration risk" value={concentrationRisk} />
+          <DataRow label="Concentration risk" value={concentrationRisk === 'Open Check' ? concentrationRisk : `${concentrationRisk} concentration`} />
           <DataRow label="Creator in top holders" value={creatorTopHolderLabel(concentration.creatorInTopHolders, concentration.creatorHolderPercent)} />
           <DataRow label="Trading taxes" value={securityTax} />
           <div style={{ marginTop: '8px', display: 'grid', gap: '6px' }}>{topHolders.slice(0, 5).map((h, idx) => <DataRow key={`${h.address}-${idx}`} label={`#${h.rank ?? idx + 1}`} value={`${shortAddr(h.address)} · ${percent(getHolderPercent(h))}`} />)}</div>

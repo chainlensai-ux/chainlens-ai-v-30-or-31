@@ -287,10 +287,10 @@ export function buildCortexLpRead(params: {
     : lpLockStatus === "burned"
       ? "On-chain data shows the dominant share of LP tokens sent to a burn address."
       : !lpModel.standardLockApplies
-        ? "Standard ERC-20 LP lock/burn proof does not apply to this concentrated-liquidity pool. Use protocol-specific position checks to assess liquidity control."
+        ? "Standard ERC-20 LP lock/burn proof does not apply to this concentrated-liquidity pool. Liquidity control requires protocol-specific position checks."
         : "No lock or burn proof was confirmed for this LP — treat liquidity as potentially withdrawable.";
 
-  const riskSummary = `${name} (${symbol}) shows a "${riskTier}" liquidity-depth risk tier based on observed pool data. This reflects liquidity depth and pool structure only — ownership, mintability, honeypot and tax status remain unconfirmed (data mode: ${mode}, confidence: ${confidence}). ${lockClause}`;
+  const riskSummary = `${name} (${symbol}) shows a "${riskTier}" liquidity-depth risk tier based on observed pool data. This reflects liquidity depth and pool structure only — ownership, mintability, simulation and tax status remain unconfirmed (data mode: ${mode}, confidence: ${confidence}). ${lockClause}`;
 
   const poolDetected = observedPoolPresent ?? fragments > 0;
   const liquidityAnalysis = poolDetected
@@ -314,9 +314,9 @@ export function buildCortexLpRead(params: {
     nextActions: [
       ...(lpModel.standardLockApplies
         ? ["Confirm LP lock and burn status directly on-chain before trusting any safety claims."]
-        : ["Standard ERC-20 LP lock/burn proof does not apply to this concentrated-liquidity pool. Use protocol-specific position checks to assess liquidity control."]),
+        : ["Standard ERC-20 LP lock/burn proof does not apply to this concentrated-liquidity pool. Liquidity control requires protocol-specific position checks."]),
       "Verify contract ownership/renouncement and mintability via the contract source code.",
-      "Run a honeypot and tax simulation prior to trading.",
+      "Run a simulation and tax check prior to trading.",
     ],
   };
 }

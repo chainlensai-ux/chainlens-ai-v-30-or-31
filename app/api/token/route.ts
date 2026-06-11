@@ -5155,7 +5155,7 @@ export async function POST(req: Request) {
         liquidityDecay,
         poolType: _typeLabel,
         note: `${lpControl.proofApplicability === 'not_applicable'
-          ? 'Standard ERC-20 LP lock/burn proof does not apply to this concentrated-liquidity pool. Use protocol-specific position checks to assess liquidity control'
+          ? 'Standard ERC-20 LP lock/burn proof does not apply to this concentrated-liquidity pool. Liquidity control requires protocol-specific position checks'
           : `LP ${_lpStatus === 'burned' ? 'is burned — permanent lock' : _lpStatus === 'locked' ? `is locked (${_lockTimeLabel ?? 'duration unknown'})` : _lpStatus === 'team_controlled' ? 'is team-controlled — exit risk active' : _lpStatus === 'protocol' ? 'is protocol-owned — follows protocol governance' : 'control status inferred — lock or burn proof not confirmed'}`
         }. Depth: ${depth}. Migration risk: ${migrationRisk}.`
       }
@@ -5173,7 +5173,7 @@ export async function POST(req: Request) {
       if (!hpResult.ok) nextActions.push('Run a manual trade simulation to confirm buy/sell taxes and honeypot status.')
       if (deployerProfile.deployer == null) nextActions.push(`Trace deployer wallet via ${chain === 'eth' ? 'Etherscan contract creation' : 'Basescan'} before taking a position.`)
       if (lpControl.proofApplicability === 'not_applicable') {
-        nextActions.push('Standard ERC-20 LP lock/burn proof does not apply to this concentrated-liquidity pool. Use protocol-specific position checks to assess liquidity control.')
+        nextActions.push('Standard ERC-20 LP lock/burn proof does not apply to this concentrated-liquidity pool. Liquidity control requires protocol-specific position checks.')
       } else if (lpIntelligence.migrationRisk === 'high' || lpIntelligence.migrationRisk === 'inferred') {
         nextActions.push('Verify LP lock status — team-controlled liquidity can be removed at any time.')
       }

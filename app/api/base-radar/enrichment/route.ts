@@ -54,6 +54,16 @@ function finiteNumber(value: unknown): number | null {
   return Number.isFinite(n) ? n : null
 }
 
+// Derives a holder-concentration risk label from indexed top-holder percentages —
+// never reports "Open Check" when top10/top20 evidence is actually available.
+function deriveConcentrationRisk(top10: number | null, top20: number | null): "extreme" | "high" | "medium" | "lower" | null {
+  if (top10 == null && top20 == null) return null
+  if ((top10 != null && top10 >= 80) || (top20 != null && top20 >= 90)) return "extreme"
+  if (top10 != null && top10 >= 60) return "high"
+  if (top10 != null && top10 >= 40) return "medium"
+  return "lower"
+}
+
 
 function publicAddress(value: unknown): string | null {
   return typeof value === 'string' && /^0x[a-fA-F0-9]{40}$/.test(value.trim()) ? value.trim() : null
@@ -169,7 +179,10 @@ function sanitizeProviderText(value: string): string {
   return value
     .replace(/geckoterminal\+goldrush/gi, 'Market + holder evidence')
     .replace(/moralis_transfer_fallback/gi, 'Transfer inference')
-    .replace(/honeypot(?:\.is|_is)?/gi, 'Simulation evidence')
+    // Only replace explicit provider-name forms (e.g. "honeypot.is", "honeypot_is") —
+    // never the bare word "honeypot"/"simulation", which appear in normal CORTEX
+    // sentences ("...mintability, simulation and tax status...") and must not be mangled.
+    .replace(/honeypot(?:\.is|_is)/gi, 'Simulation evidence')
     .replace(/goldrush/gi, 'holder index')
     .replace(/geckoterminal/gi, 'market index')
 }
@@ -314,7 +327,8 @@ function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract
         isContract: typeof h.isContract === 'boolean' ? h.isContract : null,
         walletType: h.walletType ?? null,
       })),
-      concentration: scan.cortexRiskEngine?.holderIntelligence?.concentration ?? scan.holderIntelligence?.concentration ?? null,
+      concentration: deriveConcentrationRisk(finiteNumber(holderDistribution.top10), finiteNumber(holderDistribution.top20))
+        ?? scan.cortexRiskEngine?.holderIntelligence?.concentration ?? scan.holderIntelligence?.concentration ?? null,
       creatorInTopHolders: typeof scan.creatorInTopHolders === 'boolean' ? scan.creatorInTopHolders : null,
       creatorHolderPercent,
     },
