@@ -19,12 +19,14 @@ import { calculateCortexScoreV2 } from '@/lib/token/scoring'
 // Local LP model/migration proof helper — pure function derived from GeckoTerminal pool data,
 // delegating to the shared classifyPoolModel() so Token Scanner and Liquidity Safety agree
 // on Aerodrome V2 vs Aerodrome Slipstream (concentrated) classification.
-function _deriveLpModelProof(pools: Array<{ relationships?: { dex?: { data?: { id: string } } } }>): {
+// Derives lpModelProof from the CANONICAL primary pool's dex id — the same pool
+// (lpPool/lpDexId) that drives lpControl, so lpModelProof.model and
+// lpControl.poolType / lpProofApplicability never describe different pools.
+function _deriveLpModelProof(dexId: string | null): {
   model: 'constant_product' | 'concentrated' | 'stableswap' | 'unknown'
   dexName: string | null
   standardLockApplies: boolean
 } {
-  const dexId = pools[0]?.relationships?.dex?.data?.id ?? null
   const cls = classifyPoolModel(dexId)
   const model: 'constant_product' | 'concentrated' | 'stableswap' | 'unknown' =
     cls.poolModel === 'aerodrome_v2' ? 'constant_product' : cls.poolModel
@@ -2214,6 +2216,18 @@ type LpControlResult = {
   // can run; "not_applicable": pool model has no ERC-20 LP token (concentrated/no_pool);
   // "unknown": pool model could not be classified.
   proofApplicability?: "applicable" | "not_applicable" | "unknown";
+  // Secondary V2/Aerodrome ERC-20 LP pool signal — populated only when the PRIMARY pool
+  // is concentrated/protocol liquidity AND a separate ERC-20 LP pool was found. Never
+  // overrides `status`/`proofApplicability` above (selection rule 3/4).
+  secondaryLpControlSignals?: {
+    status: LpControlResult["status"];
+    confidence: LpControlResult["confidence"];
+    poolAddress: string | null;
+    poolDex: string | null;
+    poolType: string | null;
+    reason: string;
+    evidence: string[];
+  } | null;
 };
 type LpDiagnostics = {
   attempted: boolean;
@@ -2962,9 +2976,11 @@ function _buildDeterministicSummary(
     inferred.push('holder concentration inferred as moderate-to-high — cross-check top wallets before sizing a position')
   }
   if (ownerStatus === 'renounced') {
-    confirmed.push('Ownership is renounced.')
-  } else if (ownerStatus !== 'renounced') {
+    confirmed.push('Ownership is renounced — verified zero address.')
+  } else if (ownerStatus === 'held') {
     risks.push('contract ownership is active — owner retains admin control')
+  } else {
+    inferred.push('ownership status is an open check — not verified on-chain')
   }
   if (lpControlStatus === 'team_controlled') {
     risks.push('LP is team-controlled — liquidity can be removed at any time without warning')
@@ -3280,6 +3296,11 @@ export async function POST(req: Request) {
     )
     const lpPool = canonicalPrimaryUsable ? canonicalPrimaryPool : selectedLpPool.pool;
     const lpPoolType = lpPool?.poolType ?? "unknown";
+    // Canonical LP proof target: the PRIMARY/highest-liquidity pool (lpPool) is the single
+    // source of truth for whether standard ERC-20 LP lock/burn proof applies (selection
+    // rules 1/2). If it's concentrated/CLMM/V3, standard proof never applies to it —
+    // any V2/Aerodrome pool found elsewhere is at most a SECONDARY signal (rule 3/4).
+    const _primaryConcentrated = lpPoolType === "v3" || lpPoolType === "concentrated";
     // lpVerifyPool: separate from lpPool — best V2/unknown pool for burn/lock/team proof.
     // normalizedPools is sorted by liquidity desc, so first V2/unknown = highest-liquidity verifiable pool.
     const _isV2Verifiable = (p: NormalizedPool) =>
@@ -3538,7 +3559,7 @@ export async function POST(req: Request) {
     if (!_lpProofPresent) {
       // No pool at all — not even a market pool with a usable address
       lpControl = { ...lpControl, status: "no_pool", reason: "No pool address found from provider for LP-holder verification." };
-    } else if (!lpVerifyPoolPresent && (lpPoolType === "v3" || lpPoolType === "concentrated")) {
+    } else if (!lpVerifyPoolPresent && _primaryConcentrated) {
       // Market pool exists but is V3/concentrated, and no V2/Aerodrome-V2 pool found anywhere → concentrated status
       lpControl = {
         status: "concentrated_liquidity",
@@ -3590,17 +3611,17 @@ export async function POST(req: Request) {
       if (grProvedUnknown) {
         // GoldRush returned usable holder data — classify from it
         if (unknownBurnPct >= 50) {
-          lpControl = { status: "burned", confidence: confidenceFor(unknownBurnPct), poolType: "unknown", source: "geckoterminal+goldrush", reason: "Dominant LP share appears in burn/dead addresses, but the pool model is not fully classified.", evidence: [`burn_share=${unknownBurnPct.toFixed(2)}%`, `pool=${_lpAddrSnippet}`], poolAddressPresent: true, dexId: dexId || undefined };
+          lpControl = { status: "burned", confidence: confidenceFor(unknownBurnPct), poolType: "unknown", source: "Market + holder evidence", reason: "Dominant LP share appears in burn/dead addresses, but the pool model is not fully classified.", evidence: [`burn_share=${unknownBurnPct.toFixed(2)}%`, `pool=${_lpAddrSnippet}`], poolAddressPresent: true, dexId: dexId || undefined };
         } else if (unknownLockerPct >= 50) {
-          lpControl = { status: "locked", confidence: confidenceFor(unknownLockerPct), poolType: "unknown", source: "geckoterminal+goldrush", reason: "Dominant LP share appears in known lockers, but the pool model is not fully classified.", evidence: [`locker_share=${unknownLockerPct.toFixed(2)}%`, `pool=${_lpAddrSnippet}`], poolAddressPresent: true, dexId: dexId || undefined };
+          lpControl = { status: "locked", confidence: confidenceFor(unknownLockerPct), poolType: "unknown", source: "Market + holder evidence", reason: "Dominant LP share appears in known lockers, but the pool model is not fully classified.", evidence: [`locker_share=${unknownLockerPct.toFixed(2)}%`, `pool=${_lpAddrSnippet}`], poolAddressPresent: true, dexId: dexId || undefined };
         } else if (unknownTopHolder && (unknownTopHolder.pct ?? 0) >= 80 && !DEAD.has(unknownTopHolder.address) && !KNOWN_LOCKERS.has(unknownTopHolder.address)) {
-          lpControl = { status: "team_controlled", confidence: "high", poolType: "unknown", source: "geckoterminal+goldrush", reason: "Single normal wallet holds dominant LP share, but the pool model is not fully classified.", evidence: [`top_holder=${unknownTopHolder.address}`, `top_share=${(unknownTopHolder.pct ?? 0).toFixed(2)}%`], poolAddressPresent: true, dexId: dexId || undefined };
+          lpControl = { status: "team_controlled", confidence: "high", poolType: "unknown", source: "Market + holder evidence", reason: "Single normal wallet holds dominant LP share, but the pool model is not fully classified.", evidence: [`top_holder=${unknownTopHolder.address}`, `top_share=${(unknownTopHolder.pct ?? 0).toFixed(2)}%`], poolAddressPresent: true, dexId: dexId || undefined };
         } else {
           const partialEv2 = [
             unknownBurnPct > 0.5 ? `burn_share=${unknownBurnPct.toFixed(2)}%` : null,
             unknownLockerPct > 0.5 ? `locker_share=${unknownLockerPct.toFixed(2)}%` : null,
           ].filter(Boolean) as string[]
-          lpControl = { status: partialEv2.length ? "partial" : "partial", confidence: "low", poolType: "unknown", source: "geckoterminal+goldrush", reason: "LP holder check inconclusive — no dominant burn/lock pattern and pool model is not fully classified.", evidence: [`top_rows=${unknownTop.length}`, ...partialEv2, `pool=${_lpAddrSnippet}`], poolAddressPresent: true, dexId: dexId || undefined };
+          lpControl = { status: partialEv2.length ? "partial" : "partial", confidence: "low", poolType: "unknown", source: "Market + holder evidence", reason: "LP holder check inconclusive — no dominant burn/lock pattern and pool model is not fully classified.", evidence: [`top_rows=${unknownTop.length}`, ...partialEv2, `pool=${_lpAddrSnippet}`], poolAddressPresent: true, dexId: dexId || undefined };
         }
       } else {
         // Step 2: GoldRush failed or empty — probe pool via RPC to classify
@@ -3669,11 +3690,11 @@ export async function POST(req: Request) {
       const burnPct = top.filter((x) => DEAD.has(x.address)).reduce((a, b) => a + (b.pct ?? 0), 0);
       const lockerPct = top.filter((x) => KNOWN_LOCKERS.has(x.address)).reduce((a, b) => a + (b.pct ?? 0), 0);
       if (burnPct >= 50) {
-        lpControl = { status: "burned", confidence: confidenceFor(burnPct), poolType: _lpProofType, source: "geckoterminal+goldrush", reason: "Dominant LP share appears in burn/dead addresses.", evidence: [`burn_share=${burnPct.toFixed(2)}%`, `pool=${_lpAddrSnippet}`] };
+        lpControl = { status: "burned", confidence: confidenceFor(burnPct), poolType: _lpProofType, source: "Market + holder evidence", reason: "Dominant LP share appears in burn/dead addresses.", evidence: [`burn_share=${burnPct.toFixed(2)}%`, `pool=${_lpAddrSnippet}`] };
       } else if (lockerPct >= 50) {
-        lpControl = { status: "locked", confidence: confidenceFor(lockerPct), poolType: _lpProofType, source: "geckoterminal+goldrush", reason: "Dominant LP share appears in known lockers.", evidence: [`locker_share=${lockerPct.toFixed(2)}%`, `pool=${_lpAddrSnippet}`] };
+        lpControl = { status: "locked", confidence: confidenceFor(lockerPct), poolType: _lpProofType, source: "Market + holder evidence", reason: "Dominant LP share appears in known lockers.", evidence: [`locker_share=${lockerPct.toFixed(2)}%`, `pool=${_lpAddrSnippet}`] };
       } else if (topHolder && (topHolder.pct ?? 0) >= 80 && !DEAD.has(topHolder.address) && !KNOWN_LOCKERS.has(topHolder.address)) {
-        lpControl = { status: "team_controlled", confidence: "high", poolType: _lpProofType, source: "geckoterminal+goldrush", reason: "Single normal wallet holds dominant LP share.", evidence: [`top_holder=${topHolder.address}`, `top_share=${(topHolder.pct ?? 0).toFixed(2)}%`] };
+        lpControl = { status: "team_controlled", confidence: "high", poolType: _lpProofType, source: "Market + holder evidence", reason: "Single normal wallet holds dominant LP share.", evidence: [`top_holder=${topHolder.address}`, `top_share=${(topHolder.pct ?? 0).toFixed(2)}%`] };
       } else if (lpItems.length === 0 || !top.some((x) => (x.pct ?? 0) > 0)) {
         // Alchemy RPC fallback when GoldRush holder percentages are unavailable
         _lpRpcFallbackRan = true
@@ -3718,7 +3739,38 @@ export async function POST(req: Request) {
         const partialReason = partialEv.length
           ? `LP holder check inconclusive — no dominant burn/lock pattern. ${partialEv.join(', ')}.`
           : "LP checks ran but could not prove burned/locked/team-controlled state."
-        lpControl = { status: partialEv.length ? "partial" : "partial", confidence: "low", poolType: _lpProofType, source: "geckoterminal+goldrush", reason: partialReason, evidence: [`top_rows=${top.length}`, ...partialEv] };
+        lpControl = { status: partialEv.length ? "partial" : "partial", confidence: "low", poolType: _lpProofType, source: "Market + holder evidence", reason: partialReason, evidence: [`top_rows=${top.length}`, ...partialEv] };
+      }
+    }
+
+    // Selection rule 3/4: when the PRIMARY pool is concentrated/CLMM but a SEPARATE
+    // V2/Aerodrome ERC-20 LP pool was checked above, demote that result to a secondary
+    // signal and report the canonical (primary-pool) status as concentrated_liquidity.
+    // This prevents a secondary V2 pool from making the whole token "team_controlled"
+    // while lpModelProof/cortexLpRead describe the primary pool as concentrated.
+    if (_primaryConcentrated && lpVerifyPoolPresent && lpVerifyPool && lpVerifyPool.address && lpVerifyPool.address !== lpPoolAddress) {
+      const secondaryLpControlSignals: LpControlResult["secondaryLpControlSignals"] = {
+        status: lpControl.status,
+        confidence: lpControl.confidence,
+        poolAddress: lpVerifyPoolAddress,
+        poolDex: lpVerifyPool.dexId ?? lpVerifyPool.dexName ?? null,
+        poolType: lpVerifyPoolType,
+        reason: lpControl.reason,
+        evidence: lpControl.evidence,
+      }
+      lpControl = {
+        status: "concentrated_liquidity",
+        confidence: "medium",
+        poolType: lpPoolType,
+        source: "dex_data",
+        reason: "Protocol-specific LP proof required for the primary pool.",
+        evidence: [
+          `Primary pool: ${marketPair} (${lpPoolType})`,
+          `pool=${primaryPoolAddress}`, `dex=${lpDexId ?? lpDexName ?? "unknown"}`, `poolType=${lpPoolType}`,
+        ],
+        poolAddressPresent: true,
+        dexId: dexId || undefined,
+        secondaryLpControlSignals,
       }
     }
     const _extractEvidencePct = (ev: string[], prefix: string): number | null => {
@@ -4754,12 +4806,19 @@ export async function POST(req: Request) {
     const _implHex = alchemyMandatoryReads[4] ?? null
     const _ZERO_ADDR = '0x0000000000000000000000000000000000000000'
     const proxyImplAddr = _implHex && _implHex.length >= 42 && _implHex !== '0x' ? `0x${_implHex.slice(-40)}`.toLowerCase() : null
-    // Only mark renounced when RPC was attempted (alchemyConfigured) and owner is zero/null.
-    // If RPC wasn't configured, ownerAddr is null but we haven't verified anything.
+    // Only mark renounced/verified when RPC was attempted (alchemyConfigured).
+    // ownerAddr === zero means owner()/getOwner()/admin() explicitly returned the zero
+    // address (confirmed renounced) — distinct from ownerAddr === null, which means no
+    // owner-style selector returned usable data (status unknown, NOT renounced).
     const rpcOwnershipAttempted = alchemyConfigured
-    const isRenounced = rpcOwnershipAttempted && (!ownerAddr || ownerAddr === _ZERO_ADDR)
-    // ownerAddr=zero (renounced) does not count as verified — a zero string is truthy but meaningless
-    const ownershipVerified = rpcOwnershipAttempted && Boolean((ownerAddr && ownerAddr !== _ZERO_ADDR) || adminAddr)
+    const _ownerConfirmedZero = ownerAddr === _ZERO_ADDR
+    const _ownerConfirmedActive = Boolean((ownerAddr && ownerAddr !== _ZERO_ADDR) || adminAddr)
+    // ownershipVerified: RPC gave a definitive answer — either a confirmed zero (renounced)
+    // or a confirmed active owner/admin address.
+    const ownershipVerified = rpcOwnershipAttempted && (_ownerConfirmedZero || _ownerConfirmedActive)
+    // isRenounced requires BOTH ownershipVerified AND a confirmed zero owner address —
+    // never inferred from a missing/unresolved owner() call.
+    const isRenounced = ownershipVerified && _ownerConfirmedZero
     const rpcSupply = await countedRpcCall('eth_call', [{ to: contract, data: '0x18160ddd' }, 'latest'], 'totalSupplyCheck', true)
     const rpcDecimalsHex = await countedRpcCall('eth_call', [{ to: contract, data: '0x313ce567' }, 'latest'], 'decimalsCheck', true)
 
@@ -5200,7 +5259,7 @@ export async function POST(req: Request) {
     // lock/burn/controller status — unknowns are reported as "unverified". ──
     // Compute applicability first so we skip ERC-20 proof calls for concentrated
     // pools where no LP token exists. Unknown pool model still attempts proof.
-    const lpModelProof = _deriveLpModelProof(gtAllPools)
+    const lpModelProof = _deriveLpModelProof(lpDexId)
     const lpMigrationProof = _deriveMigrationProof(gtAllPools, liquidityUsd)
     // Single shared classification (problem 1/2): "applicable" only when lpControl confirmed
     // an ERC-20 LP token (V2 or Aerodrome V2). Never "applicable" for concentrated/no_pool/unclassified.
@@ -5269,6 +5328,9 @@ export async function POST(req: Request) {
       lpLockStatus,
       lpLockProvider,
       lpUnlockTime,
+      secondaryLpSignal: lpControl.secondaryLpControlSignals
+        ? { status: lpControl.secondaryLpControlSignals.status, poolDex: lpControl.secondaryLpControlSignals.poolDex }
+        : null,
     })
 
     // ── Structured exit risk fields (problem 6): liquidityDepthRisk separated from
@@ -5287,6 +5349,9 @@ export async function POST(req: Request) {
       liquidityUsd: _liqForRisk,
       poolModel: lpModelProof.model === 'concentrated' && lpDexId && /aerodrome|velodrome/i.test(lpDexId) ? 'concentrated' : lpModelProof.model,
       hasPool: !noActivePools && _lpProofPresent,
+      secondaryLpSignal: lpControl.secondaryLpControlSignals
+        ? { status: lpControl.secondaryLpControlSignals.status, poolDex: lpControl.secondaryLpControlSignals.poolDex }
+        : null,
     })
     const lpExitRisk = _lpExitRiskResult.lpExitRisk
     const lpExitRiskReason = _lpExitRiskResult.lpExitRiskReason

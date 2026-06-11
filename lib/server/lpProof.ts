@@ -278,16 +278,29 @@ export function buildCortexLpRead(params: {
   lpLockStatus: LpLockStatus;
   lpLockProvider: "PinkLock" | null;
   lpUnlockTime: number | null;
+  secondaryLpSignal?: { status: string; poolDex: string | null } | null;
 }): CortexLpRead {
-  const { name, symbol, totalLiq, fragments, observedPoolPresent, riskTier, lpModel, migrationSummary, mode, confidence, gaps, lpLockStatus, lpLockProvider, lpUnlockTime } = params;
+  const { name, symbol, totalLiq, fragments, observedPoolPresent, riskTier, lpModel, migrationSummary, mode, confidence, gaps, lpLockStatus, lpLockProvider, lpUnlockTime, secondaryLpSignal } = params;
   const liqStr = totalLiq != null ? `$${totalLiq.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : "an unknown amount";
+
+  // Secondary signal wording (selection rule 4): only describes a SECONDARY V2/Aerodrome ERC-20 LP
+  // pool, and never overrides the primary pool's concentrated/protocol classification.
+  const secondaryClause = secondaryLpSignal
+    ? secondaryLpSignal.status === "team_controlled"
+      ? " Primary liquidity uses concentrated/protocol liquidity. A secondary ERC-20 LP pool shows wallet-controlled LP exposure."
+      : secondaryLpSignal.status === "burned"
+        ? " A secondary ERC-20 LP pool shows its LP tokens sent to a burn address."
+        : secondaryLpSignal.status === "locked"
+          ? " A secondary ERC-20 LP pool shows its LP tokens in a known lock contract."
+          : ""
+    : "";
 
   const lockClause = lpLockStatus === "locked"
     ? `An active LP lock was found${lpLockProvider ? ` via ${lpLockProvider}` : ""}${lpUnlockTime ? `, unlocking at ${new Date(lpUnlockTime * 1000).toISOString()}` : ""}.`
     : lpLockStatus === "burned"
       ? "On-chain data shows the dominant share of LP tokens sent to a burn address."
       : !lpModel.standardLockApplies
-        ? "Standard ERC-20 LP lock/burn proof does not apply to this concentrated-liquidity pool. Liquidity control requires protocol-specific position checks."
+        ? `Standard ERC-20 LP lock/burn proof does not apply to this concentrated-liquidity pool. Liquidity control requires protocol-specific position checks.${secondaryClause}`
         : "No lock or burn proof was confirmed for this LP — treat liquidity as potentially withdrawable.";
 
   const riskSummary = `${name} (${symbol}) shows a "${riskTier}" liquidity-depth risk tier based on observed pool data. This reflects liquidity depth and pool structure only — ownership, mintability, simulation and tax status remain unconfirmed (data mode: ${mode}, confidence: ${confidence}). ${lockClause}`;
@@ -314,7 +327,7 @@ export function buildCortexLpRead(params: {
     nextActions: [
       ...(lpModel.standardLockApplies
         ? ["Confirm LP lock and burn status directly on-chain before trusting any safety claims."]
-        : ["Standard ERC-20 LP lock/burn proof does not apply to this concentrated-liquidity pool. Liquidity control requires protocol-specific position checks."]),
+        : [`Standard ERC-20 LP lock/burn proof does not apply to this concentrated-liquidity pool. Liquidity control requires protocol-specific position checks.${secondaryClause}`]),
       "Verify contract ownership/renouncement and mintability via the contract source code.",
       "Run a simulation and tax check prior to trading.",
     ],
@@ -480,8 +493,9 @@ export function computeLpExitRisk(params: {
   liquidityUsd: number | null;
   poolModel: PoolModel;
   hasPool: boolean;
+  secondaryLpSignal?: { status: string; poolDex: string | null } | null;
 }): LpExitRiskResult {
-  const { proofApplicability, lpLockStatus, lpController, liquidityUsd, poolModel, hasPool } = params;
+  const { proofApplicability, lpLockStatus, lpController, liquidityUsd, poolModel, hasPool, secondaryLpSignal } = params;
 
   const liquidityDepthRisk: LpExitRiskResult["liquidityDepthRisk"] =
     liquidityUsd == null ? "unknown" :
@@ -497,9 +511,12 @@ export function computeLpExitRisk(params: {
   if (proofApplicability === "not_applicable") {
     const monitor = liquidityUsd != null && liquidityUsd > 50_000;
     const watch = liquidityUsd != null && liquidityUsd > 0;
+    const secondaryClause = secondaryLpSignal?.status === "team_controlled"
+      ? " A secondary ERC-20 LP pool shows wallet-controlled LP exposure — monitor that pool separately."
+      : "";
     return {
       lpExitRisk: monitor ? "monitor" : watch ? "watch" : "open_check",
-      lpExitRiskReason: `${poolModel === "concentrated" ? "Concentrated-liquidity (V3/Slipstream)" : "Protocol-managed"} pool — standard LP lock/burn proof does not apply. Exit risk based on pool depth ($${liqStr === "unknown" ? "unknown" : liqStr.replace("$", "")}).`,
+      lpExitRiskReason: `${poolModel === "concentrated" ? "Concentrated-liquidity (V3/Slipstream)" : "Protocol-managed"} pool — standard LP lock/burn proof does not apply. Exit risk based on pool depth ($${liqStr === "unknown" ? "unknown" : liqStr.replace("$", "")}).${secondaryClause}`,
       liquidityDepthRisk,
     };
   }

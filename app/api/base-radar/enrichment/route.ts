@@ -166,8 +166,12 @@ function publicEvidenceLabel(value: unknown): string | null {
   if (typeof value !== 'string' || !value.trim()) return null
   const normalized = value.toLowerCase()
   if (normalized.includes('moralis_transfer_fallback')) return 'Transfer inference'
-  if (normalized.includes('geckoterminal') || normalized.includes('goldrush')) return 'Market + holder evidence'
+  if (normalized.includes('moralis_token_transfers')) return 'Transfer evidence'
+  if (normalized.includes('goldrush_token_holders')) return 'Holder evidence'
+  if (normalized.includes('geckoterminal+goldrush') || normalized.includes('market + holder evidence')) return 'Market + holder evidence'
   if (normalized.includes('honeypot_is') || normalized.includes('honeypot.is') || normalized.includes('honeypot')) return 'Simulation evidence'
+  if (normalized.includes('dexscreener')) return 'Market data'
+  if (normalized.includes('geckoterminal') || normalized.includes('goldrush')) return 'Market + holder evidence'
   if (normalized.includes('transfer')) return 'Transfer inference'
   if (normalized.includes('simulation')) return 'Simulation evidence'
   if (normalized.includes('market') || normalized.includes('holder')) return 'Market + holder evidence'
@@ -178,13 +182,16 @@ function publicEvidenceLabel(value: unknown): string | null {
 function sanitizeProviderText(value: string): string {
   return value
     .replace(/geckoterminal\+goldrush/gi, 'Market + holder evidence')
+    .replace(/goldrush_token_holders/gi, 'Holder evidence')
     .replace(/moralis_transfer_fallback/gi, 'Transfer inference')
+    .replace(/moralis_token_transfers/gi, 'Transfer evidence')
     // Only replace explicit provider-name forms (e.g. "honeypot.is", "honeypot_is") —
     // never the bare word "honeypot"/"simulation", which appear in normal CORTEX
     // sentences ("...mintability, simulation and tax status...") and must not be mangled.
     .replace(/honeypot(?:\.is|_is)/gi, 'Simulation evidence')
+    .replace(/dexscreener/gi, 'Market data')
     .replace(/goldrush/gi, 'holder index')
-    .replace(/geckoterminal/gi, 'market index')
+    .replace(/geckoterminal/gi, 'Market data')
 }
 
 function sanitizeProviderNames<T>(value: T): T {
