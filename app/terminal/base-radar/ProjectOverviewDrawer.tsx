@@ -97,6 +97,14 @@ type DrawerEnrichmentPayload = {
   security?: {
     honeypot?: { isHoneypot?: boolean | null; buyTax?: number | null; sellTax?: number | null; simulationSuccess?: boolean | null } | null
     contractFlags?: Record<string, unknown> | null
+    devOwnership?: {
+      ownerAddress?: string | null
+      adminAddress?: string | null
+      isRenounced?: boolean | null
+      ownershipVerified?: boolean | null
+      ownershipStatus?: 'renounced' | 'active_owner' | 'open_check' | string | null
+      ownershipLabel?: string | null
+    } | null
     riskDrivers?: string[]
     openChecks?: string[]
   } | null
@@ -319,6 +327,7 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
   const deployerMethod = publicMethodLabel(deployer?.methodLabel)
   const holderStatusLabel = holderStatus(concentration.status, concentration.confidence, concentration.reason)
   const securityTax = security?.honeypot?.simulationSuccess ? `${percent(security.honeypot.buyTax)} buy · ${percent(security.honeypot.sellTax)} sell` : 'Open Check'
+  const ownershipLabel = security?.devOwnership?.ownershipLabel ?? (security?.devOwnership?.ownershipVerified === true && security.devOwnership.isRenounced === true ? 'Renounced ownership' : security?.devOwnership?.ownershipVerified === true && (security.devOwnership.ownerAddress || security.devOwnership.adminAddress) ? 'Active owner/admin verified' : 'Open Check / Not verified')
 
   const poolDistributionLine = lp?.cortexLpRead?.liquidityAnalysis ?? (market?.observedPoolPresent
     ? (market?.poolCountStatus === 'confirmed' && market?.observedPoolCount != null
@@ -406,6 +415,7 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
           <DataRow label="Cluster detection" value={clusterLabel} />
           <DataRow label="Linked wallet supply" value={percent(deployer?.clusterEvidence?.linkedWalletSupplyPercent ?? deployer?.supplyControl?.linkedWalletSupplyPercent ?? null)} />
           <DataRow label="Creator in top holders" value={deployer?.creatorInTopHolders === true ? 'Yes' : deployer?.creatorInTopHolders === false ? 'No' : 'Open Check'} />
+          <DataRow label="Ownership" value={ownershipLabel} mono={false} />
         </Section>
 
         <Section title="Holder Distribution" state={enrichmentState}>
