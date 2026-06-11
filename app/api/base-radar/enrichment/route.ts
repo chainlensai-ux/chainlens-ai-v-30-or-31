@@ -59,6 +59,53 @@ function publicAddress(value: unknown): string | null {
   return typeof value === 'string' && /^0x[a-fA-F0-9]{40}$/.test(value.trim()) ? value.trim() : null
 }
 
+
+function firstPublicAddress(...values: unknown[]): string | null {
+  for (const value of values) {
+    const address = publicAddress(value)
+    if (address) return address
+  }
+  return null
+}
+
+function evidenceAddress(evidence: unknown, key: string): string | null {
+  const rows = Array.isArray(evidence) ? evidence : typeof evidence === 'string' ? [evidence] : []
+  const pattern = new RegExp(`(?:^|\b)${key}=(${String.raw`0x[a-fA-F0-9]{40}`})(?:\b|$)`, 'i')
+  for (const row of rows) {
+    if (typeof row !== 'string') continue
+    const match = row.match(pattern)
+    const address = publicAddress(match?.[1])
+    if (address) return address
+  }
+  return null
+}
+
+function teamControlledLpController(lpControl: unknown): string | null {
+  if (!lpControl || typeof lpControl !== 'object') return null
+  const raw = lpControl as Record<string, unknown>
+  if (raw.status !== 'team_controlled') return null
+  return firstPublicAddress(raw.controller, raw.lpController, raw.topHolder, raw.top_holder, raw.owner, raw.wallet, raw.holder) ?? evidenceAddress(raw.evidence, 'top_holder') ?? null
+}
+
+function ownershipSummary(devOwnership: unknown): Record<string, unknown> {
+  const raw = devOwnership && typeof devOwnership === 'object' ? devOwnership as Record<string, unknown> : {}
+  const ownershipVerified = raw.ownershipVerified === true
+  const ownerAddress = publicAddress(raw.ownerAddress)
+  const adminAddress = publicAddress(raw.adminAddress)
+  const isRenounced = ownershipVerified && raw.isRenounced === true
+  const ownershipStatus = !ownershipVerified ? 'open_check' : isRenounced ? 'renounced' : (ownerAddress || adminAddress) ? 'active_owner' : 'open_check'
+  const ownershipLabel = ownershipStatus === 'renounced' ? 'Renounced ownership' : ownershipStatus === 'active_owner' ? 'Active owner/admin verified' : 'Open Check / Not verified'
+  return { ...raw, ownerAddress, adminAddress, isRenounced, ownershipVerified, ownershipStatus, ownershipLabel }
+}
+
+function confirmedClusterEvidence(params: { deployerStatus: unknown; edgeCount: number; matchedLinkedWallets: number | null; linkedWalletSupply: number | null; devClusterSupply: number | null }): boolean {
+  if (params.edgeCount > 0) return true
+  if (params.matchedLinkedWallets != null && params.matchedLinkedWallets > 0) return true
+  if (params.linkedWalletSupply != null && params.linkedWalletSupply > 0) return true
+  if (params.deployerStatus === 'confirmed' && params.devClusterSupply != null && params.devClusterSupply > 0) return true
+  return false
+}
+
 function hasValue(value: unknown): boolean {
   if (value == null) return false
   if (typeof value === 'string') return value.trim().length > 0
@@ -186,6 +233,17 @@ function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract
   const simulation = security.simulation ?? scan.honeypot ?? null
   const observedPools = observedPoolFields(scan)
   const sanitizedLpControl = publicLpControl(scan.lpControl)
+  const derivedLpController = teamControlledLpController(scan.lpControl)
+  const devOwnership = ownershipSummary(security.devOwnership)
+  const deployerStatus = scan.deployerStatus ?? scan.devIntel?.deployerStatus ?? null
+  const matchedLinkedWallets = Array.isArray(scan.matchedLinkedWallets) ? scan.matchedLinkedWallets.length : null
+  const clusterConfirmed = confirmedClusterEvidence({
+    deployerStatus,
+    edgeCount: clusterEdges.length,
+    matchedLinkedWallets,
+    linkedWalletSupply,
+    devClusterSupply,
+  })
 
   return {
     chain,
@@ -212,7 +270,7 @@ function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract
       lpLockStatus: scan.lpLockStatus ?? null,
       lpLockAmount: finiteNumber(scan.lpLockAmount),
       lpUnlockTime: scan.lpUnlockTime ?? null,
-      lpController: publicAddress(scan.lpController) ?? publicAddress(security.devOwnership?.ownerAddress) ?? publicAddress(scan.lpControl?.owner) ?? null,
+      lpController: firstPublicAddress(scan.lpController, derivedLpController, scan.lpControl?.controller, scan.lpControl?.topHolder, scan.lpControl?.owner) ?? null,
       lpProofStatus: scan.lpProofStatus ?? null,
       lpProofApplicability: scan.lpProofApplicability ?? null,
       lockBurnReason: sanitizedLpControl?.lockBurnReason ?? scan.lpMeta?.lpModelDecision?.lockBurnReason ?? null,
@@ -248,19 +306,19 @@ function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract
     },
     deployer: {
       deployerAddress: scan.deployerAddress ?? scan.devIntel?.deployerAddress ?? null,
-      deployerStatus: scan.deployerStatus ?? scan.devIntel?.deployerStatus ?? null,
+      deployerStatus,
       deployerConfidence: scan.deployerConfidence ?? scan.devIntel?.deployerConfidence ?? null,
       methodLabel: publicEvidenceLabel(scan.methodUsed ?? scan.devIntel?.methodUsed) ?? null,
       creationTxHash: scan.creationTxHash ?? scan.devIntel?.creationTxHash ?? null,
       pastLaunches: scan.deployerProfile?.rugHistory != null ? null : null,
       rugHistoryVerified: null,
       clusterEvidence: {
-        confirmed: clusterEdges.length > 0 || clusterNodes.length > 1 || (devClusterSupply != null && devClusterSupply > 0),
+        confirmed: clusterConfirmed,
         edgeCount: clusterEdges.length,
         nodeCount: clusterNodes.length,
         devClusterSupplyPercent: devClusterSupply,
         linkedWalletSupplyPercent: linkedWalletSupply,
-        matchedLinkedWallets: Array.isArray(scan.matchedLinkedWallets) ? scan.matchedLinkedWallets.length : null,
+        matchedLinkedWallets,
       },
       supplyControl: sanitizeProviderNames(scan.supplyControl ?? scan.devIntel?.supplyControl ?? null),
       linkedWallets: Array.isArray(scan.linkedWallets) ? scan.linkedWallets : [],
@@ -270,7 +328,7 @@ function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract
     security: {
       honeypot: sanitizeProviderNames(simulation),
       contractFlags: security.contractFlags ?? null,
-      devOwnership: security.devOwnership ?? null,
+      devOwnership,
       riskDrivers: sanitizeProviderNames(scan.cortexRiskEngine?.riskDrivers ?? scan.riskDrivers ?? []),
       openChecks: sanitizeProviderNames(scan.cortexRiskEngine?.openChecks ?? scan.openChecks ?? []),
     },
