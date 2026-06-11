@@ -98,11 +98,13 @@ function ownershipSummary(devOwnership: unknown): Record<string, unknown> {
   return { ...raw, ownerAddress, adminAddress, isRenounced, ownershipVerified, ownershipStatus, ownershipLabel }
 }
 
-function confirmedClusterEvidence(params: { deployerStatus: unknown; edgeCount: number; matchedLinkedWallets: number | null; linkedWalletSupply: number | null; devClusterSupply: number | null }): boolean {
+function confirmedClusterEvidence(params: { edgeCount: number; matchedLinkedWallets: number; linkedWalletSupply: number | null; devClusterSupply: number | null }): boolean {
+  // Holder nodes alone are not confirmed cluster evidence. Only real links, matched linked wallets,
+  // or positive supply overlap should confirm a cluster.
   if (params.edgeCount > 0) return true
-  if (params.matchedLinkedWallets != null && params.matchedLinkedWallets > 0) return true
+  if (params.matchedLinkedWallets > 0) return true
   if (params.linkedWalletSupply != null && params.linkedWalletSupply > 0) return true
-  if (params.deployerStatus === 'confirmed' && params.devClusterSupply != null && params.devClusterSupply > 0) return true
+  if (params.devClusterSupply != null && params.devClusterSupply > 0) return true
   return false
 }
 
@@ -236,14 +238,22 @@ function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract
   const derivedLpController = teamControlledLpController(scan.lpControl)
   const devOwnership = ownershipSummary(security.devOwnership)
   const deployerStatus = scan.deployerStatus ?? scan.devIntel?.deployerStatus ?? null
-  const matchedLinkedWallets = Array.isArray(scan.matchedLinkedWallets) ? scan.matchedLinkedWallets.length : null
+  const matchedLinkedWallets = Array.isArray(scan.matchedLinkedWallets)
+    ? scan.matchedLinkedWallets.length
+    : Array.isArray(scan.devIntel?.matchedLinkedWallets)
+      ? scan.devIntel.matchedLinkedWallets.length
+      : Array.isArray(scan.supplyControl?.matchedLinkedWallets)
+        ? scan.supplyControl.matchedLinkedWallets.length
+        : 0
   const clusterConfirmed = confirmedClusterEvidence({
-    deployerStatus,
     edgeCount: clusterEdges.length,
     matchedLinkedWallets,
     linkedWalletSupply,
     devClusterSupply,
   })
+  const clusterEvidenceReason = clusterConfirmed
+    ? 'Confirmed cluster links found in current evidence.'
+    : 'No confirmed cluster links in current evidence.'
 
   return {
     chain,
@@ -284,7 +294,7 @@ function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract
       lpEvidenceSummary: sanitizeProviderNames(scan.lpEvidenceSummary ?? null),
       lpModelProof: scan.lpModelProof ?? null,
       lpMigrationProof: scan.lpMigrationProof ?? null,
-      cortexLpRead: scan.cortexLpRead ?? null,
+      cortexLpRead: sanitizeProviderNames(scan.cortexLpRead ?? null),
     },
     holders: {
       top1: finiteNumber(holderDistribution.top1),
@@ -319,6 +329,7 @@ function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract
         devClusterSupplyPercent: devClusterSupply,
         linkedWalletSupplyPercent: linkedWalletSupply,
         matchedLinkedWallets,
+        reason: clusterEvidenceReason,
       },
       supplyControl: sanitizeProviderNames(scan.supplyControl ?? scan.devIntel?.supplyControl ?? null),
       linkedWallets: Array.isArray(scan.linkedWallets) ? scan.linkedWallets : [],
