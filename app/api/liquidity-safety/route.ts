@@ -5,6 +5,8 @@ import {
   buildEvidenceGaps,
   deriveDataModeAndConfidence,
   buildCortexLpRead,
+  getLpProofApplicability,
+  computeLpExitRisk,
   type LpEvidenceGap,
 } from '@/lib/server/lpProof'
 
@@ -21,6 +23,7 @@ const LIQ_COOLDOWN_MS: Record<'free' | 'pro' | 'elite', number> = { free: 25_000
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface PoolAttrs {
+  [key: string]: unknown;
   name?: string;
   base_token_price_usd?: string;
   reserve_in_usd?: string;
@@ -271,22 +274,21 @@ function scoreLiquidityDepth(pools: GTPool[]): {
 
 // ─── Evidence gaps & LP model/migration proofs (no external security provider) ─
 
+// Pool model for narrative text (cortex_lp_read) — derived from the same shared
+// classifyPoolModel() used by getLpProofApplicability() below, so this route and
+// Token Scanner never disagree on Aerodrome V2 vs Aerodrome Slipstream classification.
 function deriveLpModelProof(pools: GTPool[]): {
   model: "constant_product" | "concentrated" | "stableswap" | "unknown";
   dexName: string | null;
   standardLockApplies: boolean;
 } {
-  const primary = pools[0];
-  const dexId = (primary?.relationships?.dex?.data?.id ?? "").toLowerCase();
-  let model: "constant_product" | "concentrated" | "stableswap" | "unknown" = "unknown";
-  if (dexId.includes("curve")) model = "stableswap";
-  else if (dexId.includes("v3") || dexId.includes("slipstream") || dexId.includes("concentrated")) model = "concentrated";
-  else if (dexId.includes("uniswap") || dexId.includes("aerodrome") || dexId.includes("sushiswap") || dexId.includes("v2")) model = "constant_product";
-
+  const cls = getLpProofApplicability(pools);
+  const model: "constant_product" | "concentrated" | "stableswap" | "unknown" =
+    cls.poolModel === "aerodrome_v2" ? "constant_product" : cls.poolModel;
   return {
     model,
-    dexName: primary?.relationships?.dex?.data?.id ?? null,
-    standardLockApplies: model !== "concentrated",
+    dexName: cls.dexName,
+    standardLockApplies: cls.standardLockApplies,
   };
 }
 
@@ -440,37 +442,40 @@ export async function POST(req: NextRequest) {
     const lpModelProof = deriveLpModelProof(pools);
     const migrationProof = deriveMigrationProof(pools, analysis.lp_total_liquidity_usd);
 
-    // ─── LP Proof: only run ERC-20 LP lock/burn checks on constant-product pools ─
-    // Concentrated/V3/Slipstream/Aerodrome CL pools have no ERC-20 LP token —
-    // PinkLock and burn-address scans would always fail on these. Only attempt proof
-    // on constant-product (V2-style) pools where the pool address == LP token.
-    const lpProofApplicable = lpModelProof.standardLockApplies;
-    let lpProof: { lpLockStatus: "locked" | "burned" | "unlocked" | "unverified"; lpLockAmount: number | null; lpUnlockTime: number | null; lpLockProvider: "PinkLock" | null; lpController: "wallet" | "contract" | "burn" | "lockContract" | "unknown" };
+    // ─── LP Proof (problems 1/2/3): single shared classification used by both
+    // Token Scanner and Liquidity Safety, so the two routes never disagree on
+    // pool model / proof applicability for the same token (e.g. Aerodrome V2
+    // vs. Aerodrome Slipstream).
+    const lpClassification = getLpProofApplicability(pools);
+    const lpProofApplicability = lpClassification.proofApplicability;
+    let lpProof: { lpLockStatus: "locked" | "burned" | "unlocked" | "unverified"; lpLockAmount: number | null; lpUnlockTime: number | null; lpLockProvider: "PinkLock" | null; lpController: "wallet" | "contract" | "burn" | "lockContract" | "unknown"; reasonCode?: string };
     let lpProofSkipReason: string | null = null;
 
-    if (!lpProofApplicable) {
-      // Standard ERC-20 LP proof does not apply to this pool model.
-      lpProof = { lpLockStatus: "unverified", lpLockAmount: null, lpUnlockTime: null, lpLockProvider: null, lpController: "unknown" };
-      lpProofSkipReason = `Pool model is ${lpModelProof.model} (DEX: ${lpModelProof.dexName ?? "unknown"}) — standard ERC-20 LP lock/burn proof does not apply.`;
+    if (lpClassification.proofAddressType === "erc20_lp_token" && lpClassification.proofAddress) {
+      lpProof = await resolveLpProof(chain, lpClassification.proofAddress);
     } else {
-      // Select best constant-product pool for proof: prefer explicit v2/sushi pools,
-      // fall back to primary pool if none found.
-      const v2Pool = pools.find((p) => {
-        const dex = (p.relationships?.dex?.data?.id ?? "").toLowerCase();
-        return !dex.includes("v3") && !dex.includes("slipstream") && !dex.includes("concentrated");
-      }) ?? pools[0];
-      const lpTokenAddress = idToAddress(v2Pool?.id ?? "");
-      lpProof = await resolveLpProof(chain, lpTokenAddress);
+      // Standard ERC-20 LP proof does not apply to this pool model — never fake a
+      // lock/burn result for concentrated/NFT-position/unclassified pools.
+      lpProof = { lpLockStatus: "unverified", lpLockAmount: null, lpUnlockTime: null, lpLockProvider: null, lpController: "unknown", reasonCode: "proofNotApplicable" };
+      lpProofSkipReason = `${lpClassification.reason} (pool model: ${lpClassification.poolModel}, DEX: ${lpClassification.dexName ?? "unknown"})`;
     }
 
     const { lpLockStatus, lpLockAmount, lpUnlockTime, lpLockProvider, lpController } = lpProof;
-    const lpProofApplicability: "applicable" | "not_applicable" = lpProofApplicable ? "applicable" : "not_applicable";
 
     const { lp_data_mode, lp_data_confidence } = deriveDataModeAndConfidence(pools.length > 0, lpLockStatus);
-    const evidenceGaps = buildEvidenceGaps({
+    const evidenceGaps: LpEvidenceGap[] = buildEvidenceGaps({
       lpLockStatus, lpController,
-      proofApplicable: lpProofApplicable,
+      proofApplicability: lpProofApplicability,
+      controllerProofAttempted: lpClassification.proofAddressType === "erc20_lp_token",
       includeTokenGaps: false, // LP safety scan does not run token-level checks
+    });
+    const lpExitRiskResult = computeLpExitRisk({
+      proofApplicability: lpProofApplicability,
+      lpLockStatus,
+      lpController,
+      liquidityUsd: analysis.lp_total_liquidity_usd,
+      poolModel: lpClassification.poolModel,
+      hasPool: pools.length > 0,
     });
     const cortexLpRead = buildCortexLpRead({
       name, symbol,
@@ -501,14 +506,27 @@ export async function POST(req: NextRequest) {
         lpLockProvider,
         lpController,
         lpProofApplicability,
+        lpExitRisk: lpExitRiskResult.lpExitRisk,
+        lpExitRiskReason: lpExitRiskResult.lpExitRiskReason,
+        liquidityDepthRisk: lpExitRiskResult.liquidityDepthRisk,
         lp_data_mode,
         lp_data_confidence,
         lp_evidence_gaps: evidenceGaps,
         lp_model_proof: lpModelProof,
         lp_migration_proof: migrationProof,
         cortex_lp_read: cortexLpRead,
+        lpMeta: {
+          // Base LP-locker registry coverage (problem 5): no verified Base locker
+          // registry is configured yet, so "locked" can never be fabricated for
+          // Base V2 pools via locker-address detection — this is reported
+          // explicitly instead.
+          lockerRegistryStatus: chain === 'base' ? 'empty' : 'configured',
+          lockerDetectionAvailable: chain !== 'base',
+          lockProofCoverage: chain === 'base' ? 'limited' : 'standard',
+          lockerRegistryReason: chain === 'base' ? 'No verified Base locker registry is configured yet.' : null,
+        },
       },
-      diagnostics: process.env.NODE_ENV === 'development' ? { cacheHit: false, providerStatus: 'ok', rateLimited: false, lpProofSkipReason } : undefined,
+      diagnostics: process.env.NODE_ENV === 'development' ? { cacheHit: false, providerStatus: 'ok', rateLimited: false, lpProofSkipReason, lpClassificationReason: lpClassification.reason } : undefined,
     };
     liqCache.set(cacheKey, { exp: Date.now() + LIQ_CACHE_TTL_MS, payload })
     return NextResponse.json(payload);

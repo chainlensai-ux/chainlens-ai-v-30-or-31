@@ -5,22 +5,30 @@ import { fetchHoneypotSecurity } from "@/lib/server/honeypotSecurity";
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { type CanonicalStatus, toCanonical } from '@/lib/canonicalStatus'
 import { buildClusterMap } from '@/lib/clusterMap'
-import { resolveLpProof, buildEvidenceGaps as buildLpEvidenceGaps, deriveDataModeAndConfidence as deriveLpDataModeAndConfidence, buildCortexLpRead as buildSharedCortexLpRead } from '@/lib/server/lpProof'
+import {
+  resolveLpProof,
+  buildEvidenceGaps as buildLpEvidenceGaps,
+  deriveDataModeAndConfidence as deriveLpDataModeAndConfidence,
+  buildCortexLpRead as buildSharedCortexLpRead,
+  classifyPoolModel,
+  computeLpExitRisk,
+  type ProofApplicability,
+} from '@/lib/server/lpProof'
 import { calculateCortexScoreV2 } from '@/lib/token/scoring'
 
-// Local LP model/migration proof helpers — pure functions derived from GeckoTerminal pool data.
-// Kept inline so this route compiles regardless of shared-module export state.
+// Local LP model/migration proof helper — pure function derived from GeckoTerminal pool data,
+// delegating to the shared classifyPoolModel() so Token Scanner and Liquidity Safety agree
+// on Aerodrome V2 vs Aerodrome Slipstream (concentrated) classification.
 function _deriveLpModelProof(pools: Array<{ relationships?: { dex?: { data?: { id: string } } } }>): {
   model: 'constant_product' | 'concentrated' | 'stableswap' | 'unknown'
   dexName: string | null
   standardLockApplies: boolean
 } {
-  const dexId = (pools[0]?.relationships?.dex?.data?.id ?? '').toLowerCase()
-  let model: 'constant_product' | 'concentrated' | 'stableswap' | 'unknown' = 'unknown'
-  if (dexId.includes('curve')) model = 'stableswap'
-  else if (dexId.includes('v3') || dexId.includes('slipstream') || dexId.includes('concentrated')) model = 'concentrated'
-  else if (dexId.includes('uniswap') || dexId.includes('aerodrome') || dexId.includes('sushiswap') || dexId.includes('v2')) model = 'constant_product'
-  return { model, dexName: pools[0]?.relationships?.dex?.data?.id ?? null, standardLockApplies: model === 'constant_product' }
+  const dexId = pools[0]?.relationships?.dex?.data?.id ?? null
+  const cls = classifyPoolModel(dexId)
+  const model: 'constant_product' | 'concentrated' | 'stableswap' | 'unknown' =
+    cls.poolModel === 'aerodrome_v2' ? 'constant_product' : cls.poolModel
+  return { model, dexName: dexId, standardLockApplies: cls.standardLockApplies }
 }
 
 function _deriveMigrationProof(pools: Array<{ attributes: { reserve_in_usd?: string | number | null }; relationships?: { dex?: { data?: { id: string } } } }>, totalLiq: number | null): {
@@ -2201,6 +2209,11 @@ type LpControlResult = {
   displayLpModel?: "erc20_lp_token" | "concentrated_liquidity" | "protocol_or_gauge" | "open_check" | "no_pool" | null;
   lockBurnApplicable?: boolean;
   lockBurnReason?: string | null;
+  // Shared three-way proof-applicability classification — single source of truth for
+  // both Token Scanner and Liquidity Safety. "applicable": ERC-20 LP lock/burn proof
+  // can run; "not_applicable": pool model has no ERC-20 LP token (concentrated/no_pool);
+  // "unknown": pool model could not be classified.
+  proofApplicability?: "applicable" | "not_applicable" | "unknown";
 };
 type LpDiagnostics = {
   attempted: boolean;
@@ -2482,8 +2495,9 @@ function normalizePool(pool: Record<string, unknown> | null, includedTokenById: 
     poolType: detectPoolType(pool, dexId || undefined),
     hasLpToken: (() => {
       const pt = detectPoolType(pool, dexId || undefined)
-      if (pt === 'v2') return true
-      if (pt === 'v3' || pt === 'aerodrome' || pt === 'concentrated') return false
+      // "aerodrome" now means Aerodrome V2 (volatile/stable) — pool contract IS the ERC-20 LP token.
+      if (pt === 'v2' || pt === 'aerodrome') return true
+      if (pt === 'v3' || pt === 'concentrated') return false
       return null
     })(),
     hasDexMeta: Boolean(dexId || dexName),
@@ -2573,10 +2587,16 @@ function detectPoolType(pool: Record<string, unknown> | null, dexIdHint?: string
   const text = candidates.join(' | ');
   // Fast-path: use startsWith on the most reliable id signals first.
   // This correctly handles network-suffixed variants like "uniswap_v2_eth" or "uniswap_v3_base".
+  // Aerodrome/Velodrome Slipstream (concentrated-liquidity) pools are NOT ERC-20 LP tokens —
+  // distinguish them from Aerodrome V2 (volatile/stable) pools, which ARE ERC-20 LP tokens.
+  const isAerodromeFamily = (s: string) => /aerodrome|velodrome/.test(s)
+  const isConcentratedMarker = (s: string) => /slipstream|concentrated|algebra|\bcl\b|[-_]cl[-_]?|[-_]cl$/.test(s)
   const idSignals = [dexIdHint ?? '', relDexId, String(a.dex_id ?? a.dex ?? '').toLowerCase().trim()]
   for (const s of idSignals) {
     if (!s) continue
-    if (/^aerodrome|^slipstream/.test(s)) return "aerodrome"
+    if (isAerodromeFamily(s) && isConcentratedMarker(s)) return "concentrated"
+    if (isAerodromeFamily(s)) return "aerodrome"
+    if (/^slipstream/.test(s)) return "concentrated"
     if (/^uniswap_v4|^uniswap-v4/.test(s)) return "v3"  // treat V4 as concentrated
     if (/^uniswap_v3|^uniswap-v3|^pancakeswap_v3|^sushiswap_v3|^algebra/.test(s)) return "v3"
     if (/^uniswap_v2|^uniswap-v2|^pancakeswap_v2|^sushiswap_v2|^baseswap|^alienbase|^swapbased|^shibaswap/.test(s)) return "v2"
@@ -2584,7 +2604,9 @@ function detectPoolType(pool: Record<string, unknown> | null, dexIdHint?: string
     if (/^sushiswap|^pancakeswap/.test(s)) return "v2"  // unversioned: default to v2
   }
   const has = (re: RegExp) => re.test(text);
-  if (has(/\baerodrome\b|\bslipstream\b/)) return "aerodrome";
+  if (has(/\baerodrome\b|\bvelodrome\b/) && has(/slipstream|concentrated|\bcl\b/)) return "concentrated";
+  if (has(/\baerodrome\b|\bvelodrome\b/)) return "aerodrome";
+  if (has(/\bslipstream\b/)) return "concentrated";
   if (has(/\bconcentrated\b|\bcl pool\b|\balgebra\b/)) return "concentrated";
   // Use (?:_|-) instead of \b after version number to match "uniswap_v3_eth" etc.
   if (has(/uniswap(?:[_-]?v)?3(?:[_-]|$)|\bpancakeswap(?:[_-]?v)?3(?:[_-]|$)|(?:^| )v3(?:[_-]|$)/)) return "v3";
@@ -3219,8 +3241,9 @@ export async function POST(req: Request) {
         quoteTokenAddress: dexFbEarly.quoteToken?.address?.toLowerCase() ?? null,
         poolType: _dsFbType,
         hasLpToken: (() => {
-          if (_dsFbType === 'v2') return true
-          if (_dsFbType === 'v3' || _dsFbType === 'aerodrome' || _dsFbType === 'concentrated') return false
+          // "aerodrome" now means Aerodrome V2 (volatile/stable) — ERC-20 LP token confirmed.
+          if (_dsFbType === 'v2' || _dsFbType === 'aerodrome') return true
+          if (_dsFbType === 'v3' || _dsFbType === 'concentrated') return false
           // On Base, DexScreener may label V2 pools as unknown/v3 — detect by dexId
           if (chain === 'base' && _dsFbDexId) {
             const dxLc = _dsFbDexId.toLowerCase()
@@ -3255,14 +3278,14 @@ export async function POST(req: Request) {
     // lpVerifyPool: separate from lpPool — best V2/unknown pool for burn/lock/team proof.
     // normalizedPools is sorted by liquidity desc, so first V2/unknown = highest-liquidity verifiable pool.
     const _isV2Verifiable = (p: NormalizedPool) =>
-      (p.poolType === 'v2' || p.poolType === 'unknown' || (chain === 'base' && p.hasLpToken === true)) &&
+      (p.poolType === 'v2' || p.poolType === 'unknown' || p.poolType === 'aerodrome' || p.hasLpToken === true) &&
       p.isValidAddress && Boolean(p.address)
     const lpVerifyPool = normalizedPools.find(_isV2Verifiable) ?? null
     const lpVerifyPoolAddress = lpVerifyPool?.address ?? null
     const lpVerifyPoolType: NormalizedPool['poolType'] = lpVerifyPool?.poolType ?? 'unknown'
     const lpVerifyPoolPresent = Boolean(lpVerifyPoolAddress && /^0x[a-f0-9]{40}$/.test(lpVerifyPoolAddress))
     const _v2PoolCandidates = normalizedPools.filter(_isV2Verifiable)
-    const _protocolPoolCandidates = normalizedPools.filter(p => p.poolType === 'v3' || p.poolType === 'aerodrome' || p.poolType === 'concentrated')
+    const _protocolPoolCandidates = normalizedPools.filter(p => p.poolType === 'v3' || p.poolType === 'concentrated')
     const dexId = String(mainPoolAttr.dex_id ?? mainPoolAttr.dex ?? "").trim() || null;
     const dexName = String(mainPoolAttr.dex_name ?? "").trim() || null;
     // Primary pool DEX display name — exhaustive field search across attributes + relationships
@@ -3328,7 +3351,10 @@ export async function POST(req: Request) {
         dexscreenerPoolSynthesized: _dsFbPoolSynthesized,
       }))
     }
-    const needsLpHolderFetch = Boolean(_lpProofPresent && (_lpProofType === 'v2' || _lpProofType === 'unknown'))
+    // 'aerodrome' poolType now means Aerodrome V2 (volatile/stable) — confirmed ERC-20 LP token,
+    // so holder-based lock/burn proof can run just like a standard V2 pool. 'unknown' still
+    // attempts the fetch so the RPC probe below can classify it.
+    const needsLpHolderFetch = Boolean(_lpProofPresent && (_lpProofType === 'v2' || _lpProofType === 'unknown' || _lpProofType === 'aerodrome'))
     // Always run AI: the prompt handles missing data gracefully and prevents the fallback "insufficient data" message
     const needsAI = true
     const needsOnchainMc = _mcEarly == null && _priceEarly != null
@@ -3392,7 +3418,7 @@ export async function POST(req: Request) {
 
     // Early owner fetch for LP team-wallet check — runs after phase2 to not block parallel work.
     // Only needed when pool is V2-like (burn/locker checks will use it). Fast single RPC call.
-    const _ownerHexForLp = (_lpProofPresent && (_lpProofType === 'v2' || _lpProofType === 'unknown'))
+    const _ownerHexForLp = (_lpProofPresent && (_lpProofType === 'v2' || _lpProofType === 'unknown' || _lpProofType === 'aerodrome'))
       ? await rpcCall(chain, 'eth_call', [{ to: contract, data: '0x8da5cb5b' }, 'latest']).catch(() => null)
       : null
     const ownerAddrEarlyForLp = _ownerHexForLp && _ownerHexForLp.length >= 42 ? `0x${_ownerHexForLp.slice(-40)}`.toLowerCase() : null
@@ -3507,10 +3533,10 @@ export async function POST(req: Request) {
     if (!_lpProofPresent) {
       // No pool at all — not even a market pool with a usable address
       lpControl = { ...lpControl, status: "no_pool", reason: "No pool address found from provider for LP-holder verification." };
-    } else if (!lpVerifyPoolPresent && (lpPoolType === "v3" || lpPoolType === "aerodrome" || lpPoolType === "concentrated")) {
-      // Market pool exists but is protocol/concentrated, and no V2 pool found anywhere → protocol status
+    } else if (!lpVerifyPoolPresent && (lpPoolType === "v3" || lpPoolType === "concentrated")) {
+      // Market pool exists but is V3/concentrated, and no V2/Aerodrome-V2 pool found anywhere → concentrated status
       lpControl = {
-        status: lpPoolType === "aerodrome" ? "protocol" : "concentrated_liquidity",
+        status: "concentrated_liquidity",
         confidence: "medium",
         poolType: lpPoolType,
         source: "dex_data",
@@ -3521,9 +3547,9 @@ export async function POST(req: Request) {
         ],
       };
     } else if (lpVerifyPoolPresent && lpVerifyPool?.hasLpToken === false) {
-      // LP verification pool has no ERC20 LP token (V3/CL NFT) — burn/lock proof not applicable
+      // LP verification pool has no ERC20 LP token (V3/CL NFT, incl. Aerodrome Slipstream) — burn/lock proof not applicable
       lpControl = {
-        status: (lpVerifyPool.poolType === 'aerodrome') ? 'protocol' : 'concentrated_liquidity',
+        status: 'concentrated_liquidity',
         confidence: 'medium',
         poolType: _lpProofType,
         source: 'dex_data',
@@ -3765,20 +3791,21 @@ export async function POST(req: Request) {
         _displayLpModel = 'no_pool'
         _lockBurnApplicable = false
         _lockBurnReason = 'No active pool detected.'
-      } else if (lpPoolType === 'aerodrome' || lpControl.status === 'protocol') {
-        _displayLpModel = 'protocol_or_gauge'
-        _lockBurnApplicable = false
-        _lockBurnReason = 'Aerodrome/protocol-managed liquidity — LP lock/burn proof does not apply.'
       } else if (lpPoolType === 'v3' || lpPoolType === 'concentrated' || lpControl.status === 'concentrated_liquidity') {
         _displayLpModel = 'concentrated_liquidity'
         _lockBurnApplicable = false
-        _lockBurnReason = 'Concentrated liquidity (V3/V4) — standard ERC-20 LP lock/burn proof does not apply.'
-      } else if (lpPoolType === 'v2' && _lpProofPresent) {
+        _lockBurnReason = lpDexId && /aerodrome|velodrome/i.test(lpDexId)
+          ? 'Aerodrome Slipstream (concentrated liquidity) — standard ERC-20 LP lock/burn proof does not apply.'
+          : 'Concentrated liquidity (V3/V4) — standard ERC-20 LP lock/burn proof does not apply.'
+      } else if ((lpPoolType === 'v2' || lpPoolType === 'aerodrome') && _lpProofPresent) {
+        // 'aerodrome' here means Aerodrome V2 (volatile/stable) — pool contract is an ERC-20 LP token.
         _displayLpModel = 'erc20_lp_token'
         _lockBurnApplicable = true
-        _lockBurnReason = 'Standard V2 LP token — lock/burn proof applies.'
-      } else if (_lpProofPresent && _lpProofType === 'v2') {
-        // Primary pool type unknown but verification pool is V2-style
+        _lockBurnReason = lpPoolType === 'aerodrome'
+          ? 'Aerodrome V2 (volatile/stable) LP token — lock/burn proof applies.'
+          : 'Standard V2 LP token — lock/burn proof applies.'
+      } else if (_lpProofPresent && (_lpProofType === 'v2' || _lpProofType === 'aerodrome')) {
+        // Primary pool type unknown but verification pool is V2/Aerodrome-V2-style
         _displayLpModel = 'erc20_lp_token'
         _lockBurnApplicable = true
         _lockBurnReason = 'V2-style verification pool with LP token — lock/burn proof applies.'
@@ -3792,7 +3819,13 @@ export async function POST(req: Request) {
         _lockBurnReason = 'LP model could not be determined from available data.'
       }
 
-      const _notApplicable = _displayLpModel === 'concentrated_liquidity' || _displayLpModel === 'protocol_or_gauge' || _displayLpModel === 'no_pool'
+      const _notApplicable = _displayLpModel === 'concentrated_liquidity' || _displayLpModel === 'no_pool'
+
+      // Shared proof-applicability classification (problem 1/2/7): erc20_lp_token → applicable;
+      // concentrated/no_pool → not_applicable; open_check (model not classified) → unknown.
+      lpControl.proofApplicability = _displayLpModel === 'erc20_lp_token' ? 'applicable'
+        : (_displayLpModel === 'concentrated_liquidity' || _displayLpModel === 'no_pool') ? 'not_applicable'
+        : 'unknown'
 
       lpControl.primaryMarketPool = lpDiagnostics.primaryMarketPoolAddress ?? null
       lpControl.verificationPool = lpDiagnostics.lpVerificationPoolAddress ?? null
@@ -5154,17 +5187,21 @@ export async function POST(req: Request) {
     // pools where no LP token exists. Unknown pool model still attempts proof.
     const lpModelProof = _deriveLpModelProof(gtAllPools)
     const lpMigrationProof = _deriveMigrationProof(gtAllPools, liquidityUsd)
-    const _proofApplicableEarly = lpModelProof.standardLockApplies &&
-      lpControl.status !== 'concentrated_liquidity' && lpControl.status !== 'protocol'
-    let lpProof: { lpLockStatus: 'locked' | 'burned' | 'unlocked' | 'unverified'; lpLockAmount: number | null; lpUnlockTime: number | null; lpLockProvider: 'PinkLock' | null; lpController: 'wallet' | 'contract' | 'burn' | 'lockContract' | 'unknown' }
+    // Single shared classification (problem 1/2): "applicable" only when lpControl confirmed
+    // an ERC-20 LP token (V2 or Aerodrome V2). Never "applicable" for concentrated/no_pool/unclassified.
+    const lpProofApplicability: ProofApplicability = noActivePools || !_lpProofPresent
+      ? 'not_available'
+      : (lpControl.proofApplicability ?? 'unknown')
+    const _proofApplicableEarly = lpProofApplicability === 'applicable'
+    let lpProof: { lpLockStatus: 'locked' | 'burned' | 'unlocked' | 'unverified'; lpLockAmount: number | null; lpUnlockTime: number | null; lpLockProvider: 'PinkLock' | null; lpController: 'wallet' | 'contract' | 'burn' | 'lockContract' | 'unknown'; reasonCode?: string }
     let _lpProofSkipReason: string | null = null
     if (!_proofApplicableEarly) {
-      lpProof = { lpLockStatus: 'unverified', lpLockAmount: null, lpUnlockTime: null, lpLockProvider: null, lpController: 'unknown' }
-      _lpProofSkipReason = `LP proof skipped: pool model is ${lpModelProof.model} / status ${lpControl.status} — standard ERC-20 LP proof does not apply.`
+      lpProof = { lpLockStatus: 'unverified', lpLockAmount: null, lpUnlockTime: null, lpLockProvider: null, lpController: 'unknown', reasonCode: 'proofNotApplicable' }
+      _lpProofSkipReason = `LP proof skipped: pool model is ${lpModelProof.model} / status ${lpControl.status} / applicability ${lpProofApplicability} — standard ERC-20 LP proof does not apply.`
     } else if (chain === 'eth' || chain === 'base') {
       lpProof = await resolveLpProof(chain, _lpProofAddress)
     } else {
-      lpProof = { lpLockStatus: 'unverified', lpLockAmount: null, lpUnlockTime: null, lpLockProvider: null, lpController: 'unknown' }
+      lpProof = { lpLockStatus: 'unverified', lpLockAmount: null, lpUnlockTime: null, lpLockProvider: null, lpController: 'unknown', reasonCode: 'proofNotApplicable' }
     }
     const { lpLockStatus, lpLockAmount, lpUnlockTime, lpLockProvider, lpController: _lpControllerFromProof } = lpProof
     // Synthesize lpController from lpControl evidence when the proof scan returned 'unknown'.
@@ -5179,14 +5216,14 @@ export async function POST(req: Request) {
     })()
     if (_lpProofSkipReason) lpDiagnostics.lpProofSkipReason = _lpProofSkipReason
 
-    // proofApplicable: false for concentrated/protocol pools (no standard ERC-20 LP token)
+    // proofApplicability: shared classification — "not_applicable"/"not_available" suppress
+    // lock/burn/controller gaps; "unknown" emits a pool-model-uncertainty gap instead.
     // includeTokenGaps: false — token scanner has its own security section for tax/honeypot/renounce
-    const _lpProofApplicableForGaps = lpModelProof.standardLockApplies &&
-      lpControl.status !== 'concentrated_liquidity' && lpControl.status !== 'protocol'
     const lpEvidenceGaps = buildLpEvidenceGaps({
       lpLockStatus,
       lpController,
-      proofApplicable: _lpProofApplicableForGaps,
+      proofApplicability: lpProofApplicability,
+      controllerProofAttempted: _proofApplicableEarly,
       includeTokenGaps: false,
     })
 
@@ -5219,13 +5256,12 @@ export async function POST(req: Request) {
       lpUnlockTime,
     })
 
-    // ── LP proof applicability and structured exit risk fields ──────────────
-    const isConcentratedPool = lpControl.status === 'concentrated_liquidity' || lpControl.status === 'protocol' || lpModelProof.model === 'concentrated'
-    const isConfirmedStandardLp = lpModelProof.model === 'constant_product' || lpControl.poolType === 'v2' || lpControl.probeV2Like === true
-    const lpProofApplicability: 'applicable' | 'not_applicable' | 'unknown' =
-      isConcentratedPool ? 'not_applicable' : (isConfirmedStandardLp && _lpProofAddress ? 'applicable' : 'unknown')
+    // ── Structured exit risk fields (problem 6): liquidityDepthRisk separated from
+    // exitControlRisk via the shared computeLpExitRisk helper, used identically by
+    // Liquidity Safety so the two routes never disagree.
+    const _liqForRisk = liquidityUsd
     const lpProofStatusNew: 'confirmed' | 'partial' | 'missing' | 'not_applicable' | 'unknown' =
-      lpProofApplicability === 'not_applicable' ? 'not_applicable' :
+      (lpProofApplicability === 'not_applicable' || lpProofApplicability === 'not_available') ? 'not_applicable' :
       (lpLockStatus === 'locked' || lpLockStatus === 'burned') ? 'confirmed' :
       lpLockStatus === 'unlocked' ? 'partial' :
       noActivePools ? 'unknown' : 'missing'
@@ -6084,6 +6120,7 @@ export async function POST(req: Request) {
       lpProofStatus: lpProofStatusNew,
       lpExitRisk,
       lpExitRiskReason,
+      liquidityDepthRisk,
       lpEvidenceSummary,
       lpMeta: {
         v2PoolCandidatesCount: lpDiagnostics.v2PoolCandidatesCount,
@@ -6093,6 +6130,16 @@ export async function POST(req: Request) {
         primaryMarketDex: lpDiagnostics.primaryMarketDex,
         lpVerificationPoolSelected: lpDiagnostics.lpVerificationPoolSelected,
         proofStatus: lpDiagnostics.lpState ?? null,
+        // Base LP-locker registry coverage (problem 5): the registry is intentionally
+        // empty for Base until verified locker addresses are confirmed on-chain, so
+        // "locked" can never fire for Base V2 pools via holder-balance detection.
+        // This is reported explicitly rather than fabricating locker entries.
+        lockerRegistryStatus: lpDiagnostics.lockerRegistryEmpty ? 'empty' : 'configured',
+        lockerDetectionAvailable: !lpDiagnostics.lockerRegistryEmpty,
+        lockProofCoverage: (chain === 'base' && lpDiagnostics.lockerRegistryEmpty) ? 'limited' : 'standard',
+        lockerRegistryReason: (chain === 'base' && lpDiagnostics.lockerRegistryEmpty)
+          ? 'No verified Base locker registry is configured yet.'
+          : null,
       },
 
       // AI summary from Cortex Engine
