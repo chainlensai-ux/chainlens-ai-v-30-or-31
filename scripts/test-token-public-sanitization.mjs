@@ -114,13 +114,21 @@ const virtualLikePayload = {
   suspiciousFlows: { transfers, fallbackUsed: 'moralis_token_transfers' },
   securityDiagnostics: { honeypotProvider: 'honeypot.is' },
   projectSocials: { twitter: 'x', sourceTrail: ['coingecko:succeeded'] },
-  rugRisk: { score: 42, label: 'watch', raw: { provider: 'moralis', holders } },
+  rugRisk: { score: 42, label: 'watch', overall_rug_risk_score: 83, lp_safety: { status: 'team_controlled', owner: null }, raw: { provider: 'moralis', holders } },
   riskEngine: {
     rugRiskScore: 38,
     rugRiskLabel: 'watch',
     cortexScoreDebug: { raw: true },
     cortexScore: 67,
     cortexVerdict: 'CAUTION',
+    clarkInterpretation: {
+      summary: 'Base token. Rug-risk pressure: 83/100. Watch-level signals — monitor closely. Primary risk: wallet-controlled LP.',
+      riskDrivers: ['wallet-controlled LP'],
+      openChecks: [],
+      nextActions: [],
+      chainContext: 'On Base: check for CL pool (Aerodrome/Uniswap v3).',
+      confidence: 'medium',
+    },
     note: 'dexscreener fallback',
   },
   cortexScore: 67,
@@ -177,6 +185,17 @@ assert('raw technical totalSupply hex is stripped from contract checks', !('tota
 assert('top-level old CORTEX score is debug-only', publicPayload.cortexScore == null && publicPayload.cortexVerdict == null, { cortexScore: publicPayload.cortexScore, cortexVerdict: publicPayload.cortexVerdict })
 assert('drops riskEngine.rugRiskScore', !('rugRiskScore' in publicPayload.riskEngine), publicPayload.riskEngine)
 assert('drops riskEngine.rugRiskLabel', !('rugRiskLabel' in publicPayload.riskEngine), publicPayload.riskEngine)
+
+// Legacy rug-risk score wording is removed from public output; canonical Token Safety Score is unchanged.
+assert('riskScore remains 58', publicPayload.riskScore === 58, publicPayload.riskScore)
+assert('riskLabel remains moderate', publicPayload.riskLabel === 'moderate', publicPayload.riskLabel)
+assert('riskBreakdown remains present (2)', Boolean(publicPayload.riskBreakdown), publicPayload.riskBreakdown)
+assert('drops rugRisk.score', !('score' in (publicPayload.rugRisk ?? {})), publicPayload.rugRisk)
+assert('drops rugRisk.label', !('label' in (publicPayload.rugRisk ?? {})), publicPayload.rugRisk)
+assert('drops rugRisk.overall_rug_risk_score', !('overall_rug_risk_score' in (publicPayload.rugRisk ?? {})), publicPayload.rugRisk)
+assert('rugRisk keeps non-score status fields', publicPayload.rugRisk?.lp_safety?.status === 'team_controlled', publicPayload.rugRisk)
+assert('no "Rug-risk pressure" wording in public response', !/Rug-risk pressure/i.test(serialized(publicPayload)), publicPayload.riskEngine?.clarkInterpretation?.summary)
+assert('clarkInterpretation.summary references Token Safety Score', /Token Safety Score:\s*58\/100/.test(publicPayload.riskEngine?.clarkInterpretation?.summary ?? ''), publicPayload.riskEngine?.clarkInterpretation?.summary)
 assert('drops lpDataModeRaw', !('lpDataModeRaw' in publicPayload))
 assert('keeps normalized public lpDataMode', publicPayload.lpDataMode === 'evidence_based', publicPayload.lpDataMode)
 assert('caps priceChart.points', publicPayload.priceChart.points.length === 150, publicPayload.priceChart.points.length)
@@ -235,6 +254,9 @@ assert('debug keeps raw/provider evidence', Boolean(debugPayload.gtRaw && debugP
 assert('debug keeps raw holder arrays', Array.isArray(debugPayload.holderResolver.holders) && debugPayload.holderResolver.holders.length === 25, debugPayload.holderResolver.holders?.length)
 assert('debug keeps raw transfer arrays', Array.isArray(debugPayload.transferResolver.transfers) && debugPayload.transferResolver.transfers.length === 25, debugPayload.transferResolver.transfers?.length)
 assert('debug keeps provider names for diagnostics', serialized(debugPayload).includes('goldrush') && serialized(debugPayload).includes('moralis'), debugPayload)
+assert('debug keeps rugRisk.score/label', debugPayload.rugRisk.score === 42 && debugPayload.rugRisk.label === 'watch', debugPayload.rugRisk)
+assert('debug keeps rugRisk.overall_rug_risk_score', debugPayload.rugRisk.overall_rug_risk_score === 83, debugPayload.rugRisk)
+assert('debug keeps raw "Rug-risk pressure" wording', /Rug-risk pressure:\s*83\/100/.test(debugPayload.riskEngine.clarkInterpretation.summary), debugPayload.riskEngine.clarkInterpretation.summary)
 assert('debug keeps riskEngine.rugRiskScore', debugPayload.riskEngine.rugRiskScore === 38)
 assert('debug keeps lpDataModeRaw', debugPayload.lpDataModeRaw === 'fallback')
 assert('debug keeps full priceChart.points', debugPayload.priceChart.points.length === 400)

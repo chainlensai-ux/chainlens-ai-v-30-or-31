@@ -91,17 +91,32 @@ export function sanitizePublicTokenResponse<T extends Record<string, any>>(paylo
     delete (sanitized as any).sections.contractChecks.symbolFallback
   }
   if ((sanitized as any).rugRisk) {
-    ;(sanitized as any).rugRisk = {
-      score: (sanitized as any).rugRisk.score ?? (sanitized as any).riskEngine?.rugRiskScore ?? null,
-      label: (sanitized as any).rugRisk.label ?? (sanitized as any).riskEngine?.rugRiskLabel ?? null,
-      status: (sanitized as any).rugRisk.status ?? null,
-    }
+    // rugRisk.score/label/overall_rug_risk_score are the legacy V1 rug-risk score —
+    // competes with the public Token Safety Score (riskScore/riskLabel/riskBreakdown).
+    // Keep only the non-score status fields (lp_safety, contract_flags, etc.) publicly.
+    delete (sanitized as any).rugRisk.score
+    delete (sanitized as any).rugRisk.label
+    delete (sanitized as any).rugRisk.overall_rug_risk_score
   }
   // riskEngine.rugRiskScore/rugRiskLabel are the legacy V1 score — competes with the
   // public Token Safety Score (riskScore/riskLabel/riskBreakdown), debug-only.
   if ((sanitized as any).riskEngine) {
     delete (sanitized as any).riskEngine.rugRiskScore
     delete (sanitized as any).riskEngine.rugRiskLabel
+  }
+  // riskEngine.clarkInterpretation.summary embeds the legacy "Rug-risk pressure: X/100"
+  // wording — rewrite it to reference the canonical public Token Safety Score instead.
+  if (typeof (sanitized as any).riskEngine?.clarkInterpretation?.summary === 'string') {
+    const ci = (sanitized as any).riskEngine.clarkInterpretation
+    const riskScore = (sanitized as any).riskScore
+    const riskLabel = (sanitized as any).riskLabel
+    const replacement = (riskScore != null && riskLabel != null)
+      ? `Token Safety Score: ${riskScore}/100 (${String(riskLabel).replace(/_/g, ' ')}).`
+      : ''
+    ci.summary = ci.summary
+      .replace(/Rug-risk pressure:\s*\d+\/100\.?/gi, replacement)
+      .replace(/\s{2,}/g, ' ')
+      .trim()
   }
   // lp_data_mode raw value ('strict'|'minimal'|'fallback'|'insufficient') is internal —
   // public callers get the normalized lpDataMode field instead. cortexLpRead.mode and any
