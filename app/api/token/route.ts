@@ -495,13 +495,15 @@ type RiskEngine = {
 
 type RugRiskReport = {
   lp_safety: {
-    status: "locked" | "unlocked" | "team_controlled" | "protocol" | "concentrated_liquidity" | "partial"
+    status: "locked" | "unlocked" | "team_controlled" | "protocol" | "concentrated_liquidity" | "partial" | "open_check"
     unlock_at: string | null
     countdown_seconds: number | null
     owner: string | null
     contract: string | null
     movement_24h_usd: number | null
     source_status: "ok" | "partial"
+    /** Set only for "open_check" — explains that liquidity exists but the LP control path is unverified. */
+    note?: string | null
   }
   contract_flags: {
     honeypot: boolean | null
@@ -4869,8 +4871,15 @@ export async function POST(req: Request) {
     // Canonical owner address for display: shows the confirmed zero address when renounced
     // is verified (proof of renouncement), null only when ownership is an open check.
     const _ownerAddressForDisplay = _ownerConfirmedZero ? _ZERO_ADDR : (ownerAddr ?? null)
-    const ownershipStatus: 'renounced' | 'open_check' = isRenounced ? 'renounced' : 'open_check'
-    const ownershipLabel = isRenounced ? 'Ownership renounced / verified zero address' : 'Ownership not verified'
+    // devOwnership-facing status/label: an RPC-verified active owner/admin address must be
+    // reported as such ("active_owner"), never as "open_check" / "Ownership not verified" —
+    // that wording is reserved for when ownership evidence was never resolved.
+    const ownershipStatus: 'renounced' | 'active_owner' | 'open_check' = isRenounced
+      ? 'renounced'
+      : (ownershipVerified && _ownerConfirmedActive) ? 'active_owner' : 'open_check'
+    const ownershipLabel = isRenounced
+      ? 'Ownership renounced / verified zero address'
+      : (ownershipVerified && _ownerConfirmedActive) ? 'Active owner/admin verified' : 'Ownership not verified'
     const rpcSupply = await countedRpcCall('eth_call', [{ to: contract, data: '0x18160ddd' }, 'latest'], 'totalSupplyCheck', true)
     const rpcDecimalsHex = await countedRpcCall('eth_call', [{ to: contract, data: '0x313ce567' }, 'latest'], 'decimalsCheck', true)
 
@@ -5319,7 +5328,14 @@ export async function POST(req: Request) {
     let _lpProofSkipReason: string | null = null
     if (!_proofApplicableEarly) {
       lpProof = { lpLockStatus: 'unverified', lpLockAmount: null, lpUnlockTime: null, lpLockProvider: null, lpController: 'unknown', reasonCode: 'proofNotApplicable' }
-      _lpProofSkipReason = `LP proof skipped: pool model is ${lpModelProof.model} / status ${lpControl.status} / applicability ${lpProofApplicability} — standard ERC-20 LP proof does not apply.`
+      // Keep "pool model unknown" (proof may apply once confirmed) and "confirmed
+      // concentrated/protocol pool" (proof genuinely does not apply) as separate reasons —
+      // the latter wording must never be shown for an unverified/open-check pool model.
+      _lpProofSkipReason = lpProofApplicability === 'unknown'
+        ? 'LP proof skipped because the pool model is unknown. Standard lock/burn proof only applies after an ERC-20 LP token is confirmed.'
+        : lpProofApplicability === 'not_applicable'
+          ? 'Standard ERC-20 LP lock/burn proof does not apply to this concentrated-liquidity pool.'
+          : `LP proof skipped: no pool address available for LP proof (status ${lpControl.status}).`
     } else if (chain === 'eth' || chain === 'base') {
       lpProof = await resolveLpProof(chain, _lpProofAddress)
     } else {
@@ -5403,6 +5419,8 @@ export async function POST(req: Request) {
       lpController: lpControllerType,
       lpControllerAddress,
       isEstablishedToken,
+      proofApplicability: lpProofApplicability,
+      fallbackLiquidityDetected: _fallbackLiquidityDetected,
     })
 
     // ── Structured exit risk fields (problem 6): liquidityDepthRisk separated from
@@ -5498,13 +5516,23 @@ export async function POST(req: Request) {
                 ? "concentrated_liquidity"
                 : lpControl.status === "partial"
                   ? "partial"
-                  : "unlocked",
+                  // "open_check": liquidity was detected but the pool model/LP control path is
+                  // unverified — never reported as "unlocked" (that would imply a confirmed
+                  // ERC-20 LP token with no lock/burn proof, which has not been checked here).
+                  : lpControl.status === "open_check"
+                    ? "open_check"
+                    : "unlocked",
         unlock_at: lpUnlockAt,
         countdown_seconds: lpCountdownSeconds,
-        owner: ownerAddr ?? null,
+        // Owner/controller of the LP is unknown for "open_check" — never report a wallet/LP
+        // owner address until the pool model and LP control path are confirmed.
+        owner: lpControl.status === "open_check" ? null : (ownerAddr ?? null),
         contract: primaryPoolAddress ?? null,
         movement_24h_usd: _ev ?? null,
-        source_status: lpControl.status === "error" || lpControl.status === "insufficient_data" ? "partial" : "ok",
+        source_status: lpControl.status === "error" || lpControl.status === "insufficient_data" || lpControl.status === "open_check" ? "partial" : "ok",
+        note: lpControl.status === "open_check"
+          ? "Market liquidity was detected, but the pool model and LP control path could not be verified from current evidence."
+          : null,
       },
       contract_flags: {
         honeypot: hpResult.ok ? hpResult.honeypot : null,

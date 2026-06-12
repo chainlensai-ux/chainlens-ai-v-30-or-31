@@ -192,6 +192,8 @@ const EVIDENCE_GAP_DEFS: Record<string, LpEvidenceGap> = {
   TAX_CHECK_UNAVAILABLE: { id: "TAX_CHECK_UNAVAILABLE", label: "TAX CHECK UNAVAILABLE", explanation: "Buy/sell tax has not been verified by this scan.", nextAction: "Simulate a buy and sell to confirm actual transaction tax." },
   RENOUNCE_STATUS_UNKNOWN: { id: "RENOUNCE_STATUS_UNKNOWN", label: "RENOUNCE STATUS UNKNOWN", explanation: "Whether contract ownership has been renounced is not confirmed by this scan.", nextAction: "Check the contract's owner address on a block explorer for renouncement." },
   POOL_MODEL_UNCERTAIN: { id: "POOL_MODEL_UNCERTAIN", label: "POOL MODEL UNCERTAIN", explanation: "The liquidity pool's AMM model could not be determined from available DEX metadata, so LP lock/burn proof could not be attempted.", nextAction: "Identify the DEX and pool type on a block explorer, then re-check LP lock/burn status using a method appropriate for that pool model." },
+  LP_CONTROL_UNVERIFIED: { id: "LP_CONTROL_UNVERIFIED", label: "LP CONTROL UNVERIFIED", explanation: "The LP control path — who can withdraw or manage this pool's liquidity — could not be verified from current evidence.", nextAction: "Confirm the pool model on-chain, then verify the LP holder distribution and control path." },
+  LOCK_BURN_PROOF_NOT_ATTEMPTED_UNTIL_MODEL_CONFIRMED: { id: "LOCK_BURN_PROOF_NOT_ATTEMPTED_UNTIL_MODEL_CONFIRMED", label: "LOCK/BURN PROOF NOT ATTEMPTED UNTIL MODEL CONFIRMED", explanation: "Standard ERC-20 LP lock/burn proof was not attempted because the pool model has not been confirmed.", nextAction: "Confirm the pool model on-chain, then re-run LP lock/burn verification if an ERC-20 LP token is confirmed." },
 };
 
 export function buildEvidenceGaps(params: {
@@ -221,7 +223,7 @@ export function buildEvidenceGaps(params: {
     if (params.lpLockStatus !== "burned" && params.lpLockStatus !== "locked") ids.push("BURN_PROOF_UNCONFIRMED");
     if (controllerProofAttempted && params.lpController === "unknown") ids.push("CONTROLLER_UNKNOWN");
   } else if (applicability === "unknown") {
-    ids.push("POOL_MODEL_UNCERTAIN");
+    ids.push("POOL_MODEL_UNCERTAIN", "LP_CONTROL_UNVERIFIED", "LOCK_BURN_PROOF_NOT_ATTEMPTED_UNTIL_MODEL_CONFIRMED");
   }
   // "not_applicable" / "not_available": no lock/burn/controller gaps — proof genuinely doesn't apply.
   ids.push("POOL_AGE_UNKNOWN");
@@ -282,9 +284,16 @@ export function buildCortexLpRead(params: {
   lpController?: LpController;
   lpControllerAddress?: string | null;
   isEstablishedToken?: boolean;
+  /** Pool model could not be confirmed (lpProofApplicability === "unknown") — market liquidity
+   *  may exist, but neither "concentrated" nor "standard LP proof does not apply" wording applies. */
+  proofApplicability?: ProofApplicability;
+  /** True when market-fallback evidence (e.g. DexScreener pair) proved liquidity exists even
+   *  though no canonical on-chain pool was confirmed/indexed. */
+  fallbackLiquidityDetected?: boolean;
 }): CortexLpRead {
-  const { name, symbol, totalLiq, fragments, observedPoolPresent, riskTier, lpModel, migrationSummary, mode, confidence, gaps, lpLockStatus, lpLockProvider, lpUnlockTime, secondaryLpSignal, lpController, lpControllerAddress, isEstablishedToken } = params;
+  const { name, symbol, totalLiq, fragments, observedPoolPresent, riskTier, lpModel, migrationSummary, mode, confidence, gaps, lpLockStatus, lpLockProvider, lpUnlockTime, secondaryLpSignal, lpController, lpControllerAddress, isEstablishedToken, proofApplicability, fallbackLiquidityDetected } = params;
   const liqStr = totalLiq != null ? `$${totalLiq.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : "an unknown amount";
+  const modelUnknown = proofApplicability === "unknown";
 
   // Secondary signal wording (selection rule 4): only describes a SECONDARY V2/Aerodrome ERC-20 LP
   // pool, and never overrides the primary pool's concentrated/protocol classification.
@@ -302,11 +311,13 @@ export function buildCortexLpRead(params: {
     ? `An active LP lock was found${lpLockProvider ? ` via ${lpLockProvider}` : ""}${lpUnlockTime ? `, unlocking at ${new Date(lpUnlockTime * 1000).toISOString()}` : ""}.`
     : lpLockStatus === "burned"
       ? "On-chain data shows the dominant share of LP tokens sent to a burn address."
-      : !lpModel.standardLockApplies
-        ? `Standard ERC-20 LP lock/burn proof does not apply to this concentrated-liquidity pool. Liquidity control requires protocol-specific position checks.${secondaryClause}`
-        : (lpController === "wallet" && isEstablishedToken)
-          ? `Selected LP position appears wallet-controlled${lpControllerAddress ? ` (${lpControllerAddress})` : ""}. This is a liquidity-control signal, not proof of malicious behavior. Verify the controlling wallet and any lock/burn evidence before relying on liquidity safety.`
-          : "No lock or burn proof was confirmed for this LP — treat liquidity as potentially withdrawable.";
+      : modelUnknown
+        ? `Market liquidity was detected, but the pool model and LP control path could not be verified from current evidence.${secondaryClause}`
+        : !lpModel.standardLockApplies
+          ? `Standard ERC-20 LP lock/burn proof does not apply to this concentrated-liquidity pool. Liquidity control requires protocol-specific position checks.${secondaryClause}`
+          : (lpController === "wallet" && isEstablishedToken)
+            ? `Selected LP position appears wallet-controlled${lpControllerAddress ? ` (${lpControllerAddress})` : ""}. This is a liquidity-control signal, not proof of malicious behavior. Verify the controlling wallet and any lock/burn evidence before relying on liquidity safety.`
+            : "No lock or burn proof was confirmed for this LP — treat liquidity as potentially withdrawable.";
 
   const riskSummary = `${name} (${symbol}) shows a "${riskTier}" liquidity-depth risk tier based on observed pool data. This reflects liquidity depth and pool structure only — ownership, mintability, simulation and tax status remain unconfirmed (data mode: ${mode}, confidence: ${confidence}). ${lockClause}`;
 
@@ -315,7 +326,9 @@ export function buildCortexLpRead(params: {
     ? totalLiq != null
       ? `Observed liquidity is approximately ${liqStr} in the detected primary pool.`
       : "A primary liquidity pool was detected, but full pool distribution is not fully indexed."
-    : "No active liquidity pool was confirmed from current evidence.";
+    : fallbackLiquidityDetected
+      ? "Market liquidity was detected from fallback evidence, but the pool address/model was not confirmed from current pool discovery."
+      : "No active liquidity pool was confirmed from current evidence.";
 
   const poolStructureAnalysis = lpModel.model === "unknown"
     ? "The AMM model could not be determined from the available DEX data."
@@ -330,9 +343,11 @@ export function buildCortexLpRead(params: {
     migrationAnalysis: migrationSummary,
     evidenceGaps: gaps.map((g) => g.label),
     nextActions: [
-      ...(lpModel.standardLockApplies
-        ? ["Confirm LP lock and burn status directly on-chain before trusting any safety claims."]
-        : [`Standard ERC-20 LP lock/burn proof does not apply to this concentrated-liquidity pool. Liquidity control requires protocol-specific position checks.${secondaryClause}`]),
+      ...(modelUnknown
+        ? ["Standard lock/burn proof was not attempted because ChainLens has not confirmed an ERC-20 LP token."]
+        : lpModel.standardLockApplies
+          ? ["Confirm LP lock and burn status directly on-chain before trusting any safety claims."]
+          : [`Standard ERC-20 LP lock/burn proof does not apply to this concentrated-liquidity pool. Liquidity control requires protocol-specific position checks.${secondaryClause}`]),
       "Verify contract ownership/renouncement and mintability via the contract source code.",
       "Run a simulation and tax check prior to trading.",
     ],
