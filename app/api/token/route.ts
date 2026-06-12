@@ -14,6 +14,11 @@ import {
   computeLpExitRisk,
   type ProofApplicability,
 } from '@/lib/server/lpProof'
+import {
+  computeDisplayLpModel,
+  reconcileSecondaryLpSignal,
+  type LpPoolCandidate,
+} from '@/lib/server/lpIntelligence'
 import { calculateCortexScoreV2 } from '@/lib/token/scoring'
 
 // Local LP model/migration proof helper — pure function derived from GeckoTerminal pool data,
@@ -3771,35 +3776,32 @@ export async function POST(req: Request) {
       }
     }
 
-    // Selection rule 3/4: when the PRIMARY pool is concentrated/CLMM but a SEPARATE
-    // V2/Aerodrome ERC-20 LP pool was checked above, demote that result to a secondary
-    // signal and report the canonical (primary-pool) status as concentrated_liquidity.
-    // This prevents a secondary V2 pool from making the whole token "team_controlled"
-    // while lpModelProof/cortexLpRead describe the primary pool as concentrated.
-    if (_primaryConcentrated && lpVerifyPoolPresent && lpVerifyPool && lpVerifyPool.address && lpVerifyPool.address !== lpPoolAddress) {
-      const secondaryLpControlSignals: LpControlResult["secondaryLpControlSignals"] = {
-        status: lpControl.status,
-        confidence: lpControl.confidence,
-        poolAddress: lpVerifyPoolAddress,
-        poolDex: lpVerifyPool.dexId ?? lpVerifyPool.dexName ?? null,
+    // Selection rules 3/4 (shared with Liquidity Safety via lib/server/lpIntelligence):
+    // when the PRIMARY pool is concentrated/CLMM but a SEPARATE V2/Aerodrome ERC-20 LP
+    // pool was checked above, demote that result to a secondary signal and report the
+    // canonical (primary-pool) status as concentrated_liquidity. This prevents a
+    // secondary V2 pool from making the whole token "team_controlled" while
+    // lpModelProof/cortexLpRead describe the primary pool as concentrated.
+    {
+      const _verifyPoolCandidate: LpPoolCandidate | null = lpVerifyPool ? {
+        address: lpVerifyPoolAddress,
+        liquidityUsd: lpVerifyPool.liquidityUsd ?? 0,
+        dexId: lpVerifyPool.dexId ?? null,
+        dexName: lpVerifyPool.dexName ?? null,
         poolType: lpVerifyPoolType,
-        reason: lpControl.reason,
-        evidence: lpControl.evidence,
-      }
-      lpControl = {
-        status: "concentrated_liquidity",
-        confidence: "medium",
-        poolType: lpPoolType,
-        source: "dex_data",
-        reason: "Protocol-specific LP proof required for the primary pool.",
-        evidence: [
-          `Primary pool: ${marketPair} (${lpPoolType})`,
-          `pool=${primaryPoolAddress}`, `dex=${lpDexId ?? lpDexName ?? "unknown"}`, `poolType=${lpPoolType}`,
-        ],
-        poolAddressPresent: true,
-        dexId: dexId || undefined,
-        secondaryLpControlSignals,
-      }
+        hasLpToken: lpVerifyPool.hasLpToken ?? null,
+        hasDexMeta: lpVerifyPool.hasDexMeta ?? false,
+        isValidAddress: lpVerifyPool.isValidAddress ?? Boolean(lpVerifyPoolAddress),
+      } : null
+      const { lpControl: _reconciled } = reconcileSecondaryLpSignal(lpControl, {
+        primaryConcentrated: _primaryConcentrated,
+        verifyPool: _verifyPoolCandidate,
+        primaryPoolAddress,
+        primaryPoolType: lpPoolType,
+        primaryDexId: lpDexId ?? lpDexName ?? "unknown",
+        marketPairLabel: marketPair,
+      })
+      lpControl = _reconciled
     }
     const _extractEvidencePct = (ev: string[], prefix: string): number | null => {
       const line = ev.find(e => e.startsWith(`${prefix}=`))
@@ -3861,56 +3863,27 @@ export async function POST(req: Request) {
     lpControl.poolAddressPresent = _lpProofPresent;
 
     // Normalize split-pool and proof-status fields so frontend never needs to derive them.
-    // These are always set regardless of which LP branch ran.
+    // These are always set regardless of which LP branch ran. Uses the shared
+    // computeDisplayLpModel() (lib/server/lpIntelligence) so Token Scanner and
+    // Liquidity Safety never disagree on whether standard ERC-20 LP lock/burn proof
+    // applies to the canonical primary pool.
     {
       const _isVerified = lpControl.status === 'burned' || lpControl.status === 'locked'
 
-      // displayLpModel is driven by the PRIMARY market pool type, NOT the verification pool type.
-      // This prevents V3/Aerodrome primary pools from showing as ERC-20 LP Token just because
-      // a fallback V2 verification pool was found during the proof scan.
-      let _displayLpModel: LpControlResult['displayLpModel']
-      let _lockBurnApplicable: boolean
-      let _lockBurnReason: string
-
-      if (noActivePools && !_lpProofPresent) {
-        _displayLpModel = 'no_pool'
-        _lockBurnApplicable = false
-        _lockBurnReason = 'No active pool detected.'
-      } else if (lpPoolType === 'v3' || lpPoolType === 'concentrated' || lpControl.status === 'concentrated_liquidity') {
-        _displayLpModel = 'concentrated_liquidity'
-        _lockBurnApplicable = false
-        _lockBurnReason = lpDexId && /aerodrome|velodrome/i.test(lpDexId)
-          ? 'Aerodrome Slipstream (concentrated liquidity) — standard ERC-20 LP lock/burn proof does not apply.'
-          : 'Concentrated liquidity (V3/V4) — standard ERC-20 LP lock/burn proof does not apply.'
-      } else if ((lpPoolType === 'v2' || lpPoolType === 'aerodrome') && _lpProofPresent) {
-        // 'aerodrome' here means Aerodrome V2 (volatile/stable) — pool contract is an ERC-20 LP token.
-        _displayLpModel = 'erc20_lp_token'
-        _lockBurnApplicable = true
-        _lockBurnReason = lpPoolType === 'aerodrome'
-          ? 'Aerodrome V2 (volatile/stable) LP token — lock/burn proof applies.'
-          : 'Standard V2 LP token — lock/burn proof applies.'
-      } else if (_lpProofPresent && (_lpProofType === 'v2' || _lpProofType === 'aerodrome')) {
-        // Primary pool type unknown but verification pool is V2/Aerodrome-V2-style
-        _displayLpModel = 'erc20_lp_token'
-        _lockBurnApplicable = true
-        _lockBurnReason = 'V2-style verification pool with LP token — lock/burn proof applies.'
-      } else if (_lpProofPresent) {
-        _displayLpModel = 'open_check'
-        _lockBurnApplicable = false
-        _lockBurnReason = 'Pool detected, but LP model could not be fully classified.'
-      } else {
-        _displayLpModel = 'open_check'
-        _lockBurnApplicable = false
-        _lockBurnReason = 'LP model could not be determined from available data.'
-      }
-
+      const _display = computeDisplayLpModel({
+        noActivePools,
+        proofPresent: _lpProofPresent,
+        primaryPoolType: lpPoolType,
+        primaryDexId: lpDexId,
+        verifyPoolType: _lpProofType,
+        controlStatusConcentrated: lpControl.status === 'concentrated_liquidity',
+      })
+      const _displayLpModel = _display.displayLpModel
       const _notApplicable = _displayLpModel === 'concentrated_liquidity' || _displayLpModel === 'no_pool'
 
       // Shared proof-applicability classification (problem 1/2/7): erc20_lp_token → applicable;
       // concentrated/no_pool → not_applicable; open_check (model not classified) → unknown.
-      lpControl.proofApplicability = _displayLpModel === 'erc20_lp_token' ? 'applicable'
-        : (_displayLpModel === 'concentrated_liquidity' || _displayLpModel === 'no_pool') ? 'not_applicable'
-        : 'unknown'
+      lpControl.proofApplicability = _display.proofApplicability
 
       lpControl.primaryMarketPool = lpDiagnostics.primaryMarketPoolAddress ?? null
       // For concentrated/no-pool models there is no ERC-20 LP verification pool — report
@@ -3922,8 +3895,8 @@ export async function POST(req: Request) {
       lpControl.primaryPoolDex = lpDiagnostics.primaryMarketDex ?? null
       lpControl.primaryPoolType = lpPoolType
       lpControl.displayLpModel = _displayLpModel
-      lpControl.lockBurnApplicable = _lockBurnApplicable
-      lpControl.lockBurnReason = _lockBurnReason
+      lpControl.lockBurnApplicable = _display.lockBurnApplicable
+      lpControl.lockBurnReason = _display.lockBurnReason
       lpControl.proofStatus = _notApplicable ? 'not_applicable' : _isVerified ? 'verified' : 'open_check'
       lpControl.lockStatus = _notApplicable ? 'not_applicable' : lpControl.status === 'locked' ? 'locked' : 'not_confirmed'
       lpControl.burnStatus = _notApplicable ? 'not_applicable' : lpControl.status === 'burned' ? 'burned' : 'not_confirmed'

@@ -57,8 +57,12 @@ type DrawerEnrichmentPayload = {
     lpDataConfidence?: string | null
     lpExitRisk?: string | null
     lpExitRiskReason?: string | null
+    liquidityDepthRisk?: string | null
+    displayLpModel?: string | null
+    lockBurnApplicable?: boolean | null
     lpEvidenceSummary?: string | null
     lockBurnReason?: string | null
+    secondaryLpControlSignals?: { status?: string | null; poolDex?: string | null; reason?: string | null } | null
     cortexLpRead?: { liquidityAnalysis?: string | null } | null
   } | null
   holders?: {
@@ -200,7 +204,8 @@ function hasVerifiedLock(lockStatus: string | null | undefined): boolean {
   return lockStatus === 'locked' || lockStatus === 'burned'
 }
 
-function lockStatusLabel(status: string | null | undefined, proofStatus: string | null | undefined): string {
+function lockStatusLabel(status: string | null | undefined, proofStatus: string | null | undefined, applicability?: string | null): string {
+  if (applicability === 'not_applicable') return 'Not applicable'
   if (status === 'locked') return 'Locked'
   if (status === 'burned') return 'Burned'
   if (status === 'unlocked' || status === 'unverified' || proofStatus === 'missing' || proofStatus === 'partial') return 'No verified lock'
@@ -208,7 +213,7 @@ function lockStatusLabel(status: string | null | undefined, proofStatus: string 
 }
 
 function proofLabel(status: string | null | undefined, applicability: string | null | undefined): string {
-  if (applicability === 'not_applicable') return 'Not applicable for this pool type'
+  if (applicability === 'not_applicable') return 'Not applicable for this pool model'
   if (status === 'confirmed') return 'Confirmed lock/burn proof'
   if (status === 'partial') return 'No verified lock/burn proof'
   if (status === 'missing') return 'No verified lock/burn proof'
@@ -216,22 +221,37 @@ function proofLabel(status: string | null | undefined, applicability: string | n
   return 'Open Check'
 }
 
-function lockAmountLabel(amount: number | null | undefined, lockStatus: string | null | undefined, proofStatus: string | null | undefined): string {
+function lockAmountLabel(amount: number | null | undefined, lockStatus: string | null | undefined, proofStatus: string | null | undefined, applicability?: string | null): string {
+  if (applicability === 'not_applicable') return 'Not applicable'
   if (amount != null && Number.isFinite(amount)) return String(amount)
   if (!hasVerifiedLock(lockStatus) && (lockStatus || proofStatus === 'missing' || proofStatus === 'partial')) return 'No verified lock'
   return 'Open Check'
 }
 
-function unlockTimeLabel(value: string | number | null | undefined, lockStatus?: string | null, proofStatus?: string | null): string {
+function unlockTimeLabel(value: string | number | null | undefined, lockStatus?: string | null, proofStatus?: string | null, applicability?: string | null): string {
+  if (applicability === 'not_applicable') return 'Not applicable'
   if (!hasVerifiedLock(lockStatus) && (lockStatus || proofStatus === 'missing' || proofStatus === 'partial')) return 'Not applicable until lock is verified'
   if (value == null) return 'Open Check'
   const millis = typeof value === 'number' ? (value > 10_000_000_000 ? value : value * 1000) : Date.parse(value)
   return Number.isFinite(millis) ? new Date(millis).toUTCString() : 'Open Check'
 }
 
-function lpRiskLabel(lpStatus: string | null, controller: string | null | undefined, lockStatus: string | null | undefined, providedReason?: string | null): string {
+const LP_EXIT_RISK_LABELS: Record<string, string> = {
+  low: 'Low exit risk',
+  monitor: 'Monitor',
+  watch: 'Watch',
+  medium: 'Medium exit risk',
+  high: 'High exit risk',
+  open_check: 'Open Check',
+}
+
+function lpRiskLabel(lpStatus: string | null, controller: string | null | undefined, lockStatus: string | null | undefined, providedReason?: string | null, exitRisk?: string | null): string {
   if (lpStatus === 'team_controlled' && controller && !hasVerifiedLock(lockStatus)) {
     return 'High exit risk — Single wallet controls the detected LP position. No verified lock or burn proof was found.'
+  }
+  if (exitRisk && providedReason) {
+    const prefix = LP_EXIT_RISK_LABELS[exitRisk] ?? publicStatus(exitRisk)
+    return providedReason.toLowerCase().startsWith(prefix.toLowerCase()) ? providedReason : `${prefix} — ${providedReason}`
   }
   if (providedReason && !(/open check/i.test(providedReason) && lpStatus === 'team_controlled' && controller)) return providedReason
   if (lpStatus === 'team_controlled') return 'High exit risk — LP appears wallet controlled and no verified lock or burn proof was found.'
@@ -375,9 +395,9 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
 
   const lpControlStatus = lp?.lpControl?.status ?? null
   const lpControllerLabel = controllerLabel(lp?.lpController, lpControlStatus)
-  const lpLockStatusLabel = lockStatusLabel(lp?.lpLockStatus, lp?.lpProofStatus)
+  const lpLockStatusLabel = lockStatusLabel(lp?.lpLockStatus, lp?.lpProofStatus, lp?.lpProofApplicability)
   const lpProofLabel = proofLabel(lp?.lpProofStatus, lp?.lpProofApplicability)
-  const lpRiskLabelValue = lpRiskLabel(lpControlStatus, lp?.lpController, lp?.lpLockStatus, lp?.lpExitRiskReason)
+  const lpRiskLabelValue = lpRiskLabel(lpControlStatus, lp?.lpController, lp?.lpLockStatus, lp?.lpExitRiskReason, lp?.lpExitRisk)
   const concentrationRisk = concentrationRiskLabel(concentration.top10, concentration.top20, concentration.concentration)
   const clusterLabel = clusterEvidenceLabel(deployer?.clusterEvidence)
   const deployerMethod = publicMethodLabel(deployer?.methodLabel)
@@ -391,11 +411,16 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
       : 'A primary liquidity pool was detected, but full pool distribution is not fully indexed.')
     : 'No active liquidity pool was confirmed from current evidence.')
 
-  const lpCortexLine = lp?.lpProofApplicability === 'not_applicable'
-    ? 'The primary pool uses a concentrated-liquidity model, so standard ERC-20 LP lock/burn proof does not apply.'
+  const secondaryLpSignal = lp?.secondaryLpControlSignals
+  const secondaryLpLine = secondaryLpSignal?.status === 'team_controlled'
+    ? ` A secondary pool${secondaryLpSignal.poolDex ? ` (${secondaryLpSignal.poolDex})` : ''} shows wallet-controlled LP exposure and may carry separate exit risk.`
+    : ''
+
+  const lpCortexLine = (lp?.lpProofApplicability === 'not_applicable'
+    ? (lp?.lockBurnReason ?? 'The primary pool uses a concentrated-liquidity model, so standard ERC-20 LP lock/burn proof does not apply.')
     : lpControlStatus === 'team_controlled' && lp?.lpController && !hasVerifiedLock(lp?.lpLockStatus)
     ? 'LP holder evidence indicates a single wallet controls the LP position, and no verified lock or burn proof was found.'
-    : `LP control is ${lpControlStatus ? publicStatus(lpControlStatus) : 'Open Check'}; ${lpRiskLabelValue}`
+    : `LP control is ${lpControlStatus ? publicStatus(lpControlStatus) : 'Open Check'}; ${lpRiskLabelValue}`) + secondaryLpLine
   const holderCortexLine = concentration.top10 != null && Number.isFinite(concentration.top10)
     ? `${concentrationRisk === 'Extreme' ? 'Holder concentration is extreme' : `Holder concentration is ${concentrationRisk.toLowerCase()}`}, with the top 10 holders controlling ${concentration.top10 >= 95 ? 'nearly all indexed supply' : `about ${percent(concentration.top10)} of indexed supply`}.`
     : `Top holder concentration is ${percent(concentration.top10)} for top 10 holders; holder evidence is ${holderStatusLabel}.`
@@ -463,8 +488,8 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
           <DataRow label="LP proof" value={lpProofLabel} />
           <DataRow label="Controller" value={lpControllerLabel} />
           <DataRow label="Control" value={`${lpControlStatus ? publicStatus(lpControlStatus) : 'Open Check'} · ${lp?.lpControl?.confidence ?? lp?.lpDataConfidence ?? 'open-check'}`} />
-          <DataRow label="Lock amount" value={lockAmountLabel(lp?.lpLockAmount, lp?.lpLockStatus, lp?.lpProofStatus)} />
-          <DataRow label="Unlock time" value={unlockTimeLabel(lp?.lpUnlockTime, lp?.lpLockStatus, lp?.lpProofStatus)} />
+          <DataRow label="Lock amount" value={lockAmountLabel(lp?.lpLockAmount, lp?.lpLockStatus, lp?.lpProofStatus, lp?.lpProofApplicability)} />
+          <DataRow label="Unlock time" value={unlockTimeLabel(lp?.lpUnlockTime, lp?.lpLockStatus, lp?.lpProofStatus, lp?.lpProofApplicability)} />
           <DataRow label="Data mode" value={lpDataModeLabel(lp?.lpDataMode, lp?.lpDataConfidence)} />
           <DataRow label="Risk" value={lpRiskLabelValue} mono={false} />
           <a href={`/terminal/liquidity?address=${token.contract}&chain=${chain}`} style={{ ...buttonStyle, display: 'inline-flex', marginTop: '10px', textDecoration: 'none' }}>Open full LP Safety</a>
