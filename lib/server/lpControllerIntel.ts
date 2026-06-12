@@ -1,0 +1,256 @@
+export type LpControllerIntelStatus =
+  | 'wallet_controlled'
+  | 'locked'
+  | 'burned'
+  | 'protected'
+  | 'protocol_controlled'
+  | 'concentrated_liquidity'
+  | 'open_check'
+  | 'no_pool'
+
+export type LpControllerIntelProof = 'confirmed' | 'open_check' | 'not_applicable'
+
+export interface LpControllerIntelInput {
+  lpControl?: Record<string, unknown> | null
+  lpControlRead?: Record<string, unknown> | null
+  selectedPool?: Record<string, unknown> | null
+  lpExitRisk?: string | null
+  liquidityDepthRisk?: string | null
+  lpMigrationProof?: Record<string, unknown> | null
+  lpEvidenceGaps?: Array<{ label?: unknown }> | null
+  lpMeta?: Record<string, unknown> | null
+  lpDataMode?: string | null
+}
+
+export interface LpControllerIntel {
+  status: LpControllerIntelStatus
+  controller: string | null
+  controllerType: string
+  controllerLabel: string
+  controllerSharePercent: number | null
+  poolAddress: string | null
+  poolPair: string | null
+  poolLiquidityUsd: number | null
+  controlProof: LpControllerIntelProof
+  lockBurnProof: LpControllerIntelProof
+  exitRisk: string
+  liquidityDepth: string
+  migrationRisk: string
+  confidence: string
+  summary: string
+  signals: string[]
+  evidenceGaps: string[]
+  nextActions: string[]
+}
+
+function asString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null
+}
+
+function asNumber(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string' && value.trim()) {
+    const n = Number(value.replace(/[$,%]/g, ''))
+    return Number.isFinite(n) ? n : null
+  }
+  return null
+}
+
+function roundPercent(value: number | null): number | null {
+  return value == null ? null : Math.round(value * 100) / 100
+}
+
+function evidencePercent(evidence: unknown, keys: string[]): number | null {
+  if (!Array.isArray(evidence)) return null
+  for (const key of keys) {
+    const line = evidence.find((item) => typeof item === 'string' && item.toLowerCase().startsWith(`${key.toLowerCase()}=`))
+    if (typeof line === 'string') {
+      const pct = asNumber(line.split('=').slice(1).join('='))
+      if (pct != null) return pct
+    }
+  }
+  return null
+}
+
+function normalizeControllerType(value: unknown, status: string | null): string {
+  const raw = asString(value)?.toLowerCase() ?? null
+  if (raw === 'lockcontract') return 'lock_contract'
+  if (raw === 'wallet' || raw === 'contract' || raw === 'burn' || raw === 'unknown') return raw
+  if (status === 'team_controlled') return 'wallet'
+  if (status === 'locked') return 'lock_contract'
+  if (status === 'burned') return 'burn'
+  if (status === 'protocol' || status === 'protocol_managed') return 'protocol'
+  if (status === 'concentrated_liquidity') return 'concentrated_liquidity'
+  return 'unknown'
+}
+
+function controllerLabel(type: string): string {
+  switch (type) {
+    case 'wallet': return 'Wallet controller'
+    case 'lock_contract': return 'Lock contract'
+    case 'burn': return 'Burn address'
+    case 'protocol': return 'Protocol controller'
+    case 'concentrated_liquidity': return 'Concentrated-liquidity positions'
+    case 'contract': return 'Contract controller'
+    default: return 'Controller unverified'
+  }
+}
+
+function isNotApplicableModel(lpControl: Record<string, unknown>, selectedPool: Record<string, unknown>): boolean {
+  const status = asString(lpControl.status)
+  const model = asString(lpControl.displayLpModel) ?? asString(selectedPool.model)
+  const applicability = asString(lpControl.proofApplicability)
+  return status === 'protocol' || status === 'protocol_managed' || status === 'concentrated_liquidity'
+    || model === 'concentrated_liquidity' || model === 'protocol_or_gauge' || model === 'concentrated' || model === 'stableswap'
+    || applicability === 'not_applicable'
+}
+
+function normalizeExitRisk(value: string | null): string {
+  if (value === 'monitor') return 'watch'
+  if (value === 'medium') return 'monitor'
+  if (value === 'high' || value === 'watch' || value === 'low' || value === 'open_check') return value
+  return 'open_check'
+}
+
+function normalizeLiquidityDepth(value: string | null, liquidityUsd: number | null): string {
+  if (value === 'low') return 'deep'
+  if (value === 'medium') return 'moderate'
+  if (value === 'high') return 'thin'
+  if (liquidityUsd != null) {
+    if (liquidityUsd > 500_000) return 'deep'
+    if (liquidityUsd > 50_000) return 'moderate'
+    if (liquidityUsd > 0) return 'thin'
+  }
+  return 'open_check'
+}
+
+function normalizeMigrationRisk(value: string | null): string {
+  if (value === 'flagged') return 'high'
+  if (value === 'watch') return 'medium'
+  if (value === 'low') return 'low'
+  return 'open_check'
+}
+
+function buildStatus(lpControl: Record<string, unknown>, controllerTypeValue: string, notApplicable: boolean): LpControllerIntelStatus {
+  const status = asString(lpControl.status)
+  const model = asString(lpControl.displayLpModel)
+  if (status === 'burned') return 'burned'
+  if (status === 'locked') return 'locked'
+  if (status === 'concentrated_liquidity' || model === 'concentrated_liquidity') return 'concentrated_liquidity'
+  if (status === 'protocol' || status === 'protocol_managed' || model === 'protocol_or_gauge') return 'protocol_controlled'
+  if (status === 'no_pool') return 'no_pool'
+  if (controllerTypeValue === 'wallet' || status === 'team_controlled') return 'wallet_controlled'
+  if (notApplicable) return 'concentrated_liquidity'
+  return 'open_check'
+}
+
+function buildSummary(params: {
+  status: LpControllerIntelStatus
+  share: number | null
+  pair: string | null
+  lockBurnProof: LpControllerIntelProof
+  liquidityDepth: string
+}): string {
+  const poolLabel = params.pair ? `The selected ${params.pair} LP` : 'The selected LP'
+  if (params.status === 'burned') return `${poolLabel} shows burn evidence, so standard ERC-20 LP removal risk is reduced by confirmed burn proof. Liquidity depth is ${params.liquidityDepth}.`
+  if (params.status === 'locked' || params.status === 'protected') return `${poolLabel} shows active lock evidence, so standard ERC-20 LP removal risk is reduced while that lock remains valid. Liquidity depth is ${params.liquidityDepth}.`
+  if (params.status === 'protocol_controlled') return `${poolLabel} is protocol-controlled. Standard ERC-20 LP lock/burn proof is not applicable to this pool model, so liquidity control should be reviewed through the protocol-specific position or governance path.`
+  if (params.status === 'concentrated_liquidity') return `${poolLabel} uses concentrated liquidity. Standard ERC-20 LP lock/burn proof does not apply, so do not infer a V2-style lock or burn from this scan.`
+  if (params.status === 'wallet_controlled') {
+    const share = params.share != null ? ` with about ${params.share.toFixed(2)}% of the LP supply` : ''
+    const lockText = params.lockBurnProof === 'confirmed' ? 'lock/burn proof is confirmed' : 'lock/burn proof is not confirmed'
+    return `${poolLabel} is controlled by a dominant wallet${share}; ${lockText}. This is a liquidity-control signal and should be monitored without assuming intent.`
+  }
+  if (params.status === 'no_pool') return 'No active LP pool was selected, so LP controller intelligence is not applicable until liquidity appears.'
+  return `${poolLabel} has partial LP evidence only. Lock/burn proof and controller dominance remain open checks until stronger on-chain evidence is available.`
+}
+
+export function buildLpControllerIntel(input: LpControllerIntelInput): LpControllerIntel {
+  const lpControl = input.lpControl ?? {}
+  const selectedPool = input.selectedPool ?? {}
+  const lpMeta = input.lpMeta ?? {}
+  const lpMigrationProof = input.lpMigrationProof ?? {}
+  const statusRaw = asString(lpControl.status)
+  const notApplicable = isNotApplicableModel(lpControl, selectedPool)
+  const controllerTypeValue = normalizeControllerType(lpControl.lpControllerType, statusRaw)
+  const status = buildStatus(lpControl, controllerTypeValue, notApplicable)
+  const controller = asString(lpControl.lpController) && asString(lpControl.lpController) !== controllerTypeValue ? asString(lpControl.lpController) : null
+  const share = roundPercent(
+    evidencePercent(lpControl.evidence, ['top_share', 'owner_lp_share', 'locker_share', 'burn_share'])
+    ?? asNumber(lpMeta.teamPercent)
+    ?? asNumber(lpMeta.controllerSharePercent)
+  )
+  const poolAddress = asString(selectedPool.address) ?? asString(lpControl.primaryMarketPool) ?? asString(lpControl.verificationPool)
+  const poolPair = asString(selectedPool.pair)
+  const poolLiquidityUsd = asNumber(selectedPool.liquidityUsd)
+  const lockStatus = asString(lpControl.lockStatus)
+  const burnStatus = asString(lpControl.burnStatus)
+  const controlProof: LpControllerIntelProof = status === 'no_pool' ? 'open_check'
+    : status === 'open_check' ? 'open_check'
+    : 'confirmed'
+  const lockBurnProof: LpControllerIntelProof = notApplicable ? 'not_applicable'
+    : (lockStatus === 'locked' || burnStatus === 'burned' || status === 'locked' || status === 'burned') ? 'confirmed'
+    : 'open_check'
+  const exitRisk = normalizeExitRisk(asString(input.lpExitRisk))
+  const liquidityDepth = normalizeLiquidityDepth(asString(input.liquidityDepthRisk), poolLiquidityUsd)
+  const migrationRisk = normalizeMigrationRisk(asString(lpMigrationProof.status))
+  const confidence = asString(lpControl.confidence) ?? 'low'
+  const signals: string[] = []
+  if (poolAddress) signals.push('selected LP pool found')
+  if (controllerTypeValue === 'wallet') signals.push('controller wallet detected')
+  else if (controllerTypeValue === 'protocol') signals.push('protocol-controlled pool detected')
+  else if (status === 'concentrated_liquidity') signals.push('concentrated-liquidity pool detected')
+  if (share != null && share >= 50) signals.push('dominant LP share detected')
+  if (lockBurnProof === 'confirmed' && (lockStatus === 'locked' || status === 'locked')) signals.push('lock proof confirmed')
+  else if (lockBurnProof === 'not_applicable') signals.push('standard LP lock proof not applicable')
+  else signals.push('lock proof not confirmed')
+  if (lockBurnProof === 'confirmed' && (burnStatus === 'burned' || status === 'burned')) signals.push('burn proof confirmed')
+  else if (lockBurnProof === 'not_applicable') signals.push('standard LP burn proof not applicable')
+  else signals.push('burn proof not confirmed')
+  if (liquidityDepth === 'deep') signals.push('liquidity depth is deep')
+  else if (liquidityDepth === 'moderate') signals.push('liquidity depth is moderate')
+  else if (liquidityDepth === 'thin') signals.push('liquidity depth is thin')
+
+  const evidenceGaps: string[] = []
+  if (lockBurnProof === 'open_check') {
+    evidenceGaps.push('active LP lock not confirmed', 'LP burn proof not confirmed')
+  } else if (lockBurnProof === 'not_applicable') {
+    evidenceGaps.push('standard ERC-20 LP lock/burn proof not applicable to this pool model')
+  }
+  if (Array.isArray(input.lpEvidenceGaps)) {
+    for (const gap of input.lpEvidenceGaps) {
+      const label = asString(gap.label)
+      if (label && !evidenceGaps.includes(label)) evidenceGaps.push(label)
+    }
+  }
+
+  const nextActions = lockBurnProof === 'not_applicable'
+    ? ['review protocol-specific liquidity positions', 'monitor pool liquidity and position changes', 'rescan after liquidity changes']
+    : [
+      'monitor controller wallet for LP movement',
+      'verify lock/burn evidence on-chain',
+      'rescan after liquidity changes',
+      'treat LP as removable until lock/burn proof is confirmed',
+    ]
+
+  return {
+    status,
+    controller,
+    controllerType: controllerTypeValue,
+    controllerLabel: controllerLabel(controllerTypeValue),
+    controllerSharePercent: share,
+    poolAddress,
+    poolPair,
+    poolLiquidityUsd,
+    controlProof,
+    lockBurnProof,
+    exitRisk,
+    liquidityDepth,
+    migrationRisk,
+    confidence,
+    summary: buildSummary({ status, share, pair: poolPair, lockBurnProof, liquidityDepth }),
+    signals,
+    evidenceGaps,
+    nextActions,
+  }
+}
