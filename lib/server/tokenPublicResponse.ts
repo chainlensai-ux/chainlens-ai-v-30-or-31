@@ -1,4 +1,27 @@
+// Raw DEX/pool-source identifiers (e.g. "aerodrome-base", "uniswap-v3-base") are internal —
+// public text shows the neutral DEX brand name instead. Order matters: more specific
+// (versioned/network-suffixed) patterns must run before their generic catch-alls.
+const DEX_LABEL_REPLACEMENTS: Array<[RegExp, string]> = [
+  [/aerodrome[-_\s]*slipstream/gi, 'Aerodrome Slipstream'],
+  [/aerodrome[-_\s]*(?:v2|base)?/gi, 'Aerodrome'],
+  [/uniswap[-_\s]*v4(?:[-_\s]*base)?/gi, 'Uniswap V4'],
+  [/uniswap[-_\s]*v3(?:[-_\s]*base)?/gi, 'Uniswap V3'],
+  [/uniswap[-_\s]*v2(?:[-_\s]*base)?/gi, 'Uniswap V2'],
+  [/uniswap/gi, 'Uniswap'],
+  [/pancakeswap[-_\s]*v3(?:[-_\s]*base)?/gi, 'PancakeSwap V3'],
+  [/pancakeswap[-_\s]*v2(?:[-_\s]*base)?/gi, 'PancakeSwap V2'],
+  [/pancakeswap/gi, 'PancakeSwap'],
+  [/baseswap[-_\s]*v2/gi, 'BaseSwap'],
+  [/baseswap/gi, 'BaseSwap'],
+  [/sushiswap[-_\s]*v3/gi, 'SushiSwap V3'],
+  [/sushiswap[-_\s]*v2/gi, 'SushiSwap V2'],
+  [/sushiswap/gi, 'SushiSwap'],
+  [/alienbase/gi, 'AlienBase'],
+  [/swapbased/gi, 'SwapBased'],
+]
+
 const PROVIDER_NAME_REPLACEMENTS: Array<[RegExp, string]> = [
+  ...DEX_LABEL_REPLACEMENTS,
   [/geckoterminal/gi, 'Market data'],
   [/gecko\s*terminal/gi, 'Market data'],
   [/dexscreener/gi, 'Market data'],
@@ -81,8 +104,23 @@ export function sanitizePublicTokenResponse<T extends Record<string, any>>(paylo
     delete (sanitized as any).riskEngine.rugRiskLabel
   }
   // lp_data_mode raw value ('strict'|'minimal'|'fallback'|'insufficient') is internal —
-  // public callers get the normalized lpDataMode field instead.
+  // public callers get the normalized lpDataMode field instead. cortexLpRead.mode and any
+  // "(data mode: ...)" text it embeds must match the public mode, never say "fallback"
+  // when the public mode is evidence_based/resolved/indexed.
+  const lpDataModeRawValue = (sanitized as any).lpDataModeRaw as string | undefined
+  const lpDataModePublicValue = (sanitized as any).lpDataMode as string | undefined
   delete (sanitized as any).lpDataModeRaw
+  if ((sanitized as any).cortexLpRead && lpDataModeRawValue) {
+    const displayMode = lpDataModePublicValue === 'evidence_based' ? 'evidence-based' : lpDataModePublicValue ?? lpDataModeRawValue
+    const cortexLpRead = (sanitized as any).cortexLpRead
+    if (typeof cortexLpRead.mode === 'string') cortexLpRead.mode = displayMode
+    if (typeof cortexLpRead.riskSummary === 'string') {
+      cortexLpRead.riskSummary = cortexLpRead.riskSummary.replace(
+        new RegExp(`data mode:\\s*${lpDataModeRawValue}`, 'gi'),
+        `data mode: ${displayMode}`
+      )
+    }
+  }
   if ((sanitized as any).priceChart?.points?.length > 150) {
     ;(sanitized as any).priceChart = { ...(sanitized as any).priceChart, points: (sanitized as any).priceChart.points.slice(-150) }
   }

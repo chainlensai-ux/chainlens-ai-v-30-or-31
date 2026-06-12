@@ -65,6 +65,30 @@ const virtualLikePayload = {
   lpProofStatus: 'partial',
   lpDataMode: 'evidence_based',
   lpDataModeRaw: 'fallback',
+  lpModelProof: {
+    model: 'constant_product',
+    dexName: 'aerodrome-base',
+    standardLockApplies: true,
+  },
+  cortexLpRead: {
+    mode: 'fallback',
+    confidence: 'medium',
+    riskSummary: 'Virtuals Protocol (VIRTUAL) shows an overall "moderate" risk tier based on observed pool data. Liquidity depth is deep relative to this token. (data mode: fallback, confidence: medium). No lock or burn proof was confirmed for this LP.',
+    liquidityAnalysis: 'Observed liquidity is approximately $1,200,000 in the detected primary pool.',
+    poolStructureAnalysis: 'The primary pool runs on a constant-product model (DEX: aerodrome-base).',
+    migrationAnalysis: 'GeckoTerminal pools show a selected primary pool.',
+    evidenceGaps: [],
+    nextActions: ['Confirm LP lock and burn status directly on-chain before trusting any safety claims.'],
+  },
+  lpControllerIntel: {
+    status: 'wallet_controlled',
+    controllerSharePercent: 82.45,
+    controlProof: 'confirmed',
+    lockBurnProof: 'open_check',
+    exitRisk: 'watch',
+    liquidityDepth: 'deep',
+    migrationRisk: 'low',
+  },
   lpMeta: {
     primaryMarketDex: 'Aerodrome',
     lpControlState: 'team_controlled',
@@ -141,6 +165,29 @@ assert('sections.liquidity.lpLockBurnProofStatus is distinct from top-level lpPr
 assert('no field named bare "proofStatus" at lpMeta top level', !('proofStatus' in publicPayload.lpMeta))
 assert('no field named bare "proofStatus" at sections.liquidity.lpMeta', !('proofStatus' in publicPayload.sections.liquidity.lpMeta))
 
+// lpControllerIntel keeps passing for VIRTUAL-like output.
+assert('lpControllerIntel.status remains wallet_controlled', publicPayload.lpControllerIntel?.status === 'wallet_controlled', publicPayload.lpControllerIntel)
+assert('lpControllerIntel.controllerSharePercent remains 82.45', publicPayload.lpControllerIntel?.controllerSharePercent === 82.45, publicPayload.lpControllerIntel)
+assert('lpControllerIntel.controlProof remains confirmed', publicPayload.lpControllerIntel?.controlProof === 'confirmed', publicPayload.lpControllerIntel)
+assert('lpControllerIntel.lockBurnProof remains open_check', publicPayload.lpControllerIntel?.lockBurnProof === 'open_check', publicPayload.lpControllerIntel)
+assert('lpControllerIntel.exitRisk remains watch', publicPayload.lpControllerIntel?.exitRisk === 'watch', publicPayload.lpControllerIntel)
+assert('lpControllerIntel.liquidityDepth remains deep', publicPayload.lpControllerIntel?.liquidityDepth === 'deep', publicPayload.lpControllerIntel)
+assert('lpControllerIntel.migrationRisk remains low', publicPayload.lpControllerIntel?.migrationRisk === 'low', publicPayload.lpControllerIntel)
+
+// Public cortexLpRead does not say "fallback" — uses evidence-based wording or hides raw mode.
+assert('cortexLpRead.mode is not the raw "fallback" string', publicPayload.cortexLpRead?.mode !== 'fallback', publicPayload.cortexLpRead?.mode)
+assert('cortexLpRead.mode reads evidence-based', publicPayload.cortexLpRead?.mode === 'evidence-based', publicPayload.cortexLpRead?.mode)
+assert('cortexLpRead.riskSummary does not say "data mode: fallback"', !/data mode:\s*fallback/i.test(publicPayload.cortexLpRead?.riskSummary ?? ''), publicPayload.cortexLpRead?.riskSummary)
+assert('cortexLpRead.riskSummary says evidence-based data mode', /data mode:\s*evidence-based/i.test(publicPayload.cortexLpRead?.riskSummary ?? ''), publicPayload.cortexLpRead?.riskSummary)
+
+// Public LP text does not leak raw DEX IDs; lpModelProof.dexName is public-safe.
+assert('lpModelProof.dexName is normalized to Aerodrome', publicPayload.lpModelProof?.dexName === 'Aerodrome', publicPayload.lpModelProof)
+assert('cortexLpRead.poolStructureAnalysis does not contain raw DEX id', !/aerodrome-base/i.test(publicPayload.cortexLpRead?.poolStructureAnalysis ?? ''), publicPayload.cortexLpRead?.poolStructureAnalysis)
+assert('cortexLpRead.poolStructureAnalysis shows Aerodrome', /Aerodrome/.test(publicPayload.cortexLpRead?.poolStructureAnalysis ?? ''), publicPayload.cortexLpRead?.poolStructureAnalysis)
+assert('lpMeta.primaryMarketDex is Aerodrome (not raw id)', publicPayload.lpMeta.primaryMarketDex === 'Aerodrome', publicPayload.lpMeta.primaryMarketDex)
+const rawDexIds = ['aerodrome-base', 'aerodrome-slipstream', 'uniswap-v3-base', 'pancakeswap-v3-base']
+for (const rawId of rawDexIds) assert(`public response does not expose raw DEX id ${rawId}`, !serialized(publicPayload).includes(rawId), rawId)
+
 console.log('\nB. debug=true response')
 const debugPayload = sanitizePublicTokenResponse(JSON.parse(JSON.stringify(virtualLikePayload)), true)
 assert('debug keeps score debug', Boolean(debugPayload.cortexScoreDebug && debugPayload.riskEngine.cortexScoreDebug), debugPayload.cortexScoreDebug)
@@ -151,6 +198,10 @@ assert('debug keeps provider names for diagnostics', serialized(debugPayload).in
 assert('debug keeps riskEngine.rugRiskScore', debugPayload.riskEngine.rugRiskScore === 38)
 assert('debug keeps lpDataModeRaw', debugPayload.lpDataModeRaw === 'fallback')
 assert('debug keeps full priceChart.points', debugPayload.priceChart.points.length === 400)
+assert('debug keeps raw cortexLpRead.mode', debugPayload.cortexLpRead?.mode === 'fallback', debugPayload.cortexLpRead?.mode)
+assert('debug keeps raw "data mode: fallback" text', /data mode:\s*fallback/i.test(debugPayload.cortexLpRead?.riskSummary ?? ''), debugPayload.cortexLpRead?.riskSummary)
+assert('debug keeps raw lpModelProof.dexName', debugPayload.lpModelProof?.dexName === 'aerodrome-base', debugPayload.lpModelProof)
+assert('debug keeps raw DEX id in poolStructureAnalysis', /aerodrome-base/i.test(debugPayload.cortexLpRead?.poolStructureAnalysis ?? ''), debugPayload.cortexLpRead?.poolStructureAnalysis)
 
 console.log('\nC. concentrated/protocol pool regression')
 const protocolPayload = sanitizePublicTokenResponse({
