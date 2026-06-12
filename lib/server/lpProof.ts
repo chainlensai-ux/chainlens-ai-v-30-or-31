@@ -266,6 +266,21 @@ export function deriveDataModeAndConfidence(
   return { lp_data_mode: "fallback", lp_data_confidence: "low" };
 }
 
+export type PublicLpDataMode = "resolved" | "evidence_based" | "indexed";
+
+// Maps the internal lp_data_mode (which calls anything short of a confirmed
+// lock/burn "fallback", even when a pool and LP-holder evidence were resolved)
+// to a public-facing mode that never implies "no usable data" when evidence exists.
+export function publicLpDataMode(
+  mode: LpDataMode,
+  hasUsablePoolData: boolean,
+  lpOwnershipVerified: boolean
+): PublicLpDataMode {
+  if (mode === "strict") return "resolved";
+  if (mode === "fallback" && hasUsablePoolData && lpOwnershipVerified) return "evidence_based";
+  return "indexed";
+}
+
 export interface CortexLpRead {
   mode: string;
   confidence: string;

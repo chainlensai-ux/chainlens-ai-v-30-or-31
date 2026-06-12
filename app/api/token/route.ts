@@ -10,6 +10,7 @@ import {
   resolveLpProof,
   buildEvidenceGaps as buildLpEvidenceGaps,
   deriveDataModeAndConfidence as deriveLpDataModeAndConfidence,
+  publicLpDataMode,
   buildCortexLpRead as buildSharedCortexLpRead,
   classifyPoolModel,
   classifyPoolByRpc,
@@ -22,6 +23,7 @@ import {
   type LpPoolCandidate,
 } from '@/lib/server/lpIntelligence'
 import { calculateCortexScoreV2 } from '@/lib/token/scoring'
+import { sanitizePublicTokenResponse } from '@/lib/server/publicTokenResponse'
 
 // Local LP model/migration proof helper — pure function derived from GeckoTerminal pool data,
 // delegating to the shared classifyPoolModel() so Token Scanner and Liquidity Safety agree
@@ -3641,7 +3643,7 @@ export async function POST(req: Request) {
       primaryMarketPoolAddress: lpPoolAddress,
       primaryMarketPoolId: primaryMarketPoolId ?? lpPool?.poolId ?? null,
       primaryMarketPoolAddressType: primaryMarketPoolAddressType ?? lpPool?.poolAddressType ?? "unknown",
-      primaryMarketDex: primaryDexName ?? lpPool?.dexId ?? lpPool?.dexName ?? null,
+      primaryMarketDex: primaryDexName ?? normalizeDexLabel(lpPool?.dexId ?? lpPool?.dexName ?? null),
       primaryMarketType: lpPoolType,
       primaryMarketLiquidityUsd: lpPool?.liquidityUsd ?? null,
       lpVerificationPoolSelected: lpVerifyPoolPresent,
@@ -5463,14 +5465,17 @@ export async function POST(req: Request) {
       poolAgeMs: _poolAgeMsForGaps,
     })
 
+    const _hasUsablePoolData = !noActivePools && (liquidityUsd != null && liquidityUsd > 0)
     const { lp_data_mode: lpDataMode, lp_data_confidence: _lpDataConfRaw } = deriveLpDataModeAndConfidence(
-      !noActivePools && (liquidityUsd != null && liquidityUsd > 0),
+      _hasUsablePoolData,
       lpLockStatus
     )
     // Upgrade confidence from 'low' to 'medium' when LP control status is confirmed (not unknown/no_pool).
     // Pool/control evidence can be high-confidence even when lock/burn proof is unverified.
     const _lpControlKnown = lpControl.status !== 'no_pool' && lpControl.status !== 'error' && lpControl.status !== 'insufficient_data'
     const lpDataConfidence = (_lpDataConfRaw === 'low' && _lpControlKnown) ? 'medium' : _lpDataConfRaw
+    // Public-facing lp_data_mode: never label resolved pool + LP-holder evidence as "fallback".
+    const lpDataModePublic = publicLpDataMode(lpDataMode, _hasUsablePoolData, lpOwnershipVerified)
 
     const lpModelForCortex = lpModelProof
     const migrationSummaryForCortex = lpMigrationProof.reason + (noActivePools ? ' No active pools were detected for this token.' : '')
@@ -6481,7 +6486,8 @@ export async function POST(req: Request) {
       lpController,
       lpControllerType,
       lpEvidenceGaps,
-      lpDataMode,
+      lpDataMode: lpDataModePublic,
+      lpDataModeRaw: lpDataMode,
       lpDataConfidence,
       cortexLpRead,
       lpModelProof,
@@ -6499,7 +6505,7 @@ export async function POST(req: Request) {
         primaryMarketType: lpDiagnostics.primaryMarketType,
         primaryMarketDex: lpDiagnostics.primaryMarketDex,
         lpVerificationPoolSelected: lpDiagnostics.lpVerificationPoolSelected,
-        proofStatus: lpDiagnostics.lpState ?? null,
+        lpControlState: lpDiagnostics.lpState ?? null,
         selectedPrimaryPoolStrategy: lpDiagnostics.selectedPrimaryPoolStrategy,
         // Base LP-locker registry coverage (problem 5): the registry is intentionally
         // empty for Base until verified locker addresses are confirmed on-chain, so
@@ -6576,12 +6582,12 @@ export async function POST(req: Request) {
           primaryPair: mainPool?.attributes?.name ?? null,
           liquidityDepth: liquidityUsd,
           pool_age: pairCreatedAt ?? _dexFb?.pairCreatedAt ?? null,
-          pool_protocol: primaryDexName ?? lpPool?.dexName ?? null,
+          pool_protocol: primaryDexName ?? normalizeDexLabel(lpPool?.dexName ?? null),
           pool_fragmentation: matchingPools.length > 2 ? 'fragmented' : matchingPools.length === 2 ? 'split' : matchingPools.length === 1 ? 'single' : 'none',
           lpSafetyAttempted,
           lpSafetyUsable,
           lpOwnershipVerified,
-          lpProofStatus,
+          lpLockBurnProofStatus: lpProofStatus,
           lpOwnershipStatus: (lpState === 'protocol' || lpState === 'concentrated_liquidity') ? 'not_applicable' : (lpOwnershipVerified ? 'verified' : 'inferred'),
           lpControl: {
             ...lpControl,
@@ -6599,7 +6605,7 @@ export async function POST(req: Request) {
             primaryMarketType: lpDiagnostics.primaryMarketType,
             primaryMarketDex: lpDiagnostics.primaryMarketDex,
             lpVerificationPoolSelected: lpDiagnostics.lpVerificationPoolSelected,
-            proofStatus: lpDiagnostics.lpState ?? null,
+            lpControlState: lpDiagnostics.lpState ?? null,
             selectedPrimaryPoolStrategy: lpDiagnostics.selectedPrimaryPoolStrategy,
           },
         },
@@ -7117,7 +7123,7 @@ export async function POST(req: Request) {
     } else {
       delete (responsePayload as any)._diagnostics
     }
-    return NextResponse.json(responsePayload)
+    return NextResponse.json(sanitizePublicTokenResponse(responsePayload, debugMode))
   } catch (err) {
     console.error("Fatal backend error:", err);
     const _failureReason = err instanceof Error ? err.message : 'unknown_error'

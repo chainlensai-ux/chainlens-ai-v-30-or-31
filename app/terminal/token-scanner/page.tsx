@@ -158,7 +158,8 @@ type ScanResult = {
   lpExitRiskReason?: string
   lpEvidenceSummary?: string
   lpEvidenceGaps?: Array<{ id: string; label: string; explanation: string; nextAction: string }>
-  lpDataMode?: 'strict' | 'minimal' | 'fallback' | 'insufficient'
+  lpDataMode?: 'resolved' | 'evidence_based' | 'indexed' | 'strict' | 'minimal' | 'fallback' | 'insufficient'
+  lpDataModeRaw?: 'strict' | 'minimal' | 'fallback' | 'insufficient'
   lpDataConfidence?: 'high' | 'medium' | 'low' | 'unverified'
   lpModelProof?: {
     model?: 'constant_product' | 'concentrated' | 'stableswap' | 'unknown'
@@ -324,7 +325,7 @@ type ScanResult = {
     primaryMarketType?: string | null
     primaryMarketDex?: string | null
     lpVerificationPoolSelected?: boolean | null
-    proofStatus?: string | null
+    lpControlState?: string | null
   } | null
   devIntel?: DevWalletIntel | null
   security?: {
@@ -2170,7 +2171,7 @@ function deriveLpMode(result: ScanResult): LpMode {
   // protocol: Base + no V2 pools + any concentrated-liquidity signal
   if (chain === 'base' && (v2Count === 0 || v2Count == null)) {
     const isConcentrated = (
-      meta?.proofStatus === 'concentrated_liquidity' ||
+      meta?.lpControlState === 'concentrated_liquidity' ||
       lpStatus === 'concentrated_liquidity' ||
       meta?.lpProofUnavailableReason === 'no_v2_lp_token_pool_found' ||
       meta?.primaryMarketType === 'v3' ||
@@ -3258,6 +3259,7 @@ export default function TerminalTokenScanner() {
           lpEvidenceSummary: json.lpEvidenceSummary ?? undefined,
           lpEvidenceGaps: json.lpEvidenceGaps ?? undefined,
           lpDataMode: json.lpDataMode ?? undefined,
+          lpDataModeRaw: json.lpDataModeRaw ?? undefined,
           lpDataConfidence: json.lpDataConfidence ?? undefined,
           lpModelProof: json.lpModelProof ?? null,
           lpMigrationProof: json.lpMigrationProof ?? null,
