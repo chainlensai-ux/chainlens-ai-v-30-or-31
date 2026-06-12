@@ -974,7 +974,15 @@ export default function WalletScannerPage() {
   const [result, setResult]             = useState<WalletResult | null>(null)
   const [showAllHoldings, setShowAllHoldings] = useState(false)
   const [deepActivity, setDeepActivity] = useState(false)
+  const [addressCopied, setAddressCopied] = useState(false)
   const clarkLoading = loading
+
+  function copyAddress(address: string) {
+    navigator.clipboard?.writeText(address).then(() => {
+      setAddressCopied(true)
+      setTimeout(() => setAddressCopied(false), 1500)
+    }).catch(() => {})
+  }
 
   async function handleScan() {
     const q = input.trim()
@@ -1555,6 +1563,21 @@ export default function WalletScannerPage() {
                     }}>
                       {shortAddr(result.address)}
                     </span>
+                    <button
+                      onClick={() => copyAddress(result.address)}
+                      title="Copy wallet address"
+                      style={{
+                        display: 'inline-flex', alignItems: 'center', gap: '4px',
+                        border: '1px solid rgba(255,255,255,0.10)',
+                        background: addressCopied ? 'rgba(45,212,191,0.12)' : 'rgba(255,255,255,0.03)',
+                        color: addressCopied ? '#5eead4' : 'rgba(255,255,255,0.45)',
+                        borderRadius: '6px', padding: '3px 8px', cursor: 'pointer',
+                        fontSize: '9px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+                        letterSpacing: '0.08em', textTransform: 'uppercase',
+                      }}
+                    >
+                      {addressCopied ? 'Copied' : 'Copy'}
+                    </button>
                     {result.holdings.length > 0 && (
                       <span style={{ fontSize: '10px', color: 'rgba(45,212,191,0.55)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', letterSpacing: '0.10em' }}>
                         {result.holdings.length} token{result.holdings.length !== 1 ? 's' : ''} indexed

@@ -222,14 +222,14 @@ function proofLabel(status: string | null | undefined, applicability: string | n
 }
 
 function lockAmountLabel(amount: number | null | undefined, lockStatus: string | null | undefined, proofStatus: string | null | undefined, applicability?: string | null): string {
-  if (applicability === 'not_applicable') return 'Not applicable'
+  if (applicability === 'not_applicable') return 'Not applicable to this pool model'
   if (amount != null && Number.isFinite(amount)) return String(amount)
   if (!hasVerifiedLock(lockStatus) && (lockStatus || proofStatus === 'missing' || proofStatus === 'partial')) return 'No verified lock'
   return 'Open Check'
 }
 
 function unlockTimeLabel(value: string | number | null | undefined, lockStatus?: string | null, proofStatus?: string | null, applicability?: string | null): string {
-  if (applicability === 'not_applicable') return 'Not applicable'
+  if (applicability === 'not_applicable') return 'Not applicable to this pool model'
   if (!hasVerifiedLock(lockStatus) && (lockStatus || proofStatus === 'missing' || proofStatus === 'partial')) return 'Not applicable until lock is verified'
   if (value == null) return 'Open Check'
   const millis = typeof value === 'number' ? (value > 10_000_000_000 ? value : value * 1000) : Date.parse(value)
@@ -302,6 +302,19 @@ function creatorTopHolderLabel(inTopHolders: boolean | null | undefined, creator
 
 function lpDataModeLabel(mode: string | null | undefined, confidence: string | null | undefined): string {
   return `${mode ? publicStatus(mode) : 'Fallback'} · ${confidence ?? 'limited'}`
+}
+
+const DISPLAY_LP_MODEL_LABELS: Record<string, string> = {
+  erc20_lp_token: 'Standard ERC-20 LP token',
+  concentrated_liquidity: 'Concentrated liquidity position',
+  protocol_or_gauge: 'Protocol / gauge-controlled liquidity',
+  open_check: 'Open Check',
+  no_pool: 'No pool detected',
+}
+
+function displayLpModelLabel(model: string | null | undefined): string {
+  if (!model) return 'Open Check'
+  return DISPLAY_LP_MODEL_LABELS[model] ?? publicStatus(model)
 }
 
 function Section({ title, state, children }: { title: string; state?: ApiState<unknown>; children: React.ReactNode }) {
@@ -432,6 +445,43 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
     token?.flags?.length ? `Risk context: ${token.flags.join(', ')}.` : 'Risk context: no radar flags on this card.',
   ]
 
+  const evidenceGaps: string[] = []
+  if (lp?.lpProofApplicability === 'applicable' && (lp?.lpProofStatus === 'missing' || lp?.lpProofStatus === 'partial')) {
+    evidenceGaps.push('No verified lock/burn proof found for the primary LP position.')
+  }
+  if (lp?.lpProofApplicability === 'unknown') {
+    evidenceGaps.push('LP proof model could not be determined from current evidence.')
+  }
+  if (secondaryLpSignal?.status === 'team_controlled') {
+    evidenceGaps.push('Secondary LP exposure detected — a secondary pool shows wallet-controlled liquidity.')
+  }
+  if (holderStatusLabel.startsWith('Open Check') || holderStatusLabel.startsWith('Limited')) {
+    evidenceGaps.push('Holder distribution evidence is limited or unverified.')
+  }
+  if (!deployer?.deployerAddress) {
+    evidenceGaps.push('Deployer identity is Open Check.')
+  }
+  if (security?.openChecks?.length) {
+    for (const item of security.openChecks) evidenceGaps.push(typeof item === 'string' ? item : String(item))
+  }
+  if ((market?.marketConfidence ?? '').toLowerCase().includes('open')) {
+    evidenceGaps.push('Market evidence confidence is Open Check.')
+  }
+
+  const watchNext: string[] = []
+  if (lpControlStatus === 'team_controlled' && !hasVerifiedLock(lp?.lpLockStatus)) {
+    watchNext.push('Watch for LP movement from the controlling wallet — no lock/burn proof currently protects this position.')
+  }
+  if (concentrationRisk === 'High' || concentrationRisk === 'Extreme') {
+    watchNext.push('Watch top-holder wallets for large transfers given current concentration.')
+  }
+  if (token?.flags?.length) {
+    watchNext.push(`Monitor radar flags: ${token.flags.join(', ')}.`)
+  }
+  if (!watchNext.length) {
+    watchNext.push('No specific watch items from current evidence — continue monitoring liquidity and holder activity.')
+  }
+
   async function copyText(value: string) {
     await navigator.clipboard?.writeText(value)
   }
@@ -448,6 +498,8 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
               <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
                 <h2 style={{ margin: 0, fontSize: '20px', color: '#f8fafc' }}>{token.name} <span style={{ color: '#64748b' }}>({token.symbol})</span></h2>
                 <span style={{ padding: '3px 8px', borderRadius: '999px', background: 'rgba(45,212,191,0.10)', border: '1px solid rgba(45,212,191,0.24)', color: '#99f6e4', fontSize: '10px', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{chain === 'base' ? 'Base' : 'ETH'}</span>
+                <span style={{ padding: '3px 8px', borderRadius: '999px', background: 'rgba(168,85,247,0.10)', border: '1px solid rgba(168,85,247,0.24)', color: '#e9d5ff', fontSize: '10px', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Radar {token.radarScore}/100</span>
+                <span style={{ padding: '3px 8px', borderRadius: '999px', background: 'rgba(148,163,184,0.10)', border: '1px solid rgba(148,163,184,0.22)', color: '#cbd5e1', fontSize: '10px', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{token.status}</span>
               </div>
               <p style={{ margin: '6px 0 0', color: '#64748b', fontSize: '11px', fontFamily: 'var(--font-plex-mono)' }}>{shortAddr(token.contract)}</p>
             </div>
@@ -459,14 +511,16 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
           </div>
         </header>
 
-        <Section title="Quick Stats">
+        <Section title="Market Snapshot">
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '0 12px' }}>
             <DataRow label="Liquidity" value={fmtUSD(market?.liquidityUsd ?? token.liquidityUsd)} />
             <DataRow label="Volume 24h" value={fmtUSD(market?.volume24hUsd ?? token.volume24h)} />
+            <DataRow label="Market cap" value={fmtUSD(market?.marketCapUsd ?? null)} />
             <DataRow label="FDV" value={fmtUSD(market?.fdvUsd ?? token.fdvUsd ?? null)} />
             <DataRow label="Score" value={`${token.radarScore}/100`} />
             <DataRow label="Momentum" value={token.momentum} />
             <DataRow label="Age" value={fmtAge(token.ageMinutes)} />
+            <DataRow label="Market evidence" value={market?.marketConfidence ? publicStatus(market.marketConfidence) : 'Open Check'} />
           </div>
           <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginTop: '10px' }}>{(token.flags.length ? token.flags : ['No radar tags']).map((flag) => <span key={flag} style={tagStyle}>{flag}</span>)}</div>
         </Section>
@@ -483,19 +537,52 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
           </div>
         </Section>
 
-        <Section title="LP Safety Snapshot" state={enrichmentState}>
-          <DataRow label="Lock status" value={lpLockStatusLabel} />
-          <DataRow label="LP proof" value={lpProofLabel} />
+        <Section title="Liquidity / LP Model" state={enrichmentState}>
+          <DataRow label="Pool model" value={displayLpModelLabel(lp?.displayLpModel)} />
+
+          {lp?.lpProofApplicability === 'not_applicable' ? (
+            <div style={{ margin: '4px 0 10px', padding: '10px', borderRadius: '10px', background: 'rgba(168,85,247,0.06)', border: '1px solid rgba(168,85,247,0.18)' }}>
+              <p style={{ margin: 0, color: '#e9d5ff', fontSize: '11px', fontWeight: 700, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Model-specific LP proof</p>
+              <p style={{ margin: '6px 0 0', color: '#cbd5e1', fontSize: '11px', lineHeight: 1.5 }}>
+                Standard V2 LP lock/burn proof does not apply to this pool model.
+              </p>
+              <p style={{ margin: '4px 0 0', color: '#94a3b8', fontSize: '11px', lineHeight: 1.5 }}>
+                CORTEX evaluates this liquidity using pool model, depth, age, ownership, and secondary LP exposure.
+              </p>
+            </div>
+          ) : (
+            <DataRow label="LP proof" value={lpProofLabel} />
+          )}
+
+          {lp?.lpProofApplicability === 'applicable' && (lp?.lpProofStatus === 'missing' || lp?.lpProofStatus === 'partial') ? (
+            <div style={{ margin: '4px 0 10px', padding: '10px', borderRadius: '10px', background: 'rgba(251,191,36,0.06)', border: '1px solid rgba(251,191,36,0.20)' }}>
+              <p style={{ margin: 0, color: '#fde68a', fontSize: '11px', fontWeight: 700, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>No verified lock/burn proof found</p>
+              <p style={{ margin: '6px 0 0', color: '#cbd5e1', fontSize: '11px', lineHeight: 1.5 }}>{lpRiskLabelValue}</p>
+            </div>
+          ) : null}
+
           <DataRow label="Controller" value={lpControllerLabel} />
           <DataRow label="Control" value={`${lpControlStatus ? publicStatus(lpControlStatus) : 'Open Check'} · ${lp?.lpControl?.confidence ?? lp?.lpDataConfidence ?? 'open-check'}`} />
+          <DataRow label="Lock status" value={lpLockStatusLabel} />
           <DataRow label="Lock amount" value={lockAmountLabel(lp?.lpLockAmount, lp?.lpLockStatus, lp?.lpProofStatus, lp?.lpProofApplicability)} />
           <DataRow label="Unlock time" value={unlockTimeLabel(lp?.lpUnlockTime, lp?.lpLockStatus, lp?.lpProofStatus, lp?.lpProofApplicability)} />
           <DataRow label="Data mode" value={lpDataModeLabel(lp?.lpDataMode, lp?.lpDataConfidence)} />
-          <DataRow label="Risk" value={lpRiskLabelValue} mono={false} />
+          <DataRow label="Liquidity depth risk" value={lp?.liquidityDepthRisk ? publicStatus(lp.liquidityDepthRisk) : 'Open Check'} />
+          <DataRow label="Exit risk" value={lpRiskLabelValue} mono={false} />
+
+          {secondaryLpSignal?.status === 'team_controlled' ? (
+            <div style={{ margin: '10px 0 0', padding: '10px', borderRadius: '10px', background: 'rgba(248,113,113,0.06)', border: '1px solid rgba(248,113,113,0.20)' }}>
+              <p style={{ margin: 0, color: '#fca5a5', fontSize: '11px', fontWeight: 700, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Secondary LP exposure detected</p>
+              <p style={{ margin: '6px 0 0', color: '#cbd5e1', fontSize: '11px', lineHeight: 1.5 }}>
+                Primary liquidity for this token is concentrated or protocol-controlled, but a secondary ERC-20 LP pool{secondaryLpSignal.poolDex ? ` (${secondaryLpSignal.poolDex})` : ''} shows wallet-controlled exposure and may carry separate exit risk.
+              </p>
+            </div>
+          ) : null}
+
           <a href={`/terminal/liquidity?address=${token.contract}&chain=${chain}`} style={{ ...buttonStyle, display: 'inline-flex', marginTop: '10px', textDecoration: 'none' }}>Open full LP Safety</a>
         </Section>
 
-        <Section title="Deployer Intelligence" state={enrichmentState}>
+        <Section title="Deployer / Ownership" state={enrichmentState}>
           <DataRow label="Deployer" value={shortAddr(deployer?.deployerAddress)} />
           <DataRow label="Status" value={`${deployer?.deployerStatus ? publicStatus(deployer.deployerStatus) : 'Open Check'} · ${deployer?.deployerConfidence ?? 'limited'}`} />
           <DataRow label="Method" value={deployerMethod} />
@@ -522,9 +609,22 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
           <MiniChart points={chartPoints} />
         </Section>
 
-        <Section title="CORTEX Radar Read">
+        <Section title="CORTEX Read">
           <ul style={{ margin: 0, paddingLeft: '18px', color: '#cbd5e1', fontSize: '12px', lineHeight: 1.55 }}>
             {cortexRead.map((line) => <li key={line}>{line}</li>)}
+          </ul>
+        </Section>
+
+        <Section title="Evidence Gaps / Watch Next">
+          <p style={{ margin: '0 0 6px', color: '#94a3b8', fontSize: '10px', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Open checks</p>
+          <ul style={{ margin: '0 0 12px', paddingLeft: '18px', color: '#cbd5e1', fontSize: '12px', lineHeight: 1.55 }}>
+            {evidenceGaps.length
+              ? evidenceGaps.map((line) => <li key={line}>{line}</li>)
+              : <li>No open evidence gaps from current checks.</li>}
+          </ul>
+          <p style={{ margin: '0 0 6px', color: '#94a3b8', fontSize: '10px', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Watch next</p>
+          <ul style={{ margin: 0, paddingLeft: '18px', color: '#cbd5e1', fontSize: '12px', lineHeight: 1.55 }}>
+            {watchNext.map((line) => <li key={line}>{line}</li>)}
           </ul>
         </Section>
       </aside>
