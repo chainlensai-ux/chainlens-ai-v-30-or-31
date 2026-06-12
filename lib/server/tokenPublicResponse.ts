@@ -151,6 +151,24 @@ export function sanitizePublicTokenResponse<T extends Record<string, any>>(paylo
   if ((sanitized as any).projectSocials) {
     delete (sanitized as any).projectSocials.sourceTrail
   }
+  // When LP lock/burn proof is an open check, public lpProofStatus/lpEvidenceSummary/
+  // sections.liquidity.lpLockBurnProofStatus should say "open_check" rather than the
+  // internal "missing"/"partial" wording, which reads as more alarming than warranted.
+  if ((sanitized as any).lpLockBurnIntel?.lockBurnProof === 'open_check') {
+    if ((sanitized as any).lpProofStatus === 'missing' || (sanitized as any).lpProofStatus === 'partial') {
+      ;(sanitized as any).lpProofStatus = 'open_check'
+    }
+    if (typeof (sanitized as any).lpEvidenceSummary === 'string') {
+      ;(sanitized as any).lpEvidenceSummary = (sanitized as any).lpEvidenceSummary.replace(
+        /Proof status:\s*(missing|partial)/i,
+        'Proof status: open_check'
+      )
+    }
+    const lpLockBurnProofStatus = (sanitized as any).sections?.liquidity?.lpLockBurnProofStatus
+    if (lpLockBurnProofStatus === 'missing' || lpLockBurnProofStatus === 'partial') {
+      ;(sanitized as any).sections.liquidity.lpLockBurnProofStatus = 'open_check'
+    }
+  }
   rewriteLegacyRiskSummaryValues(sanitized, sanitized as Record<string, any>)
   return sanitized
 }

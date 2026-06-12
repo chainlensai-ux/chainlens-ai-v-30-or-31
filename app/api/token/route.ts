@@ -7,6 +7,7 @@ import { sanitizePublicTokenResponse } from "@/lib/server/tokenPublicResponse";
 import { buildLpControllerIntel } from "@/lib/server/lpControllerIntel";
 import { buildLpMovementWatch } from "@/lib/server/lpMovementWatch";
 import { buildLpLockBurnIntel, LP_LOCK_BURN_REGISTRY } from "@/lib/server/lpLockBurnIntel";
+import { buildLpUnlockTimeline } from "@/lib/server/lpUnlockTimeline";
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { type CanonicalStatus, toCanonical } from '@/lib/canonicalStatus'
 import { buildClusterMap } from '@/lib/clusterMap'
@@ -5596,6 +5597,10 @@ export async function POST(req: Request) {
         lpControlState: lpDiagnostics.lpState ?? null,
       },
     })
+    const lpUnlockTimeline = buildLpUnlockTimeline({
+      chain,
+      lpLockBurnIntel,
+    })
 
 
     // ── Data Fill Score: 0-100. Inferred values count at half weight ──
@@ -6537,6 +6542,7 @@ export async function POST(req: Request) {
       lpControllerIntel,
       lpMovementWatch,
       lpLockBurnIntel,
+      lpUnlockTimeline,
       lpMeta: {
         v2PoolCandidatesCount: lpDiagnostics.v2PoolCandidatesCount,
         protocolPoolCandidatesCount: lpDiagnostics.protocolPoolCandidatesCount,

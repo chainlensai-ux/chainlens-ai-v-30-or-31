@@ -7,6 +7,7 @@ import { publicLpDataMode } from '../lib/server/lpProof.ts'
 import { buildLpControllerIntel } from '../lib/server/lpControllerIntel.ts'
 import { buildLpMovementWatch } from '../lib/server/lpMovementWatch.ts'
 import { buildLpLockBurnIntel, LP_LOCK_BURN_REGISTRY } from '../lib/server/lpLockBurnIntel.ts'
+import { buildLpUnlockTimeline } from '../lib/server/lpUnlockTimeline.ts'
 
 let passed = 0
 let failed = 0
@@ -68,6 +69,7 @@ const virtualLikePayload = {
   liquidityDepthRisk: 'low',
   lpProofApplicability: 'applicable',
   lpProofStatus: 'partial',
+  lpEvidenceSummary: 'Pool model: constant_product | Liquidity: $1,234,567 | Proof applicability: applicable | Proof status: partial | Migration: low',
   lpDataMode: 'evidence_based',
   lpDataModeRaw: 'fallback',
   lpModelProof: {
@@ -170,6 +172,10 @@ virtualLikePayload.lpLockBurnIntel = buildLpLockBurnIntel({
   selectedPool: virtualLikePayload.selectedPool,
   lpMeta: virtualLikePayload.lpMeta,
 })
+virtualLikePayload.lpUnlockTimeline = buildLpUnlockTimeline({
+  chain: virtualLikePayload.chain,
+  lpLockBurnIntel: virtualLikePayload.lpLockBurnIntel,
+})
 
 console.log('\nA. VIRTUAL-like public response')
 const publicPayload = sanitizePublicTokenResponse(JSON.parse(JSON.stringify(virtualLikePayload)), false)
@@ -209,8 +215,8 @@ assert('lpControllerIntel summary does not call wallet control malicious', !/mal
 
 // LP public status fields are internally consistent / non-conflicting.
 assert('lpMeta.lpControlState reflects LP control state', publicPayload.lpMeta.lpControlState === 'team_controlled')
-assert('sections.liquidity.lpLockBurnProofStatus is distinct from top-level lpProofStatus',
-  publicPayload.sections.liquidity.lpLockBurnProofStatus === 'partial' && publicPayload.lpProofStatus === 'partial')
+assert('sections.liquidity.lpLockBurnProofStatus matches top-level lpProofStatus (normalized to open_check)',
+  publicPayload.sections.liquidity.lpLockBurnProofStatus === 'open_check' && publicPayload.lpProofStatus === 'open_check')
 assert('no field named bare "proofStatus" at lpMeta top level', !('proofStatus' in publicPayload.lpMeta))
 assert('no field named bare "proofStatus" at sections.liquidity.lpMeta', !('proofStatus' in publicPayload.sections.liquidity.lpMeta))
 
@@ -257,6 +263,20 @@ assert('lpMeta.primaryMarketDex is Aerodrome (not raw id)', publicPayload.lpMeta
 const rawDexIds = ['aerodrome-base', 'aerodrome-slipstream', 'uniswap-v3-base', 'pancakeswap-v3-base']
 for (const rawId of rawDexIds) assert(`public response does not expose raw DEX id ${rawId}`, !serialized(publicPayload).includes(rawId), rawId)
 assert('public lpMovementWatch does not expose provider names/raw DEX IDs', providerNames.every((name) => !serialized(publicPayload.lpMovementWatch).includes(name)) && rawDexIds.every((rawId) => !serialized(publicPayload.lpMovementWatch).includes(rawId)), publicPayload.lpMovementWatch)
+
+// VIRTUAL lpUnlockTimeline: lock/burn proof is open_check, so no fake unlock date/risk.
+assert('VIRTUAL includes lpUnlockTimeline', Boolean(publicPayload.lpUnlockTimeline), publicPayload.lpUnlockTimeline)
+assert('VIRTUAL lpUnlockTimeline.status is open_check', publicPayload.lpUnlockTimeline?.status === 'open_check', publicPayload.lpUnlockTimeline)
+assert('VIRTUAL lpUnlockTimeline.unlockRisk is unknown', publicPayload.lpUnlockTimeline?.unlockRisk === 'unknown', publicPayload.lpUnlockTimeline)
+assert('VIRTUAL lpUnlockTimeline.unlockTime is null (no fake date)', publicPayload.lpUnlockTimeline?.unlockTime === null, publicPayload.lpUnlockTimeline)
+assert('VIRTUAL lpUnlockTimeline.unlockTimeStatus is unknown', publicPayload.lpUnlockTimeline?.unlockTimeStatus === 'unknown', publicPayload.lpUnlockTimeline)
+assert('VIRTUAL lpUnlockTimeline.unlockCountdownSeconds is null', publicPayload.lpUnlockTimeline?.unlockCountdownSeconds === null, publicPayload.lpUnlockTimeline)
+assert('VIRTUAL lpUnlockTimeline summary says no confirmed unlock time available', /no confirmed LP unlock time is available/i.test(publicPayload.lpUnlockTimeline?.summary ?? ''), publicPayload.lpUnlockTimeline?.summary)
+
+// Normalize old LP proof wording to open_check when lpLockBurnIntel.lockBurnProof is open_check.
+assert('VIRTUAL lpProofStatus is normalized to open_check', publicPayload.lpProofStatus === 'open_check', publicPayload.lpProofStatus)
+assert('VIRTUAL lpEvidenceSummary says "Proof status: open_check"', /Proof status:\s*open_check/i.test(publicPayload.lpEvidenceSummary ?? ''), publicPayload.lpEvidenceSummary)
+assert('VIRTUAL sections.liquidity.lpLockBurnProofStatus is normalized to open_check', publicPayload.sections.liquidity.lpLockBurnProofStatus === 'open_check', publicPayload.sections.liquidity.lpLockBurnProofStatus)
 
 console.log('\nB. debug=true response')
 const debugPayload = sanitizePublicTokenResponse(JSON.parse(JSON.stringify(virtualLikePayload)), true)
@@ -310,6 +330,10 @@ protocolPayload.lpLockBurnIntel = buildLpLockBurnIntel({
   selectedPool: protocolPayload.selectedPool,
   lpMeta: protocolPayload.lpMeta,
 })
+protocolPayload.lpUnlockTimeline = buildLpUnlockTimeline({
+  chain: 'base',
+  lpLockBurnIntel: protocolPayload.lpLockBurnIntel,
+})
 assert('protocol pool proofApplicability remains not_applicable', protocolPayload.lpProofApplicability === 'not_applicable', protocolPayload.lpProofApplicability)
 assert('concentrated pool is not forced into ERC20 lock/burn proof', protocolPayload.lpControl?.proofStatus === 'not_applicable' && protocolPayload.lpControl?.lockStatus === 'not_applicable' && protocolPayload.lpControl?.burnStatus === 'not_applicable', protocolPayload.lpControl)
 assert('selected pool address is not fake-truncated', protocolPayload.selectedPool.address === '0x2222222222222222222222222222222222222222', protocolPayload.selectedPool.address)
@@ -324,6 +348,10 @@ assert('GOAL/concentrated lpLockBurnIntel status is not_applicable', protocolPay
 assert('GOAL/concentrated lpLockBurnIntel proof is not_applicable', protocolPayload.lpLockBurnIntel?.lockBurnProof === 'not_applicable', protocolPayload.lpLockBurnIntel)
 assert('GOAL/concentrated lpLockBurnIntel does not fake locked/burned percentages', protocolPayload.lpLockBurnIntel?.lockedPercent == null && protocolPayload.lpLockBurnIntel?.burnedPercent == null, protocolPayload.lpLockBurnIntel)
 assert('GOAL/concentrated lpLockBurnIntel summary explains ERC20 proof does not apply', /ERC20 LP lock\/burn proof does not apply/i.test(protocolPayload.lpLockBurnIntel?.summary ?? ''), protocolPayload.lpLockBurnIntel?.summary)
+assert('GOAL/concentrated lpUnlockTimeline status is not_applicable', protocolPayload.lpUnlockTimeline?.status === 'not_applicable', protocolPayload.lpUnlockTimeline)
+assert('GOAL/concentrated lpUnlockTimeline unlockRisk is not_applicable', protocolPayload.lpUnlockTimeline?.unlockRisk === 'not_applicable', protocolPayload.lpUnlockTimeline)
+assert('GOAL/concentrated lpUnlockTimeline has no countdown', protocolPayload.lpUnlockTimeline?.unlockCountdownSeconds == null, protocolPayload.lpUnlockTimeline)
+assert('GOAL/concentrated lpUnlockTimeline summary explains unlock timeline does not apply', /unlock timeline does not apply/i.test(protocolPayload.lpUnlockTimeline?.summary ?? ''), protocolPayload.lpUnlockTimeline?.summary)
 
 // ─── publicLpDataMode mapping ───────────────────────────────────────────────
 console.log('\nD. publicLpDataMode mapping')
@@ -337,6 +365,31 @@ assert('minimal -> indexed', publicLpDataMode('minimal', true, false) === 'index
 assert('insufficient -> indexed', publicLpDataMode('insufficient', false, false) === 'indexed')
 assert('public mode is never the raw "fallback" string',
   !['strict', 'minimal', 'fallback', 'insufficient'].includes(publicLpDataMode('fallback', true, true)))
+
+// ─── E. buildLpUnlockTimeline risk tiering for confirmed locks ─────────────
+console.log('\nE. lpUnlockTimeline risk tiering')
+const now = Date.now()
+const confirmedBase = { status: 'locked', lockBurnProof: 'confirmed', confidence: 'medium', chain: 'eth', lpTokenOrPool: '0x21594b992f68495dd28d605834b58889d0a727c7' }
+const farFuture = buildLpUnlockTimeline({ chain: 'eth', lpLockBurnIntel: { ...confirmedBase, unlockTime: new Date(now + 45 * 86400_000).toISOString() } })
+assert('confirmed lock unlocking in 45d is low risk', farFuture.unlockRisk === 'low', farFuture)
+assert('confirmed lock unlocking in 45d has known unlockTimeStatus', farFuture.unlockTimeStatus === 'known', farFuture)
+assert('confirmed lock unlocking in 45d has a countdown label', typeof farFuture.unlockCountdownLabel === 'string' && farFuture.unlockCountdownLabel.length > 0, farFuture)
+
+const midFuture = buildLpUnlockTimeline({ chain: 'eth', lpLockBurnIntel: { ...confirmedBase, unlockTime: new Date(now + 15 * 86400_000).toISOString() } })
+assert('confirmed lock unlocking in 15d is watch risk', midFuture.unlockRisk === 'watch', midFuture)
+
+const nearFuture = buildLpUnlockTimeline({ chain: 'eth', lpLockBurnIntel: { ...confirmedBase, unlockTime: new Date(now + 3 * 86400_000).toISOString() } })
+assert('confirmed lock unlocking in 3d is high risk', nearFuture.unlockRisk === 'high', nearFuture)
+
+const past = buildLpUnlockTimeline({ chain: 'eth', lpLockBurnIntel: { ...confirmedBase, unlockTime: new Date(now - 86400_000).toISOString() } })
+assert('confirmed lock with unlockTime in the past is expired', past.unlockRisk === 'expired', past)
+assert('expired unlock countdown is zero', past.unlockCountdownSeconds === 0, past)
+
+const burned = buildLpUnlockTimeline({ chain: 'eth', lpLockBurnIntel: { status: 'burned', lockBurnProof: 'confirmed', confidence: 'medium', chain: 'eth' } })
+assert('burned LP status is burned', burned.status === 'burned', burned)
+assert('burned LP unlockRisk is none', burned.unlockRisk === 'none', burned)
+assert('burned LP unlockTimeStatus is not_applicable', burned.unlockTimeStatus === 'not_applicable', burned)
+assert('burned LP has no countdown', burned.unlockCountdownSeconds == null, burned)
 
 console.log(`\n${passed} passed, ${failed} failed`)
 if (failed > 0) process.exit(1)

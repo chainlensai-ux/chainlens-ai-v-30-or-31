@@ -215,6 +215,22 @@ type ScanResult = {
     evidenceGaps?: string[]
     nextActions?: string[]
   } | null
+  lpUnlockTimeline?: {
+    status?: string
+    unlockRisk?: string
+    confidence?: string
+    chain?: string | null
+    lpTokenOrPool?: string | null
+    unlockTime?: string | number | null
+    unlockTimeStatus?: string
+    unlockCountdownSeconds?: number | null
+    unlockCountdownLabel?: string | null
+    lockState?: string | null
+    summary?: string
+    signals?: string[]
+    evidenceGaps?: string[]
+    nextActions?: string[]
+  } | null
   lpDataMode?: 'resolved' | 'evidence_based' | 'indexed' | 'strict' | 'minimal' | 'fallback' | 'insufficient'
   lpDataModeRaw?: 'strict' | 'minimal' | 'fallback' | 'insufficient'
   lpDataConfidence?: 'high' | 'medium' | 'low' | 'unverified'
@@ -4810,6 +4826,52 @@ export default function TerminalTokenScanner() {
                           ['Signals', result.lpLockBurnIntel.signals ?? [], '#34d399'],
                           ['Gaps', result.lpLockBurnIntel.evidenceGaps ?? [], '#fbbf24'],
                           ['Actions', result.lpLockBurnIntel.nextActions ?? [], '#67e8f9'],
+                        ].map(([title, items, color]) => (
+                          <div key={String(title)} style={{ minWidth: 0 }}>
+                            <p style={{ margin: '0 0 6px', fontSize: '9px', color: String(color), fontWeight: 900, letterSpacing: '.12em', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{String(title)}</p>
+                            {(items as string[]).slice(0, 4).map((item) => (
+                              <div key={item} style={{ display: 'flex', gap: '6px', marginBottom: '4px', alignItems: 'flex-start' }}>
+                                <span style={{ color: String(color), fontSize: '10px', lineHeight: '15px' }}>•</span>
+                                <p style={{ margin: 0, fontSize: '10px', color: '#94a3b8', lineHeight: 1.45, fontFamily: 'var(--font-plex-mono)' }}>{item}</p>
+                              </div>
+                            ))}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* ── LP Unlock Timeline ────────────────────────── */}
+                  {result.lpUnlockTimeline && (
+                    <div style={{ marginBottom: '14px', padding: '12px 14px', background: 'linear-gradient(135deg, rgba(167,139,250,0.07), rgba(15,23,42,0.72))', border: '1px solid rgba(167,139,250,0.20)', borderRadius: '14px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'flex-start', marginBottom: '10px' }}>
+                        <div>
+                          <p style={{ margin: 0, fontSize: '10px', fontWeight: 900, letterSpacing: '.16em', color: '#c4b5fd', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>LP Unlock Timeline</p>
+                          {result.lpUnlockTimeline.summary && <p style={{ margin: '7px 0 0', fontSize: '11px', color: '#ddd6fe', lineHeight: 1.55, fontFamily: 'var(--font-plex-mono)' }}>{result.lpUnlockTimeline.summary}</p>}
+                        </div>
+                        <span style={{ flexShrink: 0, padding: '4px 9px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '.10em', color: result.lpUnlockTimeline.unlockRisk === 'high' || result.lpUnlockTimeline.unlockRisk === 'expired' ? '#f87171' : result.lpUnlockTimeline.unlockRisk === 'low' || result.lpUnlockTimeline.unlockRisk === 'none' ? '#34d399' : result.lpUnlockTimeline.unlockRisk === 'not_applicable' ? '#94a3b8' : '#fbbf24', background: 'rgba(2,6,23,0.48)', border: '1px solid rgba(167,139,250,0.25)', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
+                          {result.lpUnlockTimeline.status?.replace(/_/g, ' ') ?? 'open check'}
+                        </span>
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(145px,1fr))', gap: '7px', marginBottom: '10px' }}>
+                        {([
+                          ['Unlock Risk', result.lpUnlockTimeline.unlockRisk?.replace(/_/g, ' ') ?? 'unknown'],
+                          ['Unlock Time', result.lpUnlockTimeline.unlockTime == null ? (result.lpUnlockTimeline.unlockTimeStatus === 'not_applicable' ? 'Not applicable' : 'Open check') : new Date(result.lpUnlockTimeline.unlockTime).toLocaleString()],
+                          ['Countdown', result.lpUnlockTimeline.unlockCountdownLabel ?? 'Open check'],
+                          ['Lock State', result.lpUnlockTimeline.lockState?.replace(/_/g, ' ') ?? 'open check'],
+                          ['Confidence', result.lpUnlockTimeline.confidence ?? 'low'],
+                        ] as Array<[string, string]>).map(([label, value]) => (
+                          <div key={label} style={{ padding: '8px 9px', borderRadius: '10px', background: 'rgba(2,6,23,0.42)', border: '1px solid rgba(148,163,184,0.10)', minWidth: 0 }}>
+                            <div style={{ fontSize: '9px', color: '#64748b', letterSpacing: '.10em', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '4px' }}>{label}</div>
+                            <div style={{ fontSize: '11px', color: /high|expired/i.test(value) ? '#f87171' : /low|none/i.test(value) ? '#34d399' : /not applicable/i.test(value) ? '#94a3b8' : /open|unknown|watch/i.test(value) ? '#fbbf24' : '#e2e8f0', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'capitalize', overflow: 'hidden', textOverflow: 'ellipsis' }}>{value}</div>
+                          </div>
+                        ))}
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(170px,1fr))', gap: '9px' }}>
+                        {[
+                          ['Signals', result.lpUnlockTimeline.signals ?? [], '#34d399'],
+                          ['Gaps', result.lpUnlockTimeline.evidenceGaps ?? [], '#fbbf24'],
+                          ['Actions', result.lpUnlockTimeline.nextActions ?? [], '#67e8f9'],
                         ].map(([title, items, color]) => (
                           <div key={String(title)} style={{ minWidth: 0 }}>
                             <p style={{ margin: '0 0 6px', fontSize: '9px', color: String(color), fontWeight: 900, letterSpacing: '.12em', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{String(title)}</p>
