@@ -217,7 +217,7 @@ function cortexLockClause({ lpLockStatus, modelUnknown, standardLockApplies, lpC
 }
 
 // ─── Mirrors lib/server/lpProof.ts deriveMigrationProof ────────────────────────
-function deriveMigrationProof(pools, totalLiq) {
+function deriveMigrationProof(pools, totalLiq, primaryPoolSelected = false) {
   const dexsUsed = Array.from(new Set(pools.map((p) => p.dexId).filter(Boolean)))
   const liquidities = pools.map((p) => p.liquidityUsd ?? 0)
   const topShare = totalLiq && totalLiq > 0 ? (liquidities[0] ?? 0) / totalLiq : null
@@ -225,12 +225,48 @@ function deriveMigrationProof(pools, totalLiq) {
   let confidence = 'unverified'
   let reason = 'Not enough pool data to assess migration risk.'
   const hasMeaningfulPrimary = (liquidities[0] ?? 0) > 0 && topShare != null && topShare >= 0.2
+  const hasSelectedPrimary = hasMeaningfulPrimary || primaryPoolSelected
   if (pools.length > 0 && topShare != null) {
     if (dexsUsed.length === 1 && topShare >= 0.7) { status = 'low'; confidence = 'medium'; reason = 'Liquidity is concentrated in a single DEX and primary pool — no migration signal observed.' }
-    else if (hasMeaningfulPrimary) { status = 'low'; confidence = 'low'; reason = 'Liquidity is distributed across multiple pools. A primary pool is present, so pool count alone is not enough evidence of migration risk.' }
+    else if (hasSelectedPrimary) { status = 'low'; confidence = 'low'; reason = 'Liquidity is distributed across multiple pools. A primary pool is present, so pool count alone is not enough evidence of migration risk. Historical liquidity movement is unavailable.' }
     else { status = 'unknown'; confidence = 'unverified'; reason = 'Liquidity is spread across multiple pools with no clear primary pool. Historical liquidity movement is unavailable, so migration risk cannot be confirmed from current evidence.' }
   }
   return { status, confidence, reason, missingEvidence: ['pool_creation_date_unavailable', 'historical_liquidity_movement_unavailable'] }
+}
+
+// ─── Mirrors app/api/token/route.ts lpIntelligence.migrationRisk mapping ────────
+function mapMigrationRiskFromProof(migrationProofStatus) {
+  if (migrationProofStatus === 'flagged') return 'high'
+  if (migrationProofStatus === 'watch') return 'medium'
+  if (migrationProofStatus === 'low') return 'low'
+  return 'inferred'
+}
+
+// ─── Mirrors lib/server/lpProof.ts buildCortexLpRead contractStatusClause ──────
+function contractStatusClause(contractSignals) {
+  if (!contractSignals) return 'ownership, mintability, simulation and tax status remain unconfirmed'
+  const confirmed = []
+  const unconfirmed = []
+  if (contractSignals.ownershipStatus === 'renounced') confirmed.push('ownership is verified renounced')
+  else if (contractSignals.ownershipStatus === 'held') confirmed.push('ownership is held by a non-renounced address')
+  else unconfirmed.push('ownership')
+
+  if (contractSignals.mintDetected === true) confirmed.push('a mint authority/function is detected')
+  else if (contractSignals.mintDetected === false) confirmed.push('no mint authority was detected')
+  else unconfirmed.push('mintability')
+
+  if (contractSignals.simulationVerified) {
+    const buyTaxStr = contractSignals.buyTax != null ? `${contractSignals.buyTax}%` : 'unknown'
+    const sellTaxStr = contractSignals.sellTax != null ? `${contractSignals.sellTax}%` : 'unknown'
+    confirmed.push(`a trade simulation passed (buy tax ${buyTaxStr}, sell tax ${sellTaxStr})`)
+  } else {
+    unconfirmed.push('simulation and tax status')
+  }
+
+  const parts = []
+  if (confirmed.length > 0) parts.push(confirmed.join(', '))
+  if (unconfirmed.length > 0) parts.push(`${unconfirmed.join(', ')} remain unconfirmed`)
+  return parts.join('; ')
 }
 
 // ─── Scenario 1: VIRTUAL-style — concentrated primary + V2 secondary ──────────
@@ -567,6 +603,97 @@ console.log('\nScenario 16: concentrated primary preserved (regression)')
   })
   assert('concentrated deep-liquidity exit risk is monitor', r.lpExitRisk === 'monitor', r)
   assert('reason states standard proof does not apply', /does not apply/i.test(r.lpExitRiskReason), r.lpExitRiskReason)
+}
+
+// ─── Scenario 17: VIRTUAL-style — many ecosystem pools, selected primary, low top-share ──
+console.log('\nScenario 17: VIRTUAL-style multi-pool + selected primary pool — neutral migration copy')
+{
+  // Many small ecosystem pools across DEXs; deep total liquidity but the top pool holds
+  // less than 20% of the grand total. A primary/verification pool WAS selected by the LP
+  // pipeline (primaryPoolSelected = true).
+  const pools = [
+    { dexId: 'uniswap-v3-base', liquidityUsd: 900_000 },
+    { dexId: 'aerodrome-base', liquidityUsd: 850_000 },
+    { dexId: 'uniswap-v2-base', liquidityUsd: 800_000 },
+    { dexId: 'pancakeswap-base', liquidityUsd: 750_000 },
+    { dexId: 'sushiswap-base', liquidityUsd: 700_000 },
+    { dexId: 'baseswap', liquidityUsd: 1_000_000 },
+  ]
+  const total = pools.reduce((s, p) => s + p.liquidityUsd, 0)
+  const topShare = pools[0].liquidityUsd / total
+  assert('fixture has a top-share below the 20% meaningful-primary threshold', topShare < 0.2, topShare)
+
+  const m = deriveMigrationProof(pools, total, true)
+  assert('migration status is low (neutral), not watch/flagged', m.status === 'low', m.status)
+  assert('migration confidence is low (not high/medium)', m.confidence === 'low', m.confidence)
+  assert('migration reason does NOT say "no clear primary pool"', !/no clear primary pool/i.test(m.reason), m.reason)
+  assert('migration reason uses the required neutral copy', m.reason === 'Liquidity is distributed across multiple pools. A primary pool is present, so pool count alone is not enough evidence of migration risk. Historical liquidity movement is unavailable.', m.reason)
+
+  const migrationRisk = mapMigrationRiskFromProof(m.status)
+  assert('mapped migrationRisk is low, not high', migrationRisk === 'low', migrationRisk)
+}
+
+// ─── Scenario 18: no selected primary + fragmented pools + missing history ──────
+console.log('\nScenario 18: fragmented pools with no selected primary — open_check, not confirmed high')
+{
+  const pools = [
+    { dexId: 'a', liquidityUsd: 100 }, { dexId: 'b', liquidityUsd: 100 },
+    { dexId: 'c', liquidityUsd: 100 }, { dexId: 'd', liquidityUsd: 100 },
+    { dexId: 'e', liquidityUsd: 100 }, { dexId: 'f', liquidityUsd: 100 },
+  ]
+  const total = pools.reduce((s, p) => s + p.liquidityUsd, 0)
+
+  const m = deriveMigrationProof(pools, total, false)
+  assert('migration status is unknown (open_check), not watch/flagged', m.status === 'unknown', m.status)
+  assert('migration confidence is unverified', m.confidence === 'unverified', m.confidence)
+  assert('migration reason cites no clear primary pool', /no clear primary pool/i.test(m.reason), m.reason)
+
+  const migrationRisk = mapMigrationRiskFromProof(m.status)
+  assert('mapped migrationRisk is inferred (open_check), not high', migrationRisk === 'inferred', migrationRisk)
+  assert('mapped migrationRisk is never "high" for fragmentation alone', migrationRisk !== 'high', migrationRisk)
+}
+
+// ─── Scenario 19: migrationRisk mapping — only watch/flagged escalate ───────────
+console.log('\nScenario 19: migrationRisk mapping requires real migration-proof evidence')
+{
+  assert('proof status "low" maps to migrationRisk "low"', mapMigrationRiskFromProof('low') === 'low')
+  assert('proof status "watch" maps to migrationRisk "medium"', mapMigrationRiskFromProof('watch') === 'medium')
+  assert('proof status "flagged" maps to migrationRisk "high"', mapMigrationRiskFromProof('flagged') === 'high')
+  assert('proof status "unknown" maps to migrationRisk "inferred"', mapMigrationRiskFromProof('unknown') === 'inferred')
+}
+
+// ─── Scenario 20: CORTEX LP read — confirmed contract signals are not reported as unconfirmed ──
+console.log('\nScenario 20: CORTEX LP read reports confirmed ownership/mint/simulation/tax evidence')
+{
+  // VIRTUAL-style: ownership verified renounced, simulation passed with 0% taxes, mint detected.
+  const confirmedClause = contractStatusClause({
+    ownershipStatus: 'renounced',
+    mintDetected: true,
+    simulationVerified: true,
+    buyTax: 0,
+    sellTax: 0,
+  })
+  assert('confirmed clause states ownership is verified renounced', /ownership is verified renounced/i.test(confirmedClause), confirmedClause)
+  assert('confirmed clause states a mint authority/function is detected', /mint authority\/function is detected/i.test(confirmedClause), confirmedClause)
+  assert('confirmed clause states simulation passed with tax values', /trade simulation passed \(buy tax 0%, sell tax 0%\)/i.test(confirmedClause), confirmedClause)
+  assert('confirmed clause does NOT claim ownership/mintability/simulation/tax are unconfirmed', !/remain unconfirmed/i.test(confirmedClause), confirmedClause)
+
+  // No mint detected + held ownership + no simulation → only simulation/tax remain unconfirmed.
+  const partialClause = contractStatusClause({
+    ownershipStatus: 'held',
+    mintDetected: false,
+    simulationVerified: false,
+    buyTax: null,
+    sellTax: null,
+  })
+  assert('partial clause states ownership is held by a non-renounced address', /ownership is held by a non-renounced address/i.test(partialClause), partialClause)
+  assert('partial clause states no mint authority was detected', /no mint authority was detected/i.test(partialClause), partialClause)
+  assert('partial clause says simulation and tax status remain unconfirmed', /simulation and tax status remain unconfirmed/i.test(partialClause), partialClause)
+  assert('partial clause does not say ownership is unconfirmed', !/^ownership(?!.*verified|.*held)/i.test(partialClause), partialClause)
+
+  // No contractSignals provided (e.g. Liquidity Safety route) → preserve the exact old wording.
+  const legacyClause = contractStatusClause(undefined)
+  assert('legacy (no signals) clause preserves old fully-unconfirmed wording', legacyClause === 'ownership, mintability, simulation and tax status remain unconfirmed', legacyClause)
 }
 
 console.log(`\n${passed} passed, ${failed} failed`)

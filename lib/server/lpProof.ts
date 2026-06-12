@@ -302,8 +302,18 @@ export function buildCortexLpRead(params: {
   /** True when market-fallback evidence (e.g. DexScreener pair) proved liquidity exists even
    *  though no canonical on-chain pool was confirmed/indexed. */
   fallbackLiquidityDetected?: boolean;
+  /** Contract-level signals (ownership, mint, simulation/tax) already verified elsewhere in the
+   *  scan. When provided, the risk summary describes what was actually confirmed instead of
+   *  blanket-claiming everything is unconfirmed. Wording stays provider-neutral. */
+  contractSignals?: {
+    ownershipStatus: "renounced" | "held" | "unknown";
+    mintDetected: boolean | null;
+    simulationVerified: boolean;
+    buyTax: number | null;
+    sellTax: number | null;
+  };
 }): CortexLpRead {
-  const { name, symbol, totalLiq, fragments, observedPoolPresent, riskTier, lpModel, migrationSummary, mode, confidence, gaps, lpLockStatus, lpLockProvider, lpUnlockTime, secondaryLpSignal, lpController, lpControllerAddress, isEstablishedToken, proofApplicability, fallbackLiquidityDetected } = params;
+  const { name, symbol, totalLiq, fragments, observedPoolPresent, riskTier, lpModel, migrationSummary, mode, confidence, gaps, lpLockStatus, lpLockProvider, lpUnlockTime, secondaryLpSignal, lpController, lpControllerAddress, isEstablishedToken, proofApplicability, fallbackLiquidityDetected, contractSignals } = params;
   const liqStr = totalLiq != null ? `$${totalLiq.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : "an unknown amount";
   const modelUnknown = proofApplicability === "unknown";
 
@@ -336,7 +346,40 @@ export function buildCortexLpRead(params: {
               // implies confirmed wallet/team/contract control, which has not been established.
               : "No lock or burn proof was confirmed for the selected LP model. ChainLens could not confirm whether liquidity is controlled by a wallet, lock contract, burn address, or protocol mechanism from current evidence.";
 
-  const riskSummary = `${name} (${symbol}) shows a "${riskTier}" liquidity-depth risk tier based on observed pool data. This reflects liquidity depth and pool structure only — ownership, mintability, simulation and tax status remain unconfirmed (data mode: ${mode}, confidence: ${confidence}). ${lockClause}`;
+  // Describe only what is actually unconfirmed — confirmed ownership/mint/simulation/tax
+  // evidence should be reported as such instead of a blanket "unconfirmed" claim.
+  const contractStatusClause = (() => {
+    if (!contractSignals) {
+      return "ownership, mintability, simulation and tax status remain unconfirmed";
+    }
+    const confirmed: string[] = [];
+    const unconfirmed: string[] = [];
+
+    if (contractSignals.ownershipStatus === "renounced") confirmed.push("ownership is verified renounced");
+    else if (contractSignals.ownershipStatus === "held") confirmed.push("ownership is held by a non-renounced address");
+    else unconfirmed.push("ownership");
+
+    if (contractSignals.mintDetected === true) confirmed.push("a mint authority/function is detected");
+    else if (contractSignals.mintDetected === false) confirmed.push("no mint authority was detected");
+    else unconfirmed.push("mintability");
+
+    if (contractSignals.simulationVerified) {
+      const buyTaxStr = contractSignals.buyTax != null ? `${contractSignals.buyTax}%` : "unknown";
+      const sellTaxStr = contractSignals.sellTax != null ? `${contractSignals.sellTax}%` : "unknown";
+      confirmed.push(`a trade simulation passed (buy tax ${buyTaxStr}, sell tax ${sellTaxStr})`);
+    } else {
+      unconfirmed.push("simulation and tax status");
+    }
+
+    const parts: string[] = [];
+    if (confirmed.length > 0) parts.push(confirmed.join(", "));
+    if (unconfirmed.length > 0) parts.push(`${unconfirmed.join(", ")} remain unconfirmed`);
+    return parts.join("; ");
+  })();
+
+  const riskSummary = contractSignals
+    ? `${name} (${symbol}) shows a "${riskTier}" liquidity-depth risk tier based on observed pool data. This reflects liquidity depth and pool structure, plus available contract checks — ${contractStatusClause} (data mode: ${mode}, confidence: ${confidence}). ${lockClause}`
+    : `${name} (${symbol}) shows a "${riskTier}" liquidity-depth risk tier based on observed pool data. This reflects liquidity depth and pool structure only — ${contractStatusClause} (data mode: ${mode}, confidence: ${confidence}). ${lockClause}`;
 
   const poolDetected = observedPoolPresent ?? fragments > 0;
   const liquidityAnalysis = poolDetected
@@ -620,7 +663,7 @@ export interface LpMigrationProof {
   nextAction: string;
 }
 
-export function deriveMigrationProof(pools: GTPool[], totalLiq: number | null): LpMigrationProof {
+export function deriveMigrationProof(pools: GTPool[], totalLiq: number | null, primaryPoolSelected = false): LpMigrationProof {
   const dexsUsed = Array.from(new Set(pools.map((p) => p.relationships?.dex?.data?.id).filter((d): d is string => !!d)));
   const primaryDex = pools[0]?.relationships?.dex?.data?.id ?? null;
   const liquidities = pools.map((p) => _toNum(p.attributes.reserve_in_usd as string | number | null | undefined) ?? 0);
@@ -636,6 +679,9 @@ export function deriveMigrationProof(pools: GTPool[], totalLiq: number | null): 
   // observed liquidity. Many ecosystem pools across several DEXs is NORMAL for established
   // tokens and is not, on its own, evidence of migration.
   const hasMeaningfulPrimary = (liquidities[0] ?? 0) > 0 && topShare != null && topShare >= 0.2;
+  // A primary/verification pool was actually selected by the LP pipeline — never say "no clear
+  // primary pool" in that case, even if its share of TOTAL liquidity is below the 20% threshold.
+  const hasSelectedPrimary = hasMeaningfulPrimary || primaryPoolSelected;
 
   if (pools.length > 0 && topShare != null) {
     liquidityDistribution = topShare >= 0.7 ? "concentrated in primary pool" : topShare >= 0.4 ? "moderately distributed" : "spread thinly across pools";
@@ -648,9 +694,9 @@ export function deriveMigrationProof(pools: GTPool[], totalLiq: number | null): 
     if (dexsUsed.length === 1 && topShare >= 0.7) {
       status = "low"; confidence = "medium";
       reason = "Liquidity is concentrated in a single DEX and primary pool — no migration signal observed.";
-    } else if (hasMeaningfulPrimary) {
+    } else if (hasSelectedPrimary) {
       status = "low"; confidence = "low";
-      reason = "Liquidity is distributed across multiple pools. A primary pool is present, so pool count alone is not enough evidence of migration risk.";
+      reason = "Liquidity is distributed across multiple pools. A primary pool is present, so pool count alone is not enough evidence of migration risk. Historical liquidity movement is unavailable.";
     } else {
       status = "unknown"; confidence = "unverified";
       reason = "Liquidity is spread across multiple pools with no clear primary pool. Historical liquidity movement is unavailable, so migration risk cannot be confirmed from current evidence.";

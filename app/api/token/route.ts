@@ -39,7 +39,7 @@ function _deriveLpModelProof(dexId: string | null): {
   return { model, dexName: dexId, standardLockApplies: cls.standardLockApplies }
 }
 
-function _deriveMigrationProof(pools: Array<{ attributes: { reserve_in_usd?: string | number | null }; relationships?: { dex?: { data?: { id: string } } } }>, totalLiq: number | null): {
+function _deriveMigrationProof(pools: Array<{ attributes: { reserve_in_usd?: string | number | null }; relationships?: { dex?: { data?: { id: string } } } }>, totalLiq: number | null, primaryPoolSelected: boolean): {
   status: 'low' | 'watch' | 'flagged' | 'unknown'
   confidence: 'high' | 'medium' | 'low' | 'unverified'
   reason: string
@@ -64,6 +64,10 @@ function _deriveMigrationProof(pools: Array<{ attributes: { reserve_in_usd?: str
   // observed liquidity. Many ecosystem pools across several DEXs is NORMAL for established
   // tokens and is not, on its own, evidence of migration.
   const hasMeaningfulPrimary = (liquidities[0] ?? 0) > 0 && topShare != null && topShare >= 0.2
+  // A primary/verification pool was actually selected by the LP pipeline (e.g. VIRTUAL: many
+  // ecosystem pools, but a clear primary pool was chosen and deep liquidity confirmed) — never
+  // say "no clear primary pool" in that case, even if its share of TOTAL liquidity is < 20%.
+  const hasSelectedPrimary = hasMeaningfulPrimary || primaryPoolSelected
   if (pools.length > 0 && topShare != null) {
     liquidityDistribution = topShare >= 0.7 ? 'concentrated in primary pool' : topShare >= 0.4 ? 'moderately distributed' : 'spread thinly across pools'
     if (dexsUsed.length > 1) signals.push(`Liquidity is split across ${dexsUsed.length} different DEXs.`)
@@ -73,7 +77,7 @@ function _deriveMigrationProof(pools: Array<{ attributes: { reserve_in_usd?: str
     // liquidity drop, or a new pool gaining dominance). Historical movement is not available here, so
     // pool count / DEX spread alone never escalates to a migration warning — it is recorded as a gap.
     if (dexsUsed.length === 1 && topShare >= 0.7) { status = 'low'; confidence = 'medium'; reason = 'Liquidity is concentrated in a single DEX and primary pool — no migration signal observed.' }
-    else if (hasMeaningfulPrimary) { status = 'low'; confidence = 'low'; reason = 'Liquidity is distributed across multiple pools. A primary pool is present, so pool count alone is not enough evidence of migration risk.' }
+    else if (hasSelectedPrimary) { status = 'low'; confidence = 'low'; reason = 'Liquidity is distributed across multiple pools. A primary pool is present, so pool count alone is not enough evidence of migration risk. Historical liquidity movement is unavailable.' }
     else { status = 'unknown'; confidence = 'unverified'; reason = 'Liquidity is spread across multiple pools with no clear primary pool. Historical liquidity movement is unavailable, so migration risk cannot be confirmed from current evidence.' }
   }
   return { status, confidence, reason, dexsUsed, primaryDex, liquidityDistribution, signals, missingEvidence: ['pool_creation_date_unavailable', 'historical_liquidity_movement_unavailable'], nextAction: 'Confirm pool creation dates and historical liquidity moves on a block explorer before drawing migration conclusions.' }
@@ -5267,6 +5271,10 @@ export async function POST(req: Request) {
       return { status: 'inferred', concentration: 'inferred', churn, velocity, earlyBuyerConcentration, whaleConcentration, note: `Holder data not indexed on ${_chainDefault}. Concentration inferred as moderate-to-high — verify via block explorer.` }
     })()
 
+    // ── Migration proof — derived early so LP Intelligence's migrationRisk can reflect
+    // real migration evidence instead of conflating it with LP-control status. ──
+    const lpMigrationProof = _deriveMigrationProof(gtAllPools, liquidityUsd, Boolean(lpPool))
+
     // ── LP Intelligence — lock time, migration risk, mint authority, depth, volatility ──
     const lpIntelligence: RiskEngine["lpIntelligence"] = (() => {
       const _lpStatus = lpControl.status
@@ -5276,11 +5284,12 @@ export async function POST(req: Request) {
       // No lock-duration provider is wired up — lock time is always unverified.
       const _lockSecs: number | null = null
       const _lockTimeLabel: string | null = null
-      // Migration risk: high when team-controlled or no lock proof
-      const migrationRisk: RiskEngine["lpIntelligence"]["migrationRisk"] = _lpStatus === 'team_controlled' ? 'high'
-        : _lpStatus === 'burned' ? 'low'
-        : _lpStatus === 'locked' ? 'low'
-        : _lpStatus === 'protocol' || _lpStatus === 'concentrated_liquidity' || lpControl.proofApplicability === 'not_applicable' ? 'medium'
+      // Migration risk reflects real migration evidence (lpMigrationProof), not LP-control
+      // status alone — a team-controlled LP with deep liquidity and a selected primary pool
+      // is an exit-risk concern, not necessarily a migration-risk one.
+      const migrationRisk: RiskEngine["lpIntelligence"]["migrationRisk"] = lpMigrationProof.status === 'flagged' ? 'high'
+        : lpMigrationProof.status === 'watch' ? 'medium'
+        : lpMigrationProof.status === 'low' ? 'low'
         : 'inferred'
       // Mint authority: active = mint bytecode detected; renounced = ownership provably renounced;
       // not_applicable = mint bytecode not detected (no authority to yield); inferred = unknown.
@@ -5367,7 +5376,6 @@ export async function POST(req: Request) {
     // Compute applicability first so we skip ERC-20 proof calls for concentrated
     // pools where no LP token exists. Unknown pool model still attempts proof.
     const lpModelProof = _deriveLpModelProof(lpDexId)
-    const lpMigrationProof = _deriveMigrationProof(gtAllPools, liquidityUsd)
     // Single shared classification (problem 1/2): "applicable" only when lpControl confirmed
     // an ERC-20 LP token (V2 or Aerodrome V2). Never "applicable" for concentrated/no_pool/unclassified.
     // When fallback liquidity is detected but no verification pool could be probed, the model is
@@ -5485,6 +5493,15 @@ export async function POST(req: Request) {
       isEstablishedToken,
       proofApplicability: lpProofApplicability,
       fallbackLiquidityDetected: _fallbackLiquidityDetected,
+      contractSignals: {
+        ownershipStatus: _ownershipStatusFinal === 'open_check' ? 'unknown' : _ownershipStatusFinal,
+        mintDetected: cortexContractFlags.mint.status === 'verified' ? true
+          : cortexContractFlags.mint.status === 'not_detected' ? false
+          : null,
+        simulationVerified: Boolean(hpResult.ok && hpResult.simulationSuccess),
+        buyTax: hpResult.ok ? (hpResult.buyTax ?? null) : null,
+        sellTax: hpResult.ok ? (hpResult.sellTax ?? null) : null,
+      },
     })
 
     // ── Structured exit risk fields (problem 6): liquidityDepthRisk separated from
