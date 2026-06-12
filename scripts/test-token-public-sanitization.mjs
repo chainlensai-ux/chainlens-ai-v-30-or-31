@@ -1,25 +1,12 @@
 /**
- * Validation script for the /api/token public-vs-debug response shape
- * (lib/server/publicTokenResponse.ts, lib/server/lpProof.ts publicLpDataMode).
- *
- * Checks that normal (debug !== true) responses:
- *  - keep the Token Safety Score (riskScore/riskLabel/riskBreakdown)
- *  - drop the legacy top-level CORTEX V2 score fields
- *  - drop riskEngine.rugRiskScore/rugRiskLabel/cortexScoreDebug
- *  - cap heavy priceChart.points arrays
- *  - keep LP public status fields internally consistent and non-conflicting
- *  - leave GOAL/concentrated proofApplicability untouched
- * and that debug=true responses are returned unchanged.
- *
+ * Regression tests for /api/token public-vs-debug response shape.
  * Run: node --experimental-strip-types scripts/test-token-public-sanitization.mjs
  */
-
-import { sanitizePublicTokenResponse } from '../lib/server/publicTokenResponse.ts'
+import { sanitizePublicTokenResponse } from '../lib/server/tokenPublicResponse.ts'
 import { publicLpDataMode } from '../lib/server/lpProof.ts'
 
 let passed = 0
 let failed = 0
-
 function assert(label, condition, got) {
   if (condition) {
     console.log(`  ✅ ${label}`)
@@ -29,170 +16,173 @@ function assert(label, condition, got) {
     failed++
   }
 }
+function hasKeyDeep(value, key) {
+  if (Array.isArray(value)) return value.some((item) => hasKeyDeep(item, key))
+  if (!value || typeof value !== 'object') return false
+  if (Object.prototype.hasOwnProperty.call(value, key)) return true
+  return Object.values(value).some((item) => hasKeyDeep(item, key))
+}
+function serialized(value) {
+  return JSON.stringify(value).toLowerCase()
+}
+const providerNames = ['coingecko', 'geckoterminal', 'dexscreener', 'goldrush', 'covalent', 'moralis', 'alchemy', 'honeypot.is', 'basescan', 'zerion', 'gmgn']
 
-function buildVirtualLikePayload() {
-  return {
-    chain: 'base',
-    contract: '0xVirtualLikeToken',
-    riskScore: 62,
-    riskLabel: 'elevated',
-    riskBreakdown: {
-      marketMaturity: { score: 18, max: 25, reasons: ['Verified market cap'] },
-      liquiditySafety: { score: 10, max: 25, reasons: ['LP is wallet-controlled'] },
-      contractSafety: { score: 20, max: 25, reasons: ['No mint detected'] },
-      behavioralRisk: { score: 14, max: 25, reasons: ['Top10 concentration moderate'] },
-    },
-    // Legacy top-level CORTEX V2 fields — must be dropped from public output.
-    cortexScore: 71,
-    cortexVerdict: 'Watch',
-    cortexConfidence: 'medium',
-    scoreReasons: ['Liquidity verified', 'Mint not detected'],
-    missingScoreInputs: ['holder_concentration'],
-    scoreCoveragePercent: 80,
-    cortexScoreDebug: { rawInputs: { liquidityUsd: 4_300_000 } },
-    riskEngine: {
-      rugRiskScore: 38,
-      rugRiskLabel: 'watch',
-      cortexScoreDebug: { rawInputs: { liquidityUsd: 4_300_000 } },
-      confidence: 'medium',
-      cortexScore: 71,
-      cortexVerdict: 'Watch',
-      cortexConfidence: 'medium',
-      cortexRead: 'Score calculated from available evidence.',
-      verifiedSignals: ['LP Control shows team_controlled.'],
-      riskDrivers: ['LP Control indicates a dominant team wallet can control liquidity.'],
-      openChecks: ['LP lock/burn not confirmed.'],
-    },
-    lpControl: {
-      status: 'team_controlled',
-      proofStatus: 'team_controlled',
-      lockStatus: 'not_confirmed',
-      burnStatus: 'not_confirmed',
-    },
-    lpExitRisk: 'watch',
-    liquidityDepthRisk: 'low',
-    lpMigrationProof: { status: 'low' },
-    lpProofApplicability: 'applicable',
-    lpProofStatus: 'partial',
-    lpDataMode: 'evidence_based',
-    lpDataModeRaw: 'fallback',
-    lpMeta: {
-      primaryMarketDex: 'Aerodrome',
-      lpControlState: 'team_controlled',
-    },
-    sections: {
-      liquidity: {
-        lpLockBurnProofStatus: 'partial',
-        lpMeta: {
-          primaryMarketDex: 'Aerodrome',
-          lpControlState: 'team_controlled',
-        },
+const holders = Array.from({ length: 25 }, (_, index) => ({
+  rank: index + 1,
+  address: `0x${String(index + 1).padStart(40, '0')}`,
+  percent: index + 1,
+  source: 'goldrush_token_holders',
+}))
+const transfers = Array.from({ length: 25 }, (_, index) => ({
+  hash: `0x${String(index + 1).padStart(64, '0')}`,
+  from: holders[0].address,
+  to: holders[1].address,
+  source: 'moralis_token_transfers',
+}))
+
+const virtualLikePayload = {
+  chain: 'base',
+  contract: '0x0000000000000000000000000000000000000001',
+  name: 'Virtuals Protocol',
+  symbol: 'VIRTUAL',
+  selectedPool: { address: '0x1111111111111111111111111111111111111111', dex: 'geckoterminal' },
+  riskScore: 58,
+  riskLabel: 'moderate',
+  riskBreakdown: { total: 58, liquiditySafety: { score: 7, max: 30, reasons: ['Wallet-controlled LP'] } },
+  lpControl: {
+    status: 'team_controlled',
+    proofStatus: 'open_check',
+    lockStatus: 'not_confirmed',
+    burnStatus: 'not_confirmed',
+    lpControllerType: 'wallet',
+    reason: 'GoldRush holder evidence and Alchemy RPC confirmed LP controller wallet.',
+  },
+  lpControlRead: { title: 'LP controlled by wallet', meaning: 'Control Proof: Confirmed' },
+  lpMigrationProof: { status: 'low', reason: 'GeckoTerminal pools show a selected primary pool.' },
+  lpExitRisk: 'watch',
+  liquidityDepthRisk: 'low',
+  lpProofApplicability: 'applicable',
+  lpProofStatus: 'partial',
+  lpDataMode: 'evidence_based',
+  lpDataModeRaw: 'fallback',
+  lpMeta: {
+    primaryMarketDex: 'Aerodrome',
+    lpControlState: 'team_controlled',
+  },
+  sections: {
+    liquidity: {
+      lpLockBurnProofStatus: 'partial',
+      lpMeta: {
+        primaryMarketDex: 'Aerodrome',
+        lpControlState: 'team_controlled',
       },
     },
-    priceChart: {
-      timeframe: '24h',
-      sourceStatus: 'ok',
-      points: Array.from({ length: 400 }, (_, i) => ({
-        timestamp: new Date(i * 60_000).toISOString(),
-        open: 1, high: 1, low: 1, close: 1, volume: 1, priceUsd: 1,
-      })),
-    },
-  }
+    contractChecks: { totalSupply: '0x1234', decimalsRpc: '0x12', source: 'alchemy' },
+  },
+  holderDistribution: { top10: 48, holderCount: 100000, topHolders: holders },
+  devIntel: { holderDistribution: { topHolders: holders } },
+  holderResolver: { holders, sourceTrail: ['goldrush:attempted'], fallbackUsed: 'goldrush_token_holders' },
+  transferResolver: { transfers, sourceTrail: ['moralis:attempted'], fallbackUsed: 'moralis_token_transfers' },
+  suspiciousFlows: { transfers, fallbackUsed: 'moralis_token_transfers' },
+  securityDiagnostics: { honeypotProvider: 'honeypot.is' },
+  projectSocials: { twitter: 'x', sourceTrail: ['coingecko:succeeded'] },
+  rugRisk: { score: 42, label: 'watch', raw: { provider: 'moralis', holders } },
+  riskEngine: {
+    rugRiskScore: 38,
+    rugRiskLabel: 'watch',
+    cortexScoreDebug: { raw: true },
+    cortexScore: 67,
+    cortexVerdict: 'CAUTION',
+    note: 'dexscreener fallback',
+  },
+  cortexScore: 67,
+  cortexVerdict: 'CAUTION',
+  cortexScoreDebug: { raw: true },
+  gtRaw: { provider: 'geckoterminal' },
+  gtPools: [{ provider: 'geckoterminal' }],
+  gmgn: { provider: 'gmgn' },
+  _debug: { goldrushUsage: true },
+  priceChart: {
+    timeframe: '24h',
+    sourceStatus: 'ok',
+    points: Array.from({ length: 400 }, (_, i) => ({
+      timestamp: new Date(i * 60_000).toISOString(),
+      open: 1, high: 1, low: 1, close: 1, volume: 1, priceUsd: 1,
+    })),
+  },
 }
 
-function buildGoalLikePayload() {
-  return {
-    chain: 'base',
-    contract: '0xGoalLikeToken',
-    riskScore: 30,
-    riskLabel: 'watch',
-    riskBreakdown: {},
-    lpProofApplicability: 'not_applicable',
-    lpProofStatus: 'not_applicable',
-    lpModelProof: { model: 'concentrated' },
-    lpControl: { status: 'concentrated_liquidity', proofStatus: 'not_applicable' },
-    lpMeta: { lpControlState: 'concentrated_liquidity' },
-    sections: { liquidity: { lpLockBurnProofStatus: 'not_applicable', lpMeta: { lpControlState: 'concentrated_liquidity' } } },
-    lpDataMode: 'indexed',
-    lpDataModeRaw: 'insufficient',
-    priceChart: { timeframe: '24h', sourceStatus: 'ok', points: [] },
-  }
-}
+console.log('\nA. VIRTUAL-like public response')
+const publicPayload = sanitizePublicTokenResponse(JSON.parse(JSON.stringify(virtualLikePayload)), false)
+assert('riskScore remains present', publicPayload.riskScore === 58, publicPayload.riskScore)
+assert('riskBreakdown remains present', Boolean(publicPayload.riskBreakdown), publicPayload.riskBreakdown)
+assert('lpControl.status is team_controlled', publicPayload.lpControl?.status === 'team_controlled', publicPayload.lpControl)
+assert('lpControlRead says wallet controlled', publicPayload.lpControlRead?.title === 'LP controlled by wallet', publicPayload.lpControlRead)
+assert('selectedPool exists', Boolean(publicPayload.selectedPool?.address), publicPayload.selectedPool)
+assert('lpMigrationProof.status is low', publicPayload.lpMigrationProof?.status === 'low', publicPayload.lpMigrationProof)
+assert('public response does not expose cortexScoreDebug', !hasKeyDeep(publicPayload, 'cortexScoreDebug'), publicPayload.riskEngine)
+for (const provider of providerNames) assert(`public response does not expose provider name ${provider}`, !serialized(publicPayload).includes(provider), provider)
+assert('top holders are capped to 10', publicPayload.holderDistribution.topHolders.length === 10, publicPayload.holderDistribution.topHolders.length)
+assert('raw holder arrays are not exposed in holderResolver', !Array.isArray(publicPayload.holderResolver?.holders), publicPayload.holderResolver)
+assert('raw transfer arrays are not exposed in transferResolver', !Array.isArray(publicPayload.transferResolver?.transfers), publicPayload.transferResolver)
+assert('raw suspicious transfer arrays are not exposed', !Array.isArray(publicPayload.suspiciousFlows?.transfers), publicPayload.suspiciousFlows)
+assert('raw technical totalSupply hex is stripped from contract checks', !('totalSupply' in publicPayload.sections.contractChecks), publicPayload.sections.contractChecks)
+assert('top-level old CORTEX score is debug-only', publicPayload.cortexScore == null && publicPayload.cortexVerdict == null, { cortexScore: publicPayload.cortexScore, cortexVerdict: publicPayload.cortexVerdict })
+assert('drops riskEngine.rugRiskScore', !('rugRiskScore' in publicPayload.riskEngine), publicPayload.riskEngine)
+assert('drops riskEngine.rugRiskLabel', !('rugRiskLabel' in publicPayload.riskEngine), publicPayload.riskEngine)
+assert('drops lpDataModeRaw', !('lpDataModeRaw' in publicPayload))
+assert('keeps normalized public lpDataMode', publicPayload.lpDataMode === 'evidence_based', publicPayload.lpDataMode)
+assert('caps priceChart.points', publicPayload.priceChart.points.length === 150, publicPayload.priceChart.points.length)
 
-// ─── Scenario 1: VIRTUAL-like, normal public output ────────────────────────
-console.log('\nScenario 1: VIRTUAL-like token, debug !== true')
-{
-  const result = sanitizePublicTokenResponse(buildVirtualLikePayload(), false)
+// LP public status fields are internally consistent / non-conflicting.
+assert('lpMeta.lpControlState reflects LP control state', publicPayload.lpMeta.lpControlState === 'team_controlled')
+assert('sections.liquidity.lpLockBurnProofStatus is distinct from top-level lpProofStatus',
+  publicPayload.sections.liquidity.lpLockBurnProofStatus === 'partial' && publicPayload.lpProofStatus === 'partial')
+assert('no field named bare "proofStatus" at lpMeta top level', !('proofStatus' in publicPayload.lpMeta))
+assert('no field named bare "proofStatus" at sections.liquidity.lpMeta', !('proofStatus' in publicPayload.sections.liquidity.lpMeta))
 
-  assert('keeps riskScore', result.riskScore === 62, result.riskScore)
-  assert('keeps riskLabel', result.riskLabel === 'elevated', result.riskLabel)
-  assert('keeps riskBreakdown', typeof result.riskBreakdown === 'object' && result.riskBreakdown != null)
+console.log('\nB. debug=true response')
+const debugPayload = sanitizePublicTokenResponse(JSON.parse(JSON.stringify(virtualLikePayload)), true)
+assert('debug keeps score debug', Boolean(debugPayload.cortexScoreDebug && debugPayload.riskEngine.cortexScoreDebug), debugPayload.cortexScoreDebug)
+assert('debug keeps raw/provider evidence', Boolean(debugPayload.gtRaw && debugPayload.gtPools && debugPayload.gmgn), { gtRaw: debugPayload.gtRaw, gtPools: debugPayload.gtPools, gmgn: debugPayload.gmgn })
+assert('debug keeps raw holder arrays', Array.isArray(debugPayload.holderResolver.holders) && debugPayload.holderResolver.holders.length === 25, debugPayload.holderResolver.holders?.length)
+assert('debug keeps raw transfer arrays', Array.isArray(debugPayload.transferResolver.transfers) && debugPayload.transferResolver.transfers.length === 25, debugPayload.transferResolver.transfers?.length)
+assert('debug keeps provider names for diagnostics', serialized(debugPayload).includes('goldrush') && serialized(debugPayload).includes('moralis'), debugPayload)
+assert('debug keeps riskEngine.rugRiskScore', debugPayload.riskEngine.rugRiskScore === 38)
+assert('debug keeps lpDataModeRaw', debugPayload.lpDataModeRaw === 'fallback')
+assert('debug keeps full priceChart.points', debugPayload.priceChart.points.length === 400)
 
-  assert('drops top-level cortexScore', !('cortexScore' in result))
-  assert('drops top-level cortexVerdict', !('cortexVerdict' in result))
-  assert('drops top-level cortexConfidence', !('cortexConfidence' in result))
-  assert('drops top-level scoreReasons', !('scoreReasons' in result))
-  assert('drops top-level missingScoreInputs', !('missingScoreInputs' in result))
-  assert('drops top-level scoreCoveragePercent', !('scoreCoveragePercent' in result))
-  assert('drops top-level cortexScoreDebug', !('cortexScoreDebug' in result))
+console.log('\nC. concentrated/protocol pool regression')
+const protocolPayload = sanitizePublicTokenResponse({
+  selectedPool: { address: '0x2222222222222222222222222222222222222222' },
+  lpControl: { status: 'protocol_managed', displayLpModel: 'concentrated_liquidity', proofStatus: 'not_applicable', lockStatus: 'not_applicable', burnStatus: 'not_applicable' },
+  lpProofApplicability: 'not_applicable',
+  lpProofStatus: 'not_applicable',
+  lpModelProof: { model: 'concentrated', standardLockApplies: false },
+  riskScore: 70,
+  riskBreakdown: { total: 70 },
+  lpMeta: { lpControlState: 'concentrated_liquidity' },
+  sections: { liquidity: { lpLockBurnProofStatus: 'not_applicable', lpMeta: { lpControlState: 'concentrated_liquidity' } } },
+}, false)
+assert('protocol pool proofApplicability remains not_applicable', protocolPayload.lpProofApplicability === 'not_applicable', protocolPayload.lpProofApplicability)
+assert('concentrated pool is not forced into ERC20 lock/burn proof', protocolPayload.lpControl?.proofStatus === 'not_applicable' && protocolPayload.lpControl?.lockStatus === 'not_applicable' && protocolPayload.lpControl?.burnStatus === 'not_applicable', protocolPayload.lpControl)
+assert('selected pool address is not fake-truncated', protocolPayload.selectedPool.address === '0x2222222222222222222222222222222222222222', protocolPayload.selectedPool.address)
+assert('lpProofStatus remains not_applicable', protocolPayload.lpProofStatus === 'not_applicable')
+assert('sections.liquidity.lpLockBurnProofStatus remains not_applicable', protocolPayload.sections.liquidity.lpLockBurnProofStatus === 'not_applicable')
+assert('lpMeta.lpControlState remains concentrated_liquidity', protocolPayload.lpMeta.lpControlState === 'concentrated_liquidity')
 
-  assert('drops riskEngine.rugRiskScore', !('rugRiskScore' in result.riskEngine), result.riskEngine)
-  assert('drops riskEngine.rugRiskLabel', !('rugRiskLabel' in result.riskEngine), result.riskEngine)
-  assert('drops riskEngine.cortexScoreDebug', !('cortexScoreDebug' in result.riskEngine), result.riskEngine)
-  assert('keeps riskEngine.cortexScore for CORTEX read', result.riskEngine.cortexScore === 71)
-
-  assert('drops lpDataModeRaw', !('lpDataModeRaw' in result))
-  assert('keeps normalized public lpDataMode', result.lpDataMode === 'evidence_based', result.lpDataMode)
-
-  assert('caps priceChart.points', result.priceChart.points.length === 150, result.priceChart.points.length)
-
-  // LP public status fields are internally consistent / non-conflicting.
-  assert('lpMeta.lpControlState reflects LP control state', result.lpMeta.lpControlState === 'team_controlled')
-  assert('sections.liquidity.lpLockBurnProofStatus is distinct from top-level lpProofStatus',
-    result.sections.liquidity.lpLockBurnProofStatus === 'partial' && result.lpProofStatus === 'partial')
-  assert('no field named bare "proofStatus" at lpMeta top level', !('proofStatus' in result.lpMeta))
-  assert('no field named bare "proofStatus" at sections.liquidity.lpMeta', !('proofStatus' in result.sections.liquidity.lpMeta))
-}
-
-// ─── Scenario 2: debug=true leaves payload untouched ───────────────────────
-console.log('\nScenario 2: VIRTUAL-like token, debug === true')
-{
-  const input = buildVirtualLikePayload()
-  const result = sanitizePublicTokenResponse(input, true)
-
-  assert('debug payload is returned as-is (same reference)', result === input)
-  assert('debug keeps cortexScore', result.cortexScore === 71)
-  assert('debug keeps riskEngine.rugRiskScore', result.riskEngine.rugRiskScore === 38)
-  assert('debug keeps lpDataModeRaw', result.lpDataModeRaw === 'fallback')
-  assert('debug keeps full priceChart.points', result.priceChart.points.length === 400)
-}
-
-// ─── Scenario 3: GOAL/concentrated pool — proofApplicability regression ───
-console.log('\nScenario 3: GOAL/concentrated pool, debug !== true')
-{
-  const result = sanitizePublicTokenResponse(buildGoalLikePayload(), false)
-
-  assert('proofApplicability remains not_applicable', result.lpProofApplicability === 'not_applicable')
-  assert('lpProofStatus remains not_applicable', result.lpProofStatus === 'not_applicable')
-  assert('lpModelProof.model remains concentrated', result.lpModelProof.model === 'concentrated')
-  assert('sections.liquidity.lpLockBurnProofStatus remains not_applicable', result.sections.liquidity.lpLockBurnProofStatus === 'not_applicable')
-  assert('lpMeta.lpControlState remains concentrated_liquidity', result.lpMeta.lpControlState === 'concentrated_liquidity')
-}
-
-// ─── Scenario 4: publicLpDataMode mapping ──────────────────────────────────
-console.log('\nScenario 4: publicLpDataMode mapping')
-{
-  assert('strict -> resolved', publicLpDataMode('strict', true, true) === 'resolved')
-  assert('strict -> resolved even without pool data', publicLpDataMode('strict', false, false) === 'resolved')
-  assert('fallback + usable pool + ownership verified -> evidence_based',
-    publicLpDataMode('fallback', true, true) === 'evidence_based')
-  assert('fallback without ownership proof -> indexed (never "fallback")',
-    publicLpDataMode('fallback', true, false) === 'indexed')
-  assert('minimal -> indexed', publicLpDataMode('minimal', true, false) === 'indexed')
-  assert('insufficient -> indexed', publicLpDataMode('insufficient', false, false) === 'indexed')
-  assert('public mode is never the raw "fallback" string',
-    !['strict', 'minimal', 'fallback', 'insufficient'].includes(publicLpDataMode('fallback', true, true)))
-}
+// ─── publicLpDataMode mapping ───────────────────────────────────────────────
+console.log('\nD. publicLpDataMode mapping')
+assert('strict -> resolved', publicLpDataMode('strict', true, true) === 'resolved')
+assert('strict -> resolved even without pool data', publicLpDataMode('strict', false, false) === 'resolved')
+assert('fallback + usable pool + ownership verified -> evidence_based',
+  publicLpDataMode('fallback', true, true) === 'evidence_based')
+assert('fallback without ownership proof -> indexed (never "fallback")',
+  publicLpDataMode('fallback', true, false) === 'indexed')
+assert('minimal -> indexed', publicLpDataMode('minimal', true, false) === 'indexed')
+assert('insufficient -> indexed', publicLpDataMode('insufficient', false, false) === 'indexed')
+assert('public mode is never the raw "fallback" string',
+  !['strict', 'minimal', 'fallback', 'insufficient'].includes(publicLpDataMode('fallback', true, true)))
 
 console.log(`\n${passed} passed, ${failed} failed`)
 if (failed > 0) process.exit(1)

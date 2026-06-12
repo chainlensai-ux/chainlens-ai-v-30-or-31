@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { fetchHoneypotSecurity } from "@/lib/server/honeypotSecurity";
 import { calculateTokenRiskScore } from "@/lib/server/riskScore";
+import { sanitizePublicTokenResponse } from "@/lib/server/tokenPublicResponse";
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { type CanonicalStatus, toCanonical } from '@/lib/canonicalStatus'
 import { buildClusterMap } from '@/lib/clusterMap'
@@ -23,7 +24,6 @@ import {
   type LpPoolCandidate,
 } from '@/lib/server/lpIntelligence'
 import { calculateCortexScoreV2 } from '@/lib/token/scoring'
-import { sanitizePublicTokenResponse } from '@/lib/server/publicTokenResponse'
 
 // Local LP model/migration proof helper — pure function derived from GeckoTerminal pool data,
 // delegating to the shared classifyPoolModel() so Token Scanner and Liquidity Safety agree
@@ -6115,7 +6115,7 @@ export async function POST(req: Request) {
       devClusterSupplyPercent,
       matchedLinkedWallets,
       creatorInTopHolders,
-      ...(process.env.NODE_ENV !== 'production' || debugHolder === true ? {
+      ...(debugMode === true && debugHolder === true ? {
         debugHolderStatus: {
           providerCalled: holdersRaw?.__status !== 'not_configured',
           chain: chain === 'eth' ? 'eth-mainnet' : 'base-mainnet',
@@ -6646,25 +6646,31 @@ export async function POST(req: Request) {
       },
     }
     const cortexScoreResult = calculateCortexScoreV2(responsePayload)
-    ;(responsePayload as any).cortexScore = cortexScoreResult.cortexScore
-    ;(responsePayload as any).cortexVerdict = cortexScoreResult.cortexVerdict
-    ;(responsePayload as any).cortexConfidence = cortexScoreResult.cortexConfidence
-    ;(responsePayload as any).scoreReasons = cortexScoreResult.scoreReasons
-    ;(responsePayload as any).missingScoreInputs = cortexScoreResult.missingScoreInputs
-    ;(responsePayload as any).scoreCoveragePercent = cortexScoreResult.scoreCoveragePercent
-    ;(responsePayload as any).cortexScoreDebug = cortexScoreResult.cortexScoreDebug
+    const cortexLegacyRead = cortexScoreResult.cortexConfidence === 'insufficient'
+      ? 'CORTEX needs more evidence across core categories before calculating a score.'
+      : `Score calculated from available evidence. Missing checks reduce confidence. Coverage ${cortexScoreResult.scoreCoveragePercent}%.`
     ;(responsePayload as any).riskEngine = {
       ...(responsePayload as any).riskEngine,
-      cortexScore: cortexScoreResult.cortexScore,
-      cortexVerdict: cortexScoreResult.cortexVerdict,
-      cortexConfidence: cortexScoreResult.cortexConfidence,
-      scoreReasons: cortexScoreResult.scoreReasons,
-      missingScoreInputs: cortexScoreResult.missingScoreInputs,
-      scoreCoveragePercent: cortexScoreResult.scoreCoveragePercent,
-      cortexScoreDebug: cortexScoreResult.cortexScoreDebug,
-      cortexRead: cortexScoreResult.cortexConfidence === 'insufficient'
-        ? 'CORTEX needs more evidence across core categories before calculating a score.'
-        : `Score calculated from available evidence. Missing checks reduce confidence. Coverage ${cortexScoreResult.scoreCoveragePercent}%.`,
+      cortexRead: cortexLegacyRead,
+    }
+    if (debugMode) {
+      ;(responsePayload as any).cortexScore = cortexScoreResult.cortexScore
+      ;(responsePayload as any).cortexVerdict = cortexScoreResult.cortexVerdict
+      ;(responsePayload as any).cortexConfidence = cortexScoreResult.cortexConfidence
+      ;(responsePayload as any).scoreReasons = cortexScoreResult.scoreReasons
+      ;(responsePayload as any).missingScoreInputs = cortexScoreResult.missingScoreInputs
+      ;(responsePayload as any).scoreCoveragePercent = cortexScoreResult.scoreCoveragePercent
+      ;(responsePayload as any).cortexScoreDebug = cortexScoreResult.cortexScoreDebug
+      ;(responsePayload as any).riskEngine = {
+        ...(responsePayload as any).riskEngine,
+        cortexScore: cortexScoreResult.cortexScore,
+        cortexVerdict: cortexScoreResult.cortexVerdict,
+        cortexConfidence: cortexScoreResult.cortexConfidence,
+        scoreReasons: cortexScoreResult.scoreReasons,
+        missingScoreInputs: cortexScoreResult.missingScoreInputs,
+        scoreCoveragePercent: cortexScoreResult.scoreCoveragePercent,
+        cortexScoreDebug: cortexScoreResult.cortexScoreDebug,
+      }
     }
 
     const tokenRiskScoreResult = calculateTokenRiskScore({
@@ -7123,7 +7129,7 @@ export async function POST(req: Request) {
     } else {
       delete (responsePayload as any)._diagnostics
     }
-    return NextResponse.json(sanitizePublicTokenResponse(responsePayload, debugMode))
+    return NextResponse.json(sanitizePublicTokenResponse(responsePayload as Record<string, any>, debugMode === true))
   } catch (err) {
     console.error("Fatal backend error:", err);
     const _failureReason = err instanceof Error ? err.message : 'unknown_error'
