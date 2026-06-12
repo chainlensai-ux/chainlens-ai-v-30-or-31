@@ -4825,6 +4825,16 @@ export async function POST(req: Request) {
     const poolCount = matchingPools.length
     const observedPoolPresent = Boolean(lpDiagnostics.poolDetected || lpDiagnostics.primaryMarketPoolAddress || lpDiagnostics.lpVerificationPoolAddress)
     const observedPoolCount: number | null = poolCount > 0 ? poolCount : (observedPoolPresent ? null : 0)
+    // Fallback-market normalization: when the primary pool read has no usable pair timestamp
+    // or pool count but the secondary market read confirms a single usable pool address with
+    // liquidity, surface that evidence instead of leaving LP context as null/unknown.
+    const _dexFbCreatedAtMs = _dexFb?.pairCreatedAt != null ? Number(_dexFb.pairCreatedAt) : null
+    const normalizedPairCreatedAt = pairCreatedAt
+      ?? (_dexFbCreatedAtMs != null && Number.isFinite(_dexFbCreatedAtMs) && _dexFbCreatedAtMs > 0
+        ? new Date(_dexFbCreatedAtMs).toISOString()
+        : null)
+    const normalizedObservedPoolCount: number | null = observedPoolCount
+      ?? (marketDataSource === 'fallback' && _fallbackLiquidityDetected && lpPoolAddressPresent ? 1 : observedPoolCount)
     const poolCountStatus: 'confirmed' | 'inferred_from_primary_pool' | 'unknown' = poolCount > 0
       ? 'confirmed'
       : observedPoolPresent
@@ -5481,7 +5491,10 @@ export async function POST(req: Request) {
     // exitControlRisk via the shared computeLpExitRisk helper, used identically by
     // Liquidity Safety so the two routes never disagree. Computed before cortexLpRead so the
     // CORTEX LP read can describe liquidity depth and LP control as separate risk dimensions.
-    const _liqForRisk = liquidityUsd
+    // Use the effective (fallback-aware) liquidity for LP exit-risk, cortexLpRead, and the
+    // public selectedPool/LP-intel views so a fallback-only liquidity read still informs LP
+    // context. The Token Safety Score itself keeps using the primary-only `liquidityUsd`.
+    const _liqForRisk = _el
     const lpProofStatusNew: 'confirmed' | 'partial' | 'missing' | 'not_applicable' | 'unknown' =
       (lpProofApplicability === 'not_applicable' || lpProofApplicability === 'not_available') ? 'not_applicable' :
       (lpLockStatus === 'locked' || lpLockStatus === 'burned') ? 'confirmed' :
@@ -5508,7 +5521,7 @@ export async function POST(req: Request) {
     const cortexLpRead = buildSharedCortexLpRead({
       name: finalResolvedName !== 'Unknown' ? finalResolvedName : (finalResolvedSymbol !== '?' ? finalResolvedSymbol : 'This token'),
       symbol: finalResolvedSymbol,
-      totalLiq: liquidityUsd,
+      totalLiq: _el,
       fragments: Array.isArray(gtAllPools) ? gtAllPools.length : (liquidityUsd != null ? 1 : 0),
       observedPoolPresent,
       riskTier: rugRiskLabel,
@@ -5558,7 +5571,7 @@ export async function POST(req: Request) {
         pair: lpPair ?? null,
         address: lpPoolAddress ?? null,
         model: lpModelProof.model,
-        liquidityUsd,
+        liquidityUsd: _el,
       },
       lpExitRisk,
       liquidityDepthRisk,
@@ -5575,7 +5588,7 @@ export async function POST(req: Request) {
         pair: lpPair ?? null,
         address: lpPoolAddress ?? null,
         model: lpModelProof.model,
-        liquidityUsd,
+        liquidityUsd: _el,
       },
       lpMeta: { teamPercent: lpDiagnostics.teamPercent, lpToken: lpDiagnostics.lpTokenAddress },
     })
@@ -5587,7 +5600,7 @@ export async function POST(req: Request) {
         pair: lpPair ?? null,
         address: lpPoolAddress ?? null,
         model: lpModelProof.model,
-        liquidityUsd,
+        liquidityUsd: _el,
       },
       lpMeta: {
         teamPercent: lpDiagnostics.teamPercent,
@@ -6178,9 +6191,9 @@ export async function POST(req: Request) {
       priceSource: publicSourceLabel(_priceSource, debugMode),
       liquidityUsd: _el,
       volume24hUsd: _ev,
-      poolCount: observedPoolCount,
+      poolCount: normalizedObservedPoolCount,
       observedPoolPresent,
-      observedPoolCount,
+      observedPoolCount: normalizedObservedPoolCount,
       poolCountStatus,
       primaryDexName,
       // Legacy pool-level field kept for frontend pair display
@@ -6251,8 +6264,8 @@ export async function POST(req: Request) {
         address: lpPoolAddress ?? null,
         dex: lpControl.primaryPoolDex ?? null,
         model: lpModelProof.model,
-        liquidityUsd: liquidityUsd,
-        createdAt: pairCreatedAt ?? null,
+        liquidityUsd: _el,
+        createdAt: normalizedPairCreatedAt,
       },
       ...(debugMode ? {
         gtPools: matchingPools,

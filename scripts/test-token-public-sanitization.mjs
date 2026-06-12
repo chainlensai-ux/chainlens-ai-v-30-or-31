@@ -3,7 +3,7 @@
  * Run: node --experimental-strip-types scripts/test-token-public-sanitization.mjs
  */
 import { sanitizePublicTokenResponse } from '../lib/server/tokenPublicResponse.ts'
-import { publicLpDataMode } from '../lib/server/lpProof.ts'
+import { publicLpDataMode, computeLpExitRisk, buildCortexLpRead } from '../lib/server/lpProof.ts'
 import { buildLpControllerIntel } from '../lib/server/lpControllerIntel.ts'
 import { buildLpMovementWatch } from '../lib/server/lpMovementWatch.ts'
 import { buildLpLockBurnIntel, LP_LOCK_BURN_REGISTRY } from '../lib/server/lpLockBurnIntel.ts'
@@ -390,6 +390,180 @@ assert('burned LP status is burned', burned.status === 'burned', burned)
 assert('burned LP unlockRisk is none', burned.unlockRisk === 'none', burned)
 assert('burned LP unlockTimeStatus is not_applicable', burned.unlockTimeStatus === 'not_applicable', burned)
 assert('burned LP has no countdown', burned.unlockCountdownSeconds == null, burned)
+
+// ─── F. VIRTUAL fallback market normalization ──────────────────────────────
+// Mirrors route.ts's normalization: when marketDataSource === 'fallback', the secondary
+// market read's liquidityUsd/pairCreatedAt become the effective values (_el/normalizedPairCreatedAt)
+// fed into selectedPool, LP exit-risk, and cortexLpRead — instead of leaving them null.
+console.log('\nF. VIRTUAL fallback market normalization')
+const fallbackDexFb = {
+  liquidityUsd: 3_170_000,
+  pairCreatedAt: '1711899559000',
+  pairAddress: '0x21594b992f68495dd28d605834b58889d0a727c7',
+}
+const _elFallback = fallbackDexFb.liquidityUsd
+const normalizedCreatedAtFallback = new Date(Number(fallbackDexFb.pairCreatedAt)).toISOString()
+
+const fallbackPayload = {
+  chain: 'base',
+  contract: '0x0000000000000000000000000000000000000002',
+  name: 'Virtuals Protocol',
+  symbol: 'VIRTUAL',
+  marketDataSource: 'fallback',
+  selectedPool: {
+    address: fallbackDexFb.pairAddress,
+    pair: 'VIRTUAL / WETH',
+    dex: 'geckoterminal',
+    model: 'constant_product',
+    liquidityUsd: _elFallback,
+    createdAt: normalizedCreatedAtFallback,
+  },
+  riskScore: 58,
+  riskLabel: 'moderate',
+  riskBreakdown: { total: 58, liquiditySafety: { score: 7, max: 30, reasons: ['Wallet-controlled LP'] } },
+  lpControl: {
+    status: 'team_controlled',
+    proofStatus: 'open_check',
+    lockStatus: 'not_confirmed',
+    burnStatus: 'not_confirmed',
+    lpController: '0xbd62cad65b49b4ad9c7aa9b8bdb89d63221f7af5',
+    lpControllerType: 'wallet',
+    evidence: ['top_holder=0xbd62cad65b49b4ad9c7aa9b8bdb89d63221f7af5', 'top_share=82.45%'],
+    reason: 'Holder evidence confirmed LP controller wallet.',
+  },
+  lpControlRead: { title: 'LP controlled by wallet', meaning: 'Control Proof: Confirmed' },
+  lpMigrationProof: { status: 'low', reason: 'Fallback market data shows a usable pool.' },
+  lpProofApplicability: 'applicable',
+  lpDataMode: 'evidence_based',
+  lpDataModeRaw: 'fallback',
+  lpModelProof: {
+    model: 'constant_product',
+    dexName: 'aerodrome-base',
+    standardLockApplies: true,
+  },
+  lpMeta: {
+    primaryMarketDex: 'Aerodrome',
+    lpControlState: 'team_controlled',
+  },
+  sections: {
+    liquidity: {
+      lpLockBurnProofStatus: 'partial',
+      lpMeta: {
+        primaryMarketDex: 'Aerodrome',
+        lpControlState: 'team_controlled',
+      },
+    },
+  },
+  holderDistribution: { top10: 48, holderCount: 100000, topHolders: holders },
+  poolActivity: { pairCreatedAt: fallbackDexFb.pairCreatedAt },
+  poolCount: 1,
+  observedPoolPresent: true,
+  observedPoolCount: 1,
+}
+
+// LP exit-risk computed with the normalized fallback liquidity (_el) — matches route.ts's
+// `_liqForRisk = _el` for a wallet-controlled, applicable-proof, has-pool scenario.
+const fallbackExitRiskResult = computeLpExitRisk({
+  proofApplicability: 'applicable',
+  lpLockStatus: 'unlocked',
+  lpController: 'wallet',
+  liquidityUsd: _elFallback,
+  poolModel: 'constant_product',
+  hasPool: true,
+  lpControllerAddress: fallbackPayload.lpControl.lpController,
+  isEstablishedToken: false,
+})
+fallbackPayload.lpExitRisk = fallbackExitRiskResult.lpExitRisk
+fallbackPayload.lpExitRiskReason = fallbackExitRiskResult.lpExitRiskReason
+fallbackPayload.liquidityDepthRisk = fallbackExitRiskResult.liquidityDepthRisk
+fallbackPayload.lpProofStatus =
+  fallbackPayload.lpControl.lockStatus === 'locked' || fallbackPayload.lpControl.burnStatus === 'burned' ? 'confirmed'
+  : fallbackPayload.lpControl.lockStatus === 'not_confirmed' ? 'missing'
+  : 'partial'
+fallbackPayload.lpEvidenceSummary = [
+  `Pool model: ${fallbackPayload.lpModelProof.model}`,
+  `Liquidity: $${_elFallback.toLocaleString(undefined, { maximumFractionDigits: 0 })}`,
+  `Proof applicability: ${fallbackPayload.lpProofApplicability}`,
+  `Proof status: ${fallbackPayload.lpProofStatus}`,
+  `Migration: ${fallbackPayload.lpMigrationProof.status}`,
+].join(' | ')
+
+fallbackPayload.cortexLpRead = buildCortexLpRead({
+  name: fallbackPayload.name,
+  symbol: fallbackPayload.symbol,
+  totalLiq: _elFallback,
+  fragments: 1,
+  observedPoolPresent: true,
+  riskTier: 'watch',
+  liquidityDepthRisk: fallbackPayload.liquidityDepthRisk,
+  lpModel: fallbackPayload.lpModelProof,
+  migrationSummary: fallbackPayload.lpMigrationProof.reason,
+  mode: 'fallback',
+  confidence: 'medium',
+  gaps: [],
+  lpLockStatus: 'unlocked',
+  lpLockProvider: null,
+  lpUnlockTime: null,
+  lpController: 'wallet',
+  lpControllerAddress: fallbackPayload.lpControl.lpController,
+  isEstablishedToken: false,
+  proofApplicability: 'applicable',
+  fallbackLiquidityDetected: true,
+})
+
+fallbackPayload.lpControllerIntel = buildLpControllerIntel({
+  lpControl: fallbackPayload.lpControl,
+  lpControlRead: fallbackPayload.lpControlRead,
+  selectedPool: fallbackPayload.selectedPool,
+  lpExitRisk: fallbackPayload.lpExitRisk,
+  liquidityDepthRisk: fallbackPayload.liquidityDepthRisk,
+  lpMigrationProof: fallbackPayload.lpMigrationProof,
+  lpEvidenceGaps: [],
+  lpMeta: fallbackPayload.lpMeta,
+  lpDataMode: fallbackPayload.lpDataMode,
+})
+fallbackPayload.lpMovementWatch = buildLpMovementWatch({
+  chain: fallbackPayload.chain,
+  lpControllerIntel: fallbackPayload.lpControllerIntel,
+  lpControl: fallbackPayload.lpControl,
+  selectedPool: fallbackPayload.selectedPool,
+  lpMeta: fallbackPayload.lpMeta,
+})
+fallbackPayload.lpLockBurnIntel = buildLpLockBurnIntel({
+  chain: fallbackPayload.chain,
+  lpControllerIntel: fallbackPayload.lpControllerIntel,
+  lpControl: fallbackPayload.lpControl,
+  selectedPool: fallbackPayload.selectedPool,
+  lpMeta: fallbackPayload.lpMeta,
+})
+fallbackPayload.lpUnlockTimeline = buildLpUnlockTimeline({
+  chain: fallbackPayload.chain,
+  lpLockBurnIntel: fallbackPayload.lpLockBurnIntel,
+})
+
+const fallbackPublicPayload = sanitizePublicTokenResponse(JSON.parse(JSON.stringify(fallbackPayload)), false)
+
+assert('fallback selectedPool.liquidityUsd uses fallback liquidity', fallbackPublicPayload.selectedPool?.liquidityUsd === 3_170_000, fallbackPublicPayload.selectedPool)
+assert('fallback selectedPool.createdAt is normalized ISO from pairCreatedAt ms', fallbackPublicPayload.selectedPool?.createdAt === new Date(1711899559000).toISOString(), fallbackPublicPayload.selectedPool)
+assert('fallback poolActivity.pairCreatedAt preserved', fallbackPublicPayload.poolActivity?.pairCreatedAt === '1711899559000', fallbackPublicPayload.poolActivity)
+assert('fallback lpControllerIntel.poolLiquidityUsd is not null', fallbackPublicPayload.lpControllerIntel?.poolLiquidityUsd === 3_170_000, fallbackPublicPayload.lpControllerIntel)
+assert('fallback liquidityDepthRisk is low/deep with ~$3.17M liquidity', fallbackPublicPayload.liquidityDepthRisk === 'low', fallbackPublicPayload.liquidityDepthRisk)
+assert('fallback lpControllerIntel.liquidityDepth is deep', fallbackPublicPayload.lpControllerIntel?.liquidityDepth === 'deep', fallbackPublicPayload.lpControllerIntel)
+assert('fallback lpExitRisk is watch (not high) for wallet-controlled deep liquidity', fallbackPublicPayload.lpExitRisk === 'watch', fallbackPublicPayload.lpExitRisk)
+assert('fallback cortexLpRead.liquidityAnalysis mentions observed liquidity (not "no active pool")', /Observed liquidity is approximately/i.test(fallbackPublicPayload.cortexLpRead?.liquidityAnalysis ?? ''), fallbackPublicPayload.cortexLpRead?.liquidityAnalysis)
+assert('fallback cortexLpRead.riskSummary does not say liquidity depth could not be confirmed', !/Liquidity depth could not be confirmed/i.test(fallbackPublicPayload.cortexLpRead?.riskSummary ?? ''), fallbackPublicPayload.cortexLpRead?.riskSummary)
+assert('fallback cortexLpRead.riskSummary says liquidity depth is deep', /Liquidity depth is deep/i.test(fallbackPublicPayload.cortexLpRead?.riskSummary ?? ''), fallbackPublicPayload.cortexLpRead?.riskSummary)
+assert('fallback cortexLpRead.mode is evidence-based, not raw "fallback"', fallbackPublicPayload.cortexLpRead?.mode === 'evidence-based', fallbackPublicPayload.cortexLpRead?.mode)
+assert('fallback lpLockBurnIntel.status remains open_check', fallbackPublicPayload.lpLockBurnIntel?.status === 'open_check', fallbackPublicPayload.lpLockBurnIntel)
+assert('fallback lpLockBurnIntel does not fake locked/burned percentages', fallbackPublicPayload.lpLockBurnIntel?.lockedPercent == null && fallbackPublicPayload.lpLockBurnIntel?.burnedPercent == null, fallbackPublicPayload.lpLockBurnIntel)
+assert('fallback lpUnlockTimeline.status remains open_check', fallbackPublicPayload.lpUnlockTimeline?.status === 'open_check', fallbackPublicPayload.lpUnlockTimeline)
+assert('fallback lpUnlockTimeline.unlockTime is null (no fake date)', fallbackPublicPayload.lpUnlockTimeline?.unlockTime === null, fallbackPublicPayload.lpUnlockTimeline)
+assert('fallback lpProofStatus normalized to open_check', fallbackPublicPayload.lpProofStatus === 'open_check', fallbackPublicPayload.lpProofStatus)
+assert('fallback sections.liquidity.lpLockBurnProofStatus normalized to open_check', fallbackPublicPayload.sections.liquidity.lpLockBurnProofStatus === 'open_check', fallbackPublicPayload.sections.liquidity.lpLockBurnProofStatus)
+assert('fallback poolCount/observedPoolCount are conservatively 1, not null', fallbackPublicPayload.poolCount === 1 && fallbackPublicPayload.observedPoolCount === 1, { poolCount: fallbackPublicPayload.poolCount, observedPoolCount: fallbackPublicPayload.observedPoolCount })
+for (const provider of providerNames) assert(`fallback response does not expose provider name ${provider}`, !serialized(fallbackPublicPayload).includes(provider), provider)
+for (const rawId of rawDexIds) assert(`fallback response does not expose raw DEX id ${rawId}`, !serialized(fallbackPublicPayload).includes(rawId), rawId)
+assert('fallback response has no legacy Rug-risk pressure wording', !/Rug-risk pressure/i.test(serialized(fallbackPublicPayload)), fallbackPublicPayload)
 
 console.log(`\n${passed} passed, ${failed} failed`)
 if (failed > 0) process.exit(1)
