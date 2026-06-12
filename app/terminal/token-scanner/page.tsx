@@ -155,6 +155,7 @@ type ScanResult = {
   lpProofApplicability?: 'applicable' | 'not_applicable' | 'unknown'
   lpProofStatus?: 'confirmed' | 'partial' | 'missing' | 'not_applicable' | 'unknown'
   lpExitRisk?: 'low' | 'monitor' | 'watch' | 'medium' | 'high' | 'open_check'
+  liquidityDepthRisk?: 'low' | 'medium' | 'high' | 'open_check'
   lpExitRiskReason?: string
   lpEvidenceSummary?: string
   lpEvidenceGaps?: Array<{ id: string; label: string; explanation: string; nextAction: string }>
@@ -3012,7 +3013,7 @@ function ContractRiskSection({ gp, hp }: { gp: Record<string, unknown> | null; h
         marginBottom: '12px', fontFamily: 'var(--font-plex-mono)',
       }}>
         Security Simulation
-        {hp?.simulationSuccess && <span style={{ color: '#1e3a44', marginLeft: '6px' }}>· Honeypot.is</span>}
+        {hp?.simulationSuccess && <span style={{ color: '#1e3a44', marginLeft: '6px' }}>· Simulation evidence</span>}
         
       </p>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '7px' }}>
@@ -3255,6 +3256,7 @@ export default function TerminalTokenScanner() {
           lpProofStatus: json.lpProofStatus ?? undefined,
           lpExitRisk: json.lpExitRisk ?? undefined,
           lpExitRiskReason: json.lpExitRiskReason ?? undefined,
+          liquidityDepthRisk: json.liquidityDepthRisk ?? undefined,
           lpEvidenceSummary: json.lpEvidenceSummary ?? undefined,
           lpEvidenceGaps: json.lpEvidenceGaps ?? undefined,
           lpDataMode: json.lpDataMode ?? undefined,
@@ -4031,10 +4033,10 @@ export default function TerminalTokenScanner() {
                             <span style={{ fontSize: '8px', fontWeight: 700, letterSpacing: '0.08em', padding: '1px 6px', borderRadius: '99px', color: '#94a3b8', background: 'rgba(148,163,184,0.10)', border: '1px solid rgba(148,163,184,0.22)', textTransform: 'uppercase' }}>Estimated from FDV</span>
                           )}
                           {result.priceSource === 'coingecko' && (
-                            <span style={{ fontSize: '8px', fontWeight: 700, letterSpacing: '0.08em', padding: '1px 6px', borderRadius: '99px', color: '#94a3b8', background: 'rgba(148,163,184,0.10)', border: '1px solid rgba(148,163,184,0.22)', textTransform: 'uppercase' }}>CoinGecko</span>
+                            <span style={{ fontSize: '8px', fontWeight: 700, letterSpacing: '0.08em', padding: '1px 6px', borderRadius: '99px', color: '#94a3b8', background: 'rgba(148,163,184,0.10)', border: '1px solid rgba(148,163,184,0.22)', textTransform: 'uppercase' }}>Market data</span>
                           )}
                           {result.priceSource === 'dexscreener' && (
-                            <span style={{ fontSize: '8px', fontWeight: 700, letterSpacing: '0.08em', padding: '1px 6px', borderRadius: '99px', color: '#94a3b8', background: 'rgba(148,163,184,0.10)', border: '1px solid rgba(148,163,184,0.22)', textTransform: 'uppercase' }}>DexScreener</span>
+                            <span style={{ fontSize: '8px', fontWeight: 700, letterSpacing: '0.08em', padding: '1px 6px', borderRadius: '99px', color: '#94a3b8', background: 'rgba(148,163,184,0.10)', border: '1px solid rgba(148,163,184,0.22)', textTransform: 'uppercase' }}>Market data</span>
                           )}
                           {result.price != null && result.priceSource == null && (
                             <span style={{ fontSize: '8px', fontWeight: 700, letterSpacing: '0.08em', padding: '1px 6px', borderRadius: '99px', color: '#94a3b8', background: 'rgba(148,163,184,0.10)', border: '1px solid rgba(148,163,184,0.22)', textTransform: 'uppercase' }}>Unverified price</span>
@@ -4606,13 +4608,9 @@ export default function TerminalTokenScanner() {
                     const lpModeVal = getLpMode(result)
                     const lpStatus = result.lpControl?.status
                     const dm3 = result.lpControl?.displayLpModel
-                    const poolCount = result.pools?.length ?? 0
                     const hasLiquidity = (result.liquidity ?? 0) > 0
                     const hasPool = hasLiquidity || result.lpControl?.poolAddressPresent
                     const notApplicable = dm3 === 'concentrated_liquidity' || dm3 === 'protocol_or_gauge' || result.lpControl?.proofStatus === 'not_applicable'
-                    const lpProofVal = notApplicable ? 'Not applicable'
-                      : lpStatus === 'burned' || lpStatus === 'locked' ? 'Confirmed'
-                      : 'Open Check'
                     // Migration risk comes from real migration evidence (lpMigrationProof / riskEngine.lpIntelligence),
                     // never inferred from pool count alone.
                     const migProofStatus = result.lpMigrationProof?.status
@@ -4626,12 +4624,39 @@ export default function TerminalTokenScanner() {
                       : migrationRisk === 'Elevated' ? '#f87171'
                       : migrationRisk === 'Monitor' ? '#fbbf24'
                       : undefined
+                    const controlProof = result.lpControl?.status === 'team_controlled' || result.lpControl?.proofStatus === 'verified'
+                      ? 'Confirmed'
+                      : result.lpControl?.proofStatus === 'not_applicable' ? 'Not applicable' : 'Open Check'
+                    const lockBurnProof = result.lpControl?.lockStatus === 'locked' || result.lpControl?.burnStatus === 'burned'
+                      ? 'Confirmed'
+                      : notApplicable ? 'Not applicable' : 'Open Check'
+                    const liquidityDepth = result.liquidityDepthRisk === 'low'
+                      ? 'Deep'
+                      : result.liquidityDepthRisk === 'medium' ? 'Moderate'
+                      : result.liquidityDepthRisk === 'high' ? 'Thin'
+                      : (result.liquidity ?? 0) > 500_000 ? 'Deep'
+                      : (result.liquidity ?? 0) > 50_000 ? 'Moderate'
+                      : hasPool ? 'Thin' : 'Open Check'
+                    const exitRisk = result.lpExitRisk === 'low' ? 'Low'
+                      : result.lpExitRisk === 'watch' || result.lpExitRisk === 'monitor' ? 'Watch'
+                      : result.lpExitRisk === 'medium' ? 'Monitor'
+                      : result.lpExitRisk === 'high' ? 'High' : 'Open Check'
+                    const lpControlDisplay = result.lpControl?.status === 'team_controlled' || result.lpControl?.lpControllerType === 'wallet'
+                      ? 'Wallet Controlled'
+                      : lpModeVal === 'protocol' ? 'Protocol-Managed'
+                      : lpStatus === 'burned' ? 'Burned'
+                      : lpStatus === 'locked' ? 'Locked'
+                      : lpStatus === 'partial' ? 'Partial'
+                      : lpStatus === 'no_pool' ? 'Open Check'
+                      : (lpStatus ? lpStatus.replace(/_/g, ' ') : 'Open Check')
                     const rows: { label: string; value: string; color?: string }[] = [
-                      { label: 'Liquidity', value: result.liquidity != null ? `$${fmtLarge(result.liquidity)}` : 'Open Check' },
-                      { label: 'Primary Pool', value: result.primaryDexName ?? result.pools?.[0]?.name ?? 'Open Check' },
-                      { label: 'Pool Count', value: poolCount > 0 ? `${poolCount} pool${poolCount > 1 ? 's' : ''}` : hasPool ? 'Pool detected' : 'Open Check' },
-                      { label: 'LP Proof', value: lpProofVal },
+                      { label: 'LP Control', value: lpControlDisplay, color: lpControlDisplay === 'Wallet Controlled' ? '#fbbf24' : undefined },
+                      { label: 'Control Proof', value: controlProof, color: controlProof === 'Confirmed' ? '#34d399' : undefined },
+                      { label: 'Lock/Burn Proof', value: lockBurnProof, color: lockBurnProof === 'Confirmed' ? '#34d399' : lockBurnProof === 'Open Check' ? '#fbbf24' : undefined },
+                      { label: 'Exit Risk', value: exitRisk, color: exitRisk === 'Low' ? '#34d399' : exitRisk === 'Watch' || exitRisk === 'Monitor' ? '#fbbf24' : exitRisk === 'High' ? '#f87171' : undefined },
+                      { label: 'Liquidity Depth', value: liquidityDepth, color: liquidityDepth === 'Deep' ? '#34d399' : liquidityDepth === 'Moderate' ? '#fbbf24' : liquidityDepth === 'Thin' ? '#f87171' : undefined },
                       { label: 'Migration Risk', value: migrationRisk, color: migrationRiskColor },
+                      { label: 'Primary Pool', value: result.primaryDexName ?? result.pools?.[0]?.name ?? 'Pool detected' },
                     ]
                     return (
                       <div style={{ marginBottom: '14px', padding: '10px 14px', background: 'rgba(8,14,28,0.55)', border: '1px solid rgba(148,163,184,0.10)', borderRadius: '12px' }}>
