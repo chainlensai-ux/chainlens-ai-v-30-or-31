@@ -40,6 +40,31 @@ const PROVIDER_NAME_REPLACEMENTS: Array<[RegExp, string]> = [
   [/gmgn/gi, 'Market data'],
 ]
 
+
+function formatTokenSafetyScore(payload: Record<string, any>): string {
+  const score = typeof payload.riskScore === 'number' ? payload.riskScore : null
+  const rawLabel = typeof payload.riskLabel === 'string' ? payload.riskLabel : null
+  const label = rawLabel ? ` (${rawLabel})` : ''
+  return score == null ? `Token Safety Score${label}` : `Token Safety Score: ${score}/100${label}`
+}
+
+function rewriteLegacyRiskSummaryText(text: string, payload: Record<string, any>): string {
+  return text.replace(/Rug-risk pressure:\s*\d+\s*\/\s*100\.?/gi, `${formatTokenSafetyScore(payload)}.`)
+}
+
+function rewriteLegacyRiskSummaryValues(value: unknown, payload: Record<string, any>): unknown {
+  if (typeof value === 'string') return rewriteLegacyRiskSummaryText(value, payload)
+  if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index++) value[index] = rewriteLegacyRiskSummaryValues(value[index], payload)
+    return value
+  }
+  if (!value || typeof value !== 'object') return value
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    ;(value as Record<string, unknown>)[key] = rewriteLegacyRiskSummaryValues(raw, payload)
+  }
+  return value
+}
+
 function sanitizePublicString(value: string): string {
   return PROVIDER_NAME_REPLACEMENTS.reduce((text, [pattern, replacement]) => text.replace(pattern, replacement), value)
 }
@@ -91,32 +116,16 @@ export function sanitizePublicTokenResponse<T extends Record<string, any>>(paylo
     delete (sanitized as any).sections.contractChecks.symbolFallback
   }
   if ((sanitized as any).rugRisk) {
-    // rugRisk.score/label/overall_rug_risk_score are the legacy V1 rug-risk score —
-    // competes with the public Token Safety Score (riskScore/riskLabel/riskBreakdown).
-    // Keep only the non-score status fields (lp_safety, contract_flags, etc.) publicly.
-    delete (sanitized as any).rugRisk.score
-    delete (sanitized as any).rugRisk.label
-    delete (sanitized as any).rugRisk.overall_rug_risk_score
+    ;(sanitized as any).rugRisk = {
+      status: (sanitized as any).rugRisk.status ?? null,
+    }
   }
   // riskEngine.rugRiskScore/rugRiskLabel are the legacy V1 score — competes with the
   // public Token Safety Score (riskScore/riskLabel/riskBreakdown), debug-only.
   if ((sanitized as any).riskEngine) {
     delete (sanitized as any).riskEngine.rugRiskScore
     delete (sanitized as any).riskEngine.rugRiskLabel
-  }
-  // riskEngine.clarkInterpretation.summary embeds the legacy "Rug-risk pressure: X/100"
-  // wording — rewrite it to reference the canonical public Token Safety Score instead.
-  if (typeof (sanitized as any).riskEngine?.clarkInterpretation?.summary === 'string') {
-    const ci = (sanitized as any).riskEngine.clarkInterpretation
-    const riskScore = (sanitized as any).riskScore
-    const riskLabel = (sanitized as any).riskLabel
-    const replacement = (riskScore != null && riskLabel != null)
-      ? `Token Safety Score: ${riskScore}/100 (${String(riskLabel).replace(/_/g, ' ')}).`
-      : ''
-    ci.summary = ci.summary
-      .replace(/Rug-risk pressure:\s*\d+\/100\.?/gi, replacement)
-      .replace(/\s{2,}/g, ' ')
-      .trim()
+    rewriteLegacyRiskSummaryValues((sanitized as any).riskEngine.clarkInterpretation, sanitized as Record<string, any>)
   }
   // lp_data_mode raw value ('strict'|'minimal'|'fallback'|'insufficient') is internal —
   // public callers get the normalized lpDataMode field instead. cortexLpRead.mode and any
@@ -142,5 +151,6 @@ export function sanitizePublicTokenResponse<T extends Record<string, any>>(paylo
   if ((sanitized as any).projectSocials) {
     delete (sanitized as any).projectSocials.sourceTrail
   }
+  rewriteLegacyRiskSummaryValues(sanitized, sanitized as Record<string, any>)
   return sanitized
 }

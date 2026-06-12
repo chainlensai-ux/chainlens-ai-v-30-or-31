@@ -195,6 +195,26 @@ type ScanResult = {
     evidenceGaps?: string[]
     nextActions?: string[]
   } | null
+  lpLockBurnIntel?: {
+    status?: string
+    lockBurnProof?: string
+    proofSource?: string | null
+    confidence?: string
+    chain?: string | null
+    poolModel?: string | null
+    lpTokenOrPool?: string | null
+    lockedPercent?: number | null
+    burnedPercent?: number | null
+    unlockedPercent?: number | null
+    lockContracts?: string[]
+    burnAddresses?: string[]
+    unlockTime?: string | number | null
+    unlockTimeStatus?: string
+    summary?: string
+    signals?: string[]
+    evidenceGaps?: string[]
+    nextActions?: string[]
+  } | null
   lpDataMode?: 'resolved' | 'evidence_based' | 'indexed' | 'strict' | 'minimal' | 'fallback' | 'insufficient'
   lpDataModeRaw?: 'strict' | 'minimal' | 'fallback' | 'insufficient'
   lpDataConfidence?: 'high' | 'medium' | 'low' | 'unverified'
@@ -4757,6 +4777,54 @@ export default function TerminalTokenScanner() {
                       </div>
                     </div>
                   )}
+
+                  {/* ── LP Lock/Burn Intelligence ─────────────────── */}
+                  {result.lpLockBurnIntel && (
+                    <div style={{ marginBottom: '14px', padding: '12px 14px', background: 'linear-gradient(135deg, rgba(34,211,238,0.07), rgba(15,23,42,0.72))', border: '1px solid rgba(34,211,238,0.20)', borderRadius: '14px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'flex-start', marginBottom: '10px' }}>
+                        <div>
+                          <p style={{ margin: 0, fontSize: '10px', fontWeight: 900, letterSpacing: '.16em', color: '#67e8f9', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>LP Lock/Burn Intelligence</p>
+                          {result.lpLockBurnIntel.summary && <p style={{ margin: '7px 0 0', fontSize: '11px', color: '#bae6fd', lineHeight: 1.55, fontFamily: 'var(--font-plex-mono)' }}>{result.lpLockBurnIntel.summary}</p>}
+                        </div>
+                        <span style={{ flexShrink: 0, padding: '4px 9px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '.10em', color: result.lpLockBurnIntel.lockBurnProof === 'confirmed' ? '#34d399' : result.lpLockBurnIntel.lockBurnProof === 'not_applicable' ? '#94a3b8' : '#fbbf24', background: 'rgba(2,6,23,0.48)', border: '1px solid rgba(34,211,238,0.25)', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
+                          {result.lpLockBurnIntel.status?.replace(/_/g, ' ') ?? 'open check'}
+                        </span>
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(145px,1fr))', gap: '7px', marginBottom: '10px' }}>
+                        {([
+                          ['Lock/Burn Proof', result.lpLockBurnIntel.lockBurnProof?.replace(/_/g, ' ') ?? 'open check'],
+                          ['Locked %', result.lpLockBurnIntel.lockedPercent == null ? 'Open check' : `${result.lpLockBurnIntel.lockedPercent.toFixed(2)}%`],
+                          ['Burned %', result.lpLockBurnIntel.burnedPercent == null ? 'Open check' : `${result.lpLockBurnIntel.burnedPercent.toFixed(2)}%`],
+                          ['Unlock Time', result.lpLockBurnIntel.unlockTime == null ? (result.lpLockBurnIntel.unlockTimeStatus === 'not_applicable' ? 'Not applicable' : 'Open check') : new Date(result.lpLockBurnIntel.unlockTime).toLocaleString()],
+                          ['Proof Source', result.lpLockBurnIntel.proofSource?.replace(/_/g, ' ') ?? 'Open check'],
+                          ['Confidence', result.lpLockBurnIntel.confidence ?? 'low'],
+                        ] as Array<[string, string]>).map(([label, value]) => (
+                          <div key={label} style={{ padding: '8px 9px', borderRadius: '10px', background: 'rgba(2,6,23,0.42)', border: '1px solid rgba(148,163,184,0.10)', minWidth: 0 }}>
+                            <div style={{ fontSize: '9px', color: '#64748b', letterSpacing: '.10em', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '4px' }}>{label}</div>
+                            <div style={{ fontSize: '11px', color: /confirmed|locked|burned|high/i.test(value) ? '#34d399' : /not applicable/i.test(value) ? '#94a3b8' : /open|unknown|low/i.test(value) ? '#fbbf24' : '#e2e8f0', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'capitalize', overflow: 'hidden', textOverflow: 'ellipsis' }}>{value}</div>
+                          </div>
+                        ))}
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(170px,1fr))', gap: '9px' }}>
+                        {[
+                          ['Signals', result.lpLockBurnIntel.signals ?? [], '#34d399'],
+                          ['Gaps', result.lpLockBurnIntel.evidenceGaps ?? [], '#fbbf24'],
+                          ['Actions', result.lpLockBurnIntel.nextActions ?? [], '#67e8f9'],
+                        ].map(([title, items, color]) => (
+                          <div key={String(title)} style={{ minWidth: 0 }}>
+                            <p style={{ margin: '0 0 6px', fontSize: '9px', color: String(color), fontWeight: 900, letterSpacing: '.12em', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{String(title)}</p>
+                            {(items as string[]).slice(0, 4).map((item) => (
+                              <div key={item} style={{ display: 'flex', gap: '6px', marginBottom: '4px', alignItems: 'flex-start' }}>
+                                <span style={{ color: String(color), fontSize: '10px', lineHeight: '15px' }}>•</span>
+                                <p style={{ margin: 0, fontSize: '10px', color: '#94a3b8', lineHeight: 1.45, fontFamily: 'var(--font-plex-mono)' }}>{item}</p>
+                              </div>
+                            ))}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
 
                   {/* ── LP Movement Watch ─────────────────────────── */}
                   {result.lpMovementWatch && (
