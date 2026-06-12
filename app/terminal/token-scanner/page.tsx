@@ -243,6 +243,35 @@ type ScanResult = {
     finalVerdict?: string
     confidence?: string
   }
+  riskScore?: number
+  riskLabel?: "extreme" | "high" | "moderate" | "low" | "very_low" | string
+  riskBreakdown?: {
+    marketMaturity?: {
+      score?: number
+      max?: number
+      components?: Record<string, number>
+      reasons?: string[]
+    }
+    liquiditySafety?: {
+      score?: number
+      max?: number
+      components?: Record<string, number>
+      reasons?: string[]
+    }
+    contractSafety?: {
+      score?: number
+      max?: number
+      components?: Record<string, number>
+      reasons?: string[]
+    }
+    behavioralRisk?: {
+      score?: number
+      max?: number
+      components?: Record<string, number>
+      reasons?: string[]
+    }
+    total?: number
+  }
   riskEngine?: {
     rugRiskScore: number | null
     rugRiskLabel: "low_visible_risk" | "watch" | "high" | "critical" | "partial_data"
@@ -2611,6 +2640,86 @@ function getVerdictStyle(verdict: CortexScoreResult['verdict'] | CortexScoreResu
   }
 }
 
+// ─── Token Safety Score helpers ────────────────────────────────────────────
+const RISK_LABEL_MAP: Record<string, string> = {
+  extreme: 'Extreme Risk',
+  high: 'High Risk',
+  moderate: 'Moderate Risk',
+  low: 'Low Risk',
+  very_low: 'Very Low Risk',
+}
+
+function getRiskLabelDisplay(riskLabel?: string | null): string {
+  if (!riskLabel) return 'Unrated'
+  return RISK_LABEL_MAP[riskLabel] ?? riskLabel
+}
+
+function getRiskLabelColor(riskLabel?: string | null): string {
+  switch (riskLabel) {
+    case 'very_low': return '#34d399'
+    case 'low':      return '#2DD4BF'
+    case 'moderate': return '#fbbf24'
+    case 'high':     return '#f59e0b'
+    case 'extreme':  return '#f87171'
+    default:         return '#94a3b8'
+  }
+}
+
+const RISK_REASON_MAP: Record<string, string> = {
+  market_cap_unavailable: 'Market cap unavailable',
+  market_cap_derived_from_fdv_low_confidence: 'Market cap estimated from FDV (low confidence)',
+  liquidity_depth_unavailable: 'Liquidity depth unavailable',
+  holder_distribution_unavailable: 'Holder distribution unavailable',
+  top_holder_owns_over_50_percent: 'Top holder owns over 50% of supply',
+  top5_holders_own_over_70_percent: 'Top 5 holders own over 70% of supply',
+  top10_holders_own_over_80_percent: 'Top 10 holders own over 80% of supply',
+  top10_holders_under_40_percent: 'Top 10 holders below 40%',
+  top10_holders_under_60_percent: 'Top 10 holders below 60%',
+  moderate_holder_concentration: 'Moderate holder concentration',
+  lp_burn_confirmed: 'LP burn confirmed',
+  lp_lock_confirmed: 'LP lock confirmed',
+  lp_controlled_by_wallet_no_lock_or_burn_proof: 'Wallet-controlled LP with no confirmed lock or burn',
+  lp_controller_unknown_no_lock_or_burn_proof: 'LP controller unknown — no confirmed lock or burn',
+  lp_lock_burn_proof_incomplete: 'LP lock/burn proof incomplete',
+  lp_lock_burn_status_low_confidence_default: 'LP lock/burn status not confirmed',
+  lp_model_erc20_lp_token: 'Standard LP token model',
+  lp_model_concentrated_liquidity: 'Concentrated liquidity pool model',
+  lp_model_protocol_pool: 'Protocol-managed pool model',
+  lp_model_unknown_or_unclassified: 'LP model not classified',
+  lp_controller_burn_or_lock_confirmed: 'LP controller is a confirmed burn or lock address',
+  lp_controller_team_wallet_no_lock: 'LP controller is a wallet with no confirmed lock',
+  lp_controller_contract_lock_burn_unproven: 'LP controller is a contract — lock/burn unproven',
+  lp_controller_standard_lock_not_applicable: 'Standard LP lock does not apply to this pool model',
+  lp_controller_unknown: 'LP controller unknown',
+  source_code_verified: 'Source code verified',
+  source_verification_unavailable: 'Source verification unavailable',
+  mint_function_detected: 'Mint function detected',
+  blacklist_function_detected: 'Blacklist function detected',
+  trading_pause_detected: 'Trading pause function detected',
+  transfer_tax_above_10_percent: 'Transfer tax above 10%',
+  deployer_confirmed: 'Deployer confirmed',
+  deployer_unknown_or_unconfirmed: 'Deployer unknown or unconfirmed',
+  high_early_buyer_concentration: 'High early-buyer concentration',
+  early_buyer_evidence_missing: 'Early-buyer evidence missing',
+  organic_early_buyer_pattern: 'Organic early-buyer pattern',
+  moderate_early_buyer_signal: 'Moderate early-buyer signal',
+  dev_wallet_flagged_dumping_or_suspicious: 'Dev wallet flagged for dumping or suspicious activity',
+  dev_wallet_no_confirmed_dumping: 'No confirmed dev-wallet dumping',
+  dev_wallet_evidence_missing: 'Dev wallet evidence missing',
+  confirmed_high_risk_cluster: 'Confirmed high-risk wallet cluster',
+  no_significant_cluster_links: 'No significant cluster links',
+  cluster_evidence_missing_or_partial: 'Cluster evidence missing or partial',
+}
+
+function translateRiskReason(reason: string): string {
+  if (RISK_REASON_MAP[reason]) return RISK_REASON_MAP[reason]
+  return reason
+    .split('_')
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(' ')
+}
+
 function getMarketRead(result: ScanResult): string {
   if (result.noActivePools) return 'No active pool found. Market data is unavailable.'
   const parts = [
@@ -3168,6 +3277,11 @@ export default function TerminalTokenScanner() {
           devIntel: json.devIntel ?? null,
           security: json.security ?? null,
           projectSocials: json.projectSocials ?? null,
+          cortexScore: json.cortexScore ?? null,
+          cortexVerdict: json.cortexVerdict ?? undefined,
+          riskScore: typeof json.riskScore === 'number' ? json.riskScore : undefined,
+          riskLabel: json.riskLabel ?? undefined,
+          riskBreakdown: json.riskBreakdown ?? undefined,
         }
         setResult(mapped)
         if (json.devIntel) {
@@ -3659,8 +3773,85 @@ export default function TerminalTokenScanner() {
                 ]
                 const goodSignals = goodSigns.length >= 2 ? goodSigns : [...goodSigns, 'No additional positive signals confirmed this scan.']
                 const riskSignals = riskSigns.length >= 2 ? riskSigns : [...riskSigns, 'No additional risk signals surfaced beyond current checks.']
+                const riskScoreVal = typeof result.riskScore === 'number' && Number.isFinite(result.riskScore) ? result.riskScore : null
+                const riskLabelColor = getRiskLabelColor(result.riskLabel)
+                const riskLabelDisplay = getRiskLabelDisplay(result.riskLabel)
+                const riskBreakdownRows: Array<{ label: string; data?: { score?: number; max?: number; reasons?: string[] } }> = [
+                  { label: 'Market Maturity', data: result.riskBreakdown?.marketMaturity },
+                  { label: 'Liquidity Safety', data: result.riskBreakdown?.liquiditySafety },
+                  { label: 'Contract Safety', data: result.riskBreakdown?.contractSafety },
+                  { label: 'Behavioral Risk', data: result.riskBreakdown?.behavioralRisk },
+                ]
+                const legacyCortexScore = result.cortexScore ?? score
                 return (
                   <>
+                    {/* Token Safety Score Hero — primary product score */}
+                    <div className="risk-score-hero" style={{ marginBottom: '16px', background: 'linear-gradient(160deg,rgba(8,16,32,.98),rgba(4,8,18,.96))', border: `1px solid ${riskLabelColor}32`, borderRadius: '18px', padding: '22px 24px', boxShadow: `0 0 60px ${riskLabelColor}12, 0 0 24px ${riskLabelColor}08, 0 0 0 1px ${riskLabelColor}06 inset` }}>
+                      <div style={{ fontSize: '10px', letterSpacing: '.18em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', marginBottom: '6px' }}>TOKEN SAFETY SCORE</div>
+                      {riskScoreVal != null ? (
+                        <>
+                          <div style={{ display: 'flex', alignItems: 'baseline', gap: '3px' }}>
+                            <span style={{ fontSize: '62px', fontWeight: 800, color: riskLabelColor, fontFamily: 'var(--font-plex-mono)', lineHeight: 1, textShadow: `0 0 28px ${riskLabelColor}40` }}>{riskScoreVal}</span>
+                            <span style={{ fontSize: '18px', color: `${riskLabelColor}55`, fontFamily: 'var(--font-plex-mono)' }}>/100</span>
+                          </div>
+                          <div style={{ marginTop: '8px', display: 'flex', alignItems: 'center', gap: '7px' }}>
+                            <span style={{ fontSize: '11px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>Risk Level:</span>
+                            <span style={{ padding: '4px 14px', borderRadius: '999px', fontSize: '11px', fontWeight: 800, letterSpacing: '0.10em', color: riskLabelColor, background: `${riskLabelColor}14`, border: `1px solid ${riskLabelColor}45`, fontFamily: 'var(--font-plex-mono)' }}>{riskLabelDisplay}</span>
+                          </div>
+                          <div style={{ height: '5px', borderRadius: '999px', background: 'rgba(255,255,255,0.06)', overflow: 'hidden', marginTop: '14px' }}>
+                            <div style={{ height: '100%', width: `${riskScoreVal}%`, borderRadius: '999px', background: `linear-gradient(90deg,${riskLabelColor},${riskLabelColor}80)`, transition: 'width 0.7s ease', boxShadow: `0 0 8px ${riskLabelColor}60` }} />
+                          </div>
+                          <div style={{ fontSize: '10px', color: '#475569', fontFamily: 'var(--font-plex-mono)', marginTop: '8px', letterSpacing: '.04em' }}>Higher score means safer. Evidence-weighted across market maturity, liquidity safety, contract safety, and behavioral risk.</div>
+                        </>
+                      ) : (
+                        <div style={{ fontSize: '20px', fontWeight: 700, color: '#64748b', fontFamily: 'var(--font-plex-mono)', padding: '8px 0' }}>Token Safety Score unavailable</div>
+                      )}
+                    </div>
+
+                    {/* Score Breakdown — Market Maturity / Liquidity Safety / Contract Safety / Behavioral Risk */}
+                    {result.riskBreakdown && (
+                      <div style={{ marginBottom: '20px', padding: '14px 16px', borderRadius: '12px', border: '1px solid rgba(125,211,252,0.20)', background: 'rgba(8,14,28,0.72)' }}>
+                        <p style={{ margin: '0 0 12px', fontSize: '10px', letterSpacing: '.16em', color: '#7dd3fc', fontWeight: 800, fontFamily: 'var(--font-plex-mono)' }}>SCORE BREAKDOWN</p>
+                        <div style={{ display: 'grid', gap: '12px' }}>
+                          {riskBreakdownRows.map(({ label, data }) => {
+                            const sc = data?.score ?? 0
+                            const max = data?.max ?? 0
+                            const pct = max > 0 ? Math.max(0, Math.min(100, (sc / max) * 100)) : 0
+                            const barColor = pct >= 70 ? '#2DD4BF' : pct >= 40 ? '#fbbf24' : '#f87171'
+                            const reasons = (data?.reasons ?? []).slice(0, 3)
+                            return (
+                              <div key={label}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '5px' }}>
+                                  <span style={{ fontSize: '11px', color: '#cbd5e1', fontFamily: 'var(--font-plex-mono)', fontWeight: 600 }}>{label}</span>
+                                  <span style={{ fontSize: '11px', color: barColor, fontWeight: 800, letterSpacing: '.06em', fontFamily: 'var(--font-plex-mono)' }}>{sc}/{max}</span>
+                                </div>
+                                <div style={{ height: '5px', borderRadius: '999px', background: 'rgba(255,255,255,0.06)', overflow: 'hidden', marginBottom: '7px' }}>
+                                  <div style={{ height: '100%', width: `${pct}%`, borderRadius: '999px', background: `linear-gradient(90deg,${barColor},${barColor}80)`, transition: 'width 0.7s ease' }} />
+                                </div>
+                                {reasons.length > 0 && (
+                                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                                    {reasons.map((r, i) => (
+                                      <span key={i} style={{ padding: '3px 9px', borderRadius: '999px', fontSize: '10px', fontWeight: 600, color: '#94a3b8', background: 'rgba(148,163,184,0.06)', border: '1px solid rgba(148,163,184,0.18)', fontFamily: 'var(--font-plex-mono)' }}>{translateRiskReason(r)}</span>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            )
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* CORTEX Engine Read — secondary legacy score */}
+                    <div style={{ marginBottom: '20px', padding: '12px 16px', borderRadius: '12px', border: '1px solid rgba(148,163,184,0.16)', background: 'rgba(8,14,28,0.55)' }}>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '14px', alignItems: 'baseline', marginBottom: '6px' }}>
+                        <div style={{ fontSize: '9px', letterSpacing: '.16em', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>CORTEX ENGINE READ</div>
+                        <div style={{ fontSize: '15px', fontWeight: 800, color: scoreColor, fontFamily: 'var(--font-plex-mono)' }}>{legacyCortexScore != null ? `${scoreDisplay}/100` : 'Unavailable'}</div>
+                        <div style={{ fontSize: '11px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>CORTEX Verdict: <span style={{ color: v.color, fontWeight: 700 }}>{v.label}</span></div>
+                      </div>
+                      <p style={{ margin: 0, fontSize: '10px', color: '#475569', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>CORTEX Engine is a stricter evidence-weighted risk read. Token Safety Score is the main normalized product score.</p>
+                    </div>
+
                     {/* CORTEX Score Hero */}
                     <div className="cortex-score-hero" style={{ marginBottom: '20px', background: 'linear-gradient(160deg,rgba(8,16,32,.98),rgba(4,8,18,.96))', border: `1px solid ${scoreColor}32`, borderRadius: '18px', padding: '22px 24px', boxShadow: `0 0 60px ${scoreColor}12, 0 0 24px ${scoreColor}08, 0 0 0 1px ${scoreColor}06 inset` }}>
                       <div style={{ display: 'flex', alignItems: 'flex-start', gap: '20px', flexWrap: 'wrap', marginBottom: '18px' }}>
