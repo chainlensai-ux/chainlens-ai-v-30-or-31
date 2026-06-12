@@ -5,6 +5,7 @@ import { fetchHoneypotSecurity } from "@/lib/server/honeypotSecurity";
 import { calculateTokenRiskScore } from "@/lib/server/riskScore";
 import { sanitizePublicTokenResponse } from "@/lib/server/tokenPublicResponse";
 import { buildLpControllerIntel } from "@/lib/server/lpControllerIntel";
+import { buildLpMovementWatch } from "@/lib/server/lpMovementWatch";
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { type CanonicalStatus, toCanonical } from '@/lib/canonicalStatus'
 import { buildClusterMap } from '@/lib/clusterMap'
@@ -5578,6 +5579,18 @@ export async function POST(req: Request) {
       lpMeta: { teamPercent: lpDiagnostics.teamPercent },
       lpDataMode: lpDataModePublic,
     })
+    const lpMovementWatch = buildLpMovementWatch({
+      chain,
+      lpControllerIntel,
+      lpControl: { ...lpControl, lpController, lpControllerType, proofApplicability: lpProofApplicability },
+      selectedPool: {
+        pair: lpPair ?? null,
+        address: lpPoolAddress ?? null,
+        model: lpModelProof.model,
+        liquidityUsd,
+      },
+      lpMeta: { teamPercent: lpDiagnostics.teamPercent, lpToken: lpDiagnostics.lpTokenAddress },
+    })
 
 
     // ── Data Fill Score: 0-100. Inferred values count at half weight ──
@@ -6517,6 +6530,7 @@ export async function POST(req: Request) {
       liquidityDepthRisk,
       lpEvidenceSummary,
       lpControllerIntel,
+      lpMovementWatch,
       lpMeta: {
         v2PoolCandidatesCount: lpDiagnostics.v2PoolCandidatesCount,
         protocolPoolCandidatesCount: lpDiagnostics.protocolPoolCandidatesCount,
