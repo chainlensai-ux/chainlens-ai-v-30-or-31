@@ -7630,6 +7630,13 @@ export async function POST(req: NextRequest) {
     for (const k of ["reply", "response", "analysis", "verdict"] as const) {
       if (typeof normData[k] === "string") normData[k] = cleanClarkText(normData[k] as string)
     }
+    // Re-check after cleaning: cleanup could collapse the reply to whitespace.
+    if (typeof normData.reply === "string" && normData.reply.trim().length === 0) {
+      normData.reply = CLARK_EMPTY_FALLBACK
+      normData.response = CLARK_EMPTY_FALLBACK
+      normData.message = CLARK_EMPTY_FALLBACK
+      normData.text = CLARK_EMPTY_FALLBACK
+    }
     const replyForMem = typeof normData.reply === 'string' ? normData.reply : (typeof normData.analysis === 'string' ? normData.analysis : "")
     rememberMessage(sessionMem, "assistant", replyForMem)
     if (debugMemory) normalized._debug = {
@@ -7673,15 +7680,23 @@ export async function POST(req: NextRequest) {
   }
 }
 
+const CLARK_EMPTY_FALLBACK = "No data available right now — try again in a moment."
+
 function normalizeApiReplyShape(result: unknown, body: ClarkRequestBody) {
   const obj = (result && typeof result === "object") ? { ...(result as Record<string, unknown>) } : {};
-  const reply =
+  let reply =
     (typeof obj.reply === "string" ? obj.reply : null) ??
     (typeof obj.analysis === "string" ? obj.analysis : null) ??
     (typeof obj.response === "string" ? obj.response : null) ??
     (typeof obj.message === "string" ? obj.message : null) ??
     (typeof obj.text === "string" ? obj.text : null) ??
     (typeof result === "string" ? result : "");
+
+  // Guard: never let an empty/whitespace-only string, or a non-string result
+  // that produced no matching text field, reach the frontend markdown renderer.
+  if (typeof reply !== "string" || reply.trim().length === 0) {
+    reply = CLARK_EMPTY_FALLBACK;
+  }
 
   const verdictMatch = reply.match(/\bVerdict:\s*(AVOID|WATCH|SCAN DEEPER|TRUSTWORTHY|UNKNOWN)\b/i);
   const confMatch = reply.match(/\bConfidence:\s*(Low|Medium|High)\b/i);
