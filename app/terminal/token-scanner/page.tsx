@@ -231,6 +231,28 @@ type ScanResult = {
     evidenceGaps?: string[]
     nextActions?: string[]
   } | null
+  lpHistoryTimeline?: {
+    status?: string
+    migrationRisk?: string
+    confidence?: string
+    chain?: string | null
+    poolModel?: string | null
+    primaryPool?: string | null
+    primaryPair?: string | null
+    primaryDex?: string | null
+    primaryPoolCreatedAt?: string | null
+    primaryPoolAgeLabel?: string | null
+    poolCount?: number | null
+    observedPoolCount?: number | null
+    liquidityUsd?: number | null
+    liquidityDistribution?: string
+    fragmentation?: string
+    events?: string[]
+    summary?: string
+    signals?: string[]
+    evidenceGaps?: string[]
+    nextActions?: string[]
+  } | null
   lpDataMode?: 'resolved' | 'evidence_based' | 'indexed' | 'strict' | 'minimal' | 'fallback' | 'insufficient'
   lpDataModeRaw?: 'strict' | 'minimal' | 'fallback' | 'insufficient'
   lpDataConfidence?: 'high' | 'medium' | 'low' | 'unverified'
@@ -4826,6 +4848,54 @@ export default function TerminalTokenScanner() {
                           ['Signals', result.lpLockBurnIntel.signals ?? [], '#34d399'],
                           ['Gaps', result.lpLockBurnIntel.evidenceGaps ?? [], '#fbbf24'],
                           ['Actions', result.lpLockBurnIntel.nextActions ?? [], '#67e8f9'],
+                        ].map(([title, items, color]) => (
+                          <div key={String(title)} style={{ minWidth: 0 }}>
+                            <p style={{ margin: '0 0 6px', fontSize: '9px', color: String(color), fontWeight: 900, letterSpacing: '.12em', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{String(title)}</p>
+                            {(items as string[]).slice(0, 4).map((item) => (
+                              <div key={item} style={{ display: 'flex', gap: '6px', marginBottom: '4px', alignItems: 'flex-start' }}>
+                                <span style={{ color: String(color), fontSize: '10px', lineHeight: '15px' }}>•</span>
+                                <p style={{ margin: 0, fontSize: '10px', color: '#94a3b8', lineHeight: 1.45, fontFamily: 'var(--font-plex-mono)' }}>{item}</p>
+                              </div>
+                            ))}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* ── LP History / Migration Timeline ─────────────── */}
+                  {result.lpHistoryTimeline && (
+                    <div style={{ marginBottom: '14px', padding: '12px 14px', background: 'linear-gradient(135deg, rgba(96,165,250,0.07), rgba(15,23,42,0.72))', border: '1px solid rgba(96,165,250,0.20)', borderRadius: '14px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'flex-start', marginBottom: '10px' }}>
+                        <div>
+                          <p style={{ margin: 0, fontSize: '10px', fontWeight: 900, letterSpacing: '.16em', color: '#93c5fd', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>LP History / Migration</p>
+                          {result.lpHistoryTimeline.summary && <p style={{ margin: '7px 0 0', fontSize: '11px', color: '#bfdbfe', lineHeight: 1.55, fontFamily: 'var(--font-plex-mono)' }}>{result.lpHistoryTimeline.summary}</p>}
+                        </div>
+                        <span style={{ flexShrink: 0, padding: '4px 9px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '.10em', color: result.lpHistoryTimeline.migrationRisk === 'high' ? '#f87171' : result.lpHistoryTimeline.migrationRisk === 'low' ? '#34d399' : '#fbbf24', background: 'rgba(2,6,23,0.48)', border: '1px solid rgba(96,165,250,0.25)', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
+                          {result.lpHistoryTimeline.status?.replace(/_/g, ' ') ?? 'unknown'}
+                        </span>
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(145px,1fr))', gap: '7px', marginBottom: '10px' }}>
+                        {([
+                          ['Migration Risk', result.lpHistoryTimeline.migrationRisk?.replace(/_/g, ' ') ?? 'unknown'],
+                          ['Primary Pool Age', result.lpHistoryTimeline.primaryPoolAgeLabel ?? 'Open check'],
+                          ['Pool Count', result.lpHistoryTimeline.poolCount == null ? 'Open check' : String(result.lpHistoryTimeline.poolCount)],
+                          ['Liquidity', result.lpHistoryTimeline.liquidityUsd == null ? 'Open check' : `$${Math.round(result.lpHistoryTimeline.liquidityUsd).toLocaleString()}`],
+                          ['Fragmentation', result.lpHistoryTimeline.fragmentation?.replace(/_/g, ' ') ?? 'unknown'],
+                          ['Confidence', result.lpHistoryTimeline.confidence ?? 'low'],
+                        ] as Array<[string, string]>).map(([label, value]) => (
+                          <div key={label} style={{ padding: '8px 9px', borderRadius: '10px', background: 'rgba(2,6,23,0.42)', border: '1px solid rgba(148,163,184,0.10)', minWidth: 0 }}>
+                            <div style={{ fontSize: '9px', color: '#64748b', letterSpacing: '.10em', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '4px' }}>{label}</div>
+                            <div style={{ fontSize: '11px', color: /high/i.test(value) ? '#f87171' : /low/i.test(value) ? '#34d399' : /open|unknown|watch/i.test(value) ? '#fbbf24' : '#e2e8f0', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'capitalize', overflow: 'hidden', textOverflow: 'ellipsis' }}>{value}</div>
+                          </div>
+                        ))}
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(170px,1fr))', gap: '9px' }}>
+                        {[
+                          ['Events', result.lpHistoryTimeline.events ?? [], '#60a5fa'],
+                          ['Signals', result.lpHistoryTimeline.signals ?? [], '#34d399'],
+                          ['Gaps', result.lpHistoryTimeline.evidenceGaps ?? [], '#fbbf24'],
+                          ['Actions', result.lpHistoryTimeline.nextActions ?? [], '#67e8f9'],
                         ].map(([title, items, color]) => (
                           <div key={String(title)} style={{ minWidth: 0 }}>
                             <p style={{ margin: '0 0 6px', fontSize: '9px', color: String(color), fontWeight: 900, letterSpacing: '.12em', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{String(title)}</p>

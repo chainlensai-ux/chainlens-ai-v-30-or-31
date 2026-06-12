@@ -8,6 +8,7 @@ import { buildLpControllerIntel } from "@/lib/server/lpControllerIntel";
 import { buildLpMovementWatch } from "@/lib/server/lpMovementWatch";
 import { buildLpLockBurnIntel, LP_LOCK_BURN_REGISTRY } from "@/lib/server/lpLockBurnIntel";
 import { buildLpUnlockTimeline } from "@/lib/server/lpUnlockTimeline";
+import { buildLpHistoryTimeline } from "@/lib/server/lpHistoryTimeline";
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { type CanonicalStatus, toCanonical } from '@/lib/canonicalStatus'
 import { buildClusterMap } from '@/lib/clusterMap'
@@ -4835,6 +4836,7 @@ export async function POST(req: Request) {
         : null)
     const normalizedObservedPoolCount: number | null = observedPoolCount
       ?? (marketDataSource === 'fallback' && _fallbackLiquidityDetected && lpPoolAddressPresent ? 1 : observedPoolCount)
+    const normalizedPairAgeLabel = pairAgeLabel ?? (normalizedPairCreatedAt ? computePairAge(normalizedPairCreatedAt) : null)
     const poolCountStatus: 'confirmed' | 'inferred_from_primary_pool' | 'unknown' = poolCount > 0
       ? 'confirmed'
       : observedPoolPresent
@@ -5613,6 +5615,23 @@ export async function POST(req: Request) {
     const lpUnlockTimeline = buildLpUnlockTimeline({
       chain,
       lpLockBurnIntel,
+    })
+    const lpHistoryTimeline = buildLpHistoryTimeline({
+      chain,
+      poolModel: lpModelProof.model,
+      marketDataSource,
+      selectedPool: {
+        pair: lpPair ?? null,
+        address: lpPoolAddress ?? null,
+        dex: lpControl.primaryPoolDex ?? primaryDexName ?? null,
+        liquidityUsd: _el,
+        createdAt: normalizedPairCreatedAt,
+      },
+      primaryPoolAgeLabel: normalizedPairAgeLabel,
+      poolCount: normalizedObservedPoolCount,
+      observedPoolCount: normalizedObservedPoolCount,
+      liquidityUsd: _el,
+      lpMigrationProof,
     })
 
 
@@ -6556,6 +6575,7 @@ export async function POST(req: Request) {
       lpMovementWatch,
       lpLockBurnIntel,
       lpUnlockTimeline,
+      lpHistoryTimeline,
       lpMeta: {
         v2PoolCandidatesCount: lpDiagnostics.v2PoolCandidatesCount,
         protocolPoolCandidatesCount: lpDiagnostics.protocolPoolCandidatesCount,

@@ -8,6 +8,7 @@ import { buildLpControllerIntel } from '../lib/server/lpControllerIntel.ts'
 import { buildLpMovementWatch } from '../lib/server/lpMovementWatch.ts'
 import { buildLpLockBurnIntel, LP_LOCK_BURN_REGISTRY } from '../lib/server/lpLockBurnIntel.ts'
 import { buildLpUnlockTimeline } from '../lib/server/lpUnlockTimeline.ts'
+import { buildLpHistoryTimeline } from '../lib/server/lpHistoryTimeline.ts'
 
 let passed = 0
 let failed = 0
@@ -49,7 +50,7 @@ const virtualLikePayload = {
   contract: '0x0000000000000000000000000000000000000001',
   name: 'Virtuals Protocol',
   symbol: 'VIRTUAL',
-  selectedPool: { address: '0x21594b992f68495dd28d605834b58889d0a727c7', pair: 'VIRTUAL / WETH', dex: 'geckoterminal', liquidityUsd: 1234567 },
+  selectedPool: { address: '0x21594b992f68495dd28d605834b58889d0a727c7', pair: 'VIRTUAL / WETH', dex: 'aerodrome-base', liquidityUsd: 1234567, createdAt: '2024-03-31T15:39:37.000Z' },
   riskScore: 58,
   riskLabel: 'moderate',
   riskBreakdown: { total: 58, liquiditySafety: { score: 7, max: 30, reasons: ['Wallet-controlled LP'] } },
@@ -64,7 +65,21 @@ const virtualLikePayload = {
     reason: 'Holder evidence confirmed LP controller wallet.',
   },
   lpControlRead: { title: 'LP controlled by wallet', meaning: 'Control Proof: Confirmed' },
-  lpMigrationProof: { status: 'low', reason: 'GeckoTerminal pools show a selected primary pool.' },
+  lpMigrationProof: {
+    status: 'low',
+    confidence: 'medium',
+    reason: 'GeckoTerminal pools show a selected primary pool.',
+    dexsUsed: ['aerodrome-base'],
+    primaryDex: 'aerodrome-base',
+    liquidityDistribution: 'concentrated in primary pool',
+    signals: ['All observed liquidity sits in a single pool.'],
+    missingEvidence: ['pool_creation_date_unavailable', 'historical_liquidity_movement_unavailable'],
+    nextAction: 'Confirm pool creation dates and historical liquidity moves on a block explorer before drawing migration conclusions.',
+  },
+  marketDataSource: 'primary',
+  poolCount: 20,
+  observedPoolCount: 20,
+  primaryPoolAgeLabel: '14mo',
   lpExitRisk: 'watch',
   liquidityDepthRisk: 'low',
   lpProofApplicability: 'applicable',
@@ -176,6 +191,17 @@ virtualLikePayload.lpUnlockTimeline = buildLpUnlockTimeline({
   chain: virtualLikePayload.chain,
   lpLockBurnIntel: virtualLikePayload.lpLockBurnIntel,
 })
+virtualLikePayload.lpHistoryTimeline = buildLpHistoryTimeline({
+  chain: virtualLikePayload.chain,
+  poolModel: virtualLikePayload.lpModelProof.model,
+  marketDataSource: virtualLikePayload.marketDataSource,
+  selectedPool: virtualLikePayload.selectedPool,
+  primaryPoolAgeLabel: virtualLikePayload.primaryPoolAgeLabel,
+  poolCount: virtualLikePayload.poolCount,
+  observedPoolCount: virtualLikePayload.observedPoolCount,
+  liquidityUsd: virtualLikePayload.selectedPool.liquidityUsd,
+  lpMigrationProof: virtualLikePayload.lpMigrationProof,
+})
 
 console.log('\nA. VIRTUAL-like public response')
 const publicPayload = sanitizePublicTokenResponse(JSON.parse(JSON.stringify(virtualLikePayload)), false)
@@ -273,6 +299,21 @@ assert('VIRTUAL lpUnlockTimeline.unlockTimeStatus is unknown', publicPayload.lpU
 assert('VIRTUAL lpUnlockTimeline.unlockCountdownSeconds is null', publicPayload.lpUnlockTimeline?.unlockCountdownSeconds === null, publicPayload.lpUnlockTimeline)
 assert('VIRTUAL lpUnlockTimeline summary says no confirmed unlock time available', /no confirmed LP unlock time is available/i.test(publicPayload.lpUnlockTimeline?.summary ?? ''), publicPayload.lpUnlockTimeline?.summary)
 
+// VIRTUAL lpHistoryTimeline: multi-pool primary evidence, no fake migration event.
+assert('VIRTUAL includes lpHistoryTimeline', Boolean(publicPayload.lpHistoryTimeline), publicPayload.lpHistoryTimeline)
+assert('VIRTUAL lpHistoryTimeline.status is ok', publicPayload.lpHistoryTimeline?.status === 'ok', publicPayload.lpHistoryTimeline)
+assert('VIRTUAL lpHistoryTimeline.primaryPool matches selectedPool.address', publicPayload.lpHistoryTimeline?.primaryPool === publicPayload.selectedPool.address, publicPayload.lpHistoryTimeline)
+assert('VIRTUAL lpHistoryTimeline.primaryPair is VIRTUAL / WETH', publicPayload.lpHistoryTimeline?.primaryPair === 'VIRTUAL / WETH', publicPayload.lpHistoryTimeline)
+assert('VIRTUAL lpHistoryTimeline.primaryDex is Aerodrome (not raw id)', publicPayload.lpHistoryTimeline?.primaryDex === 'Aerodrome', publicPayload.lpHistoryTimeline)
+assert('VIRTUAL lpHistoryTimeline.primaryPoolCreatedAt is the expected ISO date', publicPayload.lpHistoryTimeline?.primaryPoolCreatedAt === '2024-03-31T15:39:37.000Z', publicPayload.lpHistoryTimeline)
+assert('VIRTUAL lpHistoryTimeline.poolCount is 20', publicPayload.lpHistoryTimeline?.poolCount === 20, publicPayload.lpHistoryTimeline)
+assert('VIRTUAL lpHistoryTimeline.liquidityUsd is ~$1.2M', publicPayload.lpHistoryTimeline?.liquidityUsd === 1234567, publicPayload.lpHistoryTimeline)
+assert('VIRTUAL lpHistoryTimeline.migrationRisk is low', publicPayload.lpHistoryTimeline?.migrationRisk === 'low', publicPayload.lpHistoryTimeline)
+assert('VIRTUAL lpHistoryTimeline.fragmentation is concentrated', publicPayload.lpHistoryTimeline?.fragmentation === 'concentrated', publicPayload.lpHistoryTimeline)
+assert('VIRTUAL lpHistoryTimeline events include primary pool detected', (publicPayload.lpHistoryTimeline?.events ?? []).some((e) => /primary pool detected/i.test(e)), publicPayload.lpHistoryTimeline?.events)
+assert('VIRTUAL lpHistoryTimeline events do not mention migration', (publicPayload.lpHistoryTimeline?.events ?? []).every((e) => !/migrat/i.test(e)), publicPayload.lpHistoryTimeline?.events)
+assert('VIRTUAL lpHistoryTimeline summary does not contain raw DEX id', !/aerodrome-base/i.test(publicPayload.lpHistoryTimeline?.summary ?? ''), publicPayload.lpHistoryTimeline?.summary)
+
 // Normalize old LP proof wording to open_check when lpLockBurnIntel.lockBurnProof is open_check.
 assert('VIRTUAL lpProofStatus is normalized to open_check', publicPayload.lpProofStatus === 'open_check', publicPayload.lpProofStatus)
 assert('VIRTUAL lpEvidenceSummary says "Proof status: open_check"', /Proof status:\s*open_check/i.test(publicPayload.lpEvidenceSummary ?? ''), publicPayload.lpEvidenceSummary)
@@ -334,6 +375,17 @@ protocolPayload.lpUnlockTimeline = buildLpUnlockTimeline({
   chain: 'base',
   lpLockBurnIntel: protocolPayload.lpLockBurnIntel,
 })
+protocolPayload.lpHistoryTimeline = buildLpHistoryTimeline({
+  chain: 'base',
+  poolModel: protocolPayload.lpModelProof.model,
+  marketDataSource: 'primary',
+  selectedPool: protocolPayload.selectedPool,
+  primaryPoolAgeLabel: null,
+  poolCount: 1,
+  observedPoolCount: 1,
+  liquidityUsd: null,
+  lpMigrationProof: { status: 'low', confidence: 'medium', liquidityDistribution: 'unknown', dexsUsed: [], signals: [], missingEvidence: ['pool_creation_date_unavailable', 'historical_liquidity_movement_unavailable'] },
+})
 assert('protocol pool proofApplicability remains not_applicable', protocolPayload.lpProofApplicability === 'not_applicable', protocolPayload.lpProofApplicability)
 assert('concentrated pool is not forced into ERC20 lock/burn proof', protocolPayload.lpControl?.proofStatus === 'not_applicable' && protocolPayload.lpControl?.lockStatus === 'not_applicable' && protocolPayload.lpControl?.burnStatus === 'not_applicable', protocolPayload.lpControl)
 assert('selected pool address is not fake-truncated', protocolPayload.selectedPool.address === '0x2222222222222222222222222222222222222222', protocolPayload.selectedPool.address)
@@ -352,6 +404,12 @@ assert('GOAL/concentrated lpUnlockTimeline status is not_applicable', protocolPa
 assert('GOAL/concentrated lpUnlockTimeline unlockRisk is not_applicable', protocolPayload.lpUnlockTimeline?.unlockRisk === 'not_applicable', protocolPayload.lpUnlockTimeline)
 assert('GOAL/concentrated lpUnlockTimeline has no countdown', protocolPayload.lpUnlockTimeline?.unlockCountdownSeconds == null, protocolPayload.lpUnlockTimeline)
 assert('GOAL/concentrated lpUnlockTimeline summary explains unlock timeline does not apply', /unlock timeline does not apply/i.test(protocolPayload.lpUnlockTimeline?.summary ?? ''), protocolPayload.lpUnlockTimeline?.summary)
+assert('GOAL/concentrated includes lpHistoryTimeline', Boolean(protocolPayload.lpHistoryTimeline), protocolPayload.lpHistoryTimeline)
+assert('GOAL/concentrated lpHistoryTimeline.poolModel is concentrated', protocolPayload.lpHistoryTimeline?.poolModel === 'concentrated', protocolPayload.lpHistoryTimeline)
+assert('GOAL/concentrated lpHistoryTimeline.primaryPool matches selectedPool.address', protocolPayload.lpHistoryTimeline?.primaryPool === protocolPayload.selectedPool.address, protocolPayload.lpHistoryTimeline)
+assert('GOAL/concentrated lpHistoryTimeline.status is partial (single pool)', protocolPayload.lpHistoryTimeline?.status === 'partial', protocolPayload.lpHistoryTimeline)
+assert('GOAL/concentrated lpHistoryTimeline does not mention LP lock/burn proof', !/lock\/burn proof/i.test(protocolPayload.lpHistoryTimeline?.summary ?? ''), protocolPayload.lpHistoryTimeline?.summary)
+assert('GOAL/concentrated lpHistoryTimeline events do not fake a migration', (protocolPayload.lpHistoryTimeline?.events ?? []).every((e) => !/migrat/i.test(e)), protocolPayload.lpHistoryTimeline?.events)
 
 // ─── publicLpDataMode mapping ───────────────────────────────────────────────
 console.log('\nD. publicLpDataMode mapping')
@@ -413,7 +471,7 @@ const fallbackPayload = {
   selectedPool: {
     address: fallbackDexFb.pairAddress,
     pair: 'VIRTUAL / WETH',
-    dex: 'geckoterminal',
+    dex: 'aerodrome-base',
     model: 'constant_product',
     liquidityUsd: _elFallback,
     createdAt: normalizedCreatedAtFallback,
@@ -432,7 +490,16 @@ const fallbackPayload = {
     reason: 'Holder evidence confirmed LP controller wallet.',
   },
   lpControlRead: { title: 'LP controlled by wallet', meaning: 'Control Proof: Confirmed' },
-  lpMigrationProof: { status: 'low', reason: 'Fallback market data shows a usable pool.' },
+  lpMigrationProof: {
+    status: 'low',
+    confidence: 'low',
+    reason: 'Fallback market data shows a usable pool.',
+    dexsUsed: ['aerodrome-base'],
+    primaryDex: 'aerodrome-base',
+    liquidityDistribution: 'unknown',
+    signals: [],
+    missingEvidence: ['pool_creation_date_unavailable', 'historical_liquidity_movement_unavailable'],
+  },
   lpProofApplicability: 'applicable',
   lpDataMode: 'evidence_based',
   lpDataModeRaw: 'fallback',
@@ -540,6 +607,17 @@ fallbackPayload.lpUnlockTimeline = buildLpUnlockTimeline({
   chain: fallbackPayload.chain,
   lpLockBurnIntel: fallbackPayload.lpLockBurnIntel,
 })
+fallbackPayload.lpHistoryTimeline = buildLpHistoryTimeline({
+  chain: fallbackPayload.chain,
+  poolModel: fallbackPayload.lpModelProof.model,
+  marketDataSource: fallbackPayload.marketDataSource,
+  selectedPool: fallbackPayload.selectedPool,
+  primaryPoolAgeLabel: null,
+  poolCount: fallbackPayload.poolCount,
+  observedPoolCount: fallbackPayload.observedPoolCount,
+  liquidityUsd: fallbackPayload.selectedPool.liquidityUsd,
+  lpMigrationProof: fallbackPayload.lpMigrationProof,
+})
 
 const fallbackPublicPayload = sanitizePublicTokenResponse(JSON.parse(JSON.stringify(fallbackPayload)), false)
 
@@ -561,6 +639,14 @@ assert('fallback lpUnlockTimeline.unlockTime is null (no fake date)', fallbackPu
 assert('fallback lpProofStatus normalized to open_check', fallbackPublicPayload.lpProofStatus === 'open_check', fallbackPublicPayload.lpProofStatus)
 assert('fallback sections.liquidity.lpLockBurnProofStatus normalized to open_check', fallbackPublicPayload.sections.liquidity.lpLockBurnProofStatus === 'open_check', fallbackPublicPayload.sections.liquidity.lpLockBurnProofStatus)
 assert('fallback poolCount/observedPoolCount are conservatively 1, not null', fallbackPublicPayload.poolCount === 1 && fallbackPublicPayload.observedPoolCount === 1, { poolCount: fallbackPublicPayload.poolCount, observedPoolCount: fallbackPublicPayload.observedPoolCount })
+assert('fallback includes lpHistoryTimeline', Boolean(fallbackPublicPayload.lpHistoryTimeline), fallbackPublicPayload.lpHistoryTimeline)
+assert('fallback lpHistoryTimeline.status is partial (single fallback pool)', fallbackPublicPayload.lpHistoryTimeline?.status === 'partial', fallbackPublicPayload.lpHistoryTimeline)
+assert('fallback lpHistoryTimeline.primaryPool matches fallback pair address', fallbackPublicPayload.lpHistoryTimeline?.primaryPool === fallbackDexFb.pairAddress, fallbackPublicPayload.lpHistoryTimeline)
+assert('fallback lpHistoryTimeline.primaryPoolCreatedAt is normalized from fallback ms timestamp', fallbackPublicPayload.lpHistoryTimeline?.primaryPoolCreatedAt === normalizedCreatedAtFallback, fallbackPublicPayload.lpHistoryTimeline)
+assert('fallback lpHistoryTimeline.liquidityUsd is not null (uses fallback-normalized liquidity)', fallbackPublicPayload.lpHistoryTimeline?.liquidityUsd === 3_170_000, fallbackPublicPayload.lpHistoryTimeline)
+assert('fallback lpHistoryTimeline.migrationRisk is open_check, not a fake "low"', fallbackPublicPayload.lpHistoryTimeline?.migrationRisk === 'open_check', fallbackPublicPayload.lpHistoryTimeline)
+assert('fallback lpHistoryTimeline does not say liquidity unknown', !/liquidity unknown/i.test(fallbackPublicPayload.lpHistoryTimeline?.summary ?? ''), fallbackPublicPayload.lpHistoryTimeline?.summary)
+assert('fallback lpHistoryTimeline events do not fake a migration', (fallbackPublicPayload.lpHistoryTimeline?.events ?? []).every((e) => !/migrat/i.test(e)), fallbackPublicPayload.lpHistoryTimeline?.events)
 for (const provider of providerNames) assert(`fallback response does not expose provider name ${provider}`, !serialized(fallbackPublicPayload).includes(provider), provider)
 for (const rawId of rawDexIds) assert(`fallback response does not expose raw DEX id ${rawId}`, !serialized(fallbackPublicPayload).includes(rawId), rawId)
 assert('fallback response has no legacy Rug-risk pressure wording', !/Rug-risk pressure/i.test(serialized(fallbackPublicPayload)), fallbackPublicPayload)
