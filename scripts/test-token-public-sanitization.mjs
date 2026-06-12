@@ -119,6 +119,10 @@ const virtualLikePayload = {
     rugRiskScore: 38,
     rugRiskLabel: 'watch',
     cortexScoreDebug: { raw: true },
+    clarkInterpretation: {
+      summary: 'Base token. Rug-risk pressure: 83/100. Watch-level signals — monitor closely.',
+      riskDrivers: ['Rug-risk pressure: 83/100. Legacy driver wording.'],
+    },
     cortexScore: 67,
     cortexVerdict: 'CAUTION',
     note: 'dexscreener fallback',
@@ -162,6 +166,7 @@ virtualLikePayload.lpMovementWatch = buildLpMovementWatch({
 console.log('\nA. VIRTUAL-like public response')
 const publicPayload = sanitizePublicTokenResponse(JSON.parse(JSON.stringify(virtualLikePayload)), false)
 assert('riskScore remains present', publicPayload.riskScore === 58, publicPayload.riskScore)
+assert('riskLabel remains moderate', publicPayload.riskLabel === 'moderate', publicPayload.riskLabel)
 assert('riskBreakdown remains present', Boolean(publicPayload.riskBreakdown), publicPayload.riskBreakdown)
 assert('lpControl.status is team_controlled', publicPayload.lpControl?.status === 'team_controlled', publicPayload.lpControl)
 assert('lpControlRead says wallet controlled', publicPayload.lpControlRead?.title === 'LP controlled by wallet', publicPayload.lpControlRead)
@@ -175,8 +180,13 @@ assert('raw transfer arrays are not exposed in transferResolver', !Array.isArray
 assert('raw suspicious transfer arrays are not exposed', !Array.isArray(publicPayload.suspiciousFlows?.transfers), publicPayload.suspiciousFlows)
 assert('raw technical totalSupply hex is stripped from contract checks', !('totalSupply' in publicPayload.sections.contractChecks), publicPayload.sections.contractChecks)
 assert('top-level old CORTEX score is debug-only', publicPayload.cortexScore == null && publicPayload.cortexVerdict == null, { cortexScore: publicPayload.cortexScore, cortexVerdict: publicPayload.cortexVerdict })
+assert('drops top-level rugRisk.score', !('score' in publicPayload.rugRisk), publicPayload.rugRisk)
+assert('drops top-level rugRisk.label', !('label' in publicPayload.rugRisk), publicPayload.rugRisk)
 assert('drops riskEngine.rugRiskScore', !('rugRiskScore' in publicPayload.riskEngine), publicPayload.riskEngine)
 assert('drops riskEngine.rugRiskLabel', !('rugRiskLabel' in publicPayload.riskEngine), publicPayload.riskEngine)
+assert('Clark summary does not say Rug-risk pressure', !/Rug-risk pressure/i.test(publicPayload.riskEngine.clarkInterpretation.summary), publicPayload.riskEngine.clarkInterpretation.summary)
+assert('Clark summary references canonical Token Safety Score', /Token Safety Score:\s*58\/100 \(moderate\)/.test(publicPayload.riskEngine.clarkInterpretation.summary), publicPayload.riskEngine.clarkInterpretation.summary)
+assert('public payload has no Rug-risk pressure wording', !/Rug-risk pressure/i.test(serialized(publicPayload)), publicPayload.riskEngine.clarkInterpretation)
 assert('drops lpDataModeRaw', !('lpDataModeRaw' in publicPayload))
 assert('keeps normalized public lpDataMode', publicPayload.lpDataMode === 'evidence_based', publicPayload.lpDataMode)
 assert('caps priceChart.points', publicPayload.priceChart.points.length === 150, publicPayload.priceChart.points.length)
@@ -236,6 +246,9 @@ assert('debug keeps raw holder arrays', Array.isArray(debugPayload.holderResolve
 assert('debug keeps raw transfer arrays', Array.isArray(debugPayload.transferResolver.transfers) && debugPayload.transferResolver.transfers.length === 25, debugPayload.transferResolver.transfers?.length)
 assert('debug keeps provider names for diagnostics', serialized(debugPayload).includes('goldrush') && serialized(debugPayload).includes('moralis'), debugPayload)
 assert('debug keeps riskEngine.rugRiskScore', debugPayload.riskEngine.rugRiskScore === 38)
+assert('debug keeps top-level rugRisk.score', debugPayload.rugRisk.score === 42)
+assert('debug keeps top-level rugRisk.label', debugPayload.rugRisk.label === 'watch')
+assert('debug keeps legacy Clark summary wording', /Rug-risk pressure:\s*83\/100/i.test(debugPayload.riskEngine.clarkInterpretation.summary), debugPayload.riskEngine.clarkInterpretation.summary)
 assert('debug keeps lpDataModeRaw', debugPayload.lpDataModeRaw === 'fallback')
 assert('debug keeps full priceChart.points', debugPayload.priceChart.points.length === 400)
 assert('debug keeps raw cortexLpRead.mode', debugPayload.cortexLpRead?.mode === 'fallback', debugPayload.cortexLpRead?.mode)
