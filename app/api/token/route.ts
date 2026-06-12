@@ -2,6 +2,7 @@
 import { NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { fetchHoneypotSecurity } from "@/lib/server/honeypotSecurity";
+import { calculateTokenRiskScore } from "@/lib/server/riskScore";
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { type CanonicalStatus, toCanonical } from '@/lib/canonicalStatus'
 import { buildClusterMap } from '@/lib/clusterMap'
@@ -6599,6 +6600,48 @@ export async function POST(req: Request) {
         ? 'CORTEX needs more evidence across core categories before calculating a score.'
         : `Score calculated from available evidence. Missing checks reduce confidence. Coverage ${cortexScoreResult.scoreCoveragePercent}%.`,
     }
+
+    const tokenRiskScoreResult = calculateTokenRiskScore({
+      marketCapUsd: marketCapFromGt,
+      fdvUsd: _efdv,
+      displayMarketValue,
+      displayMarketValueLabel,
+      displayMarketValueConfidence,
+      valuationContext: (responsePayload as any).valuationContext,
+      liquidityUsd,
+      holderDistribution,
+      lpControl: {
+        status: lpControl.status,
+        displayLpModel: lpControl.displayLpModel,
+        lockStatus: lpControl.lockStatus,
+        burnStatus: lpControl.burnStatus,
+        proofStatus: lpControl.proofStatus,
+        lpController,
+        lpControllerType,
+      },
+      lpLockStatus,
+      lpProofApplicability,
+      lpProofStatus: lpProofStatusNew,
+      lpModelProof,
+      lpMigrationProof,
+      contractFlags: {
+        mint: cortexContractFlags.mint,
+        blacklist: cortexContractFlags.blacklist,
+        pause: cortexContractFlags.pause,
+      },
+      honeypot: hpResult.ok ? {
+        buyTax: hpResult.buyTax,
+        sellTax: hpResult.sellTax,
+        transferTax: hpResult.transferTax,
+      } : null,
+      deployerProfile: riskEngine.deployerProfile,
+      sniperActivity: riskEngine.sniperActivity,
+      holderIntelligence: riskEngine.holderIntelligence,
+      supplyControl,
+    })
+    ;(responsePayload as any).riskScore = tokenRiskScoreResult.riskScore
+    ;(responsePayload as any).riskLabel = tokenRiskScoreResult.riskLabel
+    ;(responsePayload as any).riskBreakdown = tokenRiskScoreResult.riskBreakdown
 
     if (process.env.NODE_ENV === 'development') {
       const _totalMs = Date.now() - _t0
