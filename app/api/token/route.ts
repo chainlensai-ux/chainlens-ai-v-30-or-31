@@ -3312,12 +3312,14 @@ export async function POST(req: Request) {
     const gtAllPools: any[] = Array.isArray(gtData?.data) ? gtData.data : [];
     const gtIncluded: unknown[] = Array.isArray(gtData?.included) ? gtData.included : [];
 
-    // Sort by liquidity descending — market primary is deepest pool
-    const matchingPools = [...gtAllPools].sort(
-      (a, b) =>
-        parseFloat(b.attributes?.reserve_in_usd || "0") -
-        parseFloat(a.attributes?.reserve_in_usd || "0")
-    );
+    // Sort by liquidity descending — market primary is deepest pool. Tie-break on pool id so
+    // primary-pool selection is deterministic regardless of the order the provider returns
+    // pools in (avoids score/category drift across identical-evidence scans).
+    const matchingPools = [...gtAllPools].sort((a, b) => {
+      const liqDiff = parseFloat(b.attributes?.reserve_in_usd || "0") - parseFloat(a.attributes?.reserve_in_usd || "0")
+      if (liqDiff !== 0) return liqDiff
+      return String(a.id ?? "").localeCompare(String(b.id ?? ""))
+    });
 
     const mainPool = matchingPools[0] ?? null;
     const includedTokenById = new Map<string, Record<string, unknown>>();
@@ -3466,6 +3468,9 @@ export async function POST(req: Request) {
     const lpPoolAddress = lpPool?.address ?? null
     const lpDexId = lpPool?.dexId ?? null
     const lpDexName = lpPool?.dexName ?? null
+    // Computed early so the "Normalize split-pool and proof-status fields" block below can use
+    // standardLockApplies to keep displayLpModel/proofApplicability consistent with lpModelProof.
+    const lpModelProof = _deriveLpModelProof(lpDexId)
     const lpPoolAddressPresent = Boolean(lpPoolAddress && /^0x[a-f0-9]{40}$/.test(lpPoolAddress))
     // For LP proof logic, use lpVerifyPool (V2/unknown) if available, else fall back to lpPool
     const _lpProofAddress = lpVerifyPoolPresent ? lpVerifyPoolAddress : lpPoolAddress
@@ -3979,6 +3984,7 @@ export async function POST(req: Request) {
         controlStatusConcentrated: lpControl.status === 'concentrated_liquidity',
         marketLiquidityDetected: _fallbackLiquidityDetected,
         aerodromeLpConfirmed: _aerodromeLpConfirmed,
+        modelProofStandardLockApplies: lpModelProof.standardLockApplies,
       })
       const _displayLpModel = _display.displayLpModel
       const _notApplicable = _displayLpModel === 'concentrated_liquidity' || _displayLpModel === 'no_pool'
@@ -5375,7 +5381,6 @@ export async function POST(req: Request) {
     // lock/burn/controller status — unknowns are reported as "unverified". ──
     // Compute applicability first so we skip ERC-20 proof calls for concentrated
     // pools where no LP token exists. Unknown pool model still attempts proof.
-    const lpModelProof = _deriveLpModelProof(lpDexId)
     // Single shared classification (problem 1/2): "applicable" only when lpControl confirmed
     // an ERC-20 LP token (V2 or Aerodrome V2). Never "applicable" for concentrated/no_pool/unclassified.
     // When fallback liquidity is detected but no verification pool could be probed, the model is
@@ -5605,10 +5610,12 @@ export async function POST(req: Request) {
                     : "unlocked",
         unlock_at: lpUnlockAt,
         countdown_seconds: lpCountdownSeconds,
-        // Owner/controller of the LP is unknown for "open_check"/concentrated/protocol pools —
-        // never report the token owner/deployer as the LP owner until an LP controller is
-        // actually proven (concentrated/V3/V4/CLMM positions are NFTs, not ERC-20 LP tokens).
-        owner: _lpControllerUnproven ? null : (ownerAddr ?? null),
+        // Owner/controller of the LP — never the TOKEN contract owner/deployer. Only populated
+        // when an LP controller wallet is actually verified (lpControllerAddress); null for
+        // "open_check"/concentrated/protocol pools or when LP control is otherwise unproven.
+        // Token-ownership renouncement is reported separately via security.devOwnership /
+        // sections.ownership / CORTEX contract wording, never copied into the LP owner field.
+        owner: lpControllerAddress ?? null,
         contract: primaryPoolAddress ?? null,
         movement_24h_usd: _ev ?? null,
         source_status: (lpControl.status === "error" || lpControl.status === "insufficient_data" || _lpControllerUnproven) ? "partial" : "ok",

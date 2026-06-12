@@ -38,7 +38,13 @@ export interface CanonicalPoolSelection {
 // (V2/Aerodrome-V2/unknown with an ERC-20 LP token) — it may be the same pool as
 // the primary, or a separate secondary pool when the primary is concentrated.
 export function selectCanonicalPools(pools: LpPoolCandidate[]): CanonicalPoolSelection {
-  const sorted = [...pools].sort((a, b) => (b.liquidityUsd ?? 0) - (a.liquidityUsd ?? 0))
+  // Sort by liquidity descending with an address tie-breaker so the canonical primary pool is
+  // deterministic for the same evidence regardless of input/provider ordering.
+  const sorted = [...pools].sort((a, b) => {
+    const liqDiff = (b.liquidityUsd ?? 0) - (a.liquidityUsd ?? 0)
+    if (liqDiff !== 0) return liqDiff
+    return (a.address ?? "").localeCompare(b.address ?? "")
+  })
   const primaryPool = sorted[0] ?? null
   const primaryConcentrated = primaryPool?.poolType === 'v3' || primaryPool?.poolType === 'concentrated'
   const isVerifiable = (p: LpPoolCandidate) =>
@@ -162,8 +168,14 @@ export function computeDisplayLpModel(params: {
   // alone. `false` = proof path ran but did not confirm an ERC-20 LP token → open check.
   // `undefined` (default) preserves prior behavior for callers that do not probe Aerodrome.
   aerodromeLpConfirmed?: boolean
+  // standardLockApplies from lpModelProof (classifyPoolModel on this pool's DEX id). When true,
+  // the POOL MODEL is a known ERC-20/constant-product LP token even if holder/RPC evidence has
+  // not yet confirmed lock/burn DOMINANCE — the model itself must never be reported as
+  // "unknown"/open_check in that case. Model classification and control/dominance proof are
+  // tracked separately (displayLpModel/proofApplicability vs lpControl.status).
+  modelProofStandardLockApplies?: boolean
 }): DisplayLpModelResult {
-  const { noActivePools, proofPresent, primaryPoolType, primaryDexId, verifyPoolType, controlStatusConcentrated, marketLiquidityDetected, aerodromeLpConfirmed } = params
+  const { noActivePools, proofPresent, primaryPoolType, primaryDexId, verifyPoolType, controlStatusConcentrated, marketLiquidityDetected, aerodromeLpConfirmed, modelProofStandardLockApplies } = params
 
   let displayLpModel: DisplayLpModel
   let lockBurnApplicable: boolean
@@ -215,6 +227,17 @@ export function computeDisplayLpModel(params: {
     lockBurnReason = marketLiquidityDetected
       ? 'Pool detected from market fallback; pool model requires RPC confirmation.'
       : 'LP model could not be determined from available data.'
+  }
+
+  // Final consistency check: lpModelProof (derived from this pool's DEX id via
+  // classifyPoolModel) already confirms a standard ERC-20/constant-product LP model — never
+  // report the pool MODEL as "unknown"/open_check in that case. Lock/burn DOMINANCE may still
+  // be unconfirmed; that is tracked separately by lpControl.status ("partial"), not by the
+  // model classification.
+  if (displayLpModel === 'open_check' && modelProofStandardLockApplies === true) {
+    displayLpModel = 'erc20_lp_token'
+    lockBurnApplicable = true
+    lockBurnReason = 'Pool model is a standard ERC-20 LP token (constant-product) per DEX metadata. Lock/burn dominance has not yet been confirmed from holder/controller evidence.'
   }
 
   const notApplicable = displayLpModel === 'concentrated_liquidity' || displayLpModel === 'no_pool'

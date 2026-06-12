@@ -29,7 +29,11 @@ function assert(label, condition, got) {
 // ─── Mirrors lib/server/lpIntelligence.ts ──────────────────────────────────
 
 function selectCanonicalPools(pools) {
-  const sorted = [...pools].sort((a, b) => (b.liquidityUsd ?? 0) - (a.liquidityUsd ?? 0))
+  const sorted = [...pools].sort((a, b) => {
+    const liqDiff = (b.liquidityUsd ?? 0) - (a.liquidityUsd ?? 0)
+    if (liqDiff !== 0) return liqDiff
+    return (a.address ?? '').localeCompare(b.address ?? '')
+  })
   const primaryPool = sorted[0] ?? null
   const primaryConcentrated = primaryPool?.poolType === 'v3' || primaryPool?.poolType === 'concentrated'
   const isVerifiable = (p) =>
@@ -72,7 +76,7 @@ function applyRpcClassificationToCandidate(candidate, rpc) {
 }
 
 function computeDisplayLpModel(params) {
-  const { noActivePools, proofPresent, primaryPoolType, primaryDexId, verifyPoolType, controlStatusConcentrated, marketLiquidityDetected, aerodromeLpConfirmed } = params
+  const { noActivePools, proofPresent, primaryPoolType, primaryDexId, verifyPoolType, controlStatusConcentrated, marketLiquidityDetected, aerodromeLpConfirmed, modelProofStandardLockApplies } = params
 
   let displayLpModel
   let lockBurnApplicable
@@ -120,6 +124,14 @@ function computeDisplayLpModel(params) {
     lockBurnReason = marketLiquidityDetected
       ? 'Pool detected from market fallback; pool model requires RPC confirmation.'
       : 'LP model could not be determined from available data.'
+  }
+
+  // Final consistency check: lpModelProof confirms a standard ERC-20/constant-product LP
+  // model — never report the pool MODEL as "unknown"/open_check in that case.
+  if (displayLpModel === 'open_check' && modelProofStandardLockApplies === true) {
+    displayLpModel = 'erc20_lp_token'
+    lockBurnApplicable = true
+    lockBurnReason = 'Pool model is a standard ERC-20 LP token (constant-product) per DEX metadata. Lock/burn dominance has not yet been confirmed from holder/controller evidence.'
   }
 
   const notApplicable = displayLpModel === 'concentrated_liquidity' || displayLpModel === 'no_pool'
@@ -267,6 +279,44 @@ function contractStatusClause(contractSignals) {
   if (confirmed.length > 0) parts.push(confirmed.join(', '))
   if (unconfirmed.length > 0) parts.push(`${unconfirmed.join(', ')} remain unconfirmed`)
   return parts.join('; ')
+}
+
+// ─── Mirrors lib/server/lpProof.ts buildCortexLpRead evidence-aware nextActions ──
+function cortexContractCheckActions(contractSignals) {
+  const actions = []
+  if (!contractSignals) {
+    actions.push('Verify contract ownership/renouncement and mintability via the contract source code.')
+    actions.push('Run a simulation and tax check prior to trading.')
+    return actions
+  }
+  if (contractSignals.ownershipStatus === 'unknown') {
+    actions.push('Verify contract ownership/renouncement via the contract source code.')
+  }
+  if (contractSignals.mintDetected === true) {
+    actions.push('Monitor the impact of the active mint authority — confirm whether mint authority is disabled or constrained if source-level evidence is missing.')
+  } else if (contractSignals.mintDetected === null) {
+    actions.push('Verify mintability via the contract source code.')
+  }
+  if (!contractSignals.simulationVerified) {
+    actions.push('Run a simulation and tax check prior to trading.')
+  }
+  return actions
+}
+
+function cortexLpControllerActions(lpController) {
+  if (lpController !== 'wallet') return []
+  return [
+    'Verify LP holder distribution and confirm whether lock/burn dominance exists for the selected LP pool.',
+    'Monitor top-LP-holder wallet activity for movement of the controlling position.',
+  ]
+}
+
+// ─── Mirrors app/api/token/route.ts rugRisk.lp_safety owner/controller fields ──
+function lpSafetyOwnerController(lpControllerAddress, lpControllerUnproven) {
+  return {
+    owner: lpControllerAddress ?? null,
+    controller: lpControllerUnproven ? 'unknown' : (lpControllerAddress ?? null),
+  }
 }
 
 // ─── Scenario 1: VIRTUAL-style — concentrated primary + V2 secondary ──────────
@@ -694,6 +744,121 @@ console.log('\nScenario 20: CORTEX LP read reports confirmed ownership/mint/simu
   // No contractSignals provided (e.g. Liquidity Safety route) → preserve the exact old wording.
   const legacyClause = contractStatusClause(undefined)
   assert('legacy (no signals) clause preserves old fully-unconfirmed wording', legacyClause === 'ownership, mintability, simulation and tax status remain unconfirmed', legacyClause)
+}
+
+// ─── Scenario 21: VIRTUAL-style constant-product primary pool — model/proof consistency ──
+console.log('\nScenario 21: constant-product primary pool — proofApplicability matches lpModelProof.standardLockApplies')
+{
+  // RPC/holder evidence did not confirm an ERC-20 LP token for this Aerodrome V2 pool, but
+  // lpModelProof (from classifyPoolModel on the same DEX id) says standardLockApplies=true.
+  const display = computeDisplayLpModel({
+    noActivePools: false,
+    proofPresent: true,
+    primaryPoolType: 'aerodrome',
+    primaryDexId: 'aerodrome-base',
+    verifyPoolType: 'aerodrome',
+    aerodromeLpConfirmed: false,
+    modelProofStandardLockApplies: true,
+  })
+  assert('displayLpModel is erc20_lp_token (not open_check)', display.displayLpModel === 'erc20_lp_token', display)
+  assert('proofApplicability is applicable (not unknown)', display.proofApplicability === 'applicable', display)
+  assert('lockBurnApplicable is true', display.lockBurnApplicable === true, display)
+  assert('reason does not say "pool model unknown" / "not confirmed"', !/model.*not confirmed|model is unknown/i.test(display.lockBurnReason), display.lockBurnReason)
+  assert('reason cites holder/controller evidence as the open item', /holder\/controller evidence/i.test(display.lockBurnReason), display.lockBurnReason)
+}
+
+// ─── Scenario 22: genuinely unknown model — proofApplicability stays unknown ──
+console.log('\nScenario 22: genuinely unknown pool model — proofApplicability unknown, skip reason can say model unknown')
+{
+  const display = computeDisplayLpModel({
+    noActivePools: false,
+    proofPresent: true,
+    primaryPoolType: 'unknown',
+    primaryDexId: 'some-unindexed-dex',
+    verifyPoolType: 'unknown',
+    modelProofStandardLockApplies: false,
+  })
+  assert('displayLpModel is open_check', display.displayLpModel === 'open_check', display)
+  assert('proofApplicability is unknown', display.proofApplicability === 'unknown', display)
+  assert('lockBurnApplicable is false', display.lockBurnApplicable === false, display)
+}
+
+// ─── Scenario 23: concentrated/protocol pool — standard lock proof never applies ──
+console.log('\nScenario 23: concentrated primary pool — standard ERC-20 LP lock proof does not apply')
+{
+  const display = computeDisplayLpModel({
+    noActivePools: false,
+    proofPresent: true,
+    primaryPoolType: 'v3',
+    primaryDexId: 'uniswap_v3-base',
+    verifyPoolType: 'unknown',
+    modelProofStandardLockApplies: false,
+  })
+  assert('displayLpModel is concentrated_liquidity', display.displayLpModel === 'concentrated_liquidity', display)
+  assert('proofApplicability is not_applicable', display.proofApplicability === 'not_applicable', display)
+  assert('lockBurnApplicable is false', display.lockBurnApplicable === false, display)
+  assert('reason does not claim ERC-20 LP lock proof applies', !/lock\/burn proof applies/i.test(display.lockBurnReason), display.lockBurnReason)
+
+  // Even if lpModelProof somehow said standardLockApplies=true for a confirmed-concentrated
+  // primary, the concentrated classification must win — never override to erc20_lp_token.
+  const displayOverrideAttempt = computeDisplayLpModel({
+    noActivePools: false,
+    proofPresent: true,
+    primaryPoolType: 'v3',
+    primaryDexId: 'uniswap_v3-base',
+    verifyPoolType: 'unknown',
+    modelProofStandardLockApplies: true,
+  })
+  assert('concentrated classification is not overridden by modelProofStandardLockApplies', displayOverrideAttempt.displayLpModel === 'concentrated_liquidity', displayOverrideAttempt)
+}
+
+// ─── Scenario 24: rugRisk.lp_safety.owner is the LP controller, never the token owner ──
+console.log('\nScenario 24: rugRisk.lp_safety.owner/controller reflect LP control, not token ownership')
+{
+  // Token owner renounced (zero address), but LP controller is unknown (proofApplicability unknown).
+  const unknownController = lpSafetyOwnerController(null, true)
+  assert('owner is null when LP controller is not verified', unknownController.owner === null, unknownController)
+  assert('controller is "unknown" consistently with owner=null', unknownController.controller === 'unknown', unknownController)
+
+  // LP controller IS verified (team-controlled wallet) — owner is the LP controller wallet,
+  // never the token-contract owner address.
+  const knownController = lpSafetyOwnerController('0xteamwallet000000000000000000000000000001', false)
+  assert('owner is the verified LP controller wallet', knownController.owner === '0xteamwallet000000000000000000000000000001', knownController)
+  assert('controller matches owner for a verified wallet controller', knownController.controller === knownController.owner, knownController)
+}
+
+// ─── Scenario 25: CORTEX nextActions is evidence-aware (VIRTUAL-style) ──────────
+console.log('\nScenario 25: CORTEX nextActions does not re-ask for already-verified evidence')
+{
+  // Ownership verified renounced, mint detected, simulation passed — VIRTUAL-style.
+  const virtualSignals = { ownershipStatus: 'renounced', mintDetected: true, simulationVerified: true, buyTax: 0, sellTax: 0 }
+  const contractActions = cortexContractCheckActions(virtualSignals)
+  assert('does not say verify ownership/renouncement again', !contractActions.some((a) => /verify contract ownership/i.test(a)), contractActions)
+  assert('does not say run simulation/tax check again', !contractActions.some((a) => /run a simulation and tax check/i.test(a)), contractActions)
+  assert('mentions monitoring active mint authority impact', contractActions.some((a) => /monitor the impact of the active mint authority/i.test(a)), contractActions)
+
+  const lpActions = cortexLpControllerActions('wallet')
+  assert('focuses on LP controller/holder distribution proof', lpActions.some((a) => /lp holder distribution/i.test(a)), lpActions)
+  assert('focuses on monitoring top-holder movement', lpActions.some((a) => /top-lp-holder wallet activity/i.test(a)), lpActions)
+
+  // Legacy path (no contractSignals) still asks the generic questions.
+  const legacyActions = cortexContractCheckActions(undefined)
+  assert('legacy actions still verify ownership/mintability', legacyActions.some((a) => /verify contract ownership\/renouncement and mintability/i.test(a)), legacyActions)
+  assert('legacy actions still ask for simulation/tax check', legacyActions.some((a) => /run a simulation and tax check/i.test(a)), legacyActions)
+}
+
+// ─── Scenario 26: deterministic primary-pool selection regardless of input order ──
+console.log('\nScenario 26: primary-pool selection is deterministic for tied liquidity / reordered input')
+{
+  const poolsA = [
+    { address: '0xbbbb000000000000000000000000000000bbbb', liquidityUsd: 1_000_000, poolType: 'v2', hasLpToken: true, isValidAddress: true },
+    { address: '0xaaaa000000000000000000000000000000aaaa', liquidityUsd: 1_000_000, poolType: 'v2', hasLpToken: true, isValidAddress: true },
+  ]
+  const poolsB = [...poolsA].reverse()
+  const selA = selectCanonicalPools(poolsA)
+  const selB = selectCanonicalPools(poolsB)
+  assert('tied-liquidity primary pool selection is order-independent', selA.primaryPool?.address === selB.primaryPool?.address, { a: selA.primaryPool, b: selB.primaryPool })
+  assert('tie-break picks the lexicographically-first address', selA.primaryPool?.address === '0xaaaa000000000000000000000000000000aaaa', selA.primaryPool)
 }
 
 console.log(`\n${passed} passed, ${failed} failed`)

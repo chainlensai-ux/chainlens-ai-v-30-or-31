@@ -394,6 +394,34 @@ export function buildCortexLpRead(params: {
     ? "The AMM model could not be determined from the available DEX data."
     : `The primary pool runs on a ${lpModel.model.replace("_", "-")} model${lpModel.dexName ? ` (DEX: ${lpModel.dexName})` : ""}.${lpModel.standardLockApplies ? "" : " Standard LP lock proofs may not apply to concentrated-liquidity positions — lock verification methods differ for this model."}`;
 
+  // Evidence-aware contract-check actions — only ask the user to verify what is actually
+  // still unconfirmed. When contractSignals is absent, preserve the old generic actions.
+  const contractCheckActions: string[] = [];
+  if (!contractSignals) {
+    contractCheckActions.push("Verify contract ownership/renouncement and mintability via the contract source code.");
+    contractCheckActions.push("Run a simulation and tax check prior to trading.");
+  } else {
+    if (contractSignals.ownershipStatus === "unknown") {
+      contractCheckActions.push("Verify contract ownership/renouncement via the contract source code.");
+    }
+    if (contractSignals.mintDetected === true) {
+      contractCheckActions.push("Monitor the impact of the active mint authority — confirm whether mint authority is disabled or constrained if source-level evidence is missing.");
+    } else if (contractSignals.mintDetected === null) {
+      contractCheckActions.push("Verify mintability via the contract source code.");
+    }
+    if (!contractSignals.simulationVerified) {
+      contractCheckActions.push("Run a simulation and tax check prior to trading.");
+    }
+  }
+
+  // LP-controller-focused actions — relevant when a wallet controls the selected LP and
+  // lock/burn dominance has not been independently proven.
+  const lpControllerActions: string[] = [];
+  if (lpController === "wallet") {
+    lpControllerActions.push("Verify LP holder distribution and confirm whether lock/burn dominance exists for the selected LP pool.");
+    lpControllerActions.push("Monitor top-LP-holder wallet activity for movement of the controlling position.");
+  }
+
   return {
     mode,
     confidence,
@@ -408,8 +436,8 @@ export function buildCortexLpRead(params: {
         : lpModel.standardLockApplies
           ? ["Confirm LP lock and burn status directly on-chain before trusting any safety claims."]
           : [`Standard ERC-20 LP lock/burn proof does not apply to this concentrated-liquidity pool. Liquidity control requires protocol-specific position checks.${secondaryClause}`]),
-      "Verify contract ownership/renouncement and mintability via the contract source code.",
-      "Run a simulation and tax check prior to trading.",
+      ...lpControllerActions,
+      ...contractCheckActions,
     ],
   };
 }
