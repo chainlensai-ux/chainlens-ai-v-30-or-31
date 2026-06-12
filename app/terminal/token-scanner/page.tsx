@@ -159,6 +159,26 @@ type ScanResult = {
   lpExitRiskReason?: string
   lpEvidenceSummary?: string
   lpEvidenceGaps?: Array<{ id: string; label: string; explanation: string; nextAction: string }>
+  lpControllerIntel?: {
+    status?: string
+    controller?: string | null
+    controllerType?: string
+    controllerLabel?: string
+    controllerSharePercent?: number | null
+    poolAddress?: string | null
+    poolPair?: string | null
+    poolLiquidityUsd?: number | null
+    controlProof?: string
+    lockBurnProof?: string
+    exitRisk?: string
+    liquidityDepth?: string
+    migrationRisk?: string
+    confidence?: string
+    summary?: string
+    signals?: string[]
+    evidenceGaps?: string[]
+    nextActions?: string[]
+  } | null
   lpDataMode?: 'resolved' | 'evidence_based' | 'indexed' | 'strict' | 'minimal' | 'fallback' | 'insufficient'
   lpDataModeRaw?: 'strict' | 'minimal' | 'fallback' | 'insufficient'
   lpDataConfidence?: 'high' | 'medium' | 'low' | 'unverified'
@@ -4671,6 +4691,56 @@ export default function TerminalTokenScanner() {
                       </div>
                     )
                   })()}
+
+
+                  {/* ── LP Controller Intelligence ──────────────────────── */}
+                  {result.lpControllerIntel && (
+                    <div style={{ marginBottom: '14px', padding: '13px 15px', background: 'linear-gradient(135deg, rgba(45,212,191,0.08), rgba(15,23,42,0.72))', border: '1px solid rgba(45,212,191,0.20)', borderRadius: '14px', boxShadow: '0 18px 45px rgba(0,0,0,0.18)' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'flex-start', marginBottom: '10px' }}>
+                        <div>
+                          <p style={{ margin: 0, fontSize: '10px', fontWeight: 900, letterSpacing: '.16em', color: '#67e8f9', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>LP Controller Intelligence</p>
+                          {result.lpControllerIntel.summary && <p style={{ margin: '7px 0 0', fontSize: '11px', color: '#a7f3d0', lineHeight: 1.55, fontFamily: 'var(--font-plex-mono)' }}>{result.lpControllerIntel.summary}</p>}
+                        </div>
+                        <span style={{ flexShrink: 0, padding: '4px 9px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '.10em', color: result.lpControllerIntel.confidence === 'high' ? '#34d399' : '#fbbf24', background: result.lpControllerIntel.confidence === 'high' ? 'rgba(52,211,153,0.10)' : 'rgba(251,191,36,0.10)', border: `1px solid ${result.lpControllerIntel.confidence === 'high' ? 'rgba(52,211,153,0.30)' : 'rgba(251,191,36,0.30)'}`, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
+                          {result.lpControllerIntel.confidence ?? 'open'}
+                        </span>
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(170px,1fr))', gap: '7px', marginBottom: '11px' }}>
+                        {([
+                          ['Controller', result.lpControllerIntel.controller ?? result.lpControllerIntel.controllerLabel ?? 'Open check'],
+                          ['Controller Type', result.lpControllerIntel.controllerType?.replace(/_/g, ' ') ?? 'Open check'],
+                          ['Controller Share', result.lpControllerIntel.controllerSharePercent != null ? `${result.lpControllerIntel.controllerSharePercent.toFixed(2)}%` : 'Open check'],
+                          ['Control Proof', result.lpControllerIntel.controlProof?.replace(/_/g, ' ') ?? 'Open check'],
+                          ['Lock/Burn Proof', result.lpControllerIntel.lockBurnProof?.replace(/_/g, ' ') ?? 'Open check'],
+                          ['Exit Risk', result.lpControllerIntel.exitRisk?.replace(/_/g, ' ') ?? 'Open check'],
+                          ['Liquidity Depth', result.lpControllerIntel.liquidityDepth?.replace(/_/g, ' ') ?? 'Open check'],
+                          ['Migration Risk', result.lpControllerIntel.migrationRisk?.replace(/_/g, ' ') ?? 'Open check'],
+                        ] as Array<[string, string]>).map(([label, value]) => (
+                          <div key={label} style={{ padding: '8px 9px', borderRadius: '10px', background: 'rgba(2,6,23,0.42)', border: '1px solid rgba(148,163,184,0.10)' }}>
+                            <div style={{ fontSize: '9px', color: '#64748b', letterSpacing: '.10em', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '4px' }}>{label}</div>
+                            <div style={{ fontSize: '11px', color: value === 'confirmed' || value === 'deep' || value === 'low' ? '#34d399' : value === 'open check' || value === 'watch' ? '#fbbf24' : '#e2e8f0', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: label === 'Controller' ? 'none' : 'capitalize', overflow: 'hidden', textOverflow: 'ellipsis' }}>{value}</div>
+                          </div>
+                        ))}
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(180px,1fr))', gap: '9px' }}>
+                        {[
+                          ['Signals', result.lpControllerIntel.signals ?? [], '#34d399'],
+                          ['Evidence Gaps', result.lpControllerIntel.evidenceGaps ?? [], '#fbbf24'],
+                          ['Next Actions', result.lpControllerIntel.nextActions ?? [], '#67e8f9'],
+                        ].map(([title, items, color]) => (
+                          <div key={String(title)} style={{ minWidth: 0 }}>
+                            <p style={{ margin: '0 0 6px', fontSize: '9px', color: String(color), fontWeight: 900, letterSpacing: '.12em', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{String(title)}</p>
+                            {(items as string[]).slice(0, 5).map((item) => (
+                              <div key={item} style={{ display: 'flex', gap: '6px', marginBottom: '4px', alignItems: 'flex-start' }}>
+                                <span style={{ color: String(color), fontSize: '10px', lineHeight: '15px' }}>•</span>
+                                <p style={{ margin: 0, fontSize: '10px', color: '#94a3b8', lineHeight: 1.45, fontFamily: 'var(--font-plex-mono)' }}>{item}</p>
+                              </div>
+                            ))}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
 
                   {/* ── Data mode / confidence + Evidence Gaps ────────── */}
                   {(result.lpDataMode || (result.lpEvidenceGaps && result.lpEvidenceGaps.length > 0)) && (

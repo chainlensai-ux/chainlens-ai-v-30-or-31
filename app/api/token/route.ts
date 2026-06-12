@@ -4,6 +4,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { fetchHoneypotSecurity } from "@/lib/server/honeypotSecurity";
 import { calculateTokenRiskScore } from "@/lib/server/riskScore";
 import { sanitizePublicTokenResponse } from "@/lib/server/tokenPublicResponse";
+import { buildLpControllerIntel } from "@/lib/server/lpControllerIntel";
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { type CanonicalStatus, toCanonical } from '@/lib/canonicalStatus'
 import { buildClusterMap } from '@/lib/clusterMap'
@@ -5561,6 +5562,23 @@ export async function POST(req: Request) {
       `Proof status: ${lpProofStatusNew}`,
       `Migration: ${lpMigrationProof.status}`,
     ].join(' | ')
+    const lpControllerIntel = buildLpControllerIntel({
+      lpControl: { ...lpControl, lpController, lpControllerType, proofApplicability: lpProofApplicability },
+      lpControlRead: computeLpControlRead(lpControl, String(lpPool?.pairName ?? ""), lpControllerAddress),
+      selectedPool: {
+        pair: lpPair ?? null,
+        address: lpPoolAddress ?? null,
+        model: lpModelProof.model,
+        liquidityUsd,
+      },
+      lpExitRisk,
+      liquidityDepthRisk,
+      lpMigrationProof,
+      lpEvidenceGaps,
+      lpMeta: { teamPercent: lpDiagnostics.teamPercent },
+      lpDataMode: lpDataModePublic,
+    })
+
 
     // ── Data Fill Score: 0-100. Inferred values count at half weight ──
     const _fillMarket = (liquidityUsd != null || marketCapFromGt != null || fdv != null) ? 20 : 0
@@ -6498,6 +6516,7 @@ export async function POST(req: Request) {
       lpExitRiskReason,
       liquidityDepthRisk,
       lpEvidenceSummary,
+      lpControllerIntel,
       lpMeta: {
         v2PoolCandidatesCount: lpDiagnostics.v2PoolCandidatesCount,
         protocolPoolCandidatesCount: lpDiagnostics.protocolPoolCandidatesCount,

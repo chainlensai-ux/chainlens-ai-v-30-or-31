@@ -4,6 +4,7 @@
  */
 import { sanitizePublicTokenResponse } from '../lib/server/tokenPublicResponse.ts'
 import { publicLpDataMode } from '../lib/server/lpProof.ts'
+import { buildLpControllerIntel } from '../lib/server/lpControllerIntel.ts'
 
 let passed = 0
 let failed = 0
@@ -45,7 +46,7 @@ const virtualLikePayload = {
   contract: '0x0000000000000000000000000000000000000001',
   name: 'Virtuals Protocol',
   symbol: 'VIRTUAL',
-  selectedPool: { address: '0x1111111111111111111111111111111111111111', dex: 'geckoterminal' },
+  selectedPool: { address: '0x21594b992f68495dd28d605834b58889d0a727c7', pair: 'VIRTUAL / WETH', dex: 'geckoterminal', liquidityUsd: 1234567 },
   riskScore: 58,
   riskLabel: 'moderate',
   riskBreakdown: { total: 58, liquiditySafety: { score: 7, max: 30, reasons: ['Wallet-controlled LP'] } },
@@ -54,8 +55,10 @@ const virtualLikePayload = {
     proofStatus: 'open_check',
     lockStatus: 'not_confirmed',
     burnStatus: 'not_confirmed',
+    lpController: '0xbd62cad65b49b4ad9c7aa9b8bdb89d63221f7af5',
     lpControllerType: 'wallet',
-    reason: 'GoldRush holder evidence and Alchemy RPC confirmed LP controller wallet.',
+    evidence: ['top_holder=0xbd62cad65b49b4ad9c7aa9b8bdb89d63221f7af5', 'top_share=82.45%'],
+    reason: 'Holder evidence confirmed LP controller wallet.',
   },
   lpControlRead: { title: 'LP controlled by wallet', meaning: 'Control Proof: Confirmed' },
   lpMigrationProof: { status: 'low', reason: 'GeckoTerminal pools show a selected primary pool.' },
@@ -112,6 +115,18 @@ const virtualLikePayload = {
   },
 }
 
+virtualLikePayload.lpControllerIntel = buildLpControllerIntel({
+  lpControl: virtualLikePayload.lpControl,
+  lpControlRead: virtualLikePayload.lpControlRead,
+  selectedPool: virtualLikePayload.selectedPool,
+  lpExitRisk: virtualLikePayload.lpExitRisk,
+  liquidityDepthRisk: virtualLikePayload.liquidityDepthRisk,
+  lpMigrationProof: virtualLikePayload.lpMigrationProof,
+  lpEvidenceGaps: virtualLikePayload.lpEvidenceGaps,
+  lpMeta: virtualLikePayload.lpMeta,
+  lpDataMode: virtualLikePayload.lpDataMode,
+})
+
 console.log('\nA. VIRTUAL-like public response')
 const publicPayload = sanitizePublicTokenResponse(JSON.parse(JSON.stringify(virtualLikePayload)), false)
 assert('riskScore remains present', publicPayload.riskScore === 58, publicPayload.riskScore)
@@ -133,6 +148,14 @@ assert('drops riskEngine.rugRiskLabel', !('rugRiskLabel' in publicPayload.riskEn
 assert('drops lpDataModeRaw', !('lpDataModeRaw' in publicPayload))
 assert('keeps normalized public lpDataMode', publicPayload.lpDataMode === 'evidence_based', publicPayload.lpDataMode)
 assert('caps priceChart.points', publicPayload.priceChart.points.length === 150, publicPayload.priceChart.points.length)
+assert('lpControllerIntel is public', Boolean(publicPayload.lpControllerIntel), publicPayload.lpControllerIntel)
+assert('VIRTUAL lpControllerIntel.status is wallet_controlled', publicPayload.lpControllerIntel?.status === 'wallet_controlled', publicPayload.lpControllerIntel)
+assert('VIRTUAL lpControllerIntel.controlProof is confirmed', publicPayload.lpControllerIntel?.controlProof === 'confirmed', publicPayload.lpControllerIntel)
+assert('VIRTUAL lpControllerIntel.lockBurnProof is open_check', publicPayload.lpControllerIntel?.lockBurnProof === 'open_check', publicPayload.lpControllerIntel)
+assert('VIRTUAL lpControllerIntel.controllerSharePercent is present', publicPayload.lpControllerIntel?.controllerSharePercent === 82.45, publicPayload.lpControllerIntel)
+assert('VIRTUAL lpControllerIntel.liquidityDepth is deep', publicPayload.lpControllerIntel?.liquidityDepth === 'deep', publicPayload.lpControllerIntel)
+assert('VIRTUAL lpControllerIntel.migrationRisk is low', publicPayload.lpControllerIntel?.migrationRisk === 'low', publicPayload.lpControllerIntel)
+assert('lpControllerIntel summary does not call wallet control malicious', !/malicious/i.test(publicPayload.lpControllerIntel?.summary ?? ''), publicPayload.lpControllerIntel?.summary)
 
 // LP public status fields are internally consistent / non-conflicting.
 assert('lpMeta.lpControlState reflects LP control state', publicPayload.lpMeta.lpControlState === 'team_controlled')
@@ -164,12 +187,22 @@ const protocolPayload = sanitizePublicTokenResponse({
   lpMeta: { lpControlState: 'concentrated_liquidity' },
   sections: { liquidity: { lpLockBurnProofStatus: 'not_applicable', lpMeta: { lpControlState: 'concentrated_liquidity' } } },
 }, false)
+protocolPayload.lpControllerIntel = buildLpControllerIntel({
+  lpControl: protocolPayload.lpControl,
+  selectedPool: protocolPayload.selectedPool,
+  lpExitRisk: 'watch',
+  liquidityDepthRisk: 'low',
+  lpMigrationProof: { status: 'low' },
+  lpMeta: protocolPayload.lpMeta,
+})
 assert('protocol pool proofApplicability remains not_applicable', protocolPayload.lpProofApplicability === 'not_applicable', protocolPayload.lpProofApplicability)
 assert('concentrated pool is not forced into ERC20 lock/burn proof', protocolPayload.lpControl?.proofStatus === 'not_applicable' && protocolPayload.lpControl?.lockStatus === 'not_applicable' && protocolPayload.lpControl?.burnStatus === 'not_applicable', protocolPayload.lpControl)
 assert('selected pool address is not fake-truncated', protocolPayload.selectedPool.address === '0x2222222222222222222222222222222222222222', protocolPayload.selectedPool.address)
 assert('lpProofStatus remains not_applicable', protocolPayload.lpProofStatus === 'not_applicable')
 assert('sections.liquidity.lpLockBurnProofStatus remains not_applicable', protocolPayload.sections.liquidity.lpLockBurnProofStatus === 'not_applicable')
 assert('lpMeta.lpControlState remains concentrated_liquidity', protocolPayload.lpMeta.lpControlState === 'concentrated_liquidity')
+assert('GOAL/concentrated lpControllerIntel status is concentrated_liquidity', protocolPayload.lpControllerIntel.status === 'concentrated_liquidity', protocolPayload.lpControllerIntel)
+assert('GOAL/concentrated lpControllerIntel lockBurnProof is not_applicable', protocolPayload.lpControllerIntel.lockBurnProof === 'not_applicable', protocolPayload.lpControllerIntel)
 
 // ─── publicLpDataMode mapping ───────────────────────────────────────────────
 console.log('\nD. publicLpDataMode mapping')
