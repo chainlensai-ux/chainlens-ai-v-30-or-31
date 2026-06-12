@@ -861,5 +861,44 @@ console.log('\nScenario 26: primary-pool selection is deterministic for tied liq
   assert('tie-break picks the lexicographically-first address', selA.primaryPool?.address === '0xaaaa000000000000000000000000000000aaaa', selA.primaryPool)
 }
 
+// ─── Scenario 27: Lock/Burn registry-intel semantics ───────────────────────
+console.log('\nScenario 27: lpLockBurnIntel registry semantics')
+{
+  const registry = {
+    burnAddresses: ['0x0000000000000000000000000000000000000000', '0x000000000000000000000000000000000000dead'],
+    lockersByChain: { base: [], eth: [], bnb: [] },
+  }
+  const virtualIntel = {
+    status: 'open_check',
+    lockBurnProof: 'open_check',
+    chain: 'base',
+    lpTokenOrPool: '0x21594b992f68495dd28d605834b58889d0a727c7',
+    lockedPercent: null,
+    burnedPercent: null,
+    summary: 'LP controller is known, but active lock/burn proof is not confirmed.',
+    evidenceGaps: ['no verified base locker registry match', 'burn proof not confirmed'],
+    nextActions: ['verify LP holders', 'verify locker', 'monitor/rescan'],
+  }
+  assert('registry has base/eth/bnb locker arrays', Array.isArray(registry.lockersByChain.base) && Array.isArray(registry.lockersByChain.eth) && Array.isArray(registry.lockersByChain.bnb), registry.lockersByChain)
+  assert('registry has zero/dead burn addresses', registry.burnAddresses.length === 2 && registry.burnAddresses[0].endsWith('0000') && registry.burnAddresses[1].endsWith('dead'), registry.burnAddresses)
+  assert('VIRTUAL lock/burn status is open_check', virtualIntel.status === 'open_check', virtualIntel)
+  assert('VIRTUAL lock/burn proof is open_check', virtualIntel.lockBurnProof === 'open_check', virtualIntel)
+  assert('VIRTUAL lock/burn percentages are null', virtualIntel.lockedPercent == null && virtualIntel.burnedPercent == null, virtualIntel)
+  assert('VIRTUAL lock/burn summary says controller known but no active proof', /controller is known.*not confirmed/i.test(virtualIntel.summary), virtualIntel.summary)
+  assert('VIRTUAL lock/burn gaps/actions match expected', virtualIntel.evidenceGaps.includes('no verified base locker registry match') && virtualIntel.evidenceGaps.includes('burn proof not confirmed') && virtualIntel.nextActions.includes('monitor/rescan'), virtualIntel)
+
+  const goalIntel = {
+    status: 'not_applicable',
+    lockBurnProof: 'not_applicable',
+    lockedPercent: null,
+    burnedPercent: null,
+    summary: 'ERC20 LP lock/burn proof does not apply to concentrated or protocol-managed pools; positions require protocol-specific verification.',
+  }
+  assert('GOAL/concentrated lock/burn status is not_applicable', goalIntel.status === 'not_applicable', goalIntel)
+  assert('GOAL/concentrated lock/burn proof is not_applicable', goalIntel.lockBurnProof === 'not_applicable', goalIntel)
+  assert('GOAL/concentrated lock/burn percentages are null', goalIntel.lockedPercent == null && goalIntel.burnedPercent == null, goalIntel)
+  assert('GOAL/concentrated summary explains ERC20 proof does not apply', /ERC20 LP lock\/burn proof does not apply/i.test(goalIntel.summary), goalIntel.summary)
+}
+
 console.log(`\n${passed} passed, ${failed} failed`)
 if (failed > 0) process.exit(1)

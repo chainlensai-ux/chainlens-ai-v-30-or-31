@@ -6,6 +6,7 @@ import { calculateTokenRiskScore } from "@/lib/server/riskScore";
 import { sanitizePublicTokenResponse } from "@/lib/server/tokenPublicResponse";
 import { buildLpControllerIntel } from "@/lib/server/lpControllerIntel";
 import { buildLpMovementWatch } from "@/lib/server/lpMovementWatch";
+import { buildLpLockBurnIntel, LP_LOCK_BURN_REGISTRY } from "@/lib/server/lpLockBurnIntel";
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { type CanonicalStatus, toCanonical } from '@/lib/canonicalStatus'
 import { buildClusterMap } from '@/lib/clusterMap'
@@ -1836,24 +1837,10 @@ function extractProjectSocials(
 
 const CHAIN_ID_MAP: Record<ChainKey, number> = { eth: 1, base: 8453, polygon: 137, bnb: 56 };
 
-// Chain-aware LP locker contract registry.
-// Only add verified on-chain locker contract addresses. Addresses must be lowercase.
-// An empty list for a chain means "locked" will never fire on that chain —
-// intentional: no false-positive locked claims without proof.
-const LOCKER_REGISTRY: Partial<Record<ChainKey, string[]>> = {
-  eth: [
-    "0x663a5c229c09b049e36dcca11a9d0d4a0f33f3f9", // UNCX / UniCrypt V2 LP Locker
-    "0x71b5759d73262fbb223956913ecf4ecc51057641", // PinkLock (PinkSale)
-    "0xe2fe530c047f2d85298b07d9333c05737f1435fb", // Team Finance LP Locker
-    "0xdba68f07d1b7ca219f78ae8582c213d975c25caf", // UniCrypt V3 LP Locker
-    "0xf6c7282943dc5ea13461ef77dd3a24e5d01e5e1a", // DxLock
-    "0x0be46842df45f36a19bea0de0fd6e34da00fd8a5", // Mudra Locker
-  ],
-  // Base mainnet: intentionally empty until locker contract addresses are
-  // confirmed on-chain. "locked" status cannot fire for Base V2 pools until
-  // verified addresses are added here.
-  base: [],
-};
+// Chain-aware LP lock/burn registry is centralized in lib/server/lpLockBurnIntel.ts.
+// Only verified locker contracts belong in the registry; empty chain lists intentionally
+// produce open_check instead of unlocked/safe claims.
+const LOCKER_REGISTRY: Partial<Record<ChainKey, string[]>> = LP_LOCK_BURN_REGISTRY.lockersByChain;
 
 // Resolves honeypot + tax simulation for a given chain and token address.
 // Wraps fetchHoneypotSecurity and returns the canonical simulation object or null on failure.
@@ -5591,6 +5578,24 @@ export async function POST(req: Request) {
       },
       lpMeta: { teamPercent: lpDiagnostics.teamPercent, lpToken: lpDiagnostics.lpTokenAddress },
     })
+    const lpLockBurnIntel = buildLpLockBurnIntel({
+      chain,
+      lpControl: { ...lpControl, lpController, lpControllerType, proofApplicability: lpProofApplicability },
+      lpControllerIntel: lpControllerIntel as unknown as Record<string, unknown>,
+      selectedPool: {
+        pair: lpPair ?? null,
+        address: lpPoolAddress ?? null,
+        model: lpModelProof.model,
+        liquidityUsd,
+      },
+      lpMeta: {
+        teamPercent: lpDiagnostics.teamPercent,
+        lpToken: lpDiagnostics.lpTokenAddress,
+        primaryMarketType: lpDiagnostics.primaryMarketType,
+        displayLpModel: lpControl.displayLpModel,
+        lpControlState: lpDiagnostics.lpState ?? null,
+      },
+    })
 
 
     // ── Data Fill Score: 0-100. Inferred values count at half weight ──
@@ -6531,6 +6536,7 @@ export async function POST(req: Request) {
       lpEvidenceSummary,
       lpControllerIntel,
       lpMovementWatch,
+      lpLockBurnIntel,
       lpMeta: {
         v2PoolCandidatesCount: lpDiagnostics.v2PoolCandidatesCount,
         protocolPoolCandidatesCount: lpDiagnostics.protocolPoolCandidatesCount,
