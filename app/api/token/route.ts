@@ -11,6 +11,7 @@ import {
   deriveDataModeAndConfidence as deriveLpDataModeAndConfidence,
   buildCortexLpRead as buildSharedCortexLpRead,
   classifyPoolModel,
+  classifyPoolByRpc,
   computeLpExitRisk,
   type ProofApplicability,
 } from '@/lib/server/lpProof'
@@ -2210,7 +2211,7 @@ async function fetchTokenHoldersUncached(_chain: ChainKey, contract: string): Pr
 }
 
 type LpControlResult = {
-  status: "burned" | "locked" | "protocol" | "team_controlled" | "concentrated_liquidity" | "partial" | "no_pool" | "insufficient_data" | "error";
+  status: "burned" | "locked" | "protocol" | "team_controlled" | "concentrated_liquidity" | "partial" | "no_pool" | "open_check" | "insufficient_data" | "error";
   confidence: "high" | "medium" | "low";
   poolType: "v2" | "v3" | "aerodrome" | "concentrated" | "unknown";
   source: string;
@@ -2401,6 +2402,15 @@ function computeLpControlRead(lp: LpControlResult, pairName?: string | null, con
         whatWasFound: [...poolLine, "Some LP checks returned usable data"],
         couldNotVerify: ["Complete lock/burn/team LP proof"],
         nextAction: "Treat LP control as partial until more holder or RPC evidence is available.",
+      };
+    case "open_check":
+      return {
+        title: "Liquidity detected — pool model not yet confirmed",
+        meaning: "Market evidence shows active liquidity, but the pool model and LP control path could not be confirmed from current on-chain evidence.",
+        riskLevel: "Open Check",
+        whatWasFound: [...poolLine, "Liquidity detected from market evidence"],
+        couldNotVerify: ["Pool model (V2 / concentrated)", "LP lock/burn proof", "LP control path"],
+        nextAction: "Re-scan to confirm the pool model on-chain before relying on LP lock/burn proof.",
       };
     case "no_pool":
     case "insufficient_data":
@@ -3309,10 +3319,35 @@ export async function POST(req: Request) {
       })
       _dsFbPoolSynthesized = true
     }
+    // Market-fallback liquidity evidence: the secondary market read proved liquidity/volume
+    // exists for this token even if no canonical on-chain pool could be selected. When this is
+    // true the token is NEVER reported as no_pool — at worst the pool model is an open check.
+    const _fallbackLiquidityDetected = Boolean(
+      dexFbEarly && ((dexFbEarly.liquidityUsd ?? 0) > 0 || (dexFbEarly.volume24h ?? 0) > 0 ||
+        (typeof dexFbEarly.pairAddress === 'string' && /^0x[a-f0-9]{40}$/i.test(dexFbEarly.pairAddress)))
+    )
+    // RPC-classify a synthesized fallback pool whose model is still unknown, using the existing
+    // Base/ETH RPC path (no new providers). Confirms V2/ERC-20 LP vs concentrated so the model is
+    // not left as a generic open check when on-chain data can resolve it.
+    let _fallbackRpcModel: 'v2' | 'concentrated' | 'unknown' | null = null
+    if (_dsFbPoolSynthesized && (chain === 'eth' || chain === 'base')) {
+      const _synthPool = normalizedPools[0]
+      if (_synthPool && _synthPool.poolType === 'unknown' && _synthPool.address && /^0x[a-f0-9]{40}$/.test(_synthPool.address)) {
+        const _rpcCls = await classifyPoolByRpc(chain, _synthPool.address)
+        _fallbackRpcModel = _rpcCls.poolType
+        if (_rpcCls.poolType !== 'unknown') {
+          _synthPool.poolType = _rpcCls.poolType
+          _synthPool.hasLpToken = _rpcCls.hasLpToken
+        } else if (_synthPool.hasLpToken == null) {
+          _synthPool.hasLpToken = _rpcCls.hasLpToken
+        }
+      }
+    }
     const selectedLpPool = selectLpVerificationPool(normalizedPools, String(contract));
     // Use normalizedPools (post-DS-fallback-synthesis) so noActivePools is false
-    // when a DexScreener fallback pool was successfully synthesized.
-    const noActivePools = normalizedPools.length === 0;
+    // when a DexScreener fallback pool was successfully synthesized. Fallback liquidity
+    // evidence alone (even without a usable pair address) also clears noActivePools.
+    const noActivePools = normalizedPools.length === 0 && !_fallbackLiquidityDetected;
     const mainPoolAttr = (mainPool?.attributes ?? {}) as Record<string, unknown>;
     const _mpAddrRaw = String(mainPoolAttr.address ?? '').trim().toLowerCase()
     const _mpIdHex = String(mainPool?.id ?? '').match(/0x[a-f0-9]{40}/i)?.[0]?.toLowerCase() ?? null
@@ -3590,8 +3625,14 @@ export async function POST(req: Request) {
     let _lpGrItemCount = 0
     _scanStage = 'lp_control_evaluation'
     if (!_lpProofPresent) {
-      // No pool at all — not even a market pool with a usable address
-      lpControl = { ...lpControl, status: "no_pool", reason: "No pool address found from provider for LP-holder verification." };
+      if (_fallbackLiquidityDetected) {
+        // Market-fallback evidence proves liquidity exists, but no usable pool address could be
+        // selected/probed for LP-holder verification → pool detected, model is an open check.
+        lpControl = { ...lpControl, status: "open_check", confidence: "low", reason: "Pool detected from market fallback; pool model requires RPC confirmation." };
+      } else {
+        // No pool at all — not even a market pool with a usable address
+        lpControl = { ...lpControl, status: "no_pool", reason: "No pool address found from provider for LP-holder verification." };
+      }
     } else if (!lpVerifyPoolPresent && _primaryConcentrated) {
       // Market pool exists but is V3/concentrated, and no V2/Aerodrome-V2 pool found anywhere → concentrated status
       lpControl = {
@@ -3877,6 +3918,7 @@ export async function POST(req: Request) {
         primaryDexId: lpDexId,
         verifyPoolType: _lpProofType,
         controlStatusConcentrated: lpControl.status === 'concentrated_liquidity',
+        marketLiquidityDetected: _fallbackLiquidityDetected,
       })
       const _displayLpModel = _display.displayLpModel
       const _notApplicable = _displayLpModel === 'concentrated_liquidity' || _displayLpModel === 'no_pool'
@@ -5264,8 +5306,13 @@ export async function POST(req: Request) {
     const lpMigrationProof = _deriveMigrationProof(gtAllPools, liquidityUsd)
     // Single shared classification (problem 1/2): "applicable" only when lpControl confirmed
     // an ERC-20 LP token (V2 or Aerodrome V2). Never "applicable" for concentrated/no_pool/unclassified.
-    const lpProofApplicability: ProofApplicability = noActivePools || !_lpProofPresent
+    // When fallback liquidity is detected but no verification pool could be probed, the model is
+    // an open check ("unknown"), NOT "not_available" — there IS a pool, we just couldn't confirm
+    // its model. This keeps CORTEX from wrongly saying standard LP proof "does not apply".
+    const lpProofApplicability: ProofApplicability = noActivePools || (!_lpProofPresent && !_fallbackLiquidityDetected)
       ? 'not_available'
+      : (!_lpProofPresent && _fallbackLiquidityDetected)
+      ? 'unknown'
       : (lpControl.proofApplicability ?? 'unknown')
     const _proofApplicableEarly = lpProofApplicability === 'applicable'
     let lpProof: { lpLockStatus: 'locked' | 'burned' | 'unlocked' | 'unverified'; lpLockAmount: number | null; lpUnlockTime: number | null; lpLockProvider: 'PinkLock' | null; lpController: 'wallet' | 'contract' | 'burn' | 'lockContract' | 'unknown'; reasonCode?: string }
@@ -5373,7 +5420,9 @@ export async function POST(req: Request) {
       lpController: lpControllerType,
       liquidityUsd: _liqForRisk,
       poolModel: lpModelProof.model === 'concentrated' && lpDexId && /aerodrome|velodrome/i.test(lpDexId) ? 'concentrated' : lpModelProof.model,
-      hasPool: !noActivePools && _lpProofPresent,
+      // Fallback liquidity counts as a pool for exit-risk purposes — there IS liquidity, the
+      // model is just unconfirmed (open check), so don't fall through to "no active pool".
+      hasPool: !noActivePools && (_lpProofPresent || _fallbackLiquidityDetected),
       secondaryLpSignal: lpControl.secondaryLpControlSignals
         ? { status: lpControl.secondaryLpControlSignals.status, poolDex: lpControl.secondaryLpControlSignals.poolDex }
         : null,
@@ -5381,7 +5430,11 @@ export async function POST(req: Request) {
       isEstablishedToken,
     })
     const lpExitRisk = _lpExitRiskResult.lpExitRisk
-    const lpExitRiskReason = _lpExitRiskResult.lpExitRiskReason
+    // For the fallback "pool detected, model unverified" case, use the task-specified evidence
+    // wording instead of the generic open-check reason.
+    const lpExitRiskReason = (!_lpProofPresent && _fallbackLiquidityDetected && lpProofApplicability === 'unknown')
+      ? 'Liquidity was detected, but ChainLens could not verify the pool model or LP control path from current evidence.'
+      : _lpExitRiskResult.lpExitRiskReason
     const liquidityDepthRisk = _lpExitRiskResult.liquidityDepthRisk
     const lpEvidenceSummary = [
       `Pool model: ${lpModelProof.model}`,

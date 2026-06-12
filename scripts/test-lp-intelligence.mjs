@@ -48,17 +48,44 @@ function selectCanonicalPools(pools) {
   }
 }
 
+function marketFallbackToCandidate(fb) {
+  if (!fb) return null
+  const liquidityUsd = typeof fb.liquidityUsd === 'number' && Number.isFinite(fb.liquidityUsd) ? fb.liquidityUsd : 0
+  const hasLiquidityEvidence = liquidityUsd > 0 || (typeof fb.volume24h === 'number' && fb.volume24h > 0)
+  const addr = typeof fb.pairAddress === 'string' && /^0x[a-fA-F0-9]{40}$/.test(fb.pairAddress) ? fb.pairAddress.toLowerCase() : null
+  if (!addr && !hasLiquidityEvidence) return null
+  return {
+    address: addr,
+    liquidityUsd,
+    dexId: fb.dexId ?? null,
+    dexName: fb.dexId ?? null,
+    poolType: fb.poolType ?? 'unknown',
+    hasLpToken: fb.hasLpToken ?? null,
+    hasDexMeta: Boolean(fb.dexId),
+    isValidAddress: Boolean(addr),
+  }
+}
+
+function applyRpcClassificationToCandidate(candidate, rpc) {
+  if (rpc.poolType === 'unknown') return { ...candidate, hasLpToken: candidate.hasLpToken ?? rpc.hasLpToken }
+  return { ...candidate, poolType: rpc.poolType, hasLpToken: rpc.hasLpToken }
+}
+
 function computeDisplayLpModel(params) {
-  const { noActivePools, proofPresent, primaryPoolType, primaryDexId, verifyPoolType, controlStatusConcentrated } = params
+  const { noActivePools, proofPresent, primaryPoolType, primaryDexId, verifyPoolType, controlStatusConcentrated, marketLiquidityDetected } = params
 
   let displayLpModel
   let lockBurnApplicable
   let lockBurnReason
 
-  if (noActivePools && !proofPresent) {
+  if (noActivePools && !proofPresent && !marketLiquidityDetected) {
     displayLpModel = 'no_pool'
     lockBurnApplicable = false
     lockBurnReason = 'No active pool detected.'
+  } else if (noActivePools && !proofPresent && marketLiquidityDetected) {
+    displayLpModel = 'open_check'
+    lockBurnApplicable = false
+    lockBurnReason = 'Pool detected from market fallback; pool model requires RPC confirmation.'
   } else if (primaryPoolType === 'v3' || primaryPoolType === 'concentrated' || controlStatusConcentrated) {
     displayLpModel = 'concentrated_liquidity'
     lockBurnApplicable = false
@@ -82,7 +109,9 @@ function computeDisplayLpModel(params) {
   } else {
     displayLpModel = 'open_check'
     lockBurnApplicable = false
-    lockBurnReason = 'LP model could not be determined from available data.'
+    lockBurnReason = marketLiquidityDetected
+      ? 'Pool detected from market fallback; pool model requires RPC confirmation.'
+      : 'LP model could not be determined from available data.'
   }
 
   const notApplicable = displayLpModel === 'concentrated_liquidity' || displayLpModel === 'no_pool'
@@ -240,6 +269,134 @@ console.log('\nScenario 5: pool present but model could not be classified')
   assert('displayLpModel is open_check', display.displayLpModel === 'open_check', display)
   assert('proofApplicability is unknown (not "applicable" or "not_applicable")', display.proofApplicability === 'unknown', display)
   assert('lockBurnApplicable is false', display.lockBurnApplicable === false, display)
+}
+
+// ─── Scenario 6: GOAL — fallback liquidity + pair address + RPC unknown ─────────
+// market.liquidityUsd > 0 from fallback, a usable pair address exists, but the RPC
+// probe could not confirm the model → pool detected, model open check (NOT no_pool).
+console.log('\nScenario 6: fallback liquidity + pair address + RPC unknown (GOAL-style)')
+{
+  const fb = { pairAddress: '0x072ab6b2ea4bb811102d3f11b092c63115ed1b83', liquidityUsd: 42_000, volume24h: 9_500, dexId: null }
+  const candidate = marketFallbackToCandidate(fb)
+  assert('fallback produces a pool candidate', candidate !== null, candidate)
+  assert('candidate has a valid address', candidate?.isValidAddress === true, candidate)
+  // RPC probe inconclusive
+  const classified = applyRpcClassificationToCandidate(candidate, { poolType: 'unknown', hasLpToken: null })
+  const selection = selectCanonicalPools([classified])
+  const proofPresent = Boolean(selection.verifyPool?.address && selection.verifyPool.hasLpToken === true)
+  const display = computeDisplayLpModel({
+    noActivePools: false,
+    proofPresent,
+    primaryPoolType: selection.primaryPool.poolType,
+    primaryDexId: selection.primaryPool.dexId,
+    verifyPoolType: selection.verifyPool?.poolType ?? 'unknown',
+    marketLiquidityDetected: true,
+  })
+  assert('displayLpModel is NOT no_pool', display.displayLpModel !== 'no_pool', display)
+  assert('displayLpModel is open_check', display.displayLpModel === 'open_check', display)
+  assert('proofApplicability is unknown', display.proofApplicability === 'unknown', display)
+  assert('lockBurnApplicable is false', display.lockBurnApplicable === false, display)
+  assert('reason cites market fallback', /market fallback/i.test(display.lockBurnReason), display.lockBurnReason)
+}
+
+// ─── Scenario 7: fallback pair + RPC confirms V2 → proof applicable ─────────────
+console.log('\nScenario 7: fallback pair + RPC V2 confirmed (proof applicable)')
+{
+  const fb = { pairAddress: '0x1111111111111111111111111111111111111111', liquidityUsd: 130_000, volume24h: 50_000, dexId: null }
+  const candidate = marketFallbackToCandidate(fb)
+  // RPC probe: token0/token1/getReserves/totalSupply all resolved → V2 ERC-20 LP
+  const classified = applyRpcClassificationToCandidate(candidate, { poolType: 'v2', hasLpToken: true })
+  assert('candidate upgraded to v2', classified.poolType === 'v2', classified)
+  assert('candidate has LP token', classified.hasLpToken === true, classified)
+  const selection = selectCanonicalPools([classified])
+  const proofPresent = Boolean(selection.verifyPool?.address && selection.verifyPool.hasLpToken === true)
+  const display = computeDisplayLpModel({
+    noActivePools: false,
+    proofPresent,
+    primaryPoolType: selection.primaryPool.poolType,
+    primaryDexId: selection.primaryPool.dexId,
+    verifyPoolType: selection.verifyPool?.poolType ?? 'unknown',
+    marketLiquidityDetected: true,
+  })
+  assert('displayLpModel is erc20_lp_token', display.displayLpModel === 'erc20_lp_token', display)
+  assert('proofApplicability is applicable', display.proofApplicability === 'applicable', display)
+  assert('lockBurnApplicable is true', display.lockBurnApplicable === true, display)
+}
+
+// ─── Scenario 8: no GT pool + no fallback pair → true no_pool ───────────────────
+console.log('\nScenario 8: no GeckoTerminal pool + no fallback pair (true no_pool)')
+{
+  const candidate = marketFallbackToCandidate(null)
+  assert('no fallback candidate produced', candidate === null, candidate)
+  const candidate2 = marketFallbackToCandidate({ pairAddress: null, liquidityUsd: 0, volume24h: 0, dexId: null })
+  assert('empty fallback produces no candidate', candidate2 === null, candidate2)
+  const selection = selectCanonicalPools([])
+  const display = computeDisplayLpModel({
+    noActivePools: true,
+    proofPresent: false,
+    primaryPoolType: 'unknown',
+    primaryDexId: null,
+    verifyPoolType: 'unknown',
+    marketLiquidityDetected: false,
+  })
+  assert('displayLpModel is no_pool', display.displayLpModel === 'no_pool', display)
+  assert('proofApplicability is not_applicable', display.proofApplicability === 'not_applicable', display)
+}
+
+// ─── Scenario 9: fallback pair + RPC confirms concentrated → not_applicable ─────
+console.log('\nScenario 9: fallback pair + RPC concentrated confirmed (not_applicable, not no_pool)')
+{
+  const fb = { pairAddress: '0x2222222222222222222222222222222222222222', liquidityUsd: 800_000, volume24h: 200_000, dexId: null }
+  const candidate = marketFallbackToCandidate(fb)
+  // RPC probe: token0/token1 + slot0/liquidity resolved, no getReserves/totalSupply → concentrated
+  const classified = applyRpcClassificationToCandidate(candidate, { poolType: 'concentrated', hasLpToken: false })
+  const selection = selectCanonicalPools([classified])
+  assert('primary flagged concentrated', selection.primaryConcentrated === true, selection.primaryConcentrated)
+  const proofPresent = Boolean(selection.verifyPool?.address && selection.verifyPool.hasLpToken === true)
+  const display = computeDisplayLpModel({
+    noActivePools: false,
+    proofPresent,
+    primaryPoolType: selection.primaryPool.poolType,
+    primaryDexId: selection.primaryPool.dexId,
+    verifyPoolType: selection.verifyPool?.poolType ?? 'unknown',
+    marketLiquidityDetected: true,
+  })
+  assert('displayLpModel is concentrated_liquidity', display.displayLpModel === 'concentrated_liquidity', display)
+  assert('displayLpModel is NOT no_pool', display.displayLpModel !== 'no_pool', display)
+  assert('proofApplicability is not_applicable', display.proofApplicability === 'not_applicable', display)
+}
+
+// ─── Scenario 10: VIRTUAL-style mixed (concentrated primary + V2 secondary) ─────
+// With fallback liquidity also present, the primary stays concentrated and the V2
+// wallet-control finding stays under secondaryLpControlSignals only.
+console.log('\nScenario 10: mixed concentrated primary + V2 secondary, with fallback liquidity present')
+{
+  const pools = [
+    { address: '0xprimaryclmm0000000000000000000000000000', liquidityUsd: 5_000_000, dexId: 'aerodrome-base', poolType: 'concentrated', hasLpToken: false, isValidAddress: true },
+    { address: '0xsecondaryv200000000000000000000000000000', liquidityUsd: 250_000, dexId: 'uniswap-v2-base', poolType: 'v2', hasLpToken: true, isValidAddress: true },
+  ]
+  const selection = selectCanonicalPools(pools)
+  const display = computeDisplayLpModel({
+    noActivePools: false,
+    proofPresent: true,
+    primaryPoolType: selection.primaryPool.poolType,
+    primaryDexId: selection.primaryPool.dexId,
+    verifyPoolType: selection.verifyPool.poolType,
+    marketLiquidityDetected: true,
+  })
+  assert('primary stays concentrated_liquidity', display.displayLpModel === 'concentrated_liquidity', display)
+  const lpControlFromSecondary = { status: 'team_controlled', confidence: 'high', reason: 'Single wallet holds the LP supply.', evidence: ['holder=0xabc...'] }
+  const { lpControl: reconciled, secondary } = reconcileSecondaryLpSignal(lpControlFromSecondary, {
+    primaryConcentrated: selection.primaryConcentrated,
+    verifyPool: selection.verifyPool,
+    primaryPoolAddress: selection.primaryPool.address,
+    primaryPoolType: selection.primaryPool.poolType,
+    primaryDexId: selection.primaryPool.dexId,
+    marketPairLabel: 'TOKEN/WETH',
+  })
+  assert('canonical status demoted to concentrated_liquidity', reconciled.status === 'concentrated_liquidity', reconciled.status)
+  assert('secondary signal carries the V2 team_controlled finding', secondary?.status === 'team_controlled' && secondary?.poolAddress === '0xsecondaryv200000000000000000000000000000', secondary)
+  assert('top-level never reports team_controlled', reconciled.status !== 'team_controlled', reconciled.status)
 }
 
 console.log(`\n${passed} passed, ${failed} failed`)

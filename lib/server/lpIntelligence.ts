@@ -87,6 +87,46 @@ export function gtPoolToCandidate(pool: GTPool): LpPoolCandidate {
   }
 }
 
+// Converts a market-fallback pair read (e.g. DexScreener token-pairs) into the same
+// LpPoolCandidate shape used everywhere else, so fallback liquidity is treated as a
+// real pool candidate. Returns null only when there is neither a usable pair address
+// nor any liquidity/volume evidence (a genuine no-pool).
+export function marketFallbackToCandidate(fb: {
+  pairAddress?: string | null
+  liquidityUsd?: number | null
+  volume24h?: number | null
+  dexId?: string | null
+  poolType?: LpPoolType | null
+  hasLpToken?: boolean | null
+} | null | undefined): LpPoolCandidate | null {
+  if (!fb) return null
+  const liquidityUsd = typeof fb.liquidityUsd === 'number' && Number.isFinite(fb.liquidityUsd) ? fb.liquidityUsd : 0
+  const hasLiquidityEvidence = liquidityUsd > 0 || (typeof fb.volume24h === 'number' && fb.volume24h > 0)
+  const addr = typeof fb.pairAddress === 'string' && /^0x[a-fA-F0-9]{40}$/.test(fb.pairAddress) ? fb.pairAddress.toLowerCase() : null
+  if (!addr && !hasLiquidityEvidence) return null
+  return {
+    address: addr,
+    liquidityUsd,
+    dexId: fb.dexId ?? null,
+    dexName: fb.dexId ?? null,
+    poolType: fb.poolType ?? 'unknown',
+    hasLpToken: fb.hasLpToken ?? null,
+    hasDexMeta: Boolean(fb.dexId),
+    isValidAddress: Boolean(addr),
+  }
+}
+
+// Applies an RPC pool-model classification (token0/token1/getReserves/totalSupply/
+// slot0/liquidity probe) to a candidate, upgrading its poolType / hasLpToken. Pure so
+// it can be unit-tested without RPC: pass the already-resolved classification.
+export function applyRpcClassificationToCandidate(
+  candidate: LpPoolCandidate,
+  rpc: { poolType: 'v2' | 'concentrated' | 'unknown'; hasLpToken: boolean | null }
+): LpPoolCandidate {
+  if (rpc.poolType === 'unknown') return { ...candidate, hasLpToken: candidate.hasLpToken ?? rpc.hasLpToken }
+  return { ...candidate, poolType: rpc.poolType, hasLpToken: rpc.hasLpToken }
+}
+
 export type DisplayLpModel = 'erc20_lp_token' | 'concentrated_liquidity' | 'protocol_or_gauge' | 'open_check' | 'no_pool'
 export type LpProofApplicability = 'applicable' | 'not_applicable' | 'unknown'
 
@@ -111,17 +151,28 @@ export function computeDisplayLpModel(params: {
   // the verification pool as concentrated_liquidity) — treated the same as a
   // concentrated primary pool type when set.
   controlStatusConcentrated?: boolean
+  // True when market-fallback evidence proves liquidity exists (e.g. a DexScreener
+  // pair with reserves/volume) even though no canonical on-chain pool could be
+  // selected/probed. A pool that is detected from fallback liquidity is reported as
+  // an open check ("model pending"), never as no_pool.
+  marketLiquidityDetected?: boolean
 }): DisplayLpModelResult {
-  const { noActivePools, proofPresent, primaryPoolType, primaryDexId, verifyPoolType, controlStatusConcentrated } = params
+  const { noActivePools, proofPresent, primaryPoolType, primaryDexId, verifyPoolType, controlStatusConcentrated, marketLiquidityDetected } = params
 
   let displayLpModel: DisplayLpModel
   let lockBurnApplicable: boolean
   let lockBurnReason: string
 
-  if (noActivePools && !proofPresent) {
+  if (noActivePools && !proofPresent && !marketLiquidityDetected) {
     displayLpModel = 'no_pool'
     lockBurnApplicable = false
     lockBurnReason = 'No active pool detected.'
+  } else if (noActivePools && !proofPresent && marketLiquidityDetected) {
+    // Liquidity is proven by market-fallback evidence but the pool model could not be
+    // confirmed on-chain — pool detected, model is an open check (not no_pool).
+    displayLpModel = 'open_check'
+    lockBurnApplicable = false
+    lockBurnReason = 'Pool detected from market fallback; pool model requires RPC confirmation.'
   } else if (primaryPoolType === 'v3' || primaryPoolType === 'concentrated' || controlStatusConcentrated) {
     displayLpModel = 'concentrated_liquidity'
     lockBurnApplicable = false
@@ -145,7 +196,9 @@ export function computeDisplayLpModel(params: {
   } else {
     displayLpModel = 'open_check'
     lockBurnApplicable = false
-    lockBurnReason = 'LP model could not be determined from available data.'
+    lockBurnReason = marketLiquidityDetected
+      ? 'Pool detected from market fallback; pool model requires RPC confirmation.'
+      : 'LP model could not be determined from available data.'
   }
 
   const notApplicable = displayLpModel === 'concentrated_liquidity' || displayLpModel === 'no_pool'

@@ -661,3 +661,86 @@ export async function resolveLpProof(chain: LpChain, lpTokenAddress: string | nu
   lpProofCache.set(cacheKey, { exp: Date.now() + LP_PROOF_CACHE_TTL_MS, data: result });
   return result;
 }
+
+// ── RPC pool-model classifier ────────────────────────────────────────────────
+// Classifies an on-chain pool/pair address by probing well-known selectors using
+// the existing Base/ETH RPC path (no new providers). Used to confirm the model of
+// a pool that was only discovered via market-fallback data (e.g. a DexScreener
+// pair address with no GeckoTerminal pool record), so a pool detected from
+// fallback liquidity is never mislabeled "no_pool".
+//
+//   V2 / ERC-20 LP token : token0() + token1() + getReserves() + totalSupply() all resolve
+//                          → lock/burn proof applies (constant_product LP token).
+//   Concentrated (V3/CL) : token0() + token1() + (slot0() or liquidity()) resolve, but it is
+//                          not a constant_product ERC-20 LP token → proof does not apply.
+//   Unknown              : an address exists but probes are inconclusive → pool detected,
+//                          model is an open check (proof not attempted until confirmed).
+export type RpcPoolModel = "v2_erc20_lp" | "concentrated" | "unknown";
+
+export interface RpcPoolClassification {
+  model: RpcPoolModel;
+  poolType: "v2" | "concentrated" | "unknown";
+  hasLpToken: boolean | null;
+  proofApplicable: boolean;
+  probed: {
+    token0: boolean;
+    token1: boolean;
+    getReserves: boolean;
+    totalSupply: boolean;
+    slot0: boolean;
+    liquidity: boolean;
+  };
+}
+
+const rpcPoolClassCache = new Map<string, { exp: number; data: RpcPoolClassification }>();
+
+function _rpcResolved(hex: string | null): boolean {
+  return typeof hex === "string" && hex !== "0x" && hex.length > 2;
+}
+
+export async function classifyPoolByRpc(chain: LpChain, poolAddress: string | null | undefined): Promise<RpcPoolClassification> {
+  const unknown: RpcPoolClassification = {
+    model: "unknown", poolType: "unknown", hasLpToken: null, proofApplicable: false,
+    probed: { token0: false, token1: false, getReserves: false, totalSupply: false, slot0: false, liquidity: false },
+  };
+  if (!poolAddress || !/^0x[a-fA-F0-9]{40}$/.test(poolAddress)) return unknown;
+
+  const addr = poolAddress.toLowerCase();
+  const cacheKey = `${chain}:${addr}`;
+  const cached = rpcPoolClassCache.get(cacheKey);
+  if (cached && cached.exp > Date.now()) return cached.data;
+
+  const call = (selector: string) => lpRpcCall(chain, "eth_call", [{ to: addr, data: selector }, "latest"]);
+  // token0()=0x0dfe1681 token1()=0xd21220a7 getReserves()=0x0902f1ac
+  // totalSupply()=0x18160ddd slot0()=0x3850c7bd liquidity()=0x1a686502
+  const [token0Hex, token1Hex, reservesHex, supplyHex, slot0Hex, liquidityHex] = await Promise.all([
+    call("0x0dfe1681"), call("0xd21220a7"), call("0x0902f1ac"),
+    call("0x18160ddd"), call("0x3850c7bd"), call("0x1a686502"),
+  ]);
+
+  const probed = {
+    token0: _rpcResolved(token0Hex),
+    token1: _rpcResolved(token1Hex),
+    getReserves: _rpcResolved(reservesHex),
+    totalSupply: _rpcResolved(supplyHex),
+    slot0: _rpcResolved(slot0Hex),
+    liquidity: _rpcResolved(liquidityHex),
+  };
+
+  let result: RpcPoolClassification;
+  if (probed.token0 && probed.token1 && probed.getReserves && probed.totalSupply) {
+    // Pair exposes reserves AND an ERC-20 total supply → standard V2 LP token.
+    result = { model: "v2_erc20_lp", poolType: "v2", hasLpToken: true, proofApplicable: true, probed };
+  } else if (probed.token0 && probed.token1 && (probed.slot0 || probed.liquidity)) {
+    // Pair exposes a concentrated-liquidity interface (slot0/liquidity) and is not a
+    // constant-product ERC-20 LP token → standard lock/burn proof does not apply.
+    result = { model: "concentrated", poolType: "concentrated", hasLpToken: false, proofApplicable: false, probed };
+  } else {
+    // An address exists but the probe could not confirm the model (RPC unavailable,
+    // proxy, or non-standard pool) → pool detected, model is an open check.
+    result = { model: "unknown", poolType: "unknown", hasLpToken: null, proofApplicable: false, probed };
+  }
+
+  rpcPoolClassCache.set(cacheKey, { exp: Date.now() + LP_PROOF_CACHE_TTL_MS, data: result });
+  return result;
+}
