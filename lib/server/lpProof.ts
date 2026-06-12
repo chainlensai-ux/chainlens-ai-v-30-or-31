@@ -187,6 +187,7 @@ const EVIDENCE_GAP_DEFS: Record<string, LpEvidenceGap> = {
   BURN_PROOF_UNCONFIRMED: { id: "BURN_PROOF_UNCONFIRMED", label: "BURN PROOF UNCONFIRMED", explanation: "Whether LP tokens were burned to a dead address has not been confirmed by this scan.", nextAction: "Check the LP token holder list on-chain for transfers to a burn address." },
   CONTROLLER_UNKNOWN: { id: "CONTROLLER_UNKNOWN", label: "CONTROLLER UNKNOWN", explanation: "The LP token's controlling address (wallet, contract, lock contract, or burn) has not been confirmed by this scan.", nextAction: "Inspect the LP token's holder list and the token contract's owner() / admin functions on a block explorer." },
   POOL_AGE_UNKNOWN: { id: "POOL_AGE_UNKNOWN", label: "POOL AGE UNKNOWN", explanation: "Pool creation date is not available from the data used in this scan.", nextAction: "Check the pool creation transaction on a block explorer to determine its age." },
+  POOL_AGE_VERY_NEW: { id: "POOL_AGE_VERY_NEW", label: "POOL AGE VERY NEW", explanation: "Pool appears very new based on observed pool creation time.", nextAction: "Newly created pools have a limited trading history — review liquidity and trading activity over time before relying on current depth." },
   MINTABILITY_UNAVAILABLE: { id: "MINTABILITY_UNAVAILABLE", label: "MINTABILITY UNAVAILABLE", explanation: "Whether the token contract can mint new supply has not been confirmed by this scan.", nextAction: "Review the token contract source code for mint functions." },
   HONEYPOT_CHECK_UNAVAILABLE: { id: "HONEYPOT_CHECK_UNAVAILABLE", label: "HONEYPOT CHECK UNAVAILABLE", explanation: "This scan does not include a honeypot / sell-simulation check.", nextAction: "Run a dedicated honeypot simulation before trading meaningful size." },
   TAX_CHECK_UNAVAILABLE: { id: "TAX_CHECK_UNAVAILABLE", label: "TAX CHECK UNAVAILABLE", explanation: "Buy/sell tax has not been verified by this scan.", nextAction: "Simulate a buy and sell to confirm actual transaction tax." },
@@ -211,10 +212,17 @@ export function buildEvidenceGaps(params: {
   controllerProofAttempted?: boolean;
   /** When false, token-level gaps (mintability/honeypot/tax/renounce) are omitted. Default true. */
   includeTokenGaps?: boolean;
+  /**
+   * Pool creation time in milliseconds since epoch, when known (e.g. GeckoTerminal
+   * pool_created_at). When set, POOL_AGE_UNKNOWN is never emitted — a POOL_AGE_VERY_NEW
+   * watch item is emitted instead if the pool is less than 24h old.
+   */
+  poolAgeMs?: number | null;
 }): LpEvidenceGap[] {
   const applicability = params.proofApplicability ?? "applicable";
   const controllerProofAttempted = params.controllerProofAttempted !== false;
   const tokenGaps = params.includeTokenGaps !== false;
+  const poolAgeKnown = params.poolAgeMs != null && Number.isFinite(params.poolAgeMs);
   const ids: string[] = [];
   if (applicability === "applicable") {
     // Only show lock-status unverified when LP is neither locked nor burned.
@@ -226,7 +234,11 @@ export function buildEvidenceGaps(params: {
     ids.push("POOL_MODEL_UNCERTAIN", "LP_CONTROL_UNVERIFIED", "LOCK_BURN_PROOF_NOT_ATTEMPTED_UNTIL_MODEL_CONFIRMED");
   }
   // "not_applicable" / "not_available": no lock/burn/controller gaps — proof genuinely doesn't apply.
-  ids.push("POOL_AGE_UNKNOWN");
+  if (!poolAgeKnown) {
+    ids.push("POOL_AGE_UNKNOWN");
+  } else if ((params.poolAgeMs as number) < 24 * 60 * 60 * 1000) {
+    ids.push("POOL_AGE_VERY_NEW");
+  }
   if (tokenGaps) {
     ids.push(
       "MINTABILITY_UNAVAILABLE",

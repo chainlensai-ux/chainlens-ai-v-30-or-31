@@ -504,6 +504,8 @@ type RugRiskReport = {
     source_status: "ok" | "partial"
     /** Set only for "open_check" — explains that liquidity exists but the LP control path is unverified. */
     note?: string | null
+    /** "unknown" when the LP controller has not been proven (open_check/concentrated/protocol). */
+    controller?: string | null
   }
   contract_flags: {
     honeypot: boolean | null
@@ -2228,6 +2230,7 @@ type LpControlResult = {
   lpVerificationPoolReason?: string;
   // Normalized split-pool fields — always set after LP resolution
   primaryMarketPool?: string | null;
+  primaryMarketPoolId?: string | null;
   verificationPool?: string | null;
   verificationPoolDex?: string | null;
   verificationPoolType?: string | null;
@@ -2302,6 +2305,8 @@ type LpDiagnostics = {
   // Split-pool diagnostic fields (market vs verification)
   primaryMarketSelected: boolean;
   primaryMarketPoolAddress: string | null;
+  primaryMarketPoolId: string | null;
+  primaryMarketPoolAddressType: "contract" | "pool_id" | "unknown";
   primaryMarketDex: string | null;
   primaryMarketType: string | null;
   primaryMarketLiquidityUsd: number | null;
@@ -2525,6 +2530,28 @@ function extractPoolDex(pool: Record<string, unknown> | null, included: unknown[
   return { dexId: attrDexId || relDexId, dexName: attrDexName || incDexName || attrDexId || relDexId };
 }
 
+// Resolves a pool's identifier to either a real 20-byte contract address, or — for
+// Uniswap V4 / PoolManager-based pools — a bytes32 pool ID. GeckoTerminal pool ids look
+// like "<network>_<hex>"; for V2/V3 the hex part is a 40-char (20-byte) pool contract
+// address, but for V4 it's a 64-char (32-byte) pool ID that is NOT a contract address.
+// Never truncate a 64-char pool ID into a fake 40-char address.
+function extractPoolAddressOrId(rawId: unknown, attrAddress: unknown): { address: string | null; poolId: string | null; poolAddressType: "contract" | "pool_id" | "unknown" } {
+  const addrRaw = String(attrAddress ?? '').trim().toLowerCase()
+  if (/^0x[a-f0-9]{40}$/.test(addrRaw)) {
+    return { address: addrRaw, poolId: null, poolAddressType: "contract" }
+  }
+  const idRaw = String(rawId ?? '')
+  const idx = idRaw.indexOf('_')
+  const idHex = (idx === -1 ? idRaw : idRaw.slice(idx + 1)).trim().toLowerCase()
+  if (/^0x[a-f0-9]{40}$/.test(idHex)) {
+    return { address: idHex, poolId: null, poolAddressType: "contract" }
+  }
+  if (/^0x[a-f0-9]{64}$/.test(idHex)) {
+    return { address: null, poolId: idHex, poolAddressType: "pool_id" }
+  }
+  return { address: null, poolId: null, poolAddressType: "unknown" }
+}
+
 function normalizePool(pool: Record<string, unknown> | null, includedTokenById: Map<string, Record<string, unknown>>): NormalizedPool {
   const attrs = (pool?.attributes ?? {}) as Record<string, unknown>;
   const rel = (pool?.relationships ?? {}) as Record<string, unknown>;
@@ -2536,12 +2563,12 @@ function normalizePool(pool: Record<string, unknown> | null, includedTokenById: 
   const quoteTokenAddress = String((quoteInc as Record<string, unknown>).address ?? "").trim().toLowerCase() || null;
   const baseTokenSymbol = String((baseInc as Record<string, unknown>).symbol ?? "").trim() || null;
   const quoteTokenSymbol = String((quoteInc as Record<string, unknown>).symbol ?? "").trim() || null;
-  const _addrRaw = String(attrs.address ?? '').trim().toLowerCase()
-  const _idHex = String(pool?.id ?? '').match(/0x[a-f0-9]{40}/i)?.[0]?.toLowerCase() ?? null
-  const address = (/^0x[a-f0-9]{40}$/.test(_addrRaw) ? _addrRaw : _idHex) || null
+  const { address, poolId, poolAddressType } = extractPoolAddressOrId(pool?.id, attrs.address)
   const { dexId, dexName } = extractPoolDex(pool, []);
   return {
     address,
+    poolId,
+    poolAddressType,
     pairName: String(attrs.name ?? attrs.pool_name ?? attrs.pair_name ?? "").trim() || null,
     liquidityUsd: pickNum(attrs.reserve_in_usd, attrs.liquidity_usd, attrs.reserve_usd) ?? 0,
     dexId: dexId || null,
@@ -2566,6 +2593,8 @@ function normalizePool(pool: Record<string, unknown> | null, includedTokenById: 
 
 type NormalizedPool = {
   address?: string | null;
+  poolId?: string | null;
+  poolAddressType?: "contract" | "pool_id" | "unknown";
   pairName?: string | null;
   liquidityUsd: number;
   dexId?: string | null;
@@ -3351,16 +3380,14 @@ export async function POST(req: Request) {
     // evidence alone (even without a usable pair address) also clears noActivePools.
     const noActivePools = normalizedPools.length === 0 && !_fallbackLiquidityDetected;
     const mainPoolAttr = (mainPool?.attributes ?? {}) as Record<string, unknown>;
-    const _mpAddrRaw = String(mainPoolAttr.address ?? '').trim().toLowerCase()
-    const _mpIdHex = String(mainPool?.id ?? '').match(/0x[a-f0-9]{40}/i)?.[0]?.toLowerCase() ?? null
-    const primaryPoolAddress = (/^0x[a-f0-9]{40}$/.test(_mpAddrRaw) ? _mpAddrRaw : _mpIdHex) || null
+    const { address: primaryPoolAddress, poolId: primaryMarketPoolId, poolAddressType: primaryMarketPoolAddressType } = extractPoolAddressOrId(mainPool?.id, mainPoolAttr.address)
     // Canonical primary pool for both Liquidity&Pools and LP Control:
     // use the highest-liquidity normalized pool first (same ordering as matchingPools/mainPool),
     // then fall back to LP verification selector if needed.
     const canonicalPrimaryPool = normalizedPools[0] ?? null
     const canonicalPrimaryUsable = Boolean(
-      canonicalPrimaryPool?.address &&
-      /^0x[a-f0-9]{40}$/.test(canonicalPrimaryPool.address) &&
+      canonicalPrimaryPool &&
+      (canonicalPrimaryPool.isValidAddress || canonicalPrimaryPool.poolId) &&
       (canonicalPrimaryPool.liquidityUsd ?? 0) > 0
     )
     const lpPool = canonicalPrimaryUsable ? canonicalPrimaryPool : selectedLpPool.pool;
@@ -3432,7 +3459,7 @@ export async function POST(req: Request) {
     // For LP proof logic, use lpVerifyPool (V2/unknown) if available, else fall back to lpPool
     const _lpProofAddress = lpVerifyPoolPresent ? lpVerifyPoolAddress : lpPoolAddress
     const _lpProofType = lpVerifyPoolPresent ? lpVerifyPoolType : lpPoolType
-    const _lpProofPresent = lpVerifyPoolPresent || lpPoolAddressPresent
+    const _lpProofPresent = lpVerifyPoolPresent || lpPoolAddressPresent || Boolean(lpPool?.poolId)
     // Log LP pool selection so production scans self-document the fix
     if (process.env.NODE_ENV === 'development' || process.env.LP_DEBUG === '1') {
       console.log('[lp-pool-select]', JSON.stringify({
@@ -3581,14 +3608,16 @@ export async function POST(req: Request) {
       dexscreenerPoolSynthesized: _dsFbPoolSynthesized,
       poolDetected: normalizedPools.length > 0,
       poolSource: _dsFbPoolSynthesized ? 'dexscreener_synthesized' : (matchingPools.length > 0 ? 'geckoterminal' : 'none'),
-      primaryPoolSelected: Boolean(lpPoolAddressPresent && (lpPool?.liquidityUsd ?? 0) > 0),
+      primaryPoolSelected: Boolean((lpPoolAddressPresent || lpPool?.poolId) && (lpPool?.liquidityUsd ?? 0) > 0),
       selectedPoolAddress: _lpProofAddress,
       selectedPoolDex: lpVerifyPool?.dexId ?? lpVerifyPool?.dexName ?? lpPool?.dexId ?? lpPool?.dexName ?? null,
       selectedPoolType: _lpProofType,
       selectedPoolLiquidityUsd: lpVerifyPool?.liquidityUsd ?? lpPool?.liquidityUsd ?? null,
       // Split-pool diagnostics
-      primaryMarketSelected: Boolean(lpPoolAddressPresent),
+      primaryMarketSelected: Boolean(lpPoolAddressPresent || lpPool?.poolId),
       primaryMarketPoolAddress: lpPoolAddress,
+      primaryMarketPoolId: primaryMarketPoolId ?? lpPool?.poolId ?? null,
+      primaryMarketPoolAddressType: primaryMarketPoolAddressType ?? lpPool?.poolAddressType ?? "unknown",
       primaryMarketDex: primaryDexName ?? lpPool?.dexId ?? lpPool?.dexName ?? null,
       primaryMarketType: lpPoolType,
       primaryMarketLiquidityUsd: lpPool?.liquidityUsd ?? null,
@@ -3645,7 +3674,8 @@ export async function POST(req: Request) {
         reason: "Protocol-specific LP proof required.",
         evidence: [
           `Market pool: ${marketPair} (${lpPoolType})`,
-          `pool=${primaryPoolAddress}`, `dex=${lpDexId ?? lpDexName ?? "unknown"}`, `poolType=${lpPoolType}`,
+          primaryPoolAddress ? `pool=${primaryPoolAddress}` : `poolId=${primaryMarketPoolId ?? lpPool?.poolId ?? "unknown"}`,
+          `dex=${lpDexId ?? lpDexName ?? "unknown"}`, `poolType=${lpPoolType}`,
         ],
       };
     } else if (lpVerifyPoolPresent && lpVerifyPool?.hasLpToken === false) {
@@ -3930,6 +3960,7 @@ export async function POST(req: Request) {
       lpControl.proofApplicability = _display.proofApplicability
 
       lpControl.primaryMarketPool = lpDiagnostics.primaryMarketPoolAddress ?? null
+      lpControl.primaryMarketPoolId = lpDiagnostics.primaryMarketPoolId ?? null
       // For concentrated/no-pool models there is no ERC-20 LP verification pool — report
       // these as null rather than surfacing a CLMM/V3 pool that was only used to confirm
       // "no LP token here", which would otherwise look like a (misleading) V2 proof source.
@@ -5318,7 +5349,7 @@ export async function POST(req: Request) {
     // When fallback liquidity is detected but no verification pool could be probed, the model is
     // an open check ("unknown"), NOT "not_available" — there IS a pool, we just couldn't confirm
     // its model. This keeps CORTEX from wrongly saying standard LP proof "does not apply".
-    const lpProofApplicability: ProofApplicability = noActivePools || (!_lpProofPresent && !_fallbackLiquidityDetected)
+    const lpProofApplicability: ProofApplicability = noActivePools
       ? 'not_available'
       : (!_lpProofPresent && _fallbackLiquidityDetected)
       ? 'unknown'
@@ -5366,17 +5397,26 @@ export async function POST(req: Request) {
       return null
     })()
     const lpController: string = lpControllerAddress ?? lpControllerType
+    // LP controller has not been proven for open-check (model unverified) or
+    // concentrated/protocol (NFT position, not an ERC-20 LP token) pools — never report
+    // the token owner/deployer as the LP owner/controller in these cases.
+    const _lpControllerUnproven = lpControl.status === "open_check" || lpControl.status === "concentrated_liquidity" || lpControl.status === "protocol"
     if (_lpProofSkipReason) lpDiagnostics.lpProofSkipReason = _lpProofSkipReason
 
     // proofApplicability: shared classification — "not_applicable"/"not_available" suppress
     // lock/burn/controller gaps; "unknown" emits a pool-model-uncertainty gap instead.
     // includeTokenGaps: false — token scanner has its own security section for tax/honeypot/renounce
+    // Pool age: prefer the GeckoTerminal pool's pool_created_at, falling back to the
+    // DexScreener fallback's pairCreatedAt — when either is known, never emit
+    // POOL_AGE_UNKNOWN (a POOL_AGE_VERY_NEW watch item is emitted instead if <24h old).
+    const _poolAgeMsForGaps = _pairAgeMs ?? (dexFbEarly?.pairCreatedAt ? (() => { try { return Date.now() - new Date(dexFbEarly.pairCreatedAt as string).getTime() } catch { return null } })() : null)
     const lpEvidenceGaps = buildLpEvidenceGaps({
       lpLockStatus,
       lpController: lpControllerType,
       proofApplicability: lpProofApplicability,
       controllerProofAttempted: _proofApplicableEarly,
       includeTokenGaps: false,
+      poolAgeMs: _poolAgeMsForGaps,
     })
 
     const { lp_data_mode: lpDataMode, lp_data_confidence: _lpDataConfRaw } = deriveLpDataModeAndConfidence(
@@ -5524,15 +5564,19 @@ export async function POST(req: Request) {
                     : "unlocked",
         unlock_at: lpUnlockAt,
         countdown_seconds: lpCountdownSeconds,
-        // Owner/controller of the LP is unknown for "open_check" — never report a wallet/LP
-        // owner address until the pool model and LP control path are confirmed.
-        owner: lpControl.status === "open_check" ? null : (ownerAddr ?? null),
+        // Owner/controller of the LP is unknown for "open_check"/concentrated/protocol pools —
+        // never report the token owner/deployer as the LP owner until an LP controller is
+        // actually proven (concentrated/V3/V4/CLMM positions are NFTs, not ERC-20 LP tokens).
+        owner: _lpControllerUnproven ? null : (ownerAddr ?? null),
         contract: primaryPoolAddress ?? null,
         movement_24h_usd: _ev ?? null,
-        source_status: lpControl.status === "error" || lpControl.status === "insufficient_data" || lpControl.status === "open_check" ? "partial" : "ok",
+        source_status: (lpControl.status === "error" || lpControl.status === "insufficient_data" || _lpControllerUnproven) ? "partial" : "ok",
+        controller: _lpControllerUnproven ? "unknown" : (lpControllerAddress ?? null),
         note: lpControl.status === "open_check"
           ? "Market liquidity was detected, but the pool model and LP control path could not be verified from current evidence."
-          : null,
+          : _lpControllerUnproven
+            ? "LP controller is not proven for this concentrated-liquidity model."
+            : null,
       },
       contract_flags: {
         honeypot: hpResult.ok ? hpResult.honeypot : null,
@@ -6697,6 +6741,8 @@ export async function POST(req: Request) {
           // Primary market pool (display/Liquidity UI)
           primaryMarketSelected: lpDiagnostics.primaryMarketSelected,
           primaryMarketPoolAddress: lpDiagnostics.primaryMarketPoolAddress,
+          primaryMarketPoolId: lpDiagnostics.primaryMarketPoolId,
+          primaryMarketPoolAddressType: lpDiagnostics.primaryMarketPoolAddressType,
           primaryMarketDex: lpDiagnostics.primaryMarketDex,
           primaryMarketType: lpDiagnostics.primaryMarketType,
           primaryMarketLiquidityUsd: lpDiagnostics.primaryMarketLiquidityUsd,
