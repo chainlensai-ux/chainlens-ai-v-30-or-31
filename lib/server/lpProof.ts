@@ -284,6 +284,10 @@ export function buildCortexLpRead(params: {
   fragments: number;
   observedPoolPresent?: boolean;
   riskTier: string;
+  /** Liquidity-depth-only risk (deep pool vs. shallow pool), separate from LP-control risk
+   *  (who can withdraw the liquidity). Keeping these distinct avoids saying "high
+   *  liquidity-depth risk" when the pool is deep but LP control is the actual concern. */
+  liquidityDepthRisk?: "low" | "medium" | "high" | "unknown";
   lpModel: { model: "constant_product" | "concentrated" | "stableswap" | "unknown"; dexName: string | null; standardLockApplies: boolean };
   migrationSummary: string;
   mode: string;
@@ -313,7 +317,7 @@ export function buildCortexLpRead(params: {
     sellTax: number | null;
   };
 }): CortexLpRead {
-  const { name, symbol, totalLiq, fragments, observedPoolPresent, riskTier, lpModel, migrationSummary, mode, confidence, gaps, lpLockStatus, lpLockProvider, lpUnlockTime, secondaryLpSignal, lpController, lpControllerAddress, isEstablishedToken, proofApplicability, fallbackLiquidityDetected, contractSignals } = params;
+  const { name, symbol, totalLiq, fragments, observedPoolPresent, riskTier, liquidityDepthRisk, lpModel, migrationSummary, mode, confidence, gaps, lpLockStatus, lpLockProvider, lpUnlockTime, secondaryLpSignal, lpController, lpControllerAddress, isEstablishedToken, proofApplicability, fallbackLiquidityDetected, contractSignals } = params;
   const liqStr = totalLiq != null ? `$${totalLiq.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : "an unknown amount";
   const modelUnknown = proofApplicability === "unknown";
 
@@ -377,9 +381,26 @@ export function buildCortexLpRead(params: {
     return parts.join("; ");
   })();
 
+  // Liquidity depth (how deep the pool is) and LP control (who can withdraw it) are
+  // distinct risk dimensions — never describe a deep pool as carrying "high liquidity-depth
+  // risk" just because the overall risk tier is high for other reasons (e.g. LP control).
+  const depthClause = liquidityDepthRisk === "low"
+    ? "Liquidity depth is deep relative to this token, which lowers slippage/exit-depth risk."
+    : liquidityDepthRisk === "medium"
+      ? "Liquidity depth is moderate for this token."
+      : liquidityDepthRisk === "high"
+        ? "Liquidity depth is shallow for this token, which raises slippage/exit-depth risk."
+        : "Liquidity depth could not be confirmed from current evidence.";
+
+  const lpControlRiskClause = (lpController === "wallet" && (lpLockStatus !== "locked" && lpLockStatus !== "burned"))
+    ? "Separately, LP control risk is high: a dominant wallet controls the LP position and no lock or burn proof is confirmed."
+    : (lpLockStatus === "locked" || lpLockStatus === "burned")
+      ? "Separately, LP control risk is low: the selected LP position is locked or burned."
+      : "Separately, LP control could not be confirmed from current evidence.";
+
   const riskSummary = contractSignals
-    ? `${name} (${symbol}) shows a "${riskTier}" liquidity-depth risk tier based on observed pool data. This reflects liquidity depth and pool structure, plus available contract checks — ${contractStatusClause} (data mode: ${mode}, confidence: ${confidence}). ${lockClause}`
-    : `${name} (${symbol}) shows a "${riskTier}" liquidity-depth risk tier based on observed pool data. This reflects liquidity depth and pool structure only — ${contractStatusClause} (data mode: ${mode}, confidence: ${confidence}). ${lockClause}`;
+    ? `${name} (${symbol}) shows an overall "${riskTier}" risk tier based on observed pool data. ${depthClause} ${lpControlRiskClause} This also reflects available contract checks — ${contractStatusClause} (data mode: ${mode}, confidence: ${confidence}). ${lockClause}`
+    : `${name} (${symbol}) shows an overall "${riskTier}" risk tier based on observed pool data. ${depthClause} ${lpControlRiskClause} ${contractStatusClause} (data mode: ${mode}, confidence: ${confidence}). ${lockClause}`;
 
   const poolDetected = observedPoolPresent ?? fragments > 0;
   const liquidityAnalysis = poolDetected

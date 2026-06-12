@@ -2692,7 +2692,7 @@ const RISK_REASON_MAP: Record<string, string> = {
   lp_controller_standard_lock_not_applicable: 'Standard LP lock does not apply to this pool model',
   lp_controller_unknown: 'LP controller unknown',
   source_code_verified: 'Source code verified',
-  source_verification_unavailable: 'Source verification unavailable',
+  source_verification_unavailable: 'Source-level contract review not confirmed',
   mint_function_detected: 'Mint function detected',
   blacklist_function_detected: 'Blacklist function detected',
   trading_pause_detected: 'Trading pause function detected',
@@ -3852,7 +3852,13 @@ export default function TerminalTokenScanner() {
                       <p style={{ margin: 0, fontSize: '10px', color: '#475569', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>CORTEX Engine is a stricter evidence-weighted risk read. Token Safety Score is the main normalized product score.</p>
                     </div>
 
-                    {/* CORTEX Score Hero */}
+                    {/* Advanced CORTEX Details — collapsed by default. The old large CORTEX
+                        Score Hero and its breakdown live here as a secondary, opt-in view;
+                        Token Safety Score and the compact CORTEX Engine Read strip above are
+                        the only scores shown by default. */}
+                    <details style={{ marginBottom: '20px' }}>
+                    <summary style={{ cursor: 'pointer', listStyle: 'none', fontSize: '11px', letterSpacing: '.14em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, padding: '10px 14px', borderRadius: '10px', border: '1px solid rgba(148,163,184,0.16)', background: 'rgba(8,14,28,0.55)' }}>ADVANCED CORTEX DETAILS</summary>
+                    <div style={{ marginTop: '14px' }}>
                     <div className="cortex-score-hero" style={{ marginBottom: '20px', background: 'linear-gradient(160deg,rgba(8,16,32,.98),rgba(4,8,18,.96))', border: `1px solid ${scoreColor}32`, borderRadius: '18px', padding: '22px 24px', boxShadow: `0 0 60px ${scoreColor}12, 0 0 24px ${scoreColor}08, 0 0 0 1px ${scoreColor}06 inset` }}>
                       <div style={{ display: 'flex', alignItems: 'flex-start', gap: '20px', flexWrap: 'wrap', marginBottom: '18px' }}>
                         <div style={{ flexShrink: 0 }}>
@@ -3960,6 +3966,9 @@ export default function TerminalTokenScanner() {
                           .map((s, i) => <div key={i}>- {humanizeSectionLine(s.source, s.status, s.reason)}</div>)}
                       </div>
                     )}
+                    </div>
+                    </details>
+
                     {!planLoading && !isFullAccess && (
                       <div style={{ marginTop: '24px', padding: '28px 24px', border: '1px solid rgba(139,92,246,0.28)', borderRadius: '16px', background: 'rgba(139,92,246,0.06)', textAlign: 'center' }}>
                         <div style={{ fontSize: '26px', marginBottom: '12px' }}>🔒</div>

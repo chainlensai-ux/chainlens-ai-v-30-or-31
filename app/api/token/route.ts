@@ -40,7 +40,7 @@ function _deriveLpModelProof(dexId: string | null): {
   return { model, dexName: dexId, standardLockApplies: cls.standardLockApplies }
 }
 
-function _deriveMigrationProof(pools: Array<{ attributes: { reserve_in_usd?: string | number | null }; relationships?: { dex?: { data?: { id: string } } } }>, totalLiq: number | null, primaryPoolSelected: boolean): {
+function _deriveMigrationProof(pools: Array<{ attributes: { reserve_in_usd?: string | number | null }; relationships?: { dex?: { data?: { id: string } } } }>, totalLiq: number | null, primaryPoolSelected: boolean, canonicalPrimaryDex?: string | null, selectedPoolCreatedAt?: string | null): {
   status: 'low' | 'watch' | 'flagged' | 'unknown'
   confidence: 'high' | 'medium' | 'low' | 'unverified'
   reason: string
@@ -52,7 +52,10 @@ function _deriveMigrationProof(pools: Array<{ attributes: { reserve_in_usd?: str
   nextAction: string
 } {
   const dexsUsed = Array.from(new Set(pools.map((p) => p.relationships?.dex?.data?.id).filter((d): d is string => !!d)))
-  const primaryDex = pools[0]?.relationships?.dex?.data?.id ?? null
+  // Prefer the canonical primary pool's DEX (the one already selected by the LP control
+  // pipeline) over the raw first pool — they can disagree when the LP-verification pool
+  // isn't the first pool returned by the pools endpoint.
+  const primaryDex = canonicalPrimaryDex ?? pools[0]?.relationships?.dex?.data?.id ?? null
   const toN = (v: string | number | null | undefined): number | null => { if (v == null) return null; const n = typeof v === 'number' ? v : parseFloat(v as string); return isNaN(n) ? null : n }
   const liquidities = pools.map((p) => toN(p.attributes.reserve_in_usd) ?? 0)
   const topShare = totalLiq && totalLiq > 0 ? (liquidities[0] ?? 0) / totalLiq : null
@@ -81,7 +84,10 @@ function _deriveMigrationProof(pools: Array<{ attributes: { reserve_in_usd?: str
     else if (hasSelectedPrimary) { status = 'low'; confidence = 'low'; reason = 'Liquidity is distributed across multiple pools. A primary pool is present, so pool count alone is not enough evidence of migration risk. Historical liquidity movement is unavailable.' }
     else { status = 'unknown'; confidence = 'unverified'; reason = 'Liquidity is spread across multiple pools with no clear primary pool. Historical liquidity movement is unavailable, so migration risk cannot be confirmed from current evidence.' }
   }
-  return { status, confidence, reason, dexsUsed, primaryDex, liquidityDistribution, signals, missingEvidence: ['pool_creation_date_unavailable', 'historical_liquidity_movement_unavailable'], nextAction: 'Confirm pool creation dates and historical liquidity moves on a block explorer before drawing migration conclusions.' }
+  const missingEvidence: string[] = []
+  if (!selectedPoolCreatedAt) missingEvidence.push('pool_creation_date_unavailable')
+  missingEvidence.push('historical_liquidity_movement_unavailable')
+  return { status, confidence, reason, dexsUsed, primaryDex, liquidityDistribution, signals, missingEvidence, nextAction: 'Confirm pool creation dates and historical liquidity moves on a block explorer before drawing migration conclusions.' }
 }
 
 const anthropic = new Anthropic({
@@ -5280,7 +5286,7 @@ export async function POST(req: Request) {
 
     // ── Migration proof — derived early so LP Intelligence's migrationRisk can reflect
     // real migration evidence instead of conflating it with LP-control status. ──
-    const lpMigrationProof = _deriveMigrationProof(gtAllPools, liquidityUsd, Boolean(lpPool))
+    const lpMigrationProof = _deriveMigrationProof(gtAllPools, liquidityUsd, Boolean(lpPool), lpControl.primaryPoolDex ?? null, pairCreatedAt)
 
     // ── LP Intelligence — lock time, migration risk, mint authority, depth, volatility ──
     const lpIntelligence: RiskEngine["lpIntelligence"] = (() => {
@@ -5476,6 +5482,34 @@ export async function POST(req: Request) {
       && (holderCount != null && holderCount >= 1000)
       && (marketCapFromGt != null && marketCapFromGt > 0)
 
+    // ── Structured exit risk fields (problem 6): liquidityDepthRisk separated from
+    // exitControlRisk via the shared computeLpExitRisk helper, used identically by
+    // Liquidity Safety so the two routes never disagree. Computed before cortexLpRead so the
+    // CORTEX LP read can describe liquidity depth and LP control as separate risk dimensions.
+    const _liqForRisk = liquidityUsd
+    const lpProofStatusNew: 'confirmed' | 'partial' | 'missing' | 'not_applicable' | 'unknown' =
+      (lpProofApplicability === 'not_applicable' || lpProofApplicability === 'not_available') ? 'not_applicable' :
+      (lpLockStatus === 'locked' || lpLockStatus === 'burned') ? 'confirmed' :
+      lpLockStatus === 'unlocked' ? 'partial' :
+      noActivePools ? 'unknown' : 'missing'
+    const _lpExitRiskResult = computeLpExitRisk({
+      proofApplicability: lpProofApplicability,
+      lpLockStatus,
+      lpController: lpControllerType,
+      liquidityUsd: _liqForRisk,
+      poolModel: lpModelProof.model === 'concentrated' && lpDexId && /aerodrome|velodrome/i.test(lpDexId) ? 'concentrated' : lpModelProof.model,
+      // Fallback liquidity counts as a pool for exit-risk purposes — there IS liquidity, the
+      // model is just unconfirmed (open check), so don't fall through to "no active pool".
+      hasPool: !noActivePools && (_lpProofPresent || _fallbackLiquidityDetected),
+      secondaryLpSignal: lpControl.secondaryLpControlSignals
+        ? { status: lpControl.secondaryLpControlSignals.status, poolDex: lpControl.secondaryLpControlSignals.poolDex }
+        : null,
+      lpControllerAddress,
+      isEstablishedToken,
+    })
+    const lpExitRisk = _lpExitRiskResult.lpExitRisk
+    const liquidityDepthRisk = _lpExitRiskResult.liquidityDepthRisk
+
     const cortexLpRead = buildSharedCortexLpRead({
       name: finalResolvedName !== 'Unknown' ? finalResolvedName : (finalResolvedSymbol !== '?' ? finalResolvedSymbol : 'This token'),
       symbol: finalResolvedSymbol,
@@ -5483,6 +5517,7 @@ export async function POST(req: Request) {
       fragments: Array.isArray(gtAllPools) ? gtAllPools.length : (liquidityUsd != null ? 1 : 0),
       observedPoolPresent,
       riskTier: rugRiskLabel,
+      liquidityDepthRisk,
       lpModel: lpModelForCortex,
       migrationSummary: migrationSummaryForCortex,
       mode: lpDataMode,
@@ -5509,38 +5544,11 @@ export async function POST(req: Request) {
         sellTax: hpResult.ok ? (hpResult.sellTax ?? null) : null,
       },
     })
-
-    // ── Structured exit risk fields (problem 6): liquidityDepthRisk separated from
-    // exitControlRisk via the shared computeLpExitRisk helper, used identically by
-    // Liquidity Safety so the two routes never disagree.
-    const _liqForRisk = liquidityUsd
-    const lpProofStatusNew: 'confirmed' | 'partial' | 'missing' | 'not_applicable' | 'unknown' =
-      (lpProofApplicability === 'not_applicable' || lpProofApplicability === 'not_available') ? 'not_applicable' :
-      (lpLockStatus === 'locked' || lpLockStatus === 'burned') ? 'confirmed' :
-      lpLockStatus === 'unlocked' ? 'partial' :
-      noActivePools ? 'unknown' : 'missing'
-    const _lpExitRiskResult = computeLpExitRisk({
-      proofApplicability: lpProofApplicability,
-      lpLockStatus,
-      lpController: lpControllerType,
-      liquidityUsd: _liqForRisk,
-      poolModel: lpModelProof.model === 'concentrated' && lpDexId && /aerodrome|velodrome/i.test(lpDexId) ? 'concentrated' : lpModelProof.model,
-      // Fallback liquidity counts as a pool for exit-risk purposes — there IS liquidity, the
-      // model is just unconfirmed (open check), so don't fall through to "no active pool".
-      hasPool: !noActivePools && (_lpProofPresent || _fallbackLiquidityDetected),
-      secondaryLpSignal: lpControl.secondaryLpControlSignals
-        ? { status: lpControl.secondaryLpControlSignals.status, poolDex: lpControl.secondaryLpControlSignals.poolDex }
-        : null,
-      lpControllerAddress,
-      isEstablishedToken,
-    })
-    const lpExitRisk = _lpExitRiskResult.lpExitRisk
     // For the fallback "pool detected, model unverified" case, use the task-specified evidence
     // wording instead of the generic open-check reason.
     const lpExitRiskReason = (!_lpProofPresent && _fallbackLiquidityDetected && lpProofApplicability === 'unknown')
       ? 'Liquidity was detected, but ChainLens could not verify the pool model or LP control path from current evidence.'
       : _lpExitRiskResult.lpExitRiskReason
-    const liquidityDepthRisk = _lpExitRiskResult.liquidityDepthRisk
     const lpEvidenceSummary = [
       `Pool model: ${lpModelProof.model}`,
       `Liquidity: ${_liqForRisk != null ? '$' + _liqForRisk.toLocaleString(undefined, {maximumFractionDigits:0}) : 'unknown'}`,
@@ -6010,6 +6018,32 @@ export async function POST(req: Request) {
     const { _foundKeys: _psFoundKeys, _rejectedCount: _psRejectedCount, ...projectSocials } =
       extractProjectSocials(gtToken, coingeckoRaw, gmgnItem, _dexFb)
 
+    // Resolve the public-facing "analysis" copy from actual resolved evidence instead of the
+    // static analyzeContract() placeholders — avoids contradicting verified ownership,
+    // simulation, and LP-proof state in the rest of the response.
+    const resolvedAnalysis = {
+      ...analysis,
+      ownerStatus: _ownershipStatusFinal === 'renounced'
+        ? 'Ownership verified renounced — contract owner is the zero address.'
+        : _ownershipStatusFinal === 'held'
+          ? 'Ownership verified — contract owner is an active, non-renounced address.'
+          : analysis.ownerStatus,
+      honeypot: hpResult.ok
+        ? (hpResult.honeypot
+          ? 'Trading simulation flagged this token as a honeypot — sell transactions blocked.'
+          : `Trading simulation passed${(hpResult.buyTax != null && hpResult.sellTax != null) ? ` with ${hpResult.buyTax}% buy / ${hpResult.sellTax}% sell tax` : ''}.`)
+        : analysis.honeypot,
+      liquidityStatus: lpLockStatus === 'locked'
+        ? 'LP is locked via a time-lock contract.'
+        : lpLockStatus === 'burned'
+          ? 'LP is burned — liquidity is permanently locked.'
+          : lpPoolAddressPresent && lpProofApplicability === 'applicable'
+            ? (lpControllerType === 'wallet'
+              ? 'LP controller is wallet-controlled — lock/burn proof is not confirmed.'
+              : 'LP pool identified — lock/burn proof is not confirmed for the selected pool.')
+            : analysis.liquidityStatus,
+    }
+
     _scanStage = 'response_assembly'
     const responsePayload = {
       chain,
@@ -6030,26 +6064,28 @@ export async function POST(req: Request) {
       marketStatus,
 
       // Extra data
-      holders: goldrush?.holders || null,
-      holderDistribution,
+      ...(debugMode ? { holders: goldrush?.holders || null } : {}),
+      // Public response caps the holder list to a small UI-safe count — full 100+ holder
+      // arrays are debug-only.
+      holderDistribution: debugMode ? holderDistribution : { ...holderDistribution, topHolders: (holderDistribution.topHolders ?? []).slice(0, 10) },
       holderDistributionStatus,
       holderStatus: holdersStatus,
       holderResolver: {
-        holders: holderResolverResult.holders.map((h) => ({ ...h, source: publicSourceLabel(h.source, debugMode) })),
+        ...(debugMode ? { holders: holderResolverResult.holders.map((h) => ({ ...h, source: publicSourceLabel(h.source, debugMode) })) } : { holderCount: holderResolverResult.holders.length }),
         insufficientEvidence: holderResolverResult.insufficientEvidence,
         reason: holderResolverResult.reason ?? null,
         fallbackUsed: publicSourceLabel(holderResolverResult.fallbackUsed, debugMode) ?? null,
         confidence: holderResolverResult.confidence,
       },
       transferResolver: {
-        transfers: transferResolverResult.transfers.map((t) => ({ ...t, source: publicSourceLabel(t.source, debugMode) })),
+        ...(debugMode ? { transfers: transferResolverResult.transfers.map((t) => ({ ...t, source: publicSourceLabel(t.source, debugMode) })) } : { transferCount: transferResolverResult.transfers.length }),
         insufficientEvidence: transferResolverResult.insufficientEvidence,
         reason: transferResolverResult.reason ?? null,
         fallbackUsed: publicSourceLabel(transferResolverResult.fallbackUsed, debugMode) ?? null,
         confidence: transferResolverResult.confidence,
       },
       suspiciousFlows: {
-        transfers: transferResolverResult.transfers.map((t) => ({ ...t, source: publicSourceLabel(t.source, debugMode) })),
+        ...(debugMode ? { transfers: transferResolverResult.transfers.map((t) => ({ ...t, source: publicSourceLabel(t.source, debugMode) })) } : { transferCount: transferResolverResult.transfers.length }),
         insufficientEvidence: transferResolverResult.insufficientEvidence,
         reason: transferResolverResult.insufficientEvidence ? (transferResolverResult.reason ?? 'Transfer evidence unavailable in this pass.') : 'Transfer evidence available from resolver.',
         fallbackUsed: publicSourceLabel(transferResolverResult.fallbackUsed ?? 'none', debugMode),
@@ -6148,11 +6184,35 @@ export async function POST(req: Request) {
       chartDataSource,
       marketTrendSnapshot,
 
-      pairs: matchingPools,
-      gtPools: matchingPools,
-      gtRaw: gtData || null,
-
-      gmgn: gmgn?.data || null,
+      // Public/default response carries only a trimmed view of the selected/main pool —
+      // full raw pool dumps, the GeckoTerminal raw payload, and GMGN raw data are
+      // diagnostics-only and only included when debug=true.
+      pairs: debugMode ? matchingPools : (mainPool ? [{
+        attributes: {
+          name: (mainPool.attributes as Record<string, unknown> | undefined)?.name ?? null,
+          address: (mainPool.attributes as Record<string, unknown> | undefined)?.address ?? null,
+          base_token_price_usd: (mainPool.attributes as Record<string, unknown> | undefined)?.base_token_price_usd ?? null,
+          reserve_in_usd: (mainPool.attributes as Record<string, unknown> | undefined)?.reserve_in_usd ?? null,
+          volume_usd: (mainPool.attributes as Record<string, unknown> | undefined)?.volume_usd ?? null,
+          price_change_percentage: (mainPool.attributes as Record<string, unknown> | undefined)?.price_change_percentage ?? null,
+          pool_created_at: (mainPool.attributes as Record<string, unknown> | undefined)?.pool_created_at ?? null,
+        },
+      }] : []),
+      // Selected canonical LP-verification pool — the single pool ChainLens used for LP
+      // control/proof analysis, summarized for public display.
+      selectedPool: {
+        pair: lpPair ?? null,
+        address: lpPoolAddress ?? null,
+        dex: lpControl.primaryPoolDex ?? null,
+        model: lpModelProof.model,
+        liquidityUsd: liquidityUsd,
+        createdAt: pairCreatedAt ?? null,
+      },
+      ...(debugMode ? {
+        gtPools: matchingPools,
+        gtRaw: gtData || null,
+        gmgn: gmgn?.data || null,
+      } : {}),
 
       contractSecurity: null,
 
@@ -6410,7 +6470,7 @@ export async function POST(req: Request) {
       },
 
       // Contract analysis
-      analysis,
+      analysis: resolvedAnalysis,
       lpControl: { ...lpControl, canonicalStatus: toCanonical(lpControl.status), rawLpState: lpControl.status, rawState: lpControl.status, lpController, lpControllerType },
       lpStatus: (lpControl.status === 'error' || lpControl.status === 'insufficient_data') ? 'partial' : lpControl.status,
       lpControlRead: computeLpControlRead(lpControl, String(lpPool?.pairName ?? ""), lpControllerAddress),
