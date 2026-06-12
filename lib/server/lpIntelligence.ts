@@ -156,8 +156,14 @@ export function computeDisplayLpModel(params: {
   // selected/probed. A pool that is detected from fallback liquidity is reported as
   // an open check ("model pending"), never as no_pool.
   marketLiquidityDetected?: boolean
+  // Tri-state confirmation that the ERC-20 LP proof path actually verified ERC-20 LP
+  // behavior (totalSupply/holder/balance evidence) for an Aerodrome pool. Aerodrome is
+  // only marked applicable/erc20_lp_token from RPC/holder evidence — never from the DEX id
+  // alone. `false` = proof path ran but did not confirm an ERC-20 LP token → open check.
+  // `undefined` (default) preserves prior behavior for callers that do not probe Aerodrome.
+  aerodromeLpConfirmed?: boolean
 }): DisplayLpModelResult {
-  const { noActivePools, proofPresent, primaryPoolType, primaryDexId, verifyPoolType, controlStatusConcentrated, marketLiquidityDetected } = params
+  const { noActivePools, proofPresent, primaryPoolType, primaryDexId, verifyPoolType, controlStatusConcentrated, marketLiquidityDetected, aerodromeLpConfirmed } = params
 
   let displayLpModel: DisplayLpModel
   let lockBurnApplicable: boolean
@@ -179,12 +185,22 @@ export function computeDisplayLpModel(params: {
     lockBurnReason = primaryDexId && /aerodrome|velodrome/i.test(primaryDexId)
       ? 'Aerodrome Slipstream (concentrated liquidity) — standard ERC-20 LP lock/burn proof does not apply.'
       : 'Concentrated liquidity (V3/V4) — standard ERC-20 LP lock/burn proof does not apply.'
+  } else if (primaryPoolType === 'aerodrome' && proofPresent && aerodromeLpConfirmed === false) {
+    // Aerodrome pool detected, but the ERC-20 LP proof path was attempted and did NOT confirm
+    // ERC-20 LP behavior — do not mark applicable from the DEX id alone.
+    displayLpModel = 'open_check'
+    lockBurnApplicable = false
+    lockBurnReason = 'Aerodrome pool detected, but the ERC-20 LP proof path is not confirmed — pool model/controller path not fully verified.'
   } else if ((primaryPoolType === 'v2' || primaryPoolType === 'aerodrome') && proofPresent) {
     displayLpModel = 'erc20_lp_token'
     lockBurnApplicable = true
     lockBurnReason = primaryPoolType === 'aerodrome'
       ? 'Aerodrome V2 (volatile/stable) LP token — lock/burn proof applies.'
       : 'Standard V2 LP token — lock/burn proof applies.'
+  } else if (verifyPoolType === 'aerodrome' && proofPresent && aerodromeLpConfirmed === false) {
+    displayLpModel = 'open_check'
+    lockBurnApplicable = false
+    lockBurnReason = 'Aerodrome verification pool detected, but the ERC-20 LP proof path is not confirmed — pool model/controller path not fully verified.'
   } else if (proofPresent && (verifyPoolType === 'v2' || verifyPoolType === 'aerodrome')) {
     displayLpModel = 'erc20_lp_token'
     lockBurnApplicable = true

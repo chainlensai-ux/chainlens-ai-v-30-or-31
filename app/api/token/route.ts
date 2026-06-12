@@ -60,16 +60,23 @@ function _deriveMigrationProof(pools: Array<{ attributes: { reserve_in_usd?: str
   let confidence: 'high' | 'medium' | 'low' | 'unverified' = 'unverified'
   let reason = 'Not enough pool data to assess migration risk.'
   let liquidityDistribution = 'unknown'
+  // A "meaningful primary pool" exists when the top pool holds a real, non-trivial share of
+  // observed liquidity. Many ecosystem pools across several DEXs is NORMAL for established
+  // tokens and is not, on its own, evidence of migration.
+  const hasMeaningfulPrimary = (liquidities[0] ?? 0) > 0 && topShare != null && topShare >= 0.2
   if (pools.length > 0 && topShare != null) {
     liquidityDistribution = topShare >= 0.7 ? 'concentrated in primary pool' : topShare >= 0.4 ? 'moderately distributed' : 'spread thinly across pools'
     if (dexsUsed.length > 1) signals.push(`Liquidity is split across ${dexsUsed.length} different DEXs.`)
     if (pools.length > 1 && topShare < 0.4) signals.push('No single pool holds a clear majority of liquidity.')
     if (pools.length === 1) signals.push('All observed liquidity sits in a single pool.')
-    if (dexsUsed.length > 1 && topShare < 0.4) { status = 'watch'; confidence = 'low'; reason = 'Liquidity is fragmented across multiple DEXs with no dominant pool — could indicate an in-progress or past migration.' }
-    else if (dexsUsed.length === 1 && topShare >= 0.7) { status = 'low'; confidence = 'medium'; reason = 'Liquidity is concentrated in a single DEX and primary pool — no migration signal observed.' }
-    else { status = 'watch'; confidence = 'low'; reason = 'Pool distribution shows mixed signals — insufficient evidence to rule out migration activity.' }
+    // Migration "watch"/"high" requires stronger evidence (recent liquidity movement, a primary-pool
+    // liquidity drop, or a new pool gaining dominance). Historical movement is not available here, so
+    // pool count / DEX spread alone never escalates to a migration warning — it is recorded as a gap.
+    if (dexsUsed.length === 1 && topShare >= 0.7) { status = 'low'; confidence = 'medium'; reason = 'Liquidity is concentrated in a single DEX and primary pool — no migration signal observed.' }
+    else if (hasMeaningfulPrimary) { status = 'low'; confidence = 'low'; reason = 'Liquidity is distributed across multiple pools. A primary pool is present, so pool count alone is not enough evidence of migration risk.' }
+    else { status = 'unknown'; confidence = 'unverified'; reason = 'Liquidity is spread across multiple pools with no clear primary pool. Historical liquidity movement is unavailable, so migration risk cannot be confirmed from current evidence.' }
   }
-  return { status, confidence, reason, dexsUsed, primaryDex, liquidityDistribution, signals, missingEvidence: ['pool_creation_date_unavailable'], nextAction: 'Confirm pool creation dates and historical liquidity moves on a block explorer before drawing migration conclusions.' }
+  return { status, confidence, reason, dexsUsed, primaryDex, liquidityDistribution, signals, missingEvidence: ['pool_creation_date_unavailable', 'historical_liquidity_movement_unavailable'], nextAction: 'Confirm pool creation dates and historical liquidity moves on a block explorer before drawing migration conclusions.' }
 }
 
 const anthropic = new Anthropic({
@@ -3943,6 +3950,22 @@ export async function POST(req: Request) {
     {
       const _isVerified = lpControl.status === 'burned' || lpControl.status === 'locked'
 
+      // ERC-20 LP proof confirmation (Aerodrome): only treat an Aerodrome pool as a confirmed
+      // ERC-20 LP token when the holder/RPC proof path actually verified ERC-20 LP behavior —
+      // never from the DEX id alone. Definitive control outcomes (burned/locked/team_controlled)
+      // and RPC-confirmed V2-like probes prove the pool exposes an ERC-20 LP token; a "partial"
+      // result that only reflects "no data"/"not indexed" does not.
+      const _lpSource = typeof lpControl.source === 'string' ? lpControl.source : ''
+      const _erc20LpProofConfirmed =
+        lpControl.status === 'burned' || lpControl.status === 'locked' || lpControl.status === 'team_controlled' ||
+        lpControl.probeV2Like === true ||
+        (lpControl.status === 'partial' && /holder evidence/i.test(_lpSource))
+      // Only gate Aerodrome pools (V2 pools' contract IS the LP token, so address presence is
+      // sufficient evidence). For non-Aerodrome pools, leave undefined to preserve prior behavior.
+      const _aerodromeLpConfirmed = (lpPoolType === 'aerodrome' || _lpProofType === 'aerodrome')
+        ? _erc20LpProofConfirmed
+        : undefined
+
       const _display = computeDisplayLpModel({
         noActivePools,
         proofPresent: _lpProofPresent,
@@ -3951,6 +3974,7 @@ export async function POST(req: Request) {
         verifyPoolType: _lpProofType,
         controlStatusConcentrated: lpControl.status === 'concentrated_liquidity',
         marketLiquidityDetected: _fallbackLiquidityDetected,
+        aerodromeLpConfirmed: _aerodromeLpConfirmed,
       })
       const _displayLpModel = _display.displayLpModel
       const _notApplicable = _displayLpModel === 'concentrated_liquidity' || _displayLpModel === 'no_pool'

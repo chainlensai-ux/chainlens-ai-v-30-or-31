@@ -329,7 +329,12 @@ export function buildCortexLpRead(params: {
           ? `Standard ERC-20 LP lock/burn proof does not apply to this concentrated-liquidity pool. Liquidity control requires protocol-specific position checks.${secondaryClause}`
           : (lpController === "wallet" && isEstablishedToken)
             ? `Selected LP position appears wallet-controlled${lpControllerAddress ? ` (${lpControllerAddress})` : ""}. This is a liquidity-control signal, not proof of malicious behavior. Verify the controlling wallet and any lock/burn evidence before relying on liquidity safety.`
-            : "No lock or burn proof was confirmed for this LP — treat liquidity as potentially withdrawable.";
+            : lpController === "wallet"
+              // Wallet control is actually confirmed → withdrawable wording is evidence-based.
+              ? "No lock or burn proof was confirmed for this LP — treat liquidity as potentially withdrawable."
+              // Controller is unknown: do NOT claim liquidity is "potentially withdrawable" — that
+              // implies confirmed wallet/team/contract control, which has not been established.
+              : "No lock or burn proof was confirmed for the selected LP model. ChainLens could not confirm whether liquidity is controlled by a wallet, lock contract, burn address, or protocol mechanism from current evidence.";
 
   const riskSummary = `${name} (${symbol}) shows a "${riskTier}" liquidity-depth risk tier based on observed pool data. This reflects liquidity depth and pool structure only — ownership, mintability, simulation and tax status remain unconfirmed (data mode: ${mode}, confidence: ${confidence}). ${lockClause}`;
 
@@ -585,9 +590,20 @@ export function computeLpExitRisk(params: {
     };
   }
 
+  // proofApplicability === "applicable", no lock/burn proof, and the LP controller is
+  // unknown. Keep the risk label and its reason internally consistent: deep liquidity →
+  // "watch" with a watch-worded reason; otherwise → "open_check" with an open-check reason.
+  // Never emit a "watch" label alongside an "open check" reason (or vice versa).
+  if (liquidityDepthRisk === "low") {
+    return {
+      lpExitRisk: "watch",
+      lpExitRiskReason: "Deep liquidity is present, but LP lock/burn proof and controller dominance remain unconfirmed.",
+      liquidityDepthRisk,
+    };
+  }
   return {
-    lpExitRisk: liquidityDepthRisk === "low" ? "watch" : "open_check",
-    lpExitRiskReason: "LP lock/burn proof not confirmed and LP controller is unknown — exit risk is an open check.",
+    lpExitRisk: "open_check",
+    lpExitRiskReason: "LP lock/burn proof applies to the selected pool, but ChainLens could not confirm lock, burn, or controller dominance from current evidence.",
     liquidityDepthRisk,
   };
 }
@@ -616,26 +632,34 @@ export function deriveMigrationProof(pools: GTPool[], totalLiq: number | null): 
   let reason = "Not enough pool data to assess migration risk.";
   let liquidityDistribution = "unknown";
 
+  // A "meaningful primary pool" exists when the top pool holds a real, non-trivial share of
+  // observed liquidity. Many ecosystem pools across several DEXs is NORMAL for established
+  // tokens and is not, on its own, evidence of migration.
+  const hasMeaningfulPrimary = (liquidities[0] ?? 0) > 0 && topShare != null && topShare >= 0.2;
+
   if (pools.length > 0 && topShare != null) {
     liquidityDistribution = topShare >= 0.7 ? "concentrated in primary pool" : topShare >= 0.4 ? "moderately distributed" : "spread thinly across pools";
     if (dexsUsed.length > 1) signals.push(`Liquidity is split across ${dexsUsed.length} different DEXs.`);
     if (pools.length > 1 && topShare < 0.4) signals.push("No single pool holds a clear majority of liquidity.");
     if (pools.length === 1) signals.push("All observed liquidity sits in a single pool.");
-    if (dexsUsed.length > 1 && topShare < 0.4) {
-      status = "watch"; confidence = "low";
-      reason = "Liquidity is fragmented across multiple DEXs with no dominant pool — could indicate an in-progress or past migration.";
-    } else if (dexsUsed.length === 1 && topShare >= 0.7) {
+    // Migration "watch"/"high" requires stronger evidence (recent liquidity movement, a primary-pool
+    // liquidity drop, or a new pool gaining dominance). Historical movement is not available here, so
+    // pool count / DEX spread alone never escalates to a migration warning — it is recorded as a gap.
+    if (dexsUsed.length === 1 && topShare >= 0.7) {
       status = "low"; confidence = "medium";
       reason = "Liquidity is concentrated in a single DEX and primary pool — no migration signal observed.";
+    } else if (hasMeaningfulPrimary) {
+      status = "low"; confidence = "low";
+      reason = "Liquidity is distributed across multiple pools. A primary pool is present, so pool count alone is not enough evidence of migration risk.";
     } else {
-      status = "watch"; confidence = "low";
-      reason = "Pool distribution shows mixed signals — insufficient evidence to rule out migration activity.";
+      status = "unknown"; confidence = "unverified";
+      reason = "Liquidity is spread across multiple pools with no clear primary pool. Historical liquidity movement is unavailable, so migration risk cannot be confirmed from current evidence.";
     }
   }
 
   return {
     status, confidence, reason, dexsUsed, primaryDex, liquidityDistribution, signals,
-    missingEvidence: ["pool_creation_date_unavailable"],
+    missingEvidence: ["pool_creation_date_unavailable", "historical_liquidity_movement_unavailable"],
     nextAction: "Confirm pool creation dates and historical liquidity moves on a block explorer before drawing migration conclusions.",
   };
 }

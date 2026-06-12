@@ -72,7 +72,7 @@ function applyRpcClassificationToCandidate(candidate, rpc) {
 }
 
 function computeDisplayLpModel(params) {
-  const { noActivePools, proofPresent, primaryPoolType, primaryDexId, verifyPoolType, controlStatusConcentrated, marketLiquidityDetected } = params
+  const { noActivePools, proofPresent, primaryPoolType, primaryDexId, verifyPoolType, controlStatusConcentrated, marketLiquidityDetected, aerodromeLpConfirmed } = params
 
   let displayLpModel
   let lockBurnApplicable
@@ -92,12 +92,20 @@ function computeDisplayLpModel(params) {
     lockBurnReason = primaryDexId && /aerodrome|velodrome/i.test(primaryDexId)
       ? 'Aerodrome Slipstream (concentrated liquidity) — standard ERC-20 LP lock/burn proof does not apply.'
       : 'Concentrated liquidity (V3/V4) — standard ERC-20 LP lock/burn proof does not apply.'
+  } else if (primaryPoolType === 'aerodrome' && proofPresent && aerodromeLpConfirmed === false) {
+    displayLpModel = 'open_check'
+    lockBurnApplicable = false
+    lockBurnReason = 'Aerodrome pool detected, but the ERC-20 LP proof path is not confirmed — pool model/controller path not fully verified.'
   } else if ((primaryPoolType === 'v2' || primaryPoolType === 'aerodrome') && proofPresent) {
     displayLpModel = 'erc20_lp_token'
     lockBurnApplicable = true
     lockBurnReason = primaryPoolType === 'aerodrome'
       ? 'Aerodrome V2 (volatile/stable) LP token — lock/burn proof applies.'
       : 'Standard V2 LP token — lock/burn proof applies.'
+  } else if (verifyPoolType === 'aerodrome' && proofPresent && aerodromeLpConfirmed === false) {
+    displayLpModel = 'open_check'
+    lockBurnApplicable = false
+    lockBurnReason = 'Aerodrome verification pool detected, but the ERC-20 LP proof path is not confirmed — pool model/controller path not fully verified.'
   } else if (proofPresent && (verifyPoolType === 'v2' || verifyPoolType === 'aerodrome')) {
     displayLpModel = 'erc20_lp_token'
     lockBurnApplicable = true
@@ -154,6 +162,75 @@ function reconcileSecondaryLpSignal(lpControl, params) {
   }
 
   return { lpControl: reconciled, secondary }
+}
+
+// ─── Mirrors lib/server/lpProof.ts computeLpExitRisk ───────────────────────────
+function computeLpExitRisk(params) {
+  const { proofApplicability, lpLockStatus, lpController, liquidityUsd, poolModel, hasPool, secondaryLpSignal, lpControllerAddress, isEstablishedToken } = params
+  const liquidityDepthRisk =
+    liquidityUsd == null ? 'unknown' :
+    liquidityUsd >= 100_000 ? 'low' :
+    liquidityUsd >= 20_000 ? 'medium' : 'high'
+  const liqStr = liquidityUsd != null ? `$${liquidityUsd.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : 'unknown'
+
+  if (!hasPool) return { lpExitRisk: 'open_check', lpExitRiskReason: 'No active liquidity pool was found — exit risk cannot be assessed.', liquidityDepthRisk }
+
+  if (proofApplicability === 'not_applicable') {
+    const monitor = liquidityUsd != null && liquidityUsd > 50_000
+    const watch = liquidityUsd != null && liquidityUsd > 0
+    const secondaryClause = secondaryLpSignal?.status === 'team_controlled'
+      ? ' A secondary ERC-20 LP pool shows wallet-controlled LP exposure — monitor that pool separately.'
+      : ''
+    return {
+      lpExitRisk: monitor ? 'monitor' : watch ? 'watch' : 'open_check',
+      lpExitRiskReason: `${poolModel === 'concentrated' ? 'Concentrated-liquidity (V3/Slipstream)' : 'Protocol-managed'} pool — standard LP lock/burn proof does not apply. Exit risk based on pool depth ($${liqStr === 'unknown' ? 'unknown' : liqStr.replace('$', '')}).${secondaryClause}`,
+      liquidityDepthRisk,
+    }
+  }
+  if (lpLockStatus === 'burned' || lpLockStatus === 'locked') {
+    return { lpExitRisk: liquidityDepthRisk === 'high' ? 'medium' : 'low', lpExitRiskReason: lpLockStatus === 'burned' ? 'LP tokens sent to a burn address — exit liquidity permanently locked.' : 'Active LP lock proof found — protected for the lock duration.', liquidityDepthRisk }
+  }
+  if (proofApplicability === 'unknown') {
+    return { lpExitRisk: 'open_check', lpExitRiskReason: 'Pool model could not be confirmed — LP lock/burn proof could not be attempted.', liquidityDepthRisk }
+  }
+  if (lpController === 'wallet') {
+    const reason = isEstablishedToken
+      ? `Selected LP position appears wallet-controlled${lpControllerAddress ? ` (${lpControllerAddress})` : ''}. This is a liquidity-control signal, not proof of malicious behavior. Verify the controlling wallet and any lock/burn evidence before relying on liquidity safety. Pool depth ${liqStr}.`
+      : `A wallet controls the LP with no lock or burn proof — liquidity can be withdrawn at any time. Pool depth ${liqStr}.`
+    return { lpExitRisk: liquidityDepthRisk === 'low' ? 'watch' : 'high', lpExitRiskReason: reason, liquidityDepthRisk }
+  }
+  if (liquidityDepthRisk === 'low') {
+    return { lpExitRisk: 'watch', lpExitRiskReason: 'Deep liquidity is present, but LP lock/burn proof and controller dominance remain unconfirmed.', liquidityDepthRisk }
+  }
+  return { lpExitRisk: 'open_check', lpExitRiskReason: 'LP lock/burn proof applies to the selected pool, but ChainLens could not confirm lock, burn, or controller dominance from current evidence.', liquidityDepthRisk }
+}
+
+// ─── Mirrors lib/server/lpProof.ts buildCortexLpRead lockClause (unknown controller) ──
+function cortexLockClause({ lpLockStatus, modelUnknown, standardLockApplies, lpController, isEstablishedToken }) {
+  if (lpLockStatus === 'locked') return 'lock'
+  if (lpLockStatus === 'burned') return 'burn'
+  if (modelUnknown) return 'model-unknown'
+  if (!standardLockApplies) return 'concentrated'
+  if (lpController === 'wallet' && isEstablishedToken) return 'wallet-established'
+  if (lpController === 'wallet') return 'No lock or burn proof was confirmed for this LP — treat liquidity as potentially withdrawable.'
+  return 'No lock or burn proof was confirmed for the selected LP model. ChainLens could not confirm whether liquidity is controlled by a wallet, lock contract, burn address, or protocol mechanism from current evidence.'
+}
+
+// ─── Mirrors lib/server/lpProof.ts deriveMigrationProof ────────────────────────
+function deriveMigrationProof(pools, totalLiq) {
+  const dexsUsed = Array.from(new Set(pools.map((p) => p.dexId).filter(Boolean)))
+  const liquidities = pools.map((p) => p.liquidityUsd ?? 0)
+  const topShare = totalLiq && totalLiq > 0 ? (liquidities[0] ?? 0) / totalLiq : null
+  let status = 'unknown'
+  let confidence = 'unverified'
+  let reason = 'Not enough pool data to assess migration risk.'
+  const hasMeaningfulPrimary = (liquidities[0] ?? 0) > 0 && topShare != null && topShare >= 0.2
+  if (pools.length > 0 && topShare != null) {
+    if (dexsUsed.length === 1 && topShare >= 0.7) { status = 'low'; confidence = 'medium'; reason = 'Liquidity is concentrated in a single DEX and primary pool — no migration signal observed.' }
+    else if (hasMeaningfulPrimary) { status = 'low'; confidence = 'low'; reason = 'Liquidity is distributed across multiple pools. A primary pool is present, so pool count alone is not enough evidence of migration risk.' }
+    else { status = 'unknown'; confidence = 'unverified'; reason = 'Liquidity is spread across multiple pools with no clear primary pool. Historical liquidity movement is unavailable, so migration risk cannot be confirmed from current evidence.' }
+  }
+  return { status, confidence, reason, missingEvidence: ['pool_creation_date_unavailable', 'historical_liquidity_movement_unavailable'] }
 }
 
 // ─── Scenario 1: VIRTUAL-style — concentrated primary + V2 secondary ──────────
@@ -397,6 +474,99 @@ console.log('\nScenario 10: mixed concentrated primary + V2 secondary, with fall
   assert('canonical status demoted to concentrated_liquidity', reconciled.status === 'concentrated_liquidity', reconciled.status)
   assert('secondary signal carries the V2 team_controlled finding', secondary?.status === 'team_controlled' && secondary?.poolAddress === '0xsecondaryv200000000000000000000000000000', secondary)
   assert('top-level never reports team_controlled', reconciled.status !== 'team_controlled', reconciled.status)
+}
+
+// ─── Scenario 11: applicable + unknown controller + missing lock/burn (VIRTUAL) ─
+// Deep liquidity → exit risk label and reason must agree (watch + watch-worded reason).
+console.log('\nScenario 11: applicable proof + unknown controller + missing lock/burn (deep liquidity)')
+{
+  const r = computeLpExitRisk({
+    proofApplicability: 'applicable', lpLockStatus: 'unverified', lpController: 'unknown',
+    liquidityUsd: 5_000_000, poolModel: 'constant_product', hasPool: true,
+  })
+  assert('exit risk is watch (deep liquidity)', r.lpExitRisk === 'watch', r)
+  assert('reason does NOT say "open check"', !/open check/i.test(r.lpExitRiskReason), r.lpExitRiskReason)
+  assert('reason matches the watch wording', /Deep liquidity is present/.test(r.lpExitRiskReason), r.lpExitRiskReason)
+}
+
+// ─── Scenario 12: applicable + unknown controller + thin liquidity ──────────────
+// Thin liquidity → open_check label must carry an open_check-worded reason.
+console.log('\nScenario 12: applicable proof + unknown controller + thin liquidity')
+{
+  const r = computeLpExitRisk({
+    proofApplicability: 'applicable', lpLockStatus: 'unverified', lpController: 'unknown',
+    liquidityUsd: 5_000, poolModel: 'constant_product', hasPool: true,
+  })
+  assert('exit risk is open_check (thin liquidity)', r.lpExitRisk === 'open_check', r)
+  assert('reason does NOT contradict with a "watch" claim', !/^watch/i.test(r.lpExitRiskReason), r.lpExitRiskReason)
+  assert('reason matches the open-check wording', /could not confirm lock, burn, or controller dominance/.test(r.lpExitRiskReason), r.lpExitRiskReason)
+}
+
+// ─── Scenario 13: CORTEX wording — unknown controller is not "withdrawable" ─────
+console.log('\nScenario 13: CORTEX wording — unknown controller does not say "potentially withdrawable"')
+{
+  const unknownClause = cortexLockClause({ lpLockStatus: 'unverified', modelUnknown: false, standardLockApplies: true, lpController: 'unknown', isEstablishedToken: false })
+  assert('unknown-controller clause avoids "withdrawable"', !/withdrawable/i.test(unknownClause), unknownClause)
+  assert('unknown-controller clause uses the neutral wording', /could not confirm whether liquidity is controlled/i.test(unknownClause), unknownClause)
+  const walletClause = cortexLockClause({ lpLockStatus: 'unverified', modelUnknown: false, standardLockApplies: true, lpController: 'wallet', isEstablishedToken: false })
+  assert('confirmed wallet control still allowed to say "withdrawable"', /withdrawable/i.test(walletClause), walletClause)
+}
+
+// ─── Scenario 14: Aerodrome dex id alone does NOT force applicable ──────────────
+console.log('\nScenario 14: Aerodrome detected but ERC-20 LP proof path not confirmed')
+{
+  const unconfirmed = computeDisplayLpModel({
+    noActivePools: false, proofPresent: true, primaryPoolType: 'aerodrome',
+    primaryDexId: 'aerodrome-base', verifyPoolType: 'aerodrome', aerodromeLpConfirmed: false,
+  })
+  assert('displayLpModel is open_check (not erc20_lp_token)', unconfirmed.displayLpModel === 'open_check', unconfirmed)
+  assert('lockBurnApplicable is false', unconfirmed.lockBurnApplicable === false, unconfirmed)
+  assert('proofApplicability is unknown (not applicable)', unconfirmed.proofApplicability === 'unknown', unconfirmed)
+  assert('reason cites unverified pool model/controller path', /not fully verified/i.test(unconfirmed.lockBurnReason), unconfirmed.lockBurnReason)
+
+  // Confirmed ERC-20 LP behavior → applicable.
+  const confirmed = computeDisplayLpModel({
+    noActivePools: false, proofPresent: true, primaryPoolType: 'aerodrome',
+    primaryDexId: 'aerodrome-base', verifyPoolType: 'aerodrome', aerodromeLpConfirmed: true,
+  })
+  assert('confirmed Aerodrome ERC-20 LP is applicable', confirmed.displayLpModel === 'erc20_lp_token' && confirmed.proofApplicability === 'applicable', confirmed)
+}
+
+// ─── Scenario 15: multi-pool token with a clear primary does not auto-migrate ───
+console.log('\nScenario 15: multi-pool token with meaningful primary pool — no false migration watch')
+{
+  const pools = [
+    { dexId: 'uniswap-v2-base', liquidityUsd: 6_000_000 },
+    { dexId: 'aerodrome-base', liquidityUsd: 2_000_000 },
+    { dexId: 'uniswap-v3-base', liquidityUsd: 1_500_000 },
+    { dexId: 'pancakeswap-base', liquidityUsd: 800_000 },
+  ]
+  const total = pools.reduce((s, p) => s + p.liquidityUsd, 0)
+  const m = deriveMigrationProof(pools, total)
+  assert('migration status is NOT watch/flagged', m.status !== 'watch' && m.status !== 'flagged', m.status)
+  assert('migration reason avoids "no dominant pool"', !/no dominant pool/i.test(m.reason), m.reason)
+  assert('migration reason uses neutral primary-pool wording', /primary pool is present/i.test(m.reason), m.reason)
+  assert('historical movement recorded as a missing-evidence gap', m.missingEvidence.includes('historical_liquidity_movement_unavailable'), m.missingEvidence)
+
+  // No clear primary (evenly fragmented) → unknown + unverified, still never an unsupported watch.
+  const frag = [
+    { dexId: 'a', liquidityUsd: 100 }, { dexId: 'b', liquidityUsd: 100 },
+    { dexId: 'c', liquidityUsd: 100 }, { dexId: 'd', liquidityUsd: 100 },
+    { dexId: 'e', liquidityUsd: 100 }, { dexId: 'f', liquidityUsd: 100 },
+  ]
+  const fm = deriveMigrationProof(frag, 600)
+  assert('fragmented-no-primary status is unknown (not watch)', fm.status === 'unknown', fm.status)
+}
+
+// ─── Scenario 16: concentrated primary still not_applicable (regression guard) ──
+console.log('\nScenario 16: concentrated primary preserved (regression)')
+{
+  const r = computeLpExitRisk({
+    proofApplicability: 'not_applicable', lpLockStatus: 'unverified', lpController: 'unknown',
+    liquidityUsd: 5_000_000, poolModel: 'concentrated', hasPool: true,
+  })
+  assert('concentrated deep-liquidity exit risk is monitor', r.lpExitRisk === 'monitor', r)
+  assert('reason states standard proof does not apply', /does not apply/i.test(r.lpExitRiskReason), r.lpExitRiskReason)
 }
 
 console.log(`\n${passed} passed, ${failed} failed`)
