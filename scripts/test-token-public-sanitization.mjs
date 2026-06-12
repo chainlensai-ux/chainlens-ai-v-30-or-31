@@ -5,6 +5,7 @@
 import { sanitizePublicTokenResponse } from '../lib/server/tokenPublicResponse.ts'
 import { publicLpDataMode } from '../lib/server/lpProof.ts'
 import { buildLpControllerIntel } from '../lib/server/lpControllerIntel.ts'
+import { buildLpMovementWatch } from '../lib/server/lpMovementWatch.ts'
 
 let passed = 0
 let failed = 0
@@ -150,6 +151,13 @@ virtualLikePayload.lpControllerIntel = buildLpControllerIntel({
   lpMeta: virtualLikePayload.lpMeta,
   lpDataMode: virtualLikePayload.lpDataMode,
 })
+virtualLikePayload.lpMovementWatch = buildLpMovementWatch({
+  chain: virtualLikePayload.chain,
+  lpControllerIntel: virtualLikePayload.lpControllerIntel,
+  lpControl: virtualLikePayload.lpControl,
+  selectedPool: virtualLikePayload.selectedPool,
+  lpMeta: virtualLikePayload.lpMeta,
+})
 
 console.log('\nA. VIRTUAL-like public response')
 const publicPayload = sanitizePublicTokenResponse(JSON.parse(JSON.stringify(virtualLikePayload)), false)
@@ -196,6 +204,14 @@ assert('lpControllerIntel.lockBurnProof remains open_check', publicPayload.lpCon
 assert('lpControllerIntel.exitRisk remains watch', publicPayload.lpControllerIntel?.exitRisk === 'watch', publicPayload.lpControllerIntel)
 assert('lpControllerIntel.liquidityDepth remains deep', publicPayload.lpControllerIntel?.liquidityDepth === 'deep', publicPayload.lpControllerIntel)
 assert('lpControllerIntel.migrationRisk remains low', publicPayload.lpControllerIntel?.migrationRisk === 'low', publicPayload.lpControllerIntel)
+assert('VIRTUAL includes lpMovementWatch', Boolean(publicPayload.lpMovementWatch), publicPayload.lpMovementWatch)
+assert('VIRTUAL lpMovementWatch is open_check without LP-transfer evidence', publicPayload.lpMovementWatch?.status === 'open_check', publicPayload.lpMovementWatch)
+assert('VIRTUAL lpMovementWatch movementRisk is unknown without LP-transfer evidence', publicPayload.lpMovementWatch?.movementRisk === 'unknown', publicPayload.lpMovementWatch)
+assert('VIRTUAL lpMovementWatch does not fake recent movement', publicPayload.lpMovementWatch?.recentMovementDetected == null && publicPayload.lpMovementWatch?.recentTransferCount == null, publicPayload.lpMovementWatch)
+assert('VIRTUAL lpMovementWatch controller matches lpControllerIntel.controller', publicPayload.lpMovementWatch?.controller === publicPayload.lpControllerIntel?.controller, { movement: publicPayload.lpMovementWatch, intel: publicPayload.lpControllerIntel })
+assert('VIRTUAL lpMovementWatch summary says movement evidence not confirmed', /controller is known.*movement evidence was not confirmed/i.test(publicPayload.lpMovementWatch?.summary ?? ''), publicPayload.lpMovementWatch?.summary)
+assert('VIRTUAL lpMovementWatch evidence gap includes recent transfer history', (publicPayload.lpMovementWatch?.evidenceGaps ?? []).includes('recent LP-controller transfer history not confirmed'), publicPayload.lpMovementWatch?.evidenceGaps)
+assert('VIRTUAL lpMovementWatch nextActions are expected', ['monitor controller wallet', 'verify LP token transfers', 'rescan after liquidity changes'].every((action) => (publicPayload.lpMovementWatch?.nextActions ?? []).includes(action)), publicPayload.lpMovementWatch?.nextActions)
 
 // Public cortexLpRead does not say "fallback" — uses evidence-based wording or hides raw mode.
 assert('cortexLpRead.mode is not the raw "fallback" string', publicPayload.cortexLpRead?.mode !== 'fallback', publicPayload.cortexLpRead?.mode)
@@ -210,6 +226,7 @@ assert('cortexLpRead.poolStructureAnalysis shows Aerodrome', /Aerodrome/.test(pu
 assert('lpMeta.primaryMarketDex is Aerodrome (not raw id)', publicPayload.lpMeta.primaryMarketDex === 'Aerodrome', publicPayload.lpMeta.primaryMarketDex)
 const rawDexIds = ['aerodrome-base', 'aerodrome-slipstream', 'uniswap-v3-base', 'pancakeswap-v3-base']
 for (const rawId of rawDexIds) assert(`public response does not expose raw DEX id ${rawId}`, !serialized(publicPayload).includes(rawId), rawId)
+assert('public lpMovementWatch does not expose provider names/raw DEX IDs', providerNames.every((name) => !serialized(publicPayload.lpMovementWatch).includes(name)) && rawDexIds.every((rawId) => !serialized(publicPayload.lpMovementWatch).includes(rawId)), publicPayload.lpMovementWatch)
 
 console.log('\nB. debug=true response')
 const debugPayload = sanitizePublicTokenResponse(JSON.parse(JSON.stringify(virtualLikePayload)), true)
@@ -246,6 +263,13 @@ protocolPayload.lpControllerIntel = buildLpControllerIntel({
   lpMigrationProof: { status: 'low' },
   lpMeta: protocolPayload.lpMeta,
 })
+protocolPayload.lpMovementWatch = buildLpMovementWatch({
+  chain: 'base',
+  lpControllerIntel: protocolPayload.lpControllerIntel,
+  lpControl: protocolPayload.lpControl,
+  selectedPool: protocolPayload.selectedPool,
+  lpMeta: protocolPayload.lpMeta,
+})
 assert('protocol pool proofApplicability remains not_applicable', protocolPayload.lpProofApplicability === 'not_applicable', protocolPayload.lpProofApplicability)
 assert('concentrated pool is not forced into ERC20 lock/burn proof', protocolPayload.lpControl?.proofStatus === 'not_applicable' && protocolPayload.lpControl?.lockStatus === 'not_applicable' && protocolPayload.lpControl?.burnStatus === 'not_applicable', protocolPayload.lpControl)
 assert('selected pool address is not fake-truncated', protocolPayload.selectedPool.address === '0x2222222222222222222222222222222222222222', protocolPayload.selectedPool.address)
@@ -254,6 +278,8 @@ assert('sections.liquidity.lpLockBurnProofStatus remains not_applicable', protoc
 assert('lpMeta.lpControlState remains concentrated_liquidity', protocolPayload.lpMeta.lpControlState === 'concentrated_liquidity')
 assert('GOAL/concentrated lpControllerIntel status is concentrated_liquidity', protocolPayload.lpControllerIntel.status === 'concentrated_liquidity', protocolPayload.lpControllerIntel)
 assert('GOAL/concentrated lpControllerIntel lockBurnProof is not_applicable', protocolPayload.lpControllerIntel.lockBurnProof === 'not_applicable', protocolPayload.lpControllerIntel)
+assert('GOAL/concentrated lpMovementWatch returns not_applicable or unsupported', ['not_applicable', 'pool_model_not_supported'].includes(protocolPayload.lpMovementWatch?.status), protocolPayload.lpMovementWatch)
+assert('GOAL/concentrated lpMovementWatch does not fake ERC20 movement', protocolPayload.lpMovementWatch?.recentMovementDetected == null && protocolPayload.lpMovementWatch?.recentTransferCount == null, protocolPayload.lpMovementWatch)
 
 // ─── publicLpDataMode mapping ───────────────────────────────────────────────
 console.log('\nD. publicLpDataMode mapping')
