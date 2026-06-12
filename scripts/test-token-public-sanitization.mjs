@@ -6,6 +6,7 @@ import { sanitizePublicTokenResponse } from '../lib/server/tokenPublicResponse.t
 import { publicLpDataMode } from '../lib/server/lpProof.ts'
 import { buildLpControllerIntel } from '../lib/server/lpControllerIntel.ts'
 import { buildLpMovementWatch } from '../lib/server/lpMovementWatch.ts'
+import { buildLpLockBurnIntel, LP_LOCK_BURN_REGISTRY } from '../lib/server/lpLockBurnIntel.ts'
 
 let passed = 0
 let failed = 0
@@ -162,6 +163,13 @@ virtualLikePayload.lpMovementWatch = buildLpMovementWatch({
   selectedPool: virtualLikePayload.selectedPool,
   lpMeta: virtualLikePayload.lpMeta,
 })
+virtualLikePayload.lpLockBurnIntel = buildLpLockBurnIntel({
+  chain: virtualLikePayload.chain,
+  lpControllerIntel: virtualLikePayload.lpControllerIntel,
+  lpControl: virtualLikePayload.lpControl,
+  selectedPool: virtualLikePayload.selectedPool,
+  lpMeta: virtualLikePayload.lpMeta,
+})
 
 console.log('\nA. VIRTUAL-like public response')
 const publicPayload = sanitizePublicTokenResponse(JSON.parse(JSON.stringify(virtualLikePayload)), false)
@@ -223,6 +231,18 @@ assert('VIRTUAL lpMovementWatch summary says movement evidence not confirmed', /
 assert('VIRTUAL lpMovementWatch evidence gap includes recent transfer history', (publicPayload.lpMovementWatch?.evidenceGaps ?? []).includes('recent LP-controller transfer history not confirmed'), publicPayload.lpMovementWatch?.evidenceGaps)
 assert('VIRTUAL lpMovementWatch nextActions are expected', ['monitor controller wallet', 'verify LP token transfers', 'rescan after liquidity changes'].every((action) => (publicPayload.lpMovementWatch?.nextActions ?? []).includes(action)), publicPayload.lpMovementWatch?.nextActions)
 
+assert('lpLockBurn registry has chain-aware base/eth/bnb locker shape', Array.isArray(LP_LOCK_BURN_REGISTRY.lockersByChain.base) && Array.isArray(LP_LOCK_BURN_REGISTRY.lockersByChain.eth) && Array.isArray(LP_LOCK_BURN_REGISTRY.lockersByChain.bnb), LP_LOCK_BURN_REGISTRY.lockersByChain)
+assert('lpLockBurn registry burn addresses include zero and dead', LP_LOCK_BURN_REGISTRY.burnAddresses.includes('0x0000000000000000000000000000000000000000') && LP_LOCK_BURN_REGISTRY.burnAddresses.includes('0x000000000000000000000000000000000000dead'), LP_LOCK_BURN_REGISTRY.burnAddresses)
+assert('VIRTUAL includes lpLockBurnIntel', Boolean(publicPayload.lpLockBurnIntel), publicPayload.lpLockBurnIntel)
+assert('VIRTUAL lpLockBurnIntel status is open_check', publicPayload.lpLockBurnIntel?.status === 'open_check', publicPayload.lpLockBurnIntel)
+assert('VIRTUAL lpLockBurnIntel lockBurnProof is open_check', publicPayload.lpLockBurnIntel?.lockBurnProof === 'open_check', publicPayload.lpLockBurnIntel)
+assert('VIRTUAL lpLockBurnIntel chain is base', publicPayload.lpLockBurnIntel?.chain === 'base', publicPayload.lpLockBurnIntel)
+assert('VIRTUAL lpLockBurnIntel lpTokenOrPool is selectedPool.address', publicPayload.lpLockBurnIntel?.lpTokenOrPool === publicPayload.selectedPool.address, publicPayload.lpLockBurnIntel)
+assert('VIRTUAL lpLockBurnIntel does not fake locked/burned percentages', publicPayload.lpLockBurnIntel?.lockedPercent == null && publicPayload.lpLockBurnIntel?.burnedPercent == null, publicPayload.lpLockBurnIntel)
+assert('VIRTUAL lpLockBurnIntel summary states controller known but proof not confirmed', /controller is known.*lock\/burn proof is not confirmed/i.test(publicPayload.lpLockBurnIntel?.summary ?? ''), publicPayload.lpLockBurnIntel?.summary)
+assert('VIRTUAL lpLockBurnIntel gaps include no verified locker match and burn proof not confirmed', (publicPayload.lpLockBurnIntel?.evidenceGaps ?? []).some((gap) => /no verified base locker registry match/i.test(gap)) && (publicPayload.lpLockBurnIntel?.evidenceGaps ?? []).includes('burn proof not confirmed'), publicPayload.lpLockBurnIntel?.evidenceGaps)
+assert('VIRTUAL lpLockBurnIntel actions are expected', ['verify LP holders', 'verify locker', 'monitor/rescan'].every((action) => (publicPayload.lpLockBurnIntel?.nextActions ?? []).includes(action)), publicPayload.lpLockBurnIntel?.nextActions)
+
 // Public cortexLpRead does not say "fallback" — uses evidence-based wording or hides raw mode.
 assert('cortexLpRead.mode is not the raw "fallback" string', publicPayload.cortexLpRead?.mode !== 'fallback', publicPayload.cortexLpRead?.mode)
 assert('cortexLpRead.mode reads evidence-based', publicPayload.cortexLpRead?.mode === 'evidence-based', publicPayload.cortexLpRead?.mode)
@@ -283,6 +303,13 @@ protocolPayload.lpMovementWatch = buildLpMovementWatch({
   selectedPool: protocolPayload.selectedPool,
   lpMeta: protocolPayload.lpMeta,
 })
+protocolPayload.lpLockBurnIntel = buildLpLockBurnIntel({
+  chain: 'base',
+  lpControllerIntel: protocolPayload.lpControllerIntel,
+  lpControl: protocolPayload.lpControl,
+  selectedPool: protocolPayload.selectedPool,
+  lpMeta: protocolPayload.lpMeta,
+})
 assert('protocol pool proofApplicability remains not_applicable', protocolPayload.lpProofApplicability === 'not_applicable', protocolPayload.lpProofApplicability)
 assert('concentrated pool is not forced into ERC20 lock/burn proof', protocolPayload.lpControl?.proofStatus === 'not_applicable' && protocolPayload.lpControl?.lockStatus === 'not_applicable' && protocolPayload.lpControl?.burnStatus === 'not_applicable', protocolPayload.lpControl)
 assert('selected pool address is not fake-truncated', protocolPayload.selectedPool.address === '0x2222222222222222222222222222222222222222', protocolPayload.selectedPool.address)
@@ -293,6 +320,10 @@ assert('GOAL/concentrated lpControllerIntel status is concentrated_liquidity', p
 assert('GOAL/concentrated lpControllerIntel lockBurnProof is not_applicable', protocolPayload.lpControllerIntel.lockBurnProof === 'not_applicable', protocolPayload.lpControllerIntel)
 assert('GOAL/concentrated lpMovementWatch returns not_applicable or unsupported', ['not_applicable', 'pool_model_not_supported'].includes(protocolPayload.lpMovementWatch?.status), protocolPayload.lpMovementWatch)
 assert('GOAL/concentrated lpMovementWatch does not fake ERC20 movement', protocolPayload.lpMovementWatch?.recentMovementDetected == null && protocolPayload.lpMovementWatch?.recentTransferCount == null, protocolPayload.lpMovementWatch)
+assert('GOAL/concentrated lpLockBurnIntel status is not_applicable', protocolPayload.lpLockBurnIntel?.status === 'not_applicable', protocolPayload.lpLockBurnIntel)
+assert('GOAL/concentrated lpLockBurnIntel proof is not_applicable', protocolPayload.lpLockBurnIntel?.lockBurnProof === 'not_applicable', protocolPayload.lpLockBurnIntel)
+assert('GOAL/concentrated lpLockBurnIntel does not fake locked/burned percentages', protocolPayload.lpLockBurnIntel?.lockedPercent == null && protocolPayload.lpLockBurnIntel?.burnedPercent == null, protocolPayload.lpLockBurnIntel)
+assert('GOAL/concentrated lpLockBurnIntel summary explains ERC20 proof does not apply', /ERC20 LP lock\/burn proof does not apply/i.test(protocolPayload.lpLockBurnIntel?.summary ?? ''), protocolPayload.lpLockBurnIntel?.summary)
 
 // ─── publicLpDataMode mapping ───────────────────────────────────────────────
 console.log('\nD. publicLpDataMode mapping')
