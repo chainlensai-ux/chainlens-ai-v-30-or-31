@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { getRadarValuationBasis, getRadarValuationCardDisplay, getRadarValuationDrawerDisplay, getRadarCortexValuationLine, getRadarValuationEvidenceGap, tokenPassesRadarValuationFilters, resolveFallbackMarketCap, DEFAULT_RADAR_MIN_LIQUIDITY_USD } from '../lib/baseRadarValuation.ts'
+import { getRadarValuationBasis, getRadarValuationCardDisplay, getRadarValuationDrawerDisplay, getRadarCortexValuationLine, getRadarValuationEvidenceGap, tokenPassesRadarValuationFilters, resolveFallbackMarketCap, resolveBaseRadarMarketCap, DEFAULT_RADAR_MIN_LIQUIDITY_USD } from '../lib/baseRadarValuation.ts'
 
 const fmtUSD = (v) => {
   if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(1)}M`
@@ -99,5 +99,38 @@ assert.equal(realMc.marketCapStatus, 'verified')
 const missingMc = resolveFallbackMarketCap(null)
 assert.equal(missingMc.marketCapUsd, null)
 assert.equal(missingMc.marketCapStatus, null)
+
+// ─── resolveBaseRadarMarketCap: DexScreener-style pair fixture ────────────
+const dexFixture1 = resolveBaseRadarMarketCap({ dexPair: { marketCap: 123456, fdv: 120000, liquidity: { usd: 30000 } } })
+assert.equal(dexFixture1.marketCapUsd, 123456)
+assert.equal(dexFixture1.marketCapStatus, 'verified')
+assert.equal(dexFixture1.sourceKind, 'market_api')
+
+// ─── resolveBaseRadarMarketCap: DexScreener marketCapUsd field ────────────
+const dexFixture2 = resolveBaseRadarMarketCap({ dexPair: { marketCapUsd: 123456 } })
+assert.equal(dexFixture2.marketCapUsd, 123456)
+assert.equal(dexFixture2.marketCapStatus, 'verified')
+
+// ─── resolveBaseRadarMarketCap: GeckoTerminal pool attributes fixture ─────
+const geckoFixture = resolveBaseRadarMarketCap({ geckoPool: { attributes: { market_cap_usd: '123456', fdv_usd: '120000', reserve_in_usd: '30000' } } })
+assert.equal(geckoFixture.marketCapUsd, 123456)
+assert.equal(geckoFixture.marketCapStatus, 'verified')
+
+// ─── No market cap + valid FDV -> FDV fallback, not verified market cap ──
+const noMcValidFdv = getRadarValuationBasis({ marketCapUsd: null, marketCapStatus: 'unavailable', fdvUsd: 50_000, liquidityUsd: 5_000 })
+assert.equal(noMcValidFdv.basis, 'fdv_fallback')
+assert.equal(noMcValidFdv.verified, false)
+assert.notEqual(noMcValidFdv.basis, 'verified_market_cap')
+
+// ─── Valid market cap + invalid FDV -> market cap still verified ─────────
+const validMcInvalidFdv = getRadarValuationBasis({ marketCapUsd: 123456, marketCapStatus: 'verified', fdvUsd: 1, liquidityUsd: 5_000 })
+assert.equal(validMcInvalidFdv.basis, 'verified_market_cap')
+assert.equal(validMcInvalidFdv.valueUsd, 123456)
+assert.equal(validMcInvalidFdv.verified, true)
+
+// ─── Invalid FDV + no market cap -> open check + sanity-check reason ─────
+const invalidFdvNoMc = getRadarValuationBasis({ marketCapUsd: null, marketCapStatus: 'unavailable', fdvUsd: 1, liquidityUsd: 5_000 })
+assert.equal(invalidFdvNoMc.basis, 'unavailable')
+assert.equal(invalidFdvNoMc.reason, 'FDV VALUE FAILED SANITY CHECK')
 
 console.log('base radar valuation tests passed')

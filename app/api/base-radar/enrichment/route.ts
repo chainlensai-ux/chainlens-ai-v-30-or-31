@@ -2,6 +2,7 @@
 import { NextResponse } from 'next/server'
 import { POST as tokenScannerPost } from '@/app/api/token/route'
 import { reconcileBaseRadarLp } from '@/lib/server/baseRadarLpReconciliation'
+import { getRadarValuationBasis, resolveBaseRadarMarketCap } from '@/lib/baseRadarValuation'
 
 type ChainKey = 'base' | 'eth'
 type SectionKey = 'market' | 'lp' | 'holders' | 'deployer' | 'security' | 'socials'
@@ -257,7 +258,7 @@ function observedPoolFields(scan: Record<string, any>) {
   return { observedPoolPresent, observedPoolCount, poolCountStatus }
 }
 
-function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract: string): Record<string, unknown> {
+function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract: string, debug = false): Record<string, unknown> {
   const holderDistribution = scan.holderDistribution ?? {}
   const holderResolver = scan.holderResolver ?? {}
   const holderRows = Array.isArray(holderDistribution.topHolders)
@@ -315,23 +316,51 @@ function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract
     contract,
     name: scan.name ?? scan.tokenInfo?.name ?? null,
     symbol: scan.symbol ?? scan.tokenInfo?.symbol ?? null,
-    market: {
-      priceUsd: finiteNumber(scan.priceUsd),
-      liquidityUsd: finiteNumber(scan.liquidityUsd),
-      volume24hUsd: finiteNumber(scan.volume24hUsd),
-      fdvUsd: finiteNumber(scan.fdvUsd ?? scan.fdv),
-      marketCapUsd: finiteNumber(scan.marketCapUsd ?? scan.market_cap),
-      marketCapStatus: finiteNumber(scan.marketCapUsd ?? scan.market_cap) != null ? 'verified' : null,
-      marketStatus: scan.marketStatus ?? null,
-      marketConfidence: scan.marketConfidence ?? null,
-      poolCount: observedPools.observedPoolCount,
-      observedPoolPresent: observedPools.observedPoolPresent,
-      observedPoolCount: observedPools.observedPoolCount,
-      poolCountStatus: observedPools.poolCountStatus,
-      primaryDexName: scan.primaryDexName ?? null,
-      poolActivity: scan.poolActivity ?? null,
-      valuationContext: scan.valuationContext ?? null,
-    },
+    market: (() => {
+      const liquidityUsd = finiteNumber(scan.liquidityUsd)
+      const fdvUsd = finiteNumber(scan.fdvUsd ?? scan.fdv)
+      const resolvedMarketCap = resolveBaseRadarMarketCap({
+        dexPair: scan.dexPair ?? null,
+        geckoPool: scan.geckoPool ?? null,
+        normalized: scan,
+      })
+      const marketCapUsd = resolvedMarketCap.marketCapUsd
+      const marketCapStatus = marketCapUsd != null ? 'verified' : null
+      const valuation = getRadarValuationBasis({
+        marketCapUsd,
+        marketCapStatus,
+        fdvUsd,
+        liquidityUsd,
+      })
+      return {
+        priceUsd: finiteNumber(scan.priceUsd),
+        liquidityUsd,
+        volume24hUsd: finiteNumber(scan.volume24hUsd),
+        fdvUsd,
+        marketCapUsd,
+        marketCapStatus,
+        marketStatus: scan.marketStatus ?? null,
+        marketConfidence: scan.marketConfidence ?? null,
+        poolCount: observedPools.observedPoolCount,
+        observedPoolPresent: observedPools.observedPoolPresent,
+        observedPoolCount: observedPools.observedPoolCount,
+        poolCountStatus: observedPools.poolCountStatus,
+        primaryDexName: scan.primaryDexName ?? null,
+        poolActivity: scan.poolActivity ?? null,
+        valuationContext: scan.valuationContext ?? null,
+        valuationBasis: valuation.basis,
+        valuationUsd: valuation.valueUsd,
+        valuationLabel: valuation.label,
+        ...(debug ? { marketCapDiagnostics: {
+          rawDexMarketCap: finiteNumber(scan.dexPair?.marketCap ?? scan.dexPair?.marketCapUsd ?? scan.dexPair?.market_cap ?? scan.dexPair?.market_cap_usd),
+          rawGeckoMarketCap: finiteNumber(scan.geckoPool?.attributes?.market_cap_usd ?? scan.geckoPool?.attributes?.market_cap ?? scan.geckoPool?.attributes?.token_market_cap_usd ?? scan.geckoPool?.attributes?.base_token_market_cap_usd),
+          selectedMarketCapUsd: marketCapUsd,
+          selectedMarketCapStatus: resolvedMarketCap.marketCapStatus,
+          fdvUsd,
+          valuationBasis: valuation.basis,
+        } } : {}),
+      }
+    })(),
     lp: {
       lpLockStatus: scan.lpLockStatus ?? null,
       lpLockAmount: finiteNumber(scan.lpLockAmount),
@@ -436,7 +465,7 @@ async function scanToken(req: Request, chain: ChainKey, contract: string, debug:
       fetchedAt: new Date().toISOString(),
     }
   }
-  return buildPublicPayload(scan, chain, contract)
+  return buildPublicPayload(scan, chain, contract, debug)
 }
 
 function storeCache(key: string, payload: Record<string, unknown>, now: number) {

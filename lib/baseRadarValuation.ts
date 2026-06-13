@@ -4,6 +4,7 @@ export interface RadarValuationInput {
   marketCapUsd?: number | null
   marketCapStatus?: string | null
   fdvUsd?: number | null
+  liquidityUsd?: number | null
 }
 
 export interface RadarValuationResult {
@@ -35,6 +36,73 @@ export function resolveFallbackMarketCap(fallbackMarketCapUsd: number | null | u
   return { marketCapUsd: null, marketCapStatus: null }
 }
 
+export interface BaseRadarMarketCapRawInput {
+  dexPair?: Record<string, unknown> | null
+  geckoPool?: { attributes?: Record<string, unknown> | null } | null
+  normalized?: Record<string, unknown> | null
+}
+
+export type BaseRadarMarketCapSourceKind = 'market_api' | null
+
+export interface ResolvedBaseRadarMarketCap {
+  marketCapUsd: number | null
+  marketCapStatus: 'verified' | 'unavailable'
+  sourceKind: BaseRadarMarketCapSourceKind
+  reason: string
+}
+
+function finitePositiveNumber(value: unknown): number | null {
+  const n = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
+  return Number.isFinite(n) && n > 0 ? n : null
+}
+
+/**
+ * Centralized Base Radar market cap resolver. Checks known raw market-cap fields
+ * across DexScreener pair, GeckoTerminal pool attributes, and normalized shapes —
+ * first finite positive value wins. Market cap is never inferred from FDV here.
+ */
+export function resolveBaseRadarMarketCap(input: BaseRadarMarketCapRawInput): ResolvedBaseRadarMarketCap {
+  const dexPair = input.dexPair ?? {}
+  const geckoAttrs = input.geckoPool?.attributes ?? {}
+  const normalized = input.normalized ?? {}
+
+  const candidates: unknown[] = [
+    (dexPair as Record<string, unknown>).marketCap,
+    (dexPair as Record<string, unknown>).marketCapUsd,
+    (dexPair as Record<string, unknown>).market_cap,
+    (dexPair as Record<string, unknown>).market_cap_usd,
+    (geckoAttrs as Record<string, unknown>).market_cap_usd,
+    (geckoAttrs as Record<string, unknown>).market_cap,
+    (geckoAttrs as Record<string, unknown>).token_market_cap_usd,
+    (geckoAttrs as Record<string, unknown>).base_token_market_cap_usd,
+    (normalized as Record<string, unknown>).marketCapUsd,
+    (normalized as Record<string, unknown>).market_cap_usd,
+    (normalized as Record<string, unknown>).marketCap,
+  ]
+
+  for (const candidate of candidates) {
+    const value = finitePositiveNumber(candidate)
+    if (value != null) {
+      return { marketCapUsd: value, marketCapStatus: 'verified', sourceKind: 'market_api', reason: 'Explicit market cap found in raw market data.' }
+    }
+  }
+
+  return { marketCapUsd: null, marketCapStatus: 'unavailable', sourceKind: null, reason: 'No explicit market cap field present in raw market data.' }
+}
+
+/**
+ * FDV sanity check. FDV is rejected as a fallback valuation if it is not a finite
+ * positive number, or if it is implausible relative to liquidity. A real verified
+ * market cap is never gated by this check.
+ */
+export function isFdvValid(fdvUsd: number | null | undefined, liquidityUsd?: number | null): boolean {
+  if (typeof fdvUsd !== 'number' || !Number.isFinite(fdvUsd) || fdvUsd <= 0) return false
+  const liquidity = typeof liquidityUsd === 'number' && Number.isFinite(liquidityUsd) ? liquidityUsd : 0
+  if (liquidity > 0 && fdvUsd < liquidity) return false
+  if (liquidity >= 1000 && fdvUsd < 100) return false
+  return true
+}
+
 export function getRadarValuationBasis(input: RadarValuationInput): RadarValuationResult {
   if (
     typeof input.marketCapUsd === 'number' &&
@@ -51,14 +119,10 @@ export function getRadarValuationBasis(input: RadarValuationInput): RadarValuati
     }
   }
 
-  if (
-    typeof input.fdvUsd === 'number' &&
-    Number.isFinite(input.fdvUsd) &&
-    input.fdvUsd > 0
-  ) {
+  if (isFdvValid(input.fdvUsd, input.liquidityUsd)) {
     return {
       basis: 'fdv_fallback',
-      valueUsd: input.fdvUsd,
+      valueUsd: input.fdvUsd as number,
       label: 'FDV',
       verified: false,
       reason: 'Market cap unavailable; FDV used as fallback valuation.',
@@ -70,7 +134,7 @@ export function getRadarValuationBasis(input: RadarValuationInput): RadarValuati
     valueUsd: null,
     label: 'Unavailable',
     verified: false,
-    reason: 'No verified market cap or FDV available.',
+    reason: input.fdvUsd != null ? 'FDV VALUE FAILED SANITY CHECK' : 'No verified market cap or FDV available.',
   }
 }
 
@@ -83,12 +147,13 @@ export function tokenPassesRadarValuationFilters(input: RadarValuationInput & {
   const minValuationUsd = input.minValuationUsd ?? DEFAULT_RADAR_MIN_VALUATION_USD
   const minLiquidityUsd = input.minLiquidityUsd ?? DEFAULT_RADAR_MIN_LIQUIDITY_USD
   const allowFdvFallback = input.allowFdvFallback ?? DEFAULT_RADAR_ALLOW_FDV_FALLBACK
+  const liquidityUsd = typeof input.liquidityUsd === 'number' && Number.isFinite(input.liquidityUsd) ? input.liquidityUsd : 0
   const valuation = getRadarValuationBasis({
     marketCapUsd: input.marketCapUsd,
     marketCapStatus: input.marketCapStatus,
     fdvUsd: allowFdvFallback ? input.fdvUsd : null,
+    liquidityUsd,
   })
-  const liquidityUsd = typeof input.liquidityUsd === 'number' && Number.isFinite(input.liquidityUsd) ? input.liquidityUsd : 0
 
   return {
     valuation,

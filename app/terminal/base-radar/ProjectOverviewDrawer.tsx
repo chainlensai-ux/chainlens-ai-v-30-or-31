@@ -488,6 +488,7 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
     marketCapUsd: market?.marketCapUsd ?? null,
     marketCapStatus: market?.marketCapStatus ?? null,
     fdvUsd: market?.fdvUsd ?? token?.fdvUsd ?? null,
+    liquidityUsd,
   })
   const marketValuationCard = getRadarValuationCardDisplay(marketValuation, fmtUSD)
   const excludedFromFeed = liquidityUsd != null && liquidityUsd < DEFAULT_RADAR_MIN_LIQUIDITY_USD
