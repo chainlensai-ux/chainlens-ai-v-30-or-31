@@ -257,6 +257,7 @@ function applyScoreTrustCaps(token: RadarToken, score: number): number {
     volume24h: token.volume24h,
     ageMinutes: token.ageMinutes,
     simulationStatus: token.simulationStatus,
+    simulationReason: token.simulationReason,
     buyTax: token.honeypot?.buyTax ?? null,
     sellTax: token.honeypot?.sellTax ?? null,
     honeypotPresent: Boolean(token.honeypot),
@@ -370,10 +371,13 @@ function getSignalInsight(token: TokenIntel): string {
 }
 
 function simulationStatusLabel(token: RadarToken): string {
-  if (token.simulationStatus === 'passed') return token.simulationLabel ?? 'Simulation confirmed'
-  if (token.simulationReason === 'timeout_after_retry' || token.simulationReason === 'timeout') return 'Timeout after retry'
-  if (token.simulationReason === 'unsupported_pool_model') return 'Route unsupported'
+  if (token.simulationStatus === 'passed') return token.simulationLabel ?? 'Tax check clear'
+  if (token.simulationReason === 'timeout_after_retry' || token.simulationReason === 'timeout') return 'Tax check timed out'
+  if (token.simulationReason === 'unsupported_pool_model') return 'Simulation unsupported'
   if (token.simulationReason === 'missing_pair_address') return 'Pair route missing'
+  if (token.simulationReason === 'insufficient_route') return 'Route evidence missing'
+  if (token.simulationReason === 'provider_unavailable') return 'Simulation temporarily unavailable'
+  if (token.simulationReason === 'not_attempted_low_confidence_pair') return 'Simulation pending'
   return 'Simulation pending'
 }
 
@@ -387,7 +391,7 @@ function getTaxLabel(token: TokenIntel): string {
 
 function getValuationCardMetric(token: RadarToken): { label: string; value: string; sublabel?: string | null; accent?: string } {
   if (token.valuationBasis === 'verified_market_cap') {
-    return { label: 'Market cap', value: fmtUSD(token.marketCapUsd ?? token.valuationUsd ?? 0), sublabel: token.valuationSublabel ?? 'Verified', accent: '#99f6e4' }
+    return { label: 'Market Cap', value: fmtUSD(token.marketCapUsd ?? token.valuationUsd ?? 0), sublabel: token.valuationSublabel ?? 'Verified', accent: '#99f6e4' }
   }
   if (token.valuationBasis === 'fdv_fallback') {
     return { label: 'FDV', value: fmtUSD(token.fdvUsd ?? token.valuationUsd ?? 0), sublabel: token.valuationSublabel ?? 'Market cap unavailable', accent: '#fde68a' }
@@ -444,7 +448,7 @@ function TokenCard({
     valuationDisplay,
     { label: 'Age', value: fmtAge(token.ageMinutes), accent: token.ageMinutes <= 30 ? '#bfdbfe' : undefined },
     { label: 'Momentum', value: token.momentum === 'NONE' ? 'Open check' : token.momentum, accent: token.momentum === 'HIGH' ? '#99f6e4' : undefined },
-    { label: 'Tax / Sim', value: getTaxLabel(token), accent: token.simulationStatus === 'passed' ? '#99f6e4' : '#fde68a' },
+    { label: 'Tax Check', value: getTaxLabel(token), accent: token.simulationStatus === 'passed' ? '#99f6e4' : '#fde68a' },
   ]
 
   return (
@@ -892,7 +896,7 @@ export default function BaseRadarPage() {
       `Status: ${token.status}`,
       `Liquidity: ${fmtUSD(token.liquidityUsd)}`,
       `Volume 24h: ${fmtUSD(token.volume24h)}`,
-      `Market cap: ${token.valuationBasis === 'verified_market_cap' ? fmtUSD(token.marketCapUsd ?? token.valuationUsd ?? 0) : 'Unverified'}`,
+      `Market Cap: ${token.valuationBasis === 'verified_market_cap' ? fmtUSD(token.marketCapUsd ?? token.valuationUsd ?? 0) : 'Unverified'}`,
       `FDV: ${token.fdvUsd ? fmtUSD(token.fdvUsd) : 'Open check'}`,
       `Valuation: ${token.valuationBasis === 'verified_market_cap' ? 'Verified market cap' : token.valuationBasis === 'fdv_fallback' ? 'FDV fallback' : 'Unavailable'}`,
       ...(token.valuationCortexLine ? [`Note: ${token.valuationCortexLine}`] : []),
@@ -976,14 +980,16 @@ export default function BaseRadarPage() {
           100% { transform: rotate(360deg); }
         }
         @media (max-width: 768px) {
-          .radar-main { padding: 18px 12px 120px !important; }
+          .radar-main { padding: 18px 12px 120px !important; overflow-x: hidden !important; }
+          .opportunity-card { border-radius: 16px !important; padding: 12px !important; }
           .radar-grid { grid-template-columns: 1fr !important; }
           .radar-stats { position: static !important; }
           .radar-controls { flex-direction: column !important; align-items: flex-start !important; }
-          .radar-controls > div { width: 100%; justify-content: space-between; }
+          .radar-controls > div { width: 100%; justify-content: space-between; flex-wrap: wrap; }
           .radar-overview-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
           .radar-overview-card { padding: 12px !important; }
           .token-card-header { flex-direction: column !important; }
+          .token-card-header span { max-width: 100%; }
           .token-card-header > div:last-child { width: 100%; }
           .token-card-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
           .token-card-actions { flex-direction: column !important; align-items: stretch !important; }

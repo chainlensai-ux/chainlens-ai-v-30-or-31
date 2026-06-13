@@ -402,25 +402,43 @@ function DataRow({ label, value, mono = true }: { label: string; value: React.Re
 
 function MiniChart({ points }: { points: ChartPoint[] }) {
   const values = points.map((p) => Number(p.close ?? p.price ?? p.value)).filter(Number.isFinite)
-  const path = useMemo(() => {
-    if (values.length < 2) return ''
+  const stats = useMemo(() => {
+    if (values.length === 0) return null
     const min = Math.min(...values)
     const max = Math.max(...values)
-    const spread = max - min || 1
-    return values.map((v, i) => {
-      const x = (i / (values.length - 1)) * 320
-      const y = 86 - ((v - min) / spread) * 70
-      return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)} ${y.toFixed(1)}`
-    }).join(' ')
+    const current = values[values.length - 1]
+    const spread = max - min
+    const coords = values.map((v, i) => {
+      const x = 14 + (i / Math.max(values.length - 1, 1)) * 292
+      const y = spread === 0 ? 58 : 88 - ((v - min) / spread) * 64
+      return { x, y }
+    })
+    const line = coords.map((pt, i) => `${i === 0 ? 'M' : 'L'}${pt.x.toFixed(1)} ${pt.y.toFixed(1)}`).join(' ')
+    const area = `${line} L306 104 L14 104 Z`
+    return { min, max, current, line, area, flat: spread === 0 }
   }, [values])
 
-  if (!path) return <p style={{ color: '#64748b', fontSize: '11px', margin: 0 }}>OHLCV chart data is unavailable for this token right now.</p>
+  if (values.length < 4 || !stats) {
+    return <div style={{ minHeight: 112, borderRadius: 16, border: '1px solid rgba(148,163,184,.12)', background: 'linear-gradient(180deg, rgba(15,23,42,.72), rgba(2,6,23,.55))', display: 'grid', placeItems: 'center', padding: 16 }}><p style={{ color: '#94a3b8', fontSize: 12, margin: 0, textAlign: 'center' }}>Limited chart history — pool is very new.</p></div>
+  }
 
   return (
-    <svg viewBox="0 0 320 96" width="100%" height="110" role="img" aria-label="Token mini chart" style={{ borderRadius: '12px', background: 'rgba(15,23,42,0.65)', border: '1px solid rgba(45,212,191,0.12)' }}>
-      <path d={path} fill="none" stroke="#2DD4BF" strokeWidth="2" />
-      <path d={`${path} L320 96 L0 96 Z`} fill="rgba(45,212,191,0.08)" stroke="none" />
-    </svg>
+    <div style={{ borderRadius: 16, border: '1px solid rgba(45,212,191,0.14)', background: 'linear-gradient(180deg, rgba(15,23,42,0.78), rgba(2,6,23,0.56))', padding: 10, overflow: 'hidden' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, marginBottom: 8, color: '#94a3b8', fontSize: 10, fontFamily: 'var(--font-plex-mono)' }}>
+        <span>Min {fmtUSD(stats.min)}</span><span style={{ color: '#99f6e4' }}>Now {fmtUSD(stats.current)}</span><span>Max {fmtUSD(stats.max)}</span>
+      </div>
+      <svg viewBox="0 0 320 112" width="100%" height="150" role="img" aria-label="Token mini chart" className="radar-mini-chart-svg" style={{ display: 'block', maxHeight: 150 }}>
+        <defs>
+          <linearGradient id="radarChartFill" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stopColor="#2DD4BF" stopOpacity="0.20" /><stop offset="100%" stopColor="#2DD4BF" stopOpacity="0.02" /></linearGradient>
+          <filter id="radarChartGlow"><feGaussianBlur stdDeviation="2.5" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+        </defs>
+        {[24, 48, 72, 96].map((y) => <line key={y} x1="12" x2="308" y1={y} y2={y} stroke="rgba(148,163,184,.10)" strokeWidth="1" />)}
+        <path d={stats.area} fill="url(#radarChartFill)" stroke="none" />
+        <path d={stats.line} fill="none" stroke="#2DD4BF" strokeWidth={stats.flat ? 2 : 2.4} strokeLinecap="round" strokeLinejoin="round" filter="url(#radarChartGlow)" />
+        <circle cx="306" cy={stats.line.match(/ ([0-9.]+)$/)?.[1] ?? 58} r="3.5" fill="#99f6e4" />
+      </svg>
+      {stats.flat ? <p style={{ margin: '6px 0 0', color: '#64748b', fontSize: 11 }}>Flat price action in the available window.</p> : null}
+    </div>
   )
 }
 
@@ -655,9 +673,10 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
 
   return (
     <div aria-hidden={!open}>
+      <style>{`@media (max-width: 640px) { .radar-drawer { width: 100vw !important; padding: 12px !important; border-left: 0 !important; } .radar-drawer-header { margin: -12px -12px 12px !important; padding: 10px 12px !important; } .radar-mini-chart-svg { height: 120px !important; max-height: 120px !important; } .holder-row-list > div { grid-template-columns: 34px minmax(0,1fr) auto !important; overflow-wrap: anywhere; } }`}</style>
       <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: open ? 'rgba(2,6,23,0.68)' : 'transparent', backdropFilter: open ? 'blur(4px)' : 'none', pointerEvents: open ? 'auto' : 'none', transition: 'background 0.2s, backdrop-filter 0.2s', zIndex: 70 }} />
-      <aside role="dialog" aria-modal="true" aria-label="Project overview" style={{ position: 'fixed', top: 0, right: 0, height: '100dvh', width: 'min(640px, 100vw)', transform: open ? 'translateX(0)' : 'translateX(105%)', transition: 'transform 0.28s cubic-bezier(.22,1,.36,1)', zIndex: 80, background: 'radial-gradient(circle at 20% 0%, rgba(45,212,191,.13), transparent 32%), radial-gradient(circle at 90% 16%, rgba(168,85,247,.12), transparent 28%), linear-gradient(180deg, #07111f, #020617 58%)', borderLeft: '1px solid rgba(45,212,191,0.20)', boxShadow: '-32px 0 100px rgba(0,0,0,0.52)', color: '#e2e8f0', overflowY: 'auto', padding: '18px', overflowX: 'hidden' }}>
-        <header style={{ position: 'sticky', top: 0, zIndex: 3, margin: '-18px -18px 14px', padding: '14px 18px', background: 'rgba(2,6,23,0.88)', backdropFilter: 'blur(18px)', borderBottom: '1px solid rgba(148,163,184,0.12)' }}>
+      <aside className="radar-drawer" role="dialog" aria-modal="true" aria-label="Project overview" style={{ position: 'fixed', top: 0, right: 0, height: '100dvh', width: 'min(640px, 100vw)', transform: open ? 'translateX(0)' : 'translateX(105%)', transition: 'transform 0.28s cubic-bezier(.22,1,.36,1)', zIndex: 80, background: 'radial-gradient(circle at 20% 0%, rgba(45,212,191,.13), transparent 32%), radial-gradient(circle at 90% 16%, rgba(168,85,247,.12), transparent 28%), linear-gradient(180deg, #07111f, #020617 58%)', borderLeft: '1px solid rgba(45,212,191,0.20)', boxShadow: '-32px 0 100px rgba(0,0,0,0.52)', color: '#e2e8f0', overflowY: 'auto', padding: '18px', overflowX: 'hidden' }}>
+        <header className="radar-drawer-header" style={{ position: 'sticky', top: 0, zIndex: 3, margin: '-18px -18px 14px', padding: '14px 18px', background: 'rgba(2,6,23,0.88)', backdropFilter: 'blur(18px)', borderBottom: '1px solid rgba(148,163,184,0.12)' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center' }}>
             <div style={{ minWidth: 0 }}>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -733,7 +752,7 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
         <Section title="Holder Distribution" state={enrichmentState} tone={holderSectionTone}>
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}><Chip label={`${concentrationRisk} concentration`} tone={holderTone} /><span style={{ color: '#94a3b8', fontSize: 12 }}>Holders: <strong style={{ color: '#e2e8f0' }}>{concentration.holderCount == null ? 'Open Check' : concentration.holderCount}</strong></span><span style={{ color: '#94a3b8', fontSize: 12 }}>{creatorTopHolderDisplay(concentration.creatorInTopHolders, concentration.creatorHolderPercent)}</span></div>
           <div style={{ display: 'grid', gap: 10, marginBottom: 12 }}><MiniBar label="Top 1" value={concentration.top1} tone={holderTone === 'risk' ? 'risk' : 'mint'} /><MiniBar label="Top 10" value={concentration.top10} tone={holderTone === 'risk' ? 'risk' : 'amber'} /><MiniBar label="Top 20" value={concentration.top20} tone={holderTone === 'risk' ? 'risk' : 'amber'} /></div>
-          <div style={{ display: 'grid', gap: 7 }}>{topHolders.slice(0, 8).map((h, idx) => <div key={`${h.address}-${idx}`} style={{ display: 'grid', gridTemplateColumns: '38px 1fr auto', gap: 8, alignItems: 'center', padding: '8px 10px', borderRadius: 12, border: '1px solid rgba(148,163,184,.10)', background: 'rgba(2,6,23,.38)' }}><span style={{ color: '#64748b', fontSize: 11, fontFamily: 'var(--font-plex-mono)' }}>#{h.rank ?? idx + 1}</span><span style={{ color: '#e2e8f0', fontSize: 12, fontFamily: 'var(--font-plex-mono)' }}>{shortAddr(h.address)}</span><span style={{ color: '#99f6e4', fontSize: 12, fontFamily: 'var(--font-plex-mono)', fontWeight: 850 }}>{percent(getHolderPercent(h))}</span></div>)}</div>
+          <div className="holder-row-list" style={{ display: 'grid', gap: 7 }}>{topHolders.slice(0, 8).map((h, idx) => <div key={`${h.address}-${idx}`} style={{ display: 'grid', gridTemplateColumns: '38px minmax(0,1fr) auto', gap: 8, alignItems: 'center', padding: '8px 10px', borderRadius: 12, border: '1px solid rgba(148,163,184,.10)', background: 'rgba(2,6,23,.38)' }}><span style={{ color: '#64748b', fontSize: 11, fontFamily: 'var(--font-plex-mono)' }}>#{h.rank ?? idx + 1}</span><span style={{ color: '#e2e8f0', fontSize: 12, fontFamily: 'var(--font-plex-mono)' }}>{shortAddr(h.address)}</span><span style={{ color: '#99f6e4', fontSize: 12, fontFamily: 'var(--font-plex-mono)', fontWeight: 850 }}>{percent(getHolderPercent(h))}</span></div>)}</div>
         </Section>
 
         <Section title="Mini Chart" state={enrichmentState}>

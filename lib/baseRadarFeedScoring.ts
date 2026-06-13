@@ -20,7 +20,10 @@ export interface RadarFeedScoreInput {
   top20?: number | null
   highHolderConcentration?: boolean
   majorControlOrHolderOrLpRedFlag?: boolean
+  simulationReason?: string | null
+  missingSocials?: boolean
 }
+
 
 function clampScore(score: number): number {
   return Math.max(0, Math.min(100, Math.round(score)))
@@ -74,7 +77,31 @@ export function applyBaseRadarScoreCaps(input: RadarFeedScoreInput): { score: nu
 
   if (!highScoreAllowed) caps.push({ cap: 79, reason: '80+ requires confirmed simulation, sane valuation, liquidity, and no major red flags.' })
 
+  let penalties = 0
+  const reason = String(input.simulationReason ?? '')
+  if (input.simulationStatus !== 'passed') {
+    if (reason === 'timeout_after_retry') penalties += 12
+    else if (reason === 'unsupported_pool_model') penalties += 8
+    else penalties += 6
+  }
+  if (missingTaxEvidence) penalties += 10
+  if (input.ageMinutes != null) {
+    if (input.ageMinutes < 5) penalties += 10
+    else if (input.ageMinutes < 15) penalties += 6
+  }
+  if (liquidity != null) {
+    if (liquidity < 500) penalties += 30
+    else if (liquidity < 5_000) penalties += 18
+  }
+  if (input.top10 != null && input.top10 > 70) penalties += 15
+  if (input.top20 != null && input.top20 > 90) penalties += 18
+  if (input.activeOwner) penalties += 10
+  if (input.missingSocials) penalties += 4
+  if (erc20LpNeedsProof && !input.lpLockBurnConfirmed && !input.strongProtection) penalties += 15
+
+  const confidenceBoost = input.valuationVerified ? 3 : 0
   const cap = caps.length ? Math.min(...caps.map(c => c.cap)) : null
-  const score = clampScore(cap == null ? input.baseScore : Math.min(input.baseScore, cap))
+  const penalizedScore = input.baseScore - penalties + confidenceBoost
+  const score = clampScore(cap == null ? penalizedScore : Math.min(penalizedScore, cap))
   return { score, cap, caps: caps.filter(c => cap == null || c.cap === cap).map(c => c.reason), riskLabel: getRadarFeedRiskLabel(score) }
 }
