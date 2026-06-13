@@ -3,7 +3,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import { getOrFetchCached } from '@/lib/coingeckoCache'
 import { createRateLimiter, getClientIp } from '@/lib/server/rateLimit'
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
-import { DEFAULT_RADAR_ALLOW_FDV_FALLBACK, DEFAULT_RADAR_MIN_LIQUIDITY_USD, DEFAULT_RADAR_MIN_VALUATION_USD, getRadarCortexValuationLine, getRadarValuationCardDisplay, getRadarValuationEvidenceGap, resolveBaseRadarMarketCap, tokenPassesRadarValuationFilters, type RadarValuationBasis } from '@/lib/baseRadarValuation'
+import { DEFAULT_RADAR_ALLOW_FDV_FALLBACK, DEFAULT_RADAR_MIN_LIQUIDITY_USD, DEFAULT_RADAR_MIN_VALUATION_USD, getRadarCortexValuationLine, getRadarValuationCardDisplay, getRadarValuationEvidenceGap, resolveBaseRadarMarketCap, selectDexScreenerMarketCapRescuePair, tokenPassesRadarValuationFilters, type DexScreenerMarketCapRescueResult, type RadarValuationBasis } from '@/lib/baseRadarValuation'
 import { getRadarSimulationDisplay, type RadarSimulationOpenCheckReason, type RadarSimulationStatus } from '@/lib/baseRadarSimulation'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
@@ -33,7 +33,7 @@ export interface RadarToken {
   volume24h: number
   fdvUsd: number | null
   marketCapUsd: number | null
-  marketCapStatus: 'verified' | 'inferred' | 'partial'
+  marketCapStatus: 'verified' | 'unavailable'
   valuationBasis: RadarValuationBasis
   valuationUsd: number | null
   valuationLabel: string
@@ -50,12 +50,20 @@ export interface RadarToken {
   simulationCortexLine: string
   clarkVerdict: string | null
   marketCapDiagnostics?: {
-    rawDexMarketCap: number | null
-    rawGeckoMarketCap: number | null
     selectedMarketCapUsd: number | null
     selectedMarketCapStatus: 'verified' | 'unavailable'
+    selectedMarketCapFieldPath: string | null
+    selectedValuationBasis: RadarValuationBasis
     fdvUsd: number | null
-    valuationBasis: RadarValuationBasis
+    rawCandidates: { path: string; value: unknown }[]
+    resolverReason: string
+    rescueAttempted: boolean
+    rescueCacheHit: boolean
+    rescuePairCount: number
+    rescueSelectedPairAddress: string | null
+    rescueSelectedDexId: string | null
+    rescueSelectedLiquidityUsd: number | null
+    rescueRawCandidates: { path: string; value: unknown }[]
   }
 }
 
@@ -169,8 +177,11 @@ const EMPTY_STATS: RadarStats = { totalNewTokens: 0, averageLiquidity: 0, mostCo
 
 const HONEYPOT_CACHE_TTL_MS = 5 * 60 * 1000
 const RADAR_CACHE_TTL_MS = 5 * 60 * 1000
+export const DEX_MARKET_CAP_RESCUE_TTL_MS = 2 * 60 * 1000
 const radarPayloadCache = new Map<string, { cachedAt: number; payload: { tokens: RadarToken[]; stats: RadarStats; fetchedAt: string; limitedLiveFeed: boolean; _debug?: Record<string, unknown> } }>()
 const honeypotCache = new Map<string, { result: HoneypotResult | null; cachedAt: number }>()
+const dexMarketCapRescueCache = new Map<string, { result: DexScreenerMarketCapRescueResult; cachedAt: number }>()
+const dexMarketCapRescueInflight = new Map<string, Promise<DexScreenerMarketCapRescueResult>>()
 
 async function getCachedHoneypot(contract: string): Promise<HoneypotResult | null> {
   const key = contract.toLowerCase()
@@ -180,6 +191,51 @@ async function getCachedHoneypot(contract: string): Promise<HoneypotResult | nul
   const result = await fetchHoneypot(contract)
   honeypotCache.set(key, { result, cachedAt: Date.now() })
   return result
+}
+
+async function getDexMarketCapRescue(input: { chain: string; token: string; primaryPoolAddress?: string | null }): Promise<DexScreenerMarketCapRescueResult & { cacheHit: boolean }> {
+  const chain = input.chain.toLowerCase()
+  const token = input.token.toLowerCase()
+  const key = `base-radar:market-cap-rescue:${chain}:${token}`
+  const cached = dexMarketCapRescueCache.get(key)
+  if (cached && Date.now() - cached.cachedAt <= DEX_MARKET_CAP_RESCUE_TTL_MS) return { ...cached.result, cacheHit: true }
+
+  const existing = dexMarketCapRescueInflight.get(key)
+  if (existing) return { ...(await existing), cacheHit: true }
+
+  const promise = (async () => {
+    const ac = new AbortController()
+    const tid = setTimeout(() => ac.abort(), 3000)
+    try {
+      const res = await fetch(`https://api.dexscreener.com/token-pairs/v1/${encodeURIComponent(chain)}/${encodeURIComponent(token)}`, {
+        headers: { Accept: 'application/json' },
+        cache: 'no-store',
+        signal: ac.signal,
+      })
+      if (!res.ok) throw new Error(`dex_rescue_unavailable_${res.status}`)
+      const data = await res.json()
+      const pairs: unknown[] = Array.isArray(data)
+        ? data
+        : Array.isArray((data as Record<string, unknown>)?.pairs) ? (data as Record<string, unknown>).pairs as unknown[] : []
+      return selectDexScreenerMarketCapRescuePair({
+        pairs: pairs.filter((pair): pair is Record<string, unknown> => !!pair && typeof pair === 'object'),
+        chain,
+        primaryPoolAddress: input.primaryPoolAddress,
+      })
+    } catch {
+      return selectDexScreenerMarketCapRescuePair({ pairs: [], chain, primaryPoolAddress: input.primaryPoolAddress })
+    } finally {
+      clearTimeout(tid)
+    }
+  })()
+  dexMarketCapRescueInflight.set(key, promise)
+  try {
+    const result = await promise
+    dexMarketCapRescueCache.set(key, { result, cachedAt: Date.now() })
+    return { ...result, cacheHit: false }
+  } finally {
+    dexMarketCapRescueInflight.delete(key)
+  }
 }
 
 export async function GET(req: NextRequest) {
@@ -255,14 +311,15 @@ export async function GET(req: NextRequest) {
     }
 
     // Build token lookup from ?include= entities
-    const tokenMap = new Map<string, { name: string; symbol: string; address: string }>()
+    const tokenMap = new Map<string, { name: string; symbol: string; address: string; attributes: Record<string, unknown> }>()
     for (const item of includedAll) {
-      const attrs = item.attributes as Record<string, string> | undefined
+      const attrs = item.attributes as Record<string, unknown> | undefined
       if (item.type === 'token' && attrs?.address) {
         tokenMap.set(item.id as string, {
-          name:    attrs.name   ?? 'Unknown',
-          symbol:  attrs.symbol ?? '?',
-          address: attrs.address,
+          name:    typeof attrs.name === 'string' ? attrs.name : 'Unknown',
+          symbol:  typeof attrs.symbol === 'string' ? attrs.symbol : '?',
+          address: String(attrs.address),
+          attributes: attrs,
         })
       }
     }
@@ -307,26 +364,42 @@ export async function GET(req: NextRequest) {
       seenContracts.add(key)
 
       const fdvUsd = parseFloat(String(attrs?.fdv_usd ?? '0')) || null
-      const resolvedMarketCap = resolveBaseRadarMarketCap({ geckoPool: { attributes: attrs } })
-      const marketCapUsd = resolvedMarketCap.marketCapUsd
-      const marketCapStatus = marketCapUsd != null ? 'verified' : (fdvUsd != null ? 'inferred' : 'partial')
+      const resolvedMarketCap = resolveBaseRadarMarketCap({ geckoPool: { attributes: attrs }, geckoIncludedToken: { attributes: baseToken.attributes } })
+      const primaryPoolAddress = typeof attrs?.address === 'string'
+        ? attrs.address
+        : poolId.includes('_') ? poolId.split('_').pop() ?? null : null
+      const rescue = resolvedMarketCap.marketCapUsd == null
+        ? await getDexMarketCapRescue({ chain: 'base', token: baseToken.address, primaryPoolAddress })
+        : null
+      const marketCapUsd = resolvedMarketCap.marketCapUsd ?? rescue?.marketCapUsd ?? null
+      const marketCapStatus = marketCapUsd != null ? 'verified' : resolvedMarketCap.marketCapStatus
+      const marketCapFieldPath = resolvedMarketCap.marketCapUsd != null ? resolvedMarketCap.marketCapFieldPath : rescue?.marketCapFieldPath ?? resolvedMarketCap.marketCapFieldPath
+      const resolverReason = resolvedMarketCap.marketCapUsd != null ? resolvedMarketCap.reason : rescue?.reason ?? resolvedMarketCap.reason
       const filterResult = tokenPassesRadarValuationFilters({ marketCapUsd, marketCapStatus, fdvUsd, liquidityUsd, minValuationUsd, minLiquidityUsd, allowFdvFallback })
       if (!filterResult.included) continue
       const valuation = filterResult.valuation
       const valuationCardDisplay = getRadarValuationCardDisplay(valuation, fmtK)
-      const valuationGap = getRadarValuationEvidenceGap(valuation)
-      const evidenceGaps = valuationGap ? [valuationGap] : []
+      const valuationEvidenceGap = getRadarValuationEvidenceGap(valuation)
+      const evidenceGaps = valuationEvidenceGap ? [valuationEvidenceGap] : []
       candidates.push({
         name: baseToken.name, symbol: baseToken.symbol, contract: baseToken.address,
         ageMinutes, liquidityUsd, volume24h, fdvUsd, marketCapUsd, marketCapStatus, valuationBasis: valuation.basis, valuationUsd: valuation.valueUsd, valuationLabel: valuation.label, valuationSublabel: valuationCardDisplay.sublabel, valuationVerified: valuation.verified, valuationReason: valuation.reason, valuationCortexLine: getRadarCortexValuationLine(valuation), evidenceGaps, riskLevel: 'SAFE', honeypot: null,
         simulationStatus: 'open_check', simulationReason: null, simulationLabel: '', simulationCortexLine: '',
         ...(debug ? { marketCapDiagnostics: {
-          rawDexMarketCap: null,
-          rawGeckoMarketCap: finiteOrNull(attrs?.market_cap_usd) ?? finiteOrNull(attrs?.market_cap) ?? finiteOrNull(attrs?.token_market_cap_usd) ?? finiteOrNull(attrs?.base_token_market_cap_usd),
           selectedMarketCapUsd: marketCapUsd,
-          selectedMarketCapStatus: resolvedMarketCap.marketCapStatus,
+          selectedMarketCapStatus: marketCapStatus,
+          selectedMarketCapFieldPath: marketCapFieldPath,
+          selectedValuationBasis: valuation.basis,
           fdvUsd,
-          valuationBasis: valuation.basis,
+          rawCandidates: resolvedMarketCap.rawCandidates,
+          resolverReason,
+          rescueAttempted: rescue != null,
+          rescueCacheHit: rescue?.cacheHit ?? false,
+          rescuePairCount: rescue?.pairCount ?? 0,
+          rescueSelectedPairAddress: rescue?.selectedPairAddress ?? null,
+          rescueSelectedDexId: rescue?.selectedDexId ?? null,
+          rescueSelectedLiquidityUsd: rescue?.selectedLiquidityUsd ?? null,
+          rescueRawCandidates: rescue?.rawCandidates ?? [],
         } } : {}),
       })
     }

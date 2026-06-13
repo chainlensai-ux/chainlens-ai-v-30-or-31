@@ -285,6 +285,9 @@ function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract
         proofApplicability: lpReconciliation.proofApplicability,
         lockBurnApplicable: lpReconciliation.lockBurnApplicable,
         evidence: lpReconciliation.evidence,
+        primaryMarketPool: lpReconciliation.primaryMarketPool,
+        primaryMarketPoolId: lpReconciliation.primaryMarketPoolId,
+        poolAddressPresent: lpReconciliation.poolAddressPresent,
         secondaryLpControlSignals: lpReconciliation.secondaryLpControlSignals,
       }
     : scan.lpControl
@@ -350,7 +353,7 @@ function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract
         normalized: scan,
       })
       const marketCapUsd = resolvedMarketCap.marketCapUsd
-      const marketCapStatus = marketCapUsd != null ? 'verified' : null
+      const marketCapStatus = resolvedMarketCap.marketCapStatus
       const valuation = getRadarValuationBasis({
         marketCapUsd,
         marketCapStatus,
@@ -377,12 +380,13 @@ function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract
         valuationUsd: valuation.valueUsd,
         valuationLabel: valuation.label,
         ...(debug ? { marketCapDiagnostics: {
-          rawDexMarketCap: finiteNumber(scan.dexPair?.marketCap ?? scan.dexPair?.marketCapUsd ?? scan.dexPair?.market_cap ?? scan.dexPair?.market_cap_usd),
-          rawGeckoMarketCap: finiteNumber(scan.geckoPool?.attributes?.market_cap_usd ?? scan.geckoPool?.attributes?.market_cap ?? scan.geckoPool?.attributes?.token_market_cap_usd ?? scan.geckoPool?.attributes?.base_token_market_cap_usd),
           selectedMarketCapUsd: marketCapUsd,
           selectedMarketCapStatus: resolvedMarketCap.marketCapStatus,
+          selectedMarketCapFieldPath: resolvedMarketCap.marketCapFieldPath,
+          selectedValuationBasis: valuation.basis,
           fdvUsd,
-          valuationBasis: valuation.basis,
+          rawCandidates: resolvedMarketCap.rawCandidates,
+          resolverReason: resolvedMarketCap.reason,
         } } : {}),
       }
     })(),
@@ -411,6 +415,7 @@ function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract
       cortexLpRead: sanitizeProviderNames(lpReconciliation.cortexLpRead),
       lpProofDisplay: lpReconciliation.lpProofDisplay,
       primaryMarketPool: lpReconciliation.primaryMarketPool,
+      primaryMarketPoolId: lpReconciliation.primaryMarketPoolId,
       poolAddressPresent: lpReconciliation.poolAddressPresent,
       rugRiskStatus: lpReconciliation.rugRiskDisplay?.status ?? null,
       rugRiskReason: lpReconciliation.rugRiskDisplay?.reason ?? null,

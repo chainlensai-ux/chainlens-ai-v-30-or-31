@@ -347,7 +347,7 @@ function reconcileBaseRadarLp(scan) {
     }
   }
 
-  const poolAddressPresent = Boolean(primaryAddr)
+  const poolAddressPresent = Boolean(primaryAddr || primaryId)
   const simulationPairAddress = primaryAddr
     ? primaryAddr
     : pairIdentityOpenCheck
@@ -365,6 +365,7 @@ function reconcileBaseRadarLp(scan) {
     secondaryLpControlSignals,
     lpProofDisplay,
     primaryMarketPool: primaryAddr,
+    primaryMarketPoolId: primaryId,
     poolAddressPresent,
     fallbackPoolIdentity,
     simulationPairAddress,
@@ -766,6 +767,49 @@ assert('concentrated V4: LP proof says Position verification required', concentr
 assert('concentrated V4: lock status says Protocol-specific', concentratedV4.lpProofDisplay?.lockStatus === 'Protocol-specific', concentratedV4.lpProofDisplay)
 assert('concentrated V4: rug/LP risk is position-control open check, not fake ERC20 lock proof', concentratedV4.rugRiskDisplay?.status === 'position_control_open_check', concentratedV4.rugRiskDisplay)
 assert('concentrated V4: poolAddressPresent is true', concentratedV4.poolAddressPresent === true, concentratedV4.poolAddressPresent)
+
+
+// ─── Section I: Drooling Dog concentrated pool-id fixture ───────────────────
+
+console.log('\nSection I: Drooling Dog concentrated Uniswap V4 pool-id fixture')
+
+const droolingDogScan = {
+  lpControl: {
+    status: 'concentrated_liquidity',
+    displayLpModel: 'concentrated_liquidity',
+    proofApplicability: 'not_applicable',
+    lockBurnApplicable: false,
+    poolAddressPresent: true,
+    primaryPoolType: 'concentrated',
+    primaryPoolDex: 'uniswap-v4',
+    primaryMarketPool: null,
+    primaryMarketPoolId: 'base_0xpoolmanager_droolingdog_1234',
+    evidence: [
+      'Market primary pair: DROOLING DOG / WETH',
+      'Primary market pool ID: base_0xpoolmanager_droolingdog_1234 (concentrated)',
+      'lpHolderCheckAttempted=false',
+    ],
+  },
+  lpModelProof: { model: 'concentrated', dexName: 'uniswap-v4', standardLockApplies: false },
+  lpEvidenceSummary: ['Pool model: concentrated'],
+  cortexLpRead: {
+    poolStructureAnalysis: 'This pool uses a concentrated-liquidity model; standard ERC-20 LP lock/burn proof does not apply.',
+  },
+  holderDistribution: { top1: 42, top10: 75, top20: 88, holderCount: 51 },
+  supplyControl: { creatorHolderPercent: 2, devClusterSupplyPercent: 2 },
+  security: { devOwnership: { ownershipStatus: 'active_owner' } },
+  riskScore: 35,
+  riskLabel: 'low',
+}
+
+const droolingDog = reconcileBaseRadarLp(droolingDogScan)
+
+assert('Drooling Dog final model remains concentrated_liquidity', droolingDog.displayLpModel === 'concentrated_liquidity', droolingDog.displayLpModel)
+assert('Drooling Dog poolAddressPresent true when pool ID exists', droolingDog.poolAddressPresent === true, droolingDog.poolAddressPresent)
+assert('Drooling Dog exposes primaryMarketPoolId consistently', droolingDog.primaryMarketPoolId === 'base_0xpoolmanager_droolingdog_1234', droolingDog.primaryMarketPoolId)
+assert('Drooling Dog top-level primaryMarketPool remains null without address', droolingDog.primaryMarketPool === null, droolingDog.primaryMarketPool)
+assert('Drooling Dog evidence includes poolId=<id>', droolingDog.evidence.includes('poolId=base_0xpoolmanager_droolingdog_1234'), droolingDog.evidence)
+assert('Drooling Dog rug risk remains position_control_open_check', droolingDog.rugRiskDisplay?.status === 'position_control_open_check', droolingDog.rugRiskDisplay)
 
 // ─── Summary ────────────────────────────────────────────────────────────
 
