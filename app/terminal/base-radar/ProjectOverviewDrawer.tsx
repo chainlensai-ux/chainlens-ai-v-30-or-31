@@ -2,6 +2,7 @@
 
 import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { assessBaseRadarSeverity, creatorTopHolderDisplay, normalizePairCreatedAt, ageLabelFromIso } from '@/lib/baseRadarSeverity'
 
 type ChainKey = 'base' | 'eth'
 
@@ -44,6 +45,7 @@ type DrawerEnrichmentPayload = {
     observedPoolPresent?: boolean | null
     observedPoolCount?: number | null
     poolCountStatus?: "confirmed" | "inferred_from_primary_pool" | "unknown" | string | null
+    poolActivity?: { pairCreatedAt?: string | number | null } | null
   } | null
   lp?: {
     lpLockStatus?: string | null
@@ -52,7 +54,7 @@ type DrawerEnrichmentPayload = {
     lpController?: string | null
     lpProofStatus?: string | null
     lpProofApplicability?: string | null
-    lpControl?: { status?: string | null; confidence?: string | null; reason?: string | null } | null
+    lpControl?: { status?: string | null; confidence?: string | null; reason?: string | null; evidence?: string[] | null } | null
     lpDataMode?: string | null
     lpDataConfidence?: string | null
     lpExitRisk?: string | null
@@ -166,14 +168,6 @@ function asLink(value: unknown): string | null {
 
 function percent(v: number | null | undefined): string {
   return v == null || !Number.isFinite(v) ? 'N/A' : `${v.toFixed(1)}%`
-}
-
-function precisePercent(v: number | null | undefined): string {
-  if (v == null || !Number.isFinite(v)) return 'N/A'
-  const abs = Math.abs(v)
-  if (abs > 0 && abs < 0.01) return `${v.toFixed(4)}%`
-  if (abs > 0 && abs < 0.1) return `${v.toFixed(3)}%`
-  return `${v.toFixed(1)}%`
 }
 
 function getHolderPercent(holder: HolderRow): number | null {
@@ -294,12 +288,6 @@ function concentrationRiskLabel(top10: number | null | undefined, top20: number 
   return fallback ? publicStatus(fallback) : 'Open Check'
 }
 
-function creatorTopHolderLabel(inTopHolders: boolean | null | undefined, creatorPercent: number | null | undefined): string {
-  if (inTopHolders === true) return creatorPercent != null && Number.isFinite(creatorPercent) ? `Yes · ${precisePercent(creatorPercent)}` : 'Yes'
-  if (inTopHolders === false) return 'No'
-  return 'Open Check'
-}
-
 function lpDataModeLabel(mode: string | null | undefined, confidence: string | null | undefined): string {
   return `${mode ? publicStatus(mode) : 'Fallback'} · ${confidence ?? 'limited'}`
 }
@@ -418,6 +406,30 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
   const securityTax = security?.honeypot?.simulationSuccess ? `${percent(security.honeypot.buyTax)} buy · ${percent(security.honeypot.sellTax)} sell` : 'Open Check'
   const ownershipLabel = security?.devOwnership?.ownershipLabel ?? (security?.devOwnership?.ownershipVerified === true && security.devOwnership.isRenounced === true ? 'Renounced ownership' : security?.devOwnership?.ownershipVerified === true && (security.devOwnership.ownerAddress || security.devOwnership.adminAddress) ? 'Active owner/admin verified' : 'Open Check / Not verified')
 
+  const normalizedPairCreatedAt = normalizePairCreatedAt(market?.poolActivity?.pairCreatedAt ?? null)
+  const pairAgeLabel = ageLabelFromIso(normalizedPairCreatedAt)
+  const poolAgeMinutes = normalizedPairCreatedAt
+    ? Math.max(0, Math.floor((Date.now() - new Date(normalizedPairCreatedAt).getTime()) / 60_000))
+    : (Number.isFinite(token?.ageMinutes) ? token!.ageMinutes : null)
+  const hasSocials = Boolean(asLink(socials.website) || asLink(socials.twitter) || asLink(socials.telegram))
+
+  const severity = assessBaseRadarSeverity({
+    baseScore: token?.radarScore ?? 0,
+    lpControlStatus: lpControlStatus,
+    lpController: lp?.lpController ?? null,
+    lockBurnConfirmed: hasVerifiedLock(lp?.lpLockStatus) || lp?.lpProofApplicability === 'not_applicable',
+    lpControlEvidence: lp?.lpControl?.evidence ?? null,
+    top1: concentration.top1 ?? null,
+    top10: concentration.top10 ?? null,
+    holderCount: concentration.holderCount ?? null,
+    ownershipStatus: security?.devOwnership?.ownershipStatus ?? null,
+    hasSocials,
+    poolAgeMinutes,
+    marketCapUsd: market?.marketCapUsd ?? null,
+    fdvUsd: market?.fdvUsd ?? token?.fdvUsd ?? null,
+  })
+  const effectiveScore = severity.effectiveScore
+
   const poolDistributionLine = lp?.cortexLpRead?.liquidityAnalysis ?? (market?.observedPoolPresent
     ? (market?.poolCountStatus === 'confirmed' && market?.observedPoolCount != null
       ? `Observed liquidity is ${fmtUSD(market?.liquidityUsd ?? token?.liquidityUsd)} across ${market.observedPoolCount} tracked pool${market.observedPoolCount === 1 ? '' : 's'}.`
@@ -438,14 +450,15 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
     ? `${concentrationRisk === 'Extreme' ? 'Holder concentration is extreme' : `Holder concentration is ${concentrationRisk.toLowerCase()}`}, with the top 10 holders controlling ${concentration.top10 >= 95 ? 'nearly all indexed supply' : `about ${percent(concentration.top10)} of indexed supply`}.`
     : `Top holder concentration is ${percent(concentration.top10)} for top 10 holders; holder evidence is ${holderStatusLabel}.`
   const cortexRead = [
-    `${poolDistributionLine} Momentum is ${(token?.momentum ?? 'unknown').toLowerCase()} and radar score is ${token?.radarScore ?? 'N/A'}.`,
+    severity.cortexSevereLine,
+    `${poolDistributionLine} Momentum is ${(token?.momentum ?? 'unknown').toLowerCase()} and radar score is ${effectiveScore}.`,
     lpCortexLine,
     holderCortexLine,
     deployer?.deployerAddress ? `Deployer ${shortAddr(deployer.deployerAddress)} is ${publicStatus(deployer.deployerStatus ?? 'reviewed')} at ${deployer.deployerConfidence ?? 'open-check'} confidence.` : 'Deployer is Open Check in the current evidence.',
     token?.flags?.length ? `Risk context: ${token.flags.join(', ')}.` : 'Risk context: no radar flags on this card.',
-  ]
+  ].filter((line): line is string => Boolean(line))
 
-  const evidenceGaps: string[] = []
+  const evidenceGaps: string[] = [...severity.evidenceGaps]
   if (lp?.lpProofApplicability === 'applicable' && (lp?.lpProofStatus === 'missing' || lp?.lpProofStatus === 'partial')) {
     evidenceGaps.push('No verified lock/burn proof found for the primary LP position.')
   }
@@ -461,17 +474,21 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
   if (!deployer?.deployerAddress) {
     evidenceGaps.push('Deployer identity is Open Check.')
   }
+  if (deployer?.pastLaunches == null) {
+    evidenceGaps.push('Past launches for this deployer are an open check.')
+  }
+  if (deployer?.rugHistoryVerified == null) {
+    evidenceGaps.push('Rug history for this deployer is an open check.')
+  }
   if (security?.openChecks?.length) {
     for (const item of security.openChecks) evidenceGaps.push(typeof item === 'string' ? item : String(item))
   }
   if ((market?.marketConfidence ?? '').toLowerCase().includes('open')) {
     evidenceGaps.push('Market evidence confidence is Open Check.')
   }
+  const dedupedEvidenceGaps = Array.from(new Set(evidenceGaps))
 
-  const watchNext: string[] = []
-  if (lpControlStatus === 'team_controlled' && !hasVerifiedLock(lp?.lpLockStatus)) {
-    watchNext.push('Watch for LP movement from the controlling wallet — no lock/burn proof currently protects this position.')
-  }
+  const watchNext: string[] = [...severity.watchNext]
   if (concentrationRisk === 'High' || concentrationRisk === 'Extreme') {
     watchNext.push('Watch top-holder wallets for large transfers given current concentration.')
   }
@@ -481,6 +498,7 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
   if (!watchNext.length) {
     watchNext.push('No specific watch items from current evidence — continue monitoring liquidity and holder activity.')
   }
+  const dedupedWatchNext = Array.from(new Set(watchNext))
 
   async function copyText(value: string) {
     await navigator.clipboard?.writeText(value)
@@ -498,8 +516,9 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
               <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
                 <h2 style={{ margin: 0, fontSize: '20px', color: '#f8fafc' }}>{token.name} <span style={{ color: '#64748b' }}>({token.symbol})</span></h2>
                 <span style={{ padding: '3px 8px', borderRadius: '999px', background: 'rgba(45,212,191,0.10)', border: '1px solid rgba(45,212,191,0.24)', color: '#99f6e4', fontSize: '10px', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{chain === 'base' ? 'Base' : 'ETH'}</span>
-                <span style={{ padding: '3px 8px', borderRadius: '999px', background: 'rgba(168,85,247,0.10)', border: '1px solid rgba(168,85,247,0.24)', color: '#e9d5ff', fontSize: '10px', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Radar {token.radarScore}/100</span>
+                <span style={{ padding: '3px 8px', borderRadius: '999px', background: 'rgba(168,85,247,0.10)', border: '1px solid rgba(168,85,247,0.24)', color: '#e9d5ff', fontSize: '10px', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Radar {effectiveScore}/100</span>
                 <span style={{ padding: '3px 8px', borderRadius: '999px', background: 'rgba(148,163,184,0.10)', border: '1px solid rgba(148,163,184,0.22)', color: '#cbd5e1', fontSize: '10px', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{token.status}</span>
+                <span style={{ padding: '3px 8px', borderRadius: '999px', background: 'rgba(248,113,113,0.10)', border: '1px solid rgba(248,113,113,0.24)', color: '#fca5a5', fontSize: '10px', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{severity.severityLabel}</span>
               </div>
               <p style={{ margin: '6px 0 0', color: '#64748b', fontSize: '11px', fontFamily: 'var(--font-plex-mono)' }}>{shortAddr(token.contract)}</p>
             </div>
@@ -517,9 +536,9 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
             <DataRow label="Volume 24h" value={fmtUSD(market?.volume24hUsd ?? token.volume24h)} />
             <DataRow label="Market cap" value={fmtUSD(market?.marketCapUsd ?? null)} />
             <DataRow label="FDV" value={fmtUSD(market?.fdvUsd ?? token.fdvUsd ?? null)} />
-            <DataRow label="Score" value={`${token.radarScore}/100`} />
+            <DataRow label="Score" value={`${effectiveScore}/100 · ${severity.severityLabel}`} />
             <DataRow label="Momentum" value={token.momentum} />
-            <DataRow label="Age" value={fmtAge(token.ageMinutes)} />
+            <DataRow label="Age" value={pairAgeLabel ?? fmtAge(token.ageMinutes)} />
             <DataRow label="Market evidence" value={market?.marketConfidence ? publicStatus(market.marketConfidence) : 'Open Check'} />
           </div>
           <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginTop: '10px' }}>{(token.flags.length ? token.flags : ['No radar tags']).map((flag) => <span key={flag} style={tagStyle}>{flag}</span>)}</div>
@@ -590,7 +609,7 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
           <DataRow label="Rug history" value={deployer?.rugHistoryVerified === true ? 'Verified rug history' : deployer?.rugHistoryVerified === false ? 'No verified rug flags' : 'Open Check'} />
           <DataRow label="Cluster detection" value={clusterLabel} />
           <DataRow label="Linked wallet supply" value={percent(deployer?.clusterEvidence?.linkedWalletSupplyPercent ?? deployer?.supplyControl?.linkedWalletSupplyPercent ?? null)} />
-          <DataRow label="Creator in top holders" value={creatorTopHolderLabel(deployer?.creatorInTopHolders, deployer?.creatorHolderPercent)} />
+          <DataRow label="Creator in top holders" value={creatorTopHolderDisplay(deployer?.creatorInTopHolders, deployer?.creatorHolderPercent)} />
           <DataRow label="Ownership" value={ownershipLabel} mono={false} />
         </Section>
 
@@ -599,7 +618,7 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
           <DataRow label="Holder count" value={concentration.holderCount == null ? 'Open Check' : String(concentration.holderCount)} />
           <DataRow label="Evidence status" value={holderStatusLabel} />
           <DataRow label="Concentration risk" value={concentrationRisk === 'Open Check' ? concentrationRisk : `${concentrationRisk} concentration`} />
-          <DataRow label="Creator in top holders" value={creatorTopHolderLabel(concentration.creatorInTopHolders, concentration.creatorHolderPercent)} />
+          <DataRow label="Creator in top holders" value={creatorTopHolderDisplay(concentration.creatorInTopHolders, concentration.creatorHolderPercent)} />
           <DataRow label="Trading taxes" value={securityTax} />
           <div style={{ marginTop: '8px', display: 'grid', gap: '6px' }}>{topHolders.slice(0, 5).map((h, idx) => <DataRow key={`${h.address}-${idx}`} label={`#${h.rank ?? idx + 1}`} value={`${shortAddr(h.address)} · ${percent(getHolderPercent(h))}`} />)}</div>
         </Section>
@@ -618,13 +637,13 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
         <Section title="Evidence Gaps / Watch Next">
           <p style={{ margin: '0 0 6px', color: '#94a3b8', fontSize: '10px', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Open checks</p>
           <ul style={{ margin: '0 0 12px', paddingLeft: '18px', color: '#cbd5e1', fontSize: '12px', lineHeight: 1.55 }}>
-            {evidenceGaps.length
-              ? evidenceGaps.map((line) => <li key={line}>{line}</li>)
+            {dedupedEvidenceGaps.length
+              ? dedupedEvidenceGaps.map((line) => <li key={line}>{line}</li>)
               : <li>No open evidence gaps from current checks.</li>}
           </ul>
           <p style={{ margin: '0 0 6px', color: '#94a3b8', fontSize: '10px', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Watch next</p>
           <ul style={{ margin: 0, paddingLeft: '18px', color: '#cbd5e1', fontSize: '12px', lineHeight: 1.55 }}>
-            {watchNext.map((line) => <li key={line}>{line}</li>)}
+            {dedupedWatchNext.map((line) => <li key={line}>{line}</li>)}
           </ul>
         </Section>
       </aside>
