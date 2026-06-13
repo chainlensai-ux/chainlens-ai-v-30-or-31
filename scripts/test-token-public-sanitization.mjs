@@ -1449,6 +1449,7 @@ console.log('\nQ. VIRTUAL Aerodrome LP holder regression — placeholder percent
   const virtualRiskRecovered = calculateTokenRiskScore(virtualRiskInputRecovered)
   assert('VIRTUAL riskScore stays around 58 (moderate)', virtualRiskRecovered.riskScore >= 50 && virtualRiskRecovered.riskScore <= 65, virtualRiskRecovered.riskScore)
   assert('VIRTUAL riskLabel stays moderate', virtualRiskRecovered.riskLabel === 'moderate', virtualRiskRecovered.riskLabel)
+  assert('VIRTUAL liquiditySafety reasons do not include lp_controller_unknown when top_holder proof exists', !virtualRiskRecovered.riskBreakdown.liquiditySafety.reasons.includes('lp_controller_unknown'), virtualRiskRecovered.riskBreakdown.liquiditySafety.reasons)
 }
 
 // ─── R. PLAY Part 2 — poolType must reflect the primary pool, not the secondary Aerodrome
@@ -1553,6 +1554,28 @@ console.log('\nS. CORTEX identity formatter avoids duplicate symbol/name')
   })
   assert('MFERGPT CORTEX summary starts with normalized identity once', /^mferGPT \(MFERGPT\) shows/.test(mferCortex.riskSummary), mferCortex.riskSummary)
   assert('MFERGPT CORTEX summary does not append symbol after identity', !/\(MFERGPT\)\s+MFERGPT\s+has/i.test(mferCortex.riskSummary), mferCortex.riskSummary)
+
+  const duplicateCases = [
+    { name: 'Virtual Protocol', symbol: 'VIRTUAL', bad: /\(VIRTUAL\)\s+VIRTUAL\s+has/i },
+    { name: 'Play', symbol: 'PLAY', bad: /\(PLAY\)\s+PLAY\s+has/i },
+    { name: 'mferGPT', symbol: 'MFERGPT', bad: /\(MFERGPT\)\s+MFERGPT\s+has/i },
+    { name: null, symbol: 'ONLY', bad: /\(ONLY\)\s+ONLY\s+has/i },
+    { name: 'PLAY', symbol: 'PLAY', bad: /PLAY\s+PLAY\s+has/i },
+  ]
+  for (const tokenCase of duplicateCases) {
+    const identity = formatTokenIdentity(tokenCase.name, tokenCase.symbol)
+    const sanitizedSummary = sanitizePublicTokenResponse({
+      name: tokenCase.name,
+      symbol: tokenCase.symbol,
+      riskScore: 58,
+      riskLabel: 'moderate',
+      cortexLpRead: {
+        riskSummary: `${identity} shows an overall "moderate" risk tier based on observed pool data. Liquidity depth is moderate.`,
+      },
+    }, false).cortexLpRead.riskSummary
+    assert(`${identity} public CORTEX summary starts with exactly one formatted identity`, sanitizedSummary.startsWith(`${identity} has a moderate Token Safety Score`), sanitizedSummary)
+    assert(`${identity} public CORTEX summary does not duplicate symbol after formatted identity`, !tokenCase.bad.test(sanitizedSummary), sanitizedSummary)
+  }
 }
 
 console.log(`\n${passed} passed, ${failed} failed`)
