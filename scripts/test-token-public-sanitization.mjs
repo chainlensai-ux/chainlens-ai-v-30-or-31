@@ -1606,8 +1606,139 @@ console.log('\nT. Public chain metadata alignment')
   assert('public payload resolvedInput.requestedChain aligns to base', chainPayload.resolvedInput?.requestedChain === 'base', chainPayload.resolvedInput)
 }
 
-// ─── U. _debug.lpResolution — VIRTUAL LP-holder resolution trace (debug-only) ──────────
-console.log('\nU. _debug.lpResolution debug-only LP controller resolution trace')
+// ─── U. Cross-pair LP verification: GAME/VIRTUAL must not override VIRTUAL primary lpControl ─
+console.log('\nU. Secondary V2 pool (GAME/VIRTUAL) must not override primary VIRTUAL lpControl')
+{
+  // Mirrors the lpVerifyPool/_samePairAsPrimary/secondaryPoolCandidates selection added to
+  // app/api/token/route.ts: the canonical primary pool (VIRTUAL/WETH, Aerodrome,
+  // ~$3.25M) must be the LP-verification pool for VIRTUAL, even though a higher-liquidity
+  // V2 pool exists for a DIFFERENT pair (GAME/VIRTUAL, Uniswap V2, ~$2.33M).
+  const VIRTUAL = '0x0b3e328455c4059eeb9e3f84b5543f74e24e7e1b'
+  const WETH = '0x4200000000000000000000000000000000000006'
+  const GAME = '0x1c4cca7c5db003824208adda61bd749e55f463a3'
+
+  const normalizedPools = [
+    {
+      address: '0x21594b992f68495dd28d605834b58889d0a727c7',
+      pairName: 'VIRTUAL / WETH',
+      liquidityUsd: 3250000,
+      dexId: 'aerodrome',
+      dexName: 'Aerodrome',
+      baseTokenSymbol: 'VIRTUAL',
+      quoteTokenSymbol: 'WETH',
+      baseTokenAddress: VIRTUAL,
+      quoteTokenAddress: WETH,
+      poolType: 'aerodrome',
+      hasLpToken: true,
+      hasDexMeta: true,
+      isValidAddress: true,
+    },
+    {
+      address: '0xd418dfe7670c21f682e041f34250c114db5d7789',
+      pairName: 'GAME / VIRTUAL',
+      liquidityUsd: 2330000,
+      dexId: 'uniswap-v2',
+      dexName: 'Uniswap V2',
+      baseTokenSymbol: 'GAME',
+      quoteTokenSymbol: 'VIRTUAL',
+      baseTokenAddress: GAME,
+      quoteTokenAddress: VIRTUAL,
+      poolType: 'v2',
+      hasLpToken: true,
+      hasDexMeta: true,
+      isValidAddress: true,
+    },
+  ]
+  const lpPool = normalizedPools[0]
+  const lpPoolType = lpPool.poolType
+
+  const _isV2Verifiable = (p) =>
+    (p.poolType === 'v2' || p.poolType === 'unknown' || p.poolType === 'aerodrome' || p.hasLpToken === true) &&
+    p.isValidAddress && Boolean(p.address)
+  const _samePairAsPrimary = (p) => {
+    if (!lpPool) return false
+    const a = [lpPool.baseTokenAddress, lpPool.quoteTokenAddress].filter(Boolean)
+    const b = [p.baseTokenAddress, p.quoteTokenAddress].filter(Boolean)
+    if (a.length === 0 || b.length === 0 || a.length !== b.length) return false
+    return a.every((addr) => b.includes(addr)) && b.every((addr) => a.includes(addr))
+  }
+  const lpVerifyPool = (lpPool && _isV2Verifiable(lpPool))
+    ? lpPool
+    : normalizedPools.find((p) => _isV2Verifiable(p) && _samePairAsPrimary(p)) ?? null
+  const secondaryPoolCandidates = normalizedPools.filter((p) =>
+    _isV2Verifiable(p) && p.address !== lpVerifyPool?.address && !_samePairAsPrimary(p))
+
+  assert('lpVerifyPool selects the primary VIRTUAL/WETH Aerodrome pool', lpVerifyPool?.address === normalizedPools[0].address, lpVerifyPool)
+  assert('lpVerifyPool is NOT the GAME/VIRTUAL pool', lpVerifyPool?.pairName !== 'GAME / VIRTUAL', lpVerifyPool)
+  assert('secondaryPoolCandidates contains GAME/VIRTUAL', secondaryPoolCandidates.some((p) => p.pairName === 'GAME / VIRTUAL'), secondaryPoolCandidates)
+  assert('secondaryPoolCandidates does not contain the primary VIRTUAL/WETH pool', !secondaryPoolCandidates.some((p) => p.pairName === 'VIRTUAL / WETH'), secondaryPoolCandidates)
+
+  // Primary LP-holder check runs against VIRTUAL/WETH (lpVerifyPool) — GoldRush has no LP
+  // holder rows indexed for this Aerodrome pool, so the primary verdict is partial/open_check,
+  // never team_controlled from GAME/VIRTUAL's holder data.
+  const primaryLpItems = []
+  const primaryLpControl = primaryLpItems.length === 0
+    ? { status: 'partial', confidence: 'low', poolType: lpPoolType, source: 'dex_data+rpc', reason: 'RPC balances do not prove burned/locked/team-controlled dominance.', evidence: [`burn_share=0.00%`, `locker_share=0.00%`] }
+    : null
+
+  assert('primary VIRTUAL lpControl.status is not team_controlled', primaryLpControl.status !== 'team_controlled', primaryLpControl.status)
+  assert('primary VIRTUAL lpControl.status is partial', primaryLpControl.status === 'partial', primaryLpControl.status)
+  assert('primary VIRTUAL lpControl.evidence does not reference GAME/VIRTUAL top holder', !primaryLpControl.evidence.some((e) => e.startsWith('top_holder=')), primaryLpControl.evidence)
+
+  // GAME/VIRTUAL secondary pool classification — mirrors _classifySecondaryLpHolders():
+  // dominant holder 0x974a...76b3e at 99.45% of GAME/VIRTUAL LP supply.
+  const secondaryItems = [
+    { address: '0x974a21754271dd3d71a16f2852f8e226a9276b3e', balance: '99450000000000000000', percentage: 99.45 },
+  ]
+  const secondaryTop = secondaryItems[0]
+  const secondaryClassification = (secondaryTop.percentage ?? 0) >= 80
+    ? { status: 'team_controlled', confidence: 'high', reason: "Secondary pool LP-holder evidence — informational only, does not affect this token's primary LP verdict.", evidence: [`top_holder=${secondaryTop.address}`, `top_share=${secondaryTop.percentage.toFixed(2)}%`] }
+    : { status: 'partial', confidence: 'low', reason: 'Secondary pool LP-holder check inconclusive.', evidence: [`top_rows=${secondaryItems.length}`] }
+
+  const secPool = secondaryPoolCandidates[0]
+  const secondaryLpControlSignals = {
+    status: secondaryClassification.status,
+    confidence: secondaryClassification.confidence,
+    poolAddress: secPool.address,
+    poolDex: secPool.dexId,
+    poolType: secPool.poolType,
+    pair: secPool.pairName,
+    reason: secondaryClassification.reason,
+    evidence: secondaryClassification.evidence,
+  }
+  const secondaryPoolPromotedToPrimary = false
+
+  assert('GAME/VIRTUAL secondary classification is team_controlled', secondaryLpControlSignals.status === 'team_controlled', secondaryLpControlSignals)
+  assert('GAME/VIRTUAL secondary pair is GAME / VIRTUAL', secondaryLpControlSignals.pair === 'GAME / VIRTUAL', secondaryLpControlSignals.pair)
+  assert('secondaryPoolPromotedToPrimary is false', secondaryPoolPromotedToPrimary === false, secondaryPoolPromotedToPrimary)
+  assert('primary lpControl.status remains partial after secondary classification', primaryLpControl.status === 'partial', primaryLpControl.status)
+
+  // GAME/VIRTUAL proof appears only in secondaryLpExposure, never the primary lpControl.
+  const secondaryLpExposure = buildSecondaryLpExposure({
+    secondarySignals: secondaryLpControlSignals,
+    primaryDex: 'aerodrome',
+    primaryPair: 'VIRTUAL / WETH',
+    primaryPoolModel: 'erc20_lp_token',
+  })
+  assert('secondaryLpExposure is built from GAME/VIRTUAL', secondaryLpExposure?.pair === 'GAME / VIRTUAL', secondaryLpExposure)
+  assert('secondaryLpExposure.status is wallet_controlled', secondaryLpExposure?.status === 'wallet_controlled', secondaryLpExposure?.status)
+  assert('secondaryLpExposure.controller is the GAME/VIRTUAL dominant holder', secondaryLpExposure?.controller === '0x974a21754271dd3d71a16f2852f8e226a9276b3e', secondaryLpExposure?.controller)
+  assert('secondaryLpExposure.controllerSharePercent is ~99.45', Math.abs((secondaryLpExposure?.controllerSharePercent ?? 0) - 99.45) < 0.01, secondaryLpExposure?.controllerSharePercent)
+
+  // The public-facing LP controller intel for the PRIMARY pool must not say VIRTUAL's main
+  // LP is team-controlled because of GAME/VIRTUAL.
+  const primaryLpControllerIntel = buildLpControllerIntel({
+    lpControl: { ...primaryLpControl, lpController: null, lpControllerType: 'unknown' },
+    selectedPool: { address: lpVerifyPool.address, pairName: 'VIRTUAL / WETH' },
+    lpMeta: {},
+  })
+  assert('VIRTUAL primary lpControllerIntel.status is not wallet_controlled', primaryLpControllerIntel.status !== 'wallet_controlled', primaryLpControllerIntel.status)
+  assert('VIRTUAL primary CORTEX summary does not say team-controlled', !/team-controlled|team_controlled/i.test(primaryLpControllerIntel.summary ?? ''), primaryLpControllerIntel.summary)
+  assert('VIRTUAL primary CORTEX summary does not mention GAME', !/GAME/i.test(primaryLpControllerIntel.summary ?? ''), primaryLpControllerIntel.summary)
+}
+
+// ─── V. _debug.lpResolution — VIRTUAL LP-holder resolution trace (debug-only) ──────────
+console.log('\nV. _debug.lpResolution debug-only LP controller resolution trace')
 {
   // Mirrors the _lpResolutionDebug capture added to the V2/Aerodrome LP-holder branch in
   // app/api/token/route.ts, using the same VIRTUAL-style "percentage=0 placeholder" fixture

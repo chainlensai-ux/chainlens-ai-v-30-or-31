@@ -254,6 +254,7 @@ export interface SecondaryLpSignal {
   poolAddress: string | null
   poolDex: string | null
   poolType: string | null
+  pair?: string | null
   reason: string
   evidence: string[]
 }

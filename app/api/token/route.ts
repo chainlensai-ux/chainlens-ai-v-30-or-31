@@ -2298,6 +2298,7 @@ type LpControlResult = {
     poolAddress: string | null;
     poolDex: string | null;
     poolType: string | null;
+    pair?: string | null;
     reason: string;
     evidence: string[];
   } | null;
@@ -3441,17 +3442,39 @@ export async function POST(req: Request) {
     // rules 1/2). If it's concentrated/CLMM/V3, standard proof never applies to it —
     // any V2/Aerodrome pool found elsewhere is at most a SECONDARY signal (rule 3/4).
     const _primaryConcentrated = lpPoolType === "v3" || lpPoolType === "concentrated";
-    // lpVerifyPool: separate from lpPool — best V2/unknown pool for burn/lock/team proof.
-    // normalizedPools is sorted by liquidity desc, so first V2/unknown = highest-liquidity verifiable pool.
+    // lpVerifyPool: the pool used for burn/lock/team-controller LP-holder proof of the
+    // PRIMARY market pool (lpPool). It must describe the SAME token pair as lpPool — a
+    // different-pair V2/Aerodrome pool (e.g. GAME/VIRTUAL or TIBBIR/VIRTUAL when scanning
+    // VIRTUAL) must never become the verification pool for THIS token's primary
+    // lpControl/lpControllerIntel/riskBreakdown.liquiditySafety, even if it has higher
+    // liquidity than lpPool (selection rules 1-3). If lpPool itself is a V2/Aerodrome/
+    // constant-product pool with a valid address, verify it directly.
     const _isV2Verifiable = (p: NormalizedPool) =>
       (p.poolType === 'v2' || p.poolType === 'unknown' || p.poolType === 'aerodrome' || p.hasLpToken === true) &&
       p.isValidAddress && Boolean(p.address)
-    const lpVerifyPool = normalizedPools.find(_isV2Verifiable) ?? null
+    // Same-pair check: does this pool cover the same two tokens as the canonical primary
+    // pool (lpPool), regardless of base/quote ordering?
+    const _samePairAsPrimary = (p: NormalizedPool): boolean => {
+      if (!lpPool) return false
+      const a = [lpPool.baseTokenAddress, lpPool.quoteTokenAddress].filter(Boolean) as string[]
+      const b = [p.baseTokenAddress, p.quoteTokenAddress].filter(Boolean) as string[]
+      if (a.length === 0 || b.length === 0 || a.length !== b.length) return false
+      return a.every((addr) => b.includes(addr)) && b.every((addr) => a.includes(addr))
+    }
+    const lpVerifyPool = (lpPool && _isV2Verifiable(lpPool))
+      ? lpPool
+      : normalizedPools.find((p) => _isV2Verifiable(p) && _samePairAsPrimary(p)) ?? null
     const lpVerifyPoolAddress = lpVerifyPool?.address ?? null
     const lpVerifyPoolType: NormalizedPool['poolType'] = lpVerifyPool?.poolType ?? 'unknown'
     const lpVerifyPoolPresent = Boolean(lpVerifyPoolAddress && /^0x[a-f0-9]{40}$/.test(lpVerifyPoolAddress))
     const _v2PoolCandidates = normalizedPools.filter(_isV2Verifiable)
     const _protocolPoolCandidates = normalizedPools.filter(p => p.poolType === 'v3' || p.poolType === 'concentrated')
+    // Different-pair V2/Aerodrome pools (e.g. GAME/VIRTUAL, TIBBIR/VIRTUAL, AIXBT/VIRTUAL) —
+    // analyzed only as secondaryLpControlSignals/secondaryLpExposure below (rule 4), never
+    // promoted into lpVerifyPool/lpControl for the primary pool (rule 5).
+    const secondaryPoolCandidates = normalizedPools.filter((p) =>
+      _isV2Verifiable(p) && p.address !== lpVerifyPoolAddress && !_samePairAsPrimary(p))
+    const _secondaryPoolAddress = secondaryPoolCandidates[0]?.address ?? null
     const dexId = String(mainPoolAttr.dex_id ?? mainPoolAttr.dex ?? "").trim() || null;
     const dexName = String(mainPoolAttr.dex_name ?? "").trim() || null;
     // Primary pool DEX display name — exhaustive field search across attributes + relationships
@@ -3563,10 +3586,13 @@ export async function POST(req: Request) {
       'Lead with the most critical risk. If a key check is not indexed, note it briefly. Be direct.',
     ].filter(Boolean).join('\n')
 
-    // Phase 2: LP holder fetch + AI summary + onchain supply all in parallel
+    // Phase 2: LP holder fetch + AI summary + onchain supply + secondary-pool LP holder fetch
+    // (for a different-pair V2/Aerodrome pool, e.g. GAME/VIRTUAL — informational
+    // secondaryLpControlSignals/secondaryLpExposure only, see rules 4/5) all in parallel
     _scanStage = 'phase2_lp_holder_fetch'
     const _t2 = Date.now()
-    const [_lpHoldersSettled, _aiSettled, _onchainSettled] = await Promise.allSettled([
+    const _needsSecondaryLpHolderFetch = Boolean(needsLpHolderFetch && _secondaryPoolAddress && /^0x[a-f0-9]{40}$/.test(_secondaryPoolAddress))
+    const [_lpHoldersSettled, _aiSettled, _onchainSettled, _secondaryLpHoldersSettled] = await Promise.allSettled([
       needsLpHolderFetch
         ? Promise.race([
             fetchTokenHolders(chain, _lpProofAddress!),
@@ -3582,8 +3608,17 @@ export async function POST(req: Request) {
           ])
         : Promise.resolve(null),
       needsOnchainMc ? fetchOnchainSupply(chain, contract) : Promise.resolve(null),
+      _needsSecondaryLpHolderFetch
+        ? Promise.race([
+            fetchTokenHolders(chain, _secondaryPoolAddress!),
+            new Promise<Record<string, unknown>>(r =>
+              setTimeout(() => r({ __status: 'error', __reason: 'lp_holder_timeout' }), 7000)
+            ),
+          ])
+        : Promise.resolve(null),
     ])
     if (process.env.NODE_ENV === 'development') console.log('[token-timing] phase2Ms', Date.now() - _t2, 'needsLP', needsLpHolderFetch, 'needsAI', needsAI, 'needsOnchain', needsOnchainMc)
+    const _secondaryLpHoldersForControl = (_secondaryLpHoldersSettled.status === 'fulfilled' ? _secondaryLpHoldersSettled.value : null) as any
 
     // Early owner fetch for LP team-wallet check — runs after phase2 to not block parallel work.
     // Only needed when pool is V2-like (burn/locker checks will use it). Fast single RPC call.
@@ -3715,6 +3750,48 @@ export async function POST(req: Request) {
       lpHolderCheckAttempted: false,
       lpHolderFetchAttempted: needsLpHolderFetch,
       lpHolderFetchSkippedReason: needsLpHolderFetch ? null : 'pool_model_not_v2_or_unknown',
+    }
+    // Classifies LP-holder evidence for a SECONDARY (different-pair) V2/Aerodrome pool —
+    // informational only (secondaryLpControlSignals/secondaryLpExposure); never affects the
+    // primary lpControl/lpControllerIntel/riskBreakdown.liquiditySafety computed below.
+    const _classifySecondaryLpHolders = async (
+      items: Array<Record<string, unknown>>,
+      poolAddress: string
+    ): Promise<{ status: "burned" | "locked" | "team_controlled" | "partial"; confidence: "high" | "low"; reason: string; evidence: string[] } | null> => {
+      if (items.length === 0) return null
+      const grSupply = items.find((i) => i?.total_supply != null)?.total_supply
+      let supplyStr = grSupply != null ? String(grSupply) : null
+      const hasDirectPct = items.some((h) => {
+        const p = toNum(h.percentage) ?? toNum(h.percent) ?? toNum(h.ownership_percentage) ?? toNum(h.balancePercent) ?? toNum(h.ownershipPercent) ?? toNum(h.percent_of_supply) ?? toNum(h.share) ?? toNum(h.supply_percentage) ?? toNum(h.percentage_relative_to_total_supply)
+        return p != null && p > 0
+      })
+      if (supplyStr == null && !hasDirectPct) {
+        const hex = await countedRpcCall("eth_call", [{ to: poolAddress, data: "0x18160ddd" }, "latest"], "secondaryLpHolderCheck.totalSupply", false)
+        const big = hexToBigInt(hex)
+        if (big != null && big > BigInt(0)) supplyStr = big.toString()
+      }
+      const top = items.slice(0, 5).map((h) => {
+        const directPctRaw = toNum(h.percentage) ?? toNum(h.percent) ?? toNum(h.ownership_percentage) ?? toNum(h.balancePercent) ?? toNum(h.ownershipPercent) ?? toNum(h.percent_of_supply) ?? toNum(h.share) ?? toNum(h.supply_percentage) ?? toNum(h.percentage_relative_to_total_supply)
+        const directPct = (directPctRaw != null && directPctRaw > 0) ? directPctRaw : null
+        let derivedPct: number | null = null
+        if (directPct == null && supplyStr != null) derivedPct = bigIntPct(lpHolderBalanceRaw(h), supplyStr)
+        return { address: String(h.address ?? h.holder_address ?? h.wallet_address ?? "").toLowerCase(), pct: directPct ?? derivedPct ?? 0 }
+      }).filter((x) => /^0x[a-f0-9]{40}$/.test(x.address))
+      const topHolder = top[0] ?? null
+      const burnPct = top.filter((x) => DEAD.has(x.address)).reduce((a, b) => a + (b.pct ?? 0), 0)
+      const lockerPct = top.filter((x) => KNOWN_LOCKERS.has(x.address)).reduce((a, b) => a + (b.pct ?? 0), 0)
+      const _secConfidence = (pct: number): "high" | "low" => pct >= 80 ? "high" : "low"
+      if (burnPct >= 50) return { status: 'burned', confidence: _secConfidence(burnPct), reason: 'Dominant LP share in this secondary pool appears in burn/dead addresses.', evidence: [`burn_share=${burnPct.toFixed(2)}%`] }
+      if (lockerPct >= 50) return { status: 'locked', confidence: _secConfidence(lockerPct), reason: 'Dominant LP share in this secondary pool appears in known lockers.', evidence: [`locker_share=${lockerPct.toFixed(2)}%`] }
+      if (topHolder && (topHolder.pct ?? 0) > 0 && !DEAD.has(topHolder.address) && !KNOWN_LOCKERS.has(topHolder.address)) {
+        return {
+          status: (topHolder.pct ?? 0) >= 80 ? 'team_controlled' : 'partial',
+          confidence: (topHolder.pct ?? 0) >= 80 ? 'high' : 'low',
+          reason: "Secondary pool LP-holder evidence — informational only, does not affect this token's primary LP verdict.",
+          evidence: [`top_holder=${topHolder.address}`, `top_share=${(topHolder.pct ?? 0).toFixed(2)}%`],
+        }
+      }
+      return { status: 'partial', confidence: 'low', reason: 'Secondary pool LP-holder check inconclusive.', evidence: [`top_rows=${top.length}`] }
     }
     _scanStage = 'lp_control_evaluation'
     if (!_lpProofPresent) {
@@ -4028,6 +4105,28 @@ export async function POST(req: Request) {
         marketPairLabel: marketPair,
       })
       lpControl = _reconciled
+    }
+    // Different-pair secondary V2/Aerodrome pools (rule 4/5, e.g. GAME/VIRTUAL when scanning
+    // VIRTUAL) — classified ONLY as secondaryLpControlSignals/secondaryLpExposure below.
+    // secondaryPoolPromotedToPrimary is always false: this never replaces lpControl.status.
+    const secondaryPoolPromotedToPrimary = false
+    if (!lpControl.secondaryLpControlSignals && _secondaryPoolAddress && secondaryPoolCandidates[0]) {
+      const _secItems = Array.isArray(_secondaryLpHoldersForControl?.data?.items) ? _secondaryLpHoldersForControl.data.items as Array<Record<string, unknown>> : []
+      const _secClassification = await _classifySecondaryLpHolders(_secItems, _secondaryPoolAddress)
+      if (_secClassification) {
+        const _secPool = secondaryPoolCandidates[0]
+        const _secPair = _secPool.pairName ?? `${_secPool.baseTokenSymbol ?? "?"}/${_secPool.quoteTokenSymbol ?? "?"}`
+        lpControl.secondaryLpControlSignals = {
+          status: _secClassification.status,
+          confidence: _secClassification.confidence,
+          poolAddress: _secPool.address ?? null,
+          poolDex: _secPool.dexId ?? _secPool.dexName ?? null,
+          poolType: _secPool.poolType,
+          pair: _secPair,
+          reason: _secClassification.reason,
+          evidence: _secClassification.evidence,
+        }
+      }
     }
     const _extractEvidencePct = (ev: string[], prefix: string): number | null => {
       const line = ev.find(e => e.startsWith(`${prefix}=`))
@@ -5830,7 +5929,7 @@ export async function POST(req: Request) {
     // pool's lpControllerIntel/lpMovementWatch/lpLockBurnIntel/lpUnlockTimeline/lpHistoryTimeline above.
     const secondaryLpExposure = buildSecondaryLpExposure({
       secondarySignals: lpControl.secondaryLpControlSignals
-        ? { ...lpControl.secondaryLpControlSignals, pair: lpPair ?? null }
+        ? { ...lpControl.secondaryLpControlSignals, pair: lpControl.secondaryLpControlSignals.pair ?? lpPair ?? null }
         : null,
       primaryDex: lpControl.primaryPoolDex ?? primaryDexName ?? null,
       primaryPair: _primaryPair ?? null,
@@ -7270,6 +7369,18 @@ export async function POST(req: Request) {
             verificationPoolDex: lpVerifyPool?.dexId ?? lpVerifyPool?.dexName ?? null,
             verificationPoolType: lpVerifyPoolPresent ? lpVerifyPoolType : null,
             selectedPrimaryPoolStrategy: lpDiagnostics.selectedPrimaryPoolStrategy,
+            // Cross-pair LP-verification-pool fix debug fields (see _samePairAsPrimary /
+            // secondaryPoolCandidates above): proves the primary lpControl is verified
+            // against the canonical primary pool, not a different-pair secondary pool.
+            primaryMarketPoolAddress: lpPoolAddress ?? null,
+            primaryMarketPair: _primaryPair ?? null,
+            lpVerificationPoolAddress: lpVerifyPoolAddress ?? null,
+            lpVerificationPair: lpVerifyPool
+              ? (lpVerifyPool.pairName ?? `${lpVerifyPool.baseTokenSymbol ?? "?"}/${lpVerifyPool.quoteTokenSymbol ?? "?"}`)
+              : null,
+            lpVerificationIsPrimaryPool: Boolean(lpVerifyPool && lpPool && lpVerifyPool === lpPool),
+            secondaryPoolProofsCount: secondaryPoolCandidates.length,
+            secondaryPoolPromotedToPrimary,
           },
           holderFetch: _lpResolutionDebug,
           finalReconciliation: {
