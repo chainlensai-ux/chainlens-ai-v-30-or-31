@@ -7047,26 +7047,32 @@ export async function POST(req: Request) {
     const cortexLegacyRead = cortexScoreResult.cortexConfidence === 'insufficient'
       ? 'CORTEX needs more evidence across core categories before calculating a score.'
       : `Score calculated from available evidence. Missing checks reduce confidence. Coverage ${cortexScoreResult.scoreCoveragePercent}%.`
+    // cortexScore/cortexVerdict/cortexConfidence/scoreCoveragePercent are
+    // derived purely from already-public scan evidence (no provider names),
+    // and the CORTEX RISK ENGINE UI reads them directly — they must always
+    // be present so a token with severe evidence shows a real score/verdict
+    // instead of falling back to "Open Check". Only cortexScoreDebug (raw
+    // category inputs/statuses) stays debug-only.
+    ;(responsePayload as any).cortexScore = cortexScoreResult.cortexScore
+    ;(responsePayload as any).cortexVerdict = cortexScoreResult.cortexVerdict
+    ;(responsePayload as any).cortexConfidence = cortexScoreResult.cortexConfidence
+    ;(responsePayload as any).scoreReasons = cortexScoreResult.scoreReasons
+    ;(responsePayload as any).missingScoreInputs = cortexScoreResult.missingScoreInputs
+    ;(responsePayload as any).scoreCoveragePercent = cortexScoreResult.scoreCoveragePercent
     ;(responsePayload as any).riskEngine = {
       ...(responsePayload as any).riskEngine,
       cortexRead: cortexLegacyRead,
+      cortexScore: cortexScoreResult.cortexScore,
+      cortexVerdict: cortexScoreResult.cortexVerdict,
+      cortexConfidence: cortexScoreResult.cortexConfidence,
+      scoreReasons: cortexScoreResult.scoreReasons,
+      missingScoreInputs: cortexScoreResult.missingScoreInputs,
+      scoreCoveragePercent: cortexScoreResult.scoreCoveragePercent,
     }
     if (debugMode) {
-      ;(responsePayload as any).cortexScore = cortexScoreResult.cortexScore
-      ;(responsePayload as any).cortexVerdict = cortexScoreResult.cortexVerdict
-      ;(responsePayload as any).cortexConfidence = cortexScoreResult.cortexConfidence
-      ;(responsePayload as any).scoreReasons = cortexScoreResult.scoreReasons
-      ;(responsePayload as any).missingScoreInputs = cortexScoreResult.missingScoreInputs
-      ;(responsePayload as any).scoreCoveragePercent = cortexScoreResult.scoreCoveragePercent
       ;(responsePayload as any).cortexScoreDebug = cortexScoreResult.cortexScoreDebug
       ;(responsePayload as any).riskEngine = {
         ...(responsePayload as any).riskEngine,
-        cortexScore: cortexScoreResult.cortexScore,
-        cortexVerdict: cortexScoreResult.cortexVerdict,
-        cortexConfidence: cortexScoreResult.cortexConfidence,
-        scoreReasons: cortexScoreResult.scoreReasons,
-        missingScoreInputs: cortexScoreResult.missingScoreInputs,
-        scoreCoveragePercent: cortexScoreResult.scoreCoveragePercent,
         cortexScoreDebug: cortexScoreResult.cortexScoreDebug,
       }
     }

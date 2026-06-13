@@ -155,6 +155,20 @@ function includesAny(values: string[], pattern: RegExp): boolean {
   return values.some((value) => pattern.test(value))
 }
 
+// Mirrors the top_share/owner_lp_share/locker_share/burn_share evidence
+// convention used in lib/baseRadarSeverity.ts and lib/server/secondaryLpExposure.ts.
+function extractLpControllerSharePercent(evidence: string[] | null): number | null {
+  if (!Array.isArray(evidence)) return null
+  for (const key of ['owner_lp_share', 'top_share', 'locker_share', 'burn_share']) {
+    const line = evidence.find((item) => item.toLowerCase().startsWith(`${key}=`))
+    if (line) {
+      const value = Number(line.split('=').slice(1).join('=').replace('%', ''))
+      if (Number.isFinite(value)) return Math.round(value * 100) / 100
+    }
+  }
+  return null
+}
+
 
 function getContractFlagStatus(result: AnyRecord, key: 'mint' | 'pause' | 'blacklist' | 'proxy' | 'withdraw'): string | null {
   const contractFlags = asRecord(result.contractFlags)
@@ -466,11 +480,15 @@ function hasUsableDevEvidence(result: AnyRecord, dev: Factor & { devBreakdown: C
   return bool(devOwnership?.isRenounced) != null || deployerReputation != null || devIntel != null || hasConcreteFlag || (lpStatus != null && !['no_pool', 'partial', 'unavailable_with_reason', 'insufficient_data', 'error'].includes(lpStatus)) || dev.devBreakdown.some((item) => item.score != null && item.score !== 55 && !/unavailable|missing|neutral assumed/i.test(item.reason))
 }
 
-function verdictForScore(score: number | null, confidence: CortexConfidence): CortexVerdict {
-  if (score == null || confidence === 'insufficient') return 'Open Check'
-  if (score >= 85) return 'Strong'
-  if (score >= 70) return 'Watch'
-  if (score >= 50) return 'Caution'
+// Verdict bands: 0-24 Extreme Watch, 25-39 High Watch, 40-59 Caution,
+// 60-74 Moderate Watch, 75+ Stronger Profile — mapped onto the existing
+// CortexVerdict labels. A numeric score never maps to 'Open Check'; that
+// label is reserved for "no usable evidence across core categories".
+function verdictForScore(score: number | null): CortexVerdict {
+  if (score == null) return 'Open Check'
+  if (score >= 75) return 'Strong'
+  if (score >= 60) return 'Watch'
+  if (score >= 40) return 'Caution'
   return 'High Risk'
 }
 
@@ -518,13 +536,20 @@ export function calculateCortexScoreV2(rawResult: unknown): CortexScoreResultV2 
   }
 
   const usableKeys = (Object.entries(weightedCategories) as Array<[CortexWeightedCategoryKey, WeightedCategory]>).filter(([, category]) => category.coverage > 0).map(([key]) => key)
-  const hasMinimumEvidence = usableKeys.length >= 2 || (usableKeys.includes('marketLiquidity') && usableKeys.includes('holderDistribution')) || (usableKeys.includes('marketLiquidity') && usableKeys.includes('lpControl'))
   const scoreCoveragePercent = Math.round((Object.entries(weightedCategories) as Array<[CortexWeightedCategoryKey, WeightedCategory]>).reduce((sum, [key, category]) => sum + (CORTEX_WEIGHTED_WEIGHTS[key] * category.coverage), 0) * 100)
   const missingScoreInputs = (Object.entries(weightedCategories) as Array<[CortexWeightedCategoryKey, WeightedCategory]>).filter(([, category]) => category.coverage === 0).map(([key]) => weightedCategoryLabel(key))
   const scoreReasons = (Object.entries(weightedCategories) as Array<[CortexWeightedCategoryKey, WeightedCategory]>).filter(([, category]) => category.coverage > 0).map(([key, category]) => `${weightedCategoryLabel(key)}: ${category.reason}`)
 
-  let score: number | null = hasMinimumEvidence
-    ? roundScore((Object.entries(weightedCategories) as Array<[CortexWeightedCategoryKey, WeightedCategory]>).reduce((sum, [key, category]) => sum + ((category.score ?? 0) * CORTEX_WEIGHTED_WEIGHTS[key] * category.coverage), 0))
+  // Open Check is reserved for "genuinely no usable evidence across core
+  // categories" — any category with coverage > 0 is enough to calculate a
+  // real score. Missing categories only reduce coverage/confidence below;
+  // the score itself is the coverage-weighted average of the categories
+  // that DO have evidence (it is not dragged toward 0 by missing ones).
+  const totalCoveredWeight = (Object.entries(weightedCategories) as Array<[CortexWeightedCategoryKey, WeightedCategory]>).reduce((sum, [key, category]) => sum + (CORTEX_WEIGHTED_WEIGHTS[key] * category.coverage), 0)
+  const hasAnyEvidence = totalCoveredWeight > 0
+
+  let score: number | null = hasAnyEvidence
+    ? roundScore((Object.entries(weightedCategories) as Array<[CortexWeightedCategoryKey, WeightedCategory]>).reduce((sum, [key, category]) => sum + ((category.score ?? 0) * CORTEX_WEIGHTED_WEIGHTS[key] * category.coverage), 0) / totalCoveredWeight)
     : null
 
   const capsApplied: string[] = []
@@ -539,6 +564,7 @@ export function calculateCortexScoreV2(rawResult: unknown): CortexScoreResultV2 
   const maxTax = Math.max(getTax(result, 'buyTax') ?? 0, getTax(result, 'sellTax') ?? 0)
   const top1 = num(getHolderDistribution(result)?.top1)
   const top10 = num(getHolderDistribution(result)?.top10)
+  const holderCount = num(getHolderDistribution(result)?.holderCount)
   const mint = getContractFlag(result, 'mint')
   const proxy = getContractFlag(result, 'proxy')
   const lpStatus = getLpStatus(result)
@@ -548,12 +574,39 @@ export function calculateCortexScoreV2(rawResult: unknown): CortexScoreResultV2 
   if (lpStatus === 'team_controlled' || lpStatus === 'risky') applyCap(49, 'LP confirmed removable/team-controlled capped score at High Risk.')
   if ((top1 != null && top1 >= 25) || (top10 != null && top10 >= 65)) applyCap(49, 'Extreme holder concentration capped score at High Risk.')
 
-  const confidence: CortexConfidence = !hasMinimumEvidence
+  // ── Severe-risk caps ─────────────────────────────────────────────────
+  // Mirrors the Base Radar severe-risk caps (lib/baseRadarSeverity.ts):
+  // a token with extreme holder concentration and/or wallet/team-controlled
+  // LP and an active owner must never display as Open Check or a healthy
+  // verdict, even if the weighted average above is high.
+  const lpEvidence = Array.isArray(asRecord(result.lpControl)?.evidence) ? asRecord(result.lpControl)!.evidence as string[] : null
+  const lpControllerSharePercent = extractLpControllerSharePercent(lpEvidence)
+  const lockBurnConfirmed = lpStatus === 'burned' || lpStatus === 'locked'
+  const isWalletTeamControlled = lpStatus === 'team_controlled' || lpStatus === 'risky'
+  const isRenouncedOwner = bool(asRecord(asRecord(result.security)?.devOwnership)?.isRenounced)
+  const activeOwner = isRenouncedOwner === false
+
+  const severeCaps: Array<{ flag: string; matched: boolean; cap: number }> = [
+    { flag: 'Top 10 holders control at least 90% of supply', matched: top10 != null && top10 >= 90, cap: 35 },
+    { flag: 'Top 10 holders control at least 99% of supply', matched: top10 != null && top10 >= 99, cap: 25 },
+    { flag: 'Top holder controls at least 50% of supply', matched: top1 != null && top1 >= 50, cap: 40 },
+    { flag: 'Top holder controls at least 90% of supply', matched: top1 != null && top1 >= 90, cap: 25 },
+    { flag: 'Holder count is under 25', matched: holderCount != null && holderCount < 25, cap: 35 },
+    { flag: 'LP wallet/team controlled with no verified lock or burn proof', matched: isWalletTeamControlled && !lockBurnConfirmed, cap: 35 },
+    { flag: 'LP controller share is at least 90% with lock/burn proof open', matched: lpControllerSharePercent != null && lpControllerSharePercent >= 90 && !lockBurnConfirmed, cap: 30 },
+    { flag: 'Active owner/admin alongside wallet/team LP control', matched: activeOwner && isWalletTeamControlled, cap: 35 },
+  ]
+  const severeFlags = severeCaps.filter((c) => c.matched)
+  for (const c of severeFlags) applyCap(c.cap, `Severe risk flag: ${c.flag}.`)
+  if (severeFlags.length >= 3) applyCap(30, 'Multiple severe risk flags (3 or more) capped score.')
+  if (severeFlags.length >= 5) applyCap(25, 'Multiple severe risk flags (5 or more) capped score.')
+
+  const confidence: CortexConfidence = !hasAnyEvidence
     ? 'insufficient'
     : scoreCoveragePercent >= 85 ? 'high'
       : scoreCoveragePercent >= 55 ? 'medium'
         : 'low'
-  const cortexVerdict = verdictForScore(score, confidence)
+  const cortexVerdict = verdictForScore(score)
 
   const legacyVerdict: CortexScoreResultV2['verdict'] = cortexVerdict === 'Open Check'
     ? 'OPEN CHECK'
@@ -595,11 +648,11 @@ export function calculateCortexScoreV2(rawResult: unknown): CortexScoreResultV2 
     score,
     mainScore: score,
     displayScore: score == null ? 'Open Check' : String(score),
-    isOpenCheck: confidence === 'insufficient',
+    isOpenCheck: score == null,
     verdict: legacyVerdict,
     confidence: legacyConfidence,
     scanQuality,
-    capReason: capsApplied.length > 0 ? capsApplied[0] : confidence === 'insufficient' ? 'Insufficient evidence across core CORTEX categories.' : null,
+    capReason: capsApplied.length > 0 ? capsApplied[0] : score == null ? 'Insufficient evidence across core CORTEX categories.' : null,
     openChecks,
     breakdown,
     devBreakdown: dev.devBreakdown,

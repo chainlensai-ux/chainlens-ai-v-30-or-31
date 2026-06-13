@@ -5437,8 +5437,21 @@ export default function TerminalTokenScanner() {
                     const next2 = getNextAction(result)
                     const rugLabelMap: Record<string, string> = { low_visible_risk:'Low visible risk', watch:'Watch', high:'High', critical:'Critical', partial_data:'Open check', unavailable_with_reason:'Open check', unverified:'Open check' }
                     const lpLabelMap: Record<string, string> = { burned:'Burned', locked:'Locked', protocol:'Protocol-specific', concentrated_liquidity:'Concentrated Liquidity', team_controlled:'Wallet Controlled', wallet_controlled:'Wallet Controlled', partial:'Partial Evidence', no_pool:'Open Check', unavailable_with_reason:'Open Check', unverified:'Open Check', insufficient_data:'Open Check', error:'Open Check', open_check:'Open Check', not_applicable:'Protocol-specific' }
-                    const displayCortexScore = result.cortexScore ?? engine?.cortexScore ?? (engine?.rugRiskScore != null ? Math.max(0, 100 - engine.rugRiskScore) : null)
-                    const displayCortexVerdict = result.cortexVerdict ?? engine?.cortexVerdict ?? null
+                    // Recompute locally as a last-resort fallback — older cached
+                    // responses may not carry cortexScore/cortexVerdict on
+                    // riskEngine yet. A numeric score is always preferred over
+                    // "Open Check", and a numeric score's verdict is never
+                    // overridden by an "Open Check" verdict.
+                    const localCortex = calculateCortexScoreV2(result)
+                    const displayCortexScore = result.cortexScore ?? engine?.cortexScore ?? localCortex.cortexScore ?? (engine?.rugRiskScore != null ? Math.max(0, 100 - engine.rugRiskScore) : null)
+                    const verdictFromScore = (s: number): typeof localCortex.cortexVerdict =>
+                      s >= 75 ? 'Strong' : s >= 60 ? 'Watch' : s >= 40 ? 'Caution' : 'High Risk'
+                    const rawCortexVerdict = result.cortexVerdict ?? engine?.cortexVerdict ?? null
+                    const displayCortexVerdict = (rawCortexVerdict && rawCortexVerdict !== 'Open Check')
+                      ? rawCortexVerdict
+                      : displayCortexScore != null
+                        ? (localCortex.cortexVerdict !== 'Open Check' ? localCortex.cortexVerdict : verdictFromScore(displayCortexScore))
+                        : rawCortexVerdict
                     const displayCortexConfidence = result.cortexConfidence ?? engine?.cortexConfidence ?? (engine?.confidence ?? 'low')
                     const gaugeColor = displayCortexScore == null ? '#94a3b8' : displayCortexScore >= 85 ? '#34d399' : displayCortexScore >= 70 ? '#fbbf24' : displayCortexScore >= 50 ? '#f59e0b' : '#f43f5e'
                     const confColor = displayCortexConfidence === 'high' ? '#34d399' : displayCortexConfidence === 'medium' ? '#fbbf24' : displayCortexConfidence === 'low' ? '#94a3b8' : '#fbbf24'
