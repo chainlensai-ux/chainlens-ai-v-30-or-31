@@ -12,6 +12,40 @@ import { buildLpUnlockTimeline } from '../lib/server/lpUnlockTimeline.ts'
 import { buildLpHistoryTimeline } from '../lib/server/lpHistoryTimeline.ts'
 import { buildSecondaryLpExposure } from '../lib/server/secondaryLpExposure.ts'
 
+// Mirrors reconcileSecondaryLpSignal() in lib/server/lpIntelligence.ts (selection rules
+// 3/4) in plain JS, matching the re-implementation pattern used by
+// scripts/test-lp-intelligence.mjs — avoids importing lpIntelligence.ts, which has its
+// own extensionless internal import that node's --experimental-strip-types can't resolve.
+function reconcileSecondaryLpSignal(lpControl, params) {
+  const { primaryConcentrated, verifyPool, primaryPoolAddress, primaryPoolType, primaryDexId, marketPairLabel, canonicalStatus } = params
+  if (!(primaryConcentrated && verifyPool?.address && verifyPool.address !== primaryPoolAddress)) {
+    return { lpControl, secondary: null }
+  }
+  const secondary = {
+    status: lpControl.status,
+    confidence: lpControl.confidence,
+    poolAddress: verifyPool.address,
+    poolDex: verifyPool.dexId ?? verifyPool.dexName ?? null,
+    poolType: verifyPool.poolType,
+    reason: lpControl.reason,
+    evidence: lpControl.evidence,
+  }
+  const reconciled = {
+    ...lpControl,
+    status: canonicalStatus ?? 'concentrated_liquidity',
+    confidence: 'medium',
+    reason: 'Protocol-specific LP proof required for the primary pool.',
+    evidence: [
+      `Primary pool: ${marketPairLabel} (${primaryPoolType})`,
+      `pool=${primaryPoolAddress ?? 'unknown'}`,
+      `dex=${primaryDexId ?? 'unknown'}`,
+      `poolType=${primaryPoolType}`,
+    ],
+    secondaryLpControlSignals: secondary,
+  }
+  return { lpControl: reconciled, secondary }
+}
+
 let passed = 0
 let failed = 0
 function assert(label, condition, got) {
@@ -1137,6 +1171,118 @@ console.log('\nN. VIRTUAL-like Aerodrome V2 dominant LP holder evidence')
 assert('EVO lpLockBurnIntel.status remains not_applicable', evoLockBurnIntel?.status === 'not_applicable', evoLockBurnIntel)
 assert('MFERGPT lpLockBurnIntel.status remains not_applicable', mferLockBurnIntel?.status === 'not_applicable', mferLockBurnIntel)
 assert('PLAY lpLockBurnIntel.status remains not_applicable', playLockBurnIntel?.status === 'not_applicable', playLockBurnIntel)
+
+// ─── O. PLAY-like secondary Aerodrome V2 LP exposure alongside concentrated primary ──
+console.log('\nO. PLAY-like secondary Aerodrome V2 LP exposure')
+{
+  const playSecondaryPool = '0x42781ec558f9fb95f5e080572bcd0a37523b55e2'
+
+  // O1. Secondary pool has dominant LP holder evidence (e.g. team_controlled, 90% share) —
+  // reconcileSecondaryLpSignal must preserve the SECONDARY pool's own status/evidence in
+  // secondaryLpControlSignals, not the primary pool's reconciled "concentrated_liquidity".
+  const preReconcileWithHolder = {
+    status: 'team_controlled',
+    confidence: 'high',
+    reason: 'Single normal wallet holds dominant LP share.',
+    evidence: ['top_holder=0x111111111111111111111111111111111111aaaa', 'top_share=90.00%'],
+  }
+  const { lpControl: reconciledWithHolder, secondary: secondaryWithHolder } = reconcileSecondaryLpSignal(preReconcileWithHolder, {
+    primaryConcentrated: true,
+    verifyPool: { address: playSecondaryPool, liquidityUsd: 50000, dexId: 'aerodrome-base', dexName: 'Aerodrome', poolType: 'aerodrome', hasLpToken: true, hasDexMeta: true, isValidAddress: true },
+    primaryPoolAddress: playPoolAddress,
+    primaryPoolType: 'v3',
+    primaryDexId: 'pancakeswap-v3-base',
+    marketPairLabel: 'PLAY / USDC',
+  })
+  assert('PLAY reconciled primary lpControl.status is concentrated_liquidity', reconciledWithHolder.status === 'concentrated_liquidity', reconciledWithHolder.status)
+  assert('PLAY secondaryLpControlSignals.status is NOT concentrated_liquidity (preserves secondary pool evidence)', secondaryWithHolder?.status !== 'concentrated_liquidity', secondaryWithHolder?.status)
+  assert('PLAY secondaryLpControlSignals.status reflects the secondary pool dominant-holder status', secondaryWithHolder?.status === 'team_controlled', secondaryWithHolder?.status)
+  assert('PLAY secondaryLpControlSignals.poolAddress is the Aerodrome secondary pool', secondaryWithHolder?.poolAddress === playSecondaryPool, secondaryWithHolder?.poolAddress)
+
+  const playSecondaryExposureWithHolder = buildSecondaryLpExposure({
+    secondarySignals: { ...secondaryWithHolder, pair: 'PLAY / USDC' },
+    primaryDex: 'PancakeSwap V3',
+    primaryPair: 'PLAY / USDC',
+    primaryPoolModel: 'concentrated',
+  })
+  assert('PLAY secondaryLpExposure (with holder evidence) exists', Boolean(playSecondaryExposureWithHolder), playSecondaryExposureWithHolder)
+  assert('PLAY secondaryLpExposure.status is wallet_controlled when dominant holder confirmed', playSecondaryExposureWithHolder?.status === 'wallet_controlled', playSecondaryExposureWithHolder?.status)
+  assert('PLAY secondaryLpExposure.controller is the dominant holder address', playSecondaryExposureWithHolder?.controller === '0x111111111111111111111111111111111111aaaa', playSecondaryExposureWithHolder?.controller)
+  assert('PLAY secondaryLpExposure.controllerSharePercent is 90', playSecondaryExposureWithHolder?.controllerSharePercent === 90, playSecondaryExposureWithHolder?.controllerSharePercent)
+  assert('PLAY secondaryLpExposure.summary says wallet-controlled when controller/share confirmed', /wallet-controlled/i.test(playSecondaryExposureWithHolder?.summary ?? ''), playSecondaryExposureWithHolder?.summary)
+  assert('PLAY secondaryLpExposure.summary mentions "Secondary ERC-20 LP exposure detected"', /Secondary ERC-20 LP exposure detected/i.test(playSecondaryExposureWithHolder?.summary ?? ''), playSecondaryExposureWithHolder?.summary)
+  assert('PLAY secondaryLpExposure.summary mentions this pool is separate from the primary liquidity venue', /separate from the primary liquidity venue/i.test(playSecondaryExposureWithHolder?.summary ?? ''), playSecondaryExposureWithHolder?.summary)
+
+  // O2. Secondary pool has NO controller/share evidence — must be open_check, controller
+  // null, controllerSharePercent null, and the summary must NOT claim "wallet-controlled".
+  const preReconcileNoEvidence = {
+    status: 'partial',
+    confidence: 'low',
+    reason: 'LP checks ran but could not prove burned/locked/team-controlled state.',
+    evidence: ['top_rows=0'],
+  }
+  const { secondary: secondaryNoEvidence } = reconcileSecondaryLpSignal(preReconcileNoEvidence, {
+    primaryConcentrated: true,
+    verifyPool: { address: playSecondaryPool, liquidityUsd: 50000, dexId: 'aerodrome-base', dexName: 'Aerodrome', poolType: 'aerodrome', hasLpToken: true, hasDexMeta: true, isValidAddress: true },
+    primaryPoolAddress: playPoolAddress,
+    primaryPoolType: 'v3',
+    primaryDexId: 'pancakeswap-v3-base',
+    marketPairLabel: 'PLAY / USDC',
+  })
+  assert('PLAY secondaryLpControlSignals.status (no evidence) is NOT concentrated_liquidity', secondaryNoEvidence?.status !== 'concentrated_liquidity', secondaryNoEvidence?.status)
+
+  const playSecondaryExposureNoEvidence = buildSecondaryLpExposure({
+    secondarySignals: { ...secondaryNoEvidence, pair: 'PLAY / USDC' },
+    primaryDex: 'PancakeSwap V3',
+    primaryPair: 'PLAY / USDC',
+    primaryPoolModel: 'concentrated',
+  })
+  assert('PLAY secondaryLpExposure (no evidence) status is open_check', playSecondaryExposureNoEvidence?.status === 'open_check', playSecondaryExposureNoEvidence?.status)
+  assert('PLAY secondaryLpExposure (no evidence) controller is null', playSecondaryExposureNoEvidence?.controller === null, playSecondaryExposureNoEvidence?.controller)
+  assert('PLAY secondaryLpExposure (no evidence) controllerSharePercent is null', playSecondaryExposureNoEvidence?.controllerSharePercent === null, playSecondaryExposureNoEvidence?.controllerSharePercent)
+  assert('PLAY secondaryLpExposure (no evidence) summary does NOT say "appears wallet-controlled"', !/appears wallet-controlled/i.test(playSecondaryExposureNoEvidence?.summary ?? ''), playSecondaryExposureNoEvidence?.summary)
+  assert('PLAY secondaryLpExposure (no evidence) summary says lock/burn proof remains open', /Lock\/burn proof remains open until confirmed from LP holder evidence/i.test(playSecondaryExposureNoEvidence?.summary ?? ''), playSecondaryExposureNoEvidence?.summary)
+
+  // O3. Public payload includes the secondary exposure card alongside the not_applicable
+  // primary card, mentions "Secondary ERC-20 LP exposure", and never overrides the primary
+  // lpControl/lpLockBurnIntel not_applicable status.
+  const playPublicPayloadWithSecondary = sanitizePublicTokenResponse({
+    symbol: 'PLAY',
+    selectedPool: playSelectedPool,
+    lpControl: playLpControl,
+    lpControllerIntel: playControllerIntel,
+    lpLockBurnIntel: playLockBurnIntel,
+    lpMovementWatch: playMovementWatch,
+    lpUnlockTimeline: playUnlockTimeline,
+    secondaryLpExposure: playSecondaryExposureWithHolder,
+    lpProofApplicability: 'not_applicable',
+    lpProofStatus: 'not_applicable',
+  }, false)
+  assert('PLAY public payload includes secondaryLpExposure', Boolean(playPublicPayloadWithSecondary.secondaryLpExposure), playPublicPayloadWithSecondary.secondaryLpExposure)
+  assert('PLAY public payload contains "Secondary ERC-20 LP exposure"', serialized(playPublicPayloadWithSecondary).includes('secondary erc-20 lp exposure'), playPublicPayloadWithSecondary.secondaryLpExposure?.summary)
+  assert('PLAY public payload primary lpLockBurnIntel.status remains not_applicable alongside secondary exposure', playPublicPayloadWithSecondary.lpLockBurnIntel?.status === 'not_applicable', playPublicPayloadWithSecondary.lpLockBurnIntel)
+  assert('PLAY public payload primary lpControl.proofApplicability remains not_applicable alongside secondary exposure', playPublicPayloadWithSecondary.lpControl?.proofApplicability === 'not_applicable', playPublicPayloadWithSecondary.lpControl)
+}
+
+// ─── P. CORTEX wording — no scam/financial-advice language, evidence-based instead ──
+console.log('\nP. CORTEX wording is evidence-based, never scam/financial-advice language')
+{
+  const riskDriversSample = ['very high holder concentration', 'active owner', 'deployer/top-holder supply control']
+  // Mirrors app/api/token/route.ts clarkInterpretation._riskSuffix for rugRiskLabel === 'critical'.
+  const criticalRiskSuffix = `Major risk drivers present: ${riskDriversSample.slice(0, 3).join(', ')}. Verify open checks before relying on this scan.`
+  const bannedPhrases = ['avoid exposure', 'critical rug vectors confirmed', 'scam', 'rug confirmed', 'guaranteed', 'risk-free']
+  for (const phrase of bannedPhrases) {
+    assert(`CORTEX critical wording does not contain "${phrase}"`, !criticalRiskSuffix.toLowerCase().includes(phrase), criticalRiskSuffix)
+  }
+  assert('CORTEX critical wording cites risk drivers', /very high holder concentration/i.test(criticalRiskSuffix), criticalRiskSuffix)
+  assert('CORTEX critical wording says to verify open checks', /verify open checks before relying on this scan/i.test(criticalRiskSuffix), criticalRiskSuffix)
+
+  // Public payload must never contain the old scam/financial-advice phrasing, regardless of token.
+  for (const payload of [publicPayload, fallbackPublicPayload, protocolPayload, mferPublicPayload, playPublicPayload]) {
+    assert('public payload does not contain "avoid exposure"', !serialized(payload).includes('avoid exposure'), payload.symbol)
+    assert('public payload does not contain "critical rug vectors confirmed"', !serialized(payload).includes('critical rug vectors confirmed'), payload.symbol)
+  }
+}
 
 console.log(`\n${passed} passed, ${failed} failed`)
 if (failed > 0) process.exit(1)

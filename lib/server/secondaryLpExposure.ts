@@ -61,6 +61,7 @@ function mapStatus(status: string | null, sharePercent: number | null): Secondar
   if (status === 'burned') return 'burned'
   if (status === 'locked') return 'locked'
   if (status === 'team_controlled') return 'wallet_controlled'
+  if (sharePercent != null && sharePercent >= 80) return 'wallet_controlled'
   if (sharePercent != null && sharePercent >= 50) return 'watch'
   return 'open_check'
 }
@@ -114,7 +115,17 @@ export function buildSecondaryLpExposure(input: SecondaryLpExposureInput): Secon
   const nextActions = ['monitor the secondary LP pool separately from the primary pool', 'rescan after liquidity changes']
 
   const sharePhrase = sharePercent != null ? ` (about ${sharePercent}% of this secondary pool's LP supply)` : ''
-  const summary = `Primary liquidity uses ${primaryDexLabel ? `${primaryDexLabel} ` : ''}${primaryModelLabel}${input.primaryPair ? ` (${input.primaryPair})` : ''}. A secondary ERC-20 LP pool also exists${sharePhrase} and appears ${status === 'burned' ? 'burned' : status === 'locked' ? 'locked' : 'wallet-controlled'}; this is secondary LP exposure, not primary liquidity, and should be monitored separately.`
+  // Only say "appears wallet-controlled"/"burned"/"locked" when the status reflects confirmed
+  // or dominant-holder evidence; an open_check secondary pool must not claim wallet control.
+  const statusPhrase = status === 'burned' ? 'appears burned'
+    : status === 'locked' ? 'appears locked'
+    : status === 'wallet_controlled' ? 'appears wallet-controlled'
+    : status === 'watch' ? 'shows a dominant LP holder approaching wallet control'
+    : 'has control proof that is an open check (not confirmed wallet-controlled)'
+  const lockBurnSentence = lockBurnProof === 'open_check'
+    ? ' Lock/burn proof remains open until confirmed from LP holder evidence.'
+    : ''
+  const summary = `Secondary ERC-20 LP exposure detected. Primary liquidity uses ${primaryDexLabel ? `${primaryDexLabel} ` : ''}${primaryModelLabel}${input.primaryPair ? ` (${input.primaryPair})` : ''}. A secondary ERC-20 LP pool also exists${sharePhrase} and ${statusPhrase}; this is secondary LP exposure, not primary liquidity, and should be monitored separately. This pool is separate from the primary liquidity venue.${lockBurnSentence}`
 
   return {
     status,

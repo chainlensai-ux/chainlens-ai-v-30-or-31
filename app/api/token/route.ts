@@ -4032,7 +4032,11 @@ export async function POST(req: Request) {
       // evidence (e.g. a dominant LP holder), surface that as a SEPARATE secondary signal —
       // it must never overwrite or be confused with the primary pool's lpControllerIntel/
       // lpLockBurnIntel/lpMovementWatch, which describe the primary (concentrated) pool model.
-      if (_notApplicable && lpVerifyPoolPresent && lpVerifyPoolAddress && lpPool !== lpVerifyPool) {
+      // reconcileSecondaryLpSignal() above already derives secondaryLpControlSignals from the
+      // SECONDARY pool's own pre-reconciliation holder evidence/status — do not overwrite it
+      // here with lpControl.status, which has since been reset to "concentrated_liquidity"
+      // (the PRIMARY pool's canonical status).
+      if (!lpControl.secondaryLpControlSignals && _notApplicable && lpVerifyPoolPresent && lpVerifyPoolAddress && lpPool !== lpVerifyPool) {
         lpControl.secondaryLpControlSignals = {
           status: lpControl.status,
           confidence: lpControl.confidence,
@@ -5413,7 +5417,7 @@ export async function POST(req: Request) {
       if (!hpResult.ok) nextActions.push('Run a manual trade simulation to confirm buy/sell taxes and honeypot status.')
       if (deployerProfile.deployer == null) nextActions.push(`Trace deployer wallet via ${chain === 'eth' ? 'Etherscan contract creation' : 'Basescan'} before taking a position.`)
       if (lpControl.proofApplicability === 'not_applicable') {
-        nextActions.push('Standard ERC-20 LP lock/burn proof does not apply to this concentrated-liquidity pool. Liquidity control requires protocol-specific position checks.')
+        nextActions.push('Standard ERC-20 LP lock/burn proof does not apply to the primary concentrated-liquidity pool. Liquidity control requires protocol-specific position checks.')
       } else if (lpIntelligence.migrationRisk === 'high' || lpIntelligence.migrationRisk === 'inferred') {
         nextActions.push('Verify LP lock status — team-controlled liquidity can be removed at any time.')
       }
@@ -5421,7 +5425,10 @@ export async function POST(req: Request) {
       if (lpIntelligence.depth === 'shallow' || lpIntelligence.depth === 'none') nextActions.push('Caution: shallow liquidity — large trades will face significant slippage.')
       if (nextActions.length === 0) nextActions.push('All major checks passed — continue monitoring for holder changes and LP movements.')
       // Summary sentence
-      const _riskSuffix = rugRiskLabel === 'critical' ? 'Multiple critical rug vectors confirmed — avoid exposure.' : rugRiskLabel === 'high' ? 'High risk flags present — verify before any position.' : rugRiskLabel === 'watch' ? 'Watch-level signals — monitor closely.' : rugRiskLabel === 'partial_data' ? 'Partial data scan — score is conservative baseline pending full verification.' : 'Low visible risk across verified checks.'
+      // Evidence-based wording only — never assert scam/rug certainty or give financial
+      // advice ("avoid exposure", "guaranteed", "safe"). Cite the actual risk drivers and
+      // point to open checks instead.
+      const _riskSuffix = rugRiskLabel === 'critical' ? `Major risk drivers present: ${riskDrivers.length > 0 ? riskDrivers.slice(0, 3).join(', ') : 'multiple high-risk signals'}. Verify open checks before relying on this scan.` : rugRiskLabel === 'high' ? 'High risk flags present — verify before any position.' : rugRiskLabel === 'watch' ? 'Watch-level signals — monitor closely.' : rugRiskLabel === 'partial_data' ? 'Partial data scan — score is conservative baseline pending full verification.' : 'Low visible risk across verified checks.'
       const _topDriver = riskDrivers.length > 0 ? ` Primary risk: ${riskDrivers[0]}` : ''
       // Use "Rug-risk pressure" label to avoid confusion with CORTEX Score (different scale/direction)
       const summary = `${_chain} token. Rug-risk pressure: ${rugRiskScore}/100. ${_riskSuffix}${_topDriver}`
@@ -6167,7 +6174,7 @@ export async function POST(req: Request) {
         : lpLockStatus === 'burned'
           ? 'LP is burned — liquidity is permanently locked.'
           : lpProofApplicability === 'not_applicable'
-            ? 'Concentrated liquidity detected — standard ERC-20 LP lock/burn proof does not apply. Liquidity control requires protocol-specific position checks.'
+            ? 'Concentrated liquidity detected — standard ERC-20 LP lock/burn proof does not apply to the primary concentrated-liquidity pool. Liquidity control requires protocol-specific position checks.'
             : lpPoolAddressPresent && lpProofApplicability === 'applicable'
               ? (lpControllerType === 'wallet'
                 ? 'LP controller is wallet-controlled — lock/burn proof is not confirmed.'
