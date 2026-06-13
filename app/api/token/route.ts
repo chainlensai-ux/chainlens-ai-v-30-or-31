@@ -760,6 +760,9 @@ function lpHolderBalanceRaw(holder: Record<string, unknown>): unknown {
     ?? holder.balance_raw
     ?? holder.raw_balance
     ?? holder.amount
+    ?? holder.balance_raw_integer
+    ?? holder.balanceRaw
+    ?? holder.balance_raw_quote
     ?? null
 }
 
@@ -3735,7 +3738,7 @@ export async function POST(req: Request) {
       const _unknownLpSupply = _unknownLpItems.find((i: Record<string, unknown>) => i?.total_supply != null)?.total_supply
       let _unknownLpSupplyStr = _unknownLpSupply != null ? String(_unknownLpSupply) : null
       const _unknownItemsHaveDirectPct = _unknownLpItems.some((h: Record<string, unknown>) => {
-        const p = toNum(h.percentage) ?? toNum(h.percent) ?? toNum(h.ownership_percentage)
+        const p = toNum(h.percentage) ?? toNum(h.percent) ?? toNum(h.ownership_percentage) ?? toNum(h.balancePercent) ?? toNum(h.ownershipPercent) ?? toNum(h.percent_of_supply) ?? toNum(h.share) ?? toNum(h.supply_percentage) ?? toNum(h.percentage_relative_to_total_supply)
         return p != null && p > 0
       })
       if (_unknownLpSupplyStr == null && !_unknownItemsHaveDirectPct && _unknownLpItems.length > 0) {
@@ -3746,7 +3749,7 @@ export async function POST(req: Request) {
         }
       }
       const unknownTop = _unknownLpItems.slice(0, 5).map((h: Record<string, unknown>) => {
-        const directPctRaw = toNum(h.percentage) ?? toNum(h.percent) ?? toNum(h.ownership_percentage)
+        const directPctRaw = toNum(h.percentage) ?? toNum(h.percent) ?? toNum(h.ownership_percentage) ?? toNum(h.balancePercent) ?? toNum(h.ownershipPercent) ?? toNum(h.percent_of_supply) ?? toNum(h.share) ?? toNum(h.supply_percentage) ?? toNum(h.percentage_relative_to_total_supply)
         const directPct = (directPctRaw != null && directPctRaw > 0) ? directPctRaw : null
         let derivedPct: number | null = null
         if (directPct == null && _unknownLpSupplyStr != null) {
@@ -3838,7 +3841,7 @@ export async function POST(req: Request) {
       // percentage as usable when it is a positive value — a row of all-zero "direct"
       // percentages must not block the RPC totalSupply-derived fallback below.
       const _lpItemsHaveDirectPct = lpItems.some((h) => {
-        const p = toNum(h.percentage) ?? toNum(h.percent) ?? toNum(h.ownership_percentage)
+        const p = toNum(h.percentage) ?? toNum(h.percent) ?? toNum(h.ownership_percentage) ?? toNum(h.balancePercent) ?? toNum(h.ownershipPercent) ?? toNum(h.percent_of_supply) ?? toNum(h.share) ?? toNum(h.supply_percentage) ?? toNum(h.percentage_relative_to_total_supply)
         return p != null && p > 0
       })
       // GoldRush LP-holder rows sometimes omit total_supply — fall back to an RPC totalSupply
@@ -3854,7 +3857,7 @@ export async function POST(req: Request) {
         }
       }
       const top = lpItems.slice(0, 5).map((h) => {
-        const directPctRaw = toNum(h.percentage) ?? toNum(h.percent) ?? toNum(h.ownership_percentage)
+        const directPctRaw = toNum(h.percentage) ?? toNum(h.percent) ?? toNum(h.ownership_percentage) ?? toNum(h.balancePercent) ?? toNum(h.ownershipPercent) ?? toNum(h.percent_of_supply) ?? toNum(h.share) ?? toNum(h.supply_percentage) ?? toNum(h.percentage_relative_to_total_supply)
         const directPct = (directPctRaw != null && directPctRaw > 0) ? directPctRaw : null
         let derivedPct: number | null = null
         if (directPct == null && _lpGrSupplyStr != null) {

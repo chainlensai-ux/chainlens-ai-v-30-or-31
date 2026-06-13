@@ -51,14 +51,26 @@ function formatTokenSafetyScore(payload: Record<string, any>): string {
   return score == null ? `Token Safety Score${label}` : `Token Safety Score: ${score}/100${label}`
 }
 
+
+function formatTokenIdentityForPublic(name: string | null | undefined, symbol: string | null | undefined): string {
+  const cleanName = typeof name === 'string' && name.trim() ? name.trim() : ''
+  const cleanSymbol = typeof symbol === 'string' && symbol.trim() ? symbol.trim() : ''
+  if (cleanName && cleanSymbol && cleanName !== cleanSymbol) return `${cleanName} (${cleanSymbol})`
+  if (cleanName) return cleanName
+  if (cleanSymbol) return cleanSymbol
+  return 'This token'
+}
+
 function tokenSafetySentence(payload: Record<string, any>): string {
-  const symbol = typeof payload.symbol === 'string' && payload.symbol.trim() ? payload.symbol.trim() : 'This token'
+  const symbol = typeof payload.symbol === 'string' && payload.symbol.trim() ? payload.symbol.trim() : null
+  const name = typeof payload.name === 'string' && payload.name.trim() ? payload.name.trim() : null
+  const identity = formatTokenIdentityForPublic(name, symbol)
   const score = typeof payload.riskScore === 'number' ? payload.riskScore : null
   const label = typeof payload.riskLabel === 'string' && payload.riskLabel.trim() ? payload.riskLabel.trim() : null
-  if (score != null && label) return `${symbol} has a ${label} Token Safety Score (${score}/100), with severe holder/dev-control risk drivers.`
-  if (label) return `${symbol} has a ${label} Token Safety Score, with severe holder/dev-control risk drivers.`
-  if (score != null) return `${symbol} has a Token Safety Score of ${score}/100, with severe holder/dev-control risk drivers.`
-  return `${symbol} has a Token Safety Score, with severe holder/dev-control risk drivers.`
+  if (score != null && label) return `${identity} has a ${label} Token Safety Score (${score}/100), with severe holder/dev-control risk drivers.`
+  if (label) return `${identity} has a ${label} Token Safety Score, with severe holder/dev-control risk drivers.`
+  if (score != null) return `${identity} has a Token Safety Score of ${score}/100, with severe holder/dev-control risk drivers.`
+  return `${identity} has a Token Safety Score, with severe holder/dev-control risk drivers.`
 }
 
 function rewriteLegacyRiskSummaryText(text: string, payload: Record<string, any>): string {
@@ -168,7 +180,7 @@ export function sanitizePublicTokenResponse<T extends Record<string, any>>(paylo
   if (typeof (sanitized as any).cortexLpRead?.riskSummary === 'string') {
     const cortexLpRead = (sanitized as any).cortexLpRead
     cortexLpRead.riskSummary = cortexLpRead.riskSummary.replace(
-      /shows an overall "[^"]*" risk tier based on observed pool data\./i,
+      /^(?:(?:[^.]*?\([^)]*\)|[^.]*?)\s+)?shows an overall \"[^\"]*\" risk tier based on observed pool data\./i,
       tokenSafetySentence(sanitized as Record<string, any>)
     )
   }
