@@ -209,14 +209,8 @@ export function assessBaseRadarSeverity(input: BaseRadarSeverityInput): BaseRada
   if (isWalletTeamControlled && input.lpController) {
     evidenceGaps.push('A single wallet controls the dominant share of the LP position.')
   }
-  if (input.marketCapUsd == null && input.fdvUsd != null) {
-    evidenceGaps.push('Market cap is unavailable; valuation context is FDV-only.')
-  }
   if (input.poolAgeMinutes == null) {
     evidenceGaps.push('Pool age is unavailable or not normalized from current evidence.')
-  }
-  if (!input.hasSocials) {
-    evidenceGaps.push('Project socials are missing from current evidence.')
   }
   if (input.holderCount != null && input.holderCount < 25) {
     evidenceGaps.push(`Holder count is very low (${input.holderCount}).`)
@@ -224,9 +218,10 @@ export function assessBaseRadarSeverity(input: BaseRadarSeverityInput): BaseRada
   if ((input.top10 != null && input.top10 >= 95) || (input.top1 != null && input.top1 >= 90)) {
     evidenceGaps.push('Holder concentration is extreme based on indexed top-holder evidence.')
   }
-  if (activeOwner) {
-    evidenceGaps.push('Contract ownership is active (not renounced).')
-  }
+  // Valuation (FDV-fallback/unavailable), missing socials, and active ownership are
+  // reported as structured evidence entries by getRadarValuationEvidence /
+  // getRadarSocialsEvidence / getRadarOwnershipEvidence (lib/baseRadarEvidence.ts) —
+  // not duplicated here as plain evidenceGaps strings.
 
   const evidenceTags: string[] = []
   if (input.liquidityUsd != null && input.liquidityUsd < 5_000) evidenceTags.push('LIQUIDITY BELOW DEFAULT RADAR THRESHOLD')

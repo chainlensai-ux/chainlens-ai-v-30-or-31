@@ -32,7 +32,7 @@ result = tokenPassesRadarValuationFilters({ liquidityUsd: 1_000, marketCapUsd: 2
 assert.equal(result.included, false)
 
 const fdvOnly = getRadarValuationBasis({ marketCapUsd: null, marketCapStatus: null, fdvUsd: 20_000 })
-assert.equal(getRadarValuationEvidenceGap(fdvOnly), 'Market cap unavailable; FDV used as fallback valuation.')
+assert.equal(getRadarValuationEvidenceGap(fdvOnly), 'Verified market cap not returned; FDV is shown as fallback valuation.')
 assert.equal(fdvOnly.label, 'FDV')
 assert.equal(fdvOnly.verified, false)
 

@@ -135,23 +135,14 @@ function assessBaseRadarSeverity(input) {
   if (isWalletTeamControlled && input.lpController) {
     evidenceGaps.push('A single wallet controls the dominant share of the LP position.')
   }
-  if (input.marketCapUsd == null && input.fdvUsd != null) {
-    evidenceGaps.push('Market cap is unavailable; valuation context is FDV-only.')
-  }
   if (input.poolAgeMinutes == null) {
     evidenceGaps.push('Pool age is unavailable or not normalized from current evidence.')
-  }
-  if (!input.hasSocials) {
-    evidenceGaps.push('Project socials are missing from current evidence.')
   }
   if (input.holderCount != null && input.holderCount < 25) {
     evidenceGaps.push(`Holder count is very low (${input.holderCount}).`)
   }
   if ((input.top10 != null && input.top10 >= 95) || (input.top1 != null && input.top1 >= 90)) {
     evidenceGaps.push('Holder concentration is extreme based on indexed top-holder evidence.')
-  }
-  if (activeOwner) {
-    evidenceGaps.push('Contract ownership is active (not renounced).')
   }
 
   const evidenceTags = []
@@ -245,11 +236,12 @@ assert('evidence gaps are not empty', verity.evidenceGaps.length > 0, verity.evi
 assert('gaps mention LP lock proof', verity.evidenceGaps.some((g) => /lock proof/i.test(g)), verity.evidenceGaps)
 assert('gaps mention LP burn proof', verity.evidenceGaps.some((g) => /burn proof/i.test(g)), verity.evidenceGaps)
 assert('gaps mention dominant LP controller', verity.evidenceGaps.some((g) => /single wallet controls the dominant share of the LP/i.test(g)), verity.evidenceGaps)
-assert('gaps mention FDV-only market cap', verity.evidenceGaps.some((g) => /FDV-only/i.test(g)), verity.evidenceGaps)
-assert('gaps mention missing socials', verity.evidenceGaps.some((g) => /socials are missing/i.test(g)), verity.evidenceGaps)
+assert('gaps do not duplicate FDV-only market cap (now handled by structured evidence)', !verity.evidenceGaps.some((g) => /FDV-only/i.test(g)), verity.evidenceGaps)
+assert('gaps do not duplicate missing socials (now handled by structured evidence)', !verity.evidenceGaps.some((g) => /socials are missing/i.test(g)), verity.evidenceGaps)
 assert('gaps mention very low holders', verity.evidenceGaps.some((g) => /very low \(8\)/i.test(g)), verity.evidenceGaps)
 assert('gaps mention extreme concentration', verity.evidenceGaps.some((g) => /concentration is extreme/i.test(g)), verity.evidenceGaps)
-assert('gaps mention active ownership', verity.evidenceGaps.some((g) => /ownership is active/i.test(g)), verity.evidenceGaps)
+assert('gaps do not duplicate active ownership (now a risk_fact, not an open check)', !verity.evidenceGaps.some((g) => /ownership is active/i.test(g)), verity.evidenceGaps)
+assert('evidence tags still flag active owner for severity scoring', verity.evidenceTags.includes('ACTIVE OWNER ADMIN'), verity.evidenceTags)
 assert('watch next includes LP movement watch', verity.watchNext.some((w) => /watch lp movement from controlling wallet/i.test(w)), verity.watchNext)
 assert('watch next includes top-holder watch', verity.watchNext.some((w) => /watch top-holder wallets/i.test(w)), verity.watchNext)
 assert('watch next includes lock/burn verification', verity.watchNext.some((w) => /verify lock\/burn proof/i.test(w)), verity.watchNext)

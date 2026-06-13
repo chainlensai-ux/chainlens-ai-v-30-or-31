@@ -4,6 +4,7 @@ import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { assessBaseRadarSeverity, creatorTopHolderDisplay, normalizePairCreatedAt, ageLabelFromIso, extractLpControllerSharePercent, getBaseRadarDetailSeverityCap, getScoreSeverityLabel } from '@/lib/baseRadarSeverity'
 import { getRadarValuationBasis, getRadarValuationCardDisplay, DEFAULT_RADAR_MIN_LIQUIDITY_USD } from '@/lib/baseRadarValuation'
+import { getRadarValuationEvidence, getRadarSocialsEvidence, getRadarOwnershipEvidence, getRadarPastLaunchesEvidence, getRadarRugHistoryEvidence, type RadarEvidenceEntry } from '@/lib/baseRadarEvidence'
 
 type ChainKey = 'base' | 'eth'
 
@@ -109,8 +110,17 @@ type DrawerEnrichmentPayload = {
     deployerConfidence?: string | null
     methodLabel?: string | null
     creationTxHash?: string | null
-    pastLaunches?: number | null
-    rugHistoryVerified?: boolean | null
+    pastLaunches?: {
+      status?: 'checked' | 'open_check' | string | null
+      count?: number | null
+      sample?: string[] | null
+      reason?: string | null
+    } | null
+    rugHistory?: {
+      verified?: boolean | null
+      count?: number | null
+      reason?: string | null
+    } | null
     clusterEvidence?: {
       confirmed?: boolean | null
       edgeCount?: number | null
@@ -140,7 +150,13 @@ type DrawerEnrichmentPayload = {
     riskDrivers?: string[]
     openChecks?: string[]
   } | null
-  socials?: Record<string, unknown> | null
+  socials?: {
+    website?: string | null
+    twitter?: string | null
+    telegram?: string | null
+    status?: string | null
+    reason?: string | null
+  } | null
   priceChart?: { points?: ChartPoint[]; timeframe?: string | null } | null
   status?: string | null
   error?: string | null
@@ -523,7 +539,40 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
     token?.flags?.length ? `Risk context: ${token.flags.join(', ')}.` : 'Risk context: no radar flags on this card.',
   ].filter((line): line is string => Boolean(line))
 
-  const evidenceGaps: string[] = [...severity.evidenceGaps, ...(token?.evidenceGaps ?? [])]
+  // Structured, evidence-first entries (lib/baseRadarEvidence.ts) — one clean item
+  // per category (valuation, socials, ownership, deployer past launches, rug
+  // history). risk_fact entries are surfaced separately, not as generic open checks.
+  const valuationEvidence = getRadarValuationEvidence(marketValuation)
+  const socialsEvidence = getRadarSocialsEvidence({
+    website: typeof socials.website === 'string' ? socials.website : null,
+    twitter: typeof socials.twitter === 'string' ? socials.twitter : null,
+    telegram: typeof socials.telegram === 'string' ? socials.telegram : null,
+    status: socials.status ?? null,
+    reason: socials.reason ?? null,
+  })
+  const ownershipEvidence = getRadarOwnershipEvidence(security?.devOwnership ?? null)
+  const pastLaunchesEvidence = getRadarPastLaunchesEvidence({
+    deployerAddress: deployer?.deployerAddress ?? null,
+    pastLaunches: deployer?.pastLaunches ?? null,
+  })
+  const rugHistoryEvidence = getRadarRugHistoryEvidence({
+    deployerAddress: deployer?.deployerAddress ?? null,
+    rugHistory: deployer?.rugHistory ?? null,
+  })
+
+  const structuredEvidence: RadarEvidenceEntry[] = [
+    ...(valuationEvidence ? [valuationEvidence] : []),
+    socialsEvidence,
+    pastLaunchesEvidence,
+    rugHistoryEvidence,
+    ...(ownershipEvidence ? [ownershipEvidence] : []),
+  ]
+  const riskFacts = structuredEvidence.filter((e) => e.status === 'risk_fact').map((e) => e.label)
+  const evidenceGaps: string[] = [
+    ...structuredEvidence.filter((e) => e.status !== 'risk_fact').map((e) => e.label),
+    ...severity.evidenceGaps,
+    ...(token?.evidenceGaps ?? []),
+  ]
   if (lp?.lpProofApplicability === 'applicable' && (lp?.lpProofStatus === 'missing' || lp?.lpProofStatus === 'partial')) {
     evidenceGaps.push('No verified lock/burn proof found for the primary LP position.')
   }
@@ -539,12 +588,6 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
   if (!deployer?.deployerAddress) {
     evidenceGaps.push('Deployer identity is Open Check.')
   }
-  if (deployer?.pastLaunches == null) {
-    evidenceGaps.push('Past launches for this deployer are an open check.')
-  }
-  if (deployer?.rugHistoryVerified == null) {
-    evidenceGaps.push('Rug history for this deployer is an open check.')
-  }
   if (security?.openChecks?.length) {
     for (const item of security.openChecks) evidenceGaps.push(typeof item === 'string' ? item : String(item))
   }
@@ -552,6 +595,7 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
     evidenceGaps.push('Market evidence confidence is Open Check.')
   }
   const dedupedEvidenceGaps = Array.from(new Set(evidenceGaps))
+  const dedupedRiskFacts = Array.from(new Set(riskFacts))
 
   const watchNext: string[] = [...severity.watchNext]
   if (concentrationRisk === 'High' || concentrationRisk === 'Extreme') {
@@ -679,8 +723,8 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
           <DataRow label="Deployer" value={shortAddr(deployer?.deployerAddress)} />
           <DataRow label="Status" value={`${deployer?.deployerStatus ? publicStatus(deployer.deployerStatus) : 'Open Check'} · ${deployer?.deployerConfidence ?? 'limited'}`} />
           <DataRow label="Method" value={deployerMethod} />
-          <DataRow label="Past launches" value={deployer?.pastLaunches == null ? 'Open Check' : String(deployer.pastLaunches)} />
-          <DataRow label="Rug history" value={deployer?.rugHistoryVerified === true ? 'Verified rug history' : deployer?.rugHistoryVerified === false ? 'No verified rug flags' : 'Open Check'} />
+          <DataRow label="Past launches" value={pastLaunchesEvidence.status === 'verified' || pastLaunchesEvidence.status === 'checked_not_found' ? String(deployer?.pastLaunches?.count ?? 0) : 'Open Check'} />
+          <DataRow label="Rug history" value={rugHistoryEvidence.status === 'risk_fact' ? 'Flagged — see evidence gaps' : rugHistoryEvidence.status === 'checked_not_found' ? 'No verified rug flags' : 'Open Check'} />
           <DataRow label="Cluster detection" value={clusterLabel} />
           <DataRow label="Linked wallet supply" value={percent(deployer?.clusterEvidence?.linkedWalletSupplyPercent ?? deployer?.supplyControl?.linkedWalletSupplyPercent ?? null)} />
           <DataRow label="Creator in top holders" value={creatorTopHolderDisplay(deployer?.creatorInTopHolders, deployer?.creatorHolderPercent)} />
@@ -709,6 +753,14 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
         </Section>
 
         <Section title="Evidence Gaps / Watch Next">
+          {dedupedRiskFacts.length ? (
+            <>
+              <p style={{ margin: '0 0 6px', color: '#fca5a5', fontSize: '10px', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Risk facts</p>
+              <ul style={{ margin: '0 0 12px', paddingLeft: '18px', color: '#fecaca', fontSize: '12px', lineHeight: 1.55 }}>
+                {dedupedRiskFacts.map((line) => <li key={line}>{line}</li>)}
+              </ul>
+            </>
+          ) : null}
           <p style={{ margin: '0 0 6px', color: '#94a3b8', fontSize: '10px', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Open checks</p>
           <ul style={{ margin: '0 0 12px', paddingLeft: '18px', color: '#cbd5e1', fontSize: '12px', lineHeight: 1.55 }}>
             {dedupedEvidenceGaps.length

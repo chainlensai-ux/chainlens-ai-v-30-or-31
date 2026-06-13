@@ -162,7 +162,7 @@ export function tokenPassesRadarValuationFilters(input: RadarValuationInput & {
 }
 
 export function getRadarValuationEvidenceGap(valuation: RadarValuationResult): string | null {
-  if (valuation.basis === 'fdv_fallback') return 'Market cap unavailable; FDV used as fallback valuation.'
+  if (valuation.basis === 'fdv_fallback') return 'Verified market cap not returned; FDV is shown as fallback valuation.'
   if (valuation.basis === 'unavailable') return 'Market valuation unavailable.'
   return null
 }

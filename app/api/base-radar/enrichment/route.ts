@@ -311,6 +311,31 @@ function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract
     ? 'Confirmed cluster links found in current evidence.'
     : 'No confirmed cluster links in current evidence.'
 
+  const resolvedDeployerAddress = publicAddress(scan.deployerAddress ?? scan.devIntel?.deployerAddress ?? null)
+  const linkedWalletAddresses = (Array.isArray(scan.linkedWallets) ? scan.linkedWallets : [])
+    .map((w: Record<string, any>) => publicAddress(w?.address ?? w))
+    .filter((addr: string | null): addr is string => addr != null)
+
+  // Items 4/5 — past launches and rug history are derived from cluster/linked-wallet
+  // evidence already computed during this scan (clusterMap, matchedLinkedWallets,
+  // supply overlap) — no additional provider calls are made.
+  const pastLaunches = !resolvedDeployerAddress
+    ? { status: 'open_check' as const, count: null, sample: [] as string[], reason: 'deployer identity is an open check' }
+    : {
+        status: 'checked' as const,
+        count: matchedLinkedWallets > 0 ? matchedLinkedWallets : clusterEdges.length > 0 ? clusterEdges.length : 0,
+        sample: linkedWalletAddresses.slice(0, 5),
+        reason: null,
+      }
+
+  const rugHistory = !resolvedDeployerAddress
+    ? { verified: null, count: null, reason: 'deployer identity is an open check' }
+    : {
+        verified: clusterConfirmed,
+        count: clusterConfirmed ? (matchedLinkedWallets || clusterEdges.length || null) : 0,
+        reason: null,
+      }
+
   return {
     chain,
     contract,
@@ -416,8 +441,8 @@ function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract
       deployerConfidence: scan.deployerConfidence ?? scan.devIntel?.deployerConfidence ?? null,
       methodLabel: publicEvidenceLabel(scan.methodUsed ?? scan.devIntel?.methodUsed) ?? null,
       creationTxHash: scan.creationTxHash ?? scan.devIntel?.creationTxHash ?? null,
-      pastLaunches: scan.deployerProfile?.rugHistory != null ? null : null,
-      rugHistoryVerified: null,
+      pastLaunches,
+      rugHistory,
       clusterEvidence: {
         confirmed: clusterConfirmed,
         edgeCount: clusterEdges.length,
@@ -448,6 +473,8 @@ function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract
       website: socialsRaw.website ?? null,
       twitter: socialsRaw.twitter ?? null,
       telegram: socialsRaw.telegram ?? null,
+      status: scan.projectSocials ? (socialsRaw.status ?? null) : null,
+      reason: sanitizeProviderNames(scan.projectSocials ? (socialsRaw.reason ?? null) : null),
     },
     priceChart: sanitizeProviderNames(scan.priceChart ?? null),
     fetchedAt: new Date().toISOString(),
