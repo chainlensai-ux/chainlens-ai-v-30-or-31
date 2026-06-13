@@ -3,6 +3,7 @@ import { getBaseMarketUniverse, type BaseMarketCandidate, type BaseMarketMode } 
 import { fetchHoneypotSecurity } from "@/lib/server/honeypotSecurity";
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { getVerifiedUserPlan } from '@/lib/supabase/userSettings'
+import { resolveClarkIntent } from '@/lib/clarkIntent'
 
 const {
   GOLDRUSH_API_KEY,
@@ -364,6 +365,15 @@ interface ClarkRequestBody {
   prompt?: string;
   query?: string;
   tokenData?: unknown;
+  appContext?: {
+    route?: string | null;
+    chain?: string | null;
+    selectedToken?: string | { address?: string | null; contract?: string | null } | null;
+    selectedWallet?: string | { address?: string | null } | null;
+    baseRadarSummary?: unknown;
+    whaleSyncStatus?: string | null;
+    currentTool?: string | null;
+  };
   clarkContext?: {
     lastMarketList?: unknown;
     lastToken?: string | null;
@@ -1340,6 +1350,11 @@ function buildClarkToolPlan(input: {
   const marketItems = structuredMarketRows.length ? structuredMarketRows : extractMarketListItemsFromHistory(input.history);
   const selectedOptionIndex = inferSelectionIndex(trimmed, input.history, marketItems, input.clarkContext?.lastSelectedRank);
   const directAddress = extractAddress(message);
+  const routedIntent = resolveClarkIntent(message, input.context && typeof input.context === 'object' ? (input.context as any).appContext : undefined);
+  if (routedIntent.intent === 'base_radar') return { intent: "market", tools: [{ name: "market_get_base_movers", args: { page: 1, perPage: 20 }, required: false }], depth: "normal", followupContext: { address: null, lastTokenAddress: null, lastWalletAddress: null, marketFollowup: true, selectedOptionIndex: null } };
+  if (routedIntent.intent === 'wallet_scan' || routedIntent.intent === 'portfolio') return { intent: routedIntent.intent === 'portfolio' ? "wallet_balance" : "wallet_quality", tools: routedIntent.address ? [{ name: "wallet_get_snapshot", args: { address: routedIntent.address }, required: true }] : [], depth: "normal", followupContext: { address: routedIntent.address, lastTokenAddress: null, lastWalletAddress: routedIntent.address, marketFollowup: false, selectedOptionIndex: null } };
+  if (routedIntent.intent === 'liquidity_scan' && routedIntent.address) return { intent: "liquidity_safety", tools: [{ name: "liquidity_analyze", args: { address: routedIntent.address }, required: true }], depth: "normal", followupContext: { address: routedIntent.address, lastTokenAddress: routedIntent.address, lastWalletAddress: null, marketFollowup: false, selectedOptionIndex: null } };
+  if (routedIntent.intent === 'token_scan' && routedIntent.address) return { intent: "token_analysis", tools: [{ name: "token_scan", args: { address: routedIntent.address }, required: true }], depth: "normal", followupContext: { address: routedIntent.address, lastTokenAddress: routedIntent.address, lastWalletAddress: null, marketFollowup: false, selectedOptionIndex: null } };
   // HARD PRIORITY OVERRIDE — dev_wallet and liquidity_safety by token name, before any classification
   if (!directAddress) {
     const _DEV_RE = /who\s+(?:deployed|built|created|made)|deployer\s+of|creator\s+wallet|dev\s+wallet\s+(?:for|of)/i;
@@ -5863,6 +5878,29 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   if (!sessionMem) sessionMem = { lastTokenSymbol: null, lastTokenName: null, lastTokenAddress: null, lastTokenChain: null, lastTokenSummary: null, prevTokenSymbol: null, prevTokenName: null, prevTokenAddress: null, prevTokenChain: null, prevTokenSummary: null, lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0, lastActionableIntent: null, lastActionableIntentTs: 0, allowedRankScanUntil: 0, allowedRankScanUsed: false, lastMomentumShownCount: 0, recentMessages: [], conversationHistory: [], recentTokens: [], recentWallets: [], selectedChain: "base", lastActiveTool: null, currentPage: null, lastDevWallet: null };
   const chain = body.chain ?? "base";
   const prompt = body.prompt ?? "Give me a clear on-chain summary.";
+
+  const appIntent = resolveClarkIntent(prompt, body.appContext);
+  const appIntentTools = appIntent.cta.map((a) => a.label).join(' · ');
+  if (appIntent.intent === 'wallet_scan') {
+    const href = appIntent.address ? `/terminal/wallet-scanner?address=${appIntent.address}&chain=auto` : '/terminal/wallet-scanner';
+    return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_scan", toolsUsed: [], ui: { intentBadge: 'Wallet Scan', actions: appIntent.cta }, analysis: appIntent.address
+      ? `WALLET SCAN\nI found a wallet address and routed this to Wallet Scanner with auto-chain detection. If the live pull fails, open Wallet Scanner and run Deep Scan.\nCTA: Scan Wallet — ${href}`
+      : `WALLET SCAN\nWallet Scanner is the right tool. I need a wallet address to run the live pull, or open Wallet Scanner and paste one there.\nCTA: ${appIntentTools}` };
+  }
+  if (appIntent.intent === 'liquidity_scan' && !appIntent.address) {
+    return { feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_safety", toolsUsed: [], ui: { intentBadge: 'LP Check', actions: appIntent.cta }, analysis: [
+      'LP CHECK',
+      'Liquidity Safety is the right Elite LP pipeline for that.',
+      'Send a token contract and I will check pool model, lock/burn proof, controller/position verification, liquidity depth, exit risk, and missing proof.',
+      'CTA: Run LP Check or Scan Token.'
+    ].join('\n') };
+  }
+  if (appIntent.intent === 'whale_alerts') {
+    const synced = String(body.appContext?.whaleSyncStatus ?? '').toLowerCase();
+    if (!/synced|fresh|ready/.test(synced)) {
+      return { feature: "clark-ai", chain, mode: "analysis", intent: "whale_alerts", toolsUsed: [], ui: { intentBadge: 'Whale Alerts', actions: appIntent.cta }, analysis: 'WHALE ALERTS\nWhale data needs a refresh. I can open Whale Alerts and sync latest tracked wallets safely; if sync is unavailable, use the current watchlist view and retry in 30 seconds.\nCTA: Open Whale Alerts' };
+    }
+  }
   if (/what can you do|what can u do|help|yo clark what can u do/i.test(prompt.toLowerCase())) {
     return { feature: "clark-ai", chain, mode: "casual_help", intent: "help", toolsUsed: [], analysis: "I can scan tokens and wallets, read Whale Flows, Pump Alerts, and Base Radar, check liquidity/security/holders where data exists, run dev-wallet checks, and explain risk signals." };
   }
@@ -7030,7 +7068,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       }));
       return { feature: "clark-ai", chain, mode: "general_market", analysis: buildGTMarketBriefing(list), intent: plan.intent, toolsUsed };
     }
-    return { feature: "clark-ai", chain, mode: "general_market", analysis: "I can't pull the full Base market feed right now, but I can still scan any token you paste and build a watchlist from partial data.", intent: plan.intent, toolsUsed };
+    return { feature: "clark-ai", chain, mode: "general_market", ui: { intentBadge: 'Base Radar', actions: [{ label: 'Open Base Radar', href: '/terminal/base-radar' }] }, analysis: "Base Radar data is temporarily unavailable. Try opening Base Radar or rescan in 30 seconds. I can still scan any token contract you paste and build a watchlist from partial data. CTA: Open Base Radar", intent: plan.intent, toolsUsed };
   }
 
   if (plan.intent === "wallet_balance") {
@@ -7040,7 +7078,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     }
     const w = evidence.walletSnapshot;
     if (!w?.ok) {
-      return { feature: "clark-ai", chain, mode: "analysis", analysis: "I couldn't pull this wallet snapshot right now. Paste the wallet again and I'll retry.", intent: plan.intent, toolsUsed };
+      return { feature: "clark-ai", chain, mode: "analysis", analysis: `WALLET SCAN\nI couldn't complete the live wallet pull, but I can open Wallet Scanner with this address.\nCTA: /terminal/wallet-scanner?address=${resolvedAddress ?? plan.followupContext.address ?? ''}&chain=auto`, intent: plan.intent, toolsUsed };
     }
     const summary = formatWalletBalanceSummary(w);
     if (w.address) updateMemWallet(sessionMem, String(w.address), null, summary);
@@ -7145,10 +7183,12 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         "LIQUIDITY READ",
         `- Asset: ${tokenName} (${tokenSymbol})`,
         `- Contract: ${resolvedAddress}`,
-        "- Pool depth: Unverified — incomplete data in this pass",
-        "- LP control: Unverified",
-        "- Concentration: Unverified",
-        "Worth monitoring once liquidity data is available.",
+        "- Pool model: Unverified — incomplete data in this pass",
+        "- Lock/burn proof: Missing or unavailable",
+        "- Controller/position verification: Unverified",
+        "- Liquidity depth: Unverified",
+        "- Exit risk: Unknown until LP depth and control are verified",
+        "CTA: Run LP Check from Liquidity Safety or scan this token again in 30 seconds.",
       ].join("\n"),
       intent: plan.intent,
       toolsUsed,
