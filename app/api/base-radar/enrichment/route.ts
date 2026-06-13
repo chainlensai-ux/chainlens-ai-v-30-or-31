@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextResponse } from 'next/server'
 import { POST as tokenScannerPost } from '@/app/api/token/route'
+import { reconcileBaseRadarLp } from '@/lib/server/baseRadarLpReconciliation'
 
 type ChainKey = 'base' | 'eth'
 type SectionKey = 'market' | 'lp' | 'holders' | 'deployer' | 'security' | 'socials'
@@ -255,7 +256,18 @@ function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract
   const security = scan.security && typeof scan.security === 'object' ? scan.security : {}
   const simulation = security.simulation ?? scan.honeypot ?? null
   const observedPools = observedPoolFields(scan)
-  const sanitizedLpControl = publicLpControl(scan.lpControl)
+  const lpReconciliation = reconcileBaseRadarLp(scan)
+  const reconciledLpControlSource = scan.lpControl && typeof scan.lpControl === 'object'
+    ? {
+        ...scan.lpControl,
+        displayLpModel: lpReconciliation.displayLpModel,
+        proofApplicability: lpReconciliation.proofApplicability,
+        lockBurnApplicable: lpReconciliation.lockBurnApplicable,
+        evidence: lpReconciliation.evidence,
+        secondaryLpControlSignals: lpReconciliation.secondaryLpControlSignals,
+      }
+    : scan.lpControl
+  const sanitizedLpControl = publicLpControl(reconciledLpControlSource)
   const derivedLpController = teamControlledLpController(scan.lpControl)
   const publicLpController = firstPublicAddress(scan.lpController, derivedLpController, scan.lpControl?.controller, scan.lpControl?.topHolder, scan.lpControl?.owner)
   const teamControlledUnlockedLp = sanitizedLpControl?.status === 'team_controlled' && publicLpController && scan.lpLockStatus !== 'locked' && scan.lpLockStatus !== 'burned'
@@ -305,23 +317,23 @@ function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract
       lpUnlockTime: scan.lpUnlockTime ?? null,
       lpController: publicLpController ?? null,
       lpProofStatus: scan.lpProofStatus ?? null,
-      lpProofApplicability: scan.lpProofApplicability ?? null,
-      displayLpModel: scan.lpControl?.displayLpModel ?? null,
-      lockBurnApplicable: scan.lpControl?.lockBurnApplicable ?? null,
+      lpProofApplicability: lpReconciliation.proofApplicability,
+      displayLpModel: lpReconciliation.displayLpModel,
+      lockBurnApplicable: lpReconciliation.lockBurnApplicable,
       lockBurnReason: sanitizedLpControl?.lockBurnReason ?? scan.lpMeta?.lpModelDecision?.lockBurnReason ?? null,
       lpControl: sanitizedLpControl,
       lpControlRead: sanitizeProviderNames(scan.lpControlRead ?? null),
-      secondaryLpControlSignals: sanitizeProviderNames(scan.lpControl?.secondaryLpControlSignals ?? null),
+      secondaryLpControlSignals: sanitizeProviderNames(lpReconciliation.secondaryLpControlSignals),
       lpLockProvider: scan.lpLockStatus === 'locked' ? (scan.lpLockProvider ?? null) : null,
       lpDataMode: scan.lpDataMode ?? null,
       lpDataConfidence: scan.lpDataConfidence ?? null,
       lpExitRisk: teamControlledUnlockedLp ? 'high' : scan.lpExitRisk ?? null,
       lpExitRiskReason: teamControlledUnlockedLp ? 'High exit risk — Single wallet controls the detected LP position. No verified lock or burn proof was found.' : scan.lpExitRiskReason ?? null,
       liquidityDepthRisk: scan.liquidityDepthRisk ?? null,
-      lpEvidenceSummary: sanitizeProviderNames(scan.lpEvidenceSummary ?? null),
-      lpModelProof: scan.lpModelProof ?? null,
+      lpEvidenceSummary: sanitizeProviderNames(lpReconciliation.lpEvidenceSummary),
+      lpModelProof: lpReconciliation.lpModelProof,
       lpMigrationProof: scan.lpMigrationProof ?? null,
-      cortexLpRead: sanitizeProviderNames(scan.cortexLpRead ?? null),
+      cortexLpRead: sanitizeProviderNames(lpReconciliation.cortexLpRead),
     },
     holders: {
       top1: finiteNumber(holderDistribution.top1),
