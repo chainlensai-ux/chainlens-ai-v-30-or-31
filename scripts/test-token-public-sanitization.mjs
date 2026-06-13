@@ -1219,7 +1219,8 @@ console.log('\nO. PLAY-like secondary Aerodrome V2 LP exposure')
   assert('PLAY secondaryLpExposure.controllerSharePercent is 90', playSecondaryExposureWithHolder?.controllerSharePercent === 90, playSecondaryExposureWithHolder?.controllerSharePercent)
   assert('PLAY secondaryLpExposure.summary says wallet-controlled when controller/share confirmed', /wallet-controlled/i.test(playSecondaryExposureWithHolder?.summary ?? ''), playSecondaryExposureWithHolder?.summary)
   assert('PLAY secondaryLpExposure.summary mentions "Secondary ERC-20 LP exposure detected"', /Secondary ERC-20 LP exposure detected/i.test(playSecondaryExposureWithHolder?.summary ?? ''), playSecondaryExposureWithHolder?.summary)
-  assert('PLAY secondaryLpExposure.summary mentions this pool is separate from the primary liquidity venue', /separate from the primary liquidity venue/i.test(playSecondaryExposureWithHolder?.summary ?? ''), playSecondaryExposureWithHolder?.summary)
+  assert('PLAY secondaryLpExposure.summary says secondary exposure should be monitored separately', /not primary liquidity, and should be monitored separately/i.test(playSecondaryExposureWithHolder?.summary ?? ''), playSecondaryExposureWithHolder?.summary)
+  assert('PLAY secondaryLpExposure.summary describes primary as PancakeSwap V3 concentrated liquidity', /PancakeSwap V3 concentrated liquidity/i.test(playSecondaryExposureWithHolder?.summary ?? ''), playSecondaryExposureWithHolder?.summary)
 
   // O2. Secondary pool has NO controller/share evidence — must be open_check, controller
   // null, controllerSharePercent null, and the summary must NOT claim "wallet-controlled".
@@ -1945,6 +1946,118 @@ console.log('\nW. GET /api/token query alias extraction (input/address/contract/
     assert('no debug: _debug is not present', !('_debug' in result), Object.keys(result))
     assert('no debug: _diagnostics is not present', !('_diagnostics' in result), Object.keys(result))
   }
+}
+
+console.log('\nX. Concentrated primary pool public evidence/whatWasFound wording')
+{
+  // Mirrors the lpControl.evidence assembly added to app/api/token/route.ts: for concentrated
+  // primary pools (proofApplicability === "not_applicable" or displayLpModel ===
+  // "concentrated_liquidity"), "LP verification ..." labels become "Secondary ERC-20 LP
+  // exposure ..." labels, and "Primary market pool: none (...)" becomes
+  // "Primary market pool ID: ... (...)" when a pool ID is available.
+  function mirrorConcentratedEvidence({ lpControl, marketPair, lpPoolAddress, lpPoolType, lpPair, lpProofAddress, lpProofType, lpVerifyPoolPresent, lpPoolDiffersFromVerify, lpReason, needsLpHolderFetch }) {
+    const _concentratedPrimary = lpControl.proofApplicability === 'not_applicable' || lpControl.displayLpModel === 'concentrated_liquidity'
+    const _primaryMarketPoolLine = lpPoolAddress
+      ? `Primary market pool: ${lpPoolAddress} (${lpPoolType})`
+      : lpControl.primaryMarketPoolId
+        ? `Primary market pool ID: ${lpControl.primaryMarketPoolId} (${lpPoolType})`
+        : `Primary market pool: none (${lpPoolType})`
+    return [
+      ...(lpControl.evidence ?? []),
+      `Market primary pair: ${marketPair}`,
+      _primaryMarketPoolLine,
+      _concentratedPrimary ? `Secondary ERC-20 LP exposure pair: ${lpPair}` : `LP verification pair: ${lpPair}`,
+      _concentratedPrimary ? `Secondary ERC-20 LP exposure pool: ${lpProofAddress ?? 'none'} (${lpProofType})` : `LP verification pool: ${lpProofAddress ?? 'none'} (${lpProofType})`,
+      lpVerifyPoolPresent && lpPoolDiffersFromVerify ? (_concentratedPrimary ? `Secondary pool differs from primary concentrated pool` : `V2 proof pool differs from market pool`) : '',
+      _concentratedPrimary ? `Secondary exposure reason: ${lpReason}` : `LP verification reason: ${lpReason}`,
+      `lpHolderCheckAttempted=${needsLpHolderFetch}`,
+    ].filter(Boolean)
+  }
+
+  // Mirrors computeLpControlRead()'s "concentrated_liquidity" case whatWasFound.
+  function mirrorConcentratedWhatWasFound(lp) {
+    return [
+      "Primary concentrated pool found",
+      "Primary market pool selected",
+      "Pool structure reviewed",
+      ...(lp.secondaryLpControlSignals ? ["Secondary ERC-20 LP exposure detected"] : []),
+    ]
+  }
+
+  // PLAY: concentrated PancakeSwap V3 primary, secondary Aerodrome PLAY/USDC exposure.
+  const playSecondaryPool = '0x42781ec558f9fb95f5e080572bcd0a37523b55e2'
+  const { lpControl: playReconciled } = reconcileSecondaryLpSignal({ ...playLpControl, evidence: [] }, {
+    primaryConcentrated: true,
+    verifyPool: { address: playSecondaryPool, liquidityUsd: 50000, dexId: 'aerodrome-base', dexName: 'Aerodrome', poolType: 'aerodrome', hasLpToken: true, hasDexMeta: true, isValidAddress: true },
+    primaryPoolAddress: playPoolAddress,
+    primaryPoolType: 'v3',
+    primaryDexId: 'pancakeswap-v3-base',
+    primaryMarketPoolId: playPoolAddress,
+    marketPairLabel: 'PLAY / USDC',
+  })
+  const playEvidence = mirrorConcentratedEvidence({
+    lpControl: playReconciled,
+    marketPair: 'PLAY / USDC',
+    lpPoolAddress: playPoolAddress,
+    lpPoolType: 'v3',
+    lpPair: 'PLAY / USDC',
+    lpProofAddress: playSecondaryPool,
+    lpProofType: 'aerodrome',
+    lpVerifyPoolPresent: true,
+    lpPoolDiffersFromVerify: true,
+    lpReason: 'V2 proof pool selected (Aerodrome) — highest-liquidity V2 pool for burn/lock verification',
+    needsLpHolderFetch: true,
+  })
+  assert('PLAY evidence does not include "LP verification pool:"', !playEvidence.some((e) => e.startsWith('LP verification pool:')), playEvidence)
+  assert('PLAY evidence does not include "LP verification pair:"', !playEvidence.some((e) => e.startsWith('LP verification pair:')), playEvidence)
+  assert('PLAY evidence does not include "LP verification reason:"', !playEvidence.some((e) => e.startsWith('LP verification reason:')), playEvidence)
+  assert('PLAY evidence includes "Secondary ERC-20 LP exposure pool:"', playEvidence.some((e) => e.startsWith('Secondary ERC-20 LP exposure pool:')), playEvidence)
+  assert('PLAY evidence includes "Secondary ERC-20 LP exposure pair:"', playEvidence.some((e) => e.startsWith('Secondary ERC-20 LP exposure pair:')), playEvidence)
+  assert('PLAY evidence includes "Secondary pool differs from primary concentrated pool"', playEvidence.includes('Secondary pool differs from primary concentrated pool'), playEvidence)
+  assert('PLAY evidence includes "Secondary exposure reason:"', playEvidence.some((e) => e.startsWith('Secondary exposure reason:')), playEvidence)
+
+  const playWhatWasFound = mirrorConcentratedWhatWasFound(playReconciled)
+  assert('PLAY lpControlRead.whatWasFound does not include "Verification pool found"', !playWhatWasFound.includes('Verification pool found'), playWhatWasFound)
+  assert('PLAY lpControlRead.whatWasFound includes "Primary concentrated pool found"', playWhatWasFound.includes('Primary concentrated pool found'), playWhatWasFound)
+  assert('PLAY lpControlRead.whatWasFound includes "Secondary ERC-20 LP exposure detected" (secondary exists)', playWhatWasFound.includes('Secondary ERC-20 LP exposure detected'), playWhatWasFound)
+
+  // No secondary exposure -> whatWasFound omits "Secondary ERC-20 LP exposure detected".
+  const playWhatWasFoundNoSecondary = mirrorConcentratedWhatWasFound({ ...playReconciled, secondaryLpControlSignals: undefined })
+  assert('whatWasFound omits "Secondary ERC-20 LP exposure detected" when no secondary exposure', !playWhatWasFoundNoSecondary.includes('Secondary ERC-20 LP exposure detected'), playWhatWasFoundNoSecondary)
+
+  // MFERGPT: Uniswap V4 concentrated primary with no pool address but a primaryMarketPoolId,
+  // plus secondary Aerodrome MFERGPT/$MFER exposure.
+  const mferEvidence = mirrorConcentratedEvidence({
+    lpControl: mferLpControl,
+    marketPair: 'MFERGPT / WETH',
+    lpPoolAddress: null,
+    lpPoolType: 'concentrated',
+    lpPair: 'MFERGPT / $MFER',
+    lpProofAddress: mferSecondaryPool,
+    lpProofType: 'v2',
+    lpVerifyPoolPresent: true,
+    lpPoolDiffersFromVerify: true,
+    lpReason: 'V2 proof pool selected (Aerodrome) — highest-liquidity V2 pool for burn/lock verification',
+    needsLpHolderFetch: true,
+  })
+  assert('MFERGPT evidence does not include "pool=unknown"', !mferEvidence.includes('pool=unknown'), mferEvidence)
+  assert('MFERGPT evidence includes "Primary market pool ID: ' + mferPoolId + '"', mferEvidence.includes(`Primary market pool ID: ${mferPoolId} (concentrated)`), mferEvidence)
+  assert('MFERGPT evidence does not include "LP verification pool:"', !mferEvidence.some((e) => e.startsWith('LP verification pool:')), mferEvidence)
+  assert('MFERGPT evidence does not include "LP verification pair:"', !mferEvidence.some((e) => e.startsWith('LP verification pair:')), mferEvidence)
+  assert('MFERGPT evidence includes "Secondary ERC-20 LP exposure pool:"', mferEvidence.some((e) => e.startsWith('Secondary ERC-20 LP exposure pool:')), mferEvidence)
+
+  // VIRTUAL: primary is constant-product (Aerodrome V2), so the secondary exposure summary
+  // must not claim "Primary liquidity uses ... concentrated liquidity".
+  const virtualSecondaryExposure = buildSecondaryLpExposure({
+    secondarySignals: { status: 'team_controlled', confidence: 'high', poolAddress: '0x88e2e3f0c4ac9af2b500e3e3f6efeaee2f1a4d3a', poolDex: 'uniswap-v2-base', poolType: 'v2', pair: 'GAME / VIRTUAL', reason: 'Secondary pool LP-holder evidence.', evidence: ['top_holder=0x974a21754271dd3d71a16f2852f8e226a9276b3e', 'top_share=99.45%'] },
+    primaryDex: 'Aerodrome',
+    primaryPair: 'VIRTUAL / WETH',
+    primaryPoolModel: 'erc20_lp_token',
+  })
+  assert('VIRTUAL secondaryLpExposure summary does not say "concentrated liquidity" (primary is constant-product)', !/concentrated liquidity/i.test(virtualSecondaryExposure?.summary ?? ''), virtualSecondaryExposure?.summary)
+  assert('VIRTUAL secondaryLpExposure summary says "Primary liquidity uses the selected"', /Primary liquidity uses the selected/i.test(virtualSecondaryExposure?.summary ?? ''), virtualSecondaryExposure?.summary)
+  assert('VIRTUAL secondaryLpExposure summary mentions primary pair VIRTUAL / WETH', /VIRTUAL \/ WETH/.test(virtualSecondaryExposure?.summary ?? ''), virtualSecondaryExposure?.summary)
+  assert('VIRTUAL secondaryLpExposure summary mentions secondary pair GAME / VIRTUAL', /GAME \/ VIRTUAL/.test(virtualSecondaryExposure?.summary ?? ''), virtualSecondaryExposure?.summary)
 }
 
 console.log(`\n${passed} passed, ${failed} failed`)

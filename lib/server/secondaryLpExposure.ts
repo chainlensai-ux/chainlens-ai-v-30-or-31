@@ -99,9 +99,9 @@ export function buildSecondaryLpExposure(input: SecondaryLpExposureInput): Secon
   const confidence = asString(secondary.confidence) ?? 'low'
 
   const primaryDexLabel = asString(input.primaryDex)
-  const primaryModelLabel = input.primaryPoolModel === 'concentrated' ? 'concentrated liquidity'
-    : input.primaryPoolModel === 'protocol_or_gauge' ? 'protocol-managed liquidity'
-    : 'concentrated liquidity'
+  const primaryPairLabel = asString(input.primaryPair)
+  const secondaryPairLabel = asString(secondary.pair)
+  const isConcentratedPrimary = input.primaryPoolModel === 'concentrated'
 
   const signals: string[] = ['secondary LP pool detected separate from the primary pool']
   if (status === 'wallet_controlled' || status === 'watch') signals.push('secondary LP pool appears wallet-controlled')
@@ -125,7 +125,10 @@ export function buildSecondaryLpExposure(input: SecondaryLpExposureInput): Secon
   const lockBurnSentence = lockBurnProof === 'open_check'
     ? ' Lock/burn proof remains open until confirmed from LP holder evidence.'
     : ''
-  const summary = `Secondary ERC-20 LP exposure detected. Primary liquidity uses ${primaryDexLabel ? `${primaryDexLabel} ` : ''}${primaryModelLabel}${input.primaryPair ? ` (${input.primaryPair})` : ''}. A secondary ERC-20 LP pool also exists${sharePhrase} and ${statusPhrase}; this is secondary LP exposure, not primary liquidity, and should be monitored separately. This pool is separate from the primary liquidity venue.${lockBurnSentence}`
+  const secondaryPairPhrase = secondaryPairLabel ? ` (${secondaryPairLabel})` : (sharePhrase || '')
+  const summary = isConcentratedPrimary
+    ? `Secondary ERC-20 LP exposure detected. Primary liquidity uses ${primaryDexLabel ? `${primaryDexLabel} ` : ''}concentrated liquidity${primaryPairLabel ? ` (${primaryPairLabel})` : ''}. A secondary ERC-20 LP pool also exists${secondaryPairPhrase} and ${statusPhrase}; this is secondary LP exposure, not primary liquidity, and should be monitored separately.${lockBurnSentence}`
+    : `Secondary ERC-20 LP exposure detected. Primary liquidity uses the selected${primaryPairLabel ? ` ${primaryPairLabel}` : ''}${primaryDexLabel ? ` ${primaryDexLabel}` : ''} LP pool. A secondary ERC-20 LP pool also exists${secondaryPairPhrase} and ${statusPhrase}; this is secondary LP exposure, not a replacement for the primary LP verdict.${lockBurnSentence}`
 
   return {
     status,

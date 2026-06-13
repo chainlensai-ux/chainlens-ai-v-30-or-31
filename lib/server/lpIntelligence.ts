@@ -280,11 +280,12 @@ export function reconcileSecondaryLpSignal<T extends ReconcilableLpControl>(
     primaryPoolAddress: string | null
     primaryPoolType: string
     primaryDexId?: string | null
+    primaryMarketPoolId?: string | null
     marketPairLabel: string
     canonicalStatus?: T['status']
   }
 ): { lpControl: T & { secondaryLpControlSignals?: SecondaryLpSignal | null }; secondary: SecondaryLpSignal | null } {
-  const { primaryConcentrated, verifyPool, primaryPoolAddress, primaryPoolType, primaryDexId, marketPairLabel, canonicalStatus } = params
+  const { primaryConcentrated, verifyPool, primaryPoolAddress, primaryPoolType, primaryDexId, primaryMarketPoolId, marketPairLabel, canonicalStatus } = params
 
   if (!(primaryConcentrated && verifyPool?.address && verifyPool.address !== primaryPoolAddress)) {
     return { lpControl, secondary: null }
@@ -307,7 +308,7 @@ export function reconcileSecondaryLpSignal<T extends ReconcilableLpControl>(
     reason: 'Protocol-specific LP proof required for the primary pool.',
     evidence: [
       `Primary pool: ${marketPairLabel} (${primaryPoolType})`,
-      `pool=${primaryPoolAddress ?? 'unknown'}`,
+      primaryPoolAddress ? `pool=${primaryPoolAddress}` : primaryMarketPoolId ? `poolId=${primaryMarketPoolId}` : 'pool=unknown',
       `dex=${primaryDexId ?? 'unknown'}`,
       `poolType=${primaryPoolType}`,
     ],

@@ -2437,7 +2437,12 @@ function computeLpControlRead(lp: LpControlResult, pairName?: string | null, con
         title: "Concentrated liquidity — protocol-specific position checks",
         meaning: "Standard ERC-20 LP-token lock/burn proof does not apply to the primary concentrated-liquidity pool. Liquidity control requires protocol-specific position checks.",
         riskLevel: "Caution",
-        whatWasFound: [...poolLine.filter((x)=>!/^Pair:/i.test(x)), "Pool detected", "Primary market selected", "Pool structure reviewed"],
+        whatWasFound: [
+          "Primary concentrated pool found",
+          "Primary market pool selected",
+          "Pool structure reviewed",
+          ...(lp.secondaryLpControlSignals ? ["Secondary ERC-20 LP exposure detected"] : []),
+        ],
         couldNotVerify: ["Position verification required"],
         nextAction: "Monitor liquidity movement through protocol-specific position checks.",
       };
@@ -4102,6 +4107,7 @@ export async function POST(req: Request) {
         primaryPoolAddress,
         primaryPoolType: lpPoolType,
         primaryDexId: lpDexId ?? lpDexName ?? "unknown",
+        primaryMarketPoolId: primaryMarketPoolId ?? lpPool?.poolId ?? null,
         marketPairLabel: marketPair,
       })
       lpControl = _reconciled
@@ -4267,14 +4273,24 @@ export async function POST(req: Request) {
       lpControl.burnStatus = _notApplicable ? 'not_applicable' : lpControl.status === 'burned' ? 'burned' : 'not_confirmed'
     }
 
+    // For concentrated primary pools, standard ERC-20 LP verification does not apply to the
+    // primary pool — any V2/Aerodrome pool reported here is SECONDARY exposure, not the
+    // primary LP verification pool, so the public evidence labels must say so explicitly.
+    const _concentratedPrimary = lpControl.proofApplicability === 'not_applicable' || lpControl.displayLpModel === 'concentrated_liquidity'
+    const _primaryMarketPoolLine = lpPoolAddress
+      ? `Primary market pool: ${lpPoolAddress} (${lpPoolType})`
+      : lpControl.primaryMarketPoolId
+        ? `Primary market pool ID: ${lpControl.primaryMarketPoolId} (${lpPoolType})`
+        : `Primary market pool: none (${lpPoolType})`
+
     lpControl.evidence = [
       ...(lpControl.evidence ?? []),
       `Market primary pair: ${marketPair}`,
-      `Primary market pool: ${lpPoolAddress ?? 'none'} (${lpPoolType})`,
-      `LP verification pair: ${lpPair}`,
-      `LP verification pool: ${_lpProofAddress ?? 'none'} (${_lpProofType})`,
-      lpVerifyPoolPresent && lpPool !== lpVerifyPool ? `V2 proof pool differs from market pool` : '',
-      `LP verification reason: ${lpReason}`,
+      _primaryMarketPoolLine,
+      _concentratedPrimary ? `Secondary ERC-20 LP exposure pair: ${lpPair}` : `LP verification pair: ${lpPair}`,
+      _concentratedPrimary ? `Secondary ERC-20 LP exposure pool: ${_lpProofAddress ?? 'none'} (${_lpProofType})` : `LP verification pool: ${_lpProofAddress ?? 'none'} (${_lpProofType})`,
+      lpVerifyPoolPresent && lpPool !== lpVerifyPool ? (_concentratedPrimary ? `Secondary pool differs from primary concentrated pool` : `V2 proof pool differs from market pool`) : '',
+      _concentratedPrimary ? `Secondary exposure reason: ${lpReason}` : `LP verification reason: ${lpReason}`,
       `lpHolderCheckAttempted=${needsLpHolderFetch}`,
     ].filter(Boolean);
 
