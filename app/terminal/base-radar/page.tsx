@@ -70,9 +70,13 @@ interface RadarSummary {
   unverified: number
   averageLiquidity: number
   highestLiquidityToken: string
+  highestLiquidityValue: string
   highestVolumeToken: string
+  highestVolumeValue: string
   newestToken: string
+  newestValue: string
   hottestToken: string
+  hottestValue: string
   hasSecurityData: boolean
 }
 
@@ -142,6 +146,37 @@ function shortAddr(addr: string): string {
 
 function safeText(value: string | null | undefined, fallback = 'Open check'): string {
   return value && value.trim().length > 0 ? value : fallback
+}
+
+
+function cleanIdentityPart(value: string | null | undefined): string {
+  const cleaned = safeText(value, '')
+    .replace(/call\s*↳\s*by\s*@?[\w.-]+/ig, ' ')
+    .replace(/\b\d+\s*(?:s|m|h|d)\s*ago\b/ig, ' ')
+    .replace(/@[\w.-]+/g, ' ')
+    .replace(/0x[a-fA-F0-9]{6,}/g, ' ')
+    .replace(/[·•|]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  return cleaned
+}
+
+function getTokenIdentity(token: RadarToken): { primary: string; symbol: string; context: string } {
+  const rawName = cleanIdentityPart(token.name)
+  const rawSymbol = cleanIdentityPart(token.symbol).replace(/^\$+/, '')
+  const symbol = rawSymbol || 'TOKEN'
+  const nameWithoutDuplicate = rawName.replace(new RegExp(`\\b${symbol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'ig'), '').replace(/\s+/g, ' ').trim()
+  const primary = nameWithoutDuplicate && nameWithoutDuplicate.toLowerCase() !== symbol.toLowerCase() ? nameWithoutDuplicate : symbol
+  const context = token.ageMinutes <= 30 ? `Fresh call · ${fmtAge(token.ageMinutes)}` : `Radar call · ${fmtAge(token.ageMinutes)}`
+
+  return { primary, symbol, context }
+}
+
+function getOverviewTokenTitle(token: TokenIntel | undefined): string {
+  if (!token) return 'Open check'
+  const identity = getTokenIdentity(token)
+  return identity.symbol && identity.symbol !== identity.primary ? `${identity.primary} / ${identity.symbol}` : identity.primary
 }
 
 function hasSuspiciousBranding(name: string, symbol: string): boolean {
@@ -224,7 +259,7 @@ function getCortexSignal(status: RadarStatus): string {
     HOT: 'Strong early activity relative to liquidity. Worth watching closely, but still verify before entry.',
     WATCH: 'Fresh Base pool with some traction. Monitor liquidity and volume before making a move.',
     EARLY: 'Very new pool. Not enough history yet, but early activity is visible.',
-    UNVERIFIED: 'Not enough verified market data yet. Treat as unconfirmed, not automatically safe.',
+    UNVERIFIED: 'Not enough verified market data yet. Treat as unconfirmed, not automatically reliable.',
     RISKY: 'Weak liquidity, poor activity, or tax/branding flags detected. Approach carefully.',
     DEAD: 'No meaningful trading activity detected yet. Likely inactive or too early.',
   }
@@ -308,11 +343,14 @@ function getStageLabel(token: TokenIntel): string {
 }
 
 function getSignalInsight(token: TokenIntel): string {
-  if (token.status === 'UNVERIFIED') return 'High open-check count. Review liquidity and simulation evidence before trusting this signal.'
-  if (token.ageMinutes <= 30 && token.liquidityUsd < 5_000) return 'Very new pool. Early activity visible. Liquidity still thin.'
-  if (token.momentum === 'HIGH' && token.honeypot?.simulationSuccess) return 'Volume spike with active trading and clean simulation evidence.'
-  if (token.volume24h >= 5_000) return 'Fresh volume is building against visible liquidity. Scan deeper for confirmation.'
-  if (token.liquidityUsd >= 30_000) return 'Visible liquidity is stronger than most fresh pools. Monitor volume follow-through.'
+  const openChecks = token.flags.filter(flag => flag.includes('Open Check') || flag === 'Open Check').length
+
+  if (token.ageMinutes <= 30 && token.volume24h > 0) return 'Fresh pool with early activity visible.'
+  if (token.volume24h >= 20_000 || token.momentum === 'HIGH') return 'Volume spike is driving this radar placement.'
+  if (token.liquidityUsd > 0 && token.liquidityUsd < 2_000) return 'Thin liquidity makes this an early-watch signal.'
+  if (openChecks >= 1 || token.status === 'UNVERIFIED') return 'Open checks remain high; verify evidence before relying on this signal.'
+  if (token.honeypot?.simulationSuccess && (token.honeypot.buyTax ?? 0) <= 5 && (token.honeypot.sellTax ?? 0) <= 5) return 'Trading simulation is clear, but other evidence still needs review.'
+  if (token.radarScore >= 75) return 'Radar score is elevated from visible momentum and activity signals.'
   return safeText(token.clarkVerdict ?? token.clarkSignal)
 }
 
@@ -321,6 +359,14 @@ function getTaxLabel(token: TokenIntel): string {
   const buyTax = token.honeypot.buyTax ?? 0
   const sellTax = token.honeypot.sellTax ?? 0
   return `B ${buyTax.toFixed(1)}% / S ${sellTax.toFixed(1)}%`
+}
+
+function getPriorityAccent(token: TokenIntel): { color: string; background: string; border: string; glow: string } {
+  if (token.status === 'RISKY' || token.status === 'DEAD' || token.flags.includes('High Risk')) return { color: '#f87171', background: 'rgba(248,113,113,0.12)', border: 'rgba(248,113,113,0.34)', glow: 'rgba(248,113,113,0.14)' }
+  if (token.flags.some(flag => flag.includes('Open Check') || flag === 'Simulation Open')) return { color: '#fbbf24', background: 'rgba(251,191,36,0.12)', border: 'rgba(251,191,36,0.34)', glow: 'rgba(251,191,36,0.14)' }
+  if (token.momentum === 'HIGH' || token.volume24h >= 5_000) return { color: '#2DD4BF', background: 'rgba(45,212,191,0.13)', border: 'rgba(45,212,191,0.36)', glow: 'rgba(45,212,191,0.16)' }
+  if (token.radarScore >= 75) return { color: '#22d3ee', background: 'rgba(34,211,238,0.12)', border: 'rgba(34,211,238,0.34)', glow: 'rgba(34,211,238,0.15)' }
+  return { color: STATUS_COLOR[token.status], background: STATUS_BG[token.status], border: STATUS_BORDER[token.status], glow: STATUS_BG[token.status] }
 }
 
 function getBadgeStyle(flag: string): { color: string; background: string; border: string } {
@@ -348,10 +394,12 @@ function TokenCard({
   tracking: boolean
 }) {
   const [hovered, setHovered] = useState(false)
-  const statusColor = STATUS_COLOR[token.status]
-  const statusBg = STATUS_BG[token.status]
-  const statusBorder = STATUS_BORDER[token.status]
-  const avatarText = (token.symbol || token.name || '?').slice(0, 2).toUpperCase()
+  const priorityAccent = getPriorityAccent(token)
+  const statusColor = priorityAccent.color
+  const statusBg = priorityAccent.background
+  const statusBorder = priorityAccent.border
+  const identity = getTokenIdentity(token)
+  const avatarText = (identity.symbol || identity.primary || '?').slice(0, 2).toUpperCase()
   const highSignal = token.radarScore >= 75
   const stageLabel = getStageLabel(token)
   const insight = getSignalInsight(token)
@@ -376,54 +424,54 @@ function TokenCard({
           : `linear-gradient(135deg, rgba(8,13,24,0.94), rgba(4,9,18,0.90)), radial-gradient(circle at 0% 0%, ${statusBg}, transparent 36%)`,
         border: `1px solid ${hovered || highSignal ? statusBorder : 'rgba(148,163,184,0.13)'}`,
         borderRadius: '18px',
-        padding: '14px',
+        padding: '12px 13px',
         cursor: 'pointer',
         transition: 'transform 0.18s ease, background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease',
         transform: hovered ? 'translateY(-1px)' : 'translateY(0)',
-        boxShadow: highSignal ? `0 18px 55px rgba(0,0,0,0.28), 0 0 34px ${statusBg}` : '0 14px 36px rgba(0,0,0,0.22)',
+        boxShadow: highSignal ? `0 16px 48px rgba(0,0,0,0.26), 0 0 30px ${priorityAccent.glow}` : '0 14px 36px rgba(0,0,0,0.22)',
         animation: 'radarSlideIn 0.35s ease both',
         animationDelay: `${index * 45}ms`,
         position: 'relative',
         overflow: 'hidden',
       }}
     >
-      <div style={{ position: 'absolute', inset: '0 auto 0 0', width: '4px', background: statusColor, opacity: highSignal ? 0.95 : 0.65 }} />
+      <div style={{ position: 'absolute', inset: '0 auto 0 0', width: highSignal ? '5px' : '4px', background: `linear-gradient(180deg, ${statusColor}, transparent)`, opacity: highSignal ? 0.95 : 0.65 }} />
 
-      <div className='token-card-header' style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '12px', marginBottom: '12px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '11px', minWidth: 0 }}>
-          <div style={{ width: '42px', height: '42px', borderRadius: '14px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '13px', fontWeight: 900, color: '#f8fafc', background: `linear-gradient(135deg, ${statusBg}, rgba(168,85,247,0.20))`, border: `1px solid ${statusBorder}`, boxShadow: `0 0 22px ${statusBg}`, fontFamily: 'var(--font-plex-mono)', flexShrink: 0 }}>
+      <div className='token-card-header' style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '10px', marginBottom: '10px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
+          <div style={{ width: '38px', height: '38px', borderRadius: '13px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '13px', fontWeight: 900, color: '#f8fafc', background: `linear-gradient(135deg, ${statusBg}, rgba(168,85,247,0.20))`, border: `1px solid ${statusBorder}`, boxShadow: `0 0 22px ${statusBg}`, fontFamily: 'var(--font-plex-mono)', flexShrink: 0 }}>
             {avatarText}
           </div>
           <div style={{ minWidth: 0 }}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: '7px', minWidth: 0 }}>
-              <span style={{ fontSize: '17px', fontWeight: 850, color: '#f8fafc', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{safeText(token.name, 'Unknown token')}</span>
-              <span style={{ fontSize: '11px', fontWeight: 800, color: '#94a3b8', fontFamily: 'var(--font-plex-mono)' }}>{safeText(token.symbol, '???')}</span>
+              <span style={{ fontSize: '16px', fontWeight: 850, color: '#f8fafc', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{identity.primary}</span>
+              <span style={{ fontSize: '11px', fontWeight: 800, color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap' }}>{identity.symbol}</span>
             </div>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '6px' }}>
               <span style={{ fontSize: '10px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>{shortAddr(token.contract)}</span>
-              <MiniPill label={fmtAge(token.ageMinutes)} />
+              <MiniPill label={identity.context} />
               <MiniPill label={stageLabel} color={statusColor} background={statusBg} border={statusBorder} />
             </div>
           </div>
         </div>
 
-        <div style={{ minWidth: '86px', borderRadius: '16px', padding: '8px 10px', textAlign: 'center', background: `linear-gradient(180deg, ${statusBg}, rgba(255,255,255,0.035))`, border: `1px solid ${statusBorder}`, boxShadow: highSignal ? `0 0 22px ${statusBg}` : 'none' }}>
+        <div style={{ minWidth: '86px', borderRadius: '16px', padding: '7px 9px', textAlign: 'center', background: `linear-gradient(180deg, ${statusBg}, rgba(255,255,255,0.035))`, border: `1px solid ${statusBorder}`, boxShadow: highSignal ? `0 0 22px ${statusBg}` : 'none' }}>
           <p style={{ margin: '0 0 2px', fontSize: '8px', color: '#94a3b8', letterSpacing: '0.14em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', fontWeight: 800 }}>Radar Score</p>
-          <p style={{ margin: 0, color: statusColor, fontSize: '28px', lineHeight: 1, fontWeight: 900, fontFamily: 'var(--font-plex-mono)' }}>{token.radarScore}</p>
+          <p style={{ margin: 0, color: statusColor, fontSize: '25px', lineHeight: 1, fontWeight: 900, fontFamily: 'var(--font-plex-mono)' }}>{token.radarScore}</p>
         </div>
       </div>
 
-      <div style={{ borderRadius: '14px', padding: '11px 12px', marginBottom: '12px', border: `1px solid ${statusBorder}`, background: `linear-gradient(90deg, ${statusBg}, rgba(255,255,255,0.025))` }}>
+      <div style={{ borderRadius: '14px', padding: '9px 11px', marginBottom: '10px', border: `1px solid ${statusBorder}`, background: `linear-gradient(90deg, ${statusBg}, rgba(255,255,255,0.025))` }}>
         <p style={{ margin: '0 0 4px', fontSize: '9px', color: statusColor, letterSpacing: '0.14em', textTransform: 'uppercase', fontWeight: 900, fontFamily: 'var(--font-plex-mono)' }}>Why on radar</p>
         <p style={{ margin: 0, color: '#dbeafe', fontSize: '12px', lineHeight: 1.45, fontWeight: 650 }}>{insight}</p>
       </div>
 
-      <div className='token-card-metrics' style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: '8px', marginBottom: '10px' }}>
+      <div className='token-card-metrics' style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: '7px', marginBottom: '9px' }}>
         {metrics.map(metric => <Metric key={metric.label} {...metric} />)}
       </div>
 
       {token.flags.length > 0 && (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '12px' }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '10px' }}>
           {token.flags.map(flag => {
             const badge = getBadgeStyle(flag)
             return <span key={flag} style={{ padding: '4px 8px', borderRadius: '99px', fontSize: '9px', fontWeight: 850, letterSpacing: '0.07em', color: badge.color, background: badge.background, border: `1px solid ${badge.border}`, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{flag}</span>
@@ -431,10 +479,10 @@ function TokenCard({
         </div>
       )}
 
-      <div className='token-card-actions' style={{ display: 'flex', alignItems: 'center', gap: '8px', paddingTop: '10px', borderTop: '1px solid rgba(148,163,184,0.12)' }}>
-        <ActionButton label='Scan' onClick={onScan} />
-        <ActionButton label='Ask CORTEX' hint='Analyze with CORTEX' onClick={onAskCortex} />
-        <ActionButton label={tracking ? 'Tracking' : 'Track'} active={tracking} onClick={onTrackToggle} />
+      <div className='token-card-actions' style={{ display: 'flex', alignItems: 'center', gap: '8px', paddingTop: '9px', borderTop: '1px solid rgba(148,163,184,0.12)' }}>
+        <ActionButton label='Scan' variant='primary' onClick={onScan} />
+        <ActionButton label='Ask CORTEX' variant='secondary' hint='Analyze with CORTEX' onClick={onAskCortex} />
+        <ActionButton label={tracking ? 'Tracking' : 'Track'} variant='ghost' active={tracking} onClick={onTrackToggle} />
       </div>
     </div>
   )
@@ -450,13 +498,21 @@ function ActionButton({
   disabled,
   active,
   hint,
+  variant = 'secondary',
 }: {
   label: string
   onClick: () => void
   disabled?: boolean
   active?: boolean
   hint?: string
+  variant?: 'primary' | 'secondary' | 'ghost'
 }) {
+  const isPrimary = variant === 'primary'
+  const isGhost = variant === 'ghost'
+  const border = active ? 'rgba(45,212,191,0.38)' : isPrimary ? 'rgba(45,212,191,0.46)' : isGhost ? 'rgba(148,163,184,0.16)' : 'rgba(96,165,250,0.22)'
+  const background = active ? 'rgba(45,212,191,0.16)' : isPrimary ? 'linear-gradient(135deg, rgba(45,212,191,0.22), rgba(34,211,238,0.14))' : isGhost ? 'rgba(15,23,42,0.38)' : 'rgba(15,23,42,0.72)'
+  const color = disabled ? '#475569' : active ? '#2DD4BF' : isPrimary ? '#dffcf6' : isGhost ? '#94a3b8' : '#cbd5e1'
+
   return (
     <button
       onClick={(e) => {
@@ -474,12 +530,12 @@ function ActionButton({
         fontWeight: 700,
         letterSpacing: '0.08em',
         textTransform: 'uppercase',
-        border: `1px solid ${active ? 'rgba(45,212,191,0.35)' : 'rgba(255,255,255,0.12)'}`,
-        background: active ? 'rgba(45,212,191,0.16)' : 'rgba(15,23,42,0.72)',
-        color: disabled ? '#475569' : active ? '#2DD4BF' : '#cbd5e1',
+        border: `1px solid ${border}`,
+        background,
+        color,
         fontFamily: 'var(--font-plex-mono)',
         cursor: disabled ? 'not-allowed' : 'pointer',
-        boxShadow: active ? '0 0 18px rgba(45,212,191,0.10)' : 'none',
+        boxShadow: isPrimary ? '0 0 22px rgba(45,212,191,0.12), inset 0 1px 0 rgba(255,255,255,0.08)' : active ? '0 0 18px rgba(45,212,191,0.10)' : 'none',
       }}
     >
       {label}
@@ -506,13 +562,13 @@ function OverviewMetric({ label, value, caption, accent = '#99f6e4' }: { label: 
       background: 'linear-gradient(180deg, rgba(8,13,24,0.82), rgba(10,18,32,0.58))',
       border: '1px solid rgba(148, 163, 184, 0.14)',
       borderRadius: '16px',
-      padding: '14px',
+      padding: '12px 13px',
       boxShadow: `inset 0 1px 0 rgba(255,255,255,0.05), 0 18px 45px rgba(0,0,0,0.22)`,
       minWidth: 0,
     }}>
-      <p style={{ margin: '0 0 8px', fontSize: '9px', color: '#64748b', letterSpacing: '0.14em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>{label}</p>
-      <p style={{ margin: 0, fontSize: '17px', color: accent, fontWeight: 800, letterSpacing: '-0.02em', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{value}</p>
-      <p style={{ margin: '6px 0 0', fontSize: '10px', color: '#64748b', lineHeight: 1.35 }}>{caption}</p>
+      <p style={{ margin: '0 0 7px', fontSize: '9px', color: '#64748b', letterSpacing: '0.14em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>{label}</p>
+      <p title={value} style={{ margin: 0, fontSize: '15px', color: accent, fontWeight: 850, letterSpacing: '-0.02em', whiteSpace: 'normal', overflowWrap: 'anywhere', lineHeight: 1.12 }}>{value}</p>
+      <p style={{ margin: '6px 0 0', fontSize: '10px', color: '#64748b', lineHeight: 1.25, fontFamily: 'var(--font-plex-mono)' }}>{caption}</p>
     </div>
   )
 }
@@ -520,10 +576,10 @@ function OverviewMetric({ label, value, caption, accent = '#99f6e4' }: { label: 
 function PulseStrip({ summary }: { summary: RadarSummary }) {
   const items = [
     { label: 'Tokens Tracked', value: String(summary.newPools), caption: 'Current Base results', accent: '#e2e8f0' },
-    { label: 'Strongest Mover', value: summary.hottestToken, caption: 'Highest radar score', accent: '#22d3ee' },
-    { label: 'Highest Volume', value: summary.highestVolumeToken, caption: 'Top 24h activity', accent: '#99f6e4' },
-    { label: 'Newest Pool', value: summary.newestToken, caption: 'Fresh discovery feed', accent: '#60a5fa' },
-    { label: 'Liquidity Leader', value: summary.highestLiquidityToken, caption: 'Deepest visible liquidity', accent: '#c4b5fd' },
+    { label: 'Strongest Mover', value: summary.hottestToken, caption: summary.hottestValue, accent: '#22d3ee' },
+    { label: 'Highest Volume', value: summary.highestVolumeToken, caption: summary.highestVolumeValue, accent: '#99f6e4' },
+    { label: 'Newest Pool', value: summary.newestToken, caption: summary.newestValue, accent: '#60a5fa' },
+    { label: 'Liquidity Leader', value: summary.highestLiquidityToken, caption: summary.highestLiquidityValue, accent: '#c4b5fd' },
     { label: 'Open Checks', value: String(summary.unverified), caption: 'Needs more evidence', accent: '#fbbf24' },
   ]
 
@@ -633,7 +689,7 @@ function StatsPanel({ summary, fetchedAt, loading, showUpsell }: { summary: Rada
         background: 'linear-gradient(180deg, rgba(168,85,247,0.10), rgba(45,212,191,0.08))',
         border: '1px solid rgba(255,255,255,0.10)',
         borderRadius: '12px',
-        padding: '14px',
+        padding: '12px 13px',
       }}>
         <p style={{ margin: 0, fontSize: '11px', lineHeight: 1.35, color: '#e2e8f0', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>
           Upgrade to Pro
@@ -829,10 +885,14 @@ export default function BaseRadarPage() {
       highMomentum,
       unverified,
       averageLiquidity,
-      highestLiquidityToken: highestLiquidity ? `${highestLiquidity.symbol} ${fmtUSD(highestLiquidity.liquidityUsd)}` : 'Open check',
-      highestVolumeToken: highestVolume ? `${highestVolume.symbol} ${fmtUSD(highestVolume.volume24h)}` : 'Open check',
-      newestToken: newest ? `${newest.symbol} ${fmtAge(newest.ageMinutes)}` : 'Open check',
-      hottestToken: hottest ? `${hottest.symbol} (${hottest.radarScore})` : 'Open check',
+      highestLiquidityToken: getOverviewTokenTitle(highestLiquidity),
+      highestLiquidityValue: highestLiquidity ? `${fmtUSD(highestLiquidity.liquidityUsd)} liquidity` : 'Needs data',
+      highestVolumeToken: getOverviewTokenTitle(highestVolume),
+      highestVolumeValue: highestVolume ? `${fmtUSD(highestVolume.volume24h)} volume` : 'Needs data',
+      newestToken: getOverviewTokenTitle(newest),
+      newestValue: newest ? `${fmtAge(newest.ageMinutes)} old` : 'Needs data',
+      hottestToken: getOverviewTokenTitle(hottest),
+      hottestValue: hottest ? `Score ${hottest.radarScore}` : 'Needs data',
       hasSecurityData,
     }
   }, [intelTokens])
