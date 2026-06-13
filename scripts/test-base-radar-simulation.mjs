@@ -7,13 +7,13 @@ const VALID = '0x1111111111111111111111111111111111111111'
 let result = getRadarSimulationDisplay({ contract: VALID, liquidityUsd: 0, honeypot: null })
 assert.equal(result.attempted, false)
 assert.equal(result.status, 'open_check')
-assert.equal(result.reason, 'insufficient route/pool evidence')
-assert.equal(result.label, 'Simulation open check — insufficient route/pool evidence')
+assert.equal(result.reason, 'insufficient_route')
+assert.equal(result.label, 'Simulation pending')
 
 // ─── Invalid contract address -> not attempted ─────────────────────────────
 result = getRadarSimulationDisplay({ contract: 'not-an-address', liquidityUsd: 10_000, honeypot: null })
 assert.equal(result.attempted, false)
-assert.equal(result.reason, 'insufficient route/pool evidence')
+assert.equal(result.reason, 'insufficient_route')
 
 // ─── Valid token + pool evidence -> simulation is attempted ────────────────
 result = getRadarSimulationDisplay({ contract: VALID, liquidityUsd: 10_000, honeypot: { simulationSuccess: true, isHoneypot: false, buyTax: 2, sellTax: 3 } })
@@ -31,22 +31,22 @@ assert.ok(!/unconfirmed|open check/i.test(result.label))
 result = getRadarSimulationDisplay({ contract: VALID, liquidityUsd: 10_000, honeypot: null })
 assert.equal(result.attempted, true)
 assert.equal(result.status, 'open_check')
-assert.equal(result.reason, 'timeout')
-assert.equal(result.label, 'Simulation open check — timeout')
+assert.equal(result.reason, 'timeout_after_retry')
+assert.equal(result.label, 'Simulation timed out after retry')
 
 // ─── Simulation attempted but provider reports failure -> explicit reason ──
 result = getRadarSimulationDisplay({ contract: VALID, liquidityUsd: 10_000, honeypot: { simulationSuccess: false } })
 assert.equal(result.attempted, true)
 assert.equal(result.status, 'open_check')
-assert.equal(result.reason, 'unsupported pool model')
-assert.equal(result.label, 'Simulation open check — unsupported pool model')
+assert.equal(result.reason, 'unsupported_pool_model')
+assert.equal(result.label, 'Simulation unsupported for this pool')
 
 // ─── SPHINCS-style fixture: pool/liquidity evidence but no pair address ────
 result = getRadarSimulationDisplay({ contract: VALID, liquidityUsd: 23_568, pairAddress: null, honeypot: null })
 assert.equal(result.attempted, false)
 assert.equal(result.status, 'open_check')
-assert.equal(result.reason, 'missing pair address')
-assert.equal(result.label, 'Simulation open check — missing pair address')
+assert.equal(result.reason, 'missing_pair_address')
+assert.equal(result.label, 'Pair route missing')
 
 // ─── Orbit-style fixture: simulation passed with 0% buy / 0% sell ──────────
 result = getRadarSimulationDisplay({ contract: VALID, liquidityUsd: 2.45, honeypot: { simulationSuccess: true, isHoneypot: false, buyTax: 0, sellTax: 0 } })

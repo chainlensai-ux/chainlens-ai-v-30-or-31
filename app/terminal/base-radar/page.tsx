@@ -6,6 +6,7 @@ import Link from 'next/link'
 import ProjectOverviewDrawer from './ProjectOverviewDrawer'
 import { usePlanWithLoading, LockedPanel, canAccessFeature } from '@/lib/usePlan'
 import { supabase } from '@/lib/supabaseClient'
+import { applyBaseRadarScoreCaps, getRadarFeedStatusFromScore } from '@/lib/baseRadarFeedScoring'
 
 interface HoneypotResult {
   isHoneypot: boolean | null
@@ -128,7 +129,7 @@ const FILTER_CHIPS: Array<{ key: RadarFilter; label: string }> = [
   { key: 'EARLY', label: 'New' },
   { key: 'HOT', label: 'Volume' },
   { key: 'WATCH', label: 'Liquidity' },
-  { key: 'UNVERIFIED', label: 'Open Checks' },
+  { key: 'UNVERIFIED', label: 'Evidence Gaps' },
   { key: 'RISKY', label: 'High Risk' },
 ]
 
@@ -249,23 +250,23 @@ function getStatus(token: RadarToken, score: number, momentum: MomentumLevel): R
   return 'WATCH'
 }
 
-function applyScoreTrustCaps(token: RadarToken, score: number, status: RadarStatus, momentum: MomentumLevel): number {
-  let capped = score
-  const hasSecurity = token.simulationStatus === 'passed'
-
-  if (!hasSecurity) capped = Math.min(capped, 75)
-  if (status === 'UNVERIFIED') capped = Math.min(capped, 65)
-  if (token.volume24h <= 0) capped = Math.min(capped, 55)
-  if (token.liquidityUsd < 2_000) capped = Math.min(capped, 60)
-
-  const premiumEligible = token.liquidityUsd >= 30_000
-    && token.volume24h >= 10_000
-    && (momentum === 'HIGH' || momentum === 'MEDIUM')
-    && status !== 'UNVERIFIED'
-
-  if (!premiumEligible && capped >= 90) capped = 89
-
-  return Math.max(0, Math.min(100, Math.round(capped)))
+function applyScoreTrustCaps(token: RadarToken, score: number): number {
+  return applyBaseRadarScoreCaps({
+    baseScore: score,
+    liquidityUsd: token.liquidityUsd,
+    volume24h: token.volume24h,
+    ageMinutes: token.ageMinutes,
+    simulationStatus: token.simulationStatus,
+    buyTax: token.honeypot?.buyTax ?? null,
+    sellTax: token.honeypot?.sellTax ?? null,
+    honeypotPresent: Boolean(token.honeypot),
+    valuationVerified: Boolean(token.valuationVerified || token.marketCapStatus === 'verified'),
+    valuationUsd: token.valuationUsd ?? token.marketCapUsd ?? token.fdvUsd ?? null,
+    lpLockBurnConfirmed: false,
+    lpModel: 'open_check',
+    strongProtection: false,
+    majorControlOrHolderOrLpRedFlag: false,
+  }).score
 }
 
 function getCortexSignal(status: RadarStatus): string {
@@ -289,11 +290,11 @@ function getFlags(token: RadarToken, status: RadarStatus, momentum: MomentumLeve
   if (token.ageMinutes <= 30) flags.push('New Pool')
   if (token.volume24h >= 5_000) flags.push('Volume Spike')
   if (token.liquidityUsd >= 30_000) flags.push('Liquidity Watch')
-  if (token.liquidityUsd < 2_000) flags.push('LP Open Check')
-  if (token.simulationStatus === 'open_check' || buyTax > 5 || sellTax > 5) flags.push('Simulation Open')
-  if (token.simulationStatus === 'passed' && buyTax === 0 && sellTax === 0) flags.push('Simulation Clear')
+  if (token.liquidityUsd < 2_000) flags.push('Tax check pending')
+  if (token.simulationStatus === 'open_check' || buyTax > 5 || sellTax > 5) flags.push('Simulation pending')
+  if (token.simulationStatus === 'passed' && buyTax === 0 && sellTax === 0) flags.push('Simulation confirmed')
   if (suspiciousBranding) flags.push('CORTEX Watch')
-  if (status === 'UNVERIFIED') flags.push('Open Check')
+  if (status === 'UNVERIFIED') flags.push('Pending Evidence')
   if (status === 'RISKY') flags.push('High Risk')
 
   return flags
@@ -326,8 +327,8 @@ function enrichToken(token: RadarToken): TokenIntel {
   const { level: momentum, ratio: momentumRatio } = getMomentum(token.volume24h, token.liquidityUsd)
   const baseScore = getBaseRadarScore(token)
   const baseStatus = getStatus(token, baseScore, momentum)
-  const radarScore = applyScoreTrustCaps(token, baseScore, baseStatus, momentum)
-  const status = getStatus(token, radarScore, momentum)
+  const radarScore = applyScoreTrustCaps(token, baseScore)
+  const status = token.simulationStatus !== 'passed' ? getRadarFeedStatusFromScore(radarScore) : getStatus(token, radarScore, momentum)
 
   return {
     ...token,
@@ -357,7 +358,7 @@ function getStageLabel(token: TokenIntel): string {
 }
 
 function getSignalInsight(token: TokenIntel): string {
-  const openChecks = token.flags.filter(flag => flag.includes('Open Check') || flag === 'Open Check').length
+  const openChecks = token.flags.filter(flag => flag.includes('Pending Evidence') || flag === 'Pending Evidence').length
 
   if (token.ageMinutes <= 30 && token.volume24h > 0) return 'Fresh pool with early activity visible.'
   if (token.volume24h >= 20_000 || token.momentum === 'HIGH') return 'Volume spike is driving this radar placement.'
@@ -368,9 +369,17 @@ function getSignalInsight(token: TokenIntel): string {
   return safeText(token.clarkVerdict ?? token.clarkSignal)
 }
 
+function simulationStatusLabel(token: RadarToken): string {
+  if (token.simulationStatus === 'passed') return token.simulationLabel ?? 'Simulation confirmed'
+  if (token.simulationReason === 'timeout_after_retry' || token.simulationReason === 'timeout') return 'Timeout after retry'
+  if (token.simulationReason === 'unsupported_pool_model') return 'Route unsupported'
+  if (token.simulationReason === 'missing_pair_address') return 'Pair route missing'
+  return 'Simulation pending'
+}
+
 function getTaxLabel(token: TokenIntel): string {
   if (token.simulationLabel) return token.simulationLabel
-  if (!token.honeypot?.simulationSuccess) return 'Simulation open check — insufficient route/pool evidence'
+  if (!token.honeypot?.simulationSuccess) return simulationStatusLabel(token)
   const buyTax = token.honeypot.buyTax ?? 0
   const sellTax = token.honeypot.sellTax ?? 0
   return `B ${buyTax.toFixed(1)}% / S ${sellTax.toFixed(1)}%`
@@ -388,15 +397,15 @@ function getValuationCardMetric(token: RadarToken): { label: string; value: stri
 
 function getPriorityAccent(token: TokenIntel): { color: string; background: string; border: string; glow: string } {
   if (token.status === 'RISKY' || token.status === 'DEAD' || token.flags.includes('High Risk')) return { color: '#f87171', background: 'rgba(248,113,113,0.12)', border: 'rgba(248,113,113,0.34)', glow: 'rgba(248,113,113,0.14)' }
-  if (token.flags.some(flag => flag.includes('Open Check') || flag === 'Simulation Open')) return { color: '#fbbf24', background: 'rgba(251,191,36,0.12)', border: 'rgba(251,191,36,0.34)', glow: 'rgba(251,191,36,0.14)' }
+  if (token.flags.some(flag => flag.includes('Pending Evidence') || flag === 'Simulation pending')) return { color: '#fbbf24', background: 'rgba(251,191,36,0.12)', border: 'rgba(251,191,36,0.34)', glow: 'rgba(251,191,36,0.14)' }
   if (token.momentum === 'HIGH' || token.volume24h >= 5_000) return { color: '#2DD4BF', background: 'rgba(45,212,191,0.13)', border: 'rgba(45,212,191,0.36)', glow: 'rgba(45,212,191,0.16)' }
   if (token.radarScore >= 75) return { color: '#22d3ee', background: 'rgba(34,211,238,0.12)', border: 'rgba(34,211,238,0.34)', glow: 'rgba(34,211,238,0.15)' }
   return { color: STATUS_COLOR[token.status], background: STATUS_BG[token.status], border: STATUS_BORDER[token.status], glow: STATUS_BG[token.status] }
 }
 
 function getBadgeStyle(flag: string): { color: string; background: string; border: string } {
-  if (['Momentum', 'Volume Spike', 'Simulation Clear'].includes(flag)) return { color: '#99f6e4', background: 'rgba(45,212,191,0.13)', border: 'rgba(45,212,191,0.30)' }
-  if (['LP Open Check', 'Simulation Open', 'Open Check', 'Liquidity Watch'].includes(flag)) return { color: '#fde68a', background: 'rgba(251,191,36,0.12)', border: 'rgba(251,191,36,0.28)' }
+  if (['Momentum', 'Volume Spike', 'Simulation confirmed'].includes(flag)) return { color: '#99f6e4', background: 'rgba(45,212,191,0.13)', border: 'rgba(45,212,191,0.30)' }
+  if (['Tax check pending', 'Simulation pending', 'Pending Evidence', 'Liquidity Watch'].includes(flag)) return { color: '#fde68a', background: 'rgba(251,191,36,0.12)', border: 'rgba(251,191,36,0.28)' }
   if (['High Risk', 'CORTEX Watch'].includes(flag)) return { color: '#fecaca', background: 'rgba(248,113,113,0.11)', border: 'rgba(248,113,113,0.28)' }
   return { color: '#bfdbfe', background: 'rgba(96,165,250,0.13)', border: 'rgba(96,165,250,0.30)' }
 }
@@ -611,7 +620,7 @@ function PulseStrip({ summary }: { summary: RadarSummary }) {
     { label: 'Highest Volume', value: summary.highestVolumeToken, caption: summary.highestVolumeValue, accent: '#99f6e4' },
     { label: 'Newest Pool', value: summary.newestToken, caption: summary.newestValue, accent: '#60a5fa' },
     { label: 'Liquidity Leader', value: summary.highestLiquidityToken, caption: summary.highestLiquidityValue, accent: '#c4b5fd' },
-    { label: 'Open Checks', value: String(summary.unverified), caption: 'Needs more evidence', accent: '#fbbf24' },
+    { label: 'Evidence Gaps', value: String(summary.unverified), caption: 'Needs more evidence', accent: '#fbbf24' },
   ]
 
   return (
@@ -631,8 +640,8 @@ function CortexRadarPanel({ summary, topTokens, onRescan }: { summary: RadarSumm
     summary.averageLiquidity > 0 ? `Average visible liquidity is ${fmtUSD(summary.averageLiquidity)}.` : 'Liquidity evidence is still an open check.',
   ]
   const warnings = [
-    summary.unverified > 0 ? `${summary.unverified} open verification check${summary.unverified === 1 ? '' : 's'} require review.` : 'No open verification cluster in the current results.',
-    summary.hasSecurityData ? 'Simulation evidence is available for part of the feed.' : 'Simulation evidence is an open check.',
+    summary.unverified > 0 ? `${summary.unverified} checks need more evidence.` : 'No open verification cluster in the current results.',
+    summary.hasSecurityData ? 'Simulation is confirmed for some tokens; unresolved tokens are capped until checks complete.' : 'Simulation checks need more evidence.',
     'Use Token Scanner before acting on any radar signal.',
   ]
 
