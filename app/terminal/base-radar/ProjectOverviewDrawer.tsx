@@ -21,6 +21,7 @@ type RadarDrawerToken = {
   valuationLabel?: string | null
   valuationVerified?: boolean
   valuationReason?: string | null
+  valuationCortexLine?: string | null
   evidenceGaps?: string[]
   radarScore: number
   momentum: string
@@ -28,6 +29,9 @@ type RadarDrawerToken = {
   status: string
   clarkSignal?: string | null
   clarkVerdict?: string | null
+  simulationStatus?: 'passed' | 'open_check'
+  simulationLabel?: string | null
+  simulationCortexLine?: string | null
 }
 
 type DrawerProps = {
@@ -411,7 +415,9 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
   const clusterLabel = clusterEvidenceLabel(deployer?.clusterEvidence)
   const deployerMethod = publicMethodLabel(deployer?.methodLabel)
   const holderStatusLabel = holderStatus(concentration.status, concentration.confidence, concentration.reason)
-  const securityTax = security?.honeypot?.simulationSuccess ? `${percent(security.honeypot.buyTax)} buy · ${percent(security.honeypot.sellTax)} sell` : 'Open Check'
+  const securityTax = security?.honeypot?.simulationSuccess
+    ? `${percent(security.honeypot.buyTax)} buy · ${percent(security.honeypot.sellTax)} sell`
+    : (token?.simulationLabel ?? 'Open Check')
   const ownershipLabel = security?.devOwnership?.ownershipLabel ?? (security?.devOwnership?.ownershipVerified === true && security.devOwnership.isRenounced === true ? 'Renounced ownership' : security?.devOwnership?.ownershipVerified === true && (security.devOwnership.ownerAddress || security.devOwnership.adminAddress) ? 'Active owner/admin verified' : 'Open Check / Not verified')
 
   const normalizedPairCreatedAt = normalizePairCreatedAt(market?.poolActivity?.pairCreatedAt ?? null)
@@ -460,8 +466,10 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
   const cortexRead = [
     severity.cortexSevereLine,
     `${poolDistributionLine} Momentum is ${(token?.momentum ?? 'unknown').toLowerCase()} and radar score is ${effectiveScore}.`,
+    token?.valuationCortexLine ?? null,
     lpCortexLine,
     holderCortexLine,
+    token?.simulationCortexLine ?? null,
     deployer?.deployerAddress ? `Deployer ${shortAddr(deployer.deployerAddress)} is ${publicStatus(deployer.deployerStatus ?? 'reviewed')} at ${deployer.deployerConfidence ?? 'open-check'} confidence.` : 'Deployer is Open Check in the current evidence.',
     token?.flags?.length ? `Risk context: ${token.flags.join(', ')}.` : 'Risk context: no radar flags on this card.',
   ].filter((line): line is string => Boolean(line))
@@ -550,7 +558,7 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
             <DataRow label="Age" value={pairAgeLabel ?? fmtAge(token.ageMinutes)} />
             <DataRow label="Market evidence" value={market?.marketConfidence ? publicStatus(market.marketConfidence) : 'Open Check'} />
           </div>
-          {token.valuationBasis === 'fdv_fallback' && <p style={{ margin: '10px 0 0', color: '#fde68a', fontSize: '11px', lineHeight: 1.4 }}>Note: Market cap unavailable — FDV shown only.</p>}
+          {token.valuationBasis === 'fdv_fallback' && <p style={{ margin: '10px 0 0', color: '#fde68a', fontSize: '11px', lineHeight: 1.4 }}>Market cap: Unverified · FDV shown because verified market cap is unavailable.</p>}
           <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginTop: '10px' }}>{(token.flags.length ? token.flags : ['No radar tags']).map((flag) => <span key={flag} style={tagStyle}>{flag}</span>)}</div>
         </Section>
 

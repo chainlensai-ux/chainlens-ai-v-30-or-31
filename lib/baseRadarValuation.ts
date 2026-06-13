@@ -84,3 +84,74 @@ export function getRadarValuationEvidenceGap(valuation: RadarValuationResult): s
   if (valuation.basis === 'unavailable') return 'Market valuation unavailable.'
   return null
 }
+
+export interface RadarValuationCardDisplay {
+  label: 'Market cap' | 'FDV' | 'Valuation'
+  value: string
+  sublabel: string | null
+}
+
+/**
+ * Card-level valuation display per priority: verified marketCapUsd -> FDV fallback -> unavailable.
+ * Never labels an FDV fallback value as a verified market cap.
+ */
+export function getRadarValuationCardDisplay(valuation: RadarValuationResult, fmtUSD: (value: number) => string): RadarValuationCardDisplay {
+  if (valuation.basis === 'verified_market_cap' && valuation.valueUsd != null) {
+    return { label: 'Market cap', value: fmtUSD(valuation.valueUsd), sublabel: 'Verified' }
+  }
+  if (valuation.basis === 'fdv_fallback' && valuation.valueUsd != null) {
+    return { label: 'FDV', value: fmtUSD(valuation.valueUsd), sublabel: 'Market cap unavailable' }
+  }
+  return { label: 'Valuation', value: 'Open check', sublabel: null }
+}
+
+export interface RadarValuationDrawerDisplay {
+  marketCapLabel: string
+  marketCapValue: string
+  fdvLabel: string
+  fdvValue: string
+  note: string | null
+}
+
+/**
+ * Drawer/details valuation display. When FDV fallback is used, market cap is shown
+ * explicitly as "Unverified" alongside the FDV value and a note explaining the fallback.
+ */
+export function getRadarValuationDrawerDisplay(valuation: RadarValuationResult, fdvUsd: number | null | undefined, fmtUSD: (value: number) => string): RadarValuationDrawerDisplay {
+  if (valuation.basis === 'fdv_fallback' && valuation.valueUsd != null) {
+    return {
+      marketCapLabel: 'Market cap',
+      marketCapValue: 'Unverified',
+      fdvLabel: 'FDV',
+      fdvValue: fmtUSD(valuation.valueUsd),
+      note: 'FDV shown because verified market cap is unavailable.',
+    }
+  }
+  if (valuation.basis === 'verified_market_cap' && valuation.valueUsd != null) {
+    return {
+      marketCapLabel: 'Market cap',
+      marketCapValue: fmtUSD(valuation.valueUsd),
+      fdvLabel: 'FDV',
+      fdvValue: typeof fdvUsd === 'number' && Number.isFinite(fdvUsd) && fdvUsd > 0 ? fmtUSD(fdvUsd) : 'Open check',
+      note: null,
+    }
+  }
+  return {
+    marketCapLabel: 'Market cap',
+    marketCapValue: 'Open check',
+    fdvLabel: 'FDV',
+    fdvValue: 'Open check',
+    note: null,
+  }
+}
+
+/**
+ * CORTEX wording for valuation. Only fires when FDV fallback is used; verified
+ * market cap and unavailable valuations need no extra CORTEX explanation here.
+ */
+export function getRadarCortexValuationLine(valuation: RadarValuationResult): string | null {
+  if (valuation.basis === 'fdv_fallback') {
+    return 'Verified market cap is unavailable, so FDV is shown as fallback valuation.'
+  }
+  return null
+}

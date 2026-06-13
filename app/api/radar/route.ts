@@ -3,7 +3,8 @@ import Anthropic from '@anthropic-ai/sdk'
 import { getOrFetchCached } from '@/lib/coingeckoCache'
 import { createRateLimiter, getClientIp } from '@/lib/server/rateLimit'
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
-import { DEFAULT_RADAR_ALLOW_FDV_FALLBACK, DEFAULT_RADAR_MIN_LIQUIDITY_USD, DEFAULT_RADAR_MIN_VALUATION_USD, getRadarValuationBasis, tokenPassesRadarValuationFilters, type RadarValuationBasis } from '@/lib/baseRadarValuation'
+import { DEFAULT_RADAR_ALLOW_FDV_FALLBACK, DEFAULT_RADAR_MIN_LIQUIDITY_USD, DEFAULT_RADAR_MIN_VALUATION_USD, getRadarCortexValuationLine, getRadarValuationBasis, getRadarValuationCardDisplay, tokenPassesRadarValuationFilters, type RadarValuationBasis } from '@/lib/baseRadarValuation'
+import { getRadarSimulationDisplay, type RadarSimulationOpenCheckReason, type RadarSimulationStatus } from '@/lib/baseRadarSimulation'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 const limiter = createRateLimiter({ windowMs: 60_000, max: 5 })
@@ -36,11 +37,17 @@ export interface RadarToken {
   valuationBasis: RadarValuationBasis
   valuationUsd: number | null
   valuationLabel: string
+  valuationSublabel: string | null
   valuationVerified: boolean
   valuationReason: string
+  valuationCortexLine: string | null
   evidenceGaps: string[]
   riskLevel: RiskLevel
   honeypot: HoneypotResult | null
+  simulationStatus: RadarSimulationStatus
+  simulationReason: RadarSimulationOpenCheckReason | null
+  simulationLabel: string
+  simulationCortexLine: string
   clarkVerdict: string | null
 }
 
@@ -292,6 +299,7 @@ export async function GET(req: NextRequest) {
       const filterResult = tokenPassesRadarValuationFilters({ marketCapUsd, marketCapStatus, fdvUsd, liquidityUsd, minValuationUsd, minLiquidityUsd, allowFdvFallback })
       if (!filterResult.included) continue
       const valuation = getRadarValuationBasis({ marketCapUsd, marketCapStatus, fdvUsd: allowFdvFallback ? fdvUsd : null })
+      const valuationCardDisplay = getRadarValuationCardDisplay(valuation, fmtK)
       const evidenceGaps = valuation.basis === 'fdv_fallback'
         ? ['Market cap unavailable; FDV used as fallback valuation.']
         : valuation.basis === 'unavailable'
@@ -299,7 +307,8 @@ export async function GET(req: NextRequest) {
           : []
       candidates.push({
         name: baseToken.name, symbol: baseToken.symbol, contract: baseToken.address,
-        ageMinutes, liquidityUsd, volume24h, fdvUsd, marketCapUsd, marketCapStatus, valuationBasis: valuation.basis, valuationUsd: valuation.valueUsd, valuationLabel: valuation.label, valuationVerified: valuation.verified, valuationReason: valuation.reason, evidenceGaps, riskLevel: 'SAFE', honeypot: null,
+        ageMinutes, liquidityUsd, volume24h, fdvUsd, marketCapUsd, marketCapStatus, valuationBasis: valuation.basis, valuationUsd: valuation.valueUsd, valuationLabel: valuation.label, valuationSublabel: valuationCardDisplay.sublabel, valuationVerified: valuation.verified, valuationReason: valuation.reason, valuationCortexLine: getRadarCortexValuationLine(valuation), evidenceGaps, riskLevel: 'SAFE', honeypot: null,
+        simulationStatus: 'open_check', simulationReason: null, simulationLabel: '', simulationCortexLine: '',
       })
     }
 
@@ -321,7 +330,16 @@ export async function GET(req: NextRequest) {
 
     const scored: Candidate[] = toCheck.map((token, i) => {
       const hp = hpResults[i].status === 'fulfilled' ? hpResults[i].value : null
-      return { ...token, honeypot: hp, riskLevel: scoreRisk(hp) }
+      const simulation = getRadarSimulationDisplay({ contract: token.contract, liquidityUsd: token.liquidityUsd, honeypot: hp })
+      return {
+        ...token,
+        honeypot: hp,
+        riskLevel: scoreRisk(hp),
+        simulationStatus: simulation.status,
+        simulationReason: simulation.reason,
+        simulationLabel: simulation.label,
+        simulationCortexLine: simulation.cortexLine,
+      }
     })
 
     // 3. Clark verdicts for top 5 by liquidity

@@ -29,9 +29,15 @@ interface RadarToken {
   valuationBasis?: 'verified_market_cap' | 'fdv_fallback' | 'unavailable'
   valuationUsd?: number | null
   valuationLabel?: string | null
+  valuationSublabel?: string | null
   valuationVerified?: boolean
   valuationReason?: string | null
+  valuationCortexLine?: string | null
   evidenceGaps?: string[]
+  simulationStatus?: 'passed' | 'open_check'
+  simulationReason?: string | null
+  simulationLabel?: string | null
+  simulationCortexLine?: string | null
 }
 
 interface RadarStats {
@@ -232,7 +238,7 @@ function getBaseRadarScore(token: RadarToken): number {
 
 function getStatus(token: RadarToken, score: number, momentum: MomentumLevel): RadarStatus {
   const hasEnoughMarketData = Number.isFinite(token.liquidityUsd) && Number.isFinite(token.volume24h) && token.liquidityUsd > 0
-  const insufficientData = !hasEnoughMarketData || !token.honeypot?.simulationSuccess
+  const insufficientData = !hasEnoughMarketData || token.simulationStatus !== 'passed'
 
   if (insufficientData) return 'UNVERIFIED'
   if (token.volume24h <= 0 && token.ageMinutes > 30) return 'DEAD'
@@ -245,7 +251,7 @@ function getStatus(token: RadarToken, score: number, momentum: MomentumLevel): R
 
 function applyScoreTrustCaps(token: RadarToken, score: number, status: RadarStatus, momentum: MomentumLevel): number {
   let capped = score
-  const hasSecurity = Boolean(token.honeypot?.simulationSuccess)
+  const hasSecurity = token.simulationStatus === 'passed'
 
   if (!hasSecurity) capped = Math.min(capped, 75)
   if (status === 'UNVERIFIED') capped = Math.min(capped, 65)
@@ -284,8 +290,8 @@ function getFlags(token: RadarToken, status: RadarStatus, momentum: MomentumLeve
   if (token.volume24h >= 5_000) flags.push('Volume Spike')
   if (token.liquidityUsd >= 30_000) flags.push('Liquidity Watch')
   if (token.liquidityUsd < 2_000) flags.push('LP Open Check')
-  if (buyTax > 5 || sellTax > 5) flags.push('Simulation Open')
-  if (buyTax === 0 && sellTax === 0 && token.honeypot?.simulationSuccess) flags.push('Simulation Clear')
+  if (token.simulationStatus === 'open_check' || buyTax > 5 || sellTax > 5) flags.push('Simulation Open')
+  if (token.simulationStatus === 'passed' && buyTax === 0 && sellTax === 0) flags.push('Simulation Clear')
   if (suspiciousBranding) flags.push('CORTEX Watch')
   if (status === 'UNVERIFIED') flags.push('Open Check')
   if (status === 'RISKY') flags.push('High Risk')
@@ -304,13 +310,13 @@ function getLaunchQuality(token: RadarToken): LaunchQuality {
   const age = token.ageMinutes <= 30 ? 'Fresh' : token.ageMinutes <= 120 ? 'New' : 'Older'
 
   let taxes: QualityLevel = 'Unknown'
-  if (token.honeypot?.simulationSuccess) {
-    const buyTax = token.honeypot.buyTax ?? 0
-    const sellTax = token.honeypot.sellTax ?? 0
+  if (token.simulationStatus === 'passed') {
+    const buyTax = token.honeypot?.buyTax ?? 0
+    const sellTax = token.honeypot?.sellTax ?? 0
     taxes = buyTax > 5 || sellTax > 5 ? 'High' : 'Clean'
   }
 
-  const security: QualityLevel = token.honeypot?.simulationSuccess ? 'Verified' : 'Security Unknown'
+  const security: QualityLevel = token.simulationStatus === 'passed' ? 'Verified' : 'Security Unknown'
 
   return { liquidity, volume, age, taxes, security }
 }
@@ -357,16 +363,27 @@ function getSignalInsight(token: TokenIntel): string {
   if (token.volume24h >= 20_000 || token.momentum === 'HIGH') return 'Volume spike is driving this radar placement.'
   if (token.liquidityUsd > 0 && token.liquidityUsd < 2_000) return 'Thin liquidity makes this an early-watch signal.'
   if (openChecks >= 1 || token.status === 'UNVERIFIED') return 'Open checks remain high; verify evidence before relying on this signal.'
-  if (token.honeypot?.simulationSuccess && (token.honeypot.buyTax ?? 0) <= 5 && (token.honeypot.sellTax ?? 0) <= 5) return 'Trading simulation is clear, but other evidence still needs review.'
+  if (token.simulationStatus === 'passed' && (token.honeypot?.buyTax ?? 0) <= 5 && (token.honeypot?.sellTax ?? 0) <= 5) return 'Trading simulation is clear, but other evidence still needs review.'
   if (token.radarScore >= 75) return 'Radar score is elevated from visible momentum and activity signals.'
   return safeText(token.clarkVerdict ?? token.clarkSignal)
 }
 
 function getTaxLabel(token: TokenIntel): string {
-  if (!token.honeypot?.simulationSuccess) return 'Open check'
+  if (token.simulationLabel) return token.simulationLabel
+  if (!token.honeypot?.simulationSuccess) return 'Simulation open check — insufficient route/pool evidence'
   const buyTax = token.honeypot.buyTax ?? 0
   const sellTax = token.honeypot.sellTax ?? 0
   return `B ${buyTax.toFixed(1)}% / S ${sellTax.toFixed(1)}%`
+}
+
+function getValuationCardMetric(token: RadarToken): { label: string; value: string; sublabel?: string | null; accent?: string } {
+  if (token.valuationBasis === 'verified_market_cap') {
+    return { label: 'Market cap', value: fmtUSD(token.marketCapUsd ?? token.valuationUsd ?? 0), sublabel: token.valuationSublabel ?? 'Verified', accent: '#99f6e4' }
+  }
+  if (token.valuationBasis === 'fdv_fallback') {
+    return { label: 'FDV', value: fmtUSD(token.fdvUsd ?? token.valuationUsd ?? 0), sublabel: token.valuationSublabel ?? 'Market cap unavailable', accent: '#fde68a' }
+  }
+  return { label: 'Valuation', value: 'Open check', sublabel: null }
 }
 
 function getPriorityAccent(token: TokenIntel): { color: string; background: string; border: string; glow: string } {
@@ -411,23 +428,14 @@ function TokenCard({
   const highSignal = token.radarScore >= 75
   const stageLabel = getStageLabel(token)
   const insight = getSignalInsight(token)
+  const valuationDisplay = getValuationCardMetric(token)
   const metrics = [
     { label: 'Liquidity', value: fmtUSD(token.liquidityUsd), accent: token.liquidityUsd >= 30_000 ? '#99f6e4' : undefined },
     { label: '24h Volume', value: fmtUSD(token.volume24h), accent: token.volume24h >= 5_000 ? '#99f6e4' : undefined },
-    ...(token.valuationBasis === 'verified_market_cap'
-      ? [
-          { label: 'Market cap', value: fmtUSD(token.marketCapUsd ?? token.valuationUsd ?? 0), accent: '#99f6e4' },
-          { label: 'Valuation', value: 'Verified market cap', accent: '#99f6e4' },
-        ]
-      : token.valuationBasis === 'fdv_fallback'
-        ? [
-            { label: 'Market cap', value: 'Unverified', accent: '#fde68a' },
-            { label: 'FDV', value: fmtUSD(token.fdvUsd ?? token.valuationUsd ?? 0), accent: '#fde68a' },
-          ]
-        : [{ label: 'Valuation', value: 'Open check' }]),
+    valuationDisplay,
     { label: 'Age', value: fmtAge(token.ageMinutes), accent: token.ageMinutes <= 30 ? '#bfdbfe' : undefined },
     { label: 'Momentum', value: token.momentum === 'NONE' ? 'Open check' : token.momentum, accent: token.momentum === 'HIGH' ? '#99f6e4' : undefined },
-    { label: 'Tax / Sim', value: getTaxLabel(token), accent: token.honeypot?.simulationSuccess ? '#99f6e4' : '#fde68a' },
+    { label: 'Tax / Sim', value: getTaxLabel(token), accent: token.simulationStatus === 'passed' ? '#99f6e4' : '#fde68a' },
   ]
 
   return (
@@ -561,7 +569,7 @@ function ActionButton({
   )
 }
 
-function Metric({ label, value, accent }: { label: string; value: string; accent?: string }) {
+function Metric({ label, value, accent, sublabel }: { label: string; value: string; accent?: string; sublabel?: string | null }) {
   return (
     <div style={{ border: '1px solid rgba(148,163,184,0.12)', borderRadius: '12px', padding: '9px 10px', background: 'rgba(255,255,255,0.035)', minWidth: 0 }}>
       <p style={{ fontSize: '8px', fontWeight: 800, letterSpacing: '0.12em', color: '#64748b', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', margin: '0 0 5px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
@@ -570,6 +578,11 @@ function Metric({ label, value, accent }: { label: string; value: string; accent
       <p style={{ fontSize: '13px', fontWeight: 850, color: accent ?? '#e2e8f0', margin: 0, fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
         {value}
       </p>
+      {sublabel && (
+        <p style={{ fontSize: '9px', fontWeight: 700, color: '#64748b', margin: '3px 0 0', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', letterSpacing: '0.06em', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+          {sublabel}
+        </p>
+      )}
     </div>
   )
 }
@@ -860,7 +873,7 @@ export default function BaseRadarPage() {
   function askCortex(token: TokenIntel) {
     const buyTax = token.honeypot?.buyTax
     const sellTax = token.honeypot?.sellTax
-    const security = token.honeypot?.simulationSuccess ? 'Verified' : 'Unknown'
+    const security = token.simulationStatus === 'passed' ? 'Verified' : 'Unknown'
     const prompt = [
       '[mode: base-radar]',
       'Analyze this Base Radar token and give me a clear verdict: WATCH, PASS, or SCAN DEEPER.',
@@ -873,10 +886,11 @@ export default function BaseRadarPage() {
       `Market cap: ${token.valuationBasis === 'verified_market_cap' ? fmtUSD(token.marketCapUsd ?? token.valuationUsd ?? 0) : 'Unverified'}`,
       `FDV: ${token.fdvUsd ? fmtUSD(token.fdvUsd) : 'Open check'}`,
       `Valuation: ${token.valuationBasis === 'verified_market_cap' ? 'Verified market cap' : token.valuationBasis === 'fdv_fallback' ? 'FDV fallback' : 'Unavailable'}`,
-      ...(token.valuationBasis === 'fdv_fallback' ? ['Note: Market cap unavailable — FDV shown only.'] : []),
+      ...(token.valuationCortexLine ? [`Note: ${token.valuationCortexLine}`] : []),
       `Momentum: ${token.momentum}`,
-      `Buy Tax: ${buyTax !== null && buyTax !== undefined ? `${buyTax.toFixed(1)}%` : 'Unknown'}`,
-      `Sell Tax: ${sellTax !== null && sellTax !== undefined ? `${sellTax.toFixed(1)}%` : 'Unknown'}`,
+      `Buy Tax: ${token.simulationStatus === 'passed' && buyTax !== null && buyTax !== undefined ? `${buyTax.toFixed(1)}%` : 'Unknown'}`,
+      `Sell Tax: ${token.simulationStatus === 'passed' && sellTax !== null && sellTax !== undefined ? `${sellTax.toFixed(1)}%` : 'Unknown'}`,
+      `Simulation: ${token.simulationCortexLine ?? 'Buy/sell simulation status unavailable.'}`,
       `Security: ${security}`,
       `Flags: ${token.flags.length > 0 ? token.flags.join(', ') : 'None'}`,
       `CORTEX Signal: ${token.clarkVerdict ?? token.clarkSignal}`,
@@ -898,7 +912,7 @@ export default function BaseRadarPage() {
     const highestVolume = [...intelTokens].sort((a, b) => b.volume24h - a.volume24h)[0]
     const newest = [...intelTokens].sort((a, b) => a.ageMinutes - b.ageMinutes)[0]
     const hottest = [...intelTokens].sort((a, b) => b.radarScore - a.radarScore)[0]
-    const hasSecurityData = intelTokens.some(token => token.honeypot?.simulationSuccess)
+    const hasSecurityData = intelTokens.some(token => token.simulationStatus === 'passed')
 
     return {
       newPools: intelTokens.length,
