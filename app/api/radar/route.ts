@@ -3,6 +3,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import { getOrFetchCached } from '@/lib/coingeckoCache'
 import { createRateLimiter, getClientIp } from '@/lib/server/rateLimit'
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
+import { DEFAULT_RADAR_ALLOW_FDV_FALLBACK, DEFAULT_RADAR_MIN_LIQUIDITY_USD, DEFAULT_RADAR_MIN_VALUATION_USD, getRadarValuationBasis, tokenPassesRadarValuationFilters, type RadarValuationBasis } from '@/lib/baseRadarValuation'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 const limiter = createRateLimiter({ windowMs: 60_000, max: 5 })
@@ -30,6 +31,14 @@ export interface RadarToken {
   liquidityUsd: number
   volume24h: number
   fdvUsd: number | null
+  marketCapUsd: number | null
+  marketCapStatus: 'verified' | 'inferred' | 'partial'
+  valuationBasis: RadarValuationBasis
+  valuationUsd: number | null
+  valuationLabel: string
+  valuationVerified: boolean
+  valuationReason: string
+  evidenceGaps: string[]
   riskLevel: RiskLevel
   honeypot: HoneypotResult | null
   clarkVerdict: string | null
@@ -165,8 +174,11 @@ export async function GET(req: NextRequest) {
   }
   if (plan === 'free') return NextResponse.json({ error: 'Included in Pro and Elite.' }, { status: 403 })
   const debug = req.nextUrl.searchParams.get('debug') === 'true'
+  const minValuationUsd = Number(req.nextUrl.searchParams.get('minValuationUsd')) || DEFAULT_RADAR_MIN_VALUATION_USD
+  const minLiquidityUsd = Number(req.nextUrl.searchParams.get('minLiquidityUsd')) || DEFAULT_RADAR_MIN_LIQUIDITY_USD
+  const allowFdvFallback = req.nextUrl.searchParams.get('allowFdvFallback') === 'false' ? false : DEFAULT_RADAR_ALLOW_FDV_FALLBACK
   const now = Date.now()
-  const cacheKey = `plan:${plan}`
+  const cacheKey = `plan:${plan}:minValuation:${minValuationUsd}:minLiquidity:${minLiquidityUsd}:fdvFallback:${allowFdvFallback}`
   const cachedPayload = radarPayloadCache.get(cacheKey)
   if (cachedPayload && now - cachedPayload.cachedAt <= RADAR_CACHE_TTL_MS) {
     const payload = cachedPayload.payload
@@ -263,7 +275,6 @@ export async function GET(req: NextRequest) {
       if (ageMs < DAY_MS && liquidityUsd >= 1000) allDay24h.push(liquidityUsd)
 
       if (ageMs  >= 6 * 60 * 60 * 1000) continue
-      if (liquidityUsd < 1000) continue
 
       const baseData    = ((rels?.base_token as Record<string, unknown>)?.data) as Record<string, string> | undefined
       const baseToken   = baseData?.id ? tokenMap.get(baseData.id) : undefined
@@ -276,9 +287,19 @@ export async function GET(req: NextRequest) {
       seenContracts.add(key)
 
       const fdvUsd = parseFloat(String(attrs?.fdv_usd ?? '0')) || null
+      const marketCapUsd = parseFloat(String(attrs?.market_cap_usd ?? '0')) || null
+      const marketCapStatus = marketCapUsd != null ? 'verified' : (fdvUsd != null ? 'inferred' : 'partial')
+      const filterResult = tokenPassesRadarValuationFilters({ marketCapUsd, marketCapStatus, fdvUsd, liquidityUsd, minValuationUsd, minLiquidityUsd, allowFdvFallback })
+      if (!filterResult.included) continue
+      const valuation = getRadarValuationBasis({ marketCapUsd, marketCapStatus, fdvUsd: allowFdvFallback ? fdvUsd : null })
+      const evidenceGaps = valuation.basis === 'fdv_fallback'
+        ? ['Market cap unavailable; FDV used as fallback valuation.']
+        : valuation.basis === 'unavailable'
+          ? ['Market valuation unavailable.']
+          : []
       candidates.push({
         name: baseToken.name, symbol: baseToken.symbol, contract: baseToken.address,
-        ageMinutes, liquidityUsd, volume24h, fdvUsd, riskLevel: 'SAFE', honeypot: null,
+        ageMinutes, liquidityUsd, volume24h, fdvUsd, marketCapUsd, marketCapStatus, valuationBasis: valuation.basis, valuationUsd: valuation.valueUsd, valuationLabel: valuation.label, valuationVerified: valuation.verified, valuationReason: valuation.reason, evidenceGaps, riskLevel: 'SAFE', honeypot: null,
       })
     }
 
@@ -336,6 +357,7 @@ export async function GET(req: NextRequest) {
       sourcesSucceeded,
       sourceCounts,
       mergedCount: candidates.length,
+      filters: { minValuationUsd, minLiquidityUsd, allowFdvFallback },
       finalTokenCount: tokens.length,
       cacheHit: false,
       effectivePlan: plan,

@@ -24,6 +24,14 @@ interface RadarToken {
   honeypot: HoneypotResult | null
   clarkVerdict: string | null
   fdvUsd?: number | null
+  marketCapUsd?: number | null
+  marketCapStatus?: string | null
+  valuationBasis?: 'verified_market_cap' | 'fdv_fallback' | 'unavailable'
+  valuationUsd?: number | null
+  valuationLabel?: string | null
+  valuationVerified?: boolean
+  valuationReason?: string | null
+  evidenceGaps?: string[]
 }
 
 interface RadarStats {
@@ -406,7 +414,17 @@ function TokenCard({
   const metrics = [
     { label: 'Liquidity', value: fmtUSD(token.liquidityUsd), accent: token.liquidityUsd >= 30_000 ? '#99f6e4' : undefined },
     { label: '24h Volume', value: fmtUSD(token.volume24h), accent: token.volume24h >= 5_000 ? '#99f6e4' : undefined },
-    { label: 'FDV / Value', value: token.fdvUsd ? fmtUSD(token.fdvUsd) : 'Open check' },
+    ...(token.valuationBasis === 'verified_market_cap'
+      ? [
+          { label: 'Market cap', value: fmtUSD(token.marketCapUsd ?? token.valuationUsd ?? 0), accent: '#99f6e4' },
+          { label: 'Valuation', value: 'Verified market cap', accent: '#99f6e4' },
+        ]
+      : token.valuationBasis === 'fdv_fallback'
+        ? [
+            { label: 'Market cap', value: 'Unverified', accent: '#fde68a' },
+            { label: 'FDV', value: fmtUSD(token.fdvUsd ?? token.valuationUsd ?? 0), accent: '#fde68a' },
+          ]
+        : [{ label: 'Valuation', value: 'Open check' }]),
     { label: 'Age', value: fmtAge(token.ageMinutes), accent: token.ageMinutes <= 30 ? '#bfdbfe' : undefined },
     { label: 'Momentum', value: token.momentum === 'NONE' ? 'Open check' : token.momentum, accent: token.momentum === 'HIGH' ? '#99f6e4' : undefined },
     { label: 'Tax / Sim', value: getTaxLabel(token), accent: token.honeypot?.simulationSuccess ? '#99f6e4' : '#fde68a' },
@@ -852,7 +870,10 @@ export default function BaseRadarPage() {
       `Status: ${token.status}`,
       `Liquidity: ${fmtUSD(token.liquidityUsd)}`,
       `Volume 24h: ${fmtUSD(token.volume24h)}`,
+      `Market cap: ${token.valuationBasis === 'verified_market_cap' ? fmtUSD(token.marketCapUsd ?? token.valuationUsd ?? 0) : 'Unverified'}`,
       `FDV: ${token.fdvUsd ? fmtUSD(token.fdvUsd) : 'Open check'}`,
+      `Valuation: ${token.valuationBasis === 'verified_market_cap' ? 'Verified market cap' : token.valuationBasis === 'fdv_fallback' ? 'FDV fallback' : 'Unavailable'}`,
+      ...(token.valuationBasis === 'fdv_fallback' ? ['Note: Market cap unavailable — FDV shown only.'] : []),
       `Momentum: ${token.momentum}`,
       `Buy Tax: ${buyTax !== null && buyTax !== undefined ? `${buyTax.toFixed(1)}%` : 'Unknown'}`,
       `Sell Tax: ${sellTax !== null && sellTax !== undefined ? `${sellTax.toFixed(1)}%` : 'Unknown'}`,
@@ -959,6 +980,9 @@ export default function BaseRadarPage() {
 
           <p style={{ fontSize: '13px', color: '#94a3b8', margin: '0 0 12px', maxWidth: '720px', lineHeight: 1.45 }}>
             Live market discovery for Base tokens
+          </p>
+          <p style={{ fontSize: '12px', color: '#64748b', margin: '0 0 12px', maxWidth: '760px', lineHeight: 1.45, fontFamily: 'var(--font-plex-mono)' }}>
+            Default feed filters out pools under $15K valuation and shallow liquidity. When verified market cap is unavailable, FDV is used only as a fallback and clearly labeled.
           </p>
 
           <div className="radar-pulse-wrap">
