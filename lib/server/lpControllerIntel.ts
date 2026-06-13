@@ -90,9 +90,9 @@ function controllerLabel(type: string): string {
     case 'lock_contract': return 'Lock contract'
     case 'burn': return 'Burn address'
     case 'protocol': return 'Protocol controller'
-    case 'concentrated_liquidity': return 'Concentrated-liquidity positions'
+    case 'concentrated_liquidity': return 'Position verification required'
     case 'contract': return 'Contract controller'
-    default: return 'Controller unverified'
+    default: return 'Position verification required'
   }
 }
 
@@ -155,7 +155,7 @@ function buildSummary(params: {
   if (params.status === 'burned') return `${poolLabel} shows burn evidence, so standard ERC-20 LP removal risk is reduced by confirmed burn proof. Liquidity depth is ${params.liquidityDepth}.`
   if (params.status === 'locked' || params.status === 'protected') return `${poolLabel} shows active lock evidence, so standard ERC-20 LP removal risk is reduced while that lock remains valid. Liquidity depth is ${params.liquidityDepth}.`
   if (params.status === 'protocol_controlled') return `${poolLabel} is protocol-controlled. Standard ERC-20 LP lock/burn proof is not applicable to this pool model, so liquidity control should be reviewed through the protocol-specific position or governance path.`
-  if (params.status === 'concentrated_liquidity') return `${poolLabel} uses concentrated liquidity. Standard ERC-20 LP lock/burn proof does not apply, so do not infer a V2-style lock or burn from this scan.`
+  if (params.status === 'concentrated_liquidity') return `${poolLabel} uses concentrated liquidity. Standard ERC-20 LP-token lock/burn proof does not apply to the primary concentrated-liquidity pool. Liquidity control requires protocol-specific position checks.`
   if (params.status === 'wallet_controlled') {
     const share = params.share != null ? ` with about ${params.share.toFixed(2)}% of the LP supply` : ''
     const lockText = params.lockBurnProof === 'confirmed' ? 'lock/burn proof is confirmed' : 'lock/burn proof is not confirmed'
@@ -180,7 +180,7 @@ export function buildLpControllerIntel(input: LpControllerIntelInput): LpControl
     ?? asNumber(lpMeta.teamPercent)
     ?? asNumber(lpMeta.controllerSharePercent)
   )
-  const poolAddress = asString(selectedPool.address) ?? asString(lpControl.primaryMarketPool) ?? asString(lpControl.verificationPool)
+  const poolAddress = asString(selectedPool.address) ?? asString(selectedPool.poolId) ?? asString(lpControl.primaryMarketPool) ?? asString(lpControl.primaryMarketPoolId) ?? asString(lpControl.verificationPool)
   const poolPair = asString(selectedPool.pair)
   const poolLiquidityUsd = asNumber(selectedPool.liquidityUsd)
   const lockStatus = asString(lpControl.lockStatus)
@@ -207,10 +207,10 @@ export function buildLpControllerIntel(input: LpControllerIntelInput): LpControl
   else if (status === 'concentrated_liquidity') signals.push('concentrated-liquidity pool detected')
   if (share != null && share >= 50) signals.push('dominant LP share detected')
   if (lockBurnProof === 'confirmed' && (lockStatus === 'locked' || status === 'locked')) signals.push('lock proof confirmed')
-  else if (lockBurnProof === 'not_applicable') signals.push('standard LP lock proof not applicable')
+  else if (lockBurnProof === 'not_applicable') signals.push('protocol-specific lock proof model')
   else signals.push('lock proof not confirmed')
   if (lockBurnProof === 'confirmed' && (burnStatus === 'burned' || status === 'burned')) signals.push('burn proof confirmed')
-  else if (lockBurnProof === 'not_applicable') signals.push('standard LP burn proof not applicable')
+  else if (lockBurnProof === 'not_applicable') signals.push('protocol-specific burn proof model')
   else signals.push('burn proof not confirmed')
   if (liquidityDepth === 'deep') signals.push('liquidity depth is deep')
   else if (liquidityDepth === 'moderate') signals.push('liquidity depth is moderate')
@@ -220,7 +220,7 @@ export function buildLpControllerIntel(input: LpControllerIntelInput): LpControl
   if (lockBurnProof === 'open_check') {
     evidenceGaps.push('active LP lock not confirmed', 'LP burn proof not confirmed')
   } else if (lockBurnProof === 'not_applicable') {
-    evidenceGaps.push('standard ERC-20 LP lock/burn proof not applicable to this pool model')
+    evidenceGaps.push('protocol-specific liquidity position verification required')
   }
   if (Array.isArray(input.lpEvidenceGaps)) {
     for (const gap of input.lpEvidenceGaps) {

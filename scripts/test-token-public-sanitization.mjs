@@ -3,7 +3,7 @@
  * Run: node --experimental-strip-types scripts/test-token-public-sanitization.mjs
  */
 import { sanitizePublicTokenResponse } from '../lib/server/tokenPublicResponse.ts'
-import { publicLpDataMode, computeLpExitRisk, buildCortexLpRead } from '../lib/server/lpProof.ts'
+import { publicLpDataMode, computeLpExitRisk, buildCortexLpRead, formatTokenIdentity } from '../lib/server/lpProof.ts'
 import { buildLpControllerIntel, resolveLpControllerIdentity } from '../lib/server/lpControllerIntel.ts'
 import { calculateTokenRiskScore } from '../lib/server/riskScore.ts'
 import { buildLpMovementWatch } from '../lib/server/lpMovementWatch.ts'
@@ -1058,7 +1058,10 @@ const playRiskInput = {
 }
 const playRisk = calculateTokenRiskScore(playRiskInput)
 assert('PLAY riskBreakdown reasons include lp_model_concentrated_liquidity', playRisk.riskBreakdown.liquiditySafety.reasons.includes('lp_model_concentrated_liquidity'), playRisk.riskBreakdown.liquiditySafety.reasons)
+assert('PLAY riskBreakdown reasons include lp_position_verification_required', playRisk.riskBreakdown.liquiditySafety.reasons.includes('lp_position_verification_required'), playRisk.riskBreakdown.liquiditySafety.reasons)
+assert('PLAY riskBreakdown reasons include standard_lp_lock_not_applicable', playRisk.riskBreakdown.liquiditySafety.reasons.includes('standard_lp_lock_not_applicable'), playRisk.riskBreakdown.liquiditySafety.reasons)
 assert('PLAY riskBreakdown reasons do not include lp_model_erc20_lp_token', !playRisk.riskBreakdown.liquiditySafety.reasons.includes('lp_model_erc20_lp_token'), playRisk.riskBreakdown.liquiditySafety.reasons)
+assert('PLAY riskBreakdown reasons do not include lp_controller_unknown_no_lock_or_burn_proof', !playRisk.riskBreakdown.liquiditySafety.reasons.includes('lp_controller_unknown_no_lock_or_burn_proof'), playRisk.riskBreakdown.liquiditySafety.reasons)
 
 const playPublicPayload = sanitizePublicTokenResponse({
   symbol: 'PLAY',
@@ -1319,15 +1322,19 @@ console.log('\nP. CORTEX wording is evidence-based, never scam/financial-advice 
 
   // Mirrors lib/server/tokenPublicResponse.ts's cortexLpRead.riskSummary rewrite: a
   // "shows an overall ... risk tier" sentence built from the legacy rugRiskLabel tier
-  // ("critical") must be replaced with the canonical Token Safety Score, never left as
-  // "critical" when riskScore/riskLabel say 49/moderate.
-  const rawCortexLpReadSummary = 'PLAY (PLAY) shows an overall "critical" risk tier based on observed pool data. Liquidity depth is moderate for this token.'
-  const rewrittenCortexLpReadSummary = rawCortexLpReadSummary.replace(
-    /shows an overall "[^"]*" risk tier based on observed pool data\./i,
-    'has a Token Safety Score: 49/100 (moderate) based on observed pool data.'
-  )
+  // ("critical") must be replaced with evidence-first canonical Token Safety Score
+  // wording, never left as "critical" when riskScore/riskLabel say 49/moderate.
+  const playCortexRewritePayload = sanitizePublicTokenResponse({
+    symbol: 'PLAY',
+    riskScore: 49,
+    riskLabel: 'moderate',
+    cortexLpRead: {
+      riskSummary: 'PLAY (PLAY) shows an overall "critical" risk tier based on observed pool data. Liquidity depth is moderate for this token.',
+    },
+  }, false)
+  const rewrittenCortexLpReadSummary = playCortexRewritePayload.cortexLpRead.riskSummary
   assert('cortexLpRead.riskSummary does not say "critical" when riskLabel is moderate', !/critical/i.test(rewrittenCortexLpReadSummary), rewrittenCortexLpReadSummary)
-  assert('cortexLpRead.riskSummary cites the canonical Token Safety Score', /Token Safety Score:\s*49\/100 \(moderate\)/i.test(rewrittenCortexLpReadSummary), rewrittenCortexLpReadSummary)
+  assert('cortexLpRead.riskSummary uses evidence-first moderate Token Safety wording', /PLAY has a moderate Token Safety Score \(49\/100\), with severe holder\/dev-control risk drivers\./i.test(rewrittenCortexLpReadSummary), rewrittenCortexLpReadSummary)
 
   // Public payload must never contain the old scam/financial-advice phrasing, regardless of token.
   for (const payload of [publicPayload, fallbackPublicPayload, protocolPayload, mferPublicPayload, playPublicPayload]) {
@@ -1504,6 +1511,17 @@ console.log('\nR. PLAY primary poolType + secondary Aerodrome controller/share')
   assert('PLAY secondaryLpExposure.lockBurnProof is open_check', playSecondaryExposureReal?.lockBurnProof === 'open_check', playSecondaryExposureReal?.lockBurnProof)
   assert('PLAY secondaryLpExposure.summary says this is secondary LP exposure, not primary liquidity', /secondary LP exposure, not primary liquidity/i.test(playSecondaryExposureReal?.summary ?? ''), playSecondaryExposureReal?.summary)
 
+  const playSecondaryExposureMissingController = buildSecondaryLpExposure({
+    secondarySignals: { ...secondaryPlayPoolType, evidence: ['top_share=99.47%'], pair: 'PLAY / USDC' },
+    primaryDex: 'PancakeSwap V3',
+    primaryPair: 'PLAY / USDC',
+    primaryPoolModel: 'concentrated',
+  })
+  assert('PLAY secondaryLpExposure without controller evidence remains open_check', playSecondaryExposureMissingController?.status === 'open_check', playSecondaryExposureMissingController)
+  assert('PLAY secondaryLpExposure without controller evidence has null controller', playSecondaryExposureMissingController?.controller === null, playSecondaryExposureMissingController)
+  assert('PLAY secondaryLpExposure without controller evidence has null-ish controller when no top_holder is present', playSecondaryExposureMissingController?.controller === null, playSecondaryExposureMissingController?.controller)
+  assert('PLAY secondaryLpExposure without controller evidence summary does not say appears wallet-controlled', !/appears wallet-controlled/i.test(playSecondaryExposureMissingController?.summary ?? ''), playSecondaryExposureMissingController?.summary)
+
   // R3. Public payload: lpControl.poolType reflects the primary pool, never "Aerodrome" for
   // PLAY's PancakeSwap V3 primary pool, while secondaryLpExposure carries the Aerodrome data.
   const playLpControlReconciled = { ...playLpControl, poolType: reconciledPlayPoolType.poolType, secondaryLpControlSignals: secondaryPlayPoolType }
@@ -1521,6 +1539,71 @@ console.log('\nR. PLAY primary poolType + secondary Aerodrome controller/share')
   }, false)
   assert('PLAY public payload lpControl.poolType is v3 (primary), not aerodrome', playPublicPayloadReal.lpControl?.poolType === 'v3', playPublicPayloadReal.lpControl?.poolType)
   assert('PLAY public payload secondaryLpExposure.controllerSharePercent is ~99.47', playPublicPayloadReal.secondaryLpExposure?.controllerSharePercent >= 99.4 && playPublicPayloadReal.secondaryLpExposure?.controllerSharePercent <= 99.5, playPublicPayloadReal.secondaryLpExposure?.controllerSharePercent)
+}
+
+
+// ─── S. CORTEX token identity formatter avoids duplicate name/symbol wording ─────
+console.log('\nS. CORTEX identity formatter avoids duplicate symbol/name')
+{
+  assert('Virtual Protocol + VIRTUAL formats as Virtual Protocol (VIRTUAL)', formatTokenIdentity('Virtual Protocol', 'VIRTUAL') === 'Virtual Protocol (VIRTUAL)', formatTokenIdentity('Virtual Protocol', 'VIRTUAL'))
+  assert('Play + PLAY formats as Play (PLAY)', formatTokenIdentity('Play', 'PLAY') === 'Play (PLAY)', formatTokenIdentity('Play', 'PLAY'))
+  assert('mferGPT + MFERGPT formats as mferGPT (MFERGPT)', formatTokenIdentity('mferGPT', 'MFERGPT') === 'mferGPT (MFERGPT)', formatTokenIdentity('mferGPT', 'MFERGPT'))
+  assert('symbol-only identity formats as symbol', formatTokenIdentity(null, 'PLAY') === 'PLAY', formatTokenIdentity(null, 'PLAY'))
+  assert('same name/symbol identity is not duplicated', formatTokenIdentity('PLAY', 'PLAY') === 'PLAY', formatTokenIdentity('PLAY', 'PLAY'))
+
+  const mferCortex = buildCortexLpRead({
+    name: 'mferGPT',
+    symbol: 'MFERGPT',
+    totalLiq: 120000,
+    fragments: 1,
+    observedPoolPresent: true,
+    riskTier: 'moderate',
+    liquidityDepthRisk: 'low',
+    lpModel: { model: 'concentrated', dexName: 'Uniswap V4', standardLockApplies: false },
+    migrationSummary: 'Migration status is low.',
+    mode: 'indexed',
+    confidence: 'medium',
+    gaps: [],
+    lpLockStatus: 'unverified',
+    lpLockProvider: null,
+    lpUnlockTime: null,
+    proofApplicability: 'not_applicable',
+  })
+  assert('MFERGPT CORTEX summary starts with normalized identity once', /^mferGPT \(MFERGPT\) shows/.test(mferCortex.riskSummary), mferCortex.riskSummary)
+  assert('MFERGPT CORTEX summary does not append symbol after identity', !/\(MFERGPT\)\s+MFERGPT\s+has/i.test(mferCortex.riskSummary), mferCortex.riskSummary)
+
+  const duplicateCases = [
+    { name: 'Virtual Protocol', symbol: 'VIRTUAL', bad: /\(VIRTUAL\)\s+VIRTUAL\s+has/i },
+    { name: 'Play', symbol: 'PLAY', bad: /\(PLAY\)\s+PLAY\s+has/i },
+    { name: 'mferGPT', symbol: 'MFERGPT', bad: /\(MFERGPT\)\s+MFERGPT\s+has/i },
+    { name: null, symbol: 'ONLY', bad: /\(ONLY\)\s+ONLY\s+has/i },
+    { name: 'PLAY', symbol: 'PLAY', bad: /PLAY\s+PLAY\s+has/i },
+  ]
+  for (const tokenCase of duplicateCases) {
+    const identity = formatTokenIdentity(tokenCase.name, tokenCase.symbol)
+    const sanitizedSummary = sanitizePublicTokenResponse({
+      name: tokenCase.name,
+      symbol: tokenCase.symbol,
+      riskScore: 58,
+      riskLabel: 'moderate',
+      cortexLpRead: {
+        riskSummary: `${identity} shows an overall "moderate" risk tier based on observed pool data. Liquidity depth is moderate.`,
+      },
+    }, false).cortexLpRead.riskSummary
+    assert(`${identity} public CORTEX summary starts with exactly one formatted identity`, sanitizedSummary.startsWith(`${identity} has a moderate Token Safety Score`), sanitizedSummary)
+    assert(`${identity} public CORTEX summary does not duplicate symbol after formatted identity`, !tokenCase.bad.test(sanitizedSummary), sanitizedSummary)
+  }
+}
+
+// ─── T. Public chain metadata must match effective scan chain ───────────────
+console.log('\nT. Public chain metadata alignment')
+{
+  const chainPayload = sanitizePublicTokenResponse({
+    chain: 'base',
+    resolvedInput: { original: '0xToken', type: 'address', resolvedAddress: '0xToken', requestedChain: 'eth', confidence: 'high' },
+  }, false)
+  assert('public payload cannot show chain base with resolvedInput.requestedChain eth', !(chainPayload.chain === 'base' && chainPayload.resolvedInput?.requestedChain === 'eth'), chainPayload)
+  assert('public payload resolvedInput.requestedChain aligns to base', chainPayload.resolvedInput?.requestedChain === 'base', chainPayload.resolvedInput)
 }
 
 console.log(`\n${passed} passed, ${failed} failed`)

@@ -57,12 +57,11 @@ function extractSharePercent(evidence: string[]): number | null {
   return null
 }
 
-function mapStatus(status: string | null, sharePercent: number | null): SecondaryLpExposureStatus {
+function mapStatus(status: string | null, sharePercent: number | null, controller: string | null): SecondaryLpExposureStatus {
   if (status === 'burned') return 'burned'
   if (status === 'locked') return 'locked'
-  if (status === 'team_controlled') return 'wallet_controlled'
-  if (sharePercent != null && sharePercent >= 80) return 'wallet_controlled'
-  if (sharePercent != null && sharePercent >= 50) return 'watch'
+  if (controller && (status === 'team_controlled' || (sharePercent != null && sharePercent >= 80))) return 'wallet_controlled'
+  if (controller && sharePercent != null && sharePercent >= 50) return 'watch'
   return 'open_check'
 }
 
@@ -78,22 +77,23 @@ export function buildSecondaryLpExposure(input: SecondaryLpExposureInput): Secon
   const evidence = Array.isArray(secondary.evidence) ? secondary.evidence : []
   const statusRaw = asString(secondary.status)
   const sharePercent = extractSharePercent(evidence)
-  const status = mapStatus(statusRaw, sharePercent)
 
   // Mirrors resolveLpControllerIdentity() in lpControllerIntel.ts for this secondary
   // pool's own evidence — a dominant top_holder/owner_lp_share here is a wallet controller.
-  const controllerType = statusRaw === 'team_controlled' ? 'wallet'
-    : statusRaw === 'burned' ? 'burn'
+  // Do not infer wallet control from a percentage alone: without a holder address, the
+  // secondary exposure remains an open check and public copy must not say it appears
+  // wallet-controlled.
+  const evidenceController = (() => {
+    const topHolderEv = evidence.find((e) => e.toLowerCase().startsWith('top_holder='))
+    const addr = topHolderEv?.split('=').slice(1).join('=').trim().toLowerCase()
+    return addr && /^0x[a-f0-9]{40}$/.test(addr) ? addr : null
+  })()
+  const status = mapStatus(statusRaw, sharePercent, evidenceController)
+  const controllerType = statusRaw === 'burned' ? 'burn'
     : statusRaw === 'locked' ? 'lockContract'
-    : (sharePercent != null && sharePercent >= 50) ? 'wallet'
+    : (status === 'wallet_controlled' || status === 'watch') ? 'wallet'
     : 'unknown'
-  const controller = controllerType === 'wallet'
-    ? (() => {
-        const topHolderEv = evidence.find((e) => e.startsWith('top_holder='))
-        const addr = topHolderEv?.split('=')[1]?.toLowerCase()
-        return addr && /^0x[a-f0-9]{40}$/.test(addr) ? addr : null
-      })()
-    : null
+  const controller = controllerType === 'wallet' ? evidenceController : null
 
   const lockBurnProof: SecondaryLpExposureLockBurnProof = (status === 'locked' || status === 'burned') ? 'confirmed' : 'open_check'
   const confidence = asString(secondary.confidence) ?? 'low'

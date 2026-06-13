@@ -751,6 +751,21 @@ function hexToBigInt(hex: string | null | undefined): bigint | null {
 
 // BigInt-safe percentage: avoids float precision loss on 18-decimal ERC-20 balances.
 // Returns e.g. 5.23 for 5.23%. Uses BigInt() constructor (not literals) for ES2017 compat.
+
+function lpHolderBalanceRaw(holder: Record<string, unknown>): unknown {
+  return holder.balance
+    ?? holder.token_balance
+    ?? holder.balance_wei
+    ?? holder.token_balance_wei
+    ?? holder.balance_raw
+    ?? holder.raw_balance
+    ?? holder.amount
+    ?? holder.balance_raw_integer
+    ?? holder.balanceRaw
+    ?? holder.balance_raw_quote
+    ?? null
+}
+
 function bigIntPct(balanceRaw: unknown, supplyRaw: unknown): number | null {
   try {
     if (balanceRaw == null || supplyRaw == null) return null
@@ -2406,12 +2421,12 @@ function computeLpControlRead(lp: LpControlResult, pairName?: string | null, con
       };
     case "concentrated_liquidity":
       return {
-        title: "Concentrated liquidity — LP proof not applicable",
-        meaning: "No ERC-20 V2 LP token found. Burn/lock proof requires protocol-specific position checks.",
+        title: "Concentrated liquidity — protocol-specific position checks",
+        meaning: "Standard ERC-20 LP-token lock/burn proof does not apply to the primary concentrated-liquidity pool. Liquidity control requires protocol-specific position checks.",
         riskLevel: "Caution",
         whatWasFound: [...poolLine.filter((x)=>!/^Pair:/i.test(x)), "Pool detected", "Primary market selected", "Pool structure reviewed"],
-        couldNotVerify: ["Protocol-specific LP proof required"],
-        nextAction: "Monitor liquidity movement and owner/control checks. V2 burn/lock proof is not available for this pool type.",
+        couldNotVerify: ["Position verification required"],
+        nextAction: "Monitor liquidity movement through protocol-specific position checks.",
       };
     case "partial":
       return {
@@ -3201,6 +3216,9 @@ export async function POST(req: Request) {
       }
     }
     _diagSelectedChain = chain
+    if (resolvedInput) {
+      resolvedInput.requestedChain = chain
+    }
 
     console.log("Incoming scan request:", contract);
 
@@ -3698,7 +3716,7 @@ export async function POST(req: Request) {
         reason: "Protocol-specific LP proof required.",
         evidence: [
           `Market pool: ${marketPair} (${lpPoolType})`,
-          primaryPoolAddress ? `pool=${primaryPoolAddress}` : `poolId=${primaryMarketPoolId ?? lpPool?.poolId ?? "unknown"}`,
+          `pool=${primaryPoolAddress ?? primaryMarketPoolId ?? lpPool?.poolId ?? "unknown"}`,
           `dex=${lpDexId ?? lpDexName ?? "unknown"}`, `poolType=${lpPoolType}`,
         ],
       };
@@ -3721,12 +3739,24 @@ export async function POST(req: Request) {
       _lpGrItemCount = _unknownLpItems.length
       const _grStatus = _lpHoldersForControl?.__status ?? (_unknownLpItems.length > 0 ? 'ok' : 'empty')
       const _unknownLpSupply = _unknownLpItems.find((i: Record<string, unknown>) => i?.total_supply != null)?.total_supply
-      const _unknownLpSupplyStr = _unknownLpSupply != null ? String(_unknownLpSupply) : null
+      let _unknownLpSupplyStr = _unknownLpSupply != null ? String(_unknownLpSupply) : null
+      const _unknownItemsHaveDirectPct = _unknownLpItems.some((h: Record<string, unknown>) => {
+        const p = toNum(h.percentage) ?? toNum(h.percent) ?? toNum(h.ownership_percentage) ?? toNum(h.balancePercent) ?? toNum(h.ownershipPercent) ?? toNum(h.percent_of_supply) ?? toNum(h.share) ?? toNum(h.supply_percentage) ?? toNum(h.percentage_relative_to_total_supply)
+        return p != null && p > 0
+      })
+      if (_unknownLpSupplyStr == null && !_unknownItemsHaveDirectPct && _unknownLpItems.length > 0) {
+        const _lpTotalSupplyHex = await countedRpcCall("eth_call", [{ to: _lpProofAddress!, data: "0x18160ddd" }, "latest"], "lpControlCheck.totalSupply", false);
+        const _lpTotalSupplyBigInt = hexToBigInt(_lpTotalSupplyHex);
+        if (_lpTotalSupplyBigInt != null && _lpTotalSupplyBigInt > BigInt(0)) {
+          _unknownLpSupplyStr = _lpTotalSupplyBigInt.toString()
+        }
+      }
       const unknownTop = _unknownLpItems.slice(0, 5).map((h: Record<string, unknown>) => {
-        const directPct = toNum(h.percentage) ?? toNum(h.percent) ?? toNum(h.ownership_percentage)
+        const directPctRaw = toNum(h.percentage) ?? toNum(h.percent) ?? toNum(h.ownership_percentage) ?? toNum(h.balancePercent) ?? toNum(h.ownershipPercent) ?? toNum(h.percent_of_supply) ?? toNum(h.share) ?? toNum(h.supply_percentage) ?? toNum(h.percentage_relative_to_total_supply)
+        const directPct = (directPctRaw != null && directPctRaw > 0) ? directPctRaw : null
         let derivedPct: number | null = null
         if (directPct == null && _unknownLpSupplyStr != null) {
-          derivedPct = bigIntPct(h.balance ?? h.token_balance, _unknownLpSupplyStr)
+          derivedPct = bigIntPct(lpHolderBalanceRaw(h), _unknownLpSupplyStr)
           if (derivedPct != null) _lpGrPctDerived = true
         }
         return {
@@ -3814,7 +3844,7 @@ export async function POST(req: Request) {
       // percentage as usable when it is a positive value — a row of all-zero "direct"
       // percentages must not block the RPC totalSupply-derived fallback below.
       const _lpItemsHaveDirectPct = lpItems.some((h) => {
-        const p = toNum(h.percentage) ?? toNum(h.percent) ?? toNum(h.ownership_percentage)
+        const p = toNum(h.percentage) ?? toNum(h.percent) ?? toNum(h.ownership_percentage) ?? toNum(h.balancePercent) ?? toNum(h.ownershipPercent) ?? toNum(h.percent_of_supply) ?? toNum(h.share) ?? toNum(h.supply_percentage) ?? toNum(h.percentage_relative_to_total_supply)
         return p != null && p > 0
       })
       // GoldRush LP-holder rows sometimes omit total_supply — fall back to an RPC totalSupply
@@ -3830,11 +3860,11 @@ export async function POST(req: Request) {
         }
       }
       const top = lpItems.slice(0, 5).map((h) => {
-        const directPctRaw = toNum(h.percentage) ?? toNum(h.percent) ?? toNum(h.ownership_percentage)
+        const directPctRaw = toNum(h.percentage) ?? toNum(h.percent) ?? toNum(h.ownership_percentage) ?? toNum(h.balancePercent) ?? toNum(h.ownershipPercent) ?? toNum(h.percent_of_supply) ?? toNum(h.share) ?? toNum(h.supply_percentage) ?? toNum(h.percentage_relative_to_total_supply)
         const directPct = (directPctRaw != null && directPctRaw > 0) ? directPctRaw : null
         let derivedPct: number | null = null
         if (directPct == null && _lpGrSupplyStr != null) {
-          derivedPct = bigIntPct(h.balance ?? h.token_balance, _lpGrSupplyStr)
+          derivedPct = bigIntPct(lpHolderBalanceRaw(h), _lpGrSupplyStr)
           if (derivedPct != null) _lpGrPctDerived = true
         }
         return {
@@ -5660,6 +5690,7 @@ export async function POST(req: Request) {
       selectedPool: {
         pair: _primaryPair ?? null,
         address: lpPoolAddress ?? null,
+        poolId: primaryMarketPoolId ?? lpPool?.poolId ?? null,
         model: lpModelProof.model,
         liquidityUsd: _el,
       },
@@ -5677,6 +5708,7 @@ export async function POST(req: Request) {
       selectedPool: {
         pair: _primaryPair ?? null,
         address: lpPoolAddress ?? null,
+        poolId: primaryMarketPoolId ?? lpPool?.poolId ?? null,
         model: lpModelProof.model,
         liquidityUsd: _el,
       },
@@ -5689,6 +5721,7 @@ export async function POST(req: Request) {
       selectedPool: {
         pair: _primaryPair ?? null,
         address: lpPoolAddress ?? null,
+        poolId: primaryMarketPoolId ?? lpPool?.poolId ?? null,
         model: lpModelProof.model,
         liquidityUsd: _el,
       },

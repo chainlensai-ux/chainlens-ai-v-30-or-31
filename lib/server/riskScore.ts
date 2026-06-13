@@ -221,6 +221,15 @@ function scoreLiquiditySafety(input: RiskScoreInput): RiskScoreSectionResult {
     status === 'burned' || burnStatus === 'burned' || input.lpLockStatus === 'burned'
   const lockConfirmed = lockStatus === 'locked' || input.lpLockStatus === 'locked'
   const teamControlled = status === 'team_controlled' || controllerType === 'wallet'
+  const displayLpModel = lpControl?.displayLpModel ?? null
+  const lpModel = input.lpModelProof?.model ?? null
+  const standardLockApplies = input.lpModelProof?.standardLockApplies ?? null
+  const protocolOrConcentrated =
+    status === 'protocol' ||
+    status === 'concentrated_liquidity' ||
+    displayLpModel === 'concentrated_liquidity' ||
+    lpModel === 'concentrated' ||
+    standardLockApplies === false
   const controllerUnknown =
     controllerType == null || controllerType === 'unknown' || controller == null
 
@@ -238,6 +247,13 @@ function scoreLiquiditySafety(input: RiskScoreInput): RiskScoreSectionResult {
   } else if (teamControlled) {
     lockBurnScore = 0
     reasons.push('lp_controlled_by_wallet_no_lock_or_burn_proof')
+  } else if (protocolOrConcentrated) {
+    // V3/V4/protocol-position pools do not expose a standard ERC-20 LP controller
+    // to lock or burn. Keep the same conservative score as an unproven controller,
+    // but report the model accurately instead of implying a failed V2-style proof.
+    lockBurnScore = 0
+    reasons.push('lp_position_verification_required')
+    reasons.push('standard_lp_lock_not_applicable')
   } else if (controllerUnknown) {
     // An unresolved/unknown LP controller is an open risk, not a safety signal — it
     // must not score better than a confirmed wallet-controlled LP with no lock/burn
@@ -254,9 +270,6 @@ function scoreLiquiditySafety(input: RiskScoreInput): RiskScoreSectionResult {
   components.lpLockOrBurn = lockBurnScore
 
   // --- LP model applicability (0-5) ---
-  const displayLpModel = lpControl?.displayLpModel ?? null
-  const lpModel = input.lpModelProof?.model ?? null
-
   let lpModelScore: number
   if (displayLpModel === 'erc20_lp_token') {
     lpModelScore = 5
@@ -278,9 +291,6 @@ function scoreLiquiditySafety(input: RiskScoreInput): RiskScoreSectionResult {
   components.lpModelApplicability = lpModelScore
 
   // --- LP controller risk (0-10) ---
-  const standardLockApplies = input.lpModelProof?.standardLockApplies ?? null
-  const protocolOrConcentrated = status === 'protocol' || status === 'concentrated_liquidity'
-
   let controllerScore: number
   if (
     burnConfirmed ||
@@ -296,7 +306,7 @@ function scoreLiquiditySafety(input: RiskScoreInput): RiskScoreSectionResult {
   } else if (controllerType === 'contract') {
     controllerScore = 5
     reasons.push('lp_controller_contract_lock_burn_unproven')
-  } else if (protocolOrConcentrated || standardLockApplies === false) {
+  } else if (protocolOrConcentrated) {
     controllerScore = 6
     reasons.push('lp_controller_standard_lock_not_applicable')
   } else {
