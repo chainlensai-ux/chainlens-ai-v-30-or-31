@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { getRadarValuationBasis, getRadarValuationCardDisplay, getRadarValuationDrawerDisplay, getRadarCortexValuationLine, getRadarValuationEvidenceGap, tokenPassesRadarValuationFilters, resolveFallbackMarketCap, resolveBaseRadarMarketCap, DEFAULT_RADAR_MIN_LIQUIDITY_USD } from '../lib/baseRadarValuation.ts'
+import { getRadarValuationBasis, getRadarValuationCardDisplay, getRadarValuationDrawerDisplay, getRadarCortexValuationLine, getRadarValuationEvidenceGap, tokenPassesRadarValuationFilters, resolveFallbackMarketCap, resolveBaseRadarMarketCap, selectDexScreenerMarketCapRescuePair, DEFAULT_RADAR_MIN_LIQUIDITY_USD } from '../lib/baseRadarValuation.ts'
 
 const fmtUSD = (v) => {
   if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(1)}M`
@@ -177,5 +177,71 @@ const publicMarket = {
 assert.equal(publicMarket.marketCapUsd, 222222)
 assert.equal(publicMarket.marketCapStatus, 'verified')
 assert.equal(publicMarket.marketCapDiagnostics.selectedMarketCapFieldPath, 'dexPair.marketCapUsd')
+
+// ─── Dex rescue: resolver has no MC, rescue pair has explicit marketCap ───
+const noPrimaryMc = resolveBaseRadarMarketCap({ normalized: { marketCapUsd: null } })
+const rescueMc = selectDexScreenerMarketCapRescuePair({
+  chain: 'base',
+  pairs: [{ chainId: 'base', pairAddress: '0xpair1', dexId: 'uniswap', liquidity: { usd: 25_000 }, marketCap: 123456, fdv: 130000 }],
+})
+const rescueValuation = getRadarValuationBasis({
+  marketCapUsd: noPrimaryMc.marketCapUsd ?? rescueMc.marketCapUsd,
+  marketCapStatus: rescueMc.marketCapStatus,
+  fdvUsd: 130_000,
+  liquidityUsd: 25_000,
+})
+assert.equal(rescueMc.marketCapUsd, 123456)
+assert.equal(rescueMc.marketCapStatus, 'verified')
+assert.equal(rescueMc.marketCapFieldPath, 'dexPair[0xpair1].marketCapRescue.marketCap')
+assert.equal(rescueValuation.basis, 'verified_market_cap')
+
+// ─── Dex rescue: multiple pairs; highest-liquidity active pair with MC wins ─
+const rescueMulti = selectDexScreenerMarketCapRescuePair({
+  chain: 'base',
+  pairs: [
+    { chainId: 'base', pairAddress: '0xlow', dexId: 'dex-a', liquidity: { usd: 10_000 }, marketCap: 111 },
+    { chainId: 'base', pairAddress: '0xzero', dexId: 'dex-b', liquidity: { usd: 0 }, marketCap: 999 },
+    { chainId: 'ethereum', pairAddress: '0xeth', dexId: 'dex-c', liquidity: { usd: 1_000_000 }, marketCap: 888 },
+    { chainId: 'base', pairAddress: '0xhigh', dexId: 'dex-d', liquidity: { usd: 99_000 }, info: { marketCapUsd: '777777' } },
+  ],
+})
+assert.equal(rescueMulti.marketCapUsd, 777777)
+assert.equal(rescueMulti.selectedPairAddress, '0xhigh')
+assert.equal(rescueMulti.selectedDexId, 'dex-d')
+assert.equal(rescueMulti.selectedLiquidityUsd, 99_000)
+assert.equal(rescueMulti.marketCapFieldPath, 'dexPair[0xhigh].marketCapRescue.info.marketCapUsd')
+
+// ─── Dex rescue: no MC + valid FDV remains FDV fallback ───────────────────
+const rescueNoMc = selectDexScreenerMarketCapRescuePair({
+  chain: 'base',
+  pairs: [{ chainId: 'base', pairAddress: '0xfdv', liquidity: { usd: 12_000 }, fdv: 44_000 }],
+})
+const rescueFdvFallback = getRadarValuationBasis({ marketCapUsd: rescueNoMc.marketCapUsd, marketCapStatus: rescueNoMc.marketCapStatus, fdvUsd: 44_000, liquidityUsd: 12_000 })
+assert.equal(rescueNoMc.marketCapUsd, null)
+assert.equal(rescueFdvFallback.basis, 'fdv_fallback')
+
+// ─── Dex rescue: no MC + invalid FDV remains open check ───────────────────
+const rescueInvalidFdv = getRadarValuationBasis({ marketCapUsd: rescueNoMc.marketCapUsd, marketCapStatus: rescueNoMc.marketCapStatus, fdvUsd: 1, liquidityUsd: 12_000 })
+assert.equal(rescueInvalidFdv.basis, 'unavailable')
+assert.equal(rescueInvalidFdv.valueUsd, null)
+
+// ─── Debug diagnostics include rescue flags and selected field path ───────
+const rescueDebug = {
+  selectedMarketCapUsd: rescueMc.marketCapUsd,
+  selectedMarketCapStatus: rescueMc.marketCapStatus,
+  selectedMarketCapFieldPath: rescueMc.marketCapFieldPath,
+  selectedValuationBasis: rescueValuation.basis,
+  resolverReason: rescueMc.reason,
+  rescueAttempted: true,
+  rescueCacheHit: false,
+  rescuePairCount: rescueMc.pairCount,
+  rescueSelectedPairAddress: rescueMc.selectedPairAddress,
+  rescueSelectedDexId: rescueMc.selectedDexId,
+  rescueSelectedLiquidityUsd: rescueMc.selectedLiquidityUsd,
+  rescueRawCandidates: rescueMc.rawCandidates,
+}
+assert.equal(rescueDebug.rescueAttempted, true)
+assert.equal(rescueDebug.selectedMarketCapFieldPath, 'dexPair[0xpair1].marketCapRescue.marketCap')
+assert.ok(rescueDebug.rescueRawCandidates.some(candidate => candidate.path === 'dexPair[0xpair1].marketCapRescue.marketCap' && candidate.value === 123456))
 
 console.log('base radar valuation tests passed')
