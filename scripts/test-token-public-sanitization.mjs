@@ -3,7 +3,7 @@
  * Run: node --experimental-strip-types scripts/test-token-public-sanitization.mjs
  */
 import { sanitizePublicTokenResponse } from '../lib/server/tokenPublicResponse.ts'
-import { publicLpDataMode, computeLpExitRisk, buildCortexLpRead } from '../lib/server/lpProof.ts'
+import { publicLpDataMode, computeLpExitRisk, buildCortexLpRead, formatTokenIdentity } from '../lib/server/lpProof.ts'
 import { buildLpControllerIntel, resolveLpControllerIdentity } from '../lib/server/lpControllerIntel.ts'
 import { calculateTokenRiskScore } from '../lib/server/riskScore.ts'
 import { buildLpMovementWatch } from '../lib/server/lpMovementWatch.ts'
@@ -1521,6 +1521,38 @@ console.log('\nR. PLAY primary poolType + secondary Aerodrome controller/share')
   }, false)
   assert('PLAY public payload lpControl.poolType is v3 (primary), not aerodrome', playPublicPayloadReal.lpControl?.poolType === 'v3', playPublicPayloadReal.lpControl?.poolType)
   assert('PLAY public payload secondaryLpExposure.controllerSharePercent is ~99.47', playPublicPayloadReal.secondaryLpExposure?.controllerSharePercent >= 99.4 && playPublicPayloadReal.secondaryLpExposure?.controllerSharePercent <= 99.5, playPublicPayloadReal.secondaryLpExposure?.controllerSharePercent)
+}
+
+
+// ─── S. CORTEX token identity formatter avoids duplicate name/symbol wording ─────
+console.log('\nS. CORTEX identity formatter avoids duplicate symbol/name')
+{
+  assert('Virtual Protocol + VIRTUAL formats as Virtual Protocol (VIRTUAL)', formatTokenIdentity('Virtual Protocol', 'VIRTUAL') === 'Virtual Protocol (VIRTUAL)', formatTokenIdentity('Virtual Protocol', 'VIRTUAL'))
+  assert('Play + PLAY formats as Play (PLAY)', formatTokenIdentity('Play', 'PLAY') === 'Play (PLAY)', formatTokenIdentity('Play', 'PLAY'))
+  assert('mferGPT + MFERGPT formats as mferGPT (MFERGPT)', formatTokenIdentity('mferGPT', 'MFERGPT') === 'mferGPT (MFERGPT)', formatTokenIdentity('mferGPT', 'MFERGPT'))
+  assert('symbol-only identity formats as symbol', formatTokenIdentity(null, 'PLAY') === 'PLAY', formatTokenIdentity(null, 'PLAY'))
+  assert('same name/symbol identity is not duplicated', formatTokenIdentity('PLAY', 'PLAY') === 'PLAY', formatTokenIdentity('PLAY', 'PLAY'))
+
+  const mferCortex = buildCortexLpRead({
+    name: 'mferGPT',
+    symbol: 'MFERGPT',
+    totalLiq: 120000,
+    fragments: 1,
+    observedPoolPresent: true,
+    riskTier: 'moderate',
+    liquidityDepthRisk: 'low',
+    lpModel: { model: 'concentrated', dexName: 'Uniswap V4', standardLockApplies: false },
+    migrationSummary: 'Migration status is low.',
+    mode: 'indexed',
+    confidence: 'medium',
+    gaps: [],
+    lpLockStatus: 'unverified',
+    lpLockProvider: null,
+    lpUnlockTime: null,
+    proofApplicability: 'not_applicable',
+  })
+  assert('MFERGPT CORTEX summary starts with normalized identity once', /^mferGPT \(MFERGPT\) shows/.test(mferCortex.riskSummary), mferCortex.riskSummary)
+  assert('MFERGPT CORTEX summary does not append symbol after identity', !/\(MFERGPT\)\s+MFERGPT\s+has/i.test(mferCortex.riskSummary), mferCortex.riskSummary)
 }
 
 console.log(`\n${passed} passed, ${failed} failed`)
