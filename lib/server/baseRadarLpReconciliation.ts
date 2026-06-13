@@ -114,10 +114,25 @@ export function reconcileBaseRadarLp(scan: Record<string, any>): BaseRadarLpReco
     lpEvidenceSummary = lpEvidenceSummary.map((line) =>
       /^Pool model:/i.test(line) ? `Pool model: ${lpModelProofModel}` : line,
     )
+  } else {
+    const liquidity = typeof scan.liquidityUsd === 'number' && Number.isFinite(scan.liquidityUsd)
+      ? `$${scan.liquidityUsd.toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+      : 'unknown'
+    lpEvidenceSummary = [
+      `Pool model: ${lpModelProofModel}`,
+      `Liquidity: ${liquidity}`,
+      `Proof applicability: ${proofApplicability}`,
+      `Proof status: ${scan.lpProofStatus ?? 'open_check'}`,
+      `Migration: ${scan.lpMigrationProof?.status ?? 'unknown'}`,
+    ]
   }
 
   // 3. Sanitize CORTEX pool-structure copy for concentrated primaries.
   let cortexLpRead: Record<string, unknown> | null = scan.cortexLpRead && typeof scan.cortexLpRead === 'object' ? { ...scan.cortexLpRead as Record<string, unknown> } : null
+  if (cortexLpRead && displayLpModel === 'unknown') {
+    cortexLpRead.riskSummary = 'Market activity was detected, but the pool model could not be confirmed from fallback evidence.'
+  }
+
   if (cortexLpRead && displayLpModel === 'concentrated_liquidity') {
     for (const [key, value] of Object.entries(cortexLpRead)) {
       if (typeof value === 'string') cortexLpRead[key] = sanitizeConcentratedCortexText(value)

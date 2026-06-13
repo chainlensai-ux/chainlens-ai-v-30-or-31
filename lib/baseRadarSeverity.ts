@@ -87,7 +87,7 @@ export function creatorTopHolderDisplay(inTopHolders: boolean | null | undefined
     if (creatorPercent != null && Number.isFinite(creatorPercent) && creatorPercent > 0) {
       return `Detected · ${creatorPercent.toFixed(1)}%`
     }
-    return 'Detected, supply share open check'
+    return 'Detected in indexed holders · supply share open check'
   }
   if (inTopHolders === false) return 'Not confirmed'
   return 'Open Check'
