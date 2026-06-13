@@ -2701,9 +2701,9 @@ function detectPoolType(pool: Record<string, unknown> | null, dexIdHint?: string
     if (isAerodromeFamily(s)) return "aerodrome"
     if (isConcentratedDex(s)) return "concentrated"
     if (/^uniswap_v4|^uniswap-v4/.test(s)) return "v3"  // treat V4 as concentrated
-    if (/^uniswap_v3|^uniswap-v3|^pancakeswap_v3|^sushiswap_v3|^algebra/.test(s)) return "v3"
-    if (/^uniswap_v2|^uniswap-v2|^pancakeswap_v2|^sushiswap_v2|^baseswap|^alienbase|^swapbased|^shibaswap/.test(s)) return "v2"
-    if (/^pancakeswap_v3|^sushiswap_v3/.test(s)) return "v3"
+    if (/^uniswap_v3|^uniswap-v3|^pancakeswap_v3|^pancakeswap-v3|^sushiswap_v3|^sushiswap-v3|^algebra/.test(s)) return "v3"
+    if (/^uniswap_v2|^uniswap-v2|^pancakeswap_v2|^pancakeswap-v2|^sushiswap_v2|^sushiswap-v2|^baseswap|^alienbase|^swapbased|^shibaswap/.test(s)) return "v2"
+    if (/^pancakeswap_v3|^pancakeswap-v3|^sushiswap_v3|^sushiswap-v3/.test(s)) return "v3"
     if (/^sushiswap|^pancakeswap/.test(s)) return "v2"  // unversioned: default to v2
   }
   const has = (re: RegExp) => re.test(text);

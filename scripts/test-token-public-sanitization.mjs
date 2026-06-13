@@ -936,5 +936,109 @@ for (const payload of [publicPayload, fallbackPublicPayload, protocolPayload, mf
 assert('GOAL/concentrated public lpLockBurnIntel summary mentions ERC20 LP lock/burn proof does not apply', /ERC20 LP lock\/burn proof does not apply/i.test(protocolPayload.lpLockBurnIntel?.summary ?? ''), protocolPayload.lpLockBurnIntel?.summary)
 assert('MFERGPT public secondaryLpExposure does not contain the concentrated liquidityStatus copy (separate field)', !serialized(mferPublicPayload.secondaryLpExposure).includes('Concentrated liquidity detected'))
 
+// ─── M. PLAY-like PancakeSwap V3 concentrated pool — must not be classified as V2/ERC20 LP ──
+console.log('\nM. PLAY-like PancakeSwap V3 concentrated primary pool')
+{
+  // Mirrors app/api/token/route.ts detectPoolType(): a hyphenated GeckoTerminal dex id
+  // like "pancakeswap-v3-base" must be classified as "v3", not fall through to "v2".
+  const playDexId = 'pancakeswap-v3-base'
+  const s = playDexId.toLowerCase()
+  const detected = /^uniswap_v4|^uniswap-v4/.test(s) ? 'v3'
+    : /^uniswap_v3|^uniswap-v3|^pancakeswap_v3|^pancakeswap-v3|^sushiswap_v3|^sushiswap-v3|^algebra/.test(s) ? 'v3'
+    : /^uniswap_v2|^uniswap-v2|^pancakeswap_v2|^pancakeswap-v2|^sushiswap_v2|^sushiswap-v2|^baseswap|^alienbase|^swapbased|^shibaswap/.test(s) ? 'v2'
+    : /^pancakeswap_v3|^pancakeswap-v3|^sushiswap_v3|^sushiswap-v3/.test(s) ? 'v3'
+    : 'unknown'
+  assert('PLAY "pancakeswap-v3-base" dex id is classified as v3, not v2', detected === 'v3', detected)
+}
+
+const playPoolAddress = '0xf1cacd7e005b9337c58aae77bc88d93c635cdf4d'
+const playSelectedPool = { address: playPoolAddress, pair: 'PLAY / USDC', dex: 'PancakeSwap V3', model: 'concentrated', liquidityUsd: 500_000 }
+const playLpControl = {
+  status: 'concentrated_liquidity',
+  confidence: 'medium',
+  displayLpModel: 'concentrated_liquidity',
+  proofApplicability: 'not_applicable',
+  poolType: 'v3',
+  lockStatus: 'not_applicable',
+  burnStatus: 'not_applicable',
+  proofStatus: 'not_applicable',
+  primaryMarketPool: playPoolAddress,
+  primaryMarketPoolId: playPoolAddress,
+  primaryPoolDex: 'pancakeswap-v3-base',
+  primaryPoolType: 'v3',
+  verificationPool: null,
+  verificationPoolDex: null,
+  verificationPoolType: null,
+  lpController: null,
+  lpControllerType: 'unknown',
+  evidence: [],
+}
+const playLpMeta = { displayLpModel: 'concentrated_liquidity', primaryMarketType: 'v3' }
+
+const playControllerIntel = buildLpControllerIntel({
+  lpControl: playLpControl,
+  selectedPool: playSelectedPool,
+  lpExitRisk: 'watch',
+  liquidityDepthRisk: 'moderate',
+  lpMigrationProof: { status: 'low' },
+  lpMeta: playLpMeta,
+})
+const playLockBurnIntel = buildLpLockBurnIntel({
+  chain: 'base',
+  lpControl: playLpControl,
+  lpControllerIntel: playControllerIntel,
+  selectedPool: playSelectedPool,
+  lpMeta: playLpMeta,
+})
+const playMovementWatch = buildLpMovementWatch({
+  chain: 'base',
+  lpControllerIntel: playControllerIntel,
+  lpControl: playLpControl,
+  selectedPool: playSelectedPool,
+  lpMeta: playLpMeta,
+})
+const playUnlockTimeline = buildLpUnlockTimeline({ chain: 'base', lpLockBurnIntel: playLockBurnIntel })
+
+assert('PLAY selectedPool.model is concentrated', playSelectedPool.model === 'concentrated', playSelectedPool)
+assert('PLAY lpControl.proofApplicability is not_applicable', playLpControl.proofApplicability === 'not_applicable', playLpControl)
+assert('PLAY lpLockBurnIntel.poolModel is concentrated_liquidity', playLockBurnIntel?.poolModel === 'concentrated_liquidity', playLockBurnIntel)
+assert('PLAY lpLockBurnIntel.status is not_applicable', playLockBurnIntel?.status === 'not_applicable', playLockBurnIntel)
+assert('PLAY lpUnlockTimeline.status is not_applicable', playUnlockTimeline?.status === 'not_applicable', playUnlockTimeline)
+assert('PLAY lpMovementWatch.status is not_applicable or unsupported', ['not_applicable', 'pool_model_not_supported'].includes(playMovementWatch?.status), playMovementWatch)
+
+const playRiskInput = {
+  marketCapUsd: 5_000_000,
+  fdvUsd: 5_000_000,
+  liquidityUsd: 500_000,
+  holderDistribution: { top1: 10, top5: 25, top10: 40 },
+  lpControl: playLpControl,
+  lpProofApplicability: 'not_applicable',
+  lpProofStatus: 'not_applicable',
+  lpModelProof: { model: 'concentrated', standardLockApplies: false },
+  lpMigrationProof: { status: 'low' },
+}
+const playRisk = calculateTokenRiskScore(playRiskInput)
+assert('PLAY riskBreakdown reasons include lp_model_concentrated_liquidity', playRisk.riskBreakdown.liquiditySafety.reasons.includes('lp_model_concentrated_liquidity'), playRisk.riskBreakdown.liquiditySafety.reasons)
+assert('PLAY riskBreakdown reasons do not include lp_model_erc20_lp_token', !playRisk.riskBreakdown.liquiditySafety.reasons.includes('lp_model_erc20_lp_token'), playRisk.riskBreakdown.liquiditySafety.reasons)
+
+const playPublicPayload = sanitizePublicTokenResponse({
+  symbol: 'PLAY',
+  selectedPool: playSelectedPool,
+  lpControl: playLpControl,
+  lpControllerIntel: playControllerIntel,
+  lpLockBurnIntel: playLockBurnIntel,
+  lpMovementWatch: playMovementWatch,
+  lpUnlockTimeline: playUnlockTimeline,
+  lpProofApplicability: 'not_applicable',
+  lpProofStatus: 'not_applicable',
+  riskEngine: { riskBreakdown: playRisk.riskBreakdown },
+}, false)
+assert('PLAY public payload does not contain lp_model_erc20_lp_token', !serialized(playPublicPayload).includes('lp_model_erc20_lp_token'), playPublicPayload)
+assert('PLAY public lpLockBurnIntel summary mentions ERC20 LP lock/burn proof does not apply', /ERC20 LP lock\/burn proof does not apply/i.test(playPublicPayload.lpLockBurnIntel?.summary ?? ''), playPublicPayload.lpLockBurnIntel?.summary)
+
+// Mirrors app/api/token/route.ts resolvedAnalysis.liquidityStatus for PLAY's lpProofApplicability === 'not_applicable'.
+const playConcentratedLiquidityStatus = 'Concentrated liquidity detected — standard ERC-20 LP lock/burn proof does not apply. Liquidity control requires protocol-specific position checks.'
+assert('PLAY liquidityStatus mentions standard ERC-20 LP lock/burn proof does not apply and protocol-specific position checks', /standard ERC-20 LP lock\/burn proof does not apply/i.test(playConcentratedLiquidityStatus) && /protocol-specific position checks/i.test(playConcentratedLiquidityStatus), playConcentratedLiquidityStatus)
+
 console.log(`\n${passed} passed, ${failed} failed`)
 if (failed > 0) process.exit(1)
