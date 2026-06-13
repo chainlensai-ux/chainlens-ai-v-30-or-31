@@ -14,6 +14,14 @@ type RadarDrawerToken = {
   liquidityUsd: number
   volume24h: number
   fdvUsd?: number | null
+  marketCapUsd?: number | null
+  marketCapStatus?: string | null
+  valuationBasis?: 'verified_market_cap' | 'fdv_fallback' | 'unavailable'
+  valuationUsd?: number | null
+  valuationLabel?: string | null
+  valuationVerified?: boolean
+  valuationReason?: string | null
+  evidenceGaps?: string[]
   radarScore: number
   momentum: string
   flags: string[]
@@ -458,7 +466,7 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
     token?.flags?.length ? `Risk context: ${token.flags.join(', ')}.` : 'Risk context: no radar flags on this card.',
   ].filter((line): line is string => Boolean(line))
 
-  const evidenceGaps: string[] = [...severity.evidenceGaps]
+  const evidenceGaps: string[] = [...severity.evidenceGaps, ...(token?.evidenceGaps ?? [])]
   if (lp?.lpProofApplicability === 'applicable' && (lp?.lpProofStatus === 'missing' || lp?.lpProofStatus === 'partial')) {
     evidenceGaps.push('No verified lock/burn proof found for the primary LP position.')
   }
@@ -534,13 +542,15 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '0 12px' }}>
             <DataRow label="Liquidity" value={fmtUSD(market?.liquidityUsd ?? token.liquidityUsd)} />
             <DataRow label="Volume 24h" value={fmtUSD(market?.volume24hUsd ?? token.volume24h)} />
-            <DataRow label="Market cap" value={fmtUSD(market?.marketCapUsd ?? null)} />
+            <DataRow label="Market cap" value={token.valuationBasis === 'fdv_fallback' ? 'Unverified' : fmtUSD(market?.marketCapUsd ?? token.marketCapUsd ?? null)} />
             <DataRow label="FDV" value={fmtUSD(market?.fdvUsd ?? token.fdvUsd ?? null)} />
+            <DataRow label="Valuation" value={token.valuationBasis === 'verified_market_cap' ? 'Verified market cap' : token.valuationBasis === 'fdv_fallback' ? 'FDV fallback' : 'Unavailable'} />
             <DataRow label="Score" value={`${effectiveScore}/100 · ${severity.severityLabel}`} />
             <DataRow label="Momentum" value={token.momentum} />
             <DataRow label="Age" value={pairAgeLabel ?? fmtAge(token.ageMinutes)} />
             <DataRow label="Market evidence" value={market?.marketConfidence ? publicStatus(market.marketConfidence) : 'Open Check'} />
           </div>
+          {token.valuationBasis === 'fdv_fallback' && <p style={{ margin: '10px 0 0', color: '#fde68a', fontSize: '11px', lineHeight: 1.4 }}>Note: Market cap unavailable — FDV shown only.</p>}
           <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginTop: '10px' }}>{(token.flags.length ? token.flags : ['No radar tags']).map((flag) => <span key={flag} style={tagStyle}>{flag}</span>)}</div>
         </Section>
 
