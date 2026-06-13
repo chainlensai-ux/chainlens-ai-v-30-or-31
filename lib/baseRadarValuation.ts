@@ -48,6 +48,18 @@ export interface BaseRadarMarketCapCandidate {
   value: unknown
 }
 
+export interface DexScreenerMarketCapRescueResult {
+  marketCapUsd: number | null
+  marketCapStatus: 'verified' | 'unavailable'
+  marketCapFieldPath: string | null
+  pairCount: number
+  selectedPairAddress: string | null
+  selectedDexId: string | null
+  selectedLiquidityUsd: number | null
+  rawCandidates: BaseRadarMarketCapCandidate[]
+  reason: string
+}
+
 export type BaseRadarMarketCapSourceKind = 'market_api' | null
 
 export interface ResolvedBaseRadarMarketCap {
@@ -64,6 +76,94 @@ function finitePositiveNumber(value: unknown): number | null {
   return Number.isFinite(n) && n > 0 ? n : null
 }
 
+function getRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' ? value as Record<string, unknown> : {}
+}
+
+function getPairLiquidityUsd(pair: Record<string, unknown>): number {
+  const liquidity = getRecord(pair.liquidity)
+  return finitePositiveNumber(pair.liquidityUsd) ?? finitePositiveNumber(liquidity.usd) ?? 0
+}
+
+function getPairAddress(pair: Record<string, unknown>): string | null {
+  const address = pair.pairAddress ?? pair.pair_address ?? pair.address
+  return typeof address === 'string' && address.trim() ? address : null
+}
+
+function getPairChainId(pair: Record<string, unknown>): string | null {
+  const chainId = pair.chainId ?? pair.chain ?? pair.network
+  return typeof chainId === 'string' && chainId.trim() ? chainId.toLowerCase() : null
+}
+
+export function getDexScreenerMarketCapCandidates(pair: Record<string, unknown>, prefix = 'dexPair'): BaseRadarMarketCapCandidate[] {
+  const info = getRecord(pair.info)
+  return [
+    { path: `${prefix}.marketCap`, value: pair.marketCap },
+    { path: `${prefix}.marketCapUsd`, value: pair.marketCapUsd },
+    { path: `${prefix}.market_cap`, value: pair.market_cap },
+    { path: `${prefix}.market_cap_usd`, value: pair.market_cap_usd },
+    { path: `${prefix}.info.marketCap`, value: info.marketCap },
+    { path: `${prefix}.info.marketCapUsd`, value: info.marketCapUsd },
+  ]
+}
+
+export function selectDexScreenerMarketCapRescuePair(input: {
+  pairs: Record<string, unknown>[]
+  chain: string
+  primaryPoolAddress?: string | null
+}): DexScreenerMarketCapRescueResult {
+  const chain = input.chain.toLowerCase()
+  const primaryPoolAddress = input.primaryPoolAddress?.toLowerCase() ?? null
+  const sameChainActive = input.pairs
+    .filter(pair => {
+      const pairChain = getPairChainId(pair)
+      return (!pairChain || pairChain === chain) && getPairLiquidityUsd(pair) > 0
+    })
+
+  const sorted = [...sameChainActive].sort((a, b) => {
+    const aPrimary = primaryPoolAddress && getPairAddress(a)?.toLowerCase() === primaryPoolAddress ? 1 : 0
+    const bPrimary = primaryPoolAddress && getPairAddress(b)?.toLowerCase() === primaryPoolAddress ? 1 : 0
+    if (aPrimary !== bPrimary) return bPrimary - aPrimary
+    return getPairLiquidityUsd(b) - getPairLiquidityUsd(a)
+  })
+
+  const rawCandidates: BaseRadarMarketCapCandidate[] = []
+  for (const pair of sorted) {
+    const pairAddress = getPairAddress(pair)
+    const prefix = pairAddress ? `dexPair[${pairAddress}].marketCapRescue` : 'dexPair.marketCapRescue'
+    const candidates = getDexScreenerMarketCapCandidates(pair, prefix)
+    rawCandidates.push(...candidates)
+    for (const candidate of candidates) {
+      const value = finitePositiveNumber(candidate.value)
+      if (value != null) {
+        return {
+          marketCapUsd: value,
+          marketCapStatus: 'verified',
+          marketCapFieldPath: candidate.path,
+          pairCount: input.pairs.length,
+          selectedPairAddress: pairAddress,
+          selectedDexId: typeof pair.dexId === 'string' ? pair.dexId : null,
+          selectedLiquidityUsd: getPairLiquidityUsd(pair),
+          rawCandidates,
+          reason: `Explicit DexScreener market cap found at ${candidate.path}.`,
+        }
+      }
+    }
+  }
+
+  return {
+    marketCapUsd: null,
+    marketCapStatus: 'unavailable',
+    marketCapFieldPath: null,
+    pairCount: input.pairs.length,
+    selectedPairAddress: sorted.length ? getPairAddress(sorted[0]) : null,
+    selectedDexId: sorted.length && typeof sorted[0].dexId === 'string' ? sorted[0].dexId : null,
+    selectedLiquidityUsd: sorted.length ? getPairLiquidityUsd(sorted[0]) : null,
+    rawCandidates,
+    reason: 'No explicit market cap field present in DexScreener rescue pairs.',
+  }
+}
+
 /**
  * Centralized Base Radar market cap resolver. Checks known raw market-cap fields
  * across DexScreener pair, GeckoTerminal pool attributes, and normalized shapes —
@@ -77,17 +177,9 @@ export function resolveBaseRadarMarketCap(input: BaseRadarMarketCapRawInput): Re
     ? geckoIncludedToken.attributes as Record<string, unknown>
     : geckoIncludedToken as Record<string, unknown>
   const normalized = input.normalized ?? {}
-  const dexInfo = (dexPair as Record<string, unknown>).info && typeof (dexPair as Record<string, unknown>).info === 'object'
-    ? (dexPair as Record<string, unknown>).info as Record<string, unknown>
-    : {}
 
   const candidates: BaseRadarMarketCapCandidate[] = [
-    { path: 'dexPair.marketCap', value: (dexPair as Record<string, unknown>).marketCap },
-    { path: 'dexPair.marketCapUsd', value: (dexPair as Record<string, unknown>).marketCapUsd },
-    { path: 'dexPair.market_cap', value: (dexPair as Record<string, unknown>).market_cap },
-    { path: 'dexPair.market_cap_usd', value: (dexPair as Record<string, unknown>).market_cap_usd },
-    { path: 'dexPair.info.marketCap', value: dexInfo.marketCap },
-    { path: 'dexPair.info.marketCapUsd', value: dexInfo.marketCapUsd },
+    ...getDexScreenerMarketCapCandidates(dexPair as Record<string, unknown>),
     { path: 'geckoPool.attributes.market_cap_usd', value: (geckoAttrs as Record<string, unknown>).market_cap_usd },
     { path: 'geckoPool.attributes.market_cap', value: (geckoAttrs as Record<string, unknown>).market_cap },
     { path: 'geckoPool.attributes.token_market_cap_usd', value: (geckoAttrs as Record<string, unknown>).token_market_cap_usd },
