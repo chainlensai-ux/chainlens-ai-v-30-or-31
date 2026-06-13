@@ -2424,6 +2424,85 @@ function getLpRiskSummary(result: ScanResult): { goodSigns: string[]; riskSigns:
   return { goodSigns: goodSigns.slice(0, 4), riskSigns: riskSigns.slice(0, 4), missingProofs: missingProofs.slice(0, 3) }
 }
 
+type LpEliteChip = { label: string; value: string; color: string }
+
+function getLpEliteSummary(result: ScanResult): { chips: LpEliteChip[]; verdict: string; openChecks: string[]; monitor: string[]; evidenceGaps: string[] } {
+  const ci = result.lpControllerIntel
+  const mv = result.lpMovementWatch
+  const lb = result.lpLockBurnIntel
+  const ut = result.lpUnlockTimeline
+  const ht = result.lpHistoryTimeline
+
+  const controllerValue = ci?.status ? ci.status.replace(/_/g, ' ') : 'open check'
+  const controllerColor = (ci?.status === 'locked' || ci?.status === 'burned' || ci?.status === 'protected') ? '#34d399'
+    : (ci?.status === 'protocol_controlled' || ci?.status === 'concentrated_liquidity' || ci?.status === 'no_pool') ? '#94a3b8'
+    : '#fbbf24'
+
+  const lockBurnValue = lb?.lockBurnProof ? lb.lockBurnProof.replace(/_/g, ' ') : 'open check'
+  const lockBurnColor = lb?.lockBurnProof === 'confirmed' ? '#34d399' : lb?.lockBurnProof === 'not_applicable' ? '#94a3b8' : '#fbbf24'
+
+  const unlockValue = ut?.unlockRisk ? ut.unlockRisk.replace(/_/g, ' ') : 'unknown'
+  const unlockColor = (ut?.unlockRisk === 'high' || ut?.unlockRisk === 'expired') ? '#f87171'
+    : (ut?.unlockRisk === 'low' || ut?.unlockRisk === 'none') ? '#34d399'
+    : (ut?.unlockRisk === 'not_applicable') ? '#94a3b8'
+    : '#fbbf24'
+
+  const movementValue = mv?.movementRisk ? mv.movementRisk.replace(/_/g, ' ') : (mv?.status ? mv.status.replace(/_/g, ' ') : 'unknown')
+  const movementColor = mv?.movementRisk === 'high' ? '#f87171'
+    : (mv?.movementRisk === 'low' || mv?.movementRisk === 'protected') ? '#34d399'
+    : (mv?.status === 'not_applicable') ? '#94a3b8'
+    : '#fbbf24'
+
+  const migrationValue = ht?.migrationRisk ? ht.migrationRisk.replace(/_/g, ' ') : 'unknown'
+  const migrationColor = ht?.migrationRisk === 'high' ? '#f87171'
+    : ht?.migrationRisk === 'low' ? '#34d399'
+    : ht?.migrationRisk === 'unknown' ? '#94a3b8'
+    : '#fbbf24'
+
+  const chips: LpEliteChip[] = [
+    { label: 'Controller', value: controllerValue, color: controllerColor },
+    { label: 'Lock/Burn', value: lockBurnValue, color: lockBurnColor },
+    { label: 'Unlock', value: unlockValue, color: unlockColor },
+    { label: 'Movement', value: movementValue, color: movementColor },
+    { label: 'Migration', value: migrationValue, color: migrationColor },
+  ]
+
+  const foundParts: string[] = []
+  if (ci?.controllerLabel) foundParts.push(ci.controllerLabel.toLowerCase())
+  if (ci?.controllerSharePercent != null) foundParts.push(`holding ~${ci.controllerSharePercent.toFixed(2)}% of the LP`)
+  const found = foundParts.length ? foundParts.join(', ') : 'LP control evidence is limited so far'
+
+  let mainRisk = 'LP exit-liquidity protections look favorable based on current evidence.'
+  if ([controllerColor, lockBurnColor, unlockColor, movementColor, migrationColor].includes('#f87171')) {
+    mainRisk = 'Elevated LP risk signals were detected — review before sizing.'
+  } else if ([controllerColor, lockBurnColor, unlockColor, movementColor, migrationColor].includes('#fbbf24')) {
+    mainRisk = 'No confirmed exit-liquidity protection yet — treat the LP as removable until lock/burn proof is confirmed.'
+  }
+
+  const openChecks = chips.filter((c) => /open check|unknown|watch/.test(c.value)).map((c) => c.label)
+  const monitor = Array.from(new Set([
+    ...(ci?.nextActions ?? []),
+    ...(mv?.nextActions ?? []),
+    ...(lb?.nextActions ?? []),
+    ...(ut?.nextActions ?? []),
+    ...(ht?.nextActions ?? []),
+  ])).slice(0, 4)
+
+  const evidenceGaps = Array.from(new Set([
+    ...(ci?.evidenceGaps ?? []),
+    ...(mv?.evidenceGaps ?? []),
+    ...(lb?.evidenceGaps ?? []),
+    ...(ut?.evidenceGaps ?? []),
+    ...(ht?.evidenceGaps ?? []),
+  ]))
+
+  const foundSentence = `${found.charAt(0).toUpperCase()}${found.slice(1)}.`
+  const openChecksSentence = openChecks.length ? ` Still open check: ${openChecks.join(', ')}.` : ''
+  const verdict = `${foundSentence} ${mainRisk}${openChecksSentence}`
+
+  return { chips, verdict, openChecks, monitor, evidenceGaps }
+}
+
 function getLpNextAction(result: ScanResult): string {
   const lp = result.lpControl
   const dm = lp?.displayLpModel
@@ -4767,6 +4846,25 @@ export default function TerminalTokenScanner() {
                   })()}
 
 
+                  {/* ══════════ LP ELITE INTELLIGENCE ══════════ */}
+                  {(result.lpControllerIntel || result.lpMovementWatch || result.lpLockBurnIntel || result.lpUnlockTimeline || result.lpHistoryTimeline) && (() => {
+                    const elite = getLpEliteSummary(result)
+                    return (
+                      <div style={{ marginBottom: '14px', padding: '14px 16px', background: 'linear-gradient(160deg, rgba(34,211,238,0.05), rgba(8,12,28,0.6))', border: '1px solid rgba(148,163,184,0.14)', borderRadius: '16px' }}>
+                        <p style={{ margin: 0, fontSize: '11px', fontWeight: 900, letterSpacing: '.20em', color: '#67e8f9', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>LP Elite Intelligence</p>
+                        <p style={{ margin: '8px 0 12px', fontSize: '11px', color: '#cbd5e1', lineHeight: 1.6, fontFamily: 'var(--font-plex-mono)' }}>{elite.verdict}</p>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(120px,1fr))', gap: '7px' }}>
+                          {elite.chips.map((chip) => (
+                            <div key={chip.label} style={{ padding: '8px 10px', borderRadius: '10px', background: 'rgba(2,6,23,0.5)', border: `1px solid ${chip.color}30` }}>
+                              <div style={{ fontSize: '9px', color: '#64748b', letterSpacing: '.12em', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '4px' }}>{chip.label}</div>
+                              <div style={{ fontSize: '11px', color: chip.color, fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'capitalize' }}>{chip.value}</div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )
+                  })()}
+
                   {/* ── LP Controller Intelligence ──────────────────────── */}
                   {result.lpControllerIntel && (
                     <div style={{ marginBottom: '14px', padding: '13px 15px', background: 'linear-gradient(135deg, rgba(45,212,191,0.08), rgba(15,23,42,0.72))', border: '1px solid rgba(45,212,191,0.20)', borderRadius: '14px', boxShadow: '0 18px 45px rgba(0,0,0,0.18)' }}>
@@ -5003,6 +5101,36 @@ export default function TerminalTokenScanner() {
                       </div>
                     </div>
                   )}
+
+                  {/* ── LP Elite: Evidence Gaps + Next Actions ────────── */}
+                  {(result.lpControllerIntel || result.lpMovementWatch || result.lpLockBurnIntel || result.lpUnlockTimeline || result.lpHistoryTimeline) && (() => {
+                    const elite = getLpEliteSummary(result)
+                    if (elite.evidenceGaps.length === 0 && elite.monitor.length === 0) return null
+                    return (
+                      <div style={{ marginBottom: '14px', padding: '12px 14px', background: 'rgba(2,6,23,0.4)', border: '1px solid rgba(148,163,184,0.12)', borderRadius: '14px' }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(200px,1fr))', gap: '12px' }}>
+                          <div>
+                            <p style={{ margin: '0 0 6px', fontSize: '9px', color: '#fbbf24', fontWeight: 900, letterSpacing: '.12em', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Open Checks / Evidence Gaps</p>
+                            {elite.evidenceGaps.length > 0 ? elite.evidenceGaps.slice(0, 6).map((gap) => (
+                              <div key={gap} style={{ display: 'flex', gap: '6px', marginBottom: '4px', alignItems: 'flex-start' }}>
+                                <span style={{ color: '#fbbf24', fontSize: '10px', lineHeight: '15px' }}>•</span>
+                                <p style={{ margin: 0, fontSize: '10px', color: '#94a3b8', lineHeight: 1.45, fontFamily: 'var(--font-plex-mono)' }}>{gap}</p>
+                              </div>
+                            )) : <p style={{ margin: 0, fontSize: '10px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>No open evidence gaps.</p>}
+                          </div>
+                          <div>
+                            <p style={{ margin: '0 0 6px', fontSize: '9px', color: '#67e8f9', fontWeight: 900, letterSpacing: '.12em', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>What To Monitor Next</p>
+                            {elite.monitor.length > 0 ? elite.monitor.map((action) => (
+                              <div key={action} style={{ display: 'flex', gap: '6px', marginBottom: '4px', alignItems: 'flex-start' }}>
+                                <span style={{ color: '#67e8f9', fontSize: '10px', lineHeight: '15px' }}>•</span>
+                                <p style={{ margin: 0, fontSize: '10px', color: '#94a3b8', lineHeight: 1.45, fontFamily: 'var(--font-plex-mono)' }}>{action}</p>
+                              </div>
+                            )) : <p style={{ margin: 0, fontSize: '10px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>No further actions identified.</p>}
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  })()}
 
                   {/* ── Data mode / confidence + Evidence Gaps ────────── */}
                   {(result.lpDataMode || (result.lpEvidenceGaps && result.lpEvidenceGaps.length > 0)) && (
