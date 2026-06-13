@@ -751,6 +751,18 @@ function hexToBigInt(hex: string | null | undefined): bigint | null {
 
 // BigInt-safe percentage: avoids float precision loss on 18-decimal ERC-20 balances.
 // Returns e.g. 5.23 for 5.23%. Uses BigInt() constructor (not literals) for ES2017 compat.
+
+function lpHolderBalanceRaw(holder: Record<string, unknown>): unknown {
+  return holder.balance
+    ?? holder.token_balance
+    ?? holder.balance_wei
+    ?? holder.token_balance_wei
+    ?? holder.balance_raw
+    ?? holder.raw_balance
+    ?? holder.amount
+    ?? null
+}
+
 function bigIntPct(balanceRaw: unknown, supplyRaw: unknown): number | null {
   try {
     if (balanceRaw == null || supplyRaw == null) return null
@@ -3726,7 +3738,7 @@ export async function POST(req: Request) {
         const directPct = toNum(h.percentage) ?? toNum(h.percent) ?? toNum(h.ownership_percentage)
         let derivedPct: number | null = null
         if (directPct == null && _unknownLpSupplyStr != null) {
-          derivedPct = bigIntPct(h.balance ?? h.token_balance, _unknownLpSupplyStr)
+          derivedPct = bigIntPct(lpHolderBalanceRaw(h), _unknownLpSupplyStr)
           if (derivedPct != null) _lpGrPctDerived = true
         }
         return {
@@ -3834,7 +3846,7 @@ export async function POST(req: Request) {
         const directPct = (directPctRaw != null && directPctRaw > 0) ? directPctRaw : null
         let derivedPct: number | null = null
         if (directPct == null && _lpGrSupplyStr != null) {
-          derivedPct = bigIntPct(h.balance ?? h.token_balance, _lpGrSupplyStr)
+          derivedPct = bigIntPct(lpHolderBalanceRaw(h), _lpGrSupplyStr)
           if (derivedPct != null) _lpGrPctDerived = true
         }
         return {
