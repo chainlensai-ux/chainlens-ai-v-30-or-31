@@ -281,6 +281,16 @@ export function publicLpDataMode(
   return "indexed";
 }
 
+
+export function formatTokenIdentity(name: string | null | undefined, symbol: string | null | undefined): string {
+  const cleanName = typeof name === "string" && name.trim() ? name.trim() : "";
+  const cleanSymbol = typeof symbol === "string" && symbol.trim() ? symbol.trim() : "";
+  if (cleanName && cleanSymbol && cleanName !== cleanSymbol) return `${cleanName} (${cleanSymbol})`;
+  if (cleanName) return cleanName;
+  if (cleanSymbol) return cleanSymbol;
+  return "This token";
+}
+
 export interface CortexLpRead {
   mode: string;
   confidence: string;
@@ -333,6 +343,7 @@ export function buildCortexLpRead(params: {
   };
 }): CortexLpRead {
   const { name, symbol, totalLiq, fragments, observedPoolPresent, riskTier, liquidityDepthRisk, lpModel, migrationSummary, mode, confidence, gaps, lpLockStatus, lpLockProvider, lpUnlockTime, secondaryLpSignal, lpController, lpControllerAddress, isEstablishedToken, proofApplicability, fallbackLiquidityDetected, contractSignals } = params;
+  const tokenIdentity = formatTokenIdentity(name, symbol);
   const liqStr = totalLiq != null ? `$${totalLiq.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : "an unknown amount";
   const modelUnknown = proofApplicability === "unknown";
 
@@ -355,7 +366,7 @@ export function buildCortexLpRead(params: {
       : modelUnknown
         ? `Market liquidity was detected, but the pool model and LP control path could not be verified from current evidence.${secondaryClause}`
         : !lpModel.standardLockApplies
-          ? `Standard ERC-20 LP lock/burn proof does not apply to this concentrated-liquidity pool. Liquidity control requires protocol-specific position checks.${secondaryClause}`
+          ? `Standard ERC-20 LP-token lock/burn proof does not apply to the primary concentrated-liquidity pool. Liquidity control requires protocol-specific position checks.${secondaryClause}`
           : (lpController === "wallet" && isEstablishedToken)
             ? `Selected LP position appears wallet-controlled${lpControllerAddress ? ` (${lpControllerAddress})` : ""}. This is a liquidity-control signal, not proof of malicious behavior. Verify the controlling wallet and any lock/burn evidence before relying on liquidity safety.`
             : lpController === "wallet"
@@ -414,8 +425,8 @@ export function buildCortexLpRead(params: {
       : "Separately, LP control could not be confirmed from current evidence.";
 
   const riskSummary = contractSignals
-    ? `${name} (${symbol}) shows an overall "${riskTier}" risk tier based on observed pool data. ${depthClause} ${lpControlRiskClause} This also reflects available contract checks — ${contractStatusClause} (data mode: ${mode}, confidence: ${confidence}). ${lockClause}`
-    : `${name} (${symbol}) shows an overall "${riskTier}" risk tier based on observed pool data. ${depthClause} ${lpControlRiskClause} ${contractStatusClause} (data mode: ${mode}, confidence: ${confidence}). ${lockClause}`;
+    ? `${tokenIdentity} shows an overall "${riskTier}" risk tier based on observed pool data. ${depthClause} ${lpControlRiskClause} This also reflects available contract checks — ${contractStatusClause} (data mode: ${mode}, confidence: ${confidence}). ${lockClause}`
+    : `${tokenIdentity} shows an overall "${riskTier}" risk tier based on observed pool data. ${depthClause} ${lpControlRiskClause} ${contractStatusClause} (data mode: ${mode}, confidence: ${confidence}). ${lockClause}`;
 
   const poolDetected = observedPoolPresent ?? fragments > 0;
   const liquidityAnalysis = poolDetected
@@ -468,10 +479,10 @@ export function buildCortexLpRead(params: {
     evidenceGaps: gaps.map((g) => g.label),
     nextActions: [
       ...(modelUnknown
-        ? ["Standard lock/burn proof was not attempted because ChainLens has not confirmed an ERC-20 LP token."]
+        ? ["Position verification required: ChainLens has not confirmed a standard ERC-20 LP token for the primary pool."]
         : lpModel.standardLockApplies
           ? ["Confirm LP lock and burn status directly on-chain before trusting any safety claims."]
-          : [`Standard ERC-20 LP lock/burn proof does not apply to this concentrated-liquidity pool. Liquidity control requires protocol-specific position checks.${secondaryClause}`]),
+          : [`Standard ERC-20 LP-token lock/burn proof does not apply to the primary concentrated-liquidity pool. Liquidity control requires protocol-specific position checks.${secondaryClause}`]),
       ...lpControllerActions,
       ...contractCheckActions,
     ],
