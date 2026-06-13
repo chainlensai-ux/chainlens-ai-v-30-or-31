@@ -55,6 +55,73 @@ function asAddress(value: unknown): string | null {
   return s && /^0x[a-fA-F0-9]{40}$/.test(s) ? s.toLowerCase() : null
 }
 
+export type FallbackPoolModelHint = 'erc20_lp_token' | 'concentrated_liquidity' | 'unknown'
+
+export interface NormalizedFallbackPoolIdentity {
+  pairAddress: string | null
+  dexName: string | null
+  dexId: string | null
+  pairLabel: string | null
+  modelHint: FallbackPoolModelHint
+}
+
+// V2/constant-product style AMMs on Base — a fallback pool on one of these DEXes
+// is treated as an ERC-20 LP token pool (standard lock/burn proof applies).
+const V2_DEX_PATTERNS = ['uniswap_v2', 'uniswapv2', 'baseswap', 'aerodrome', 'alienbase', 'swapbased', 'sushiswap', 'pancakeswap_v2', 'pancakeswapv2']
+// Concentrated-liquidity style pools — standard ERC-20 LP lock/burn proof does not apply.
+const CONCENTRATED_DEX_PATTERNS = ['uniswap_v3', 'uniswapv3', 'uniswap_v4', 'uniswapv4', 'slipstream', 'pancakeswap_v3', 'pancakeswapv3', 'pancakeswap-v3']
+
+function classifyDexModelHint(dexId: string | null): FallbackPoolModelHint {
+  if (!dexId) return 'unknown'
+  const normalized = dexId.toLowerCase().trim().replace(/[\s-]+/g, '_')
+  if (normalized === 'uniswap') return 'unknown'
+  if (CONCENTRATED_DEX_PATTERNS.some((p) => normalized.includes(p.replace(/[\s-]+/g, '_')))) return 'concentrated_liquidity'
+  if (V2_DEX_PATTERNS.some((p) => normalized.includes(p.replace(/[\s-]+/g, '_')))) return 'erc20_lp_token'
+  if (normalized.includes('v3') || normalized.includes('v4')) return 'concentrated_liquidity'
+  if (normalized.includes('v2')) return 'erc20_lp_token'
+  return 'unknown'
+}
+
+/**
+ * Normalizes the fallback market pool identity (pair address, dex, pair label) from
+ * whatever raw fallback fields are present on the scan result — no additional
+ * provider/API calls. Used to carry pool/liquidity evidence Base Radar already has
+ * into LP model classification, evidence, and simulation when lpControl never
+ * resolved a primary pool.
+ */
+export function normalizeBaseRadarFallbackPoolIdentity(scan: Record<string, any>): NormalizedFallbackPoolIdentity {
+  const selectedPool = scan?.selectedPool && typeof scan.selectedPool === 'object' ? scan.selectedPool as Record<string, unknown> : {}
+  const marketFallback = scan?._diagnostics?.marketFallback && typeof scan._diagnostics.marketFallback === 'object' ? scan._diagnostics.marketFallback as Record<string, unknown> : {}
+  const dexPair = scan?.dexPair && typeof scan.dexPair === 'object' ? scan.dexPair as Record<string, unknown> : {}
+  const baseTokenObj = (dexPair.baseToken ?? scan?.baseToken) as Record<string, unknown> | undefined
+  const quoteTokenObj = (dexPair.quoteToken ?? scan?.quoteToken) as Record<string, unknown> | undefined
+
+  const pairAddress = asAddress(
+    scan?.pairAddress ?? scan?.pair_address ?? scan?.poolAddress ?? scan?.pool_address ?? scan?.address
+    ?? dexPair.pairAddress ?? dexPair.pair_address
+    ?? selectedPool.address
+    ?? marketFallback.pairAddress,
+  )
+
+  const dexId = asString(
+    scan?.dexId ?? dexPair.dexId ?? marketFallback.dexId ?? selectedPool.dex ?? scan?.dexName ?? scan?.primaryDexName,
+  )
+
+  const dexName = asString(scan?.dexName ?? scan?.primaryDexName ?? (typeof selectedPool.dex === 'string' ? selectedPool.dex : null) ?? dexId)
+
+  const symbolPair = [baseTokenObj?.symbol, quoteTokenObj?.symbol].filter((v) => typeof v === 'string' && v).join('/')
+  const pairLabel = asString(selectedPool.pair) ?? (symbolPair ? symbolPair : null)
+
+  return {
+    pairAddress,
+    dexName,
+    dexId,
+    pairLabel,
+    modelHint: pairAddress ? classifyDexModelHint(dexId) : 'unknown',
+  }
+}
+
+
 function extractEvidenceValue(evidence: string[], prefix: string): string | null {
   const line = evidence.find((e) => e.startsWith(prefix))
   return line ? line.slice(prefix.length).trim() : null
@@ -86,6 +153,11 @@ export interface BaseRadarLpReconciliationResult {
   evidence: string[]
   secondaryLpControlSignals: Record<string, unknown> | null
   lpProofDisplay: LpProofDisplay | null
+  primaryMarketPool: string | null
+  poolAddressPresent: boolean
+  fallbackPoolIdentity: NormalizedFallbackPoolIdentity
+  simulationPairAddress: string | null | undefined
+  rugRiskDisplay: { status: string; reason: string } | null
 }
 
 export function reconcileBaseRadarLp(scan: Record<string, any>): BaseRadarLpReconciliationResult {
@@ -93,13 +165,19 @@ export function reconcileBaseRadarLp(scan: Record<string, any>): BaseRadarLpReco
   const evidence = Array.isArray(lpControl.evidence) ? [...lpControl.evidence as string[]] : []
   const lpModelProofRaw = scan.lpModelProof && typeof scan.lpModelProof === 'object' ? scan.lpModelProof as Record<string, unknown> : null
 
-  // 1. Reconcile the canonical model from the priority-ordered sources.
+  // 0. Normalize the fallback market pool identity (no provider calls — re-derived
+  // from fields already present on the scan result).
+  const fallbackPoolIdentity = normalizeBaseRadarFallbackPoolIdentity(scan)
+
+  // 1. Reconcile the canonical model from the priority-ordered sources. A fallback
+  // pool's dex-based model hint is used only when it has a real pair address.
   const displayLpModel = reconcileLpModel([
     lpControl.displayLpModel,
     scan.displayLpModel,
     scan.lpControlRead?.selectedPoolModel,
     lpControl.primaryPoolType,
     lpModelProofRaw?.model,
+    fallbackPoolIdentity.pairAddress ? fallbackPoolIdentity.modelHint : null,
   ])
 
   let proofApplicability: LpProofApplicability
@@ -161,9 +239,16 @@ export function reconcileBaseRadarLp(scan: Record<string, any>): BaseRadarLpReco
   }
 
   // 4. Determine the primary pool's identity (address or pool id) to detect a
-  // "secondary" pool that is actually the same pool as the primary.
-  const primaryAddr = asAddress(lpControl.primaryMarketPool)
-  const primaryId = asString(lpControl.primaryMarketPoolId)?.toLowerCase() ?? null
+  // "secondary" pool that is actually the same pool as the primary. When lpControl
+  // never resolved a primary pool, fall back to the normalized fallback pool identity
+  // so pool/liquidity evidence Base Radar already has carries into LP/rug risk.
+  let primaryAddr = asAddress(lpControl.primaryMarketPool)
+  let primaryId = asString(lpControl.primaryMarketPoolId)?.toLowerCase() ?? null
+  let usedFallbackPoolIdentity = false
+  if (!primaryAddr && !primaryId && fallbackPoolIdentity.pairAddress) {
+    primaryAddr = fallbackPoolIdentity.pairAddress
+    usedFallbackPoolIdentity = true
+  }
 
   const secondaryRaw = lpControl.secondaryLpControlSignals && typeof lpControl.secondaryLpControlSignals === 'object'
     ? lpControl.secondaryLpControlSignals as Record<string, unknown>
@@ -181,13 +266,18 @@ export function reconcileBaseRadarLp(scan: Record<string, any>): BaseRadarLpReco
     secondaryAddr && ((primaryAddr && secondaryAddr === primaryAddr) || (primaryId && secondaryAddr === primaryId)),
   )
 
-  const secondaryLpControlSignals = secondaryMatchesPrimary ? null : (secondaryRaw ?? null)
+  // A "real" secondary pool is a different ERC-20-LP-compatible pool with its own
+  // resolved address — not the primary pool, and not a "none" placeholder.
+  const hasRealSecondaryPool = Boolean(secondaryAddr) && !secondaryMatchesPrimary
+
+  const secondaryLpControlSignals = hasRealSecondaryPool ? (secondaryRaw ?? null) : null
 
   // 5. Reconcile evidence lines.
   let reconciledEvidence = evidence
 
-  // 5a. Drop fake secondary-exposure lines when the "secondary" pool is the primary pool.
-  if (secondaryMatchesPrimary) {
+  // 5a. Drop fake secondary-exposure lines unless a real, different ERC-20 LP pool
+  // address exists (covers "secondary pool equals primary" and "secondary pool: none").
+  if (!hasRealSecondaryPool) {
     reconciledEvidence = reconciledEvidence.filter((line) =>
       !/^Secondary ERC-20 LP exposure (pair|pool):/.test(line)
       && !/^Secondary exposure reason:/.test(line)
@@ -212,8 +302,8 @@ export function reconcileBaseRadarLp(scan: Record<string, any>): BaseRadarLpReco
   // 5c. For concentrated primary pools, add canonical "Primary pool" identity lines
   // (pool=/poolId=/dex=/poolType=) and never leave "pool=unknown".
   if (displayLpModel === 'concentrated_liquidity') {
-    const resolvedPair = extractEvidenceValue(reconciledEvidence, 'Market primary pair: ') ?? 'unknown'
-    const dex = asString(lpControl.primaryPoolDex) ?? 'unknown'
+    const resolvedPair = extractEvidenceValue(reconciledEvidence, 'Market primary pair: ') ?? fallbackPoolIdentity.pairLabel ?? 'unknown'
+    const dex = asString(lpControl.primaryPoolDex) ?? fallbackPoolIdentity.dexId ?? 'unknown'
     const identityLines: string[] = [`Primary pool: ${resolvedPair} (concentrated)`]
     if (primaryAddr) identityLines.push(`pool=${primaryAddr}`)
     else if (primaryId) identityLines.push(`poolId=${primaryId}`)
@@ -227,11 +317,23 @@ export function reconcileBaseRadarLp(scan: Record<string, any>): BaseRadarLpReco
     reconciledEvidence = [...reconciledEvidence, ...identityLines]
   }
 
+  // 5c2. For erc20_lp_token pools whose identity came from fallback market data
+  // (lpControl never resolved a primary pool), add the same "Market primary pair" /
+  // "Primary market pool" identity lines a normal LP-control scan would produce.
+  if (displayLpModel === 'erc20_lp_token' && usedFallbackPoolIdentity) {
+    if (!extractEvidenceValue(reconciledEvidence, 'Market primary pair: ')) {
+      reconciledEvidence = [...reconciledEvidence, `Market primary pair: ${fallbackPoolIdentity.pairLabel ?? 'unknown'}`]
+    }
+    if (!reconciledEvidence.some((line) => /^Primary market pool:/.test(line))) {
+      reconciledEvidence = [...reconciledEvidence, `Primary market pool: ${primaryAddr} (${fallbackPoolIdentity.dexId ?? 'v2'})`]
+    }
+  }
+
   // 5d. For unknown LP models where a DEX is known from market data, surface
   // "DEX: <name> / Pool model: unknown / Pair identity: open check" instead of
   // generic "DEX metadata: not_indexed" / "Market primary pair: ?/?" lines.
   if (displayLpModel === 'unknown') {
-    const dexName = asString(scan.primaryDexName) ?? asString(lpControl.primaryPoolDex)
+    const dexName = asString(scan.primaryDexName) ?? asString(lpControl.primaryPoolDex) ?? fallbackPoolIdentity.dexName
     if (dexName) {
       reconciledEvidence = reconciledEvidence.filter((line) =>
         !/^DEX metadata:/.test(line) && !/^Market primary pair: \?\/\?$/.test(line),
@@ -275,6 +377,51 @@ export function reconcileBaseRadarLp(scan: Record<string, any>): BaseRadarLpReco
     }
   }
 
+  // Fallback market evidence (liquidity/volume/dex/age) exists, but no pair address
+  // could be resolved — pool identity itself is the open item, not the LP proof.
+  const pairIdentityOpenCheck = !hasPrimaryPoolIdentity && reconciledEvidence.includes('Pair identity: open check')
+
+  if (!lpProofDisplay && pairIdentityOpenCheck) {
+    lpProofDisplay = {
+      proofLabel: 'Pair identity open check',
+      lockStatus: 'Pair identity open check',
+      lockAmount: null,
+      unlockTime: 'Pair identity open check',
+      burnProof: null,
+      controller: null,
+      exitRisk: null,
+    }
+  }
+
+  // 7. Rug/LP risk: never leave a generic "Open Check" when facts exist.
+  let rugRiskDisplay: { status: string; reason: string } | null = null
+  if (displayLpModel === 'erc20_lp_token' && hasPrimaryPoolIdentity && !lockBurnConfirmed) {
+    rugRiskDisplay = {
+      status: 'checked_dangerous',
+      reason: 'No lock or burn proof found for the LP token; exit risk is high if the wallet/team controls the LP.',
+    }
+  } else if (displayLpModel === 'concentrated_liquidity') {
+    rugRiskDisplay = {
+      status: 'position_control_open_check',
+      reason: 'Concentrated-liquidity position control requires protocol-specific verification.',
+    }
+  } else if (pairIdentityOpenCheck) {
+    rugRiskDisplay = {
+      status: 'pool_identity_open_check',
+      reason: 'Missing pair address — pool identity could not be confirmed.',
+    }
+  }
+
+  // 8. Pool address presence and the simulation pair address. When fallback market
+  // evidence exists but no pair address resolved, pass `null` (not `undefined`) so
+  // getRadarSimulationDisplay reports "missing pair address" instead of skipping.
+  const poolAddressPresent = Boolean(primaryAddr)
+  const simulationPairAddress: string | null | undefined = primaryAddr
+    ? primaryAddr
+    : pairIdentityOpenCheck
+      ? null
+      : undefined
+
   return {
     displayLpModel,
     proofApplicability,
@@ -285,5 +432,10 @@ export function reconcileBaseRadarLp(scan: Record<string, any>): BaseRadarLpReco
     evidence: reconciledEvidence,
     secondaryLpControlSignals,
     lpProofDisplay,
+    primaryMarketPool: primaryAddr,
+    poolAddressPresent,
+    fallbackPoolIdentity,
+    simulationPairAddress,
+    rugRiskDisplay,
   }
 }

@@ -385,6 +385,10 @@ function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract
       lpMigrationProof: scan.lpMigrationProof ?? null,
       cortexLpRead: sanitizeProviderNames(lpReconciliation.cortexLpRead),
       lpProofDisplay: lpReconciliation.lpProofDisplay,
+      primaryMarketPool: lpReconciliation.primaryMarketPool,
+      poolAddressPresent: lpReconciliation.poolAddressPresent,
+      rugRiskStatus: lpReconciliation.rugRiskDisplay?.status ?? null,
+      rugRiskReason: lpReconciliation.rugRiskDisplay?.reason ?? null,
     },
     holders: {
       top1: finiteNumber(holderDistribution.top1),
@@ -431,8 +435,10 @@ function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract
     },
     security: {
       honeypot: sanitizeProviderNames(simulation),
-      simulationStatus: security.simulationStatus ?? (simulation ? 'ok' : 'open_check'),
-      simulationReason: sanitizeProviderNames(security.simulationReason ?? security.reason ?? null),
+      simulationStatus: lpReconciliation.simulationPairAddress === null ? 'open_check' : security.simulationStatus ?? (simulation ? 'ok' : 'open_check'),
+      simulationReason: lpReconciliation.simulationPairAddress === null
+        ? 'missing pair address'
+        : sanitizeProviderNames(security.simulationReason ?? security.reason ?? null),
       contractFlags: security.contractFlags ?? null,
       devOwnership,
       riskDrivers: sanitizeProviderNames(scan.cortexRiskEngine?.riskDrivers ?? scan.riskDrivers ?? []),
