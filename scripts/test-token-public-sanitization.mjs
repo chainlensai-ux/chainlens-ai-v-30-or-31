@@ -1335,7 +1335,23 @@ console.log('\nP. CORTEX wording is evidence-based, never scam/financial-advice 
   }, false)
   const rewrittenCortexLpReadSummary = playCortexRewritePayload.cortexLpRead.riskSummary
   assert('cortexLpRead.riskSummary does not say "critical" when riskLabel is moderate', !/critical/i.test(rewrittenCortexLpReadSummary), rewrittenCortexLpReadSummary)
-  assert('cortexLpRead.riskSummary uses evidence-first moderate Token Safety wording', /PLAY has a moderate Token Safety Score \(49\/100\), with severe holder\/dev-control risk drivers\./i.test(rewrittenCortexLpReadSummary), rewrittenCortexLpReadSummary)
+  assert('cortexLpRead.riskSummary uses evidence-first moderate Token Safety wording without unsupported severe dev-control', /PLAY has a moderate Token Safety Score \(49\/100\); no severe holder\/dev-control risk drivers were confirmed from current evidence\./i.test(rewrittenCortexLpReadSummary), rewrittenCortexLpReadSummary)
+
+  const droolingDogSummary = sanitizePublicTokenResponse({
+    name: 'Drooling Dog',
+    symbol: 'DOG',
+    riskScore: 35,
+    riskLabel: 'high',
+    holderDistribution: { top1: 42, top10: 75, top20: 88, holderCount: 51 },
+    supplyControl: { creatorHolderPercent: 2, devClusterSupplyPercent: 2 },
+    security: { devOwnership: { ownershipStatus: 'active_owner' } },
+    cortexLpRead: {
+      riskSummary: 'Drooling Dog (DOG) shows an overall "high" risk tier based on observed pool data.',
+    },
+  }, false).cortexLpRead.riskSummary
+  assert('Drooling Dog CORTEX says low Token Safety Score for 35', /Drooling Dog \(DOG\) has a low Token Safety Score \(35\/100\)/i.test(droolingDogSummary), droolingDogSummary)
+  assert('Drooling Dog CORTEX mentions holder concentration + active owner/admin', /Score is pressured by high holder concentration and active owner\/admin control\./i.test(droolingDogSummary), droolingDogSummary)
+  assert('Drooling Dog CORTEX does not claim severe dev-control', !/severe holder\/dev-control/i.test(droolingDogSummary), droolingDogSummary)
 
   // Public payload must never contain the old scam/financial-advice phrasing, regardless of token.
   for (const payload of [publicPayload, fallbackPublicPayload, protocolPayload, mferPublicPayload, playPublicPayload]) {

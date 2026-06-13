@@ -30,6 +30,7 @@ import {
   type LpPoolCandidate,
 } from '@/lib/server/lpIntelligence'
 import { calculateCortexScoreV2 } from '@/lib/token/scoring'
+import { getRadarValuationBasis, resolveBaseRadarMarketCap } from '@/lib/baseRadarValuation'
 
 // Local LP model/migration proof helper — pure function derived from GeckoTerminal pool data,
 // delegating to the shared classifyPoolModel() so Token Scanner and Liquidity Safety agree
@@ -4610,6 +4611,14 @@ export async function POST(req: Request) {
       metaItem?.market_cap
     )
     const selectedPoolMarketCapUsd = pickNum(poolAttr.market_cap_usd, poolAttr.market_cap)
+    const marketCapDiagnosticsResolved = resolveBaseRadarMarketCap({
+      geckoPool: mainPool ? { attributes: poolAttr as Record<string, unknown> } : null,
+      geckoIncludedToken: gtTokenInfo?.data?.attributes ?? gtToken ?? null,
+      normalized: {
+        marketCapUsd: pickNum(gtToken?.marketCap, gtToken?.market_cap_usd, goldItem?.market_cap, metaItem?.market_cap),
+        marketCap: pickNum(gtToken?.market_cap, gtToken?.market_cap_in_usd),
+      },
+    })
     const marketCapFromGt = (tokenEndpointMarketCap != null && tokenEndpointMarketCap > 0)
       ? tokenEndpointMarketCap
       : (selectedPoolMarketCapUsd != null && selectedPoolMarketCapUsd > 0 ? selectedPoolMarketCapUsd : null)
@@ -4621,6 +4630,12 @@ export async function POST(req: Request) {
       : 'none'
     const fdv = pickNum(gtToken?.fdv_usd, gtToken?.fdv, gtToken?.fully_diluted_valuation, poolAttr.fdv_usd, poolAttr.fdv, mainPool?.fdv_usd, goldItem?.fully_diluted_value, gmgnItem?.fdv)
     const fdvSource = fdv != null ? 'geckoterminal' : 'none'
+    const marketCapValuationBasis = getRadarValuationBasis({
+      marketCapUsd: marketCapDiagnosticsResolved.marketCapUsd,
+      marketCapStatus: marketCapDiagnosticsResolved.marketCapStatus,
+      fdvUsd: fdv,
+      liquidityUsd: pickNum(mainPool?.attributes?.reserve_in_usd),
+    })
     const priceUsd = tokenPrice
     // Tier B: onchain estimated MC — uses result from parallel phase 2 (no extra await)
     let estimatedMarketCap: number | null = null
@@ -6570,6 +6585,15 @@ export async function POST(req: Request) {
         ? ((tokenEndpointMarketCap != null && tokenEndpointMarketCap > 0) ? 'Verified live market data' : 'Verified live pool market data')
         : _efdv != null ? 'FDV used as market cap proxy — circulating supply not confirmed'
         : 'Market cap not resolved — pool data or token endpoint did not return supply',
+      ...(debugMode ? { marketCapDiagnostics: {
+        selectedMarketCapUsd: marketCapDiagnosticsResolved.marketCapUsd,
+        selectedMarketCapStatus: marketCapDiagnosticsResolved.marketCapStatus,
+        selectedMarketCapFieldPath: marketCapDiagnosticsResolved.marketCapFieldPath,
+        selectedValuationBasis: marketCapValuationBasis.basis,
+        fdvUsd: _efdv,
+        rawCandidates: marketCapDiagnosticsResolved.rawCandidates,
+        resolverReason: marketCapDiagnosticsResolved.reason,
+      } } : {}),
       circulating_supply: circulatingSupply,
       fdv: _efdv,
       fdvUsd: _efdv,
