@@ -64,6 +64,9 @@ export interface BaseRadarSeverityInput {
   fdvUsd: number | null
   simulationStatus?: 'passed' | 'open_check' | null
   lpModelUnknown?: boolean
+  liquidityUsd?: number | null
+  creatorHolderPercent?: number | null
+  devClusterSupplyPercent?: number | null
 }
 
 export interface BaseRadarSeverityResult {
@@ -73,16 +76,18 @@ export interface BaseRadarSeverityResult {
   severeFlags: string[]
   flagCount: number
   evidenceGaps: string[]
+  evidenceTags: string[]
   watchNext: string[]
   cortexSevereLine: string | null
 }
 
+// Score-wording bands: 0-24 very low, 25-39 low, 40-59 moderate, 60-74 watchlist, 75+ stronger.
 export function getScoreSeverityLabel(score: number): string {
-  if (score >= 75) return 'STRONG SIGNAL'
+  if (score >= 75) return 'STRONGER'
   if (score >= 60) return 'WATCHLIST'
-  if (score >= 40) return 'CAUTION'
-  if (score >= 25) return 'HIGH WATCH'
-  return 'EXTREME WATCH'
+  if (score >= 40) return 'MODERATE'
+  if (score >= 25) return 'LOW'
+  return 'VERY LOW'
 }
 
 export function creatorTopHolderDisplay(inTopHolders: boolean | null | undefined, creatorPercent: number | null | undefined): string {
@@ -223,6 +228,20 @@ export function assessBaseRadarSeverity(input: BaseRadarSeverityInput): BaseRada
     evidenceGaps.push('Contract ownership is active (not renounced).')
   }
 
+  const evidenceTags: string[] = []
+  if (input.liquidityUsd != null && input.liquidityUsd < 5_000) evidenceTags.push('LIQUIDITY BELOW DEFAULT RADAR THRESHOLD')
+  if (input.liquidityUsd != null && input.liquidityUsd < 100) evidenceTags.push('EXTREMELY SHALLOW LIQUIDITY')
+  if (input.creatorHolderPercent != null && input.creatorHolderPercent >= 50) evidenceTags.push('CREATOR CONTROLS MAJORITY SUPPLY')
+  if (input.devClusterSupplyPercent != null && input.devClusterSupplyPercent >= 50) evidenceTags.push('DEV CLUSTER CONTROLS MAJORITY SUPPLY')
+  if ((input.top10 != null && input.top10 >= 95) || (input.top20 != null && input.top20 >= 99)) evidenceTags.push('TOP HOLDERS CONTROL NEAR TOTAL SUPPLY')
+  if (lpControllerSharePercent != null && lpControllerSharePercent >= 99) evidenceTags.push('LP WALLET CONTROLS 100% OF LP')
+  if (!input.lockBurnConfirmed) {
+    evidenceTags.push('NO LOCK DETECTED')
+    evidenceTags.push('BURN PROOF NOT FOUND')
+  }
+  if (activeOwner) evidenceTags.push('ACTIVE OWNER ADMIN')
+  if (!input.hasSocials) evidenceTags.push('NO SOCIAL LINKS')
+
   const watchNext: string[] = []
   if (flagCount > 0) {
     if (isWalletTeamControlled) watchNext.push('Watch LP movement from controlling wallet.')
@@ -249,7 +268,56 @@ export function assessBaseRadarSeverity(input: BaseRadarSeverityInput): BaseRada
     severeFlags,
     flagCount,
     evidenceGaps,
+    evidenceTags,
     watchNext,
     cortexSevereLine,
   }
+}
+
+export interface BaseRadarDetailSeverityInput {
+  liquidityUsd: number | null
+  holderCount: number | null
+  top1: number | null
+  top10: number | null
+  top20: number | null
+  creatorHolderPercent: number | null
+  devClusterSupplyPercent: number | null
+  lpControllerSharePercent: number | null
+  lockBurnConfirmed: boolean
+  activeOwner: boolean
+}
+
+export interface BaseRadarDetailSeverityResult {
+  cap: number | null
+  flagCount: number
+  severeFlags: string[]
+}
+
+// id="9x30eb" — Base Radar details/direct-mode extreme-risk cap table. Applied
+// in addition to (via Math.min with) assessBaseRadarSeverity's effectiveScore
+// when a token is opened in details/direct mode.
+export function getBaseRadarDetailSeverityCap(input: BaseRadarDetailSeverityInput): BaseRadarDetailSeverityResult {
+  const caps: Array<{ flag: string; matched: boolean; cap: number }> = [
+    { flag: 'Liquidity is under $100', matched: input.liquidityUsd != null && input.liquidityUsd < 100, cap: 20 },
+    { flag: 'Liquidity is under $1,000', matched: input.liquidityUsd != null && input.liquidityUsd < 1000, cap: 25 },
+    { flag: 'Holder count is under 25', matched: input.holderCount != null && input.holderCount < 25, cap: 25 },
+    { flag: 'Top holder controls at least 80% of supply', matched: input.top1 != null && input.top1 >= 80, cap: 25 },
+    { flag: 'Top 10 holders control at least 95% of supply', matched: input.top10 != null && input.top10 >= 95, cap: 25 },
+    { flag: 'Top 20 holders control at least 99% of supply', matched: input.top20 != null && input.top20 >= 99, cap: 25 },
+    { flag: 'Creator holder controls at least 80% of supply', matched: input.creatorHolderPercent != null && input.creatorHolderPercent >= 80, cap: 20 },
+    { flag: 'Dev cluster controls at least 80% of supply', matched: input.devClusterSupplyPercent != null && input.devClusterSupplyPercent >= 80, cap: 20 },
+    { flag: 'LP controller share is at least 99% with no verified lock or burn proof', matched: input.lpControllerSharePercent != null && input.lpControllerSharePercent >= 99 && !input.lockBurnConfirmed, cap: 20 },
+    { flag: 'Active owner/admin with creator holding at least 50% of supply', matched: input.activeOwner && input.creatorHolderPercent != null && input.creatorHolderPercent >= 50, cap: 20 },
+    { flag: 'Active owner/admin with dev cluster holding at least 50% of supply', matched: input.activeOwner && input.devClusterSupplyPercent != null && input.devClusterSupplyPercent >= 50, cap: 20 },
+  ]
+
+  const severeFlags = caps.filter((c) => c.matched).map((c) => c.flag)
+  const flagCount = severeFlags.length
+  const candidateCaps = caps.filter((c) => c.matched).map((c) => c.cap)
+  if (flagCount >= 5) candidateCaps.push(20)
+  if (flagCount >= 7) candidateCaps.push(15)
+
+  const cap = candidateCaps.length ? Math.min(...candidateCaps) : null
+
+  return { cap, flagCount, severeFlags }
 }

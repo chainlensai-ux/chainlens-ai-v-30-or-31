@@ -2,7 +2,8 @@
 
 import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { assessBaseRadarSeverity, creatorTopHolderDisplay, normalizePairCreatedAt, ageLabelFromIso } from '@/lib/baseRadarSeverity'
+import { assessBaseRadarSeverity, creatorTopHolderDisplay, normalizePairCreatedAt, ageLabelFromIso, extractLpControllerSharePercent, getBaseRadarDetailSeverityCap, getScoreSeverityLabel } from '@/lib/baseRadarSeverity'
+import { getRadarValuationBasis, getRadarValuationCardDisplay, DEFAULT_RADAR_MIN_LIQUIDITY_USD } from '@/lib/baseRadarValuation'
 
 type ChainKey = 'base' | 'eth'
 
@@ -51,6 +52,7 @@ type DrawerEnrichmentPayload = {
     volume24hUsd?: number | null
     fdvUsd?: number | null
     marketCapUsd?: number | null
+    marketCapStatus?: string | null
     marketStatus?: string | null
     marketConfidence?: string | null
     poolCount?: number | null
@@ -78,6 +80,15 @@ type DrawerEnrichmentPayload = {
     lockBurnReason?: string | null
     secondaryLpControlSignals?: { status?: string | null; poolDex?: string | null; reason?: string | null } | null
     cortexLpRead?: { liquidityAnalysis?: string | null } | null
+    lpProofDisplay?: {
+      proofLabel?: string | null
+      lockStatus?: string | null
+      lockAmount?: string | null
+      unlockTime?: string | null
+      burnProof?: string | null
+      controller?: string | null
+      exitRisk?: string | null
+    } | null
   } | null
   holders?: {
     top1?: number | null
@@ -406,11 +417,12 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
   const deployer = enriched?.deployer
   const security = enriched?.security
 
+  const lpProofDisplay = lp?.lpProofDisplay ?? null
   const lpControlStatus = lp?.lpControl?.status ?? null
-  const lpControllerLabel = controllerLabel(lp?.lpController, lpControlStatus)
-  const lpLockStatusLabel = lockStatusLabel(lp?.lpLockStatus, lp?.lpProofStatus, lp?.lpProofApplicability)
-  const lpProofLabel = proofLabel(lp?.lpProofStatus, lp?.lpProofApplicability)
-  const lpRiskLabelValue = lpRiskLabel(lpControlStatus, lp?.lpController, lp?.lpLockStatus, lp?.lpExitRiskReason, lp?.lpExitRisk)
+  const lpControllerLabel = lpProofDisplay?.controller ?? controllerLabel(lp?.lpController, lpControlStatus)
+  const lpLockStatusLabel = lpProofDisplay?.lockStatus ?? lockStatusLabel(lp?.lpLockStatus, lp?.lpProofStatus, lp?.lpProofApplicability)
+  const lpProofLabel = lpProofDisplay?.proofLabel ?? proofLabel(lp?.lpProofStatus, lp?.lpProofApplicability)
+  const lpRiskLabelValue = lpProofDisplay?.exitRisk ?? lpRiskLabel(lpControlStatus, lp?.lpController, lp?.lpLockStatus, lp?.lpExitRiskReason, lp?.lpExitRisk)
   const concentrationRisk = concentrationRiskLabel(concentration.top10, concentration.top20, concentration.concentration)
   const clusterLabel = clusterEvidenceLabel(deployer?.clusterEvidence)
   const deployerMethod = publicMethodLabel(deployer?.methodLabel)
@@ -427,11 +439,18 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
     : (Number.isFinite(token?.ageMinutes) ? token!.ageMinutes : null)
   const hasSocials = Boolean(asLink(socials.website) || asLink(socials.twitter) || asLink(socials.telegram))
 
+  const lockBurnConfirmed = hasVerifiedLock(lp?.lpLockStatus) || lp?.lpProofApplicability === 'not_applicable'
+  const liquidityUsd = market?.liquidityUsd ?? token?.liquidityUsd ?? null
+  const creatorHolderPercent = concentration.creatorHolderPercent ?? deployer?.creatorHolderPercent ?? null
+  const devClusterSupplyPercent = deployer?.clusterEvidence?.devClusterSupplyPercent ?? null
+  const lpControllerSharePercent = extractLpControllerSharePercent(lp?.lpControl?.evidence ?? null)
+  const activeOwner = (security?.devOwnership?.ownershipStatus ?? null) === 'active_owner'
+
   const severity = assessBaseRadarSeverity({
     baseScore: token?.radarScore ?? 0,
     lpControlStatus: lpControlStatus,
     lpController: lp?.lpController ?? null,
-    lockBurnConfirmed: hasVerifiedLock(lp?.lpLockStatus) || lp?.lpProofApplicability === 'not_applicable',
+    lockBurnConfirmed,
     lpControlEvidence: lp?.lpControl?.evidence ?? null,
     top1: concentration.top1 ?? null,
     top10: concentration.top10 ?? null,
@@ -444,8 +463,34 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
     fdvUsd: market?.fdvUsd ?? token?.fdvUsd ?? null,
     simulationStatus: token?.simulationStatus ?? null,
     lpModelUnknown: (lp?.displayLpModel ?? null) === 'unknown',
+    liquidityUsd,
+    creatorHolderPercent,
+    devClusterSupplyPercent,
   })
-  const effectiveScore = severity.effectiveScore
+
+  const detailSeverity = getBaseRadarDetailSeverityCap({
+    liquidityUsd,
+    holderCount: concentration.holderCount ?? null,
+    top1: concentration.top1 ?? null,
+    top10: concentration.top10 ?? null,
+    top20: concentration.top20 ?? null,
+    creatorHolderPercent,
+    devClusterSupplyPercent,
+    lpControllerSharePercent,
+    lockBurnConfirmed,
+    activeOwner,
+  })
+
+  const effectiveScore = detailSeverity.cap != null ? Math.min(severity.effectiveScore, detailSeverity.cap) : severity.effectiveScore
+  const severityLabel = getScoreSeverityLabel(effectiveScore)
+
+  const marketValuation = getRadarValuationBasis({
+    marketCapUsd: market?.marketCapUsd ?? null,
+    marketCapStatus: market?.marketCapStatus ?? null,
+    fdvUsd: market?.fdvUsd ?? token?.fdvUsd ?? null,
+  })
+  const marketValuationCard = getRadarValuationCardDisplay(marketValuation, fmtUSD)
+  const excludedFromFeed = liquidityUsd != null && liquidityUsd < DEFAULT_RADAR_MIN_LIQUIDITY_USD
 
   const poolDistributionLine = lp?.cortexLpRead?.liquidityAnalysis ?? (market?.observedPoolPresent
     ? (market?.poolCountStatus === 'confirmed' && market?.observedPoolCount != null
@@ -537,7 +582,7 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
                 <span style={{ padding: '3px 8px', borderRadius: '999px', background: 'rgba(45,212,191,0.10)', border: '1px solid rgba(45,212,191,0.24)', color: '#99f6e4', fontSize: '10px', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{chain === 'base' ? 'Base' : 'ETH'}</span>
                 <span style={{ padding: '3px 8px', borderRadius: '999px', background: 'rgba(168,85,247,0.10)', border: '1px solid rgba(168,85,247,0.24)', color: '#e9d5ff', fontSize: '10px', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Radar {effectiveScore}/100</span>
                 <span style={{ padding: '3px 8px', borderRadius: '999px', background: 'rgba(148,163,184,0.10)', border: '1px solid rgba(148,163,184,0.22)', color: '#cbd5e1', fontSize: '10px', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{token.status}</span>
-                <span style={{ padding: '3px 8px', borderRadius: '999px', background: 'rgba(248,113,113,0.10)', border: '1px solid rgba(248,113,113,0.24)', color: '#fca5a5', fontSize: '10px', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{severity.severityLabel}</span>
+                <span style={{ padding: '3px 8px', borderRadius: '999px', background: 'rgba(248,113,113,0.10)', border: '1px solid rgba(248,113,113,0.24)', color: '#fca5a5', fontSize: '10px', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{severityLabel}</span>
               </div>
               <p style={{ margin: '6px 0 0', color: '#64748b', fontSize: '11px', fontFamily: 'var(--font-plex-mono)' }}>{shortAddr(token.contract)}</p>
             </div>
@@ -550,19 +595,25 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
         </header>
 
         <Section title="Market Snapshot">
+          {excludedFromFeed && (
+            <p style={{ margin: '0 0 10px', padding: '8px 10px', borderRadius: '8px', background: 'rgba(248,113,113,0.08)', border: '1px solid rgba(248,113,113,0.22)', color: '#fca5a5', fontSize: '11px', lineHeight: 1.4 }}>
+              Excluded from default feed — liquidity below $5K threshold.
+            </p>
+          )}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '0 12px' }}>
             <DataRow label="Liquidity" value={fmtUSD(market?.liquidityUsd ?? token.liquidityUsd)} />
             <DataRow label="Volume 24h" value={fmtUSD(market?.volume24hUsd ?? token.volume24h)} />
-            <DataRow label="Market cap" value={token.valuationBasis === 'fdv_fallback' ? 'Unverified' : fmtUSD(market?.marketCapUsd ?? token.marketCapUsd ?? null)} />
-            <DataRow label="FDV" value={fmtUSD(market?.fdvUsd ?? token.fdvUsd ?? null)} />
-            <DataRow label="Valuation" value={token.valuationBasis === 'verified_market_cap' ? 'Verified market cap' : token.valuationBasis === 'fdv_fallback' ? 'FDV fallback' : 'Unavailable'} />
-            <DataRow label="Score" value={`${effectiveScore}/100 · ${severity.severityLabel}`} />
+            <DataRow label={marketValuationCard.label === 'FDV' ? 'FDV' : 'Market cap'} value={marketValuationCard.value} />
+            {marketValuationCard.label === 'FDV' && <DataRow label="Market cap" value="Unverified" />}
+            {marketValuationCard.label !== 'FDV' && <DataRow label="FDV" value={fmtUSD(market?.fdvUsd ?? token.fdvUsd ?? null)} />}
+            <DataRow label="Valuation" value={marketValuation.basis === 'verified_market_cap' ? 'Verified market cap' : marketValuation.basis === 'fdv_fallback' ? 'FDV fallback' : 'Unavailable'} />
+            <DataRow label="Score" value={`${effectiveScore}/100 · ${severityLabel}`} />
             <DataRow label="Momentum" value={token.momentum} />
             <DataRow label="Age" value={pairAgeLabel ?? fmtAge(token.ageMinutes)} />
             <DataRow label="Market evidence" value={market?.marketConfidence ? publicStatus(market.marketConfidence) : 'Open Check'} />
           </div>
-          {token.valuationBasis === 'fdv_fallback' && <p style={{ margin: '10px 0 0', color: '#fde68a', fontSize: '11px', lineHeight: 1.4 }}>Market cap: Unverified · FDV shown because verified market cap is unavailable.</p>}
-          <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginTop: '10px' }}>{(token.flags.length ? token.flags : ['No radar tags']).map((flag) => <span key={flag} style={tagStyle}>{flag}</span>)}</div>
+          {marketValuation.basis === 'fdv_fallback' && <p style={{ margin: '10px 0 0', color: '#fde68a', fontSize: '11px', lineHeight: 1.4 }}>Market cap: Unverified · FDV shown because verified market cap is unavailable.</p>}
+          <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginTop: '10px' }}>{(token.flags.length || severity.evidenceTags.length ? Array.from(new Set([...token.flags, ...severity.evidenceTags])) : ['No radar tags']).map((flag) => <span key={flag} style={tagStyle}>{flag}</span>)}</div>
         </Section>
 
         <Section title="Socials" state={enrichmentState}>
@@ -580,6 +631,8 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
         <Section title="Liquidity / LP Model" state={enrichmentState}>
           <DataRow label="Pool model" value={displayLpModelLabel(lp?.displayLpModel)} />
 
+          <DataRow label="LP proof" value={lpProofLabel} />
+
           {lp?.lpProofApplicability === 'not_applicable' ? (
             <div style={{ margin: '4px 0 10px', padding: '10px', borderRadius: '10px', background: 'rgba(168,85,247,0.06)', border: '1px solid rgba(168,85,247,0.18)' }}>
               <p style={{ margin: 0, color: '#e9d5ff', fontSize: '11px', fontWeight: 700, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Model-specific LP proof</p>
@@ -590,11 +643,9 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
                 CORTEX evaluates this liquidity using pool model, depth, age, ownership, and secondary LP exposure.
               </p>
             </div>
-          ) : (
-            <DataRow label="LP proof" value={lpProofLabel} />
-          )}
+          ) : null}
 
-          {lp?.lpProofApplicability === 'applicable' && (lp?.lpProofStatus === 'missing' || lp?.lpProofStatus === 'partial') ? (
+          {lp?.lpProofApplicability === 'applicable' && lpProofDisplay && !hasVerifiedLock(lp?.lpLockStatus) ? (
             <div style={{ margin: '4px 0 10px', padding: '10px', borderRadius: '10px', background: 'rgba(251,191,36,0.06)', border: '1px solid rgba(251,191,36,0.20)' }}>
               <p style={{ margin: 0, color: '#fde68a', fontSize: '11px', fontWeight: 700, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>No verified lock/burn proof found</p>
               <p style={{ margin: '6px 0 0', color: '#cbd5e1', fontSize: '11px', lineHeight: 1.5 }}>{lpRiskLabelValue}</p>
@@ -604,8 +655,9 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
           <DataRow label="Controller" value={lpControllerLabel} />
           <DataRow label="Control" value={`${lpControlStatus ? publicStatus(lpControlStatus) : 'Open Check'} · ${lp?.lpControl?.confidence ?? lp?.lpDataConfidence ?? 'open-check'}`} />
           <DataRow label="Lock status" value={lpLockStatusLabel} />
-          <DataRow label="Lock amount" value={lockAmountLabel(lp?.lpLockAmount, lp?.lpLockStatus, lp?.lpProofStatus, lp?.lpProofApplicability)} />
-          <DataRow label="Unlock time" value={unlockTimeLabel(lp?.lpUnlockTime, lp?.lpLockStatus, lp?.lpProofStatus, lp?.lpProofApplicability)} />
+          <DataRow label="Lock amount" value={lpProofDisplay?.lockAmount ?? lockAmountLabel(lp?.lpLockAmount, lp?.lpLockStatus, lp?.lpProofStatus, lp?.lpProofApplicability)} />
+          <DataRow label="Unlock time" value={lpProofDisplay?.unlockTime ?? unlockTimeLabel(lp?.lpUnlockTime, lp?.lpLockStatus, lp?.lpProofStatus, lp?.lpProofApplicability)} />
+          {lpProofDisplay?.burnProof && <DataRow label="Burn proof" value={lpProofDisplay.burnProof} />}
           <DataRow label="Data mode" value={lpDataModeLabel(lp?.lpDataMode, lp?.lpDataConfidence)} />
           <DataRow label="Liquidity depth risk" value={lp?.liquidityDepthRisk ? publicStatus(lp.liquidityDepthRisk) : 'Open Check'} />
           <DataRow label="Exit risk" value={lpRiskLabelValue} mono={false} />

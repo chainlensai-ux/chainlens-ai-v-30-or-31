@@ -65,11 +65,19 @@ function extractLpControllerSharePercent(evidence) {
 }
 
 function getScoreSeverityLabel(score) {
-  if (score >= 75) return 'STRONG SIGNAL'
+  if (score >= 75) return 'STRONGER'
   if (score >= 60) return 'WATCHLIST'
-  if (score >= 40) return 'CAUTION'
-  if (score >= 25) return 'HIGH WATCH'
-  return 'EXTREME WATCH'
+  if (score >= 40) return 'MODERATE'
+  if (score >= 25) return 'LOW'
+  return 'VERY LOW'
+}
+
+// Mirrors resolveFallbackMarketCap in lib/baseRadarValuation.ts
+function resolveFallbackMarketCap(fallbackMarketCapUsd) {
+  if (typeof fallbackMarketCapUsd === 'number' && Number.isFinite(fallbackMarketCapUsd) && fallbackMarketCapUsd > 0) {
+    return { marketCapUsd: fallbackMarketCapUsd, marketCapStatus: 'verified' }
+  }
+  return { marketCapUsd: null, marketCapStatus: null }
 }
 
 function creatorTopHolderDisplay(inTopHolders, creatorPercent) {
@@ -146,6 +154,20 @@ function assessBaseRadarSeverity(input) {
     evidenceGaps.push('Contract ownership is active (not renounced).')
   }
 
+  const evidenceTags = []
+  if (input.liquidityUsd != null && input.liquidityUsd < 5_000) evidenceTags.push('LIQUIDITY BELOW DEFAULT RADAR THRESHOLD')
+  if (input.liquidityUsd != null && input.liquidityUsd < 100) evidenceTags.push('EXTREMELY SHALLOW LIQUIDITY')
+  if (input.creatorHolderPercent != null && input.creatorHolderPercent >= 50) evidenceTags.push('CREATOR CONTROLS MAJORITY SUPPLY')
+  if (input.devClusterSupplyPercent != null && input.devClusterSupplyPercent >= 50) evidenceTags.push('DEV CLUSTER CONTROLS MAJORITY SUPPLY')
+  if ((input.top10 != null && input.top10 >= 95) || (input.top20 != null && input.top20 >= 99)) evidenceTags.push('TOP HOLDERS CONTROL NEAR TOTAL SUPPLY')
+  if (lpControllerSharePercent != null && lpControllerSharePercent >= 99) evidenceTags.push('LP WALLET CONTROLS 100% OF LP')
+  if (!input.lockBurnConfirmed) {
+    evidenceTags.push('NO LOCK DETECTED')
+    evidenceTags.push('BURN PROOF NOT FOUND')
+  }
+  if (activeOwner) evidenceTags.push('ACTIVE OWNER ADMIN')
+  if (!input.hasSocials) evidenceTags.push('NO SOCIAL LINKS')
+
   const watchNext = []
   if (flagCount > 0) {
     if (isWalletTeamControlled) watchNext.push('Watch LP movement from controlling wallet.')
@@ -165,7 +187,33 @@ function assessBaseRadarSeverity(input) {
       + 'Treat as extreme watch until lock/burn and holder movement evidence improves.'
   }
 
-  return { cap, effectiveScore, severityLabel, severeFlags, flagCount, evidenceGaps, watchNext, cortexSevereLine }
+  return { cap, effectiveScore, severityLabel, severeFlags, flagCount, evidenceGaps, evidenceTags, watchNext, cortexSevereLine }
+}
+
+// id="9x30eb" — Base Radar details/direct-mode extreme-risk cap table.
+function getBaseRadarDetailSeverityCap(input) {
+  const caps = [
+    { flag: 'Liquidity is under $100', matched: input.liquidityUsd != null && input.liquidityUsd < 100, cap: 20 },
+    { flag: 'Liquidity is under $1,000', matched: input.liquidityUsd != null && input.liquidityUsd < 1000, cap: 25 },
+    { flag: 'Holder count is under 25', matched: input.holderCount != null && input.holderCount < 25, cap: 25 },
+    { flag: 'Top holder controls at least 80% of supply', matched: input.top1 != null && input.top1 >= 80, cap: 25 },
+    { flag: 'Top 10 holders control at least 95% of supply', matched: input.top10 != null && input.top10 >= 95, cap: 25 },
+    { flag: 'Top 20 holders control at least 99% of supply', matched: input.top20 != null && input.top20 >= 99, cap: 25 },
+    { flag: 'Creator holder controls at least 80% of supply', matched: input.creatorHolderPercent != null && input.creatorHolderPercent >= 80, cap: 20 },
+    { flag: 'Dev cluster controls at least 80% of supply', matched: input.devClusterSupplyPercent != null && input.devClusterSupplyPercent >= 80, cap: 20 },
+    { flag: 'LP controller share is at least 99% with no verified lock or burn proof', matched: input.lpControllerSharePercent != null && input.lpControllerSharePercent >= 99 && !input.lockBurnConfirmed, cap: 20 },
+    { flag: 'Active owner/admin with creator holding at least 50% of supply', matched: input.activeOwner && input.creatorHolderPercent != null && input.creatorHolderPercent >= 50, cap: 20 },
+    { flag: 'Active owner/admin with dev cluster holding at least 50% of supply', matched: input.activeOwner && input.devClusterSupplyPercent != null && input.devClusterSupplyPercent >= 50, cap: 20 },
+  ]
+
+  const severeFlags = caps.filter((c) => c.matched).map((c) => c.flag)
+  const flagCount = severeFlags.length
+  const candidateCaps = caps.filter((c) => c.matched).map((c) => c.cap)
+  if (flagCount >= 5) candidateCaps.push(20)
+  if (flagCount >= 7) candidateCaps.push(15)
+
+  const cap = candidateCaps.length ? Math.min(...candidateCaps) : null
+  return { cap, flagCount, severeFlags }
 }
 
 // ─── Section A: Verity-style severe-risk token ─────────────────────────────
@@ -192,7 +240,7 @@ const verity = assessBaseRadarSeverity(verityInput)
 
 assert('score is capped to <= 30', verity.effectiveScore <= 30, verity.effectiveScore)
 assert('score is in the ideal 20-25 range', verity.effectiveScore >= 20 && verity.effectiveScore <= 25, verity.effectiveScore)
-assert('severity label is a severe label (EXTREME WATCH or HIGH WATCH)', verity.severityLabel === 'EXTREME WATCH' || verity.severityLabel === 'HIGH WATCH', verity.severityLabel)
+assert('severity label is a severe label (VERY LOW or LOW)', verity.severityLabel === 'VERY LOW' || verity.severityLabel === 'LOW', verity.severityLabel)
 assert('evidence gaps are not empty', verity.evidenceGaps.length > 0, verity.evidenceGaps)
 assert('gaps mention LP lock proof', verity.evidenceGaps.some((g) => /lock proof/i.test(g)), verity.evidenceGaps)
 assert('gaps mention LP burn proof', verity.evidenceGaps.some((g) => /burn proof/i.test(g)), verity.evidenceGaps)
@@ -359,6 +407,70 @@ assert('BTW CORTEX mentions broad holders + renounced ownership', /Holder distri
 assert('BTW lpEvidenceSummary is not null', typeof btwPool.lpEvidenceSummary === 'string' && btwPool.lpEvidenceSummary.length > 0, btwPool.lpEvidenceSummary)
 assert('BTW simulation status has value/reason', Boolean(btwPool.simulationStatus && btwPool.simulationReason), btwPool)
 assert('BTW creator display does not show Yes · 0.0%', creatorTopHolderDisplay(true, 0) !== 'Yes · 0.0%', creatorTopHolderDisplay(true, 0))
+
+// ─── Section E: Orbit-style extreme-risk token (id="9x30eb") ──────────────
+
+console.log('\nSection E: Orbit-style extreme-risk token')
+
+const orbitInput = {
+  baseScore: 33,
+  lpControlStatus: 'team_controlled',
+  lpController: '0x4444444444444444444444444444444444444444',
+  lockBurnConfirmed: false,
+  lpControlEvidence: ['top_holder=0x4444444444444444444444444444444444444444', 'owner_lp_share=100.00%'],
+  top1: 84.8,
+  top10: 98.7,
+  top20: 99.9,
+  holderCount: 14,
+  ownershipStatus: 'active_owner',
+  hasSocials: false,
+  poolAgeMinutes: 30,
+  marketCapUsd: null,
+  fdvUsd: 35_000,
+  simulationStatus: 'passed',
+  lpModelUnknown: false,
+  liquidityUsd: 2.45,
+  creatorHolderPercent: 84.8,
+  devClusterSupplyPercent: 84.8,
+}
+
+const orbit = assessBaseRadarSeverity(orbitInput)
+const orbitDetail = getBaseRadarDetailSeverityCap({
+  liquidityUsd: orbitInput.liquidityUsd,
+  holderCount: orbitInput.holderCount,
+  top1: orbitInput.top1,
+  top10: orbitInput.top10,
+  top20: orbitInput.top20,
+  creatorHolderPercent: orbitInput.creatorHolderPercent,
+  devClusterSupplyPercent: orbitInput.devClusterSupplyPercent,
+  lpControllerSharePercent: extractLpControllerSharePercent(orbitInput.lpControlEvidence),
+  lockBurnConfirmed: orbitInput.lockBurnConfirmed,
+  activeOwner: orbitInput.ownershipStatus === 'active_owner',
+})
+const orbitEffectiveScore = orbitDetail.cap != null ? Math.min(orbit.effectiveScore, orbitDetail.cap) : orbit.effectiveScore
+const orbitSeverityLabel = getScoreSeverityLabel(orbitEffectiveScore)
+
+assert('Orbit is excluded from default feed (liquidity < $5K)', orbitInput.liquidityUsd < 5_000, orbitInput.liquidityUsd)
+assert('Orbit detail score is <= 20', orbitEffectiveScore <= 20, orbitEffectiveScore)
+assert('Orbit severity label is VERY LOW', orbitSeverityLabel === 'VERY LOW', orbitSeverityLabel)
+assert('Orbit 7+ severe flags trigger detail cap 15', orbitDetail.flagCount >= 7 && orbitDetail.cap === 15, orbitDetail)
+assert('Orbit evidence tags include LIQUIDITY BELOW DEFAULT RADAR THRESHOLD', orbit.evidenceTags.includes('LIQUIDITY BELOW DEFAULT RADAR THRESHOLD'), orbit.evidenceTags)
+assert('Orbit evidence tags include EXTREMELY SHALLOW LIQUIDITY', orbit.evidenceTags.includes('EXTREMELY SHALLOW LIQUIDITY'), orbit.evidenceTags)
+assert('Orbit evidence tags include CREATOR CONTROLS MAJORITY SUPPLY', orbit.evidenceTags.includes('CREATOR CONTROLS MAJORITY SUPPLY'), orbit.evidenceTags)
+assert('Orbit evidence tags include DEV CLUSTER CONTROLS MAJORITY SUPPLY', orbit.evidenceTags.includes('DEV CLUSTER CONTROLS MAJORITY SUPPLY'), orbit.evidenceTags)
+assert('Orbit evidence tags include TOP HOLDERS CONTROL NEAR TOTAL SUPPLY', orbit.evidenceTags.includes('TOP HOLDERS CONTROL NEAR TOTAL SUPPLY'), orbit.evidenceTags)
+assert('Orbit evidence tags include LP WALLET CONTROLS 100% OF LP', orbit.evidenceTags.includes('LP WALLET CONTROLS 100% OF LP'), orbit.evidenceTags)
+assert('Orbit evidence tags include NO LOCK DETECTED', orbit.evidenceTags.includes('NO LOCK DETECTED'), orbit.evidenceTags)
+assert('Orbit evidence tags include BURN PROOF NOT FOUND', orbit.evidenceTags.includes('BURN PROOF NOT FOUND'), orbit.evidenceTags)
+assert('Orbit evidence tags include ACTIVE OWNER ADMIN', orbit.evidenceTags.includes('ACTIVE OWNER ADMIN'), orbit.evidenceTags)
+assert('Orbit evidence tags include NO SOCIAL LINKS', orbit.evidenceTags.includes('NO SOCIAL LINKS'), orbit.evidenceTags)
+assert('Orbit CORTEX severe line does not say simulation unconfirmed', !/simulation.*unconfirmed/i.test(orbit.cortexSevereLine ?? ''), orbit.cortexSevereLine)
+
+// Verified-marketCap mapping from a fallback payload with a real marketCap
+const orbitWithVerifiedMc = resolveFallbackMarketCap(48_000)
+assert('Orbit fallback payload with real marketCap maps to verified marketCapUsd', orbitWithVerifiedMc.marketCapUsd === 48_000 && orbitWithVerifiedMc.marketCapStatus === 'verified', orbitWithVerifiedMc)
+const orbitNoMc = resolveFallbackMarketCap(null)
+assert('Orbit without fallback marketCap stays unverified (FDV never inferred as MC)', orbitNoMc.marketCapUsd === null && orbitNoMc.marketCapStatus === null, orbitNoMc)
 
 // ─── Summary ────────────────────────────────────────────────────────────
 

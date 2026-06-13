@@ -18,6 +18,23 @@ export const DEFAULT_RADAR_MIN_VALUATION_USD = 15_000
 export const DEFAULT_RADAR_MIN_LIQUIDITY_USD = 5_000
 export const DEFAULT_RADAR_ALLOW_FDV_FALLBACK = true
 
+export interface ResolvedFallbackMarketCap {
+  marketCapUsd: number | null
+  marketCapStatus: 'verified' | null
+}
+
+/**
+ * Maps a real marketCap/marketCapUsd value from a fallback market payload to a
+ * verified marketCapUsd. FDV must never be inferred as market cap here — callers
+ * pass only the fallback payload's marketCap field, not its FDV.
+ */
+export function resolveFallbackMarketCap(fallbackMarketCapUsd: number | null | undefined): ResolvedFallbackMarketCap {
+  if (typeof fallbackMarketCapUsd === 'number' && Number.isFinite(fallbackMarketCapUsd) && fallbackMarketCapUsd > 0) {
+    return { marketCapUsd: fallbackMarketCapUsd, marketCapStatus: 'verified' }
+  }
+  return { marketCapUsd: null, marketCapStatus: null }
+}
+
 export function getRadarValuationBasis(input: RadarValuationInput): RadarValuationResult {
   if (
     typeof input.marketCapUsd === 'number' &&

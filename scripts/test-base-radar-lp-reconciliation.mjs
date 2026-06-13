@@ -80,6 +80,19 @@ function sanitizeConcentratedCortexText(text) {
   )
 }
 
+// Mirrors extractLpControllerSharePercent in lib/baseRadarSeverity.ts
+function extractLpControllerSharePercent(evidence) {
+  if (!Array.isArray(evidence)) return null
+  for (const key of ['owner_lp_share', 'top_share', 'locker_share', 'burn_share']) {
+    const line = evidence.find((item) => item.toLowerCase().startsWith(`${key}=`))
+    if (line) {
+      const value = Number(line.split('=').slice(1).join('=').replace('%', ''))
+      if (Number.isFinite(value)) return Math.round(value * 100) / 100
+    }
+  }
+  return null
+}
+
 function reconcileBaseRadarLp(scan) {
   const lpControl = scan.lpControl && typeof scan.lpControl === 'object' ? scan.lpControl : {}
   const evidence = Array.isArray(lpControl.evidence) ? [...lpControl.evidence] : []
@@ -207,6 +220,33 @@ function reconcileBaseRadarLp(scan) {
     }
   }
 
+  let lpProofDisplay = null
+  const lockBurnConfirmed = scan.lpLockStatus === 'locked' || scan.lpLockStatus === 'burned'
+  const hasPrimaryPoolIdentity = Boolean(primaryAddr || primaryId)
+
+  if (displayLpModel === 'erc20_lp_token' && hasPrimaryPoolIdentity && !lockBurnConfirmed) {
+    const lpControllerSharePercent = extractLpControllerSharePercent(evidence)
+    lpProofDisplay = {
+      proofLabel: 'Checked',
+      lockStatus: 'No lock detected',
+      lockAmount: 'None found',
+      unlockTime: 'No unlock schedule found',
+      burnProof: 'Not burned',
+      controller: lpControllerSharePercent != null ? `Wallet controlled · ${lpControllerSharePercent}%` : 'Wallet controlled',
+      exitRisk: 'High — LP can be removed unless locked or burned',
+    }
+  } else if (displayLpModel === 'concentrated_liquidity') {
+    lpProofDisplay = {
+      proofLabel: 'Position verification required',
+      lockStatus: 'Protocol-specific',
+      lockAmount: null,
+      unlockTime: 'Position check required',
+      burnProof: null,
+      controller: null,
+      exitRisk: null,
+    }
+  }
+
   return {
     displayLpModel,
     proofApplicability,
@@ -216,6 +256,7 @@ function reconcileBaseRadarLp(scan) {
     cortexLpRead,
     evidence: reconciledEvidence,
     secondaryLpControlSignals,
+    lpProofDisplay,
   }
 }
 
@@ -471,6 +512,55 @@ assert('SPHINCS evidence drops "Market primary pair: ?/?"', !sphincsLp.evidence.
 assert('SPHINCS observedPoolPresent is true via fallback', sphincsPools.observedPoolPresent === true, sphincsPools)
 assert('SPHINCS observedPoolCount is 1', sphincsPools.observedPoolCount === 1, sphincsPools)
 assert('SPHINCS poolCountStatus is fallback_confirmed', sphincsPools.poolCountStatus === 'fallback_confirmed', sphincsPools)
+
+// ─── Section E: Orbit-style fixture — V2 LP, wallet controls 100%, no lock/burn ──
+
+console.log('\nSection E: Orbit-style fixture (V2 LP, 100% wallet-controlled, no lock/burn)')
+
+const orbitScan = {
+  liquidityUsd: 2.45,
+  lpLockStatus: 'unverified',
+  lpControl: {
+    status: 'team_controlled',
+    displayLpModel: 'erc20_lp_token',
+    proofApplicability: 'applicable',
+    lockBurnApplicable: true,
+    primaryPoolType: 'v2',
+    primaryPoolDex: 'uniswap-v2',
+    primaryMarketPool: '0x4444444444444444444444444444444444444444',
+    primaryMarketPoolId: null,
+    evidence: [
+      'top_holder=0x5555555555555555555555555555555555555555',
+      'owner_lp_share=100.00%',
+      'Market primary pair: ORBIT / WETH',
+      'Primary market pool: 0x4444444444444444444444444444444444444444 (v2)',
+      'lpHolderCheckAttempted=true',
+    ],
+  },
+  lpModelProof: { model: 'constant_product', dexName: 'uniswap-v2', standardLockApplies: true },
+  lpEvidenceSummary: ['Pool model: constant_product', 'LP token holders checked: yes'],
+}
+
+const orbitLp = reconcileBaseRadarLp(orbitScan)
+
+assert('Orbit final model is erc20_lp_token', orbitLp.displayLpModel === 'erc20_lp_token', orbitLp.displayLpModel)
+assert('Orbit proofApplicability is applicable', orbitLp.proofApplicability === 'applicable', orbitLp.proofApplicability)
+assert('Orbit LP proof says Checked, not generic Open Check', orbitLp.lpProofDisplay?.proofLabel === 'Checked', orbitLp.lpProofDisplay)
+assert('Orbit lock status says No lock detected', orbitLp.lpProofDisplay?.lockStatus === 'No lock detected', orbitLp.lpProofDisplay)
+assert('Orbit lock amount says None found', orbitLp.lpProofDisplay?.lockAmount === 'None found', orbitLp.lpProofDisplay)
+assert('Orbit unlock time says No unlock schedule found', orbitLp.lpProofDisplay?.unlockTime === 'No unlock schedule found', orbitLp.lpProofDisplay)
+assert('Orbit burn proof says Not burned', orbitLp.lpProofDisplay?.burnProof === 'Not burned', orbitLp.lpProofDisplay)
+assert('Orbit controller shows Wallet controlled · 100%', orbitLp.lpProofDisplay?.controller === 'Wallet controlled · 100%', orbitLp.lpProofDisplay)
+assert('Orbit exit risk is High — LP can be removed unless locked or burned', orbitLp.lpProofDisplay?.exitRisk === 'High — LP can be removed unless locked or burned', orbitLp.lpProofDisplay)
+
+// ─── Section F: Concentrated (V3/V4) LP proof display ──────────────────────
+
+console.log('\nSection F: Concentrated (V3/V4) LP proof display')
+
+const concentratedLp = reconcileBaseRadarLp(bitcockScan)
+assert('Concentrated LP proof says Position verification required', concentratedLp.lpProofDisplay?.proofLabel === 'Position verification required', concentratedLp.lpProofDisplay)
+assert('Concentrated lock status says Protocol-specific', concentratedLp.lpProofDisplay?.lockStatus === 'Protocol-specific', concentratedLp.lpProofDisplay)
+assert('Concentrated unlock time says Position check required', concentratedLp.lpProofDisplay?.unlockTime === 'Position check required', concentratedLp.lpProofDisplay)
 
 // ─── Summary ────────────────────────────────────────────────────────────
 

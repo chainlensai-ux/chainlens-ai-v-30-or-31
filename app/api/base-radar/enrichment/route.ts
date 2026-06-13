@@ -321,6 +321,7 @@ function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract
       volume24hUsd: finiteNumber(scan.volume24hUsd),
       fdvUsd: finiteNumber(scan.fdvUsd ?? scan.fdv),
       marketCapUsd: finiteNumber(scan.marketCapUsd ?? scan.market_cap),
+      marketCapStatus: finiteNumber(scan.marketCapUsd ?? scan.market_cap) != null ? 'verified' : null,
       marketStatus: scan.marketStatus ?? null,
       marketConfidence: scan.marketConfidence ?? null,
       poolCount: observedPools.observedPoolCount,
@@ -354,6 +355,7 @@ function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract
       lpModelProof: lpReconciliation.lpModelProof,
       lpMigrationProof: scan.lpMigrationProof ?? null,
       cortexLpRead: sanitizeProviderNames(lpReconciliation.cortexLpRead),
+      lpProofDisplay: lpReconciliation.lpProofDisplay,
     },
     holders: {
       top1: finiteNumber(holderDistribution.top1),

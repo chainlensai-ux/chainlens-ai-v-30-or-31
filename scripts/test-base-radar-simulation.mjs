@@ -48,4 +48,15 @@ assert.equal(result.status, 'open_check')
 assert.equal(result.reason, 'missing pair address')
 assert.equal(result.label, 'Simulation open check — missing pair address')
 
+// ─── Orbit-style fixture: simulation passed with 0% buy / 0% sell ──────────
+result = getRadarSimulationDisplay({ contract: VALID, liquidityUsd: 2.45, honeypot: { simulationSuccess: true, isHoneypot: false, buyTax: 0, sellTax: 0 } })
+assert.equal(result.attempted, true)
+assert.equal(result.status, 'passed')
+assert.equal(result.reason, null)
+assert.equal(result.buyTax, 0)
+assert.equal(result.sellTax, 0)
+assert.equal(result.label, 'B 0.0% / S 0.0%')
+assert.ok(!/unconfirmed/i.test(result.cortexLine), 'CORTEX must not say simulation unconfirmed when it passed')
+assert.equal(result.cortexLine, 'Buy/sell simulation passed — values reflect the latest simulation result.')
+
 console.log('base radar simulation tests passed')

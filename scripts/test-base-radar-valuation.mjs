@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { getRadarValuationBasis, getRadarValuationCardDisplay, getRadarValuationDrawerDisplay, getRadarCortexValuationLine, getRadarValuationEvidenceGap, tokenPassesRadarValuationFilters } from '../lib/baseRadarValuation.ts'
+import { getRadarValuationBasis, getRadarValuationCardDisplay, getRadarValuationDrawerDisplay, getRadarCortexValuationLine, getRadarValuationEvidenceGap, tokenPassesRadarValuationFilters, resolveFallbackMarketCap, DEFAULT_RADAR_MIN_LIQUIDITY_USD } from '../lib/baseRadarValuation.ts'
 
 const fmtUSD = (v) => {
   if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(1)}M`
@@ -78,5 +78,26 @@ assert.equal(verifiedDrawer.note, null)
 assert.equal(getRadarCortexValuationLine(fdvFallback), 'Verified market cap is unavailable, so FDV is shown as fallback valuation.')
 assert.equal(getRadarCortexValuationLine(verifiedMc), null)
 assert.equal(getRadarCortexValuationLine(unavailable), null)
+
+// ─── Orbit-style fixture: $2.45 liquidity, FDV $35K, marketCap null ────────
+const orbitValuation = tokenPassesRadarValuationFilters({ liquidityUsd: 2.45, marketCapUsd: null, marketCapStatus: null, fdvUsd: 35_000 })
+assert.equal(orbitValuation.included, false, 'Orbit must be excluded from default feed (liquidity below $5K threshold)')
+assert.equal(orbitValuation.valuation.basis, 'fdv_fallback')
+assert.ok(2.45 < DEFAULT_RADAR_MIN_LIQUIDITY_USD)
+
+const orbitCard = getRadarValuationCardDisplay(orbitValuation.valuation, fmtUSD)
+assert.equal(orbitCard.label, 'FDV')
+assert.equal(orbitCard.sublabel, 'Market cap unavailable')
+assert.notEqual(orbitCard.label, 'Market cap')
+
+// ─── resolveFallbackMarketCap: real marketCap -> verified marketCapUsd ─────
+const realMc = resolveFallbackMarketCap(48_000)
+assert.equal(realMc.marketCapUsd, 48_000)
+assert.equal(realMc.marketCapStatus, 'verified')
+
+// ─── resolveFallbackMarketCap: missing marketCap -> never inferred from FDV ─
+const missingMc = resolveFallbackMarketCap(null)
+assert.equal(missingMc.marketCapUsd, null)
+assert.equal(missingMc.marketCapStatus, null)
 
 console.log('base radar valuation tests passed')

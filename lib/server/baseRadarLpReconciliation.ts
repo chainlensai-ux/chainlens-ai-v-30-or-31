@@ -8,8 +8,20 @@
 // without making any additional provider/API calls — it only re-derives from fields
 // already present on the scan result.
 
+import { extractLpControllerSharePercent } from '../baseRadarSeverity'
+
 export type ReconciledLpModel = 'concentrated_liquidity' | 'erc20_lp_token' | 'unknown'
 export type LpProofApplicability = 'applicable' | 'not_applicable' | 'unknown'
+
+export interface LpProofDisplay {
+  proofLabel: string
+  lockStatus: string
+  lockAmount: string | null
+  unlockTime: string
+  burnProof: string | null
+  controller: string | null
+  exitRisk: string | null
+}
 
 function normalizeModelToken(value: unknown): ReconciledLpModel | null {
   if (typeof value !== 'string' || !value.trim()) return null
@@ -73,6 +85,7 @@ export interface BaseRadarLpReconciliationResult {
   cortexLpRead: Record<string, unknown> | null
   evidence: string[]
   secondaryLpControlSignals: Record<string, unknown> | null
+  lpProofDisplay: LpProofDisplay | null
 }
 
 export function reconcileBaseRadarLp(scan: Record<string, any>): BaseRadarLpReconciliationResult {
@@ -232,6 +245,36 @@ export function reconcileBaseRadarLp(scan: Record<string, any>): BaseRadarLpReco
     }
   }
 
+  // 6. Build a clear LP proof display for V2/ERC-20 LP and concentrated pools.
+  // Avoids leaving a generic "Open Check" when a check actually ran and found
+  // no lock/burn proof for an erc20_lp_token pool with a known pool address.
+  let lpProofDisplay: LpProofDisplay | null = null
+  const lockBurnConfirmed = scan.lpLockStatus === 'locked' || scan.lpLockStatus === 'burned'
+  const hasPrimaryPoolIdentity = Boolean(primaryAddr || primaryId)
+
+  if (displayLpModel === 'erc20_lp_token' && hasPrimaryPoolIdentity && !lockBurnConfirmed) {
+    const lpControllerSharePercent = extractLpControllerSharePercent(evidence)
+    lpProofDisplay = {
+      proofLabel: 'Checked',
+      lockStatus: 'No lock detected',
+      lockAmount: 'None found',
+      unlockTime: 'No unlock schedule found',
+      burnProof: 'Not burned',
+      controller: lpControllerSharePercent != null ? `Wallet controlled · ${lpControllerSharePercent}%` : 'Wallet controlled',
+      exitRisk: 'High — LP can be removed unless locked or burned',
+    }
+  } else if (displayLpModel === 'concentrated_liquidity') {
+    lpProofDisplay = {
+      proofLabel: 'Position verification required',
+      lockStatus: 'Protocol-specific',
+      lockAmount: null,
+      unlockTime: 'Position check required',
+      burnProof: null,
+      controller: null,
+      exitRisk: null,
+    }
+  }
+
   return {
     displayLpModel,
     proofApplicability,
@@ -241,5 +284,6 @@ export function reconcileBaseRadarLp(scan: Record<string, any>): BaseRadarLpReco
     cortexLpRead,
     evidence: reconciledEvidence,
     secondaryLpControlSignals,
+    lpProofDisplay,
   }
 }
