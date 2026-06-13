@@ -67,10 +67,33 @@ function tokenSafetySentence(payload: Record<string, any>): string {
   const identity = formatTokenIdentityForPublic(name, symbol)
   const score = typeof payload.riskScore === 'number' ? payload.riskScore : null
   const label = typeof payload.riskLabel === 'string' && payload.riskLabel.trim() ? payload.riskLabel.trim() : null
-  if (score != null && label) return `${identity} has a ${label} Token Safety Score (${score}/100), with severe holder/dev-control risk drivers.`
-  if (label) return `${identity} has a ${label} Token Safety Score, with severe holder/dev-control risk drivers.`
-  if (score != null) return `${identity} has a Token Safety Score of ${score}/100, with severe holder/dev-control risk drivers.`
-  return `${identity} has a Token Safety Score, with severe holder/dev-control risk drivers.`
+  const holderDistribution = payload.holderDistribution && typeof payload.holderDistribution === 'object' ? payload.holderDistribution as Record<string, any> : {}
+  const top1 = typeof holderDistribution.top1 === 'number' ? holderDistribution.top1 : null
+  const top10 = typeof holderDistribution.top10 === 'number' ? holderDistribution.top10 : null
+  const holderCount = typeof holderDistribution.holderCount === 'number' ? holderDistribution.holderCount : null
+  const ownershipStatus = payload.security?.devOwnership?.ownershipStatus ?? payload.sections?.ownership?.status ?? null
+  const clusterSupply = payload.devClusterSupplyPercent ?? payload.supplyControl?.devClusterSupplyPercent ?? null
+  const severeHolderDev = Boolean(
+    (top1 != null && top1 >= 50)
+    || (top10 != null && top10 >= 95)
+    || (holderCount != null && holderCount < 25)
+    || ownershipStatus === 'active_owner'
+    || (typeof clusterSupply === 'number' && clusterSupply >= 20)
+  )
+  const scorePart = score != null && label
+    ? `has a ${label} Token Safety Score (${score}/100)`
+    : label
+      ? `has a ${label} Token Safety Score`
+      : score != null
+        ? `has a Token Safety Score of ${score}/100`
+        : 'has a Token Safety Score'
+  if (severeHolderDev) return `${identity} ${scorePart}, with severe holder/dev-control risk drivers.`
+  const broadHolders = top1 != null && top1 <= 10 && top10 != null && top10 <= 20 && holderCount != null && holderCount >= 100
+  const renounced = ownershipStatus === 'renounced' || payload.security?.devOwnership?.isRenounced === true || payload.sections?.ownership?.is_renounced === true
+  if (broadHolders && renounced) {
+    return 'Holder distribution appears broad and ownership is renounced. Main open checks are fallback-only pool identity, LP model/control verification, simulation/tax status, FDV-only valuation, and missing socials.'
+  }
+  return `${identity} ${scorePart}; no severe holder/dev-control risk drivers were confirmed from current evidence.`
 }
 
 function rewriteLegacyRiskSummaryText(text: string, payload: Record<string, any>): string {
