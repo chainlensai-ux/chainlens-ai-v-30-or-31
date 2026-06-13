@@ -157,6 +157,29 @@ assert('burned/locked token riskScore is high (>=61)', burnedResult.riskScore >=
 assert('burned/locked token riskLabel is low or very_low', burnedResult.riskLabel === 'low' || burnedResult.riskLabel === 'very_low', burnedResult.riskLabel)
 assert('burned/locked token scores higher than VIRTUAL', burnedResult.riskScore > virtualResult.riskScore, { burned: burnedResult.riskScore, virtual: virtualResult.riskScore })
 
+// ─── Scenario 4: VIRTUAL-like with unknown LP controller, no lock/burn proof ──
+console.log('\nScenario 4: VIRTUAL-like mature token but LP controller is unresolved/unknown (same market evidence as Scenario 1)')
+const unknownControllerInput = {
+  ...virtualInput,
+  lpControl: {
+    status: 'partial',
+    displayLpModel: 'erc20_lp_token',
+    lockStatus: 'not_confirmed',
+    burnStatus: 'not_confirmed',
+    proofStatus: 'open_check',
+    lpController: null,
+    lpControllerType: 'unknown',
+  },
+}
+const unknownControllerResult = calculateTokenRiskScore(unknownControllerInput)
+console.log('  riskScore:', unknownControllerResult.riskScore, 'riskLabel:', unknownControllerResult.riskLabel)
+
+assert('lpLockOrBurn for unknown controller is 0 (not higher than wallet-controlled)', unknownControllerResult.riskBreakdown.liquiditySafety.components.lpLockOrBurn === 0, unknownControllerResult.riskBreakdown.liquiditySafety.components.lpLockOrBurn)
+assert('lpControllerRisk for unknown controller is 0 (not higher than wallet-controlled)', unknownControllerResult.riskBreakdown.liquiditySafety.components.lpControllerRisk === 0, unknownControllerResult.riskBreakdown.liquiditySafety.components.lpControllerRisk)
+assert('unknown-controller liquiditySafety is not higher than wallet-controlled VIRTUAL', unknownControllerResult.riskBreakdown.liquiditySafety.score <= virtualResult.riskBreakdown.liquiditySafety.score, { unknown: unknownControllerResult.riskBreakdown.liquiditySafety.score, virtual: virtualResult.riskBreakdown.liquiditySafety.score })
+assert('unknown-controller riskScore is not higher (more bullish) than wallet-controlled VIRTUAL', unknownControllerResult.riskScore <= virtualResult.riskScore, { unknown: unknownControllerResult.riskScore, virtual: virtualResult.riskScore })
+assert('unknown-controller riskLabel is not a "safer" label than VIRTUAL', !(unknownControllerResult.riskLabel === 'low' && virtualResult.riskLabel === 'moderate'), { unknown: unknownControllerResult.riskLabel, virtual: virtualResult.riskLabel })
+
 // ─── Determinism ────────────────────────────────────────────────────────────
 console.log('\nDeterminism checks')
 const virtualResult2 = calculateTokenRiskScore(virtualInput)

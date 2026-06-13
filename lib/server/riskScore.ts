@@ -239,7 +239,10 @@ function scoreLiquiditySafety(input: RiskScoreInput): RiskScoreSectionResult {
     lockBurnScore = 0
     reasons.push('lp_controlled_by_wallet_no_lock_or_burn_proof')
   } else if (controllerUnknown) {
-    lockBurnScore = 5
+    // An unresolved/unknown LP controller is an open risk, not a safety signal — it
+    // must not score better than a confirmed wallet-controlled LP with no lock/burn
+    // proof (lockBurnScore 0 above).
+    lockBurnScore = 0
     reasons.push('lp_controller_unknown_no_lock_or_burn_proof')
   } else if (proofStatus === 'open_check' || proofStatus === 'missing' || proofStatus === 'partial') {
     lockBurnScore = 5
@@ -297,7 +300,10 @@ function scoreLiquiditySafety(input: RiskScoreInput): RiskScoreSectionResult {
     controllerScore = 6
     reasons.push('lp_controller_standard_lock_not_applicable')
   } else {
-    controllerScore = 5
+    // controllerUnknown (or any other unresolved state): an unresolved controller
+    // is not a safer state than a confirmed wallet-controlled LP (controllerScore 0
+    // above) — never award more safety points just because the controller is unknown.
+    controllerScore = 0
     reasons.push('lp_controller_unknown')
   }
   components.lpControllerRisk = controllerScore

@@ -3,7 +3,10 @@
 // (versioned/network-suffixed) patterns must run before their generic catch-alls.
 const DEX_LABEL_REPLACEMENTS: Array<[RegExp, string]> = [
   [/aerodrome[-_\s]*slipstream/gi, 'Aerodrome Slipstream'],
-  [/aerodrome[-_\s]*(?:v2|base)?/gi, 'Aerodrome'],
+  // The trailing `(?:v2|base)` suffix must only be consumed together with its
+  // separator — an unanchored `[-_\s]*` would otherwise swallow a trailing space
+  // when no suffix follows (e.g. "aerodrome is" -> "Aerodromeis").
+  [/aerodrome(?:[-_\s]*(?:v2|base))?/gi, 'Aerodrome'],
   [/uniswap[-_\s]*v4(?:[-_\s]*base)?/gi, 'Uniswap V4'],
   [/uniswap[-_\s]*v3(?:[-_\s]*base)?/gi, 'Uniswap V3'],
   [/uniswap[-_\s]*v2(?:[-_\s]*base)?/gi, 'Uniswap V2'],

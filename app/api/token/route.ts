@@ -4,7 +4,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { fetchHoneypotSecurity } from "@/lib/server/honeypotSecurity";
 import { calculateTokenRiskScore } from "@/lib/server/riskScore";
 import { sanitizePublicTokenResponse } from "@/lib/server/tokenPublicResponse";
-import { buildLpControllerIntel } from "@/lib/server/lpControllerIntel";
+import { buildLpControllerIntel, resolveLpControllerIdentity } from "@/lib/server/lpControllerIntel";
 import { buildLpMovementWatch } from "@/lib/server/lpMovementWatch";
 import { buildLpLockBurnIntel, LP_LOCK_BURN_REGISTRY } from "@/lib/server/lpLockBurnIntel";
 import { buildLpUnlockTimeline } from "@/lib/server/lpUnlockTimeline";
@@ -3743,6 +3743,11 @@ export async function POST(req: Request) {
             unknownBurnPct > 0.5 ? `burn_share=${unknownBurnPct.toFixed(2)}%` : null,
             unknownLockerPct > 0.5 ? `locker_share=${unknownLockerPct.toFixed(2)}%` : null,
           ].filter(Boolean) as string[]
+          // Surface dominant-holder evidence even below the 80% "team_controlled"
+          // threshold so LP-controller intel doesn't fall back to "unknown".
+          if (unknownTopHolder && (unknownTopHolder.pct ?? 0) > 0 && !DEAD.has(unknownTopHolder.address) && !KNOWN_LOCKERS.has(unknownTopHolder.address)) {
+            partialEv2.push(`top_holder=${unknownTopHolder.address}`, `top_share=${(unknownTopHolder.pct ?? 0).toFixed(2)}%`)
+          }
           lpControl = { status: partialEv2.length ? "partial" : "partial", confidence: "low", poolType: "unknown", source: "Market + holder evidence", reason: "LP holder check inconclusive — no dominant burn/lock pattern and pool model is not fully classified.", evidence: [`top_rows=${unknownTop.length}`, ...partialEv2, `pool=${_lpAddrSnippet}`], poolAddressPresent: true, dexId: dexId || undefined };
         }
       } else {
@@ -3781,7 +3786,7 @@ export async function POST(req: Request) {
             } else if (teamShareProbe >= 80) {
               lpControl = { ...base, status: "team_controlled", confidence: "high", reason: `Owner wallet holds ${teamShareProbe.toFixed(2)}% of LP supply (RPC verified).`, evidence: [`owner_lp_share=${teamShareProbe.toFixed(2)}%`, `pool=${_lpAddrSnippet}`] };
             } else {
-              lpControl = { ...base, status: (burnShare > 0 || lockerShare > 0) ? "partial" : "partial", confidence: "low", reason: "RPC balances do not prove burned/locked LP dominance.", evidence: [`burn_share=${burnShare.toFixed(2)}%`, `locker_share=${lockerShare.toFixed(2)}%`, `pool=${_lpAddrSnippet}`] };
+              lpControl = { ...base, status: (burnShare > 0 || lockerShare > 0) ? "partial" : "partial", confidence: "low", reason: "RPC balances do not prove burned/locked LP dominance.", evidence: [`burn_share=${burnShare.toFixed(2)}%`, `locker_share=${lockerShare.toFixed(2)}%`, ...(teamShareProbe > 0 ? [`owner_lp_share=${teamShareProbe.toFixed(2)}%`] : []), `pool=${_lpAddrSnippet}`] };
             }
           }
         } else if (probe.v3Like) {
@@ -3850,7 +3855,7 @@ export async function POST(req: Request) {
           } else if (teamShareFallback >= 80) {
             lpControl = { status: "team_controlled", confidence: "high", poolType: _lpProofType, source: "dex_data+rpc", reason: `Owner wallet holds ${teamShareFallback.toFixed(2)}% of LP supply (RPC verified).`, evidence: [`owner_lp_share=${teamShareFallback.toFixed(2)}%`] };
           } else {
-            lpControl = { status: (burnShare > 0 || lockerShare > 0) ? "partial" : "partial", confidence: "low", poolType: _lpProofType, source: "dex_data+rpc", reason: "RPC balances do not prove burned/locked LP dominance.", evidence: [`burn_share=${burnShare.toFixed(2)}%`, `locker_share=${lockerShare.toFixed(2)}%`] };
+            lpControl = { status: (burnShare > 0 || lockerShare > 0) ? "partial" : "partial", confidence: "low", poolType: _lpProofType, source: "dex_data+rpc", reason: "RPC balances do not prove burned/locked LP dominance.", evidence: [`burn_share=${burnShare.toFixed(2)}%`, `locker_share=${lockerShare.toFixed(2)}%`, ...(teamShareFallback > 0 ? [`owner_lp_share=${teamShareFallback.toFixed(2)}%`] : [])] };
           }
         }
       } else {
@@ -3858,6 +3863,12 @@ export async function POST(req: Request) {
           burnPct > 0.5 ? `burn_share=${burnPct.toFixed(2)}%` : null,
           lockerPct > 0.5 ? `locker_share=${lockerPct.toFixed(2)}%` : null,
         ].filter(Boolean) as string[]
+        // Even when the dominant LP holder doesn't cross the 80% "team_controlled"
+        // threshold, surface the holder/share evidence so downstream LP-controller
+        // intel can reuse it instead of reporting the controller as "unknown".
+        if (topHolder && (topHolder.pct ?? 0) > 0 && !DEAD.has(topHolder.address) && !KNOWN_LOCKERS.has(topHolder.address)) {
+          partialEv.push(`top_holder=${topHolder.address}`, `top_share=${(topHolder.pct ?? 0).toFixed(2)}%`)
+        }
         const partialReason = partialEv.length
           ? `LP holder check inconclusive — no dominant burn/lock pattern. ${partialEv.join(', ')}.`
           : "LP checks ran but could not prove burned/locked/team-controlled state."
@@ -5421,30 +5432,19 @@ export async function POST(req: Request) {
       lpProof = { lpLockStatus: 'unverified', lpLockAmount: null, lpUnlockTime: null, lpLockProvider: null, lpController: 'unknown', reasonCode: 'proofNotApplicable' }
     }
     const { lpLockStatus, lpLockAmount, lpUnlockTime, lpLockProvider, lpController: _lpControllerFromProof } = lpProof
-    // Synthesize lpControllerType from lpControl evidence when the proof scan returned 'unknown'.
-    // lpControl independently detects who holds the LP tokens (team wallet, burn address, etc.)
-    // and should be the authoritative source for controller identity when proof has no data.
-    const lpControllerType: 'wallet' | 'contract' | 'burn' | 'lockContract' | 'unknown' = (() => {
-      if (_lpControllerFromProof !== 'unknown') return _lpControllerFromProof
-      if (lpControl.status === 'team_controlled') return 'wallet'
-      if (lpControl.status === 'burned') return 'burn'
-      if (lpControl.status === 'locked') return 'lockContract'
-      return _lpControllerFromProof
-    })()
-    // The actual controlling address (when known) — never collapse this to the literal
-    // string "wallet"/"burn"/etc. lpController exposes the address (or null), while
-    // lpControllerType retains the enum classification for UI labeling.
-    const lpControllerAddress: string | null = (() => {
-      if (lpControllerType !== 'wallet') return null
-      const _topHolderEv = lpControl.evidence.find((e) => e.startsWith('top_holder='))
-      if (_topHolderEv) {
-        const _addr = _topHolderEv.split('=')[1]?.toLowerCase()
-        return _addr && /^0x[a-f0-9]{40}$/.test(_addr) ? _addr : null
-      }
-      if (lpControl.evidence.some((e) => e.startsWith('owner_lp_share='))) return ownerAddr ?? null
-      return null
-    })()
-    const lpController: string = lpControllerAddress ?? lpControllerType
+    // Synthesize lpControllerType/lpControllerAddress from lpControl evidence when the
+    // proof scan returned 'unknown'. lpControl independently detects who holds the LP
+    // tokens (team wallet, burn address, etc.) and should be the authoritative source
+    // for controller identity when proof has no data — including a dominant LP holder
+    // surfaced via top_share/owner_lp_share evidence even when lpControl.status stops
+    // short of the strict 80% "team_controlled" threshold (e.g. a "partial" result from
+    // a flaky holder-data fetch). See resolveLpControllerIdentity for the shared logic.
+    const { lpControllerType, lpControllerAddress, lpController } = resolveLpControllerIdentity({
+      status: lpControl.status,
+      evidence: lpControl.evidence,
+      lpControllerFromProof: _lpControllerFromProof,
+      ownerAddr,
+    })
     // LP controller has not been proven for open-check (model unverified) or
     // concentrated/protocol (NFT position, not an ERC-20 LP token) pools — never report
     // the token owner/deployer as the LP owner/controller in these cases.

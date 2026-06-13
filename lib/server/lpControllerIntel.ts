@@ -254,3 +254,65 @@ export function buildLpControllerIntel(input: LpControllerIntelInput): LpControl
     nextActions,
   }
 }
+
+export type LpControllerType = 'wallet' | 'contract' | 'burn' | 'lockContract' | 'unknown'
+
+export interface LpControllerIdentityInput {
+  /** lpControl.status from the LP-holder/controller derivation. */
+  status?: string | null
+  /** lpControl.evidence — e.g. 'top_holder=0x..', 'top_share=82.45%', 'owner_lp_share=...'. */
+  evidence?: string[] | null
+  /** Controller type returned by the on-chain LP lock/burn proof scan ('unknown' when not run/inconclusive). */
+  lpControllerFromProof: LpControllerType
+  /** Contract owner address, used when evidence only proves an owner-held LP share. */
+  ownerAddr?: string | null
+}
+
+export interface LpControllerIdentity {
+  lpControllerType: LpControllerType
+  lpControllerAddress: string | null
+  lpController: string
+}
+
+// Single authoritative LP-controller identity derivation, shared by the API route and
+// tests, so a dominant LP holder discovered anywhere in the scan (even when lpControl.status
+// stops short of the strict 80% "team_controlled" threshold, e.g. a "partial" result from a
+// flaky holder-data fetch) is consistently reused for lpControl.lpController,
+// lpControllerIntel.controller/controllerSharePercent, and lpMovementWatch.controller —
+// instead of collapsing to an "unknown" controller.
+export function resolveLpControllerIdentity(input: LpControllerIdentityInput): LpControllerIdentity {
+  const evidence = input.evidence ?? []
+  const extractPct = (prefix: string): number | null => {
+    const line = evidence.find((e) => e.startsWith(`${prefix}=`))
+    if (!line) return null
+    const value = parseFloat(line.split('=').slice(1).join('=').replace('%', ''))
+    return Number.isFinite(value) ? value : null
+  }
+  const dominantSharePct = extractPct('owner_lp_share') ?? extractPct('top_share')
+
+  const lpControllerType: LpControllerType = (() => {
+    if (input.lpControllerFromProof !== 'unknown') return input.lpControllerFromProof
+    if (input.status === 'team_controlled') return 'wallet'
+    if (input.status === 'burned') return 'burn'
+    if (input.status === 'locked') return 'lockContract'
+    if (dominantSharePct != null && dominantSharePct >= 50) return 'wallet'
+    return input.lpControllerFromProof
+  })()
+
+  const lpControllerAddress: string | null = (() => {
+    if (lpControllerType !== 'wallet') return null
+    const topHolderEv = evidence.find((e) => e.startsWith('top_holder='))
+    if (topHolderEv) {
+      const addr = topHolderEv.split('=')[1]?.toLowerCase()
+      return addr && /^0x[a-f0-9]{40}$/.test(addr) ? addr : null
+    }
+    if (evidence.some((e) => e.startsWith('owner_lp_share='))) return input.ownerAddr ?? null
+    return null
+  })()
+
+  return {
+    lpControllerType,
+    lpControllerAddress,
+    lpController: lpControllerAddress ?? lpControllerType,
+  }
+}

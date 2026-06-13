@@ -4,7 +4,8 @@
  */
 import { sanitizePublicTokenResponse } from '../lib/server/tokenPublicResponse.ts'
 import { publicLpDataMode, computeLpExitRisk, buildCortexLpRead } from '../lib/server/lpProof.ts'
-import { buildLpControllerIntel } from '../lib/server/lpControllerIntel.ts'
+import { buildLpControllerIntel, resolveLpControllerIdentity } from '../lib/server/lpControllerIntel.ts'
+import { calculateTokenRiskScore } from '../lib/server/riskScore.ts'
 import { buildLpMovementWatch } from '../lib/server/lpMovementWatch.ts'
 import { buildLpLockBurnIntel, LP_LOCK_BURN_REGISTRY } from '../lib/server/lpLockBurnIntel.ts'
 import { buildLpUnlockTimeline } from '../lib/server/lpUnlockTimeline.ts'
@@ -650,6 +651,91 @@ assert('fallback lpHistoryTimeline events do not fake a migration', (fallbackPub
 for (const provider of providerNames) assert(`fallback response does not expose provider name ${provider}`, !serialized(fallbackPublicPayload).includes(provider), provider)
 for (const rawId of rawDexIds) assert(`fallback response does not expose raw DEX id ${rawId}`, !serialized(fallbackPublicPayload).includes(rawId), rawId)
 assert('fallback response has no legacy Rug-risk pressure wording', !/Rug-risk pressure/i.test(serialized(fallbackPublicPayload)), fallbackPublicPayload)
+
+// ─── G. VIRTUAL controller-evidence reuse (resolveLpControllerIdentity) ────
+console.log('\nG. VIRTUAL controller-evidence reuse across lpControl/lpControllerIntel/lpMovementWatch')
+const virtualControllerEvidence = ['top_rows=10', 'top_holder=0xbd62cad65b49b4ad9c7aa9b8bdb89d63221f7af5', 'top_share=82.45%']
+const virtualIdentity = resolveLpControllerIdentity({
+  status: 'partial',
+  evidence: virtualControllerEvidence,
+  lpControllerFromProof: 'unknown',
+  ownerAddr: null,
+})
+assert('VIRTUAL resolveLpControllerIdentity yields wallet controller type', virtualIdentity.lpControllerType === 'wallet', virtualIdentity)
+assert('VIRTUAL resolveLpControllerIdentity yields the dominant-holder address', virtualIdentity.lpControllerAddress === '0xbd62cad65b49b4ad9c7aa9b8bdb89d63221f7af5', virtualIdentity)
+assert('VIRTUAL resolveLpControllerIdentity.lpController matches the dominant-holder address', virtualIdentity.lpController === '0xbd62cad65b49b4ad9c7aa9b8bdb89d63221f7af5', virtualIdentity)
+
+const virtualLpControl = {
+  status: 'partial',
+  displayLpModel: 'erc20_lp_token',
+  lockStatus: 'not_confirmed',
+  burnStatus: 'not_confirmed',
+  proofStatus: 'open_check',
+  evidence: virtualControllerEvidence,
+  lpController: virtualIdentity.lpController,
+  lpControllerType: virtualIdentity.lpControllerType,
+}
+const virtualSelectedPool = { address: '0x21594b992f68495dd28d605834b58889d0a727c7', pair: 'VIRTUAL/WETH', liquidityUsd: 4_300_000 }
+const virtualControllerIntel = buildLpControllerIntel({
+  lpControl: virtualLpControl,
+  selectedPool: virtualSelectedPool,
+  lpExitRisk: 'watch',
+  liquidityDepthRisk: 'low',
+  lpMigrationProof: { status: 'low' },
+  lpMeta: {},
+})
+const virtualMovementWatch = buildLpMovementWatch({
+  chain: 'base',
+  lpControllerIntel: virtualControllerIntel,
+  lpControl: virtualLpControl,
+  selectedPool: virtualSelectedPool,
+  lpMeta: {},
+})
+assert('VIRTUAL lpControllerIntel.status is wallet_controlled despite lpControl.status=partial', virtualControllerIntel.status === 'wallet_controlled', virtualControllerIntel)
+assert('VIRTUAL lpControllerIntel.controller is not null/unknown', virtualControllerIntel.controller === '0xbd62cad65b49b4ad9c7aa9b8bdb89d63221f7af5', virtualControllerIntel)
+assert('VIRTUAL lpControllerIntel.controllerSharePercent is 82.45', virtualControllerIntel.controllerSharePercent === 82.45, virtualControllerIntel)
+assert('VIRTUAL lpControl.lpController matches lpControllerIntel.controller', virtualLpControl.lpController === virtualControllerIntel.controller, { lpControl: virtualLpControl.lpController, intel: virtualControllerIntel.controller })
+assert('VIRTUAL lpMovementWatch.controller matches lpControllerIntel.controller', virtualMovementWatch?.controller === virtualControllerIntel.controller, { movement: virtualMovementWatch?.controller, intel: virtualControllerIntel.controller })
+
+// ─── H. Genuinely unknown LP controller — scoring must not be falsely bullish ──
+console.log('\nH. Genuinely unknown LP controller scores no safer than confirmed wallet-controlled')
+const walletControlledRiskInput = {
+  marketCapUsd: 400_000_000,
+  fdvUsd: 420_000_000,
+  liquidityUsd: 4_300_000,
+  holderDistribution: { top1: 12, top5: 30, top10: 48 },
+  lpControl: { status: 'team_controlled', displayLpModel: 'erc20_lp_token', lockStatus: 'not_confirmed', burnStatus: 'not_confirmed', proofStatus: 'open_check', lpController: '0xTeamWallet', lpControllerType: 'wallet' },
+  lpProofApplicability: 'applicable',
+  lpProofStatus: 'open_check',
+  lpModelProof: { model: 'v2', standardLockApplies: true },
+  lpMigrationProof: { status: 'low' },
+}
+const unknownControllerRiskInput = {
+  ...walletControlledRiskInput,
+  lpControl: { status: 'open_check', displayLpModel: 'erc20_lp_token', lockStatus: 'not_confirmed', burnStatus: 'not_confirmed', proofStatus: 'open_check', lpController: null, lpControllerType: 'unknown' },
+}
+const walletControlledRisk = calculateTokenRiskScore(walletControlledRiskInput)
+const unknownControllerRisk = calculateTokenRiskScore(unknownControllerRiskInput)
+assert('unknown-controller liquiditySafety is not higher than wallet-controlled', unknownControllerRisk.riskBreakdown.liquiditySafety.score <= walletControlledRisk.riskBreakdown.liquiditySafety.score, { unknown: unknownControllerRisk.riskBreakdown.liquiditySafety.score, wallet: walletControlledRisk.riskBreakdown.liquiditySafety.score })
+assert('unknown-controller riskScore is not higher (more bullish) than wallet-controlled', unknownControllerRisk.riskScore <= walletControlledRisk.riskScore, { unknown: unknownControllerRisk.riskScore, wallet: walletControlledRisk.riskScore })
+assert('unknown-controller riskLabel is not "safer" than wallet-controlled', !(unknownControllerRisk.riskLabel === 'low' && walletControlledRisk.riskLabel !== 'low'), { unknown: unknownControllerRisk.riskLabel, wallet: walletControlledRisk.riskLabel })
+
+// ─── I. LP history summary typo fix (Aerodromeis -> Aerodrome is) ──────────
+console.log('\nI. LP history timeline "Aerodrome is" wording (no Aerodromeis typo)')
+const aerodromeHistory = buildLpHistoryTimeline({
+  chain: 'base',
+  poolModel: 'v2',
+  marketDataSource: 'primary',
+  selectedPool: { address: '0x21594b992f68495dd28d605834b58889d0a727c7', pair: 'VIRTUAL/WETH', dex: 'aerodrome', liquidityUsd: 4_300_000 },
+  primaryPoolAgeLabel: '1y',
+  poolCount: 2,
+  observedPoolCount: 2,
+  liquidityUsd: 4_300_000,
+  lpMigrationProof: { status: 'low', confidence: 'medium', liquidityDistribution: 'concentrated in primary pool', dexsUsed: [], signals: [], missingEvidence: [] },
+})
+const aerodromeHistoryPublic = sanitizePublicTokenResponse({ lpHistoryTimeline: aerodromeHistory }, false)
+assert('Aerodrome LP history summary says "Aerodrome is" with a space', /Aerodrome is/.test(aerodromeHistoryPublic.lpHistoryTimeline.summary), aerodromeHistoryPublic.lpHistoryTimeline.summary)
+assert('Aerodrome LP history summary does not contain the "Aerodromeis" typo', !/Aerodromeis/.test(aerodromeHistoryPublic.lpHistoryTimeline.summary), aerodromeHistoryPublic.lpHistoryTimeline.summary)
 
 console.log(`\n${passed} passed, ${failed} failed`)
 if (failed > 0) process.exit(1)
