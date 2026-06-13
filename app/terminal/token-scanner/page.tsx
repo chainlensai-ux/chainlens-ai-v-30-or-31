@@ -15,14 +15,76 @@ type CanonicalStatus =
   | "unavailable_with_reason"
 
 function canonicalLabel(s: CanonicalStatus | string | undefined): string {
-  switch (s) {
-    case 'verified':              return 'Verified'
-    case 'inferred':              return 'Inferred'
-    case 'partial':               return 'Partial'
-    case 'not_applicable':        return 'Not applicable'
-    case 'unavailable_with_reason': return 'Open check'
-    default:                      return 'Open check'
+  return cleanStatusLabel(s)
+}
+
+function cleanStatusLabel(value: string | null | undefined): string {
+  switch ((value ?? '').toLowerCase()) {
+    case 'not_applicable': return 'Protocol-specific'
+    case 'concentrated_liquidity': return 'Concentrated Liquidity'
+    case 'protocol_or_gauge': return 'Protocol Position Model'
+    case 'open_check':
+    case 'unavailable_with_reason':
+    case 'insufficient_data':
+    case 'error':
+    case 'unknown': return 'Open Check'
+    case 'team_controlled':
+    case 'wallet_controlled':
+    case 'wallet': return 'Wallet Controlled'
+    case 'burn':
+    case 'burned': return 'Burned'
+    case 'lockcontract':
+    case 'locked': return 'Locked'
+    case 'partial': return 'Partial Evidence'
+    case 'confirmed':
+    case 'verified': return 'Confirmed'
+    case 'no_pool': return 'No Active Pool'
+    case 'low': return 'Low'
+    case 'medium': return 'Medium'
+    case 'high': return 'High'
+    case 'watch': return 'Watch'
+    case 'protected': return 'Protected'
+    case 'none': return 'None'
+    case 'expired': return 'Expired'
+    case 'deep': return 'Deep'
+    case 'contract': return 'Contract'
+    default: {
+      const raw = value?.trim()
+      return raw ? raw.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) : 'Open Check'
+    }
   }
+}
+
+function isProtocolPositionModel(result: ScanResult): boolean {
+  const dm = result.lpControl?.displayLpModel
+  return dm === 'concentrated_liquidity'
+    || dm === 'protocol_or_gauge'
+    || result.lpControl?.proofStatus === 'not_applicable'
+    || result.lpLockBurnIntel?.lockBurnProof === 'not_applicable'
+    || result.lpControllerIntel?.status === 'concentrated_liquidity'
+    || result.lpLockBurnIntel?.poolModel === 'concentrated_liquidity'
+    || result.lpHistoryTimeline?.poolModel === 'concentrated_liquidity'
+}
+
+function primaryLiquidityModelLabel(result: ScanResult): string {
+  const dex = result.lpHistoryTimeline?.primaryDex || result.primaryDexName || result.lpControl?.primaryPoolDex || result.lpControl?.dexName || result.lpModelProof?.dexName
+  const dm = result.lpControl?.displayLpModel
+  if (isProtocolPositionModel(result)) {
+    if (dex && /pancake/i.test(dex)) return 'PancakeSwap V3 Concentrated'
+    if (dex && /uniswap\s*v4/i.test(dex)) return 'Uniswap V4 Concentrated'
+    if (dex && /uniswap/i.test(dex)) return 'Uniswap V3 Concentrated'
+    if (dex && /slipstream|aerodrome/i.test(dex)) return 'Aerodrome Slipstream'
+    return dm === 'protocol_or_gauge' ? 'Protocol Position Model' : 'Concentrated Liquidity'
+  }
+  if (dm === 'erc20_lp_token') return 'ERC-20 LP Token'
+  if (dm === 'no_pool') return 'No Active Pool'
+  return 'Model Open Check'
+}
+
+function protocolPositionSubtext(kind: 'lock' | 'control' | 'movement'): string {
+  if (kind === 'lock') return 'Standard ERC-20 LP-token lock/burn proof does not apply to this primary pool.'
+  if (kind === 'control') return 'Liquidity control requires protocol-specific position checks.'
+  return 'ERC-20 LP-token transfers are not the evidence model for this pool.'
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────
@@ -2449,34 +2511,35 @@ function getLpEliteSummary(result: ScanResult): { chips: LpEliteChip[]; verdict:
   const ut = result.lpUnlockTimeline
   const ht = result.lpHistoryTimeline
 
-  const controllerValue = ci?.status ? ci.status.replace(/_/g, ' ') : 'open check'
+  const protocolPosition = isProtocolPositionModel(result)
+  const controllerValue = protocolPosition ? 'Position verification required' : cleanStatusLabel(ci?.status)
   const controllerColor = (ci?.status === 'locked' || ci?.status === 'burned' || ci?.status === 'protected') ? '#34d399'
     : (ci?.status === 'protocol_controlled' || ci?.status === 'concentrated_liquidity' || ci?.status === 'no_pool') ? '#94a3b8'
     : '#fbbf24'
 
-  const lockBurnValue = lb?.lockBurnProof ? lb.lockBurnProof.replace(/_/g, ' ') : 'open check'
+  const lockBurnValue = protocolPosition ? 'Protocol-specific' : cleanStatusLabel(lb?.lockBurnProof)
   const lockBurnColor = lb?.lockBurnProof === 'confirmed' ? '#34d399' : lb?.lockBurnProof === 'not_applicable' ? '#94a3b8' : '#fbbf24'
 
-  const unlockValue = ut?.unlockRisk ? ut.unlockRisk.replace(/_/g, ' ') : 'unknown'
+  const unlockValue = protocolPosition ? 'Protocol-specific' : cleanStatusLabel(ut?.unlockRisk)
   const unlockColor = (ut?.unlockRisk === 'high' || ut?.unlockRisk === 'expired') ? '#f87171'
     : (ut?.unlockRisk === 'low' || ut?.unlockRisk === 'none') ? '#34d399'
     : (ut?.unlockRisk === 'not_applicable') ? '#94a3b8'
     : '#fbbf24'
 
-  const movementValue = mv?.movementRisk ? mv.movementRisk.replace(/_/g, ' ') : (mv?.status ? mv.status.replace(/_/g, ' ') : 'unknown')
+  const movementValue = protocolPosition ? 'Position movement required' : cleanStatusLabel(mv?.movementRisk ?? mv?.status)
   const movementColor = mv?.movementRisk === 'high' ? '#f87171'
     : (mv?.movementRisk === 'low' || mv?.movementRisk === 'protected') ? '#34d399'
     : (mv?.status === 'not_applicable') ? '#94a3b8'
     : '#fbbf24'
 
-  const migrationValue = ht?.migrationRisk ? ht.migrationRisk.replace(/_/g, ' ') : 'unknown'
+  const migrationValue = cleanStatusLabel(ht?.migrationRisk)
   const migrationColor = ht?.migrationRisk === 'high' ? '#f87171'
     : ht?.migrationRisk === 'low' ? '#34d399'
     : ht?.migrationRisk === 'unknown' ? '#94a3b8'
     : '#fbbf24'
 
   const chips: LpEliteChip[] = [
-    { label: 'Controller', value: controllerValue, color: controllerColor },
+    { label: protocolPosition ? 'Control Proof' : 'Controller', value: controllerValue, color: controllerColor },
     { label: 'Lock/Burn', value: lockBurnValue, color: lockBurnColor },
     { label: 'Unlock', value: unlockValue, color: unlockColor },
     { label: 'Movement', value: movementValue, color: movementColor },
@@ -2536,9 +2599,9 @@ function getLpNextAction(result: ScanResult): string {
     const shareStr = topShare != null ? ` (${topShare.toFixed(2)}% of LP supply)` : ''
     return `LP is controlled by a single wallet${controllerAddr ? ` (${shorten(controllerAddr)})` : ''}${shareStr} and has no lock or burn proof. Monitor this wallet, holder distribution, and lock/burn status before treating exit liquidity as protected.`
   }
-  if (dm === 'concentrated_liquidity') return 'V3/V4-style liquidity does not use standard LP lock/burn proof. Monitor pool depth, age, volume, and holder concentration.'
+  if (dm === 'concentrated_liquidity') return 'Primary liquidity uses a protocol position model. Review position ownership, pool depth, age, volume, and holder concentration.'
   if (dm === 'protocol_or_gauge') return 'Protocol or gauge-based liquidity can be normal. Monitor depth, pool age, and whether liquidity is moving.'
-  if (lpMode === 'protocol') return 'V3/V4-style pools do not use standard ERC-20 LP lock/burn proof. Monitor pool depth, age, and holder concentration.'
+  if (lpMode === 'protocol') return 'Primary liquidity uses a protocol position model. Review position ownership, pool depth, age, and holder concentration.'
   if (lockStatus === 'unlocked') return 'On-chain evidence shows the LP is held by a removable wallet with no lock or burn proof — treat exit risk as elevated and avoid large positions.'
   return 'LP lock/burn proof is an open check — verify directly on-chain (lock explorer, LP token holder list) before trusting any safety claim.'
 }
@@ -3949,7 +4012,7 @@ export default function TerminalTokenScanner() {
                 ]
                 const marketStrengthLabel = result.noActivePools ? 'Open check' : (result.liquidity ?? 0) > 250000 ? 'Strong' : (result.liquidity ?? 0) > 50000 ? 'Active' : (result.liquidity ?? 0) > 0 ? 'Thin' : 'Open check'
                 const holderRiskLabel = holderState.kind !== 'rowsWithPercent' ? 'Open check' : (result.holderDistribution?.top10 ?? 0) > 50 ? 'High' : (result.holderDistribution?.top10 ?? 0) > 30 ? 'Medium' : 'Low'
-                const lpProofLabel = lpMode === 'protocol' ? 'Not applicable' : lpStatus === 'locked' || lpStatus === 'burned' ? 'Verified' : lpStatus === 'team_controlled' ? 'Team controlled' : lpStatus === 'partial' ? 'Partial' : lpStatus === 'no_pool' ? 'Open check' : lpMode === 'unknown' ? 'Open check' : 'Open check'
+                const lpProofLabel = lpMode === 'protocol' ? 'Protocol-specific' : lpStatus === 'locked' || lpStatus === 'burned' ? 'Verified' : lpStatus === 'team_controlled' ? 'Wallet Controlled' : lpStatus === 'partial' ? 'Partial Evidence' : lpStatus === 'no_pool' ? 'Open check' : lpMode === 'unknown' ? 'Open check' : 'Open check'
                 const securityConfidenceLabel = result.honeypot?.simulationSuccess ? (result.honeypot?.isHoneypot === false ? 'Verified' : 'Partial') : 'Open check'
                 const degradedBadges = [
                   (result.lpControl?.status === 'unavailable_with_reason' || result.lpControl?.status === 'insufficient_data') ? 'LP open check' : null,
@@ -4740,14 +4803,7 @@ export default function TerminalTokenScanner() {
                     const dm2 = result.lpControl?.displayLpModel
                     const effectiveDm = (dm2 === 'no_pool' && hasPool) ? 'open_check' : dm2
                     const lpProofConfirmed = lpStatus2 === 'burned' || lpStatus2 === 'locked'
-                    const modelLabel = effectiveDm === 'concentrated_liquidity' ? 'Concentrated Liquidity'
-                      : effectiveDm === 'protocol_or_gauge' ? 'Protocol / Gauge Pool'
-                      : effectiveDm === 'erc20_lp_token' ? 'ERC-20 LP Token'
-                      : effectiveDm === 'no_pool' ? 'No Active Pool'
-                      : lpModeVal === 'protocol' ? 'Concentrated'
-                      : lpModeVal === 'lp_token' ? 'ERC-20 LP Token'
-                      : hasPool ? 'Model Open Check'
-                      : 'Unverified'
+                    const modelLabel = primaryLiquidityModelLabel(result)
                     const modelColor = effectiveDm === 'concentrated_liquidity' ? '#c084fc'
                       : effectiveDm === 'protocol_or_gauge' ? '#a78bfa'
                       : effectiveDm === 'erc20_lp_token' ? (lpProofConfirmed ? '#34d399' : '#60a5fa')
@@ -4756,11 +4812,9 @@ export default function TerminalTokenScanner() {
                       : lpModeVal === 'lp_token' ? (lpProofConfirmed ? '#34d399' : '#60a5fa')
                       : hasPool ? '#fbbf24'
                       : '#94a3b8'
-                    const modelDesc = effectiveDm === 'concentrated_liquidity' ? 'V3/V4-style pool detected. Standard ERC-20 LP lock/burn proof does not apply.'
-                      : effectiveDm === 'protocol_or_gauge' ? 'Protocol-managed liquidity model detected. Monitor pool depth, emissions/gauge context, and holder concentration.'
+                    const modelDesc = isProtocolPositionModel(result) ? protocolPositionSubtext('lock')
                       : effectiveDm === 'erc20_lp_token' ? (lpProofConfirmed ? 'Standard ERC-20 LP token — lock or burn proof confirmed.' : 'Standard ERC-20 LP token detected. Lock or burn proof has not been verified.')
                       : effectiveDm === 'no_pool' ? 'No active liquidity pool detected for this token.'
-                      : lpModeVal === 'protocol' ? 'V3/V4-style pool — no ERC-20 LP tokens. Lock/burn proof does not apply.'
                       : lpModeVal === 'lp_token' ? (lpProofConfirmed ? 'Standard ERC-20 LP token — lock or burn proof confirmed.' : 'Standard ERC-20 LP token detected. Lock or burn proof has not been verified.')
                       : hasPool ? 'Pool detected, but LP token model could not be fully classified.'
                       : 'Pool structure could not be classified from this scan.'
@@ -4783,7 +4837,7 @@ export default function TerminalTokenScanner() {
                           <p style={{ margin: 0, fontSize: '11px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>{exitInfo.description}</p>
                         </div>
                         <div style={{ padding: '15px 17px', background: `${modelColor}08`, border: `1px solid ${modelColor}28`, borderRadius: '14px' }}>
-                          <div style={{ fontSize: '9px', letterSpacing: '.15em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', marginBottom: '9px', fontWeight: 700, textTransform: 'uppercase' }}>LP Model</div>
+                          <div style={{ fontSize: '9px', letterSpacing: '.15em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', marginBottom: '9px', fontWeight: 700, textTransform: 'uppercase' }}>Primary Liquidity Model</div>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
                             <span style={{ width: 7, height: 7, borderRadius: '50%', background: modelColor, flexShrink: 0, boxShadow: `0 0 8px ${modelColor}` }} />
                             <span style={{ fontSize: '16px', fontWeight: 800, color: modelColor, fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.03em' }}>{modelLabel}</span>
@@ -4802,6 +4856,7 @@ export default function TerminalTokenScanner() {
                     const hasLiquidity = (result.liquidity ?? 0) > 0
                     const hasPool = hasLiquidity || result.lpControl?.poolAddressPresent
                     const notApplicable = dm3 === 'concentrated_liquidity' || dm3 === 'protocol_or_gauge' || result.lpControl?.proofStatus === 'not_applicable'
+                    const protocolPosition = isProtocolPositionModel(result)
                     // Migration risk comes from real migration evidence (lpMigrationProof / riskEngine.lpIntelligence),
                     // never inferred from pool count alone.
                     const migProofStatus = result.lpMigrationProof?.status
@@ -4817,10 +4872,10 @@ export default function TerminalTokenScanner() {
                       : undefined
                     const controlProof = result.lpControl?.status === 'team_controlled' || result.lpControl?.proofStatus === 'verified'
                       ? 'Confirmed'
-                      : result.lpControl?.proofStatus === 'not_applicable' ? 'Not applicable' : 'Open Check'
+                      : protocolPosition ? 'Position verification required' : 'Open Check'
                     const lockBurnProof = result.lpControl?.lockStatus === 'locked' || result.lpControl?.burnStatus === 'burned'
                       ? 'Confirmed'
-                      : notApplicable ? 'Not applicable' : 'Open Check'
+                      : notApplicable ? 'Protocol-specific' : 'Open Check'
                     const liquidityDepth = result.liquidityDepthRisk === 'low'
                       ? 'Deep'
                       : result.liquidityDepthRisk === 'medium' ? 'Moderate'
@@ -4834,16 +4889,17 @@ export default function TerminalTokenScanner() {
                       : result.lpExitRisk === 'high' ? 'High' : 'Open Check'
                     const lpControlDisplay = result.lpControl?.status === 'team_controlled' || result.lpControl?.lpControllerType === 'wallet'
                       ? 'Wallet Controlled'
-                      : lpModeVal === 'protocol' ? 'Protocol-Managed'
+                      : lpModeVal === 'protocol' ? 'Protocol Position Model'
                       : lpStatus === 'burned' ? 'Burned'
                       : lpStatus === 'locked' ? 'Locked'
-                      : lpStatus === 'partial' ? 'Partial'
+                      : lpStatus === 'partial' ? 'Partial Evidence'
                       : lpStatus === 'no_pool' ? 'Open Check'
-                      : (lpStatus ? lpStatus.replace(/_/g, ' ') : 'Open Check')
-                    const rows: { label: string; value: string; color?: string }[] = [
-                      { label: 'LP Control', value: lpControlDisplay, color: lpControlDisplay === 'Wallet Controlled' ? '#fbbf24' : undefined },
-                      { label: 'Control Proof', value: controlProof, color: controlProof === 'Confirmed' ? '#34d399' : undefined },
-                      { label: 'Lock/Burn Proof', value: lockBurnProof, color: lockBurnProof === 'Confirmed' ? '#34d399' : lockBurnProof === 'Open Check' ? '#fbbf24' : undefined },
+                      : cleanStatusLabel(lpStatus)
+                    const rows: { label: string; value: string; color?: string; note?: string }[] = [
+                      { label: 'Primary Liquidity', value: primaryLiquidityModelLabel(result), color: protocolPosition ? '#c084fc' : undefined },
+                      { label: 'LP Control', value: protocolPosition ? 'Position verification required' : lpControlDisplay, color: lpControlDisplay === 'Wallet Controlled' ? '#fbbf24' : undefined, note: protocolPosition ? protocolPositionSubtext('control') : undefined },
+                      { label: 'Control Proof', value: controlProof, color: controlProof === 'Confirmed' ? '#34d399' : protocolPosition ? '#c084fc' : undefined, note: protocolPosition ? protocolPositionSubtext('control') : undefined },
+                      { label: 'Lock/Burn Proof', value: lockBurnProof, color: lockBurnProof === 'Confirmed' ? '#34d399' : lockBurnProof === 'Open Check' ? '#fbbf24' : protocolPosition ? '#c084fc' : undefined, note: protocolPosition ? protocolPositionSubtext('lock') : undefined },
                       { label: 'Exit Risk', value: exitRisk, color: exitRisk === 'Low' ? '#34d399' : exitRisk === 'Watch' || exitRisk === 'Monitor' ? '#fbbf24' : exitRisk === 'High' ? '#f87171' : undefined },
                       { label: 'Liquidity Depth', value: liquidityDepth, color: liquidityDepth === 'Deep' ? '#34d399' : liquidityDepth === 'Moderate' ? '#fbbf24' : liquidityDepth === 'Thin' ? '#f87171' : undefined },
                       { label: 'Migration Risk', value: migrationRisk, color: migrationRiskColor },
@@ -4851,10 +4907,10 @@ export default function TerminalTokenScanner() {
                     ]
                     return (
                       <div style={{ marginBottom: '14px', padding: '10px 14px', background: 'rgba(8,14,28,0.55)', border: '1px solid rgba(148,163,184,0.10)', borderRadius: '12px' }}>
-                        {rows.map(({ label, value, color }, i) => (
+                        {rows.map(({ label, value, color, note }, i) => (
                           <div key={label} style={{ display: 'grid', gridTemplateColumns: '120px 1fr', gap: '12px', alignItems: 'center', padding: '7px 4px', borderBottom: i < rows.length - 1 ? '1px solid rgba(255,255,255,.04)' : 'none' }}>
                             <span style={{ fontSize: '10px', color: '#64748b', fontFamily: 'var(--font-plex-mono)', letterSpacing: '.08em' }}>{label}</span>
-                            <span style={{ fontSize: '11px', color: color ?? (value === 'Open Check' ? '#fbbf24' : value === 'Not applicable' ? '#64748b' : value === 'Confirmed' ? '#34d399' : '#e2e8f0'), fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{value}</span>
+                            <span style={{ fontSize: '11px', color: color ?? (value === 'Open Check' ? '#fbbf24' : value === 'Confirmed' ? '#34d399' : '#e2e8f0'), fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{value}{note && <span style={{ display: 'block', marginTop: '3px', color: '#94a3b8', fontWeight: 500, lineHeight: 1.45 }}>{note}</span>}</span>
                           </div>
                         ))}
                       </div>
@@ -4896,17 +4952,17 @@ export default function TerminalTokenScanner() {
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(170px,1fr))', gap: '7px', marginBottom: '11px' }}>
                         {([
                           ['Controller', result.lpControllerIntel.controller ?? result.lpControllerIntel.controllerLabel ?? 'Open check'],
-                          ['Controller Type', result.lpControllerIntel.controllerType?.replace(/_/g, ' ') ?? 'Open check'],
-                          ['Controller Share', result.lpControllerIntel.controllerSharePercent != null ? `${result.lpControllerIntel.controllerSharePercent.toFixed(2)}%` : 'Open check'],
-                          ['Control Proof', result.lpControllerIntel.controlProof?.replace(/_/g, ' ') ?? 'Open check'],
-                          ['Lock/Burn Proof', result.lpControllerIntel.lockBurnProof?.replace(/_/g, ' ') ?? 'Open check'],
-                          ['Exit Risk', result.lpControllerIntel.exitRisk?.replace(/_/g, ' ') ?? 'Open check'],
-                          ['Liquidity Depth', result.lpControllerIntel.liquidityDepth?.replace(/_/g, ' ') ?? 'Open check'],
-                          ['Migration Risk', result.lpControllerIntel.migrationRisk?.replace(/_/g, ' ') ?? 'Open check'],
+                          ['Controller Type', isProtocolPositionModel(result) ? 'Protocol Position Model' : cleanStatusLabel(result.lpControllerIntel.controllerType)],
+                          ['Controller Share', isProtocolPositionModel(result) ? 'Position verification required' : result.lpControllerIntel.controllerSharePercent != null ? `${result.lpControllerIntel.controllerSharePercent.toFixed(2)}%` : 'Open Check'],
+                          ['Control Proof', isProtocolPositionModel(result) ? 'Position verification required' : cleanStatusLabel(result.lpControllerIntel.controlProof)],
+                          ['Lock/Burn Proof', isProtocolPositionModel(result) ? 'Protocol-specific' : cleanStatusLabel(result.lpControllerIntel.lockBurnProof)],
+                          ['Exit Risk', cleanStatusLabel(result.lpControllerIntel.exitRisk)],
+                          ['Liquidity Depth', cleanStatusLabel(result.lpControllerIntel.liquidityDepth)],
+                          ['Migration Risk', cleanStatusLabel(result.lpControllerIntel.migrationRisk)],
                         ] as Array<[string, string]>).map(([label, value]) => (
                           <div key={label} style={{ padding: '8px 9px', borderRadius: '10px', background: 'rgba(2,6,23,0.42)', border: '1px solid rgba(148,163,184,0.10)' }}>
                             <div style={{ fontSize: '9px', color: '#64748b', letterSpacing: '.10em', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '4px' }}>{label}</div>
-                            <div style={{ fontSize: '11px', color: value === 'confirmed' || value === 'deep' || value === 'low' ? '#34d399' : value === 'open check' || value === 'watch' ? '#fbbf24' : '#e2e8f0', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: label === 'Controller' ? 'none' : 'capitalize', overflow: 'hidden', textOverflow: 'ellipsis' }}>{value}</div>
+                            <div style={{ fontSize: '11px', color: value === 'Confirmed' || value === 'Deep' || value === 'Low' ? '#34d399' : value === 'Open Check' || value === 'Watch' ? '#fbbf24' : '#e2e8f0', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: label === 'Controller' ? 'none' : 'capitalize', overflow: 'hidden', textOverflow: 'ellipsis' }}>{value}</div>
                           </div>
                         ))}
                       </div>
@@ -4939,21 +4995,21 @@ export default function TerminalTokenScanner() {
                           {result.lpLockBurnIntel.summary && <p style={{ margin: '7px 0 0', fontSize: '11px', color: '#bae6fd', lineHeight: 1.55, fontFamily: 'var(--font-plex-mono)' }}>{result.lpLockBurnIntel.summary}</p>}
                         </div>
                         <span style={{ flexShrink: 0, padding: '4px 9px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '.10em', color: result.lpLockBurnIntel.lockBurnProof === 'confirmed' ? '#34d399' : result.lpLockBurnIntel.lockBurnProof === 'not_applicable' ? '#94a3b8' : '#fbbf24', background: 'rgba(2,6,23,0.48)', border: '1px solid rgba(34,211,238,0.25)', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
-                          {result.lpLockBurnIntel.status?.replace(/_/g, ' ') ?? 'open check'}
+                          {isProtocolPositionModel(result) ? 'Protocol-specific' : cleanStatusLabel(result.lpLockBurnIntel.status)}
                         </span>
                       </div>
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(145px,1fr))', gap: '7px', marginBottom: '10px' }}>
                         {([
-                          ['Lock/Burn Proof', result.lpLockBurnIntel.lockBurnProof?.replace(/_/g, ' ') ?? 'open check'],
-                          ['Locked %', result.lpLockBurnIntel.lockedPercent == null ? 'Open check' : `${result.lpLockBurnIntel.lockedPercent.toFixed(2)}%`],
-                          ['Burned %', result.lpLockBurnIntel.burnedPercent == null ? 'Open check' : `${result.lpLockBurnIntel.burnedPercent.toFixed(2)}%`],
-                          ['Unlock Time', result.lpLockBurnIntel.unlockTime == null ? (result.lpLockBurnIntel.unlockTimeStatus === 'not_applicable' ? 'Not applicable' : 'Open check') : new Date(result.lpLockBurnIntel.unlockTime).toLocaleString()],
-                          ['Proof Source', result.lpLockBurnIntel.proofSource?.replace(/_/g, ' ') ?? 'Open check'],
-                          ['Confidence', result.lpLockBurnIntel.confidence ?? 'low'],
+                          ['Lock/Burn Proof', isProtocolPositionModel(result) ? 'Protocol-specific' : cleanStatusLabel(result.lpLockBurnIntel.lockBurnProof)],
+                          ['Locked %', isProtocolPositionModel(result) ? protocolPositionSubtext('lock') : result.lpLockBurnIntel.lockedPercent == null ? 'Open Check' : `${result.lpLockBurnIntel.lockedPercent.toFixed(2)}%`],
+                          ['Burned %', isProtocolPositionModel(result) ? 'Protocol-specific' : result.lpLockBurnIntel.burnedPercent == null ? 'Open Check' : `${result.lpLockBurnIntel.burnedPercent.toFixed(2)}%`],
+                          ['Unlock Time', result.lpLockBurnIntel.unlockTime == null ? (result.lpLockBurnIntel.unlockTimeStatus === 'not_applicable' ? 'Protocol-specific' : 'Open Check') : new Date(result.lpLockBurnIntel.unlockTime).toLocaleString()],
+                          ['Proof Source', isProtocolPositionModel(result) ? 'Pool model' : cleanStatusLabel(result.lpLockBurnIntel.proofSource)],
+                          ['Confidence', cleanStatusLabel(result.lpLockBurnIntel.confidence)],
                         ] as Array<[string, string]>).map(([label, value]) => (
                           <div key={label} style={{ padding: '8px 9px', borderRadius: '10px', background: 'rgba(2,6,23,0.42)', border: '1px solid rgba(148,163,184,0.10)', minWidth: 0 }}>
                             <div style={{ fontSize: '9px', color: '#64748b', letterSpacing: '.10em', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '4px' }}>{label}</div>
-                            <div style={{ fontSize: '11px', color: /confirmed|locked|burned|high/i.test(value) ? '#34d399' : /not applicable/i.test(value) ? '#94a3b8' : /open|unknown|low/i.test(value) ? '#fbbf24' : '#e2e8f0', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'capitalize', overflow: 'hidden', textOverflow: 'ellipsis' }}>{value}</div>
+                            <div style={{ fontSize: '11px', color: /confirmed|locked|burned|high/i.test(value) ? '#34d399' : /protocol-specific|position verification/i.test(value) ? '#94a3b8' : /open|unknown|low/i.test(value) ? '#fbbf24' : '#e2e8f0', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'capitalize', overflow: 'hidden', textOverflow: 'ellipsis' }}>{value}</div>
                           </div>
                         ))}
                       </div>
@@ -4986,16 +5042,16 @@ export default function TerminalTokenScanner() {
                           {result.lpHistoryTimeline.summary && <p style={{ margin: '7px 0 0', fontSize: '11px', color: '#bfdbfe', lineHeight: 1.55, fontFamily: 'var(--font-plex-mono)' }}>{result.lpHistoryTimeline.summary}</p>}
                         </div>
                         <span style={{ flexShrink: 0, padding: '4px 9px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '.10em', color: result.lpHistoryTimeline.migrationRisk === 'high' ? '#f87171' : result.lpHistoryTimeline.migrationRisk === 'low' ? '#34d399' : '#fbbf24', background: 'rgba(2,6,23,0.48)', border: '1px solid rgba(96,165,250,0.25)', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
-                          {result.lpHistoryTimeline.status?.replace(/_/g, ' ') ?? 'unknown'}
+                          {cleanStatusLabel(result.lpHistoryTimeline.status)}
                         </span>
                       </div>
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(145px,1fr))', gap: '7px', marginBottom: '10px' }}>
                         {([
-                          ['Migration Risk', result.lpHistoryTimeline.migrationRisk?.replace(/_/g, ' ') ?? 'unknown'],
+                          ['Migration Risk', cleanStatusLabel(result.lpHistoryTimeline.migrationRisk)],
                           ['Primary Pool Age', result.lpHistoryTimeline.primaryPoolAgeLabel ?? 'Open check'],
                           ['Pool Count', result.lpHistoryTimeline.poolCount == null ? 'Open check' : String(result.lpHistoryTimeline.poolCount)],
                           ['Liquidity', result.lpHistoryTimeline.liquidityUsd == null ? 'Open check' : `$${Math.round(result.lpHistoryTimeline.liquidityUsd).toLocaleString()}`],
-                          ['Fragmentation', result.lpHistoryTimeline.fragmentation?.replace(/_/g, ' ') ?? 'unknown'],
+                          ['Fragmentation', cleanStatusLabel(result.lpHistoryTimeline.fragmentation)],
                           ['Confidence', result.lpHistoryTimeline.confidence ?? 'low'],
                         ] as Array<[string, string]>).map(([label, value]) => (
                           <div key={label} style={{ padding: '8px 9px', borderRadius: '10px', background: 'rgba(2,6,23,0.42)', border: '1px solid rgba(148,163,184,0.10)', minWidth: 0 }}>
@@ -5034,20 +5090,20 @@ export default function TerminalTokenScanner() {
                           {result.lpUnlockTimeline.summary && <p style={{ margin: '7px 0 0', fontSize: '11px', color: '#ddd6fe', lineHeight: 1.55, fontFamily: 'var(--font-plex-mono)' }}>{result.lpUnlockTimeline.summary}</p>}
                         </div>
                         <span style={{ flexShrink: 0, padding: '4px 9px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '.10em', color: result.lpUnlockTimeline.unlockRisk === 'high' || result.lpUnlockTimeline.unlockRisk === 'expired' ? '#f87171' : result.lpUnlockTimeline.unlockRisk === 'low' || result.lpUnlockTimeline.unlockRisk === 'none' ? '#34d399' : result.lpUnlockTimeline.unlockRisk === 'not_applicable' ? '#94a3b8' : '#fbbf24', background: 'rgba(2,6,23,0.48)', border: '1px solid rgba(167,139,250,0.25)', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
-                          {result.lpUnlockTimeline.status?.replace(/_/g, ' ') ?? 'open check'}
+                          {isProtocolPositionModel(result) ? 'Protocol-specific' : cleanStatusLabel(result.lpUnlockTimeline.status)}
                         </span>
                       </div>
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(145px,1fr))', gap: '7px', marginBottom: '10px' }}>
                         {([
-                          ['Unlock Risk', result.lpUnlockTimeline.unlockRisk?.replace(/_/g, ' ') ?? 'unknown'],
-                          ['Unlock Time', result.lpUnlockTimeline.unlockTime == null ? (result.lpUnlockTimeline.unlockTimeStatus === 'not_applicable' ? 'Not applicable' : 'Open check') : new Date(result.lpUnlockTimeline.unlockTime).toLocaleString()],
+                          ['Unlock Risk', isProtocolPositionModel(result) ? 'Protocol-specific' : cleanStatusLabel(result.lpUnlockTimeline.unlockRisk)],
+                          ['Unlock Time', result.lpUnlockTimeline.unlockTime == null ? (result.lpUnlockTimeline.unlockTimeStatus === 'not_applicable' ? 'Protocol-specific' : 'Open Check') : new Date(result.lpUnlockTimeline.unlockTime).toLocaleString()],
                           ['Countdown', result.lpUnlockTimeline.unlockCountdownLabel ?? 'Open check'],
-                          ['Lock State', result.lpUnlockTimeline.lockState?.replace(/_/g, ' ') ?? 'open check'],
+                          ['Lock State', isProtocolPositionModel(result) ? 'Protocol-specific' : cleanStatusLabel(result.lpUnlockTimeline.lockState)],
                           ['Confidence', result.lpUnlockTimeline.confidence ?? 'low'],
                         ] as Array<[string, string]>).map(([label, value]) => (
                           <div key={label} style={{ padding: '8px 9px', borderRadius: '10px', background: 'rgba(2,6,23,0.42)', border: '1px solid rgba(148,163,184,0.10)', minWidth: 0 }}>
                             <div style={{ fontSize: '9px', color: '#64748b', letterSpacing: '.10em', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '4px' }}>{label}</div>
-                            <div style={{ fontSize: '11px', color: /high|expired/i.test(value) ? '#f87171' : /low|none/i.test(value) ? '#34d399' : /not applicable/i.test(value) ? '#94a3b8' : /open|unknown|watch/i.test(value) ? '#fbbf24' : '#e2e8f0', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'capitalize', overflow: 'hidden', textOverflow: 'ellipsis' }}>{value}</div>
+                            <div style={{ fontSize: '11px', color: /high|expired/i.test(value) ? '#f87171' : /low|none/i.test(value) ? '#34d399' : /protocol-specific|position verification/i.test(value) ? '#94a3b8' : /open|unknown|watch/i.test(value) ? '#fbbf24' : '#e2e8f0', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'capitalize', overflow: 'hidden', textOverflow: 'ellipsis' }}>{value}</div>
                           </div>
                         ))}
                       </div>
@@ -5081,16 +5137,16 @@ export default function TerminalTokenScanner() {
                           {result.lpMovementWatch.summary && <p style={{ margin: '7px 0 0', fontSize: '11px', color: '#fde68a', lineHeight: 1.55, fontFamily: 'var(--font-plex-mono)' }}>{result.lpMovementWatch.summary}</p>}
                         </div>
                         <span style={{ flexShrink: 0, padding: '4px 9px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '.10em', color: result.lpMovementWatch.movementRisk === 'high' ? '#f87171' : result.lpMovementWatch.movementRisk === 'low' || result.lpMovementWatch.movementRisk === 'protected' ? '#34d399' : '#fbbf24', background: 'rgba(2,6,23,0.48)', border: '1px solid rgba(251,191,36,0.25)', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
-                          {result.lpMovementWatch.status?.replace(/_/g, ' ') ?? 'open check'}
+                          {isProtocolPositionModel(result) ? 'Position movement required' : cleanStatusLabel(result.lpMovementWatch.status)}
                         </span>
                       </div>
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(145px,1fr))', gap: '7px', marginBottom: '10px' }}>
                         {([
-                          ['Movement Risk', result.lpMovementWatch.movementRisk?.replace(/_/g, ' ') ?? 'unknown'],
-                          ['Recent Movement', result.lpMovementWatch.recentMovementDetected == null ? 'Open check' : result.lpMovementWatch.recentMovementDetected ? 'Detected' : 'Not confirmed'],
-                          ['Transfer Count', result.lpMovementWatch.recentTransferCount == null ? 'Open check' : String(result.lpMovementWatch.recentTransferCount)],
-                          ['Last Movement', result.lpMovementWatch.lastMovementAt ? new Date(result.lpMovementWatch.lastMovementAt).toLocaleString() : 'Open check'],
-                          ['Controller', result.lpMovementWatch.controller ?? result.lpMovementWatch.controllerType ?? 'Open check'],
+                          ['Movement Watch', isProtocolPositionModel(result) ? 'Position movement required' : cleanStatusLabel(result.lpMovementWatch.movementRisk)],
+                          ['Evidence Model', isProtocolPositionModel(result) ? protocolPositionSubtext('movement') : 'ERC-20 LP-token transfers'],
+                          ['Transfer Count', isProtocolPositionModel(result) ? 'Protocol-specific' : result.lpMovementWatch.recentTransferCount == null ? 'Open Check' : String(result.lpMovementWatch.recentTransferCount)],
+                          ['Last Movement', isProtocolPositionModel(result) ? 'Position movement required' : result.lpMovementWatch.lastMovementAt ? new Date(result.lpMovementWatch.lastMovementAt).toLocaleString() : 'Open Check'],
+                          ['Controller', isProtocolPositionModel(result) ? 'Position verification required' : result.lpMovementWatch.controller ?? cleanStatusLabel(result.lpMovementWatch.controllerType)],
                         ] as Array<[string, string]>).map(([label, value]) => (
                           <div key={label} style={{ padding: '8px 9px', borderRadius: '10px', background: 'rgba(2,6,23,0.42)', border: '1px solid rgba(148,163,184,0.10)', minWidth: 0 }}>
                             <div style={{ fontSize: '9px', color: '#64748b', letterSpacing: '.10em', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '4px' }}>{label}</div>
@@ -5124,7 +5180,7 @@ export default function TerminalTokenScanner() {
                       <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'flex-start', marginBottom: '10px' }}>
                         <div>
                           <p style={{ margin: 0, fontSize: '10px', fontWeight: 900, letterSpacing: '.16em', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Secondary LP Exposure</p>
-                          {result.secondaryLpExposure.summary && <p style={{ margin: '7px 0 0', fontSize: '11px', color: '#cbd5e1', lineHeight: 1.55, fontFamily: 'var(--font-plex-mono)' }}>{result.secondaryLpExposure.summary}</p>}
+                          <p style={{ margin: '7px 0 0', fontSize: '11px', color: '#cbd5e1', lineHeight: 1.55, fontFamily: 'var(--font-plex-mono)' }}>{result.secondaryLpExposure.summary ?? 'This is separate from the primary liquidity pool.'} This is separate from the primary liquidity pool.</p>
                         </div>
                         <span style={{ flexShrink: 0, padding: '4px 9px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '.10em', color: '#94a3b8', background: 'rgba(2,6,23,0.48)', border: '1px solid rgba(148,163,184,0.25)', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
                           secondary LP exposure detected
@@ -5132,10 +5188,12 @@ export default function TerminalTokenScanner() {
                       </div>
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(145px,1fr))', gap: '7px', marginBottom: '10px' }}>
                         {([
-                          ['Controller Share', result.secondaryLpExposure.controllerSharePercent != null ? `${result.secondaryLpExposure.controllerSharePercent.toFixed(2)}%` : 'Open check'],
-                          ['Controller Type', result.secondaryLpExposure.controllerType?.replace(/_/g, ' ') ?? 'Open check'],
-                          ['Lock/Burn Proof', result.secondaryLpExposure.lockBurnProof?.replace(/_/g, ' ') ?? 'Open check'],
-                          ['Confidence', result.secondaryLpExposure.confidence ?? 'low'],
+                          ['Secondary Pool', result.secondaryLpExposure.pair ?? result.secondaryLpExposure.poolDex ?? 'Secondary ERC-20 LP'],
+                          ['Control Proof', cleanStatusLabel(result.secondaryLpExposure.status)],
+                          ['Controller Share', result.secondaryLpExposure.controllerSharePercent != null ? `${result.secondaryLpExposure.controllerSharePercent.toFixed(2)}%` : 'Open Check'],
+                          ['Controller Type', cleanStatusLabel(result.secondaryLpExposure.controllerType)],
+                          ['Lock/Burn Proof', cleanStatusLabel(result.secondaryLpExposure.lockBurnProof)],
+                          ['Confidence', cleanStatusLabel(result.secondaryLpExposure.confidence)],
                         ] as Array<[string, string]>).map(([label, value]) => (
                           <div key={label} style={{ padding: '8px 9px', borderRadius: '10px', background: 'rgba(2,6,23,0.42)', border: '1px solid rgba(148,163,184,0.10)', minWidth: 0 }}>
                             <div style={{ fontSize: '9px', color: '#64748b', letterSpacing: '.10em', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '4px' }}>{label}</div>
@@ -5378,7 +5436,7 @@ export default function TerminalTokenScanner() {
                     const missing2 = getMissingChecks(result)
                     const next2 = getNextAction(result)
                     const rugLabelMap: Record<string, string> = { low_visible_risk:'Low visible risk', watch:'Watch', high:'High', critical:'Critical', partial_data:'Open check', unavailable_with_reason:'Open check', unverified:'Open check' }
-                    const lpLabelMap: Record<string, string> = { burned:'Burned', locked:'Locked', protocol:'Not applicable', concentrated_liquidity:'Not applicable', team_controlled:'Team controlled', partial:'Partial', no_pool:'Open check', unavailable_with_reason:'Open check', unverified:'Open check', insufficient_data:'Open check', error:'Open check' }
+                    const lpLabelMap: Record<string, string> = { burned:'Burned', locked:'Locked', protocol:'Protocol-specific', concentrated_liquidity:'Concentrated Liquidity', team_controlled:'Wallet Controlled', wallet_controlled:'Wallet Controlled', partial:'Partial Evidence', no_pool:'Open Check', unavailable_with_reason:'Open Check', unverified:'Open Check', insufficient_data:'Open Check', error:'Open Check', open_check:'Open Check', not_applicable:'Protocol-specific' }
                     const displayCortexScore = result.cortexScore ?? engine?.cortexScore ?? (engine?.rugRiskScore != null ? Math.max(0, 100 - engine.rugRiskScore) : null)
                     const displayCortexVerdict = result.cortexVerdict ?? engine?.cortexVerdict ?? null
                     const displayCortexConfidence = result.cortexConfidence ?? engine?.cortexConfidence ?? (engine?.confidence ?? 'low')
