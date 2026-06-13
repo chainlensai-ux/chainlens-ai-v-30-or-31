@@ -1058,7 +1058,10 @@ const playRiskInput = {
 }
 const playRisk = calculateTokenRiskScore(playRiskInput)
 assert('PLAY riskBreakdown reasons include lp_model_concentrated_liquidity', playRisk.riskBreakdown.liquiditySafety.reasons.includes('lp_model_concentrated_liquidity'), playRisk.riskBreakdown.liquiditySafety.reasons)
+assert('PLAY riskBreakdown reasons include lp_position_verification_required', playRisk.riskBreakdown.liquiditySafety.reasons.includes('lp_position_verification_required'), playRisk.riskBreakdown.liquiditySafety.reasons)
+assert('PLAY riskBreakdown reasons include standard_lp_lock_not_applicable', playRisk.riskBreakdown.liquiditySafety.reasons.includes('standard_lp_lock_not_applicable'), playRisk.riskBreakdown.liquiditySafety.reasons)
 assert('PLAY riskBreakdown reasons do not include lp_model_erc20_lp_token', !playRisk.riskBreakdown.liquiditySafety.reasons.includes('lp_model_erc20_lp_token'), playRisk.riskBreakdown.liquiditySafety.reasons)
+assert('PLAY riskBreakdown reasons do not include lp_controller_unknown_no_lock_or_burn_proof', !playRisk.riskBreakdown.liquiditySafety.reasons.includes('lp_controller_unknown_no_lock_or_burn_proof'), playRisk.riskBreakdown.liquiditySafety.reasons)
 
 const playPublicPayload = sanitizePublicTokenResponse({
   symbol: 'PLAY',
@@ -1576,6 +1579,17 @@ console.log('\nS. CORTEX identity formatter avoids duplicate symbol/name')
     assert(`${identity} public CORTEX summary starts with exactly one formatted identity`, sanitizedSummary.startsWith(`${identity} has a moderate Token Safety Score`), sanitizedSummary)
     assert(`${identity} public CORTEX summary does not duplicate symbol after formatted identity`, !tokenCase.bad.test(sanitizedSummary), sanitizedSummary)
   }
+}
+
+// ─── T. Public chain metadata must match effective scan chain ───────────────
+console.log('\nT. Public chain metadata alignment')
+{
+  const chainPayload = sanitizePublicTokenResponse({
+    chain: 'base',
+    resolvedInput: { original: '0xToken', type: 'address', resolvedAddress: '0xToken', requestedChain: 'eth', confidence: 'high' },
+  }, false)
+  assert('public payload cannot show chain base with resolvedInput.requestedChain eth', !(chainPayload.chain === 'base' && chainPayload.resolvedInput?.requestedChain === 'eth'), chainPayload)
+  assert('public payload resolvedInput.requestedChain aligns to base', chainPayload.resolvedInput?.requestedChain === 'base', chainPayload.resolvedInput)
 }
 
 console.log(`\n${passed} passed, ${failed} failed`)

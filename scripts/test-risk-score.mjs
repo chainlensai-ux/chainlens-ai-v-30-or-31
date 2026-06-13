@@ -211,6 +211,33 @@ for (const name of providerNames) {
 }
 
 // ─── Summary ────────────────────────────────────────────────────────────────
+
+// ─── Scenario 6: Concentrated liquidity primary pool copy ───────────────────
+console.log('\nScenario 6: Concentrated-liquidity primary pool uses protocol-specific reasons')
+const concentratedResult = calculateTokenRiskScore({
+  marketCapUsd: 5_000_000,
+  fdvUsd: 5_000_000,
+  liquidityUsd: 500_000,
+  holderDistribution: { top1: 10, top5: 25, top10: 40 },
+  lpControl: {
+    status: 'concentrated_liquidity',
+    displayLpModel: 'concentrated_liquidity',
+    lockStatus: 'not_applicable',
+    burnStatus: 'not_applicable',
+    proofStatus: 'not_applicable',
+    lpController: null,
+    lpControllerType: null,
+  },
+  lpProofApplicability: 'not_applicable',
+  lpProofStatus: 'not_applicable',
+  lpModelProof: { model: 'concentrated', standardLockApplies: false },
+  lpMigrationProof: { status: 'low' },
+})
+assert('concentrated reasons include lp_position_verification_required', concentratedResult.riskBreakdown.liquiditySafety.reasons.includes('lp_position_verification_required'), concentratedResult.riskBreakdown.liquiditySafety.reasons)
+assert('concentrated reasons include standard_lp_lock_not_applicable', concentratedResult.riskBreakdown.liquiditySafety.reasons.includes('standard_lp_lock_not_applicable'), concentratedResult.riskBreakdown.liquiditySafety.reasons)
+assert('concentrated reasons include lp_model_concentrated_liquidity', concentratedResult.riskBreakdown.liquiditySafety.reasons.includes('lp_model_concentrated_liquidity'), concentratedResult.riskBreakdown.liquiditySafety.reasons)
+assert('concentrated reasons do not include lp_controller_unknown_no_lock_or_burn_proof', !concentratedResult.riskBreakdown.liquiditySafety.reasons.includes('lp_controller_unknown_no_lock_or_burn_proof'), concentratedResult.riskBreakdown.liquiditySafety.reasons)
+
 console.log(`\n${passed} passed, ${failed} failed`)
 if (failed > 0) {
   process.exit(1)

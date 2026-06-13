@@ -3216,6 +3216,9 @@ export async function POST(req: Request) {
       }
     }
     _diagSelectedChain = chain
+    if (resolvedInput) {
+      resolvedInput.requestedChain = chain
+    }
 
     console.log("Incoming scan request:", contract);
 

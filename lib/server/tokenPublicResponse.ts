@@ -114,6 +114,9 @@ function sanitizePublicValue(value: unknown): unknown {
 export function sanitizePublicTokenResponse<T extends Record<string, any>>(payload: T, debugMode: boolean): T {
   if (debugMode) return payload
   const sanitized = sanitizePublicValue(payload) as T
+  if (typeof (sanitized as any).chain === 'string' && (sanitized as any).resolvedInput && typeof (sanitized as any).resolvedInput === 'object') {
+    ;(sanitized as any).resolvedInput.requestedChain = (sanitized as any).chain
+  }
   delete (sanitized as any).gtRaw
   delete (sanitized as any).gtPools
   delete (sanitized as any).gmgn
