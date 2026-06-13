@@ -185,8 +185,13 @@ export function buildLpControllerIntel(input: LpControllerIntelInput): LpControl
   const poolLiquidityUsd = asNumber(selectedPool.liquidityUsd)
   const lockStatus = asString(lpControl.lockStatus)
   const burnStatus = asString(lpControl.burnStatus)
+  // For concentrated-liquidity pools, controller is null and there is no ERC20
+  // LP-holder controller to prove — "confirmed" here would misleadingly read as
+  // confirmed controller/ownership proof. The pool *model* classification is
+  // confirmed, but controller proof does not apply to this pool model.
   const controlProof: LpControllerIntelProof = status === 'no_pool' ? 'open_check'
     : status === 'open_check' ? 'open_check'
+    : status === 'concentrated_liquidity' ? 'not_applicable'
     : 'confirmed'
   const lockBurnProof: LpControllerIntelProof = notApplicable ? 'not_applicable'
     : (lockStatus === 'locked' || burnStatus === 'burned' || status === 'locked' || status === 'burned') ? 'confirmed'

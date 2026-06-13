@@ -13,6 +13,13 @@ export interface LpHistoryTimelineInput {
     liquidityUsd?: number | null
     createdAt?: string | null
   } | null
+  // Concentrated/V3/V4 pools often have no normal ERC20 LP pool address — fall back to
+  // the on-chain pool/position identity (primaryMarketPool/primaryMarketPoolId) so the
+  // history timeline isn't reported as "no selected LP pool" when this identity exists.
+  lpControl?: {
+    primaryMarketPool?: string | null
+    primaryMarketPoolId?: string | null
+  } | null
   primaryPoolAgeLabel?: string | null
   poolCount?: number | null
   observedPoolCount?: number | null
@@ -34,6 +41,8 @@ export interface LpHistoryTimeline {
   chain: string | null
   poolModel: string | null
   primaryPool: string | null
+  primaryPoolId: string | null
+  primaryPoolIdentity: string | null
   primaryPair: string | null
   primaryDex: string | null
   primaryPoolCreatedAt: string | null
@@ -75,7 +84,10 @@ export function buildLpHistoryTimeline(input: LpHistoryTimelineInput): LpHistory
   const chain = asString(input.chain)
   const poolModel = asString(input.poolModel)
   const selectedPool = input.selectedPool ?? {}
-  const primaryPool = asString(selectedPool.address)
+  const lpControl = input.lpControl ?? {}
+  const primaryPool = asString(selectedPool.address) ?? asString(lpControl.primaryMarketPool)
+  const primaryPoolId = asString(lpControl.primaryMarketPoolId)
+  const primaryPoolIdentity = primaryPool ?? primaryPoolId
   const primaryPair = asString(selectedPool.pair)
   const primaryDex = asString(selectedPool.dex)
   const primaryPoolCreatedAt = asString(selectedPool.createdAt)
@@ -97,10 +109,10 @@ export function buildLpHistoryTimeline(input: LpHistoryTimelineInput): LpHistory
   ) : [])]
   const nextActions: string[] = ['verify pool history on a block explorer', 'rescan after liquidity changes']
 
-  if (!primaryPool) {
+  if (!primaryPoolIdentity) {
     return {
       status: 'unknown', migrationRisk: 'unknown', confidence, chain, poolModel,
-      primaryPool: null, primaryPair, primaryDex, primaryPoolCreatedAt: null, primaryPoolAgeLabel: null,
+      primaryPool: null, primaryPoolId: null, primaryPoolIdentity: null, primaryPair, primaryDex, primaryPoolCreatedAt: null, primaryPoolAgeLabel: null,
       poolCount, observedPoolCount, liquidityUsd: null,
       liquidityDistribution: 'unknown', fragmentation: 'unknown',
       events: ['no selected LP pool — pool history is not available'],
@@ -109,7 +121,9 @@ export function buildLpHistoryTimeline(input: LpHistoryTimelineInput): LpHistory
     }
   }
 
-  events.push(`primary pool detected${primaryDex ? ` on ${primaryDex}` : ''}`)
+  const isPoolIdOnly = !primaryPool && Boolean(primaryPoolId)
+
+  events.push(`primary ${isPoolIdOnly ? 'pool identity' : 'pool'} detected${primaryDex ? ` on ${primaryDex}` : ''}`)
   if (primaryPoolCreatedAt) events.push(`primary pool created ${primaryPoolCreatedAt}`)
   if (liquidityUsd != null) events.push(`liquidity observed in primary pool (~$${Math.round(liquidityUsd).toLocaleString()})`)
   if (effectivePoolCount != null && effectivePoolCount > 1) events.push(`multi-pool liquidity observed across ${effectivePoolCount} pools`)
@@ -136,13 +150,15 @@ export function buildLpHistoryTimeline(input: LpHistoryTimelineInput): LpHistory
     : poolModel === 'unknown' ? null
     : 'constant-product'
 
-  const summary = status === 'partial'
+  const summary = isPoolIdOnly
+    ? `Primary ${poolModelLabel ?? 'concentrated-liquidity'} pool detected${primaryDex ? ` on ${primaryDex}` : ''}. Standard ERC20 LP lock/burn proof does not apply, but pool age, liquidity, and pool count can still be monitored.`
+    : status === 'partial'
     ? `${poolModelLabel ? `A ${poolModelLabel} ` : 'A '}primary LP pool was detected${primaryDex ? ` on ${primaryDex}` : ''}${liquidityUsd != null ? ` with observed liquidity of approximately $${Math.round(liquidityUsd).toLocaleString()}` : ''}, but only this single pool is confirmed — broader pool history/migration evidence is an open check.`
     : `${poolModelLabel ? `The primary ${poolModelLabel} pool` : 'The primary pool'}${primaryDex ? ` on ${primaryDex}` : ''} is the dominant liquidity venue${effectivePoolCount != null ? ` among ${effectivePoolCount} observed pools` : ''}; ${liquidityDistribution === 'unknown' ? 'liquidity distribution across pools could not be confirmed' : `liquidity is ${liquidityDistribution}`}. ${baseMigrationRisk === 'low' ? 'No migration signal was observed from current pool evidence.' : baseMigrationRisk === 'watch' ? 'Some liquidity-distribution signals warrant monitoring.' : baseMigrationRisk === 'high' ? 'Liquidity-distribution signals suggest elevated migration risk.' : 'Migration risk could not be confirmed from current pool evidence.'}`
 
   return {
     status, migrationRisk, confidence, chain, poolModel,
-    primaryPool, primaryPair, primaryDex, primaryPoolCreatedAt, primaryPoolAgeLabel,
+    primaryPool, primaryPoolId, primaryPoolIdentity, primaryPair, primaryDex, primaryPoolCreatedAt, primaryPoolAgeLabel,
     poolCount, observedPoolCount, liquidityUsd,
     liquidityDistribution, fragmentation,
     events, summary, signals, evidenceGaps, nextActions,

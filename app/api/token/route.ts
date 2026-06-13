@@ -5627,6 +5627,10 @@ export async function POST(req: Request) {
         liquidityUsd: _el,
         createdAt: normalizedPairCreatedAt,
       },
+      lpControl: {
+        primaryMarketPool: lpControl.primaryMarketPool ?? null,
+        primaryMarketPoolId: lpControl.primaryMarketPoolId ?? null,
+      },
       primaryPoolAgeLabel: normalizedPairAgeLabel,
       poolCount: normalizedObservedPoolCount,
       observedPoolCount: normalizedObservedPoolCount,

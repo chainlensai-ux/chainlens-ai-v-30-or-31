@@ -737,5 +737,79 @@ const aerodromeHistoryPublic = sanitizePublicTokenResponse({ lpHistoryTimeline: 
 assert('Aerodrome LP history summary says "Aerodrome is" with a space', /Aerodrome is/.test(aerodromeHistoryPublic.lpHistoryTimeline.summary), aerodromeHistoryPublic.lpHistoryTimeline.summary)
 assert('Aerodrome LP history summary does not contain the "Aerodromeis" typo', !/Aerodromeis/.test(aerodromeHistoryPublic.lpHistoryTimeline.summary), aerodromeHistoryPublic.lpHistoryTimeline.summary)
 
+// ─── J. EVO-like Uniswap V4 / concentrated pool — lpHistoryTimeline via poolId ──
+console.log('\nJ. EVO-like Uniswap V4 concentrated pool — lpHistoryTimeline uses primaryMarketPoolId identity')
+const evoPoolId = '0xd8ee119a65d3a902ced4ef7693b98e62a7fbb1d7808a693dbb6961d7f544fb80'
+const evoHistory = buildLpHistoryTimeline({
+  chain: 'base',
+  poolModel: 'concentrated',
+  marketDataSource: 'primary',
+  selectedPool: {
+    pair: 'evo / WETH',
+    address: null,
+    dex: 'Uniswap V4',
+    liquidityUsd: 215891.928,
+    createdAt: '2026-04-26T20:19:11Z',
+  },
+  lpControl: { primaryMarketPool: null, primaryMarketPoolId: evoPoolId },
+  primaryPoolAgeLabel: null,
+  poolCount: 1,
+  observedPoolCount: 1,
+  liquidityUsd: 215891.928,
+  lpMigrationProof: { status: 'low', confidence: 'medium', liquidityDistribution: 'unknown', dexsUsed: [], signals: [], missingEvidence: [] },
+})
+assert('EVO lpHistoryTimeline.status is partial or ok (not unknown)', evoHistory.status === 'partial' || evoHistory.status === 'ok', evoHistory.status)
+assert('EVO lpHistoryTimeline.primaryDex is Uniswap V4', evoHistory.primaryDex === 'Uniswap V4', evoHistory.primaryDex)
+assert('EVO lpHistoryTimeline.primaryPair is evo / WETH', evoHistory.primaryPair === 'evo / WETH', evoHistory.primaryPair)
+assert('EVO lpHistoryTimeline.primaryPool or primaryPoolId includes the poolId', evoHistory.primaryPool === evoPoolId || evoHistory.primaryPoolId === evoPoolId, evoHistory)
+assert('EVO lpHistoryTimeline.primaryPoolCreatedAt matches', evoHistory.primaryPoolCreatedAt === '2026-04-26T20:19:11Z', evoHistory.primaryPoolCreatedAt)
+assert('EVO lpHistoryTimeline.liquidityUsd matches', evoHistory.liquidityUsd === 215891.928, evoHistory.liquidityUsd)
+assert('EVO lpHistoryTimeline does not report "no selected LP pool"', !evoHistory.events.some((e) => /no selected LP pool/i.test(e)), evoHistory.events)
+assert('EVO lpHistoryTimeline summary mentions concentrated-liquidity pool', /concentrated-liquidity pool detected/i.test(evoHistory.summary), evoHistory.summary)
+assert('EVO lpHistoryTimeline summary mentions Uniswap V4', /Uniswap V4/.test(evoHistory.summary), evoHistory.summary)
+assert('EVO lpHistoryTimeline summary explains ERC20 lock/burn proof does not apply', /Standard ERC20 LP lock\/burn proof does not apply/i.test(evoHistory.summary), evoHistory.summary)
+
+const evoLpControl = {
+  status: 'concentrated_liquidity',
+  displayLpModel: 'concentrated_liquidity',
+  lockStatus: 'not_applicable',
+  burnStatus: 'not_applicable',
+  proofStatus: 'not_applicable',
+  primaryMarketPool: null,
+  primaryMarketPoolId: evoPoolId,
+  lpController: null,
+  lpControllerType: 'unknown',
+}
+const evoSelectedPool = { address: null, pair: 'evo / WETH', model: 'concentrated', liquidityUsd: 215891.928 }
+const evoControllerIntel = buildLpControllerIntel({
+  lpControl: evoLpControl,
+  selectedPool: evoSelectedPool,
+  lpExitRisk: 'watch',
+  liquidityDepthRisk: 'moderate',
+  lpMigrationProof: { status: 'low' },
+  lpMeta: {},
+})
+const evoLockBurnIntel = buildLpLockBurnIntel({
+  chain: 'base',
+  lpControl: evoLpControl,
+  lpControllerIntel: evoControllerIntel,
+  selectedPool: evoSelectedPool,
+  lpMeta: { displayLpModel: 'concentrated_liquidity' },
+})
+const evoUnlockTimeline = buildLpUnlockTimeline({ chain: 'base', lpLockBurnIntel: evoLockBurnIntel })
+const evoMovementWatch = buildLpMovementWatch({
+  chain: 'base',
+  lpControllerIntel: evoControllerIntel,
+  lpControl: evoLpControl,
+  selectedPool: evoSelectedPool,
+  lpMeta: {},
+})
+assert('EVO lpControllerIntel.status is concentrated_liquidity', evoControllerIntel.status === 'concentrated_liquidity', evoControllerIntel)
+assert('EVO lpControllerIntel.controller is null', evoControllerIntel.controller === null, evoControllerIntel)
+assert('EVO lpControllerIntel.controlProof is not_applicable (not misleadingly "confirmed")', evoControllerIntel.controlProof === 'not_applicable', evoControllerIntel.controlProof)
+assert('EVO lpLockBurnIntel.status is not_applicable', evoLockBurnIntel?.status === 'not_applicable', evoLockBurnIntel)
+assert('EVO lpUnlockTimeline.status is not_applicable', evoUnlockTimeline?.status === 'not_applicable', evoUnlockTimeline)
+assert('EVO lpMovementWatch.status is not_applicable or unsupported', ['not_applicable', 'pool_model_not_supported'].includes(evoMovementWatch?.status), evoMovementWatch)
+
 console.log(`\n${passed} passed, ${failed} failed`)
 if (failed > 0) process.exit(1)
