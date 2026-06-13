@@ -227,13 +227,33 @@ function observedPoolFields(scan: Record<string, any>) {
     publicAddress(scan.lpMeta?.lpVerificationPoolAddress) ||
     scan.lpMeta?.poolDetected === true,
   )
-  const observedPoolPresent = Boolean((rawPoolCount != null && rawPoolCount > 0) || hasPoolEvidence)
-  const observedPoolCount = rawPoolCount != null && rawPoolCount > 0 ? rawPoolCount : (observedPoolPresent ? null : 0)
-  const poolCountStatus: 'confirmed' | 'inferred_from_primary_pool' | 'unknown' = rawPoolCount != null && rawPoolCount > 0
+  let observedPoolPresent = Boolean((rawPoolCount != null && rawPoolCount > 0) || hasPoolEvidence)
+  let observedPoolCount = rawPoolCount != null && rawPoolCount > 0 ? rawPoolCount : (observedPoolPresent ? null : 0)
+  let poolCountStatus: 'confirmed' | 'inferred_from_primary_pool' | 'fallback_confirmed' | 'unknown' = rawPoolCount != null && rawPoolCount > 0
     ? 'confirmed'
     : observedPoolPresent
       ? 'inferred_from_primary_pool'
       : 'unknown'
+
+  // Fallback pool normalization: when no pool/pair identity was indexed but the
+  // fallback market data carries real liquidity, volume, a known DEX, and a pair
+  // creation time, treat the pool as observed/confirmed rather than "unknown".
+  if (!observedPoolPresent) {
+    const liquidityUsd = finiteNumber(scan.liquidityUsd)
+    const volume24hUsd = finiteNumber(scan.volume24hUsd)
+    const dexName = scan.primaryDexName ?? scan.dexName ?? null
+    const pairCreatedAt = scan.poolActivity?.pairCreatedAt ?? null
+    const fallbackConfirmed = liquidityUsd != null && liquidityUsd > 0
+      && volume24hUsd != null && volume24hUsd > 0
+      && Boolean(dexName)
+      && Boolean(pairCreatedAt)
+    if (fallbackConfirmed) {
+      observedPoolPresent = true
+      observedPoolCount = 1
+      poolCountStatus = 'fallback_confirmed'
+    }
+  }
+
   return { observedPoolPresent, observedPoolCount, poolCountStatus }
 }
 

@@ -2,6 +2,7 @@ export type RadarSimulationStatus = 'passed' | 'open_check'
 
 export type RadarSimulationOpenCheckReason =
   | 'insufficient route/pool evidence'
+  | 'missing pair address'
   | 'timeout'
   | 'unsupported pool model'
 
@@ -15,6 +16,13 @@ export interface RadarSimulationHoneypotInput {
 export interface RadarSimulationInput {
   contract?: string | null
   liquidityUsd?: number | null
+  /**
+   * Pair/pool address backing the simulation route. Pass `null` when the
+   * scan has pool/liquidity evidence but no resolved pair address — this is
+   * distinct from omitting the field, which leaves existing callers (without
+   * pair-address tracking) unaffected.
+   */
+  pairAddress?: string | null
   honeypot?: RadarSimulationHoneypotInput | null
 }
 
@@ -59,6 +67,10 @@ export function getRadarSimulationDisplay(input: RadarSimulationInput): RadarSim
   const validAddress = typeof input.contract === 'string' && VALID_ADDRESS.test(input.contract)
   if (!validAddress || !hasPoolEvidence(input)) {
     return openCheck(false, 'insufficient route/pool evidence')
+  }
+
+  if (input.pairAddress === null) {
+    return openCheck(false, 'missing pair address')
   }
 
   const honeypot = input.honeypot

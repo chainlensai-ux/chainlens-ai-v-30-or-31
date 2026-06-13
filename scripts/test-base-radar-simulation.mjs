@@ -41,4 +41,11 @@ assert.equal(result.status, 'open_check')
 assert.equal(result.reason, 'unsupported pool model')
 assert.equal(result.label, 'Simulation open check — unsupported pool model')
 
+// ─── SPHINCS-style fixture: pool/liquidity evidence but no pair address ────
+result = getRadarSimulationDisplay({ contract: VALID, liquidityUsd: 23_568, pairAddress: null, honeypot: null })
+assert.equal(result.attempted, false)
+assert.equal(result.status, 'open_check')
+assert.equal(result.reason, 'missing pair address')
+assert.equal(result.label, 'Simulation open check — missing pair address')
+
 console.log('base radar simulation tests passed')

@@ -48,6 +48,14 @@ function extractEvidenceValue(evidence: string[], prefix: string): string | null
   return line ? line.slice(prefix.length).trim() : null
 }
 
+function formatDexLabel(value: string): string {
+  return value
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map((word) => (/^v\d+$/i.test(word) ? word.toUpperCase() : word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()))
+    .join(' ')
+}
+
 function sanitizeConcentratedCortexText(text: string): string {
   if (!/constant[\s_-]?product/i.test(text)) return text
   return text.replace(
@@ -189,6 +197,24 @@ export function reconcileBaseRadarLp(scan: Record<string, any>): BaseRadarLpReco
       !/^Primary market pool(?: ID)?:/.test(line) && line !== 'pool=unknown',
     )
     reconciledEvidence = [...reconciledEvidence, ...identityLines]
+  }
+
+  // 5d. For unknown LP models where a DEX is known from market data, surface
+  // "DEX: <name> / Pool model: unknown / Pair identity: open check" instead of
+  // generic "DEX metadata: not_indexed" / "Market primary pair: ?/?" lines.
+  if (displayLpModel === 'unknown') {
+    const dexName = asString(scan.primaryDexName) ?? asString(lpControl.primaryPoolDex)
+    if (dexName) {
+      reconciledEvidence = reconciledEvidence.filter((line) =>
+        !/^DEX metadata:/.test(line) && !/^Market primary pair: \?\/\?$/.test(line),
+      )
+      reconciledEvidence = [
+        ...reconciledEvidence,
+        `DEX: ${formatDexLabel(dexName)}`,
+        'Pool model: unknown',
+        'Pair identity: open check',
+      ]
+    }
   }
 
   return {

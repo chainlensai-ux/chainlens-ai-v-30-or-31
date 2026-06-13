@@ -88,6 +88,7 @@ function assessBaseRadarSeverity(input) {
   const isWalletTeamControlled = input.lpControlStatus === 'team_controlled'
   const activeOwner = input.ownershipStatus === 'active_owner'
   const smallOrNewPool = input.poolAgeMinutes == null || input.poolAgeMinutes <= 1440
+  const extremeConcentration = (input.top10 != null && input.top10 >= 80) || (input.top20 != null && input.top20 >= 90)
 
   const caps = [
     { flag: 'LP wallet/team controlled with no verified lock or burn proof', matched: isWalletTeamControlled && !input.lockBurnConfirmed, cap: 45 },
@@ -96,16 +97,23 @@ function assessBaseRadarSeverity(input) {
     { flag: 'Top holder controls at least 50% of supply', matched: input.top1 != null && input.top1 >= 50, cap: 40 },
     { flag: 'Top holder controls at least 90% of supply', matched: input.top1 != null && input.top1 >= 90, cap: 25 },
     { flag: 'Top 10 holders control at least 95% of supply', matched: input.top10 != null && input.top10 >= 95, cap: 30 },
+    { flag: 'Top 10 holders control at least 80% of supply', matched: input.top10 != null && input.top10 >= 80, cap: 45 },
+    { flag: 'Top 10 holders control at least 90% of supply', matched: input.top10 != null && input.top10 >= 90, cap: 35 },
+    { flag: 'Top 20 holders control at least 90% of supply', matched: input.top20 != null && input.top20 >= 90, cap: 40 },
     { flag: 'Holder count is under 25', matched: input.holderCount != null && input.holderCount < 25, cap: 35 },
     { flag: 'Active owner/admin alongside wallet/team LP control', matched: activeOwner && isWalletTeamControlled, cap: 35 },
+    { flag: 'Active owner/admin with top holder controlling at least 50% of supply', matched: activeOwner && input.top1 != null && input.top1 >= 50, cap: 35 },
+    { flag: 'Active owner/admin alongside extreme holder concentration', matched: activeOwner && extremeConcentration, cap: 35 },
+    { flag: 'Buy/sell simulation is an open check alongside extreme holder concentration', matched: input.simulationStatus === 'open_check' && extremeConcentration, cap: 40 },
+    { flag: 'LP pool model is unknown alongside extreme holder concentration', matched: Boolean(input.lpModelUnknown) && extremeConcentration, cap: 40 },
     { flag: 'Missing socials on a small or very new pool', matched: !input.hasSocials && smallOrNewPool, cap: 45 },
   ]
 
   const severeFlags = caps.filter((c) => c.matched).map((c) => c.flag)
   const flagCount = severeFlags.length
   const candidateCaps = caps.filter((c) => c.matched).map((c) => c.cap)
-  if (flagCount >= 3) candidateCaps.push(30)
-  if (flagCount >= 5) candidateCaps.push(25)
+  if (flagCount >= 3) candidateCaps.push(35)
+  if (flagCount >= 5) candidateCaps.push(30)
 
   const cap = candidateCaps.length ? Math.min(...candidateCaps) : null
   const effectiveScore = cap != null ? Math.min(input.baseScore, cap) : input.baseScore
@@ -147,7 +155,10 @@ function assessBaseRadarSeverity(input) {
   }
 
   let cortexSevereLine = null
-  if (flagCount >= 3) {
+  if (activeOwner && input.top1 != null && input.top1 >= 50 && input.top20 != null && input.top20 >= 90) {
+    cortexSevereLine = 'Holder concentration is high: the top wallet controls over 50% and the top 20 wallets control over 90%. '
+      + 'Ownership/admin control is still active, so owner-side risk remains open.'
+  } else if (flagCount >= 3) {
     cortexSevereLine = 'Market evidence is available and simulation passed, but the control profile is severe: '
       + 'a single wallet controls the detected LP position, no verified lock/burn proof was found, '
       + 'holder count is very low, and indexed supply is extremely concentrated. '
@@ -243,6 +254,44 @@ assert('no cortex severe line for healthy token', healthy.cortexSevereLine === n
 
 const healthyCreator = creatorTopHolderDisplay(true, 1.4)
 assert('healthy creator display shows precise percent', healthyCreator === 'Detected · 1.4%', healthyCreator)
+
+// ─── Section C: SPHINCS-style fallback risk token ──────────────────────────
+
+console.log('\nSection C: SPHINCS-style fallback risk token')
+
+const sphincsInput = {
+  baseScore: 70,
+  lpControlStatus: null,
+  lpController: null,
+  lockBurnConfirmed: false,
+  lpControlEvidence: null,
+  top1: 54.39,
+  top10: 84.45,
+  top20: 92.66,
+  holderCount: 54,
+  ownershipStatus: 'active_owner',
+  hasSocials: false,
+  poolAgeMinutes: 13,
+  marketCapUsd: null,
+  fdvUsd: 28_999,
+  simulationStatus: 'open_check',
+  lpModelUnknown: true,
+}
+
+const sphincs = assessBaseRadarSeverity(sphincsInput)
+
+assert('score is capped to <= 40', sphincs.effectiveScore <= 40, sphincs.effectiveScore)
+assert('score is in the ideal <= 35 range', sphincs.effectiveScore <= 35, sphincs.effectiveScore)
+assert('top1 >= 50 flag present', sphincs.severeFlags.some((f) => /top holder controls at least 50%/i.test(f)), sphincs.severeFlags)
+assert('top10 >= 80 flag present', sphincs.severeFlags.some((f) => /top 10 holders control at least 80%/i.test(f)), sphincs.severeFlags)
+assert('top20 >= 90 flag present', sphincs.severeFlags.some((f) => /top 20 holders control at least 90%/i.test(f)), sphincs.severeFlags)
+assert('active owner + extreme concentration flag present', sphincs.severeFlags.some((f) => /active owner\/admin alongside extreme holder concentration/i.test(f)), sphincs.severeFlags)
+assert('simulation open check + extreme concentration flag present', sphincs.severeFlags.some((f) => /simulation is an open check alongside extreme holder concentration/i.test(f)), sphincs.severeFlags)
+assert('lp model unknown + extreme concentration flag present', sphincs.severeFlags.some((f) => /lp pool model is unknown alongside extreme holder concentration/i.test(f)), sphincs.severeFlags)
+assert('cortex line mentions top wallet over 50%', /top wallet controls over 50%/i.test(sphincs.cortexSevereLine ?? ''), sphincs.cortexSevereLine)
+assert('cortex line mentions top 20 over 90%', /top 20 wallets control over 90%/i.test(sphincs.cortexSevereLine ?? ''), sphincs.cortexSevereLine)
+assert('cortex line mentions active owner/admin control', /ownership\/admin control is still active/i.test(sphincs.cortexSevereLine ?? ''), sphincs.cortexSevereLine)
+assert('cortex line does not call it moderate', !/moderate/i.test(sphincs.cortexSevereLine ?? ''), sphincs.cortexSevereLine)
 
 // ─── Summary ────────────────────────────────────────────────────────────
 

@@ -64,6 +64,14 @@ function extractEvidenceValue(evidence, prefix) {
   return line ? line.slice(prefix.length).trim() : null
 }
 
+function formatDexLabelMirror(value) {
+  return value
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map((word) => (/^v\d+$/i.test(word) ? word.toUpperCase() : word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()))
+    .join(' ')
+}
+
 function sanitizeConcentratedCortexText(text) {
   if (!/constant[\s_-]?product/i.test(text)) return text
   return text.replace(
@@ -182,6 +190,21 @@ function reconcileBaseRadarLp(scan) {
       !/^Primary market pool(?: ID)?:/.test(line) && line !== 'pool=unknown',
     )
     reconciledEvidence = [...reconciledEvidence, ...identityLines]
+  }
+
+  if (displayLpModel === 'unknown') {
+    const dexName = asString(scan.primaryDexName) ?? asString(lpControl.primaryPoolDex)
+    if (dexName) {
+      reconciledEvidence = reconciledEvidence.filter((line) =>
+        !/^DEX metadata:/.test(line) && !/^Market primary pair: \?\/\?$/.test(line),
+      )
+      reconciledEvidence = [
+        ...reconciledEvidence,
+        `DEX: ${formatDexLabelMirror(dexName)}`,
+        'Pool model: unknown',
+        'Pair identity: open check',
+      ]
+    }
   }
 
   return {
@@ -355,6 +378,99 @@ assert('PLAY evidence still shows Secondary ERC-20 LP exposure pair', play.evide
 assert('PLAY evidence still shows Secondary ERC-20 LP exposure pool', play.evidence.includes('Secondary ERC-20 LP exposure pool: 0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb (v2)'), play.evidence)
 assert('PLAY evidence includes canonical Primary pool concentrated line', play.evidence.includes('Primary pool: PLAY / WETH (concentrated)'), play.evidence)
 assert('PLAY evidence includes pool=<primary address>', play.evidence.includes('pool=0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'), play.evidence)
+
+// ─── Section D: SPHINCS-style fallback fixture (unknown model, fallback pool) ──
+
+console.log('\nSection D: SPHINCS-style fallback fixture')
+
+function finiteNumber(value) {
+  const n = typeof value === 'number' ? value : typeof value === 'string' && value.trim() !== '' ? Number(value) : NaN
+  return Number.isFinite(n) ? n : null
+}
+
+function publicAddress(value) {
+  return typeof value === 'string' && /^0x[a-fA-F0-9]{40}$/.test(value.trim()) ? value.trim() : null
+}
+
+// Mirrors observedPoolFields() in app/api/base-radar/enrichment/route.ts
+function observedPoolFields(scan) {
+  const rawPoolCount = finiteNumber(scan.poolCount)
+  const lpControl = scan.lpControl && typeof scan.lpControl === 'object' ? scan.lpControl : {}
+  const hasPoolEvidence = Boolean(
+    publicAddress(lpControl.primaryMarketPool) ||
+    publicAddress(lpControl.verificationPool) ||
+    publicAddress(scan.lpMeta?.primaryMarketPoolAddress) ||
+    publicAddress(scan.lpMeta?.lpVerificationPoolAddress) ||
+    scan.lpMeta?.poolDetected === true,
+  )
+  let observedPoolPresent = Boolean((rawPoolCount != null && rawPoolCount > 0) || hasPoolEvidence)
+  let observedPoolCount = rawPoolCount != null && rawPoolCount > 0 ? rawPoolCount : (observedPoolPresent ? null : 0)
+  let poolCountStatus = rawPoolCount != null && rawPoolCount > 0
+    ? 'confirmed'
+    : observedPoolPresent
+      ? 'inferred_from_primary_pool'
+      : 'unknown'
+
+  if (!observedPoolPresent) {
+    const liquidityUsd = finiteNumber(scan.liquidityUsd)
+    const volume24hUsd = finiteNumber(scan.volume24hUsd)
+    const dexName = scan.primaryDexName ?? scan.dexName ?? null
+    const pairCreatedAt = scan.poolActivity?.pairCreatedAt ?? null
+    const fallbackConfirmed = liquidityUsd != null && liquidityUsd > 0
+      && volume24hUsd != null && volume24hUsd > 0
+      && Boolean(dexName)
+      && Boolean(pairCreatedAt)
+    if (fallbackConfirmed) {
+      observedPoolPresent = true
+      observedPoolCount = 1
+      poolCountStatus = 'fallback_confirmed'
+    }
+  }
+
+  return { observedPoolPresent, observedPoolCount, poolCountStatus }
+}
+
+const pairCreatedAt = new Date(Date.now() - 13 * 60_000).toISOString()
+
+const sphincsScan = {
+  liquidityUsd: 23_568,
+  volume24hUsd: 22_139,
+  fdvUsd: 28_999,
+  primaryDexName: 'Uniswap',
+  poolActivity: { pairCreatedAt },
+  poolCount: null,
+  lpControl: {
+    status: null,
+    displayLpModel: null,
+    proofApplicability: null,
+    lockBurnApplicable: false,
+    primaryPoolType: null,
+    primaryPoolDex: 'Uniswap',
+    primaryMarketPool: null,
+    primaryMarketPoolId: null,
+    evidence: [
+      'DEX metadata: not_indexed',
+      'Market primary pair: ?/?',
+      'lpHolderCheckAttempted=false',
+    ],
+  },
+  lpModelProof: null,
+  lpEvidenceSummary: ['Pool model: unknown'],
+}
+
+const sphincsLp = reconcileBaseRadarLp(sphincsScan)
+const sphincsPools = observedPoolFields(sphincsScan)
+
+assert('SPHINCS displayLpModel is unknown', sphincsLp.displayLpModel === 'unknown', sphincsLp.displayLpModel)
+assert('SPHINCS evidence includes DEX: Uniswap', sphincsLp.evidence.includes('DEX: Uniswap'), sphincsLp.evidence)
+assert('SPHINCS evidence includes Pool model: unknown', sphincsLp.evidence.includes('Pool model: unknown'), sphincsLp.evidence)
+assert('SPHINCS evidence includes Pair identity: open check', sphincsLp.evidence.includes('Pair identity: open check'), sphincsLp.evidence)
+assert('SPHINCS evidence drops "DEX metadata: not_indexed"', !sphincsLp.evidence.includes('DEX metadata: not_indexed'), sphincsLp.evidence)
+assert('SPHINCS evidence drops "Market primary pair: ?/?"', !sphincsLp.evidence.includes('Market primary pair: ?/?'), sphincsLp.evidence)
+
+assert('SPHINCS observedPoolPresent is true via fallback', sphincsPools.observedPoolPresent === true, sphincsPools)
+assert('SPHINCS observedPoolCount is 1', sphincsPools.observedPoolCount === 1, sphincsPools)
+assert('SPHINCS poolCountStatus is fallback_confirmed', sphincsPools.poolCountStatus === 'fallback_confirmed', sphincsPools)
 
 // ─── Summary ────────────────────────────────────────────────────────────
 

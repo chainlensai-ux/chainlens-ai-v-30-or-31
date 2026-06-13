@@ -435,12 +435,15 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
     lpControlEvidence: lp?.lpControl?.evidence ?? null,
     top1: concentration.top1 ?? null,
     top10: concentration.top10 ?? null,
+    top20: concentration.top20 ?? null,
     holderCount: concentration.holderCount ?? null,
     ownershipStatus: security?.devOwnership?.ownershipStatus ?? null,
     hasSocials,
     poolAgeMinutes,
     marketCapUsd: market?.marketCapUsd ?? null,
     fdvUsd: market?.fdvUsd ?? token?.fdvUsd ?? null,
+    simulationStatus: token?.simulationStatus ?? null,
+    lpModelUnknown: (lp?.displayLpModel ?? null) === 'unknown',
   })
   const effectiveScore = severity.effectiveScore
 
