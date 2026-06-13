@@ -752,18 +752,30 @@ function hexToBigInt(hex: string | null | undefined): bigint | null {
 // BigInt-safe percentage: avoids float precision loss on 18-decimal ERC-20 balances.
 // Returns e.g. 5.23 for 5.23%. Uses BigInt() constructor (not literals) for ES2017 compat.
 
+const LP_HOLDER_BALANCE_FIELDS = ['balance', 'token_balance', 'balance_wei', 'token_balance_wei', 'balance_raw', 'raw_balance', 'amount', 'balance_raw_integer', 'balanceRaw', 'balance_raw_quote'] as const
+const LP_HOLDER_PERCENT_FIELDS = ['percentage', 'percent', 'ownership_percentage', 'balancePercent', 'ownershipPercent', 'percent_of_supply', 'share', 'supply_percentage', 'percentage_relative_to_total_supply'] as const
+
 function lpHolderBalanceRaw(holder: Record<string, unknown>): unknown {
-  return holder.balance
-    ?? holder.token_balance
-    ?? holder.balance_wei
-    ?? holder.token_balance_wei
-    ?? holder.balance_raw
-    ?? holder.raw_balance
-    ?? holder.amount
-    ?? holder.balance_raw_integer
-    ?? holder.balanceRaw
-    ?? holder.balance_raw_quote
-    ?? null
+  for (const field of LP_HOLDER_BALANCE_FIELDS) {
+    if (holder[field] != null) return holder[field]
+  }
+  return null
+}
+
+// debug-only: identifies which of LP_HOLDER_BALANCE_FIELDS/LP_HOLDER_PERCENT_FIELDS supplied
+// the value lpHolderBalanceRaw()/the direct-percentage lookup actually used, for _debug.lpResolution.
+function lpHolderFieldUsed(holder: Record<string, unknown>, fields: readonly string[]): string | null {
+  for (const field of fields) {
+    if (holder[field] != null) return field
+  }
+  return null
+}
+
+// debug-only: pulls a `<prefix>=NN.NN%` value out of lpControl.evidence, for _debug.lpResolution.
+function _extractEvidencePctDebug(ev: string[], prefix: string): number | null {
+  const line = ev.find((e) => e.startsWith(`${prefix}=`))
+  if (!line) return null
+  return parseFloat(line.split('=')[1]?.replace('%', '') ?? '') || null
 }
 
 function bigIntPct(balanceRaw: unknown, supplyRaw: unknown): number | null {
@@ -3696,6 +3708,14 @@ export async function POST(req: Request) {
     let _lpGrPctDerived = false
     let _lpRpcFallbackRan = false
     let _lpGrItemCount = 0
+    // debug-only (?debug=true): captures each step of LP-holder controller resolution so
+    // _debug.lpResolution can show whether a dominant holder was found/derived/accepted or
+    // overwritten by the burn/locker fallback — see _debug.lpResolution assembly below.
+    const _lpResolutionDebug: Record<string, unknown> = {
+      lpHolderCheckAttempted: false,
+      lpHolderFetchAttempted: needsLpHolderFetch,
+      lpHolderFetchSkippedReason: needsLpHolderFetch ? null : 'pool_model_not_v2_or_unknown',
+    }
     _scanStage = 'lp_control_evaluation'
     if (!_lpProofPresent) {
       if (_fallbackLiquidityDetected) {
@@ -3875,6 +3895,38 @@ export async function POST(req: Request) {
       const topHolder = top[0] ?? null;
       const burnPct = top.filter((x) => DEAD.has(x.address)).reduce((a, b) => a + (b.pct ?? 0), 0);
       const lockerPct = top.filter((x) => KNOWN_LOCKERS.has(x.address)).reduce((a, b) => a + (b.pct ?? 0), 0);
+      // debug-only (?debug=true) — see _debug.lpResolution assembly near response_assembly.
+      {
+        const _rawTopRow = lpItems[0] ?? null
+        const _rawBalanceField = _rawTopRow ? lpHolderFieldUsed(_rawTopRow, LP_HOLDER_BALANCE_FIELDS) : null
+        const _rawPercentField = _rawTopRow ? lpHolderFieldUsed(_rawTopRow, LP_HOLDER_PERCENT_FIELDS) : null
+        const _rawPercentValue = _rawPercentField ? toNum(_rawTopRow![_rawPercentField]) : null
+        const _directPctRejected = _rawPercentField != null && !(_rawPercentValue != null && _rawPercentValue > 0)
+        Object.assign(_lpResolutionDebug, {
+          lpHolderCheckAttempted: true,
+          lpHolderFetchStatus: _lpHoldersForControl?.__status ?? (lpItems.length > 0 ? 'ok' : 'empty'),
+          lpHolderFetchSkippedReason: null,
+          lpHolderRowCount: lpItems.length,
+          rawTopHolderAddress: _rawTopRow ? String(_rawTopRow.address ?? _rawTopRow.holder_address ?? _rawTopRow.wallet_address ?? null) : null,
+          rawTopHolderKnownFields: _rawTopRow ? Object.keys(_rawTopRow) : [],
+          rawTopHolderBalanceValue: _rawBalanceField ? _rawTopRow![_rawBalanceField] : null,
+          rawTopHolderBalanceFieldUsed: _rawBalanceField,
+          rawTopHolderPercentValue: _rawPercentValue,
+          rawTopHolderPercentFieldUsed: _rawPercentField,
+          directPctConsideredValid: _rawPercentField != null && !_directPctRejected,
+          directPctRejectedReason: _directPctRejected
+            ? (_rawPercentValue === 0 ? 'percent_field_zero_placeholder' : 'percent_field_not_positive')
+            : (_rawPercentField == null ? 'no_percent_field_present' : null),
+          totalSupplyFetchAttempted: _lpGrSupplyStr == null ? false : (_lpGrTotalSupply == null),
+          totalSupplyFetchStatus: _lpGrTotalSupply != null ? 'skipped_supply_present_in_holder_rows' : (_lpGrSupplyStr != null ? 'ok' : (lpItems.length > 0 ? 'error' : 'skipped')),
+          totalSupplyRaw: _lpGrSupplyStr,
+          derivedTopSharePercent: topHolder?.pct ?? null,
+          derivedTopShareStatus: !_lpGrPctDerived ? (topHolder?.pct ? 'unavailable_used_direct_pct' : 'unavailable') : (topHolder ? 'ok' : 'unavailable'),
+          derivedTopShareRejectedReason: _lpGrPctDerived ? null : (_lpGrSupplyStr == null ? 'no_total_supply_available' : null),
+          dominantHolderCandidateAddress: topHolder?.address ?? null,
+          dominantHolderCandidateShare: topHolder?.pct ?? null,
+        })
+      }
       if (burnPct >= 50) {
         lpControl = { status: "burned", confidence: confidenceFor(burnPct), poolType: _lpProofType, source: "Market + holder evidence", reason: "Dominant LP share appears in burn/dead addresses.", evidence: [`burn_share=${burnPct.toFixed(2)}%`, `pool=${_lpAddrSnippet}`] };
       } else if (lockerPct >= 50) {
@@ -3932,6 +3984,21 @@ export async function POST(req: Request) {
           ? `LP holder check inconclusive — no dominant burn/lock pattern. ${partialEv.join(', ')}.`
           : "LP checks ran but could not prove burned/locked/team-controlled state."
         lpControl = { status: partialEv.length ? "partial" : "partial", confidence: "low", poolType: _lpProofType, source: "Market + holder evidence", reason: partialReason, evidence: [`top_rows=${top.length}`, ...partialEv] };
+      }
+      // debug-only (?debug=true) — see _debug.lpResolution assembly near response_assembly.
+      {
+        const _dominantAccepted = lpControl.status === 'team_controlled' || lpControl.evidence.some((e) => e.startsWith('top_holder=') || e.startsWith('owner_lp_share='))
+        Object.assign(_lpResolutionDebug, {
+          dominantHolderAccepted: _dominantAccepted,
+          dominantHolderRejectedReason: _dominantAccepted ? null : (topHolder == null ? 'no_holder_rows' : (topHolder.pct ?? 0) <= 0 ? 'top_holder_pct_zero' : 'below_team_controlled_threshold'),
+          dominantHolderControllerType: _dominantAccepted ? (DEAD.has(topHolder?.address ?? '') ? 'burn' : KNOWN_LOCKERS.has(topHolder?.address ?? '') ? 'lockContract' : 'wallet') : null,
+          fallbackBurnLockerRan: _lpRpcFallbackRan,
+          fallbackBurnShare: _lpRpcFallbackRan ? _extractEvidencePctDebug(lpControl.evidence ?? [], 'burn_share') : (burnPct || null),
+          fallbackLockerShare: _lpRpcFallbackRan ? _extractEvidencePctDebug(lpControl.evidence ?? [], 'locker_share') : (lockerPct || null),
+          fallbackOverwroteDominantHolder: _lpRpcFallbackRan && topHolder != null && (topHolder.pct ?? 0) > 0 && !_dominantAccepted,
+          finalLpControlBeforeFallback: !_lpRpcFallbackRan ? { status: lpControl.status, evidence: lpControl.evidence } : null,
+          finalLpControlAfterFallback: { status: lpControl.status, evidence: lpControl.evidence },
+        })
       }
     }
 
@@ -7173,6 +7240,46 @@ export async function POST(req: Request) {
           lpOwnershipVerified,
           reason: lpDiagnostics.reason,
           _full: lpDiagnostics,
+        },
+        // Debug-only step-by-step trace of LP-holder controller resolution (see
+        // _lpResolutionDebug capture inside the V2/Aerodrome LP-holder branch above) — lets
+        // ?debug=true scans distinguish: deployment/cache staleness vs. the LP holder fetch
+        // not running vs. unrecognized raw holder fields vs. totalSupply derivation failing
+        // vs. the burn/locker-only fallback overwriting a real dominant-holder result.
+        lpResolution: {
+          deployment: {
+            deployedCommitSha: process.env.VERCEL_GIT_COMMIT_SHA ?? process.env.GIT_SHA ?? null,
+            vercelEnv: process.env.VERCEL_ENV ?? null,
+            nodeEnv: process.env.NODE_ENV ?? null,
+            debugEnabled: true,
+          },
+          cache: {
+            tokenCacheHit: false,
+            tokenCacheKey: `${chain}:${contract}`,
+            lpCacheHit: false,
+            lpCacheKey: null,
+            cachedLpControlUsed: false,
+            cacheAgeMs: null,
+          },
+          selectedPool: {
+            selectedPoolAddress: lpPoolAddress ?? null,
+            selectedPoolPair: _primaryPair ?? null,
+            selectedPoolDex: primaryDexName ?? normalizeDexLabel(lpPool?.dexId ?? lpPool?.dexName ?? null) ?? null,
+            selectedPoolModel: lpModelProof.model,
+            verificationPoolAddress: lpVerifyPoolAddress ?? null,
+            verificationPoolDex: lpVerifyPool?.dexId ?? lpVerifyPool?.dexName ?? null,
+            verificationPoolType: lpVerifyPoolPresent ? lpVerifyPoolType : null,
+            selectedPrimaryPoolStrategy: lpDiagnostics.selectedPrimaryPoolStrategy,
+          },
+          holderFetch: _lpResolutionDebug,
+          finalReconciliation: {
+            finalLpControlStatus: lpControl.status,
+            finalLpController: lpController,
+            finalLpControllerType: lpControllerType,
+            finalLpControllerIntelStatus: lpControllerIntel.status,
+            finalControllerSharePercent: lpControllerIntel.controllerSharePercent ?? null,
+            finalLiquiditySafetyReasons: tokenRiskScoreResult.riskBreakdown.liquiditySafety.reasons,
+          },
         },
         contractFlagDiagnostics: {
           bytecodeChecked: cortexContractFlags.bytecodeChecked,
