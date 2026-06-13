@@ -6,7 +6,8 @@ import Link from 'next/link'
 import ProjectOverviewDrawer from './ProjectOverviewDrawer'
 import { usePlanWithLoading, LockedPanel, canAccessFeature } from '@/lib/usePlan'
 import { supabase } from '@/lib/supabaseClient'
-import { applyBaseRadarScoreCaps, getRadarFeedStatusFromScore } from '@/lib/baseRadarFeedScoring'
+import { getRadarFeedStatusFromScore } from '@/lib/baseRadarFeedScoring'
+import { buildBaseRadarDisplayModel, type BaseRadarDisplayModel } from '@/lib/baseRadarDisplayModel'
 
 interface HoneypotResult {
   isHoneypot: boolean | null
@@ -76,6 +77,7 @@ interface TokenIntel extends RadarToken {
   clarkSignal: string
   suspiciousBranding: boolean
   launchQuality: LaunchQuality
+  displayModel: BaseRadarDisplayModel
 }
 
 interface RadarSummary {
@@ -250,26 +252,6 @@ function getStatus(token: RadarToken, score: number, momentum: MomentumLevel): R
   return 'WATCH'
 }
 
-function applyScoreTrustCaps(token: RadarToken, score: number): number {
-  return applyBaseRadarScoreCaps({
-    baseScore: score,
-    liquidityUsd: token.liquidityUsd,
-    volume24h: token.volume24h,
-    ageMinutes: token.ageMinutes,
-    simulationStatus: token.simulationStatus,
-    simulationReason: token.simulationReason,
-    buyTax: token.honeypot?.buyTax ?? null,
-    sellTax: token.honeypot?.sellTax ?? null,
-    honeypotPresent: Boolean(token.honeypot),
-    valuationVerified: Boolean(token.valuationVerified || token.marketCapStatus === 'verified'),
-    valuationUsd: token.valuationUsd ?? token.marketCapUsd ?? token.fdvUsd ?? null,
-    lpLockBurnConfirmed: false,
-    lpModel: 'open_check',
-    strongProtection: false,
-    majorControlOrHolderOrLpRedFlag: false,
-  }).score
-}
-
 function getCortexSignal(status: RadarStatus): string {
   const map: Record<RadarStatus, string> = {
     HOT: 'Strong early activity relative to liquidity. Worth watching closely, but still verify before entry.',
@@ -326,10 +308,9 @@ function getLaunchQuality(token: RadarToken): LaunchQuality {
 function enrichToken(token: RadarToken): TokenIntel {
   const suspiciousBranding = hasSuspiciousBranding(token.name, token.symbol)
   const { level: momentum, ratio: momentumRatio } = getMomentum(token.volume24h, token.liquidityUsd)
-  const baseScore = getBaseRadarScore(token)
-  const baseStatus = getStatus(token, baseScore, momentum)
-  const radarScore = applyScoreTrustCaps(token, baseScore)
-  const status = token.simulationStatus !== 'passed' ? getRadarFeedStatusFromScore(radarScore) : getStatus(token, radarScore, momentum)
+  const displayModel = buildBaseRadarDisplayModel(token)
+  const radarScore = displayModel.score
+  const status = displayModel.simulation.status !== 'passed' ? getRadarFeedStatusFromScore(radarScore) : getStatus(token, radarScore, momentum)
 
   return {
     ...token,
@@ -341,6 +322,7 @@ function enrichToken(token: RadarToken): TokenIntel {
     flags: getFlags(token, status, momentum, suspiciousBranding),
     clarkSignal: getCortexSignal(status),
     launchQuality: getLaunchQuality(token),
+    displayModel,
   }
 }
 
@@ -359,15 +341,7 @@ function getStageLabel(token: TokenIntel): string {
 }
 
 function getSignalInsight(token: TokenIntel): string {
-  const openChecks = token.flags.filter(flag => flag.includes('Pending Evidence') || flag === 'Pending Evidence').length
-
-  if (token.ageMinutes <= 30 && token.volume24h > 0) return 'Fresh pool with early activity visible.'
-  if (token.volume24h >= 20_000 || token.momentum === 'HIGH') return 'Volume spike is driving this radar placement.'
-  if (token.liquidityUsd > 0 && token.liquidityUsd < 2_000) return 'Thin liquidity makes this an early-watch signal.'
-  if (openChecks >= 1 || token.status === 'UNVERIFIED') return 'Open checks remain high; verify evidence before relying on this signal.'
-  if (token.simulationStatus === 'passed' && (token.honeypot?.buyTax ?? 0) <= 5 && (token.honeypot?.sellTax ?? 0) <= 5) return 'Trading simulation is clear, but other evidence still needs review.'
-  if (token.radarScore >= 75) return 'Radar score is elevated from visible momentum and activity signals.'
-  return safeText(token.clarkVerdict ?? token.clarkSignal)
+  return token.displayModel.whyOnRadar
 }
 
 function simulationStatusLabel(token: RadarToken): string {
@@ -389,14 +363,9 @@ function getTaxLabel(token: TokenIntel): string {
   return `B ${buyTax.toFixed(1)}% / S ${sellTax.toFixed(1)}%`
 }
 
-function getValuationCardMetric(token: RadarToken): { label: string; value: string; sublabel?: string | null; accent?: string } {
-  if (token.valuationBasis === 'verified_market_cap') {
-    return { label: 'Market Cap', value: fmtUSD(token.marketCapUsd ?? token.valuationUsd ?? 0), sublabel: token.valuationSublabel ?? 'Verified', accent: '#99f6e4' }
-  }
-  if (token.valuationBasis === 'fdv_fallback') {
-    return { label: 'FDV', value: fmtUSD(token.fdvUsd ?? token.valuationUsd ?? 0), sublabel: token.valuationSublabel ?? 'Market cap unavailable', accent: '#fde68a' }
-  }
-  return { label: 'Valuation', value: 'Open check', sublabel: null }
+function getValuationCardMetric(token: TokenIntel): { label: string; value: string; sublabel?: string | null; accent?: string } {
+  const valuation = token.displayModel.valuation
+  return { label: valuation.label, value: valuation.valueUsd != null ? fmtUSD(valuation.valueUsd) : 'Open check', sublabel: valuation.sublabel, accent: valuation.status === 'verified' ? '#99f6e4' : valuation.status === 'fdv_fallback' ? '#fde68a' : undefined }
 }
 
 function getPriorityAccent(token: TokenIntel): { color: string; background: string; border: string; glow: string } {

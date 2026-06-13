@@ -4,6 +4,7 @@ import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { assessBaseRadarSeverity, creatorTopHolderDisplay, normalizePairCreatedAt, ageLabelFromIso, extractLpControllerSharePercent, getBaseRadarDetailSeverityCap, getScoreSeverityLabel } from '@/lib/baseRadarSeverity'
 import { getRadarValuationBasis, getRadarValuationCardDisplay, DEFAULT_RADAR_MIN_LIQUIDITY_USD } from '@/lib/baseRadarValuation'
+import { buildBaseRadarDisplayModel } from '@/lib/baseRadarDisplayModel'
 import { getRadarValuationEvidence, getRadarSocialsEvidence, getRadarOwnershipEvidence, getRadarPastLaunchesEvidence, getRadarRugHistoryEvidence, type RadarEvidenceEntry } from '@/lib/baseRadarEvidence'
 
 type ChainKey = 'base' | 'eth'
@@ -501,6 +502,8 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
   const lpControllerSharePercent = extractLpControllerSharePercent(lp?.lpControl?.evidence ?? null)
   const activeOwner = (security?.devOwnership?.ownershipStatus ?? null) === 'active_owner'
 
+  const displayModel = token ? buildBaseRadarDisplayModel(token, enriched) : null
+
   const severity = assessBaseRadarSeverity({
     baseScore: token?.radarScore ?? 0,
     lpControlStatus: lpControlStatus,
@@ -536,16 +539,18 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
     activeOwner,
   })
 
-  const effectiveScore = detailSeverity.cap != null ? Math.min(severity.effectiveScore, detailSeverity.cap) : severity.effectiveScore
-  const severityLabel = getScoreSeverityLabel(effectiveScore)
+  const effectiveScore = displayModel?.score ?? (detailSeverity.cap != null ? Math.min(severity.effectiveScore, detailSeverity.cap) : severity.effectiveScore)
+  const severityLabel = displayModel?.riskLabel ?? getScoreSeverityLabel(effectiveScore)
 
   const marketValuation = getRadarValuationBasis({
-    marketCapUsd: market?.marketCapUsd ?? null,
-    marketCapStatus: market?.marketCapStatus ?? null,
-    fdvUsd: market?.fdvUsd ?? token?.fdvUsd ?? null,
+    marketCapUsd: displayModel?.marketSnapshot.marketCapUsd ?? null,
+    marketCapStatus: displayModel?.marketSnapshot.marketCapStatus ?? null,
+    fdvUsd: displayModel?.marketSnapshot.fdvUsd ?? null,
     liquidityUsd,
   })
-  const marketValuationCard = getRadarValuationCardDisplay(marketValuation, fmtUSD)
+  const marketValuationCard = displayModel
+    ? { label: displayModel.valuation.label === 'Market Cap' ? 'Market cap' : displayModel.valuation.label, value: displayModel.valuation.valueUsd != null ? fmtUSD(displayModel.valuation.valueUsd) : 'Open check', sublabel: displayModel.valuation.sublabel }
+    : getRadarValuationCardDisplay(marketValuation, fmtUSD)
   const excludedFromFeed = liquidityUsd != null && liquidityUsd < DEFAULT_RADAR_MIN_LIQUIDITY_USD
 
   const poolDistributionLine = lp?.cortexLpRead?.liquidityAnalysis ?? (market?.observedPoolPresent
@@ -573,7 +578,7 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
     token?.valuationCortexLine ?? null,
     lpCortexLine,
     holderCortexLine,
-    token?.simulationCortexLine ?? null,
+    displayModel?.simulation.cortexLine ?? token?.simulationCortexLine ?? null,
     deployer?.deployerAddress ? `Deployer ${shortAddr(deployer.deployerAddress)} is ${publicStatus(deployer.deployerStatus ?? 'reviewed')} at ${deployer.deployerConfidence ?? 'open-check'} confidence.` : 'Deployer is Open Check in the current evidence.',
     token?.flags?.length ? `Risk context: ${token.flags.join(', ')}.` : 'Risk context: no radar flags on this card.',
   ].filter((line): line is string => Boolean(line))
@@ -655,7 +660,7 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
     { label: 'Telegram', href: asLink(socials.telegram) },
   ].filter((item): item is { label: string; href: string } => Boolean(item.href))
   const marketSignals = Array.from(new Set([pairAgeLabel ? 'New Pool' : null, token?.momentum ? `${publicStatus(token.momentum)} Momentum` : null, marketValuation.basis === 'verified_market_cap' ? 'Market Cap Verified' : marketValuation.basis === 'fdv_fallback' ? 'FDV Fallback' : 'Valuation Open Check'].filter(Boolean) as string[])).slice(0, 5)
-  const riskSignals = Array.from(new Set([excludedFromFeed ? 'Liquidity Watch' : null, concentrationRisk === 'Extreme' ? 'Extreme Holder Control' : concentrationRisk === 'High' ? 'High Holder Control' : null, !hasVerifiedLock(lp?.lpLockStatus) && lp?.lpProofApplicability !== 'not_applicable' ? 'No Lock Detected' : null, token?.simulationStatus === 'passed' ? 'Simulation Clear' : token?.simulationStatus === 'open_check' ? 'Simulation Timeout' : null, ...severity.evidenceTags].filter(Boolean) as string[])).slice(0, 6)
+  const riskSignals = Array.from(new Set([excludedFromFeed ? 'Liquidity Watch' : null, concentrationRisk === 'Extreme' ? 'Extreme Holder Control' : concentrationRisk === 'High' ? 'High Holder Control' : null, !hasVerifiedLock(lp?.lpLockStatus) && lp?.lpProofApplicability !== 'not_applicable' ? 'No Lock Detected' : null, displayModel?.simulation.status === 'passed' ? 'Simulation Clear' : displayModel?.simulation.status === 'open_check' ? 'Simulation Pending' : null, ...severity.evidenceTags].filter(Boolean) as string[])).slice(0, 6)
   const controlSignals = Array.from(new Set([activeOwner ? 'Active Owner/Admin' : ownershipLabel, lpControlStatus ? publicStatus(lpControlStatus) : 'LP Control Open Check', deployer?.clusterEvidence?.confirmed ? 'Cluster Evidence' : 'Cluster Open Check'].filter(Boolean) as string[])).slice(0, 5)
   const cortexFound = [severity.cortexSevereLine, poolDistributionLine, holderCortexLine].filter(Boolean).slice(0, 3)
   const cortexMainRisk = activeOwner ? 'Active owner/admin remains the primary control risk.' : concentrationRisk === 'Extreme' ? 'Extreme holder concentration is the primary risk driver.' : lpRiskLabelValue
@@ -709,7 +714,7 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
           {excludedFromFeed && <div style={{ marginBottom: 10 }}><Chip label="Below default liquidity threshold" tone="risk" /></div>}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10 }}>
             <MetricCard label="Liquidity" value={fmtUSD(liquidityUsd)} sublabel={excludedFromFeed ? 'Below $5K feed threshold' : 'Primary observed depth'} chip={excludedFromFeed ? 'Watch' : 'Depth'} tone={excludedFromFeed ? 'risk' : 'mint'} />
-            <MetricCard label={marketValuationCard.label === 'FDV' ? 'FDV' : marketValuation.basis === 'unavailable' ? 'Valuation' : 'Market Cap'} value={marketValuationCard.value} sublabel={marketValuation.basis === 'verified_market_cap' ? 'Verified' : marketValuation.basis === 'fdv_fallback' ? 'Market cap unavailable' : 'Open check'} chip={marketValuation.basis === 'verified_market_cap' ? 'Verified' : marketValuation.basis === 'fdv_fallback' ? 'Fallback' : 'Open'} tone={valuationTone} />
+            <MetricCard label={displayModel?.valuation.label ?? (marketValuationCard.label === 'FDV' ? 'FDV' : marketValuation.basis === 'unavailable' ? 'Valuation' : 'Market Cap')} value={marketValuationCard.value} sublabel={displayModel?.valuation.sublabel ?? (marketValuation.basis === 'verified_market_cap' ? 'Verified' : marketValuation.basis === 'fdv_fallback' ? 'Market cap unavailable' : 'Open check')} chip={displayModel?.valuation.status === 'verified' ? 'Verified' : displayModel?.valuation.status === 'fdv_fallback' ? 'Fallback' : marketValuation.basis === 'verified_market_cap' ? 'Verified' : marketValuation.basis === 'fdv_fallback' ? 'Fallback' : 'Open'} tone={valuationTone} />
             <MetricCard label="24h Volume" value={fmtUSD(market?.volume24hUsd ?? token.volume24h)} sublabel="Recent market activity" chip="24h" tone="purple" />
             <MetricCard label="Age" value={pairAgeLabel ?? fmtAge(token.ageMinutes)} sublabel="Pool age evidence" chip="Launch" tone="neutral" />
             <MetricCard label="Momentum" value={publicStatus(token.momentum)} sublabel={`Radar ${effectiveScore}/100`} chip={token.status} tone="mint" />
