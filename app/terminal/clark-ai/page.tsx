@@ -1,11 +1,12 @@
 'use client'
 
 import { Suspense, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
-import { useSearchParams } from 'next/navigation'
+import { usePathname, useSearchParams } from 'next/navigation'
 import { supabase } from '@/lib/supabaseClient'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
-type Message = { role: 'user' | 'clark'; text: string }
+type ClarkAction = { label: string; href: string; requiresInput?: boolean }
+type Message = { role: 'user' | 'clark'; text: string; intentBadge?: string | null; actions?: ClarkAction[] }
 type UiTab   = 'analyst' | 'chat'
 
 // ── Session / context helpers (unchanged) ────────────────────────────────────
@@ -107,6 +108,7 @@ function ClarkOrb({ size = 44, thinking = false }: { size?: number; thinking?: b
 
 // ── Main content ─────────────────────────────────────────────────────────────
 function ClarkAiContent() {
+  const pathname          = usePathname()
   const searchParams      = useSearchParams()
   const importedPrompt    = useMemo(() => decodePrompt(searchParams.get('prompt')), [searchParams])
   const autoSendRequested = searchParams.get('autoSend') === '1' || searchParams.get('autosend') === '1'
@@ -201,6 +203,15 @@ function ClarkAiContent() {
           moversContext: { items: clarkContextRef.current.lastMarketList ?? [] },
           marketContext: { items: clarkContextRef.current.lastMarketList ?? [] },
           clientContext: getClientClarkContext(),
+          appContext: {
+            route: pathname,
+            chain: 'base',
+            selectedToken: clarkContextRef.current.lastMarketList?.[0]?.tokenAddress ?? null,
+            selectedWallet: getClientClarkContext().lastWallet ?? null,
+            baseRadarSummary: clarkContextRef.current.lastMarketList ?? null,
+            whaleSyncStatus: sessionStorage.getItem('chainlens:whale-alerts:sync-status') ?? 'unknown',
+            currentTool: activeMode,
+          },
         }),
       })
       const json = await res.json()
@@ -233,7 +244,9 @@ function ClarkAiContent() {
       const reply = json.ok
         ? (payload?.reply ?? payload?.analysis ?? payload?.response ?? json.reply ?? json.analysis ?? 'No response from Clark.')
         : (json.error ?? 'Something went wrong.')
-      setMessages((prev) => { const next = [...prev]; next[next.length - 1] = { role: 'clark', text: String(reply) }; return next })
+      const ui = payload.ui && typeof payload.ui === 'object' ? payload.ui as { intentBadge?: unknown; actions?: unknown } : null
+      const actions = Array.isArray(ui?.actions) ? ui.actions.filter((a): a is ClarkAction => Boolean(a && typeof a === 'object' && typeof (a as ClarkAction).label === 'string' && typeof (a as ClarkAction).href === 'string')) : []
+      setMessages((prev) => { const next = [...prev]; next[next.length - 1] = { role: 'clark', text: String(reply), intentBadge: typeof ui?.intentBadge === 'string' ? ui.intentBadge : null, actions }; return next })
     } catch {
       setMessages((prev) => { const next = [...prev]; next[next.length - 1] = { role: 'clark', text: FALLBACK_ERROR_MESSAGE }; return next })
     } finally { setLoading(false) }
@@ -540,6 +553,10 @@ function ClarkAiContent() {
         }
         .clk-msg--user .clk-msg-role { color: #5eead4; }
         .clk-msg--clark .clk-msg-role { color: #64748b; }
+        .clk-intent-badge { display:inline-flex; width:max-content; margin: 0 0 8px; padding: 4px 8px; border: 1px solid rgba(45,212,191,.28); border-radius: 999px; color: #67e8f9; background: rgba(45,212,191,.08); font-size: 10px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
+        .clk-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
+        .clk-action { border:1px solid rgba(45,212,191,.25); border-radius:999px; padding:7px 10px; color:#ccfbf1; background:rgba(45,212,191,.07); font-size:12px; font-weight:700; text-decoration:none; }
+        .clk-action--disabled { opacity:.45; cursor:not-allowed; pointer-events:none; }
         .clk-msg-text {
           margin: 0;
           font-size: 13.5px;
@@ -896,7 +913,19 @@ function ClarkAiContent() {
                         <span className='clk-thinking-text'>Clark is thinking…</span>
                       </div>
                     ) : (
-                      <p className='clk-msg-text'>{msg.text}</p>
+                      <>
+                        {msg.intentBadge && <span className='clk-intent-badge'>{msg.intentBadge}</span>}
+                        <p className='clk-msg-text'>{msg.text}</p>
+                        {msg.actions && msg.actions.length > 0 && (
+                          <div className='clk-actions'>
+                            {msg.actions.map((action) => (
+                              <a key={`${action.label}-${action.href}`} className={`clk-action${action.requiresInput ? ' clk-action--disabled' : ''}`} href={action.requiresInput ? undefined : action.href} aria-disabled={action.requiresInput || undefined}>
+                                {action.label}
+                              </a>
+                            ))}
+                          </div>
+                        )}
+                      </>
                     )}
                   </div>
                 )
