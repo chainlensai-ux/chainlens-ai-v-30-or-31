@@ -380,6 +380,8 @@ function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract
     },
     security: {
       honeypot: sanitizeProviderNames(simulation),
+      simulationStatus: security.simulationStatus ?? (simulation ? 'ok' : 'open_check'),
+      simulationReason: sanitizeProviderNames(security.simulationReason ?? security.reason ?? null),
       contractFlags: security.contractFlags ?? null,
       devOwnership,
       riskDrivers: sanitizeProviderNames(scan.cortexRiskEngine?.riskDrivers ?? scan.riskDrivers ?? []),

@@ -77,7 +77,7 @@ function creatorTopHolderDisplay(inTopHolders, creatorPercent) {
     if (creatorPercent != null && Number.isFinite(creatorPercent) && creatorPercent > 0) {
       return `Detected · ${creatorPercent.toFixed(1)}%`
     }
-    return 'Detected, supply share open check'
+    return 'Detected in indexed holders · supply share open check'
   }
   if (inTopHolders === false) return 'Not confirmed'
   return 'Open Check'
@@ -209,8 +209,8 @@ const creatorNotInTopHolders = creatorTopHolderDisplay(false, null)
 const creatorDetectedNoShare = creatorTopHolderDisplay(true, null)
 const creatorDetectedZeroShare = creatorTopHolderDisplay(true, 0)
 assert('creatorInTopHolders=false -> "Not confirmed"', creatorNotInTopHolders === 'Not confirmed', creatorNotInTopHolders)
-assert('creatorInTopHolders=true, percent null -> "Detected, supply share open check"', creatorDetectedNoShare === 'Detected, supply share open check', creatorDetectedNoShare)
-assert('creatorInTopHolders=true, percent 0 -> "Detected, supply share open check"', creatorDetectedZeroShare === 'Detected, supply share open check', creatorDetectedZeroShare)
+assert('creatorInTopHolders=true, percent null -> "Detected in indexed holders · supply share open check"', creatorDetectedNoShare === 'Detected in indexed holders · supply share open check', creatorDetectedNoShare)
+assert('creatorInTopHolders=true, percent 0 -> "Detected in indexed holders · supply share open check"', creatorDetectedZeroShare === 'Detected in indexed holders · supply share open check', creatorDetectedZeroShare)
 assert('creator display never renders "Yes · 0.0%"', ![creatorNotInTopHolders, creatorDetectedNoShare, creatorDetectedZeroShare].some((s) => s === 'Yes · 0.0%'), { creatorNotInTopHolders, creatorDetectedNoShare, creatorDetectedZeroShare })
 
 // ─── Section B: Healthy token regression (no caps applied) ────────────────
@@ -243,6 +243,74 @@ assert('no cortex severe line for healthy token', healthy.cortexSevereLine === n
 
 const healthyCreator = creatorTopHolderDisplay(true, 1.4)
 assert('healthy creator display shows precise percent', healthyCreator === 'Detected · 1.4%', healthyCreator)
+
+
+// ─── Section C: BACK TO WORK fallback market regression ──────────────────
+
+console.log('\nSection C: BACK TO WORK fallback market regression')
+
+function normalizeFallbackMarketPool(scan) {
+  const pairAddress = typeof scan.fallbackMarket?.pairAddress === 'string' && /^0x[a-f0-9]{40}$/i.test(scan.fallbackMarket.pairAddress)
+    ? scan.fallbackMarket.pairAddress.toLowerCase()
+    : null
+  const hasMarket = (scan.fallbackMarket?.liquidityUsd ?? 0) > 0 || (scan.fallbackMarket?.volume24hUsd ?? 0) > 0 || (scan.fallbackMarket?.fdvUsd ?? 0) > 0
+  const identity = Boolean(pairAddress)
+  const pairCreatedAt = normalizePairCreatedAt(scan.fallbackMarket?.pairCreatedAt)
+  const pairLabel = [scan.fallbackMarket?.baseToken?.symbol, scan.fallbackMarket?.quoteToken?.symbol].filter(Boolean).join('/') || null
+  return {
+    observedPoolPresent: identity && hasMarket ? true : false,
+    observedPoolCount: identity && hasMarket ? Math.max(1, scan.poolCount ?? 0) : 0,
+    poolCount: identity && hasMarket ? Math.max(1, scan.poolCount ?? 0) : (scan.poolCount ?? 0),
+    primaryDexName: scan.fallbackMarket?.dexName ?? scan.fallbackMarket?.dexId ?? null,
+    primaryPairLabel: pairLabel,
+    primaryPoolAddress: pairAddress,
+    poolActivity: { pairCreatedAt, pairAgeLabel: ageLabelFromIso(pairCreatedAt) },
+    lpEvidenceSummary: `Pool model: unknown | Liquidity: $${scan.fallbackMarket.liquidityUsd.toLocaleString()} | Proof applicability: unknown | Proof status: open_check | Migration: unknown`,
+    simulationStatus: identity && hasMarket ? 'eligible' : 'open_check',
+    simulationReason: identity && hasMarket ? 'fallback/normalized pool evidence exists' : 'insufficient route/pool evidence',
+  }
+}
+
+function fallbackCortexLine(scan) {
+  const broadHolders = scan.holders.top1 <= 10 && scan.holders.top10 <= 20 && scan.holders.holderCount >= 100
+  if (broadHolders && scan.ownershipStatus === 'renounced' && (scan.devClusterSupplyPercent ?? 0) === 0) {
+    return 'Holder distribution appears broad and ownership is renounced. Main open checks are fallback-only pool identity, LP model/control verification, simulation/tax status, FDV-only valuation, and missing socials.'
+  }
+  return 'Open checks remain.'
+}
+
+const btw = {
+  marketStatus: 'fallback_ok',
+  fallbackMarket: {
+    liquidityUsd: 12881,
+    volume24hUsd: 57483,
+    fdvUsd: 138951,
+    marketCapUsd: null,
+    pairAddress: '0x1111111111111111111111111111111111111111',
+    dexId: 'aerodrome',
+    dexName: 'Aerodrome',
+    baseToken: { symbol: 'BTW' },
+    quoteToken: { symbol: 'WETH' },
+    pairCreatedAt: '1781355343000',
+  },
+  poolCount: 0,
+  holders: { top1: 4.56, top10: 5.27, holderCount: 162 },
+  ownershipStatus: 'renounced',
+  devClusterSupplyPercent: 0,
+  socials: {},
+}
+
+const btwPool = normalizeFallbackMarketPool(btw)
+const btwCortex = fallbackCortexLine(btw)
+assert('BTW pairCreatedAt parses from millisecond string', btwPool.poolActivity.pairCreatedAt !== null, btwPool.poolActivity)
+assert('BTW pairAgeLabel is not null', btwPool.poolActivity.pairAgeLabel !== null, btwPool.poolActivity)
+assert('BTW fallback pool evidence is normalized', btwPool.observedPoolPresent === true && btwPool.observedPoolCount >= 1 && btwPool.poolCount >= 1, btwPool)
+assert('BTW fallback identity carries dex/pair/address', btwPool.primaryDexName === 'Aerodrome' && btwPool.primaryPairLabel === 'BTW/WETH' && btwPool.primaryPoolAddress != null, btwPool)
+assert('BTW CORTEX does not say severe holder/dev-control', !/severe holder\/dev-control/i.test(btwCortex), btwCortex)
+assert('BTW CORTEX mentions broad holders + renounced ownership', /Holder distribution appears broad and ownership is renounced/i.test(btwCortex), btwCortex)
+assert('BTW lpEvidenceSummary is not null', typeof btwPool.lpEvidenceSummary === 'string' && btwPool.lpEvidenceSummary.length > 0, btwPool.lpEvidenceSummary)
+assert('BTW simulation status has value/reason', Boolean(btwPool.simulationStatus && btwPool.simulationReason), btwPool)
+assert('BTW creator display does not show Yes · 0.0%', creatorTopHolderDisplay(true, 0) !== 'Yes · 0.0%', creatorTopHolderDisplay(true, 0))
 
 // ─── Summary ────────────────────────────────────────────────────────────
 

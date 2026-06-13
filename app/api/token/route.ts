@@ -2544,9 +2544,27 @@ function normalizeDexLabel(raw: string | null): string | null {
   return null
 }
 
+function normalizePairCreatedAtValue(value: unknown): string | null {
+  if (value == null || value === '') return null
+  const raw = typeof value === 'string' ? value.trim() : value
+  if (typeof raw === 'number' || (typeof raw === 'string' && /^\d+$/.test(raw))) {
+    const n = Number(raw)
+    if (!Number.isFinite(n) || n <= 0) return null
+    const ms = n > 10_000_000_000 ? n : n * 1000
+    const d = new Date(ms)
+    return Number.isNaN(d.getTime()) ? null : d.toISOString()
+  }
+  if (typeof raw === 'string') {
+    const d = new Date(raw)
+    return Number.isNaN(d.getTime()) ? null : d.toISOString()
+  }
+  return null
+}
+
 function computePairAge(createdAt: string): string | null {
   try {
-    const ms = Date.now() - new Date(createdAt).getTime()
+    const normalized = normalizePairCreatedAtValue(createdAt) ?? createdAt
+    const ms = Date.now() - new Date(normalized).getTime()
     if (isNaN(ms) || ms < 0) return null
     const mins  = Math.floor(ms / 60000)
     const hours = Math.floor(ms / 3600000)
@@ -3511,7 +3529,7 @@ export async function POST(req: Request) {
       if (/pancakeswap/i.test(nameHint)) return 'pancakeswap'
       return dexId || dexName || null
     })()
-    const primaryDexName = normalizeDexLabel(_extractedDexId)
+    const primaryDexName = normalizeDexLabel(_extractedDexId) ?? normalizeDexLabel(dexFbEarly?.dexId ?? null)
     const pairName = String(mainPoolAttr.name ?? mainPoolAttr.pool_name ?? mainPoolAttr.pair_name ?? "").trim() || null;
     const selectedPrimaryPoolSource = String(mainPoolAttr.address ?? "").trim() ? "attributes.address" : (String(mainPool?.id ?? "").trim() ? "pool.id_normalized" : "none");
     const poolAddressPresent = Boolean(primaryPoolAddress && /^0x[a-f0-9]{40}$/.test(primaryPoolAddress));
@@ -5101,15 +5119,14 @@ export async function POST(req: Request) {
     // Fallback-market normalization: when the primary pool read has no usable pair timestamp
     // or pool count but the secondary market read confirms a single usable pool address with
     // liquidity, surface that evidence instead of leaving LP context as null/unknown.
-    const _dexFbCreatedAtMs = _dexFb?.pairCreatedAt != null ? Number(_dexFb.pairCreatedAt) : null
-    const normalizedPairCreatedAt = pairCreatedAt
-      ?? (_dexFbCreatedAtMs != null && Number.isFinite(_dexFbCreatedAtMs) && _dexFbCreatedAtMs > 0
-        ? new Date(_dexFbCreatedAtMs).toISOString()
-        : null)
-    const normalizedObservedPoolCount: number | null = observedPoolCount
-      ?? (marketDataSource === 'fallback' && _fallbackLiquidityDetected && lpPoolAddressPresent ? 1 : observedPoolCount)
+    const fallbackPairIdentityPresent = Boolean(_dexFb?.pairAddress && /^0x[a-f0-9]{40}$/i.test(_dexFb.pairAddress))
+    const fallbackPoolEvidencePresent = Boolean(_fallbackLiquidityDetected && fallbackPairIdentityPresent)
+    const normalizedPairCreatedAt = normalizePairCreatedAtValue(pairCreatedAt) ?? normalizePairCreatedAtValue(_dexFb?.pairCreatedAt)
+    const normalizedObservedPoolCount: number | null = poolCount > 0
+      ? poolCount
+      : (observedPoolPresent || fallbackPoolEvidencePresent ? 1 : 0)
     const normalizedPairAgeLabel = pairAgeLabel ?? (normalizedPairCreatedAt ? computePairAge(normalizedPairCreatedAt) : null)
-    const poolCountStatus: 'confirmed' | 'inferred_from_primary_pool' | 'unknown' = poolCount > 0
+    const poolCountStatus: 'confirmed' | 'inferred_from_primary_pool' | 'unknown' = poolCount > 0 || fallbackPoolEvidencePresent
       ? 'confirmed'
       : observedPoolPresent
         ? 'inferred_from_primary_pool'
@@ -5162,7 +5179,16 @@ export async function POST(req: Request) {
     const _simImpliedClean = hpResult.ok === true && hpResult.honeypot === false && hpResult.simulationSuccess === true
     const securityStatus: "ok" | "partial" | "inferred" | "error" =
       hpResult.ok ? "ok" : _simImpliedClean ? "partial" : "inferred";
-    const securityReason = hpResult.ok ? null : _simImpliedClean ? "simulation_implied_clean" : "simulation_not_performed";
+    const simulationOpenReason = hpResult.ok
+      ? null
+      : !fallbackPoolEvidencePresent && !observedPoolPresent
+        ? 'insufficient route/pool evidence'
+        : !(_dexFb?.pairAddress || lpPoolAddress)
+          ? 'missing pair address'
+          : lpModelProof.model === 'concentrated'
+            ? 'unsupported pool model'
+            : 'timeout'
+    const securityReason = hpResult.ok ? null : _simImpliedClean ? "simulation_implied_clean" : simulationOpenReason;
     const holdersStatus: CanonicalStatus =
       holderDistributionStatus.status === 'ok' ? 'verified' :
       holderDistributionStatus.status === 'partial' ? 'partial' :
@@ -5870,8 +5896,8 @@ export async function POST(req: Request) {
       lpControl: { ...lpControl, lpController, lpControllerType, proofApplicability: lpProofApplicability },
       lpControlRead: computeLpControlRead(lpControl, String(lpPool?.pairName ?? ""), lpControllerAddress),
       selectedPool: {
-        pair: _primaryPair ?? null,
-        address: lpPoolAddress ?? null,
+        pair: _primaryPair ?? ([ _dexFb?.baseToken?.symbol, _dexFb?.quoteToken?.symbol ].filter(Boolean).join('/') || null),
+        address: lpPoolAddress ?? _dexFb?.pairAddress ?? null,
         poolId: primaryMarketPoolId ?? lpPool?.poolId ?? null,
         model: lpModelProof.model,
         liquidityUsd: _el,
@@ -5888,8 +5914,8 @@ export async function POST(req: Request) {
       lpControllerIntel,
       lpControl: { ...lpControl, lpController, lpControllerType, proofApplicability: lpProofApplicability },
       selectedPool: {
-        pair: _primaryPair ?? null,
-        address: lpPoolAddress ?? null,
+        pair: _primaryPair ?? ([ _dexFb?.baseToken?.symbol, _dexFb?.quoteToken?.symbol ].filter(Boolean).join('/') || null),
+        address: lpPoolAddress ?? _dexFb?.pairAddress ?? null,
         poolId: primaryMarketPoolId ?? lpPool?.poolId ?? null,
         model: lpModelProof.model,
         liquidityUsd: _el,
@@ -5901,8 +5927,8 @@ export async function POST(req: Request) {
       lpControl: { ...lpControl, lpController, lpControllerType, proofApplicability: lpProofApplicability },
       lpControllerIntel: lpControllerIntel as unknown as Record<string, unknown>,
       selectedPool: {
-        pair: _primaryPair ?? null,
-        address: lpPoolAddress ?? null,
+        pair: _primaryPair ?? ([ _dexFb?.baseToken?.symbol, _dexFb?.quoteToken?.symbol ].filter(Boolean).join('/') || null),
+        address: lpPoolAddress ?? _dexFb?.pairAddress ?? null,
         poolId: primaryMarketPoolId ?? lpPool?.poolId ?? null,
         model: lpModelProof.model,
         liquidityUsd: _el,
@@ -5924,8 +5950,8 @@ export async function POST(req: Request) {
       poolModel: lpModelProof.model,
       marketDataSource,
       selectedPool: {
-        pair: _primaryPair ?? null,
-        address: lpPoolAddress ?? null,
+        pair: _primaryPair ?? ([ _dexFb?.baseToken?.symbol, _dexFb?.quoteToken?.symbol ].filter(Boolean).join('/') || null),
+        address: lpPoolAddress ?? _dexFb?.pairAddress ?? null,
         dex: lpControl.primaryPoolDex ?? primaryDexName ?? null,
         liquidityUsd: _el,
         createdAt: normalizedPairCreatedAt,
@@ -6530,7 +6556,7 @@ export async function POST(req: Request) {
       liquidityUsd: _el,
       volume24hUsd: _ev,
       poolCount: normalizedObservedPoolCount,
-      observedPoolPresent,
+      observedPoolPresent: observedPoolPresent || fallbackPoolEvidencePresent,
       observedPoolCount: normalizedObservedPoolCount,
       poolCountStatus,
       primaryDexName,
@@ -6571,8 +6597,8 @@ export async function POST(req: Request) {
         volume24hUsd: _ev,
         buyVolume24hUsd,
         sellVolume24hUsd,
-        pairCreatedAt: pairCreatedAt ?? _dexFb?.pairCreatedAt ?? null,
-        pairAgeLabel,
+        pairCreatedAt: normalizedPairCreatedAt ?? pairCreatedAt ?? _dexFb?.pairCreatedAt ?? null,
+        pairAgeLabel: normalizedPairAgeLabel,
       },
       priceChart,
       chartStatus,
@@ -6598,9 +6624,9 @@ export async function POST(req: Request) {
       // Selected canonical LP-verification pool — the single pool ChainLens used for LP
       // control/proof analysis, summarized for public display.
       selectedPool: {
-        pair: _primaryPair ?? null,
-        address: lpPoolAddress ?? null,
-        dex: lpControl.primaryPoolDex ?? null,
+        pair: _primaryPair ?? ([ _dexFb?.baseToken?.symbol, _dexFb?.quoteToken?.symbol ].filter(Boolean).join('/') || null),
+        address: lpPoolAddress ?? _dexFb?.pairAddress ?? null,
+        dex: lpControl.primaryPoolDex ?? primaryDexName ?? _dexFb?.dexId ?? null,
         model: lpModelProof.model,
         liquidityUsd: _el,
         createdAt: normalizedPairCreatedAt,
@@ -6616,6 +6642,8 @@ export async function POST(req: Request) {
       security: {
         // resolveSimulation result — null when simulation provider is unavailable
         simulation: _simResult ? { ..._simResult, source: publicSourceLabel(_simResult.source, debugMode) } : _simResult,
+        simulationStatus: hpResult.ok ? 'ok' : 'open_check',
+        simulationReason: hpResult.ok ? null : simulationOpenReason,
         // resolveContractFlags: ABI scan with bytecode fallback
         contractFlags: resolveContractFlags(grContractIntel, cortexContractFlags),
         devOwnership: {
@@ -6953,6 +6981,7 @@ export async function POST(req: Request) {
           status: toCanonical(securityStatus),
           rawStatus: securityStatus,
           reason: securityReason,
+          simulationReason: hpResult.ok ? null : simulationOpenReason,
           source: hpResult.ok ? "risk_layer" : "inferred",
           honeypot: hpResult.ok ? hpResult.honeypot : null,
           buyTax: hpResult.ok ? hpResult.buyTax : null,
