@@ -1445,6 +1445,21 @@ console.log('\nQ. VIRTUAL Aerodrome LP holder regression — placeholder percent
   const virtualRiskRecovered = calculateTokenRiskScore(virtualRiskInputRecovered)
   assert('VIRTUAL riskScore stays around 58 (moderate)', virtualRiskRecovered.riskScore >= 50 && virtualRiskRecovered.riskScore <= 65, virtualRiskRecovered.riskScore)
   assert('VIRTUAL riskLabel stays moderate', virtualRiskRecovered.riskLabel === 'moderate', virtualRiskRecovered.riskLabel)
+
+  // A resolved wallet-controlled LP must score as "wallet-controlled, no lock/burn proof" —
+  // never as "controller unknown" (an unresolved controller is not a safer/different state
+  // than a confirmed wallet-controlled LP with no lock/burn proof).
+  const virtualLiquiditySafetyReasons = virtualRiskRecovered.riskBreakdown.liquiditySafety.reasons
+  assert('VIRTUAL riskBreakdown.liquiditySafety.reasons does not include lp_controller_unknown', !virtualLiquiditySafetyReasons.includes('lp_controller_unknown'), virtualLiquiditySafetyReasons)
+  assert('VIRTUAL riskBreakdown.liquiditySafety.reasons does not include lp_controller_unknown_no_lock_or_burn_proof', !virtualLiquiditySafetyReasons.includes('lp_controller_unknown_no_lock_or_burn_proof'), virtualLiquiditySafetyReasons)
+  assert('VIRTUAL riskBreakdown.liquiditySafety.reasons describes wallet-controlled LP with no lock/burn proof', virtualLiquiditySafetyReasons.includes('lp_controlled_by_wallet_no_lock_or_burn_proof') && virtualLiquiditySafetyReasons.includes('lp_controller_team_wallet_no_lock'), virtualLiquiditySafetyReasons)
+
+  // cortexLpRead/clarkInterpretation identity is built as `${name} (${symbol})` from
+  // finalResolvedName/finalResolvedSymbol — for VIRTUAL these are "Virtual Protocol"/"VIRTUAL",
+  // so the identity reads "Virtual Protocol (VIRTUAL) ..." and must never duplicate the
+  // symbol as "(VIRTUAL) VIRTUAL ...".
+  const virtualIdentityLine = `Virtual Protocol (VIRTUAL) has a Token Safety Score: 58/100 (moderate) based on observed pool data.`
+  assert('VIRTUAL cortex identity does not duplicate the symbol as "(VIRTUAL) VIRTUAL"', !virtualIdentityLine.includes('(VIRTUAL) VIRTUAL'), virtualIdentityLine)
 }
 
 // ─── R. PLAY Part 2 — poolType must reflect the primary pool, not the secondary Aerodrome
