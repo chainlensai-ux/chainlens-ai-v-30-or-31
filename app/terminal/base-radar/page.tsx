@@ -70,6 +70,8 @@ interface RadarSummary {
   unverified: number
   averageLiquidity: number
   highestLiquidityToken: string
+  highestVolumeToken: string
+  newestToken: string
   hottestToken: string
   hasSecurityData: boolean
 }
@@ -104,12 +106,12 @@ const STATUS_BORDER: Record<RadarStatus, string> = {
 }
 
 const FILTER_CHIPS: Array<{ key: RadarFilter; label: string }> = [
-  { key: 'ALL', label: 'All' },
-  { key: 'HOT', label: 'Hot' },
-  { key: 'WATCH', label: 'Watch' },
-  { key: 'EARLY', label: 'Early' },
-  { key: 'RISKY', label: 'Risky' },
-  { key: 'UNVERIFIED', label: 'Unverified' },
+  { key: 'ALL', label: 'Trending' },
+  { key: 'EARLY', label: 'New' },
+  { key: 'HOT', label: 'Volume' },
+  { key: 'WATCH', label: 'Liquidity' },
+  { key: 'UNVERIFIED', label: 'Open Checks' },
+  { key: 'RISKY', label: 'High Risk' },
 ]
 
 const SORT_OPTIONS: Array<{ key: SortMode; label: string }> = [
@@ -121,18 +123,25 @@ const SORT_OPTIONS: Array<{ key: SortMode; label: string }> = [
 ]
 
 function fmtUSD(v: number): string {
+  if (!Number.isFinite(v) || v <= 0) return 'Open check'
   if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(1)}M`
   if (v >= 1_000) return `$${(v / 1_000).toFixed(1)}K`
   return `$${v.toFixed(0)}`
 }
 
 function fmtAge(minutes: number): string {
+  if (!Number.isFinite(minutes) || minutes < 0) return 'Open check'
   if (minutes < 60) return `${minutes}m`
   return `${Math.floor(minutes / 60)}h ${minutes % 60}m`
 }
 
 function shortAddr(addr: string): string {
+  if (!addr) return 'Open check'
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`
+}
+
+function safeText(value: string | null | undefined, fallback = 'Open check'): string {
+  return value && value.trim().length > 0 ? value : fallback
 }
 
 function hasSuspiciousBranding(name: string, symbol: string): boolean {
@@ -227,15 +236,15 @@ function getFlags(token: RadarToken, status: RadarStatus, momentum: MomentumLeve
   const buyTax = token.honeypot?.buyTax ?? 0
   const sellTax = token.honeypot?.sellTax ?? 0
 
-  if (token.liquidityUsd < 2_000) flags.push('Low liquidity')
-  if (token.liquidityUsd >= 30_000) flags.push('High liquidity')
-  if (token.volume24h <= 0) flags.push('No volume')
-  if (momentum === 'HIGH') flags.push('High momentum')
-  if (token.ageMinutes <= 30) flags.push('Very new')
-  if (buyTax > 5 || sellTax > 5) flags.push('High tax')
-  if (buyTax === 0 && sellTax === 0 && token.honeypot?.simulationSuccess) flags.push('Clean tax')
-  if (suspiciousBranding) flags.push('Suspicious branding')
-  if (status === 'UNVERIFIED') flags.push('Unverified')
+  if (momentum === 'HIGH') flags.push('Momentum')
+  if (token.ageMinutes <= 30) flags.push('New Pool')
+  if (token.volume24h >= 5_000) flags.push('Volume Spike')
+  if (token.liquidityUsd >= 30_000) flags.push('Liquidity Watch')
+  if (token.liquidityUsd < 2_000) flags.push('LP Open Check')
+  if (buyTax > 5 || sellTax > 5) flags.push('Simulation Open')
+  if (buyTax === 0 && sellTax === 0 && token.honeypot?.simulationSuccess) flags.push('Simulation Clear')
+  if (suspiciousBranding) flags.push('CORTEX Watch')
+  if (status === 'UNVERIFIED') flags.push('Open Check')
 
   return flags
 }
@@ -387,12 +396,12 @@ function TokenCard({
         </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 120px', gap: '8px', marginBottom: '7px' }}>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, minmax(0, 1fr))', gap: '8px' }}>
+      <div className='token-card-main' style={{ display: 'grid', gridTemplateColumns: '1fr 120px', gap: '8px', marginBottom: '7px' }}>
+        <div className='token-card-metrics' style={{ display: 'grid', gridTemplateColumns: 'repeat(6, minmax(0, 1fr))', gap: '8px' }}>
           <Metric label='Score' value={String(token.radarScore)} accent={token.radarScore >= 80 ? '#22d3ee' : '#e2e8f0'} />
           <Metric label='Liquidity' value={fmtUSD(token.liquidityUsd)} />
           <Metric label='Vol 24h' value={fmtUSD(token.volume24h)} />
-          <Metric label='FDV' value={token.fdvUsd ? fmtUSD(token.fdvUsd) : 'N/A'} />
+          <Metric label='FDV' value={token.fdvUsd ? fmtUSD(token.fdvUsd) : 'Open check'} />
           <Metric label='Momentum' value={token.momentum} />
           <Metric label='Tax' value={securityVerified ? `B ${buyTax?.toFixed(1) ?? '0'} / S ${sellTax?.toFixed(1) ?? '0'}%` : 'Unknown'} />
         </div>
@@ -409,12 +418,12 @@ function TokenCard({
             <path d='M2 22 L18 19 L33 21 L46 14 L62 16 L78 9 L93 13 L108 8' stroke='rgba(45,212,191,0.8)' strokeWidth='1.5' fill='none' />
           </svg>
           <span style={{ fontSize: '8px', color: '#475569', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.08em' }}>
-            Sparkline
+            Radar Signal
           </span>
         </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0, 1fr))', gap: '5px', marginBottom: '7px' }}>
+      <div className='token-quality-grid' style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0, 1fr))', gap: '5px', marginBottom: '7px' }}>
         {(
           [
             ['Liquidity', token.launchQuality.liquidity],
@@ -442,7 +451,7 @@ function TokenCard({
       )}
 
       <p style={{ fontSize: '10px', color: '#64748b', margin: '0 0 7px', lineHeight: 1.35, borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '7px', fontStyle: 'italic' }}>
-        “{token.clarkVerdict ?? token.clarkSignal}”
+        Why on radar: {safeText(token.clarkVerdict ?? token.clarkSignal)}
       </p>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -507,46 +516,79 @@ function Metric({ label, value, accent }: { label: string; value: string; accent
   )
 }
 
+function OverviewMetric({ label, value, caption, accent = '#99f6e4' }: { label: string; value: string; caption: string; accent?: string }) {
+  return (
+    <div className="radar-overview-card" style={{
+      background: 'linear-gradient(180deg, rgba(8,13,24,0.82), rgba(10,18,32,0.58))',
+      border: '1px solid rgba(148, 163, 184, 0.14)',
+      borderRadius: '16px',
+      padding: '14px',
+      boxShadow: `inset 0 1px 0 rgba(255,255,255,0.05), 0 18px 45px rgba(0,0,0,0.22)`,
+      minWidth: 0,
+    }}>
+      <p style={{ margin: '0 0 8px', fontSize: '9px', color: '#64748b', letterSpacing: '0.14em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>{label}</p>
+      <p style={{ margin: 0, fontSize: '17px', color: accent, fontWeight: 800, letterSpacing: '-0.02em', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{value}</p>
+      <p style={{ margin: '6px 0 0', fontSize: '10px', color: '#64748b', lineHeight: 1.35 }}>{caption}</p>
+    </div>
+  )
+}
+
 function PulseStrip({ summary }: { summary: RadarSummary }) {
   const items = [
-    { label: 'New Pools', value: String(summary.newPools), icon: '◈', glow: 'rgba(45,212,191,0.24)' },
-    { label: 'Worth Watching', value: String(summary.worthWatching), icon: '◎', glow: 'rgba(56,189,248,0.22)' },
-    { label: 'High Momentum', value: String(summary.highMomentum), icon: '↗', glow: 'rgba(139,92,246,0.22)' },
-    { label: 'Unverified', value: String(summary.unverified), icon: '◌', glow: 'rgba(244,114,182,0.20)' },
-    { label: 'Avg Liquidity', value: fmtUSD(summary.averageLiquidity), icon: '$', glow: 'rgba(45,212,191,0.24)' },
-    { label: 'Highest Liquidity', value: summary.highestLiquidityToken, icon: '◉', glow: 'rgba(168,85,247,0.22)' },
-    { label: 'Hottest Score', value: summary.hottestToken, icon: '✦', glow: 'rgba(236,72,153,0.22)' },
+    { label: 'Tokens Tracked', value: String(summary.newPools), caption: 'Current Base results', accent: '#e2e8f0' },
+    { label: 'Strongest Mover', value: summary.hottestToken, caption: 'Highest radar score', accent: '#22d3ee' },
+    { label: 'Highest Volume', value: summary.highestVolumeToken, caption: 'Top 24h activity', accent: '#99f6e4' },
+    { label: 'Newest Pool', value: summary.newestToken, caption: 'Fresh discovery feed', accent: '#60a5fa' },
+    { label: 'Liquidity Leader', value: summary.highestLiquidityToken, caption: 'Deepest visible liquidity', accent: '#c4b5fd' },
+    { label: 'Open Checks', value: String(summary.unverified), caption: 'Needs more evidence', accent: '#fbbf24' },
   ]
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, minmax(0, 1fr))', gap: '8px', marginBottom: '14px' }}>
+    <div className="radar-overview-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(6, minmax(0, 1fr))', gap: '10px', marginBottom: '14px' }}>
       {items.map((item) => (
-        <div key={item.label} style={{
-          background: 'linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.015))',
-          border: '1px solid rgba(255,255,255,0.09)',
-          borderRadius: '10px',
-          padding: '10px',
-          boxShadow: `inset 0 1px 0 rgba(255,255,255,0.03), 0 0 22px ${item.glow}`,
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
-            <span style={{
-              width: '16px',
-              height: '16px',
-              borderRadius: '5px',
-              background: 'rgba(255,255,255,0.05)',
-              border: '1px solid rgba(255,255,255,0.10)',
-              display: 'inline-flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              fontSize: '9px',
-              color: '#99f6e4',
-              fontFamily: 'var(--font-plex-mono)',
-            }}>{item.icon}</span>
-            <p style={{ margin: 0, fontSize: '8px', color: '#3a5268', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>{item.label}</p>
-          </div>
-          <p style={{ margin: 0, fontSize: '11px', color: '#e2e8f0', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{item.value}</p>
-        </div>
+        <OverviewMetric key={item.label} {...item} />
       ))}
+    </div>
+  )
+}
+
+function CortexRadarPanel({ summary, topTokens, onRescan }: { summary: RadarSummary; topTokens: TokenIntel[]; onRescan: () => void }) {
+  const signals = [
+    summary.highMomentum > 0 ? `${summary.highMomentum} momentum signal${summary.highMomentum === 1 ? '' : 's'} in the current Base feed.` : 'Momentum is still forming across the visible feed.',
+    summary.worthWatching > 0 ? `${summary.worthWatching} token${summary.worthWatching === 1 ? '' : 's'} have enough traction to watch.` : 'No strong watch cluster yet; keep radar open.',
+    topTokens[0] ? `${topTokens[0].symbol} is leading the current radar score.` : 'Open check: no lead token yet.',
+    summary.averageLiquidity > 0 ? `Average visible liquidity is ${fmtUSD(summary.averageLiquidity)}.` : 'Liquidity evidence is still an open check.',
+  ]
+  const warnings = [
+    summary.unverified > 0 ? `${summary.unverified} open verification check${summary.unverified === 1 ? '' : 's'} require review.` : 'No open verification cluster in the current results.',
+    summary.hasSecurityData ? 'Simulation evidence is available for part of the feed.' : 'Simulation evidence is an open check.',
+    'Use Token Scanner before acting on any radar signal.',
+  ]
+
+  return (
+    <div style={{ background: 'linear-gradient(180deg, rgba(6,11,22,0.92), rgba(12,20,36,0.76))', border: '1px solid rgba(45,212,191,0.18)', borderRadius: '18px', padding: '16px', boxShadow: '0 24px 70px rgba(0,0,0,0.28), 0 0 45px rgba(45,212,191,0.08)' }}>
+      <p style={{ margin: '0 0 4px', color: '#99f6e4', fontSize: '11px', fontWeight: 800, letterSpacing: '0.16em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>CORTEX Radar Read</p>
+      <p style={{ margin: '0 0 14px', color: '#94a3b8', fontSize: '12px', lineHeight: 1.45 }}>Live interpretation of the visible Base Radar feed. Not financial advice.</p>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '14px' }}>
+        {signals.slice(0, 4).map(signal => (
+          <div key={signal} style={{ display: 'flex', gap: '8px', color: '#cbd5e1', fontSize: '11px', lineHeight: 1.4 }}>
+            <span style={{ color: '#22d3ee' }}>✦</span>
+            <span>{signal}</span>
+          </div>
+        ))}
+      </div>
+      <div style={{ borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+        {warnings.slice(0, 3).map(warning => (
+          <div key={warning} style={{ display: 'flex', gap: '8px', color: '#fbbf24', fontSize: '11px', lineHeight: 1.4 }}>
+            <span>◇</span>
+            <span>{warning}</span>
+          </div>
+        ))}
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginTop: '14px' }}>
+        <Link href="/terminal/token-scanner" style={{ textDecoration: 'none', padding: '7px 10px', borderRadius: '10px', border: '1px solid rgba(45,212,191,0.30)', background: 'rgba(45,212,191,0.12)', color: '#99f6e4', fontSize: '10px', fontWeight: 800, letterSpacing: '0.08em', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Open Token Scanner</Link>
+        <button onClick={onRescan} style={{ padding: '7px 10px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.12)', background: 'rgba(255,255,255,0.04)', color: '#cbd5e1', fontSize: '10px', fontWeight: 800, letterSpacing: '0.08em', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', cursor: 'pointer' }}>Rescan</button>
+      </div>
     </div>
   )
 }
@@ -590,11 +632,11 @@ function StatsPanel({ summary, fetchedAt, loading, showUpsell }: { summary: Rada
 
       <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '12px', padding: '14px' }}>
         <p style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#3a5268', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', margin: '0 0 10px' }}>
-          Data Sources
+          Evidence
         </p>
         {[
-          'CORTEX market feed',
-          summary.hasSecurityData ? 'Security simulation' : 'ChainLens Radar Engine',
+          'Market Data',
+          summary.hasSecurityData ? 'Simulation Evidence' : 'CORTEX Evidence',
         ].map(src => (
           <div key={src} style={{ display: 'flex', alignItems: 'center', gap: '7px', fontSize: '11px', color: '#64748b', marginBottom: '6px', fontFamily: 'var(--font-plex-mono)' }}>
             <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#2DD4BF', flexShrink: 0 }} />
@@ -666,7 +708,7 @@ function LowActivityPanel() {
   return (
     <div style={{ borderRadius: '12px', border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(255,255,255,0.02)', padding: '14px 16px', fontFamily: 'var(--font-plex-mono)', marginTop: '10px' }}>
       <p style={{ margin: 0, fontSize: '11px', color: '#64748b' }}>
-        Radar is quiet right now. New Base pools will appear here as CoinGecko Terminal detects them.
+        Radar is quiet right now. New Base pools will appear here as Market Data detects them.
       </p>
     </div>
   )
@@ -770,7 +812,7 @@ export default function BaseRadarPage() {
       `Status: ${token.status}`,
       `Liquidity: ${fmtUSD(token.liquidityUsd)}`,
       `Volume 24h: ${fmtUSD(token.volume24h)}`,
-      `FDV: ${token.fdvUsd ? fmtUSD(token.fdvUsd) : 'N/A'}`,
+      `FDV: ${token.fdvUsd ? fmtUSD(token.fdvUsd) : 'Open check'}`,
       `Momentum: ${token.momentum}`,
       `Buy Tax: ${buyTax !== null && buyTax !== undefined ? `${buyTax.toFixed(1)}%` : 'Unknown'}`,
       `Sell Tax: ${sellTax !== null && sellTax !== undefined ? `${sellTax.toFixed(1)}%` : 'Unknown'}`,
@@ -792,6 +834,8 @@ export default function BaseRadarPage() {
     const unverified = intelTokens.filter(token => token.status === 'UNVERIFIED').length
     const averageLiquidity = intelTokens.length > 0 ? Math.round(intelTokens.reduce((sum, token) => sum + token.liquidityUsd, 0) / intelTokens.length) : 0
     const highestLiquidity = [...intelTokens].sort((a, b) => b.liquidityUsd - a.liquidityUsd)[0]
+    const highestVolume = [...intelTokens].sort((a, b) => b.volume24h - a.volume24h)[0]
+    const newest = [...intelTokens].sort((a, b) => a.ageMinutes - b.ageMinutes)[0]
     const hottest = [...intelTokens].sort((a, b) => b.radarScore - a.radarScore)[0]
     const hasSecurityData = intelTokens.some(token => token.honeypot?.simulationSuccess)
 
@@ -801,8 +845,10 @@ export default function BaseRadarPage() {
       highMomentum,
       unverified,
       averageLiquidity,
-      highestLiquidityToken: highestLiquidity ? `${highestLiquidity.symbol} ${fmtUSD(highestLiquidity.liquidityUsd)}` : 'N/A',
-      hottestToken: hottest ? `${hottest.symbol} (${hottest.radarScore})` : 'N/A',
+      highestLiquidityToken: highestLiquidity ? `${highestLiquidity.symbol} ${fmtUSD(highestLiquidity.liquidityUsd)}` : 'Open check',
+      highestVolumeToken: highestVolume ? `${highestVolume.symbol} ${fmtUSD(highestVolume.volume24h)}` : 'Open check',
+      newestToken: newest ? `${newest.symbol} ${fmtAge(newest.ageMinutes)}` : 'Open check',
+      hottestToken: hottest ? `${hottest.symbol} (${hottest.radarScore})` : 'Open check',
       hasSecurityData,
     }
   }, [intelTokens])
@@ -847,12 +893,15 @@ export default function BaseRadarPage() {
           .radar-stats { position: static !important; }
           .radar-controls { flex-direction: column !important; align-items: flex-start !important; }
           .radar-controls > div { width: 100%; justify-content: space-between; }
-          .radar-pulse-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-          .radar-pulse-wrap > * { min-width: 640px; }
+          .radar-overview-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+          .radar-overview-card { padding: 12px !important; }
+          .token-card-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+          .token-card-main { grid-template-columns: 1fr !important; }
+          .token-quality-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
         }
       `}</style>
 
-      <div className="radar-main" style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden', padding: '28px 32px 120px', color: '#e2e8f0', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
+      <div className="radar-main" style={{ minHeight: '100%', overflowY: 'auto', overflowX: 'hidden', padding: '28px 32px 120px', color: '#e2e8f0', fontFamily: 'var(--font-inter, Inter, sans-serif)', background: 'radial-gradient(circle at 18% 0%, rgba(34,211,238,0.11), transparent 34%), radial-gradient(circle at 88% 12%, rgba(168,85,247,0.10), transparent 30%), #030712' }}>
         <div style={{ marginBottom: '20px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', marginBottom: '6px' }}>
             <h1 style={{ fontSize: '24px', fontWeight: 700, color: '#f8fafc', margin: 0, letterSpacing: '-0.01em' }}>Base Radar</h1>
@@ -863,8 +912,8 @@ export default function BaseRadarPage() {
             </span>
           </div>
 
-          <p style={{ fontSize: '12px', color: '#64748b', margin: '0 0 12px' }}>
-            Base launch command center — dense signals for new pools, momentum, and risk context.
+          <p style={{ fontSize: '13px', color: '#94a3b8', margin: '0 0 12px', maxWidth: '720px', lineHeight: 1.45 }}>
+            Live market discovery for Base tokens
           </p>
 
           <div className="radar-pulse-wrap">
@@ -990,8 +1039,10 @@ export default function BaseRadarPage() {
 
           <div className="radar-stats" style={{ position: 'sticky', top: '0' }}>
             <p style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#3a5268', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', margin: '0 0 10px' }}>
-              Radar Stats
+              CORTEX Panel
             </p>
+            <CortexRadarPanel summary={summary} topTokens={filteredAndSortedTokens} onRescan={handleManualRefresh} />
+            <div style={{ height: '12px' }} />
             <StatsPanel summary={summary} fetchedAt={data?.fetchedAt ?? null} loading={loading} showUpsell={showUpsell} />
           </div>
         </div>
