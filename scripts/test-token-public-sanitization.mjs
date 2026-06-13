@@ -10,6 +10,7 @@ import { buildLpMovementWatch } from '../lib/server/lpMovementWatch.ts'
 import { buildLpLockBurnIntel, LP_LOCK_BURN_REGISTRY } from '../lib/server/lpLockBurnIntel.ts'
 import { buildLpUnlockTimeline } from '../lib/server/lpUnlockTimeline.ts'
 import { buildLpHistoryTimeline } from '../lib/server/lpHistoryTimeline.ts'
+import { buildSecondaryLpExposure } from '../lib/server/secondaryLpExposure.ts'
 
 let passed = 0
 let failed = 0
@@ -810,6 +811,109 @@ assert('EVO lpControllerIntel.controlProof is not_applicable (not misleadingly "
 assert('EVO lpLockBurnIntel.status is not_applicable', evoLockBurnIntel?.status === 'not_applicable', evoLockBurnIntel)
 assert('EVO lpUnlockTimeline.status is not_applicable', evoUnlockTimeline?.status === 'not_applicable', evoUnlockTimeline)
 assert('EVO lpMovementWatch.status is not_applicable or unsupported', ['not_applicable', 'pool_model_not_supported'].includes(evoMovementWatch?.status), evoMovementWatch)
+
+// ─── K. MFERGPT-like Uniswap V4 concentrated primary + Aerodrome V2 secondary ──
+console.log('\nK. MFERGPT-like concentrated primary pool + secondary Aerodrome V2 LP exposure')
+const mferPoolId = '0x9876543210fedcba9876543210fedcba98765432fedcba9876543210fedcba'
+const mferSecondaryPool = '0x9bcc904149a72f33f22f7288de837cc4b3ed3779'
+const mferLpControl = {
+  status: 'team_controlled',
+  confidence: 'medium',
+  displayLpModel: 'concentrated_liquidity',
+  proofApplicability: 'not_applicable',
+  lockStatus: 'not_applicable',
+  burnStatus: 'not_applicable',
+  proofStatus: 'not_applicable',
+  primaryMarketPool: null,
+  primaryMarketPoolId: mferPoolId,
+  primaryPoolDex: 'uniswap-v4-base',
+  primaryPoolType: 'concentrated',
+  verificationPool: null,
+  verificationPoolDex: null,
+  verificationPoolType: null,
+  lpController: 'wallet',
+  lpControllerType: 'wallet',
+  evidence: ['top_holder=0xfee7486a3ebff6d668630517aa493ae7a0598067', 'top_share=100%'],
+  secondaryLpControlSignals: {
+    status: 'team_controlled',
+    confidence: 'medium',
+    poolAddress: mferSecondaryPool,
+    poolDex: 'aerodrome-base',
+    poolType: 'v2',
+    reason: 'lp_holder_evidence',
+    evidence: ['top_holder=0xfee7486a3ebff6d668630517aa493ae7a0598067', 'top_share=100%'],
+  },
+}
+const mferSelectedPool = { address: null, pair: 'MFERGPT / WETH', dex: 'Uniswap V4', model: 'concentrated', liquidityUsd: 250000 }
+// lpMeta.lpToken carries the SECONDARY Aerodrome V2 pool's own address (the V2 pool
+// contract is its own LP token) — this must never leak into a primary "not applicable" card.
+const mferLpMeta = { lpToken: mferSecondaryPool, displayLpModel: 'concentrated_liquidity' }
+
+const mferControllerIntel = buildLpControllerIntel({
+  lpControl: mferLpControl,
+  selectedPool: mferSelectedPool,
+  lpExitRisk: 'watch',
+  liquidityDepthRisk: 'moderate',
+  lpMigrationProof: { status: 'low' },
+  lpMeta: mferLpMeta,
+})
+const mferLockBurnIntel = buildLpLockBurnIntel({
+  chain: 'base',
+  lpControl: mferLpControl,
+  lpControllerIntel: mferControllerIntel,
+  selectedPool: mferSelectedPool,
+  lpMeta: mferLpMeta,
+})
+const mferMovementWatch = buildLpMovementWatch({
+  chain: 'base',
+  lpControllerIntel: mferControllerIntel,
+  lpControl: mferLpControl,
+  selectedPool: mferSelectedPool,
+  lpMeta: mferLpMeta,
+})
+
+assert('MFERGPT selectedPool.pair is MFERGPT / WETH (primary, not secondary $MFER)', mferSelectedPool.pair === 'MFERGPT / WETH', mferSelectedPool)
+assert('MFERGPT lpLockBurnIntel.status is not_applicable', mferLockBurnIntel.status === 'not_applicable', mferLockBurnIntel)
+assert('MFERGPT lpLockBurnIntel.lockBurnProof is not_applicable', mferLockBurnIntel.lockBurnProof === 'not_applicable', mferLockBurnIntel)
+assert('MFERGPT lpLockBurnIntel.lpTokenOrPool is not the secondary Aerodrome V2 pool', mferLockBurnIntel.lpTokenOrPool !== mferSecondaryPool, mferLockBurnIntel.lpTokenOrPool)
+assert('MFERGPT lpLockBurnIntel.lpTokenOrPool is the primary pool identity (poolId)', mferLockBurnIntel.lpTokenOrPool === mferPoolId, mferLockBurnIntel.lpTokenOrPool)
+assert('MFERGPT lpMovementWatch.status is not_applicable or unsupported', ['not_applicable', 'pool_model_not_supported'].includes(mferMovementWatch.status), mferMovementWatch.status)
+assert('MFERGPT lpMovementWatch.lpTokenOrPool is not the secondary Aerodrome V2 pool', mferMovementWatch.lpTokenOrPool !== mferSecondaryPool, mferMovementWatch.lpTokenOrPool)
+assert('MFERGPT lpMovementWatch.lpTokenOrPool is the primary pool identity (poolId)', mferMovementWatch.lpTokenOrPool === mferPoolId, mferMovementWatch.lpTokenOrPool)
+
+const mferSecondaryExposure = buildSecondaryLpExposure({
+  secondarySignals: { ...mferLpControl.secondaryLpControlSignals, pair: 'MFERGPT / $MFER' },
+  primaryDex: 'Uniswap V4',
+  primaryPair: 'MFERGPT / WETH',
+  primaryPoolModel: 'concentrated',
+})
+assert('MFERGPT secondaryLpExposure exists', Boolean(mferSecondaryExposure), mferSecondaryExposure)
+assert('MFERGPT secondaryLpExposure.poolAddress is the Aerodrome V2 pool', mferSecondaryExposure?.poolAddress === mferSecondaryPool, mferSecondaryExposure)
+assert('MFERGPT secondaryLpExposure.controllerSharePercent is 100', mferSecondaryExposure?.controllerSharePercent === 100, mferSecondaryExposure)
+assert('MFERGPT secondaryLpExposure.status is wallet_controlled or watch', ['wallet_controlled', 'watch'].includes(mferSecondaryExposure?.status ?? ''), mferSecondaryExposure?.status)
+assert('MFERGPT secondaryLpExposure.lockBurnProof is open_check', mferSecondaryExposure?.lockBurnProof === 'open_check', mferSecondaryExposure)
+assert('MFERGPT secondaryLpExposure.summary mentions Uniswap V4 concentrated liquidity', /Uniswap V4.*concentrated liquidity/i.test(mferSecondaryExposure?.summary ?? ''), mferSecondaryExposure?.summary)
+assert('MFERGPT secondaryLpExposure.summary mentions secondary ERC-20 LP pool and wallet-controlled', /secondary ERC-20 LP pool.*wallet-controlled/i.test(mferSecondaryExposure?.summary ?? ''), mferSecondaryExposure?.summary)
+assert('MFERGPT secondaryLpExposure.summary says monitor separately / not primary liquidity', /monitor.*separately/i.test(mferSecondaryExposure?.summary ?? '') && /not primary liquidity/i.test(mferSecondaryExposure?.summary ?? ''), mferSecondaryExposure?.summary)
+
+// No secondary signals -> no secondaryLpExposure (VIRTUAL/EVO-style regression guard).
+assert('No secondaryLpExposure when secondaryLpControlSignals is absent', buildSecondaryLpExposure({ secondarySignals: null, primaryDex: 'Aerodrome', primaryPair: 'VIRTUAL / WETH', primaryPoolModel: 'concentrated' }) === null)
+
+// Sanitization: secondaryLpExposure must not leak raw DEX ids or provider/API names publicly.
+const mferPublicPayload = sanitizePublicTokenResponse({
+  symbol: 'MFERGPT',
+  selectedPool: { address: null, pair: 'MFERGPT / WETH', dex: 'Uniswap V4', liquidityUsd: 250000, createdAt: null },
+  lpControllerIntel: mferControllerIntel,
+  lpMovementWatch: mferMovementWatch,
+  lpLockBurnIntel: mferLockBurnIntel,
+  secondaryLpExposure: mferSecondaryExposure,
+}, false)
+assert('MFERGPT public payload includes secondaryLpExposure', Boolean(mferPublicPayload.secondaryLpExposure), mferPublicPayload.secondaryLpExposure)
+assert('MFERGPT secondaryLpExposure.poolDex does not leak raw DEX id', mferPublicPayload.secondaryLpExposure?.poolDex === 'Aerodrome', mferPublicPayload.secondaryLpExposure?.poolDex)
+for (const providerName of providerNames) {
+  assert(`MFERGPT secondaryLpExposure does not mention provider name "${providerName}"`, !serialized(mferPublicPayload.secondaryLpExposure).includes(providerName.toLowerCase()))
+}
+assert('MFERGPT secondaryLpExposure does not contain raw "aerodrome-base" id', !serialized(mferPublicPayload.secondaryLpExposure).includes('aerodrome-base'))
 
 console.log(`\n${passed} passed, ${failed} failed`)
 if (failed > 0) process.exit(1)

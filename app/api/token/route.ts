@@ -9,6 +9,7 @@ import { buildLpMovementWatch } from "@/lib/server/lpMovementWatch";
 import { buildLpLockBurnIntel, LP_LOCK_BURN_REGISTRY } from "@/lib/server/lpLockBurnIntel";
 import { buildLpUnlockTimeline } from "@/lib/server/lpUnlockTimeline";
 import { buildLpHistoryTimeline } from "@/lib/server/lpHistoryTimeline";
+import { buildSecondaryLpExposure } from "@/lib/server/secondaryLpExposure";
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { type CanonicalStatus, toCanonical } from '@/lib/canonicalStatus'
 import { buildClusterMap } from '@/lib/clusterMap'
@@ -3567,6 +3568,13 @@ export async function POST(req: Request) {
     const _lpAddrSnippet = _lpProofAddress ? `${_lpProofAddress.slice(0, 10)}…${_lpProofAddress.slice(-4)}` : "none";
     const lpVerifyPoolObj = lpVerifyPoolPresent ? lpVerifyPool : lpPool
     const lpPair = lpVerifyPoolObj?.pairName ?? `${lpVerifyPoolObj?.baseTokenSymbol ?? "?"}/${lpVerifyPoolObj?.quoteTokenSymbol ?? "?"}`;
+    // _primaryPair always describes the PRIMARY/canonical pool's pair (e.g. "MFERGPT / WETH"
+    // on Uniswap V4), even when a different secondary V2/Aerodrome pool (lpPair, above) was
+    // used for LP-holder lock/burn proof — selectedPool fields shown to LP-intel builders
+    // must never mix the primary pool's dex/model with a secondary pool's pair label.
+    const _primaryPair = lpPool?.pairName
+      ?? (lpPool?.baseTokenSymbol || lpPool?.quoteTokenSymbol ? `${lpPool?.baseTokenSymbol ?? "?"}/${lpPool?.quoteTokenSymbol ?? "?"}` : null)
+      ?? lpPair
     const marketPair = pairName ?? "unknown";
     const lpReason = lpVerifyPoolPresent && lpVerifyPool !== lpPool
       ? `V2 proof pool selected (${lpVerifyPool?.dexId ?? lpVerifyPool?.dexName ?? 'unknown dex'}) — highest-liquidity V2 pool for burn/lock verification`
@@ -4006,6 +4014,22 @@ export async function POST(req: Request) {
 
       lpControl.primaryMarketPool = lpDiagnostics.primaryMarketPoolAddress ?? null
       lpControl.primaryMarketPoolId = lpDiagnostics.primaryMarketPoolId ?? null
+      // When the primary pool is concentrated/protocol liquidity (no standard ERC-20 LP
+      // proof applies), but a separate V2/Aerodrome pool was checked and produced LP-holder
+      // evidence (e.g. a dominant LP holder), surface that as a SEPARATE secondary signal —
+      // it must never overwrite or be confused with the primary pool's lpControllerIntel/
+      // lpLockBurnIntel/lpMovementWatch, which describe the primary (concentrated) pool model.
+      if (_notApplicable && lpVerifyPoolPresent && lpVerifyPoolAddress && lpPool !== lpVerifyPool) {
+        lpControl.secondaryLpControlSignals = {
+          status: lpControl.status,
+          confidence: lpControl.confidence,
+          poolAddress: lpVerifyPoolAddress,
+          poolDex: lpDiagnostics.lpVerificationDex ?? null,
+          poolType: _lpProofType,
+          reason: typeof lpControl.reason === "string" ? lpControl.reason : "",
+          evidence: Array.isArray(lpControl.evidence) ? [...lpControl.evidence] : [],
+        }
+      }
       // For concentrated/no-pool models there is no ERC-20 LP verification pool — report
       // these as null rather than surfacing a CLMM/V3 pool that was only used to confirm
       // "no LP token here", which would otherwise look like a (misleading) V2 proof source.
@@ -5570,7 +5594,7 @@ export async function POST(req: Request) {
       lpControl: { ...lpControl, lpController, lpControllerType, proofApplicability: lpProofApplicability },
       lpControlRead: computeLpControlRead(lpControl, String(lpPool?.pairName ?? ""), lpControllerAddress),
       selectedPool: {
-        pair: lpPair ?? null,
+        pair: _primaryPair ?? null,
         address: lpPoolAddress ?? null,
         model: lpModelProof.model,
         liquidityUsd: _el,
@@ -5587,7 +5611,7 @@ export async function POST(req: Request) {
       lpControllerIntel,
       lpControl: { ...lpControl, lpController, lpControllerType, proofApplicability: lpProofApplicability },
       selectedPool: {
-        pair: lpPair ?? null,
+        pair: _primaryPair ?? null,
         address: lpPoolAddress ?? null,
         model: lpModelProof.model,
         liquidityUsd: _el,
@@ -5599,7 +5623,7 @@ export async function POST(req: Request) {
       lpControl: { ...lpControl, lpController, lpControllerType, proofApplicability: lpProofApplicability },
       lpControllerIntel: lpControllerIntel as unknown as Record<string, unknown>,
       selectedPool: {
-        pair: lpPair ?? null,
+        pair: _primaryPair ?? null,
         address: lpPoolAddress ?? null,
         model: lpModelProof.model,
         liquidityUsd: _el,
@@ -5621,7 +5645,7 @@ export async function POST(req: Request) {
       poolModel: lpModelProof.model,
       marketDataSource,
       selectedPool: {
-        pair: lpPair ?? null,
+        pair: _primaryPair ?? null,
         address: lpPoolAddress ?? null,
         dex: lpControl.primaryPoolDex ?? primaryDexName ?? null,
         liquidityUsd: _el,
@@ -5638,6 +5662,16 @@ export async function POST(req: Request) {
       lpMigrationProof,
     })
 
+    // Separate secondary V2/ERC-20 LP exposure signal — never merged into the primary
+    // pool's lpControllerIntel/lpMovementWatch/lpLockBurnIntel/lpUnlockTimeline/lpHistoryTimeline above.
+    const secondaryLpExposure = buildSecondaryLpExposure({
+      secondarySignals: lpControl.secondaryLpControlSignals
+        ? { ...lpControl.secondaryLpControlSignals, pair: lpPair ?? null }
+        : null,
+      primaryDex: lpControl.primaryPoolDex ?? primaryDexName ?? null,
+      primaryPair: _primaryPair ?? null,
+      primaryPoolModel: lpModelProof.model,
+    })
 
     // ── Data Fill Score: 0-100. Inferred values count at half weight ──
     const _fillMarket = (liquidityUsd != null || marketCapFromGt != null || fdv != null) ? 20 : 0
@@ -6283,7 +6317,7 @@ export async function POST(req: Request) {
       // Selected canonical LP-verification pool — the single pool ChainLens used for LP
       // control/proof analysis, summarized for public display.
       selectedPool: {
-        pair: lpPair ?? null,
+        pair: _primaryPair ?? null,
         address: lpPoolAddress ?? null,
         dex: lpControl.primaryPoolDex ?? null,
         model: lpModelProof.model,
@@ -6580,6 +6614,7 @@ export async function POST(req: Request) {
       lpLockBurnIntel,
       lpUnlockTimeline,
       lpHistoryTimeline,
+      ...(secondaryLpExposure ? { secondaryLpExposure } : {}),
       lpMeta: {
         v2PoolCandidatesCount: lpDiagnostics.v2PoolCandidatesCount,
         protocolPoolCandidatesCount: lpDiagnostics.protocolPoolCandidatesCount,

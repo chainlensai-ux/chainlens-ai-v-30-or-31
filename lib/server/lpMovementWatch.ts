@@ -175,13 +175,19 @@ export function buildLpMovementWatch(input: LpMovementWatchInput): LpMovementWat
     const standardMessage = unsupported === 'not_applicable'
       ? 'This pool uses a concentrated-liquidity model, so ERC-20 LP-token transfer movement is not applicable in this scan.'
       : 'This pool model is protocol-specific, so ERC-20 LP-token transfer movement is not supported by this scan.'
+    // Same as lpLockBurnIntel: never surface the secondary V2/Aerodrome verification
+    // pool/LP-token address (verificationPool / lpMeta.lpToken) inside a primary
+    // "not applicable" card — only the primary pool's own identity, or null.
+    const primaryLpTokenOrPool = normalizeAddress(selectedPool.address)
+      ?? normalizeAddress(lpControl.primaryMarketPool)
+      ?? asString(lpControl.primaryMarketPoolId)
     return {
       status: unsupported,
       movementRisk: 'not_applicable',
       confidence: 'medium',
       controller,
       controllerType,
-      lpTokenOrPool,
+      lpTokenOrPool: primaryLpTokenOrPool,
       recentMovementDetected: null,
       recentTransferCount: null,
       lastMovementAt: null,

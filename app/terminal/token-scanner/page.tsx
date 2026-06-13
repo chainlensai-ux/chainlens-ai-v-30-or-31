@@ -253,6 +253,22 @@ type ScanResult = {
     evidenceGaps?: string[]
     nextActions?: string[]
   } | null
+  secondaryLpExposure?: {
+    status?: string
+    poolAddress?: string | null
+    poolDex?: string | null
+    poolType?: string | null
+    pair?: string | null
+    controller?: string | null
+    controllerType?: string
+    controllerSharePercent?: number | null
+    lockBurnProof?: string
+    confidence?: string
+    summary?: string
+    signals?: string[]
+    evidenceGaps?: string[]
+    nextActions?: string[]
+  } | null
   lpDataMode?: 'resolved' | 'evidence_based' | 'indexed' | 'strict' | 'minimal' | 'fallback' | 'insufficient'
   lpDataModeRaw?: 'strict' | 'minimal' | 'fallback' | 'insufficient'
   lpDataConfidence?: 'high' | 'medium' | 'low' | 'unverified'
@@ -5087,6 +5103,51 @@ export default function TerminalTokenScanner() {
                           ['Signals', result.lpMovementWatch.signals ?? [], '#34d399'],
                           ['Evidence Gaps', result.lpMovementWatch.evidenceGaps ?? [], '#fbbf24'],
                           ['Next Actions', result.lpMovementWatch.nextActions ?? [], '#67e8f9'],
+                        ].map(([title, items, color]) => (
+                          <div key={String(title)} style={{ minWidth: 0 }}>
+                            <p style={{ margin: '0 0 6px', fontSize: '9px', color: String(color), fontWeight: 900, letterSpacing: '.12em', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{String(title)}</p>
+                            {(items as string[]).slice(0, 4).map((item) => (
+                              <div key={item} style={{ display: 'flex', gap: '6px', marginBottom: '4px', alignItems: 'flex-start' }}>
+                                <span style={{ color: String(color), fontSize: '10px', lineHeight: '15px' }}>•</span>
+                                <p style={{ margin: 0, fontSize: '10px', color: '#94a3b8', lineHeight: 1.45, fontFamily: 'var(--font-plex-mono)' }}>{item}</p>
+                              </div>
+                            ))}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* ── Secondary LP Exposure ─────────────────────────── */}
+                  {result.secondaryLpExposure && (
+                    <div style={{ marginBottom: '14px', padding: '12px 14px', background: 'linear-gradient(135deg, rgba(148,163,184,0.06), rgba(15,23,42,0.72))', border: '1px solid rgba(148,163,184,0.18)', borderRadius: '14px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'flex-start', marginBottom: '10px' }}>
+                        <div>
+                          <p style={{ margin: 0, fontSize: '10px', fontWeight: 900, letterSpacing: '.16em', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Secondary LP Exposure</p>
+                          {result.secondaryLpExposure.summary && <p style={{ margin: '7px 0 0', fontSize: '11px', color: '#cbd5e1', lineHeight: 1.55, fontFamily: 'var(--font-plex-mono)' }}>{result.secondaryLpExposure.summary}</p>}
+                        </div>
+                        <span style={{ flexShrink: 0, padding: '4px 9px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '.10em', color: '#94a3b8', background: 'rgba(2,6,23,0.48)', border: '1px solid rgba(148,163,184,0.25)', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
+                          secondary LP exposure detected
+                        </span>
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(145px,1fr))', gap: '7px', marginBottom: '10px' }}>
+                        {([
+                          ['Controller Share', result.secondaryLpExposure.controllerSharePercent != null ? `${result.secondaryLpExposure.controllerSharePercent.toFixed(2)}%` : 'Open check'],
+                          ['Controller Type', result.secondaryLpExposure.controllerType?.replace(/_/g, ' ') ?? 'Open check'],
+                          ['Lock/Burn Proof', result.secondaryLpExposure.lockBurnProof?.replace(/_/g, ' ') ?? 'Open check'],
+                          ['Confidence', result.secondaryLpExposure.confidence ?? 'low'],
+                        ] as Array<[string, string]>).map(([label, value]) => (
+                          <div key={label} style={{ padding: '8px 9px', borderRadius: '10px', background: 'rgba(2,6,23,0.42)', border: '1px solid rgba(148,163,184,0.10)', minWidth: 0 }}>
+                            <div style={{ fontSize: '9px', color: '#64748b', letterSpacing: '.10em', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '4px' }}>{label}</div>
+                            <div style={{ fontSize: '11px', color: '#e2e8f0', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'capitalize', overflow: 'hidden', textOverflow: 'ellipsis' }}>{value}</div>
+                          </div>
+                        ))}
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(170px,1fr))', gap: '9px' }}>
+                        {[
+                          ['Signals', result.secondaryLpExposure.signals ?? [], '#34d399'],
+                          ['Evidence Gaps', result.secondaryLpExposure.evidenceGaps ?? [], '#fbbf24'],
+                          ['Next Actions', result.secondaryLpExposure.nextActions ?? [], '#67e8f9'],
                         ].map(([title, items, color]) => (
                           <div key={String(title)} style={{ minWidth: 0 }}>
                             <p style={{ margin: '0 0 6px', fontSize: '9px', color: String(color), fontWeight: 900, letterSpacing: '.12em', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{String(title)}</p>

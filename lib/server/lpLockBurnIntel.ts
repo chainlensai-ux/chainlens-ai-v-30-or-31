@@ -138,9 +138,16 @@ export function buildLpLockBurnIntel(input: LpLockBurnIntelInput): LpLockBurnInt
   }
 
   if (isNotApplicable(lpControl, selectedPool, lpMeta)) {
+    // Concentrated/protocol-managed primary pools have no ERC-20 LP token of their own —
+    // only report the PRIMARY pool's own identity here (or null), never the secondary
+    // V2/Aerodrome verification pool/LP-token address (lpControl.verificationPool /
+    // lpMeta.lpToken), which would otherwise leak into a "not applicable" primary card.
+    const primaryLpTokenOrPool = selectedPoolAddress
+      ?? normalizeAddress(lpControl.primaryMarketPool)
+      ?? asString(lpControl.primaryMarketPoolId)
     return {
       status: 'not_applicable', lockBurnProof: 'not_applicable', proofSource: 'pool_model', confidence: asString(lpControl.confidence) ?? 'medium', chain, poolModel: poolModel ?? 'concentrated_liquidity',
-      lpTokenOrPool, lockedPercent: null, burnedPercent: null, unlockedPercent: null,
+      lpTokenOrPool: primaryLpTokenOrPool, lockedPercent: null, burnedPercent: null, unlockedPercent: null,
       lockContracts: [], burnAddresses: [], unlockTime: null, unlockTimeStatus: 'not_applicable',
       summary: 'ERC20 LP lock/burn proof does not apply to concentrated or protocol-managed pools; positions require protocol-specific verification.',
       signals: ['pool model does not expose standard ERC20 LP lock/burn proof'],
