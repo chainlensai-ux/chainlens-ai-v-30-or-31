@@ -106,15 +106,33 @@ assert.equal(dexFixture1.marketCapUsd, 123456)
 assert.equal(dexFixture1.marketCapStatus, 'verified')
 assert.equal(dexFixture1.sourceKind, 'market_api')
 
+assert.equal(dexFixture1.marketCapFieldPath, 'dexPair.marketCap')
+
+const dexInfoFixture = resolveBaseRadarMarketCap({ dexPair: { info: { marketCap: '654321' }, fdv: 1 } })
+assert.equal(dexInfoFixture.marketCapUsd, 654321)
+assert.equal(dexInfoFixture.marketCapStatus, 'verified')
+assert.equal(dexInfoFixture.marketCapFieldPath, 'dexPair.info.marketCap')
+
 // ─── resolveBaseRadarMarketCap: DexScreener marketCapUsd field ────────────
 const dexFixture2 = resolveBaseRadarMarketCap({ dexPair: { marketCapUsd: 123456 } })
 assert.equal(dexFixture2.marketCapUsd, 123456)
 assert.equal(dexFixture2.marketCapStatus, 'verified')
+assert.equal(dexFixture2.marketCapFieldPath, 'dexPair.marketCapUsd')
 
 // ─── resolveBaseRadarMarketCap: GeckoTerminal pool attributes fixture ─────
 const geckoFixture = resolveBaseRadarMarketCap({ geckoPool: { attributes: { market_cap_usd: '123456', fdv_usd: '120000', reserve_in_usd: '30000' } } })
 assert.equal(geckoFixture.marketCapUsd, 123456)
 assert.equal(geckoFixture.marketCapStatus, 'verified')
+assert.equal(geckoFixture.marketCapFieldPath, 'geckoPool.attributes.market_cap_usd')
+
+const geckoIncludedFixture = resolveBaseRadarMarketCap({ geckoIncludedToken: { attributes: { market_cap_usd: '777777' } } })
+assert.equal(geckoIncludedFixture.marketCapUsd, 777777)
+assert.equal(geckoIncludedFixture.marketCapStatus, 'verified')
+assert.equal(geckoIncludedFixture.marketCapFieldPath, 'geckoIncludedToken.attributes.market_cap_usd')
+
+const normalizedFixture = resolveBaseRadarMarketCap({ normalized: { marketCapUsd: 888888 } })
+assert.equal(normalizedFixture.marketCapUsd, 888888)
+assert.equal(normalizedFixture.marketCapFieldPath, 'normalized.marketCapUsd')
 
 // ─── No market cap + valid FDV -> FDV fallback, not verified market cap ──
 const noMcValidFdv = getRadarValuationBasis({ marketCapUsd: null, marketCapStatus: 'unavailable', fdvUsd: 50_000, liquidityUsd: 5_000 })
@@ -132,5 +150,32 @@ assert.equal(validMcInvalidFdv.verified, true)
 const invalidFdvNoMc = getRadarValuationBasis({ marketCapUsd: null, marketCapStatus: 'unavailable', fdvUsd: 1, liquidityUsd: 5_000 })
 assert.equal(invalidFdvNoMc.basis, 'unavailable')
 assert.equal(invalidFdvNoMc.reason, 'FDV VALUE FAILED SANITY CHECK')
+
+// ─── Fjorn fixture: impossible FDV rejected despite liquidity ─────────────
+const fjornFixture = getRadarValuationBasis({ marketCapUsd: null, marketCapStatus: 'unavailable', fdvUsd: 0.017, liquidityUsd: 31_070 })
+assert.equal(fjornFixture.basis, 'unavailable')
+assert.equal(fjornFixture.valueUsd, null)
+assert.equal(fjornFixture.reason, 'FDV VALUE FAILED SANITY CHECK')
+
+// ─── Route-level public/debug shape regression from raw MC resolver output ─
+const routeResolved = resolveBaseRadarMarketCap({ dexPair: { marketCapUsd: 222222 } })
+const routeValuation = getRadarValuationBasis({ marketCapUsd: routeResolved.marketCapUsd, marketCapStatus: routeResolved.marketCapStatus, fdvUsd: 1, liquidityUsd: 5_000 })
+const publicMarket = {
+  marketCapUsd: routeResolved.marketCapUsd,
+  marketCapStatus: routeResolved.marketCapStatus,
+  valuationBasis: routeValuation.basis,
+  marketCapDiagnostics: {
+    selectedMarketCapUsd: routeResolved.marketCapUsd,
+    selectedMarketCapStatus: routeResolved.marketCapStatus,
+    selectedMarketCapFieldPath: routeResolved.marketCapFieldPath,
+    selectedValuationBasis: routeValuation.basis,
+    fdvUsd: 1,
+    rawCandidates: routeResolved.rawCandidates,
+    resolverReason: routeResolved.reason,
+  },
+}
+assert.equal(publicMarket.marketCapUsd, 222222)
+assert.equal(publicMarket.marketCapStatus, 'verified')
+assert.equal(publicMarket.marketCapDiagnostics.selectedMarketCapFieldPath, 'dexPair.marketCapUsd')
 
 console.log('base radar valuation tests passed')

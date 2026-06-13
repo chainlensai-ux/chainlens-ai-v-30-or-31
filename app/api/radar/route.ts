@@ -3,7 +3,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import { getOrFetchCached } from '@/lib/coingeckoCache'
 import { createRateLimiter, getClientIp } from '@/lib/server/rateLimit'
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
-import { DEFAULT_RADAR_ALLOW_FDV_FALLBACK, DEFAULT_RADAR_MIN_LIQUIDITY_USD, DEFAULT_RADAR_MIN_VALUATION_USD, getRadarCortexValuationLine, getRadarValuationCardDisplay, resolveBaseRadarMarketCap, tokenPassesRadarValuationFilters, type RadarValuationBasis } from '@/lib/baseRadarValuation'
+import { DEFAULT_RADAR_ALLOW_FDV_FALLBACK, DEFAULT_RADAR_MIN_LIQUIDITY_USD, DEFAULT_RADAR_MIN_VALUATION_USD, getRadarCortexValuationLine, getRadarValuationCardDisplay, getRadarValuationEvidenceGap, resolveBaseRadarMarketCap, tokenPassesRadarValuationFilters, type RadarValuationBasis } from '@/lib/baseRadarValuation'
 import { getRadarSimulationDisplay, type RadarSimulationOpenCheckReason, type RadarSimulationStatus } from '@/lib/baseRadarSimulation'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
@@ -33,7 +33,7 @@ export interface RadarToken {
   volume24h: number
   fdvUsd: number | null
   marketCapUsd: number | null
-  marketCapStatus: 'verified' | 'inferred' | 'partial'
+  marketCapStatus: 'verified' | 'unavailable'
   valuationBasis: RadarValuationBasis
   valuationUsd: number | null
   valuationLabel: string
@@ -50,12 +50,13 @@ export interface RadarToken {
   simulationCortexLine: string
   clarkVerdict: string | null
   marketCapDiagnostics?: {
-    rawDexMarketCap: number | null
-    rawGeckoMarketCap: number | null
     selectedMarketCapUsd: number | null
     selectedMarketCapStatus: 'verified' | 'unavailable'
+    selectedMarketCapFieldPath: string | null
+    selectedValuationBasis: RadarValuationBasis
     fdvUsd: number | null
-    valuationBasis: RadarValuationBasis
+    rawCandidates: { path: string; value: unknown }[]
+    resolverReason: string
   }
 }
 
@@ -255,14 +256,15 @@ export async function GET(req: NextRequest) {
     }
 
     // Build token lookup from ?include= entities
-    const tokenMap = new Map<string, { name: string; symbol: string; address: string }>()
+    const tokenMap = new Map<string, { name: string; symbol: string; address: string; attributes: Record<string, unknown> }>()
     for (const item of includedAll) {
-      const attrs = item.attributes as Record<string, string> | undefined
+      const attrs = item.attributes as Record<string, unknown> | undefined
       if (item.type === 'token' && attrs?.address) {
         tokenMap.set(item.id as string, {
-          name:    attrs.name   ?? 'Unknown',
-          symbol:  attrs.symbol ?? '?',
-          address: attrs.address,
+          name:    typeof attrs.name === 'string' ? attrs.name : 'Unknown',
+          symbol:  typeof attrs.symbol === 'string' ? attrs.symbol : '?',
+          address: String(attrs.address),
+          attributes: attrs,
         })
       }
     }
@@ -307,29 +309,27 @@ export async function GET(req: NextRequest) {
       seenContracts.add(key)
 
       const fdvUsd = parseFloat(String(attrs?.fdv_usd ?? '0')) || null
-      const resolvedMarketCap = resolveBaseRadarMarketCap({ geckoPool: { attributes: attrs } })
+      const resolvedMarketCap = resolveBaseRadarMarketCap({ geckoPool: { attributes: attrs }, geckoIncludedToken: { attributes: baseToken.attributes } })
       const marketCapUsd = resolvedMarketCap.marketCapUsd
-      const marketCapStatus = marketCapUsd != null ? 'verified' : (fdvUsd != null ? 'inferred' : 'partial')
+      const marketCapStatus = resolvedMarketCap.marketCapStatus
       const filterResult = tokenPassesRadarValuationFilters({ marketCapUsd, marketCapStatus, fdvUsd, liquidityUsd, minValuationUsd, minLiquidityUsd, allowFdvFallback })
       if (!filterResult.included) continue
       const valuation = filterResult.valuation
       const valuationCardDisplay = getRadarValuationCardDisplay(valuation, fmtK)
-      const evidenceGaps = valuation.basis === 'fdv_fallback'
-        ? ['Market cap unavailable; FDV used as fallback valuation.']
-        : valuation.basis === 'unavailable'
-          ? ['Market valuation unavailable.']
-          : []
+      const valuationEvidenceGap = getRadarValuationEvidenceGap(valuation)
+      const evidenceGaps = valuationEvidenceGap ? [valuationEvidenceGap] : []
       candidates.push({
         name: baseToken.name, symbol: baseToken.symbol, contract: baseToken.address,
         ageMinutes, liquidityUsd, volume24h, fdvUsd, marketCapUsd, marketCapStatus, valuationBasis: valuation.basis, valuationUsd: valuation.valueUsd, valuationLabel: valuation.label, valuationSublabel: valuationCardDisplay.sublabel, valuationVerified: valuation.verified, valuationReason: valuation.reason, valuationCortexLine: getRadarCortexValuationLine(valuation), evidenceGaps, riskLevel: 'SAFE', honeypot: null,
         simulationStatus: 'open_check', simulationReason: null, simulationLabel: '', simulationCortexLine: '',
         ...(debug ? { marketCapDiagnostics: {
-          rawDexMarketCap: null,
-          rawGeckoMarketCap: finiteOrNull(attrs?.market_cap_usd) ?? finiteOrNull(attrs?.market_cap) ?? finiteOrNull(attrs?.token_market_cap_usd) ?? finiteOrNull(attrs?.base_token_market_cap_usd),
           selectedMarketCapUsd: marketCapUsd,
           selectedMarketCapStatus: resolvedMarketCap.marketCapStatus,
+          selectedMarketCapFieldPath: resolvedMarketCap.marketCapFieldPath,
+          selectedValuationBasis: valuation.basis,
           fdvUsd,
-          valuationBasis: valuation.basis,
+          rawCandidates: resolvedMarketCap.rawCandidates,
+          resolverReason: resolvedMarketCap.reason,
         } } : {}),
       })
     }

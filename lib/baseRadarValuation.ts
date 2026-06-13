@@ -39,7 +39,13 @@ export function resolveFallbackMarketCap(fallbackMarketCapUsd: number | null | u
 export interface BaseRadarMarketCapRawInput {
   dexPair?: Record<string, unknown> | null
   geckoPool?: { attributes?: Record<string, unknown> | null } | null
+  geckoIncludedToken?: { attributes?: Record<string, unknown> | null } | Record<string, unknown> | null
   normalized?: Record<string, unknown> | null
+}
+
+export interface BaseRadarMarketCapCandidate {
+  path: string
+  value: unknown
 }
 
 export type BaseRadarMarketCapSourceKind = 'market_api' | null
@@ -48,6 +54,8 @@ export interface ResolvedBaseRadarMarketCap {
   marketCapUsd: number | null
   marketCapStatus: 'verified' | 'unavailable'
   sourceKind: BaseRadarMarketCapSourceKind
+  marketCapFieldPath: string | null
+  rawCandidates: BaseRadarMarketCapCandidate[]
   reason: string
 }
 
@@ -64,30 +72,54 @@ function finitePositiveNumber(value: unknown): number | null {
 export function resolveBaseRadarMarketCap(input: BaseRadarMarketCapRawInput): ResolvedBaseRadarMarketCap {
   const dexPair = input.dexPair ?? {}
   const geckoAttrs = input.geckoPool?.attributes ?? {}
+  const geckoIncludedToken = input.geckoIncludedToken ?? {}
+  const geckoIncludedAttrs = 'attributes' in geckoIncludedToken && geckoIncludedToken.attributes && typeof geckoIncludedToken.attributes === 'object'
+    ? geckoIncludedToken.attributes as Record<string, unknown>
+    : geckoIncludedToken as Record<string, unknown>
   const normalized = input.normalized ?? {}
+  const dexInfo = (dexPair as Record<string, unknown>).info && typeof (dexPair as Record<string, unknown>).info === 'object'
+    ? (dexPair as Record<string, unknown>).info as Record<string, unknown>
+    : {}
 
-  const candidates: unknown[] = [
-    (dexPair as Record<string, unknown>).marketCap,
-    (dexPair as Record<string, unknown>).marketCapUsd,
-    (dexPair as Record<string, unknown>).market_cap,
-    (dexPair as Record<string, unknown>).market_cap_usd,
-    (geckoAttrs as Record<string, unknown>).market_cap_usd,
-    (geckoAttrs as Record<string, unknown>).market_cap,
-    (geckoAttrs as Record<string, unknown>).token_market_cap_usd,
-    (geckoAttrs as Record<string, unknown>).base_token_market_cap_usd,
-    (normalized as Record<string, unknown>).marketCapUsd,
-    (normalized as Record<string, unknown>).market_cap_usd,
-    (normalized as Record<string, unknown>).marketCap,
+  const candidates: BaseRadarMarketCapCandidate[] = [
+    { path: 'dexPair.marketCap', value: (dexPair as Record<string, unknown>).marketCap },
+    { path: 'dexPair.marketCapUsd', value: (dexPair as Record<string, unknown>).marketCapUsd },
+    { path: 'dexPair.market_cap', value: (dexPair as Record<string, unknown>).market_cap },
+    { path: 'dexPair.market_cap_usd', value: (dexPair as Record<string, unknown>).market_cap_usd },
+    { path: 'dexPair.info.marketCap', value: dexInfo.marketCap },
+    { path: 'dexPair.info.marketCapUsd', value: dexInfo.marketCapUsd },
+    { path: 'geckoPool.attributes.market_cap_usd', value: (geckoAttrs as Record<string, unknown>).market_cap_usd },
+    { path: 'geckoPool.attributes.market_cap', value: (geckoAttrs as Record<string, unknown>).market_cap },
+    { path: 'geckoPool.attributes.token_market_cap_usd', value: (geckoAttrs as Record<string, unknown>).token_market_cap_usd },
+    { path: 'geckoPool.attributes.base_token_market_cap_usd', value: (geckoAttrs as Record<string, unknown>).base_token_market_cap_usd },
+    { path: 'geckoIncludedToken.attributes.market_cap_usd', value: geckoIncludedAttrs.market_cap_usd },
+    { path: 'normalized.marketCapUsd', value: (normalized as Record<string, unknown>).marketCapUsd },
+    { path: 'normalized.market_cap_usd', value: (normalized as Record<string, unknown>).market_cap_usd },
+    { path: 'normalized.marketCap', value: (normalized as Record<string, unknown>).marketCap },
   ]
 
   for (const candidate of candidates) {
-    const value = finitePositiveNumber(candidate)
+    const value = finitePositiveNumber(candidate.value)
     if (value != null) {
-      return { marketCapUsd: value, marketCapStatus: 'verified', sourceKind: 'market_api', reason: 'Explicit market cap found in raw market data.' }
+      return {
+        marketCapUsd: value,
+        marketCapStatus: 'verified',
+        sourceKind: 'market_api',
+        marketCapFieldPath: candidate.path,
+        rawCandidates: candidates,
+        reason: `Explicit market cap found at ${candidate.path}.`,
+      }
     }
   }
 
-  return { marketCapUsd: null, marketCapStatus: 'unavailable', sourceKind: null, reason: 'No explicit market cap field present in raw market data.' }
+  return {
+    marketCapUsd: null,
+    marketCapStatus: 'unavailable',
+    sourceKind: null,
+    marketCapFieldPath: null,
+    rawCandidates: candidates,
+    reason: 'No explicit market cap field present in raw or normalized market data.',
+  }
 }
 
 /**
@@ -163,7 +195,7 @@ export function tokenPassesRadarValuationFilters(input: RadarValuationInput & {
 
 export function getRadarValuationEvidenceGap(valuation: RadarValuationResult): string | null {
   if (valuation.basis === 'fdv_fallback') return 'Market cap unavailable; FDV used as fallback valuation.'
-  if (valuation.basis === 'unavailable') return 'Market valuation unavailable.'
+  if (valuation.basis === 'unavailable') return valuation.reason === 'FDV VALUE FAILED SANITY CHECK' ? 'FDV VALUE FAILED SANITY CHECK' : 'Market valuation unavailable.'
   return null
 }
 
