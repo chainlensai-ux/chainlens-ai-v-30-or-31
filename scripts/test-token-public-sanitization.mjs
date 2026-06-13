@@ -1040,5 +1040,103 @@ assert('PLAY public lpLockBurnIntel summary mentions ERC20 LP lock/burn proof do
 const playConcentratedLiquidityStatus = 'Concentrated liquidity detected — standard ERC-20 LP lock/burn proof does not apply. Liquidity control requires protocol-specific position checks.'
 assert('PLAY liquidityStatus mentions standard ERC-20 LP lock/burn proof does not apply and protocol-specific position checks', /standard ERC-20 LP lock\/burn proof does not apply/i.test(playConcentratedLiquidityStatus) && /protocol-specific position checks/i.test(playConcentratedLiquidityStatus), playConcentratedLiquidityStatus)
 
+// ─── N. VIRTUAL-like Aerodrome V2 LP — dominant LP holder evidence preserved ──
+console.log('\nN. VIRTUAL-like Aerodrome V2 dominant LP holder evidence')
+{
+  // Mirrors app/api/token/route.ts bigIntPct(): BigInt-safe percentage from raw balances.
+  function bigIntPctMirror(balanceRaw, supplyRaw) {
+    try {
+      if (balanceRaw == null || supplyRaw == null) return null
+      const b = BigInt(String(balanceRaw).split('.')[0])
+      const s = BigInt(String(supplyRaw).split('.')[0])
+      if (s === BigInt(0)) return null
+      return Number(b * BigInt(1000000) / s) / 10000
+    } catch { return null }
+  }
+
+  // GoldRush LP-holder rows with no total_supply field — the case that previously
+  // collapsed every holder's pct to 0 and discarded the dominant holder's address.
+  const virtualLpItems = [
+    { address: '0xbd62cad65b49b4ad9c7aa9b8bdb89d63221f7af5', balance: '8247000000000000000000000' },
+    { address: '0x0000000000000000000000000000000000dead', balance: '1000000000000000000000' },
+  ]
+  // RPC-derived totalSupply (eth_call 0x18160ddd), used as the fallback supply when
+  // GoldRush omits total_supply.
+  const virtualRpcTotalSupply = '10000000000000000000000000'
+
+  const virtualTop = virtualLpItems.map((h) => ({
+    address: h.address.toLowerCase(),
+    pct: bigIntPctMirror(h.balance, virtualRpcTotalSupply) ?? 0,
+  }))
+  const virtualTopHolder = virtualTop[0]
+  assert('VIRTUAL RPC-derived totalSupply fallback yields top_holder pct in 82.45-82.49 range', virtualTopHolder.pct >= 82.45 && virtualTopHolder.pct <= 82.49, virtualTopHolder.pct)
+
+  const virtualLpControlFixed = {
+    status: 'team_controlled',
+    confidence: 'high',
+    poolType: 'aerodrome',
+    source: 'Market + holder evidence',
+    reason: 'Single normal wallet holds dominant LP share.',
+    lockStatus: 'not_confirmed',
+    burnStatus: 'not_confirmed',
+    proofStatus: 'open_check',
+    evidence: [`top_holder=${virtualTopHolder.address}`, `top_share=${virtualTopHolder.pct.toFixed(2)}%`],
+  }
+  const virtualIdentity = resolveLpControllerIdentity({
+    status: virtualLpControlFixed.status,
+    evidence: virtualLpControlFixed.evidence,
+    lpControllerFromProof: 'unknown',
+    ownerAddr: null,
+  })
+  assert('VIRTUAL resolveLpControllerIdentity returns lpControllerType wallet', virtualIdentity.lpControllerType === 'wallet', virtualIdentity)
+  assert('VIRTUAL resolveLpControllerIdentity returns the dominant LP holder address', virtualIdentity.lpControllerAddress === '0xbd62cad65b49b4ad9c7aa9b8bdb89d63221f7af5', virtualIdentity)
+
+  virtualLpControlFixed.lpController = virtualIdentity.lpController
+  virtualLpControlFixed.lpControllerType = virtualIdentity.lpControllerType
+
+  const virtualSelectedPoolFixed = { address: '0x21594b992f68495dd28d605834b58889d0a727c7', pair: 'VIRTUAL / WETH', dex: 'Aerodrome', model: 'constant_product', liquidityUsd: 1234567 }
+  const virtualControllerIntelFixed = buildLpControllerIntel({
+    lpControl: virtualLpControlFixed,
+    selectedPool: virtualSelectedPoolFixed,
+    lpExitRisk: 'watch',
+    liquidityDepthRisk: 'low',
+    lpMigrationProof: { status: 'low' },
+    lpMeta: {},
+  })
+  const virtualLockBurnIntelFixed = buildLpLockBurnIntel({
+    chain: 'base',
+    lpControl: virtualLpControlFixed,
+    lpControllerIntel: virtualControllerIntelFixed,
+    selectedPool: virtualSelectedPoolFixed,
+    lpMeta: {},
+  })
+  assert('VIRTUAL lpControllerIntel.status is wallet_controlled', virtualControllerIntelFixed.status === 'wallet_controlled', virtualControllerIntelFixed)
+  assert('VIRTUAL lpControllerIntel.controller is the dominant LP holder', virtualControllerIntelFixed.controller === '0xbd62cad65b49b4ad9c7aa9b8bdb89d63221f7af5', virtualControllerIntelFixed)
+  assert('VIRTUAL lpControllerIntel.controllerSharePercent is in 82.45-82.49 range', virtualControllerIntelFixed.controllerSharePercent >= 82.45 && virtualControllerIntelFixed.controllerSharePercent <= 82.49, virtualControllerIntelFixed.controllerSharePercent)
+  assert('VIRTUAL lpLockBurnIntel.status stays open_check (no lock/burn proof confirmed)', virtualLockBurnIntelFixed.status === 'open_check', virtualLockBurnIntelFixed)
+
+  const virtualRiskInputFixed = {
+    marketCapUsd: 1_900_000_000,
+    fdvUsd: 1_900_000_000,
+    liquidityUsd: 1_234_567,
+    holderDistribution: { top1: 12, top5: 30, top10: 48 },
+    lpControl: { ...virtualLpControlFixed, displayLpModel: 'erc20_lp_token' },
+    lpProofApplicability: 'applicable',
+    lpProofStatus: 'open_check',
+    lpModelProof: { model: 'constant_product', standardLockApplies: true },
+    lpMigrationProof: { status: 'low' },
+  }
+  const virtualRiskFixed = calculateTokenRiskScore(virtualRiskInputFixed)
+  assert('VIRTUAL riskScore stays around 58 (moderate)', virtualRiskFixed.riskScore >= 50 && virtualRiskFixed.riskScore <= 65, virtualRiskFixed.riskScore)
+  assert('VIRTUAL riskLabel stays moderate', virtualRiskFixed.riskLabel === 'moderate', virtualRiskFixed.riskLabel)
+}
+
+// Concentrated fixtures (PMFI/EVO/MFERGPT-style, PLAY) remain not_applicable after the
+// VIRTUAL dominant-holder fix — the fix only adds an RPC totalSupply fallback for the V2/
+// Aerodrome GoldRush-holder-check branch and does not touch concentrated/V3/V4 handling.
+assert('EVO lpLockBurnIntel.status remains not_applicable', evoLockBurnIntel?.status === 'not_applicable', evoLockBurnIntel)
+assert('MFERGPT lpLockBurnIntel.status remains not_applicable', mferLockBurnIntel?.status === 'not_applicable', mferLockBurnIntel)
+assert('PLAY lpLockBurnIntel.status remains not_applicable', playLockBurnIntel?.status === 'not_applicable', playLockBurnIntel)
+
 console.log(`\n${passed} passed, ${failed} failed`)
 if (failed > 0) process.exit(1)

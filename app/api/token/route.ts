@@ -3808,7 +3808,20 @@ export async function POST(req: Request) {
       const lpItems = Array.isArray(_lpHoldersForControl?.data?.items) ? _lpHoldersForControl.data.items as Array<Record<string, unknown>> : [];
       _lpGrItemCount = lpItems.length
       const _lpGrTotalSupply = lpItems.find(i => i?.total_supply != null)?.total_supply
-      const _lpGrSupplyStr = _lpGrTotalSupply != null ? String(_lpGrTotalSupply) : null
+      let _lpGrSupplyStr = _lpGrTotalSupply != null ? String(_lpGrTotalSupply) : null
+      const _lpItemsHaveDirectPct = lpItems.some((h) => (toNum(h.percentage) ?? toNum(h.percent) ?? toNum(h.ownership_percentage)) != null)
+      // GoldRush LP-holder rows sometimes omit total_supply — fall back to an RPC totalSupply
+      // read (same eth_call used by the RPC-fallback path below) so balance percentages can
+      // still be derived. Without this, every holder's pct collapses to 0, the dominant LP
+      // holder's address/share is discarded, and the scan falls through to the RPC-only
+      // burn/locker/owner probe, which cannot discover an arbitrary dominant wallet.
+      if (_lpGrSupplyStr == null && !_lpItemsHaveDirectPct && lpItems.length > 0) {
+        const _lpTotalSupplyHex = await countedRpcCall("eth_call", [{ to: _lpProofAddress!, data: "0x18160ddd" }, "latest"], "lpControlCheck.totalSupply", false);
+        const _lpTotalSupplyBigInt = hexToBigInt(_lpTotalSupplyHex);
+        if (_lpTotalSupplyBigInt != null && _lpTotalSupplyBigInt > BigInt(0)) {
+          _lpGrSupplyStr = _lpTotalSupplyBigInt.toString()
+        }
+      }
       const top = lpItems.slice(0, 5).map((h) => {
         const directPct = toNum(h.percentage) ?? toNum(h.percent) ?? toNum(h.ownership_percentage)
         let derivedPct: number | null = null
