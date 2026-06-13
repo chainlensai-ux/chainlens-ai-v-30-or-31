@@ -915,5 +915,26 @@ for (const providerName of providerNames) {
 }
 assert('MFERGPT secondaryLpExposure does not contain raw "aerodrome-base" id', !serialized(mferPublicPayload.secondaryLpExposure).includes('aerodrome-base'))
 
+// ─── L. Public wording — concentrated LP lock/burn + missing-simulation copy ──
+console.log('\nL. Public wording — concentrated LP lock/burn and missing-simulation copy')
+{
+  // Mirrors app/api/token/route.ts resolvedAnalysis.liquidityStatus for lpProofApplicability === 'not_applicable'.
+  const concentratedLiquidityStatus = 'Concentrated liquidity detected — standard ERC-20 LP lock/burn proof does not apply. Liquidity control requires protocol-specific position checks.'
+  assert('concentrated liquidityStatus mentions standard ERC-20 LP lock/burn proof does not apply', /standard ERC-20 LP lock\/burn proof does not apply/i.test(concentratedLiquidityStatus), concentratedLiquidityStatus)
+  assert('concentrated liquidityStatus does not say lock/burn check requires pool address', !/lock\/burn check requires pool address/i.test(concentratedLiquidityStatus), concentratedLiquidityStatus)
+
+  // Mirrors app/api/token/route.ts _buildDeterministicSummary inferred[] entry when hpResult.ok is false.
+  const missingSimulationCopy = 'trading simulation not confirmed — verify buy/sell path and tax behavior before relying on this scan'
+  assert('missing-simulation copy says trading simulation not confirmed', /trading simulation not confirmed/i.test(missingSimulationCopy), missingSimulationCopy)
+  assert('missing-simulation copy does not say tax rates inferred as standard', !/tax rates inferred as standard/i.test(missingSimulationCopy), missingSimulationCopy)
+}
+
+for (const payload of [publicPayload, fallbackPublicPayload, protocolPayload, mferPublicPayload]) {
+  assert('public payload does not contain "tax rates inferred as standard"', !serialized(payload).includes('tax rates inferred as standard'), payload.symbol)
+  assert('public payload does not contain "lock/burn check requires pool address"', !serialized(payload).includes('lock/burn check requires pool address'), payload.symbol)
+}
+assert('GOAL/concentrated public lpLockBurnIntel summary mentions ERC20 LP lock/burn proof does not apply', /ERC20 LP lock\/burn proof does not apply/i.test(protocolPayload.lpLockBurnIntel?.summary ?? ''), protocolPayload.lpLockBurnIntel?.summary)
+assert('MFERGPT public secondaryLpExposure does not contain the concentrated liquidityStatus copy (separate field)', !serialized(mferPublicPayload.secondaryLpExposure).includes('Concentrated liquidity detected'))
+
 console.log(`\n${passed} passed, ${failed} failed`)
 if (failed > 0) process.exit(1)

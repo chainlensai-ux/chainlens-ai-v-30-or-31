@@ -3047,7 +3047,7 @@ function _buildDeterministicSummary(
       confirmed.push(`Trading simulation passed${taxNote ? ` (${taxNote})` : ''}.`)
     }
   } else {
-    inferred.push('tax rates inferred as standard — direct simulation deferred, verify before large transactions')
+    inferred.push('trading simulation not confirmed — verify buy/sell path and tax behavior before relying on this scan')
   }
   if (analysis.suspiciousFunctions.length > 0) {
     risks.push(`bytecode contains suspicious selectors: ${analysis.suspiciousFunctions.slice(0, 3).join(', ')}`)
@@ -6153,11 +6153,13 @@ export async function POST(req: Request) {
         ? 'LP is locked via a time-lock contract.'
         : lpLockStatus === 'burned'
           ? 'LP is burned — liquidity is permanently locked.'
-          : lpPoolAddressPresent && lpProofApplicability === 'applicable'
-            ? (lpControllerType === 'wallet'
-              ? 'LP controller is wallet-controlled — lock/burn proof is not confirmed.'
-              : 'LP pool identified — lock/burn proof is not confirmed for the selected pool.')
-            : analysis.liquidityStatus,
+          : lpProofApplicability === 'not_applicable'
+            ? 'Concentrated liquidity detected — standard ERC-20 LP lock/burn proof does not apply. Liquidity control requires protocol-specific position checks.'
+            : lpPoolAddressPresent && lpProofApplicability === 'applicable'
+              ? (lpControllerType === 'wallet'
+                ? 'LP controller is wallet-controlled — lock/burn proof is not confirmed.'
+                : 'LP pool identified — lock/burn proof is not confirmed for the selected pool.')
+              : analysis.liquidityStatus,
     }
 
     _scanStage = 'response_assembly'
