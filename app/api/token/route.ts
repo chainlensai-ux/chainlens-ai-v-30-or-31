@@ -3809,7 +3809,14 @@ export async function POST(req: Request) {
       _lpGrItemCount = lpItems.length
       const _lpGrTotalSupply = lpItems.find(i => i?.total_supply != null)?.total_supply
       let _lpGrSupplyStr = _lpGrTotalSupply != null ? String(_lpGrTotalSupply) : null
-      const _lpItemsHaveDirectPct = lpItems.some((h) => (toNum(h.percentage) ?? toNum(h.percent) ?? toNum(h.ownership_percentage)) != null)
+      // GoldRush LP-holder rows sometimes report percentage/percent/ownership_percentage as a
+      // placeholder 0 for every row instead of leaving the field absent. Only treat a direct
+      // percentage as usable when it is a positive value — a row of all-zero "direct"
+      // percentages must not block the RPC totalSupply-derived fallback below.
+      const _lpItemsHaveDirectPct = lpItems.some((h) => {
+        const p = toNum(h.percentage) ?? toNum(h.percent) ?? toNum(h.ownership_percentage)
+        return p != null && p > 0
+      })
       // GoldRush LP-holder rows sometimes omit total_supply — fall back to an RPC totalSupply
       // read (same eth_call used by the RPC-fallback path below) so balance percentages can
       // still be derived. Without this, every holder's pct collapses to 0, the dominant LP
@@ -3823,7 +3830,8 @@ export async function POST(req: Request) {
         }
       }
       const top = lpItems.slice(0, 5).map((h) => {
-        const directPct = toNum(h.percentage) ?? toNum(h.percent) ?? toNum(h.ownership_percentage)
+        const directPctRaw = toNum(h.percentage) ?? toNum(h.percent) ?? toNum(h.ownership_percentage)
+        const directPct = (directPctRaw != null && directPctRaw > 0) ? directPctRaw : null
         let derivedPct: number | null = null
         if (directPct == null && _lpGrSupplyStr != null) {
           derivedPct = bigIntPct(h.balance ?? h.token_balance, _lpGrSupplyStr)
@@ -5424,12 +5432,48 @@ export async function POST(req: Request) {
       if (cortexContractFlags.mint.status === 'inferred') nextActions.push('Confirm mint function absence via contract source code or bytecode audit.')
       if (lpIntelligence.depth === 'shallow' || lpIntelligence.depth === 'none') nextActions.push('Caution: shallow liquidity — large trades will face significant slippage.')
       if (nextActions.length === 0) nextActions.push('All major checks passed — continue monitoring for holder changes and LP movements.')
+      // Converts a full risk-driver sentence (e.g. "Holder concentration is very high (Top 10 >
+      // 70%).") into a short noun phrase suitable for "Major risk drivers present: a, b, and c."
+      // Falls back to a generic cleanup (strip trailing period, lowercase first letter) for any
+      // driver not covered by the mapping below.
+      const _shortDriverPhrase = (driver: string): string => {
+        const phraseMap: Array<[RegExp, string]> = [
+          [/^Holder concentration is very high/i, 'very high holder concentration'],
+          [/^Holder concentration is elevated/i, 'elevated holder concentration'],
+          [/^Holder concentration is moderate/i, 'moderate holder concentration'],
+          [/^Dev Control: ownership is held by a wallet/i, 'active ownership'],
+          [/^Proxy contract with active owner/i, 'an upgradeable proxy with an active owner'],
+          [/^LP Control indicates a dominant team wallet/i, 'dominant LP wallet control'],
+          [/^Trading simulation indicates a blocked or trapped sell path/i, 'a blocked or trapped sell path'],
+          [/^Trading taxes are high/i, 'high trading taxes'],
+          [/^Trading taxes are elevated/i, 'elevated trading taxes'],
+          [/^Contract can mint supply/i, 'active mint authority'],
+          [/^Contract may have mint capability/i, 'possible mint capability'],
+          [/^Contract is upgradeable \(proxy confirmed\)/i, 'a confirmed upgradeable proxy'],
+          [/^Contract may be upgradeable/i, 'a possible upgradeable proxy'],
+          [/^Contract includes withdraw\/sweep style controls/i, 'withdraw/sweep-style contract controls'],
+          [/^Whale pressure is high/i, 'deployer/top-holder supply control'],
+          [/^Whale pressure is medium/i, 'notable top-holder concentration'],
+          [/^Supply spread elevated/i, 'elevated supply concentration among top holders'],
+        ]
+        for (const [pattern, phrase] of phraseMap) {
+          if (pattern.test(driver)) return phrase
+        }
+        const stripped = driver.replace(/\.$/, '')
+        return stripped.charAt(0).toLowerCase() + stripped.slice(1)
+      }
+      const _joinDriverPhrases = (phrases: string[]): string => {
+        if (phrases.length === 0) return ''
+        if (phrases.length === 1) return phrases[0]
+        if (phrases.length === 2) return `${phrases[0]} and ${phrases[1]}`
+        return `${phrases.slice(0, -1).join(', ')}, and ${phrases[phrases.length - 1]}`
+      }
       // Summary sentence
       // Evidence-based wording only — never assert scam/rug certainty or give financial
       // advice ("avoid exposure", "guaranteed", "safe"). Cite the actual risk drivers and
       // point to open checks instead.
-      const _riskSuffix = rugRiskLabel === 'critical' ? `Major risk drivers present: ${riskDrivers.length > 0 ? riskDrivers.slice(0, 3).join(', ') : 'multiple high-risk signals'}. Verify open checks before relying on this scan.` : rugRiskLabel === 'high' ? 'High risk flags present — verify before any position.' : rugRiskLabel === 'watch' ? 'Watch-level signals — monitor closely.' : rugRiskLabel === 'partial_data' ? 'Partial data scan — score is conservative baseline pending full verification.' : 'Low visible risk across verified checks.'
-      const _topDriver = riskDrivers.length > 0 ? ` Primary risk: ${riskDrivers[0]}` : ''
+      const _riskSuffix = rugRiskLabel === 'critical' ? `Major risk drivers present: ${riskDrivers.length > 0 ? _joinDriverPhrases(riskDrivers.slice(0, 3).map(_shortDriverPhrase)) : 'multiple high-risk signals'}. Verify open checks before relying on this scan.` : rugRiskLabel === 'high' ? 'High risk flags present — verify before any position.' : rugRiskLabel === 'watch' ? 'Watch-level signals — monitor closely.' : rugRiskLabel === 'partial_data' ? 'Partial data scan — score is conservative baseline pending full verification.' : 'Low visible risk across verified checks.'
+      const _topDriver = (riskDrivers.length > 0 && rugRiskLabel !== 'critical') ? ` Primary risk: ${riskDrivers[0]}` : ''
       // Use "Rug-risk pressure" label to avoid confusion with CORTEX Score (different scale/direction)
       const summary = `${_chain} token. Rug-risk pressure: ${rugRiskScore}/100. ${_riskSuffix}${_topDriver}`
       return {

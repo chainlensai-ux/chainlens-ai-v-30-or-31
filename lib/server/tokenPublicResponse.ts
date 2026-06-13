@@ -148,6 +148,18 @@ export function sanitizePublicTokenResponse<T extends Record<string, any>>(paylo
       )
     }
   }
+  // cortexLpRead.riskSummary's "shows an overall ... risk tier" wording is built from the
+  // legacy rugRiskLabel tier, which can disagree with the canonical Token Safety Score
+  // (e.g. a "critical" LP-risk tier alongside a 49/100 "moderate" overall score). Replace it
+  // with the canonical score/label so the public summary never names a different tier than
+  // riskScore/riskLabel.
+  if (typeof (sanitized as any).cortexLpRead?.riskSummary === 'string') {
+    const cortexLpRead = (sanitized as any).cortexLpRead
+    cortexLpRead.riskSummary = cortexLpRead.riskSummary.replace(
+      /shows an overall "[^"]*" risk tier based on observed pool data\./i,
+      `has a ${formatTokenSafetyScore(sanitized as Record<string, any>)} based on observed pool data.`
+    )
+  }
   if ((sanitized as any).priceChart?.points?.length > 150) {
     ;(sanitized as any).priceChart = { ...(sanitized as any).priceChart, points: (sanitized as any).priceChart.points.slice(-150) }
   }

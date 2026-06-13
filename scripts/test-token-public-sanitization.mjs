@@ -43,6 +43,11 @@ function reconcileSecondaryLpSignal(lpControl, params) {
     ],
     secondaryLpControlSignals: secondary,
   }
+  // Mirrors lpIntelligence.ts: reset poolType to the PRIMARY pool's type so the secondary
+  // pool's poolType (just spread in via ...lpControl) doesn't leak into the reconciled object.
+  if ('poolType' in lpControl) {
+    reconciled.poolType = primaryPoolType
+  }
   return { lpControl: reconciled, secondary }
 }
 
@@ -1267,21 +1272,240 @@ console.log('\nO. PLAY-like secondary Aerodrome V2 LP exposure')
 // ─── P. CORTEX wording — no scam/financial-advice language, evidence-based instead ──
 console.log('\nP. CORTEX wording is evidence-based, never scam/financial-advice language')
 {
-  const riskDriversSample = ['very high holder concentration', 'active owner', 'deployer/top-holder supply control']
-  // Mirrors app/api/token/route.ts clarkInterpretation._riskSuffix for rugRiskLabel === 'critical'.
-  const criticalRiskSuffix = `Major risk drivers present: ${riskDriversSample.slice(0, 3).join(', ')}. Verify open checks before relying on this scan.`
-  const bannedPhrases = ['avoid exposure', 'critical rug vectors confirmed', 'scam', 'rug confirmed', 'guaranteed', 'risk-free']
+  // Mirrors app/api/token/route.ts clarkInterpretation._shortDriverPhrase/_joinDriverPhrases
+  // for rugRiskLabel === 'critical'. Real riskDrivers entries are full sentences ending in
+  // "." — joining them naively with ", " produces "X., Y., Z." (bad punctuation).
+  const _shortDriverPhrase = (driver) => {
+    const phraseMap = [
+      [/^Holder concentration is very high/i, 'very high holder concentration'],
+      [/^Dev Control: ownership is held by a wallet/i, 'active ownership'],
+      [/^Whale pressure is high/i, 'deployer/top-holder supply control'],
+    ]
+    for (const [pattern, phrase] of phraseMap) {
+      if (pattern.test(driver)) return phrase
+    }
+    const stripped = driver.replace(/\.$/, '')
+    return stripped.charAt(0).toLowerCase() + stripped.slice(1)
+  }
+  const _joinDriverPhrases = (phrases) => {
+    if (phrases.length === 0) return ''
+    if (phrases.length === 1) return phrases[0]
+    if (phrases.length === 2) return `${phrases[0]} and ${phrases[1]}`
+    return `${phrases.slice(0, -1).join(', ')}, and ${phrases[phrases.length - 1]}`
+  }
+
+  const playRiskDriversSample = [
+    'Holder concentration is very high (Top 10 > 70%).',
+    'Dev Control: ownership is held by a wallet.',
+    'Whale pressure is high: top holder or top-5 hold a dominant share.',
+  ]
+  const criticalRiskSuffix = `Major risk drivers present: ${_joinDriverPhrases(playRiskDriversSample.slice(0, 3).map(_shortDriverPhrase))}. Verify open checks before relying on this scan.`
+  assert('CORTEX critical wording has no double-period punctuation', !/\.\s*,/.test(criticalRiskSuffix), criticalRiskSuffix)
+  assert('CORTEX critical wording reads "very high holder concentration, active ownership, and deployer/top-holder supply control"', criticalRiskSuffix.includes('very high holder concentration, active ownership, and deployer/top-holder supply control'), criticalRiskSuffix)
+
+  const bannedPhrases = ['avoid exposure', 'critical rug vectors confirmed', 'scam', 'rug confirmed', 'guaranteed', 'risk-free', 'safe']
   for (const phrase of bannedPhrases) {
     assert(`CORTEX critical wording does not contain "${phrase}"`, !criticalRiskSuffix.toLowerCase().includes(phrase), criticalRiskSuffix)
   }
   assert('CORTEX critical wording cites risk drivers', /very high holder concentration/i.test(criticalRiskSuffix), criticalRiskSuffix)
   assert('CORTEX critical wording says to verify open checks', /verify open checks before relying on this scan/i.test(criticalRiskSuffix), criticalRiskSuffix)
 
+  // A summary built from this suffix must not say "critical" anywhere, even when the legacy
+  // rugRiskLabel tier was "critical" — only the canonical Token Safety Score/label (e.g.
+  // "49/100 (moderate)") should describe the overall tier.
+  const playClarkSummary = `Base token. Token Safety Score: 49/100 (moderate). ${criticalRiskSuffix}`
+  assert('CORTEX summary does not say "critical" when riskLabel is moderate', !/critical/i.test(playClarkSummary), playClarkSummary)
+  assert('CORTEX summary cites the canonical Token Safety Score (49/100 (moderate))', /Token Safety Score:\s*49\/100 \(moderate\)/i.test(playClarkSummary), playClarkSummary)
+
+  // Mirrors lib/server/tokenPublicResponse.ts's cortexLpRead.riskSummary rewrite: a
+  // "shows an overall ... risk tier" sentence built from the legacy rugRiskLabel tier
+  // ("critical") must be replaced with the canonical Token Safety Score, never left as
+  // "critical" when riskScore/riskLabel say 49/moderate.
+  const rawCortexLpReadSummary = 'PLAY (PLAY) shows an overall "critical" risk tier based on observed pool data. Liquidity depth is moderate for this token.'
+  const rewrittenCortexLpReadSummary = rawCortexLpReadSummary.replace(
+    /shows an overall "[^"]*" risk tier based on observed pool data\./i,
+    'has a Token Safety Score: 49/100 (moderate) based on observed pool data.'
+  )
+  assert('cortexLpRead.riskSummary does not say "critical" when riskLabel is moderate', !/critical/i.test(rewrittenCortexLpReadSummary), rewrittenCortexLpReadSummary)
+  assert('cortexLpRead.riskSummary cites the canonical Token Safety Score', /Token Safety Score:\s*49\/100 \(moderate\)/i.test(rewrittenCortexLpReadSummary), rewrittenCortexLpReadSummary)
+
   // Public payload must never contain the old scam/financial-advice phrasing, regardless of token.
   for (const payload of [publicPayload, fallbackPublicPayload, protocolPayload, mferPublicPayload, playPublicPayload]) {
     assert('public payload does not contain "avoid exposure"', !serialized(payload).includes('avoid exposure'), payload.symbol)
     assert('public payload does not contain "critical rug vectors confirmed"', !serialized(payload).includes('critical rug vectors confirmed'), payload.symbol)
   }
+}
+
+// ─── Q. VIRTUAL Part 1 regression — GoldRush placeholder percentage=0 rows must not block
+// the RPC totalSupply-derived fallback (lost dominant LP holder evidence) ──────────────
+console.log('\nQ. VIRTUAL Aerodrome LP holder regression — placeholder percentage=0 rows')
+{
+  function toNumMirror(v) {
+    if (typeof v === 'number' && Number.isFinite(v)) return v
+    if (typeof v === 'string' && v.trim()) { const n = Number(v); return Number.isFinite(n) ? n : null }
+    return null
+  }
+  function bigIntPctMirror(balanceRaw, supplyRaw) {
+    try {
+      const balance = BigInt(String(balanceRaw))
+      const supply = BigInt(String(supplyRaw))
+      if (supply <= BigInt(0)) return null
+      return Number(balance * BigInt(1_000_000) / supply) / 10_000
+    } catch { return null }
+  }
+
+  // GoldRush sometimes returns percentage/percent/ownership_percentage = 0 as a placeholder
+  // on every LP-holder row instead of omitting the field. Mirrors the
+  // _lpItemsHaveDirectPct / per-holder pct logic in app/api/token/route.ts's V2 LP-holder
+  // branch: a row of all-zero "direct" percentages must NOT block the RPC
+  // totalSupply-derived fallback, or the dominant holder's real share is lost and the scan
+  // falls through to the RPC-only burn/locker/owner probe (evidence: only burn_share=0.00%,
+  // locker_share=0.00%).
+  const lpItemsAllZeroPct = [
+    { address: '0xbd62cad65b49b4ad9c7aa9b8bdb89d63221f7af5', balance: '8247000000000000000000000', percentage: 0 },
+    { address: '0x0000000000000000000000000000000000dead', balance: '1000000000000000000000', percentage: 0 },
+  ]
+  const rpcTotalSupply = '10000000000000000000000000'
+
+  const _lpItemsHaveDirectPct = lpItemsAllZeroPct.some((h) => {
+    const p = toNumMirror(h.percentage)
+    return p != null && p > 0
+  })
+  assert('VIRTUAL: all-zero percentage=0 placeholder rows are NOT treated as direct pct', _lpItemsHaveDirectPct === false, _lpItemsHaveDirectPct)
+
+  const top = lpItemsAllZeroPct.map((h) => {
+    const directPctRaw = toNumMirror(h.percentage)
+    const directPct = (directPctRaw != null && directPctRaw > 0) ? directPctRaw : null
+    const derivedPct = directPct == null ? bigIntPctMirror(h.balance, rpcTotalSupply) : null
+    return { address: h.address.toLowerCase(), pct: directPct ?? derivedPct ?? 0 }
+  })
+  const topHolder = top[0]
+  assert('VIRTUAL: topHolder pct is derived from RPC totalSupply despite percentage=0 placeholder', topHolder.pct >= 82.45 && topHolder.pct <= 82.49, topHolder.pct)
+  assert('VIRTUAL: top.some(pct>0) is true, so the RPC burn/locker-only fallback does not run and dominant-holder evidence is preserved', top.some((x) => x.pct > 0), top)
+  assert('VIRTUAL: topHolder address matches the known dominant LP holder', topHolder.address === '0xbd62cad65b49b4ad9c7aa9b8bdb89d63221f7af5', topHolder.address)
+
+  // The resulting lpControl must classify as team_controlled with top_holder/top_share
+  // evidence — not "partial" with only burn_share=0.00%/locker_share=0.00%.
+  const virtualLpControlRecovered = {
+    status: topHolder.pct >= 80 ? 'team_controlled' : 'partial',
+    confidence: 'high',
+    evidence: [`top_holder=${topHolder.address}`, `top_share=${topHolder.pct.toFixed(2)}%`],
+  }
+  assert('VIRTUAL lpControl.status is team_controlled (not partial)', virtualLpControlRecovered.status === 'team_controlled', virtualLpControlRecovered.status)
+  assert('VIRTUAL lpControl.evidence includes top_holder/top_share', virtualLpControlRecovered.evidence.some((e) => e.startsWith('top_holder=')) && virtualLpControlRecovered.evidence.some((e) => e.startsWith('top_share=')), virtualLpControlRecovered.evidence)
+  assert('VIRTUAL lpControl.evidence is not only burn_share/locker_share', !virtualLpControlRecovered.evidence.every((e) => e.startsWith('burn_share=') || e.startsWith('locker_share=')), virtualLpControlRecovered.evidence)
+
+  const virtualIdentityRecovered = resolveLpControllerIdentity({
+    status: virtualLpControlRecovered.status,
+    evidence: virtualLpControlRecovered.evidence,
+    lpControllerFromProof: 'unknown',
+    ownerAddr: null,
+  })
+  assert('VIRTUAL resolveLpControllerIdentity (recovered) yields wallet controller type', virtualIdentityRecovered.lpControllerType === 'wallet', virtualIdentityRecovered)
+  assert('VIRTUAL resolveLpControllerIdentity (recovered) yields the dominant LP holder address', virtualIdentityRecovered.lpControllerAddress === '0xbd62cad65b49b4ad9c7aa9b8bdb89d63221f7af5', virtualIdentityRecovered)
+
+  const virtualLpControlRecoveredFull = {
+    ...virtualLpControlRecovered,
+    poolType: 'aerodrome',
+    lpController: virtualIdentityRecovered.lpController,
+    lpControllerType: virtualIdentityRecovered.lpControllerType,
+  }
+  const virtualSelectedPoolRecovered = { address: '0x21594b992f68495dd28d605834b58889d0a727c7', pair: 'VIRTUAL / WETH', dex: 'Aerodrome', model: 'constant_product', liquidityUsd: 1234567 }
+  const virtualControllerIntelRecovered = buildLpControllerIntel({
+    lpControl: virtualLpControlRecoveredFull,
+    selectedPool: virtualSelectedPoolRecovered,
+    lpExitRisk: 'watch',
+    liquidityDepthRisk: 'low',
+    lpMigrationProof: { status: 'low' },
+    lpMeta: {},
+  })
+  const virtualLockBurnIntelRecovered = buildLpLockBurnIntel({
+    chain: 'base',
+    lpControl: virtualLpControlRecoveredFull,
+    lpControllerIntel: virtualControllerIntelRecovered,
+    selectedPool: virtualSelectedPoolRecovered,
+    lpMeta: {},
+  })
+  assert('VIRTUAL lpControllerIntel.status is wallet_controlled', virtualControllerIntelRecovered.status === 'wallet_controlled', virtualControllerIntelRecovered)
+  assert('VIRTUAL lpControllerIntel.controller is the dominant LP holder', virtualControllerIntelRecovered.controller === '0xbd62cad65b49b4ad9c7aa9b8bdb89d63221f7af5', virtualControllerIntelRecovered)
+  assert('VIRTUAL lpControllerIntel.controllerSharePercent is in 82.4-82.6 range', virtualControllerIntelRecovered.controllerSharePercent >= 82.4 && virtualControllerIntelRecovered.controllerSharePercent <= 82.6, virtualControllerIntelRecovered.controllerSharePercent)
+  assert('VIRTUAL lpLockBurnIntel.status stays open_check', virtualLockBurnIntelRecovered.status === 'open_check', virtualLockBurnIntelRecovered)
+
+  const virtualRiskInputRecovered = {
+    marketCapUsd: 1_900_000_000,
+    fdvUsd: 1_900_000_000,
+    liquidityUsd: 1_234_567,
+    holderDistribution: { top1: 12, top5: 30, top10: 48 },
+    lpControl: { ...virtualLpControlRecoveredFull, displayLpModel: 'erc20_lp_token' },
+    lpProofApplicability: 'applicable',
+    lpProofStatus: 'open_check',
+    lpModelProof: { model: 'constant_product', standardLockApplies: true },
+    lpMigrationProof: { status: 'low' },
+  }
+  const virtualRiskRecovered = calculateTokenRiskScore(virtualRiskInputRecovered)
+  assert('VIRTUAL riskScore stays around 58 (moderate)', virtualRiskRecovered.riskScore >= 50 && virtualRiskRecovered.riskScore <= 65, virtualRiskRecovered.riskScore)
+  assert('VIRTUAL riskLabel stays moderate', virtualRiskRecovered.riskLabel === 'moderate', virtualRiskRecovered.riskLabel)
+}
+
+// ─── R. PLAY Part 2 — poolType must reflect the primary pool, not the secondary Aerodrome
+// proof pool; secondary controller/share must match the real PLAY Aerodrome holder ─────
+console.log('\nR. PLAY primary poolType + secondary Aerodrome controller/share')
+{
+  const playSecondaryPoolR = '0x42781ec558f9fb95f5e080572bcd0a37523b55e2'
+
+  // R1. reconcileSecondaryLpSignal must reset lpControl.poolType to the PRIMARY pool's type
+  // (v3), not leave the SECONDARY Aerodrome pool's poolType ("aerodrome") on the
+  // reconciled, canonical lpControl.
+  const preReconcilePlayPoolType = {
+    status: 'team_controlled',
+    confidence: 'high',
+    poolType: 'aerodrome',
+    reason: 'Single normal wallet holds dominant LP share.',
+    evidence: ['top_holder=0x5c38ab2c57b1446d031572fea5f13bbd85f341f4', 'top_share=99.47%'],
+  }
+  const { lpControl: reconciledPlayPoolType, secondary: secondaryPlayPoolType } = reconcileSecondaryLpSignal(preReconcilePlayPoolType, {
+    primaryConcentrated: true,
+    verifyPool: { address: playSecondaryPoolR, liquidityUsd: 50000, dexId: 'aerodrome-base', dexName: 'Aerodrome', poolType: 'aerodrome', hasLpToken: true, hasDexMeta: true, isValidAddress: true },
+    primaryPoolAddress: playPoolAddress,
+    primaryPoolType: 'v3',
+    primaryDexId: 'pancakeswap-v3-base',
+    marketPairLabel: 'PLAY / USDC',
+  })
+  assert('PLAY reconciled lpControl.poolType is the primary pool type (v3), not the secondary Aerodrome pool', reconciledPlayPoolType.poolType === 'v3', reconciledPlayPoolType.poolType)
+  assert('PLAY reconciled lpControl.status is concentrated_liquidity', reconciledPlayPoolType.status === 'concentrated_liquidity', reconciledPlayPoolType.status)
+  assert('PLAY secondaryLpControlSignals.poolType is the secondary Aerodrome pool type', secondaryPlayPoolType?.poolType === 'aerodrome', secondaryPlayPoolType?.poolType)
+
+  // R2. Secondary LP exposure with the real PLAY Aerodrome dominant-holder evidence:
+  // controller 0x5c38ab2c57b1446d031572fea5f13bbd85f341f4, share ~99.47%.
+  const playSecondaryExposureReal = buildSecondaryLpExposure({
+    secondarySignals: { ...secondaryPlayPoolType, pair: 'PLAY / USDC' },
+    primaryDex: 'PancakeSwap V3',
+    primaryPair: 'PLAY / USDC',
+    primaryPoolModel: 'concentrated',
+  })
+  assert('PLAY secondaryLpExposure.status is wallet_controlled', playSecondaryExposureReal?.status === 'wallet_controlled', playSecondaryExposureReal?.status)
+  assert('PLAY secondaryLpExposure.controller is 0x5c38ab2c57b1446d031572fea5f13bbd85f341f4', playSecondaryExposureReal?.controller === '0x5c38ab2c57b1446d031572fea5f13bbd85f341f4', playSecondaryExposureReal?.controller)
+  assert('PLAY secondaryLpExposure.controllerSharePercent is ~99.47', playSecondaryExposureReal?.controllerSharePercent >= 99.4 && playSecondaryExposureReal?.controllerSharePercent <= 99.5, playSecondaryExposureReal?.controllerSharePercent)
+  assert('PLAY secondaryLpExposure.lockBurnProof is open_check', playSecondaryExposureReal?.lockBurnProof === 'open_check', playSecondaryExposureReal?.lockBurnProof)
+  assert('PLAY secondaryLpExposure.summary says this is secondary LP exposure, not primary liquidity', /secondary LP exposure, not primary liquidity/i.test(playSecondaryExposureReal?.summary ?? ''), playSecondaryExposureReal?.summary)
+
+  // R3. Public payload: lpControl.poolType reflects the primary pool, never "Aerodrome" for
+  // PLAY's PancakeSwap V3 primary pool, while secondaryLpExposure carries the Aerodrome data.
+  const playLpControlReconciled = { ...playLpControl, poolType: reconciledPlayPoolType.poolType, secondaryLpControlSignals: secondaryPlayPoolType }
+  const playPublicPayloadReal = sanitizePublicTokenResponse({
+    symbol: 'PLAY',
+    selectedPool: playSelectedPool,
+    lpControl: playLpControlReconciled,
+    lpControllerIntel: playControllerIntel,
+    lpLockBurnIntel: playLockBurnIntel,
+    lpMovementWatch: playMovementWatch,
+    lpUnlockTimeline: playUnlockTimeline,
+    secondaryLpExposure: playSecondaryExposureReal,
+    lpProofApplicability: 'not_applicable',
+    lpProofStatus: 'not_applicable',
+  }, false)
+  assert('PLAY public payload lpControl.poolType is v3 (primary), not aerodrome', playPublicPayloadReal.lpControl?.poolType === 'v3', playPublicPayloadReal.lpControl?.poolType)
+  assert('PLAY public payload secondaryLpExposure.controllerSharePercent is ~99.47', playPublicPayloadReal.secondaryLpExposure?.controllerSharePercent >= 99.4 && playPublicPayloadReal.secondaryLpExposure?.controllerSharePercent <= 99.5, playPublicPayloadReal.secondaryLpExposure?.controllerSharePercent)
 }
 
 console.log(`\n${passed} passed, ${failed} failed`)

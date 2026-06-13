@@ -313,6 +313,14 @@ export function reconcileSecondaryLpSignal<T extends ReconcilableLpControl>(
     secondaryLpControlSignals: secondary,
   }
 
+  // The pre-reconciliation lpControl.poolType describes the SECONDARY pool that was just
+  // probed (e.g. "aerodrome"); once reconciled to the primary pool's canonical status, the
+  // primary pool's own type must be reported instead — otherwise the public payload shows
+  // an Aerodrome poolType for a PancakeSwap V3 primary pool.
+  if ('poolType' in lpControl) {
+    (reconciled as Record<string, unknown>).poolType = primaryPoolType
+  }
+
   return { lpControl: reconciled, secondary }
 }
 
