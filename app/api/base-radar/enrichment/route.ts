@@ -285,6 +285,9 @@ function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract
         proofApplicability: lpReconciliation.proofApplicability,
         lockBurnApplicable: lpReconciliation.lockBurnApplicable,
         evidence: lpReconciliation.evidence,
+        primaryMarketPool: lpReconciliation.primaryMarketPool,
+        primaryMarketPoolId: lpReconciliation.primaryMarketPoolId,
+        poolAddressPresent: lpReconciliation.poolAddressPresent,
         secondaryLpControlSignals: lpReconciliation.secondaryLpControlSignals,
       }
     : scan.lpControl
@@ -387,6 +390,7 @@ function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract
       cortexLpRead: sanitizeProviderNames(lpReconciliation.cortexLpRead),
       lpProofDisplay: lpReconciliation.lpProofDisplay,
       primaryMarketPool: lpReconciliation.primaryMarketPool,
+      primaryMarketPoolId: lpReconciliation.primaryMarketPoolId,
       poolAddressPresent: lpReconciliation.poolAddressPresent,
       rugRiskStatus: lpReconciliation.rugRiskDisplay?.status ?? null,
       rugRiskReason: lpReconciliation.rugRiskDisplay?.reason ?? null,

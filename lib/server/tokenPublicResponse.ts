@@ -52,6 +52,16 @@ function formatTokenSafetyScore(payload: Record<string, any>): string {
 }
 
 
+
+function tokenSafetyAdjective(score: number | null, fallbackLabel: string | null): string | null {
+  if (score == null) return fallbackLabel
+  if (score <= 24) return 'very low'
+  if (score <= 39) return 'low'
+  if (score <= 59) return 'moderate'
+  if (score <= 74) return 'watchlist'
+  return 'stronger'
+}
+
 function formatTokenIdentityForPublic(name: string | null | undefined, symbol: string | null | undefined): string {
   const cleanName = typeof name === 'string' && name.trim() ? name.trim() : ''
   const cleanSymbol = typeof symbol === 'string' && symbol.trim() ? symbol.trim() : ''
@@ -66,19 +76,21 @@ function tokenSafetySentence(payload: Record<string, any>): string {
   const name = typeof payload.name === 'string' && payload.name.trim() ? payload.name.trim() : null
   const identity = formatTokenIdentityForPublic(name, symbol)
   const score = typeof payload.riskScore === 'number' ? payload.riskScore : null
-  const label = typeof payload.riskLabel === 'string' && payload.riskLabel.trim() ? payload.riskLabel.trim() : null
+  const rawLabel = typeof payload.riskLabel === 'string' && payload.riskLabel.trim() ? payload.riskLabel.trim() : null
+  const label = tokenSafetyAdjective(score, rawLabel)
   const holderDistribution = payload.holderDistribution && typeof payload.holderDistribution === 'object' ? payload.holderDistribution as Record<string, any> : {}
   const top1 = typeof holderDistribution.top1 === 'number' ? holderDistribution.top1 : null
   const top10 = typeof holderDistribution.top10 === 'number' ? holderDistribution.top10 : null
+  const top20 = typeof holderDistribution.top20 === 'number' ? holderDistribution.top20 : null
   const holderCount = typeof holderDistribution.holderCount === 'number' ? holderDistribution.holderCount : null
   const ownershipStatus = payload.security?.devOwnership?.ownershipStatus ?? payload.sections?.ownership?.status ?? null
+  const creatorSupply = payload.creatorHolderPercent ?? payload.supplyControl?.creatorHolderPercent ?? null
   const clusterSupply = payload.devClusterSupplyPercent ?? payload.supplyControl?.devClusterSupplyPercent ?? null
+  const activeOwner = ownershipStatus === 'active_owner' || payload.security?.devOwnership?.activeOwner === true
+  const highHolderConcentration = Boolean((top1 != null && top1 >= 40) || (top10 != null && top10 >= 70) || (top20 != null && top20 >= 85) || (holderCount != null && holderCount < 75))
   const severeHolderDev = Boolean(
-    (top1 != null && top1 >= 50)
-    || (top10 != null && top10 >= 95)
-    || (holderCount != null && holderCount < 25)
-    || ownershipStatus === 'active_owner'
-    || (typeof clusterSupply === 'number' && clusterSupply >= 20)
+    (typeof clusterSupply === 'number' && clusterSupply >= 50)
+    || (typeof creatorSupply === 'number' && creatorSupply >= 50)
   )
   const scorePart = score != null && label
     ? `has a ${label} Token Safety Score (${score}/100)`
@@ -88,6 +100,7 @@ function tokenSafetySentence(payload: Record<string, any>): string {
         ? `has a Token Safety Score of ${score}/100`
         : 'has a Token Safety Score'
   if (severeHolderDev) return `${identity} ${scorePart}, with severe holder/dev-control risk drivers.`
+  if (highHolderConcentration && activeOwner) return `${identity} ${scorePart}. Score is pressured by high holder concentration and active owner/admin control.`
   const broadHolders = top1 != null && top1 <= 10 && top10 != null && top10 <= 20 && holderCount != null && holderCount >= 100
   const renounced = ownershipStatus === 'renounced' || payload.security?.devOwnership?.isRenounced === true || payload.sections?.ownership?.is_renounced === true
   if (broadHolders && renounced) {

@@ -154,6 +154,7 @@ export interface BaseRadarLpReconciliationResult {
   secondaryLpControlSignals: Record<string, unknown> | null
   lpProofDisplay: LpProofDisplay | null
   primaryMarketPool: string | null
+  primaryMarketPoolId: string | null
   poolAddressPresent: boolean
   fallbackPoolIdentity: NormalizedFallbackPoolIdentity
   simulationPairAddress: string | null | undefined
@@ -415,7 +416,7 @@ export function reconcileBaseRadarLp(scan: Record<string, any>): BaseRadarLpReco
   // 8. Pool address presence and the simulation pair address. When fallback market
   // evidence exists but no pair address resolved, pass `null` (not `undefined`) so
   // getRadarSimulationDisplay reports "missing pair address" instead of skipping.
-  const poolAddressPresent = Boolean(primaryAddr)
+  const poolAddressPresent = Boolean(primaryAddr || primaryId)
   const simulationPairAddress: string | null | undefined = primaryAddr
     ? primaryAddr
     : pairIdentityOpenCheck
@@ -433,6 +434,7 @@ export function reconcileBaseRadarLp(scan: Record<string, any>): BaseRadarLpReco
     secondaryLpControlSignals,
     lpProofDisplay,
     primaryMarketPool: primaryAddr,
+    primaryMarketPoolId: primaryId,
     poolAddressPresent,
     fallbackPoolIdentity,
     simulationPairAddress,
