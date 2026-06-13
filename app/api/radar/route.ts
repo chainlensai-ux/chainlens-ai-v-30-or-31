@@ -21,7 +21,8 @@ interface HoneypotResult {
   isHoneypot: boolean | null
   buyTax: number | null
   sellTax: number | null
-  simulationSuccess: boolean
+  simulationSuccess: boolean | null
+  failureReason?: RadarSimulationOpenCheckReason
 }
 
 export interface RadarToken {
@@ -83,12 +84,14 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Pro
 }
 
 async function fetchHoneypot(contract: string): Promise<HoneypotResult | null> {
+  const ac = new AbortController()
+  const tid = setTimeout(() => ac.abort(), 2500)
   try {
     const res = await fetch(
       `https://api.honeypot.is/v2/IsHoneypot?address=${contract}&chainID=8453`,
-      { cache: 'no-store' }
+      { cache: 'no-store', signal: ac.signal }
     )
-    if (!res.ok) return null
+    if (!res.ok) return { isHoneypot: null, buyTax: null, sellTax: null, simulationSuccess: null, failureReason: 'provider_unavailable' }
     const data = await res.json()
     return {
       isHoneypot:        data.honeypotResult?.isHoneypot        ?? null,
@@ -96,8 +99,11 @@ async function fetchHoneypot(contract: string): Promise<HoneypotResult | null> {
       sellTax:           data.simulationResult?.sellTax          ?? null,
       simulationSuccess: data.simulationSuccess                  ?? false,
     }
-  } catch {
-    return null
+  } catch (err) {
+    const name = err instanceof Error ? err.name : ''
+    return { isHoneypot: null, buyTax: null, sellTax: null, simulationSuccess: null, failureReason: name === 'AbortError' ? 'timeout_after_retry' : 'provider_unavailable' }
+  } finally {
+    clearTimeout(tid)
   }
 }
 
@@ -194,7 +200,7 @@ async function getCachedHoneypot(contract: string, retry = false): Promise<Honey
   const promise = (async () => {
     const first = await fetchHoneypot(contract)
     if (first || !retry) return first
-    return withTimeout(fetchHoneypot(contract), 2500, null)
+    return withTimeout(fetchHoneypot(contract), 2500, { isHoneypot: null, buyTax: null, sellTax: null, simulationSuccess: null, failureReason: 'timeout_after_retry' })
   })()
   honeypotInflight.set(key, promise)
   try {
@@ -444,7 +450,7 @@ export async function GET(req: NextRequest) {
         simulationReason: simulation.reason,
         simulationLabel: simulation.label,
         simulationCortexLine: simulation.cortexLine,
-        evidenceGaps: simulation.status === 'passed' ? token.evidenceGaps : Array.from(new Set([...(token.evidenceGaps ?? []), 'Buy/sell simulation not confirmed', `Simulation reason: ${simulation.reason ?? 'provider_unavailable'}`, 'Honeypot/tax status not confirmed', ...(token.ageMinutes < 15 ? ['Token is very new'] : [])])),
+        evidenceGaps: simulation.status === 'passed' ? token.evidenceGaps : Array.from(new Set([...(token.evidenceGaps ?? []), 'Buy/sell simulation not confirmed', simulation.label, 'Honeypot/tax status not confirmed', ...(token.ageMinutes < 15 ? ['Token is very new'] : [])])),
       }
     })
 

@@ -25,3 +25,21 @@ assert.equal(f.riskLabel, getRadarFeedRiskLabel(f.score))
 assert.ok(f.score <= 59, f)
 
 console.log('base radar feed scoring tests passed')
+
+// Additional regression: unresolved tokens with different evidence should not all flatten at cap 49.
+{
+  const cases = [
+    applyBaseRadarScoreCaps({ baseScore: 86, liquidityUsd: 4000, ageMinutes: 4, simulationStatus: 'open_check', simulationReason: 'timeout_after_retry', honeypotPresent: false, valuationVerified: false, lpModel: 'erc20_lp_token', lpLockBurnConfirmed: false }).score,
+    applyBaseRadarScoreCaps({ baseScore: 82, liquidityUsd: 12000, ageMinutes: 12, simulationStatus: 'open_check', simulationReason: 'unsupported_pool_model', honeypotPresent: false, valuationVerified: true, lpModel: 'erc20_lp_token', lpLockBurnConfirmed: false }).score,
+    applyBaseRadarScoreCaps({ baseScore: 78, liquidityUsd: 25000, ageMinutes: 28, simulationStatus: 'open_check', simulationReason: 'provider_unavailable', honeypotPresent: false, valuationVerified: true, lpModel: 'erc20_lp_token', lpLockBurnConfirmed: false, missingSocials: true }).score,
+  ]
+  assert('unresolved score cap remains granular, not all 49', new Set(cases).size > 1 && !cases.every((s) => s === 49), cases)
+}
+
+// 80+ still requires passed simulation/tax and no major red flags.
+{
+  const blocked = applyBaseRadarScoreCaps({ baseScore: 96, liquidityUsd: 80000, ageMinutes: 60, simulationStatus: 'open_check', honeypotPresent: false, valuationVerified: true, lpModel: 'not_applicable', lpLockBurnConfirmed: true }).score
+  const clear = applyBaseRadarScoreCaps({ baseScore: 96, liquidityUsd: 80000, ageMinutes: 60, simulationStatus: 'passed', honeypotPresent: true, buyTax: 0, sellTax: 0, valuationVerified: true, lpModel: 'not_applicable', lpLockBurnConfirmed: true }).score
+  assert('unpassed simulation cannot score 80+', blocked < 80, blocked)
+  assert('clean passed simulation can score 80+', clear >= 80, clear)
+}
