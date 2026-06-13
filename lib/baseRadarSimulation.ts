@@ -1,10 +1,11 @@
 export type RadarSimulationStatus = 'passed' | 'open_check'
 
 export type RadarSimulationOpenCheckReason =
-  | 'insufficient route/pool evidence'
-  | 'missing pair address'
-  | 'timeout'
-  | 'unsupported pool model'
+  | 'insufficient_route'
+  | 'missing_pair_address'
+  | 'timeout_after_retry'
+  | 'unsupported_pool_model'
+  | 'provider_unavailable'
 
 export interface RadarSimulationHoneypotInput {
   isHoneypot?: boolean | null
@@ -51,8 +52,12 @@ function openCheck(attempted: boolean, reason: RadarSimulationOpenCheckReason): 
     sellTax: null,
     isHoneypot: null,
     reason,
-    label: `Simulation open check — ${reason}`,
-    cortexLine: `Buy/sell simulation remains open check because ${reason}.`,
+    label: reason === 'timeout_after_retry' ? 'Simulation timed out after retry'
+      : reason === 'unsupported_pool_model' ? 'Simulation unsupported for this pool'
+        : reason === 'missing_pair_address' ? 'Pair route missing'
+          : reason === 'provider_unavailable' ? 'Simulation pending'
+            : 'Simulation pending',
+    cortexLine: 'Buy/sell simulation could not complete, so tax and honeypot status are not confirmed yet.',
   }
 }
 
@@ -66,20 +71,20 @@ function openCheck(attempted: boolean, reason: RadarSimulationOpenCheckReason): 
 export function getRadarSimulationDisplay(input: RadarSimulationInput): RadarSimulationResult {
   const validAddress = typeof input.contract === 'string' && VALID_ADDRESS.test(input.contract)
   if (!validAddress || !hasPoolEvidence(input)) {
-    return openCheck(false, 'insufficient route/pool evidence')
+    return openCheck(false, 'insufficient_route')
   }
 
   if (input.pairAddress === null) {
-    return openCheck(false, 'missing pair address')
+    return openCheck(false, 'missing_pair_address')
   }
 
   const honeypot = input.honeypot
   if (!honeypot || honeypot.simulationSuccess == null) {
-    return openCheck(true, 'timeout')
+    return openCheck(true, 'timeout_after_retry')
   }
 
   if (honeypot.simulationSuccess === false) {
-    return openCheck(true, 'unsupported pool model')
+    return openCheck(true, 'unsupported_pool_model')
   }
 
   const buyTax = honeypot.buyTax ?? 0

@@ -180,17 +180,30 @@ const RADAR_CACHE_TTL_MS = 5 * 60 * 1000
 export const DEX_MARKET_CAP_RESCUE_TTL_MS = 2 * 60 * 1000
 const radarPayloadCache = new Map<string, { cachedAt: number; payload: { tokens: RadarToken[]; stats: RadarStats; fetchedAt: string; limitedLiveFeed: boolean; _debug?: Record<string, unknown> } }>()
 const honeypotCache = new Map<string, { result: HoneypotResult | null; cachedAt: number }>()
+const honeypotInflight = new Map<string, Promise<HoneypotResult | null>>()
 const dexMarketCapRescueCache = new Map<string, { result: DexScreenerMarketCapRescueResult; cachedAt: number }>()
 const dexMarketCapRescueInflight = new Map<string, Promise<DexScreenerMarketCapRescueResult>>()
 
-async function getCachedHoneypot(contract: string): Promise<HoneypotResult | null> {
+async function getCachedHoneypot(contract: string, retry = false): Promise<HoneypotResult | null> {
   const key = contract.toLowerCase()
   const now = Date.now()
   const cached = honeypotCache.get(key)
-  if (cached && now - cached.cachedAt <= HONEYPOT_CACHE_TTL_MS) return cached.result
-  const result = await fetchHoneypot(contract)
-  honeypotCache.set(key, { result, cachedAt: Date.now() })
-  return result
+  if (cached && now - cached.cachedAt <= HONEYPOT_CACHE_TTL_MS && !(retry && cached.result == null)) return cached.result
+  const existing = honeypotInflight.get(key)
+  if (existing) return existing
+  const promise = (async () => {
+    const first = await fetchHoneypot(contract)
+    if (first || !retry) return first
+    return withTimeout(fetchHoneypot(contract), 2500, null)
+  })()
+  honeypotInflight.set(key, promise)
+  try {
+    const result = await promise
+    honeypotCache.set(key, { result, cachedAt: Date.now() })
+    return result
+  } finally {
+    honeypotInflight.delete(key)
+  }
 }
 
 async function getDexMarketCapRescue(input: { chain: string; token: string; primaryPoolAddress?: string | null }): Promise<DexScreenerMarketCapRescueResult & { cacheHit: boolean }> {
@@ -328,7 +341,7 @@ export async function GET(req: NextRequest) {
     const TWO_HOURS = 2  * 60 * 60 * 1000
     const DAY_MS    = 24 * 60 * 60 * 1000
 
-    type Candidate = Omit<RadarToken, 'clarkVerdict'>
+    type Candidate = Omit<RadarToken, 'clarkVerdict'> & { pairAddress?: string | null }
     const candidates: Candidate[] = []
     const allDay24h:  number[]    = []
     const seenContracts = new Set<string>()
@@ -384,7 +397,7 @@ export async function GET(req: NextRequest) {
       candidates.push({
         name: baseToken.name, symbol: baseToken.symbol, contract: baseToken.address,
         ageMinutes, liquidityUsd, volume24h, fdvUsd, marketCapUsd, marketCapStatus, valuationBasis: valuation.basis, valuationUsd: valuation.valueUsd, valuationLabel: valuation.label, valuationSublabel: valuationCardDisplay.sublabel, valuationVerified: valuation.verified, valuationReason: valuation.reason, valuationCortexLine: getRadarCortexValuationLine(valuation), evidenceGaps, riskLevel: 'SAFE', honeypot: null,
-        simulationStatus: 'open_check', simulationReason: null, simulationLabel: '', simulationCortexLine: '',
+        simulationStatus: 'open_check', simulationReason: null, simulationLabel: '', simulationCortexLine: '', pairAddress: primaryPoolAddress,
         ...(debug ? { marketCapDiagnostics: {
           selectedMarketCapUsd: marketCapUsd,
           selectedMarketCapStatus: marketCapStatus,
@@ -417,20 +430,21 @@ export async function GET(req: NextRequest) {
     // 2. Honeypot checks in parallel with 5s timeout each
     const hpCacheHitFlags = toCheck.map(t => { const c = honeypotCache.get(t.contract.toLowerCase()); return !!(c && Date.now() - c.cachedAt <= HONEYPOT_CACHE_TTL_MS) })
     const hpResults = await Promise.allSettled(
-      toCheck.map(t => withTimeout(getCachedHoneypot(t.contract), 5000, null))
+      toCheck.map(t => withTimeout(getCachedHoneypot(t.contract, true), 5000, null))
     )
 
     const scored: Candidate[] = toCheck.map((token, i) => {
       const hp = hpResults[i].status === 'fulfilled' ? hpResults[i].value : null
-      const simulation = getRadarSimulationDisplay({ contract: token.contract, liquidityUsd: token.liquidityUsd, honeypot: hp })
+      const simulation = getRadarSimulationDisplay({ contract: token.contract, liquidityUsd: token.liquidityUsd, pairAddress: token.pairAddress ?? null, honeypot: hp })
       return {
         ...token,
         honeypot: hp,
-        riskLevel: scoreRisk(hp),
+        riskLevel: simulation.status === 'passed' ? scoreRisk(hp) : 'CAUTION',
         simulationStatus: simulation.status,
         simulationReason: simulation.reason,
         simulationLabel: simulation.label,
         simulationCortexLine: simulation.cortexLine,
+        evidenceGaps: simulation.status === 'passed' ? token.evidenceGaps : Array.from(new Set([...(token.evidenceGaps ?? []), 'Buy/sell simulation not confirmed', `Simulation reason: ${simulation.reason ?? 'provider_unavailable'}`, 'Honeypot/tax status not confirmed', ...(token.ageMinutes < 15 ? ['Token is very new'] : [])])),
       }
     })
 
@@ -441,7 +455,7 @@ export async function GET(req: NextRequest) {
     // 4. Final output — newest first for live feed
     const tokens: RadarToken[] = [...scored]
       .sort((a, b) => a.ageMinutes - b.ageMinutes)
-      .map(t => ({ ...t, clarkVerdict: verdicts.get(t.contract.toLowerCase()) ?? null }))
+      .map(t => { const { pairAddress: _pairAddress, ...rest } = t; return { ...rest, clarkVerdict: verdicts.get(t.contract.toLowerCase()) ?? null } })
 
     // 5. Stats
     const dangerCount  = scored.filter(t => t.riskLevel === 'DANGER').length
