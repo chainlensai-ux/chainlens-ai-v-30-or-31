@@ -1319,15 +1319,19 @@ console.log('\nP. CORTEX wording is evidence-based, never scam/financial-advice 
 
   // Mirrors lib/server/tokenPublicResponse.ts's cortexLpRead.riskSummary rewrite: a
   // "shows an overall ... risk tier" sentence built from the legacy rugRiskLabel tier
-  // ("critical") must be replaced with the canonical Token Safety Score, never left as
-  // "critical" when riskScore/riskLabel say 49/moderate.
-  const rawCortexLpReadSummary = 'PLAY (PLAY) shows an overall "critical" risk tier based on observed pool data. Liquidity depth is moderate for this token.'
-  const rewrittenCortexLpReadSummary = rawCortexLpReadSummary.replace(
-    /shows an overall "[^"]*" risk tier based on observed pool data\./i,
-    'has a Token Safety Score: 49/100 (moderate) based on observed pool data.'
-  )
+  // ("critical") must be replaced with evidence-first canonical Token Safety Score
+  // wording, never left as "critical" when riskScore/riskLabel say 49/moderate.
+  const playCortexRewritePayload = sanitizePublicTokenResponse({
+    symbol: 'PLAY',
+    riskScore: 49,
+    riskLabel: 'moderate',
+    cortexLpRead: {
+      riskSummary: 'PLAY (PLAY) shows an overall "critical" risk tier based on observed pool data. Liquidity depth is moderate for this token.',
+    },
+  }, false)
+  const rewrittenCortexLpReadSummary = playCortexRewritePayload.cortexLpRead.riskSummary
   assert('cortexLpRead.riskSummary does not say "critical" when riskLabel is moderate', !/critical/i.test(rewrittenCortexLpReadSummary), rewrittenCortexLpReadSummary)
-  assert('cortexLpRead.riskSummary cites the canonical Token Safety Score', /Token Safety Score:\s*49\/100 \(moderate\)/i.test(rewrittenCortexLpReadSummary), rewrittenCortexLpReadSummary)
+  assert('cortexLpRead.riskSummary uses evidence-first moderate Token Safety wording', /PLAY has a moderate Token Safety Score \(49\/100\), with severe holder\/dev-control risk drivers\./i.test(rewrittenCortexLpReadSummary), rewrittenCortexLpReadSummary)
 
   // Public payload must never contain the old scam/financial-advice phrasing, regardless of token.
   for (const payload of [publicPayload, fallbackPublicPayload, protocolPayload, mferPublicPayload, playPublicPayload]) {
@@ -1488,6 +1492,17 @@ console.log('\nR. PLAY primary poolType + secondary Aerodrome controller/share')
   assert('PLAY secondaryLpExposure.controllerSharePercent is ~99.47', playSecondaryExposureReal?.controllerSharePercent >= 99.4 && playSecondaryExposureReal?.controllerSharePercent <= 99.5, playSecondaryExposureReal?.controllerSharePercent)
   assert('PLAY secondaryLpExposure.lockBurnProof is open_check', playSecondaryExposureReal?.lockBurnProof === 'open_check', playSecondaryExposureReal?.lockBurnProof)
   assert('PLAY secondaryLpExposure.summary says this is secondary LP exposure, not primary liquidity', /secondary LP exposure, not primary liquidity/i.test(playSecondaryExposureReal?.summary ?? ''), playSecondaryExposureReal?.summary)
+
+  const playSecondaryExposureMissingController = buildSecondaryLpExposure({
+    secondarySignals: { ...secondaryPlayPoolType, evidence: ['top_share=99.47%'], pair: 'PLAY / USDC' },
+    primaryDex: 'PancakeSwap V3',
+    primaryPair: 'PLAY / USDC',
+    primaryPoolModel: 'concentrated',
+  })
+  assert('PLAY secondaryLpExposure without controller evidence remains open_check', playSecondaryExposureMissingController?.status === 'open_check', playSecondaryExposureMissingController)
+  assert('PLAY secondaryLpExposure without controller evidence has null controller', playSecondaryExposureMissingController?.controller === null, playSecondaryExposureMissingController)
+  assert('PLAY secondaryLpExposure without controller evidence has null-ish controller when no top_holder is present', playSecondaryExposureMissingController?.controller === null, playSecondaryExposureMissingController?.controller)
+  assert('PLAY secondaryLpExposure without controller evidence summary does not say appears wallet-controlled', !/appears wallet-controlled/i.test(playSecondaryExposureMissingController?.summary ?? ''), playSecondaryExposureMissingController?.summary)
 
   // R3. Public payload: lpControl.poolType reflects the primary pool, never "Aerodrome" for
   // PLAY's PancakeSwap V3 primary pool, while secondaryLpExposure carries the Aerodrome data.
