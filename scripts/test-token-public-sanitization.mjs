@@ -1846,5 +1846,106 @@ console.log('\nV. _debug.lpResolution debug-only LP controller resolution trace'
   assert('debug public payload includes _debug.lpResolution', Boolean(debugPayloadWithLpResolution._debug?.lpResolution), debugPayloadWithLpResolution._debug)
 }
 
+console.log('\nW. GET /api/token query alias extraction (input/address/contract/token/q/symbol)')
+{
+  const VIRTUAL_ADDRESS = '0x0b3e328455c4059EEb9e3f84b5543F74E24e7E1b'
+
+  // Mirrors the alias-priority extraction added to the GET handler in app/api/token/route.ts
+  function extractGetParams(searchParams) {
+    const rawInput =
+      searchParams.get('input') ??
+      searchParams.get('address') ??
+      searchParams.get('contract') ??
+      searchParams.get('token') ??
+      searchParams.get('q') ??
+      searchParams.get('symbol') ??
+      ''
+    const contractInput = rawInput.trim()
+    const chain = (searchParams.get('chain') ?? '').trim().toLowerCase() || 'base'
+    const debugParam = searchParams.get('debug')
+    const debugMode = debugParam === 'true' || debugParam === '1'
+    return { contractInput, chain, debugMode }
+  }
+
+  // address= resolves to the VIRTUAL address (not empty)
+  {
+    const { contractInput, chain } = extractGetParams(new URL(`https://x/api/token?chain=base&address=${VIRTUAL_ADDRESS}&debug=true`).searchParams)
+    assert('GET address= resolves contractInput to VIRTUAL address', contractInput === VIRTUAL_ADDRESS, contractInput)
+    assert('GET address= keeps chain=base', chain === 'base', chain)
+  }
+
+  // input= resolves to the VIRTUAL address (not empty)
+  {
+    const { contractInput } = extractGetParams(new URL(`https://x/api/token?chain=base&input=${VIRTUAL_ADDRESS}&debug=true`).searchParams)
+    assert('GET input= resolves contractInput to VIRTUAL address', contractInput === VIRTUAL_ADDRESS, contractInput)
+  }
+
+  // contract= resolves to the VIRTUAL address (not empty)
+  {
+    const { contractInput } = extractGetParams(new URL(`https://x/api/token?chain=base&contract=${VIRTUAL_ADDRESS}&debug=true`).searchParams)
+    assert('GET contract= resolves contractInput to VIRTUAL address', contractInput === VIRTUAL_ADDRESS, contractInput)
+  }
+
+  // token=, q=, symbol= are all supported aliases
+  {
+    assert('GET token= is a supported alias', extractGetParams(new URL('https://x/api/token?token=VIRTUAL').searchParams).contractInput === 'VIRTUAL', null)
+    assert('GET q= is a supported alias', extractGetParams(new URL('https://x/api/token?q=VIRTUAL').searchParams).contractInput === 'VIRTUAL', null)
+    assert('GET symbol= is a supported alias', extractGetParams(new URL('https://x/api/token?symbol=VIRTUAL').searchParams).contractInput === 'VIRTUAL', null)
+  }
+
+  // whitespace is trimmed
+  {
+    const { contractInput } = extractGetParams(new URL(`https://x/api/token?address=${encodeURIComponent(`  ${VIRTUAL_ADDRESS}  `)}`).searchParams)
+    assert('GET extracted input is trimmed', contractInput === VIRTUAL_ADDRESS, JSON.stringify(contractInput))
+  }
+
+  // chain defaults to base only when missing
+  {
+    assert('GET defaults chain to base when missing', extractGetParams(new URL(`https://x/api/token?address=${VIRTUAL_ADDRESS}`).searchParams).chain === 'base', null)
+    assert('GET respects explicit chain=eth', extractGetParams(new URL(`https://x/api/token?address=${VIRTUAL_ADDRESS}&chain=eth`).searchParams).chain === 'eth', null)
+  }
+
+  // debug=true and debug=1 both enable debug mode
+  {
+    assert('GET debug=true enables debugMode', extractGetParams(new URL(`https://x/api/token?address=${VIRTUAL_ADDRESS}&debug=true`).searchParams).debugMode === true, null)
+    assert('GET debug=1 enables debugMode', extractGetParams(new URL(`https://x/api/token?address=${VIRTUAL_ADDRESS}&debug=1`).searchParams).debugMode === true, null)
+    assert('GET no debug param disables debugMode', extractGetParams(new URL(`https://x/api/token?address=${VIRTUAL_ADDRESS}`).searchParams).debugMode === false, null)
+    assert('GET debug=0 disables debugMode', extractGetParams(new URL(`https://x/api/token?address=${VIRTUAL_ADDRESS}&debug=0`).searchParams).debugMode === false, null)
+  }
+
+  // Mirrors the GET handler's _diagnostics/_debug pass-through assembly
+  function buildGetDiagnostics(contractInput, scan, debugMode) {
+    if (!debugMode) return {}
+    return {
+      _diagnostics: { resolverInput: contractInput, ...(scan._diagnostics ?? {}) },
+      _debug: { resolverDiagnostics: { original: contractInput }, ...(scan._debug ?? {}) },
+    }
+  }
+
+  // debug=true: _diagnostics.resolverInput and _debug.resolverDiagnostics.original
+  // reflect the extracted query value, even if the underlying scan reported an empty
+  // resolverInput (e.g. before the GET handler fix).
+  {
+    const scan = {
+      contract: VIRTUAL_ADDRESS.toLowerCase(),
+      _diagnostics: { debug: { resolverInput: '', resolverType: 'address' } },
+      _debug: {},
+    }
+    const result = buildGetDiagnostics(VIRTUAL_ADDRESS, scan, true)
+    assert('debug=true: _diagnostics.resolverInput reflects extracted query value', result._diagnostics.resolverInput === VIRTUAL_ADDRESS, result._diagnostics)
+    assert('debug=true: _debug.resolverDiagnostics.original reflects extracted query value', result._debug.resolverDiagnostics.original === VIRTUAL_ADDRESS, result._debug)
+    assert('debug=true: response includes _debug', '_debug' in result, Object.keys(result))
+    assert('debug=true: response includes _diagnostics', '_diagnostics' in result, Object.keys(result))
+  }
+
+  // no debug param: response does not expose _debug or _diagnostics
+  {
+    const scan = { contract: VIRTUAL_ADDRESS.toLowerCase() }
+    const result = buildGetDiagnostics(VIRTUAL_ADDRESS, scan, false)
+    assert('no debug: _debug is not present', !('_debug' in result), Object.keys(result))
+    assert('no debug: _diagnostics is not present', !('_diagnostics' in result), Object.keys(result))
+  }
+}
+
 console.log(`\n${passed} passed, ${failed} failed`)
 if (failed > 0) process.exit(1)

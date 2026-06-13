@@ -7637,25 +7637,42 @@ export async function POST(req: Request) {
 
 export async function GET(req: Request) {
   const url = new URL(req.url)
-  const contract = url.searchParams.get('address') ?? url.searchParams.get('contract') ?? ''
-  const chain = url.searchParams.get('chain') ?? 'base'
+  const rawInput =
+    url.searchParams.get('input') ??
+    url.searchParams.get('address') ??
+    url.searchParams.get('contract') ??
+    url.searchParams.get('token') ??
+    url.searchParams.get('q') ??
+    url.searchParams.get('symbol') ??
+    ''
+  const contractInput = rawInput.trim()
+  const chain = (url.searchParams.get('chain') ?? '').trim().toLowerCase() || 'base'
+  const debugParam = url.searchParams.get('debug')
+  const debugMode = debugParam === 'true' || debugParam === '1'
 
-  if (!/^0x[a-fA-F0-9]{40}$/.test(contract)) {
+  if (!contractInput) {
     return NextResponse.json({ error: 'Invalid or missing address parameter.' }, { status: 400 })
   }
 
   const mockReq = new Request(req.url, {
     method: 'POST',
     headers: req.headers,
-    body: JSON.stringify({ contract, chain, debug: url.searchParams.get('debug') === 'true' }),
+    body: JSON.stringify({ contract: contractInput, chain, debug: debugMode }),
   })
   const scanRes = await POST(mockReq)
   const scan = await scanRes.json().catch(() => null) as Record<string, any> | null
   if (!scanRes.ok || scan?.error) {
-    return NextResponse.json({ error: scan?.error ?? 'Token metadata unavailable.' }, { status: scanRes.ok ? 502 : scanRes.status })
+    return NextResponse.json({
+      error: scan?.error ?? 'Token metadata unavailable.',
+      ...(debugMode ? {
+        _diagnostics: { resolverInput: contractInput, ...(scan?._diagnostics ?? {}) },
+        _debug: { resolverDiagnostics: { original: contractInput }, ...(scan?._debug ?? {}) },
+      } : {}),
+    }, { status: scanRes.ok ? 502 : scanRes.status })
   }
   if (!scan) return NextResponse.json(null)
 
+  const contract = scan.contract ?? contractInput
   const socials = (scan.projectSocials && typeof scan.projectSocials === 'object') ? scan.projectSocials as Record<string, unknown> : {}
   const explorerBase = chain === 'eth' || chain === 'ethereum' ? 'https://etherscan.io' : 'https://basescan.org'
   const gtNetwork = chain === 'eth' || chain === 'ethereum' ? 'eth' : 'base'
@@ -7690,6 +7707,10 @@ export async function GET(req: Request) {
     holderResolver: scan.holderResolver ?? null,
     priceChart: scan.priceChart ?? null,
     sections: scan.sections ?? null,
+    ...(debugMode ? {
+      _diagnostics: { resolverInput: contractInput, ...(scan._diagnostics ?? {}) },
+      _debug: { resolverDiagnostics: { original: contractInput }, ...(scan._debug ?? {}) },
+    } : {}),
   }
 
   if (metadata.name == null && metadata.symbol == null && metadata.decimals == null && metadata.website == null && metadata.twitter == null && metadata.telegram == null) {
