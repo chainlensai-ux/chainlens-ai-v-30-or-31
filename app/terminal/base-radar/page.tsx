@@ -219,7 +219,7 @@ function applyScoreTrustCaps(token: RadarToken, score: number, status: RadarStat
   return Math.max(0, Math.min(100, Math.round(capped)))
 }
 
-function getClarkSignal(status: RadarStatus): string {
+function getCortexSignal(status: RadarStatus): string {
   const map: Record<RadarStatus, string> = {
     HOT: 'Strong early activity relative to liquidity. Worth watching closely, but still verify before entry.',
     WATCH: 'Fresh Base pool with some traction. Monitor liquidity and volume before making a move.',
@@ -245,6 +245,7 @@ function getFlags(token: RadarToken, status: RadarStatus, momentum: MomentumLeve
   if (buyTax === 0 && sellTax === 0 && token.honeypot?.simulationSuccess) flags.push('Simulation Clear')
   if (suspiciousBranding) flags.push('CORTEX Watch')
   if (status === 'UNVERIFIED') flags.push('Open Check')
+  if (status === 'RISKY') flags.push('High Risk')
 
   return flags
 }
@@ -287,7 +288,7 @@ function enrichToken(token: RadarToken): TokenIntel {
     radarScore,
     status,
     flags: getFlags(token, status, momentum, suspiciousBranding),
-    clarkSignal: getClarkSignal(status),
+    clarkSignal: getCortexSignal(status),
     launchQuality: getLaunchQuality(token),
   }
 }
@@ -299,11 +300,41 @@ function qualityColor(level: QualityLevel): string {
   return '#fbbf24'
 }
 
+function getStageLabel(token: TokenIntel): string {
+  if (token.status === 'HOT') return 'Trending'
+  if (token.ageMinutes <= 15) return 'New Pool'
+  if (token.status === 'EARLY') return 'Early'
+  return 'Watch'
+}
+
+function getSignalInsight(token: TokenIntel): string {
+  if (token.status === 'UNVERIFIED') return 'High open-check count. Review liquidity and simulation evidence before trusting this signal.'
+  if (token.ageMinutes <= 30 && token.liquidityUsd < 5_000) return 'Very new pool. Early activity visible. Liquidity still thin.'
+  if (token.momentum === 'HIGH' && token.honeypot?.simulationSuccess) return 'Volume spike with active trading and clean simulation evidence.'
+  if (token.volume24h >= 5_000) return 'Fresh volume is building against visible liquidity. Scan deeper for confirmation.'
+  if (token.liquidityUsd >= 30_000) return 'Visible liquidity is stronger than most fresh pools. Monitor volume follow-through.'
+  return safeText(token.clarkVerdict ?? token.clarkSignal)
+}
+
+function getTaxLabel(token: TokenIntel): string {
+  if (!token.honeypot?.simulationSuccess) return 'Open check'
+  const buyTax = token.honeypot.buyTax ?? 0
+  const sellTax = token.honeypot.sellTax ?? 0
+  return `B ${buyTax.toFixed(1)}% / S ${sellTax.toFixed(1)}%`
+}
+
+function getBadgeStyle(flag: string): { color: string; background: string; border: string } {
+  if (['Momentum', 'Volume Spike', 'Simulation Clear'].includes(flag)) return { color: '#99f6e4', background: 'rgba(45,212,191,0.13)', border: 'rgba(45,212,191,0.30)' }
+  if (['LP Open Check', 'Simulation Open', 'Open Check', 'Liquidity Watch'].includes(flag)) return { color: '#fde68a', background: 'rgba(251,191,36,0.12)', border: 'rgba(251,191,36,0.28)' }
+  if (['High Risk', 'CORTEX Watch'].includes(flag)) return { color: '#fecaca', background: 'rgba(248,113,113,0.11)', border: 'rgba(248,113,113,0.28)' }
+  return { color: '#bfdbfe', background: 'rgba(96,165,250,0.13)', border: 'rgba(96,165,250,0.30)' }
+}
+
 function TokenCard({
   token,
   index,
   onScan,
-  onAskClark,
+  onAskCortex,
   onOpenOverview,
   onTrackToggle,
   tracking,
@@ -311,7 +342,7 @@ function TokenCard({
   token: TokenIntel
   index: number
   onScan: () => void
-  onAskClark: () => void
+  onAskCortex: () => void
   onOpenOverview: () => void
   onTrackToggle: () => void
   tracking: boolean
@@ -320,147 +351,97 @@ function TokenCard({
   const statusColor = STATUS_COLOR[token.status]
   const statusBg = STATUS_BG[token.status]
   const statusBorder = STATUS_BORDER[token.status]
-
-  const buyTax = token.honeypot?.buyTax
-  const sellTax = token.honeypot?.sellTax
-  const securityVerified = token.honeypot?.simulationSuccess
   const avatarText = (token.symbol || token.name || '?').slice(0, 2).toUpperCase()
+  const highSignal = token.radarScore >= 75
+  const stageLabel = getStageLabel(token)
+  const insight = getSignalInsight(token)
+  const metrics = [
+    { label: 'Liquidity', value: fmtUSD(token.liquidityUsd), accent: token.liquidityUsd >= 30_000 ? '#99f6e4' : undefined },
+    { label: '24h Volume', value: fmtUSD(token.volume24h), accent: token.volume24h >= 5_000 ? '#99f6e4' : undefined },
+    { label: 'FDV / Value', value: token.fdvUsd ? fmtUSD(token.fdvUsd) : 'Open check' },
+    { label: 'Age', value: fmtAge(token.ageMinutes), accent: token.ageMinutes <= 30 ? '#bfdbfe' : undefined },
+    { label: 'Momentum', value: token.momentum === 'NONE' ? 'Open check' : token.momentum, accent: token.momentum === 'HIGH' ? '#99f6e4' : undefined },
+    { label: 'Tax / Sim', value: getTaxLabel(token), accent: token.honeypot?.simulationSuccess ? '#99f6e4' : '#fde68a' },
+  ]
 
   return (
     <div
+      className='opportunity-card'
       onClick={onOpenOverview}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{
-        background: hovered ? 'rgba(255,255,255,0.05)' : 'rgba(255,255,255,0.03)',
-        border: `1px solid ${hovered ? 'rgba(255,255,255,0.14)' : 'rgba(255,255,255,0.08)'}`,
-        borderRadius: '14px',
-        padding: '12px',
+        background: hovered
+          ? `linear-gradient(135deg, rgba(15,23,42,0.96), rgba(6,13,24,0.92)), radial-gradient(circle at 0% 0%, ${statusBg}, transparent 38%)`
+          : `linear-gradient(135deg, rgba(8,13,24,0.94), rgba(4,9,18,0.90)), radial-gradient(circle at 0% 0%, ${statusBg}, transparent 36%)`,
+        border: `1px solid ${hovered || highSignal ? statusBorder : 'rgba(148,163,184,0.13)'}`,
+        borderRadius: '18px',
+        padding: '14px',
         cursor: 'pointer',
-        transition: 'background 0.15s, border-color 0.15s',
+        transition: 'transform 0.18s ease, background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease',
+        transform: hovered ? 'translateY(-1px)' : 'translateY(0)',
+        boxShadow: highSignal ? `0 18px 55px rgba(0,0,0,0.28), 0 0 34px ${statusBg}` : '0 14px 36px rgba(0,0,0,0.22)',
         animation: 'radarSlideIn 0.35s ease both',
         animationDelay: `${index * 45}ms`,
         position: 'relative',
         overflow: 'hidden',
       }}
     >
-      <div
-        style={{
-          position: 'absolute',
-          top: 0,
-          left: 0,
-          right: 0,
-          height: '2px',
-          background: statusColor,
-          opacity: 0.65,
-        }}
-      />
+      <div style={{ position: 'absolute', inset: '0 auto 0 0', width: '4px', background: statusColor, opacity: highSignal ? 0.95 : 0.65 }} />
 
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', marginBottom: '6px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '9px', minWidth: 0 }}>
-          <div style={{
-            width: '28px',
-            height: '28px',
-            borderRadius: '50%',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            fontSize: '10px',
-            fontWeight: 700,
-            color: '#e2e8f0',
-            background: 'linear-gradient(135deg, rgba(45,212,191,0.25), rgba(168,85,247,0.22))',
-            border: '1px solid rgba(255,255,255,0.16)',
-            fontFamily: 'var(--font-plex-mono)',
-            flexShrink: 0,
-          }}>
+      <div className='token-card-header' style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '12px', marginBottom: '12px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '11px', minWidth: 0 }}>
+          <div style={{ width: '42px', height: '42px', borderRadius: '14px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '13px', fontWeight: 900, color: '#f8fafc', background: `linear-gradient(135deg, ${statusBg}, rgba(168,85,247,0.20))`, border: `1px solid ${statusBorder}`, boxShadow: `0 0 22px ${statusBg}`, fontFamily: 'var(--font-plex-mono)', flexShrink: 0 }}>
             {avatarText}
           </div>
           <div style={{ minWidth: 0 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <span style={{ fontSize: '14px', fontWeight: 700, color: '#f1f5f9', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                {token.name}
-              </span>
-              <span style={{ fontSize: '10px', fontWeight: 700, color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>{token.symbol}</span>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: '7px', minWidth: 0 }}>
+              <span style={{ fontSize: '17px', fontWeight: 850, color: '#f8fafc', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{safeText(token.name, 'Unknown token')}</span>
+              <span style={{ fontSize: '11px', fontWeight: 800, color: '#94a3b8', fontFamily: 'var(--font-plex-mono)' }}>{safeText(token.symbol, '???')}</span>
             </div>
-            <span style={{ fontSize: '10px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>{shortAddr(token.contract)}</span>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '6px' }}>
+              <span style={{ fontSize: '10px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>{shortAddr(token.contract)}</span>
+              <MiniPill label={fmtAge(token.ageMinutes)} />
+              <MiniPill label={stageLabel} color={statusColor} background={statusBg} border={statusBorder} />
+            </div>
           </div>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
-          <span style={{ padding: '3px 8px', borderRadius: '99px', fontSize: '9px', fontWeight: 700, letterSpacing: '0.08em', color: '#94a3b8', background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.08)', fontFamily: 'var(--font-plex-mono)' }}>
-            {fmtAge(token.ageMinutes)}
-          </span>
-          <span style={{ padding: '3px 8px', borderRadius: '99px', fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', color: statusColor, background: statusBg, border: `1px solid ${statusBorder}`, fontFamily: 'var(--font-plex-mono)' }}>
-            {token.status}
-          </span>
+        <div style={{ minWidth: '86px', borderRadius: '16px', padding: '8px 10px', textAlign: 'center', background: `linear-gradient(180deg, ${statusBg}, rgba(255,255,255,0.035))`, border: `1px solid ${statusBorder}`, boxShadow: highSignal ? `0 0 22px ${statusBg}` : 'none' }}>
+          <p style={{ margin: '0 0 2px', fontSize: '8px', color: '#94a3b8', letterSpacing: '0.14em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', fontWeight: 800 }}>Radar Score</p>
+          <p style={{ margin: 0, color: statusColor, fontSize: '28px', lineHeight: 1, fontWeight: 900, fontFamily: 'var(--font-plex-mono)' }}>{token.radarScore}</p>
         </div>
       </div>
 
-      <div className='token-card-main' style={{ display: 'grid', gridTemplateColumns: '1fr 120px', gap: '8px', marginBottom: '7px' }}>
-        <div className='token-card-metrics' style={{ display: 'grid', gridTemplateColumns: 'repeat(6, minmax(0, 1fr))', gap: '8px' }}>
-          <Metric label='Score' value={String(token.radarScore)} accent={token.radarScore >= 80 ? '#22d3ee' : '#e2e8f0'} />
-          <Metric label='Liquidity' value={fmtUSD(token.liquidityUsd)} />
-          <Metric label='Vol 24h' value={fmtUSD(token.volume24h)} />
-          <Metric label='FDV' value={token.fdvUsd ? fmtUSD(token.fdvUsd) : 'Open check'} />
-          <Metric label='Momentum' value={token.momentum} />
-          <Metric label='Tax' value={securityVerified ? `B ${buyTax?.toFixed(1) ?? '0'} / S ${sellTax?.toFixed(1) ?? '0'}%` : 'Unknown'} />
-        </div>
-        <div style={{
-          borderRadius: '10px',
-          border: '1px solid rgba(255,255,255,0.08)',
-          background: 'linear-gradient(180deg, rgba(45,212,191,0.06), rgba(168,85,247,0.04))',
-          padding: '5px',
-          display: 'flex',
-          flexDirection: 'column',
-          justifyContent: 'space-between',
-        }}>
-          <svg viewBox='0 0 110 32' width='100%' height='24' aria-hidden='true'>
-            <path d='M2 22 L18 19 L33 21 L46 14 L62 16 L78 9 L93 13 L108 8' stroke='rgba(45,212,191,0.8)' strokeWidth='1.5' fill='none' />
-          </svg>
-          <span style={{ fontSize: '8px', color: '#475569', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.08em' }}>
-            Radar Signal
-          </span>
-        </div>
+      <div style={{ borderRadius: '14px', padding: '11px 12px', marginBottom: '12px', border: `1px solid ${statusBorder}`, background: `linear-gradient(90deg, ${statusBg}, rgba(255,255,255,0.025))` }}>
+        <p style={{ margin: '0 0 4px', fontSize: '9px', color: statusColor, letterSpacing: '0.14em', textTransform: 'uppercase', fontWeight: 900, fontFamily: 'var(--font-plex-mono)' }}>Why on radar</p>
+        <p style={{ margin: 0, color: '#dbeafe', fontSize: '12px', lineHeight: 1.45, fontWeight: 650 }}>{insight}</p>
       </div>
 
-      <div className='token-quality-grid' style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0, 1fr))', gap: '5px', marginBottom: '7px' }}>
-        {(
-          [
-            ['Liquidity', token.launchQuality.liquidity],
-            ['Volume', token.launchQuality.volume],
-            ['Age', token.launchQuality.age],
-            ['Taxes', token.launchQuality.taxes],
-            ['Security', token.launchQuality.security],
-          ] as Array<[string, QualityLevel]>
-        ).map(([label, value]) => (
-          <div key={label} style={{ border: '1px solid rgba(255,255,255,0.06)', borderRadius: '8px', padding: '5px 6px', background: 'rgba(255,255,255,0.02)' }}>
-            <p style={{ margin: '0 0 2px', fontSize: '8px', letterSpacing: '0.10em', color: '#3a5268', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>{label}</p>
-            <p style={{ margin: 0, fontSize: '10px', fontWeight: 700, color: qualityColor(value), fontFamily: 'var(--font-plex-mono)' }}>{value}</p>
-          </div>
-        ))}
+      <div className='token-card-metrics' style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: '8px', marginBottom: '10px' }}>
+        {metrics.map(metric => <Metric key={metric.label} {...metric} />)}
       </div>
 
       {token.flags.length > 0 && (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px', marginBottom: '8px' }}>
-          {token.flags.map(flag => (
-            <span key={flag} style={{ padding: '2px 7px', borderRadius: '99px', fontSize: '8px', fontWeight: 700, letterSpacing: '0.08em', color: '#cbd5e1', background: 'rgba(148,163,184,0.10)', border: '1px solid rgba(148,163,184,0.20)', fontFamily: 'var(--font-plex-mono)' }}>
-              {flag}
-            </span>
-          ))}
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '12px' }}>
+          {token.flags.map(flag => {
+            const badge = getBadgeStyle(flag)
+            return <span key={flag} style={{ padding: '4px 8px', borderRadius: '99px', fontSize: '9px', fontWeight: 850, letterSpacing: '0.07em', color: badge.color, background: badge.background, border: `1px solid ${badge.border}`, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{flag}</span>
+          })}
         </div>
       )}
 
-      <p style={{ fontSize: '10px', color: '#64748b', margin: '0 0 7px', lineHeight: 1.35, borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '7px', fontStyle: 'italic' }}>
-        Why on radar: {safeText(token.clarkVerdict ?? token.clarkSignal)}
-      </p>
-
-      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+      <div className='token-card-actions' style={{ display: 'flex', alignItems: 'center', gap: '8px', paddingTop: '10px', borderTop: '1px solid rgba(148,163,184,0.12)' }}>
         <ActionButton label='Scan' onClick={onScan} />
-        <ActionButton label='Ask Clark' hint='Analyze with Clark' onClick={onAskClark} />
+        <ActionButton label='Ask CORTEX' hint='Analyze with CORTEX' onClick={onAskCortex} />
         <ActionButton label={tracking ? 'Tracking' : 'Track'} active={tracking} onClick={onTrackToggle} />
       </div>
     </div>
   )
+}
+
+function MiniPill({ label, color = '#94a3b8', background = 'rgba(255,255,255,0.06)', border = 'rgba(255,255,255,0.10)' }: { label: string; color?: string; background?: string; border?: string }) {
+  return <span style={{ padding: '3px 7px', borderRadius: '99px', fontSize: '9px', fontWeight: 800, letterSpacing: '0.08em', color, background, border: `1px solid ${border}`, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{label}</span>
 }
 
 function ActionButton({
@@ -485,17 +466,20 @@ function ActionButton({
       title={hint}
       disabled={disabled}
       style={{
-        padding: '4px 10px',
-        borderRadius: '8px',
-        fontSize: '9px',
+        flex: 1,
+        minHeight: '34px',
+        padding: '8px 11px',
+        borderRadius: '11px',
+        fontSize: '10px',
         fontWeight: 700,
         letterSpacing: '0.08em',
         textTransform: 'uppercase',
         border: `1px solid ${active ? 'rgba(45,212,191,0.35)' : 'rgba(255,255,255,0.12)'}`,
-        background: active ? 'rgba(45,212,191,0.14)' : 'rgba(255,255,255,0.03)',
+        background: active ? 'rgba(45,212,191,0.16)' : 'rgba(15,23,42,0.72)',
         color: disabled ? '#475569' : active ? '#2DD4BF' : '#cbd5e1',
         fontFamily: 'var(--font-plex-mono)',
         cursor: disabled ? 'not-allowed' : 'pointer',
+        boxShadow: active ? '0 0 18px rgba(45,212,191,0.10)' : 'none',
       }}
     >
       {label}
@@ -505,11 +489,11 @@ function ActionButton({
 
 function Metric({ label, value, accent }: { label: string; value: string; accent?: string }) {
   return (
-    <div>
-      <p style={{ fontSize: '8px', fontWeight: 700, letterSpacing: '0.12em', color: '#3a5268', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', margin: '0 0 2px' }}>
+    <div style={{ border: '1px solid rgba(148,163,184,0.12)', borderRadius: '12px', padding: '9px 10px', background: 'rgba(255,255,255,0.035)', minWidth: 0 }}>
+      <p style={{ fontSize: '8px', fontWeight: 800, letterSpacing: '0.12em', color: '#64748b', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', margin: '0 0 5px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
         {label}
       </p>
-      <p style={{ fontSize: '11px', fontWeight: 700, color: accent ?? '#e2e8f0', margin: 0, fontFamily: 'var(--font-plex-mono)' }}>
+      <p style={{ fontSize: '13px', fontWeight: 850, color: accent ?? '#e2e8f0', margin: 0, fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
         {value}
       </p>
     </div>
@@ -799,13 +783,13 @@ export default function BaseRadarPage() {
     setTrackedContracts(prev => ({ ...prev, [contract]: !prev[contract] }))
   }
 
-  function askClark(token: TokenIntel) {
+  function askCortex(token: TokenIntel) {
     const buyTax = token.honeypot?.buyTax
     const sellTax = token.honeypot?.sellTax
     const security = token.honeypot?.simulationSuccess ? 'Verified' : 'Unknown'
     const prompt = [
       '[mode: base-radar]',
-      'Analyze this Base Radar token and give me a clear verdict: WATCH, AVOID, or SCAN DEEPER.',
+      'Analyze this Base Radar token and give me a clear verdict: WATCH, PASS, or SCAN DEEPER.',
       `Token: ${token.name} (${token.symbol})`,
       `Contract: ${token.contract}`,
       `Radar Score: ${token.radarScore}`,
@@ -818,7 +802,7 @@ export default function BaseRadarPage() {
       `Sell Tax: ${sellTax !== null && sellTax !== undefined ? `${sellTax.toFixed(1)}%` : 'Unknown'}`,
       `Security: ${security}`,
       `Flags: ${token.flags.length > 0 ? token.flags.join(', ') : 'None'}`,
-      `Clark Signal: ${token.clarkVerdict ?? token.clarkSignal}`,
+      `CORTEX Signal: ${token.clarkVerdict ?? token.clarkSignal}`,
     ].join('\n')
 
     router.push(`/terminal/clark-ai?prompt=${encodeURIComponent(prompt)}`)
@@ -895,9 +879,10 @@ export default function BaseRadarPage() {
           .radar-controls > div { width: 100%; justify-content: space-between; }
           .radar-overview-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
           .radar-overview-card { padding: 12px !important; }
+          .token-card-header { flex-direction: column !important; }
+          .token-card-header > div:last-child { width: 100%; }
           .token-card-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
-          .token-card-main { grid-template-columns: 1fr !important; }
-          .token-quality-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+          .token-card-actions { flex-direction: column !important; align-items: stretch !important; }
         }
       `}</style>
 
@@ -1026,7 +1011,7 @@ export default function BaseRadarPage() {
                   token={token}
                   index={i}
                   onScan={() => openToken(token.contract)}
-                  onAskClark={() => askClark(token)}
+                  onAskCortex={() => askCortex(token)}
                   onOpenOverview={() => openProjectOverview(token)}
                   onTrackToggle={() => toggleTrack(token.contract)}
                   tracking={Boolean(trackedContracts[token.contract])}
