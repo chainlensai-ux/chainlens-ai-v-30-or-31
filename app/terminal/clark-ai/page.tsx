@@ -187,6 +187,16 @@ function ClarkAiContent() {
         .map((m) => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.text }))
       const { data: { session: authSession } } = await supabase.auth.getSession()
       const accessToken = authSession?.access_token ?? null
+      const clientClarkContext = getClientClarkContext()
+      const appContext = {
+        route: pathname,
+        chain: 'base',
+        selectedToken: clarkContextRef.current.lastMarketList?.[0]?.tokenAddress ?? clientClarkContext.lastToken ?? null,
+        selectedWallet: clientClarkContext.lastWallet ?? null,
+        baseRadarSummary: clarkContextRef.current.lastMarketList ?? clientClarkContext.lastMomentumList ?? null,
+        whaleSyncStatus: typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('chainlens:whale-alerts:sync-status') ?? 'unknown' : 'unknown',
+        currentTool: activeMode ?? null,
+      }
       const res = await fetch('/api/clark', {
         method: 'POST',
         headers: {
@@ -202,16 +212,8 @@ function ClarkAiContent() {
           recentMovers: clarkContextRef.current.lastMarketList ?? [],
           moversContext: { items: clarkContextRef.current.lastMarketList ?? [] },
           marketContext: { items: clarkContextRef.current.lastMarketList ?? [] },
-          clientContext: getClientClarkContext(),
-          appContext: {
-            route: pathname,
-            chain: 'base',
-            selectedToken: clarkContextRef.current.lastMarketList?.[0]?.tokenAddress ?? null,
-            selectedWallet: getClientClarkContext().lastWallet ?? null,
-            baseRadarSummary: clarkContextRef.current.lastMarketList ?? null,
-            whaleSyncStatus: sessionStorage.getItem('chainlens:whale-alerts:sync-status') ?? 'unknown',
-            currentTool: activeMode,
-          },
+          clientContext: clientClarkContext,
+          appContext,
         }),
       })
       const json = await res.json()

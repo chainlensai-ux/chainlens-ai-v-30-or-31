@@ -528,7 +528,7 @@ async function resolveEnsOrBasename(name: string): Promise<string | null> {
   return null
 }
 function isValidationOnlyAnalysis(analysis: string): boolean {
-  return /I can run that, but I need a wallet address first|I can run that, but I need a token contract first|I couldn't resolve .+ to a wallet address|That doesn't look like a Base token|LOCKED\s*\n|Upgrade to unlock full CORTEX reads/i.test(analysis)
+  return /I can run that, but I need a wallet address first|I can run that, but I need a token contract first|I couldn't resolve .+ to a wallet address|That doesn't look like a Base token|LOCKED\s*\n|Upgrade to unlock full CORTEX reads|could not complete|could not refresh|data is temporarily unavailable|live wallet scan could not complete|looks like a wallet, not a token contract|LP pipeline failed|No data available right now/i.test(analysis)
 }
 
 function idToAddress(id: string): string {
@@ -1337,6 +1337,7 @@ function buildClarkToolPlan(input: {
   history?: ClarkRequestBody["history"];
   structuredMarketList?: StructuredMarketItem[];
   clarkContext?: ClarkRequestBody["clarkContext"];
+  appContext?: ClarkRequestBody["appContext"];
 }): ClarkToolPlan {
   const message = input.message ?? "";
   const historyLines = getHistoryMessages(input.history);
@@ -1350,7 +1351,7 @@ function buildClarkToolPlan(input: {
   const marketItems = structuredMarketRows.length ? structuredMarketRows : extractMarketListItemsFromHistory(input.history);
   const selectedOptionIndex = inferSelectionIndex(trimmed, input.history, marketItems, input.clarkContext?.lastSelectedRank);
   const directAddress = extractAddress(message);
-  const routedIntent = resolveClarkIntent(message, input.context && typeof input.context === 'object' ? (input.context as any).appContext : undefined);
+  const routedIntent = resolveClarkIntent(message, input.appContext ?? (input.context && typeof input.context === 'object' ? (input.context as any).appContext : undefined));
   if (routedIntent.intent === 'base_radar') return { intent: "market", tools: [{ name: "market_get_base_movers", args: { page: 1, perPage: 20 }, required: false }], depth: "normal", followupContext: { address: null, lastTokenAddress: null, lastWalletAddress: null, marketFollowup: true, selectedOptionIndex: null } };
   if (routedIntent.intent === 'wallet_scan' || routedIntent.intent === 'portfolio') return { intent: routedIntent.intent === 'portfolio' ? "wallet_balance" : "wallet_quality", tools: routedIntent.address ? [{ name: "wallet_get_snapshot", args: { address: routedIntent.address }, required: true }] : [], depth: "normal", followupContext: { address: routedIntent.address, lastTokenAddress: null, lastWalletAddress: routedIntent.address, marketFollowup: false, selectedOptionIndex: null } };
   if (routedIntent.intent === 'liquidity_scan' && routedIntent.address) return { intent: "liquidity_safety", tools: [{ name: "liquidity_analyze", args: { address: routedIntent.address }, required: true }], depth: "normal", followupContext: { address: routedIntent.address, lastTokenAddress: routedIntent.address, lastWalletAddress: null, marketFollowup: false, selectedOptionIndex: null } };
@@ -2600,6 +2601,55 @@ function formatWalletBalanceSummary(snapshot: NonNullable<ClarkToolEvidence["wal
     "Next check:",
     "Monitor entries/exits before trusting this wallet. Run token scans on major holdings. No trade call.",
   ].join("\n");
+}
+
+
+function wantsWalletDeepScan(prompt: string): boolean {
+  return /\b(deep\s*scan|full\s*(?:wallet\s*)?scan|scan\s+all\s+chains|deep\b|historical|pnl|trades?)\b/i.test(prompt);
+}
+
+function getRpcUrlForClarkCodeCheck(chain: SupportedChain | string | undefined): string | null {
+  const c = chain === "ethereum" || chain === "eth" ? "eth" : "base";
+  if (c === "eth") {
+    if (process.env.ETH_RPC_URL && /^https?:\/\//.test(process.env.ETH_RPC_URL)) return process.env.ETH_RPC_URL;
+    if (process.env.ALCHEMY_ETHEREUM_KEY) return `https://eth-mainnet.g.alchemy.com/v2/${process.env.ALCHEMY_ETHEREUM_KEY}`;
+    return null;
+  }
+  if (process.env.BASE_RPC_URL && /^https?:\/\//.test(process.env.BASE_RPC_URL)) return process.env.BASE_RPC_URL;
+  if (process.env.ALCHEMY_BASE_RPC_URL && /^https?:\/\//.test(process.env.ALCHEMY_BASE_RPC_URL)) return process.env.ALCHEMY_BASE_RPC_URL;
+  if (process.env.ALCHEMY_BASE_KEY) return `https://base-mainnet.g.alchemy.com/v2/${process.env.ALCHEMY_BASE_KEY}`;
+  return "https://mainnet.base.org";
+}
+
+async function classifyAddressForClark(address: string, chain: SupportedChain | string | undefined): Promise<"wallet" | "contract" | "unknown"> {
+  const rpcUrl = getRpcUrlForClarkCodeCheck(chain);
+  if (!rpcUrl) return "unknown";
+  try {
+    const res = await fetch(rpcUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_getCode", params: [address, "latest"] }),
+      signal: AbortSignal.timeout(3500),
+    });
+    const json = await res.json().catch(() => ({}));
+    const code = typeof json?.result === "string" ? json.result : null;
+    if (!code) return "unknown";
+    return code === "0x" || code === "0x0" ? "wallet" : "contract";
+  } catch {
+    return "unknown";
+  }
+}
+
+function walletScannerDeepLink(address: string, deepScan: boolean): string {
+  return `/terminal/wallet-scanner?address=${address}&chain=auto${deepScan ? "&deepScan=true" : ""}`;
+}
+
+function tokenScannerDeepLink(address: string): string {
+  return `/terminal/token-scanner?address=${address}&chain=base`;
+}
+
+function liquidityDeepLink(address: string): string {
+  return `/terminal/liquidity?address=${address}&chain=base`;
 }
 
 function missingAddressReply(intent: ClarkIntent): string {
@@ -5882,10 +5932,64 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   const appIntent = resolveClarkIntent(prompt, body.appContext);
   const appIntentTools = appIntent.cta.map((a) => a.label).join(' · ');
   if (appIntent.intent === 'wallet_scan') {
-    const href = appIntent.address ? `/terminal/wallet-scanner?address=${appIntent.address}&chain=auto` : '/terminal/wallet-scanner';
-    return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_scan", toolsUsed: [], ui: { intentBadge: 'Wallet Scan', actions: appIntent.cta }, analysis: appIntent.address
-      ? `WALLET SCAN\nI found a wallet address and routed this to Wallet Scanner with auto-chain detection. If the live pull fails, open Wallet Scanner and run Deep Scan.\nCTA: Scan Wallet — ${href}`
-      : `WALLET SCAN\nWallet Scanner is the right tool. I need a wallet address to run the live pull, or open Wallet Scanner and paste one there.\nCTA: ${appIntentTools}` };
+    const selectedWallet = typeof body.appContext?.selectedWallet === 'string' ? body.appContext.selectedWallet : body.appContext?.selectedWallet?.address ?? null;
+    const walletAddress = appIntent.address ?? selectedWallet ?? null;
+    const deepScan = wantsWalletDeepScan(prompt);
+    if (!walletAddress) {
+      return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_scan", toolsUsed: [], ui: { intentBadge: 'Wallet Scan', actions: appIntent.cta }, analysis: `WALLET SCAN\nI can run Wallet Scanner, but I need a wallet address or selected wallet context.\nCTA: ${appIntentTools}` };
+    }
+    const href = walletScannerDeepLink(walletAddress, deepScan);
+    const scanPayload = deepScan
+      ? { address: walletAddress, walletAddress, chain: "auto", chainMode: "all_supported", deepScan: true, debug: false, source: "clark" }
+      : { address: walletAddress, walletAddress, chain: "auto", deepScan: false, debug: false, source: "clark" };
+    const walletRes = await callInternalApi(origin, "/api/wallet", scanPayload, authHeader ?? undefined)
+      .catch((err) => ({ ok: false, status: 0, json: { error: err instanceof Error ? err.message : "wallet_scan_timeout" } }));
+    if (!walletRes.ok || (walletRes.json as Record<string, unknown>)?.error) {
+      const reason = String((walletRes.json as Record<string, unknown>)?.error ?? (walletRes.status === 0 ? "timeout" : `HTTP ${walletRes.status}`));
+      return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_scan", toolsUsed: ["wallet_get_snapshot"], ui: { intentBadge: deepScan ? 'Wallet Deep Scan' : 'Wallet Scan', actions: [{ label: 'Open Wallet Scanner', href }, { label: 'Run Deep Scan', href: walletScannerDeepLink(walletAddress, true) }] }, analysis: [
+        deepScan ? "WALLET DEEP SCAN" : "WALLET SCAN",
+        `- wallet: ${walletAddress}`,
+        `- what Clark did: called Wallet Scanner (${deepScan ? "deepScan=true, chainMode=all_supported" : "deepScan=false, chain=auto"})`,
+        `- result: live wallet scan could not complete (${reason}).`,
+        "- evidence gaps: portfolio, active chains, activity, and PnL remain unverified from this attempt.",
+        `CTA: Open Wallet Scanner — ${href}`,
+      ].join("\n") };
+    }
+    const snapshot = normalizeWalletSnapshotEvidence(walletRes.json as Record<string, unknown>, walletAddress);
+    const activeChainsRaw = (walletRes.json as Record<string, unknown>).activeChains;
+    const activeChains = Array.isArray(activeChainsRaw) ? activeChainsRaw.filter((x): x is string => typeof x === "string") : [];
+    const pnlStatus = typeof (walletRes.json as Record<string, unknown>).pnlStatus === "string" ? (walletRes.json as Record<string, unknown>).pnlStatus : (deepScan ? "Realized PnL returned only when historical lots are available." : "Run Deep Scan for realized PnL / historical trades.");
+    const summary = [
+      deepScan ? "WALLET DEEP SCAN" : "WALLET SCAN",
+      `- wallet: ${walletAddress}`,
+      `- what Clark did: called Wallet Scanner with ${deepScan ? "deepScan=true, chainMode=all_supported" : "deepScan=false, chain=auto"}.`,
+      `- active chains: ${activeChains.length ? activeChains.join(", ") : "not reported"}`,
+      `- portfolio value: ${formatUsdShort(snapshot.totalValue)}`,
+      `- holdings count: ${snapshot.tokenCount ?? "n/a"}`,
+      `- recent activity: ${snapshot.txCount != null ? `${formatInt(snapshot.txCount)} transactions` : "activity summary unavailable"}`,
+      `- realized PnL status: ${pnlStatus}`,
+      `- evidence gaps: ${snapshot.dataQuality === "Complete" ? "No major wallet evidence gaps in returned snapshot." : "Some activity, chain coverage, or unpriced holdings are incomplete."}`,
+      `CTA: Open Wallet Scanner — ${href}${deepScan ? "" : ` / Run Deep Scan — ${walletScannerDeepLink(walletAddress, true)}`}`,
+      "",
+      formatWalletBalanceSummary(snapshot),
+    ].join("\n");
+    updateMemWallet(sessionMem, walletAddress, null, summary);
+    updateMemIntent(sessionMem, "wallet_analysis");
+    return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_scan", toolsUsed: ["wallet_get_snapshot"], ui: { intentBadge: deepScan ? 'Wallet Deep Scan' : 'Wallet Scan', actions: [{ label: 'Open Wallet Scanner', href }, { label: 'Run Deep Scan', href: walletScannerDeepLink(walletAddress, true) }] }, analysis: summary };
+  }
+  if (appIntent.intent === 'liquidity_scan' && appIntent.address) {
+    const kind = await classifyAddressForClark(appIntent.address, chain);
+    if (kind === "wallet") {
+      const href = walletScannerDeepLink(appIntent.address, false);
+      return { feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_safety", toolsUsed: ["address_code_check"], ui: { intentBadge: 'LP Check', actions: [{ label: 'Scan Wallet', href }, { label: 'Deep Scan Wallet', href: walletScannerDeepLink(appIntent.address, true) }] }, analysis: [
+        "LP READ",
+        `- address: ${appIntent.address}`,
+        "- what Clark did: checked whether the address has contract code before running LP tools.",
+        "- result: That address looks like a wallet, not a token contract. LP checks need a token contract. I can scan the wallet instead.",
+        "- evidence gaps: token LP pipeline was not run because this is not a contract candidate.",
+        `CTA: Scan Wallet — ${href}`,
+      ].join("\n") };
+    }
   }
   if (appIntent.intent === 'liquidity_scan' && !appIntent.address) {
     return { feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_safety", toolsUsed: [], ui: { intentBadge: 'LP Check', actions: appIntent.cta }, analysis: [
@@ -6824,6 +6928,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     history: body.history,
     structuredMarketList,
     clarkContext: body.clarkContext,
+    appContext: body.appContext,
   });
   const { evidence, toolsUsed, resolvedAddress } = await executeClarkToolPlan({ plan, origin, prompt, chain, verifiedPlan: verifiedPlan ?? clarkInternalCtx.verifiedPlan ?? 'free', authHeader: authHeader ?? (clarkInternalCtx.authToken ? `Bearer ${clarkInternalCtx.authToken}` : undefined) });
 
@@ -7175,20 +7280,28 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         toolsUsed,
       };
     }
+    const rawReason = evidence.liquidity?.errorSafeMessage || evidence.liquidity?.warnings?.[0] || "API unavailable before useful LP data";
+    const reason = /no.*pool/i.test(rawReason) ? "no pool found" :
+      /concentrated|protocol/i.test(rawReason) ? "unsupported concentrated position route" :
+      /pair.*missing|pool address/i.test(rawReason) ? "pair identity missing" :
+      /timeout/i.test(rawReason) ? "timeout" :
+      /unavailable|API/i.test(rawReason) ? "API unavailable" : rawReason;
     return {
       feature: "clark-ai",
       chain,
       mode: "analysis",
       analysis: [
-        "LIQUIDITY READ",
+        "LP READ",
         `- Asset: ${tokenName} (${tokenSymbol})`,
         `- Contract: ${resolvedAddress}`,
-        "- Pool model: Unverified — incomplete data in this pass",
-        "- Lock/burn proof: Missing or unavailable",
-        "- Controller/position verification: Unverified",
+        `- what Clark did: called the Token Scanner / Liquidity Safety Elite LP pipeline.`,
+        `- result: LP pipeline failed (${reason}).`,
+        "- Pool model: Unverified — incomplete data in this pass.",
+        "- Lock/burn proof: Missing or unavailable.",
+        "- Controller/position verification: Unverified.",
         "- Liquidity depth: Unverified",
         "- Exit risk: Unknown until LP depth and control are verified",
-        "CTA: Run LP Check from Liquidity Safety or scan this token again in 30 seconds.",
+        `CTA: Open Liquidity Safety — ${liquidityDeepLink(resolvedAddress)} / Open Token Scanner — ${tokenScannerDeepLink(resolvedAddress)}`,
       ].join("\n"),
       intent: plan.intent,
       toolsUsed,
