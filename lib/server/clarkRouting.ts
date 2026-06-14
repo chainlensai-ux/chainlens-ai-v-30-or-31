@@ -1,6 +1,8 @@
 // Pure, server-side routing/classification/formatting helpers for the Clark chat handler.
 // No Next.js / Anthropic SDK dependencies — importable directly by unit test scripts (node + .ts via tsx/ts-node-less import).
 
+export { resolveClarkIntent, type ClarkIntentContext, type ClarkResolvedIntent } from "../clarkIntent.ts";
+
 export type DashboardMarketRow = {
   symbol: string;
   name?: string;
