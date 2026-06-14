@@ -1938,6 +1938,8 @@ export async function POST(req: Request) {
       holderRowsAvailable: holderDataAvailable,
     })
 
+    if (!debug) delete (clusterMap as any).clusterMapDebug
+
     const { verdict: clarkVerdict, clarkError } = await getClarkVerdict(origin, {
       contractAddress: normalizedAddress,
       deployerAddress,

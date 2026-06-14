@@ -4,13 +4,13 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 // ─── Types ────────────────────────────────────────────────────────────────────
 type NodeType = 'contract' | 'deployer' | 'linked_wallet' | 'holder_wallet'
 type RiskLevel = 'low' | 'medium' | 'high' | 'open_check' | 'neutral'
-type ConfLevel = 'high' | 'medium' | 'low' | 'open_check'
+type ConfLevel = 'verified' | 'high' | 'medium' | 'low' | 'open_check'
 type EdgeType = 'deployment' | 'transfer_signal' | 'suspicious_transfer' | 'holder_overlap' | 'weak_heuristic'
 
 interface GNode {
   id: string; address: string; label: string
   type: NodeType; confidence: ConfLevel; isCreator: boolean; isLinked: boolean
-  supplyPercent: number | null; reasons: string[]
+  supplyPercent: number | null; holderRank: number | null; roleLabel?: string; confidenceReason?: string; evidence?: string[]; reasons: string[]
   x: number; y: number; vx: number; vy: number; fx: number | null; fy: number | null
   mass: number; radius: number
 }
@@ -30,7 +30,7 @@ const EDGE_STROKE: Record<EdgeType, string> = {
   deployment: '#7dd3fc', transfer_signal: '#38bdf8', suspicious_transfer: '#fb7185',
   holder_overlap: '#a855f7', weak_heuristic: '#334155',
 }
-const CONF_OPACITY: Record<ConfLevel, number> = { high: 1.0, medium: 0.72, low: 0.42, open_check: 0.5 }
+const CONF_OPACITY: Record<ConfLevel, number> = { verified: 1.0, high: 1.0, medium: 0.72, low: 0.42, open_check: 0.5 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function hexToRgb(hex: string): string {
@@ -50,6 +50,7 @@ function shortAddr(addr: string): string {
   return addr.length > 10 ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : addr
 }
 function confToLevel(conf: string | null | undefined): ConfLevel {
+  if (conf === 'verified') return 'verified'
   if (conf === 'high') return 'high'
   if (conf === 'medium') return 'medium'
   if (conf === 'low') return 'low'
@@ -168,7 +169,7 @@ interface ClusterMapProps {
   deployerAddress?: string | null
   deployerStatus?: string | null
   linkedWallets?: Array<{ address: string; confidence?: string | null; reason?: string | null }>
-  topHolders?: Array<{ address?: string | null; percent?: number | null }>
+  topHolders?: Array<{ address?: string | null; percent?: number | null; rank?: number | null }>
   supplyControl?: {
     creatorInTopHolders: boolean
     creatorHolderPercent: number | null
@@ -222,6 +223,13 @@ export function ClusterForceGraph({
         supplyMap.set(addr, th.percent)
     }
 
+    const rankMap = new Map<string, number>()
+    for (const mw of supplyControl?.matchedLinkedWallets ?? []) rankMap.set(mw.address.toLowerCase(), mw.rank)
+    for (const th of topHolders) {
+      const addr = (th.address ?? '').toLowerCase()
+      if (addr && typeof th.rank === 'number' && !rankMap.has(addr)) rankMap.set(addr, th.rank)
+    }
+
     const newNodes: GNode[] = []
     const seen = new Set<string>()
 
@@ -229,7 +237,7 @@ export function ClusterForceGraph({
     newNodes.push({
       id: 'contract', address: '', label: 'Contract', type: 'contract',
       confidence: 'high', isCreator: false, isLinked: false,
-      supplyPercent: null, reasons: [],
+      supplyPercent: null, holderRank: null, confidenceReason: 'Token contract anchor for the cluster map.', evidence: [], reasons: [],
       x: w / 2, y: 70, vx: 0, vy: 0, fx: w / 2, fy: 70,
       mass: 3, radius: 26,
     })
@@ -243,7 +251,7 @@ export function ClusterForceGraph({
       newNodes.push({
         id: 'deployer', address: deployerAddress, label: shortAddr(deployerAddress),
         type: 'deployer', confidence: conf, isCreator: true, isLinked: false,
-        supplyPercent: pct, reasons: [],
+        supplyPercent: pct, holderRank: rankMap.get(al) ?? null, confidenceReason: pct != null ? `Indexed holder evidence confirms the deployer holds ${pct.toFixed(1)}% of supply.` : 'Deployer confirmed; holder supply not found.', evidence: pct != null ? ['deployer_found_in_holders'] : ['deployer_role_confirmed'], reasons: [],
         x: w / 2, y: h / 2, vx: 0, vy: 0, fx: null, fy: null,
         mass: nodeMass(pct), radius: nodeRadius(pct),
       })
@@ -263,7 +271,7 @@ export function ClusterForceGraph({
       newNodes.push({
         id: al, address: lw.address, label: shortAddr(lw.address),
         type: 'linked_wallet', confidence: conf, isCreator: false, isLinked: true,
-        supplyPercent: pct,
+        supplyPercent: pct, holderRank: rankMap.get(al) ?? null, confidenceReason: pct != null ? `Supply found in holder data, but link evidence is incomplete.` : 'No transfer edges confirmed in this pass.', evidence: ['linked_wallet_evidence'],
         reasons: [
           ...(lw.reason ? [lw.reason] : []),
           ...(hasSusp ? ['suspicious_transfer_pattern'] : []),
@@ -284,8 +292,8 @@ export function ClusterForceGraph({
       const pct = typeof th.percent === 'number' ? th.percent : null
       newNodes.push({
         id: addr, address: th.address ?? '', label: shortAddr(th.address ?? ''),
-        type: 'holder_wallet', confidence: 'open_check', isCreator: false, isLinked: false,
-        supplyPercent: pct, reasons: [],
+        type: 'holder_wallet', confidence: pct != null ? 'high' : 'open_check', isCreator: false, isLinked: false,
+        supplyPercent: pct, holderRank: th.rank ?? rankMap.get(addr) ?? null, confidenceReason: pct != null ? `Indexed holder evidence confirms this wallet holds ${pct.toFixed(1)}% of supply.` : 'Supply not found in indexed holders.', evidence: ['indexed_holder_data'], reasons: [],
         x: w / 2, y: h / 2, vx: 0, vy: 0, fx: null, fy: null,
         mass: nodeMass(pct), radius: nodeRadius(pct),
       })
@@ -515,7 +523,7 @@ export function ClusterForceGraph({
                   opacity={Math.min(opacity * 1.2, 0.9)}
                   style={{ pointerEvents: 'none' }}
                 >
-                  {node.type === 'contract' ? 'Contract' : node.label}
+                  {node.type === 'contract' ? 'Contract' : `${nodeRoleLabel(node.type, node.isCreator).replace('Origin Wallet', 'Deployer').replace('Indexed Holder', node.holderRank ? `Holder #${node.holderRank}` : 'Holder')} · ${node.supplyPercent != null ? `${node.supplyPercent.toFixed(1)}%` : 'supply unknown'}`}
                 </text>
               </g>
             )
@@ -548,14 +556,15 @@ export function ClusterForceGraph({
           )}
           <TooltipRow
             label="Supply"
-            value={hoveredNode.supplyPercent != null ? `${hoveredNode.supplyPercent.toFixed(1)}%` : 'Not indexed in this pass'}
+            value={hoveredNode.supplyPercent != null ? `${hoveredNode.supplyPercent.toFixed(1)}%` : 'Supply not found in indexed holders.'}
           />
           <div style={{ display: 'flex', gap: '14px', marginTop: '2px' }}>
+            <TooltipRow label="Rank" value={hoveredNode.holderRank != null ? `#${hoveredNode.holderRank}` : 'Not found'} />
             <TooltipRow label="Risk" value={riskLabel(deriveRisk(hoveredNode, clusterRiskScore))}
               valueColor={RISK_FILL[deriveRisk(hoveredNode, clusterRiskScore)]} />
             <TooltipRow label="Confidence"
               value={hoveredNode.confidence === 'open_check' ? 'Open check' : hoveredNode.confidence.charAt(0).toUpperCase() + hoveredNode.confidence.slice(1)}
-              valueColor={hoveredNode.confidence === 'high' ? '#34d399' : hoveredNode.confidence === 'medium' ? '#fbbf24' : '#94a3b8'}
+              valueColor={hoveredNode.confidence === 'verified' || hoveredNode.confidence === 'high' ? '#34d399' : hoveredNode.confidence === 'medium' ? '#fbbf24' : '#94a3b8'}
             />
           </div>
         </div>
@@ -666,7 +675,8 @@ function SelectedNodePanel({
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(120px,1fr))', gap: '8px', marginBottom: '10px' }}>
         {[
-          { label: 'Supply', value: node.supplyPercent != null ? `${node.supplyPercent.toFixed(1)}%` : 'Not indexed', color: '#e2e8f0' },
+          { label: 'Supply position', value: node.supplyPercent != null ? `${node.supplyPercent.toFixed(1)}% of supply` : 'Supply not found in indexed holders.', color: '#e2e8f0' },
+          { label: 'Holder rank', value: node.holderRank != null ? `Holder rank #${node.holderRank}` : 'Not found', color: '#e2e8f0' },
           { label: 'Risk', value: riskLabel(risk), color: riskFill },
           { label: 'Confidence', value: confLabel, color: '#e2e8f0' },
           { label: 'Role', value: nodeRoleLabel(node.type, node.isCreator), color: roleBorder },
@@ -677,6 +687,17 @@ function SelectedNodePanel({
           </div>
         ))}
       </div>
+
+      <div style={{ padding: '8px 11px', borderRadius: '8px', background: 'rgba(45,212,191,0.04)', border: '1px solid rgba(45,212,191,0.14)', marginBottom: '10px' }}>
+        <div style={{ fontSize: '8px', letterSpacing: '.12em', color: '#2dd4bf', fontFamily: 'var(--font-plex-mono)', marginBottom: '5px', fontWeight: 700 }}>CONFIDENCE REASON</div>
+        <div style={{ fontSize: '10px', color: '#99f6e4', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{node.confidenceReason ?? 'No useful wallet evidence was available in this pass.'}</div>
+      </div>
+
+      {node.evidence && node.evidence.length > 0 && (
+        <div style={{ display: 'flex', gap: '5px', flexWrap: 'wrap', marginBottom: '10px' }}>
+          {node.evidence.map((ev, i) => <span key={i} style={{ fontSize: '8px', color: '#7dd3fc', border: '1px solid rgba(125,211,252,0.22)', borderRadius: '999px', padding: '3px 6px', fontFamily: 'var(--font-plex-mono)' }}>{ev}</span>)}
+        </div>
+      )}
 
       {/* Reasons / risk notes */}
       {node.reasons.length > 0 ? (

@@ -6367,6 +6367,7 @@ export async function POST(req: Request) {
       suspiciousTransferReasons: [],
       holderRowsAvailable: holderRowsConfirmed,
     })
+    if (!debugMode) delete (clusterMap as any).clusterMapDebug
     if (clusterMap.summary.clusterSupplyPercent != null && clusterMap.summary.clusterSupplyPercent >= 20) {
       const driver = `Dev cluster supply is elevated at ${clusterMap.summary.clusterSupplyPercent.toFixed(1)}% from matched holder evidence.`
       if (!riskEngine.riskDrivers.includes(driver)) riskEngine.riskDrivers.push(driver)
