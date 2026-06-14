@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef, type MouseEvent, type CSSProperties } from 'react'
+import { useState, useEffect, useRef, type MouseEvent } from 'react'
 import { usePlanWithLoading, canAccessFeature } from '@/lib/usePlan'
 import { supabase } from '@/lib/supabaseClient'
 import { resolveTokenQuery, isContractAddress, fmtLiquidity, type ResolverResult, type ResolverCandidate } from '@/lib/tickerResolver'
@@ -1548,55 +1548,6 @@ function StatCard({ label, value, accent, helper }: { label: string; value: stri
       {helper && <p style={{ margin: 0, fontSize: '10px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.4 }}>{helper}</p>}
     </div>
   )
-}
-
-
-
-const panelCard: CSSProperties = { background:'linear-gradient(160deg,rgba(8,16,32,.96),rgba(3,8,18,.94))', border:'1px solid rgba(125,211,252,.18)', borderRadius:'16px', padding:'16px', minWidth:0 }
-const monoTiny: CSSProperties = { fontSize:'9px', letterSpacing:'.14em', color:'#64748b', fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }
-const addrStyle: CSSProperties = { fontFamily:'var(--font-plex-mono)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', minWidth:0 }
-
-function PremiumBar({ label, value, color = '#2dd4bf' }: { label: string; value: number | null | undefined; color?: string }) {
-  const pct = value == null ? 0 : Math.max(0, Math.min(100, value))
-  return <div><div style={{ display:'flex', justifyContent:'space-between', gap:8, marginBottom:5 }}><span style={{ ...monoTiny, color:'#94a3b8' }}>{label}</span><span style={{ color:value == null ? '#64748b' : color, fontWeight:800, fontFamily:'var(--font-plex-mono)', fontSize:11 }}>{value == null ? 'Open Check' : `${value.toFixed(1)}%`}</span></div><div style={{ height:8, borderRadius:999, background:'rgba(148,163,184,.12)', overflow:'hidden', border:'1px solid rgba(255,255,255,.06)' }}><div style={{ width:`${pct}%`, height:'100%', background:`linear-gradient(90deg,${color},${color}88)`, boxShadow:`0 0 14px ${color}55` }} /></div></div>
-}
-
-function PremiumMetric({ label, value, helper, accent = '#e2e8f0' }: { label: string; value: string; helper?: string; accent?: string }) {
-  return <div style={panelCard}><p style={{ ...monoTiny, margin:'0 0 7px' }}>{label}</p><p title={value} style={{ margin:0, color:accent, fontSize:20, fontWeight:900, fontFamily:'var(--font-plex-mono)', ...addrStyle }}>{value}</p>{helper && <p style={{ margin:'7px 0 0', color:'#64748b', fontSize:11, lineHeight:1.45, fontFamily:'var(--font-plex-mono)' }}>{helper}</p>}</div>
-}
-
-function PremiumLPControl({ result }: { result: ScanResult }) {
-  const protocol = isProtocolPositionModel(result)
-  const poolId = result.lpControllerIntel?.poolAddress ?? result.lpControl?.verificationPool ?? result.lpControl?.primaryMarketPool ?? result.lpHistoryTimeline?.primaryPool ?? result.secondaryLpExposure?.poolAddress ?? null
-  const lockProof = protocol ? 'Position Verification Required' : cleanStatusLabel(result.lpControl?.lockStatus ?? result.lpLockBurnIntel?.lockBurnProof ?? result.lpLockStatus)
-  const burnProof = protocol ? 'Position Verification Required' : cleanStatusLabel(result.lpControl?.burnStatus ?? result.lpLockBurnIntel?.lockBurnProof)
-  const controller = result.lpControllerIntel?.controller ?? result.lpControl?.lpController ?? null
-  const exitRisk = cleanStatusLabel(result.lpExitRisk ?? result.lpControllerIntel?.exitRisk ?? result.lpHistoryTimeline?.migrationRisk)
-  const gaps = [...(result.lpEvidenceGaps?.map(g => g.label) ?? []), ...(result.lpControllerIntel?.evidenceGaps ?? []), ...(result.lpLockBurnIntel?.evidenceGaps ?? [])].slice(0,5)
-  const bannerColor = protocol ? '#a78bfa' : /locked|burned|confirmed/i.test(`${lockProof} ${burnProof}`) ? '#34d399' : '#fbbf24'
-  return <><div style={{ marginBottom:16, padding:20, borderRadius:18, border:`1px solid ${bannerColor}55`, background:`linear-gradient(135deg,${bannerColor}18,rgba(8,14,28,.94))` }}><p style={{ ...monoTiny, color:bannerColor, margin:'0 0 8px', fontWeight:900 }}>LP Safety Analyzer</p><h3 style={{ margin:0, color:'#f8fafc', fontSize:24 }}>{protocol ? 'Position Verification Required' : cleanStatusLabel(result.lpControl?.status ?? result.lpProofStatus)}</h3><p style={{ margin:'10px 0 0', color:'#cbd5e1', fontSize:13, lineHeight:1.6 }}>{protocol ? 'Position Verification Required — ERC20 LP lock/burn proof does not apply to this pool model. Position/control verification is required.' : (result.lpEvidenceSummary ?? result.lpControlRead?.meaning ?? 'LP lock, burn, owner, and controller evidence are summarized from this scan.')}</p></div><div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(190px,1fr))', gap:10, marginBottom:14 }}><PremiumMetric label="Pool model" value={primaryLiquidityModelLabel(result)} accent="#a78bfa"/><PremiumMetric label="Liquidity depth" value={fmtLarge(result.lpControllerIntel?.poolLiquidityUsd ?? result.lpHistoryTimeline?.liquidityUsd ?? result.liquidity)} accent="#2dd4bf"/><PremiumMetric label="Pool address / ID" value={poolId ? shorten(poolId) : 'Open Check'} helper={poolId ?? undefined} accent="#67e8f9"/><PremiumMetric label="LP proof applicability" value={protocol ? 'Protocol-specific' : cleanStatusLabel(result.lpProofApplicability)} /></div><div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(210px,1fr))', gap:10, marginBottom:14 }}>{[['Lock proof', lockProof],['Burn proof', burnProof],['Controller / owner proof', controller ? shorten(controller) : cleanStatusLabel(result.lpControllerIntel?.controlProof ?? result.lpControl?.lpControllerType)],['Position verification', protocol ? 'Required' : cleanStatusLabel(result.lpControl?.proofStatus)],['Secondary LP exposure', cleanStatusLabel(result.secondaryLpExposure?.status)],['Exit risk', exitRisk]].map(([label,value]) => <PremiumMetric key={label} label={label} value={value || 'Open Check'} />)}</div><div style={panelCard}><p style={{ ...monoTiny, color:'#fbbf24', margin:'0 0 10px', fontWeight:900 }}>Evidence gaps</p>{gaps.length ? gaps.map((g,i)=><p key={i} style={{ margin:'0 0 6px', color:'#cbd5e1', fontSize:12 }}>• {g}</p>) : <p style={{ margin:0, color:'#94a3b8', fontSize:12 }}>No additional LP evidence gaps returned.</p>}<div style={{ marginTop:12, padding:12, borderRadius:12, border:'1px solid rgba(45,212,191,.24)', color:'#99f6e4', fontFamily:'var(--font-plex-mono)', fontSize:12 }}>{result.lpControlRead?.nextAction ?? result.lpControllerIntel?.nextActions?.[0] ?? 'Next action: verify liquidity controller and pool ownership before sizing a trade.'}</div></div></>
-}
-
-function PremiumHolderMap({ result }: { result: ScanResult }) {
- const hs=deriveHolderState(result), h=result.holderDistribution, rows=h?.topHolders ?? []; if(hs.kind==='noRowsFallback') return <div style={panelCard}><p style={{color:'#fbbf24',margin:0,fontWeight:800}}>Holder evidence unavailable for this scan. Rescan recommended.</p></div>
- const top10=h?.top10??null; const risk=top10==null?'Open Check':top10>50?'High concentration':top10>30?'Elevated concentration':'Balanced distribution'; const creator=result.devIntel?.creatorInTopHolders
- return <><div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(180px,1fr))',gap:10,marginBottom:14}}><PremiumMetric label="Holder count" value={h?.holderCount?.toLocaleString() ?? 'Open Check'} accent="#a78bfa"/><PremiumMetric label="Concentration risk" value={risk} accent={top10!=null&&top10>50?'#f87171':'#2dd4bf'}/><PremiumMetric label="Creator / deployer top holder" value={creator==null?'Open Check':creator?'Detected':'Not detected'} /></div><div style={{...panelCard,marginBottom:14,display:'grid',gap:12}}><PremiumBar label="Top 1" value={h?.top1} color={(h?.top1??0)>20?'#f87171':'#2dd4bf'}/><PremiumBar label="Top 10" value={h?.top10} color={(h?.top10??0)>50?'#f87171':'#a78bfa'}/><PremiumBar label="Top 20" value={h?.top20} color={(h?.top20??0)>65?'#f87171':'#67e8f9'}/>{top10!=null&&top10>50&&<p style={{margin:0,color:'#fecaca',fontSize:12}}>Concentration warning: top holders control a large share of supply.</p>}</div><div style={panelCard}><p style={{...monoTiny,margin:'0 0 10px',color:'#a78bfa',fontWeight:900}}>Top holders</p>{rows.slice(0,10).map(r=><div key={`${r.rank}-${r.address}`} style={{display:'grid',gridTemplateColumns:'44px minmax(0,1fr) 72px',gap:8,padding:'9px 0',borderTop:'1px solid rgba(148,163,184,.12)'}}><span style={{color:'#64748b',fontFamily:'var(--font-plex-mono)'}}>#{r.rank}</span><span title={r.address} style={{...addrStyle,color:'#e2e8f0',fontSize:12}}>{shorten(r.address)}</span><span style={{color:'#2dd4bf',fontWeight:800,textAlign:'right',fontFamily:'var(--font-plex-mono)'}}>{r.percent==null?'—':`${r.percent.toFixed(2)}%`}</span></div>)}</div></>
-}
-
-function PremiumMarketPulse({ result }: { result: ScanResult }) {
- const ratio=result.volume24h!=null&&result.liquidity ? result.volume24h/result.liquidity : null; const val=result.marketCapUsd!=null?['Verified Market Cap',fmtLarge(result.marketCapUsd),'#a78bfa']:result.fdvUsd!=null?['FDV shown — market cap unavailable',fmtLarge(result.fdvUsd),'#fbbf24']:['Valuation evidence unavailable','Open Check','#64748b']; const trend=result.priceChange24h==null?'Momentum open check':result.priceChange24h>=0?'Positive momentum':'Negative momentum'
- return <><div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(170px,1fr))',gap:10,marginBottom:14}}><PremiumMetric label="Price" value={fmtPrice(result.price)} accent="#2dd4bf"/><PremiumMetric label={val[0]} value={val[1]} accent={val[2]}/><PremiumMetric label="Liquidity" value={fmtLarge(result.liquidity)} /><PremiumMetric label="24h volume" value={fmtLarge(result.volume24h)} /><PremiumMetric label="Pool age" value={result.poolActivity?.pairAgeLabel ?? result.lpHistoryTimeline?.primaryPoolAgeLabel ?? 'Open Check'} /><PremiumMetric label="Volume / liquidity" value={ratio==null?'Open Check':`${ratio.toFixed(2)}x`} accent={ratio!=null&&ratio>3?'#f87171':'#67e8f9'}/><PremiumMetric label="Trend / momentum" value={trend} accent={result.priceChange24h==null?'#64748b':result.priceChange24h>=0?'#34d399':'#f87171'}/></div><div style={panelCard}>{result.priceChart?.points?.length ? <MiniPriceChart points={result.priceChart.points.map(p=>({timestamp:p.timestamp,priceUsd:p.priceUsd}))}/> : <p style={{margin:0,color:'#64748b',fontFamily:'var(--font-plex-mono)'}}>Mini chart unavailable for this scan.</p>}</div></>
-}
-
-function PremiumRiskEngine({ result }: { result: ScanResult }) {
- const hp=result.honeypot; const flags: Array<[string, unknown]> =[['Blacklist',result.security?.contractFlags?.blacklist??result.contractFlags?.blacklist?.status],['Pause',result.security?.contractFlags?.pause??result.contractFlags?.pause?.status],['Mint',result.security?.contractFlags?.mint??result.contractFlags?.mint?.status],['Proxy',result.security?.contractFlags?.proxy??result.contractFlags?.proxy?.status],['Ownership',result.security?.devOwnership?.isRenounced===true?'Renounced':result.security?.devOwnership?.ownerAddress?'Held':null]]
- const open=[...(result.riskEngine?.openChecks??[]), ...getMissingChecks(result)].slice(0,6)
- return <><div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(180px,1fr))',gap:10,marginBottom:14}}><PremiumMetric label="Simulation status" value={hp?.simulationSuccess?'Passed':'Open Evidence'} accent={hp?.simulationSuccess?'#34d399':'#fbbf24'}/><PremiumMetric label="Buy tax" value={hp?.buyTax==null?'Open Evidence':`${hp.buyTax.toFixed(2)}%`}/><PremiumMetric label="Sell tax" value={hp?.sellTax==null?'Open Evidence':`${hp.sellTax.toFixed(2)}%`}/><PremiumMetric label="Honeypot status" value={hp?.isHoneypot==null?'Open Evidence':hp.isHoneypot?'Flagged':'Not detected'} accent={hp?.isHoneypot?'#f87171':'#34d399'}/></div><div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:14}}>{flags.map(([k,v])=><span key={k} style={{padding:'7px 10px',borderRadius:999,border:'1px solid rgba(148,163,184,.22)',color:v==null?'#fbbf24':String(v).includes('true')||String(v).includes('verified')?'#f87171':'#cbd5e1',fontSize:11,fontWeight:800,fontFamily:'var(--font-plex-mono)'}}>{k}: {v==null?'Open Evidence':cleanStatusLabel(String(v))}</span>)}</div><div style={panelCard}><p style={{...monoTiny,color:'#fbbf24',margin:'0 0 10px',fontWeight:900}}>Open Evidence — this check could not be verified yet.</p>{open.length?open.map((o,i)=><p key={i} style={{margin:'0 0 6px',color:'#cbd5e1',fontSize:12}}>• {o}</p>):<p style={{margin:0,color:'#94a3b8',fontSize:12}}>No open evidence items returned.</p>}</div></>
-}
-
-function PremiumDevControl({ result, devIntel }: { result: ScanResult; devIntel: DevWalletIntel | null }) {
- const d=devIntel??result.devIntel; if(!d) return <div style={panelCard}><p style={{margin:0,color:'#fbbf24',fontWeight:800}}>Developer-control evidence is incomplete for this scan.</p></div>; const sc=d.supplyControl; const owner=result.security?.devOwnership?.ownerAddress??result.security?.devOwnership?.adminAddress??null; const creator=sc?.creatorHolderPercent??null; const linked=sc?.linkedWalletSupplyPercent??d.linkedWalletSupplyPercent??null; const cluster=sc?.devClusterSupplyPercent??d.devClusterSupplyPercent??null; const label=sc?.clusterInfluence?.clusterRiskLabel??d.clusterInfluence?.clusterRiskLabel??'open_check'
- return <><div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(190px,1fr))',gap:10,marginBottom:14}}><PremiumMetric label="Deployer" value={d.deployerAddress?shorten(d.deployerAddress):'Open Check'} helper={d.deployerAddress??undefined} accent="#fbbf24"/><PremiumMetric label="Owner / admin" value={owner?shorten(owner):'Open Check'} helper={owner??undefined}/><PremiumMetric label="Clean / suspicious status" value={d.suspiciousTransfers?'Suspicious pattern':'Clean so far'} accent={d.suspiciousTransfers?'#f87171':'#34d399'}/><PremiumMetric label="Past launches / rug history" value={result.rugRisk?.deployer_reputation?.rug_history!=null?`${result.rugRisk.deployer_reputation.rug_history} events`:'Open Check'}/></div><div style={{...panelCard,display:'grid',gap:12,marginBottom:14}}><PremiumBar label="Creator holder %" value={creator} color="#fbbf24"/><PremiumBar label="Linked wallet supply %" value={linked} color="#a78bfa"/><PremiumBar label="Dev cluster supply %" value={cluster} color={(cluster??0)>20?'#f87171':'#2dd4bf'}/></div><div style={panelCard}><p style={{...monoTiny,margin:'0 0 8px',color:'#fbbf24',fontWeight:900}}>Cluster influence</p><p style={{margin:0,color:'#e2e8f0',fontWeight:800}}>{cleanStatusLabel(String(label))}</p>{(d.reasons??d.suspiciousTransferReasons??[]).slice(0,4).map((r,i)=><p key={i} style={{margin:'8px 0 0',color:'#94a3b8',fontSize:12}}>• {r}</p>)}</div></>
 }
 
 // ─── Project Socials Card ─────────────────────────────────────────────────
@@ -4607,30 +4558,1748 @@ export default function TerminalTokenScanner() {
                 )
               })()}
 
-              {activeSection === 'market-pulse' && result && <PremiumMarketPulse result={result} />}
-
               {/* ── MARKET PULSE ──────────────────────────────────────── */}
-              {null}
+              {activeSection === 'market-pulse' && (
+                <>
+                  <div style={{ marginBottom: '18px' }}>
+                    <p style={{ margin: '0 0 3px', fontSize: '12px', fontWeight: 800, letterSpacing: '0.10em', color: '#67e8f9', fontFamily: 'var(--font-plex-mono)' }}>MARKET PULSE</p>
+                    <p style={{ margin: 0, fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>Live price, liquidity, volume and pool data for this token.</p>
+                  </div>
+                  <div style={{ marginBottom: '16px', display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(210px,1fr))', gap: '9px' }}>
+                    {(() => {
+                      const marketStrength = result.noActivePools ? 'Not indexed' : (result.liquidity ?? 0) > 250000 ? 'Strong' : (result.liquidity ?? 0) > 50000 ? 'Active' : (result.liquidity ?? 0) > 0 ? 'Thin' : 'Not indexed'
+                      const volRead = result.priceChange24h == null ? 'Not indexed' : Math.abs(result.priceChange24h) > 20 ? 'High volatility' : Math.abs(result.priceChange24h) > 8 ? 'Moderate volatility' : 'Controlled volatility'
+                      const activityRead = result.volume24h != null && result.liquidity != null && result.liquidity > 0 ? `${((result.volume24h / result.liquidity) * 100).toFixed(0)}% vol/liquidity` : 'Not indexed'
+                      const mcfdvRead = result.marketCapUsd != null && result.fdvUsd != null && result.fdvUsd > 0 ? `${((result.marketCapUsd / result.fdvUsd) * 100).toFixed(0)}% MC/FDV` : 'Not indexed'
+                      const items = [
+                        ['Market strength', marketStrength],
+                        ['Liquidity depth', result.liquidity != null ? fmtLarge(result.liquidity) : 'Not indexed'],
+                        ['24h activity', activityRead],
+                        ['Volatility read', volRead],
+                        ['MC vs FDV read', mcfdvRead],
+                      ] as Array<[string,string]>
+                      return items.map(([label, value]) => (
+                        <div key={label} style={{ padding:'11px 12px', borderRadius:'10px', border:'1px solid rgba(103,232,249,0.16)', background:'rgba(8,14,28,0.62)' }}>
+                          <div style={{ fontSize:'9px', letterSpacing:'.12em', color:'#64748b', fontFamily:'var(--font-plex-mono)', marginBottom:'4px' }}>{label}</div>
+                          <div style={{ fontSize:'12px', color:'#e2e8f0', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>{value}</div>
+                        </div>
+                      ))
+                    })()}
+                  </div>
+                  {/* Market Insight Strip */}
+                  {!result.noActivePools && (result.price != null || result.liquidity != null) && (
+                    <div style={{ marginBottom: '20px', padding: '14px 18px', background: 'linear-gradient(135deg,rgba(103,232,249,0.05),rgba(45,212,191,0.03))', border: '1px solid rgba(103,232,249,0.18)', borderRadius: '14px', display: 'flex', flexWrap: 'wrap', gap: '18px', alignItems: 'center' }}>
+                      <div style={{ flexShrink: 0 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '3px' }}>
+                          <div style={{ fontSize: '9px', letterSpacing: '.16em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>LIVE PRICE</div>
+                          {result.chartSource === 'synthetic_flat_series' && (
+                            <svg width="32" height="16" viewBox="0 0 32 16" style={{ display: 'inline-block', verticalAlign: 'middle' }}>
+                              <defs>
+                                <filter id="spkGlow" x="-20%" y="-100%" width="140%" height="300%">
+                                  <feGaussianBlur in="SourceGraphic" stdDeviation="1.5" result="b" />
+                                  <feMerge><feMergeNode in="b" /><feMergeNode in="SourceGraphic" /></feMerge>
+                                </filter>
+                              </defs>
+                              <line x1="2" y1="8" x2="30" y2="8" stroke="rgba(0,255,255,0.65)" strokeWidth="1.5" filter="url(#spkGlow)" />
+                              <circle cx="30" cy="8" r="2" fill="rgba(0,255,255,0.8)" filter="url(#spkGlow)" />
+                            </svg>
+                          )}
+                          {result.priceSource === 'fdv_derived' && (
+                            <span style={{ fontSize: '8px', fontWeight: 700, letterSpacing: '0.08em', padding: '1px 6px', borderRadius: '99px', color: '#94a3b8', background: 'rgba(148,163,184,0.10)', border: '1px solid rgba(148,163,184,0.22)', textTransform: 'uppercase' }}>Estimated from FDV</span>
+                          )}
+                          {result.priceSource === 'coingecko' && (
+                            <span style={{ fontSize: '8px', fontWeight: 700, letterSpacing: '0.08em', padding: '1px 6px', borderRadius: '99px', color: '#94a3b8', background: 'rgba(148,163,184,0.10)', border: '1px solid rgba(148,163,184,0.22)', textTransform: 'uppercase' }}>Market data</span>
+                          )}
+                          {result.priceSource === 'dexscreener' && (
+                            <span style={{ fontSize: '8px', fontWeight: 700, letterSpacing: '0.08em', padding: '1px 6px', borderRadius: '99px', color: '#94a3b8', background: 'rgba(148,163,184,0.10)', border: '1px solid rgba(148,163,184,0.22)', textTransform: 'uppercase' }}>Market data</span>
+                          )}
+                          {result.price != null && result.priceSource == null && (
+                            <span style={{ fontSize: '8px', fontWeight: 700, letterSpacing: '0.08em', padding: '1px 6px', borderRadius: '99px', color: '#94a3b8', background: 'rgba(148,163,184,0.10)', border: '1px solid rgba(148,163,184,0.22)', textTransform: 'uppercase' }}>Unverified price</span>
+                          )}
+                        </div>
+                        <div style={{ fontSize: '22px', fontWeight: 800, color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)', lineHeight: 1 }}>{fmtPrice(result.price)}</div>
+                      </div>
+                      <div style={{ width: '1px', height: '32px', background: 'rgba(255,255,255,0.07)', flexShrink: 0 }} />
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '16px', flex: 1 }}>
+                        {result.priceChange24h != null && (
+                          <div>
+                            <div style={{ fontSize: '9px', letterSpacing: '.14em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', marginBottom: '2px' }}>24H MOVE</div>
+                            <div style={{ fontSize: '14px', fontWeight: 700, color: result.priceChange24h >= 0 ? '#34d399' : '#f87171', fontFamily: 'var(--font-plex-mono)' }}>{fmtPct(result.priceChange24h)}</div>
+                          </div>
+                        )}
+                        {result.liquidity != null && (
+                          <div>
+                            <div style={{ fontSize: '9px', letterSpacing: '.14em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', marginBottom: '2px' }}>LIQUIDITY</div>
+                            <div style={{ fontSize: '14px', fontWeight: 700, color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)' }}>{fmtLarge(result.liquidity)}</div>
+                          </div>
+                        )}
+                        {result.volume24h != null && (
+                          <div>
+                            <div style={{ fontSize: '9px', letterSpacing: '.14em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', marginBottom: '2px' }}>VOLUME 24H</div>
+                            <div style={{ fontSize: '14px', fontWeight: 700, color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)' }}>{fmtLarge(result.volume24h)}</div>
+                          </div>
+                        )}
+                        {result.poolActivity?.pairAgeLabel != null && (
+                          <div>
+                            <div style={{ fontSize: '9px', letterSpacing: '.14em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', marginBottom: '2px' }}>PAIR AGE</div>
+                            <div style={{ fontSize: '14px', fontWeight: 700, color: '#a78bfa', fontFamily: 'var(--font-plex-mono)' }}>{result.poolActivity.pairAgeLabel}</div>
+                          </div>
+                        )}
+                        {result.marketCapUsd != null && result.fdvUsd != null && result.fdvUsd > 0 && result.marketCapUsd !== result.fdvUsd && (
+                          <div>
+                            <div style={{ fontSize: '9px', letterSpacing: '.14em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', marginBottom: '2px' }}>MC / FDV</div>
+                            <div style={{ fontSize: '14px', fontWeight: 700, color: '#a78bfa', fontFamily: 'var(--font-plex-mono)' }}>{`${((result.marketCapUsd / result.fdvUsd) * 100).toFixed(0)}%`}</div>
+                          </div>
+                        )}
+                        {(() => {
+                          const volLiqRatio = result.volume24h != null && result.liquidity != null && result.liquidity > 0
+                            ? result.volume24h / result.liquidity
+                            : null
+                          if (volLiqRatio == null) return null
+                          const ratioColor = volLiqRatio > 3 ? '#f87171' : volLiqRatio > 1 ? '#fbbf24' : '#34d399'
+                          return (
+                            <div>
+                              <div style={{ fontSize: '9px', letterSpacing: '.14em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', marginBottom: '2px' }}>VOL / LIQ</div>
+                              <div style={{ fontSize: '14px', fontWeight: 700, color: ratioColor, fontFamily: 'var(--font-plex-mono)' }}>{volLiqRatio.toFixed(2)}x</div>
+                            </div>
+                          )
+                        })()}
+                      </div>
+                    </div>
+                  )}
+                  {(() => {
+                    const volLiqRatio = result.volume24h != null && result.liquidity != null && result.liquidity > 0
+                      ? result.volume24h / result.liquidity
+                      : null
+                    const volLiqRead = volLiqRatio == null
+                      ? 'Volume/liquidity ratio unavailable.'
+                      : volLiqRatio > 3
+                        ? 'Volume is very high relative to liquidity — expect significant volatility and slippage.'
+                        : volLiqRatio > 1
+                          ? 'Volume is high relative to liquidity — expect volatility.'
+                          : 'Healthy activity — volume is proportionate to liquidity depth.'
+                    if (!result.noActivePools && (result.volume24h != null || result.liquidity != null)) {
+                      return (
+                        <div style={{ marginBottom: '16px', padding: '11px 14px', borderRadius: '10px', background: 'rgba(103,232,249,0.04)', border: '1px solid rgba(103,232,249,0.14)', display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                          <span style={{ fontSize: '9px', letterSpacing: '.14em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, flexShrink: 0 }}>VOL/LIQ READ</span>
+                          <span style={{ fontSize: '11px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{volLiqRead}</span>
+                          {volLiqRatio != null && <span style={{ marginLeft: 'auto', fontSize: '12px', fontWeight: 800, color: volLiqRatio > 3 ? '#f87171' : volLiqRatio > 1 ? '#fbbf24' : '#34d399', fontFamily: 'var(--font-plex-mono)', flexShrink: 0 }}>{volLiqRatio.toFixed(2)}x</span>}
+                        </div>
+                      )
+                    }
+                    return null
+                  })()}
+                  {result.noActivePools ? (
+                    <div style={{ padding: '20px 22px', marginBottom: '28px', background: 'rgba(245,158,11,0.04)', border: '1px solid rgba(245,158,11,0.2)', borderRadius: '12px', fontFamily: 'var(--font-plex-mono)' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                        <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#f59e0b', flexShrink: 0 }} />
+                        <span style={{ fontSize: '11px', fontWeight: 700, letterSpacing: '0.12em', color: '#fbbf24', textTransform: 'uppercase' }}>No Active Pool Found</span>
+                      </div>
+                      <p style={{ margin: 0, fontSize: '12px', color: '#b7a675', lineHeight: 1.55 }}>No liquidity pools were found for this contract on {result.chain === 'eth' ? 'Ethereum' : 'Base'}. Price, volume, and liquidity data are unavailable.</p>
+                    </div>
+                  ) : (
+                    <>
+                      {result.marketDataSource === 'fallback' && (
+                        <div style={{ padding: '8px 14px', marginBottom: '12px', background: 'rgba(139,92,246,0.06)', border: '1px solid rgba(139,92,246,0.2)', borderRadius: '8px', fontFamily: 'var(--font-plex-mono)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#8b5cf6', flexShrink: 0 }} />
+                          <span style={{ fontSize: '10px', color: '#a78bfa', fontWeight: 700, letterSpacing: '0.08em' }}>CORTEX MARKET READ</span>
+                          <span style={{ fontSize: '10px', color: '#475569' }}>Primary pool data unavailable — showing fallback market data. FDV is not market cap.</span>
+                        </div>
+                      )}
+                      <div className="metric-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: '10px', marginBottom: '28px' }}>
+                        <StatCard label="Price" value={fmtPrice(result.price)} accent="#2DD4BF" helper={result.marketDataSource === 'fallback' ? 'Market read' : 'Primary pool'} />
+                        <StatCard label="Liquidity" value={fmtLarge(result.liquidity)} helper="Pool depth" />
+                        <StatCard label="Volume 24h" value={fmtLarge(result.volume24h)} helper="24h trading activity" />
+                        <StatCard label="24h Change" value={fmtPct(result.priceChange24h)} accent={pctColor(result.priceChange24h)} helper="Price movement" />
+                        {(() => {
+                          const val = result.valuationContext
+                          const fdvOnly = val?.primaryValuationStatus === 'fdv_only' && val?.primaryValuationUsd != null
+                          return (
+                            <StatCard
+                              label={fdvOnly ? 'Valuation' : 'Market Cap'}
+                              value={val?.primaryValuationStatus === 'verified_mc' ? fmtLarge(val.primaryValuationUsd) : fdvOnly ? `FDV ${fmtLarge(val.primaryValuationUsd)}` : 'Supply not confirmed'}
+                              helper={val?.primaryValuationStatus === 'verified_mc' ? 'Verified live market data' : fdvOnly ? 'Market cap not verified live' : 'Live valuation not verified'}
+                              accent="#a78bfa"
+                            />
+                          )
+                        })()}
+                        <StatCard label="FDV" value={result.fdvUsd != null ? fmtLarge(result.fdvUsd) : 'Not indexed'} helper="Fully Diluted Valuation" accent="#a78bfa" />
+                        <StatCard label="Pool Protocol" value={result.primaryDexName ?? 'Protocol not confirmed'} helper={result.primaryDexName ? 'Primary liquidity pool' : 'Pool found · protocol metadata missing'} accent={result.primaryDexName ? '#67e8f9' : '#64748b'} />
+                      </div>
+                    </>
+                  )}
+                  {result.marketCapStatus !== 'verified' && !result.noActivePools && (
+                    <p style={{ marginTop: '-14px', marginBottom: '16px', color: '#94a3b8', fontSize: '12px' }}>Market cap not confirmed. FDV is shown separately.</p>
+                  )}
+                  {result.fdvUsd != null && result.marketCapUsd != null && result.marketCapUsd !== result.fdvUsd && (
+                    <div style={{ marginBottom: '16px', padding: '10px 14px', background: 'rgba(167,139,250,0.06)', border: '1px solid rgba(167,139,250,0.16)', borderRadius: '10px', fontSize: '11px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>
+                      <span style={{ color: '#a78bfa', fontWeight: 700 }}>MC vs FDV: </span>
+                      {`Market cap ${fmtLarge(result.marketCapUsd)} reflects circulating supply. FDV ${fmtLarge(result.fdvUsd)} covers all tokens including locked and unvested. ${result.marketCapUsd / result.fdvUsd < 0.7 ? 'Significant unlock pressure possible.' : 'Low unlock pressure from current ratio.'}`}
+                    </div>
+                  )}
+                  {/* Project Links — indexed socials from token metadata */}
+                  <ProjectSocialsCard socials={result.projectSocials} />
+                  {(() => {
+                    // Priority:
+                    //   A) Real/reconstructed candles (pool_ohlcv, token_level_ohlcv, dexscreener_ohlcv, trade_reconstructed)
+                    //      → CandlestickChart
+                    //   B) Synthetic sources (synthetic_price_estimate, synthetic_flat_series) fall through
+                    //      to TrendChart — we never render fake candlestick bars for estimated data
+                    //   C) marketTrendSnapshot.status === 'ok' → premium TrendChart (smooth line/area)
+                    //   D) Else → minimal snapshot state
+                    const _REAL_SOURCES = new Set(['pool_ohlcv', 'token_level_ohlcv', 'dexscreener_ohlcv', 'trade_reconstructed'])
+                    const _hasValidCandles = result.chartStatus === 'ok' && (result.priceChart?.points.length ?? 0) >= 2 && _REAL_SOURCES.has(result.chartSource ?? '')
+                    const _hasMarketTrend = result.marketTrendSnapshot?.status === 'ok'
+                    const mts = result.marketTrendSnapshot
+                    const pctColor = (v: number | null) => v == null ? '#94a3b8' : v >= 0 ? '#34d399' : '#f87171'
 
-              {activeSection === 'holder-map' && result && <PremiumHolderMap result={result} />}
+                    if (_hasValidCandles) {
+                      return (
+                        <div className="glass-card" style={{ marginBottom: '22px', borderRadius: '16px', padding: '16px' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'center', flexWrap: 'wrap', marginBottom: '8px' }}>
+                            <p style={{ margin: 0, fontSize: '12px', fontWeight: 700, letterSpacing: '0.08em', color: '#cbd5e1', textTransform: 'uppercase' }}>Price Chart</p>
+                            <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                              {result.chartSource === 'trade_reconstructed' && (
+                                <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', padding: '2px 8px', borderRadius: '99px', color: '#fbbf24', background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.22)', textTransform: 'uppercase' }}>
+                                  Reconstructed from recent swaps
+                                </span>
+                              )}
+                              {result.chartSource === 'dexscreener_ohlcv' && (
+                                <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', padding: '2px 8px', borderRadius: '99px', color: '#818cf8', background: 'rgba(129,140,248,0.08)', border: '1px solid rgba(129,140,248,0.22)', textTransform: 'uppercase' }}>
+                                  Indexed from fallback market candles
+                                </span>
+                              )}
+                              {(result.chartSource === 'pool_ohlcv' || result.chartSource === 'token_level_ohlcv') && (
+                                <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', padding: '2px 8px', borderRadius: '99px', color: '#34d399', background: 'rgba(52,211,153,0.07)', border: '1px solid rgba(52,211,153,0.20)', textTransform: 'uppercase' }}>
+                                  Live Candles
+                                </span>
+                              )}
+                              <p style={{ margin: 0, fontSize: '11px', color: '#64748b' }}>
+                                {result.priceChart!.fallbackUsed ? 'Live pool price action (fallback pool)' : 'Primary pool price action'}
+                              </p>
+                            </div>
+                          </div>
+                          <div style={{ display: 'inline-flex', marginBottom: '10px', border: '1px solid rgba(148,163,184,.3)', borderRadius: '999px', padding: '2px 8px', fontSize: '10px', color: '#cbd5e1' }}>
+                            {result.priceChart!.timeframe === '24h' ? '24H' : result.priceChart!.timeframe === '48h' ? '48H' : result.priceChart!.timeframe === '7d' ? '7D' : '30D'}
+                          </div>
+                          <CandlestickChart candles={result.priceChart!.points} timeframe={result.priceChart!.timeframe} isFlatSeries={result.chartSource === 'synthetic_flat_series'} />
+                        </div>
+                      )
+                    }
+
+                    if (_hasMarketTrend) {
+                      const visibleChanges = (mts?.changes ?? []).filter(c => c.value != null)
+                      const _trendChart = <TrendChart snapshot={mts!} currentPrice={result.price ?? null} />
+                      return (
+                        <div className="glass-card" style={{ marginBottom: '22px', borderRadius: '16px', padding: '16px' }}>
+                          {/* Header row */}
+                          <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'center', flexWrap: 'wrap', marginBottom: '8px' }}>
+                            <p style={{ margin: 0, fontSize: '12px', fontWeight: 700, letterSpacing: '0.08em', color: '#cbd5e1', textTransform: 'uppercase' }}>Price Chart</p>
+                            <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                              <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', padding: '2px 8px', borderRadius: '99px', color: '#a78bfa', background: 'rgba(167,139,250,0.07)', border: '1px solid rgba(167,139,250,0.22)', textTransform: 'uppercase' }}>
+                                Estimated Trend
+                              </span>
+                              {result.marketDataSource === 'fallback' && (
+                                <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', padding: '2px 8px', borderRadius: '99px', color: '#a78bfa', background: 'rgba(167,139,250,0.08)', border: '1px solid rgba(167,139,250,0.22)', textTransform: 'uppercase' }}>CORTEX MARKET READ</span>
+                              )}
+                              <p style={{ margin: 0, fontSize: '11px', color: '#64748b' }}>
+                                {visibleChanges.length > 0 ? 'Inferred from indexed % changes' : 'Live price only'}
+                              </p>
+                            </div>
+                          </div>
+
+                          {/* Trend chart (null-safe: renders nothing if < 2 anchors) */}
+                          {_trendChart}
+
+                          {/* Price + change chips */}
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '14px', alignItems: 'flex-end', marginTop: '14px', marginBottom: '14px' }}>
+                            <div>
+                              <div style={{ fontSize: '9px', letterSpacing: '.16em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', marginBottom: '3px', textTransform: 'uppercase' }}>Live Price</div>
+                              <div style={{ fontSize: '22px', fontWeight: 800, color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)', lineHeight: 1 }}>{fmtPrice(mts!.price)}</div>
+                            </div>
+                            {visibleChanges.length > 0 && (
+                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', alignItems: 'center', paddingBottom: '2px' }}>
+                                {visibleChanges.map(c => (
+                                  <div key={c.label} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '5px 10px', borderRadius: '10px', background: `${pctColor(c.value)}10`, border: `1px solid ${pctColor(c.value)}28` }}>
+                                    <span style={{ fontSize: '8px', letterSpacing: '.12em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '2px' }}>{c.label}</span>
+                                    <span style={{ fontSize: '12px', fontWeight: 800, color: pctColor(c.value), fontFamily: 'var(--font-plex-mono)' }}>{fmtPct(c.value)}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Stats grid */}
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(110px,1fr))', gap: '8px', marginBottom: '14px' }}>
+                            {mts!.liquidity != null && (
+                              <div style={{ padding: '10px 12px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.07)', background: 'rgba(8,14,28,0.55)' }}>
+                                <div style={{ fontSize: '8px', letterSpacing: '.12em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '3px' }}>Liquidity</div>
+                                <div style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)' }}>{fmtLarge(mts!.liquidity)}</div>
+                              </div>
+                            )}
+                            {mts!.volume24h != null && (
+                              <div style={{ padding: '10px 12px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.07)', background: 'rgba(8,14,28,0.55)' }}>
+                                <div style={{ fontSize: '8px', letterSpacing: '.12em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '3px' }}>Volume 24H</div>
+                                <div style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)' }}>{fmtLarge(mts!.volume24h)}</div>
+                              </div>
+                            )}
+                            {(mts!.buys24h != null && mts!.sells24h != null) ? (
+                              <div style={{ padding: '10px 12px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.07)', background: 'rgba(8,14,28,0.55)' }}>
+                                <div style={{ fontSize: '8px', letterSpacing: '.12em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '3px' }}>Buys / Sells</div>
+                                <div style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)' }}>{mts!.buys24h!.toLocaleString()} <span style={{ color: '#3a5268' }}>/</span> {mts!.sells24h!.toLocaleString()}</div>
+                              </div>
+                            ) : mts!.transactions24h != null ? (
+                              <div style={{ padding: '10px 12px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.07)', background: 'rgba(8,14,28,0.55)' }}>
+                                <div style={{ fontSize: '8px', letterSpacing: '.12em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '3px' }}>Transactions 24H</div>
+                                <div style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)' }}>{mts!.transactions24h!.toLocaleString()}</div>
+                              </div>
+                            ) : null}
+                            {mts!.pairAge != null && (
+                              <div style={{ padding: '10px 12px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.07)', background: 'rgba(8,14,28,0.55)' }}>
+                                <div style={{ fontSize: '8px', letterSpacing: '.12em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '3px' }}>Pair Age</div>
+                                <div style={{ fontSize: '13px', fontWeight: 700, color: '#a78bfa', fontFamily: 'var(--font-plex-mono)' }}>{mts!.pairAge}</div>
+                              </div>
+                            )}
+                          </div>
+
+                          <p style={{ margin: 0, fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>
+                            Historical candles are not indexed yet. Trend is inferred from live indexed price changes.
+                          </p>
+                        </div>
+                      )
+                    }
+
+                    // Minimal snapshot — no candles, no market trend data
+                    return (
+                      <div className="glass-card" style={{ marginBottom: '22px', borderRadius: '16px', padding: '16px' }}>
+                        <p style={{ margin: '0 0 6px', fontSize: '12px', fontWeight: 700, color: '#cbd5e1', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Price Chart</p>
+                        <p style={{ margin: 0, fontSize: '12px', color: '#3a5268', lineHeight: 1.6, fontFamily: 'var(--font-plex-mono)' }}>
+                          {result.noActivePools ? 'Chart data unavailable — no active indexed pools found for this token.' : 'Historical candles are not indexed for this pool yet.'}
+                        </p>
+                      </div>
+                    )
+                  })()}
+                  {!result.noActivePools && result.marketDataSource !== 'fallback' && (
+                    <div style={{ marginBottom: '28px' }}>
+                      <p style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#3a5268', textTransform: 'uppercase', marginBottom: '10px', fontFamily: 'var(--font-plex-mono)' }}>Pool Activity</p>
+                      <div className="activity-grid">
+                        <StatCard label="Transactions 24H" value={result.poolActivity?.transactions24h != null ? result.poolActivity.transactions24h.toLocaleString() : 'Activity unavailable'} helper="Primary pool activity" />
+                        <StatCard label="Buys / Sells" value={result.poolActivity?.buys24h != null && result.poolActivity?.sells24h != null ? `${result.poolActivity.buys24h.toLocaleString()} / ${result.poolActivity.sells24h.toLocaleString()}` : 'Buy/sell split unavailable'} helper="24h pool flow" />
+                        <StatCard label="Buy / Sell Vol" value={result.poolActivity?.buyVolume24hUsd != null && result.poolActivity?.sellVolume24hUsd != null ? `${fmtLarge(result.poolActivity.buyVolume24hUsd)} / ${fmtLarge(result.poolActivity.sellVolume24hUsd)}` : result.poolActivity?.volume24hUsd != null ? `Total ${fmtLarge(result.poolActivity.volume24hUsd)}` : 'Volume unavailable'} helper={result.poolActivity?.buyVolume24hUsd != null && result.poolActivity?.sellVolume24hUsd != null ? '24h buy/sell volume' : result.poolActivity?.volume24hUsd != null ? 'Buy/sell volume split not exposed' : '24h volume not exposed'} />
+                        <StatCard label="Pair Age" value={result.poolActivity?.pairAgeLabel ?? 'Pool age unavailable'} helper={result.poolActivity?.pairAgeLabel != null ? 'Primary pool created' : 'Creation time not exposed'} />
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
 
               {/* ── HOLDER MAP ────────────────────────────────────────── */}
-              {null}
-
-              {activeSection === 'lp-safety' && result && <PremiumLPControl result={result} />}
+              {activeSection === 'holder-map' && (() => {
+                const holderState = deriveHolderState(result)
+                const fallback = deriveHolderFallbackEvidence(result)
+                return (
+                  <>
+                    <div style={{ marginBottom: '18px' }}>
+                      <p style={{ margin: '0 0 3px', fontSize: '12px', fontWeight: 800, letterSpacing: '0.10em', color: '#a78bfa', fontFamily: 'var(--font-plex-mono)' }}>HOLDER MAP</p>
+                      <p style={{ margin: 0, fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>Top holder distribution and supply concentration analysis.</p>
+                    </div>
+                    {!planLoading && !isFullAccess && (
+                      <div style={{ padding: '24px', border: '1px solid rgba(139,92,246,0.28)', borderRadius: '16px', background: 'rgba(139,92,246,0.06)', textAlign: 'center' }}>
+                        <div style={{ fontSize: '22px', marginBottom: '10px' }}>🔒</div>
+                        <p style={{ fontWeight: 700, color: '#f8fafc', margin: '0 0 6px', fontSize: '14px' }}>Holder Distribution</p>
+                        <p style={{ color: '#94a3b8', fontSize: '12px', margin: '0 0 16px', lineHeight: 1.5 }}>Holder analytics are included in Pro and Elite.</p>
+                        <a href="/pricing" style={{ display: 'inline-block', padding: '8px 20px', borderRadius: '999px', background: 'linear-gradient(135deg,#7c3aed,#a855f7)', color: '#fff', fontWeight: 700, fontSize: '12px', textDecoration: 'none' }}>Get Access</a>
+                      </div>
+                    )}
+                    {!planLoading && isFullAccess && result.debugHolderStatus && (() => {
+                      const d = result.debugHolderStatus!
+                      return (
+                        <details style={{ marginBottom: '12px', background: 'rgba(251,191,36,0.04)', border: '1px solid rgba(251,191,36,0.18)', borderRadius: '8px', padding: '8px 12px', fontSize: '10px', fontFamily: 'var(--font-plex-mono)' }}>
+                          <summary style={{ cursor: 'pointer', color: '#fbbf24', letterSpacing: '0.10em', fontWeight: 700 }}>
+                            Holder Debug · HTTP {d.statusCode ?? '?'} · items:{d.itemCount ?? '?'} norm:{d.normalizedCount ?? '?'}
+                          </summary>
+                          <table style={{ marginTop: '8px', borderCollapse: 'collapse', width: '100%' }}><tbody>
+                            {([['providerCalled',String(d.providerCalled??'?')],['chain',d.chain??'?'],['statusCode',d.statusCode!=null?String(d.statusCode):'—'],['itemCount',d.itemCount!=null?String(d.itemCount):'—'],['normalizedCount',d.normalizedCount!=null?String(d.normalizedCount):'—'],['reason',d.reason??'—']] as [string,string][]).map(([k,v])=>(
+                              <tr key={k}><td style={{paddingRight:'12px',color:'#78716c',whiteSpace:'nowrap'}}>{k}</td><td style={{color:'#d97706',wordBreak:'break-all'}}>{v}</td></tr>
+                            ))}
+                          </tbody></table>
+                        </details>
+                      )
+                    })()}
+                    {!planLoading && isFullAccess && (() => {
+                      if (holderState.kind !== 'noRowsFallback') {
+                        const top1h = result.holderDistribution?.top1
+                        const top10h = result.holderDistribution?.top10
+                        const top20h = result.holderDistribution?.top20
+                        const holderCount = result.holderDistribution?.holderCount
+                        const concRisk = top10h != null ? (top10h > 50 ? 'HIGH' : top10h > 30 ? 'MEDIUM' : 'LOW') : null
+                        const concColor = concRisk === 'HIGH' ? '#f87171' : concRisk === 'MEDIUM' ? '#fbbf24' : concRisk === 'LOW' ? '#34d399' : '#94a3b8'
+                        const concRead = holderState.kind === 'rowsWithPercent' && concRisk != null
+                          ? concRisk === 'HIGH' ? 'High concentration — top holders control majority supply.' : concRisk === 'MEDIUM' ? 'Moderate concentration — watch for coordinated movement.' : 'Spread looks reasonable — no extreme concentration flagged.'
+                          : null
+                        const whalePressure = holderState.kind !== 'rowsWithPercent' || top10h == null
+                          ? 'UNVERIFIED'
+                          : top10h >= 70 ? 'EXTREME' : top10h >= 50 ? 'HIGH' : top10h >= 20 ? 'MEDIUM' : 'LOW'
+                        const whalePressureColor = whalePressure === 'EXTREME' ? '#f87171' : whalePressure === 'HIGH' ? '#fb923c' : whalePressure === 'MEDIUM' ? '#fbbf24' : whalePressure === 'LOW' ? '#34d399' : '#94a3b8'
+                        return (
+                          <div className="holders-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '20px' }}>
+                            {/* Whale Pressure Card */}
+                            <div style={{ gridColumn:'1 / -1', marginBottom:'4px', padding:'14px 16px', borderRadius:'12px', background:'rgba(167,139,250,0.05)', border:`1px solid ${whalePressureColor}28` }}>
+                              <div style={{ display:'flex', alignItems:'center', gap:'10px', marginBottom:'12px', flexWrap:'wrap' }}>
+                                <span style={{ fontSize:'9px', fontWeight:700, letterSpacing:'.16em', color:'#a78bfa', fontFamily:'var(--font-plex-mono)' }}>WHALE PRESSURE</span>
+                                <span style={{ padding:'3px 10px', borderRadius:'999px', fontSize:'9px', fontWeight:800, letterSpacing:'.12em', color:whalePressureColor, background:`${whalePressureColor}12`, border:`1px solid ${whalePressureColor}40`, fontFamily:'var(--font-plex-mono)' }}>{whalePressure}</span>
+                              </div>
+                              <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(110px,1fr))', gap:'8px', marginBottom: (top10h != null && top10h > 50) || (top20h != null && top20h > 50) ? '10px' : '0' }}>
+                                {[
+                                  ['Top 1', top1h != null ? `${top1h.toFixed(1)}%` : 'N/A'],
+                                  ['Top 10', top10h != null ? `${top10h.toFixed(1)}%` : 'N/A'],
+                                  ['Top 20', top20h != null ? `${top20h.toFixed(1)}%` : 'N/A'],
+                                  ['Holders', holderCount != null ? holderCount.toLocaleString() : 'N/A'],
+                                ].map(([label, val]) => (
+                                  <div key={label} style={{ padding:'8px 10px', borderRadius:'8px', background:'rgba(15,23,42,0.55)', border:'1px solid rgba(167,139,250,0.16)' }}>
+                                    <div style={{ fontSize:'9px', letterSpacing:'.12em', color:'#64748b', marginBottom:'3px', fontFamily:'var(--font-plex-mono)' }}>{label}</div>
+                                    <div style={{ fontSize:'12px', color:'#e2e8f0', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>{val}</div>
+                                  </div>
+                                ))}
+                              </div>
+                              {top10h != null && top10h > 50 && (
+                                <div style={{ display:'flex', gap:'6px', alignItems:'flex-start', padding:'7px 10px', borderRadius:'8px', background:'rgba(248,113,113,0.06)', border:'1px solid rgba(248,113,113,0.18)' }}>
+                                  <span style={{ color:'#f87171', fontSize:'11px', flexShrink:0 }}>!</span>
+                                  <span style={{ fontSize:'11px', color:'#fca5a5', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>Top wallets control majority supply.</span>
+                                </div>
+                              )}
+                              {top20h != null && top20h > 50 && !(top10h != null && top10h > 50) && (
+                                <div style={{ display:'flex', gap:'6px', alignItems:'flex-start', padding:'7px 10px', borderRadius:'8px', background:'rgba(251,191,36,0.06)', border:'1px solid rgba(251,191,36,0.18)' }}>
+                                  <span style={{ color:'#fbbf24', fontSize:'11px', flexShrink:0 }}>!</span>
+                                  <span style={{ fontSize:'11px', color:'#fde68a', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>Watch for coordinated holder movement.</span>
+                                </div>
+                              )}
+                            </div>
+                            <div style={{ gridColumn:'1 / -1', display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(145px,1fr))', gap:'8px' }}>
+                              {[
+                                ['Holder Risk', concRisk ?? 'Open check'],
+                                ['Top 10 Control', top10h != null ? `${top10h.toFixed(1)}%` : 'Open check'],
+                                ['Top 20 Control', top20h != null ? `${top20h.toFixed(1)}%` : 'Open check'],
+                                ['Holder Count', holderCount != null ? holderCount.toLocaleString() : 'Open check'],
+                                ['Supply Spread', concRead ?? 'Open check'],
+                              ].map(([label,val])=>(
+                                <div key={label} style={{ padding:'10px 11px', borderRadius:'10px', border:'1px solid rgba(167,139,250,0.22)', background:'rgba(15,23,42,0.55)' }}>
+                                  <div style={{ fontSize:'9px', letterSpacing:'.12em', color:'#64748b', marginBottom:'4px', fontFamily:'var(--font-plex-mono)' }}>{label}</div>
+                                  <div style={{ fontSize:'11px', color:'#e2e8f0', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>{val}</div>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="glass-card" style={{ padding: '18px' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px', flexWrap: 'wrap' }}>
+                                <p style={{ fontSize: '12px', fontWeight: 800, letterSpacing: '0.12em', color: '#8fb3d0', margin: 0, fontFamily: 'var(--font-plex-mono)' }}>HOLDER CONCENTRATION</p>
+                                <span style={{ padding: '2px 7px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '0.1em', fontFamily: 'var(--font-plex-mono)', border: `1px solid ${holderState.kind === 'rowsWithPercent' ? 'rgba(45,212,191,.5)' : 'rgba(251,191,36,.4)'}`, color: holderState.kind === 'rowsWithPercent' ? '#2dd4bf' : '#fbbf24', background: holderState.kind === 'rowsWithPercent' ? 'rgba(45,212,191,.1)' : 'rgba(251,191,36,.1)' }}>{holderState.kind === 'rowsWithPercent' ? 'VERIFIED' : 'PARTIAL'}</span>
+                                {concRisk != null && <span style={{ padding: '2px 7px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '0.1em', fontFamily: 'var(--font-plex-mono)', border: `1px solid ${concColor}44`, color: concColor, background: `${concColor}10` }}>{concRisk} CONC</span>}
+                              </div>
+                              {result.holderDistribution?.holderCount != null && <div style={{ margin: '0 0 12px', fontSize: '13px', color: '#67e8f9', border: '1px solid rgba(45,212,191,.3)', background: 'rgba(6,78,59,.16)', padding: '8px 10px', borderRadius: '10px', display: 'inline-flex', gap: '8px' }}><span style={{ color: '#99f6e4' }}>Holder count</span><strong style={{ fontFamily: 'var(--font-plex-mono)', color: '#e6fffa' }}>{result.holderDistribution.holderCount.toLocaleString()}</strong></div>}
+                              {holderState.kind === 'rowsWithoutPercent' && <p style={{ margin: '0 0 10px', fontSize: '11px', color: '#fbbf24' }}>{holderState.safeReason} Addresses and amounts shown below.</p>}
+                              {holderState.kind === 'rowsWithPercent' && <div style={{ display: 'grid', gap: '10px' }}>
+                                {[['Top 1',result.holderDistribution?.top1],['Top 5',result.holderDistribution?.top5],['Top 10',result.holderDistribution?.top10],['Top 20',result.holderDistribution?.top20]].map(([l,v])=>(
+                                  <div key={String(l)} style={{ display: 'grid', gridTemplateColumns: '82px 1fr 64px', alignItems: 'center', gap: '10px' }}>
+                                    <span style={{ fontSize: '12px', color: '#d6e6f3', fontWeight: 700 }}>{l}</span>
+                                    <div style={{ height: '12px', borderRadius: '999px', background: 'linear-gradient(90deg,rgba(30,41,59,.9),rgba(51,65,85,.5))', border: '1px solid rgba(148,163,184,.25)' }}><div style={{ height: '100%', width: `${v==null?0:Math.max(0,Math.min(100,Number(v)))}%`, borderRadius: '999px', background: 'linear-gradient(90deg,#2dd4bf,#a855f7)', boxShadow: '0 0 14px rgba(45,212,191,.28)' }} /></div>
+                                    <span style={{ fontSize: '13px', fontWeight: 800, color: '#eef6ff', textAlign: 'right', fontFamily: 'var(--font-plex-mono)' }}>{v==null?'N/A':`${Number(v).toFixed(1)}%`}</span>
+                                  </div>
+                                ))}
+                              </div>}
+                              {(top10h != null && top10h > 50) && (
+                                <p style={{ margin: '10px 0 0', fontSize: '12px', color: '#fca5a5', lineHeight: 1.5, border: '1px solid rgba(248,113,113,0.28)', background: 'rgba(248,113,113,0.08)', borderRadius: '10px', padding: '8px 10px' }}>
+                                  High concentration — top wallets control majority supply.
+                                </p>
+                              )}
+                              {(top1h != null && top1h > 20) && (
+                                <p style={{ margin: '8px 0 0', fontSize: '12px', color: '#fecaca', lineHeight: 1.5, border: '1px solid rgba(248,113,113,0.22)', background: 'rgba(248,113,113,0.06)', borderRadius: '10px', padding: '8px 10px' }}>
+                                  Largest holder has meaningful supply control.
+                                </p>
+                              )}
+                              {holderState.kind === 'rowsWithPercent' && top10h != null && <p style={{ margin: '10px 0 0', fontSize: '11px', color: concColor, lineHeight: 1.5 }}>{`Top 10 controls ${top10h.toFixed(1)}%. Monitor concentration before trusting supply distribution.`}</p>}
+                              <p style={{ margin: '8px 0 0', fontSize: '11px', color: '#8aa3b8' }}>{holderState.kind === 'rowsWithPercent' ? 'Top holder concentration from live holder data' : 'Holder distribution based on available live holder rows'}</p>
+                            </div>
+                            <div className="glass-card" style={{ padding: '18px', minWidth: 0, overflow: 'hidden' }}>
+                              <p style={{ fontSize: '12px', fontWeight: 800, letterSpacing: '0.12em', color: '#8fb3d0', marginBottom: '4px', fontFamily: 'var(--font-plex-mono)' }}>TOP HOLDERS</p>
+                              <p style={{ margin: '0 0 10px', fontSize: '11px', color: '#8aa3b8' }}>Top 10 holders</p>
+                              <div className="top-holder-head" style={{ display: 'grid', gridTemplateColumns: '36px minmax(0,1fr) 88px 62px 74px', gap: '10px', fontSize: '10px', letterSpacing: '0.10em', color: '#6a8198', marginBottom: '8px', fontFamily: 'var(--font-plex-mono)' }}><span>#</span><span>WALLET</span><span style={{ textAlign: 'right' }}>AMOUNT</span><span style={{ textAlign: 'right' }}>%</span><span style={{ textAlign: 'right' }}>COPY</span></div>
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '320px', overflowY: 'auto', paddingRight: '3px' }}>
+                                {holderState.rows.slice(0,20).map((h)=>(
+                                  <div className="top-holder-row" key={h.rank+h.address} style={{ display: 'grid', gridTemplateColumns: '36px minmax(0,1fr) 88px 62px 74px', gap: '10px', alignItems: 'center', padding: '10px', border: '1px solid rgba(148,163,184,.18)', borderRadius: '10px', background: 'rgba(15,23,42,.45)' }}>
+                                    <span style={{ fontSize: '11px', color: '#dbeafe', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, display: 'inline-flex', justifyContent: 'center', padding: '2px 0', borderRadius: '999px', background: h.rank<=3?'linear-gradient(90deg,rgba(45,212,191,.28),rgba(168,85,247,.28))':'transparent', border: h.rank<=3?'1px solid rgba(167,139,250,.45)':'none' }}>{h.rank}</span>
+                                    <span className="top-holder-mobile-meta" style={{ fontSize: '12px', color: '#c5d8ea', fontFamily: 'var(--font-plex-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{shorten(h.address)}<span style={{ display: 'none', fontSize: '12px', fontWeight: 800, color: h.percent!=null&&h.percent>=10?'#fb7185':h.percent!=null&&h.percent>=5?'#fbbf24':'#67e8f9' }}>{h.percent==null?'—':`${h.percent.toFixed(2)}%`}</span></span>
+                                    <span className="top-holder-mobile-amt" style={{ fontSize: '12px', color: '#e5eef9', textAlign: 'right', fontFamily: 'var(--font-plex-mono)' }}>{fmtTokenAmt(h.amount,result.decimals??18)}</span>
+                                    <span style={{ fontSize: '12px', fontWeight: 800, textAlign: 'right', fontFamily: 'var(--font-plex-mono)', color: h.percent!=null&&h.percent>=10?'#fb7185':h.percent!=null&&h.percent>=5?'#fbbf24':'#67e8f9' }}>{h.percent==null?'—':`${h.percent.toFixed(2)}%`}</span>
+                                    {isValidHolderAddress(h.address) && (
+                                      <button
+                                        type="button"
+                                        onClick={() => { void copyHolderAddress(h.address) }}
+                                        style={{
+                                          justifySelf: 'end',
+                                          padding: '4px 10px',
+                                          borderRadius: '999px',
+                                          border: copiedHolderAddress === h.address ? '1px solid rgba(45,212,191,0.55)' : '1px solid rgba(167,139,250,0.48)',
+                                          background: copiedHolderAddress === h.address
+                                            ? 'linear-gradient(135deg,rgba(45,212,191,0.18),rgba(45,212,191,0.1))'
+                                            : 'linear-gradient(135deg,rgba(167,139,250,0.2),rgba(45,212,191,0.08))',
+                                          color: copiedHolderAddress === h.address ? '#67e8f9' : '#c4b5fd',
+                                          fontSize: '10px',
+                                          fontWeight: 700,
+                                          letterSpacing: '0.08em',
+                                          fontFamily: 'var(--font-plex-mono)',
+                                          cursor: 'pointer',
+                                          whiteSpace: 'nowrap',
+                                          boxShadow: copiedHolderAddress === h.address ? '0 0 10px rgba(45,212,191,0.25)' : '0 0 10px rgba(167,139,250,0.14)',
+                                          transition: 'all 0.14s ease',
+                                          minHeight: '26px',
+                                        }}
+                                        aria-label={`Copy full holder address ${h.address}`}
+                                      >
+                                        {copiedHolderAddress === h.address ? 'Copied' : 'Copy'}
+                                      </button>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          </div>
+                        )
+                      }
+                      const fb = buildHolderFallbackRead(fallback)
+                      const lpS = result.lpControl?.status
+                      const lpV = lpS === 'locked' || lpS === 'burned'
+                      const hpV = result.honeypot?.simulationSuccess === true
+                      const evItems: Array<{label:string;value:string;ok:boolean}> = [
+                        { label: 'Market data',         value: result.price!=null?'Available':'Unavailable',                   ok: result.price!=null },
+                        { label: 'Liquidity depth',     value: fallback.liquidityDepth!=null?fmtLarge(fallback.liquidityDepth):'Open check', ok: fallback.liquidityDepth!=null },
+                        { label: 'Pool count',          value: fallback.poolCount>0?String(fallback.poolCount):'Open check',    ok: fallback.poolCount>0 },
+                        { label: 'LP control',          value: lpV?'Verified':'Open check',                                   ok: lpV },
+                        { label: 'Owner status',        value: fallback.ownerStatus,                                           ok: fallback.ownerStatus==='Renounced' },
+                        { label: 'Security simulation', value: hpV?'Verified':'Open check',                                   ok: hpV },
+                      ]
+                      return (
+                        <div style={{ marginBottom: '20px', background: 'linear-gradient(160deg,rgba(12,10,4,.72),rgba(4,8,18,.88))', border: '1px solid rgba(251,191,36,.22)', borderRadius: '14px', padding: '18px' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px', flexWrap: 'wrap' }}>
+                            <p style={{ fontSize: '12px', fontWeight: 800, letterSpacing: '0.12em', color: '#8fb3d0', margin: 0, fontFamily: 'var(--font-plex-mono)' }}>HOLDER CONCENTRATION</p>
+                            <span style={{ padding: '2px 7px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '0.1em', fontFamily: 'var(--font-plex-mono)', border: '1px solid rgba(251,191,36,.4)', color: '#fbbf24', background: 'rgba(251,191,36,.08)' }}>UNVERIFIED</span>
+                          </div>
+                          <p style={{ margin: '0 0 12px', fontSize: '12px', color: '#fde68a', lineHeight: 1.5 }}>Holder distribution was not returned in this scan. Supply concentration remains an open risk check.</p>
+                          <div className="intel-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3,minmax(0,1fr))', gap: '8px', marginBottom: '14px' }}>
+                            {evItems.map(({label,value,ok})=>(
+                              <div key={label} style={{ padding: '9px 10px', borderRadius: '10px', background: 'rgba(15,23,42,0.42)', border: `1px solid ${ok?'rgba(52,211,153,.22)':value==='Open check'?'rgba(251,191,36,.22)':'rgba(248,113,113,.22)'}` }}>
+                                <div style={{ fontSize: '9px', color: '#64748b', fontFamily: 'var(--font-plex-mono)', marginBottom: '3px' }}>{label}</div>
+                                <div style={{ fontSize: '11px', fontWeight: 700, color: ok?'#34d399':value==='Open check'?'#fbbf24':'#f87171', fontFamily: 'var(--font-plex-mono)' }}>{value}</div>
+                              </div>
+                            ))}
+                          </div>
+                          <div style={{ padding: '10px 12px', borderRadius: '10px', background: 'rgba(15,23,42,.5)', border: '1px solid rgba(125,211,252,.15)', marginBottom: '10px' }}>
+                            <div style={{ fontSize: '9px', letterSpacing: '.1em', color: '#7dd3fc', fontFamily: 'var(--font-plex-mono)', marginBottom: '5px' }}>CORTEX READ</div>
+                            <p style={{ margin: 0, fontSize: '11px', color: '#b7c9da', lineHeight: 1.6 }}>{fb.read}</p>
+                          </div>
+                          <p style={{ margin: 0, fontSize: '11px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)' }}>Rescan later and monitor holder distribution before trusting supply spread.</p>
+                        </div>
+                      )
+                    })()}
+                  </>
+                )
+              })()}
 
               {/* ── LP SAFETY ─────────────────────────────────────────── */}
-              {null}
+              {activeSection === 'lp-safety' && (
+                <>
+                  {/* ── header ────────────────────────────────────────── */}
+                  <div style={{ marginBottom: '18px' }}>
+                    <p style={{ margin: '0 0 3px', fontSize: '13px', fontWeight: 800, letterSpacing: '0.10em', color: '#34d399', fontFamily: 'var(--font-plex-mono)' }}>LP SAFETY ANALYZER</p>
+                    <p style={{ margin: 0, fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>Liquidity pool lock status, exit risk, and LP model.</p>
+                  </div>
 
-              {activeSection === 'risk-engine' && result && <PremiumRiskEngine result={result} />}
+                  {/* ── 3-card hero: LP Status · Exit Risk · LP Model ─── */}
+                  {(() => {
+                    const lockInfo = getLpLockLabel(result)
+                    const exitInfo = getLpExitRiskInfo(result)
+                    const lpModeVal = getLpMode(result)
+                    const lpStatus = result.lpControl?.status
+                    const hasPool = (result.liquidity ?? 0) > 0 || result.lpControl?.poolAddressPresent
+                    const lpStatus2 = result.lpControl?.status
+                    const dm2 = result.lpControl?.displayLpModel
+                    const effectiveDm = (dm2 === 'no_pool' && hasPool) ? 'open_check' : dm2
+                    const lpProofConfirmed = lpStatus2 === 'burned' || lpStatus2 === 'locked'
+                    const modelLabel = primaryLiquidityModelLabel(result)
+                    const modelColor = effectiveDm === 'concentrated_liquidity' ? '#c084fc'
+                      : effectiveDm === 'protocol_or_gauge' ? '#a78bfa'
+                      : effectiveDm === 'erc20_lp_token' ? (lpProofConfirmed ? '#34d399' : '#60a5fa')
+                      : effectiveDm === 'no_pool' ? '#94a3b8'
+                      : lpModeVal === 'protocol' ? '#c084fc'
+                      : lpModeVal === 'lp_token' ? (lpProofConfirmed ? '#34d399' : '#60a5fa')
+                      : hasPool ? '#fbbf24'
+                      : '#94a3b8'
+                    const modelDesc = isProtocolPositionModel(result) ? protocolPositionSubtext('lock')
+                      : effectiveDm === 'erc20_lp_token' ? (lpProofConfirmed ? 'Standard ERC-20 LP token — lock or burn proof confirmed.' : 'Standard ERC-20 LP token detected. Lock or burn proof has not been verified.')
+                      : effectiveDm === 'no_pool' ? 'No active liquidity pool detected for this token.'
+                      : lpModeVal === 'lp_token' ? (lpProofConfirmed ? 'Standard ERC-20 LP token — lock or burn proof confirmed.' : 'Standard ERC-20 LP token detected. Lock or burn proof has not been verified.')
+                      : hasPool ? 'Pool detected, but LP token model could not be fully classified.'
+                      : 'Pool structure could not be classified from this scan.'
+                    void lpStatus
+                    return (
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(190px,1fr))', gap: '10px', marginBottom: '14px' }}>
+                        <div style={{ padding: '15px 17px', background: lockInfo.bg, border: `1px solid ${lockInfo.border}`, borderRadius: '14px' }}>
+                          <div style={{ fontSize: '9px', letterSpacing: '.15em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', marginBottom: '9px', fontWeight: 700, textTransform: 'uppercase' }}>LP Status</div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                            <span style={{ width: 7, height: 7, borderRadius: '50%', background: lockInfo.color, flexShrink: 0, boxShadow: `0 0 8px ${lockInfo.color}` }} />
+                            <span style={{ fontSize: '16px', fontWeight: 800, color: lockInfo.color, fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.03em' }}>{lockInfo.label}</span>
+                          </div>
+                          <p style={{ margin: 0, fontSize: '11px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>{lockInfo.description}</p>
+                        </div>
+                        <div style={{ padding: '15px 17px', background: `${exitInfo.color}08`, border: `1px solid ${exitInfo.color}28`, borderRadius: '14px' }}>
+                          <div style={{ fontSize: '9px', letterSpacing: '.15em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', marginBottom: '9px', fontWeight: 700, textTransform: 'uppercase' }}>Exit Risk</div>
+                          <div style={{ marginBottom: '8px' }}>
+                            <span style={{ padding: '4px 13px', borderRadius: '999px', background: `${exitInfo.color}14`, border: `1px solid ${exitInfo.color}45`, color: exitInfo.color, fontSize: '14px', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.05em' }}>{exitInfo.label}</span>
+                          </div>
+                          <p style={{ margin: 0, fontSize: '11px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>{exitInfo.description}</p>
+                        </div>
+                        <div style={{ padding: '15px 17px', background: `${modelColor}08`, border: `1px solid ${modelColor}28`, borderRadius: '14px' }}>
+                          <div style={{ fontSize: '9px', letterSpacing: '.15em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', marginBottom: '9px', fontWeight: 700, textTransform: 'uppercase' }}>Primary Liquidity Model</div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                            <span style={{ width: 7, height: 7, borderRadius: '50%', background: modelColor, flexShrink: 0, boxShadow: `0 0 8px ${modelColor}` }} />
+                            <span style={{ fontSize: '16px', fontWeight: 800, color: modelColor, fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.03em' }}>{modelLabel}</span>
+                          </div>
+                          <p style={{ margin: 0, fontSize: '11px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>{modelDesc}</p>
+                        </div>
+                      </div>
+                    )
+                  })()}
+
+                  {/* ── Compact detail rows ───────────────────────────── */}
+                  {(() => {
+                    const lpModeVal = getLpMode(result)
+                    const lpStatus = result.lpControl?.status
+                    const dm3 = result.lpControl?.displayLpModel
+                    const hasLiquidity = (result.liquidity ?? 0) > 0
+                    const hasPool = hasLiquidity || result.lpControl?.poolAddressPresent
+                    const notApplicable = dm3 === 'concentrated_liquidity' || dm3 === 'protocol_or_gauge' || result.lpControl?.proofStatus === 'not_applicable'
+                    const protocolPosition = isProtocolPositionModel(result)
+                    // Migration risk comes from real migration evidence (lpMigrationProof / riskEngine.lpIntelligence),
+                    // never inferred from pool count alone.
+                    const migProofStatus = result.lpMigrationProof?.status
+                    const migEngineRisk = result.riskEngine?.lpIntelligence?.migrationRisk
+                    const migrationRisk = (migProofStatus === 'low' || migEngineRisk === 'low') ? 'Low'
+                      : (migProofStatus === 'flagged' || migEngineRisk === 'high') ? 'Elevated'
+                      : (migProofStatus === 'watch' || migEngineRisk === 'medium') ? 'Monitor'
+                      : (migProofStatus === 'unknown' || migEngineRisk === 'inferred') ? 'Open Check'
+                      : hasPool ? 'Pool detected' : 'Open Check'
+                    const migrationRiskColor = migrationRisk === 'Low' ? '#34d399'
+                      : migrationRisk === 'Elevated' ? '#f87171'
+                      : migrationRisk === 'Monitor' ? '#fbbf24'
+                      : undefined
+                    const controlProof = result.lpControl?.status === 'team_controlled' || result.lpControl?.proofStatus === 'verified'
+                      ? 'Confirmed'
+                      : protocolPosition ? 'Position verification required' : 'Open Check'
+                    const lockBurnProof = result.lpControl?.lockStatus === 'locked' || result.lpControl?.burnStatus === 'burned'
+                      ? 'Confirmed'
+                      : notApplicable ? 'Protocol-specific' : 'Open Check'
+                    const liquidityDepth = result.liquidityDepthRisk === 'low'
+                      ? 'Deep'
+                      : result.liquidityDepthRisk === 'medium' ? 'Moderate'
+                      : result.liquidityDepthRisk === 'high' ? 'Thin'
+                      : (result.liquidity ?? 0) > 500_000 ? 'Deep'
+                      : (result.liquidity ?? 0) > 50_000 ? 'Moderate'
+                      : hasPool ? 'Thin' : 'Open Check'
+                    const exitRisk = result.lpExitRisk === 'low' ? 'Low'
+                      : result.lpExitRisk === 'watch' || result.lpExitRisk === 'monitor' ? 'Watch'
+                      : result.lpExitRisk === 'medium' ? 'Monitor'
+                      : result.lpExitRisk === 'high' ? 'High' : 'Open Check'
+                    const lpControlDisplay = result.lpControl?.status === 'team_controlled' || result.lpControl?.lpControllerType === 'wallet'
+                      ? 'Wallet Controlled'
+                      : lpModeVal === 'protocol' ? 'Protocol Position Model'
+                      : lpStatus === 'burned' ? 'Burned'
+                      : lpStatus === 'locked' ? 'Locked'
+                      : lpStatus === 'partial' ? 'Partial Evidence'
+                      : lpStatus === 'no_pool' ? 'Open Check'
+                      : cleanStatusLabel(lpStatus)
+                    const rows: { label: string; value: string; color?: string; note?: string }[] = [
+                      { label: 'Primary Liquidity', value: primaryLiquidityModelLabel(result), color: protocolPosition ? '#c084fc' : undefined },
+                      { label: 'LP Control', value: protocolPosition ? 'Position verification required' : lpControlDisplay, color: lpControlDisplay === 'Wallet Controlled' ? '#fbbf24' : undefined, note: protocolPosition ? protocolPositionSubtext('control') : undefined },
+                      { label: 'Control Proof', value: controlProof, color: controlProof === 'Confirmed' ? '#34d399' : protocolPosition ? '#c084fc' : undefined, note: protocolPosition ? protocolPositionSubtext('control') : undefined },
+                      { label: 'Lock/Burn Proof', value: lockBurnProof, color: lockBurnProof === 'Confirmed' ? '#34d399' : lockBurnProof === 'Open Check' ? '#fbbf24' : protocolPosition ? '#c084fc' : undefined, note: protocolPosition ? protocolPositionSubtext('lock') : undefined },
+                      { label: 'Exit Risk', value: exitRisk, color: exitRisk === 'Low' ? '#34d399' : exitRisk === 'Watch' || exitRisk === 'Monitor' ? '#fbbf24' : exitRisk === 'High' ? '#f87171' : undefined },
+                      { label: 'Liquidity Depth', value: liquidityDepth, color: liquidityDepth === 'Deep' ? '#34d399' : liquidityDepth === 'Moderate' ? '#fbbf24' : liquidityDepth === 'Thin' ? '#f87171' : undefined },
+                      { label: 'Migration Risk', value: migrationRisk, color: migrationRiskColor },
+                      { label: 'Primary Pool', value: result.primaryDexName ?? result.pools?.[0]?.name ?? 'Pool detected' },
+                    ]
+                    return (
+                      <div style={{ marginBottom: '14px', padding: '10px 14px', background: 'rgba(8,14,28,0.55)', border: '1px solid rgba(148,163,184,0.10)', borderRadius: '12px' }}>
+                        {rows.map(({ label, value, color, note }, i) => (
+                          <div key={label} style={{ display: 'grid', gridTemplateColumns: '120px 1fr', gap: '12px', alignItems: 'center', padding: '7px 4px', borderBottom: i < rows.length - 1 ? '1px solid rgba(255,255,255,.04)' : 'none' }}>
+                            <span style={{ fontSize: '10px', color: '#64748b', fontFamily: 'var(--font-plex-mono)', letterSpacing: '.08em' }}>{label}</span>
+                            <span style={{ fontSize: '11px', color: color ?? (value === 'Open Check' ? '#fbbf24' : value === 'Confirmed' ? '#34d399' : '#e2e8f0'), fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{value}{note && <span style={{ display: 'block', marginTop: '3px', color: '#94a3b8', fontWeight: 500, lineHeight: 1.45 }}>{note}</span>}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )
+                  })()}
+
+
+                  {/* ══════════ LP ELITE INTELLIGENCE ══════════ */}
+                  {(result.lpControllerIntel || result.lpMovementWatch || result.lpLockBurnIntel || result.lpUnlockTimeline || result.lpHistoryTimeline) && (() => {
+                    const elite = getLpEliteSummary(result)
+                    return (
+                      <div style={{ marginBottom: '14px', padding: '14px 16px', background: 'linear-gradient(160deg, rgba(34,211,238,0.05), rgba(8,12,28,0.6))', border: '1px solid rgba(148,163,184,0.14)', borderRadius: '16px' }}>
+                        <p style={{ margin: 0, fontSize: '11px', fontWeight: 900, letterSpacing: '.20em', color: '#67e8f9', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>LP Elite Intelligence</p>
+                        <p style={{ margin: '8px 0 12px', fontSize: '11px', color: '#cbd5e1', lineHeight: 1.6, fontFamily: 'var(--font-plex-mono)' }}>{elite.verdict}</p>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(120px,1fr))', gap: '7px' }}>
+                          {elite.chips.map((chip) => (
+                            <div key={chip.label} style={{ padding: '8px 10px', borderRadius: '10px', background: 'rgba(2,6,23,0.5)', border: `1px solid ${chip.color}30` }}>
+                              <div style={{ fontSize: '9px', color: '#64748b', letterSpacing: '.12em', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '4px' }}>{chip.label}</div>
+                              <div style={{ fontSize: '11px', color: chip.color, fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'capitalize' }}>{chip.value}</div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )
+                  })()}
+
+                  {/* ── LP Controller Intelligence ──────────────────────── */}
+                  {result.lpControllerIntel && (
+                    <div style={{ marginBottom: '14px', padding: '13px 15px', background: 'linear-gradient(135deg, rgba(45,212,191,0.08), rgba(15,23,42,0.72))', border: '1px solid rgba(45,212,191,0.20)', borderRadius: '14px', boxShadow: '0 18px 45px rgba(0,0,0,0.18)' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'flex-start', marginBottom: '10px' }}>
+                        <div>
+                          <p style={{ margin: 0, fontSize: '10px', fontWeight: 900, letterSpacing: '.16em', color: '#67e8f9', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>LP Controller Intelligence</p>
+                          {result.lpControllerIntel.summary && <p style={{ margin: '7px 0 0', fontSize: '11px', color: '#a7f3d0', lineHeight: 1.55, fontFamily: 'var(--font-plex-mono)' }}>{result.lpControllerIntel.summary}</p>}
+                        </div>
+                        <span style={{ flexShrink: 0, padding: '4px 9px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '.10em', color: result.lpControllerIntel.confidence === 'high' ? '#34d399' : '#fbbf24', background: result.lpControllerIntel.confidence === 'high' ? 'rgba(52,211,153,0.10)' : 'rgba(251,191,36,0.10)', border: `1px solid ${result.lpControllerIntel.confidence === 'high' ? 'rgba(52,211,153,0.30)' : 'rgba(251,191,36,0.30)'}`, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
+                          {result.lpControllerIntel.confidence ?? 'open'}
+                        </span>
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(170px,1fr))', gap: '7px', marginBottom: '11px' }}>
+                        {([
+                          ['Controller', result.lpControllerIntel.controller ?? result.lpControllerIntel.controllerLabel ?? 'Open check'],
+                          ['Controller Type', isProtocolPositionModel(result) ? 'Protocol Position Model' : cleanStatusLabel(result.lpControllerIntel.controllerType)],
+                          ['Controller Share', isProtocolPositionModel(result) ? 'Position verification required' : result.lpControllerIntel.controllerSharePercent != null ? `${result.lpControllerIntel.controllerSharePercent.toFixed(2)}%` : 'Open Check'],
+                          ['Control Proof', isProtocolPositionModel(result) ? 'Position verification required' : cleanStatusLabel(result.lpControllerIntel.controlProof)],
+                          ['Lock/Burn Proof', isProtocolPositionModel(result) ? 'Protocol-specific' : cleanStatusLabel(result.lpControllerIntel.lockBurnProof)],
+                          ['Exit Risk', cleanStatusLabel(result.lpControllerIntel.exitRisk)],
+                          ['Liquidity Depth', cleanStatusLabel(result.lpControllerIntel.liquidityDepth)],
+                          ['Migration Risk', cleanStatusLabel(result.lpControllerIntel.migrationRisk)],
+                        ] as Array<[string, string]>).map(([label, value]) => (
+                          <div key={label} style={{ padding: '8px 9px', borderRadius: '10px', background: 'rgba(2,6,23,0.42)', border: '1px solid rgba(148,163,184,0.10)' }}>
+                            <div style={{ fontSize: '9px', color: '#64748b', letterSpacing: '.10em', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '4px' }}>{label}</div>
+                            <div style={{ fontSize: '11px', color: value === 'Confirmed' || value === 'Deep' || value === 'Low' ? '#34d399' : value === 'Open Check' || value === 'Watch' ? '#fbbf24' : '#e2e8f0', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: label === 'Controller' ? 'none' : 'capitalize', overflow: 'hidden', textOverflow: 'ellipsis' }}>{value}</div>
+                          </div>
+                        ))}
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(180px,1fr))', gap: '9px' }}>
+                        {[
+                          ['Signals', result.lpControllerIntel.signals ?? [], '#34d399'],
+                          ['Evidence Gaps', result.lpControllerIntel.evidenceGaps ?? [], '#fbbf24'],
+                          ['Next Actions', result.lpControllerIntel.nextActions ?? [], '#67e8f9'],
+                        ].map(([title, items, color]) => (
+                          <div key={String(title)} style={{ minWidth: 0 }}>
+                            <p style={{ margin: '0 0 6px', fontSize: '9px', color: String(color), fontWeight: 900, letterSpacing: '.12em', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{String(title)}</p>
+                            {(items as string[]).slice(0, 5).map((item) => (
+                              <div key={item} style={{ display: 'flex', gap: '6px', marginBottom: '4px', alignItems: 'flex-start' }}>
+                                <span style={{ color: String(color), fontSize: '10px', lineHeight: '15px' }}>•</span>
+                                <p style={{ margin: 0, fontSize: '10px', color: '#94a3b8', lineHeight: 1.45, fontFamily: 'var(--font-plex-mono)' }}>{item}</p>
+                              </div>
+                            ))}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* ── LP Lock/Burn Intelligence ─────────────────── */}
+                  {result.lpLockBurnIntel && (
+                    <div style={{ marginBottom: '14px', padding: '12px 14px', background: 'linear-gradient(135deg, rgba(34,211,238,0.07), rgba(15,23,42,0.72))', border: '1px solid rgba(34,211,238,0.20)', borderRadius: '14px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'flex-start', marginBottom: '10px' }}>
+                        <div>
+                          <p style={{ margin: 0, fontSize: '10px', fontWeight: 900, letterSpacing: '.16em', color: '#67e8f9', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>LP Lock/Burn Intelligence</p>
+                          {result.lpLockBurnIntel.summary && <p style={{ margin: '7px 0 0', fontSize: '11px', color: '#bae6fd', lineHeight: 1.55, fontFamily: 'var(--font-plex-mono)' }}>{result.lpLockBurnIntel.summary}</p>}
+                        </div>
+                        <span style={{ flexShrink: 0, padding: '4px 9px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '.10em', color: result.lpLockBurnIntel.lockBurnProof === 'confirmed' ? '#34d399' : result.lpLockBurnIntel.lockBurnProof === 'not_applicable' ? '#94a3b8' : '#fbbf24', background: 'rgba(2,6,23,0.48)', border: '1px solid rgba(34,211,238,0.25)', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
+                          {isProtocolPositionModel(result) ? 'Protocol-specific' : cleanStatusLabel(result.lpLockBurnIntel.status)}
+                        </span>
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(145px,1fr))', gap: '7px', marginBottom: '10px' }}>
+                        {([
+                          ['Lock/Burn Proof', isProtocolPositionModel(result) ? 'Protocol-specific' : cleanStatusLabel(result.lpLockBurnIntel.lockBurnProof)],
+                          ['Locked %', isProtocolPositionModel(result) ? protocolPositionSubtext('lock') : result.lpLockBurnIntel.lockedPercent == null ? 'Open Check' : `${result.lpLockBurnIntel.lockedPercent.toFixed(2)}%`],
+                          ['Burned %', isProtocolPositionModel(result) ? 'Protocol-specific' : result.lpLockBurnIntel.burnedPercent == null ? 'Open Check' : `${result.lpLockBurnIntel.burnedPercent.toFixed(2)}%`],
+                          ['Unlock Time', result.lpLockBurnIntel.unlockTime == null ? (result.lpLockBurnIntel.unlockTimeStatus === 'not_applicable' ? 'Protocol-specific' : 'Open Check') : new Date(result.lpLockBurnIntel.unlockTime).toLocaleString()],
+                          ['Proof Source', isProtocolPositionModel(result) ? 'Pool model' : cleanStatusLabel(result.lpLockBurnIntel.proofSource)],
+                          ['Confidence', cleanStatusLabel(result.lpLockBurnIntel.confidence)],
+                        ] as Array<[string, string]>).map(([label, value]) => (
+                          <div key={label} style={{ padding: '8px 9px', borderRadius: '10px', background: 'rgba(2,6,23,0.42)', border: '1px solid rgba(148,163,184,0.10)', minWidth: 0 }}>
+                            <div style={{ fontSize: '9px', color: '#64748b', letterSpacing: '.10em', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '4px' }}>{label}</div>
+                            <div style={{ fontSize: '11px', color: /confirmed|locked|burned|high/i.test(value) ? '#34d399' : /protocol-specific|position verification/i.test(value) ? '#94a3b8' : /open|unknown|low/i.test(value) ? '#fbbf24' : '#e2e8f0', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'capitalize', overflow: 'hidden', textOverflow: 'ellipsis' }}>{value}</div>
+                          </div>
+                        ))}
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(170px,1fr))', gap: '9px' }}>
+                        {[
+                          ['Signals', result.lpLockBurnIntel.signals ?? [], '#34d399'],
+                          ['Gaps', result.lpLockBurnIntel.evidenceGaps ?? [], '#fbbf24'],
+                          ['Actions', result.lpLockBurnIntel.nextActions ?? [], '#67e8f9'],
+                        ].map(([title, items, color]) => (
+                          <div key={String(title)} style={{ minWidth: 0 }}>
+                            <p style={{ margin: '0 0 6px', fontSize: '9px', color: String(color), fontWeight: 900, letterSpacing: '.12em', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{String(title)}</p>
+                            {(items as string[]).slice(0, 4).map((item) => (
+                              <div key={item} style={{ display: 'flex', gap: '6px', marginBottom: '4px', alignItems: 'flex-start' }}>
+                                <span style={{ color: String(color), fontSize: '10px', lineHeight: '15px' }}>•</span>
+                                <p style={{ margin: 0, fontSize: '10px', color: '#94a3b8', lineHeight: 1.45, fontFamily: 'var(--font-plex-mono)' }}>{item}</p>
+                              </div>
+                            ))}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* ── LP History / Migration Timeline ─────────────── */}
+                  {result.lpHistoryTimeline && (
+                    <div style={{ marginBottom: '14px', padding: '12px 14px', background: 'linear-gradient(135deg, rgba(96,165,250,0.07), rgba(15,23,42,0.72))', border: '1px solid rgba(96,165,250,0.20)', borderRadius: '14px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'flex-start', marginBottom: '10px' }}>
+                        <div>
+                          <p style={{ margin: 0, fontSize: '10px', fontWeight: 900, letterSpacing: '.16em', color: '#93c5fd', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>LP History / Migration</p>
+                          {result.lpHistoryTimeline.summary && <p style={{ margin: '7px 0 0', fontSize: '11px', color: '#bfdbfe', lineHeight: 1.55, fontFamily: 'var(--font-plex-mono)' }}>{result.lpHistoryTimeline.summary}</p>}
+                        </div>
+                        <span style={{ flexShrink: 0, padding: '4px 9px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '.10em', color: result.lpHistoryTimeline.migrationRisk === 'high' ? '#f87171' : result.lpHistoryTimeline.migrationRisk === 'low' ? '#34d399' : '#fbbf24', background: 'rgba(2,6,23,0.48)', border: '1px solid rgba(96,165,250,0.25)', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
+                          {cleanStatusLabel(result.lpHistoryTimeline.status)}
+                        </span>
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(145px,1fr))', gap: '7px', marginBottom: '10px' }}>
+                        {([
+                          ['Migration Risk', cleanStatusLabel(result.lpHistoryTimeline.migrationRisk)],
+                          ['Primary Pool Age', result.lpHistoryTimeline.primaryPoolAgeLabel ?? 'Open check'],
+                          ['Pool Count', result.lpHistoryTimeline.poolCount == null ? 'Open check' : String(result.lpHistoryTimeline.poolCount)],
+                          ['Liquidity', result.lpHistoryTimeline.liquidityUsd == null ? 'Open check' : `$${Math.round(result.lpHistoryTimeline.liquidityUsd).toLocaleString()}`],
+                          ['Fragmentation', cleanStatusLabel(result.lpHistoryTimeline.fragmentation)],
+                          ['Confidence', result.lpHistoryTimeline.confidence ?? 'low'],
+                        ] as Array<[string, string]>).map(([label, value]) => (
+                          <div key={label} style={{ padding: '8px 9px', borderRadius: '10px', background: 'rgba(2,6,23,0.42)', border: '1px solid rgba(148,163,184,0.10)', minWidth: 0 }}>
+                            <div style={{ fontSize: '9px', color: '#64748b', letterSpacing: '.10em', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '4px' }}>{label}</div>
+                            <div style={{ fontSize: '11px', color: /high/i.test(value) ? '#f87171' : /low/i.test(value) ? '#34d399' : /open|unknown|watch/i.test(value) ? '#fbbf24' : '#e2e8f0', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'capitalize', overflow: 'hidden', textOverflow: 'ellipsis' }}>{value}</div>
+                          </div>
+                        ))}
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(170px,1fr))', gap: '9px' }}>
+                        {[
+                          ['Events', result.lpHistoryTimeline.events ?? [], '#60a5fa'],
+                          ['Signals', result.lpHistoryTimeline.signals ?? [], '#34d399'],
+                          ['Gaps', result.lpHistoryTimeline.evidenceGaps ?? [], '#fbbf24'],
+                          ['Actions', result.lpHistoryTimeline.nextActions ?? [], '#67e8f9'],
+                        ].map(([title, items, color]) => (
+                          <div key={String(title)} style={{ minWidth: 0 }}>
+                            <p style={{ margin: '0 0 6px', fontSize: '9px', color: String(color), fontWeight: 900, letterSpacing: '.12em', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{String(title)}</p>
+                            {(items as string[]).slice(0, 4).map((item) => (
+                              <div key={item} style={{ display: 'flex', gap: '6px', marginBottom: '4px', alignItems: 'flex-start' }}>
+                                <span style={{ color: String(color), fontSize: '10px', lineHeight: '15px' }}>•</span>
+                                <p style={{ margin: 0, fontSize: '10px', color: '#94a3b8', lineHeight: 1.45, fontFamily: 'var(--font-plex-mono)' }}>{item}</p>
+                              </div>
+                            ))}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* ── LP Unlock Timeline ────────────────────────── */}
+                  {result.lpUnlockTimeline && (
+                    <div style={{ marginBottom: '14px', padding: '12px 14px', background: 'linear-gradient(135deg, rgba(167,139,250,0.07), rgba(15,23,42,0.72))', border: '1px solid rgba(167,139,250,0.20)', borderRadius: '14px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'flex-start', marginBottom: '10px' }}>
+                        <div>
+                          <p style={{ margin: 0, fontSize: '10px', fontWeight: 900, letterSpacing: '.16em', color: '#c4b5fd', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>LP Unlock Timeline</p>
+                          {result.lpUnlockTimeline.summary && <p style={{ margin: '7px 0 0', fontSize: '11px', color: '#ddd6fe', lineHeight: 1.55, fontFamily: 'var(--font-plex-mono)' }}>{result.lpUnlockTimeline.summary}</p>}
+                        </div>
+                        <span style={{ flexShrink: 0, padding: '4px 9px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '.10em', color: result.lpUnlockTimeline.unlockRisk === 'high' || result.lpUnlockTimeline.unlockRisk === 'expired' ? '#f87171' : result.lpUnlockTimeline.unlockRisk === 'low' || result.lpUnlockTimeline.unlockRisk === 'none' ? '#34d399' : result.lpUnlockTimeline.unlockRisk === 'not_applicable' ? '#94a3b8' : '#fbbf24', background: 'rgba(2,6,23,0.48)', border: '1px solid rgba(167,139,250,0.25)', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
+                          {isProtocolPositionModel(result) ? 'Protocol-specific' : cleanStatusLabel(result.lpUnlockTimeline.status)}
+                        </span>
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(145px,1fr))', gap: '7px', marginBottom: '10px' }}>
+                        {([
+                          ['Unlock Risk', isProtocolPositionModel(result) ? 'Protocol-specific' : cleanStatusLabel(result.lpUnlockTimeline.unlockRisk)],
+                          ['Unlock Time', result.lpUnlockTimeline.unlockTime == null ? (result.lpUnlockTimeline.unlockTimeStatus === 'not_applicable' ? 'Protocol-specific' : 'Open Check') : new Date(result.lpUnlockTimeline.unlockTime).toLocaleString()],
+                          ['Countdown', result.lpUnlockTimeline.unlockCountdownLabel ?? 'Open check'],
+                          ['Lock State', isProtocolPositionModel(result) ? 'Protocol-specific' : cleanStatusLabel(result.lpUnlockTimeline.lockState)],
+                          ['Confidence', result.lpUnlockTimeline.confidence ?? 'low'],
+                        ] as Array<[string, string]>).map(([label, value]) => (
+                          <div key={label} style={{ padding: '8px 9px', borderRadius: '10px', background: 'rgba(2,6,23,0.42)', border: '1px solid rgba(148,163,184,0.10)', minWidth: 0 }}>
+                            <div style={{ fontSize: '9px', color: '#64748b', letterSpacing: '.10em', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '4px' }}>{label}</div>
+                            <div style={{ fontSize: '11px', color: /high|expired/i.test(value) ? '#f87171' : /low|none/i.test(value) ? '#34d399' : /protocol-specific|position verification/i.test(value) ? '#94a3b8' : /open|unknown|watch/i.test(value) ? '#fbbf24' : '#e2e8f0', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'capitalize', overflow: 'hidden', textOverflow: 'ellipsis' }}>{value}</div>
+                          </div>
+                        ))}
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(170px,1fr))', gap: '9px' }}>
+                        {[
+                          ['Signals', result.lpUnlockTimeline.signals ?? [], '#34d399'],
+                          ['Gaps', result.lpUnlockTimeline.evidenceGaps ?? [], '#fbbf24'],
+                          ['Actions', result.lpUnlockTimeline.nextActions ?? [], '#67e8f9'],
+                        ].map(([title, items, color]) => (
+                          <div key={String(title)} style={{ minWidth: 0 }}>
+                            <p style={{ margin: '0 0 6px', fontSize: '9px', color: String(color), fontWeight: 900, letterSpacing: '.12em', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{String(title)}</p>
+                            {(items as string[]).slice(0, 4).map((item) => (
+                              <div key={item} style={{ display: 'flex', gap: '6px', marginBottom: '4px', alignItems: 'flex-start' }}>
+                                <span style={{ color: String(color), fontSize: '10px', lineHeight: '15px' }}>•</span>
+                                <p style={{ margin: 0, fontSize: '10px', color: '#94a3b8', lineHeight: 1.45, fontFamily: 'var(--font-plex-mono)' }}>{item}</p>
+                              </div>
+                            ))}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+
+                  {/* ── LP Movement Watch ─────────────────────────── */}
+                  {result.lpMovementWatch && (
+                    <div style={{ marginBottom: '14px', padding: '12px 14px', background: 'linear-gradient(135deg, rgba(251,191,36,0.07), rgba(15,23,42,0.72))', border: '1px solid rgba(251,191,36,0.20)', borderRadius: '14px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'flex-start', marginBottom: '10px' }}>
+                        <div>
+                          <p style={{ margin: 0, fontSize: '10px', fontWeight: 900, letterSpacing: '.16em', color: '#fbbf24', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>LP Movement Watch</p>
+                          {result.lpMovementWatch.summary && <p style={{ margin: '7px 0 0', fontSize: '11px', color: '#fde68a', lineHeight: 1.55, fontFamily: 'var(--font-plex-mono)' }}>{result.lpMovementWatch.summary}</p>}
+                        </div>
+                        <span style={{ flexShrink: 0, padding: '4px 9px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '.10em', color: result.lpMovementWatch.movementRisk === 'high' ? '#f87171' : result.lpMovementWatch.movementRisk === 'low' || result.lpMovementWatch.movementRisk === 'protected' ? '#34d399' : '#fbbf24', background: 'rgba(2,6,23,0.48)', border: '1px solid rgba(251,191,36,0.25)', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
+                          {isProtocolPositionModel(result) ? 'Position movement required' : cleanStatusLabel(result.lpMovementWatch.status)}
+                        </span>
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(145px,1fr))', gap: '7px', marginBottom: '10px' }}>
+                        {([
+                          ['Movement Watch', isProtocolPositionModel(result) ? 'Position movement required' : cleanStatusLabel(result.lpMovementWatch.movementRisk)],
+                          ['Evidence Model', isProtocolPositionModel(result) ? protocolPositionSubtext('movement') : 'ERC-20 LP-token transfers'],
+                          ['Transfer Count', isProtocolPositionModel(result) ? 'Protocol-specific' : result.lpMovementWatch.recentTransferCount == null ? 'Open Check' : String(result.lpMovementWatch.recentTransferCount)],
+                          ['Last Movement', isProtocolPositionModel(result) ? 'Position movement required' : result.lpMovementWatch.lastMovementAt ? new Date(result.lpMovementWatch.lastMovementAt).toLocaleString() : 'Open Check'],
+                          ['Controller', isProtocolPositionModel(result) ? 'Position verification required' : result.lpMovementWatch.controller ?? cleanStatusLabel(result.lpMovementWatch.controllerType)],
+                        ] as Array<[string, string]>).map(([label, value]) => (
+                          <div key={label} style={{ padding: '8px 9px', borderRadius: '10px', background: 'rgba(2,6,23,0.42)', border: '1px solid rgba(148,163,184,0.10)', minWidth: 0 }}>
+                            <div style={{ fontSize: '9px', color: '#64748b', letterSpacing: '.10em', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '4px' }}>{label}</div>
+                            <div style={{ fontSize: '11px', color: /high|detected/i.test(value) ? '#f87171' : /low|protected|not confirmed/i.test(value) ? '#34d399' : /open|watch|unknown/i.test(value) ? '#fbbf24' : '#e2e8f0', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: label === 'Controller' ? 'none' : 'capitalize', overflow: 'hidden', textOverflow: 'ellipsis' }}>{value}</div>
+                          </div>
+                        ))}
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(170px,1fr))', gap: '9px' }}>
+                        {[
+                          ['Signals', result.lpMovementWatch.signals ?? [], '#34d399'],
+                          ['Evidence Gaps', result.lpMovementWatch.evidenceGaps ?? [], '#fbbf24'],
+                          ['Next Actions', result.lpMovementWatch.nextActions ?? [], '#67e8f9'],
+                        ].map(([title, items, color]) => (
+                          <div key={String(title)} style={{ minWidth: 0 }}>
+                            <p style={{ margin: '0 0 6px', fontSize: '9px', color: String(color), fontWeight: 900, letterSpacing: '.12em', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{String(title)}</p>
+                            {(items as string[]).slice(0, 4).map((item) => (
+                              <div key={item} style={{ display: 'flex', gap: '6px', marginBottom: '4px', alignItems: 'flex-start' }}>
+                                <span style={{ color: String(color), fontSize: '10px', lineHeight: '15px' }}>•</span>
+                                <p style={{ margin: 0, fontSize: '10px', color: '#94a3b8', lineHeight: 1.45, fontFamily: 'var(--font-plex-mono)' }}>{item}</p>
+                              </div>
+                            ))}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* ── Secondary LP Exposure ─────────────────────────── */}
+                  {result.secondaryLpExposure && (
+                    <div style={{ marginBottom: '14px', padding: '12px 14px', background: 'linear-gradient(135deg, rgba(148,163,184,0.06), rgba(15,23,42,0.72))', border: '1px solid rgba(148,163,184,0.18)', borderRadius: '14px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'flex-start', marginBottom: '10px' }}>
+                        <div>
+                          <p style={{ margin: 0, fontSize: '10px', fontWeight: 900, letterSpacing: '.16em', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Secondary LP Exposure</p>
+                          <p style={{ margin: '7px 0 0', fontSize: '11px', color: '#cbd5e1', lineHeight: 1.55, fontFamily: 'var(--font-plex-mono)' }}>{result.secondaryLpExposure.summary ?? 'This is separate from the primary liquidity pool.'} This is separate from the primary liquidity pool.</p>
+                        </div>
+                        <span style={{ flexShrink: 0, padding: '4px 9px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '.10em', color: '#94a3b8', background: 'rgba(2,6,23,0.48)', border: '1px solid rgba(148,163,184,0.25)', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
+                          secondary LP exposure detected
+                        </span>
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(145px,1fr))', gap: '7px', marginBottom: '10px' }}>
+                        {([
+                          ['Secondary Pool', result.secondaryLpExposure.pair ?? result.secondaryLpExposure.poolDex ?? 'Secondary ERC-20 LP'],
+                          ['Control Proof', cleanStatusLabel(result.secondaryLpExposure.status)],
+                          ['Controller Share', result.secondaryLpExposure.controllerSharePercent != null ? `${result.secondaryLpExposure.controllerSharePercent.toFixed(2)}%` : 'Open Check'],
+                          ['Controller Type', cleanStatusLabel(result.secondaryLpExposure.controllerType)],
+                          ['Lock/Burn Proof', cleanStatusLabel(result.secondaryLpExposure.lockBurnProof)],
+                          ['Confidence', cleanStatusLabel(result.secondaryLpExposure.confidence)],
+                        ] as Array<[string, string]>).map(([label, value]) => (
+                          <div key={label} style={{ padding: '8px 9px', borderRadius: '10px', background: 'rgba(2,6,23,0.42)', border: '1px solid rgba(148,163,184,0.10)', minWidth: 0 }}>
+                            <div style={{ fontSize: '9px', color: '#64748b', letterSpacing: '.10em', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '4px' }}>{label}</div>
+                            <div style={{ fontSize: '11px', color: '#e2e8f0', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'capitalize', overflow: 'hidden', textOverflow: 'ellipsis' }}>{value}</div>
+                          </div>
+                        ))}
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(170px,1fr))', gap: '9px' }}>
+                        {[
+                          ['Signals', result.secondaryLpExposure.signals ?? [], '#34d399'],
+                          ['Evidence Gaps', result.secondaryLpExposure.evidenceGaps ?? [], '#fbbf24'],
+                          ['Next Actions', result.secondaryLpExposure.nextActions ?? [], '#67e8f9'],
+                        ].map(([title, items, color]) => (
+                          <div key={String(title)} style={{ minWidth: 0 }}>
+                            <p style={{ margin: '0 0 6px', fontSize: '9px', color: String(color), fontWeight: 900, letterSpacing: '.12em', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{String(title)}</p>
+                            {(items as string[]).slice(0, 4).map((item) => (
+                              <div key={item} style={{ display: 'flex', gap: '6px', marginBottom: '4px', alignItems: 'flex-start' }}>
+                                <span style={{ color: String(color), fontSize: '10px', lineHeight: '15px' }}>•</span>
+                                <p style={{ margin: 0, fontSize: '10px', color: '#94a3b8', lineHeight: 1.45, fontFamily: 'var(--font-plex-mono)' }}>{item}</p>
+                              </div>
+                            ))}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* ── LP Elite: Evidence Gaps + Next Actions ────────── */}
+                  {(result.lpControllerIntel || result.lpMovementWatch || result.lpLockBurnIntel || result.lpUnlockTimeline || result.lpHistoryTimeline) && (() => {
+                    const elite = getLpEliteSummary(result)
+                    if (elite.evidenceGaps.length === 0 && elite.monitor.length === 0) return null
+                    return (
+                      <div style={{ marginBottom: '14px', padding: '12px 14px', background: 'rgba(2,6,23,0.4)', border: '1px solid rgba(148,163,184,0.12)', borderRadius: '14px' }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(200px,1fr))', gap: '12px' }}>
+                          <div>
+                            <p style={{ margin: '0 0 6px', fontSize: '9px', color: '#fbbf24', fontWeight: 900, letterSpacing: '.12em', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Open Checks / Evidence Gaps</p>
+                            {elite.evidenceGaps.length > 0 ? elite.evidenceGaps.slice(0, 6).map((gap) => (
+                              <div key={gap} style={{ display: 'flex', gap: '6px', marginBottom: '4px', alignItems: 'flex-start' }}>
+                                <span style={{ color: '#fbbf24', fontSize: '10px', lineHeight: '15px' }}>•</span>
+                                <p style={{ margin: 0, fontSize: '10px', color: '#94a3b8', lineHeight: 1.45, fontFamily: 'var(--font-plex-mono)' }}>{gap}</p>
+                              </div>
+                            )) : <p style={{ margin: 0, fontSize: '10px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>No open evidence gaps.</p>}
+                          </div>
+                          <div>
+                            <p style={{ margin: '0 0 6px', fontSize: '9px', color: '#67e8f9', fontWeight: 900, letterSpacing: '.12em', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>What To Monitor Next</p>
+                            {elite.monitor.length > 0 ? elite.monitor.map((action) => (
+                              <div key={action} style={{ display: 'flex', gap: '6px', marginBottom: '4px', alignItems: 'flex-start' }}>
+                                <span style={{ color: '#67e8f9', fontSize: '10px', lineHeight: '15px' }}>•</span>
+                                <p style={{ margin: 0, fontSize: '10px', color: '#94a3b8', lineHeight: 1.45, fontFamily: 'var(--font-plex-mono)' }}>{action}</p>
+                              </div>
+                            )) : <p style={{ margin: 0, fontSize: '10px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>No further actions identified.</p>}
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  })()}
+
+                  {/* ── Data mode / confidence + Evidence Gaps ────────── */}
+                  {(result.lpDataMode || (result.lpEvidenceGaps && result.lpEvidenceGaps.length > 0)) && (
+                    <div style={{ marginBottom: '14px' }}>
+                      {result.lpDataMode && (
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '10px' }}>
+                          <span style={{ display: 'inline-block', padding: '5px 12px', borderRadius: '999px', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.10)', fontSize: '9px', fontWeight: 700, letterSpacing: '0.12em', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)' }}>
+                            SCAN MODE: {result.lpDataMode.toUpperCase()}
+                          </span>
+                          {result.lpDataConfidence && (
+                            <span style={{ display: 'inline-block', padding: '5px 12px', borderRadius: '999px', background: 'rgba(255,255,255,0.04)', border: `1px solid ${result.lpDataConfidence === 'high' ? '#34d39940' : result.lpDataConfidence === 'medium' ? '#fbbf2440' : result.lpDataConfidence === 'low' ? '#fb923c40' : '#4a627240'}`, fontSize: '9px', fontWeight: 700, letterSpacing: '0.12em', color: result.lpDataConfidence === 'high' ? '#34d399' : result.lpDataConfidence === 'medium' ? '#fbbf24' : result.lpDataConfidence === 'low' ? '#fb923c' : '#4a6272', fontFamily: 'var(--font-plex-mono)' }}>
+                              EVIDENCE CONFIDENCE: {result.lpDataConfidence.toUpperCase()}
+                            </span>
+                          )}
+                        </div>
+                      )}
+                      {result.lpEvidenceGaps && result.lpEvidenceGaps.length > 0 && (
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                          {result.lpEvidenceGaps.map((gap) => (
+                            <span key={gap.id} title={gap.explanation} style={{ display: 'inline-block', padding: '5px 12px', borderRadius: '999px', background: 'rgba(251,146,60,0.08)', border: '1px solid rgba(251,146,60,0.25)', fontSize: '9px', fontWeight: 700, letterSpacing: '0.12em', color: '#fb923c', fontFamily: 'var(--font-plex-mono)' }}>
+                              {gap.label}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* ── LP Risk Summary ───────────────────────────────── */}
+                  {(() => {
+                    const rs = getLpRiskSummary(result)
+                    return (
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(170px,1fr))', gap: '8px', marginBottom: '14px' }}>
+                        <div style={{ padding: '12px 14px', background: 'rgba(52,211,153,0.04)', border: '1px solid rgba(52,211,153,0.15)', borderRadius: '12px' }}>
+                          <p style={{ margin: '0 0 8px', fontSize: '9px', fontWeight: 800, letterSpacing: '.15em', color: '#34d399', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Good Signs</p>
+                          {rs.goodSigns.length > 0 ? rs.goodSigns.map((s, i) => (
+                            <div key={i} style={{ display: 'flex', gap: '7px', marginBottom: '5px' }}>
+                              <span style={{ color: '#34d399', flexShrink: 0, fontWeight: 800, fontSize: '11px', lineHeight: '16px' }}>✓</span>
+                              <p style={{ margin: 0, fontSize: '11px', color: '#86efac', lineHeight: 1.5, fontFamily: 'var(--font-plex-mono)' }}>{s}</p>
+                            </div>
+                          )) : <p style={{ margin: 0, fontSize: '11px', color: '#2a4438', fontFamily: 'var(--font-plex-mono)' }}>No confirmed signal in this category.</p>}
+                        </div>
+                        <div style={{ padding: '12px 14px', background: 'rgba(248,113,113,0.04)', border: '1px solid rgba(248,113,113,0.15)', borderRadius: '12px' }}>
+                          <p style={{ margin: '0 0 8px', fontSize: '9px', fontWeight: 800, letterSpacing: '.15em', color: '#f87171', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Risk Signs</p>
+                          {rs.riskSigns.length > 0 ? rs.riskSigns.map((s, i) => (
+                            <div key={i} style={{ display: 'flex', gap: '7px', marginBottom: '5px' }}>
+                              <span style={{ color: '#f87171', flexShrink: 0, fontWeight: 800, fontSize: '11px', lineHeight: '16px' }}>!</span>
+                              <p style={{ margin: 0, fontSize: '11px', color: '#fca5a5', lineHeight: 1.5, fontFamily: 'var(--font-plex-mono)' }}>{s}</p>
+                            </div>
+                          )) : <p style={{ margin: 0, fontSize: '11px', color: '#3a2020', fontFamily: 'var(--font-plex-mono)' }}>No confirmed risk signals in this pass.</p>}
+                        </div>
+                        <div style={{ padding: '12px 14px', background: 'rgba(251,191,36,0.04)', border: '1px solid rgba(251,191,36,0.15)', borderRadius: '12px' }}>
+                          <p style={{ margin: '0 0 8px', fontSize: '9px', fontWeight: 800, letterSpacing: '.15em', color: '#fbbf24', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Missing Proofs</p>
+                          {rs.missingProofs.length > 0 ? rs.missingProofs.map((s, i) => (
+                            <div key={i} style={{ display: 'flex', gap: '7px', marginBottom: '5px' }}>
+                              <span style={{ color: '#fbbf24', flexShrink: 0, fontWeight: 800, fontSize: '11px', lineHeight: '16px' }}>—</span>
+                              <p style={{ margin: 0, fontSize: '11px', color: '#fde68a', lineHeight: 1.5, fontFamily: 'var(--font-plex-mono)' }}>{s}</p>
+                            </div>
+                          )) : (() => {
+                            const dmInner = result.lpControl?.displayLpModel
+                            const lpModeInner = getLpMode(result)
+                            const isNotApplicable = dmInner === 'concentrated_liquidity' || dmInner === 'protocol_or_gauge' || lpModeInner === 'protocol'
+                            return isNotApplicable
+                              ? <p style={{ margin: 0, fontSize: '11px', color: '#c084fc', fontFamily: 'var(--font-plex-mono)' }}>Standard lock/burn proof does not apply to this pool model.</p>
+                              : <p style={{ margin: 0, fontSize: '11px', color: '#34d399', fontFamily: 'var(--font-plex-mono)' }}>All key LP proofs passed.</p>
+                          })()}
+                        </div>
+                      </div>
+                    )
+                  })()}
+
+                  {/* ── Next Action ───────────────────────────────────── */}
+                  <div style={{ marginBottom: '20px', padding: '14px 18px', background: 'rgba(45,212,191,0.05)', border: '1px solid rgba(45,212,191,0.20)', borderRadius: '12px' }}>
+                    <p style={{ margin: '0 0 7px', fontSize: '9px', fontWeight: 800, letterSpacing: '.15em', color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Next Action</p>
+                    <p style={{ margin: 0, fontSize: '11px', color: '#67e8f9', lineHeight: 1.7, fontFamily: 'var(--font-plex-mono)' }}>{getLpNextAction(result)}</p>
+                  </div>
+                  {/* ── CORTEX LP Read ────────────────────────────────── */}
+                  {result.cortexLpRead && (
+                    <div style={{ marginBottom: '20px' }}>
+                      <p style={{ margin: '0 0 10px', fontSize: '9px', fontWeight: 800, letterSpacing: '.15em', color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>CORTEX LP Read</p>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                        {[
+                          { label: 'Risk Summary', text: result.cortexLpRead.riskSummary },
+                          { label: 'Liquidity Analysis', text: result.cortexLpRead.liquidityAnalysis },
+                          { label: 'Pool Structure', text: result.cortexLpRead.poolStructureAnalysis },
+                          { label: 'Migration Analysis', text: result.cortexLpRead.migrationAnalysis },
+                        ].map((sec) => (
+                          <div key={sec.label} style={{ padding: '12px 14px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '10px' }}>
+                            <p style={{ margin: '0 0 5px', fontSize: '9px', fontWeight: 700, letterSpacing: '0.12em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{sec.label}</p>
+                            <p style={{ margin: 0, fontSize: '12px', lineHeight: 1.6, color: '#94a3b8', fontFamily: 'var(--font-plex-mono)' }}>{sec.text}</p>
+                          </div>
+                        ))}
+                        {result.cortexLpRead.evidenceGaps.length > 0 && (
+                          <div style={{ padding: '12px 14px', background: 'rgba(251,146,60,0.04)', border: '1px solid rgba(251,146,60,0.14)', borderRadius: '10px' }}>
+                            <p style={{ margin: '0 0 5px', fontSize: '9px', fontWeight: 700, letterSpacing: '0.12em', color: '#fb923c', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Evidence Gaps</p>
+                            <p style={{ margin: 0, fontSize: '12px', lineHeight: 1.6, color: '#94a3b8', fontFamily: 'var(--font-plex-mono)' }}>{result.cortexLpRead.evidenceGaps.join(' · ')}</p>
+                          </div>
+                        )}
+                        <div style={{ padding: '12px 14px', background: 'rgba(45,212,191,0.04)', border: '1px solid rgba(45,212,191,0.14)', borderRadius: '10px' }}>
+                          <p style={{ margin: '0 0 5px', fontSize: '9px', fontWeight: 700, letterSpacing: '0.12em', color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Next Action</p>
+                          <p style={{ margin: 0, fontSize: '12px', lineHeight: 1.6, color: '#67e8f9', fontFamily: 'var(--font-plex-mono)' }}>{result.cortexLpRead.nextActions.join(' ')}</p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  {!planLoading && !isFullAccess && (
+                    <div style={{ padding: '24px', border: '1px solid rgba(139,92,246,0.28)', borderRadius: '16px', background: 'rgba(139,92,246,0.06)', textAlign: 'center', marginBottom: '18px' }}>
+                      <div style={{ fontSize: '22px', marginBottom: '10px' }}>🔒</div>
+                      <p style={{ fontWeight: 700, color: '#f8fafc', margin: '0 0 6px', fontSize: '14px' }}>LP Control Analysis</p>
+                      <p style={{ color: '#94a3b8', fontSize: '12px', margin: '0 0 16px', lineHeight: 1.5 }}>LP control checks are included in Pro and Elite.</p>
+                      <a href="/pricing" style={{ display: 'inline-block', padding: '8px 20px', borderRadius: '999px', background: 'linear-gradient(135deg,#7c3aed,#a855f7)', color: '#fff', fontWeight: 700, fontSize: '12px', textDecoration: 'none' }}>Get Access</a>
+                    </div>
+                  )}
+                  {!planLoading && isFullAccess && !result.lpControl && (
+                    <div style={{ padding:'14px 18px',marginBottom:'18px',background:'rgba(255,255,255,0.02)',border:'1px solid rgba(255,255,255,0.06)',borderRadius:'10px',fontSize:'12px',color:'#3a5268',fontFamily:'var(--font-plex-mono)' }}>LP control data was not returned in this scan.</div>
+                  )}
+                  {!planLoading && isFullAccess && result.lpControl && result.lpControl.status === 'unavailable_with_reason' && (
+                    <div style={{ padding:'11px 14px',marginBottom:'12px',background:'rgba(100,116,139,0.06)',border:'1px solid rgba(100,116,139,0.18)',borderRadius:'10px',fontSize:'11px',color:'#94a3b8',fontFamily:'var(--font-plex-mono)' }}>
+                      LP lock/burn status could not be verified this scan.
+                    </div>
+                  )}
+                  {result.pools && result.pools.length > 0 && (
+                    <>
+                      <div style={{ display:'flex',alignItems:'baseline',gap:'10px',marginBottom:'10px',flexWrap:'wrap' }}>
+                        <p style={{ fontSize:'10px',fontWeight:700,letterSpacing:'0.14em',color:'#3a5268',textTransform:'uppercase',margin:0,fontFamily:'var(--font-plex-mono)' }}>LIQUIDITY &amp; POOLS</p>
+                        <div style={{ display:'inline-flex',padding:'3px 9px',borderRadius:'999px',border:'1px solid rgba(125,211,252,.3)',color:'#67e8f9',fontSize:'10px',fontFamily:'var(--font-plex-mono)' }}>{result.pools.length} {result.pools.length===1?'POOL':'POOLS'}</div>
+                        <span style={{ fontSize:'11px',color:'#3a5268',fontFamily:'var(--font-plex-mono)' }}>Primary pool selected by liquidity.</span>
+                      </div>
+                      <div className="pools-scroll" style={{ overflowX:'auto',paddingBottom:'6px',maxWidth:'100%' }}>
+                        <div className="pools-inner" style={{ display:'flex',flexDirection:'column',gap:'6px',minWidth:'940px' }}>
+                          {[...result.pools].sort((a,b)=>(b.liquidity??0)-(a.liquidity??0)).slice(0,8).map((pool,i)=>(
+                            <div key={i} style={{ display:'grid',gridTemplateColumns:'minmax(220px,1.2fr) repeat(6,minmax(82px,auto))',alignItems:'center',gap:'20px',padding:'12px 18px',background:i===0?'linear-gradient(90deg,rgba(45,212,191,0.06),rgba(167,139,250,0.04))':'rgba(255,255,255,0.025)',border:i===0?'1px solid rgba(45,212,191,0.22)':'1px solid rgba(255,255,255,0.06)',borderRadius:'10px',fontSize:'12px',fontFamily:'var(--font-plex-mono)' }}>
+                              <span style={{ color:i===0?'#2DD4BF':'#94a3b8',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',display:'flex',alignItems:'center',gap:'7px' }}>
+                                {i===0&&<span style={{ fontSize:'9px',fontWeight:700,letterSpacing:'.10em',padding:'1px 6px',borderRadius:'999px',border:'1px solid rgba(45,212,191,.35)',color:'#2DD4BF',background:'rgba(45,212,191,.08)',flexShrink:0 }}>PRIMARY</span>}
+                                {pool.name??shorten(pool.address??'')}
+                              </span>
+                              <span style={{ color:'#2DD4BF',whiteSpace:'nowrap' }}>{fmtPrice(pool.price)}</span>
+                              <span style={{ color:'#4a6272',whiteSpace:'nowrap' }}>Liq {fmtLarge(pool.liquidity)}</span>
+                              <span style={{ color:'#4a6272',whiteSpace:'nowrap' }}>Vol {fmtLarge(pool.volume24h)}</span>
+                              <span style={{ color:'#64748b',whiteSpace:'nowrap' }}>APR N/A</span>
+                              <span style={{ color:pctColor(pool.priceChange24h),whiteSpace:'nowrap' }}>{fmtPct(pool.priceChange24h)}</span>
+                              <span style={{ whiteSpace:'nowrap',color:(pool.liquidity??0)>200000?'#34d399':(pool.liquidity??0)>50000?'#67e8f9':'#fbbf24' }}>{(pool.liquidity??0)>200000?'Excellent':(pool.liquidity??0)>50000?'Healthy':'Weak'}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </>
+                  )}
+                  {(!result.pools||result.pools.length===0)&&(
+                    <div style={{ padding:'14px 18px',background:'rgba(255,255,255,0.02)',border:'1px solid rgba(255,255,255,0.06)',borderRadius:'10px',fontSize:'12px',color:'#3a5268',fontFamily:'var(--font-plex-mono)' }}>No pools found for this token.</div>
+                  )}
+                </>
+              )}
 
               {/* ── RISK CHECKS (CORTEX Risk Engine) ─────────────────── */}
-              {null}
+              {activeSection === 'risk-engine' && (
+                <>
+                  <div style={{ marginBottom: '18px' }}>
+                    <p style={{ margin:'0 0 3px',fontSize:'12px',fontWeight:800,letterSpacing:'0.10em',color:'#f43f5e',fontFamily:'var(--font-plex-mono)' }}>CORTEX RISK ENGINE</p>
+                    <p style={{ margin:0,fontSize:'11px',color:'#3a5268',fontFamily:'var(--font-plex-mono)' }}>Rug risk scores, contract flags, and simulation results.</p>
+                  </div>
+                  {!planLoading && !isFullAccess && (
+                    <div style={{ padding:'24px',border:'1px solid rgba(139,92,246,0.28)',borderRadius:'16px',background:'rgba(139,92,246,0.06)',textAlign:'center' }}>
+                      <div style={{ fontSize:'22px',marginBottom:'10px' }}>🔒</div>
+                      <p style={{ fontWeight:700,color:'#f8fafc',margin:'0 0 6px',fontSize:'14px' }}>Full Risk Analysis</p>
+                      <p style={{ color:'#94a3b8',fontSize:'12px',margin:'0 0 16px',lineHeight:1.5 }}>Security checks are included in Pro and Elite.</p>
+                      <a href="/pricing" style={{ display:'inline-block',padding:'8px 20px',borderRadius:'999px',background:'linear-gradient(135deg,#7c3aed,#a855f7)',color:'#fff',fontWeight:700,fontSize:'12px',textDecoration:'none' }}>Get Access</a>
+                    </div>
+                  )}
+                  {!planLoading && isFullAccess && (() => {
+                    const engine = result.riskEngine
+                    const _secSim = result.security?.simulation
+                    const sim = _secSim != null ? {
+                      isHoneypot: _secSim.honeypot,
+                      buyTax: _secSim.buyTax,
+                      sellTax: _secSim.sellTax,
+                      transferTax: _secSim.transferTax,
+                      simulationSuccess: _secSim.simulationSuccess,
+                    } : result.honeypot
+                    const simVerified = sim?.simulationSuccess === true
+                    const simUnavailable = sim == null
+                    const lpState = result.lpControl?.status ?? 'unavailable_with_reason'
+                    const ownerState = deriveHolderFallbackEvidence(result).ownerStatus
+                    const missing2 = getMissingChecks(result)
+                    const next2 = getNextAction(result)
+                    const rugLabelMap: Record<string, string> = { low_visible_risk:'Low visible risk', watch:'Watch', high:'High', critical:'Critical', partial_data:'Open check', unavailable_with_reason:'Open check', unverified:'Open check' }
+                    const lpLabelMap: Record<string, string> = { burned:'Burned', locked:'Locked', protocol:'Protocol-specific', concentrated_liquidity:'Concentrated Liquidity', team_controlled:'Wallet Controlled', wallet_controlled:'Wallet Controlled', partial:'Partial Evidence', no_pool:'Open Check', unavailable_with_reason:'Open Check', unverified:'Open Check', insufficient_data:'Open Check', error:'Open Check', open_check:'Open Check', not_applicable:'Protocol-specific' }
+                    // Recompute locally as a last-resort fallback — older cached
+                    // responses may not carry cortexScore/cortexVerdict on
+                    // riskEngine yet. A numeric score is always preferred over
+                    // "Open Check", and a numeric score's verdict is never
+                    // overridden by an "Open Check" verdict.
+                    const localCortex = calculateCortexScoreV2(result)
+                    const displayCortexScore = result.cortexScore ?? engine?.cortexScore ?? localCortex.cortexScore ?? (engine?.rugRiskScore != null ? Math.max(0, 100 - engine.rugRiskScore) : null)
+                    const verdictFromScore = (s: number): typeof localCortex.cortexVerdict =>
+                      s >= 75 ? 'Strong' : s >= 60 ? 'Watch' : s >= 40 ? 'Caution' : 'High Risk'
+                    const rawCortexVerdict = result.cortexVerdict ?? engine?.cortexVerdict ?? null
+                    const displayCortexVerdict = (rawCortexVerdict && rawCortexVerdict !== 'Open Check')
+                      ? rawCortexVerdict
+                      : displayCortexScore != null
+                        ? (localCortex.cortexVerdict !== 'Open Check' ? localCortex.cortexVerdict : verdictFromScore(displayCortexScore))
+                        : rawCortexVerdict
+                    const displayCortexConfidence = result.cortexConfidence ?? engine?.cortexConfidence ?? (engine?.confidence ?? 'low')
+                    const gaugeColor = displayCortexScore == null ? '#94a3b8' : displayCortexScore >= 85 ? '#34d399' : displayCortexScore >= 70 ? '#fbbf24' : displayCortexScore >= 50 ? '#f59e0b' : '#f43f5e'
+                    const confColor = displayCortexConfidence === 'high' ? '#34d399' : displayCortexConfidence === 'medium' ? '#fbbf24' : displayCortexConfidence === 'low' ? '#94a3b8' : '#fbbf24'
+                    const cardBase: React.CSSProperties = { padding:'14px 16px', background:'linear-gradient(145deg,rgba(6,12,24,.94),rgba(14,16,32,.84))', borderRadius:'14px' }
+                    const cardTitle: React.CSSProperties = { margin:'0 0 10px',fontSize:'10px',fontWeight:700,letterSpacing:'.14em',textTransform:'uppercase',fontFamily:'var(--font-plex-mono)' }
+                    return (
+                      <div style={{ display:'flex', flexDirection:'column', gap:'14px' }}>
+                        {/* Hero: gauge + verdict + CORTEX read */}
+                        <div style={{ padding:'20px 22px', background:'linear-gradient(160deg,rgba(8,16,32,.98),rgba(4,8,18,.95))', border:`1px solid ${gaugeColor}35`, borderRadius:'18px', boxShadow:`0 0 44px ${gaugeColor}0c` }}>
+                          <div style={{ display:'flex', alignItems:'flex-start', gap:'22px', flexWrap:'wrap', marginBottom: engine?.cortexRead ? '16px' : '0' }}>
+                            <div style={{ flexShrink:0 }}>
+                              <RiskGaugeCircle score={displayCortexScore} color={gaugeColor} />
+                            </div>
+                            <div style={{ flex:1, minWidth:'160px', paddingTop:'4px' }}>
+                              <div style={{ fontSize:'9px',letterSpacing:'.18em',color:'#3a5268',fontFamily:'var(--font-plex-mono)',marginBottom:'8px' }}>CORTEX RISK ENGINE</div>
+                              <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', marginBottom:'12px' }}>
+                                <span style={{ padding:'5px 14px',borderRadius:'999px',fontSize:'11px',fontWeight:800,letterSpacing:'.10em',color:gaugeColor,background:`${gaugeColor}14`,border:`1px solid ${gaugeColor}44`,fontFamily:'var(--font-plex-mono)' }}>
+                                  {displayCortexVerdict ?? (rugLabelMap[engine?.rugRiskLabel ?? 'unavailable_with_reason'] ?? 'OPEN CHECK')}
+                                </span>
+                                <span style={{ padding:'5px 10px',borderRadius:'999px',fontSize:'9px',fontWeight:700,letterSpacing:'.10em',color:confColor,background:`${confColor}12`,border:`1px solid ${confColor}38`,fontFamily:'var(--font-plex-mono)' }}>
+                                  {displayCortexConfidence === 'insufficient' ? 'Insufficient confidence' : displayCortexConfidence === 'low' ? 'Partial confidence' : `${displayCortexConfidence.toUpperCase()} CONFIDENCE`}
+                                </span>
+                              </div>
+                              {engine?.cortexRead ? (
+                                <div style={{ padding:'10px 12px',borderRadius:'10px',background:'rgba(45,212,191,0.05)',border:'1px solid rgba(45,212,191,0.18)' }}>
+                                  <p style={{ margin:0,fontSize:'11px',color:'#99f6e4',lineHeight:1.6,fontFamily:'var(--font-plex-mono)' }}>{engine.cortexRead}</p>
+                                </div>
+                              ) : (
+                                <p style={{ margin:0,fontSize:'11px',color:'#3a5268',fontFamily:'var(--font-plex-mono)',lineHeight:1.5 }}>Rug risk analysis available when upstream APIs respond.</p>
+                              )}
+                            </div>
+                          </div>
+                        </div>
 
-              {activeSection === 'deployer-intel' && result && <PremiumDevControl result={result} devIntel={devIntel} />}
+                        {/* Cards grid */}
+                        <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(240px,1fr))', gap:'12px' }}>
+                          {/* Risk Drivers */}
+                          <div style={{ ...cardBase, border:'1px solid rgba(244,63,94,0.22)' }}>
+                            <p style={{ ...cardTitle, color:'#f43f5e' }}>Risk Drivers</p>
+                            {(engine?.riskDrivers?.length ? engine.riskDrivers : ['No active risk drivers detected.']).map((d, i) => (
+                              <div key={i} style={{ display:'flex',gap:'7px',marginBottom:'5px',alignItems:'flex-start' }}>
+                                <span style={{ color:'#f43f5e',flexShrink:0,fontSize:'11px',lineHeight:'16px' }}>!</span>
+                                <p style={{ margin:0,fontSize:'11px',color:'#fda4af',lineHeight:1.5,fontFamily:'var(--font-plex-mono)' }}>{d}</p>
+                              </div>
+                            ))}
+                          </div>
+
+                          {/* LP Control */}
+                          {(() => {
+                            const lpMode2 = deriveLpMode(result)
+                            return (
+                              <div style={{ ...cardBase, border:`1px solid ${lpMode2==='protocol'?'rgba(168,85,247,0.22)':'rgba(52,211,153,0.18)'}` }}>
+                                <p style={{ ...cardTitle, color: lpMode2==='protocol'?'#a855f7':'#34d399' }}>LP Control</p>
+                                <div style={{ display:'flex',alignItems:'center',gap:'8px',marginBottom:'8px',flexWrap:'wrap' }}>
+                                  <span style={{ fontSize:'13px',fontWeight:800,color:'#f8fafc',fontFamily:'var(--font-plex-mono)' }}>
+                                    {lpMode2==='protocol' ? 'Concentrated Liquidity (v3/v4)' : (lpLabelMap[lpState] ?? lpState.replace(/_/g,' '))}
+                                  </span>
+                                  {(lpState==='locked'||lpState==='burned') && (
+                                    <span style={{ padding:'2px 8px',borderRadius:'999px',fontSize:'9px',fontWeight:700,color:'#34d399',background:'rgba(52,211,153,0.12)',border:'1px solid rgba(52,211,153,0.30)',fontFamily:'var(--font-plex-mono)' }}>VERIFIED</span>
+                                  )}
+                                  {lpMode2==='protocol' && (
+                                    <span style={{ padding:'2px 8px',borderRadius:'999px',fontSize:'9px',fontWeight:700,color:'#a855f7',background:'rgba(168,85,247,0.10)',border:'1px solid rgba(168,85,247,0.30)',fontFamily:'var(--font-plex-mono)' }}>PROTOCOL</span>
+                                  )}
+                                </div>
+                                {lpMode2==='protocol'
+                                  ? <p style={{ margin:0,fontSize:'11px',color:'#c4b5fd',lineHeight:1.5,fontFamily:'var(--font-plex-mono)' }}>This token uses concentrated liquidity. No ERC-20 LP token exists, so traditional burn/lock proof does not apply.</p>
+                                  : result.lpControl?.reason && <p style={{ margin:0,fontSize:'11px',color:'#94a3b8',lineHeight:1.5,fontFamily:'var(--font-plex-mono)' }}>{result.lpControl.reason}</p>
+                                }
+                                {result.lpControl?.confidence && <p style={{ margin:'5px 0 0',fontSize:'10px',color:'#64748b',fontFamily:'var(--font-plex-mono)' }}>Confidence: {result.lpControl.confidence}</p>}
+                              </div>
+                            )
+                          })()}
+
+                          {/* Ownership / Control */}
+                          <div style={{ ...cardBase, border:'1px solid rgba(167,139,250,0.18)' }}>
+                            <p style={{ ...cardTitle, color:'#a78bfa' }}>Ownership / Control</p>
+                            <div style={{ display:'grid',gap:'7px' }}>
+                              {[
+                                ['Dev Control', ownerState, ownerState==='Renounced'?'#34d399':ownerState==='Held'?'#fbbf24':'#94a3b8'],
+                                ['LP Control', deriveLpMode(result)==='protocol'?'Protocol-Managed':(lpLabelMap[lpState] ?? lpState.replace(/_/g,' ')), '#e2e8f0'],
+                              ].map(([label, val, col]) => (
+                                <div key={String(label)} style={{ display:'flex',justifyContent:'space-between',alignItems:'center',gap:'8px' }}>
+                                  <span style={{ fontSize:'11px',color:'#64748b',fontFamily:'var(--font-plex-mono)' }}>{label}</span>
+                                  <span style={{ fontSize:'11px',fontWeight:700,color:String(col),fontFamily:'var(--font-plex-mono)' }}>{val}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+
+                          {/* Trading Simulation */}
+                          <div style={{ ...cardBase, border:`1px solid ${simVerified?'rgba(45,212,191,0.25)':simUnavailable?'rgba(100,116,139,0.18)':'rgba(251,191,36,0.20)'}` }}>
+                            <p style={{ ...cardTitle, color:'#67e8f9' }}>Trading Simulation</p>
+                            <div style={{ display:'flex',gap:'6px',marginBottom:'10px',flexWrap:'wrap' }}>
+                              <span style={{ padding:'3px 10px',borderRadius:'999px',fontSize:'9px',fontWeight:700,color:simVerified?'#34d399':simUnavailable?'#94a3b8':'#fbbf24',background:simVerified?'rgba(52,211,153,0.10)':simUnavailable?'rgba(148,163,184,0.08)':'rgba(251,191,36,0.10)',border:`1px solid ${simVerified?'rgba(52,211,153,0.30)':simUnavailable?'rgba(148,163,184,0.22)':'rgba(251,191,36,0.30)'}`,fontFamily:'var(--font-plex-mono)' }}>
+                                {simVerified?'VERIFIED':simUnavailable?'UNVERIFIED':'PARTIAL'}
+                              </span>
+                              {sim?.isHoneypot === true && (
+                                <span style={{ padding:'3px 10px',borderRadius:'999px',fontSize:'9px',fontWeight:700,color:'#f87171',background:'rgba(248,113,113,0.10)',border:'1px solid rgba(248,113,113,0.35)',fontFamily:'var(--font-plex-mono)' }}>HONEYPOT</span>
+                              )}
+                            </div>
+                            <div style={{ display:'grid',gap:'6px' }}>
+                              {([
+                                ['Honeypot', sim?.isHoneypot==null?'Open check':sim.isHoneypot?'YES':'NO', sim?.isHoneypot?'#f87171':sim?.isHoneypot===false?'#34d399':'#94a3b8'],
+                                ['Buy Tax', sim?.buyTax!=null?`${sim.buyTax.toFixed(1)}%`:'Open check', sim?.buyTax!=null?(sim.buyTax>8?'#f87171':sim.buyTax>0?'#fbbf24':'#34d399'):'#94a3b8'],
+                                ['Sell Tax', sim?.sellTax!=null?`${sim.sellTax.toFixed(1)}%`:'Open check', sim?.sellTax!=null?(sim.sellTax>8?'#f87171':sim.sellTax>0?'#fbbf24':'#34d399'):'#94a3b8'],
+                                ...(sim?.transferTax!=null&&sim.transferTax>0 ? [['Transfer Tax',`${sim.transferTax.toFixed(1)}%`,'#fbbf24'] as [string,string,string]] : []),
+                              ] as Array<[string,string,string]>).map(([label,val,col])=>(
+                                <div key={label} style={{ display:'flex',justifyContent:'space-between',gap:'8px' }}>
+                                  <span style={{ fontSize:'11px',color:'#64748b',fontFamily:'var(--font-plex-mono)' }}>{label}</span>
+                                  <span style={{ fontSize:'11px',fontWeight:700,color:col,fontFamily:'var(--font-plex-mono)' }}>{val}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+
+                          {/* Contract Flags */}
+                          <div style={{ ...cardBase, border:'1px solid rgba(251,191,36,0.18)' }}>
+                            <p style={{ ...cardTitle, color:'#fbbf24' }}>Contract Flags</p>
+                            <div style={{ display:'grid',gap:'7px' }}>
+                              {(() => {
+                                const scf = result.security?.contractFlags
+                                type BoolFlag = boolean | null | undefined
+                                const flagRows: Array<[string, BoolFlag]> = [
+                                  ['Mint Function', scf?.mint],
+                                  ['Upgradeable / Proxy', scf?.proxy],
+                                  ['Blacklist', scf?.blacklist],
+                                  ['Pause Control', scf?.pause],
+                                  ['Withdraw Control', scf?.withdraw],
+                                ]
+                                const flagLabel = (v: BoolFlag) =>
+                                  v === true ? 'Detected' : v === false ? 'Not detected' : 'Not analyzed'
+                                const flagColor = (v: BoolFlag) =>
+                                  v === true ? '#f87171' : v === false ? '#34d399' : '#64748b'
+                                const flagBg = (v: BoolFlag) =>
+                                  v === true ? 'rgba(248,113,113,0.10)' : v === false ? 'rgba(52,211,153,0.08)' : 'rgba(255,255,255,0.04)'
+                                const flagBorder = (v: BoolFlag) =>
+                                  v === true ? 'rgba(248,113,113,0.30)' : v === false ? 'rgba(52,211,153,0.22)' : 'rgba(255,255,255,0.08)'
+                                return flagRows.map(([label, val]) => (
+                                  <div key={label} style={{ display:'flex',justifyContent:'space-between',alignItems:'center',gap:'8px' }}>
+                                    <span style={{ fontSize:'11px',color:'#94a3b8',fontFamily:'var(--font-plex-mono)' }}>{label}</span>
+                                    <span style={{ padding:'2px 8px',borderRadius:'999px',fontSize:'9px',fontWeight:700,fontFamily:'var(--font-plex-mono)',color:flagColor(val),background:flagBg(val),border:`1px solid ${flagBorder(val)}` }}>
+                                      {flagLabel(val)}
+                                    </span>
+                                  </div>
+                                ))
+                              })()}
+                            </div>
+                          </div>
+
+                          {/* Open Checks */}
+                          <div style={{ ...cardBase, border:'1px solid rgba(251,191,36,0.16)' }}>
+                            <p style={{ ...cardTitle, color:'#fbbf24' }}>Open Checks</p>
+                            {(() => {
+                              const openItems = (engine?.openChecks?.length ? engine.openChecks : missing2)
+                              return openItems.length > 0 ? (
+                                <div style={{ display:'flex',flexDirection:'column',gap:'5px' }}>
+                                  {openItems.map((m, i) => (
+                                    <div key={i} style={{ display:'flex',gap:'6px',alignItems:'flex-start' }}>
+                                      <span style={{ color:'#fbbf24',flexShrink:0,fontSize:'11px',lineHeight:'16px' }}>⚠</span>
+                                      <p style={{ margin:0,fontSize:'11px',color:'#fde68a',lineHeight:1.5,fontFamily:'var(--font-plex-mono)' }}>{m}</p>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : (
+                                <p style={{ margin:0,fontSize:'11px',color:'#34d399',fontFamily:'var(--font-plex-mono)' }}>All key checks passed.</p>
+                              )
+                            })()}
+                          </div>
+                        </div>
+
+                        {/* Verified Signals */}
+                        {engine?.verifiedSignals && engine.verifiedSignals.length > 0 && (
+                          <div style={{ padding:'14px 16px',background:'rgba(52,211,153,0.04)',border:'1px solid rgba(52,211,153,0.18)',borderRadius:'12px' }}>
+                            <p style={{ margin:'0 0 10px',fontSize:'9px',fontWeight:700,letterSpacing:'.14em',color:'#34d399',textTransform:'uppercase',fontFamily:'var(--font-plex-mono)' }}>Verified Signals</p>
+                            {engine.verifiedSignals.map((s, i) => (
+                              <div key={i} style={{ display:'flex',gap:'7px',marginBottom:'4px' }}>
+                                <span style={{ color:'#34d399',flexShrink:0,fontSize:'11px',lineHeight:'16px' }}>✓</span>
+                                <p style={{ margin:0,fontSize:'11px',color:'#86efac',lineHeight:1.5,fontFamily:'var(--font-plex-mono)' }}>{s}</p>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {/* Next Action */}
+                        <div style={{ padding:'14px 16px',background:'rgba(45,212,191,0.05)',border:'1px solid rgba(45,212,191,0.22)',borderRadius:'12px' }}>
+                          <p style={{ margin:'0 0 6px',fontSize:'9px',fontWeight:700,letterSpacing:'.16em',color:'#2DD4BF',textTransform:'uppercase',fontFamily:'var(--font-plex-mono)' }}>Next Action</p>
+                          <p style={{ margin:0,fontSize:'12px',color:'#67e8f9',lineHeight:1.6,fontFamily:'var(--font-plex-mono)' }}>{next2}</p>
+                        </div>
+                      </div>
+                    )
+                  })()}
+                </>
+              )}
 
               {/* ── DEV CONTROL ─────────────────────────────────────── */}
-              {null}
+              {activeSection === 'deployer-intel' && (() => {
+                const holderState = deriveHolderState(result)
+                const activeDevIntel = devIntel ?? result.devIntel ?? null
+                const _safeActorAddr = (a: unknown): string | null => typeof a === 'string' && /^0x[a-f0-9]{40}$/i.test(a) && a.toLowerCase() !== '0x0000000000000000000000000000000000000000' ? a : null
+                const creatorAddress = _safeActorAddr(activeDevIntel?.deployerAddress) ?? _safeActorAddr(result.security?.devOwnership?.ownerAddress) ?? _safeActorAddr(result.security?.devOwnership?.adminAddress) ?? null
+                const creatorStatus = activeDevIntel?.deployerStatus === 'confirmed' ? 'confirmed' : activeDevIntel?.deployerStatus === 'possible_match' ? 'likely' : (creatorAddress ? (result.security?.devOwnership?.ownershipVerified ? 'confirmed' : 'likely') : null)
+                const linkedWallets = activeDevIntel?.linkedWallets ?? []
+                const linkedWalletCount = linkedWallets.length
+                const clusterMap = activeDevIntel?.clusterMap ?? result.devIntel?.clusterMap ?? null
+                const sc = activeDevIntel?.supplyControl ?? null
+                const linkedWalletSupply = sc?.linkedWalletSupplyPercent ?? activeDevIntel?.linkedWalletSupplyPercent ?? activeDevIntel?.linkedWalletSupply ?? null
+                const top1 = activeDevIntel?.holderDistribution?.top1 ?? result.holderDistribution?.top1 ?? null
+                const top10 = activeDevIntel?.holderDistribution?.top10 ?? result.holderDistribution?.top10 ?? null
+                const top20 = activeDevIntel?.holderDistribution?.top20 ?? result.holderDistribution?.top20 ?? null
+                const creatorInTop = sc?.creatorInTopHolders ?? activeDevIntel?.creatorInTopHolders ?? null
+                const devClusterSupply = sc?.devClusterSupplyPercent ?? activeDevIntel?.devClusterSupplyPercent ?? activeDevIntel?.devClusterSupply ?? null
+                const clusterInfluence = sc?.clusterInfluence ?? activeDevIntel?.clusterInfluence ?? null
+                const clusterSupplyPercent = clusterInfluence?.clusterSupplyPercent ?? devClusterSupply
+                const clusterDominance = clusterInfluence?.clusterDominance ?? (clusterSupplyPercent == null ? 'unknown' : clusterSupplyPercent === 0 ? 'none' : clusterSupplyPercent < 5 ? 'low' : clusterSupplyPercent < 10 ? 'medium' : clusterSupplyPercent < 20 ? 'high' : 'critical')
+                const clusterRiskScore = clusterInfluence?.clusterRiskScore ?? null
+                const clusterRiskLabel = clusterInfluence?.clusterRiskLabel ?? (clusterSupplyPercent == null ? 'open_check' : 'low')
+                const clusterDominanceLabel = clusterDominance === 'unknown' ? 'Open check' : clusterDominance === 'none' ? 'No dominance' : `${clusterDominance.charAt(0).toUpperCase()}${clusterDominance.slice(1)} dominance`
+                const clusterRiskAccent = clusterRiskLabel === 'critical' || clusterRiskLabel === 'high' ? '#f87171' : clusterRiskLabel === 'elevated' || clusterRiskLabel === 'watch' ? '#fbbf24' : clusterRiskLabel === 'open_check' ? '#94a3b8' : '#34d399'
+                const clusterSignals = (clusterInfluence?.signals?.length ? clusterInfluence.signals : ([clusterInfluence?.reason].filter(Boolean) as string[])).slice(0, 3)
+                const suspiciousTransferPattern = activeDevIntel?.suspiciousTransfers ?? false
+                const missingChecks = getMissingChecks(result)
+                const openChecks = [
+                  ...(linkedWalletCount === 0 ? ['Linked wallet cluster still limited from available transfer evidence.'] : []),
+                  ...(holderState.kind !== 'rowsWithPercent' ? ['Holder concentration data remains partial.'] : []),
+                ]
+                const score = Math.max(10, Math.min(98, Math.round((creatorStatus === 'confirmed' ? 32 : creatorStatus === 'likely' ? 24 : 14) + (linkedWalletCount > 0 ? 18 : 8) + (devClusterSupply != null ? Math.max(0, 25 - Math.round(devClusterSupply / 2)) : 10) + (suspiciousTransferPattern ? 4 : 14))))
+                const riskLabel = score >= 76 ? 'LOW RISK' : score >= 56 ? 'WATCH' : score >= 35 ? 'HIGH RISK' : 'CRITICAL'
+                const confidenceLabel = creatorStatus && holderState.kind === 'rowsWithPercent' ? 'HIGH' : creatorStatus || linkedWalletCount > 0 ? 'MEDIUM' : 'LOW'
+                const next = getNextAction(result)
+                const safeError = devIntelError ? 'Dev intelligence is temporarily unavailable. Retry the scan to refresh this module.' : null
+
+                return (<>
+                  <div style={{ marginBottom:'12px', padding:'18px', borderRadius:'14px', border:'1px solid rgba(125,211,252,0.22)', background:'linear-gradient(165deg, rgba(14,24,43,0.95), rgba(8,14,26,0.95))', boxShadow:'0 10px 28px rgba(5,10,25,0.45)' }}>
+                    <div style={{ display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:'12px',marginBottom:'12px' }}>
+                      <div>
+                        <p style={{ margin:'0 0 6px',fontSize:'10px',letterSpacing:'.14em',color:'#7dd3fc',fontWeight:700,fontFamily:'var(--font-plex-mono)' }}>CORTEX Dev Control Read</p>
+                        <p style={{ margin:0,fontSize:'12px',color:'#cbd5e1',fontFamily:'var(--font-plex-mono)' }}>Deployer identity, wallet cluster connections, and on-chain supply influence — CORTEX dev intelligence layer.</p>
+                      </div>
+                      <p style={{ margin:0,fontSize:'28px',fontWeight:800,color:'#f8fafc',fontFamily:'var(--font-plex-mono)' }}>{score}<span style={{ fontSize:'12px',color:'#64748b' }}>/100</span></p>
+                    </div>
+                    <div style={{ display:'flex',gap:'8px',flexWrap:'wrap',marginBottom:'10px' }}>
+                      <span style={{ padding:'4px 9px',borderRadius:'999px',fontSize:'10px',fontWeight:700,color:riskLabel.includes('LOW') ? '#34d399' : riskLabel==='WATCH' ? '#fbbf24' : '#f87171',background:riskLabel.includes('LOW')?'rgba(52,211,153,.1)':riskLabel==='WATCH'?'rgba(251,191,36,.1)':'rgba(248,113,113,.1)',border:riskLabel.includes('LOW')?'1px solid rgba(52,211,153,.35)':riskLabel==='WATCH'?'1px solid rgba(251,191,36,.35)':'1px solid rgba(248,113,113,.35)',fontFamily:'var(--font-plex-mono)' }}>{riskLabel}</span>
+                      <span style={{ padding:'4px 9px',borderRadius:'999px',fontSize:'10px',fontWeight:700,color:'#7dd3fc',border:'1px solid rgba(125,211,252,0.26)',fontFamily:'var(--font-plex-mono)' }}>CONFIDENCE {confidenceLabel}</span>
+                    </div>
+                    <div style={{ height:'8px',borderRadius:'999px',background:'rgba(15,23,42,0.9)',border:'1px solid rgba(255,255,255,0.08)',overflow:'hidden' }}><div style={{ width:`${score}%`,height:'100%',background:'linear-gradient(90deg, #2dd4bf, #7dd3fc)' }} /></div>
+                  </div>
+                  <div style={{ display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(170px,1fr))',gap:'10px',marginBottom:'14px' }}>
+                    {[
+                      { k:'Deployer', v: creatorStatus === 'confirmed' ? 'Confirmed' : creatorStatus === 'likely' ? 'Likely matched' : 'Limited signal' },
+                      { k:'Linked Wallets', v: `${linkedWalletCount} mapped` },
+                      { k:'Supply Control', v: clusterSupplyPercent != null ? `${clusterSupplyPercent.toFixed(1)}% cluster` : 'Open check' },
+                      { k:'Patterns', v: suspiciousTransferPattern ? 'Suspicious transfers seen' : 'No major pattern flagged' },
+                    ].map((item)=><div key={item.k} style={{ padding:'12px',borderRadius:'12px',border:'1px solid rgba(148,163,184,0.2)',background:'rgba(9,15,29,0.82)' }}><p style={{ margin:'0 0 5px',fontSize:'9px',letterSpacing:'.12em',color:'#64748b',textTransform:'uppercase',fontFamily:'var(--font-plex-mono)' }}>{item.k}</p><p style={{ margin:0,fontSize:'12px',color:'#e2e8f0',fontWeight:700,fontFamily:'var(--font-plex-mono)' }}>{item.v}</p></div>)}
+                  </div>
+                  <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', marginBottom:'12px' }}>
+                    {([['dev-map','Dev Map'],['cluster-map','Cluster Map'],['supply-control','Supply Control'],['history','History'],['watch-plan','Watch Plan']] as Array<[typeof devControlTab, string]>).map(([id,label]) => <button key={id} onClick={() => setDevControlTab(id)} style={{ padding:'8px 12px', borderRadius:'10px', border:devControlTab===id?'1px solid rgba(125,211,252,0.45)':'1px solid rgba(148,163,184,0.2)', background:devControlTab===id?'rgba(14,29,47,0.95)':'rgba(8,14,28,0.6)', color:devControlTab===id?'#7dd3fc':'#94a3b8', fontSize:'10px', letterSpacing:'.10em', textTransform:'uppercase', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>{label}</button>)}
+                  </div>
+                  <div style={{ border:'1px solid rgba(148,163,184,0.2)', borderRadius:'14px', padding:'14px', background:'rgba(7,12,24,0.8)' }}>
+                    {devControlTab==='dev-map' && (() => {
+                      const fmt = (addr: string | null | undefined) => addr ? `${addr.slice(0,6)}…${addr.slice(-4)}` : null
+                      const contractAddr = result.contract ?? null
+                      const originAddr = creatorAddress
+                      const originLabel = creatorStatus === 'confirmed' ? 'Confirmed deployer' : creatorStatus === 'likely' ? 'Likely deployer' : 'Origin wallet'
+                      const originChip = creatorStatus === 'confirmed' ? { label: 'Confirmed', color: '#34d399', bg: 'rgba(52,211,153,.12)', border: 'rgba(52,211,153,.3)' } : creatorStatus === 'likely' ? { label: 'Likely matched', color: '#fbbf24', bg: 'rgba(251,191,36,.1)', border: 'rgba(251,191,36,.3)' } : { label: 'Open check', color: '#94a3b8', bg: 'rgba(148,163,184,.08)', border: 'rgba(148,163,184,.25)' }
+                      const confLabel = activeDevIntel?.confidence === 'high' ? 'High confidence' : activeDevIntel?.confidence === 'medium' ? 'Medium confidence' : activeDevIntel?.confidence === 'low' ? 'Low confidence' : 'Evidence-based inference'
+                      const chainLabel = (result.chain ?? chain ?? 'unknown').toUpperCase()
+                      return (
+                        <div style={{ display:'grid', gap:'16px' }}>
+                          {/* Intelligence flow: three node cards */}
+                          <div style={{ display:'grid', gridTemplateColumns:'1fr auto 1fr auto 1fr', alignItems:'stretch', gap:'6px' }}>
+                            {/* Token Contract node */}
+                            <div style={{ padding:'12px 14px', borderRadius:'12px', background:'linear-gradient(145deg,rgba(14,24,43,.9),rgba(8,16,32,.85))', border:'1px solid rgba(125,211,252,.28)', display:'flex', flexDirection:'column', gap:'6px' }}>
+                              <div style={{ display:'flex', alignItems:'center', gap:'6px', marginBottom:'2px' }}>
+                                <span style={{ width:'6px', height:'6px', borderRadius:'50%', background:'#7dd3fc', flexShrink:0 }} />
+                                <span style={{ fontSize:'9px', letterSpacing:'.14em', color:'#7dd3fc', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>TOKEN CONTRACT</span>
+                              </div>
+                              {contractAddr ? (
+                                <span title={contractAddr} style={{ fontSize:'10px', color:'#e2e8f0', fontFamily:'var(--font-plex-mono)', background:'rgba(125,211,252,.08)', border:'1px solid rgba(125,211,252,.18)', borderRadius:'6px', padding:'3px 7px', cursor:'default' }}>{fmt(contractAddr)}</span>
+                              ) : (
+                                <span style={{ fontSize:'10px', color:'#3a5268', fontFamily:'var(--font-plex-mono)' }}>Address not resolved</span>
+                              )}
+                              <span style={{ fontSize:'9px', color:'#475569', fontFamily:'var(--font-plex-mono)' }}>{chainLabel} mainnet</span>
+                            </div>
+                            {/* Arrow */}
+                            <div style={{ display:'flex', alignItems:'center', justifyContent:'center', paddingTop:'6px' }}>
+                              <span style={{ color:'#2dd4bf', fontSize:'14px', lineHeight:1 }}>→</span>
+                            </div>
+                            {/* Origin Wallet node */}
+                            <div style={{ padding:'12px 14px', borderRadius:'12px', background:'linear-gradient(145deg,rgba(30,20,10,.85),rgba(18,14,6,.9))', border:`1px solid ${originAddr ? 'rgba(251,191,36,.32)' : 'rgba(148,163,184,.18)'}`, display:'flex', flexDirection:'column', gap:'6px' }}>
+                              <div style={{ display:'flex', alignItems:'center', gap:'6px', marginBottom:'2px' }}>
+                                <span style={{ width:'6px', height:'6px', borderRadius:'50%', background: originAddr ? '#fbbf24' : '#475569', flexShrink:0 }} />
+                                <span style={{ fontSize:'9px', letterSpacing:'.14em', color: originAddr ? '#fbbf24' : '#64748b', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>ORIGIN WALLET</span>
+                              </div>
+                              {originAddr ? (
+                                <span title={originAddr} style={{ fontSize:'10px', color:'#fde68a', fontFamily:'var(--font-plex-mono)', background:'rgba(251,191,36,.08)', border:'1px solid rgba(251,191,36,.2)', borderRadius:'6px', padding:'3px 7px', cursor:'default' }}>{fmt(originAddr)}</span>
+                              ) : (
+                                <span style={{ fontSize:'10px', color:'#3a5268', fontFamily:'var(--font-plex-mono)' }}>Pending confirmation</span>
+                              )}
+                              <span style={{ display:'inline-flex', alignSelf:'flex-start', padding:'2px 7px', borderRadius:'999px', fontSize:'9px', fontWeight:700, color:originChip.color, background:originChip.bg, border:`1px solid ${originChip.border}`, fontFamily:'var(--font-plex-mono)' }}>{originChip.label}</span>
+                            </div>
+                            {/* Arrow */}
+                            <div style={{ display:'flex', alignItems:'center', justifyContent:'center', paddingTop:'6px' }}>
+                              <span style={{ color:linkedWallets.length > 0 ? '#2dd4bf' : '#1e3a44', fontSize:'14px', lineHeight:1 }}>→</span>
+                            </div>
+                            {/* Linked Wallets node */}
+                            <div style={{ padding:'12px 14px', borderRadius:'12px', background:'linear-gradient(145deg,rgba(6,20,18,.85),rgba(4,14,14,.9))', border:`1px solid ${linkedWallets.length > 0 ? 'rgba(45,212,191,.28)' : 'rgba(148,163,184,.14)'}`, display:'flex', flexDirection:'column', gap:'6px' }}>
+                              <div style={{ display:'flex', alignItems:'center', gap:'6px', marginBottom:'2px' }}>
+                                <span style={{ width:'6px', height:'6px', borderRadius:'50%', background: linkedWallets.length > 0 ? '#2dd4bf' : '#1e3a44', flexShrink:0 }} />
+                                <span style={{ fontSize:'9px', letterSpacing:'.14em', color: linkedWallets.length > 0 ? '#2dd4bf' : '#3a5268', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>LINKED WALLETS</span>
+                              </div>
+                              <span style={{ fontSize:'13px', fontWeight:800, color: linkedWallets.length > 0 ? '#99f6e4' : '#475569', fontFamily:'var(--font-plex-mono)' }}>{linkedWallets.length > 0 ? linkedWallets.length : '—'}</span>
+                              <span style={{ fontSize:'9px', color: linkedWallets.length > 0 ? '#2dd4bf80' : '#1e3a44', fontFamily:'var(--font-plex-mono)' }}>{linkedWallets.length > 0 ? `${linkedWallets.length} wallet${linkedWallets.length !== 1 ? 's' : ''} mapped` : 'Not confirmed yet'}</span>
+                            </div>
+                          </div>
+
+                          {/* Origin Wallet detail card */}
+                          <div style={{ padding:'14px 16px', borderRadius:'12px', background:'rgba(10,16,30,.7)', border:'1px solid rgba(251,191,36,.18)' }}>
+                            <div style={{ display:'flex', alignItems:'center', gap:'8px', marginBottom:'10px', flexWrap:'wrap' }}>
+                              <p style={{ margin:0, fontSize:'10px', letterSpacing:'.14em', fontWeight:700, color:'#fbbf24', fontFamily:'var(--font-plex-mono)' }}>{originLabel.toUpperCase()}</p>
+                              <span style={{ padding:'2px 8px', borderRadius:'999px', fontSize:'9px', fontWeight:700, color:originChip.color, background:originChip.bg, border:`1px solid ${originChip.border}`, fontFamily:'var(--font-plex-mono)' }}>{originChip.label}</span>
+                            </div>
+                            <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(160px,1fr))', gap:'8px' }}>
+                              {[
+                                { label: 'Address', value: originAddr ? fmt(originAddr) : 'Not confirmed', title: originAddr ?? undefined },
+                                { label: 'Detection confidence', value: confLabel },
+                                { label: 'Evidence source', value: activeDevIntel?.reasons?.[0] ?? (originAddr ? 'Transfer trace' : 'No direct evidence') },
+                                { label: 'Network', value: chainLabel },
+                              ].map(({ label, value, title }) => (
+                                <div key={label} style={{ padding:'8px 10px', borderRadius:'8px', background:'rgba(15,23,42,.5)', border:'1px solid rgba(148,163,184,.1)' }}>
+                                  <div style={{ fontSize:'9px', letterSpacing:'.1em', color:'#475569', fontFamily:'var(--font-plex-mono)', marginBottom:'4px' }}>{label.toUpperCase()}</div>
+                                  <div title={title} style={{ fontSize:'11px', color:'#cbd5e1', fontWeight:600, fontFamily:'var(--font-plex-mono)', cursor: title ? 'default' : undefined }}>{value ?? '—'}</div>
+                                </div>
+                              ))}
+                            </div>
+                            {!originAddr && (
+                              <p style={{ margin:'10px 0 0', fontSize:'11px', color:'#475569', fontFamily:'var(--font-plex-mono)', lineHeight:1.55 }}>
+                                Origin wallet has not been confirmed in this pass. CORTEX needs additional transfer evidence to resolve the deployer identity.
+                              </p>
+                            )}
+                          </div>
+
+                          {/* Linked Wallets list */}
+                          <div style={{ padding:'14px 16px', borderRadius:'12px', background:'rgba(6,14,22,.7)', border:'1px solid rgba(45,212,191,.18)' }}>
+                            <div style={{ display:'flex', alignItems:'center', gap:'8px', marginBottom:'10px', flexWrap:'wrap' }}>
+                              <p style={{ margin:0, fontSize:'10px', letterSpacing:'.14em', fontWeight:700, color:'#2dd4bf', fontFamily:'var(--font-plex-mono)' }}>LINKED WALLET CLUSTER</p>
+                              {linkedWallets.length > 0 && (
+                                <span style={{ padding:'2px 8px', borderRadius:'999px', fontSize:'9px', fontWeight:700, color:'#2dd4bf', background:'rgba(45,212,191,.1)', border:'1px solid rgba(45,212,191,.28)', fontFamily:'var(--font-plex-mono)' }}>{linkedWallets.length} mapped</span>
+                              )}
+                            </div>
+                            {linkedWallets.length > 0 ? (
+                              <div style={{ display:'grid', gap:'7px' }}>
+                                {linkedWallets.map((wallet, i) => {
+                                  const confColor = wallet.confidence === 'high' ? '#34d399' : wallet.confidence === 'medium' ? '#fbbf24' : '#94a3b8'
+                                  return (
+                                    <div key={wallet.address + i} style={{ display:'flex', alignItems:'center', gap:'10px', padding:'9px 12px', borderRadius:'9px', background:'rgba(15,23,42,.55)', border:'1px solid rgba(45,212,191,.14)', flexWrap:'wrap' }}>
+                                      <span title={wallet.address} style={{ fontSize:'11px', color:'#99f6e4', fontFamily:'var(--font-plex-mono)', fontWeight:600, cursor:'default', letterSpacing:'.04em' }}>{fmt(wallet.address)}</span>
+                                      {wallet.confidence && (
+                                        <span style={{ padding:'1px 6px', borderRadius:'999px', fontSize:'9px', fontWeight:700, color:confColor, background:`${confColor}14`, border:`1px solid ${confColor}38`, fontFamily:'var(--font-plex-mono)' }}>{wallet.confidence}</span>
+                                      )}
+                                      {wallet.reason && (
+                                        <span style={{ fontSize:'10px', color:'#475569', fontFamily:'var(--font-plex-mono)', flex:1, minWidth:'120px' }}>{wallet.reason}</span>
+                                      )}
+                                    </div>
+                                  )
+                                })}
+                              </div>
+                            ) : (
+                              <div style={{ padding:'14px', borderRadius:'10px', background:'rgba(15,23,42,.4)', border:'1px solid rgba(148,163,184,.1)', textAlign:'center' }}>
+                                <p style={{ margin:'0 0 4px', fontSize:'11px', color:'#475569', fontFamily:'var(--font-plex-mono)', fontWeight:600 }}>No linked wallets confirmed in this pass</p>
+                                <p style={{ margin:0, fontSize:'10px', color:'#2d3f50', fontFamily:'var(--font-plex-mono)', lineHeight:1.55 }}>CORTEX needs more transfer evidence to confirm wallet cluster connections.</p>
+                              </div>
+                            )}
+                            {linkedWalletSupply != null && (
+                              <div style={{ marginTop:'10px', padding:'8px 12px', borderRadius:'8px', background:'rgba(45,212,191,.06)', border:'1px solid rgba(45,212,191,.15)', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                                <span style={{ fontSize:'10px', color:'#2dd4bf80', fontFamily:'var(--font-plex-mono)' }}>Cluster supply influence</span>
+                                <span style={{ fontSize:'12px', fontWeight:700, color:'#2dd4bf', fontFamily:'var(--font-plex-mono)' }}>{linkedWalletSupply.toFixed(1)}%</span>
+                              </div>
+                            )}
+                            {linkedWalletSupply == null && linkedWallets.length === 0 && (
+                              <p style={{ margin:'10px 0 0', fontSize:'10px', color:'#1e3a44', fontFamily:'var(--font-plex-mono)' }}>Supply influence still needs confirmation — rescan when holder data is available.</p>
+                            )}
+                          </div>
+                        </div>
+                      )
+                    })()}
+                    {devControlTab==='supply-control' && (
+                      <div style={{ display:'grid', gap:'10px' }}>
+                        <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(140px,1fr))', gap:'8px' }}>
+                          {[
+                            { label:'Creator in top holders', value: creatorInTop==null ? 'Open check' : creatorInTop ? 'Yes' : 'No', accent: creatorInTop==null ? '#64748b' : creatorInTop ? '#fbbf24' : '#34d399' },
+                            { label:'Top 1 concentration',   value: top1!=null ? `${top1.toFixed(1)}%` : '—', accent: top1!=null && top1>20 ? '#f87171' : '#94a3b8' },
+                            { label:'Top 10 concentration',  value: top10!=null ? `${top10.toFixed(1)}%` : '—', accent: top10!=null ? (top10>50?'#f87171':top10>30?'#fbbf24':'#34d399') : '#94a3b8' },
+                            { label:'Top 20 concentration',  value: top20!=null ? `${top20.toFixed(1)}%` : '—', accent: top20!=null ? (top20>60?'#f87171':top20>40?'#fbbf24':'#34d399') : '#94a3b8' },
+                            { label:'Linked-wallet supply',  value: linkedWalletSupply!=null ? `${linkedWalletSupply.toFixed(1)}%` : '—', accent:'#2dd4bf' },
+                            { label:'Dev cluster supply',    value: devClusterSupply!=null ? `${devClusterSupply.toFixed(1)}%` : 'Pending', accent: devClusterSupply!=null ? (devClusterSupply>30?'#f87171':devClusterSupply>15?'#fbbf24':'#34d399') : '#64748b' },
+                          ].map(({ label, value, accent }) => (
+                            <div key={label} style={{ padding:'10px 12px', borderRadius:'10px', background:'rgba(9,15,29,.8)', border:'1px solid rgba(148,163,184,.14)' }}>
+                              <div style={{ fontSize:'9px', letterSpacing:'.1em', color:'#475569', fontFamily:'var(--font-plex-mono)', marginBottom:'5px', textTransform:'uppercase' }}>{label}</div>
+                              <div style={{ fontSize:'13px', fontWeight:700, color:accent, fontFamily:'var(--font-plex-mono)' }}>{value}</div>
+                            </div>
+                          ))}
+                        </div>
+                        <div style={{ padding:'14px 16px', borderRadius:'13px', background:'linear-gradient(145deg, rgba(13,27,43,.92), rgba(6,13,25,.94))', border:`1px solid ${clusterRiskLabel === 'open_check' ? 'rgba(148,163,184,.16)' : 'rgba(45,212,191,.22)'}`, boxShadow:'inset 0 1px 0 rgba(255,255,255,.03)' }}>
+                          <div style={{ display:'flex', justifyContent:'space-between', gap:'12px', alignItems:'flex-start', marginBottom:'12px' }}>
+                            <div>
+                              <p style={{ margin:'0 0 5px', fontSize:'9px', letterSpacing:'.14em', color:'#2dd4bf', fontWeight:800, fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>Dev Cluster Influence</p>
+                              <p style={{ margin:0, fontSize:'11px', color:'#94a3b8', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>
+                                {clusterSupplyPercent == null ? 'Open check' : `${clusterSupplyPercent.toFixed(1)}% cluster supply`}
+                                {' · '}
+                                {clusterSupplyPercent == null ? 'CORTEX needs more holder evidence before confirming cluster influence.' : clusterInfluence?.reason ?? clusterDominanceLabel}
+                              </p>
+                            </div>
+                            <div style={{ textAlign:'right', flexShrink:0 }}>
+                              <p style={{ margin:'0 0 4px', fontSize:'18px', fontWeight:800, color:clusterRiskAccent, fontFamily:'var(--font-plex-mono)' }}>{clusterRiskScore != null ? clusterRiskScore : '—'}<span style={{ fontSize:'10px', color:'#64748b' }}>/100</span></p>
+                              <p style={{ margin:0, fontSize:'9px', letterSpacing:'.1em', color:clusterRiskAccent, fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>{clusterRiskScore != null ? `Risk score ${clusterRiskScore}/100` : 'Open check'}</p>
+                            </div>
+                          </div>
+                          <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))', gap:'8px', marginBottom:'10px' }}>
+                            <div style={{ padding:'9px 11px', borderRadius:'10px', background:'rgba(15,23,42,.72)', border:'1px solid rgba(148,163,184,.12)' }}>
+                              <p style={{ margin:'0 0 4px', fontSize:'8px', letterSpacing:'.1em', color:'#475569', fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>Cluster supply</p>
+                              <p style={{ margin:0, fontSize:'12px', color:clusterSupplyPercent == null ? '#94a3b8' : '#e2e8f0', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>{clusterSupplyPercent == null ? 'Open check' : `${clusterSupplyPercent.toFixed(1)}% cluster supply`}</p>
+                            </div>
+                            <div style={{ padding:'9px 11px', borderRadius:'10px', background:'rgba(15,23,42,.72)', border:'1px solid rgba(148,163,184,.12)' }}>
+                              <p style={{ margin:'0 0 4px', fontSize:'8px', letterSpacing:'.1em', color:'#475569', fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>Dominance</p>
+                              <p style={{ margin:0, fontSize:'12px', color:clusterRiskAccent, fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>{clusterDominanceLabel}</p>
+                            </div>
+                          </div>
+                          <div style={{ display:'grid', gap:'5px' }}>
+                            {(clusterSupplyPercent == null ? ['CORTEX needs more holder evidence before confirming cluster influence.'] : clusterSignals.length > 0 ? clusterSignals : ['No cluster supply found in indexed holders.']).slice(0, 3).map((signal, i) => (
+                              <div key={i} style={{ display:'flex', gap:'8px', alignItems:'flex-start' }}>
+                                <span style={{ color:clusterRiskAccent, flexShrink:0, fontSize:'10px', lineHeight:'16px' }}>›</span>
+                                <p style={{ margin:0, fontSize:'10px', color:'#cbd5e1', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>{signal}</p>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                        {devClusterSupply == null && (
+                          <div style={{ padding:'11px 14px', borderRadius:'10px', background:'rgba(251,191,36,.04)', border:'1px solid rgba(251,191,36,.14)' }}>
+                            <p style={{ margin:0, fontSize:'11px', color:'#78716c', fontFamily:'var(--font-plex-mono)', lineHeight:1.55 }}>Supply influence still needs confirmation. CORTEX needs more holder evidence before confirming cluster control.</p>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {devControlTab==='cluster-map' && <ClusterMapPanel clusterMap={clusterMap} devIntel={activeDevIntel} holderDistribution={activeDevIntel?.holderDistribution ?? result.holderDistribution ?? null} />}
+                    {devControlTab==='history' && (
+                      <div style={{ display:'grid', gap:'10px' }}>
+                        {activeDevIntel?.reasons && activeDevIntel.reasons.length > 0 ? (
+                          <div style={{ padding:'13px 15px', borderRadius:'11px', background:'rgba(125,211,252,.04)', border:'1px solid rgba(125,211,252,.16)' }}>
+                            <p style={{ margin:'0 0 7px', fontSize:'9px', letterSpacing:'.14em', color:'#7dd3fc', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>EVIDENCE TRACES</p>
+                            <div style={{ display:'grid', gap:'5px' }}>
+                              {activeDevIntel.reasons.map((r, i) => (
+                                <div key={i} style={{ display:'flex', gap:'8px', alignItems:'flex-start' }}>
+                                  <span style={{ color:'#2dd4bf', flexShrink:0, fontSize:'10px', lineHeight:'16px' }}>›</span>
+                                  <p style={{ margin:0, fontSize:'11px', color:'#94a3b8', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>{r}</p>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ) : (
+                          <div style={{ padding:'13px 15px', borderRadius:'11px', background:'rgba(148,163,184,.04)', border:'1px solid rgba(148,163,184,.14)' }}>
+                            <p style={{ margin:0, fontSize:'11px', color:'#3a5268', fontFamily:'var(--font-plex-mono)', lineHeight:1.55 }}>Evidence traces are still being built from available deployer activity. Rescan to refresh.</p>
+                          </div>
+                        )}
+                        <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(200px,1fr))', gap:'8px' }}>
+                          <div style={{ padding:'12px 14px', borderRadius:'11px', background:'rgba(9,15,29,.8)', border:'1px solid rgba(148,163,184,.14)' }}>
+                            <p style={{ margin:'0 0 6px', fontSize:'9px', letterSpacing:'.12em', color:'#475569', fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>Deployer identity</p>
+                            <p style={{ margin:0, fontSize:'11px', color:'#cbd5e1', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>
+                              {creatorStatus === 'confirmed'
+                                ? 'Deployer identity confirmed — wallet linked to this deployment.'
+                                : creatorStatus === 'likely'
+                                  ? 'Likely deployer identified from transfer traces — pending direct confirmation.'
+                                  : 'Deployer identity is an open check — limited transfer evidence available.'}
+                            </p>
+                          </div>
+                          <div style={{ padding:'12px 14px', borderRadius:'11px', background:'rgba(9,15,29,.8)', border:`1px solid ${suspiciousTransferPattern ? 'rgba(248,113,113,.22)' : 'rgba(148,163,184,.14)'}` }}>
+                            <p style={{ margin:'0 0 6px', fontSize:'9px', letterSpacing:'.12em', color: suspiciousTransferPattern ? '#f87171' : '#475569', fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>Transfer patterns</p>
+                            <p style={{ margin:0, fontSize:'11px', color: suspiciousTransferPattern ? '#fca5a5' : '#cbd5e1', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>
+                              {suspiciousTransferPattern
+                                ? 'Suspicious transfer activity flagged — review linked wallet flows before sizing a position.'
+                                : 'No suspicious transfer patterns confirmed from current traces.'}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                    {devControlTab==='watch-plan' && (
+                      <div style={{ display:'grid', gap:'10px' }}>
+                        <div style={{ padding:'13px 16px', borderRadius:'12px', background:'rgba(125,211,252,.04)', border:'1px solid rgba(125,211,252,.2)' }}>
+                          <p style={{ margin:'0 0 6px', fontSize:'9px', letterSpacing:'.14em', color:'#7dd3fc', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>CORTEX DEV SUMMARY</p>
+                          <p style={{ margin:0, fontSize:'11px', color:'#94a3b8', fontFamily:'var(--font-plex-mono)', lineHeight:1.6 }}>
+                            {`Deployer ${creatorStatus === 'confirmed' ? 'confirmed' : creatorStatus === 'likely' ? 'likely matched' : 'open check'}. ${linkedWalletCount > 0 ? `${linkedWalletCount} linked wallet${linkedWalletCount !== 1 ? 's' : ''} mapped.` : 'No linked wallets confirmed.'} Dev cluster supply ${devClusterSupply != null ? `${devClusterSupply.toFixed(1)}% of circulating.` : 'pending confirmation.'}`}
+                          </p>
+                        </div>
+                        <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(200px,1fr))', gap:'8px' }}>
+                          <div style={{ padding:'12px 14px', borderRadius:'11px', background:'rgba(52,211,153,.04)', border:'1px solid rgba(52,211,153,.18)' }}>
+                            <p style={{ margin:'0 0 6px', fontSize:'9px', letterSpacing:'.12em', color:'#34d399', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>CONFIRMED SIGNALS</p>
+                            {linkedWalletCount > 0 ? (
+                              <p style={{ margin:0, fontSize:'11px', color:'#86efac', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>{linkedWalletCount} linked wallet connection{linkedWalletCount !== 1 ? 's' : ''} mapped from transfer evidence.</p>
+                            ) : creatorStatus ? (
+                              <p style={{ margin:0, fontSize:'11px', color:'#86efac', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>Deployer {creatorStatus === 'confirmed' ? 'identity confirmed' : 'likely matched'} from on-chain traces.</p>
+                            ) : (
+                              <p style={{ margin:0, fontSize:'11px', color:'#374151', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>No confirmed signals from available data this pass.</p>
+                            )}
+                          </div>
+                          <div style={{ padding:'12px 14px', borderRadius:'11px', background:'rgba(251,191,36,.04)', border:'1px solid rgba(251,191,36,.18)' }}>
+                            <p style={{ margin:'0 0 6px', fontSize:'9px', letterSpacing:'.12em', color:'#fbbf24', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>OPEN CHECKS</p>
+                            {openChecks.length > 0 ? (
+                              <div style={{ display:'grid', gap:'4px' }}>
+                                {openChecks.map((c, i) => <p key={i} style={{ margin:0, fontSize:'11px', color:'#fde68a', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>{c}</p>)}
+                              </div>
+                            ) : (
+                              <p style={{ margin:0, fontSize:'11px', color:'#374151', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>No additional open checks.</p>
+                            )}
+                          </div>
+                        </div>
+                        <div style={{ padding:'12px 14px', borderRadius:'11px', background:'rgba(45,212,191,.04)', border:'1px solid rgba(45,212,191,.18)' }}>
+                          <p style={{ margin:'0 0 6px', fontSize:'9px', letterSpacing:'.12em', color:'#2dd4bf', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>NEXT ACTION</p>
+                          <p style={{ margin:0, fontSize:'11px', color:'#99f6e4', fontFamily:'var(--font-plex-mono)', lineHeight:1.55 }}>{next}</p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  {devIntelLoading && <div style={{ marginTop:'10px', padding:'10px 12px', border:'1px solid rgba(125,211,252,0.22)', borderRadius:'10px', color:'#7dd3fc', fontSize:'11px', fontFamily:'var(--font-plex-mono)' }}>Loading dev intelligence…</div>}
+                  {safeError && <div style={{ marginTop:'10px', padding:'10px 12px', border:'1px solid rgba(251,191,36,0.28)', borderRadius:'10px', color:'#fcd34d', fontSize:'11px', fontFamily:'var(--font-plex-mono)' }}>{safeError}</div>}
+                  {missingChecks.length > 0 && <p style={{ margin:'10px 2px 0',fontSize:'10px',color:'#64748b',fontFamily:'var(--font-plex-mono)' }}>Open verification items: {missingChecks.slice(0,2).join(' · ')}</p>}
+                </>)
+              })()}
             </div>
 
 
