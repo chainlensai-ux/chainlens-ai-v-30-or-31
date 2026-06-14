@@ -4,6 +4,7 @@ import { fetchHoneypotSecurity } from "@/lib/server/honeypotSecurity";
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { getVerifiedUserPlan } from '@/lib/supabase/userSettings'
 import {
+  resolveClarkIntent,
   classifyClarkPrompt,
   buildWalletApiRequestBody,
   formatBaseMarketReadFromRows,
