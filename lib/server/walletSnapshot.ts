@@ -1409,6 +1409,10 @@ type UnmatchedSellBackfillReason =
   | 'base_provider_unavailable'
   | 'base_contract_filter_unavailable'
   | 'cost_budget_reached'
+  | 'backfill_not_started_timeout'
+  | 'backfill_budget_blocked'
+  | 'backfill_provider_unavailable'
+  | 'backfill_partial_timeout'
   | 'sell_before_first_indexed_buy'
   | 'prior_buy_found'
 
@@ -2916,16 +2920,16 @@ async function runTargetedUnmatchedSellBackfill(address: string, targets: Unmatc
       const result = perTarget.get(targetKey)!
       if (foundTargetKeys.has(targetKey)) continue
       if (debug.pagesAttempted >= maxPagesTotal) {
-        if (result.reason !== 'prior_buy_found') result.reason = 'cost_budget_reached'
-        debug.sampleSkippedReasons.push({ reason: 'cost_budget_reached', chain: target.chain, tokenContract: target.tokenContract, page })
-        stopReason = 'cost_budget_reached'
+        if (result.reason !== 'prior_buy_found') result.reason = 'backfill_budget_blocked'
+        debug.sampleSkippedReasons.push({ reason: 'backfill_budget_blocked', chain: target.chain, tokenContract: target.tokenContract, page })
+        stopReason = 'backfill_budget_blocked'
         continue
       }
       const chainName = normalizeChainForGoldrush(target.chain)
       const sellTime = target.sellTimestamp ? new Date(target.sellTimestamp).getTime() : null
       result.attempted = true
       if (!apiKey) {
-        const reason: UnmatchedSellBackfillReason = target.chain === 'base' ? 'base_provider_unavailable' : 'provider_history_depth_insufficient'
+        const reason: UnmatchedSellBackfillReason = 'backfill_provider_unavailable'
         result.reason = reason
         debug.sampleSkippedReasons.push({ reason, chain: target.chain, tokenContract: target.tokenContract, page })
       } else {
@@ -2933,7 +2937,7 @@ async function runTargetedUnmatchedSellBackfill(address: string, targets: Unmatc
         result.pagesAttempted++
         const pageResult = await fetchGoldrushHistoricalPage(address, chainName, apiKey, page)
         if (pageResult.error) {
-          const reason: UnmatchedSellBackfillReason = target.chain === 'base' ? 'base_provider_unavailable' : 'provider_history_depth_insufficient'
+          const reason: UnmatchedSellBackfillReason = 'backfill_provider_unavailable'
           result.reason = reason
           debug.sampleSkippedReasons.push({ reason, chain: target.chain, tokenContract: target.tokenContract, page })
         } else {
@@ -2959,9 +2963,9 @@ async function runTargetedUnmatchedSellBackfill(address: string, targets: Unmatc
     result.rawEventsFetched += alchemy.raw
     result.normalizedEvents += alchemy.events.length
     if (alchemy.error) {
-      result.reason = result.reason === 'cost_budget_reached' ? 'cost_budget_reached' : 'base_contract_filter_unavailable'
+      result.reason = result.reason === 'backfill_budget_blocked' ? 'backfill_budget_blocked' : 'base_contract_filter_unavailable'
       debug.sampleSkippedReasons.push({ reason: 'base_contract_filter_unavailable', chain: target.chain, tokenContract: target.tokenContract })
-    } else if (alchemy.events.length === 0 && result.reason !== 'cost_budget_reached') {
+    } else if (alchemy.events.length === 0 && result.reason !== 'backfill_budget_blocked') {
       result.reason = 'prior_buy_not_found_for_sold_token'
     }
     if (alchemy.events.length > 0) addEventsForTarget(target, alchemy.events, alchemy.events)
@@ -3010,7 +3014,7 @@ async function runTargetedUnmatchedSellBackfill(address: string, targets: Unmatc
           break
         }
       }
-      if (!moralisBuysFound && result.reason !== 'cost_budget_reached') {
+      if (!moralisBuysFound && result.reason !== 'backfill_budget_blocked') {
         result.reason = 'prior_buy_not_found_for_sold_token'
         debug.sampleSkippedReasons.push({ reason: 'prior_buy_not_found_for_sold_token', chain: target.chain, tokenContract: target.tokenContract })
       }
@@ -3020,13 +3024,13 @@ async function runTargetedUnmatchedSellBackfill(address: string, targets: Unmatc
   for (const target of targets) {
     const targetKey = `${target.chain}:${target.tokenContract}`
     const result = perTarget.get(targetKey)!
-    if (result.reason === 'prior_buy_found' || result.reason === 'cost_budget_reached' || result.reason === 'base_provider_unavailable' || result.reason === 'base_contract_filter_unavailable' || result.reason === 'provider_history_depth_insufficient') continue
+    if (result.reason === 'prior_buy_found' || result.reason === 'backfill_budget_blocked'  || result.reason === 'base_provider_unavailable' || result.reason === 'base_contract_filter_unavailable' || result.reason === 'provider_history_depth_insufficient') continue
     result.reason = 'prior_buy_not_found_for_sold_token'
     debug.sampleSkippedReasons.push({ reason: 'prior_buy_not_found_for_sold_token', chain: target.chain, tokenContract: target.tokenContract })
   }
 
   debug.eventsAddedToFifo = eventsToAdd.length
-  debug.stopReason = eventsToAdd.length > 0 ? 'prior_buy_found' : (debug.perTargetResults.find(r => r.reason === 'cost_budget_reached')?.reason ?? debug.perTargetResults[debug.perTargetResults.length - 1]?.reason ?? stopReason)
+  debug.stopReason = eventsToAdd.length > 0 ? 'prior_buy_found' : (debug.perTargetResults.find(r => r.reason === 'backfill_budget_blocked')?.reason ?? debug.perTargetResults[debug.perTargetResults.length - 1]?.reason ?? stopReason)
   debug.reason = eventsToAdd.length > 0 ? 'prior_buy_found' : debug.stopReason
   debug.sampleStillUnmatched = targets.filter(t => !foundTargetKeys.has(`${t.chain}:${t.tokenContract}`)).map(t => `${t.chain}:${t.tokenContract}`).slice(0, 5)
   unmatchedSellBackfillCache.set(cacheKey, { data: { events: eventsToAdd, targetBuyKeys: [...targetBuyKeys], debug }, cachedAt: Date.now() })
@@ -8399,7 +8403,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         _perfTimedOut.push('unmatched_sell_backfill')
         return {
           events: [] as PnlEvent[], targetBuyKeys: new Set<string>(),
-          debug: { attempted: true, reason: 'backfill_timeout' as const, unmatchedSellCount: _initialFifoKeys.length, targetTokens: _targets.map(t => ({ chain: t.chain, tokenContract: t.tokenContract, symbol: t.symbol })), pagesAttempted: 0, rawEventsFetched: 0, normalizedEvents: 0, priorBuysFound: 0, priorBuysPriced: 0, eventsAddedToFifo: 0, closedLotsBefore: walletLotSummary.closedLots, closedLotsAfter: walletLotSummary.closedLots, realizedPnlBefore: walletLotSummary.realizedPnlUsd, realizedPnlAfter: walletLotSummary.realizedPnlUsd, stopReason: 'backfill_timeout' as const, perTargetResults: [], sampleTargets: _targets.slice(0, 5), samplePriorBuys: [], sampleStillUnmatched: _initialFifoKeys.slice(0, 5), sampleSkippedReasons: [] },
+          debug: { attempted: true, reason: 'backfill_not_started_timeout' as const, unmatchedSellCount: _initialFifoKeys.length, targetTokens: _targets.map(t => ({ chain: t.chain, tokenContract: t.tokenContract, symbol: t.symbol })), pagesAttempted: 0, rawEventsFetched: 0, normalizedEvents: 0, priorBuysFound: 0, priorBuysPriced: 0, eventsAddedToFifo: 0, closedLotsBefore: walletLotSummary.closedLots, closedLotsAfter: walletLotSummary.closedLots, realizedPnlBefore: walletLotSummary.realizedPnlUsd, realizedPnlAfter: walletLotSummary.realizedPnlUsd, stopReason: 'backfill_not_started_timeout' as const, perTargetResults: _targets.map(t => ({ chain: t.chain, tokenContract: t.tokenContract, symbol: t.symbol, attempted: true, pagesAttempted: 0, rawEventsFetched: 0, normalizedEvents: 0, priorBuysFound: 0, priorBuysPriced: 0, eventsAddedToFifo: 0, reason: 'backfill_not_started_timeout' as const })), sampleTargets: _targets.slice(0, 5), samplePriorBuys: [], sampleStillUnmatched: _initialFifoKeys.slice(0, 5), sampleSkippedReasons: [{ reason: 'backfill_not_started_timeout' }] },
         } as UnmatchedSellBackfillOutput
       }
       return result
