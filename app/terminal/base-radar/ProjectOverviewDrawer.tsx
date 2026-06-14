@@ -5,6 +5,12 @@ import { useQuery } from '@tanstack/react-query'
 import { assessBaseRadarSeverity, creatorTopHolderDisplay, normalizePairCreatedAt, ageLabelFromIso, extractLpControllerSharePercent, getBaseRadarDetailSeverityCap, getScoreSeverityLabel } from '@/lib/baseRadarSeverity'
 import { getRadarDrawerValuation, getRadarValuationCardDisplay, DEFAULT_RADAR_MIN_LIQUIDITY_USD } from '@/lib/baseRadarValuation'
 import { getRadarValuationEvidence, getRadarSocialsEvidence, getRadarOwnershipEvidence, getRadarPastLaunchesEvidence, getRadarRugHistoryEvidence, getRadarSimulationEvidence, getRadarAgeEvidence, getRadarLpPositionEvidence, type RadarEvidenceEntry } from '@/lib/baseRadarEvidence'
+import { buildBaseRadarDisplayModel } from '@/lib/baseRadarDisplayModel'
+import { buildRadarSignals, buildWhyItMatters, buildRadarTimeline, buildNextFiveMinuteRead } from '@/lib/baseRadarSignals'
+import WhyItMattersBox from './WhyItMattersBox'
+import TimelineMiniChart from './TimelineMiniChart'
+import SignalsSidebar from './SignalsSidebar'
+import NextFiveMinuteCard from './NextFiveMinuteCard'
 
 type ChainKey = 'base' | 'eth'
 
@@ -689,6 +695,23 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
   const holderSectionTone = holderTone === 'amber' ? 'purple' : holderTone
   const lpTone = !hasVerifiedLock(lp?.lpLockStatus) && lp?.lpProofApplicability !== 'not_applicable' ? 'risk' : 'mint'
 
+  const radarSignals = useMemo(
+    () => buildRadarSignals(token, enriched),
+    [token, enriched]
+  )
+  const whyItMatters = useMemo(
+    () => buildWhyItMatters(token, enriched),
+    [token, enriched]
+  )
+  const radarTimeline = useMemo(
+    () => buildRadarTimeline(token, enriched),
+    [token, enriched]
+  )
+  const nextFiveMinuteRead = useMemo(
+    () => buildNextFiveMinuteRead(token, enriched),
+    [token, enriched]
+  )
+
   async function copyText(value: string) {
     await navigator.clipboard?.writeText(value)
   }
@@ -723,6 +746,8 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
           </div>
         </header>
 
+        <WhyItMattersBox sentences={whyItMatters} />
+
         <Section title="CORTEX Verdict" tone={severityLabel === 'High Risk' || severityLabel === 'Critical' ? 'risk' : 'mint'}>
           <p style={{ margin: '0 0 12px', color: '#e2e8f0', fontSize: 14, lineHeight: 1.5, fontWeight: 650 }}>{severity.cortexSevereLine}</p>
           <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', marginBottom: 12 }}>{[...marketSignals, ...riskSignals].slice(0, 3).map((x) => <Chip key={x} label={x} tone={/risk|lock|holder|timeout|watch/i.test(x) ? 'risk' : 'mint'} />)}</div>
@@ -744,6 +769,10 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
         <Section title="Signal Stack" tone="purple">
           {[['Market Signals', marketSignals, 'mint'], ['Risk Signals', riskSignals, 'risk'], ['Control Signals', controlSignals, 'amber']].map(([title, items, tone]) => <div key={title as string} style={{ marginBottom: 11 }}><p style={{ margin: '0 0 7px', color: '#94a3b8', fontSize: 10, letterSpacing: '.11em', textTransform: 'uppercase', fontWeight: 850 }}>{title as string}</p><div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>{(items as string[]).map((x) => <Chip key={x} label={x} tone={tone as 'mint' | 'amber' | 'risk'} />)}</div></div>)}
         </Section>
+
+        <TimelineMiniChart timeline={radarTimeline} />
+
+        <SignalsSidebar signals={radarSignals} />
 
         <Section title="Socials" state={enrichmentState}>
           {projectLinks.length ? <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(120px,1fr))', gap: 10 }}>{projectLinks.map((link) => <a key={link.label} href={link.href} target="_blank" rel="noreferrer" style={{ textDecoration: 'none', color: '#e2e8f0', padding: 12, borderRadius: 14, border: '1px solid rgba(45,212,191,.20)', background: 'rgba(45,212,191,.07)', fontWeight: 800 }}>{link.label} ↗</a>)}</div> : <div style={{ padding: 14, borderRadius: 15, border: '1px solid rgba(148,163,184,.12)', background: 'rgba(15,23,42,.52)' }}><p style={{ margin: '0 0 5px', color: '#e2e8f0', fontWeight: 750 }}>No public project links found in current metadata.</p><p style={{ margin: 0, color: '#94a3b8', fontSize: 12 }}>CORTEX will keep this as a social-evidence gap.</p></div>}
@@ -791,6 +820,8 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
         <Section title="Evidence Gaps / Watch Next" tone="risk">
           {[['Risk Facts', dedupedRiskFacts.length ? dedupedRiskFacts : ['No high-confidence risk facts from current structured checks.'], 'risk'], ['Open Checks', dedupedEvidenceGaps.length ? dedupedEvidenceGaps.slice(0, 6) : ['No open evidence gaps from current checks.'], 'amber'], ['Watch Next', dedupedWatchNext.slice(0, 5), 'mint']].map(([title, items, tone]) => <div key={title as string} style={{ marginBottom: 10 }}><p style={{ margin: '0 0 8px', color: tone === 'risk' ? '#fb7185' : tone === 'amber' ? '#fbbf24' : '#2dd4bf', fontSize: 10, letterSpacing: '.12em', textTransform: 'uppercase', fontWeight: 900 }}>{title as string}</p><div style={{ display: 'grid', gap: 8 }}>{(items as string[]).map((line) => <div key={line} style={{ display: 'grid', gridTemplateColumns: '14px 1fr', gap: 8, padding: 10, borderRadius: 13, border: '1px solid rgba(148,163,184,.11)', background: 'rgba(15,23,42,.48)' }}><span style={{ marginTop: 4, width: 7, height: 7, borderRadius: 999, background: tone === 'risk' ? '#fb7185' : tone === 'amber' ? '#fbbf24' : '#2dd4bf' }} /><span style={{ color: '#cbd5e1', fontSize: 12, lineHeight: 1.45 }}>{line}</span></div>)}</div></div>)}
         </Section>
+
+        <NextFiveMinuteCard prediction={nextFiveMinuteRead} />
       </aside>
     </div>
   )
