@@ -6,7 +6,7 @@ import { assessBaseRadarSeverity, creatorTopHolderDisplay, normalizePairCreatedA
 import { getRadarDrawerValuation, getRadarValuationCardDisplay, DEFAULT_RADAR_MIN_LIQUIDITY_USD } from '@/lib/baseRadarValuation'
 import { getRadarValuationEvidence, getRadarSocialsEvidence, getRadarOwnershipEvidence, getRadarPastLaunchesEvidence, getRadarRugHistoryEvidence, getRadarSimulationEvidence, getRadarAgeEvidence, getRadarLpPositionEvidence, type RadarEvidenceEntry } from '@/lib/baseRadarEvidence'
 import { buildBaseRadarDisplayModel } from '@/lib/baseRadarDisplayModel'
-import { buildRadarSignals, buildWhyItMatters, buildRadarTimeline, buildNextFiveMinuteRead } from '@/lib/baseRadarSignals'
+import { buildRadarSignals, buildWhyItMatters, buildRadarTimeline, buildNextFiveMinuteRead, buildSmartMoneyClusterIntel, buildRadarContextLabels, buildRadarRiskSummary, type RadarSignalSeverity } from '@/lib/baseRadarSignals'
 import WhyItMattersBox from './WhyItMattersBox'
 import TimelineMiniChart from './TimelineMiniChart'
 import SignalsSidebar from './SignalsSidebar'
@@ -183,6 +183,22 @@ const EXPLORER: Record<ChainKey, string> = {
 const GT_NETWORK: Record<ChainKey, string> = {
   base: 'base',
   eth: 'eth',
+}
+
+const RADAR_RISK_SEVERITY_COLORS: Record<RadarSignalSeverity, string> = {
+  positive: '#34d399',
+  neutral: '#94a3b8',
+  watch: '#fbbf24',
+  risk: '#fb923c',
+  critical: '#f87171',
+}
+
+const RADAR_RISK_SEVERITY_LABELS: Record<RadarSignalSeverity, string> = {
+  positive: 'Positive',
+  neutral: 'Neutral',
+  watch: 'Watch',
+  risk: 'Risk',
+  critical: 'Critical',
 }
 
 async function fetchJson<T>(url: string): Promise<T> {
@@ -711,6 +727,18 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
     () => buildNextFiveMinuteRead(token, enriched),
     [token, enriched]
   )
+  const smartMoneyClusterIntel = useMemo(
+    () => buildSmartMoneyClusterIntel(token, enriched),
+    [token, enriched]
+  )
+  const radarContextLabels = useMemo(
+    () => buildRadarContextLabels(token, enriched),
+    [token, enriched]
+  )
+  const radarRiskSummary = useMemo(
+    () => buildRadarRiskSummary(token, enriched),
+    [token, enriched]
+  )
 
   async function copyText(value: string) {
     await navigator.clipboard?.writeText(value)
@@ -773,6 +801,66 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
         <TimelineMiniChart timeline={radarTimeline} />
 
         <SignalsSidebar signals={radarSignals} />
+
+        <section style={{ border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(255,255,255,0.03)', borderRadius: '14px', padding: '14px', marginBottom: '12px', maxWidth: '100%', overflow: 'hidden' }}>
+          <h3 style={{ margin: '0 0 12px', color: '#f8fafc', fontSize: '11px', letterSpacing: '0.14em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Wallet &amp; Risk Intelligence</h3>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10, marginBottom: 14 }}>
+            <div style={{ border: '1px solid rgba(255,255,255,0.07)', background: 'rgba(255,255,255,0.02)', borderRadius: '12px', padding: '10px 12px' }}>
+              <div style={{ color: '#94a3b8', fontSize: 10, letterSpacing: '.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', marginBottom: 6 }}>Smart Money</div>
+              {smartMoneyClusterIntel.smartMoney.count != null || smartMoneyClusterIntel.smartMoney.score != null ? (
+                <>
+                  <div style={{ color: '#f8fafc', fontSize: 18, fontWeight: 850, fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
+                    {smartMoneyClusterIntel.smartMoney.count ?? 'N/A'} <span style={{ color: '#94a3b8', fontSize: 11, fontWeight: 600 }}>wallets</span>
+                  </div>
+                  <div style={{ color: '#94a3b8', fontSize: 11, marginTop: 4 }}>Score: {smartMoneyClusterIntel.smartMoney.score ?? 'N/A'}</div>
+                </>
+              ) : (
+                <div style={{ color: '#94a3b8', fontSize: 12, fontFamily: 'var(--font-inter, Inter, sans-serif)', lineHeight: 1.4 }}>{smartMoneyClusterIntel.smartMoney.label}</div>
+              )}
+            </div>
+
+            <div style={{ border: '1px solid rgba(255,255,255,0.07)', background: 'rgba(255,255,255,0.02)', borderRadius: '12px', padding: '10px 12px' }}>
+              <div style={{ color: '#94a3b8', fontSize: 10, letterSpacing: '.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', marginBottom: 6 }}>Cluster Reputation</div>
+              <div style={{ color: '#f8fafc', fontSize: 14, fontWeight: 800, fontFamily: 'var(--font-inter, Inter, sans-serif)', marginBottom: 4 }}>{smartMoneyClusterIntel.cluster.reputation}</div>
+              {smartMoneyClusterIntel.cluster.clusterId ? <div style={{ color: '#64748b', fontSize: 10, fontFamily: 'var(--font-plex-mono)', marginBottom: 6 }}>{shortAddr(smartMoneyClusterIntel.cluster.clusterId)}</div> : null}
+              <div style={{ color: '#94a3b8', fontSize: 11, lineHeight: 1.45 }}>{smartMoneyClusterIntel.cluster.detail}</div>
+            </div>
+          </div>
+
+          <div style={{ marginBottom: 14 }}>
+            <p style={{ margin: '0 0 8px', color: '#94a3b8', fontSize: 10, letterSpacing: '.11em', textTransform: 'uppercase', fontWeight: 850, fontFamily: 'var(--font-plex-mono)' }}>Context</p>
+            <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>
+              <Chip label={`Liquidity: ${radarContextLabels.liquidity ?? 'N/A'}`} tone={radarContextLabels.liquidity === 'shallow' ? 'risk' : radarContextLabels.liquidity === 'deep' ? 'mint' : 'neutral'} />
+              <Chip label={`Volume: ${radarContextLabels.volume ?? 'N/A'}`} tone={radarContextLabels.volume === 'low' ? 'risk' : radarContextLabels.volume === 'high' ? 'mint' : 'neutral'} />
+              <Chip label={`Market cap: ${radarContextLabels.marketCap ?? 'N/A'}`} tone={radarContextLabels.marketCap === 'low' ? 'risk' : radarContextLabels.marketCap === 'high' ? 'mint' : 'neutral'} />
+              <Chip label={`Age: ${radarContextLabels.age ?? 'N/A'}`} tone={radarContextLabels.age === 'early' ? 'amber' : radarContextLabels.age === 'late' ? 'mint' : 'neutral'} />
+            </div>
+          </div>
+
+          <div>
+            <p style={{ margin: '0 0 8px', color: '#94a3b8', fontSize: 10, letterSpacing: '.11em', textTransform: 'uppercase', fontWeight: 850, fontFamily: 'var(--font-plex-mono)' }}>Risk Summary</p>
+            <div>
+              {radarRiskSummary.map((risk, idx) => {
+                const color = RADAR_RISK_SEVERITY_COLORS[risk.severity]
+                return (
+                  <div key={`${risk.label}-${idx}`} style={{ display: 'flex', gap: '10px', alignItems: 'flex-start', padding: '8px 0', borderBottom: idx === radarRiskSummary.length - 1 ? 'none' : '1px solid rgba(255,255,255,0.05)' }}>
+                    <span aria-hidden style={{ marginTop: '4px', width: '8px', height: '8px', borderRadius: '999px', background: color, flexShrink: 0 }} />
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                        <span style={{ color: '#e2e8f0', fontSize: '11px', fontWeight: 700, fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{risk.label}</span>
+                        <span style={{ padding: '2px 6px', borderRadius: '999px', border: `1px solid ${color}55`, background: `${color}1a`, color, fontSize: '9px', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+                          {RADAR_RISK_SEVERITY_LABELS[risk.severity]}
+                        </span>
+                      </div>
+                      <p style={{ margin: '4px 0 0', color: '#94a3b8', fontSize: '11px', lineHeight: 1.45 }}>{risk.detail}</p>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        </section>
 
         <Section title="Socials" state={enrichmentState}>
           {projectLinks.length ? <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(120px,1fr))', gap: 10 }}>{projectLinks.map((link) => <a key={link.label} href={link.href} target="_blank" rel="noreferrer" style={{ textDecoration: 'none', color: '#e2e8f0', padding: 12, borderRadius: 14, border: '1px solid rgba(45,212,191,.20)', background: 'rgba(45,212,191,.07)', fontWeight: 800 }}>{link.label} ↗</a>)}</div> : <div style={{ padding: 14, borderRadius: 15, border: '1px solid rgba(148,163,184,.12)', background: 'rgba(15,23,42,.52)' }}><p style={{ margin: '0 0 5px', color: '#e2e8f0', fontWeight: 750 }}>No public project links found in current metadata.</p><p style={{ margin: 0, color: '#94a3b8', fontSize: 12 }}>CORTEX will keep this as a social-evidence gap.</p></div>}
