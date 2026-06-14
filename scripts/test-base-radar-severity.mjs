@@ -464,6 +464,71 @@ assert('Orbit fallback payload with real marketCap maps to verified marketCapUsd
 const orbitNoMc = resolveFallbackMarketCap(null)
 assert('Orbit without fallback marketCap stays unverified (FDV never inferred as MC)', orbitNoMc.marketCapUsd === null && orbitNoMc.marketCapStatus === null, orbitNoMc)
 
+// ─── Section F: Risk-label scoring — verified market cap is not SAFE ──────
+// Mirrors scoreRisk() in app/api/radar/route.ts.
+const DEFAULT_RADAR_MIN_LIQUIDITY_USD_MIRROR = 5_000
+const VERY_NEW_MAX_AGE_MINUTES_MIRROR = 15
+const AGGRESSIVE_VOLUME_TO_LIQUIDITY_RATIO_MIRROR = 5
+
+function scoreRiskMirror({ hp, simulationStatus, ageMinutes, liquidityUsd, volume24h }) {
+  if (hp?.isHoneypot === true) return 'DANGER'
+  if (simulationStatus === 'passed' && hp != null && hp.simulationSuccess && hp.isHoneypot != null) {
+    if ((hp.sellTax ?? 0) > 10 || (hp.buyTax ?? 0) > 10) return 'CAUTION'
+    return 'SAFE'
+  }
+  const veryNew = ageMinutes < VERY_NEW_MAX_AGE_MINUTES_MIRROR
+  const weakLiquidity = liquidityUsd < DEFAULT_RADAR_MIN_LIQUIDITY_USD_MIRROR
+  const aggressiveVolume = liquidityUsd > 0 && volume24h / liquidityUsd >= AGGRESSIVE_VOLUME_TO_LIQUIDITY_RATIO_MIRROR
+  if (veryNew || weakLiquidity || aggressiveVolume) return 'CAUTION'
+  return 'WATCH'
+}
+
+console.log('\nSection F: Risk-label scoring')
+
+// Verified market cap + simulation timeout (honeypot null) → cannot be SAFE
+const timeoutRisk = scoreRiskMirror({ hp: null, simulationStatus: 'open_check', ageMinutes: 120, liquidityUsd: 25_000, volume24h: 5_000 })
+assert('Simulation timeout (honeypot null) on an established token is WATCH, not SAFE', timeoutRisk === 'WATCH', timeoutRisk)
+
+// Simulation timeout + very new token → CAUTION
+const timeoutVeryNewRisk = scoreRiskMirror({ hp: null, simulationStatus: 'open_check', ageMinutes: 5, liquidityUsd: 25_000, volume24h: 5_000 })
+assert('Simulation timeout on a very-new token is CAUTION', timeoutVeryNewRisk === 'CAUTION', timeoutVeryNewRisk)
+
+// Simulation timeout + weak liquidity → CAUTION
+const timeoutWeakLiquidityRisk = scoreRiskMirror({ hp: null, simulationStatus: 'open_check', ageMinutes: 120, liquidityUsd: 2_000, volume24h: 500 })
+assert('Simulation timeout with weak liquidity is CAUTION', timeoutWeakLiquidityRisk === 'CAUTION', timeoutWeakLiquidityRisk)
+
+// Simulation timeout + aggressive volume/liquidity ratio → CAUTION
+const timeoutAggressiveVolumeRisk = scoreRiskMirror({ hp: null, simulationStatus: 'open_check', ageMinutes: 120, liquidityUsd: 10_000, volume24h: 60_000 })
+assert('Simulation timeout with aggressive volume/liquidity ratio is CAUTION', timeoutAggressiveVolumeRisk === 'CAUTION', timeoutAggressiveVolumeRisk)
+
+// Honeypot true → DANGER regardless of simulation status
+const honeypotRisk = scoreRiskMirror({ hp: { isHoneypot: true, simulationSuccess: true, buyTax: 0, sellTax: 0 }, simulationStatus: 'passed', ageMinutes: 120, liquidityUsd: 25_000, volume24h: 5_000 })
+assert('Confirmed honeypot is DANGER', honeypotRisk === 'DANGER', honeypotRisk)
+
+// Simulation passed, honeypot known false, low taxes → SAFE
+const safeRisk = scoreRiskMirror({ hp: { isHoneypot: false, simulationSuccess: true, buyTax: 1, sellTax: 1 }, simulationStatus: 'passed', ageMinutes: 120, liquidityUsd: 25_000, volume24h: 5_000 })
+assert('Simulation passed with low taxes and known honeypot=false is SAFE', safeRisk === 'SAFE', safeRisk)
+
+// Simulation passed, high taxes → CAUTION
+const highTaxRisk = scoreRiskMirror({ hp: { isHoneypot: false, simulationSuccess: true, buyTax: 15, sellTax: 1 }, simulationStatus: 'passed', ageMinutes: 120, liquidityUsd: 25_000, volume24h: 5_000 })
+assert('Simulation passed with high buy tax is CAUTION', highTaxRisk === 'CAUTION', highTaxRisk)
+
+// ─── Stats must count final adjusted risk labels, not raw SAFE ────────────
+const scoredTokens = [
+  scoreRiskMirror({ hp: null, simulationStatus: 'open_check', ageMinutes: 120, liquidityUsd: 25_000, volume24h: 5_000 }), // WATCH
+  scoreRiskMirror({ hp: null, simulationStatus: 'open_check', ageMinutes: 5, liquidityUsd: 25_000, volume24h: 5_000 }), // CAUTION
+  scoreRiskMirror({ hp: { isHoneypot: true, simulationSuccess: true, buyTax: 0, sellTax: 0 }, simulationStatus: 'passed', ageMinutes: 120, liquidityUsd: 25_000, volume24h: 5_000 }), // DANGER
+  scoreRiskMirror({ hp: { isHoneypot: false, simulationSuccess: true, buyTax: 1, sellTax: 1 }, simulationStatus: 'passed', ageMinutes: 120, liquidityUsd: 25_000, volume24h: 5_000 }), // SAFE
+]
+const dangerCount = scoredTokens.filter((r) => r === 'DANGER').length
+const cautionCount = scoredTokens.filter((r) => r === 'CAUTION').length
+const watchCount = scoredTokens.filter((r) => r === 'WATCH').length
+const safeCount = scoredTokens.filter((r) => r === 'SAFE').length
+assert('Stats counts reflect adjusted risk labels (1 each of DANGER/CAUTION/WATCH/SAFE)', dangerCount === 1 && cautionCount === 1 && watchCount === 1 && safeCount === 1, { dangerCount, cautionCount, watchCount, safeCount })
+const counts = [['DANGER', dangerCount], ['CAUTION', cautionCount], ['WATCH', watchCount], ['SAFE', safeCount]]
+const mostCommonRisk = counts.reduce((best, current) => current[1] > best[1] ? current : best)[0]
+assert('mostCommonRisk is the highest-count adjusted label (DANGER, first by tie-order)', mostCommonRisk === 'DANGER', mostCommonRisk)
+
 // ─── Summary ────────────────────────────────────────────────────────────
 
 console.log(`\n${passed} passed, ${failed} failed`)

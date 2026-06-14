@@ -6,7 +6,16 @@ import {
   getRadarOwnershipEvidence,
   getRadarPastLaunchesEvidence,
   getRadarRugHistoryEvidence,
+  getRadarSimulationEvidence,
+  getRadarAgeEvidence,
+  getRadarLpPositionEvidence,
 } from '../lib/baseRadarEvidence.ts'
+
+const fmtUSD = (v) => {
+  if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(1)}M`
+  if (v >= 1_000) return `$${(v / 1_000).toFixed(1)}K`
+  return `$${v.toFixed(0)}`
+}
 
 // ─── Item 1: valuation — marketCap null + valid FDV → single FDV-fallback item ─
 const fdvFallbackValuation = getRadarValuationBasis({ marketCapUsd: null, marketCapStatus: null, fdvUsd: 50_000, liquidityUsd: 10_000 })
@@ -114,5 +123,56 @@ assert.ok(rugHistoryFlagged.label.includes('3 linked wallet/cluster patterns'))
 const rugHistoryNoDeployer = getRadarRugHistoryEvidence({ deployerAddress: null, rugHistory: null })
 assert.equal(rugHistoryNoDeployer.status, 'open_check')
 assert.ok(rugHistoryNoDeployer.reason)
+
+// ─── Item 6: simulation — timeout → specific reason + tax/honeypot not confirmed ─
+const simTimeout = getRadarSimulationEvidence({ status: 'open_check', reason: 'timeout' })
+assert.ok(simTimeout)
+assert.equal(simTimeout.status, 'open_check')
+assert.ok(/timed out/i.test(simTimeout.label))
+assert.ok(/tax and honeypot status are not confirmed/i.test(simTimeout.label))
+assert.ok(!/remains open check because/i.test(simTimeout.label))
+
+// simulation unsupported pool model → specific reason
+const simUnsupported = getRadarSimulationEvidence({ status: 'open_check', reason: 'unsupported pool model' })
+assert.ok(simUnsupported)
+assert.ok(/unsupported pool model/i.test(simUnsupported.label))
+
+// simulation missing pair address → specific reason
+const simMissingPair = getRadarSimulationEvidence({ status: 'open_check', reason: 'missing pair address' })
+assert.ok(simMissingPair)
+assert.ok(/missing pair address/i.test(simMissingPair.label))
+
+// simulation passed → no evidence gap
+assert.equal(getRadarSimulationEvidence({ status: 'passed', reason: null }), null)
+
+// ─── Item 7: age — token under 15 minutes is a verified risk fact ──────────────
+const veryNewEvidence = getRadarAgeEvidence({ ageMinutes: 7 })
+assert.ok(veryNewEvidence)
+assert.equal(veryNewEvidence.status, 'risk_fact')
+assert.ok(/very new/i.test(veryNewEvidence.label))
+assert.ok(/7 minute/.test(veryNewEvidence.label))
+
+// token older than 15 minutes → no age evidence entry
+assert.equal(getRadarAgeEvidence({ ageMinutes: 45 }), null)
+assert.equal(getRadarAgeEvidence({ ageMinutes: null }), null)
+
+// ─── Item 8: LP position — concentrated pools show "Position verification required"
+// with pool ID/dex/liquidity facts, not a generic open check ────────────────────
+const lpConcentrated = getRadarLpPositionEvidence({
+  isConcentrated: true,
+  poolId: '0xpool1234567890123456789012345678901234ab',
+  dex: 'Uniswap V3',
+  liquidityUsd: 42_000,
+  fmtUSD,
+})
+assert.ok(lpConcentrated)
+assert.equal(lpConcentrated.status, 'open_check')
+assert.ok(lpConcentrated.label.startsWith('Position verification required'))
+assert.ok(lpConcentrated.label.includes('Uniswap V3'))
+assert.ok(lpConcentrated.label.includes('$42.0K'))
+assert.ok(!/^Open check/i.test(lpConcentrated.label))
+
+// non-concentrated pools → no LP position evidence entry
+assert.equal(getRadarLpPositionEvidence({ isConcentrated: false, poolId: null, dex: null, liquidityUsd: null, fmtUSD }), null)
 
 console.log('base radar evidence tests passed')

@@ -3,7 +3,19 @@ import { getBaseMarketUniverse, type BaseMarketCandidate, type BaseMarketMode } 
 import { fetchHoneypotSecurity } from "@/lib/server/honeypotSecurity";
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { getVerifiedUserPlan } from '@/lib/supabase/userSettings'
-import { resolveClarkIntent } from '@/lib/clarkIntent'
+import {
+  classifyClarkPrompt,
+  buildWalletApiRequestBody,
+  formatBaseMarketReadFromRows,
+  formatBaseMarketReadFromCandidates,
+  formatBaseRadarRead,
+  formatWalletScanResult,
+  formatEoaLpCheckReply,
+  formatLpReadResult,
+  formatCouldNotComplete,
+  buildRoutedActions,
+  type ClarkAction,
+} from "@/lib/server/clarkRouting";
 
 const {
   GOLDRUSH_API_KEY,
@@ -394,6 +406,13 @@ interface ClarkRequestBody {
     lastToken?: ClarkSessionMemory["lastToken"];
     lastWallet?: ClarkSessionMemory["lastWallet"];
   };
+  route?: string;
+  currentTool?: string;
+  selectedToken?: string;
+  selectedWallet?: string;
+  dashboardMarketRows?: Array<{ symbol: string; name?: string; chain?: string; priceUsd?: number; change24h?: number; volume24hUsd?: number; marketCapUsd?: number }>;
+  baseRadarSummary?: unknown;
+  whaleSyncStatus?: unknown;
 }
 
 interface ClarkContext {
@@ -419,7 +438,10 @@ type ClarkIntent =
   | "wallet_analysis"
   | "dev_wallet"
   | "liquidity_safety"
+  | "liquidity_scan"
   | "base_radar"
+  | "base_market_discovery"
+  | "wallet_scan"
   | "whale_alert"
   | "feature_context"
   | "unknown";
@@ -478,7 +500,7 @@ type ClarkReplyMode =
   | "feature_context"
   | "unknown";
 
-type LiveIntent = "MARKET_OVERVIEW" | "TOKEN_QUERY" | "BASE_MARKET" | "WALLET_QUERY" | "WHALE_FEED" | "GENERAL_CHAT";
+type LiveIntent = "MARKET_OVERVIEW" | "TOKEN_QUERY" | "BASE_MARKET" | "BASE_MARKET_DISCOVERY" | "WALLET_QUERY" | "WHALE_FEED" | "GENERAL_CHAT";
 
 // ---------- Chain name maps ----------
 
@@ -2875,6 +2897,35 @@ async function callScanToken(
     return json.ok ? json.data : null;
   } catch {
     return null;
+  }
+}
+
+// Read-only eth_getCode check — distinguishes a token contract from an EOA.
+// Modeled on getContractCode() in app/api/scan-holder/route.ts.
+async function isContractAddress(address: string, _origin: string): Promise<boolean> {
+  const key = process.env.ALCHEMY_BASE_KEY ?? "";
+  const rpc = key
+    ? `https://base-mainnet.g.alchemy.com/v2/${key}`
+    : "https://mainnet.base.org";
+  try {
+    const res = await fetch(rpc, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "eth_getCode",
+        params: [address, "latest"],
+      }),
+      cache: "no-store",
+      signal: AbortSignal.timeout(4_000),
+    });
+    if (!res.ok) return false;
+    const json = await res.json();
+    const code: string = json?.result ?? "";
+    return code !== "0x" && code !== "";
+  } catch {
+    return false;
   }
 }
 
@@ -6409,6 +6460,212 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   }
   const liveIntent = detectLiveIntent(prompt);
   const directIntent = detectIntent(prompt);
+
+  // ── New routed intents (classifyClarkPrompt) — intercept before legacy logic ──
+  const routed = classifyClarkPrompt(prompt);
+  if (routed.intent === "liquidity_scan" && routed.address) {
+    const isContract = await isContractAddress(routed.address, origin);
+    if (!isContract) {
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_scan", toolsUsed: [],
+        analysis: formatEoaLpCheckReply(),
+        intentBadge: "liquidity_scan",
+        actions: buildRoutedActions(["Scan Wallet", "Deep Scan Wallet"]),
+        quotaConsumed: false,
+      };
+    }
+    const scanData = await callScanToken(routed.address, "contract", origin).catch(() => null) as Record<string, unknown> | null;
+    if (!scanData) {
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_scan", toolsUsed: ["liquidity_analyze"],
+        analysis: formatLpReadResult(null),
+        intentBadge: "liquidity_scan",
+        actions: buildRoutedActions(["Open Token Scanner", "Run LP Check"]),
+        quotaConsumed: false,
+      };
+    }
+    const pools = Array.isArray(scanData.pools) ? scanData.pools as Array<Record<string, unknown>> : [];
+    const topPool = pools[0];
+    const mapped = {
+      token: { name: typeof scanData.name === "string" ? scanData.name : null, symbol: typeof scanData.symbol === "string" ? scanData.symbol : null },
+      primaryPool: topPool && typeof topPool.address === "string" ? topPool.address : null,
+      poolModel: undefined,
+      lockBurnProof: undefined,
+      controllerVerification: undefined,
+      liquidityDepth: typeof scanData.liquidity === "number" ? `${scanData.liquidity}` : undefined,
+      exitRisk: undefined,
+      missingEvidence: ["LP lock/burn proof", "pool model", "controller verification", "exit risk"],
+    };
+    return {
+      feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_scan", toolsUsed: ["liquidity_analyze"],
+      analysis: formatLpReadResult(mapped),
+      intentBadge: "liquidity_scan",
+      actions: buildRoutedActions(["Open Token Scanner", "Run LP Check"]),
+      quotaConsumed: true,
+    };
+  }
+
+  if (routed.intent === "wallet_scan" && routed.address) {
+    const reqBody = buildWalletApiRequestBody(routed.address, routed.deep);
+    const walletRes = await callInternalApi(origin, "/api/wallet", reqBody, authHeader ?? undefined);
+    const w = (walletRes.json ?? {}) as Record<string, unknown>;
+    const ok = walletRes.ok && Object.keys(w).length > 0 && w.error == null;
+    const holdings = Array.isArray(w.holdings) ? (w.holdings as Array<Record<string, unknown>>) : [];
+    const chainsActive = Array.from(new Set(
+      holdings.map((h) => (typeof h.chain === "string" ? h.chain : null)).filter((c): c is string => !!c)
+    ));
+    const mappedResult = {
+      ok,
+      address: routed.address,
+      totalValue: typeof w.totalValue === "number" ? w.totalValue : null,
+      holdings: holdings.map((h) => ({
+        symbol: typeof h.symbol === "string" ? h.symbol : undefined,
+        value: typeof h.value === "number" ? h.value : undefined,
+        chain: typeof h.chain === "string" ? h.chain : null,
+      })),
+      chainsActive: chainsActive.length > 0 ? chainsActive : null,
+      txCount: typeof w.txCount === "number" ? w.txCount : null,
+      error: typeof w.error === "string" ? w.error : null,
+    };
+    const analysis = formatWalletScanResult(routed.address, mappedResult, routed.deep);
+    updateMemWallet(sessionMem, routed.address, null, analysis);
+    updateMemIntent(sessionMem, "wallet_analysis");
+    return {
+      feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: ["wallet_get_snapshot"],
+      analysis,
+      intentBadge: "wallet_scan",
+      actions: buildRoutedActions(routed.deep ? ["Open Token Scanner"] : ["Deep Scan Wallet"]),
+      quotaConsumed: ok,
+    };
+  }
+
+  if (routed.intent === "base_radar") {
+    let radarItems: import("@/lib/server/clarkRouting").RadarLikeItem[] = [];
+    let evidenceGaps: string[] | null = null;
+    const summary = body.baseRadarSummary;
+    if (summary && typeof summary === "object" && Object.keys(summary as Record<string, unknown>).length > 0) {
+      const s = summary as Record<string, unknown>;
+      const rawItems = Array.isArray(s.items) ? (s.items as Array<Record<string, unknown>>) : [];
+      radarItems = rawItems.map((it) => ({
+        symbol: typeof it.symbol === "string" ? it.symbol : null,
+        name: typeof it.name === "string" ? it.name : null,
+        radarScore: typeof it.radarScore === "number" ? it.radarScore : null,
+        volume24h: typeof it.volume24h === "number" ? it.volume24h : null,
+        liquidity: typeof it.liquidity === "number" ? it.liquidity : null,
+        poolAgeHours: typeof it.poolAgeHours === "number" ? it.poolAgeHours : null,
+        address: typeof it.address === "string" ? it.address : null,
+      }));
+      evidenceGaps = Array.isArray(s.evidenceGaps) ? (s.evidenceGaps as string[]).filter((x) => typeof x === "string") : null;
+    }
+    if (radarItems.length === 0) {
+      const radarResult = await handleBaseRadarSnapshot(origin, prompt).catch(() => ({ analysis: "", items: [] as Array<Record<string, unknown>> }));
+      radarItems = (radarResult.items ?? []).map((it) => ({
+        symbol: typeof it.symbol === "string" ? it.symbol : null,
+        name: typeof it.name === "string" ? it.name : null,
+        radarScore: null,
+        volume24h: typeof it.volume24h === "number" ? it.volume24h : null,
+        liquidity: typeof it.liquidity === "number" ? it.liquidity : null,
+        poolAgeHours: null,
+        address: typeof it.address === "string" ? it.address : null,
+      }));
+    }
+    const formatted = formatBaseRadarRead(radarItems, evidenceGaps);
+    if (formatted) {
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "base_radar", toolsUsed: ["base_radar_feed"],
+        analysis: formatted,
+        intentBadge: "base_radar",
+        actions: buildRoutedActions(["Open Base Radar", "Run LP Check"]),
+        quotaConsumed: true,
+      };
+    }
+    return {
+      feature: "clark-ai", chain, mode: "analysis", intent: "base_radar", toolsUsed: ["base_radar_feed"],
+      analysis: formatCouldNotComplete({
+        intentBadge: "base_radar",
+        attempted: ["Base Radar feed", "live trending snapshot"],
+        reason: "radar snapshot returned no candidates",
+        actions: buildRoutedActions(["Open Base Radar", "Refresh Market Data"]),
+      }),
+      intentBadge: "base_radar",
+      actions: buildRoutedActions(["Open Base Radar", "Refresh Market Data"]),
+      quotaConsumed: false,
+    };
+  }
+
+  if (routed.intent === "base_market_discovery") {
+    if (Array.isArray(body.dashboardMarketRows) && body.dashboardMarketRows.length > 0) {
+      const formatted = formatBaseMarketReadFromRows(body.dashboardMarketRows);
+      if (formatted) {
+        return {
+          feature: "clark-ai", chain, mode: "analysis", intent: "base_market_discovery", toolsUsed: [],
+          analysis: formatted,
+          intentBadge: "base_market_discovery",
+          actions: buildRoutedActions(["Open Base Radar", "Open Token Scanner", "Refresh Market Data"]),
+          quotaConsumed: true,
+        };
+      }
+    }
+    const universe = await getBaseMarketUniverse({ origin, mode: "pumping", requestedCount: 10, followup: false, excludeAddresses: [], includePoolVariants: false }).catch(() => null);
+    const candidates = universe?.candidates ?? [];
+    if (candidates.length > 0) {
+      const mappedCandidates = candidates.map((c) => ({
+        symbol: c.symbol, name: c.name, change24h: c.change24h, volume24hUsd: c.volume24h,
+        priceUsd: c.priceUsd, marketCapUsd: c.marketCap,
+      }));
+      const formatted = formatBaseMarketReadFromCandidates(mappedCandidates);
+      if (formatted) {
+        return {
+          feature: "clark-ai", chain, mode: "analysis", intent: "base_market_discovery", toolsUsed: ["base_market_universe"],
+          analysis: formatted,
+          intentBadge: "base_market_discovery",
+          actions: buildRoutedActions(["Open Base Radar", "Open Token Scanner", "Refresh Market Data"]),
+          quotaConsumed: true,
+        };
+      }
+    }
+    return {
+      feature: "clark-ai", chain, mode: "analysis", intent: "base_market_discovery", toolsUsed: ["base_market_universe"],
+      analysis: formatCouldNotComplete({
+        intentBadge: "base_market_discovery",
+        attempted: ["dashboard market view", "live Base market data"],
+        reason: "no dashboard market rows were supplied and the live Base market universe returned no candidates",
+        actions: buildRoutedActions(["Open Base Radar", "Refresh Market Data"]),
+      }),
+      intentBadge: "base_market_discovery",
+      actions: buildRoutedActions(["Open Base Radar", "Refresh Market Data"]),
+      quotaConsumed: false,
+    };
+  }
+
+  if (routed.intent === "whale_alert") {
+    const whaleResult = await handleWhaleAlertFeed(prompt, body, origin, authHeader);
+    const whaleAnalysis = typeof (whaleResult as Record<string, unknown>)?.analysis === "string"
+      ? (whaleResult as Record<string, unknown>).analysis as string
+      : "";
+    const looksEmpty = whaleAnalysis.trim().length === 0 || /no .*(alerts|data|signal)/i.test(whaleAnalysis);
+    if (looksEmpty) {
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "whale_alert", toolsUsed: ["whale_alerts_feed"],
+        analysis: formatCouldNotComplete({
+          intentBadge: "whale_alert",
+          attempted: ["whale alert feed"],
+          reason: "the whale alert feed returned no usable data for this request",
+          actions: buildRoutedActions(["Open Whale Alerts"]),
+        }),
+        intentBadge: "whale_alert",
+        actions: buildRoutedActions(["Open Whale Alerts"]),
+        quotaConsumed: false,
+      };
+    }
+    return {
+      ...(whaleResult as Record<string, unknown>),
+      intentBadge: "whale_alert",
+      actions: buildRoutedActions(["Open Whale Alerts"]),
+      quotaConsumed: true,
+    };
+  }
+
   const historyContext = buildHistoryContextText(body.history);
 
   if (directIntent.intent === "trading_boundary") {
@@ -7785,10 +8042,17 @@ export async function POST(req: NextRequest) {
     }
     // Re-check after cleaning: cleanup could collapse the reply to whitespace.
     if (typeof normData.reply === "string" && normData.reply.trim().length === 0) {
-      normData.reply = CLARK_EMPTY_FALLBACK
-      normData.response = CLARK_EMPTY_FALLBACK
-      normData.message = CLARK_EMPTY_FALLBACK
-      normData.text = CLARK_EMPTY_FALLBACK
+      const fallback = formatCouldNotComplete({
+        intentBadge: typeof normData.intentBadge === "string" ? normData.intentBadge : (body.prompt ?? body.feature ?? "unknown"),
+        attempted: ["live Base market data", "CORTEX evidence pipeline"],
+        reason: "The selected response renderer produced no readable text for this request.",
+        actions: buildRoutedActions(["Refresh Market Data"]),
+      })
+      normData.reply = fallback
+      normData.response = fallback
+      normData.message = fallback
+      normData.text = fallback
+      normData.quotaConsumedOverride = false
     }
     const replyForMem = typeof normData.reply === 'string' ? normData.reply : (typeof normData.analysis === 'string' ? normData.analysis : "")
     rememberMessage(sessionMem, "assistant", replyForMem)
@@ -7805,7 +8069,11 @@ export async function POST(req: NextRequest) {
       },
     }
     const resultAnalysis = typeof (result as Record<string, unknown>)?.analysis === 'string' ? (result as Record<string, unknown>).analysis as string : ''
-    const quotaConsumed = !isValidationOnlyAnalysis(resultAnalysis)
+    const resultQuotaOverride = (result as Record<string, unknown>)?.quotaConsumed
+    let quotaConsumed = !isValidationOnlyAnalysis(resultAnalysis)
+    if (typeof resultQuotaOverride === 'boolean') quotaConsumed = resultQuotaOverride
+    if (normData.quotaConsumedOverride === false) quotaConsumed = false
+    delete normData.quotaConsumedOverride
     if (quotaConsumed) rateResult.commitDaily()
     normalized.quotaConsumed = quotaConsumed
     const cacheTtl = body.feature === "clark-ai" ? 90_000 : body.feature === "whale-alerts" || body.feature === "pump-alerts" || body.feature === "base-radar" ? 120_000 : 60_000
@@ -7813,27 +8081,33 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(normalized, { status: 200 });
   } catch (err: unknown) {
     console.error("[Clark]", err instanceof Error ? err.message : err);
-    const safeMsg = [
-      "CORTEX could not complete that read from live data right now. The available signals are incomplete.",
-      "",
-      "Try:",
-      "- run token scan: scan SYMBOL",
-      "- run liquidity check: liquidity check SYMBOL",
-      "- paste a contract address",
-      "- paste a wallet address",
-    ].join("\n");
+    const intentBadge = (() => {
+      try {
+        const { intent } = detectIntent(body.prompt ?? "");
+        return intent;
+      } catch { return "unknown"; }
+    })();
+    const safeMsg = formatCouldNotComplete({
+      intentBadge,
+      attempted: ["live Base market data", "CORTEX evidence pipeline"],
+      reason: err instanceof Error ? err.message : "An unexpected error interrupted this read before a result was produced.",
+      actions: buildRoutedActions(["Refresh Market Data"]),
+    });
     return NextResponse.json({
       ok: true,
       feature: "clark-ai",
-      data: { reply: safeMsg, response: safeMsg, analysis: safeMsg, verdict: "SCAN DEEPER", source: "fallback" },
+      data: {
+        reply: safeMsg, response: safeMsg, message: safeMsg, text: safeMsg, analysis: safeMsg,
+        verdict: "SCAN DEEPER", source: "fallback",
+        intentBadge, actions: buildRoutedActions(["Refresh Market Data"]),
+      },
+      quotaConsumed: false,
     }, { status: 200 });
   }
   finally {
     clarkInternalCtx = {}
   }
 }
-
-const CLARK_EMPTY_FALLBACK = "No data available right now — try again in a moment."
 
 function normalizeApiReplyShape(result: unknown, body: ClarkRequestBody) {
   const obj = (result && typeof result === "object") ? { ...(result as Record<string, unknown>) } : {};
@@ -7845,10 +8119,19 @@ function normalizeApiReplyShape(result: unknown, body: ClarkRequestBody) {
     (typeof obj.text === "string" ? obj.text : null) ??
     (typeof result === "string" ? result : "");
 
+  let quotaConsumedOverride: boolean | undefined
   // Guard: never let an empty/whitespace-only string, or a non-string result
   // that produced no matching text field, reach the frontend markdown renderer.
+  // Replace with a structured "could not complete" response instead of a dead-end string.
   if (typeof reply !== "string" || reply.trim().length === 0) {
-    reply = CLARK_EMPTY_FALLBACK;
+    const intentBadge = typeof obj.intent === "string" ? obj.intent : (typeof obj.mode === "string" ? obj.mode : (body.mode ?? body.feature ?? "unknown"));
+    reply = formatCouldNotComplete({
+      intentBadge: String(intentBadge),
+      attempted: ["live Base market data", "CORTEX evidence pipeline"],
+      reason: "No usable evidence was returned for this request in the current pass.",
+      actions: buildRoutedActions(["Refresh Market Data"]),
+    });
+    quotaConsumedOverride = false
   }
 
   const verdictMatch = reply.match(/\bVerdict:\s*(AVOID|WATCH|SCAN DEEPER|TRUSTWORTHY|UNKNOWN)\b/i);
@@ -7858,6 +8141,12 @@ function normalizeApiReplyShape(result: unknown, body: ClarkRequestBody) {
   const source: ClarkSource = verdict
     ? (body.feature === "clark-ai" ? "feature_context" : "tool_call")
     : (isCasualAssistantPrompt(body.prompt ?? "") ? "casual" : "fallback");
+
+  const intentBadge = typeof obj.intentBadge === "string" ? obj.intentBadge
+    : (typeof obj.intent === "string" ? obj.intent : (body.mode ?? body.feature ?? "unknown"));
+  const actions = Array.isArray(obj.actions) && obj.actions.length > 0
+    ? buildRoutedActions(obj.actions as ClarkAction[])
+    : buildRoutedActions(["Refresh Market Data"]);
 
   return {
     ...obj,
@@ -7869,5 +8158,8 @@ function normalizeApiReplyShape(result: unknown, body: ClarkRequestBody) {
     confidence,
     mode: (typeof obj.mode === "string" ? obj.mode : null) ?? body.mode ?? body.feature,
     source,
+    intentBadge: String(intentBadge),
+    actions,
+    ...(quotaConsumedOverride === false ? { quotaConsumedOverride: false } : {}),
   };
 }

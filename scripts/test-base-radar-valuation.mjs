@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { getRadarValuationBasis, getRadarValuationCardDisplay, getRadarValuationDrawerDisplay, getRadarCortexValuationLine, getRadarValuationEvidenceGap, tokenPassesRadarValuationFilters, resolveFallbackMarketCap, resolveBaseRadarMarketCap, selectDexScreenerMarketCapRescuePair, DEFAULT_RADAR_MIN_LIQUIDITY_USD } from '../lib/baseRadarValuation.ts'
+import { getRadarValuationBasis, getRadarValuationCardDisplay, getRadarValuationDrawerDisplay, getRadarCortexValuationLine, getRadarValuationEvidenceGap, getRadarDrawerValuation, tokenPassesRadarValuationFilters, resolveFallbackMarketCap, resolveBaseRadarMarketCap, selectDexScreenerMarketCapRescuePair, DEFAULT_RADAR_MIN_LIQUIDITY_USD } from '../lib/baseRadarValuation.ts'
 
 const fmtUSD = (v) => {
   if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(1)}M`
@@ -192,6 +192,57 @@ const rescueValuation = getRadarValuationBasis({
 })
 assert.equal(rescueMc.marketCapUsd, 123456)
 assert.equal(rescueMc.marketCapStatus, 'verified')
+
+// ─── Drawer merge rule: verified feed MC + null drawer enrichment -> drawer
+// keeps the verified feed market cap, not FDV fallback/unavailable ─────────
+let drawerValuation = getRadarDrawerValuation({
+  enrichmentMarketCapUsd: null,
+  enrichmentMarketCapStatus: 'unavailable',
+  feedMarketCapUsd: 25_006,
+  feedMarketCapStatus: 'verified',
+  fdvUsd: 980_000,
+  liquidityUsd: 12_000,
+})
+assert.equal(drawerValuation.basis, 'verified_market_cap')
+assert.equal(drawerValuation.valueUsd, 25_006)
+assert.equal(drawerValuation.verified, true)
+assert.equal(getRadarValuationCardDisplay(drawerValuation, fmtUSD).label, 'Market cap')
+assert.equal(getRadarValuationCardDisplay(drawerValuation, fmtUSD).sublabel, 'Verified')
+
+// ─── Drawer merge rule: verified enrichment MC wins over verified feed MC ──
+drawerValuation = getRadarDrawerValuation({
+  enrichmentMarketCapUsd: 30_000,
+  enrichmentMarketCapStatus: 'verified',
+  feedMarketCapUsd: 25_006,
+  feedMarketCapStatus: 'verified',
+  fdvUsd: null,
+  liquidityUsd: 12_000,
+})
+assert.equal(drawerValuation.basis, 'verified_market_cap')
+assert.equal(drawerValuation.valueUsd, 30_000)
+
+// ─── Drawer merge rule: neither side verified -> FDV fallback ─────────────
+drawerValuation = getRadarDrawerValuation({
+  enrichmentMarketCapUsd: null,
+  enrichmentMarketCapStatus: 'unavailable',
+  feedMarketCapUsd: null,
+  feedMarketCapStatus: 'unavailable',
+  fdvUsd: 980_000,
+  liquidityUsd: 12_000,
+})
+assert.equal(drawerValuation.basis, 'fdv_fallback')
+
+// ─── Drawer merge rule: neither side verified, no valid FDV -> unavailable ─
+drawerValuation = getRadarDrawerValuation({
+  enrichmentMarketCapUsd: null,
+  enrichmentMarketCapStatus: 'unavailable',
+  feedMarketCapUsd: null,
+  feedMarketCapStatus: 'unavailable',
+  fdvUsd: null,
+  liquidityUsd: 12_000,
+})
+assert.equal(drawerValuation.basis, 'unavailable')
+
 assert.equal(rescueMc.marketCapFieldPath, 'dexPair[0xpair1].marketCapRescue.marketCap')
 assert.equal(rescueValuation.basis, 'verified_market_cap')
 

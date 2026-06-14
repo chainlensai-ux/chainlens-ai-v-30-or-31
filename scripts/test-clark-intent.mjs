@@ -1,52 +1,50 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
-import vm from 'node:vm'
-import ts from 'typescript'
+import {
+  classifyClarkPrompt,
+  formatEoaLpCheckReply,
+  formatBaseMarketReadFromRows,
+  formatBaseRadarRead,
+} from '../lib/server/clarkRouting.ts'
 
-const source = readFileSync(new URL('../lib/clarkIntent.ts', import.meta.url), 'utf8')
-  .replace('export function resolveClarkIntent', 'function resolveClarkIntent')
-const js = ts.transpileModule(`${source}\n;(globalThis.__resolveClarkIntent = resolveClarkIntent)`, {
-  compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022, verbatimModuleSyntax: false },
-}).outputText.replace(/export \{\};?/, '')
-const sandbox = { globalThis: {} }
-vm.runInNewContext(js, sandbox)
-const resolveClarkIntent = sandbox.globalThis.__resolveClarkIntent
+// ─── base_market_discovery vs base_radar ─────────────────────────────────────
+assert.equal(classifyClarkPrompt("what's pumping on Base?").intent, 'base_market_discovery')
+assert.equal(classifyClarkPrompt("what's pumping on Base Radar?").intent, 'base_radar')
 
-const wallet = '0x1111111111111111111111111111111111111111'
-const token = '0x2222222222222222222222222222222222222222'
-assert.equal(resolveClarkIntent('whats pumping base').intent, 'base_radar')
-assert.equal(resolveClarkIntent('base movers').intent, 'base_radar')
-let r = resolveClarkIntent(`scan this wallet ${wallet}`)
-assert.equal(r.intent, 'wallet_scan'); assert.equal(r.address, wallet); assert.equal(r.addressKind, 'wallet')
-r = resolveClarkIntent(`deep scan this wallet ${wallet}`)
-assert.equal(r.intent, 'wallet_scan'); assert.equal(r.address, wallet)
-r = resolveClarkIntent(`full wallet scan ${wallet}`)
-assert.equal(r.intent, 'wallet_scan'); assert.equal(r.address, wallet)
-r = resolveClarkIntent(`pnl ${wallet}`)
-assert.equal(r.intent, 'wallet_scan'); assert.equal(r.address, wallet)
-r = resolveClarkIntent(wallet)
-assert.equal(r.intent, 'wallet_scan'); assert.equal(r.address, wallet)
-r = resolveClarkIntent(`lp check ${token}`)
-assert.equal(r.intent, 'liquidity_scan'); assert.equal(r.address, token); assert.equal(r.addressKind, 'token')
-assert.equal(resolveClarkIntent('whale wallets').intent, 'whale_alerts')
-r = resolveClarkIntent('check liquidity', { selectedToken: token })
-assert.equal(r.intent, 'liquidity_scan'); assert.equal(r.address, token); assert.equal(r.source, 'context')
-r = resolveClarkIntent('deep scan this', { selectedWallet: wallet })
-assert.equal(r.intent, 'wallet_scan'); assert.equal(r.address, wallet); assert.equal(r.source, 'context')
+// ─── wallet_scan ──────────────────────────────────────────────────────────────
+{
+  const r = classifyClarkPrompt('scan this wallet 0x1234567890123456789012345678901234567890')
+  assert.equal(r.intent, 'wallet_scan')
+  assert.equal(r.deep, false)
+}
+{
+  const r = classifyClarkPrompt('deep scan this wallet 0x1234567890123456789012345678901234567890')
+  assert.equal(r.intent, 'wallet_scan')
+  assert.equal(r.deep, true)
+}
+{
+  const r = classifyClarkPrompt('0x1234567890123456789012345678901234567890')
+  assert.equal(r.intent, 'wallet_scan')
+}
 
-const badDeadEnds = [/^no data available right now\.?$/i, /paste a (token|wallet)/i]
-const radarOk = 'BASE RADAR READ\n- strongest: TOKEN score 91\n- highest volume: TOKEN\nCTA: Open Base Radar / Scan top token / Ask CORTEX'
-assert.match(radarOk, /BASE RADAR READ/)
-assert.ok(!/No data available/i.test(radarOk))
-const radarUnavailable = 'Base Radar could not refresh right now. Open Base Radar or retry in 30 seconds.'
-assert.match(radarUnavailable, /Open Base Radar|30 seconds/i)
-const walletFail = `WALLET SCAN\n- wallet: ${wallet}\n- result: live wallet scan could not complete (timeout).\nCTA: Open Wallet Scanner`
-assert.doesNotMatch(walletFail, /paste/i)
-const lpWalletRefusal = 'That address looks like a wallet, not a token contract. LP checks need a token contract. I can scan the wallet instead. CTA: Scan Wallet'
-assert.match(lpWalletRefusal, /wallet, not a token contract/i)
-const lpFailure = 'LP READ\n- result: LP pipeline failed (no pool found).\nCTA: Open Liquidity Safety / Open Token Scanner'
-assert.match(lpFailure, /no pool found|unsupported concentrated position route|pair identity missing|timeout|API unavailable/)
-const fallbackNoQuota = 'live wallet scan could not complete (timeout)'
-assert.ok(/could not complete|not a token contract|could not refresh|temporarily unavailable|LP pipeline failed/i.test(fallbackNoQuota))
-assert.ok(!badDeadEnds.some((re) => re.test(radarUnavailable)))
-console.log('Clark intent/router tests passed')
+// ─── liquidity_scan ───────────────────────────────────────────────────────────
+// NOTE: classifyClarkPrompt only classifies by phrase+address — it cannot know
+// whether the address is an EOA or a contract (that requires eth_getCode at
+// runtime). Both EOA and contract addresses classify as "liquidity_scan" here;
+// the EOA-vs-contract branch behavior is tested in test-clark-execution.mjs.
+{
+  const r = classifyClarkPrompt('lp check 0x1234567890123456789012345678901234567890')
+  assert.equal(r.intent, 'liquidity_scan')
+  assert.equal(r.address, '0x1234567890123456789012345678901234567890')
+}
+
+// ─── formatting helpers behave as documented ─────────────────────────────────
+assert.equal(formatBaseMarketReadFromRows([]), null)
+assert.equal(formatBaseMarketReadFromRows(null), null)
+assert.equal(formatBaseRadarRead([]), null)
+assert.equal(formatBaseRadarRead(null), null)
+
+const eoaReply = formatEoaLpCheckReply()
+assert.ok(eoaReply.includes('wallet, not a token contract'))
+assert.ok(eoaReply.includes('CTA:'))
+
+console.log('test-clark-intent.mjs: all assertions passed')

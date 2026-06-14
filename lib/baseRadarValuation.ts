@@ -262,6 +262,44 @@ export function getRadarValuationBasis(input: RadarValuationInput): RadarValuati
   }
 }
 
+export interface RadarDrawerValuationInput {
+  enrichmentMarketCapUsd?: number | null
+  enrichmentMarketCapStatus?: string | null
+  feedMarketCapUsd?: number | null
+  feedMarketCapStatus?: string | null
+  fdvUsd?: number | null
+  liquidityUsd?: number | null
+}
+
+function isVerifiedMarketCap(marketCapUsd: number | null | undefined, marketCapStatus: string | null | undefined): boolean {
+  return typeof marketCapUsd === 'number' && Number.isFinite(marketCapUsd) && marketCapUsd > 0 && marketCapStatus === 'verified'
+}
+
+/**
+ * Drawer-level valuation merge: a verified enrichment market cap wins, then a
+ * verified feed market cap, then FDV fallback, then unavailable. The drawer's
+ * own (possibly null/unavailable) enrichment market cap must never overwrite
+ * a verified market cap the feed already resolved.
+ */
+export function getRadarDrawerValuation(input: RadarDrawerValuationInput): RadarValuationResult {
+  const enrichmentVerified = isVerifiedMarketCap(input.enrichmentMarketCapUsd, input.enrichmentMarketCapStatus)
+  const feedVerified = isVerifiedMarketCap(input.feedMarketCapUsd, input.feedMarketCapStatus)
+
+  const marketCapUsd = enrichmentVerified
+    ? input.enrichmentMarketCapUsd
+    : feedVerified
+      ? input.feedMarketCapUsd
+      : null
+  const marketCapStatus = (enrichmentVerified || feedVerified) ? 'verified' : null
+
+  return getRadarValuationBasis({
+    marketCapUsd,
+    marketCapStatus,
+    fdvUsd: input.fdvUsd,
+    liquidityUsd: input.liquidityUsd,
+  })
+}
+
 export function tokenPassesRadarValuationFilters(input: RadarValuationInput & {
   liquidityUsd?: number | null
   minValuationUsd?: number
