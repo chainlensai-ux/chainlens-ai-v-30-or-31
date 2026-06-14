@@ -178,6 +178,7 @@ function pruneWalletScannerDebug(payload: any, debug: boolean) {
 }
 
 type WalletValueTier = 'micro' | 'small' | 'standard' | 'high_value' | 'whale'
+type PnlCacheQuality = 'complete' | 'partial_needs_historical' | 'stale_low_coverage'
 
 function getWalletValueTier(totalValueUsd: number): WalletValueTier {
   if (totalValueUsd >= 1_000_000) return 'whale'
@@ -203,6 +204,54 @@ function buildPublicWalletScanBudget(scanMode: string, requestedHistoricalScan: 
     budgetCapReason: null as string | null,
     skippedAfterBudgetCap: 0,
     estimatedCreditsSavedByCache: 0,
+  }
+}
+
+function getWalletPnlRecoverySignals(snap: any) {
+  const totalValue = Number(snap?.totalValue ?? 0) || 0
+  const walletValueTier = getWalletValueTier(totalValue)
+  const estimatedCoverage = Number(snap?.estimatedPnl?.coveragePercent ?? 0) || 0
+  const lot = snap?.walletLotSummary ?? {}
+  const stats = snap?.walletTradeStatsSummary ?? {}
+  const historical = snap?.walletHistoricalCoverageSummary ?? {}
+  const backfill = snap?._diagnostics?.unmatchedSellBackfillDebug ?? snap?._debug?.unmatchedSellBackfillDebug ?? snap?._cachedDiagnosticsSlim?.unmatchedSellBackfillDebug ?? {}
+  const closedLots = Number(lot.closedLots ?? stats.closedLots ?? 0) || 0
+  const openedLots = Number(lot.openedLots ?? stats.openedLots ?? 0) || 0
+  const unmatchedSells = Number(lot.unmatchedSells ?? backfill.unmatchedSellCount ?? 0) || 0
+  const unmatchedBuys = Number(lot.unmatchedBuys ?? 0) || 0
+  const historicalStatus = typeof historical.status === 'string' ? historical.status : 'not_requested'
+  const historicalRequested = historical.requested === true
+  const backfillReason = String(backfill.reason ?? backfill.stopReason ?? '')
+  const backfillTimedOut = backfillReason.includes('timeout')
+  return {
+    walletValueTier,
+    coveragePercent: estimatedCoverage,
+    closedLots,
+    openedLots,
+    unmatchedSells,
+    unmatchedBuys,
+    tradeStatus: typeof stats.status === 'string' ? stats.status : null,
+    historicalStatus,
+    historicalRequested,
+    backfillTimedOut,
+    needsHistorical: walletValueTier === 'high_value' || walletValueTier === 'whale' || estimatedCoverage < 60 || unmatchedSells > 0 || unmatchedBuys > 0 || closedLots < 10 || stats.status === 'partial' || historicalStatus === 'not_requested',
+  }
+}
+
+function getPnlCacheQuality(snap: any): PnlCacheQuality {
+  const s = getWalletPnlRecoverySignals(snap)
+  const lowCoverage = s.coveragePercent < 60 || s.closedLots < 10
+  if (s.backfillTimedOut && lowCoverage) return 'stale_low_coverage'
+  if (!s.historicalRequested && (lowCoverage || s.unmatchedSells > 0 || s.unmatchedBuys > 0)) return 'partial_needs_historical'
+  return 'complete'
+}
+
+function annotatePnlCacheQuality(payload: any, quality: PnlCacheQuality) {
+  if (!payload || typeof payload !== 'object') return
+  payload.pnlCacheQuality = quality
+  if (quality !== 'complete') {
+    payload.walletScanCacheNote = 'Cached wallet snapshot loaded, but historical PnL recovery is still needed for fuller trade stats.'
+    payload.walletPnlRecoveryCta = 'Run historical recovery / Retry deep scan when budget allows'
   }
 }
 
@@ -483,12 +532,13 @@ export async function POST(req: Request) {
     const deepScan = body?.deepScan === true || body?.deepScan === 'true'
     const deepActivityFlag = body?.deepActivity === true || body?.deepActivity === 'true'
     const includeActivityFlag = body?.includeActivity === true || body?.includeActivity === 'true'
-    const deepActivity = deepActivityFlag || includeActivityFlag
+    const deepActivity = deepScan || deepActivityFlag || includeActivityFlag
     const cacheMode: 'activity' | 'holdings' = (deepScan || deepActivity) ? 'activity' : 'holdings'
     const chainMode = body?.chainMode === 'base' || body?.chainMode === 'eth' || body?.chainMode === 'base_eth' || body?.chainMode === 'all_supported' ? body.chainMode : 'auto'
 
     // Historical coverage: ONLY when explicitly requested — debug=true no longer auto-triggers it
-    const historicalCoverageRequested = (body?.historicalCoverage === true || body?.historicalCoverage === 'true' || body?.historicalScan === true || body?.historicalScan === 'true') && deepActivity
+    const explicitHistoricalCoverageRequested = (body?.historicalCoverage === true || body?.historicalCoverage === 'true' || body?.historicalScan === true || body?.historicalScan === 'true') && deepActivity
+    let historicalCoverageRequested = explicitHistoricalCoverageRequested
     const adminOverrideRequested = WALLET_ADMIN_FORENSIC_SCAN && (body?.adminForensicScan === true || body?.adminForensicScan === 'true') && debugAllowed
 
     // Production page cap: max 2 in prod unless WALLET_DEEP_DEBUG_ENABLED=true, default 1
@@ -576,10 +626,49 @@ export async function POST(req: Request) {
       if (mode === 'blocked_by_cost_guard') return 'Historical scan cached due to cost guard — wallet has heavy history.'
       return undefined
     }
+    const recoverHistoricalFromCachedPayload = async (cachedPayload: any, cacheAgeSeconds: number, cacheBackend: 'memory' | 'persistent') => {
+      const quality = getPnlCacheQuality(cachedPayload)
+      annotatePnlCacheQuality(cachedPayload, quality)
+      const signals = getWalletPnlRecoverySignals(cachedPayload)
+      const canTryHistorical = deepActivity && quality !== 'complete' && !signals.historicalRequested && !cooldownActive && !costGuardHit
+      if (!canTryHistorical) return cachedPayload
+      const tier = signals.walletValueTier
+      const probeBudget = buildPublicWalletScanBudget('historical', true, tier, adminOverrideRequested)
+      if (probeBudget.totalCreditHardCap <= 0) {
+        cachedPayload.walletHistoricalRecoveryStatus = 'blocked'
+        cachedPayload.walletHistoricalRecoveryReason = 'budget_hard_cap_blocks_recovery'
+        return cachedPayload
+      }
+      try {
+        const recovered: any = await fetchWalletSnapshot(address ?? '', {
+          refresh,
+          chain,
+          deepScan: true,
+          deepActivity: true,
+          chainMode: resolvedChainMode,
+          historicalCoverage: true,
+          maxHistoricalPages,
+          maxFallbackPages,
+          walletScanBudget: probeBudget,
+        } satisfies WalletSnapshotOptions)
+        recovered.pnlCacheQuality = getPnlCacheQuality(recovered)
+        recovered.walletScanCostMode = 'historical_live'
+        recovered.walletScanCacheNote = 'Historical PnL recovery ran because the cached deep scan had partial trade coverage.'
+        recovered.walletHistoricalRecoveryStatus = 'attempted'
+        recovered.walletHistoricalRecoveryReason = `cached_${cacheBackend}_needed_historical_recovery`
+        recovered.dataFreshness = 'live'
+        recovered.cacheAgeSeconds = cacheAgeSeconds
+        return recovered
+      } catch {
+        cachedPayload.walletHistoricalRecoveryStatus = 'needed'
+        cachedPayload.walletHistoricalRecoveryReason = 'historical_recovery_attempt_failed'
+        return cachedPayload
+      }
+    }
 
     if (cached && cached.exp > Date.now()) {
       const cacheAgeSeconds = Math.floor((Date.now() - cached.cachedAt) / 1000)
-      const cp: any = typeof cached.payload === 'object' && cached.payload ? { ...(cached.payload as any), dataFreshness: 'cached', cacheAgeSeconds } : cached.payload
+      let cp: any = typeof cached.payload === 'object' && cached.payload ? { ...(cached.payload as any), dataFreshness: 'cached', cacheAgeSeconds } : cached.payload
       if (cp && typeof cp === 'object') {
         const costMode = getCostMode(true)
         cp.walletScanCostMode = costMode
@@ -587,6 +676,7 @@ export async function POST(req: Request) {
         if (cp.walletHistoricalCoverage) cp.walletHistoricalCoverage = { ...cp.walletHistoricalCoverage, cacheHit: true }
         const note = getCacheNote(costMode, cacheAgeSeconds)
         if (note) cp.walletScanCacheNote = note
+        cp = await recoverHistoricalFromCachedPayload(cp, cacheAgeSeconds, 'memory')
       }
       const _deepCooldownExpiry = walletDeepCooldown.get(deepCooldownKey) ?? 0
       const _cooldownExpiresInSeconds = _deepCooldownExpiry > Date.now() ? Math.floor((_deepCooldownExpiry - Date.now()) / 1000) : null
@@ -758,7 +848,7 @@ export async function POST(req: Request) {
           if (!deepCooldownActive) walletDeepCooldown.set(deepCooldownKey, persCache.createdAt.getTime() + WALLET_DEEP_COOLDOWN_MS)
 
           const cacheAgeSeconds = Math.floor((Date.now() - persCache.createdAt.getTime()) / 1000)
-          const cp: any = typeof persCache.payload === 'object' && persCache.payload
+          let cp: any = typeof persCache.payload === 'object' && persCache.payload
             ? { ...(persCache.payload as any), dataFreshness: 'cached', cacheAgeSeconds }
             : persCache.payload
           if (cp && typeof cp === 'object') {
@@ -766,6 +856,7 @@ export async function POST(req: Request) {
             cp.walletScanCostMode = costMode
             const note = getCacheNote(costMode, cacheAgeSeconds)
             if (note) cp.walletScanCacheNote = note
+            cp = await recoverHistoricalFromCachedPayload(cp, cacheAgeSeconds, 'persistent')
           }
           const _dce = walletDeepCooldown.get(deepCooldownKey) ?? 0
           const _dces = _dce > Date.now() ? Math.floor((_dce - Date.now()) / 1000) : null
@@ -877,7 +968,37 @@ export async function POST(req: Request) {
       }
     }
 
-    const snapshot: any = rawSnapshot
+    let snapshot: any = rawSnapshot
+    const _initialRecoverySignals = getWalletPnlRecoverySignals(snapshot)
+    const _shouldAutoRequestHistoricalRecovery =
+      deepActivity &&
+      !effectiveHistoricalCoverage &&
+      !explicitHistoricalCoverageRequested &&
+      !cooldownActive &&
+      !costGuardHit &&
+      _initialRecoverySignals.needsHistorical
+    if (_shouldAutoRequestHistoricalRecovery) {
+      historicalCoverageRequested = true
+      const _autoBudget = buildPublicWalletScanBudget('historical', true, _initialRecoverySignals.walletValueTier, adminOverrideRequested)
+      if (_autoBudget.totalCreditHardCap > 0) {
+        const _historicalSnapshot: any = await fetchWalletSnapshot(address ?? '', {
+          refresh,
+          chain,
+          deepScan: true,
+          deepActivity: true,
+          chainMode: resolvedChainMode,
+          historicalCoverage: true,
+          maxHistoricalPages,
+          maxFallbackPages,
+          walletScanBudget: _autoBudget,
+        } satisfies WalletSnapshotOptions)
+        snapshot = { ..._historicalSnapshot, walletHistoricalRecoveryStatus: 'attempted', walletHistoricalRecoveryReason: 'auto_trigger_low_pnl_coverage' }
+      } else {
+        snapshot.walletHistoricalRecoveryStatus = 'blocked'
+        snapshot.walletHistoricalRecoveryReason = 'budget_hard_cap_blocks_recovery'
+      }
+    }
+    snapshot.pnlCacheQuality = getPnlCacheQuality(snapshot)
     const providers: any = snapshot._diagnostics?.providers ?? {}
     const snapshotCacheDebug = snapshot._diagnostics?.snapshotCache ?? null
 
