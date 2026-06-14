@@ -247,6 +247,21 @@ type WalletResult = {
     exitTxHash?: string | null
     verificationStatus?: 'verifiable' | 'partial' | 'not_available'
   }>
+  walletPersonality?: {
+    personality: 'Sniper' | 'Smart Money' | 'Rotator' | 'Degen' | 'Not enough data'
+    scores: { sniperScore: number; smartMoneyScore: number; rotatorScore: number; degenScore: number } | null
+    summary: string
+  }
+  walletPnlWindows?: {
+    '3d': { realizedPnlUsd: number; closedLots: number; winRatePercent: number | null } | { closedLots: 0; fallback: string }
+    '7d': { realizedPnlUsd: number; closedLots: number; winRatePercent: number | null } | { closedLots: 0; fallback: string }
+    '30d': { realizedPnlUsd: number; closedLots: number; winRatePercent: number | null } | { closedLots: 0; fallback: string }
+  }
+  walletBotScore?: {
+    score: number
+    classification: 'Likely bot' | 'Possibly semi-automated' | 'Likely human/manual'
+    reason: string
+  }
   walletScanCostMode?: 'basic' | 'basic_cached' | 'deep_cached' | 'deep_live' | 'historical_cached' | 'historical_live' | 'blocked_by_cooldown' | 'blocked_by_cost_guard'
   walletScanCacheNote?: string
   pnlCacheQuality?: 'complete' | 'partial_needs_historical' | 'stale_low_coverage'
@@ -2021,6 +2036,119 @@ export default function WalletScannerPage() {
                   )
                 })()}
               </div>
+
+              {/* Trading Intelligence — personality, bot detection, and windowed PnL (derived from existing FIFO closed-lot data) */}
+              {result.walletPersonality && (() => {
+                const wp = result.walletPersonality
+                const bot = result.walletBotScore
+                const windows = result.walletPnlWindows
+                const personalityColor =
+                  wp.personality === 'Smart Money' ? '#4ade80'
+                  : wp.personality === 'Sniper' ? '#2DD4BF'
+                  : wp.personality === 'Rotator' ? '#fbbf24'
+                  : wp.personality === 'Degen' ? '#f87171'
+                  : '#7dd3fc'
+                const botColor =
+                  bot?.classification === 'Likely bot' ? '#f87171'
+                  : bot?.classification === 'Possibly semi-automated' ? '#fbbf24'
+                  : '#4ade80'
+                const fmtUsdSigned = (v: number) => `${v < 0 ? '-' : '+'}$${Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                const scoreRows: Array<{ label: string; value: number }> = wp.scores
+                  ? [
+                      { label: 'Sniper', value: wp.scores.sniperScore },
+                      { label: 'Smart Money', value: wp.scores.smartMoneyScore },
+                      { label: 'Rotator', value: wp.scores.rotatorScore },
+                      { label: 'Degen', value: wp.scores.degenScore },
+                    ]
+                  : []
+                const combinedSummary = [wp.summary, bot?.reason].filter(Boolean).join(' ')
+                return (
+                  <div style={{ background: 'rgba(6,10,18,0.95)', border: '1px solid rgba(45,212,191,0.12)', borderRadius: '18px', overflow: 'hidden' }}>
+                    <div style={{ padding: '18px 24px 16px', borderBottom: '1px solid rgba(255,255,255,0.06)', display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                      <div style={{ width: '3px', height: '16px', borderRadius: '2px', background: 'linear-gradient(180deg, #2DD4BF, rgba(45,212,191,0.3))', flexShrink: 0 }} />
+                      <span className="ws-section-header" style={{ color: '#e2e8f0' }}>Trading Intelligence</span>
+                    </div>
+
+                    <div style={{ padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: '18px' }}>
+                      {/* Personality + bot score row */}
+                      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(220px, 1.3fr) minmax(180px, 1fr)', gap: '14px' }} className="wallet-intel-grid">
+                        <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '12px', padding: '14px' }}>
+                          <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.28)', letterSpacing: '0.13em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '8px' }}>Wallet Personality</div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: scoreRows.length > 0 ? '12px' : '0' }}>
+                            <span style={{ fontSize: '18px', fontWeight: 800, color: personalityColor, fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{wp.personality}</span>
+                          </div>
+                          {scoreRows.length > 0 && (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                              {scoreRows.map(row => (
+                                <div key={row.label} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                  <div style={{ width: '76px', fontSize: '10px', color: 'rgba(255,255,255,0.45)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{row.label}</div>
+                                  <div style={{ flex: 1, height: '6px', borderRadius: '3px', background: 'rgba(255,255,255,0.05)', overflow: 'hidden' }}>
+                                    <div style={{ height: '100%', width: `${row.value}%`, borderRadius: '3px', background: row.label === wp.personality ? personalityColor : 'rgba(255,255,255,0.18)' }} />
+                                  </div>
+                                  <div style={{ width: '30px', textAlign: 'right', fontSize: '10px', color: 'rgba(255,255,255,0.45)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{row.value}</div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+
+                        <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '12px', padding: '14px' }}>
+                          <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.28)', letterSpacing: '0.13em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '8px' }}>Bot Score</div>
+                          {bot ? (
+                            <>
+                              <div style={{ display: 'flex', alignItems: 'flex-end', gap: '8px', marginBottom: '8px' }}>
+                                <div style={{ fontSize: '32px', lineHeight: 0.9, fontWeight: 950, letterSpacing: '-0.04em', color: botColor, fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{bot.score}</div>
+                                <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.35)', marginBottom: '4px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>/100</div>
+                              </div>
+                              <div style={{ height: '6px', borderRadius: '3px', background: 'rgba(255,255,255,0.05)', overflow: 'hidden', marginBottom: '8px' }}>
+                                <div style={{ height: '100%', width: `${bot.score}%`, borderRadius: '3px', background: botColor }} />
+                              </div>
+                              <span style={{ display: 'inline-block', fontSize: '10px', fontWeight: 700, letterSpacing: '0.08em', color: botColor, border: `1px solid ${botColor}33`, background: `${botColor}14`, borderRadius: '999px', padding: '3px 9px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', textTransform: 'uppercase' }}>{bot.classification}</span>
+                            </>
+                          ) : (
+                            <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.35)', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>Not enough data</div>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Windowed PnL cards */}
+                      {windows && (
+                        <div>
+                          <div className="ws-stat-label" style={{ marginBottom: '8px' }}>Time-Windowed Realized PnL</div>
+                          <div className="wallet-intel-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: '10px' }}>
+                            {(['3d', '7d', '30d'] as const).map(key => {
+                              const w = windows[key]
+                              const hasData = w.closedLots > 0 && 'realizedPnlUsd' in w
+                              return (
+                                <div key={key} style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '12px', padding: '12px' }}>
+                                  <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.28)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '7px' }}>{key.toUpperCase()} PnL</div>
+                                  {hasData && 'realizedPnlUsd' in w ? (
+                                    <>
+                                      <div style={{ fontSize: '18px', fontWeight: 800, color: w.realizedPnlUsd < 0 ? '#f87171' : '#4ade80', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{fmtUsdSigned(w.realizedPnlUsd)}</div>
+                                      <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.32)', marginTop: '4px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                                        {w.closedLots} closed lot{w.closedLots !== 1 ? 's' : ''}{w.winRatePercent != null ? ` · ${w.winRatePercent}% win rate` : ''}
+                                      </div>
+                                    </>
+                                  ) : (
+                                    <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.32)', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{'fallback' in w ? w.fallback : 'Not enough data'}</div>
+                                  )}
+                                </div>
+                              )
+                            })}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Recent trade behavior summary */}
+                      {combinedSummary && (
+                        <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.45)', lineHeight: 1.6, fontFamily: 'var(--font-inter, Inter, sans-serif)', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '14px' }}>
+                          {combinedSummary}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )
+              })()}
 
               {/* CORTEX Facts — factual wallet intelligence from holdings + indexed activity */}
               {result.walletFacts && (() => {

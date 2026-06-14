@@ -387,6 +387,7 @@ export type WalletSnapshot = {
     exitTxHash: string | null
     verificationStatus: 'verifiable' | 'partial' | 'not_available'
   }>
+  walletClosedLotsAll: WalletClosedLot[]
   walletHistoricalCoverageSummary: {
     status: 'not_requested' | 'open_check' | 'partial' | 'ok'
     requested: boolean
@@ -9658,6 +9659,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     walletTradeStatsSource,
     tokenUsage: EMPTY_TOKEN_USAGE(),
     walletClosedTradeSamples,
+    walletClosedLotsAll: _sampleSourceLots,
     walletHistoricalCoverageSummary,
     walletHistoricalCandidateSummary,
     walletHistoricalPricingPreviewSummary,

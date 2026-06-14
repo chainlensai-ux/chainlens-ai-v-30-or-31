@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { fetchWalletSnapshot, type WalletSnapshotOptions } from '@/lib/server/walletSnapshot'
+import { computeWalletPersonality, computeWindowedPnl, computeBotScore } from '@/lib/server/walletIntelligence'
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import {
   walletScanPersistentCacheAvailable,
@@ -1058,6 +1059,21 @@ export async function POST(req: Request) {
     if (walletModuleCoverage.openPositionPerformanceSummary) {
       snapshot.openPositionPerformanceSummary = walletModuleCoverage.openPositionPerformanceSummary
     }
+
+    // Wallet personality classification, time-windowed PnL, and bot detection — derived purely
+    // from existing FIFO closed-lot data and behavior summaries (additive, no scoring changes).
+    const _closedLotsForIntelligence = (snapshot as any).walletClosedLotsAll ?? []
+    snapshot.walletPersonality = computeWalletPersonality(
+      _closedLotsForIntelligence,
+      (snapshot as any).walletBehavior ?? null,
+      (snapshot as any).walletTradeStatsSummary ?? null
+    )
+    snapshot.walletPnlWindows = computeWindowedPnl(_closedLotsForIntelligence)
+    snapshot.walletBotScore = computeBotScore(
+      _closedLotsForIntelligence,
+      (snapshot as any).walletBehavior ?? null,
+      (snapshot as any).walletTradeStatsSummary ?? null
+    )
 
     const _scanBudgetDebug = snapshot._diagnostics?.walletScanBudgetDebug ?? null
     const _walletValueTier = getWalletValueTier(Number(snapshot.totalValue ?? 0))
