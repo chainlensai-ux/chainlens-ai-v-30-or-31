@@ -3468,6 +3468,9 @@ export default function TerminalTokenScanner() {
   const [resolverResult, setResolverResult]     = useState<ResolverResult | null>(null)
   const [copiedContract, setCopiedContract] = useState(false)
   const [trackedSaved, setTrackedSaved] = useState(false)
+  const [watchlistLoading, setWatchlistLoading] = useState(false)
+  const [watchlistMessage, setWatchlistMessage] = useState<string | null>(null)
+  const [watchlistAuthenticated, setWatchlistAuthenticated] = useState<boolean | null>(null)
 
   const isValidHolderAddress = (value: string | null | undefined) => typeof value === 'string' && /^0x[a-fA-F0-9]{40}$/.test(value)
 
@@ -3540,6 +3543,8 @@ export default function TerminalTokenScanner() {
     setError(null)
     setDevIntel(null)
     setDevIntelError(null)
+    setTrackedSaved(false)
+    setWatchlistMessage(null)
     devIntelCacheRef.current = {}  // clear cached devIntel so no stale data bleeds across scans
     // ────────────────────────────────────────────────────────────────────────
 
@@ -3738,6 +3743,74 @@ export default function TerminalTokenScanner() {
       setClarkLoading(false)
     } finally {
       setLoading(false)
+    }
+  }
+
+
+  useEffect(() => {
+    const contract = result?.contract
+    if (!contract) return
+    let aborted = false
+    const run = async () => {
+      const { data } = await supabase.auth.getSession()
+      const token = data.session?.access_token
+      setWatchlistAuthenticated(Boolean(token))
+      if (!token) {
+        setTrackedSaved(false)
+        setWatchlistMessage('Sign in to save tokens')
+        return
+      }
+      try {
+        const chainKey = result.chain === 'eth' ? 'eth' : (result.chain === 'base' ? 'base' : chain)
+        const res = await fetch(`/api/watchlist/tokens?chain=${encodeURIComponent(chainKey)}&tokenAddress=${encodeURIComponent(contract)}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+        const json = await res.json().catch(() => null)
+        if (!aborted) setTrackedSaved(Boolean(json?.saved))
+      } catch {
+        if (!aborted) setWatchlistMessage('Could not load watchlist status.')
+      }
+    }
+    void run()
+    return () => { aborted = true }
+  }, [result?.contract, result?.chain, chain])
+
+  async function handleToggleWatchlist() {
+    if (!result?.contract || watchlistLoading) return
+    setWatchlistLoading(true)
+    setWatchlistMessage(null)
+    try {
+      const { data } = await supabase.auth.getSession()
+      const token = data.session?.access_token
+      setWatchlistAuthenticated(Boolean(token))
+      if (!token) {
+        setWatchlistMessage('Sign in to save tokens')
+        return
+      }
+      const chainKey = result.chain === 'eth' ? 'eth' : (result.chain === 'base' ? 'base' : chain)
+      const body = trackedSaved
+        ? { chain: chainKey, tokenAddress: result.contract }
+        : {
+            chain: chainKey,
+            tokenAddress: result.contract,
+            tokenSymbol: result.symbol,
+            tokenName: result.name,
+            riskLabel: result.riskLabel ?? undefined,
+            score: typeof result.riskScore === 'number' ? result.riskScore : (typeof result.cortexScore === 'number' ? result.cortexScore : undefined),
+          }
+      const res = await fetch('/api/watchlist/tokens', {
+        method: trackedSaved ? 'DELETE' : 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(body),
+      })
+      const json = await res.json().catch(() => null)
+      if (!res.ok) throw new Error(json?.error ?? 'watchlist_failed')
+      setTrackedSaved(Boolean(json?.saved))
+      setWatchlistMessage(json?.saved ? 'Token added to your watchlist.' : 'Token removed from your watchlist.')
+    } catch {
+      setWatchlistMessage('Could not update watchlist. Try again.')
+    } finally {
+      setWatchlistLoading(false)
     }
   }
 
@@ -4227,13 +4300,26 @@ export default function TerminalTokenScanner() {
                         Rescan
                       </button>
                       <button
-                        onClick={() => setTrackedSaved((v) => !v)}
-                        style={{ padding: '5px 11px', borderRadius: '8px', fontSize: '10px', fontWeight: 700, fontFamily: 'var(--font-plex-mono)', cursor: 'pointer', letterSpacing: '0.06em', color: trackedSaved ? '#2DD4BF' : '#94a3b8', background: trackedSaved ? 'rgba(45,212,191,0.08)' : 'rgba(255,255,255,0.03)', border: `1px solid ${trackedSaved ? 'rgba(45,212,191,0.35)' : 'rgba(255,255,255,0.10)'}` }}
+                        onClick={() => { void handleToggleWatchlist() }}
+                        disabled={watchlistLoading}
+                        title={watchlistAuthenticated === false ? 'Sign in to save tokens' : trackedSaved ? 'Remove from watchlist' : 'Save to watchlist'}
+                        style={{ padding: '5px 11px', borderRadius: '8px', fontSize: '10px', fontWeight: 700, fontFamily: 'var(--font-plex-mono)', cursor: watchlistLoading ? 'default' : 'pointer', letterSpacing: '0.06em', color: trackedSaved ? '#2DD4BF' : watchlistAuthenticated === false ? '#fbbf24' : '#94a3b8', background: trackedSaved ? 'rgba(45,212,191,0.08)' : 'rgba(255,255,255,0.03)', border: `1px solid ${trackedSaved ? 'rgba(45,212,191,0.35)' : 'rgba(255,255,255,0.10)'}`, opacity: watchlistLoading ? 0.65 : 1 }}
                       >
-                        {trackedSaved ? 'Saved ✓' : 'Save / Track'}
+                        {watchlistLoading ? 'Saving...' : trackedSaved ? 'Saved' : 'Save / Track'}
                       </button>
+                      {trackedSaved && !watchlistLoading && (
+                        <button
+                          onClick={() => { void handleToggleWatchlist() }}
+                          style={{ padding: '5px 11px', borderRadius: '8px', fontSize: '10px', fontWeight: 700, fontFamily: 'var(--font-plex-mono)', cursor: 'pointer', letterSpacing: '0.06em', color: '#fbbf24', background: 'rgba(251,191,36,0.05)', border: '1px solid rgba(251,191,36,0.22)' }}
+                        >
+                          Remove
+                        </button>
+                      )}
                     </div>
 
+                    {watchlistMessage && (
+                      <p style={{ margin: '0', width: '100%', color: watchlistMessage.includes('Could not') ? '#f87171' : watchlistMessage.includes('Sign in') ? '#fbbf24' : '#2DD4BF', fontSize: '11px', fontFamily: 'var(--font-plex-mono)' }}>{watchlistMessage}</p>
+                    )}
                     {result.resolvedInput && result.resolvedInput.type !== 'address' && (
                       <p style={{ margin: '0', width: '100%', color: '#94a3b8', fontSize: '11px' }}>Resolved from {result.resolvedInput.original.toUpperCase()}.</p>
                     )}
@@ -6178,16 +6264,16 @@ export default function TerminalTokenScanner() {
                         <div style={{ padding:'14px 16px', borderRadius:'13px', background:'linear-gradient(145deg, rgba(13,27,43,.92), rgba(6,13,25,.94))', border:`1px solid ${clusterRiskLabel === 'open_check' ? 'rgba(148,163,184,.16)' : 'rgba(45,212,191,.22)'}`, boxShadow:'inset 0 1px 0 rgba(255,255,255,.03)' }}>
                           <div style={{ display:'flex', justifyContent:'space-between', gap:'12px', alignItems:'flex-start', marginBottom:'12px' }}>
                             <div>
-                              <p style={{ margin:'0 0 5px', fontSize:'9px', letterSpacing:'.14em', color:'#2dd4bf', fontWeight:800, fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>Dev Cluster Influence</p>
+                              <p style={{ margin:'0 0 5px', fontSize:'9px', letterSpacing:'.14em', color:'#2dd4bf', fontWeight:800, fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>Dev-Control Influence</p>
                               <p style={{ margin:0, fontSize:'11px', color:'#94a3b8', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>
                                 {clusterSupplyPercent == null ? 'Open check' : `${clusterSupplyPercent.toFixed(1)}% cluster supply`}
                                 {' · '}
-                                {clusterSupplyPercent == null ? 'CORTEX needs more holder evidence before confirming cluster influence.' : clusterInfluence?.reason ?? clusterDominanceLabel}
+                                {clusterSupplyPercent == null ? 'CORTEX needs more holder evidence before confirming supply-control risk.' : clusterInfluence?.reason ?? clusterDominanceLabel}
                               </p>
                             </div>
                             <div style={{ textAlign:'right', flexShrink:0 }}>
                               <p style={{ margin:'0 0 4px', fontSize:'18px', fontWeight:800, color:clusterRiskAccent, fontFamily:'var(--font-plex-mono)' }}>{clusterRiskScore != null ? clusterRiskScore : '—'}<span style={{ fontSize:'10px', color:'#64748b' }}>/100</span></p>
-                              <p style={{ margin:0, fontSize:'9px', letterSpacing:'.1em', color:clusterRiskAccent, fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>{clusterRiskScore != null ? `Risk score ${clusterRiskScore}/100` : 'Open check'}</p>
+                              <p style={{ margin:0, fontSize:'9px', letterSpacing:'.1em', color:clusterRiskAccent, fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>{clusterRiskScore != null ? cleanStatusLabel(clusterRiskLabel) : 'Open check'}</p>
                             </div>
                           </div>
                           <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))', gap:'8px', marginBottom:'10px' }}>
@@ -6196,8 +6282,24 @@ export default function TerminalTokenScanner() {
                               <p style={{ margin:0, fontSize:'12px', color:clusterSupplyPercent == null ? '#94a3b8' : '#e2e8f0', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>{clusterSupplyPercent == null ? 'Open check' : `${clusterSupplyPercent.toFixed(1)}% cluster supply`}</p>
                             </div>
                             <div style={{ padding:'9px 11px', borderRadius:'10px', background:'rgba(15,23,42,.72)', border:'1px solid rgba(148,163,184,.12)' }}>
-                              <p style={{ margin:'0 0 4px', fontSize:'8px', letterSpacing:'.1em', color:'#475569', fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>Dominance</p>
-                              <p style={{ margin:0, fontSize:'12px', color:clusterRiskAccent, fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>{clusterDominanceLabel}</p>
+                              <p style={{ margin:'0 0 4px', fontSize:'8px', letterSpacing:'.1em', color:'#475569', fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>Linked wallet supply</p>
+                              <p style={{ margin:0, fontSize:'12px', color:'#e2e8f0', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>{linkedWalletSupply != null ? `${linkedWalletSupply.toFixed(1)}%` : 'Open check'}</p>
+                            </div>
+                            <div style={{ padding:'9px 11px', borderRadius:'10px', background:'rgba(15,23,42,.72)', border:'1px solid rgba(148,163,184,.12)' }}>
+                              <p style={{ margin:'0 0 4px', fontSize:'8px', letterSpacing:'.1em', color:'#475569', fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>Creator holder %</p>
+                              <p style={{ margin:0, fontSize:'12px', color:'#e2e8f0', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>{sc?.creatorHolderPercent != null ? `${sc.creatorHolderPercent.toFixed(1)}%` : 'Not indexed'}</p>
+                            </div>
+                            <div style={{ padding:'9px 11px', borderRadius:'10px', background:'rgba(15,23,42,.72)', border:'1px solid rgba(148,163,184,.12)' }}>
+                              <p style={{ margin:'0 0 4px', fontSize:'8px', letterSpacing:'.1em', color:'#475569', fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>Top 10 concentration</p>
+                              <p style={{ margin:0, fontSize:'12px', color:'#e2e8f0', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>{top10 != null ? `${top10.toFixed(1)}%` : 'Open check'}</p>
+                            </div>
+                            <div style={{ padding:'9px 11px', borderRadius:'10px', background:'rgba(15,23,42,.72)', border:'1px solid rgba(148,163,184,.12)' }}>
+                              <p style={{ margin:'0 0 4px', fontSize:'8px', letterSpacing:'.1em', color:'#475569', fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>Top 20 concentration</p>
+                              <p style={{ margin:0, fontSize:'12px', color:'#e2e8f0', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>{top20 != null ? `${top20.toFixed(1)}%` : 'Open check'}</p>
+                            </div>
+                            <div style={{ padding:'9px 11px', borderRadius:'10px', background:'rgba(15,23,42,.72)', border:'1px solid rgba(148,163,184,.12)' }}>
+                              <p style={{ margin:'0 0 4px', fontSize:'8px', letterSpacing:'.1em', color:'#475569', fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>Evidence status</p>
+                              <p style={{ margin:0, fontSize:'12px', color:clusterRiskAccent, fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>{sc?.devClusterSupplyStatus ? canonicalLabel(sc.devClusterSupplyStatus) : clusterDominanceLabel}</p>
                             </div>
                           </div>
                           <div style={{ display:'grid', gap:'5px' }}>
