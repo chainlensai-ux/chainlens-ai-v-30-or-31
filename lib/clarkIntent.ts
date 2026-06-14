@@ -87,7 +87,7 @@ export function resolveClarkIntent(message: string, context?: ClarkIntentContext
   if (pumping) intent = 'base_radar'
   else if (lp) { intent = 'liquidity_scan'; if (!resolvedAddress && selectedToken) { resolvedAddress = selectedToken; source = 'context' } }
   else if (whale) intent = 'whale_alerts'
-  else if (wallet || (address && /wallet|scan this|scan 0x|pnl|holdings|portfolio/.test(normalized))) { intent = /portfolio|holdings/.test(normalized) ? 'portfolio' : 'wallet_scan'; if (!resolvedAddress && selectedWallet) { resolvedAddress = selectedWallet; source = 'context' } }
+  else if (wallet || (address && (/wallet|scan this|scan 0x|pnl|holdings|portfolio/.test(normalized) || normalized === address.toLowerCase()))) { intent = /portfolio|holdings/.test(normalized) ? 'portfolio' : 'wallet_scan'; if (!resolvedAddress && selectedWallet) { resolvedAddress = selectedWallet; source = 'context' } }
   else if (page) intent = 'explain_current_page'
   else if (token || address) { intent = 'token_scan'; if (!resolvedAddress && selectedToken) { resolvedAddress = selectedToken; source = 'context' } }
   else if (/\bscan this\b/.test(normalized) && selectedWallet) { intent = 'wallet_scan'; resolvedAddress = selectedWallet; source = 'context' }
