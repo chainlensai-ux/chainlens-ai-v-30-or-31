@@ -11,6 +11,10 @@ export type DashboardMarketRow = {
   change24h?: number;
   volume24hUsd?: number;
   marketCapUsd?: number;
+  liquidityUsd?: number;
+  contract?: string | null;
+  poolAddress?: string | null;
+  updatedAt?: string | null;
 };
 
 // Fixed list of allowed CTA/action strings surfaced to the client.
@@ -247,6 +251,10 @@ export type WalletApiResult = {
   chainsActive?: string[] | null;
   txCount?: number | null;
   error?: string | null;
+  pnlCoverage?: unknown;
+  historicalRecoveryStatus?: unknown;
+  openLots?: unknown;
+  closedLots?: unknown;
 };
 
 export function formatWalletScanResult(address: string, result: WalletApiResult | null, deep: boolean): string {
@@ -274,12 +282,17 @@ export function formatWalletScanResult(address: string, result: WalletApiResult 
     `- Holdings count: ${holdings.length}`,
     `- Total value: ${totalValue}`,
   ];
+  const topHoldings = holdings.slice(0, 5).map((h) => `${h.symbol ?? "?"}${h.value != null ? ` (${fmtUsdShort(h.value)})` : ""}`).join(", ") || "none returned";
+  lines.push(`- Top holdings: ${topHoldings}`);
+  lines.push(`- Open lots / closed lots: ${String(result.openLots ?? "unverified")} / ${String(result.closedLots ?? "unverified")}`);
+  lines.push(`- PnL coverage: ${String(result.pnlCoverage ?? (deep ? "not fully recovered" : "not requested"))}`);
+  lines.push(`- Historical recovery status: ${String(result.historicalRecoveryStatus ?? (deep ? "open check" : "not requested"))}`);
   if (deep) {
-    lines.push(`- Activity/PnL status: ${result.txCount != null ? `${result.txCount} transactions in scanned window` : "activity history not available in this pass"}`);
+    lines.push(`- Activity status: ${result.txCount != null ? `${result.txCount} transactions in scanned window` : "activity history not available in this pass"}`);
   } else {
-    lines.push(`- Activity/PnL status: not requested (use deep scan for activity history)`);
+    lines.push(`- Activity status: not requested (use deep scan for activity history)`);
   }
-  lines.push(`- Evidence gaps: ${holdings.length === 0 ? "no priced holdings returned" : "holder-level behavior verification not run"}`);
+  lines.push(`- Evidence gaps: ${holdings.length === 0 ? "no priced holdings returned" : "closed/open lot attribution and historical recovery may be partial"}`);
   lines.push("");
   lines.push(`CTA: Open Wallet Scanner${deep ? "" : " / Deep Scan Wallet"}`);
   return lines.join("\n");
@@ -301,11 +314,20 @@ export type LpCheckResult = {
   token?: { name?: string | null; symbol?: string | null } | null;
   primaryPool?: string | null;
   poolModel?: string | null;
+  poolType?: string | null;
+  lpProofStatus?: string | null;
+  lpProofApplicability?: string | null;
+  lockStatus?: string | null;
+  burnStatus?: string | null;
+  controllerStatus?: string | null;
+  positionVerificationStatus?: string | null;
+  secondaryLpExposure?: unknown;
   lockBurnProof?: string | null;
   controllerVerification?: string | null;
   liquidityDepth?: string | null;
   exitRisk?: string | null;
   missingEvidence?: string[] | null;
+  nextAction?: string | null;
 };
 
 export function formatLpReadResult(result: LpCheckResult | null): string {
@@ -323,9 +345,11 @@ export function formatLpReadResult(result: LpCheckResult | null): string {
     "LP READ",
     `- Token: ${name} (${symbol})`,
     `- Primary pool / pool id: ${result.primaryPool ?? "not available"}`,
-    `- Pool model: ${result.poolModel ?? "not verified"}`,
-    `- Lock/burn proof: ${result.lockBurnProof ?? "not verified"}`,
-    `- Controller/position verification: ${result.controllerVerification ?? "not verified"}`,
+    `- Pool model: ${result.poolType ?? "unknown"} / ${result.poolModel ?? "not verified"}`,
+    `- Lock/burn proof: ${result.lpProofStatus ?? result.lockBurnProof ?? "not verified"} / applicability: ${result.lpProofApplicability ?? "unknown"}`,
+    `- Locked/burned/controller status: ${result.lockStatus ?? "not verified"} / ${result.burnStatus ?? "not verified"} / ${result.controllerStatus ?? "not verified"}`,
+    `- Controller/position verification: ${result.positionVerificationStatus ?? result.controllerVerification ?? "not verified"}`,
+    `- Secondary LP exposure: ${String(result.secondaryLpExposure ?? "unverified")}`,
     `- Liquidity depth: ${result.liquidityDepth ?? "unverified"}`,
     `- Exit risk: ${result.exitRisk ?? "unverified"}`,
     `- Missing evidence: ${result.missingEvidence && result.missingEvidence.length > 0 ? result.missingEvidence.join("; ") : "none flagged"}`,

@@ -26,6 +26,7 @@ function getClientClarkContext() {
       lastToken: JSON.parse(sessionStorage.getItem('chainlens:clark:last-token') ?? 'null') ?? undefined,
       lastWallet: JSON.parse(sessionStorage.getItem('chainlens:clark:last-wallet') ?? 'null') ?? undefined,
       lastMomentumShownCount: Number(sessionStorage.getItem('chainlens:clark:last-momentum-shown-count') ?? '0') || 0,
+      dashboardMarketRows: JSON.parse(sessionStorage.getItem('chainlens:clark:dashboard-market-rows') ?? 'null') ?? undefined,
     }
   } catch { return {} }
 }
@@ -77,7 +78,7 @@ export default function MobileClarkDrawer() {
       const res = await fetch('/api/clark', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-clark-session': getOrCreateSessionId() },
-        body: JSON.stringify({ feature: 'clark-ai', prompt: text, clientContext: getClientClarkContext() }),
+        body: JSON.stringify({ feature: 'clark-ai', prompt: text, clientContext: getClientClarkContext(), appContext: { route: window.location.pathname, chain: 'base', dashboardMarketRows: getClientClarkContext().dashboardMarketRows ?? null }, dashboardMarketRows: getClientClarkContext().dashboardMarketRows ?? [] }),
       })
       const json = await res.json().catch(() => ({}))
       const payload = (json?.data && typeof json.data === 'object') ? json.data : json

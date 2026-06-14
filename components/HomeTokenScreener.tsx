@@ -109,6 +109,20 @@ export default function HomeTokenScreener() {
       if (result.length > 0) {
         setTrending(result)
         setLastUpdate(Date.now())
+        try {
+          sessionStorage.setItem('chainlens:clark:dashboard-market-rows', JSON.stringify(result.slice(0, 40).map((token) => ({
+            symbol: token.symbol,
+            name: token.name,
+            chain: token.chain || 'base',
+            priceUsd: token.price,
+            change24h: token.change24h,
+            volume24hUsd: token.volume,
+            liquidityUsd: token.liquidity,
+            contract: token.contract,
+            poolAddress: token.contract,
+            updatedAt: new Date().toISOString(),
+          }))))
+        } catch {}
       }
     }
 
