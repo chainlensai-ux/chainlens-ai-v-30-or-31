@@ -249,6 +249,10 @@ type WalletResult = {
   }>
   walletScanCostMode?: 'basic' | 'basic_cached' | 'deep_cached' | 'deep_live' | 'historical_cached' | 'historical_live' | 'blocked_by_cooldown' | 'blocked_by_cost_guard'
   walletScanCacheNote?: string
+  pnlCacheQuality?: 'complete' | 'partial_needs_historical' | 'stale_low_coverage'
+  walletPnlRecoveryCta?: string
+  walletHistoricalRecoveryStatus?: 'needed' | 'attempted' | 'blocked' | 'timed_out'
+  walletHistoricalRecoveryReason?: string | null
   walletScanBudget?: {
     scanMode: string
     requestedHistoricalScan: boolean
@@ -2232,6 +2236,55 @@ export default function WalletScannerPage() {
                         <span style={{ fontWeight: 700, color: 'rgba(251,191,36,0.80)' }}>Partial chain coverage:</span>{' '}{result.walletActivityCoverageNote}
                       </div>
                     )}
+                    {(() => {
+                      const coveragePct = result.estimatedPnl?.coveragePercent ?? 0
+                      const closedLots = ls?.closedLots ?? ts.closedLots ?? 0
+                      const openLots = ls?.openedLots ?? ts.openedLots ?? 0
+                      const unmatchedBuys = ls?.unmatchedBuys ?? 0
+                      const unmatchedSells = ls?.unmatchedSells ?? 0
+                      const historicalStatus = result.walletHistoricalRecoveryStatus
+                        ?? (result.walletHistoricalCoverage?.checked ? 'attempted' : (coveragePct < 60 || unmatchedBuys > 0 || unmatchedSells > 0 || closedLots < 10 ? 'needed' : 'attempted'))
+                      const winRateLocked = ts.winRatePercent == null || ts.closedLots < 10 || ts.isBreakEvenOnly === true
+                      const lockReason = ts.isBreakEvenOnly === true
+                        ? 'break-even only — needs decisive winning or losing closed lots'
+                        : ts.closedLots < 10
+                          ? 'needs 10+ verified closed lots'
+                          : 'needs decisive closed-lot evidence'
+                      const showRecoveryPanel = coveragePct < 60 || closedLots < 10 || unmatchedBuys > 0 || unmatchedSells > 0 || historicalStatus !== 'attempted' || result.pnlCacheQuality !== 'complete'
+                      if (!showRecoveryPanel) return null
+                      const stat = (label: string, value: string | number, tone: string = '#e2e8f0') => (
+                        <div key={label} style={{ background: 'rgba(15,23,42,0.52)', border: '1px solid rgba(148,163,184,0.14)', borderRadius: '9px', padding: '8px 10px' }}>
+                          <div style={{ fontSize: '8px', color: 'rgba(148,163,184,0.68)', letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: '4px' }}>{label}</div>
+                          <div style={{ fontSize: '12px', fontWeight: 800, color: tone }}>{value}</div>
+                        </div>
+                      )
+                      return (
+                        <div style={{ fontSize: '12px', color: 'rgba(226,232,240,0.84)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '12px', lineHeight: 1.55, background: 'rgba(251,191,36,0.045)', border: '1px solid rgba(251,191,36,0.16)', borderRadius: '10px', padding: '10px 13px' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'center', marginBottom: '8px' }}>
+                            <div style={{ fontWeight: 800, fontSize: '11px', letterSpacing: '0.08em', textTransform: 'uppercase', color: 'rgba(251,191,36,0.88)' }}>PnL status: partial</div>
+                            <div style={{ fontSize: '10px', color: 'rgba(251,191,36,0.68)' }}>{result.walletPnlRecoveryCta ?? 'Run historical recovery / Retry deep scan when budget allows'}</div>
+                          </div>
+                          {result.pnlCacheQuality && result.pnlCacheQuality !== 'complete' && (
+                            <div style={{ marginBottom: '8px', fontSize: '11px', color: 'rgba(251,191,36,0.72)' }}>
+                              Cached wallet snapshot loaded, but historical PnL recovery is still needed for fuller trade stats.
+                            </div>
+                          )}
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0,1fr))', gap: '7px', marginBottom: '8px' }}>
+                            {stat('Coverage', `${coveragePct}%`, coveragePct >= 60 ? '#4ade80' : '#fbbf24')}
+                            {stat('Closed lots', closedLots)}
+                            {stat('Open lots', openLots)}
+                            {stat('Unmatched buys', unmatchedBuys, unmatchedBuys > 0 ? '#fbbf24' : '#94a3b8')}
+                            {stat('Unmatched sells', unmatchedSells, unmatchedSells > 0 ? '#fbbf24' : '#94a3b8')}
+                            {stat('Historical recovery', historicalStatus.replaceAll('_', ' '), historicalStatus === 'blocked' ? '#f87171' : historicalStatus === 'attempted' ? '#4ade80' : '#fbbf24')}
+                          </div>
+                          {winRateLocked && (
+                            <div style={{ fontSize: '10px', color: 'rgba(148,163,184,0.74)' }}>
+                              Win rate locked until decisive closed lots exist: {lockReason}. Realized PnL is not final while coverage is partial.
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })()}
                     {result.walletPnlOutlierNote && (
                       <div style={{ fontSize: '12px', color: 'rgba(148,163,184,0.80)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '12px', lineHeight: 1.55, background: 'rgba(148,163,184,0.05)', border: '1px solid rgba(148,163,184,0.18)', borderRadius: '10px', padding: '10px 13px' }}>
                         <div style={{ fontWeight: 700, fontSize: '11px', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: '5px', color: 'rgba(148,163,184,0.90)' }}>Pricing outliers excluded</div>

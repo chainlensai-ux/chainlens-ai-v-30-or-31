@@ -347,17 +347,42 @@ function displayLpModelLabel(model: string | null | undefined): string {
   return DISPLAY_LP_MODEL_LABELS[model] ?? publicStatus(model)
 }
 
-function Section({ title, state, children }: { title: string; state?: ApiState<unknown>; children: React.ReactNode }) {
+function Section({ title, state, children, tone = 'default' }: { title: string; state?: ApiState<unknown>; children: React.ReactNode; tone?: 'default' | 'risk' | 'mint' | 'purple' }) {
   const loading = state?.isLoading
+  const accent = tone === 'risk' ? '#fb7185' : tone === 'purple' ? '#a78bfa' : '#2dd4bf'
   return (
-    <section style={{ border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(255,255,255,0.03)', borderRadius: '14px', padding: '14px', marginBottom: '12px' }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', marginBottom: '10px' }}>
-        <h3 style={{ margin: 0, color: '#f8fafc', fontSize: '11px', letterSpacing: '0.14em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>{title}</h3>
+    <section style={{ border: `1px solid ${tone === 'default' ? 'rgba(148,163,184,0.12)' : `${accent}33`}`, background: 'linear-gradient(180deg, rgba(15,23,42,0.72), rgba(2,6,23,0.58))', borderRadius: '18px', padding: '15px', marginBottom: '12px', boxShadow: '0 18px 50px rgba(0,0,0,0.20)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', marginBottom: '12px' }}>
+        <h3 style={{ margin: 0, color: '#f8fafc', fontSize: '11px', letterSpacing: '0.14em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}><span style={{ color: accent }}>◆</span> {title}</h3>
         {state?.error ? <span style={{ color: '#fbbf24', fontSize: '9px', fontFamily: 'var(--font-plex-mono)' }}>Limited</span> : null}
       </div>
       {loading ? <SkeletonRows /> : children}
     </section>
   )
+}
+
+function MetricCard({ label, value, sublabel, chip, tone = 'mint' }: { label: string; value: React.ReactNode; sublabel?: React.ReactNode; chip?: string; tone?: 'mint' | 'amber' | 'risk' | 'neutral' | 'purple' }) {
+  const color = tone === 'risk' ? '#fb7185' : tone === 'amber' ? '#fbbf24' : tone === 'purple' ? '#a78bfa' : tone === 'neutral' ? '#94a3b8' : '#2dd4bf'
+  return <div style={{ minWidth: 0, border: `1px solid ${color}26`, background: `linear-gradient(180deg, ${color}10, rgba(15,23,42,0.72))`, borderRadius: '16px', padding: '12px' }}>
+    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', marginBottom: 8 }}><span style={{ color: '#94a3b8', fontSize: 10, letterSpacing: '.12em', textTransform: 'uppercase', fontWeight: 800 }}>{label}</span>{chip ? <Chip label={chip} tone={tone} /> : null}</div>
+    <div style={{ color: '#f8fafc', fontSize: 22, lineHeight: 1, fontWeight: 850, letterSpacing: '-.03em', overflowWrap: 'anywhere' }}>{value}</div>
+    {sublabel ? <div style={{ marginTop: 7, color: '#94a3b8', fontSize: 11, lineHeight: 1.35 }}>{sublabel}</div> : null}
+  </div>
+}
+
+function Chip({ label, tone = 'neutral' }: { label: React.ReactNode; tone?: 'mint' | 'amber' | 'risk' | 'neutral' | 'purple' }) {
+  const color = tone === 'risk' ? '#fb7185' : tone === 'amber' ? '#fbbf24' : tone === 'purple' ? '#a78bfa' : tone === 'mint' ? '#2dd4bf' : '#94a3b8'
+  return <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 8px', borderRadius: 999, border: `1px solid ${color}33`, background: `${color}12`, color, fontSize: 9, fontWeight: 850, letterSpacing: '.08em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}><span style={{ width: 5, height: 5, borderRadius: 999, background: color }} />{label}</span>
+}
+
+function ProofTile({ label, value, tone = 'neutral' }: { label: string; value: React.ReactNode; tone?: 'mint' | 'amber' | 'risk' | 'neutral' | 'purple' }) {
+  return <div style={{ border: '1px solid rgba(148,163,184,.12)', background: 'rgba(2,6,23,.42)', borderRadius: 13, padding: 10 }}><div style={{ color: '#64748b', fontSize: 10, marginBottom: 5 }}>{label}</div><div style={{ color: tone === 'risk' ? '#fecaca' : tone === 'amber' ? '#fde68a' : '#e2e8f0', fontSize: 12, fontWeight: 750, lineHeight: 1.3 }}>{value}</div></div>
+}
+
+function MiniBar({ label, value, tone = 'mint' }: { label: string; value: number | null | undefined; tone?: 'mint' | 'amber' | 'risk' }) {
+  const n = value == null || !Number.isFinite(value) ? 0 : Math.max(0, Math.min(100, value))
+  const color = tone === 'risk' ? '#fb7185' : tone === 'amber' ? '#fbbf24' : '#2dd4bf'
+  return <div><div style={{ display: 'flex', justifyContent: 'space-between', color: '#cbd5e1', fontSize: 11, marginBottom: 6 }}><span>{label}</span><span style={{ fontFamily: 'var(--font-plex-mono)', color }}>{value == null ? 'N/A' : `${value.toFixed(1)}%`}</span></div><div style={{ height: 8, borderRadius: 999, background: 'rgba(148,163,184,.12)', overflow: 'hidden' }}><div style={{ width: `${n}%`, height: '100%', background: `linear-gradient(90deg, ${color}, ${tone === 'risk' ? '#a78bfa' : '#99f6e4'})`, borderRadius: 999 }} /></div></div>
 }
 
 function SkeletonRows() {
@@ -377,32 +402,46 @@ function DataRow({ label, value, mono = true }: { label: string; value: React.Re
   )
 }
 
-function DrawerLink({ href, label }: { href: string | null; label: string }) {
-  if (!href) return <span style={{ color: '#475569' }}>{label}: unavailable</span>
-  return <a href={href} target="_blank" rel="noreferrer" style={{ color: '#67e8f9', textDecoration: 'none' }}>{label}</a>
-}
 
 function MiniChart({ points }: { points: ChartPoint[] }) {
   const values = points.map((p) => Number(p.close ?? p.price ?? p.value)).filter(Number.isFinite)
-  const path = useMemo(() => {
-    if (values.length < 2) return ''
+  const stats = useMemo(() => {
+    if (values.length === 0) return null
     const min = Math.min(...values)
     const max = Math.max(...values)
-    const spread = max - min || 1
-    return values.map((v, i) => {
-      const x = (i / (values.length - 1)) * 320
-      const y = 86 - ((v - min) / spread) * 70
-      return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)} ${y.toFixed(1)}`
-    }).join(' ')
+    const current = values[values.length - 1]
+    const spread = max - min
+    const coords = values.map((v, i) => {
+      const x = 14 + (i / Math.max(values.length - 1, 1)) * 292
+      const y = spread === 0 ? 58 : 88 - ((v - min) / spread) * 64
+      return { x, y }
+    })
+    const line = coords.map((pt, i) => `${i === 0 ? 'M' : 'L'}${pt.x.toFixed(1)} ${pt.y.toFixed(1)}`).join(' ')
+    const area = `${line} L306 104 L14 104 Z`
+    return { min, max, current, line, area, flat: spread === 0 }
   }, [values])
 
-  if (!path) return <p style={{ color: '#64748b', fontSize: '11px', margin: 0 }}>OHLCV chart data is unavailable for this token right now.</p>
+  if (values.length < 4 || !stats) {
+    return <div style={{ minHeight: 112, borderRadius: 16, border: '1px solid rgba(148,163,184,.12)', background: 'linear-gradient(180deg, rgba(15,23,42,.72), rgba(2,6,23,.55))', display: 'grid', placeItems: 'center', padding: 16 }}><p style={{ color: '#94a3b8', fontSize: 12, margin: 0, textAlign: 'center' }}>Limited chart history — pool is very new.</p></div>
+  }
 
   return (
-    <svg viewBox="0 0 320 96" width="100%" height="110" role="img" aria-label="Token mini chart" style={{ borderRadius: '12px', background: 'rgba(15,23,42,0.65)', border: '1px solid rgba(45,212,191,0.12)' }}>
-      <path d={path} fill="none" stroke="#2DD4BF" strokeWidth="2" />
-      <path d={`${path} L320 96 L0 96 Z`} fill="rgba(45,212,191,0.08)" stroke="none" />
-    </svg>
+    <div style={{ borderRadius: 16, border: '1px solid rgba(45,212,191,0.14)', background: 'linear-gradient(180deg, rgba(15,23,42,0.78), rgba(2,6,23,0.56))', padding: 10, overflow: 'hidden' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, marginBottom: 8, color: '#94a3b8', fontSize: 10, fontFamily: 'var(--font-plex-mono)' }}>
+        <span>Min {fmtUSD(stats.min)}</span><span style={{ color: '#99f6e4' }}>Now {fmtUSD(stats.current)}</span><span>Max {fmtUSD(stats.max)}</span>
+      </div>
+      <svg viewBox="0 0 320 112" width="100%" height="150" role="img" aria-label="Token mini chart" className="radar-mini-chart-svg" style={{ display: 'block', maxHeight: 150 }}>
+        <defs>
+          <linearGradient id="radarChartFill" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stopColor="#2DD4BF" stopOpacity="0.20" /><stop offset="100%" stopColor="#2DD4BF" stopOpacity="0.02" /></linearGradient>
+          <filter id="radarChartGlow"><feGaussianBlur stdDeviation="2.5" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+        </defs>
+        {[24, 48, 72, 96].map((y) => <line key={y} x1="12" x2="308" y1={y} y2={y} stroke="rgba(148,163,184,.10)" strokeWidth="1" />)}
+        <path d={stats.area} fill="url(#radarChartFill)" stroke="none" />
+        <path d={stats.line} fill="none" stroke="#2DD4BF" strokeWidth={stats.flat ? 2 : 2.4} strokeLinecap="round" strokeLinejoin="round" filter="url(#radarChartGlow)" />
+        <circle cx="306" cy={stats.line.match(/ ([0-9.]+)$/)?.[1] ?? 58} r="3.5" fill="#99f6e4" />
+      </svg>
+      {stats.flat ? <p style={{ margin: '6px 0 0', color: '#64748b', fontSize: 11 }}>Flat price action in the available window.</p> : null}
+    </div>
   )
 }
 
@@ -465,6 +504,8 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
   const lpControllerSharePercent = extractLpControllerSharePercent(lp?.lpControl?.evidence ?? null)
   const activeOwner = (security?.devOwnership?.ownershipStatus ?? null) === 'active_owner'
 
+  const displayModel = token ? buildBaseRadarDisplayModel(token, enriched) : null
+
   const severity = assessBaseRadarSeverity({
     baseScore: token?.radarScore ?? 0,
     lpControlStatus: lpControlStatus,
@@ -500,8 +541,8 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
     activeOwner,
   })
 
-  const effectiveScore = detailSeverity.cap != null ? Math.min(severity.effectiveScore, detailSeverity.cap) : severity.effectiveScore
-  const severityLabel = getScoreSeverityLabel(effectiveScore)
+  const effectiveScore = displayModel?.score ?? (detailSeverity.cap != null ? Math.min(severity.effectiveScore, detailSeverity.cap) : severity.effectiveScore)
+  const severityLabel = displayModel?.riskLabel ?? getScoreSeverityLabel(effectiveScore)
 
   const marketValuation = getRadarDrawerValuation({
     enrichmentMarketCapUsd: market?.marketCapUsd ?? null,
@@ -511,7 +552,9 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
     fdvUsd: market?.fdvUsd ?? token?.fdvUsd ?? null,
     liquidityUsd,
   })
-  const marketValuationCard = getRadarValuationCardDisplay(marketValuation, fmtUSD)
+  const marketValuationCard = displayModel
+    ? { label: displayModel.valuation.label === 'Market Cap' ? 'Market cap' : displayModel.valuation.label, value: displayModel.valuation.valueUsd != null ? fmtUSD(displayModel.valuation.valueUsd) : 'Open check', sublabel: displayModel.valuation.sublabel }
+    : getRadarValuationCardDisplay(marketValuation, fmtUSD)
   const excludedFromFeed = liquidityUsd != null && liquidityUsd < DEFAULT_RADAR_MIN_LIQUIDITY_USD
 
   const poolDistributionLine = lp?.cortexLpRead?.liquidityAnalysis ?? (market?.observedPoolPresent
@@ -539,7 +582,7 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
     token?.valuationCortexLine ?? null,
     lpCortexLine,
     holderCortexLine,
-    token?.simulationCortexLine ?? null,
+    displayModel?.simulation.cortexLine ?? token?.simulationCortexLine ?? null,
     deployer?.deployerAddress ? `Deployer ${shortAddr(deployer.deployerAddress)} is ${publicStatus(deployer.deployerStatus ?? 'reviewed')} at ${deployer.deployerConfidence ?? 'open-check'} confidence.` : 'Deployer is Open Check in the current evidence.',
     token?.flags?.length ? `Risk context: ${token.flags.join(', ')}.` : 'Risk context: no radar flags on this card.',
   ].filter((line): line is string => Boolean(line))
@@ -629,6 +672,23 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
   }
   const dedupedWatchNext = Array.from(new Set(watchNext))
 
+
+  const projectLinks = [
+    { label: 'Website', href: asLink(socials.website) },
+    { label: 'X', href: asLink(socials.twitter) },
+    { label: 'Telegram', href: asLink(socials.telegram) },
+  ].filter((item): item is { label: string; href: string } => Boolean(item.href))
+  const marketSignals = Array.from(new Set([pairAgeLabel ? 'New Pool' : null, token?.momentum ? `${publicStatus(token.momentum)} Momentum` : null, marketValuation.basis === 'verified_market_cap' ? 'Market Cap Verified' : marketValuation.basis === 'fdv_fallback' ? 'FDV Fallback' : 'Valuation Open Check'].filter(Boolean) as string[])).slice(0, 5)
+  const riskSignals = Array.from(new Set([excludedFromFeed ? 'Liquidity Watch' : null, concentrationRisk === 'Extreme' ? 'Extreme Holder Control' : concentrationRisk === 'High' ? 'High Holder Control' : null, !hasVerifiedLock(lp?.lpLockStatus) && lp?.lpProofApplicability !== 'not_applicable' ? 'No Lock Detected' : null, displayModel?.simulation.status === 'passed' ? 'Simulation Clear' : displayModel?.simulation.status === 'open_check' ? 'Simulation Pending' : null, ...severity.evidenceTags].filter(Boolean) as string[])).slice(0, 6)
+  const controlSignals = Array.from(new Set([activeOwner ? 'Active Owner/Admin' : ownershipLabel, lpControlStatus ? publicStatus(lpControlStatus) : 'LP Control Open Check', deployer?.clusterEvidence?.confirmed ? 'Cluster Evidence' : 'Cluster Open Check'].filter(Boolean) as string[])).slice(0, 5)
+  const cortexFound = [severity.cortexSevereLine, poolDistributionLine, holderCortexLine].filter(Boolean).slice(0, 3)
+  const cortexMainRisk = activeOwner ? 'Active owner/admin remains the primary control risk.' : concentrationRisk === 'Extreme' ? 'Extreme holder concentration is the primary risk driver.' : lpRiskLabelValue
+  const cortexWatch = dedupedWatchNext.slice(0, 3)
+  const valuationTone = marketValuation.basis === 'verified_market_cap' ? 'mint' : marketValuation.basis === 'fdv_fallback' ? 'amber' : 'neutral'
+  const holderTone = concentrationRisk === 'Extreme' || concentrationRisk === 'High' ? 'risk' : concentrationRisk === 'Medium' ? 'amber' : 'mint'
+  const holderSectionTone = holderTone === 'amber' ? 'purple' : holderTone
+  const lpTone = !hasVerifiedLock(lp?.lpLockStatus) && lp?.lpProofApplicability !== 'not_applicable' ? 'risk' : 'mint'
+
   async function copyText(value: string) {
     await navigator.clipboard?.writeText(value)
   }
@@ -637,160 +697,99 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
 
   return (
     <div aria-hidden={!open}>
-      <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: open ? 'rgba(2,6,23,0.58)' : 'transparent', backdropFilter: open ? 'blur(3px)' : 'none', pointerEvents: open ? 'auto' : 'none', transition: 'background 0.2s, backdrop-filter 0.2s', zIndex: 70 }} />
-      <aside role="dialog" aria-modal="true" aria-label="Project overview" style={{ position: 'fixed', top: 0, right: 0, height: '100dvh', width: 'min(560px, 100vw)', transform: open ? 'translateX(0)' : 'translateX(105%)', transition: 'transform 0.28s cubic-bezier(.22,1,.36,1)', zIndex: 80, background: 'linear-gradient(180deg, rgba(15,23,42,0.98), rgba(2,6,23,0.98))', borderLeft: '1px solid rgba(45,212,191,0.18)', boxShadow: '-28px 0 80px rgba(0,0,0,0.42)', color: '#e2e8f0', overflowY: 'auto', padding: '18px' }}>
-        <header style={{ position: 'sticky', top: 0, zIndex: 1, margin: '-18px -18px 14px', padding: '18px', background: 'rgba(2,6,23,0.92)', backdropFilter: 'blur(16px)', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'flex-start' }}>
-            <div>
-              <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
-                <h2 style={{ margin: 0, fontSize: '20px', color: '#f8fafc' }}>{token.name} <span style={{ color: '#64748b' }}>({token.symbol})</span></h2>
-                <span style={{ padding: '3px 8px', borderRadius: '999px', background: 'rgba(45,212,191,0.10)', border: '1px solid rgba(45,212,191,0.24)', color: '#99f6e4', fontSize: '10px', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{chain === 'base' ? 'Base' : 'ETH'}</span>
-                <span style={{ padding: '3px 8px', borderRadius: '999px', background: 'rgba(168,85,247,0.10)', border: '1px solid rgba(168,85,247,0.24)', color: '#e9d5ff', fontSize: '10px', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Radar {effectiveScore}/100</span>
-                <span style={{ padding: '3px 8px', borderRadius: '999px', background: 'rgba(148,163,184,0.10)', border: '1px solid rgba(148,163,184,0.22)', color: '#cbd5e1', fontSize: '10px', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{token.status}</span>
-                <span style={{ padding: '3px 8px', borderRadius: '999px', background: 'rgba(248,113,113,0.10)', border: '1px solid rgba(248,113,113,0.24)', color: '#fca5a5', fontSize: '10px', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{severityLabel}</span>
+      <style>{`@media (max-width: 640px) { .radar-drawer { width: 100vw !important; padding: 12px !important; border-left: 0 !important; } .radar-drawer-header { margin: -12px -12px 12px !important; padding: 10px 12px !important; } .radar-mini-chart-svg { height: 120px !important; max-height: 120px !important; } .holder-row-list > div { grid-template-columns: 34px minmax(0,1fr) auto !important; overflow-wrap: anywhere; } }`}</style>
+      <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: open ? 'rgba(2,6,23,0.68)' : 'transparent', backdropFilter: open ? 'blur(4px)' : 'none', pointerEvents: open ? 'auto' : 'none', transition: 'background 0.2s, backdrop-filter 0.2s', zIndex: 70 }} />
+      <aside className="radar-drawer" role="dialog" aria-modal="true" aria-label="Project overview" style={{ position: 'fixed', top: 0, right: 0, height: '100dvh', width: 'min(640px, 100vw)', transform: open ? 'translateX(0)' : 'translateX(105%)', transition: 'transform 0.28s cubic-bezier(.22,1,.36,1)', zIndex: 80, background: 'radial-gradient(circle at 20% 0%, rgba(45,212,191,.13), transparent 32%), radial-gradient(circle at 90% 16%, rgba(168,85,247,.12), transparent 28%), linear-gradient(180deg, #07111f, #020617 58%)', borderLeft: '1px solid rgba(45,212,191,0.20)', boxShadow: '-32px 0 100px rgba(0,0,0,0.52)', color: '#e2e8f0', overflowY: 'auto', padding: '18px', overflowX: 'hidden' }}>
+        <header className="radar-drawer-header" style={{ position: 'sticky', top: 0, zIndex: 3, margin: '-18px -18px 14px', padding: '14px 18px', background: 'rgba(2,6,23,0.88)', backdropFilter: 'blur(18px)', borderBottom: '1px solid rgba(148,163,184,0.12)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center' }}>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <h2 style={{ margin: 0, fontSize: 20, color: '#f8fafc', letterSpacing: '-.03em', overflowWrap: 'anywhere' }}>{token.name} <span style={{ color: '#94a3b8' }}>/{token.symbol}</span></h2>
+                <Chip label={chain === 'base' ? 'Base' : 'ETH'} tone="mint" />
+                <Chip label={fmtAge(token.ageMinutes)} tone="neutral" />
               </div>
-              <p style={{ margin: '6px 0 0', color: '#64748b', fontSize: '11px', fontFamily: 'var(--font-plex-mono)' }}>{shortAddr(token.contract)}</p>
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginTop: 10 }}>
+                <div style={{ padding: '9px 12px', borderRadius: 14, background: 'linear-gradient(135deg, rgba(45,212,191,.18), rgba(15,23,42,.62))', border: '1px solid rgba(45,212,191,.28)' }}><span style={{ color: '#99f6e4', fontSize: 10, fontWeight: 900, letterSpacing: '.12em', textTransform: 'uppercase' }}>Radar</span><span style={{ marginLeft: 8, color: '#fff', fontSize: 18, fontWeight: 900 }}>{effectiveScore}</span><span style={{ color: '#64748b', fontSize: 11 }}>/100</span></div>
+                <div style={{ padding: '9px 12px', borderRadius: 14, background: 'linear-gradient(135deg, rgba(251,113,133,.16), rgba(15,23,42,.62))', border: '1px solid rgba(251,113,133,.25)', color: '#fecaca', fontSize: 12, fontWeight: 850 }}>{severityLabel}</div>
+                <span title={token.contract} style={{ color: '#94a3b8', fontSize: 11, fontFamily: 'var(--font-plex-mono)' }}>{shortAddr(token.contract)}</span>
+              </div>
             </div>
-            <button onClick={onClose} aria-label="Close project overview" style={{ border: '1px solid rgba(255,255,255,0.12)', background: 'rgba(255,255,255,0.04)', color: '#cbd5e1', borderRadius: '10px', width: '34px', height: '34px', cursor: 'pointer' }}>×</button>
+            <button onClick={onClose} aria-label="Close project overview" style={{ flex: '0 0 auto', border: '1px solid rgba(255,255,255,0.12)', background: 'rgba(255,255,255,0.04)', color: '#cbd5e1', borderRadius: 12, width: 36, height: 36, cursor: 'pointer', fontSize: 20 }}>×</button>
           </div>
-          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '12px' }}>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
             <button onClick={() => copyText(token.contract)} style={buttonStyle}>Copy CA</button>
-            <a href={`/terminal/token-scanner?contract=${token.contract}`} style={{ ...buttonStyle, textDecoration: 'none' }}>Open in Token Scanner</a>
+            <a href={explorer ?? '#'} target="_blank" rel="noreferrer" style={{ ...buttonStyle, textDecoration: 'none' }}>Open Explorer</a>
+            <a href={`/terminal/token-scanner?contract=${token.contract}`} style={{ ...buttonStyle, textDecoration: 'none' }}>Deep Scan</a>
           </div>
         </header>
 
-        <Section title="Market Snapshot">
-          {excludedFromFeed && (
-            <p style={{ margin: '0 0 10px', padding: '8px 10px', borderRadius: '8px', background: 'rgba(248,113,113,0.08)', border: '1px solid rgba(248,113,113,0.22)', color: '#fca5a5', fontSize: '11px', lineHeight: 1.4 }}>
-              Excluded from default feed — liquidity below $5K threshold.
-            </p>
-          )}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '0 12px' }}>
-            <DataRow label="Liquidity" value={fmtUSD(market?.liquidityUsd ?? token.liquidityUsd)} />
-            <DataRow label="Volume 24h" value={fmtUSD(market?.volume24hUsd ?? token.volume24h)} />
-            <DataRow label={marketValuationCard.label === 'FDV' ? 'FDV' : 'Market cap'} value={marketValuationCard.value} />
-            {marketValuationCard.label === 'FDV' && <DataRow label="Market cap" value="Unverified" />}
-            {marketValuationCard.label !== 'FDV' && <DataRow label="FDV" value={fmtUSD(market?.fdvUsd ?? token.fdvUsd ?? null)} />}
-            <DataRow label="Valuation" value={marketValuation.basis === 'verified_market_cap' ? 'Verified market cap' : marketValuation.basis === 'fdv_fallback' ? 'FDV fallback' : 'Unavailable'} />
-            <DataRow label="Score" value={`${effectiveScore}/100 · ${severityLabel}`} />
-            <DataRow label="Momentum" value={token.momentum} />
-            <DataRow label="Age" value={pairAgeLabel ?? fmtAge(token.ageMinutes)} />
-            <DataRow label="Market evidence" value={market?.marketConfidence ? publicStatus(market.marketConfidence) : 'Open Check'} />
+        <Section title="CORTEX Verdict" tone={severityLabel === 'High Risk' || severityLabel === 'Critical' ? 'risk' : 'mint'}>
+          <p style={{ margin: '0 0 12px', color: '#e2e8f0', fontSize: 14, lineHeight: 1.5, fontWeight: 650 }}>{severity.cortexSevereLine}</p>
+          <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', marginBottom: 12 }}>{[...marketSignals, ...riskSignals].slice(0, 3).map((x) => <Chip key={x} label={x} tone={/risk|lock|holder|timeout|watch/i.test(x) ? 'risk' : 'mint'} />)}</div>
+          <ProofTile label="Primary risk driver" value={cortexMainRisk} tone={/High|risk|Active|Extreme|No verified/i.test(cortexMainRisk) ? 'risk' : 'neutral'} />
+        </Section>
+
+        <Section title="Market Snapshot" tone="mint">
+          {excludedFromFeed && <div style={{ marginBottom: 10 }}><Chip label="Below default liquidity threshold" tone="risk" /></div>}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10 }}>
+            <MetricCard label="Liquidity" value={fmtUSD(liquidityUsd)} sublabel={excludedFromFeed ? 'Below $5K feed threshold' : 'Primary observed depth'} chip={excludedFromFeed ? 'Watch' : 'Depth'} tone={excludedFromFeed ? 'risk' : 'mint'} />
+            <MetricCard label={displayModel?.valuation.label ?? (marketValuationCard.label === 'FDV' ? 'FDV' : marketValuation.basis === 'unavailable' ? 'Valuation' : 'Market Cap')} value={marketValuationCard.value} sublabel={displayModel?.valuation.sublabel ?? (marketValuation.basis === 'verified_market_cap' ? 'Verified' : marketValuation.basis === 'fdv_fallback' ? 'Market cap unavailable' : 'Open check')} chip={displayModel?.valuation.status === 'verified' ? 'Verified' : displayModel?.valuation.status === 'fdv_fallback' ? 'Fallback' : marketValuation.basis === 'verified_market_cap' ? 'Verified' : marketValuation.basis === 'fdv_fallback' ? 'Fallback' : 'Open'} tone={valuationTone} />
+            <MetricCard label="24h Volume" value={fmtUSD(market?.volume24hUsd ?? token.volume24h)} sublabel="Recent market activity" chip="24h" tone="purple" />
+            <MetricCard label="Age" value={pairAgeLabel ?? fmtAge(token.ageMinutes)} sublabel="Pool age evidence" chip="Launch" tone="neutral" />
+            <MetricCard label="Momentum" value={publicStatus(token.momentum)} sublabel={`Radar ${effectiveScore}/100`} chip={token.status} tone="mint" />
+            <MetricCard label="Market Evidence" value={market?.marketConfidence ? publicStatus(market.marketConfidence) : 'Open Check'} sublabel={marketValuationCard.sublabel} chip={market?.marketStatus ? publicStatus(market.marketStatus) : 'Evidence'} tone={market?.marketConfidence?.toLowerCase().includes('open') ? 'amber' : 'mint'} />
           </div>
-          {marketValuation.basis === 'fdv_fallback' && <p style={{ margin: '10px 0 0', color: '#fde68a', fontSize: '11px', lineHeight: 1.4 }}>Market cap: Unverified · FDV shown because verified market cap is unavailable.</p>}
-          <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginTop: '10px' }}>{(token.flags.length || severity.evidenceTags.length ? Array.from(new Set([...token.flags, ...severity.evidenceTags])) : ['No radar tags']).map((flag) => <span key={flag} style={tagStyle}>{flag}</span>)}</div>
+        </Section>
+
+        <Section title="Signal Stack" tone="purple">
+          {[['Market Signals', marketSignals, 'mint'], ['Risk Signals', riskSignals, 'risk'], ['Control Signals', controlSignals, 'amber']].map(([title, items, tone]) => <div key={title as string} style={{ marginBottom: 11 }}><p style={{ margin: '0 0 7px', color: '#94a3b8', fontSize: 10, letterSpacing: '.11em', textTransform: 'uppercase', fontWeight: 850 }}>{title as string}</p><div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>{(items as string[]).map((x) => <Chip key={x} label={x} tone={tone as 'mint' | 'amber' | 'risk'} />)}</div></div>)}
         </Section>
 
         <Section title="Socials" state={enrichmentState}>
-          <div style={{ display: 'grid', gap: '8px', fontSize: '11px', fontFamily: 'var(--font-plex-mono)' }}>
-            <DrawerLink href={asLink(socials.website)} label="Website" />
-            <DrawerLink href={asLink(socials.twitter)} label="Twitter" />
-            <DrawerLink href={asLink(socials.telegram)} label="Telegram" />
-            <DrawerLink href={dexScreener} label="Market chart" />
-            <DrawerLink href={geckoTerminal} label="Pool explorer" />
-            <DrawerLink href={explorer} label="Block explorer" />
-            <button onClick={() => copyText(socialLinks.join('\n'))} disabled={socialLinks.length === 0} style={{ ...buttonStyle, width: 'fit-content', opacity: socialLinks.length ? 1 : 0.45 }}>Copy all links</button>
+          {projectLinks.length ? <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(120px,1fr))', gap: 10 }}>{projectLinks.map((link) => <a key={link.label} href={link.href} target="_blank" rel="noreferrer" style={{ textDecoration: 'none', color: '#e2e8f0', padding: 12, borderRadius: 14, border: '1px solid rgba(45,212,191,.20)', background: 'rgba(45,212,191,.07)', fontWeight: 800 }}>{link.label} ↗</a>)}</div> : <div style={{ padding: 14, borderRadius: 15, border: '1px solid rgba(148,163,184,.12)', background: 'rgba(15,23,42,.52)' }}><p style={{ margin: '0 0 5px', color: '#e2e8f0', fontWeight: 750 }}>No public project links found in current metadata.</p><p style={{ margin: 0, color: '#94a3b8', fontSize: 12 }}>CORTEX will keep this as a social-evidence gap.</p></div>}
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}><a href={dexScreener ?? '#'} target="_blank" rel="noreferrer" style={{ ...buttonStyle, textDecoration: 'none' }}>Market chart</a><a href={geckoTerminal ?? '#'} target="_blank" rel="noreferrer" style={{ ...buttonStyle, textDecoration: 'none' }}>Pool explorer</a></div>
+        </Section>
+
+        <Section title={lp?.lpProofApplicability === 'not_applicable' ? 'LP Position Control' : 'LP Control'} state={enrichmentState} tone={lpTone}>
+          <div style={{ marginBottom: 12 }}><Chip label={lp?.lpProofApplicability === 'not_applicable' ? 'Position verification required' : lpProofLabel} tone={lpTone} /></div>
+          <p style={{ margin: '0 0 12px', color: lpTone === 'risk' ? '#fecaca' : '#cbd5e1', fontSize: 13, lineHeight: 1.5 }}>{lp?.lpProofApplicability === 'not_applicable' ? 'Standard LP token lock proof may not apply. Position owner and control route require verification.' : lpRiskLabelValue}</p>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(130px,1fr))', gap: 10 }}>
+            <ProofTile label="Pool model" value={displayLpModelLabel(lp?.displayLpModel)} tone="purple" />
+            <ProofTile label="Lock proof" value={lpLockStatusLabel} tone={lpTone} />
+            <ProofTile label="Burn proof" value={lpProofDisplay?.burnProof ?? (hasVerifiedLock(lp?.lpLockStatus) ? 'Not required' : 'No burn proof')} tone={lpTone} />
+            <ProofTile label="Controller" value={lpControllerLabel} tone={lpTone} />
           </div>
+          {secondaryLpSignal?.status === 'team_controlled' ? <div style={{ marginTop: 10 }}><ProofTile label="Secondary exposure" value={`Wallet-controlled secondary pool${secondaryLpSignal.poolDex ? ` · ${secondaryLpSignal.poolDex}` : ''}`} tone="risk" /></div> : null}
+          <a href={`/terminal/liquidity?address=${token.contract}&chain=${chain}`} style={{ ...buttonStyle, display: 'inline-flex', marginTop: 12, textDecoration: 'none' }}>Open full LP Safety</a>
         </Section>
 
-        <Section title="Liquidity / LP Model" state={enrichmentState}>
-          <DataRow label="Pool model" value={displayLpModelLabel(lp?.displayLpModel)} />
-
-          <DataRow label="LP proof" value={lpProofLabel} />
-
-          {lp?.lpProofApplicability === 'not_applicable' ? (
-            <div style={{ margin: '4px 0 10px', padding: '10px', borderRadius: '10px', background: 'rgba(168,85,247,0.06)', border: '1px solid rgba(168,85,247,0.18)' }}>
-              <p style={{ margin: 0, color: '#e9d5ff', fontSize: '11px', fontWeight: 700, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Model-specific LP proof</p>
-              <p style={{ margin: '6px 0 0', color: '#cbd5e1', fontSize: '11px', lineHeight: 1.5 }}>
-                Standard V2 LP lock/burn proof does not apply to this pool model.
-              </p>
-              <p style={{ margin: '4px 0 0', color: '#94a3b8', fontSize: '11px', lineHeight: 1.5 }}>
-                CORTEX evaluates this liquidity using pool model, depth, age, ownership, and secondary LP exposure.
-              </p>
-            </div>
-          ) : null}
-
-          {lp?.lpProofApplicability === 'applicable' && lpProofDisplay && !hasVerifiedLock(lp?.lpLockStatus) ? (
-            <div style={{ margin: '4px 0 10px', padding: '10px', borderRadius: '10px', background: 'rgba(251,191,36,0.06)', border: '1px solid rgba(251,191,36,0.20)' }}>
-              <p style={{ margin: 0, color: '#fde68a', fontSize: '11px', fontWeight: 700, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>No verified lock/burn proof found</p>
-              <p style={{ margin: '6px 0 0', color: '#cbd5e1', fontSize: '11px', lineHeight: 1.5 }}>{lpRiskLabelValue}</p>
-            </div>
-          ) : null}
-
-          <DataRow label="Controller" value={lpControllerLabel} />
-          <DataRow label="Control" value={`${lpControlStatus ? publicStatus(lpControlStatus) : 'Open Check'} · ${lp?.lpControl?.confidence ?? lp?.lpDataConfidence ?? 'open-check'}`} />
-          <DataRow label="Lock status" value={lpLockStatusLabel} />
-          <DataRow label="Lock amount" value={lpProofDisplay?.lockAmount ?? lockAmountLabel(lp?.lpLockAmount, lp?.lpLockStatus, lp?.lpProofStatus, lp?.lpProofApplicability)} />
-          <DataRow label="Unlock time" value={lpProofDisplay?.unlockTime ?? unlockTimeLabel(lp?.lpUnlockTime, lp?.lpLockStatus, lp?.lpProofStatus, lp?.lpProofApplicability)} />
-          {lpProofDisplay?.burnProof && <DataRow label="Burn proof" value={lpProofDisplay.burnProof} />}
-          <DataRow label="Data mode" value={lpDataModeLabel(lp?.lpDataMode, lp?.lpDataConfidence)} />
-          <DataRow label="Liquidity depth risk" value={lp?.liquidityDepthRisk ? publicStatus(lp.liquidityDepthRisk) : 'Open Check'} />
-          <DataRow label="Exit risk" value={lpRiskLabelValue} mono={false} />
-
-          {secondaryLpSignal?.status === 'team_controlled' ? (
-            <div style={{ margin: '10px 0 0', padding: '10px', borderRadius: '10px', background: 'rgba(248,113,113,0.06)', border: '1px solid rgba(248,113,113,0.20)' }}>
-              <p style={{ margin: 0, color: '#fca5a5', fontSize: '11px', fontWeight: 700, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Secondary LP exposure detected</p>
-              <p style={{ margin: '6px 0 0', color: '#cbd5e1', fontSize: '11px', lineHeight: 1.5 }}>
-                Primary liquidity for this token is concentrated or protocol-controlled, but a secondary ERC-20 LP pool{secondaryLpSignal.poolDex ? ` (${secondaryLpSignal.poolDex})` : ''} shows wallet-controlled exposure and may carry separate exit risk.
-              </p>
-            </div>
-          ) : null}
-
-          <a href={`/terminal/liquidity?address=${token.contract}&chain=${chain}`} style={{ ...buttonStyle, display: 'inline-flex', marginTop: '10px', textDecoration: 'none' }}>Open full LP Safety</a>
+        <Section title="Deployer / Ownership" state={enrichmentState} tone={activeOwner ? 'risk' : 'default'}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(170px,1fr))', gap: 10 }}>
+            <ProofTile label="Deployer identity" value={`${shortAddr(deployer?.deployerAddress)} · ${deployerMethod}`} />
+            <ProofTile label="Ownership/admin" value={ownershipLabel} tone={activeOwner ? 'risk' : 'mint'} />
+            <ProofTile label="Past launches" value={pastLaunchesEvidence.status === 'verified' || pastLaunchesEvidence.status === 'checked_not_found' ? `${deployer?.pastLaunches?.count ?? 0} found` : 'Open Check'} />
+            <ProofTile label="Rug history" value={rugHistoryEvidence.status === 'risk_fact' ? 'Flagged' : rugHistoryEvidence.status === 'checked_not_found' ? 'None found' : 'Open Check'} tone={rugHistoryEvidence.status === 'risk_fact' ? 'risk' : 'mint'} />
+          </div>
+          <div style={{ marginTop: 12 }}><MiniBar label="Cluster supply control" value={deployer?.clusterEvidence?.devClusterSupplyPercent ?? deployer?.clusterEvidence?.linkedWalletSupplyPercent ?? deployer?.supplyControl?.linkedWalletSupplyPercent ?? null} tone={(deployer?.clusterEvidence?.devClusterSupplyPercent ?? 0) > 30 ? 'risk' : 'mint'} /></div>
         </Section>
 
-        <Section title="Deployer / Ownership" state={enrichmentState}>
-          <DataRow label="Deployer" value={shortAddr(deployer?.deployerAddress)} />
-          <DataRow label="Status" value={`${deployer?.deployerStatus ? publicStatus(deployer.deployerStatus) : 'Open Check'} · ${deployer?.deployerConfidence ?? 'limited'}`} />
-          <DataRow label="Method" value={deployerMethod} />
-          <DataRow label="Past launches" value={pastLaunchesEvidence.status === 'verified' || pastLaunchesEvidence.status === 'checked_not_found' ? String(deployer?.pastLaunches?.count ?? 0) : 'Open Check'} />
-          <DataRow label="Rug history" value={rugHistoryEvidence.status === 'risk_fact' ? 'Flagged — see evidence gaps' : rugHistoryEvidence.status === 'checked_not_found' ? 'No verified rug flags' : 'Open Check'} />
-          <DataRow label="Cluster detection" value={clusterLabel} />
-          <DataRow label="Linked wallet supply" value={percent(deployer?.clusterEvidence?.linkedWalletSupplyPercent ?? deployer?.supplyControl?.linkedWalletSupplyPercent ?? null)} />
-          <DataRow label="Creator in top holders" value={creatorTopHolderDisplay(deployer?.creatorInTopHolders, deployer?.creatorHolderPercent)} />
-          <DataRow label="Ownership" value={ownershipLabel} mono={false} />
-        </Section>
-
-        <Section title="Holder Distribution" state={enrichmentState}>
-          <DataRow label="Top 1 / 10 / 20" value={`${percent(concentration.top1)} / ${percent(concentration.top10)} / ${percent(concentration.top20)}`} />
-          <DataRow label="Holder count" value={concentration.holderCount == null ? 'Open Check' : String(concentration.holderCount)} />
-          <DataRow label="Evidence status" value={holderStatusLabel} />
-          <DataRow label="Concentration risk" value={concentrationRisk === 'Open Check' ? concentrationRisk : `${concentrationRisk} concentration`} />
-          <DataRow label="Creator in top holders" value={creatorTopHolderDisplay(concentration.creatorInTopHolders, concentration.creatorHolderPercent)} />
-          <DataRow label="Trading taxes" value={securityTax} />
-          <div style={{ marginTop: '8px', display: 'grid', gap: '6px' }}>{topHolders.slice(0, 5).map((h, idx) => <DataRow key={`${h.address}-${idx}`} label={`#${h.rank ?? idx + 1}`} value={`${shortAddr(h.address)} · ${percent(getHolderPercent(h))}`} />)}</div>
+        <Section title="Holder Distribution" state={enrichmentState} tone={holderSectionTone}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}><Chip label={`${concentrationRisk} concentration`} tone={holderTone} /><span style={{ color: '#94a3b8', fontSize: 12 }}>Holders: <strong style={{ color: '#e2e8f0' }}>{concentration.holderCount == null ? 'Open Check' : concentration.holderCount}</strong></span><span style={{ color: '#94a3b8', fontSize: 12 }}>{creatorTopHolderDisplay(concentration.creatorInTopHolders, concentration.creatorHolderPercent)}</span></div>
+          <div style={{ display: 'grid', gap: 10, marginBottom: 12 }}><MiniBar label="Top 1" value={concentration.top1} tone={holderTone === 'risk' ? 'risk' : 'mint'} /><MiniBar label="Top 10" value={concentration.top10} tone={holderTone === 'risk' ? 'risk' : 'amber'} /><MiniBar label="Top 20" value={concentration.top20} tone={holderTone === 'risk' ? 'risk' : 'amber'} /></div>
+          <div className="holder-row-list" style={{ display: 'grid', gap: 7 }}>{topHolders.slice(0, 8).map((h, idx) => <div key={`${h.address}-${idx}`} style={{ display: 'grid', gridTemplateColumns: '38px minmax(0,1fr) auto', gap: 8, alignItems: 'center', padding: '8px 10px', borderRadius: 12, border: '1px solid rgba(148,163,184,.10)', background: 'rgba(2,6,23,.38)' }}><span style={{ color: '#64748b', fontSize: 11, fontFamily: 'var(--font-plex-mono)' }}>#{h.rank ?? idx + 1}</span><span style={{ color: '#e2e8f0', fontSize: 12, fontFamily: 'var(--font-plex-mono)' }}>{shortAddr(h.address)}</span><span style={{ color: '#99f6e4', fontSize: 12, fontFamily: 'var(--font-plex-mono)', fontWeight: 850 }}>{percent(getHolderPercent(h))}</span></div>)}</div>
         </Section>
 
         <Section title="Mini Chart" state={enrichmentState}>
-          <div style={{ display: 'flex', gap: '6px', marginBottom: '10px' }}>{['1h', '6h', '24h'].map((tf) => <span key={tf} style={tagStyle}>{tf}</span>)}</div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', marginBottom: 10 }}><div style={{ display: 'flex', gap: 6 }}>{['1h', '6h', '24h'].map((tf) => <Chip key={tf} label={tf} tone={tf === (enriched?.priceChart?.timeframe ?? '24h') ? 'mint' : 'neutral'} />)}</div>{chartPoints.length < 4 ? <Chip label="Low data" tone="amber" /> : null}</div>
           <MiniChart points={chartPoints} />
         </Section>
 
-        <Section title="CORTEX Read">
-          <ul style={{ margin: 0, paddingLeft: '18px', color: '#cbd5e1', fontSize: '12px', lineHeight: 1.55 }}>
-            {cortexRead.map((line) => <li key={line}>{line}</li>)}
-          </ul>
+        <Section title="CORTEX Read" tone="purple">
+          {[['What CORTEX found', cortexFound], ['Main risk', [cortexMainRisk]], ['Watch next', cortexWatch]].map(([title, lines]) => <div key={title as string} style={{ marginBottom: 12 }}><p style={{ margin: '0 0 7px', color: '#a78bfa', fontSize: 10, letterSpacing: '.12em', textTransform: 'uppercase', fontWeight: 850 }}>{title as string}</p><ul style={{ margin: 0, paddingLeft: 18, color: '#cbd5e1', fontSize: 12, lineHeight: 1.6 }}>{(lines as string[]).slice(0, title === 'What CORTEX found' ? 3 : 2).map((line) => <li key={line}>{line}</li>)}</ul></div>)}
         </Section>
 
-        <Section title="Evidence Gaps / Watch Next">
-          {dedupedRiskFacts.length ? (
-            <>
-              <p style={{ margin: '0 0 6px', color: '#fca5a5', fontSize: '10px', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Risk facts</p>
-              <ul style={{ margin: '0 0 12px', paddingLeft: '18px', color: '#fecaca', fontSize: '12px', lineHeight: 1.55 }}>
-                {dedupedRiskFacts.map((line) => <li key={line}>{line}</li>)}
-              </ul>
-            </>
-          ) : null}
-          <p style={{ margin: '0 0 6px', color: '#94a3b8', fontSize: '10px', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Open checks</p>
-          <ul style={{ margin: '0 0 12px', paddingLeft: '18px', color: '#cbd5e1', fontSize: '12px', lineHeight: 1.55 }}>
-            {dedupedEvidenceGaps.length
-              ? dedupedEvidenceGaps.map((line) => <li key={line}>{line}</li>)
-              : <li>No open evidence gaps from current checks.</li>}
-          </ul>
-          <p style={{ margin: '0 0 6px', color: '#94a3b8', fontSize: '10px', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Watch next</p>
-          <ul style={{ margin: 0, paddingLeft: '18px', color: '#cbd5e1', fontSize: '12px', lineHeight: 1.55 }}>
-            {dedupedWatchNext.map((line) => <li key={line}>{line}</li>)}
-          </ul>
+        <Section title="Evidence Gaps / Watch Next" tone="risk">
+          {[['Risk Facts', dedupedRiskFacts.length ? dedupedRiskFacts : ['No high-confidence risk facts from current structured checks.'], 'risk'], ['Open Checks', dedupedEvidenceGaps.length ? dedupedEvidenceGaps.slice(0, 6) : ['No open evidence gaps from current checks.'], 'amber'], ['Watch Next', dedupedWatchNext.slice(0, 5), 'mint']].map(([title, items, tone]) => <div key={title as string} style={{ marginBottom: 10 }}><p style={{ margin: '0 0 8px', color: tone === 'risk' ? '#fb7185' : tone === 'amber' ? '#fbbf24' : '#2dd4bf', fontSize: 10, letterSpacing: '.12em', textTransform: 'uppercase', fontWeight: 900 }}>{title as string}</p><div style={{ display: 'grid', gap: 8 }}>{(items as string[]).map((line) => <div key={line} style={{ display: 'grid', gridTemplateColumns: '14px 1fr', gap: 8, padding: 10, borderRadius: 13, border: '1px solid rgba(148,163,184,.11)', background: 'rgba(15,23,42,.48)' }}><span style={{ marginTop: 4, width: 7, height: 7, borderRadius: 999, background: tone === 'risk' ? '#fb7185' : tone === 'amber' ? '#fbbf24' : '#2dd4bf' }} /><span style={{ color: '#cbd5e1', fontSize: 12, lineHeight: 1.45 }}>{line}</span></div>)}</div></div>)}
         </Section>
       </aside>
     </div>
