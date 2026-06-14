@@ -1,7 +1,7 @@
 import type { CanonicalStatus } from './canonicalStatus'
 
 export type ClusterNodeType = 'deployer' | 'linked_wallet' | 'cluster_wallet' | 'holder_wallet'
-export type ClusterConfidence = 'high' | 'medium' | 'low' | 'open_check'
+export type ClusterConfidence = 'verified' | 'high' | 'medium' | 'low' | 'open_check'
 export type ClusterEdgeConfidence = 'high' | 'medium' | 'low'
 
 export type ClusterNode = {
@@ -11,7 +11,11 @@ export type ClusterNode = {
   type: ClusterNodeType
   supplyPercent: number | null
   rank: number | null
+  holderRank: number | null
+  roleLabel: string
   confidence: ClusterConfidence
+  confidenceReason: string
+  evidence: string[]
   isCreator: boolean
   isLinked: boolean
   isCluster: boolean
@@ -46,6 +50,14 @@ export type ClusterMap = {
     reason: string
   }
   signals: string[]
+  clusterMapDebug?: {
+    nodeCount: number
+    nodesWithSupply: number
+    deployerSupplyResolved: boolean
+    supplyResolutionSource: string | null
+    openCheckNodeCount: number
+    openCheckReasons: string[]
+  }
 }
 
 type BuildClusterMapInput = {
@@ -88,11 +100,11 @@ function cleanPercent(value: number | null | undefined): number | null {
 }
 
 function normalizeConfidence(value: string | null | undefined, fallback: ClusterConfidence = 'medium'): ClusterConfidence {
-  return value === 'high' || value === 'medium' || value === 'low' || value === 'open_check' ? value : fallback
+  return value === 'verified' || value === 'high' || value === 'medium' || value === 'low' || value === 'open_check' ? value : fallback
 }
 
 function edgeConfidence(value: ClusterConfidence): ClusterEdgeConfidence {
-  return value === 'high' || value === 'medium' ? value : 'low'
+  return value === 'verified' || value === 'high' || value === 'medium' ? (value === 'medium' ? 'medium' : 'high') : 'low'
 }
 
 function dominanceFromSupply(percent: number | null): ClusterMap['summary']['clusterDominance'] {
@@ -114,6 +126,38 @@ function riskFromSupply(percent: number | null, suspiciousTransfers: boolean): {
 
 function pushUniqueSignal(signals: string[], signal: string) {
   if (!signals.includes(signal) && signals.length < 5) signals.push(signal)
+}
+
+function hasEvidence(list: string[], pattern: RegExp): boolean {
+  return list.some((item) => pattern.test(item))
+}
+
+function roleLabelFor(type: ClusterNodeType, rank: number | null): string {
+  if (type === 'deployer') return 'Deployer'
+  if (type === 'linked_wallet') return 'Linked Wallet'
+  if (type === 'cluster_wallet') return 'Cluster Wallet'
+  return rank != null ? `Holder #${rank}` : 'Holder'
+}
+
+function confidenceFromEvidence(args: { addressRoleConfirmed: boolean; supplyPercent: number | null; holderRank: number | null; evidence: string[] }): ClusterConfidence {
+  const hasRole = args.addressRoleConfirmed || hasEvidence(args.evidence, /deployer|linked|holder|cluster|role/i)
+  const hasLink = hasEvidence(args.evidence, /transfer|linked|edge|overlap/i)
+  if (hasRole && args.supplyPercent != null && hasLink) return 'verified'
+  if (hasRole && args.supplyPercent != null) return 'high'
+  if (hasRole && (args.holderRank != null || hasLink)) return 'medium'
+  if (hasRole) return 'low'
+  return 'open_check'
+}
+
+function confidenceReasonFor(args: { type: ClusterNodeType; supplyPercent: number | null; holderRank: number | null; evidence: string[]; holderRowsAvailable: boolean; addressRoleConfirmed: boolean }): string {
+  if (args.type === 'deployer' && args.evidence.includes('deployer_found_in_holders') && args.supplyPercent != null) return `Indexed holder evidence confirms the deployer holds ${args.supplyPercent.toFixed(1)}% of supply.`
+  if (args.supplyPercent != null && args.holderRank != null) return `Indexed holder evidence confirms this wallet holds ${args.supplyPercent.toFixed(1)}% of supply at rank #${args.holderRank}.`
+  if (args.supplyPercent != null) return `Supply found in holder data, but link evidence is incomplete.`
+  if (args.type === 'deployer' && !args.holderRowsAvailable) return 'Deployer identified, but holder supply evidence is unavailable.'
+  if (args.type === 'deployer') return 'Deployer confirmed; holder supply not found.'
+  if (args.holderRank != null) return `Holder rank #${args.holderRank} found, but supply percent is unavailable.`
+  if (args.evidence.length > 0 || args.addressRoleConfirmed) return 'No transfer edges confirmed in this pass.'
+  return 'No useful wallet evidence was available in this pass.'
 }
 
 export function buildClusterMap(input: BuildClusterMapInput): ClusterMap {
@@ -138,7 +182,19 @@ export function buildClusterMap(input: BuildClusterMapInput): ClusterMap {
   const edges: ClusterEdge[] = []
   const signals: string[] = []
 
-  function upsertNode(node: ClusterNode) {
+  function upsertNode(rawNode: Omit<ClusterNode, 'holderRank' | 'roleLabel' | 'confidenceReason' | 'evidence'> & Partial<Pick<ClusterNode, 'holderRank' | 'roleLabel' | 'confidenceReason' | 'evidence'>>) {
+    const evidence = Array.from(new Set([...(rawNode.evidence ?? []), ...rawNode.reasons]))
+    const holderRank = rawNode.holderRank ?? rawNode.rank ?? null
+    const addressRoleConfirmed = rawNode.type === 'deployer' || rawNode.isLinked || rawNode.isCluster || rawNode.type === 'holder_wallet'
+    const computedConfidence = confidenceFromEvidence({ addressRoleConfirmed, supplyPercent: rawNode.supplyPercent, holderRank, evidence })
+    const node: ClusterNode = {
+      ...rawNode,
+      holderRank,
+      roleLabel: rawNode.roleLabel ?? roleLabelFor(rawNode.type, holderRank),
+      confidence: rawNode.confidence === 'open_check' ? computedConfidence : (computedConfidence === 'verified' || computedConfidence === 'high' ? computedConfidence : rawNode.confidence),
+      confidenceReason: rawNode.confidenceReason ?? confidenceReasonFor({ type: rawNode.type, supplyPercent: rawNode.supplyPercent, holderRank, evidence, holderRowsAvailable: input.holderRowsAvailable !== false && holderRows.length > 0, addressRoleConfirmed }),
+      evidence,
+    }
     const existing = nodes.get(node.id)
     if (!existing) {
       nodes.set(node.id, node)
@@ -149,11 +205,15 @@ export function buildClusterMap(input: BuildClusterMapInput): ClusterMap {
       ...node,
       supplyPercent: existing.supplyPercent ?? node.supplyPercent,
       rank: existing.rank ?? node.rank,
-      confidence: existing.confidence === 'high' || node.confidence === 'open_check' ? existing.confidence : node.confidence,
+      holderRank: existing.holderRank ?? node.holderRank,
+      roleLabel: existing.roleLabel || node.roleLabel,
+      confidence: existing.confidence === 'verified' || existing.confidence === 'high' || node.confidence === 'open_check' ? existing.confidence : node.confidence,
+      confidenceReason: existing.confidenceReason || node.confidenceReason,
       isCreator: existing.isCreator || node.isCreator,
       isLinked: existing.isLinked || node.isLinked,
       isCluster: existing.isCluster || node.isCluster,
       reasons: Array.from(new Set([...existing.reasons, ...node.reasons])),
+      evidence: Array.from(new Set([...existing.evidence, ...node.evidence])),
     })
   }
 
@@ -166,11 +226,12 @@ export function buildClusterMap(input: BuildClusterMapInput): ClusterMap {
       type: 'deployer',
       supplyPercent: cleanPercent(input.supplyControl?.creatorHolderPercent) ?? holder?.percent ?? null,
       rank: input.supplyControl?.creatorHolderRank ?? holder?.rank ?? null,
-      confidence: input.deployerStatus === 'confirmed' || input.deployerStatus == null ? 'high' : 'medium',
+      confidence: holder || cleanPercent(input.supplyControl?.creatorHolderPercent) != null ? 'high' : 'low',
       isCreator: true,
       isLinked: false,
       isCluster: Boolean(holder),
-      reasons: [holder ? 'Deployer appears in indexed holder rows.' : 'Deployer/origin wallet resolved from Dev Control evidence.'],
+      reasons: [holder ? 'Deployer appears in indexed holder rows.' : (input.holderRowsAvailable === false || holderRows.length === 0 ? 'Deployer identified, but holder supply evidence is unavailable.' : 'Deployer not found in indexed top holders for this scan.')],
+      evidence: ['deployer_role_confirmed', ...(holder ? ['deployer_found_in_holders'] : [])],
     })
     pushUniqueSignal(signals, 'Deployer confirmed')
   }
@@ -191,6 +252,7 @@ export function buildClusterMap(input: BuildClusterMapInput): ClusterMap {
       isLinked: true,
       isCluster: Boolean(matched || holder),
       reasons: [wallet.reason || 'Linked wallet mapped by Dev Control evidence.', ...(matched || holder ? ['Linked wallet appears in indexed holder set.'] : [])],
+      evidence: ['linked_wallet_evidence', ...(matched || holder ? ['linked_wallet_supply_found'] : []), ...(wallet.reason ? [wallet.reason] : [])],
     })
     pushUniqueSignal(signals, 'Linked wallet mapped')
     if (matched || holder) pushUniqueSignal(signals, 'Linked wallet appears in holder set')
@@ -224,6 +286,7 @@ export function buildClusterMap(input: BuildClusterMapInput): ClusterMap {
       isLinked: true,
       isCluster: true,
       reasons: ['Matched linked wallet appears in indexed holder set.'],
+      evidence: ['linked_wallet_evidence', 'linked_wallet_supply_found', 'holder_overlap'],
     })
     pushUniqueSignal(signals, 'Linked wallet appears in holder set')
     if (deployerAddress) {
@@ -252,7 +315,8 @@ export function buildClusterMap(input: BuildClusterMapInput): ClusterMap {
       isCreator: false,
       isLinked: false,
       isCluster: false,
-      reasons: ['Indexed top holder only; no deployer or linked-wallet evidence confirmed.'],
+      reasons: ['Indexed holder evidence confirms this wallet supply position.'],
+      evidence: ['indexed_holder_data'],
     })
   }
 
@@ -313,5 +377,13 @@ export function buildClusterMap(input: BuildClusterMapInput): ClusterMap {
       reason,
     },
     signals,
+    clusterMapDebug: {
+      nodeCount: nodeList.length,
+      nodesWithSupply: nodeList.filter((node) => node.supplyPercent != null).length,
+      deployerSupplyResolved: Boolean(deployerAddress && nodeList.find((node) => node.address === deployerAddress)?.supplyPercent != null),
+      supplyResolutionSource: deployerAddress && holderByAddress.has(deployerAddress) ? 'holder_rows' : cleanPercent(input.supplyControl?.creatorHolderPercent) != null ? 'supply_control_creator_holder_percent' : null,
+      openCheckNodeCount: nodeList.filter((node) => node.confidence === 'open_check').length,
+      openCheckReasons: nodeList.filter((node) => node.confidence === 'open_check').map((node) => node.confidenceReason),
+    },
   }
 }
