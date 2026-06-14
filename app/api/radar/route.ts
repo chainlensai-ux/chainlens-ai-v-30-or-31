@@ -15,7 +15,7 @@ const EXCLUDED = new Set([
   'WSTETH', 'EURC', 'BSDETH',
 ])
 
-type RiskLevel = 'DANGER' | 'CAUTION' | 'SAFE'
+type RiskLevel = 'DANGER' | 'CAUTION' | 'WATCH' | 'SAFE'
 
 interface HoneypotResult {
   isHoneypot: boolean | null
@@ -73,6 +73,7 @@ export interface RadarStats {
   mostCommonRisk: RiskLevel
   dangerCount: number
   cautionCount: number
+  watchCount: number
   safeCount: number
 }
 
@@ -101,11 +102,32 @@ async function fetchHoneypot(contract: string): Promise<HoneypotResult | null> {
   }
 }
 
-function scoreRisk(hp: HoneypotResult | null): RiskLevel {
-  if (!hp || !hp.simulationSuccess) return 'SAFE'
-  if (hp.isHoneypot === true) return 'DANGER'
-  if ((hp.sellTax ?? 0) > 10 || (hp.buyTax ?? 0) > 10) return 'CAUTION'
-  return 'SAFE'
+const RADAR_VERY_NEW_MAX_AGE_MINUTES = 15
+const RADAR_AGGRESSIVE_VOLUME_TO_LIQUIDITY_RATIO = 5
+
+function scoreRisk(input: {
+  hp: HoneypotResult | null
+  simulationStatus: RadarSimulationStatus
+  ageMinutes: number
+  liquidityUsd: number
+  volume24h: number
+}): RiskLevel {
+  const { hp, simulationStatus, ageMinutes, liquidityUsd, volume24h } = input
+
+  if (hp?.isHoneypot === true) return 'DANGER'
+
+  // A verified market cap does not make a token SAFE — simulation must have
+  // passed and honeypot must be known before SAFE/CAUTION can be assigned.
+  if (simulationStatus === 'passed' && hp != null && hp.simulationSuccess && hp.isHoneypot != null) {
+    if ((hp.sellTax ?? 0) > 10 || (hp.buyTax ?? 0) > 10) return 'CAUTION'
+    return 'SAFE'
+  }
+
+  const veryNew = ageMinutes < RADAR_VERY_NEW_MAX_AGE_MINUTES
+  const weakLiquidity = liquidityUsd < DEFAULT_RADAR_MIN_LIQUIDITY_USD
+  const aggressiveVolume = liquidityUsd > 0 && volume24h / liquidityUsd >= RADAR_AGGRESSIVE_VOLUME_TO_LIQUIDITY_RATIO
+  if (veryNew || weakLiquidity || aggressiveVolume) return 'CAUTION'
+  return 'WATCH'
 }
 
 function finiteOrNull(value: unknown): number | null {
@@ -173,7 +195,7 @@ async function getClarkVerdicts(tokens: Omit<RadarToken, 'clarkVerdict'>[]): Pro
   }
 }
 
-const EMPTY_STATS: RadarStats = { totalNewTokens: 0, averageLiquidity: 0, mostCommonRisk: 'SAFE', dangerCount: 0, cautionCount: 0, safeCount: 0 }
+const EMPTY_STATS: RadarStats = { totalNewTokens: 0, averageLiquidity: 0, mostCommonRisk: 'SAFE', dangerCount: 0, cautionCount: 0, watchCount: 0, safeCount: 0 }
 
 const HONEYPOT_CACHE_TTL_MS = 5 * 60 * 1000
 const RADAR_CACHE_TTL_MS = 5 * 60 * 1000
@@ -426,7 +448,13 @@ export async function GET(req: NextRequest) {
       return {
         ...token,
         honeypot: hp,
-        riskLevel: scoreRisk(hp),
+        riskLevel: scoreRisk({
+          hp,
+          simulationStatus: simulation.status,
+          ageMinutes: token.ageMinutes,
+          liquidityUsd: token.liquidityUsd,
+          volume24h: token.volume24h,
+        }),
         simulationStatus: simulation.status,
         simulationReason: simulation.reason,
         simulationLabel: simulation.label,
@@ -443,20 +471,26 @@ export async function GET(req: NextRequest) {
       .sort((a, b) => a.ageMinutes - b.ageMinutes)
       .map(t => ({ ...t, clarkVerdict: verdicts.get(t.contract.toLowerCase()) ?? null }))
 
-    // 5. Stats
+    // 5. Stats — counts reflect the final adjusted risk labels (post-scoreRisk),
+    // not a raw honeypot-only SAFE default.
     const dangerCount  = scored.filter(t => t.riskLevel === 'DANGER').length
     const cautionCount = scored.filter(t => t.riskLevel === 'CAUTION').length
+    const watchCount   = scored.filter(t => t.riskLevel === 'WATCH').length
     const safeCount    = scored.filter(t => t.riskLevel === 'SAFE').length
     const avgLiq       = allDay24h.length > 0 ? allDay24h.reduce((s, v) => s + v, 0) / allDay24h.length : 0
-    const mostCommonRisk: RiskLevel =
-      dangerCount >= cautionCount && dangerCount >= safeCount ? 'DANGER'
-      : cautionCount >= safeCount ? 'CAUTION' : 'SAFE'
+    const counts: [RiskLevel, number][] = [
+      ['DANGER', dangerCount],
+      ['CAUTION', cautionCount],
+      ['WATCH', watchCount],
+      ['SAFE', safeCount],
+    ]
+    const mostCommonRisk: RiskLevel = counts.reduce((best, current) => current[1] > best[1] ? current : best)[0]
 
     const stats: RadarStats = {
       totalNewTokens:   allDay24h.length,
       averageLiquidity: Math.round(avgLiq),
       mostCommonRisk,
-      dangerCount, cautionCount, safeCount,
+      dangerCount, cautionCount, watchCount, safeCount,
     }
 
     const limitedLiveFeed = tokens.length > 0 && tokens.length < 5

@@ -52,7 +52,9 @@ function openCheck(attempted: boolean, reason: RadarSimulationOpenCheckReason): 
     isHoneypot: null,
     reason,
     label: `Simulation open check — ${reason}`,
-    cortexLine: `Buy/sell simulation remains open check because ${reason}.`,
+    cortexLine: reason === 'timeout'
+      ? 'Buy/sell simulation timed out, so tax and honeypot status are not confirmed yet.'
+      : `Buy/sell simulation remains open check because ${reason}.`,
   }
 }
 

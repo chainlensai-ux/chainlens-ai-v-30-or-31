@@ -44,6 +44,93 @@ export function getRadarValuationEvidence(valuation: { basis: RadarValuationBasi
   }
 }
 
+export interface RadarSimulationEvidenceInput {
+  status?: 'passed' | 'open_check' | null
+  reason?: string | null
+}
+
+/**
+ * Simulation evidence. Returns null when the simulation passed (no gap to
+ * report). Otherwise surfaces the specific reason simulation did not
+ * complete plus the resulting tax/honeypot uncertainty — never a lazy
+ * "remains open check" string.
+ */
+export function getRadarSimulationEvidence(input: RadarSimulationEvidenceInput): RadarEvidenceEntry | null {
+  if (input.status === 'passed') return null
+  const reason = input.reason ?? 'insufficient route/pool evidence'
+  const reasonLabel = reason === 'timeout'
+    ? 'Buy/sell simulation timed out'
+    : reason === 'missing pair address'
+    ? 'Buy/sell simulation could not run — missing pair address'
+    : reason === 'unsupported pool model'
+    ? 'Buy/sell simulation could not run — unsupported pool model'
+    : 'Buy/sell simulation could not run — insufficient route/pool evidence'
+  return {
+    status: 'open_check',
+    label: `${reasonLabel}, so tax and honeypot status are not confirmed.`,
+    known: [],
+    missing: ['buy/sell tax', 'honeypot status'],
+    reason,
+  }
+}
+
+export interface RadarAgeEvidenceInput {
+  ageMinutes?: number | null
+}
+
+const VERY_NEW_MAX_AGE_MINUTES = 15
+
+/**
+ * Age evidence. A token under 15 minutes old is a verified risk fact (very
+ * new), not an open check. Returns null when the token is older than the
+ * very-new threshold or age is unknown.
+ */
+export function getRadarAgeEvidence(input: RadarAgeEvidenceInput): RadarEvidenceEntry | null {
+  const ageMinutes = input.ageMinutes
+  if (typeof ageMinutes !== 'number' || !Number.isFinite(ageMinutes) || ageMinutes < 0) return null
+  if (ageMinutes >= VERY_NEW_MAX_AGE_MINUTES) return null
+  return {
+    status: 'risk_fact',
+    label: `Token is very new — pool age is ${Math.floor(ageMinutes)} minute${Math.floor(ageMinutes) === 1 ? '' : 's'} (under ${VERY_NEW_MAX_AGE_MINUTES}m).`,
+    known: [`ageMinutes=${Math.floor(ageMinutes)}`],
+  }
+}
+
+export interface RadarLpPositionEvidenceInput {
+  isConcentrated: boolean
+  poolId?: string | null
+  dex?: string | null
+  liquidityUsd?: number | null
+  fmtUSD: (value: number) => string
+}
+
+/**
+ * LP position evidence for concentrated-liquidity pools. Surfaces the pool
+ * ID/dex/liquidity facts alongside "Position verification required" rather
+ * than a generic open check, since standard ERC-20 LP lock/burn proof does
+ * not apply to this pool model.
+ */
+export function getRadarLpPositionEvidence(input: RadarLpPositionEvidenceInput): RadarEvidenceEntry | null {
+  if (!input.isConcentrated) return null
+  const known: string[] = []
+  if (input.poolId) known.push(`pool=${input.poolId}`)
+  if (input.dex) known.push(`dex=${input.dex}`)
+  if (typeof input.liquidityUsd === 'number' && Number.isFinite(input.liquidityUsd)) {
+    known.push(`liquidity=${input.fmtUSD(input.liquidityUsd)}`)
+  }
+  const facts = [
+    input.dex ? `dex ${input.dex}` : null,
+    input.poolId ? `pool ${shortenAddress(input.poolId)}` : null,
+    typeof input.liquidityUsd === 'number' && Number.isFinite(input.liquidityUsd) ? `liquidity ${input.fmtUSD(input.liquidityUsd)}` : null,
+  ].filter((part): part is string => Boolean(part))
+  return {
+    status: 'open_check',
+    label: `Position verification required${facts.length ? ` — ${facts.join(', ')}` : ''}.`,
+    known,
+    reason: 'concentrated-liquidity position ownership/range has not been independently verified',
+  }
+}
+
 export interface RadarSocialsEvidenceInput {
   website?: string | null
   twitter?: string | null

@@ -33,6 +33,8 @@ assert.equal(result.attempted, true)
 assert.equal(result.status, 'open_check')
 assert.equal(result.reason, 'timeout')
 assert.equal(result.label, 'Simulation open check — timeout')
+assert.equal(result.cortexLine, 'Buy/sell simulation timed out, so tax and honeypot status are not confirmed yet.')
+assert.ok(!/remains open check because timeout/i.test(result.cortexLine), 'timeout CORTEX line must not use the lazy "remains open check" wording')
 
 // ─── Simulation attempted but provider reports failure -> explicit reason ──
 result = getRadarSimulationDisplay({ contract: VALID, liquidityUsd: 10_000, honeypot: { simulationSuccess: false } })

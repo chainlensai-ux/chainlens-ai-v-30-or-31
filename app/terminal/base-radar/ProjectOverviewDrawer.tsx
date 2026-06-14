@@ -3,8 +3,8 @@
 import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { assessBaseRadarSeverity, creatorTopHolderDisplay, normalizePairCreatedAt, ageLabelFromIso, extractLpControllerSharePercent, getBaseRadarDetailSeverityCap, getScoreSeverityLabel } from '@/lib/baseRadarSeverity'
-import { getRadarValuationBasis, getRadarValuationCardDisplay, DEFAULT_RADAR_MIN_LIQUIDITY_USD } from '@/lib/baseRadarValuation'
-import { getRadarValuationEvidence, getRadarSocialsEvidence, getRadarOwnershipEvidence, getRadarPastLaunchesEvidence, getRadarRugHistoryEvidence, type RadarEvidenceEntry } from '@/lib/baseRadarEvidence'
+import { getRadarDrawerValuation, getRadarValuationCardDisplay, DEFAULT_RADAR_MIN_LIQUIDITY_USD } from '@/lib/baseRadarValuation'
+import { getRadarValuationEvidence, getRadarSocialsEvidence, getRadarOwnershipEvidence, getRadarPastLaunchesEvidence, getRadarRugHistoryEvidence, getRadarSimulationEvidence, getRadarAgeEvidence, getRadarLpPositionEvidence, type RadarEvidenceEntry } from '@/lib/baseRadarEvidence'
 
 type ChainKey = 'base' | 'eth'
 
@@ -32,6 +32,7 @@ type RadarDrawerToken = {
   clarkSignal?: string | null
   clarkVerdict?: string | null
   simulationStatus?: 'passed' | 'open_check'
+  simulationReason?: string | null
   simulationLabel?: string | null
   simulationCortexLine?: string | null
 }
@@ -81,6 +82,8 @@ type DrawerEnrichmentPayload = {
     lockBurnReason?: string | null
     secondaryLpControlSignals?: { status?: string | null; poolDex?: string | null; reason?: string | null } | null
     cortexLpRead?: { liquidityAnalysis?: string | null } | null
+    primaryMarketPool?: string | null
+    lpModelProof?: { model?: string | null; dexName?: string | null; standardLockApplies?: boolean | null } | null
     lpProofDisplay?: {
       proofLabel?: string | null
       lockStatus?: string | null
@@ -500,9 +503,11 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
   const effectiveScore = detailSeverity.cap != null ? Math.min(severity.effectiveScore, detailSeverity.cap) : severity.effectiveScore
   const severityLabel = getScoreSeverityLabel(effectiveScore)
 
-  const marketValuation = getRadarValuationBasis({
-    marketCapUsd: market?.marketCapUsd ?? null,
-    marketCapStatus: market?.marketCapStatus ?? null,
+  const marketValuation = getRadarDrawerValuation({
+    enrichmentMarketCapUsd: market?.marketCapUsd ?? null,
+    enrichmentMarketCapStatus: market?.marketCapStatus ?? null,
+    feedMarketCapUsd: token?.marketCapUsd ?? null,
+    feedMarketCapStatus: token?.marketCapStatus ?? null,
     fdvUsd: market?.fdvUsd ?? token?.fdvUsd ?? null,
     liquidityUsd,
   })
@@ -559,6 +564,18 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
     deployerAddress: deployer?.deployerAddress ?? null,
     rugHistory: deployer?.rugHistory ?? null,
   })
+  const simulationEvidence = getRadarSimulationEvidence({
+    status: token?.simulationStatus ?? null,
+    reason: token?.simulationReason ?? null,
+  })
+  const ageEvidence = getRadarAgeEvidence({ ageMinutes: poolAgeMinutes })
+  const lpPositionEvidence = getRadarLpPositionEvidence({
+    isConcentrated: lp?.displayLpModel === 'concentrated_liquidity',
+    poolId: lp?.primaryMarketPool ?? null,
+    dex: lp?.lpModelProof?.dexName ?? null,
+    liquidityUsd,
+    fmtUSD,
+  })
 
   const structuredEvidence: RadarEvidenceEntry[] = [
     ...(valuationEvidence ? [valuationEvidence] : []),
@@ -566,6 +583,9 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
     pastLaunchesEvidence,
     rugHistoryEvidence,
     ...(ownershipEvidence ? [ownershipEvidence] : []),
+    ...(simulationEvidence ? [simulationEvidence] : []),
+    ...(ageEvidence ? [ageEvidence] : []),
+    ...(lpPositionEvidence ? [lpPositionEvidence] : []),
   ]
   const riskFacts = structuredEvidence.filter((e) => e.status === 'risk_fact').map((e) => e.label)
   const evidenceGaps: string[] = [
