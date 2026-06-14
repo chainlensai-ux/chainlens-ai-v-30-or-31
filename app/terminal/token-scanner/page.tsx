@@ -3800,7 +3800,9 @@ export default function TerminalTokenScanner() {
         .cortex-bdrow{border-radius:6px;transition:background .14s ease;}
         .cortex-bdrow:hover{background:rgba(255,255,255,.028) !important;}
         .token-shell{display:grid;grid-template-columns:minmax(0,1fr);height:100%;overflow-x:hidden;color:#e2e8f0;background-image:linear-gradient(rgba(45,212,191,.020) 1px,transparent 1px),linear-gradient(90deg,rgba(45,212,191,.020) 1px,transparent 1px),radial-gradient(circle at 22% 0%,rgba(20,35,68,.52),rgba(2,6,23,1) 56%);background-size:52px 52px,52px 52px,100% 100%;background-color:rgba(2,6,23,1);}
-        .token-main,.mob-verdict-panel,.glass-card,.metric-grid,.holders-grid,.activity-grid,.intel-grid{min-width:0;}
+        .token-main,.mob-verdict-panel,.glass-card,.metric-grid,.holders-grid,.activity-grid,.intel-grid,.scan-stage-grid{min-width:0;}
+        *{box-sizing:border-box;}
+        button{max-width:100%;}
         .token-main{max-width:none;}
         .glass-card{background:linear-gradient(180deg,rgba(10,18,34,.9),rgba(3,8,19,.88));border:1px solid rgba(148,163,184,.18);border-radius:16px;box-shadow:0 0 0 1px rgba(45,212,191,.05) inset,0 18px 45px rgba(2,6,23,.4),0 0 28px rgba(139,92,246,.12);}
         .search-card{background:linear-gradient(160deg,rgba(12,22,40,.97) 0%,rgba(5,10,22,.95) 100%);border:1px solid rgba(45,212,191,.18);border-radius:18px;box-shadow:0 0 0 1px rgba(45,212,191,.07) inset,0 28px 60px rgba(2,6,23,.60),0 0 48px rgba(45,212,191,.08),0 0 80px rgba(139,92,246,.04);}
@@ -3820,9 +3822,9 @@ export default function TerminalTokenScanner() {
         @media (min-width:1536px){.token-shell{grid-template-columns:minmax(0,1fr) clamp(360px,22vw,420px);} .token-main{max-width:1260px;margin:0 auto;}}
         @media (min-width:1280px) and (max-width:1535px){.token-shell{grid-template-columns:minmax(0,1fr) clamp(320px,24vw,360px);} .token-main{max-width:1120px;margin:0 auto;} .mob-verdict-panel{padding:24px 16px;font-size:12px;} .activity-grid{gap:8px;}}
         @media (max-width:1279px){.token-shell{display:block;height:auto;overflow:visible;} .mob-scan-main{overflow-y:visible !important;} .token-shell .mob-verdict-panel{position:static !important;width:100% !important;max-width:100% !important;height:auto !important;min-height:0 !important;border-left:none !important;border-top:1px solid rgba(255,255,255,0.08) !important;overflow-y:visible !important;}}
-        @media (max-width:1023px){.metric-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;} .holders-grid,.intel-grid{grid-template-columns:1fr !important;} .activity-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;} .proof-stack-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;}}
+        @media (max-width:1023px){.scan-stage-grid{grid-template-columns:1fr !important;} .metric-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;} .holders-grid,.intel-grid{grid-template-columns:1fr !important;} .activity-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;} .proof-stack-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;}}
         @media (min-width:1024px){.token-identity-bar{position:sticky;top:0;z-index:20;backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);}}
-        @media (max-width:768px){.token-main{padding:36px 14px 120px !important;} .token-input-row{flex-direction:column;max-width:100% !important;} .token-input-row button{width:100%;} .top-holder-head{display:none !important;} .top-holder-row{display:block !important;padding:12px !important;} .top-holder-mobile-meta{display:flex !important;align-items:center;justify-content:space-between;gap:8px;} .top-holder-mobile-amt{display:block !important;margin-top:6px !important;text-align:left !important;} .pools-scroll{overflow-x:auto !important;-webkit-overflow-scrolling:touch;margin:0 -12px;padding:0 12px;} .mob-verdict-panel{padding:18px 14px !important;gap:12px !important;} .glass-card{padding:14px !important;} .preview-module-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;} .proof-stack-grid{grid-template-columns:1fr !important;} .token-identity-bar{flex-direction:column;align-items:flex-start !important;} .token-identity-bar > div{width:100%;}}
+        @media (max-width:768px){body{overflow-x:hidden;} .token-main{padding:36px 14px 120px !important;} .token-input-row{flex-direction:column;max-width:100% !important;} .token-input-row button{width:100%;} .top-holder-head{display:none !important;} .top-holder-row{display:block !important;padding:12px !important;} .top-holder-mobile-meta{display:flex !important;align-items:center;justify-content:space-between;gap:8px;} .top-holder-mobile-amt{display:block !important;margin-top:6px !important;text-align:left !important;} .pools-scroll{overflow-x:auto !important;-webkit-overflow-scrolling:touch;margin:0 -12px;padding:0 12px;} .mob-verdict-panel{padding:18px 14px !important;gap:12px !important;} .glass-card{padding:14px !important;} .preview-module-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;} .proof-stack-grid{grid-template-columns:1fr !important;} .token-identity-bar{flex-direction:column;align-items:flex-start !important;} .token-identity-bar > div{width:100%;}}
       `}</style>
 
       <div className="token-shell" style={{ color: '#e2e8f0' }}>
@@ -4038,6 +4040,27 @@ export default function TerminalTokenScanner() {
               marginBottom: '24px',
             }}>
               {error}
+            </div>
+          )}
+
+          {/* Premium scan loading stages */}
+          {loading && !result && !error && (
+            <div style={{ maxWidth:'820px', marginBottom:'24px', padding:'18px', borderRadius:'16px', background:'linear-gradient(160deg,rgba(8,20,38,.92),rgba(5,10,22,.95))', border:'1px solid rgba(45,212,191,.22)', boxShadow:'0 22px 60px rgba(2,6,23,.55), 0 0 30px rgba(45,212,191,.08)' }}>
+              <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:'12px', flexWrap:'wrap', marginBottom:'14px' }}>
+                <div>
+                  <p style={{ margin:'0 0 5px', fontSize:'10px', fontWeight:900, letterSpacing:'.18em', color:'#2dd4bf', fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>CORTEX Scan In Progress</p>
+                  <p style={{ margin:0, fontSize:'12px', color:'#94a3b8', fontFamily:'var(--font-plex-mono)' }}>Building market, LP, holder, and security intelligence from live evidence.</p>
+                </div>
+                <span style={{ display:'inline-block', width:18, height:18, borderRadius:'50%', border:'2px solid rgba(45,212,191,.35)', borderTopColor:'#2dd4bf', animation:'spin .8s linear infinite', flexShrink:0 }} />
+              </div>
+              <div className="scan-stage-grid" style={{ display:'grid', gridTemplateColumns:'repeat(5,minmax(0,1fr))', gap:'8px' }}>
+                {['Resolving token','Reading market','Checking LP proof','Mapping holders','Building CORTEX verdict'].map((stage, i) => (
+                  <div key={stage} style={{ padding:'10px 9px', borderRadius:'11px', background:'rgba(2,6,23,.45)', border:'1px solid rgba(45,212,191,.16)', minWidth:0 }}>
+                    <div style={{ height:'3px', borderRadius:'999px', background:'rgba(255,255,255,.06)', overflow:'hidden', marginBottom:'8px' }}><div className="shimmer-line" style={{ width:`${70 + (i % 2) * 20}%`, height:'100%' }} /></div>
+                    <p style={{ margin:0, fontSize:'10px', lineHeight:1.35, color:'#cbd5e1', fontWeight:800, letterSpacing:'.06em', fontFamily:'var(--font-plex-mono)' }}>{stage}</p>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
 
