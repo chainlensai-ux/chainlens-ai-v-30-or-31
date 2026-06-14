@@ -11,6 +11,7 @@ import { buildLpUnlockTimeline } from "@/lib/server/lpUnlockTimeline";
 import { buildLpHistoryTimeline } from "@/lib/server/lpHistoryTimeline";
 import { buildSecondaryLpExposure } from "@/lib/server/secondaryLpExposure";
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
+import { calculateDevControlRisk, getDevControlRiskLabel } from '@/lib/server/devControlRisk'
 import { type CanonicalStatus, toCanonical } from '@/lib/canonicalStatus'
 import { buildClusterMap } from '@/lib/clusterMap'
 import {
@@ -657,11 +658,7 @@ function getClusterInfluenceBaseScore(clusterSupplyPercent: number): number {
 }
 
 function getClusterInfluenceRiskLabel(score: number): ClusterInfluence["clusterRiskLabel"] {
-  if (score >= 85) return "critical"
-  if (score >= 65) return "high"
-  if (score >= 45) return "elevated"
-  if (score >= 25) return "watch"
-  return "low"
+  return getDevControlRiskLabel(score)
 }
 
 function buildClusterInfluence(params: {
@@ -671,6 +668,14 @@ function buildClusterInfluence(params: {
   suspiciousTransfers: boolean
   holderEvidenceAvailable: boolean
   holderEvidencePartial: boolean
+  linkedWalletSupplyPercent?: number | null
+  creatorHolderPercent?: number | null
+  top10Percent?: number | null
+  top20Percent?: number | null
+  deployerInTopHolders?: boolean | null
+  suspiciousDeployer?: boolean | null
+  suspiciousPastLaunches?: boolean | null
+  rugHistoryFlag?: boolean | null
 }): ClusterInfluence {
   const {
     clusterSupplyPercent,
@@ -679,6 +684,14 @@ function buildClusterInfluence(params: {
     suspiciousTransfers,
     holderEvidenceAvailable,
     holderEvidencePartial,
+    linkedWalletSupplyPercent = null,
+    creatorHolderPercent = null,
+    top10Percent = null,
+    top20Percent = null,
+    deployerInTopHolders = null,
+    suspiciousDeployer = false,
+    suspiciousPastLaunches = false,
+    rugHistoryFlag = false,
   } = params
 
   if (!holderEvidenceAvailable || clusterSupplyPercent == null) {
@@ -695,38 +708,21 @@ function buildClusterInfluence(params: {
     }
   }
 
-  let score = getClusterInfluenceBaseScore(clusterSupplyPercent)
-  const signals: string[] = [
-    clusterSupplyPercent === 0
-      ? "No cluster supply found in indexed holders."
-      : `${clusterSupplyPercent.toFixed(1)}% cluster supply found in indexed holders.`,
-  ]
-
-  if (creatorInTopHolders === true) {
-    score += 5
-    signals.push("Creator wallet appears in indexed top holders.")
-  } else if (creatorInTopHolders === false) {
-    signals.push("Creator wallet was not found in indexed top holders.")
-  }
-
-  if (matchedLinkedWallets.length >= 2) {
-    score += 5
-    signals.push(`${matchedLinkedWallets.length} linked wallets matched indexed holder rows.`)
-  } else if (matchedLinkedWallets.length === 1) {
-    signals.push("1 linked wallet matched indexed holder rows.")
-  }
-
-  if (suspiciousTransfers) {
-    score += 10
-    signals.push("Suspicious transfer pattern is present in dev intelligence.")
-  }
-
-  if (holderEvidencePartial) {
-    score = Math.max(getClusterInfluenceBaseScore(0), score - 10)
-    signals.push("Holder evidence is partial, so scoring is conservatively reduced.")
-  }
-
-  const clusterRiskScore = Math.max(0, Math.min(100, Math.round(score)))
+  const risk = calculateDevControlRisk({
+    clusterSupplyPercent,
+    linkedWalletSupplyPercent,
+    creatorHolderPercent,
+    top10Percent,
+    top20Percent,
+    creatorInTopHolders,
+    deployerInTopHolders,
+    suspiciousDeployer: suspiciousDeployer || suspiciousTransfers,
+    suspiciousPastLaunches,
+    rugHistoryFlag,
+    holderEvidencePartial,
+  })
+  const signals: string[] = risk.signals
+  const clusterRiskScore = risk.score
   const clusterDominance = getClusterInfluenceDominance(clusterSupplyPercent)
   const dominanceText = clusterDominance === "none" ? "No" : `${clusterDominance.charAt(0).toUpperCase()}${clusterDominance.slice(1)}`
 
@@ -735,10 +731,10 @@ function buildClusterInfluence(params: {
     clusterDominance,
     clusterRiskScore,
     clusterRiskLabel: getClusterInfluenceRiskLabel(clusterRiskScore),
-    reason: clusterSupplyPercent === 0
-      ? "No cluster supply found in indexed holders."
-      : `${dominanceText} cluster dominance from indexed holder evidence.`,
-    signals: signals.slice(0, 4),
+    reason: risk.reason || (clusterSupplyPercent === 0
+      ? "No cluster dominance found; risk remains low."
+      : `${dominanceText} cluster dominance from indexed holder evidence.`),
+    signals: signals.slice(0, 8),
   }
 }
 
@@ -6335,6 +6331,12 @@ export async function POST(req: Request) {
       suspiciousTransfers: false,
       holderEvidenceAvailable: holderRowsConfirmed,
       holderEvidencePartial: supplyRowsArePartial,
+      linkedWalletSupplyPercent,
+      creatorHolderPercent,
+      top10Percent: holderDistribution.top10,
+      top20Percent: holderDistribution.top20,
+      deployerInTopHolders: creatorInTopHolders,
+      rugHistoryFlag: false,
     })
     const supplyControl: SupplyControl = {
       creatorInTopHolders,
