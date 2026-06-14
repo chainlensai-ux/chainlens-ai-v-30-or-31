@@ -105,6 +105,7 @@ function getClientClarkContext() {
       lastToken: JSON.parse(sessionStorage.getItem('chainlens:clark:last-token') ?? 'null') ?? undefined,
       lastWallet: JSON.parse(sessionStorage.getItem('chainlens:clark:last-wallet') ?? 'null') ?? undefined,
       lastMomentumShownCount: Number(sessionStorage.getItem('chainlens:clark:last-momentum-shown-count') ?? '0') || 0,
+      dashboardMarketRows: JSON.parse(sessionStorage.getItem('chainlens:clark:dashboard-market-rows') ?? 'null') ?? undefined,
     }
   } catch { return {} }
 }
@@ -205,6 +206,7 @@ export default function ClarkChat({
         selectedToken: clarkContextRef.current.lastMarketList?.[0]?.tokenAddress ?? clientClarkContext.lastToken ?? null,
         selectedWallet: clientClarkContext.lastWallet ?? null,
         baseRadarSummary: clarkContextRef.current.lastMarketList ?? clientClarkContext.lastMomentumList ?? null,
+        dashboardMarketRows: clientClarkContext.dashboardMarketRows ?? null,
         whaleSyncStatus: typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('chainlens:whale-alerts:sync-status') ?? 'unknown' : 'unknown',
         currentTool: mode ?? null,
       }
@@ -228,6 +230,7 @@ export default function ClarkChat({
           marketContext: { items: clarkContextRef.current.lastMarketList ?? [] },
           clientContext: clientClarkContext,
           appContext,
+          dashboardMarketRows: clientClarkContext.dashboardMarketRows ?? [],
         }),
       })
       const json = await res.json()

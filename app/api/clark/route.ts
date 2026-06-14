@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getBaseMarketUniverse, type BaseMarketCandidate, type BaseMarketMode } from "@/lib/server/baseMarketUniverse";
 import { fetchHoneypotSecurity } from "@/lib/server/honeypotSecurity";
+import { runWalletScanner } from "@/lib/server/walletScannerRunner";
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { getVerifiedUserPlan } from '@/lib/supabase/userSettings'
 import {
@@ -386,6 +387,7 @@ interface ClarkRequestBody {
     baseRadarSummary?: unknown;
     whaleSyncStatus?: string | null;
     currentTool?: string | null;
+    dashboardMarketRows?: Array<{ symbol: string; name?: string; chain?: string; priceUsd?: number; change24h?: number; volume24hUsd?: number; marketCapUsd?: number; liquidityUsd?: number; contract?: string; poolAddress?: string; updatedAt?: string }>;
   };
   clarkContext?: {
     lastMarketList?: unknown;
@@ -411,7 +413,7 @@ interface ClarkRequestBody {
   currentTool?: string;
   selectedToken?: string;
   selectedWallet?: string;
-  dashboardMarketRows?: Array<{ symbol: string; name?: string; chain?: string; priceUsd?: number; change24h?: number; volume24hUsd?: number; marketCapUsd?: number }>;
+  dashboardMarketRows?: Array<{ symbol: string; name?: string; chain?: string; priceUsd?: number; change24h?: number; volume24hUsd?: number; marketCapUsd?: number; liquidityUsd?: number; contract?: string; poolAddress?: string; updatedAt?: string }>;
   baseRadarSummary?: unknown;
   whaleSyncStatus?: unknown;
 }
@@ -551,7 +553,7 @@ async function resolveEnsOrBasename(name: string): Promise<string | null> {
   return null
 }
 function isValidationOnlyAnalysis(analysis: string): boolean {
-  return /I can run that, but I need a wallet address first|I can run that, but I need a token contract first|I couldn't resolve .+ to a wallet address|That doesn't look like a Base token|LOCKED\s*\n|Upgrade to unlock full CORTEX reads|could not complete|could not refresh|data is temporarily unavailable|live wallet scan could not complete|looks like a wallet, not a token contract|LP pipeline failed|No data available right now/i.test(analysis)
+  return /I can run that, but I need a wallet address first|I can run that, but I need a token contract first|I couldn't resolve .+ to a wallet address|That doesn't look like a Base token|LOCKED\s*\n|Upgrade to unlock full CORTEX reads|could not complete|could not refresh|data is temporarily unavailable|live wallet scan could not complete|looks like a wallet, not a token contract|LP pipeline failed/i.test(analysis)
 }
 
 function idToAddress(id: string): string {
@@ -6475,27 +6477,39 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         quotaConsumed: false,
       };
     }
-    const scanData = await callScanToken(routed.address, "contract", origin).catch(() => null) as Record<string, unknown> | null;
-    if (!scanData) {
+    const liqRes = await callInternalApi(origin, "/api/liquidity-safety", { contract: routed.address, chain: "base" }, authHeader ?? undefined, verifiedPlan);
+    const raw = (liqRes.json ?? {}) as Record<string, unknown>;
+    const data = (raw.data && typeof raw.data === "object" ? raw.data : raw) as Record<string, unknown>;
+    if (!liqRes.ok || raw.ok === false || Object.keys(data).length === 0) {
       return {
-        feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_scan", toolsUsed: ["liquidity_analyze"],
+        feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_scan", toolsUsed: ["liquidity_safety_pipeline"],
         analysis: formatLpReadResult(null),
         intentBadge: "liquidity_scan",
         actions: buildRoutedActions(["Open Token Scanner", "Run LP Check"]),
         quotaConsumed: false,
       };
     }
-    const pools = Array.isArray(scanData.pools) ? scanData.pools as Array<Record<string, unknown>> : [];
-    const topPool = pools[0];
+    const lpMeta = data.lpMeta && typeof data.lpMeta === "object" ? data.lpMeta as Record<string, unknown> : null;
+    const primaryPool = lpMeta?.primaryPool && typeof lpMeta.primaryPool === "object" ? lpMeta.primaryPool as Record<string, unknown> : null;
+    const gaps = Array.isArray(data.lp_evidence_gaps) ? (data.lp_evidence_gaps as Array<Record<string, unknown> | string>).map((g) => typeof g === "string" ? g : String(g.label ?? g.code ?? g.reason ?? "LP evidence gap")) : [];
+    const displayModel = typeof data.displayLpModel === "string" ? data.displayLpModel : (typeof data.poolModel === "string" ? data.poolModel : null);
+    const concentrated = displayModel === "concentrated_liquidity" || displayModel === "concentrated" || data.lpProofApplicability === "not_applicable";
     const mapped = {
-      token: { name: typeof scanData.name === "string" ? scanData.name : null, symbol: typeof scanData.symbol === "string" ? scanData.symbol : null },
-      primaryPool: topPool && typeof topPool.address === "string" ? topPool.address : null,
-      poolModel: undefined,
-      lockBurnProof: undefined,
-      controllerVerification: undefined,
-      liquidityDepth: typeof scanData.liquidity === "number" ? `${scanData.liquidity}` : undefined,
-      exitRisk: undefined,
-      missingEvidence: ["LP lock/burn proof", "pool model", "controller verification", "exit risk"],
+      token: { name: typeof data.name === "string" ? data.name : null, symbol: typeof data.symbol === "string" ? data.symbol : null },
+      primaryPool: typeof primaryPool?.address === "string" ? primaryPool.address : null,
+      poolModel: displayModel,
+      poolType: typeof primaryPool?.poolType === "string" ? primaryPool.poolType : null,
+      lpProofStatus: typeof data.lpLockStatus === "string" ? data.lpLockStatus : null,
+      lpProofApplicability: typeof data.lpProofApplicability === "string" ? data.lpProofApplicability : null,
+      lockStatus: typeof data.lpLockStatus === "string" ? data.lpLockStatus : null,
+      burnStatus: data.lpLockStatus === "burned" ? "burned" : "not_verified",
+      controllerStatus: typeof data.lpController === "string" ? data.lpController : null,
+      positionVerificationStatus: concentrated ? "Position/control verification required" : (typeof data.lpControl === "object" ? String((data.lpControl as Record<string, unknown>).status ?? "open_check") : "open_check"),
+      secondaryLpExposure: lpMeta?.secondaryLpExposure ?? null,
+      liquidityDepth: typeof data.lp_total_liquidity_usd === "number" ? `$${data.lp_total_liquidity_usd.toLocaleString()}` : undefined,
+      exitRisk: typeof data.lpExitRisk === "string" ? data.lpExitRisk : undefined,
+      missingEvidence: concentrated ? ["ERC20 LP lock/burn proof does not apply to this pool model. Position/control verification is required.", ...gaps] : gaps,
+      nextAction: "Open Liquidity Safety / Open Token Scanner",
     };
     return {
       feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_scan", toolsUsed: ["liquidity_analyze"],
@@ -6508,9 +6522,8 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
 
   if (routed.intent === "wallet_scan" && routed.address) {
     const reqBody = buildWalletApiRequestBody(routed.address, routed.deep);
-    const walletRes = await callInternalApi(origin, "/api/wallet", reqBody, authHeader ?? undefined);
-    const w = (walletRes.json ?? {}) as Record<string, unknown>;
-    const ok = walletRes.ok && Object.keys(w).length > 0 && w.error == null;
+    const w = await runWalletScanner({ address: routed.address, deepScan: reqBody.deepScan, deepActivity: routed.deep, chainMode: reqBody.chainMode ?? "auto" }).catch((err) => ({ ok: false, error: err instanceof Error ? err.message : "Wallet Scanner authorization failed inside Clark execution. The direct Wallet Scanner page may still work." })) as Record<string, unknown>;
+    const ok = w.ok === true && Object.keys(w).length > 0 && w.error == null;
     const holdings = Array.isArray(w.holdings) ? (w.holdings as Array<Record<string, unknown>>) : [];
     const chainsActive = Array.from(new Set(
       holdings.map((h) => (typeof h.chain === "string" ? h.chain : null)).filter((c): c is string => !!c)
@@ -6527,7 +6540,11 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       chainsActive: chainsActive.length > 0 ? chainsActive : null,
       txCount: typeof w.txCount === "number" ? w.txCount : null,
       error: typeof w.error === "string" ? w.error : null,
-    };
+      pnlCoverage: w.pnlCoverage,
+      historicalRecoveryStatus: w.historicalRecoveryStatus,
+      openLots: w.openLots,
+      closedLots: w.closedLots,
+    } as any;
     const analysis = formatWalletScanResult(routed.address, mappedResult, routed.deep);
     updateMemWallet(sessionMem, routed.address, null, analysis);
     updateMemIntent(sessionMem, "wallet_analysis");
@@ -6595,8 +6612,9 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   }
 
   if (routed.intent === "base_market_discovery") {
-    if (Array.isArray(body.dashboardMarketRows) && body.dashboardMarketRows.length > 0) {
-      const formatted = formatBaseMarketReadFromRows(body.dashboardMarketRows);
+    const dashboardRows = Array.isArray(body.appContext?.dashboardMarketRows) ? body.appContext.dashboardMarketRows : body.dashboardMarketRows;
+    if (Array.isArray(dashboardRows) && dashboardRows.length > 0) {
+      const formatted = formatBaseMarketReadFromRows(dashboardRows);
       if (formatted) {
         return {
           feature: "clark-ai", chain, mode: "analysis", intent: "base_market_discovery", toolsUsed: [],
