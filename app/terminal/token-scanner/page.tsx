@@ -3087,6 +3087,168 @@ function CortexSummaryCard({ result }: { result: ScanResult }) {
   )
 }
 
+// ─── Proof Stack ──────────────────────────────────────────────────────
+
+type ProofTileStatus = 'verified' | 'partial' | 'open' | 'risk' | 'blocked'
+
+type ProofTile = {
+  label: string
+  status: ProofTileStatus
+  summary: string
+  evidenceCount?: number
+  missing?: string[]
+}
+
+function proofTileStyle(status: ProofTileStatus): { color: string; bg: string; border: string; tag: string } {
+  switch (status) {
+    case 'verified': return { color: '#2DD4BF', bg: 'rgba(45,212,191,0.06)', border: 'rgba(45,212,191,0.30)', tag: 'Verified' }
+    case 'partial':  return { color: '#fbbf24', bg: 'rgba(251,191,36,0.05)', border: 'rgba(251,191,36,0.26)', tag: 'Partial' }
+    case 'open':     return { color: '#fbbf24', bg: 'rgba(251,191,36,0.05)', border: 'rgba(251,191,36,0.26)', tag: 'Open Evidence' }
+    case 'risk':     return { color: '#f87171', bg: 'rgba(248,113,113,0.06)', border: 'rgba(248,113,113,0.32)', tag: 'Risk' }
+    case 'blocked':  return { color: '#64748b', bg: 'rgba(100,116,139,0.05)', border: 'rgba(100,116,139,0.22)', tag: 'Unavailable' }
+  }
+}
+
+function deriveMarketProofTile(result: ScanResult): ProofTile {
+  if (result.noActivePools) {
+    return { label: 'Market Proof', status: 'blocked', summary: 'No active liquidity pool detected — market data could not be sourced this scan.', missing: ['Active pool', 'Live price feed'] }
+  }
+  const hasLiquidity = result.liquidity != null
+  const confidence = result.marketConfidence
+  if (confidence === 'high' && hasLiquidity) {
+    return { label: 'Market Proof', status: 'verified', summary: `Live price and liquidity confirmed${result.marketCapUsd != null ? `, market cap ${fmtLarge(result.marketCapUsd)}` : ''}.`, evidenceCount: [result.price != null, result.liquidity != null, result.volume24h != null, result.marketCapUsd != null].filter(Boolean).length }
+  }
+  if (confidence === 'medium' && hasLiquidity) {
+    return { label: 'Market Proof', status: 'partial', summary: 'Market data available but confidence is medium — some figures may be estimated.', missing: result.marketCapUsd == null ? ['Verified market cap'] : undefined }
+  }
+  if (hasLiquidity) {
+    return { label: 'Market Proof', status: 'open', summary: 'Liquidity detected but pricing confidence is low — treat market figures as indicative.', missing: ['High-confidence price source'] }
+  }
+  return { label: 'Market Proof', status: 'open', summary: 'This signal needs confirmation. Market data is incomplete for this scan.', missing: ['Liquidity depth', 'Price feed'] }
+}
+
+function deriveHolderProofTile(result: ScanResult): ProofTile {
+  const holderState = deriveHolderState(result)
+  const count = result.holderDistribution?.holderCount
+  if (holderState.kind === 'rowsWithPercent') {
+    return { label: 'Holder Proof', status: 'verified', summary: `Holder distribution confirmed${count != null ? ` — ${count.toLocaleString()} holders on record` : ''}, concentration percentages available.`, evidenceCount: count != null ? 2 : 1 }
+  }
+  if (holderState.kind === 'rowsWithoutPercent') {
+    return { label: 'Holder Proof', status: 'open', summary: 'Holder wallets found, but supply percentages are unconfirmed — concentration is Open Evidence.', missing: ['Holder percentage breakdown'] }
+  }
+  return { label: 'Holder Proof', status: 'blocked', summary: 'Evidence unavailable for this scan. Holder distribution was not returned by the provider.', missing: ['Holder distribution'] }
+}
+
+function deriveLpProofTile(result: ScanResult): ProofTile {
+  const status = result.lpProofStatus
+  const applicability = result.lpProofApplicability
+  const gaps = result.lpEvidenceGaps ?? []
+  const exitRisk = result.lpExitRisk
+  if (exitRisk === 'high') {
+    return { label: 'LP Proof', status: 'risk', summary: result.lpExitRiskReason ?? 'LP exit risk is elevated — exit liquidity protections are not confirmed.', missing: gaps.slice(0, 2).map(g => g.label) }
+  }
+  if (status === 'confirmed') {
+    return { label: 'LP Proof', status: 'verified', summary: 'LP lock, burn, or controller proof is confirmed for this pool.', evidenceCount: 1 }
+  }
+  if (applicability === 'not_applicable') {
+    return { label: 'LP Proof', status: 'open', summary: 'Standard LP lock/burn proof does not apply to this pool model — position-level verification is still open.', missing: ['Position verification'] }
+  }
+  if (status === 'partial' || gaps.length > 0) {
+    return { label: 'LP Proof', status: 'partial', summary: 'Some LP control evidence is confirmed, but gaps remain in lock, burn, or controller proof.', missing: gaps.slice(0, 2).map(g => g.label) }
+  }
+  if (status === 'missing' || status === 'unknown' || !status) {
+    return { label: 'LP Proof', status: 'open', summary: 'This signal needs confirmation. LP lock/burn/controller proof has not been established.', missing: ['LP lock or burn proof'] }
+  }
+  return { label: 'LP Proof', status: 'open', summary: 'LP proof status is an open check this pass.', missing: ['LP lock or burn proof'] }
+}
+
+function deriveSecurityProofTile(result: ScanResult): ProofTile {
+  const hp = result.honeypot
+  const gp = result.contractSecurity && result.contract
+    ? (result.contractSecurity[result.contract.toLowerCase()] ?? null) as Record<string, unknown> | null
+    : null
+  if (hp?.isHoneypot === true) {
+    return { label: 'Security Proof', status: 'risk', summary: 'Honeypot flagged — sell simulation detected a blocked transaction.', missing: [] }
+  }
+  const flagged = gp ? (String(gp['is_blacklisted']) === '1' || String(gp['is_mintable']) === '1') : false
+  const highTax = (hp?.buyTax != null && hp.buyTax > 8) || (hp?.sellTax != null && hp.sellTax > 8)
+  if (flagged || highTax) {
+    return { label: 'Security Proof', status: 'risk', summary: 'Contract checks surfaced elevated-risk flags — review taxes and owner controls before sizing.', missing: [] }
+  }
+  if (hp?.simulationSuccess) {
+    return { label: 'Security Proof', status: 'verified', summary: 'Security simulation passed — no honeypot or major contract flags detected.', evidenceCount: gp ? 2 : 1 }
+  }
+  if (gp) {
+    return { label: 'Security Proof', status: 'partial', summary: 'Contract-level checks are available, but the buy/sell simulation did not complete.', missing: ['Sell simulation'] }
+  }
+  return { label: 'Security Proof', status: 'open', summary: 'Evidence unavailable for this scan. Security simulation was not attempted.', missing: ['Security simulation', 'Contract checks'] }
+}
+
+function deriveDevProofTile(devIntel: DevWalletIntel | null, devIntelLoading: boolean): ProofTile {
+  if (devIntelLoading) {
+    return { label: 'Dev Proof', status: 'open', summary: 'Deployer and cluster intelligence is loading for this scan.', missing: ['Deployer history'] }
+  }
+  if (!devIntel) {
+    return { label: 'Dev Proof', status: 'open', summary: 'This signal needs confirmation. Deployer intelligence is not yet available for this scan.', missing: ['Deployer wallet history', 'Cluster evidence'] }
+  }
+  const suspicious = devIntel.suspiciousTransfers === true
+  const clusterFlag = devIntel.clusterInfluence?.clusterRiskLabel as string | undefined
+  const highCluster = typeof clusterFlag === 'string' && /high|critical|severe/i.test(clusterFlag)
+  if (suspicious || highCluster) {
+    return { label: 'Dev Proof', status: 'risk', summary: 'Deployer wallet activity or cluster links show suspicious patterns — review before trusting supply distribution.', missing: [] }
+  }
+  if (devIntel.deployerStatus === 'confirmed') {
+    return { label: 'Dev Proof', status: 'verified', summary: 'Deployer wallet confirmed with no flagged rug history or suspicious cluster activity.', evidenceCount: 1 }
+  }
+  return { label: 'Dev Proof', status: 'partial', summary: 'Deployer intelligence is available, but the deployer wallet is not fully confirmed.', missing: ['Deployer confirmation'] }
+}
+
+function ProofStackSection({ result, devIntel, devIntelLoading }: { result: ScanResult; devIntel: DevWalletIntel | null; devIntelLoading: boolean }) {
+  const tiles: ProofTile[] = [
+    deriveMarketProofTile(result),
+    deriveHolderProofTile(result),
+    deriveLpProofTile(result),
+    deriveSecurityProofTile(result),
+    deriveDevProofTile(devIntel, devIntelLoading),
+  ]
+  return (
+    <div style={{ marginBottom: '20px' }}>
+      <p style={{ margin: '0 0 10px', fontSize: '9px', fontWeight: 700, letterSpacing: '0.18em', color: '#3a5268', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>
+        Proof Stack
+      </p>
+      <div className="proof-stack-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0,1fr))', gap: '10px' }}>
+        {tiles.map((tile) => {
+          const st = proofTileStyle(tile.status)
+          return (
+            <div key={tile.label} style={{
+              padding: '13px 14px', borderRadius: '12px',
+              background: st.bg, border: `1px solid ${st.border}`,
+              boxShadow: tile.status === 'verified' ? `0 0 18px ${st.color}10` : tile.status === 'risk' ? `0 0 18px ${st.color}12` : 'none',
+              display: 'flex', flexDirection: 'column', gap: '7px', minHeight: '128px',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '6px' }}>
+                <span style={{ fontSize: '10px', fontWeight: 800, letterSpacing: '0.10em', color: '#cbd5e1', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{tile.label}</span>
+                <span style={{ padding: '2px 8px', borderRadius: '999px', fontSize: '9px', fontWeight: 700, letterSpacing: '0.08em', color: st.color, background: `${st.color}14`, border: `1px solid ${st.border}`, fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap' }}>{st.tag}</span>
+              </div>
+              <p style={{ margin: 0, fontSize: '11px', color: '#94a3b8', lineHeight: 1.55, fontFamily: 'var(--font-plex-mono)', flex: 1 }}>{tile.summary}</p>
+              {tile.evidenceCount != null && tile.evidenceCount > 0 && (
+                <span style={{ fontSize: '9px', color: '#475569', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.06em' }}>{tile.evidenceCount} evidence point{tile.evidenceCount !== 1 ? 's' : ''} confirmed</span>
+              )}
+              {tile.missing && tile.missing.length > 0 && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                  {tile.missing.slice(0, 2).map((m) => (
+                    <span key={m} style={{ padding: '2px 7px', borderRadius: '999px', fontSize: '9px', fontWeight: 600, color: '#fbbf24', background: 'rgba(251,191,36,0.06)', border: '1px solid rgba(251,191,36,0.20)', fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap' }}>{m}</span>
+                  ))}
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 // ─── Risk Gauge Circle ───────────────────────────────────────────────
 
 function RiskGaugeCircle({ score, color }: { score: number | null; color: string }) {
@@ -3304,18 +3466,19 @@ export default function TerminalTokenScanner() {
 
   const [resolving, setResolving]               = useState(false)
   const [resolverResult, setResolverResult]     = useState<ResolverResult | null>(null)
+  const [copiedContract, setCopiedContract] = useState(false)
+  const [trackedSaved, setTrackedSaved] = useState(false)
 
   const isValidHolderAddress = (value: string | null | undefined) => typeof value === 'string' && /^0x[a-fA-F0-9]{40}$/.test(value)
 
-  async function copyHolderAddress(address: string) {
-    if (!isValidHolderAddress(address)) return
+  async function copyToClipboard(text: string): Promise<boolean> {
     try {
-      if (typeof window === 'undefined') return
+      if (typeof window === 'undefined') return false
       if (navigator?.clipboard?.writeText) {
-        await navigator.clipboard.writeText(address)
+        await navigator.clipboard.writeText(text)
       } else {
         const textArea = document.createElement('textarea')
-        textArea.value = address
+        textArea.value = text
         textArea.setAttribute('readonly', '')
         textArea.style.position = 'fixed'
         textArea.style.opacity = '0'
@@ -3325,13 +3488,27 @@ export default function TerminalTokenScanner() {
         document.execCommand('copy')
         document.body.removeChild(textArea)
       }
-      setCopiedHolderAddress(address)
-      window.setTimeout(() => {
-        setCopiedHolderAddress((current) => (current === address ? null : current))
-      }, 1500)
+      return true
     } catch {
-      // Keep UI silent on clipboard errors.
+      return false
     }
+  }
+
+  async function copyHolderAddress(address: string) {
+    if (!isValidHolderAddress(address)) return
+    const ok = await copyToClipboard(address)
+    if (!ok) return
+    setCopiedHolderAddress(address)
+    window.setTimeout(() => {
+      setCopiedHolderAddress((current) => (current === address ? null : current))
+    }, 1500)
+  }
+
+  async function copyContractAddress(address: string) {
+    const ok = await copyToClipboard(address)
+    if (!ok) return
+    setCopiedContract(true)
+    window.setTimeout(() => setCopiedContract(false), 1500)
   }
 
   // Auto-scan when opened from Base Radar with ?contract= param
@@ -3643,8 +3820,9 @@ export default function TerminalTokenScanner() {
         @media (min-width:1536px){.token-shell{grid-template-columns:minmax(0,1fr) clamp(360px,22vw,420px);} .token-main{max-width:1260px;margin:0 auto;}}
         @media (min-width:1280px) and (max-width:1535px){.token-shell{grid-template-columns:minmax(0,1fr) clamp(320px,24vw,360px);} .token-main{max-width:1120px;margin:0 auto;} .mob-verdict-panel{padding:24px 16px;font-size:12px;} .activity-grid{gap:8px;}}
         @media (max-width:1279px){.token-shell{display:block;height:auto;overflow:visible;} .mob-scan-main{overflow-y:visible !important;} .token-shell .mob-verdict-panel{position:static !important;width:100% !important;max-width:100% !important;height:auto !important;min-height:0 !important;border-left:none !important;border-top:1px solid rgba(255,255,255,0.08) !important;overflow-y:visible !important;}}
-        @media (max-width:1023px){.metric-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;} .holders-grid,.intel-grid{grid-template-columns:1fr !important;} .activity-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;}}
-        @media (max-width:768px){.token-main{padding:36px 14px 120px !important;} .token-input-row{flex-direction:column;max-width:100% !important;} .token-input-row button{width:100%;} .top-holder-head{display:none !important;} .top-holder-row{display:block !important;padding:12px !important;} .top-holder-mobile-meta{display:flex !important;align-items:center;justify-content:space-between;gap:8px;} .top-holder-mobile-amt{display:block !important;margin-top:6px !important;text-align:left !important;} .pools-scroll{overflow-x:auto !important;-webkit-overflow-scrolling:touch;margin:0 -12px;padding:0 12px;} .mob-verdict-panel{padding:18px 14px !important;gap:12px !important;} .glass-card{padding:14px !important;} .preview-module-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;}}
+        @media (max-width:1023px){.metric-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;} .holders-grid,.intel-grid{grid-template-columns:1fr !important;} .activity-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;} .proof-stack-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;}}
+        @media (min-width:1024px){.token-identity-bar{position:sticky;top:0;z-index:20;backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);}}
+        @media (max-width:768px){.token-main{padding:36px 14px 120px !important;} .token-input-row{flex-direction:column;max-width:100% !important;} .token-input-row button{width:100%;} .top-holder-head{display:none !important;} .top-holder-row{display:block !important;padding:12px !important;} .top-holder-mobile-meta{display:flex !important;align-items:center;justify-content:space-between;gap:8px;} .top-holder-mobile-amt{display:block !important;margin-top:6px !important;text-align:left !important;} .pools-scroll{overflow-x:auto !important;-webkit-overflow-scrolling:touch;margin:0 -12px;padding:0 12px;} .mob-verdict-panel{padding:18px 14px !important;gap:12px !important;} .glass-card{padding:14px !important;} .preview-module-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;} .proof-stack-grid{grid-template-columns:1fr !important;} .token-identity-bar{flex-direction:column;align-items:flex-start !important;} .token-identity-bar > div{width:100%;}}
       `}</style>
 
       <div className="token-shell" style={{ color: '#e2e8f0' }}>
@@ -3906,22 +4084,139 @@ export default function TerminalTokenScanner() {
           {result && (
             <div style={{ maxWidth: 'none', width: '100%' }}>
 
-              {/* Token identity — always visible */}
-              <div style={{ marginBottom: '20px' }}>
-                <h2 style={{ fontSize: '20px', fontWeight: 700, color: '#f8fafc', margin: '0 0 4px' }}>
-                  {result.name ?? 'Unknown'}
-                  {result.symbol && <span style={{ marginLeft: '10px', fontSize: '14px', color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)' }}>{result.symbol}</span>}
-                </h2>
-                {result.contract && (
-                  <p style={{ fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', margin: 0 }}>
-                    {shorten(result.contract)}{` · ${String(result.chain ?? 'Base').toUpperCase()}`}
-                    <span style={{ marginLeft: '8px', padding: '2px 8px', border: '1px solid rgba(59,130,246,.35)', borderRadius: '999px', color: '#93c5fd' }}>{String(result.chain ?? chain).toUpperCase()}</span>
-                  </p>
-                )}
-                {result.resolvedInput && result.resolvedInput.type !== 'address' && (
-                  <p style={{ margin: '6px 0 0', color: '#94a3b8', fontSize: '11px' }}>Resolved from {result.resolvedInput.original.toUpperCase()}.</p>
-                )}
-              </div>
+              {/* ── Token Identity Bar ─────────────────────────────────── */}
+              {(() => {
+                const cxId = calculateCortexScoreV2(result)
+                const idScore = cxId.score
+                const idScoreColor = cxId.isOpenCheck ? '#fbbf24' : (idScore ?? 0) >= 75 ? '#34d399' : (idScore ?? 0) >= 50 ? '#fbbf24' : '#f87171'
+                const idV = getVerdictStyle(cxId.verdict)
+                const idRiskColor = getRiskLabelColor(result.riskLabel)
+                const idRiskDisplay = getRiskLabelDisplay(result.riskLabel)
+                const idChain = String(result.chain ?? chain)
+                const explorerBase = idChain === 'eth' ? 'https://etherscan.io/token/' : 'https://basescan.org/token/'
+                const symbolLetter = (result.symbol ?? result.name ?? '?').charAt(0).toUpperCase()
+                const idHolderCount = result.holderDistribution?.holderCount
+                return (
+                  <div className="token-identity-bar" style={{
+                    marginBottom: '20px', padding: '14px 16px', borderRadius: '14px',
+                    background: 'linear-gradient(150deg, rgba(10,18,34,.92), rgba(4,9,20,.90))',
+                    border: '1px solid rgba(148,163,184,.16)',
+                    boxShadow: '0 0 0 1px rgba(45,212,191,.04) inset, 0 12px 32px rgba(2,6,23,.4)',
+                    display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap',
+                    backdropFilter: 'blur(10px)', WebkitBackdropFilter: 'blur(10px)',
+                  }}>
+                    {/* Avatar */}
+                    <div style={{
+                      width: '40px', height: '40px', borderRadius: '50%', flexShrink: 0,
+                      background: 'linear-gradient(135deg,#2DD4BF,#8b5cf6)',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      fontSize: '17px', fontWeight: 800, color: '#04111c', fontFamily: 'var(--font-plex-mono)',
+                      boxShadow: '0 0 18px rgba(139,92,246,.22)',
+                    }}>
+                      {symbolLetter}
+                    </div>
+
+                    {/* Name / symbol / chain / contract */}
+                    <div style={{ minWidth: 0, flex: '1 1 220px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                        <span style={{ fontSize: '15px', fontWeight: 800, color: '#f8fafc' }}>{result.name ?? 'Unknown'}</span>
+                        {result.symbol && <span style={{ fontSize: '11px', color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)', fontWeight: 700 }}>{result.symbol}</span>}
+                        <span style={{ padding: '2px 8px', border: '1px solid rgba(59,130,246,.35)', borderRadius: '999px', color: '#93c5fd', fontSize: '9px', fontWeight: 700, letterSpacing: '0.08em', fontFamily: 'var(--font-plex-mono)' }}>{idChain.toUpperCase()}</span>
+                      </div>
+                      {result.contract && (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '3px' }}>
+                          <span style={{ fontSize: '10px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>{shorten(result.contract)}</span>
+                          <button
+                            onClick={() => { void copyContractAddress(result.contract!) }}
+                            title="Copy contract address"
+                            style={{
+                              padding: '1px 7px', borderRadius: '999px', fontSize: '9px', fontWeight: 700,
+                              fontFamily: 'var(--font-plex-mono)', cursor: 'pointer', letterSpacing: '0.06em',
+                              color: copiedContract ? '#34d399' : '#64748b',
+                              background: copiedContract ? 'rgba(52,211,153,0.08)' : 'rgba(255,255,255,0.03)',
+                              border: `1px solid ${copiedContract ? 'rgba(52,211,153,0.35)' : 'rgba(255,255,255,0.10)'}`,
+                            }}
+                          >
+                            {copiedContract ? 'Copied' : 'Copy'}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Risk + score chips */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                      <span style={{ padding: '4px 12px', borderRadius: '999px', fontSize: '10px', fontWeight: 800, letterSpacing: '0.10em', color: idRiskColor, background: `${idRiskColor}14`, border: `1px solid ${idRiskColor}45`, fontFamily: 'var(--font-plex-mono)' }}>
+                        {idRiskDisplay}
+                      </span>
+                      {idScore != null && (
+                        <span style={{ padding: '4px 12px', borderRadius: '999px', fontSize: '10px', fontWeight: 800, letterSpacing: '0.06em', color: idScoreColor, background: `${idScoreColor}12`, border: `1px solid ${idScoreColor}40`, fontFamily: 'var(--font-plex-mono)' }}>
+                          {idScore}/100
+                        </span>
+                      )}
+                      <span style={{ padding: '4px 12px', borderRadius: '999px', fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', color: idV.color, background: idV.bg, border: `1px solid ${idV.border}`, fontFamily: 'var(--font-plex-mono)' }}>
+                        {idV.label}
+                      </span>
+                    </div>
+
+                    {/* Market chips */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                      {result.marketCapUsd != null && (
+                        <span style={{ padding: '3px 10px', borderRadius: '999px', fontSize: '9px', fontWeight: 700, color: '#94a3b8', background: 'rgba(148,163,184,0.06)', border: '1px solid rgba(148,163,184,0.18)', fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap' }}>
+                          MC {fmtLarge(result.marketCapUsd)}
+                        </span>
+                      )}
+                      {result.liquidity != null && (
+                        <span style={{ padding: '3px 10px', borderRadius: '999px', fontSize: '9px', fontWeight: 700, color: '#94a3b8', background: 'rgba(148,163,184,0.06)', border: '1px solid rgba(148,163,184,0.18)', fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap' }}>
+                          LIQ {fmtLarge(result.liquidity)}
+                        </span>
+                      )}
+                      {idHolderCount != null && (
+                        <span style={{ padding: '3px 10px', borderRadius: '999px', fontSize: '9px', fontWeight: 700, color: '#94a3b8', background: 'rgba(148,163,184,0.06)', border: '1px solid rgba(148,163,184,0.18)', fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap' }}>
+                          {idHolderCount.toLocaleString()} holders
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Quick actions */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', marginLeft: 'auto' }}>
+                      {result.contract && (
+                        <button
+                          onClick={() => { void copyContractAddress(result.contract!) }}
+                          style={{ padding: '5px 11px', borderRadius: '8px', fontSize: '10px', fontWeight: 700, fontFamily: 'var(--font-plex-mono)', cursor: 'pointer', letterSpacing: '0.06em', color: copiedContract ? '#34d399' : '#94a3b8', background: copiedContract ? 'rgba(52,211,153,0.08)' : 'rgba(255,255,255,0.03)', border: `1px solid ${copiedContract ? 'rgba(52,211,153,0.35)' : 'rgba(255,255,255,0.10)'}` }}
+                        >
+                          {copiedContract ? 'Copied CA' : 'Copy CA'}
+                        </button>
+                      )}
+                      {result.contract && (
+                        <a
+                          href={`${explorerBase}${result.contract}`}
+                          target="_blank" rel="noopener noreferrer"
+                          style={{ padding: '5px 11px', borderRadius: '8px', fontSize: '10px', fontWeight: 700, fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.06em', color: '#93c5fd', background: 'rgba(59,130,246,0.06)', border: '1px solid rgba(59,130,246,0.25)', textDecoration: 'none' }}
+                        >
+                          Explorer ↗
+                        </a>
+                      )}
+                      <button
+                        onClick={() => { if (result.contract) void handleScan(result.contract, idChain === 'eth' ? 'eth' : 'base') }}
+                        disabled={loading || resolving}
+                        style={{ padding: '5px 11px', borderRadius: '8px', fontSize: '10px', fontWeight: 700, fontFamily: 'var(--font-plex-mono)', cursor: (loading || resolving) ? 'default' : 'pointer', letterSpacing: '0.06em', color: '#a78bfa', background: 'rgba(139,92,246,0.06)', border: '1px solid rgba(139,92,246,0.28)', opacity: (loading || resolving) ? 0.5 : 1 }}
+                      >
+                        Rescan
+                      </button>
+                      <button
+                        onClick={() => setTrackedSaved((v) => !v)}
+                        style={{ padding: '5px 11px', borderRadius: '8px', fontSize: '10px', fontWeight: 700, fontFamily: 'var(--font-plex-mono)', cursor: 'pointer', letterSpacing: '0.06em', color: trackedSaved ? '#2DD4BF' : '#94a3b8', background: trackedSaved ? 'rgba(45,212,191,0.08)' : 'rgba(255,255,255,0.03)', border: `1px solid ${trackedSaved ? 'rgba(45,212,191,0.35)' : 'rgba(255,255,255,0.10)'}` }}
+                      >
+                        {trackedSaved ? 'Saved ✓' : 'Save / Track'}
+                      </button>
+                    </div>
+
+                    {result.resolvedInput && result.resolvedInput.type !== 'address' && (
+                      <p style={{ margin: '0', width: '100%', color: '#94a3b8', fontSize: '11px' }}>Resolved from {result.resolvedInput.original.toUpperCase()}.</p>
+                    )}
+                  </div>
+                )
+              })()}
 
               {/* CORTEX Command Bar */}
               {(() => {
@@ -4063,6 +4358,9 @@ export default function TerminalTokenScanner() {
                         <div style={{ fontSize: '20px', fontWeight: 700, color: '#64748b', fontFamily: 'var(--font-plex-mono)', padding: '8px 0' }}>Token Safety Score unavailable</div>
                       )}
                     </div>
+
+                    {/* Proof Stack — Intelligence Report evidence summary */}
+                    <ProofStackSection result={result} devIntel={devIntel} devIntelLoading={devIntelLoading} />
 
                     {/* Score Breakdown — Market Maturity / Liquidity Safety / Contract Safety / Behavioral Risk */}
                     {result.riskBreakdown && (
