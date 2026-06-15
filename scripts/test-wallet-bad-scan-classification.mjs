@@ -174,8 +174,8 @@ assert.match(
   'WalletSnapshot type includes suspiciousTokenSummary'
 )
 
-// 8. UI shows the "PnL unavailable" card gated on pnlCacheQuality === 'no_trade_evidence'
-assert.match(ui, /PnL unavailable/, 'UI contains the PnL unavailable card title')
+// 8. UI shows the limited PnL recovery card gated on pnlCacheQuality === 'no_trade_evidence'
+assert.match(ui, /PnL recovery limited/, 'UI contains the PnL recovery limited card title')
 assert.match(
   ui,
   /result\.pnlCacheQuality === 'no_trade_evidence'/,
