@@ -1,5 +1,5 @@
-export type LpLockBurnIntelStatus = 'locked' | 'burned' | 'open_check' | 'not_applicable' | 'no_pool'
-export type LpLockBurnProof = 'confirmed' | 'open_check' | 'not_applicable'
+export type LpLockBurnIntelStatus = 'locked' | 'burned' | 'not_confirmed' | 'open_check' | 'unavailable_with_reason' | 'not_applicable' | 'no_pool'
+export type LpLockBurnProof = 'confirmed' | 'not_confirmed' | 'open_check' | 'unavailable_with_reason' | 'not_applicable'
 export type LpLockBurnChain = 'base' | 'eth' | 'bnb' | string
 
 export interface LpLockBurnIntelInput {
@@ -125,6 +125,10 @@ export function buildLpLockBurnIntel(input: LpLockBurnIntelInput): LpLockBurnInt
   const evidence = lpControl.evidence
   const burnPctEvidence = evidencePercent(evidence, ['burn_share', 'burned_share'])
   const lockPctEvidence = evidencePercent(evidence, ['locker_share', 'locked_share'])
+  const burnProofSource = asString(lpControl.burnProofSource)
+  const lockProofSource = asString(lpControl.lockProofSource)
+  const onchainBurnAttempted = Boolean(lpControl.burnProofAttempted)
+  const onchainBurnUnavailable = Boolean(lpControl.burnProofUnavailable)
   const lockerRegistryEmpty = registryLockers.length === 0
 
   if (!lpTokenOrPool && statusRaw === 'no_pool') {
@@ -164,10 +168,10 @@ export function buildLpLockBurnIntel(input: LpLockBurnIntelInput): LpLockBurnInt
     const burnedPercent = roundPercent(burnPctEvidence)
     const unlockedPercent = burnedPercent == null ? null : roundPercent(Math.max(0, 100 - burnedPercent))
     return {
-      status: 'burned', lockBurnProof: 'confirmed', proofSource: 'lp_holder_evidence', confidence, chain, poolModel,
+      status: 'burned', lockBurnProof: 'confirmed', proofSource: burnProofSource ?? 'onchain_lp_balance', confidence, chain, poolModel,
       lpTokenOrPool, lockedPercent: null, burnedPercent, unlockedPercent,
       lockContracts: [], burnAddresses, unlockTime: null, unlockTimeStatus: 'not_applicable',
-      summary: 'LP holder evidence confirms dominant LP supply at burn/dead addresses.',
+      summary: 'On-chain LP balance proof confirms dominant LP supply at burn/dead addresses.',
       signals: ['burn/dead address dominance confirmed'], evidenceGaps: [], nextActions: ['monitor LP holder distribution', 'rescan after liquidity changes'],
     }
   }
@@ -176,7 +180,7 @@ export function buildLpLockBurnIntel(input: LpLockBurnIntelInput): LpLockBurnInt
     const lockedPercent = roundPercent(lockPctEvidence)
     const unlockedPercent = lockedPercent == null ? null : roundPercent(Math.max(0, 100 - lockedPercent))
     return {
-      status: 'locked', lockBurnProof: 'confirmed', proofSource: 'lp_holder_evidence', confidence, chain, poolModel,
+      status: 'locked', lockBurnProof: 'confirmed', proofSource: lockProofSource ?? 'verified_locker_contract', confidence, chain, poolModel,
       lpTokenOrPool, lockedPercent, burnedPercent: null, unlockedPercent,
       lockContracts: controller ? [controller] : [], burnAddresses, unlockTime, unlockTimeStatus: unlockTime == null ? 'unknown' : 'known',
       summary: 'LP holder/controller evidence confirms dominant LP supply in a verified locker contract.',
@@ -184,22 +188,41 @@ export function buildLpLockBurnIntel(input: LpLockBurnIntelInput): LpLockBurnInt
     }
   }
 
+  if (onchainBurnUnavailable) {
+    return {
+      status: 'unavailable_with_reason', lockBurnProof: 'unavailable_with_reason', proofSource: null, confidence, chain, poolModel,
+      lpTokenOrPool, lockedPercent: null, burnedPercent: null, unlockedPercent: null,
+      lockContracts: registryLockers, burnAddresses, unlockTime: null, unlockTimeStatus: 'unknown',
+      summary: 'LP burn proof could not be read from RPC; no lock or burn safety is assumed.',
+      signals: controller ? ['LP controller evidence exists'] : [],
+      evidenceGaps: ['LP totalSupply/balanceOf read unavailable', lockerRegistryEmpty ? `no verified ${chain ?? 'chain'} locker registry match` : 'no verified locker match'],
+      nextActions: ['retry RPC burn proof', 'verify LP holders', 'verify locker contract'],
+    }
+  }
+
   const controllerKnown = Boolean(controller) || statusRaw === 'team_controlled' || asString(lpControllerIntel.controlProof) === 'confirmed'
+  const controllerType = asString(lpControl.lpControllerType) ?? asString(lpControllerIntel.controllerType)
+  const walletControlled = statusRaw === 'team_controlled' || controllerType === 'wallet'
+  const burnedPercent = roundPercent(burnPctEvidence)
   const signals = [
     controllerKnown ? 'LP controller is known from existing controller evidence' : null,
+    onchainBurnAttempted ? 'LP burn balances checked on-chain' : null,
     lpTokenOrPool ? 'selected LP token or pool is available for targeted verification' : null,
   ].filter(Boolean) as string[]
   const evidenceGaps = [
+    walletControlled ? 'dominant LP holder is an EOA/wallet, not a verified locker or burn address' : null,
     lockerRegistryEmpty ? `no verified ${chain ?? 'chain'} locker registry match` : 'no verified locker match',
-    'burn proof not confirmed',
+    onchainBurnAttempted ? 'burn_addresses_hold_insufficient_lp' : 'burn proof not confirmed',
     !lpTokenOrPool ? 'LP token or pool not confirmed' : null,
   ].filter(Boolean) as string[]
 
   return {
-    status: 'open_check', lockBurnProof: 'open_check', proofSource: controllerKnown ? 'controller_evidence' : null, confidence, chain, poolModel,
-    lpTokenOrPool, lockedPercent: null, burnedPercent: null, unlockedPercent: null,
+    status: 'not_confirmed', lockBurnProof: 'not_confirmed', proofSource: onchainBurnAttempted ? 'onchain_lp_balance' : (controllerKnown ? 'controller_evidence' : null), confidence, chain, poolModel,
+    lpTokenOrPool, lockedPercent: null, burnedPercent, unlockedPercent: burnedPercent == null ? null : roundPercent(Math.max(0, 100 - burnedPercent)),
     lockContracts: registryLockers, burnAddresses, unlockTime: null, unlockTimeStatus: 'unknown',
-    summary: controllerKnown
+    summary: walletControlled
+      ? 'Dominant LP holder is a wallet and no burn/locker proof was found.'
+      : controllerKnown
       ? 'LP controller is known, but active lock/burn proof is not confirmed.'
       : 'Active LP lock/burn proof is not confirmed from current evidence.',
     signals,
