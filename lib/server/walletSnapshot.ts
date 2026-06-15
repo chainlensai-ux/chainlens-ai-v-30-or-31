@@ -494,6 +494,14 @@ export type WalletSnapshot = {
     tokens: { symbol: string; chain: string; reason: string }[]
     warning: string | null
   }
+  walletScanHealth?: {
+    status: 'ok' | 'partial' | 'limited_pnl' | 'limited_activity' | 'open_check'
+    title: string
+    summary: string
+    usableModules: string[]
+    lockedModules: string[]
+    nextAction: string
+  }
   walletFacts?: WalletFacts
   _debug?: {
     walletFactsShapeIssues?: string[]

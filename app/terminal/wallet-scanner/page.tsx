@@ -326,8 +326,8 @@ type WalletResult = {
     activity:      { status: 'ok' | 'partial' | 'open_check'; evidence: string[]; eventCount: number; reason: string }
     swapDetection: { status: 'ok' | 'partial' | 'open_check'; evidence: string[]; candidateCount: number; reason: string }
     priceEvidence: { status: 'ok' | 'partial' | 'open_check'; pricedEvents: number; reason: string }
-    fifoPnL:       { status: 'ok' | 'partial' | 'open_check'; closedLots: number; reason: string }
-    tradeStats:    { status: 'ok' | 'partial' | 'open_check'; closedLots: number; openedLots: number; readyForWinRate: boolean; reason: string }
+    fifoPnL:       { status: 'ok' | 'partial' | 'open_check' | 'locked_no_closed_lots'; closedLots: number; reason: string }
+    tradeStats:    { status: 'ok' | 'partial' | 'open_check' | 'locked_no_closed_lots' | 'locked_insufficient_trades'; closedLots: number; openedLots: number; readyForWinRate: boolean; reason: string }
     behavior:      { status: 'ok' | 'partial' | 'open_check'; reason: string }
     walletOpenPositionSummary?: {
       status: 'partial' | 'open_check'
@@ -339,6 +339,14 @@ type WalletResult = {
       reason: string
     } | null
     openPositionPerformanceSummary?: OpenPositionPerformanceSummary
+  }
+  walletScanHealth?: {
+    status: 'ok' | 'partial' | 'limited_pnl' | 'limited_activity' | 'open_check'
+    title: string
+    summary: string
+    usableModules: string[]
+    lockedModules: string[]
+    nextAction: string
   }
   walletOpenPositionSummary?: {
     status: 'partial' | 'open_check'
@@ -1492,6 +1500,26 @@ export default function WalletScannerPage() {
                 </div>
               )}
 
+              {/* Wallet scan health — separates "missing PnL evidence" from a failed scan */}
+              {result.walletScanHealth && (() => {
+                const health = result.walletScanHealth!
+                const healthColor = health.status === 'ok' ? '#4ade80'
+                  : health.status === 'open_check' ? '#7dd3fc'
+                  : '#fbbf24'
+                return (
+                  <div style={{ padding: '14px 16px', background: 'rgba(255,255,255,0.02)', border: `1px solid ${healthColor}33`, borderRadius: '12px' }}>
+                    <div style={{ fontSize: '13px', fontWeight: 800, color: healthColor, fontFamily: 'var(--font-inter, Inter, sans-serif)', marginBottom: '6px' }}>{health.status === 'limited_pnl' ? 'Portfolio found — PnL needs more trade evidence' : health.title}</div>
+                    <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.45)', lineHeight: 1.5, fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{health.summary}</div>
+                    {(health.status === 'limited_pnl' || health.status === 'limited_activity' || health.status === 'partial') && (
+                      <div style={{ fontSize: '11px', color: '#7dd3fc', lineHeight: 1.5, marginTop: '6px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                        Small sample — wallet intelligence is limited, but holdings/activity are still usable.
+                      </div>
+                    )}
+                    <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.28)', marginTop: '8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{health.nextAction}</div>
+                  </div>
+                )
+              })()}
+
               {/* Scan cost / cache note banner */}
               {result.walletScanCacheNote && (result.walletScanCostMode === 'blocked_by_cooldown' || result.walletScanCostMode === 'blocked_by_cost_guard' || result.walletScanCostMode === 'historical_cached' || result.walletScanCostMode === 'deep_cached') && (
                 <div style={{ fontSize: '11px', color: '#7dd3fc', background: 'rgba(56,189,248,0.05)', border: '1px solid rgba(56,189,248,0.12)', borderRadius: '10px', padding: '10px 14px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', lineHeight: 1.6, display: 'flex', alignItems: 'flex-start', gap: '8px' }}>
@@ -1503,11 +1531,11 @@ export default function WalletScannerPage() {
               {/* Module coverage strip — shows what was checked vs what had evidence */}
               {result.walletModuleCoverage && (() => {
                 const mc = result.walletModuleCoverage!
-                const statusIcon = (s: 'ok' | 'partial' | 'open_check') =>
-                  s === 'ok' ? '✓' : s === 'partial' ? '~' : '○'
-                const statusColor = (s: 'ok' | 'partial' | 'open_check') =>
-                  s === 'ok' ? '#4ade80' : s === 'partial' ? '#fbbf24' : '#7dd3fc'
-                const chips: { label: string; note: string; status: 'ok' | 'partial' | 'open_check' }[] = [
+                const statusIcon = (s: 'ok' | 'partial' | 'open_check' | 'locked_no_closed_lots' | 'locked_insufficient_trades') =>
+                  s === 'ok' ? '✓' : s === 'partial' ? '~' : s === 'locked_no_closed_lots' || s === 'locked_insufficient_trades' ? '🔒' : '○'
+                const statusColor = (s: 'ok' | 'partial' | 'open_check' | 'locked_no_closed_lots' | 'locked_insufficient_trades') =>
+                  s === 'ok' ? '#4ade80' : s === 'partial' ? '#fbbf24' : s === 'locked_no_closed_lots' || s === 'locked_insufficient_trades' ? '#94a3b8' : '#7dd3fc'
+                const chips: { label: string; note: string; status: 'ok' | 'partial' | 'open_check' | 'locked_no_closed_lots' | 'locked_insufficient_trades' }[] = [
                   { label: 'Portfolio', note: mc.portfolio.status === 'ok' ? `${(mc.portfolio.evidence.includes('total_value') ? 'value + ' : '')}holdings` : mc.portfolio.reason.replace(/_/g, ' '), status: mc.portfolio.status },
                   { label: 'Activity', note: mc.activity.eventCount > 0 ? `${mc.activity.eventCount} events indexed` : mc.activity.status === 'open_check' && mc.activity.reason === 'provider_unavailable' ? 'unavailable' : 'not checked', status: mc.activity.status },
                   { label: 'Swap pairs', note: mc.swapDetection.candidateCount > 0 ? `${mc.swapDetection.candidateCount} candidates` : mc.activity.eventCount > 0 ? 'none found in sample' : 'no activity', status: mc.swapDetection.status },
@@ -1523,7 +1551,7 @@ export default function WalletScannerPage() {
                     if (mc.walletOpenPositionSummary) return 'Open position detected — no matched sells yet'
                     if ((result.walletLotSummary?.unmatchedSells ?? 0) > 0) return 'Exit detected — entry missing from indexed window'
                     if (candidates > 0) return 'no swap evidence priced'
-                    return 'no swap evidence'
+                    return 'PnL locked — no matched closed lots yet.'
                   })(), status: (() => {
                     const closedLots = mc.fifoPnL.closedLots
                     const openedLots = result.walletLotSummary?.openedLots ?? 0
@@ -1535,10 +1563,10 @@ export default function WalletScannerPage() {
                   { label: 'Trade stats', note: (() => {
                     const tradeClosedLots = mc.tradeStats.closedLots
                     const tradeOpenedLots = mc.tradeStats.openedLots ?? 0
-                    if (tradeClosedLots > 0) return `${tradeClosedLots} lots` + (mc.tradeStats.readyForWinRate ? '' : ' — below threshold')
-                    if (tradeOpenedLots > 0) return `no closed trades yet — ${tradeOpenedLots} open lot${tradeOpenedLots !== 1 ? 's' : ''} tracked`
-                    if (mc.swapDetection.candidateCount > 0 && (mc.priceEvidence?.pricedEvents ?? 0) === 0) return 'no verified closed lots'
-                    return 'no closed lots'
+                    if (tradeClosedLots > 0) return `${tradeClosedLots} lots` + (mc.tradeStats.readyForWinRate ? '' : ' — Win rate locked — needs more meaningful closed trades.')
+                    if (tradeOpenedLots > 0) return `Win rate locked — needs more meaningful closed trades. (${tradeOpenedLots} open lot${tradeOpenedLots !== 1 ? 's' : ''} tracked)`
+                    if (mc.swapDetection.candidateCount > 0 && (mc.priceEvidence?.pricedEvents ?? 0) === 0) return 'Win rate locked — needs more meaningful closed trades.'
+                    return 'Win rate locked — needs more meaningful closed trades.'
                   })(), status: mc.tradeStats.status },
                 ]
                 return (
@@ -1832,7 +1860,7 @@ export default function WalletScannerPage() {
                             <div style={{ background: 'rgba(255,255,255,0.035)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '12px', padding: '12px' }}>
                               <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.28)', letterSpacing: '0.13em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '6px' }}>Win Rate</div>
                               <div style={{ fontSize: '14px', color: '#7dd3fc', fontWeight: 800, fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', lineHeight: 1.3 }}>Trading Open Check</div>
-                              <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.28)', marginTop: '4px' }}>No closed lots yet</div>
+                              <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.28)', marginTop: '4px' }}>Win rate locked — needs more meaningful closed trades.</div>
                             </div>
                             <div style={{ background: 'rgba(255,255,255,0.035)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '12px', padding: '12px' }}>
                               <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.28)', letterSpacing: '0.13em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '6px' }}>Wallet Score</div>
@@ -1843,7 +1871,7 @@ export default function WalletScannerPage() {
                         </>
                       )
                     }
-                    const winRateNote = walletIntel.winRate !== null ? 'Closed lots only' : closedLots > 0 ? officialWinRateLockCopy(ts) : 'No closed lots yet'
+                    const winRateNote = walletIntel.winRate !== null ? 'Closed lots only' : closedLots > 0 ? officialWinRateLockCopy(ts) : 'Win rate locked — needs more meaningful closed trades.'
                     const confidenceNote = hasNoDecisiveClosedLots(ts) ? 'break-even only' : walletIntel.confidence === 'open check' ? (closedLots > 0 ? `${closedLots} closed lots reconstructed` : 'Closed-lot stats not available yet') : 'Evidence weighted'
                     const scoreReason = walletIntel.walletScore === null ? walletScoreLockCopy(ts) : null
                     return (
@@ -1875,7 +1903,7 @@ export default function WalletScannerPage() {
                               const rawRate = ts && closedLots > 0 && walletIntel.winRate === null && !hasNoDecisiveClosedLots(ts) ? (ts.winRatePercent ?? (ts.winningClosedLots / closedLots) * 100) : null
                               const label = walletIntel.winRate !== null ? 'Win Rate' : closedLots > 0 && closedLots < 10 ? 'Win Rate (raw)' : closedLots > 0 ? 'Official Win Rate' : 'Win Rate'
                               const value = hasNoDecisiveClosedLots(ts) ? 'Break-even only' : walletIntel.winRate !== null ? fmtOpenPct(walletIntel.winRate) : rawRate !== null ? `${rawRate.toFixed(1)}%` : fmtOpenPct(null)
-                              const note = walletIntel.winRate !== null ? winRateNote : closedLots > 0 ? officialWinRateLockCopy(ts) : 'No closed lots yet'
+                              const note = walletIntel.winRate !== null ? winRateNote : closedLots > 0 ? officialWinRateLockCopy(ts) : 'Win rate locked — needs more meaningful closed trades.'
                               return { label, value, note }
                             })(),
                             { label: 'Confidence', value: hasNoDecisiveClosedLots(ts) ? 'break-even only' : ts ? (ts.confidence === 'open_check' ? 'open check' : ts.confidence) : walletIntel.confidence, note: confidenceNote },
@@ -2048,7 +2076,7 @@ export default function WalletScannerPage() {
                           if (mc?.swapDetection && mc.swapDetection.candidateCount > 0 && mc.fifoPnL.closedLots === 0) {
                             return 'Swap candidates found but no matched buy/sell lot pairs yet. Closed-lot PnL not available until FIFO lots close.'
                           }
-                          return 'Closed-lot stats not available yet. PnL values only appear when priced buy/sell lot pairs are reconstructed.'
+                          return 'PnL locked — no matched closed lots yet. PnL values only appear when priced buy/sell lot pairs are reconstructed.'
                         })()}
                       </div>
                     </div>

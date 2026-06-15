@@ -182,4 +182,49 @@ assert.match(
   'UI gates the PnL unavailable card on pnlCacheQuality === no_trade_evidence'
 )
 
+// ── Wallet scan health — separate module states so missing PnL evidence doesn't
+//    make the whole scan look like an open check ──────────────────────────
+assert.match(route, /function computeWalletScanHealth/, 'computeWalletScanHealth function exists')
+assert.match(
+  route,
+  /const fifoStatus = closedLots > 0 \? \(ls\?\.status \?\? 'ok'\) : 'locked_no_closed_lots'/,
+  '1\\/3. FIFO PnL locks to locked_no_closed_lots (not open_check) when no closed lots'
+)
+assert.match(
+  route,
+  /const tradeStatus = readyForWinRate \? \(ts\?\.status \?\? 'ok'\) : tradeClosedLots > 0 \? 'locked_insufficient_trades' : 'locked_no_closed_lots'/,
+  '3. Trade stats locks to locked_insufficient_trades when below threshold, else locked_no_closed_lots'
+)
+assert.match(
+  route,
+  /const portStatus = holdingsCount > 0 && totalUsdAvailable \? 'ok' : holdingsCount > 0 \? 'partial' : 'open_check'/,
+  '2. Portfolio status is computed independently of PnL/closed-lot evidence'
+)
+assert.match(
+  route,
+  /if \(!hasHoldings && !hasActivity\)[\s\S]*?status: 'open_check' as const/,
+  '4. walletScanHealth is open_check only when neither holdings nor activity exist'
+)
+assert.match(
+  route,
+  /if \(coverage\.fifoPnL\.status !== 'ok'\)[\s\S]*?if \(hasHoldings\)[\s\S]*?status: 'limited_pnl' as const,\s*title: 'Portfolio found — PnL needs more trade evidence',\s*summary: 'Holdings and activity were loaded, but ChainLens could not verify enough closed trades for PnL or win rate\.'/,
+  '1. holdings exist + closedLots 0 => walletScanHealth.status = limited_pnl with required title/summary'
+)
+assert.match(snap, /walletScanHealth\?:\s*\{\s*status: 'ok' \| 'partial' \| 'limited_pnl' \| 'limited_activity' \| 'open_check'/, 'WalletSnapshot type includes walletScanHealth')
+assert.match(ui, /walletScanHealth\?:\s*\{\s*status: 'ok' \| 'partial' \| 'limited_pnl' \| 'limited_activity' \| 'open_check'/, 'WalletResult type includes walletScanHealth')
+
+// UI copy
+assert.match(ui, /PnL locked — no matched closed lots yet\./, '5. UI includes "PnL locked — no matched closed lots yet."')
+assert.match(ui, /Win rate locked — needs more meaningful closed trades\./, '5. UI includes "Win rate locked — needs more meaningful closed trades."')
+assert.match(ui, /Small sample — wallet intelligence is limited, but holdings\/activity are still usable\./, '5. UI includes small-sample copy')
+assert.match(ui, /Portfolio found — PnL needs more trade evidence/, '5. UI surfaces "Portfolio found — PnL needs more trade evidence" title')
+
+// 6. No fake $0 PnL when closedLots === 0 — total/realized/unrealized stay null (fmtSignedUSD renders 'Open Check', never $0)
+assert.match(
+  ui,
+  /const noLotsNullPnl = \(ts\?\.closedLots \?\? 0\) === 0 && \(ls\?\.realizedPnlUsd \?\? null\) === null/,
+  '6. PnL total/realized/unrealized are forced null (not $0) when there are no closed lots'
+)
+assert.match(ui, /function fmtSignedUSD[\s\S]*?if \(v === null \|\| !Number\.isFinite\(v\)\) return 'Open Check'/, '6. fmtSignedUSD renders "Open Check" (not $0) for null PnL values')
+
 console.log('wallet bad-scan classification checks passed')

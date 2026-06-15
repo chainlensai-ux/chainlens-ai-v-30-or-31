@@ -307,13 +307,15 @@ function buildWalletModuleCoverage(snap: any) {
   const _estPnlOpenCandidateCount = ((snap.estimatedPnl?.tokens ?? []) as Array<{ buysDetected: number; sellsDetected: number; estimatedCostBasisUsd: number | null }>)
     .filter(t => t.buysDetected > 0 && t.sellsDetected === 0 && (t.estimatedCostBasisUsd ?? 0) > 0).length
   const _hasOpenPositionEvidence = openedLots > 0 || _estPnlOpenCandidateCount > 0
-  const fifoStatus = closedLots > 0 ? (ls?.status ?? 'ok') : pricedSwapEvents > 0 ? 'open_check' : 'open_check'
+  // FIFO PnL is locked (not open_check) when there's simply no closed-lot evidence yet —
+  // missing PnL evidence should not be conflated with a failed/open-check scan.
+  const fifoStatus = closedLots > 0 ? (ls?.status ?? 'ok') : 'locked_no_closed_lots'
   const fifoReason = closedLots > 0 ? `${closedLots}_closed_lots_matched` : pricedSwapEvents > 0 ? 'priced_events_found_no_matched_lots' : _hasOpenPositionEvidence ? 'open_position_evidence_no_closed_trades' : 'no_priced_swap_events'
 
   // Trade stats
   const tradeClosedLots: number = ts?.closedLots ?? 0
   const readyForWinRate = tradeClosedLots >= 10 && ts?.economicSignificance === 'meaningful'
-  const tradeStatus = readyForWinRate ? (ts?.status ?? 'ok') : tradeClosedLots > 0 ? 'partial' : openedLots > 0 ? 'partial' : 'open_check'
+  const tradeStatus = readyForWinRate ? (ts?.status ?? 'ok') : tradeClosedLots > 0 ? 'locked_insufficient_trades' : 'locked_no_closed_lots'
   const tradeReason = tradeClosedLots >= 10 ? `${tradeClosedLots}_closed_lots_ready` : tradeClosedLots > 0 ? `${tradeClosedLots}_closed_lots_below_threshold` : openedLots > 0 ? 'open_lots_tracked_no_closed_trades' : 'no_closed_lots'
 
   // Open position summary — derived from FIFO debug sampleOpenLots (up to 5 lots).
@@ -494,6 +496,76 @@ function buildWalletModuleCoverage(snap: any) {
     behavior: { status: bhStatus, reason: bhStatus === 'ok' ? 'activity_detected' : bhStatus === 'partial' ? 'limited_activity_signal' : 'no_activity_data' },
     walletOpenPositionSummary,
     openPositionPerformanceSummary,
+  }
+}
+
+// Separates "missing PnL evidence" from "scan failed" so holdings/activity can stay usable
+// even when closed-lot evidence isn't available yet.
+function computeWalletScanHealth(coverage: ReturnType<typeof buildWalletModuleCoverage>, snap: any) {
+  const holdingsCount: number = snap.holdingsCount ?? (snap.holdings?.length ?? 0)
+  const hasHoldings = coverage.portfolio.status !== 'open_check' && holdingsCount > 0
+  const hasActivity = coverage.activity.status !== 'open_check'
+
+  const usableModules: string[] = []
+  const lockedModules: string[] = []
+  if (coverage.portfolio.status !== 'open_check') usableModules.push('portfolio'); else lockedModules.push('portfolio')
+  if (coverage.activity.status !== 'open_check') usableModules.push('activity'); else lockedModules.push('activity')
+  if (coverage.swapDetection.status !== 'open_check') usableModules.push('swapDetection'); else lockedModules.push('swapDetection')
+  if (coverage.priceEvidence.status !== 'open_check') usableModules.push('priceEvidence'); else lockedModules.push('priceEvidence')
+  if (coverage.fifoPnL.status === 'ok') usableModules.push('fifoPnL'); else lockedModules.push('fifoPnL')
+  if (coverage.tradeStats.status === 'ok') usableModules.push('tradeStats'); else lockedModules.push('tradeStats')
+  if (coverage.behavior.status !== 'open_check') usableModules.push('behavior'); else lockedModules.push('behavior')
+
+  if (!hasHoldings && !hasActivity) {
+    return {
+      status: 'open_check' as const,
+      title: 'Wallet scan open check',
+      summary: 'ChainLens could not find usable holdings or activity evidence for this wallet.',
+      usableModules,
+      lockedModules,
+      nextAction: 'Verify the wallet address and chain, or try again later.',
+    }
+  }
+
+  if (coverage.fifoPnL.status !== 'ok') {
+    if (hasHoldings) {
+      return {
+        status: 'limited_pnl' as const,
+        title: 'Portfolio found — PnL needs more trade evidence',
+        summary: 'Holdings and activity were loaded, but ChainLens could not verify enough closed trades for PnL or win rate.',
+        usableModules,
+        lockedModules,
+        nextAction: 'PnL and win rate unlock once matched closed lots are found.',
+      }
+    }
+    return {
+      status: 'limited_activity' as const,
+      title: 'Activity found — holdings and PnL are limited',
+      summary: 'Wallet activity was indexed, but holdings and closed-trade evidence are limited for this wallet.',
+      usableModules,
+      lockedModules,
+      nextAction: 'PnL and holdings unlock with more indexed evidence.',
+    }
+  }
+
+  if (coverage.tradeStats.status !== 'ok') {
+    return {
+      status: 'partial' as const,
+      title: 'Wallet scan mostly complete',
+      summary: 'Holdings, activity, and closed-lot PnL were found, but there are not enough meaningful closed trades for full win-rate stats yet.',
+      usableModules,
+      lockedModules,
+      nextAction: 'Win-rate stats unlock with more meaningful closed trades.',
+    }
+  }
+
+  return {
+    status: 'ok' as const,
+    title: 'Wallet scan complete',
+    summary: 'Holdings, activity, and PnL evidence were all available for this wallet.',
+    usableModules,
+    lockedModules,
+    nextAction: 'Review the full breakdown below.',
   }
 }
 
@@ -1085,6 +1157,7 @@ export async function POST(req: Request) {
     if (walletModuleCoverage.openPositionPerformanceSummary) {
       snapshot.openPositionPerformanceSummary = walletModuleCoverage.openPositionPerformanceSummary
     }
+    snapshot.walletScanHealth = computeWalletScanHealth(walletModuleCoverage, snapshot)
 
     // Wallet personality classification, time-windowed PnL, and bot detection — derived purely
     // from existing FIFO closed-lot data and behavior summaries (additive, no scoring changes).
