@@ -690,7 +690,7 @@ export async function POST(req: Request) {
     const cached = cachedRaw ?? null
 
     // Determine cost mode
-    type WalletScanCostMode = 'basic' | 'basic_cached' | 'deep_cached' | 'deep_live' | 'historical_cached' | 'historical_live' | 'blocked_by_cooldown' | 'blocked_by_cost_guard' | 'deep_cached_no_trade_evidence' | 'historical_not_started'
+    type WalletScanCostMode = 'basic' | 'basic_cached' | 'deep_cached' | 'deep_live' | 'historical_cached' | 'historical_live' | 'blocked_by_cooldown' | 'blocked_by_cost_guard' | 'deep_cached_no_trade_evidence' | 'historical_not_started' | 'deep_cached_partial_pnl'
     const getCostMode = (fromCache: boolean): WalletScanCostMode => {
       if (cooldownActive) return 'blocked_by_cooldown'
       if (costGuardHit) return 'blocked_by_cost_guard'
@@ -702,11 +702,25 @@ export async function POST(req: Request) {
       if (mode === 'basic') return 'Basic scan — no deep history used.'
       if (mode === 'basic_cached') return `Basic scan served from cache${cacheAgeSeconds != null ? ` (${cacheAgeSeconds}s ago)` : ''}.`
       if (mode === 'deep_cached') return `Deep result served from cache${cacheAgeSeconds != null ? ` (${cacheAgeSeconds}s ago)` : ''}.`
+      if (mode === 'deep_cached_partial_pnl') return 'Cached deep scan loaded. PnL coverage remains partial until a live deeper recovery runs.'
       if (mode === 'historical_cached') return `Historical scan served from cache to protect API usage${cacheAgeSeconds != null ? ` (${cacheAgeSeconds}s ago)` : ''}.`
       if (mode === 'blocked_by_cooldown') return 'Enhanced scan cooling down. Try again later.'
       if (mode === 'blocked_by_cost_guard') return 'Historical scan cached due to cost guard — wallet has heavy history.'
       return undefined
     }
+
+    const normalizeCachedHistoricalLabels = (payload: any) => {
+      if (!payload || typeof payload !== 'object') return payload
+      const hasLiveCalls = Boolean(payload._debug?.apiAudit?.totalCredits || payload._diagnostics?.apiAudit?.totalCredits)
+      const historicalMs = Number(payload.walletDeepScanTiming?.historicalMs ?? payload._debug?.walletDeepScanTiming?.historicalMs ?? 0) || 0
+      if ((deepActivity || effectiveHistoricalCoverage) && (payload.walletScanCostMode === 'historical_live' || payload.walletHistoricalRecoveryStatus === 'attempted' || !hasLiveCalls || historicalMs === 0)) {
+        payload.walletScanCostMode = 'deep_cached_partial_pnl'
+        payload.walletHistoricalRecoveryStatus = 'cached_preview_only'
+        payload.walletScanCacheNote = 'Cached deep scan loaded. PnL coverage remains partial until a live deeper recovery runs.'
+      }
+      return payload
+    }
+
     const recoverHistoricalFromCachedPayload = async (cachedPayload: any, cacheAgeSeconds: number, cacheBackend: 'memory' | 'persistent') => {
       const quality = getPnlCacheQuality(cachedPayload)
       annotatePnlCacheQuality(cachedPayload, quality)
@@ -733,9 +747,12 @@ export async function POST(req: Request) {
           walletScanBudget: probeBudget,
         } satisfies WalletSnapshotOptions)
         recovered.pnlCacheQuality = getPnlCacheQuality(recovered)
-        recovered.walletScanCostMode = 'historical_live'
+        const recoveredLiveCalls = (((recovered as any)._diagnostics?.apiAudit?.totalCredits ?? 0) > 0)
+        const recoveredHistoricalMs = Number((recovered as any)._diagnostics?.walletPerformanceDebug?.historicalMs ?? 0) || 0
+        recovered.walletScanCostMode = recoveredLiveCalls && recoveredHistoricalMs > 0 ? 'historical_live' : 'deep_cached_partial_pnl'
         recovered.walletScanCacheNote = 'Historical PnL recovery ran because the cached deep scan had partial trade coverage.'
-        recovered.walletHistoricalRecoveryStatus = 'attempted'
+        recovered.walletHistoricalRecoveryStatus = recovered.walletScanCostMode === 'historical_live' ? 'attempted' : 'cached_preview_only'
+        if (recovered.walletScanCostMode === 'deep_cached_partial_pnl') recovered.walletScanCacheNote = 'Cached deep scan loaded. PnL coverage remains partial until a live deeper recovery runs.'
         recovered.walletHistoricalRecoveryReason = `cached_${cacheBackend}_needed_historical_recovery`
         recovered.dataFreshness = 'live'
         recovered.cacheAgeSeconds = cacheAgeSeconds
@@ -757,6 +774,7 @@ export async function POST(req: Request) {
         if (cp.walletHistoricalCoverage) cp.walletHistoricalCoverage = { ...cp.walletHistoricalCoverage, cacheHit: true }
         const note = getCacheNote(costMode, cacheAgeSeconds)
         if (note) cp.walletScanCacheNote = note
+        cp = normalizeCachedHistoricalLabels(cp)
         cp = await recoverHistoricalFromCachedPayload(cp, cacheAgeSeconds, 'memory')
       }
       const _deepCooldownExpiry = walletDeepCooldown.get(deepCooldownKey) ?? 0
@@ -1134,7 +1152,9 @@ export async function POST(req: Request) {
     // wallets with zero trade evidence — avoids reporting 'historical_live' when nothing live happened.
     if (snapshot.walletScanCostMode === 'historical_live') {
       const _hcSummary = snapshot.walletHistoricalCoverageSummary ?? {}
-      const _historicalDidNotRun = (_hcSummary.pagesAttempted ?? 0) === 0 && _hcSummary.requested === true
+      const _timing = buildWalletDeepScanTiming(snapshot, startedAt, _cacheReadMs, _cacheWriteMs)
+      const _liveProviderCalls = Number((snapshot as any)._diagnostics?.apiAudit?.totalCredits ?? 0) || 0
+      const _historicalDidNotRun = ((_hcSummary.pagesAttempted ?? 0) === 0 && _hcSummary.requested === true) || _liveProviderCalls === 0 || (_timing.historicalMs ?? 0) === 0
       if (_historicalDidNotRun) {
         snapshot.walletScanCostMode = snapshot.pnlCacheQuality === 'no_trade_evidence'
           ? 'deep_cached_no_trade_evidence'

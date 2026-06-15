@@ -228,3 +228,18 @@ assert.match(
 assert.match(ui, /function fmtSignedUSD[\s\S]*?if \(v === null \|\| !Number\.isFinite\(v\)\) return 'Open Check'/, '6. fmtSignedUSD renders "Open Check" (not $0) for null PnL values')
 
 console.log('wallet bad-scan classification checks passed')
+
+// Token-level PnL read and cached/micro handling
+assert.match(snap, /walletTokenPnlRead\?: WalletTokenPnlRead\[\]/, 'WalletSnapshot exposes walletTokenPnlRead')
+assert.match(snap, /Current holding found, but acquisition cost was not recovered\./, 'top holding without buy lots gets cost_basis_missing reason')
+assert.match(snap, /status = 'cost_basis_missing'/, 'token read can classify cost_basis_missing')
+assert.match(snap, /status = hasHolding \? 'winning' : 'closed_profit'/, 'positive matched closed lots classify as winning/closed_profit')
+assert.match(snap, /status = hasHolding \? 'losing' : 'closed_loss'/, 'negative matched closed lots classify as losing/closed_loss')
+assert.match(snap, /Micro sample only — closed lots are too small to count as real wallet skill\./, 'break-even dust lots are marked micro sample only')
+assert.match(snap, /walletTokenPnlSummary/, 'wallet with holdings but no closed lots still has token-level summary')
+assert.match(route, /normalizeCachedHistoricalLabels/, 'cached hit normalization prevents historical_live without live calls')
+assert.match(route, /deep_cached_partial_pnl/, 'cached partial PnL uses deep_cached_partial_pnl')
+assert.match(route, /cached_preview_only/, 'cached partial PnL uses cached_preview_only')
+assert.match(ui, /Token PnL Read/, 'UI includes Token PnL Read')
+assert.match(ui, /Cost basis missing/, 'UI includes Cost basis missing status copy')
+assert.match(ui, /Micro sample only/, 'UI includes Micro sample only copy')

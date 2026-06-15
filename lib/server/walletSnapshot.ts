@@ -232,6 +232,46 @@ type WalletFacts = {
   }
 }
 
+
+export type WalletTokenPnlRead = {
+  tokenAddress: string | null
+  symbol: string
+  name?: string
+  chain: string
+  currentValueUsd: number | null
+  currentBalance: number | null
+  status: 'winning' | 'losing' | 'break_even' | 'open_position' | 'cost_basis_missing' | 'closed_profit' | 'closed_loss' | 'dust_ignored' | 'no_trade_evidence' | 'insufficient_data'
+  realizedPnlUsd: number | null
+  unrealizedPnlUsd: number | null
+  totalPnlUsd: number | null
+  realizedPnlPercent: number | null
+  unrealizedPnlPercent: number | null
+  buysDetected: number
+  sellsDetected: number
+  closedLots: number
+  openLots: number
+  unmatchedBuys: number
+  unmatchedSells: number
+  confidence: 'high' | 'medium' | 'low' | 'open_check'
+  reason: string
+}
+
+export type WalletTokenPnlSummary = {
+  tokensAnalyzed: number
+  winningTokens: number
+  losingTokens: number
+  breakEvenTokens: number
+  openPositions: number
+  costBasisMissing: number
+  insufficientData: number
+  dustIgnored: number
+  realizedPnlUsd: number | null
+  unrealizedPnlUsd: number | null
+  totalPnlUsd: number | null
+  confidence: 'high' | 'medium' | 'low' | 'open_check'
+  reason: string
+}
+
 export type WalletSnapshot = {
   address: string
   totalValue: number
@@ -468,6 +508,8 @@ export type WalletSnapshot = {
     missing: string[]
     reason: string | null
   }
+  walletTokenPnlRead?: WalletTokenPnlRead[]
+  walletTokenPnlSummary?: WalletTokenPnlSummary
   walletPnlRecoveryDebug?: {
     highValueRecoveryTriggered: boolean
     pagesAttempted: number
@@ -482,7 +524,7 @@ export type WalletSnapshot = {
   }
   dataFreshness?: 'live' | 'cached' | 'partial'
   cacheAgeSeconds?: number | null
-  walletScanCostMode?: 'basic' | 'basic_cached' | 'deep_cached' | 'deep_live' | 'historical_cached' | 'historical_live' | 'blocked_by_cooldown' | 'blocked_by_cost_guard' | 'deep_cached_no_trade_evidence' | 'historical_not_started'
+  walletScanCostMode?: 'basic' | 'basic_cached' | 'deep_cached' | 'deep_live' | 'historical_cached' | 'historical_live' | 'blocked_by_cooldown' | 'blocked_by_cost_guard' | 'deep_cached_no_trade_evidence' | 'historical_not_started' | 'deep_cached_partial_pnl'
   walletScanCacheNote?: string
   walletActivityCoverageNote?: string | null
   walletPnlOutlierNote?: string | null
@@ -5546,6 +5588,75 @@ async function fetchWalletBehavior(address: string, baseUrl: string): Promise<Wa
   }
 }
 
+function buildWalletTokenPnlRead(
+  holdings: Holding[],
+  evidence: WalletTxEvidence[],
+  closedLots: WalletClosedLot[],
+  debugMode: boolean,
+): { reads: WalletTokenPnlRead[]; summary: WalletTokenPnlSummary } {
+  const keyOf = (addr: string | null | undefined, symbol: string | null | undefined, chain: string | null | undefined) => `${(addr ?? '').toLowerCase()}|${(symbol ?? '').toUpperCase()}|${chain ?? 'unknown'}`
+  const byKey = new Map<string, WalletTokenPnlRead & { _openCostUsd?: number; _closedCostUsd?: number }>()
+  const get = (addr: string | null | undefined, symbol: string | null | undefined, chain: string | null | undefined) => {
+    const key = keyOf(addr, symbol, chain)
+    let row = byKey.get(key)
+    if (!row) {
+      row = { tokenAddress: addr ?? null, symbol: symbol || 'UNKNOWN', chain: chain || 'unknown', currentValueUsd: null, currentBalance: null, status: 'no_trade_evidence', realizedPnlUsd: null, unrealizedPnlUsd: null, totalPnlUsd: null, realizedPnlPercent: null, unrealizedPnlPercent: null, buysDetected: 0, sellsDetected: 0, closedLots: 0, openLots: 0, unmatchedBuys: 0, unmatchedSells: 0, confidence: 'low', reason: 'No buy/sell evidence found in indexed activity.' }
+      byKey.set(key, row)
+    }
+    return row
+  }
+  holdings.forEach((h) => { const row = get(h.contract ?? null, h.symbol, h.chain ?? 'unknown'); row.name = h.name; row.currentValueUsd = Number.isFinite(h.value) ? h.value : null; row.currentBalance = Number.isFinite(h.balance) ? h.balance : null })
+  for (const e of evidence) {
+    if (e.direction !== 'buy' && e.direction !== 'sell') continue
+    const row = get(e.contract, e.symbol, e.chain)
+    if (e.direction === 'buy') row.buysDetected += 1
+    if (e.direction === 'sell') row.sellsDetected += 1
+    if (e.direction === 'buy' && e.priceAtTime?.priceUsd && e.amount > 0) row._openCostUsd = (row._openCostUsd ?? 0) + e.priceAtTime.priceUsd * e.amount
+  }
+  for (const l of closedLots) {
+    const row = get(l.tokenAddress, l.tokenSymbol ?? null, l.chain)
+    row.closedLots += 1
+    row.realizedPnlUsd = (row.realizedPnlUsd ?? 0) + l.realizedPnlUsd
+    row._closedCostUsd = (row._closedCostUsd ?? 0) + l.costBasisUsd
+    row.realizedPnlPercent = row._closedCostUsd > 0 ? ((row.realizedPnlUsd ?? 0) / row._closedCostUsd) * 100 : null
+  }
+  const topKeys = new Set(holdings.slice(0, 10).map(h => keyOf(h.contract ?? null, h.symbol, h.chain ?? 'unknown')))
+  const reads: WalletTokenPnlRead[] = []
+  for (const [key, row] of byKey) {
+    const currentValue = row.currentValueUsd ?? 0
+    const include = topKeys.has(key) || currentValue >= 10 || row.closedLots > 0 || debugMode
+    const dustOnly = !include && currentValue > 0
+    if (!include && !dustOnly) continue
+    const meaningfulClosedLots = row.closedLots > 0 && ((row._closedCostUsd ?? 0) >= 10 || Math.abs(row.realizedPnlUsd ?? 0) >= 1) ? row.closedLots : 0
+    const hasHolding = currentValue >= 0.01 || (row.currentBalance ?? 0) > 0
+    const buyCost = Math.max(0, (row._openCostUsd ?? 0) - (row._closedCostUsd ?? 0))
+    row.openLots = hasHolding ? (buyCost > 0 ? 1 : 0) : 0
+    row.unmatchedBuys = Math.max(0, row.buysDetected - row.closedLots - row.openLots)
+    row.unmatchedSells = Math.max(0, row.sellsDetected - row.closedLots)
+    if (dustOnly) { row.status = 'dust_ignored'; row.confidence = 'low'; row.reason = 'Tiny holding below display threshold; ignored as dust/spam unless debug mode is enabled.' }
+    else if (row.closedLots > 0) {
+      const pnl = row.realizedPnlUsd ?? 0
+      if (meaningfulClosedLots === 0) { row.status = 'break_even'; row.confidence = 'low'; row.reason = 'Micro sample only — closed lots are too small to count as real wallet skill.' }
+      else if (pnl > 1) { row.status = hasHolding ? 'winning' : 'closed_profit'; row.confidence = 'high'; row.reason = 'Matched closed lots show meaningful positive realized PnL.' }
+      else if (pnl < -1) { row.status = hasHolding ? 'losing' : 'closed_loss'; row.confidence = 'high'; row.reason = 'Matched closed lots show meaningful negative realized PnL.' }
+      else { row.status = 'break_even'; row.confidence = 'medium'; row.reason = 'Matched closed lots are near break-even after applying the small-PnL threshold.' }
+    } else if (hasHolding && buyCost > 0) { row.unrealizedPnlUsd = currentValue - buyCost; row.unrealizedPnlPercent = buyCost > 0 ? (row.unrealizedPnlUsd / buyCost) * 100 : null; row.status = 'open_position'; row.confidence = 'open_check'; row.reason = 'Current holding found with recovered buy/cost basis; unrealized PnL is an open-position estimate.' }
+    else if (hasHolding) { row.status = 'cost_basis_missing'; row.confidence = 'open_check'; row.reason = 'Current holding found, but acquisition cost was not recovered.' }
+    else if (row.sellsDetected > 0 && row.buysDetected === 0) { row.status = 'insufficient_data'; row.confidence = 'low'; row.reason = 'Sells detected without matched buy lots inside indexed window.' }
+    else { row.status = 'no_trade_evidence'; row.confidence = 'low'; row.reason = 'No buy/sell evidence found in indexed activity.' }
+    row.totalPnlUsd = row.realizedPnlUsd !== null || row.unrealizedPnlUsd !== null ? (row.realizedPnlUsd ?? 0) + (row.unrealizedPnlUsd ?? 0) : null
+    const out = row as WalletTokenPnlRead
+    delete (out as any)._openCostUsd; delete (out as any)._closedCostUsd
+    reads.push(out)
+  }
+  reads.sort((a, b) => (b.currentValueUsd ?? 0) - (a.currentValueUsd ?? 0) || b.closedLots - a.closedLots)
+  const sumKnown = (field: 'realizedPnlUsd' | 'unrealizedPnlUsd' | 'totalPnlUsd') => reads.some(r => r[field] !== null) ? reads.reduce((sum, r) => sum + (r[field] ?? 0), 0) : null
+  const topAnalyzed = reads.filter(r => (r.currentValueUsd ?? 0) >= 10 || topKeys.has(keyOf(r.tokenAddress, r.symbol, r.chain)))
+  const majorMissing = topAnalyzed.filter(r => r.status === 'cost_basis_missing').length
+  const summary: WalletTokenPnlSummary = { tokensAnalyzed: reads.filter(r => r.status !== 'dust_ignored').length, winningTokens: reads.filter(r => r.status === 'winning' || r.status === 'closed_profit').length, losingTokens: reads.filter(r => r.status === 'losing' || r.status === 'closed_loss').length, breakEvenTokens: reads.filter(r => r.status === 'break_even').length, openPositions: reads.filter(r => r.status === 'open_position').length, costBasisMissing: reads.filter(r => r.status === 'cost_basis_missing').length, insufficientData: reads.filter(r => r.status === 'insufficient_data').length, dustIgnored: reads.filter(r => r.status === 'dust_ignored').length, realizedPnlUsd: sumKnown('realizedPnlUsd'), unrealizedPnlUsd: majorMissing > Math.max(0, Math.floor(topAnalyzed.length / 2)) ? null : sumKnown('unrealizedPnlUsd'), totalPnlUsd: majorMissing > Math.max(0, Math.floor(topAnalyzed.length / 2)) ? null : sumKnown('totalPnlUsd'), confidence: majorMissing > 0 ? 'open_check' : reads.some(r => r.confidence === 'low') ? 'low' : reads.some(r => r.confidence === 'medium') ? 'medium' : 'high', reason: majorMissing > Math.max(0, Math.floor(topAnalyzed.length / 2)) ? 'Token-level read available, but total wallet PnL is incomplete because cost basis is missing for major open positions.' : reads.length > 0 ? 'Token-level read available from matched lots and current holdings.' : 'Not enough data to build a token-level PnL read.' }
+  return { reads, summary }
+}
+
 function buildWalletFacts(
   holdings: Holding[],
   totalValue: number,
@@ -9738,6 +9849,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     }
   })()
 
+  const { reads: walletTokenPnlRead, summary: walletTokenPnlSummary } = buildWalletTokenPnlRead(holdings, _pricedEvidence, _sampleSourceLots, Boolean(debug))
+
   const snapshot: WalletSnapshot = {
     address: addr,
     totalValue,
@@ -9768,6 +9881,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     tokenUsage: EMPTY_TOKEN_USAGE(),
     walletClosedTradeSamples,
     walletClosedLotsAll: _sampleSourceLots,
+    walletTokenPnlRead,
+    walletTokenPnlSummary,
     suspiciousTokenSummary,
     walletHistoricalCoverageSummary,
     walletHistoricalCandidateSummary,
