@@ -262,11 +262,48 @@ type WalletResult = {
     classification: 'Likely bot' | 'Possibly semi-automated' | 'Likely human/manual'
     reason: string
   }
-  walletScanCostMode?: 'basic' | 'basic_cached' | 'deep_cached' | 'deep_live' | 'historical_cached' | 'historical_live' | 'blocked_by_cooldown' | 'blocked_by_cost_guard' | 'deep_cached_no_trade_evidence' | 'historical_not_started'
+  walletTokenPnlRead?: Array<{
+    tokenAddress: string | null
+    symbol: string
+    name?: string
+    chain: string
+    currentValueUsd: number | null
+    currentBalance: number | null
+    status: 'winning' | 'losing' | 'break_even' | 'open_position' | 'cost_basis_missing' | 'closed_profit' | 'closed_loss' | 'dust_ignored' | 'no_trade_evidence' | 'insufficient_data'
+    realizedPnlUsd: number | null
+    unrealizedPnlUsd: number | null
+    totalPnlUsd: number | null
+    realizedPnlPercent: number | null
+    unrealizedPnlPercent: number | null
+    buysDetected: number
+    sellsDetected: number
+    closedLots: number
+    openLots: number
+    unmatchedBuys: number
+    unmatchedSells: number
+    confidence: 'high' | 'medium' | 'low' | 'open_check'
+    reason: string
+  }>
+  walletTokenPnlSummary?: {
+    tokensAnalyzed: number
+    winningTokens: number
+    losingTokens: number
+    breakEvenTokens: number
+    openPositions: number
+    costBasisMissing: number
+    insufficientData: number
+    dustIgnored: number
+    realizedPnlUsd: number | null
+    unrealizedPnlUsd: number | null
+    totalPnlUsd: number | null
+    confidence: 'high' | 'medium' | 'low' | 'open_check'
+    reason: string
+  }
+  walletScanCostMode?: 'basic' | 'basic_cached' | 'deep_cached' | 'deep_live' | 'historical_cached' | 'historical_live' | 'blocked_by_cooldown' | 'blocked_by_cost_guard' | 'deep_cached_no_trade_evidence' | 'historical_not_started' | 'deep_cached_partial_pnl'
   walletScanCacheNote?: string
   pnlCacheQuality?: 'complete' | 'partial_needs_historical' | 'stale_low_coverage' | 'no_trade_evidence' | 'no_pnl_coverage' | 'historical_not_started'
   walletPnlRecoveryCta?: string
-  walletHistoricalRecoveryStatus?: 'needed' | 'attempted' | 'blocked' | 'timed_out' | 'not_applicable'
+  walletHistoricalRecoveryStatus?: 'needed' | 'attempted' | 'blocked' | 'timed_out' | 'not_applicable' | 'cached_preview_only'
   walletHistoricalRecoveryReason?: string | null
   suspiciousTokenSummary?: {
     count: number
@@ -2712,6 +2749,45 @@ export default function WalletScannerPage() {
                       </div>
                     ) : (
                       <>
+                        {(() => {
+                          const tokenReads = (result.walletTokenPnlRead ?? []).filter(t => t.status !== 'dust_ignored').slice(0, 12)
+                          if (tokenReads.length === 0) return null
+                          const statusLabel: Record<string, string> = {
+                            winning: 'Win', closed_profit: 'Win', losing: 'Loss', closed_loss: 'Loss', break_even: 'Break-even', open_position: 'Open', cost_basis_missing: 'Cost basis missing', insufficient_data: 'Insufficient data', no_trade_evidence: 'No trade evidence', dust_ignored: 'Dust ignored'
+                          }
+                          const statusColor = (status: string) => status === 'winning' || status === 'closed_profit' ? '#4ade80'
+                            : status === 'losing' || status === 'closed_loss' ? '#f87171'
+                            : status === 'cost_basis_missing' || status === 'open_position' ? '#7dd3fc'
+                            : status === 'insufficient_data' ? '#fbbf24' : 'rgba(226,232,240,0.78)'
+                          return (
+                            <div style={{ background: 'rgba(255,255,255,0.025)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '16px', padding: '14px', marginBottom: '14px' }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', marginBottom: '10px' }}>
+                                <div>
+                                  <div style={{ fontSize: '12px', fontWeight: 900, color: '#e2e8f0', letterSpacing: '0.08em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Token PnL Read</div>
+                                  <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.46)', marginTop: '4px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Per-token win/loss/open-position status from matched lots and current holdings.</div>
+                                </div>
+                                {result.walletTokenPnlSummary && <div style={{ fontSize: '10px', color: '#7dd3fc', textAlign: 'right', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{result.walletTokenPnlSummary.reason}</div>}
+                              </div>
+                              <div style={{ display: 'grid', gap: '8px' }}>
+                                {tokenReads.map((t, idx) => {
+                                  const openMissing = t.status === 'cost_basis_missing' ? 'Open position — cost basis missing' : statusLabel[t.status] ?? t.status
+                                  return (
+                                    <div key={`${t.tokenAddress ?? t.symbol}-${t.chain}-${idx}`} style={{ display: 'grid', gridTemplateColumns: '1.1fr 0.8fr 1fr 0.8fr', gap: '10px', alignItems: 'center', background: 'rgba(15,23,42,0.45)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '12px', padding: '10px' }}>
+                                      <div>
+                                        <div style={{ fontSize: '13px', fontWeight: 900, color: '#e2e8f0' }}>{t.symbol} <span style={{ fontSize: '9px', color: 'rgba(255,255,255,0.38)', textTransform: 'uppercase' }}>{t.chain}</span></div>
+                                        <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.42)', marginTop: '3px' }}>Current value: {t.currentValueUsd !== null ? fmtUSD(t.currentValueUsd) : '—'}</div>
+                                      </div>
+                                      <div style={{ justifySelf: 'start', color: statusColor(t.status), border: `1px solid ${statusColor(t.status)}55`, background: `${statusColor(t.status)}12`, borderRadius: '999px', padding: '4px 8px', fontSize: '10px', fontWeight: 800 }}>{openMissing}</div>
+                                      <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.56)', lineHeight: 1.5 }}>Realized: {t.realizedPnlUsd !== null ? fmtSignedUSD(t.realizedPnlUsd) : '—'}<br/>Unrealized: {t.unrealizedPnlUsd !== null ? fmtSignedUSD(t.unrealizedPnlUsd) : '—'}<br/>Lots: {t.closedLots} closed / {t.openLots} open</div>
+                                      <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.46)', lineHeight: 1.45 }}><strong style={{ color: 'rgba(226,232,240,0.85)' }}>{t.confidence}</strong><br/>{t.reason}</div>
+                                    </div>
+                                  )
+                                })}
+                              </div>
+                            </div>
+                          )
+                        })()}
+
                         <div className="wallet-intel-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: '10px', marginBottom: '10px' }}>
                           {(() => {
                             const pnlBreakEven = isBreakEvenOnly && ts.realizedPnlUsd !== null && ts.realizedPnlUsd === 0
@@ -2758,6 +2834,7 @@ export default function WalletScannerPage() {
                           const rawWinRate = ts.closedLots > 0 && !hasNoDecisiveClosedLots(ts) ? ts.winRatePercent ?? (ts.winningClosedLots / ts.closedLots) * 100 : null
                           const isBreakEvenOnly = ts.isBreakEvenOnly === true || (ts.closedLots > 0 && ts.winningClosedLots === 0 && ts.losingClosedLots === 0 && ts.breakEvenClosedLots === ts.closedLots)
                           const isSmallSample = ts.closedLots > 0 && !hasEnough
+                          const isMicroSampleOnly = ts.closedLots > 0 && (ts.meaningfulClosedLots ?? 0) === 0
                           const earlyCards: Array<{ label: string; value: string | null; locked?: boolean; lockNote?: string; pnl?: number | null; raw?: boolean; breakEven?: boolean }> = [
                             {
                               label: hasEnough ? 'Win Rate' : isSmallSample ? 'Win Rate (raw)' : 'Win Rate',
@@ -2768,7 +2845,7 @@ export default function WalletScannerPage() {
                               breakEven: isBreakEvenOnly,
                             },
                             { label: 'Avg PnL / Lot', value: ts.avgPnlUsdPerClosedLot !== null ? fmtSignedUSD(ts.avgPnlUsdPerClosedLot) : '—', pnl: ts.avgPnlUsdPerClosedLot },
-                            { label: 'Avg Return / Lot', value: ts.avgReturnPercentPerClosedLot !== null ? `${ts.avgReturnPercentPerClosedLot >= 0 ? '+' : ''}${ts.avgReturnPercentPerClosedLot.toFixed(1)}%` : '—', pnl: ts.avgReturnPercentPerClosedLot },
+                            { label: 'Avg Return / Lot', value: isMicroSampleOnly ? 'Micro sample only' : ts.avgReturnPercentPerClosedLot !== null ? `${ts.avgReturnPercentPerClosedLot >= 0 ? '+' : ''}${ts.avgReturnPercentPerClosedLot.toFixed(1)}%` : '—', pnl: isMicroSampleOnly ? null : ts.avgReturnPercentPerClosedLot, breakEven: isMicroSampleOnly },
                             { label: 'Median Return', value: ts.medianReturnPercentPerClosedLot !== null ? `${ts.medianReturnPercentPerClosedLot >= 0 ? '+' : ''}${ts.medianReturnPercentPerClosedLot.toFixed(1)}%` : '—', pnl: ts.medianReturnPercentPerClosedLot },
                             { label: 'Avg Hold Time', value: fmtHoldTime(ts.avgHoldingTimeSeconds) },
                             { label: 'Median Hold Time', value: fmtHoldTime(ts.medianHoldingTimeSeconds) },
