@@ -12,13 +12,13 @@ type AuthResult =
 
 async function getAuth(request: NextRequest): Promise<AuthResult> {
   const authHeader = request.headers.get('authorization')
-  if (!authHeader?.toLowerCase().startsWith('bearer ')) return { error: 'Unauthorized.', status: 401 }
+  if (!authHeader?.toLowerCase().startsWith('bearer ')) return { error: 'Sign in to save tokens.', status: 401 }
   const token = authHeader.slice(7).trim()
   const authSupabase = createAnonSupabaseClient()
   const supabase = createAuthedSupabaseClient(token)
-  if (!token || !authSupabase || !supabase) return { error: 'Unauthorized.', status: 401 }
+  if (!token || !authSupabase || !supabase) return { error: 'Sign in to save tokens.', status: 401 }
   const { data, error } = await authSupabase.auth.getUser(token)
-  if (error || !data.user) return { error: 'Unauthorized.', status: 401 }
+  if (error || !data.user) return { error: 'Sign in to save tokens.', status: 401 }
   return { user: { id: data.user.id }, userId: data.user.id, supabase }
 }
 
@@ -34,14 +34,19 @@ function normalizeChain(value: unknown): string | null {
   return trimmed ? trimmed : null
 }
 
-function logWatchlist(action: WatchlistAction, status: 'ok' | 'error', userId: string | undefined, chain: string | null, tokenAddress: string | null, error?: { code?: string, message?: string } | null) {
+function logWatchlist(action: WatchlistAction, status: 'ok' | 'error', userId: string | undefined, chain: string | null, tokenAddress: string | null, error?: { code?: string, message?: string, details?: string } | null) {
   const payload = {
     action,
     status,
-    userId,
+    hasUser: !!userId,
+    userId: userId ?? null,
     chain,
     tokenAddress,
-    error: error ? { code: error.code, message: error.message } : null,
+    normalizedChain: chain,
+    normalizedTokenAddress: tokenAddress,
+    errorCode: error?.code ?? null,
+    errorMessage: error?.message ?? null,
+    errorDetails: error?.details ?? null,
   }
   if (status === 'error') console.error('[watchlist.tokens]', payload)
   else console.log('[watchlist.tokens]', payload)

@@ -12,6 +12,7 @@ assert.match(route, /export async function POST/, 'POST route exists')
 assert.match(route, /export async function DELETE/, 'DELETE route exists')
 assert.match(route, /status: auth\.status/, 'unauthenticated requests return auth status')
 assert.match(route, /status: 401/, 'unauthenticated requests return 401')
+assert.match(route, /Sign in to save tokens\./, 'unauthenticated requests return sign-in copy')
 assert.match(route, /Token address is required\./, 'missing tokenAddress returns useful 400')
 assert.match(route, /status: 400/, 'bad requests return 400')
 assert.match(route, /\.trim\(\)\.toLowerCase\(\)/, 'chain and token address are normalized lowercase')
@@ -19,7 +20,9 @@ assert.match(route, /user_id: auth\.user\.id/, 'POST uses authenticated user id'
 assert.match(route, /\.upsert\(payload, \{ onConflict: 'user_id,chain,token_address' \}\)/, 'POST upserts by account/chain/address')
 assert.match(route, /\.eq\('user_id', auth\.userId\)/, 'GET/DELETE scopes to authenticated user')
 assert.match(route, /console\.error\('\[watchlist\.tokens\]'/, 'server-side debug logging exists')
-assert.match(route, /error: error \? \{ code: error\.code, message: error\.message \} : null/, 'safe error details are logged server-side')
+assert.match(route, /hasUser: !!userId/, 'log payload records whether a user was resolved')
+assert.match(route, /errorCode: error\?\.code \?\? null/, 'safe error code is logged server-side')
+assert.match(route, /errorDetails: error\?\.details \?\? null/, 'safe error details are logged server-side')
 assert.doesNotMatch(route, /NextResponse\.json\(\{ error: error\?\.message/, 'raw Supabase errors are not returned publicly')
 
 for (const ddl of [sql, migration]) {
