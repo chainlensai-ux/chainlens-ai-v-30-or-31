@@ -3884,12 +3884,15 @@ export default function TerminalTokenScanner() {
         button{max-width:100%;}
         .token-main{max-width:none;}
         .glass-card{background:linear-gradient(180deg,rgba(10,18,34,.9),rgba(3,8,19,.88));border:1px solid rgba(148,163,184,.18);border-radius:16px;box-shadow:0 0 0 1px rgba(45,212,191,.05) inset,0 18px 45px rgba(2,6,23,.4),0 0 28px rgba(139,92,246,.12);}
-        .search-card{background:linear-gradient(160deg,rgba(12,22,40,.97) 0%,rgba(5,10,22,.95) 100%);border:1px solid rgba(45,212,191,.18);border-radius:18px;box-shadow:0 0 0 1px rgba(45,212,191,.07) inset,0 28px 60px rgba(2,6,23,.60),0 0 48px rgba(45,212,191,.08),0 0 80px rgba(139,92,246,.04);}
-        .chain-tab-active{background:rgba(45,212,191,.11) !important;border:1px solid rgba(45,212,191,.50) !important;color:#2DD4BF !important;box-shadow:0 0 16px rgba(45,212,191,.20),inset 0 1px 0 rgba(45,212,191,.12) !important;}
-        .chain-tab-inactive{background:rgba(255,255,255,.025) !important;border:1px solid rgba(255,255,255,.08) !important;color:#4b6070 !important;}
-        .chain-tab-inactive:hover{background:rgba(255,255,255,.04) !important;border-color:rgba(255,255,255,.16) !important;color:#64748b !important;}
-        .preview-module-card{background:linear-gradient(160deg,rgba(8,15,28,.75),rgba(5,10,20,.70));border:1px solid rgba(255,255,255,.10);border-radius:12px;padding:16px;transition:transform .20s ease,border-color .20s ease,box-shadow .20s ease;cursor:default;}
-        .preview-module-card:hover{transform:translateY(-3px);border-color:rgba(45,212,191,.20);box-shadow:0 10px 32px rgba(2,6,23,.55),0 0 16px rgba(45,212,191,.06);}
+        .search-card{background:linear-gradient(160deg,rgba(12,22,40,.98) 0%,rgba(5,10,22,.96) 52%,rgba(7,11,25,.97) 100%);border:1px solid rgba(45,212,191,.22);border-radius:24px;box-shadow:0 0 0 1px rgba(45,212,191,.08) inset,0 30px 70px rgba(2,6,23,.68),0 0 58px rgba(45,212,191,.09),0 0 90px rgba(139,92,246,.08);overflow:hidden;}
+        .search-card:before{content:"";position:absolute;inset:0;border-radius:24px;padding:1px;background:linear-gradient(135deg,rgba(45,212,191,.56),rgba(139,92,246,.34),rgba(15,23,42,0));-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;pointer-events:none;}
+        .chain-tab-active{background:linear-gradient(135deg,rgba(45,212,191,.18),rgba(139,92,246,.10)) !important;border:1px solid rgba(45,212,191,.56) !important;color:#99f6e4 !important;box-shadow:0 0 18px rgba(45,212,191,.20),inset 0 1px 0 rgba(255,255,255,.08) !important;}
+        .chain-tab-inactive{background:rgba(15,23,42,.58) !important;border:1px solid rgba(148,163,184,.16) !important;color:#7890a7 !important;}
+        .chain-tab-inactive:hover{background:rgba(30,41,59,.62) !important;border-color:rgba(45,212,191,.24) !important;color:#cbd5e1 !important;}
+        .preview-module-card{background:linear-gradient(160deg,rgba(10,18,34,.86),rgba(5,10,20,.78));border:1px solid rgba(148,163,184,.14);border-radius:18px;padding:17px;min-height:132px;transition:transform .20s ease,border-color .20s ease,box-shadow .20s ease,background .20s ease;cursor:default;box-shadow:inset 0 1px 0 rgba(255,255,255,.035);}
+        .preview-module-card:hover{transform:translateY(-3px);border-color:rgba(45,212,191,.28);background:linear-gradient(160deg,rgba(11,24,43,.92),rgba(7,12,25,.82));box-shadow:0 14px 34px rgba(2,6,23,.58),0 0 20px rgba(45,212,191,.08);}
+        .quick-action{transition:all .16s ease;}
+        .quick-action:hover{transform:translateY(-1px);border-color:rgba(45,212,191,.34) !important;color:#ccfbf1 !important;background:rgba(45,212,191,.08) !important;}
         .shimmer-line{background:linear-gradient(90deg,rgba(255,255,255,.04) 25%,rgba(255,255,255,.10) 50%,rgba(255,255,255,.04) 75%);background-size:300% 100%;border-radius:3px;animation:shimmer 2.6s ease-in-out infinite;}
         .scan-btn-live{transition:all .18s ease !important;}
         .scan-btn-live:hover{transform:translateY(-1px);animation:scanBtnGlow 1.6s ease-in-out infinite;}
@@ -3903,7 +3906,7 @@ export default function TerminalTokenScanner() {
         @media (max-width:1279px){.token-shell{display:block;height:auto;overflow:visible;} .mob-scan-main{overflow-y:visible !important;} .token-shell .mob-verdict-panel{position:static !important;width:100% !important;max-width:100% !important;height:auto !important;min-height:0 !important;border-left:none !important;border-top:1px solid rgba(255,255,255,0.08) !important;overflow-y:visible !important;}}
         @media (max-width:1023px){.scan-stage-grid{grid-template-columns:1fr !important;} .metric-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;} .holders-grid,.intel-grid{grid-template-columns:1fr !important;} .activity-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;} .proof-stack-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;}}
         @media (min-width:1024px){.token-identity-bar{position:sticky;top:0;z-index:20;backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);}}
-        @media (max-width:768px){body{overflow-x:hidden;} .token-main{padding:36px 14px 120px !important;} .token-input-row{flex-direction:column;max-width:100% !important;} .token-input-row button{width:100%;} .top-holder-head{display:none !important;} .top-holder-row{display:block !important;padding:12px !important;} .top-holder-mobile-meta{display:flex !important;align-items:center;justify-content:space-between;gap:8px;} .top-holder-mobile-amt{display:block !important;margin-top:6px !important;text-align:left !important;} .pools-scroll{overflow-x:auto !important;-webkit-overflow-scrolling:touch;margin:0 -12px;padding:0 12px;} .mob-verdict-panel{padding:18px 14px !important;gap:12px !important;} .glass-card{padding:14px !important;} .preview-module-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;} .proof-stack-grid{grid-template-columns:1fr !important;} .token-identity-bar{flex-direction:column;align-items:flex-start !important;} .token-identity-bar > div{width:100%;}}
+        @media (max-width:768px){body{overflow-x:hidden;} .token-main{padding:30px 14px 120px !important;} .token-input-row{flex-direction:column;max-width:100% !important;} .token-input-wrap{width:100% !important;} .token-input-row button{width:100%;} .chain-switcher{width:100%;} .chain-switcher button{flex:1 1 0;padding-left:12px !important;padding-right:12px !important;} .top-holder-head{display:none !important;} .top-holder-row{display:block !important;padding:12px !important;} .top-holder-mobile-meta{display:flex !important;align-items:center;justify-content:space-between;gap:8px;} .top-holder-mobile-amt{display:block !important;margin-top:6px !important;text-align:left !important;} .pools-scroll{overflow-x:auto !important;-webkit-overflow-scrolling:touch;margin:0 -12px;padding:0 12px;} .mob-verdict-panel{padding:18px 14px !important;gap:12px !important;} .glass-card{padding:14px !important;} .preview-module-grid{grid-template-columns:1fr !important;} .proof-stack-grid{grid-template-columns:1fr !important;} .token-identity-bar{flex-direction:column;align-items:flex-start !important;} .token-identity-bar > div{width:100%;}}
       `}</style>
 
       <div className="token-shell" style={{ color: '#e2e8f0' }}>
@@ -3932,10 +3935,10 @@ export default function TerminalTokenScanner() {
             <h1 style={{ fontSize: 'clamp(26px,3.6vw,38px)', fontWeight: 800, color: '#f1f5f9', lineHeight: 1.12, margin: '0 0 10px', letterSpacing: '-0.02em' }}>
               Token Scanner
             </h1>
-            <p style={{ margin: '0 0 14px', color: '#64748b', fontSize: '13px', lineHeight: 1.65, maxWidth: '560px' }}>
+            <p style={{ margin: '0 0 16px', color: '#9fb0c3', fontSize: '14px', lineHeight: 1.7, maxWidth: '650px' }}>
               {chain === 'eth'
-                ? 'Scan Ethereum tokens for liquidity, contract risk, taxes, pool depth, and Clark AI verdicts.'
-                : 'Scan Base tokens for liquidity, contract risk, taxes, pool depth, and Clark AI verdicts.'}
+                ? 'Scan Ethereum tokens for live liquidity, holder concentration, LP control, dev activity, and evidence-weighted CORTEX risk.'
+                : 'Scan Base tokens for live liquidity, holder concentration, LP control, dev activity, and evidence-weighted CORTEX risk.'}
             </p>
 
             {/* Status pills */}
@@ -3943,8 +3946,10 @@ export default function TerminalTokenScanner() {
               {[
                 { label: 'BASE',           color: '#2DD4BF', bg: 'rgba(45,212,191,0.07)',  border: 'rgba(45,212,191,0.22)' },
                 { label: 'ETH',            color: '#818cf8', bg: 'rgba(129,140,248,0.07)', border: 'rgba(129,140,248,0.22)' },
-                { label: 'LIVE CORTEX',    color: '#34d399', bg: 'rgba(52,211,153,0.07)',  border: 'rgba(52,211,153,0.20)' },
-                { label: 'REAL DATA ONLY', color: '#475569', bg: 'rgba(71,85,105,0.07)',   border: 'rgba(71,85,105,0.18)' },
+                { label: 'Live CORTEX',    color: '#34d399', bg: 'rgba(52,211,153,0.07)',  border: 'rgba(52,211,153,0.20)' },
+                { label: 'Real Data Only', color: '#94a3b8', bg: 'rgba(71,85,105,0.10)',   border: 'rgba(148,163,184,0.18)' },
+                { label: 'LP + Holder Intelligence', color: '#99f6e4', bg: 'rgba(45,212,191,0.06)', border: 'rgba(45,212,191,0.18)' },
+                { label: 'No Financial Advice', color: '#c4b5fd', bg: 'rgba(139,92,246,0.08)', border: 'rgba(139,92,246,0.20)' },
               ].map(p => (
                 <span key={p.label} style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.11em', padding: '3px 10px', borderRadius: '99px', color: p.color, background: p.bg, border: `1px solid ${p.border}`, fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap' }}>
                   {p.label}
@@ -3974,10 +3979,14 @@ export default function TerminalTokenScanner() {
             </div>
 
             {/* Premium search card */}
-            <div className="search-card" style={{ position: 'relative', zIndex: 1, padding: '22px 22px 18px' }}>
+            <div className="search-card" style={{ position: 'relative', zIndex: 1, padding: '24px 24px 20px' }}>
+              <div style={{ marginBottom: '18px' }}>
+                <p style={{ margin: '0 0 6px', fontSize: '10px', letterSpacing: '.16em', color: '#2dd4bf', fontWeight: 900, fontFamily: 'var(--font-plex-mono)' }}>COMMAND INPUT</p>
+                <p style={{ margin: 0, color: '#94a3b8', fontSize: '12px', lineHeight: 1.55 }}>Resolve a token and build a live risk receipt from market, holder, LP, and dev-control evidence.</p>
+              </div>
 
               {/* Chain tabs */}
-              <div style={{ display: 'flex', gap: '8px', marginBottom: '18px' }}>
+              <div className="chain-switcher" style={{ display: 'flex', gap: '8px', marginBottom: '18px' }}>
                 {(['base', 'eth'] as const).map(c => (
                   <button
                     key={c}
@@ -3998,14 +4007,16 @@ export default function TerminalTokenScanner() {
 
               {/* Input + button row */}
               <div className="token-input-row" style={{ display: 'flex', gap: '10px', marginBottom: '12px' }}>
-                <input
+                <div className="token-input-wrap" style={{ position: 'relative', flex: 1, minWidth: 0 }}>
+                  <span aria-hidden="true" style={{ position: 'absolute', left: '15px', top: '50%', transform: 'translateY(-50%)', color: '#5eead4', opacity: 0.82, fontSize: '15px', pointerEvents: 'none' }}>⌕</span>
+                  <input
                   value={input}
                   onChange={e => { setInput(e.target.value); setResolverResult(null) }}
                   onKeyDown={e => { if (e.key === 'Enter') handleScan() }}
                   disabled={loading}
-                  placeholder={chain === 'eth' ? 'Paste Ethereum contract, symbol, or token name' : 'Paste Base contract, symbol, or token name'}
+                  placeholder="Paste contract, ticker, or token name"
                   style={{
-                    flex: 1, padding: '14px 18px',
+                    width: '100%', padding: '16px 18px 16px 42px',
                     background: 'rgba(255,255,255,0.04)',
                     border: '1px solid rgba(255,255,255,0.10)',
                     borderRadius: '12px',
@@ -4025,22 +4036,23 @@ export default function TerminalTokenScanner() {
                     e.currentTarget.style.boxShadow = 'none'
                   }}
                 />
+                </div>
                 <button
                   onClick={() => handleScan()}
                   disabled={loading || resolving || !input.trim()}
                   className={loading || resolving || !input.trim() ? '' : 'scan-btn-live'}
                   style={{
-                    padding: '14px 32px', borderRadius: '12px', border: 'none',
+                    padding: '16px 34px', borderRadius: '14px', border: '1px solid rgba(255,255,255,.08)',
                     background: loading || resolving || !input.trim()
-                      ? 'rgba(45,212,191,0.09)'
+                      ? 'linear-gradient(135deg, rgba(45,212,191,0.12), rgba(139,92,246,0.10))'
                       : 'linear-gradient(135deg, #2DD4BF 0%, #8b5cf6 100%)',
-                    color: loading || resolving || !input.trim() ? 'rgba(255,255,255,0.20)' : '#04040a',
+                    color: loading || resolving || !input.trim() ? 'rgba(203,213,225,0.46)' : '#04111c',
                     fontSize: '12px', fontWeight: 800,
                     fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.12em',
                     cursor: loading || resolving || !input.trim() ? 'not-allowed' : 'pointer',
                     flexShrink: 0,
                     whiteSpace: 'nowrap',
-                    boxShadow: loading || resolving || !input.trim() ? 'none' : '0 2px 16px rgba(45,212,191,0.22)',
+                    boxShadow: loading || resolving || !input.trim() ? 'inset 0 1px 0 rgba(255,255,255,.05)' : '0 8px 24px rgba(45,212,191,0.24),0 0 22px rgba(139,92,246,.16)',
                   }}
                 >
                   {resolving ? 'RESOLVING…' : loading ? 'SCANNING…' : 'SCAN TOKEN'}
@@ -4048,9 +4060,19 @@ export default function TerminalTokenScanner() {
               </div>
 
               {/* Helper text */}
-              <p style={{ margin: 0, fontSize: '11px', color: '#2a3d4d', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5, letterSpacing: '0.02em' }}>
-                Paste a contract, ticker, or token name to start a scan.
+              <p style={{ margin: '0 0 12px', fontSize: '11px', color: '#7f93a8', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6, letterSpacing: '0.02em' }}>
+                CORTEX checks liquidity, holders, LP control, dev activity, and risk evidence.
               </p>
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '14px' }}>
+                {[{ label: 'Try VIRTUAL', value: 'VIRTUAL' }, { label: 'Scan by contract', value: '' }, { label: 'Check LP risk', value: 'LP risk' }].map(action => (
+                  <button key={action.label} type="button" className="quick-action" onClick={() => { if (action.value) setInput(action.value); setResolverResult(null) }} style={{ padding: '7px 11px', borderRadius: '999px', border: '1px solid rgba(148,163,184,.16)', background: 'rgba(15,23,42,.55)', color: '#8aa0b5', fontSize: '10px', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', cursor: 'pointer' }}>
+                    {action.label}
+                  </button>
+                ))}
+              </div>
+              <div style={{ padding: '11px 13px', borderRadius: '14px', background: 'rgba(45,212,191,.045)', border: '1px solid rgba(45,212,191,.14)', color: '#8fa4b8', fontSize: '11px', lineHeight: 1.55 }}>
+                ChainLens does not give financial advice. CORTEX surfaces evidence, risk signals, and missing checks so you can review before acting.
+              </div>
             </div>
           </div>
 
@@ -4148,12 +4170,12 @@ export default function TerminalTokenScanner() {
             <div style={{ maxWidth: '820px' }}>
 
               {/* Headline */}
-              <div style={{ marginBottom: '20px' }}>
-                <p style={{ margin: '0 0 7px', fontSize: '14px', fontWeight: 700, color: '#94a3b8', lineHeight: 1.45, letterSpacing: '-0.005em' }}>
-                  Run a scan to generate a full token intelligence report.
+              <div style={{ marginBottom: '16px' }}>
+                <p style={{ margin: '0 0 7px', fontSize: '15px', fontWeight: 800, color: '#dbeafe', lineHeight: 1.45, letterSpacing: '-0.005em' }}>
+                  What this scan checks
                 </p>
-                <p style={{ margin: 0, fontSize: '11px', color: '#253340', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.65 }}>
-                  CORTEX will build Market Pulse, Holder Map, LP Safety, Dev Control, Cluster Map, and Risk context.
+                <p style={{ margin: 0, fontSize: '12px', color: '#8398ad', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.65 }}>
+                  A structured pre-trade intelligence pass with no fake values and no simulated certainty.
                 </p>
               </div>
 
@@ -4161,21 +4183,18 @@ export default function TerminalTokenScanner() {
               <div className="preview-module-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3,minmax(0,1fr))', gap: '12px', marginBottom: '28px' }}>
                 {[
                   { label: 'Market Pulse',  dot: '#2DD4BF', desc: 'Price, liquidity, volume, and pool depth.' },
-                  { label: 'Holder Map',    dot: '#a78bfa', desc: 'Top holder concentration and distribution.' },
-                  { label: 'LP Safety',     dot: '#34d399', desc: 'Pool lock status and liquidity risk.' },
-                  { label: 'Dev Control',   dot: '#fbbf24', desc: 'Deployer wallet and contract ownership.' },
+                  { label: 'Holder Map',    dot: '#a78bfa', desc: 'Top-holder concentration and supply distribution.' },
+                  { label: 'LP Safety',     dot: '#34d399', desc: 'Pool lock status, LP control, and exit risk.' },
+                  { label: 'Dev Control',   dot: '#fbbf24', desc: 'Deployer wallet, ownership, and supply influence.' },
                   { label: 'Cluster Map',   dot: '#67e8f9', desc: 'Wallet clustering and coordination signals.' },
-                  { label: 'CORTEX Risk',   dot: '#f87171', desc: 'Aggregated rug risk and open checks.' },
+                  { label: 'CORTEX Risk',   dot: '#f87171', desc: 'Evidence-weighted verdict and next action.' },
                 ].map(mod => (
                   <div key={mod.label} className="preview-module-card">
                     <div style={{ display: 'flex', alignItems: 'center', gap: '7px', marginBottom: '9px' }}>
                       <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: mod.dot, flexShrink: 0, opacity: 0.65, boxShadow: `0 0 6px ${mod.dot}44` }} />
                       <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.10em', color: '#4b6070', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{mod.label}</span>
                     </div>
-                    <p style={{ margin: '0 0 12px', fontSize: '11px', color: '#2a3d4d', lineHeight: 1.55 }}>{mod.desc}</p>
-                    {/* Skeleton placeholder lines */}
-                    <div className="shimmer-line" style={{ height: '5px', width: '72%', marginBottom: '6px' }} />
-                    <div className="shimmer-line" style={{ height: '5px', width: '48%' }} />
+                    <p style={{ margin: 0, fontSize: '12px', color: '#91a4b8', lineHeight: 1.6 }}>{mod.desc}</p>
                   </div>
                 ))}
               </div>
@@ -6446,7 +6465,7 @@ export default function TerminalTokenScanner() {
                 color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)',
                 textTransform: 'uppercase', margin: 0,
               }}>
-                Clark AI Verdict
+                CORTEX Receipt
               </p>
             </div>
             {(!clarkLoading && !clarkVerdict && !clarkError) && (
@@ -6467,29 +6486,32 @@ export default function TerminalTokenScanner() {
             </div>
           )}
 
-          {/* Idle — premium placeholder */}
+          {/* Idle — premium receipt preview */}
           {!planLoading && isFullAccess && !clarkLoading && !clarkVerdict && !clarkError && (
-            <div>
-              <p style={{ margin: '0 0 18px', fontSize: '11px', color: '#253340', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.65 }}>
-                Scan a token to generate a structured CORTEX verdict.
+            <div style={{ padding: '18px', borderRadius: '22px', background: 'linear-gradient(160deg,rgba(10,18,34,.86),rgba(5,10,20,.76))', border: '1px solid rgba(148,163,184,.14)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,.04),0 18px 45px rgba(2,6,23,.35)' }}>
+              <p style={{ margin: '0 0 6px', fontSize: '15px', fontWeight: 900, color: '#f8fafc', letterSpacing: '-0.01em' }}>
+                CORTEX Receipt
+              </p>
+              <p style={{ margin: '0 0 16px', fontSize: '12px', color: '#91a4b8', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.65 }}>
+                Scan a token to generate a structured risk receipt.
               </p>
               {[
-                { label: 'Verdict',              dot: '#94a3b8', w1: '55%', w2: '35%' },
-                { label: 'Market Read',          dot: '#2DD4BF', w1: '80%', w2: '60%' },
-                { label: 'Holder / Supply Read', dot: '#a78bfa', w1: '70%', w2: '45%' },
-                { label: 'LP / Risk Read',       dot: '#34d399', w1: '65%', w2: '50%' },
-                { label: 'Dev Control',          dot: '#fbbf24', w1: '75%', w2: '40%' },
-                { label: 'Next Action',          dot: '#f87171', w1: '60%', w2: '55%' },
+                { label: 'Verdict', dot: '#94a3b8' },
+                { label: 'Market Read', dot: '#2DD4BF' },
+                { label: 'Holder / Supply Read', dot: '#a78bfa' },
+                { label: 'LP / Risk Read', dot: '#34d399' },
+                { label: 'Dev Control', dot: '#fbbf24' },
+                { label: 'Next Action', dot: '#f87171' },
               ].map((sec, idx) => (
-                <div key={sec.label} className={idx > 0 ? 'clark-section' : ''} style={{ marginBottom: '12px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '7px' }}>
-                    <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: sec.dot, flexShrink: 0, opacity: 0.55 }} />
-                    <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.12em', color: '#253340', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{sec.label}</span>
-                  </div>
-                  <div className="shimmer-line" style={{ height: '5px', width: sec.w1, marginBottom: '5px' }} />
-                  <div className="shimmer-line" style={{ height: '5px', width: sec.w2 }} />
+                <div key={sec.label} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: idx === 0 ? '0 0 10px' : '10px 0', borderTop: idx === 0 ? 'none' : '1px solid rgba(148,163,184,.08)' }}>
+                  <span style={{ width: '18px', height: '18px', borderRadius: '50%', border: `1px solid ${sec.dot}55`, background: `${sec.dot}16`, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: sec.dot, fontSize: '11px', flexShrink: 0 }}>✓</span>
+                  <span style={{ fontSize: '11px', fontWeight: 800, letterSpacing: '0.08em', color: '#cbd5e1', fontFamily: 'var(--font-plex-mono)' }}>{sec.label}</span>
                 </div>
               ))}
+              <div style={{ marginTop: '12px', opacity: .45 }} aria-hidden="true">
+                <div className="shimmer-line" style={{ height: '4px', width: '76%', marginBottom: '6px' }} />
+                <div className="shimmer-line" style={{ height: '4px', width: '48%' }} />
+              </div>
             </div>
           )}
 
