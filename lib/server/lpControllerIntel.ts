@@ -8,7 +8,7 @@ export type LpControllerIntelStatus =
   | 'open_check'
   | 'no_pool'
 
-export type LpControllerIntelProof = 'confirmed' | 'open_check' | 'not_applicable'
+export type LpControllerIntelProof = 'confirmed' | 'not_confirmed' | 'open_check' | 'unavailable_with_reason' | 'not_applicable'
 
 export interface LpControllerIntelInput {
   lpControl?: Record<string, unknown> | null
@@ -193,8 +193,12 @@ export function buildLpControllerIntel(input: LpControllerIntelInput): LpControl
     : status === 'open_check' ? 'open_check'
     : status === 'concentrated_liquidity' ? 'not_applicable'
     : 'confirmed'
+  const burnAttempted = Boolean(lpControl.burnProofAttempted)
+  const burnUnavailable = Boolean(lpControl.burnProofUnavailable)
   const lockBurnProof: LpControllerIntelProof = notApplicable ? 'not_applicable'
+    : burnUnavailable ? 'unavailable_with_reason'
     : (lockStatus === 'locked' || burnStatus === 'burned' || status === 'locked' || status === 'burned') ? 'confirmed'
+    : (lockStatus === 'not_confirmed' || burnStatus === 'not_confirmed' || burnAttempted || controllerTypeValue === 'wallet' || status === 'wallet_controlled') ? 'not_confirmed'
     : 'open_check'
   const exitRisk = normalizeExitRisk(asString(input.lpExitRisk))
   const liquidityDepth = normalizeLiquidityDepth(asString(input.liquidityDepthRisk), poolLiquidityUsd)
@@ -218,7 +222,11 @@ export function buildLpControllerIntel(input: LpControllerIntelInput): LpControl
 
   const evidenceGaps: string[] = []
   if (lockBurnProof === 'open_check') {
-    evidenceGaps.push('active LP lock not confirmed', 'LP burn proof not confirmed')
+    evidenceGaps.push('active LP lock unresolved', 'LP burn proof unresolved')
+  } else if (lockBurnProof === 'not_confirmed') {
+    evidenceGaps.push('No verified locker contract matched the LP controller.', 'Burn addresses hold insufficient LP for burn confirmation.')
+  } else if (lockBurnProof === 'unavailable_with_reason') {
+    evidenceGaps.push('LP lock/burn proof unavailable from current RPC evidence')
   } else if (lockBurnProof === 'not_applicable') {
     evidenceGaps.push('protocol-specific liquidity position verification required')
   }

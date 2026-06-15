@@ -1,4 +1,4 @@
-export type LpUnlockTimelineStatus = 'locked' | 'burned' | 'open_check' | 'not_applicable'
+export type LpUnlockTimelineStatus = 'locked' | 'burned' | 'not_confirmed' | 'open_check' | 'unavailable_with_reason' | 'not_applicable'
 export type LpUnlockRisk = 'low' | 'watch' | 'high' | 'expired' | 'unknown' | 'none' | 'not_applicable'
 export type LpUnlockTimeStatus = 'known' | 'unknown' | 'not_applicable'
 
@@ -92,14 +92,23 @@ export function buildLpUnlockTimeline(input: LpUnlockTimelineInput): LpUnlockTim
   const unlockMs = unlockTimeRaw != null ? parseUnlockTimeMs(unlockTimeRaw) : null
 
   if (lockBurnProof !== 'confirmed' || unlockMs == null) {
+    const unresolvedStatus: LpUnlockTimelineStatus = lockBurnProof === 'not_confirmed'
+      ? 'not_confirmed'
+      : lockBurnProof === 'unavailable_with_reason'
+        ? 'unavailable_with_reason'
+        : 'open_check'
     return {
-      status: 'open_check', unlockRisk: 'unknown', confidence, chain, lpTokenOrPool,
+      status: unresolvedStatus, unlockRisk: 'unknown', confidence, chain, lpTokenOrPool,
       unlockTime: null, unlockTimeStatus: 'unknown', unlockCountdownSeconds: null, unlockCountdownLabel: null,
-      lockState,
+      lockState: lockBurnProof === 'not_confirmed' ? 'not_confirmed' : lockState,
       summary: lockBurnProof === 'confirmed'
         ? 'LP lock is confirmed, but no confirmed LP unlock time is available for this LP.'
-        : 'No confirmed LP unlock time is available because the LP lock/burn proof is open_check.',
-      signals: [],
+        : lockBurnProof === 'not_confirmed'
+          ? 'LP lock/burn proof was checked and is not confirmed, so no verified LP unlock timeline is available.'
+          : lockBurnProof === 'unavailable_with_reason'
+            ? 'LP lock/burn proof could not be checked from current RPC evidence, so no verified LP unlock timeline is available.'
+            : 'No confirmed LP unlock time is available because the LP lock/burn proof is unresolved.',
+      signals: lockBurnProof === 'not_confirmed' ? ['LP lock proof not confirmed'] : [],
       evidenceGaps: ['confirmed LP unlock time not available'],
       nextActions: ['verify lock terms', 'monitor unlock schedule', 'rescan after liquidity changes'],
     }

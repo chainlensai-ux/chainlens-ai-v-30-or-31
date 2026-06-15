@@ -2274,7 +2274,7 @@ type LpControlResult = {
   primaryPoolDex?: string | null;
   primaryPoolType?: string | null;
   // Normalized proof status fields — always set after LP resolution
-  proofStatus?: "open_check" | "verified" | "not_applicable" | null;
+  proofStatus?: "open_check" | "verified" | "not_confirmed" | "not_applicable" | null;
   lockStatus?: "locked" | "not_confirmed" | "not_applicable" | null;
   burnStatus?: "burned" | "not_confirmed" | "not_applicable" | null;
   burnProofAttempted?: boolean;
@@ -4312,6 +4312,7 @@ export async function POST(req: Request) {
           lpControl.burnProofAttempted = true
           lpControl.burnProofUnavailable = true
           lpControl.burnStatus = 'not_confirmed'
+          lpControl.proofStatus = 'not_confirmed'
           lpControl.reason = "LP burn proof unavailable: totalSupply read succeeded but burn balanceOf reads failed."
         } else {
           const burned = zeroBal + deadBal
@@ -4330,7 +4331,10 @@ export async function POST(req: Request) {
           } else {
             lpControl.burnStatus = 'not_confirmed'
             if (lpControl.status !== 'locked') {
-              lpControl.reason = "Burn addresses hold insufficient LP for burn confirmation."
+              lpControl.proofStatus = 'not_confirmed'
+              lpControl.reason = lpControl.status === 'team_controlled'
+                ? "Dominant LP holder is a wallet and no burn/locker proof was found."
+                : "Burn addresses hold insufficient LP for burn confirmation."
             }
           }
         }
@@ -4338,6 +4342,7 @@ export async function POST(req: Request) {
         lpControl.burnProofAttempted = true
         lpControl.burnProofUnavailable = true
         lpControl.burnStatus = 'not_confirmed'
+        lpControl.proofStatus = 'not_confirmed'
         lpControl.reason = "LP burn proof unavailable: totalSupply could not be read from RPC."
       }
     }
@@ -5888,9 +5893,10 @@ export async function POST(req: Request) {
     // public selectedPool/LP-intel views so a fallback-only liquidity read still informs LP
     // context. The Token Safety Score itself keeps using the primary-only `liquidityUsd`.
     const _liqForRisk = _el
-    const lpProofStatusNew: 'confirmed' | 'partial' | 'missing' | 'not_applicable' | 'unknown' =
+    const lpProofStatusNew: 'confirmed' | 'partial' | 'missing' | 'not_confirmed' | 'not_applicable' | 'unknown' =
       (lpProofApplicability === 'not_applicable' || lpProofApplicability === 'not_available') ? 'not_applicable' :
       (lpLockStatus === 'locked' || lpLockStatus === 'burned') ? 'confirmed' :
+      lpControl.proofStatus === 'not_confirmed' ? 'not_confirmed' :
       lpLockStatus === 'unlocked' ? 'partial' :
       noActivePools ? 'unknown' : 'missing'
     const _lpExitRiskResult = computeLpExitRisk({
