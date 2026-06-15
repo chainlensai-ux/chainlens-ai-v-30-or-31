@@ -295,6 +295,20 @@ type WalletResult = {
     reason: string | null
     cacheHit?: boolean
   }
+  walletHistoricalCoverageSummary?: {
+    pagesAttempted: number
+    stopReason?: string | null
+    budgetUsed?: number
+    candidateTxCount?: number
+  }
+  walletHistoricalPricingPreviewSummary?: {
+    pricedHistoricalCandidates: number
+  }
+  walletHistoricalFifoPreviewSummary?: {
+    previewClosedLots: number
+    safeToPromoteToPublicStats: boolean
+    blockedPromotionReason?: string | null
+  }
   walletDeepScanTiming?: {
     portfolioMs: number
     activityMs: number
@@ -2369,7 +2383,7 @@ export default function WalletScannerPage() {
                         <span style={{ fontWeight: 700, color: 'rgba(251,191,36,0.80)' }}>Partial chain coverage:</span>{' '}{result.walletActivityCoverageNote}
                       </div>
                     )}
-                    {result.pnlCacheQuality === 'no_trade_evidence' && (() => {
+                    {(result.pnlCacheQuality === 'no_trade_evidence' || ((result.walletLotSummary?.closedLots ?? 0) === 0 && (result.walletHistoricalCoverageSummary?.pagesAttempted ?? 0) > 0)) && (() => {
                       const stat = (label: string, value: string | number, tone: string = '#e2e8f0') => (
                         <div key={label} style={{ background: 'rgba(15,23,42,0.52)', border: '1px solid rgba(148,163,184,0.14)', borderRadius: '9px', padding: '8px 10px' }}>
                           <div style={{ fontSize: '8px', color: 'rgba(148,163,184,0.68)', letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: '4px' }}>{label}</div>
@@ -2379,22 +2393,32 @@ export default function WalletScannerPage() {
                       const holdingsValue = result.totalValue ?? 0
                       const holdingsCount = result.holdings?.length ?? 0
                       const activityEvents = result.walletBehavior?.txCount ?? 0
+                      const pagesAttempted = result.walletHistoricalCoverageSummary?.pagesAttempted ?? 0
+                      const candidateSwaps = result.walletHistoricalCoverageSummary?.candidateTxCount ?? result.walletSwapSummary?.swapCandidateCount ?? 0
+                      const pricedCandidates = result.walletHistoricalPricingPreviewSummary?.pricedHistoricalCandidates ?? result.walletPriceEvidenceSummary?.pricedEvents ?? 0
+                      const closedLotsRecovered = result.walletHistoricalFifoPreviewSummary?.previewClosedLots ?? result.walletLotSummary?.closedLots ?? 0
+                      const stopReason = result.walletHistoricalCoverageSummary?.stopReason ?? result.walletHistoricalCoverage?.reason ?? 'not_available'
+                      const missingBasis = (result.holdings ?? []).filter(h => (h.value ?? 0) > 50).slice(0, 10).map(h => `${h.symbol}: open_position_cost_basis_missing`).join(' · ')
                       return (
                         <div style={{ fontSize: '12px', color: 'rgba(226,232,240,0.84)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '12px', lineHeight: 1.55, background: 'rgba(125,211,252,0.045)', border: '1px solid rgba(125,211,252,0.16)', borderRadius: '10px', padding: '10px 13px' }}>
                           <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'center', marginBottom: '8px' }}>
-                            <div style={{ fontWeight: 800, fontSize: '11px', letterSpacing: '0.08em', textTransform: 'uppercase', color: 'rgba(125,211,252,0.88)' }}>PnL unavailable</div>
+                            <div style={{ fontWeight: 800, fontSize: '11px', letterSpacing: '0.08em', textTransform: 'uppercase', color: 'rgba(125,211,252,0.88)' }}>PnL recovery limited</div>
                           </div>
                           <div style={{ marginBottom: '8px', fontSize: '11px', color: 'rgba(203,213,225,0.72)' }}>
-                            Portfolio holdings were found, but no valid swap or closed-lot evidence was detected. Historical recovery was not applicable for this scan.
+                            Wallet holdings were found, but ChainLens could not reconstruct enough buy/sell pairs to verify realized PnL.
                           </div>
                           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0,1fr))', gap: '7px', marginBottom: result.suspiciousTokenSummary?.warning ? '8px' : 0 }}>
                             {stat('Holdings value', `$${holdingsValue.toLocaleString(undefined, { maximumFractionDigits: 2 })}`)}
                             {stat('Holdings count', holdingsCount)}
                             {stat('Activity events', activityEvents)}
-                            {stat('Swap candidates', 0)}
-                            {stat('Closed lots', 0)}
-                            {stat('PnL coverage', '0%')}
+                            {stat('Historical pages attempted', pagesAttempted)}
+                            {stat('Candidate swaps found', candidateSwaps)}
+                            {stat('Priced candidates', pricedCandidates)}
+                            {stat('Closed lots recovered', closedLotsRecovered)}
+                            {stat('Stop reason', String(stopReason).replaceAll('_', ' '))}
+                            {stat('CTA', 'Run deeper recovery if budget allows.', '#7dd3fc')}
                           </div>
+                          {missingBasis && <div style={{ fontSize: '11px', color: '#fbbf24', marginTop: '8px' }}>Top holdings with missing cost basis: {missingBasis}</div>}
                           {result.suspiciousTokenSummary?.warning && (
                             <div style={{ fontSize: '11px', color: '#fbbf24' }}>
                               {result.suspiciousTokenSummary.warning}
