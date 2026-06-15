@@ -7,7 +7,10 @@ import {
 } from '../lib/server/clarkRouting.ts'
 
 // ─── base_market_discovery vs base_radar ─────────────────────────────────────
-assert.equal(classifyClarkPrompt("what's pumping on Base?").intent, 'base_market_discovery')
+assert.equal(classifyClarkPrompt("who's pumping on Base?").intent, 'base_market_discovery')
+assert.equal(classifyClarkPrompt("whos pumping on base").intent, 'base_market_discovery')
+assert.equal(classifyClarkPrompt("what Base pairs are pumping?").intent, 'base_market_discovery')
+assert.equal(classifyClarkPrompt("show me trending Base tokens").intent, 'base_market_discovery')
 assert.equal(classifyClarkPrompt("what's pumping on Base Radar?").intent, 'base_radar')
 
 // ─── wallet_scan ──────────────────────────────────────────────────────────────

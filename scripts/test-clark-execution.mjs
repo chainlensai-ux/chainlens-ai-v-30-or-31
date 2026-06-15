@@ -15,13 +15,17 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 // ─── formatBaseMarketReadFromRows ────────────────────────────────────────────
 const mockRows = [
-  { symbol: 'AERO', name: 'Aerodrome', change24h: 5.2, volume24hUsd: 2_000_000, priceUsd: 1.2, marketCapUsd: 100_000_000 },
-  { symbol: 'BRETT', name: 'Brett', change24h: 12.4, volume24hUsd: 5_000_000, priceUsd: 0.08, marketCapUsd: 400_000_000 },
+  { symbol: 'AERO', name: 'Aerodrome', change24h: 5.2, volume24hUsd: 2_000_000, liquidityUsd: 1_000_000, priceUsd: 1.2, marketCapUsd: 100_000_000, poolAddress: '0xpoola', reasonTags: ['volume expansion'] },
+  { symbol: 'BRETT', name: 'Brett', change24h: 12.4, volume24hUsd: 5_000_000, liquidityUsd: 2_500_000, priceUsd: 0.08, marketCapUsd: 400_000_000, poolAddress: '0xpoolb', reasonTags: ['volume spike', 'price move'] },
 ]
 {
   const out = formatBaseMarketReadFromRows(mockRows)
   assert.ok(out, 'non-null for non-empty rows')
-  assert.ok(out.startsWith('BASE MARKET READ'))
+  assert.ok(out.startsWith('Here are the strongest Base movers'))
+  assert.ok(out.includes('BRETT'))
+  assert.ok(out.includes('Why:'))
+  assert.ok(out.includes('Risk:'))
+  assert.ok(out.includes('Want me to scan the top one in Token Scanner?'))
   assert.ok(out.includes('CTA:'))
 }
 assert.equal(formatBaseMarketReadFromRows([]), null)
@@ -94,6 +98,29 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
 {
   const routeFile = fs.readFileSync(path.join(__dirname, '..', 'app', 'api', 'clark', 'route.ts'), 'utf8')
   assert.ok(!routeFile.includes('No data available right now'), 'stale fallback string must be removed')
+  assert.ok(!routeFile.includes('const walletRes = await callInternalApi(origin, "/api/wallet", scanPayload'), 'routed Clark wallet execution must not use unauthenticated internal wallet API path')
+  assert.ok(routeFile.includes('runWalletScanner'), 'Clark wallet execution should call the Wallet Scanner runner')
+}
+
+
+// ─── wallet scan formatting surfaces scanner modules ─────────────────────────
+{
+  const { formatWalletScanResult } = await import('../lib/server/clarkRouting.ts')
+  const out = formatWalletScanResult(addr, {
+    ok: true,
+    totalValue: 1234,
+    holdings: [{ symbol: 'DEGEN', value: 1000, chain: 'base' }],
+    walletScanHealth: { status: 'limited_pnl', summary: 'Holdings were loaded, but closed lots/cost basis are incomplete.', lockedModules: ['fifoPnL', 'tradeStats'] },
+    walletModuleCoverage: { portfolio: { status: 'ok' }, activity: { status: 'partial' }, fifoPnL: { status: 'locked_no_closed_lots' }, tradeStats: { status: 'locked_no_closed_lots' } },
+    walletTokenPnlSummary: { status: 'partial', reason: 'cost_basis_limited' },
+    walletTokenPnlRead: [{ symbol: 'DEGEN', status: 'cost_basis_only' }],
+    historicalRecoveryStatus: 'not_started',
+  }, false)
+  assert.ok(out.includes('Portfolio found. PnL is limited'))
+  assert.ok(out.includes('walletScanHealth'))
+  assert.ok(out.includes('walletModuleCoverage'))
+  assert.ok(out.includes('Token-level read'))
+  assert.ok(out.includes('Locked modules'))
 }
 
 // ─── buildRoutedActions ──────────────────────────────────────────────────────

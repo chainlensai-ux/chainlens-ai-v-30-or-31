@@ -86,7 +86,7 @@ export function classifyClarkPrompt(prompt: string): {
 
   // ---- Base market discovery (generic "pumping/trending on base", no "radar") ----
   const BASE_MARKET_DISCOVERY_RE =
-    /(what'?s\s+pumping\s+on\s+base|base\s+pumps|trending\s+base|base\s+(?:movers|trending)|new\s+base\s+pools|what'?s\s+(?:moving|hot|running|happening)\s+on\s+base|base\s+market|top\s+base\s+tokens|base\s+momentum)/i;
+    /(?:who'?s\s+pumping\s+on\s+base|whos\s+pumping\s+on\s+base|what\s+is\s+pumping\s+on\s+base|what'?s\s+pumping\s+on\s+base|base\s+pairs?\s+(?:are\s+)?pumping|(?:show\s+me\s+)?trending\s+base\s+tokens?|hot\s+base\s+tokens?|base\s+gainers|base\s+pumps|trending\s+base|base\s+(?:movers|trending)|new\s+base\s+pools|what'?s\s+(?:moving|hot|running|happening)\s+on\s+base|base\s+market|top\s+base\s+tokens|base\s+momentum)/i;
   if (BASE_MARKET_DISCOVERY_RE.test(t)) {
     return { intent: "base_market_discovery", address: null, deep: false };
   }
@@ -146,6 +146,12 @@ export type MarketLikeRow = {
   volume24hUsd?: number | null;
   priceUsd?: number | null;
   marketCapUsd?: number | null;
+  liquidityUsd?: number | null;
+  tokenAddress?: string | null;
+  poolAddress?: string | null;
+  contract?: string | null;
+  pairAddress?: string | null;
+  reasonTags?: string[] | null;
 };
 
 const MAJOR_BASE_SYMBOLS = new Set([
@@ -174,22 +180,35 @@ export function formatBaseMarketReadFromRows(rows: MarketLikeRow[] | undefined |
   const valid = rows.filter((r) => r && r.symbol);
   if (valid.length === 0) return null;
 
-  const topMover = [...valid].sort((a, b) => (b.change24h ?? -Infinity) - (a.change24h ?? -Infinity))[0];
-  const highestVolume = [...valid].sort((a, b) => (b.volume24hUsd ?? -Infinity) - (a.volume24hUsd ?? -Infinity))[0];
-  const majors = valid.filter((r) => MAJOR_BASE_SYMBOLS.has(String(r.symbol ?? "").toUpperCase()));
-  const majorsLine = majors.length > 0
-    ? majors.slice(0, 4).map((r) => `${String(r.symbol).toUpperCase()} ${fmtPct(r.change24h)}`).join(", ")
-    : "No major Base assets reported in current dashboard rows.";
+  const ranked = [...valid]
+    .sort((a, b) => {
+      const aScore = Math.max(0, a.change24h ?? 0) * 1.5 + Math.log10((a.volume24hUsd ?? 0) + 1) * 3 + Math.log10((a.liquidityUsd ?? 0) + 1) * 2;
+      const bScore = Math.max(0, b.change24h ?? 0) * 1.5 + Math.log10((b.volume24hUsd ?? 0) + 1) * 3 + Math.log10((b.liquidityUsd ?? 0) + 1) * 2;
+      return bScore - aScore;
+    })
+    .slice(0, 5);
 
-  return [
-    "BASE MARKET READ",
-    `- Top mover by 24h %: ${String(topMover.symbol).toUpperCase()} (${fmtPct(topMover.change24h)})`,
-    `- Highest volume: ${String(highestVolume.symbol).toUpperCase()} (${fmtUsdShort(highestVolume.volume24hUsd)})`,
-    `- Major Base assets moving: ${majorsLine}`,
-    `- Quick note: Based on the dashboard market view currently open — refresh for the latest pull.`,
-    "",
-    "CTA: Open Base Radar / Open Token Scanner / Refresh Market Data",
-  ].join("\n");
+  const lines = ["Here are the strongest Base movers I found right now:"];
+  ranked.forEach((r, i) => {
+    const sym = String(r.symbol ?? "?").toUpperCase();
+    const label = r.name && r.name !== r.symbol ? `${sym} (${r.name})` : sym;
+    const pair = r.pairAddress ?? r.poolAddress ?? r.contract ?? r.tokenAddress ?? null;
+    const reasons = Array.isArray(r.reasonTags) && r.reasonTags.length > 0
+      ? r.reasonTags.join(" + ")
+      : [
+          (r.volume24hUsd ?? 0) > 0 ? "volume spike" : null,
+          r.change24h != null ? "price move" : null,
+          pair ? "active pair" : null,
+        ].filter(Boolean).join(" + ") || "live Base market momentum";
+    lines.push(`${i + 1}. ${label} — ${fmtPct(r.change24h)} / volume ${fmtUsdShort(r.volume24hUsd)} / liquidity ${fmtUsdShort(r.liquidityUsd)}${r.marketCapUsd != null ? ` / market cap ${fmtUsdShort(r.marketCapUsd)}` : ""}`);
+    if (pair) lines.push(`   Pair/contract: ${pair}`);
+    lines.push(`   Why: ${reasons}.`);
+    lines.push("   Risk: liquidity, holder concentration, LP control, and contract safety still need scanner verification.");
+  });
+  lines.push("");
+  lines.push("Want me to scan the top one in Token Scanner?");
+  lines.push("CTA: Open Base Radar / Open Token Scanner / Refresh Market Data");
+  return lines.join("\n");
 }
 
 /**
@@ -255,6 +274,13 @@ export type WalletApiResult = {
   historicalRecoveryStatus?: unknown;
   openLots?: unknown;
   closedLots?: unknown;
+  walletScanHealth?: any;
+  walletModuleCoverage?: any;
+  walletTokenPnlSummary?: any;
+  walletTokenPnlRead?: Array<any>;
+  walletTradeStatsSummary?: any;
+  walletHistoricalCoverageSummary?: any;
+  warnings?: unknown;
 };
 
 export function formatWalletScanResult(address: string, result: WalletApiResult | null, deep: boolean): string {
@@ -275,8 +301,12 @@ export function formatWalletScanResult(address: string, result: WalletApiResult 
     : "Base";
   const totalValue = result.totalValue != null ? fmtUsdShort(result.totalValue) : "unverified";
 
+  const health = result.walletScanHealth;
+  const coverage = result.walletModuleCoverage;
+  const tokenReads = Array.isArray(result.walletTokenPnlRead) ? result.walletTokenPnlRead.slice(0, 5) : [];
+  const hasHoldingsButLimitedPnl = holdings.length > 0 && health?.status === "limited_pnl";
   const lines = [
-    "WALLET READ",
+    hasHoldingsButLimitedPnl ? "Portfolio found. PnL is limited because closed lots/cost basis are incomplete." : "WALLET READ",
     `- Address: ${address}`,
     `- Active chains: ${chains}`,
     `- Holdings count: ${holdings.length}`,
@@ -284,14 +314,20 @@ export function formatWalletScanResult(address: string, result: WalletApiResult 
   ];
   const topHoldings = holdings.slice(0, 5).map((h) => `${h.symbol ?? "?"}${h.value != null ? ` (${fmtUsdShort(h.value)})` : ""}`).join(", ") || "none returned";
   lines.push(`- Top holdings: ${topHoldings}`);
+  if (health) lines.push(`- walletScanHealth: ${health.status ?? "unknown"}${health.summary ? ` — ${health.summary}` : ""}`);
+  if (coverage) lines.push(`- walletModuleCoverage: portfolio=${coverage.portfolio?.status ?? "unknown"}; activity=${coverage.activity?.status ?? "unknown"}; pnl=${coverage.fifoPnL?.status ?? "unknown"}; tradeStats=${coverage.tradeStats?.status ?? "unknown"}`);
   lines.push(`- Open lots / closed lots: ${String(result.openLots ?? "unverified")} / ${String(result.closedLots ?? "unverified")}`);
   lines.push(`- PnL coverage: ${String(result.pnlCoverage ?? (deep ? "not fully recovered" : "not requested"))}`);
-  lines.push(`- Historical recovery status: ${String(result.historicalRecoveryStatus ?? (deep ? "open check" : "not requested"))}`);
+  lines.push(`- Historical recovery status: ${String(result.historicalRecoveryStatus ?? result.walletHistoricalCoverageSummary?.status ?? (deep ? "open check" : "not requested"))}`);
+  if (result.walletTokenPnlSummary) lines.push(`- walletTokenPnlSummary: ${String(result.walletTokenPnlSummary.status ?? result.walletTokenPnlSummary.reason ?? JSON.stringify(result.walletTokenPnlSummary))}`);
+  if (tokenReads.length > 0) lines.push(`- Token-level read: ${tokenReads.map((t) => `${t.symbol ?? "?"}:${t.status ?? t.pnlStatus ?? "read"}`).join(", ")}`);
+  if (health?.lockedModules?.length) lines.push(`- Locked modules: ${health.lockedModules.join(" / ")}`);
   if (deep) {
     lines.push(`- Activity status: ${result.txCount != null ? `${result.txCount} transactions in scanned window` : "activity history not available in this pass"}`);
   } else {
     lines.push(`- Activity status: not requested (use deep scan for activity history)`);
   }
+  if (result.warnings) lines.push(`- Warnings/limits: ${String(result.warnings)}`);
   lines.push(`- Evidence gaps: ${holdings.length === 0 ? "no priced holdings returned" : "closed/open lot attribution and historical recovery may be partial"}`);
   lines.push("");
   lines.push(`CTA: Open Wallet Scanner${deep ? "" : " / Deep Scan Wallet"}`);
