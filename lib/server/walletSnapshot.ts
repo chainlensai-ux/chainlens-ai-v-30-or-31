@@ -1,4 +1,5 @@
 import { fetchMoralisBalances, fetchMoralisTransfers, type MoralisFetchResult, type MoralisChain, type MoralisTransferItem } from './moralis'
+import { detectSuspiciousTokenSymbol } from './tokenSymbolSpoof'
 
 
 type TokenUsage = {
@@ -464,13 +465,18 @@ export type WalletSnapshot = {
   }
   dataFreshness?: 'live' | 'cached' | 'partial'
   cacheAgeSeconds?: number | null
-  walletScanCostMode?: 'basic' | 'basic_cached' | 'deep_cached' | 'deep_live' | 'historical_cached' | 'historical_live' | 'blocked_by_cooldown' | 'blocked_by_cost_guard'
+  walletScanCostMode?: 'basic' | 'basic_cached' | 'deep_cached' | 'deep_live' | 'historical_cached' | 'historical_live' | 'blocked_by_cooldown' | 'blocked_by_cost_guard' | 'deep_cached_no_trade_evidence' | 'historical_not_started'
   walletScanCacheNote?: string
   walletActivityCoverageNote?: string | null
   walletPnlOutlierNote?: string | null
   walletPricingCoverageNote?: string | null
   walletValueTier?: WalletValueTier
   walletHistoricalScanNote?: string | null
+  suspiciousTokenSummary?: {
+    count: number
+    tokens: { symbol: string; chain: string; reason: string }[]
+    warning: string | null
+  }
   walletFacts?: WalletFacts
   _debug?: {
     walletFactsShapeIssues?: string[]
@@ -5437,7 +5443,7 @@ function buildWalletBehaviorFromPnlEvents(address: string, pnlEvents: PnlEvent[]
   const topTokens = [...tokenFreq].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([s]) => s)
   const topContracts = [...contractFreq].sort((a, b) => b[1] - a[1]).slice(0, 3)
     .map(([a]) => `${a.slice(0, 6)}…${a.slice(-4)}`)
-  const stablecoinActivity = all.some(e => e.symbol && STABLES.test(e.symbol))
+  const stablecoinActivity = all.some(e => e.symbol && STABLES.test(e.symbol) && !detectSuspiciousTokenSymbol(e.symbol).suspicious)
   return {
     status: 'ok', source: 'activity_layer' as const,
     txCount: all.length, activeDays: days.size,
@@ -5487,7 +5493,7 @@ async function fetchWalletBehavior(address: string, baseUrl: string): Promise<Wa
     const topTokens = [...tokenFreq].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([s]) => s)
     const topContracts = [...contractFreq].sort((a, b) => b[1] - a[1]).slice(0, 3)
       .map(([a]) => `${a.slice(0, 6)}…${a.slice(-4)}`)
-    const stablecoinActivity = all.some(t => t.asset && STABLES.test(t.asset))
+    const stablecoinActivity = all.some(t => t.asset && STABLES.test(t.asset) && !detectSuspiciousTokenSymbol(t.asset).suspicious)
     return {
       status: 'ok', source: 'activity_layer' as const,
       txCount: all.length, activeDays: days.size,
@@ -9298,6 +9304,32 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     }
   })
 
+  // Phase 6H: Detect spoofed/homoglyph token symbols among closed-lot samples so the
+  // public response can warn that some "activity" resembles fake stablecoin/blue-chip
+  // symbols and should not be treated as verified trading activity.
+  const suspiciousTokenSummary: WalletSnapshot['suspiciousTokenSummary'] = (() => {
+    const seen = new Set<string>()
+    const tokens: { symbol: string; chain: string; reason: string }[] = []
+    for (const l of _sampleSourceLots) {
+      const symbol = l.tokenSymbol
+      if (!symbol) continue
+      const key = `${symbol}__${l.chain}`
+      if (seen.has(key)) continue
+      const detection = detectSuspiciousTokenSymbol(symbol)
+      if (!detection.suspicious) continue
+      seen.add(key)
+      tokens.push({ symbol, chain: l.chain, reason: detection.reason ?? 'Suspicious token symbol detected.' })
+      if (tokens.length >= 10) break
+    }
+    return {
+      count: tokens.length,
+      tokens,
+      warning: tokens.length > 0
+        ? 'Suspicious token-symbol spoofing detected. Some activity resembles fake stablecoin/blue-chip symbols and should not be treated as verified trading activity.'
+        : null,
+    }
+  })()
+
   const _grEthAttempted = _shouldFetchGrEth
   const _grBaseAttempted = activityRequested && Boolean(GOLDRUSH_KEY)
   const _alchemyAttempted = _alchemyActivityFallbackAttempted
@@ -9660,6 +9692,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     tokenUsage: EMPTY_TOKEN_USAGE(),
     walletClosedTradeSamples,
     walletClosedLotsAll: _sampleSourceLots,
+    suspiciousTokenSummary,
     walletHistoricalCoverageSummary,
     walletHistoricalCandidateSummary,
     walletHistoricalPricingPreviewSummary,

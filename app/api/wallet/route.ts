@@ -179,7 +179,7 @@ function pruneWalletScannerDebug(payload: any, debug: boolean) {
 }
 
 type WalletValueTier = 'micro' | 'small' | 'standard' | 'high_value' | 'whale'
-type PnlCacheQuality = 'complete' | 'partial_needs_historical' | 'stale_low_coverage'
+type PnlCacheQuality = 'complete' | 'partial_needs_historical' | 'stale_low_coverage' | 'no_trade_evidence' | 'no_pnl_coverage' | 'historical_not_started'
 
 function getWalletValueTier(totalValueUsd: number): WalletValueTier {
   if (totalValueUsd >= 1_000_000) return 'whale'
@@ -224,6 +224,8 @@ function getWalletPnlRecoverySignals(snap: any) {
   const historicalRequested = historical.requested === true
   const backfillReason = String(backfill.reason ?? backfill.stopReason ?? '')
   const backfillTimedOut = backfillReason.includes('timeout')
+  const swapCandidateEvents = Number(snap?.walletSwapSummary?.swapCandidateEvents ?? snap?.walletPriceEvidenceSummary?.swapCandidateEvents ?? 0) || 0
+  const pagesAttempted = Number(snap?.walletHistoricalCoverageSummary?.pagesAttempted ?? 0) || 0
   return {
     walletValueTier,
     coveragePercent: estimatedCoverage,
@@ -235,6 +237,8 @@ function getWalletPnlRecoverySignals(snap: any) {
     historicalStatus,
     historicalRequested,
     backfillTimedOut,
+    swapCandidateEvents,
+    pagesAttempted,
     needsHistorical: walletValueTier === 'high_value' || walletValueTier === 'whale' || estimatedCoverage < 60 || unmatchedSells > 0 || unmatchedBuys > 0 || closedLots < 10 || stats.status === 'partial' || historicalStatus === 'not_requested',
   }
 }
@@ -242,9 +246,13 @@ function getWalletPnlRecoverySignals(snap: any) {
 function getPnlCacheQuality(snap: any): PnlCacheQuality {
   const s = getWalletPnlRecoverySignals(snap)
   const lowCoverage = s.coveragePercent < 60 || s.closedLots < 10
+  const tradeStatsOpenCheck = s.tradeStatus === 'open_check'
+  if (s.closedLots > 0 && s.coveragePercent >= 60 && !tradeStatsOpenCheck) return 'complete'
   if (s.backfillTimedOut && lowCoverage) return 'stale_low_coverage'
-  if (!s.historicalRequested && (lowCoverage || s.unmatchedSells > 0 || s.unmatchedBuys > 0)) return 'partial_needs_historical'
-  return 'complete'
+  if (s.swapCandidateEvents === 0 && s.closedLots === 0) return 'no_trade_evidence'
+  if (s.coveragePercent === 0 || tradeStatsOpenCheck) return 'no_pnl_coverage'
+  if (s.historicalRequested && s.pagesAttempted === 0) return 'historical_not_started'
+  return 'partial_needs_historical'
 }
 
 function annotatePnlCacheQuality(payload: any, quality: PnlCacheQuality) {
@@ -610,7 +618,7 @@ export async function POST(req: Request) {
     const cached = cachedRaw ?? null
 
     // Determine cost mode
-    type WalletScanCostMode = 'basic' | 'basic_cached' | 'deep_cached' | 'deep_live' | 'historical_cached' | 'historical_live' | 'blocked_by_cooldown' | 'blocked_by_cost_guard'
+    type WalletScanCostMode = 'basic' | 'basic_cached' | 'deep_cached' | 'deep_live' | 'historical_cached' | 'historical_live' | 'blocked_by_cooldown' | 'blocked_by_cost_guard' | 'deep_cached_no_trade_evidence' | 'historical_not_started'
     const getCostMode = (fromCache: boolean): WalletScanCostMode => {
       if (cooldownActive) return 'blocked_by_cooldown'
       if (costGuardHit) return 'blocked_by_cost_guard'
@@ -1000,6 +1008,11 @@ export async function POST(req: Request) {
       }
     }
     snapshot.pnlCacheQuality = getPnlCacheQuality(snapshot)
+    if (snapshot.pnlCacheQuality === 'no_trade_evidence') {
+      snapshot.walletHistoricalRecoveryStatus = 'not_applicable'
+      snapshot.walletHistoricalRecoveryReason = 'no_valid_swap_or_lot_evidence'
+      snapshot.walletHistoricalScanNote = 'Historical PnL recovery was not applicable because no valid swap or closed-lot evidence was detected.'
+    }
     const providers: any = snapshot._diagnostics?.providers ?? {}
     const snapshotCacheDebug = snapshot._diagnostics?.snapshotCache ?? null
 
@@ -1043,6 +1056,19 @@ export async function POST(req: Request) {
     const cacheNote = getCacheNote(costMode)
     snapshot.walletScanCostMode = costMode
     if (cacheNote) snapshot.walletScanCacheNote = cacheNote
+
+    // Downgrade misleading cost-mode classification when historical recovery was requested
+    // but never actually ran (e.g. persistent cache hit / no provider pages fetched) for
+    // wallets with zero trade evidence — avoids reporting 'historical_live' when nothing live happened.
+    if (snapshot.walletScanCostMode === 'historical_live') {
+      const _hcSummary = snapshot.walletHistoricalCoverageSummary ?? {}
+      const _historicalDidNotRun = (_hcSummary.pagesAttempted ?? 0) === 0 && _hcSummary.requested === true
+      if (_historicalDidNotRun) {
+        snapshot.walletScanCostMode = snapshot.pnlCacheQuality === 'no_trade_evidence'
+          ? 'deep_cached_no_trade_evidence'
+          : 'historical_not_started'
+      }
+    }
 
     // Pre-compute cache write decision for debug observability (Map.set is synchronous, always succeeds)
     const _cacheTtlMs = effectiveHistoricalCoverage ? WALLET_HISTORICAL_CACHE_TTL_MS : deepActivity ? WALLET_DEEP_CACHE_TTL_MS : WALLET_BASIC_CACHE_TTL_MS

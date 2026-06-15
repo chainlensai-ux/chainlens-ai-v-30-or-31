@@ -262,12 +262,17 @@ type WalletResult = {
     classification: 'Likely bot' | 'Possibly semi-automated' | 'Likely human/manual'
     reason: string
   }
-  walletScanCostMode?: 'basic' | 'basic_cached' | 'deep_cached' | 'deep_live' | 'historical_cached' | 'historical_live' | 'blocked_by_cooldown' | 'blocked_by_cost_guard'
+  walletScanCostMode?: 'basic' | 'basic_cached' | 'deep_cached' | 'deep_live' | 'historical_cached' | 'historical_live' | 'blocked_by_cooldown' | 'blocked_by_cost_guard' | 'deep_cached_no_trade_evidence' | 'historical_not_started'
   walletScanCacheNote?: string
-  pnlCacheQuality?: 'complete' | 'partial_needs_historical' | 'stale_low_coverage'
+  pnlCacheQuality?: 'complete' | 'partial_needs_historical' | 'stale_low_coverage' | 'no_trade_evidence' | 'no_pnl_coverage' | 'historical_not_started'
   walletPnlRecoveryCta?: string
-  walletHistoricalRecoveryStatus?: 'needed' | 'attempted' | 'blocked' | 'timed_out'
+  walletHistoricalRecoveryStatus?: 'needed' | 'attempted' | 'blocked' | 'timed_out' | 'not_applicable'
   walletHistoricalRecoveryReason?: string | null
+  suspiciousTokenSummary?: {
+    count: number
+    tokens: { symbol: string; chain: string; reason: string }[]
+    warning: string | null
+  }
   walletScanBudget?: {
     scanMode: string
     requestedHistoricalScan: boolean
@@ -2364,6 +2369,40 @@ export default function WalletScannerPage() {
                         <span style={{ fontWeight: 700, color: 'rgba(251,191,36,0.80)' }}>Partial chain coverage:</span>{' '}{result.walletActivityCoverageNote}
                       </div>
                     )}
+                    {result.pnlCacheQuality === 'no_trade_evidence' && (() => {
+                      const stat = (label: string, value: string | number, tone: string = '#e2e8f0') => (
+                        <div key={label} style={{ background: 'rgba(15,23,42,0.52)', border: '1px solid rgba(148,163,184,0.14)', borderRadius: '9px', padding: '8px 10px' }}>
+                          <div style={{ fontSize: '8px', color: 'rgba(148,163,184,0.68)', letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: '4px' }}>{label}</div>
+                          <div style={{ fontSize: '12px', fontWeight: 800, color: tone }}>{value}</div>
+                        </div>
+                      )
+                      const holdingsValue = result.totalValue ?? 0
+                      const holdingsCount = result.holdings?.length ?? 0
+                      const activityEvents = result.walletBehavior?.txCount ?? 0
+                      return (
+                        <div style={{ fontSize: '12px', color: 'rgba(226,232,240,0.84)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '12px', lineHeight: 1.55, background: 'rgba(125,211,252,0.045)', border: '1px solid rgba(125,211,252,0.16)', borderRadius: '10px', padding: '10px 13px' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'center', marginBottom: '8px' }}>
+                            <div style={{ fontWeight: 800, fontSize: '11px', letterSpacing: '0.08em', textTransform: 'uppercase', color: 'rgba(125,211,252,0.88)' }}>PnL unavailable</div>
+                          </div>
+                          <div style={{ marginBottom: '8px', fontSize: '11px', color: 'rgba(203,213,225,0.72)' }}>
+                            Portfolio holdings were found, but no valid swap or closed-lot evidence was detected. Historical recovery was not applicable for this scan.
+                          </div>
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0,1fr))', gap: '7px', marginBottom: result.suspiciousTokenSummary?.warning ? '8px' : 0 }}>
+                            {stat('Holdings value', `$${holdingsValue.toLocaleString(undefined, { maximumFractionDigits: 2 })}`)}
+                            {stat('Holdings count', holdingsCount)}
+                            {stat('Activity events', activityEvents)}
+                            {stat('Swap candidates', 0)}
+                            {stat('Closed lots', 0)}
+                            {stat('PnL coverage', '0%')}
+                          </div>
+                          {result.suspiciousTokenSummary?.warning && (
+                            <div style={{ fontSize: '11px', color: '#fbbf24' }}>
+                              {result.suspiciousTokenSummary.warning}
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })()}
                     {(() => {
                       const coveragePct = result.estimatedPnl?.coveragePercent ?? 0
                       const closedLots = ls?.closedLots ?? ts.closedLots ?? 0
@@ -2378,7 +2417,7 @@ export default function WalletScannerPage() {
                         : ts.closedLots < 10
                           ? 'needs 10+ verified closed lots'
                           : 'needs decisive closed-lot evidence'
-                      const showRecoveryPanel = coveragePct < 60 || closedLots < 10 || unmatchedBuys > 0 || unmatchedSells > 0 || historicalStatus !== 'attempted' || result.pnlCacheQuality !== 'complete'
+                      const showRecoveryPanel = result.pnlCacheQuality !== 'no_trade_evidence' && (coveragePct < 60 || closedLots < 10 || unmatchedBuys > 0 || unmatchedSells > 0 || historicalStatus !== 'attempted' || result.pnlCacheQuality !== 'complete')
                       if (!showRecoveryPanel) return null
                       const stat = (label: string, value: string | number, tone: string = '#e2e8f0') => (
                         <div key={label} style={{ background: 'rgba(15,23,42,0.52)', border: '1px solid rgba(148,163,184,0.14)', borderRadius: '9px', padding: '8px 10px' }}>
