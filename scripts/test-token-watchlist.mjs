@@ -86,4 +86,26 @@ const poolAddress = '0x2222222222222222222222222222222222222222'
 const savePayload = { tokenAddress: scannedTokenContract.toLowerCase(), poolAddress }
 assert.notEqual(savePayload.tokenAddress, savePayload.poolAddress, 'Save payload uses token contract, not pool address')
 
-console.log('ok - token watchlist API, RLS, frontend body, holder count, and upsert flow checks passed')
+// ── Tracked Tokens panel ────────────────────────────────────────────────
+assert.match(route, /tokenAddress: row\.token_address/, 'GET maps token_address to camelCase tokenAddress')
+assert.match(route, /tokenSymbol: row\.token_symbol/, 'GET maps token_symbol to camelCase tokenSymbol')
+assert.match(route, /tokenName: row\.token_name/, 'GET maps token_name to camelCase tokenName')
+assert.match(route, /riskLabel: row\.risk_label/, 'GET maps risk_label to camelCase riskLabel')
+assert.match(route, /createdAt: row\.created_at/, 'GET maps created_at to camelCase createdAt')
+assert.match(route, /updatedAt: row\.updated_at/, 'GET maps updated_at to camelCase updatedAt')
+
+assert.match(page, /Tracked Tokens/, 'tracked tokens panel title exists')
+assert.match(page, /Saved to your account\./, 'tracked tokens panel subtitle exists')
+assert.match(page, /No tracked tokens yet\. Save a scan to build your watchlist\./, 'empty watchlist copy exists')
+assert.match(page, /Sign in to track tokens across devices\./, 'logged-out watchlist copy exists')
+assert.match(page, /Could not load tracked tokens\./, 'watchlist load error copy exists')
+
+assert.match(page, /function mapWatchlistRow/, 'watchlist row mapper exists')
+assert.match(page, /t\.chain\.toLowerCase\(\) === entry\.chain\.toLowerCase\(\) && t\.tokenAddress\.toLowerCase\(\) === entry\.tokenAddress\.toLowerCase\(\)/, 'watchlist matching normalizes chain and token address')
+assert.match(page, /setWatchlistTokens\(\(prev\) => \{\s*const filtered = prev\.filter/, 'Save success appends/updates token in watchlist UI state')
+assert.match(page, /function handleWatchlistRemove/, 'remove handler exists')
+assert.match(page, /setWatchlistTokens\(\(prev\) => prev\.filter\(\(t\) => `\$\{t\.chain\.toLowerCase\(\)\}:\$\{t\.tokenAddress\.toLowerCase\(\)\}` !== key\)\)/, 'Remove success removes token from watchlist UI state')
+assert.match(page, /function handleWatchlistScan/, 'watchlist scan handler exists')
+assert.match(page, /void handleScan\(entry\.tokenAddress, chainKey\)/, 'Scan action uses saved token contract address, not pool address')
+
+console.log('ok - token watchlist API, RLS, frontend body, holder count, upsert flow, and tracked tokens panel checks passed')

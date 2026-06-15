@@ -66,7 +66,18 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'Could not load watchlist.', saved: false }, { status: 500, headers: noStoreHeaders })
   }
   logWatchlist('get', 'ok', auth.userId, chain, tokenAddress)
-  return NextResponse.json({ saved: tokenAddress ? (data?.length ?? 0) > 0 : undefined, tokens: data ?? [] }, { headers: noStoreHeaders })
+  const tokens = (data ?? []).map((row) => ({
+    id: row.id,
+    chain: row.chain,
+    tokenAddress: row.token_address,
+    tokenSymbol: row.token_symbol,
+    tokenName: row.token_name,
+    riskLabel: row.risk_label,
+    score: row.score,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }))
+  return NextResponse.json({ saved: tokenAddress ? tokens.length > 0 : undefined, tokens }, { headers: noStoreHeaders })
 }
 
 export async function POST(request: NextRequest) {

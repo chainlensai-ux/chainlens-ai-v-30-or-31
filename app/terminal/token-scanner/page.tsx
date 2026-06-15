@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef, type MouseEvent } from 'react'
+import { useState, useEffect, useCallback, useRef, type MouseEvent } from 'react'
 import { usePlanWithLoading, canAccessFeature } from '@/lib/usePlan'
 import { supabase } from '@/lib/supabaseClient'
 import { resolveTokenQuery, isContractAddress, fmtLiquidity, type ResolverResult, type ResolverCandidate } from '@/lib/tickerResolver'
@@ -3470,6 +3470,34 @@ function ContractRiskSection({ gp, hp }: { gp: Record<string, unknown> | null; h
   )
 }
 
+// ─── Tracked Tokens (account watchlist) ──────────────────────────────────
+
+type WatchlistTokenEntry = {
+  id: string
+  chain: string
+  tokenAddress: string
+  tokenSymbol: string | null
+  tokenName: string | null
+  riskLabel: string | null
+  score: number | null
+  createdAt: string | null
+  updatedAt: string | null
+}
+
+function mapWatchlistRow(row: Record<string, unknown>): WatchlistTokenEntry {
+  return {
+    id: String(row.id ?? ''),
+    chain: String(row.chain ?? ''),
+    tokenAddress: String(row.token_address ?? row.tokenAddress ?? ''),
+    tokenSymbol: (row.token_symbol ?? row.tokenSymbol ?? null) as string | null,
+    tokenName: (row.token_name ?? row.tokenName ?? null) as string | null,
+    riskLabel: (row.risk_label ?? row.riskLabel ?? null) as string | null,
+    score: (row.score ?? null) as number | null,
+    createdAt: (row.created_at ?? row.createdAt ?? null) as string | null,
+    updatedAt: (row.updated_at ?? row.updatedAt ?? null) as string | null,
+  }
+}
+
 // ─── Page ─────────────────────────────────────────────────────────────────
 
 export default function TerminalTokenScanner() {
@@ -3501,6 +3529,10 @@ export default function TerminalTokenScanner() {
   const [watchlistLoading, setWatchlistLoading] = useState(false)
   const [watchlistMessage, setWatchlistMessage] = useState<string | null>(null)
   const [watchlistAuthenticated, setWatchlistAuthenticated] = useState<boolean | null>(null)
+  const [watchlistTokens, setWatchlistTokens] = useState<WatchlistTokenEntry[]>([])
+  const [watchlistTokensLoading, setWatchlistTokensLoading] = useState(false)
+  const [watchlistTokensError, setWatchlistTokensError] = useState<string | null>(null)
+  const [watchlistRemovingKey, setWatchlistRemovingKey] = useState<string | null>(null)
 
   const isValidHolderAddress = (value: string | null | undefined) => typeof value === 'string' && /^0x[a-fA-F0-9]{40}$/.test(value)
 
@@ -3557,6 +3589,38 @@ export default function TerminalTokenScanner() {
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // Tracked Tokens — load the user's saved watchlist once on page load
+  const fetchWatchlistTokens = useCallback(async () => {
+    setWatchlistTokensLoading(true)
+    setWatchlistTokensError(null)
+    try {
+      const { data } = await supabase.auth.getSession()
+      const token = data.session?.access_token
+      setWatchlistAuthenticated(Boolean(token))
+      if (!token) {
+        setWatchlistTokens([])
+        return
+      }
+      const res = await fetch('/api/watchlist/tokens', {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      const json = await res.json().catch(() => null)
+      if (!res.ok) {
+        setWatchlistTokensError('Could not load tracked tokens.')
+        return
+      }
+      setWatchlistTokens(Array.isArray(json?.tokens) ? json.tokens.map(mapWatchlistRow) : [])
+    } catch {
+      setWatchlistTokensError('Could not load tracked tokens.')
+    } finally {
+      setWatchlistTokensLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    void fetchWatchlistTokens()
+  }, [fetchWatchlistTokens])
 
   async function handleScan(override?: string, chainOverride?: 'base' | 'eth') {
     const q             = (override ?? input).trim()
@@ -3845,10 +3909,61 @@ export default function TerminalTokenScanner() {
       }
       setTrackedSaved(Boolean(json?.saved))
       setWatchlistMessage(json?.saved ? 'Token added to your watchlist.' : 'Token removed from your watchlist.')
+      if (json?.saved && json?.token) {
+        const entry = mapWatchlistRow(json.token)
+        setWatchlistTokens((prev) => {
+          const filtered = prev.filter((t) => !(t.chain.toLowerCase() === entry.chain.toLowerCase() && t.tokenAddress.toLowerCase() === entry.tokenAddress.toLowerCase()))
+          return [entry, ...filtered]
+        })
+      } else if (!json?.saved) {
+        setWatchlistTokens((prev) => prev.filter((t) => !(t.chain.toLowerCase() === body.chain.toLowerCase() && t.tokenAddress.toLowerCase() === body.tokenAddress.toLowerCase())))
+      }
     } catch {
       setWatchlistMessage('Could not save token. Watchlist setup may be incomplete.')
     } finally {
       setWatchlistLoading(false)
+    }
+  }
+
+  function handleWatchlistScan(entry: WatchlistTokenEntry) {
+    const chainKey = entry.chain.toLowerCase() === 'eth' ? 'eth' : 'base'
+    setChain(chainKey)
+    setInput(entry.tokenAddress)
+    void handleScan(entry.tokenAddress, chainKey)
+  }
+
+  async function handleWatchlistRemove(entry: WatchlistTokenEntry) {
+    const key = `${entry.chain.toLowerCase()}:${entry.tokenAddress.toLowerCase()}`
+    if (watchlistRemovingKey) return
+    setWatchlistRemovingKey(key)
+    try {
+      const { data } = await supabase.auth.getSession()
+      const token = data.session?.access_token
+      if (!token) {
+        setWatchlistAuthenticated(false)
+        return
+      }
+      const res = await fetch('/api/watchlist/tokens', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ chain: entry.chain, tokenAddress: entry.tokenAddress }),
+      })
+      if (!res.ok) {
+        setWatchlistMessage('Could not save token. Watchlist setup may be incomplete.')
+        return
+      }
+      setWatchlistTokens((prev) => prev.filter((t) => `${t.chain.toLowerCase()}:${t.tokenAddress.toLowerCase()}` !== key))
+      if (result?.contract && result.contract.toLowerCase() === entry.tokenAddress.toLowerCase()) {
+        const resultChain = result.chain === 'eth' ? 'eth' : 'base'
+        if (resultChain === entry.chain.toLowerCase()) {
+          setTrackedSaved(false)
+          setWatchlistMessage('Token removed from your watchlist.')
+        }
+      }
+    } catch {
+      setWatchlistMessage('Could not save token. Watchlist setup may be incomplete.')
+    } finally {
+      setWatchlistRemovingKey(null)
     }
   }
 
@@ -6690,6 +6805,52 @@ export default function TerminalTokenScanner() {
               </div>
             )
           })()}
+
+          {/* ── Tracked Tokens (account watchlist) ──────────────────── */}
+          <div className="tracked-tokens-panel" style={{ padding: '16px', borderRadius: '14px', border: '1px solid rgba(148,163,184,.14)', background: 'linear-gradient(160deg,rgba(10,18,34,.86),rgba(5,10,20,.76))' }}>
+            <p style={{ margin: '0 0 2px', fontSize: '13px', fontWeight: 800, color: '#f8fafc', fontFamily: 'var(--font-plex-mono)' }}>Tracked Tokens</p>
+            <p style={{ margin: '0 0 12px', fontSize: '11px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>Saved to your account.</p>
+            {watchlistAuthenticated === false ? (
+              <p style={{ margin: 0, fontSize: '11px', color: '#fbbf24', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>Sign in to track tokens across devices.</p>
+            ) : watchlistTokensError ? (
+              <p style={{ margin: 0, fontSize: '11px', color: '#f87171', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>Could not load tracked tokens.</p>
+            ) : watchlistTokensLoading && watchlistTokens.length === 0 ? (
+              <p style={{ margin: 0, fontSize: '11px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>Loading…</p>
+            ) : watchlistTokens.length === 0 ? (
+              <p style={{ margin: 0, fontSize: '11px', color: '#64748b', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>No tracked tokens yet. Save a scan to build your watchlist.</p>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                {watchlistTokens.map((entry) => {
+                  const key = `${entry.chain.toLowerCase()}:${entry.tokenAddress.toLowerCase()}`
+                  const removing = watchlistRemovingKey === key
+                  return (
+                    <div key={key} style={{ padding: '10px 12px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.07)', background: 'rgba(8,14,28,.65)', minWidth: 0 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '4px' }}>
+                        <span style={{ fontSize: '12px', fontWeight: 800, color: '#f8fafc', fontFamily: 'var(--font-plex-mono)' }}>{entry.tokenSymbol || entry.tokenName || 'Unknown token'}</span>
+                        <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '.10em', padding: '2px 7px', borderRadius: '999px', color: '#7dd3fc', border: '1px solid rgba(125,211,252,.28)', background: 'rgba(125,211,252,.06)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>{entry.chain}</span>
+                        {entry.riskLabel && (
+                          <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '.10em', padding: '2px 7px', borderRadius: '999px', color: '#fbbf24', border: '1px solid rgba(251,191,36,.28)', background: 'rgba(251,191,36,.06)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>{entry.riskLabel}</span>
+                        )}
+                        {entry.score != null && (
+                          <span style={{ fontSize: '9px', fontWeight: 700, color: '#34d399', fontFamily: 'var(--font-plex-mono)' }}>{entry.score}/100</span>
+                        )}
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap' }}>
+                        <span style={{ fontSize: '10px', color: '#64748b', fontFamily: 'var(--font-plex-mono)', wordBreak: 'break-all', overflowWrap: 'anywhere' }}>
+                          {shorten(entry.tokenAddress)}
+                          {entry.updatedAt && <span style={{ marginLeft: '8px', color: '#3a5268' }}>{new Date(entry.updatedAt).toLocaleDateString()}</span>}
+                        </span>
+                        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                          <button onClick={() => handleWatchlistScan(entry)} style={{ padding: '4px 10px', borderRadius: '999px', border: '1px solid rgba(45,212,191,.32)', background: 'rgba(45,212,191,.06)', color: '#2DD4BF', fontSize: '10px', fontWeight: 700, fontFamily: 'var(--font-plex-mono)', cursor: 'pointer' }}>Scan</button>
+                          <button onClick={() => void handleWatchlistRemove(entry)} disabled={removing} style={{ padding: '4px 10px', borderRadius: '999px', border: '1px solid rgba(248,113,113,.28)', background: 'rgba(248,113,113,.05)', color: '#f87171', fontSize: '10px', fontWeight: 700, fontFamily: 'var(--font-plex-mono)', cursor: removing ? 'default' : 'pointer', opacity: removing ? .6 : 1 }}>{removing ? 'Removing…' : 'Remove'}</button>
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
         </aside>
 
       </div>
