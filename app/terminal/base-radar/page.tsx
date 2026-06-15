@@ -385,7 +385,6 @@ function getBadgeStyle(flag: string): { color: string; background: string; borde
 
 function TokenCard({
   token,
-  index,
   onScan,
   onAskCortex,
   onOpenOverview,
@@ -393,7 +392,6 @@ function TokenCard({
   tracking,
 }: {
   token: TokenIntel
-  index: number
   onScan: () => void
   onAskCortex: () => void
   onOpenOverview: () => void
@@ -437,8 +435,7 @@ function TokenCard({
         transition: 'transform 0.18s ease, background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease',
         transform: hovered ? 'translateY(-1px)' : 'translateY(0)',
         boxShadow: highSignal ? `0 16px 48px rgba(0,0,0,0.26), 0 0 30px ${priorityAccent.glow}` : '0 14px 36px rgba(0,0,0,0.22)',
-        animation: 'radarSlideIn 0.35s ease both',
-        animationDelay: `${index * 45}ms`,
+        
         position: 'relative',
         overflow: 'hidden',
       }}
@@ -572,15 +569,15 @@ function Metric({ label, value, accent, sublabel }: { label: string; value: stri
 function OverviewMetric({ label, value, caption, accent = '#99f6e4' }: { label: string; value: string; caption: string; accent?: string }) {
   return (
     <div className="radar-overview-card" style={{
-      background: 'linear-gradient(180deg, rgba(8,13,24,0.82), rgba(10,18,32,0.58))',
-      border: '1px solid rgba(148, 163, 184, 0.14)',
-      borderRadius: '16px',
-      padding: '12px 13px',
-      boxShadow: `inset 0 1px 0 rgba(255,255,255,0.05), 0 18px 45px rgba(0,0,0,0.22)`,
+      background: 'linear-gradient(180deg, rgba(10,18,32,0.78), rgba(3,7,18,0.72))',
+      border: '1px solid rgba(148, 163, 184, 0.18)',
+      borderRadius: '14px',
+      padding: '15px 16px',
+      boxShadow: `inset 0 1px 0 rgba(255,255,255,0.06), 0 18px 45px rgba(0,0,0,0.20)`,
       minWidth: 0,
     }}>
       <p style={{ margin: '0 0 7px', fontSize: '9px', color: '#64748b', letterSpacing: '0.14em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>{label}</p>
-      <p title={value} style={{ margin: 0, fontSize: '15px', color: accent, fontWeight: 850, letterSpacing: '-0.02em', whiteSpace: 'normal', overflowWrap: 'anywhere', lineHeight: 1.12 }}>{value}</p>
+      <p title={value} style={{ margin: 0, fontSize: '18px', color: accent, fontWeight: 850, letterSpacing: '-0.02em', whiteSpace: 'normal', overflowWrap: 'anywhere', lineHeight: 1.12 }}>{value}</p>
       <p style={{ margin: '6px 0 0', fontSize: '10px', color: '#64748b', lineHeight: 1.25, fontFamily: 'var(--font-plex-mono)' }}>{caption}</p>
     </div>
   )
@@ -597,7 +594,7 @@ function PulseStrip({ summary }: { summary: RadarSummary }) {
   ]
 
   return (
-    <div className="radar-overview-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(6, minmax(0, 1fr))', gap: '10px', marginBottom: '14px' }}>
+    <div className="radar-overview-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(6, minmax(130px, 1fr))', gap: '12px', marginBottom: '18px' }}>
       {items.map((item) => (
         <OverviewMetric key={item.label} {...item} />
       ))}
@@ -619,8 +616,9 @@ function CortexRadarPanel({ summary, topTokens, onRescan }: { summary: RadarSumm
   ]
 
   return (
-    <div style={{ background: 'linear-gradient(180deg, rgba(6,11,22,0.92), rgba(12,20,36,0.76))', border: '1px solid rgba(45,212,191,0.18)', borderRadius: '18px', padding: '16px', boxShadow: '0 24px 70px rgba(0,0,0,0.28), 0 0 45px rgba(45,212,191,0.08)' }}>
-      <p style={{ margin: '0 0 4px', color: '#99f6e4', fontSize: '11px', fontWeight: 800, letterSpacing: '0.16em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>CORTEX Radar Read</p>
+    <div style={{ background: 'linear-gradient(180deg, rgba(10,18,32,0.86), rgba(3,7,18,0.78))', border: '1px solid rgba(148,163,184,0.16)', borderRadius: '18px', padding: '18px', boxShadow: '0 24px 70px rgba(0,0,0,0.30), 0 0 38px rgba(59,130,246,0.08)' }}>
+      <p style={{ margin: '0 0 10px', color: '#94a3b8', fontSize: '10px', fontWeight: 800, letterSpacing: '0.16em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>CORTEX Panel</p>
+      <h2 style={{ margin: '0 0 8px', color: '#f8fafc', fontSize: '16px', fontWeight: 850, letterSpacing: '-0.02em' }}>CORTEX Radar Read</h2>
       <p style={{ margin: '0 0 14px', color: '#94a3b8', fontSize: '12px', lineHeight: 1.45 }}>Live interpretation of the visible Base Radar feed. Not financial advice.</p>
       <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '14px' }}>
         {signals.slice(0, 4).map(signal => (
@@ -639,8 +637,8 @@ function CortexRadarPanel({ summary, topTokens, onRescan }: { summary: RadarSumm
         ))}
       </div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginTop: '14px' }}>
-        <Link href="/terminal/token-scanner" style={{ textDecoration: 'none', padding: '7px 10px', borderRadius: '10px', border: '1px solid rgba(45,212,191,0.30)', background: 'rgba(45,212,191,0.12)', color: '#99f6e4', fontSize: '10px', fontWeight: 800, letterSpacing: '0.08em', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Open Token Scanner</Link>
-        <button onClick={onRescan} style={{ padding: '7px 10px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.12)', background: 'rgba(255,255,255,0.04)', color: '#cbd5e1', fontSize: '10px', fontWeight: 800, letterSpacing: '0.08em', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', cursor: 'pointer' }}>Rescan</button>
+        <Link href="/terminal/token-scanner" style={{ textDecoration: 'none', flex: 1, textAlign: 'center', padding: '10px 12px', borderRadius: '10px', border: '1px solid rgba(96,165,250,0.34)', background: 'linear-gradient(135deg, rgba(37,99,235,0.72), rgba(147,51,234,0.74))', color: '#eff6ff', fontSize: '10px', fontWeight: 850, letterSpacing: '0.08em', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', boxShadow: '0 16px 35px rgba(59,130,246,0.16)' }}>Open Token Scanner →</Link>
+        <button onClick={onRescan} style={{ padding: '10px 12px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.12)', background: 'rgba(255,255,255,0.04)', color: '#cbd5e1', fontSize: '10px', fontWeight: 800, letterSpacing: '0.08em', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', cursor: 'pointer' }}>Rescan</button>
       </div>
     </div>
   )
@@ -649,8 +647,8 @@ function CortexRadarPanel({ summary, topTokens, onRescan }: { summary: RadarSumm
 function StatsPanel({ summary, fetchedAt, loading, showUpsell }: { summary: RadarSummary; fetchedAt: string | null; loading: boolean; showUpsell: boolean }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-      <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '12px', padding: '14px' }}>
-        <p style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#3a5268', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', margin: '0 0 12px' }}>
+      <div style={{ background: 'linear-gradient(180deg, rgba(10,18,32,0.78), rgba(3,7,18,0.72))', border: '1px solid rgba(148,163,184,0.14)', borderRadius: '16px', padding: '16px', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.05)' }}>
+        <p style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#94a3b8', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', margin: '0 0 12px' }}>
           Radar Stats
         </p>
         <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '10px' }}>
@@ -659,12 +657,11 @@ function StatsPanel({ summary, fetchedAt, loading, showUpsell }: { summary: Rada
             height: '88px',
             borderRadius: '50%',
             border: '1px solid rgba(45,212,191,0.30)',
-            background: 'radial-gradient(circle at center, rgba(45,212,191,0.16), rgba(15,23,42,0.3) 65%)',
+            background: `conic-gradient(from 0deg, #2DD4BF 0 28%, #60a5fa 28% 45%, #fbbf24 45% 58%, #a855f7 58% 100%)`,
             boxShadow: '0 0 20px rgba(45,212,191,0.18)',
             position: 'relative',
           }}>
-            <div style={{ position: 'absolute', inset: '14px', borderRadius: '50%', border: '1px dashed rgba(168,85,247,0.30)' }} />
-            <div style={{ position: 'absolute', left: '50%', top: '50%', width: '4px', height: '4px', borderRadius: '50%', background: '#99f6e4', transform: 'translate(-50%, -50%)' }} />
+            <div style={{ position: 'absolute', inset: '15px', borderRadius: '50%', background: '#07111f', border: '1px solid rgba(148,163,184,0.16)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#f8fafc', fontWeight: 900, fontFamily: 'var(--font-plex-mono)' }}>{summary.newPools}</div>
           </div>
         </div>
 
@@ -678,13 +675,13 @@ function StatsPanel({ summary, fetchedAt, loading, showUpsell }: { summary: Rada
       </div>
 
       {fetchedAt && (
-        <p style={{ fontSize: '10px', color: '#3a5268', textAlign: 'center', fontFamily: 'var(--font-plex-mono)', margin: 0 }}>
+        <p style={{ fontSize: '10px', color: '#94a3b8', textAlign: 'center', fontFamily: 'var(--font-plex-mono)', margin: 0 }}>
           Updated {new Date(fetchedAt).toLocaleTimeString()}
         </p>
       )}
 
       <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '12px', padding: '14px' }}>
-        <p style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#3a5268', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', margin: '0 0 10px' }}>
+        <p style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#94a3b8', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', margin: '0 0 10px' }}>
           Evidence
         </p>
         {[
@@ -941,8 +938,8 @@ export default function BaseRadarPage() {
           to   { opacity: 1; transform: translateY(0); }
         }
         @keyframes livePulse {
-          0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(236,72,153,0.6); }
-          50%       { opacity: 0.6; box-shadow: 0 0 0 5px rgba(236,72,153,0); }
+          0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(45,212,191,0.50); }
+          50%       { opacity: 0.72; box-shadow: 0 0 0 5px rgba(45,212,191,0); }
         }
         @keyframes radarSpin {
           0%   { transform: rotate(0deg);   }
@@ -955,6 +952,8 @@ export default function BaseRadarPage() {
           .radar-stats { position: static !important; }
           .radar-controls { flex-direction: column !important; align-items: flex-start !important; }
           .radar-controls > div { width: 100%; justify-content: space-between; flex-wrap: wrap; }
+          .radar-header { align-items: flex-start !important; }
+          .radar-header-action { width: 100%; justify-content: center !important; }
           .radar-overview-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
           .radar-overview-card { padding: 12px !important; }
           .token-card-header { flex-direction: column !important; }
@@ -965,23 +964,26 @@ export default function BaseRadarPage() {
         }
       `}</style>
 
-      <div className="radar-main" style={{ minHeight: '100%', overflowY: 'auto', overflowX: 'hidden', padding: '28px 32px 120px', color: '#e2e8f0', fontFamily: 'var(--font-inter, Inter, sans-serif)', background: 'radial-gradient(circle at 18% 0%, rgba(34,211,238,0.11), transparent 34%), radial-gradient(circle at 88% 12%, rgba(168,85,247,0.10), transparent 30%), #030712' }}>
-        <div style={{ marginBottom: '20px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', marginBottom: '6px' }}>
-            <h1 style={{ fontSize: '24px', fontWeight: 700, color: '#f8fafc', margin: 0, letterSpacing: '-0.01em' }}>Base Radar</h1>
-
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '4px 10px', borderRadius: '99px', background: 'rgba(236,72,153,0.12)', border: '1px solid rgba(236,72,153,0.30)', fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#ec4899', fontFamily: 'var(--font-plex-mono)' }}>
-              <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#ec4899', animation: 'livePulse 1.8s ease-in-out infinite', flexShrink: 0 }} />
-              LIVE
-            </span>
+      <div className="radar-main" style={{ minHeight: '100%', overflowY: 'auto', overflowX: 'hidden', padding: '30px 34px 120px', color: '#e2e8f0', fontFamily: 'var(--font-inter, Inter, sans-serif)', background: 'radial-gradient(circle at 78% 4%, rgba(37,99,235,0.26), transparent 24%), radial-gradient(circle at 68% 14%, rgba(45,212,191,0.14), transparent 18%), radial-gradient(circle at 92% 0%, rgba(147,51,234,0.18), transparent 28%), linear-gradient(rgba(148,163,184,0.035) 1px, transparent 1px), linear-gradient(90deg, rgba(148,163,184,0.035) 1px, transparent 1px), #020617', backgroundSize: 'auto, auto, auto, 44px 44px, 44px 44px, auto' }}>
+        <div style={{ marginBottom: '22px' }}>
+          <div className="radar-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '18px', flexWrap: 'wrap', marginBottom: '18px' }}>
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', marginBottom: '8px' }}>
+                <h1 style={{ fontSize: '32px', fontWeight: 850, color: '#f8fafc', margin: 0, letterSpacing: '-0.04em' }}>Base Radar</h1>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', padding: '6px 12px', borderRadius: '99px', background: 'rgba(45,212,191,0.12)', border: '1px solid rgba(45,212,191,0.30)', fontSize: '11px', fontWeight: 850, letterSpacing: '0.16em', color: '#99f6e4', fontFamily: 'var(--font-plex-mono)' }}>
+                  <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: '#2DD4BF', animation: 'livePulse 2.2s ease-in-out infinite', flexShrink: 0 }} />
+                  LIVE
+                </span>
+              </div>
+              <p style={{ fontSize: '14px', color: '#dbeafe', margin: '0 0 10px', maxWidth: '720px', lineHeight: 1.45 }}>
+                Live market discovery for Base tokens
+              </p>
+              <p style={{ fontSize: '13px', color: '#a6b3c6', margin: 0, maxWidth: '790px', lineHeight: 1.55 }}>
+                Default feed filters out pools under $15K valuation and shallow liquidity. When verified market cap is unavailable, FDV is used only as a fallback and clearly labeled.
+              </p>
+            </div>
+            <button className="radar-header-action" type="button" style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', padding: '10px 14px', borderRadius: '10px', border: '1px solid rgba(148,163,184,0.20)', background: 'rgba(15,23,42,0.54)', color: '#dbeafe', fontSize: '12px', fontWeight: 750, boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.06)', cursor: 'default' }}>ⓘ How it works</button>
           </div>
-
-          <p style={{ fontSize: '13px', color: '#94a3b8', margin: '0 0 12px', maxWidth: '720px', lineHeight: 1.45 }}>
-            Live market discovery for Base tokens
-          </p>
-          <p style={{ fontSize: '12px', color: '#64748b', margin: '0 0 12px', maxWidth: '760px', lineHeight: 1.45, fontFamily: 'var(--font-plex-mono)' }}>
-            Default feed filters out pools under $15K valuation and shallow liquidity. When verified market cap is unavailable, FDV is used only as a fallback and clearly labeled.
-          </p>
 
           <div className="radar-pulse-wrap">
             <PulseStrip summary={summary} />
@@ -1087,11 +1089,10 @@ export default function BaseRadarPage() {
             )}
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              {filteredAndSortedTokens.map((token, i) => (
+              {filteredAndSortedTokens.map((token) => (
                 <TokenCard
                   key={token.contract}
                   token={token}
-                  index={i}
                   onScan={() => openToken(token.contract)}
                   onAskCortex={() => askCortex(token)}
                   onOpenOverview={() => openProjectOverview(token)}
