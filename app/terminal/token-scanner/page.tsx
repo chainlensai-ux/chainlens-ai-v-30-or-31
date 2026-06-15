@@ -21,14 +21,14 @@ function canonicalLabel(s: CanonicalStatus | string | undefined): string {
 
 function cleanStatusLabel(value: string | null | undefined): string {
   switch ((value ?? '').toLowerCase()) {
-    case 'not_applicable': return 'Protocol-specific'
+    case 'not_applicable': return 'Not Applicable'
     case 'concentrated_liquidity': return 'Concentrated Liquidity'
     case 'protocol_or_gauge': return 'Protocol Position Model'
     case 'open_check':
     case 'insufficient_data':
     case 'error':
     case 'unknown': return 'Open Check'
-    case 'unavailable_with_reason': return 'Unavailable With Reason'
+    case 'unavailable_with_reason': return 'Unavailable'
     case 'not_confirmed': return 'Not Confirmed'
     case 'team_controlled':
     case 'wallet_controlled':
@@ -194,7 +194,7 @@ type ScanResult = {
     verificationPoolType?: string | null
     primaryPoolDex?: string | null
     primaryPoolType?: string | null
-    proofStatus?: 'open_check' | 'verified' | 'not_applicable' | null
+    proofStatus?: 'open_check' | 'verified' | 'not_confirmed' | 'not_applicable' | null
     lockStatus?: 'locked' | 'not_confirmed' | 'not_applicable' | null
     burnStatus?: 'burned' | 'not_confirmed' | 'not_applicable' | null
     displayLpModel?: 'erc20_lp_token' | 'concentrated_liquidity' | 'protocol_or_gauge' | 'open_check' | 'no_pool' | null
@@ -218,7 +218,7 @@ type ScanResult = {
   lpController?: 'wallet' | 'contract' | 'burn' | 'lockContract' | 'unknown'
   lpControllerType?: 'wallet' | 'contract' | 'burn' | 'lockContract' | 'unknown'
   lpProofApplicability?: 'applicable' | 'not_applicable' | 'unknown'
-  lpProofStatus?: 'confirmed' | 'partial' | 'missing' | 'not_applicable' | 'unknown'
+  lpProofStatus?: 'confirmed' | 'partial' | 'missing' | 'not_confirmed' | 'not_applicable' | 'unknown'
   lpExitRisk?: 'low' | 'monitor' | 'watch' | 'medium' | 'high' | 'open_check'
   liquidityDepthRisk?: 'low' | 'medium' | 'high' | 'open_check'
   lpExitRiskReason?: string

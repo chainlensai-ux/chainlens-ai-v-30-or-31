@@ -11,6 +11,7 @@ import { buildLpLockBurnIntel, LP_LOCK_BURN_REGISTRY } from '../lib/server/lpLoc
 import { buildLpUnlockTimeline } from '../lib/server/lpUnlockTimeline.ts'
 import { buildLpHistoryTimeline } from '../lib/server/lpHistoryTimeline.ts'
 import { buildSecondaryLpExposure } from '../lib/server/secondaryLpExposure.ts'
+import { readFileSync } from 'node:fs'
 
 // Mirrors reconcileSecondaryLpSignal() in lib/server/lpIntelligence.ts (selection rules
 // 3/4) in plain JS, matching the re-implementation pattern used by
@@ -736,6 +737,58 @@ assert('VIRTUAL lpControllerIntel.controller is not null/unknown', virtualContro
 assert('VIRTUAL lpControllerIntel.controllerSharePercent is 82.45', virtualControllerIntel.controllerSharePercent === 82.45, virtualControllerIntel)
 assert('VIRTUAL lpControl.lpController matches lpControllerIntel.controller', virtualLpControl.lpController === virtualControllerIntel.controller, { lpControl: virtualLpControl.lpController, intel: virtualControllerIntel.controller })
 assert('VIRTUAL lpMovementWatch.controller matches lpControllerIntel.controller', virtualMovementWatch?.controller === virtualControllerIntel.controller, { movement: virtualMovementWatch?.controller, intel: virtualControllerIntel.controller })
+
+
+
+// ─── H2. VVV-style checked LP evidence stays not_confirmed, not open_check ──
+console.log('\nH2. VVV-style LP checked evidence normalizes to not_confirmed')
+const vvvLpControl = {
+  status: 'team_controlled',
+  displayLpModel: 'erc20_lp_token',
+  lockStatus: 'not_confirmed',
+  burnStatus: 'not_confirmed',
+  proofStatus: 'not_confirmed',
+  burnProofAttempted: true,
+  burnProofSource: 'onchain_lp_balance',
+  lpController: '0xb3c89592d84ae6adb6a1aa41515ac14ec822b175',
+  lpControllerType: 'wallet',
+  evidence: [
+    'top_holder=0xb3c89592d84ae6adb6a1aa41515ac14ec822b175',
+    'top_share=59.91%',
+    'burn_share=0.00%',
+    'burn_proof_source=onchain_lp_balance',
+  ],
+  confidence: 'medium',
+  reason: 'Dominant LP holder is a wallet and no burn/locker proof was found.',
+}
+const vvvSelectedPool = { address: '0x01784ef301d79e4b2df3a21ad9a536d4cf09a5ce', pair: 'VVV/WETH', liquidityUsd: 250000, model: 'aerodrome' }
+const vvvControllerIntel = buildLpControllerIntel({
+  lpControl: vvvLpControl,
+  selectedPool: vvvSelectedPool,
+  lpExitRisk: 'watch',
+  liquidityDepthRisk: 'medium',
+  lpMigrationProof: { status: 'low' },
+  lpMeta: { teamPercent: 59.91 },
+})
+const vvvLockBurnIntel = buildLpLockBurnIntel({
+  chain: 'base',
+  lpControl: vvvLpControl,
+  lpControllerIntel: vvvControllerIntel,
+  selectedPool: vvvSelectedPool,
+  lpMeta: { lpToken: vvvSelectedPool.address, displayLpModel: 'erc20_lp_token' },
+})
+const vvvUnlockTimeline = buildLpUnlockTimeline({ chain: 'base', lpLockBurnIntel: vvvLockBurnIntel })
+const vvvLpProofStatus = vvvLpControl.proofStatus
+assert('VVV controller exists + controlProof confirmed', vvvControllerIntel.controller === vvvLpControl.lpController && vvvControllerIntel.controlProof === 'confirmed', vvvControllerIntel)
+assert('VVV burnProofAttempted true + burnedPercent 0 => burnStatus not_confirmed', vvvLpControl.burnProofAttempted === true && vvvLockBurnIntel.burnedPercent === 0 && vvvLpControl.burnStatus === 'not_confirmed', { vvvLpControl, vvvLockBurnIntel })
+assert('VVV lockStatus not_confirmed stays Not Confirmed', vvvLpControl.lockStatus === 'not_confirmed', vvvLpControl.lockStatus)
+assert('VVV lpProofStatus is not open_check', vvvLpProofStatus === 'not_confirmed', vvvLpProofStatus)
+assert('VVV lpControllerIntel.lockBurnProof is not open_check', vvvControllerIntel.lockBurnProof === 'not_confirmed', vvvControllerIntel)
+assert('VVV lpLockBurnIntel status/proof are not_confirmed', vvvLockBurnIntel.status === 'not_confirmed' && vvvLockBurnIntel.lockBurnProof === 'not_confirmed', vvvLockBurnIntel)
+assert('VVV lpUnlockTimeline summary does not say open_check', !/open_check/i.test(vvvUnlockTimeline.summary) && vvvUnlockTimeline.lockState === 'not_confirmed', vvvUnlockTimeline)
+const tokenScannerUi = readFileSync('app/terminal/token-scanner/page.tsx', 'utf8')
+assert('Token Scanner UI maps not_confirmed to Not Confirmed', /case 'not_confirmed': return 'Not Confirmed'/.test(tokenScannerUi), 'missing not_confirmed label')
+assert('Token Scanner UI maps open_check separately from not_confirmed proof rows', /case 'open_check':[\s\S]*return 'Open Check'/.test(tokenScannerUi), 'missing open_check label')
 
 // ─── H. Genuinely unknown LP controller — scoring must not be falsely bullish ──
 console.log('\nH. Genuinely unknown LP controller scores no safer than confirmed wallet-controlled')
