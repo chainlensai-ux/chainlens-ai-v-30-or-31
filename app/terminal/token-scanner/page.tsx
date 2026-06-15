@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback, useRef, type MouseEvent } from 'react'
+import { useState, useEffect, useCallback, useRef, type MouseEvent, type CSSProperties } from 'react'
 import { usePlanWithLoading, canAccessFeature } from '@/lib/usePlan'
 import { supabase } from '@/lib/supabaseClient'
 import { resolveTokenQuery, isContractAddress, fmtLiquidity, type ResolverResult, type ResolverCandidate } from '@/lib/tickerResolver'
@@ -4026,18 +4026,18 @@ export default function TerminalTokenScanner() {
         .cortex-chip:hover{transform:translateY(-2px);}
         .cortex-bdrow{border-radius:6px;transition:background .14s ease;}
         .cortex-bdrow:hover{background:rgba(255,255,255,.028) !important;}
-        .token-shell{display:grid;grid-template-columns:minmax(0,1fr);height:100%;overflow-x:hidden;color:#e2e8f0;background-image:linear-gradient(rgba(45,212,191,.020) 1px,transparent 1px),linear-gradient(90deg,rgba(45,212,191,.020) 1px,transparent 1px),radial-gradient(circle at 22% 0%,rgba(20,35,68,.52),rgba(2,6,23,1) 56%);background-size:52px 52px,52px 52px,100% 100%;background-color:rgba(2,6,23,1);}
+        .token-shell{position:relative;display:grid;grid-template-columns:minmax(0,1fr);height:100%;overflow-x:hidden;color:#e2e8f0;background-color:#020617;background-image:linear-gradient(rgba(45,212,191,.045) 1px,transparent 1px),linear-gradient(90deg,rgba(99,102,241,.045) 1px,transparent 1px),radial-gradient(circle at 78% 4%,rgba(37,99,235,.30),transparent 30%),radial-gradient(circle at 60% 16%,rgba(139,92,246,.24),transparent 34%),radial-gradient(circle at 18% 6%,rgba(45,212,191,.16),transparent 30%),linear-gradient(135deg,#020617 0%,#031026 48%,#050517 100%);background-size:64px 64px,64px 64px,100% 100%,100% 100%,100% 100%,100% 100%;}
         .token-main,.mob-verdict-panel,.glass-card,.metric-grid,.holders-grid,.activity-grid,.intel-grid,.scan-stage-grid{min-width:0;}
         *{box-sizing:border-box;}
         button{max-width:100%;}
         .token-main{max-width:none;}
-        .glass-card{background:linear-gradient(180deg,rgba(10,18,34,.9),rgba(3,8,19,.88));border:1px solid rgba(148,163,184,.18);border-radius:16px;box-shadow:0 0 0 1px rgba(45,212,191,.05) inset,0 18px 45px rgba(2,6,23,.4),0 0 28px rgba(139,92,246,.12);}
-        .search-card{background:linear-gradient(160deg,rgba(12,22,40,.98) 0%,rgba(5,10,22,.96) 52%,rgba(7,11,25,.97) 100%);border:1px solid rgba(45,212,191,.22);border-radius:24px;box-shadow:0 0 0 1px rgba(45,212,191,.08) inset,0 30px 70px rgba(2,6,23,.68),0 0 58px rgba(45,212,191,.09),0 0 90px rgba(139,92,246,.08);overflow:hidden;}
+        .glass-card{background:linear-gradient(180deg,rgba(10,18,34,.9),rgba(3,8,19,.88));border:1px solid rgba(148,163,184,.18);border-radius:16px;box-shadow:0 0 0 1px rgba(45,212,191,.05) inset,0 18px 45px rgba(2,6,23,.4),0 0 28px rgba(139,92,246,.12);} .scanner-hero-wrap{max-width:980px;margin:0 auto;} .receipt-panel{background:linear-gradient(160deg,rgba(13,18,36,.88),rgba(5,9,22,.82)) !important;border:1px solid rgba(125,211,252,.16) !important;border-radius:22px !important;box-shadow:inset 0 1px 0 rgba(255,255,255,.045),0 24px 60px rgba(2,6,23,.45),0 0 44px rgba(99,102,241,.10);} .disclaimer-strip{position:relative;overflow:hidden;background:linear-gradient(135deg,rgba(45,212,191,.075),rgba(139,92,246,.080),rgba(236,72,153,.055)) !important;border:1px solid rgba(45,212,191,.24) !important;box-shadow:inset 0 1px 0 rgba(255,255,255,.06),0 0 24px rgba(139,92,246,.10);} .disclaimer-strip:before{content:"🛡";margin-right:10px;color:#22d3ee;} .tracked-token-card{background:linear-gradient(145deg,rgba(15,23,42,.86),rgba(4,9,22,.88)) !important;border:1px solid rgba(99,102,241,.16) !important;border-radius:16px !important;box-shadow:inset 0 1px 0 rgba(255,255,255,.04);} .token-avatar{width:42px;height:42px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;background:linear-gradient(135deg,#2563eb,#7c3aed 58%,#06b6d4);box-shadow:0 0 24px rgba(124,58,237,.35);color:#fff;font-size:13px;font-weight:900;font-family:var(--font-plex-mono);}
+        .search-card{background:linear-gradient(155deg,rgba(10,22,46,.96) 0%,rgba(7,11,30,.94) 54%,rgba(21,10,42,.92) 100%);border:1px solid rgba(59,130,246,.32);border-radius:26px;box-shadow:0 0 0 1px rgba(45,212,191,.08) inset,0 34px 84px rgba(2,6,23,.72),0 0 62px rgba(37,99,235,.18),0 0 90px rgba(139,92,246,.14);overflow:hidden;}
         .search-card:before{content:"";position:absolute;inset:0;border-radius:24px;padding:1px;background:linear-gradient(135deg,rgba(45,212,191,.56),rgba(139,92,246,.34),rgba(15,23,42,0));-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;pointer-events:none;}
-        .chain-tab-active{background:linear-gradient(135deg,rgba(45,212,191,.18),rgba(139,92,246,.10)) !important;border:1px solid rgba(45,212,191,.56) !important;color:#99f6e4 !important;box-shadow:0 0 18px rgba(45,212,191,.20),inset 0 1px 0 rgba(255,255,255,.08) !important;}
+        .chain-tab-active{background:linear-gradient(135deg,#0ea5e9,#2563eb 54%,#7c3aed) !important;border:1px solid rgba(125,211,252,.62) !important;color:#ffffff !important;box-shadow:0 0 22px rgba(37,99,235,.34),0 0 28px rgba(139,92,246,.18),inset 0 1px 0 rgba(255,255,255,.18) !important;}
         .chain-tab-inactive{background:rgba(15,23,42,.58) !important;border:1px solid rgba(148,163,184,.16) !important;color:#7890a7 !important;}
         .chain-tab-inactive:hover{background:rgba(30,41,59,.62) !important;border-color:rgba(45,212,191,.24) !important;color:#cbd5e1 !important;}
-        .preview-module-card{background:linear-gradient(160deg,rgba(10,18,34,.86),rgba(5,10,20,.78));border:1px solid rgba(148,163,184,.14);border-radius:18px;padding:17px;min-height:132px;transition:transform .20s ease,border-color .20s ease,box-shadow .20s ease,background .20s ease;cursor:default;box-shadow:inset 0 1px 0 rgba(255,255,255,.035);}
+        .preview-module-card{background:linear-gradient(160deg,var(--card-glow,rgba(10,18,34,.86)),rgba(5,10,20,.78));border:1px solid var(--card-border,rgba(148,163,184,.14));border-radius:18px;padding:18px;min-height:150px;transition:transform .20s ease,border-color .20s ease,box-shadow .20s ease,background .20s ease;cursor:default;box-shadow:inset 0 1px 0 rgba(255,255,255,.045),0 0 26px var(--card-shadow,rgba(45,212,191,.04));}
         .preview-module-card:hover{transform:translateY(-3px);border-color:rgba(45,212,191,.28);background:linear-gradient(160deg,rgba(11,24,43,.92),rgba(7,12,25,.82));box-shadow:0 14px 34px rgba(2,6,23,.58),0 0 20px rgba(45,212,191,.08);}
         .quick-action{transition:all .16s ease;}
         .quick-action:hover{transform:translateY(-1px);border-color:rgba(45,212,191,.34) !important;color:#ccfbf1 !important;background:rgba(45,212,191,.08) !important;}
@@ -4049,10 +4049,10 @@ export default function TerminalTokenScanner() {
         @media (prefers-reduced-motion:reduce){.live-dot,.radar-ring,.shimmer-line,.scan-btn-live,.cortex-score-hero{animation:none !important;} .scan-btn-live:hover,.cortex-chip:hover{transform:none !important;} .cortex-bdrow:hover{background:none !important;}}
         .metric-grid{grid-template-columns:repeat(auto-fit,minmax(150px,1fr)) !important;gap:clamp(8px,1vw,12px) !important;}
         .activity-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;}
-        @media (min-width:1536px){.token-shell{grid-template-columns:minmax(0,1fr) clamp(360px,22vw,420px);} .token-main{max-width:1260px;margin:0 auto;}}
+        @media (min-width:1536px){.token-shell{grid-template-columns:minmax(0,1fr) clamp(360px,22vw,420px);} .token-main{max-width:1320px;margin:0 auto;}}
         @media (min-width:1280px) and (max-width:1535px){.token-shell{grid-template-columns:minmax(0,1fr) clamp(320px,24vw,360px);} .token-main{max-width:1120px;margin:0 auto;} .mob-verdict-panel{padding:24px 16px;font-size:12px;} .activity-grid{gap:8px;}}
         @media (max-width:1279px){.token-shell{display:block;height:auto;overflow:visible;} .mob-scan-main{overflow-y:visible !important;} .token-shell .mob-verdict-panel{position:static !important;width:100% !important;max-width:100% !important;height:auto !important;min-height:0 !important;border-left:none !important;border-top:1px solid rgba(255,255,255,0.08) !important;overflow-y:visible !important;}}
-        @media (max-width:1023px){.scan-stage-grid{grid-template-columns:1fr !important;} .metric-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;} .holders-grid,.intel-grid{grid-template-columns:1fr !important;} .activity-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;} .proof-stack-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;}}
+        @media (max-width:1023px){.scanner-hero-wrap{max-width:100%;}.scan-stage-grid{grid-template-columns:1fr !important;} .metric-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;} .holders-grid,.intel-grid{grid-template-columns:1fr !important;} .activity-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;} .proof-stack-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;}}
         @media (min-width:1024px){.token-identity-bar{position:sticky;top:0;z-index:20;backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);}}
         @media (max-width:768px){body{overflow-x:hidden;} .token-main{padding:30px 14px 120px !important;} .token-input-row{flex-direction:column;max-width:100% !important;} .token-input-wrap{width:100% !important;} .token-input-row button{width:100%;} .chain-switcher{width:100%;} .chain-switcher button{flex:1 1 0;padding-left:12px !important;padding-right:12px !important;} .top-holder-head{display:none !important;} .top-holder-row{display:block !important;padding:12px !important;} .top-holder-mobile-meta{display:flex !important;align-items:center;justify-content:space-between;gap:8px;} .top-holder-mobile-amt{display:block !important;margin-top:6px !important;text-align:left !important;} .pools-scroll{overflow-x:auto !important;-webkit-overflow-scrolling:touch;margin:0 -12px;padding:0 12px;} .mob-verdict-panel{padding:18px 14px !important;gap:12px !important;} .glass-card{padding:14px !important;} .preview-module-grid{grid-template-columns:1fr !important;} .proof-stack-grid{grid-template-columns:1fr !important;} .token-identity-bar{flex-direction:column;align-items:flex-start !important;} .token-identity-bar > div{width:100%;}}
       `}</style>
@@ -4063,7 +4063,7 @@ export default function TerminalTokenScanner() {
         <div className="mob-scan-main token-main" style={{ minWidth: 0, overflowY: 'auto', overflowX: 'hidden', padding: '44px clamp(16px, 2.2vw, 34px) 120px', width: '100%' }}>
 
           {/* ── Hero area ─────────────────────────────────────────── */}
-          <div style={{ marginBottom: '28px', maxWidth: '820px' }}>
+          <div className="scanner-hero-wrap" style={{ marginBottom: '28px' }}>
 
             {/* Badge row */}
             <div style={{ marginBottom: '14px' }}>
@@ -4110,7 +4110,7 @@ export default function TerminalTokenScanner() {
           </div>
 
           {/* ── Search card with hologram ─────────────────────────── */}
-          <div style={{ position: 'relative', maxWidth: '820px', marginBottom: '32px' }}>
+          <div className="scanner-hero-wrap" style={{ position: 'relative', marginBottom: '30px' }}>
 
             {/* Decorative radar hologram (behind card) */}
             <div style={{ position: 'absolute', left: '50%', top: '-32px', transform: 'translateX(-50%)', pointerEvents: 'none', zIndex: 0, width: '260px', height: '88px', overflow: 'hidden', opacity: 0.48 }} aria-hidden="true">
@@ -4129,7 +4129,7 @@ export default function TerminalTokenScanner() {
             {/* Premium search card */}
             <div className="search-card" style={{ position: 'relative', zIndex: 1, padding: '24px 24px 20px' }}>
               <div style={{ marginBottom: '18px' }}>
-                <p style={{ margin: '0 0 6px', fontSize: '10px', letterSpacing: '.16em', color: '#2dd4bf', fontWeight: 900, fontFamily: 'var(--font-plex-mono)' }}>COMMAND INPUT</p>
+                <p style={{ margin: '0 0 6px', fontSize: '10px', letterSpacing: '.16em', color: '#2dd4bf', fontWeight: 900, fontFamily: 'var(--font-plex-mono)' }}>Scan a token</p>
                 <p style={{ margin: 0, color: '#94a3b8', fontSize: '12px', lineHeight: 1.55 }}>Resolve a token and build a live risk receipt from market, holder, LP, and dev-control evidence.</p>
               </div>
 
@@ -4166,7 +4166,7 @@ export default function TerminalTokenScanner() {
                   style={{
                     width: '100%', padding: '16px 18px 16px 42px',
                     background: 'rgba(255,255,255,0.04)',
-                    border: '1px solid rgba(255,255,255,0.10)',
+                    border: '1px solid rgba(34,211,238,0.34)',
                     borderRadius: '12px',
                     color: '#e2e8f0', fontSize: '15px',
                     fontFamily: 'var(--font-plex-mono)',
@@ -4180,7 +4180,7 @@ export default function TerminalTokenScanner() {
                     e.currentTarget.style.boxShadow = '0 0 0 3px rgba(45,212,191,0.08)'
                   }}
                   onBlur={e => {
-                    e.currentTarget.style.borderColor = 'rgba(255,255,255,0.10)'
+                    e.currentTarget.style.borderColor = 'rgba(34,211,238,0.34)'
                     e.currentTarget.style.boxShadow = 'none'
                   }}
                 />
@@ -4218,7 +4218,7 @@ export default function TerminalTokenScanner() {
                   </button>
                 ))}
               </div>
-              <div style={{ padding: '11px 13px', borderRadius: '14px', background: 'rgba(45,212,191,.045)', border: '1px solid rgba(45,212,191,.14)', color: '#8fa4b8', fontSize: '11px', lineHeight: 1.55 }}>
+              <div className="disclaimer-strip" style={{ padding: '12px 14px', borderRadius: '14px', color: '#b6c7dc', fontSize: '11px', lineHeight: 1.55, display: 'flex', alignItems: 'center' }}>
                 ChainLens does not give financial advice. CORTEX surfaces evidence, risk signals, and missing checks so you can review before acting.
               </div>
             </div>
@@ -4315,7 +4315,7 @@ export default function TerminalTokenScanner() {
 
           {/* ── Premium empty state / module preview ─────────────── */}
           {!loading && !resolving && !result && !error && (
-            <div style={{ maxWidth: '820px' }}>
+            <div className="scanner-hero-wrap">
 
               {/* Headline */}
               <div style={{ marginBottom: '16px' }}>
@@ -4328,16 +4328,14 @@ export default function TerminalTokenScanner() {
               </div>
 
               {/* Module preview grid */}
-              <div className="preview-module-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3,minmax(0,1fr))', gap: '12px', marginBottom: '28px' }}>
+              <div className="preview-module-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(4,minmax(0,1fr))', gap: '12px', marginBottom: '28px' }}>
                 {[
-                  { label: 'Market Pulse',  dot: '#2DD4BF', desc: 'Price, liquidity, volume, and pool depth.' },
-                  { label: 'Holder Map',    dot: '#a78bfa', desc: 'Top-holder concentration and supply distribution.' },
-                  { label: 'LP Safety',     dot: '#34d399', desc: 'Pool lock status, LP control, and exit risk.' },
-                  { label: 'Dev Control',   dot: '#fbbf24', desc: 'Deployer wallet, ownership, and supply influence.' },
-                  { label: 'Cluster Map',   dot: '#67e8f9', desc: 'Wallet clustering and coordination signals.' },
-                  { label: 'CORTEX Risk',   dot: '#f87171', desc: 'Evidence-weighted verdict and next action.' },
+                  { label: 'Market Pulse',  dot: '#38bdf8', glow: 'rgba(37,99,235,.20)', border: 'rgba(59,130,246,.28)', desc: 'Price, liquidity, volume, and pool depth.' },
+                  { label: 'Holder Map',    dot: '#a78bfa', glow: 'rgba(124,58,237,.22)', border: 'rgba(167,139,250,.30)', desc: 'Top-holder concentration and supply distribution.' },
+                  { label: 'LP Safety',     dot: '#34d399', glow: 'rgba(16,185,129,.18)', border: 'rgba(52,211,153,.28)', desc: 'Pool lock status, LP control, and exit risk.' },
+                  { label: 'Dev Activity',  dot: '#fb923c', glow: 'rgba(248,113,113,.18)', border: 'rgba(251,146,60,.30)', desc: 'Contract ownership, dev wallets, and recent activity.' },
                 ].map(mod => (
-                  <div key={mod.label} className="preview-module-card">
+                  <div key={mod.label} className="preview-module-card" style={{ '--card-glow': mod.glow, '--card-border': mod.border, '--card-shadow': mod.glow } as CSSProperties}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '7px', marginBottom: '9px' }}>
                       <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: mod.dot, flexShrink: 0, opacity: 0.65, boxShadow: `0 0 6px ${mod.dot}44` }} />
                       <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.10em', color: '#4b6070', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{mod.label}</span>
@@ -6585,7 +6583,7 @@ export default function TerminalTokenScanner() {
         </div>
 
         {/* ── Right: Clark verdict panel (288px) ─────────────────── */}
-        <aside className="mob-verdict-panel" style={{
+        <aside className="mob-verdict-panel receipt-panel" style={{
           width: 'clamp(320px, 24vw, 400px)',
           minWidth: 0,
           flexShrink: 0,
@@ -6811,7 +6809,7 @@ export default function TerminalTokenScanner() {
           })()}
 
           {/* ── Tracked Tokens (account watchlist) ──────────────────── */}
-          <div className="tracked-tokens-panel" style={{ padding: '16px', borderRadius: '14px', border: '1px solid rgba(148,163,184,.14)', background: 'linear-gradient(160deg,rgba(10,18,34,.86),rgba(5,10,20,.76))' }}>
+          <div className="tracked-tokens-panel receipt-panel" style={{ padding: '16px' }}>
             <p style={{ margin: '0 0 2px', fontSize: '13px', fontWeight: 800, color: '#f8fafc', fontFamily: 'var(--font-plex-mono)' }}>Tracked Tokens</p>
             <p style={{ margin: '0 0 12px', fontSize: '11px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>Saved to your account.</p>
             {watchlistAuthenticated === false ? (
@@ -6828,16 +6826,19 @@ export default function TerminalTokenScanner() {
                   const key = `${entry.chain.toLowerCase()}:${entry.tokenAddress.toLowerCase()}`
                   const removing = watchlistRemovingKey === key
                   return (
-                    <div key={key} style={{ padding: '10px 12px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.07)', background: 'rgba(8,14,28,.65)', minWidth: 0 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '4px' }}>
-                        <span style={{ fontSize: '12px', fontWeight: 800, color: '#f8fafc', fontFamily: 'var(--font-plex-mono)' }}>{entry.tokenSymbol || entry.tokenName || 'Unknown token'}</span>
-                        <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '.10em', padding: '2px 7px', borderRadius: '999px', color: '#7dd3fc', border: '1px solid rgba(125,211,252,.28)', background: 'rgba(125,211,252,.06)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>{entry.chain}</span>
+                    <div key={key} className="tracked-token-card" style={{ padding: '12px', minWidth: 0 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px', minWidth: 0 }}>
+                        <span className="token-avatar">{(entry.tokenSymbol || entry.tokenName || '?').slice(0, 2).toUpperCase()}</span>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '7px', flexWrap: 'wrap', minWidth: 0 }}>
+                          <span style={{ fontSize: '12px', fontWeight: 800, color: '#f8fafc', fontFamily: 'var(--font-plex-mono)' }}>{entry.tokenSymbol || entry.tokenName || 'Unknown token'}</span>
+                          <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '.10em', padding: '2px 7px', borderRadius: '999px', color: '#7dd3fc', border: '1px solid rgba(125,211,252,.28)', background: 'rgba(125,211,252,.06)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>{entry.chain}</span>
                         {entry.riskLabel && (
                           <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '.10em', padding: '2px 7px', borderRadius: '999px', color: '#fbbf24', border: '1px solid rgba(251,191,36,.28)', background: 'rgba(251,191,36,.06)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>{entry.riskLabel}</span>
                         )}
-                        {entry.score != null && (
-                          <span style={{ fontSize: '9px', fontWeight: 700, color: '#34d399', fontFamily: 'var(--font-plex-mono)' }}>{entry.score}/100</span>
-                        )}
+                          {entry.score != null && (
+                            <span style={{ fontSize: '9px', fontWeight: 700, color: '#34d399', fontFamily: 'var(--font-plex-mono)' }}>{entry.score}/100</span>
+                          )}
+                        </div>
                       </div>
                       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap' }}>
                         <span style={{ fontSize: '10px', color: '#64748b', fontFamily: 'var(--font-plex-mono)', wordBreak: 'break-all', overflowWrap: 'anywhere' }}>
