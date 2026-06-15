@@ -2277,6 +2277,10 @@ type LpControlResult = {
   proofStatus?: "open_check" | "verified" | "not_applicable" | null;
   lockStatus?: "locked" | "not_confirmed" | "not_applicable" | null;
   burnStatus?: "burned" | "not_confirmed" | "not_applicable" | null;
+  burnProofAttempted?: boolean;
+  burnProofUnavailable?: boolean;
+  burnProofSource?: string | null;
+  lockProofSource?: string | null;
   // Authoritative LP model for the UI — derived from PRIMARY pool type, not verification pool
   displayLpModel?: "erc20_lp_token" | "concentrated_liquidity" | "protocol_or_gauge" | "open_check" | "no_pool" | null;
   lockBurnApplicable?: boolean;
@@ -4286,6 +4290,56 @@ export async function POST(req: Request) {
       lpControl.proofStatus = _notApplicable ? 'not_applicable' : _isVerified ? 'verified' : 'open_check'
       lpControl.lockStatus = _notApplicable ? 'not_applicable' : lpControl.status === 'locked' ? 'locked' : 'not_confirmed'
       lpControl.burnStatus = _notApplicable ? 'not_applicable' : lpControl.status === 'burned' ? 'burned' : 'not_confirmed'
+    }
+
+    // Applicable ERC-20 LP pools get a real burn proof pass even when holder rows already
+    // produced a dominant wallet/controller. This keeps "not confirmed" grounded in
+    // totalSupply() + balanceOf(zero/dead), while preserving open/unavailable for RPC read
+    // failures instead of pretending a failed read proves no burn.
+    if (lpControl.proofApplicability === 'applicable' && lpControl.verificationPool) {
+      const totalSupplyHex = await countedRpcCall("eth_call", [{ to: lpControl.verificationPool, data: "0x18160ddd" }, "latest"], "lpBurnProof.totalSupply", false)
+      const totalSupplyBig = hexToBigInt(totalSupplyHex)
+      const readBurnBalance = async (addr: string): Promise<bigint | null> => {
+        const balHex = await countedRpcCall("eth_call", [{ to: lpControl.verificationPool, data: `0x70a08231${pad32HexAddress(addr)}` }, "latest"], "lpBurnProof.balanceOf", false)
+        return hexToBigInt(balHex)
+      }
+      if (totalSupplyBig != null && totalSupplyBig > BigInt(0)) {
+        const [zeroBal, deadBal] = await Promise.all([
+          readBurnBalance("0x0000000000000000000000000000000000000000"),
+          readBurnBalance("0x000000000000000000000000000000000000dEaD"),
+        ])
+        if (zeroBal == null || deadBal == null) {
+          lpControl.burnProofAttempted = true
+          lpControl.burnProofUnavailable = true
+          lpControl.burnStatus = 'not_confirmed'
+          lpControl.reason = "LP burn proof unavailable: totalSupply read succeeded but burn balanceOf reads failed."
+        } else {
+          const burned = zeroBal + deadBal
+          const burnedPercent = Number((burned * BigInt(1_000_000)) / totalSupplyBig) / 10_000
+          const nextEvidence = Array.isArray(lpControl.evidence) ? lpControl.evidence.filter((e) => !/^burn_share=/i.test(e)) : []
+          nextEvidence.push(`burn_share=${burnedPercent.toFixed(2)}%`, 'burn_proof_source=onchain_lp_balance')
+          lpControl.evidence = nextEvidence
+          lpControl.burnProofAttempted = true
+          lpControl.burnProofSource = 'onchain_lp_balance'
+          if (burnedPercent >= 50) {
+            lpControl.status = 'burned'
+            lpControl.burnStatus = 'burned'
+            lpControl.proofStatus = 'verified'
+            lpControl.confidence = confidenceFor(burnedPercent)
+            lpControl.reason = "LP burn proof confirmed by on-chain burn/dead address balances."
+          } else {
+            lpControl.burnStatus = 'not_confirmed'
+            if (lpControl.status !== 'locked') {
+              lpControl.reason = "Burn addresses hold insufficient LP for burn confirmation."
+            }
+          }
+        }
+      } else {
+        lpControl.burnProofAttempted = true
+        lpControl.burnProofUnavailable = true
+        lpControl.burnStatus = 'not_confirmed'
+        lpControl.reason = "LP burn proof unavailable: totalSupply could not be read from RPC."
+      }
     }
 
     // For concentrated primary pools, standard ERC-20 LP verification does not apply to the

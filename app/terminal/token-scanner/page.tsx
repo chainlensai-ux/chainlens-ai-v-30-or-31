@@ -25,10 +25,11 @@ function cleanStatusLabel(value: string | null | undefined): string {
     case 'concentrated_liquidity': return 'Concentrated Liquidity'
     case 'protocol_or_gauge': return 'Protocol Position Model'
     case 'open_check':
-    case 'unavailable_with_reason':
     case 'insufficient_data':
     case 'error':
     case 'unknown': return 'Open Check'
+    case 'unavailable_with_reason': return 'Unavailable With Reason'
+    case 'not_confirmed': return 'Not Confirmed'
     case 'team_controlled':
     case 'wallet_controlled':
     case 'wallet': return 'Wallet Controlled'
@@ -5579,10 +5580,13 @@ export default function TerminalTokenScanner() {
                       </div>
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(145px,1fr))', gap: '7px', marginBottom: '10px' }}>
                         {([
-                          ['Lock/Burn Proof', isProtocolPositionModel(result) ? 'Protocol-specific' : cleanStatusLabel(result.lpLockBurnIntel.lockBurnProof)],
-                          ['Locked %', isProtocolPositionModel(result) ? protocolPositionSubtext('lock') : result.lpLockBurnIntel.lockedPercent == null ? 'Open Check' : `${result.lpLockBurnIntel.lockedPercent.toFixed(2)}%`],
-                          ['Burned %', isProtocolPositionModel(result) ? 'Protocol-specific' : result.lpLockBurnIntel.burnedPercent == null ? 'Open Check' : `${result.lpLockBurnIntel.burnedPercent.toFixed(2)}%`],
-                          ['Unlock Time', result.lpLockBurnIntel.unlockTime == null ? (result.lpLockBurnIntel.unlockTimeStatus === 'not_applicable' ? 'Protocol-specific' : 'Open Check') : new Date(result.lpLockBurnIntel.unlockTime).toLocaleString()],
+                          ['Control Proof', isProtocolPositionModel(result) ? 'Position verification required' : cleanStatusLabel(result.lpControllerIntel?.controlProof ?? result.lpControl?.proofStatus)],
+                          ['Lock Proof', isProtocolPositionModel(result) ? 'Not Applicable' : cleanStatusLabel(result.lpControl?.lockStatus ?? result.lpLockBurnIntel.lockBurnProof)],
+                          ['Burn Proof', isProtocolPositionModel(result) ? 'Not Applicable' : cleanStatusLabel(result.lpControl?.burnStatus ?? result.lpLockBurnIntel.lockBurnProof)],
+                          ['Controller Type', isProtocolPositionModel(result) ? 'Protocol' : cleanStatusLabel(result.lpControl?.lpControllerType ?? result.lpControllerIntel?.controllerType)],
+                          ['Locked %', isProtocolPositionModel(result) ? protocolPositionSubtext('lock') : result.lpLockBurnIntel.lockedPercent == null ? 'Not Confirmed' : `${result.lpLockBurnIntel.lockedPercent.toFixed(2)}%`],
+                          ['Burned %', isProtocolPositionModel(result) ? 'Not Applicable' : result.lpLockBurnIntel.burnedPercent == null ? 'Not Confirmed' : `${result.lpLockBurnIntel.burnedPercent.toFixed(2)}%`],
+                          ['Unlock Time', result.lpLockBurnIntel.unlockTime == null ? (result.lpLockBurnIntel.unlockTimeStatus === 'not_applicable' ? 'Not Applicable' : 'Not Confirmed') : new Date(result.lpLockBurnIntel.unlockTime).toLocaleString()],
                           ['Proof Source', isProtocolPositionModel(result) ? 'Pool model' : cleanStatusLabel(result.lpLockBurnIntel.proofSource)],
                           ['Confidence', cleanStatusLabel(result.lpLockBurnIntel.confidence)],
                         ] as Array<[string, string]>).map(([label, value]) => (
