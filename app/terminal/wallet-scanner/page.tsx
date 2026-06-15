@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { usePlanWithLoading, LockedPanel, canAccessFeature } from '@/lib/usePlan'
 import { supabase } from '@/lib/supabaseClient'
 
@@ -300,6 +300,13 @@ type WalletResult = {
     reason: string
   }
   walletScanCostMode?: 'basic' | 'basic_cached' | 'deep_cached' | 'deep_live' | 'historical_cached' | 'historical_live' | 'blocked_by_cooldown' | 'blocked_by_cost_guard' | 'deep_cached_no_trade_evidence' | 'historical_not_started' | 'deep_cached_partial_pnl'
+  walletLoadState?: {
+    source: 'live' | 'cache' | 'partial_cache'
+    fastPathUsed: boolean
+    heavyModulesPending: boolean
+    modulesReady: string[]
+    modulesPending: string[]
+  }
   walletScanCacheNote?: string
   pnlCacheQuality?: 'complete' | 'partial_needs_historical' | 'stale_low_coverage' | 'no_trade_evidence' | 'no_pnl_coverage' | 'historical_not_started'
   walletPnlRecoveryCta?: string
@@ -999,14 +1006,13 @@ function ClarkDots() {
   )
 }
 
-function WalletScanProgress({ hasPreviousResult, deepScan }: { hasPreviousResult: boolean; deepScan: boolean }) {
+function WalletScanProgress({ hasPreviousResult, deepScan, stageIndex }: { hasPreviousResult: boolean; deepScan: boolean; stageIndex: number }) {
   const modules = [
-    { label: 'Portfolio loading', detail: 'Reading visible holdings and value first.' },
-    { label: 'Activity indexing', detail: 'Indexing wallet-side transfer history.' },
-    { label: 'Swap pairs', detail: 'Grouping token legs into CORTEX candidates.' },
-    { label: 'Pricing evidence', detail: 'Resolving cost-basis evidence without synthetic numbers.' },
-    { label: 'FIFO matching', detail: 'Matching buys and sells with existing safety rules.' },
-    { label: 'Trade stats', detail: 'Unlocking stats only after verified closed lots.' },
+    { label: 'Loading portfolio...', detail: 'Reading visible portfolio value first.' },
+    { label: 'Loading holdings...', detail: 'Rendering token holdings as soon as they are verified.' },
+    { label: 'Checking activity...', detail: 'Indexing wallet-side transfer history.' },
+    { label: 'Building PnL read...', detail: 'Resolving cost-basis evidence without synthetic numbers.' },
+    { label: 'Finalizing wallet intelligence...', detail: 'Unlocking stats only after verified closed lots.' },
   ]
   return (
     <div style={{ maxWidth: '760px', marginTop: hasPreviousResult ? '0' : '24px' }}>
@@ -1018,7 +1024,7 @@ function WalletScanProgress({ hasPreviousResult, deepScan }: { hasPreviousResult
           <ClarkDots />
           <div>
             <div style={{ fontSize: '10px', fontWeight: 800, letterSpacing: '0.16em', color: '#7dd3fc', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
-              {hasPreviousResult ? 'Deep Scan running — refreshing CORTEX read…' : deepScan ? 'Deep Scan running' : 'CORTEX scan in progress'}
+              {hasPreviousResult ? 'Refreshing…' : deepScan ? 'Deep Scan running' : 'CORTEX scan in progress'}
             </div>
             <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.42)', marginTop: '3px', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
               {hasPreviousResult
@@ -1032,8 +1038,8 @@ function WalletScanProgress({ hasPreviousResult, deepScan }: { hasPreviousResult
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: '8px' }}>
           {modules.map((m, i) => (
             <div key={m.label} style={{ border: '1px solid rgba(255,255,255,0.07)', borderRadius: '10px', padding: '10px 11px', background: 'rgba(255,255,255,0.018)' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '7px', color: i < 2 ? '#7dd3fc' : 'rgba(255,255,255,0.48)', fontSize: '10px', fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
-                <span style={{ width: '6px', height: '6px', borderRadius: '999px', background: i < 2 ? '#7dd3fc' : 'rgba(125,211,252,0.28)', boxShadow: i < 2 ? '0 0 10px rgba(125,211,252,0.35)' : 'none' }} />
+              <div style={{ display: 'flex', alignItems: 'center', gap: '7px', color: i <= stageIndex ? '#7dd3fc' : 'rgba(255,255,255,0.48)', fontSize: '10px', fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                <span style={{ width: '6px', height: '6px', borderRadius: '999px', background: i <= stageIndex ? '#7dd3fc' : 'rgba(125,211,252,0.28)', boxShadow: i <= stageIndex ? '0 0 10px rgba(125,211,252,0.35)' : 'none' }} />
                 {m.label}
               </div>
               <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.32)', marginTop: '5px', lineHeight: 1.45, fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
@@ -1058,7 +1064,17 @@ export default function WalletScannerPage() {
   const [showAllHoldings, setShowAllHoldings] = useState(false)
   const [deepActivity, setDeepActivity] = useState(false)
   const [addressCopied, setAddressCopied] = useState(false)
+  const [scanStageIndex, setScanStageIndex] = useState(0)
   const clarkLoading = loading
+
+  useEffect(() => {
+    if (!loading) {
+      setScanStageIndex(0)
+      return
+    }
+    const timers = [0, 450, 1100, 1900, 2800].map((delay, idx) => window.setTimeout(() => setScanStageIndex(idx), delay))
+    return () => timers.forEach(window.clearTimeout)
+  }, [loading])
 
   function copyAddress(address: string) {
     navigator.clipboard?.writeText(address).then(() => {
@@ -1072,7 +1088,7 @@ export default function WalletScannerPage() {
     if (!q) return
     setLoading(true)
     setError(null)
-    setShowAllHoldings(false)
+    if (!result) setShowAllHoldings(false)
 
     try {
       const { data: { session } } = await supabase.auth.getSession()
@@ -1443,7 +1459,7 @@ export default function WalletScannerPage() {
 
           {/* Progressive loading state */}
           {loading && !result && (
-            <><WalletScanProgress hasPreviousResult={false} deepScan={deepActivity} /><div style={{ maxWidth: '700px', marginTop: '12px' }}>
+            <><WalletScanProgress hasPreviousResult={false} deepScan={deepActivity} stageIndex={scanStageIndex} /><div style={{ maxWidth: '700px', marginTop: '12px' }}>
               <div style={{ background: 'rgba(255,255,255,0.025)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '16px', padding: '24px', marginBottom: '12px' }}>
                 {[220, 140, 180, 110, 160, 90].map((w, i) => (
                   <div key={i} style={{
@@ -1462,7 +1478,7 @@ export default function WalletScannerPage() {
               </div>
             </div></>
           )}
-          {loading && result && <WalletScanProgress hasPreviousResult deepScan={deepActivity} />}
+          {loading && result && <WalletScanProgress hasPreviousResult deepScan={deepActivity} stageIndex={scanStageIndex} />}
 
           {/* Error */}
           {error && (
@@ -2751,7 +2767,24 @@ export default function WalletScannerPage() {
                       <>
                         {(() => {
                           const tokenReads = (result.walletTokenPnlRead ?? []).filter(t => t.status !== 'dust_ignored').slice(0, 12)
-                          if (tokenReads.length === 0) return null
+                          if (tokenReads.length === 0) return (
+                            <>
+                            <div style={{ background: 'rgba(255,255,255,0.025)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '16px', padding: '14px', marginBottom: '14px' }}>
+                              <div style={{ fontSize: '12px', fontWeight: 900, color: '#e2e8f0', letterSpacing: '0.08em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Token PnL Read</div>
+                              <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.46)', marginTop: '6px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Building PnL read...</div>
+                              {[0,1,2].map(i => <div key={i} style={{ height: '10px', borderRadius: '6px', marginTop: '10px', width: `${78 - i * 14}%`, background: 'linear-gradient(90deg, rgba(255,255,255,0.04) 0%, rgba(255,255,255,0.09) 50%, rgba(255,255,255,0.04) 100%)', backgroundSize: '600px 100%', animation: `shimmer 1.6s ease-in-out ${i * 0.12}s infinite` }} />)}
+                            </div>
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '10px', marginBottom: '14px' }}>
+                              {['Trade Stats', 'Historical Recovery'].map((label, i) => (
+                                <div key={label} style={{ background: 'rgba(255,255,255,0.025)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '14px', padding: '12px' }}>
+                                  <div style={{ fontSize: '11px', fontWeight: 900, color: '#e2e8f0', letterSpacing: '0.08em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{label}</div>
+                                  <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.42)', marginTop: '5px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{i === 0 ? 'Checking activity...' : 'Finalizing wallet intelligence...'}</div>
+                                  <div style={{ height: '10px', borderRadius: '6px', marginTop: '10px', width: '70%', background: 'linear-gradient(90deg, rgba(255,255,255,0.04) 0%, rgba(255,255,255,0.09) 50%, rgba(255,255,255,0.04) 100%)', backgroundSize: '600px 100%', animation: `shimmer 1.6s ease-in-out ${i * 0.12}s infinite` }} />
+                                </div>
+                              ))}
+                            </div>
+                            </>
+                          )
                           const statusLabel: Record<string, string> = {
                             winning: 'Win', closed_profit: 'Win', losing: 'Loss', closed_loss: 'Loss', break_even: 'Break-even', open_position: 'Open', cost_basis_missing: 'Cost basis missing', insufficient_data: 'Insufficient data', no_trade_evidence: 'No trade evidence', dust_ignored: 'Dust ignored'
                           }

@@ -525,6 +525,13 @@ export type WalletSnapshot = {
   dataFreshness?: 'live' | 'cached' | 'partial'
   cacheAgeSeconds?: number | null
   walletScanCostMode?: 'basic' | 'basic_cached' | 'deep_cached' | 'deep_live' | 'historical_cached' | 'historical_live' | 'blocked_by_cooldown' | 'blocked_by_cost_guard' | 'deep_cached_no_trade_evidence' | 'historical_not_started' | 'deep_cached_partial_pnl'
+  walletLoadState?: {
+    source: 'live' | 'cache' | 'partial_cache'
+    fastPathUsed: boolean
+    heavyModulesPending: boolean
+    modulesReady: string[]
+    modulesPending: string[]
+  }
   walletScanCacheNote?: string
   walletActivityCoverageNote?: string | null
   walletPnlOutlierNote?: string | null
