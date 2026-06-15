@@ -9,6 +9,7 @@ import {
   buildWalletApiRequestBody,
   formatBaseMarketReadFromRows,
   formatBaseMarketReadFromCandidates,
+  rankBaseMarketRows,
   formatBaseRadarRead,
   formatWalletScanResult,
   formatEoaLpCheckReply,
@@ -178,8 +179,8 @@ function parseRankFollowup(prompt: string): number | null {
   const rankPrompt = prompt.trim().toLowerCase();
   const ordinalMap: Record<string, number> = { first: 1, second: 2, third: 3, fourth: 4, fifth: 5, sixth: 6, seventh: 7, eighth: 8, ninth: 9, tenth: 10 };
   const ordinalRankMatch = rankPrompt.match(/\b(?:scan|check|full\s+report\s+on|why\s+is)\s+(?:the\s+)?(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)(?:\s+one)?\b/i);
-  const numericRankMatch = rankPrompt.match(/\b(?:scan(?:\s+number)?|check|full\s+report\s+on|why\s+is(?:\s+token)?(?:\s+number)?)\s+([1-9]\d{0,2})\b/i);
-  const directRankMatch = rankPrompt.match(/^([1-9]\d{0,2})$/);
+  const numericRankMatch = rankPrompt.match(/\b(?:scan(?:\s+number)?|check|full\s+report\s+on|why\s+is(?:\s+token)?(?:\s+number)?)\s+#?([1-9]\d{0,2})\b/i);
+  const directRankMatch = rankPrompt.match(/^#?([1-9]\d{0,2})$/);
   return ordinalRankMatch
     ? ordinalMap[ordinalRankMatch[1].toLowerCase()]
     : (numericRankMatch ? Number(numericRankMatch[1]) : (directRankMatch ? Number(directRankMatch[1]) : null));
@@ -551,7 +552,7 @@ async function resolveEnsOrBasename(name: string): Promise<string | null> {
   return null
 }
 function isValidationOnlyAnalysis(analysis: string): boolean {
-  return /I can run that, but I need a wallet address first|I can run that, but I need a token contract first|I couldn't resolve .+ to a wallet address|That doesn't look like a Base token|LOCKED\s*\n|Upgrade to unlock full CORTEX reads|could not complete|could not refresh|data is temporarily unavailable|live wallet scan could not complete|looks like a wallet, not a token contract|LP pipeline failed|No data available right now/i.test(analysis)
+  return /I can run that, but I need a wallet address first|I can run that, but I need a token contract first|I couldn't resolve .+ to a wallet address|That doesn't look like a Base token|LOCKED\s*\n|Upgrade to unlock full CORTEX reads|could not complete|could not refresh|data is temporarily unavailable|live wallet scan could not complete|looks like a wallet, not a token contract|LP pipeline failed/i.test(analysis)
 }
 
 function idToAddress(id: string): string {
@@ -1129,8 +1130,8 @@ function inferSelectionIndex(
 ): number | null {
   const direct =
     (/^\s*([1-9]\d{0,2})\s*$/.test(trimmed) ? Number(trimmed.match(/^\s*([1-9]\d{0,2})\s*$/)?.[1] ?? 0) : null) ??
-    (/\b(?:scan|check|token|full report on|report(?: on)?|why is token|number|pick)\s+([1-9]\d{0,2})\b/.test(trimmed)
-      ? Number(trimmed.match(/\b(?:scan|check|token|full report on|report(?: on)?|why is token|number|pick)\s+([1-9]\d{0,2})\b/)?.[1] ?? 0)
+    (/\b(?:scan|check|token|full report on|report(?: on)?|why is token|number|pick)\s+#?([1-9]\d{0,2})\b/.test(trimmed)
+      ? Number(trimmed.match(/\b(?:scan|check|token|full report on|report(?: on)?|why is token|number|pick)\s+#?([1-9]\d{0,2})\b/)?.[1] ?? 0)
       : null) ??
     (/\b([1-9]\d{0,2})\s+of (?:them|those|the list|the candidates|all those)\b/.test(trimmed)
       ? Number(trimmed.match(/\b([1-9]\d{0,2})\s+of (?:them|those|the list|the candidates|all those)\b/)?.[1] ?? 0)
@@ -6598,6 +6599,20 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     if (Array.isArray(body.dashboardMarketRows) && body.dashboardMarketRows.length > 0) {
       const formatted = formatBaseMarketReadFromRows(body.dashboardMarketRows);
       if (formatted) {
+        const ranked = rankBaseMarketRows(body.dashboardMarketRows, 5);
+        updateMemMomentum(sessionMem, ranked.map((r, i) => ({
+          rank: i + 1,
+          symbol: String(r.symbol ?? "?").toUpperCase(),
+          name: r.name ?? null,
+          address: r.tokenAddress ?? r.poolAddress ?? r.contract ?? r.pairAddress ?? null,
+          liquidity: r.liquidityUsd ?? null,
+          volume24h: r.volume24hUsd ?? null,
+          change24h: r.change24h ?? null,
+          tag: r.reasonTags?.[0] ?? null,
+        })));
+        sessionMem.allowedRankScanUntil = Date.now() + 60_000;
+        sessionMem.allowedRankScanUsed = false;
+        updateMemIntent(sessionMem, "market");
         return {
           feature: "clark-ai", chain, mode: "analysis", intent: "base_market_discovery", toolsUsed: [],
           analysis: formatted,
@@ -6607,15 +6622,46 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         };
       }
     }
-    const universe = await getBaseMarketUniverse({ origin, mode: "pumping", requestedCount: 10, followup: false, excludeAddresses: [], includePoolVariants: false }).catch(() => null);
+    let universe: Awaited<ReturnType<typeof getBaseMarketUniverse>> | null;
+    try {
+      universe = await getBaseMarketUniverse({ origin, mode: "pumping", requestedCount: 10, followup: false, excludeAddresses: [], includePoolVariants: false });
+    } catch {
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "base_market_discovery", toolsUsed: ["base_market_universe"],
+        analysis: formatCouldNotComplete({
+          intentBadge: "base_market_discovery",
+          attempted: ["live Base market data"],
+          reason: "Base mover data source timed out. Try again shortly.",
+          actions: buildRoutedActions(["Open Base Radar", "Refresh Market Data"]),
+        }),
+        intentBadge: "base_market_discovery",
+        actions: buildRoutedActions(["Open Base Radar", "Refresh Market Data"]),
+        quotaConsumed: false,
+      };
+    }
     const candidates = universe?.candidates ?? [];
     if (candidates.length > 0) {
       const mappedCandidates = candidates.map((c) => ({
         symbol: c.symbol, name: c.name, change24h: c.change24h, volume24hUsd: c.volume24h,
-        priceUsd: c.priceUsd, marketCapUsd: c.marketCap,
+        priceUsd: c.priceUsd, marketCapUsd: c.marketCap, liquidityUsd: c.liquidityUsd,
+        tokenAddress: c.tokenAddress, poolAddress: c.poolAddress, reasonTags: c.reasonTags,
       }));
       const formatted = formatBaseMarketReadFromCandidates(mappedCandidates);
       if (formatted) {
+        const ranked = rankBaseMarketRows(mappedCandidates, 5);
+        updateMemMomentum(sessionMem, ranked.map((r, i) => ({
+          rank: i + 1,
+          symbol: String(r.symbol ?? "?").toUpperCase(),
+          name: r.name ?? null,
+          address: r.tokenAddress ?? r.poolAddress ?? null,
+          liquidity: r.liquidityUsd ?? null,
+          volume24h: r.volume24hUsd ?? null,
+          change24h: r.change24h ?? null,
+          tag: r.reasonTags?.[0] ?? null,
+        })));
+        sessionMem.allowedRankScanUntil = Date.now() + 60_000;
+        sessionMem.allowedRankScanUsed = false;
+        updateMemIntent(sessionMem, "market");
         return {
           feature: "clark-ai", chain, mode: "analysis", intent: "base_market_discovery", toolsUsed: ["base_market_universe"],
           analysis: formatted,
@@ -6630,7 +6676,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       analysis: formatCouldNotComplete({
         intentBadge: "base_market_discovery",
         attempted: ["dashboard market view", "live Base market data"],
-        reason: "no dashboard market rows were supplied and the live Base market universe returned no candidates",
+        reason: "No live Base mover data is available right now.",
         actions: buildRoutedActions(["Open Base Radar", "Refresh Market Data"]),
       }),
       intentBadge: "base_market_discovery",

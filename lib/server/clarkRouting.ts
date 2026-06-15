@@ -82,7 +82,7 @@ export function classifyClarkPrompt(prompt: string): {
 
   // ---- Base market discovery (generic "pumping/trending on base", no "radar") ----
   const BASE_MARKET_DISCOVERY_RE =
-    /(what'?s\s+pumping\s+on\s+base|base\s+pumps|trending\s+base|base\s+(?:movers|trending)|new\s+base\s+pools|what'?s\s+(?:moving|hot|running|happening)\s+on\s+base|base\s+market|top\s+base\s+tokens|base\s+momentum)/i;
+    /(who'?s\s+pumping\s+on\s+base|whos\s+pumping\s+on\s+base|what\s+is\s+pumping\s+on\s+base|what'?s\s+pumping\s+on\s+base|\bpumping\s+on\s+base\b|base\s+pumpers?|base\s+pairs?\s+(?:are\s+)?pumping|tokens?\s+(?:are\s+)?(?:moving|pumping|trending)\s+on\s+base|base\s+pumps|trending\s+base|base\s+(?:movers|trending)|new\s+base\s+pools|what'?s\s+(?:moving|hot|running|happening)\s+on\s+base|base\s+market|top\s+base\s+tokens|base\s+momentum)/i;
   if (BASE_MARKET_DISCOVERY_RE.test(t)) {
     return { intent: "base_market_discovery", address: null, deep: false };
   }
@@ -142,12 +142,13 @@ export type MarketLikeRow = {
   volume24hUsd?: number | null;
   priceUsd?: number | null;
   marketCapUsd?: number | null;
+  liquidityUsd?: number | null;
+  tokenAddress?: string | null;
+  poolAddress?: string | null;
+  contract?: string | null;
+  pairAddress?: string | null;
+  reasonTags?: string[] | null;
 };
-
-const MAJOR_BASE_SYMBOLS = new Set([
-  "ETH", "WETH", "CBETH", "CBBTC", "BTC", "WBTC", "USDC", "USDBC", "USDT", "DAI",
-  "AERO", "VIRTUAL", "VELVET", "WSTETH", "RETH",
-]);
 
 function fmtPct(n: number | null | undefined): string {
   if (n == null || !Number.isFinite(n)) return "unverified";
@@ -162,30 +163,54 @@ function fmtUsdShort(n: number | null | undefined): string {
 }
 
 /**
- * Build the "BASE MARKET READ" reply from dashboard-supplied market rows.
+ * Rank market-like rows by a transparent momentum score (price change + volume + liquidity)
+ * and return the top `limit` rows. Used both for formatting and for building the
+ * Clark session "lastMomentumList" memory so "scan #N" follow-ups can resolve.
+ */
+export function rankBaseMarketRows(rows: MarketLikeRow[] | undefined | null, limit = 5): MarketLikeRow[] {
+  if (!rows || rows.length === 0) return [];
+  const valid = rows.filter((r) => r && r.symbol);
+  if (valid.length === 0) return [];
+
+  return [...valid]
+    .sort((a, b) => {
+      const aScore = Math.max(0, a.change24h ?? 0) * 1.5 + Math.log10((a.volume24hUsd ?? 0) + 1) * 3 + Math.log10((a.liquidityUsd ?? 0) + 1) * 2;
+      const bScore = Math.max(0, b.change24h ?? 0) * 1.5 + Math.log10((b.volume24hUsd ?? 0) + 1) * 3 + Math.log10((b.liquidityUsd ?? 0) + 1) * 2;
+      return bScore - aScore;
+    })
+    .slice(0, limit);
+}
+
+/**
+ * Build the "Base movers" reply from dashboard-supplied or live market rows.
  * Returns null if rows is empty/missing — caller should fall through to the live endpoint.
  */
 export function formatBaseMarketReadFromRows(rows: MarketLikeRow[] | undefined | null): string | null {
-  if (!rows || rows.length === 0) return null;
-  const valid = rows.filter((r) => r && r.symbol);
-  if (valid.length === 0) return null;
+  const ranked = rankBaseMarketRows(rows, 5);
+  if (ranked.length === 0) return null;
 
-  const topMover = [...valid].sort((a, b) => (b.change24h ?? -Infinity) - (a.change24h ?? -Infinity))[0];
-  const highestVolume = [...valid].sort((a, b) => (b.volume24hUsd ?? -Infinity) - (a.volume24hUsd ?? -Infinity))[0];
-  const majors = valid.filter((r) => MAJOR_BASE_SYMBOLS.has(String(r.symbol ?? "").toUpperCase()));
-  const majorsLine = majors.length > 0
-    ? majors.slice(0, 4).map((r) => `${String(r.symbol).toUpperCase()} ${fmtPct(r.change24h)}`).join(", ")
-    : "No major Base assets reported in current dashboard rows.";
-
-  return [
-    "BASE MARKET READ",
-    `- Top mover by 24h %: ${String(topMover.symbol).toUpperCase()} (${fmtPct(topMover.change24h)})`,
-    `- Highest volume: ${String(highestVolume.symbol).toUpperCase()} (${fmtUsdShort(highestVolume.volume24hUsd)})`,
-    `- Major Base assets moving: ${majorsLine}`,
-    `- Quick note: Based on the dashboard market view currently open — refresh for the latest pull.`,
-    "",
-    "CTA: Open Base Radar / Open Token Scanner / Refresh Market Data",
-  ].join("\n");
+  const lines = ["Here are the strongest Base movers I found right now:"];
+  ranked.forEach((r, i) => {
+    const sym = String(r.symbol ?? "?").toUpperCase();
+    const label = r.name && r.name !== r.symbol ? `${sym} (${r.name})` : sym;
+    const pair = r.pairAddress ?? r.poolAddress ?? r.contract ?? r.tokenAddress ?? null;
+    const reasons = Array.isArray(r.reasonTags) && r.reasonTags.length > 0
+      ? r.reasonTags.join(" + ")
+      : [
+          (r.volume24hUsd ?? 0) > 0 ? "volume spike" : null,
+          r.change24h != null ? "price move" : null,
+          pair ? "active pair" : null,
+        ].filter(Boolean).join(" + ") || "live Base market momentum";
+    lines.push(`${i + 1}. ${label} — ${fmtPct(r.change24h)} / volume ${fmtUsdShort(r.volume24hUsd)} / liquidity ${fmtUsdShort(r.liquidityUsd)}${r.marketCapUsd != null ? ` / market cap ${fmtUsdShort(r.marketCapUsd)}` : ""}`);
+    if (pair) lines.push(`   Pair/contract: ${pair}`);
+    lines.push(`   Why: ${reasons}.`);
+    lines.push("   Risk: liquidity, holder concentration, LP control, and contract safety still need scanner verification.");
+    lines.push(`   Say "scan #${i + 1}" to run Token Scanner.`);
+  });
+  lines.push("");
+  lines.push("Want me to scan the top one in Token Scanner?");
+  lines.push("CTA: Open Base Radar / Open Token Scanner / Refresh Market Data");
+  return lines.join("\n");
 }
 
 /**

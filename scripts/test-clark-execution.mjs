@@ -9,22 +9,31 @@ import {
   formatLpReadResult,
   formatCouldNotComplete,
   buildRoutedActions,
+  rankBaseMarketRows,
 } from '../lib/server/clarkRouting.ts'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 // ─── formatBaseMarketReadFromRows ────────────────────────────────────────────
 const mockRows = [
-  { symbol: 'AERO', name: 'Aerodrome', change24h: 5.2, volume24hUsd: 2_000_000, priceUsd: 1.2, marketCapUsd: 100_000_000 },
-  { symbol: 'BRETT', name: 'Brett', change24h: 12.4, volume24hUsd: 5_000_000, priceUsd: 0.08, marketCapUsd: 400_000_000 },
+  { symbol: 'AERO', name: 'Aerodrome', change24h: 5.2, volume24hUsd: 2_000_000, liquidityUsd: 1_500_000, priceUsd: 1.2, marketCapUsd: 100_000_000, tokenAddress: '0xaero', poolAddress: '0xaeropool', reasonTags: ['liquid mover'] },
+  { symbol: 'BRETT', name: 'Brett', change24h: 12.4, volume24hUsd: 5_000_000, liquidityUsd: 2_000_000, priceUsd: 0.08, marketCapUsd: 400_000_000, tokenAddress: '0xbrett', poolAddress: '0xbrettpool', reasonTags: ['volume expansion'] },
 ]
 {
   const out = formatBaseMarketReadFromRows(mockRows)
   assert.ok(out, 'non-null for non-empty rows')
-  assert.ok(out.startsWith('BASE MARKET READ'))
+  assert.ok(out.startsWith('Here are the strongest Base movers I found right now:'))
   assert.ok(out.includes('CTA:'))
+  // ─── product wording: "movers" not "confirmed pumps" ─────────────────────
+  assert.ok(out.toLowerCase().includes('movers'))
+  assert.ok(!out.toLowerCase().includes('confirmed pump'))
+  assert.ok(!out.toLowerCase().includes('confirmed manipulation'))
+  // ─── scan-by-rank prompts surfaced ─────────────────────────────────────────
+  assert.ok(out.includes('Say "scan #1" to run Token Scanner.'))
+  assert.ok(out.includes('Say "scan #2" to run Token Scanner.'))
 }
 assert.equal(formatBaseMarketReadFromRows([]), null)
+assert.equal(formatBaseMarketReadFromRows(null), null)
 
 // ─── buildWalletApiRequestBody ───────────────────────────────────────────────
 const addr = '0x1234567890123456789012345678901234567890'
@@ -94,6 +103,27 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
 {
   const routeFile = fs.readFileSync(path.join(__dirname, '..', 'app', 'api', 'clark', 'route.ts'), 'utf8')
   assert.ok(!routeFile.includes('No data available right now'), 'stale fallback string must be removed')
+
+  // ─── base_market_discovery: movers saved to session memory ────────────────
+  const baseMarketBlockIdx = routeFile.indexOf('routed.intent === "base_market_discovery"')
+  assert.ok(baseMarketBlockIdx >= 0, 'base_market_discovery route block must exist')
+  const baseMarketBlock = routeFile.slice(baseMarketBlockIdx, baseMarketBlockIdx + 6000)
+  assert.ok(baseMarketBlock.includes('updateMemMomentum'), 'base movers must be saved via updateMemMomentum')
+  assert.ok(baseMarketBlock.includes('rankBaseMarketRows'), 'movers must be ranked via rankBaseMarketRows')
+
+  // ─── honest empty/timeout wording ──────────────────────────────────────────
+  assert.ok(routeFile.includes('No live Base mover data is available right now.'))
+  assert.ok(routeFile.includes('Base mover data source timed out. Try again shortly.'))
+  assert.ok(!routeFile.includes('No tokens are moving.'))
+}
+
+// ─── rankBaseMarketRows ───────────────────────────────────────────────────────
+{
+  const ranked = rankBaseMarketRows(mockRows, 5)
+  assert.equal(ranked.length, 2)
+  assert.equal(ranked[0].symbol, 'BRETT') // higher change/volume/liquidity wins
+  assert.deepEqual(rankBaseMarketRows([]), [])
+  assert.deepEqual(rankBaseMarketRows(null), [])
 }
 
 // ─── buildRoutedActions ──────────────────────────────────────────────────────

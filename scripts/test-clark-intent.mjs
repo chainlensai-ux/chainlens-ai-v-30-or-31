@@ -9,6 +9,12 @@ import {
 // ─── base_market_discovery vs base_radar ─────────────────────────────────────
 assert.equal(classifyClarkPrompt("what's pumping on Base?").intent, 'base_market_discovery')
 assert.equal(classifyClarkPrompt("what's pumping on Base Radar?").intent, 'base_radar')
+assert.equal(classifyClarkPrompt("who's pumping on Base?").intent, 'base_market_discovery')
+assert.equal(classifyClarkPrompt("show Base pumpers").intent, 'base_market_discovery')
+assert.equal(classifyClarkPrompt("what tokens are moving on Base").intent, 'base_market_discovery')
+assert.equal(classifyClarkPrompt("what's hot on Base").intent, 'base_market_discovery')
+assert.equal(classifyClarkPrompt("Base movers").intent, 'base_market_discovery')
+assert.equal(classifyClarkPrompt("Base trending tokens").intent, 'base_market_discovery')
 
 // ─── wallet_scan ──────────────────────────────────────────────────────────────
 {
