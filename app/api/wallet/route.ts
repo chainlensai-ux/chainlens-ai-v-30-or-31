@@ -141,6 +141,35 @@ function attachWalletDeepScanTiming(payload: any, timing: LegacyWalletDeepScanTi
   }
 }
 
+
+function attachWalletLoadState(payload: any, source: 'live' | 'cache' | 'partial_cache', fastPathUsed: boolean) {
+  if (!payload || typeof payload !== 'object') return payload
+  const coverage = payload.walletModuleCoverage ?? {}
+  const ready: string[] = []
+  const pending: string[] = []
+  const mark = (name: string, ok: boolean) => (ok ? ready : pending).push(name)
+  mark('portfolio', (payload.holdings?.length ?? payload.holdingsCount ?? 0) > 0 || (payload.totalValue ?? 0) > 0 || coverage.portfolio?.status === 'ok' || coverage.portfolio?.status === 'partial')
+  mark('holdings', (payload.holdings?.length ?? 0) > 0)
+  mark('activity', coverage.activity?.status === 'ok' || coverage.activity?.status === 'partial' || (payload.walletEvidenceSummary?.totalEvents ?? 0) > 0)
+  mark('token_pnl', Array.isArray(payload.walletTokenPnlRead) && payload.walletTokenPnlRead.length > 0)
+  mark('trade_stats', coverage.tradeStats?.status === 'ok' || (payload.walletTradeStatsSummary?.closedLots ?? 0) > 0)
+  mark('historical_recovery', payload.walletHistoricalRecoveryStatus === 'attempted' || payload.walletHistoricalCoverage?.checked === true)
+  const modulesReady = Array.from(new Set(ready))
+  const modulesPending = Array.from(new Set(pending))
+  payload.walletLoadState = {
+    source,
+    fastPathUsed,
+    heavyModulesPending: modulesPending.some((m) => m === 'token_pnl' || m === 'trade_stats' || m === 'historical_recovery'),
+    modulesReady,
+    modulesPending,
+  }
+  if (source === 'cache') payload.walletScanCacheNote = 'Loaded cached wallet snapshot instantly.'
+  if (source === 'live' && !payload.walletScanCacheNote) payload.walletScanCacheNote = 'Portfolio loaded. Deeper wallet intelligence is being checked.'
+  if (source === 'partial_cache') payload.walletScanCacheNote = 'Cached portfolio loaded. Trade/PnL coverage remains partial.'
+  if (payload.walletScanCostMode === 'historical_live' && source !== 'live') payload.walletScanCostMode = 'deep_cached_partial_pnl'
+  return payload
+}
+
 function stripUndefinedInPlace(value: unknown): unknown {
   if (Array.isArray(value)) {
     for (let i = value.length - 1; i >= 0; i--) {
@@ -864,6 +893,7 @@ export async function POST(req: Request) {
         },
       }
       attachWalletDeepScanTiming(cp, { ...zeroWalletDeepScanTiming(), totalMs: Date.now() - startedAt, cacheHit: true, cacheReadMs: _cacheReadMs }, debug)
+      attachWalletLoadState(cp, cp?.walletScanCostMode === 'deep_cached_partial_pnl' ? 'partial_cache' : 'cache', true)
       pruneWalletScannerDebug(cp, debug)
       return json(cp)
     }
@@ -878,6 +908,7 @@ export async function POST(req: Request) {
           cp.walletScanCostMode = 'blocked_by_cooldown'
           cp.walletScanCacheNote = 'Enhanced scan cooling down. Try again later.'
         }
+        attachWalletLoadState(cp, 'partial_cache', true)
         pruneWalletScannerDebug(cp, debug)
         return json(cp)
       }
@@ -894,6 +925,7 @@ export async function POST(req: Request) {
           cp.walletScanCostMode = 'blocked_by_cost_guard'
           cp.walletScanCacheNote = 'Historical scan served from cache — wallet has heavy history.'
         }
+        attachWalletLoadState(cp, 'partial_cache', true)
         pruneWalletScannerDebug(cp, debug)
         return json(cp)
       }
@@ -910,6 +942,7 @@ export async function POST(req: Request) {
           cp.walletScanCostMode = 'deep_cached'
           cp.walletScanCacheNote = 'Deep scan cooling down — serving recent result to protect API budget.'
         }
+        attachWalletLoadState(cp, 'partial_cache', true)
         pruneWalletScannerDebug(cp, debug)
         return json(cp)
       }
@@ -996,6 +1029,7 @@ export async function POST(req: Request) {
             }
           }
           attachWalletDeepScanTiming(cp, { ...zeroWalletDeepScanTiming(), totalMs: Date.now() - startedAt, cacheHit: true, cacheReadMs: _cacheReadMs }, debug)
+          attachWalletLoadState(cp, cp?.walletScanCostMode === 'deep_cached_partial_pnl' ? 'partial_cache' : 'cache', true)
           pruneWalletScannerDebug(cp, debug)
           return json(cp)
         }
@@ -1021,6 +1055,7 @@ export async function POST(req: Request) {
             cp.walletScanCacheNote = 'Deep scan cooling down — serving recent result to protect API budget.'
           }
           attachWalletDeepScanTiming(cp, { ...zeroWalletDeepScanTiming(), totalMs: Date.now() - startedAt, cacheHit: true, cacheReadMs: _cacheReadMs }, debug)
+          attachWalletLoadState(cp, cp?.walletScanCostMode === 'deep_cached_partial_pnl' ? 'partial_cache' : 'cache', true)
           pruneWalletScannerDebug(cp, debug)
           return json(cp)
         }
@@ -1582,6 +1617,7 @@ export async function POST(req: Request) {
       _cacheWriteMs += Date.now() - _memoryCacheWriteStartedAt
     }
     attachWalletDeepScanTiming(snapshot, buildWalletDeepScanTiming(snapshot, startedAt, _cacheReadMs, _cacheWriteMs, { cacheHit: false, dedupeHit: inFlightDeduped }), debug)
+    attachWalletLoadState(snapshot, 'live', Boolean(inFlightDeduped))
     pruneWalletScannerDebug(snapshot, debug)
     return json(snapshot)
   } catch (err: unknown) {
