@@ -14,23 +14,19 @@ create table if not exists public.token_watchlist (
 
 alter table public.token_watchlist enable row level security;
 
-drop policy if exists "Users can read own token watchlist" on public.token_watchlist;
-create policy "Users can read own token watchlist"
+create policy if not exists "Users can read own token watchlist"
 on public.token_watchlist for select
 using (auth.uid() = user_id);
 
-drop policy if exists "Users can insert own token watchlist" on public.token_watchlist;
-create policy "Users can insert own token watchlist"
+create policy if not exists "Users can insert own token watchlist"
 on public.token_watchlist for insert
 with check (auth.uid() = user_id);
 
-drop policy if exists "Users can update own token watchlist" on public.token_watchlist;
-create policy "Users can update own token watchlist"
+create policy if not exists "Users can update own token watchlist"
 on public.token_watchlist for update
 using (auth.uid() = user_id)
 with check (auth.uid() = user_id);
 
-drop policy if exists "Users can delete own token watchlist" on public.token_watchlist;
-create policy "Users can delete own token watchlist"
+create policy if not exists "Users can delete own token watchlist"
 on public.token_watchlist for delete
 using (auth.uid() = user_id);

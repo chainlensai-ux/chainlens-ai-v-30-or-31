@@ -5,6 +5,7 @@ import { usePlanWithLoading, canAccessFeature } from '@/lib/usePlan'
 import { supabase } from '@/lib/supabaseClient'
 import { resolveTokenQuery, isContractAddress, fmtLiquidity, type ResolverResult, type ResolverCandidate } from '@/lib/tickerResolver'
 import { calculateCortexScoreV2, type CortexScoreResultV2 } from '@/lib/token/scoring'
+import { buildTokenWatchlistBody } from '@/lib/tokenWatchlist'
 
 // ─── Canonical status ─────────────────────────────────────────────────────
 type CanonicalStatus =
@@ -3776,7 +3777,17 @@ export default function TerminalTokenScanner() {
   }, [result?.contract, result?.chain, chain])
 
   async function handleToggleWatchlist() {
-    if (!result?.contract || watchlistLoading) return
+    if (watchlistLoading) return
+    const chainKey = result?.chain === 'eth' ? 'eth' : (result?.chain === 'base' ? 'base' : chain)
+    const body = result ? buildTokenWatchlistBody(result, chainKey) : null
+    if (!body?.tokenAddress) {
+      setWatchlistMessage('Token address unavailable for this scan.')
+      return
+    }
+    if (!body.chain) {
+      setWatchlistMessage('Select a chain before saving this token.')
+      return
+    }
     setWatchlistLoading(true)
     setWatchlistMessage(null)
     try {
@@ -3787,28 +3798,23 @@ export default function TerminalTokenScanner() {
         setWatchlistMessage('Sign in to save tokens')
         return
       }
-      const chainKey = result.chain === 'eth' ? 'eth' : (result.chain === 'base' ? 'base' : chain)
-      const body = trackedSaved
-        ? { chain: chainKey, tokenAddress: result.contract }
-        : {
-            chain: chainKey,
-            tokenAddress: result.contract,
-            tokenSymbol: result.symbol,
-            tokenName: result.name,
-            riskLabel: result.riskLabel ?? undefined,
-            score: typeof result.riskScore === 'number' ? result.riskScore : (typeof result.cortexScore === 'number' ? result.cortexScore : undefined),
-          }
+      const requestBody = trackedSaved ? { chain: body.chain, tokenAddress: body.tokenAddress } : body
       const res = await fetch('/api/watchlist/tokens', {
         method: trackedSaved ? 'DELETE' : 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify(body),
+        body: JSON.stringify(requestBody),
       })
       const json = await res.json().catch(() => null)
-      if (!res.ok) throw new Error(json?.error ?? 'watchlist_failed')
+      if (!res.ok) {
+        if (res.status === 401) setWatchlistMessage('Sign in to save tokens')
+        else if (res.status === 400) setWatchlistMessage(json?.error === 'Token address is required.' ? 'Token address unavailable for this scan.' : 'Could not save token. Watchlist setup may be incomplete.')
+        else setWatchlistMessage('Could not save token. Watchlist setup may be incomplete.')
+        return
+      }
       setTrackedSaved(Boolean(json?.saved))
       setWatchlistMessage(json?.saved ? 'Token added to your watchlist.' : 'Token removed from your watchlist.')
     } catch {
-      setWatchlistMessage('Could not update watchlist. Try again.')
+      setWatchlistMessage('Could not save token. Watchlist setup may be incomplete.')
     } finally {
       setWatchlistLoading(false)
     }
@@ -4305,7 +4311,7 @@ export default function TerminalTokenScanner() {
                         title={watchlistAuthenticated === false ? 'Sign in to save tokens' : trackedSaved ? 'Remove from watchlist' : 'Save to watchlist'}
                         style={{ padding: '5px 11px', borderRadius: '8px', fontSize: '10px', fontWeight: 700, fontFamily: 'var(--font-plex-mono)', cursor: watchlistLoading ? 'default' : 'pointer', letterSpacing: '0.06em', color: trackedSaved ? '#2DD4BF' : watchlistAuthenticated === false ? '#fbbf24' : '#94a3b8', background: trackedSaved ? 'rgba(45,212,191,0.08)' : 'rgba(255,255,255,0.03)', border: `1px solid ${trackedSaved ? 'rgba(45,212,191,0.35)' : 'rgba(255,255,255,0.10)'}`, opacity: watchlistLoading ? 0.65 : 1 }}
                       >
-                        {watchlistLoading ? 'Saving...' : trackedSaved ? 'Saved' : 'Save / Track'}
+                        {watchlistLoading ? 'Saving…' : trackedSaved ? 'Saved' : 'Save / Track'}
                       </button>
                       {trackedSaved && !watchlistLoading && (
                         <button
@@ -4318,7 +4324,7 @@ export default function TerminalTokenScanner() {
                     </div>
 
                     {watchlistMessage && (
-                      <p style={{ margin: '0', width: '100%', color: watchlistMessage.includes('Could not') ? '#f87171' : watchlistMessage.includes('Sign in') ? '#fbbf24' : '#2DD4BF', fontSize: '11px', fontFamily: 'var(--font-plex-mono)' }}>{watchlistMessage}</p>
+                      <p style={{ margin: '0', width: '100%', color: (watchlistMessage.includes('Could not') || watchlistMessage.includes('unavailable') || watchlistMessage.includes('Select')) ? '#f87171' : watchlistMessage.includes('Sign in') ? '#fbbf24' : '#2DD4BF', fontSize: '11px', fontFamily: 'var(--font-plex-mono)' }}>{watchlistMessage}</p>
                     )}
                     {result.resolvedInput && result.resolvedInput.type !== 'address' && (
                       <p style={{ margin: '0', width: '100%', color: '#94a3b8', fontSize: '11px' }}>Resolved from {result.resolvedInput.original.toUpperCase()}.</p>
