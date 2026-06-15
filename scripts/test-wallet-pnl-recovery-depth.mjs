@@ -11,7 +11,7 @@ assert.match(snap, /top_holdings_by_value_token_specific_recovery/, 'top holding
 assert.match(snap, /hasQuoteOutTokenIn[\s\S]*routerless buy candidate/, 'same tx with quote out + token in becomes buy candidate')
 assert.match(snap, /hasTokenOutQuoteIn[\s\S]*routerless sell candidate/, 'same tx with token out + quote in becomes sell candidate')
 assert.match(snap, /_fifoEligibleEventsFinal = _pricedEvidence\.filter[\s\S]*e\.swapDetection\?\.isSwapCandidate[\s\S]*e\.priceAtTime\?\.status === 'priced'/, 'priced eligible trade events flow into FIFO')
-assert.match(snap, /pricedEventsExcludedFromFifoReason[\s\S]*quote_leg_without_token_side[\s\S]*direction_unknown[\s\S]*wallet_side_unresolved[\s\S]*not_trade_event/, 'priced quote-only/invalid events explain FIFO exclusion')
+assert.match(snap, /_pricedExcludedReasons:[\s\S]*quote_leg_without_token_side[\s\S]*direction_unknown[\s\S]*wallet_side_unresolved[\s\S]*not_trade_event[\s\S]*pricedEventsExcludedFromFifoReason/, 'priced quote-only/invalid events explain FIFO exclusion')
 assert.match(snap, /safeToPromoteToPublicStats === true[\s\S]*promotedTradeStatsSummary = \{[\s\S]*\.\.\.previewTradeStats/, 'historical preview with closed lots promotes when safe')
 assert.match(ui, /PnL recovery limited[\s\S]*could not reconstruct enough buy\/sell pairs[\s\S]*Historical pages attempted[\s\S]*Candidate swaps found[\s\S]*Priced candidates[\s\S]*Closed lots recovered[\s\S]*Stop reason[\s\S]*Run deeper recovery if budget allows/, 'UI explains limited recovery instead of final unavailable/zero PnL')
 assert.doesNotMatch(ui, /final \$0 PnL|\$0 PnL/, 'UI does not present unknown PnL as zero')
