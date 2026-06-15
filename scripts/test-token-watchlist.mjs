@@ -19,7 +19,7 @@ assert.match(route, /user_id: auth\.user\.id/, 'POST uses authenticated user id'
 assert.match(route, /\.upsert\(payload, \{ onConflict: 'user_id,chain,token_address' \}\)/, 'POST upserts by account/chain/address')
 assert.match(route, /\.eq\('user_id', auth\.userId\)/, 'GET/DELETE scopes to authenticated user')
 assert.match(route, /console\.error\('\[watchlist\.tokens\]'/, 'server-side debug logging exists')
-assert.match(route, /errorCode: error\?\.code/, 'safe error code is logged server-side')
+assert.match(route, /error: error \? \{ code: error\.code, message: error\.message \} : null/, 'safe error details are logged server-side')
 assert.doesNotMatch(route, /NextResponse\.json\(\{ error: error\?\.message/, 'raw Supabase errors are not returned publicly')
 
 for (const ddl of [sql, migration]) {
@@ -34,6 +34,7 @@ for (const ddl of [sql, migration]) {
 
 assert.match(helper, /export function buildTokenWatchlistBody/, 'frontend helper exists')
 assert.match(helper, /tokenAddress,/, 'frontend helper includes tokenAddress from scan result')
+assert.match(page, /body\.tokenAddress = body\.tokenAddress\.toLowerCase\(\)/, 'Save payload normalizes token contract lowercase')
 assert.match(helper, /chain: chainKey/, 'frontend helper includes selected chain')
 assert.match(helper, /tokenSymbol: scan\.symbol/, 'frontend helper includes symbol when available')
 assert.match(helper, /riskLabel: scan\.riskLabel/, 'frontend helper includes risk label when available')
@@ -44,6 +45,11 @@ assert.match(page, /Token address unavailable for this scan\./, 'missing token a
 assert.match(page, /Saving…/, 'saving state copy exists')
 assert.match(page, /Saved/, 'saved state copy exists')
 assert.match(page, /Remove/, 'remove state copy exists')
+assert.match(page, /function getDisplayHolderCount/, 'holder display helper exists')
+assert.match(page, /result\.holderResolver\?\.holderCount/, 'holder display helper falls back to holderResolver holderCount')
+assert.match(page, /result\.holderDistributionStatus\?\.itemCount/, 'holder display helper falls back to holderDistributionStatus itemCount')
+assert.match(page, /indexed holders/, 'holder display helper distinguishes indexed rows from total holder count')
+assert.match(page, /Holder count unavailable/, 'holder display helper uses unavailable copy')
 
 const normalized = {
   chain: 'BASE'.toLowerCase(),
@@ -62,4 +68,19 @@ assert.equal([...rows.values()].filter((row) => row.user_id === 'user-1').length
 rows.delete(`user-1:base:${normalized.token_address}`)
 assert.equal(rows.size, 0, 'DELETE removes saved token')
 
-console.log('ok - token watchlist API, RLS, frontend body, and upsert flow checks passed')
+const holderDisplay = (r) => {
+  const exact = r.holderDistribution?.holderCount ?? r.holderResolver?.holderCount ?? r.devIntel?.holderEvidence?.holderCount ?? r.holderDistributionStatus?.normalizedCount ?? r.holderDistributionStatus?.itemCount
+  if (exact != null) return `${exact} holders`
+  const indexed = r.holderDistribution?.topHolders?.length
+  return indexed ? `${indexed} indexed holders` : 'Holder count unavailable'
+}
+assert.equal(holderDisplay({ holderDistribution: { holderCount: null }, holderResolver: { holderCount: 99 }, devIntel: { holderEvidence: { holderCount: 88 } }, holderDistributionStatus: { itemCount: 77 } }), '99 holders', 'holderResolver holderCount wins when distribution count is null')
+assert.equal(holderDisplay({ holderDistribution: { holderCount: null }, holderDistributionStatus: { itemCount: 99 } }), '99 holders', 'holderDistributionStatus itemCount is used as holder count evidence')
+assert.equal(holderDisplay({ holderDistribution: { topHolders: [{}, {}] } }), '2 indexed holders', 'topHolders length is labeled as indexed holders only')
+
+const scannedTokenContract = '0x1111111111111111111111111111111111111111'
+const poolAddress = '0x2222222222222222222222222222222222222222'
+const savePayload = { tokenAddress: scannedTokenContract.toLowerCase(), poolAddress }
+assert.notEqual(savePayload.tokenAddress, savePayload.poolAddress, 'Save payload uses token contract, not pool address')
+
+console.log('ok - token watchlist API, RLS, frontend body, holder count, and upsert flow checks passed')

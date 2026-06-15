@@ -158,6 +158,7 @@ type ScanResult = {
   priceSource?: 'dexscreener' | 'coingecko' | 'geckoterminal' | 'fdv_derived' | null
   decimals?: number
   holderDistribution?: { top1:number|null; top5:number|null; top10:number|null; top20:number|null; others:number|null; holderCount:number|null; topHolders:Array<{rank:number;address:string;amount:string|number|null;percent:number|null}> } | null
+  holderResolver?: { holderCount?: number | null } | null
   holderDistributionStatus?: { source?: string; status?: 'ok'|'partial'|'unavailable_with_reason'|'error'; reason?: string; itemCount?: number; normalizedCount?: number } | null
   debugHolderStatus?: {
     providerCalled?: boolean; chain?: string; endpointPath?: string; authMode?: string;
@@ -764,6 +765,7 @@ type DevWalletIntel = {
   matchedLinkedWallets?: Array<{ address: string; percent: number | null; rank: number | null; confidence: string }>
   creatorInTopHolders?: boolean | null
   holderDistribution?: { top1?: number | null; top10?: number | null; top20?: number | null; holderCount?: number | null; topHolders?: Array<{ rank?: number | null; address?: string | null; percent?: number | null }> } | null
+  holderEvidence?: { holderCount?: number | null } | null
   holderDistributionStatus?: string | null
   holderPercentAvailable?: boolean
   holderPercentSource?: string | null
@@ -1389,6 +1391,33 @@ function evidenceValue(lines: string[] | undefined, label: string): string | nul
   const line = lines.find((l) => l.startsWith(`${label}:`))
   if (!line) return null
   return line.slice(label.length + 1).trim() || null
+}
+
+
+type DisplayHolderCount = { count: number; label: string; isIndexedOnly: boolean } | null
+
+function positiveInteger(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.trunc(value) : null
+}
+
+function getDisplayHolderCount(result: ScanResult): DisplayHolderCount {
+  const exactCount = positiveInteger(result.holderDistribution?.holderCount)
+    ?? positiveInteger(result.holderResolver?.holderCount)
+    ?? positiveInteger(result.devIntel?.holderEvidence?.holderCount)
+    ?? positiveInteger(result.holderDistributionStatus?.normalizedCount)
+    ?? positiveInteger(result.holderDistributionStatus?.itemCount)
+  if (exactCount != null) {
+    return { count: exactCount, label: `${exactCount.toLocaleString()} holders`, isIndexedOnly: false }
+  }
+  const indexedCount = positiveInteger(result.holderDistribution?.topHolders?.length)
+  if (indexedCount != null) {
+    return { count: indexedCount, label: `${indexedCount.toLocaleString()} indexed holders`, isIndexedOnly: true }
+  }
+  return null
+}
+
+function holderCountCopy(result: ScanResult): string {
+  return getDisplayHolderCount(result)?.label ?? 'Holder count unavailable'
 }
 
 function normalizeHolderProviderStatus(
@@ -3009,9 +3038,9 @@ function getHolderRead(result: ScanResult): string {
   if (holderState.kind === 'noRowsFallback') return 'Holder distribution was not returned this scan. Supply spread is an open check.'
   if (holderState.kind === 'rowsWithoutPercent') return 'Holder wallets available, but supply percentages not confirmed. Concentration is an open check.'
   const top10 = result.holderDistribution?.top10
-  const count = result.holderDistribution?.holderCount
+  const count = getDisplayHolderCount(result)
   const parts = [
-    count != null ? `${count.toLocaleString()} holders on record` : null,
+    count ? `${count.label} on record` : null,
     top10 != null ? `top 10 hold ${top10.toFixed(1)}%` : null,
     result.holderDistribution?.top20 != null ? `top 20 hold ${result.holderDistribution.top20.toFixed(1)}%` : null,
   ].filter(Boolean)
@@ -3130,9 +3159,9 @@ function deriveMarketProofTile(result: ScanResult): ProofTile {
 
 function deriveHolderProofTile(result: ScanResult): ProofTile {
   const holderState = deriveHolderState(result)
-  const count = result.holderDistribution?.holderCount
+  const count = getDisplayHolderCount(result)
   if (holderState.kind === 'rowsWithPercent') {
-    return { label: 'Holder Proof', status: 'verified', summary: `Holder distribution confirmed${count != null ? ` — ${count.toLocaleString()} holders on record` : ''}, concentration percentages available.`, evidenceCount: count != null ? 2 : 1 }
+    return { label: 'Holder Proof', status: 'verified', summary: `Holder distribution confirmed${count ? ` — ${count.label} on record` : ''}, concentration percentages available.`, evidenceCount: count != null ? 2 : 1 }
   }
   if (holderState.kind === 'rowsWithoutPercent') {
     return { label: 'Holder Proof', status: 'open', summary: 'Holder wallets found, but supply percentages are unconfirmed — concentration is Open Evidence.', missing: ['Holder percentage breakdown'] }
@@ -3677,6 +3706,7 @@ export default function TerminalTokenScanner() {
           contractSecurity: json.contractSecurity ?? null,
           honeypot: json.honeypot ?? null,
           holderDistribution: json.holderDistribution ?? null,
+          holderResolver: json.holderResolver ?? null,
           holderDistributionStatus: json.holderDistributionStatus ?? null,
           debugHolderStatus: json.debugHolderStatus ?? null,
           sections: json.sections ?? null,
@@ -3780,6 +3810,8 @@ export default function TerminalTokenScanner() {
     if (watchlistLoading) return
     const chainKey = result?.chain === 'eth' ? 'eth' : (result?.chain === 'base' ? 'base' : chain)
     const body = result ? buildTokenWatchlistBody(result, chainKey) : null
+    if (body?.tokenAddress) body.tokenAddress = body.tokenAddress.toLowerCase()
+    if (body?.chain) body.chain = body.chain.toLowerCase()
     if (!body?.tokenAddress) {
       setWatchlistMessage('Token address unavailable for this scan.')
       return
@@ -4216,7 +4248,7 @@ export default function TerminalTokenScanner() {
                 const idChain = String(result.chain ?? chain)
                 const explorerBase = idChain === 'eth' ? 'https://etherscan.io/token/' : 'https://basescan.org/token/'
                 const symbolLetter = (result.symbol ?? result.name ?? '?').charAt(0).toUpperCase()
-                const idHolderCount = result.holderDistribution?.holderCount
+                const idHolderCount = getDisplayHolderCount(result)
                 return (
                   <div className="token-identity-bar" style={{
                     marginBottom: '20px', padding: '14px 16px', borderRadius: '14px',
@@ -4291,9 +4323,9 @@ export default function TerminalTokenScanner() {
                           LIQ {fmtLarge(result.liquidity)}
                         </span>
                       )}
-                      {idHolderCount != null && (
+                      {idHolderCount && (
                         <span style={{ padding: '3px 10px', borderRadius: '999px', fontSize: '9px', fontWeight: 700, color: '#94a3b8', background: 'rgba(148,163,184,0.06)', border: '1px solid rgba(148,163,184,0.18)', fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap' }}>
-                          {idHolderCount.toLocaleString()} holders
+                          {idHolderCount.label}
                         </span>
                       )}
                     </div>
@@ -5042,7 +5074,7 @@ export default function TerminalTokenScanner() {
                         const top1h = result.holderDistribution?.top1
                         const top10h = result.holderDistribution?.top10
                         const top20h = result.holderDistribution?.top20
-                        const holderCount = result.holderDistribution?.holderCount
+                        const holderCount = getDisplayHolderCount(result)
                         const concRisk = top10h != null ? (top10h > 50 ? 'HIGH' : top10h > 30 ? 'MEDIUM' : 'LOW') : null
                         const concColor = concRisk === 'HIGH' ? '#f87171' : concRisk === 'MEDIUM' ? '#fbbf24' : concRisk === 'LOW' ? '#34d399' : '#94a3b8'
                         const concRead = holderState.kind === 'rowsWithPercent' && concRisk != null
@@ -5065,7 +5097,7 @@ export default function TerminalTokenScanner() {
                                   ['Top 1', top1h != null ? `${top1h.toFixed(1)}%` : 'N/A'],
                                   ['Top 10', top10h != null ? `${top10h.toFixed(1)}%` : 'N/A'],
                                   ['Top 20', top20h != null ? `${top20h.toFixed(1)}%` : 'N/A'],
-                                  ['Holders', holderCount != null ? holderCount.toLocaleString() : 'N/A'],
+                                  ['Holders', holderCount?.label ?? 'Holder count unavailable'],
                                 ].map(([label, val]) => (
                                   <div key={label} style={{ padding:'8px 10px', borderRadius:'8px', background:'rgba(15,23,42,0.55)', border:'1px solid rgba(167,139,250,0.16)' }}>
                                     <div style={{ fontSize:'9px', letterSpacing:'.12em', color:'#64748b', marginBottom:'3px', fontFamily:'var(--font-plex-mono)' }}>{label}</div>
@@ -5091,7 +5123,7 @@ export default function TerminalTokenScanner() {
                                 ['Holder Risk', concRisk ?? 'Open check'],
                                 ['Top 10 Control', top10h != null ? `${top10h.toFixed(1)}%` : 'Open check'],
                                 ['Top 20 Control', top20h != null ? `${top20h.toFixed(1)}%` : 'Open check'],
-                                ['Holder Count', holderCount != null ? holderCount.toLocaleString() : 'Open check'],
+                                ['Holder Count', holderCount?.label ?? 'Holder count unavailable'],
                                 ['Supply Spread', concRead ?? 'Open check'],
                               ].map(([label,val])=>(
                                 <div key={label} style={{ padding:'10px 11px', borderRadius:'10px', border:'1px solid rgba(167,139,250,0.22)', background:'rgba(15,23,42,0.55)' }}>
@@ -5106,7 +5138,7 @@ export default function TerminalTokenScanner() {
                                 <span style={{ padding: '2px 7px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '0.1em', fontFamily: 'var(--font-plex-mono)', border: `1px solid ${holderState.kind === 'rowsWithPercent' ? 'rgba(45,212,191,.5)' : 'rgba(251,191,36,.4)'}`, color: holderState.kind === 'rowsWithPercent' ? '#2dd4bf' : '#fbbf24', background: holderState.kind === 'rowsWithPercent' ? 'rgba(45,212,191,.1)' : 'rgba(251,191,36,.1)' }}>{holderState.kind === 'rowsWithPercent' ? 'VERIFIED' : 'PARTIAL'}</span>
                                 {concRisk != null && <span style={{ padding: '2px 7px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '0.1em', fontFamily: 'var(--font-plex-mono)', border: `1px solid ${concColor}44`, color: concColor, background: `${concColor}10` }}>{concRisk} CONC</span>}
                               </div>
-                              {result.holderDistribution?.holderCount != null && <div style={{ margin: '0 0 12px', fontSize: '13px', color: '#67e8f9', border: '1px solid rgba(45,212,191,.3)', background: 'rgba(6,78,59,.16)', padding: '8px 10px', borderRadius: '10px', display: 'inline-flex', gap: '8px' }}><span style={{ color: '#99f6e4' }}>Holder count</span><strong style={{ fontFamily: 'var(--font-plex-mono)', color: '#e6fffa' }}>{result.holderDistribution.holderCount.toLocaleString()}</strong></div>}
+                              {holderCount && <div style={{ margin: '0 0 12px', fontSize: '13px', color: '#67e8f9', border: '1px solid rgba(45,212,191,.3)', background: 'rgba(6,78,59,.16)', padding: '8px 10px', borderRadius: '10px', display: 'inline-flex', gap: '8px' }}><span style={{ color: '#99f6e4' }}>Holder count</span><strong style={{ fontFamily: 'var(--font-plex-mono)', color: '#e6fffa' }}>{holderCount.label}</strong></div>}
                               {holderState.kind === 'rowsWithoutPercent' && <p style={{ margin: '0 0 10px', fontSize: '11px', color: '#fbbf24' }}>{holderState.safeReason} Addresses and amounts shown below.</p>}
                               {holderState.kind === 'rowsWithPercent' && <div style={{ display: 'grid', gap: '10px' }}>
                                 {[['Top 1',result.holderDistribution?.top1],['Top 5',result.holderDistribution?.top5],['Top 10',result.holderDistribution?.top10],['Top 20',result.holderDistribution?.top20]].map(([l,v])=>(
@@ -6637,9 +6669,9 @@ export default function TerminalTokenScanner() {
                   {d.holderState.kind === 'noRowsFallback' && (
                     <div style={{display:'inline-flex',marginBottom:'7px',padding:'2px 8px',borderRadius:'999px',border:'1px solid rgba(251,191,36,.35)',color:'#fbbf24',fontSize:'9px',fontWeight:700,letterSpacing:'.10em',fontFamily:'var(--font-plex-mono)',background:'rgba(251,191,36,.07)'}}>CONCENTRATION UNVERIFIED</div>
                   )}
-                  {result.holderDistribution?.holderCount != null && (
+                  {getDisplayHolderCount(result) && (
                     <div style={{display:'inline-flex',marginBottom:'7px',padding:'2px 9px',border:'1px solid rgba(45,212,191,.28)',borderRadius:'999px',fontSize:'11px',color:'#2DD4BF',fontFamily:'var(--font-plex-mono)',background:'rgba(45,212,191,.06)'}}>
-                      {result.holderDistribution.holderCount.toLocaleString()} holders
+                      {holderCountCopy(result)}
                     </div>
                   )}
                   {(top10 != null || top20 != null) && (

@@ -34,15 +34,17 @@ function normalizeChain(value: unknown): string | null {
   return trimmed ? trimmed : null
 }
 
-function logWatchlistError(action: WatchlistAction, userId: string | undefined, chain: string | null, tokenAddress: string | null, error: { code?: string, message?: string } | null | undefined) {
-  console.error('[watchlist.tokens]', {
+function logWatchlist(action: WatchlistAction, status: 'ok' | 'error', userId: string | undefined, chain: string | null, tokenAddress: string | null, error?: { code?: string, message?: string } | null) {
+  const payload = {
     action,
+    status,
     userId,
     chain,
     tokenAddress,
-    errorCode: error?.code,
-    errorMessage: error?.message,
-  })
+    error: error ? { code: error.code, message: error.message } : null,
+  }
+  if (status === 'error') console.error('[watchlist.tokens]', payload)
+  else console.log('[watchlist.tokens]', payload)
 }
 
 export async function GET(request: NextRequest) {
@@ -55,9 +57,10 @@ export async function GET(request: NextRequest) {
   if (tokenAddress) query = query.eq('token_address', tokenAddress)
   const { data, error } = await query
   if (error) {
-    logWatchlistError('get', auth.userId, chain, tokenAddress, error)
+    logWatchlist('get', 'error', auth.userId, chain, tokenAddress, error)
     return NextResponse.json({ error: 'Could not load watchlist.', saved: false }, { status: 500, headers: noStoreHeaders })
   }
+  logWatchlist('get', 'ok', auth.userId, chain, tokenAddress)
   return NextResponse.json({ saved: tokenAddress ? (data?.length ?? 0) > 0 : undefined, tokens: data ?? [] }, { headers: noStoreHeaders })
 }
 
@@ -83,9 +86,10 @@ export async function POST(request: NextRequest) {
   }
   const { data, error } = await auth.supabase.from('token_watchlist').upsert(payload, { onConflict: 'user_id,chain,token_address' }).select(selectColumns).single()
   if (error) {
-    logWatchlistError('post', auth.userId, payload.chain, payload.token_address, error)
+    logWatchlist('post', 'error', auth.userId, payload.chain, payload.token_address, error)
     return NextResponse.json({ error: 'Could not save token. Watchlist setup may be incomplete.', saved: false }, { status: 500, headers: noStoreHeaders })
   }
+  logWatchlist('post', 'ok', auth.userId, payload.chain, payload.token_address)
   return NextResponse.json({ saved: true, token: data }, { headers: noStoreHeaders })
 }
 
@@ -100,8 +104,9 @@ export async function DELETE(request: NextRequest) {
   if (!tokenAddress) return NextResponse.json({ error: 'Token address is invalid.', saved: false }, { status: 400, headers: noStoreHeaders })
   const { error } = await auth.supabase.from('token_watchlist').delete().eq('user_id', auth.userId).eq('chain', chain).eq('token_address', tokenAddress)
   if (error) {
-    logWatchlistError('delete', auth.userId, chain, tokenAddress, error)
+    logWatchlist('delete', 'error', auth.userId, chain, tokenAddress, error)
     return NextResponse.json({ error: 'Could not save token. Watchlist setup may be incomplete.', saved: false }, { status: 500, headers: noStoreHeaders })
   }
+  logWatchlist('delete', 'ok', auth.userId, chain, tokenAddress)
   return NextResponse.json({ saved: false }, { headers: noStoreHeaders })
 }
