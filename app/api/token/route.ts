@@ -7638,6 +7638,15 @@ export async function POST(req: Request) {
     } else {
       delete (responsePayload as any)._diagnostics
     }
+    if (debugMode === true || process.env.NODE_ENV !== 'production') {
+      ;(responsePayload as any)._tokenRouteDebug = {
+        routeReached: true,
+        chain,
+        address: contract,
+        stagesCompleted: [_scanStage],
+        totalMs: Date.now() - _t0,
+      }
+    }
     return NextResponse.json(sanitizePublicTokenResponse(responsePayload as Record<string, any>, debugMode === true))
   } catch (err) {
     console.error("Fatal backend error:", err);

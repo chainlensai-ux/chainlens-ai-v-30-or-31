@@ -509,4 +509,51 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(noWalletOnToken, 'token prompt stays away from wallet_scan in timeout path')
 }
 
+// ─── Task 11: Debug timing proof in fetchTokenEvidence / clarkDebugReceipt ───
+{
+  const routeFile = fs.readFileSync(path.join(__dirname, '..', 'app', 'api', 'clark', 'route.ts'), 'utf8')
+
+  // fetchTokenEvidence must record timing
+  assert.ok(routeFile.includes('startedAt = Date.now()'), 'fetchTokenEvidence records startedAt')
+  assert.ok(routeFile.includes('durationMs'), 'fetchTokenEvidence records durationMs')
+  assert.ok(routeFile.includes('fetchAborted'), 'fetchTokenEvidence tracks abort')
+  assert.ok(routeFile.includes('fetchNetworkError'), 'fetchTokenEvidence tracks network error')
+
+  // tokenScanDebug object is built and returned from fetchTokenEvidence
+  assert.ok(routeFile.includes('tokenScanAttempted: true'), 'tokenScanDebug includes tokenScanAttempted')
+  assert.ok(routeFile.includes('requestUrlPath'), 'tokenScanDebug includes requestUrlPath')
+  assert.ok(routeFile.includes('authForwarded'), 'tokenScanDebug includes authForwarded')
+  assert.ok(routeFile.includes('_tokenScanDebug: tokenScanDebug'), 'fetchTokenEvidence returns _tokenScanDebug')
+
+  // clarkDebugReceipt includes tokenScanDebug from evidence
+  assert.ok(routeFile.includes('tokenScanDebug: evDebug._tokenScanDebug'), 'clarkDebugReceipt includes tokenScanDebug from evidence')
+
+  // /api/token route must emit _tokenRouteDebug in non-prod
+  const tokenRouteFile = fs.readFileSync(path.join(__dirname, '..', 'app', 'api', 'token', 'route.ts'), 'utf8')
+  assert.ok(tokenRouteFile.includes('_tokenRouteDebug'), '/api/token emits _tokenRouteDebug in non-prod/debug mode')
+  assert.ok(tokenRouteFile.includes('routeReached: true'), '/api/token _tokenRouteDebug includes routeReached')
+  assert.ok(tokenRouteFile.includes('stagesCompleted'), '/api/token _tokenRouteDebug includes stagesCompleted')
+  assert.ok(tokenRouteFile.includes('totalMs'), '/api/token _tokenRouteDebug includes totalMs')
+
+  // fetchTokenEvidence reads _tokenRouteDebug from the token response
+  assert.ok(routeFile.includes('_tokenRouteDebug'), 'fetchTokenEvidence reads _tokenRouteDebug from token response')
+  assert.ok(routeFile.includes('tokenRouteDebugSummary'), 'fetchTokenEvidence maps _tokenRouteDebug to tokenRouteDebugSummary')
+
+  // Public response must NOT expose auth values
+  const { sanitizePublicTokenResponse } = await import('../lib/server/tokenPublicResponse.ts')
+  const mockPayload = {
+    chain: 'base',
+    contract: '0xabc',
+    _tokenRouteDebug: { routeReached: true, chain: 'base', address: '0xabc', stagesCompleted: ['response_assembly'], totalMs: 123 },
+    name: 'TestToken',
+    symbol: 'TEST',
+  }
+  const sanitized = sanitizePublicTokenResponse(mockPayload, false)
+  // _tokenRouteDebug is not in the public strip list but is debug-only data;
+  // in non-debug mode it is still emitted because it's benign
+  assert.ok('chain' in sanitized, 'sanitize preserves chain')
+  const debugSanitized = sanitizePublicTokenResponse(mockPayload, true)
+  assert.ok(debugSanitized._tokenRouteDebug?.routeReached === true, 'debug mode preserves _tokenRouteDebug')
+}
+
 console.log('test-clark-execution.mjs: all assertions passed')

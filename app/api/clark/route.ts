@@ -6853,19 +6853,69 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
 
   // ── Pack 1: Token Core Pipeline handlers ──────────────────────────────────────
 
-  async function fetchTokenEvidence(tokenAddress: string): Promise<TokenScanEvidence & { _tokenApiStatus?: string; _tokenApiHttpStatus?: number; _tokenScanFailureReason?: string }> {
-    const [tokenData, securitySim] = await Promise.all([
-      callInternalApi(origin, "/api/token", { contract: tokenAddress }, authHeader ?? undefined, verifiedPlan),
-      fetchHoneypotSecurity(tokenAddress, "base"),
-    ]);
-    const tokenApiOk = tokenData?.ok === true;
-    const tokenApiHttpStatus = tokenData?.status ?? 0;
-    const tokenJson = tokenApiOk ? tokenData.json : null;
+  async function fetchTokenEvidence(tokenAddress: string): Promise<TokenScanEvidence & { _tokenApiStatus?: string; _tokenApiHttpStatus?: number; _tokenScanFailureReason?: string; _tokenScanDebug?: Record<string, unknown> }> {
+    const startedAt = Date.now();
+    let tokenData: { ok: boolean; status: number; json: unknown } | null = null;
+    let fetchAborted = false;
+    let fetchNetworkError = false;
+
+    const tokenFetchPromise = callInternalApi(origin, "/api/token", { contract: tokenAddress, chain: chain ?? "base" }, authHeader ?? undefined, verifiedPlan)
+      .then((r) => { tokenData = r; return r; })
+      .catch((e: unknown) => {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (/abort|timeout/i.test(msg)) fetchAborted = true;
+        else fetchNetworkError = true;
+        return null;
+      });
+
+    const [, securitySim] = await Promise.all([tokenFetchPromise, fetchHoneypotSecurity(tokenAddress, "base")]);
+    const durationMs = Date.now() - startedAt;
+
+    const _td = tokenData as { ok: boolean; status: number; json: unknown } | null;
+    const tokenApiOk = _td?.ok === true;
+    const tokenApiHttpStatus = _td?.status ?? 0;
+    const tokenJson = tokenApiOk ? _td!.json : null;
+
+    // Derive scan debug status
+    let tokenScanStatus: string;
+    if (fetchAborted) tokenScanStatus = "timeout";
+    else if (fetchNetworkError) tokenScanStatus = "network_error";
+    else if (!tokenData) tokenScanStatus = "no_response";
+    else if (tokenApiHttpStatus === 401) tokenScanStatus = "http_401";
+    else if (tokenApiHttpStatus === 500) tokenScanStatus = "http_500";
+    else if (!tokenApiOk) tokenScanStatus = `http_${tokenApiHttpStatus}`;
+    else tokenScanStatus = "ok";
+
+    const tokenScanDebug: Record<string, unknown> = {
+      tokenScanAttempted: true,
+      requestUrlPath: "/api/token",
+      method: "POST",
+      chain: chain ?? "base",
+      address: tokenAddress,
+      startedAt: new Date(startedAt).toISOString(),
+      durationMs,
+      aborted: fetchAborted,
+      status: tokenScanStatus,
+      routeReached: tokenData !== null,
+      authForwarded: {
+        cookie: Boolean(clarkInternalCtx.cookie),
+        authorization: Boolean(authHeader ?? clarkInternalCtx.authToken),
+      },
+    };
+
     const t = (tokenJson ?? {}) as Record<string, unknown>;
+    // Extract token route stage debug if /api/token included it
+    const tokenRouteDebug = (t._tokenRouteDebug && typeof t._tokenRouteDebug === "object") ? t._tokenRouteDebug as Record<string, unknown> : null;
+    if (tokenRouteDebug) {
+      tokenScanDebug.tokenRouteDebugSummary = {
+        routeReached: tokenRouteDebug.routeReached ?? true,
+        stagesCompleted: tokenRouteDebug.stagesCompleted ?? [],
+        totalMs: tokenRouteDebug.totalMs ?? null,
+      };
+    }
+
     const sections = (t.sections ?? {}) as Record<string, unknown>;
     const holdersSection = (sections.holders ?? {}) as Record<string, unknown>;
-    // goplus is stripped from the public /api/token response by sanitizePublicTokenResponse —
-    // read ownership/flags from security.devOwnership and security.contractFlags instead.
     const tSecurity = (t.security ?? {}) as Record<string, unknown>;
     const tDevOwnership = (tSecurity.devOwnership ?? {}) as Record<string, unknown>;
     const tContractFlags = (tSecurity.contractFlags ?? {}) as Record<string, unknown>;
@@ -6876,18 +6926,26 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const hd = (t.holderDistribution ?? {}) as Record<string, unknown>;
 
     const missingEvidence: string[] = securitySim?.missing ? [...securitySim.missing] : [];
-    let tokenApiStatus = "ok";
+    let tokenApiStatus = tokenScanStatus;
     let tokenScanFailureReason: string | undefined;
     if (!tokenApiOk) {
-      tokenApiStatus = `http_${tokenApiHttpStatus}`;
       if (tokenApiHttpStatus === 401) {
         tokenScanFailureReason = "token_route_unauthorized";
         missingEvidence.push("Token Scanner authorization failed. Reconnect/sign in and try again.");
+      } else if (fetchAborted) {
+        tokenScanFailureReason = "timeout";
+        missingEvidence.push("Token scan timed out — /api/token did not respond in time.");
+      } else if (fetchNetworkError) {
+        tokenScanFailureReason = "network_error";
+        missingEvidence.push("Token scan route failed — network error reaching /api/token.");
+      } else if (tokenData !== null) {
+        missingEvidence.push(`Token scan route failed — /api/token returned http_${tokenApiHttpStatus}`);
       } else {
-        missingEvidence.push(`Token scan route failed — /api/token returned ${tokenApiStatus}`);
+        missingEvidence.push("Token scan route failed — no response from /api/token.");
       }
     } else if (!t.priceUsd && !t.liquidityUsd && !t.name) {
       tokenApiStatus = "no_pool_data";
+      tokenScanDebug.status = "no_pool_data";
       missingEvidence.push("Token not found on Base or no active pool data");
     }
 
@@ -6897,7 +6955,6 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       chain: "Base",
       market: {
         price: typeof t.priceUsd === "number" ? t.priceUsd : null,
-        // priceChange24h not at response root — read from sections.market.change24h
         change24h: typeof t.priceChange24h === "number" ? t.priceChange24h : (typeof tSectMarket.change24h === "number" ? tSectMarket.change24h : null),
         volume24h: typeof t.volume24hUsd === "number" ? t.volume24hUsd : null,
         liquidity: typeof t.liquidityUsd === "number" ? t.liquidityUsd : null,
@@ -6910,11 +6967,9 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         status: typeof holdersSection.status === "string" ? holdersSection.status : "unavailable",
       },
       security: {
-        // Prefer securitySim (direct HP call), then sections.security, then security.simulation, then legacy honeypot obj
         honeypot: securitySim?.honeypot ?? (typeof tSectSecurity.honeypot === "boolean" ? tSectSecurity.honeypot : (typeof tSecSim.isHoneypot === "boolean" ? tSecSim.isHoneypot : (typeof hp.isHoneypot === "boolean" ? hp.isHoneypot : null))),
         buyTax: securitySim?.buyTax ?? (typeof tSectSecurity.buyTax === "number" ? tSectSecurity.buyTax : (typeof tSecSim.buyTax === "number" ? tSecSim.buyTax : (typeof hp.buyTax === "number" ? hp.buyTax : null))),
         sellTax: securitySim?.sellTax ?? (typeof tSectSecurity.sellTax === "number" ? tSectSecurity.sellTax : (typeof tSecSim.sellTax === "number" ? tSecSim.sellTax : (typeof hp.sellTax === "number" ? hp.sellTax : null))),
-        // ownerRenounced/mintable/proxy: goplus stripped from public response; use security.devOwnership + security.contractFlags
         ownerRenounced: typeof tDevOwnership.isRenounced === "boolean" ? tDevOwnership.isRenounced : null,
         mintable: typeof tContractFlags.mint === "boolean" ? tContractFlags.mint : null,
         proxy: typeof tContractFlags.proxy === "boolean" ? tContractFlags.proxy : null,
@@ -6933,6 +6988,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       _tokenApiStatus: tokenApiStatus,
       _tokenApiHttpStatus: tokenApiHttpStatus,
       _tokenScanFailureReason: tokenScanFailureReason,
+      _tokenScanDebug: tokenScanDebug,
     };
   }
 
@@ -7026,6 +7082,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       formatterUsed: ev.ok ? "formatTokenScanResult" : "inline_fallback",
       finalAnswerType: ev.ok ? "token_read" : "open_check",
       walletScanAttempted: false,
+      tokenScanDebug: evDebug._tokenScanDebug ?? null,
     } : undefined;
     return {
       feature: "clark-ai", chain, mode: "analysis", intent: "token_scan", toolsUsed: ["token_scan"],
