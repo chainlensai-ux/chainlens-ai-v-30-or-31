@@ -47,7 +47,7 @@ const CLARK_DAILY_BY_PLAN: Record<string, number> = { free: 5, pro: 50, elite: 3
 const CLARK_MINUTE_BY_PLAN: Record<string, number> = { free: 2, pro: 5, elite: 5, unauth: 1 }
 const CLARK_LOW_COST_MINUTE_BY_PLAN: Record<string, number> = { free: 15, pro: 20, elite: 20, unauth: 8 }
 const clarkRateLowCostMinute = new Map<string, { count: number; resetAt: number }>()
-let clarkInternalCtx: { authToken?: string; verifiedPlan?: 'free' | 'pro' | 'elite' } = {}
+let clarkInternalCtx: { authToken?: string; verifiedPlan?: 'free' | 'pro' | 'elite'; cookie?: string } = {}
 
 // Plan feature access matrix
 function planAllows(plan: string | undefined, feature: 'token_full_report' | 'wallet_scan' | 'liquidity_check' | 'dev_wallet' | 'whale_alerts' | 'pump_alerts' | 'base_radar_full' | 'base_market_preview'): boolean {
@@ -2819,6 +2819,10 @@ async function callInternalApi(origin: string, path: string, payload: Record<str
   const plan = verifiedPlan ?? clarkInternalCtx.verifiedPlan
   if (tok) headers.Authorization = tok
   if (plan) headers["x-user-plan"] = plan
+  // Forward the original request's cookie so Vercel deployment protection and
+  // cookie-based Supabase sessions are honoured on server-to-server internal calls.
+  const cookieVal = clarkInternalCtx.cookie
+  if (cookieVal) headers.Cookie = cookieVal
   const res = await fetch(`${origin}${path}`, {
     method: "POST",
     headers,
@@ -6849,7 +6853,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
 
   // ── Pack 1: Token Core Pipeline handlers ──────────────────────────────────────
 
-  async function fetchTokenEvidence(tokenAddress: string): Promise<TokenScanEvidence & { _tokenApiStatus?: string; _tokenApiHttpStatus?: number }> {
+  async function fetchTokenEvidence(tokenAddress: string): Promise<TokenScanEvidence & { _tokenApiStatus?: string; _tokenApiHttpStatus?: number; _tokenScanFailureReason?: string }> {
     const [tokenData, securitySim] = await Promise.all([
       callInternalApi(origin, "/api/token", { contract: tokenAddress }, authHeader ?? undefined, verifiedPlan),
       fetchHoneypotSecurity(tokenAddress, "base"),
@@ -6873,9 +6877,15 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
 
     const missingEvidence: string[] = securitySim?.missing ? [...securitySim.missing] : [];
     let tokenApiStatus = "ok";
+    let tokenScanFailureReason: string | undefined;
     if (!tokenApiOk) {
       tokenApiStatus = `http_${tokenApiHttpStatus}`;
-      missingEvidence.push(`Token scan route failed — /api/token returned ${tokenApiStatus}`);
+      if (tokenApiHttpStatus === 401) {
+        tokenScanFailureReason = "token_route_unauthorized";
+        missingEvidence.push("Token Scanner authorization failed. Reconnect/sign in and try again.");
+      } else {
+        missingEvidence.push(`Token scan route failed — /api/token returned ${tokenApiStatus}`);
+      }
     } else if (!t.priceUsd && !t.liquidityUsd && !t.name) {
       tokenApiStatus = "no_pool_data";
       missingEvidence.push("Token not found on Base or no active pool data");
@@ -6922,6 +6932,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       warnings: tokenJson ? [] : missingEvidence,
       _tokenApiStatus: tokenApiStatus,
       _tokenApiHttpStatus: tokenApiHttpStatus,
+      _tokenScanFailureReason: tokenScanFailureReason,
     };
   }
 
@@ -6975,20 +6986,24 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       };
     }
     const ev = await fetchTokenEvidence(tokenAddress);
+    const tokenApiHttpStatus = (ev as Record<string, unknown>)._tokenApiHttpStatus as number | undefined;
     const analysis = ev.ok
       ? formatTokenScanResult(ev, "Base")
       : [
           `TOKEN READ — evidence missing`,
           `- Address: ${tokenAddress}`,
           `- Chain: Base`,
-          `- Status: ${(ev as Record<string, unknown>)._tokenApiStatus ?? "unknown"}`,
-          ...(ev.warnings && ev.warnings.length > 0 ? ev.warnings.map((w) => `- ${w}`) : ["- Token Scanner returned no market/security evidence"]),
+          ...(tokenApiHttpStatus === 401
+            ? ["- Token Scanner authorization failed. Reconnect/sign in and try again."]
+            : (ev.warnings && ev.warnings.length > 0 ? ev.warnings.map((w) => `- ${w}`) : ["- Token Scanner returned no market/security evidence"])
+          ),
           ``,
           `Paste the contract address and try again, or open Token Scanner directly.`,
           `CTA: Open Token Scanner`,
         ].join("\n");
     updateMemToken(sessionMem, tokenAddress, ev.token?.symbol ?? resolvedSymbol, ev.token?.name ?? null, analysis);
     updateMemIntent(sessionMem, "token_analysis");
+    const evDebug = ev as Record<string, unknown>;
     const clarkDebugReceipt = clarkDebugMode ? {
       routeHint,
       detectedIntent: "token_scan",
@@ -7000,8 +7015,13 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       tokenLookupAttempted: true,
       tokenLookupStatus: tokenAddress ? "address_resolved" : "no_address",
       tokenScanAttempted: true,
-      tokenScanStatus: (ev as Record<string, unknown>)._tokenApiStatus ?? (ev.ok ? "ok" : "unknown"),
+      tokenScanStatus: evDebug._tokenApiStatus ?? (ev.ok ? "ok" : "unknown"),
       tokenScanEndpointOrFunction: "/api/token (POST via callInternalApi)",
+      tokenScanAuthForwarded: {
+        cookie: Boolean(clarkInternalCtx.cookie),
+        authorization: Boolean(authHeader ?? clarkInternalCtx.authToken),
+      },
+      tokenScanFailureReason: evDebug._tokenScanFailureReason ?? null,
       tokenEvidenceMissing: ev.warnings ?? [],
       formatterUsed: ev.ok ? "formatTokenScanResult" : "inline_fallback",
       finalAnswerType: ev.ok ? "token_read" : "open_check",
@@ -8450,7 +8470,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: errMsg, ...debugInfo }, { status: 429 })
   }
   try {
-    clarkInternalCtx = { authToken: token || undefined, verifiedPlan: effectivePlan }
+    clarkInternalCtx = { authToken: token || undefined, verifiedPlan: effectivePlan, cookie: req.headers.get('cookie') || undefined }
     // body already parsed before rate check — do NOT call req.json() again
     const cacheKey = JSON.stringify({ actor, verifiedPlan: effectivePlan, feature: body.feature, mode: body.mode ?? "", prompt: body.prompt ?? body.message ?? "", chain: body.chain ?? "base", token: body.tokenAddress ?? body.addressOrToken ?? "", wallet: body.walletAddress ?? "" })
     const cached = clarkCache.get(cacheKey)

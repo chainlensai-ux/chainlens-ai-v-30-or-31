@@ -345,6 +345,38 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(walletGuardCount >= 3, `at least 3 wallet execution points guarded (found ${walletGuardCount})`)
 }
 
+// ─── Task 9: Clark token_scan 401 auth forwarding fix ────────────────────────
+{
+  const routeFile = fs.readFileSync(path.join(__dirname, '..', 'app', 'api', 'clark', 'route.ts'), 'utf8')
+
+  // clarkInternalCtx must carry cookie
+  assert.ok(routeFile.includes("cookie?: string"), 'clarkInternalCtx type includes cookie field')
+  assert.ok(routeFile.includes("cookie: req.headers.get('cookie') || undefined"), 'cookie extracted from original request')
+
+  // callInternalApi must forward cookie
+  assert.ok(routeFile.includes("headers.Cookie = cookieVal"), 'callInternalApi forwards Cookie header')
+
+  // 401 must produce specific public message not "unavailable right now"
+  assert.ok(routeFile.includes('Token Scanner authorization failed. Reconnect/sign in and try again.'), '401 produces specific auth failure message')
+  assert.ok(!routeFile.includes('"Token data unavailable right now."'), 'generic unavailable message removed')
+
+  // Debug receipt must include auth forwarding info
+  assert.ok(routeFile.includes('tokenScanAuthForwarded'), 'debug receipt includes tokenScanAuthForwarded')
+  assert.ok(routeFile.includes('cookie: Boolean(clarkInternalCtx.cookie)'), 'auth forwarded bool does not expose cookie value')
+  assert.ok(routeFile.includes('tokenScanFailureReason'), 'debug receipt includes tokenScanFailureReason')
+  assert.ok(routeFile.includes('"token_route_unauthorized"'), 'debug receipt 401 reason is token_route_unauthorized')
+
+  // Provider names must not appear in the 401 public failure message text
+  assert.ok(!routeFile.includes('geckoterminal authorization failed'), 'no geckoterminal in auth failure message')
+  assert.ok(!routeFile.includes('goldrush authorization failed'), 'no goldrush in auth failure message')
+
+  // Explicit token prompt must not trigger wallet scan (regression)
+  const { classifyClarkPrompt } = await import('../lib/server/clarkRouting.ts')
+  const tokenAddr = '0x0b3e328455c4059eeb9e3f84b5543f74e24e7e1b'
+  assert.equal(classifyClarkPrompt(`scan this token ${tokenAddr} on base`).intent, 'token_scan', 'explicit token prompt routes to token_scan')
+  assert.notEqual(classifyClarkPrompt(`scan this token ${tokenAddr} on base`).intent, 'wallet_scan', 'explicit token prompt does not route to wallet_scan')
+}
+
 // ─── Task 8: Clark token debug receipt + field-mapping regression ─────────────
 {
   const routeFile = fs.readFileSync(path.join(__dirname, '..', 'app', 'api', 'clark', 'route.ts'), 'utf8')
