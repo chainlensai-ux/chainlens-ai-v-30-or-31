@@ -459,4 +459,54 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(out.includes('?'), 'handles null token gracefully')
 }
 
+// ─── Task 10: Timeout fallback preserves original intent ─────────────────────
+{
+  const routeFile = fs.readFileSync(path.join(__dirname, '..', 'app', 'api', 'clark', 'route.ts'), 'utf8')
+  const { classifyClarkPrompt, getClarkAddressRouteHint } = await import('../lib/server/clarkRouting.ts')
+
+  const tokenAddr = '0x0b3e328455c4059eeb9e3f84b5543f74e24e7e1b'
+
+  // Token prompt → token intent, not generic analysis
+  const tokenResult = classifyClarkPrompt(`scan this token ${tokenAddr} on base`)
+  assert.equal(tokenResult.intent, 'token_scan', 'token prompt classifies as token_scan')
+  const tokenHint = getClarkAddressRouteHint(`scan this token ${tokenAddr} on base`)
+  assert.equal(tokenHint, 'token', 'token prompt routeHint is "token"')
+
+  // The catch block must use classifyClarkPrompt, not legacy detectIntent, for intent detection
+  assert.ok(routeFile.includes('classifyClarkPrompt(prompt)'), 'catch block uses classifyClarkPrompt for accurate intent')
+  assert.ok(routeFile.includes('getClarkAddressRouteHint(prompt)'), 'catch block uses getClarkAddressRouteHint')
+
+  // Token fallback must produce TOKEN READ header, not "Interpreted as: analysis"
+  assert.ok(routeFile.includes('TOKEN READ — '), 'token timeout produces TOKEN READ header')
+  assert.ok(routeFile.includes('Token scan'), 'token timeout message mentions token scan stage')
+  assert.ok(routeFile.includes('Open Token Scanner / Retry Token Scan'), 'token timeout CTA is Open Token Scanner')
+
+  // Wallet fallback must produce WALLET READ header
+  assert.ok(routeFile.includes('WALLET READ — '), 'wallet timeout produces WALLET READ header')
+  assert.ok(routeFile.includes('Open Wallet Scanner / Retry Wallet Scan'), 'wallet timeout CTA is correct')
+
+  // Market fallback uses Refresh Market Data
+  assert.ok(routeFile.includes("isMarketFallback"), 'market intent path exists')
+
+  // Token fallback must NOT use "Refresh Market Data" as its CTA
+  // (check that token path explicitly uses Open Token Scanner)
+  assert.ok(routeFile.includes('"Open Token Scanner"'), 'token fallback CTA is Open Token Scanner, not market')
+
+  // No fake token evidence on timeout (no hardcoded token data in fallback)
+  assert.ok(!routeFile.includes('honeypot: false'), 'no fake security data injected in timeout fallback')
+
+  // Debug receipt is emitted in non-prod
+  assert.ok(routeFile.includes('originalIntent'), 'debug receipt includes originalIntent')
+  assert.ok(routeFile.includes('timeoutStage'), 'debug receipt includes timeoutStage')
+  assert.ok(routeFile.includes('fallbackUsed'), 'debug receipt includes fallbackUsed')
+  assert.ok(routeFile.includes('finalIntentBadge'), 'debug receipt includes finalIntentBadge')
+
+  // No re-classification as "analysis" for token prompts
+  assert.ok(!routeFile.includes('"Interpreted as: analysis"'), 'token prompt is never labelled as "analysis" in catch')
+
+  // Token prompt does not call wallet scan
+  const noWalletOnToken = tokenResult.intent !== 'wallet_scan' && tokenHint !== 'wallet'
+  assert.ok(noWalletOnToken, 'token prompt stays away from wallet_scan in timeout path')
+}
+
 console.log('test-clark-execution.mjs: all assertions passed')

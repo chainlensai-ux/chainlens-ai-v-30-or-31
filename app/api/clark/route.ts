@@ -8571,25 +8571,94 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(normalized, { status: 200 });
   } catch (err: unknown) {
     console.error("[Clark]", err instanceof Error ? err.message : err);
-    const intentBadge = (() => {
-      try {
-        const { intent } = detectIntent(body.prompt ?? "");
-        return intent;
-      } catch { return "unknown"; }
-    })();
-    const safeMsg = formatCouldNotComplete({
-      intentBadge,
-      attempted: ["live Base market data", "CORTEX evidence pipeline"],
-      reason: err instanceof Error ? err.message : "An unexpected error interrupted this read before a result was produced.",
-      actions: buildRoutedActions(["Refresh Market Data"]),
-    });
+    const errMsg = err instanceof Error ? err.message : "An unexpected error interrupted this read before a result was produced.";
+    const isTimeout = /abort|timeout/i.test(errMsg);
+    const prompt = body.prompt ?? "";
+
+    // Use the accurate router, not the legacy detectIntent, so token prompts are never
+    // re-classified as generic "analysis" in the timeout path.
+    let routedFallback: { intent: string; address: string | null; symbol: string | null } = { intent: "unknown", address: null, symbol: null };
+    try {
+      const rc = classifyClarkPrompt(prompt);
+      routedFallback = { intent: rc.intent, address: rc.address, symbol: rc.symbol };
+    } catch { /* ignore */ }
+    const rh = (() => { try { return getClarkAddressRouteHint(prompt); } catch { return "none" as const; } })();
+
+    const TOKEN_INTENTS_FB = new Set(["token_scan", "token_safety", "dev_rug_check", "lp_lock_check", "risk_explanation"]);
+    const WALLET_INTENTS_FB = new Set(["wallet_scan", "wallet_pnl_followup", "wallet_compare", "wallet_dig_deeper"]);
+    const MARKET_INTENTS_FB = new Set(["base_radar", "base_market_discovery", "whale_alert"]);
+
+    const isTokenFallback = TOKEN_INTENTS_FB.has(routedFallback.intent) || rh === "token";
+    const isWalletFallback = !isTokenFallback && (WALLET_INTENTS_FB.has(routedFallback.intent) || rh === "wallet");
+    const isMarketFallback = !isTokenFallback && !isWalletFallback && MARKET_INTENTS_FB.has(routedFallback.intent);
+
+    let intentBadge: string;
+    let safeMsg: string;
+    let actions: string[];
+
+    if (isTokenFallback) {
+      intentBadge = "token_scan";
+      const addrLine = routedFallback.address ? `\n- Address: ${routedFallback.address}` : "";
+      const symLine = routedFallback.symbol ? ` (${routedFallback.symbol})` : "";
+      safeMsg = [
+        `TOKEN READ — ${isTimeout ? "timed out" : "could not complete"}${symLine}`,
+        `- Chain: ${body.chain ?? "base"}`,
+        ...(routedFallback.address ? [`- Address: ${routedFallback.address}`] : []),
+        `- Stage: token scan`,
+        `- Reason: Token scan ${isTimeout ? "timed out before evidence could be returned" : "failed: " + errMsg}.`,
+        ``,
+        `Paste the contract address in Token Scanner to run the full scan directly.`,
+        `CTA: Open Token Scanner / Retry Token Scan`,
+      ].join("\n");
+      void addrLine; void symLine;
+      actions = ["Open Token Scanner"];
+    } else if (isWalletFallback) {
+      intentBadge = "wallet_scan";
+      safeMsg = [
+        `WALLET READ — ${isTimeout ? "timed out" : "could not complete"}`,
+        `- Reason: Wallet scan ${isTimeout ? "timed out before data could be returned" : "failed: " + errMsg}.`,
+        ``,
+        `Open Wallet Scanner and paste the address to run the scan directly.`,
+        `CTA: Open Wallet Scanner / Retry Wallet Scan`,
+      ].join("\n");
+      actions = ["Scan Wallet"];
+    } else if (isMarketFallback) {
+      intentBadge = "base_radar";
+      safeMsg = formatCouldNotComplete({
+        intentBadge: "base_radar",
+        attempted: ["live Base market data", "CORTEX evidence pipeline"],
+        reason: errMsg,
+        actions: buildRoutedActions(["Open Base Radar", "Refresh Market Data"]),
+      });
+      actions = ["Open Base Radar", "Refresh Market Data"];
+    } else {
+      // True generic fallback only when intent is actually unknown
+      intentBadge = (() => { try { return detectIntent(prompt).intent; } catch { return "unknown"; } })();
+      safeMsg = formatCouldNotComplete({
+        intentBadge,
+        attempted: ["live Base market data", "CORTEX evidence pipeline"],
+        reason: errMsg,
+        actions: buildRoutedActions(["Refresh Market Data"]),
+      });
+      actions = ["Refresh Market Data"];
+    }
+
+    const debugReceipt = process.env.NODE_ENV !== "production" ? {
+      originalIntent: routedFallback.intent,
+      routeHint: rh,
+      timeoutStage: isTimeout ? "token scan" : "execution",
+      fallbackUsed: isTokenFallback ? "token" : isWalletFallback ? "wallet" : isMarketFallback ? "market" : "generic",
+      finalIntentBadge: intentBadge,
+    } : undefined;
+
     return NextResponse.json({
       ok: true,
       feature: "clark-ai",
       data: {
         reply: safeMsg, response: safeMsg, message: safeMsg, text: safeMsg, analysis: safeMsg,
         verdict: "SCAN DEEPER", source: "fallback",
-        intentBadge, actions: buildRoutedActions(["Refresh Market Data"]),
+        intentBadge, actions: buildRoutedActions(actions as Parameters<typeof buildRoutedActions>[0]),
+        ...(debugReceipt ? { clarkDebugReceipt: debugReceipt } : {}),
       },
       quotaConsumed: false,
     }, { status: 200 });
