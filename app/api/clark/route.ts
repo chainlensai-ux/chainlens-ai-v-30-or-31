@@ -6161,7 +6161,10 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_pnl_followup", toolsUsed: ["wallet_scanner_runner"], ui: { intentBadge: 'Wallet Deep Scan', actions: [{ label: 'Open Wallet Scanner', href: walletScannerDeepLink(targetAddr, true) }] }, analysis };
   }
 
-  if (appIntent.intent === 'wallet_scan') {
+  // Token intent from classifyClarkPrompt takes priority over appIntent wallet_scan
+  const TOKEN_INTENTS = new Set(['token_scan','token_safety','dev_rug_check','lp_lock_check','risk_explanation'] as const);
+  const routedIsToken = TOKEN_INTENTS.has(routedClassification.intent as typeof TOKEN_INTENTS extends Set<infer T> ? T : never);
+  if (appIntent.intent === 'wallet_scan' && !routedIsToken) {
     const selectedWallet = typeof body.appContext?.selectedWallet === 'string' ? body.appContext.selectedWallet : body.appContext?.selectedWallet?.address ?? null;
     const walletAddress = appIntent.address ?? selectedWallet ?? null;
     const deepScan = wantsWalletDeepScan(prompt);

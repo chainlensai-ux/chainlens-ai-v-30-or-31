@@ -133,13 +133,15 @@ export function classifyClarkPrompt(prompt: string): {
 
   // ---- Wallet scan ----
   const walletScanRe = /\b(scan\s+(?:this\s+)?wallet|scan\s+wallet|analyze\s+(?:this\s+)?wallet|wallet\s+pnl|wallet\s+(?:scan|check|report|analysis))\b/i;
-  if (address && (walletScanRe.test(t) || WALLET_DEEP_RE.test(t))) {
+  // token keywords prevent wallet routing even if WALLET_DEEP_RE fires
+  const hasExplicitTokenKeyword = /\b(token|coin|contract|ticker|\bca\b|scan\s+this\s+token|token\s+scan|on\s+base|on\s+eth)\b/i.test(t);
+  if (address && !hasExplicitTokenKeyword && (walletScanRe.test(t) || WALLET_DEEP_RE.test(t))) {
     return { intent: "wallet_scan", address, addresses, deep, symbol: null };
   }
   // Plain EOA address alone (no other strong intent keywords) → wallet scan
   if (address) {
     const hasOtherStrongIntent =
-      /\b(lp\s+check|liquidity\s+check|liquidity|radar|pumping|trending|movers|whale|smart\s+money|token\s+scan|scan\s+this\s+token|token\s+check|is\s+(?:this\s+)?token|can\s+(?:the\s+)?dev|is\s+lp|explain\s+lp|high\s+risk|red\s+flags)\b/i.test(t);
+      /\b(lp\s+check|liquidity\s+check|liquidity|radar|pumping|trending|movers|whale|smart\s+money|token\s+scan|scan\s+this\s+token|token\s+check|is\s+(?:this\s+)?token|this\s+token|can\s+(?:the\s+)?dev|is\s+lp|explain\s+lp|high\s+risk|red\s+flags|on\s+base|on\s+eth|base\s+token|eth\s+token|\btoken\b|\bcoin\b|\bca\b|\bticker\b|contract\s+address)\b/i.test(t);
     if (!hasOtherStrongIntent) {
       return { intent: "wallet_scan", address, addresses, deep, symbol: null };
     }

@@ -288,6 +288,28 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(routeFile.includes("routed.intent === \"risk_explanation\""), 'risk_explanation handler exists')
   assert.ok(routeFile.includes('updateMemToken'), 'token scan saves to session memory')
   assert.ok(!routeFile.includes('No data available right now'), 'stale fallback removed')
+  // Token routing priority guard: wallet_scan block must not fire when routedIsToken is true
+  assert.ok(routeFile.includes('routedIsToken'), 'route.ts has token-over-wallet priority guard')
+  assert.ok(routeFile.includes('!routedIsToken'), 'wallet_scan block skipped when routed intent is token')
+}
+
+// ─── Token address routing priority (classifyClarkPrompt) ────────────────────
+{
+  const { classifyClarkPrompt: classify } = await import('../lib/server/clarkRouting.ts')
+
+  const addr = '0xabcdef1234567890abcdef1234567890abcdef12'
+
+  // explicit token keyword must win
+  assert.equal(classify(`scan this token ${addr} on base`).intent, 'token_scan', '"scan this token ... on base" => token_scan')
+  assert.equal(classify(`token scan ${addr}`).intent, 'token_scan', '"token scan 0x" => token_scan')
+
+  // wallet keyword with address must still work
+  assert.equal(classify(`scan this wallet ${addr}`).intent, 'wallet_scan', '"scan this wallet 0x" => wallet_scan')
+  assert.equal(classify(`wallet pnl ${addr}`).intent, 'wallet_scan', '"wallet pnl 0x" => wallet_scan')
+
+  // address + "on base" must not be wallet_scan
+  const onBaseResult = classify(`${addr} on base`)
+  assert.notEqual(onBaseResult.intent, 'wallet_scan', '"0x on base" must not be wallet_scan')
 }
 
 console.log('test-clark-execution.mjs: all assertions passed')

@@ -19,6 +19,40 @@ assert.equal(classifyClarkPrompt("what Base pairs are pumping?").intent, 'base_m
 assert.equal(classifyClarkPrompt("show me trending Base tokens").intent, 'base_market_discovery')
 assert.equal(classifyClarkPrompt("what's pumping on Base Radar?").intent, 'base_radar')
 
+// ─── Token-over-wallet routing priority ───────────────────────────────────────
+// "scan this token 0x..." must never route to wallet_scan
+{
+  const r = classifyClarkPrompt('scan this token 0xabcdef1234567890abcdef1234567890abcdef12 on base')
+  assert.equal(r.intent, 'token_scan', 'scan this token ... on base => token_scan, not wallet_scan')
+  assert.equal(r.address, '0xabcdef1234567890abcdef1234567890abcdef12')
+}
+{
+  const r = classifyClarkPrompt('token scan 0xabcdef1234567890abcdef1234567890abcdef12')
+  assert.equal(r.intent, 'token_scan', 'token scan 0x => token_scan')
+}
+{
+  const r = classifyClarkPrompt('is this token safe 0xabcdef1234567890abcdef1234567890abcdef12')
+  assert.ok(r.intent === 'token_safety' || r.intent === 'token_scan', 'is this token safe => token_safety or token_scan, not wallet_scan')
+}
+{
+  const r = classifyClarkPrompt('scan this wallet 0x1234567890123456789012345678901234567890')
+  assert.equal(r.intent, 'wallet_scan', 'explicit wallet keyword => wallet_scan')
+}
+{
+  const r = classifyClarkPrompt('wallet pnl 0x1234567890123456789012345678901234567890')
+  assert.equal(r.intent, 'wallet_scan', 'wallet pnl => wallet_scan')
+}
+{
+  // bare address: hasOtherStrongIntent is false, so wallet_scan is the fallback
+  const r = classifyClarkPrompt('0x1234567890123456789012345678901234567890')
+  assert.equal(r.intent, 'wallet_scan', 'bare address => wallet_scan fallback')
+}
+{
+  // address + "on base" signals token, not wallet
+  const r = classifyClarkPrompt('0xabcdef1234567890abcdef1234567890abcdef12 on base')
+  assert.notEqual(r.intent, 'wallet_scan', 'address + on base must not be wallet_scan')
+}
+
 // ─── wallet_scan ──────────────────────────────────────────────────────────────
 {
   const r = classifyClarkPrompt('scan this wallet 0x1234567890123456789012345678901234567890')

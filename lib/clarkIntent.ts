@@ -78,6 +78,8 @@ export function resolveClarkIntent(message: string, context?: ClarkIntentContext
   const whale = /\b(whales?|big wallets?|large wallets?|wallet alerts?|whale alerts?|smart money|large buys?|large sells?|accumulation|distribution)\b/.test(normalized)
   const page = /\b(what page am i on|explain this|what does this mean|what am i looking at|current page)\b/.test(normalized)
   const token = /\b(scan token|check token|token contract|contract|ca\b|is this coin safe|is this token safe|rug|honeypot|tax)\b/.test(normalized)
+  // Explicit token-intent keywords — these must win over any wallet fallback
+  const tokenExplicit = /\b(scan\s+this\s+token|token\s+scan|this\s+token|coin\b|ticker|on\s+base|on\s+eth|base\s+token|eth\s+token|is\s+this\s+token|can\s+dev\s+rug|is\s+lp\s+locked|is\s+liquidity|explain\s+lp)\b/i.test(normalized)
 
   let intent: ClarkIntentCategory = 'general_help'
   let source: ClarkResolvedIntent['source'] = 'none'
@@ -87,9 +89,10 @@ export function resolveClarkIntent(message: string, context?: ClarkIntentContext
   if (pumping) intent = 'base_radar'
   else if (lp) { intent = 'liquidity_scan'; if (!resolvedAddress && selectedToken) { resolvedAddress = selectedToken; source = 'context' } }
   else if (whale) intent = 'whale_alerts'
-  else if (wallet || (address && (/wallet|scan this|scan 0x|pnl|holdings|portfolio/.test(normalized) || normalized === address.toLowerCase()))) { intent = /portfolio|holdings/.test(normalized) ? 'portfolio' : 'wallet_scan'; if (!resolvedAddress && selectedWallet) { resolvedAddress = selectedWallet; source = 'context' } }
+  // wallet routing only fires when explicit wallet words are present AND no explicit token signal overrides
+  else if (!tokenExplicit && (wallet || (address && (/wallet|pnl|holdings|portfolio/.test(normalized) || normalized === address.toLowerCase())))) { intent = /portfolio|holdings/.test(normalized) ? 'portfolio' : 'wallet_scan'; if (!resolvedAddress && selectedWallet) { resolvedAddress = selectedWallet; source = 'context' } }
   else if (page) intent = 'explain_current_page'
-  else if (token || address) { intent = 'token_scan'; if (!resolvedAddress && selectedToken) { resolvedAddress = selectedToken; source = 'context' } }
+  else if (token || tokenExplicit || address) { intent = 'token_scan'; if (!resolvedAddress && selectedToken) { resolvedAddress = selectedToken; source = 'context' } }
   else if (/\bscan this\b/.test(normalized) && selectedWallet) { intent = 'wallet_scan'; resolvedAddress = selectedWallet; source = 'context' }
 
   if (source === 'none' && resolvedAddress) source = address ? 'message' : 'context'
