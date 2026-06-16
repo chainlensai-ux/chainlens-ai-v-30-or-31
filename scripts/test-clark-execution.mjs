@@ -399,7 +399,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
 
   // Failure message must not just say "Token data unavailable right now."
   assert.ok(!routeFile.includes('"Token data unavailable right now."'), 'stale "unavailable" fallback removed from fetchTokenEvidence')
-  assert.ok(routeFile.includes('Token scan route failed'), 'specific failure message for route failure')
+  assert.ok(routeFile.includes('Market, LP, and holder data'), 'specific failure message for route failure covers market/LP/holders')
   assert.ok(routeFile.includes('Token not found on Base'), 'specific failure message for no pool data')
 
   // Provider names must not appear in public Clark answers
@@ -514,10 +514,10 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   const routeFile = fs.readFileSync(path.join(__dirname, '..', 'app', 'api', 'clark', 'route.ts'), 'utf8')
 
   // fetchTokenEvidence must record timing
-  assert.ok(routeFile.includes('startedAt = Date.now()'), 'fetchTokenEvidence records startedAt')
-  assert.ok(routeFile.includes('durationMs'), 'fetchTokenEvidence records durationMs')
-  assert.ok(routeFile.includes('fetchAborted'), 'fetchTokenEvidence tracks abort')
-  assert.ok(routeFile.includes('fetchNetworkError'), 'fetchTokenEvidence tracks network error')
+  assert.ok(routeFile.includes('tokenRouteStart = Date.now()'), 'fetchTokenEvidence records tokenRouteStart timing')
+  assert.ok(routeFile.includes('tokenRouteDurationMs'), 'fetchTokenEvidence records tokenRouteDurationMs')
+  assert.ok(routeFile.includes('tokenRouteAborted'), 'fetchTokenEvidence tracks token route abort')
+  assert.ok(routeFile.includes('honeypotAborted'), 'fetchTokenEvidence tracks honeypot abort')
 
   // tokenScanDebug object is built and returned from fetchTokenEvidence
   assert.ok(routeFile.includes('tokenScanAttempted: true'), 'tokenScanDebug includes tokenScanAttempted')
@@ -554,6 +554,104 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok('chain' in sanitized, 'sanitize preserves chain')
   const debugSanitized = sanitizePublicTokenResponse(mockPayload, true)
   assert.ok(debugSanitized._tokenRouteDebug?.routeReached === true, 'debug mode preserves _tokenRouteDebug')
+}
+
+// ─── Pack 1 Task 1-7: partial evidence / missing evidence / memory / follow-up ─
+{
+  const routeFile = fs.readFileSync(path.join(__dirname, '..', 'app', 'api', 'clark', 'route.ts'), 'utf8')
+  const { formatTokenScanResult, formatTokenSafetyAnswer, formatDevRugCheck, formatLpLockCheck } = await import('../lib/server/clarkRouting.ts')
+
+  // Task 1: fetchTokenEvidence branches are independently guarded
+  assert.ok(routeFile.includes('tokenFetchPromise'), 'token route branch has its own promise')
+  assert.ok(routeFile.includes('honeypotPromise'), 'honeypot branch has its own promise')
+  assert.ok(routeFile.includes('Promise.all([tokenFetchPromise, honeypotPromise])'), 'both branches run in parallel')
+  assert.ok(routeFile.includes('tokenRouteAborted'), 'token route abort tracked independently')
+  assert.ok(routeFile.includes('honeypotAborted'), 'honeypot abort tracked independently')
+
+  // Task 2: partial evidence flags exist in return value
+  assert.ok(routeFile.includes('_partialEvidenceUsed'), 'fetchTokenEvidence returns _partialEvidenceUsed')
+  assert.ok(routeFile.includes('_evidenceSectionsPresent'), 'fetchTokenEvidence returns _evidenceSectionsPresent')
+  assert.ok(routeFile.includes('_evidenceSectionsMissing'), 'fetchTokenEvidence returns _evidenceSectionsMissing')
+  assert.ok(routeFile.includes('_tokenRouteStatus'), 'fetchTokenEvidence returns _tokenRouteStatus')
+  assert.ok(routeFile.includes('_tokenRouteDurationMs'), 'fetchTokenEvidence returns _tokenRouteDurationMs')
+  assert.ok(routeFile.includes('_honeypotStatus'), 'fetchTokenEvidence returns _honeypotStatus')
+  assert.ok(routeFile.includes('_honeypotDurationMs'), 'fetchTokenEvidence returns _honeypotDurationMs')
+
+  // Task 3: public missing evidence messages use open_check language
+  assert.ok(routeFile.includes('timed out / Open Check'), 'timeout uses Open Check language')
+  assert.ok(routeFile.includes('network error / Open Check'), 'network error uses Open Check language')
+  assert.ok(routeFile.includes('Security simulation: timed out / Open Check'), 'honeypot timeout says Open Check')
+
+  // Task 4: formatPartialTokenRead exists and has correct output structure
+  assert.ok(routeFile.includes('formatPartialTokenRead'), 'partial token read formatter exists')
+  assert.ok(routeFile.includes('TOKEN READ — ${sym} (partial evidence)'), 'partial formatter header uses partial evidence label')
+  assert.ok(routeFile.includes('Open Check'), 'partial formatter emits Open Check for missing sections')
+  assert.ok(routeFile.includes('Missing evidence:'), 'partial formatter lists missing evidence')
+
+  // Task 1 partial behavior: /api/token success + honeypot timeout → partial TOKEN READ
+  // Simulated by checking the routing logic: partialEvidenceUsed when one branch failed
+  assert.ok(routeFile.includes('partialEvidenceUsed = !totalFailure && (tokenRouteFailed || honeypotFailed'), 'partial evidence condition covers mixed success/fail')
+
+  // /api/token timeout + honeypot success → partial with market/LP/holders open_check
+  assert.ok(routeFile.includes('tokenRouteFailed ? `token route ${tokenRouteStatus}` : "unavailable"'), 'market/holders missing reason references token route status')
+
+  // Total failure → TOKEN READ — timed out
+  assert.ok(routeFile.includes('TOKEN READ — timed out'), 'total failure outputs timed out header')
+
+  // No fake safe/clean/LP locked when evidence missing
+  const partialReadStart = routeFile.indexOf('formatPartialTokenRead')
+  const partialReadEnd = routeFile.indexOf('async function resolveTokenForFollowup')
+  const partialReadBody = routeFile.slice(partialReadStart, partialReadEnd)
+  assert.ok(!partialReadBody.includes('"safe"'), 'partial formatter does not claim safe')
+  assert.ok(!partialReadBody.includes('"Cleaner"'), 'partial formatter does not claim Cleaner verdict without evidence')
+  assert.ok(!partialReadBody.includes('"LP locked"'), 'partial formatter does not claim LP locked without evidence')
+  // Verdict only asserts Avoid when honeypot=true
+  assert.ok(partialReadBody.includes('sec?.honeypot === true'), 'partial formatter only claims Avoid when honeypot=true')
+
+  // Task 5: lastToken memory stores extra fields
+  assert.ok(routeFile.includes('normalizedEvidenceSummary'), 'lastToken stores normalizedEvidenceSummary')
+  assert.ok(routeFile.includes('missingEvidence:'), 'lastToken stores missingEvidence')
+  assert.ok(routeFile.includes("confidence:"), 'lastToken stores confidence')
+  assert.ok(routeFile.includes('cachedEvidence:'), 'lastToken stores cachedEvidence')
+  assert.ok(routeFile.includes('cachedEvidence: memConfidence !== "none" ? ev : null'), 'cachedEvidence stored when evidence is present')
+
+  // Task 6: follow-up intents use memory-first
+  assert.ok(routeFile.includes('fromMemory: true'), 'resolveTokenForFollowup returns fromMemory flag')
+  assert.ok(routeFile.includes('cachedEvidence && mem.address'), 'follow-up checks cached evidence before re-calling')
+  // Follow-up intents set toolsUsed to ["memory"] from memory
+  assert.ok(routeFile.includes("r.fromMemory ? [\"memory\"] : [\"token_scan\"]"), 'token_safety uses memory tool label when from cache')
+  // Does not re-call providers when memory exists
+  assert.ok(routeFile.includes('quotaConsumed: r.fromMemory ? false'), 'no quota consumed from memory follow-up')
+
+  // Formatters with partial evidence — formatTokenSafetyAnswer handles null fields gracefully
+  const partialEv = {
+    ok: false,
+    token: { name: 'TestCoin', symbol: 'TEST', address: '0xabc' },
+    chain: 'Base',
+    market: { price: null, change24h: null, volume24h: null, liquidity: null, marketCap: null },
+    holders: { top1: null, top10: null, holderCount: null, status: 'timed out' },
+    security: { honeypot: false, buyTax: 0, sellTax: 0, ownerRenounced: null, mintable: null, proxy: null, securityStatus: 'partial', riskLevel: 'unknown', missing: ['Market, LP, and holder data: timed out / Open Check'] },
+    lpControl: null,
+    warnings: ['Market, LP, and holder data: timed out / Open Check'],
+  }
+  // Honeypot succeeded, but token route timed out — safety answer should include what's known
+  const safetyOut = formatTokenSafetyAnswer(partialEv)
+  assert.ok(!safetyOut.includes('LP locked'), 'safety answer does not say LP locked when lpControl is null')
+  assert.ok(!safetyOut.includes('renounced'), 'safety answer does not claim renounced when ownerRenounced is null')
+  assert.ok(safetyOut.includes('TEST'), 'safety answer includes symbol')
+
+  const devOut = formatDevRugCheck(partialEv)
+  assert.ok(!devOut.includes('renounced'), 'dev rug check does not claim renounced when evidence null')
+
+  // Task 7: debug receipt has new fields
+  assert.ok(routeFile.includes('tokenRouteAttempted: true'), 'debug receipt includes tokenRouteAttempted')
+  assert.ok(routeFile.includes('honeypotAttempted: true'), 'debug receipt includes honeypotAttempted')
+  assert.ok(routeFile.includes('tokenRouteDurationMs'), 'debug receipt includes tokenRouteDurationMs')
+  assert.ok(routeFile.includes('honeypotDurationMs'), 'debug receipt includes honeypotDurationMs')
+  assert.ok(routeFile.includes('memoryUpdated: true'), 'debug receipt includes memoryUpdated')
+
+  // Public response does not expose cookies or auth
+  assert.ok(!routeFile.includes('cookie: clarkInternalCtx.cookie,') || routeFile.includes('cookie: Boolean(clarkInternalCtx.cookie)'), 'cookie exposed as boolean only')
 }
 
 console.log('test-clark-execution.mjs: all assertions passed')

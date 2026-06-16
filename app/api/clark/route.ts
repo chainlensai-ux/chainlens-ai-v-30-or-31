@@ -109,6 +109,10 @@ type ClarkSessionMemory = {
     symbol: string | null;
     name: string | null;
     scanSummary: string | null;
+    normalizedEvidenceSummary?: string | null;
+    missingEvidence?: string[];
+    confidence?: "full" | "partial" | "none";
+    cachedEvidence?: TokenScanEvidence | null;
     ts: number;
   } | null;
   prevToken?: {
@@ -215,7 +219,19 @@ function getSessionKeySource(req: NextRequest, authenticated: boolean): "user" |
   return "ip";
 }
 
-function updateMemToken(mem: ClarkSessionMemory, address: string, symbol: string | null, name: string | null, scanSummary: string | null) {
+function updateMemToken(
+  mem: ClarkSessionMemory,
+  address: string,
+  symbol: string | null,
+  name: string | null,
+  scanSummary: string | null,
+  opts?: {
+    normalizedEvidenceSummary?: string | null;
+    missingEvidence?: string[];
+    confidence?: "full" | "partial" | "none";
+    cachedEvidence?: TokenScanEvidence | null;
+  }
+) {
   if (mem.lastToken) {
     mem.prevToken = { ...mem.lastToken, chain: mem.selectedChain }
     mem.prevTokenSymbol = mem.lastToken.symbol;
@@ -224,7 +240,13 @@ function updateMemToken(mem: ClarkSessionMemory, address: string, symbol: string
     mem.prevTokenChain = mem.selectedChain;
     mem.prevTokenSummary = mem.lastToken.scanSummary;
   }
-  mem.lastToken = { address, symbol, name, scanSummary, ts: Date.now() };
+  mem.lastToken = {
+    address, symbol, name, scanSummary, ts: Date.now(),
+    normalizedEvidenceSummary: opts?.normalizedEvidenceSummary ?? null,
+    missingEvidence: opts?.missingEvidence ?? [],
+    confidence: opts?.confidence ?? "none",
+    cachedEvidence: opts?.cachedEvidence ?? null,
+  };
   mem.lastTokenSymbol = symbol;
   mem.lastTokenName = name;
   mem.lastTokenAddress = address;
@@ -6853,67 +6875,71 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
 
   // ── Pack 1: Token Core Pipeline handlers ──────────────────────────────────────
 
-  async function fetchTokenEvidence(tokenAddress: string): Promise<TokenScanEvidence & { _tokenApiStatus?: string; _tokenApiHttpStatus?: number; _tokenScanFailureReason?: string; _tokenScanDebug?: Record<string, unknown> }> {
-    const startedAt = Date.now();
-    let tokenData: { ok: boolean; status: number; json: unknown } | null = null;
-    let fetchAborted = false;
-    let fetchNetworkError = false;
+  async function fetchTokenEvidence(tokenAddress: string): Promise<TokenScanEvidence & { _tokenApiStatus?: string; _tokenApiHttpStatus?: number; _tokenScanFailureReason?: string; _tokenScanDebug?: Record<string, unknown>; _partialEvidenceUsed?: boolean; _evidenceSectionsPresent?: string[]; _evidenceSectionsMissing?: Array<{ section: string; reason: string }>; _tokenRouteStatus?: string; _tokenRouteDurationMs?: number; _honeypotStatus?: string; _honeypotDurationMs?: number }> {
 
+    // ── Branch 1: /api/token (market, holders, LP, contract flags) ──
+    const tokenRouteStart = Date.now();
+    let tokenData: { ok: boolean; status: number; json: unknown } | null = null;
+    let tokenRouteAborted = false;
+    let tokenRouteNetworkError = false;
     const tokenFetchPromise = callInternalApi(origin, "/api/token", { contract: tokenAddress, chain: chain ?? "base" }, authHeader ?? undefined, verifiedPlan)
       .then((r) => { tokenData = r; return r; })
       .catch((e: unknown) => {
         const msg = e instanceof Error ? e.message : String(e);
-        if (/abort|timeout/i.test(msg)) fetchAborted = true;
-        else fetchNetworkError = true;
+        if (/abort|timeout/i.test(msg)) tokenRouteAborted = true;
+        else tokenRouteNetworkError = true;
         return null;
       });
 
-    const [, securitySim] = await Promise.all([tokenFetchPromise, fetchHoneypotSecurity(tokenAddress, "base")]);
-    const durationMs = Date.now() - startedAt;
+    // ── Branch 2: honeypot/security sim ──
+    const honeypotStart = Date.now();
+    let securitySim: Awaited<ReturnType<typeof fetchHoneypotSecurity>> | null = null;
+    let honeypotAborted = false;
+    let honeypotNetworkError = false;
+    const honeypotPromise = fetchHoneypotSecurity(tokenAddress, "base")
+      .then((r) => { securitySim = r; return r; })
+      .catch((e: unknown) => {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (/abort|timeout/i.test(msg)) honeypotAborted = true;
+        else honeypotNetworkError = true;
+        return null;
+      });
 
+    await Promise.all([tokenFetchPromise, honeypotPromise]);
+
+    const tokenRouteDurationMs = Date.now() - tokenRouteStart;
+    const honeypotDurationMs = Date.now() - honeypotStart;
+
+    // Cast to work around TypeScript's narrowing of variables assigned inside .then() callbacks
     const _td = tokenData as { ok: boolean; status: number; json: unknown } | null;
+    const _hp = securitySim as (Awaited<ReturnType<typeof fetchHoneypotSecurity>> | null);
+
+    // ── Derive per-branch status ──
     const tokenApiOk = _td?.ok === true;
     const tokenApiHttpStatus = _td?.status ?? 0;
     const tokenJson = tokenApiOk ? _td!.json : null;
 
-    // Derive scan debug status
-    let tokenScanStatus: string;
-    if (fetchAborted) tokenScanStatus = "timeout";
-    else if (fetchNetworkError) tokenScanStatus = "network_error";
-    else if (!tokenData) tokenScanStatus = "no_response";
-    else if (tokenApiHttpStatus === 401) tokenScanStatus = "http_401";
-    else if (tokenApiHttpStatus === 500) tokenScanStatus = "http_500";
-    else if (!tokenApiOk) tokenScanStatus = `http_${tokenApiHttpStatus}`;
-    else tokenScanStatus = "ok";
+    let tokenRouteStatus: string;
+    if (tokenRouteAborted) tokenRouteStatus = "timeout";
+    else if (tokenRouteNetworkError) tokenRouteStatus = "network_error";
+    else if (!tokenData) tokenRouteStatus = "no_response";
+    else if (tokenApiHttpStatus === 401) tokenRouteStatus = "http_401";
+    else if (tokenApiHttpStatus === 500) tokenRouteStatus = "http_500";
+    else if (!tokenApiOk) tokenRouteStatus = `http_${tokenApiHttpStatus}`;
+    else tokenRouteStatus = "ok";
 
-    const tokenScanDebug: Record<string, unknown> = {
-      tokenScanAttempted: true,
-      requestUrlPath: "/api/token",
-      method: "POST",
-      chain: chain ?? "base",
-      address: tokenAddress,
-      startedAt: new Date(startedAt).toISOString(),
-      durationMs,
-      aborted: fetchAborted,
-      status: tokenScanStatus,
-      routeReached: tokenData !== null,
-      authForwarded: {
-        cookie: Boolean(clarkInternalCtx.cookie),
-        authorization: Boolean(authHeader ?? clarkInternalCtx.authToken),
-      },
-    };
+    let honeypotStatus: string;
+    if (honeypotAborted) honeypotStatus = "timeout";
+    else if (honeypotNetworkError) honeypotStatus = "network_error";
+    else if (!securitySim) honeypotStatus = "no_response";
+    else honeypotStatus = "ok";
 
+    const tokenRouteFailed = tokenRouteStatus !== "ok" && tokenRouteStatus !== "no_pool_data";
+    const honeypotFailed = honeypotStatus !== "ok";
+
+    // ── Extract token route payload ──
     const t = (tokenJson ?? {}) as Record<string, unknown>;
-    // Extract token route stage debug if /api/token included it
     const tokenRouteDebug = (t._tokenRouteDebug && typeof t._tokenRouteDebug === "object") ? t._tokenRouteDebug as Record<string, unknown> : null;
-    if (tokenRouteDebug) {
-      tokenScanDebug.tokenRouteDebugSummary = {
-        routeReached: tokenRouteDebug.routeReached ?? true,
-        stagesCompleted: tokenRouteDebug.stagesCompleted ?? [],
-        totalMs: tokenRouteDebug.totalMs ?? null,
-      };
-    }
-
     const sections = (t.sections ?? {}) as Record<string, unknown>;
     const holdersSection = (sections.holders ?? {}) as Record<string, unknown>;
     const tSecurity = (t.security ?? {}) as Record<string, unknown>;
@@ -6925,33 +6951,110 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const hp = (t.honeypot ?? {}) as Record<string, unknown>;
     const hd = (t.holderDistribution ?? {}) as Record<string, unknown>;
 
-    const missingEvidence: string[] = securitySim?.missing ? [...securitySim.missing] : [];
-    let tokenApiStatus = tokenScanStatus;
+    const hasMarket = tokenApiOk && (typeof t.priceUsd === "number" || typeof t.liquidityUsd === "number");
+    const hasHolders = tokenApiOk && (typeof hd.top10 === "number" || typeof holdersSection.top10 === "number");
+    const hasLp = tokenApiOk && t.lpControl && typeof t.lpControl === "object";
+    const hasContractFlags = tokenApiOk && (typeof tDevOwnership.isRenounced === "boolean" || typeof tContractFlags.mint === "boolean");
+    const hasHoneypot = !honeypotFailed && _hp != null;
+    const noPoolData = tokenApiOk && !t.priceUsd && !t.liquidityUsd && !t.name;
+
+    // Both branches completely failed → total failure
+    const totalFailure = tokenRouteFailed && honeypotFailed;
+    // Partial = at least one branch has data
+    const partialEvidenceUsed = !totalFailure && (tokenRouteFailed || honeypotFailed || noPoolData);
+
+    // ── Sections present/missing tracking ──
+    const sectionsPresent: string[] = [];
+    const sectionsMissing: Array<{ section: string; reason: string }> = [];
+
+    if (hasMarket) sectionsPresent.push("market");
+    else sectionsMissing.push({ section: "market", reason: noPoolData ? "no active pool data on Base" : tokenRouteFailed ? `token route ${tokenRouteStatus}` : "unavailable" });
+
+    if (hasHolders) sectionsPresent.push("holders");
+    else sectionsMissing.push({ section: "holders", reason: tokenRouteFailed ? `token route ${tokenRouteStatus}` : "unavailable" });
+
+    if (hasLp) sectionsPresent.push("lp");
+    else sectionsMissing.push({ section: "lp", reason: tokenRouteFailed ? `token route ${tokenRouteStatus}` : "unavailable" });
+
+    if (hasContractFlags) sectionsPresent.push("contract_flags");
+    else sectionsMissing.push({ section: "contract_flags", reason: tokenRouteFailed ? `token route ${tokenRouteStatus}` : "unavailable" });
+
+    if (hasHoneypot) sectionsPresent.push("security_sim");
+    else sectionsMissing.push({ section: "security_sim", reason: honeypotFailed ? `honeypot ${honeypotStatus}` : "unavailable" });
+
+    // ── Build public missing evidence reasons ──
+    const missingEvidence: string[] = _hp?.missing ? [..._hp.missing] : [];
     let tokenScanFailureReason: string | undefined;
-    if (!tokenApiOk) {
-      if (tokenApiHttpStatus === 401) {
+
+    if (tokenRouteFailed) {
+      if (tokenRouteStatus === "http_401") {
         tokenScanFailureReason = "token_route_unauthorized";
         missingEvidence.push("Token Scanner authorization failed. Reconnect/sign in and try again.");
-      } else if (fetchAborted) {
+      } else if (tokenRouteStatus === "timeout") {
         tokenScanFailureReason = "timeout";
-        missingEvidence.push("Token scan timed out — /api/token did not respond in time.");
-      } else if (fetchNetworkError) {
+        missingEvidence.push("Market, LP, and holder data: timed out / Open Check");
+      } else if (tokenRouteStatus === "network_error") {
         tokenScanFailureReason = "network_error";
-        missingEvidence.push("Token scan route failed — network error reaching /api/token.");
+        missingEvidence.push("Market, LP, and holder data: network error / Open Check");
       } else if (tokenData !== null) {
-        missingEvidence.push(`Token scan route failed — /api/token returned http_${tokenApiHttpStatus}`);
+        missingEvidence.push(`Market, LP, and holder data: token route returned ${tokenRouteStatus} / Open Check`);
       } else {
-        missingEvidence.push("Token scan route failed — no response from /api/token.");
+        missingEvidence.push("Market, LP, and holder data: no response from token route / Open Check");
       }
-    } else if (!t.priceUsd && !t.liquidityUsd && !t.name) {
-      tokenApiStatus = "no_pool_data";
-      tokenScanDebug.status = "no_pool_data";
+    } else if (noPoolData) {
       missingEvidence.push("Token not found on Base or no active pool data");
     }
 
+    if (honeypotFailed) {
+      if (honeypotStatus === "timeout") missingEvidence.push("Security simulation: timed out / Open Check");
+      else if (honeypotStatus === "network_error") missingEvidence.push("Security simulation: network error / Open Check");
+      else missingEvidence.push("Security simulation: unavailable / Open Check");
+    }
+
+    // ── Build debug object ──
+    const tokenScanDebug: Record<string, unknown> = {
+      tokenScanAttempted: true,
+      requestUrlPath: "/api/token",
+      method: "POST",
+      chain: chain ?? "base",
+      address: tokenAddress,
+      startedAt: new Date(tokenRouteStart).toISOString(),
+      tokenRouteDurationMs,
+      honeypotDurationMs,
+      tokenRouteStatus,
+      honeypotStatus,
+      partialEvidenceUsed,
+      evidenceSectionsPresent: sectionsPresent,
+      evidenceSectionsMissing: sectionsMissing,
+      authForwarded: {
+        cookie: Boolean(clarkInternalCtx.cookie),
+        authorization: Boolean(authHeader ?? clarkInternalCtx.authToken),
+      },
+    };
+    if (tokenRouteDebug) {
+      tokenScanDebug.tokenRouteDebugSummary = {
+        routeReached: tokenRouteDebug.routeReached ?? true,
+        stagesCompleted: tokenRouteDebug.stagesCompleted ?? [],
+        totalMs: tokenRouteDebug.totalMs ?? null,
+      };
+    }
+
+    // ── Determine ok and confidence ──
+    const evidenceOk = !totalFailure && !noPoolData && (hasMarket || hasHoneypot);
+    const confidence: "full" | "partial" | "none" =
+      sectionsPresent.length >= 4 ? "full" :
+      sectionsPresent.length >= 1 ? "partial" :
+      "none";
+
+    const finalTokenRouteStatus = noPoolData ? "no_pool_data" : tokenRouteStatus;
+
     return {
-      ok: Boolean(tokenJson),
-      token: tokenJson ? { name: String(t.name ?? "Unknown"), symbol: String(t.symbol ?? "?"), address: String(t.contract ?? tokenAddress) } : null,
+      ok: evidenceOk,
+      token: (tokenJson || hasHoneypot) ? {
+        name: typeof t.name === "string" ? t.name : "Unknown",
+        symbol: typeof t.symbol === "string" ? t.symbol : "?",
+        address: typeof t.contract === "string" ? t.contract : tokenAddress,
+      } : null,
       chain: "Base",
       market: {
         price: typeof t.priceUsd === "number" ? t.priceUsd : null,
@@ -6964,17 +7067,17 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         top1: typeof hd.top1 === "number" ? hd.top1 : (typeof holdersSection.top1 === "number" ? holdersSection.top1 : null),
         top10: typeof hd.top10 === "number" ? hd.top10 : (typeof holdersSection.top10 === "number" ? holdersSection.top10 : null),
         holderCount: typeof hd.holderCount === "number" ? hd.holderCount : (typeof holdersSection.holderCount === "number" ? holdersSection.holderCount : null),
-        status: typeof holdersSection.status === "string" ? holdersSection.status : "unavailable",
+        status: typeof holdersSection.status === "string" ? holdersSection.status : (tokenRouteFailed ? "timed out" : "unavailable"),
       },
       security: {
-        honeypot: securitySim?.honeypot ?? (typeof tSectSecurity.honeypot === "boolean" ? tSectSecurity.honeypot : (typeof tSecSim.isHoneypot === "boolean" ? tSecSim.isHoneypot : (typeof hp.isHoneypot === "boolean" ? hp.isHoneypot : null))),
-        buyTax: securitySim?.buyTax ?? (typeof tSectSecurity.buyTax === "number" ? tSectSecurity.buyTax : (typeof tSecSim.buyTax === "number" ? tSecSim.buyTax : (typeof hp.buyTax === "number" ? hp.buyTax : null))),
-        sellTax: securitySim?.sellTax ?? (typeof tSectSecurity.sellTax === "number" ? tSectSecurity.sellTax : (typeof tSecSim.sellTax === "number" ? tSecSim.sellTax : (typeof hp.sellTax === "number" ? hp.sellTax : null))),
+        honeypot: _hp?.honeypot ?? (typeof tSectSecurity.honeypot === "boolean" ? tSectSecurity.honeypot : (typeof tSecSim.isHoneypot === "boolean" ? tSecSim.isHoneypot : (typeof hp.isHoneypot === "boolean" ? hp.isHoneypot : null))),
+        buyTax: _hp?.buyTax ?? (typeof tSectSecurity.buyTax === "number" ? tSectSecurity.buyTax : (typeof tSecSim.buyTax === "number" ? tSecSim.buyTax : (typeof hp.buyTax === "number" ? hp.buyTax : null))),
+        sellTax: _hp?.sellTax ?? (typeof tSectSecurity.sellTax === "number" ? tSectSecurity.sellTax : (typeof tSecSim.sellTax === "number" ? tSecSim.sellTax : (typeof hp.sellTax === "number" ? hp.sellTax : null))),
         ownerRenounced: typeof tDevOwnership.isRenounced === "boolean" ? tDevOwnership.isRenounced : null,
         mintable: typeof tContractFlags.mint === "boolean" ? tContractFlags.mint : null,
         proxy: typeof tContractFlags.proxy === "boolean" ? tContractFlags.proxy : null,
-        securityStatus: securitySim?.securityStatus ?? "unverified",
-        riskLevel: securitySim?.riskLevel ?? "unknown",
+        securityStatus: _hp?.securityStatus ?? (honeypotFailed ? "timed out" : "unverified"),
+        riskLevel: _hp?.riskLevel ?? "unknown",
         missing: missingEvidence,
       },
       lpControl: (t.lpControl && typeof t.lpControl === "object") ? {
@@ -6984,11 +7087,18 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         poolType: typeof (t.lpControl as Record<string, unknown>).poolType === "string" ? String((t.lpControl as Record<string, unknown>).poolType) : null,
       } : null,
       liquidity: { pools: Array.isArray(t.pools) ? (t.pools as unknown[]).length : 0 },
-      warnings: tokenJson ? [] : missingEvidence,
-      _tokenApiStatus: tokenApiStatus,
+      warnings: missingEvidence,
+      _tokenApiStatus: finalTokenRouteStatus,
       _tokenApiHttpStatus: tokenApiHttpStatus,
       _tokenScanFailureReason: tokenScanFailureReason,
       _tokenScanDebug: tokenScanDebug,
+      _partialEvidenceUsed: partialEvidenceUsed,
+      _evidenceSectionsPresent: sectionsPresent,
+      _evidenceSectionsMissing: sectionsMissing,
+      _tokenRouteStatus: finalTokenRouteStatus,
+      _tokenRouteDurationMs: tokenRouteDurationMs,
+      _honeypotStatus: honeypotStatus,
+      _honeypotDurationMs: honeypotDurationMs,
     };
   }
 
@@ -7001,13 +7111,111 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     return { address: addr, name: String(j.name ?? sym), symbol: String(j.symbol ?? sym) };
   }
 
-  async function resolveTokenForFollowup(): Promise<{ ev: TokenScanEvidence; address: string } | { needsAddress: true }> {
+  // Build partial TOKEN READ output when some but not all evidence branches succeeded.
+  function formatPartialTokenRead(ev: TokenScanEvidence, tokenAddress: string, evDebugRaw: Record<string, unknown>): string {
+    const pFmtUsd = (n: number | null | undefined): string => {
+      if (n == null) return "N/A";
+      if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(2)}M`;
+      if (n >= 1_000) return `$${(n / 1_000).toFixed(1)}K`;
+      return `$${n.toFixed(2)}`;
+    };
+    const pFmtPct = (n: number | null | undefined): string => n == null ? "N/A" : `${n >= 0 ? "+" : ""}${n.toFixed(1)}%`;
+    const pFmtTax = (n: number | null | undefined): string => n == null ? "open check" : `${n.toFixed(1)}%`;
+
+    const sym = ev.token?.symbol ? String(ev.token.symbol).toUpperCase() : "?";
+    const name = ev.token?.name ?? null;
+    const sectionsPresent = (evDebugRaw._evidenceSectionsPresent as string[] | undefined) ?? [];
+    const sectionsMissing = (evDebugRaw._evidenceSectionsMissing as Array<{ section: string; reason: string }> | undefined) ?? [];
+    const mkt = ev.market;
+    const h = ev.holders;
+    const sec = ev.security;
+    const lp = ev.lpControl;
+
+    const lines: string[] = [`TOKEN READ — ${sym} (partial evidence)`];
+    lines.push(`- Token: ${name && name !== sym ? `${name} (${sym})` : sym}`);
+    lines.push(`- Address: ${ev.token?.address ?? tokenAddress}`);
+    lines.push(`- Chain: Base`);
+
+    // Market
+    if (sectionsPresent.includes("market") && (mkt?.price != null || mkt?.liquidity != null)) {
+      lines.push(`- Market: loaded`);
+      if (mkt?.liquidity != null) lines.push(`  Liquidity: ${pFmtUsd(mkt.liquidity)}`);
+      if (mkt?.volume24h != null) lines.push(`  24h volume: ${pFmtUsd(mkt.volume24h)}`);
+      if (mkt?.change24h != null) lines.push(`  24h change: ${pFmtPct(mkt.change24h)}`);
+    } else {
+      const marketMissing = sectionsMissing.find(s => s.section === "market");
+      lines.push(`- Market: ${marketMissing ? marketMissing.reason : "unavailable"} / Open Check`);
+    }
+
+    // LP
+    if (sectionsPresent.includes("lp") && lp?.status) {
+      lines.push(`- LP: ${lp.status}${lp.poolType ? ` (${lp.poolType})` : ""}`);
+    } else {
+      const lpMissing = sectionsMissing.find(s => s.section === "lp");
+      lines.push(`- LP: ${lpMissing ? lpMissing.reason : "unavailable"} / Open Check`);
+    }
+
+    // Holders
+    if (sectionsPresent.includes("holders") && h?.top10 != null) {
+      lines.push(`- Holders: top-10 at ${h.top10.toFixed(1)}%${h.holderCount != null ? `, ${h.holderCount} holders` : ""}`);
+    } else {
+      const holdersMissing = sectionsMissing.find(s => s.section === "holders");
+      lines.push(`- Holders: ${holdersMissing ? holdersMissing.reason : "unavailable"} / Open Check`);
+    }
+
+    // Security
+    const hasHoneypot = sectionsPresent.includes("security_sim");
+    const hasContractFlags = sectionsPresent.includes("contract_flags");
+    if (hasHoneypot && sec?.honeypot != null) {
+      lines.push(`- Security simulation: ${sec.honeypot ? "HONEYPOT — flagged" : "no honeypot signal"}`);
+      if (sec.buyTax != null) lines.push(`  Buy tax: ${pFmtTax(sec.buyTax)} / Sell tax: ${pFmtTax(sec.sellTax)}`);
+    } else {
+      const secMissing = sectionsMissing.find(s => s.section === "security_sim");
+      lines.push(`- Security simulation: ${secMissing ? secMissing.reason : "unavailable"} / Open Check`);
+    }
+    if (hasContractFlags) {
+      if (sec?.ownerRenounced != null) lines.push(`- Ownership: ${sec.ownerRenounced ? "renounced" : "active owner"}`);
+      if (sec?.mintable != null) lines.push(`- Mintable: ${sec.mintable ? "YES" : "no"}`);
+    } else if (!hasHoneypot) {
+      lines.push(`- Contract flags: Open Check`);
+    }
+
+    // Verdict — only assert avoid when honeypot evidence is present
+    if (sec?.honeypot === true) {
+      lines.push(`- Verdict: Avoid — honeypot detected`);
+    } else {
+      lines.push(`- Verdict: Open Check — insufficient evidence`);
+    }
+
+    if (sectionsMissing.length > 0) {
+      lines.push(`- Missing evidence:`);
+      sectionsMissing.forEach(s => lines.push(`  • ${s.section}: ${s.reason}`));
+    }
+
+    lines.push("");
+    lines.push(`Open Token Scanner for a full read, or paste the address to retry.`);
+    lines.push("CTA: Open Token Scanner / Run LP Check");
+    return lines.join("\n");
+  }
+
+  async function resolveTokenForFollowup(opts?: { fromMemoryOnly?: boolean }): Promise<{ ev: TokenScanEvidence; address: string; fromMemory?: boolean } | { needsAddress: true }> {
+    // Check memory first — follow-ups do not re-call providers if cached evidence exists
+    if (opts?.fromMemoryOnly || (!routed.address && !routed.symbol)) {
+      const mem = sessionMem?.lastToken;
+      if (mem?.cachedEvidence && mem.address) {
+        return { ev: mem.cachedEvidence, address: mem.address, fromMemory: true };
+      }
+    }
     let tokenAddress = routed.address;
     if (!tokenAddress && routed.symbol) {
       const resolved = await resolveTokenSymbolToAddress(routed.symbol);
       tokenAddress = resolved?.address ?? null;
     }
     if (!tokenAddress && sessionMem?.lastToken) {
+      // Use cached evidence from memory if available
+      if (sessionMem.lastToken.cachedEvidence) {
+        return { ev: sessionMem.lastToken.cachedEvidence, address: sessionMem.lastToken.address, fromMemory: true };
+      }
       tokenAddress = sessionMem.lastToken.address;
     }
     if (!tokenAddress) return { needsAddress: true };
@@ -7042,24 +7250,52 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       };
     }
     const ev = await fetchTokenEvidence(tokenAddress);
-    const tokenApiHttpStatus = (ev as Record<string, unknown>)._tokenApiHttpStatus as number | undefined;
-    const analysis = ev.ok
-      ? formatTokenScanResult(ev, "Base")
-      : [
-          `TOKEN READ — evidence missing`,
-          `- Address: ${tokenAddress}`,
-          `- Chain: Base`,
-          ...(tokenApiHttpStatus === 401
-            ? ["- Token Scanner authorization failed. Reconnect/sign in and try again."]
-            : (ev.warnings && ev.warnings.length > 0 ? ev.warnings.map((w) => `- ${w}`) : ["- Token Scanner returned no market/security evidence"])
-          ),
-          ``,
-          `Paste the contract address and try again, or open Token Scanner directly.`,
-          `CTA: Open Token Scanner`,
-        ].join("\n");
-    updateMemToken(sessionMem, tokenAddress, ev.token?.symbol ?? resolvedSymbol, ev.token?.name ?? null, analysis);
-    updateMemIntent(sessionMem, "token_analysis");
     const evDebug = ev as Record<string, unknown>;
+    const tokenApiHttpStatus = evDebug._tokenApiHttpStatus as number | undefined;
+    const partialEvidenceUsed = Boolean(evDebug._partialEvidenceUsed);
+    const totalFailure = !ev.ok && !partialEvidenceUsed;
+
+    // Determine confidence for memory storage
+    const sectionsPresent = (evDebug._evidenceSectionsPresent as string[] | undefined) ?? [];
+    const sectionsMissing = (evDebug._evidenceSectionsMissing as Array<{ section: string; reason: string }> | undefined) ?? [];
+    const memConfidence: "full" | "partial" | "none" = sectionsPresent.length >= 4 ? "full" : sectionsPresent.length >= 1 ? "partial" : "none";
+    const memMissingEvidence = sectionsMissing.map(s => `${s.section}: ${s.reason}`);
+
+    let analysis: string;
+    let formatterUsed: string;
+
+    if (ev.ok && !partialEvidenceUsed) {
+      analysis = formatTokenScanResult(ev, "Base");
+      formatterUsed = "formatTokenScanResult";
+    } else if (!totalFailure) {
+      // Partial evidence — at least one branch succeeded
+      analysis = formatPartialTokenRead(ev, tokenAddress, evDebug);
+      formatterUsed = "formatPartialTokenRead";
+    } else {
+      // Total failure — all branches failed
+      analysis = [
+        `TOKEN READ — timed out`,
+        `- Address: ${tokenAddress}`,
+        `- Chain: Base`,
+        ...(tokenApiHttpStatus === 401
+          ? ["- Token Scanner authorization failed. Reconnect/sign in and try again."]
+          : (ev.warnings && ev.warnings.length > 0 ? ev.warnings.map((w) => `- ${w}`) : ["- Token Scanner returned no market/security evidence"])
+        ),
+        ``,
+        `Paste the contract address and try again, or open Token Scanner directly.`,
+        `CTA: Open Token Scanner`,
+      ].join("\n");
+      formatterUsed = "inline_fallback_total";
+    }
+
+    updateMemToken(sessionMem, tokenAddress, ev.token?.symbol ?? resolvedSymbol, ev.token?.name ?? null, analysis, {
+      normalizedEvidenceSummary: ev.ok ? "full" : partialEvidenceUsed ? "partial" : "none",
+      missingEvidence: memMissingEvidence,
+      confidence: memConfidence,
+      cachedEvidence: memConfidence !== "none" ? ev : null,
+    });
+    updateMemIntent(sessionMem, "token_analysis");
+
     const clarkDebugReceipt = clarkDebugMode ? {
       routeHint,
       detectedIntent: "token_scan",
@@ -7068,22 +7304,27 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       selectedChain: chain,
       extractedAddress: tokenAddress,
       extractedSymbol: routed.symbol ?? resolvedSymbol ?? null,
-      tokenLookupAttempted: true,
-      tokenLookupStatus: tokenAddress ? "address_resolved" : "no_address",
-      tokenScanAttempted: true,
-      tokenScanStatus: evDebug._tokenApiStatus ?? (ev.ok ? "ok" : "unknown"),
+      tokenRouteAttempted: true,
+      tokenRouteStatus: evDebug._tokenRouteStatus ?? null,
+      tokenRouteDurationMs: evDebug._tokenRouteDurationMs ?? null,
+      honeypotAttempted: true,
+      honeypotStatus: evDebug._honeypotStatus ?? null,
+      honeypotDurationMs: evDebug._honeypotDurationMs ?? null,
+      partialEvidenceUsed,
+      evidenceSectionsPresent: sectionsPresent,
+      evidenceSectionsMissing: sectionsMissing,
+      formatterUsed,
+      memoryUpdated: true,
+      walletScanAttempted: false,
       tokenScanEndpointOrFunction: "/api/token (POST via callInternalApi)",
       tokenScanAuthForwarded: {
         cookie: Boolean(clarkInternalCtx.cookie),
         authorization: Boolean(authHeader ?? clarkInternalCtx.authToken),
       },
       tokenScanFailureReason: evDebug._tokenScanFailureReason ?? null,
-      tokenEvidenceMissing: ev.warnings ?? [],
-      formatterUsed: ev.ok ? "formatTokenScanResult" : "inline_fallback",
-      finalAnswerType: ev.ok ? "token_read" : "open_check",
-      walletScanAttempted: false,
       tokenScanDebug: evDebug._tokenScanDebug ?? null,
     } : undefined;
+
     return {
       feature: "clark-ai", chain, mode: "analysis", intent: "token_scan", toolsUsed: ["token_scan"],
       analysis,
@@ -7095,6 +7336,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   }
 
   if (routed.intent === "token_safety") {
+    // Memory-first: use cached evidence for follow-up without re-calling providers
     const r = await resolveTokenForFollowup();
     if ("needsAddress" in r) {
       return {
@@ -7105,19 +7347,26 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         quotaConsumed: false,
       };
     }
+    const toolsUsed: string[] = r.fromMemory ? ["memory"] : ["token_scan"];
     const analysis = formatTokenSafetyAnswer(r.ev, "Base");
-    updateMemToken(sessionMem, r.address, r.ev.token?.symbol ?? null, r.ev.token?.name ?? null, analysis);
+    if (!r.fromMemory) {
+      updateMemToken(sessionMem, r.address, r.ev.token?.symbol ?? null, r.ev.token?.name ?? null, analysis, {
+        confidence: (r.ev as Record<string, unknown>)._partialEvidenceUsed ? "partial" : r.ev.ok ? "full" : "none",
+        cachedEvidence: r.ev.ok || (r.ev as Record<string, unknown>)._partialEvidenceUsed ? r.ev : null,
+      });
+    }
     updateMemIntent(sessionMem, "token_safety");
     return {
-      feature: "clark-ai", chain, mode: "analysis", intent: "token_safety", toolsUsed: ["token_scan"],
+      feature: "clark-ai", chain, mode: "analysis", intent: "token_safety", toolsUsed,
       analysis,
       intentBadge: "token_safety",
       actions: buildRoutedActions(["Open Token Scanner", "Run LP Check"]),
-      quotaConsumed: r.ev.ok ?? false,
+      quotaConsumed: r.fromMemory ? false : (r.ev.ok ?? false),
     };
   }
 
   if (routed.intent === "dev_rug_check") {
+    // Memory-first: use cached evidence for follow-up without re-calling providers
     const r = await resolveTokenForFollowup();
     if ("needsAddress" in r) {
       return {
@@ -7128,14 +7377,15 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         quotaConsumed: false,
       };
     }
+    const toolsUsed: string[] = r.fromMemory ? ["memory"] : ["token_scan"];
     const analysis = formatDevRugCheck(r.ev, "Base");
     updateMemIntent(sessionMem, "dev_rug_check");
     return {
-      feature: "clark-ai", chain, mode: "analysis", intent: "dev_rug_check", toolsUsed: ["token_scan"],
+      feature: "clark-ai", chain, mode: "analysis", intent: "dev_rug_check", toolsUsed,
       analysis,
       intentBadge: "dev_rug_check",
       actions: buildRoutedActions(["Open Token Scanner", "Run LP Check"]),
-      quotaConsumed: r.ev.ok ?? false,
+      quotaConsumed: r.fromMemory ? false : (r.ev.ok ?? false),
     };
   }
 
@@ -7192,6 +7442,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   }
 
   if (routed.intent === "risk_explanation") {
+    // Memory-first: use cached evidence for follow-up without re-calling providers
     const r = await resolveTokenForFollowup();
     if ("needsAddress" in r) {
       return {
@@ -7202,14 +7453,15 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         quotaConsumed: false,
       };
     }
+    const toolsUsed: string[] = r.fromMemory ? ["memory"] : ["token_scan"];
     const analysis = formatRiskExplanation(r.ev, "Base");
     updateMemIntent(sessionMem, "risk_explanation");
     return {
-      feature: "clark-ai", chain, mode: "analysis", intent: "risk_explanation", toolsUsed: ["token_scan"],
+      feature: "clark-ai", chain, mode: "analysis", intent: "risk_explanation", toolsUsed,
       analysis,
       intentBadge: "risk_explanation",
       actions: buildRoutedActions(["Open Token Scanner"]),
-      quotaConsumed: r.ev.ok ?? false,
+      quotaConsumed: r.fromMemory ? false : (r.ev.ok ?? false),
     };
   }
 
