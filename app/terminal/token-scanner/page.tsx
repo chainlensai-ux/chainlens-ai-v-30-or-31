@@ -3297,6 +3297,68 @@ export default function TerminalTokenScanner() {
   const [clarkVerdict, setClarkVerdict] = useState<string | null>(null)
   const [clarkLoading, setClarkLoading] = useState(false)
   const [clarkError, setClarkError]     = useState<string | null>(null)
+
+  // Tracked tokens
+  type TrackedToken = { address: string; symbol?: string | null; name?: string | null; chain?: string | null; risk_label?: string | null; score?: number | null; saved_at?: string | null }
+  const [trackedTokens, setTrackedTokens] = useState<TrackedToken[]>([])
+  const [trackedLoading, setTrackedLoading] = useState(false)
+  const [trackedSaving, setTrackedSaving]   = useState(false)
+  const [trackedLoggedOut, setTrackedLoggedOut] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    async function loadTracked() {
+      setTrackedLoading(true)
+      try {
+        const { data: sd } = await supabase.auth.getSession()
+        const tok = sd.session?.access_token
+        if (!tok) { if (!cancelled) { setTrackedLoggedOut(true); setTrackedLoading(false) } return }
+        const res = await fetch('/api/watchlist/tokens', { headers: { Authorization: `Bearer ${tok}` } })
+        const json = await res.json()
+        if (!cancelled) setTrackedTokens(json.tokens ?? [])
+      } catch { /* silent */ } finally { if (!cancelled) setTrackedLoading(false) }
+    }
+    loadTracked()
+    return () => { cancelled = true }
+  }, [])
+
+  async function saveTrackedToken() {
+    if (!result?.contract) return
+    setTrackedSaving(true)
+    try {
+      const { data: sd } = await supabase.auth.getSession()
+      const tok = sd.session?.access_token
+      if (!tok) return
+      const scx = calculateCortexScoreV2(result)
+      await fetch('/api/watchlist/tokens', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tok}` },
+        body: JSON.stringify({
+          address: result.contract,
+          symbol: result.symbol ?? null,
+          name: result.name ?? null,
+          chain: result.chain ?? chain,
+          riskLabel: result.cortexVerdict ?? scx.cortexVerdict ?? null,
+          score: result.cortexScore ?? scx.cortexScore ?? null,
+        }),
+      })
+      const res2 = await fetch('/api/watchlist/tokens', { headers: { Authorization: `Bearer ${tok}` } })
+      const json2 = await res2.json()
+      setTrackedTokens(json2.tokens ?? [])
+    } catch { /* silent */ } finally { setTrackedSaving(false) }
+  }
+
+  async function removeTrackedToken(address: string) {
+    setTrackedTokens(prev => prev.filter(t => t.address !== address.toLowerCase()))
+    try {
+      const { data: sd } = await supabase.auth.getSession()
+      const tok = sd.session?.access_token
+      if (!tok) return
+      await fetch(`/api/watchlist/tokens?address=${encodeURIComponent(address.toLowerCase())}`, {
+        method: 'DELETE', headers: { Authorization: `Bearer ${tok}` },
+      })
+    } catch { /* silent */ }
+  }
   const [devIntelLoading, setDevIntelLoading] = useState(false)
   const [devIntelError, setDevIntelError] = useState<string | null>(null)
   const [devIntel, setDevIntel] = useState<DevWalletIntel | null>(null)
@@ -3674,18 +3736,18 @@ export default function TerminalTokenScanner() {
               Token Scanner
             </h1>
             <p style={{ margin: '0 0 14px', color: '#64748b', fontSize: '13px', lineHeight: 1.65, maxWidth: '560px' }}>
-              {chain === 'eth'
-                ? 'Scan Ethereum tokens for liquidity, contract risk, taxes, pool depth, and Clark AI verdicts.'
-                : 'Scan Base tokens for liquidity, contract risk, taxes, pool depth, and Clark AI verdicts.'}
+              Scan Base tokens for live liquidity, holder concentration, LP control, dev activity, and evidence-weighted CORTEX risk.
             </p>
 
             {/* Status pills */}
             <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '7px' }}>
               {[
-                { label: 'BASE',           color: '#2DD4BF', bg: 'rgba(45,212,191,0.07)',  border: 'rgba(45,212,191,0.22)' },
-                { label: 'ETH',            color: '#818cf8', bg: 'rgba(129,140,248,0.07)', border: 'rgba(129,140,248,0.22)' },
-                { label: 'LIVE CORTEX',    color: '#34d399', bg: 'rgba(52,211,153,0.07)',  border: 'rgba(52,211,153,0.20)' },
-                { label: 'REAL DATA ONLY', color: '#475569', bg: 'rgba(71,85,105,0.07)',   border: 'rgba(71,85,105,0.18)' },
+                { label: 'BASE',                    color: '#2DD4BF', bg: 'rgba(45,212,191,0.07)',  border: 'rgba(45,212,191,0.22)' },
+                { label: 'ETH',                     color: '#818cf8', bg: 'rgba(129,140,248,0.07)', border: 'rgba(129,140,248,0.22)' },
+                { label: 'LIVE CORTEX',             color: '#34d399', bg: 'rgba(52,211,153,0.07)',  border: 'rgba(52,211,153,0.20)' },
+                { label: 'LP + HOLDER INTELLIGENCE',color: '#a78bfa', bg: 'rgba(167,139,250,0.07)', border: 'rgba(167,139,250,0.22)' },
+                { label: 'REAL DATA ONLY',          color: '#475569', bg: 'rgba(71,85,105,0.07)',   border: 'rgba(71,85,105,0.18)' },
+                { label: 'NO FINANCIAL ADVICE',     color: '#334155', bg: 'rgba(51,65,85,0.07)',    border: 'rgba(51,65,85,0.18)' },
               ].map(p => (
                 <span key={p.label} style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.11em', padding: '3px 10px', borderRadius: '99px', color: p.color, background: p.bg, border: `1px solid ${p.border}`, fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap' }}>
                   {p.label}
@@ -3744,7 +3806,7 @@ export default function TerminalTokenScanner() {
                   onChange={e => { setInput(e.target.value); setResolverResult(null) }}
                   onKeyDown={e => { if (e.key === 'Enter') handleScan() }}
                   disabled={loading}
-                  placeholder={chain === 'eth' ? 'Paste Ethereum contract, symbol, or token name' : 'Paste Base contract, symbol, or token name'}
+                  placeholder="Paste contract, ticker, or token name"
                   style={{
                     flex: 1, padding: '14px 18px',
                     background: 'rgba(255,255,255,0.04)',
@@ -3788,9 +3850,29 @@ export default function TerminalTokenScanner() {
                 </button>
               </div>
 
+              {/* Quick action buttons */}
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '12px' }}>
+                {[
+                  { label: 'Try VIRTUAL', action: () => { setInput('VIRTUAL'); setTimeout(() => handleScan('VIRTUAL'), 0) } },
+                  { label: 'Scan by contract', action: () => setInput('') },
+                  { label: 'Check LP risk', action: () => setInput('') },
+                ].map(btn => (
+                  <button
+                    key={btn.label}
+                    type="button"
+                    onClick={btn.action}
+                    style={{ padding: '5px 12px', borderRadius: '999px', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.10)', color: '#64748b', fontSize: '10px', fontFamily: 'var(--font-plex-mono)', cursor: 'pointer', transition: 'all .14s' }}
+                    onMouseEnter={e => { e.currentTarget.style.color = '#2DD4BF'; e.currentTarget.style.borderColor = 'rgba(45,212,191,0.35)' }}
+                    onMouseLeave={e => { e.currentTarget.style.color = '#64748b'; e.currentTarget.style.borderColor = 'rgba(255,255,255,0.10)' }}
+                  >
+                    {btn.label}
+                  </button>
+                ))}
+              </div>
+
               {/* Helper text */}
               <p style={{ margin: 0, fontSize: '11px', color: '#2a3d4d', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5, letterSpacing: '0.02em' }}>
-                Paste a contract, ticker, or token name to start a scan.
+                CORTEX checks liquidity, holders, LP control, dev activity, and risk evidence.
               </p>
             </div>
           </div>
@@ -6017,7 +6099,7 @@ export default function TerminalTokenScanner() {
                 color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)',
                 textTransform: 'uppercase', margin: 0,
               }}>
-                Clark AI Verdict
+                CORTEX RECEIPT
               </p>
             </div>
             {(!clarkLoading && !clarkVerdict && !clarkError) && (
@@ -6038,27 +6120,30 @@ export default function TerminalTokenScanner() {
             </div>
           )}
 
-          {/* Idle — premium placeholder */}
+          {/* Idle — premium checklist */}
           {!planLoading && isFullAccess && !clarkLoading && !clarkVerdict && !clarkError && (
             <div>
-              <p style={{ margin: '0 0 18px', fontSize: '11px', color: '#253340', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.65 }}>
-                Scan a token to generate a structured CORTEX verdict.
+              <p style={{ margin: '0 0 16px', fontSize: '11px', color: '#253340', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.65 }}>
+                Scan a token to generate a structured CORTEX receipt.
               </p>
               {[
-                { label: 'Verdict',              dot: '#94a3b8', w1: '55%', w2: '35%' },
-                { label: 'Market Read',          dot: '#2DD4BF', w1: '80%', w2: '60%' },
-                { label: 'Holder / Supply Read', dot: '#a78bfa', w1: '70%', w2: '45%' },
-                { label: 'LP / Risk Read',       dot: '#34d399', w1: '65%', w2: '50%' },
-                { label: 'Dev Control',          dot: '#fbbf24', w1: '75%', w2: '40%' },
-                { label: 'Next Action',          dot: '#f87171', w1: '60%', w2: '55%' },
+                { label: 'Market Pulse',         color: '#2DD4BF', desc: 'Price, volume, liquidity, pool depth' },
+                { label: 'Holder Map',           color: '#a78bfa', desc: 'Concentration, top holders, supply spread' },
+                { label: 'LP Safety',            color: '#34d399', desc: 'Lock/burn proof, controller, pool model' },
+                { label: 'Dev Activity',         color: '#fbbf24', desc: 'Deployer wallet, mint risk, ownership' },
+                { label: 'Risk Engine',          color: '#f87171', desc: 'CORTEX score, verdict, evidence gaps' },
+                { label: 'Next Action',          color: '#67e8f9', desc: 'Actionable read based on scan signals' },
               ].map((sec, idx) => (
-                <div key={sec.label} className={idx > 0 ? 'clark-section' : ''} style={{ marginBottom: '12px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '7px' }}>
-                    <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: sec.dot, flexShrink: 0, opacity: 0.55 }} />
-                    <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.12em', color: '#253340', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{sec.label}</span>
+                <div key={sec.label} className={idx > 0 ? 'clark-section' : ''} style={{ marginBottom: '10px' }}>
+                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: '8px' }}>
+                    <span style={{ width: '14px', height: '14px', borderRadius: '50%', background: `${sec.color}1a`, border: `1px solid ${sec.color}55`, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', marginTop: '1px' }}>
+                      <svg width="7" height="7" viewBox="0 0 7 7" fill="none"><polyline points="1,4 3,6 6,2" stroke={sec.color} strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                    </span>
+                    <div>
+                      <div style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.12em', color: sec.color, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '2px' }}>{sec.label}</div>
+                      <div style={{ fontSize: '9px', color: '#253340', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{sec.desc}</div>
+                    </div>
                   </div>
-                  <div className="shimmer-line" style={{ height: '5px', width: sec.w1, marginBottom: '5px' }} />
-                  <div className="shimmer-line" style={{ height: '5px', width: sec.w2 }} />
                 </div>
               ))}
             </div>
@@ -6204,9 +6289,91 @@ export default function TerminalTokenScanner() {
                   <p style={{...stitle,color:'#2DD4BF',marginBottom:'5px'}}>Next Action</p>
                   <p style={{...sbody,color:'#67e8f9'}}>{getNextAction(result)}</p>
                 </div>
+                {/* Save button */}
+                <button
+                  onClick={saveTrackedToken}
+                  disabled={trackedSaving}
+                  style={{ width:'100%', padding:'10px 0', borderRadius:'10px', border:'1px solid rgba(167,139,250,0.35)', background:'rgba(167,139,250,0.07)', color: trackedSaving ? '#64748b' : '#a78bfa', fontSize:'11px', fontWeight:700, fontFamily:'var(--font-plex-mono)', letterSpacing:'.10em', cursor: trackedSaving ? 'not-allowed' : 'pointer', transition:'all .15s' }}
+                >
+                  {trackedSaving ? 'SAVING…' : '+ TRACK THIS TOKEN'}
+                </button>
               </div>
             )
           })()}
+
+          {/* ── Tracked Tokens panel ──────────────────────────────── */}
+          <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: '20px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+              <p style={{ margin: 0, fontSize: '9px', fontWeight: 700, letterSpacing: '0.18em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
+                Tracked Tokens
+              </p>
+              {trackedTokens.length > 0 && (
+                <span style={{ fontSize: '9px', color: '#253340', fontFamily: 'var(--font-plex-mono)' }}>{trackedTokens.length} saved</span>
+              )}
+            </div>
+
+            {trackedLoggedOut && (
+              <p style={{ margin: 0, fontSize: '10px', color: '#334155', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>
+                Sign in to track tokens across sessions.
+              </p>
+            )}
+
+            {!trackedLoggedOut && trackedLoading && (
+              <div style={{ display: 'flex', gap: '4px', alignItems: 'center', paddingTop: '4px' }}>
+                {[0,1,2].map(i => <span key={i} style={{ width:'4px', height:'4px', borderRadius:'50%', background:'#2DD4BF', display:'inline-block', animation:`clarkDot 1.2s ease-in-out ${i*.2}s infinite` }} />)}
+              </div>
+            )}
+
+            {!trackedLoggedOut && !trackedLoading && trackedTokens.length === 0 && (
+              <p style={{ margin: 0, fontSize: '10px', color: '#253340', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>
+                Tokens you track will appear here. Scan and click &quot;Track this token&quot; to save.
+              </p>
+            )}
+
+            {!trackedLoggedOut && !trackedLoading && trackedTokens.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                {trackedTokens.map(t => {
+                  const initials = (t.symbol ?? t.name ?? '?').slice(0, 2).toUpperCase()
+                  const addr = t.address ?? ''
+                  const short = addr.length >= 10 ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : addr
+                  const riskColor = t.risk_label === 'High Risk' ? '#f87171' : t.risk_label === 'Strong' ? '#34d399' : t.risk_label === 'Watch' || t.risk_label === 'Caution' ? '#fbbf24' : '#94a3b8'
+                  return (
+                    <div key={t.address} style={{ padding: '10px 12px', borderRadius: '10px', background: 'rgba(8,14,28,.65)', border: '1px solid rgba(255,255,255,0.07)' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px' }}>
+                        <div style={{ width: '32px', height: '32px', borderRadius: '50%', background: 'rgba(45,212,191,0.10)', border: '1px solid rgba(45,212,191,0.22)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, fontSize: '11px', fontWeight: 800, color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)' }}>
+                          {initials}
+                        </div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                            <span style={{ fontSize: '11px', fontWeight: 700, color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)' }}>{t.symbol ?? '—'}</span>
+                            <span style={{ fontSize: '8px', padding: '1px 6px', borderRadius: '999px', background: 'rgba(45,212,191,0.08)', border: '1px solid rgba(45,212,191,0.20)', color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase' }}>{t.chain ?? 'base'}</span>
+                          </div>
+                          <div style={{ fontSize: '9px', color: '#334155', fontFamily: 'var(--font-plex-mono)', marginTop: '2px' }}>{short}</div>
+                        </div>
+                        {t.risk_label && (
+                          <span style={{ fontSize: '8px', fontWeight: 700, color: riskColor, fontFamily: 'var(--font-plex-mono)', letterSpacing: '.06em', flexShrink: 0 }}>{t.risk_label}</span>
+                        )}
+                      </div>
+                      <div style={{ display: 'flex', gap: '6px' }}>
+                        <button
+                          onClick={() => { setInput(t.address); handleScan(t.address, (t.chain === 'eth' ? 'eth' : 'base') as 'base'|'eth') }}
+                          style={{ flex: 1, padding: '6px 0', borderRadius: '7px', background: 'rgba(45,212,191,0.07)', border: '1px solid rgba(45,212,191,0.22)', color: '#2DD4BF', fontSize: '9px', fontWeight: 700, fontFamily: 'var(--font-plex-mono)', cursor: 'pointer', letterSpacing: '.10em' }}
+                        >
+                          SCAN
+                        </button>
+                        <button
+                          onClick={() => removeTrackedToken(t.address)}
+                          style={{ padding: '6px 10px', borderRadius: '7px', background: 'rgba(248,113,113,0.07)', border: '1px solid rgba(248,113,113,0.20)', color: '#f87171', fontSize: '9px', fontWeight: 700, fontFamily: 'var(--font-plex-mono)', cursor: 'pointer' }}
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
         </aside>
 
       </div>
