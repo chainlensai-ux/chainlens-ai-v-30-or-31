@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getBaseMarketUniverse, type BaseMarketCandidate, type BaseMarketMode } from "@/lib/server/baseMarketUniverse";
 import { fetchHoneypotSecurity } from "@/lib/server/honeypotSecurity";
+import { runWalletScanner } from "@/lib/server/walletScannerRunner";
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { getVerifiedUserPlan } from '@/lib/supabase/userSettings'
 import {
@@ -9,13 +10,16 @@ import {
   buildWalletApiRequestBody,
   formatBaseMarketReadFromRows,
   formatBaseMarketReadFromCandidates,
-  rankBaseMarketRows,
   formatBaseRadarRead,
   formatWalletScanResult,
+  formatWalletCompareUnsupported,
   formatEoaLpCheckReply,
   formatLpReadResult,
   formatCouldNotComplete,
   buildRoutedActions,
+  extractAllAddressesForRouting,
+  isWalletComparePrompt,
+  isWalletPnlFollowupPrompt,
   type ClarkAction,
 } from "@/lib/server/clarkRouting";
 
@@ -111,6 +115,8 @@ type ClarkSessionMemory = {
     address: string;
     ensName: string | null;
     walletSummary: string | null;
+    snapshot: Record<string, unknown> | null;
+    pnlEvidence: Record<string, unknown> | null;
     ts: number;
   } | null;
   lastMomentumList: Array<{
@@ -179,8 +185,8 @@ function parseRankFollowup(prompt: string): number | null {
   const rankPrompt = prompt.trim().toLowerCase();
   const ordinalMap: Record<string, number> = { first: 1, second: 2, third: 3, fourth: 4, fifth: 5, sixth: 6, seventh: 7, eighth: 8, ninth: 9, tenth: 10 };
   const ordinalRankMatch = rankPrompt.match(/\b(?:scan|check|full\s+report\s+on|why\s+is)\s+(?:the\s+)?(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)(?:\s+one)?\b/i);
-  const numericRankMatch = rankPrompt.match(/\b(?:scan(?:\s+number)?|check|full\s+report\s+on|why\s+is(?:\s+token)?(?:\s+number)?)\s+#?([1-9]\d{0,2})\b/i);
-  const directRankMatch = rankPrompt.match(/^#?([1-9]\d{0,2})$/);
+  const numericRankMatch = rankPrompt.match(/\b(?:scan(?:\s+number)?|check|full\s+report\s+on|why\s+is(?:\s+token)?(?:\s+number)?)\s+([1-9]\d{0,2})\b/i);
+  const directRankMatch = rankPrompt.match(/^([1-9]\d{0,2})$/);
   return ordinalRankMatch
     ? ordinalMap[ordinalRankMatch[1].toLowerCase()]
     : (numericRankMatch ? Number(numericRankMatch[1]) : (directRankMatch ? Number(directRankMatch[1]) : null));
@@ -219,8 +225,22 @@ function updateMemToken(mem: ClarkSessionMemory, address: string, symbol: string
   mem.recentTokens = [{ address, symbol, name, chain: mem.selectedChain, summary: scanSummary, ts: Date.now() }, ...mem.recentTokens.filter(t => t.address !== address)].slice(0, 3)
 }
 
-function updateMemWallet(mem: ClarkSessionMemory, address: string, ensName: string | null, walletSummary: string | null) {
-  mem.lastWallet = { address, ensName, walletSummary, ts: Date.now() };
+function updateMemWallet(
+  mem: ClarkSessionMemory,
+  address: string,
+  ensName: string | null,
+  walletSummary: string | null,
+  snapshot?: Record<string, unknown> | null,
+  pnlEvidence?: Record<string, unknown> | null,
+) {
+  mem.lastWallet = {
+    address,
+    ensName,
+    walletSummary,
+    snapshot: snapshot ?? null,
+    pnlEvidence: pnlEvidence ?? null,
+    ts: Date.now(),
+  };
   mem.recentWallets = [{ address, chain: mem.selectedChain, summary: walletSummary, ts: Date.now() }, ...mem.recentWallets.filter(w => w.address !== address)].slice(0, 2)
 }
 function rememberMessage(mem: ClarkSessionMemory, role: "user" | "assistant", content: string) {
@@ -387,6 +407,7 @@ interface ClarkRequestBody {
     baseRadarSummary?: unknown;
     whaleSyncStatus?: string | null;
     currentTool?: string | null;
+    dashboardMarketRows?: Array<{ symbol: string; name?: string; chain?: string; priceUsd?: number; change24h?: number; volume24hUsd?: number; marketCapUsd?: number; liquidityUsd?: number; contract?: string; poolAddress?: string; updatedAt?: string }>;
   };
   clarkContext?: {
     lastMarketList?: unknown;
@@ -412,7 +433,7 @@ interface ClarkRequestBody {
   currentTool?: string;
   selectedToken?: string;
   selectedWallet?: string;
-  dashboardMarketRows?: Array<{ symbol: string; name?: string; chain?: string; priceUsd?: number; change24h?: number; volume24hUsd?: number; marketCapUsd?: number }>;
+  dashboardMarketRows?: Array<{ symbol: string; name?: string; chain?: string; priceUsd?: number; change24h?: number; volume24hUsd?: number; marketCapUsd?: number; liquidityUsd?: number; contract?: string; poolAddress?: string; updatedAt?: string }>;
   baseRadarSummary?: unknown;
   whaleSyncStatus?: unknown;
 }
@@ -1130,8 +1151,8 @@ function inferSelectionIndex(
 ): number | null {
   const direct =
     (/^\s*([1-9]\d{0,2})\s*$/.test(trimmed) ? Number(trimmed.match(/^\s*([1-9]\d{0,2})\s*$/)?.[1] ?? 0) : null) ??
-    (/\b(?:scan|check|token|full report on|report(?: on)?|why is token|number|pick)\s+#?([1-9]\d{0,2})\b/.test(trimmed)
-      ? Number(trimmed.match(/\b(?:scan|check|token|full report on|report(?: on)?|why is token|number|pick)\s+#?([1-9]\d{0,2})\b/)?.[1] ?? 0)
+    (/\b(?:scan|check|token|full report on|report(?: on)?|why is token|number|pick)\s+([1-9]\d{0,2})\b/.test(trimmed)
+      ? Number(trimmed.match(/\b(?:scan|check|token|full report on|report(?: on)?|why is token|number|pick)\s+([1-9]\d{0,2})\b/)?.[1] ?? 0)
       : null) ??
     (/\b([1-9]\d{0,2})\s+of (?:them|those|the list|the candidates|all those)\b/.test(trimmed)
       ? Number(trimmed.match(/\b([1-9]\d{0,2})\s+of (?:them|those|the list|the candidates|all those)\b/)?.[1] ?? 0)
@@ -2629,7 +2650,7 @@ function formatWalletBalanceSummary(snapshot: NonNullable<ClarkToolEvidence["wal
 
 
 function wantsWalletDeepScan(prompt: string): boolean {
-  return /\b(deep\s*scan|full\s*(?:wallet\s*)?scan|scan\s+all\s+chains|deep\b|historical|pnl|trades?)\b/i.test(prompt);
+  return /\b(deep\s*scan|full\s*(?:wallet\s*)?scan|scan\s+all\s+chains|deep\b|historical|pnl|p&l|trades?|dig\s+deeper|recover\s+(?:more\s+)?history|analyze\s+(?:this\s+)?wallet|wallet\s+pnl|why\s+is\s+pnl|cost\s+basis|closed\s+lots?)\b/i.test(prompt);
 }
 
 function getRpcUrlForClarkCodeCheck(chain: SupportedChain | string | undefined): string | null {
@@ -2666,6 +2687,107 @@ async function classifyAddressForClark(address: string, chain: SupportedChain | 
 
 function walletScannerDeepLink(address: string, deepScan: boolean): string {
   return `/terminal/wallet-scanner?address=${address}&chain=auto${deepScan ? "&deepScan=true" : ""}`;
+}
+
+/** Map the raw Wallet Scanner runner output into the shape formatWalletScanResult expects. */
+function mapWalletRunnerResult(walletAddress: string, w: Record<string, unknown>, holdings: Array<Record<string, unknown>>) {
+  const chainsActive = Array.from(new Set(holdings.map((h) => (typeof h.chain === "string" ? h.chain : null)).filter((c): c is string => !!c)));
+  return {
+    ok: w.ok === true && w.error == null,
+    address: walletAddress,
+    totalValue: typeof w.totalValue === "number" ? w.totalValue : null,
+    holdings: holdings.map((h) => ({ symbol: typeof h.symbol === "string" ? h.symbol : undefined, value: typeof h.value === "number" ? h.value : undefined, chain: typeof h.chain === "string" ? h.chain : null })),
+    chainsActive: chainsActive.length > 0 ? chainsActive : null,
+    txCount: typeof w.txCount === "number" ? w.txCount : null,
+    error: typeof w.error === "string" ? w.error : null,
+    pnlCoverage: w.pnlCoverage, historicalRecoveryStatus: w.historicalRecoveryStatus, openLots: w.openLots, closedLots: w.closedLots,
+    walletScanHealth: w.walletScanHealth, walletModuleCoverage: w.walletModuleCoverage, walletTokenPnlSummary: w.walletTokenPnlSummary,
+    walletTokenPnlRead: Array.isArray(w.walletTokenPnlRead) ? w.walletTokenPnlRead : [], walletTradeStatsSummary: w.walletTradeStatsSummary,
+    walletHistoricalCoverageSummary: w.walletHistoricalCoverageSummary, walletRecoveryRecommendation: w.walletRecoveryRecommendation,
+    walletLotSummary: w.walletLotSummary,
+    dataFreshness: typeof w.dataFreshness === "string" ? w.dataFreshness : "live",
+    cacheAgeSeconds: typeof w.cacheAgeSeconds === "number" ? w.cacheAgeSeconds : null,
+    warnings: w.warnings,
+  } as any;
+}
+
+/** Pull only the PnL/coverage evidence fields out of a scan result for session memory. */
+function extractPnlEvidence(mapped: Record<string, unknown>): Record<string, unknown> {
+  return {
+    walletScanHealth: mapped.walletScanHealth ?? null,
+    walletModuleCoverage: mapped.walletModuleCoverage ?? null,
+    walletTokenPnlSummary: mapped.walletTokenPnlSummary ?? null,
+    walletTokenPnlRead: mapped.walletTokenPnlRead ?? null,
+    walletTradeStatsSummary: mapped.walletTradeStatsSummary ?? null,
+    walletHistoricalCoverageSummary: mapped.walletHistoricalCoverageSummary ?? null,
+    walletRecoveryRecommendation: mapped.walletRecoveryRecommendation ?? null,
+    walletLotSummary: mapped.walletLotSummary ?? null,
+    openLots: mapped.openLots ?? null,
+    closedLots: mapped.closedLots ?? null,
+    totalValue: mapped.totalValue ?? null,
+  };
+}
+
+/**
+ * Task 5: honest label for a "dig deeper" run. Says exactly what state the deep scan is in
+ * — cached preview only / historical recovery capped / target tokens recommended — never "I need an address".
+ */
+function buildDigDeeperNote(mapped: Record<string, any>): string {
+  const fresh = String(mapped.dataFreshness ?? "").toLowerCase();
+  const cacheAge = typeof mapped.cacheAgeSeconds === "number" ? mapped.cacheAgeSeconds : null;
+  const isCached = fresh === "cached" || (cacheAge != null && cacheAge > 0);
+  const hist = mapped.walletHistoricalCoverageSummary ?? null;
+  const histStatus = String(hist?.status ?? "");
+  const capped = /capped|partial|limited|not_recovered|open_check/.test(histStatus);
+  const targetTokens = Array.isArray(mapped.walletTokenPnlRead)
+    ? mapped.walletTokenPnlRead.filter((t: any) => /cost_basis|open_position/i.test(String(t?.status ?? ""))).slice(0, 3).map((t: any) => t?.symbol ?? null).filter(Boolean)
+    : [];
+  const lines: string[] = ["DIG DEEPER"];
+  lines.push(`- ${isCached ? "cached preview only — not live recovery" : "live deep scan attempted"}`);
+  if (capped) lines.push(`- historical recovery capped${histStatus ? ` (${histStatus})` : ""}`);
+  if (targetTokens.length > 0) lines.push(`- target tokens recommended for manual recovery: ${targetTokens.join(", ")}`);
+  lines.push("- What to retry: open the full Wallet Scanner terminal page and run Deep Scan from there for complete activity/PnL history.");
+  return lines.join("\n");
+}
+
+/**
+ * Task 4: build a PnL-explainer answer purely from stored wallet evidence — no provider
+ * re-call. Honest about why PnL is limited; never fakes lots or "not requested".
+ */
+function buildWalletPnlFollowupFromEvidence(address: string, ev: Record<string, any>): string {
+  const coverage = ev.walletModuleCoverage ?? null;
+  const health = ev.walletScanHealth ?? null;
+  const tokenPnl = ev.walletTokenPnlSummary ?? null;
+  const hist = ev.walletHistoricalCoverageSummary ?? null;
+  const tradeStats = ev.walletTradeStatsSummary ?? null;
+  const lotSummary = ev.walletLotSummary ?? null;
+  const fifoStatus = coverage?.fifoPnL?.status ?? null;
+
+  const reasons: string[] = [];
+  if (fifoStatus === "locked_no_closed_lots" || health?.status === "limited_pnl") reasons.push("no closed lots matched for this wallet");
+  if (coverage?.fifoPnL?.reason) reasons.push(String(coverage.fifoPnL.reason));
+  if (tokenPnl?.reason) reasons.push(`token PnL: ${tokenPnl.reason}`);
+  const tokenReads = Array.isArray(ev.walletTokenPnlRead) ? ev.walletTokenPnlRead : [];
+  const missingCostBasis = tokenReads.filter((t: any) => /cost_basis|no_cost|missing|open_position/i.test(String(t?.status ?? t?.pnlStatus ?? ""))).slice(0, 3);
+  if (missingCostBasis.length > 0) reasons.push(`missing cost basis on ${missingCostBasis.map((t: any) => t?.symbol ?? "?").join(", ")}`);
+
+  const lines = [
+    "WALLET PnL READ",
+    `- Address: ${address}`,
+    `- PnL quality: ${fifoStatus === "ok" ? "ok (closed lots recovered)" : health?.status === "limited_pnl" ? "limited" : "limited"}`,
+  ];
+  if (tokenPnl?.status || tokenPnl?.reason) lines.push(`- walletTokenPnlSummary: ${tokenPnl.status ?? ""}${tokenPnl.reason ? ` — ${tokenPnl.reason}` : ""}`.trim());
+  if (hist?.status) lines.push(`- walletHistoricalCoverageSummary: ${hist.status}${hist.summary ? ` — ${hist.summary}` : ""}`);
+  if (tradeStats?.status || tradeStats?.reason) lines.push(`- walletTradeStatsSummary: ${tradeStats.status ?? ""}${tradeStats.reason ? ` — ${tradeStats.reason}` : ""}`.trim());
+  if (lotSummary && (lotSummary.missingReasons || lotSummary.missingReason)) {
+    const mr = lotSummary.missingReasons ?? lotSummary.missingReason;
+    lines.push(`- lot summary missing reasons: ${Array.isArray(mr) ? mr.join("; ") : String(mr)}`);
+  }
+  lines.push(`- Why PnL is limited: ${reasons.length > 0 ? [...new Set(reasons)].join("; ") : "cost basis / closed lots incomplete in the recovered window"}`);
+  lines.push("- This read came from the last scan evidence (no new provider call). Say 'deep scan' or 'recover more history' to retry recovery.");
+  lines.push("");
+  lines.push("CTA: Run Deep Scan / Open Wallet Scanner");
+  return lines.join("\n");
 }
 
 function tokenScannerDeepLink(address: string): string {
@@ -5983,7 +6105,55 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   const prompt = body.prompt ?? "Give me a clear on-chain summary.";
 
   const appIntent = resolveClarkIntent(prompt, body.appContext);
+  const routedClassification = classifyClarkPrompt(prompt);
   const appIntentTools = appIntent.cta.map((a) => a.label).join(' · ');
+
+  // ─── Wallet compare (honest unsupported compare — never scan only one wallet) ───
+  if (routedClassification.intent === 'wallet_compare' || isWalletComparePrompt(prompt)) {
+    const typedAddresses = extractAllAddressesForRouting(prompt);
+    const lastAddr = sessionMem.lastWallet?.address ?? null;
+    const addressA = typedAddresses[0] ?? lastAddr;
+    const addressB = typedAddresses[1] ?? (typedAddresses[0] && lastAddr && typedAddresses[0].toLowerCase() !== lastAddr.toLowerCase() ? lastAddr : null);
+    const analysis = formatWalletCompareUnsupported({ addressA, addressB, walletScannerDeepLink });
+    updateMemIntent(sessionMem, "wallet_compare_request");
+    return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_compare", toolsUsed: [], ui: { intentBadge: 'Wallet Compare', actions: [{ label: 'Open Wallet Scanner', href: '/terminal/wallet-scanner' }] }, analysis };
+  }
+
+  // ─── Wallet PnL / history follow-up using lastWallet (no re-scan unless refresh/deep) ───
+  if (
+    routedClassification.intent === 'wallet_pnl_followup' ||
+    (isWalletPnlFollowupPrompt(prompt) && sessionMem.lastWallet)
+  ) {
+    const lastAddr = sessionMem.lastWallet?.address ?? null;
+    const explicitAddr = extractAddress(prompt);
+    const targetAddr = explicitAddr ?? lastAddr;
+    const asksRefresh = /\b(refresh|deep\s+scan|dig\s+deeper|recover\s+(?:more\s+)?history)\b/i.test(prompt);
+    if (!targetAddr) {
+      return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_pnl_followup", toolsUsed: [], ui: { intentBadge: 'Wallet PnL', actions: appIntent.cta }, analysis: `WALLET PnL\nI need a wallet address to explain PnL. Paste a full 0x wallet or scan one first.\nCTA: ${appIntentTools}` };
+    }
+    // Task 4: answer from stored evidence unless the user explicitly asks to refresh / deep / recover.
+    if (!asksRefresh && sessionMem.lastWallet?.pnlEvidence) {
+      const ev = sessionMem.lastWallet.pnlEvidence as Record<string, any>;
+      const analysis = buildWalletPnlFollowupFromEvidence(targetAddr, ev);
+      updateMemIntent(sessionMem, "wallet_pnl_followup");
+      return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_pnl_followup", toolsUsed: [], ui: { intentBadge: 'Wallet PnL', actions: [{ label: 'Open Wallet Scanner', href: walletScannerDeepLink(targetAddr, true) }, { label: 'Run Deep Scan', href: walletScannerDeepLink(targetAddr, true) }] }, analysis };
+    }
+    // Explicit refresh/deep/recover → re-run the existing deep scan path for the resolved address.
+    const deepScan = true;
+    const w = await runWalletScanner({ address: targetAddr, deepScan: true, deepActivity: true, refresh: true, chainMode: "all_supported" })
+      .catch((err) => ({ ok: false, error: err instanceof Error ? err.message : "wallet_scan_timeout" })) as Record<string, unknown>;
+    const holdings = Array.isArray(w.holdings) ? (w.holdings as Array<Record<string, unknown>>) : [];
+    const mappedResult = mapWalletRunnerResult(targetAddr, w, holdings);
+    const isDigDeeper = /\bdig\s+deeper\b/i.test(prompt);
+    const baseAnalysis = formatWalletScanResult(targetAddr, mappedResult, true);
+    // Task 5: if the deep scan came back capped/cached, label it honestly instead of "I need an address".
+    const digNote = isDigDeeper ? buildDigDeeperNote(mappedResult as Record<string, unknown>) : null;
+    const analysis = digNote ? `${baseAnalysis}\n\n${digNote}` : baseAnalysis;
+    updateMemWallet(sessionMem, targetAddr, null, analysis, mappedResult as Record<string, unknown>, extractPnlEvidence(mappedResult as Record<string, unknown>));
+    updateMemIntent(sessionMem, "wallet_pnl_followup");
+    return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_pnl_followup", toolsUsed: ["wallet_scanner_runner"], ui: { intentBadge: 'Wallet Deep Scan', actions: [{ label: 'Open Wallet Scanner', href: walletScannerDeepLink(targetAddr, true) }] }, analysis };
+  }
+
   if (appIntent.intent === 'wallet_scan') {
     const selectedWallet = typeof body.appContext?.selectedWallet === 'string' ? body.appContext.selectedWallet : body.appContext?.selectedWallet?.address ?? null;
     const walletAddress = appIntent.address ?? selectedWallet ?? null;
@@ -5992,43 +6162,15 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_scan", toolsUsed: [], ui: { intentBadge: 'Wallet Scan', actions: appIntent.cta }, analysis: `WALLET SCAN\nI can run Wallet Scanner, but I need a wallet address or selected wallet context.\nCTA: ${appIntentTools}` };
     }
     const href = walletScannerDeepLink(walletAddress, deepScan);
-    const scanPayload = deepScan
-      ? { address: walletAddress, walletAddress, chain: "auto", chainMode: "all_supported", deepScan: true, debug: false, source: "clark" }
-      : { address: walletAddress, walletAddress, chain: "auto", deepScan: false, debug: false, source: "clark" };
-    const walletRes = await callInternalApi(origin, "/api/wallet", scanPayload, authHeader ?? undefined)
-      .catch((err) => ({ ok: false, status: 0, json: { error: err instanceof Error ? err.message : "wallet_scan_timeout" } }));
-    if (!walletRes.ok || (walletRes.json as Record<string, unknown>)?.error) {
-      const reason = String((walletRes.json as Record<string, unknown>)?.error ?? (walletRes.status === 0 ? "timeout" : `HTTP ${walletRes.status}`));
-      return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_scan", toolsUsed: ["wallet_get_snapshot"], ui: { intentBadge: deepScan ? 'Wallet Deep Scan' : 'Wallet Scan', actions: [{ label: 'Open Wallet Scanner', href }, { label: 'Run Deep Scan', href: walletScannerDeepLink(walletAddress, true) }] }, analysis: [
-        deepScan ? "WALLET DEEP SCAN" : "WALLET SCAN",
-        `- wallet: ${walletAddress}`,
-        `- what Clark did: called Wallet Scanner (${deepScan ? "deepScan=true, chainMode=all_supported" : "deepScan=false, chain=auto"})`,
-        `- result: live wallet scan could not complete (${reason}).`,
-        "- evidence gaps: portfolio, active chains, activity, and PnL remain unverified from this attempt.",
-        `CTA: Open Wallet Scanner — ${href}`,
-      ].join("\n") };
-    }
-    const snapshot = normalizeWalletSnapshotEvidence(walletRes.json as Record<string, unknown>, walletAddress);
-    const activeChainsRaw = (walletRes.json as Record<string, unknown>).activeChains;
-    const activeChains = Array.isArray(activeChainsRaw) ? activeChainsRaw.filter((x): x is string => typeof x === "string") : [];
-    const pnlStatus = typeof (walletRes.json as Record<string, unknown>).pnlStatus === "string" ? (walletRes.json as Record<string, unknown>).pnlStatus : (deepScan ? "Realized PnL returned only when historical lots are available." : "Run Deep Scan for realized PnL / historical trades.");
-    const summary = [
-      deepScan ? "WALLET DEEP SCAN" : "WALLET SCAN",
-      `- wallet: ${walletAddress}`,
-      `- what Clark did: called Wallet Scanner with ${deepScan ? "deepScan=true, chainMode=all_supported" : "deepScan=false, chain=auto"}.`,
-      `- active chains: ${activeChains.length ? activeChains.join(", ") : "not reported"}`,
-      `- portfolio value: ${formatUsdShort(snapshot.totalValue)}`,
-      `- holdings count: ${snapshot.tokenCount ?? "n/a"}`,
-      `- recent activity: ${snapshot.txCount != null ? `${formatInt(snapshot.txCount)} transactions` : "activity summary unavailable"}`,
-      `- realized PnL status: ${pnlStatus}`,
-      `- evidence gaps: ${snapshot.dataQuality === "Complete" ? "No major wallet evidence gaps in returned snapshot." : "Some activity, chain coverage, or unpriced holdings are incomplete."}`,
-      `CTA: Open Wallet Scanner — ${href}${deepScan ? "" : ` / Run Deep Scan — ${walletScannerDeepLink(walletAddress, true)}`}`,
-      "",
-      formatWalletBalanceSummary(snapshot),
-    ].join("\n");
-    updateMemWallet(sessionMem, walletAddress, null, summary);
+    const reqBody = buildWalletApiRequestBody(walletAddress, deepScan);
+    const w = await runWalletScanner({ address: walletAddress, deepScan: reqBody.deepScan, deepActivity: deepScan, chainMode: reqBody.chainMode ?? "auto" })
+      .catch((err) => ({ ok: false, error: err instanceof Error ? err.message : "wallet_scan_timeout" })) as Record<string, unknown>;
+    const holdings = Array.isArray(w.holdings) ? (w.holdings as Array<Record<string, unknown>>) : [];
+    const mappedResult = mapWalletRunnerResult(walletAddress, w, holdings);
+    const analysis = formatWalletScanResult(walletAddress, mappedResult, deepScan);
+    updateMemWallet(sessionMem, walletAddress, null, analysis, mappedResult as Record<string, unknown>, extractPnlEvidence(mappedResult as Record<string, unknown>));
     updateMemIntent(sessionMem, "wallet_analysis");
-    return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_scan", toolsUsed: ["wallet_get_snapshot"], ui: { intentBadge: deepScan ? 'Wallet Deep Scan' : 'Wallet Scan', actions: [{ label: 'Open Wallet Scanner', href }, { label: 'Run Deep Scan', href: walletScannerDeepLink(walletAddress, true) }] }, analysis: summary };
+    return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_scan", toolsUsed: ["wallet_scanner_runner"], ui: { intentBadge: deepScan ? 'Wallet Deep Scan' : 'Wallet Scan', actions: [{ label: 'Open Wallet Scanner', href }, { label: 'Run Deep Scan', href: walletScannerDeepLink(walletAddress, true) }] }, analysis };
   }
   if (appIntent.intent === 'liquidity_scan' && appIntent.address) {
     const kind = await classifyAddressForClark(appIntent.address, chain);
@@ -6476,27 +6618,39 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         quotaConsumed: false,
       };
     }
-    const scanData = await callScanToken(routed.address, "contract", origin).catch(() => null) as Record<string, unknown> | null;
-    if (!scanData) {
+    const liqRes = await callInternalApi(origin, "/api/liquidity-safety", { contract: routed.address, chain: "base" }, authHeader ?? undefined, verifiedPlan);
+    const raw = (liqRes.json ?? {}) as Record<string, unknown>;
+    const data = (raw.data && typeof raw.data === "object" ? raw.data : raw) as Record<string, unknown>;
+    if (!liqRes.ok || raw.ok === false || Object.keys(data).length === 0) {
       return {
-        feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_scan", toolsUsed: ["liquidity_analyze"],
+        feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_scan", toolsUsed: ["liquidity_safety_pipeline"],
         analysis: formatLpReadResult(null),
         intentBadge: "liquidity_scan",
         actions: buildRoutedActions(["Open Token Scanner", "Run LP Check"]),
         quotaConsumed: false,
       };
     }
-    const pools = Array.isArray(scanData.pools) ? scanData.pools as Array<Record<string, unknown>> : [];
-    const topPool = pools[0];
+    const lpMeta = data.lpMeta && typeof data.lpMeta === "object" ? data.lpMeta as Record<string, unknown> : null;
+    const primaryPool = lpMeta?.primaryPool && typeof lpMeta.primaryPool === "object" ? lpMeta.primaryPool as Record<string, unknown> : null;
+    const gaps = Array.isArray(data.lp_evidence_gaps) ? (data.lp_evidence_gaps as Array<Record<string, unknown> | string>).map((g) => typeof g === "string" ? g : String(g.label ?? g.code ?? g.reason ?? "LP evidence gap")) : [];
+    const displayModel = typeof data.displayLpModel === "string" ? data.displayLpModel : (typeof data.poolModel === "string" ? data.poolModel : null);
+    const concentrated = displayModel === "concentrated_liquidity" || displayModel === "concentrated" || data.lpProofApplicability === "not_applicable";
     const mapped = {
-      token: { name: typeof scanData.name === "string" ? scanData.name : null, symbol: typeof scanData.symbol === "string" ? scanData.symbol : null },
-      primaryPool: topPool && typeof topPool.address === "string" ? topPool.address : null,
-      poolModel: undefined,
-      lockBurnProof: undefined,
-      controllerVerification: undefined,
-      liquidityDepth: typeof scanData.liquidity === "number" ? `${scanData.liquidity}` : undefined,
-      exitRisk: undefined,
-      missingEvidence: ["LP lock/burn proof", "pool model", "controller verification", "exit risk"],
+      token: { name: typeof data.name === "string" ? data.name : null, symbol: typeof data.symbol === "string" ? data.symbol : null },
+      primaryPool: typeof primaryPool?.address === "string" ? primaryPool.address : null,
+      poolModel: displayModel,
+      poolType: typeof primaryPool?.poolType === "string" ? primaryPool.poolType : null,
+      lpProofStatus: typeof data.lpLockStatus === "string" ? data.lpLockStatus : null,
+      lpProofApplicability: typeof data.lpProofApplicability === "string" ? data.lpProofApplicability : null,
+      lockStatus: typeof data.lpLockStatus === "string" ? data.lpLockStatus : null,
+      burnStatus: data.lpLockStatus === "burned" ? "burned" : "not_verified",
+      controllerStatus: typeof data.lpController === "string" ? data.lpController : null,
+      positionVerificationStatus: concentrated ? "Position/control verification required" : (typeof data.lpControl === "object" ? String((data.lpControl as Record<string, unknown>).status ?? "open_check") : "open_check"),
+      secondaryLpExposure: lpMeta?.secondaryLpExposure ?? null,
+      liquidityDepth: typeof data.lp_total_liquidity_usd === "number" ? `$${data.lp_total_liquidity_usd.toLocaleString()}` : undefined,
+      exitRisk: typeof data.lpExitRisk === "string" ? data.lpExitRisk : undefined,
+      missingEvidence: concentrated ? ["ERC20 LP lock/burn proof does not apply to this pool model. Position/control verification is required.", ...gaps] : gaps,
+      nextAction: "Open Liquidity Safety / Open Token Scanner",
     };
     return {
       feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_scan", toolsUsed: ["liquidity_analyze"],
@@ -6509,9 +6663,8 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
 
   if (routed.intent === "wallet_scan" && routed.address) {
     const reqBody = buildWalletApiRequestBody(routed.address, routed.deep);
-    const walletRes = await callInternalApi(origin, "/api/wallet", reqBody, authHeader ?? undefined);
-    const w = (walletRes.json ?? {}) as Record<string, unknown>;
-    const ok = walletRes.ok && Object.keys(w).length > 0 && w.error == null;
+    const w = await runWalletScanner({ address: routed.address, deepScan: reqBody.deepScan, deepActivity: routed.deep, chainMode: reqBody.chainMode ?? "auto" }).catch((err) => ({ ok: false, error: err instanceof Error ? err.message : "Wallet Scanner authorization failed inside Clark execution. The direct Wallet Scanner page may still work." })) as Record<string, unknown>;
+    const ok = w.ok === true && Object.keys(w).length > 0 && w.error == null;
     const holdings = Array.isArray(w.holdings) ? (w.holdings as Array<Record<string, unknown>>) : [];
     const chainsActive = Array.from(new Set(
       holdings.map((h) => (typeof h.chain === "string" ? h.chain : null)).filter((c): c is string => !!c)
@@ -6528,7 +6681,18 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       chainsActive: chainsActive.length > 0 ? chainsActive : null,
       txCount: typeof w.txCount === "number" ? w.txCount : null,
       error: typeof w.error === "string" ? w.error : null,
-    };
+      pnlCoverage: w.pnlCoverage,
+      historicalRecoveryStatus: w.historicalRecoveryStatus,
+      openLots: w.openLots,
+      closedLots: w.closedLots,
+      walletScanHealth: w.walletScanHealth,
+      walletModuleCoverage: w.walletModuleCoverage,
+      walletTokenPnlSummary: w.walletTokenPnlSummary,
+      walletTokenPnlRead: Array.isArray(w.walletTokenPnlRead) ? w.walletTokenPnlRead : [],
+      walletTradeStatsSummary: w.walletTradeStatsSummary,
+      walletHistoricalCoverageSummary: w.walletHistoricalCoverageSummary,
+      warnings: w.warnings,
+    } as any;
     const analysis = formatWalletScanResult(routed.address, mappedResult, routed.deep);
     updateMemWallet(sessionMem, routed.address, null, analysis);
     updateMemIntent(sessionMem, "wallet_analysis");
@@ -6596,23 +6760,10 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   }
 
   if (routed.intent === "base_market_discovery") {
-    if (Array.isArray(body.dashboardMarketRows) && body.dashboardMarketRows.length > 0) {
-      const formatted = formatBaseMarketReadFromRows(body.dashboardMarketRows);
+    const dashboardRows = Array.isArray(body.appContext?.dashboardMarketRows) ? body.appContext.dashboardMarketRows : body.dashboardMarketRows;
+    if (Array.isArray(dashboardRows) && dashboardRows.length > 0) {
+      const formatted = formatBaseMarketReadFromRows(dashboardRows);
       if (formatted) {
-        const ranked = rankBaseMarketRows(body.dashboardMarketRows, 5);
-        updateMemMomentum(sessionMem, ranked.map((r, i) => ({
-          rank: i + 1,
-          symbol: String(r.symbol ?? "?").toUpperCase(),
-          name: r.name ?? null,
-          address: r.tokenAddress ?? r.poolAddress ?? r.contract ?? r.pairAddress ?? null,
-          liquidity: r.liquidityUsd ?? null,
-          volume24h: r.volume24hUsd ?? null,
-          change24h: r.change24h ?? null,
-          tag: r.reasonTags?.[0] ?? null,
-        })));
-        sessionMem.allowedRankScanUntil = Date.now() + 60_000;
-        sessionMem.allowedRankScanUsed = false;
-        updateMemIntent(sessionMem, "market");
         return {
           feature: "clark-ai", chain, mode: "analysis", intent: "base_market_discovery", toolsUsed: [],
           analysis: formatted,
@@ -6622,23 +6773,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         };
       }
     }
-    let universe: Awaited<ReturnType<typeof getBaseMarketUniverse>> | null;
-    try {
-      universe = await getBaseMarketUniverse({ origin, mode: "pumping", requestedCount: 10, followup: false, excludeAddresses: [], includePoolVariants: false });
-    } catch {
-      return {
-        feature: "clark-ai", chain, mode: "analysis", intent: "base_market_discovery", toolsUsed: ["base_market_universe"],
-        analysis: formatCouldNotComplete({
-          intentBadge: "base_market_discovery",
-          attempted: ["live Base market data"],
-          reason: "Base mover data source timed out. Try again shortly.",
-          actions: buildRoutedActions(["Open Base Radar", "Refresh Market Data"]),
-        }),
-        intentBadge: "base_market_discovery",
-        actions: buildRoutedActions(["Open Base Radar", "Refresh Market Data"]),
-        quotaConsumed: false,
-      };
-    }
+    const universe = await getBaseMarketUniverse({ origin, mode: "pumping", requestedCount: 10, followup: false, excludeAddresses: [], includePoolVariants: false }).catch(() => null);
     const candidates = universe?.candidates ?? [];
     if (candidates.length > 0) {
       const mappedCandidates = candidates.map((c) => ({
@@ -6648,20 +6783,6 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       }));
       const formatted = formatBaseMarketReadFromCandidates(mappedCandidates);
       if (formatted) {
-        const ranked = rankBaseMarketRows(mappedCandidates, 5);
-        updateMemMomentum(sessionMem, ranked.map((r, i) => ({
-          rank: i + 1,
-          symbol: String(r.symbol ?? "?").toUpperCase(),
-          name: r.name ?? null,
-          address: r.tokenAddress ?? r.poolAddress ?? null,
-          liquidity: r.liquidityUsd ?? null,
-          volume24h: r.volume24hUsd ?? null,
-          change24h: r.change24h ?? null,
-          tag: r.reasonTags?.[0] ?? null,
-        })));
-        sessionMem.allowedRankScanUntil = Date.now() + 60_000;
-        sessionMem.allowedRankScanUsed = false;
-        updateMemIntent(sessionMem, "market");
         return {
           feature: "clark-ai", chain, mode: "analysis", intent: "base_market_discovery", toolsUsed: ["base_market_universe"],
           analysis: formatted,
@@ -6676,7 +6797,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       analysis: formatCouldNotComplete({
         intentBadge: "base_market_discovery",
         attempted: ["dashboard market view", "live Base market data"],
-        reason: "No live Base mover data is available right now.",
+        reason: "no dashboard market rows were supplied and the live Base market universe returned no candidates",
         actions: buildRoutedActions(["Open Base Radar", "Refresh Market Data"]),
       }),
       intentBadge: "base_market_discovery",

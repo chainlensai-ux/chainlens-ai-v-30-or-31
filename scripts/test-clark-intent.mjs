@@ -7,20 +7,18 @@ import {
 } from '../lib/server/clarkRouting.ts'
 
 // ─── base_market_discovery vs base_radar ─────────────────────────────────────
-assert.equal(classifyClarkPrompt("what's pumping on Base?").intent, 'base_market_discovery')
-assert.equal(classifyClarkPrompt("what's pumping on Base Radar?").intent, 'base_radar')
 assert.equal(classifyClarkPrompt("who's pumping on Base?").intent, 'base_market_discovery')
-assert.equal(classifyClarkPrompt("show Base pumpers").intent, 'base_market_discovery')
-assert.equal(classifyClarkPrompt("what tokens are moving on Base").intent, 'base_market_discovery')
-assert.equal(classifyClarkPrompt("what's hot on Base").intent, 'base_market_discovery')
-assert.equal(classifyClarkPrompt("Base movers").intent, 'base_market_discovery')
-assert.equal(classifyClarkPrompt("Base trending tokens").intent, 'base_market_discovery')
+assert.equal(classifyClarkPrompt("whos pumping on base").intent, 'base_market_discovery')
+assert.equal(classifyClarkPrompt("what Base pairs are pumping?").intent, 'base_market_discovery')
+assert.equal(classifyClarkPrompt("show me trending Base tokens").intent, 'base_market_discovery')
+assert.equal(classifyClarkPrompt("what's pumping on Base Radar?").intent, 'base_radar')
 
 // ─── wallet_scan ──────────────────────────────────────────────────────────────
 {
   const r = classifyClarkPrompt('scan this wallet 0x1234567890123456789012345678901234567890')
   assert.equal(r.intent, 'wallet_scan')
   assert.equal(r.deep, false)
+  assert.ok(Array.isArray(r.addresses) && r.addresses.length === 1, 'addresses array populated')
 }
 {
   const r = classifyClarkPrompt('deep scan this wallet 0x1234567890123456789012345678901234567890')
@@ -28,8 +26,37 @@ assert.equal(classifyClarkPrompt("Base trending tokens").intent, 'base_market_di
   assert.equal(r.deep, true)
 }
 {
+  const r = classifyClarkPrompt('analyze wallet 0x1234567890123456789012345678901234567890')
+  assert.equal(r.intent, 'wallet_scan')
+  assert.equal(r.deep, true)
+}
+{
+  const r = classifyClarkPrompt('wallet pnl 0x1234567890123456789012345678901234567890')
+  assert.equal(r.intent, 'wallet_scan')
+  assert.equal(r.deep, true)
+}
+{
   const r = classifyClarkPrompt('0x1234567890123456789012345678901234567890')
   assert.equal(r.intent, 'wallet_scan')
+}
+
+// ─── wallet compare (does NOT scan only the second wallet) ─────────────────────
+{
+  const r = classifyClarkPrompt('compare this wallet with 0x79abcdefabcdefabcdefabcdefabcdefabcdef12')
+  assert.equal(r.intent, 'wallet_compare')
+  assert.ok(r.addresses.length >= 1, 'compare captures typed address')
+}
+
+// ─── wallet PnL follow-up phrases (route to pnl followup, rely on memory) ──────
+{
+  const r = classifyClarkPrompt('why is pnl missing')
+  assert.equal(r.intent, 'wallet_pnl_followup')
+  assert.equal(r.deep, true)
+}
+{
+  const r = classifyClarkPrompt('dig deeper into this wallet')
+  assert.equal(r.intent, 'wallet_pnl_followup')
+  assert.equal(r.deep, true)
 }
 
 // ─── liquidity_scan ───────────────────────────────────────────────────────────

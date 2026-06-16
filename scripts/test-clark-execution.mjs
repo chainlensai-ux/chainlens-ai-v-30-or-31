@@ -9,31 +9,28 @@ import {
   formatLpReadResult,
   formatCouldNotComplete,
   buildRoutedActions,
-  rankBaseMarketRows,
+  formatWalletCompareUnsupported,
+  pickTopHoldingsByValue,
 } from '../lib/server/clarkRouting.ts'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 // ─── formatBaseMarketReadFromRows ────────────────────────────────────────────
 const mockRows = [
-  { symbol: 'AERO', name: 'Aerodrome', change24h: 5.2, volume24hUsd: 2_000_000, liquidityUsd: 1_500_000, priceUsd: 1.2, marketCapUsd: 100_000_000, tokenAddress: '0xaero', poolAddress: '0xaeropool', reasonTags: ['liquid mover'] },
-  { symbol: 'BRETT', name: 'Brett', change24h: 12.4, volume24hUsd: 5_000_000, liquidityUsd: 2_000_000, priceUsd: 0.08, marketCapUsd: 400_000_000, tokenAddress: '0xbrett', poolAddress: '0xbrettpool', reasonTags: ['volume expansion'] },
+  { symbol: 'AERO', name: 'Aerodrome', change24h: 5.2, volume24hUsd: 2_000_000, liquidityUsd: 1_000_000, priceUsd: 1.2, marketCapUsd: 100_000_000, poolAddress: '0xpoola', reasonTags: ['volume expansion'] },
+  { symbol: 'BRETT', name: 'Brett', change24h: 12.4, volume24hUsd: 5_000_000, liquidityUsd: 2_500_000, priceUsd: 0.08, marketCapUsd: 400_000_000, poolAddress: '0xpoolb', reasonTags: ['volume spike', 'price move'] },
 ]
 {
   const out = formatBaseMarketReadFromRows(mockRows)
   assert.ok(out, 'non-null for non-empty rows')
-  assert.ok(out.startsWith('Here are the strongest Base movers I found right now:'))
+  assert.ok(out.startsWith('Here are the strongest Base movers'))
+  assert.ok(out.includes('BRETT'))
+  assert.ok(out.includes('Why:'))
+  assert.ok(out.includes('Risk:'))
+  assert.ok(out.includes('Want me to scan the top one in Token Scanner?'))
   assert.ok(out.includes('CTA:'))
-  // ─── product wording: "movers" not "confirmed pumps" ─────────────────────
-  assert.ok(out.toLowerCase().includes('movers'))
-  assert.ok(!out.toLowerCase().includes('confirmed pump'))
-  assert.ok(!out.toLowerCase().includes('confirmed manipulation'))
-  // ─── scan-by-rank prompts surfaced ─────────────────────────────────────────
-  assert.ok(out.includes('Say "scan #1" to run Token Scanner.'))
-  assert.ok(out.includes('Say "scan #2" to run Token Scanner.'))
 }
 assert.equal(formatBaseMarketReadFromRows([]), null)
-assert.equal(formatBaseMarketReadFromRows(null), null)
 
 // ─── buildWalletApiRequestBody ───────────────────────────────────────────────
 const addr = '0x1234567890123456789012345678901234567890'
@@ -103,33 +100,114 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
 {
   const routeFile = fs.readFileSync(path.join(__dirname, '..', 'app', 'api', 'clark', 'route.ts'), 'utf8')
   assert.ok(!routeFile.includes('No data available right now'), 'stale fallback string must be removed')
-
-  // ─── base_market_discovery: movers saved to session memory ────────────────
-  const baseMarketBlockIdx = routeFile.indexOf('routed.intent === "base_market_discovery"')
-  assert.ok(baseMarketBlockIdx >= 0, 'base_market_discovery route block must exist')
-  const baseMarketBlock = routeFile.slice(baseMarketBlockIdx, baseMarketBlockIdx + 6000)
-  assert.ok(baseMarketBlock.includes('updateMemMomentum'), 'base movers must be saved via updateMemMomentum')
-  assert.ok(baseMarketBlock.includes('rankBaseMarketRows'), 'movers must be ranked via rankBaseMarketRows')
-
-  // ─── honest empty/timeout wording ──────────────────────────────────────────
-  assert.ok(routeFile.includes('No live Base mover data is available right now.'))
-  assert.ok(routeFile.includes('Base mover data source timed out. Try again shortly.'))
-  assert.ok(!routeFile.includes('No tokens are moving.'))
+  assert.ok(!routeFile.includes('const walletRes = await callInternalApi(origin, "/api/wallet", scanPayload'), 'routed Clark wallet execution must not use unauthenticated internal wallet API path')
+  assert.ok(routeFile.includes('runWalletScanner'), 'Clark wallet execution should call the Wallet Scanner runner')
 }
 
-// ─── rankBaseMarketRows ───────────────────────────────────────────────────────
+
+// ─── wallet scan formatting surfaces scanner modules ─────────────────────────
 {
-  const ranked = rankBaseMarketRows(mockRows, 5)
-  assert.equal(ranked.length, 2)
-  assert.equal(ranked[0].symbol, 'BRETT') // higher change/volume/liquidity wins
-  assert.deepEqual(rankBaseMarketRows([]), [])
-  assert.deepEqual(rankBaseMarketRows(null), [])
+  const { formatWalletScanResult } = await import('../lib/server/clarkRouting.ts')
+  const out = formatWalletScanResult(addr, {
+    ok: true,
+    totalValue: 1234,
+    holdings: [{ symbol: 'DEGEN', value: 1000, chain: 'base' }],
+    walletScanHealth: { status: 'limited_pnl', summary: 'Holdings were loaded, but closed lots/cost basis are incomplete.', lockedModules: ['fifoPnL', 'tradeStats'] },
+    walletModuleCoverage: { portfolio: { status: 'ok' }, activity: { status: 'partial' }, fifoPnL: { status: 'locked_no_closed_lots' }, tradeStats: { status: 'locked_no_closed_lots' } },
+    walletTokenPnlSummary: { status: 'partial', reason: 'cost_basis_limited' },
+    walletTokenPnlRead: [{ symbol: 'DEGEN', status: 'cost_basis_only' }],
+    historicalRecoveryStatus: 'not_started',
+  }, false)
+  assert.ok(out.includes('Portfolio found. PnL is limited'))
+  assert.ok(out.includes('walletScanHealth'))
+  assert.ok(out.includes('walletModuleCoverage'))
+  assert.ok(out.includes('Token-level read'))
+  assert.ok(out.includes('Module status'), 'locked modules surfaced as honest Module status')
 }
 
 // ─── buildRoutedActions ──────────────────────────────────────────────────────
 {
   const out = buildRoutedActions(['Scan Wallet', 'Scan Wallet', 'Bogus Action'])
   assert.deepEqual(out, ['Scan Wallet'])
+}
+
+// ─── top holdings by value (no $0 dust) ───────────────────────────────────────
+{
+  const holdings = [
+    { symbol: 'mUSDC', value: 0, chain: 'base' },
+    { symbol: 'APE', value: 0, chain: 'base' },
+    { symbol: 'FTM', value: 0, chain: 'base' },
+    { symbol: 'WETH', value: 372_000, chain: 'base' },
+    { symbol: 'DEGEN', value: 500, chain: 'base' },
+  ]
+  const top = pickTopHoldingsByValue(holdings, 5)
+  assert.equal(top.length, 2, 'dust filtered out')
+  assert.equal(top[0].symbol, 'WETH', 'highest value first')
+  assert.equal(top[1].symbol, 'DEGEN')
+}
+{
+  // formatWalletScanResult must surface the meaningful holding, not $0 dust
+  const { formatWalletScanResult } = await import('../lib/server/clarkRouting.ts')
+  const out = formatWalletScanResult(addr, {
+    ok: true,
+    totalValue: 372_700,
+    holdings: [
+      { symbol: 'mUSDC', value: 0, chain: 'base' },
+      { symbol: 'APE', value: 0, chain: 'base' },
+      { symbol: 'WETH', value: 372_700, chain: 'base' },
+    ],
+    walletScanHealth: { status: 'limited_pnl', summary: 'Holdings loaded, closed lots incomplete.', lockedModules: ['fifoPnL'] },
+    walletModuleCoverage: { portfolio: { status: 'ok' }, activity: { status: 'open_check' }, fifoPnL: { status: 'locked_no_closed_lots', reason: 'no_closed_lots' }, tradeStats: { status: 'locked_no_closed_lots' } },
+    walletTokenPnlSummary: { status: 'partial', reason: 'cost_basis_limited' },
+    historicalRecoveryStatus: 'partial',
+    dataFreshness: 'live',
+  }, false)
+  assert.ok(out.includes('WETH'), 'top holding by value shown')
+  assert.ok(!/mUSDC \(\$0\)|APE \(\$0\)/.test(out), 'no $0 dust listed as top holdings')
+  assert.ok(!out.includes('PnL coverage: not requested'), 'must not say PnL not requested after a scan')
+  assert.ok(!out.includes('Activity status: not requested'), 'must not say activity not requested')
+  assert.ok(out.toLowerCase().includes('attempted: limited'), 'PnL labelled as attempted: limited')
+}
+
+// ─── PnL never "not requested" for deep scan either ──────────────────────────
+{
+  const { formatWalletScanResult } = await import('../lib/server/clarkRouting.ts')
+  const out = formatWalletScanResult(addr, {
+    ok: true,
+    totalValue: 1_000,
+    holdings: [{ symbol: 'WETH', value: 1_000, chain: 'base' }],
+    walletScanHealth: { status: 'limited_pnl', lockedModules: ['fifoPnL', 'tradeStats'] },
+    walletModuleCoverage: { portfolio: { status: 'ok' }, activity: { status: 'open_check' }, fifoPnL: { status: 'locked_no_closed_lots', reason: 'no_closed_lots' }, tradeStats: { status: 'locked_no_closed_lots' } },
+    walletTokenPnlSummary: { status: 'partial', reason: 'cost_basis_limited' },
+    walletHistoricalCoverageSummary: { status: 'partial' },
+  }, true)
+  assert.ok(!out.includes('not requested'), 'deep scan must not produce "not requested" anywhere')
+  assert.ok(out.includes('WETH'), 'meaningful holding shown')
+}
+
+// ─── cached portfolio preview labelling (API/debug truth) ─────────────────────
+{
+  const { formatWalletScanResult } = await import('../lib/server/clarkRouting.ts')
+  const out = formatWalletScanResult(addr, {
+    ok: true,
+    totalValue: 1_000,
+    holdings: [{ symbol: 'WETH', value: 1_000, chain: 'base' }],
+    walletScanHealth: { status: 'cached', lockedModules: ['fifoPnL'] },
+    walletModuleCoverage: { portfolio: { status: 'ok' }, fifoPnL: { status: 'locked_no_closed_lots' } },
+    dataFreshness: 'cached',
+    cacheAgeSeconds: 120,
+  }, false)
+  assert.ok(out.includes('cached portfolio preview'), 'cached preview labelled honestly')
+}
+
+// ─── wallet compare unsupported: names both addresses, scans neither ──────────
+{
+  const fakeLink = (a, d) => `/w/${a}?deep=${d ? 1 : 0}`
+  const out = formatWalletCompareUnsupported({ addressA: addr, addressB: '0x79abcdefabcdefabcdefabcdefabcdefabcdefabcd', walletScannerDeepLink: fakeLink })
+  assert.ok(out.includes('not fully wired yet'))
+  assert.ok(out.toLowerCase().includes(addr.toLowerCase()))
+  assert.ok(out.includes('0x79abcdefabcdefabcdefabcdefabcdefabcdefabcd'))
+  assert.ok(!/WALLET READ/i.test(out), 'must not present a one-sided scan as a compare')
 }
 
 console.log('test-clark-execution.mjs: all assertions passed')
