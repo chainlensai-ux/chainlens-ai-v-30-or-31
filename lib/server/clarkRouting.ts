@@ -58,6 +58,22 @@ const LP_LOCK_RE = /\b(is\s+lp\s+locked|lp\s+locked|can\s+liquidity\s+be\s+pulle
 const RISK_EXPL_RE = /\b(why\s+(?:is\s+(?:this|it)\s+)?(?:high|low)\s+risk|why\s+did\s+it\s+score\s+low|explain\s+(?:the\s+)?risk|what\s+are\s+the\s+red\s+flags|red\s+flags|why\s+(?:the\s+)?caution|why\s+risky|explain\s+(?:the\s+)?score|what\s+makes\s+(?:it|this)\s+risky|what\s+are\s+the\s+risks|explain\s+(?:the\s+)?verdict)\b/i;
 const TOKEN_NAME_RE = /\b(scan|check|analyze|tell\s+me\s+about|token\s+scan|is|look\s+up)\s+([A-Z][A-Z0-9]{1,10})\b/;
 
+/**
+ * Single source of truth for address routing hint.
+ * Returns "token" when explicit token keywords are present, "wallet" when
+ * explicit wallet keywords are present, "ambiguous" when both, "none" otherwise.
+ * All wallet execution points in route.ts must check routeHint !== "token".
+ */
+export function getClarkAddressRouteHint(prompt: string): "token" | "wallet" | "ambiguous" | "none" {
+  const t = (prompt ?? "").trim().toLowerCase();
+  const tokenSignals = /\b(token|coin|contract|\bca\b|ticker|scan\s+this\s+token|token\s+scan|is\s+this\s+token|base\s+token|eth\s+token|on\s+base|on\s+eth|rug|dev\s+rug|lp\s+locked|liquidity\s+locked|base\s+contract|ethereum\s+token|honeypot|buy\s+tax|sell\s+tax)\b/i.test(t);
+  const walletSignals = /\b(wallet|portfolio|holdings?|pnl|profit|trades?|scan\s+this\s+wallet|analyze\s+wallet|deep\s+scan\s+wallet|wallet\s+pnl|wallet\s+scan|wallet\s+check|wallet\s+report)\b/i.test(t);
+  if (tokenSignals && !walletSignals) return "token";
+  if (walletSignals && !tokenSignals) return "wallet";
+  if (tokenSignals && walletSignals) return "ambiguous";
+  return "none";
+}
+
 /** True for prompts that are PnL/history follow-ups about the last scanned wallet. */
 export function isWalletPnlFollowupPrompt(text: string): boolean {
   return WALLET_FOLLOWUP_RE.test(String(text ?? ""));

@@ -312,4 +312,37 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.notEqual(onBaseResult.intent, 'wallet_scan', '"0x on base" must not be wallet_scan')
 }
 
+// ─── getClarkAddressRouteHint regression (Task 7 hard-fix) ───────────────────
+{
+  const { getClarkAddressRouteHint } = await import('../lib/server/clarkRouting.ts')
+  const bugAddr = '0x0b3e328455c4059eeb9e3f84b5543f74e24e7e1b'
+
+  // Critical bug prompt — must return "token", never "wallet"
+  assert.equal(
+    getClarkAddressRouteHint(`scan this token ${bugAddr} on base`),
+    'token',
+    'CRITICAL: "scan this token 0x... on base" => routeHint must be "token"'
+  )
+  assert.equal(getClarkAddressRouteHint(`token scan ${bugAddr}`), 'token')
+  assert.equal(getClarkAddressRouteHint(`is this token safe ${bugAddr}`), 'token')
+  assert.equal(getClarkAddressRouteHint(`${bugAddr} on base`), 'token')
+  assert.equal(getClarkAddressRouteHint(`can the dev rug ${bugAddr}`), 'token')
+  assert.equal(getClarkAddressRouteHint(`is lp locked ${bugAddr}`), 'token')
+
+  // Wallet prompts must still return "wallet"
+  assert.equal(getClarkAddressRouteHint(`scan this wallet ${bugAddr}`), 'wallet')
+  assert.equal(getClarkAddressRouteHint(`wallet pnl ${bugAddr}`), 'wallet')
+  assert.equal(getClarkAddressRouteHint(`portfolio ${bugAddr}`), 'wallet')
+
+  // Pure address (no keywords) => "none"
+  assert.equal(getClarkAddressRouteHint(bugAddr), 'none')
+
+  // route.ts must import and use routeHint guard on all wallet execution points
+  const routeFile = fs.readFileSync(path.join(__dirname, '..', 'app', 'api', 'clark', 'route.ts'), 'utf8')
+  assert.ok(routeFile.includes('getClarkAddressRouteHint'), 'route.ts imports getClarkAddressRouteHint')
+  assert.ok(routeFile.includes("routeHint !== 'token'"), 'route.ts guards wallet blocks with routeHint')
+  const walletGuardCount = (routeFile.match(/routeHint !== 'token'/g) ?? []).length
+  assert.ok(walletGuardCount >= 3, `at least 3 wallet execution points guarded (found ${walletGuardCount})`)
+}
+
 console.log('test-clark-execution.mjs: all assertions passed')

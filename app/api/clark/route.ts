@@ -28,6 +28,7 @@ import {
   formatRiskExplanation,
   formatNoTokenInMemory,
   type TokenScanEvidence,
+  getClarkAddressRouteHint,
 } from "@/lib/server/clarkRouting";
 
 const {
@@ -6113,6 +6114,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
 
   const appIntent = resolveClarkIntent(prompt, body.appContext);
   const routedClassification = classifyClarkPrompt(prompt);
+  const routeHint = getClarkAddressRouteHint(prompt);
   const appIntentTools = appIntent.cta.map((a) => a.label).join(' · ');
 
   // ─── Wallet compare (honest unsupported compare — never scan only one wallet) ───
@@ -6164,7 +6166,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   // Token intent from classifyClarkPrompt takes priority over appIntent wallet_scan
   const TOKEN_INTENTS = new Set(['token_scan','token_safety','dev_rug_check','lp_lock_check','risk_explanation'] as const);
   const routedIsToken = TOKEN_INTENTS.has(routedClassification.intent as typeof TOKEN_INTENTS extends Set<infer T> ? T : never);
-  if (appIntent.intent === 'wallet_scan' && !routedIsToken) {
+  if (appIntent.intent === 'wallet_scan' && !routedIsToken && routeHint !== 'token') {
     const selectedWallet = typeof body.appContext?.selectedWallet === 'string' ? body.appContext.selectedWallet : body.appContext?.selectedWallet?.address ?? null;
     const walletAddress = appIntent.address ?? selectedWallet ?? null;
     const deepScan = wantsWalletDeepScan(prompt);
@@ -6671,7 +6673,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     };
   }
 
-  if (routed.intent === "wallet_scan" && routed.address) {
+  if (routed.intent === "wallet_scan" && routed.address && routeHint !== 'token') {
     const reqBody = buildWalletApiRequestBody(routed.address, routed.deep);
     const w = await runWalletScanner({ address: routed.address, deepScan: reqBody.deepScan, deepActivity: routed.deep, chainMode: reqBody.chainMode ?? "auto" }).catch((err) => ({ ok: false, error: err instanceof Error ? err.message : "Wallet Scanner authorization failed inside Clark execution. The direct Wallet Scanner page may still work." })) as Record<string, unknown>;
     const ok = w.ok === true && Object.keys(w).length > 0 && w.error == null;
@@ -7127,7 +7129,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: [], analysis: "I can run that, but I need a wallet address first. Paste a full 0x wallet (or a .base.eth / .eth name) and I'll analyze the available data." };
   }
   // Wallet analysis with address — route to wallet before plan execution
-  if (directIntent.intent === "wallet_analysis" && directIntent.address) {
+  if (directIntent.intent === "wallet_analysis" && directIntent.address && routeHint !== 'token') {
     if (!planAllows(verifiedPlan, 'wallet_scan')) {
       return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: [],
         analysis: buildLockedResponse('wallet_scan', 'ask what makes a wallet worth monitoring.') };
@@ -7162,7 +7164,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   }
 
   // Hard guard: bare 0x address after recent wallet-context turn → wallet analysis
-  if (directIntent.address && isBareAddressPrompt(prompt) && hasRecentWalletContext(body.history)) {
+  if (directIntent.address && isBareAddressPrompt(prompt) && hasRecentWalletContext(body.history) && routeHint !== 'token') {
     console.log("[clark-intent] detected=wallet_analysis reason=history_wallet_context");
     const walletRes = await callInternalApi(origin, "/api/wallet", { address: directIntent.address }, authHeader ?? undefined);
     const w = (walletRes.json ?? {}) as Record<string, unknown>;
