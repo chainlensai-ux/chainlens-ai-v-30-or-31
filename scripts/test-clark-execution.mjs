@@ -345,4 +345,86 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(walletGuardCount >= 3, `at least 3 wallet execution points guarded (found ${walletGuardCount})`)
 }
 
+// ─── Task 8: Clark token debug receipt + field-mapping regression ─────────────
+{
+  const routeFile = fs.readFileSync(path.join(__dirname, '..', 'app', 'api', 'clark', 'route.ts'), 'utf8')
+
+  // Debug receipt shape must be emitted in token_scan handler
+  assert.ok(routeFile.includes('clarkDebugReceipt'), 'route.ts emits clarkDebugReceipt')
+  assert.ok(routeFile.includes('clarkDebugMode'), 'route.ts computes clarkDebugMode')
+  assert.ok(routeFile.includes('walletScanAttempted: false'), 'debug receipt records walletScanAttempted: false for token scan')
+  assert.ok(routeFile.includes('formatterUsed'), 'debug receipt includes formatterUsed field')
+  assert.ok(routeFile.includes('tokenScanAttempted: true'), 'debug receipt records tokenScanAttempted: true')
+  assert.ok(routeFile.includes('tokenScanEndpointOrFunction'), 'debug receipt records endpoint name')
+
+  // Field-mapping fix: goplus stripped → must use security.devOwnership and security.contractFlags
+  assert.ok(routeFile.includes('tDevOwnership.isRenounced'), 'ownerRenounced reads from security.devOwnership.isRenounced')
+  assert.ok(routeFile.includes('tContractFlags.mint'), 'mintable reads from security.contractFlags.mint')
+  assert.ok(routeFile.includes('tContractFlags.proxy'), 'proxy reads from security.contractFlags.proxy')
+
+  // change24h field-mapping fix: must read from sections.market.change24h
+  assert.ok(routeFile.includes('tSectMarket.change24h'), 'change24h reads from sections.market.change24h fallback')
+
+  // Failure message must not just say "Token data unavailable right now."
+  assert.ok(!routeFile.includes('"Token data unavailable right now."'), 'stale "unavailable" fallback removed from fetchTokenEvidence')
+  assert.ok(routeFile.includes('Token scan route failed'), 'specific failure message for route failure')
+  assert.ok(routeFile.includes('Token not found on Base'), 'specific failure message for no pool data')
+
+  // Provider names must not appear in public Clark answers
+  const publicFormatterCode = routeFile.match(/function formatTokenScan[\s\S]*?^}/m)?.[0] ?? ''
+  assert.ok(!publicFormatterCode.includes('geckoterminal'), 'formatTokenScanResult must not mention geckoterminal')
+  assert.ok(!publicFormatterCode.includes('goldrush'), 'formatTokenScanResult must not mention goldrush')
+}
+
+// ─── fetchTokenEvidence field-map: mock evidence → formatter outputs fields ───
+{
+  const { formatTokenScanResult, formatDevRugCheck } = await import('../lib/server/clarkRouting.ts')
+
+  // Mock evidence simulating what the fixed fetchTokenEvidence now produces
+  const mockEv = {
+    ok: true,
+    token: { name: 'TestCoin', symbol: 'TEST', address: '0x0b3e328455c4059eeb9e3f84b5543f74e24e7e1b' },
+    chain: 'Base',
+    market: { price: 0.001, change24h: 5.2, volume24h: 100_000, liquidity: 50_000, marketCap: 1_000_000 },
+    holders: { top1: 12.5, top10: 45.0, holderCount: 800 },
+    security: { honeypot: false, buyTax: 0, sellTax: 0, ownerRenounced: true, mintable: false, proxy: false, securityStatus: 'clean', riskLevel: 'low', missing: [] },
+    lpControl: { status: 'open_check', reason: null, confidence: null, poolType: 'v2' },
+    warnings: [],
+  }
+
+  const out = formatTokenScanResult(mockEv)
+  assert.ok(out.startsWith('TOKEN READ'), 'formatter outputs TOKEN READ header')
+  assert.ok(out.includes('TEST'), 'formatter includes symbol')
+  assert.ok(out.includes('Liquidity:'), 'formatter surfaces liquidity')
+  assert.ok(out.includes('Holders:'), 'formatter surfaces holders')
+  assert.ok(out.includes('Honeypot:'), 'formatter surfaces honeypot status')
+  assert.ok(!out.toLowerCase().includes('geckoterminal'), 'no provider names in public output')
+  assert.ok(!out.toLowerCase().includes('goldrush'), 'no provider names in public output')
+
+  // Dev rug check surfaces ownership + mint from same evidence
+  const devOut = formatDevRugCheck(mockEv)
+  assert.ok(devOut.includes('Ownership:'), 'dev rug check surfaces ownership')
+  assert.ok(devOut.includes('renounced'), 'dev rug check surfaces renounced status')
+}
+
+// ─── empty evidence → specific missing-evidence reason ───────────────────────
+{
+  const { formatTokenScanResult } = await import('../lib/server/clarkRouting.ts')
+  const emptyEv = {
+    ok: false,
+    token: null,
+    chain: 'Base',
+    market: { price: null, change24h: null, volume24h: null, liquidity: null, marketCap: null },
+    holders: { top1: null, top10: null, holderCount: null },
+    security: { honeypot: null, buyTax: null, sellTax: null, ownerRenounced: null, mintable: null, proxy: null, securityStatus: 'unverified', riskLevel: 'unknown', missing: ['Token scan route failed — /api/token returned http_502'] },
+    lpControl: null,
+    warnings: ['Token scan route failed — /api/token returned http_502'],
+  }
+  // formatTokenScanResult with ok=false triggers inline fallback in route.ts (not this formatter),
+  // but the formatter should not crash and should handle null evidence gracefully
+  const out = formatTokenScanResult(emptyEv)
+  // token is null → symbol defaults to "?"
+  assert.ok(out.includes('?'), 'handles null token gracefully')
+}
+
 console.log('test-clark-execution.mjs: all assertions passed')

@@ -6115,6 +6115,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   const appIntent = resolveClarkIntent(prompt, body.appContext);
   const routedClassification = classifyClarkPrompt(prompt);
   const routeHint = getClarkAddressRouteHint(prompt);
+  const clarkDebugMode = Boolean((body as unknown as Record<string, unknown>).debug) || process.env.NODE_ENV !== 'production';
   const appIntentTools = appIntent.cta.map((a) => a.label).join(' · ');
 
   // ─── Wallet compare (honest unsupported compare — never scan only one wallet) ───
@@ -6848,25 +6849,46 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
 
   // ── Pack 1: Token Core Pipeline handlers ──────────────────────────────────────
 
-  async function fetchTokenEvidence(tokenAddress: string): Promise<TokenScanEvidence> {
+  async function fetchTokenEvidence(tokenAddress: string): Promise<TokenScanEvidence & { _tokenApiStatus?: string; _tokenApiHttpStatus?: number }> {
     const [tokenData, securitySim] = await Promise.all([
       callInternalApi(origin, "/api/token", { contract: tokenAddress }, authHeader ?? undefined, verifiedPlan),
       fetchHoneypotSecurity(tokenAddress, "base"),
     ]);
-    const tokenJson = tokenData?.ok ? tokenData.json : null;
+    const tokenApiOk = tokenData?.ok === true;
+    const tokenApiHttpStatus = tokenData?.status ?? 0;
+    const tokenJson = tokenApiOk ? tokenData.json : null;
     const t = (tokenJson ?? {}) as Record<string, unknown>;
     const sections = (t.sections ?? {}) as Record<string, unknown>;
     const holdersSection = (sections.holders ?? {}) as Record<string, unknown>;
-    const g = ((t.goplus ?? {}) as Record<string, unknown>)[tokenAddress.toLowerCase()] as Record<string, unknown> | undefined ?? {};
+    // goplus is stripped from the public /api/token response by sanitizePublicTokenResponse —
+    // read ownership/flags from security.devOwnership and security.contractFlags instead.
+    const tSecurity = (t.security ?? {}) as Record<string, unknown>;
+    const tDevOwnership = (tSecurity.devOwnership ?? {}) as Record<string, unknown>;
+    const tContractFlags = (tSecurity.contractFlags ?? {}) as Record<string, unknown>;
+    const tSecSim = (tSecurity.simulation ?? {}) as Record<string, unknown>;
+    const tSectMarket = (sections.market ?? {}) as Record<string, unknown>;
+    const tSectSecurity = (sections.security ?? {}) as Record<string, unknown>;
     const hp = (t.honeypot ?? {}) as Record<string, unknown>;
     const hd = (t.holderDistribution ?? {}) as Record<string, unknown>;
+
+    const missingEvidence: string[] = securitySim?.missing ? [...securitySim.missing] : [];
+    let tokenApiStatus = "ok";
+    if (!tokenApiOk) {
+      tokenApiStatus = `http_${tokenApiHttpStatus}`;
+      missingEvidence.push(`Token scan route failed — /api/token returned ${tokenApiStatus}`);
+    } else if (!t.priceUsd && !t.liquidityUsd && !t.name) {
+      tokenApiStatus = "no_pool_data";
+      missingEvidence.push("Token not found on Base or no active pool data");
+    }
+
     return {
       ok: Boolean(tokenJson),
       token: tokenJson ? { name: String(t.name ?? "Unknown"), symbol: String(t.symbol ?? "?"), address: String(t.contract ?? tokenAddress) } : null,
       chain: "Base",
       market: {
         price: typeof t.priceUsd === "number" ? t.priceUsd : null,
-        change24h: typeof t.priceChange24h === "number" ? t.priceChange24h : null,
+        // priceChange24h not at response root — read from sections.market.change24h
+        change24h: typeof t.priceChange24h === "number" ? t.priceChange24h : (typeof tSectMarket.change24h === "number" ? tSectMarket.change24h : null),
         volume24h: typeof t.volume24hUsd === "number" ? t.volume24hUsd : null,
         liquidity: typeof t.liquidityUsd === "number" ? t.liquidityUsd : null,
         marketCap: typeof t.marketCapUsd === "number" ? t.marketCapUsd : null,
@@ -6874,19 +6896,21 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       holders: {
         top1: typeof hd.top1 === "number" ? hd.top1 : (typeof holdersSection.top1 === "number" ? holdersSection.top1 : null),
         top10: typeof hd.top10 === "number" ? hd.top10 : (typeof holdersSection.top10 === "number" ? holdersSection.top10 : null),
-        holderCount: typeof hd.holderCount === "number" ? hd.holderCount : null,
+        holderCount: typeof hd.holderCount === "number" ? hd.holderCount : (typeof holdersSection.holderCount === "number" ? holdersSection.holderCount : null),
         status: typeof holdersSection.status === "string" ? holdersSection.status : "unavailable",
       },
       security: {
-        honeypot: securitySim?.honeypot ?? (typeof hp.isHoneypot === "boolean" ? hp.isHoneypot : null),
-        buyTax: securitySim?.buyTax ?? (typeof hp.buyTax === "number" ? hp.buyTax : (g.buy_tax != null ? Number(g.buy_tax) : null)),
-        sellTax: securitySim?.sellTax ?? (typeof hp.sellTax === "number" ? hp.sellTax : (g.sell_tax != null ? Number(g.sell_tax) : null)),
-        ownerRenounced: g.owner_address != null ? String(g.owner_address).toLowerCase() === "0x0000000000000000000000000000000000000000" : null,
-        mintable: g.is_mintable != null ? String(g.is_mintable) === "1" : null,
-        proxy: g.is_proxy != null ? String(g.is_proxy) === "1" : null,
+        // Prefer securitySim (direct HP call), then sections.security, then security.simulation, then legacy honeypot obj
+        honeypot: securitySim?.honeypot ?? (typeof tSectSecurity.honeypot === "boolean" ? tSectSecurity.honeypot : (typeof tSecSim.isHoneypot === "boolean" ? tSecSim.isHoneypot : (typeof hp.isHoneypot === "boolean" ? hp.isHoneypot : null))),
+        buyTax: securitySim?.buyTax ?? (typeof tSectSecurity.buyTax === "number" ? tSectSecurity.buyTax : (typeof tSecSim.buyTax === "number" ? tSecSim.buyTax : (typeof hp.buyTax === "number" ? hp.buyTax : null))),
+        sellTax: securitySim?.sellTax ?? (typeof tSectSecurity.sellTax === "number" ? tSectSecurity.sellTax : (typeof tSecSim.sellTax === "number" ? tSecSim.sellTax : (typeof hp.sellTax === "number" ? hp.sellTax : null))),
+        // ownerRenounced/mintable/proxy: goplus stripped from public response; use security.devOwnership + security.contractFlags
+        ownerRenounced: typeof tDevOwnership.isRenounced === "boolean" ? tDevOwnership.isRenounced : null,
+        mintable: typeof tContractFlags.mint === "boolean" ? tContractFlags.mint : null,
+        proxy: typeof tContractFlags.proxy === "boolean" ? tContractFlags.proxy : null,
         securityStatus: securitySim?.securityStatus ?? "unverified",
         riskLevel: securitySim?.riskLevel ?? "unknown",
-        missing: securitySim?.missing ?? [],
+        missing: missingEvidence,
       },
       lpControl: (t.lpControl && typeof t.lpControl === "object") ? {
         status: String((t.lpControl as Record<string, unknown>).status ?? "unverified"),
@@ -6895,7 +6919,9 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         poolType: typeof (t.lpControl as Record<string, unknown>).poolType === "string" ? String((t.lpControl as Record<string, unknown>).poolType) : null,
       } : null,
       liquidity: { pools: Array.isArray(t.pools) ? (t.pools as unknown[]).length : 0 },
-      warnings: tokenJson ? [] : ["Token data unavailable right now."],
+      warnings: tokenJson ? [] : missingEvidence,
+      _tokenApiStatus: tokenApiStatus,
+      _tokenApiHttpStatus: tokenApiHttpStatus,
     };
   }
 
@@ -6949,15 +6975,45 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       };
     }
     const ev = await fetchTokenEvidence(tokenAddress);
-    const analysis = formatTokenScanResult(ev, "Base");
+    const analysis = ev.ok
+      ? formatTokenScanResult(ev, "Base")
+      : [
+          `TOKEN READ — evidence missing`,
+          `- Address: ${tokenAddress}`,
+          `- Chain: Base`,
+          `- Status: ${(ev as Record<string, unknown>)._tokenApiStatus ?? "unknown"}`,
+          ...(ev.warnings && ev.warnings.length > 0 ? ev.warnings.map((w) => `- ${w}`) : ["- Token Scanner returned no market/security evidence"]),
+          ``,
+          `Paste the contract address and try again, or open Token Scanner directly.`,
+          `CTA: Open Token Scanner`,
+        ].join("\n");
     updateMemToken(sessionMem, tokenAddress, ev.token?.symbol ?? resolvedSymbol, ev.token?.name ?? null, analysis);
     updateMemIntent(sessionMem, "token_analysis");
+    const clarkDebugReceipt = clarkDebugMode ? {
+      routeHint,
+      detectedIntent: "token_scan",
+      routedIntent: routed.intent,
+      appIntent: appIntent.intent,
+      selectedChain: chain,
+      extractedAddress: tokenAddress,
+      extractedSymbol: routed.symbol ?? resolvedSymbol ?? null,
+      tokenLookupAttempted: true,
+      tokenLookupStatus: tokenAddress ? "address_resolved" : "no_address",
+      tokenScanAttempted: true,
+      tokenScanStatus: (ev as Record<string, unknown>)._tokenApiStatus ?? (ev.ok ? "ok" : "unknown"),
+      tokenScanEndpointOrFunction: "/api/token (POST via callInternalApi)",
+      tokenEvidenceMissing: ev.warnings ?? [],
+      formatterUsed: ev.ok ? "formatTokenScanResult" : "inline_fallback",
+      finalAnswerType: ev.ok ? "token_read" : "open_check",
+      walletScanAttempted: false,
+    } : undefined;
     return {
       feature: "clark-ai", chain, mode: "analysis", intent: "token_scan", toolsUsed: ["token_scan"],
       analysis,
       intentBadge: "token_scan",
       actions: buildRoutedActions(["Open Token Scanner", "Run LP Check"]),
       quotaConsumed: ev.ok ?? false,
+      ...(clarkDebugReceipt ? { clarkDebugReceipt } : {}),
     };
   }
 
