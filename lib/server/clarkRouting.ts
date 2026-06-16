@@ -39,11 +39,24 @@ export type ClarkRoutedIntent =
   | "wallet_compare"
   | "liquidity_scan"
   | "whale_alert"
+  | "token_scan"
+  | "token_safety"
+  | "dev_rug_check"
+  | "lp_lock_check"
+  | "risk_explanation"
   | "none";
 
 const WALLET_DEEP_RE = /\b(deep\s+scan|deep|full\s+scan|full\s+wallet\s+scan|scan\s+all\s+chains|pnl|p&l|trades?|historical|dig\s+deeper|recover\s+(?:more\s+)?history|history\s+recovery|why\s+(?:is|are|no|the)\s+pnl|why\s+is\s+pnl\s+(?:missing|zero|wrong)|why\s+no\s+pnl|cost\s+basis|analyze\s+(?:this\s+)?wallet)\b/i;
 const WALLET_FOLLOWUP_RE = /\b(dig\s+deeper|why\s+is\s+pnl\s+(?:missing|zero|wrong)|why\s+is\s+the\s+pnl|why\s+no\s+pnl|recover\s+(?:more\s+)?history|what\s+about\s+this\s+wallet|why\s+is\s+history\s+missing|pnl\s+missing|pnl\s+coverage)\b/i;
 const WALLET_COMPARE_RE = /\b(compare\s+(?:this\s+)?wallet(?:\s+with|\s+vs|\s+to|\s+and)|compare\s+wallets|wallet\s+comparison|wallet\s+a\s+vs|wallet\s+compare)\b/i;
+
+const TOKEN_SCAN_RE = /\b(scan\s+this\s+token|token\s+scan|scan\s+token|what\s+is\s+this\s+token|tell\s+me\s+about\s+(?:this\s+)?token|check\s+this\s+token|analyze\s+(?:this\s+)?token|token\s+check|run\s+token\s+scan)\b/i;
+const TOKEN_SCAN_ON_BASE_RE = /\bscan\b.{0,30}\bon\s+base\b|\bon\s+base\b.{0,30}\bscan\b/i;
+const TOKEN_SAFETY_RE = /\b(is\s+this\s+(?:token\s+)?safe|is\s+it\s+safe|should\s+i\s+buy(?:\s+this(?:\s+token)?)?|is\s+this\s+(?:a\s+)?rug(?:\s+pull)?|is\s+this\s+token\s+risky|is\s+(?:it|this)\s+risky|safe\s+to\s+buy|rug\s+check|is\s+it\s+legit)\b/i;
+const DEV_RUG_RE = /\b(can\s+(?:the\s+)?dev(?:s?|eloper)?\s+rug|can\s+deployer\s+rug|does\s+dev\s+control|dev\s+control(?:s?|led)?|is\s+ownership\s+renounced|ownership\s+renounced|can\s+they\s+mint|dev\s+(?:wallet\s+)?risk|deployer\s+risk|mint\s+risk|blacklist\s+risk|proxy\s+risk|is\s+owner\s+renounced|who\s+controls\s+(?:the\s+)?supply|supply\s+control)\b/i;
+const LP_LOCK_RE = /\b(is\s+lp\s+locked|lp\s+locked|can\s+liquidity\s+be\s+pulled|is\s+liquidity\s+safe|who\s+controls\s+(?:the\s+)?lp|lp\s+(?:burned|burn)|burned\s+lp|explain\s+(?:the\s+)?lp|lp\s+(?:lock|control|safety)|liquidity\s+(?:lock|locked|safety|control|pulled))\b/i;
+const RISK_EXPL_RE = /\b(why\s+(?:is\s+(?:this|it)\s+)?(?:high|low)\s+risk|why\s+did\s+it\s+score\s+low|explain\s+(?:the\s+)?risk|what\s+are\s+the\s+red\s+flags|red\s+flags|why\s+(?:the\s+)?caution|why\s+risky|explain\s+(?:the\s+)?score|what\s+makes\s+(?:it|this)\s+risky|what\s+are\s+the\s+risks|explain\s+(?:the\s+)?verdict)\b/i;
+const TOKEN_NAME_RE = /\b(scan|check|analyze|tell\s+me\s+about|token\s+scan|is|look\s+up)\s+([A-Z][A-Z0-9]{1,10})\b/;
 
 /** True for prompts that are PnL/history follow-ups about the last scanned wallet. */
 export function isWalletPnlFollowupPrompt(text: string): boolean {
@@ -88,18 +101,21 @@ export function classifyClarkPrompt(prompt: string): {
   address: string | null;
   addresses: string[];
   deep: boolean;
+  symbol: string | null;
 } {
   const raw = prompt ?? "";
   const t = raw.trim().toLowerCase().replace(/[‘’ʼ´`]/g, "'");
   const address = extractAddressForRouting(raw);
   const addresses = extractAllAddressesForRouting(raw);
   const deep = WALLET_DEEP_RE.test(t);
+  const symbolMatch = raw.match(TOKEN_NAME_RE);
+  const symbol = symbolMatch ? symbolMatch[2].toUpperCase() : null;
 
   // ---- Wallet compare (must run before generic wallet_scan) ----
   if (WALLET_COMPARE_RE.test(t)) {
     // Compare needs at least one address (this wallet from memory + the typed one, or two typed)
     if (addresses.length >= 1) {
-      return { intent: "wallet_compare", address: addresses[0], addresses, deep };
+      return { intent: "wallet_compare", address: addresses[0], addresses, deep, symbol: null };
     }
   }
 
@@ -107,46 +123,75 @@ export function classifyClarkPrompt(prompt: string): {
   // These rely on session memory (lastWallet). We still classify them so the caller
   // can resolve the address from memory instead of asking again.
   if (WALLET_FOLLOWUP_RE.test(t)) {
-    return { intent: "wallet_pnl_followup", address, addresses, deep: true };
+    return { intent: "wallet_pnl_followup", address, addresses, deep: true, symbol: null };
   }
 
   // ---- LP / liquidity check (classify by phrase; contract-vs-EOA decided by caller via eth_getCode) ----
   if (/\b(lp\s+check|liquidity\s+check)\b/i.test(t) && address) {
-    return { intent: "liquidity_scan", address, addresses, deep: false };
+    return { intent: "liquidity_scan", address, addresses, deep: false, symbol: null };
   }
 
   // ---- Wallet scan ----
   const walletScanRe = /\b(scan\s+(?:this\s+)?wallet|scan\s+wallet|analyze\s+(?:this\s+)?wallet|wallet\s+pnl|wallet\s+(?:scan|check|report|analysis))\b/i;
   if (address && (walletScanRe.test(t) || WALLET_DEEP_RE.test(t))) {
-    return { intent: "wallet_scan", address, addresses, deep };
+    return { intent: "wallet_scan", address, addresses, deep, symbol: null };
   }
   // Plain EOA address alone (no other strong intent keywords) → wallet scan
   if (address) {
     const hasOtherStrongIntent =
-      /\b(lp\s+check|liquidity\s+check|liquidity|radar|pumping|trending|movers|whale|smart\s+money)\b/i.test(t);
+      /\b(lp\s+check|liquidity\s+check|liquidity|radar|pumping|trending|movers|whale|smart\s+money|token\s+scan|scan\s+this\s+token|token\s+check|is\s+(?:this\s+)?token|can\s+(?:the\s+)?dev|is\s+lp|explain\s+lp|high\s+risk|red\s+flags)\b/i.test(t);
     if (!hasOtherStrongIntent) {
-      return { intent: "wallet_scan", address, addresses, deep };
+      return { intent: "wallet_scan", address, addresses, deep, symbol: null };
     }
   }
 
   // ---- Base Radar (anything containing "radar") ----
   if (/\bradar\b/i.test(t)) {
-    return { intent: "base_radar", address: null, addresses, deep: false };
+    return { intent: "base_radar", address: null, addresses, deep: false, symbol: null };
   }
 
   // ---- Base market discovery (generic "pumping/trending on base", no "radar") ----
   const BASE_MARKET_DISCOVERY_RE =
     /(?:who'?s\s+pumping\s+on\s+base|whos\s+pumping\s+on\s+base|what\s+is\s+pumping\s+on\s+base|what'?s\s+pumping\s+on\s+base|base\s+pairs?\s+(?:are\s+)?pumping|(?:show\s+me\s+)?trending\s+base\s+tokens?|hot\s+base\s+tokens?|base\s+gainers|base\s+pumps|trending\s+base|base\s+(?:movers|trending)|new\s+base\s+pools|what'?s\s+(?:moving|hot|running|happening)\s+on\s+base|base\s+market|top\s+base\s+tokens|base\s+momentum)/i;
   if (BASE_MARKET_DISCOVERY_RE.test(t)) {
-    return { intent: "base_market_discovery", address: null, addresses, deep: false };
+    return { intent: "base_market_discovery", address: null, addresses, deep: false, symbol: null };
   }
 
   // ---- Whale / smart money ----
   if (/\b(whale|whales|big\s+wallet|smart\s+money)\b/i.test(t)) {
-    return { intent: "whale_alert", address: null, addresses, deep: false };
+    return { intent: "whale_alert", address: null, addresses, deep: false, symbol: null };
   }
 
-  return { intent: "none", address, addresses, deep: false };
+  // ---- Token safety ("is this token safe", "is it a rug") ----
+  if (TOKEN_SAFETY_RE.test(t)) {
+    return { intent: "token_safety", address, addresses, deep: false, symbol };
+  }
+
+  // ---- Dev/rug check ----
+  if (DEV_RUG_RE.test(t)) {
+    return { intent: "dev_rug_check", address, addresses, deep: false, symbol };
+  }
+
+  // ---- LP lock check ----
+  if (LP_LOCK_RE.test(t)) {
+    return { intent: "lp_lock_check", address, addresses, deep: false, symbol };
+  }
+
+  // ---- Risk explanation ----
+  if (RISK_EXPL_RE.test(t)) {
+    return { intent: "risk_explanation", address, addresses, deep: false, symbol };
+  }
+
+  // ---- Token scan (explicit "token scan" keyword, or address + "on base", or named token) ----
+  if (TOKEN_SCAN_RE.test(t) || (address && TOKEN_SCAN_ON_BASE_RE.test(t))) {
+    return { intent: "token_scan", address, addresses, deep: false, symbol };
+  }
+  // Named token scan without address ("scan VIRTUAL", "check AERO")
+  if (symbol && TOKEN_SCAN_RE.test(t)) {
+    return { intent: "token_scan", address: null, addresses, deep: false, symbol };
+  }
+
+  return { intent: "none", address, addresses, deep: false, symbol: null };
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -619,4 +664,308 @@ export function buildRoutedActions(actions: ClarkAction[]): ClarkAction[] {
     }
   }
   return out.length > 0 ? out : ["Refresh Market Data"];
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Pack 1: Token Core Pipeline formatting helpers
+// ─────────────────────────────────────────────────────────────────────────
+
+export type TokenScanEvidence = {
+  token?: { name?: string | null; symbol?: string | null; address?: string | null } | null;
+  chain?: string | null;
+  market?: {
+    price?: number | null;
+    change24h?: number | null;
+    volume24h?: number | null;
+    liquidity?: number | null;
+    marketCap?: number | null;
+  } | null;
+  holders?: {
+    top1?: number | null;
+    top10?: number | null;
+    holderCount?: number | null;
+    status?: string | null;
+  } | null;
+  security?: {
+    honeypot?: boolean | null;
+    buyTax?: number | null;
+    sellTax?: number | null;
+    ownerRenounced?: boolean | null;
+    mintable?: boolean | null;
+    proxy?: boolean | null;
+    securityStatus?: string | null;
+    riskLevel?: string | null;
+    missing?: string[] | null;
+  } | null;
+  lpControl?: {
+    status?: string | null;
+    reason?: string | null;
+    confidence?: string | null;
+    poolType?: string | null;
+  } | null;
+  liquidity?: { pools?: number; topPoolLiquidity?: number | null } | null;
+  warnings?: string[];
+  ok?: boolean;
+};
+
+function fmtTaxPct(n: number | null | undefined): string {
+  if (n == null || !Number.isFinite(n)) return "open check";
+  return `${n.toFixed(1)}%`;
+}
+
+function holderLine(h: TokenScanEvidence["holders"]): string {
+  if (!h) return "holder data: open check";
+  const parts: string[] = [];
+  if (h.holderCount != null) parts.push(`${h.holderCount.toLocaleString()} holders`);
+  if (h.top1 != null) parts.push(`top-1 holds ${h.top1.toFixed(1)}%`);
+  if (h.top10 != null) parts.push(`top-10 holds ${h.top10.toFixed(1)}%`);
+  return parts.length > 0 ? parts.join(" / ") : "holder data: open check";
+}
+
+function lpStatusLine(ev: TokenScanEvidence): string {
+  const lp = ev.lpControl;
+  if (!lp) return "LP proof: open check";
+  const poolType = lp.poolType ?? "";
+  const concentrated = poolType.includes("concentrated") || poolType.includes("clmm") || poolType.includes("infinity");
+  const status = lp.status ?? "unverified";
+  if (concentrated) return "LP proof: concentrated/protocol pool — ERC-20 LP lock may not apply";
+  if (status === "locked") return "LP proof: lock/burn confirmed";
+  if (status === "burned") return "LP proof: burned — confirmed";
+  if (status === "team_controlled" || status === "wallet_controlled") return "LP proof: wallet/team controlled — pull risk present";
+  if (status === "open_check" || status === "unverified") return "LP proof: open check — not confirmed";
+  return `LP proof: ${status}`;
+}
+
+function verdictLabel(ev: TokenScanEvidence): string {
+  const sec = ev.security;
+  const h = ev.holders;
+  const lp = ev.lpControl;
+  if (sec?.honeypot === true) return "Avoid";
+  if (sec?.riskLevel === "high") return "High Risk";
+  if (lp?.status === "wallet_controlled" || lp?.status === "team_controlled") return "Caution";
+  if (sec?.mintable === true && sec?.ownerRenounced === false) return "Caution";
+  if (h?.top10 != null && h.top10 > 80) return "Caution";
+  if (sec?.honeypot === false && sec?.ownerRenounced === true && (lp?.status === "locked" || lp?.status === "burned")) return "Cleaner";
+  return "Open Check";
+}
+
+export function formatTokenScanResult(ev: TokenScanEvidence, chain = "Base"): string {
+  const sym = String(ev.token?.symbol ?? "?").toUpperCase();
+  const name = ev.token?.name ?? sym;
+  const addr = ev.token?.address ?? null;
+  const sec = ev.security;
+  const h = ev.holders;
+  const mkt = ev.market;
+
+  const lines: string[] = [
+    `TOKEN READ — ${sym}`,
+    `- Chain: ${chain}`,
+  ];
+  if (addr) lines.push(`- Address: ${addr}`);
+  if (name !== sym) lines.push(`- Name: ${name}`);
+  if (mkt?.liquidity != null) lines.push(`- Liquidity: ${fmtUsdShort(mkt.liquidity)}`);
+  if (mkt?.volume24h != null) lines.push(`- 24h volume: ${fmtUsdShort(mkt.volume24h)}`);
+  if (mkt?.change24h != null) lines.push(`- 24h change: ${fmtPct(mkt.change24h)}`);
+
+  // LP status
+  lines.push(`- ${lpStatusLine(ev)}`);
+
+  // Holders
+  lines.push(`- Holders: ${holderLine(h)}`);
+
+  // Security
+  if (sec) {
+    lines.push(`- Honeypot: ${sec.honeypot == null ? "open check" : sec.honeypot ? "YES — flagged" : "no signal found"}`);
+    lines.push(`- Buy tax: ${fmtTaxPct(sec.buyTax)} / Sell tax: ${fmtTaxPct(sec.sellTax)}`);
+    if (sec.mintable != null) lines.push(`- Mintable: ${sec.mintable ? "YES" : "no"}`);
+    if (sec.ownerRenounced != null) lines.push(`- Ownership: ${sec.ownerRenounced ? "renounced" : "active owner"}`);
+    if (sec.proxy != null) lines.push(`- Proxy: ${sec.proxy ? "YES" : "no"}`);
+    if (sec.missing && sec.missing.length > 0) lines.push(`- Security open checks: ${sec.missing.join(", ")}`);
+  }
+
+  const verdict = verdictLabel(ev);
+  lines.push(`- Verdict: ${verdict}`);
+
+  if (ev.warnings && ev.warnings.length > 0) lines.push(`- Note: ${ev.warnings.join("; ")}`);
+
+  lines.push("");
+  lines.push(`Next: Ask "is it safe", "can dev rug", "explain LP", or "why high risk"`);
+  lines.push("CTA: Open Token Scanner / Run LP Check");
+  return lines.join("\n");
+}
+
+export function formatTokenSafetyAnswer(ev: TokenScanEvidence, chain = "Base"): string {
+  const sym = String(ev.token?.symbol ?? "?").toUpperCase();
+  const sec = ev.security;
+  const h = ev.holders;
+  const lp = ev.lpControl;
+  const verdict = verdictLabel(ev);
+
+  const drivers: string[] = [];
+  const missing: string[] = [];
+
+  if (sec?.honeypot === true) drivers.push("Honeypot flag detected — buy/sell simulation failed");
+  else if (sec?.honeypot === false) drivers.push("No honeypot signal found from available checks");
+  else missing.push("Honeypot simulation not run");
+
+  if (lp) {
+    drivers.push(lpStatusLine(ev));
+  } else {
+    missing.push("LP lock/burn proof not checked");
+  }
+
+  if (h?.top10 != null) {
+    if (h.top10 > 80) drivers.push(`Top-10 holders control ${h.top10.toFixed(1)}% of supply — high concentration`);
+    else drivers.push(`Holder concentration: top-10 at ${h.top10.toFixed(1)}%`);
+  } else {
+    missing.push("Holder concentration not confirmed");
+  }
+
+  if (sec?.mintable === true && sec?.ownerRenounced === false) drivers.push("Owner can mint new tokens — supply risk");
+  if (sec?.ownerRenounced === true) drivers.push("Ownership renounced");
+  else if (sec?.ownerRenounced === false) missing.push("Active owner — mint/control risk not ruled out");
+  else missing.push("Ownership status open check");
+
+  if (sec?.missing && sec.missing.length > 0) missing.push(...sec.missing.filter(m => !missing.includes(m)));
+
+  const lines = [
+    `TOKEN SAFETY — ${sym} (${chain})`,
+    `Verdict: ${verdict}`,
+    "",
+    "Top safety signals:",
+    ...drivers.slice(0, 3).map((d, i) => `${i + 1}. ${d}`),
+  ];
+  if (missing.length > 0) {
+    lines.push("", "Missing checks:");
+    missing.slice(0, 3).forEach(m => lines.push(`- ${m}`));
+  }
+  lines.push("", "Note: This is evidence-based routing, not financial advice. Verdict is based on available data only.");
+  lines.push("", "CTA: Open Token Scanner / Run LP Check");
+  return lines.join("\n");
+}
+
+export function formatDevRugCheck(ev: TokenScanEvidence, chain = "Base"): string {
+  const sym = String(ev.token?.symbol ?? "?").toUpperCase();
+  const sec = ev.security;
+  const h = ev.holders;
+  const lp = ev.lpControl;
+
+  const lines = [`DEV/RUG CHECK — ${sym} (${chain})`, ""];
+
+  if (sec?.ownerRenounced != null) lines.push(`- Ownership: ${sec.ownerRenounced ? "renounced — owner cannot call privileged functions" : "NOT renounced — active owner present"}`);
+  else lines.push("- Ownership: open check — renounce status not confirmed");
+
+  if (sec?.mintable != null) lines.push(`- Mint authority: ${sec.mintable ? "YES — new tokens can be minted" : "no mint authority detected"}`);
+  else lines.push("- Mint authority: open check");
+
+  if (sec?.proxy != null) lines.push(`- Proxy/upgradeable: ${sec.proxy ? "YES — contract logic can be replaced" : "no proxy detected"}`);
+  else lines.push("- Proxy/upgradeable: open check");
+
+  if (lp) {
+    const controlled = lp.status === "wallet_controlled" || lp.status === "team_controlled";
+    lines.push(`- LP control: ${controlled ? "wallet/team controlled — dev can pull liquidity" : (lp.status === "locked" || lp.status === "burned" ? "locked/burned — pull risk reduced" : `open check (${lp.status ?? "unverified"})`)}`);
+  } else {
+    lines.push("- LP control: open check — not verified");
+  }
+
+  if (h?.top1 != null) lines.push(`- Top-1 holder: ${h.top1.toFixed(1)}% of supply`);
+  else lines.push("- Top-1 holder: open check");
+
+  if (h?.top10 != null) lines.push(`- Top-10 holders: ${h.top10.toFixed(1)}% of supply${h.top10 > 50 ? " — high concentration" : ""}`);
+
+  const missingChecks: string[] = [];
+  if (sec?.ownerRenounced == null) missingChecks.push("ownership status");
+  if (sec?.mintable == null) missingChecks.push("mint authority");
+  if (!lp) missingChecks.push("LP controller identity");
+  if (missingChecks.length > 0) lines.push("", `- Missing evidence: ${missingChecks.join(", ")}`);
+
+  lines.push("", "CTA: Open Token Scanner / Run LP Check");
+  return lines.join("\n");
+}
+
+export function formatLpLockCheck(ev: TokenScanEvidence, chain = "Base"): string {
+  const sym = String(ev.token?.symbol ?? "?").toUpperCase();
+  const lp = ev.lpControl;
+  const mkt = ev.market;
+
+  const lead = (() => {
+    if (!lp) return "LP proof not confirmed";
+    const pt = lp.poolType ?? "";
+    const concentrated = pt.includes("concentrated") || pt.includes("clmm") || pt.includes("infinity");
+    if (concentrated) return "Concentrated liquidity / protocol pool — ERC-20 LP lock may not apply";
+    const s = lp.status ?? "unverified";
+    if (s === "locked") return "LP lock/burn proof confirmed";
+    if (s === "burned") return "LP lock/burn proof confirmed — burned";
+    if (s === "wallet_controlled" || s === "team_controlled") return "LP appears wallet/team controlled";
+    return "LP proof not confirmed";
+  })();
+
+  const lines = [
+    `LP CHECK — ${sym} (${chain})`,
+    `Status: ${lead}`,
+    "",
+  ];
+
+  if (mkt?.liquidity != null) lines.push(`- Liquidity depth: ${fmtUsdShort(mkt.liquidity)} (not the same as lock safety)`);
+  else lines.push("- Liquidity depth: open check");
+
+  if (lp?.reason) lines.push(`- Lock/burn detail: ${lp.reason}`);
+  if (lp?.confidence) lines.push(`- Confidence: ${lp.confidence}`);
+
+  const missing: string[] = [];
+  if (!lp || lp.status === "unverified") missing.push("LP lock/burn proof");
+  if (!lp?.reason) missing.push("controller/holder identity");
+  if (missing.length > 0) lines.push(`- Missing: ${missing.join(", ")}`);
+
+  lines.push("", "CTA: Run LP Check / Open Token Scanner");
+  return lines.join("\n");
+}
+
+export function formatRiskExplanation(ev: TokenScanEvidence, chain = "Base"): string {
+  const sym = String(ev.token?.symbol ?? "?").toUpperCase();
+  const sec = ev.security;
+  const h = ev.holders;
+  const lp = ev.lpControl;
+  const mkt = ev.market;
+
+  const signals: string[] = [];
+  const missing: string[] = [];
+
+  if (sec?.honeypot === true) signals.push("Honeypot flag: buy/sell simulation detected a trap");
+  if (sec?.mintable === true && sec?.ownerRenounced === false) signals.push("Mint risk: owner can issue new tokens");
+  if (sec?.proxy === true) signals.push("Proxy contract: logic can be upgraded by deployer");
+  if (lp?.status === "wallet_controlled" || lp?.status === "team_controlled") signals.push("LP wallet-controlled: liquidity can be pulled");
+  if (h?.top10 != null && h.top10 > 70) signals.push(`Concentration risk: top-10 hold ${h.top10.toFixed(1)}% of supply`);
+  if (h?.top1 != null && h.top1 > 20) signals.push(`Single-wallet dominance: top-1 holds ${h.top1.toFixed(1)}%`);
+  if (mkt?.liquidity != null && mkt.liquidity < 10_000) signals.push(`Thin liquidity: ${fmtUsdShort(mkt.liquidity)} — price impact is high`);
+  if (sec?.buyTax != null && sec.buyTax > 10) signals.push(`High buy tax: ${sec.buyTax.toFixed(1)}%`);
+  if (sec?.sellTax != null && sec.sellTax > 10) signals.push(`High sell tax: ${sec.sellTax.toFixed(1)}%`);
+
+  if (!sec || sec.honeypot == null) missing.push("honeypot simulation");
+  if (!lp) missing.push("LP lock/burn proof");
+  if (!h?.top10) missing.push("holder concentration");
+  if (sec?.ownerRenounced == null) missing.push("ownership/mint status");
+
+  const lines = [
+    `RISK SIGNALS — ${sym} (${chain})`,
+    "",
+    signals.length > 0 ? "Risk signals found:" : "No deterministic risk signals confirmed from available data.",
+    ...signals.map((s, i) => `${i + 1}. ${s}`),
+  ];
+  if (missing.length > 0) {
+    lines.push("", "Evidence not yet checked:");
+    missing.forEach(m => lines.push(`- ${m}`));
+  }
+  lines.push("", "Note: These are risk signals, not a precise score. Missing evidence means open check, not safe.");
+  lines.push("", "CTA: Open Token Scanner / Run LP Check");
+  return lines.join("\n");
+}
+
+export function formatNoTokenInMemory(): string {
+  return [
+    "I need a token to check.",
+    "Paste the contract address, or tell me the token name/symbol and chain.",
+    "",
+    "CTA: Open Token Scanner",
+  ].join("\n");
 }

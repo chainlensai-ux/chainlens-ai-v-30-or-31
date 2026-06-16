@@ -4,6 +4,12 @@ import {
   formatEoaLpCheckReply,
   formatBaseMarketReadFromRows,
   formatBaseRadarRead,
+  formatTokenScanResult,
+  formatTokenSafetyAnswer,
+  formatDevRugCheck,
+  formatLpLockCheck,
+  formatRiskExplanation,
+  formatNoTokenInMemory,
 } from '../lib/server/clarkRouting.ts'
 
 // ─── base_market_discovery vs base_radar ─────────────────────────────────────
@@ -40,14 +46,14 @@ assert.equal(classifyClarkPrompt("what's pumping on Base Radar?").intent, 'base_
   assert.equal(r.intent, 'wallet_scan')
 }
 
-// ─── wallet compare (does NOT scan only the second wallet) ─────────────────────
+// ─── wallet compare ───────────────────────────────────────────────────────────
 {
   const r = classifyClarkPrompt('compare this wallet with 0x79abcdefabcdefabcdefabcdefabcdefabcdef12')
   assert.equal(r.intent, 'wallet_compare')
   assert.ok(r.addresses.length >= 1, 'compare captures typed address')
 }
 
-// ─── wallet PnL follow-up phrases (route to pnl followup, rely on memory) ──────
+// ─── wallet PnL follow-up ─────────────────────────────────────────────────────
 {
   const r = classifyClarkPrompt('why is pnl missing')
   assert.equal(r.intent, 'wallet_pnl_followup')
@@ -60,17 +66,62 @@ assert.equal(classifyClarkPrompt("what's pumping on Base Radar?").intent, 'base_
 }
 
 // ─── liquidity_scan ───────────────────────────────────────────────────────────
-// NOTE: classifyClarkPrompt only classifies by phrase+address — it cannot know
-// whether the address is an EOA or a contract (that requires eth_getCode at
-// runtime). Both EOA and contract addresses classify as "liquidity_scan" here;
-// the EOA-vs-contract branch behavior is tested in test-clark-execution.mjs.
 {
   const r = classifyClarkPrompt('lp check 0x1234567890123456789012345678901234567890')
   assert.equal(r.intent, 'liquidity_scan')
   assert.equal(r.address, '0x1234567890123456789012345678901234567890')
 }
 
-// ─── formatting helpers behave as documented ─────────────────────────────────
+// ─── Pack 1: token_scan ───────────────────────────────────────────────────────
+{
+  const r = classifyClarkPrompt('scan this token 0xabcdef1234567890abcdef1234567890abcdef12')
+  assert.equal(r.intent, 'token_scan')
+  assert.equal(r.address, '0xabcdef1234567890abcdef1234567890abcdef12')
+}
+{
+  const r = classifyClarkPrompt('token scan 0xabcdef1234567890abcdef1234567890abcdef12')
+  assert.equal(r.intent, 'token_scan')
+}
+{
+  // symbol-only scan
+  const r = classifyClarkPrompt('token scan VIRTUAL')
+  assert.equal(r.intent, 'token_scan')
+  assert.equal(r.symbol, 'VIRTUAL')
+}
+
+// ─── Pack 1: token_safety ─────────────────────────────────────────────────────
+{
+  assert.equal(classifyClarkPrompt('is this token safe').intent, 'token_safety')
+  assert.equal(classifyClarkPrompt('is this a rug').intent, 'token_safety')
+  assert.equal(classifyClarkPrompt('should I buy this token').intent, 'token_safety')
+  assert.equal(classifyClarkPrompt('is it risky').intent, 'token_safety')
+}
+
+// ─── Pack 1: dev_rug_check ────────────────────────────────────────────────────
+{
+  assert.equal(classifyClarkPrompt('can the dev rug this').intent, 'dev_rug_check')
+  assert.equal(classifyClarkPrompt('is ownership renounced').intent, 'dev_rug_check')
+  assert.equal(classifyClarkPrompt('can they mint').intent, 'dev_rug_check')
+  assert.equal(classifyClarkPrompt('dev wallet risk').intent, 'dev_rug_check')
+}
+
+// ─── Pack 1: lp_lock_check ────────────────────────────────────────────────────
+{
+  assert.equal(classifyClarkPrompt('is LP locked').intent, 'lp_lock_check')
+  assert.equal(classifyClarkPrompt('can liquidity be pulled').intent, 'lp_lock_check')
+  assert.equal(classifyClarkPrompt('explain LP').intent, 'lp_lock_check')
+  assert.equal(classifyClarkPrompt('is liquidity safe').intent, 'lp_lock_check')
+}
+
+// ─── Pack 1: risk_explanation ─────────────────────────────────────────────────
+{
+  assert.equal(classifyClarkPrompt('why is this high risk').intent, 'risk_explanation')
+  assert.equal(classifyClarkPrompt('explain the risk').intent, 'risk_explanation')
+  assert.equal(classifyClarkPrompt('what are the red flags').intent, 'risk_explanation')
+  assert.equal(classifyClarkPrompt('why caution').intent, 'risk_explanation')
+}
+
+// ─── formatting helpers ───────────────────────────────────────────────────────
 assert.equal(formatBaseMarketReadFromRows([]), null)
 assert.equal(formatBaseMarketReadFromRows(null), null)
 assert.equal(formatBaseRadarRead([]), null)
@@ -79,5 +130,67 @@ assert.equal(formatBaseRadarRead(null), null)
 const eoaReply = formatEoaLpCheckReply()
 assert.ok(eoaReply.includes('wallet, not a token contract'))
 assert.ok(eoaReply.includes('CTA:'))
+
+// ─── Pack 1: format functions output shape ────────────────────────────────────
+const mockEv = {
+  token: { name: 'Brett', symbol: 'BRETT', address: '0xabcdef1234567890abcdef1234567890abcdef12' },
+  chain: 'Base',
+  market: { price: 0.08, change24h: 12.4, volume24h: 5_000_000, liquidity: 2_000_000, marketCap: 400_000_000 },
+  holders: { top1: 8.2, top10: 42.1, holderCount: 12000 },
+  security: { honeypot: false, buyTax: 0, sellTax: 0, ownerRenounced: true, mintable: false, proxy: false, securityStatus: 'clean', riskLevel: 'low', missing: [] },
+  lpControl: { status: 'locked', reason: 'locked via protocol', confidence: 'high', poolType: 'v2' },
+  warnings: [],
+  ok: true,
+}
+
+{
+  const out = formatTokenScanResult(mockEv)
+  assert.ok(out.startsWith('TOKEN READ'))
+  assert.ok(out.includes('BRETT'))
+  assert.ok(out.includes('LP proof'))
+  assert.ok(out.includes('Verdict:'))
+  assert.ok(out.includes('CTA:'))
+  // no fake certainty
+  assert.ok(!out.toLowerCase().includes('confirmed safe'))
+  assert.ok(!out.toLowerCase().includes('confirmed pump'))
+}
+
+{
+  const out = formatTokenSafetyAnswer(mockEv)
+  assert.ok(out.startsWith('TOKEN SAFETY'))
+  assert.ok(out.includes('Verdict:'))
+  assert.ok(out.includes('CTA:'))
+  assert.ok(!out.toLowerCase().includes('this token is safe'))
+}
+
+{
+  const out = formatDevRugCheck(mockEv)
+  assert.ok(out.startsWith('DEV/RUG CHECK'))
+  assert.ok(out.includes('Ownership:'))
+  assert.ok(out.includes('Mint authority:'))
+  assert.ok(out.includes('LP control:'))
+}
+
+{
+  const out = formatLpLockCheck(mockEv)
+  assert.ok(out.startsWith('LP CHECK'))
+  assert.ok(out.includes('Status:'))
+  // leads with lock/burn/control status, not just liquidity depth number
+  assert.ok(out.includes('lock/burn proof confirmed') || out.includes('controlled') || out.includes('not confirmed') || out.includes('concentrated'))
+}
+
+{
+  const out = formatRiskExplanation(mockEv)
+  assert.ok(out.startsWith('RISK SIGNALS'))
+  assert.ok(out.includes('CTA:'))
+  // does not invent score
+  assert.ok(!out.includes('score formula'))
+}
+
+{
+  const out = formatNoTokenInMemory()
+  assert.ok(out.includes('contract address'))
+  assert.ok(out.includes('CTA:'))
+}
 
 console.log('test-clark-intent.mjs: all assertions passed')

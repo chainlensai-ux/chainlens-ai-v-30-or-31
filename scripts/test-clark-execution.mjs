@@ -210,4 +210,84 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(!/WALLET READ/i.test(out), 'must not present a one-sided scan as a compare')
 }
 
+// ─── Pack 1: formatTokenScanResult ───────────────────────────────────────────
+{
+  const { formatTokenScanResult, formatTokenSafetyAnswer, formatDevRugCheck, formatLpLockCheck, formatRiskExplanation, formatNoTokenInMemory } = await import('../lib/server/clarkRouting.ts')
+  const ev = {
+    token: { name: 'Brett', symbol: 'BRETT', address: '0xabcdef1234567890abcdef1234567890abcdef12' },
+    chain: 'Base',
+    market: { price: 0.08, change24h: 12.4, volume24h: 5_000_000, liquidity: 2_000_000, marketCap: 400_000_000 },
+    holders: { top1: 8.2, top10: 42.1, holderCount: 12000 },
+    security: { honeypot: false, buyTax: 0, sellTax: 0, ownerRenounced: true, mintable: false, proxy: false, securityStatus: 'clean', riskLevel: 'low', missing: [] },
+    lpControl: { status: 'locked', reason: 'locked via protocol', confidence: 'high', poolType: 'v2' },
+    warnings: [],
+    ok: true,
+  }
+
+  // TOKEN_SCAN output
+  {
+    const out = formatTokenScanResult(ev)
+    assert.ok(out.startsWith('TOKEN READ'), 'starts with TOKEN READ')
+    assert.ok(out.includes('BRETT'))
+    assert.ok(out.includes('LP proof'), 'LP status surfaced')
+    assert.ok(out.includes('Verdict:'), 'verdict present')
+    assert.ok(out.includes('CTA:'), 'CTA present')
+    assert.ok(!out.toLowerCase().includes('confirmed safe'), 'no fake certainty')
+    assert.ok(!out.toLowerCase().includes('provider'), 'no provider names exposed')
+  }
+
+  // TOKEN_SAFETY: verdict-first, not "this token is safe"
+  {
+    const out = formatTokenSafetyAnswer(ev)
+    assert.ok(out.startsWith('TOKEN SAFETY'))
+    assert.ok(out.includes('Verdict:'))
+    assert.ok(!out.toLowerCase().includes('this token is safe'), 'never asserts "this token is safe"')
+    assert.ok(out.includes('CTA:'))
+  }
+
+  // DEV_RUG: surfaces ownership + mint + LP
+  {
+    const out = formatDevRugCheck(ev)
+    assert.ok(out.startsWith('DEV/RUG CHECK'))
+    assert.ok(out.includes('Ownership:'))
+    assert.ok(out.includes('Mint authority:'))
+    assert.ok(out.includes('LP control:'))
+    assert.ok(!out.toLowerCase().includes('confirmed rug'), 'no fake rug claim')
+  }
+
+  // LP_LOCK: leads with lock/burn/control status, not raw liquidity depth
+  {
+    const out = formatLpLockCheck(ev)
+    assert.ok(out.startsWith('LP CHECK'))
+    const statusLine = out.split('\n')[1] ?? ''
+    assert.ok(statusLine.toLowerCase().includes('status:'), 'second line is Status')
+    assert.ok(!statusLine.match(/^\s*-\s*Liquidity depth/), 'does not lead with liquidity depth')
+  }
+
+  // RISK_EXPLANATION: signals not a fake score formula
+  {
+    const out = formatRiskExplanation(ev)
+    assert.ok(out.startsWith('RISK SIGNALS'))
+    assert.ok(out.includes('CTA:'))
+    assert.ok(!out.includes('formula'), 'no fake formula')
+  }
+
+  // NO_TOKEN_IN_MEMORY
+  {
+    const out = formatNoTokenInMemory()
+    assert.ok(out.includes('contract address') || out.includes('token'))
+    assert.ok(out.includes('CTA:'))
+  }
+
+  // Pack 1 route.ts: handlers wired
+  const routeFile = fs.readFileSync(path.join(__dirname, '..', 'app', 'api', 'clark', 'route.ts'), 'utf8')
+  assert.ok(routeFile.includes("routed.intent === \"token_scan\""), 'token_scan handler exists')
+  assert.ok(routeFile.includes("routed.intent === \"token_safety\""), 'token_safety handler exists')
+  assert.ok(routeFile.includes("routed.intent === \"dev_rug_check\""), 'dev_rug_check handler exists')
+  assert.ok(routeFile.includes("routed.intent === \"lp_lock_check\""), 'lp_lock_check handler exists')
+  assert.ok(routeFile.includes("routed.intent === \"risk_explanation\""), 'risk_explanation handler exists')
+  assert.ok(routeFile.includes('updateMemToken'), 'token scan saves to session memory')
+  assert.ok(!routeFile.includes('No data available right now'), 'stale fallback removed')
+}
+
 console.log('test-clark-execution.mjs: all assertions passed')

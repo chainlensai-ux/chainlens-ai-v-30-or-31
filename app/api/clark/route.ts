@@ -21,6 +21,13 @@ import {
   isWalletComparePrompt,
   isWalletPnlFollowupPrompt,
   type ClarkAction,
+  formatTokenScanResult,
+  formatTokenSafetyAnswer,
+  formatDevRugCheck,
+  formatLpLockCheck,
+  formatRiskExplanation,
+  formatNoTokenInMemory,
+  type TokenScanEvidence,
 } from "@/lib/server/clarkRouting";
 
 const {
@@ -6831,6 +6838,240 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       intentBadge: "whale_alert",
       actions: buildRoutedActions(["Open Whale Alerts"]),
       quotaConsumed: true,
+    };
+  }
+
+  // ── Pack 1: Token Core Pipeline handlers ──────────────────────────────────────
+
+  async function fetchTokenEvidence(tokenAddress: string): Promise<TokenScanEvidence> {
+    const [tokenData, securitySim] = await Promise.all([
+      callInternalApi(origin, "/api/token", { contract: tokenAddress }, authHeader ?? undefined, verifiedPlan),
+      fetchHoneypotSecurity(tokenAddress, "base"),
+    ]);
+    const tokenJson = tokenData?.ok ? tokenData.json : null;
+    const t = (tokenJson ?? {}) as Record<string, unknown>;
+    const sections = (t.sections ?? {}) as Record<string, unknown>;
+    const holdersSection = (sections.holders ?? {}) as Record<string, unknown>;
+    const g = ((t.goplus ?? {}) as Record<string, unknown>)[tokenAddress.toLowerCase()] as Record<string, unknown> | undefined ?? {};
+    const hp = (t.honeypot ?? {}) as Record<string, unknown>;
+    const hd = (t.holderDistribution ?? {}) as Record<string, unknown>;
+    return {
+      ok: Boolean(tokenJson),
+      token: tokenJson ? { name: String(t.name ?? "Unknown"), symbol: String(t.symbol ?? "?"), address: String(t.contract ?? tokenAddress) } : null,
+      chain: "Base",
+      market: {
+        price: typeof t.priceUsd === "number" ? t.priceUsd : null,
+        change24h: typeof t.priceChange24h === "number" ? t.priceChange24h : null,
+        volume24h: typeof t.volume24hUsd === "number" ? t.volume24hUsd : null,
+        liquidity: typeof t.liquidityUsd === "number" ? t.liquidityUsd : null,
+        marketCap: typeof t.marketCapUsd === "number" ? t.marketCapUsd : null,
+      },
+      holders: {
+        top1: typeof hd.top1 === "number" ? hd.top1 : (typeof holdersSection.top1 === "number" ? holdersSection.top1 : null),
+        top10: typeof hd.top10 === "number" ? hd.top10 : (typeof holdersSection.top10 === "number" ? holdersSection.top10 : null),
+        holderCount: typeof hd.holderCount === "number" ? hd.holderCount : null,
+        status: typeof holdersSection.status === "string" ? holdersSection.status : "unavailable",
+      },
+      security: {
+        honeypot: securitySim?.honeypot ?? (typeof hp.isHoneypot === "boolean" ? hp.isHoneypot : null),
+        buyTax: securitySim?.buyTax ?? (typeof hp.buyTax === "number" ? hp.buyTax : (g.buy_tax != null ? Number(g.buy_tax) : null)),
+        sellTax: securitySim?.sellTax ?? (typeof hp.sellTax === "number" ? hp.sellTax : (g.sell_tax != null ? Number(g.sell_tax) : null)),
+        ownerRenounced: g.owner_address != null ? String(g.owner_address).toLowerCase() === "0x0000000000000000000000000000000000000000" : null,
+        mintable: g.is_mintable != null ? String(g.is_mintable) === "1" : null,
+        proxy: g.is_proxy != null ? String(g.is_proxy) === "1" : null,
+        securityStatus: securitySim?.securityStatus ?? "unverified",
+        riskLevel: securitySim?.riskLevel ?? "unknown",
+        missing: securitySim?.missing ?? [],
+      },
+      lpControl: (t.lpControl && typeof t.lpControl === "object") ? {
+        status: String((t.lpControl as Record<string, unknown>).status ?? "unverified"),
+        reason: typeof (t.lpControl as Record<string, unknown>).reason === "string" ? String((t.lpControl as Record<string, unknown>).reason) : null,
+        confidence: typeof (t.lpControl as Record<string, unknown>).confidence === "string" ? String((t.lpControl as Record<string, unknown>).confidence) : null,
+        poolType: typeof (t.lpControl as Record<string, unknown>).poolType === "string" ? String((t.lpControl as Record<string, unknown>).poolType) : null,
+      } : null,
+      liquidity: { pools: Array.isArray(t.pools) ? (t.pools as unknown[]).length : 0 },
+      warnings: tokenJson ? [] : ["Token data unavailable right now."],
+    };
+  }
+
+  async function resolveTokenSymbolToAddress(sym: string): Promise<{ address: string; name: string; symbol: string } | null> {
+    const res = await callInternalApi(origin, "/api/resolve", { query: sym, chain: "base" }, authHeader ?? undefined, verifiedPlan).catch(() => null);
+    if (!res?.ok) return null;
+    const j = (res.json ?? {}) as Record<string, unknown>;
+    const addr = typeof j.address === "string" ? j.address : (typeof j.contract === "string" ? j.contract : null);
+    if (!addr || !/^0x[a-fA-F0-9]{40}$/.test(addr)) return null;
+    return { address: addr, name: String(j.name ?? sym), symbol: String(j.symbol ?? sym) };
+  }
+
+  async function resolveTokenForFollowup(): Promise<{ ev: TokenScanEvidence; address: string } | { needsAddress: true }> {
+    let tokenAddress = routed.address;
+    if (!tokenAddress && routed.symbol) {
+      const resolved = await resolveTokenSymbolToAddress(routed.symbol);
+      tokenAddress = resolved?.address ?? null;
+    }
+    if (!tokenAddress && sessionMem?.lastToken) {
+      tokenAddress = sessionMem.lastToken.address;
+    }
+    if (!tokenAddress) return { needsAddress: true };
+    const ev = await fetchTokenEvidence(tokenAddress);
+    return { ev, address: tokenAddress };
+  }
+
+  if (routed.intent === "token_scan") {
+    let tokenAddress = routed.address;
+    let resolvedSymbol = routed.symbol;
+    if (!tokenAddress && resolvedSymbol) {
+      const resolved = await resolveTokenSymbolToAddress(resolvedSymbol);
+      if (!resolved) {
+        return {
+          feature: "clark-ai", chain, mode: "analysis", intent: "token_scan", toolsUsed: ["token_resolve"],
+          analysis: `No Base pool found for ${resolvedSymbol}. Paste the contract address if you have it.`,
+          intentBadge: "token_scan",
+          actions: buildRoutedActions(["Open Token Scanner"]),
+          quotaConsumed: false,
+        };
+      }
+      tokenAddress = resolved.address;
+      resolvedSymbol = resolved.symbol;
+    }
+    if (!tokenAddress) {
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "token_scan", toolsUsed: [],
+        analysis: formatNoTokenInMemory(),
+        intentBadge: "token_scan",
+        actions: buildRoutedActions(["Open Token Scanner"]),
+        quotaConsumed: false,
+      };
+    }
+    const ev = await fetchTokenEvidence(tokenAddress);
+    const analysis = formatTokenScanResult(ev, "Base");
+    updateMemToken(sessionMem, tokenAddress, ev.token?.symbol ?? resolvedSymbol, ev.token?.name ?? null, analysis);
+    updateMemIntent(sessionMem, "token_analysis");
+    return {
+      feature: "clark-ai", chain, mode: "analysis", intent: "token_scan", toolsUsed: ["token_scan"],
+      analysis,
+      intentBadge: "token_scan",
+      actions: buildRoutedActions(["Open Token Scanner", "Run LP Check"]),
+      quotaConsumed: ev.ok ?? false,
+    };
+  }
+
+  if (routed.intent === "token_safety") {
+    const r = await resolveTokenForFollowup();
+    if ("needsAddress" in r) {
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "token_safety", toolsUsed: [],
+        analysis: formatNoTokenInMemory(),
+        intentBadge: "token_safety",
+        actions: buildRoutedActions(["Open Token Scanner"]),
+        quotaConsumed: false,
+      };
+    }
+    const analysis = formatTokenSafetyAnswer(r.ev, "Base");
+    updateMemToken(sessionMem, r.address, r.ev.token?.symbol ?? null, r.ev.token?.name ?? null, analysis);
+    updateMemIntent(sessionMem, "token_safety");
+    return {
+      feature: "clark-ai", chain, mode: "analysis", intent: "token_safety", toolsUsed: ["token_scan"],
+      analysis,
+      intentBadge: "token_safety",
+      actions: buildRoutedActions(["Open Token Scanner", "Run LP Check"]),
+      quotaConsumed: r.ev.ok ?? false,
+    };
+  }
+
+  if (routed.intent === "dev_rug_check") {
+    const r = await resolveTokenForFollowup();
+    if ("needsAddress" in r) {
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "dev_rug_check", toolsUsed: [],
+        analysis: formatNoTokenInMemory(),
+        intentBadge: "dev_rug_check",
+        actions: buildRoutedActions(["Open Token Scanner"]),
+        quotaConsumed: false,
+      };
+    }
+    const analysis = formatDevRugCheck(r.ev, "Base");
+    updateMemIntent(sessionMem, "dev_rug_check");
+    return {
+      feature: "clark-ai", chain, mode: "analysis", intent: "dev_rug_check", toolsUsed: ["token_scan"],
+      analysis,
+      intentBadge: "dev_rug_check",
+      actions: buildRoutedActions(["Open Token Scanner", "Run LP Check"]),
+      quotaConsumed: r.ev.ok ?? false,
+    };
+  }
+
+  if (routed.intent === "lp_lock_check") {
+    let tokenAddress = routed.address;
+    if (!tokenAddress && sessionMem.lastToken) tokenAddress = sessionMem.lastToken.address;
+    if (!tokenAddress && routed.symbol) {
+      const resolved = await resolveTokenSymbolToAddress(routed.symbol);
+      tokenAddress = resolved?.address ?? null;
+    }
+    if (!tokenAddress) {
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "lp_lock_check", toolsUsed: [],
+        analysis: formatNoTokenInMemory(),
+        intentBadge: "lp_lock_check",
+        actions: buildRoutedActions(["Run LP Check"]),
+        quotaConsumed: false,
+      };
+    }
+    const liqRes = await callInternalApi(origin, "/api/liquidity-safety", { contract: tokenAddress, chain: "base" }, authHeader ?? undefined, verifiedPlan);
+    const raw = (liqRes.json ?? {}) as Record<string, unknown>;
+    const data = (raw.data && typeof raw.data === "object" ? raw.data : raw) as Record<string, unknown>;
+    if (!liqRes.ok || raw.ok === false || Object.keys(data).length === 0) {
+      const ev = await fetchTokenEvidence(tokenAddress);
+      const analysis = formatLpLockCheck(ev, "Base");
+      updateMemIntent(sessionMem, "lp_lock_check");
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "lp_lock_check", toolsUsed: ["token_scan"],
+        analysis,
+        intentBadge: "lp_lock_check",
+        actions: buildRoutedActions(["Run LP Check", "Open Token Scanner"]),
+        quotaConsumed: false,
+      };
+    }
+    const displayModel = typeof data.displayLpModel === "string" ? data.displayLpModel : null;
+    const concentrated = displayModel === "concentrated_liquidity" || displayModel === "concentrated" || data.lpProofApplicability === "not_applicable";
+    const lpStatus = typeof data.lpLockStatus === "string" ? data.lpLockStatus : (concentrated ? "concentrated" : "unverified");
+    const ev: TokenScanEvidence = {
+      token: { name: typeof data.name === "string" ? data.name : null, symbol: typeof data.symbol === "string" ? data.symbol : null, address: tokenAddress },
+      chain: "Base",
+      market: { liquidity: typeof data.lp_total_liquidity_usd === "number" ? data.lp_total_liquidity_usd : null },
+      lpControl: { status: lpStatus, reason: typeof data.lpController === "string" ? data.lpController : null, confidence: null, poolType: displayModel },
+    };
+    const analysis = formatLpLockCheck(ev, "Base");
+    updateMemToken(sessionMem, tokenAddress, ev.token?.symbol ?? null, ev.token?.name ?? null, analysis);
+    updateMemIntent(sessionMem, "lp_lock_check");
+    return {
+      feature: "clark-ai", chain, mode: "analysis", intent: "lp_lock_check", toolsUsed: ["liquidity_analyze"],
+      analysis,
+      intentBadge: "lp_lock_check",
+      actions: buildRoutedActions(["Run LP Check", "Open Token Scanner"]),
+      quotaConsumed: true,
+    };
+  }
+
+  if (routed.intent === "risk_explanation") {
+    const r = await resolveTokenForFollowup();
+    if ("needsAddress" in r) {
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "risk_explanation", toolsUsed: [],
+        analysis: formatNoTokenInMemory(),
+        intentBadge: "risk_explanation",
+        actions: buildRoutedActions(["Open Token Scanner"]),
+        quotaConsumed: false,
+      };
+    }
+    const analysis = formatRiskExplanation(r.ev, "Base");
+    updateMemIntent(sessionMem, "risk_explanation");
+    return {
+      feature: "clark-ai", chain, mode: "analysis", intent: "risk_explanation", toolsUsed: ["token_scan"],
+      analysis,
+      intentBadge: "risk_explanation",
+      actions: buildRoutedActions(["Open Token Scanner"]),
+      quotaConsumed: r.ev.ok ?? false,
     };
   }
 
