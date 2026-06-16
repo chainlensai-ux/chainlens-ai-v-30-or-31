@@ -3688,10 +3688,10 @@ export default function TerminalTokenScanner() {
         .token-main,.mob-verdict-panel,.glass-card,.metric-grid,.holders-grid,.activity-grid,.intel-grid{min-width:0;}
         .token-main{max-width:none;}
         .glass-card{background:linear-gradient(180deg,rgba(10,18,34,.9),rgba(3,8,19,.88));border:1px solid rgba(148,163,184,.18);border-radius:16px;box-shadow:0 0 0 1px rgba(45,212,191,.05) inset,0 18px 45px rgba(2,6,23,.4),0 0 28px rgba(139,92,246,.12);}
-        .search-card{background:linear-gradient(160deg,rgba(12,22,40,.97) 0%,rgba(5,10,22,.95) 100%);border:1px solid rgba(45,212,191,.18);border-radius:18px;box-shadow:0 0 0 1px rgba(45,212,191,.07) inset,0 28px 60px rgba(2,6,23,.60),0 0 48px rgba(45,212,191,.08),0 0 80px rgba(139,92,246,.04);}
-        .chain-tab-active{background:rgba(45,212,191,.11) !important;border:1px solid rgba(45,212,191,.50) !important;color:#2DD4BF !important;box-shadow:0 0 16px rgba(45,212,191,.20),inset 0 1px 0 rgba(45,212,191,.12) !important;}
-        .chain-tab-inactive{background:rgba(255,255,255,.025) !important;border:1px solid rgba(255,255,255,.08) !important;color:#4b6070 !important;}
-        .chain-tab-inactive:hover{background:rgba(255,255,255,.04) !important;border-color:rgba(255,255,255,.16) !important;color:#64748b !important;}
+        .search-card{background:linear-gradient(160deg,rgba(10,18,36,.98) 0%,rgba(6,12,26,.97) 100%);border:1px solid rgba(99,102,241,.38);border-radius:20px;box-shadow:0 0 0 1px rgba(99,102,241,.12) inset,0 32px 80px rgba(2,6,23,.75),0 0 80px rgba(99,102,241,.22),0 0 140px rgba(139,92,246,.14),0 0 40px rgba(45,212,191,.08);}
+        .chain-tab-active{background:linear-gradient(135deg,rgba(99,102,241,.30) 0%,rgba(139,92,246,.25) 100%) !important;border:1px solid rgba(99,102,241,.65) !important;color:#a5b4fc !important;box-shadow:0 0 22px rgba(99,102,241,.30),inset 0 1px 0 rgba(167,139,250,.18) !important;}
+        .chain-tab-inactive{background:rgba(255,255,255,.03) !important;border:1px solid rgba(255,255,255,.09) !important;color:#3d4f62 !important;}
+        .chain-tab-inactive:hover{background:rgba(255,255,255,.05) !important;border-color:rgba(255,255,255,.18) !important;color:#64748b !important;}
         .preview-module-card{background:linear-gradient(160deg,rgba(8,15,28,.75),rgba(5,10,20,.70));border:1px solid rgba(255,255,255,.10);border-radius:12px;padding:16px;transition:transform .20s ease,border-color .20s ease,box-shadow .20s ease;cursor:default;}
         .preview-module-card:hover{transform:translateY(-3px);border-color:rgba(45,212,191,.20);box-shadow:0 10px 32px rgba(2,6,23,.55),0 0 16px rgba(45,212,191,.06);}
         .shimmer-line{background:linear-gradient(90deg,rgba(255,255,255,.04) 25%,rgba(255,255,255,.10) 50%,rgba(255,255,255,.04) 75%);background-size:300% 100%;border-radius:3px;animation:shimmer 2.6s ease-in-out infinite;}
@@ -3735,21 +3735,21 @@ export default function TerminalTokenScanner() {
             <h1 style={{ fontSize: 'clamp(26px,3.6vw,38px)', fontWeight: 800, color: '#f1f5f9', lineHeight: 1.12, margin: '0 0 10px', letterSpacing: '-0.02em' }}>
               Token Scanner
             </h1>
-            <p style={{ margin: '0 0 14px', color: '#64748b', fontSize: '13px', lineHeight: 1.65, maxWidth: '560px' }}>
+            <p style={{ margin: '0 0 16px', color: '#64748b', fontSize: '13px', lineHeight: 1.65, maxWidth: '560px' }}>
               Scan Base tokens for live liquidity, holder concentration, LP control, dev activity, and evidence-weighted CORTEX risk.
             </p>
 
             {/* Status pills */}
-            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '7px' }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '6px' }}>
               {[
-                { label: 'BASE',                    color: '#2DD4BF', bg: 'rgba(45,212,191,0.07)',  border: 'rgba(45,212,191,0.22)' },
-                { label: 'ETH',                     color: '#818cf8', bg: 'rgba(129,140,248,0.07)', border: 'rgba(129,140,248,0.22)' },
-                { label: 'LIVE CORTEX',             color: '#34d399', bg: 'rgba(52,211,153,0.07)',  border: 'rgba(52,211,153,0.20)' },
-                { label: 'LP + HOLDER INTELLIGENCE',color: '#a78bfa', bg: 'rgba(167,139,250,0.07)', border: 'rgba(167,139,250,0.22)' },
-                { label: 'REAL DATA ONLY',          color: '#475569', bg: 'rgba(71,85,105,0.07)',   border: 'rgba(71,85,105,0.18)' },
-                { label: 'NO FINANCIAL ADVICE',     color: '#334155', bg: 'rgba(51,65,85,0.07)',    border: 'rgba(51,65,85,0.18)' },
+                { label: 'BASE',                    color: '#22d3ee', bg: 'rgba(34,211,238,0.09)',  border: 'rgba(34,211,238,0.32)' },
+                { label: 'ETH',                     color: '#818cf8', bg: 'rgba(129,140,248,0.09)', border: 'rgba(129,140,248,0.32)' },
+                { label: 'Live CORTEX',             color: '#34d399', bg: 'rgba(52,211,153,0.09)',  border: 'rgba(52,211,153,0.32)' },
+                { label: 'Real Data Only',          color: '#94a3b8', bg: 'rgba(148,163,184,0.07)', border: 'rgba(148,163,184,0.22)' },
+                { label: 'LP + Holder Intelligence',color: '#a78bfa', bg: 'rgba(167,139,250,0.09)', border: 'rgba(167,139,250,0.32)' },
+                { label: 'No Financial Advice',     color: '#64748b', bg: 'rgba(100,116,139,0.06)', border: 'rgba(100,116,139,0.20)' },
               ].map(p => (
-                <span key={p.label} style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.11em', padding: '3px 10px', borderRadius: '99px', color: p.color, background: p.bg, border: `1px solid ${p.border}`, fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap' }}>
+                <span key={p.label} style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.09em', padding: '4px 11px', borderRadius: '99px', color: p.color, background: p.bg, border: `1px solid ${p.border}`, fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap' }}>
                   {p.label}
                 </span>
               ))}
@@ -3777,7 +3777,13 @@ export default function TerminalTokenScanner() {
             </div>
 
             {/* Premium search card */}
-            <div className="search-card" style={{ position: 'relative', zIndex: 1, padding: '22px 22px 18px' }}>
+            <div className="search-card" style={{ position: 'relative', zIndex: 1, padding: '26px 24px 22px' }}>
+
+              {/* Card title + description */}
+              <div style={{ marginBottom: '18px' }}>
+                <p style={{ margin: '0 0 4px', fontSize: '13px', fontWeight: 700, color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.04em' }}>Scan a token</p>
+                <p style={{ margin: 0, fontSize: '11px', color: '#3a4d60', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>Resolve a token and build a live risk receipt from market, holder, LP, and dev-control evidence.</p>
+              </div>
 
               {/* Chain tabs */}
               <div style={{ display: 'flex', gap: '8px', marginBottom: '18px' }}>
@@ -3851,7 +3857,7 @@ export default function TerminalTokenScanner() {
               </div>
 
               {/* Quick action buttons */}
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '12px' }}>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '7px', marginBottom: '14px' }}>
                 {[
                   { label: 'Try VIRTUAL', action: () => { setInput('VIRTUAL'); setTimeout(() => handleScan('VIRTUAL'), 0) } },
                   { label: 'Scan by contract', action: () => setInput('') },
@@ -3861,9 +3867,9 @@ export default function TerminalTokenScanner() {
                     key={btn.label}
                     type="button"
                     onClick={btn.action}
-                    style={{ padding: '5px 12px', borderRadius: '999px', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.10)', color: '#64748b', fontSize: '10px', fontFamily: 'var(--font-plex-mono)', cursor: 'pointer', transition: 'all .14s' }}
-                    onMouseEnter={e => { e.currentTarget.style.color = '#2DD4BF'; e.currentTarget.style.borderColor = 'rgba(45,212,191,0.35)' }}
-                    onMouseLeave={e => { e.currentTarget.style.color = '#64748b'; e.currentTarget.style.borderColor = 'rgba(255,255,255,0.10)' }}
+                    style={{ padding: '6px 14px', borderRadius: '999px', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.13)', color: '#64748b', fontSize: '11px', fontFamily: 'var(--font-plex-mono)', cursor: 'pointer', transition: 'all .14s' }}
+                    onMouseEnter={e => { e.currentTarget.style.color = '#a5b4fc'; e.currentTarget.style.borderColor = 'rgba(99,102,241,0.45)'; e.currentTarget.style.background = 'rgba(99,102,241,0.08)' }}
+                    onMouseLeave={e => { e.currentTarget.style.color = '#64748b'; e.currentTarget.style.borderColor = 'rgba(255,255,255,0.13)'; e.currentTarget.style.background = 'rgba(255,255,255,0.03)' }}
                   >
                     {btn.label}
                   </button>
@@ -3871,9 +3877,15 @@ export default function TerminalTokenScanner() {
               </div>
 
               {/* Helper text */}
-              <p style={{ margin: 0, fontSize: '11px', color: '#2a3d4d', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5, letterSpacing: '0.02em' }}>
+              <p style={{ margin: '0 0 14px', fontSize: '11px', color: '#2a3d4d', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5, letterSpacing: '0.02em' }}>
                 CORTEX checks liquidity, holders, LP control, dev activity, and risk evidence.
               </p>
+
+              {/* Disclaimer strip */}
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', padding: '10px 14px', borderRadius: '10px', background: 'rgba(99,102,241,0.06)', border: '1px solid rgba(99,102,241,0.18)' }}>
+                <svg width="13" height="13" viewBox="0 0 13 13" fill="none" style={{ flexShrink: 0, marginTop: '1px' }}><circle cx="6.5" cy="6.5" r="5.5" stroke="#6366f1" strokeWidth="1"/><path d="M6.5 5.5v3M6.5 4h.01" stroke="#6366f1" strokeWidth="1.2" strokeLinecap="round"/></svg>
+                <p style={{ margin: 0, fontSize: '10px', color: '#4b5d7a', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>ChainLens does not give financial advice. CORTEX surfaces evidence, risk signals, and missing checks so you can review before acting.</p>
+              </div>
             </div>
           </div>
 
@@ -3945,39 +3957,34 @@ export default function TerminalTokenScanner() {
             </div>
           )}
 
-          {/* ── Premium empty state / module preview ─────────────── */}
+          {/* ── What this scan checks ─────────────────────────────── */}
           {!loading && !resolving && !result && !error && (
             <div style={{ maxWidth: '820px' }}>
-
-              {/* Headline */}
               <div style={{ marginBottom: '20px' }}>
-                <p style={{ margin: '0 0 7px', fontSize: '14px', fontWeight: 700, color: '#94a3b8', lineHeight: 1.45, letterSpacing: '-0.005em' }}>
-                  Run a scan to generate a full token intelligence report.
+                <p style={{ margin: '0 0 5px', fontSize: '18px', fontWeight: 700, color: '#e2e8f0', lineHeight: 1.35, letterSpacing: '-0.01em' }}>
+                  What this scan checks
                 </p>
-                <p style={{ margin: 0, fontSize: '11px', color: '#253340', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.65 }}>
-                  CORTEX will build Market Pulse, Holder Map, LP Safety, Dev Control, Cluster Map, and Risk context.
+                <p style={{ margin: 0, fontSize: '12px', color: '#334155', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.65 }}>
+                  A structured pre-trade intelligence pass with no fake values and no simulated certainty.
                 </p>
               </div>
 
-              {/* Module preview grid */}
-              <div className="preview-module-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3,minmax(0,1fr))', gap: '12px', marginBottom: '28px' }}>
+              <div className="preview-module-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(4,minmax(0,1fr))', gap: '12px', marginBottom: '28px' }}>
                 {[
-                  { label: 'Market Pulse',  dot: '#2DD4BF', desc: 'Price, liquidity, volume, and pool depth.' },
-                  { label: 'Holder Map',    dot: '#a78bfa', desc: 'Top holder concentration and distribution.' },
-                  { label: 'LP Safety',     dot: '#34d399', desc: 'Pool lock status and liquidity risk.' },
-                  { label: 'Dev Control',   dot: '#fbbf24', desc: 'Deployer wallet and contract ownership.' },
-                  { label: 'Cluster Map',   dot: '#67e8f9', desc: 'Wallet clustering and coordination signals.' },
-                  { label: 'CORTEX Risk',   dot: '#f87171', desc: 'Aggregated rug risk and open checks.' },
+                  { label: 'Market Pulse',  color: '#22d3ee', border: 'rgba(34,211,238,.30)',  bg: 'rgba(34,211,238,.06)',  desc: 'Price, liquidity, volume, and pool depth.' },
+                  { label: 'Holder Map',    color: '#a78bfa', border: 'rgba(167,139,250,.30)', bg: 'rgba(167,139,250,.06)', desc: 'Top-holder concentration and supply distribution.' },
+                  { label: 'LP Safety',     color: '#34d399', border: 'rgba(52,211,153,.30)',  bg: 'rgba(52,211,153,.06)',  desc: 'Pool lock status, LP control, and exit risk.' },
+                  { label: 'Dev Activity',  color: '#fb923c', border: 'rgba(251,146,60,.30)',  bg: 'rgba(251,146,60,.06)',  desc: 'Contract ownership, dev wallets, and recent activity.' },
                 ].map(mod => (
-                  <div key={mod.label} className="preview-module-card">
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '7px', marginBottom: '9px' }}>
-                      <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: mod.dot, flexShrink: 0, opacity: 0.65, boxShadow: `0 0 6px ${mod.dot}44` }} />
-                      <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.10em', color: '#4b6070', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{mod.label}</span>
+                  <div key={mod.label} style={{ background: mod.bg, border: `1px solid ${mod.border}`, borderRadius: '14px', padding: '18px 16px', transition: 'transform .20s ease,box-shadow .20s ease', cursor: 'default' }}
+                    onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.transform = 'translateY(-3px)'; (e.currentTarget as HTMLDivElement).style.boxShadow = `0 10px 32px rgba(2,6,23,.55),0 0 20px ${mod.color}18` }}
+                    onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.transform = ''; (e.currentTarget as HTMLDivElement).style.boxShadow = '' }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '10px' }}>
+                      <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: mod.color, flexShrink: 0, boxShadow: `0 0 7px ${mod.color}` }} />
+                      <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.12em', color: mod.color, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{mod.label}</span>
                     </div>
-                    <p style={{ margin: '0 0 12px', fontSize: '11px', color: '#2a3d4d', lineHeight: 1.55 }}>{mod.desc}</p>
-                    {/* Skeleton placeholder lines */}
-                    <div className="shimmer-line" style={{ height: '5px', width: '72%', marginBottom: '6px' }} />
-                    <div className="shimmer-line" style={{ height: '5px', width: '48%' }} />
+                    <p style={{ margin: 0, fontSize: '11px', color: '#64748b', lineHeight: 1.6 }}>{mod.desc}</p>
                   </div>
                 ))}
               </div>
@@ -6067,15 +6074,15 @@ export default function TerminalTokenScanner() {
           )}
         </div>
 
-        {/* ── Right: Clark verdict panel (288px) ─────────────────── */}
+        {/* ── Right: CORTEX receipt panel ─────────────────────────── */}
         <aside className="mob-verdict-panel" style={{
-          width: 'clamp(320px, 24vw, 400px)',
+          width: 'clamp(300px, 22vw, 380px)',
           minWidth: 0,
           flexShrink: 0,
-          borderLeft: '1px solid rgba(255,255,255,0.08)',
-          background: 'linear-gradient(180deg, rgba(6,10,20,.96), rgba(4,8,18,.96))',
+          borderLeft: '1px solid rgba(99,102,241,0.18)',
+          background: 'linear-gradient(180deg, rgba(7,11,24,.98), rgba(5,8,18,.98))',
           overflowY: 'auto',
-          padding: '28px 20px',
+          padding: '26px 18px',
           display: 'flex',
           flexDirection: 'column',
           gap: '16px',
@@ -6088,23 +6095,23 @@ export default function TerminalTokenScanner() {
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
               <span style={{
                 width: '7px', height: '7px', borderRadius: '50%',
-                background: clarkLoading ? '#2DD4BF' : clarkVerdict ? '#2DD4BF' : '#162230',
-                boxShadow: (clarkLoading || clarkVerdict) ? '0 0 10px rgba(45,212,191,0.85)' : 'none',
+                background: clarkLoading ? '#22d3ee' : clarkVerdict ? '#22d3ee' : '#162230',
+                boxShadow: (clarkLoading || clarkVerdict) ? '0 0 10px rgba(34,211,238,0.85)' : 'none',
                 flexShrink: 0,
                 transition: 'all 0.3s',
                 ...((!clarkLoading && !clarkVerdict) ? {} : { animation: 'liveDotPulse 2.2s ease-in-out infinite' }),
               }} />
               <p style={{
                 fontSize: '10px', fontWeight: 700, letterSpacing: '0.18em',
-                color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)',
+                color: '#22d3ee', fontFamily: 'var(--font-plex-mono)',
                 textTransform: 'uppercase', margin: 0,
               }}>
                 CORTEX RECEIPT
               </p>
             </div>
             {(!clarkLoading && !clarkVerdict && !clarkError) && (
-              <div style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', padding: '3px 10px', borderRadius: '99px', background: 'rgba(45,212,191,0.08)', border: '1px solid rgba(45,212,191,0.20)', fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', color: 'rgba(45,212,191,0.75)', fontFamily: 'var(--font-plex-mono)' }}>
-                <span className="live-dot" style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#34d399', boxShadow: '0 0 5px #34d399', flexShrink: 0 }} />
+              <div style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', padding: '3px 10px', borderRadius: '99px', background: 'rgba(34,211,238,0.08)', border: '1px solid rgba(34,211,238,0.25)', fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', color: 'rgba(34,211,238,0.85)', fontFamily: 'var(--font-plex-mono)' }}>
+                <span className="live-dot" style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#22d3ee', boxShadow: '0 0 6px #22d3ee', flexShrink: 0 }} />
                 LIVE · Powered by CORTEX
               </div>
             )}
@@ -6120,30 +6127,26 @@ export default function TerminalTokenScanner() {
             </div>
           )}
 
-          {/* Idle — premium checklist */}
+          {/* Idle — CORTEX Receipt checklist */}
           {!planLoading && isFullAccess && !clarkLoading && !clarkVerdict && !clarkError && (
-            <div>
-              <p style={{ margin: '0 0 16px', fontSize: '11px', color: '#253340', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.65 }}>
-                Scan a token to generate a structured CORTEX receipt.
+            <div style={{ background: 'rgba(8,14,28,.70)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '14px', padding: '16px' }}>
+              <p style={{ margin: '0 0 4px', fontSize: '13px', fontWeight: 700, color: '#e2e8f0' }}>CORTEX Receipt</p>
+              <p style={{ margin: '0 0 16px', fontSize: '10px', color: '#334155', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>
+                Scan a token to generate a structured risk receipt.
               </p>
               {[
-                { label: 'Market Pulse',         color: '#2DD4BF', desc: 'Price, volume, liquidity, pool depth' },
-                { label: 'Holder Map',           color: '#a78bfa', desc: 'Concentration, top holders, supply spread' },
-                { label: 'LP Safety',            color: '#34d399', desc: 'Lock/burn proof, controller, pool model' },
-                { label: 'Dev Activity',         color: '#fbbf24', desc: 'Deployer wallet, mint risk, ownership' },
-                { label: 'Risk Engine',          color: '#f87171', desc: 'CORTEX score, verdict, evidence gaps' },
-                { label: 'Next Action',          color: '#67e8f9', desc: 'Actionable read based on scan signals' },
+                { label: 'Verdict',              color: '#22d3ee' },
+                { label: 'Market Read',          color: '#22d3ee' },
+                { label: 'Holder / Supply Read', color: '#22d3ee' },
+                { label: 'LP / Risk Read',       color: '#22d3ee' },
+                { label: 'Dev Control',          color: '#22d3ee' },
+                { label: 'Next Action',          color: '#22d3ee' },
               ].map((sec, idx) => (
-                <div key={sec.label} className={idx > 0 ? 'clark-section' : ''} style={{ marginBottom: '10px' }}>
-                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: '8px' }}>
-                    <span style={{ width: '14px', height: '14px', borderRadius: '50%', background: `${sec.color}1a`, border: `1px solid ${sec.color}55`, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', marginTop: '1px' }}>
-                      <svg width="7" height="7" viewBox="0 0 7 7" fill="none"><polyline points="1,4 3,6 6,2" stroke={sec.color} strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                    </span>
-                    <div>
-                      <div style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.12em', color: sec.color, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '2px' }}>{sec.label}</div>
-                      <div style={{ fontSize: '9px', color: '#253340', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{sec.desc}</div>
-                    </div>
-                  </div>
+                <div key={sec.label} style={{ display: 'flex', alignItems: 'center', gap: '10px', paddingTop: idx > 0 ? '10px' : 0, marginTop: idx > 0 ? '10px' : 0, borderTop: idx > 0 ? '1px solid rgba(255,255,255,0.04)' : 'none' }}>
+                  <span style={{ width: '18px', height: '18px', borderRadius: '50%', background: 'rgba(34,211,238,0.12)', border: '1px solid rgba(34,211,238,0.40)', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <svg width="9" height="9" viewBox="0 0 9 9" fill="none"><polyline points="1.5,5 3.5,7 7.5,2" stroke="#22d3ee" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                  </span>
+                  <span style={{ fontSize: '11px', fontWeight: 600, color: '#94a3b8' }}>{sec.label}</span>
                 </div>
               ))}
             </div>
@@ -6302,31 +6305,31 @@ export default function TerminalTokenScanner() {
           })()}
 
           {/* ── Tracked Tokens panel ──────────────────────────────── */}
-          <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: '20px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
-              <p style={{ margin: 0, fontSize: '9px', fontWeight: 700, letterSpacing: '0.18em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
+          <div style={{ borderTop: '1px solid rgba(99,102,241,0.15)', paddingTop: '20px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px' }}>
+              <p style={{ margin: 0, fontSize: '12px', fontWeight: 700, color: '#e2e8f0' }}>
                 Tracked Tokens
               </p>
               {trackedTokens.length > 0 && (
-                <span style={{ fontSize: '9px', color: '#253340', fontFamily: 'var(--font-plex-mono)' }}>{trackedTokens.length} saved</span>
+                <span style={{ fontSize: '9px', color: '#334155', fontFamily: 'var(--font-plex-mono)', padding: '2px 8px', borderRadius: '99px', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)' }}>{trackedTokens.length} saved</span>
               )}
             </div>
 
             {trackedLoggedOut && (
-              <p style={{ margin: 0, fontSize: '10px', color: '#334155', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>
+              <p style={{ margin: 0, fontSize: '11px', color: '#334155', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>
                 Sign in to track tokens across sessions.
               </p>
             )}
 
             {!trackedLoggedOut && trackedLoading && (
               <div style={{ display: 'flex', gap: '4px', alignItems: 'center', paddingTop: '4px' }}>
-                {[0,1,2].map(i => <span key={i} style={{ width:'4px', height:'4px', borderRadius:'50%', background:'#2DD4BF', display:'inline-block', animation:`clarkDot 1.2s ease-in-out ${i*.2}s infinite` }} />)}
+                {[0,1,2].map(i => <span key={i} style={{ width:'4px', height:'4px', borderRadius:'50%', background:'#22d3ee', display:'inline-block', animation:`clarkDot 1.2s ease-in-out ${i*.2}s infinite` }} />)}
               </div>
             )}
 
             {!trackedLoggedOut && !trackedLoading && trackedTokens.length === 0 && (
-              <p style={{ margin: 0, fontSize: '10px', color: '#253340', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>
-                Tokens you track will appear here. Scan and click &quot;Track this token&quot; to save.
+              <p style={{ margin: 0, fontSize: '10px', color: '#334155', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>
+                Saved to your account. Tokens you track will appear here. Scan and click &quot;Track this token&quot; to save.
               </p>
             )}
 
@@ -6337,35 +6340,43 @@ export default function TerminalTokenScanner() {
                   const addr = t.address ?? ''
                   const short = addr.length >= 10 ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : addr
                   const riskColor = t.risk_label === 'High Risk' ? '#f87171' : t.risk_label === 'Strong' ? '#34d399' : t.risk_label === 'Watch' || t.risk_label === 'Caution' ? '#fbbf24' : '#94a3b8'
+                  const riskBg = t.risk_label === 'High Risk' ? 'rgba(248,113,113,0.10)' : t.risk_label === 'Strong' ? 'rgba(52,211,153,0.10)' : t.risk_label === 'Watch' || t.risk_label === 'Caution' ? 'rgba(251,191,36,0.10)' : 'rgba(148,163,184,0.08)'
+                  const savedDate = t.saved_at ? new Date(t.saved_at).toLocaleDateString('en-GB', { day:'2-digit', month:'2-digit', year:'numeric' }).replace(/\//g,'/') : null
                   return (
-                    <div key={t.address} style={{ padding: '10px 12px', borderRadius: '10px', background: 'rgba(8,14,28,.65)', border: '1px solid rgba(255,255,255,0.07)' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px' }}>
-                        <div style={{ width: '32px', height: '32px', borderRadius: '50%', background: 'rgba(45,212,191,0.10)', border: '1px solid rgba(45,212,191,0.22)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, fontSize: '11px', fontWeight: 800, color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)' }}>
+                    <div key={t.address} style={{ padding: '12px', borderRadius: '12px', background: 'rgba(8,14,28,.75)', border: '1px solid rgba(255,255,255,0.09)' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '10px' }}>
+                        <div style={{ width: '36px', height: '36px', borderRadius: '50%', background: 'linear-gradient(135deg,rgba(99,102,241,0.25),rgba(167,139,250,0.20))', border: '1px solid rgba(167,139,250,0.35)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, fontSize: '12px', fontWeight: 800, color: '#a78bfa', fontFamily: 'var(--font-plex-mono)' }}>
                           {initials}
                         </div>
                         <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
-                            <span style={{ fontSize: '11px', fontWeight: 700, color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)' }}>{t.symbol ?? '—'}</span>
-                            <span style={{ fontSize: '8px', padding: '1px 6px', borderRadius: '999px', background: 'rgba(45,212,191,0.08)', border: '1px solid rgba(45,212,191,0.20)', color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase' }}>{t.chain ?? 'base'}</span>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', marginBottom: '3px' }}>
+                            <span style={{ fontSize: '12px', fontWeight: 700, color: '#f1f5f9' }}>{t.symbol ?? t.name ?? '—'}</span>
+                            <span style={{ fontSize: '8px', padding: '1px 7px', borderRadius: '999px', background: 'rgba(34,211,238,0.10)', border: '1px solid rgba(34,211,238,0.28)', color: '#22d3ee', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase' }}>{t.chain ?? 'base'}</span>
+                            {t.risk_label && (
+                              <span style={{ fontSize: '8px', padding: '1px 7px', borderRadius: '999px', background: riskBg, border: `1px solid ${riskColor}44`, color: riskColor, fontFamily: 'var(--font-plex-mono)', fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase' }}>{t.risk_label}</span>
+                            )}
+                            {t.score != null && (
+                              <span style={{ fontSize: '8px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>{t.score}/100</span>
+                            )}
                           </div>
-                          <div style={{ fontSize: '9px', color: '#334155', fontFamily: 'var(--font-plex-mono)', marginTop: '2px' }}>{short}</div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <span style={{ fontSize: '9px', color: '#334155', fontFamily: 'var(--font-plex-mono)' }}>{short}</span>
+                            {savedDate && <span style={{ fontSize: '9px', color: '#253340', fontFamily: 'var(--font-plex-mono)' }}>{savedDate}</span>}
+                          </div>
                         </div>
-                        {t.risk_label && (
-                          <span style={{ fontSize: '8px', fontWeight: 700, color: riskColor, fontFamily: 'var(--font-plex-mono)', letterSpacing: '.06em', flexShrink: 0 }}>{t.risk_label}</span>
-                        )}
                       </div>
                       <div style={{ display: 'flex', gap: '6px' }}>
                         <button
                           onClick={() => { setInput(t.address); handleScan(t.address, (t.chain === 'eth' ? 'eth' : 'base') as 'base'|'eth') }}
-                          style={{ flex: 1, padding: '6px 0', borderRadius: '7px', background: 'rgba(45,212,191,0.07)', border: '1px solid rgba(45,212,191,0.22)', color: '#2DD4BF', fontSize: '9px', fontWeight: 700, fontFamily: 'var(--font-plex-mono)', cursor: 'pointer', letterSpacing: '.10em' }}
+                          style={{ flex: 1, padding: '7px 0', borderRadius: '8px', background: 'rgba(34,211,238,0.07)', border: '1px solid rgba(34,211,238,0.25)', color: '#22d3ee', fontSize: '9px', fontWeight: 700, fontFamily: 'var(--font-plex-mono)', cursor: 'pointer', letterSpacing: '.10em' }}
                         >
-                          SCAN
+                          Scan
                         </button>
                         <button
                           onClick={() => removeTrackedToken(t.address)}
-                          style={{ padding: '6px 10px', borderRadius: '7px', background: 'rgba(248,113,113,0.07)', border: '1px solid rgba(248,113,113,0.20)', color: '#f87171', fontSize: '9px', fontWeight: 700, fontFamily: 'var(--font-plex-mono)', cursor: 'pointer' }}
+                          style={{ padding: '7px 12px', borderRadius: '8px', background: 'rgba(248,113,113,0.07)', border: '1px solid rgba(248,113,113,0.22)', color: '#f87171', fontSize: '10px', fontWeight: 700, fontFamily: 'var(--font-plex-mono)', cursor: 'pointer' }}
                         >
-                          ✕
+                          Remove
                         </button>
                       </div>
                     </div>
