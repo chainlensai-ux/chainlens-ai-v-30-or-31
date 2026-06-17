@@ -87,6 +87,28 @@ export function isWalletComparePrompt(text: string): boolean {
   return /\b0x[a-f0-9]{40}\b/i.test(t);
 }
 
+// Task 1 (Pack 1 hard fix): token follow-up prompts that must always resolve against
+// the last scanned token in memory, never fall through to a wallet branch.
+const TOKEN_FOLLOWUP_RE = /\b(is\s+it\s+safe|is\s+this\s+safe|is\s+this\s+token\s+safe|should\s+i\s+buy|is\s+it\s+legit|is\s+it\s+a\s+rug|can\s+(?:the\s+)?dev\s+rug|can\s+liquidity\s+be\s+pulled|is\s+lp\s+locked|explain\s+lp|explain\s+holders|explain\s+dev(?:\s+control)?|why\s+high\s+risk|why\s+is\s+it\s+risky|what\s+are\s+red\s+flags|explain\s+risk|explain\s+verdict)\b/i;
+
+/** True for short token follow-up prompts ("is it safe", "explain LP", "can dev rug"...)
+ *  that must always be answered from the last scanned token in memory and must never
+ *  execute a wallet scan. */
+export function isTokenFollowupPrompt(prompt: string): boolean {
+  return TOKEN_FOLLOWUP_RE.test(String(prompt ?? "").trim());
+}
+
+export type TokenFollowupKind = "safety" | "dev_rug" | "lp_lock" | "risk";
+
+/** Maps a token follow-up prompt to the formatter/intent it should use. */
+export function classifyTokenFollowupKind(prompt: string): TokenFollowupKind {
+  const t = String(prompt ?? "").toLowerCase();
+  if (/\b(can\s+(?:the\s+)?dev\s+rug|explain\s+dev(?:\s+control)?)\b/.test(t)) return "dev_rug";
+  if (/\b(is\s+lp\s+locked|explain\s+lp|can\s+liquidity\s+be\s+pulled)\b/.test(t)) return "lp_lock";
+  if (/\b(why\s+high\s+risk|why\s+is\s+it\s+risky|what\s+are\s+red\s+flags|explain\s+risk|explain\s+verdict|explain\s+holders)\b/.test(t)) return "risk";
+  return "safety";
+}
+
 const EOA_ADDRESS_RE = /\b0x[a-fA-F0-9]{40}\b/g;
 
 export function extractAddressForRouting(text: string): string | null {

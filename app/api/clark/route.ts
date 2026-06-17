@@ -29,6 +29,8 @@ import {
   formatNoTokenInMemory,
   formatFastTokenRead,
   hasUsableTokenEvidence,
+  isTokenFollowupPrompt,
+  classifyTokenFollowupKind,
   type TokenScanEvidence,
   getClarkAddressRouteHint,
 } from "@/lib/server/clarkRouting";
@@ -6151,6 +6153,42 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   const routeHint = getClarkAddressRouteHint(prompt);
   const clarkDebugMode = Boolean((body as unknown as Record<string, unknown>).debug) || process.env.NODE_ENV !== 'production';
   const appIntentTools = appIntent.cta.map((a) => a.label).join(' · ');
+
+  // ─── Task 1: hard token follow-up memory guard ───
+  // "is it safe", "can dev rug", "explain LP", etc. must always resolve against the
+  // last scanned token in memory and must NEVER execute a wallet scan, regardless of
+  // what appIntent/classifyClarkPrompt would otherwise pick. This runs before every
+  // wallet branch (appIntent.wallet_scan, routed.intent === "wallet_scan",
+  // directIntent wallet_analysis, bare-address fallback, classifyAddressForClark).
+  if (isTokenFollowupPrompt(prompt) && sessionMem.lastToken?.address) {
+    const followupKind = classifyTokenFollowupKind(prompt);
+    const tokenAddress = sessionMem.lastToken.address;
+    const cached = sessionMem.lastToken.cachedEvidence ?? null;
+    const ev: TokenScanEvidence = cached ?? (await fetchTokenEvidence(tokenAddress));
+    const fromMemory = Boolean(cached);
+
+    let analysis: string;
+    let intentBadge: string;
+    if (followupKind === "dev_rug") { analysis = formatDevRugCheck(ev, "Base"); intentBadge = "dev_rug_check"; }
+    else if (followupKind === "lp_lock") { analysis = formatLpLockCheck(ev, "Base"); intentBadge = "lp_lock_check"; }
+    else if (followupKind === "risk") { analysis = formatRiskExplanation(ev, "Base"); intentBadge = "risk_explanation"; }
+    else { analysis = formatTokenSafetyAnswer(ev, "Base"); intentBadge = "token_safety"; }
+
+    if (!fromMemory) {
+      updateMemToken(sessionMem, tokenAddress, ev.token?.symbol ?? null, ev.token?.name ?? null, analysis, {
+        confidence: (ev as Record<string, unknown>)._partialEvidenceUsed ? "partial" : ev.ok ? "full" : "none",
+        cachedEvidence: ev.ok || (ev as Record<string, unknown>)._partialEvidenceUsed ? ev : null,
+      });
+    }
+    updateMemIntent(sessionMem, intentBadge);
+    return {
+      feature: "clark-ai", chain, mode: "analysis", intent: intentBadge, toolsUsed: fromMemory ? ["memory"] : ["token_scan"],
+      analysis,
+      intentBadge,
+      actions: buildRoutedActions(["Open Token Scanner", "Run LP Check"]),
+      quotaConsumed: fromMemory ? false : (ev.ok ?? false),
+    };
+  }
 
   // ─── Wallet compare (honest unsupported compare — never scan only one wallet) ───
   if (routedClassification.intent === 'wallet_compare' || isWalletComparePrompt(prompt)) {

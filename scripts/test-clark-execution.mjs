@@ -855,4 +855,86 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(fullOut.startsWith('TOKEN READ'), 'full-mode evidence still produces a normal TOKEN READ')
 }
 
+// ─── Clark Pack 1 hard fix: token follow-up memory guard (this pass) ────────
+{
+  const routeFile = fs.readFileSync(path.join(__dirname, '..', 'app', 'api', 'clark', 'route.ts'), 'utf8')
+  const {
+    isTokenFollowupPrompt,
+    classifyTokenFollowupKind,
+    formatTokenSafetyAnswer,
+    formatDevRugCheck,
+    formatLpLockCheck,
+    formatRiskExplanation,
+  } = await import('../lib/server/clarkRouting.ts')
+
+  // Task 1: isTokenFollowupPrompt matches every listed follow-up phrase
+  const followupPrompts = [
+    'is it safe', 'is this safe', 'is this token safe', 'should I buy', 'is it legit',
+    'is it a rug', 'can dev rug', 'can the dev rug', 'can liquidity be pulled',
+    'is LP locked', 'explain LP', 'explain holders', 'explain dev', 'explain dev control',
+    'why high risk', 'why is it risky', 'what are red flags', 'explain risk', 'explain verdict',
+  ]
+  for (const p of followupPrompts) {
+    assert.ok(isTokenFollowupPrompt(p), `isTokenFollowupPrompt should match: "${p}"`)
+  }
+  assert.ok(!isTokenFollowupPrompt('scan this wallet 0x1234567890123456789012345678901234567890'), 'wallet-specific prompt is not treated as a token follow-up')
+  assert.ok(!isTokenFollowupPrompt('what is pumping on base'), 'unrelated prompt is not treated as a token follow-up')
+
+  // Task 1: kind classification routes to the right formatter
+  assert.equal(classifyTokenFollowupKind('can dev rug'), 'dev_rug')
+  assert.equal(classifyTokenFollowupKind('explain dev control'), 'dev_rug')
+  assert.equal(classifyTokenFollowupKind('is LP locked'), 'lp_lock')
+  assert.equal(classifyTokenFollowupKind('can liquidity be pulled'), 'lp_lock')
+  assert.equal(classifyTokenFollowupKind('why is it risky'), 'risk')
+  assert.equal(classifyTokenFollowupKind('explain holders'), 'risk')
+  assert.equal(classifyTokenFollowupKind('is it safe'), 'safety')
+
+  // Task 1/6: the hard guard runs before every wallet branch in handleClarkAI
+  const guardIdx = routeFile.indexOf('Task 1: hard token follow-up memory guard')
+  assert.ok(guardIdx > -1, 'hard token follow-up guard block exists')
+  const walletCompareIdx = routeFile.indexOf("routedClassification.intent === 'wallet_compare'")
+  const appIntentWalletScanIdx = routeFile.indexOf("appIntent.intent === 'wallet_scan'")
+  const routedWalletScanIdx = routeFile.indexOf('routed.intent === "wallet_scan"')
+  const walletAnalysisIdx = routeFile.indexOf('directIntent.intent === "wallet_analysis" && !directIntent.address')
+  assert.ok(guardIdx < walletCompareIdx, 'guard runs before wallet_compare branch')
+  assert.ok(guardIdx < appIntentWalletScanIdx, 'guard runs before appIntent.wallet_scan branch')
+  assert.ok(guardIdx < routedWalletScanIdx, 'guard runs before routed.intent === "wallet_scan" branch')
+  assert.ok(guardIdx < walletAnalysisIdx, 'guard runs before directIntent wallet_analysis branch')
+  assert.ok(routeFile.includes('isTokenFollowupPrompt(prompt) && sessionMem.lastToken?.address'), 'guard requires both a follow-up prompt and an existing lastToken in memory')
+  assert.ok(!routeFile.slice(guardIdx, guardIdx + 1600).includes('runWalletScanner'), 'token follow-up guard never calls runWalletScanner')
+
+  // Task 3/5: each formatter is section-specific, never a generic "open check" excuse,
+  // and never asserts safe/locked/renounced claims without evidence.
+  const noEvidence = {
+    ok: false,
+    token: { name: null, symbol: 'VIRTUAL', address: '0x0b3e328455c4059eeb9e3f84b5543f74e24e7e1b' },
+    market: { price: 0.5, liquidity: 4_900_000, volume24h: 97_600, change24h: null, marketCap: null },
+    holders: null,
+    lpControl: null,
+    security: { honeypot: null, buyTax: null, sellTax: null, ownerRenounced: null, mintable: null, proxy: null, missing: [] },
+    warnings: [],
+  }
+  const safetyOut = formatTokenSafetyAnswer(noEvidence, 'Base')
+  assert.ok(safetyOut.startsWith('TOKEN SAFETY'), 'token safety follow-up produces TOKEN SAFETY header, not WALLET READ')
+  assert.ok(safetyOut.includes('Verdict:'), 'safety answer always carries an explicit verdict line, never a bare "safe" claim')
+  assert.ok(!safetyOut.toLowerCase().includes('wallet read'), 'token safety follow-up never produces WALLET READ')
+
+  const devOut = formatDevRugCheck(noEvidence, 'Base')
+  assert.ok(devOut.startsWith('DEV/RUG CHECK'), 'dev rug follow-up produces DEV/RUG CHECK header')
+  assert.ok(devOut.includes('open check'), 'dev rug check reports section-specific open checks, not a generic excuse')
+  assert.ok(!/renounced — owner cannot|YES — new tokens can be minted|locked\/burned/i.test(devOut), 'dev rug check does not fabricate ownership/mint/LP claims when evidence is missing')
+
+  const lpOut = formatLpLockCheck(noEvidence, 'Base')
+  assert.ok(lpOut.startsWith('LP CHECK'), 'LP follow-up produces LP CHECK header')
+  assert.ok(!/lp lock\/burn proof confirmed/i.test(lpOut), 'LP check never claims LP locked without evidence')
+
+  const riskOut = formatRiskExplanation(noEvidence, 'Base')
+  assert.ok(riskOut.startsWith('RISK SIGNALS'), 'risk follow-up produces RISK SIGNALS header')
+  assert.ok(riskOut.includes('Evidence not yet checked:'), 'risk explanation lists precisely which evidence is missing')
+
+  // Task 6: quota is never consumed when the follow-up was answered straight from memory
+  const memoryFollowupIdx = routeFile.indexOf('quotaConsumed: fromMemory ? false : (ev.ok ?? false),')
+  assert.ok(memoryFollowupIdx > -1, 'memory-served token follow-up never consumes quota')
+}
+
 console.log('test-clark-execution.mjs: all assertions passed')
