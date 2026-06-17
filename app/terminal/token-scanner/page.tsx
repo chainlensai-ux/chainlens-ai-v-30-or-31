@@ -3304,6 +3304,7 @@ export default function TerminalTokenScanner() {
   const [trackedLoading, setTrackedLoading] = useState(false)
   const [trackedSaving, setTrackedSaving]   = useState(false)
   const [trackedLoggedOut, setTrackedLoggedOut] = useState(false)
+  const [trackedUnavailable, setTrackedUnavailable] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -3314,9 +3315,10 @@ export default function TerminalTokenScanner() {
         const tok = sd.session?.access_token
         if (!tok) { if (!cancelled) { setTrackedLoggedOut(true); setTrackedLoading(false) } return }
         const res = await fetch('/api/watchlist/tokens', { headers: { Authorization: `Bearer ${tok}` } })
+        if (!res.ok) { if (!cancelled) setTrackedUnavailable(true); return }
         const json = await res.json()
         if (!cancelled) setTrackedTokens(json.tokens ?? [])
-      } catch { /* silent */ } finally { if (!cancelled) setTrackedLoading(false) }
+      } catch { if (!cancelled) setTrackedUnavailable(true) } finally { if (!cancelled) setTrackedLoading(false) }
     }
     loadTracked()
     return () => { cancelled = true }
@@ -3328,9 +3330,9 @@ export default function TerminalTokenScanner() {
     try {
       const { data: sd } = await supabase.auth.getSession()
       const tok = sd.session?.access_token
-      if (!tok) return
+      if (!tok) { setTrackedLoggedOut(true); return }
       const scx = calculateCortexScoreV2(result)
-      await fetch('/api/watchlist/tokens', {
+      const res = await fetch('/api/watchlist/tokens', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tok}` },
         body: JSON.stringify({
@@ -3342,10 +3344,13 @@ export default function TerminalTokenScanner() {
           score: result.cortexScore ?? scx.cortexScore ?? null,
         }),
       })
+      if (!res.ok) { setTrackedUnavailable(true); return }
       const res2 = await fetch('/api/watchlist/tokens', { headers: { Authorization: `Bearer ${tok}` } })
+      if (!res2.ok) { setTrackedUnavailable(true); return }
       const json2 = await res2.json()
       setTrackedTokens(json2.tokens ?? [])
-    } catch { /* silent */ } finally { setTrackedSaving(false) }
+      setTrackedUnavailable(false)
+    } catch { setTrackedUnavailable(true) } finally { setTrackedSaving(false) }
   }
 
   async function removeTrackedToken(address: string) {
@@ -3353,11 +3358,12 @@ export default function TerminalTokenScanner() {
     try {
       const { data: sd } = await supabase.auth.getSession()
       const tok = sd.session?.access_token
-      if (!tok) return
-      await fetch(`/api/watchlist/tokens?address=${encodeURIComponent(address.toLowerCase())}`, {
+      if (!tok) { setTrackedLoggedOut(true); return }
+      const res = await fetch(`/api/watchlist/tokens?address=${encodeURIComponent(address.toLowerCase())}`, {
         method: 'DELETE', headers: { Authorization: `Bearer ${tok}` },
       })
-    } catch { /* silent */ }
+      if (!res.ok) setTrackedUnavailable(true)
+    } catch { setTrackedUnavailable(true) }
   }
   const [devIntelLoading, setDevIntelLoading] = useState(false)
   const [devIntelError, setDevIntelError] = useState<string | null>(null)
@@ -3684,7 +3690,8 @@ export default function TerminalTokenScanner() {
         .cortex-chip:hover{transform:translateY(-2px);}
         .cortex-bdrow{border-radius:6px;transition:background .14s ease;}
         .cortex-bdrow:hover{background:rgba(255,255,255,.028) !important;}
-        .token-shell{display:grid;grid-template-columns:minmax(0,1fr);height:100%;overflow-x:hidden;color:#e2e8f0;background-image:linear-gradient(rgba(45,212,191,.020) 1px,transparent 1px),linear-gradient(90deg,rgba(45,212,191,.020) 1px,transparent 1px),radial-gradient(circle at 22% 0%,rgba(20,35,68,.52),rgba(2,6,23,1) 56%);background-size:52px 52px,52px 52px,100% 100%;background-color:rgba(2,6,23,1);}
+        .token-shell{position:relative;display:grid;grid-template-columns:minmax(0,1fr);height:100%;overflow-x:hidden;color:#e2e8f0;background-image:linear-gradient(rgba(45,212,191,.020) 1px,transparent 1px),linear-gradient(90deg,rgba(45,212,191,.020) 1px,transparent 1px),radial-gradient(circle at 18% 4%,rgba(34,211,238,.10),transparent 38%),radial-gradient(circle at 86% 92%,rgba(217,70,239,.09),transparent 42%),radial-gradient(circle at 88% 14%,rgba(139,92,246,.08),transparent 36%),radial-gradient(circle at 22% 0%,rgba(20,35,68,.52),rgba(2,6,23,1) 56%);background-size:52px 52px,52px 52px,100% 100%,100% 100%,100% 100%,100% 100%;background-color:rgba(2,6,23,1);background-attachment:fixed,fixed,fixed,fixed,fixed,fixed;}
+        @media (max-width:1279px){.token-shell{background-attachment:scroll !important;}}
         .token-main,.mob-verdict-panel,.glass-card,.metric-grid,.holders-grid,.activity-grid,.intel-grid{min-width:0;}
         .token-main{max-width:none;}
         .glass-card{background:linear-gradient(180deg,rgba(10,18,34,.9),rgba(3,8,19,.88));border:1px solid rgba(148,163,184,.18);border-radius:16px;box-shadow:0 0 0 1px rgba(45,212,191,.05) inset,0 18px 45px rgba(2,6,23,.4),0 0 28px rgba(139,92,246,.12);}
@@ -3736,7 +3743,7 @@ export default function TerminalTokenScanner() {
               Token Scanner
             </h1>
             <p style={{ margin: '0 0 16px', color: '#64748b', fontSize: '13px', lineHeight: 1.65, maxWidth: '560px' }}>
-              Scan Base tokens for live liquidity, holder concentration, LP control, dev activity, and evidence-weighted CORTEX risk.
+              Scan Base tokens for market read, LP/liquidity control, holder concentration, security/tax checks where available, and dev/deployer risk where available.
             </p>
 
             {/* Status pills */}
@@ -6300,6 +6307,11 @@ export default function TerminalTokenScanner() {
                 >
                   {trackedSaving ? 'SAVING…' : '+ TRACK THIS TOKEN'}
                 </button>
+                {(trackedLoggedOut || trackedUnavailable) && (
+                  <p style={{ margin: '8px 0 0', fontSize: '10px', color: '#fbbf24', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>
+                    Tracking unavailable. Reconnect wallet or sign in to save tokens.
+                  </p>
+                )}
               </div>
             )
           })()}
@@ -6315,25 +6327,25 @@ export default function TerminalTokenScanner() {
               )}
             </div>
 
-            {trackedLoggedOut && (
-              <p style={{ margin: 0, fontSize: '11px', color: '#334155', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>
-                Sign in to track tokens across sessions.
+            {(trackedLoggedOut || trackedUnavailable) && (
+              <p style={{ margin: 0, fontSize: '11px', color: '#fbbf24', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>
+                Tracking unavailable. Reconnect wallet or sign in to save tokens.
               </p>
             )}
 
-            {!trackedLoggedOut && trackedLoading && (
+            {!trackedLoggedOut && !trackedUnavailable && trackedLoading && (
               <div style={{ display: 'flex', gap: '4px', alignItems: 'center', paddingTop: '4px' }}>
                 {[0,1,2].map(i => <span key={i} style={{ width:'4px', height:'4px', borderRadius:'50%', background:'#22d3ee', display:'inline-block', animation:`clarkDot 1.2s ease-in-out ${i*.2}s infinite` }} />)}
               </div>
             )}
 
-            {!trackedLoggedOut && !trackedLoading && trackedTokens.length === 0 && (
+            {!trackedLoggedOut && !trackedUnavailable && !trackedLoading && trackedTokens.length === 0 && (
               <p style={{ margin: 0, fontSize: '10px', color: '#334155', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>
-                Saved to your account. Tokens you track will appear here. Scan and click &quot;Track this token&quot; to save.
+                Tracked tokens you save will appear here. Scan a token and click &quot;Track this token&quot; to save it.
               </p>
             )}
 
-            {!trackedLoggedOut && !trackedLoading && trackedTokens.length > 0 && (
+            {!trackedLoggedOut && !trackedUnavailable && !trackedLoading && trackedTokens.length > 0 && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                 {trackedTokens.map(t => {
                   const initials = (t.symbol ?? t.name ?? '?').slice(0, 2).toUpperCase()
