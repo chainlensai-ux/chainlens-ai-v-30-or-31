@@ -3163,7 +3163,8 @@ export async function POST(req: Request) {
     const _t0 = Date.now()
 
     const body = await req.json();
-    const { contract: contractInput, debugHolder, debug: debugMode, forceDexFallback: _forceDexFallback } = body;
+    const { contract: contractInput, debugHolder, debug: debugMode, forceDexFallback: _forceDexFallback, mode: scanMode } = body;
+    const isClarkFastMode = scanMode === 'clark_fast';
     const rawChain = String(body.chain ?? 'base').toLowerCase()
     if (rawChain !== 'base' && rawChain !== 'eth') {
       return NextResponse.json({ error: 'Unsupported chain. Use chain=base or chain=eth.' }, { status: 400 })
@@ -3255,6 +3256,77 @@ export async function POST(req: Request) {
     _diagSelectedChain = chain
     if (resolvedInput) {
       resolvedInput.requestedChain = chain
+    }
+
+    // ── Clark fast mode: lightweight, cache-friendly evidence pass ──
+    // Skips slow holders/deep-LP/dev-enrichment providers used by the full
+    // Token Scanner pipeline below. Does not alter normal scan behavior —
+    // this branch only runs when mode === 'clark_fast' is explicitly sent.
+    if (isClarkFastMode) {
+      const _fastT0 = Date.now()
+      const [gtDataFast, gtTokenInfoFast, simResultFast] = await Promise.all([
+        fetchGeckoTerminal(contract, chain).catch(() => null),
+        fetchGeckoTerminalToken(contract, chain).catch(() => null),
+        resolveSimulation(chain, contract).catch(() => null),
+      ])
+      const poolsFast: any[] = Array.isArray(gtDataFast?.data) ? gtDataFast.data : []
+      const mainPoolFast = [...poolsFast].sort((a, b) => {
+        const liqDiff = parseFloat(b.attributes?.reserve_in_usd || "0") - parseFloat(a.attributes?.reserve_in_usd || "0")
+        if (liqDiff !== 0) return liqDiff
+        return String(a.id ?? "").localeCompare(String(b.id ?? ""))
+      })[0]
+      const poolAttrFast = mainPoolFast?.attributes ?? {}
+      const gtTokenFast = gtTokenInfoFast?.data?.attributes ?? null
+      const priceUsdFast = pickNum(poolAttrFast.base_token_price_usd, gtTokenFast?.price_usd, gtTokenFast?.price)
+      const liquidityUsdFast = pickNum(poolAttrFast.reserve_in_usd, poolAttrFast.liquidity_usd, poolAttrFast.reserve_usd)
+      const volume24hUsdFast = pickNum((poolAttrFast.volume_usd as Record<string, unknown> | undefined)?.h24)
+      const marketCapUsdFast = pickNum(gtTokenFast?.market_cap_usd, gtTokenFast?.market_cap, gtTokenFast?.marketCap)
+      const nameFast = (gtTokenFast?.name as string | undefined) ?? aliasHit?.symbol ?? null
+      const symbolFast = (gtTokenFast?.symbol as string | undefined) ?? aliasHit?.symbol ?? null
+      const hasMarketFast = priceUsdFast != null || liquidityUsdFast != null
+      const fastPayload: Record<string, unknown> = {
+        status: hasMarketFast ? 'ok' : 'no_pool_data',
+        mode: 'clark_fast',
+        contract,
+        chain,
+        name: nameFast,
+        symbol: symbolFast,
+        priceUsd: priceUsdFast,
+        liquidityUsd: liquidityUsdFast,
+        volume24hUsd: volume24hUsdFast,
+        marketCapUsd: marketCapUsdFast,
+        security: {
+          simulation: {
+            honeypot: simResultFast?.honeypot ?? null,
+            buyTax: simResultFast?.buyTax ?? null,
+            sellTax: simResultFast?.sellTax ?? null,
+            transferTax: simResultFast?.transferTax ?? null,
+            simulationSuccess: simResultFast?.simulationSuccess ?? null,
+          },
+        },
+        lpControl: { status: 'open_check', reason: 'LP lock/burn proof not run in Clark fast mode — open full Token Scanner for full LP verification.', confidence: 'open_check', poolType: null },
+        holderDistribution: null,
+        sections: {
+          market: { status: hasMarketFast ? 'ok' : 'unavailable', reason: hasMarketFast ? null : 'No active pool data found in fast mode.' },
+          security: { status: simResultFast ? 'ok' : 'pending', reason: simResultFast ? null : 'Security simulation unavailable in fast mode.' },
+          holders: { status: 'open_check', reason: 'Holder scan not run in Clark fast mode.' },
+          liquidity: { status: 'open_check', reason: 'Full LP proof not run in Clark fast mode.' },
+        },
+      }
+      if (debugMode === true || process.env.NODE_ENV !== 'production') {
+        ;(fastPayload as any).tokenRouteDebug = {
+          routeReached: true,
+          mode: 'clark_fast',
+          method: 'POST',
+          contract,
+          chain,
+          stagesStarted: ['market', 'security'],
+          stagesCompleted: [hasMarketFast ? 'market' : null, simResultFast ? 'security' : null].filter(Boolean),
+          stagesSkipped: ['holders', 'lp', 'dev_enrichment'],
+          totalMs: Date.now() - _fastT0,
+        }
+      }
+      return NextResponse.json(fastPayload, { status: 200 })
     }
 
     console.log("Incoming scan request:", contract);

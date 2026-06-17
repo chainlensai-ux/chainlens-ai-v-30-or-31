@@ -595,8 +595,8 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   // /api/token timeout + honeypot success → partial with market/LP/holders open_check
   assert.ok(routeFile.includes('tokenRouteFailed ? `token route ${tokenRouteStatus}` : "unavailable"'), 'market/holders missing reason references token route status')
 
-  // Total failure → TOKEN READ — timed out
-  assert.ok(routeFile.includes('TOKEN READ — timed out'), 'total failure outputs timed out header')
+  // Total/no-usable-evidence failure → TOKEN READ — failed (quota-safe, never charged)
+  assert.ok(routeFile.includes('TOKEN READ — failed'), 'no-usable-evidence outputs failed header')
 
   // No fake safe/clean/LP locked when evidence missing
   const partialReadStart = routeFile.indexOf('formatPartialTokenRead')
@@ -687,7 +687,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(!/clarkDebugReceipt[\s\S]{0,2000}cookie:\s*clarkInternalCtx\.cookie[^B]/.test(routeFile), 'clarkDebugReceipt must not leak raw cookie value')
 
   // Task 3: Clark threads its own debug flag into the /api/token payload
-  assert.ok(routeFile.includes('tokenInternalApiPayload = { contract: tokenAddress, chain: chain ?? "base", ...(clarkDebugMode ? { debug: true } : {}) }'), 'Clark forwards debug flag to /api/token payload')
+  assert.ok(routeFile.includes('tokenInternalApiPayload = { contract: tokenAddress, chain: chain ?? "base", ...(clarkDebugMode ? { debug: true } : {}), ...(wantsFullScan ? {} : { mode: "clark_fast" }) }'), 'Clark forwards debug flag and clark_fast mode to /api/token payload')
 
   // Task 4: payload shape sent to /api/token is { contract, chain } (safe fields only)
   assert.ok(routeFile.includes('callInternalApi(origin, "/api/token", tokenInternalApiPayload'), 'fetchTokenEvidence calls /api/token with tokenInternalApiPayload')
@@ -749,6 +749,110 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(smokeOut.startsWith('TOKEN READ'), 'mocked /api/token evidence produces TOKEN READ via formatter')
   assert.ok(smokeOut.includes('SMOKE'), 'mapped evidence symbol reaches formatter output')
   assert.ok(!smokeOut.toLowerCase().includes('wallet read'), 'token smoke test never produces WALLET READ')
+}
+
+// ─── Clark token quota fix + clark_fast mode (this pass) ────────────────────
+{
+  const routeFile = fs.readFileSync(path.join(__dirname, '..', 'app', 'api', 'clark', 'route.ts'), 'utf8')
+  const tokenRouteFile = fs.readFileSync(path.join(__dirname, '..', 'app', 'api', 'token', 'route.ts'), 'utf8')
+  const { hasUsableTokenEvidence, formatFastTokenRead, formatTokenScanResult: fmtFull } = await import('../lib/server/clarkRouting.ts')
+
+  // Task 1: hasUsableTokenEvidence — false when every major section is missing
+  assert.equal(hasUsableTokenEvidence(null), false, 'null evidence is not usable')
+  assert.equal(hasUsableTokenEvidence({
+    token: { symbol: '?', name: 'Unknown' },
+    market: null, holders: null, lpControl: null,
+    security: { honeypot: null, buyTax: null, sellTax: null, ownerRenounced: null, mintable: null, proxy: null, missing: [] },
+  }), false, 'all-missing evidence (timeout/unavailable) is not usable')
+
+  // Task 1: true when at least one useful section is present
+  assert.equal(hasUsableTokenEvidence({
+    token: { symbol: 'SMOKE', name: 'SmokeCoin' },
+    market: { price: 0.05, liquidity: 80_000, volume24h: 1000, change24h: 1, marketCap: 1 },
+    holders: null, lpControl: null, security: null,
+  }), true, 'market evidence alone counts as usable')
+  assert.equal(hasUsableTokenEvidence({
+    token: null, market: null, holders: null, lpControl: null,
+    security: { honeypot: false, buyTax: 0, sellTax: 0, ownerRenounced: null, mintable: null, proxy: null, missing: [] },
+  }), true, 'security simulation evidence alone counts as usable')
+
+  // Task 2: quota gating wired into the token_scan handler via the usable-evidence gate
+  assert.ok(routeFile.includes('const usableEvidence = hasUsableTokenEvidence(ev);'), 'token_scan computes usableEvidence via hasUsableTokenEvidence')
+  assert.ok(routeFile.includes('const quotaEligible = usableEvidence;'), 'token_scan quotaEligible derives from usableEvidence')
+  assert.ok(routeFile.includes('const quotaConsumed = quotaEligible;'), 'token_scan quotaConsumed derives from quotaEligible')
+  assert.ok(routeFile.includes('quotaConsumed,\n      ...(clarkDebugReceipt'), 'token_scan response uses the gated quotaConsumed value')
+
+  // Task 3: Clark calls /api/token with mode "clark_fast" by default (no fullScan opt)
+  assert.ok(routeFile.includes('...(wantsFullScan ? {} : { mode: "clark_fast" })'), 'fetchTokenEvidence defaults to clark_fast mode unless fullScan requested')
+  assert.ok(routeFile.includes('async function fetchTokenEvidence(tokenAddress: string, opts?: { fullScan?: boolean })'), 'fetchTokenEvidence accepts a fullScan opt-out for explicit deep/full scans')
+
+  // Task 3: /api/token implements mode === "clark_fast" as an early, separate lightweight branch
+  assert.ok(tokenRouteFile.includes("mode: scanMode } = body;"), '/api/token reads mode from the request body')
+  assert.ok(tokenRouteFile.includes("isClarkFastMode = scanMode === 'clark_fast'"), '/api/token detects clark_fast mode')
+  assert.ok(tokenRouteFile.includes('if (isClarkFastMode) {'), '/api/token branches into a lightweight path for clark_fast')
+  assert.ok(tokenRouteFile.includes("stagesSkipped: ['holders', 'lp', 'dev_enrichment']"), 'clark_fast marks skipped slow sections instead of faking them')
+  assert.ok(tokenRouteFile.includes("status: 'open_check'") && tokenRouteFile.includes('lpControl'), 'clark_fast marks LP as open_check, not a fake safe verdict')
+
+  // Task 3: normal Token Scanner behavior is unaffected when mode is absent — the heavy
+  // pipeline (13-way Promise.all of bytecode/GoldRush/Moralis/GeckoTerminal/etc.) still runs
+  // unconditionally after the clark_fast early-return branch.
+  assert.ok(tokenRouteFile.includes('const [bytecode, goldrush, holdersRaw, gtData, gtTokenInfo, gmgn, metadata, _simResult, coingeckoRaw, moralisHoldersRaw, moralisTransfersRaw, dexFbEarly, grContractIntel] = await Promise.all(['), 'full heavy scan pipeline is untouched and still runs for non-clark_fast requests')
+
+  // Task 4: clark_fast mocked market evidence produces "TOKEN READ — fast evidence"
+  const fastEvWithMarket = {
+    ok: false,
+    token: { name: 'FastCoin', symbol: 'FAST', address: '0x0b3e328455c4059eeb9e3f84b5543f74e24e7e1b' },
+    market: { price: 0.01, liquidity: 50_000, volume24h: 5_000, change24h: null, marketCap: null },
+    holders: null,
+    lpControl: { status: 'open_check', reason: 'LP lock/burn proof not run in Clark fast mode.', confidence: 'open_check', poolType: null },
+    security: { honeypot: false, buyTax: null, sellTax: null, ownerRenounced: null, mintable: null, proxy: null, missing: [] },
+    warnings: [],
+  }
+  const fastOut = formatFastTokenRead(fastEvWithMarket, 'Base')
+  assert.ok(fastOut.startsWith('TOKEN READ — fast evidence'), 'clark_fast formatter produces the exact fast-evidence header')
+  assert.ok(fastOut.includes('FAST'), 'fast evidence output includes the token symbol')
+  assert.ok(/Market:.*price/i.test(fastOut), 'fast evidence output includes market read when available')
+
+  // Task 4: skipped holders/LP/dev sections are reported as Open Check, never a fake safe verdict
+  assert.ok(fastOut.includes('LP: Open Check — full LP proof not run in Clark fast read'), 'clark_fast LP section is Open Check, not a fake verdict')
+  assert.ok(fastOut.includes('Holders: Open Check — holder scan not run in Clark fast read'), 'clark_fast holders section is Open Check, not faked')
+  assert.ok(fastOut.includes('Missing evidence: holders, LP proof, dev-risk require full Token Scanner scan'), 'fast evidence output lists missing-evidence categories')
+  assert.ok(!/lp.*locked|holders.*verified/i.test(fastOut), 'fast evidence never claims LP locked or holders verified without evidence')
+
+  // Task 5: explicit full/deep scan prompts route to the full /api/token path
+  assert.ok(routeFile.includes('function wantsFullTokenScan(prompt: string): boolean {'), 'wantsFullTokenScan helper exists')
+  assert.ok(routeFile.includes('const wantsFullScan = wantsFullTokenScan(prompt);'), 'token_scan reads the full-scan opt-in from the prompt')
+  for (const deepPrompt of ['deep scan this token', 'full scan this token', 'run full token scan']) {
+    assert.match(deepPrompt, /\b(deep\s*scan|full\s*scan|run\s+full\s+token\s+scan|full\s+token\s+scan)\b/i)
+  }
+  assert.ok(!/\b(deep\s*scan|full\s*scan|run\s+full\s+token\s+scan|full\s+token\s+scan)\b/i.test('scan this token 0x0b3e328455c4059eeb9e3f84b5543f74e24e7e1b on base'), 'normal scan prompt does not trigger full-scan mode')
+
+  // Task 6: clarkDebugReceipt carries the new fast-mode/quota proof fields
+  for (const field of ['tokenMode', 'tokenRouteTimedOut', 'usableEvidence', 'quotaEligible']) {
+    assert.ok(routeFile.includes(field), `clarkDebugReceipt is missing fast-mode proof field: ${field}`)
+  }
+
+  // Task 7: no Wallet Scanner call is made for a token_scan prompt — fetchTokenEvidence only
+  // ever calls /api/token (market/security), never /api/wallet or runWalletScanner.
+  const fetchTokenEvidenceBody = routeFile.slice(
+    routeFile.indexOf('async function fetchTokenEvidence('),
+    routeFile.indexOf('async function resolveTokenSymbolToAddress(')
+  )
+  assert.ok(!fetchTokenEvidenceBody.includes('/api/wallet'), 'fetchTokenEvidence never calls /api/wallet')
+  assert.ok(!fetchTokenEvidenceBody.includes('runWalletScanner'), 'fetchTokenEvidence never calls runWalletScanner')
+
+  // Task 7: still proves formatTokenScanResult works for fully-resolved evidence (full mode)
+  const fullModeEvidence = {
+    ok: true,
+    token: { name: 'SmokeCoin', symbol: 'SMOKE', address: '0x0b3e328455c4059eeb9e3f84b5543f74e24e7e1b' },
+    market: { price: 0.05, change24h: 3.1, volume24h: 200_000, liquidity: 80_000, marketCap: 2_000_000 },
+    holders: { top1: 9.0, top10: 38.0, holderCount: 500 },
+    security: { honeypot: false, buyTax: 0, sellTax: 0, ownerRenounced: true, mintable: false, proxy: false, securityStatus: 'clean', riskLevel: 'low', missing: [] },
+    lpControl: { status: 'locked', reason: 'locked via protocol', confidence: 'high', poolType: 'v2' },
+    warnings: [],
+  }
+  const fullOut = fmtFull(fullModeEvidence, 'Base')
+  assert.ok(fullOut.startsWith('TOKEN READ'), 'full-mode evidence still produces a normal TOKEN READ')
 }
 
 console.log('test-clark-execution.mjs: all assertions passed')

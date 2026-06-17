@@ -726,6 +726,22 @@ export type TokenScanEvidence = {
   ok?: boolean;
 };
 
+// Returns true only if at least one useful evidence section is present —
+// token identity, market data, holders, LP control, security/honeypot, or
+// contract flags. False when every major section is missing (e.g. all
+// branches timed out / were unavailable), so callers can avoid charging
+// quota for a read that gave the user nothing usable.
+export function hasUsableTokenEvidence(ev: TokenScanEvidence | null | undefined): boolean {
+  if (!ev) return false;
+  const hasTokenIdentity = Boolean(ev.token?.symbol && ev.token.symbol !== "?") || Boolean(ev.token?.name && ev.token.name !== "Unknown");
+  const hasMarket = ev.market != null && (ev.market.price != null || ev.market.liquidity != null || ev.market.volume24h != null || ev.market.marketCap != null);
+  const hasHolders = ev.holders != null && (ev.holders.top1 != null || ev.holders.top10 != null || ev.holders.holderCount != null);
+  const hasLp = ev.lpControl != null && typeof ev.lpControl.status === "string" && ev.lpControl.status !== "open_check" && ev.lpControl.status !== "unverified";
+  const hasSecurity = ev.security != null && (ev.security.honeypot != null || ev.security.buyTax != null || ev.security.sellTax != null);
+  const hasContractFlags = ev.security != null && (ev.security.ownerRenounced != null || ev.security.mintable != null || ev.security.proxy != null);
+  return hasTokenIdentity || hasMarket || hasHolders || hasLp || hasSecurity || hasContractFlags;
+}
+
 function fmtTaxPct(n: number | null | undefined): string {
   if (n == null || !Number.isFinite(n)) return "open check";
   return `${n.toFixed(1)}%`;
@@ -808,6 +824,49 @@ export function formatTokenScanResult(ev: TokenScanEvidence, chain = "Base"): st
 
   lines.push("");
   lines.push(`Next: Ask "is it safe", "can dev rug", "explain LP", or "why high risk"`);
+  lines.push("CTA: Open Token Scanner / Run LP Check");
+  return lines.join("\n");
+}
+
+// Clark fast-mode reply: used when /api/token was called with mode "clark_fast"
+// and returned market/pool identity but skipped the slow holders/deep-LP/dev
+// enrichment sections. Those sections are reported as Open Check, never as fake
+// safe/verified values.
+export function formatFastTokenRead(ev: TokenScanEvidence, chain = "Base"): string {
+  const sym = String(ev.token?.symbol ?? "?").toUpperCase();
+  const name = ev.token?.name ?? null;
+  const mkt = ev.market;
+  const sec = ev.security;
+  const hasMarket = mkt != null && (mkt.price != null || mkt.liquidity != null || mkt.volume24h != null);
+  const hasFastSecurity = sec != null && (sec.honeypot != null || sec.buyTax != null || sec.sellTax != null);
+
+  const lines: string[] = [`TOKEN READ — fast evidence`];
+  lines.push(`- Token: ${name && name !== sym ? `${name} / ${sym}` : sym}`);
+  lines.push(`- Chain: ${chain}`);
+
+  if (hasMarket) {
+    const parts: string[] = [];
+    if (mkt?.price != null) parts.push(`price ${fmtUsdShort(mkt.price)}`);
+    if (mkt?.liquidity != null) parts.push(`liquidity ${fmtUsdShort(mkt.liquidity)}`);
+    if (mkt?.volume24h != null) parts.push(`24h volume ${fmtUsdShort(mkt.volume24h)}`);
+    lines.push(`- Market: ${parts.join(", ")}`);
+  } else {
+    lines.push(`- Market: unavailable / Open Check`);
+  }
+
+  lines.push(`- LP: Open Check — full LP proof not run in Clark fast read`);
+  lines.push(`- Holders: Open Check — holder scan not run in Clark fast read`);
+
+  if (hasFastSecurity) {
+    lines.push(`- Security: ${sec?.honeypot === true ? "HONEYPOT flagged" : sec?.honeypot === false ? "no honeypot signal" : "available fast flags"}${sec?.buyTax != null ? ` (buy tax ${fmtTaxPct(sec.buyTax)}, sell tax ${fmtTaxPct(sec.sellTax)})` : ""}`);
+  } else {
+    lines.push(`- Security: Open Check / available fast flags`);
+  }
+
+  const verdictKnown = sec?.honeypot === true;
+  lines.push(`- Verdict: ${verdictKnown ? "Avoid — honeypot detected" : "Open Check unless enough evidence exists"}`);
+
+  lines.push(`- Missing evidence: holders, LP proof, dev-risk require full Token Scanner scan`);
   lines.push("CTA: Open Token Scanner / Run LP Check");
   return lines.join("\n");
 }

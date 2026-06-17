@@ -27,6 +27,8 @@ import {
   formatLpLockCheck,
   formatRiskExplanation,
   formatNoTokenInMemory,
+  formatFastTokenRead,
+  hasUsableTokenEvidence,
   type TokenScanEvidence,
   getClarkAddressRouteHint,
 } from "@/lib/server/clarkRouting";
@@ -2681,6 +2683,12 @@ function formatWalletBalanceSummary(snapshot: NonNullable<ClarkToolEvidence["wal
 
 function wantsWalletDeepScan(prompt: string): boolean {
   return /\b(deep\s*scan|full\s*(?:wallet\s*)?scan|scan\s+all\s+chains|deep\b|historical|pnl|p&l|trades?|dig\s+deeper|recover\s+(?:more\s+)?history|analyze\s+(?:this\s+)?wallet|wallet\s+pnl|why\s+is\s+pnl|cost\s+basis|closed\s+lots?)\b/i.test(prompt);
+}
+
+// Task 5: explicit opt-in to the full (heavy) /api/token scan path for token_scan.
+// Normal token prompts ("scan this token ... on base") always use Clark fast mode.
+function wantsFullTokenScan(prompt: string): boolean {
+  return /\b(deep\s*scan|full\s*scan|run\s+full\s+token\s+scan|full\s+token\s+scan)\b/i.test(prompt);
 }
 
 function getRpcUrlForClarkCodeCheck(chain: SupportedChain | string | undefined): string | null {
@@ -6875,14 +6883,15 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
 
   // ── Pack 1: Token Core Pipeline handlers ──────────────────────────────────────
 
-  async function fetchTokenEvidence(tokenAddress: string): Promise<TokenScanEvidence & { _tokenApiStatus?: string; _tokenApiHttpStatus?: number; _tokenScanFailureReason?: string; _tokenScanDebug?: Record<string, unknown>; _partialEvidenceUsed?: boolean; _evidenceSectionsPresent?: string[]; _evidenceSectionsMissing?: Array<{ section: string; reason: string }>; _tokenRouteStatus?: string; _tokenRouteDurationMs?: number; _honeypotStatus?: string; _honeypotDurationMs?: number; _tokenEvidenceMappedKeys?: string[] }> {
+  async function fetchTokenEvidence(tokenAddress: string, opts?: { fullScan?: boolean }): Promise<TokenScanEvidence & { _tokenApiStatus?: string; _tokenApiHttpStatus?: number; _tokenScanFailureReason?: string; _tokenScanDebug?: Record<string, unknown>; _partialEvidenceUsed?: boolean; _evidenceSectionsPresent?: string[]; _evidenceSectionsMissing?: Array<{ section: string; reason: string }>; _tokenRouteStatus?: string; _tokenRouteDurationMs?: number; _honeypotStatus?: string; _honeypotDurationMs?: number; _tokenEvidenceMappedKeys?: string[]; _tokenApiMode?: string }> {
 
     // ── Branch 1: /api/token (market, holders, LP, contract flags) ──
     const tokenRouteStart = Date.now();
     let tokenData: { ok: boolean; status: number; json: unknown } | null = null;
     let tokenRouteAborted = false;
     let tokenRouteNetworkError = false;
-    const tokenInternalApiPayload = { contract: tokenAddress, chain: chain ?? "base", ...(clarkDebugMode ? { debug: true } : {}) };
+    const wantsFullScan = opts?.fullScan === true;
+    const tokenInternalApiPayload = { contract: tokenAddress, chain: chain ?? "base", ...(clarkDebugMode ? { debug: true } : {}), ...(wantsFullScan ? {} : { mode: "clark_fast" }) };
     const tokenFetchPromise = callInternalApi(origin, "/api/token", tokenInternalApiPayload, authHeader ?? undefined, verifiedPlan)
       .then((r) => { tokenData = r; return r; })
       .catch((e: unknown) => {
@@ -7033,6 +7042,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     // ── Build debug object ──
     const tokenScanDebug: Record<string, unknown> = {
       tokenScanAttempted: true,
+      tokenMode: wantsFullScan ? "full" : "clark_fast",
       tokenInternalApiCalled,
       tokenInternalApiPath: "/api/token",
       tokenInternalApiPayload,
@@ -7136,6 +7146,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       _honeypotStatus: honeypotStatus,
       _honeypotDurationMs: honeypotDurationMs,
       _tokenEvidenceMappedKeys: tokenEvidenceMappedKeys,
+      _tokenApiMode: typeof t.mode === "string" ? t.mode : (wantsFullScan ? "full" : "clark_fast"),
     };
   }
 
@@ -7263,6 +7274,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   if (routed.intent === "token_scan") {
     let tokenAddress = routed.address;
     let resolvedSymbol = routed.symbol;
+    const wantsFullScan = wantsFullTokenScan(prompt);
     if (!tokenAddress && resolvedSymbol) {
       const resolved = await resolveTokenSymbolToAddress(resolvedSymbol);
       if (!resolved) {
@@ -7286,11 +7298,13 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         quotaConsumed: false,
       };
     }
-    const ev = await fetchTokenEvidence(tokenAddress);
+    const ev = await fetchTokenEvidence(tokenAddress, { fullScan: wantsFullScan });
     const evDebug = ev as Record<string, unknown>;
     const tokenApiHttpStatus = evDebug._tokenApiHttpStatus as number | undefined;
     const partialEvidenceUsed = Boolean(evDebug._partialEvidenceUsed);
     const totalFailure = !ev.ok && !partialEvidenceUsed;
+    const tokenApiMode = (evDebug._tokenApiMode as string | undefined) ?? (wantsFullScan ? "full" : "clark_fast");
+    const tokenRouteTimedOut = evDebug._tokenRouteStatus === "timeout" || evDebug._honeypotStatus === "timeout";
 
     // Determine confidence for memory storage
     const sectionsPresent = (evDebug._evidenceSectionsPresent as string[] | undefined) ?? [];
@@ -7298,31 +7312,40 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const memConfidence: "full" | "partial" | "none" = sectionsPresent.length >= 4 ? "full" : sectionsPresent.length >= 1 ? "partial" : "none";
     const memMissingEvidence = sectionsMissing.map(s => `${s.section}: ${s.reason}`);
 
+    // Task 1/2: usable-evidence gate — quota is never charged unless Clark actually
+    // returned something the user can use (token identity, market, holders, LP, or security).
+    const usableEvidence = hasUsableTokenEvidence(ev);
+
     let analysis: string;
     let formatterUsed: string;
 
-    if (ev.ok && !partialEvidenceUsed) {
-      analysis = formatTokenScanResult(ev, "Base");
-      formatterUsed = "formatTokenScanResult";
-    } else if (!totalFailure) {
-      // Partial evidence — at least one branch succeeded
-      analysis = formatPartialTokenRead(ev, tokenAddress, evDebug);
-      formatterUsed = "formatPartialTokenRead";
-    } else {
-      // Total failure — all branches failed
+    if (!usableEvidence) {
+      // No usable evidence at all (every major section timed out / unavailable) —
+      // be honest about it and never charge quota for this read.
       analysis = [
-        `TOKEN READ — timed out`,
+        `TOKEN READ — failed`,
         `- Address: ${tokenAddress}`,
         `- Chain: Base`,
         ...(tokenApiHttpStatus === 401
           ? ["- Token Scanner authorization failed. Reconnect/sign in and try again."]
-          : (ev.warnings && ev.warnings.length > 0 ? ev.warnings.map((w) => `- ${w}`) : ["- Token Scanner returned no market/security evidence"])
+          : (ev.warnings && ev.warnings.length > 0 ? ev.warnings.map((w) => `- ${w}`) : ["- Token Scanner returned no usable evidence"])
         ),
         ``,
         `Paste the contract address and try again, or open Token Scanner directly.`,
         `CTA: Open Token Scanner`,
       ].join("\n");
       formatterUsed = "inline_fallback_total";
+    } else if (tokenApiMode === "clark_fast" && !ev.ok) {
+      // Clark fast mode: market/pool identity present, deeper sections intentionally skipped.
+      analysis = formatFastTokenRead(ev, "Base");
+      formatterUsed = "formatFastTokenRead";
+    } else if (ev.ok && !partialEvidenceUsed) {
+      analysis = formatTokenScanResult(ev, "Base");
+      formatterUsed = "formatTokenScanResult";
+    } else {
+      // Partial evidence — at least one branch succeeded
+      analysis = formatPartialTokenRead(ev, tokenAddress, evDebug);
+      formatterUsed = "formatPartialTokenRead";
     }
 
     updateMemToken(sessionMem, tokenAddress, ev.token?.symbol ?? resolvedSymbol, ev.token?.name ?? null, analysis, {
@@ -7334,7 +7357,11 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     updateMemIntent(sessionMem, "token_analysis");
 
     const evScanDebug = (evDebug._tokenScanDebug ?? {}) as Record<string, unknown>;
-    const finalAnswerType: string = ev.ok && !partialEvidenceUsed ? "full_token_read" : !totalFailure ? "partial_token_read" : "token_read_failed";
+    const finalAnswerType: string = !usableEvidence ? "token_read_failed" : (tokenApiMode === "clark_fast" && !ev.ok) ? "fast_token_read" : (ev.ok && !partialEvidenceUsed) ? "full_token_read" : "partial_token_read";
+
+    // Task 2: quota is only consumed when there's usable evidence to charge for.
+    const quotaEligible = usableEvidence;
+    const quotaConsumed = quotaEligible;
 
     const clarkDebugReceipt = clarkDebugMode ? {
       routeHint,
@@ -7342,6 +7369,15 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       selectedChain: chain,
       extractedAddress: tokenAddress,
       tokenScanAttempted: true,
+      tokenMode: tokenApiMode,
+      tokenRouteStatus: evDebug._tokenRouteStatus ?? null,
+      tokenRouteDurationMs: evDebug._tokenRouteDurationMs ?? null,
+      tokenRouteTimedOut,
+      usableEvidence,
+      quotaEligible,
+      quotaConsumed,
+      evidenceSectionsPresent: sectionsPresent,
+      evidenceSectionsMissing: sectionsMissing,
       tokenInternalApiCalled: evScanDebug.tokenInternalApiCalled ?? true,
       tokenInternalApiPath: evScanDebug.tokenInternalApiPath ?? "/api/token",
       tokenInternalApiPayload: evScanDebug.tokenInternalApiPayload ?? { contract: tokenAddress, chain },
@@ -7351,8 +7387,6 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       tokenInternalApiReturnedKeys: evScanDebug.tokenInternalApiReturnedKeys ?? [],
       tokenInternalApiReturnedTokenFields: evScanDebug.tokenInternalApiReturnedTokenFields ?? null,
       tokenEvidenceMappedKeys: evDebug._tokenEvidenceMappedKeys ?? [],
-      evidenceSectionsPresent: sectionsPresent,
-      evidenceSectionsMissing: sectionsMissing,
       formatterUsed,
       finalAnswerType,
       // Additional proof fields retained from prior debug receipt for continuity
@@ -7361,8 +7395,6 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       appIntent: appIntent.intent,
       extractedSymbol: routed.symbol ?? resolvedSymbol ?? null,
       tokenRouteAttempted: true,
-      tokenRouteStatus: evDebug._tokenRouteStatus ?? null,
-      tokenRouteDurationMs: evDebug._tokenRouteDurationMs ?? null,
       honeypotAttempted: true,
       honeypotStatus: evDebug._honeypotStatus ?? null,
       honeypotDurationMs: evDebug._honeypotDurationMs ?? null,
@@ -7383,7 +7415,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       analysis,
       intentBadge: "token_scan",
       actions: buildRoutedActions(["Open Token Scanner", "Run LP Check"]),
-      quotaConsumed: ev.ok ?? false,
+      quotaConsumed,
       ...(clarkDebugReceipt ? { clarkDebugReceipt } : {}),
     };
   }
