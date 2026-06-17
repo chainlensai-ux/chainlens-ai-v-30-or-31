@@ -6875,14 +6875,15 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
 
   // ── Pack 1: Token Core Pipeline handlers ──────────────────────────────────────
 
-  async function fetchTokenEvidence(tokenAddress: string): Promise<TokenScanEvidence & { _tokenApiStatus?: string; _tokenApiHttpStatus?: number; _tokenScanFailureReason?: string; _tokenScanDebug?: Record<string, unknown>; _partialEvidenceUsed?: boolean; _evidenceSectionsPresent?: string[]; _evidenceSectionsMissing?: Array<{ section: string; reason: string }>; _tokenRouteStatus?: string; _tokenRouteDurationMs?: number; _honeypotStatus?: string; _honeypotDurationMs?: number }> {
+  async function fetchTokenEvidence(tokenAddress: string): Promise<TokenScanEvidence & { _tokenApiStatus?: string; _tokenApiHttpStatus?: number; _tokenScanFailureReason?: string; _tokenScanDebug?: Record<string, unknown>; _partialEvidenceUsed?: boolean; _evidenceSectionsPresent?: string[]; _evidenceSectionsMissing?: Array<{ section: string; reason: string }>; _tokenRouteStatus?: string; _tokenRouteDurationMs?: number; _honeypotStatus?: string; _honeypotDurationMs?: number; _tokenEvidenceMappedKeys?: string[] }> {
 
     // ── Branch 1: /api/token (market, holders, LP, contract flags) ──
     const tokenRouteStart = Date.now();
     let tokenData: { ok: boolean; status: number; json: unknown } | null = null;
     let tokenRouteAborted = false;
     let tokenRouteNetworkError = false;
-    const tokenFetchPromise = callInternalApi(origin, "/api/token", { contract: tokenAddress, chain: chain ?? "base" }, authHeader ?? undefined, verifiedPlan)
+    const tokenInternalApiPayload = { contract: tokenAddress, chain: chain ?? "base", ...(clarkDebugMode ? { debug: true } : {}) };
+    const tokenFetchPromise = callInternalApi(origin, "/api/token", tokenInternalApiPayload, authHeader ?? undefined, verifiedPlan)
       .then((r) => { tokenData = r; return r; })
       .catch((e: unknown) => {
         const msg = e instanceof Error ? e.message : String(e);
@@ -6913,6 +6914,24 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     // Cast to work around TypeScript's narrowing of variables assigned inside .then() callbacks
     const _td = tokenData as { ok: boolean; status: number; json: unknown } | null;
     const _hp = securitySim as (Awaited<ReturnType<typeof fetchHoneypotSecurity>> | null);
+
+    // Hard proof fields (Task 1/Clark Pack 1 audit): record exactly what was sent/received
+    // on the /api/token internal call, independent of downstream evidence-mapping logic.
+    const tokenInternalApiCalled = true;
+    const tokenInternalApiStatus = _td?.status ?? 0;
+    const tokenInternalApiOk = _td?.ok === true;
+    const tokenInternalApiReturnedKeys = (_td?.json && typeof _td.json === "object") ? Object.keys(_td.json as Record<string, unknown>) : [];
+    const _tdJson = (_td?.json && typeof _td.json === "object") ? _td.json as Record<string, unknown> : {};
+    const tokenInternalApiReturnedTokenFields = {
+      hasName: typeof _tdJson.name === "string",
+      hasSymbol: typeof _tdJson.symbol === "string",
+      hasPriceUsd: typeof _tdJson.priceUsd === "number",
+      hasLiquidityUsd: typeof _tdJson.liquidityUsd === "number",
+      hasSections: typeof _tdJson.sections === "object" && _tdJson.sections !== null,
+      hasSecurity: typeof _tdJson.security === "object" && _tdJson.security !== null,
+      hasLpControl: typeof _tdJson.lpControl === "object" && _tdJson.lpControl !== null,
+      hasHolderDistribution: typeof _tdJson.holderDistribution === "object" && _tdJson.holderDistribution !== null,
+    };
 
     // ── Derive per-branch status ──
     const tokenApiOk = _td?.ok === true;
@@ -7014,6 +7033,14 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     // ── Build debug object ──
     const tokenScanDebug: Record<string, unknown> = {
       tokenScanAttempted: true,
+      tokenInternalApiCalled,
+      tokenInternalApiPath: "/api/token",
+      tokenInternalApiPayload,
+      tokenInternalApiStatus,
+      tokenInternalApiDurationMs: tokenRouteDurationMs,
+      tokenInternalApiOk,
+      tokenInternalApiReturnedKeys,
+      tokenInternalApiReturnedTokenFields,
       requestUrlPath: "/api/token",
       method: "POST",
       chain: chain ?? "base",
@@ -7048,6 +7075,15 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
 
     const finalTokenRouteStatus = noPoolData ? "no_pool_data" : tokenRouteStatus;
 
+    // Keys of TokenScanEvidence that actually received real (non-null) mapped data —
+    // proves the formatter-facing object, not just the raw /api/token payload, carries evidence.
+    const tokenEvidenceMappedKeys: string[] = [];
+    if (tokenJson || hasHoneypot) tokenEvidenceMappedKeys.push("token");
+    if (hasMarket) tokenEvidenceMappedKeys.push("market");
+    if (hasHolders) tokenEvidenceMappedKeys.push("holders");
+    if (hasHoneypot || hasContractFlags) tokenEvidenceMappedKeys.push("security");
+    if (hasLp) tokenEvidenceMappedKeys.push("lpControl");
+
     return {
       ok: evidenceOk,
       token: (tokenJson || hasHoneypot) ? {
@@ -7070,7 +7106,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         status: typeof holdersSection.status === "string" ? holdersSection.status : (tokenRouteFailed ? "timed out" : "unavailable"),
       },
       security: {
-        honeypot: _hp?.honeypot ?? (typeof tSectSecurity.honeypot === "boolean" ? tSectSecurity.honeypot : (typeof tSecSim.isHoneypot === "boolean" ? tSecSim.isHoneypot : (typeof hp.isHoneypot === "boolean" ? hp.isHoneypot : null))),
+        honeypot: _hp?.honeypot ?? (typeof tSectSecurity.honeypot === "boolean" ? tSectSecurity.honeypot : (typeof tSecSim.honeypot === "boolean" ? tSecSim.honeypot : null)),
         buyTax: _hp?.buyTax ?? (typeof tSectSecurity.buyTax === "number" ? tSectSecurity.buyTax : (typeof tSecSim.buyTax === "number" ? tSecSim.buyTax : (typeof hp.buyTax === "number" ? hp.buyTax : null))),
         sellTax: _hp?.sellTax ?? (typeof tSectSecurity.sellTax === "number" ? tSectSecurity.sellTax : (typeof tSecSim.sellTax === "number" ? tSecSim.sellTax : (typeof hp.sellTax === "number" ? hp.sellTax : null))),
         ownerRenounced: typeof tDevOwnership.isRenounced === "boolean" ? tDevOwnership.isRenounced : null,
@@ -7099,6 +7135,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       _tokenRouteDurationMs: tokenRouteDurationMs,
       _honeypotStatus: honeypotStatus,
       _honeypotDurationMs: honeypotDurationMs,
+      _tokenEvidenceMappedKeys: tokenEvidenceMappedKeys,
     };
   }
 
@@ -7296,13 +7333,32 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     });
     updateMemIntent(sessionMem, "token_analysis");
 
+    const evScanDebug = (evDebug._tokenScanDebug ?? {}) as Record<string, unknown>;
+    const finalAnswerType: string = ev.ok && !partialEvidenceUsed ? "full_token_read" : !totalFailure ? "partial_token_read" : "token_read_failed";
+
     const clarkDebugReceipt = clarkDebugMode ? {
       routeHint,
+      intentBadge: "token_scan",
+      selectedChain: chain,
+      extractedAddress: tokenAddress,
+      tokenScanAttempted: true,
+      tokenInternalApiCalled: evScanDebug.tokenInternalApiCalled ?? true,
+      tokenInternalApiPath: evScanDebug.tokenInternalApiPath ?? "/api/token",
+      tokenInternalApiPayload: evScanDebug.tokenInternalApiPayload ?? { contract: tokenAddress, chain },
+      tokenInternalApiStatus: evScanDebug.tokenInternalApiStatus ?? null,
+      tokenInternalApiDurationMs: evScanDebug.tokenInternalApiDurationMs ?? evDebug._tokenRouteDurationMs ?? null,
+      tokenInternalApiOk: evScanDebug.tokenInternalApiOk ?? null,
+      tokenInternalApiReturnedKeys: evScanDebug.tokenInternalApiReturnedKeys ?? [],
+      tokenInternalApiReturnedTokenFields: evScanDebug.tokenInternalApiReturnedTokenFields ?? null,
+      tokenEvidenceMappedKeys: evDebug._tokenEvidenceMappedKeys ?? [],
+      evidenceSectionsPresent: sectionsPresent,
+      evidenceSectionsMissing: sectionsMissing,
+      formatterUsed,
+      finalAnswerType,
+      // Additional proof fields retained from prior debug receipt for continuity
       detectedIntent: "token_scan",
       routedIntent: routed.intent,
       appIntent: appIntent.intent,
-      selectedChain: chain,
-      extractedAddress: tokenAddress,
       extractedSymbol: routed.symbol ?? resolvedSymbol ?? null,
       tokenRouteAttempted: true,
       tokenRouteStatus: evDebug._tokenRouteStatus ?? null,
@@ -7311,9 +7367,6 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       honeypotStatus: evDebug._honeypotStatus ?? null,
       honeypotDurationMs: evDebug._honeypotDurationMs ?? null,
       partialEvidenceUsed,
-      evidenceSectionsPresent: sectionsPresent,
-      evidenceSectionsMissing: sectionsMissing,
-      formatterUsed,
       memoryUpdated: true,
       walletScanAttempted: false,
       tokenScanEndpointOrFunction: "/api/token (POST via callInternalApi)",

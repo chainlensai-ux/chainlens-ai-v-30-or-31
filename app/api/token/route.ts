@@ -7646,6 +7646,36 @@ export async function POST(req: Request) {
         stagesCompleted: [_scanStage],
         totalMs: Date.now() - _t0,
       }
+      // Hard proof receipt (Clark Pack 1 audit, Task 2): coarse per-stage status,
+      // read-only from values the pipeline already computed above — no scoring/
+      // provider/risk logic is touched here.
+      ;(responsePayload as any).tokenRouteDebug = {
+        routeReached: true,
+        method: 'POST',
+        contract,
+        chain,
+        authPassed: true,
+        cookieForwarded: Boolean(req.headers.get('cookie')),
+        authorizationForwarded: Boolean(req.headers.get('authorization')),
+        stagesStarted: ['market', 'security', 'holders', 'lp'],
+        stagesCompleted: [
+          marketStatus ? 'market' : null,
+          securityStatus ? 'security' : null,
+          holdersStatus ? 'holders' : null,
+          liquidityStatus ? 'lp' : null,
+        ].filter(Boolean),
+        marketDataAttempted: _diagMarketAttempted || _diagPoolAttempted,
+        marketDataStatus: marketStatus,
+        poolDataFound: _diagPoolCount > 0,
+        securityAttempted: true,
+        securityStatus,
+        holdersAttempted: true,
+        holdersStatus,
+        lpAttempted: true,
+        lpStatus: liquidityStatus,
+        publicResponseKeys: Object.keys(responsePayload as Record<string, unknown>),
+        totalMs: Date.now() - _t0,
+      }
     }
     return NextResponse.json(sanitizePublicTokenResponse(responsePayload as Record<string, any>, debugMode === true))
   } catch (err) {

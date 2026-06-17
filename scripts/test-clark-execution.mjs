@@ -654,4 +654,101 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(!routeFile.includes('cookie: clarkInternalCtx.cookie,') || routeFile.includes('cookie: Boolean(clarkInternalCtx.cookie)'), 'cookie exposed as boolean only')
 }
 
+// ─── Clark Pack 1 Token Core API wiring audit: hard debug receipt proof ──────
+{
+  const routeFile = fs.readFileSync(path.join(__dirname, '..', 'app', 'api', 'clark', 'route.ts'), 'utf8')
+  const tokenRouteFile = fs.readFileSync(path.join(__dirname, '..', 'app', 'api', 'token', 'route.ts'), 'utf8')
+
+  // Task 1: clarkDebugReceipt carries the exact hard-proof field names
+  for (const field of [
+    'routeHint',
+    'intentBadge',
+    'selectedChain',
+    'extractedAddress',
+    'tokenScanAttempted',
+    'tokenInternalApiCalled',
+    'tokenInternalApiPath',
+    'tokenInternalApiPayload',
+    'tokenInternalApiStatus',
+    'tokenInternalApiDurationMs',
+    'tokenInternalApiOk',
+    'tokenInternalApiReturnedKeys',
+    'tokenInternalApiReturnedTokenFields',
+    'tokenEvidenceMappedKeys',
+    'evidenceSectionsPresent',
+    'evidenceSectionsMissing',
+    'formatterUsed',
+    'finalAnswerType',
+  ]) {
+    assert.ok(routeFile.includes(field), `clarkDebugReceipt is missing hard-proof field: ${field}`)
+  }
+
+  // Debug receipt must never expose raw cookie/auth/secret values, only booleans
+  assert.ok(!/clarkDebugReceipt[\s\S]{0,2000}cookie:\s*clarkInternalCtx\.cookie[^B]/.test(routeFile), 'clarkDebugReceipt must not leak raw cookie value')
+
+  // Task 3: Clark threads its own debug flag into the /api/token payload
+  assert.ok(routeFile.includes('tokenInternalApiPayload = { contract: tokenAddress, chain: chain ?? "base", ...(clarkDebugMode ? { debug: true } : {}) }'), 'Clark forwards debug flag to /api/token payload')
+
+  // Task 4: payload shape sent to /api/token is { contract, chain } (safe fields only)
+  assert.ok(routeFile.includes('callInternalApi(origin, "/api/token", tokenInternalApiPayload'), 'fetchTokenEvidence calls /api/token with tokenInternalApiPayload')
+
+  // Task 6: field-mapping bug fix — tSecSim.isHoneypot (wrong field name) removed,
+  // correct field name (honeypot) used instead
+  assert.ok(!routeFile.includes('tSecSim.isHoneypot'), 'wrong field name tSecSim.isHoneypot removed')
+  assert.ok(routeFile.includes('tSecSim.honeypot'), 'honeypot mapping reads correct field tSecSim.honeypot')
+
+  // Task 2: /api/token emits the literal tokenRouteDebug proof shape
+  for (const field of [
+    'tokenRouteDebug',
+    'routeReached: true',
+    "method: 'POST'",
+    'authPassed: true',
+    'stagesStarted',
+    'marketDataAttempted',
+    'marketDataStatus',
+    'poolDataFound',
+    'securityAttempted',
+    'securityStatus',
+    'holdersAttempted',
+    'holdersStatus',
+    'lpAttempted',
+    'lpStatus',
+    'publicResponseKeys',
+    'totalMs',
+  ]) {
+    assert.ok(tokenRouteFile.includes(field), `/api/token tokenRouteDebug is missing field: ${field}`)
+  }
+  // No provider API keys or raw secrets in the debug block
+  assert.ok(!/tokenRouteDebug[\s\S]{0,800}apiKey/i.test(tokenRouteFile), 'tokenRouteDebug must not expose provider API keys')
+
+  // Task 7: pipeline proof via mocked evidence end-to-end through the real formatters —
+  // simulates a /api/token response with real field shapes reaching Clark's formatter.
+  const { formatTokenScanResult, classifyClarkPrompt, getClarkAddressRouteHint } = await import('../lib/server/clarkRouting.ts')
+  const smokeAddr = '0x0b3e328455c4059eeb9e3f84b5543f74e24e7e1b'
+  const smokePrompt = `scan this token ${smokeAddr} on base`
+
+  // routeHint = token, never wallet
+  assert.equal(getClarkAddressRouteHint(smokePrompt), 'token', 'smoke prompt routeHint must be token')
+  const smokeClassified = classifyClarkPrompt(smokePrompt)
+  assert.equal(smokeClassified.intent, 'token_scan', 'smoke prompt classifies as token_scan')
+  assert.equal(smokeClassified.address?.toLowerCase(), smokeAddr, 'extracted address matches exactly')
+
+  // Mocked /api/token-shaped evidence (mirrors real field names: priceUsd, liquidityUsd,
+  // sections.market/security, security.devOwnership/contractFlags, lpControl)
+  const mockTokenEvidence = {
+    ok: true,
+    token: { name: 'SmokeCoin', symbol: 'SMOKE', address: smokeAddr },
+    chain: 'Base',
+    market: { price: 0.05, change24h: 3.1, volume24h: 200_000, liquidity: 80_000, marketCap: 2_000_000 },
+    holders: { top1: 9.0, top10: 38.0, holderCount: 500 },
+    security: { honeypot: false, buyTax: 0, sellTax: 0, ownerRenounced: true, mintable: false, proxy: false, securityStatus: 'clean', riskLevel: 'low', missing: [] },
+    lpControl: { status: 'locked', reason: 'locked via protocol', confidence: 'high', poolType: 'v2' },
+    warnings: [],
+  }
+  const smokeOut = formatTokenScanResult(mockTokenEvidence)
+  assert.ok(smokeOut.startsWith('TOKEN READ'), 'mocked /api/token evidence produces TOKEN READ via formatter')
+  assert.ok(smokeOut.includes('SMOKE'), 'mapped evidence symbol reaches formatter output')
+  assert.ok(!smokeOut.toLowerCase().includes('wallet read'), 'token smoke test never produces WALLET READ')
+}
+
 console.log('test-clark-execution.mjs: all assertions passed')
