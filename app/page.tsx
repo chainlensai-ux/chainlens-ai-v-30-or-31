@@ -74,43 +74,10 @@ const FEATURES = [
     hoverBg: 'linear-gradient(145deg, rgba(139,92,246,0.06) 0%, rgba(255,255,255,0.02) 100%)',
     href: '/terminal/token-scanner',
     title: 'Analyze Base Tokens',
-    body: 'Scan contracts for price, liquidity, FDV, holder concentration, security/tax checks where available, pools, and Clark verdicts.',
+    body: 'Scan Base tokens for price, liquidity, LP control, holder concentration, security/tax checks, and dev/deployer risk.',
     icon: (
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
         <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/><path d="M11 8v6M8 11h6"/>
-      </svg>
-    ),
-  },
-  {
-    accent: '#60a5fa',
-    grad: 'linear-gradient(90deg, #3b82f6 0%, #60a5fa 100%)',
-    borderColor: 'rgba(96,165,250,0.16)',
-    hoverBorder: 'rgba(96,165,250,0.44)',
-    hoverShadow: '0 0 40px rgba(96,165,250,0.18), 0 8px 48px rgba(0,0,0,0.50)',
-    hoverBg: 'linear-gradient(145deg, rgba(96,165,250,0.06) 0%, rgba(255,255,255,0.02) 100%)',
-    href: '/terminal/liquidity',
-    title: 'Read Liquidity & Pools',
-    body: 'Review pool depth, pair routes, liquidity strength, weak pools, and missing LP-control checks before trusting a token.',
-    icon: (
-      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/>
-      </svg>
-    ),
-  },
-  {
-    accent: '#f97316',
-    grad: 'linear-gradient(90deg, #f97316 0%, #fb923c 100%)',
-    borderColor: 'rgba(249,115,22,0.16)',
-    hoverBorder: 'rgba(249,115,22,0.44)',
-    hoverShadow: '0 0 40px rgba(249,115,22,0.18), 0 8px 48px rgba(0,0,0,0.50)',
-    hoverBg: 'linear-gradient(145deg, rgba(249,115,22,0.06) 0%, rgba(255,255,255,0.02) 100%)',
-    href: '/terminal/dev-wallet',
-    title: 'Dev Wallet Detector',
-    body: 'Identify developer and deployer wallets linked to any token. Detect concentrated insider holdings before they become a risk.',
-    icon: (
-      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
-        <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
       </svg>
     ),
   },
@@ -1479,10 +1446,9 @@ export default function HomePage() {
                 cta: 'Get Started', ctaStyle: 'outline', border: 'rgba(255,255,255,0.09)', badge: null,
                 bg: 'rgba(10,10,18,0.72)', radius: '14px', pad: '20px 16px 18px', mt: '0',
                 sections: [
-                  { title: 'Token Scanner', items: ['Price, liquidity, volume, 24h change', 'Basic token info only', 'No AI verdict'] },
-                  { title: 'Liquidity Safety', items: ['Basic LP score only', 'No full LP analysis'] },
+                  { title: 'Token Scanner', items: ['Basic token and liquidity checks', 'No AI verdict'] },
                   { title: 'Clark AI', items: ['3 prompts per day'] },
-                  { title: 'Not Included', items: ['No Wallet Scanner', 'No Dev Wallet Detector', 'No Pump Alerts', 'No Whale Alerts', 'No Base Radar'] },
+                  { title: 'Not Included', items: ['No Wallet Scanner', 'No Pump Alerts', 'No Whale Alerts', 'No Base Radar'] },
                 ],
               },
               {
@@ -1491,7 +1457,7 @@ export default function HomePage() {
                 cta: 'Pay with Crypto', ctaStyle: 'gradient', border: 'rgba(139,92,246,0.55)', badge: 'MOST POPULAR',
                 bg: 'rgba(12,10,26,0.92)', radius: '14px', pad: '20px 16px 18px', mt: '-8px',
                 sections: [
-                  { title: 'Everything in Free, plus', items: ['Full Token Scanner', 'Full Liquidity Safety', 'Wallet Scanner', 'Dev Wallet Detector', 'Pump Alerts', 'Whale Alerts', 'Base Radar', 'Clark AI — 50 prompts / day'] },
+                  { title: 'Everything in Free, plus', items: ['Token security, liquidity, holder, tax, LP, and dev-risk analysis where available', 'Wallet Scanner', 'Pump Alerts', 'Whale Alerts', 'Base Radar', 'Clark AI — 50 prompts / day'] },
                 ],
               },
               {

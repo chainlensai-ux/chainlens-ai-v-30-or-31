@@ -360,12 +360,10 @@ export default function AffiliatePage() {
             </div>
             <div className="aff-tools-grid" style={{ display:'grid', gridTemplateColumns:'repeat(4,minmax(0,1fr))', gap:'12px' }}>
               {([
-                { icon:'🔍', accent:'#2DD4BF', rgb:'45,212,191',  label:'Token Scanner',       desc:'Instant contract analysis with CORTEX AI risk scoring' },
+                { icon:'🔍', accent:'#2DD4BF', rgb:'45,212,191',  label:'Token Scanner',       desc:'Price, liquidity, LP control, holder concentration, security/tax checks, and dev/deployer risk' },
                 { icon:'👛', accent:'#8b5cf6', rgb:'139,92,246',  label:'Wallet Scanner',      desc:'Deep-dive any wallet — age, activity, PnL, history' },
                 { icon:'🐋', accent:'#67e8f9', rgb:'103,232,249', label:'Whale Alerts',        desc:'Live alerts when major wallets move on Base' },
                 { icon:'🚀', accent:'#f59e0b', rgb:'245,158,11',  label:'Pump Alerts',         desc:'Early signals on emerging momentum tokens on Base' },
-                { icon:'🔬', accent:'#ec4899', rgb:'236,72,153',  label:'Dev Wallet Detector', desc:'Identify insider wallets and dev activity pre-launch' },
-                { icon:'💧', accent:'#a78bfa', rgb:'167,139,250', label:'Liquidity Safety',    desc:'Scan token liquidity depth, locks, and rug risk' },
                 { icon:'📡', accent:'#34d399', rgb:'52,211,153',  label:'Base Radar',          desc:'Live feed of new token launches across Base chain' },
                 { icon:'🤖', accent:'#2DD4BF', rgb:'45,212,191',  label:'Clark AI',            desc:'Conversational CORTEX intelligence for any onchain query' },
               ] as Array<{icon:string;accent:string;rgb:string;label:string;desc:string}>).map(({ icon, accent, rgb, label, desc }) => (

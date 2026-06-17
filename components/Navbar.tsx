@@ -23,8 +23,7 @@ const TIER_COLUMNS = [
     bg: 'rgba(236,72,153,0.10)',
     border: 'rgba(236,72,153,0.20)',
     tools: [
-      { icon: '🧪', name: 'Token Scanner',    href: '/terminal/token-scanner', note: 'Basic' },
-      { icon: '💧', name: 'Liquidity Safety', href: '/terminal/liquidity',      note: 'Basic score' },
+      { icon: '🧪', name: 'Token Scanner',    href: '/terminal/token-scanner', note: 'Basic token + liquidity checks' },
       { icon: '🤖', name: 'Clark AI',         href: '/terminal?tab=clark',      note: '5 prompts/day' },
     ],
   },
@@ -35,10 +34,8 @@ const TIER_COLUMNS = [
     bg: 'rgba(45,212,191,0.08)',
     border: 'rgba(45,212,191,0.20)',
     tools: [
-      { icon: '🧪', name: 'Token Scanner',    href: '/terminal/token-scanner', note: 'Full' },
-      { icon: '💧', name: 'Liquidity Safety', href: '/terminal/liquidity',      note: 'Full analysis' },
+      { icon: '🧪', name: 'Token Scanner',    href: '/terminal/token-scanner', note: 'Full token, liquidity, LP, holder, security, and dev-risk analysis' },
       { icon: '👛', name: 'Wallet Scanner',   href: '/terminal?tab=wallet',     note: '' },
-      { icon: '🧬', name: 'Dev Wallets',      href: '/terminal?tab=devs',       note: '' },
       { icon: '🐋', name: 'Whale Alerts',     href: '/terminal?tab=whales',     note: '' },
       { icon: '🚨', name: 'Pump Alerts',      href: '/terminal?tab=pumps',      note: '' },
       { icon: '📡', name: 'Base Radar',       href: '/terminal?tab=radar',      note: '' },
@@ -606,8 +603,6 @@ export default function Navbar() {
               {[
                 { icon: '🧪', name: 'Token Scanner',      href: '/terminal/token-scanner' },
                 { icon: '👛', name: 'Wallet Scanner',     href: '/terminal/wallet-scanner' },
-                { icon: '🧬', name: 'Dev Wallet Detector',href: '/terminal/dev-wallet' },
-                { icon: '💧', name: 'Liquidity Safety',   href: '/terminal/liquidity' },
                 { icon: '🐋', name: 'Whale Alerts',       href: '/terminal/whale-alerts' },
                 { icon: '🚨', name: 'Pump Alerts',        href: '/terminal/pump-alerts' },
                 { icon: '📡', name: 'Base Radar',         href: '/terminal/base-radar' },
