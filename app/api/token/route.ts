@@ -2376,6 +2376,12 @@ type LpDiagnostics = {
   // (lpPool) used for lpControl/lpModelProof — currently always the
   // highest-liquidity pool among canonical market pools.
   selectedPrimaryPoolStrategy: 'highest_liquidity_canonical_market_pool';
+  // Pool-candidate audit fields — explain exactly why a fallback pool was or wasn't
+  // promoted into a usable LP-verification candidate, instead of a generic no-pool reason.
+  selectedPoolPresent: boolean;
+  marketPoolPresent: boolean;
+  poolCandidateRejectionReason: string | null;
+  poolModelStatus: "confirmed" | "partial" | "unknown";
 };
 
 type LpControlRead = {
@@ -3467,19 +3473,32 @@ export async function POST(req: Request) {
     // When GeckoTerminal has no pool data, synthesize a pool from DexScreener pair address
     // so LP verification (burn/lock/team checks) can still be attempted.
     let _dsFbPoolSynthesized = false
-    if (normalizedPools.length === 0 && dexFbEarly?.pairAddress && /^0x[a-f0-9]{40}$/i.test(dexFbEarly.pairAddress)) {
-      const _dsFbDexId = dexFbEarly.dexId ?? null
-      const _dsFbType = detectPoolType(null, _dsFbDexId ?? undefined)
+    // Pool detected from market fallback, but pool contract address not verified — set when the
+    // fallback pair identifier exists but isn't a standard 20-byte EVM contract address (e.g. a
+    // Uniswap V3/V4 64-char pool ID). Surfaced to callers instead of silently dropping the pool.
+    let _dsFbPoolCandidateRejectionReason: string | null = null
+    const _dsFbPairIdRaw = typeof dexFbEarly?.pairAddress === 'string' ? dexFbEarly.pairAddress.trim().toLowerCase() : null
+    const _dsFbPairIsContractAddress = Boolean(_dsFbPairIdRaw && /^0x[a-f0-9]{40}$/.test(_dsFbPairIdRaw))
+    const _dsFbPairIsPoolId = Boolean(_dsFbPairIdRaw && !_dsFbPairIsContractAddress && /^0x[a-f0-9]{64}$/.test(_dsFbPairIdRaw))
+    if (normalizedPools.length === 0 && _dsFbPairIdRaw && (_dsFbPairIsContractAddress || _dsFbPairIsPoolId)) {
+      const _dsFbDexId = dexFbEarly!.dexId ?? null
+      let _dsFbType = detectPoolType(null, _dsFbDexId ?? undefined)
+      // A 64-char fallback pair identifier is a bytes32 pool ID (Uniswap V3/V4 style), never a
+      // contract address — it has no ERC-20 LP token, so the pool model is concentrated unless
+      // dex metadata says otherwise.
+      if (_dsFbPairIsPoolId && _dsFbType === 'unknown') _dsFbType = 'concentrated'
       normalizedPools.push({
-        address: dexFbEarly.pairAddress.toLowerCase(),
-        pairName: [dexFbEarly.baseToken?.symbol, dexFbEarly.quoteToken?.symbol].filter(Boolean).join('/') || null,
-        liquidityUsd: dexFbEarly.liquidityUsd ?? 0,
+        address: _dsFbPairIsContractAddress ? _dsFbPairIdRaw : null,
+        poolId: _dsFbPairIsPoolId ? _dsFbPairIdRaw : null,
+        poolAddressType: _dsFbPairIsContractAddress ? 'contract' : (_dsFbPairIsPoolId ? 'pool_id' : 'unknown'),
+        pairName: [dexFbEarly!.baseToken?.symbol, dexFbEarly!.quoteToken?.symbol].filter(Boolean).join('/') || null,
+        liquidityUsd: dexFbEarly!.liquidityUsd ?? 0,
         dexId: _dsFbDexId,
         dexName: normalizeDexLabel(_dsFbDexId) || null,
-        baseTokenSymbol: dexFbEarly.baseToken?.symbol ?? null,
-        quoteTokenSymbol: dexFbEarly.quoteToken?.symbol ?? null,
-        baseTokenAddress: dexFbEarly.baseToken?.address?.toLowerCase() ?? null,
-        quoteTokenAddress: dexFbEarly.quoteToken?.address?.toLowerCase() ?? null,
+        baseTokenSymbol: dexFbEarly!.baseToken?.symbol ?? null,
+        quoteTokenSymbol: dexFbEarly!.quoteToken?.symbol ?? null,
+        baseTokenAddress: dexFbEarly!.baseToken?.address?.toLowerCase() ?? null,
+        quoteTokenAddress: dexFbEarly!.quoteToken?.address?.toLowerCase() ?? null,
         poolType: _dsFbType,
         hasLpToken: (() => {
           // "aerodrome" now means Aerodrome V2 (volatile/stable) — ERC-20 LP token confirmed.
@@ -3493,9 +3512,12 @@ export async function POST(req: Request) {
           return null
         })(),
         hasDexMeta: Boolean(_dsFbDexId),
-        isValidAddress: true,
+        isValidAddress: _dsFbPairIsContractAddress,
       })
       _dsFbPoolSynthesized = true
+      if (!_dsFbPairIsContractAddress) {
+        _dsFbPoolCandidateRejectionReason = "Pool detected from market fallback, but pool contract address not verified."
+      }
     }
     // Market-fallback liquidity evidence: the secondary market read proved liquidity/volume
     // exists for this token even if no canonical on-chain pool could be selected. When this is
@@ -3829,6 +3851,12 @@ export async function POST(req: Request) {
       rpcConfigured: _rpcConfigured,
       rpcSkippedReason: _rpcSkippedReason,
       selectedPrimaryPoolStrategy: 'highest_liquidity_canonical_market_pool',
+      selectedPoolPresent: Boolean(mainPool) || _dsFbPoolSynthesized,
+      marketPoolPresent: Boolean(mainPool) || Boolean(dexFbEarly?.pairAddress),
+      poolCandidateRejectionReason: _dsFbPoolCandidateRejectionReason,
+      poolModelStatus: lpPoolType === 'unknown'
+        ? (normalizedPools.length > 0 ? 'partial' : 'unknown')
+        : 'confirmed',
     };
     let lpControl: LpControlResult = {
       status: "partial",
