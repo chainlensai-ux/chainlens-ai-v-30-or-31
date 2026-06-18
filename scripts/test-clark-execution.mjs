@@ -937,4 +937,37 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(memoryFollowupIdx > -1, 'memory-served token follow-up never consumes quota')
 }
 
+// ─── Wording polish: TOKEN SAFETY no longer mislabels missing evidence (this pass) ──
+{
+  const { formatTokenSafetyAnswer, formatTokenScanResult } = await import('../lib/server/clarkRouting.ts')
+
+  const virtualLikeEv = {
+    ok: false,
+    token: { name: 'Virtual Protocol', symbol: 'VIRTUAL', address: '0x0b3e328455c4059eeb9e3f84b5543f74e24e7e1b' },
+    market: { price: 0.5, liquidity: 4_900_000, volume24h: 97_600, change24h: null, marketCap: null },
+    holders: null,
+    lpControl: null,
+    security: { honeypot: null, buyTax: null, sellTax: null, ownerRenounced: null, mintable: null, proxy: null, missing: ['honeypot', 'buyTax', 'sellTax'] },
+    warnings: ['honeypot'],
+  }
+  const out = formatTokenSafetyAnswer(virtualLikeEv, 'Base')
+
+  // "Open Check" must never appear under a positive-sounding "Top safety signals" header
+  assert.ok(!out.includes('Top safety signals'), 'safety answer no longer has a "Top safety signals" header')
+  assert.ok(!/Top safety signals:\s*\n[^\n]*open check/i.test(out), '"Open Check" / missing evidence is never listed as a top safety signal')
+
+  assert.ok(out.includes('Visible evidence:'), 'safety answer includes a "Visible evidence" section')
+  assert.ok(out.includes('Open checks:'), 'safety answer includes an "Open checks" section')
+  assert.ok(out.includes('Not enough confirmed evidence to call it safe'), 'incomplete evidence produces the "not enough confirmed evidence" safe-call line')
+  const safeLine = out.split('\n').find(l => l.startsWith('Safe?')) ?? ''
+  assert.equal(safeLine, 'Safe? Not enough confirmed evidence to call it safe.', 'safety answer never bare-states "safe" as a fact when evidence is incomplete')
+  assert.ok(!/lp lock\/burn proof confirmed|cleaner|locked — confirmed/i.test(out), 'safety answer never fakes a clean/locked verdict when evidence is missing')
+
+  // Token scan output must not leak raw field-name tokens like "Note: honeypot"
+  const scanOut = formatTokenScanResult(virtualLikeEv, 'Base')
+  assert.ok(!scanOut.includes('Note: honeypot'), 'token scan output never prints the raw "Note: honeypot" token dump')
+  assert.ok(!scanOut.includes('Security open checks: honeypot'), 'token scan output never prints the raw "Security open checks: honeypot" dump')
+  assert.ok(scanOut.includes('Security: Open Check — honeypot simulation not returned'), 'token scan output uses the precise honeypot open-check sentence')
+}
+
 console.log('test-clark-execution.mjs: all assertions passed')

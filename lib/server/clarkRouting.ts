@@ -831,18 +831,22 @@ export function formatTokenScanResult(ev: TokenScanEvidence, chain = "Base"): st
 
   // Security
   if (sec) {
-    lines.push(`- Honeypot: ${sec.honeypot == null ? "open check" : sec.honeypot ? "YES — flagged" : "no signal found"}`);
-    lines.push(`- Buy tax: ${fmtTaxPct(sec.buyTax)} / Sell tax: ${fmtTaxPct(sec.sellTax)}`);
+    if (sec.honeypot == null) lines.push(`- Security: Open Check — honeypot simulation not returned`);
+    else lines.push(`- Honeypot: ${sec.honeypot ? "YES — flagged" : "no signal found"}`);
+    if (sec.buyTax != null || sec.sellTax != null) lines.push(`- Buy tax: ${fmtTaxPct(sec.buyTax)} / Sell tax: ${fmtTaxPct(sec.sellTax)}`);
     if (sec.mintable != null) lines.push(`- Mintable: ${sec.mintable ? "YES" : "no"}`);
     if (sec.ownerRenounced != null) lines.push(`- Ownership: ${sec.ownerRenounced ? "renounced" : "active owner"}`);
     if (sec.proxy != null) lines.push(`- Proxy: ${sec.proxy ? "YES" : "no"}`);
-    if (sec.missing && sec.missing.length > 0) lines.push(`- Security open checks: ${sec.missing.join(", ")}`);
   }
 
   const verdict = verdictLabel(ev);
   lines.push(`- Verdict: ${verdict}`);
 
-  if (ev.warnings && ev.warnings.length > 0) lines.push(`- Note: ${ev.warnings.join("; ")}`);
+  // Filter raw field-name tokens (e.g. "honeypot", "buyTax") out of the warnings dump —
+  // only surface real sentences, since those tokens are already covered by the
+  // precise Security/Open-Check lines above.
+  const sentenceWarnings = (ev.warnings ?? []).filter(w => /\s/.test(w));
+  if (sentenceWarnings.length > 0) lines.push(`- Note: ${sentenceWarnings.join("; ")}`);
 
   lines.push("");
   lines.push(`Next: Ask "is it safe", "can dev rug", "explain LP", or "why high risk"`);
@@ -898,50 +902,96 @@ export function formatTokenSafetyAnswer(ev: TokenScanEvidence, chain = "Base"): 
   const sec = ev.security;
   const h = ev.holders;
   const lp = ev.lpControl;
+  const mkt = ev.market;
   const verdict = verdictLabel(ev);
 
-  const drivers: string[] = [];
-  const missing: string[] = [];
+  // Confirmed facts (good or neutral) vs. confirmed bad evidence vs. evidence that
+  // simply was not returned. Missing evidence is never listed as a "signal" — it
+  // belongs under Open checks, not under anything that reads as reassuring.
+  const visible: string[] = [];
+  const risks: string[] = [];
+  const openChecks: string[] = [];
+  const openTopics: string[] = [];
 
-  if (sec?.honeypot === true) drivers.push("Honeypot flag detected — buy/sell simulation failed");
-  else if (sec?.honeypot === false) drivers.push("No honeypot signal found from available checks");
-  else missing.push("Honeypot simulation not run");
+  if (mkt?.liquidity != null || mkt?.volume24h != null) {
+    const parts: string[] = [];
+    if (mkt.liquidity != null) parts.push(`liquidity ${fmtUsdShort(mkt.liquidity)}`);
+    if (mkt.volume24h != null) parts.push(`volume ${fmtUsdShort(mkt.volume24h)}`);
+    visible.push(`Market: ${parts.join(" and ")} available.`);
+  }
+  if (sec?.buyTax != null || sec?.sellTax != null) {
+    visible.push(`Taxes: buy tax ${fmtTaxPct(sec?.buyTax)} / sell tax ${fmtTaxPct(sec?.sellTax)}.`);
+  }
 
-  if (lp) {
-    drivers.push(lpStatusLine(ev));
+  if (sec?.honeypot === true) {
+    risks.push("Honeypot flag detected — buy/sell simulation failed.");
+  } else if (sec?.honeypot === false) {
+    visible.push("Honeypot: no signal found from available checks.");
   } else {
-    missing.push("LP lock/burn proof not checked");
+    openChecks.push("Honeypot/security: simulation not returned.");
+    openTopics.push("honeypot/security");
+  }
+
+  if (lp?.status === "wallet_controlled" || lp?.status === "team_controlled") {
+    risks.push("LP wallet/team controlled — liquidity can be pulled.");
+  } else if (lp && lp.status && lp.status !== "open_check" && lp.status !== "unverified") {
+    visible.push(`${lpStatusLine(ev)}.`);
+  } else {
+    openChecks.push("LP proof: not confirmed.");
+    openTopics.push("LP control");
   }
 
   if (h?.top10 != null) {
-    if (h.top10 > 80) drivers.push(`Top-10 holders control ${h.top10.toFixed(1)}% of supply — high concentration`);
-    else drivers.push(`Holder concentration: top-10 at ${h.top10.toFixed(1)}%`);
+    if (h.top10 > 80) risks.push(`Top-10 holders control ${h.top10.toFixed(1)}% of supply — high concentration.`);
+    else visible.push(`Holders: top-10 at ${h.top10.toFixed(1)}%.`);
   } else {
-    missing.push("Holder concentration not confirmed");
+    openChecks.push("Holders: holder concentration not confirmed.");
+    openTopics.push("holder concentration");
   }
 
-  if (sec?.mintable === true && sec?.ownerRenounced === false) drivers.push("Owner can mint new tokens — supply risk");
-  if (sec?.ownerRenounced === true) drivers.push("Ownership renounced");
-  else if (sec?.ownerRenounced === false) missing.push("Active owner — mint/control risk not ruled out");
-  else missing.push("Ownership status open check");
-
-  if (sec?.missing && sec.missing.length > 0) missing.push(...sec.missing.filter(m => !missing.includes(m)));
-
-  const lines = [
-    `TOKEN SAFETY — ${sym} (${chain})`,
-    `Verdict: ${verdict}`,
-    "",
-    "Top safety signals:",
-    ...drivers.slice(0, 3).map((d, i) => `${i + 1}. ${d}`),
-  ];
-  if (missing.length > 0) {
-    lines.push("", "Missing checks:");
-    missing.slice(0, 3).forEach(m => lines.push(`- ${m}`));
+  if (sec?.mintable === true && sec?.ownerRenounced === false) {
+    risks.push("Owner can mint new tokens — supply risk.");
+  } else if (sec?.ownerRenounced === true) {
+    visible.push("Ownership: renounced.");
+  } else {
+    openChecks.push("Ownership/dev control: status not confirmed.");
+    openTopics.push("dev control");
   }
-  lines.push("", "Note: This is evidence-based routing, not financial advice. Verdict is based on available data only.");
+
+  const safeLine =
+    sec?.honeypot === true ? "Safe? No — honeypot detected."
+    : risks.length > 0 ? "Safe? Not safe to assume — risk signals present."
+    : openChecks.length > 0 ? "Safe? Not enough confirmed evidence to call it safe."
+    : "Safe? No confirmed red flags from available checks — always verify before buying.";
+
+  const lines = [`TOKEN SAFETY — ${sym} (${chain})`, "", `Verdict: ${verdict}`, safeLine];
+
+  if (visible.length > 0) {
+    lines.push("", "Visible evidence:");
+    visible.forEach(v => lines.push(`- ${v}`));
+  }
+  if (risks.length > 0) {
+    lines.push("", "Risk signals:");
+    risks.forEach(r => lines.push(`- ${r}`));
+  }
+  if (openChecks.length > 0) {
+    lines.push("", "Open checks:");
+    openChecks.forEach(o => lines.push(`- ${o}`));
+  }
+
+  lines.push("", "Read:");
+  if (openTopics.length > 0) {
+    lines.push(`Clark can't mark this as safe until ${openTopics.join(", ")} ${openTopics.length > 1 ? "are" : "is"} confirmed.`);
+  } else if (risks.length > 0) {
+    lines.push("Confirmed risk signals are present — this is not a safe call.");
+  } else {
+    lines.push("No confirmed red flags from available checks. This is evidence-based routing, not financial advice.");
+  }
+
   lines.push("", "CTA: Open Token Scanner / Run LP Check");
   return lines.join("\n");
 }
+
 
 export function formatDevRugCheck(ev: TokenScanEvidence, chain = "Base"): string {
   const sym = String(ev.token?.symbol ?? "?").toUpperCase();
