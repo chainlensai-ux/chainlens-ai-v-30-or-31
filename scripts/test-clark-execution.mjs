@@ -686,8 +686,8 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   // Debug receipt must never expose raw cookie/auth/secret values, only booleans
   assert.ok(!/clarkDebugReceipt[\s\S]{0,2000}cookie:\s*clarkInternalCtx\.cookie[^B]/.test(routeFile), 'clarkDebugReceipt must not leak raw cookie value')
 
-  // Task 3: Clark threads its own debug flag into the /api/token payload
-  assert.ok(routeFile.includes('tokenInternalApiPayload = { contract: tokenAddress, chain: chain ?? "base", ...(clarkDebugMode ? { debug: true } : {}), ...(wantsFullScan ? {} : { mode: "clark_fast" }) }'), 'Clark forwards debug flag and clark_fast mode to /api/token payload')
+  // Task 3: Clark threads its own debug flag and mode into the /api/token payload
+  assert.ok(routeFile.includes('tokenInternalApiPayload = { contract: tokenAddress, chain: chain ?? "base", ...(clarkDebugMode ? { debug: true } : {}), mode: wantsFastPreview ? "clark_fast" : "clark_core" }'), 'Clark forwards debug flag and clark_core/clark_fast mode to /api/token payload')
 
   // Task 4: payload shape sent to /api/token is { contract, chain } (safe fields only)
   assert.ok(routeFile.includes('callInternalApi(origin, "/api/token", tokenInternalApiPayload'), 'fetchTokenEvidence calls /api/token with tokenInternalApiPayload')
@@ -782,9 +782,11 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(routeFile.includes('const quotaConsumed = quotaEligible;'), 'token_scan quotaConsumed derives from quotaEligible')
   assert.ok(routeFile.includes('quotaConsumed,\n      ...(clarkDebugReceipt'), 'token_scan response uses the gated quotaConsumed value')
 
-  // Task 3: Clark calls /api/token with mode "clark_fast" by default (no fullScan opt)
-  assert.ok(routeFile.includes('...(wantsFullScan ? {} : { mode: "clark_fast" })'), 'fetchTokenEvidence defaults to clark_fast mode unless fullScan requested')
-  assert.ok(routeFile.includes('async function fetchTokenEvidence(tokenAddress: string, opts?: { fullScan?: boolean })'), 'fetchTokenEvidence accepts a fullScan opt-out for explicit deep/full scans')
+  // Task 3 (superseded): Clark now calls /api/token with mode "clark_core" by default —
+  // real security/LP/holders/dev evidence, not the weak market-only clark_fast preview.
+  // clark_fast is only used when the user explicitly asks for a quick preview.
+  assert.ok(routeFile.includes('mode: wantsFastPreview ? "clark_fast" : "clark_core"'), 'fetchTokenEvidence defaults to clark_core (real evidence) mode unless an explicit fast preview is requested')
+  assert.ok(routeFile.includes('async function fetchTokenEvidence(tokenAddress: string, opts?: { fullScan?: boolean; fastPreview?: boolean })'), 'fetchTokenEvidence accepts a fastPreview opt-in for explicit quick previews')
 
   // Task 3: /api/token implements mode === "clark_fast" as an early, separate lightweight branch
   assert.ok(tokenRouteFile.includes("mode: scanMode } = body;"), '/api/token reads mode from the request body')
@@ -819,13 +821,12 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(fastOut.includes('Missing evidence: holders, LP proof, dev-risk require full Token Scanner scan'), 'fast evidence output lists missing-evidence categories')
   assert.ok(!/lp.*locked|holders.*verified/i.test(fastOut), 'fast evidence never claims LP locked or holders verified without evidence')
 
-  // Task 5: explicit full/deep scan prompts route to the full /api/token path
-  assert.ok(routeFile.includes('function wantsFullTokenScan(prompt: string): boolean {'), 'wantsFullTokenScan helper exists')
-  assert.ok(routeFile.includes('const wantsFullScan = wantsFullTokenScan(prompt);'), 'token_scan reads the full-scan opt-in from the prompt')
-  for (const deepPrompt of ['deep scan this token', 'full scan this token', 'run full token scan']) {
-    assert.match(deepPrompt, /\b(deep\s*scan|full\s*scan|run\s+full\s+token\s+scan|full\s+token\s+scan)\b/i)
-  }
-  assert.ok(!/\b(deep\s*scan|full\s*scan|run\s+full\s+token\s+scan|full\s+token\s+scan)\b/i.test('scan this token 0x0b3e328455c4059eeb9e3f84b5543f74e24e7e1b on base'), 'normal scan prompt does not trigger full-scan mode')
+  // Task 1/2 (this pass): normal token_scan prompts use clark_core (real evidence) by
+  // default; only an explicit quick-preview request drops to clark_fast.
+  assert.ok(routeFile.includes('function wantsFastTokenPreview(prompt: string): boolean {'), 'wantsFastTokenPreview helper exists')
+  assert.ok(routeFile.includes('const wantsFastPreview = wantsFastTokenPreview(prompt) && !wantsFullTokenScan(prompt);'), 'token_scan reads the fast-preview opt-in from the prompt, with "full/deep scan" phrasing always winning')
+  assert.ok(!/\b(quick\s*(scan|preview|check|look)|fast\s*(scan|preview))\b/i.test('scan this token 0x0b3e328455c4059eeb9e3f84b5543f74e24e7e1b on base'), 'normal scan prompt does not trigger the fast-preview path')
+  assert.ok(/\bquick\s*scan\b/i.test('quick scan this token'), 'explicit quick-scan prompt is recognized as a fast-preview request')
 
   // Task 6: clarkDebugReceipt carries the new fast-mode/quota proof fields
   for (const field of ['tokenMode', 'tokenRouteTimedOut', 'usableEvidence', 'quotaEligible']) {
@@ -1011,6 +1012,28 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(routeFile.includes('const safetyFetchReturnedNonTaxCoreEvidence = safetyEscalationAttempted && hasNonTaxCoreSafetyEvidence(ev);'), 'escalation result is judged by non-tax core safety evidence only')
   assert.ok(routeFile.includes('const quotaConsumed = fromMemory ? false : safetyFetchReturnedNonTaxCoreEvidence;'), 'quota is only charged when the safety fetch actually returns usable non-tax safety evidence')
   assert.ok(routeFile.includes('toolsUsed: fromMemory ? ["memory"] : ["token_scan", "safety_fetch"]'), 'toolsUsed is not just ["memory"] when safety escalation runs')
+}
+
+// ─── Token Core: real evidence is the default, only an explicit timeout extension for it ──
+{
+  const fs = await import('node:fs')
+  const path = await import('node:path')
+  const routeFile = fs.readFileSync(path.join(process.cwd(), 'app/api/clark/route.ts'), 'utf8')
+  const tokenRouteFile = fs.readFileSync(path.join(process.cwd(), 'app/api/token/route.ts'), 'utf8')
+
+  // clark_core attempts security/LP/holders/dev sections (same payload shape, no opt-outs).
+  assert.ok(routeFile.includes('const wantsFullScan = !wantsFastPreview;'), 'clark_core (full evidence) is the default unless fastPreview is explicitly requested')
+
+  // Only the token-evidence call gets the extended timeout; callInternalApi keeps its
+  // original 9s default for every other caller (wallet/whale/liquidity/resolve unchanged).
+  assert.ok(routeFile.includes('const TOKEN_CORE_TIMEOUT_MS = 18000;'), 'Token Core has its own extended timeout constant')
+  assert.ok(routeFile.includes('timeoutMs: number = 9000'), 'callInternalApi keeps its original 9s default timeout for non-token-core callers')
+  assert.ok(routeFile.includes('wantsFastPreview ? 9000 : TOKEN_CORE_TIMEOUT_MS'), 'only the token-evidence call uses the extended Token Core timeout, and only when not a fast preview')
+
+  // /api/token's clark_fast branch is untouched — clark_core falls through to the same
+  // full pipeline that always ran for normal (non-clark_fast) requests, so Token Scanner
+  // itself was not rewritten.
+  assert.ok(tokenRouteFile.includes("isClarkFastMode = scanMode === 'clark_fast'"), '/api/token still only special-cases clark_fast; clark_core runs the existing full pipeline unchanged')
 }
 
 console.log('test-clark-execution.mjs: all assertions passed')

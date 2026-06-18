@@ -2696,6 +2696,18 @@ function wantsFullTokenScan(prompt: string): boolean {
   return /\b(deep\s*scan|full\s*scan|run\s+full\s+token\s+scan|full\s+token\s+scan)\b/i.test(prompt);
 }
 
+// Token Core (real security/LP/holders/dev evidence) is the default for every normal token
+// scan and follow-up. The weak clark_fast market-only preview only runs when the user
+// explicitly asks for a quick/fast preview — never as the default Token Core path.
+function wantsFastTokenPreview(prompt: string): boolean {
+  return /\b(quick\s*(scan|preview|check|look)|fast\s*(scan|preview)|just\s+(the\s+)?price|price\s+check\s+only)\b/i.test(prompt);
+}
+
+// Token Core's real security/LP/holders/dev pipeline takes longer than the 9s default
+// internal-API budget. Only this call gets the extended timeout — every other Clark
+// internal call (wallet, whale, liquidity, resolve) keeps the unchanged 9s budget.
+const TOKEN_CORE_TIMEOUT_MS = 18000;
+
 function getRpcUrlForClarkCodeCheck(chain: SupportedChain | string | undefined): string | null {
   const c = chain === "ethereum" || chain === "eth" ? "eth" : "base";
   if (c === "eth") {
@@ -2848,7 +2860,7 @@ function missingAddressReply(intent: ClarkIntent): string {
   return "I can run that, but I need a token contract first. Paste a full 0x contract and I'll analyze the available data.";
 }
 
-async function callInternalApi(origin: string, path: string, payload: Record<string, unknown>, authHeader?: string, verifiedPlan?: 'free' | 'pro' | 'elite') {
+async function callInternalApi(origin: string, path: string, payload: Record<string, unknown>, authHeader?: string, verifiedPlan?: 'free' | 'pro' | 'elite', timeoutMs: number = 9000) {
   const headers: Record<string, string> = { "Content-Type": "application/json" }
   const tok = authHeader ?? (clarkInternalCtx.authToken ? `Bearer ${clarkInternalCtx.authToken}` : undefined)
   const plan = verifiedPlan ?? clarkInternalCtx.verifiedPlan
@@ -2862,7 +2874,7 @@ async function callInternalApi(origin: string, path: string, payload: Record<str
     method: "POST",
     headers,
     body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(9000),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   const json = await res.json().catch(() => ({}));
   return { ok: res.ok, status: res.status, json };
@@ -6965,16 +6977,22 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
 
   // ── Pack 1: Token Core Pipeline handlers ──────────────────────────────────────
 
-  async function fetchTokenEvidence(tokenAddress: string, opts?: { fullScan?: boolean }): Promise<TokenScanEvidence & { _tokenApiStatus?: string; _tokenApiHttpStatus?: number; _tokenScanFailureReason?: string; _tokenScanDebug?: Record<string, unknown>; _partialEvidenceUsed?: boolean; _evidenceSectionsPresent?: string[]; _evidenceSectionsMissing?: Array<{ section: string; reason: string }>; _tokenRouteStatus?: string; _tokenRouteDurationMs?: number; _honeypotStatus?: string; _honeypotDurationMs?: number; _tokenEvidenceMappedKeys?: string[]; _tokenApiMode?: string }> {
+  // opts.fullScan is kept as a legacy alias for "use Token Core" (both now mean the same
+  // thing: real security/LP/holders/dev evidence, not the market-only fast preview).
+  // opts.fastPreview is the only way to request the weak clark_fast market-only path.
+  async function fetchTokenEvidence(tokenAddress: string, opts?: { fullScan?: boolean; fastPreview?: boolean }): Promise<TokenScanEvidence & { _tokenApiStatus?: string; _tokenApiHttpStatus?: number; _tokenScanFailureReason?: string; _tokenScanDebug?: Record<string, unknown>; _partialEvidenceUsed?: boolean; _evidenceSectionsPresent?: string[]; _evidenceSectionsMissing?: Array<{ section: string; reason: string }>; _tokenRouteStatus?: string; _tokenRouteDurationMs?: number; _honeypotStatus?: string; _honeypotDurationMs?: number; _tokenEvidenceMappedKeys?: string[]; _tokenApiMode?: string }> {
 
-    // ── Branch 1: /api/token (market, holders, LP, contract flags) ──
+    // ── Branch 1: /api/token (market, security, LP, holders, dev/contract flags) ──
     const tokenRouteStart = Date.now();
     let tokenData: { ok: boolean; status: number; json: unknown } | null = null;
     let tokenRouteAborted = false;
     let tokenRouteNetworkError = false;
-    const wantsFullScan = opts?.fullScan === true;
-    const tokenInternalApiPayload = { contract: tokenAddress, chain: chain ?? "base", ...(clarkDebugMode ? { debug: true } : {}), ...(wantsFullScan ? {} : { mode: "clark_fast" }) };
-    const tokenFetchPromise = callInternalApi(origin, "/api/token", tokenInternalApiPayload, authHeader ?? undefined, verifiedPlan)
+    // Token Core (real evidence) is the default. The weak market-only fast preview only
+    // runs when explicitly requested via opts.fastPreview.
+    const wantsFastPreview = opts?.fastPreview === true;
+    const wantsFullScan = !wantsFastPreview;
+    const tokenInternalApiPayload = { contract: tokenAddress, chain: chain ?? "base", ...(clarkDebugMode ? { debug: true } : {}), mode: wantsFastPreview ? "clark_fast" : "clark_core" };
+    const tokenFetchPromise = callInternalApi(origin, "/api/token", tokenInternalApiPayload, authHeader ?? undefined, verifiedPlan, wantsFastPreview ? 9000 : TOKEN_CORE_TIMEOUT_MS)
       .then((r) => { tokenData = r; return r; })
       .catch((e: unknown) => {
         const msg = e instanceof Error ? e.message : String(e);
@@ -7124,7 +7142,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     // ── Build debug object ──
     const tokenScanDebug: Record<string, unknown> = {
       tokenScanAttempted: true,
-      tokenMode: wantsFullScan ? "full" : "clark_fast",
+      tokenMode: wantsFullScan ? "clark_core" : "clark_fast",
       tokenInternalApiCalled,
       tokenInternalApiPath: "/api/token",
       tokenInternalApiPayload,
@@ -7228,7 +7246,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       _honeypotStatus: honeypotStatus,
       _honeypotDurationMs: honeypotDurationMs,
       _tokenEvidenceMappedKeys: tokenEvidenceMappedKeys,
-      _tokenApiMode: typeof t.mode === "string" ? t.mode : (wantsFullScan ? "full" : "clark_fast"),
+      _tokenApiMode: typeof t.mode === "string" ? t.mode : (wantsFullScan ? "clark_core" : "clark_fast"),
     };
   }
 
@@ -7356,7 +7374,11 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   if (routed.intent === "token_scan") {
     let tokenAddress = routed.address;
     let resolvedSymbol = routed.symbol;
-    const wantsFullScan = wantsFullTokenScan(prompt);
+    // Token Core (real security/LP/holders/dev evidence) is the default for every normal
+    // scan, including "deep scan"/"full scan" phrasing — those are just synonyms for the
+    // same default now. Only an explicit quick-preview request drops to clark_fast.
+    const wantsFastPreview = wantsFastTokenPreview(prompt) && !wantsFullTokenScan(prompt);
+    const wantsFullScan = !wantsFastPreview;
     if (!tokenAddress && resolvedSymbol) {
       const resolved = await resolveTokenSymbolToAddress(resolvedSymbol);
       if (!resolved) {
@@ -7380,12 +7402,12 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         quotaConsumed: false,
       };
     }
-    const ev = await fetchTokenEvidence(tokenAddress, { fullScan: wantsFullScan });
+    const ev = await fetchTokenEvidence(tokenAddress, { fastPreview: wantsFastPreview });
     const evDebug = ev as Record<string, unknown>;
     const tokenApiHttpStatus = evDebug._tokenApiHttpStatus as number | undefined;
     const partialEvidenceUsed = Boolean(evDebug._partialEvidenceUsed);
     const totalFailure = !ev.ok && !partialEvidenceUsed;
-    const tokenApiMode = (evDebug._tokenApiMode as string | undefined) ?? (wantsFullScan ? "full" : "clark_fast");
+    const tokenApiMode = (evDebug._tokenApiMode as string | undefined) ?? (wantsFullScan ? "clark_core" : "clark_fast");
     const tokenRouteTimedOut = evDebug._tokenRouteStatus === "timeout" || evDebug._honeypotStatus === "timeout";
 
     // Determine confidence for memory storage
@@ -7471,6 +7493,26 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       tokenEvidenceMappedKeys: evDebug._tokenEvidenceMappedKeys ?? [],
       formatterUsed,
       finalAnswerType,
+      tokenCoreAttempted: tokenApiMode !== "clark_fast",
+      tokenCoreStatus: evDebug._tokenRouteStatus ?? null,
+      tokenCoreDurationMs: evDebug._tokenRouteDurationMs ?? null,
+      tokenSectionsAttempted: {
+        market: true,
+        security: true,
+        lp: tokenApiMode !== "clark_fast",
+        holders: tokenApiMode !== "clark_fast",
+        dev: tokenApiMode !== "clark_fast",
+      },
+      tokenSectionsReturned: {
+        market: sectionsPresent.includes("market"),
+        security: sectionsPresent.includes("security_sim"),
+        lp: sectionsPresent.includes("lp"),
+        holders: sectionsPresent.includes("holders"),
+        dev: sectionsPresent.includes("contract_flags"),
+      },
+      tokenSectionsMissingReasons: sectionsMissing,
+      mappedSections: evDebug._tokenEvidenceMappedKeys ?? [],
+      usableCoreEvidence: usableEvidence,
       // Additional proof fields retained from prior debug receipt for continuity
       detectedIntent: "token_scan",
       routedIntent: routed.intent,
