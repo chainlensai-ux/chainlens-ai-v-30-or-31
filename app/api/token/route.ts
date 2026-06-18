@@ -22,7 +22,9 @@ import {
   classifyPoolModel,
   classifyPoolByRpc,
   computeLpExitRisk,
+  attemptConcentratedPositionProof,
   type ProofApplicability,
+  type ConcentratedPositionProof,
 } from '@/lib/server/lpProof'
 import {
   computeDisplayLpModel,
@@ -2393,7 +2395,7 @@ type LpControlRead = {
   nextAction: string;
 };
 
-function computeLpControlRead(lp: LpControlResult, pairName?: string | null, controllerAddress?: string | null): LpControlRead {
+function computeLpControlRead(lp: LpControlResult, pairName?: string | null, controllerAddress?: string | null, positionProof?: ConcentratedPositionProof | null): LpControlRead {
   const pair = pairName ? `Pair: ${pairName}` : null;
   const poolLine = pair ? ["Verification pool found", pair] : lp.poolAddressPresent ? ["Verification pool found"] : [];
   switch (lp.status) {
@@ -2443,7 +2445,10 @@ function computeLpControlRead(lp: LpControlResult, pairName?: string | null, con
         couldNotVerify: ["LP token holder distribution (V2 method N/A)", "Lock or burn status via standard ERC-20 check"],
         nextAction: "Check LP positions on-chain via the V3 position manager or a protocol-specific explorer.",
       };
-    case "concentrated_liquidity":
+    case "concentrated_liquidity": {
+      const couldNotVerify = positionProof
+        ? (positionProof.status === "verified" ? [] : positionProof.missingEvidence.length ? positionProof.missingEvidence : ["Position ownership"])
+        : ["Position verification required"];
       return {
         title: "Concentrated liquidity — protocol-specific position checks",
         meaning: "Standard ERC-20 LP-token lock/burn proof does not apply to the primary concentrated-liquidity pool. Liquidity control requires protocol-specific position checks.",
@@ -2452,11 +2457,13 @@ function computeLpControlRead(lp: LpControlResult, pairName?: string | null, con
           "Primary concentrated pool found",
           "Primary market pool selected",
           "Pool structure reviewed",
+          ...(positionProof ? [`Position proof attempted: ${positionProof.status}`] : []),
           ...(lp.secondaryLpControlSignals ? ["Secondary ERC-20 LP exposure detected"] : []),
         ],
-        couldNotVerify: ["Position verification required"],
-        nextAction: "Monitor liquidity movement through protocol-specific position checks.",
+        couldNotVerify,
+        nextAction: positionProof?.nextAction ?? "Monitor liquidity movement through protocol-specific position checks.",
       };
+    }
     case "partial":
       return {
         title: "Partial LP proof",
@@ -3870,6 +3877,7 @@ export async function POST(req: Request) {
       dexName: dexName || undefined,
       lpVerificationPoolReason: lpReason,
     };
+    let concentratedPositionProof: ConcentratedPositionProof | null = null
     let _lpGrPctDerived = false
     let _lpRpcFallbackRan = false
     let _lpGrItemCount = 0
@@ -3934,30 +3942,42 @@ export async function POST(req: Request) {
         lpControl = { ...lpControl, status: "no_pool", reason: "No pool address found from provider for LP-holder verification." };
       }
     } else if (!lpVerifyPoolPresent && _primaryConcentrated) {
-      // Market pool exists but is V3/concentrated, and no V2/Aerodrome-V2 pool found anywhere → concentrated status
+      // Market pool exists but is V3/concentrated, and no V2/Aerodrome-V2 pool found anywhere →
+      // attempt a real position/controller proof instead of stopping at "required".
+      concentratedPositionProof = await attemptConcentratedPositionProof(
+        chain as "eth" | "base", primaryPoolAddress, primaryMarketPoolId ?? lpPool?.poolId ?? null,
+        primaryMarketPoolAddressType ?? lpPool?.poolAddressType ?? "unknown", lpDexId ?? lpDexName ?? null,
+      )
       lpControl = {
         status: "concentrated_liquidity",
         confidence: "medium",
         poolType: lpPoolType,
         source: "dex_data",
-        reason: "Protocol-specific LP proof required.",
+        reason: `Position proof attempted: ${concentratedPositionProof.reason}`,
         evidence: [
           `Market pool: ${marketPair} (${lpPoolType})`,
           `pool=${primaryPoolAddress ?? primaryMarketPoolId ?? lpPool?.poolId ?? "unknown"}`,
           `dex=${lpDexId ?? lpDexName ?? "unknown"}`, `poolType=${lpPoolType}`,
+          ...concentratedPositionProof.evidence,
         ],
       };
     } else if (lpVerifyPoolPresent && lpVerifyPool?.hasLpToken === false) {
-      // LP verification pool has no ERC20 LP token (V3/CL NFT, incl. Aerodrome Slipstream) — burn/lock proof not applicable
+      // LP verification pool has no ERC20 LP token (V3/CL NFT, incl. Aerodrome Slipstream) — burn/lock
+      // proof not applicable; attempt a real position/controller proof instead of stopping at "required".
+      concentratedPositionProof = await attemptConcentratedPositionProof(
+        chain as "eth" | "base", lpVerifyPoolAddress, lpVerifyPool?.poolId ?? null,
+        lpVerifyPool?.poolAddressType ?? "unknown", lpDexId ?? lpDexName ?? null,
+      )
       lpControl = {
         status: 'concentrated_liquidity',
         confidence: 'medium',
         poolType: _lpProofType,
         source: 'dex_data',
-        reason: 'Protocol-specific LP proof required.',
+        reason: `Position proof attempted: ${concentratedPositionProof.reason}`,
         evidence: [
           `Market pool: ${marketPair} (${_lpProofType})`,
           `pool=${_lpAddrSnippet}`, `dex=${lpDexId ?? lpDexName ?? 'unknown'}`, `hasLpToken=false`,
+          ...concentratedPositionProof.evidence,
         ],
       };
     } else if (_lpProofType === "unknown") {
@@ -6015,7 +6035,7 @@ export async function POST(req: Request) {
     ].join(' | ')
     const lpControllerIntel = buildLpControllerIntel({
       lpControl: { ...lpControl, lpController, lpControllerType, proofApplicability: lpProofApplicability },
-      lpControlRead: computeLpControlRead(lpControl, String(lpPool?.pairName ?? ""), lpControllerAddress),
+      lpControlRead: computeLpControlRead(lpControl, String(lpPool?.pairName ?? ""), lpControllerAddress, concentratedPositionProof),
       selectedPool: {
         pair: _primaryPair ?? ([ _dexFb?.baseToken?.symbol, _dexFb?.quoteToken?.symbol ].filter(Boolean).join('/') || null),
         address: lpPoolAddress ?? _dexFb?.pairAddress ?? null,
@@ -6029,6 +6049,7 @@ export async function POST(req: Request) {
       lpEvidenceGaps,
       lpMeta: { teamPercent: lpDiagnostics.teamPercent },
       lpDataMode: lpDataModePublic,
+      concentratedPositionProof,
     })
     const lpMovementWatch = buildLpMovementWatch({
       chain,
@@ -7046,7 +7067,7 @@ export async function POST(req: Request) {
       analysis: resolvedAnalysis,
       lpControl: { ...lpControl, canonicalStatus: toCanonical(lpControl.status), rawLpState: lpControl.status, rawState: lpControl.status, lpController, lpControllerType },
       lpStatus: (lpControl.status === 'error' || lpControl.status === 'insufficient_data') ? 'partial' : lpControl.status,
-      lpControlRead: computeLpControlRead(lpControl, String(lpPool?.pairName ?? ""), lpControllerAddress),
+      lpControlRead: computeLpControlRead(lpControl, String(lpPool?.pairName ?? ""), lpControllerAddress, concentratedPositionProof),
       lpLockStatus,
       lpLockAmount,
       lpUnlockTime,
@@ -7067,6 +7088,7 @@ export async function POST(req: Request) {
       liquidityDepthRisk,
       lpEvidenceSummary,
       lpControllerIntel,
+      concentratedPositionProof,
       lpMovementWatch,
       lpLockBurnIntel,
       lpUnlockTimeline,
@@ -7174,7 +7196,7 @@ export async function POST(req: Request) {
             lpController,
             lpControllerType,
           },
-          lpControlRead: computeLpControlRead(lpControl, String(lpPool?.pairName ?? ""), lpControllerAddress),
+          lpControlRead: computeLpControlRead(lpControl, String(lpPool?.pairName ?? ""), lpControllerAddress, concentratedPositionProof),
           lpMeta: {
             v2PoolCandidatesCount: lpDiagnostics.v2PoolCandidatesCount,
             protocolPoolCandidatesCount: lpDiagnostics.protocolPoolCandidatesCount,

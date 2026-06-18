@@ -20,6 +20,16 @@ export interface LpControllerIntelInput {
   lpEvidenceGaps?: Array<{ label?: unknown }> | null
   lpMeta?: Record<string, unknown> | null
   lpDataMode?: string | null
+  /** Real attempted position/controller proof for concentrated-liquidity pools (V3/V4/etc) —
+   * when present, this is the authoritative source for the controller label/summary instead of
+   * a static "Position verification required" placeholder. */
+  concentratedPositionProof?: {
+    status: 'verified' | 'partial' | 'not_found' | 'not_supported' | 'failed' | 'open_check'
+    topPositionOwner?: string | null
+    topPositionOwnerType?: string | null
+    controllerRisk?: string | null
+    reason?: string | null
+  } | null
 }
 
 export interface LpControllerIntel {
@@ -41,6 +51,9 @@ export interface LpControllerIntel {
   signals: string[]
   evidenceGaps: string[]
   nextActions: string[]
+  /** Concise label for the Control Proof UI field — reflects the real attempted position-proof
+   * result for concentrated pools instead of a static "Position verification required". */
+  controlProofLabel: string
 }
 
 function asString(value: unknown): string | null {
@@ -82,6 +95,29 @@ function normalizeControllerType(value: unknown, status: string | null): string 
   if (status === 'protocol' || status === 'protocol_managed') return 'protocol'
   if (status === 'concentrated_liquidity') return 'concentrated_liquidity'
   return 'unknown'
+}
+
+// Renders the Control Proof UI line from a real attempted concentrated-liquidity
+// position-proof result, never the static "Position verification required" placeholder.
+function concentratedControlProofLabel(proof: LpControllerIntelInput['concentratedPositionProof']): string {
+  if (!proof) return 'Position verification required'
+  switch (proof.status) {
+    case 'verified': {
+      const who = proof.topPositionOwner ?? proof.topPositionOwnerType ?? 'a resolved controller'
+      return `Verified — top position controlled by ${who}`
+    }
+    case 'partial':
+      return 'Partial — pool confirmed, but position ownership could not be fully resolved.'
+    case 'not_supported':
+      return 'Not Supported — Uniswap V4 position lookup not available in current provider path.'
+    case 'not_found':
+      return 'Open Check — pool confirmed with zero active liquidity; no position to attribute ownership to.'
+    case 'failed':
+      return 'Open Check — position proof attempt failed; no position ownership evidence returned.'
+    case 'open_check':
+    default:
+      return 'Open Check — no position ownership evidence returned.'
+  }
 }
 
 function controllerLabel(type: string): string {
@@ -257,6 +293,9 @@ export function buildLpControllerIntel(input: LpControllerIntelInput): LpControl
     signals,
     evidenceGaps,
     nextActions,
+    controlProofLabel: status === 'concentrated_liquidity'
+      ? concentratedControlProofLabel(input.concentratedPositionProof)
+      : (controlProof === 'confirmed' ? 'Confirmed' : controlProof === 'not_applicable' ? 'Not Applicable' : 'Open Check'),
   }
 }
 

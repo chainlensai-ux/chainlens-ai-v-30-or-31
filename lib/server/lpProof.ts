@@ -870,6 +870,11 @@ function _rpcResolved(hex: string | null): boolean {
   return typeof hex === "string" && hex !== "0x" && hex.length > 2;
 }
 
+function hexToBigInt(hex: string | null): bigint | null {
+  if (!hex || !/^0x[0-9a-fA-F]*$/.test(hex)) return null;
+  try { return BigInt(hex); } catch { return null; }
+}
+
 export async function classifyPoolByRpc(chain: LpChain, poolAddress: string | null | undefined): Promise<RpcPoolClassification> {
   const unknown: RpcPoolClassification = {
     model: "unknown", poolType: "unknown", hasLpToken: null, proofApplicable: false,
@@ -915,4 +920,153 @@ export async function classifyPoolByRpc(chain: LpChain, poolAddress: string | nu
 
   rpcPoolClassCache.set(cacheKey, { exp: Date.now() + LP_PROOF_CACHE_TTL_MS, data: result });
   return result;
+}
+
+// ── Concentrated-liquidity position/controller proof ────────────────────────
+// Attempts a real protocol-specific verification for V3/V4-style concentrated pools
+// instead of stopping at "Position verification required". Uses only the existing
+// RPC path (same as classifyPoolByRpc) — no new providers. Per-position-NFT
+// ownership requires subgraph/event-indexer data this codebase does not have, so
+// this never claims "verified" ownership; it reports exactly what was attempted
+// and why individual position ownership could not be resolved further.
+export type ConcentratedPositionProofStatus = "verified" | "partial" | "not_found" | "not_supported" | "failed" | "open_check";
+export type ConcentratedPoolModel = "uniswap_v3" | "uniswap_v4" | "aerodrome" | "slipstream" | "unknown";
+
+export interface ConcentratedPositionProof {
+  status: ConcentratedPositionProofStatus;
+  poolModel: ConcentratedPoolModel;
+  poolAddress: string | null;
+  positionManager: string | null;
+  positionCount: number | null;
+  topPositionOwner: string | null;
+  topPositionOwnerType: "wallet" | "locker" | "protocol" | "unknown" | null;
+  topPositionSharePercent: number | null;
+  lockedOrManagedPositionFound: boolean | null;
+  controllerRisk: "low" | "watch" | "caution" | "high" | "unknown";
+  confidence: "high" | "medium" | "low";
+  reason: string;
+  evidence: string[];
+  missingEvidence: string[];
+  nextAction: string;
+}
+
+function _classifyConcentratedPoolModel(dexId: string | null | undefined, poolAddressType: "contract" | "pool_id" | "unknown"): ConcentratedPoolModel {
+  const d = (dexId ?? "").toLowerCase();
+  if (/aerodrome|velodrome/.test(d)) return /slipstream/.test(d) ? "slipstream" : "aerodrome";
+  if (/uniswap/.test(d)) {
+    if (/v4/.test(d)) return "uniswap_v4";
+    if (/v3/.test(d)) return "uniswap_v3";
+    // No version in dex metadata — a 32-byte poolId (no per-pool contract address) is the
+    // V4-singleton shape; a real pool contract address is the V3 shape.
+    return poolAddressType === "pool_id" ? "uniswap_v4" : "uniswap_v3";
+  }
+  return poolAddressType === "pool_id" ? "uniswap_v4" : "unknown";
+}
+
+export async function attemptConcentratedPositionProof(
+  chain: LpChain,
+  poolAddress: string | null | undefined,
+  poolId: string | null | undefined,
+  poolAddressType: "contract" | "pool_id" | "unknown",
+  dexId: string | null | undefined,
+): Promise<ConcentratedPositionProof> {
+  const poolModel = _classifyConcentratedPoolModel(dexId, poolAddressType);
+  const base: Omit<ConcentratedPositionProof, "status" | "reason" | "evidence" | "missingEvidence" | "nextAction" | "confidence"> = {
+    poolModel,
+    poolAddress: poolAddress ?? null,
+    positionManager: null,
+    positionCount: null,
+    topPositionOwner: null,
+    topPositionOwnerType: null,
+    topPositionSharePercent: null,
+    lockedOrManagedPositionFound: null,
+    controllerRisk: "unknown",
+  };
+
+  if (!poolAddress && !poolId) {
+    return {
+      ...base,
+      status: "open_check",
+      confidence: "low",
+      reason: "No pool address or pool ID is available to attempt a position-proof check.",
+      evidence: [],
+      missingEvidence: ["poolAddress", "poolId"],
+      nextAction: "Re-scan once a pool address or pool ID is indexed for this token.",
+    };
+  }
+
+  // Uniswap V4 (and any pool only identified by a 32-byte poolId): pools are sub-accounts of a
+  // singleton PoolManager contract, not standalone contracts. Per-position ownership for V4 is
+  // only resolvable through PoolManager mint/burn event indexing (a subgraph), which is not part
+  // of the existing RPC/market provider path here — so this is a real attempted check that
+  // correctly reports "not supported", rather than fabricating an owner.
+  if (!poolAddress || poolAddressType === "pool_id") {
+    return {
+      ...base,
+      status: "not_supported",
+      confidence: "low",
+      reason: "Uniswap V4 position lookup not available in current provider path.",
+      evidence: poolId ? [`poolId=${poolId}`] : [],
+      missingEvidence: ["positionManager", "topPositionOwner", "positionCount"],
+      nextAction: "Verify position ownership via the protocol's official position-manager UI or a subgraph indexer.",
+    };
+  }
+
+  // V3-style pool with a real contract address: attempt a live RPC probe of the pool itself.
+  // liquidity()/slot0() confirm the pool is active on-chain, but do not expose per-position-NFT
+  // ownership (that requires NonfungiblePositionManager transfer/mint event history) — so the
+  // result here is honestly "partial", not "verified".
+  const call = (selector: string) => lpRpcCall(chain, "eth_call", [{ to: poolAddress.toLowerCase(), data: selector }, "latest"]);
+  let liquidityHex: string | null = null;
+  let slot0Hex: string | null = null;
+  try {
+    [liquidityHex, slot0Hex] = await Promise.all([call("0x1a686502"), call("0x3850c7bd")]);
+  } catch {
+    return {
+      ...base,
+      status: "failed",
+      confidence: "low",
+      reason: "RPC call to the pool contract failed while attempting position-proof verification.",
+      evidence: [],
+      missingEvidence: ["liquidity", "slot0", "topPositionOwner"],
+      nextAction: "Retry the scan; if this persists the RPC provider may be unavailable for this chain.",
+    };
+  }
+  const liquidityResolved = _rpcResolved(liquidityHex);
+  const slot0Resolved = _rpcResolved(slot0Hex);
+  if (!liquidityResolved && !slot0Resolved) {
+    return {
+      ...base,
+      status: "failed",
+      confidence: "low",
+      reason: "Pool contract did not respond to liquidity()/slot0() probes — position proof could not be attempted.",
+      evidence: [],
+      missingEvidence: ["liquidity", "slot0", "topPositionOwner"],
+      nextAction: "Retry the scan; if this persists the pool may use a non-standard interface.",
+    };
+  }
+  const liquidityBig = liquidityResolved ? hexToBigInt(liquidityHex) : null;
+  if (liquidityResolved && liquidityBig === BigInt(0)) {
+    return {
+      ...base,
+      status: "not_found",
+      confidence: "medium",
+      reason: "Pool contract confirmed on-chain, but reports zero active liquidity — no position to attribute ownership to.",
+      evidence: [`liquidity=0`],
+      missingEvidence: ["topPositionOwner", "positionCount"],
+      nextAction: "Re-check if liquidity is added to this pool; no active position currently exists.",
+    };
+  }
+  return {
+    ...base,
+    status: "partial",
+    confidence: "low",
+    reason: "Pool liquidity confirmed on-chain via RPC, but individual position-NFT ownership could not be fully resolved — that requires position-manager event indexing not available in the current provider path.",
+    evidence: [
+      liquidityResolved ? `liquidity probe: resolved (${liquidityBig != null ? liquidityBig.toString() : "nonzero"})` : `liquidity probe: unresolved`,
+      slot0Resolved ? `slot0 probe: resolved (pool active)` : `slot0 probe: unresolved`,
+    ],
+    missingEvidence: ["positionManager", "topPositionOwner", "positionCount", "topPositionSharePercent"],
+    nextAction: "Check position ownership via the protocol's official position-manager UI or a subgraph indexer.",
+  };
 }

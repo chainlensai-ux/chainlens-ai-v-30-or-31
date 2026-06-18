@@ -240,6 +240,24 @@ type ScanResult = {
     signals?: string[]
     evidenceGaps?: string[]
     nextActions?: string[]
+    controlProofLabel?: string
+  } | null
+  concentratedPositionProof?: {
+    status?: 'verified' | 'partial' | 'not_found' | 'not_supported' | 'failed' | 'open_check'
+    poolModel?: string
+    poolAddress?: string | null
+    positionManager?: string | null
+    positionCount?: number | null
+    topPositionOwner?: string | null
+    topPositionOwnerType?: 'wallet' | 'locker' | 'protocol' | 'unknown' | null
+    topPositionSharePercent?: number | null
+    lockedOrManagedPositionFound?: boolean | null
+    controllerRisk?: 'low' | 'watch' | 'caution' | 'high' | 'unknown'
+    confidence?: 'high' | 'medium' | 'low'
+    reason?: string
+    evidence?: string[]
+    missingEvidence?: string[]
+    nextAction?: string
   } | null
   lpMovementWatch?: {
     status?: string
@@ -4980,9 +4998,20 @@ export default function TerminalTokenScanner() {
                       : migrationRisk === 'Elevated' ? '#f87171'
                       : migrationRisk === 'Monitor' ? '#fbbf24'
                       : undefined
+                    const cpp = result.concentratedPositionProof
+                    const controlProofFromAttempt = (() => {
+                      if (!protocolPosition || !cpp) return null
+                      switch (cpp.status) {
+                        case 'verified': return `Verified — top position controlled by ${cpp.topPositionOwner ?? cpp.topPositionOwnerType ?? 'unknown'}`
+                        case 'partial': return 'Partial — pool confirmed, but position ownership could not be fully resolved.'
+                        case 'not_supported': return 'Not Supported — Uniswap V4 position lookup not available in current provider path.'
+                        case 'not_found': return 'Open Check — pool confirmed with zero active liquidity.'
+                        default: return 'Open Check — no position ownership evidence returned.'
+                      }
+                    })()
                     const controlProof = result.lpControl?.status === 'team_controlled' || result.lpControl?.proofStatus === 'verified'
                       ? 'Confirmed'
-                      : protocolPosition ? 'Position verification required' : 'Open Check'
+                      : protocolPosition ? (controlProofFromAttempt ?? 'Position verification required') : 'Open Check'
                     const lockBurnProof = result.lpControl?.lockStatus === 'locked' || result.lpControl?.burnStatus === 'burned'
                       ? 'Confirmed'
                       : notApplicable ? 'Protocol-specific' : 'Open Check'
@@ -5005,11 +5034,26 @@ export default function TerminalTokenScanner() {
                       : lpStatus === 'partial' ? 'Partial Evidence'
                       : lpStatus === 'no_pool' ? 'Open Check'
                       : cleanStatusLabel(lpStatus)
+                    // LP Control for concentrated pools mirrors the real position-proof attempt
+                    // result instead of a static "required" placeholder — keeps it consistent
+                    // with Control Proof rather than showing two contradictory "required" lines.
+                    const lpControlFromAttempt = protocolPosition && cpp
+                      ? (cpp.status === 'verified' ? 'Verified'
+                        : cpp.status === 'partial' ? 'Partial — position proof attempted, owner unresolved.'
+                        : cpp.status === 'not_supported' ? 'Not Supported'
+                        : 'Open Check')
+                      : null
                     const rows: { label: string; value: string; color?: string; note?: string }[] = [
                       { label: 'Primary Liquidity', value: primaryLiquidityModelLabel(result), color: protocolPosition ? '#c084fc' : undefined },
-                      { label: 'LP Control', value: protocolPosition ? 'Position verification required' : lpControlDisplay, color: lpControlDisplay === 'Wallet Controlled' ? '#fbbf24' : undefined, note: protocolPosition ? protocolPositionSubtext('control') : undefined },
+                      { label: 'LP Control', value: protocolPosition ? (lpControlFromAttempt ?? 'Position verification required') : lpControlDisplay, color: lpControlDisplay === 'Wallet Controlled' ? '#fbbf24' : undefined, note: protocolPosition ? protocolPositionSubtext('control') : undefined },
                       { label: 'Control Proof', value: controlProof, color: controlProof === 'Confirmed' ? '#34d399' : protocolPosition ? '#c084fc' : undefined, note: protocolPosition ? protocolPositionSubtext('control') : undefined },
                       { label: 'Lock/Burn Proof', value: lockBurnProof, color: lockBurnProof === 'Confirmed' ? '#34d399' : lockBurnProof === 'Open Check' ? '#fbbf24' : protocolPosition ? '#c084fc' : undefined, note: protocolPosition ? protocolPositionSubtext('lock') : undefined },
+                      ...(protocolPosition && cpp ? [{
+                        label: 'Position Proof',
+                        value: `Attempted — ${cpp.status === 'not_found' ? 'open check' : (cpp.status ?? 'open_check').replace('_', ' ')}`,
+                        color: cpp.status === 'verified' ? '#34d399' : cpp.status === 'partial' ? '#fbbf24' : undefined,
+                        note: `Top position owner: ${cpp.topPositionOwner ?? 'unknown'} · Controller risk: ${cpp.controllerRisk ?? 'unknown'} · Confidence: ${cpp.confidence ?? 'low'}`,
+                      }] : []),
                       { label: 'Exit Risk', value: exitRisk, color: exitRisk === 'Low' ? '#34d399' : exitRisk === 'Watch' || exitRisk === 'Monitor' ? '#fbbf24' : exitRisk === 'High' ? '#f87171' : undefined },
                       { label: 'Liquidity Depth', value: liquidityDepth, color: liquidityDepth === 'Deep' ? '#34d399' : liquidityDepth === 'Moderate' ? '#fbbf24' : liquidityDepth === 'Thin' ? '#f87171' : undefined },
                       { label: 'Migration Risk', value: migrationRisk, color: migrationRiskColor },
@@ -5064,7 +5108,7 @@ export default function TerminalTokenScanner() {
                           ['Controller', result.lpControllerIntel.controller ?? result.lpControllerIntel.controllerLabel ?? 'Open check'],
                           ['Controller Type', isProtocolPositionModel(result) ? 'Protocol Position Model' : cleanStatusLabel(result.lpControllerIntel.controllerType)],
                           ['Controller Share', isProtocolPositionModel(result) ? 'Position verification required' : result.lpControllerIntel.controllerSharePercent != null ? `${result.lpControllerIntel.controllerSharePercent.toFixed(2)}%` : 'Open Check'],
-                          ['Control Proof', isProtocolPositionModel(result) ? 'Position verification required' : cleanStatusLabel(result.lpControllerIntel.controlProof)],
+                          ['Control Proof', isProtocolPositionModel(result) ? (result.lpControllerIntel.controlProofLabel ?? 'Position verification required') : cleanStatusLabel(result.lpControllerIntel.controlProof)],
                           ['Lock/Burn Proof', isProtocolPositionModel(result) ? 'Protocol-specific' : cleanStatusLabel(result.lpControllerIntel.lockBurnProof)],
                           ['Exit Risk', cleanStatusLabel(result.lpControllerIntel.exitRisk)],
                           ['Liquidity Depth', cleanStatusLabel(result.lpControllerIntel.liquidityDepth)],
