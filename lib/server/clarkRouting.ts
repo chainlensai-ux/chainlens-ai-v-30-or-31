@@ -501,6 +501,26 @@ export function pickTopHoldingsByValue(
   return withValue.slice(0, limit);
 }
 
+/** Clean display label for an active-chain code — display-only, never changes the
+ * underlying chain value used for routing/links. */
+export function chainDisplayName(chain: string): string {
+  const c = chain.toLowerCase();
+  if (c === "base") return "Base";
+  if (c === "eth" || c === "ethereum") return "Ethereum";
+  if (c === "bnb" || c === "bsc") return "BNB";
+  if (c === "polygon" || c === "matic") return "Polygon";
+  return chain.length > 0 ? chain.charAt(0).toUpperCase() + chain.slice(1).toLowerCase() : chain;
+}
+
+/** Maps the internal PnL quality label to the public "PnL status: <X>" wording. Never
+ * implies profitable/unprofitable — only reports whether PnL evidence was resolved. */
+function pnlStatusLabel(label: string): "Verified" | "Partial" | "Unavailable" | "Open Check" {
+  if (label === "ok") return "Verified";
+  if (label === "unavailable") return "Unavailable";
+  if (label === "open_check") return "Open Check";
+  return "Partial";
+}
+
 function describePnlQuality(result: WalletApiResult): { label: string; reason: string } {
   const health = result.walletScanHealth;
   const coverage = result.walletModuleCoverage;
@@ -562,7 +582,7 @@ export function formatWalletScanResult(address: string, result: WalletApiResult 
   const holdings = result.holdings ?? [];
   const topHoldings = pickTopHoldingsByValue(holdings, 5);
   const chains = result.chainsActive && result.chainsActive.length > 0
-    ? result.chainsActive.join(", ")
+    ? result.chainsActive.map(chainDisplayName).join(", ")
     : "Base";
   const totalValue = result.totalValue != null ? fmtUsdShort(result.totalValue) : "unverified";
 
@@ -588,7 +608,7 @@ export function formatWalletScanResult(address: string, result: WalletApiResult 
     ? topHoldings.map((h) => {
         const sym = String(h.symbol ?? "?").toUpperCase();
         const val = fmtUsdShort(h.value);
-        const chain = h.chain ? ` [${h.chain}]` : "";
+        const chain = h.chain ? ` [${chainDisplayName(h.chain)}]` : "";
         return `${sym}${chain} (${val})`;
       }).join(", ")
     : "none returned with value";
@@ -605,8 +625,8 @@ export function formatWalletScanResult(address: string, result: WalletApiResult 
 
   // Task 2: never show "PnL coverage: not requested" after a wallet scan involving PnL/deep scan.
   const pnlQ = describePnlQuality(result);
-  lines.push(`- PnL ${pnlQ.label}`);
-  lines.push(`- PnL reason: ${pnlQ.reason}`);
+  lines.push(`- PnL status: ${pnlStatusLabel(pnlQ.label)}`);
+  lines.push(`- Reason: ${pnlQ.reason}`);
   lines.push(`- Historical recovery status: ${String(result.walletHistoricalCoverageSummary?.status ?? result.historicalRecoveryStatus ?? (deep ? "open check" : "portfolio preview"))}`);
   if (result.walletTokenPnlSummary) lines.push(`- walletTokenPnlSummary: ${String(result.walletTokenPnlSummary.status ?? result.walletTokenPnlSummary.reason ?? JSON.stringify(result.walletTokenPnlSummary))}`);
   if (result.walletTradeStatsSummary) lines.push(`- walletTradeStatsSummary: ${String(result.walletTradeStatsSummary.status ?? JSON.stringify(result.walletTradeStatsSummary))}`);

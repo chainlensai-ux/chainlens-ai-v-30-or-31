@@ -559,7 +559,7 @@ type ClarkToolPlan = {
   };
 };
 
-type ClarkSource = "casual" | "feature_context" | "tool_call" | "fallback" | "token_core";
+type ClarkSource = "casual" | "feature_context" | "tool_call" | "fallback" | "token_core" | "wallet_scanner_runner";
 type ClarkReplyMode =
   | "casual_help"
   | "general_market"
@@ -6386,7 +6386,19 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const analysis = formatWalletScanResult(walletAddress, mappedResult, deepScan);
     updateMemWallet(sessionMem, walletAddress, null, analysis, mappedResult as Record<string, unknown>, extractPnlEvidence(mappedResult as Record<string, unknown>));
     updateMemIntent(sessionMem, "wallet_analysis");
-    return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_scan", toolsUsed: ["wallet_scanner_runner"], ui: { intentBadge: deepScan ? 'Wallet Deep Scan' : 'Wallet Scan', actions: [{ label: 'Open Wallet Scanner', href }, { label: 'Run Deep Scan', href: walletScannerDeepLink(walletAddress, true) }] }, analysis };
+    // Usable wallet evidence (mappedResult.ok) means the runner actually returned a real
+    // WALLET READ — never report this as a generic "fallback" source, and only consume
+    // quota when there is real evidence to show for it.
+    const walletActions = [{ label: 'Open Wallet Scanner', href }, { label: 'Run Deep Scan', href: walletScannerDeepLink(walletAddress, true) }];
+    return {
+      feature: "clark-ai", chain, mode: "analysis", intent: "wallet_scan",
+      toolsUsed: ["wallet_scanner_runner"],
+      source: mappedResult.ok ? "wallet_scanner_runner" : "fallback",
+      actions: walletActions,
+      quotaConsumed: mappedResult.ok,
+      ui: { intentBadge: deepScan ? 'Wallet Deep Scan' : 'Wallet Scan', actions: walletActions },
+      analysis,
+    };
   }
   if (appIntent.intent === 'liquidity_scan' && appIntent.address) {
     const kind = await classifyAddressForClark(appIntent.address, chain);
@@ -9290,7 +9302,7 @@ export async function POST(req: NextRequest) {
       void addrLine; void symLine;
       actions = ["Open Token Scanner"];
     } else if (isWalletFallback) {
-      intentBadge = "wallet_scan";
+      intentBadge = "Wallet Scan";
       safeMsg = [
         `WALLET READ — ${isTimeout ? "timed out" : "could not complete"}`,
         `- Reason: Wallet scan ${isTimeout ? "timed out before data could be returned" : "failed: " + errMsg}.`,
@@ -9389,11 +9401,30 @@ function normalizeApiReplyShape(result: unknown, body: ClarkRequestBody) {
       ? (body.feature === "clark-ai" ? "feature_context" : "tool_call")
       : (isCasualAssistantPrompt(body.prompt ?? "") ? "casual" : "fallback"));
 
-  const intentBadge = typeof obj.intentBadge === "string" ? obj.intentBadge
-    : (typeof obj.intent === "string" ? obj.intent : (body.mode ?? body.feature ?? "unknown"));
-  const actions = Array.isArray(obj.actions) && obj.actions.length > 0
-    ? buildRoutedActions(obj.actions as ClarkAction[])
-    : buildRoutedActions(["Refresh Market Data"]);
+  // Prefer a handler-provided ui.intentBadge (a clean human label like "Wallet Scan") so the
+  // public/top-level intentBadge never disagrees with the one already shown in ui.intentBadge —
+  // falling back to the raw internal intent only when no human label was set.
+  const uiIntentBadge = (obj.ui && typeof obj.ui === "object" && typeof (obj.ui as Record<string, unknown>).intentBadge === "string")
+    ? (obj.ui as Record<string, unknown>).intentBadge as string
+    : null;
+  const intentBadge = uiIntentBadge ?? (typeof obj.intentBadge === "string" ? obj.intentBadge
+    : (typeof obj.intent === "string" ? obj.intent : (body.mode ?? body.feature ?? "unknown")));
+  // Prefer handler-provided top-level actions, then ui.actions, before falling back to the
+  // generic market-refresh CTA — a wallet-scan result must never surface "Refresh Market Data".
+  const uiActions = (obj.ui && typeof obj.ui === "object" && Array.isArray((obj.ui as Record<string, unknown>).actions))
+    ? (obj.ui as Record<string, unknown>).actions as ClarkAction[]
+    : null;
+  // Object-shaped actions (e.g. wallet CTAs: { label, href }) are a handler's final, already-built
+  // action list and must pass through verbatim — buildRoutedActions only understands the closed
+  // CLARK_ACTIONS string union and would otherwise silently drop them back to "Refresh Market Data".
+  const isObjectActionArray = (arr: unknown): arr is Array<{ label: string; href?: string }> =>
+    Array.isArray(arr) && arr.length > 0 && arr.every((a) => a && typeof a === "object" && typeof (a as Record<string, unknown>).label === "string");
+  const rawActions = (Array.isArray(obj.actions) && obj.actions.length > 0) ? obj.actions : uiActions;
+  const actions = isObjectActionArray(rawActions)
+    ? rawActions
+    : (Array.isArray(rawActions) && rawActions.length > 0
+      ? buildRoutedActions(rawActions as ClarkAction[])
+      : buildRoutedActions(["Refresh Market Data"]));
 
   return {
     ...obj,

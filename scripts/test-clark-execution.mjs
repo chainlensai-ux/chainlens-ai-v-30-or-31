@@ -195,7 +195,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(!/mUSDC \(\$0\)|APE \(\$0\)/.test(out), 'no $0 dust listed as top holdings')
   assert.ok(!out.includes('PnL coverage: not requested'), 'must not say PnL not requested after a scan')
   assert.ok(!out.includes('Activity status: not requested'), 'must not say activity not requested')
-  assert.ok(out.toLowerCase().includes('attempted: limited'), 'PnL labelled as attempted: limited')
+  assert.ok(out.includes('PnL status: Partial'), 'PnL labelled as PnL status: Partial')
 }
 
 // ─── PnL never "not requested" for deep scan either ──────────────────────────
@@ -1531,6 +1531,71 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(guardIdx >= 0 && walletCallIdx > guardIdx, 'wallet memory guard runs before wallet scan call')
   assert.ok(routeFileForWalletMemory.includes('routed.intent === "wallet_scan" && routed.address'), 'explicit new wallet address still runs wallet scan')
   assert.ok(routeFileForWalletMemory.includes('routed.intent === "token_scan"'), 'explicit token route remains available after wallet memory')
+}
+
+// ─── Wallet scan response metadata: source/actions/badge/chain/PnL polish ────
+{
+  // Successful wallet scan must report a wallet-specific source, never the generic fallback,
+  // and must build wallet CTAs (not the token/market "Refresh Market Data" action).
+  const routeFile = fs.readFileSync(path.join(__dirname, '..', 'app', 'api', 'clark', 'route.ts'), 'utf8')
+  assert.ok(routeFile.includes('source: mappedResult.ok ? "wallet_scanner_runner" : "fallback"'), 'wallet_scan handler reports source: wallet_scanner_runner on success, honest fallback on failure')
+  assert.ok(routeFile.includes("toolsUsed: [\"wallet_scanner_runner\"]"), 'wallet_scan handler keeps toolsUsed: ["wallet_scanner_runner"]')
+  assert.ok(routeFile.includes('quotaConsumed: mappedResult.ok'), 'wallet_scan handler ties quotaConsumed to usable wallet evidence')
+  assert.ok(routeFile.includes("const walletActions = [{ label: 'Open Wallet Scanner', href }, { label: 'Run Deep Scan', href: walletScannerDeepLink(walletAddress, true) }]"), 'wallet_scan handler builds the exact wallet CTA actions')
+
+  // normalizeApiReplyShape must pass object-shaped wallet CTAs through verbatim instead of
+  // silently dropping them back to "Refresh Market Data" via the closed CLARK_ACTIONS union.
+  assert.ok(routeFile.includes('isObjectActionArray'), 'normalizeApiReplyShape detects object-shaped action arrays')
+  assert.ok(routeFile.includes('? rawActions\n    : (Array.isArray(rawActions)'), 'normalizeApiReplyShape passes object-shaped actions through verbatim')
+
+  // Public top-level intentBadge must match the handler-provided ui.intentBadge (a clean human
+  // label like "Wallet Scan"), never the raw internal intent string.
+  assert.ok(routeFile.includes('const uiIntentBadge = (obj.ui && typeof obj.ui === "object"'), 'normalizeApiReplyShape prefers ui.intentBadge for the public badge')
+  assert.ok(routeFile.includes('intentBadge = "Wallet Scan";'), 'timeout/failure wallet path also uses the clean "Wallet Scan" public badge')
+
+  // The wallet_scan ClarkSource union must include the new honest source value.
+  assert.ok(routeFile.includes('"wallet_scanner_runner"'), 'ClarkSource union includes wallet_scanner_runner')
+}
+
+{
+  // Active chain display: lowercase internal chain codes render as clean title-cased labels,
+  // without altering the internal routing value.
+  const { chainDisplayName, formatWalletScanResult } = await import('../lib/server/clarkRouting.ts')
+  assert.equal(chainDisplayName('base'), 'Base')
+  assert.equal(chainDisplayName('eth'), 'Ethereum')
+  assert.equal(chainDisplayName('ethereum'), 'Ethereum')
+  assert.equal(chainDisplayName('bnb'), 'BNB')
+  assert.equal(chainDisplayName('bsc'), 'BNB')
+  assert.equal(chainDisplayName('polygon'), 'Polygon')
+  assert.equal(chainDisplayName('zora'), 'Zora', 'unknown chains title-case safely')
+
+  const out = formatWalletScanResult(addr, {
+    ok: true,
+    totalValue: 1_000,
+    holdings: [{ symbol: 'WETH', value: 1_000, chain: 'base' }],
+    chainsActive: ['base'],
+    walletScanHealth: { status: 'ok' },
+    walletModuleCoverage: { portfolio: { status: 'ok' } },
+  }, false)
+  assert.ok(out.includes('Base'), 'active chains render as Base, not lowercase base')
+  assert.ok(!/Active chains:\s*base\b/.test(out), 'active chains line never shows raw lowercase base')
+}
+
+{
+  // PnL wording: partial PnL reads "PnL status: Partial" with the cost-basis reason preserved,
+  // never implying profitable/unprofitable without verified evidence.
+  const { formatWalletScanResult } = await import('../lib/server/clarkRouting.ts')
+  const out = formatWalletScanResult(addr, {
+    ok: true,
+    totalValue: 1_000,
+    holdings: [{ symbol: 'WETH', value: 1_000, chain: 'base' }],
+    walletScanHealth: { status: 'limited_pnl', lockedModules: ['fifoPnL'] },
+    walletModuleCoverage: { portfolio: { status: 'ok' }, fifoPnL: { status: 'locked_no_closed_lots', reason: 'no_closed_lots' } },
+    walletTokenPnlSummary: { status: 'partial', reason: 'cost_basis_limited' },
+  }, false)
+  assert.ok(out.includes('PnL status: Partial'), 'PnL partial wording reads "PnL status: Partial"')
+  assert.ok(out.toLowerCase().includes('cost basis') || out.toLowerCase().includes('closed lots'), 'PnL reason still names cost basis/closed lots incomplete')
+  assert.ok(!/\bprofitable\b|\bunprofitable\b/i.test(out), 'never claims profitable/unprofitable without verified PnL evidence')
 }
 
 console.log('test-clark-execution.mjs: all assertions passed')
