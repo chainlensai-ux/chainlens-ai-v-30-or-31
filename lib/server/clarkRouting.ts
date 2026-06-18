@@ -89,7 +89,7 @@ export function isWalletComparePrompt(text: string): boolean {
 
 // Task 1 (Pack 1 hard fix): token follow-up prompts that must always resolve against
 // the last scanned token in memory, never fall through to a wallet branch.
-const TOKEN_FOLLOWUP_RE = /\b(is\s+it\s+safe|safe\?|is\s+this\s+safe|is\s+this\s+token\s+safe|should\s+i\s+buy|is\s+it\s+legit|is\s+it\s+a\s+rug|is\s+it\s+risky|can\s+(?:the\s+)?dev\s+rug|can\s+liquidity\s+be\s+pulled|is\s+lp\s+locked|is\s+liquidity\s+locked|explain\s+lp|explain\s+holders|explain\s+dev(?:\s+control)?|why\s+high\s+risk|why\s+is\s+it\s+risky|why\s+caution|why\s+open\s+check|what\s+are\s+red\s+flags|explain\s+risk|explain\s+verdict)\b/i;
+const TOKEN_FOLLOWUP_RE = /\b(is\s+it\s+safe|safe\?|is\s+this\s+safe|is\s+this\s+token\s+safe|should\s+i\s+buy|is\s+it\s+legit|is\s+it\s+a\s+rug|is\s+it\s+risky|can\s+(?:the\s+)?dev\s+rug|can\s+liquidity\s+be\s+pulled|is\s+lp\s+locked|is\s+liquidity\s+locked|explain\s+lp|explain\s+holders|explain\s+dev(?:\s+control)?|why\s+high\s+risk|why\s+is\s+it\s+risky|why\s+caution|why\s+open\s+check|what\s+are\s+red\s+flags|explain\s+risk|explain\s+verdict|run\s+lp\s+check|lp\s+check|check\s+lp|liquidity\s+safety|check\s+liquidity(?:\s+safety)?|run\s+liquidity\s+check)\b/i;
 
 // Task 3: explicit wallet language must override token-memory follow-up routing — a user
 // who says "wallet pnl", "scan wallet <address>", "portfolio", or "holdings" clearly wants
@@ -114,7 +114,7 @@ export type TokenFollowupKind = "safety" | "dev_rug" | "lp_lock" | "risk";
 export function classifyTokenFollowupKind(prompt: string): TokenFollowupKind {
   const t = String(prompt ?? "").toLowerCase();
   if (/\b(can\s+(?:the\s+)?dev\s+rug|explain\s+dev(?:\s+control)?)\b/.test(t)) return "dev_rug";
-  if (/\b(is\s+lp\s+locked|explain\s+lp|can\s+liquidity\s+be\s+pulled)\b/.test(t)) return "lp_lock";
+  if (/\b(is\s+lp\s+locked|explain\s+lp|can\s+liquidity\s+be\s+pulled|run\s+lp\s+check|lp\s+check|check\s+lp|liquidity\s+safety|check\s+liquidity(?:\s+safety)?|run\s+liquidity\s+check)\b/.test(t)) return "lp_lock";
   if (/\b(why\s+high\s+risk|why\s+is\s+it\s+risky|what\s+are\s+red\s+flags|explain\s+risk|explain\s+verdict|explain\s+holders)\b/.test(t)) return "risk";
   return "safety";
 }

@@ -6176,7 +6176,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   // what appIntent/classifyClarkPrompt would otherwise pick. This runs before every
   // wallet branch (appIntent.wallet_scan, routed.intent === "wallet_scan",
   // directIntent wallet_analysis, bare-address fallback, classifyAddressForClark).
-  if (isTokenFollowupPrompt(prompt) && sessionMem.lastToken?.address) {
+  if (isTokenFollowupPrompt(prompt) && sessionMem.lastToken?.address && !extractAddress(prompt)) {
     const followupKind = classifyTokenFollowupKind(prompt);
     const tokenAddress = sessionMem.lastToken.address;
     const cached = sessionMem.lastToken.cachedEvidence ?? null;

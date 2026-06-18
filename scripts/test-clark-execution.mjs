@@ -902,6 +902,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(guardIdx < routedWalletScanIdx, 'guard runs before routed.intent === "wallet_scan" branch')
   assert.ok(guardIdx < walletAnalysisIdx, 'guard runs before directIntent wallet_analysis branch')
   assert.ok(routeFile.includes('isTokenFollowupPrompt(prompt) && sessionMem.lastToken?.address'), 'guard requires both a follow-up prompt and an existing lastToken in memory')
+  assert.ok(routeFile.includes('isTokenFollowupPrompt(prompt) && sessionMem.lastToken?.address && !extractAddress(prompt)'), 'guard defers to the explicit-address LP route when the prompt names a new contract')
   assert.ok(!routeFile.slice(guardIdx, guardIdx + 1600).includes('runWalletScanner'), 'token follow-up guard never calls runWalletScanner')
 
   // Task 3/5: each formatter is section-specific, never a generic "open check" excuse,
@@ -969,7 +970,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
 
   // Task 1: the hard guard is the first conditional in handleClarkAI, strictly before any
   // wallet snapshot execution or wallet-routing branch in the file.
-  const guardIdx = routeFile.indexOf('if (isTokenFollowupPrompt(prompt) && sessionMem.lastToken?.address)')
+  const guardIdx = routeFile.indexOf('if (isTokenFollowupPrompt(prompt) && sessionMem.lastToken?.address')
   const walletSnapshotIdx = routeFile.indexOf('toolsUsed: ["wallet_get_snapshot"]')
   assert.ok(guardIdx > -1, 'hard token follow-up guard exists in handleClarkAI')
   assert.ok(walletSnapshotIdx === -1 || guardIdx < walletSnapshotIdx, 'token follow-up guard runs before any wallet_get_snapshot call')
@@ -1132,7 +1133,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   const routeFile = fs.readFileSync(path.join(process.cwd(), 'app/api/clark/route.ts'), 'utf8')
 
   const followupGuard = routeFile.slice(
-    routeFile.indexOf('if (isTokenFollowupPrompt(prompt) && sessionMem.lastToken?.address) {'),
+    routeFile.indexOf('if (isTokenFollowupPrompt(prompt) && sessionMem.lastToken?.address && !extractAddress(prompt)) {'),
     routeFile.indexOf('// ─── Wallet compare')
   )
   assert.ok(followupGuard.includes('const followupVerdictMeta = tokenScanVerdictMeta(ev, hasUsableTokenEvidence(ev));'), 'memory-served follow-up guard computes verdict metadata from the same evidence it displays')
@@ -1174,6 +1175,51 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
 
   const clarkRouteFile = fs.readFileSync(path.join(__dirname, '..', 'app', 'api', 'clark', 'route.ts'), 'utf8')
   assert.ok(clarkRouteFile.includes('typeof securitySection.honeypot === "boolean"'), 'Clark maps an explicit honeypot boolean (true or false) from the sanitized token security section, not just a truthy check')
+}
+
+// ─── Clark LP Check CTA/context fix: reuse lastToken instead of asking for a contract ──
+{
+  const { isTokenFollowupPrompt, classifyTokenFollowupKind, formatLpLockCheck } = await import('../lib/server/clarkRouting.ts')
+  const routeFile = fs.readFileSync(path.join(__dirname, '..', 'app', 'api', 'clark', 'route.ts'), 'utf8')
+
+  // Task 1: every LP CTA phrase must be recognized as a token follow-up and classified lp_lock
+  const lpFollowupPrompts = [
+    'Run LP Check', 'LP check', 'check LP', 'explain LP', 'is LP locked',
+    'liquidity safety', 'check liquidity', 'check liquidity safety', 'run liquidity check',
+  ]
+  for (const p of lpFollowupPrompts) {
+    assert.ok(isTokenFollowupPrompt(p), `isTokenFollowupPrompt should match LP follow-up: "${p}"`)
+    assert.equal(classifyTokenFollowupKind(p), 'lp_lock', `classifyTokenFollowupKind should map "${p}" to lp_lock`)
+  }
+
+  // Task 2: the hard guard (lastToken reuse) must run before the generic "Send a token
+  // contract" liquidity_scan-with-no-address branch.
+  const guardIdx = routeFile.indexOf('if (isTokenFollowupPrompt(prompt) && sessionMem.lastToken?.address')
+  const sendContractIdx = routeFile.indexOf("appIntent.intent === 'liquidity_scan' && !appIntent.address")
+  assert.ok(guardIdx > -1 && sendContractIdx > -1 && guardIdx < sendContractIdx, 'lastToken LP follow-up guard runs before the generic "send a token contract" branch')
+
+  // Task 3: an explicit new address in the same prompt must bypass the lastToken guard
+  // entirely so the existing explicit-address LP route (classifyClarkPrompt) handles it.
+  assert.ok(routeFile.includes('isTokenFollowupPrompt(prompt) && sessionMem.lastToken?.address && !extractAddress(prompt)'), 'lastToken LP follow-up guard defers to an explicit new contract address in the same prompt')
+
+  // Task 4/5: formatLpLockCheck produces the exact expected heading and CTA, never "P CHECK".
+  const ev = {
+    ok: true,
+    token: { name: 'Virtual Protocol', symbol: 'VIRTUAL', address: '0x0b3e328455c4059eeb9e3f84b5543f74e24e7e1b' },
+    market: { price: 0.5, liquidity: 4_700_000, volume24h: 97_600, change24h: null, marketCap: null },
+    holders: null,
+    lpControl: { status: 'team_controlled', reason: 'Single normal wallet holds dominant LP share.', confidence: 'high' },
+    security: { honeypot: null, buyTax: 0, sellTax: 0, ownerRenounced: null, mintable: null, proxy: null, missing: [] },
+    warnings: [],
+  }
+  const lpOut = formatLpLockCheck(ev, 'Base')
+  assert.ok(lpOut.startsWith('LP CHECK — VIRTUAL (Base)'), 'LP follow-up heading reads "LP CHECK", never "P CHECK"')
+  assert.ok(!lpOut.includes('P CHECK\n') && lpOut.includes('LP CHECK'), 'no truncated "P CHECK" heading anywhere in LP follow-up output')
+  assert.ok(lpOut.includes('Single normal wallet holds dominant LP share.'), 'LP follow-up surfaces the real lpControl.reason detail from memory')
+  assert.ok(lpOut.includes('CTA: Run LP Check / Open Token Scanner'), 'LP follow-up keeps the LP-specific CTA')
+
+  // Task 6: no lastToken + no address still asks for a token contract via the existing branch.
+  assert.ok(routeFile.includes('Send a token contract and I will check pool model'), 'with no lastToken and no address, Clark still asks for a token contract')
 }
 
 console.log('test-clark-execution.mjs: all assertions passed')
