@@ -1086,4 +1086,26 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(!/lp lock\/burn proof confirmed/i.test(safetyOut), 'safety follow-up never fakes a locked LP claim from partial evidence')
 }
 
+// ─── Memory-served token follow-up guard (is it safe / can dev rug / is LP locked / why
+// high risk) must expose the same verdict/confidence/source as the dedicated token_safety
+// intent branch, not leave them null on the toolsUsed:["memory"] path ──────────────────────
+{
+  const fs = await import('node:fs')
+  const path = await import('node:path')
+  const routeFile = fs.readFileSync(path.join(process.cwd(), 'app/api/clark/route.ts'), 'utf8')
+
+  const followupGuard = routeFile.slice(
+    routeFile.indexOf('if (isTokenFollowupPrompt(prompt) && sessionMem.lastToken?.address) {'),
+    routeFile.indexOf('// ─── Wallet compare')
+  )
+  assert.ok(followupGuard.includes('const followupVerdictMeta = tokenScanVerdictMeta(ev, hasUsableTokenEvidence(ev));'), 'memory-served follow-up guard computes verdict metadata from the same evidence it displays')
+  assert.ok(/verdict:\s*followupVerdictMeta\.verdict/.test(followupGuard), 'memory-served follow-up guard returns verdict in its response object')
+  assert.ok(/confidence:\s*followupVerdictMeta\.confidence/.test(followupGuard), 'memory-served follow-up guard returns confidence in its response object')
+  assert.ok(/source:\s*followupVerdictMeta\.source/.test(followupGuard), 'memory-served follow-up guard returns source in its response object')
+
+  // normalizeApiReplyShape must prefer handler-provided metadata over its regex fallback.
+  assert.ok(routeFile.includes('const hasMappedVerdict = typeof obj.verdict === "string" && obj.verdict.length > 0;'), 'normalizeApiReplyShape checks for handler-provided verdict before falling back to regex')
+  assert.ok(routeFile.includes('? (obj.verdict as string)'), 'normalizeApiReplyShape preserves an explicit handler verdict instead of overwriting it')
+}
+
 console.log('test-clark-execution.mjs: all assertions passed')

@@ -6226,9 +6226,13 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     // only charged if it actually returned usable *non-tax* safety evidence (never pay for a
     // fetch that came back with nothing new beyond what memory already had).
     const quotaConsumed = fromMemory ? false : safetyFetchReturnedNonTaxCoreEvidence;
+    const followupVerdictMeta = tokenScanVerdictMeta(ev, hasUsableTokenEvidence(ev));
     return {
       feature: "clark-ai", chain, mode: "analysis", intent: intentBadge, toolsUsed: fromMemory ? ["memory"] : ["token_scan", "safety_fetch"],
       analysis,
+      verdict: followupVerdictMeta.verdict,
+      confidence: followupVerdictMeta.confidence,
+      source: followupVerdictMeta.source,
       intentBadge,
       actions: buildRoutedActions(["Open Token Scanner", "Run LP Check"]),
       quotaConsumed,
