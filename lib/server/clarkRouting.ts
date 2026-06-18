@@ -767,18 +767,42 @@ export function hasUsableTokenEvidence(ev: TokenScanEvidence | null | undefined)
 // True only when at least one *safety-relevant* section is actually confirmed
 // (honeypot, taxes, LP status, holder concentration, ownership, or contract flags) —
 // market/liquidity/volume alone is not enough to call evidence "safety evidence".
+// NOTE: kept for backward compatibility with other callers; safety-escalation decisions
+// must use hasNonTaxCoreSafetyEvidence/needsSafetyEscalation below instead, since tax
+// data alone is not sufficient to answer a safety follow-up.
 export function hasCoreSafetyEvidence(ev: TokenScanEvidence | null | undefined): boolean {
+  return hasTaxEvidence(ev) || hasNonTaxCoreSafetyEvidence(ev);
+}
+
+// True only when buy/sell tax is confirmed. Tax data alone is never enough to answer
+// "is it safe" — it says nothing about honeypot, LP control, holders, or ownership.
+export function hasTaxEvidence(ev: TokenScanEvidence | null | undefined): boolean {
+  if (!ev) return false;
+  const sec = ev.security;
+  return sec?.buyTax != null || sec?.sellTax != null;
+}
+
+// True only when a real (non-tax) safety section is confirmed: honeypot, a meaningful LP
+// status (not fast-mode's hardcoded open_check/unverified), holder concentration, ownership
+// renouncement, or mint/proxy contract flags.
+export function hasNonTaxCoreSafetyEvidence(ev: TokenScanEvidence | null | undefined): boolean {
   if (!ev) return false;
   const sec = ev.security;
   const lp = ev.lpControl;
   const h = ev.holders;
   const hasHoneypotConfirmed = sec?.honeypot != null;
-  const hasTaxConfirmed = sec?.buyTax != null || sec?.sellTax != null;
   const hasLpConfirmed = lp != null && typeof lp.status === "string" && lp.status.length > 0 && lp.status !== "open_check" && lp.status !== "unverified";
   const hasHolderConfirmed = h?.top1 != null || h?.top10 != null || h?.holderCount != null;
   const hasOwnershipConfirmed = sec?.ownerRenounced != null;
   const hasFlagsConfirmed = sec?.mintable != null || sec?.proxy != null;
-  return hasHoneypotConfirmed || hasTaxConfirmed || hasLpConfirmed || hasHolderConfirmed || hasOwnershipConfirmed || hasFlagsConfirmed;
+  return hasHoneypotConfirmed || hasLpConfirmed || hasHolderConfirmed || hasOwnershipConfirmed || hasFlagsConfirmed;
+}
+
+// A safety-relevant follow-up (is it safe / can dev rug / is LP locked / why high risk) needs
+// a deeper fetch whenever the cached evidence has no real safety section yet — even if it has
+// market data and confirmed tax, since tax alone cannot answer any of those questions.
+export function needsSafetyEscalation(ev: TokenScanEvidence | null | undefined): boolean {
+  return !hasNonTaxCoreSafetyEvidence(ev);
 }
 
 function fmtTaxPct(n: number | null | undefined): string {

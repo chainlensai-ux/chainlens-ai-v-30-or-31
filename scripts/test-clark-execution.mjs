@@ -933,7 +933,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(riskOut.includes('Evidence not yet checked:'), 'risk explanation lists precisely which evidence is missing')
 
   // Task 6: quota is never consumed when the follow-up was answered straight from memory
-  const memoryFollowupIdx = routeFile.indexOf('const quotaConsumed = fromMemory ? false : newSafetyEvidence;')
+  const memoryFollowupIdx = routeFile.indexOf('const quotaConsumed = fromMemory ? false : safetyFetchReturnedNonTaxCoreEvidence;')
   assert.ok(memoryFollowupIdx > -1, 'memory-served token follow-up never consumes quota')
 }
 
@@ -970,37 +970,47 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(scanOut.includes('Security: Open Check — honeypot simulation not returned'), 'token scan output uses the precise honeypot open-check sentence')
 }
 
-// ─── Evidence depth: core safety evidence helper + safety-fetch escalation ──
+// ─── Evidence depth: tax-only vs non-tax core safety evidence + escalation ──
 {
-  const { hasCoreSafetyEvidence } = await import('../lib/server/clarkRouting.ts')
+  const { hasTaxEvidence, hasNonTaxCoreSafetyEvidence, needsSafetyEscalation } = await import('../lib/server/clarkRouting.ts')
   const fs = await import('node:fs')
   const path = await import('node:path')
   const routeFile = fs.readFileSync(path.join(process.cwd(), 'app/api/clark/route.ts'), 'utf8')
 
-  // Market/taxes-only evidence (what clark_fast returns) is NOT core safety evidence.
-  const marketOnly = {
+  // Market + confirmed tax only (what clark_fast returns) — taxes alone must NOT count as
+  // core safety evidence, and escalation must be required.
+  const taxOnly = {
     ok: true,
     token: { name: 'Virtual Protocol', symbol: 'VIRTUAL', address: '0x0b3e328455c4059eeb9e3f84b5543f74e24e7e1b' },
     market: { price: 0.5, liquidity: 4_900_000, volume24h: 97_600, change24h: null, marketCap: null },
     holders: { top1: null, top10: null, holderCount: null, status: 'open_check' },
     lpControl: { status: 'open_check', reason: null, confidence: null, poolType: null },
-    security: { honeypot: null, buyTax: null, sellTax: null, ownerRenounced: null, mintable: null, proxy: null, securityStatus: 'unverified', riskLevel: 'unknown', missing: [] },
+    security: { honeypot: null, buyTax: 0, sellTax: 0, ownerRenounced: null, mintable: null, proxy: null, securityStatus: 'unverified', riskLevel: 'unknown', missing: [] },
     warnings: [],
   }
-  assert.equal(hasCoreSafetyEvidence(marketOnly), false, 'market/liquidity/volume alone is not core safety evidence')
+  assert.equal(hasTaxEvidence(taxOnly), true, 'confirmed buy/sell tax is recognized as tax evidence')
+  assert.equal(hasNonTaxCoreSafetyEvidence(taxOnly), false, 'tax-only evidence is NOT non-tax core safety evidence')
+  assert.equal(needsSafetyEscalation(taxOnly), true, 'cached market + tax only requires safety escalation')
 
-  // Any one confirmed safety section makes it core safety evidence.
-  assert.equal(hasCoreSafetyEvidence({ ...marketOnly, security: { ...marketOnly.security, honeypot: false } }), true, 'confirmed honeypot=false counts as core safety evidence')
-  assert.equal(hasCoreSafetyEvidence({ ...marketOnly, lpControl: { status: 'burned', reason: null, confidence: 'high', poolType: 'v2' } }), true, 'confirmed LP status counts as core safety evidence')
-  assert.equal(hasCoreSafetyEvidence({ ...marketOnly, holders: { top1: 5, top10: 30, holderCount: 800, status: 'verified' } }), true, 'confirmed holder concentration counts as core safety evidence')
-  assert.equal(hasCoreSafetyEvidence({ ...marketOnly, security: { ...marketOnly.security, ownerRenounced: true } }), true, 'confirmed ownership status counts as core safety evidence')
-  assert.equal(hasCoreSafetyEvidence(null), false, 'no evidence is never core safety evidence')
+  // No evidence at all also needs escalation.
+  assert.equal(needsSafetyEscalation(null), true, 'no cached evidence requires safety escalation')
 
-  // The follow-up guard must escalate to a real fetch (fullScan) when cached evidence lacks
-  // core safety sections, and must never stay memory-only forever.
-  assert.ok(routeFile.includes('hasCoreSafetyEvidence(cached)'), 'follow-up guard checks cached evidence for core safety sections before answering from memory')
-  assert.ok(routeFile.includes('fetchTokenEvidence(tokenAddress, { fullScan: true })'), 'follow-up guard runs a deeper (non clark_fast) fetch when memory lacks core safety evidence')
-  assert.ok(routeFile.includes('const quotaConsumed = fromMemory ? false : newSafetyEvidence;'), 'quota is only charged when the safety fetch actually returns usable safety evidence')
+  // Any one confirmed non-tax safety section makes escalation unnecessary.
+  assert.equal(hasNonTaxCoreSafetyEvidence({ ...taxOnly, security: { ...taxOnly.security, honeypot: false } }), true, 'confirmed honeypot=false counts as non-tax core safety evidence')
+  assert.equal(needsSafetyEscalation({ ...taxOnly, security: { ...taxOnly.security, honeypot: false } }), false, 'confirmed honeypot allows memory-only answer')
+  assert.equal(hasNonTaxCoreSafetyEvidence({ ...taxOnly, lpControl: { status: 'burned', reason: null, confidence: 'high', poolType: 'v2' } }), true, 'confirmed LP status counts as non-tax core safety evidence')
+  assert.equal(hasNonTaxCoreSafetyEvidence({ ...taxOnly, holders: { top1: 5, top10: 30, holderCount: 800, status: 'verified' } }), true, 'confirmed holder concentration counts as non-tax core safety evidence')
+  assert.equal(hasNonTaxCoreSafetyEvidence({ ...taxOnly, security: { ...taxOnly.security, ownerRenounced: true } }), true, 'confirmed ownership status counts as non-tax core safety evidence')
+  assert.equal(needsSafetyEscalation({ ...taxOnly, holders: { top1: 5, top10: 30, holderCount: 800, status: 'verified' } }), false, 'confirmed holders/LP/ownership allows memory-only answer')
+
+  // The follow-up guard must escalate to a real fetch (fullScan) when cached evidence needs it,
+  // never retry twice in the same request, and only charge quota for new non-tax evidence.
+  assert.ok(routeFile.includes('needsSafetyEscalation(cached)'), 'follow-up guard computes escalation need from cached evidence')
+  assert.ok(routeFile.includes('fetchTokenEvidence(tokenAddress, { fullScan: true })'), 'follow-up guard runs a deeper (non clark_fast) fetch exactly once when escalation is needed')
+  assert.ok(routeFile.includes('safetyEscalationReason = cachedHasTaxEvidence ? "tax_only_cached_evidence" : "no_safety_evidence_cached"'), 'escalation reason distinguishes tax-only cached evidence from no evidence at all')
+  assert.ok(routeFile.includes('const safetyFetchReturnedNonTaxCoreEvidence = safetyEscalationAttempted && hasNonTaxCoreSafetyEvidence(ev);'), 'escalation result is judged by non-tax core safety evidence only')
+  assert.ok(routeFile.includes('const quotaConsumed = fromMemory ? false : safetyFetchReturnedNonTaxCoreEvidence;'), 'quota is only charged when the safety fetch actually returns usable non-tax safety evidence')
+  assert.ok(routeFile.includes('toolsUsed: fromMemory ? ["memory"] : ["token_scan", "safety_fetch"]'), 'toolsUsed is not just ["memory"] when safety escalation runs')
 }
 
 console.log('test-clark-execution.mjs: all assertions passed')

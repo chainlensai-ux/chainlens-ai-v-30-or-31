@@ -29,7 +29,9 @@ import {
   formatNoTokenInMemory,
   formatFastTokenRead,
   hasUsableTokenEvidence,
-  hasCoreSafetyEvidence,
+  hasTaxEvidence,
+  hasNonTaxCoreSafetyEvidence,
+  needsSafetyEscalation,
   isTokenFollowupPrompt,
   classifyTokenFollowupKind,
   type TokenScanEvidence,
@@ -6166,19 +6168,25 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const tokenAddress = sessionMem.lastToken.address;
     const cached = sessionMem.lastToken.cachedEvidence ?? null;
 
-    // Case A: cached evidence already has at least one confirmed safety section — answer from
-    // memory, never re-fetch, never consume quota.
-    // Case B: cached evidence only has market/taxes (or nothing) — run one deeper safety fetch
-    // (mode: "clark_safety" / full token route) before answering, since memory alone would
-    // leave every safety section as a generic Open Check even when Token Scanner can return them.
+    // Case A: cached evidence already has at least one confirmed *non-tax* safety section
+    // (honeypot, LP, holders, ownership/flags) — answer from memory, never re-fetch.
+    // Case B: cached evidence has only market/liquidity/volume/tax (or nothing) — tax data
+    // alone cannot answer "is it safe"/"can dev rug"/"is LP locked"/"why high risk", so run
+    // exactly one deeper safety fetch (fullScan) before answering instead of staying memory-only.
+    const cachedHasTaxEvidence = hasTaxEvidence(cached);
+    const cachedHasNonTaxCoreSafetyEvidence = hasNonTaxCoreSafetyEvidence(cached);
+    const escalationNeeded = needsSafetyEscalation(cached);
+
     let ev: TokenScanEvidence;
     let fromMemory: boolean;
-    let safetyModeAttempted = false;
-    if (cached && hasCoreSafetyEvidence(cached)) {
+    let safetyEscalationAttempted = false;
+    let safetyEscalationReason: string | null = null;
+    if (cached && !escalationNeeded) {
       ev = cached;
       fromMemory = true;
     } else {
-      safetyModeAttempted = true;
+      safetyEscalationAttempted = true;
+      safetyEscalationReason = cachedHasTaxEvidence ? "tax_only_cached_evidence" : "no_safety_evidence_cached";
       ev = await fetchTokenEvidence(tokenAddress, { fullScan: true });
       fromMemory = false;
     }
@@ -6190,7 +6198,9 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     else if (followupKind === "risk") { analysis = formatRiskExplanation(ev, "Base"); intentBadge = "risk_explanation"; }
     else { analysis = formatTokenSafetyAnswer(ev, "Base"); intentBadge = "token_safety"; }
 
-    const newSafetyEvidence = safetyModeAttempted && hasCoreSafetyEvidence(ev);
+    // Do not retry within the same request: a single fullScan attempt either returns real
+    // non-tax safety evidence or it doesn't — either way the answer above already reflects it.
+    const safetyFetchReturnedNonTaxCoreEvidence = safetyEscalationAttempted && hasNonTaxCoreSafetyEvidence(ev);
 
     if (!fromMemory) {
       updateMemToken(sessionMem, tokenAddress, ev.token?.symbol ?? null, ev.token?.name ?? null, analysis, {
@@ -6200,20 +6210,23 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     }
     updateMemIntent(sessionMem, intentBadge);
     // Quota: never charged when answered purely from memory; when a safety fetch was run,
-    // only charged if it actually returned usable safety evidence (never pay for a fetch that
-    // came back empty).
-    const quotaConsumed = fromMemory ? false : newSafetyEvidence;
+    // only charged if it actually returned usable *non-tax* safety evidence (never pay for a
+    // fetch that came back with nothing new beyond what memory already had).
+    const quotaConsumed = fromMemory ? false : safetyFetchReturnedNonTaxCoreEvidence;
     return {
-      feature: "clark-ai", chain, mode: "analysis", intent: intentBadge, toolsUsed: fromMemory ? ["memory"] : ["token_safety_fetch"],
+      feature: "clark-ai", chain, mode: "analysis", intent: intentBadge, toolsUsed: fromMemory ? ["memory"] : ["token_scan", "safety_fetch"],
       analysis,
       intentBadge,
       actions: buildRoutedActions(["Open Token Scanner", "Run LP Check"]),
       quotaConsumed,
       ...(clarkDebugMode ? {
         clarkDebugReceipt: {
-          tokenMode: fromMemory ? "memory" : "clark_safety",
-          safetyModeAttempted,
-          coreSafetyEvidence: hasCoreSafetyEvidence(ev),
+          cachedHasTaxEvidence,
+          cachedHasNonTaxCoreSafetyEvidence,
+          needsSafetyEscalation: escalationNeeded,
+          safetyEscalationAttempted,
+          safetyEscalationReason,
+          safetyFetchReturnedNonTaxCoreEvidence,
           quotaEligible: !fromMemory,
           quotaConsumed,
         },
