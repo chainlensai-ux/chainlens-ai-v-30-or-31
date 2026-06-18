@@ -938,6 +938,43 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(memoryFollowupIdx > -1, 'memory-served token follow-up never consumes quota')
 }
 
+// ─── Clark Pack 1 routing regression: token follow-up must win over wallet (this pass) ──
+{
+  const routeFile = fs.readFileSync(path.join(__dirname, '..', 'app', 'api', 'clark', 'route.ts'), 'utf8')
+  const { isTokenFollowupPrompt } = await import('../lib/server/clarkRouting.ts')
+
+  // Task 5: the exact reported-regression prompt and every other required follow-up phrase
+  // must keep routing to the token follow-up guard, never to wallet.
+  const mustStayToken = [
+    'is it safe', 'safe?', 'is this safe', 'can dev rug', 'can the dev rug',
+    'is lp locked', 'is liquidity locked', 'explain lp', 'why high risk',
+    'why caution', 'why open check', 'should I buy', 'is it risky',
+  ]
+  for (const p of mustStayToken) {
+    assert.ok(isTokenFollowupPrompt(p), `isTokenFollowupPrompt should match (must stay token): "${p}"`)
+  }
+
+  // Task 3: explicit wallet language must override token-follow-up routing even after a
+  // token scan, so these must never be treated as token follow-ups.
+  const mustOverrideToWallet = [
+    'wallet pnl 0x1234567890123456789012345678901234567890',
+    'scan wallet 0x1234567890123456789012345678901234567890',
+    'deep scan wallet 0x1234567890123456789012345678901234567890',
+    'show my portfolio',
+    'show my holdings',
+  ]
+  for (const p of mustOverrideToWallet) {
+    assert.ok(!isTokenFollowupPrompt(p), `isTokenFollowupPrompt should NOT match (explicit wallet wins): "${p}"`)
+  }
+
+  // Task 1: the hard guard is the first conditional in handleClarkAI, strictly before any
+  // wallet snapshot execution or wallet-routing branch in the file.
+  const guardIdx = routeFile.indexOf('if (isTokenFollowupPrompt(prompt) && sessionMem.lastToken?.address)')
+  const walletSnapshotIdx = routeFile.indexOf('toolsUsed: ["wallet_get_snapshot"]')
+  assert.ok(guardIdx > -1, 'hard token follow-up guard exists in handleClarkAI')
+  assert.ok(walletSnapshotIdx === -1 || guardIdx < walletSnapshotIdx, 'token follow-up guard runs before any wallet_get_snapshot call')
+}
+
 // ─── Wording polish: TOKEN SAFETY no longer mislabels missing evidence (this pass) ──
 {
   const { formatTokenSafetyAnswer, formatTokenScanResult } = await import('../lib/server/clarkRouting.ts')

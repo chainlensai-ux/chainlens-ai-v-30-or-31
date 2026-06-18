@@ -89,13 +89,23 @@ export function isWalletComparePrompt(text: string): boolean {
 
 // Task 1 (Pack 1 hard fix): token follow-up prompts that must always resolve against
 // the last scanned token in memory, never fall through to a wallet branch.
-const TOKEN_FOLLOWUP_RE = /\b(is\s+it\s+safe|is\s+this\s+safe|is\s+this\s+token\s+safe|should\s+i\s+buy|is\s+it\s+legit|is\s+it\s+a\s+rug|can\s+(?:the\s+)?dev\s+rug|can\s+liquidity\s+be\s+pulled|is\s+lp\s+locked|explain\s+lp|explain\s+holders|explain\s+dev(?:\s+control)?|why\s+high\s+risk|why\s+is\s+it\s+risky|what\s+are\s+red\s+flags|explain\s+risk|explain\s+verdict)\b/i;
+const TOKEN_FOLLOWUP_RE = /\b(is\s+it\s+safe|safe\?|is\s+this\s+safe|is\s+this\s+token\s+safe|should\s+i\s+buy|is\s+it\s+legit|is\s+it\s+a\s+rug|is\s+it\s+risky|can\s+(?:the\s+)?dev\s+rug|can\s+liquidity\s+be\s+pulled|is\s+lp\s+locked|is\s+liquidity\s+locked|explain\s+lp|explain\s+holders|explain\s+dev(?:\s+control)?|why\s+high\s+risk|why\s+is\s+it\s+risky|why\s+caution|why\s+open\s+check|what\s+are\s+red\s+flags|explain\s+risk|explain\s+verdict)\b/i;
+
+// Task 3: explicit wallet language must override token-memory follow-up routing — a user
+// who says "wallet pnl", "scan wallet <address>", "portfolio", or "holdings" clearly wants
+// the wallet path even right after a token scan, so the token follow-up guard must not
+// hijack those prompts.
+const EXPLICIT_WALLET_OVERRIDE_RE = /\b(wallet|wallet\s+pnl|portfolio|holdings?|scan\s+wallet|deep\s+scan\s+wallet)\b/i;
 
 /** True for short token follow-up prompts ("is it safe", "explain LP", "can dev rug"...)
  *  that must always be answered from the last scanned token in memory and must never
- *  execute a wallet scan. */
+ *  execute a wallet scan — unless the prompt explicitly names a wallet/portfolio/holdings,
+ *  in which case the explicit wallet language wins. */
 export function isTokenFollowupPrompt(prompt: string): boolean {
-  return TOKEN_FOLLOWUP_RE.test(String(prompt ?? "").trim());
+  const t = String(prompt ?? "").trim();
+  if (EXPLICIT_WALLET_OVERRIDE_RE.test(t)) return false;
+  if (/^safe\??$/i.test(t)) return true;
+  return TOKEN_FOLLOWUP_RE.test(t);
 }
 
 export type TokenFollowupKind = "safety" | "dev_rug" | "lp_lock" | "risk";
