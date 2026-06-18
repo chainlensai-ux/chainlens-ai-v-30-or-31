@@ -1332,4 +1332,112 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.equal(r.intent, 'none')
 }
 
+// ─── Polish pass: canonical verdict + concentrated-LP + security wording ──────
+{
+  const { formatTokenScanResult, tokenScanVerdictMeta, hasUsableTokenEvidence } = await import('../lib/server/clarkRouting.ts')
+
+  // Ethereum SA1T-shaped evidence: active owner, missing security, concentrated LP.
+  const sa1t = {
+    token: { name: 'SA1T', symbol: 'SA1T', address: '0x1111111111111111111111111111111111111111' },
+    chain: 'Ethereum',
+    market: { price: 0.001, change24h: 1, volume24h: 10000, liquidity: 50000, marketCap: 1000000 },
+    holders: null,
+    security: { honeypot: null, buyTax: null, sellTax: null, ownerRenounced: false, mintable: null, proxy: false, securityStatus: 'unverified', simulationStatus: 'unavailable', riskLevel: 'unknown', missing: [] },
+    lpControl: { status: 'open_check', reason: 'Protocol-specific LP proof required.', confidence: 'low', poolType: 'concentrated', proofApplicability: 'not_applicable' },
+    warnings: [],
+    ok: true,
+  }
+  const out = formatTokenScanResult(sa1t, 'Ethereum')
+  const meta = tokenScanVerdictMeta(sa1t, hasUsableTokenEvidence(sa1t))
+
+  // Goal 1: canonical verdict only, never a combined phrase.
+  assert.ok(/^- Verdict: (Avoid|Caution|Open Check|Cleaner)$/m.test(out), 'verdict line is a single canonical value')
+  assert.ok(!out.includes('Open Check / Caution'), 'combined verdict phrase never appears in text')
+  assert.ok(!JSON.stringify(meta).includes('Open Check / Caution'), 'combined verdict phrase never appears in JSON')
+  assert.equal(meta.verdict, 'Caution', 'active owner + missing security maps to canonical Caution, not Open Check')
+  assert.ok(out.includes('Verdict: Caution'), 'text Verdict line matches JSON verdict')
+  assert.equal(meta.source, 'token_core')
+
+  // Goal 2: concentrated LP is Not Applicable, not a generic Open Check.
+  assert.ok(out.includes('LP proof: Not Applicable'), 'concentrated LP proof renders as Not Applicable')
+  assert.ok(!/LP proof: Open Check — concentrated/.test(out), 'concentrated LP never displays as generic Open Check')
+  assert.ok(/Not Applicable.*(position|controller)/i.test(out), 'Not Applicable LP still explains position/controller proof may be needed')
+
+  // Goal 3: security wording is specific, not a generic "not returned".
+  assert.ok(out.includes('Security: Open Check — simulation unavailable from current provider.'), 'security unavailable reason is specific')
+  assert.ok(!out.toLowerCase().includes('honeypot not detected'), 'never fakes honeypot-false when honeypot is unconfirmed')
+
+  // Chain compatibility: no Base-only wording leaks into the Ethereum read.
+  assert.ok(!/aerodrome/i.test(out), 'no Base-only LP wording leaks into Ethereum output')
+  assert.ok(out.includes('- Chain: Ethereum'))
+}
+
+{
+  const { formatTokenScanResult } = await import('../lib/server/clarkRouting.ts')
+  // Not-supported-chain simulation reason.
+  const ev = {
+    token: { name: 'XYZ', symbol: 'XYZ', address: '0x2222222222222222222222222222222222222222' },
+    market: { price: 1, change24h: 1, volume24h: 1, liquidity: 1, marketCap: 1 },
+    holders: { top1: 5, top10: 20, holderCount: 100 },
+    security: { honeypot: null, buyTax: null, sellTax: null, ownerRenounced: true, mintable: false, proxy: false, securityStatus: 'unverified', simulationStatus: 'not_supported', riskLevel: 'unknown', missing: [] },
+    lpControl: { status: 'locked', reason: 'locked via protocol' },
+    warnings: [],
+    ok: true,
+  }
+  const out = formatTokenScanResult(ev, 'BNB')
+  assert.ok(out.includes('Security: Open Check — simulation not supported for this chain yet.'))
+}
+
+{
+  const { formatTokenScanResult } = await import('../lib/server/clarkRouting.ts')
+  const ev = {
+    token: { name: 'TIMEO', symbol: 'TIMEO', address: '0x3333333333333333333333333333333333333333' },
+    market: { price: 1, change24h: 1, volume24h: 1, liquidity: 1, marketCap: 1 },
+    holders: { top1: 5, top10: 20, holderCount: 100 },
+    security: { honeypot: null, buyTax: null, sellTax: null, ownerRenounced: true, mintable: false, proxy: false, securityStatus: 'unverified', simulationStatus: 'timeout', riskLevel: 'unknown', missing: [] },
+    lpControl: { status: 'locked', reason: 'locked via protocol' },
+    warnings: [],
+    ok: true,
+  }
+  const out = formatTokenScanResult(ev, 'Base')
+  assert.ok(out.includes('Security: Open Check — simulation timed out.'))
+}
+
+{
+  // Base VIRTUAL-style team-controlled LP must still produce Caution (regression).
+  const { formatTokenScanResult, tokenScanVerdictMeta, hasUsableTokenEvidence } = await import('../lib/server/clarkRouting.ts')
+  const virtual = {
+    token: { name: 'Virtual', symbol: 'VIRTUAL', address: '0x4444444444444444444444444444444444444444' },
+    market: { price: 1, change24h: 1, volume24h: 1000, liquidity: 100000, marketCap: 1000000 },
+    holders: { top1: 10, top10: 40, holderCount: 5000 },
+    security: { honeypot: false, buyTax: 0, sellTax: 0, ownerRenounced: true, mintable: false, proxy: false, securityStatus: 'verified', simulationStatus: 'confirmed', riskLevel: 'unknown', missing: [] },
+    lpControl: { status: 'team_controlled', reason: 'LP tokens held by deployer wallet' },
+    warnings: [],
+    ok: true,
+  }
+  const out = formatTokenScanResult(virtual, 'Base')
+  const meta = tokenScanVerdictMeta(virtual, hasUsableTokenEvidence(virtual))
+  assert.ok(out.includes('LP proof: Team Controlled'))
+  assert.equal(meta.verdict, 'Caution')
+  assert.ok(out.includes('Verdict: Caution'))
+}
+
+{
+  // No fake safe/honeypot/locked claims anywhere in canonical verdict output.
+  const { formatTokenScanResult } = await import('../lib/server/clarkRouting.ts')
+  const noEv = {
+    token: { name: null, symbol: 'NEW', address: '0x5555555555555555555555555555555555555555' },
+    market: { price: null, liquidity: null, volume24h: null, change24h: null, marketCap: null },
+    holders: null,
+    lpControl: null,
+    security: { honeypot: null, buyTax: null, sellTax: null, ownerRenounced: null, mintable: null, proxy: null, simulationStatus: null, missing: [] },
+    warnings: [],
+    ok: false,
+  }
+  const out = formatTokenScanResult(noEv, 'Base')
+  assert.ok(!out.toLowerCase().includes('confirmed safe'))
+  assert.ok(!out.toLowerCase().includes('locked'))
+  assert.ok(!out.toLowerCase().includes('honeypot not detected'))
+}
+
 console.log('test-clark-execution.mjs: all assertions passed')

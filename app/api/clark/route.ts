@@ -7250,6 +7250,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         mintable: typeof tContractFlags.mint === "boolean" ? tContractFlags.mint : null,
         proxy: typeof tContractFlags.proxy === "boolean" ? tContractFlags.proxy : null,
         securityStatus: _hp?.securityStatus ?? (honeypotFailed ? "timed out" : "unverified"),
+        simulationStatus: _hp?.simulationStatus ?? (honeypotAborted ? "timeout" : honeypotFailed ? "unavailable" : null),
         riskLevel: _hp?.riskLevel ?? "unknown",
         missing: missingEvidence,
       },

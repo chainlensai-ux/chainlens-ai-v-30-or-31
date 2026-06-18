@@ -762,6 +762,7 @@ export type TokenScanEvidence = {
     mintable?: boolean | null;
     proxy?: boolean | null;
     securityStatus?: string | null;
+    simulationStatus?: string | null;
     riskLevel?: string | null;
     missing?: string[] | null;
   } | null;
@@ -861,7 +862,10 @@ function lpStatusLine(ev: TokenScanEvidence): string {
     lp.proofApplicability === "not_applicable" || lp.displayLpModel === "concentrated_liquidity" || lp.displayLpModel === "no_pool";
   const status = lp.status ?? "unverified";
   const reason = lp.reason ?? null;
-  if (concentrated) return `LP proof: Open Check — concentrated pool LP proof not applicable${reason ? ` (${reason})` : ""}`;
+  // Concentrated/v3/v4 pools don't mint ERC-20 LP tokens, so the standard lock/burn-proof
+  // check genuinely does not apply — this is not the same as "proof should exist but
+  // couldn't be confirmed" (that case stays Open Check below).
+  if (concentrated) return `LP proof: Not Applicable — concentrated pool; standard LP-token lock/burn proof does not apply, a position/controller proof may still be needed${reason ? ` (${reason})` : ""}`;
   if (status === "locked" || lp.lockStatus === "locked") return `LP proof: Locked/Burned — confirmed by LP proof${reason ? ` (${reason})` : ""}`;
   if (status === "burned" || lp.burnStatus === "burned") return `LP proof: Locked/Burned — confirmed by LP proof${reason ? ` (${reason})` : ""}`;
   if (status === "team_controlled" || status === "wallet_controlled") return `LP proof: Team Controlled — LP tokens appear wallet-controlled${reason ? ` (${reason})` : ""}`;
@@ -870,14 +874,21 @@ function lpStatusLine(ev: TokenScanEvidence): string {
   return `LP proof: ${status}${reason ? ` — ${reason}` : ""}`;
 }
 
-function verdictLabel(ev: TokenScanEvidence): string {
+// Canonical verdict values — Clark must never emit any other string (and never a
+// combined phrase like "Open Check / Caution based on available evidence").
+export type ClarkVerdict = "Avoid" | "Caution" | "Open Check" | "Cleaner";
+
+function verdictLabel(ev: TokenScanEvidence): ClarkVerdict {
   const sec = ev.security;
   const h = ev.holders;
   const lp = ev.lpControl;
   if (sec?.honeypot === true) return "Avoid";
-  if (sec?.riskLevel === "high") return "High Risk";
+  if (sec?.riskLevel === "high") return "Caution";
   if (lp?.status === "wallet_controlled" || lp?.status === "team_controlled") return "Caution";
   if (sec?.mintable === true && sec?.ownerRenounced === false) return "Caution";
+  // Active (non-renounced) owner is a confirmed risk signal on its own, even without a
+  // confirmed mint flag — the owner can still change behavior the token can't undo.
+  if (sec?.ownerRenounced === false) return "Caution";
   if (h?.top10 != null && h.top10 > 80) return "Caution";
   if (sec?.honeypot === false && sec?.ownerRenounced === true && (lp?.status === "locked" || lp?.status === "burned")) return "Cleaner";
   return "Open Check";
@@ -885,19 +896,16 @@ function verdictLabel(ev: TokenScanEvidence): string {
 
 // Public, structured verdict for the JSON response (data.verdict/data.confidence/data.source).
 // Must stay in sync with the human-readable "Verdict:" line produced by verdictLabel() above —
-// both read the same TokenScanEvidence fields, so they can never disagree.
+// both read the same TokenScanEvidence fields, so they can never disagree. Always one of the
+// four canonical ClarkVerdict values — never a combined phrase.
 export function tokenScanVerdictMeta(ev: TokenScanEvidence, usableEvidence: boolean): {
-  verdict: string;
+  verdict: ClarkVerdict;
   confidence: "full" | "partial" | "none";
   source: "token_core" | "fallback";
 } {
   const label = verdictLabel(ev);
   const confidence: "full" | "partial" | "none" = ev.ok ? "full" : usableEvidence ? "partial" : "none";
-  const verdict = !usableEvidence
-    ? "Open Check"
-    : label === "Open Check"
-      ? "Open Check / Caution based on available evidence"
-      : label;
+  const verdict: ClarkVerdict = !usableEvidence ? "Open Check" : label;
   return {
     verdict,
     confidence,
@@ -912,6 +920,11 @@ function securityStatusLine(sec: NonNullable<TokenScanEvidence["security"]>): st
   if (sec.honeypot === false) return "Honeypot not detected";
   if (sec.honeypot === true) return "Honeypot detected";
   if (sec.buyTax != null || sec.sellTax != null) return "Tax data returned, honeypot simulation unavailable";
+  // simulationStatus comes straight from the honeypot provider call and is specific about
+  // *why* no honeypot verdict exists — prefer it over the generic securityStatus field.
+  if (sec.simulationStatus === "not_supported") return "Open Check — simulation not supported for this chain yet.";
+  if (sec.simulationStatus === "timeout") return "Open Check — simulation timed out.";
+  if (sec.simulationStatus === "failed" || sec.simulationStatus === "unavailable") return "Open Check — simulation unavailable from current provider.";
   const reason = sec.securityStatus && sec.securityStatus !== "unverified" && sec.securityStatus !== "unknown"
     ? sec.securityStatus
     : "security simulation not returned";
