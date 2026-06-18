@@ -215,7 +215,7 @@ const mockEv = {
 
 {
   const out = formatRiskExplanation(mockEv)
-  assert.ok(out.startsWith('RISK SIGNALS'))
+  assert.ok(out.startsWith('RISK EXPLANATION'))
   assert.ok(out.includes('CTA:'))
   // does not invent score
   assert.ok(!out.includes('score formula'))

@@ -1172,38 +1172,87 @@ export function formatRiskExplanation(ev: TokenScanEvidence, chain = "Base"): st
   const sec = ev.security;
   const h = ev.holders;
   const lp = ev.lpControl;
-  const mkt = ev.market;
 
-  const signals: string[] = [];
-  const missing: string[] = [];
+  const verdict = tokenScanVerdictMeta(ev, hasUsableTokenEvidence(ev)).verdict;
 
-  if (sec?.honeypot === true) signals.push("Honeypot flag: buy/sell simulation detected a trap");
-  if (sec?.mintable === true && sec?.ownerRenounced === false) signals.push("Mint risk: owner can issue new tokens");
-  if (sec?.proxy === true) signals.push("Proxy contract: logic can be upgraded by deployer");
-  if (lp?.status === "wallet_controlled" || lp?.status === "team_controlled") signals.push("LP wallet-controlled: liquidity can be pulled");
-  if (h?.top10 != null && h.top10 > 70) signals.push(`Concentration risk: top-10 hold ${h.top10.toFixed(1)}% of supply`);
-  if (h?.top1 != null && h.top1 > 20) signals.push(`Single-wallet dominance: top-1 holds ${h.top1.toFixed(1)}%`);
-  if (mkt?.liquidity != null && mkt.liquidity < 10_000) signals.push(`Thin liquidity: ${fmtUsdShort(mkt.liquidity)} — price impact is high`);
-  if (sec?.buyTax != null && sec.buyTax > 10) signals.push(`High buy tax: ${sec.buyTax.toFixed(1)}%`);
-  if (sec?.sellTax != null && sec.sellTax > 10) signals.push(`High sell tax: ${sec.sellTax.toFixed(1)}%`);
+  // Main risk signals: the confirmed evidence that actually drives the verdict —
+  // never inferred, never present unless the underlying field has a real value.
+  const mainSignals: string[] = [];
+  if (lp?.status === "wallet_controlled" || lp?.status === "team_controlled") {
+    const label = lp.status === "team_controlled" ? "Team Controlled" : "Wallet Controlled";
+    mainSignals.push(`LP control: ${label}${lp.reason ? ` — ${lp.reason}` : ""}`);
+  } else if (lp?.status === "open_check" || lp?.status === "unverified") {
+    mainSignals.push(`LP control: Open Check${lp.reason ? ` — ${lp.reason}` : ""}`);
+  }
+  if (sec?.honeypot === true) mainSignals.push("Honeypot: detected — buy/sell simulation flagged a trap.");
+  if (sec?.mintable === true) mainSignals.push(`Mint authority: YES — new tokens can be minted${sec?.ownerRenounced === false ? " and the owner is still active." : "."}`);
+  if (sec?.proxy === true) mainSignals.push("Proxy/upgradeable: YES — contract logic can be replaced by the deployer.");
+  if (sec?.ownerRenounced === false) mainSignals.push("Ownership: NOT renounced — an active owner can still call privileged functions.");
+  if (h?.top10 != null && h.top10 > 50) mainSignals.push(`Holder concentration: top-10 holders control ${h.top10.toFixed(1)}% of supply.`);
+  if (h?.top1 != null && h.top1 > 20) mainSignals.push(`Single-wallet dominance: top-1 holder controls ${h.top1.toFixed(1)}% of supply.`);
+  if (sec?.buyTax != null && sec.buyTax > 10) mainSignals.push(`High buy tax: ${fmtTaxPct(sec.buyTax)}.`);
+  if (sec?.sellTax != null && sec.sellTax > 10) mainSignals.push(`High sell tax: ${fmtTaxPct(sec.sellTax)}.`);
 
-  if (!sec || sec.honeypot == null) missing.push("honeypot simulation");
-  if (!lp) missing.push("LP lock/burn proof");
-  if (!h?.top10) missing.push("holder concentration");
-  if (sec?.ownerRenounced == null) missing.push("ownership/mint status");
+  // Positive / lower-risk signals: confirmed evidence that reduces risk, shown so the
+  // verdict reads as a balance of evidence rather than a single flag.
+  const positiveSignals: string[] = [];
+  if (sec?.honeypot === false) positiveSignals.push("Honeypot: not detected.");
+  if (sec?.buyTax != null || sec?.sellTax != null) positiveSignals.push(`Taxes: buy ${fmtTaxPct(sec?.buyTax)} / sell ${fmtTaxPct(sec?.sellTax)}.`);
+  if (sec?.ownerRenounced === true) positiveSignals.push("Ownership: renounced.");
+  if (sec?.proxy === false) positiveSignals.push("Proxy: no proxy detected.");
+  if (lp?.status === "locked" || lp?.status === "burned") positiveSignals.push(`LP control: ${lp.status === "burned" ? "burned" : "locked"}${lp.reason ? ` — ${lp.reason}` : ""}.`);
+  if (h?.top10 != null && h.top10 <= 50) positiveSignals.push(`Holder concentration: top-10 holders control ${h.top10.toFixed(1)}% of supply.`);
+  if (h?.holderCount != null) positiveSignals.push(`Holder base: ${h.holderCount.toLocaleString()} holders.`);
+
+  // Open checks: real fields that are simply missing — never claimed as risk or safety.
+  const openChecks: string[] = [];
+  if (!lp) openChecks.push("LP lock/burn proof — not yet checked.");
+  if (!sec || sec.honeypot == null) openChecks.push("Honeypot simulation — not returned.");
+  if (sec?.mintable == null) openChecks.push("Mint authority — not verified.");
+  if (sec?.proxy == null) openChecks.push("Proxy/upgradeable status — not verified.");
+  if (sec?.ownerRenounced == null) openChecks.push("Ownership status — not verified.");
+  if (h?.top10 == null) openChecks.push("Holder concentration — not indexed for this chain.");
 
   const lines = [
-    `RISK SIGNALS — ${sym} (${chain})`,
+    `RISK EXPLANATION — ${sym} (${chain})`,
     "",
-    signals.length > 0 ? "Risk signals found:" : "No deterministic risk signals confirmed from available data.",
-    ...signals.map((s, i) => `${i + 1}. ${s}`),
+    `Verdict: ${verdict}`,
+    "",
   ];
-  if (missing.length > 0) {
-    lines.push("", "Evidence not yet checked:");
-    missing.forEach(m => lines.push(`- ${m}`));
+
+  if (mainSignals.length > 0) {
+    lines.push("Main risk signals:");
+    mainSignals.forEach((s, i) => lines.push(`${i + 1}. ${s}`));
+    lines.push("");
   }
-  lines.push("", "Note: These are risk signals, not a precise score. Missing evidence means open check, not safe.");
-  lines.push("", "CTA: Open Token Scanner / Run LP Check");
+
+  if (positiveSignals.length > 0) {
+    lines.push("Positive / lower-risk signals:");
+    positiveSignals.forEach((s) => lines.push(`- ${s}`));
+    lines.push("");
+  }
+
+  if (openChecks.length > 0) {
+    lines.push("Open checks:");
+    openChecks.forEach((s) => lines.push(`- ${s}`));
+    lines.push("");
+  }
+
+  // Read: a plain-language summary of why the verdict landed where it did, built only
+  // from the signals already listed above — never a fixed disclaimer.
+  const readParts: string[] = [];
+  if (mainSignals.length > 0) {
+    readParts.push(`Clark marks this ${verdict} mainly because ${mainSignals.map((s) => s.split(":")[0].toLowerCase()).join(" and ")} ${mainSignals.length > 1 ? "are" : "is"} the key risk driver${mainSignals.length > 1 ? "s" : ""}.`);
+  } else if (verdict === "Cleaner") {
+    readParts.push("Clark marks this Cleaner because the confirmed evidence above came back clean — no honeypot, an active lock/burn or renounced ownership, and no severe flags.");
+  } else {
+    readParts.push("Clark has not confirmed a specific risk driver from the evidence collected so far.");
+  }
+  if (positiveSignals.length > 0) readParts.push(`${positiveSignals.length > 1 ? "Some checks" : "One check"} look${positiveSignals.length > 1 ? "" : "s"} cleaner, but that does not offset the open risk above.`);
+  if (openChecks.length > 0) readParts.push("Some evidence is still an open check rather than confirmed safe.");
+  lines.push("Read:", readParts.join(" "), "");
+
+  lines.push("CTA: Open Token Scanner / Run LP Check");
   return lines.join("\n");
 }
 

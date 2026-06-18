@@ -267,7 +267,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   // RISK_EXPLANATION: signals not a fake score formula
   {
     const out = formatRiskExplanation(ev)
-    assert.ok(out.startsWith('RISK SIGNALS'))
+    assert.ok(out.startsWith('RISK EXPLANATION'))
     assert.ok(out.includes('CTA:'))
     assert.ok(!out.includes('formula'), 'no fake formula')
   }
@@ -931,8 +931,8 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(!/lp lock\/burn proof confirmed/i.test(lpOut), 'LP check never claims LP locked without evidence')
 
   const riskOut = formatRiskExplanation(noEvidence, 'Base')
-  assert.ok(riskOut.startsWith('RISK SIGNALS'), 'risk follow-up produces RISK SIGNALS header')
-  assert.ok(riskOut.includes('Evidence not yet checked:'), 'risk explanation lists precisely which evidence is missing')
+  assert.ok(riskOut.startsWith('RISK EXPLANATION'), 'risk follow-up produces RISK EXPLANATION header')
+  assert.ok(riskOut.includes('Open checks:'), 'risk explanation lists precisely which evidence is missing')
 
   // Task 6: quota is never consumed when the follow-up was answered straight from memory
   const memoryFollowupIdx = routeFile.indexOf('const quotaConsumed = fromMemory ? false : safetyFetchReturnedNonTaxCoreEvidence;')
@@ -1220,6 +1220,72 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
 
   // Task 6: no lastToken + no address still asks for a token contract via the existing branch.
   assert.ok(routeFile.includes('Send a token contract and I will check pool model'), 'with no lastToken and no address, Clark still asks for a token contract')
+}
+
+// ─── Clark risk explanation depth fix: explain full cached evidence, not just LP ──────
+{
+  const { formatRiskExplanation, tokenScanVerdictMeta, hasUsableTokenEvidence } = await import('../lib/server/clarkRouting.ts')
+
+  const fullEv = {
+    ok: true,
+    token: { name: 'Virtual Protocol', symbol: 'VIRTUAL', address: '0x0b3e328455c4059eeb9e3f84b5543f74e24e7e1b' },
+    market: { price: 0.5, liquidity: 4_700_000, volume24h: 97_600, change24h: null, marketCap: null },
+    holders: { top1: 9.6, top10: 48.2, holderCount: 1_034_796 },
+    lpControl: { status: 'team_controlled', reason: 'Single normal wallet holds dominant LP share.', confidence: 'high' },
+    security: { honeypot: false, buyTax: 0, sellTax: 0, ownerRenounced: true, mintable: true, proxy: false, missing: [] },
+    warnings: [],
+  }
+
+  for (const chainLabel of ['Base', 'Ethereum', 'BNB']) {
+    const out = formatRiskExplanation(fullEv, chainLabel)
+    assert.ok(out.startsWith(`RISK EXPLANATION — VIRTUAL (${chainLabel})`), `risk explanation header includes the real chain label "${chainLabel}"`)
+    assert.ok(out.includes('LP control: Team Controlled — Single normal wallet holds dominant LP share.'), `LP team-controlled reason is included for ${chainLabel}`)
+    assert.ok(out.includes('Mint authority: YES — new tokens can be minted'), `mintable YES is included for ${chainLabel}`)
+    assert.ok(out.includes('top-10 holders control 48.2% of supply'), `top-10 holder concentration is included for ${chainLabel}`)
+    assert.ok(out.includes('Honeypot: not detected.'), `honeypot-false is included for ${chainLabel}`)
+    assert.ok(out.includes('Taxes: buy 0.0% / sell 0.0%.'), `taxes are included for ${chainLabel}`)
+    assert.ok(out.includes('Ownership: renounced.'), `ownership-renounced is included for ${chainLabel}`)
+    assert.ok(out.includes('Proxy: no proxy detected.'), `proxy-false is included for ${chainLabel}`)
+    const expectedVerdict = tokenScanVerdictMeta(fullEv, hasUsableTokenEvidence(fullEv)).verdict
+    assert.ok(out.includes(`Verdict: ${expectedVerdict}`), `Verdict line matches the JSON verdict ("${expectedVerdict}") for ${chainLabel}`)
+    assert.ok(!out.toLowerCase().includes('aerodrome'), `no hardcoded Base-only LP wording leaks into ${chainLabel} output`)
+    assert.ok(!/\bsafe\b/i.test(out.split('Read:')[1] ?? ''), `risk explanation never claims "safe" outright for ${chainLabel}`)
+    assert.ok(!/\bscore\s*[:=]\s*\d/i.test(out), `risk explanation never fabricates a numeric score for ${chainLabel}`)
+  }
+
+  // Cleaner verdict still surfaces an open-check note even when everything looks clean.
+  const cleanerEv = {
+    ok: true,
+    token: { name: 'Clean Token', symbol: 'CLN', address: '0x1111111111111111111111111111111111111111' },
+    market: { price: 1, liquidity: 1_000_000, volume24h: 50_000, change24h: null, marketCap: null },
+    holders: { top1: 2, top10: 10, holderCount: 5000 },
+    lpControl: { status: 'burned', reason: 'LP tokens sent to burn address.', confidence: 'high' },
+    security: { honeypot: false, buyTax: 0, sellTax: 0, ownerRenounced: true, mintable: false, proxy: false, missing: [] },
+    warnings: [],
+  }
+  const cleanerOut = formatRiskExplanation(cleanerEv, 'Base')
+  const cleanerVerdict = tokenScanVerdictMeta(cleanerEv, hasUsableTokenEvidence(cleanerEv)).verdict
+  assert.ok(cleanerOut.includes(`Verdict: ${cleanerVerdict}`), 'Cleaner-style evidence produces a matching Verdict line')
+  assert.ok(cleanerOut.includes('Positive / lower-risk signals:'), 'Cleaner verdict still lists the positive signals behind it')
+
+  // No-evidence case: nothing fabricated, only open checks shown.
+  const noEv = {
+    ok: false,
+    token: { name: null, symbol: 'NEW', address: '0x2222222222222222222222222222222222222222' },
+    market: { price: null, liquidity: null, volume24h: null, change24h: null, marketCap: null },
+    holders: null,
+    lpControl: null,
+    security: { honeypot: null, buyTax: null, sellTax: null, ownerRenounced: null, mintable: null, proxy: null, missing: [] },
+    warnings: [],
+  }
+  const noEvOut = formatRiskExplanation(noEv, 'Ethereum')
+  assert.ok(noEvOut.includes('Open checks:'), 'missing evidence is listed under Open checks, never fabricated')
+  assert.ok(!noEvOut.includes('Main risk signals:'), 'no fabricated main risk signals when no evidence is confirmed')
+  assert.ok(!noEvOut.includes('Positive / lower-risk signals:'), 'no fabricated positive signals when no evidence is confirmed')
+
+  // Metadata plumbing in the route handler is unchanged by this formatter-only pass.
+  const routeFile = fs.readFileSync(path.join(__dirname, '..', 'app', 'api', 'clark', 'route.ts'), 'utf8')
+  assert.ok(routeFile.includes('else if (followupKind === "risk") { analysis = formatRiskExplanation(ev, "Base"); intentBadge = "risk_explanation"; }'), 'risk_explanation intent badge and toolsUsed/quota/verdict plumbing in the hard guard is untouched by this formatter-only pass')
 }
 
 console.log('test-clark-execution.mjs: all assertions passed')
