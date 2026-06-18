@@ -291,6 +291,8 @@ function ClarkAiContent() {
     }
     return String(value)
   }
+  const recentTokens = (clarkContextRef.current.lastMarketList ?? []).slice(0, 3)
+  const recentWalletValue = clientContext.lastWallet ? formatContextValue(clientContext.lastWallet) : null
   const quickActions = [
     { title: 'Scan Token', sub: 'Analyze any token', icon: '◎', accent: '#22d3ee', prompt: 'Analyze token ' },
     { title: 'Check LP', sub: 'Verify liquidity', icon: '⌘', accent: '#34d399', prompt: 'Check LP lock ' },
@@ -373,6 +375,16 @@ function ClarkAiContent() {
         .clk-usage-label, .clk-usage-count { font:700 11px var(--font-plex-mono, monospace); color:#728198; white-space:nowrap; }
         .clk-usage-track { flex:1; height:5px; border-radius:999px; background:rgba(148,163,184,.13); overflow:hidden; }
         .clk-usage-fill { height:100%; border-radius:999px; transition:width .5s; }
+        .clk-intel { margin-top:24px; }
+        .clk-intel-title { margin:0 0 14px; color:#f1f5f9; font-size:15px; font-weight:800; letter-spacing:.01em; }
+        .clk-intel-grid { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:14px; }
+        .clk-intel-card { position:relative; border:1px solid rgba(148,163,184,.14); border-radius:12px; background:linear-gradient(180deg, rgba(12,20,36,.7), rgba(5,10,22,.84)); padding:16px; box-shadow: inset 0 1px 0 rgba(255,255,255,.03); }
+        .clk-intel-card:not(.clk-intel-card--empty) { border-color: color-mix(in srgb, var(--accent) 38%, rgba(148,163,184,.2)); }
+        .clk-intel-icon { display:inline-flex; width:30px; height:30px; border-radius:9px; align-items:center; justify-content:center; margin-bottom:10px; color: var(--accent, #94a3b8); border:1px solid color-mix(in srgb, var(--accent, #475569) 45%, transparent); background: color-mix(in srgb, var(--accent, #475569) 10%, transparent); }
+        .clk-intel-card--empty .clk-intel-icon { color:#7c8aa1; border-color:rgba(148,163,184,.22); background:rgba(148,163,184,.06); }
+        .clk-intel-label { color:#e7edf6; font-weight:700; font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .clk-intel-card--empty .clk-intel-label { color:#9aa8bb; }
+        .clk-intel-sub { color:#7c8aa1; font-size:12px; margin-top:4px; }
         .clk-side { display:flex; flex-direction:column; gap:16px; }
         .clk-side-card { border:1px solid rgba(148,163,184,.16); border-radius:16px; background:linear-gradient(180deg, rgba(10,18,34,.8), rgba(3,7,17,.94)); padding:20px; box-shadow: inset 0 1px 0 rgba(255,255,255,.045), 0 14px 32px -16px rgba(0,0,0,.55); }
         .clk-side-card:hover { border-color: rgba(34,211,238,.22); }
@@ -401,8 +413,8 @@ function ClarkAiContent() {
         @keyframes clarkDotB { 0%,100%{ transform:translate(0,0) scale(1);} 50%{ transform:translate(-2px,2px) scale(1.16);} }
         @keyframes clarkPulse { 0%{ transform:scale(.94); opacity:.7;} 100%{ transform:scale(1.08); opacity:0;} }
         @media (max-width: 1100px) { .clk-shell { grid-template-columns:1fr; } .clk-side { grid-template-columns:repeat(3, minmax(0,1fr)); display:grid; } }
-        @media (max-width: 780px) { .clk-shell { padding:20px 14px 44px; } .clk-hero { grid-template-columns:1fr; } .clk-mark { display:none; } .clk-actions-row { grid-template-columns:1fr 1fr; } .clk-side { display:flex; } .clk-input-row { grid-template-columns:20px minmax(0,1fr) 44px; } .clk-helper { display:none; } }
-        @media (max-width: 480px) { .clk-actions-row { grid-template-columns:1fr; } .clk-title { font-size:40px; } .clk-ready-pill { padding:8px 12px; } }
+        @media (max-width: 780px) { .clk-shell { padding:20px 14px 44px; } .clk-hero { grid-template-columns:1fr; } .clk-mark { display:none; } .clk-actions-row { grid-template-columns:1fr 1fr; } .clk-side { display:flex; } .clk-input-row { grid-template-columns:20px minmax(0,1fr) 44px; } .clk-helper { display:none; } .clk-intel-grid { grid-template-columns:1fr 1fr; } }
+        @media (max-width: 480px) { .clk-actions-row { grid-template-columns:1fr; } .clk-title { font-size:40px; } .clk-ready-pill { padding:8px 12px; } .clk-intel-grid { grid-template-columns:1fr; } }
       `}</style>
 
       <div aria-hidden='true'>
@@ -418,7 +430,7 @@ function ClarkAiContent() {
                 <h1 className='clk-title'>Clark <span className='clk-title-ai'>AI</span></h1>
                 <span className='clk-ready-pill'>CORTEX READY</span>
               </div>
-              <p className='clk-subtitle'>Base-native AI analyst for tokens, wallets, and onchain risk.</p>
+              <p className='clk-subtitle'>Base-native AI analyst for tokens, wallets, liquidity, and onchain risk.</p>
               <div className='clk-live-row'>
                 <span className='clk-live-dot' />
                 <span className='clk-live-label'>LIVE</span>
@@ -465,8 +477,8 @@ function ClarkAiContent() {
               <div className='clk-intro'>
                 <ClarkOrb size={38} thinking={loading && !hasMessages} />
                 <div>
-                  <div className='clk-intro-title'>Clark</div>
-                  <p className='clk-intro-text'>I'm Clark, your onchain analyst.{`\n`}Ask me anything about tokens, wallets, liquidity, dev wallets, or Base movers.{`\n`}Example: “Analyze BRETT on Base” or “Check LP lock”.</p>
+                  <div className='clk-intro-title'>Clark is ready.</div>
+                  <p className='clk-intro-text'>Ask about tokens, wallets, liquidity, dev wallets, or Base movers.{`\n`}Example: “Analyze BRETT on Base” or “Check LP lock”.</p>
                 </div>
               </div>
               {messages.map((msg, idx) => {
@@ -530,6 +542,45 @@ function ClarkAiContent() {
                 <div className='clk-usage-fill' style={{ width: `${usagePct}%`, background: isLimited ? 'linear-gradient(90deg,#ef4444,#f43f5e)' : planLimit !== null && clarkUsed / planLimit >= 0.8 ? 'linear-gradient(90deg,#f59e0b,#ef4444)' : 'linear-gradient(90deg,#2dd4bf,#8b5cf6)' }} />
               </div>
               <span className='clk-usage-count'>{clarkUsed} / {planLimit ?? '...'}</span>
+            </div>
+          </section>
+
+          <section className='clk-intel'>
+            <h2 className='clk-intel-title'>Recent Intelligence</h2>
+            <div className='clk-intel-grid'>
+              {recentTokens.length > 0 ? (
+                recentTokens.map((t, idx) => (
+                  <div className='clk-intel-card' key={`${t.symbol}-${idx}`} style={{ '--accent': '#22d3ee' } as CSSProperties}>
+                    <span className='clk-intel-icon'>◎</span>
+                    <div className='clk-intel-label'>{t.symbol}</div>
+                    <div className='clk-intel-sub'>{t.reasonTag ?? 'From recent Base read'}</div>
+                  </div>
+                ))
+              ) : (
+                <div className='clk-intel-card clk-intel-card--empty'>
+                  <span className='clk-intel-icon'>◎</span>
+                  <div className='clk-intel-label'>No token read yet</div>
+                  <div className='clk-intel-sub'>Run a scan to populate</div>
+                </div>
+              )}
+              {recentWalletValue ? (
+                <div className='clk-intel-card' style={{ '--accent': '#8b5cf6' } as CSSProperties}>
+                  <span className='clk-intel-icon'>▣</span>
+                  <div className='clk-intel-label'>{recentWalletValue}</div>
+                  <div className='clk-intel-sub'>Last wallet read</div>
+                </div>
+              ) : (
+                <div className='clk-intel-card clk-intel-card--empty'>
+                  <span className='clk-intel-icon'>▣</span>
+                  <div className='clk-intel-label'>No wallet read yet</div>
+                  <div className='clk-intel-sub'>Run a scan to populate</div>
+                </div>
+              )}
+              <div className='clk-intel-card clk-intel-card--empty'>
+                <span className='clk-intel-icon'>⌘</span>
+                <div className='clk-intel-label'>No LP check yet</div>
+                <div className='clk-intel-sub'>Run a scan to populate</div>
+              </div>
             </div>
           </section>
         </main>
