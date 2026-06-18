@@ -29,6 +29,7 @@ import {
   formatNoTokenInMemory,
   formatFastTokenRead,
   hasUsableTokenEvidence,
+  tokenScanVerdictMeta,
   hasTaxEvidence,
   hasNonTaxCoreSafetyEvidence,
   needsSafetyEscalation,
@@ -550,7 +551,7 @@ type ClarkToolPlan = {
   };
 };
 
-type ClarkSource = "casual" | "feature_context" | "tool_call" | "fallback";
+type ClarkSource = "casual" | "feature_context" | "tool_call" | "fallback" | "token_core";
 type ClarkReplyMode =
   | "casual_help"
   | "general_market"
@@ -6980,7 +6981,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   // opts.fullScan is kept as a legacy alias for "use Token Core" (both now mean the same
   // thing: real security/LP/holders/dev evidence, not the market-only fast preview).
   // opts.fastPreview is the only way to request the weak clark_fast market-only path.
-  async function fetchTokenEvidence(tokenAddress: string, opts?: { fullScan?: boolean; fastPreview?: boolean }): Promise<TokenScanEvidence & { _tokenApiStatus?: string; _tokenApiHttpStatus?: number; _tokenScanFailureReason?: string; _tokenScanDebug?: Record<string, unknown>; _partialEvidenceUsed?: boolean; _evidenceSectionsPresent?: string[]; _evidenceSectionsMissing?: Array<{ section: string; reason: string }>; _tokenRouteStatus?: string; _tokenRouteDurationMs?: number; _honeypotStatus?: string; _honeypotDurationMs?: number; _tokenEvidenceMappedKeys?: string[]; _tokenApiMode?: string }> {
+  async function fetchTokenEvidence(tokenAddress: string, opts?: { fullScan?: boolean; fastPreview?: boolean }): Promise<TokenScanEvidence & { _tokenApiStatus?: string; _tokenApiHttpStatus?: number; _tokenScanFailureReason?: string; _tokenScanDebug?: Record<string, unknown>; _partialEvidenceUsed?: boolean; _evidenceSectionsPresent?: string[]; _evidenceSectionsMissing?: Array<{ section: string; reason: string }>; _tokenRouteStatus?: string; _tokenRouteDurationMs?: number; _honeypotStatus?: string; _honeypotDurationMs?: number; _tokenEvidenceMappedKeys?: string[]; _tokenApiMode?: string; _securityPathsFound?: string[]; _honeypotMappedFrom?: string | null; _honeypotValue?: boolean | null; _taxMappedFrom?: string | null; _lpMappedFrom?: string | null; _lpStatus?: string | null; _lpReason?: string | null }> {
 
     // ── Branch 1: /api/token (market, security, LP, holders, dev/contract flags) ──
     const tokenRouteStart = Date.now();
@@ -7216,7 +7217,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         status: typeof holdersSection.status === "string" ? holdersSection.status : (tokenRouteFailed ? "timed out" : "unavailable"),
       },
       security: {
-        honeypot: _hp?.honeypot ?? (typeof tSectSecurity.honeypot === "boolean" ? tSectSecurity.honeypot : (typeof tSecSim.honeypot === "boolean" ? tSecSim.honeypot : null)),
+        honeypot: _hp?.honeypot ?? (typeof tSectSecurity.honeypot === "boolean" ? tSectSecurity.honeypot : (typeof tSecSim.honeypot === "boolean" ? tSecSim.honeypot : (typeof hp.isHoneypot === "boolean" ? hp.isHoneypot : null))),
         buyTax: _hp?.buyTax ?? (typeof tSectSecurity.buyTax === "number" ? tSectSecurity.buyTax : (typeof tSecSim.buyTax === "number" ? tSecSim.buyTax : (typeof hp.buyTax === "number" ? hp.buyTax : null))),
         sellTax: _hp?.sellTax ?? (typeof tSectSecurity.sellTax === "number" ? tSectSecurity.sellTax : (typeof tSecSim.sellTax === "number" ? tSecSim.sellTax : (typeof hp.sellTax === "number" ? hp.sellTax : null))),
         ownerRenounced: typeof tDevOwnership.isRenounced === "boolean" ? tDevOwnership.isRenounced : null,
@@ -7231,6 +7232,11 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         reason: typeof (t.lpControl as Record<string, unknown>).reason === "string" ? String((t.lpControl as Record<string, unknown>).reason) : null,
         confidence: typeof (t.lpControl as Record<string, unknown>).confidence === "string" ? String((t.lpControl as Record<string, unknown>).confidence) : null,
         poolType: typeof (t.lpControl as Record<string, unknown>).poolType === "string" ? String((t.lpControl as Record<string, unknown>).poolType) : null,
+        proofApplicability: typeof (t.lpControl as Record<string, unknown>).proofApplicability === "string" ? String((t.lpControl as Record<string, unknown>).proofApplicability) : null,
+        displayLpModel: typeof (t.lpControl as Record<string, unknown>).displayLpModel === "string" ? String((t.lpControl as Record<string, unknown>).displayLpModel) : null,
+        lockStatus: typeof (t.lpControl as Record<string, unknown>).lockStatus === "string" ? String((t.lpControl as Record<string, unknown>).lockStatus) : null,
+        burnStatus: typeof (t.lpControl as Record<string, unknown>).burnStatus === "string" ? String((t.lpControl as Record<string, unknown>).burnStatus) : null,
+        proofStatus: typeof (t.lpControl as Record<string, unknown>).proofStatus === "string" ? String((t.lpControl as Record<string, unknown>).proofStatus) : null,
       } : null,
       liquidity: { pools: Array.isArray(t.pools) ? (t.pools as unknown[]).length : 0 },
       warnings: missingEvidence,
@@ -7247,6 +7253,26 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       _honeypotDurationMs: honeypotDurationMs,
       _tokenEvidenceMappedKeys: tokenEvidenceMappedKeys,
       _tokenApiMode: typeof t.mode === "string" ? t.mode : (wantsFullScan ? "clark_core" : "clark_fast"),
+      _securityPathsFound: [
+        typeof tSectSecurity.honeypot === "boolean" ? "sections.security.honeypot" : null,
+        typeof tSecSim.honeypot === "boolean" ? "security.simulation.honeypot" : null,
+        typeof hp.isHoneypot === "boolean" ? "honeypot.isHoneypot" : null,
+        _hp?.honeypot != null ? "clark_independent_honeypot_check" : null,
+      ].filter(Boolean) as string[],
+      _honeypotMappedFrom: _hp?.honeypot != null ? "clark_independent_honeypot_check"
+        : typeof tSectSecurity.honeypot === "boolean" ? "sections.security.honeypot"
+        : typeof tSecSim.honeypot === "boolean" ? "security.simulation.honeypot"
+        : typeof hp.isHoneypot === "boolean" ? "honeypot.isHoneypot"
+        : null,
+      _honeypotValue: _hp?.honeypot ?? (typeof tSectSecurity.honeypot === "boolean" ? tSectSecurity.honeypot : (typeof tSecSim.honeypot === "boolean" ? tSecSim.honeypot : (typeof hp.isHoneypot === "boolean" ? hp.isHoneypot : null))),
+      _taxMappedFrom: _hp?.buyTax != null || _hp?.sellTax != null ? "clark_independent_honeypot_check"
+        : typeof tSectSecurity.buyTax === "number" ? "sections.security.buyTax/sellTax"
+        : typeof tSecSim.buyTax === "number" ? "security.simulation.buyTax/sellTax"
+        : typeof hp.buyTax === "number" ? "honeypot.buyTax/sellTax"
+        : null,
+      _lpMappedFrom: (t.lpControl && typeof t.lpControl === "object") ? "lpControl" : null,
+      _lpStatus: (t.lpControl && typeof t.lpControl === "object") ? String((t.lpControl as Record<string, unknown>).status ?? "unverified") : null,
+      _lpReason: (t.lpControl && typeof t.lpControl === "object" && typeof (t.lpControl as Record<string, unknown>).reason === "string") ? String((t.lpControl as Record<string, unknown>).reason) : null,
     };
   }
 
@@ -7419,6 +7445,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     // Task 1/2: usable-evidence gate — quota is never charged unless Clark actually
     // returned something the user can use (token identity, market, holders, LP, or security).
     const usableEvidence = hasUsableTokenEvidence(ev);
+    const tokenVerdictMeta = tokenScanVerdictMeta(ev, usableEvidence);
 
     let analysis: string;
     let formatterUsed: string;
@@ -7532,11 +7559,25 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       },
       tokenScanFailureReason: evDebug._tokenScanFailureReason ?? null,
       tokenScanDebug: evDebug._tokenScanDebug ?? null,
+      securityPathsFound: evDebug._securityPathsFound ?? [],
+      honeypotMappedFrom: evDebug._honeypotMappedFrom ?? null,
+      honeypotValue: evDebug._honeypotValue ?? null,
+      taxMappedFrom: evDebug._taxMappedFrom ?? null,
+      lpMappedFrom: evDebug._lpMappedFrom ?? null,
+      lpStatus: evDebug._lpStatus ?? null,
+      lpReason: evDebug._lpReason ?? null,
+      verdictMappedFrom: usableEvidence ? "token_core_evidence" : "fallback",
+      verdictValue: tokenVerdictMeta.verdict,
+      confidenceValue: tokenVerdictMeta.confidence,
+      source: tokenVerdictMeta.source,
     } : undefined;
 
     return {
       feature: "clark-ai", chain, mode: "analysis", intent: "token_scan", toolsUsed: ["token_scan"],
       analysis,
+      verdict: tokenVerdictMeta.verdict,
+      confidence: tokenVerdictMeta.confidence,
+      source: tokenVerdictMeta.source,
       intentBadge: "token_scan",
       actions: buildRoutedActions(["Open Token Scanner", "Run LP Check"]),
       quotaConsumed,
@@ -7565,9 +7606,13 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       });
     }
     updateMemIntent(sessionMem, "token_safety");
+    const safetyVerdictMeta = tokenScanVerdictMeta(r.ev, hasUsableTokenEvidence(r.ev));
     return {
       feature: "clark-ai", chain, mode: "analysis", intent: "token_safety", toolsUsed,
       analysis,
+      verdict: safetyVerdictMeta.verdict,
+      confidence: safetyVerdictMeta.confidence,
+      source: safetyVerdictMeta.source,
       intentBadge: "token_safety",
       actions: buildRoutedActions(["Open Token Scanner", "Run LP Check"]),
       quotaConsumed: r.fromMemory ? false : (r.ev.ok ?? false),
@@ -7589,9 +7634,13 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const toolsUsed: string[] = r.fromMemory ? ["memory"] : ["token_scan"];
     const analysis = formatDevRugCheck(r.ev, "Base");
     updateMemIntent(sessionMem, "dev_rug_check");
+    const rugVerdictMeta = tokenScanVerdictMeta(r.ev, hasUsableTokenEvidence(r.ev));
     return {
       feature: "clark-ai", chain, mode: "analysis", intent: "dev_rug_check", toolsUsed,
       analysis,
+      verdict: rugVerdictMeta.verdict,
+      confidence: rugVerdictMeta.confidence,
+      source: rugVerdictMeta.source,
       intentBadge: "dev_rug_check",
       actions: buildRoutedActions(["Open Token Scanner", "Run LP Check"]),
       quotaConsumed: r.fromMemory ? false : (r.ev.ok ?? false),
@@ -7665,9 +7714,13 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const toolsUsed: string[] = r.fromMemory ? ["memory"] : ["token_scan"];
     const analysis = formatRiskExplanation(r.ev, "Base");
     updateMemIntent(sessionMem, "risk_explanation");
+    const riskVerdictMeta = tokenScanVerdictMeta(r.ev, hasUsableTokenEvidence(r.ev));
     return {
       feature: "clark-ai", chain, mode: "analysis", intent: "risk_explanation", toolsUsed,
       analysis,
+      verdict: riskVerdictMeta.verdict,
+      confidence: riskVerdictMeta.confidence,
+      source: riskVerdictMeta.source,
       intentBadge: "risk_explanation",
       actions: buildRoutedActions(["Open Token Scanner"]),
       quotaConsumed: r.fromMemory ? false : (r.ev.ok ?? false),
@@ -9211,13 +9264,24 @@ function normalizeApiReplyShape(result: unknown, body: ClarkRequestBody) {
     quotaConsumedOverride = false
   }
 
+  // A handler (e.g. token_scan) may already have set a real, mapped verdict/confidence/source
+  // on the result object — those must win over this generic regex fallback, which only knows
+  // the AVOID/WATCH/SCAN DEEPER/TRUSTWORTHY/UNKNOWN vocabulary and would otherwise null out a
+  // perfectly good token-evidence-derived verdict that uses different wording.
   const verdictMatch = reply.match(/\bVerdict:\s*(AVOID|WATCH|SCAN DEEPER|TRUSTWORTHY|UNKNOWN)\b/i);
   const confMatch = reply.match(/\bConfidence:\s*(Low|Medium|High)\b/i);
-  const verdict = verdictMatch ? verdictMatch[1].toUpperCase() : null;
-  const confidence = confMatch ? `${confMatch[1].charAt(0).toUpperCase()}${confMatch[1].slice(1).toLowerCase()}` : null;
-  const source: ClarkSource = verdict
-    ? (body.feature === "clark-ai" ? "feature_context" : "tool_call")
-    : (isCasualAssistantPrompt(body.prompt ?? "") ? "casual" : "fallback");
+  const hasMappedVerdict = typeof obj.verdict === "string" && obj.verdict.length > 0;
+  const verdict = hasMappedVerdict
+    ? (obj.verdict as string)
+    : (verdictMatch ? verdictMatch[1].toUpperCase() : null);
+  const confidence = (typeof obj.confidence === "string" && obj.confidence.length > 0)
+    ? (obj.confidence as string)
+    : (confMatch ? `${confMatch[1].charAt(0).toUpperCase()}${confMatch[1].slice(1).toLowerCase()}` : null);
+  const source: ClarkSource = (typeof obj.source === "string" && obj.source.length > 0)
+    ? (obj.source as ClarkSource)
+    : (verdict
+      ? (body.feature === "clark-ai" ? "feature_context" : "tool_call")
+      : (isCasualAssistantPrompt(body.prompt ?? "") ? "casual" : "fallback"));
 
   const intentBadge = typeof obj.intentBadge === "string" ? obj.intentBadge
     : (typeof obj.intent === "string" ? obj.intent : (body.mode ?? body.feature ?? "unknown"));

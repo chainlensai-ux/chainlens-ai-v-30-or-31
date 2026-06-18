@@ -742,6 +742,11 @@ export type TokenScanEvidence = {
     reason?: string | null;
     confidence?: string | null;
     poolType?: string | null;
+    proofApplicability?: string | null;
+    displayLpModel?: string | null;
+    lockStatus?: string | null;
+    burnStatus?: string | null;
+    proofStatus?: string | null;
   } | null;
   liquidity?: { pools?: number; topPoolLiquidity?: number | null } | null;
   warnings?: string[];
@@ -821,16 +826,20 @@ function holderLine(h: TokenScanEvidence["holders"]): string {
 
 function lpStatusLine(ev: TokenScanEvidence): string {
   const lp = ev.lpControl;
-  if (!lp) return "LP proof: open check";
-  const poolType = lp.poolType ?? "";
-  const concentrated = poolType.includes("concentrated") || poolType.includes("clmm") || poolType.includes("infinity");
+  if (!lp) return "LP proof: Open Check — no LP control data returned";
+  const poolType = lp.poolType ?? lp.displayLpModel ?? "";
+  const concentrated =
+    poolType.includes("concentrated") || poolType.includes("clmm") || poolType.includes("infinity") ||
+    lp.proofApplicability === "not_applicable" || lp.displayLpModel === "concentrated_liquidity" || lp.displayLpModel === "no_pool";
   const status = lp.status ?? "unverified";
-  if (concentrated) return "LP proof: concentrated/protocol pool — ERC-20 LP lock may not apply";
-  if (status === "locked") return "LP proof: lock/burn confirmed";
-  if (status === "burned") return "LP proof: burned — confirmed";
-  if (status === "team_controlled" || status === "wallet_controlled") return "LP proof: wallet/team controlled — pull risk present";
-  if (status === "open_check" || status === "unverified") return "LP proof: open check — not confirmed";
-  return `LP proof: ${status}`;
+  const reason = lp.reason ?? null;
+  if (concentrated) return `LP proof: Open Check — concentrated pool LP proof not applicable${reason ? ` (${reason})` : ""}`;
+  if (status === "locked" || lp.lockStatus === "locked") return `LP proof: Locked/Burned — confirmed by LP proof${reason ? ` (${reason})` : ""}`;
+  if (status === "burned" || lp.burnStatus === "burned") return `LP proof: Locked/Burned — confirmed by LP proof${reason ? ` (${reason})` : ""}`;
+  if (status === "team_controlled" || status === "wallet_controlled") return `LP proof: Team Controlled — LP tokens appear wallet-controlled${reason ? ` (${reason})` : ""}`;
+  if (status === "partial") return `LP proof: Partial — ${reason ?? "secondary LP exposure found but primary LP proof not fully confirmed."}`;
+  if (status === "open_check" || status === "unverified") return `LP proof: Open Check — ${reason ?? "not confirmed"}`;
+  return `LP proof: ${status}${reason ? ` — ${reason}` : ""}`;
 }
 
 function verdictLabel(ev: TokenScanEvidence): string {
@@ -844,6 +853,41 @@ function verdictLabel(ev: TokenScanEvidence): string {
   if (h?.top10 != null && h.top10 > 80) return "Caution";
   if (sec?.honeypot === false && sec?.ownerRenounced === true && (lp?.status === "locked" || lp?.status === "burned")) return "Cleaner";
   return "Open Check";
+}
+
+// Public, structured verdict for the JSON response (data.verdict/data.confidence/data.source).
+// Must stay in sync with the human-readable "Verdict:" line produced by verdictLabel() above —
+// both read the same TokenScanEvidence fields, so they can never disagree.
+export function tokenScanVerdictMeta(ev: TokenScanEvidence, usableEvidence: boolean): {
+  verdict: string;
+  confidence: "full" | "partial" | "none";
+  source: "token_core" | "fallback";
+} {
+  const label = verdictLabel(ev);
+  const confidence: "full" | "partial" | "none" = ev.ok ? "full" : usableEvidence ? "partial" : "none";
+  const verdict = !usableEvidence
+    ? "Open Check"
+    : label === "Open Check"
+      ? "Open Check / Caution based on available evidence"
+      : label;
+  return {
+    verdict,
+    confidence,
+    source: usableEvidence ? "token_core" : "fallback",
+  };
+}
+
+// Distinguishes "honeypot specifically wasn't returned" from "the whole security check
+// failed" — tax data alone never implies a honeypot result, and a missing honeypot result
+// never implies tax data is also missing. Never fakes a honeypot verdict from tax data alone.
+function securityStatusLine(sec: NonNullable<TokenScanEvidence["security"]>): string {
+  if (sec.honeypot === false) return "Honeypot not detected";
+  if (sec.honeypot === true) return "Honeypot detected";
+  if (sec.buyTax != null || sec.sellTax != null) return "Tax data returned, honeypot simulation unavailable";
+  const reason = sec.securityStatus && sec.securityStatus !== "unverified" && sec.securityStatus !== "unknown"
+    ? sec.securityStatus
+    : "security simulation not returned";
+  return `Open Check — ${reason}`;
 }
 
 export function formatTokenScanResult(ev: TokenScanEvidence, chain = "Base"): string {
@@ -872,15 +916,14 @@ export function formatTokenScanResult(ev: TokenScanEvidence, chain = "Base"): st
 
   // Security
   if (sec) {
-    if (sec.honeypot == null) lines.push(`- Security: Open Check — honeypot simulation not returned`);
-    else lines.push(`- Honeypot: ${sec.honeypot ? "YES — flagged" : "no signal found"}`);
+    lines.push(`- Security: ${securityStatusLine(sec)}`);
     if (sec.buyTax != null || sec.sellTax != null) lines.push(`- Buy tax: ${fmtTaxPct(sec.buyTax)} / Sell tax: ${fmtTaxPct(sec.sellTax)}`);
     if (sec.mintable != null) lines.push(`- Mintable: ${sec.mintable ? "YES" : "no"}`);
     if (sec.ownerRenounced != null) lines.push(`- Ownership: ${sec.ownerRenounced ? "renounced" : "active owner"}`);
     if (sec.proxy != null) lines.push(`- Proxy: ${sec.proxy ? "YES" : "no"}`);
   }
 
-  const verdict = verdictLabel(ev);
+  const { verdict } = tokenScanVerdictMeta(ev, hasUsableTokenEvidence(ev));
   lines.push(`- Verdict: ${verdict}`);
 
   // Filter raw field-name tokens (e.g. "honeypot", "buyTax") out of the warnings dump —
@@ -944,7 +987,7 @@ export function formatTokenSafetyAnswer(ev: TokenScanEvidence, chain = "Base"): 
   const h = ev.holders;
   const lp = ev.lpControl;
   const mkt = ev.market;
-  const verdict = verdictLabel(ev);
+  const verdict = tokenScanVerdictMeta(ev, hasUsableTokenEvidence(ev)).verdict;
 
   // Confirmed facts (good or neutral) vs. confirmed bad evidence vs. evidence that
   // simply was not returned. Missing evidence is never listed as a "signal" — it
@@ -968,6 +1011,9 @@ export function formatTokenSafetyAnswer(ev: TokenScanEvidence, chain = "Base"): 
     risks.push("Honeypot flag detected — buy/sell simulation failed.");
   } else if (sec?.honeypot === false) {
     visible.push("Honeypot: no signal found from available checks.");
+  } else if (sec?.buyTax != null || sec?.sellTax != null) {
+    openChecks.push("Honeypot: tax data returned, honeypot simulation unavailable.");
+    openTopics.push("honeypot");
   } else {
     openChecks.push("Honeypot/security: simulation not returned.");
     openTopics.push("honeypot/security");

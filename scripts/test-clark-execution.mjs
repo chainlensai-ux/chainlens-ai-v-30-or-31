@@ -429,7 +429,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(out.includes('TEST'), 'formatter includes symbol')
   assert.ok(out.includes('Liquidity:'), 'formatter surfaces liquidity')
   assert.ok(out.includes('Holders:'), 'formatter surfaces holders')
-  assert.ok(out.includes('Honeypot:'), 'formatter surfaces honeypot status')
+  assert.ok(out.includes('Honeypot not detected'), 'formatter surfaces honeypot status')
   assert.ok(!out.toLowerCase().includes('geckoterminal'), 'no provider names in public output')
   assert.ok(!out.toLowerCase().includes('goldrush'), 'no provider names in public output')
 
@@ -968,7 +968,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   const scanOut = formatTokenScanResult(virtualLikeEv, 'Base')
   assert.ok(!scanOut.includes('Note: honeypot'), 'token scan output never prints the raw "Note: honeypot" token dump')
   assert.ok(!scanOut.includes('Security open checks: honeypot'), 'token scan output never prints the raw "Security open checks: honeypot" dump')
-  assert.ok(scanOut.includes('Security: Open Check — honeypot simulation not returned'), 'token scan output uses the precise honeypot open-check sentence')
+  assert.ok(scanOut.includes('Security: Open Check — security simulation not returned'), 'token scan output uses the precise honeypot open-check sentence')
 }
 
 // ─── Evidence depth: tax-only vs non-tax core safety evidence + escalation ──
@@ -1034,6 +1034,56 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   // full pipeline that always ran for normal (non-clark_fast) requests, so Token Scanner
   // itself was not rewritten.
   assert.ok(tokenRouteFile.includes("isClarkFastMode = scanMode === 'clark_fast'"), '/api/token still only special-cases clark_fast; clark_core runs the existing full pipeline unchanged')
+}
+
+// ─── Final evidence-quality pass: honeypot/security mapping, LP detail, verdict sync ──
+{
+  const { formatTokenScanResult, tokenScanVerdictMeta, hasUsableTokenEvidence } = await import('../lib/server/clarkRouting.ts')
+
+  const base = {
+    ok: true,
+    token: { name: 'Virtual Protocol', symbol: 'VIRTUAL', address: '0x0b3e328455c4059eeb9e3f84b5543f74e24e7e1b' },
+    market: { price: 0.5, liquidity: 4_700_000, volume24h: 90_600, change24h: -6.2, marketCap: null },
+    holders: { top1: 9.6, top10: 48.2, holderCount: 1_034_796, status: 'verified' },
+    lpControl: { status: 'partial', reason: 'secondary LP exposure found but primary LP proof not fully confirmed.', confidence: 'medium', poolType: 'v2' },
+    security: { honeypot: null, buyTax: 0, sellTax: 0, ownerRenounced: true, mintable: true, proxy: false, securityStatus: 'unverified', riskLevel: 'unknown', missing: [] },
+    warnings: [],
+  }
+
+  // honeypot === false on any supported public path → "Honeypot not detected"
+  const honeypotFalseOut = formatTokenScanResult({ ...base, security: { ...base.security, honeypot: false } }, 'Base')
+  assert.ok(honeypotFalseOut.includes('Security: Honeypot not detected'), 'honeypot=false maps to "Honeypot not detected"')
+
+  // honeypot === true → "Honeypot detected", and the verdict must never call it safe
+  const honeypotTrueOut = formatTokenScanResult({ ...base, security: { ...base.security, honeypot: true } }, 'Base')
+  assert.ok(honeypotTrueOut.includes('Security: Honeypot detected'), 'honeypot=true maps to "Honeypot detected"')
+  assert.ok(honeypotTrueOut.includes('Verdict: Avoid'), 'honeypot=true never produces a safe-sounding verdict')
+
+  // tax exists but honeypot missing → tax-data-returned wording, not the generic "simulation not returned"
+  const taxOnlyOut = formatTokenScanResult(base, 'Base')
+  assert.ok(taxOnlyOut.includes('Security: Tax data returned, honeypot simulation unavailable'), 'tax-only evidence uses the tax-specific honeypot-unavailable wording')
+  assert.ok(!taxOnlyOut.includes('honeypot simulation not returned'), 'tax-only evidence never uses the generic "simulation not returned" wording')
+
+  // lpControl.status === 'partial' with a reason → the reason is printed, not just the bare word
+  assert.ok(taxOnlyOut.includes('LP proof: Partial — secondary LP exposure found but primary LP proof not fully confirmed.'), 'LP partial status prints its real reason, not just "partial"')
+
+  // Real evidence (mintable/holders/LP/ownership) produces a non-null, non-fallback verdict
+  // that stays in sync with the displayed "Verdict:" line, and source is not "fallback".
+  const meta = tokenScanVerdictMeta(base, hasUsableTokenEvidence(base))
+  assert.ok(meta.verdict != null, 'data.verdict is not null when real evidence exists')
+  assert.notEqual(meta.source, 'fallback', 'source is not "fallback" when mapped from real Token Scanner evidence')
+  assert.ok(taxOnlyOut.includes(`Verdict: ${meta.verdict}`), 'displayed Verdict line matches data.verdict exactly')
+
+  // No evidence at all → conservative Open Check verdict and fallback source, never a fake clean call
+  const noEvMeta = tokenScanVerdictMeta({ ok: false }, false)
+  assert.equal(noEvMeta.verdict, 'Open Check', 'no evidence produces a conservative Open Check verdict')
+  assert.equal(noEvMeta.source, 'fallback', 'no evidence reports source as fallback')
+
+  // Follow-up safety answer surfaces mintable/holders/LP/security evidence, never fakes safe/locked/honeypot
+  const { formatTokenSafetyAnswer } = await import('../lib/server/clarkRouting.ts')
+  const safetyOut = formatTokenSafetyAnswer({ ...base, security: { ...base.security, honeypot: false } }, 'Base')
+  assert.ok(safetyOut.includes('top-10 at 48.2%') || safetyOut.includes('48.2'), 'safety follow-up surfaces holder concentration evidence')
+  assert.ok(!/lp lock\/burn proof confirmed/i.test(safetyOut), 'safety follow-up never fakes a locked LP claim from partial evidence')
 }
 
 console.log('test-clark-execution.mjs: all assertions passed')
