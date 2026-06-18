@@ -764,6 +764,23 @@ export function hasUsableTokenEvidence(ev: TokenScanEvidence | null | undefined)
   return hasTokenIdentity || hasMarket || hasHolders || hasLp || hasSecurity || hasContractFlags;
 }
 
+// True only when at least one *safety-relevant* section is actually confirmed
+// (honeypot, taxes, LP status, holder concentration, ownership, or contract flags) —
+// market/liquidity/volume alone is not enough to call evidence "safety evidence".
+export function hasCoreSafetyEvidence(ev: TokenScanEvidence | null | undefined): boolean {
+  if (!ev) return false;
+  const sec = ev.security;
+  const lp = ev.lpControl;
+  const h = ev.holders;
+  const hasHoneypotConfirmed = sec?.honeypot != null;
+  const hasTaxConfirmed = sec?.buyTax != null || sec?.sellTax != null;
+  const hasLpConfirmed = lp != null && typeof lp.status === "string" && lp.status.length > 0 && lp.status !== "open_check" && lp.status !== "unverified";
+  const hasHolderConfirmed = h?.top1 != null || h?.top10 != null || h?.holderCount != null;
+  const hasOwnershipConfirmed = sec?.ownerRenounced != null;
+  const hasFlagsConfirmed = sec?.mintable != null || sec?.proxy != null;
+  return hasHoneypotConfirmed || hasTaxConfirmed || hasLpConfirmed || hasHolderConfirmed || hasOwnershipConfirmed || hasFlagsConfirmed;
+}
+
 function fmtTaxPct(n: number | null | undefined): string {
   if (n == null || !Number.isFinite(n)) return "open check";
   return `${n.toFixed(1)}%`;

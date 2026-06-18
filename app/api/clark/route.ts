@@ -29,6 +29,7 @@ import {
   formatNoTokenInMemory,
   formatFastTokenRead,
   hasUsableTokenEvidence,
+  hasCoreSafetyEvidence,
   isTokenFollowupPrompt,
   classifyTokenFollowupKind,
   type TokenScanEvidence,
@@ -6164,8 +6165,23 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const followupKind = classifyTokenFollowupKind(prompt);
     const tokenAddress = sessionMem.lastToken.address;
     const cached = sessionMem.lastToken.cachedEvidence ?? null;
-    const ev: TokenScanEvidence = cached ?? (await fetchTokenEvidence(tokenAddress));
-    const fromMemory = Boolean(cached);
+
+    // Case A: cached evidence already has at least one confirmed safety section — answer from
+    // memory, never re-fetch, never consume quota.
+    // Case B: cached evidence only has market/taxes (or nothing) — run one deeper safety fetch
+    // (mode: "clark_safety" / full token route) before answering, since memory alone would
+    // leave every safety section as a generic Open Check even when Token Scanner can return them.
+    let ev: TokenScanEvidence;
+    let fromMemory: boolean;
+    let safetyModeAttempted = false;
+    if (cached && hasCoreSafetyEvidence(cached)) {
+      ev = cached;
+      fromMemory = true;
+    } else {
+      safetyModeAttempted = true;
+      ev = await fetchTokenEvidence(tokenAddress, { fullScan: true });
+      fromMemory = false;
+    }
 
     let analysis: string;
     let intentBadge: string;
@@ -6174,6 +6190,8 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     else if (followupKind === "risk") { analysis = formatRiskExplanation(ev, "Base"); intentBadge = "risk_explanation"; }
     else { analysis = formatTokenSafetyAnswer(ev, "Base"); intentBadge = "token_safety"; }
 
+    const newSafetyEvidence = safetyModeAttempted && hasCoreSafetyEvidence(ev);
+
     if (!fromMemory) {
       updateMemToken(sessionMem, tokenAddress, ev.token?.symbol ?? null, ev.token?.name ?? null, analysis, {
         confidence: (ev as Record<string, unknown>)._partialEvidenceUsed ? "partial" : ev.ok ? "full" : "none",
@@ -6181,12 +6199,25 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       });
     }
     updateMemIntent(sessionMem, intentBadge);
+    // Quota: never charged when answered purely from memory; when a safety fetch was run,
+    // only charged if it actually returned usable safety evidence (never pay for a fetch that
+    // came back empty).
+    const quotaConsumed = fromMemory ? false : newSafetyEvidence;
     return {
-      feature: "clark-ai", chain, mode: "analysis", intent: intentBadge, toolsUsed: fromMemory ? ["memory"] : ["token_scan"],
+      feature: "clark-ai", chain, mode: "analysis", intent: intentBadge, toolsUsed: fromMemory ? ["memory"] : ["token_safety_fetch"],
       analysis,
       intentBadge,
       actions: buildRoutedActions(["Open Token Scanner", "Run LP Check"]),
-      quotaConsumed: fromMemory ? false : (ev.ok ?? false),
+      quotaConsumed,
+      ...(clarkDebugMode ? {
+        clarkDebugReceipt: {
+          tokenMode: fromMemory ? "memory" : "clark_safety",
+          safetyModeAttempted,
+          coreSafetyEvidence: hasCoreSafetyEvidence(ev),
+          quotaEligible: !fromMemory,
+          quotaConsumed,
+        },
+      } : {}),
     };
   }
 

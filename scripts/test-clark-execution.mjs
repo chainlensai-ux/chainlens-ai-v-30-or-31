@@ -933,7 +933,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(riskOut.includes('Evidence not yet checked:'), 'risk explanation lists precisely which evidence is missing')
 
   // Task 6: quota is never consumed when the follow-up was answered straight from memory
-  const memoryFollowupIdx = routeFile.indexOf('quotaConsumed: fromMemory ? false : (ev.ok ?? false),')
+  const memoryFollowupIdx = routeFile.indexOf('const quotaConsumed = fromMemory ? false : newSafetyEvidence;')
   assert.ok(memoryFollowupIdx > -1, 'memory-served token follow-up never consumes quota')
 }
 
@@ -968,6 +968,39 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(!scanOut.includes('Note: honeypot'), 'token scan output never prints the raw "Note: honeypot" token dump')
   assert.ok(!scanOut.includes('Security open checks: honeypot'), 'token scan output never prints the raw "Security open checks: honeypot" dump')
   assert.ok(scanOut.includes('Security: Open Check — honeypot simulation not returned'), 'token scan output uses the precise honeypot open-check sentence')
+}
+
+// ─── Evidence depth: core safety evidence helper + safety-fetch escalation ──
+{
+  const { hasCoreSafetyEvidence } = await import('../lib/server/clarkRouting.ts')
+  const fs = await import('node:fs')
+  const path = await import('node:path')
+  const routeFile = fs.readFileSync(path.join(process.cwd(), 'app/api/clark/route.ts'), 'utf8')
+
+  // Market/taxes-only evidence (what clark_fast returns) is NOT core safety evidence.
+  const marketOnly = {
+    ok: true,
+    token: { name: 'Virtual Protocol', symbol: 'VIRTUAL', address: '0x0b3e328455c4059eeb9e3f84b5543f74e24e7e1b' },
+    market: { price: 0.5, liquidity: 4_900_000, volume24h: 97_600, change24h: null, marketCap: null },
+    holders: { top1: null, top10: null, holderCount: null, status: 'open_check' },
+    lpControl: { status: 'open_check', reason: null, confidence: null, poolType: null },
+    security: { honeypot: null, buyTax: null, sellTax: null, ownerRenounced: null, mintable: null, proxy: null, securityStatus: 'unverified', riskLevel: 'unknown', missing: [] },
+    warnings: [],
+  }
+  assert.equal(hasCoreSafetyEvidence(marketOnly), false, 'market/liquidity/volume alone is not core safety evidence')
+
+  // Any one confirmed safety section makes it core safety evidence.
+  assert.equal(hasCoreSafetyEvidence({ ...marketOnly, security: { ...marketOnly.security, honeypot: false } }), true, 'confirmed honeypot=false counts as core safety evidence')
+  assert.equal(hasCoreSafetyEvidence({ ...marketOnly, lpControl: { status: 'burned', reason: null, confidence: 'high', poolType: 'v2' } }), true, 'confirmed LP status counts as core safety evidence')
+  assert.equal(hasCoreSafetyEvidence({ ...marketOnly, holders: { top1: 5, top10: 30, holderCount: 800, status: 'verified' } }), true, 'confirmed holder concentration counts as core safety evidence')
+  assert.equal(hasCoreSafetyEvidence({ ...marketOnly, security: { ...marketOnly.security, ownerRenounced: true } }), true, 'confirmed ownership status counts as core safety evidence')
+  assert.equal(hasCoreSafetyEvidence(null), false, 'no evidence is never core safety evidence')
+
+  // The follow-up guard must escalate to a real fetch (fullScan) when cached evidence lacks
+  // core safety sections, and must never stay memory-only forever.
+  assert.ok(routeFile.includes('hasCoreSafetyEvidence(cached)'), 'follow-up guard checks cached evidence for core safety sections before answering from memory')
+  assert.ok(routeFile.includes('fetchTokenEvidence(tokenAddress, { fullScan: true })'), 'follow-up guard runs a deeper (non clark_fast) fetch when memory lacks core safety evidence')
+  assert.ok(routeFile.includes('const quotaConsumed = fromMemory ? false : newSafetyEvidence;'), 'quota is only charged when the safety fetch actually returns usable safety evidence')
 }
 
 console.log('test-clark-execution.mjs: all assertions passed')
