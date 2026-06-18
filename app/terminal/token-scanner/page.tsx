@@ -3305,23 +3305,40 @@ export default function TerminalTokenScanner() {
   const [trackedSaving, setTrackedSaving]   = useState(false)
   const [trackedLoggedOut, setTrackedLoggedOut] = useState(false)
   const [trackedUnavailable, setTrackedUnavailable] = useState(false)
+  const [walletConnected, setWalletConnected] = useState(false)
+
+  async function refreshTrackedTokens() {
+    setTrackedLoading(true)
+    setTrackedUnavailable(false)
+    try {
+      const { data: sd } = await supabase.auth.getSession()
+      const tok = sd.session?.access_token
+      if (!tok) {
+        setTrackedTokens([])
+        setTrackedLoggedOut(true)
+        return
+      }
+      setTrackedLoggedOut(false)
+      const res = await fetch('/api/watchlist/tokens', { headers: { Authorization: `Bearer ${tok}` } })
+      if (!res.ok) { setTrackedUnavailable(true); return }
+      const json = await res.json()
+      setTrackedTokens(json.tokens ?? [])
+    } catch { setTrackedUnavailable(true) } finally { setTrackedLoading(false) }
+  }
 
   useEffect(() => {
-    let cancelled = false
-    async function loadTracked() {
-      setTrackedLoading(true)
-      try {
-        const { data: sd } = await supabase.auth.getSession()
-        const tok = sd.session?.access_token
-        if (!tok) { if (!cancelled) { setTrackedLoggedOut(true); setTrackedLoading(false) } return }
-        const res = await fetch('/api/watchlist/tokens', { headers: { Authorization: `Bearer ${tok}` } })
-        if (!res.ok) { if (!cancelled) setTrackedUnavailable(true); return }
-        const json = await res.json()
-        if (!cancelled) setTrackedTokens(json.tokens ?? [])
-      } catch { if (!cancelled) setTrackedUnavailable(true) } finally { if (!cancelled) setTrackedLoading(false) }
+    const detectWallet = () => {
+      const eth = (window as Window & { ethereum?: { selectedAddress?: string | null } }).ethereum
+      setWalletConnected(Boolean(eth?.selectedAddress))
     }
-    loadTracked()
-    return () => { cancelled = true }
+    detectWallet()
+    void refreshTrackedTokens()
+    const { data: authListener } = supabase.auth.onAuthStateChange(() => { void refreshTrackedTokens() })
+    window.addEventListener('focus', detectWallet)
+    return () => {
+      authListener.subscription.unsubscribe()
+      window.removeEventListener('focus', detectWallet)
+    }
   }, [])
 
   async function saveTrackedToken() {
@@ -3330,7 +3347,7 @@ export default function TerminalTokenScanner() {
     try {
       const { data: sd } = await supabase.auth.getSession()
       const tok = sd.session?.access_token
-      if (!tok) { setTrackedLoggedOut(true); return }
+      if (!tok) { setTrackedLoggedOut(true); setTrackedUnavailable(false); return }
       const scx = calculateCortexScoreV2(result)
       const res = await fetch('/api/watchlist/tokens', {
         method: 'POST',
@@ -3345,11 +3362,7 @@ export default function TerminalTokenScanner() {
         }),
       })
       if (!res.ok) { setTrackedUnavailable(true); return }
-      const res2 = await fetch('/api/watchlist/tokens', { headers: { Authorization: `Bearer ${tok}` } })
-      if (!res2.ok) { setTrackedUnavailable(true); return }
-      const json2 = await res2.json()
-      setTrackedTokens(json2.tokens ?? [])
-      setTrackedUnavailable(false)
+      await refreshTrackedTokens()
     } catch { setTrackedUnavailable(true) } finally { setTrackedSaving(false) }
   }
 
@@ -3683,7 +3696,7 @@ export default function TerminalTokenScanner() {
         @keyframes liveDotPulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.35;transform:scale(.65)} }
         @keyframes radarRing { 0%{transform:scale(.4);opacity:.65} 100%{transform:scale(1.85);opacity:0} }
         @keyframes shimmer { 0%{background-position:-300% 0} 100%{background-position:300% 0} }
-        @keyframes scanBtnGlow { 0%,100%{box-shadow:0 0 0 rgba(45,212,191,0)} 50%{box-shadow:0 0 24px rgba(45,212,191,.30),0 0 42px rgba(139,92,246,.16)} }
+        @keyframes scanBtnGlow { 0%,100%{box-shadow:inset 0 1px 0 rgba(255,255,255,.06),0 0 16px rgba(0,246,255,.12)} 50%{box-shadow:inset 0 1px 0 rgba(255,255,255,.08),0 0 24px rgba(0,246,255,.24)} }
         @keyframes cortexHeroBreath { 0%,100%{box-shadow:0 0 60px rgba(45,212,191,.08),0 0 24px rgba(45,212,191,.05)} 50%{box-shadow:0 0 80px rgba(45,212,191,.14),0 0 36px rgba(45,212,191,.08)} }
         .cortex-score-hero{animation:cortexHeroBreath 5s ease-in-out infinite;}
         .cortex-chip{transition:transform .18s ease,box-shadow .18s ease;cursor:default;}
@@ -3703,7 +3716,8 @@ export default function TerminalTokenScanner() {
         .preview-module-card:hover{transform:translateY(-3px);border-color:rgba(45,212,191,.20);box-shadow:0 10px 32px rgba(2,6,23,.55),0 0 16px rgba(45,212,191,.06);}
         .shimmer-line{background:linear-gradient(90deg,rgba(255,255,255,.04) 25%,rgba(255,255,255,.10) 50%,rgba(255,255,255,.04) 75%);background-size:300% 100%;border-radius:3px;animation:shimmer 2.6s ease-in-out infinite;}
         .scan-btn-live{transition:all .18s ease !important;}
-        .scan-btn-live:hover{transform:translateY(-1px);animation:scanBtnGlow 1.6s ease-in-out infinite;}
+        .scan-btn-live:hover{transform:translateY(-1px);animation:scanBtnGlow 1.6s ease-in-out infinite;background:linear-gradient(180deg,rgba(8,30,44,.96),rgba(2,10,21,.92)) !important;border-color:rgba(0,246,255,.55) !important;}
+        .scan-btn-live:active{transform:translateY(1px) scale(.99) !important;}
         .live-dot{animation:liveDotPulse 2.2s ease-in-out infinite;}
         .clark-section{border-top:1px solid rgba(255,255,255,.04);padding-top:12px;margin-bottom:12px;}
         @media (prefers-reduced-motion:reduce){.live-dot,.radar-ring,.shimmer-line,.scan-btn-live,.cortex-score-hero{animation:none !important;} .scan-btn-live:hover,.cortex-chip:hover{transform:none !important;} .cortex-bdrow:hover{background:none !important;}}
@@ -3846,20 +3860,20 @@ export default function TerminalTokenScanner() {
                   disabled={loading || resolving || !input.trim()}
                   className={loading || resolving || !input.trim() ? '' : 'scan-btn-live'}
                   style={{
-                    padding: '14px 32px', borderRadius: '12px', border: 'none',
+                    padding: '14px 32px', borderRadius: '12px', border: '1px solid rgba(0,246,255,0.35)',
                     background: loading || resolving || !input.trim()
-                      ? 'rgba(45,212,191,0.09)'
-                      : 'linear-gradient(135deg, #2DD4BF 0%, #8b5cf6 100%)',
-                    color: loading || resolving || !input.trim() ? 'rgba(255,255,255,0.20)' : '#04040a',
+                      ? 'rgba(15,23,42,0.54)'
+                      : 'linear-gradient(180deg, rgba(15,23,42,0.94), rgba(2,6,23,0.88))',
+                    color: loading || resolving || !input.trim() ? 'rgba(148,163,184,0.42)' : '#a5f3fc',
                     fontSize: '12px', fontWeight: 800,
                     fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.12em',
                     cursor: loading || resolving || !input.trim() ? 'not-allowed' : 'pointer',
                     flexShrink: 0,
                     whiteSpace: 'nowrap',
-                    boxShadow: loading || resolving || !input.trim() ? 'none' : '0 2px 16px rgba(45,212,191,0.22)',
+                    boxShadow: loading || resolving || !input.trim() ? 'none' : 'inset 0 1px 0 rgba(255,255,255,0.06), 0 0 18px rgba(0,246,255,0.13)',
                   }}
                 >
-                  {resolving ? 'RESOLVING…' : loading ? 'SCANNING…' : 'SCAN TOKEN'}
+                  {loading || resolving ? 'SCANNING…' : 'SCAN TOKEN'}
                 </button>
               </div>
 
@@ -5612,11 +5626,30 @@ export default function TerminalTokenScanner() {
                                     <span style={{ padding:'2px 8px',borderRadius:'999px',fontSize:'9px',fontWeight:700,color:'#a855f7',background:'rgba(168,85,247,0.10)',border:'1px solid rgba(168,85,247,0.30)',fontFamily:'var(--font-plex-mono)' }}>PROTOCOL</span>
                                   )}
                                 </div>
-                                {lpMode2==='protocol'
-                                  ? <p style={{ margin:0,fontSize:'11px',color:'#c4b5fd',lineHeight:1.5,fontFamily:'var(--font-plex-mono)' }}>This token uses concentrated liquidity. No ERC-20 LP token exists, so traditional burn/lock proof does not apply.</p>
-                                  : result.lpControl?.reason && <p style={{ margin:0,fontSize:'11px',color:'#94a3b8',lineHeight:1.5,fontFamily:'var(--font-plex-mono)' }}>{result.lpControl.reason}</p>
-                                }
-                                {result.lpControl?.confidence && <p style={{ margin:'5px 0 0',fontSize:'10px',color:'#64748b',fontFamily:'var(--font-plex-mono)' }}>Confidence: {result.lpControl.confidence}</p>}
+                                {(() => {
+                                  const poolModel = primaryLiquidityModelLabel(result)
+                                  const proofType = lpMode2 === 'protocol' ? 'Position NFT / controller' : result.lpControl?.proofStatus === 'not_applicable' ? 'Not applicable' : 'LP token'
+                                  const liquidityDepth = result.lpControllerIntel?.poolLiquidityUsd ?? result.lpHistoryTimeline?.liquidityUsd ?? result.liquidity ?? null
+                                  const exitRisk = result.lpExitRiskReason ?? result.lpControllerIntel?.summary ?? (lpState === 'team_controlled' || lpState === 'wallet_controlled' ? 'Pull risk: dominant LP position sits with a normal wallet.' : lpMode2 === 'protocol' ? 'LP token proof may not apply; verify position ownership.' : result.lpControl?.lockBurnReason ?? 'Confirm lock, burn, or controller proof before relying on liquidity.')
+                                  const reason = lpMode2 === 'protocol'
+                                    ? 'Concentrated primary pool: ERC-20 LP token lock/burn proof may not apply.'
+                                    : result.lpControl?.reason ?? result.lpControllerIntel?.summary ?? (result.lpControl?.poolAddressPresent ? 'LP controller evidence is incomplete from current providers.' : 'Pool not found from current providers.')
+                                  const rows: Array<[string, string]> = [
+                                    ['Status', lpMode2==='protocol' ? 'Concentrated Liquidity' : (lpLabelMap[lpState] ?? cleanStatusLabel(lpState))],
+                                    ['Reason', reason],
+                                    ['Confidence', cleanStatusLabel(result.lpControl?.confidence ?? result.lpControllerIntel?.confidence ?? result.lpDataConfidence)],
+                                    ['Pool model', poolModel],
+                                    ['Proof type', proofType],
+                                    ['Liquidity depth', liquidityDepth != null ? fmtLiquidity(liquidityDepth) : 'Open Check'],
+                                    ['Exit risk', exitRisk],
+                                  ]
+                                  return <div style={{ display:'grid', gap:'6px' }}>{rows.map(([label, value]) => (
+                                    <div key={label} style={{ display:'grid', gridTemplateColumns:'92px 1fr', gap:'8px', alignItems:'start' }}>
+                                      <span style={{ fontSize:'10px',color:'#64748b',fontFamily:'var(--font-plex-mono)' }}>{label}</span>
+                                      <span style={{ fontSize:'11px',color:label==='Exit risk' && (lpState==='team_controlled'||lpState==='wallet_controlled') ? '#fda4af' : '#cbd5e1',lineHeight:1.45,fontFamily:'var(--font-plex-mono)' }}>{value}</span>
+                                    </div>
+                                  ))}</div>
+                                })()}
                               </div>
                             )
                           })()}
@@ -6309,7 +6342,7 @@ export default function TerminalTokenScanner() {
                 </button>
                 {(trackedLoggedOut || trackedUnavailable) && (
                   <p style={{ margin: '8px 0 0', fontSize: '10px', color: '#fbbf24', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>
-                    Tracking unavailable. Reconnect wallet or sign in to save tokens.
+                    {trackedUnavailable ? 'Tracked tokens could not be loaded. Try again.' : walletConnected ? 'Sign in to save tracked tokens across devices.' : 'Connect wallet or sign in to track tokens.'}
                   </p>
                 )}
               </div>
@@ -6329,7 +6362,7 @@ export default function TerminalTokenScanner() {
 
             {(trackedLoggedOut || trackedUnavailable) && (
               <p style={{ margin: 0, fontSize: '11px', color: '#fbbf24', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>
-                Tracking unavailable. Reconnect wallet or sign in to save tokens.
+                {trackedUnavailable ? 'Tracked tokens could not be loaded. Try again.' : walletConnected ? 'Sign in to save tracked tokens across devices.' : 'Connect wallet or sign in to track tokens.'}
               </p>
             )}
 
@@ -6341,7 +6374,7 @@ export default function TerminalTokenScanner() {
 
             {!trackedLoggedOut && !trackedUnavailable && !trackedLoading && trackedTokens.length === 0 && (
               <p style={{ margin: 0, fontSize: '10px', color: '#334155', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>
-                Tracked tokens you save will appear here. Scan a token and click &quot;Track this token&quot; to save it.
+                No tracked tokens yet. Scan a token and press Track This Token.
               </p>
             )}
 
