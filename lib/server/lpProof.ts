@@ -651,8 +651,14 @@ export function computeLpExitRisk(params: {
   secondaryLpSignal?: { status: string; poolDex: string | null } | null;
   lpControllerAddress?: string | null;
   isEstablishedToken?: boolean;
+  /** Concrete concentrated-pool model (from attemptConcentratedPositionProof), used so the exit-risk
+   * reason names the real protocol (e.g. "Uniswap V4") instead of a generic "V3/Slipstream" guess. */
+  concentratedPoolModel?: ConcentratedPoolModel | null;
+  /** True when a concentrated-position proof was attempted but did not resolve position ownership —
+   * appended to the exit-risk reason so it never reads as a plain depth-only assessment. */
+  positionOwnershipUnresolved?: boolean;
 }): LpExitRiskResult {
-  const { proofApplicability, lpLockStatus, lpController, liquidityUsd, poolModel, hasPool, secondaryLpSignal, lpControllerAddress, isEstablishedToken } = params;
+  const { proofApplicability, lpLockStatus, lpController, liquidityUsd, poolModel, hasPool, secondaryLpSignal, lpControllerAddress, isEstablishedToken, concentratedPoolModel, positionOwnershipUnresolved } = params;
 
   const liquidityDepthRisk: LpExitRiskResult["liquidityDepthRisk"] =
     liquidityUsd == null ? "unknown" :
@@ -671,9 +677,15 @@ export function computeLpExitRisk(params: {
     const secondaryClause = secondaryLpSignal?.status === "team_controlled"
       ? " A secondary ERC-20 LP pool shows wallet-controlled LP exposure — monitor that pool separately."
       : "";
+    const concentratedLabel = concentratedPoolModel === "uniswap_v4" ? "Uniswap V4 concentrated-liquidity"
+      : concentratedPoolModel === "uniswap_v3" ? "Uniswap V3 concentrated-liquidity"
+      : concentratedPoolModel === "slipstream" ? "Aerodrome Slipstream concentrated-liquidity"
+      : concentratedPoolModel === "aerodrome" ? "Aerodrome concentrated-liquidity"
+      : "Concentrated-liquidity (V3/Slipstream)";
+    const depthClause = `Exit risk based on pool depth ($${liqStr === "unknown" ? "unknown" : liqStr.replace("$", "")})${positionOwnershipUnresolved ? " and unresolved position ownership" : ""}.`;
     return {
       lpExitRisk: monitor ? "monitor" : watch ? "watch" : "open_check",
-      lpExitRiskReason: `${poolModel === "concentrated" ? "Concentrated-liquidity (V3/Slipstream)" : "Protocol-managed"} pool — standard LP lock/burn proof does not apply. Exit risk based on pool depth ($${liqStr === "unknown" ? "unknown" : liqStr.replace("$", "")}).${secondaryClause}`,
+      lpExitRiskReason: `${poolModel === "concentrated" ? concentratedLabel : "Protocol-managed"} pool — standard LP lock/burn proof does not apply. ${depthClause}${secondaryClause}`,
       liquidityDepthRisk,
     };
   }

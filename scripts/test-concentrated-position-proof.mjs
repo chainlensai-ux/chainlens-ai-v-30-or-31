@@ -71,15 +71,41 @@ async function main() {
         topPositionOwnerType: null,
         controllerRisk: 'unknown',
         reason: 'Uniswap V4 position lookup not available in current provider path.',
+        poolModel: 'uniswap_v4',
+        poolId: '0xdc55f2e5718fe52ebfcfde3a97d14d7d963c3c3a5000798596b7f1027ec84a9d',
+        poolIdentity: '0xdc55f2e5718fe52ebfcfde3a97d14d7d963c3c3a5000798596b7f1027ec84a9d',
+        poolIdentityType: 'pool_id',
       },
     })
     assert.equal(intel.controllerLabel, 'Position proof attempted — not supported')
-    assert.equal(intel.controlProofLabel, 'Not Supported — Uniswap V4 position lookup not available in current provider path.')
+    assert.equal(intel.controlProofLabel, 'Not Supported — current provider path cannot resolve Uniswap V4 position ownership.')
     assert.notEqual(intel.controllerLabel, 'Position verification required')
     assert.ok(intel.evidenceGaps.includes('Position manager not resolved'))
     assert.ok(intel.evidenceGaps.includes('Top position owner not resolved'))
     assert.ok(intel.evidenceGaps.includes('Position count unavailable'))
     assert.equal(intel.controller, null, 'no fake verified position owner/controller')
+    // V4 pool ID must never be exposed as poolAddress — only poolId/poolIdentity.
+    assert.equal(intel.poolAddress, null, 'V4 pool ID is not a contract address')
+    assert.equal(intel.poolIdentityType, 'pool_id')
+    assert.notEqual(intel.controlProofLabel.includes('Uniswap V3'), true, 'V4 proof never mislabels as V3')
+  }
+
+  // ── lpExitRiskReason names the real concentrated-pool protocol, never a generic V3/Slipstream guess ──
+  {
+    const { computeLpExitRisk } = await import('../lib/server/lpProof.ts')
+    const result = computeLpExitRisk({
+      proofApplicability: 'not_applicable',
+      lpLockStatus: 'unknown',
+      lpController: 'unknown',
+      liquidityUsd: 138929,
+      poolModel: 'concentrated',
+      hasPool: true,
+      concentratedPoolModel: 'uniswap_v4',
+      positionOwnershipUnresolved: true,
+    })
+    assert.ok(result.lpExitRiskReason.includes('Uniswap V4 concentrated-liquidity pool'), 'names Uniswap V4, not generic V3/Slipstream')
+    assert.ok(!result.lpExitRiskReason.includes('V3/Slipstream'), 'never uses the generic V3/Slipstream guess when the model is known')
+    assert.ok(result.lpExitRiskReason.includes('unresolved position ownership'), 'flags unresolved position ownership')
   }
 
   // ── Static regressions: public/UI wording avoids raw keys and V4/V2 contradictions ──
@@ -94,6 +120,10 @@ async function main() {
       assert.ok(route.includes('humanizeConcentratedMissingEvidence'), `route humanizes ${raw}`)
     }
     assert.ok(!ui.includes("Position verification required' : cleanStatusLabel(ci?.status)"), 'UI no longer renders only required for protocol controller')
+    assert.ok(route.includes('Uniswap V4 Concentrated Liquidity'), 'riskEngine labels V4 concentrated pools correctly')
+    assert.ok(!route.includes('return "v3"  // treat V4 as concentrated'), 'detectPoolType no longer mislabels V4 as v3')
+    assert.ok(ui.includes('current provider path cannot resolve'), 'UI control-proof wording matches the poolModel-aware not_supported text')
+    assert.ok(ui.includes('Position proof attempted — not supported'), 'UI never shows raw snake_case not_supported text')
   }
 
   console.log('test-concentrated-position-proof.mjs: all assertions passed')

@@ -29,6 +29,12 @@ export interface LpControllerIntelInput {
     topPositionOwnerType?: string | null
     controllerRisk?: string | null
     reason?: string | null
+    /** Concrete pool model (e.g. "uniswap_v4") so labels name the real protocol instead of
+     * defaulting to "Uniswap V4" for every concentrated-liquidity pool. */
+    poolModel?: string | null
+    poolId?: string | null
+    poolIdentity?: string | null
+    poolIdentityType?: 'contract' | 'pool_id' | 'unknown' | null
   } | null
 }
 
@@ -39,6 +45,12 @@ export interface LpControllerIntel {
   controllerLabel: string
   controllerSharePercent: number | null
   poolAddress: string | null
+  /** Set when the pool is identified by a Uniswap V4-style 32-byte pool ID rather than a
+   * deployed contract address — never surfaced as poolAddress so the UI doesn't present a
+   * pool ID as a normal EVM contract address. */
+  poolId: string | null
+  poolIdentity: string | null
+  poolIdentityType: 'contract' | 'pool_id' | 'unknown'
   poolPair: string | null
   poolLiquidityUsd: number | null
   controlProof: LpControllerIntelProof
@@ -99,6 +111,16 @@ function normalizeControllerType(value: unknown, status: string | null): string 
 
 // Renders the Control Proof UI line from a real attempted concentrated-liquidity
 // position-proof result, never the static "Position verification required" placeholder.
+function concentratedPoolModelLabel(poolModel: string | null | undefined): string {
+  switch (poolModel) {
+    case 'uniswap_v4': return 'Uniswap V4'
+    case 'uniswap_v3': return 'Uniswap V3'
+    case 'slipstream': return 'Aerodrome Slipstream'
+    case 'aerodrome': return 'Aerodrome'
+    default: return 'concentrated-liquidity'
+  }
+}
+
 function concentratedControlProofLabel(proof: LpControllerIntelInput['concentratedPositionProof']): string {
   if (!proof) return 'Position verification required'
   switch (proof.status) {
@@ -109,7 +131,7 @@ function concentratedControlProofLabel(proof: LpControllerIntelInput['concentrat
     case 'partial':
       return 'Partial — pool confirmed, but position ownership could not be fully resolved.'
     case 'not_supported':
-      return 'Not Supported — Uniswap V4 position lookup not available in current provider path.'
+      return `Not Supported — current provider path cannot resolve ${concentratedPoolModelLabel(proof.poolModel)} position ownership.`
     case 'not_found':
       return 'Open Check — pool confirmed with zero active liquidity; no position to attribute ownership to.'
     case 'failed':
@@ -229,7 +251,15 @@ export function buildLpControllerIntel(input: LpControllerIntelInput): LpControl
     ?? asNumber(lpMeta.teamPercent)
     ?? asNumber(lpMeta.controllerSharePercent)
   )
-  const poolAddress = asString(selectedPool.address) ?? asString(selectedPool.poolId) ?? asString(lpControl.primaryMarketPool) ?? asString(lpControl.primaryMarketPoolId) ?? asString(lpControl.verificationPool)
+  // A V4-style 32-byte pool ID is not a deployed contract address — keep it out of poolAddress
+  // so the UI never presents a pool ID as a normal EVM contract address.
+  const isContractAddress = (value: string | null): boolean => value != null && /^0x[a-f0-9]{40}$/i.test(value)
+  const rawPoolIdentity = asString(selectedPool.address) ?? asString(selectedPool.poolId) ?? asString(lpControl.primaryMarketPool) ?? asString(lpControl.primaryMarketPoolId) ?? asString(lpControl.verificationPool)
+  const cppPoolIdentity = asString(input.concentratedPositionProof?.poolIdentity) ?? asString(input.concentratedPositionProof?.poolId)
+  const poolAddress = isContractAddress(rawPoolIdentity) ? rawPoolIdentity : null
+  const poolId = !isContractAddress(rawPoolIdentity) ? (rawPoolIdentity ?? cppPoolIdentity) : null
+  const poolIdentity = poolAddress ?? poolId
+  const poolIdentityType: 'contract' | 'pool_id' | 'unknown' = poolAddress ? 'contract' : poolId ? 'pool_id' : 'unknown'
   const poolPair = asString(selectedPool.pair)
   const poolLiquidityUsd = asNumber(selectedPool.liquidityUsd)
   const lockStatus = asString(lpControl.lockStatus)
@@ -250,7 +280,7 @@ export function buildLpControllerIntel(input: LpControllerIntelInput): LpControl
   const migrationRisk = normalizeMigrationRisk(asString(lpMigrationProof.status))
   const confidence = asString(lpControl.confidence) ?? 'low'
   const signals: string[] = []
-  if (poolAddress) signals.push('selected LP pool found')
+  if (poolIdentity) signals.push('selected LP pool found')
   if (controllerTypeValue === 'wallet') signals.push('controller wallet detected')
   else if (controllerTypeValue === 'protocol') signals.push('protocol-controlled pool detected')
   else if (status === 'concentrated_liquidity') signals.push('concentrated-liquidity pool detected')
@@ -301,6 +331,9 @@ export function buildLpControllerIntel(input: LpControllerIntelInput): LpControl
       : controllerLabel(controllerTypeValue),
     controllerSharePercent: share,
     poolAddress,
+    poolId,
+    poolIdentity,
+    poolIdentityType,
     poolPair,
     poolLiquidityUsd,
     controlProof,

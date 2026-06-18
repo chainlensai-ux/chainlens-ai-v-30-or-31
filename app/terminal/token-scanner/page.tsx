@@ -5002,17 +5002,33 @@ export default function TerminalTokenScanner() {
                       : migrationRisk === 'Monitor' ? '#fbbf24'
                       : undefined
                     const cpp = result.concentratedPositionProof
+                    const poolModelLabel = cpp?.poolModel === 'uniswap_v4' ? 'Uniswap V4'
+                      : cpp?.poolModel === 'uniswap_v3' ? 'Uniswap V3'
+                      : cpp?.poolModel === 'slipstream' ? 'Aerodrome Slipstream'
+                      : cpp?.poolModel === 'aerodrome' ? 'Aerodrome'
+                      : 'concentrated-liquidity'
                     const controlProofFromAttempt = (() => {
                       if (!protocolPosition || !cpp) return null
                       switch (cpp.status) {
                         case 'verified': return `Verified — top position controlled by ${cpp.topPositionOwner ?? cpp.topPositionOwnerType ?? 'unknown'}`
                         case 'partial': return 'Partial — pool confirmed, but position ownership could not be fully resolved.'
-                        case 'not_supported': return 'Not Supported — Uniswap V4 position lookup not available in current provider path.'
+                        case 'not_supported': return `Not Supported — current provider path cannot resolve ${poolModelLabel} position ownership.`
                         case 'not_found': return 'Open Check — pool confirmed with zero active liquidity.'
                         case 'failed': return 'Open Check — position proof attempt failed; no position ownership evidence returned.'
                         default: return 'Open Check — no position ownership evidence returned.'
                       }
                     })()
+                    const missingProofHuman = (cpp?.missingEvidence ?? []).map((m) =>
+                      m === 'positionManager' ? 'position manager'
+                      : m === 'topPositionOwner' ? 'top owner'
+                      : m === 'positionCount' ? 'position count'
+                      : m === 'topPositionSharePercent' ? 'top position share'
+                      : m === 'liquidity' ? 'liquidity'
+                      : m === 'slot0' ? 'pool state'
+                      : m === 'poolAddress' ? 'pool address'
+                      : m === 'poolId' ? 'pool id'
+                      : m
+                    )
                     const controlProof = result.lpControl?.status === 'team_controlled' || result.lpControl?.proofStatus === 'verified'
                       ? 'Confirmed'
                       : protocolPosition ? (controlProofFromAttempt ?? 'Position verification required') : 'Open Check'
@@ -5056,7 +5072,7 @@ export default function TerminalTokenScanner() {
                         label: 'Position Proof',
                         value: `Attempted — ${cpp.status === 'not_supported' ? 'not supported' : cpp.status === 'not_found' ? 'open check' : (cpp.status ?? 'open_check').replace('_', ' ')}`,
                         color: cpp.status === 'verified' ? '#34d399' : cpp.status === 'partial' ? '#fbbf24' : undefined,
-                        note: `${cpp.poolIdentityType === 'pool_id' && cpp.poolIdentity ? `Pool ID: ${cpp.poolIdentity} · ` : ''}Controller risk: ${cpp.controllerRisk ?? 'unknown'} · Confidence: ${cpp.confidence ?? 'low'}`, 
+                        note: `${cpp.poolIdentityType === 'pool_id' && cpp.poolIdentity ? `Pool ID: ${cpp.poolIdentity} · ` : ''}Controller risk: ${cpp.controllerRisk ?? 'unknown'} · ${missingProofHuman.length ? `Missing proof: ${missingProofHuman.join(', ')} · ` : ''}Confidence: ${cpp.confidence ?? 'low'}`,
                       }] : []),
                       { label: 'Exit Risk', value: exitRisk, color: exitRisk === 'Low' ? '#34d399' : exitRisk === 'Watch' || exitRisk === 'Monitor' ? '#fbbf24' : exitRisk === 'High' ? '#f87171' : undefined },
                       { label: 'Liquidity Depth', value: liquidityDepth, color: liquidityDepth === 'Deep' ? '#34d399' : liquidityDepth === 'Moderate' ? '#fbbf24' : liquidityDepth === 'Thin' ? '#f87171' : undefined },

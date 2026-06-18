@@ -2448,11 +2448,11 @@ function computeLpControlRead(lp: LpControlResult, pairName?: string | null, con
       }
       return {
         title: "Protocol liquidity — requires protocol-specific verification",
-        meaning: "Liquidity is in a concentrated-liquidity (V3) pool. LP positions are NFTs, not standard ERC-20 tokens — V2 holder checks do not apply.",
+        meaning: `Liquidity is in a ${positionProof ? concentratedPoolDisplayLabel(positionProof.poolModel) : "concentrated-liquidity"} pool. LP positions are NFTs, not standard ERC-20 tokens — V2 holder checks do not apply.`,
         riskLevel: "Not assessable via V2 method",
-        whatWasFound: [...poolLine, "Pool type: concentrated / V3"],
+        whatWasFound: [...poolLine, `Pool type: ${positionProof ? concentratedPoolDisplayLabel(positionProof.poolModel) : "concentrated liquidity"}`],
         couldNotVerify: ["LP token holder distribution (V2 method N/A)", "Lock or burn status via standard ERC-20 check"],
-        nextAction: "Check LP positions on-chain via the V3 position manager or a protocol-specific explorer.",
+        nextAction: "Check LP positions on-chain via the protocol-specific position manager or explorer.",
       };
     case "concentrated_liquidity": {
       const couldNotVerify = positionProof
@@ -2466,7 +2466,7 @@ function computeLpControlRead(lp: LpControlResult, pairName?: string | null, con
           "Primary concentrated pool found",
           "Primary market pool selected",
           "Pool structure reviewed",
-          ...(positionProof ? [`Position proof attempted: ${positionProof.status}`] : []),
+          ...(positionProof ? [`Position proof attempted — ${positionProof.status === "not_supported" ? "not supported" : positionProof.status.replace(/_/g, " ")}`] : []),
           ...(lp.secondaryLpControlSignals ? ["Secondary ERC-20 LP exposure detected"] : []),
         ],
         couldNotVerify,
@@ -2748,6 +2748,20 @@ function selectLpVerificationPool(pools: NormalizedPool[], tokenAddress: string)
   return best ? { pool: best.pool, reason: best.reason, candidates: pools } : { pool: null, reason: "no_pool_candidates", candidates: pools };
 }
 
+// Human-facing pool-model label for evidence/UI strings. Prefers the concrete model resolved
+// by attemptConcentratedPositionProof (which also uses pool-ID shape as a signal) over raw
+// dexId/poolType string matching, so Uniswap V4 is never displayed/labeled as "v3".
+function concentratedPoolDisplayLabel(poolModel: string | null | undefined, dexText?: string | null): string {
+  if (poolModel === "uniswap_v4") return "Uniswap V4 concentrated";
+  if (poolModel === "uniswap_v3") return "Uniswap V3 concentrated";
+  if (poolModel === "slipstream") return "Aerodrome Slipstream concentrated";
+  if (poolModel === "aerodrome") return "Aerodrome concentrated";
+  const d = (dexText ?? "").toLowerCase();
+  if (/uniswap.*v4/.test(d)) return "Uniswap V4 concentrated";
+  if (/uniswap.*v3/.test(d)) return "Uniswap V3 concentrated";
+  return "concentrated";
+}
+
 function detectPoolType(pool: Record<string, unknown> | null, dexIdHint?: string): LpControlResult["poolType"] {
   const a = (pool?.attributes ?? {}) as Record<string, unknown>;
   const rel = (pool?.relationships ?? {}) as Record<string, unknown>;
@@ -2778,7 +2792,7 @@ function detectPoolType(pool: Record<string, unknown> | null, dexIdHint?: string
     if (isAerodromeFamily(s) && isConcentratedMarker(s)) return "concentrated"
     if (isAerodromeFamily(s)) return "aerodrome"
     if (isConcentratedDex(s)) return "concentrated"
-    if (/^uniswap_v4|^uniswap-v4/.test(s)) return "v3"  // treat V4 as concentrated
+    if (/^uniswap_v4|^uniswap-v4/.test(s)) return "concentrated"
     if (/^uniswap_v3|^uniswap-v3|^pancakeswap_v3|^pancakeswap-v3|^sushiswap_v3|^sushiswap-v3|^algebra/.test(s)) return "v3"
     if (/^uniswap_v2|^uniswap-v2|^pancakeswap_v2|^pancakeswap-v2|^sushiswap_v2|^sushiswap-v2|^baseswap|^alienbase|^swapbased|^shibaswap/.test(s)) return "v2"
     if (/^pancakeswap_v3|^pancakeswap-v3|^sushiswap_v3|^sushiswap-v3/.test(s)) return "v3"
@@ -3962,11 +3976,11 @@ export async function POST(req: Request) {
         confidence: "medium",
         poolType: lpPoolType,
         source: "dex_data",
-        reason: `Position proof attempted: ${concentratedPositionProof.reason}`,
+        reason: `Position proof attempted — ${concentratedPositionProof.status === "not_supported" ? "not supported by current provider path" : concentratedPositionProof.reason}`,
         evidence: [
-          `Market pool: ${marketPair} (${lpPoolType})`,
+          `Market pool: ${marketPair} (${concentratedPoolDisplayLabel(concentratedPositionProof.poolModel, lpDexId ?? lpDexName)})`,
           `pool=${primaryPoolAddress ?? primaryMarketPoolId ?? lpPool?.poolId ?? "unknown"}`,
-          `dex=${lpDexId ?? lpDexName ?? "unknown"}`, `poolType=${lpPoolType}`,
+          `dex=${lpDexId ?? lpDexName ?? "unknown"}`, `poolModel=${concentratedPositionProof.poolModel}`,
           ...concentratedPositionProof.evidence,
         ],
       };
@@ -3982,10 +3996,10 @@ export async function POST(req: Request) {
         confidence: 'medium',
         poolType: _lpProofType,
         source: 'dex_data',
-        reason: `Position proof attempted: ${concentratedPositionProof.reason}`,
+        reason: `Position proof attempted — ${concentratedPositionProof.status === "not_supported" ? "not supported by current provider path" : concentratedPositionProof.reason}`,
         evidence: [
-          `Market pool: ${marketPair} (${_lpProofType})`,
-          `pool=${_lpAddrSnippet}`, `dex=${lpDexId ?? lpDexName ?? 'unknown'}`, `hasLpToken=false`,
+          `Market pool: ${marketPair} (${concentratedPoolDisplayLabel(concentratedPositionProof.poolModel, lpDexId ?? lpDexName)})`,
+          `pool=${_lpAddrSnippet}`, `dex=${lpDexId ?? lpDexName ?? 'unknown'}`, `hasLpToken=false`, `poolModel=${concentratedPositionProof.poolModel}`,
           ...concentratedPositionProof.evidence,
         ],
       };
@@ -4342,6 +4356,13 @@ export async function POST(req: Request) {
     const lpSafetyAttempted = needsLpHolderFetch
     const lpSafetyUsable = lpControl.status === 'burned' || lpControl.status === 'locked' || lpControl.status === 'team_controlled'
     const lpOwnershipVerified = Boolean(ownerAddrEarlyForLp && _lpProofPresent)
+    // Standard ERC-20 LP lock/burn proof vs concentrated-position proof are distinct attempts —
+    // expose both so "lpSafetyAttempted=false" never reads as "no LP proof was attempted at all"
+    // when a concentrated-position proof was in fact attempted (e.g. Uniswap V4 pools).
+    const standardLpProofAttempted = lpSafetyAttempted
+    const standardLpProofStatus: string = lpControl.status === 'concentrated_liquidity' ? 'not_applicable' : (lpSafetyUsable ? 'verified' : 'open_check')
+    const concentratedPositionProofAttempted = Boolean(concentratedPositionProof)
+    const concentratedPositionProofStatus: string = concentratedPositionProof?.status ?? 'not_applicable'
 
     // Ensure poolAddressPresent is always correct on the final object — some inner branches
     // replace lpControl wholesale without setting this field (e.g., GoldRush/RPC paths).
@@ -4431,11 +4452,14 @@ export async function POST(req: Request) {
     // primary pool — any V2/Aerodrome pool reported here is SECONDARY exposure, not the
     // primary LP verification pool, so the public evidence labels must say so explicitly.
     const _concentratedPrimary = lpControl.proofApplicability === 'not_applicable' || lpControl.displayLpModel === 'concentrated_liquidity'
+    const _primaryPoolLabel = _concentratedPrimary
+      ? concentratedPoolDisplayLabel(concentratedPositionProof?.poolModel, lpDexId ?? lpDexName)
+      : lpPoolType
     const _primaryMarketPoolLine = lpPoolAddress
-      ? `Primary market pool: ${lpPoolAddress} (${lpPoolType})`
+      ? `Primary market pool: ${lpPoolAddress} (${_primaryPoolLabel})`
       : lpControl.primaryMarketPoolId
-        ? `Primary market pool ID: ${lpControl.primaryMarketPoolId} (${lpPoolType})`
-        : `Primary market pool: none (${lpPoolType})`
+        ? `Primary market pool ID: ${lpControl.primaryMarketPoolId} (${_primaryPoolLabel})`
+        : `Primary market pool: none (${_primaryPoolLabel})`
 
     lpControl.evidence = [
       ...(lpControl.evidence ?? []),
@@ -5784,7 +5808,11 @@ export async function POST(req: Request) {
         : (_lpStatus === 'team_controlled' || _lpStatus === 'protocol' || _lpStatus === 'concentrated_liquidity') ? 'partial'
         : 'inferred'
       const _dexForTypeLabel = String(lpDexName ?? lpDexId ?? '').toLowerCase()
-      const _typeLabel = lpPoolType === 'v2' ? 'V2 AMM' : lpPoolType === 'v3' ? (_dexForTypeLabel.includes('uniswap v4') || _dexForTypeLabel.includes('uniswap_v4') ? 'Uniswap V4 concentrated liquidity' : _dexForTypeLabel.includes('uniswap') ? 'Uniswap V3 Concentrated Liquidity' : 'Concentrated Liquidity') : (lpPoolType ?? 'unknown')
+      const _typeLabel = lpPoolType === 'v2' ? 'V2 AMM' : (lpPoolType === 'v3' || lpPoolType === 'concentrated') ? (
+          concentratedPositionProof?.poolModel === 'uniswap_v4' || _dexForTypeLabel.includes('uniswap v4') || _dexForTypeLabel.includes('uniswap_v4') ? 'Uniswap V4 Concentrated Liquidity'
+          : concentratedPositionProof?.poolModel === 'uniswap_v3' || _dexForTypeLabel.includes('uniswap') ? 'Uniswap V3 Concentrated Liquidity'
+          : 'Concentrated Liquidity'
+        ) : (lpPoolType ?? 'unknown')
       return {
         status: _statusLevel,
         lockTime: _lockTimeLabel,
@@ -6009,6 +6037,8 @@ export async function POST(req: Request) {
         : null,
       lpControllerAddress,
       isEstablishedToken,
+      concentratedPoolModel: concentratedPositionProof?.poolModel ?? null,
+      positionOwnershipUnresolved: Boolean(concentratedPositionProof && concentratedPositionProof.status !== 'verified'),
     })
     const lpExitRisk = _lpExitRiskResult.lpExitRisk
     const liquidityDepthRisk = _lpExitRiskResult.liquidityDepthRisk
@@ -7212,6 +7242,10 @@ export async function POST(req: Request) {
           lpSafetyAttempted,
           lpSafetyUsable,
           lpOwnershipVerified,
+          standardLpProofAttempted,
+          standardLpProofStatus,
+          concentratedPositionProofAttempted,
+          concentratedPositionProofStatus,
           lpLockBurnProofStatus: lpProofStatus,
           lpOwnershipStatus: (lpState === 'protocol' || lpState === 'concentrated_liquidity') ? 'not_applicable' : (lpOwnershipVerified ? 'verified' : 'inferred'),
           lpControl: {
@@ -7586,6 +7620,10 @@ export async function POST(req: Request) {
           lpSafetyAttempted,
           lpSafetyUsable,
           lpOwnershipVerified,
+          standardLpProofAttempted,
+          standardLpProofStatus,
+          concentratedPositionProofAttempted,
+          concentratedPositionProofStatus,
           reason: lpDiagnostics.reason,
           _full: lpDiagnostics,
         },
@@ -7744,6 +7782,10 @@ export async function POST(req: Request) {
             lpSafetyAttempted,
             lpSafetyUsable,
             lpOwnershipVerified,
+            standardLpProofAttempted,
+            standardLpProofStatus,
+            concentratedPositionProofAttempted,
+            concentratedPositionProofStatus,
             proofStatus: lpDiagnostics.lpState,
           },
           contractFlow: {
