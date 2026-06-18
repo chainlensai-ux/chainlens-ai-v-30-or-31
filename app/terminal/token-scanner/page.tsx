@@ -5069,11 +5069,21 @@ export default function TerminalTokenScanner() {
                       { label: 'Control Proof', value: controlProof, color: controlProof === 'Confirmed' ? '#34d399' : protocolPosition ? '#c084fc' : undefined, note: protocolPosition ? protocolPositionSubtext('control') : undefined },
                       { label: 'Lock/Burn Proof', value: lockBurnProof, color: lockBurnProof === 'Confirmed' ? '#34d399' : lockBurnProof === 'Open Check' ? '#fbbf24' : protocolPosition ? '#c084fc' : undefined, note: protocolPosition ? protocolPositionSubtext('lock') : undefined },
                       ...(protocolPosition && cpp ? [{
-                        label: 'Position Proof',
-                        value: `Attempted — ${cpp.status === 'not_supported' ? 'not supported' : cpp.status === 'not_found' ? 'open check' : (cpp.status ?? 'open_check').replace('_', ' ')}`,
+                        label: 'Position Ownership',
+                        value: cpp.status === 'verified' ? 'Attempted — verified'
+                          : cpp.status === 'partial' ? 'Attempted — partial'
+                          : cpp.status === 'not_supported' ? 'Attempted — unsupported'
+                          : cpp.status === 'not_found' ? 'Attempted — open check'
+                          : cpp.status === 'failed' ? 'Attempted — provider failed'
+                          : 'Attempted — open check',
                         color: cpp.status === 'verified' ? '#34d399' : cpp.status === 'partial' ? '#fbbf24' : undefined,
-                        note: `${cpp.poolIdentityType === 'pool_id' && cpp.poolIdentity ? `Pool ID: ${cpp.poolIdentity} · ` : ''}Controller risk: ${cpp.controllerRisk ?? 'unknown'} · ${missingProofHuman.length ? `Missing proof: ${missingProofHuman.join(', ')} · ` : ''}Confidence: ${cpp.confidence ?? 'low'}`,
-                      }] : []),
+                        note: cpp.status === 'verified'
+                          ? `Top position owner: ${cpp.topPositionOwner ?? 'unknown'} (${cpp.topPositionOwnerType ?? 'unknown'}) · Top share: ${cpp.topPositionSharePercent != null ? `${cpp.topPositionSharePercent.toFixed(2)}%` : 'unknown'} · Controller risk: ${cpp.controllerRisk ?? 'unknown'} · Confidence: ${cpp.confidence ?? 'low'}`
+                          : `${cpp.poolIdentityType === 'pool_id' && cpp.poolIdentity ? `Pool ID: ${cpp.poolIdentity} · ` : ''}Controller risk: ${cpp.controllerRisk ?? 'unknown'} · ${missingProofHuman.length ? `Missing proof: ${missingProofHuman.join(', ')} · ` : ''}Confidence: ${cpp.confidence ?? 'low'}`,
+                      }] : (protocolPosition ? [{
+                        label: 'Position Ownership',
+                        value: 'Not attempted — no concentrated pool detected',
+                      }] : [])),
                       { label: 'Exit Risk', value: exitRisk, color: exitRisk === 'Low' ? '#34d399' : exitRisk === 'Watch' || exitRisk === 'Monitor' ? '#fbbf24' : exitRisk === 'High' ? '#f87171' : undefined },
                       { label: 'Liquidity Depth', value: liquidityDepth, color: liquidityDepth === 'Deep' ? '#34d399' : liquidityDepth === 'Moderate' ? '#fbbf24' : liquidityDepth === 'Thin' ? '#f87171' : undefined },
                       { label: 'Migration Risk', value: migrationRisk, color: migrationRiskColor },

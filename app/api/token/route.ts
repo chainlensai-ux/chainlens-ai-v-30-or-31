@@ -6039,6 +6039,9 @@ export async function POST(req: Request) {
       isEstablishedToken,
       concentratedPoolModel: concentratedPositionProof?.poolModel ?? null,
       positionOwnershipUnresolved: Boolean(concentratedPositionProof && concentratedPositionProof.status !== 'verified'),
+      concentratedControllerRisk: (concentratedPositionProof?.status === 'verified' || concentratedPositionProof?.status === 'partial')
+        ? (concentratedPositionProof?.controllerRisk ?? null)
+        : null,
     })
     const lpExitRisk = _lpExitRiskResult.lpExitRisk
     const liquidityDepthRisk = _lpExitRiskResult.liquidityDepthRisk
@@ -7121,7 +7124,7 @@ export async function POST(req: Request) {
 
       // Contract analysis
       analysis: resolvedAnalysis,
-      lpControl: { ...lpControl, canonicalStatus: toCanonical(lpControl.status), rawLpState: lpControl.status, rawState: lpControl.status, lpController, lpControllerType },
+      lpControl: { ...lpControl, canonicalStatus: toCanonical(lpControl.status), rawLpState: lpControl.status, rawState: lpControl.status, lpController, lpControllerType, positionProofStatus: concentratedPositionProof?.status ?? null, positionProofReason: concentratedPositionProof?.reason ?? null },
       lpStatus: (lpControl.status === 'error' || lpControl.status === 'insufficient_data') ? 'partial' : lpControl.status,
       lpControlRead: computeLpControlRead(lpControl, String(lpPool?.pairName ?? ""), lpControllerAddress, concentratedPositionProof),
       lpLockStatus,
@@ -7255,6 +7258,8 @@ export async function POST(req: Request) {
             rawState: lpControl.status,
             lpController,
             lpControllerType,
+            positionProofStatus: concentratedPositionProof?.status ?? null,
+            positionProofReason: concentratedPositionProof?.reason ?? null,
           },
           lpControlRead: computeLpControlRead(lpControl, String(lpPool?.pairName ?? ""), lpControllerAddress, concentratedPositionProof),
           lpMeta: {

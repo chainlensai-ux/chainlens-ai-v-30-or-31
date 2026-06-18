@@ -2,6 +2,8 @@
 // Used by both the standalone Liquidity Safety route and the Token Scanner LP tab.
 // No GoPlus, no paid providers. Unknowns are reported as "unverified", never fabricated.
 
+import { LP_LOCK_BURN_REGISTRY } from "./lpLockBurnIntel.ts";
+
 export type LpChain = "eth" | "base";
 
 export interface GTPool {
@@ -657,8 +659,11 @@ export function computeLpExitRisk(params: {
   /** True when a concentrated-position proof was attempted but did not resolve position ownership —
    * appended to the exit-risk reason so it never reads as a plain depth-only assessment. */
   positionOwnershipUnresolved?: boolean;
+  /** Real controller-risk tier from a verified/partial concentrated position proof, used to lift
+   * exit risk above a depth-only assessment when a single normal wallet controls the dominant share. */
+  concentratedControllerRisk?: "low" | "watch" | "caution" | "high" | "unknown" | null;
 }): LpExitRiskResult {
-  const { proofApplicability, lpLockStatus, lpController, liquidityUsd, poolModel, hasPool, secondaryLpSignal, lpControllerAddress, isEstablishedToken, concentratedPoolModel, positionOwnershipUnresolved } = params;
+  const { proofApplicability, lpLockStatus, lpController, liquidityUsd, poolModel, hasPool, secondaryLpSignal, lpControllerAddress, isEstablishedToken, concentratedPoolModel, positionOwnershipUnresolved, concentratedControllerRisk } = params;
 
   const liquidityDepthRisk: LpExitRiskResult["liquidityDepthRisk"] =
     liquidityUsd == null ? "unknown" :
@@ -683,6 +688,23 @@ export function computeLpExitRisk(params: {
       : concentratedPoolModel === "aerodrome" ? "Aerodrome concentrated-liquidity"
       : "Concentrated-liquidity (V3/Slipstream)";
     const depthClause = `Exit risk based on pool depth ($${liqStr === "unknown" ? "unknown" : liqStr.replace("$", "")})${positionOwnershipUnresolved ? " and unresolved position ownership" : ""}.`;
+    // A verified/partial position proof that found a dominant normal-wallet controller is a
+    // real liquidity-control signal — lift exit risk above a depth-only assessment instead of
+    // silently dropping that finding.
+    if (concentratedControllerRisk === "high") {
+      return {
+        lpExitRisk: "high",
+        lpExitRiskReason: `${poolModel === "concentrated" ? concentratedLabel : "Protocol-managed"} pool — a single normal wallet controls the dominant concentrated-liquidity position. ${depthClause}${secondaryClause}`,
+        liquidityDepthRisk,
+      };
+    }
+    if (concentratedControllerRisk === "caution" || concentratedControllerRisk === "watch") {
+      return {
+        lpExitRisk: "watch",
+        lpExitRiskReason: `${poolModel === "concentrated" ? concentratedLabel : "Protocol-managed"} pool — top concentrated-liquidity position owner is unresolved or contract-controlled. ${depthClause}${secondaryClause}`,
+        liquidityDepthRisk,
+      };
+    }
     return {
       lpExitRisk: monitor ? "monitor" : watch ? "watch" : "open_check",
       lpExitRiskReason: `${poolModel === "concentrated" ? concentratedLabel : "Protocol-managed"} pool — standard LP lock/burn proof does not apply. ${depthClause}${secondaryClause}`,
@@ -944,6 +966,18 @@ export async function classifyPoolByRpc(chain: LpChain, poolAddress: string | nu
 export type ConcentratedPositionProofStatus = "verified" | "partial" | "not_found" | "not_supported" | "failed" | "open_check";
 export type ConcentratedPoolModel = "uniswap_v3" | "uniswap_v4" | "aerodrome" | "slipstream" | "unknown";
 
+export type ConcentratedOwnerType = "wallet" | "contract" | "locker" | "burn" | "protocol" | "unknown";
+
+export interface ConcentratedTopOwner {
+  address: string;
+  ownerType: ConcentratedOwnerType;
+  positionCount?: number | null;
+  liquiditySharePercent?: number | null;
+  liquidityRaw?: string | number | null;
+  confidence: "high" | "medium" | "low";
+  reason: string;
+}
+
 export interface ConcentratedPositionProof {
   status: ConcentratedPositionProofStatus;
   poolModel: ConcentratedPoolModel;
@@ -953,9 +987,12 @@ export interface ConcentratedPositionProof {
   poolIdentityType: "contract" | "pool_id" | "unknown";
   positionManager: string | null;
   positionCount: number | null;
+  totalPositionLiquidity: string | number | null;
   topPositionOwner: string | null;
-  topPositionOwnerType: "wallet" | "locker" | "protocol" | "unknown" | null;
+  topPositionOwnerType: ConcentratedOwnerType | null;
   topPositionSharePercent: number | null;
+  /** Up to 5 resolved owners, capped — never the full unbounded provider payload. */
+  topOwners: ConcentratedTopOwner[];
   lockedOrManagedPositionFound: boolean | null;
   controllerRisk: "low" | "watch" | "caution" | "high" | "unknown";
   confidence: "high" | "medium" | "low";
@@ -963,6 +1000,96 @@ export interface ConcentratedPositionProof {
   evidence: string[];
   missingEvidence: string[];
   nextAction: string;
+}
+
+/** Raw owner/liquidity record returned by a position-owner source (real indexer, or a test
+ * fixture standing in for one). Never fabricated inside this module — only computed on real
+ * data supplied by the resolver. */
+export interface ConcentratedOwnerRecord {
+  address: string;
+  liquidityRaw: string | number;
+  ownerType?: ConcentratedOwnerType;
+  positionCount?: number | null;
+}
+
+/** Pluggable position-owner source. Returns null when no source is configured/available —
+ * the proof then falls back to the existing RPC-only pool-confirmation path (never "verified").
+ * Production has no real indexer configured today (no subgraph/Graph endpoint, no Alchemy NFT
+ * API usage in this codebase) — this hook exists so a real indexer can be wired in later, and
+ * so the owner/share/classification computation logic can be exercised with fixture data in tests
+ * without ever causing production code to fabricate ownership. */
+export type ConcentratedOwnerResolver = (input: {
+  chain: LpChain;
+  poolModel: ConcentratedPoolModel;
+  poolAddress: string | null;
+  poolId: string | null;
+}) => Promise<ConcentratedOwnerRecord[] | null>;
+
+const CONCENTRATED_PROOF_CACHE_TTL_MS = 10 * 60 * 1000;
+const concentratedProofCache = new Map<string, { exp: number; data: ConcentratedPositionProof }>();
+
+const KNOWN_PROTOCOL_MANAGERS = new Set([
+  "0xc36442b4a4522e871399cd717abdd847ab11fe88", // Uniswap V3 NonfungiblePositionManager (ETH + many chains)
+  "0x03a520b32c04bf3beef7beb72e919cf822ed34f1", // Uniswap V3 NonfungiblePositionManager (Base)
+]);
+
+/** Classifies an owner address using only real, already-available signals — never invents an
+ * owner identity. Burn/locker registries are the same ones used for the V2 LP lock/burn proof
+ * (LP_LOCK_BURN_REGISTRY); contract-vs-wallet uses a real eth_getCode RPC probe. */
+export async function classifyConcentratedOwnerType(chain: LpChain, address: string): Promise<ConcentratedOwnerType> {
+  const addr = address.toLowerCase();
+  if (addr === LP_ZERO_ADDRESS || addr === LP_DEAD_ADDRESS) return "burn";
+  if (KNOWN_PROTOCOL_MANAGERS.has(addr)) return "protocol";
+  const lockers = (LP_LOCK_BURN_REGISTRY.lockersByChain as Record<string, readonly string[]>)[chain] ?? [];
+  if (lockers.some((l) => l.toLowerCase() === addr)) return "locker";
+  try {
+    const code = await lpRpcCall(chain, "eth_getCode", [addr, "latest"]);
+    if (typeof code === "string" && code !== "0x" && code.length > 2) return "contract";
+    if (code === "0x") return "wallet";
+  } catch { /* fall through to unknown */ }
+  return "unknown";
+}
+
+/** Pure share/top-owner computation from real owner-liquidity records — no network calls,
+ * fully unit-testable. Caps the returned owner list to 5. */
+export function computeTopOwnerShare(owners: Array<{ address: string; liquidityRaw: string | number; ownerType: ConcentratedOwnerType; positionCount?: number | null }>): {
+  total: bigint;
+  topOwners: ConcentratedTopOwner[];
+  topPositionOwner: string | null;
+  topPositionOwnerType: ConcentratedOwnerType | null;
+  topPositionSharePercent: number | null;
+} {
+  const parsed = owners
+    .map((o) => ({ ...o, liq: typeof o.liquidityRaw === "number" ? BigInt(Math.trunc(o.liquidityRaw)) : BigInt(o.liquidityRaw || "0") }))
+    .filter((o) => o.liq > BigInt(0))
+    .sort((a, b) => (b.liq > a.liq ? 1 : b.liq < a.liq ? -1 : 0));
+  const total = parsed.reduce((sum, o) => sum + o.liq, BigInt(0));
+  const topOwners: ConcentratedTopOwner[] = parsed.slice(0, 5).map((o) => ({
+    address: o.address,
+    ownerType: o.ownerType,
+    positionCount: o.positionCount ?? null,
+    liquiditySharePercent: total > BigInt(0) ? Math.round(Number((o.liq * BigInt(10000)) / total) / 100 * 100) / 100 : null,
+    liquidityRaw: o.liquidityRaw,
+    confidence: "medium",
+    reason: `Liquidity-weighted share computed from ${parsed.length} resolved position owner(s).`,
+  }));
+  const top = parsed[0] ?? null;
+  return {
+    total,
+    topOwners,
+    topPositionOwner: top ? top.address : null,
+    topPositionOwnerType: top ? top.ownerType : null,
+    topPositionSharePercent: top && total > BigInt(0) ? Math.round(Number((top.liq * BigInt(10000)) / total) / 100 * 100) / 100 : null,
+  };
+}
+
+function _concentratedControllerRisk(ownerType: ConcentratedOwnerType | null, sharePercent: number | null): "low" | "watch" | "caution" | "high" | "unknown" {
+  if (ownerType == null || sharePercent == null) return "unknown";
+  if (ownerType === "burn" || ownerType === "locker") return "low";
+  if (ownerType === "protocol") return sharePercent >= 80 ? "watch" : "low";
+  if (ownerType === "wallet") return sharePercent >= 50 ? "high" : sharePercent >= 25 ? "caution" : "watch";
+  if (ownerType === "contract") return sharePercent >= 50 ? "caution" : "watch";
+  return "watch";
 }
 
 function _classifyConcentratedPoolModel(dexId: string | null | undefined, poolAddressType: "contract" | "pool_id" | "unknown"): ConcentratedPoolModel {
@@ -978,17 +1105,91 @@ function _classifyConcentratedPoolModel(dexId: string | null | undefined, poolAd
   return poolAddressType === "pool_id" ? "uniswap_v4" : "unknown";
 }
 
+// Real position-owner resolution, applied uniformly for both V3 (contract) and V4 (pool-id)
+// pools when a resolver is supplied. Returns null when the resolver itself returns null/empty
+// (so the caller falls back to the existing RPC-only confirmation path) or errors/times out.
+async function _resolveOwnersSafely(
+  resolver: ConcentratedOwnerResolver | undefined,
+  input: { chain: LpChain; poolModel: ConcentratedPoolModel; poolAddress: string | null; poolId: string | null },
+): Promise<ConcentratedOwnerRecord[] | null> {
+  if (!resolver) return null;
+  try {
+    const result = await Promise.race([
+      resolver(input),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 6000)),
+    ]);
+    return Array.isArray(result) ? result : null;
+  } catch {
+    return null;
+  }
+}
+
+async function _buildVerifiedOrPartialFromOwners(
+  chain: LpChain,
+  base: Omit<ConcentratedPositionProof, "status" | "reason" | "evidence" | "missingEvidence" | "nextAction" | "confidence">,
+  owners: ConcentratedOwnerRecord[],
+): Promise<ConcentratedPositionProof> {
+  if (owners.length === 0) {
+    return {
+      ...base,
+      status: "partial",
+      confidence: "low",
+      reason: "A position-owner source was queried but returned no resolvable position owners for this pool.",
+      evidence: ["owner source queried: 0 owners returned"],
+      missingEvidence: ["topPositionOwner", "positionCount", "topPositionSharePercent"],
+      nextAction: "Re-check position ownership once the indexer has caught up, or verify manually via the position-manager UI.",
+    };
+  }
+  const classified = await Promise.all(owners.map(async (o) => ({
+    ...o,
+    ownerType: o.ownerType ?? await classifyConcentratedOwnerType(chain, o.address),
+  })));
+  const { total, topOwners, topPositionOwner, topPositionOwnerType, topPositionSharePercent } = computeTopOwnerShare(classified);
+  const controllerRisk = _concentratedControllerRisk(topPositionOwnerType, topPositionSharePercent);
+  return {
+    ...base,
+    positionCount: classified.length,
+    totalPositionLiquidity: total.toString(),
+    topPositionOwner,
+    topPositionOwnerType,
+    topPositionSharePercent,
+    topOwners,
+    lockedOrManagedPositionFound: topPositionOwnerType === "locker" || topPositionOwnerType === "burn",
+    controllerRisk,
+    status: "verified",
+    confidence: topPositionOwnerType && topPositionOwnerType !== "unknown" ? "high" : "medium",
+    reason: `Position ownership resolved from ${classified.length} position record(s); top owner controls ${topPositionSharePercent ?? "an unknown"}% of resolved concentrated liquidity.`,
+    evidence: [
+      `positions resolved: ${classified.length}`,
+      `top owner type: ${topPositionOwnerType ?? "unknown"}`,
+      `top owner share: ${topPositionSharePercent != null ? `${topPositionSharePercent}%` : "unknown"}`,
+    ],
+    missingEvidence: [],
+    nextAction: topPositionOwnerType === "wallet" && (topPositionSharePercent ?? 0) >= 50
+      ? "Monitor the dominant position owner for liquidity withdrawal."
+      : "Re-scan periodically to confirm position ownership remains stable.",
+  };
+}
+
 export async function attemptConcentratedPositionProof(
   chain: LpChain,
   poolAddress: string | null | undefined,
   poolId: string | null | undefined,
   poolAddressType: "contract" | "pool_id" | "unknown",
   dexId: string | null | undefined,
+  resolveOwners?: ConcentratedOwnerResolver,
 ): Promise<ConcentratedPositionProof> {
   const poolModel = _classifyConcentratedPoolModel(dexId, poolAddressType);
   const normalizedPoolAddress = poolAddressType === "contract" ? (poolAddress ?? null) : null;
   const normalizedPoolId = poolId ?? (poolAddressType === "pool_id" ? (poolAddress ?? null) : null);
   const poolIdentity = normalizedPoolId ?? normalizedPoolAddress ?? null;
+
+  const cacheKey = poolIdentity ? `${chain}:${poolIdentity}` : null;
+  if (cacheKey && !resolveOwners) {
+    const cached = concentratedProofCache.get(cacheKey);
+    if (cached && cached.exp > Date.now()) return cached.data;
+  }
+
   const base: Omit<ConcentratedPositionProof, "status" | "reason" | "evidence" | "missingEvidence" | "nextAction" | "confidence"> = {
     poolModel,
     poolAddress: normalizedPoolAddress,
@@ -997,15 +1198,22 @@ export async function attemptConcentratedPositionProof(
     poolIdentityType: normalizedPoolId ? "pool_id" : normalizedPoolAddress ? "contract" : "unknown",
     positionManager: null,
     positionCount: null,
+    totalPositionLiquidity: null,
     topPositionOwner: null,
     topPositionOwnerType: null,
     topPositionSharePercent: null,
+    topOwners: [],
     lockedOrManagedPositionFound: null,
     controllerRisk: "unknown",
   };
 
+  const finish = (result: ConcentratedPositionProof): ConcentratedPositionProof => {
+    if (cacheKey && !resolveOwners) concentratedProofCache.set(cacheKey, { exp: Date.now() + CONCENTRATED_PROOF_CACHE_TTL_MS, data: result });
+    return result;
+  };
+
   if (!poolAddress && !poolId) {
-    return {
+    return finish({
       ...base,
       status: "open_check",
       confidence: "low",
@@ -1013,37 +1221,41 @@ export async function attemptConcentratedPositionProof(
       evidence: [],
       missingEvidence: ["poolAddress", "poolId"],
       nextAction: "Re-scan once a pool address or pool ID is indexed for this token.",
-    };
+    });
   }
 
   // Uniswap V4 (and any pool only identified by a 32-byte poolId): pools are sub-accounts of a
   // singleton PoolManager contract, not standalone contracts. Per-position ownership for V4 is
   // only resolvable through PoolManager mint/burn event indexing (a subgraph), which is not part
-  // of the existing RPC/market provider path here — so this is a real attempted check that
-  // correctly reports "not supported", rather than fabricating an owner.
+  // of the existing RPC/market provider path here. If a real position-owner source is plugged in
+  // via `resolveOwners`, attempt it first — but never fabricate an owner when none is configured.
   if (!poolAddress || poolAddressType === "pool_id") {
-    return {
+    const v4Owners = await _resolveOwnersSafely(resolveOwners, { chain, poolModel, poolAddress: normalizedPoolAddress, poolId: normalizedPoolId });
+    if (v4Owners != null) return finish(await _buildVerifiedOrPartialFromOwners(chain, base, v4Owners));
+    return finish({
       ...base,
       status: "not_supported",
       confidence: "low",
-      reason: "Uniswap V4 position lookup not available in current provider path.",
+      reason: "Uniswap V4 position ownership source not configured",
       evidence: poolId ? [`poolId=${poolId}`] : [],
-      missingEvidence: ["positionManager", "topPositionOwner", "positionCount"],
+      missingEvidence: ["positionManager", "topPositionOwner", "positionCount", "positionLiquidityShare"],
       nextAction: "Verify position ownership via the protocol's official position-manager UI or a subgraph indexer.",
-    };
+    });
   }
 
-  // V3-style pool with a real contract address: attempt a live RPC probe of the pool itself.
-  // liquidity()/slot0() confirm the pool is active on-chain, but do not expose per-position-NFT
-  // ownership (that requires NonfungiblePositionManager transfer/mint event history) — so the
-  // result here is honestly "partial", not "verified".
+  // V3-style pool with a real contract address: try a real position-owner source first (if
+  // one is configured via `resolveOwners`); otherwise fall back to the existing RPC probe of
+  // the pool itself, which confirms liquidity but cannot attribute it to a position owner.
+  const v3Owners = await _resolveOwnersSafely(resolveOwners, { chain, poolModel, poolAddress: normalizedPoolAddress, poolId: normalizedPoolId });
+  if (v3Owners != null) return finish(await _buildVerifiedOrPartialFromOwners(chain, base, v3Owners));
+
   const call = (selector: string) => lpRpcCall(chain, "eth_call", [{ to: poolAddress.toLowerCase(), data: selector }, "latest"]);
   let liquidityHex: string | null = null;
   let slot0Hex: string | null = null;
   try {
     [liquidityHex, slot0Hex] = await Promise.all([call("0x1a686502"), call("0x3850c7bd")]);
   } catch {
-    return {
+    return finish({
       ...base,
       status: "failed",
       confidence: "low",
@@ -1051,12 +1263,12 @@ export async function attemptConcentratedPositionProof(
       evidence: [],
       missingEvidence: ["liquidity", "slot0", "topPositionOwner"],
       nextAction: "Retry the scan; if this persists the RPC provider may be unavailable for this chain.",
-    };
+    });
   }
   const liquidityResolved = _rpcResolved(liquidityHex);
   const slot0Resolved = _rpcResolved(slot0Hex);
   if (!liquidityResolved && !slot0Resolved) {
-    return {
+    return finish({
       ...base,
       status: "failed",
       confidence: "low",
@@ -1064,11 +1276,11 @@ export async function attemptConcentratedPositionProof(
       evidence: [],
       missingEvidence: ["liquidity", "slot0", "topPositionOwner"],
       nextAction: "Retry the scan; if this persists the pool may use a non-standard interface.",
-    };
+    });
   }
   const liquidityBig = liquidityResolved ? hexToBigInt(liquidityHex) : null;
   if (liquidityResolved && liquidityBig === BigInt(0)) {
-    return {
+    return finish({
       ...base,
       status: "not_found",
       confidence: "medium",
@@ -1076,10 +1288,11 @@ export async function attemptConcentratedPositionProof(
       evidence: [`liquidity=0`],
       missingEvidence: ["topPositionOwner", "positionCount"],
       nextAction: "Re-check if liquidity is added to this pool; no active position currently exists.",
-    };
+    });
   }
-  return {
+  return finish({
     ...base,
+    totalPositionLiquidity: liquidityBig != null ? liquidityBig.toString() : null,
     status: "partial",
     confidence: "low",
     reason: "Pool liquidity confirmed on-chain via RPC, but individual position-NFT ownership could not be fully resolved — that requires position-manager event indexing not available in the current provider path.",
@@ -1089,5 +1302,5 @@ export async function attemptConcentratedPositionProof(
     ],
     missingEvidence: ["positionManager", "topPositionOwner", "positionCount", "topPositionSharePercent"],
     nextAction: "Check position ownership via the protocol's official position-manager UI or a subgraph indexer.",
-  };
+  });
 }

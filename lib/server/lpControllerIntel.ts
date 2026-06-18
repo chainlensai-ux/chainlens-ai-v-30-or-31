@@ -25,8 +25,10 @@ export interface LpControllerIntelInput {
    * a static "Position verification required" placeholder. */
   concentratedPositionProof?: {
     status: 'verified' | 'partial' | 'not_found' | 'not_supported' | 'failed' | 'open_check'
+    confidence?: string | null
     topPositionOwner?: string | null
     topPositionOwnerType?: string | null
+    topPositionSharePercent?: number | null
     controllerRisk?: string | null
     reason?: string | null
     /** Concrete pool model (e.g. "uniswap_v4") so labels name the real protocol instead of
@@ -66,6 +68,14 @@ export interface LpControllerIntel {
   /** Concise label for the Control Proof UI field — reflects the real attempted position-proof
    * result for concentrated pools instead of a static "Position verification required". */
   controlProofLabel: string
+  /** Mirrors the concentrated position-proof status/confidence/owner fields so consumers don't
+   * need to separately thread `concentratedPositionProof` through to read them. Null when no
+   * concentrated-position proof was attempted (e.g. a plain V2 pool). */
+  positionProofStatus: string | null
+  positionProofConfidence: string | null
+  topPositionOwner: string | null
+  topPositionSharePercent: number | null
+  controllerRisk: string | null
 }
 
 function asString(value: unknown): string | null {
@@ -126,7 +136,10 @@ function concentratedControlProofLabel(proof: LpControllerIntelInput['concentrat
   switch (proof.status) {
     case 'verified': {
       const who = proof.topPositionOwner ?? proof.topPositionOwnerType ?? 'a resolved controller'
-      return `Verified — top position controlled by ${who}`
+      const pct = typeof proof.topPositionSharePercent === 'number' && Number.isFinite(proof.topPositionSharePercent)
+        ? ` controls ${proof.topPositionSharePercent.toFixed(2)}% of concentrated liquidity`
+        : ''
+      return `Verified — top position owner ${who}${pct}`
     }
     case 'partial':
       return 'Partial — pool confirmed, but position ownership could not be fully resolved.'
@@ -145,9 +158,9 @@ function concentratedControlProofLabel(proof: LpControllerIntelInput['concentrat
 function concentratedControllerLabel(proof: LpControllerIntelInput['concentratedPositionProof']): string {
   if (!proof) return 'Position verification required'
   switch (proof.status) {
-    case 'verified': return 'Position owner verified'
-    case 'partial': return 'Position proof attempted — owner unresolved'
-    case 'not_supported': return 'Position proof attempted — not supported'
+    case 'verified': return 'Position ownership verified'
+    case 'partial': return 'Position proof partial'
+    case 'not_supported': return 'Position proof unsupported'
     case 'failed': return 'Position proof attempted — provider failed'
     case 'not_found': return 'Position proof attempted — no active position found'
     case 'open_check':
@@ -349,6 +362,11 @@ export function buildLpControllerIntel(input: LpControllerIntelInput): LpControl
     controlProofLabel: status === 'concentrated_liquidity'
       ? concentratedControlProofLabel(input.concentratedPositionProof)
       : (controlProof === 'confirmed' ? 'Confirmed' : controlProof === 'not_applicable' ? 'Not Applicable' : 'Open Check'),
+    positionProofStatus: input.concentratedPositionProof?.status ?? null,
+    positionProofConfidence: asString(input.concentratedPositionProof?.confidence) ?? null,
+    topPositionOwner: asString(input.concentratedPositionProof?.topPositionOwner) ?? null,
+    topPositionSharePercent: asNumber(input.concentratedPositionProof?.topPositionSharePercent ?? null),
+    controllerRisk: asString(input.concentratedPositionProof?.controllerRisk) ?? null,
   }
 }
 
