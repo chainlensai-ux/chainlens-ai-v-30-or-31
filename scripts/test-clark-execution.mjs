@@ -1009,6 +1009,60 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(scanOut.includes('Security: Open Check — security simulation not returned'), 'token scan output uses the precise honeypot open-check sentence')
 }
 
+
+
+// ─── Clark cross-chain concentrated-LP follow-up consistency ──────────────────
+{
+  const { formatTokenScanResult, formatTokenSafetyAnswer, formatDevRugCheck, formatLpLockCheck, formatRiskExplanation } = await import('../lib/server/clarkRouting.ts')
+  const fs = await import('node:fs')
+  const routeFile = fs.readFileSync(new URL('../app/api/clark/route.ts', import.meta.url), 'utf8')
+  const sa1t = {
+    ok: true,
+    token: { name: 'SA1T', symbol: 'SA1T', address: '0x2D61bbbe5Ad9a8F18Fef35940301Fd24f143a72B' },
+    chain: 'eth',
+    market: { price: null, change24h: null, volume24h: 253800, liquidity: 147700, marketCap: null },
+    holders: { top1: 6.0, top10: 20.0, holderCount: 909, status: 'ok' },
+    security: { honeypot: null, buyTax: null, sellTax: null, ownerRenounced: false, mintable: false, proxy: false, securityStatus: 'unverified', simulationStatus: 'unavailable', riskLevel: 'unknown', missing: [] },
+    lpControl: { status: 'concentrated_liquidity', reason: 'Uniswap V4 concentrated', confidence: 'medium', poolType: 'Uniswap V4 concentrated', proofApplicability: 'not_applicable', displayLpModel: 'concentrated_liquidity', proofStatus: 'not_applicable' },
+    warnings: [],
+  }
+  const scanOut = formatTokenScanResult(sa1t, 'Ethereum')
+  const safetyOut = formatTokenSafetyAnswer(sa1t, 'Ethereum')
+  const devOut = formatDevRugCheck(sa1t, 'Ethereum')
+  const lpOut = formatLpLockCheck(sa1t, 'Ethereum')
+  const riskOut = formatRiskExplanation(sa1t, 'Ethereum')
+
+  assert.ok(scanOut.includes('- Chain: Ethereum'), 'ETH token scan displays Ethereum')
+  assert.ok(safetyOut.startsWith('TOKEN SAFETY — SA1T (Ethereum)'), 'token safety after ETH scan says Ethereum')
+  assert.ok(devOut.startsWith('DEV/RUG CHECK — SA1T (Ethereum)'), 'dev/rug check after ETH scan says Ethereum')
+  assert.ok(lpOut.startsWith('LP CHECK — SA1T (Ethereum)'), 'LP check after ETH scan says Ethereum')
+  assert.ok(riskOut.startsWith('RISK EXPLANATION — SA1T (Ethereum)'), 'risk explanation after ETH scan says Ethereum')
+  for (const out of [safetyOut, devOut, lpOut, riskOut]) assert.ok(!out.includes('(Base)'), 'ETH follow-up output does not fall back to Base')
+
+  assert.ok(safetyOut.includes('- Ownership: active owner — privileged functions may still be callable.'), 'active owner is a safety risk signal')
+  assert.ok(!safetyOut.includes('Ownership/dev control: status not confirmed'), 'confirmed active owner is not treated as missing')
+  assert.ok(safetyOut.includes('Security: Open Check — simulation unavailable from current provider.') || safetyOut.includes('Honeypot/security: simulation unavailable from current provider.'), 'safety uses canonical security wording')
+  assert.ok(scanOut.includes('Security: Open Check — simulation unavailable from current provider.'), 'token read uses canonical security wording')
+  assert.ok(!safetyOut.includes('simulation not returned'), 'safety does not use stale simulation wording')
+
+  assert.ok(lpOut.includes('Status: Concentrated liquidity / protocol-specific proof required'), 'concentrated LP follow-up has protocol-specific status')
+  assert.ok(lpOut.includes('Lock/burn proof: Not Applicable'), 'concentrated LP follow-up says Not Applicable')
+  assert.ok(lpOut.includes('Position/controller proof required'), 'concentrated LP follow-up requires position proof')
+  assert.ok(!lpOut.includes('Status: LP proof not confirmed'), 'concentrated LP follow-up does not mislabel proof as unconfirmed')
+  assert.ok(devOut.includes('LP control: concentrated liquidity — standard LP lock/burn proof does not apply; position/controller proof required.'), 'dev/rug check has clean concentrated LP explanation')
+  assert.ok(!devOut.includes('open check (concentrated_liquidity)'), 'dev/rug check does not print raw concentrated_liquidity open check')
+  assert.ok(riskOut.includes('Ownership: NOT renounced'), 'risk explanation includes active owner')
+  assert.ok(riskOut.includes('LP control: concentrated liquidity — position/controller proof required.'), 'risk explanation includes concentrated LP context')
+  assert.ok(riskOut.includes('top-10 holders control 20.0% of supply'), 'risk explanation includes top-10 holder context')
+  assert.ok(riskOut.includes('Mint authority: no mint authority detected.'), 'risk explanation includes no mint')
+  assert.ok(riskOut.includes('Proxy: no proxy detected.'), 'risk explanation includes no proxy')
+  assert.ok(riskOut.includes('Security: Open Check — simulation unavailable from current provider.'), 'risk explanation includes security simulation unavailable')
+
+  assert.ok(routeFile.includes('tokenEvidenceChain(ev, chain)'), 'Clark derives formatter labels from actual token evidence chain')
+  assert.ok(routeFile.includes('opts.cachedEvidence.chain = evidenceChain'), 'lastToken cached evidence stores corrected chain')
+  assert.ok(routeFile.includes('chain: evidenceChain'), 'lastToken memory stores corrected chain')
+}
+
 // ─── Evidence depth: tax-only vs non-tax core safety evidence + escalation ──
 {
   const { hasTaxEvidence, hasNonTaxCoreSafetyEvidence, needsSafetyEscalation } = await import('../lib/server/clarkRouting.ts')
@@ -1285,7 +1339,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
 
   // Metadata plumbing in the route handler is unchanged by this formatter-only pass.
   const routeFile = fs.readFileSync(path.join(__dirname, '..', 'app', 'api', 'clark', 'route.ts'), 'utf8')
-  assert.ok(routeFile.includes('else if (followupKind === "risk") { analysis = formatRiskExplanation(ev, "Base"); intentBadge = "risk_explanation"; }'), 'risk_explanation intent badge and toolsUsed/quota/verdict plumbing in the hard guard is untouched by this formatter-only pass')
+  assert.ok(routeFile.includes('else if (followupKind === "risk") { analysis = formatRiskExplanation(ev, followupChainLabel); intentBadge = "risk_explanation"; }'), 'risk_explanation intent badge and toolsUsed/quota/verdict plumbing in the hard guard is untouched by this formatter-only pass')
 }
 
 // ─── Task D: chain override parsing for token scans ────────────────────────────
@@ -1309,8 +1363,8 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   // Failure/partial read wording must reflect the requested chain, not a hardcoded Base label.
   assert.ok(routeFile.includes('`- Chain: ${chainDisplayLabel(chain)}`'), 'token read chain line uses the resolved chain label')
   assert.ok(!routeFile.includes('`- Chain: Base`'), 'no hardcoded Base chain label remains in token read output')
-  assert.ok(routeFile.includes('formatFastTokenRead(ev, chainDisplayLabel(chain))'), 'fast token read uses the resolved chain label')
-  assert.ok(routeFile.includes('formatTokenScanResult(ev, chainDisplayLabel(chain))'), 'full token read uses the resolved chain label')
+  assert.ok(routeFile.includes('formatFastTokenRead(ev, chainDisplayLabel(tokenEvidenceChain(ev, chain)))'), 'fast token read uses the resolved chain label')
+  assert.ok(routeFile.includes('formatTokenScanResult(ev, chainDisplayLabel(tokenEvidenceChain(ev, chain)))'), 'full token read uses the resolved chain label')
 }
 
 {

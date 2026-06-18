@@ -853,6 +853,22 @@ function holderLine(h: TokenScanEvidence["holders"]): string {
   return parts.length > 0 ? parts.join(" / ") : "holder data: open check";
 }
 
+function isConcentratedLp(lp: TokenScanEvidence["lpControl"]): boolean {
+  if (!lp) return false;
+  const haystack = [lp.status, lp.poolType, lp.proofApplicability, lp.displayLpModel, lp.proofStatus]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  return haystack.includes("concentrated") || haystack.includes("clmm") || haystack.includes("infinity") || haystack.includes("uniswap v3") || haystack.includes("uniswap v4") || lp.proofApplicability === "not_applicable" || lp.displayLpModel === "concentrated_liquidity" || lp.proofStatus === "not_applicable";
+}
+
+function concentratedLpPrimary(lp: TokenScanEvidence["lpControl"]): string {
+  const label = lp?.poolType || lp?.reason || lp?.displayLpModel || "concentrated liquidity";
+  if (/uniswap\s*v4/i.test(label)) return "Uniswap V4 concentrated";
+  if (/uniswap\s*v3/i.test(label)) return "Uniswap V3 concentrated";
+  return label.replace(/_/g, " ");
+}
+
 function lpStatusLine(ev: TokenScanEvidence): string {
   const lp = ev.lpControl;
   if (!lp) return "LP proof: Open Check — no LP control data returned";
@@ -916,7 +932,7 @@ export function tokenScanVerdictMeta(ev: TokenScanEvidence, usableEvidence: bool
 // Distinguishes "honeypot specifically wasn't returned" from "the whole security check
 // failed" — tax data alone never implies a honeypot result, and a missing honeypot result
 // never implies tax data is also missing. Never fakes a honeypot verdict from tax data alone.
-function securityStatusLine(sec: NonNullable<TokenScanEvidence["security"]>): string {
+export function formatTokenSecurityStatus(sec: NonNullable<TokenScanEvidence["security"]>): string {
   if (sec.honeypot === false) return "Honeypot not detected";
   if (sec.honeypot === true) return "Honeypot detected";
   if (sec.buyTax != null || sec.sellTax != null) return "Tax data returned, honeypot simulation unavailable";
@@ -957,7 +973,7 @@ export function formatTokenScanResult(ev: TokenScanEvidence, chain = "Base"): st
 
   // Security
   if (sec) {
-    lines.push(`- Security: ${securityStatusLine(sec)}`);
+    lines.push(`- Security: ${formatTokenSecurityStatus(sec)}`);
     if (sec.buyTax != null || sec.sellTax != null) lines.push(`- Buy tax: ${fmtTaxPct(sec.buyTax)} / Sell tax: ${fmtTaxPct(sec.sellTax)}`);
     if (sec.mintable != null) lines.push(`- Mintable: ${sec.mintable ? "YES" : "no"}`);
     if (sec.ownerRenounced != null) lines.push(`- Ownership: ${sec.ownerRenounced ? "renounced" : "active owner"}`);
@@ -1056,12 +1072,16 @@ export function formatTokenSafetyAnswer(ev: TokenScanEvidence, chain = "Base"): 
     openChecks.push("Honeypot: tax data returned, honeypot simulation unavailable.");
     openTopics.push("honeypot");
   } else {
-    openChecks.push("Honeypot/security: simulation not returned.");
+    openChecks.push(`Honeypot/security: ${sec ? formatTokenSecurityStatus(sec).replace(/^Open Check — /, "") : "simulation unavailable from current provider."}`);
     openTopics.push("honeypot/security");
   }
 
+  const lpConcentrated = isConcentratedLp(lp);
   if (lp?.status === "wallet_controlled" || lp?.status === "team_controlled") {
     risks.push("LP wallet/team controlled — liquidity can be pulled.");
+  } else if (lpConcentrated) {
+    visible.push("LP: concentrated pool; standard LP-token lock/burn proof does not apply.");
+    risks.push("LP position/control proof: required for concentrated liquidity.");
   } else if (lp && lp.status && lp.status !== "open_check" && lp.status !== "unverified") {
     visible.push(`${lpStatusLine(ev)}.`);
   } else {
@@ -1077,8 +1097,8 @@ export function formatTokenSafetyAnswer(ev: TokenScanEvidence, chain = "Base"): 
     openTopics.push("holder concentration");
   }
 
-  if (sec?.mintable === true && sec?.ownerRenounced === false) {
-    risks.push("Owner can mint new tokens — supply risk.");
+  if (sec?.ownerRenounced === false) {
+    risks.push(sec?.mintable === true ? "Owner can mint new tokens — supply risk." : "Ownership: active owner — privileged functions may still be callable.");
   } else if (sec?.ownerRenounced === true) {
     visible.push("Ownership: renounced.");
   } else {
@@ -1091,6 +1111,9 @@ export function formatTokenSafetyAnswer(ev: TokenScanEvidence, chain = "Base"): 
     : risks.length > 0 ? "Safe? Not safe to assume — risk signals present."
     : openChecks.length > 0 ? "Safe? Not enough confirmed evidence to call it safe."
     : "Safe? No confirmed red flags from available checks — always verify before buying.";
+
+  if (sec?.mintable === false) visible.push("Mintable: no.");
+  if (sec?.proxy === false) visible.push("Proxy: no.");
 
   const lines = [`TOKEN SAFETY — ${sym} (${chain})`, "", `Verdict: ${verdict}`, safeLine];
 
@@ -1109,7 +1132,8 @@ export function formatTokenSafetyAnswer(ev: TokenScanEvidence, chain = "Base"): 
 
   lines.push("", "Read:");
   if (openTopics.length > 0) {
-    lines.push(`Clark can't mark this as safe until ${openTopics.join(", ")} ${openTopics.length > 1 ? "are" : "is"} confirmed.`);
+    if (risks.length > 0) lines.push(`Clark marks this ${verdict} because ${risks.map(r => r.split(" — ")[0].toLowerCase()).join(" and ")} still needs verification.`);
+    else lines.push(`Clark can't mark this as safe until ${openTopics.join(", ")} ${openTopics.length > 1 ? "are" : "is"} confirmed.`);
   } else if (risks.length > 0) {
     lines.push("Confirmed risk signals are present — this is not a safe call.");
   } else {
@@ -1140,7 +1164,7 @@ export function formatDevRugCheck(ev: TokenScanEvidence, chain = "Base"): string
 
   if (lp) {
     const controlled = lp.status === "wallet_controlled" || lp.status === "team_controlled";
-    lines.push(`- LP control: ${controlled ? "wallet/team controlled — dev can pull liquidity" : (lp.status === "locked" || lp.status === "burned" ? "locked/burned — pull risk reduced" : `open check (${lp.status ?? "unverified"})`)}`);
+    lines.push(`- LP control: ${controlled ? "wallet/team controlled — dev can pull liquidity" : isConcentratedLp(lp) ? "concentrated liquidity — standard LP lock/burn proof does not apply; position/controller proof required." : (lp.status === "locked" || lp.status === "burned" ? "locked/burned — pull risk reduced" : `open check (${lp.status ?? "unverified"})`)}`);
   } else {
     lines.push("- LP control: open check — not verified");
   }
@@ -1167,9 +1191,7 @@ export function formatLpLockCheck(ev: TokenScanEvidence, chain = "Base"): string
 
   const lead = (() => {
     if (!lp) return "LP proof not confirmed";
-    const pt = lp.poolType ?? "";
-    const concentrated = pt.includes("concentrated") || pt.includes("clmm") || pt.includes("infinity");
-    if (concentrated) return "Concentrated liquidity / protocol pool — ERC-20 LP lock may not apply";
+    if (isConcentratedLp(lp)) return "Concentrated liquidity / protocol-specific proof required";
     const s = lp.status ?? "unverified";
     if (s === "locked") return "LP lock/burn proof confirmed";
     if (s === "burned") return "LP lock/burn proof confirmed — burned";
@@ -1182,6 +1204,18 @@ export function formatLpLockCheck(ev: TokenScanEvidence, chain = "Base"): string
     `Status: ${lead}`,
     "",
   ];
+
+  if (isConcentratedLp(lp)) {
+    lines.push(`- Primary liquidity: ${concentratedLpPrimary(lp)}`);
+    lines.push("- Lock/burn proof: Not Applicable — standard ERC-20 LP-token lock/burn proof does not apply.");
+    lines.push("- Control proof: Position/controller proof required.");
+    lines.push("- Exit risk: Monitor / Watch based on current LP evidence.");
+    if (mkt?.liquidity != null) lines.push(`- Liquidity depth: ${fmtUsdShort(mkt.liquidity)}`);
+    else lines.push("- Liquidity depth: open check");
+    lines.push(`- Confidence: ${lp?.confidence ?? "medium"}`);
+    lines.push("", "CTA: Open Token Scanner / Run LP Check");
+    return lines.join("\n");
+  }
 
   if (mkt?.liquidity != null) lines.push(`- Liquidity depth: ${fmtUsdShort(mkt.liquidity)} (not the same as lock safety)`);
   else lines.push("- Liquidity depth: open check");
@@ -1212,6 +1246,8 @@ export function formatRiskExplanation(ev: TokenScanEvidence, chain = "Base"): st
   if (lp?.status === "wallet_controlled" || lp?.status === "team_controlled") {
     const label = lp.status === "team_controlled" ? "Team Controlled" : "Wallet Controlled";
     mainSignals.push(`LP control: ${label}${lp.reason ? ` — ${lp.reason}` : ""}`);
+  } else if (isConcentratedLp(lp)) {
+    mainSignals.push("LP control: concentrated liquidity — position/controller proof required.");
   } else if (lp?.status === "open_check" || lp?.status === "unverified") {
     mainSignals.push(`LP control: Open Check${lp.reason ? ` — ${lp.reason}` : ""}`);
   }
@@ -1233,12 +1269,13 @@ export function formatRiskExplanation(ev: TokenScanEvidence, chain = "Base"): st
   if (sec?.proxy === false) positiveSignals.push("Proxy: no proxy detected.");
   if (lp?.status === "locked" || lp?.status === "burned") positiveSignals.push(`LP control: ${lp.status === "burned" ? "burned" : "locked"}${lp.reason ? ` — ${lp.reason}` : ""}.`);
   if (h?.top10 != null && h.top10 <= 50) positiveSignals.push(`Holder concentration: top-10 holders control ${h.top10.toFixed(1)}% of supply.`);
+  if (sec?.mintable === false) positiveSignals.push("Mint authority: no mint authority detected.");
   if (h?.holderCount != null) positiveSignals.push(`Holder base: ${h.holderCount.toLocaleString()} holders.`);
 
   // Open checks: real fields that are simply missing — never claimed as risk or safety.
   const openChecks: string[] = [];
   if (!lp) openChecks.push("LP lock/burn proof — not yet checked.");
-  if (!sec || sec.honeypot == null) openChecks.push("Honeypot simulation — not returned.");
+  if (!sec || sec.honeypot == null) openChecks.push(sec ? `Security: ${formatTokenSecurityStatus(sec)}` : "Security: Open Check — simulation unavailable from current provider.");
   if (sec?.mintable == null) openChecks.push("Mint authority — not verified.");
   if (sec?.proxy == null) openChecks.push("Proxy/upgradeable status — not verified.");
   if (sec?.ownerRenounced == null) openChecks.push("Ownership status — not verified.");
