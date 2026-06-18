@@ -118,6 +118,7 @@ type ClarkSessionMemory = {
     symbol: string | null;
     name: string | null;
     scanSummary: string | null;
+    chain?: "base" | "eth";
     normalizedEvidenceSummary?: string | null;
     missingEvidence?: string[];
     confidence?: "full" | "partial" | "none";
@@ -239,6 +240,7 @@ function updateMemToken(
     missingEvidence?: string[];
     confidence?: "full" | "partial" | "none";
     cachedEvidence?: TokenScanEvidence | null;
+    chain?: "base" | "eth";
   }
 ) {
   if (mem.lastToken) {
@@ -249,8 +251,10 @@ function updateMemToken(
     mem.prevTokenChain = mem.selectedChain;
     mem.prevTokenSummary = mem.lastToken.scanSummary;
   }
+  const evidenceChain = opts?.chain ?? (opts?.cachedEvidence?.chain === "Ethereum" || opts?.cachedEvidence?.chain === "eth" ? "eth" : opts?.cachedEvidence?.chain === "Base" || opts?.cachedEvidence?.chain === "base" ? "base" : mem.selectedChain);
+  if (opts?.cachedEvidence) opts.cachedEvidence.chain = evidenceChain;
   mem.lastToken = {
-    address, symbol, name, scanSummary, ts: Date.now(),
+    address, symbol, name, scanSummary, chain: evidenceChain, ts: Date.now(),
     normalizedEvidenceSummary: opts?.normalizedEvidenceSummary ?? null,
     missingEvidence: opts?.missingEvidence ?? [],
     confidence: opts?.confidence ?? "none",
@@ -259,9 +263,9 @@ function updateMemToken(
   mem.lastTokenSymbol = symbol;
   mem.lastTokenName = name;
   mem.lastTokenAddress = address;
-  mem.lastTokenChain = mem.selectedChain;
+  mem.lastTokenChain = evidenceChain;
   mem.lastTokenSummary = scanSummary;
-  mem.recentTokens = [{ address, symbol, name, chain: mem.selectedChain, summary: scanSummary, ts: Date.now() }, ...mem.recentTokens.filter(t => t.address !== address)].slice(0, 3)
+  mem.recentTokens = [{ address, symbol, name, chain: evidenceChain, summary: scanSummary, ts: Date.now() }, ...mem.recentTokens.filter(t => t.address !== address)].slice(0, 3)
 }
 
 function updateMemWallet(
@@ -704,7 +708,15 @@ function toTokenApiChain(chain: SupportedChain): "base" | "eth" | null {
   return null;
 }
 
-function chainDisplayLabel(chain: SupportedChain): string {
+function tokenEvidenceChain(ev: TokenScanEvidence | null | undefined, fallback: SupportedChain): SupportedChain {
+  const raw = String(ev?.chain ?? "").toLowerCase();
+  if (raw === "eth" || raw === "ethereum") return "ethereum";
+  if (raw === "base") return "base";
+  return fallback;
+}
+
+function chainDisplayLabel(chain: SupportedChain | "eth"): string {
+  if (chain === "eth") return "Ethereum";
   if (chain === "ethereum") return "Ethereum";
   if (chain === "bnb") return "BNB";
   if (chain === "polygon") return "Polygon";
@@ -6228,10 +6240,11 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
 
     let analysis: string;
     let intentBadge: string;
-    if (followupKind === "dev_rug") { analysis = formatDevRugCheck(ev, "Base"); intentBadge = "dev_rug_check"; }
-    else if (followupKind === "lp_lock") { analysis = formatLpLockCheck(ev, "Base"); intentBadge = "lp_lock_check"; }
-    else if (followupKind === "risk") { analysis = formatRiskExplanation(ev, "Base"); intentBadge = "risk_explanation"; }
-    else { analysis = formatTokenSafetyAnswer(ev, "Base"); intentBadge = "token_safety"; }
+    const followupChainLabel = chainDisplayLabel(tokenEvidenceChain(ev, chain));
+    if (followupKind === "dev_rug") { analysis = formatDevRugCheck(ev, followupChainLabel); intentBadge = "dev_rug_check"; }
+    else if (followupKind === "lp_lock") { analysis = formatLpLockCheck(ev, followupChainLabel); intentBadge = "lp_lock_check"; }
+    else if (followupKind === "risk") { analysis = formatRiskExplanation(ev, followupChainLabel); intentBadge = "risk_explanation"; }
+    else { analysis = formatTokenSafetyAnswer(ev, followupChainLabel); intentBadge = "token_safety"; }
 
     // Do not retry within the same request: a single fullScan attempt either returns real
     // non-tax safety evidence or it doesn't — either way the answer above already reflects it.
@@ -7105,6 +7118,9 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const tSectSecurity = (sections.security ?? {}) as Record<string, unknown>;
     const hp = (t.honeypot ?? {}) as Record<string, unknown>;
     const hd = (t.holderDistribution ?? {}) as Record<string, unknown>;
+    const resolvedInput = (t.resolvedInput && typeof t.resolvedInput === "object") ? t.resolvedInput as Record<string, unknown> : {};
+    const responseChainRaw = [t.chain, resolvedInput.requestedChain, resolvedInput.resolvedChain].find((v) => typeof v === "string") as string | undefined;
+    const evidenceChain = responseChainRaw === "eth" || responseChainRaw === "ethereum" ? "eth" : responseChainRaw === "base" ? "base" : (chain === "ethereum" ? "eth" : "base");
 
     const hasMarket = tokenApiOk && (typeof t.priceUsd === "number" || typeof t.liquidityUsd === "number");
     const hasHolders = tokenApiOk && (typeof hd.top10 === "number" || typeof holdersSection.top10 === "number");
@@ -7228,7 +7244,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         symbol: typeof t.symbol === "string" ? t.symbol : "?",
         address: typeof t.contract === "string" ? t.contract : tokenAddress,
       } : null,
-      chain: "Base",
+      chain: evidenceChain,
       market: {
         price: typeof t.priceUsd === "number" ? t.priceUsd : null,
         change24h: typeof t.priceChange24h === "number" ? t.priceChange24h : (typeof tSectMarket.change24h === "number" ? tSectMarket.change24h : null),
@@ -7506,10 +7522,10 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       formatterUsed = "inline_fallback_total";
     } else if (tokenApiMode === "clark_fast" && !ev.ok) {
       // Clark fast mode: market/pool identity present, deeper sections intentionally skipped.
-      analysis = formatFastTokenRead(ev, chainDisplayLabel(chain));
+      analysis = formatFastTokenRead(ev, chainDisplayLabel(tokenEvidenceChain(ev, chain)));
       formatterUsed = "formatFastTokenRead";
     } else if (ev.ok && !partialEvidenceUsed) {
-      analysis = formatTokenScanResult(ev, chainDisplayLabel(chain));
+      analysis = formatTokenScanResult(ev, chainDisplayLabel(tokenEvidenceChain(ev, chain)));
       formatterUsed = "formatTokenScanResult";
     } else {
       // Partial evidence — at least one branch succeeded
@@ -7522,6 +7538,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       missingEvidence: memMissingEvidence,
       confidence: memConfidence,
       cachedEvidence: memConfidence !== "none" ? ev : null,
+      chain: tokenEvidenceChain(ev, chain) === "ethereum" ? "eth" : "base",
     });
     updateMemIntent(sessionMem, "token_analysis");
 
@@ -7636,7 +7653,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       };
     }
     const toolsUsed: string[] = r.fromMemory ? ["memory"] : ["token_scan"];
-    const analysis = formatTokenSafetyAnswer(r.ev, "Base");
+    const analysis = formatTokenSafetyAnswer(r.ev, chainDisplayLabel(tokenEvidenceChain(r.ev, chain)));
     if (!r.fromMemory) {
       updateMemToken(sessionMem, r.address, r.ev.token?.symbol ?? null, r.ev.token?.name ?? null, analysis, {
         confidence: (r.ev as Record<string, unknown>)._partialEvidenceUsed ? "partial" : r.ev.ok ? "full" : "none",
@@ -7670,7 +7687,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       };
     }
     const toolsUsed: string[] = r.fromMemory ? ["memory"] : ["token_scan"];
-    const analysis = formatDevRugCheck(r.ev, "Base");
+    const analysis = formatDevRugCheck(r.ev, chainDisplayLabel(tokenEvidenceChain(r.ev, chain)));
     updateMemIntent(sessionMem, "dev_rug_check");
     const rugVerdictMeta = tokenScanVerdictMeta(r.ev, hasUsableTokenEvidence(r.ev));
     return {
@@ -7706,7 +7723,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const data = (raw.data && typeof raw.data === "object" ? raw.data : raw) as Record<string, unknown>;
     if (!liqRes.ok || raw.ok === false || Object.keys(data).length === 0) {
       const ev = await fetchTokenEvidence(tokenAddress);
-      const analysis = formatLpLockCheck(ev, "Base");
+      const analysis = formatLpLockCheck(ev, chainDisplayLabel(tokenEvidenceChain(ev, chain)));
       updateMemIntent(sessionMem, "lp_lock_check");
       return {
         feature: "clark-ai", chain, mode: "analysis", intent: "lp_lock_check", toolsUsed: ["token_scan"],
@@ -7721,11 +7738,11 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const lpStatus = typeof data.lpLockStatus === "string" ? data.lpLockStatus : (concentrated ? "concentrated" : "unverified");
     const ev: TokenScanEvidence = {
       token: { name: typeof data.name === "string" ? data.name : null, symbol: typeof data.symbol === "string" ? data.symbol : null, address: tokenAddress },
-      chain: "Base",
+      chain: chain === "ethereum" ? "eth" : "base",
       market: { liquidity: typeof data.lp_total_liquidity_usd === "number" ? data.lp_total_liquidity_usd : null },
       lpControl: { status: lpStatus, reason: typeof data.lpController === "string" ? data.lpController : null, confidence: null, poolType: displayModel },
     };
-    const analysis = formatLpLockCheck(ev, "Base");
+    const analysis = formatLpLockCheck(ev, chainDisplayLabel(tokenEvidenceChain(ev, chain)));
     updateMemToken(sessionMem, tokenAddress, ev.token?.symbol ?? null, ev.token?.name ?? null, analysis);
     updateMemIntent(sessionMem, "lp_lock_check");
     return {
@@ -7750,7 +7767,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       };
     }
     const toolsUsed: string[] = r.fromMemory ? ["memory"] : ["token_scan"];
-    const analysis = formatRiskExplanation(r.ev, "Base");
+    const analysis = formatRiskExplanation(r.ev, chainDisplayLabel(tokenEvidenceChain(r.ev, chain)));
     updateMemIntent(sessionMem, "risk_explanation");
     const riskVerdictMeta = tokenScanVerdictMeta(r.ev, hasUsableTokenEvidence(r.ev));
     return {
