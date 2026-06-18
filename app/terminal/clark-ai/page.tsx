@@ -272,637 +272,200 @@ function ClarkAiContent() {
     ? 'Ask Clark anything about tokens, wallets, liquidity, dev wallets, or Base movers...'
     : 'Chat with Clark about Base, wallets, tokens, or risk...'
   const hasMessages = messages.length > 0
-  void activeModeConfig; void applyMode; void handleImportFromRadar; void handlePasteContract; void handlePasteWallet
+  const historyRows = messages
+    .filter((msg) => msg.role === 'user' && msg.text.trim())
+    .slice(-5)
+    .reverse()
+  const memoryStats = [
+    { label: 'Tokens analyzed', value: clarkContextRef.current.lastMarketList?.length ?? 0 },
+    { label: 'Wallet scanned', value: getClientClarkContext().lastWallet ? 1 : 0 },
+    { label: 'Messages', value: messages.length },
+  ]
+  const clientContext = getClientClarkContext() as { lastToken?: unknown; lastWallet?: unknown }
+  const formatContextValue = (value: unknown) => {
+    if (!value) return 'None yet'
+    if (typeof value === 'string') return value
+    if (typeof value === 'object') {
+      const record = value as Record<string, unknown>
+      return String(record.symbol ?? record.address ?? record.tokenAddress ?? record.wallet ?? 'Available')
+    }
+    return String(value)
+  }
+  const quickActions = [
+    { title: 'Scan Token', sub: 'Analyze any token', icon: '◎', accent: '#22d3ee', prompt: 'Analyze token ' },
+    { title: 'Check LP', sub: 'Verify liquidity', icon: '⌘', accent: '#34d399', prompt: 'Check LP lock ' },
+    { title: 'Wallet PnL', sub: 'Analyze performance', icon: '▣', accent: '#8b5cf6', prompt: 'Analyze wallet PnL ' },
+    { title: 'Base Movers', sub: 'Top tokens today', icon: '✧', accent: '#ec4899', prompt: "What's pumping on Base?" },
+  ]
+  void activeModeConfig; void applyMode; void handleImportFromRadar; void handlePasteContract; void handlePasteWallet; void chips
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div className='clk-page'>
       <style>{`
-        /* ── Page shell ────────────────────────────────────────── */
         .clk-page {
           position: relative;
           min-height: 100%;
           overflow-x: hidden;
-          color: #e2e8f0;
+          color: #e5edf8;
           background:
-            radial-gradient(ellipse 55% 40% at 8% 60%, rgba(45,212,191,.13) 0%, transparent 100%),
-            radial-gradient(ellipse 50% 40% at 92% 55%, rgba(139,92,246,.15) 0%, transparent 100%),
-            radial-gradient(ellipse 60% 30% at 50% 0%,  rgba(139,92,246,.10) 0%, transparent 100%),
-            linear-gradient(180deg, #030712 0%, #050a18 50%, #030610 100%);
+            radial-gradient(circle at 78% 10%, rgba(76, 29, 149, .22), transparent 30%),
+            radial-gradient(circle at 18% 2%, rgba(20, 184, 166, .13), transparent 28%),
+            linear-gradient(180deg, #020611 0%, #050914 46%, #02040b 100%);
         }
-
-        /* ── Animated background blobs ─────────────────────────── */
-        .clk-blob {
-          position: absolute;
-          border-radius: 50%;
-          pointer-events: none;
-          filter: blur(80px);
-          will-change: transform;
-        }
-        .clk-blob-teal {
-          width: 520px; height: 420px;
-          left: -120px; top: 20%;
-          background: radial-gradient(circle, rgba(45,212,191,.22) 0%, transparent 70%);
-          animation: clkBlobT 14s ease-in-out infinite;
-        }
-        .clk-blob-purple {
-          width: 480px; height: 400px;
-          right: -100px; top: 28%;
-          background: radial-gradient(circle, rgba(139,92,246,.20) 0%, transparent 70%);
-          animation: clkBlobP 18s ease-in-out infinite;
-        }
-        @keyframes clkBlobT {
-          0%,100% { transform: translateY(0px) scale(1); }
-          40%     { transform: translateY(-30px) scale(1.06); }
-          70%     { transform: translateY(16px) scale(0.96); }
-        }
-        @keyframes clkBlobP {
-          0%,100% { transform: translateY(0px) scale(1); }
-          35%     { transform: translateY(24px) scale(1.05); }
-          65%     { transform: translateY(-18px) scale(0.97); }
-        }
-
-        /* ── Wave SVG ──────────────────────────────────────────── */
-        .clk-waves {
-          position: absolute;
-          left: 0; top: 0;
-          width: 100%; height: 600px;
-          pointer-events: none;
-          overflow: visible;
-        }
-        .clk-wave-l {
-          animation: clkWaveFloat 12s ease-in-out infinite;
-          transform-origin: center;
-        }
-        .clk-wave-r {
-          animation: clkWaveFloat 16s ease-in-out infinite reverse;
-          transform-origin: center;
-        }
-        @keyframes clkWaveFloat {
-          0%,100% { transform: translateY(0px); }
-          40%     { transform: translateY(-18px); }
-          70%     { transform: translateY(12px); }
-        }
-
-        /* ── Subtle dot grid overlay ───────────────────────────── */
-        .clk-grid {
-          position: absolute;
-          inset: 0; pointer-events: none;
-          background-image:
-            radial-gradient(circle, rgba(148,163,184,.07) 1px, transparent 1px);
-          background-size: 36px 36px;
-          mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, black 20%, transparent 80%);
-        }
-
-        /* ── Content column ────────────────────────────────────── */
-        .clk-content {
-          position: relative;
-          z-index: 1;
-          max-width: 860px;
-          margin: 0 auto;
-          padding: 40px 24px 64px;
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          gap: 0;
-        }
-
-        /* ── Hero ──────────────────────────────────────────────── */
-        .clk-hero {
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          text-align: center;
-          gap: 0;
-          margin-bottom: 28px;
-          animation: clkFadeDown .7s ease-out both;
-        }
-        @keyframes clkFadeDown {
-          from { opacity: 0; transform: translateY(-20px); }
-          to   { opacity: 1; transform: translateY(0); }
-        }
-
-        .clk-orb-wrap { margin-bottom: 22px; }
-
-        .clk-title {
-          margin: 0 0 14px;
-          font-size: clamp(48px, 7vw, 72px);
-          font-weight: 900;
-          letter-spacing: -0.03em;
-          line-height: 1;
-          color: #f8fafc;
-        }
-        .clk-title-ai {
-          background: linear-gradient(120deg, #67e8f9 0%, #818cf8 45%, #c084fc 100%);
-          -webkit-background-clip: text;
-          -webkit-text-fill-color: transparent;
-          background-clip: text;
-        }
-
-        .clk-subtitle {
-          margin: 0 0 18px;
-          font-size: clamp(14px, 2vw, 16px);
-          color: #94a3b8;
-          max-width: 480px;
-          line-height: 1.55;
-        }
-
-        /* ── LIVE badge row ────────────────────────────────────── */
-        .clk-live-row {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          font-size: 11px;
-          font-family: var(--font-plex-mono, monospace);
-          letter-spacing: .14em;
-          color: #64748b;
-          margin-bottom: 32px;
-          text-transform: uppercase;
-        }
-        .clk-live-dot {
-          width: 8px; height: 8px;
-          border-radius: 50%;
-          background: #2dd4bf;
-          box-shadow: 0 0 6px rgba(45,212,191,.8), 0 0 12px rgba(45,212,191,.5);
-          animation: clkLivePulse 2.2s ease-in-out infinite;
-          flex-shrink: 0;
-        }
-        @keyframes clkLivePulse {
-          0%,100% { box-shadow: 0 0 4px rgba(45,212,191,.8), 0 0 8px rgba(45,212,191,.4); }
-          50%     { box-shadow: 0 0 8px rgba(45,212,191,1),  0 0 18px rgba(45,212,191,.6), 0 0 28px rgba(45,212,191,.25); }
-        }
-        .clk-live-label { color: #2dd4bf; font-weight: 700; letter-spacing: .1em; }
-        .clk-live-sep   { color: #1e293b; }
-        .clk-live-cortex { color: #64748b; }
-
-        /* ── Mode tabs ─────────────────────────────────────────── */
-        .clk-tabs {
-          display: flex;
-          gap: 6px;
-          background: rgba(5,10,24,.65);
-          border: 1px solid rgba(148,163,184,.14);
-          border-radius: 999px;
-          padding: 6px;
-          backdrop-filter: blur(8px);
-        }
-        .clk-tab {
-          display: inline-flex;
-          align-items: center;
-          gap: 9px;
-          border-radius: 999px;
-          border: 1px solid transparent;
-          background: transparent;
-          color: #64748b;
-          font-size: 16px;
-          font-weight: 600;
-          letter-spacing: 0.01em;
-          padding: 12px 34px;
-          cursor: pointer;
-          transition: all .22s ease;
-          white-space: nowrap;
-          min-height: 48px;
-        }
-        .clk-tab:hover:not(.clk-tab--analyst):not(.clk-tab--chat) {
-          color: #cbd5e1;
-          border-color: rgba(148,163,184,.22);
-          background: rgba(255,255,255,.04);
-        }
-        .clk-tab--analyst {
-          background: linear-gradient(135deg, rgba(45,212,191,.24) 0%, rgba(99,102,241,.20) 100%);
-          border-color: rgba(45,212,191,.60);
-          color: #5eead4;
-          box-shadow: 0 0 22px rgba(45,212,191,.26), 0 0 0 1px rgba(45,212,191,.20) inset;
-          text-shadow: 0 0 20px rgba(45,212,191,.40);
-        }
-        .clk-tab--chat {
-          background: linear-gradient(135deg, rgba(139,92,246,.24) 0%, rgba(236,72,153,.18) 100%);
-          border-color: rgba(139,92,246,.60);
-          color: #c4b5fd;
-          box-shadow: 0 0 22px rgba(139,92,246,.26), 0 0 0 1px rgba(139,92,246,.18) inset;
-          text-shadow: 0 0 20px rgba(139,92,246,.40);
-        }
-        .clk-tab-icon { opacity: .85; flex-shrink: 0; }
-
-        /* ── Message thread wrap (visually connected to panel) ─── */
-        .clk-thread-wrap {
-          width: 100%;
-          border: 1px solid rgba(45,212,191,.22);
-          border-bottom: none;
-          border-radius: 24px 24px 0 0;
-          background: linear-gradient(180deg, rgba(6,12,26,.82) 0%, rgba(4,9,22,.90) 100%);
-          padding: 14px 18px 4px;
-          box-shadow:
-            0 0 0 1px rgba(139,92,246,.08),
-            0 -4px 24px rgba(45,212,191,.06);
-        }
-
-        /* ── Message thread ────────────────────────────────────── */
-        .clk-thread {
-          width: 100%;
-          max-height: 400px;
-          overflow-y: auto;
-          display: flex;
-          flex-direction: column;
-          gap: 10px;
-          padding-right: 4px;
-          scrollbar-width: thin;
-          scrollbar-color: rgba(148,163,184,.2) transparent;
-        }
-        .clk-thread::-webkit-scrollbar { width: 4px; }
-        .clk-thread::-webkit-scrollbar-track { background: transparent; }
-        .clk-thread::-webkit-scrollbar-thumb { background: rgba(148,163,184,.2); border-radius: 999px; }
-        .clk-thread-header {
-          display: flex;
-          justify-content: flex-end;
-          margin-bottom: 8px;
-        }
-        .clk-clear-btn {
-          font-size: 11px;
-          color: #475569;
-          background: transparent;
-          border: 1px solid rgba(148,163,184,.18);
-          border-radius: 999px;
-          padding: 4px 12px;
-          cursor: pointer;
-          font-family: var(--font-plex-mono, monospace);
-          letter-spacing: .08em;
-          transition: color .16s, border-color .16s;
-        }
-        .clk-clear-btn:hover { color: #94a3b8; border-color: rgba(148,163,184,.38); }
-
-        .clk-msg {
-          max-width: 86%;
-          padding: 10px 13px;
-          border-radius: 14px;
-          border: 1px solid;
-        }
-        .clk-msg--user {
-          align-self: flex-end;
-          border-color: rgba(45,212,191,.32);
-          background: rgba(45,212,191,.10);
-        }
-        .clk-msg--clark {
-          align-self: flex-start;
-          border-color: rgba(148,163,184,.18);
-          background: linear-gradient(180deg, rgba(15,23,42,.75), rgba(5,10,24,.85));
-        }
-        .clk-msg-role {
-          display: block;
-          font-size: 9px;
-          letter-spacing: .14em;
-          font-family: var(--font-plex-mono, monospace);
-          margin-bottom: 5px;
-        }
-        .clk-msg--user .clk-msg-role { color: #5eead4; }
-        .clk-msg--clark .clk-msg-role { color: #64748b; }
-        .clk-intent-badge { display:inline-flex; width:max-content; margin: 0 0 8px; padding: 4px 8px; border: 1px solid rgba(45,212,191,.28); border-radius: 999px; color: #67e8f9; background: rgba(45,212,191,.08); font-size: 10px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
+        .clk-grid { position:absolute; inset:0; pointer-events:none; background-image: linear-gradient(rgba(34,211,238,.055) 1px, transparent 1px), linear-gradient(90deg, rgba(34,211,238,.055) 1px, transparent 1px); background-size: 36px 36px; mask-image: radial-gradient(ellipse 74% 50% at 58% 5%, black 0%, transparent 76%); }
+        .clk-glow { position:absolute; pointer-events:none; inset:0; background: radial-gradient(circle at 73% 12%, rgba(34,211,238,.12), transparent 18%), radial-gradient(circle at 88% 30%, rgba(168,85,247,.12), transparent 22%); }
+        .clk-shell { position:relative; z-index:1; width:100%; max-width: 1540px; margin:0 auto; padding: 28px 28px 56px; display:grid; grid-template-columns: minmax(0, 1fr) 330px; gap:28px; }
+        .clk-main { min-width:0; }
+        .clk-hero { display:grid; grid-template-columns: minmax(0, 1fr) 220px; gap:20px; align-items:center; padding: 12px 0 20px; border-bottom:1px solid rgba(148,163,184,.12); }
+        .clk-title-row { display:flex; align-items:center; gap:18px; flex-wrap:wrap; }
+        .clk-title { margin:0; font-size: clamp(42px, 4vw, 58px); font-weight: 850; letter-spacing:-.045em; line-height:.98; color:#f8fafc; }
+        .clk-title-ai { background: linear-gradient(110deg, #22d3ee 10%, #7c3aed 58%, #c084fc 96%); -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent; }
+        .clk-ready-pill { border:1px solid rgba(45,212,191,.36); border-radius:999px; padding:10px 18px; color:#5eead4; background:rgba(6,20,30,.72); font:700 12px var(--font-plex-mono, monospace); letter-spacing:.12em; box-shadow: inset 0 1px 0 rgba(255,255,255,.04); }
+        .clk-subtitle { margin:18px 0 16px; color:#a8b4c7; font-size:17px; line-height:1.55; }
+        .clk-live-row { display:flex; align-items:center; gap:12px; color:#7c8aa1; font:700 12px var(--font-plex-mono, monospace); letter-spacing:.12em; text-transform:uppercase; }
+        .clk-live-dot { width:10px; height:10px; border-radius:999px; background:#10b981; box-shadow:0 0 0 6px rgba(16,185,129,.12), 0 0 20px rgba(16,185,129,.65); }
+        .clk-live-label { color:#34d399; }
+        .clk-live-sep { color:#334155; }
+        .clk-live-cortex { color:#22d3ee; }
+        .clk-mark { justify-self:end; width:190px; height:96px; border-radius:28px; display:grid; place-items:center; color:#22d3ee; font-size:58px; font-weight:900; letter-spacing:-.12em; background:radial-gradient(circle at 45% 50%, rgba(34,211,238,.20), transparent 48%); text-shadow: 0 0 26px rgba(34,211,238,.72), 22px 10px 32px rgba(124,58,237,.70); opacity:.9; }
+        .clk-actions-row { display:grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap:14px; margin:16px 0 26px; }
+        .clk-quick-card { text-align:left; display:flex; gap:14px; align-items:center; border:1px solid rgba(148,163,184,.13); border-radius:12px; background:linear-gradient(180deg, rgba(13,21,36,.72), rgba(5,10,22,.82)); padding:16px; color:#f8fafc; cursor:pointer; transition: border-color .18s, transform .18s, background .18s; box-shadow: inset 0 1px 0 rgba(255,255,255,.035); }
+        .clk-quick-card:hover { transform: translateY(-2px); border-color:rgba(34,211,238,.35); background:linear-gradient(180deg, rgba(15,28,48,.82), rgba(5,12,25,.92)); }
+        .clk-quick-icon { width:42px; height:42px; border-radius:12px; display:grid; place-items:center; border:1px solid var(--accent); color:var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); flex:0 0 auto; }
+        .clk-quick-title { font-weight:760; font-size:16px; margin-bottom:5px; }
+        .clk-quick-sub { color:#9aa8bb; font-size:13px; }
+        .clk-console { border:1px solid rgba(59,130,246,.22); border-radius:18px; background:linear-gradient(180deg, rgba(8,15,30,.82), rgba(3,7,17,.94)); box-shadow:0 24px 60px rgba(0,0,0,.34), inset 0 1px 0 rgba(255,255,255,.045); overflow:hidden; }
+        .clk-tabs { display:grid; grid-template-columns:1fr 1fr; border-bottom:1px solid rgba(148,163,184,.14); }
+        .clk-tab { min-height:58px; border:0; border-right:1px solid rgba(148,163,184,.12); background:rgba(15,23,42,.22); color:#b7c2d4; font-weight:750; font-size:16px; cursor:pointer; display:flex; gap:10px; align-items:center; justify-content:center; }
+        .clk-tab:last-child { border-right:0; }
+        .clk-tab--active { color:#22d3ee; background:linear-gradient(180deg, rgba(34,211,238,.10), rgba(34,211,238,.025)); box-shadow: inset 0 1px 0 rgba(34,211,238,.24); }
+        .clk-thread { min-height:310px; max-height:470px; overflow-y:auto; padding:28px 24px 18px; display:flex; flex-direction:column; gap:16px; }
+        .clk-thread-top { display:flex; justify-content:flex-end; }
+        .clk-clear-btn { border:0; background:transparent; color:#98a6ba; cursor:pointer; font-size:13px; }
+        .clk-intro { display:grid; grid-template-columns:38px minmax(0,1fr); gap:14px; max-width:720px; }
+        .clk-intro-title { color:#22d3ee; font-weight:800; margin:2px 0 8px; }
+        .clk-intro-text { margin:0; color:#c4cede; line-height:1.7; font-size:16px; white-space:pre-line; }
+        .clk-msg { max-width:82%; padding:13px 15px; border-radius:15px; border:1px solid rgba(148,163,184,.15); background:rgba(15,23,42,.56); }
+        .clk-msg--user { align-self:flex-end; border-color:rgba(34,211,238,.30); background:rgba(8,145,178,.13); }
+        .clk-msg--clark { align-self:flex-start; }
+        .clk-msg-role { display:block; margin-bottom:6px; color:#22d3ee; font:700 10px var(--font-plex-mono, monospace); letter-spacing:.14em; }
+        .clk-msg-text { margin:0; font-size:14px; line-height:1.62; color:#dbe6f6; white-space:pre-wrap; word-break:break-word; overflow-wrap:anywhere; }
+        .clk-intent-badge { display:inline-flex; width:max-content; margin:0 0 8px; padding:4px 8px; border:1px solid rgba(45,212,191,.28); border-radius:999px; color:#67e8f9; background:rgba(45,212,191,.08); font-size:10px; font-weight:800; letter-spacing:.12em; text-transform:uppercase; }
         .clk-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
         .clk-action { border:1px solid rgba(45,212,191,.25); border-radius:999px; padding:7px 10px; color:#ccfbf1; background:rgba(45,212,191,.07); font-size:12px; font-weight:700; text-decoration:none; }
         .clk-action--disabled { opacity:.45; cursor:not-allowed; pointer-events:none; }
-        .clk-msg-text {
-          margin: 0;
-          font-size: 13.5px;
-          line-height: 1.55;
-          color: #e2e8f0;
-          white-space: pre-wrap;
-          word-break: break-word;
-          overflow-wrap: anywhere;
-        }
-        .clk-thinking {
-          display: flex;
-          align-items: center;
-          gap: 10px;
-        }
-        .clk-thinking-text { font-size: 13px; color: #64748b; }
-
-        /* ── Glass input panel ─────────────────────────────────── */
-        .clk-panel {
-          width: 100%;
-          border-radius: 24px;
-          border: 1px solid rgba(45,212,191,.30);
-          background: linear-gradient(165deg, rgba(8,16,34,.90) 0%, rgba(4,9,22,.94) 100%);
-          box-shadow:
-            0 0 0 1px rgba(139,92,246,.14),
-            0 0 48px rgba(45,212,191,.12),
-            0 28px 64px rgba(0,0,0,.44),
-            inset 0 1px 0 rgba(255,255,255,.05);
-          padding: 22px 22px 18px;
-          animation: clkFadeUp .8s ease-out .15s both;
-          margin-bottom: 24px;
-        }
-        .clk-panel--connected {
-          border-top: 1px solid rgba(45,212,191,.18);
-          border-radius: 0 0 24px 24px;
-          box-shadow:
-            0 0 0 1px rgba(139,92,246,.10),
-            0 0 40px rgba(45,212,191,.10),
-            0 28px 64px rgba(0,0,0,.44),
-            inset 0 1px 0 rgba(255,255,255,.03);
-        }
-        @keyframes clkFadeUp {
-          from { opacity: 0; transform: translateY(28px); }
-          to   { opacity: 1; transform: translateY(0); }
-        }
-
-        .clk-panel-input-row {
-          display: flex;
-          align-items: center;
-          gap: 14px;
-          min-height: 56px;
-          padding: 4px 0;
-          margin-bottom: 20px;
-        }
-        .clk-panel-input {
-          flex: 1;
-          background: transparent;
-          border: none;
-          outline: none;
-          color: #e2e8f0;
-          font-size: 16px;
-          line-height: 1.5;
-          caret-color: #2dd4bf;
-          min-width: 0;
-        }
-        .clk-panel-input::placeholder { color: #3d526a; }
-
-        .clk-send-btn {
-          width: 48px; height: 48px;
-          flex-shrink: 0;
-          border-radius: 50%;
-          border: none;
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-          cursor: pointer;
-          transition: transform .16s ease, box-shadow .16s ease, filter .16s ease;
-        }
-        .clk-send-btn:not(:disabled) {
-          background: linear-gradient(135deg, #2DD4BF 0%, #8B5CF6 55%, #EC4899 100%);
-          color: #fff;
-          box-shadow: 0 0 22px rgba(45,212,191,.55), 0 0 30px rgba(236,72,153,.40), 0 0 0 1px rgba(255,255,255,.12);
-        }
-        .clk-send-btn:not(:disabled):hover {
-          transform: scale(1.08);
-          filter: brightness(1.08) saturate(1.1);
-          box-shadow: 0 0 30px rgba(45,212,191,.70), 0 0 40px rgba(236,72,153,.55), 0 0 0 1px rgba(255,255,255,.16);
-        }
-        .clk-send-btn:not(:disabled):active { transform: scale(1.02); }
-        .clk-send-btn:disabled {
-          background: rgba(148,163,184,.18);
-          color: #334155;
-          cursor: not-allowed;
-          box-shadow: none;
-        }
-
-        /* ── Divider inside panel ──────────────────────────────── */
-        .clk-panel-divider {
-          height: 1px;
-          background: rgba(148,163,184,.10);
-          margin-bottom: 14px;
-        }
-
-        /* ── Upgrade notice ────────────────────────────────────── */
-        .clk-upgrade-note {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 12px;
-          flex-wrap: wrap;
-          margin-bottom: 16px;
-          padding: 11px 16px;
-          border-radius: 14px;
-          border: 1px solid rgba(139,92,246,.32);
-          background: rgba(139,92,246,.08);
-          font-size: 12.5px;
-          color: #a78bfa;
-          line-height: 1.5;
-        }
-        .clk-upgrade-link {
-          color: #c4b5fd;
-          font-size: 12px;
-          font-weight: 700;
-          text-decoration: none;
-          white-space: nowrap;
-          border: 1px solid rgba(196,181,253,.30);
-          border-radius: 999px;
-          padding: 4px 12px;
-          transition: background .16s, color .16s;
-        }
-        .clk-upgrade-link:hover {
-          background: rgba(139,92,246,.18);
-          color: #e9d5ff;
-        }
-
-        /* ── Suggestion chips ──────────────────────────────────── */
-        .clk-chips {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 8px;
-          margin-bottom: 16px;
-        }
-        .clk-chip {
-          border-radius: 999px;
-          border: 1px solid rgba(148,163,184,.22);
-          background: rgba(12,20,38,.65);
-          color: #94a3b8;
-          font-size: 12.5px;
-          padding: 7px 15px;
-          cursor: pointer;
-          transition: border-color .16s, color .16s, box-shadow .16s, background .16s;
-          white-space: nowrap;
-          max-width: 100%;
-        }
-        .clk-chip:hover {
-          border-color: rgba(45,212,191,.48);
-          color: #99f6e4;
-          background: rgba(45,212,191,.06);
-          box-shadow: 0 0 12px rgba(45,212,191,.14);
-        }
-
-        /* ── Usage row ─────────────────────────────────────────── */
-        .clk-usage {
-          display: flex;
-          align-items: center;
-          gap: 12px;
-          padding-top: 2px;
-        }
-        .clk-usage-label {
-          font-size: 11.5px;
-          color: #64748b;
-          font-family: var(--font-plex-mono, monospace);
-          white-space: nowrap;
-        }
-        .clk-usage-track {
-          flex: 1;
-          height: 5px;
-          border-radius: 999px;
-          background: rgba(148,163,184,.12);
-          overflow: hidden;
-          min-width: 60px;
-        }
-        .clk-usage-fill {
-          height: 100%;
-          border-radius: 999px;
-          transition: width .6s ease;
-          min-width: 0;
-        }
-        .clk-usage-count {
-          font-size: 11.5px;
-          font-family: var(--font-plex-mono, monospace);
-          white-space: nowrap;
-          min-width: 44px;
-          text-align: right;
-        }
-
-        /* ── Footer note ───────────────────────────────────────── */
-        .clk-footer {
-          font-size: 12px;
-          color: #334155;
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          margin: 0;
-        }
-
-        /* ── Orb (unchanged) ───────────────────────────────────── */
-        .clark-orb-shell {
-          border-radius: 999px; position: relative;
-          display: inline-flex; align-items: center; justify-content: center;
-          background: radial-gradient(circle at 30% 25%, rgba(148,163,184,.24), rgba(2,6,23,.96) 62%);
-          border: 1px solid rgba(148,163,184,.34);
-          box-shadow: inset 0 1px 0 rgba(255,255,255,.08), 0 0 20px rgba(45,212,191,.22), 0 0 28px rgba(139,92,246,.20);
-          overflow: hidden; flex-shrink: 0;
-        }
-        .clark-orb-ring {
-          position: absolute; inset: 3px; border-radius: 999px;
-          border: 1px solid rgba(45,212,191,.25); opacity: .9;
-        }
-        .clark-orb-core { position: relative; width: 100%; height: 100%; border-radius: 999px; }
-        .clark-orb-dot { position: absolute; width: 7px; height: 7px; border-radius: 999px; filter: blur(.1px); }
-        .clark-orb-dot-a { left: 34%; top: 44%; background: #67e8f9; box-shadow: 0 0 16px rgba(103,232,249,.95); animation: clarkDotA 2.4s ease-in-out infinite; }
-        .clark-orb-dot-b { right: 30%; top: 44%; background: #c4b5fd; box-shadow: 0 0 16px rgba(196,181,253,.9);  animation: clarkDotB 2.1s ease-in-out infinite; }
-        .clark-orb-shell.thinking::after {
-          content: ''; position: absolute; inset: -6px; border-radius: 999px;
-          border: 1px solid rgba(45,212,191,.22); animation: clarkPulse 1.6s ease-out infinite;
-        }
+        .clk-thinking { display:flex; align-items:center; gap:10px; }
+        .clk-thinking-text { color:#9aa8bb; font-size:13px; }
+        .clk-input-wrap { margin:0 18px 18px; border:1px solid rgba(34,211,238,.48); border-radius:10px; background:rgba(2,8,20,.72); box-shadow:0 0 22px rgba(34,211,238,.08), inset 0 1px 0 rgba(255,255,255,.035); }
+        .clk-input-row { display:grid; grid-template-columns:24px minmax(0, 1fr) auto 48px; gap:10px; align-items:center; min-height:60px; padding:7px 10px 7px 16px; }
+        .clk-prompt-mark { color:#22d3ee; font-weight:900; }
+        .clk-panel-input { width:100%; background:transparent; border:0; outline:0; color:#e5edf8; font-size:16px; caret-color:#22d3ee; }
+        .clk-panel-input::placeholder { color:#8d99ab; }
+        .clk-helper { color:#94a3b8; font-size:12px; white-space:nowrap; }
+        .clk-send-btn { width:40px; height:40px; border-radius:10px; border:1px solid rgba(34,211,238,.56); color:#22d3ee; background:linear-gradient(180deg, rgba(34,211,238,.11), rgba(14,22,36,.62)); display:grid; place-items:center; cursor:pointer; transition:transform .16s, box-shadow .16s, border-color .16s; }
+        .clk-send-btn:not(:disabled):hover { transform:translateY(-1px); box-shadow:0 0 22px rgba(34,211,238,.24); border-color:rgba(94,234,212,.74); }
+        .clk-send-btn:disabled { opacity:.38; cursor:not-allowed; box-shadow:none; }
+        .clk-upgrade-note { margin:0 18px 12px; padding:11px 14px; border:1px solid rgba(139,92,246,.28); border-radius:12px; background:rgba(139,92,246,.08); color:#c4b5fd; display:flex; justify-content:space-between; gap:12px; font-size:13px; }
+        .clk-upgrade-link { color:#e9d5ff; text-decoration:none; font-weight:800; }
+        .clk-usage { display:flex; align-items:center; gap:12px; padding:0 18px 18px; }
+        .clk-usage-label, .clk-usage-count { font:700 11px var(--font-plex-mono, monospace); color:#728198; white-space:nowrap; }
+        .clk-usage-track { flex:1; height:5px; border-radius:999px; background:rgba(148,163,184,.13); overflow:hidden; }
+        .clk-usage-fill { height:100%; border-radius:999px; transition:width .5s; }
+        .clk-side { display:flex; flex-direction:column; gap:16px; }
+        .clk-side-card { border:1px solid rgba(148,163,184,.14); border-radius:16px; background:linear-gradient(180deg, rgba(8,15,30,.76), rgba(3,7,17,.9)); padding:20px; box-shadow: inset 0 1px 0 rgba(255,255,255,.04); }
+        .clk-side-title { display:flex; align-items:center; gap:11px; margin:0 0 20px; color:#f1f5f9; font-size:16px; font-weight:800; }
+        .clk-side-title svg { color:#22d3ee; }
+        .clk-context-row { padding:0 0 15px; margin-bottom:15px; border-bottom:1px solid rgba(148,163,184,.11); }
+        .clk-context-row:last-child { margin-bottom:0; padding-bottom:0; border-bottom:0; }
+        .clk-context-label { color:#a5b4c8; font:700 11px var(--font-plex-mono, monospace); letter-spacing:.10em; text-transform:uppercase; margin-bottom:8px; }
+        .clk-context-value { color:#f8fafc; font-size:17px; font-weight:780; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .clk-context-sub { color:#93a2b7; font-size:13px; margin-top:5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .clk-history-list { display:flex; flex-direction:column; gap:12px; }
+        .clk-history-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:10px; color:#cbd5e1; font-size:14px; }
+        .clk-history-row span:first-child { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .clk-history-time { color:#94a3b8; font-size:12px; }
+        .clk-empty { color:#8795aa; font-size:14px; line-height:1.55; }
+        .clk-memory-stat { display:flex; justify-content:space-between; gap:12px; color:#cbd5e1; font-size:14px; padding:8px 0; }
+        .clk-memory-stat strong { color:#34d399; }
+        .clark-orb-shell { border-radius:999px; position:relative; display:inline-flex; align-items:center; justify-content:center; background:radial-gradient(circle at 30% 25%, rgba(148,163,184,.24), rgba(2,6,23,.96) 62%); border:1px solid rgba(148,163,184,.34); box-shadow:inset 0 1px 0 rgba(255,255,255,.08), 0 0 20px rgba(45,212,191,.22), 0 0 28px rgba(139,92,246,.20); overflow:hidden; flex-shrink:0; }
+        .clark-orb-ring { position:absolute; inset:3px; border-radius:999px; border:1px solid rgba(45,212,191,.25); opacity:.9; }
+        .clark-orb-core { position:relative; width:100%; height:100%; border-radius:999px; }
+        .clark-orb-dot { position:absolute; width:7px; height:7px; border-radius:999px; filter:blur(.1px); }
+        .clark-orb-dot-a { left:34%; top:44%; background:#67e8f9; box-shadow:0 0 16px rgba(103,232,249,.95); animation:clarkDotA 2.4s ease-in-out infinite; }
+        .clark-orb-dot-b { right:30%; top:44%; background:#c4b5fd; box-shadow:0 0 16px rgba(196,181,253,.9); animation:clarkDotB 2.1s ease-in-out infinite; }
+        .clark-orb-shell.thinking::after { content:''; position:absolute; inset:-6px; border-radius:999px; border:1px solid rgba(45,212,191,.22); animation:clarkPulse 1.6s ease-out infinite; }
         @keyframes clarkDotA { 0%,100%{ transform:translate(0,0) scale(1);} 50%{ transform:translate(2px,-2px) scale(1.18);} }
         @keyframes clarkDotB { 0%,100%{ transform:translate(0,0) scale(1);} 50%{ transform:translate(-2px,2px) scale(1.16);} }
         @keyframes clarkPulse { 0%{ transform:scale(.94); opacity:.7;} 100%{ transform:scale(1.08); opacity:0;} }
-
-        /* ── Reduced motion ────────────────────────────────────── */
-        @media (prefers-reduced-motion: reduce) {
-          .clark-orb-dot, .clark-orb-shell.thinking::after,
-          .clk-blob-teal, .clk-blob-purple,
-          .clk-wave-l, .clk-wave-r, .clk-live-dot { animation: none !important; }
-          .clk-hero, .clk-panel { animation: none !important; opacity: 1 !important; transform: none !important; }
-        }
-
-        /* ── Responsive ────────────────────────────────────────── */
-        @media (max-width: 680px) {
-          .clk-content { padding: 28px 14px 80px; }
-          .clk-title { font-size: 44px; }
-          .clk-hero { margin-bottom: 22px; }
-          .clk-tabs { gap: 4px; padding: 5px; }
-          .clk-tab { font-size: 15px; padding: 10px 22px; min-height: 44px; }
-          .clk-thread-wrap { border-radius: 18px 18px 0 0; padding: 12px 14px 4px; }
-          .clk-panel { border-radius: 18px; padding: 16px 14px 14px; }
-          .clk-panel--connected { border-radius: 0 0 18px 18px; }
-          .clk-panel-input-row { gap: 10px; min-height: 48px; margin-bottom: 16px; }
-          .clk-panel-input { font-size: 16px; }
-          .clk-chips { gap: 6px; }
-          .clk-chip { font-size: 12px; padding: 7px 13px; }
-          .clk-send-btn { width: 44px; height: 44px; }
-          .clk-thread { max-height: 300px; }
-          .clk-upgrade-note { font-size: 12px; padding: 10px 13px; }
-        }
-        @media (max-width: 420px) {
-          .clk-tabs { border-radius: 18px; }
-          .clk-tab { padding: 10px 18px; }
-          .clk-chip { white-space: normal; text-align: center; }
-        }
+        @media (max-width: 1100px) { .clk-shell { grid-template-columns:1fr; } .clk-side { grid-template-columns:repeat(3, minmax(0,1fr)); display:grid; } }
+        @media (max-width: 780px) { .clk-shell { padding:20px 14px 44px; } .clk-hero { grid-template-columns:1fr; } .clk-mark { display:none; } .clk-actions-row { grid-template-columns:1fr 1fr; } .clk-side { display:flex; } .clk-input-row { grid-template-columns:20px minmax(0,1fr) 44px; } .clk-helper { display:none; } }
+        @media (max-width: 480px) { .clk-actions-row { grid-template-columns:1fr; } .clk-title { font-size:40px; } .clk-ready-pill { padding:8px 12px; } }
       `}</style>
 
-      {/* ── Cinematic background ─────────────────────────────────── */}
       <div aria-hidden='true'>
-        <div className='clk-blob clk-blob-teal' />
-        <div className='clk-blob clk-blob-purple' />
         <div className='clk-grid' />
-        <svg className='clk-waves' viewBox='0 0 1440 600' preserveAspectRatio='xMidYMid slice' xmlns='http://www.w3.org/2000/svg' aria-hidden='true'>
-          <defs>
-            <linearGradient id='clwg1' x1='0%' y1='0%' x2='100%' y2='0%'>
-              <stop offset='0%'   stopColor='#2DD4BF' stopOpacity='.55'/>
-              <stop offset='60%'  stopColor='#8B5CF6' stopOpacity='.28'/>
-              <stop offset='100%' stopColor='#8B5CF6' stopOpacity='.06'/>
-            </linearGradient>
-            <linearGradient id='clwg2' x1='0%' y1='0%' x2='100%' y2='0%'>
-              <stop offset='0%'   stopColor='#2DD4BF' stopOpacity='.10'/>
-              <stop offset='45%'  stopColor='#8B5CF6' stopOpacity='.38'/>
-              <stop offset='100%' stopColor='#EC4899' stopOpacity='.28'/>
-            </linearGradient>
-            <linearGradient id='clwg3' x1='0%' y1='0%' x2='100%' y2='0%'>
-              <stop offset='0%'   stopColor='#2DD4BF' stopOpacity='.16'/>
-              <stop offset='100%' stopColor='#2DD4BF' stopOpacity='.04'/>
-            </linearGradient>
-          </defs>
-          {/* Left / teal wave cluster */}
-          <g className='clk-wave-l'>
-            <path d='M-240 370 C60 300 240 440 520 330 S820 290 1100 370 S1380 320 1680 370' stroke='url(#clwg1)' strokeWidth='2.2' fill='none' strokeLinecap='round' opacity='.8'/>
-            <path d='M-240 395 C60 325 240 460 520 355 S820 315 1100 395 S1380 345 1680 395' stroke='#2DD4BF'       strokeWidth='1'   fill='none' strokeLinecap='round' opacity='.28'/>
-            <path d='M-240 350 C80 285 260 415 540 310 S840 270 1120 350 S1400 300 1700 350' stroke='url(#clwg3)'    strokeWidth='.8'  fill='none' strokeLinecap='round' opacity='.35'/>
-          </g>
-          {/* Right / purple wave cluster */}
-          <g className='clk-wave-r'>
-            <path d='M-240 250 C80 318 340 192 620 268 S940 330 1220 240 S1500 298 1780 250' stroke='url(#clwg2)' strokeWidth='2.2' fill='none' strokeLinecap='round' opacity='.70'/>
-            <path d='M-240 272 C80 340 340 212 620 290 S940 352 1220 262 S1500 320 1780 272' stroke='#8B5CF6'       strokeWidth='1'   fill='none' strokeLinecap='round' opacity='.28'/>
-            <path d='M-240 228 C80 296 340 170 620 246 S940 308 1220 218 S1500 276 1780 228' stroke='#EC4899'       strokeWidth='.8'  fill='none' strokeLinecap='round' opacity='.18'/>
-          </g>
-        </svg>
+        <div className='clk-glow' />
       </div>
 
-      {/* ── Content ──────────────────────────────────────────────── */}
-      <div className='clk-content'>
+      <div className='clk-shell'>
+        <main className='clk-main'>
+          <section className='clk-hero'>
+            <div>
+              <div className='clk-title-row'>
+                <h1 className='clk-title'>Clark <span className='clk-title-ai'>AI</span></h1>
+                <span className='clk-ready-pill'>CORTEX READY</span>
+              </div>
+              <p className='clk-subtitle'>Base-native AI analyst for tokens, wallets, and onchain risk.</p>
+              <div className='clk-live-row'>
+                <span className='clk-live-dot' />
+                <span className='clk-live-label'>LIVE</span>
+                <span className='clk-live-sep'>|</span>
+                <span className='clk-live-cortex'>POWERED BY CORTEX ENGINE</span>
+              </div>
+            </div>
+            <div className='clk-mark'>CL</div>
+          </section>
 
-        {/* Hero */}
-        <section className='clk-hero'>
-          <div className='clk-orb-wrap'><ClarkOrb size={72} thinking={loading && !hasMessages} /></div>
-          <h1 className='clk-title'>Clark <span className='clk-title-ai'>AI</span></h1>
-          <p className='clk-subtitle'>Base-native AI analyst for tokens, wallets, and onchain risk.</p>
-          <div className='clk-live-row'>
-            <span className='clk-live-dot' />
-            <span className='clk-live-label'>LIVE</span>
-            <span className='clk-live-sep'>·</span>
-            <span className='clk-live-cortex'>POWERED BY CORTEX ENGINE</span>
-          </div>
+          <section className='clk-actions-row' aria-label='Clark quick actions'>
+            {quickActions.map((action) => (
+              <button
+                key={action.title}
+                className='clk-quick-card'
+                style={{ '--accent': action.accent } as CSSProperties}
+                onClick={() => setInput(action.prompt)}
+              >
+                <span className='clk-quick-icon'>{action.icon}</span>
+                <span>
+                  <span className='clk-quick-title'>{action.title}</span>
+                  <span className='clk-quick-sub'>{action.sub}</span>
+                </span>
+              </button>
+            ))}
+          </section>
 
-          {/* Analyst / Chat tabs */}
-          <div className='clk-tabs'>
-            <button
-              className={`clk-tab${uiTab === 'analyst' ? ' clk-tab--analyst' : ''}`}
-              onClick={() => setUiTab('analyst')}
-            >
-              <svg className='clk-tab-icon' width='17' height='17' viewBox='0 0 15 15' fill='none' xmlns='http://www.w3.org/2000/svg' aria-hidden='true'>
-                <path d='M7.5 1L9.18 5.31L14 5.69L10.55 8.67L11.63 13.38L7.5 11L3.37 13.38L4.45 8.67L1 5.69L5.82 5.31L7.5 1Z' stroke='currentColor' strokeWidth='1.3' strokeLinejoin='round' fill='none'/>
-              </svg>
-              Analyst
-            </button>
-            <button
-              className={`clk-tab${uiTab === 'chat' ? ' clk-tab--chat' : ''}`}
-              onClick={() => setUiTab('chat')}
-            >
-              <svg className='clk-tab-icon' width='17' height='17' viewBox='0 0 15 15' fill='none' xmlns='http://www.w3.org/2000/svg' aria-hidden='true'>
-                <path d='M13 2H2C1.45 2 1 2.45 1 3V10C1 10.55 1.45 11 2 11H4V13.5L7.5 11H13C13.55 11 14 10.55 14 10V3C14 2.45 13.55 2 13 2Z' stroke='currentColor' strokeWidth='1.3' strokeLinejoin='round' strokeLinecap='round' fill='none'/>
-              </svg>
-              Chat
-            </button>
-          </div>
-        </section>
+          <section className='clk-console'>
+            <div className='clk-tabs'>
+              <button className={`clk-tab${uiTab === 'analyst' ? ' clk-tab--active' : ''}`} onClick={() => setUiTab('analyst')}>
+                <svg width='18' height='18' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' strokeLinecap='round' strokeLinejoin='round' aria-hidden='true'><path d='M3 17l6-6 4 4 7-8'/><path d='M14 7h6v6'/></svg>
+                Analyst
+              </button>
+              <button className={`clk-tab${uiTab === 'chat' ? ' clk-tab--active' : ''}`} onClick={() => setUiTab('chat')}>
+                <svg width='18' height='18' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' strokeLinecap='round' strokeLinejoin='round' aria-hidden='true'><path d='M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z'/></svg>
+                Chat
+              </button>
+            </div>
 
-        {/* Message thread — wrapped to visually connect with panel below */}
-        {hasMessages && (
-          <div className='clk-thread-wrap'>
             <div className='clk-thread' ref={threadRef}>
-              <div className='clk-thread-header'>
-                <button onClick={handleClear} className='clk-clear-btn'>Clear</button>
+              <div className='clk-thread-top'>
+                {hasMessages && <button onClick={handleClear} className='clk-clear-btn'>Clear conversation</button>}
+              </div>
+              <div className='clk-intro'>
+                <ClarkOrb size={38} thinking={loading && !hasMessages} />
+                <div>
+                  <div className='clk-intro-title'>Clark</div>
+                  <p className='clk-intro-text'>I'm Clark, your onchain analyst.{`\n`}Ask me anything about tokens, wallets, liquidity, dev wallets, or Base movers.{`\n`}Example: “Analyze BRETT on Base” or “Check LP lock”.</p>
+                </div>
               </div>
               {messages.map((msg, idx) => {
                 const isThinking = msg.role === 'clark' && loading && msg.text === THINKING_MESSAGE
@@ -933,92 +496,65 @@ function ClarkAiContent() {
                 )
               })}
             </div>
-          </div>
-        )}
 
-        {/* Glass input panel — top corners flatten when thread is above */}
-        <div className={`clk-panel${hasMessages ? ' clk-panel--connected' : ''}`}>
-          <div className='clk-panel-input-row'>
-            <ClarkOrb size={40} thinking={loading && hasMessages} />
-            <input
-              className='clk-panel-input'
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !loading) { e.preventDefault(); void handleSend() } }}
-              disabled={loading}
-              placeholder={placeholder}
-            />
-            <button
-              className='clk-send-btn'
-              onClick={() => void handleSend()}
-              disabled={loading || !input.trim() || isLimited}
-              aria-label='Send'
-            >
-              <svg width='17' height='17' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2.4' strokeLinecap='round' strokeLinejoin='round' aria-hidden='true'>
-                <line x1='22' y1='2' x2='11' y2='13'/>
-                <polygon points='22 2 15 22 11 13 2 9 22 2'/>
-              </svg>
-            </button>
-          </div>
+            {isLimited && (
+              <div className='clk-upgrade-note'>
+                <span>Base momentum preview is available on Pro and Elite. Upgrade to unlock the full market read.</span>
+                <a href='/pricing' className='clk-upgrade-link'>Upgrade →</a>
+              </div>
+            )}
 
-          <div className='clk-panel-divider' />
-
-          {/* Upgrade notice — shown only when daily limit reached */}
-          {isLimited && (
-            <div className='clk-upgrade-note'>
-              <span>Base momentum preview is available on Pro and Elite. Upgrade to unlock the full market read.</span>
-              <a href='/pricing' className='clk-upgrade-link'>Upgrade →</a>
+            <div className='clk-input-wrap'>
+              <div className='clk-input-row'>
+                <span className='clk-prompt-mark'>›</span>
+                <input
+                  className='clk-panel-input'
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !loading) { e.preventDefault(); void handleSend() } }}
+                  disabled={loading}
+                  placeholder='Ask Clark anything...'
+                />
+                <span className='clk-helper'>Shift + Enter for new line</span>
+                <button className='clk-send-btn' onClick={() => void handleSend()} disabled={loading || !input.trim() || isLimited} aria-label='Send'>
+                  <svg width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2.2' strokeLinecap='round' strokeLinejoin='round' aria-hidden='true'><path d='M22 2 11 13'/><path d='m22 2-7 20-4-9-9-4Z'/></svg>
+                </button>
+              </div>
             </div>
-          )}
 
-          {/* Suggestion chips */}
-          <div className='clk-chips'>
-            {chips.map((chip) => (
-              <button key={chip.label} className='clk-chip' onClick={() => setInput(chip.prompt)}>
-                {chip.label}
-              </button>
-            ))}
-          </div>
-
-          {/* Usage bar */}
-          <div className='clk-usage'>
-            <span className='clk-usage-label'>Usage today</span>
-            <div className='clk-usage-track'>
-              <div
-                className='clk-usage-fill'
-                style={{
-                  width: `${usagePct}%`,
-                  background: isLimited
-                    ? 'linear-gradient(90deg,#ef4444,#f43f5e)'
-                    : planLimit !== null && clarkUsed / planLimit >= 0.8
-                      ? 'linear-gradient(90deg,#f59e0b,#ef4444)'
-                      : 'linear-gradient(90deg,#2dd4bf,#8b5cf6)',
-                }}
-              />
+            <div className='clk-usage'>
+              <span className='clk-usage-label'>Usage today</span>
+              <div className='clk-usage-track'>
+                <div className='clk-usage-fill' style={{ width: `${usagePct}%`, background: isLimited ? 'linear-gradient(90deg,#ef4444,#f43f5e)' : planLimit !== null && clarkUsed / planLimit >= 0.8 ? 'linear-gradient(90deg,#f59e0b,#ef4444)' : 'linear-gradient(90deg,#2dd4bf,#8b5cf6)' }} />
+              </div>
+              <span className='clk-usage-count'>{clarkUsed} / {planLimit ?? '...'}</span>
             </div>
-            <span
-              className='clk-usage-count'
-              style={{
-                color: isLimited
-                  ? '#fb7185'
-                  : planLimit !== null && clarkUsed / planLimit >= 0.8
-                    ? '#fbbf24'
-                    : '#64748b',
-              }}
-            >
-              {clarkUsed} / {planLimit ?? '...'}
-            </span>
-          </div>
-        </div>
+          </section>
+        </main>
 
-        {/* Footer note */}
-        <p className='clk-footer'>
-          <svg width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' strokeLinecap='round' strokeLinejoin='round' aria-hidden='true'>
-            <rect x='3' y='11' width='18' height='11' rx='2' ry='2'/><path d='M7 11V7a5 5 0 0 1 10 0v4'/>
-          </svg>
-          Your data is encrypted and never shared.
-        </p>
+        <aside className='clk-side'>
+          <section className='clk-side-card'>
+            <h2 className='clk-side-title'><svg width='19' height='19' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' strokeLinecap='round' strokeLinejoin='round'><circle cx='12' cy='12' r='2'/><path d='M16.24 7.76 14 10'/><path d='M8 16l2-2'/><path d='M14 14l2.24 2.24'/><path d='M7.76 7.76 10 10'/><circle cx='18' cy='6' r='2'/><circle cx='6' cy='18' r='2'/><circle cx='18' cy='18' r='2'/><circle cx='6' cy='6' r='2'/></svg>Context</h2>
+            <div className='clk-context-row'><div className='clk-context-label'>Current Chain</div><div className='clk-context-value'>Base</div><div className='clk-context-sub'>Chain ID: 8453</div></div>
+            <div className='clk-context-row'><div className='clk-context-label'>Last Token</div><div className='clk-context-value'>{formatContextValue(clientContext.lastToken)}</div></div>
+            <div className='clk-context-row'><div className='clk-context-label'>Last Wallet</div><div className='clk-context-value'>{formatContextValue(clientContext.lastWallet)}</div></div>
+            <div className='clk-context-row'><div className='clk-context-label'>Active Mode</div><div className='clk-context-value'>Adaptive Analysis</div><div className='clk-context-sub'>Analysis adapts based on context & onchain data</div></div>
+          </section>
 
+          <section className='clk-side-card'>
+            <h2 className='clk-side-title'><svg width='19' height='19' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' strokeLinecap='round' strokeLinejoin='round'><path d='M3 12a9 9 0 1 0 3-6.7'/><path d='M3 3v6h6'/><path d='M12 7v5l3 2'/></svg>Clark Conversation History</h2>
+            {historyRows.length > 0 ? (
+              <div className='clk-history-list'>
+                {historyRows.map((row, idx) => <div className='clk-history-row' key={`${row.text}-${idx}`}><span>{row.text}</span><span className='clk-history-time'>Recent</span></div>)}
+              </div>
+            ) : <p className='clk-empty'>No Clark history yet. Start a scan to build context.</p>}
+          </section>
+
+          <section className='clk-side-card'>
+            <h2 className='clk-side-title'><svg width='19' height='19' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' strokeLinecap='round' strokeLinejoin='round'><ellipse cx='12' cy='5' rx='9' ry='3'/><path d='M3 5v14c0 1.7 4 3 9 3s9-1.3 9-3V5'/><path d='M3 12c0 1.7 4 3 9 3s9-1.3 9-3'/></svg>Memory <span style={{ color: '#94a3b8', fontWeight: 500 }}>(This Session)</span></h2>
+            {memoryStats.map((stat) => <div className='clk-memory-stat' key={stat.label}><span>{stat.label}</span><strong>{stat.value}</strong></div>)}
+          </section>
+        </aside>
       </div>
     </div>
   )
