@@ -1877,6 +1877,8 @@ const LOCKER_REGISTRY: Partial<Record<ChainKey, string[]>> = LP_LOCK_BURN_REGIST
 // Wraps fetchHoneypotSecurity and returns the canonical simulation object or null on failure.
 async function resolveSimulation(chain: string, address: string): Promise<{
   honeypot: boolean | null;
+  honeypotStatus: "confirmed" | "unavailable" | "failed" | "not_supported" | "timeout";
+  honeypotReason: string | null;
   buyTax: number | null;
   sellTax: number | null;
   transferTax: number | null;
@@ -1889,6 +1891,8 @@ async function resolveSimulation(chain: string, address: string): Promise<{
     if (!r.ok) return null
     return {
       honeypot: r.honeypot,
+      honeypotStatus: r.simulationStatus,
+      honeypotReason: r.honeypotReason,
       buyTax: r.buyTax,
       sellTax: r.sellTax,
       transferTax: r.transferTax,
@@ -3415,6 +3419,8 @@ export async function POST(req: Request) {
     const hpResult = {
       ok: _simResult != null,
       honeypot: _simResult?.honeypot ?? null,
+      honeypotStatus: _simResult?.honeypotStatus ?? 'unavailable' as const,
+      honeypotReason: _simResult?.honeypotReason ?? null,
       buyTax: _simResult?.buyTax ?? null,
       sellTax: _simResult?.sellTax ?? null,
       transferTax: _simResult?.transferTax ?? null,
@@ -6740,6 +6746,13 @@ export async function POST(req: Request) {
         simulation: _simResult ? { ..._simResult, source: publicSourceLabel(_simResult.source, debugMode) } : _simResult,
         simulationStatus: hpResult.ok ? 'ok' : 'open_check',
         simulationReason: hpResult.ok ? null : simulationOpenReason,
+        // Tax confirmation is independent of honeypot confirmation — 0%/0% tax never implies
+        // the honeypot simulation itself succeeded or returned a verdict.
+        tax: {
+          buyTax: hpResult.ok ? hpResult.buyTax : null,
+          sellTax: hpResult.ok ? hpResult.sellTax : null,
+          status: hpResult.ok && (hpResult.buyTax != null || hpResult.sellTax != null) ? 'confirmed' : 'unavailable',
+        },
         // resolveContractFlags: ABI scan with bytecode fallback
         contractFlags: resolveContractFlags(grContractIntel, cortexContractFlags),
         devOwnership: {
@@ -6752,6 +6765,15 @@ export async function POST(req: Request) {
           ownershipStatus,
           ownershipLabel,
         },
+        ...(debugMode === true ? {
+          securityDebug: {
+            providerAttempted: true,
+            mappedHoneypotValue: hpResult.ok ? hpResult.honeypot : null,
+            taxMapped: hpResult.ok && (hpResult.buyTax != null || hpResult.sellTax != null),
+            simulationStatus: hpResult.ok ? hpResult.honeypotStatus : 'unavailable',
+            simulationReason: hpResult.ok ? hpResult.honeypotReason : simulationOpenReason,
+          },
+        } : {}),
       },
 
       // Internal diagnostics
@@ -6979,6 +7001,8 @@ export async function POST(req: Request) {
       // GoPlus is an optional low-confidence fallback only; not a core provider.
       honeypot: hpResult.ok ? {
         isHoneypot:        hpResult.honeypot,
+        honeypotStatus:    hpResult.honeypotStatus,
+        honeypotReason:    hpResult.honeypotReason,
         buyTax:            hpResult.buyTax,
         sellTax:           hpResult.sellTax,
         transferTax:       hpResult.transferTax,
@@ -7080,6 +7104,8 @@ export async function POST(req: Request) {
           simulationReason: hpResult.ok ? null : simulationOpenReason,
           source: hpResult.ok ? "risk_layer" : "inferred",
           honeypot: hpResult.ok ? hpResult.honeypot : null,
+          honeypotStatus: hpResult.ok ? hpResult.honeypotStatus : 'unavailable',
+          honeypotReason: hpResult.ok ? hpResult.honeypotReason : simulationOpenReason,
           buyTax: hpResult.ok ? hpResult.buyTax : null,
           sellTax: hpResult.ok ? hpResult.sellTax : null,
           simulationSuccess: hpResult.ok ? hpResult.simulationSuccess : null,

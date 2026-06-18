@@ -1145,4 +1145,35 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(routeFile.includes('? (obj.verdict as string)'), 'normalizeApiReplyShape preserves an explicit handler verdict instead of overwriting it')
 }
 
+// ─── Honeypot security evidence mapping fix (this pass) ─────────────────────
+{
+  const honeypotModulePath = path.join(__dirname, '..', 'lib', 'server', 'honeypotSecurity.ts')
+  const honeypotSrc = fs.readFileSync(honeypotModulePath, 'utf8')
+
+  // Root cause: honeypot.is v2 puts the verdict under honeypotResult.isHoneypot — the old
+  // code never read that field, so a real provider-confirmed result was silently dropped.
+  assert.ok(honeypotSrc.includes('honeypotResult.isHoneypot'), 'normalize() reads the real honeypot.is v2 honeypotResult.isHoneypot field')
+  assert.ok(honeypotSrc.includes('parseBool(value)'), 'boolean mapping uses a safe parser, not a truthy check')
+  assert.ok(!/if\s*\(\s*raw\.isHoneypot\s*\)/.test(honeypotSrc), 'no truthy-only check on raw.isHoneypot that would drop an explicit false')
+
+  const mod = await import('../lib/server/honeypotSecurity.ts')
+  assert.equal(typeof mod.fetchHoneypotSecurity, 'function', 'fetchHoneypotSecurity is exported')
+
+  // Tax-only behavior: buyTax/sellTax confirmed must never imply honeypot is false.
+  assert.ok(honeypotSrc.includes('honeypot !== null ? "confirmed" : simulationSuccess === false ? "failed" : "unavailable"'), 'simulationStatus is derived independently of tax fields, never inferred from 0% tax')
+}
+
+// ─── Honeypot evidence surfaced through Token Scanner / Clark (this pass) ───
+{
+  const routeFile = fs.readFileSync(path.join(__dirname, '..', 'app', 'api', 'token', 'route.ts'), 'utf8')
+
+  assert.ok(routeFile.includes('honeypotStatus: r.simulationStatus'), '/api/token resolveSimulation threads the real simulationStatus through, not a hardcoded value')
+  assert.ok(routeFile.includes('honeypotReason: r.honeypotReason'), '/api/token resolveSimulation threads the provider honeypotReason through')
+  assert.ok(routeFile.includes('honeypotStatus: hpResult.ok ? hpResult.honeypotStatus : \'unavailable\''), 'sections.security exposes honeypotStatus distinct from tax status')
+  assert.ok(routeFile.includes("status: hpResult.ok && (hpResult.buyTax != null || hpResult.sellTax != null) ? 'confirmed' : 'unavailable',"), 'security.tax.status is confirmed independently of honeypot status')
+
+  const clarkRouteFile = fs.readFileSync(path.join(__dirname, '..', 'app', 'api', 'clark', 'route.ts'), 'utf8')
+  assert.ok(clarkRouteFile.includes('typeof securitySection.honeypot === "boolean"'), 'Clark maps an explicit honeypot boolean (true or false) from the sanitized token security section, not just a truthy check')
+}
+
 console.log('test-clark-execution.mjs: all assertions passed')
