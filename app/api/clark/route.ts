@@ -35,6 +35,7 @@ import {
   needsSafetyEscalation,
   isTokenFollowupPrompt,
   classifyTokenFollowupKind,
+  extractRequestedChainFromPrompt,
   type TokenScanEvidence,
   getClarkAddressRouteHint,
 } from "@/lib/server/clarkRouting";
@@ -692,6 +693,22 @@ function extractTokenLookupQuery(prompt: string): string | null {
 
 function gtNetwork(chain: SupportedChain): "base" | "eth" {
   return chain === "ethereum" ? "eth" : "base";
+}
+
+// /api/token only supports chain=base or chain=eth today. Returns null for chains
+// Token Core cannot scan yet (bnb, polygon) so callers can say so honestly instead
+// of silently scanning Base.
+function toTokenApiChain(chain: SupportedChain): "base" | "eth" | null {
+  if (chain === "ethereum") return "eth";
+  if (chain === "base") return "base";
+  return null;
+}
+
+function chainDisplayLabel(chain: SupportedChain): string {
+  if (chain === "ethereum") return "Ethereum";
+  if (chain === "bnb") return "BNB";
+  if (chain === "polygon") return "Polygon";
+  return "Base";
 }
 
 function detectIntent(prompt: string): { intent: ClarkIntent; address: string | null } {
@@ -6161,8 +6178,13 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
 async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?: string | null, verifiedPlan?: 'free' | 'pro' | 'elite', sessionMem?: ClarkSessionMemory) {
   // Ensure we always have a session memory object even for recursive calls
   if (!sessionMem) sessionMem = { lastTokenSymbol: null, lastTokenName: null, lastTokenAddress: null, lastTokenChain: null, lastTokenSummary: null, prevTokenSymbol: null, prevTokenName: null, prevTokenAddress: null, prevTokenChain: null, prevTokenSummary: null, lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0, lastActionableIntent: null, lastActionableIntentTs: 0, allowedRankScanUntil: 0, allowedRankScanUsed: false, lastMomentumShownCount: 0, recentMessages: [], conversationHistory: [], recentTokens: [], recentWallets: [], selectedChain: "base", lastActiveTool: null, currentPage: null, lastDevWallet: null };
-  const chain = body.chain ?? "base";
   const prompt = body.prompt ?? "Give me a clear on-chain summary.";
+  // Chain priority: 1) explicit chain named in the prompt, 2) explicit UI chain param,
+  // 3) selectedChain from session memory, 4) base default. Prompt wording must never
+  // be overridden by the default UI chain.
+  const promptChain = extractRequestedChainFromPrompt(prompt);
+  const memSelectedChain: SupportedChain = sessionMem.selectedChain === "eth" ? "ethereum" : "base";
+  const chain: SupportedChain = promptChain ?? body.chain ?? memSelectedChain;
 
   const appIntent = resolveClarkIntent(prompt, body.appContext);
   const routedClassification = classifyClarkPrompt(prompt);
@@ -6996,7 +7018,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     // runs when explicitly requested via opts.fastPreview.
     const wantsFastPreview = opts?.fastPreview === true;
     const wantsFullScan = !wantsFastPreview;
-    const tokenInternalApiPayload = { contract: tokenAddress, chain: chain ?? "base", ...(clarkDebugMode ? { debug: true } : {}), mode: wantsFastPreview ? "clark_fast" : "clark_core" };
+    const tokenInternalApiPayload = { contract: tokenAddress, chain: toTokenApiChain(chain) ?? "base", ...(clarkDebugMode ? { debug: true } : {}), mode: wantsFastPreview ? "clark_fast" : "clark_core" };
     const tokenFetchPromise = callInternalApi(origin, "/api/token", tokenInternalApiPayload, authHeader ?? undefined, verifiedPlan, wantsFastPreview ? 9000 : TOKEN_CORE_TIMEOUT_MS)
       .then((r) => { tokenData = r; return r; })
       .catch((e: unknown) => {
@@ -7158,7 +7180,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       tokenInternalApiReturnedTokenFields,
       requestUrlPath: "/api/token",
       method: "POST",
-      chain: chain ?? "base",
+      chain: toTokenApiChain(chain) ?? "base",
       address: tokenAddress,
       startedAt: new Date(tokenRouteStart).toISOString(),
       tokenRouteDurationMs,
@@ -7312,7 +7334,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const lines: string[] = [`TOKEN READ — ${sym} (partial evidence)`];
     lines.push(`- Token: ${name && name !== sym ? `${name} (${sym})` : sym}`);
     lines.push(`- Address: ${ev.token?.address ?? tokenAddress}`);
-    lines.push(`- Chain: Base`);
+    lines.push(`- Chain: ${chainDisplayLabel(chain)}`);
 
     // Market
     if (sectionsPresent.includes("market") && (mkt?.price != null || mkt?.liquidity != null)) {
@@ -7404,6 +7426,17 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   if (routed.intent === "token_scan") {
     let tokenAddress = routed.address;
     let resolvedSymbol = routed.symbol;
+    // Token Core only supports Base/Ethereum today. If the user explicitly named a
+    // chain we cannot scan, say so honestly instead of silently falling back to Base.
+    if (toTokenApiChain(chain) === null) {
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "token_scan", toolsUsed: [],
+        analysis: `Token Core scanning on ${chainDisplayLabel(chain)} isn't available yet — I can run this on Base or Ethereum. Say "scan this token on base" or "on eth" to continue.`,
+        intentBadge: "token_scan",
+        actions: buildRoutedActions(["Open Token Scanner"]),
+        quotaConsumed: false,
+      };
+    }
     // Token Core (real security/LP/holders/dev evidence) is the default for every normal
     // scan, including "deep scan"/"full scan" phrasing — those are just synonyms for the
     // same default now. Only an explicit quick-preview request drops to clark_fast.
@@ -7460,7 +7493,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       analysis = [
         `TOKEN READ — failed`,
         `- Address: ${tokenAddress}`,
-        `- Chain: Base`,
+        `- Chain: ${chainDisplayLabel(chain)}`,
         ...(tokenApiHttpStatus === 401
           ? ["- Token Scanner authorization failed. Reconnect/sign in and try again."]
           : (ev.warnings && ev.warnings.length > 0 ? ev.warnings.map((w) => `- ${w}`) : ["- Token Scanner returned no usable evidence"])
@@ -7472,10 +7505,10 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       formatterUsed = "inline_fallback_total";
     } else if (tokenApiMode === "clark_fast" && !ev.ok) {
       // Clark fast mode: market/pool identity present, deeper sections intentionally skipped.
-      analysis = formatFastTokenRead(ev, "Base");
+      analysis = formatFastTokenRead(ev, chainDisplayLabel(chain));
       formatterUsed = "formatFastTokenRead";
     } else if (ev.ok && !partialEvidenceUsed) {
-      analysis = formatTokenScanResult(ev, "Base");
+      analysis = formatTokenScanResult(ev, chainDisplayLabel(chain));
       formatterUsed = "formatTokenScanResult";
     } else {
       // Partial evidence — at least one branch succeeded

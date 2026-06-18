@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import {
   classifyClarkPrompt,
+  extractRequestedChainFromPrompt,
   formatEoaLpCheckReply,
   formatBaseMarketReadFromRows,
   formatBaseRadarRead,
@@ -225,6 +226,54 @@ const mockEv = {
   const out = formatNoTokenInMemory()
   assert.ok(out.includes('contract address'))
   assert.ok(out.includes('CTA:'))
+}
+
+// ─── Task D: chain override parsing for token scans ───────────────────────────
+{
+  const r = classifyClarkPrompt('scan this eth token 0xabcdef1234567890abcdef1234567890abcdef12')
+  assert.equal(r.intent, 'token_scan', 'scan this eth token 0x... => token_scan')
+  assert.equal(r.address, '0xabcdef1234567890abcdef1234567890abcdef12')
+}
+{
+  const r = classifyClarkPrompt('0xabcdef1234567890abcdef1234567890abcdef12 scan this eth token')
+  assert.equal(r.intent, 'token_scan', 'address before "scan this eth token" => token_scan')
+}
+{
+  const r = classifyClarkPrompt('scan 0xabcdef1234567890abcdef1234567890abcdef12 on ethereum')
+  assert.equal(r.intent, 'token_scan', 'scan 0x... on ethereum => token_scan')
+}
+{
+  const r = classifyClarkPrompt('scan this bnb token 0xabcdef1234567890abcdef1234567890abcdef12')
+  assert.equal(r.intent, 'token_scan', 'scan this bnb token 0x... => token_scan')
+}
+{
+  const r = classifyClarkPrompt('0xabcdef1234567890abcdef1234567890abcdef12 scan this bsc token')
+  assert.equal(r.intent, 'token_scan', 'address before "scan this bsc token" => token_scan')
+}
+{
+  const r = classifyClarkPrompt('scan this base token 0xabcdef1234567890abcdef1234567890abcdef12')
+  assert.equal(r.intent, 'token_scan', 'scan this base token 0x... => token_scan')
+}
+{
+  // existing behavior preserved: no chain named, no "on base" — still token_scan
+  const r = classifyClarkPrompt('scan this token 0xabcdef1234567890abcdef1234567890abcdef12')
+  assert.equal(r.intent, 'token_scan')
+}
+
+assert.equal(extractRequestedChainFromPrompt('scan this eth token 0xabc'), 'ethereum')
+assert.equal(extractRequestedChainFromPrompt('scan this ethereum token'), 'ethereum')
+assert.equal(extractRequestedChainFromPrompt('scan on eth'), 'ethereum')
+assert.equal(extractRequestedChainFromPrompt('scan on ethereum'), 'ethereum')
+assert.equal(extractRequestedChainFromPrompt('eth token 0xabc'), 'ethereum')
+assert.equal(extractRequestedChainFromPrompt('ethereum 0xabc'), 'ethereum')
+assert.equal(extractRequestedChainFromPrompt('bnb token 0xabc'), 'bnb')
+assert.equal(extractRequestedChainFromPrompt('bsc token 0xabc'), 'bnb')
+assert.equal(extractRequestedChainFromPrompt('base token 0xabc'), 'base')
+assert.equal(extractRequestedChainFromPrompt('scan this token 0xabc'), null, 'no chain named => null, caller falls back to default')
+// Token prompt with explicit ETH must never route as a wallet scan
+{
+  const r = classifyClarkPrompt('0xabcdef1234567890abcdef1234567890abcdef12 scan this eth token')
+  assert.notEqual(r.intent, 'wallet_scan', 'eth token prompt must not route to wallet_scan')
 }
 
 console.log('test-clark-intent.mjs: all assertions passed')

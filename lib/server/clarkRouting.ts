@@ -50,8 +50,26 @@ const WALLET_DEEP_RE = /\b(deep\s+scan|deep|full\s+scan|full\s+wallet\s+scan|sca
 const WALLET_FOLLOWUP_RE = /\b(dig\s+deeper|why\s+is\s+pnl\s+(?:missing|zero|wrong)|why\s+is\s+the\s+pnl|why\s+no\s+pnl|recover\s+(?:more\s+)?history|what\s+about\s+this\s+wallet|why\s+is\s+history\s+missing|pnl\s+missing|pnl\s+coverage)\b/i;
 const WALLET_COMPARE_RE = /\b(compare\s+(?:this\s+)?wallet(?:\s+with|\s+vs|\s+to|\s+and)|compare\s+wallets|wallet\s+comparison|wallet\s+a\s+vs|wallet\s+compare)\b/i;
 
-const TOKEN_SCAN_RE = /\b(scan\s+this\s+token|token\s+scan|scan\s+token|what\s+is\s+this\s+token|tell\s+me\s+about\s+(?:this\s+)?token|check\s+this\s+token|analyze\s+(?:this\s+)?token|token\s+check|run\s+token\s+scan)\b/i;
-const TOKEN_SCAN_ON_BASE_RE = /\bscan\b.{0,30}\bon\s+base\b|\bon\s+base\b.{0,30}\bscan\b/i;
+const TOKEN_SCAN_RE = /\b(scan\s+this\s+(?:(?:eth|ethereum|base|bnb|bsc|polygon)\s+)?token|token\s+scan|scan\s+token|what\s+is\s+this\s+token|tell\s+me\s+about\s+(?:this\s+)?token|check\s+this\s+token|analyze\s+(?:this\s+)?token|token\s+check|run\s+token\s+scan)\b/i;
+const TOKEN_SCAN_ON_CHAIN_RE = /\bscan\b.{0,80}\bon\s+(?:base|eth|ethereum|bnb|bsc|polygon)\b|\bon\s+(?:base|eth|ethereum|bnb|bsc|polygon)\b.{0,80}\bscan\b/i;
+
+// Chain keywords explicitly named in a Clark prompt. Order doesn't matter — the
+// keyword sets are disjoint. Returns the app's canonical SupportedChain value, or
+// null when no chain is explicitly named (caller falls back to UI/memory/default).
+export type ClarkPromptChain = "base" | "ethereum" | "polygon" | "bnb";
+const ETH_CHAIN_WORD_RE = /\b(eth|ethereum|erc-?20|mainnet)\b/i;
+const BNB_CHAIN_WORD_RE = /\b(bnb|bsc|binance(?:[-\s]smart(?:[-\s]chain)?)?)\b/i;
+const POLYGON_CHAIN_WORD_RE = /\b(polygon|matic)\b/i;
+const BASE_CHAIN_WORD_RE = /\bbase\b/i;
+
+export function extractRequestedChainFromPrompt(prompt: string): ClarkPromptChain | null {
+  const t = String(prompt ?? "");
+  if (ETH_CHAIN_WORD_RE.test(t)) return "ethereum";
+  if (BNB_CHAIN_WORD_RE.test(t)) return "bnb";
+  if (POLYGON_CHAIN_WORD_RE.test(t)) return "polygon";
+  if (BASE_CHAIN_WORD_RE.test(t)) return "base";
+  return null;
+}
 const TOKEN_SAFETY_RE = /\b(is\s+this\s+(?:token\s+)?safe|is\s+it\s+safe|should\s+i\s+buy(?:\s+this(?:\s+token)?)?|is\s+this\s+(?:a\s+)?rug(?:\s+pull)?|is\s+this\s+token\s+risky|is\s+(?:it|this)\s+risky|safe\s+to\s+buy|rug\s+check|is\s+it\s+legit)\b/i;
 const DEV_RUG_RE = /\b(can\s+(?:the\s+)?dev(?:s?|eloper)?\s+rug|can\s+deployer\s+rug|does\s+dev\s+control|dev\s+control(?:s?|led)?|is\s+ownership\s+renounced|ownership\s+renounced|can\s+they\s+mint|dev\s+(?:wallet\s+)?risk|deployer\s+risk|mint\s+risk|blacklist\s+risk|proxy\s+risk|is\s+owner\s+renounced|who\s+controls\s+(?:the\s+)?supply|supply\s+control)\b/i;
 const LP_LOCK_RE = /\b(is\s+lp\s+locked|lp\s+locked|can\s+liquidity\s+be\s+pulled|is\s+liquidity\s+safe|who\s+controls\s+(?:the\s+)?lp|lp\s+(?:burned|burn)|burned\s+lp|explain\s+(?:the\s+)?lp|lp\s+(?:lock|control|safety)|liquidity\s+(?:lock|locked|safety|control|pulled))\b/i;
@@ -182,14 +200,14 @@ export function classifyClarkPrompt(prompt: string): {
   // ---- Wallet scan ----
   const walletScanRe = /\b(scan\s+(?:this\s+)?wallet|scan\s+wallet|analyze\s+(?:this\s+)?wallet|wallet\s+pnl|wallet\s+(?:scan|check|report|analysis))\b/i;
   // token keywords prevent wallet routing even if WALLET_DEEP_RE fires
-  const hasExplicitTokenKeyword = /\b(token|coin|contract|ticker|\bca\b|scan\s+this\s+token|token\s+scan|on\s+base|on\s+eth)\b/i.test(t);
+  const hasExplicitTokenKeyword = /\b(token|coin|contract|ticker|\bca\b|scan\s+this\s+token|token\s+scan|on\s+base|on\s+eth|on\s+ethereum|on\s+bnb|on\s+bsc|on\s+polygon)\b/i.test(t);
   if (address && !hasExplicitTokenKeyword && (walletScanRe.test(t) || WALLET_DEEP_RE.test(t))) {
     return { intent: "wallet_scan", address, addresses, deep, symbol: null };
   }
   // Plain EOA address alone (no other strong intent keywords) → wallet scan
   if (address) {
     const hasOtherStrongIntent =
-      /\b(lp\s+check|liquidity\s+check|liquidity|radar|pumping|trending|movers|whale|smart\s+money|token\s+scan|scan\s+this\s+token|token\s+check|is\s+(?:this\s+)?token|this\s+token|can\s+(?:the\s+)?dev|is\s+lp|explain\s+lp|high\s+risk|red\s+flags|on\s+base|on\s+eth|base\s+token|eth\s+token|\btoken\b|\bcoin\b|\bca\b|\bticker\b|contract\s+address)\b/i.test(t);
+      /\b(lp\s+check|liquidity\s+check|liquidity|radar|pumping|trending|movers|whale|smart\s+money|token\s+scan|scan\s+this\s+token|token\s+check|is\s+(?:this\s+)?token|this\s+token|can\s+(?:the\s+)?dev|is\s+lp|explain\s+lp|high\s+risk|red\s+flags|on\s+base|on\s+eth|on\s+ethereum|on\s+bnb|on\s+bsc|on\s+polygon|base\s+token|eth\s+token|ethereum\s+token|bnb\s+token|bsc\s+token|polygon\s+token|\btoken\b|\bcoin\b|\bca\b|\bticker\b|contract\s+address)\b/i.test(t);
     if (!hasOtherStrongIntent) {
       return { intent: "wallet_scan", address, addresses, deep, symbol: null };
     }
@@ -233,7 +251,7 @@ export function classifyClarkPrompt(prompt: string): {
   }
 
   // ---- Token scan (explicit "token scan" keyword, or address + "on base", or named token) ----
-  if (TOKEN_SCAN_RE.test(t) || (address && TOKEN_SCAN_ON_BASE_RE.test(t))) {
+  if (TOKEN_SCAN_RE.test(t) || (address && TOKEN_SCAN_ON_CHAIN_RE.test(t))) {
     return { intent: "token_scan", address, addresses, deep: false, symbol };
   }
   // Named token scan without address ("scan VIRTUAL", "check AERO")

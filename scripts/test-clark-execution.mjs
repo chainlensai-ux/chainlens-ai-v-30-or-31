@@ -687,7 +687,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(!/clarkDebugReceipt[\s\S]{0,2000}cookie:\s*clarkInternalCtx\.cookie[^B]/.test(routeFile), 'clarkDebugReceipt must not leak raw cookie value')
 
   // Task 3: Clark threads its own debug flag and mode into the /api/token payload
-  assert.ok(routeFile.includes('tokenInternalApiPayload = { contract: tokenAddress, chain: chain ?? "base", ...(clarkDebugMode ? { debug: true } : {}), mode: wantsFastPreview ? "clark_fast" : "clark_core" }'), 'Clark forwards debug flag and clark_core/clark_fast mode to /api/token payload')
+  assert.ok(routeFile.includes('tokenInternalApiPayload = { contract: tokenAddress, chain: toTokenApiChain(chain) ?? "base", ...(clarkDebugMode ? { debug: true } : {}), mode: wantsFastPreview ? "clark_fast" : "clark_core" }'), 'Clark forwards debug flag and clark_core/clark_fast mode to /api/token payload')
 
   // Task 4: payload shape sent to /api/token is { contract, chain } (safe fields only)
   assert.ok(routeFile.includes('callInternalApi(origin, "/api/token", tokenInternalApiPayload'), 'fetchTokenEvidence calls /api/token with tokenInternalApiPayload')
@@ -1286,6 +1286,50 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   // Metadata plumbing in the route handler is unchanged by this formatter-only pass.
   const routeFile = fs.readFileSync(path.join(__dirname, '..', 'app', 'api', 'clark', 'route.ts'), 'utf8')
   assert.ok(routeFile.includes('else if (followupKind === "risk") { analysis = formatRiskExplanation(ev, "Base"); intentBadge = "risk_explanation"; }'), 'risk_explanation intent badge and toolsUsed/quota/verdict plumbing in the hard guard is untouched by this formatter-only pass')
+}
+
+// ─── Task D: chain override parsing for token scans ────────────────────────────
+{
+  const routeFile = fs.readFileSync(path.join(__dirname, '..', 'app', 'api', 'clark', 'route.ts'), 'utf8')
+
+  // Prompt-named chain must win over the UI/default chain.
+  assert.ok(routeFile.includes('const promptChain = extractRequestedChainFromPrompt(prompt);'), 'handleClarkAI extracts a chain override from the prompt')
+  assert.ok(
+    routeFile.includes('const chain: SupportedChain = promptChain ?? body.chain ?? memSelectedChain;'),
+    'chain priority is prompt > UI param > session memory > base default'
+  )
+  assert.ok(!/const chain = body\.chain \?\? "base";\s*\n\s*const prompt/.test(routeFile), 'chain must no longer be resolved from body.chain alone before reading the prompt')
+
+  // /api/token only supports base/eth — Clark must map its chain and never silently
+  // scan Base when a chain it cannot scan was explicitly requested.
+  assert.ok(routeFile.includes('function toTokenApiChain(chain: SupportedChain): "base" | "eth" | null {'), 'toTokenApiChain mapping helper exists')
+  assert.ok(routeFile.includes('chain: toTokenApiChain(chain) ?? "base"'), 'tokenInternalApiPayload uses the mapped chain, not the raw SupportedChain value')
+  assert.ok(routeFile.includes("isn't available yet"), 'unsupported requested chain gets an honest message instead of a silent Base fallback')
+
+  // Failure/partial read wording must reflect the requested chain, not a hardcoded Base label.
+  assert.ok(routeFile.includes('`- Chain: ${chainDisplayLabel(chain)}`'), 'token read chain line uses the resolved chain label')
+  assert.ok(!routeFile.includes('`- Chain: Base`'), 'no hardcoded Base chain label remains in token read output')
+  assert.ok(routeFile.includes('formatFastTokenRead(ev, chainDisplayLabel(chain))'), 'fast token read uses the resolved chain label')
+  assert.ok(routeFile.includes('formatTokenScanResult(ev, chainDisplayLabel(chain))'), 'full token read uses the resolved chain label')
+}
+
+{
+  const { classifyClarkPrompt, extractRequestedChainFromPrompt } = await import('../lib/server/clarkRouting.ts')
+  // "scan this eth token 0x..." must resolve chain eth, not the Base default.
+  const r = classifyClarkPrompt('scan this eth token 0xabcdef1234567890abcdef1234567890abcdef12')
+  assert.equal(r.intent, 'token_scan')
+  assert.equal(extractRequestedChainFromPrompt('scan this eth token 0xabcdef1234567890abcdef1234567890abcdef12'), 'ethereum')
+}
+{
+  const { classifyClarkPrompt } = await import('../lib/server/clarkRouting.ts')
+  const r = classifyClarkPrompt('0xabcdef1234567890abcdef1234567890abcdef12 scan this eth token')
+  assert.equal(r.intent, 'token_scan', 'address-first eth token prompt resolves to token_scan, not wallet_scan')
+}
+{
+  // Existing token-follow-up memory behavior (Task B/C) must still work after the chain fix.
+  const { classifyClarkPrompt } = await import('../lib/server/clarkRouting.ts')
+  const r = classifyClarkPrompt('run lp check')
+  assert.equal(r.intent, 'none')
 }
 
 console.log('test-clark-execution.mjs: all assertions passed')
