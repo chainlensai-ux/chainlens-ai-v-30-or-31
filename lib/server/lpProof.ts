@@ -936,6 +936,9 @@ export interface ConcentratedPositionProof {
   status: ConcentratedPositionProofStatus;
   poolModel: ConcentratedPoolModel;
   poolAddress: string | null;
+  poolId: string | null;
+  poolIdentity: string | null;
+  poolIdentityType: "contract" | "pool_id" | "unknown";
   positionManager: string | null;
   positionCount: number | null;
   topPositionOwner: string | null;
@@ -971,9 +974,15 @@ export async function attemptConcentratedPositionProof(
   dexId: string | null | undefined,
 ): Promise<ConcentratedPositionProof> {
   const poolModel = _classifyConcentratedPoolModel(dexId, poolAddressType);
+  const normalizedPoolAddress = poolAddressType === "contract" ? (poolAddress ?? null) : null;
+  const normalizedPoolId = poolId ?? (poolAddressType === "pool_id" ? (poolAddress ?? null) : null);
+  const poolIdentity = normalizedPoolId ?? normalizedPoolAddress ?? null;
   const base: Omit<ConcentratedPositionProof, "status" | "reason" | "evidence" | "missingEvidence" | "nextAction" | "confidence"> = {
     poolModel,
-    poolAddress: poolAddress ?? null,
+    poolAddress: normalizedPoolAddress,
+    poolId: normalizedPoolId,
+    poolIdentity,
+    poolIdentityType: normalizedPoolId ? "pool_id" : normalizedPoolAddress ? "contract" : "unknown",
     positionManager: null,
     positionCount: null,
     topPositionOwner: null,

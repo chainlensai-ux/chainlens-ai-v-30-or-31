@@ -246,6 +246,9 @@ type ScanResult = {
     status?: 'verified' | 'partial' | 'not_found' | 'not_supported' | 'failed' | 'open_check'
     poolModel?: string
     poolAddress?: string | null
+    poolId?: string | null
+    poolIdentity?: string | null
+    poolIdentityType?: 'contract' | 'pool_id' | 'unknown' 
     positionManager?: string | null
     positionCount?: number | null
     topPositionOwner?: string | null
@@ -2530,7 +2533,7 @@ function getLpEliteSummary(result: ScanResult): { chips: LpEliteChip[]; verdict:
   const ht = result.lpHistoryTimeline
 
   const protocolPosition = isProtocolPositionModel(result)
-  const controllerValue = protocolPosition ? 'Position verification required' : cleanStatusLabel(ci?.status)
+  const controllerValue = protocolPosition ? (ci?.controllerLabel ?? 'Position proof attempted — open check') : cleanStatusLabel(ci?.status)
   const controllerColor = (ci?.status === 'locked' || ci?.status === 'burned' || ci?.status === 'protected') ? '#34d399'
     : (ci?.status === 'protocol_controlled' || ci?.status === 'concentrated_liquidity' || ci?.status === 'no_pool') ? '#94a3b8'
     : '#fbbf24'
@@ -5006,6 +5009,7 @@ export default function TerminalTokenScanner() {
                         case 'partial': return 'Partial — pool confirmed, but position ownership could not be fully resolved.'
                         case 'not_supported': return 'Not Supported — Uniswap V4 position lookup not available in current provider path.'
                         case 'not_found': return 'Open Check — pool confirmed with zero active liquidity.'
+                        case 'failed': return 'Open Check — position proof attempt failed; no position ownership evidence returned.'
                         default: return 'Open Check — no position ownership evidence returned.'
                       }
                     })()
@@ -5014,7 +5018,7 @@ export default function TerminalTokenScanner() {
                       : protocolPosition ? (controlProofFromAttempt ?? 'Position verification required') : 'Open Check'
                     const lockBurnProof = result.lpControl?.lockStatus === 'locked' || result.lpControl?.burnStatus === 'burned'
                       ? 'Confirmed'
-                      : notApplicable ? 'Protocol-specific' : 'Open Check'
+                      : notApplicable ? 'Not Applicable — standard ERC-20 LP-token lock/burn proof does not apply.' : 'Open Check'
                     const liquidityDepth = result.liquidityDepthRisk === 'low'
                       ? 'Deep'
                       : result.liquidityDepthRisk === 'medium' ? 'Moderate'
@@ -5040,19 +5044,19 @@ export default function TerminalTokenScanner() {
                     const lpControlFromAttempt = protocolPosition && cpp
                       ? (cpp.status === 'verified' ? 'Verified'
                         : cpp.status === 'partial' ? 'Partial — position proof attempted, owner unresolved.'
-                        : cpp.status === 'not_supported' ? 'Not Supported'
+                        : cpp.status === 'not_supported' ? 'Position proof attempted — not supported'
                         : 'Open Check')
                       : null
                     const rows: { label: string; value: string; color?: string; note?: string }[] = [
                       { label: 'Primary Liquidity', value: primaryLiquidityModelLabel(result), color: protocolPosition ? '#c084fc' : undefined },
-                      { label: 'LP Control', value: protocolPosition ? (lpControlFromAttempt ?? 'Position verification required') : lpControlDisplay, color: lpControlDisplay === 'Wallet Controlled' ? '#fbbf24' : undefined, note: protocolPosition ? protocolPositionSubtext('control') : undefined },
+                      { label: 'LP Control', value: protocolPosition ? (lpControlFromAttempt ?? 'Position proof attempted — open check') : lpControlDisplay, color: lpControlDisplay === 'Wallet Controlled' ? '#fbbf24' : undefined, note: protocolPosition ? protocolPositionSubtext('control') : undefined },
                       { label: 'Control Proof', value: controlProof, color: controlProof === 'Confirmed' ? '#34d399' : protocolPosition ? '#c084fc' : undefined, note: protocolPosition ? protocolPositionSubtext('control') : undefined },
                       { label: 'Lock/Burn Proof', value: lockBurnProof, color: lockBurnProof === 'Confirmed' ? '#34d399' : lockBurnProof === 'Open Check' ? '#fbbf24' : protocolPosition ? '#c084fc' : undefined, note: protocolPosition ? protocolPositionSubtext('lock') : undefined },
                       ...(protocolPosition && cpp ? [{
                         label: 'Position Proof',
-                        value: `Attempted — ${cpp.status === 'not_found' ? 'open check' : (cpp.status ?? 'open_check').replace('_', ' ')}`,
+                        value: `Attempted — ${cpp.status === 'not_supported' ? 'not supported' : cpp.status === 'not_found' ? 'open check' : (cpp.status ?? 'open_check').replace('_', ' ')}`,
                         color: cpp.status === 'verified' ? '#34d399' : cpp.status === 'partial' ? '#fbbf24' : undefined,
-                        note: `Top position owner: ${cpp.topPositionOwner ?? 'unknown'} · Controller risk: ${cpp.controllerRisk ?? 'unknown'} · Confidence: ${cpp.confidence ?? 'low'}`,
+                        note: `${cpp.poolIdentityType === 'pool_id' && cpp.poolIdentity ? `Pool ID: ${cpp.poolIdentity} · ` : ''}Controller risk: ${cpp.controllerRisk ?? 'unknown'} · Confidence: ${cpp.confidence ?? 'low'}`, 
                       }] : []),
                       { label: 'Exit Risk', value: exitRisk, color: exitRisk === 'Low' ? '#34d399' : exitRisk === 'Watch' || exitRisk === 'Monitor' ? '#fbbf24' : exitRisk === 'High' ? '#f87171' : undefined },
                       { label: 'Liquidity Depth', value: liquidityDepth, color: liquidityDepth === 'Deep' ? '#34d399' : liquidityDepth === 'Moderate' ? '#fbbf24' : liquidityDepth === 'Thin' ? '#f87171' : undefined },
@@ -5107,9 +5111,9 @@ export default function TerminalTokenScanner() {
                         {([
                           ['Controller', result.lpControllerIntel.controller ?? result.lpControllerIntel.controllerLabel ?? 'Open check'],
                           ['Controller Type', isProtocolPositionModel(result) ? 'Protocol Position Model' : cleanStatusLabel(result.lpControllerIntel.controllerType)],
-                          ['Controller Share', isProtocolPositionModel(result) ? 'Position verification required' : result.lpControllerIntel.controllerSharePercent != null ? `${result.lpControllerIntel.controllerSharePercent.toFixed(2)}%` : 'Open Check'],
-                          ['Control Proof', isProtocolPositionModel(result) ? (result.lpControllerIntel.controlProofLabel ?? 'Position verification required') : cleanStatusLabel(result.lpControllerIntel.controlProof)],
-                          ['Lock/Burn Proof', isProtocolPositionModel(result) ? 'Protocol-specific' : cleanStatusLabel(result.lpControllerIntel.lockBurnProof)],
+                          ['Controller Share', isProtocolPositionModel(result) ? (result.concentratedPositionProof?.status === 'not_supported' ? 'Position proof attempted — not supported' : 'Position proof attempted — owner unresolved') : result.lpControllerIntel.controllerSharePercent != null ? `${result.lpControllerIntel.controllerSharePercent.toFixed(2)}%` : 'Open Check'],
+                          ['Control Proof', isProtocolPositionModel(result) ? (result.lpControllerIntel.controlProofLabel ?? 'Position proof attempted — open check') : cleanStatusLabel(result.lpControllerIntel.controlProof)],
+                          ['Lock/Burn Proof', isProtocolPositionModel(result) ? 'Not Applicable — standard ERC-20 LP-token lock/burn proof does not apply.' : cleanStatusLabel(result.lpControllerIntel.lockBurnProof)],
                           ['Exit Risk', cleanStatusLabel(result.lpControllerIntel.exitRisk)],
                           ['Liquidity Depth', cleanStatusLabel(result.lpControllerIntel.liquidityDepth)],
                           ['Migration Risk', cleanStatusLabel(result.lpControllerIntel.migrationRisk)],
@@ -5154,7 +5158,7 @@ export default function TerminalTokenScanner() {
                       </div>
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(145px,1fr))', gap: '7px', marginBottom: '10px' }}>
                         {([
-                          ['Lock/Burn Proof', isProtocolPositionModel(result) ? 'Protocol-specific' : cleanStatusLabel(result.lpLockBurnIntel.lockBurnProof)],
+                          ['Lock/Burn Proof', isProtocolPositionModel(result) ? 'Not Applicable — standard ERC-20 LP-token lock/burn proof does not apply.' : cleanStatusLabel(result.lpLockBurnIntel.lockBurnProof)],
                           ['Locked %', isProtocolPositionModel(result) ? protocolPositionSubtext('lock') : result.lpLockBurnIntel.lockedPercent == null ? 'Open Check' : `${result.lpLockBurnIntel.lockedPercent.toFixed(2)}%`],
                           ['Burned %', isProtocolPositionModel(result) ? 'Protocol-specific' : result.lpLockBurnIntel.burnedPercent == null ? 'Open Check' : `${result.lpLockBurnIntel.burnedPercent.toFixed(2)}%`],
                           ['Unlock Time', result.lpLockBurnIntel.unlockTime == null ? (result.lpLockBurnIntel.unlockTimeStatus === 'not_applicable' ? 'Protocol-specific' : 'Open Check') : new Date(result.lpLockBurnIntel.unlockTime).toLocaleString()],

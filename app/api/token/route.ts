@@ -2386,6 +2386,15 @@ type LpDiagnostics = {
   poolModelStatus: "confirmed" | "partial" | "unknown";
 };
 
+function humanizeConcentratedMissingEvidence(key: string): string {
+  switch (key) {
+    case "positionManager": return "Position manager not resolved";
+    case "topPositionOwner": return "Top position owner not resolved";
+    case "positionCount": return "Position count unavailable";
+    default: return key.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
+  }
+}
+
 type LpControlRead = {
   title: string;
   meaning: string;
@@ -2447,8 +2456,8 @@ function computeLpControlRead(lp: LpControlResult, pairName?: string | null, con
       };
     case "concentrated_liquidity": {
       const couldNotVerify = positionProof
-        ? (positionProof.status === "verified" ? [] : positionProof.missingEvidence.length ? positionProof.missingEvidence : ["Position ownership"])
-        : ["Position verification required"];
+        ? (positionProof.status === "verified" ? [] : positionProof.missingEvidence.length ? positionProof.missingEvidence.map(humanizeConcentratedMissingEvidence) : ["Position ownership not resolved"])
+        : ["Position proof not attempted"];
       return {
         title: "Concentrated liquidity — protocol-specific position checks",
         meaning: "Standard ERC-20 LP-token lock/burn proof does not apply to the primary concentrated-liquidity pool. Liquidity control requires protocol-specific position checks.",
@@ -5774,7 +5783,8 @@ export async function POST(req: Request) {
       const _statusLevel: RiskEngine["lpIntelligence"]["status"] = (_lpStatus === 'burned' || _lpStatus === 'locked') ? 'verified'
         : (_lpStatus === 'team_controlled' || _lpStatus === 'protocol' || _lpStatus === 'concentrated_liquidity') ? 'partial'
         : 'inferred'
-      const _typeLabel = lpPoolType === 'v2' ? 'V2 AMM' : lpPoolType === 'v3' ? 'V3 Concentrated Liquidity' : (lpPoolType ?? 'unknown')
+      const _dexForTypeLabel = String(lpDexName ?? lpDexId ?? '').toLowerCase()
+      const _typeLabel = lpPoolType === 'v2' ? 'V2 AMM' : lpPoolType === 'v3' ? (_dexForTypeLabel.includes('uniswap v4') || _dexForTypeLabel.includes('uniswap_v4') ? 'Uniswap V4 concentrated liquidity' : _dexForTypeLabel.includes('uniswap') ? 'Uniswap V3 Concentrated Liquidity' : 'Concentrated Liquidity') : (lpPoolType ?? 'unknown')
       return {
         status: _statusLevel,
         lockTime: _lockTimeLabel,
@@ -5795,9 +5805,13 @@ export async function POST(req: Request) {
     // ── Clark Interpretation — 3-phase contextual summary with risk drivers, open checks, next actions ──
     const clarkInterpretation: RiskEngine["clarkInterpretation"] = (() => {
       const _chain = chain === 'eth' ? 'Ethereum' : 'Base'
+      const _selectedPoolDexForCtx = String(lpDexName ?? lpDexId ?? '').toLowerCase()
+      const _selectedPoolIsConcentratedForCtx = lpPoolType === 'v3' || lpPoolType === 'concentrated' || _selectedPoolDexForCtx.includes('uniswap v4') || _selectedPoolDexForCtx.includes('uniswap_v4') || _selectedPoolDexForCtx.includes('uniswap v3') || _selectedPoolDexForCtx.includes('uniswap_v3')
       const _chainCtx = chain === 'base'
         ? `On Base: check for CL pool (Aerodrome/Uniswap v3) and proxy-pattern contracts. Factory deployers are common. LP migration via concentrated liquidity positions is possible.`
-        : `On Ethereum: standard v2 LP patterns apply. Renounce events and Ownable/Pausable are common risk markers. Check Etherscan for deployer history.`
+        : _selectedPoolIsConcentratedForCtx
+          ? `On Ethereum: this token’s primary pool is concentrated liquidity, so standard ERC-20 LP lock/burn proof does not apply. Position/controller proof is the relevant verification path.`
+          : `On Ethereum: standard v2 LP patterns apply. Renounce events and Ownable/Pausable are common risk markers. Check Etherscan for deployer history.`
       // Build next actions from open checks + data gaps
       const nextActions: string[] = []
       if (!holderDataComplete) nextActions.push(`Verify holder concentration via ${chain === 'eth' ? 'Etherscan token holders' : 'Basescan'}.`)
@@ -5933,6 +5947,18 @@ export async function POST(req: Request) {
       includeTokenGaps: false,
       poolAgeMs: _poolAgeMsForGaps,
     })
+    if (concentratedPositionProof && ['not_supported', 'partial', 'failed', 'open_check'].includes(concentratedPositionProof.status)) {
+      for (const label of ['Position manager not resolved', 'Top position owner not resolved', 'Position count unavailable']) {
+        if (!lpEvidenceGaps.some((gap) => gap.label === label)) {
+          lpEvidenceGaps.push({
+            id: label.toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_|_$/g, ''),
+            label,
+            explanation: 'Concentrated-liquidity position proof was attempted but this ownership field was not resolved by the current provider path.',
+            nextAction: 'Verify position ownership in the protocol position manager or a subgraph-backed explorer.',
+          })
+        }
+      }
+    }
 
     const _hasUsablePoolData = !noActivePools && (liquidityUsd != null && liquidityUsd > 0)
     const { lp_data_mode: lpDataMode, lp_data_confidence: _lpDataConfRaw } = deriveLpDataModeAndConfidence(

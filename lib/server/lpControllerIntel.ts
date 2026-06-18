@@ -120,6 +120,19 @@ function concentratedControlProofLabel(proof: LpControllerIntelInput['concentrat
   }
 }
 
+function concentratedControllerLabel(proof: LpControllerIntelInput['concentratedPositionProof']): string {
+  if (!proof) return 'Position verification required'
+  switch (proof.status) {
+    case 'verified': return 'Position owner verified'
+    case 'partial': return 'Position proof attempted — owner unresolved'
+    case 'not_supported': return 'Position proof attempted — not supported'
+    case 'failed': return 'Position proof attempted — provider failed'
+    case 'not_found': return 'Position proof attempted — no active position found'
+    case 'open_check':
+    default: return 'Position proof attempted — open check'
+  }
+}
+
 function controllerLabel(type: string): string {
   switch (type) {
     case 'wallet': return 'Wallet controller'
@@ -257,6 +270,11 @@ export function buildLpControllerIntel(input: LpControllerIntelInput): LpControl
     evidenceGaps.push('active LP lock not confirmed', 'LP burn proof not confirmed')
   } else if (lockBurnProof === 'not_applicable') {
     evidenceGaps.push('protocol-specific liquidity position verification required')
+    if (input.concentratedPositionProof && input.concentratedPositionProof.status !== 'verified' && input.concentratedPositionProof.status !== 'not_found') {
+      for (const gap of ['Position manager not resolved', 'Top position owner not resolved', 'Position count unavailable']) {
+        if (!evidenceGaps.includes(gap)) evidenceGaps.push(gap)
+      }
+    }
   }
   if (Array.isArray(input.lpEvidenceGaps)) {
     for (const gap of input.lpEvidenceGaps) {
@@ -278,7 +296,9 @@ export function buildLpControllerIntel(input: LpControllerIntelInput): LpControl
     status,
     controller,
     controllerType: controllerTypeValue,
-    controllerLabel: controllerLabel(controllerTypeValue),
+    controllerLabel: status === 'concentrated_liquidity'
+      ? concentratedControllerLabel(input.concentratedPositionProof)
+      : controllerLabel(controllerTypeValue),
     controllerSharePercent: share,
     poolAddress,
     poolPair,
