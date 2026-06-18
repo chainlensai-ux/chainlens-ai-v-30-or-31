@@ -38,6 +38,9 @@ import {
   extractRequestedChainFromPrompt,
   type TokenScanEvidence,
   getClarkAddressRouteHint,
+  isWalletFollowupPrompt,
+  classifyWalletFollowupKind,
+  formatWalletFollowupFromMemory,
 } from "@/lib/server/clarkRouting";
 
 const {
@@ -1675,7 +1678,6 @@ function buildClarkToolPlan(input: {
   };
 }
 
-
 function normalizePromptForIntent(prompt: string): string {
   return prompt
     .toLowerCase()
@@ -2129,7 +2131,6 @@ async function handlePumpFeedSnapshot(origin: string) {
     "Next action: scan the cleanest non-stable mover first, then verify dev wallet + holders. No trade call — this is a watchlist read.",
   ].join("\n");
 }
-
 
 async function handleBasePumpMap(prompt: string, origin: string) {
   const authHeader = clarkInternalCtx.authToken ? `Bearer ${clarkInternalCtx.authToken}` : undefined;
@@ -2715,7 +2716,6 @@ function formatWalletBalanceSummary(snapshot: NonNullable<ClarkToolEvidence["wal
   ].join("\n");
 }
 
-
 function wantsWalletDeepScan(prompt: string): boolean {
   return /\b(deep\s*scan|full\s*(?:wallet\s*)?scan|scan\s+all\s+chains|deep\b|historical|pnl|p&l|trades?|dig\s+deeper|recover\s+(?:more\s+)?history|analyze\s+(?:this\s+)?wallet|wallet\s+pnl|why\s+is\s+pnl|cost\s+basis|closed\s+lots?)\b/i.test(prompt);
 }
@@ -2811,6 +2811,42 @@ function extractPnlEvidence(mapped: Record<string, unknown>): Record<string, unk
     closedLots: mapped.closedLots ?? null,
     totalValue: mapped.totalValue ?? null,
   };
+}
+
+function buildWalletMemoryResult(memWallet: ClarkSessionMemory["lastWallet"]) {
+  if (!memWallet) return null;
+  const snapshot = (memWallet.snapshot && typeof memWallet.snapshot === "object" ? memWallet.snapshot : {}) as Record<string, unknown>;
+  const pnl = (memWallet.pnlEvidence && typeof memWallet.pnlEvidence === "object" ? memWallet.pnlEvidence : {}) as Record<string, unknown>;
+  const merged = { ...snapshot, ...pnl } as Record<string, unknown>;
+  const holdings = Array.isArray(merged.holdings) ? merged.holdings as Array<Record<string, unknown>> : [];
+  return {
+    ok: true,
+    address: memWallet.address,
+    totalValue: typeof merged.totalValue === "number" ? merged.totalValue : null,
+    holdings: holdings.map((h) => ({
+      symbol: typeof h.symbol === "string" ? h.symbol : undefined,
+      value: typeof h.value === "number" ? h.value : undefined,
+      chain: typeof h.chain === "string" ? h.chain : null,
+    })),
+    chainsActive: Array.isArray(merged.chainsActive) ? merged.chainsActive as string[] : null,
+    txCount: typeof merged.txCount === "number" ? merged.txCount : null,
+    error: null,
+    pnlCoverage: merged.pnlCoverage,
+    historicalRecoveryStatus: merged.historicalRecoveryStatus,
+    openLots: merged.openLots,
+    closedLots: merged.closedLots,
+    walletScanHealth: merged.walletScanHealth,
+    walletModuleCoverage: merged.walletModuleCoverage,
+    walletTokenPnlSummary: merged.walletTokenPnlSummary,
+    walletTokenPnlRead: Array.isArray(merged.walletTokenPnlRead) ? merged.walletTokenPnlRead : [],
+    walletTradeStatsSummary: merged.walletTradeStatsSummary,
+    walletHistoricalCoverageSummary: merged.walletHistoricalCoverageSummary,
+    walletRecoveryRecommendation: merged.walletRecoveryRecommendation,
+    walletLotSummary: merged.walletLotSummary,
+    dataFreshness: typeof merged.dataFreshness === "string" ? merged.dataFreshness : "memory",
+    cacheAgeSeconds: typeof merged.cacheAgeSeconds === "number" ? merged.cacheAgeSeconds : null,
+    warnings: merged.warnings,
+  } as any;
 }
 
 /**
@@ -4802,7 +4838,6 @@ function buildLowCapRead(report: ClarkFullReportEvidence): { isLowCap: boolean; 
   return { isLowCap: true, lines };
 }
 
-
 function formatSecuritySimulationLine(report: ClarkFullReportEvidence): string {
   const simPassed = (report.contract.simulationSuccess as unknown) === true;
   if (simPassed) return 'Simulation: Passed';
@@ -6788,6 +6823,22 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
 
   // ── New routed intents (classifyClarkPrompt) — intercept before legacy logic ──
   const routed = classifyClarkPrompt(prompt);
+  if (sessionMem.lastWallet?.address && !routed.address && isWalletFollowupPrompt(prompt)) {
+    const memResult = buildWalletMemoryResult(sessionMem.lastWallet);
+    if (memResult) {
+      const walletFollowupKind = classifyWalletFollowupKind(prompt);
+      const analysis = formatWalletFollowupFromMemory(sessionMem.lastWallet.address, memResult, walletFollowupKind);
+      updateMemIntent(sessionMem, walletFollowupKind);
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: walletFollowupKind, toolsUsed: ["memory"],
+        analysis,
+        intentBadge: walletFollowupKind,
+        actions: buildRoutedActions(walletFollowupKind === "wallet_deep_scan_advice" ? ["Deep Scan Wallet"] : ["Scan Wallet", "Deep Scan Wallet"]),
+        quotaConsumed: false,
+      };
+    }
+  }
+
   if (routed.intent === "liquidity_scan" && routed.address) {
     const isContract = await isContractAddress(routed.address, origin);
     if (!isContract) {
@@ -6875,7 +6926,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       warnings: w.warnings,
     } as any;
     const analysis = formatWalletScanResult(routed.address, mappedResult, routed.deep);
-    updateMemWallet(sessionMem, routed.address, null, analysis);
+    updateMemWallet(sessionMem, routed.address, null, analysis, mappedResult, extractPnlEvidence(mappedResult));
     updateMemIntent(sessionMem, "wallet_analysis");
     return {
       feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: ["wallet_get_snapshot"],

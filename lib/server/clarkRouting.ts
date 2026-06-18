@@ -98,6 +98,41 @@ export function isWalletPnlFollowupPrompt(text: string): boolean {
 }
 
 /** True for prompts that compare two wallets / "compare this wallet with X". */
+
+export type WalletFollowupKind =
+  | "wallet_quality"
+  | "wallet_profitability"
+  | "wallet_pnl_explanation"
+  | "wallet_holdings"
+  | "wallet_chains"
+  | "wallet_deep_scan_advice"
+  | "wallet_evidence_gaps"
+  | "wallet_risk"
+  | "wallet_summary";
+
+const WALLET_REFRESH_RE = /\b(refresh|rescan|deep\s+scan|run\s+full\s+scan|scan\s+again)\b/i;
+const WALLET_FOLLOWUP_CORE_RE = /\b(is\s+this\s+wallet\s+good|is\s+this\s+wallet\s+profitable|why\s+no\s+pnl|why\s+is\s+pnl\s+missing|explain\s+pnl|top\s+holdings?|what\s+are\s+the\s+top\s+holdings?|what\s+chains\s+is\s+it\s+active\s+on|should\s+i\s+deep\s+scan|what\s+evidence\s+is\s+missing|is\s+this\s+wallet\s+risky|summarize\s+this\s+wallet|wallet\s+summary|wallet\s+risk|wallet\s+quality|wallet\s+profitability)\b/i;
+
+export function isWalletFollowupPrompt(prompt: string): boolean {
+  const t = String(prompt ?? "").trim();
+  if (!t || WALLET_REFRESH_RE.test(t)) return false;
+  if (/\b(token|coin|contract|ticker|\bca\b|lp|liquidity|dev\s+(?:rug|wallet)|honeypot|buy\s+tax|sell\s+tax)\b/i.test(t)) return false;
+  return WALLET_FOLLOWUP_CORE_RE.test(t) || WALLET_FOLLOWUP_RE.test(t);
+}
+
+export function classifyWalletFollowupKind(prompt: string): WalletFollowupKind {
+  const t = String(prompt ?? "").toLowerCase();
+  if (/why\s+no\s+pnl|why\s+is\s+pnl\s+missing|explain\s+pnl|pnl\s+(?:missing|coverage|reason)/.test(t)) return "wallet_pnl_explanation";
+  if (/profitable|profitability|profit\b/.test(t)) return "wallet_profitability";
+  if (/top\s+holdings?|holdings?/.test(t)) return "wallet_holdings";
+  if (/chains?.*active|active\s+on/.test(t)) return "wallet_chains";
+  if (/deep\s+scan|full\s+scan/.test(t)) return "wallet_deep_scan_advice";
+  if (/evidence.*missing|missing.*evidence|gaps?/.test(t)) return "wallet_evidence_gaps";
+  if (/risky|risk/.test(t)) return "wallet_risk";
+  if (/good|quality|worth\s+monitoring/.test(t)) return "wallet_quality";
+  return "wallet_summary";
+}
+
 export function isWalletComparePrompt(text: string): boolean {
   const t = String(text ?? "").toLowerCase();
   if (!WALLET_COMPARE_RE.test(t)) return false;
@@ -188,8 +223,8 @@ export function classifyClarkPrompt(prompt: string): {
   // ---- Wallet PnL / history follow-up ("why is pnl missing", "dig deeper", "recover more history") ----
   // These rely on session memory (lastWallet). We still classify them so the caller
   // can resolve the address from memory instead of asking again.
-  if (WALLET_FOLLOWUP_RE.test(t)) {
-    return { intent: "wallet_pnl_followup", address, addresses, deep: true, symbol: null };
+  if (isWalletFollowupPrompt(t)) {
+    return { intent: "wallet_pnl_followup", address, addresses, deep: false, symbol: null };
   }
 
   // ---- LP / liquidity check (classify by phrase; contract-vs-EOA decided by caller via eth_getCode) ----
@@ -609,6 +644,73 @@ export function formatWalletScanResult(address: string, result: WalletApiResult 
  * Build an honest "unsupported compare" reply that names both wallet addresses
  * (or the last wallet + the typed one) and never silently scans only one.
  */
+function walletEvidenceValue(src: Record<string, unknown>, keys: string[]): unknown {
+  for (const key of keys) {
+    const parts = key.split('.');
+    let cur: any = src;
+    for (const part of parts) cur = cur && typeof cur === 'object' ? cur[part] : undefined;
+    if (cur != null) return cur;
+  }
+  return null;
+}
+
+function walletEvidenceReasons(result: WalletApiResult): string[] {
+  const reasons: string[] = [];
+  const coverage = result.walletModuleCoverage ?? {};
+  const pnl = result.walletTokenPnlSummary ?? {};
+  const hist = result.walletHistoricalCoverageSummary ?? null;
+  const add = (label: string, yes: boolean) => { if (yes && !reasons.includes(label)) reasons.push(label); };
+  add("Cost basis incomplete", /cost basis|basis|fifo|open_check|partial|incomplete|limited|locked/i.test(JSON.stringify([coverage?.fifoPnL, pnl, result.pnlCoverage])));
+  add("Closed lots not verified", /closed|lot|locked_no_closed_lots|insufficient|unverified|partial/i.test(JSON.stringify([coverage?.fifoPnL, coverage?.tradeStats, result.closedLots])));
+  add("Historical recovery partial", /partial|limited|open|unavailable|cached|preview/i.test(JSON.stringify([hist, result.historicalRecoveryStatus])));
+  add("Activity preview only", /preview|open_check|provider_unavailable|unavailable|cached/i.test(JSON.stringify([coverage?.activity, result.dataFreshness, result.cacheAgeSeconds])));
+  add("Chain coverage limited", /limited|partial|single|auto|open_check/i.test(JSON.stringify([coverage?.chains, (result as any).chainCoverage])));
+  add("Price coverage partial", /partial|open_check|unavailable|limited/i.test(JSON.stringify([coverage?.priceEvidence, (result as any).pricingCoverage])));
+  if (Array.isArray((result as any).evidenceGaps)) for (const g of (result as any).evidenceGaps) add(String(g), true);
+  if (reasons.length === 0) reasons.push(describePnlQuality(result).reason);
+  return reasons.filter(Boolean);
+}
+
+function walletPnlStatus(result: WalletApiResult): "Verified" | "Partial" | "Open Check" | "Unavailable" {
+  const q = describePnlQuality(result);
+  if (q.label === "ok") return "Verified";
+  const text = JSON.stringify([q, result.walletModuleCoverage, result.walletTokenPnlSummary]).toLowerCase();
+  if (/unavailable|provider_unavailable|not available/.test(text)) return "Unavailable";
+  if (/partial|limited|incomplete|locked|attempted/.test(text)) return "Partial";
+  return "Open Check";
+}
+
+export function formatWalletFollowupFromMemory(address: string, result: WalletApiResult, kind: WalletFollowupKind): string {
+  const holdings = result.holdings ?? [];
+  const top = pickTopHoldingsByValue(holdings, 5);
+  const chains = result.chainsActive?.length ? result.chainsActive.join(", ") : "unverified";
+  const total = result.totalValue != null ? fmtUsdShort(result.totalValue) : "unverified";
+  const pnlStatus = walletPnlStatus(result);
+  const q = describePnlQuality(result);
+  const reasons = walletEvidenceReasons(result);
+  const closed = result.closedLots ?? result.walletLotSummary?.closedLots ?? "unverified";
+  const open = result.openLots ?? result.walletLotSummary?.openLots ?? "unverified";
+  const topLines = top.length ? top.map((h, i) => `${i + 1}. ${String(h.symbol ?? "?").toUpperCase()}${h.chain ? ` [${h.chain}]` : ""} — ${fmtUsdShort(h.value)}`) : ["none returned with value"];
+  const canProfit = pnlStatus === "Verified";
+  if (kind === "wallet_profitability") return [
+    "WALLET PROFITABILITY", `Status: ${pnlStatus === "Verified" ? "Verified" : pnlStatus === "Partial" ? "Partial" : "Open Check"}`,
+    `Realized PnL: ${walletEvidenceValue(result as any, ["realizedPnlUsd", "walletTokenPnlSummary.realizedPnlUsd", "walletTradeStatsSummary.realizedPnlUsd"]) ?? "unavailable"}`,
+    `Unrealized/Open PnL: ${walletEvidenceValue(result as any, ["unrealizedPnlUsd", "walletTokenPnlSummary.unrealizedPnlUsd", "walletTradeStatsSummary.unrealizedPnlUsd"]) ?? "unavailable"}`,
+    `Closed lots: ${closed}`, `Open lots: ${open}`, `PnL confidence: ${pnlStatus}`, "Read:", canProfit ? "Clark can judge profitability because verified PnL evidence is present." : (pnlStatus === "Partial" ? "Profitability is partial — cost basis / closed lots are incomplete." : "Clark can assess portfolio exposure, but not profitability yet."),
+    ...(canProfit ? [] : [`Reason: ${q.reason}`])
+  ].join("\n");
+  if (kind === "wallet_pnl_explanation") return ["PNL EXPLANATION", `PnL status: ${pnlStatus}`, "Why:", ...reasons.map(r => `- ${r}`)].join("\n");
+  if (kind === "wallet_deep_scan_advice") {
+    const recommend = reasons.some(r => /pnl|cost basis|closed lots|historical|activity|chain|price/i.test(r)) || (result.totalValue ?? 0) >= 10000 || (result.chainsActive?.length ?? 0) > 1;
+    return ["DEEP SCAN ADVICE", `Recommended: ${recommend ? "Yes" : "Maybe"}`, "Why:", ...(recommend ? reasons : ["Cached evidence does not show major gaps beyond normal open checks"]).map(r => `- ${r}`), "Cost note:", "Deep scan may use more provider credits. Use it when PnL/trade history matters.", "CTA: Deep Scan Wallet"].join("\n");
+  }
+  if (kind === "wallet_evidence_gaps") return ["WALLET EVIDENCE GAPS", ...reasons.map(r => `- ${r}`)].join("\n");
+  if (kind === "wallet_holdings") return ["TOP HOLDINGS", `Address: ${address}`, `Total value: ${total}`, "Top holdings:", ...topLines, "CTA: Open Wallet Scanner / Deep Scan Wallet"].join("\n");
+  if (kind === "wallet_chains") return ["WALLET CHAINS", `Address: ${address}`, `Active chains: ${chains}`, `Read: ${result.chainsActive?.length ? "Clark is using cached wallet chain evidence." : "Active chain coverage is not verified in cached evidence."}`, "CTA: Open Wallet Scanner / Deep Scan Wallet"].join("\n");
+  if (kind === "wallet_risk" || kind === "wallet_quality") return [kind === "wallet_risk" ? "WALLET RISK" : "WALLET QUALITY", `Address: ${address}`, `Total value: ${total}`, `Active chains: ${chains}`, `PnL status: ${pnlStatus}`, "Read:", canProfit ? "Profitability evidence is verified, but wallet quality still depends on concentration, activity, and risk." : "Clark can assess portfolio exposure, but not profitability yet.", ...(reasons.length ? ["Evidence limits:", ...reasons.map(r => `- ${r}`)] : []), "CTA: Open Wallet Scanner / Deep Scan Wallet"].join("\n");
+  return ["WALLET SUMMARY", `Address: ${address}`, `Total value: ${total}`, `Active chains: ${chains}`, `Holdings: ${holdings.length} tokens`, "Top holdings:", ...topLines, "PnL read:", `- Status: ${pnlStatus.toLowerCase()}`, `- Reason: ${q.reason}`, "Read:", canProfit ? "Clark can judge profitability because verified PnL evidence is present." : "Clark can assess portfolio exposure, but not profitability yet.", "CTA: Open Wallet Scanner / Deep Scan Wallet"].join("\n");
+}
+
 export function formatWalletCompareUnsupported(opts: {
   addressA: string | null;
   addressB: string | null;
