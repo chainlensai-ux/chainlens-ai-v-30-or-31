@@ -11,6 +11,7 @@ import {
   buildRoutedActions,
   formatWalletCompareUnsupported,
   pickTopHoldingsByValue,
+  formatWalletFollowupFromMemory,
 } from '../lib/server/clarkRouting.ts'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -51,6 +52,35 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   debug: false,
   source: 'clark',
 })
+// ─── Pack 2A wallet memory follow-up formatting ─────────────────────────────
+{
+  const walletEv = {
+    ok: true,
+    address: addr,
+    totalValue: 12500,
+    holdings: [{ symbol: 'WETH', value: 8000, chain: 'Base' }, { symbol: 'USDC', value: 4500, chain: 'Ethereum' }],
+    chainsActive: ['Base', 'Ethereum'],
+    walletModuleCoverage: { fifoPnL: { status: 'open_check', reason: 'cost basis incomplete' }, activity: { status: 'preview' }, tradeStats: { status: 'open_check' } },
+    walletHistoricalCoverageSummary: { status: 'partial' },
+    walletTokenPnlSummary: { status: 'partial', reason: 'closed lots not verified' },
+    openLots: 'partial',
+    closedLots: 'unverified',
+  }
+  const profitable = formatWalletFollowupFromMemory(addr, walletEv, 'wallet_profitability')
+  assert.ok(profitable.startsWith('WALLET PROFITABILITY'))
+  assert.ok(/Clark can assess portfolio exposure, but not profitability yet|Profitability is partial/.test(profitable), 'does not fake profitability')
+  assert.ok(!/profitable because total value/i.test(profitable), 'total value is not treated as profit')
+  const pnl = formatWalletFollowupFromMemory(addr, walletEv, 'wallet_pnl_explanation')
+  assert.ok(pnl.includes('PNL EXPLANATION'))
+  assert.ok(/Cost basis incomplete|Closed lots not verified|Historical recovery partial|Activity preview only/i.test(pnl), 'why no pnl uses evidence-backed gaps')
+  const holdings = formatWalletFollowupFromMemory(addr, walletEv, 'wallet_holdings')
+  assert.ok(holdings.includes('WETH [Base]'))
+  assert.ok(holdings.includes('USDC [Ethereum]'))
+  const chains = formatWalletFollowupFromMemory(addr, walletEv, 'wallet_chains')
+  assert.ok(chains.includes('Base, Ethereum'))
+  const deep = formatWalletFollowupFromMemory(addr, walletEv, 'wallet_deep_scan_advice')
+  assert.ok(deep.includes('Recommended: Yes'), 'deep scan recommended only when cached gaps justify it')
+}
 
 // ─── formatEoaLpCheckReply ────────────────────────────────────────────────────
 {
@@ -103,7 +133,6 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(!routeFile.includes('const walletRes = await callInternalApi(origin, "/api/wallet", scanPayload'), 'routed Clark wallet execution must not use unauthenticated internal wallet API path')
   assert.ok(routeFile.includes('runWalletScanner'), 'Clark wallet execution should call the Wallet Scanner runner')
 }
-
 
 // ─── wallet scan formatting surfaces scanner modules ─────────────────────────
 {
@@ -1009,8 +1038,6 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(scanOut.includes('Security: Open Check — security simulation not returned'), 'token scan output uses the precise honeypot open-check sentence')
 }
 
-
-
 // ─── Clark cross-chain concentrated-LP follow-up consistency ──────────────────
 {
   const { formatTokenScanResult, formatTokenSafetyAnswer, formatDevRugCheck, formatLpLockCheck, formatRiskExplanation } = await import('../lib/server/clarkRouting.ts')
@@ -1492,6 +1519,18 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(!out.toLowerCase().includes('confirmed safe'))
   assert.ok(!out.toLowerCase().includes('locked'))
   assert.ok(!out.toLowerCase().includes('honeypot not detected'))
+}
+
+{
+  const routeFileForWalletMemory = fs.readFileSync(path.join(__dirname, '../app/api/clark/route.ts'), 'utf8')
+  assert.ok(routeFileForWalletMemory.includes('isWalletFollowupPrompt(prompt)'), 'wallet follow-up after lastWallet uses memory classifier')
+  assert.ok(routeFileForWalletMemory.includes('toolsUsed: ["memory"]'), 'wallet memory follow-up returns toolsUsed memory')
+  assert.ok(routeFileForWalletMemory.includes('quotaConsumed: false'), 'wallet memory follow-up does not consume quota')
+  const guardIdx = routeFileForWalletMemory.indexOf('sessionMem.lastWallet?.address && !routed.address && isWalletFollowupPrompt(prompt)')
+  const walletCallIdx = routeFileForWalletMemory.indexOf('runWalletScanner({ address: routed.address', guardIdx)
+  assert.ok(guardIdx >= 0 && walletCallIdx > guardIdx, 'wallet memory guard runs before wallet scan call')
+  assert.ok(routeFileForWalletMemory.includes('routed.intent === "wallet_scan" && routed.address'), 'explicit new wallet address still runs wallet scan')
+  assert.ok(routeFileForWalletMemory.includes('routed.intent === "token_scan"'), 'explicit token route remains available after wallet memory')
 }
 
 console.log('test-clark-execution.mjs: all assertions passed')

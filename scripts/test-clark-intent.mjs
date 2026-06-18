@@ -11,6 +11,8 @@ import {
   formatLpLockCheck,
   formatRiskExplanation,
   formatNoTokenInMemory,
+  isWalletFollowupPrompt,
+  classifyWalletFollowupKind,
 } from '../lib/server/clarkRouting.ts'
 
 // ─── base_market_discovery vs base_radar ─────────────────────────────────────
@@ -92,12 +94,20 @@ assert.equal(classifyClarkPrompt("what's pumping on Base Radar?").intent, 'base_
 {
   const r = classifyClarkPrompt('why is pnl missing')
   assert.equal(r.intent, 'wallet_pnl_followup')
-  assert.equal(r.deep, true)
+  assert.equal(r.deep, false)
 }
 {
   const r = classifyClarkPrompt('dig deeper into this wallet')
   assert.equal(r.intent, 'wallet_pnl_followup')
-  assert.equal(r.deep, true)
+  assert.equal(r.deep, false)
+}
+{
+  assert.equal(isWalletFollowupPrompt('is this wallet profitable'), true)
+  assert.equal(classifyWalletFollowupKind('is this wallet profitable'), 'wallet_profitability')
+  assert.equal(classifyWalletFollowupKind('top holdings'), 'wallet_holdings')
+  assert.equal(classifyWalletFollowupKind('what chains is it active on'), 'wallet_chains')
+  assert.equal(classifyWalletFollowupKind('should I deep scan'), 'wallet_deep_scan_advice')
+  assert.equal(isWalletFollowupPrompt('scan this token on base'), false)
 }
 
 // ─── liquidity_scan ───────────────────────────────────────────────────────────
