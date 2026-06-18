@@ -313,8 +313,8 @@ function ClarkAiContent() {
             radial-gradient(circle at 18% 2%, rgba(20, 184, 166, .13), transparent 28%),
             linear-gradient(180deg, #020611 0%, #050914 46%, #02040b 100%);
         }
-        .clk-grid { position:absolute; inset:0; pointer-events:none; background-image: linear-gradient(rgba(34,211,238,.055) 1px, transparent 1px), linear-gradient(90deg, rgba(34,211,238,.055) 1px, transparent 1px); background-size: 36px 36px; mask-image: radial-gradient(ellipse 74% 50% at 58% 5%, black 0%, transparent 76%); }
-        .clk-glow { position:absolute; pointer-events:none; inset:0; background: radial-gradient(circle at 73% 12%, rgba(34,211,238,.12), transparent 18%), radial-gradient(circle at 88% 30%, rgba(168,85,247,.12), transparent 22%); }
+        .clk-grid { position:absolute; inset:0; pointer-events:none; background-image: linear-gradient(rgba(34,211,238,.055) 1px, transparent 1px), linear-gradient(90deg, rgba(34,211,238,.055) 1px, transparent 1px), radial-gradient(rgba(148,163,184,.16) 1px, transparent 1.4px); background-size: 36px 36px, 36px 36px, 18px 18px; mask-image: radial-gradient(ellipse 74% 50% at 58% 5%, black 0%, transparent 76%); }
+        .clk-glow { position:absolute; pointer-events:none; inset:0; background: radial-gradient(circle at 73% 12%, rgba(34,211,238,.14), transparent 20%), radial-gradient(circle at 88% 30%, rgba(168,85,247,.14), transparent 24%), radial-gradient(circle at 8% 60%, rgba(45,212,191,.06), transparent 30%); }
         .clk-shell { position:relative; z-index:1; width:100%; max-width: 1540px; margin:0 auto; padding: 28px 28px 56px; display:grid; grid-template-columns: minmax(0, 1fr) 330px; gap:28px; }
         .clk-main { min-width:0; }
         .clk-hero { display:grid; grid-template-columns: minmax(0, 1fr) 220px; gap:20px; align-items:center; padding: 12px 0 20px; border-bottom:1px solid rgba(148,163,184,.12); }
@@ -328,10 +328,11 @@ function ClarkAiContent() {
         .clk-live-label { color:#34d399; }
         .clk-live-sep { color:#334155; }
         .clk-live-cortex { color:#22d3ee; }
-        .clk-mark { justify-self:end; width:190px; height:96px; border-radius:28px; display:grid; place-items:center; color:#22d3ee; font-size:58px; font-weight:900; letter-spacing:-.12em; background:radial-gradient(circle at 45% 50%, rgba(34,211,238,.20), transparent 48%); text-shadow: 0 0 26px rgba(34,211,238,.72), 22px 10px 32px rgba(124,58,237,.70); opacity:.9; }
+        .clk-mark { justify-self:end; position:relative; width:190px; height:96px; border-radius:28px; display:grid; place-items:center; color:#22d3ee; font-size:58px; font-weight:900; letter-spacing:-.12em; background:radial-gradient(circle at 45% 50%, rgba(34,211,238,.22), transparent 50%); text-shadow: 0 0 26px rgba(34,211,238,.72), 22px 10px 32px rgba(124,58,237,.70); opacity:.92; }
+        .clk-mark::before { content:''; position:absolute; inset:-18px; border-radius:50%; background:radial-gradient(circle, rgba(124,58,237,.18), transparent 65%); filter:blur(6px); z-index:-1; }
         .clk-actions-row { display:grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap:14px; margin:16px 0 26px; }
-        .clk-quick-card { text-align:left; display:flex; gap:14px; align-items:center; border:1px solid rgba(148,163,184,.13); border-radius:12px; background:linear-gradient(180deg, rgba(13,21,36,.72), rgba(5,10,22,.82)); padding:16px; color:#f8fafc; cursor:pointer; transition: border-color .18s, transform .18s, background .18s; box-shadow: inset 0 1px 0 rgba(255,255,255,.035); }
-        .clk-quick-card:hover { transform: translateY(-2px); border-color:rgba(34,211,238,.35); background:linear-gradient(180deg, rgba(15,28,48,.82), rgba(5,12,25,.92)); }
+        .clk-quick-card { text-align:left; display:flex; gap:14px; align-items:center; border:1px solid rgba(148,163,184,.13); border-radius:12px; background:linear-gradient(180deg, rgba(13,21,36,.72), rgba(5,10,22,.82)); padding:16px; color:#f8fafc; cursor:pointer; transition: border-color .18s, transform .18s, background .18s, box-shadow .18s; box-shadow: inset 0 1px 0 rgba(255,255,255,.035); }
+        .clk-quick-card:hover { transform: translateY(-2px); border-color: color-mix(in srgb, var(--accent) 55%, rgba(148,163,184,.35)); background:linear-gradient(180deg, rgba(15,28,48,.82), rgba(5,12,25,.92)); box-shadow: inset 0 1px 0 rgba(255,255,255,.05), 0 10px 26px -8px color-mix(in srgb, var(--accent) 45%, transparent); }
         .clk-quick-icon { width:42px; height:42px; border-radius:12px; display:grid; place-items:center; border:1px solid var(--accent); color:var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); flex:0 0 auto; }
         .clk-quick-title { font-weight:760; font-size:16px; margin-bottom:5px; }
         .clk-quick-sub { color:#9aa8bb; font-size:13px; }
@@ -373,7 +374,8 @@ function ClarkAiContent() {
         .clk-usage-track { flex:1; height:5px; border-radius:999px; background:rgba(148,163,184,.13); overflow:hidden; }
         .clk-usage-fill { height:100%; border-radius:999px; transition:width .5s; }
         .clk-side { display:flex; flex-direction:column; gap:16px; }
-        .clk-side-card { border:1px solid rgba(148,163,184,.14); border-radius:16px; background:linear-gradient(180deg, rgba(8,15,30,.76), rgba(3,7,17,.9)); padding:20px; box-shadow: inset 0 1px 0 rgba(255,255,255,.04); }
+        .clk-side-card { border:1px solid rgba(148,163,184,.16); border-radius:16px; background:linear-gradient(180deg, rgba(10,18,34,.8), rgba(3,7,17,.94)); padding:20px; box-shadow: inset 0 1px 0 rgba(255,255,255,.045), 0 14px 32px -16px rgba(0,0,0,.55); }
+        .clk-side-card:hover { border-color: rgba(34,211,238,.22); }
         .clk-side-title { display:flex; align-items:center; gap:11px; margin:0 0 20px; color:#f1f5f9; font-size:16px; font-weight:800; }
         .clk-side-title svg { color:#22d3ee; }
         .clk-context-row { padding:0 0 15px; margin-bottom:15px; border-bottom:1px solid rgba(148,163,184,.11); }
