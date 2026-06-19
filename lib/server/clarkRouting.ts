@@ -110,12 +110,20 @@ export type WalletFollowupKind =
   | "wallet_risk"
   | "wallet_summary";
 
-const WALLET_REFRESH_RE = /\b(refresh|rescan|deep\s+scan|run\s+full\s+scan|scan\s+again)\b/i;
-const WALLET_FOLLOWUP_CORE_RE = /\b(is\s+this\s+wallet\s+good|is\s+this\s+wallet\s+profitable|why\s+no\s+pnl|why\s+is\s+pnl\s+missing|explain\s+pnl|top\s+holdings?|what\s+are\s+the\s+top\s+holdings?|what\s+chains\s+is\s+it\s+active\s+on|should\s+i\s+deep\s+scan|what\s+evidence\s+is\s+missing|is\s+this\s+wallet\s+risky|summarize\s+this\s+wallet|wallet\s+summary|wallet\s+risk|wallet\s+quality|wallet\s+profitability)\b/i;
+// Only genuine imperative re-scan commands skip the followup-memory path — questions about
+// deep scan ("should I deep scan", "deep scan?") are handled below as advice from memory, not
+// as a trigger to actually re-run the wallet scanner.
+const WALLET_REFRESH_RE = /\b(refresh|rescan|run\s+full\s+scan|scan\s+again|run\s+deep\s+scan(?:\s+now)?|do\s+a\s+deep\s+scan(?:\s+now)?)\b/i;
+const WALLET_FOLLOWUP_CORE_RE = /\b(is\s+this\s+wallet\s+good|is\s+this\s+wallet\s+profitable|why\s+no\s+pnl|why\s+is\s+pnl\s+missing|explain\s+pnl|top\s+holdings?|what\s+are\s+the\s+top\s+holdings?|what\s+chains\s+is\s+it\s+active\s+on|active\s+chains?|should\s+i\s+deep\s+scan|what\s+evidence\s+is\s+missing|what\s+is\s+missing|is\s+this\s+wallet\s+risky|summarize\s+this\s+wallet|wallet\s+summary|wallet\s+risk|wallet\s+quality|wallet\s+profitability)\b/i;
+// A bare "deep scan" / "deep scan?" with nothing else (no address, no "this wallet ...") is a
+// question asking for advice, not a command — must not be confused with "deep scan this wallet 0x...".
+const WALLET_DEEP_SCAN_QUESTION_RE = /^deep\s+scan\??$/i;
 
 export function isWalletFollowupPrompt(prompt: string): boolean {
   const t = String(prompt ?? "").trim();
-  if (!t || WALLET_REFRESH_RE.test(t)) return false;
+  if (!t) return false;
+  if (WALLET_DEEP_SCAN_QUESTION_RE.test(t)) return true;
+  if (WALLET_REFRESH_RE.test(t)) return false;
   if (/\b(token|coin|contract|ticker|\bca\b|lp|liquidity|dev\s+(?:rug|wallet)|honeypot|buy\s+tax|sell\s+tax)\b/i.test(t)) return false;
   return WALLET_FOLLOWUP_CORE_RE.test(t) || WALLET_FOLLOWUP_RE.test(t);
 }
@@ -125,9 +133,9 @@ export function classifyWalletFollowupKind(prompt: string): WalletFollowupKind {
   if (/why\s+no\s+pnl|why\s+is\s+pnl\s+missing|explain\s+pnl|pnl\s+(?:missing|coverage|reason)/.test(t)) return "wallet_pnl_explanation";
   if (/profitable|profitability|profit\b/.test(t)) return "wallet_profitability";
   if (/top\s+holdings?|holdings?/.test(t)) return "wallet_holdings";
-  if (/chains?.*active|active\s+on/.test(t)) return "wallet_chains";
+  if (/chains?.*active|active\s+on|active\s+chains?/.test(t)) return "wallet_chains";
   if (/deep\s+scan|full\s+scan/.test(t)) return "wallet_deep_scan_advice";
-  if (/evidence.*missing|missing.*evidence|gaps?/.test(t)) return "wallet_evidence_gaps";
+  if (/evidence.*missing|missing.*evidence|gaps?|what\s+is\s+missing/.test(t)) return "wallet_evidence_gaps";
   if (/risky|risk/.test(t)) return "wallet_risk";
   if (/good|quality|worth\s+monitoring/.test(t)) return "wallet_quality";
   return "wallet_summary";
@@ -691,6 +699,34 @@ function walletEvidenceReasons(result: WalletApiResult): string[] {
   return reasons.filter(Boolean);
 }
 
+/** Structured, evidence-backed gap flags shared by the deep-scan-advice and evidence-gaps
+ * follow-up formatters — only ever derived from cached wallet evidence, never invented. */
+function walletEvidenceGapFlags(result: WalletApiResult): {
+  pnlStatus: "Verified" | "Partial" | "Open Check" | "Unavailable";
+  pnlGap: boolean;
+  lotsGap: boolean;
+  histGap: boolean;
+  histPreview: boolean;
+  activityGap: boolean;
+} {
+  const coverage = result.walletModuleCoverage ?? {};
+  const fifoStatus = coverage?.fifoPnL?.status;
+  const histStatus = result.walletHistoricalCoverageSummary?.status ?? result.historicalRecoveryStatus ?? null;
+  const activityStatus = coverage?.activity?.status ?? null;
+  const fresh = String(result.dataFreshness ?? "").toLowerCase();
+  const cacheAge = typeof result.cacheAgeSeconds === "number" ? result.cacheAgeSeconds : null;
+  const isPreview = fresh === "cached" || (cacheAge != null && cacheAge > 0);
+  const pnlStatus = walletPnlStatus(result);
+  return {
+    pnlStatus,
+    pnlGap: pnlStatus !== "Verified",
+    lotsGap: fifoStatus === "locked_no_closed_lots" || fifoStatus === "locked_insufficient_trades" || result.closedLots == null || result.openLots == null,
+    histGap: (!!histStatus && String(histStatus) !== "ok") || isPreview,
+    histPreview: isPreview,
+    activityGap: activityStatus === "open_check" || activityStatus === "provider_unavailable" || isPreview,
+  };
+}
+
 function walletPnlStatus(result: WalletApiResult): "Verified" | "Partial" | "Open Check" | "Unavailable" {
   const q = describePnlQuality(result);
   if (q.label === "ok") return "Verified";
@@ -703,14 +739,14 @@ function walletPnlStatus(result: WalletApiResult): "Verified" | "Partial" | "Ope
 export function formatWalletFollowupFromMemory(address: string, result: WalletApiResult, kind: WalletFollowupKind): string {
   const holdings = result.holdings ?? [];
   const top = pickTopHoldingsByValue(holdings, 5);
-  const chains = result.chainsActive?.length ? result.chainsActive.join(", ") : "unverified";
+  const chains = result.chainsActive?.length ? result.chainsActive.map(chainDisplayName).join(", ") : "unverified";
   const total = result.totalValue != null ? fmtUsdShort(result.totalValue) : "unverified";
   const pnlStatus = walletPnlStatus(result);
   const q = describePnlQuality(result);
   const reasons = walletEvidenceReasons(result);
   const closed = result.closedLots ?? result.walletLotSummary?.closedLots ?? "unverified";
   const open = result.openLots ?? result.walletLotSummary?.openLots ?? "unverified";
-  const topLines = top.length ? top.map((h, i) => `${i + 1}. ${String(h.symbol ?? "?").toUpperCase()}${h.chain ? ` [${h.chain}]` : ""} — ${fmtUsdShort(h.value)}`) : ["none returned with value"];
+  const topLines = top.length ? top.map((h, i) => `${i + 1}. ${String(h.symbol ?? "?").toUpperCase()}${h.chain ? ` [${chainDisplayName(h.chain)}]` : ""} — ${fmtUsdShort(h.value)}`) : ["none returned with value"];
   const canProfit = pnlStatus === "Verified";
   if (kind === "wallet_profitability") return [
     "WALLET PROFITABILITY", `Status: ${pnlStatus === "Verified" ? "Verified" : pnlStatus === "Partial" ? "Partial" : "Open Check"}`,
@@ -721,12 +757,60 @@ export function formatWalletFollowupFromMemory(address: string, result: WalletAp
   ].join("\n");
   if (kind === "wallet_pnl_explanation") return ["PNL EXPLANATION", `PnL status: ${pnlStatus}`, "Why:", ...reasons.map(r => `- ${r}`)].join("\n");
   if (kind === "wallet_deep_scan_advice") {
-    const recommend = reasons.some(r => /pnl|cost basis|closed lots|historical|activity|chain|price/i.test(r)) || (result.totalValue ?? 0) >= 10000 || (result.chainsActive?.length ?? 0) > 1;
-    return ["DEEP SCAN ADVICE", `Recommended: ${recommend ? "Yes" : "Maybe"}`, "Why:", ...(recommend ? reasons : ["Cached evidence does not show major gaps beyond normal open checks"]).map(r => `- ${r}`), "Cost note:", "Deep scan may use more provider credits. Use it when PnL/trade history matters.", "CTA: Deep Scan Wallet"].join("\n");
+    const f = walletEvidenceGapFlags(result);
+    const whyLines: string[] = [];
+    if (f.pnlGap) whyLines.push(`PnL is ${f.pnlStatus.toLowerCase()}`);
+    if (f.lotsGap) whyLines.push("Closed/open lot attribution is unverified");
+    if (f.histGap) whyLines.push(`Historical recovery is ${f.histPreview ? "portfolio preview only" : "partial"}`);
+    if (f.activityGap) whyLines.push("Activity status is portfolio preview");
+    // No gaps detected at all: with holdings present, PnL/trade recovery are verified by
+    // construction (pnlGap/lotsGap would otherwise have fired) — so "No" is the honest answer.
+    // With no holdings either, there isn't enough evidence either way, so "Maybe".
+    const hasHoldings = holdings.length > 0;
+    const recommend = whyLines.length > 0 ? "Yes" : (hasHoldings ? "No" : "Maybe");
+    return [
+      "DEEP SCAN ADVICE", `Recommended: ${recommend}`, "",
+      "Why:", ...(whyLines.length ? whyLines : ["Cached evidence does not show major gaps beyond normal open checks"]).map(r => `- ${r}`), "",
+      "Cost note:", "Deep scan may use more provider credits. Use it when PnL/trade history matters.",
+    ].join("\n");
   }
-  if (kind === "wallet_evidence_gaps") return ["WALLET EVIDENCE GAPS", ...reasons.map(r => `- ${r}`)].join("\n");
-  if (kind === "wallet_holdings") return ["TOP HOLDINGS", `Address: ${address}`, `Total value: ${total}`, "Top holdings:", ...topLines, "CTA: Open Wallet Scanner / Deep Scan Wallet"].join("\n");
-  if (kind === "wallet_chains") return ["WALLET CHAINS", `Address: ${address}`, `Active chains: ${chains}`, `Read: ${result.chainsActive?.length ? "Clark is using cached wallet chain evidence." : "Active chain coverage is not verified in cached evidence."}`, "CTA: Open Wallet Scanner / Deep Scan Wallet"].join("\n");
+  if (kind === "wallet_evidence_gaps") {
+    const f = walletEvidenceGapFlags(result);
+    const gapLines: string[] = [];
+    if (f.lotsGap) gapLines.push("Closed/open lot attribution: partial/unverified");
+    if (f.histGap) gapLines.push(`Historical recovery: ${f.histPreview ? "portfolio preview" : "partial"}`);
+    if (f.activityGap) gapLines.push("Activity status: portfolio preview");
+    if (f.pnlGap) gapLines.push(`PnL confidence: ${f.pnlStatus.toLowerCase()}`);
+    return [
+      "WALLET EVIDENCE GAPS",
+      ...(gapLines.length ? gapLines.map(l => `- ${l}`) : ["- No major evidence gaps found in cached scan"]), "",
+      "Read:", "These gaps explain why Clark will not call the wallet profitable or unprofitable yet.",
+    ].join("\n");
+  }
+  if (kind === "wallet_holdings") {
+    if (top.length === 0) {
+      return ["WALLET HOLDINGS", "Clark has the last wallet address, but top holdings were not available in the cached scan. Run a fresh wallet scan."].join("\n");
+    }
+    return [
+      "WALLET HOLDINGS",
+      `- Address: ${address}`,
+      `- Total value: ${total}`,
+      `- Holdings count: ${holdings.length}`, "",
+      "Top holdings:", ...topLines, "",
+      "Read:", "Clark is using the last wallet scan evidence. This is portfolio exposure, not confirmed profitability.",
+    ].join("\n");
+  }
+  if (kind === "wallet_chains") {
+    if (!result.chainsActive?.length) {
+      return ["WALLET CHAINS", `- Address: ${address}`, "Clark has the last wallet address, but active chain data was not available in the cached scan. Run a fresh wallet scan."].join("\n");
+    }
+    return [
+      "WALLET CHAINS",
+      `- Address: ${address}`,
+      `- Active chains: ${chains}`, "",
+      "Read:", "This came from the last wallet scan evidence. Use deep scan if you want wider historical chain activity.",
+    ].join("\n");
+  }
   if (kind === "wallet_risk" || kind === "wallet_quality") return [kind === "wallet_risk" ? "WALLET RISK" : "WALLET QUALITY", `Address: ${address}`, `Total value: ${total}`, `Active chains: ${chains}`, `PnL status: ${pnlStatus}`, "Read:", canProfit ? "Profitability evidence is verified, but wallet quality still depends on concentration, activity, and risk." : "Clark can assess portfolio exposure, but not profitability yet.", ...(reasons.length ? ["Evidence limits:", ...reasons.map(r => `- ${r}`)] : []), "CTA: Open Wallet Scanner / Deep Scan Wallet"].join("\n");
   return ["WALLET SUMMARY", `Address: ${address}`, `Total value: ${total}`, `Active chains: ${chains}`, `Holdings: ${holdings.length} tokens`, "Top holdings:", ...topLines, "PnL read:", `- Status: ${pnlStatus.toLowerCase()}`, `- Reason: ${q.reason}`, "Read:", canProfit ? "Clark can judge profitability because verified PnL evidence is present." : "Clark can assess portfolio exposure, but not profitability yet.", "CTA: Open Wallet Scanner / Deep Scan Wallet"].join("\n");
 }

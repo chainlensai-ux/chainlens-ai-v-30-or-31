@@ -12,6 +12,8 @@ import {
   formatWalletCompareUnsupported,
   pickTopHoldingsByValue,
   formatWalletFollowupFromMemory,
+  isWalletFollowupPrompt,
+  classifyWalletFollowupKind,
 } from '../lib/server/clarkRouting.ts'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -1596,6 +1598,132 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(out.includes('PnL status: Partial'), 'PnL partial wording reads "PnL status: Partial"')
   assert.ok(out.toLowerCase().includes('cost basis') || out.toLowerCase().includes('closed lots'), 'PnL reason still names cost basis/closed lots incomplete')
   assert.ok(!/\bprofitable\b|\bunprofitable\b/i.test(out), 'never claims profitable/unprofitable without verified PnL evidence')
+}
+
+// ─── Wallet memory follow-up routing (all kinds, not just PnL) after a wallet scan ───────────
+{
+  // Fixture mirrors a real cached scan: holdings, multiple modules partial/preview.
+  const walletMem = {
+    ok: true,
+    address: addr,
+    totalValue: 145800,
+    holdings: [
+      { symbol: 'WETH', value: 64700, chain: 'base' },
+      { symbol: 'CBBTC', value: 30400, chain: 'base' },
+      { symbol: 'USDC', value: 29200, chain: 'base' },
+      { symbol: 'VIRTUAL', value: 6200, chain: 'base' },
+      { symbol: 'ZRO', value: 4500, chain: 'base' },
+    ],
+    chainsActive: ['base'],
+    walletScanHealth: { status: 'limited_pnl', lockedModules: ['fifoPnL'] },
+    walletModuleCoverage: { portfolio: { status: 'ok' }, activity: { status: 'open_check' }, fifoPnL: { status: 'locked_no_closed_lots', reason: 'no_closed_lots' }, tradeStats: { status: 'locked_no_closed_lots' } },
+    walletTokenPnlSummary: { status: 'partial', reason: 'cost_basis_limited' },
+    walletHistoricalCoverageSummary: { status: 'partial' },
+    dataFreshness: 'memory',
+  }
+
+  // Bug 1: every listed wallet follow-up prompt is recognized once a wallet is in memory.
+  const followupPrompts = [
+    'is this wallet profitable', 'why no pnl', 'top holdings', 'what are the top holdings',
+    'what chains is it active on', 'active chains', 'should I deep scan', 'should i deep scan',
+    'deep scan?', 'what evidence is missing', 'what is missing', 'summarize this wallet',
+    'is this wallet good', 'is this wallet risky',
+  ]
+  for (const p of followupPrompts) {
+    assert.ok(isWalletFollowupPrompt(p), `"${p}" must be recognized as a wallet follow-up`)
+  }
+
+  // Bug 6/Bug 4: "should I deep scan" and "deep scan?" must classify as advice, never as a
+  // command that would re-trigger a real wallet scan or fall through to token-scan routing.
+  assert.equal(classifyWalletFollowupKind('should I deep scan'), 'wallet_deep_scan_advice')
+  assert.equal(classifyWalletFollowupKind('deep scan?'), 'wallet_deep_scan_advice')
+  // But "deep scan this wallet 0x..." (an explicit fresh-scan command) must NOT be hijacked
+  // into the memory-advice follow-up path.
+  assert.ok(!isWalletFollowupPrompt(`deep scan this wallet ${addr}`), 'explicit deep-scan command with an address is not a memory follow-up')
+
+  // Bug 2: top holdings follow-up renders the cached holdings under the exact required header.
+  {
+    const out = formatWalletFollowupFromMemory(addr, walletMem, classifyWalletFollowupKind('top holdings'))
+    assert.ok(out.includes('WALLET HOLDINGS'))
+    assert.ok(out.includes('WETH'))
+    assert.ok(out.includes('CBBTC'))
+    assert.ok(out.includes('USDC'))
+    assert.ok(!out.toLowerCase().includes('i need a wallet address'), 'must not ask for an address when lastWallet exists')
+  }
+  // Top holdings missing → honest "run a fresh wallet scan" message, never a fake list.
+  {
+    const out = formatWalletFollowupFromMemory(addr, { ...walletMem, holdings: [] }, 'wallet_holdings')
+    assert.ok(out.includes('WALLET HOLDINGS'))
+    assert.ok(out.toLowerCase().includes('run a fresh wallet scan'))
+  }
+
+  // Bug 3: active chains follow-up renders the cached chain evidence with clean display names.
+  {
+    const out = formatWalletFollowupFromMemory(addr, walletMem, classifyWalletFollowupKind('what chains is it active on'))
+    assert.ok(out.includes('WALLET CHAINS'))
+    assert.ok(out.includes('Base'))
+    assert.ok(!out.toLowerCase().includes('i need a wallet address'))
+  }
+
+  // Bug 4: deep scan advice follow-up never claims to be a token scan and recommends based on
+  // real cached evidence gaps (PnL partial + unverified closed lots here → Yes).
+  {
+    const out = formatWalletFollowupFromMemory(addr, walletMem, classifyWalletFollowupKind('should I deep scan'))
+    assert.ok(out.includes('DEEP SCAN ADVICE'))
+    assert.ok(out.includes('Recommended: Yes'))
+    assert.ok(!out.includes('TOKEN SCAN READ'))
+  }
+  // No meaningful gaps + verified PnL → "No", never "Yes" by default.
+  {
+    const verified = {
+      ...walletMem,
+      walletScanHealth: { status: 'ok' },
+      walletModuleCoverage: { portfolio: { status: 'ok' }, activity: { status: 'ok' }, fifoPnL: { status: 'ok' }, tradeStats: { status: 'ok' } },
+      walletHistoricalCoverageSummary: { status: 'ok' },
+      closedLots: 4,
+      openLots: 1,
+      dataFreshness: 'live',
+    }
+    const out = formatWalletFollowupFromMemory(addr, verified, 'wallet_deep_scan_advice')
+    assert.ok(out.includes('Recommended: No'))
+  }
+
+  // Bug 5: evidence gaps follow-up calls the dedicated formatter, not the generic PnL one.
+  {
+    const out = formatWalletFollowupFromMemory(addr, walletMem, classifyWalletFollowupKind('what evidence is missing'))
+    assert.ok(out.includes('WALLET EVIDENCE GAPS'))
+    assert.ok(!out.includes('WALLET PnL'))
+  }
+
+  // Bug 7: the "I need a wallet address" wording is reserved for when there is truly no
+  // address anywhere — the route.ts memory follow-up gate only fires when lastWallet exists.
+  const routeFile = fs.readFileSync(path.join(__dirname, '..', 'app', 'api', 'clark', 'route.ts'), 'utf8')
+  assert.ok(routeFile.includes('sessionMem.lastWallet?.address && !routedClassification.address && isWalletFollowupPrompt(prompt)'), 'route.ts gates the memory follow-up path on lastWallet + no explicit address')
+  const followupGateIdx = routeFile.indexOf('sessionMem.lastWallet?.address && !routedClassification.address && isWalletFollowupPrompt(prompt)')
+  const followupBlockEndIdx = routeFile.indexOf('Wallet PnL / history follow-up using lastWallet', followupGateIdx)
+  const followupBlock = routeFile.slice(followupGateIdx, followupBlockEndIdx)
+  assert.ok(followupBlock.includes('toolsUsed: ["memory"]'), 'memory follow-up block reports toolsUsed: ["memory"]')
+  assert.ok(followupBlock.includes('quotaConsumed: false'), 'memory follow-up block never consumes quota')
+  assert.ok(!followupBlock.includes('runWalletScanner'), 'memory follow-up block never calls the wallet scanner runner')
+  assert.ok(!followupBlock.includes('token_scan') && !followupBlock.includes('TOKEN SCAN'), 'memory follow-up block never produces a token scan result')
+  assert.ok(followupBlock.includes('walletFollowupKind !== "wallet_pnl_explanation" && walletFollowupKind !== "wallet_profitability"'), 'non-PnL wallet follow-up kinds are excluded from the legacy PnL-only branch')
+}
+
+// ─── Token regressions after a wallet memory exists ───────────────────────────────────────────
+{
+  const routeFile = fs.readFileSync(path.join(__dirname, '..', 'app', 'api', 'clark', 'route.ts'), 'utf8')
+  // Token scan classification still works after wallet memory is populated — the new memory
+  // follow-up gate is keyed off isWalletFollowupPrompt(), which already excludes token language.
+  const { classifyClarkPrompt, isTokenFollowupPrompt } = await import('../lib/server/clarkRouting.ts')
+  const tokenAddr = '0x2D61bbbe5Ad9a8F18Fef35940301Fd24f143a72B'.toLowerCase()
+  const tokenResult = classifyClarkPrompt(`scan this token ${tokenAddr} on eth`)
+  assert.equal(tokenResult.intent, 'token_scan', 'explicit token scan still routes to token_scan after wallet memory exists')
+  assert.ok(!isWalletFollowupPrompt(`scan this token ${tokenAddr} on eth`), 'token scan prompt is never treated as a wallet follow-up')
+
+  // Token follow-up ("is it safe") must keep using token memory, not the new wallet follow-up gate.
+  assert.ok(isTokenFollowupPrompt('is it safe'), 'token follow-up prompt still resolves as a token follow-up')
+  assert.ok(!isWalletFollowupPrompt('is it safe'), '"is it safe" must never be treated as a wallet follow-up')
+  assert.ok(routeFile.includes('TOKEN_FOLLOWUP_GUARD') || routeFile.includes('isTokenFollowupPrompt'), 'route.ts still wires the token follow-up guard')
 }
 
 console.log('test-clark-execution.mjs: all assertions passed')

@@ -559,7 +559,7 @@ type ClarkToolPlan = {
   };
 };
 
-type ClarkSource = "casual" | "feature_context" | "tool_call" | "fallback" | "token_core" | "wallet_scanner_runner";
+type ClarkSource = "casual" | "feature_context" | "tool_call" | "fallback" | "token_core" | "wallet_scanner_runner" | "memory";
 type ClarkReplyMode =
   | "casual_help"
   | "general_market"
@@ -6330,6 +6330,33 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const analysis = formatWalletCompareUnsupported({ addressA, addressB, walletScannerDeepLink });
     updateMemIntent(sessionMem, "wallet_compare_request");
     return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_compare", toolsUsed: [], ui: { intentBadge: 'Wallet Compare', actions: [{ label: 'Open Wallet Scanner', href: '/terminal/wallet-scanner' }] }, analysis };
+  }
+
+  // ─── Wallet memory follow-ups (holdings/chains/deep-scan-advice/evidence-gaps/risk/quality/summary) ───
+  // classifyClarkPrompt() collapses every wallet follow-up phrasing into the single
+  // "wallet_pnl_followup" intent, which would otherwise hijack non-PnL questions like
+  // "top holdings", "what chains is it active on", and "should I deep scan" into the PnL-only
+  // branch below (and, for "deep scan", trigger a real re-scan instead of cached advice). Resolve
+  // every non-PnL wallet follow-up kind straight from session memory here, before that happens —
+  // it must never call the wallet scanner runner, never consume quota, and never fall through to
+  // token-scan routing.
+  if (sessionMem.lastWallet?.address && !routedClassification.address && isWalletFollowupPrompt(prompt)) {
+    const walletFollowupKind = classifyWalletFollowupKind(prompt);
+    if (walletFollowupKind !== "wallet_pnl_explanation" && walletFollowupKind !== "wallet_profitability") {
+      const memResult = buildWalletMemoryResult(sessionMem.lastWallet);
+      if (memResult) {
+        const analysis = formatWalletFollowupFromMemory(sessionMem.lastWallet.address, memResult, walletFollowupKind);
+        updateMemIntent(sessionMem, walletFollowupKind);
+        return {
+          feature: "clark-ai", chain, mode: "analysis", intent: walletFollowupKind, toolsUsed: ["memory"],
+          source: "memory",
+          analysis,
+          intentBadge: walletFollowupKind,
+          actions: buildRoutedActions(walletFollowupKind === "wallet_deep_scan_advice" ? ["Deep Scan Wallet"] : ["Scan Wallet", "Deep Scan Wallet"]),
+          quotaConsumed: false,
+        };
+      }
+    }
   }
 
   // ─── Wallet PnL / history follow-up using lastWallet (no re-scan unless refresh/deep) ───
