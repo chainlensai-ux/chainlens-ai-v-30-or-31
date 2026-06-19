@@ -1,29 +1,32 @@
 import type { WalletSnapshot } from './walletSnapshot'
 
 // ---------------------------------------------------------------------------
-// Wallet Identity Engine V1 — deterministic archetype + score derived only from
-// evidence already produced elsewhere in this snapshot (no new fetches, no AI).
+// Wallet Profile V2 — deterministic category + portfolio/trading behavior
+// derived only from fields already present on WalletSnapshot (no new fetches,
+// no AI, no additional provider usage).
 // ---------------------------------------------------------------------------
+
+export type ProfileConfidence = 'low' | 'medium' | 'high'
 
 export type WalletProfile = {
   score: number | null
   grade: string | null
-  confidence: 'low' | 'medium' | 'high'
-  primaryArchetype: string | null
-  secondaryArchetype: string | null
+  profileColor: 'emerald' | 'green' | 'teal' | 'yellow' | 'orange' | 'red' | null
+  confidence: ProfileConfidence
+  walletCategory: string | null
+  portfolioBehavior: string | null
+  tradingBehavior: string | null
+  portfolioConfidence: ProfileConfidence
+  tradingConfidence: ProfileConfidence
   profileSummary: string | null
   signals: string[]
   reasons: string[]
+  strengths: string[]
+  weaknesses: string[]
+  followability: 'Low' | 'Moderate' | 'High'
+  nextAction: string
   evidenceCoverage: number
 }
-
-const WALLET_ARCHETYPES = [
-  'Whale', 'Mid-Cap Investor', 'Retail Investor',
-  'Active Trader', 'Swing Trader', 'Diamond Holder', 'Meme Hunter', 'Smart Money', 'Airdrop Farmer',
-] as const
-
-const CLASS_ARCHETYPES = ['Whale', 'Mid-Cap Investor', 'Retail Investor'] as const
-const BEHAVIOR_ARCHETYPES = ['Active Trader', 'Swing Trader', 'Diamond Holder', 'Meme Hunter', 'Smart Money', 'Airdrop Farmer'] as const
 
 function gradeForScore(score: number): string {
   if (score >= 90) return 'A+'
@@ -34,22 +37,54 @@ function gradeForScore(score: number): string {
   return 'F'
 }
 
+function colorForGrade(grade: string | null): WalletProfile['profileColor'] {
+  if (grade === 'A+') return 'emerald'
+  if (grade === 'A') return 'green'
+  if (grade === 'B') return 'teal'
+  if (grade === 'C') return 'yellow'
+  if (grade === 'D') return 'orange'
+  if (grade === 'F') return 'red'
+  return null
+}
+
 function clampPct(value: number): number {
   if (!Number.isFinite(value)) return 0
   return Math.min(100, Math.max(0, value))
 }
 
+function isLikelyMemeSymbol(symbol: string): boolean {
+  const s = symbol.trim().toUpperCase()
+  if (!s) return false
+  const exact = new Set(['SHIB', 'PEPE', 'KISHU', 'DOGE', 'FLOKI', 'BONK', 'WIF', 'MOG', 'TOSHI', 'BRETT', 'DEGEN', 'WOJAK', 'TURBO', 'LADYS', 'ELON', 'BABYDOGE', 'BNBTIGER'])
+  if (exact.has(s)) return true
+  return /DOGE|INU|SHIB|PEPE|FLOKI|BONK|WIF|MOG|CAT|FROG|TIGER|MOON|MEME/.test(s)
+}
+
+function isLargeCapSymbol(symbol: string): boolean {
+  return new Set(['BTC', 'WBTC', 'ETH', 'WETH', 'SOL', 'BNB', 'XRP', 'ADA', 'AVAX', 'LINK', 'MATIC', 'POL', 'OP', 'ARB']).has(symbol.trim().toUpperCase())
+}
+
+function isYieldSymbol(symbol: string): boolean {
+  return /^(A|C|Y|ST|WST|R)?(USDC|USDT|DAI|ETH|BTC)$/.test(symbol.trim().toUpperCase()) || /AAVE|COMP|MORPHO|PENDLE|VELO|AERO|CURVE|CRV|CVX|STETH|RETH|CBETH|WSTETH|SDAI|SUSDE|LP/.test(symbol.trim().toUpperCase())
+}
+
 export function computeWalletProfile(snapshot: WalletSnapshot): WalletProfile {
   const reasons: string[] = []
   const signals: string[] = []
+  const strengths: string[] = []
+  const weaknesses: string[] = []
 
   const totalValueUsd = Number.isFinite(snapshot.totalValue) ? snapshot.totalValue : 0
   const holdings = Array.isArray(snapshot.holdings) ? snapshot.holdings : []
   const holdingsCount = holdings.length
   const facts = snapshot.walletFacts
-  const chainExposure = facts?.summary?.chainExposure ?? []
-  const chainCount = chainExposure.length
-  const concentrationLabel = facts?.summary?.concentrationLabel ?? null
+  const summary = facts?.summary
+  const chainExposure = summary?.chainExposure ?? []
+  const chainCount = chainExposure.length || new Set(holdings.map((h) => h.chain).filter(Boolean)).size
+  const concentrationLabel = summary?.concentrationLabel ?? null
+  const stablecoinExposurePercent = summary?.stablecoinExposurePercent ?? 0
+  const nativeExposurePercent = summary?.nativeExposurePercent ?? 0
+  const topHoldings = summary?.topHoldings?.length ? summary.topHoldings : holdings.slice().sort((a, b) => (b.value ?? 0) - (a.value ?? 0)).slice(0, 10).map((h) => ({ symbol: h.symbol, chain: h.chain ?? 'unknown', valueUsd: h.value ?? 0, percent: totalValueUsd > 0 ? ((h.value ?? 0) / totalValueUsd) * 100 : 0 }))
 
   const tradeStats = snapshot.walletTradeStatsSummary
   const lotSummary = snapshot.walletLotSummary
@@ -57,21 +92,17 @@ export function computeWalletProfile(snapshot: WalletSnapshot): WalletProfile {
   const behavior = snapshot.walletBehavior
   const historicalCoverage = snapshot.walletHistoricalCoverageSummary
 
-  const closedLots = tradeStats?.closedLots ?? 0
+  const closedLots = tradeStats?.closedLots ?? lotSummary?.closedLots ?? 0
+  const openLots = lotSummary?.openedLots ?? 0
   const uniqueTokensTraded = tradeStats?.uniqueTokensTraded ?? 0
-  const turnoverRatio = closedLots > 0 ? uniqueTokensTraded / closedLots : 0
   const avgHoldHours = tradeStats?.avgHoldingTimeSeconds != null ? tradeStats.avgHoldingTimeSeconds / 3600 : null
   const winRatePercent = tradeStats?.winRatePercent ?? null
   const activeDays = behavior?.activeDays ?? null
   const tradesPerActiveDay = activeDays && activeDays > 0 ? closedLots / activeDays : null
   const realizedPnlUsd = estimatedPnl?.realizedPnlUsd ?? lotSummary?.realizedPnlUsd ?? null
   const unrealizedPnlUsd = estimatedPnl?.unrealizedPnlUsd ?? null
-  const sourceClassification = (facts as unknown as { sourceClassification?: { claimOrAirdropLikeTxs?: number; swapLikeTxs?: number } } | undefined)?.sourceClassification
-  const airdropLikeTxs = sourceClassification?.claimOrAirdropLikeTxs ?? null
-  const swapLikeTxs = sourceClassification?.swapLikeTxs ?? null
 
-  // --- Evidence coverage: how much of the underlying evidence pipeline actually completed ---
-  const coverageChecks: Array<boolean> = [
+  const coverageChecks = [
     holdingsCount > 0,
     Boolean(facts && facts.status !== 'open_check'),
     Boolean(tradeStats && tradeStats.status !== 'open_check'),
@@ -79,154 +110,128 @@ export function computeWalletProfile(snapshot: WalletSnapshot): WalletProfile {
     Boolean(behavior && behavior.status !== 'unavailable'),
   ]
   const evidenceCoverage = Math.round((coverageChecks.filter(Boolean).length / coverageChecks.length) * 100)
+  const hasHoldings = holdingsCount > 0
+  const tradeEvidenceStrong = closedLots >= 3 && tradeStats?.economicSignificance === 'meaningful'
+  const tradeEvidenceWeak = closedLots > 0 || uniqueTokensTraded > 0 || tradeStats?.status === 'partial'
 
-  const hasMeaningfulTradeHistory = closedLots >= 3 && tradeStats?.economicSignificance === 'meaningful'
-  const hasAnyHoldings = holdingsCount > 0
-
-  if (!hasAnyHoldings) {
-    reasons.push('No priced holdings available for this wallet — cannot classify or score.')
+  let walletCategory: string | null = null
+  if (hasHoldings) {
+    if (totalValueUsd >= 250000) walletCategory = 'Whale'
+    else if (totalValueUsd >= 10000) walletCategory = 'Mid Portfolio'
+    else walletCategory = 'Small Portfolio'
+    signals.push(`Category "${walletCategory}": portfolio value $${Math.round(totalValueUsd).toLocaleString()} across ${holdingsCount} holdings.`)
+  } else {
+    reasons.push('No priced holdings available — wallet category and portfolio behavior withheld.')
   }
 
-  // --- Phase 1: archetype classification (deterministic, evidence-gated) ---
-  type Archetype = typeof WALLET_ARCHETYPES[number]
-  type Candidate = { archetype: Archetype; weight: number; reason: string }
-  const classCandidates: Candidate[] = []
-  const behaviorCandidates: Candidate[] = []
+  type Candidate = { label: string; weight: number; reason: string; confidence: ProfileConfidence }
+  const portfolioCandidates: Candidate[] = []
+  const tradingCandidates: Candidate[] = []
 
-  if (hasMeaningfulTradeHistory) {
-    if (winRatePercent != null && winRatePercent >= 55 && (tradeStats?.confidence === 'high' || tradeStats?.confidence === 'medium')) {
-      const weight = winRatePercent + (tradeStats?.confidence === 'high' ? 10 : 0)
-      behaviorCandidates.push({ archetype: 'Smart Money', weight, reason: `Win rate ${winRatePercent.toFixed(1)}% across ${closedLots} closed trades with ${tradeStats?.confidence} confidence.` })
-    }
-    if (avgHoldHours != null && avgHoldHours < 6 && (tradesPerActiveDay ?? 0) >= 1) {
-      behaviorCandidates.push({ archetype: 'Active Trader', weight: 60 + Math.min(40, (tradesPerActiveDay ?? 0) * 10), reason: `Average hold time ${avgHoldHours.toFixed(1)}h with ${(tradesPerActiveDay ?? 0).toFixed(1)} trades/active day.` })
-    } else if (avgHoldHours != null && avgHoldHours >= 24 && avgHoldHours < 24 * 30) {
-      behaviorCandidates.push({ archetype: 'Swing Trader', weight: 50 + Math.min(30, turnoverRatio * 30), reason: `Average hold time ${(avgHoldHours / 24).toFixed(1)} days with ${uniqueTokensTraded} unique tokens traded.` })
-    }
-    if (turnoverRatio >= 0.6 && holdingsCount > 0 && concentrationLabel === 'high') {
-      behaviorCandidates.push({ archetype: 'Meme Hunter', weight: 50 + turnoverRatio * 40, reason: `High position concentration (${concentrationLabel}) combined with high token turnover (${(turnoverRatio * 100).toFixed(0)}%).` })
-    }
-  } else if (closedLots > 0) {
-    reasons.push(`Trade history present but below the meaningful-significance threshold (${tradeStats?.economicSignificanceReason ?? 'insufficient sample'}) — trading archetypes withheld.`)
+  if (hasHoldings) {
+    const memeHoldings = topHoldings.filter((h) => isLikelyMemeSymbol(h.symbol))
+    const memeExposure = topHoldings.filter((h) => isLikelyMemeSymbol(h.symbol)).reduce((sum, h) => sum + (h.percent ?? 0), 0)
+    const largeCapExposure = topHoldings.filter((h) => isLargeCapSymbol(h.symbol)).reduce((sum, h) => sum + (h.percent ?? 0), 0) + nativeExposurePercent
+    const yieldExposure = topHoldings.filter((h) => isYieldSymbol(h.symbol)).reduce((sum, h) => sum + (h.percent ?? 0), 0)
+    const largestPercent = topHoldings[0]?.percent ?? 0
+
+    if (memeHoldings.length >= 2 || memeExposure >= 20) portfolioCandidates.push({ label: 'Meme Speculator', weight: 80 + memeHoldings.length * 5 + memeExposure, confidence: memeHoldings.length >= 3 || memeExposure >= 35 ? 'high' : 'medium', reason: `${memeHoldings.length} meme/speculative top holdings${memeExposure > 0 ? ` with ~${memeExposure.toFixed(0)}% top-holding exposure` : ''}.` })
+    if (stablecoinExposurePercent >= 45) portfolioCandidates.push({ label: 'Stablecoin Heavy', weight: stablecoinExposurePercent, confidence: stablecoinExposurePercent >= 65 ? 'high' : 'medium', reason: `Stablecoin exposure is ${stablecoinExposurePercent.toFixed(0)}% of portfolio value.` })
+    if (chainCount >= 3) portfolioCandidates.push({ label: 'Multi-Chain Portfolio Manager', weight: 65 + chainCount * 8, confidence: chainCount >= 4 && holdingsCount >= 10 ? 'high' : 'medium', reason: `Exposure spans ${chainCount} chains across ${holdingsCount} holdings.` })
+    if (holdingsCount >= 10 && concentrationLabel === 'balanced') portfolioCandidates.push({ label: 'Diversified Holder', weight: 70 + holdingsCount, confidence: 'high', reason: `Balanced concentration with ${holdingsCount} holdings.` })
+    if (largestPercent >= 55 || concentrationLabel === 'high') portfolioCandidates.push({ label: 'Conviction Holder', weight: 60 + largestPercent, confidence: largestPercent >= 70 ? 'high' : 'medium', reason: `Largest position is ${largestPercent.toFixed(0)}% and concentration is ${concentrationLabel ?? 'unknown'}.` })
+    if (largeCapExposure >= 50) portfolioCandidates.push({ label: 'Large Cap Holder', weight: largeCapExposure, confidence: largeCapExposure >= 70 ? 'high' : 'medium', reason: `Large-cap/native exposure is approximately ${largeCapExposure.toFixed(0)}%.` })
+    if (yieldExposure >= 25) portfolioCandidates.push({ label: 'Yield-Seeking Portfolio', weight: yieldExposure, confidence: yieldExposure >= 45 ? 'high' : 'medium', reason: `Yield/staked/LP-like symbols represent approximately ${yieldExposure.toFixed(0)}% of top holdings.` })
+    if (stablecoinExposurePercent >= 25 && largeCapExposure >= 25 && holdingsCount >= 5 && (concentrationLabel === 'balanced' || concentrationLabel === 'medium')) portfolioCandidates.push({ label: 'Treasury Style Portfolio', weight: stablecoinExposurePercent + largeCapExposure, confidence: 'medium', reason: `Stablecoin plus large-cap exposure with ${concentrationLabel} concentration suggests treasury-style allocation.` })
   }
 
-  if (hasAnyHoldings) {
-    if (totalValueUsd >= 250000) {
-      classCandidates.push({ archetype: 'Whale', weight: 70 + Math.min(30, Math.log10(totalValueUsd / 250000 + 1) * 30), reason: `Portfolio value $${Math.round(totalValueUsd).toLocaleString()} exceeds the whale threshold.` })
-    } else if (totalValueUsd >= 10000) {
-      classCandidates.push({ archetype: 'Mid-Cap Investor', weight: 60 + Math.min(30, Math.log10(totalValueUsd / 10000 + 1) * 20), reason: `Portfolio value $${Math.round(totalValueUsd).toLocaleString()} fits the mid-cap investor range.` })
-    } else {
-      classCandidates.push({ archetype: 'Retail Investor', weight: 50 + Math.min(25, Math.log10(totalValueUsd + 1) * 5), reason: `Portfolio value $${Math.round(totalValueUsd).toLocaleString()} fits the retail investor range.` })
-    }
+  portfolioCandidates.sort((a, b) => b.weight - a.weight)
+  const portfolio = portfolioCandidates[0] ?? null
+  const portfolioBehavior = portfolio?.label ?? null
+  const portfolioConfidence = portfolio?.confidence ?? 'low'
+  if (portfolio) {
+    signals.push(`Portfolio behavior "${portfolio.label}": ${portfolio.reason}`)
+    reasons.push(`Portfolio behavior assigned without requiring closed lots: ${portfolio.reason}`)
+  } else if (hasHoldings) {
+    reasons.push('Portfolio behavior not classified — holdings, concentration, chain, stablecoin, meme, yield, and large-cap evidence did not meet a supported behavior threshold.')
   }
 
-  if (avgHoldHours != null && avgHoldHours >= 24 * 90 && turnoverRatio < 0.2 && closedLots > 0) {
-    behaviorCandidates.push({ archetype: 'Diamond Holder', weight: 50 + Math.min(40, (avgHoldHours / (24 * 90)) * 10), reason: `Average hold time ${(avgHoldHours / 24).toFixed(0)} days with minimal turnover (${(turnoverRatio * 100).toFixed(0)}%).` })
-  } else if (closedLots === 0 && hasAnyHoldings && (activeDays ?? 0) > 30) {
-    behaviorCandidates.push({ archetype: 'Diamond Holder', weight: 40, reason: `No closed trades over ${activeDays} active days — holdings appear long-held rather than traded.` })
+  if (tradeEvidenceStrong) {
+    if (winRatePercent != null && winRatePercent >= 55 && (tradeStats?.confidence === 'high' || tradeStats?.confidence === 'medium')) tradingCandidates.push({ label: 'Smart Money Candidate', weight: winRatePercent + (tradeStats.confidence === 'high' ? 10 : 0), confidence: tradeStats.confidence, reason: `Win rate ${winRatePercent.toFixed(1)}% across ${closedLots} meaningful closed trades.` })
+    if (avgHoldHours != null && avgHoldHours < 24 && (tradesPerActiveDay ?? 0) >= 2) tradingCandidates.push({ label: 'Day Trader', weight: 85, confidence: 'high', reason: `Average hold time ${avgHoldHours.toFixed(1)}h with ${(tradesPerActiveDay ?? 0).toFixed(1)} trades/active day.` })
+    if (avgHoldHours != null && avgHoldHours < 72 && (tradesPerActiveDay ?? 0) >= 0.5) tradingCandidates.push({ label: 'Active Trader', weight: 75, confidence: 'medium', reason: `Closed-lot cadence shows frequent realized trading across ${closedLots} lots.` })
+    if (avgHoldHours != null && avgHoldHours >= 24 && avgHoldHours < 24 * 30) tradingCandidates.push({ label: 'Swing Trader', weight: 70, confidence: 'medium', reason: `Average hold time ${(avgHoldHours / 24).toFixed(1)} days across ${closedLots} closed trades.` })
+    if (uniqueTokensTraded >= 5 && openLots > 0) tradingCandidates.push({ label: 'Position Rotator', weight: 65 + uniqueTokensTraded, confidence: 'medium', reason: `${uniqueTokensTraded} unique traded tokens with ${openLots} currently open lots.` })
+  } else if (tradeEvidenceWeak) {
+    reasons.push(`Trading behavior not classified — trade evidence exists but is weak (${tradeStats?.economicSignificanceReason ?? 'insufficient meaningful closed-lot sample'}).`)
+  } else {
+    reasons.push('Trading behavior not classified — no meaningful closed-lot/trade evidence is available in the current snapshot.')
   }
 
-  if (airdropLikeTxs != null && airdropLikeTxs >= 3 && swapLikeTxs != null && airdropLikeTxs > swapLikeTxs) {
-    behaviorCandidates.push({ archetype: 'Airdrop Farmer', weight: 40 + Math.min(30, airdropLikeTxs), reason: `${airdropLikeTxs} claim/airdrop-like transactions detected, exceeding swap-like activity.` })
+  tradingCandidates.sort((a, b) => b.weight - a.weight)
+  const trading = tradingCandidates[0] ?? null
+  const tradingBehavior = trading?.label ?? null
+  const tradingConfidence = trading?.confidence ?? 'low'
+  if (trading) {
+    signals.push(`Trading behavior "${trading.label}": ${trading.reason}`)
+    reasons.push(`Trading behavior assigned from verified trade evidence: ${trading.reason}`)
   }
 
-  if (classCandidates.length === 0 && behaviorCandidates.length === 0 && hasAnyHoldings) {
-    reasons.push('Available evidence does not match any archetype heuristic with sufficient confidence.')
-  }
-
-  classCandidates.sort((a, b) => b.weight - a.weight)
-  behaviorCandidates.sort((a, b) => b.weight - a.weight)
-  const primaryArchetype = classCandidates.find((candidate) => (CLASS_ARCHETYPES as readonly string[]).includes(candidate.archetype))?.archetype ?? null
-  const secondaryArchetype = behaviorCandidates.find((candidate) => (BEHAVIOR_ARCHETYPES as readonly string[]).includes(candidate.archetype))?.archetype ?? null
-  if (primaryArchetype) {
-    const primaryCandidate = classCandidates.find((candidate) => candidate.archetype === primaryArchetype)
-    if (primaryCandidate) {
-      signals.push(primaryCandidate.reason)
-      reasons.push(`Primary archetype "${primaryArchetype}": ${primaryCandidate.reason}`)
-    }
-  }
-  if (secondaryArchetype) {
-    const secondaryCandidate = behaviorCandidates.find((candidate) => candidate.archetype === secondaryArchetype)
-    if (secondaryCandidate) {
-      signals.push(secondaryCandidate.reason)
-      reasons.push(`Secondary archetype "${secondaryArchetype}": ${secondaryCandidate.reason}`)
-    }
-  }
-
-  // --- Phase 2: weighted wallet score ---
   let score: number | null = null
   let grade: string | null = null
-  let confidence: 'low' | 'medium' | 'high' = 'low'
-
-  const sufficientEvidence = hasAnyHoldings && evidenceCoverage >= 40
-
+  let confidence: ProfileConfidence = 'low'
+  const sufficientEvidence = hasHoldings && evidenceCoverage >= 40
   if (!sufficientEvidence) {
     reasons.push(`Evidence coverage too low (${evidenceCoverage}%) to produce a reliable wallet score.`)
   } else {
-    const portfolioQuality = clampPct(
-      (totalValueUsd > 0 ? Math.min(100, Math.log10(totalValueUsd + 1) * 20) : 0)
-    )
-    const diversification = clampPct(
-      (concentrationLabel === 'balanced' ? 80 : concentrationLabel === 'medium' ? 55 : concentrationLabel === 'high' ? 25 : 50) +
-      Math.min(20, holdingsCount * 2)
-    )
-    const activityQuality = clampPct(
-      closedLots === 0 ? 40 :
-      tradeStats?.economicSignificance === 'meaningful' ? 60 + Math.min(40, closedLots * 2) :
-      30
-    )
-    const pnlQuality = clampPct(
-      estimatedPnl?.status !== 'ok' ? 30 :
-      (winRatePercent != null ? winRatePercent : 50) * 0.7 +
-      ((realizedPnlUsd ?? 0) + (unrealizedPnlUsd ?? 0) > 0 ? 30 : 10)
-    )
+    const portfolioQuality = clampPct(totalValueUsd > 0 ? Math.min(100, Math.log10(totalValueUsd + 1) * 20) : 0)
+    const diversification = clampPct((concentrationLabel === 'balanced' ? 80 : concentrationLabel === 'medium' ? 55 : concentrationLabel === 'high' ? 25 : 50) + Math.min(20, holdingsCount * 2))
+    const activityQuality = clampPct(closedLots === 0 ? 40 : tradeStats?.economicSignificance === 'meaningful' ? 60 + Math.min(40, closedLots * 2) : 30)
+    const pnlQuality = clampPct(estimatedPnl?.status !== 'ok' ? 30 : (winRatePercent ?? 50) * 0.7 + ((realizedPnlUsd ?? 0) + (unrealizedPnlUsd ?? 0) > 0 ? 30 : 10))
     const chainIntelligence = clampPct(40 + Math.min(60, chainCount * 20))
-
-    const weighted =
-      portfolioQuality * 0.25 +
-      diversification * 0.15 +
-      activityQuality * 0.20 +
-      pnlQuality * 0.25 +
-      chainIntelligence * 0.15
-
-    score = Math.round(clampPct(weighted))
+    score = Math.round(clampPct(portfolioQuality * 0.25 + diversification * 0.15 + activityQuality * 0.20 + pnlQuality * 0.25 + chainIntelligence * 0.15))
     grade = gradeForScore(score)
-
-    const highConfidenceInputs = [
-      tradeStats?.confidence === 'high',
-      estimatedPnl?.status === 'ok' && estimatedPnl?.confidence === 'high',
-      (historicalCoverage?.coverageLevel === 'medium' || historicalCoverage?.coverageLevel === 'deep'),
-    ].filter(Boolean).length
-
-    if (evidenceCoverage >= 80 && highConfidenceInputs >= 2) confidence = 'high'
-    else if (evidenceCoverage >= 55) confidence = 'medium'
+    const highConfidenceInputs = [portfolioConfidence === 'high', tradingConfidence === 'high', estimatedPnl?.status === 'ok' && estimatedPnl?.confidence === 'high', historicalCoverage?.coverageLevel === 'medium' || historicalCoverage?.coverageLevel === 'deep'].filter(Boolean).length
+    if (portfolioConfidence === 'high' && evidenceCoverage >= 60 && highConfidenceInputs >= 1) confidence = 'high'
+    else if (portfolioBehavior || evidenceCoverage >= 55) confidence = 'medium'
     else confidence = 'low'
-
     signals.push(`Wallet score ${score}/100 (grade ${grade}) from portfolio quality, diversification, activity quality, PnL quality, and chain intelligence.`)
   }
 
-  // --- Phase 3: deterministic profile summary ---
-  let profileSummary: string | null = null
-  if (sufficientEvidence && score != null) {
-    const chainPart = chainCount > 1 ? `multi-chain (${chainCount} chains)` : chainCount === 1 ? `${chainExposure[0]?.chain ?? 'single-chain'}` : 'wallet'
-    const concentrationPart = concentrationLabel === 'high' ? 'concentrated positions' : concentrationLabel === 'balanced' ? 'diversified positions' : 'mixed positions'
-    const archetypePart = primaryArchetype ? `${primaryArchetype.toLowerCase()} wallet` : 'wallet'
-    const activityPart = closedLots > 0 ? `active portfolio rotation across ${closedLots} closed trades` : 'a low-turnover holding pattern'
-    profileSummary = `${chainPart} ${archetypePart} with ${concentrationPart} and ${activityPart}.`
-    profileSummary = profileSummary.charAt(0).toUpperCase() + profileSummary.slice(1)
-  } else {
-    profileSummary = null
-  }
+  if (portfolioBehavior) strengths.push(`${portfolioBehavior} supported by current holdings/portfolio evidence.`)
+  if (tradingBehavior) strengths.push(`${tradingBehavior} supported by closed-lot/trade evidence.`)
+  if (chainCount >= 3) strengths.push(`Multi-chain exposure across ${chainCount} chains.`)
+  if (tradingConfidence === 'low') weaknesses.push('Trading confidence is low because meaningful verified trade evidence is missing or weak.')
+  if (!portfolioBehavior) weaknesses.push('Portfolio behavior is unclassified because supported portfolio thresholds were not met.')
+  if (concentrationLabel === 'high') weaknesses.push('Portfolio concentration is high.')
+  if (!hasHoldings) weaknesses.push('No priced holdings were available in this snapshot.')
+
+  const followability: WalletProfile['followability'] = tradingBehavior && tradingConfidence !== 'low' && score != null && score >= 70 ? 'High' : portfolioBehavior && score != null && score >= 55 ? 'Moderate' : 'Low'
+  const nextAction = tradingConfidence === 'low'
+    ? 'Use this profile for portfolio read only; wait for stronger trade/PnL evidence before copying trades.'
+    : 'Monitor future realized trades and position changes before following.'
+
+  const profileSummary = sufficientEvidence
+    ? `${chainCount > 1 ? `Multi-chain (${chainCount} chains)` : 'Single-chain'} ${walletCategory?.toLowerCase() ?? 'wallet'}${portfolioBehavior ? ` with ${portfolioBehavior.toLowerCase()} portfolio behavior` : ''}${tradingBehavior ? ` and ${tradingBehavior.toLowerCase()} trading behavior` : '; trading behavior not yet classified'}.`
+    : null
 
   return {
     score,
     grade,
+    profileColor: colorForGrade(grade),
     confidence,
-    primaryArchetype,
-    secondaryArchetype,
+    walletCategory,
+    portfolioBehavior,
+    tradingBehavior,
+    portfolioConfidence,
+    tradingConfidence,
     profileSummary,
     signals,
     reasons,
+    strengths,
+    weaknesses,
+    followability,
+    nextAction,
     evidenceCoverage,
   }
 }

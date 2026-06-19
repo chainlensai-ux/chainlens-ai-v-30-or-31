@@ -1780,7 +1780,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   const profileOut = formatWalletFollowupFromMemory(seqAddr, seqWalletMem, 'wallet_profile')
   assert.ok(profileOut.startsWith('WALLET PROFILE'), 'wallet profile follow-up starts with WALLET PROFILE')
   assert.ok(profileOut.includes('Followability:'), 'wallet profile includes Followability')
-  assert.ok(profileOut.includes('Next action:'), 'wallet profile includes Next action')
+  assert.ok(profileOut.includes('Next Action:'), 'wallet profile includes Next Action')
 
   // Explicit token scan with an address must still route token, never wallet memory.
   const { classifyClarkPrompt: classifyForSeq, isTokenFollowupPrompt: isTokenFollowupForSeq } = await import('../lib/server/clarkRouting.ts')
@@ -2080,7 +2080,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.equal(crossSurfaceScan.intent, 'token_scan', 'cross-surface: explicit token scan still classifies as token_scan regardless of which surface sent it')
 }
 
-// ─── Wallet Identity Engine V1 — deterministic archetype + score from existing evidence only ───
+// ─── Wallet Profile V2 — deterministic category + portfolio/trading behavior from existing evidence only ───
 {
   const { computeWalletProfile } = await import('../lib/server/walletIdentity.ts')
 
@@ -2106,13 +2106,14 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.equal(weakProfile.grade, null, 'low-coverage wallet gets grade: null')
   assert.equal(weakProfile.confidence, 'low', 'low-coverage wallet gets confidence: low')
   assert.ok(weakProfile.reasons.length > 0, 'low-coverage wallet explains itself via reasons[]')
-  assert.equal(weakProfile.primaryArchetype, null, 'low-coverage wallet does not guess an archetype')
+  assert.equal(weakProfile.tradingBehavior, null, 'low-coverage wallet does not guess trading behavior')
+  assert.ok('portfolioConfidence' in weakProfile && 'tradingConfidence' in weakProfile, 'walletProfile splits portfolio/trading confidence')
 
   // 3) Archetypes are deterministic — same input always produces the same output.
   const repeat = computeWalletProfile(baseSnapshot)
   assert.deepEqual(repeat, weakProfile, 'computeWalletProfile is deterministic for identical input')
 
-  // 4) Strong, evidence-rich wallet: high win rate + meaningful sample -> Smart Money + non-null score.
+  // 4) Strong, evidence-rich wallet: high win rate + meaningful sample -> Smart Money Candidate trading behavior + non-null score.
   const strongSnapshot = {
     ...baseSnapshot,
     totalValue: 8000,
@@ -2129,7 +2130,9 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   const strongProfile = computeWalletProfile(strongSnapshot)
   assert.notEqual(strongProfile.score, null, 'evidence-rich wallet receives a numeric score')
   assert.ok(typeof strongProfile.grade === 'string', 'evidence-rich wallet receives a letter grade')
-  assert.equal(strongProfile.primaryArchetype, 'Smart Money', 'high win-rate + meaningful sample classifies as Smart Money')
+  assert.equal(strongProfile.tradingBehavior, 'Smart Money Candidate', 'high win-rate + meaningful sample classifies as Smart Money Candidate trading behavior')
+  assert.equal(strongProfile.portfolioBehavior, 'Stablecoin Heavy', 'portfolio behavior is classified from holdings without requiring closed lots')
+  assert.equal(strongProfile.walletCategory, 'Small Portfolio', 'wallet category is separate from portfolio/trading behavior')
 
   // 5) Wallet score is stable for re-computation on an unchanged snapshot.
   const strongRepeat = computeWalletProfile(strongSnapshot)

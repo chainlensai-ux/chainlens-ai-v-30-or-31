@@ -352,12 +352,20 @@ type WalletResult = {
   walletProfile?: {
     score: number | null
     grade: string | null
+    profileColor: 'emerald' | 'green' | 'teal' | 'yellow' | 'orange' | 'red' | null
     confidence: 'low' | 'medium' | 'high'
-    primaryArchetype: string | null
-    secondaryArchetype: string | null
+    walletCategory: string | null
+    portfolioBehavior: string | null
+    tradingBehavior: string | null
+    portfolioConfidence: 'low' | 'medium' | 'high'
+    tradingConfidence: 'low' | 'medium' | 'high'
     profileSummary: string | null
     signals: string[]
     reasons: string[]
+    strengths: string[]
+    weaknesses: string[]
+    followability: 'Low' | 'Moderate' | 'High'
+    nextAction: string
     evidenceCoverage: number
   } | null
   walletFacts?: {
@@ -1493,8 +1501,9 @@ export default function WalletScannerPage() {
             const hasCortexFacts = Boolean(result.walletFacts)
             const showLegacyPortfolioCards = !(hasPortfolioIntelligence && hasCortexFacts)
             const walletProfileGradeTone = gradeToneFor(result.walletProfile?.grade)
-            const primaryWalletArchetype = cleanWalletArchetype(result.walletProfile?.primaryArchetype)
-            const secondaryWalletArchetype = cleanWalletArchetype(result.walletProfile?.secondaryArchetype)
+            const walletCategory = cleanWalletArchetype(result.walletProfile?.walletCategory)
+            const portfolioBehavior = cleanWalletArchetype(result.walletProfile?.portfolioBehavior)
+            const tradingBehavior = cleanWalletArchetype(result.walletProfile?.tradingBehavior)
             return (
             <div className="ws-result-fade" style={{ maxWidth: '100%', width: '100%', display: 'flex', flexDirection: 'column', gap: '20px', marginTop: '28px' }}>
 
@@ -1528,18 +1537,26 @@ export default function WalletScannerPage() {
                         <div style={{ display: 'inline-flex', alignItems: 'center', borderRadius: '999px', border: `1px solid ${walletProfileGradeTone.border}`, background: walletProfileGradeTone.bg, color: walletProfileGradeTone.color, padding: '4px 11px', fontSize: '22px', fontWeight: 700, lineHeight: 1 }}>{result.walletProfile.grade}</div>
                       </div>
                       <div>
-                        <div style={{ fontSize: '11px', color: '#94a3b8' }}>Confidence</div>
-                        <div style={{ fontSize: '14px', fontWeight: 600, color: '#c4b5fd', textTransform: 'capitalize' }}>{result.walletProfile.confidence}</div>
+                        <div style={{ fontSize: '11px', color: '#94a3b8' }}>Portfolio Confidence</div>
+                        <div style={{ fontSize: '14px', fontWeight: 600, color: '#c4b5fd', textTransform: 'capitalize' }}>{result.walletProfile.portfolioConfidence}</div>
+                      </div>
+                      <div>
+                        <div style={{ fontSize: '11px', color: '#94a3b8' }}>Trading Confidence</div>
+                        <div style={{ fontSize: '14px', fontWeight: 600, color: '#c4b5fd', textTransform: 'capitalize' }}>{result.walletProfile.tradingConfidence}</div>
                       </div>
                     </div>
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: '20px' }}>
                       <div>
-                        <div style={{ fontSize: '11px', color: '#94a3b8' }}>Primary Archetype</div>
-                        <div style={{ display: 'inline-flex', alignItems: 'center', borderRadius: '999px', border: '1px solid rgba(148,163,184,0.24)', background: 'rgba(148,163,184,0.08)', padding: '4px 10px', fontSize: '14px', color: '#f1f5f9' }}>{primaryWalletArchetype ?? 'None Detected'}</div>
+                        <div style={{ fontSize: '11px', color: '#94a3b8' }}>Category</div>
+                        <div style={{ display: 'inline-flex', alignItems: 'center', borderRadius: '999px', border: '1px solid rgba(148,163,184,0.24)', background: 'rgba(148,163,184,0.08)', padding: '4px 10px', fontSize: '14px', color: '#f1f5f9' }}>{walletCategory ?? 'Not Yet Classified'}</div>
                       </div>
                       <div>
-                        <div style={{ fontSize: '11px', color: '#94a3b8' }}>Secondary Archetype</div>
-                        <div style={{ display: 'inline-flex', alignItems: 'center', borderRadius: '999px', border: '1px solid rgba(45,212,191,0.30)', background: 'rgba(45,212,191,0.10)', padding: '4px 10px', fontSize: '14px', fontWeight: 600, color: '#5eead4' }}>{secondaryWalletArchetype ?? 'None Detected'}</div>
+                        <div style={{ fontSize: '11px', color: '#94a3b8' }}>Portfolio Behavior</div>
+                        <div style={{ display: 'inline-flex', alignItems: 'center', borderRadius: '999px', border: '1px solid rgba(45,212,191,0.30)', background: 'rgba(45,212,191,0.10)', padding: '4px 10px', fontSize: '14px', fontWeight: 600, color: '#5eead4' }}>{portfolioBehavior ?? 'Not Yet Classified'}</div>
+                      </div>
+                      <div>
+                        <div style={{ fontSize: '11px', color: '#94a3b8' }}>Trading Behavior</div>
+                        <div style={{ display: 'inline-flex', alignItems: 'center', borderRadius: '999px', border: '1px solid rgba(125,211,252,0.28)', background: 'rgba(125,211,252,0.08)', padding: '4px 10px', fontSize: '14px', fontWeight: 600, color: '#7dd3fc' }}>{tradingBehavior ?? 'Insufficient Evidence'}</div>
                       </div>
                     </div>
                     {result.walletProfile.profileSummary && (
@@ -1564,7 +1581,7 @@ export default function WalletScannerPage() {
                   </div>
                 ) : (
                   <div style={{ fontSize: '13px', color: '#94a3b8' }}>
-                    Open Check — Insufficient evidence to score or classify this wallet yet.
+                    Insufficient evidence to score or classify this wallet yet.
                     {result.walletProfile?.reasons?.[0] && <div style={{ marginTop: '6px', fontSize: '12px', color: '#64748b' }}>{result.walletProfile.reasons[0]}</div>}
                   </div>
                 )}

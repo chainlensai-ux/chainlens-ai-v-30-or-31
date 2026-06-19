@@ -2832,47 +2832,46 @@ function buildWalletProfileBlock(walletProfile: Record<string, unknown> | null |
   if (!walletProfile) return null;
   const score = typeof walletProfile.score === "number" ? walletProfile.score : null;
   const grade = typeof walletProfile.grade === "string" ? walletProfile.grade : null;
-  const confidence = typeof walletProfile.confidence === "string" ? walletProfile.confidence : "low";
-  const primary = typeof walletProfile.primaryArchetype === "string" ? walletProfile.primaryArchetype : null;
-  const secondary = typeof walletProfile.secondaryArchetype === "string" ? walletProfile.secondaryArchetype : null;
-  const summary = typeof walletProfile.profileSummary === "string" ? walletProfile.profileSummary : null;
+  const category = typeof walletProfile.walletCategory === "string" ? walletProfile.walletCategory : null;
+  const portfolioBehavior = typeof walletProfile.portfolioBehavior === "string" ? walletProfile.portfolioBehavior : null;
+  const tradingBehavior = typeof walletProfile.tradingBehavior === "string" ? walletProfile.tradingBehavior : null;
+  const portfolioConfidence = typeof walletProfile.portfolioConfidence === "string" ? walletProfile.portfolioConfidence : "low";
+  const tradingConfidence = typeof walletProfile.tradingConfidence === "string" ? walletProfile.tradingConfidence : "low";
   const signals = Array.isArray(walletProfile.signals) ? (walletProfile.signals as unknown[]).filter((s): s is string => typeof s === "string") : [];
   const reasons = Array.isArray(walletProfile.reasons) ? (walletProfile.reasons as unknown[]).filter((s): s is string => typeof s === "string") : [];
-  const confidenceLabel = confidence.charAt(0).toUpperCase() + confidence.slice(1);
-  const cleanArchetype = (value: string | null): string | null => {
-    const normalized = value?.trim() ?? "";
-    if (!normalized || normalized === "null" || normalized === "undefined" || normalized === "Open Check") return null;
-    return normalized;
-  };
-  const primaryType = cleanArchetype(primary);
-  const secondaryType = cleanArchetype(secondary);
+  const strengths = Array.isArray(walletProfile.strengths) ? (walletProfile.strengths as unknown[]).filter((s): s is string => typeof s === "string") : [];
+  const weaknesses = Array.isArray(walletProfile.weaknesses) ? (walletProfile.weaknesses as unknown[]).filter((s): s is string => typeof s === "string") : [];
+  const followability = typeof walletProfile.followability === "string" ? walletProfile.followability : "Low";
+  const nextAction = typeof walletProfile.nextAction === "string" ? walletProfile.nextAction : "Wait for stronger evidence before following.";
+  const why = signals.length ? signals : reasons;
 
-  if (score == null || grade == null) {
-    const reasonLine = reasons[0] ?? "Insufficient evidence to score this wallet.";
-    return [
-      "WALLET PROFILE",
-      "",
-      "Wallet Score: Open Check",
-      `Confidence: ${confidenceLabel}`,
-      "",
-      `Reason: ${reasonLine}`,
-    ].join("\n");
-  }
-
-  const lines = [
+  return [
     "WALLET PROFILE",
     "",
-    `Wallet Score: ${score}`,
-    `Grade: ${grade}`,
+    `Category: ${category ?? "Not Yet Classified"}`,
     "",
-    `Primary Type: ${primaryType ?? "None Detected"}`,
-    `Secondary Type: ${secondaryType ?? "None Detected"}`,
+    `Portfolio Behavior: ${portfolioBehavior ?? "Not Yet Classified"}`,
     "",
-    `Confidence: ${confidenceLabel}`,
-  ];
-  if (summary) lines.push("", "Summary:", summary);
-  if (signals.length > 0) lines.push("", "Signals:", ...signals.map((s) => `- ${s}`));
-  return lines.join("\n");
+    `Trading Behavior: ${tradingBehavior ?? "Insufficient Evidence"}`,
+    "",
+    `Portfolio Confidence: ${portfolioConfidence}`,
+    "",
+    `Trading Confidence: ${tradingConfidence}`,
+    "",
+    ...(score != null && grade ? [`Wallet Score: ${score}`, `Grade: ${grade}`, ""] : []),
+    "Why:",
+    ...(why.length ? why.slice(0, 5).map((line) => `• ${line}`) : ["• Insufficient evidence to classify portfolio or trading behavior."]),
+    "",
+    "Strengths:",
+    ...(strengths.length ? strengths.slice(0, 4).map((line) => `• ${line}`) : ["• No clear strengths detected from available evidence."]),
+    "",
+    "Weaknesses:",
+    ...(weaknesses.length ? weaknesses.slice(0, 4).map((line) => `• ${line}`) : ["• No explicit weakness detected from available evidence."]),
+    "",
+    `Followability: ${followability}`,
+    "",
+    `Next Action: ${nextAction}`,
+  ].join("\n");
 }
 
 // Compact, JSON-safe echo of lastWallet sent back to the client so the frontend can persist it

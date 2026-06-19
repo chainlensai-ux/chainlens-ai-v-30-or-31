@@ -817,25 +817,35 @@ export function formatWalletFollowupFromMemory(address: string, result: WalletAp
   if (kind === "wallet_risk" || kind === "wallet_quality") return [kind === "wallet_risk" ? "WALLET RISK" : "WALLET QUALITY", `Address: ${address}`, `Total value: ${total}`, `Active chains: ${chains}`, `PnL status: ${pnlStatus}`, "Read:", canProfit ? "Profitability evidence is verified, but wallet quality still depends on concentration, activity, and risk." : "Clark can assess portfolio exposure, but not profitability yet.", ...(reasons.length ? ["Evidence limits:", ...reasons.map(r => `- ${r}`)] : []), "CTA: Open Wallet Scanner / Deep Scan Wallet"].join("\n");
   if (kind === "wallet_profile") {
     const profile = (result as any).walletProfile && typeof (result as any).walletProfile === "object" ? (result as any).walletProfile as Record<string, unknown> : null;
-    const type = String(profile?.type ?? profile?.traderType ?? (holdings.length > 0 ? "Portfolio holder / allocation wallet" : "Unclassified wallet"));
-    const confidence = String(profile?.confidence ?? (pnlStatus === "Verified" ? "medium" : "low"));
-    const followability = String(profile?.followability ?? (pnlStatus === "Verified" ? "Watchlist candidate" : "Not enough verified trade/PnL evidence to follow blindly"));
-    const why = Array.isArray(profile?.why) ? (profile?.why as unknown[]).map(String) : [
+    const category = typeof profile?.walletCategory === "string" ? profile.walletCategory : "Not Yet Classified";
+    const portfolioBehavior = typeof profile?.portfolioBehavior === "string" ? profile.portfolioBehavior : "Not Yet Classified";
+    const tradingBehavior = typeof profile?.tradingBehavior === "string" ? profile.tradingBehavior : "Insufficient Evidence";
+    const portfolioConfidence = typeof profile?.portfolioConfidence === "string" ? profile.portfolioConfidence : "low";
+    const tradingConfidence = typeof profile?.tradingConfidence === "string" ? profile.tradingConfidence : "low";
+    const followability = typeof profile?.followability === "string" ? profile.followability : "Low";
+    const why = Array.isArray(profile?.signals) ? (profile?.signals as unknown[]).map(String) : [
       `${holdings.length} priced holdings in cached scan`,
       `Active chains: ${chains}`,
       `PnL status: ${pnlStatus}`,
     ];
-    const weakness = reasons[0] ?? "No explicit weakness returned in cached evidence.";
-    const next = pnlStatus === "Verified" ? "Monitor with the wallet scanner before copying trades." : "Run a deep scan if followability depends on trade history or PnL.";
+    const strengths = Array.isArray(profile?.strengths) ? (profile?.strengths as unknown[]).map(String) : [];
+    const weaknesses = Array.isArray(profile?.weaknesses) ? (profile?.weaknesses as unknown[]).map(String) : (reasons.length ? reasons : ["No explicit weakness returned in cached evidence."]);
+    const next = typeof profile?.nextAction === "string" ? profile.nextAction : (pnlStatus === "Verified" ? "Monitor with the wallet scanner before copying trades." : "Run a deep scan if followability depends on trade history or PnL.");
     return [
       "WALLET PROFILE",
-      `Type: ${type}`,
-      `Confidence: ${confidence}`,
+      `Category: ${category}`,
+      `Portfolio Behavior: ${portfolioBehavior}`,
+      `Trading Behavior: ${tradingBehavior}`,
+      `Portfolio Confidence: ${portfolioConfidence}`,
+      `Trading Confidence: ${tradingConfidence}`,
       "Why:",
-      ...why.slice(0, 4).map(r => `- ${r}`),
+      ...why.slice(0, 4).map(r => `• ${r}`),
+      "Strengths:",
+      ...(strengths.length ? strengths.slice(0, 3).map(r => `• ${r}`) : ["• No clear strengths detected from available evidence."]),
+      "Weaknesses:",
+      ...weaknesses.slice(0, 3).map(r => `• ${r}`),
       `Followability: ${followability}`,
-      `Biggest weakness: ${weakness}`,
-      `Next action: ${next}`,
+      `Next Action: ${next}`,
     ].join("\n");
   }
   return ["WALLET SUMMARY", `Address: ${address}`, `Total value: ${total}`, `Active chains: ${chains}`, `Holdings: ${holdings.length} tokens`, "Top holdings:", ...topLines, "PnL read:", `- Status: ${pnlStatus.toLowerCase()}`, `- Reason: ${q.reason}`, "Read:", canProfit ? "Clark can judge profitability because verified PnL evidence is present." : "Clark can assess portfolio exposure, but not profitability yet.", "CTA: Open Wallet Scanner / Deep Scan Wallet"].join("\n");
