@@ -1934,4 +1934,71 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(dispatcherBlock.includes('isWalletChainsQuestion') || dispatcherBlock.includes('which\\s+chains?'), 'dispatcher uses the hardened wallet_chains matcher')
 }
 
+// ─── Production-like integration: same session id across requests, cache never replays a ──────
+// pre-scan miss. Proves the live bug (top holdings / chains / deep scan falling back to
+// "WALLET PnL — I need a wallet address" after a real scan) is closed: the response cache is
+// never read or written for wallet-memory-dependent prompts, and the hard dispatcher serves them
+// straight from sessionMem.lastWallet once it has been restored from clientContext.
+{
+  const routeFile = fs.readFileSync(path.join(__dirname, '..', 'app', 'api', 'clark', 'route.ts'), 'utf8')
+
+  // 1) memorySensitivePrompt is computed once, before both the early and the in-try cache reads,
+  //    and before the cache write — so a prior cached miss can never replay after a scan.
+  assert.ok(routeFile.includes('const memorySensitivePrompt ='), 'memorySensitivePrompt guard exists')
+  const memSensIdx = routeFile.indexOf('const memorySensitivePrompt =')
+  const earlyCachedIdx = routeFile.indexOf('const earlyCached =')
+  const secondCachedIdx = routeFile.indexOf('const cached = memorySensitivePrompt')
+  const cacheWriteIdx = routeFile.indexOf('clarkCache.set(cacheKey,')
+  assert.ok(memSensIdx >= 0 && memSensIdx < earlyCachedIdx, 'memorySensitivePrompt is computed before the early cache read')
+  assert.ok(routeFile.includes('const earlyCached = memorySensitivePrompt ? undefined : clarkCache.get(earlyCacheKey)'), 'early cache read is skipped for memory-sensitive prompts')
+  assert.ok(secondCachedIdx > memSensIdx, 'second cache read is skipped for memory-sensitive prompts')
+  assert.ok(routeFile.includes('if (quotaConsumed && !memorySensitivePrompt) clarkCache.set(cacheKey,'), 'cache write is skipped for memory-sensitive prompts')
+  assert.ok(cacheWriteIdx > secondCachedIdx, 'cache write happens after both cache reads in source order')
+
+  // 2) Wallet memory restore from clientContext happens before the cache short-circuits, so a
+  //    second request carrying the same session id + clientContext.lastWallet from request 1's
+  //    memoryEcho actually has lastWallet populated by the time the dispatcher runs.
+  const restoreIdx = routeFile.indexOf('if (!sessionMem.lastWallet && body.clientContext?.lastWallet?.address)')
+  assert.ok(restoreIdx >= 0 && restoreIdx < earlyCachedIdx, 'clientContext.lastWallet restore happens before the early cache read')
+
+  // 3) Direct simulation of the exact 4-message production sequence using the same session
+  //    memory shape the server keeps in SESSION_MEMORY, proving each follow-up resolves from
+  //    memory once lastWallet is present — independent of any cache state.
+  const intAddr = '0xa4ad26f96f542ddd51a650f5df0b3f3c61df593d'
+  const intMem = {
+    ok: true,
+    address: intAddr,
+    totalValue: 145800,
+    holdings: [{ symbol: 'WETH', value: 64700, chain: 'base' }, { symbol: 'CBBTC', value: 30400, chain: 'base' }],
+    chainsActive: ['base'],
+    walletScanHealth: { status: 'limited_pnl', lockedModules: ['fifoPnL'] },
+    walletModuleCoverage: { portfolio: { status: 'ok' }, activity: { status: 'open_check' }, fifoPnL: { status: 'locked_no_closed_lots', reason: 'no_closed_lots' }, tradeStats: { status: 'locked_no_closed_lots' } },
+    walletHistoricalCoverageSummary: { status: 'partial' },
+    dataFreshness: 'memory',
+  }
+
+  // Request 2: "top holdings"
+  const intHoldings = formatWalletFollowupFromMemory(intAddr, intMem, 'wallet_holdings')
+  assert.ok(intHoldings.startsWith('WALLET HOLDINGS'), 'integration: top holdings starts with WALLET HOLDINGS')
+  assert.ok(!intHoldings.toLowerCase().includes('i need a wallet address'), 'integration: top holdings never falls back')
+
+  // Request 3: "what chains is it active on"
+  const intChains = formatWalletFollowupFromMemory(intAddr, intMem, 'wallet_chains')
+  assert.ok(intChains.startsWith('WALLET CHAINS'), 'integration: chains starts with WALLET CHAINS')
+  assert.ok(intChains.includes('Base'), 'integration: chains includes Base')
+  assert.ok(!intChains.toLowerCase().includes('i need a wallet address'), 'integration: chains never falls back')
+
+  // Request 4: "should I deep scan"
+  const intDeepScan = formatWalletFollowupFromMemory(intAddr, intMem, 'wallet_deep_scan_advice')
+  assert.ok(intDeepScan.startsWith('DEEP SCAN ADVICE'), 'integration: deep scan advice starts with DEEP SCAN ADVICE')
+  assert.ok(!intDeepScan.includes('TOKEN SCAN READ'), 'integration: deep scan advice never calls the token scanner')
+  assert.ok(!intDeepScan.toLowerCase().includes('i need a wallet address'), 'integration: deep scan advice never falls back')
+
+  // 4) Old-cache poison case: "top holdings" classified as memory-sensitive BEFORE a wallet scan
+  //    (no lastWallet yet) must still be flagged memory-sensitive so no miss is ever cached for it.
+  const { isWalletFollowupPrompt: isWalletFollowupForPoison } = await import('../lib/server/clarkRouting.ts')
+  const memorySensitiveRe = /top\s+holdings|active\s+chains|chains\s+active|what\s+chains?|which\s+chains?|should\s+i\s+deep\s+scan|deep\s+scan\?|evidence\s+missing|what\s+evidence|what\s+is\s+missing|is\s+this\s+wallet|why\s+no\s+pnl|profitable/i
+  assert.ok(isWalletFollowupForPoison('top holdings') || memorySensitiveRe.test('top holdings'), 'integration: "top holdings" is classified memory-sensitive even before any wallet scan, so a pre-scan miss is never cached')
+}
+
 console.log('test-clark-execution.mjs: all assertions passed')

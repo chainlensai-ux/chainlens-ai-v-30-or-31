@@ -9179,9 +9179,17 @@ export async function POST(req: NextRequest) {
   const rankAllowanceActive = rankFromMemory && !sessionMem.allowedRankScanUsed && Date.now() < sessionMem.allowedRankScanUntil
   const promptIsLowCost = earlyPrompt ? (isLowCostPrompt(earlyPrompt, sessionMem) || isMoreFollowup) : false
 
+  // Wallet/token-memory-dependent prompts must never read or write the response cache: the
+  // cache key carries no session/memory state, so a cached miss from before a scan (or a cached
+  // answer from a different memory state) would otherwise replay regardless of current memory.
+  const memorySensitivePrompt = Boolean(earlyPrompt) && (
+    isWalletFollowupPrompt(earlyPrompt) ||
+    /top\s+holdings|active\s+chains|chains\s+active|what\s+chains?|which\s+chains?|should\s+i\s+deep\s+scan|deep\s+scan\?|evidence\s+missing|what\s+evidence|what\s+is\s+missing|is\s+this\s+wallet|why\s+no\s+pnl|profitable/i.test(earlyPrompt)
+  );
+
   // Check cache before rate limiting — cached responses bypass expensive tool quota
   const earlyCacheKey = JSON.stringify({ actor, verifiedPlan: effectivePlan, feature: body.feature, mode: body.mode ?? "", prompt: earlyPrompt, chain: body.chain ?? "base", token: body.tokenAddress ?? body.addressOrToken ?? "", wallet: body.walletAddress ?? "" });
-  const earlyCached = clarkCache.get(earlyCacheKey);
+  const earlyCached = memorySensitivePrompt ? undefined : clarkCache.get(earlyCacheKey);
   if (earlyCached && earlyCached.exp > Date.now()) {
     return NextResponse.json(earlyCached.payload);
   }
@@ -9271,7 +9279,7 @@ export async function POST(req: NextRequest) {
     clarkInternalCtx = { authToken: token || undefined, verifiedPlan: effectivePlan, cookie: req.headers.get('cookie') || undefined }
     // body already parsed before rate check — do NOT call req.json() again
     const cacheKey = JSON.stringify({ actor, verifiedPlan: effectivePlan, feature: body.feature, mode: body.mode ?? "", prompt: body.prompt ?? body.message ?? "", chain: body.chain ?? "base", token: body.tokenAddress ?? body.addressOrToken ?? "", wallet: body.walletAddress ?? "" })
-    const cached = clarkCache.get(cacheKey)
+    const cached = memorySensitivePrompt ? undefined : clarkCache.get(cacheKey)
     if (cached && cached.exp > Date.now()) return NextResponse.json(cached.payload)
     // Derive origin from the incoming request — always correct for any deployment
     const origin = req.nextUrl.origin;
@@ -9356,6 +9364,24 @@ export async function POST(req: NextRequest) {
         followupResolved: /\b(it|this|last|compare|missing|why)\b/i.test(earlyPrompt),
       },
     }
+    if (debugMemory) {
+      const existingDebugReceipt = (normalized as Record<string, unknown>).clarkDebugReceipt as Record<string, unknown> | undefined;
+      normalized.clarkDebugReceipt = {
+        sessionIdFromHeader: req.headers.get('x-clark-session'),
+        sessionIdFromBody: (body as unknown as Record<string, unknown>).sessionId ?? null,
+        cacheKey,
+        cacheHit: false,
+        cacheSkippedReason: memorySensitivePrompt ? "memory_sensitive_prompt" : null,
+        memoryAfter: {
+          hasLastWallet: Boolean(sessionMem.lastWallet?.address),
+          lastWalletAddress: sessionMem.lastWallet?.address ?? null,
+          recentWalletCount: sessionMem.recentWallets.length,
+          hasLastToken: Boolean(sessionMem.lastToken?.address),
+          lastTokenAddress: sessionMem.lastToken?.address ?? null,
+        },
+        ...(existingDebugReceipt ?? {}),
+      };
+    }
     const resultAnalysis = typeof (result as Record<string, unknown>)?.analysis === 'string' ? (result as Record<string, unknown>).analysis as string : ''
     const resultQuotaOverride = (result as Record<string, unknown>)?.quotaConsumed
     let quotaConsumed = !isValidationOnlyAnalysis(resultAnalysis)
@@ -9368,7 +9394,7 @@ export async function POST(req: NextRequest) {
     // Never cache free/memory-sourced responses (quotaConsumed === false): the cache key has no
     // session or wallet-memory state, so caching these would replay a stale answer (e.g. a
     // "WALLET PnL — I need a wallet address" fallback asked before a scan) after memory changes.
-    if (quotaConsumed) clarkCache.set(cacheKey, { exp: Date.now() + cacheTtl, payload: normalized })
+    if (quotaConsumed && !memorySensitivePrompt) clarkCache.set(cacheKey, { exp: Date.now() + cacheTtl, payload: normalized })
     return NextResponse.json(normalized, { status: 200 });
   } catch (err: unknown) {
     console.error("[Clark]", err instanceof Error ? err.message : err);
