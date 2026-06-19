@@ -16,6 +16,32 @@ interface Message {
   role: 'user' | 'clark'
   text: string
 }
+
+type AnalysisKind = 'token' | 'wallet' | 'lp' | 'general'
+const ANALYSIS_STAGES: Record<AnalysisKind, string[]> = {
+  token: ['Analyzing token...', 'Checking liquidity...', 'Reviewing holder distribution...', 'Inspecting security signals...', 'Building CORTEX summary...'],
+  wallet: ['Loading portfolio...', 'Reviewing activity...', 'Checking chain exposure...', 'Building wallet profile...', 'Preparing intelligence report...'],
+  lp: ['Reviewing liquidity...', 'Checking LP control...', 'Analyzing concentrated positions...', 'Preparing LP report...'],
+  general: ['Parsing request...', 'Loading CORTEX context...', 'Reviewing Base signals...', 'Preparing intelligence report...'],
+}
+function inferAnalysisKind(text: string): AnalysisKind {
+  const t = text.toLowerCase()
+  if (/\b(wallet|portfolio|holdings?|pnl|whale)\b/.test(t)) return 'wallet'
+  if (/\b(lp|liquidity|pool|lock|unlock|concentrated)\b/.test(t)) return 'lp'
+  if (/\b(token|contract|ca\b|holders?|deployer|rug|safe|scan)\b/.test(t)) return 'token'
+  return 'general'
+}
+function ClarkLoadingTrace({ kind }: { kind: AnalysisKind }) {
+  const stages = ANALYSIS_STAGES[kind]
+  const [stage, setStage] = useState(0)
+  useEffect(() => {
+    setStage(0)
+    const id = window.setInterval(() => setStage((current) => Math.min(current + 1, stages.length - 1)), 1200)
+    return () => window.clearInterval(id)
+  }, [kind, stages.length])
+  return <div className="clark-loading-trace"><div className="clark-loading-stage">{stages[stage] ?? stages[0]}</div><div className="clark-loading-scan" /></div>
+}
+
 type ClarkMode = 'chat' | 'analyst'
 type ClarkContextState = {
   lastMarketList?: Array<{
@@ -118,6 +144,7 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
+  const [loadingKind, setLoadingKind] = useState<AnalysisKind>('general')
   const [clarkMode, setClarkMode] = useState<ClarkMode>('chat')
   const scrollRef = useRef<HTMLDivElement>(null)
   const messagesRef = useRef<Message[]>([])
@@ -134,6 +161,7 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
 
   const sendToClark = useCallback(async (text: string) => {
     setMessages(prev => [...prev, { role: 'user', text }])
+    setLoadingKind(inferAnalysisKind(text))
     setLoading(true)
     setMessages(prev => [...prev, { role: 'clark', text: 'Clark is thinking...' }])
 
@@ -340,13 +368,11 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
           background: rgba(123,92,255,0.30);
           border-radius: 3px;
         }
-        @keyframes radarThinkingDot {
-          0%, 80%, 100% { opacity: 0.2; transform: translateY(0); }
-          40%            { opacity: 1;   transform: translateY(-3px); }
-        }
-        .radar-dot { display: inline-block; animation: radarThinkingDot 1.2s ease-in-out infinite; }
-        .radar-dot:nth-child(2) { animation-delay: 0.15s; }
-        .radar-dot:nth-child(3) { animation-delay: 0.30s; }
+        .clark-loading-trace { min-width: 210px; }
+        .clark-loading-stage { color: #dbeafe; font: 800 11px var(--font-plex-mono); letter-spacing: .04em; }
+        .clark-loading-scan { position: relative; height: 2px; margin-top: 8px; overflow: hidden; background: rgba(148,163,184,.13); }
+        .clark-loading-scan::before { content: ''; position: absolute; inset: 0 auto 0 0; width: 45%; background: linear-gradient(90deg, transparent, rgba(45,212,191,.9), transparent); animation: clarkTraceScan 1.15s linear infinite; }
+        @keyframes clarkTraceScan { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
         @keyframes clarkOrbFloat {
           0%,100% { transform: translateY(0px) scale(1); }
           50% { transform: translateY(-2px) scale(1.02); }
@@ -366,7 +392,7 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
         .clark-msg strong { color: #e2e8f0; font-weight: 600; }
         .clark-msg-label { color: #c4b5fd; font-weight: 600; letter-spacing: 0.01em; }
         @media (prefers-reduced-motion: reduce) {
-          .clark-orb, .clark-orb::before, .radar-dot, .clark-radar-send, .clark-radar-arrow { animation: none !important; }
+          .clark-orb, .clark-orb::before, .clark-loading-scan::before, .clark-radar-send, .clark-radar-arrow { animation: none !important; }
         }
         @media (max-width: 768px) {
           .clark-panel-glow { animation: none !important; }
@@ -559,11 +585,9 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
                     />
                   )}
                   <div className={msg.role === 'clark' ? 'clark-msg' : undefined} style={{
-                    maxWidth: '82%',
-                    padding: '9px 12px',
-                    borderRadius: msg.role === 'user'
-                      ? '12px 12px 3px 12px'
-                      : '12px 12px 12px 3px',
+                    maxWidth: '84%',
+                    padding: '8px 10px',
+                    borderRadius: '7px',
                     background: msg.text === 'Clark is thinking...'
                       ? 'rgba(45,212,191,0.04)'
                       : msg.role === 'user'
@@ -584,14 +608,9 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
                     wordBreak: 'break-word',
                     overflowWrap: 'anywhere',
                   }}>
+                    <div style={{ marginBottom: '5px', color: msg.role === 'user' ? '#67e8f9' : '#5eead4', fontFamily: 'var(--font-plex-mono)', fontSize: '9px', fontWeight: 800, letterSpacing: '.14em' }}>{msg.role === 'user' ? 'USER' : 'CLARK'}</div>
                     {msg.text === 'Clark is thinking...' ? (
-                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: '7px' }}>
-                        <ClarkOrb size={16} className="clark-orb" thinking />
-                        Clark is thinking
-                        <span className="radar-dot" style={{ marginLeft: '2px' }}>.</span>
-                        <span className="radar-dot">.</span>
-                        <span className="radar-dot">.</span>
-                      </span>
+                      <ClarkLoadingTrace kind={loadingKind} />
                     ) : msg.role === 'clark' ? <ClarkMessage text={msg.text} /> : msg.text}
                   </div>
                 </div>
