@@ -2833,45 +2833,45 @@ function buildWalletProfileBlock(walletProfile: Record<string, unknown> | null |
   const score = typeof walletProfile.score === "number" ? walletProfile.score : null;
   const grade = typeof walletProfile.grade === "string" ? walletProfile.grade : null;
   const confidence = typeof walletProfile.confidence === "string" ? walletProfile.confidence : "low";
-  const primary = typeof walletProfile.primaryArchetype === "string" ? walletProfile.primaryArchetype : null;
-  const secondary = typeof walletProfile.secondaryArchetype === "string" ? walletProfile.secondaryArchetype : null;
+  const category = typeof walletProfile.category === "string" ? walletProfile.category : null;
+  const behavior = typeof walletProfile.behavior === "string" ? walletProfile.behavior : null;
   const summary = typeof walletProfile.profileSummary === "string" ? walletProfile.profileSummary : null;
-  const signals = Array.isArray(walletProfile.signals) ? (walletProfile.signals as unknown[]).filter((s): s is string => typeof s === "string") : [];
   const reasons = Array.isArray(walletProfile.reasons) ? (walletProfile.reasons as unknown[]).filter((s): s is string => typeof s === "string") : [];
+  const strengths = Array.isArray(walletProfile.strengths) ? (walletProfile.strengths as unknown[]).filter((s): s is string => typeof s === "string") : [];
+  const weaknesses = Array.isArray(walletProfile.weaknesses) ? (walletProfile.weaknesses as unknown[]).filter((s): s is string => typeof s === "string") : [];
+  const followability = typeof walletProfile.followability === "string" ? walletProfile.followability : null;
+  const nextAction = typeof walletProfile.nextAction === "string" ? walletProfile.nextAction : null;
   const confidenceLabel = confidence.charAt(0).toUpperCase() + confidence.slice(1);
-  const cleanArchetype = (value: string | null): string | null => {
-    const normalized = value?.trim() ?? "";
-    if (!normalized || normalized === "null" || normalized === "undefined" || normalized === "Open Check") return null;
-    return normalized;
-  };
-  const primaryType = cleanArchetype(primary);
-  const secondaryType = cleanArchetype(secondary);
 
   if (score == null || grade == null) {
     const reasonLine = reasons[0] ?? "Insufficient evidence to score this wallet.";
     return [
       "WALLET PROFILE",
       "",
-      "Wallet Score: Open Check",
+      `Category: ${category ?? "Open Check"}`,
+      "Behavior: Open Check",
       `Confidence: ${confidenceLabel}`,
       "",
-      `Reason: ${reasonLine}`,
+      `Why:\n• ${reasonLine}`,
     ].join("\n");
   }
 
   const lines = [
     "WALLET PROFILE",
     "",
-    `Wallet Score: ${score}`,
-    `Grade: ${grade}`,
+    `Category:\n${category ?? "Open Check"}`,
     "",
-    `Primary Type: ${primaryType ?? "None Detected"}`,
-    `Secondary Type: ${secondaryType ?? "None Detected"}`,
+    `Behavior:\n${behavior ?? "Open Check — no behavior pattern confirmed by available evidence"}`,
     "",
-    `Confidence: ${confidenceLabel}`,
+    `Confidence:\n${confidenceLabel}`,
   ];
+  const whyLines = (reasons.length > 0 ? reasons : ["No additional evidence notes."]).slice(0, 4);
+  lines.push("", "Why:", ...whyLines.map((r) => `• ${r}`));
+  lines.push("", `Followability:\n${followability ?? "Low"}`);
+  if (strengths.length > 0) lines.push("", "Strengths:", ...strengths.slice(0, 4).map((s) => `• ${s}`));
+  if (weaknesses.length > 0) lines.push("", "Weaknesses:", ...weaknesses.slice(0, 4).map((w) => `• ${w}`));
+  if (nextAction) lines.push("", `Next Action:\n${nextAction}`);
   if (summary) lines.push("", "Summary:", summary);
-  if (signals.length > 0) lines.push("", "Signals:", ...signals.map((s) => `- ${s}`));
   return lines.join("\n");
 }
 

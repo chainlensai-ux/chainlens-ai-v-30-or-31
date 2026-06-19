@@ -2102,17 +2102,23 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(Array.isArray(weakProfile.signals) && Array.isArray(weakProfile.reasons), 'walletProfile has signals[] and reasons[]')
 
   // 2) Missing/weak evidence -> Open Check (score/grade null, confidence low, explained by reasons).
+  //    Category (portfolio size) is still assignable from totalValue alone, but behavior must be
+  //    withheld (null) rather than guessed/defaulted to a "Passive Investor" fallback.
   assert.equal(weakProfile.score, null, 'low-coverage wallet gets score: null (no fabrication)')
   assert.equal(weakProfile.grade, null, 'low-coverage wallet gets grade: null')
   assert.equal(weakProfile.confidence, 'low', 'low-coverage wallet gets confidence: low')
   assert.ok(weakProfile.reasons.length > 0, 'low-coverage wallet explains itself via reasons[]')
-  assert.equal(weakProfile.primaryArchetype, null, 'low-coverage wallet does not guess an archetype')
+  assert.equal(weakProfile.category, 'Small Portfolio', 'category is derived from portfolio size alone, independent of evidence coverage')
+  assert.equal(weakProfile.behavior, null, 'low-coverage wallet does not guess a behavior')
+  assert.equal(weakProfile.primaryArchetype, weakProfile.category, 'primaryArchetype is a back-compat alias for category')
+  assert.equal(weakProfile.secondaryArchetype, weakProfile.behavior, 'secondaryArchetype is a back-compat alias for behavior')
+  assert.notEqual(weakProfile.behavior, 'Passive Investor', 'Passive Investor is never assigned as a default-on-missing-evidence guess')
 
-  // 3) Archetypes are deterministic — same input always produces the same output.
+  // 3) Behaviors are deterministic — same input always produces the same output.
   const repeat = computeWalletProfile(baseSnapshot)
   assert.deepEqual(repeat, weakProfile, 'computeWalletProfile is deterministic for identical input')
 
-  // 4) Strong, evidence-rich wallet: high win rate + meaningful sample -> Smart Money + non-null score.
+  // 4) Strong, evidence-rich wallet: high win rate + meaningful sample -> Smart Money Candidate behavior + non-null score.
   const strongSnapshot = {
     ...baseSnapshot,
     totalValue: 8000,
@@ -2129,12 +2135,30 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   const strongProfile = computeWalletProfile(strongSnapshot)
   assert.notEqual(strongProfile.score, null, 'evidence-rich wallet receives a numeric score')
   assert.ok(typeof strongProfile.grade === 'string', 'evidence-rich wallet receives a letter grade')
-  assert.equal(strongProfile.primaryArchetype, 'Smart Money', 'high win-rate + meaningful sample classifies as Smart Money')
+  assert.ok(typeof strongProfile.profileColor === 'string', 'evidence-rich wallet receives a profileColor for UI grade styling')
+  assert.equal(strongProfile.category, 'Mid Portfolio', 'category reflects portfolio size ($8,000) independent of behavior')
+  assert.equal(strongProfile.behavior, 'Smart Money Candidate', 'high win-rate + meaningful sample + positive realized PnL classifies behavior as Smart Money Candidate')
+  assert.ok(strongProfile.confidence === 'high' || strongProfile.confidence === 'medium', 'evidence-rich wallet does not get downgraded to low confidence solely because of evidence coverage thresholds')
+  assert.ok(typeof strongProfile.followability === 'string', 'evidence-rich wallet receives a followability rating')
+  assert.ok(Array.isArray(strongProfile.strengths) && strongProfile.strengths.length > 0, 'evidence-rich wallet lists at least one strength')
+  assert.ok(typeof strongProfile.nextAction === 'string', 'evidence-rich wallet receives a deterministic next action')
 
   // 5) Wallet score is stable for re-computation on an unchanged snapshot.
   const strongRepeat = computeWalletProfile(strongSnapshot)
   assert.equal(strongRepeat.score, strongProfile.score, 'wallet score is stable across repeated computation')
   assert.equal(strongRepeat.grade, strongProfile.grade, 'wallet grade is stable across repeated computation')
+
+  // 6) Whale-sized wallet with weak/no trade evidence: category is Whale, but behavior must not
+  //    fall back to a "Passive Investor"-style default — it should stay null and explain why.
+  const whaleNoTradeSnapshot = {
+    ...baseSnapshot,
+    totalValue: 430000,
+    holdings: Array.from({ length: 10 }, (_, i) => ({ name: `T${i}`, symbol: `T${i}`, icon: null, chain: 'base', balance: 1000, value: 43000, price: 43, change24h: 0, verified: true })),
+    walletFacts: { status: 'ok', summary: { totalValueUsd: 430000, holdingsCount: 10, chainExposure: [{ chain: 'base', valueUsd: 215000, percent: 50 }, { chain: 'eth', valueUsd: 215000, percent: 50 }], topHoldings: [], largestHolding: 'T0', concentrationLabel: 'balanced', stablecoinExposurePercent: 0, nativeExposurePercent: 0 } },
+  }
+  const whaleProfile = computeWalletProfile(whaleNoTradeSnapshot)
+  assert.equal(whaleProfile.category, 'Whale', 'a $430k portfolio is categorized as Whale regardless of trade evidence')
+  assert.notEqual(whaleProfile.behavior, 'Passive Investor', 'a whale with no trade evidence is never defaulted to Passive Investor')
 }
 
 // ─── Wallet Identity Engine wired into the wallet snapshot, wallet API response, and Clark ───
