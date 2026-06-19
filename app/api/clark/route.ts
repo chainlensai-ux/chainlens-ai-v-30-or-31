@@ -4270,6 +4270,7 @@ type ClarkToolEvidence = {
     walletAgeDays: number | null;
     dataQuality: "Complete" | "Partial" | "Limited";
     errorSafeMessage?: string;
+    walletProfile?: Record<string, unknown> | null;
   };
   walletQuality?: {
     ok: boolean;
@@ -4480,6 +4481,7 @@ async function executeClarkToolPlan(input: {
           ...normalized,
           ok: walletRes.ok && !w.error,
           errorSafeMessage: walletRes.ok ? undefined : "Wallet scan has no signal in the checked window.",
+          walletProfile: (w.walletProfile as Record<string, unknown> | null | undefined) ?? null,
         };
         resolvedAddress = address;
         continue;
@@ -8073,7 +8075,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         if (walletRes.ok && Object.keys(w).length > 0) {
           const snapshot = normalizeWalletSnapshotEvidence(w, sessionMem.lastWallet.address);
           const analysis = buildWalletQualityVerdict(snapshot, sessionMem.lastWallet.address, prompt);
-          updateMemWallet(sessionMem, sessionMem.lastWallet.address, sessionMem.lastWallet.ensName, analysis);
+          updateMemWallet(sessionMem, sessionMem.lastWallet.address, sessionMem.lastWallet.ensName, analysis, w);
           updateMemIntent(sessionMem, "wallet_analysis");
           return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: ["wallet_get_snapshot"], analysis };
         }
@@ -8093,7 +8095,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       const snapshot = normalizeWalletSnapshotEvidence(w, directIntent.address);
       const isBalanceQ = /\b(balance|balances|holdings?|portfolio|what(?:'s| is) in|how much|show me)\b/i.test(prompt);
       const analysis = isBalanceQ ? formatWalletBalanceSummary(snapshot) : buildWalletQualityVerdict(snapshot, directIntent.address, prompt);
-      updateMemWallet(sessionMem, directIntent.address, null, analysis);
+      updateMemWallet(sessionMem, directIntent.address, null, analysis, w);
       updateMemIntent(sessionMem, "wallet_analysis");
       return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: ["wallet_get_snapshot"], analysis };
     }
@@ -8810,7 +8812,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       return { feature: "clark-ai", chain, mode: "analysis", analysis: `WALLET SCAN\nI couldn't complete the live wallet pull, but I can open Wallet Scanner with this address.\nCTA: /terminal/wallet-scanner?address=${resolvedAddress ?? plan.followupContext.address ?? ''}&chain=auto`, intent: plan.intent, toolsUsed };
     }
     const summary = formatWalletBalanceSummary(w);
-    if (w.address) updateMemWallet(sessionMem, String(w.address), null, summary);
+    if (w.address) updateMemWallet(sessionMem, String(w.address), null, summary, w as unknown as Record<string, unknown>);
     updateMemIntent(sessionMem, "wallet_balance");
     return { feature: "clark-ai", chain, mode: "analysis", analysis: summary, intent: plan.intent, toolsUsed };
   }
@@ -8825,13 +8827,13 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     }
     if (evidence.walletSnapshot?.ok) {
       const quality = buildWalletQualityVerdict(evidence.walletSnapshot, resolvedAddress, prompt);
-      updateMemWallet(sessionMem, resolvedAddress, null, quality);
+      updateMemWallet(sessionMem, resolvedAddress, null, quality, evidence.walletSnapshot as unknown as Record<string, unknown>);
       updateMemIntent(sessionMem, "wallet_analysis");
       return { feature: "clark-ai", chain, mode: "analysis", analysis: quality, intent: plan.intent, toolsUsed };
     }
     if (evidence.walletQuality?.analysis) {
       const qualityAnalysis = enforceWalletAssetLabel(evidence.walletQuality.analysis, resolvedAddress);
-      updateMemWallet(sessionMem, resolvedAddress, null, qualityAnalysis);
+      updateMemWallet(sessionMem, resolvedAddress, null, qualityAnalysis, evidence.walletSnapshot ? (evidence.walletSnapshot as unknown as Record<string, unknown>) : null);
       updateMemIntent(sessionMem, "wallet_analysis");
       return { feature: "clark-ai", chain, mode: "analysis", analysis: qualityAnalysis, intent: plan.intent, toolsUsed };
     }
@@ -9042,7 +9044,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         if (walletRes.ok && Array.isArray(w.holdings) && (w.holdings as unknown[]).length > 0) {
           const snapshot = normalizeWalletSnapshotEvidence(w, resolvedAddress);
           const walletAnalysis = buildWalletQualityVerdict(snapshot, resolvedAddress, prompt);
-          updateMemWallet(sessionMem, resolvedAddress, null, walletAnalysis);
+          updateMemWallet(sessionMem, resolvedAddress, null, walletAnalysis, w);
           updateMemIntent(sessionMem, "wallet_analysis");
           return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: [...toolsUsed, "wallet_get_snapshot"], analysis: walletAnalysis };
         }

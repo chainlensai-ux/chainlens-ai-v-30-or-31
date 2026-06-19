@@ -2163,6 +2163,24 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(routeFile.includes('echoedWalletProfile ? { cachedEvidence: { walletProfile: echoedWalletProfile } }'), 'generic per-response memoryEcho also echoes lastWallet.cachedEvidence.walletProfile')
   assert.ok(routeFile.includes('sessionMem.lastWallet = body.clientContext.lastWallet;'), 'restore path still copies the full clientContext.lastWallet object (including cachedEvidence) back into sessionMem')
 
+  // Upstream feeder regression guard: updateMemWallet(...) sets cachedEvidence = {...snapshot, ...pnlEvidence}.
+  // Call sites that previously omitted the snapshot arg silently nulled cachedEvidence and wiped
+  // walletProfile even when the echo builders were correct. Assert each known prior bare call site
+  // now forwards a snapshot/evidence object as its 5th argument.
+  const previouslyBareCalls = [
+    'updateMemWallet(sessionMem, sessionMem.lastWallet.address, sessionMem.lastWallet.ensName, analysis);',
+    'updateMemWallet(sessionMem, directIntent.address, null, analysis);',
+    'updateMemWallet(sessionMem, String(w.address), null, summary);',
+    'updateMemWallet(sessionMem, resolvedAddress, null, quality);',
+    'updateMemWallet(sessionMem, resolvedAddress, null, qualityAnalysis);',
+    'updateMemWallet(sessionMem, resolvedAddress, null, walletAnalysis);',
+  ]
+  for (const bareCall of previouslyBareCalls) {
+    assert.ok(!routeFile.includes(bareCall), `updateMemWallet call site must pass a snapshot arg, found bare call still present: ${bareCall}`)
+  }
+  const updateMemWalletCallCount = (routeFile.match(/updateMemWallet\(/g) ?? []).length
+  assert.ok(updateMemWalletCallCount >= 6, 'found the expected updateMemWallet call sites to audit')
+
   const wsPage = fs.readFileSync(path.join(__dirname, '..', 'app', 'terminal', 'wallet-scanner', 'page.tsx'), 'utf8')
   assert.ok(wsPage.includes('Wallet Profile'), 'wallet scanner page renders a Wallet Profile section')
   assert.ok(wsPage.includes('Open Check') && wsPage.includes('Insufficient evidence'), 'wallet scanner page falls back to Open Check / Insufficient evidence when unavailable')
