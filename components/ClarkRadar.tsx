@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import ClarkOrb from '@/components/ClarkOrb'
 import { supabase } from '@/lib/supabaseClient'
+import { getClarkSessionId as getOrCreateSessionId, readClarkClientContext as getClientClarkContext, persistClarkMemoryEcho, persistClarkMomentumList } from '@/lib/client/clarkMemory'
 
 const HINT_CHIPS = [
   "What's pumping on Base?",
@@ -58,28 +59,6 @@ function extractTokenQuery(text: string): string | null {
   if (afterIs && !STOP.has(afterIs[1])) return afterIs[1]
 
   return null
-}
-
-function getOrCreateSessionId(): string {
-  if (typeof window === 'undefined') return 'ssr'
-  const key = 'chainlens:clark-session-id'
-  let id = sessionStorage.getItem(key)
-  if (!id) {
-    id = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
-    sessionStorage.setItem(key, id)
-  }
-  return id
-}
-function getClientClarkContext() {
-  if (typeof window === 'undefined') return {}
-  try {
-    return {
-      lastMomentumList: JSON.parse(sessionStorage.getItem('chainlens:clark:last-momentum-list') ?? 'null') ?? undefined,
-      lastToken: JSON.parse(sessionStorage.getItem('chainlens:clark:last-token') ?? 'null') ?? undefined,
-      lastWallet: JSON.parse(sessionStorage.getItem('chainlens:clark:last-wallet') ?? 'null') ?? undefined,
-      lastMomentumShownCount: Number(sessionStorage.getItem('chainlens:clark:last-momentum-shown-count') ?? '0') || 0,
-    }
-  } catch { return {} }
 }
 
 function isMobileClient() {
@@ -186,6 +165,7 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
           uiModeHint: clarkMode,
           context: null,
           history,
+          sessionId: getOrCreateSessionId(),
           clarkContext: clarkContextRef.current,
           recentMovers: clarkContextRef.current.lastMarketList ?? [],
           moversContext: { items: clarkContextRef.current.lastMarketList ?? [] },
@@ -200,8 +180,7 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
         : null
       const nextItems = Array.isArray(marketContext?.items) ? marketContext?.items : null
       if (nextItems && nextItems.length > 0) {
-        sessionStorage.setItem('chainlens:clark:last-momentum-list', JSON.stringify(nextItems))
-        sessionStorage.setItem('chainlens:clark:last-momentum-shown-count', String(Math.min(7, nextItems.length)))
+        persistClarkMomentumList(nextItems)
         clarkContextRef.current.lastMarketList = nextItems as ClarkContextState['lastMarketList']
         const addrSet = new Set((clarkContextRef.current.seenMarketAddresses ?? []).map((x) => x.toLowerCase()))
         const symSet = new Set((clarkContextRef.current.seenMarketSymbols ?? []).map((x) => x.toUpperCase()))
@@ -220,6 +199,9 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
         ? (marketContext as Record<string, unknown>).cursor as ClarkContextState['marketCursor']
         : null
       if (cursor) clarkContextRef.current.marketCursor = cursor
+      // Cross-surface sync: persist this response's wallet/token memory through the same shared
+      // helper every Clark surface uses, so a scan made here is immediately visible elsewhere.
+      persistClarkMemoryEcho(payload)
       clarkContextRef.current.previousIntent = clarkContextRef.current.lastIntent ?? null
       clarkContextRef.current.lastIntent = typeof payload.intent === 'string' ? payload.intent : clarkContextRef.current.lastIntent
       clarkContextRef.current.lastSelectedRank = /\b([1-9]\d{0,2})\b/.test(text) ? Number(text.match(/\b([1-9]\d{0,2})\b/)?.[1] ?? 0) || null : clarkContextRef.current.lastSelectedRank

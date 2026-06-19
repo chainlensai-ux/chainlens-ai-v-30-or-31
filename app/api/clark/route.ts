@@ -9333,6 +9333,31 @@ export async function POST(req: NextRequest) {
 
     const normalized = { ok: true, feature: body.feature, data: normalizeApiReplyShape(result, body) } as Record<string, unknown>
     const normData = normalized.data as Record<string, unknown>
+    // Always echo current wallet/token memory, regardless of which branch produced this response,
+    // so every Clark surface (terminal widget, mobile drawer, full clark-ai page) can persist the
+    // same memory to its shared sessionStorage keys and stay in sync with one another.
+    {
+      const genericMemoryEcho: Record<string, unknown> = {}
+      if (sessionMem.lastWallet?.address) {
+        genericMemoryEcho.lastWallet = {
+          address: sessionMem.lastWallet.address,
+          chainMode: sessionMem.lastWallet.chainMode ?? null,
+          lastScannedAt: sessionMem.lastWallet.lastScannedAt ?? sessionMem.lastWallet.ts,
+        }
+      }
+      if (sessionMem.lastToken?.address) {
+        genericMemoryEcho.lastToken = {
+          address: sessionMem.lastToken.address,
+          symbol: sessionMem.lastToken.symbol ?? null,
+          chain: sessionMem.lastToken.chain ?? sessionMem.selectedChain ?? null,
+          ts: sessionMem.lastToken.ts,
+        }
+      }
+      if (Object.keys(genericMemoryEcho).length > 0) {
+        const existingMemoryEcho = (typeof normData.memoryEcho === 'object' && normData.memoryEcho) ? normData.memoryEcho as Record<string, unknown> : {}
+        normData.memoryEcho = { ...genericMemoryEcho, ...existingMemoryEcho }
+      }
+    }
     for (const k of ["reply", "response", "analysis", "verdict"] as const) {
       if (typeof normData[k] === "string") normData[k] = cleanClarkText(normData[k] as string)
     }

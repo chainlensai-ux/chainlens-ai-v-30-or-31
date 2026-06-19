@@ -1821,14 +1821,17 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(routeFile.includes('function buildWalletMemoryEcho'), 'buildWalletMemoryEcho helper exists')
 
   // 5) Frontend actually persists the echoed wallet into sessionStorage so the next request's
-  //    clientContext.lastWallet is populated — this was previously dead (read-only) code.
-  assert.ok(pageFile.includes("sessionStorage.setItem('chainlens:clark:last-wallet'"), 'frontend persists the echoed wallet to sessionStorage')
-  assert.ok(pageFile.includes("JSON.parse(sessionStorage.getItem('chainlens:clark:last-wallet')"), 'frontend still reads the persisted wallet back as clientContext.lastWallet')
+  //    clientContext.lastWallet is populated — this was previously dead (read-only) code. This
+  //    logic now lives in the shared lib/client/clarkMemory.ts helper, used by every surface.
+  const clarkMemoryHelperFile = fs.readFileSync(path.join(__dirname, '..', 'lib', 'client', 'clarkMemory.ts'), 'utf8')
+  assert.ok(clarkMemoryHelperFile.includes("sessionStorage.setItem(LAST_WALLET_KEY"), 'shared helper persists the echoed wallet to sessionStorage')
+  assert.ok(clarkMemoryHelperFile.includes("readJson(LAST_WALLET_KEY)"), 'shared helper still reads the persisted wallet back as clientContext.lastWallet')
+  assert.ok(pageFile.includes('persistClarkMemoryEcho'), 'clark-ai page persists memoryEcho through the shared helper')
 
   // 6) The conversation/session id sent with every request is stable across messages in the same
   //    tab (sessionStorage-backed, created once, never regenerated per message).
-  assert.ok(pageFile.includes("function getOrCreateSessionId"), 'stable session id helper exists')
-  assert.ok(pageFile.includes("sessionStorage.getItem(key)") && pageFile.includes("sessionStorage.setItem(key, id)"), 'session id is created once and reused, not regenerated per message')
+  assert.ok(clarkMemoryHelperFile.includes("function getClarkSessionId"), 'stable session id helper exists in the shared module')
+  assert.ok(clarkMemoryHelperFile.includes("sessionStorage.getItem(SESSION_ID_KEY)") && clarkMemoryHelperFile.includes("sessionStorage.setItem(SESSION_ID_KEY, id)"), 'session id is created once and reused, not regenerated per message')
   assert.ok(pageFile.includes("'x-clark-session': getOrCreateSessionId()"), 'every Clark request sends the same stable session id header')
 
   // 7) End-to-end formatter check of the exact reproduction sequence using the new lastWallet
@@ -1999,6 +2002,74 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   const { isWalletFollowupPrompt: isWalletFollowupForPoison } = await import('../lib/server/clarkRouting.ts')
   const memorySensitiveRe = /top\s+holdings|active\s+chains|chains\s+active|what\s+chains?|which\s+chains?|should\s+i\s+deep\s+scan|deep\s+scan\?|evidence\s+missing|what\s+evidence|what\s+is\s+missing|is\s+this\s+wallet|why\s+no\s+pnl|profitable/i
   assert.ok(isWalletFollowupForPoison('top holdings') || memorySensitiveRe.test('top holdings'), 'integration: "top holdings" is classified memory-sensitive even before any wallet scan, so a pre-scan miss is never cached')
+}
+
+// ─── Shared Clark client memory helper: every surface uses it, no duplicated session logic ────
+// The live bug: /terminal (ClarkRadar widget) and /terminal/clark-ai kept independent copies of
+// the session id / clientContext helpers, and only clark-ai persisted memoryEcho.lastWallet back
+// to sessionStorage — so a wallet scanned on one surface was invisible on the other. Fixes:
+// lib/client/clarkMemory.ts now owns this behavior, and every surface imports it.
+{
+  const clarkMemoryFile = fs.readFileSync(path.join(__dirname, '..', 'lib', 'client', 'clarkMemory.ts'), 'utf8')
+  assert.ok(clarkMemoryFile.includes('export function getClarkSessionId'), 'shared helper exports getClarkSessionId')
+  assert.ok(clarkMemoryFile.includes('export function readClarkClientContext'), 'shared helper exports readClarkClientContext')
+  assert.ok(clarkMemoryFile.includes('export function persistClarkMemoryEcho'), 'shared helper exports persistClarkMemoryEcho')
+  assert.ok(clarkMemoryFile.includes("'chainlens:clark-session-id'"), 'shared helper uses the existing stable session id key (no migration breakage)')
+  assert.ok(clarkMemoryFile.includes("'chainlens:clark:last-wallet'") && clarkMemoryFile.includes("'chainlens:clark:last-token'"), 'shared helper reads/writes the existing shared wallet/token storage keys')
+
+  const clarkAiPage = fs.readFileSync(path.join(__dirname, '..', 'app', 'terminal', 'clark-ai', 'page.tsx'), 'utf8')
+  const clarkRadar = fs.readFileSync(path.join(__dirname, '..', 'components', 'ClarkRadar.tsx'), 'utf8')
+  const mobileDrawer = fs.readFileSync(path.join(__dirname, '..', 'components', 'MobileClarkDrawer.tsx'), 'utf8')
+
+  for (const [label, src] of [['clark-ai page', clarkAiPage], ['ClarkRadar widget (used by /terminal)', clarkRadar], ['MobileClarkDrawer', mobileDrawer]]) {
+    assert.ok(src.includes("from '@/lib/client/clarkMemory'"), `${label} imports the shared Clark memory helper`)
+    assert.ok(src.includes('persistClarkMemoryEcho'), `${label} persists memoryEcho through the shared helper`)
+    assert.ok(!/function getOrCreateSessionId\(\)\s*:\s*string\s*\{/.test(src), `${label} no longer defines its own duplicate getOrCreateSessionId`)
+    assert.ok(!src.includes(`sessionStorage.setItem(key, id)`), `${label} no longer duplicates session-id creation logic`)
+  }
+}
+
+// ─── Backend: clientContext restore + cache bypass + memoryEcho still hold for both wallet and ─
+// token memory after unifying the frontend surfaces ─────────────────────────────────────────────
+{
+  const routeFile = fs.readFileSync(path.join(__dirname, '..', 'app', 'api', 'clark', 'route.ts'), 'utf8')
+
+  // 1) clientContext.lastWallet / lastToken restore into sessionMem still runs before routing.
+  assert.ok(routeFile.includes('if (!sessionMem.lastWallet && body.clientContext?.lastWallet?.address) sessionMem.lastWallet = body.clientContext.lastWallet;'), 'backend still restores lastWallet from clientContext')
+  assert.ok(routeFile.includes('if (!sessionMem.lastToken && body.clientContext?.lastToken?.address) sessionMem.lastToken = body.clientContext.lastToken;'), 'backend still restores lastToken from clientContext')
+
+  // 2) memorySensitivePrompt still bypasses both cache reads and the cache write.
+  assert.ok(routeFile.includes('const memorySensitivePrompt ='), 'memory-sensitive prompt guard still present')
+  assert.ok(routeFile.includes('const earlyCached = memorySensitivePrompt ? undefined : clarkCache.get(earlyCacheKey)'), 'early cache read still bypassed for memory-sensitive prompts')
+  assert.ok(routeFile.includes('const cached = memorySensitivePrompt ? undefined : clarkCache.get(cacheKey)'), 'second cache read still bypassed for memory-sensitive prompts')
+  assert.ok(routeFile.includes('if (quotaConsumed && !memorySensitivePrompt) clarkCache.set(cacheKey,'), 'cache write still bypassed for memory-sensitive prompts')
+
+  // 3) Generic memoryEcho now carries both lastWallet and lastToken on every response, so any
+  //    Clark surface can persist token memory too (this previously only worked for wallets).
+  assert.ok(routeFile.includes('genericMemoryEcho.lastWallet ='), 'generic memoryEcho includes lastWallet')
+  assert.ok(routeFile.includes('genericMemoryEcho.lastToken ='), 'generic memoryEcho includes lastToken')
+  assert.ok(routeFile.includes('normData.memoryEcho = { ...genericMemoryEcho, ...existingMemoryEcho }'), 'generic memoryEcho is merged into every normalized response')
+
+  // 4) Existing wallet scanner / token scanner runner paths are untouched (no rewrite).
+  assert.ok(routeFile.includes('function handleWalletScanner') || routeFile.includes('handleWalletScanner('), 'wallet scanner handler still present')
+  assert.ok(routeFile.includes('function handleTokenScanner') || routeFile.includes('handleTokenScanner('), 'token scanner handler still present')
+
+  // 5) Memory follow-ups never consume quota and never fabricate PnL: the hard dispatcher still
+  //    returns quotaConsumed: false and only ever formats from cached wallet snapshot evidence.
+  const dispatcherIdx = routeFile.indexOf('Hard wallet-memory follow-up dispatcher')
+  const dispatcherEndIdx = routeFile.indexOf('Task 1: hard token follow-up memory guard', dispatcherIdx)
+  const dispatcherBlock = routeFile.slice(dispatcherIdx, dispatcherEndIdx)
+  assert.ok(dispatcherBlock.includes('quotaConsumed: false'), 'wallet memory dispatcher never consumes quota')
+  assert.ok(!dispatcherBlock.includes('Math.random()') && !dispatcherBlock.includes('fakePnl'), 'wallet memory dispatcher never fabricates PnL/evidence')
+
+  // 6) Cross-surface sequence: wallet scan -> token follow-up ("is it safe") still resolves from
+  //    token memory regardless of which surface the token was scanned on, since both restore from
+  //    the same clientContext.lastToken and the same shared sessionStorage keys.
+  const { isTokenFollowupPrompt: isTokenFollowupCrossSurface, classifyClarkPrompt: classifyCrossSurface } = await import('../lib/server/clarkRouting.ts')
+  assert.ok(isTokenFollowupCrossSurface('is it safe'), 'cross-surface: "is it safe" still classifies as a token follow-up')
+  const crossSurfaceTokenAddr = '0x2D61bbbe5Ad9a8F18Fef35940301Fd24f143a72B'
+  const crossSurfaceScan = classifyCrossSurface(`scan this token ${crossSurfaceTokenAddr} on eth`)
+  assert.equal(crossSurfaceScan.intent, 'token_scan', 'cross-surface: explicit token scan still classifies as token_scan regardless of which surface sent it')
 }
 
 console.log('test-clark-execution.mjs: all assertions passed')

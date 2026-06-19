@@ -3,34 +3,14 @@
 import { Suspense, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { usePathname, useSearchParams } from 'next/navigation'
 import { supabase } from '@/lib/supabaseClient'
+import { getClarkSessionId as getOrCreateSessionId, readClarkClientContext as getClientClarkContext, persistClarkMemoryEcho, persistClarkMomentumList } from '@/lib/client/clarkMemory'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 type ClarkAction = { label: string; href: string; requiresInput?: boolean }
 type Message = { role: 'user' | 'clark'; text: string; intentBadge?: string | null; actions?: ClarkAction[] }
 type UiTab   = 'analyst' | 'chat'
 
-// ── Session / context helpers (unchanged) ────────────────────────────────────
-function getOrCreateSessionId(): string {
-  if (typeof window === 'undefined') return 'ssr'
-  const key = 'chainlens:clark-session-id'
-  let id = sessionStorage.getItem(key)
-  if (!id) {
-    id = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
-    sessionStorage.setItem(key, id)
-  }
-  return id
-}
-function getClientClarkContext() {
-  if (typeof window === 'undefined') return {}
-  try {
-    return {
-      lastMomentumList: JSON.parse(sessionStorage.getItem('chainlens:clark:last-momentum-list') ?? 'null') ?? undefined,
-      lastToken:        JSON.parse(sessionStorage.getItem('chainlens:clark:last-token') ?? 'null') ?? undefined,
-      lastWallet:       JSON.parse(sessionStorage.getItem('chainlens:clark:last-wallet') ?? 'null') ?? undefined,
-      lastMomentumShownCount: Number(sessionStorage.getItem('chainlens:clark:last-momentum-shown-count') ?? '0') || 0,
-    }
-  } catch { return {} }
-}
+// ── Session / context helpers: shared across every Clark surface, see lib/client/clarkMemory.ts ──
 type ClarkContextState = {
   lastMarketList?: Array<{
     rank: number; symbol: string; name?: string | null; tokenAddress?: string | null
@@ -208,6 +188,7 @@ function ClarkAiContent() {
           feature: 'clark-ai', message: text, prompt: text,
           mode: 'analyst', uiModeHint: activeMode,
           context: null, history,
+          sessionId: getOrCreateSessionId(),
           clarkContext: clarkContextRef.current,
           recentMovers: clarkContextRef.current.lastMarketList ?? [],
           moversContext: { items: clarkContextRef.current.lastMarketList ?? [] },
@@ -223,8 +204,7 @@ function ClarkAiContent() {
         ? payload.marketContext as { items?: unknown } : null
       const nextItems = Array.isArray(marketContext?.items) ? marketContext?.items : null
       if (nextItems && nextItems.length > 0) {
-        sessionStorage.setItem('chainlens:clark:last-momentum-list', JSON.stringify(nextItems))
-        sessionStorage.setItem('chainlens:clark:last-momentum-shown-count', String(Math.min(7, nextItems.length)))
+        persistClarkMomentumList(nextItems)
         clarkContextRef.current.lastMarketList = nextItems as ClarkContextState['lastMarketList']
         const addrSet = new Set((clarkContextRef.current.seenMarketAddresses ?? []).map((x) => x.toLowerCase()))
         const symSet  = new Set((clarkContextRef.current.seenMarketSymbols ?? []).map((x) => x.toUpperCase()))
@@ -240,14 +220,10 @@ function ClarkAiContent() {
       const cursor = (marketContext && typeof marketContext === 'object' && (marketContext as Record<string, unknown>).cursor && typeof (marketContext as Record<string, unknown>).cursor === 'object')
         ? (marketContext as Record<string, unknown>).cursor as ClarkContextState['marketCursor'] : null
       if (cursor) clarkContextRef.current.marketCursor = cursor
-      // Redundancy layer for the server-side in-memory session map: persist the last scanned
-      // wallet so the next request's clientContext.lastWallet can restore it if the server-side
-      // session memory for this session id was not found (e.g. a different server instance).
-      const memoryEcho = (payload.memoryEcho && typeof payload.memoryEcho === 'object') ? payload.memoryEcho as Record<string, unknown> : null
-      const echoedWallet = (memoryEcho?.lastWallet && typeof memoryEcho.lastWallet === 'object') ? memoryEcho.lastWallet as { address?: unknown } : null
-      if (echoedWallet && typeof echoedWallet.address === 'string') {
-        sessionStorage.setItem('chainlens:clark:last-wallet', JSON.stringify(echoedWallet))
-      }
+      // Redundancy layer for the server-side in-memory session map, and the cross-surface sync
+      // mechanism: every Clark surface persists memoryEcho through the same shared helper, so a
+      // wallet/token scanned here is immediately visible to every other Clark surface.
+      persistClarkMemoryEcho(payload)
       clarkContextRef.current.previousIntent  = clarkContextRef.current.lastIntent ?? null
       clarkContextRef.current.lastIntent      = typeof payload.intent === 'string' ? payload.intent : clarkContextRef.current.lastIntent
       clarkContextRef.current.lastSelectedRank = /\b([1-9]\d{0,2})\b/.test(text) ? Number(text.match(/\b([1-9]\d{0,2})\b/)?.[1] ?? 0) || null : clarkContextRef.current.lastSelectedRank

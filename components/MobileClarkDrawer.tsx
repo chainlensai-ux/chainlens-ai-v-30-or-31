@@ -1,34 +1,13 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
+import { getClarkSessionId as getOrCreateSessionId, readClarkClientContext as getClientClarkContext, persistClarkMemoryEcho, persistClarkMomentumList } from '@/lib/client/clarkMemory'
 
 type Message = { role: 'user' | 'clark'; text: string; pending?: boolean }
 type ClarkOpenDetail = { prompt?: string; autoSend?: boolean; source?: string }
 
 const INITIAL_ASSISTANT_MESSAGE = 'Ask me about Base tokens, wallets, whale alerts, or risk signals.'
 const FALLBACK_ERROR_MESSAGE = 'Clark is unavailable right now. Try again in a moment.'
-
-function getOrCreateSessionId(): string {
-  if (typeof window === 'undefined') return 'ssr'
-  const key = 'chainlens:clark-session-id'
-  let id = sessionStorage.getItem(key)
-  if (!id) {
-    id = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
-    sessionStorage.setItem(key, id)
-  }
-  return id
-}
-function getClientClarkContext() {
-  if (typeof window === 'undefined') return {}
-  try {
-    return {
-      lastMomentumList: JSON.parse(sessionStorage.getItem('chainlens:clark:last-momentum-list') ?? 'null') ?? undefined,
-      lastToken: JSON.parse(sessionStorage.getItem('chainlens:clark:last-token') ?? 'null') ?? undefined,
-      lastWallet: JSON.parse(sessionStorage.getItem('chainlens:clark:last-wallet') ?? 'null') ?? undefined,
-      lastMomentumShownCount: Number(sessionStorage.getItem('chainlens:clark:last-momentum-shown-count') ?? '0') || 0,
-    }
-  } catch { return {} }
-}
 
 export default function MobileClarkDrawer() {
   const [expanded, setExpanded] = useState(false)
@@ -77,7 +56,7 @@ export default function MobileClarkDrawer() {
       const res = await fetch('/api/clark', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-clark-session': getOrCreateSessionId() },
-        body: JSON.stringify({ feature: 'clark-ai', prompt: text, clientContext: getClientClarkContext() }),
+        body: JSON.stringify({ feature: 'clark-ai', prompt: text, sessionId: getOrCreateSessionId(), clientContext: getClientClarkContext() }),
       })
       const json = await res.json().catch(() => ({}))
       const payload = (json?.data && typeof json.data === 'object') ? json.data : json
@@ -85,9 +64,11 @@ export default function MobileClarkDrawer() {
         ? (payload.marketContext as { items?: unknown[] }).items
         : null
       if (marketItems && marketItems.length > 0) {
-        sessionStorage.setItem('chainlens:clark:last-momentum-list', JSON.stringify(marketItems))
-        sessionStorage.setItem('chainlens:clark:last-momentum-shown-count', String(Math.min(7, marketItems.length)))
+        persistClarkMomentumList(marketItems)
       }
+      // Cross-surface sync: persist this response's wallet/token memory through the same shared
+      // helper every Clark surface uses.
+      persistClarkMemoryEcho(payload)
       const reply = typeof payload?.reply === 'string' && payload.reply.trim()
         ? payload.reply
         : (typeof payload?.analysis === 'string' && payload.analysis.trim() ? payload.analysis : FALLBACK_ERROR_MESSAGE)
