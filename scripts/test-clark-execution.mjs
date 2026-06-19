@@ -2072,4 +2072,92 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.equal(crossSurfaceScan.intent, 'token_scan', 'cross-surface: explicit token scan still classifies as token_scan regardless of which surface sent it')
 }
 
+// ─── Wallet Identity Engine V1 — deterministic archetype + score from existing evidence only ───
+{
+  const { computeWalletProfile } = await import('../lib/server/walletIdentity.ts')
+
+  const baseSnapshot = {
+    address: '0xabc',
+    totalValue: 500,
+    holdings: [{ name: 'USDC', symbol: 'USDC', icon: null, chain: 'base', balance: 500, value: 500, price: 1, change24h: 0, verified: true }],
+    walletBehavior: { status: 'unavailable', source: 'unavailable', txCount: null, activeDays: null, topTokens: [], topContracts: [], inboundCount: null, outboundCount: null, stablecoinActivity: false, recentActivitySummary: '', reason: 'no activity data' },
+    estimatedPnl: { status: 'unavailable', confidence: null, coveragePercent: 0, source: 'none', totalEstimatedPnlUsd: null, unrealizedPnlUsd: null, realizedPnlUsd: null, method: 'average_cost_estimate', tokens: [], reason: 'no pnl data' },
+    walletTradeStatsSummary: { status: 'open_check', closedLots: 0, uniqueTokensTraded: 0, realizedPnlUsd: null, realizedPnlPercent: null, winningClosedLots: 0, losingClosedLots: 0, breakEvenClosedLots: 0, isBreakEvenOnly: false, winRatePercent: null, avgPnlUsdPerClosedLot: null, avgReturnPercentPerClosedLot: null, medianReturnPercentPerClosedLot: null, avgHoldingTimeSeconds: null, medianHoldingTimeSeconds: null, largestWinUsd: null, largestLossUsd: null, confidence: 'open_check', sampleSizeLabel: 'insufficient', readyForWalletScore: false, rawStatsAvailable: false, scoreUnlocked: false, confidenceLabel: 'open_check', sampleWarning: null, meaningfulClosedLots: 0, dustClosedLots: 0, meaningfulCostBasisUsd: 0, avgCostBasisPerClosedLot: null, economicSignificance: 'open_check', economicSignificanceReason: 'no closed lots', missing: [] },
+    walletLotSummary: { status: 'open_check', pricedSwapEvents: 0, openedLots: 0, closedLots: 0, partiallyClosedLots: 0, unmatchedBuys: 0, unmatchedSells: 0, realizedPnlUsd: null, realizedPnlPercent: null, totalCostBasisClosedUsd: null, totalProceedsClosedUsd: null, readyForTradeStats: false, missing: [] },
+    walletHistoricalCoverageSummary: { status: 'not_requested', requested: false, pagesAttempted: 0, maxPages: 0, rawTransactions: 0, rawLogEvents: 0, normalizedEvents: 0, walletSideEvents: 0, swapLikeTransactions: 0, pricedSwapCandidates: null, matchedClosedLotsBefore: null, matchedClosedLotsAfter: null, addedClosedLots: null, coverageLevel: 'none', missing: [], reason: null },
+  }
+
+  // 1) Wallet profile generated from existing evidence only (no new fetches): pure function over
+  //    fields already present on the snapshot.
+  const weakProfile = computeWalletProfile(baseSnapshot)
+  assert.ok(weakProfile && typeof weakProfile === 'object', 'computeWalletProfile returns an object')
+  assert.ok(Array.isArray(weakProfile.signals) && Array.isArray(weakProfile.reasons), 'walletProfile has signals[] and reasons[]')
+
+  // 2) Missing/weak evidence -> Open Check (score/grade null, confidence low, explained by reasons).
+  assert.equal(weakProfile.score, null, 'low-coverage wallet gets score: null (no fabrication)')
+  assert.equal(weakProfile.grade, null, 'low-coverage wallet gets grade: null')
+  assert.equal(weakProfile.confidence, 'low', 'low-coverage wallet gets confidence: low')
+  assert.ok(weakProfile.reasons.length > 0, 'low-coverage wallet explains itself via reasons[]')
+  assert.equal(weakProfile.primaryArchetype, null, 'low-coverage wallet does not guess an archetype')
+
+  // 3) Archetypes are deterministic — same input always produces the same output.
+  const repeat = computeWalletProfile(baseSnapshot)
+  assert.deepEqual(repeat, weakProfile, 'computeWalletProfile is deterministic for identical input')
+
+  // 4) Strong, evidence-rich wallet: high win rate + meaningful sample -> Smart Money + non-null score.
+  const strongSnapshot = {
+    ...baseSnapshot,
+    totalValue: 8000,
+    holdings: [
+      { name: 'USDC', symbol: 'USDC', icon: null, chain: 'base', balance: 4000, value: 4000, price: 1, change24h: 0, verified: true },
+      { name: 'WETH', symbol: 'WETH', icon: null, chain: 'base', balance: 1, value: 4000, price: 4000, change24h: 1, verified: true },
+    ],
+    walletFacts: { status: 'ok', summary: { totalValueUsd: 8000, holdingsCount: 2, chainExposure: [{ chain: 'base', valueUsd: 8000, percent: 100 }], topHoldings: [], largestHolding: 'USDC', concentrationLabel: 'balanced', stablecoinExposurePercent: 50, nativeExposurePercent: 0 } },
+    walletBehavior: { status: 'ok', source: 'activity_layer', txCount: 40, activeDays: 20, topTokens: ['WETH'], topContracts: [], inboundCount: 20, outboundCount: 20, stablecoinActivity: true, recentActivitySummary: 'active', reason: 'ok' },
+    estimatedPnl: { status: 'ok', confidence: 'high', coveragePercent: 90, source: 'activity_layer', totalEstimatedPnlUsd: 500, unrealizedPnlUsd: 100, realizedPnlUsd: 400, method: 'average_cost_estimate', tokens: [], reason: 'ok' },
+    walletTradeStatsSummary: { ...baseSnapshot.walletTradeStatsSummary, status: 'ok', closedLots: 12, uniqueTokensTraded: 5, winRatePercent: 66.7, confidence: 'high', avgHoldingTimeSeconds: 3600 * 48, economicSignificance: 'meaningful', economicSignificanceReason: 'meaningful sample' },
+    walletLotSummary: { ...baseSnapshot.walletLotSummary, status: 'ok', realizedPnlUsd: 400 },
+  }
+  const strongProfile = computeWalletProfile(strongSnapshot)
+  assert.notEqual(strongProfile.score, null, 'evidence-rich wallet receives a numeric score')
+  assert.ok(typeof strongProfile.grade === 'string', 'evidence-rich wallet receives a letter grade')
+  assert.equal(strongProfile.primaryArchetype, 'Smart Money', 'high win-rate + meaningful sample classifies as Smart Money')
+
+  // 5) Wallet score is stable for re-computation on an unchanged snapshot.
+  const strongRepeat = computeWalletProfile(strongSnapshot)
+  assert.equal(strongRepeat.score, strongProfile.score, 'wallet score is stable across repeated computation')
+  assert.equal(strongRepeat.grade, strongProfile.grade, 'wallet grade is stable across repeated computation')
+}
+
+// ─── Wallet Identity Engine wired into the wallet snapshot, wallet API response, and Clark ───
+{
+  const snapshotFile = fs.readFileSync(path.join(__dirname, '..', 'lib', 'server', 'walletSnapshot.ts'), 'utf8')
+  const identityFile = fs.readFileSync(path.join(__dirname, '..', 'lib', 'server', 'walletIdentity.ts'), 'utf8')
+  assert.ok(identityFile.includes('export function computeWalletProfile'), 'walletIdentity.ts exports computeWalletProfile')
+  assert.ok(snapshotFile.includes("from './walletIdentity'"), 'walletSnapshot.ts wires in computeWalletProfile from walletIdentity.ts')
+  assert.ok(snapshotFile.includes('snapshot.walletProfile = computeWalletProfile(snapshot)'), 'fetchWalletSnapshot attaches walletProfile before returning (no new I/O, no new fetches)')
+  assert.ok(snapshotFile.includes("walletProfile?: WalletProfile"), 'WalletSnapshot type exposes optional walletProfile (backwards compatible)')
+
+  const routeFile = fs.readFileSync(path.join(__dirname, '..', 'app', 'api', 'clark', 'route.ts'), 'utf8')
+  assert.ok(routeFile.includes('function buildWalletProfileBlock'), 'Clark route formats a deterministic WALLET PROFILE block')
+  assert.ok(routeFile.includes('"WALLET PROFILE"'), 'WALLET PROFILE block uses the required header')
+  assert.ok(routeFile.includes('Wallet Identity Engine memory follow-ups'), 'Clark route adds a dedicated wallet-profile memory follow-up dispatcher')
+
+  // Memory follow-ups must be memory-only: quotaConsumed: false, toolsUsed: ["memory"], no rescan.
+  const profileDispatcherIdx = routeFile.indexOf('Wallet Identity Engine memory follow-ups')
+  const profileDispatcherEndIdx = routeFile.indexOf('Task 1: hard token follow-up memory guard', profileDispatcherIdx)
+  const profileDispatcherBlock = routeFile.slice(profileDispatcherIdx, profileDispatcherEndIdx)
+  assert.ok(profileDispatcherBlock.includes('toolsUsed: ["memory"]'), 'wallet profile follow-up dispatcher tags toolsUsed as memory-only')
+  assert.ok(profileDispatcherBlock.includes('quotaConsumed: false'), 'wallet profile follow-up dispatcher never consumes quota')
+  assert.ok(!profileDispatcherBlock.includes('runWalletScanner'), 'wallet profile follow-up dispatcher never calls the wallet scanner again')
+
+  // Cost safety: the new memory-sensitive regex covers the new follow-up phrases so cache never
+  // replays a stale wallet-profile answer, and no new provider/API call sites were introduced.
+  assert.ok(routeFile.includes('is\\s+this\\s+smart\\s+money|should\\s+i\\s+follow\\s+this\\s+wallet'), 'memorySensitivePrompt regex covers the new wallet-profile follow-up phrases')
+
+  const wsPage = fs.readFileSync(path.join(__dirname, '..', 'app', 'terminal', 'wallet-scanner', 'page.tsx'), 'utf8')
+  assert.ok(wsPage.includes('Wallet Profile'), 'wallet scanner page renders a Wallet Profile section')
+  assert.ok(wsPage.includes('Open Check') && wsPage.includes('Insufficient evidence'), 'wallet scanner page falls back to Open Check / Insufficient evidence when unavailable')
+}
+
 console.log('test-clark-execution.mjs: all assertions passed')

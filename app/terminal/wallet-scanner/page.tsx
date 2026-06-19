@@ -331,6 +331,17 @@ type WalletResult = {
     reason: string
   } | null
   openPositionPerformanceSummary?: OpenPositionPerformanceSummary
+  walletProfile?: {
+    score: number | null
+    grade: string | null
+    confidence: 'low' | 'medium' | 'high'
+    primaryArchetype: string | null
+    secondaryArchetype: string | null
+    profileSummary: string | null
+    signals: string[]
+    reasons: string[]
+    evidenceCoverage: number
+  } | null
   walletFacts?: {
     status: 'ok' | 'partial' | 'open_check'
     summary: {
@@ -1480,6 +1491,63 @@ export default function WalletScannerPage() {
                   {result.walletScanCacheNote}
                 </div>
               )}
+
+              {/* Wallet Profile — deterministic archetype + score from existing scan evidence */}
+              <div style={{ border: '1px solid rgba(139,92,246,0.22)', borderRadius: '14px', padding: '18px 20px', background: 'rgba(139,92,246,0.04)' }}>
+                <div style={{ fontSize: '12px', fontWeight: 600, color: '#c4b5fd', letterSpacing: '0.04em', textTransform: 'uppercase', marginBottom: '12px' }}>Wallet Profile</div>
+                {result.walletProfile && result.walletProfile.score != null && result.walletProfile.grade != null ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '20px', alignItems: 'baseline' }}>
+                      <div>
+                        <div style={{ fontSize: '11px', color: '#94a3b8' }}>Wallet Score</div>
+                        <div style={{ fontSize: '22px', fontWeight: 700, color: '#e9d5ff' }}>{result.walletProfile.score}<span style={{ fontSize: '13px', color: '#94a3b8' }}>/100</span></div>
+                      </div>
+                      <div>
+                        <div style={{ fontSize: '11px', color: '#94a3b8' }}>Grade</div>
+                        <div style={{ fontSize: '22px', fontWeight: 700, color: '#e9d5ff' }}>{result.walletProfile.grade}</div>
+                      </div>
+                      <div>
+                        <div style={{ fontSize: '11px', color: '#94a3b8' }}>Confidence</div>
+                        <div style={{ fontSize: '14px', fontWeight: 600, color: '#c4b5fd', textTransform: 'capitalize' }}>{result.walletProfile.confidence}</div>
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '20px' }}>
+                      <div>
+                        <div style={{ fontSize: '11px', color: '#94a3b8' }}>Primary Archetype</div>
+                        <div style={{ fontSize: '14px', color: '#f1f5f9' }}>{result.walletProfile.primaryArchetype ?? 'Open Check'}</div>
+                      </div>
+                      <div>
+                        <div style={{ fontSize: '11px', color: '#94a3b8' }}>Secondary Archetype</div>
+                        <div style={{ fontSize: '14px', color: '#f1f5f9' }}>{result.walletProfile.secondaryArchetype ?? 'Open Check'}</div>
+                      </div>
+                    </div>
+                    {result.walletProfile.profileSummary && (
+                      <div style={{ fontSize: '13px', color: '#cbd5e1', lineHeight: 1.6 }}>{result.walletProfile.profileSummary}</div>
+                    )}
+                    {result.walletProfile.signals.length > 0 && (
+                      <div>
+                        <div style={{ fontSize: '11px', color: '#94a3b8', marginBottom: '4px' }}>Signals</div>
+                        <ul style={{ margin: 0, paddingLeft: '18px', fontSize: '12px', color: '#94a3b8', lineHeight: 1.6 }}>
+                          {result.walletProfile.signals.map((s, i) => <li key={i}>{s}</li>)}
+                        </ul>
+                      </div>
+                    )}
+                    {result.walletProfile.reasons.length > 0 && (
+                      <div>
+                        <div style={{ fontSize: '11px', color: '#94a3b8', marginBottom: '4px' }}>Reasons</div>
+                        <ul style={{ margin: 0, paddingLeft: '18px', fontSize: '12px', color: '#94a3b8', lineHeight: 1.6 }}>
+                          {result.walletProfile.reasons.map((r, i) => <li key={i}>{r}</li>)}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div style={{ fontSize: '13px', color: '#94a3b8' }}>
+                    Open Check — Insufficient evidence to score or classify this wallet yet.
+                    {result.walletProfile?.reasons?.[0] && <div style={{ marginTop: '6px', fontSize: '12px', color: '#64748b' }}>{result.walletProfile.reasons[0]}</div>}
+                  </div>
+                )}
+              </div>
 
               {/* Module coverage strip — shows what was checked vs what had evidence */}
               {result.walletModuleCoverage && (() => {

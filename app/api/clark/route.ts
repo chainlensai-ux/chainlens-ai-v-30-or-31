@@ -2803,6 +2803,7 @@ function mapWalletRunnerResult(walletAddress: string, w: Record<string, unknown>
     dataFreshness: typeof w.dataFreshness === "string" ? w.dataFreshness : "live",
     cacheAgeSeconds: typeof w.cacheAgeSeconds === "number" ? w.cacheAgeSeconds : null,
     warnings: w.warnings,
+    walletProfile: w.walletProfile ?? null,
   } as any;
 }
 
@@ -2820,7 +2821,50 @@ function extractPnlEvidence(mapped: Record<string, unknown>): Record<string, unk
     openLots: mapped.openLots ?? null,
     closedLots: mapped.closedLots ?? null,
     totalValue: mapped.totalValue ?? null,
+    walletProfile: mapped.walletProfile ?? null,
   };
+}
+
+/** Deterministic "WALLET PROFILE" text block appended after a wallet scan, sourced only from
+ * the walletProfile already computed by lib/server/walletSnapshot.ts — no extra evidence, no AI. */
+function buildWalletProfileBlock(walletProfile: Record<string, unknown> | null | undefined): string | null {
+  if (!walletProfile) return null;
+  const score = typeof walletProfile.score === "number" ? walletProfile.score : null;
+  const grade = typeof walletProfile.grade === "string" ? walletProfile.grade : null;
+  const confidence = typeof walletProfile.confidence === "string" ? walletProfile.confidence : "low";
+  const primary = typeof walletProfile.primaryArchetype === "string" ? walletProfile.primaryArchetype : null;
+  const secondary = typeof walletProfile.secondaryArchetype === "string" ? walletProfile.secondaryArchetype : null;
+  const summary = typeof walletProfile.profileSummary === "string" ? walletProfile.profileSummary : null;
+  const signals = Array.isArray(walletProfile.signals) ? (walletProfile.signals as unknown[]).filter((s): s is string => typeof s === "string") : [];
+  const reasons = Array.isArray(walletProfile.reasons) ? (walletProfile.reasons as unknown[]).filter((s): s is string => typeof s === "string") : [];
+  const confidenceLabel = confidence.charAt(0).toUpperCase() + confidence.slice(1);
+
+  if (score == null || grade == null) {
+    const reasonLine = reasons[0] ?? "Insufficient evidence to score this wallet.";
+    return [
+      "WALLET PROFILE",
+      "",
+      "Wallet Score: Open Check",
+      `Confidence: ${confidenceLabel}`,
+      "",
+      `Reason: ${reasonLine}`,
+    ].join("\n");
+  }
+
+  const lines = [
+    "WALLET PROFILE",
+    "",
+    `Wallet Score: ${score}`,
+    `Grade: ${grade}`,
+    "",
+    `Primary Type: ${primary ?? "Open Check"}`,
+    `Secondary Type: ${secondary ?? "Open Check"}`,
+    "",
+    `Confidence: ${confidenceLabel}`,
+  ];
+  if (summary) lines.push("", "Summary:", summary);
+  if (signals.length > 0) lines.push("", "Signals:", ...signals.map((s) => `- ${s}`));
+  return lines.join("\n");
 }
 
 // Compact, JSON-safe echo of lastWallet sent back to the client so the frontend can persist it
@@ -6317,6 +6361,34 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     }
   }
 
+  // ─── Wallet Identity Engine memory follow-ups ───
+  // "what type of trader is this", "why this score", "is this smart money", etc. must answer
+  // from the walletProfile already computed during the last scan — memory only, never a rescan,
+  // never another wallet_scanner call.
+  {
+    const normalizedPrompt = prompt.toLowerCase();
+    const hasExplicitAddress = Boolean(extractAddress(prompt));
+    const isWalletProfileFollowup =
+      /what\s+type\s+of\s+trader\s+is\s+this|why\s+this\s+score|why\s+(meme\s+hunter|swing\s+trader|day\s+trader|diamond\s+holder|whale|smart\s+money|yield\s+farmer|airdrop\s+farmer|dev\s+wallet|passive\s+investor)|is\s+this\s+smart\s+money|should\s+i\s+follow\s+this\s+wallet|explain\s+wallet\s+profile|explain\s+this\s+wallet'?s?\s+(score|profile|archetype)|what'?s?\s+(its|the)\s+(wallet\s+)?score|what\s+archetype/.test(normalizedPrompt);
+
+    if (sessionMem.lastWallet?.address && isWalletProfileFollowup && !hasExplicitAddress) {
+      const walletProfile = (sessionMem.lastWallet.cachedEvidence as Record<string, unknown> | null)?.walletProfile as Record<string, unknown> | null | undefined;
+      updateMemIntent(sessionMem, "wallet_profile_followup");
+      const analysis = walletProfile
+        ? `${buildWalletProfileBlock(walletProfile)}`
+        : `WALLET PROFILE\nNo wallet profile available yet for this wallet — scan it first.\nCTA: Scan Wallet`;
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "wallet_profile_followup", toolsUsed: ["memory"],
+        source: "memory",
+        analysis: analysis ?? `WALLET PROFILE\nNo wallet profile available yet for this wallet — scan it first.\nCTA: Scan Wallet`,
+        intentBadge: "wallet_profile_followup",
+        actions: buildRoutedActions(["Scan Wallet", "Deep Scan Wallet"]),
+        quotaConsumed: false,
+        memoryEcho: buildWalletMemoryEcho(sessionMem),
+      };
+    }
+  }
+
   // ─── Task 1: hard token follow-up memory guard ───
   // "is it safe", "can dev rug", "explain LP", etc. must always resolve against the
   // last scanned token in memory and must NEVER execute a wallet scan, regardless of
@@ -6466,7 +6538,8 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const baseAnalysis = formatWalletScanResult(targetAddr, mappedResult, true);
     // Task 5: if the deep scan came back capped/cached, label it honestly instead of "I need an address".
     const digNote = isDigDeeper ? buildDigDeeperNote(mappedResult as Record<string, unknown>) : null;
-    const analysis = digNote ? `${baseAnalysis}\n\n${digNote}` : baseAnalysis;
+    const profileBlock = mappedResult.ok ? buildWalletProfileBlock(mappedResult.walletProfile as Record<string, unknown> | null) : null;
+    const analysis = `${digNote ? `${baseAnalysis}\n\n${digNote}` : baseAnalysis}${profileBlock ? `\n\n${profileBlock}` : ""}`;
     updateMemWallet(sessionMem, targetAddr, null, analysis, mappedResult as Record<string, unknown>, extractPnlEvidence(mappedResult as Record<string, unknown>));
     updateMemIntent(sessionMem, "wallet_pnl_followup");
     return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_pnl_followup", toolsUsed: ["wallet_scanner_runner"], ui: { intentBadge: 'Wallet Deep Scan', actions: [{ label: 'Open Wallet Scanner', href: walletScannerDeepLink(targetAddr, true) }] }, analysis };
@@ -6488,7 +6561,8 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       .catch((err) => ({ ok: false, error: err instanceof Error ? err.message : "wallet_scan_timeout" })) as Record<string, unknown>;
     const holdings = Array.isArray(w.holdings) ? (w.holdings as Array<Record<string, unknown>>) : [];
     const mappedResult = mapWalletRunnerResult(walletAddress, w, holdings);
-    const analysis = formatWalletScanResult(walletAddress, mappedResult, deepScan);
+    const profileBlock = mappedResult.ok ? buildWalletProfileBlock(mappedResult.walletProfile as Record<string, unknown> | null) : null;
+    const analysis = formatWalletScanResult(walletAddress, mappedResult, deepScan) + (profileBlock ? `\n\n${profileBlock}` : "");
     updateMemWallet(sessionMem, walletAddress, null, analysis, mappedResult as Record<string, unknown>, extractPnlEvidence(mappedResult as Record<string, unknown>));
     updateMemIntent(sessionMem, "wallet_analysis");
     // Usable wallet evidence (mappedResult.ok) means the runner actually returned a real
@@ -7043,8 +7117,11 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       walletTradeStatsSummary: w.walletTradeStatsSummary,
       walletHistoricalCoverageSummary: w.walletHistoricalCoverageSummary,
       warnings: w.warnings,
+      walletProfile: w.walletProfile ?? null,
     } as any;
-    const analysis = formatWalletScanResult(routed.address, mappedResult, routed.deep);
+    const baseAnalysis = formatWalletScanResult(routed.address, mappedResult, routed.deep);
+    const profileBlock = ok ? buildWalletProfileBlock(mappedResult.walletProfile as Record<string, unknown> | null) : null;
+    const analysis = `${baseAnalysis}${profileBlock ? `\n\n${profileBlock}` : ""}`;
     updateMemWallet(sessionMem, routed.address, null, analysis, mappedResult, extractPnlEvidence(mappedResult));
     updateMemIntent(sessionMem, "wallet_analysis");
     return {
@@ -9184,7 +9261,8 @@ export async function POST(req: NextRequest) {
   // answer from a different memory state) would otherwise replay regardless of current memory.
   const memorySensitivePrompt = Boolean(earlyPrompt) && (
     isWalletFollowupPrompt(earlyPrompt) ||
-    /top\s+holdings|active\s+chains|chains\s+active|what\s+chains?|which\s+chains?|should\s+i\s+deep\s+scan|deep\s+scan\?|evidence\s+missing|what\s+evidence|what\s+is\s+missing|is\s+this\s+wallet|why\s+no\s+pnl|profitable/i.test(earlyPrompt)
+    /top\s+holdings|active\s+chains|chains\s+active|what\s+chains?|which\s+chains?|should\s+i\s+deep\s+scan|deep\s+scan\?|evidence\s+missing|what\s+evidence|what\s+is\s+missing|is\s+this\s+wallet|why\s+no\s+pnl|profitable/i.test(earlyPrompt) ||
+    /what\s+type\s+of\s+trader|why\s+this\s+score|why\s+(meme\s+hunter|swing\s+trader|day\s+trader|diamond\s+holder|whale|smart\s+money|yield\s+farmer|airdrop\s+farmer|dev\s+wallet|passive\s+investor)|is\s+this\s+smart\s+money|should\s+i\s+follow\s+this\s+wallet|explain\s+wallet\s+profile|wallet'?s?\s+(score|profile|archetype)|what\s+archetype/i.test(earlyPrompt)
   );
 
   // Check cache before rate limiting — cached responses bypass expensive tool quota

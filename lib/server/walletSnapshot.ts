@@ -1,4 +1,7 @@
 import { fetchMoralisBalances, fetchMoralisTransfers, type MoralisFetchResult, type MoralisChain, type MoralisTransferItem } from './moralis'
+import { computeWalletProfile, type WalletProfile } from './walletIdentity'
+
+export { computeWalletProfile, type WalletProfile }
 
 
 type TokenUsage = {
@@ -472,6 +475,7 @@ export type WalletSnapshot = {
   walletValueTier?: WalletValueTier
   walletHistoricalScanNote?: string | null
   walletFacts?: WalletFacts
+  walletProfile?: WalletProfile
   _debug?: {
     walletFactsShapeIssues?: string[]
     walletScannerDiagnostics?: {
@@ -9930,6 +9934,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     snapshot._diagnostics.apiAudit.warnings = _apiAudit.warnings
   }
   validateWalletFactsShape(snapshot)
+  snapshot.walletProfile = computeWalletProfile(snapshot)
   if (/^0x[0-9a-fA-F]{40}$/i.test(addrNorm)) snapshotMemCache.set(cacheKey, { snapshot, cachedAt: Date.now(), ttlMs: snapshotTtlMs })
   return snapshot
 }
