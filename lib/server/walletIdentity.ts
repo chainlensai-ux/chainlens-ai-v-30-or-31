@@ -19,6 +19,11 @@ export type WalletProfile = {
   portfolioConfidence: ProfileConfidence
   tradingConfidence: ProfileConfidence
   profileSummary: string | null
+  followability: 'Low' | 'Moderate' | 'High' | null
+  followabilityReasons: string[]
+  strengths: string[]
+  weaknesses: string[]
+  nextAction: string | null
   signals: string[]
   reasons: string[]
   strengths: string[]
@@ -26,6 +31,7 @@ export type WalletProfile = {
   followability: 'Low' | 'Moderate' | 'High'
   nextAction: string
   evidenceCoverage: number
+  walletEvidenceCoverage: WalletEvidenceCoverage
 }
 
 function gradeForScore(score: number): string {
@@ -89,7 +95,7 @@ export function computeWalletProfile(snapshot: WalletSnapshot): WalletProfile {
   const tradeStats = snapshot.walletTradeStatsSummary
   const lotSummary = snapshot.walletLotSummary
   const estimatedPnl = snapshot.estimatedPnl
-  const behavior = snapshot.walletBehavior
+  const behaviorCtx = snapshot.walletBehavior
   const historicalCoverage = snapshot.walletHistoricalCoverageSummary
 
   const closedLots = tradeStats?.closedLots ?? lotSummary?.closedLots ?? 0
@@ -97,7 +103,7 @@ export function computeWalletProfile(snapshot: WalletSnapshot): WalletProfile {
   const uniqueTokensTraded = tradeStats?.uniqueTokensTraded ?? 0
   const avgHoldHours = tradeStats?.avgHoldingTimeSeconds != null ? tradeStats.avgHoldingTimeSeconds / 3600 : null
   const winRatePercent = tradeStats?.winRatePercent ?? null
-  const activeDays = behavior?.activeDays ?? null
+  const activeDays = behaviorCtx?.activeDays ?? null
   const tradesPerActiveDay = activeDays && activeDays > 0 ? closedLots / activeDays : null
   const realizedPnlUsd = estimatedPnl?.realizedPnlUsd ?? lotSummary?.realizedPnlUsd ?? null
   const unrealizedPnlUsd = estimatedPnl?.unrealizedPnlUsd ?? null
@@ -107,7 +113,7 @@ export function computeWalletProfile(snapshot: WalletSnapshot): WalletProfile {
     Boolean(facts && facts.status !== 'open_check'),
     Boolean(tradeStats && tradeStats.status !== 'open_check'),
     Boolean(estimatedPnl && estimatedPnl.status === 'ok'),
-    Boolean(behavior && behavior.status !== 'unavailable'),
+    Boolean(behaviorCtx && behaviorCtx.status !== 'unavailable'),
   ]
   const evidenceCoverage = Math.round((coverageChecks.filter(Boolean).length / coverageChecks.length) * 100)
   const hasHoldings = holdingsCount > 0
@@ -183,6 +189,7 @@ export function computeWalletProfile(snapshot: WalletSnapshot): WalletProfile {
   const sufficientEvidence = hasHoldings && evidenceCoverage >= 40
   if (!sufficientEvidence) {
     reasons.push(`Evidence coverage too low (${evidenceCoverage}%) to produce a reliable wallet score.`)
+    weaknesses.push(`Evidence coverage is only ${evidenceCoverage}% — score withheld until more data is verified.`)
   } else {
     const portfolioQuality = clampPct(totalValueUsd > 0 ? Math.min(100, Math.log10(totalValueUsd + 1) * 20) : 0)
     const diversification = clampPct((concentrationLabel === 'balanced' ? 80 : concentrationLabel === 'medium' ? 55 : concentrationLabel === 'high' ? 25 : 50) + Math.min(20, holdingsCount * 2))
@@ -226,6 +233,11 @@ export function computeWalletProfile(snapshot: WalletSnapshot): WalletProfile {
     portfolioConfidence,
     tradingConfidence,
     profileSummary,
+    followability,
+    followabilityReasons,
+    strengths,
+    weaknesses,
+    nextAction,
     signals,
     reasons,
     strengths,
@@ -233,5 +245,6 @@ export function computeWalletProfile(snapshot: WalletSnapshot): WalletProfile {
     followability,
     nextAction,
     evidenceCoverage,
+    walletEvidenceCoverage,
   }
 }

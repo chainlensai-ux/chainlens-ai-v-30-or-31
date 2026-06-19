@@ -2102,6 +2102,8 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(Array.isArray(weakProfile.signals) && Array.isArray(weakProfile.reasons), 'walletProfile has signals[] and reasons[]')
 
   // 2) Missing/weak evidence -> Open Check (score/grade null, confidence low, explained by reasons).
+  //    Category (portfolio size) is still assignable from totalValue alone, but behavior must be
+  //    withheld (null) rather than guessed/defaulted to a "Passive Investor" fallback.
   assert.equal(weakProfile.score, null, 'low-coverage wallet gets score: null (no fabrication)')
   assert.equal(weakProfile.grade, null, 'low-coverage wallet gets grade: null')
   assert.equal(weakProfile.confidence, 'low', 'low-coverage wallet gets confidence: low')
@@ -2109,7 +2111,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.equal(weakProfile.tradingBehavior, null, 'low-coverage wallet does not guess trading behavior')
   assert.ok('portfolioConfidence' in weakProfile && 'tradingConfidence' in weakProfile, 'walletProfile splits portfolio/trading confidence')
 
-  // 3) Archetypes are deterministic — same input always produces the same output.
+  // 3) Behaviors are deterministic — same input always produces the same output.
   const repeat = computeWalletProfile(baseSnapshot)
   assert.deepEqual(repeat, weakProfile, 'computeWalletProfile is deterministic for identical input')
 
@@ -2138,6 +2140,63 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   const strongRepeat = computeWalletProfile(strongSnapshot)
   assert.equal(strongRepeat.score, strongProfile.score, 'wallet score is stable across repeated computation')
   assert.equal(strongRepeat.grade, strongProfile.grade, 'wallet grade is stable across repeated computation')
+
+  // 6) Whale-sized wallet with weak/no trade evidence: category is Whale, but behavior must not
+  //    fall back to a "Passive Investor"-style default — it should stay null and explain why.
+  const whaleNoTradeSnapshot = {
+    ...baseSnapshot,
+    totalValue: 430000,
+    holdings: Array.from({ length: 10 }, (_, i) => ({ name: `T${i}`, symbol: `T${i}`, icon: null, chain: 'base', balance: 1000, value: 43000, price: 43, change24h: 0, verified: true })),
+    walletFacts: { status: 'ok', summary: { totalValueUsd: 430000, holdingsCount: 10, chainExposure: [{ chain: 'base', valueUsd: 215000, percent: 50 }, { chain: 'eth', valueUsd: 215000, percent: 50 }], topHoldings: [], largestHolding: 'T0', concentrationLabel: 'balanced', stablecoinExposurePercent: 0, nativeExposurePercent: 0 } },
+  }
+  const whaleProfile = computeWalletProfile(whaleNoTradeSnapshot)
+  assert.equal(whaleProfile.category, 'Whale', 'a $430k portfolio is categorized as Whale regardless of trade evidence')
+  assert.notEqual(whaleProfile.behavior, 'Passive Investor', 'a whale with no trade evidence is never defaulted to Passive Investor')
+
+  // 7) Evidence Coverage V2: portfolio confidence must stay high even when trading evidence is weak.
+  const goodPortfolioWeakTradingSnapshot = {
+    ...baseSnapshot,
+    totalValue: 8000,
+    holdings: strongSnapshot.holdings,
+    walletFacts: { status: 'ok', summary: { totalValueUsd: 8000, holdingsCount: 2, chainExposure: [{ chain: 'base', valueUsd: 8000, percent: 100 }], topHoldings: [], largestHolding: 'USDC', concentrationLabel: 'balanced', stablecoinExposurePercent: 50, nativeExposurePercent: 0 } },
+  }
+  const mixedProfile = computeWalletProfile(goodPortfolioWeakTradingSnapshot)
+  assert.ok(mixedProfile.walletEvidenceCoverage, 'computeWalletProfile returns walletEvidenceCoverage')
+  assert.equal(mixedProfile.walletEvidenceCoverage.portfolioConfidence, 'high', 'portfolio confidence stays high despite weak/no trading evidence')
+  assert.equal(mixedProfile.walletEvidenceCoverage.tradingConfidence, 'low', 'trading confidence reflects unavailable trade evidence independently of portfolio confidence')
+  assert.ok(Array.isArray(mixedProfile.walletEvidenceCoverage.verifiedEvidence) && mixedProfile.walletEvidenceCoverage.verifiedEvidence.length > 0, 'verifiedEvidence[] is populated')
+  assert.ok(Array.isArray(mixedProfile.walletEvidenceCoverage.missingEvidence) && mixedProfile.walletEvidenceCoverage.missingEvidence.length > 0, 'missingEvidence[] is populated')
+
+  // 8) Treasury Style Portfolio: evidence-gated on high stablecoin exposure + low concentration.
+  const treasurySnapshot = {
+    ...strongSnapshot,
+    walletFacts: { status: 'ok', summary: { totalValueUsd: 8000, holdingsCount: 2, chainExposure: [{ chain: 'base', valueUsd: 8000, percent: 100 }], topHoldings: [{ symbol: 'USDC', chain: 'base', valueUsd: 6000, percent: 75 }], largestHolding: 'USDC', concentrationLabel: 'medium', stablecoinExposurePercent: 75, nativeExposurePercent: 0 } },
+    walletTradeStatsSummary: { ...baseSnapshot.walletTradeStatsSummary },
+    walletLotSummary: { ...baseSnapshot.walletLotSummary },
+    estimatedPnl: { ...baseSnapshot.estimatedPnl },
+  }
+  const treasuryProfile = computeWalletProfile(treasurySnapshot)
+  assert.equal(treasuryProfile.behavior, 'Treasury Style Portfolio', 'high stablecoin exposure with low concentration classifies as Treasury Style Portfolio')
+  assert.ok(treasuryProfile.reasons.some((r) => r.includes('75')), 'Treasury Style Portfolio reason cites the actual stablecoin allocation percentage')
+
+  // 9) Meme Speculator: evidence-gated on detecting actual meme-token holdings, not just turnover.
+  const memeSnapshot = {
+    ...baseSnapshot,
+    totalValue: 5000,
+    holdings: [
+      { name: 'Pepe', symbol: 'PEPE', icon: null, chain: 'base', balance: 1000000, value: 2500, price: 0.0025, change24h: 5, verified: true },
+      { name: 'Shiba Inu', symbol: 'SHIB', icon: null, chain: 'base', balance: 1000000, value: 2500, price: 0.0025, change24h: 5, verified: true },
+    ],
+    walletFacts: { status: 'ok', summary: { totalValueUsd: 5000, holdingsCount: 2, chainExposure: [{ chain: 'base', valueUsd: 5000, percent: 100 }], topHoldings: [{ symbol: 'PEPE', chain: 'base', valueUsd: 2500, percent: 50 }], largestHolding: 'PEPE', concentrationLabel: 'medium', stablecoinExposurePercent: 0, nativeExposurePercent: 0 } },
+  }
+  const memeProfile = computeWalletProfile(memeSnapshot)
+  assert.equal(memeProfile.behavior, 'Meme Speculator', 'multiple meme-token holdings classify the wallet as Meme Speculator')
+  assert.ok(memeProfile.reasons.some((r) => r.includes('PEPE') || r.includes('SHIB')), 'Meme Speculator reason cites actual detected meme symbols, not generic text')
+
+  // 10) Followability now comes with explicit reasons, not just a bare label.
+  assert.ok(Array.isArray(strongProfile.followabilityReasons), 'followabilityReasons[] is present')
+  const recomputedStrong = computeWalletProfile(strongSnapshot)
+  assert.ok(recomputedStrong.followabilityReasons.length > 0, 'followability is explained with at least one concrete reason when evidence is sufficient')
 }
 
 // ─── Wallet Identity Engine wired into the wallet snapshot, wallet API response, and Clark ───
@@ -2153,6 +2212,12 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(routeFile.includes('function buildWalletProfileBlock'), 'Clark route formats a deterministic WALLET PROFILE block')
   assert.ok(routeFile.includes('"WALLET PROFILE"'), 'WALLET PROFILE block uses the required header')
   assert.ok(routeFile.includes('Wallet Identity Engine memory follow-ups'), 'Clark route adds a dedicated wallet-profile memory follow-up dispatcher')
+  assert.ok(routeFile.includes('Why This Classification:'), 'Clark output renames Why: to Why This Classification:')
+  assert.ok(routeFile.includes('Portfolio Confidence:'), 'Clark output splits confidence into Portfolio Confidence:')
+  assert.ok(routeFile.includes('Trading Confidence:'), 'Clark output splits confidence into Trading Confidence:')
+  assert.ok(routeFile.includes('Evidence Quality:'), 'Clark output adds an Evidence Quality: section')
+  assert.ok(identityFile.includes('walletEvidenceCoverage'), 'walletIdentity.ts computes walletEvidenceCoverage')
+  assert.ok(identityFile.includes('Treasury Style Portfolio'), 'walletIdentity.ts supports the Treasury Style Portfolio behavior')
 
   // Memory follow-ups must be memory-only: quotaConsumed: false, toolsUsed: ["memory"], no rescan.
   const profileDispatcherIdx = routeFile.indexOf('Wallet Identity Engine memory follow-ups')
