@@ -2840,8 +2840,30 @@ function buildWalletProfileBlock(walletProfile: Record<string, unknown> | null |
   const strengths = Array.isArray(walletProfile.strengths) ? (walletProfile.strengths as unknown[]).filter((s): s is string => typeof s === "string") : [];
   const weaknesses = Array.isArray(walletProfile.weaknesses) ? (walletProfile.weaknesses as unknown[]).filter((s): s is string => typeof s === "string") : [];
   const followability = typeof walletProfile.followability === "string" ? walletProfile.followability : null;
+  const followabilityReasons = Array.isArray(walletProfile.followabilityReasons) ? (walletProfile.followabilityReasons as unknown[]).filter((s): s is string => typeof s === "string") : [];
   const nextAction = typeof walletProfile.nextAction === "string" ? walletProfile.nextAction : null;
   const confidenceLabel = confidence.charAt(0).toUpperCase() + confidence.slice(1);
+
+  const evidenceCoverage = (walletProfile.walletEvidenceCoverage ?? null) as
+    | { portfolioConfidence?: string; tradingConfidence?: string; verifiedEvidence?: unknown[]; partialEvidence?: unknown[]; missingEvidence?: unknown[] }
+    | null;
+  const portfolioConfidenceLabel = evidenceCoverage?.portfolioConfidence
+    ? evidenceCoverage.portfolioConfidence.charAt(0).toUpperCase() + evidenceCoverage.portfolioConfidence.slice(1)
+    : confidenceLabel;
+  const tradingConfidenceLabel = evidenceCoverage?.tradingConfidence
+    ? evidenceCoverage.tradingConfidence.charAt(0).toUpperCase() + evidenceCoverage.tradingConfidence.slice(1)
+    : confidenceLabel;
+  const portfolioEvidenceLine = Array.isArray(evidenceCoverage?.verifiedEvidence) && evidenceCoverage.verifiedEvidence.length > 0
+    ? `Verified: ${evidenceCoverage.verifiedEvidence.join(", ")}`
+    : "No verified portfolio evidence yet.";
+  const tradingEvidenceParts: string[] = [];
+  if (Array.isArray(evidenceCoverage?.partialEvidence) && evidenceCoverage.partialEvidence.length > 0) {
+    tradingEvidenceParts.push(`Partial: ${evidenceCoverage.partialEvidence.join(", ")}`);
+  }
+  if (Array.isArray(evidenceCoverage?.missingEvidence) && evidenceCoverage.missingEvidence.length > 0) {
+    tradingEvidenceParts.push(`Missing: ${evidenceCoverage.missingEvidence.join(", ")}`);
+  }
+  const tradingEvidenceLine = tradingEvidenceParts.length > 0 ? tradingEvidenceParts.join(" / ") : "No trading evidence gaps detected.";
 
   if (score == null || grade == null) {
     const reasonLine = reasons[0] ?? "Insufficient evidence to score this wallet.";
@@ -2850,9 +2872,10 @@ function buildWalletProfileBlock(walletProfile: Record<string, unknown> | null |
       "",
       `Category: ${category ?? "Open Check"}`,
       "Behavior: Open Check",
-      `Confidence: ${confidenceLabel}`,
+      `Portfolio Confidence: ${portfolioConfidenceLabel}`,
+      `Trading Confidence: ${tradingConfidenceLabel}`,
       "",
-      `Why:\n• ${reasonLine}`,
+      `Why This Classification:\n• ${reasonLine}`,
     ].join("\n");
   }
 
@@ -2863,13 +2886,17 @@ function buildWalletProfileBlock(walletProfile: Record<string, unknown> | null |
     "",
     `Behavior:\n${behavior ?? "Open Check — no behavior pattern confirmed by available evidence"}`,
     "",
-    `Confidence:\n${confidenceLabel}`,
+    `Portfolio Confidence:\n${portfolioConfidenceLabel}`,
+    "",
+    `Trading Confidence:\n${tradingConfidenceLabel}`,
   ];
   const whyLines = (reasons.length > 0 ? reasons : ["No additional evidence notes."]).slice(0, 4);
-  lines.push("", "Why:", ...whyLines.map((r) => `• ${r}`));
-  lines.push("", `Followability:\n${followability ?? "Low"}`);
+  lines.push("", "Why This Classification:", ...whyLines.map((r) => `• ${r}`));
   if (strengths.length > 0) lines.push("", "Strengths:", ...strengths.slice(0, 4).map((s) => `• ${s}`));
   if (weaknesses.length > 0) lines.push("", "Weaknesses:", ...weaknesses.slice(0, 4).map((w) => `• ${w}`));
+  lines.push("", `Followability:\n${followability ?? "Low"}`);
+  if (followabilityReasons.length > 0) lines.push(...followabilityReasons.slice(0, 3).map((r) => `• ${r}`));
+  lines.push("", "Evidence Quality:", `Portfolio: ${portfolioEvidenceLine}`, `Trading: ${tradingEvidenceLine}`);
   if (nextAction) lines.push("", `Next Action:\n${nextAction}`);
   if (summary) lines.push("", "Summary:", summary);
   return lines.join("\n");

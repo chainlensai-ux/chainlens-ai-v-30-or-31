@@ -6,6 +6,14 @@ import type { WalletSnapshot } from './walletSnapshot'
 // elsewhere in this snapshot (no new fetches, no AI).
 // ---------------------------------------------------------------------------
 
+export type WalletEvidenceCoverage = {
+  portfolioConfidence: 'low' | 'medium' | 'high'
+  tradingConfidence: 'low' | 'medium' | 'high'
+  verifiedEvidence: string[]
+  partialEvidence: string[]
+  missingEvidence: string[]
+}
+
 export type WalletProfile = {
   score: number | null
   grade: string | null
@@ -19,12 +27,14 @@ export type WalletProfile = {
   secondaryArchetype: string | null
   profileSummary: string | null
   followability: 'Low' | 'Moderate' | 'High' | null
+  followabilityReasons: string[]
   strengths: string[]
   weaknesses: string[]
   nextAction: string | null
   signals: string[]
   reasons: string[]
   evidenceCoverage: number
+  walletEvidenceCoverage: WalletEvidenceCoverage
 }
 
 const WALLET_CATEGORIES = ['Whale', 'Large Portfolio', 'Mid Portfolio', 'Small Portfolio'] as const
@@ -32,7 +42,31 @@ const WALLET_CATEGORIES = ['Whale', 'Large Portfolio', 'Mid Portfolio', 'Small P
 const WALLET_BEHAVIORS = [
   'Multi-Chain Portfolio Manager', 'Active Trader', 'Position Rotator', 'Swing Trader', 'Day Trader',
   'Diversified Holder', 'Conviction Holder', 'Smart Money Candidate', 'Airdrop Farmer', 'Meme Speculator',
+  'Treasury Style Portfolio',
 ] as const
+
+// Well-known meme-coin tickers/name fragments used only for evidence-gated
+// behavior classification — no new fetches, matched against existing holdings.
+const MEME_SYMBOLS = [
+  'DOGE', 'SHIB', 'PEPE', 'WIF', 'BONK', 'FLOKI', 'MEME', 'BRETT', 'POPCAT',
+  'MOG', 'TURBO', 'WOJAK', 'LADYS', 'SPX', 'TRUMP', 'PNUT', 'GOAT', 'NEIRO',
+  'CAT', 'INU', 'ELON', 'BABYDOGE', 'DOGWIFHAT',
+] as const
+
+function detectMemeHoldings(holdings: Array<{ symbol?: string; name?: string }>): string[] {
+  const hits = new Set<string>()
+  for (const h of holdings) {
+    const symbol = (h.symbol ?? '').toUpperCase()
+    const name = (h.name ?? '').toUpperCase()
+    for (const meme of MEME_SYMBOLS) {
+      if (symbol === meme || symbol.includes(meme) || name.includes(meme)) {
+        hits.add(symbol || meme)
+        break
+      }
+    }
+  }
+  return Array.from(hits)
+}
 
 const GRADE_COLORS: Record<string, string> = {
   'A+': 'emerald', A: 'green', B: 'teal', C: 'yellow', D: 'orange', F: 'red',
@@ -102,6 +136,78 @@ export function computeWalletProfile(snapshot: WalletSnapshot): WalletProfile {
   ]
   const evidenceCoverage = Math.round((coverageChecks.filter(Boolean).length / coverageChecks.length) * 100)
 
+  const stablecoinExposurePercent = facts?.summary?.stablecoinExposurePercent ?? null
+  const memeHits = detectMemeHoldings(holdings as Array<{ symbol?: string; name?: string }>)
+
+  // --- Evidence coverage V2: portfolio and trading confidence are derived from
+  // independent evidence pools so weak trade history never drags down a wallet's
+  // already-verified portfolio data, and vice versa. ---
+  const verifiedEvidence: string[] = []
+  const partialEvidence: string[] = []
+  const missingEvidence: string[] = []
+
+  if (holdingsCount > 0) verifiedEvidence.push('Holdings')
+  else missingEvidence.push('Holdings')
+
+  if (totalValueUsd > 0) verifiedEvidence.push('Portfolio value')
+  else missingEvidence.push('Portfolio value')
+
+  if (chainCount > 0) verifiedEvidence.push('Chain exposure')
+  else partialEvidence.push('Chain exposure')
+
+  if (facts?.status === 'ok') verifiedEvidence.push('Token balances')
+  else if (facts?.status === 'partial') partialEvidence.push('Token balances')
+  else missingEvidence.push('Token balances')
+
+  const portfolioChecks: Array<boolean> = [holdingsCount > 0, totalValueUsd > 0, Boolean(facts && facts.status !== 'open_check')]
+  const portfolioScore = portfolioChecks.filter(Boolean).length / portfolioChecks.length
+  const portfolioConfidence: 'low' | 'medium' | 'high' = portfolioScore >= 0.99 ? 'high' : portfolioScore >= 0.5 ? 'medium' : 'low'
+
+  if (behaviorCtx?.status === 'ok') verifiedEvidence.push('Historical activity')
+  else if (behaviorCtx?.status === 'partial') partialEvidence.push('Historical activity')
+  else missingEvidence.push('Historical activity')
+
+  if (estimatedPnl?.status === 'ok') verifiedEvidence.push('Cost basis')
+  else if (estimatedPnl?.status === 'partial') partialEvidence.push('Cost basis')
+  else missingEvidence.push('Cost basis')
+
+  if (lotSummary?.status === 'ok') verifiedEvidence.push('Trade reconstruction')
+  else if (lotSummary?.status === 'partial') partialEvidence.push('Trade reconstruction')
+  else missingEvidence.push('Trade reconstruction')
+
+  if (tradeStats?.status === 'ok') verifiedEvidence.push('Swap attribution')
+  else if (tradeStats?.status === 'partial') partialEvidence.push('Swap attribution')
+  else missingEvidence.push('Swap attribution')
+
+  if (tradeStats?.status === 'ok' && (tradeStats?.closedLots ?? 0) > 0) verifiedEvidence.push('Closed-lot attribution')
+  else if (tradeStats?.status === 'partial') partialEvidence.push('Closed-lot attribution')
+  else missingEvidence.push('Closed-lot attribution')
+
+  if (historicalCoverage?.status === 'ok') verifiedEvidence.push('Historical recovery')
+  else if (historicalCoverage?.status === 'partial') partialEvidence.push('Historical recovery')
+  else missingEvidence.push('Historical recovery')
+
+  if (estimatedPnl?.confidence === 'high') verifiedEvidence.push('PnL confidence')
+  else if (estimatedPnl?.confidence === 'medium' || estimatedPnl?.confidence === 'low') partialEvidence.push('PnL confidence')
+  else missingEvidence.push('PnL confidence')
+
+  const tradingChecks: Array<boolean> = [
+    Boolean(tradeStats && tradeStats.status === 'ok'),
+    Boolean(lotSummary && lotSummary.status === 'ok'),
+    Boolean(estimatedPnl && estimatedPnl.status === 'ok'),
+    Boolean(historicalCoverage && historicalCoverage.status === 'ok'),
+  ]
+  const tradingScore = tradingChecks.filter(Boolean).length / tradingChecks.length
+  const tradingConfidence: 'low' | 'medium' | 'high' = tradingScore >= 0.75 ? 'high' : tradingScore >= 0.4 ? 'medium' : 'low'
+
+  const walletEvidenceCoverage: WalletEvidenceCoverage = {
+    portfolioConfidence,
+    tradingConfidence,
+    verifiedEvidence,
+    partialEvidence,
+    missingEvidence,
+  }
+
   const hasMeaningfulTradeHistory = closedLots >= 3 && tradeStats?.economicSignificance === 'meaningful'
   const hasAnyHoldings = holdingsCount > 0
 
@@ -137,7 +243,6 @@ export function computeWalletProfile(snapshot: WalletSnapshot): WalletProfile {
     if (turnoverRatio >= 0.6 && holdingsCount > 0 && concentrationLabel === 'high') {
       candidates.push({ behavior: 'Meme Speculator', weight: 50 + turnoverRatio * 40, reason: `High position concentration (${concentrationLabel}) combined with high token turnover (${(turnoverRatio * 100).toFixed(0)}%).` })
     }
-
     if (closedLots >= 8 && turnoverRatio >= 0.4) {
       candidates.push({ behavior: 'Position Rotator', weight: 45 + Math.min(35, closedLots), reason: `${closedLots} closed lots across ${uniqueTokensTraded} tokens shows repeated entry/exit rotation.` })
     }
@@ -154,14 +259,33 @@ export function computeWalletProfile(snapshot: WalletSnapshot): WalletProfile {
     reasons.push(`Trade history present but below the meaningful-significance threshold (${tradeStats?.economicSignificanceReason ?? 'insufficient sample'}) — trading behaviors withheld.`)
   }
 
+  if (memeHits.length >= 2 && hasAnyHoldings) {
+    const topMemeHolding = facts?.summary?.topHoldings?.find((h) => memeHits.includes((h.symbol ?? '').toUpperCase()))
+    const memeReason = topMemeHolding
+      ? `${memeHits.join(', ')} allocation detected — ${topMemeHolding.symbol} represents ${topMemeHolding.percent.toFixed(0)}% of portfolio, meme concentration elevated.`
+      : `${memeHits.join(', ')} allocation detected — meme concentration elevated.`
+    candidates.push({ behavior: 'Meme Speculator', weight: 45 + Math.min(40, memeHits.length * 15), reason: memeReason })
+  }
+
+  if (stablecoinExposurePercent != null && stablecoinExposurePercent >= 60 && concentrationLabel !== 'high' && hasAnyHoldings) {
+    candidates.push({
+      behavior: 'Treasury Style Portfolio',
+      weight: 50 + Math.min(40, stablecoinExposurePercent - 60),
+      reason: `Stablecoin allocation ${stablecoinExposurePercent.toFixed(0)}%, capital preservation positioning, diversified cash exposure across ${holdingsCount} holdings.`,
+    })
+  }
+
   if (hasAnyHoldings && holdingsCount >= 5 && concentrationLabel === 'balanced') {
     candidates.push({ behavior: 'Diversified Holder', weight: 35 + Math.min(25, holdingsCount), reason: `${holdingsCount} holdings with balanced concentration across positions.` })
   }
 
+  const topHoldingPercent = facts?.summary?.topHoldings?.[0]?.percent ?? null
   if (hasAnyHoldings && concentrationLabel === 'high' && closedLots === 0 && (activeDays ?? 0) > 30) {
-    candidates.push({ behavior: 'Conviction Holder', weight: 35 + Math.min(30, (activeDays ?? 0) / 10), reason: `High concentration with no closed trades over ${activeDays} active days — long-held conviction positions.` })
+    const topPart = topHoldingPercent != null ? `Top holding represents ${topHoldingPercent.toFixed(0)}% of portfolio. ` : ''
+    candidates.push({ behavior: 'Conviction Holder', weight: 35 + Math.min(30, (activeDays ?? 0) / 10), reason: `${topPart}High concentration with no closed trades over ${activeDays} active days — long-term concentration pattern.` })
   } else if (avgHoldHours != null && avgHoldHours >= 24 * 90 && turnoverRatio < 0.2 && closedLots > 0) {
-    candidates.push({ behavior: 'Conviction Holder', weight: 40 + Math.min(35, (avgHoldHours / (24 * 90)) * 10), reason: `Average hold time ${(avgHoldHours / 24).toFixed(0)} days with minimal turnover (${(turnoverRatio * 100).toFixed(0)}%).` })
+    const topPart = topHoldingPercent != null ? `Top holding represents ${topHoldingPercent.toFixed(0)}% of portfolio. ` : ''
+    candidates.push({ behavior: 'Conviction Holder', weight: 40 + Math.min(35, (avgHoldHours / (24 * 90)) * 10), reason: `${topPart}Average hold time ${(avgHoldHours / 24).toFixed(0)} days with low realized turnover (${(turnoverRatio * 100).toFixed(0)}%).` })
   }
 
   if (airdropLikeTxs != null && airdropLikeTxs >= 3 && swapLikeTxs != null && airdropLikeTxs > swapLikeTxs) {
@@ -243,15 +367,30 @@ export function computeWalletProfile(snapshot: WalletSnapshot): WalletProfile {
   else if (evidenceCoverage >= 50) confidence = 'medium'
   else confidence = 'low'
 
-  // --- Followability: derived from confidence + behavior strength, not a new evidence input ---
+  // --- Followability V2: derived from evidence quality, portfolio size, diversification,
+  // and trading evidence quality — never a new evidence input, always explained. ---
   let followability: 'Low' | 'Moderate' | 'High' | null = null
+  const followabilityReasons: string[] = []
   if (sufficientEvidence) {
-    if (behavior && (behavior === 'Smart Money Candidate' || behavior === 'Multi-Chain Portfolio Manager') && confidence === 'high') {
+    const diversificationScore = clampPct(
+      (concentrationLabel === 'balanced' ? 80 : concentrationLabel === 'medium' ? 55 : concentrationLabel === 'high' ? 25 : 50) +
+      Math.min(20, holdingsCount * 2)
+    )
+    const isSizable = category === 'Whale' || category === 'Large Portfolio'
+    const strongTradingEvidence = walletEvidenceCoverage.tradingConfidence === 'high'
+
+    if (behavior && walletEvidenceCoverage.portfolioConfidence === 'high' && strongTradingEvidence && (isSizable || diversificationScore >= 70)) {
       followability = 'High'
-    } else if (behavior && confidence !== 'low') {
+      followabilityReasons.push(`Confirmed behavior "${behavior}" with high portfolio and trading confidence.`)
+      if (isSizable) followabilityReasons.push(`Portfolio size (${category}) supports follow-worthy conviction.`)
+      if (diversificationScore >= 70) followabilityReasons.push(`Diversification score ${Math.round(diversificationScore)}/100 reduces single-position risk.`)
+    } else if (behavior && (walletEvidenceCoverage.portfolioConfidence !== 'low' || strongTradingEvidence)) {
       followability = 'Moderate'
+      followabilityReasons.push(`Behavior "${behavior}" confirmed, but evidence quality or portfolio size is not yet strong enough for high followability.`)
+      followabilityReasons.push(`Portfolio confidence: ${walletEvidenceCoverage.portfolioConfidence}, trading confidence: ${walletEvidenceCoverage.tradingConfidence}.`)
     } else {
       followability = 'Low'
+      followabilityReasons.push(behavior ? `Behavior "${behavior}" confirmed but evidence quality is too low to recommend following.` : 'No confirmed behavior pattern — insufficient signal to recommend following.')
     }
   }
 
@@ -290,11 +429,13 @@ export function computeWalletProfile(snapshot: WalletSnapshot): WalletProfile {
     secondaryArchetype: behavior,
     profileSummary,
     followability,
+    followabilityReasons,
     strengths,
     weaknesses,
     nextAction,
     signals,
     reasons,
     evidenceCoverage,
+    walletEvidenceCoverage,
   }
 }
