@@ -2870,13 +2870,15 @@ function buildWalletProfileBlock(walletProfile: Record<string, unknown> | null |
 // Compact, JSON-safe echo of lastWallet sent back to the client so the frontend can persist it
 // (sessionStorage) as a redundancy layer for the server-side in-memory session map — never the
 // primary store, just a fallback restore source for the next request's clientContext.lastWallet.
-function buildWalletMemoryEcho(mem: ClarkSessionMemory): { lastWallet: { address: string; chainMode: string | null; lastScannedAt: number } } | undefined {
+function buildWalletMemoryEcho(mem: ClarkSessionMemory): { lastWallet: { address: string; chainMode: string | null; lastScannedAt: number; cachedEvidence?: { walletProfile: unknown } } } | undefined {
   if (!mem.lastWallet?.address) return undefined;
+  const walletProfile = (mem.lastWallet.cachedEvidence as Record<string, unknown> | null | undefined)?.walletProfile ?? null;
   return {
     lastWallet: {
       address: mem.lastWallet.address,
       chainMode: mem.lastWallet.chainMode ?? null,
       lastScannedAt: mem.lastWallet.lastScannedAt ?? mem.lastWallet.ts,
+      ...(walletProfile ? { cachedEvidence: { walletProfile } } : {}),
     },
   };
 }
@@ -9417,10 +9419,12 @@ export async function POST(req: NextRequest) {
     {
       const genericMemoryEcho: Record<string, unknown> = {}
       if (sessionMem.lastWallet?.address) {
+        const echoedWalletProfile = (sessionMem.lastWallet.cachedEvidence as Record<string, unknown> | null | undefined)?.walletProfile ?? null;
         genericMemoryEcho.lastWallet = {
           address: sessionMem.lastWallet.address,
           chainMode: sessionMem.lastWallet.chainMode ?? null,
           lastScannedAt: sessionMem.lastWallet.lastScannedAt ?? sessionMem.lastWallet.ts,
+          ...(echoedWalletProfile ? { cachedEvidence: { walletProfile: echoedWalletProfile } } : {}),
         }
       }
       if (sessionMem.lastToken?.address) {

@@ -2155,6 +2155,14 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   // replays a stale wallet-profile answer, and no new provider/API call sites were introduced.
   assert.ok(routeFile.includes('is\\s+this\\s+smart\\s+money|should\\s+i\\s+follow\\s+this\\s+wallet'), 'memorySensitivePrompt regex covers the new wallet-profile follow-up phrases')
 
+  // Persistence chain regression guard: walletProfile must survive memoryEcho -> sessionStorage ->
+  // clientContext -> restore so the memory-only follow-up dispatcher can read it back. Both echo
+  // builders (the wallet-scan-success buildWalletMemoryEcho() and the generic per-response echo)
+  // must carry cachedEvidence.walletProfile, not just address/chainMode/lastScannedAt.
+  assert.ok(routeFile.includes('mem.lastWallet.cachedEvidence as Record<string, unknown> | null | undefined)?.walletProfile'), 'buildWalletMemoryEcho echoes lastWallet.cachedEvidence.walletProfile, not just address/chainMode/lastScannedAt')
+  assert.ok(routeFile.includes('echoedWalletProfile ? { cachedEvidence: { walletProfile: echoedWalletProfile } }'), 'generic per-response memoryEcho also echoes lastWallet.cachedEvidence.walletProfile')
+  assert.ok(routeFile.includes('sessionMem.lastWallet = body.clientContext.lastWallet;'), 'restore path still copies the full clientContext.lastWallet object (including cachedEvidence) back into sessionMem')
+
   const wsPage = fs.readFileSync(path.join(__dirname, '..', 'app', 'terminal', 'wallet-scanner', 'page.tsx'), 'utf8')
   assert.ok(wsPage.includes('Wallet Profile'), 'wallet scanner page renders a Wallet Profile section')
   assert.ok(wsPage.includes('Open Check') && wsPage.includes('Insufficient evidence'), 'wallet scanner page falls back to Open Check / Insufficient evidence when unavailable')
