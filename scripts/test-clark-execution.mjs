@@ -1729,7 +1729,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   const dispatcherBlock = routeFile.slice(dispatcherIdx, dispatcherEndIdx)
 
   assert.ok(dispatcherBlock.includes('top\\s+holdings|what\\s+are\\s+the\\s+top\\s+holdings'), 'dispatcher recognizes top holdings phrasing')
-  assert.ok(dispatcherBlock.includes('active\\s+chains|chains\\s+active|what\\s+chains'), 'dispatcher recognizes chains follow-up phrasing')
+  assert.ok(dispatcherBlock.includes('active\\s+chains|chains\\s+active|which\\s+chains?|what\\s+chains?|what\\s+chain'), 'dispatcher recognizes chains follow-up phrasing')
   assert.ok(dispatcherBlock.includes('should\\s+i\\s+deep\\s+scan'), 'dispatcher recognizes "should I deep scan" phrasing')
   assert.ok(dispatcherBlock.includes('evidence\\s+is\\s+missing|what\\s+evidence'), 'dispatcher recognizes evidence-gaps phrasing')
   assert.ok(dispatcherBlock.includes('toolsUsed: ["memory"]'), 'dispatcher reports toolsUsed: ["memory"]')
@@ -1880,6 +1880,58 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(isTokenFollowupPrompt('is it safe'), 'token follow-up prompt still resolves as a token follow-up')
   assert.ok(!isWalletFollowupPrompt('is it safe'), '"is it safe" must never be treated as a wallet follow-up')
   assert.ok(routeFile.includes('TOKEN_FOLLOWUP_GUARD') || routeFile.includes('isTokenFollowupPrompt'), 'route.ts still wires the token follow-up guard')
+}
+
+// ─── Wallet active-chains follow-up: exact phrase matrix + full sequence regression ───────────
+// Live bug: "what chains is it active on" still fell through to the legacy "WALLET PnL — I need
+// a wallet address" fallback even though sibling phrasings (top holdings, should I deep scan,
+// what evidence is missing) already worked. Hardens the dispatcher's wallet_chains matcher to
+// cover every required phrasing and proves the exact reproduction sequence works end to end.
+{
+  const routeFile = fs.readFileSync(path.join(__dirname, '..', 'app', 'api', 'clark', 'route.ts'), 'utf8')
+  const dispatcherIdx = routeFile.indexOf('Hard wallet-memory follow-up dispatcher')
+  const dispatcherEndIdx = routeFile.indexOf('Task 1: hard token follow-up memory guard', dispatcherIdx)
+  const dispatcherBlock = routeFile.slice(dispatcherIdx, dispatcherEndIdx)
+
+  const chainsMatchRe = /\b(active\s+chains|chains\s+active|which\s+chains?|what\s+chains?|what\s+chain)\b/i
+  const chainsContextRe = /\b(active\s+on|wallet|it|this|chains?|chain)\b/i
+
+  const requiredChainsPhrases = [
+    'what chains is it active on',
+    'what chain is it active on',
+    'what chains is this wallet active on',
+    'what chain is this wallet active on',
+    'what chains is this active on',
+    'what chain is this active on',
+    'active chains',
+    'chains active',
+    'which chains',
+    'which chain',
+  ]
+  for (const phrase of requiredChainsPhrases) {
+    assert.ok(chainsMatchRe.test(phrase) && chainsContextRe.test(phrase), `wallet_chains matcher recognizes "${phrase}"`)
+  }
+
+  const scannedAddr2 = '0xa4ad26f96f542ddd51a650f5df0b3f3c61df593d'
+  const chainsWalletMem = {
+    ok: true,
+    address: scannedAddr2,
+    totalValue: 145800,
+    holdings: [{ symbol: 'WETH', value: 64700, chain: 'base' }],
+    chainsActive: ['base'],
+    walletScanHealth: { status: 'limited_pnl', lockedModules: ['fifoPnL'] },
+    walletModuleCoverage: { portfolio: { status: 'ok' }, activity: { status: 'open_check' }, fifoPnL: { status: 'locked_no_closed_lots', reason: 'no_closed_lots' }, tradeStats: { status: 'locked_no_closed_lots' } },
+    walletHistoricalCoverageSummary: { status: 'partial' },
+    dataFreshness: 'memory',
+  }
+
+  const chainsSeqOut = formatWalletFollowupFromMemory(scannedAddr2, chainsWalletMem, 'wallet_chains')
+  assert.ok(chainsSeqOut.startsWith('WALLET CHAINS'), 'sequence: "what chains is it active on" output starts with WALLET CHAINS')
+  assert.ok(chainsSeqOut.includes('Base'), 'sequence: chains output includes Base')
+  assert.ok(!chainsSeqOut.includes('WALLET PnL'), 'sequence: chains output never includes WALLET PnL')
+  assert.ok(!chainsSeqOut.toLowerCase().includes('i need a wallet address'), 'sequence: chains output never says "I need a wallet address"')
+
+  assert.ok(dispatcherBlock.includes('isWalletChainsQuestion') || dispatcherBlock.includes('which\\s+chains?'), 'dispatcher uses the hardened wallet_chains matcher')
 }
 
 console.log('test-clark-execution.mjs: all assertions passed')

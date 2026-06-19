@@ -6277,7 +6277,8 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const walletMemoryFollowupKind: ('wallet_holdings' | 'wallet_chains' | 'wallet_deep_scan_advice' | 'wallet_evidence_gaps' | 'wallet_summary' | 'wallet_quality' | 'wallet_risk') | null =
       /top\s+holdings|what\s+are\s+the\s+top\s+holdings/.test(normalizedPrompt)
         ? "wallet_holdings"
-        : /active\s+chains|chains\s+active|what\s+chains/.test(normalizedPrompt)
+        : (/\b(active\s+chains|chains\s+active|which\s+chains?|what\s+chains?|what\s+chain)\b/.test(normalizedPrompt) &&
+            /\b(active\s+on|wallet|it|this|chains?|chain)\b/.test(normalizedPrompt))
           ? "wallet_chains"
           : /should\s+i\s+deep\s+scan|should\s+i\s+run\s+deep\s+scan|do\s+i\s+need\s+deep\s+scan|deep\s+scan\?|^deep\s+scan$/.test(normalizedPrompt)
             ? "wallet_deep_scan_advice"
