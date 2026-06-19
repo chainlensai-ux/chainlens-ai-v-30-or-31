@@ -20,18 +20,12 @@ export type WalletProfile = {
   tradingConfidence: ProfileConfidence
   profileSummary: string | null
   followability: 'Low' | 'Moderate' | 'High' | null
-  followabilityReasons: string[]
   strengths: string[]
   weaknesses: string[]
   nextAction: string | null
   signals: string[]
   reasons: string[]
-  strengths: string[]
-  weaknesses: string[]
-  followability: 'Low' | 'Moderate' | 'High'
-  nextAction: string
   evidenceCoverage: number
-  walletEvidenceCoverage: WalletEvidenceCoverage
 }
 
 function gradeForScore(score: number): string {
@@ -234,17 +228,11 @@ export function computeWalletProfile(snapshot: WalletSnapshot): WalletProfile {
     tradingConfidence,
     profileSummary,
     followability,
-    followabilityReasons,
     strengths,
     weaknesses,
     nextAction,
     signals,
     reasons,
-    strengths,
-    weaknesses,
-    followability,
-    nextAction,
     evidenceCoverage,
-    walletEvidenceCoverage,
   }
 }
