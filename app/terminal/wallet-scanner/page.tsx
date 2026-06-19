@@ -46,6 +46,24 @@ type WalletTier = 'Smart Money' | 'Positive Early Read' | 'Average Trader' | 'Lo
 type WalletIntelStatus = 'ok' | 'partial' | 'open_check'
 type WalletConfidence = 'high' | 'medium' | 'low' | 'open check'
 
+const gradeToneFor = (grade: string | null | undefined) => {
+  switch (grade) {
+    case 'A+': return { color: '#10b981', bg: 'rgba(16,185,129,0.14)', border: 'rgba(16,185,129,0.36)' }
+    case 'A': return { color: '#14b8a6', bg: 'rgba(20,184,166,0.14)', border: 'rgba(20,184,166,0.36)' }
+    case 'B': return { color: '#3b82f6', bg: 'rgba(59,130,246,0.14)', border: 'rgba(59,130,246,0.36)' }
+    case 'C': return { color: '#f59e0b', bg: 'rgba(245,158,11,0.14)', border: 'rgba(245,158,11,0.36)' }
+    case 'D': return { color: '#f97316', bg: 'rgba(249,115,22,0.14)', border: 'rgba(249,115,22,0.36)' }
+    case 'F': return { color: '#ef4444', bg: 'rgba(239,68,68,0.14)', border: 'rgba(239,68,68,0.36)' }
+    default: return { color: '#c4b5fd', bg: 'rgba(139,92,246,0.12)', border: 'rgba(139,92,246,0.28)' }
+  }
+}
+
+const cleanWalletArchetype = (archetype: string | null | undefined): string | null => {
+  const normalized = typeof archetype === 'string' ? archetype.trim() : ''
+  if (!normalized || normalized === 'null' || normalized === 'undefined' || normalized === 'Open Check') return null
+  return normalized
+}
+
 type WalletRecentTrade = {
   token: string
   entry: number | null
@@ -1474,6 +1492,9 @@ export default function WalletScannerPage() {
             const hasPortfolioIntelligence = sorted.length > 0 || result.totalValue > 0
             const hasCortexFacts = Boolean(result.walletFacts)
             const showLegacyPortfolioCards = !(hasPortfolioIntelligence && hasCortexFacts)
+            const walletProfileGradeTone = gradeToneFor(result.walletProfile?.grade)
+            const primaryWalletArchetype = cleanWalletArchetype(result.walletProfile?.primaryArchetype)
+            const secondaryWalletArchetype = cleanWalletArchetype(result.walletProfile?.secondaryArchetype)
             return (
             <div className="ws-result-fade" style={{ maxWidth: '100%', width: '100%', display: 'flex', flexDirection: 'column', gap: '20px', marginTop: '28px' }}>
 
@@ -1500,11 +1521,11 @@ export default function WalletScannerPage() {
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: '20px', alignItems: 'baseline' }}>
                       <div>
                         <div style={{ fontSize: '11px', color: '#94a3b8' }}>Wallet Score</div>
-                        <div style={{ fontSize: '22px', fontWeight: 700, color: '#e9d5ff' }}>{result.walletProfile.score}<span style={{ fontSize: '13px', color: '#94a3b8' }}>/100</span></div>
+                        <div style={{ fontSize: '22px', fontWeight: 700, color: walletProfileGradeTone.color }}>{result.walletProfile.score}<span style={{ fontSize: '13px', color: '#94a3b8' }}>/100</span></div>
                       </div>
                       <div>
                         <div style={{ fontSize: '11px', color: '#94a3b8' }}>Grade</div>
-                        <div style={{ fontSize: '22px', fontWeight: 700, color: '#e9d5ff' }}>{result.walletProfile.grade}</div>
+                        <div style={{ display: 'inline-flex', alignItems: 'center', borderRadius: '999px', border: `1px solid ${walletProfileGradeTone.border}`, background: walletProfileGradeTone.bg, color: walletProfileGradeTone.color, padding: '4px 11px', fontSize: '22px', fontWeight: 700, lineHeight: 1 }}>{result.walletProfile.grade}</div>
                       </div>
                       <div>
                         <div style={{ fontSize: '11px', color: '#94a3b8' }}>Confidence</div>
@@ -1514,11 +1535,11 @@ export default function WalletScannerPage() {
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: '20px' }}>
                       <div>
                         <div style={{ fontSize: '11px', color: '#94a3b8' }}>Primary Archetype</div>
-                        <div style={{ fontSize: '14px', color: '#f1f5f9' }}>{result.walletProfile.primaryArchetype ?? 'Open Check'}</div>
+                        <div style={{ display: 'inline-flex', alignItems: 'center', borderRadius: '999px', border: '1px solid rgba(148,163,184,0.24)', background: 'rgba(148,163,184,0.08)', padding: '4px 10px', fontSize: '14px', color: '#f1f5f9' }}>{primaryWalletArchetype ?? 'None Detected'}</div>
                       </div>
                       <div>
                         <div style={{ fontSize: '11px', color: '#94a3b8' }}>Secondary Archetype</div>
-                        <div style={{ fontSize: '14px', color: '#f1f5f9' }}>{result.walletProfile.secondaryArchetype ?? 'Open Check'}</div>
+                        <div style={{ display: 'inline-flex', alignItems: 'center', borderRadius: '999px', border: '1px solid rgba(45,212,191,0.30)', background: 'rgba(45,212,191,0.10)', padding: '4px 10px', fontSize: '14px', fontWeight: 600, color: '#5eead4' }}>{secondaryWalletArchetype ?? 'None Detected'}</div>
                       </div>
                     </div>
                     {result.walletProfile.profileSummary && (

@@ -18,9 +18,12 @@ export type WalletProfile = {
 }
 
 const WALLET_ARCHETYPES = [
-  'Smart Money', 'Meme Hunter', 'Swing Trader', 'Day Trader', 'Diamond Holder',
-  'Whale', 'Yield Farmer', 'Airdrop Farmer', 'Dev Wallet', 'Passive Investor',
+  'Whale', 'Mid-Cap Investor', 'Retail Investor',
+  'Active Trader', 'Swing Trader', 'Diamond Holder', 'Meme Hunter', 'Smart Money', 'Airdrop Farmer',
 ] as const
+
+const CLASS_ARCHETYPES = ['Whale', 'Mid-Cap Investor', 'Retail Investor'] as const
+const BEHAVIOR_ARCHETYPES = ['Active Trader', 'Swing Trader', 'Diamond Holder', 'Meme Hunter', 'Smart Money', 'Airdrop Farmer'] as const
 
 function gradeForScore(score: number): string {
   if (score >= 90) return 'A+'
@@ -85,61 +88,69 @@ export function computeWalletProfile(snapshot: WalletSnapshot): WalletProfile {
   }
 
   // --- Phase 1: archetype classification (deterministic, evidence-gated) ---
-  type Candidate = { archetype: typeof WALLET_ARCHETYPES[number]; weight: number; reason: string }
-  const candidates: Candidate[] = []
+  type Archetype = typeof WALLET_ARCHETYPES[number]
+  type Candidate = { archetype: Archetype; weight: number; reason: string }
+  const classCandidates: Candidate[] = []
+  const behaviorCandidates: Candidate[] = []
 
   if (hasMeaningfulTradeHistory) {
     if (winRatePercent != null && winRatePercent >= 55 && (tradeStats?.confidence === 'high' || tradeStats?.confidence === 'medium')) {
       const weight = winRatePercent + (tradeStats?.confidence === 'high' ? 10 : 0)
-      candidates.push({ archetype: 'Smart Money', weight, reason: `Win rate ${winRatePercent.toFixed(1)}% across ${closedLots} closed trades with ${tradeStats?.confidence} confidence.` })
+      behaviorCandidates.push({ archetype: 'Smart Money', weight, reason: `Win rate ${winRatePercent.toFixed(1)}% across ${closedLots} closed trades with ${tradeStats?.confidence} confidence.` })
     }
     if (avgHoldHours != null && avgHoldHours < 6 && (tradesPerActiveDay ?? 0) >= 1) {
-      candidates.push({ archetype: 'Day Trader', weight: 60 + Math.min(40, (tradesPerActiveDay ?? 0) * 10), reason: `Average hold time ${avgHoldHours.toFixed(1)}h with ${(tradesPerActiveDay ?? 0).toFixed(1)} trades/active day.` })
+      behaviorCandidates.push({ archetype: 'Active Trader', weight: 60 + Math.min(40, (tradesPerActiveDay ?? 0) * 10), reason: `Average hold time ${avgHoldHours.toFixed(1)}h with ${(tradesPerActiveDay ?? 0).toFixed(1)} trades/active day.` })
     } else if (avgHoldHours != null && avgHoldHours >= 24 && avgHoldHours < 24 * 30) {
-      candidates.push({ archetype: 'Swing Trader', weight: 50 + Math.min(30, turnoverRatio * 30), reason: `Average hold time ${(avgHoldHours / 24).toFixed(1)} days with ${uniqueTokensTraded} unique tokens traded.` })
+      behaviorCandidates.push({ archetype: 'Swing Trader', weight: 50 + Math.min(30, turnoverRatio * 30), reason: `Average hold time ${(avgHoldHours / 24).toFixed(1)} days with ${uniqueTokensTraded} unique tokens traded.` })
     }
     if (turnoverRatio >= 0.6 && holdingsCount > 0 && concentrationLabel === 'high') {
-      candidates.push({ archetype: 'Meme Hunter', weight: 50 + turnoverRatio * 40, reason: `High position concentration (${concentrationLabel}) combined with high token turnover (${(turnoverRatio * 100).toFixed(0)}%).` })
+      behaviorCandidates.push({ archetype: 'Meme Hunter', weight: 50 + turnoverRatio * 40, reason: `High position concentration (${concentrationLabel}) combined with high token turnover (${(turnoverRatio * 100).toFixed(0)}%).` })
     }
   } else if (closedLots > 0) {
     reasons.push(`Trade history present but below the meaningful-significance threshold (${tradeStats?.economicSignificanceReason ?? 'insufficient sample'}) — trading archetypes withheld.`)
   }
 
-  if (totalValueUsd >= 250000 && hasAnyHoldings) {
-    candidates.push({ archetype: 'Whale', weight: 70 + Math.min(30, Math.log10(totalValueUsd / 250000 + 1) * 30), reason: `Portfolio value $${Math.round(totalValueUsd).toLocaleString()} exceeds the whale threshold.` })
+  if (hasAnyHoldings) {
+    if (totalValueUsd >= 250000) {
+      classCandidates.push({ archetype: 'Whale', weight: 70 + Math.min(30, Math.log10(totalValueUsd / 250000 + 1) * 30), reason: `Portfolio value $${Math.round(totalValueUsd).toLocaleString()} exceeds the whale threshold.` })
+    } else if (totalValueUsd >= 10000) {
+      classCandidates.push({ archetype: 'Mid-Cap Investor', weight: 60 + Math.min(30, Math.log10(totalValueUsd / 10000 + 1) * 20), reason: `Portfolio value $${Math.round(totalValueUsd).toLocaleString()} fits the mid-cap investor range.` })
+    } else {
+      classCandidates.push({ archetype: 'Retail Investor', weight: 50 + Math.min(25, Math.log10(totalValueUsd + 1) * 5), reason: `Portfolio value $${Math.round(totalValueUsd).toLocaleString()} fits the retail investor range.` })
+    }
   }
 
   if (avgHoldHours != null && avgHoldHours >= 24 * 90 && turnoverRatio < 0.2 && closedLots > 0) {
-    candidates.push({ archetype: 'Diamond Holder', weight: 50 + Math.min(40, (avgHoldHours / (24 * 90)) * 10), reason: `Average hold time ${(avgHoldHours / 24).toFixed(0)} days with minimal turnover (${(turnoverRatio * 100).toFixed(0)}%).` })
+    behaviorCandidates.push({ archetype: 'Diamond Holder', weight: 50 + Math.min(40, (avgHoldHours / (24 * 90)) * 10), reason: `Average hold time ${(avgHoldHours / 24).toFixed(0)} days with minimal turnover (${(turnoverRatio * 100).toFixed(0)}%).` })
   } else if (closedLots === 0 && hasAnyHoldings && (activeDays ?? 0) > 30) {
-    candidates.push({ archetype: 'Diamond Holder', weight: 40, reason: `No closed trades over ${activeDays} active days — holdings appear long-held rather than traded.` })
+    behaviorCandidates.push({ archetype: 'Diamond Holder', weight: 40, reason: `No closed trades over ${activeDays} active days — holdings appear long-held rather than traded.` })
   }
 
   if (airdropLikeTxs != null && airdropLikeTxs >= 3 && swapLikeTxs != null && airdropLikeTxs > swapLikeTxs) {
-    candidates.push({ archetype: 'Airdrop Farmer', weight: 40 + Math.min(30, airdropLikeTxs), reason: `${airdropLikeTxs} claim/airdrop-like transactions detected, exceeding swap-like activity.` })
+    behaviorCandidates.push({ archetype: 'Airdrop Farmer', weight: 40 + Math.min(30, airdropLikeTxs), reason: `${airdropLikeTxs} claim/airdrop-like transactions detected, exceeding swap-like activity.` })
   }
 
-  if (hasAnyHoldings && closedLots === 0 && (tradesPerActiveDay ?? 0) === 0 && chainCount > 0 && concentrationLabel !== 'high' && holdingsCount >= 3) {
-    candidates.push({ archetype: 'Passive Investor', weight: 35 + Math.min(20, holdingsCount), reason: `Diversified holdings across ${holdingsCount} assets with no closed trades detected.` })
-  }
-
-  // Yield Farmer and Dev Wallet are intentionally never assigned: the existing evidence model
-  // (holdings + swap/transfer classification) does not surface LP/staking or contract-deploy
-  // signals, and guessing here would violate the "do not guess" requirement.
-  if (candidates.length === 0 && hasAnyHoldings) {
+  if (classCandidates.length === 0 && behaviorCandidates.length === 0 && hasAnyHoldings) {
     reasons.push('Available evidence does not match any archetype heuristic with sufficient confidence.')
   }
 
-  candidates.sort((a, b) => b.weight - a.weight)
-  const primaryArchetype = candidates[0]?.archetype ?? null
-  const secondaryArchetype = candidates[1] && candidates[1].archetype !== primaryArchetype ? candidates[1].archetype : null
+  classCandidates.sort((a, b) => b.weight - a.weight)
+  behaviorCandidates.sort((a, b) => b.weight - a.weight)
+  const primaryArchetype = classCandidates.find((candidate) => (CLASS_ARCHETYPES as readonly string[]).includes(candidate.archetype))?.archetype ?? null
+  const secondaryArchetype = behaviorCandidates.find((candidate) => (BEHAVIOR_ARCHETYPES as readonly string[]).includes(candidate.archetype))?.archetype ?? null
   if (primaryArchetype) {
-    signals.push(candidates[0].reason)
-    reasons.push(`Primary archetype "${primaryArchetype}": ${candidates[0].reason}`)
+    const primaryCandidate = classCandidates.find((candidate) => candidate.archetype === primaryArchetype)
+    if (primaryCandidate) {
+      signals.push(primaryCandidate.reason)
+      reasons.push(`Primary archetype "${primaryArchetype}": ${primaryCandidate.reason}`)
+    }
   }
   if (secondaryArchetype) {
-    signals.push(candidates[1].reason)
-    reasons.push(`Secondary archetype "${secondaryArchetype}": ${candidates[1].reason}`)
+    const secondaryCandidate = behaviorCandidates.find((candidate) => candidate.archetype === secondaryArchetype)
+    if (secondaryCandidate) {
+      signals.push(secondaryCandidate.reason)
+      reasons.push(`Secondary archetype "${secondaryArchetype}": ${secondaryCandidate.reason}`)
+    }
   }
 
   // --- Phase 2: weighted wallet score ---

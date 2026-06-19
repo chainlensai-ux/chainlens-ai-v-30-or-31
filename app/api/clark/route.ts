@@ -2839,6 +2839,13 @@ function buildWalletProfileBlock(walletProfile: Record<string, unknown> | null |
   const signals = Array.isArray(walletProfile.signals) ? (walletProfile.signals as unknown[]).filter((s): s is string => typeof s === "string") : [];
   const reasons = Array.isArray(walletProfile.reasons) ? (walletProfile.reasons as unknown[]).filter((s): s is string => typeof s === "string") : [];
   const confidenceLabel = confidence.charAt(0).toUpperCase() + confidence.slice(1);
+  const cleanArchetype = (value: string | null): string | null => {
+    const normalized = value?.trim() ?? "";
+    if (!normalized || normalized === "null" || normalized === "undefined" || normalized === "Open Check") return null;
+    return normalized;
+  };
+  const primaryType = cleanArchetype(primary);
+  const secondaryType = cleanArchetype(secondary);
 
   if (score == null || grade == null) {
     const reasonLine = reasons[0] ?? "Insufficient evidence to score this wallet.";
@@ -2858,8 +2865,8 @@ function buildWalletProfileBlock(walletProfile: Record<string, unknown> | null |
     `Wallet Score: ${score}`,
     `Grade: ${grade}`,
     "",
-    `Primary Type: ${primary ?? "Open Check"}`,
-    `Secondary Type: ${secondary ?? "Open Check"}`,
+    `Primary Type: ${primaryType ?? "None Detected"}`,
+    `Secondary Type: ${secondaryType ?? "None Detected"}`,
     "",
     `Confidence: ${confidenceLabel}`,
   ];
