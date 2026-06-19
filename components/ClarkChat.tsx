@@ -4,6 +4,7 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import HeroSection from '@/components/HeroSection'
 import HomeTokenScreener from '@/components/HomeTokenScreener'
 import { supabase } from '@/lib/supabaseClient'
+import { persistClarkMemoryEcho } from '@/lib/client/clarkMemory'
 
 interface ClarkChatProps {
   active: string | null
@@ -233,6 +234,7 @@ export default function ClarkChat({
       const json = await res.json()
       if (res.status !== 429 && json.quotaConsumed !== false) setClarkUsed(bumpClarkUsage())
       const payload = (json.data as Record<string, unknown>) ?? {}
+      persistClarkMemoryEcho(payload)
       const marketContext = (payload.marketContext && typeof payload.marketContext === 'object')
         ? payload.marketContext as { items?: unknown }
         : null

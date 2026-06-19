@@ -108,13 +108,14 @@ export type WalletFollowupKind =
   | "wallet_deep_scan_advice"
   | "wallet_evidence_gaps"
   | "wallet_risk"
+  | "wallet_profile"
   | "wallet_summary";
 
 // Only genuine imperative re-scan commands skip the followup-memory path — questions about
 // deep scan ("should I deep scan", "deep scan?") are handled below as advice from memory, not
 // as a trigger to actually re-run the wallet scanner.
 const WALLET_REFRESH_RE = /\b(refresh|rescan|run\s+full\s+scan|scan\s+again|run\s+deep\s+scan(?:\s+now)?|do\s+a\s+deep\s+scan(?:\s+now)?)\b/i;
-const WALLET_FOLLOWUP_CORE_RE = /\b(is\s+this\s+wallet\s+good|is\s+this\s+wallet\s+profitable|why\s+no\s+pnl|why\s+is\s+pnl\s+missing|explain\s+pnl|top\s+holdings?|what\s+are\s+the\s+top\s+holdings?|what\s+chains\s+is\s+it\s+active\s+on|active\s+chains?|should\s+i\s+deep\s+scan|what\s+evidence\s+is\s+missing|what\s+is\s+missing|is\s+this\s+wallet\s+risky|summarize\s+this\s+wallet|wallet\s+summary|wallet\s+risk|wallet\s+quality|wallet\s+profitability)\b/i;
+const WALLET_FOLLOWUP_CORE_RE = /\b(is\s+this\s+wallet\s+good|is\s+this\s+wallet\s+profitable|why\s+no\s+pnl|why\s+is\s+pnl\s+missing|explain\s+pnl|top\s+holdings?|what\s+are\s+the\s+top\s+holdings?|what\s+chains\s+is\s+it\s+active\s+on|active\s+chains?|should\s+i\s+deep\s+scan|what\s+evidence\s+is\s+missing|what\s+is\s+missing|is\s+this\s+wallet\s+risky|summarize\s+this\s+wallet|wallet\s+summary|wallet\s+risk|wallet\s+quality|wallet\s+profitability|what\s+type\s+of\s+trader|wallet\s+profile|should\s+i\s+follow|why\s+this\s+score|why\s+smart\s+money|why\s+not\s+smart\s+money|smart\s+money)\b/i;
 // A bare "deep scan" / "deep scan?" with nothing else (no address, no "this wallet ...") is a
 // question asking for advice, not a command — must not be confused with "deep scan this wallet 0x...".
 const WALLET_DEEP_SCAN_QUESTION_RE = /^deep\s+scan\??$/i;
@@ -137,6 +138,7 @@ export function classifyWalletFollowupKind(prompt: string): WalletFollowupKind {
   if (/deep\s+scan|full\s+scan/.test(t)) return "wallet_deep_scan_advice";
   if (/evidence.*missing|missing.*evidence|gaps?|what\s+is\s+missing/.test(t)) return "wallet_evidence_gaps";
   if (/risky|risk/.test(t)) return "wallet_risk";
+  if (/what\s+type\s+of\s+trader|wallet\s+profile|should\s+i\s+follow|why\s+this\s+score|why\s+smart\s+money|why\s+not\s+smart\s+money|smart\s+money/.test(t)) return "wallet_profile";
   if (/good|quality|worth\s+monitoring/.test(t)) return "wallet_quality";
   return "wallet_summary";
 }
@@ -150,7 +152,7 @@ export function isWalletComparePrompt(text: string): boolean {
 
 // Task 1 (Pack 1 hard fix): token follow-up prompts that must always resolve against
 // the last scanned token in memory, never fall through to a wallet branch.
-const TOKEN_FOLLOWUP_RE = /\b(is\s+it\s+safe|safe\?|is\s+this\s+safe|is\s+this\s+token\s+safe|should\s+i\s+buy|is\s+it\s+legit|is\s+it\s+a\s+rug|is\s+it\s+risky|can\s+(?:the\s+)?dev\s+rug|can\s+liquidity\s+be\s+pulled|is\s+lp\s+locked|is\s+liquidity\s+locked|explain\s+lp|explain\s+holders|explain\s+dev(?:\s+control)?|why\s+high\s+risk|why\s+is\s+it\s+risky|why\s+caution|why\s+open\s+check|what\s+are\s+red\s+flags|explain\s+risk|explain\s+verdict|run\s+lp\s+check|lp\s+check|check\s+lp|liquidity\s+safety|check\s+liquidity(?:\s+safety)?|run\s+liquidity\s+check)\b/i;
+const TOKEN_FOLLOWUP_RE = /\b(is\s+it\s+safe|safe\?|is\s+this\s+safe|is\s+this\s+token\s+safe|should\s+i\s+buy|is\s+it\s+legit|is\s+it\s+a\s+rug|is\s+it\s+risky|can\s+(?:the\s+)?dev\s+rug|can\s+liquidity\s+be\s+pulled|is\s+lp\s+locked|is\s+liquidity\s+locked|explain\s+lp|explain\s+holders|explain\s+dev(?:\s+control)?|why\s+high\s+risk|why\s+is\s+it\s+risky|why\s+caution|why\s+open\s+check|what\s+are\s+red\s+flags|explain\s+risk|explain\s+verdict|bull\s+case|bear\s+case|biggest\s+risk|what\s+am\s+i\s+missing|what\s+is\s+missing|run\s+lp\s+check|lp\s+check|check\s+lp|liquidity\s+safety|check\s+liquidity(?:\s+safety)?|run\s+liquidity\s+check)\b/i;
 
 // Task 3: explicit wallet language must override token-memory follow-up routing — a user
 // who says "wallet pnl", "scan wallet <address>", "portfolio", or "holdings" clearly wants
@@ -169,14 +171,15 @@ export function isTokenFollowupPrompt(prompt: string): boolean {
   return TOKEN_FOLLOWUP_RE.test(t);
 }
 
-export type TokenFollowupKind = "safety" | "dev_rug" | "lp_lock" | "risk";
+export type TokenFollowupKind = "safety" | "dev_rug" | "lp_lock" | "risk" | "analyst";
 
 /** Maps a token follow-up prompt to the formatter/intent it should use. */
 export function classifyTokenFollowupKind(prompt: string): TokenFollowupKind {
   const t = String(prompt ?? "").toLowerCase();
   if (/\b(can\s+(?:the\s+)?dev\s+rug|explain\s+dev(?:\s+control)?)\b/.test(t)) return "dev_rug";
   if (/\b(is\s+lp\s+locked|explain\s+lp|can\s+liquidity\s+be\s+pulled|run\s+lp\s+check|lp\s+check|check\s+lp|liquidity\s+safety|check\s+liquidity(?:\s+safety)?|run\s+liquidity\s+check)\b/.test(t)) return "lp_lock";
-  if (/\b(why\s+high\s+risk|why\s+is\s+it\s+risky|what\s+are\s+red\s+flags|explain\s+risk|explain\s+verdict|explain\s+holders)\b/.test(t)) return "risk";
+  if (/\b(bull\s+case|bear\s+case|biggest\s+risk|what\s+am\s+i\s+missing|what\s+is\s+missing|should\s+i\s+buy)\b/.test(t)) return "analyst";
+  if (/\b(why\s+high\s+risk|why\s+is\s+it\s+risky|why\s+caution|what\s+are\s+red\s+flags|explain\s+risk|explain\s+verdict|explain\s+holders)\b/.test(t)) return "risk";
   return "safety";
 }
 
@@ -812,6 +815,29 @@ export function formatWalletFollowupFromMemory(address: string, result: WalletAp
     ].join("\n");
   }
   if (kind === "wallet_risk" || kind === "wallet_quality") return [kind === "wallet_risk" ? "WALLET RISK" : "WALLET QUALITY", `Address: ${address}`, `Total value: ${total}`, `Active chains: ${chains}`, `PnL status: ${pnlStatus}`, "Read:", canProfit ? "Profitability evidence is verified, but wallet quality still depends on concentration, activity, and risk." : "Clark can assess portfolio exposure, but not profitability yet.", ...(reasons.length ? ["Evidence limits:", ...reasons.map(r => `- ${r}`)] : []), "CTA: Open Wallet Scanner / Deep Scan Wallet"].join("\n");
+  if (kind === "wallet_profile") {
+    const profile = (result as any).walletProfile && typeof (result as any).walletProfile === "object" ? (result as any).walletProfile as Record<string, unknown> : null;
+    const type = String(profile?.type ?? profile?.traderType ?? (holdings.length > 0 ? "Portfolio holder / allocation wallet" : "Unclassified wallet"));
+    const confidence = String(profile?.confidence ?? (pnlStatus === "Verified" ? "medium" : "low"));
+    const followability = String(profile?.followability ?? (pnlStatus === "Verified" ? "Watchlist candidate" : "Not enough verified trade/PnL evidence to follow blindly"));
+    const why = Array.isArray(profile?.why) ? (profile?.why as unknown[]).map(String) : [
+      `${holdings.length} priced holdings in cached scan`,
+      `Active chains: ${chains}`,
+      `PnL status: ${pnlStatus}`,
+    ];
+    const weakness = reasons[0] ?? "No explicit weakness returned in cached evidence.";
+    const next = pnlStatus === "Verified" ? "Monitor with the wallet scanner before copying trades." : "Run a deep scan if followability depends on trade history or PnL.";
+    return [
+      "WALLET PROFILE",
+      `Type: ${type}`,
+      `Confidence: ${confidence}`,
+      "Why:",
+      ...why.slice(0, 4).map(r => `- ${r}`),
+      `Followability: ${followability}`,
+      `Biggest weakness: ${weakness}`,
+      `Next action: ${next}`,
+    ].join("\n");
+  }
   return ["WALLET SUMMARY", `Address: ${address}`, `Total value: ${total}`, `Active chains: ${chains}`, `Holdings: ${holdings.length} tokens`, "Top holdings:", ...topLines, "PnL read:", `- Status: ${pnlStatus.toLowerCase()}`, `- Reason: ${q.reason}`, "Read:", canProfit ? "Clark can judge profitability because verified PnL evidence is present." : "Clark can assess portfolio exposure, but not profitability yet.", "CTA: Open Wallet Scanner / Deep Scan Wallet"].join("\n");
 }
 
@@ -1348,6 +1374,61 @@ export function formatTokenSafetyAnswer(ev: TokenScanEvidence, chain = "Base"): 
 
   lines.push("", "CTA: Open Token Scanner / Run LP Check");
   return lines.join("\n");
+}
+
+export function formatTokenAnalystFollowup(ev: TokenScanEvidence, chain = "Base"): string {
+  const sym = String(ev.token?.symbol ?? "?").toUpperCase();
+  const sec = ev.security;
+  const h = ev.holders;
+  const lp = ev.lpControl;
+  const mkt = ev.market;
+  const meta = tokenScanVerdictMeta(ev, hasUsableTokenEvidence(ev));
+  const bull: string[] = [];
+  const bear: string[] = [];
+  const gaps: string[] = [];
+
+  if (mkt?.liquidity != null) bull.push(`Liquidity visible: ${fmtUsdShort(mkt.liquidity)}.`);
+  else gaps.push("Liquidity depth not confirmed.");
+  if (mkt?.volume24h != null) bull.push(`24h volume visible: ${fmtUsdShort(mkt.volume24h)}.`);
+  if (sec?.honeypot === false) bull.push("Honeypot simulation did not flag a honeypot.");
+  if (sec?.ownerRenounced === true) bull.push("Ownership is renounced.");
+  if (lp?.status === "locked" || lp?.status === "burned") bull.push(`LP status: ${lp.status}.`);
+
+  if (sec?.honeypot === true) bear.push("Honeypot flag detected.");
+  if (sec?.ownerRenounced === false) bear.push("Ownership is active.");
+  if (sec?.mintable === true) bear.push("Mint authority is present.");
+  if (lp?.status === "wallet_controlled" || lp?.status === "team_controlled") bear.push("LP is wallet/team controlled.");
+  if (h?.top10 != null && h.top10 > 80) bear.push(`Top-10 holders control ${h.top10.toFixed(1)}% of supply.`);
+  if (!h || h.top10 == null) gaps.push("Holder concentration not confirmed.");
+  if (!lp || !lp.status || lp.status === "open_check" || lp.status === "unverified") gaps.push("LP control/lock proof not confirmed.");
+  if (!sec || sec.honeypot == null) gaps.push("Honeypot/security simulation not confirmed.");
+
+  const biggestRisk = bear[0] ?? gaps[0] ?? "No single confirmed red flag in cached evidence.";
+  const quickTake = meta.verdict === "Avoid" ? "Avoid until the confirmed risk is resolved."
+    : bear.length > 0 ? "Caution — confirmed risk signals exist."
+    : gaps.length > 0 ? "Open check — do not treat it as safe yet."
+    : "No confirmed red flags in cached evidence.";
+
+  return [
+    `QUICK TAKE — ${sym} (${chain})`,
+    quickTake,
+    "",
+    "WHY",
+    `- Verdict: ${meta.verdict}`,
+    `- Confidence: ${meta.confidence}`,
+    "",
+    "BULL CASE",
+    ...(bull.length ? bull.map(x => `- ${x}`) : ["- No strong bull case was proven by cached evidence."]),
+    "",
+    "BEAR CASE",
+    ...(bear.length ? bear.map(x => `- ${x}`) : ["- No confirmed bear-case red flag in cached evidence."]),
+    "",
+    "BIGGEST RISK",
+    `- ${biggestRisk}`,
+    "",
+    "NEXT ACTION",
+    `- ${gaps.length ? `Resolve open checks: ${gaps.slice(0, 3).join("; ")}` : "Use Token Scanner / LP Check before making any trade decision."}`,
+  ].join("\n");
 }
 
 
