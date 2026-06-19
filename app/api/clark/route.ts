@@ -23,6 +23,7 @@ import {
   type ClarkAction,
   formatTokenScanResult,
   formatTokenSafetyAnswer,
+  formatTokenAnalystFollowup,
   formatDevRugCheck,
   formatLpLockCheck,
   formatRiskExplanation,
@@ -6433,6 +6434,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     if (followupKind === "dev_rug") { analysis = formatDevRugCheck(ev, followupChainLabel); intentBadge = "dev_rug_check"; }
     else if (followupKind === "lp_lock") { analysis = formatLpLockCheck(ev, followupChainLabel); intentBadge = "lp_lock_check"; }
     else if (followupKind === "risk") { analysis = formatRiskExplanation(ev, followupChainLabel); intentBadge = "risk_explanation"; }
+    else if (followupKind === "analyst") { analysis = formatTokenAnalystFollowup(ev, followupChainLabel); intentBadge = "token_analyst_followup"; }
     else { analysis = formatTokenSafetyAnswer(ev, followupChainLabel); intentBadge = "token_safety"; }
 
     // Do not retry within the same request: a single fullScan attempt either returns real

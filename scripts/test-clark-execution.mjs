@@ -1628,6 +1628,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
     'what chains is it active on', 'active chains', 'should I deep scan', 'should i deep scan',
     'deep scan?', 'what evidence is missing', 'what is missing', 'summarize this wallet',
     'is this wallet good', 'is this wallet risky',
+    'what type of trader is this', 'should i follow this wallet', 'why this score',
   ]
   for (const p of followupPrompts) {
     assert.ok(isWalletFollowupPrompt(p), `"${p}" must be recognized as a wallet follow-up`)
@@ -1776,6 +1777,11 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(!deepScanOut.includes('WALLET PnL'))
   assert.ok(!deepScanOut.includes('TOKEN SCAN READ'))
 
+  const profileOut = formatWalletFollowupFromMemory(seqAddr, seqWalletMem, 'wallet_profile')
+  assert.ok(profileOut.startsWith('WALLET PROFILE'), 'wallet profile follow-up starts with WALLET PROFILE')
+  assert.ok(profileOut.includes('Followability:'), 'wallet profile includes Followability')
+  assert.ok(profileOut.includes('Next action:'), 'wallet profile includes Next action')
+
   // Explicit token scan with an address must still route token, never wallet memory.
   const { classifyClarkPrompt: classifyForSeq, isTokenFollowupPrompt: isTokenFollowupForSeq } = await import('../lib/server/clarkRouting.ts')
   const tokenAddrSeq = '0x2D61bbbe5Ad9a8F18Fef35940301Fd24f143a72B'
@@ -1785,6 +1791,8 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
 
   // "is it safe" after a token scan must route to token safety, never wallet memory.
   assert.ok(isTokenFollowupForSeq('is it safe'))
+  assert.ok(isTokenFollowupForSeq('bull case'), 'bull case routes as a token memory follow-up')
+  assert.ok(isTokenFollowupForSeq('biggest risk'), 'biggest risk routes as a token memory follow-up')
 }
 
 // ─── Wallet memory persistence across turns (cross-request, same session id) ──────────────────
