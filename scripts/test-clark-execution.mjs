@@ -1709,6 +1709,84 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(followupBlock.includes('walletFollowupKind !== "wallet_pnl_explanation" && walletFollowupKind !== "wallet_profitability"'), 'non-PnL wallet follow-up kinds are excluded from the legacy PnL-only branch')
 }
 
+// ─── Hard wallet-memory dispatcher: full real-sequence regression ─────────────────────────────
+// Mirrors the production conversation: scan wallet -> top holdings -> chains -> deep scan advice
+// -> scan token -> "is it safe". Verifies dispatcher ordering and shape directly against the
+// route.ts source, since handleClarkAI() is not exported for direct invocation.
+{
+  const routeFile = fs.readFileSync(path.join(__dirname, '..', 'app', 'api', 'clark', 'route.ts'), 'utf8')
+
+  const dispatcherIdx = routeFile.indexOf('Hard wallet-memory follow-up dispatcher')
+  assert.ok(dispatcherIdx >= 0, 'hard wallet-memory dispatcher block exists')
+
+  const tokenGuardIdx = routeFile.indexOf('Task 1: hard token follow-up memory guard')
+  assert.ok(tokenGuardIdx > dispatcherIdx, 'hard wallet-memory dispatcher runs before the token follow-up memory guard')
+
+  const legacyPnlIdx = routeFile.indexOf('I need a wallet address to explain PnL')
+  assert.ok(legacyPnlIdx > dispatcherIdx, 'hard wallet-memory dispatcher runs before the legacy PnL address-missing fallback')
+
+  const dispatcherEndIdx = routeFile.indexOf('Task 1: hard token follow-up memory guard', dispatcherIdx)
+  const dispatcherBlock = routeFile.slice(dispatcherIdx, dispatcherEndIdx)
+
+  assert.ok(dispatcherBlock.includes('top\\s+holdings|what\\s+are\\s+the\\s+top\\s+holdings'), 'dispatcher recognizes top holdings phrasing')
+  assert.ok(dispatcherBlock.includes('active\\s+chains|chains\\s+active|what\\s+chains'), 'dispatcher recognizes chains follow-up phrasing')
+  assert.ok(dispatcherBlock.includes('should\\s+i\\s+deep\\s+scan'), 'dispatcher recognizes "should I deep scan" phrasing')
+  assert.ok(dispatcherBlock.includes('evidence\\s+is\\s+missing|what\\s+evidence'), 'dispatcher recognizes evidence-gaps phrasing')
+  assert.ok(dispatcherBlock.includes('toolsUsed: ["memory"]'), 'dispatcher reports toolsUsed: ["memory"]')
+  assert.ok(dispatcherBlock.includes('quotaConsumed: false'), 'dispatcher never consumes quota')
+  assert.ok(!dispatcherBlock.includes('runWalletScanner'), 'dispatcher never calls the wallet scanner runner')
+  assert.ok(!dispatcherBlock.includes('TOKEN SCAN'), 'dispatcher never produces a token scan result')
+  assert.ok(dispatcherBlock.includes('isExplicitScanCommand'), 'dispatcher excludes explicit re-scan commands like "deep scan this wallet 0x..."')
+  assert.ok(dispatcherBlock.includes('isExplicitTokenPrompt'), 'dispatcher excludes explicit token-language prompts so token routing still wins')
+
+  // Direct formatter-level check of the exact reproduction sequence, using the same memory
+  // fixture and kind classification the dispatcher uses for each prompt in order.
+  const seqAddr = '0xa4ad26f96f542ddd51a650f5df0b3f3c61df593d'
+  const seqWalletMem = {
+    ok: true,
+    address: seqAddr,
+    totalValue: 145800,
+    holdings: [
+      { symbol: 'WETH', value: 64700, chain: 'base' },
+      { symbol: 'CBBTC', value: 30400, chain: 'base' },
+      { symbol: 'USDC', value: 29200, chain: 'base' },
+    ],
+    chainsActive: ['base'],
+    walletScanHealth: { status: 'limited_pnl', lockedModules: ['fifoPnL'] },
+    walletModuleCoverage: { portfolio: { status: 'ok' }, activity: { status: 'open_check' }, fifoPnL: { status: 'locked_no_closed_lots', reason: 'no_closed_lots' }, tradeStats: { status: 'locked_no_closed_lots' } },
+    walletTokenPnlSummary: { status: 'partial', reason: 'cost_basis_limited' },
+    walletHistoricalCoverageSummary: { status: 'partial' },
+    dataFreshness: 'memory',
+  }
+
+  const holdingsOut = formatWalletFollowupFromMemory(seqAddr, seqWalletMem, 'wallet_holdings')
+  assert.ok(holdingsOut.startsWith('WALLET HOLDINGS'), 'top holdings starts with WALLET HOLDINGS')
+  assert.ok(!holdingsOut.toLowerCase().includes('i need a wallet address'))
+
+  const chainsOut = formatWalletFollowupFromMemory(seqAddr, seqWalletMem, 'wallet_chains')
+  assert.ok(chainsOut.startsWith('WALLET CHAINS'), 'chains follow-up starts with WALLET CHAINS')
+  assert.ok(!chainsOut.toLowerCase().includes('i need a wallet address'))
+  assert.ok(!chainsOut.includes('WALLET PnL'))
+  assert.ok(!chainsOut.includes('TOKEN SCAN READ'))
+
+  const deepScanOut = formatWalletFollowupFromMemory(seqAddr, seqWalletMem, 'wallet_deep_scan_advice')
+  assert.ok(deepScanOut.startsWith('DEEP SCAN ADVICE'), 'deep scan advice starts with DEEP SCAN ADVICE')
+  assert.ok(deepScanOut.includes('Recommended: Yes'))
+  assert.ok(!deepScanOut.toLowerCase().includes('i need a wallet address'))
+  assert.ok(!deepScanOut.includes('WALLET PnL'))
+  assert.ok(!deepScanOut.includes('TOKEN SCAN READ'))
+
+  // Explicit token scan with an address must still route token, never wallet memory.
+  const { classifyClarkPrompt: classifyForSeq, isTokenFollowupPrompt: isTokenFollowupForSeq } = await import('../lib/server/clarkRouting.ts')
+  const tokenAddrSeq = '0x2D61bbbe5Ad9a8F18Fef35940301Fd24f143a72B'
+  const tokenScanClassified = classifyForSeq(`scan this token ${tokenAddrSeq} on eth`)
+  assert.equal(tokenScanClassified.intent, 'token_scan')
+  assert.equal(tokenScanClassified.address?.toLowerCase(), tokenAddrSeq.toLowerCase())
+
+  // "is it safe" after a token scan must route to token safety, never wallet memory.
+  assert.ok(isTokenFollowupForSeq('is it safe'))
+}
+
 // ─── Token regressions after a wallet memory exists ───────────────────────────────────────────
 {
   const routeFile = fs.readFileSync(path.join(__dirname, '..', 'app', 'api', 'clark', 'route.ts'), 'utf8')

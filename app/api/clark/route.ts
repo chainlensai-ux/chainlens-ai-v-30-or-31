@@ -6239,6 +6239,57 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   const clarkDebugMode = Boolean((body as unknown as Record<string, unknown>).debug) || process.env.NODE_ENV !== 'production';
   const appIntentTools = appIntent.cta.map((a) => a.label).join(' · ');
 
+  // ─── Hard wallet-memory follow-up dispatcher ───
+  // Explicit phrase guards, independent of classifyClarkPrompt()/classifyWalletFollowupKind(),
+  // so "top holdings", "what chains is it active on", and "should I deep scan" always resolve
+  // from sessionMem.lastWallet and can never fall through to the legacy "WALLET PnL — I need a
+  // wallet address" fallback. Must run before every other wallet/token branch.
+  {
+    const normalizedPrompt = prompt.toLowerCase();
+    const hasExplicitAddress = Boolean(extractAddress(prompt));
+    const isExplicitTokenPrompt = /\b(token|coin|contract|\bca\b|ticker|honeypot|buy\s+tax|sell\s+tax|lp\b|liquidity)\b/i.test(normalizedPrompt);
+    const isExplicitScanCommand = /\b(deep\s+scan\s+this\s+wallet|scan\s+this\s+wallet|scan\s+wallet|refresh|rescan|run\s+full\s+scan|scan\s+again)\b/i.test(normalizedPrompt);
+
+    const walletMemoryFollowupKind: ('wallet_holdings' | 'wallet_chains' | 'wallet_deep_scan_advice' | 'wallet_evidence_gaps' | 'wallet_summary' | 'wallet_quality' | 'wallet_risk') | null =
+      /top\s+holdings|what\s+are\s+the\s+top\s+holdings/.test(normalizedPrompt)
+        ? "wallet_holdings"
+        : /active\s+chains|chains\s+active|what\s+chains/.test(normalizedPrompt)
+          ? "wallet_chains"
+          : /should\s+i\s+deep\s+scan|should\s+i\s+run\s+deep\s+scan|do\s+i\s+need\s+deep\s+scan|deep\s+scan\?|^deep\s+scan$/.test(normalizedPrompt)
+            ? "wallet_deep_scan_advice"
+            : /evidence\s+is\s+missing|what\s+evidence|what\s+is\s+missing|missing\s+evidence/.test(normalizedPrompt)
+              ? "wallet_evidence_gaps"
+              : /summarize\s+this\s+wallet|wallet\s+summary/.test(normalizedPrompt)
+                ? "wallet_summary"
+                : /is\s+this\s+wallet\s+good|wallet\s+quality/.test(normalizedPrompt)
+                  ? "wallet_quality"
+                  : /is\s+this\s+wallet\s+risky|wallet\s+risk\b/.test(normalizedPrompt)
+                    ? "wallet_risk"
+                    : null;
+
+    if (
+      sessionMem.lastWallet?.address &&
+      walletMemoryFollowupKind &&
+      !hasExplicitAddress &&
+      !isExplicitTokenPrompt &&
+      !isExplicitScanCommand
+    ) {
+      const memResult = buildWalletMemoryResult(sessionMem.lastWallet);
+      if (memResult) {
+        const analysis = formatWalletFollowupFromMemory(sessionMem.lastWallet.address, memResult, walletMemoryFollowupKind);
+        updateMemIntent(sessionMem, walletMemoryFollowupKind);
+        return {
+          feature: "clark-ai", chain, mode: "analysis", intent: walletMemoryFollowupKind, toolsUsed: ["memory"],
+          source: "memory",
+          analysis,
+          intentBadge: walletMemoryFollowupKind,
+          actions: buildRoutedActions(walletMemoryFollowupKind === "wallet_deep_scan_advice" ? ["Deep Scan Wallet"] : ["Scan Wallet", "Deep Scan Wallet"]),
+          quotaConsumed: false,
+        };
+      }
+    }
+  }
+
   // ─── Task 1: hard token follow-up memory guard ───
   // "is it safe", "can dev rug", "explain LP", etc. must always resolve against the
   // last scanned token in memory and must NEVER execute a wallet scan, regardless of
