@@ -142,6 +142,11 @@ type ClarkSessionMemory = {
     walletSummary: string | null;
     snapshot: Record<string, unknown> | null;
     pnlEvidence: Record<string, unknown> | null;
+    // Mirrors lastToken's cachedEvidence/chain/ts shape so wallet memory persists the same way
+    // token memory does — cachedEvidence is the merged snapshot+pnlEvidence used by formatters.
+    cachedEvidence?: Record<string, unknown> | null;
+    chainMode?: string | null;
+    lastScannedAt?: number;
     ts: number;
   } | null;
   lastMomentumList: Array<{
@@ -279,15 +284,20 @@ function updateMemWallet(
   snapshot?: Record<string, unknown> | null,
   pnlEvidence?: Record<string, unknown> | null,
 ) {
+  const now = Date.now();
+  const cachedEvidence = (snapshot || pnlEvidence) ? { ...(snapshot ?? {}), ...(pnlEvidence ?? {}) } : null;
   mem.lastWallet = {
     address,
     ensName,
     walletSummary,
     snapshot: snapshot ?? null,
     pnlEvidence: pnlEvidence ?? null,
-    ts: Date.now(),
+    cachedEvidence,
+    chainMode: mem.selectedChain ?? null,
+    lastScannedAt: now,
+    ts: now,
   };
-  mem.recentWallets = [{ address, chain: mem.selectedChain, summary: walletSummary, ts: Date.now() }, ...mem.recentWallets.filter(w => w.address !== address)].slice(0, 2)
+  mem.recentWallets = [{ address, chain: mem.selectedChain, summary: walletSummary, ts: now }, ...mem.recentWallets.filter(w => w.address !== address)].slice(0, 5)
 }
 function rememberMessage(mem: ClarkSessionMemory, role: "user" | "assistant", content: string) {
   const c = content.trim()
@@ -2810,6 +2820,20 @@ function extractPnlEvidence(mapped: Record<string, unknown>): Record<string, unk
     openLots: mapped.openLots ?? null,
     closedLots: mapped.closedLots ?? null,
     totalValue: mapped.totalValue ?? null,
+  };
+}
+
+// Compact, JSON-safe echo of lastWallet sent back to the client so the frontend can persist it
+// (sessionStorage) as a redundancy layer for the server-side in-memory session map — never the
+// primary store, just a fallback restore source for the next request's clientContext.lastWallet.
+function buildWalletMemoryEcho(mem: ClarkSessionMemory): { lastWallet: { address: string; chainMode: string | null; lastScannedAt: number } } | undefined {
+  if (!mem.lastWallet?.address) return undefined;
+  return {
+    lastWallet: {
+      address: mem.lastWallet.address,
+      chainMode: mem.lastWallet.chainMode ?? null,
+      lastScannedAt: mem.lastWallet.lastScannedAt ?? mem.lastWallet.ts,
+    },
   };
 }
 
@@ -6285,6 +6309,8 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
           intentBadge: walletMemoryFollowupKind,
           actions: buildRoutedActions(walletMemoryFollowupKind === "wallet_deep_scan_advice" ? ["Deep Scan Wallet"] : ["Scan Wallet", "Deep Scan Wallet"]),
           quotaConsumed: false,
+          memoryEcho: buildWalletMemoryEcho(sessionMem),
+          ...(clarkDebugMode ? { clarkDebugReceipt: { memoryBefore: { lastWallet: { address: sessionMem.lastWallet.address } } } } : {}),
         };
       }
     }
@@ -6476,6 +6502,8 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       quotaConsumed: mappedResult.ok,
       ui: { intentBadge: deepScan ? 'Wallet Deep Scan' : 'Wallet Scan', actions: walletActions },
       analysis,
+      memoryEcho: buildWalletMemoryEcho(sessionMem),
+      ...(clarkDebugMode ? { clarkDebugReceipt: { memoryAfter: { lastWallet: sessionMem.lastWallet ? { address: sessionMem.lastWallet.address } : null } } } : {}),
     };
   }
   if (appIntent.intent === 'liquidity_scan' && appIntent.address) {
@@ -7024,6 +7052,8 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       intentBadge: "wallet_scan",
       actions: buildRoutedActions(routed.deep ? ["Open Token Scanner"] : ["Deep Scan Wallet"]),
       quotaConsumed: ok,
+      memoryEcho: buildWalletMemoryEcho(sessionMem),
+      ...(clarkDebugMode ? { clarkDebugReceipt: { memoryAfter: { lastWallet: sessionMem.lastWallet ? { address: sessionMem.lastWallet.address } : null } } } : {}),
     };
   }
 

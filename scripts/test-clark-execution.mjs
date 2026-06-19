@@ -1787,6 +1787,84 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(isTokenFollowupForSeq('is it safe'))
 }
 
+// ─── Wallet memory persistence across turns (cross-request, same session id) ──────────────────
+// The live bug: a fresh wallet scan returns a real WALLET READ, but the very next message
+// ("top holdings" / "what chains is it active on") forgets the wallet and falls into the legacy
+// "WALLET PnL — I need a wallet address" fallback. Root cause: sessionMem.lastWallet is kept only
+// in the server's in-memory SESSION_MEMORY Map, keyed by the stable x-clark-session header — and
+// the frontend never wrote the lastWallet echo back into sessionStorage, so if that in-memory map
+// entry is ever missed (different server instance / cold start), there was no redundancy and the
+// next request started from a wallet-less session. Fix: updateMemWallet() now stores
+// cachedEvidence/chainMode/lastScannedAt (mirroring lastToken's shape), the wallet-scan success
+// branches return a memoryEcho.lastWallet, and the frontend persists it to sessionStorage so the
+// existing clientContext.lastWallet restore-fallback (already in route.ts) actually has data to
+// restore from on the next request, even across a fresh server instance.
+{
+  const routeFile = fs.readFileSync(path.join(__dirname, '..', 'app', 'api', 'clark', 'route.ts'), 'utf8')
+  const pageFile = fs.readFileSync(path.join(__dirname, '..', 'app', 'terminal', 'clark-ai', 'page.tsx'), 'utf8')
+
+  // 1) lastWallet is written after a successful wallet scan, with the same shape style as lastToken
+  //    (cachedEvidence/ts), not a different/incompatible shape.
+  assert.ok(routeFile.includes('cachedEvidence,\n    chainMode: mem.selectedChain ?? null,\n    lastScannedAt: now,'), 'updateMemWallet stores cachedEvidence/chainMode/lastScannedAt mirroring lastToken')
+  assert.ok(routeFile.includes("mem.recentWallets = [{ address, chain: mem.selectedChain, summary: walletSummary, ts: now }, ...mem.recentWallets.filter(w => w.address !== address)].slice(0, 5)"), 'recentWallets capped at 5, mirroring recentTokens-style capped history')
+
+  // 2) The session map write happens on the same sessionMem object read at the top of POST —
+  //    object mutation persists into SESSION_MEMORY by reference, no separate "commit" step needed.
+  assert.ok(routeFile.includes('const sessionMem = getSessionMemory(sessionKey)'), 'POST resolves one sessionMem object per request from the session map')
+
+  // 3) Server already restores lastWallet from clientContext when the session-side memory is
+  //    empty — this is the redundancy path the new memoryEcho feeds into.
+  assert.ok(routeFile.includes('if (!sessionMem.lastWallet && body.clientContext?.lastWallet?.address) sessionMem.lastWallet = body.clientContext.lastWallet;'), 'route.ts restores lastWallet from clientContext when session memory is empty')
+
+  // 4) Wallet-scan success returns a memoryEcho so the frontend has something to persist.
+  assert.ok(routeFile.includes('memoryEcho: buildWalletMemoryEcho(sessionMem)'), 'wallet scan success returns memoryEcho.lastWallet')
+  assert.ok(routeFile.includes('function buildWalletMemoryEcho'), 'buildWalletMemoryEcho helper exists')
+
+  // 5) Frontend actually persists the echoed wallet into sessionStorage so the next request's
+  //    clientContext.lastWallet is populated — this was previously dead (read-only) code.
+  assert.ok(pageFile.includes("sessionStorage.setItem('chainlens:clark:last-wallet'"), 'frontend persists the echoed wallet to sessionStorage')
+  assert.ok(pageFile.includes("JSON.parse(sessionStorage.getItem('chainlens:clark:last-wallet')"), 'frontend still reads the persisted wallet back as clientContext.lastWallet')
+
+  // 6) The conversation/session id sent with every request is stable across messages in the same
+  //    tab (sessionStorage-backed, created once, never regenerated per message).
+  assert.ok(pageFile.includes("function getOrCreateSessionId"), 'stable session id helper exists')
+  assert.ok(pageFile.includes("sessionStorage.getItem(key)") && pageFile.includes("sessionStorage.setItem(key, id)"), 'session id is created once and reused, not regenerated per message')
+  assert.ok(pageFile.includes("'x-clark-session': getOrCreateSessionId()"), 'every Clark request sends the same stable session id header')
+
+  // 7) End-to-end formatter check of the exact reproduction sequence using the new lastWallet
+  //    shape (cachedEvidence/chainMode/lastScannedAt) — proves the follow-up formatters work
+  //    whether memory came from the live in-memory map or the restored clientContext echo.
+  const scannedAddr = '0xa4ad26f96f542ddd51a650f5df0b3f3c61df593d'
+  const persistedWallet = {
+    ok: true,
+    address: scannedAddr,
+    totalValue: 145800,
+    holdings: [{ symbol: 'WETH', value: 64700, chain: 'base' }, { symbol: 'CBBTC', value: 30400, chain: 'base' }],
+    chainsActive: ['base'],
+    walletScanHealth: { status: 'limited_pnl', lockedModules: ['fifoPnL'] },
+    walletModuleCoverage: { portfolio: { status: 'ok' }, activity: { status: 'open_check' }, fifoPnL: { status: 'locked_no_closed_lots', reason: 'no_closed_lots' }, tradeStats: { status: 'locked_no_closed_lots' } },
+    walletHistoricalCoverageSummary: { status: 'partial' },
+    dataFreshness: 'memory',
+  }
+
+  const topHoldingsOut = formatWalletFollowupFromMemory(scannedAddr, persistedWallet, 'wallet_holdings')
+  assert.ok(topHoldingsOut.startsWith('WALLET HOLDINGS'))
+  assert.ok(!topHoldingsOut.toLowerCase().includes('i need a wallet address'))
+
+  const chainsOut2 = formatWalletFollowupFromMemory(scannedAddr, persistedWallet, 'wallet_chains')
+  assert.ok(chainsOut2.startsWith('WALLET CHAINS'))
+  assert.ok(chainsOut2.includes('Base'))
+  assert.ok(!chainsOut2.toLowerCase().includes('i need a wallet address'))
+
+  const deepScanOut2 = formatWalletFollowupFromMemory(scannedAddr, persistedWallet, 'wallet_deep_scan_advice')
+  assert.ok(deepScanOut2.startsWith('DEEP SCAN ADVICE'))
+  assert.ok(!deepScanOut2.includes('WALLET PnL'))
+  assert.ok(!deepScanOut2.includes('TOKEN SCAN READ'))
+
+  const evidenceGapsOut = formatWalletFollowupFromMemory(scannedAddr, persistedWallet, 'wallet_evidence_gaps')
+  assert.ok(evidenceGapsOut.startsWith('WALLET EVIDENCE GAPS'))
+}
+
 // ─── Token regressions after a wallet memory exists ───────────────────────────────────────────
 {
   const routeFile = fs.readFileSync(path.join(__dirname, '..', 'app', 'api', 'clark', 'route.ts'), 'utf8')

@@ -240,6 +240,14 @@ function ClarkAiContent() {
       const cursor = (marketContext && typeof marketContext === 'object' && (marketContext as Record<string, unknown>).cursor && typeof (marketContext as Record<string, unknown>).cursor === 'object')
         ? (marketContext as Record<string, unknown>).cursor as ClarkContextState['marketCursor'] : null
       if (cursor) clarkContextRef.current.marketCursor = cursor
+      // Redundancy layer for the server-side in-memory session map: persist the last scanned
+      // wallet so the next request's clientContext.lastWallet can restore it if the server-side
+      // session memory for this session id was not found (e.g. a different server instance).
+      const memoryEcho = (payload.memoryEcho && typeof payload.memoryEcho === 'object') ? payload.memoryEcho as Record<string, unknown> : null
+      const echoedWallet = (memoryEcho?.lastWallet && typeof memoryEcho.lastWallet === 'object') ? memoryEcho.lastWallet as { address?: unknown } : null
+      if (echoedWallet && typeof echoedWallet.address === 'string') {
+        sessionStorage.setItem('chainlens:clark:last-wallet', JSON.stringify(echoedWallet))
+      }
       clarkContextRef.current.previousIntent  = clarkContextRef.current.lastIntent ?? null
       clarkContextRef.current.lastIntent      = typeof payload.intent === 'string' ? payload.intent : clarkContextRef.current.lastIntent
       clarkContextRef.current.lastSelectedRank = /\b([1-9]\d{0,2})\b/.test(text) ? Number(text.match(/\b([1-9]\d{0,2})\b/)?.[1] ?? 0) || null : clarkContextRef.current.lastSelectedRank
