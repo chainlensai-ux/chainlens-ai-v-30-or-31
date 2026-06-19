@@ -2183,6 +2183,14 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
     'updateMemWallet(sessionMem, resolvedAddress, null, qualityAnalysis);',
     'updateMemWallet(sessionMem, resolvedAddress, null, walletAnalysis);',
   ]
+  // Generation-side regression guard: fetchWalletSnapshot() computes snapshot.walletProfile, but the
+  // Clark wallet-scan path goes through lib/server/walletScannerRunner.ts's runWalletScanner(), which
+  // builds its own narrow return object instead of returning the snapshot directly. That object MUST
+  // forward walletProfile, or mapWalletRunnerResult's `w.walletProfile ?? null` always sees undefined
+  // and silently coerces to null before memory/persistence is ever involved.
+  const runnerFile = fs.readFileSync(path.join(__dirname, '..', 'lib', 'server', 'walletScannerRunner.ts'), 'utf8')
+  assert.ok(runnerFile.includes('walletProfile: snapshot.walletProfile ?? null'), 'runWalletScanner forwards snapshot.walletProfile into its return object')
+
   for (const bareCall of previouslyBareCalls) {
     assert.ok(!routeFile.includes(bareCall), `updateMemWallet call site must pass a snapshot arg, found bare call still present: ${bareCall}`)
   }

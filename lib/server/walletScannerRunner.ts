@@ -31,5 +31,6 @@ export async function runWalletScanner(input: WalletScannerRunnerInput) {
     pnlCoverage: snapshot.pnlCoverage ?? snapshot.estimatedPnl?.coverage ?? null,
     openLots: snapshot.openLots ?? snapshot.walletOpenPositionSummary?.openLots ?? null,
     closedLots: snapshot.closedLots ?? snapshot.estimatedPnl?.closedLots ?? null,
+    walletProfile: snapshot.walletProfile ?? null,
   }
 }
