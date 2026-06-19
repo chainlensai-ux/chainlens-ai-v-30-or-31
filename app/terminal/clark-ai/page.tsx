@@ -49,6 +49,21 @@ const CHAT_CHIPS = [
 // ── Usage helpers (unchanged) ────────────────────────────────────────────────
 const FALLBACK_ERROR_MESSAGE = 'Clark is unavailable right now. Try again in a moment.'
 const THINKING_MESSAGE       = 'Clark is thinking...'
+
+type AnalysisKind = 'token' | 'wallet' | 'lp' | 'general'
+const ANALYSIS_STAGES: Record<AnalysisKind, string[]> = {
+  token: ['Analyzing token...', 'Checking liquidity...', 'Reviewing holder distribution...', 'Inspecting security signals...', 'Building CORTEX summary...'],
+  wallet: ['Loading portfolio...', 'Reviewing activity...', 'Checking chain exposure...', 'Building wallet profile...', 'Preparing intelligence report...'],
+  lp: ['Reviewing liquidity...', 'Checking LP control...', 'Analyzing concentrated positions...', 'Preparing LP report...'],
+  general: ['Parsing request...', 'Loading CORTEX context...', 'Reviewing Base signals...', 'Preparing intelligence report...'],
+}
+function inferAnalysisKind(text: string, mode?: Mode['key']): AnalysisKind {
+  const t = text.toLowerCase()
+  if (mode === 'wallet' || /\b(wallet|portfolio|holdings?|pnl|whale)\b/.test(t)) return 'wallet'
+  if (/\b(lp|liquidity|pool|lock|unlock|concentrated)\b/.test(t)) return 'lp'
+  if (mode === 'token' || mode === 'contract' || /\b(token|contract|ca\b|holders?|deployer|rug|safe|scan)\b/.test(t)) return 'token'
+  return 'general'
+}
 const CLARK_DAILY_LIMITS: Record<string, number> = { free: 5, pro: 50, elite: 300 }
 const CLARK_LIMIT_UNAUTH = 3
 function getTodayStr() { return new Date().toISOString().slice(0, 10) }
@@ -98,6 +113,8 @@ function ClarkAiContent() {
   const [activeMode, setActiveMode] = useState<Mode['key']>(importedPrompt ? 'radar' : 'token')
   const [input,     setInput]     = useState(importedPrompt ?? '')
   const [loading,   setLoading]   = useState(false)
+  const [loadingKind, setLoadingKind] = useState<AnalysisKind>('general')
+  const [loadingStage, setLoadingStage] = useState(0)
   const [clarkUsed, setClarkUsed] = useState(0)
   const [planLimit, setPlanLimit] = useState<number | null>(null)
   const clarkContextRef = useRef<ClarkContextState>({})
@@ -135,6 +152,15 @@ function ClarkAiContent() {
   }, [messages])
 
   const activeModeConfig = MODES.find((m) => m.key === activeMode) ?? MODES[0]
+  const loadingStages = ANALYSIS_STAGES[loadingKind] ?? ANALYSIS_STAGES.general
+
+  useEffect(() => {
+    if (!loading) { setLoadingStage(0); return }
+    const id = window.setInterval(() => {
+      setLoadingStage((stage) => Math.min(stage + 1, loadingStages.length - 1))
+    }, 1200)
+    return () => window.clearInterval(id)
+  }, [loading, loadingStages.length])
 
   function applyMode(mode: Mode) {
     setActiveMode(mode.key)
@@ -158,6 +184,8 @@ function ClarkAiContent() {
   async function handleSendText(raw: string) {
     const text = raw.trim()
     if (!text || loading) return
+    setLoadingKind(inferAnalysisKind(text, activeMode))
+    setLoadingStage(0)
     setMessages((prev) => [...prev, { role: 'user', text }, { role: 'clark', text: THINKING_MESSAGE }])
     setInput('')
     setLoading(true)
@@ -314,8 +342,13 @@ function ClarkAiContent() {
         .clk-live-label { color:#34d399; }
         .clk-live-sep { color:#334155; }
         .clk-live-cortex { color:#22d3ee; }
-        .clk-mark { justify-self:end; position:relative; width:190px; height:96px; border-radius:28px; display:grid; place-items:center; color:#22d3ee; font-size:58px; font-weight:900; letter-spacing:-.12em; background:radial-gradient(circle at 45% 50%, rgba(34,211,238,.22), transparent 50%); text-shadow: 0 0 26px rgba(34,211,238,.72), 22px 10px 32px rgba(124,58,237,.70); opacity:.92; }
-        .clk-mark::before { content:''; position:absolute; inset:-18px; border-radius:50%; background:radial-gradient(circle, rgba(124,58,237,.18), transparent 65%); filter:blur(6px); z-index:-1; }
+        .clk-cortex-card { justify-self:end; width:190px; min-height:96px; border:1px solid rgba(148,163,184,.18); border-radius:14px; background:linear-gradient(180deg, rgba(7,13,24,.96), rgba(2,6,14,.98)); box-shadow:inset 0 1px 0 rgba(255,255,255,.05), 0 18px 38px -28px rgba(0,0,0,.9); padding:12px; overflow:hidden; position:relative; }
+        .clk-cortex-card::after { content:''; position:absolute; inset:0; pointer-events:none; background:repeating-linear-gradient(180deg, rgba(255,255,255,.025) 0 1px, transparent 1px 6px); opacity:.45; }
+        .clk-cortex-title { color:#e2e8f0; font:900 11px var(--font-plex-mono, monospace); letter-spacing:.14em; margin-bottom:8px; }
+        .clk-cortex-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; padding:4px 0; border-top:1px solid rgba(148,163,184,.10); font:700 10px var(--font-plex-mono, monospace); text-transform:uppercase; }
+        .clk-cortex-label { color:#7f8ea3; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .clk-cortex-value { color:#34d399; }
+        .clk-cortex-value--muted { color:#94a3b8; }
         .clk-actions-row { display:grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap:12px; margin:14px 0 18px; }
         .clk-quick-card { position:relative; min-height:96px; height:100%; text-align:left; display:flex; gap:14px; align-items:center; border:1px solid rgba(148,163,184,.14); border-radius:16px; background:linear-gradient(135deg, color-mix(in srgb, var(--accent) 10%, rgba(11,18,32,.86)) 0%, rgba(4,9,20,.9) 58%, rgba(2,6,14,.96) 100%); padding:18px 20px; color:#f8fafc; cursor:pointer; transition: border-color .18s, transform .18s, background .18s, box-shadow .18s; box-shadow: inset 0 1px 0 rgba(255,255,255,.055), 0 18px 34px -24px rgba(0,0,0,.85); overflow:hidden; }
         .clk-quick-card::before { content:''; position:absolute; inset:0; border-radius:inherit; padding:1px; background:linear-gradient(135deg, color-mix(in srgb, var(--accent) 42%, transparent), rgba(148,163,184,.08), rgba(236,72,153,.14)); -webkit-mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite:xor; mask-composite:exclude; opacity:.62; pointer-events:none; }
@@ -337,17 +370,21 @@ function ClarkAiContent() {
         .clk-intro-text { margin:0; color:#c4cede; line-height:1.55; font-size:14px; white-space:pre-line; }
         .clk-capabilities { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
         .clk-capability { border:1px solid rgba(45,212,191,.22); border-radius:999px; padding:5px 8px; color:#a7f3d0; background:rgba(45,212,191,.07); font:800 10px var(--font-plex-mono, monospace); letter-spacing:.08em; text-transform:uppercase; }
-        .clk-msg { max-width:82%; padding:13px 15px; border-radius:15px; border:1px solid rgba(148,163,184,.15); background:rgba(15,23,42,.56); }
-        .clk-msg--user { align-self:flex-end; border-color:rgba(34,211,238,.30); background:rgba(8,145,178,.13); }
-        .clk-msg--clark { align-self:flex-start; }
-        .clk-msg-role { display:block; margin-bottom:6px; color:#22d3ee; font:700 10px var(--font-plex-mono, monospace); letter-spacing:.14em; }
+        .clk-msg { max-width:84%; padding:10px 12px; border-radius:8px; border:1px solid rgba(148,163,184,.14); background:rgba(8,13,24,.82); box-shadow:inset 0 1px 0 rgba(255,255,255,.035); }
+        .clk-msg--user { align-self:flex-end; border-color:rgba(34,211,238,.20); background:rgba(7,24,34,.72); }
+        .clk-msg--clark { align-self:flex-start; border-left-color:rgba(45,212,191,.34); }
+        .clk-msg-role { display:flex; gap:8px; align-items:center; margin-bottom:7px; color:#22d3ee; font:800 10px var(--font-plex-mono, monospace); letter-spacing:.14em; text-transform:uppercase; }
+        .clk-msg-role::after { content:attr(data-intent); color:#64748b; font-weight:700; letter-spacing:.10em; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
         .clk-msg-text { margin:0; font-size:14px; line-height:1.62; color:#dbe6f6; white-space:pre-wrap; word-break:break-word; overflow-wrap:anywhere; }
         .clk-intent-badge { display:inline-flex; width:max-content; margin:0 0 8px; padding:4px 8px; border:1px solid rgba(45,212,191,.28); border-radius:999px; color:#67e8f9; background:rgba(45,212,191,.08); font-size:10px; font-weight:800; letter-spacing:.12em; text-transform:uppercase; }
         .clk-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
         .clk-action { border:1px solid rgba(45,212,191,.25); border-radius:999px; padding:7px 10px; color:#ccfbf1; background:rgba(45,212,191,.07); font-size:12px; font-weight:700; text-decoration:none; }
         .clk-action--disabled { opacity:.45; cursor:not-allowed; pointer-events:none; }
-        .clk-thinking { display:flex; align-items:center; gap:10px; }
-        .clk-thinking-text { color:#9aa8bb; font-size:13px; }
+        .clk-thinking { display:block; min-width:260px; }
+        .clk-thinking-stage { color:#dbeafe; font:800 12px var(--font-plex-mono, monospace); letter-spacing:.04em; transition:opacity .2s; }
+        .clk-scanline { position:relative; height:2px; margin-top:10px; overflow:hidden; background:rgba(148,163,184,.12); }
+        .clk-scanline::before { content:''; position:absolute; inset:0 auto 0 0; width:42%; background:linear-gradient(90deg, transparent, rgba(45,212,191,.9), transparent); animation:clkScan 1.15s linear infinite; }
+        @keyframes clkScan { from{ transform:translateX(-100%);} to{ transform:translateX(260%);} }
         .clk-input-wrap { margin:0 18px 16px; border:1px solid rgba(34,211,238,.50); border-radius:14px; background:linear-gradient(180deg, rgba(2,8,20,.86), rgba(2,6,16,.94)); box-shadow:0 0 24px rgba(34,211,238,.09), inset 0 1px 0 rgba(255,255,255,.045); }
         .clk-input-row { display:grid; grid-template-columns:42px minmax(0, 1fr) auto 46px; gap:10px; align-items:center; min-height:62px; padding:8px 10px 8px 12px; }
         .clk-prompt-mark { height:34px; border-radius:10px; display:grid; place-items:center; color:#22d3ee; font:900 16px var(--font-plex-mono, monospace); background:rgba(34,211,238,.08); border:1px solid rgba(34,211,238,.18); box-shadow:inset 0 1px 0 rgba(255,255,255,.04); }
@@ -404,7 +441,7 @@ function ClarkAiContent() {
         @keyframes clarkDotB { 0%,100%{ transform:translate(0,0) scale(1);} 50%{ transform:translate(-2px,2px) scale(1.16);} }
         @keyframes clarkPulse { 0%{ transform:scale(.94); opacity:.7;} 100%{ transform:scale(1.08); opacity:0;} }
         @media (max-width: 1100px) { .clk-shell { grid-template-columns:1fr; } .clk-side { grid-template-columns:repeat(3, minmax(0,1fr)); display:grid; } }
-        @media (max-width: 780px) { .clk-shell { padding:20px 14px 44px; } .clk-hero { grid-template-columns:1fr; } .clk-mark { display:none; } .clk-actions-row { grid-template-columns:1fr 1fr; } .clk-side { display:flex; } .clk-thread { min-height:220px; padding:16px 14px 12px; } .clk-input-row { grid-template-columns:36px minmax(0,1fr) 44px; } .clk-helper { display:none; } .clk-intel-grid { grid-template-columns:1fr 1fr; } }
+        @media (max-width: 780px) { .clk-shell { padding:20px 14px 44px; } .clk-hero { grid-template-columns:1fr; } .clk-cortex-card { justify-self:stretch; width:auto; } .clk-actions-row { grid-template-columns:1fr 1fr; } .clk-side { display:flex; } .clk-thread { min-height:220px; padding:16px 14px 12px; } .clk-input-row { grid-template-columns:36px minmax(0,1fr) 44px; } .clk-helper { display:none; } .clk-intel-grid { grid-template-columns:1fr 1fr; } }
         @media (max-width: 480px) { .clk-actions-row { grid-template-columns:1fr; } .clk-title { font-size:40px; } .clk-ready-pill { padding:8px 12px; } .clk-intel-grid { grid-template-columns:1fr; } }
       `}</style>
 
@@ -429,7 +466,21 @@ function ClarkAiContent() {
                 <span className='clk-live-cortex'>POWERED BY CORTEX ENGINE</span>
               </div>
             </div>
-            <div className='clk-mark'>CL</div>
+            <div className='clk-cortex-card' aria-label='CORTEX status'>
+              <div className='clk-cortex-title'>CORTEX STATUS</div>
+              {[
+                ['Memory Engine', messages.length > 0 ? 'Active' : 'Ready'],
+                ['Token Context', clientContext.lastToken ? 'Ready' : 'Standby'],
+                ['Wallet Context', clientContext.lastWallet ? 'Ready' : 'Standby'],
+                ['Analysis Mode', activeMode === 'radar' ? 'Radar' : 'Adaptive'],
+                ['System', loading ? 'Working' : 'Online'],
+              ].map(([label, value]) => (
+                <div className='clk-cortex-row' key={label}>
+                  <span className='clk-cortex-label'>{label}</span>
+                  <span className={`clk-cortex-value${value === 'Standby' ? ' clk-cortex-value--muted' : ''}`}>{value}</span>
+                </div>
+              ))}
+            </div>
           </section>
 
           <section className='clk-actions-row' aria-label='Clark quick actions'>
@@ -482,11 +533,11 @@ function ClarkAiContent() {
                 const isThinking = msg.role === 'clark' && loading && msg.text === THINKING_MESSAGE
                 return (
                   <div key={idx} className={`clk-msg clk-msg--${msg.role}`}>
-                    <span className='clk-msg-role'>{msg.role === 'user' ? 'YOU' : 'CLARK'}</span>
+                    <span className='clk-msg-role' data-intent={msg.role === 'user' ? msg.text.slice(0, 34) : (msg.intentBadge ?? (activeMode === 'wallet' ? 'WALLET PROFILE' : activeMode === 'token' ? 'TOKEN READ' : activeMode === 'contract' ? 'RISK READ' : 'INTELLIGENCE'))}>{msg.role === 'user' ? 'USER' : 'CLARK'}</span>
                     {isThinking ? (
                       <div className='clk-thinking'>
-                        <ClarkOrb size={22} thinking />
-                        <span className='clk-thinking-text'>Clark is thinking…</span>
+                        <div className='clk-thinking-stage'>{loadingStages[loadingStage] ?? loadingStages[0]}</div>
+                        <div className='clk-scanline' />
                       </div>
                     ) : (
                       <>

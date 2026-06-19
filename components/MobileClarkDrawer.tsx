@@ -4,6 +4,32 @@ import { useEffect, useRef, useState } from 'react'
 import { getClarkSessionId as getOrCreateSessionId, readClarkClientContext as getClientClarkContext, persistClarkMemoryEcho, persistClarkMomentumList } from '@/lib/client/clarkMemory'
 
 type Message = { role: 'user' | 'clark'; text: string; pending?: boolean }
+
+type AnalysisKind = 'token' | 'wallet' | 'lp' | 'general'
+const ANALYSIS_STAGES: Record<AnalysisKind, string[]> = {
+  token: ['Analyzing token...', 'Checking liquidity...', 'Reviewing holder distribution...', 'Inspecting security signals...', 'Building CORTEX summary...'],
+  wallet: ['Loading portfolio...', 'Reviewing activity...', 'Checking chain exposure...', 'Building wallet profile...', 'Preparing intelligence report...'],
+  lp: ['Reviewing liquidity...', 'Checking LP control...', 'Analyzing concentrated positions...', 'Preparing LP report...'],
+  general: ['Parsing request...', 'Loading CORTEX context...', 'Reviewing Base signals...', 'Preparing intelligence report...'],
+}
+function inferAnalysisKind(text: string): AnalysisKind {
+  const t = text.toLowerCase()
+  if (/\b(wallet|portfolio|holdings?|pnl|whale)\b/.test(t)) return 'wallet'
+  if (/\b(lp|liquidity|pool|lock|unlock|concentrated)\b/.test(t)) return 'lp'
+  if (/\b(token|contract|ca\b|holders?|deployer|rug|safe|scan)\b/.test(t)) return 'token'
+  return 'general'
+}
+function ClarkLoadingTrace({ kind }: { kind: AnalysisKind }) {
+  const stages = ANALYSIS_STAGES[kind]
+  const [stage, setStage] = useState(0)
+  useEffect(() => {
+    setStage(0)
+    const id = window.setInterval(() => setStage((current) => Math.min(current + 1, stages.length - 1)), 1200)
+    return () => window.clearInterval(id)
+  }, [kind, stages.length])
+  return <div className="clark-loading-trace"><div className="clark-loading-stage">{stages[stage] ?? stages[0]}</div><div className="clark-loading-scan" /></div>
+}
+
 type ClarkOpenDetail = { prompt?: string; autoSend?: boolean; source?: string }
 
 const INITIAL_ASSISTANT_MESSAGE = 'Ask me about Base tokens, wallets, whale alerts, or risk signals.'
@@ -15,6 +41,7 @@ export default function MobileClarkDrawer() {
   const [miniInput, setMiniInput] = useState('')
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
+  const [loadingKind, setLoadingKind] = useState<AnalysisKind>('general')
   const [lastAction, setLastAction] = useState('mounted')
   const [messages, setMessages] = useState<Message[]>([{ role: 'clark', text: INITIAL_ASSISTANT_MESSAGE }])
   const [error, setError] = useState('')
@@ -44,6 +71,7 @@ export default function MobileClarkDrawer() {
     setError('')
     setInput('')
     setMiniInput('')
+    setLoadingKind(inferAnalysisKind(text))
     setLoading(true)
     loadingRef.current = true
     setLastAction('send')
@@ -122,6 +150,13 @@ export default function MobileClarkDrawer() {
 
   return (
     <>
+      <style>{`
+        .clark-loading-stage { color:#dbeafe; font:800 11px var(--font-plex-mono, monospace); letter-spacing:.04em; }
+        .clark-loading-scan { position:relative; height:2px; margin-top:8px; overflow:hidden; background:rgba(148,163,184,.13); }
+        .clark-loading-scan::before { content:''; position:absolute; inset:0 auto 0 0; width:45%; background:linear-gradient(90deg, transparent, rgba(45,212,191,.9), transparent); animation:clarkDrawerScan 1.15s linear infinite; }
+        @keyframes clarkDrawerScan { from{ transform:translateX(-100%);} to{ transform:translateX(250%);} }
+      `}</style>
+
       {debugClark && (
         <div className="fixed left-3 top-20 z-[99999] rounded bg-black/90 px-2 py-1 text-[10px] text-emerald-300">
           MobileClark mounted · mode: {expanded ? 'expanded' : 'compact'} · action: {lastAction}
@@ -159,10 +194,16 @@ export default function MobileClarkDrawer() {
               <button type="button" className="text-slate-300" onClick={() => { setExpanded(false); setLastAction('minimize') }}>Minimize</button>
             </div>
 
-            <div className="flex-1 space-y-3 overflow-y-auto px-4 py-3">
-              {messages.map((m, i) => (
-                <div key={i} className={`rounded-xl px-3 py-2 text-sm ${m.role === 'user' ? 'bg-cyan-500/20 text-cyan-100' : 'bg-slate-900 text-slate-200'}`}>{m.text}</div>
-              ))}
+            <div className="flex-1 space-y-2 overflow-y-auto px-4 py-3">
+              {messages.map((m, i) => {
+                const isThinking = m.role === 'clark' && loading && m.text === 'Clark is thinking...'
+                return (
+                  <div key={i} className={`max-w-[86%] rounded-md border px-3 py-2 text-sm ${m.role === 'user' ? 'ml-auto border-cyan-300/20 bg-cyan-950/30 text-cyan-50' : 'mr-auto border-slate-600/30 bg-slate-950/80 text-slate-200'}`}>
+                    <div className={`mb-1 font-mono text-[10px] font-extrabold uppercase tracking-[0.16em] ${m.role === 'user' ? 'text-cyan-200' : 'text-emerald-200'}`}>{m.role === 'user' ? 'USER' : 'CLARK'}</div>
+                    {isThinking ? <ClarkLoadingTrace kind={loadingKind} /> : <div className="whitespace-pre-wrap break-words leading-relaxed">{m.text}</div>}
+                  </div>
+                )
+              })}
               {error && <p className="text-sm text-rose-300">{error}</p>}
               <div ref={endRef} />
             </div>
