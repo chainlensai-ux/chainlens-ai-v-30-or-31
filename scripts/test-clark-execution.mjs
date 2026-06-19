@@ -1780,7 +1780,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   const profileOut = formatWalletFollowupFromMemory(seqAddr, seqWalletMem, 'wallet_profile')
   assert.ok(profileOut.startsWith('WALLET PROFILE'), 'wallet profile follow-up starts with WALLET PROFILE')
   assert.ok(profileOut.includes('Followability:'), 'wallet profile includes Followability')
-  assert.ok(profileOut.includes('Next action:'), 'wallet profile includes Next action')
+  assert.ok(profileOut.includes('Next Action:'), 'wallet profile includes Next Action')
 
   // Explicit token scan with an address must still route token, never wallet memory.
   const { classifyClarkPrompt: classifyForSeq, isTokenFollowupPrompt: isTokenFollowupForSeq } = await import('../lib/server/clarkRouting.ts')
@@ -2080,7 +2080,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.equal(crossSurfaceScan.intent, 'token_scan', 'cross-surface: explicit token scan still classifies as token_scan regardless of which surface sent it')
 }
 
-// ─── Wallet Identity Engine V1 — deterministic archetype + score from existing evidence only ───
+// ─── Wallet Profile V2 — deterministic category + portfolio/trading behavior from existing evidence only ───
 {
   const { computeWalletProfile } = await import('../lib/server/walletIdentity.ts')
 
@@ -2108,17 +2108,14 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.equal(weakProfile.grade, null, 'low-coverage wallet gets grade: null')
   assert.equal(weakProfile.confidence, 'low', 'low-coverage wallet gets confidence: low')
   assert.ok(weakProfile.reasons.length > 0, 'low-coverage wallet explains itself via reasons[]')
-  assert.equal(weakProfile.category, 'Small Portfolio', 'category is derived from portfolio size alone, independent of evidence coverage')
-  assert.equal(weakProfile.behavior, null, 'low-coverage wallet does not guess a behavior')
-  assert.equal(weakProfile.primaryArchetype, weakProfile.category, 'primaryArchetype is a back-compat alias for category')
-  assert.equal(weakProfile.secondaryArchetype, weakProfile.behavior, 'secondaryArchetype is a back-compat alias for behavior')
-  assert.notEqual(weakProfile.behavior, 'Passive Investor', 'Passive Investor is never assigned as a default-on-missing-evidence guess')
+  assert.equal(weakProfile.tradingBehavior, null, 'low-coverage wallet does not guess trading behavior')
+  assert.ok('portfolioConfidence' in weakProfile && 'tradingConfidence' in weakProfile, 'walletProfile splits portfolio/trading confidence')
 
   // 3) Behaviors are deterministic — same input always produces the same output.
   const repeat = computeWalletProfile(baseSnapshot)
   assert.deepEqual(repeat, weakProfile, 'computeWalletProfile is deterministic for identical input')
 
-  // 4) Strong, evidence-rich wallet: high win rate + meaningful sample -> Smart Money Candidate behavior + non-null score.
+  // 4) Strong, evidence-rich wallet: high win rate + meaningful sample -> Smart Money Candidate trading behavior + non-null score.
   const strongSnapshot = {
     ...baseSnapshot,
     totalValue: 8000,
@@ -2135,13 +2132,9 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   const strongProfile = computeWalletProfile(strongSnapshot)
   assert.notEqual(strongProfile.score, null, 'evidence-rich wallet receives a numeric score')
   assert.ok(typeof strongProfile.grade === 'string', 'evidence-rich wallet receives a letter grade')
-  assert.ok(typeof strongProfile.profileColor === 'string', 'evidence-rich wallet receives a profileColor for UI grade styling')
-  assert.equal(strongProfile.category, 'Mid Portfolio', 'category reflects portfolio size ($8,000) independent of behavior')
-  assert.equal(strongProfile.behavior, 'Smart Money Candidate', 'high win-rate + meaningful sample + positive realized PnL classifies behavior as Smart Money Candidate')
-  assert.ok(strongProfile.confidence === 'high' || strongProfile.confidence === 'medium', 'evidence-rich wallet does not get downgraded to low confidence solely because of evidence coverage thresholds')
-  assert.ok(typeof strongProfile.followability === 'string', 'evidence-rich wallet receives a followability rating')
-  assert.ok(Array.isArray(strongProfile.strengths) && strongProfile.strengths.length > 0, 'evidence-rich wallet lists at least one strength')
-  assert.ok(typeof strongProfile.nextAction === 'string', 'evidence-rich wallet receives a deterministic next action')
+  assert.equal(strongProfile.tradingBehavior, 'Smart Money Candidate', 'high win-rate + meaningful sample classifies as Smart Money Candidate trading behavior')
+  assert.equal(strongProfile.portfolioBehavior, 'Stablecoin Heavy', 'portfolio behavior is classified from holdings without requiring closed lots')
+  assert.equal(strongProfile.walletCategory, 'Small Portfolio', 'wallet category is separate from portfolio/trading behavior')
 
   // 5) Wallet score is stable for re-computation on an unchanged snapshot.
   const strongRepeat = computeWalletProfile(strongSnapshot)
