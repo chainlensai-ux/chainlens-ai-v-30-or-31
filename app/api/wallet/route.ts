@@ -41,7 +41,7 @@ const WALLET_ADMIN_FORENSIC_SCAN = process.env.CHAINLENS_WALLET_ADMIN_FORENSIC_S
 const WALLET_ADMIN_HISTORICAL_HARD_CAP = parseInt(process.env.CHAINLENS_WALLET_ADMIN_HISTORICAL_HARD_CAP ?? '50', 10) || 50
 let _goldrushDailyCreditsUsed = 0
 let _goldrushDailyCreditsResetAt = 0
-const WALLET_SNAPSHOT_SCHEMA_VERSION = 'v39'
+const WALLET_SNAPSHOT_SCHEMA_VERSION = 'v40'
 const walletCache = new Map<string, { exp: number; payload: unknown; cachedAt: number }>()
 const walletRate = new Map<string, { count: number; resetAt: number }>()
 const WALLET_RATE_BY_PLAN: Record<string, number> = { free: 20, pro: 60, elite: 180 }
@@ -552,6 +552,8 @@ export async function POST(req: Request) {
     const debugFresh = requestUrl.searchParams.get('debugFresh') === 'true' || body?.debugFresh === true || body?.debugFresh === 'true'
     const hasBearerToken = (req.headers.get('authorization') ?? '').startsWith('Bearer ')
     const allowDebugFresh = debugFresh && (process.env.NODE_ENV !== 'production' || hasBearerToken)
+    const cacheBypassReason: 'refresh' | 'debugFresh' | null = allowDebugFresh ? 'debugFresh' : refresh ? 'refresh' : null
+    const debugFreshBypassedPersistentCache = allowDebugFresh
     const key = String(address ?? '').toLowerCase()
     if (!/^0x[a-fA-F0-9]{40}$/.test(key)) {
       return json({ error: 'Invalid wallet address' }, { status: 400 })
@@ -590,7 +592,7 @@ export async function POST(req: Request) {
 
     // Deep scan cooldown — prevents rapid repeat deep scans from burning credits
     const deepCooldownKey = `${key}:deep:${plan}`
-    const deepCooldownActive = deepActivity && !effectiveHistoricalCoverage && (walletDeepCooldown.get(deepCooldownKey) ?? 0) > Date.now()
+    const deepCooldownActive = !cacheBypassReason && deepActivity && !effectiveHistoricalCoverage && (walletDeepCooldown.get(deepCooldownKey) ?? 0) > Date.now()
 
     // Stable, deterministic cache key: address + logical scan mode + chain + schema version
     // Does NOT include volatile fields (debug, refresh, request id, body order)
@@ -598,9 +600,8 @@ export async function POST(req: Request) {
     const chainKey = resolvedChainMode !== 'auto' ? resolvedChainMode : chain
     const cacheKey = `${key}:${scanModeKey}:${chainKey}:${WALLET_SNAPSHOT_SCHEMA_VERSION}${hcSuffix}`
 
-    // Cache bypass: only explicit debugFresh bypasses deep scan cache.
-    // refresh=true can bypass basic cache, but deep cache stays authoritative to prevent provider spam.
-    const _cacheReadAttempted = !(allowDebugFresh || (refresh && !deepActivity))
+    // Cache bypass: explicit refresh/debugFresh bypass both memory and persistent cache reads.
+    const _cacheReadAttempted = !cacheBypassReason
     const _cacheReadStartedAt = Date.now()
     const cachedRaw = _cacheReadAttempted ? walletCache.get(cacheKey) : null
     let _cacheReadMs = Date.now() - _cacheReadStartedAt
@@ -684,7 +685,7 @@ export async function POST(req: Request) {
       if (cp && typeof cp === 'object' && debug) cp._debug = {
         routeName: '/api/wallet', cacheHit: true, cacheMode,
         requestDurationMs: Date.now() - startedAt,
-        walletSnapshotCache: { memoryHit: true, persistentHit: false, providerFetchNeeded: false, refreshBypassedCache: false, cacheAgeSeconds, cacheTtlSeconds: (effectiveHistoricalCoverage ? WALLET_HISTORICAL_CACHE_TTL_MS : deepActivity ? WALLET_DEEP_CACHE_TTL_MS : WALLET_BASIC_CACHE_TTL_MS) / 1000 },
+        walletSnapshotCache: { memoryHit: true, persistentHit: false, providerFetchNeeded: false, refreshBypassedCache: false, cacheAgeSeconds, cacheTtlSeconds: (effectiveHistoricalCoverage ? WALLET_HISTORICAL_CACHE_TTL_MS : deepActivity ? WALLET_DEEP_CACHE_TTL_MS : WALLET_BASIC_CACHE_TTL_MS) / 1000, cacheVersion: WALLET_SNAPSHOT_SCHEMA_VERSION, cacheBypassReason, debugFreshBypassedPersistentCache },
         providerFlow: null,
         walletScanBudgetDebug: cp?._cachedDiagnosticsSlim?.walletScanBudgetDebug ?? null,
         walletHistoricalScanDebug: cp?._cachedDiagnosticsSlim?.walletHistoricalScanDebug ?? null,
@@ -866,12 +867,12 @@ export async function POST(req: Request) {
             cp._debug = {
               routeName: '/api/wallet', cacheHit: true, cacheMode,
               requestDurationMs: Date.now() - startedAt,
-              walletSnapshotCache: { memoryHit: false, persistentHit: true, providerFetchNeeded: false, refreshBypassedCache: false, cacheAgeSeconds, cacheTtlSeconds: WALLET_DEEP_CACHE_TTL_MS / 1000 },
+              walletSnapshotCache: { memoryHit: false, persistentHit: true, providerFetchNeeded: false, refreshBypassedCache: false, cacheAgeSeconds, cacheTtlSeconds: WALLET_DEEP_CACHE_TTL_MS / 1000, cacheVersion: WALLET_SNAPSHOT_SCHEMA_VERSION, cacheBypassReason, debugFreshBypassedPersistentCache },
               providerFlow: null,
               walletScanCostDebug: {
                 scanId: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
                 address: key, scanMode: scanModeKey, dataFreshness: 'cached' as const,
-                cacheKey, cacheReadAttempted: _cacheReadAttempted,
+                cacheKey, cacheVersion: WALLET_SNAPSHOT_SCHEMA_VERSION, cacheBypassReason, debugFreshBypassedPersistentCache, cacheReadAttempted: _cacheReadAttempted,
                 cacheWriteAttempted: false, cacheWriteSucceeded: false,
                 cooldownKey: deepCooldownKey, cooldownHit: deepCooldownActive,
                 cooldownExpiresInSeconds: _dces,
@@ -903,9 +904,9 @@ export async function POST(req: Request) {
         }
       }
 
-      // --- Persistent cooldown check (runs even for refresh=true to prevent credit burn) ---
-      _persistentCooldownReadAttempted = _persistentAvailable
-      const persCooldown = _persistentAvailable ? await readPersistentCooldown(deepCooldownKey) : null
+      // --- Persistent cooldown check (bypassed by refresh/debugFresh so explicit fresh scans can run) ---
+      _persistentCooldownReadAttempted = !cacheBypassReason && _persistentAvailable
+      const persCooldown = _persistentCooldownReadAttempted ? await readPersistentCooldown(deepCooldownKey) : null
       if (persCooldown) {
         _persistentCooldownHit = true
         _persistentCooldownExpiresInSeconds = Math.floor((persCooldown.expiresAt.getTime() - Date.now()) / 1000)
@@ -1001,7 +1002,15 @@ export async function POST(req: Request) {
     }
     snapshot.pnlCacheQuality = getPnlCacheQuality(snapshot)
     const providers: any = snapshot._diagnostics?.providers ?? {}
-    const snapshotCacheDebug = snapshot._diagnostics?.snapshotCache ?? null
+    const snapshotCacheDebug = {
+      ...(snapshot._diagnostics?.snapshotCache ?? {}),
+      cacheVersion: WALLET_SNAPSHOT_SCHEMA_VERSION,
+      cacheBypassReason,
+      debugFreshBypassedPersistentCache,
+      persistentHit: _persistentCacheHit,
+      providerFetchNeeded: true,
+      refreshBypassedCache: refresh,
+    }
 
     // Daily credit soft cap tracking (in-memory, resets at midnight UTC)
     if (GOLDRUSH_DAILY_SOFT_CAP > 0 && !inFlightDeduped) {
@@ -1400,6 +1409,9 @@ export async function POST(req: Request) {
             goldrushDailySoftCap: GOLDRUSH_DAILY_SOFT_CAP > 0 ? GOLDRUSH_DAILY_SOFT_CAP : null,
             dataFreshness: 'live' as const,
             cacheKey,
+            cacheVersion: WALLET_SNAPSHOT_SCHEMA_VERSION,
+            cacheBypassReason,
+            debugFreshBypassedPersistentCache,
             cacheReadAttempted: _cacheReadAttempted,
             cacheWriteAttempted: _cacheWriteAttempted,
             cacheWriteSucceeded: _cacheWriteAttempted && (_persistentCacheWriteSucceeded || !_persistentAvailable),

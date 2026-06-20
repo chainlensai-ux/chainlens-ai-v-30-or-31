@@ -561,6 +561,9 @@ export type WalletSnapshot = {
       refreshBypassedCache: boolean
       cacheAgeSeconds: number | null
       cacheTtlSeconds: number
+      cacheVersion?: string
+      cacheBypassReason?: 'refresh' | 'debugFresh' | null
+      debugFreshBypassedPersistentCache?: boolean
     }
     moralis?: {
       configured: boolean
@@ -1458,7 +1461,7 @@ export type WalletSnapshotOptions = {
 
 const SNAPSHOT_TTL_MS         = 5  * 60 * 1000
 const SNAPSHOT_HISTORY_TTL_MS = 15 * 60 * 1000
-const SNAPSHOT_SCHEMA_VERSION = 'v39'
+const SNAPSHOT_SCHEMA_VERSION = 'v40'
 type SnapshotCacheEntry = { snapshot: WalletSnapshot; cachedAt: number; ttlMs: number }
 const snapshotMemCache = new Map<string, SnapshotCacheEntry>()
 
@@ -7503,6 +7506,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
             snapshotCache: {
               memoryHit: true, persistentHit: false, providerFetchNeeded: false,
               refreshBypassedCache: false, cacheAgeSeconds, cacheTtlSeconds: cached.ttlMs / 1000,
+              cacheVersion: SNAPSHOT_SCHEMA_VERSION, cacheBypassReason: null, debugFreshBypassedPersistentCache: false,
             },
           } : undefined,
           walletProfileDebug: cached.snapshot.walletProfileDebug ? {
@@ -10050,6 +10054,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       snapshotCache: {
         memoryHit: false, persistentHit: false, providerFetchNeeded: true,
         refreshBypassedCache: refresh, cacheAgeSeconds: null, cacheTtlSeconds: snapshotTtlMs / 1000,
+        cacheVersion: SNAPSHOT_SCHEMA_VERSION, cacheBypassReason: refresh ? 'refresh' : null, debugFreshBypassedPersistentCache: false,
       },
       providerFallback: {
         primaryAttempted: _grPrimaryAttempted,
