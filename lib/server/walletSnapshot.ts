@@ -1579,6 +1579,15 @@ const KNOWN_DEX_ROUTERS: Record<string, string> = {
   // consulted this map directly (router-coverage audit).
   '0x6cb442acf35158d68425b2a89f7e7b02fb5e42d5': 'AerodromeSecondary',
   '0x327df1e6de05895d2ab08513aadd9313fe505d86': 'BaseSwap',
+  // Verified via BaseScan explorer label ("Aerodrome: SlipStream Swap Router") and
+  // official GitHub repo github.com/aerodrome-finance/slipstream.
+  '0xbe6d8f0d05cc4be24d5167a3ef062215be6d18a5': 'AerodromeSlipstream',
+  // Verified via official AlienBase docs (github.com/alienbase-xyz/docs) and BaseScan label.
+  '0x8c1a3cf8f83074169fe5d7ad50b978e1cd6b37c7': 'AlienBaseRouter',
+  '0xb20c411fc84fbb27e78608c24d0056d974ea9411': 'AlienBaseSmartRouter',
+  // Virtuals Protocol: no dedicated router/bonding-curve contract address could be
+  // verified via official docs, official GitHub, or a verified explorer label within
+  // accessible sources, so none is added here per the "do not guess addresses" rule.
 }
 
 const SWAP_ENRICHMENT_TTL_MS = 45 * 60 * 1000
