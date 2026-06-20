@@ -4180,6 +4180,23 @@ function normalizeChainForGoldrush(chain: string): string {
 
 const LOT_EPSILON = 1e-9
 
+// PHASE3-FIX-1: single canonical amount used by both pricing and FIFO. Pricing derives
+// priceUsd as (legUsd / parseRawAmount(amountRaw, decimals)) when a raw amount is available,
+// so FIFO must multiply that same priceUsd by the same canonical amount — not the provider's
+// raw-normalized `e.amount` field, which can drift from the raw/decimals-derived value (wrong
+// decimals upstream, lossy float normalization, etc.) and silently skew cost basis/lot size.
+function canonicalFifoAmount(e: WalletTxEvidence): number {
+  return parseRawAmount(e.amountRaw, e.tokenDecimals) ?? e.amount
+}
+
+// PHASE3-FIX-2: epsilon scales with lot size instead of a fixed 1e-9, which is too tight for
+// large-decimal tokens (e.g. an amountOpened of 1e15 raw-derived units) and too loose for
+// sub-unit tokens. A floating-point remainder under ~1e-6 of the original lot size is dust,
+// not an open position, and should auto-close rather than linger as a phantom open lot.
+function lotEpsilonFor(amountOpened: number): number {
+  return Math.max(LOT_EPSILON, Math.abs(amountOpened) * 1e-6)
+}
+
 function lotConfidence(entrySource: string, exitSource: string): 'high' | 'medium' | 'low' {
   if (entrySource === 'stable_leg' && exitSource === 'stable_leg') return 'high'
   if (entrySource !== 'unavailable' && exitSource !== 'unavailable') return 'medium'
@@ -4231,10 +4248,18 @@ function buildFifoLotEngine(
 
   const eligible: WalletTxEvidence[] = []
   for (const e of evidenceWithPricing) {
-    if (!e.swapDetection?.isSwapCandidate) continue
+    // PHASE3-FIX-5: isSwapCandidate is already false for airdrop_candidate/transfer/bridge
+    // events (see buildSwapDetection), so this gate already excludes non-swap legs from cost
+    // basis. Kept as an explicit, named check (rather than relying only on the upstream flag)
+    // so an airdrop/rebate leg can never enter FIFO even if eventKind classification changes.
+    if (!e.swapDetection?.isSwapCandidate || e.swapDetection.eventKind === 'airdrop_candidate') continue
     if (e.direction === 'unknown') { skippedUnknownSide++; continue }
     if (e.priceAtTime?.status !== 'priced' || !e.priceAtTime.priceUsd || !isFinite(e.priceAtTime.priceUsd) || e.priceAtTime.priceUsd <= 0) { skippedUnpricedEvents++; continue }
-    if (!e.txHash || !e.timestamp || !e.contract || !e.contract.startsWith('0x') || !e.amount || e.amount <= 0) { skippedMissingFields++; continue }
+    // PHASE3-FIX-1: validate the canonical (raw/decimals-derived) amount, not the provider's
+    // possibly-drifted normalized `e.amount`, so a bad normalization doesn't silently pass
+    // through as a zero/garbage lot later.
+    const _canonicalAmount = canonicalFifoAmount(e)
+    if (!e.txHash || !e.timestamp || !e.contract || !e.contract.startsWith('0x') || !_canonicalAmount || _canonicalAmount <= 0 || !isFinite(_canonicalAmount)) { skippedMissingFields++; continue }
     if (QUOTE_ASSET_CONTRACTS[e.contract.toLowerCase()]) { skippedStableQuoteAssets++; continue }
     eligible.push(e)
   }
@@ -4264,15 +4289,26 @@ function buildFifoLotEngine(
   const sampleUnmatchedReasons: string[] = []
   const _abbr = (addr: string) => `${addr.slice(0, 8)}...${addr.slice(-6)}`
 
+  // PHASE3-FIX-3 bookkeeping: tracks which lotKeys have ever had a real (non-estimate) buy
+  // discovered, so a sell that arrives before any real buy can later be reconciled against an
+  // estimate lot instead of being left as a hard "no buy ever found" unmatched sell.
+  let backfilledFromEstimateLots = 0
+
   for (const e of eligible) {
     const normalChain = normalizeChain(e.chain)
-    const lotKey = `${normalChain}:${e.contract.toLowerCase()}`
+    // PHASE3-FIX-6: token identity key now includes decimals (chain + contract + decimals).
+    // Two events on the same contract address with different decimals can never be the same
+    // token (a malformed/duplicate event with wrong decimals), so they must never share a
+    // FIFO queue — keying on contract alone allowed them to collide.
+    const lotKey = `${normalChain}:${e.contract.toLowerCase()}:${e.tokenDecimals ?? 'NA'}`
     const priceUsd = e.priceAtTime!.priceUsd!
     const priceSource = e.priceAtTime!.source
+    // PHASE3-FIX-1: canonical amount, consistent with how priceUsd was derived upstream.
+    const amount = canonicalFifoAmount(e)
 
     if (e.direction === 'buy') {
       buyTokenKeySet.add(lotKey)
-      if (sampleBuyEvents.length < 5) sampleBuyEvents.push({ tokenAddress: _abbr(e.contract), symbol: e.symbol ?? '?', chain: normalChain, amount: e.amount, priceUsd })
+      if (sampleBuyEvents.length < 5) sampleBuyEvents.push({ tokenAddress: _abbr(e.contract), symbol: e.symbol ?? '?', chain: normalChain, amount, priceUsd })
       // Open a new lot
       const lot: WalletLotOpen = {
         tokenAddress: e.contract.toLowerCase(),
@@ -4280,10 +4316,10 @@ function buildFifoLotEngine(
         chain: normalChain,
         openedTxHash: e.txHash,
         openedAt: e.timestamp!,
-        amountOpened: e.amount,
-        amountRemaining: e.amount,
+        amountOpened: amount,
+        amountRemaining: amount,
         entryPriceUsd: priceUsd,
-        entryValueUsd: e.amount * priceUsd,
+        entryValueUsd: amount * priceUsd,
         priceSource,
         confidence: priceSource === 'stable_leg' ? 'high' : priceSource === 'current_holding_price_open_lot_estimate' ? 'low' : 'medium',
       }
@@ -4300,16 +4336,31 @@ function buildFifoLotEngine(
 
     } else if (e.direction === 'sell') {
       sellTokenKeySet.add(lotKey)
-      if (sampleSellEvents.length < 5) sampleSellEvents.push({ tokenAddress: _abbr(e.contract), symbol: e.symbol ?? '?', chain: normalChain, amount: e.amount, priceUsd })
-      const queue = openLotsMap.get(lotKey)
+      if (sampleSellEvents.length < 5) sampleSellEvents.push({ tokenAddress: _abbr(e.contract), symbol: e.symbol ?? '?', chain: normalChain, amount, priceUsd })
+      let queue = openLotsMap.get(lotKey)
+      // PHASE3-FIX-3: no real lot exists for this token, but an estimate lot (opened from a
+      // current-holding-price guess) does — instead of declaring the position phantom, fall
+      // back to closing against the estimate lot. The resulting closed lot inherits 'low'
+      // confidence via lotConfidence() since entrySource is the estimate source, so it never
+      // masquerades as a high-confidence realized trade.
+      if (!queue || queue.length === 0) {
+        const estimateQueue = estimateLotsMap.get(lotKey)
+        if (estimateQueue && estimateQueue.length > 0) {
+          queue = estimateQueue
+          backfilledFromEstimateLots++
+        }
+      }
       if (!queue || queue.length === 0) {
         unmatchedSells++
         if (sampleUnmatchedReasons.length < 10) sampleUnmatchedReasons.push(`no_prior_buy:${_abbr(e.contract)}(${e.symbol ?? '?'})`)
         continue
       }
 
-      let sellRemaining = e.amount
-      while (sellRemaining > LOT_EPSILON && queue.length > 0) {
+      let sellRemaining = amount
+      // PHASE3-FIX-4: deterministic partial-lot allocation — close the minimum of the
+      // remaining sell and the lot's remaining amount, update the lot precisely, and only
+      // shift the lot off the queue once its remainder is within the lot-relative epsilon.
+      while (sellRemaining > lotEpsilonFor(amount) && queue.length > 0) {
         const lot = queue[0]
         const closeAmount = Math.min(lot.amountRemaining, sellRemaining)
         const costBasisUsd = closeAmount * lot.entryPriceUsd
@@ -4341,10 +4392,10 @@ function buildFifoLotEngine(
 
         lot.amountRemaining -= closeAmount
         sellRemaining -= closeAmount
-        if (lot.amountRemaining <= LOT_EPSILON) queue.shift()
+        if (lot.amountRemaining <= lotEpsilonFor(lot.amountOpened)) queue.shift()
       }
 
-      if (sellRemaining > LOT_EPSILON) unmatchedSells++
+      if (sellRemaining > lotEpsilonFor(amount)) unmatchedSells++
     }
     // direction === 'unknown' already filtered by eligible filter (swap candidates are buy/sell)
   }
@@ -4355,14 +4406,16 @@ function buildFifoLotEngine(
   for (const queue of openLotsMap.values()) {
     for (const lot of queue) {
       openedLots++
-      if (lot.amountRemaining < lot.amountOpened - LOT_EPSILON) partiallyClosedLots++
+      // PHASE3-FIX-2: lot-relative epsilon — a remainder that's dust relative to this lot's
+      // own size no longer counts as "partially closed remaining open."
+      if (lot.amountRemaining < lot.amountOpened - lotEpsilonFor(lot.amountOpened)) partiallyClosedLots++
     }
   }
   // Estimate lots count as opened positions but are never matched against sells
   for (const queue of estimateLotsMap.values()) {
     for (const _lot of queue) { openedLots++ }
   }
-  unmatchedBuys = Array.from(openLotsMap.values()).flatMap(q => q).filter(lot => lot.amountRemaining >= lot.amountOpened - LOT_EPSILON).length
+  unmatchedBuys = Array.from(openLotsMap.values()).flatMap(q => q).filter(lot => lot.amountRemaining >= lot.amountOpened - lotEpsilonFor(lot.amountOpened)).length
 
   const totalCostBasisClosedUsd = closedLots.length > 0 ? closedLots.reduce((s, l) => s + l.costBasisUsd, 0) : null
   const totalProceedsClosedUsd = closedLots.length > 0 ? closedLots.reduce((s, l) => s + l.proceedsUsd, 0) : null
@@ -4392,6 +4445,9 @@ function buildFifoLotEngine(
   }
   if (unmatchedSells > 0) missing.push('unmatched_sells')
   if (unmatchedBuys > 0) missing.push('unmatched_buys')
+  // PHASE3-FIX-3: debug-visible count of sells reconciled against estimate lots instead of
+  // being left as a hard "no buy ever found" unmatched sell.
+  if (backfilledFromEstimateLots > 0) missing.push(`backfilled_from_estimate_lots:${backfilledFromEstimateLots}`)
 
   const abbr = (addr: string) => `${addr.slice(0, 8)}...${addr.slice(-6)}`
 
