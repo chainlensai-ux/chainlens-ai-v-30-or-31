@@ -696,6 +696,13 @@ export type WalletSnapshot = {
       sampleWalletInitiatedSwapLikeTxs: Array<{ txHash: string; inboundCount: number; outboundCount: number; tokens: string[]; hasStableOrWeth: boolean }>
       sampleGroupedTxs: Array<{ txHash: string; walletEventCount: number; totalEventCount: number; inboundCount: number; outboundCount: number; tokens: string[] }>
       reasons: string[]
+      // TEMPORARY DEBUG (router-coverage / unknown-events audit) — breakdown of why events
+      // landed in eventKind='unknown', debug-only, never exposed in production UI.
+      unknownRouterEvents: number
+      unknownDirectionEvents: number
+      unknownCounterpartyEvents: number
+      unknownPairingEvents: number
+      unknownPricingEvents: number
     }
     walletPriceAtTimeDebug?: {
       swapCandidateEvents: number
@@ -1567,6 +1574,11 @@ const KNOWN_DEX_ROUTERS: Record<string, string> = {
   '0x1111111254eeb25477b68fb85ed929f73a960582': 'OneInchRouter',
   '0xdef1c0ded9bec7f1a1670819833240f027b25eff': 'ZeroExExchangeProxy',
   '0xcf77a3ba9a5ca399b7c97c74d54e5b1beb874e43': 'Aerodrome',
+  // Previously only present in EXTENDED_DEX_ROUTERS (used by ETH-side reconstruction) and
+  // therefore invisible to the Base wallet-side swap classifier below, which only ever
+  // consulted this map directly (router-coverage audit).
+  '0x6cb442acf35158d68425b2a89f7e7b02fb5e42d5': 'AerodromeSecondary',
+  '0x327df1e6de05895d2ab08513aadd9313fe505d86': 'BaseSwap',
 }
 
 const SWAP_ENRICHMENT_TTL_MS = 45 * 60 * 1000
@@ -3549,6 +3561,8 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
     eventsMissingFromTo: 0, duplicateEventCount: 0, zeroAmountEventCount: 0,
     sampleSwapCandidates: [], sampleUnknowns: [], sampleRouterMatches: [],
     sampleWalletInitiatedSwapLikeTxs: [], sampleGroupedTxs: [], reasons: [],
+    unknownRouterEvents: 0, unknownDirectionEvents: 0, unknownCounterpartyEvents: 0,
+    unknownPairingEvents: 0, unknownPricingEvents: 0,
   })
   const emptySummary = (missing: string[]): WalletSnapshot['walletSwapSummary'] => ({
     status: 'open_check', totalEvidenceEvents: 0, groupedTxCount: 0, swapCandidateEvents: 0,
@@ -3630,7 +3644,13 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
     const first = group[0]
     const txToAddr = first.txToAddress?.toLowerCase() ?? null
     const txFromAddr = first.txFromAddress?.toLowerCase() ?? null
-    const txRouterProtocol = txToAddr ? (KNOWN_DEX_ROUTERS[txToAddr] ?? null) : null
+    // Router-coverage fix: fall back to EXTENDED_DEX_ROUTERS (Balancer, Curve, SushiSwap,
+    // Paraswap, additional Uniswap/1inch/0x addresses) for any address known elsewhere in
+    // this file but not yet given a friendly name in KNOWN_DEX_ROUTERS, so Base wallet-side
+    // swap classification sees every router this file already knows about.
+    const txRouterProtocol = txToAddr
+      ? (KNOWN_DEX_ROUTERS[txToAddr] ?? (EXTENDED_DEX_ROUTERS.has(txToAddr) ? 'KnownDexRouter' : null))
+      : null
     const txToKnownRouter = Boolean(txRouterProtocol)
     const walletIsInitiator = Boolean(txFromAddr && txFromAddr === walletLower)
     const hasBuy = group.some(t => t.direction === 'buy')
@@ -3773,6 +3793,23 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
   const walletSideUnclassified = evidenceWithDetection.filter(e => e.swapDetection?.eventKind === 'unknown' && e.direction !== 'unknown' && e.amount > 0).length
   if (walletSideUnclassified > 0) unknownReasonCounts['wallet_side_no_swap_pattern'] = walletSideUnclassified
 
+  // ── TEMPORARY DEBUG (router-coverage / unknown-events audit) ──
+  // Breaks unknownEvents down by which exclusion stage produced it, so a future router/
+  // direction-resolution fix can be targeted at the highest-volume cause instead of guessing.
+  const unknownDirectionEvents = directionCounts.unknown
+  const unknownCounterpartyEvents = eventsMissingFromTo
+  // Direction resolved + tx grouped, but no known router matched this tx's `to` address.
+  const unknownRouterEvents = evidenceWithDetection.filter(e =>
+    e.swapDetection?.eventKind === 'unknown' && e.direction !== 'unknown' &&
+    !(txCtxMap.get(e.txHash)?.txToKnownRouter)).length
+  // Direction resolved, tx grouped, but no opposite-direction leg in the same tx to pair against.
+  const unknownPairingEvents = evidenceWithDetection.filter(e =>
+    e.swapDetection?.eventKind === 'unknown' && e.direction !== 'unknown' &&
+    !(txCtxMap.get(e.txHash)?.hasInboundOutbound)).length
+  // Swap candidates that exist but have no timestamp, so price-at-time lookup downstream cannot run.
+  const unknownPricingEvents = evidenceWithDetection.filter(e =>
+    e.swapDetection?.isSwapCandidate && !e.timestamp).length
+
   // ── Sample grouped txs (from usable groups) ──
   const sampleGroupedTxs = Array.from(byTx.entries()).slice(0, 5).map(([txHash, group]) => ({
     txHash: `${txHash.slice(0, 10)}...${txHash.slice(-6)}`,
@@ -3808,6 +3845,8 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
       sampleRouterMatches: sampleRouterMatches.slice(0, 5),
       sampleWalletInitiatedSwapLikeTxs: Array.from(sampleWalletInitiatedSwapLikeTxsMap.values()).slice(0, 5),
       sampleGroupedTxs,
+      unknownRouterEvents, unknownDirectionEvents, unknownCounterpartyEvents,
+      unknownPairingEvents, unknownPricingEvents,
       reasons: [],
     },
   }
