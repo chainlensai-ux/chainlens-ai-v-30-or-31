@@ -1612,7 +1612,7 @@ export type WalletSnapshotOptions = {
 
 const SNAPSHOT_TTL_MS         = 5  * 60 * 1000
 const SNAPSHOT_HISTORY_TTL_MS = 15 * 60 * 1000
-const SNAPSHOT_SCHEMA_VERSION = 'v44'
+const SNAPSHOT_SCHEMA_VERSION = 'v45'
 type SnapshotCacheEntry = { snapshot: WalletSnapshot; cachedAt: number; ttlMs: number }
 const snapshotMemCache = new Map<string, SnapshotCacheEntry>()
 
@@ -10789,7 +10789,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _activityCreditsUsed = activityRequested ? 1 : 0
   const _creditsBeforeHistorical = _portfolioCreditsUsed + _activityCreditsUsed + _pricingCreditsUsed
   const _historicalPhaseBudget = Math.max(0, Math.min(6, _totalCreditHardCap - _creditsBeforeHistorical))
-  const _defaultPagesByTier = _walletValueTier === 'micro' ? 0 : _walletValueTier === 'small' ? 1 : _walletValueTier === 'standard' ? 2 : _walletValueTier === 'high_value' ? 3 : 5
+  const _defaultPagesByTier = _walletValueTier === 'micro' ? 0 : 1
   const _pagesAllowed = _adminOverrideUsed
     ? Math.max(0, Math.min(clampedMaxHistoricalPages, _historicalPhaseBudget))
     : Math.max(0, Math.min(clampedMaxHistoricalPages, _defaultPagesByTier, _historicalPhaseBudget, _totalCreditHardCap - _creditsBeforeHistorical))
@@ -10824,7 +10824,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       const syntheticTargets = ranked.filter(r => _syntheticLotTokenTargets.includes(r.contract))
       const merged = [...syntheticTargets]
       for (const t of baseTargets) if (!merged.some(m => m.contract === t.contract)) merged.push(t)
-      return merged.slice(0, Math.max(maxTokens, syntheticTargets.length))
+      return merged.slice(0, (_adminOverrideUsed || debug) ? Math.max(maxTokens, syntheticTargets.length) : maxTokens)
     }
     return baseTargets
   })()
@@ -10966,6 +10966,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   else if (!_runHistoricalCoverage) _syntheticTargetExtraSkippedReason = 'historical_recovery_not_run'
   else if (!GOLDRUSH_KEY) _syntheticTargetExtraSkippedReason = 'provider_not_configured'
   else if (_syntheticLotTokenTargets.length === 0) _syntheticTargetExtraSkippedReason = 'no_synthetic_targets'
+  else if (_syntheticLotTokenTargets.length > _syntheticTargetExtraMaxTokens && !debug) _syntheticTargetExtraSkippedReason = 'skipped_extra_recovery_too_many_synthetic_targets'
   else if (_syntheticTargetExtraEligibleTokens.length === 0) _syntheticTargetExtraSkippedReason = 'already_real_backed_lot_for_target'
   else if (_syntheticTargetExtraPriorBuysFoundSoFar > 0) _syntheticTargetExtraSkippedReason = 'prior_buy_already_found'
   else if (_syntheticTargetExtraPagesAllowed <= 0) _syntheticTargetExtraSkippedReason = 'budget_exhausted'
@@ -11301,6 +11302,11 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     syntheticTargetExtraStopReason: _syntheticTargetExtraStopReason,
     syntheticTargetExtraCreditUsed: _syntheticTargetExtraCreditUsed,
     syntheticTargetExtraSkippedReason: _syntheticTargetExtraSkippedReason,
+    missingCostBasisCostGuardApplied: _syntheticTargetExtraSkippedReason === 'skipped_extra_recovery_too_many_synthetic_targets' || (_syntheticLotsBeforeHistorical > 0 && _syntheticLotsAfterHistorical > 0),
+    costGuardReasons: [
+      ...(_syntheticTargetExtraSkippedReason === 'skipped_extra_recovery_too_many_synthetic_targets' ? ['skipped_extra_recovery_too_many_synthetic_targets'] : []),
+      ...(_syntheticLotsBeforeHistorical > 0 && _syntheticLotsAfterHistorical > 0 ? ['missing_cost_basis_cost_guard_applied'] : []),
+    ],
     syntheticTargetExtraChainsAttempted: _syntheticTargetExtraChainsAttempted,
     syntheticTargetExtraSkippedChains: _syntheticTargetExtraSkippedChains,
     syntheticTargetExtraPageCapHit: _syntheticTargetExtraPageCapHit,
@@ -12259,7 +12265,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       holdingsCount: debugHoldings.length,
       chainCount: debugChainExposure.length || new Set(debugHoldings.map((h) => h.chain).filter(Boolean)).size,
       concentrationLabel: debugSummary?.concentrationLabel ?? null,
-      closedLots: snapshot.walletTradeStatsSummary?.closedLots ?? snapshot.walletLotSummary?.closedLots ?? 0,
+      closedLots: snapshot.walletTradeStatsSummary?.closedLotsForStats ?? snapshot.walletLotSummary?.closedLotsForStats ?? snapshot.walletLotSummary?.realClosedLots ?? 0,
       winRatePercent: snapshot.walletTradeStatsSummary?.winRatePercent ?? null,
       economicSignificance: snapshot.walletTradeStatsSummary?.economicSignificance ?? null,
       estimatedPnlStatus: snapshot.estimatedPnl?.status ?? null,

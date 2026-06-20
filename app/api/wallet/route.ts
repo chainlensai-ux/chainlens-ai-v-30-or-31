@@ -55,7 +55,7 @@ const WALLET_ADMIN_FORENSIC_SCAN = process.env.CHAINLENS_WALLET_ADMIN_FORENSIC_S
 const WALLET_ADMIN_HISTORICAL_HARD_CAP = parseInt(process.env.CHAINLENS_WALLET_ADMIN_HISTORICAL_HARD_CAP ?? '50', 10) || 50
 let _goldrushDailyCreditsUsed = 0
 let _goldrushDailyCreditsResetAt = 0
-const WALLET_SNAPSHOT_SCHEMA_VERSION = 'v44'
+const WALLET_SNAPSHOT_SCHEMA_VERSION = 'v45'
 const walletCache = new Map<string, { exp: number; payload: unknown; cachedAt: number }>()
 const walletRate = new Map<string, { count: number; resetAt: number }>()
 const WALLET_RATE_BY_PLAN: Record<string, number> = { free: 20, pro: 60, elite: 180 }
@@ -729,6 +729,7 @@ export async function POST(req: Request) {
         walletScanBudgetDebug: cp?._cachedDiagnosticsSlim?.walletScanBudgetDebug ?? null,
         walletHistoricalScanDebug: cp?._cachedDiagnosticsSlim?.walletHistoricalScanDebug ?? null,
         syntheticLotRecoveryDebug: cp?._cachedDiagnosticsSlim?.syntheticLotRecoveryDebug ?? null,
+        swapReconstructionV1Debug: cp?._cachedDiagnosticsSlim?.swapReconstructionV1Debug ?? null,
         walletCostGuardDebug: {
           requestedDeepActivity: deepActivity,
           requestedHistoricalCoverage: historicalCoverageRequested,
@@ -940,6 +941,7 @@ export async function POST(req: Request) {
               walletChainActivityMergeDebug: _slim.walletChainActivityMergeDebug ?? null,
               walletEthNormalizationDebug: _slim.walletEthNormalizationDebug ?? null,
               syntheticLotRecoveryDebug: _slim.syntheticLotRecoveryDebug ?? null,
+              swapReconstructionV1Debug: _slim.swapReconstructionV1Debug ?? null,
               baseFifoMatchDebug: _slim.baseFifoMatchDebug ?? null,
               walletCacheQualityDebug: _slim.walletCacheQualityDebug ?? null,
             }
@@ -1118,8 +1120,15 @@ export async function POST(req: Request) {
     // Wallet personality classification, time-windowed PnL, and bot detection — derived purely
     // from existing FIFO closed-lot data and behavior summaries (additive, no scoring changes).
     const _closedLotsForIntelligence = (snapshot as any).walletClosedLotsAll ?? []
+    const _realBackedLotsForIntelligence = _closedLotsForIntelligence.filter((l: any) =>
+      l?.evidence?.entrySource !== 'synthetic' &&
+      !(l?.missingReasons ?? []).includes('fifo_backfilled_buy') &&
+      !(l?.missingReasons ?? []).includes('price_synthetic_fifo') &&
+      l?.coveragePercent !== 0
+    )
+    const _missingCostBasisForIntelligence = snapshot.walletTradeStatsSummary?.pnlUnavailableReason === 'missing_cost_basis' || snapshot.walletLotSummary?.pnlUnavailableReason === 'missing_cost_basis'
     snapshot.walletPersonality = computeWalletPersonality(
-      _closedLotsForIntelligence,
+      _missingCostBasisForIntelligence ? [] : _realBackedLotsForIntelligence,
       (snapshot as any).walletBehavior ?? null,
       (snapshot as any).walletTradeStatsSummary ?? null
     )
@@ -1209,6 +1218,7 @@ export async function POST(req: Request) {
         walletChainActivityMergeDebug: snapshot._diagnostics?.walletChainActivityMergeDebug ?? null,
         walletEthNormalizationDebug: snapshot._diagnostics?.walletEthNormalizationDebug ?? null,
         syntheticLotRecoveryDebug: snapshot._diagnostics?.syntheticLotRecoveryDebug ?? null,
+        swapReconstructionV1Debug: snapshot._diagnostics?.swapReconstructionV1Debug ?? null,
         walletCacheQualityDebug: {
           cacheQuality: _cacheQuality, writeAllowed: !_cacheWriteBlocked,
           blockedWriteReason: _blockedWriteReason, holdingsCount: _snapHoldingsCount,
@@ -1293,6 +1303,7 @@ export async function POST(req: Request) {
         walletHistoricalPricingPreviewDebug: snapshot._diagnostics?.walletHistoricalPricingPreviewDebug ?? null,
         walletHistoricalFifoPreviewDebug: snapshot._diagnostics?.walletHistoricalFifoPreviewDebug ?? null,
         syntheticLotRecoveryDebug: snapshot._diagnostics?.syntheticLotRecoveryDebug ?? null,
+        swapReconstructionV1Debug: snapshot._diagnostics?.swapReconstructionV1Debug ?? null,
         walletBudgetDebug: snapshot._diagnostics?.walletBudgetDebug ?? null,
         walletFactsDebug: snapshot._diagnostics?.walletFactsDebug ?? null,
         baseFifoMatchDebug: (() => {

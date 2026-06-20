@@ -92,9 +92,11 @@ export function computeWalletProfile(snapshot: WalletSnapshot): WalletProfile {
   const behaviorCtx = snapshot.walletBehavior
   const historicalCoverage = snapshot.walletHistoricalCoverageSummary
 
-  const closedLots = tradeStats?.closedLots ?? lotSummary?.closedLots ?? 0
+  const missingCostBasis = tradeStats?.pnlUnavailableReason === 'missing_cost_basis' || lotSummary?.pnlUnavailableReason === 'missing_cost_basis'
+  const closedLotsForStats = tradeStats?.closedLotsForStats ?? lotSummary?.closedLotsForStats ?? lotSummary?.realClosedLots ?? 0
+  const closedLots = missingCostBasis ? closedLotsForStats : (tradeStats?.closedLots ?? lotSummary?.closedLots ?? 0)
   const openLots = lotSummary?.openedLots ?? 0
-  const uniqueTokensTraded = tradeStats?.uniqueTokensTraded ?? 0
+  const uniqueTokensTraded = missingCostBasis || closedLotsForStats === 0 ? 0 : (tradeStats?.uniqueTokensTraded ?? 0)
   const avgHoldHours = tradeStats?.avgHoldingTimeSeconds != null ? tradeStats.avgHoldingTimeSeconds / 3600 : null
   const winRatePercent = tradeStats?.winRatePercent ?? null
   const activeDays = behaviorCtx?.activeDays ?? null
@@ -111,8 +113,8 @@ export function computeWalletProfile(snapshot: WalletSnapshot): WalletProfile {
   ]
   const evidenceCoverage = Math.round((coverageChecks.filter(Boolean).length / coverageChecks.length) * 100)
   const hasHoldings = holdingsCount > 0
-  const tradeEvidenceStrong = closedLots >= 3 && tradeStats?.economicSignificance === 'meaningful'
-  const tradeEvidenceWeak = closedLots > 0 || uniqueTokensTraded > 0 || tradeStats?.status === 'partial'
+  const tradeEvidenceStrong = !missingCostBasis && closedLotsForStats > 0 && closedLots >= 3 && tradeStats?.economicSignificance === 'meaningful'
+  const tradeEvidenceWeak = !missingCostBasis && closedLotsForStats > 0 && (closedLots > 0 || uniqueTokensTraded > 0 || tradeStats?.status === 'partial')
 
   let walletCategory: string | null = null
   if (hasHoldings) {
@@ -165,7 +167,7 @@ export function computeWalletProfile(snapshot: WalletSnapshot): WalletProfile {
   } else if (tradeEvidenceWeak) {
     reasons.push(`Trading behavior not classified — trade evidence exists but is weak (${tradeStats?.economicSignificanceReason ?? 'insufficient meaningful closed-lot sample'}).`)
   } else {
-    reasons.push('Trading behavior not classified — no meaningful closed-lot/trade evidence is available in the current snapshot.')
+    reasons.push('Trading behavior not classified — not enough verified trade data is available in the current snapshot.')
   }
 
   tradingCandidates.sort((a, b) => b.weight - a.weight)
