@@ -1562,7 +1562,7 @@ export type WalletSnapshotOptions = {
 
 const SNAPSHOT_TTL_MS         = 5  * 60 * 1000
 const SNAPSHOT_HISTORY_TTL_MS = 15 * 60 * 1000
-const SNAPSHOT_SCHEMA_VERSION = 'v41'
+const SNAPSHOT_SCHEMA_VERSION = 'v42'
 type SnapshotCacheEntry = { snapshot: WalletSnapshot; cachedAt: number; ttlMs: number }
 const snapshotMemCache = new Map<string, SnapshotCacheEntry>()
 
@@ -10951,8 +10951,20 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _liveCalls = (p: 'moralis' | 'goldrush' | 'alchemy') => _logByProvider(p).filter(e => !e.cacheHit && !e.duplicate)
   const _dupEntries = _apiCallLog.filter(e => e.duplicate)
   const _historicalCreditsUsedFinal = _historicalCoverageDebug?.pagesAttempted ?? 0
+  // SYNTH-RECOVERY-FIX-11: buildWalletHistoricalCoverage's `maxPages` argument (passed in as
+  // _pagesAllowed) is a PER-CHAIN page cap — it fetches up to maxPages pages from base-mainnet AND
+  // up to maxPages pages from eth-mainnet, so pagesAttempted (their sum) can legitimately be up to
+  // 2x _pagesAllowed. Comparing the total pagesAttempted against the per-chain _pagesAllowed (as
+  // the old budgetCapHit check did) produced a false "cap hit" whenever a single chain returned
+  // exactly its own per-chain allowance. Compare against the correct total (_pagesAllowed * chain
+  // count) instead — informational only, does not change how many pages are actually fetched.
+  const _historicalChainCount = 2 // chains fetched inside buildWalletHistoricalCoverage: base-mainnet + eth-mainnet
+  const _historicalMaxPagesPerChain = _pagesAllowed
+  const _historicalMaxPagesTotal = _pagesAllowed * _historicalChainCount
   const _creditsUsedFinal = _portfolioCreditsUsed + _activityCreditsUsed + (_priceBudgetDebug.finalPriceAttempts ?? 0) + _historicalCreditsUsedFinal
-  const _budgetCapHitFinal = _creditsUsedFinal >= _totalCreditHardCap || (_runHistoricalCoverage && _historicalCreditsUsedFinal >= _pagesAllowed && walletHistoricalCoverageSummary.coverageLevel !== 'none')
+  const _historicalBudgetCapHit = _runHistoricalCoverage && _historicalCreditsUsedFinal >= _historicalMaxPagesTotal && walletHistoricalCoverageSummary.coverageLevel !== 'none'
+  const _historicalBudgetCapReason = _historicalBudgetCapHit ? 'historical_phase_cap_reached_total_pages' : null
+  const _budgetCapHitFinal = _creditsUsedFinal >= _totalCreditHardCap || _historicalBudgetCapHit
   const _walletScanBudgetDebug = {
     scanMode: historicalCoverage ? 'historical' : activityRequested ? 'deep' : 'basic',
     requestedHistoricalScan: historicalCoverage,
@@ -10967,7 +10979,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     pricingCreditsUsed: _priceBudgetDebug.finalPriceAttempts ?? 0,
     historicalCreditsUsed: _historicalCreditsUsedFinal,
     budgetCapHit: _budgetCapHitFinal,
-    budgetCapReason: _creditsUsedFinal >= _totalCreditHardCap ? 'total_hard_cap_reached' : _historicalCreditsUsedFinal >= _pagesAllowed && historicalCoverage ? 'historical_phase_cap_reached' : null,
+    budgetCapReason: _creditsUsedFinal >= _totalCreditHardCap ? 'total_hard_cap_reached' : _historicalBudgetCapReason,
     callsSkippedAfterBudgetCap: Math.max(0, clampedMaxHistoricalPages - _pagesAllowed),
     estimatedCreditsSavedByCache: 0,
     whalePrioritisationUsed: _walletValueTier === 'whale',
@@ -10982,6 +10994,19 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     targetTokenRankingReason: _rankedHistoricalTargets.map(t => ({ contract: t.contract, symbol: t.symbol, reasons: t.reasons, estimatedUsd: t.estimatedUsd })),
     pagesAllowed: _pagesAllowed,
     pagesAttempted: _historicalCoverageDebug?.pagesAttempted ?? 0,
+    // SYNTH-RECOVERY-FIX-11: pagesAllowed/pagesAttempted above are ambiguous about whether the
+    // figure is per-chain or total (buildWalletHistoricalCoverage applies maxPages PER chain across
+    // base-mainnet + eth-mainnet). These explicit fields disambiguate the unit without changing fetch behavior.
+    historicalMaxPagesPerChain: _historicalMaxPagesPerChain,
+    historicalMaxPagesTotal: _historicalMaxPagesTotal,
+    historicalPagesAttemptedTotal: _historicalCoverageDebug?.pagesAttempted ?? 0,
+    historicalPagesAttemptedByChain: Object.fromEntries(
+      Object.entries(_historicalCoverageDebug?.chainCoverage ?? {}).map(([chain, c]) => [chain, c.pages])
+    ),
+    historicalCreditBudget: _historicalMaxPagesTotal,
+    historicalCreditsUsed: _historicalCreditsUsedFinal,
+    historicalBudgetCapHit: _historicalBudgetCapHit,
+    historicalBudgetCapReason: _historicalBudgetCapReason,
     rawEventsFetched: _historicalCoverageDebug?.rawLogEvents ?? 0,
     normalizedEvents: walletHistoricalCoverageSummary.normalizedEvents ?? 0,
     priorBuysFound: (_historicalCandidateDebug?.sampleNewSwapCandidates ?? []).filter(e => e.direction === 'buy').length,

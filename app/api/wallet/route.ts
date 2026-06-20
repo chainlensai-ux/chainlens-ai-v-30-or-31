@@ -55,7 +55,7 @@ const WALLET_ADMIN_FORENSIC_SCAN = process.env.CHAINLENS_WALLET_ADMIN_FORENSIC_S
 const WALLET_ADMIN_HISTORICAL_HARD_CAP = parseInt(process.env.CHAINLENS_WALLET_ADMIN_HISTORICAL_HARD_CAP ?? '50', 10) || 50
 let _goldrushDailyCreditsUsed = 0
 let _goldrushDailyCreditsResetAt = 0
-const WALLET_SNAPSHOT_SCHEMA_VERSION = 'v41'
+const WALLET_SNAPSHOT_SCHEMA_VERSION = 'v42'
 const walletCache = new Map<string, { exp: number; payload: unknown; cachedAt: number }>()
 const walletRate = new Map<string, { count: number; resetAt: number }>()
 const WALLET_RATE_BY_PLAN: Record<string, number> = { free: 20, pro: 60, elite: 180 }
@@ -724,6 +724,7 @@ export async function POST(req: Request) {
         providerFlow: null,
         walletScanBudgetDebug: cp?._cachedDiagnosticsSlim?.walletScanBudgetDebug ?? null,
         walletHistoricalScanDebug: cp?._cachedDiagnosticsSlim?.walletHistoricalScanDebug ?? null,
+        syntheticLotRecoveryDebug: cp?._cachedDiagnosticsSlim?.syntheticLotRecoveryDebug ?? null,
         walletCostGuardDebug: {
           requestedDeepActivity: deepActivity,
           requestedHistoricalCoverage: historicalCoverageRequested,
@@ -934,6 +935,7 @@ export async function POST(req: Request) {
               walletActivityRoutingDebug: _slim.walletActivityRoutingDebug ?? null,
               walletChainActivityMergeDebug: _slim.walletChainActivityMergeDebug ?? null,
               walletEthNormalizationDebug: _slim.walletEthNormalizationDebug ?? null,
+              syntheticLotRecoveryDebug: _slim.syntheticLotRecoveryDebug ?? null,
               baseFifoMatchDebug: _slim.baseFifoMatchDebug ?? null,
               walletCacheQualityDebug: _slim.walletCacheQualityDebug ?? null,
             }
@@ -1185,6 +1187,7 @@ export async function POST(req: Request) {
         walletActivityRoutingDebug: snapshot._diagnostics?.walletActivityRoutingDebug ?? null,
         walletChainActivityMergeDebug: snapshot._diagnostics?.walletChainActivityMergeDebug ?? null,
         walletEthNormalizationDebug: snapshot._diagnostics?.walletEthNormalizationDebug ?? null,
+        syntheticLotRecoveryDebug: snapshot._diagnostics?.syntheticLotRecoveryDebug ?? null,
         walletCacheQualityDebug: {
           cacheQuality: _cacheQuality, writeAllowed: !_cacheWriteBlocked,
           blockedWriteReason: _blockedWriteReason, holdingsCount: _snapHoldingsCount,
@@ -1268,6 +1271,7 @@ export async function POST(req: Request) {
         walletHistoricalCandidateDebug: snapshot._diagnostics?.walletHistoricalCandidateDebug ?? null,
         walletHistoricalPricingPreviewDebug: snapshot._diagnostics?.walletHistoricalPricingPreviewDebug ?? null,
         walletHistoricalFifoPreviewDebug: snapshot._diagnostics?.walletHistoricalFifoPreviewDebug ?? null,
+        syntheticLotRecoveryDebug: snapshot._diagnostics?.syntheticLotRecoveryDebug ?? null,
         walletBudgetDebug: snapshot._diagnostics?.walletBudgetDebug ?? null,
         walletFactsDebug: snapshot._diagnostics?.walletFactsDebug ?? null,
         baseFifoMatchDebug: (() => {
@@ -1478,10 +1482,18 @@ export async function POST(req: Request) {
             priceBudgetExpanded: (_budgetDbgForCost?.expansionEligible) ?? false,
             priceBudgetExpansionReason: (_budgetDbgForCost?.expansionReason) ?? null,
             historicalScanRequested: historicalCoverageRequested,
-            historicalCreditBudget: (snapshot as any)?._diagnostics?.walletHistoricalScanDebug?.pagesAllowed ?? 0,
-            historicalCreditsUsed: (snapshot as any)?._diagnostics?.walletHistoricalScanDebug?.estimatedCreditUnits ?? 0,
-            historicalCreditsSavedByCache: (snapshot as any)?._diagnostics?.walletHistoricalScanDebug?.cacheHit ? ((snapshot as any)?._diagnostics?.walletHistoricalScanDebug?.pagesAllowed ?? 0) : 0,
-            historicalBudgetCapHit: (snapshot as any)?._diagnostics?.walletHistoricalScanDebug?.budgetCapHit ?? false,
+            // SYNTH-RECOVERY-FIX-11: maxPages is applied PER CHAIN inside buildWalletHistoricalCoverage
+            // (base-mainnet + eth-mainnet), so these fields disambiguate per-chain vs total units instead
+            // of conflating "pagesAllowed" (per-chain) with "pagesAttempted" (total) as before.
+            historicalMaxPagesTotal: (snapshot as any)?._diagnostics?.walletHistoricalScanDebug?.historicalMaxPagesTotal ?? 0,
+            historicalMaxPagesPerChain: (snapshot as any)?._diagnostics?.walletHistoricalScanDebug?.historicalMaxPagesPerChain ?? 0,
+            historicalPagesAttemptedTotal: (snapshot as any)?._diagnostics?.walletHistoricalScanDebug?.historicalPagesAttemptedTotal ?? 0,
+            historicalPagesAttemptedByChain: (snapshot as any)?._diagnostics?.walletHistoricalScanDebug?.historicalPagesAttemptedByChain ?? {},
+            historicalCreditBudget: (snapshot as any)?._diagnostics?.walletHistoricalScanDebug?.historicalCreditBudget ?? 0,
+            historicalCreditsUsed: (snapshot as any)?._diagnostics?.walletHistoricalScanDebug?.historicalCreditsUsed ?? 0,
+            historicalCreditsSavedByCache: (snapshot as any)?._diagnostics?.walletHistoricalScanDebug?.cacheHit ? ((snapshot as any)?._diagnostics?.walletHistoricalScanDebug?.historicalCreditBudget ?? 0) : 0,
+            historicalBudgetCapHit: (snapshot as any)?._diagnostics?.walletHistoricalScanDebug?.historicalBudgetCapHit ?? false,
+            historicalBudgetCapReason: (snapshot as any)?._diagnostics?.walletHistoricalScanDebug?.historicalBudgetCapReason ?? null,
             historicalSkippedReason: (snapshot as any)?._diagnostics?.walletHistoricalScanDebug?.stopReason ?? null,
             totals: {
               liveProviderCalls: liveCalls,
