@@ -472,6 +472,31 @@ export type WalletSnapshot = {
   walletValueTier?: WalletValueTier
   walletHistoricalScanNote?: string | null
   walletFacts?: WalletFacts
+  // PHASE6-FIX-2: wallet-level PnL confidence, aggregated from value-weighted lot confidence,
+  // coverage percentages, unmatched sells, estimate-backfilled lots, and provider failures.
+  // Additive — does not replace any existing per-lot/per-summary confidence field.
+  pnlConfidenceScore?: number
+  pnlConfidenceTier?: 'high' | 'medium' | 'low'
+  // PHASE6-FIX-3: PnL completeness — fraction of tokens with full buy/sell history, value
+  // coverage, and truncated-stream signals. isPnlPartial is a convenience boolean derived from
+  // pnlCompletenessScore against a fixed threshold (see PHASE6_COMPLETENESS_PARTIAL_THRESHOLD).
+  pnlCompletenessScore?: number
+  isPnlPartial?: boolean
+  // PHASE6-FIX-4: result of the final integrity-check pass over the assembled snapshot. Purely
+  // additive diagnostics — violations only ever downgrade pnlConfidenceTier and append normalized
+  // reason strings; they never mutate existing PnL numbers.
+  pnlIntegrityCheck?: {
+    ok: boolean
+    violations: string[]
+  }
+  // PHASE6-FIX-5: heuristic-only (no ML) wallet behavioral signal bundle, derived strictly from
+  // values already computed elsewhere in the snapshot (trade stats, lot summary, holdings).
+  walletProfileHints?: {
+    tradeFrequency: 'low' | 'medium' | 'high'
+    avgHoldTimeBucket: 'short' | 'mid' | 'long'
+    realizedWinRateBucket: 'low' | 'medium' | 'high'
+    riskProfileHint: 'concentrated' | 'diversified' | 'dust-heavy'
+  }
   _debug?: {
     walletFactsShapeIssues?: string[]
     walletScannerDiagnostics?: {
@@ -2025,6 +2050,11 @@ export type WalletLotOpen = {
   entryValueUsd: number
   priceSource: string
   confidence: 'high' | 'medium' | 'low'
+  // PHASE6-FIX-1: optional numeric/tier confidence score, additive alongside the existing
+  // high/medium/low `confidence` field. Computed by lotConfidenceScore() wherever lots are
+  // constructed; never required so existing consumers of WalletLotOpen are unaffected.
+  confidenceScore?: number
+  confidenceTier?: 'high' | 'medium' | 'low'
 }
 
 export type WalletClosedLot = {
@@ -2045,6 +2075,9 @@ export type WalletClosedLot = {
   holdingTimeSeconds: number | null
   confidence: 'high' | 'medium' | 'low'
   evidence: { entrySource: string; exitSource: string; method: 'fifo' }
+  // PHASE6-FIX-1: see WalletLotOpen.confidenceScore/confidenceTier above — same additive pattern.
+  confidenceScore?: number
+  confidenceTier?: 'high' | 'medium' | 'low'
 }
 
 export type PriceAtTimeEvidence = {
@@ -3837,6 +3870,233 @@ function lotConfidence(entrySource: string, exitSource: string): 'high' | 'mediu
   return 'low'
 }
 
+// PHASE6-FIX-6: normalized reason-key vocabulary for all new Phase 6 confidence/completeness/
+// integrity signals. These are appended ADDITIVELY to existing missing/missingReasons-style
+// arrays elsewhere in the file — none of the existing string literals already used in those
+// arrays (e.g. 'unmatched_sells', 'no_closed_lots', 'activity_provider_unavailable', etc.) are
+// renamed or removed. Keep this list small and stable; Phase 6 code should only ever push one
+// of these exact strings, never ad-hoc text, so downstream consumers can pattern-match on them.
+const PHASE6_REASON_KEYS = {
+  partialCoverage: 'partial_coverage',
+  backfilledFromEstimateLots: 'backfilled_from_estimate_lots',
+  dustAdjustedPnl: 'dust_adjusted_pnl',
+  providerFailure: 'provider_failure',
+  truncatedHistory: 'truncated_history',
+} as const
+
+type Phase6ReasonKey = typeof PHASE6_REASON_KEYS[keyof typeof PHASE6_REASON_KEYS]
+
+// PHASE6-FIX-1: numeric/tier confidence score for a single lot (open or closed), additive
+// alongside the existing high/medium/low `confidence` field already set at construction time.
+// Inputs are intentionally narrow (the same signals already available where lots are built):
+//  - entrySource/exitSource: priceAtTime.source strings (real priced leg vs an estimate/derived leg)
+//  - isEstimateLot: true when the lot was opened from 'current_holding_price_open_lot_estimate'
+//    (i.e. backfilled from a current-price guess rather than a real historical price)
+//  - partialCoverage: true when the wallet-level activity/chain coverage was already known to be
+//    partial at the time this lot was built (e.g. priceAttemptLimitReached, provider partial)
+// Returns a 0..1 score; tier is derived from the same thresholds used elsewhere in the file
+// (>=0.85 high, >=0.5 medium, else low) so it stays consistent with existing confidence buckets.
+function lotConfidenceScore(opts: {
+  entrySource: string
+  exitSource?: string
+  isEstimateLot?: boolean
+  partialCoverage?: boolean
+}): { score: number; tier: 'high' | 'medium' | 'low' } {
+  const { entrySource, exitSource, isEstimateLot, partialCoverage } = opts
+  let score = 1
+  // Real priced legs (stable_leg / weth_leg / historical_price) keep full weight; derived/estimate
+  // legs lose weight progressively.
+  const sourceWeight = (s: string | undefined): number => {
+    if (!s) return 0.85 // open lot with no exit leg yet — neutral, not penalized
+    if (s === 'stable_leg' || s === 'weth_leg' || s === 'historical_price') return 1
+    if (s === 'provider_event_usd' || s === 'swap_derived' || s === 'eth_native_value_router_reconstruction') return 0.75
+    if (s === 'current_holding_price_open_lot_estimate') return 0.35
+    return 0.5 // unavailable / unknown source
+  }
+  score = Math.min(score, sourceWeight(entrySource))
+  if (exitSource !== undefined) score = Math.min(score, sourceWeight(exitSource))
+  if (isEstimateLot) score = Math.min(score, 0.3)
+  if (partialCoverage) score = score * 0.85
+  score = Math.max(0, Math.min(1, score))
+  const tier: 'high' | 'medium' | 'low' = score >= 0.85 ? 'high' : score >= 0.5 ? 'medium' : 'low'
+  return { score, tier }
+}
+
+// PHASE6-FIX-2: aggregates value-weighted lot confidence, coverage signals, unmatched-sell /
+// estimate-backfill presence, and provider failures into a single wallet-level PnL confidence
+// score+tier. Pure function over already-computed snapshot inputs — does not recompute lots.
+function walletPnlConfidence(input: {
+  closedLots: WalletClosedLot[]
+  openLots: WalletLotOpen[]
+  coveragePercent: number | null
+  unmatchedSells: number
+  unmatchedBuys: number
+  providerFailures: boolean
+  reasons: string[]
+}): { score: number; tier: 'high' | 'medium' | 'low'; reasons: string[] } {
+  const { closedLots, openLots, coveragePercent, unmatchedSells, unmatchedBuys, providerFailures } = input
+  const reasons: string[] = [...input.reasons]
+
+  // Value-weighted average of per-lot confidenceScore across closed + open lots, weighted by
+  // each lot's USD size so a handful of large low-confidence lots can't hide behind many tiny
+  // high-confidence ones (and vice versa).
+  const weightedLots: Array<{ weight: number; score: number }> = [
+    ...closedLots.map(l => ({ weight: Math.max(l.costBasisUsd, 0), score: l.confidenceScore ?? (l.confidence === 'high' ? 1 : l.confidence === 'medium' ? 0.65 : 0.35) })),
+    ...openLots.map(l => ({ weight: Math.max(l.entryValueUsd, 0), score: l.confidenceScore ?? (l.confidence === 'high' ? 1 : l.confidence === 'medium' ? 0.65 : 0.35) })),
+  ]
+  const totalWeight = weightedLots.reduce((s, l) => s + l.weight, 0)
+  const lotConfidenceWeighted = totalWeight > 0
+    ? weightedLots.reduce((s, l) => s + l.weight * l.score, 0) / totalWeight
+    : (weightedLots.length > 0 ? weightedLots.reduce((s, l) => s + l.score, 0) / weightedLots.length : 0.5)
+
+  const coverageFactor = coveragePercent === null ? 0.5 : Math.max(0, Math.min(1, coveragePercent / 100))
+
+  const estimateLotCount = [...closedLots.filter(l => l.evidence.entrySource === 'current_holding_price_open_lot_estimate' || l.evidence.exitSource === 'current_holding_price_open_lot_estimate'), ...openLots.filter(l => l.priceSource === 'current_holding_price_open_lot_estimate')].length
+  if (estimateLotCount > 0) reasons.push(PHASE6_REASON_KEYS.backfilledFromEstimateLots)
+  if (coveragePercent !== null && coveragePercent < 80) reasons.push(PHASE6_REASON_KEYS.partialCoverage)
+  if (providerFailures) reasons.push(PHASE6_REASON_KEYS.providerFailure)
+
+  let score = lotConfidenceWeighted * 0.6 + coverageFactor * 0.4
+  if (unmatchedSells > 0) score *= 0.9
+  if (unmatchedBuys > 0) score *= 0.95
+  if (estimateLotCount > 0) score *= 0.9
+  if (providerFailures) score *= 0.85
+  score = Math.max(0, Math.min(1, score))
+
+  const tier: 'high' | 'medium' | 'low' = score >= 0.8 ? 'high' : score >= 0.5 ? 'medium' : 'low'
+  return { score, tier, reasons: Array.from(new Set(reasons)) }
+}
+
+// PHASE6-FIX-3: completeness threshold below which isPnlPartial flips true.
+const PHASE6_COMPLETENESS_PARTIAL_THRESHOLD = 0.6
+
+// PHASE6-FIX-3: completeness score based on fraction of tokens with full buy/sell history,
+// fraction of value covered, and whether any event stream was truncated by a cap.
+function pnlCompletenessScore(input: {
+  matchedTokenKeys: number
+  buyTokenKeys: number
+  sellTokenKeys: number
+  coveragePercentValueWeighted: number | null
+  truncated: boolean
+}): { score: number; isPartial: boolean; reasons: string[] } {
+  const { matchedTokenKeys, buyTokenKeys, sellTokenKeys, coveragePercentValueWeighted, truncated } = input
+  const reasons: string[] = []
+  const totalTokenKeys = Math.max(buyTokenKeys, sellTokenKeys, 1)
+  const tokenHistoryFraction = Math.max(0, Math.min(1, matchedTokenKeys / totalTokenKeys))
+  const valueFraction = coveragePercentValueWeighted === null ? 0.5 : Math.max(0, Math.min(1, coveragePercentValueWeighted / 100))
+
+  let score = tokenHistoryFraction * 0.5 + valueFraction * 0.5
+  if (truncated) {
+    score *= 0.8
+    reasons.push(PHASE6_REASON_KEYS.truncatedHistory)
+  }
+  score = Math.max(0, Math.min(1, score))
+  const isPartial = score < PHASE6_COMPLETENESS_PARTIAL_THRESHOLD
+  if (isPartial) reasons.push(PHASE6_REASON_KEYS.partialCoverage)
+  return { score, isPartial, reasons }
+}
+
+// PHASE6-FIX-4: final integrity pass over the assembled snapshot's lot/PnL data. Read-only —
+// never mutates lots or PnL numbers; only reports violations so the caller can downgrade
+// pnlConfidenceTier and append normalized reason strings.
+function integrityCheckPnl(input: {
+  openLots: WalletLotOpen[]
+  closedLots: WalletClosedLot[]
+  realizedPnlUsd: number | null
+  unrealizedPnlUsd: number | null
+  portfolioDeltaUsd: number | null
+}): { ok: boolean; violations: string[] } {
+  const violations: string[] = []
+  const EPS = 1e-6
+
+  // No negative remaining balances.
+  for (const lot of input.openLots) {
+    if (lot.amountRemaining < -EPS) { violations.push('negative_remaining_balance'); break }
+  }
+
+  // No sells > total buys for a token, unless the lot chain is marked estimate/backfilled.
+  const buysByToken = new Map<string, number>()
+  for (const lot of input.openLots) {
+    const key = `${lot.chain}:${lot.tokenAddress}`
+    buysByToken.set(key, (buysByToken.get(key) ?? 0) + lot.amountOpened)
+  }
+  const sellsByToken = new Map<string, number>()
+  for (const lot of input.closedLots) {
+    if (lot.evidence.entrySource === 'current_holding_price_open_lot_estimate') continue
+    const key = `${lot.chain}:${lot.tokenAddress}`
+    sellsByToken.set(key, (sellsByToken.get(key) ?? 0) + lot.amountClosed)
+    const boughtSoFar = buysByToken.get(key) ?? 0
+    if ((sellsByToken.get(key) ?? 0) > boughtSoFar + EPS + (lot.amountClosed * 1e-6)) {
+      violations.push('sells_exceed_buys')
+      break
+    }
+  }
+
+  // Realized + unrealized PnL should roughly match portfolio delta within a generous tolerance
+  // (this is a sanity check, not a precise reconciliation — many legitimate factors like unpriced
+  // transfers or airdrops can cause divergence, so the tolerance is intentionally wide).
+  if (input.realizedPnlUsd !== null && input.unrealizedPnlUsd !== null && input.portfolioDeltaUsd !== null) {
+    const computedTotal = input.realizedPnlUsd + input.unrealizedPnlUsd
+    const tolerance = Math.max(50, Math.abs(input.portfolioDeltaUsd) * 0.25)
+    if (Math.abs(computedTotal - input.portfolioDeltaUsd) > tolerance) {
+      violations.push('pnl_portfolio_delta_mismatch')
+    }
+  }
+
+  return { ok: violations.length === 0, violations }
+}
+
+// PHASE6-FIX-5: heuristic-only (no ML) wallet behavioral signal bundle, derived strictly from
+// values already computed elsewhere in the snapshot (trade stats, lot summary, holdings value
+// concentration). Every bucket is a simple threshold rule — no learned weights, no external data.
+function deriveWalletProfileHints(input: {
+  closedLotsCount: number
+  walletAgeDays: number | null
+  avgHoldingTimeSeconds: number | null
+  winRatePercent: number | null
+  meaningfulClosedLots: number
+  dustClosedLots: number
+  holdingsValueUsd: number[]
+}): {
+  tradeFrequency: 'low' | 'medium' | 'high'
+  avgHoldTimeBucket: 'short' | 'mid' | 'long'
+  realizedWinRateBucket: 'low' | 'medium' | 'high'
+  riskProfileHint: 'concentrated' | 'diversified' | 'dust-heavy'
+} {
+  const tradesPerWeek = input.walletAgeDays && input.walletAgeDays > 0
+    ? (input.closedLotsCount / input.walletAgeDays) * 7
+    : input.closedLotsCount > 0 ? input.closedLotsCount : 0
+  const tradeFrequency: 'low' | 'medium' | 'high' =
+    tradesPerWeek >= 5 ? 'high' : tradesPerWeek >= 1 ? 'medium' : 'low'
+
+  const holdSeconds = input.avgHoldingTimeSeconds ?? null
+  const avgHoldTimeBucket: 'short' | 'mid' | 'long' =
+    holdSeconds === null ? 'mid'
+    : holdSeconds < 24 * 3600 ? 'short'
+    : holdSeconds < 14 * 24 * 3600 ? 'mid'
+    : 'long'
+
+  const winRate = input.winRatePercent ?? null
+  const realizedWinRateBucket: 'low' | 'medium' | 'high' =
+    winRate === null ? 'medium'
+    : winRate >= 60 ? 'high'
+    : winRate >= 40 ? 'medium'
+    : 'low'
+
+  const totalValue = input.holdingsValueUsd.reduce((s, v) => s + v, 0)
+  const sorted = [...input.holdingsValueUsd].sort((a, b) => b - a)
+  const top1Share = totalValue > 0 && sorted.length > 0 ? sorted[0] / totalValue : 0
+  const dustShare = input.meaningfulClosedLots + input.dustClosedLots > 0
+    ? input.dustClosedLots / (input.meaningfulClosedLots + input.dustClosedLots)
+    : 0
+  const riskProfileHint: 'concentrated' | 'diversified' | 'dust-heavy' =
+    dustShare >= 0.5 ? 'dust-heavy'
+    : top1Share >= 0.7 ? 'concentrated'
+    : 'diversified'
+
+  return { tradeFrequency, avgHoldTimeBucket, realizedWinRateBucket, riskProfileHint }
+}
+
 function buildFifoLotEngine(
   evidenceWithPricing: WalletTxEvidence[],
   activityRequested: boolean
@@ -3925,6 +4185,10 @@ function buildFifoLotEngine(
       buyTokenKeySet.add(lotKey)
       if (sampleBuyEvents.length < 5) sampleBuyEvents.push({ tokenAddress: _abbr(e.contract), symbol: e.symbol ?? '?', chain: normalChain, amount: e.amount, priceUsd })
       // Open a new lot
+      const _isEstimateLot = priceSource === 'current_holding_price_open_lot_estimate'
+      // PHASE6-FIX-1: lot-level numeric confidence, computed from the same priceSource signal
+      // already used for the existing high/medium/low `confidence` field above.
+      const _lotConfScore = lotConfidenceScore({ entrySource: priceSource, isEstimateLot: _isEstimateLot })
       const lot: WalletLotOpen = {
         tokenAddress: e.contract.toLowerCase(),
         tokenSymbol: e.symbol ?? null,
@@ -3937,6 +4201,8 @@ function buildFifoLotEngine(
         entryValueUsd: e.amount * priceUsd,
         priceSource,
         confidence: priceSource === 'stable_leg' ? 'high' : priceSource === 'current_holding_price_open_lot_estimate' ? 'low' : 'medium',
+        confidenceScore: _lotConfScore.score,
+        confidenceTier: _lotConfScore.tier,
       }
       if (priceSource === 'current_holding_price_open_lot_estimate') {
         // Estimate lots are open-position records only — never matched against sells to prevent fake realized PnL
@@ -3970,6 +4236,8 @@ function buildFifoLotEngine(
         const exitTs = new Date(e.timestamp!).getTime()
         const holdingTimeSeconds = isFinite(entryTs) && isFinite(exitTs) ? Math.max(0, Math.floor((exitTs - entryTs) / 1000)) : null
 
+        // PHASE6-FIX-1: closed-lot numeric confidence, derived from both legs of the trade.
+        const _closedConfScore = lotConfidenceScore({ entrySource: lot.priceSource, exitSource: priceSource })
         closedLots.push({
           tokenAddress: e.contract.toLowerCase(),
           tokenSymbol: e.symbol ?? null,
@@ -3988,6 +4256,8 @@ function buildFifoLotEngine(
           holdingTimeSeconds,
           confidence: lotConfidence(lot.priceSource, priceSource),
           evidence: { entrySource: lot.priceSource, exitSource: priceSource, method: 'fifo' },
+          confidenceScore: _closedConfScore.score,
+          confidenceTier: _closedConfScore.tier,
         })
 
         lot.amountRemaining -= closeAmount
@@ -10000,6 +10270,85 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   if (_apiAudit.warnings.length > 0 && snapshot._diagnostics?.apiAudit) {
     snapshot._diagnostics.apiAudit.warnings = _apiAudit.warnings
   }
+
+  // PHASE6-FIX-2/3/4/5: Confidence / Completeness / PnL Integrity pass. Runs last, after the
+  // snapshot object is fully assembled, so it can read the final promoted lot/trade-stats
+  // summaries without affecting any of the existing fields above. Entirely additive — every
+  // field it sets is new and optional on WalletSnapshot.
+  try {
+    const _p6OpenLots = fifoResult.openLots ?? []
+    const _p6ClosedLots = snapshot.walletClosedLotsAll ?? []
+    const _p6CoveragePercent = snapshot.estimatedPnl?.coveragePercent ?? null
+    const _p6ProviderFailures = _txProviderErrors.length > 0
+
+    const _p6Confidence = walletPnlConfidence({
+      closedLots: _p6ClosedLots,
+      openLots: _p6OpenLots,
+      coveragePercent: _p6CoveragePercent,
+      unmatchedSells: promotedLotSummary.unmatchedSells ?? 0,
+      unmatchedBuys: promotedLotSummary.unmatchedBuys ?? 0,
+      providerFailures: _p6ProviderFailures,
+      reasons: [],
+    })
+
+    const _p6Completeness = pnlCompletenessScore({
+      matchedTokenKeys: _lotEngineDebug?.matchedTokenKeys ?? 0,
+      buyTokenKeys: _lotEngineDebug?.uniqueBuyTokenKeys ?? 0,
+      sellTokenKeys: _lotEngineDebug?.uniqueSellTokenKeys ?? 0,
+      coveragePercentValueWeighted: _p6CoveragePercent,
+      truncated: Boolean(_priceBudgetDebug?.budgetCapHit) || Boolean(_walletHistoricalScanDebug?.budgetCapHit),
+    })
+
+    const _p6PortfolioDeltaUsd = snapshot.estimatedPnl?.totalEstimatedPnlUsd ?? null
+    const _p6Integrity = integrityCheckPnl({
+      openLots: _p6OpenLots,
+      closedLots: _p6ClosedLots,
+      realizedPnlUsd: promotedLotSummary.realizedPnlUsd ?? null,
+      unrealizedPnlUsd: snapshot.estimatedPnl?.unrealizedPnlUsd ?? null,
+      portfolioDeltaUsd: _p6PortfolioDeltaUsd,
+    })
+
+    // On integrity violations: downgrade the confidence tier and append normalized reasons —
+    // never mutate the underlying PnL numbers themselves.
+    let _p6FinalTier = _p6Confidence.tier
+    let _p6Reasons = _p6Confidence.reasons
+    if (!_p6Integrity.ok) {
+      _p6FinalTier = _p6FinalTier === 'high' ? 'medium' : 'low'
+      _p6Reasons = Array.from(new Set([...(_p6Reasons ?? []), PHASE6_REASON_KEYS.partialCoverage]))
+    }
+    if (_p6Completeness.reasons.length > 0) {
+      _p6Reasons = Array.from(new Set([...(_p6Reasons ?? []), ..._p6Completeness.reasons]))
+    }
+
+    snapshot.pnlConfidenceScore = _p6Confidence.score
+    snapshot.pnlConfidenceTier = _p6FinalTier
+    snapshot.pnlCompletenessScore = _p6Completeness.score
+    snapshot.isPnlPartial = _p6Completeness.isPartial
+    snapshot.pnlIntegrityCheck = { ok: _p6Integrity.ok, violations: _p6Integrity.violations }
+
+    // Append new normalized Phase 6 reason keys to the existing _diagnostics.missingReasons
+    // array additively — existing entries are preserved untouched.
+    if (snapshot._diagnostics && _p6Reasons.length > 0) {
+      snapshot._diagnostics.missingReasons = Array.from(new Set([...(snapshot._diagnostics.missingReasons ?? []), ..._p6Reasons]))
+    }
+
+    snapshot.walletProfileHints = deriveWalletProfileHints({
+      closedLotsCount: promotedTradeStatsSummary.closedLots ?? 0,
+      walletAgeDays: snapshot.walletAgeDays,
+      avgHoldingTimeSeconds: promotedTradeStatsSummary.avgHoldingTimeSeconds ?? null,
+      winRatePercent: promotedTradeStatsSummary.winRatePercent ?? null,
+      meaningfulClosedLots: promotedTradeStatsSummary.meaningfulClosedLots ?? 0,
+      dustClosedLots: promotedTradeStatsSummary.dustClosedLots ?? 0,
+      holdingsValueUsd: holdings.map(h => h.value ?? 0),
+    })
+    if ((promotedTradeStatsSummary.dustClosedLots ?? 0) > 0 && snapshot._diagnostics) {
+      snapshot._diagnostics.missingReasons = Array.from(new Set([...(snapshot._diagnostics.missingReasons ?? []), PHASE6_REASON_KEYS.dustAdjustedPnl]))
+    }
+  } catch {
+    // PHASE6: confidence/completeness/integrity signals are best-effort diagnostics — never let
+    // a failure here block returning the otherwise-valid snapshot.
+  }
+
   validateWalletFactsShape(snapshot)
   if (/^0x[0-9a-fA-F]{40}$/i.test(addrNorm)) snapshotMemCache.set(cacheKey, { snapshot, cachedAt: Date.now(), ttlMs: snapshotTtlMs })
   return snapshot
