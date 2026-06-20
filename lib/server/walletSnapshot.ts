@@ -569,6 +569,16 @@ export type WalletSnapshot = {
       syntheticLotsAfterHistorical: number
       realPriorBuysRecoveredForSyntheticLots: number
       syntheticRecoverySkippedReason: string | null
+      // SYNTH-RECOVERY-FIX-10: direct (non-swap-candidate-gated) target-token recovery debug.
+      syntheticTargetHistoricalRawLogs: number
+      syntheticTargetHistoricalNormalizedEvents: number
+      syntheticTargetHistoricalWalletInboundEvents: number
+      syntheticTargetHistoricalWalletOutboundEvents: number
+      syntheticTargetPriorBuysFound: number
+      syntheticTargetPriorBuysPriced: number
+      syntheticTargetDropBreakdown: Record<string, number>
+      sampleDroppedHistoricalLogs: Array<{ reason: string; count: number }>
+      sampleSyntheticTargetPriorBuys: Array<{ txHash: string | null; contract: string; symbol: string; amount: number; timestamp: string | null }>
     }
     providers?: {
       zerion: { configured: boolean; attempted: boolean; succeeded: boolean }
@@ -981,6 +991,22 @@ export type WalletSnapshot = {
       moralisHistoricalConfigured: boolean
       moralisHistoricalAttempted: boolean
       moralisReason: string
+      // SYNTH-RECOVERY-FIX-6: granular drop-bucket breakdown for the raw-log-to-normalized-event
+      // pipeline, additive/optional — explains why rawLogEvents collapses to a small normalizedEvents
+      // count (e.g. target-contract filtering on a targeted synthetic-lot recovery pass).
+      logNormalizationDebug?: {
+        historicalRawLogsSeen: number
+        historicalRawLogsDroppedNoTxHash: number
+        historicalRawLogsDroppedNoTimestamp: number
+        historicalRawLogsDroppedNoContract: number
+        historicalRawLogsDroppedNoAmount: number
+        historicalRawLogsDroppedNoWalletSide: number
+        historicalRawLogsDroppedNonTargetToken: number
+        historicalRawLogsDroppedDecodeFailed: number
+        historicalRawLogsDroppedDuplicate: number
+        historicalRawLogsNormalizedTransferEvents: number
+        historicalRawLogsWalletSideTransferEvents: number
+      }
     }
     walletHistoricalCandidateDebug?: {
       requested: boolean
@@ -2810,8 +2836,14 @@ async function fetchGoldrushHistoricalPage(
   apiKey: string,
   pageNum: number,
   pageSize: number = 50,
-): Promise<{ pageNum: number; chain: string; httpStatus: number | null; rawItems: number; transferLogs: number; events: PnlEvent[]; error: string | null; newestTimestamp: string | null }> {
-  const result = { pageNum, chain: chainName, httpStatus: null as number | null, rawItems: 0, transferLogs: 0, events: [] as PnlEvent[], error: null as string | null, newestTimestamp: null as string | null }
+): Promise<{
+  pageNum: number; chain: string; httpStatus: number | null; rawItems: number; transferLogs: number; events: PnlEvent[]; error: string | null; newestTimestamp: string | null
+  dropCounts: { seen: number; noTxHash: number; noTimestamp: number; noContract: number; noAmount: number; decodeFailed: number }
+}> {
+  const result = {
+    pageNum, chain: chainName, httpStatus: null as number | null, rawItems: 0, transferLogs: 0, events: [] as PnlEvent[], error: null as string | null, newestTimestamp: null as string | null,
+    dropCounts: { seen: 0, noTxHash: 0, noTimestamp: 0, noContract: 0, noAmount: 0, decodeFailed: 0 },
+  }
   try {
     const url = new URL(`https://api.covalenthq.com/v1/${chainName}/address/${address}/transactions_v3/`)
     url.searchParams.set('page-size', String(pageSize))
@@ -2846,22 +2878,25 @@ async function fetchGoldrushHistoricalPage(
         const to = String(tr.to_address ?? '').toLowerCase()
         const direction: 'buy' | 'sell' | 'unknown' = to === lower ? 'buy' : from === lower ? 'sell' : 'unknown'
         const quote = typeof tr.delta_quote === 'number' ? Math.abs(tr.delta_quote) : null
-        if (contract.startsWith('0x') && amount > 0) {
-          result.transferLogs++
-          result.events.push({ contract, symbol, direction, amount, amountRaw: delta !== '0' ? delta : null, tokenDecimals: decimals, usdValue: quote, txHash, timestamp, fromAddress: from, toAddress: to, chain: chainName, txFromAddress, txToAddress, txSucceeded })
-        }
+        result.dropCounts.seen++
+        if (!txHash) { result.dropCounts.noTxHash++; continue }
+        if (!timestamp) { result.dropCounts.noTimestamp++; continue }
+        if (!contract.startsWith('0x')) { result.dropCounts.noContract++; continue }
+        if (!(amount > 0)) { result.dropCounts.noAmount++; continue }
+        result.transferLogs++
+        result.events.push({ contract, symbol, direction, amount, amountRaw: delta !== '0' ? delta : null, tokenDecimals: decimals, usdValue: quote, txHash, timestamp, fromAddress: from, toAddress: to, chain: chainName, txFromAddress, txToAddress, txSucceeded })
       }
       const logEvents: unknown[] = Array.isArray(t.log_events) ? t.log_events : []
       for (const logEvent of logEvents) {
         const le = logEvent as Record<string, unknown>
         const decoded = le.decoded as Record<string, unknown> | null | undefined
         if (!decoded || decoded.name !== 'Transfer') continue
+        result.dropCounts.seen++
         const params = Array.isArray(decoded.params) ? (decoded.params as Record<string, unknown>[]) : []
         const fromParam = params.find(p => p.name === 'from')
         const toParam = params.find(p => p.name === 'to')
         const valueParam = params.find(p => p.name === 'value')
-        if (!fromParam || !toParam || !valueParam) continue
-        result.transferLogs++
+        if (!fromParam || !toParam || !valueParam) { result.dropCounts.decodeFailed++; continue }
         const contract = String(le.sender_address ?? '').toLowerCase()
         const symbol = String(le.sender_contract_ticker_symbol ?? '?')
         const decimals = typeof le.sender_contract_decimals === 'number' ? le.sender_contract_decimals : 18
@@ -2870,9 +2905,12 @@ async function fetchGoldrushHistoricalPage(
         const rawValue = String(valueParam.value ?? '0')
         const amount = Math.abs(parseFloat(rawValue) / Math.pow(10, decimals))
         const direction: 'buy' | 'sell' | 'unknown' = to === lower ? 'buy' : from === lower ? 'sell' : 'unknown'
-        if (contract.startsWith('0x') && amount > 0) {
-          result.events.push({ contract, symbol, direction, amount, amountRaw: rawValue !== '0' ? rawValue : null, tokenDecimals: decimals, usdValue: null, txHash, timestamp, fromAddress: from, toAddress: to, chain: chainName, txFromAddress, txToAddress, txSucceeded })
-        }
+        if (!txHash) { result.dropCounts.noTxHash++; continue }
+        if (!timestamp) { result.dropCounts.noTimestamp++; continue }
+        if (!contract.startsWith('0x')) { result.dropCounts.noContract++; continue }
+        if (!(amount > 0)) { result.dropCounts.noAmount++; continue }
+        result.transferLogs++
+        result.events.push({ contract, symbol, direction, amount, amountRaw: rawValue !== '0' ? rawValue : null, tokenDecimals: decimals, usdValue: null, txHash, timestamp, fromAddress: from, toAddress: to, chain: chainName, txFromAddress, txToAddress, txSucceeded })
       }
     }
     return result
@@ -2905,6 +2943,7 @@ async function buildWalletHistoricalCoverage(
   let totalRawTx = 0
   let totalTransferLogs = 0
   let pagesAttempted = 0
+  const _dropAgg = { seen: 0, noTxHash: 0, noTimestamp: 0, noContract: 0, noAmount: 0, decodeFailed: 0 }
   let stoppedReason = 'max_pages_reached'
   const newestTimestamps: string[] = []
   // PHASE4-FIX-7 (item 2): per-provider/chain pagination state. GoldRush's transactions_v3
@@ -2945,6 +2984,12 @@ async function buildWalletHistoricalCoverage(
       chainCoverage[chain].events += r.events.length
       totalRawTx += r.rawItems
       totalTransferLogs += r.transferLogs
+      _dropAgg.seen += r.dropCounts.seen
+      _dropAgg.noTxHash += r.dropCounts.noTxHash
+      _dropAgg.noTimestamp += r.dropCounts.noTimestamp
+      _dropAgg.noContract += r.dropCounts.noContract
+      _dropAgg.noAmount += r.dropCounts.noAmount
+      _dropAgg.decodeFailed += r.dropCounts.decodeFailed
       // PHASE4-FIX-6 (item 5): assign a synthetic per-page logIndex to events GoldRush didn't
       // already tag with one, before they're merged with other pages/chains.
       const { events: _pageEventsWithLogIndex, syntheticCount: _pageSynthetic } = assignSyntheticLogIndex(r.events)
@@ -3015,9 +3060,24 @@ async function buildWalletHistoricalCoverage(
     ...(targetContracts && targetContracts.size > 0 ? ['target_contract_filter_applied'] : []),
     ...paginationReasons,
   ]
+  const _droppedNonTargetToken = targetContracts && targetContracts.size > 0 ? Math.max(0, allEvents.length - preFilterEvents.length) : 0
+  const _droppedNoWalletSide = uniqueEvents.length - walletSideEvents
+  const _logNormalizationDebug = {
+    historicalRawLogsSeen: _dropAgg.seen,
+    historicalRawLogsDroppedNoTxHash: _dropAgg.noTxHash,
+    historicalRawLogsDroppedNoTimestamp: _dropAgg.noTimestamp,
+    historicalRawLogsDroppedNoContract: _dropAgg.noContract,
+    historicalRawLogsDroppedNoAmount: _dropAgg.noAmount,
+    historicalRawLogsDroppedNoWalletSide: _droppedNoWalletSide,
+    historicalRawLogsDroppedNonTargetToken: _droppedNonTargetToken,
+    historicalRawLogsDroppedDecodeFailed: _dropAgg.decodeFailed,
+    historicalRawLogsDroppedDuplicate: dupEvents,
+    historicalRawLogsNormalizedTransferEvents: uniqueEvents.length,
+    historicalRawLogsWalletSideTransferEvents: walletSideEvents,
+  }
   return {
     summary: { status, requested: true, pagesAttempted, maxPages, rawTransactions: totalRawTx, rawLogEvents: totalTransferLogs, normalizedEvents: uniqueEvents.length, walletSideEvents, swapLikeTransactions: swapLikeTxs, pricedSwapCandidates: null, matchedClosedLotsBefore, matchedClosedLotsAfter: null, addedClosedLots: null, coverageLevel, missing: errorSamples.length > 0 ? ['provider_errors', ...paginationReasons] : [...paginationReasons], reason: errorSamples.length > 0 ? 'One or more provider pages failed.' : null },
-    debug: { requested: true, providersAttempted: ['goldrush'], pagesAttempted, pageSize, maxPages, cursorUsed: true, stoppedReason, rawTransactions: totalRawTx, rawLogEvents: totalTransferLogs, decodedTransferLogs: totalTransferLogs, walletSideEvents, candidateSwapTxs: swapLikeTxs, candidateSwapEvents: swapLikeEvents, duplicateTxHashes: 0, duplicateEvents: dupEvents, oldestTimestamp, newestTimestamp, chainCoverage, providerErrorSamples: errorSamples.slice(0, 4), skippedReasons: _skippedReasons, sampleTxHashes: [...allTxHashes].slice(0, 5), sampleSwapLikeTransactions: [], moralisHistoricalConfigured: false, moralisHistoricalAttempted: false, moralisReason: 'moralis_history_not_wired_yet' },
+    debug: { requested: true, providersAttempted: ['goldrush'], pagesAttempted, pageSize, maxPages, cursorUsed: true, stoppedReason, rawTransactions: totalRawTx, rawLogEvents: totalTransferLogs, decodedTransferLogs: totalTransferLogs, walletSideEvents, candidateSwapTxs: swapLikeTxs, candidateSwapEvents: swapLikeEvents, duplicateTxHashes: 0, duplicateEvents: dupEvents, oldestTimestamp, newestTimestamp, chainCoverage, providerErrorSamples: errorSamples.slice(0, 4), skippedReasons: _skippedReasons, sampleTxHashes: [...allTxHashes].slice(0, 5), sampleSwapLikeTransactions: [], moralisHistoricalConfigured: false, moralisHistoricalAttempted: false, moralisReason: 'moralis_history_not_wired_yet', logNormalizationDebug: _logNormalizationDebug },
     events: uniqueEvents,
   }
 }
@@ -3428,6 +3488,68 @@ function buildHistoricalCandidateComparison(
     debug: { requested: true, baseEvidenceEvents: existingEvidenceWithDetection.length, historicalNormalizedEvents: historicalPnlEvents.length, historicalWalletSideEvents, existingSwapCandidates: existingSwapCandidateCount, historicalSwapCandidates, newSwapCandidateEvents, duplicateSwapCandidateEvents, candidateTransactions, newCandidateTransactions, candidateTokens, newCandidateTokens, candidateTokenSymbols: newTokenSymbols, earliestCandidateAt, latestCandidateAt, sampleNewSwapCandidates: newSwapCandidateItems.slice(0, 5), sampleDuplicateCandidates: duplicateSwapCandidateItems.slice(0, 5), skippedReasons: [], reasons: newSwapCandidateEvents > 0 ? ['historical_swap_candidates_found'] : ['no_new_swap_candidates'] },
     newCandidateEvidence,
     allHistoricalEvidence: histSwapEvidence,
+  }
+}
+
+// SYNTH-RECOVERY-FIX-9: for synthetic FIFO-backfilled lots specifically, find a real prior buy by
+// going directly to the normalized historical events for that exact target token contract — a
+// wallet-side inbound transfer before the synthetic sell's timestamp — without requiring it to
+// already look like a router-style swap (no counter-leg needed). Pool-to-pool or other-wallet
+// transfers are excluded because PnlEvent.direction is only 'buy'/'sell' for the scanned wallet's
+// own from/to address; everything else is 'unknown' and is never treated as wallet-side here.
+function buildSyntheticTargetPriorBuyRecovery(
+  hcEvents: PnlEvent[],
+  syntheticClosedLots: WalletClosedLot[],
+): {
+  newCandidateEvidence: WalletTxEvidence[]
+  debug: {
+    syntheticTargetHistoricalRawLogs: number
+    syntheticTargetHistoricalNormalizedEvents: number
+    syntheticTargetHistoricalWalletInboundEvents: number
+    syntheticTargetHistoricalWalletOutboundEvents: number
+    syntheticTargetPriorBuysFound: number
+    syntheticTargetDropBreakdown: Record<string, number>
+    sampleSyntheticTargetPriorBuys: Array<{ txHash: string | null; contract: string; symbol: string; amount: number; timestamp: string | null }>
+  }
+} {
+  const targetTokens = new Set(syntheticClosedLots.map(l => l.tokenAddress.toLowerCase()))
+  const latestSellTimestampByToken = new Map<string, string>()
+  for (const l of syntheticClosedLots) {
+    const t = l.tokenAddress.toLowerCase()
+    const existing = latestSellTimestampByToken.get(t)
+    if (!existing || l.closedAt > existing) latestSellTimestampByToken.set(t, l.closedAt)
+  }
+  const dropBreakdown: Record<string, number> = { non_target_token: 0, no_timestamp: 0, not_before_sell: 0 }
+  const targetEvents: PnlEvent[] = []
+  for (const e of hcEvents) {
+    if (!targetTokens.has((e.contract ?? '').toLowerCase())) { dropBreakdown.non_target_token++; continue }
+    targetEvents.push(e)
+  }
+  const inboundEvents = targetEvents.filter(e => e.direction === 'buy')
+  const outboundEvents = targetEvents.filter(e => e.direction === 'sell')
+  const priorBuyEvents: PnlEvent[] = []
+  for (const e of inboundEvents) {
+    if (!e.timestamp) { dropBreakdown.no_timestamp++; continue }
+    const sellTs = latestSellTimestampByToken.get((e.contract ?? '').toLowerCase())
+    if (sellTs && e.timestamp >= sellTs) { dropBreakdown.not_before_sell++; continue }
+    priorBuyEvents.push(e)
+  }
+  const { evidenceList } = buildTxEvidenceFromEvents(priorBuyEvents, true)
+  const newCandidateEvidence: WalletTxEvidence[] = evidenceList.map(e => ({
+    ...e,
+    swapDetection: { isSwapCandidate: true, confidence: 'medium', eventKind: 'swap_candidate' as const, reason: 'synthetic_target_prior_buy_direct_recovery', matchedProtocol: null, matchedAddress: null },
+  }))
+  return {
+    newCandidateEvidence,
+    debug: {
+      syntheticTargetHistoricalRawLogs: targetEvents.length,
+      syntheticTargetHistoricalNormalizedEvents: targetEvents.length,
+      syntheticTargetHistoricalWalletInboundEvents: inboundEvents.length,
+      syntheticTargetHistoricalWalletOutboundEvents: outboundEvents.length,
+      syntheticTargetPriorBuysFound: newCandidateEvidence.length,
+      syntheticTargetDropBreakdown: dropBreakdown,
+      sampleSyntheticTargetPriorBuys: newCandidateEvidence.slice(0, 5).map(e => ({ txHash: e.txHash, contract: e.contract, symbol: e.symbol, amount: e.amount, timestamp: e.timestamp })),
+    },
   }
 }
 
@@ -10435,11 +10557,35 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
 
   tokenMeter.measure('swapDetection', walletHistoricalCandidateSummary, _historicalCandidateDebug, _hcNewCandidateEvidence, _hcAllHistoricalEvidence)
 
-  // Phase 6C: Historical pricing preview — price only the Phase 6B new swap candidates
+  // SYNTH-RECOVERY-FIX-8: the swap-candidate-only path above misses a target token's prior buy
+  // when it's a standalone wallet-side inbound transfer (no matching counter-leg in the same tx —
+  // e.g. an airdrop/claim/transfer-in rather than a router swap). For synthetic FIFO lots, go
+  // straight to the normalized historical events for that exact target contract and pull any
+  // wallet-side inbound transfer before the synthetic sell's timestamp, bypassing isSwapCandidate.
+  const _syntheticTargetRecovery = _runHistoricalCoverage && _syntheticClosedLots.length > 0 && _hcEvents.length > 0
+    ? buildSyntheticTargetPriorBuyRecovery(_hcEvents, _syntheticClosedLots)
+    : null
+  const _hcMergedCandidateEvidence = _syntheticTargetRecovery && _syntheticTargetRecovery.newCandidateEvidence.length > 0
+    ? [
+        ..._hcNewCandidateEvidence,
+        ..._syntheticTargetRecovery.newCandidateEvidence.filter(
+          se => !_hcNewCandidateEvidence.some(e => e.txHash === se.txHash && e.contract === se.contract && e.direction === se.direction)
+        ),
+      ]
+    : _hcNewCandidateEvidence
+  const _hcMergedAllHistoricalEvidence = _syntheticTargetRecovery && _syntheticTargetRecovery.newCandidateEvidence.length > 0
+    ? [..._hcAllHistoricalEvidence, ..._syntheticTargetRecovery.newCandidateEvidence]
+    : _hcAllHistoricalEvidence
+
+  // Phase 6C: Historical pricing preview — price the Phase 6B new swap candidates plus any
+  // synthetic-target direct-recovered prior buys merged in above.
   const { summary: walletHistoricalPricingPreviewSummary, debug: _historicalPricingPreviewDebug, pricedEvidence: _hcNewPricedEvidence } =
-    _runHistoricalCoverage && _hcNewCandidateEvidence.length > 0
-      ? await buildHistoricalPricingPreview(_hcNewCandidateEvidence, _hcAllHistoricalEvidence, _reqPriceCache)
+    _runHistoricalCoverage && _hcMergedCandidateEvidence.length > 0
+      ? await buildHistoricalPricingPreview(_hcMergedCandidateEvidence, _hcMergedAllHistoricalEvidence, _reqPriceCache)
       : { summary: { status: 'not_requested' as const, requested: false, newSwapCandidateEvents: 0, pricedHistoricalCandidates: 0, unpricedHistoricalCandidates: 0, stableLegPricedEvents: 0, wethLegPricedEvents: 0, historicalPricedEvents: 0, priceAttemptLimitReached: false, readyForHistoricalFifoPreview: false, missing: ['historical_coverage_not_requested'], reason: null }, debug: undefined, pricedEvidence: [] as WalletTxEvidence[] }
+  const _syntheticTargetPriorBuysPriced = _syntheticTargetRecovery
+    ? _hcNewPricedEvidence.filter(e => _syntheticTargetRecovery!.newCandidateEvidence.some(se => se.txHash === e.txHash && se.contract === e.contract)).length
+    : 0
   tokenMeter.measure('priceInference', walletHistoricalPricingPreviewSummary, _historicalPricingPreviewDebug, _hcNewPricedEvidence)
   // Track historical pricing preview price calls
   for (let _hp2 = 0; _hp2 < (_historicalPricingPreviewDebug?.priceAttempts ?? 0); _hp2++) {
@@ -10642,9 +10788,11 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     : 0
   const _syntheticRecoverySkippedReason = !_syntheticLotsDetected
     ? null
-    : _runHistoricalCoverage
-      ? null
-      : (_skipReasons[0] ?? (!_syntheticRecoveryTierEligible ? 'wallet_value_tier_not_eligible' : 'synthetic_recovery_not_triggered'))
+    : !_runHistoricalCoverage
+      ? (_skipReasons[0] ?? (!_syntheticRecoveryTierEligible ? 'wallet_value_tier_not_eligible' : 'synthetic_recovery_not_triggered'))
+      : _realPriorBuysRecoveredForSyntheticLots > 0
+        ? null
+        : (Object.entries(_syntheticTargetRecovery?.debug.syntheticTargetDropBreakdown ?? {}).sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'no_prior_buy_found_in_window')
   const _syntheticLotRecoveryDebug = {
     syntheticLotsDetected: _syntheticLotsDetected,
     syntheticLotTokenTargets: _syntheticLotTokenTargets,
@@ -10653,6 +10801,26 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     syntheticLotsAfterHistorical: _syntheticLotsAfterHistorical,
     realPriorBuysRecoveredForSyntheticLots: _realPriorBuysRecoveredForSyntheticLots,
     syntheticRecoverySkippedReason: _syntheticRecoverySkippedReason,
+    syntheticTargetHistoricalRawLogs: _syntheticTargetRecovery?.debug.syntheticTargetHistoricalRawLogs ?? 0,
+    syntheticTargetHistoricalNormalizedEvents: _syntheticTargetRecovery?.debug.syntheticTargetHistoricalNormalizedEvents ?? 0,
+    syntheticTargetHistoricalWalletInboundEvents: _syntheticTargetRecovery?.debug.syntheticTargetHistoricalWalletInboundEvents ?? 0,
+    syntheticTargetHistoricalWalletOutboundEvents: _syntheticTargetRecovery?.debug.syntheticTargetHistoricalWalletOutboundEvents ?? 0,
+    syntheticTargetPriorBuysFound: _syntheticTargetRecovery?.debug.syntheticTargetPriorBuysFound ?? 0,
+    syntheticTargetPriorBuysPriced: _syntheticTargetPriorBuysPriced,
+    syntheticTargetDropBreakdown: _syntheticTargetRecovery?.debug.syntheticTargetDropBreakdown ?? {},
+    sampleDroppedHistoricalLogs: _historicalCoverageDebug?.logNormalizationDebug
+      ? [
+          { reason: 'noTxHash', count: _historicalCoverageDebug.logNormalizationDebug.historicalRawLogsDroppedNoTxHash },
+          { reason: 'noTimestamp', count: _historicalCoverageDebug.logNormalizationDebug.historicalRawLogsDroppedNoTimestamp },
+          { reason: 'noContract', count: _historicalCoverageDebug.logNormalizationDebug.historicalRawLogsDroppedNoContract },
+          { reason: 'noAmount', count: _historicalCoverageDebug.logNormalizationDebug.historicalRawLogsDroppedNoAmount },
+          { reason: 'noWalletSide', count: _historicalCoverageDebug.logNormalizationDebug.historicalRawLogsDroppedNoWalletSide },
+          { reason: 'nonTargetToken', count: _historicalCoverageDebug.logNormalizationDebug.historicalRawLogsDroppedNonTargetToken },
+          { reason: 'decodeFailed', count: _historicalCoverageDebug.logNormalizationDebug.historicalRawLogsDroppedDecodeFailed },
+          { reason: 'duplicate', count: _historicalCoverageDebug.logNormalizationDebug.historicalRawLogsDroppedDuplicate },
+        ].sort((a, b) => b.count - a.count)
+      : [],
+    sampleSyntheticTargetPriorBuys: _syntheticTargetRecovery?.debug.sampleSyntheticTargetPriorBuys ?? [],
   }
 
   // Phase 6F/6G: Build public closed trade samples (max 5) with blockchain verification fields
