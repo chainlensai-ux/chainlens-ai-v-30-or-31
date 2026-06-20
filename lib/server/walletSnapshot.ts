@@ -717,6 +717,18 @@ export type WalletSnapshot = {
       topUnknownReasonByCount: { bucket: UnknownReasonBucket; count: number; distinctTxCount: number; distinctTokenCount: number } | null
       topUnknownReasonByTxCount: { bucket: UnknownReasonBucket; count: number; distinctTxCount: number; distinctTokenCount: number } | null
       topUnknownReasonByTokenCount: { bucket: UnknownReasonBucket; count: number; distinctTxCount: number; distinctTokenCount: number } | null
+      // Direction Reconstruction V2 (debug-only counters, no behavior beyond what's gated by
+      // swapDetection.isSwapCandidate — see buildSwapDetection).
+      reconstructedUnknownDirectionEvents: number
+      reconstructedWalletSideUnknownEvents: number
+      unknownDirectionUsedAsContextOnly: number
+      unknownDirectionPromotedToSwapCandidate: number
+      unknownDirectionRejectedNoWalletSide: number
+      unknownDirectionRejectedLowConfidence: number
+      // Unverified txTo addresses observed on unknown-direction events — never auto-labeled.
+      unknownTxToAddressCounts: Record<string, number>
+      topUnknownTxToAddresses: Array<{ address: string; count: number }>
+      topUnknownTxToAddressesWithSwapLikeContext: Array<{ address: string; count: number }>
       walletSwapReconstructionAudit?: {
         unknownEventsSeen: number
         unknownEventsUsedForContext: number
@@ -3608,6 +3620,10 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
     unknownReasonBucketCounts: emptyUnknownReasonBucketCounts(),
     unknownReasonBucketBreakdown: UNKNOWN_REASON_BUCKETS.map(bucket => ({ bucket, count: 0, distinctTxCount: 0, distinctTokenCount: 0 })),
     topUnknownReasonByCount: null, topUnknownReasonByTxCount: null, topUnknownReasonByTokenCount: null,
+    reconstructedUnknownDirectionEvents: 0, reconstructedWalletSideUnknownEvents: 0,
+    unknownDirectionUsedAsContextOnly: 0, unknownDirectionPromotedToSwapCandidate: 0,
+    unknownDirectionRejectedNoWalletSide: 0, unknownDirectionRejectedLowConfidence: 0,
+    unknownTxToAddressCounts: {}, topUnknownTxToAddresses: [], topUnknownTxToAddressesWithSwapLikeContext: [],
   })
   const emptySummary = (missing: string[]): WalletSnapshot['walletSwapSummary'] => ({
     status: 'open_check', totalEvidenceEvents: 0, groupedTxCount: 0, swapCandidateEvents: 0,
@@ -3735,19 +3751,104 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
   const sampleRouterMatches: Array<{ txHash: string; protocol: string; walletIsInitiator: boolean; tokens: string[] }> = []
   const sampleWalletInitiatedSwapLikeTxsMap = new Map<string, { txHash: string; inboundCount: number; outboundCount: number; tokens: string[]; hasStableOrWeth: boolean }>()
 
+  // ── Direction Reconstruction V2 counters (debug-only; see walletSwapDetectionDebug) ──
+  let reconstructedUnknownDirectionEventsCount = 0
+  let reconstructedWalletSideUnknownEventsCount = 0
+  let unknownDirectionUsedAsContextOnlyCount = 0
+  let unknownDirectionPromotedToSwapCandidateCount = 0
+  let unknownDirectionRejectedNoWalletSideCount = 0
+  let unknownDirectionRejectedLowConfidenceCount = 0
+  // Unverified txTo addresses seen on unknown-direction events — never added to
+  // KNOWN_DEX_ROUTERS without independent verification (see Task B).
+  const unknownTxToAddressCounts = new Map<string, number>()
+  const unknownTxToAddressSwapLikeContextCounts = new Map<string, number>()
+
   const evidenceWithDetection: WalletTxEvidence[] = evidenceList.map(e => {
-    // Unknown-direction events are context-only unless tx-level evidence is high-confidence enough
-    // to reconstruct direction. Medium/low confidence remains unknown and cannot enter pricing/FIFO.
+    // Unknown-direction events: attempt Direction Reconstruction V2 using existing tx context
+    // only (no new provider calls). Promotion to a swap candidate requires PROVEN wallet-side
+    // direction (event's own fromAddress/toAddress matches the scanned wallet) AND either a
+    // known router match or a same-tx opposite leg with a genuine stable/WETH quote leg.
+    // Anything weaker stays out of FIFO — it can only ever improve tx-level context.
     if (e.direction === 'unknown') {
       const ctx = txCtxMap.get(e.txHash)
       const contractLower = e.contract?.toLowerCase() ?? ''
       const isQuote = Boolean(KNOWN_STABLE_WETH_CONTRACTS[contractLower])
       const hasNonQuote = Boolean(ctx && [...ctx.distinctContracts].some(c => !KNOWN_STABLE_WETH_CONTRACTS[c]))
-      if (ctx?.txToKnownRouter && ctx.walletIsInitiator && ctx.txHasStableOrWeth && ctx.hasMultipleDistinctTokens && (isQuote ? hasNonQuote : true)) {
-        const direction = isQuote ? 'sell' as const : 'buy' as const
-        return { ...e, direction, swapDetection: { isSwapCandidate: true, confidence: 'high' as const, eventKind: 'swap_candidate' as const, reason: `High-confidence router reconstruction (${ctx.txRouterProtocol}) from unknown-direction Base context`, matchedProtocol: ctx.txRouterProtocol, matchedAddress: ctx.txToAddr, swapReconstructionConfidence: 'high' as const } }
+
+      // Track unverified txTo addresses seen on unknown-direction events (Task B — debug-only,
+      // never used to label or to add anything to KNOWN_DEX_ROUTERS without verification).
+      if (ctx?.txToAddr && !ctx.txToKnownRouter) {
+        unknownTxToAddressCounts.set(ctx.txToAddr, (unknownTxToAddressCounts.get(ctx.txToAddr) ?? 0) + 1)
+        if (ctx.hasInboundOutbound || ctx.hasMultipleDistinctTokens || ctx.txHasStableOrWeth) {
+          unknownTxToAddressSwapLikeContextCounts.set(ctx.txToAddr, (unknownTxToAddressSwapLikeContextCounts.get(ctx.txToAddr) ?? 0) + 1)
+        }
       }
-      return { ...e, swapDetection: { isSwapCandidate: false, confidence: 'low' as const, eventKind: 'unknown' as const, reason: 'Transfer does not involve scanned wallet directly (pool-to-pool or third-party); retained as tx reconstruction context only', matchedProtocol: ctx?.txRouterProtocol ?? null, matchedAddress: ctx?.txToAddr ?? null, swapReconstructionConfidence: ctx?.txToKnownRouter || ctx?.txHasStableOrWeth || ctx?.hasInboundOutbound ? 'medium' as const : 'low' as const } }
+
+      // Original tx-level reconstruction path: wallet initiated a call to a KNOWN router
+      // (txFromAddr === wallet at the tx level) with a stable/WETH leg and multiple tokens.
+      const routerReconstruction = ctx?.txToKnownRouter && ctx.walletIsInitiator && ctx.txHasStableOrWeth && ctx.hasMultipleDistinctTokens && (isQuote ? hasNonQuote : true)
+      if (routerReconstruction) {
+        const direction = isQuote ? 'sell' as const : 'buy' as const
+        return { ...e, direction, swapDetection: { isSwapCandidate: true, confidence: 'high' as const, eventKind: 'swap_candidate' as const, reason: `High-confidence router reconstruction (${ctx!.txRouterProtocol}) from unknown-direction Base context`, matchedProtocol: ctx!.txRouterProtocol, matchedAddress: ctx!.txToAddr, swapReconstructionConfidence: 'high' as const } }
+      }
+
+      // ── Direction Reconstruction V2 ──
+      // Use the event's OWN fromAddress/toAddress (not the tx-level initiator) to prove
+      // wallet-side direction directly. This is existing tx context already present on every
+      // event — no new provider calls.
+      const fromLower = e.fromAddress?.toLowerCase() ?? null
+      const toLower = e.toAddress?.toLowerCase() ?? null
+      const walletIsRecipient = toLower === walletLower
+      const walletIsSender = fromLower === walletLower
+      const walletSideProven = walletIsRecipient || walletIsSender
+
+      if (!walletSideProven) {
+        // Not provably wallet-side — keep out of FIFO entirely, but it already improved tx
+        // context (grouping, router/quote-leg detection) via contextEvents/txCtxMap above.
+        unknownDirectionRejectedNoWalletSideCount++
+        unknownDirectionUsedAsContextOnlyCount++
+        return { ...e, swapDetection: { isSwapCandidate: false, confidence: 'low' as const, eventKind: 'unknown' as const, reason: 'Transfer does not involve scanned wallet directly (pool-to-pool or third-party); retained as tx reconstruction context only', matchedProtocol: ctx?.txRouterProtocol ?? null, matchedAddress: ctx?.txToAddr ?? null, swapReconstructionConfidence: ctx?.txToKnownRouter || ctx?.txHasStableOrWeth || ctx?.hasInboundOutbound ? 'medium' as const : 'low' as const } }
+      }
+
+      reconstructedUnknownDirectionEventsCount++
+      const reconstructedDirection: 'buy' | 'sell' = walletIsRecipient ? 'buy' : 'sell'
+      const validAmount = Boolean(e.amount && e.amount > 0)
+      const validContract = Boolean(e.contract && e.contract.startsWith('0x'))
+      const hasOppositeLeg = Boolean(ctx && (reconstructedDirection === 'buy' ? ctx.hasSell : ctx.hasBuy))
+      const strongRouterMatch = Boolean(ctx?.txToKnownRouter)
+      const strongPairingMatch = Boolean(ctx && hasOppositeLeg && ctx.txHasStableOrWeth && ctx.hasMultipleDistinctTokens && (isQuote ? hasNonQuote : true))
+
+      if (validAmount && validContract && (strongRouterMatch || strongPairingMatch)) {
+        reconstructedWalletSideUnknownEventsCount++
+        unknownDirectionPromotedToSwapCandidateCount++
+        const matchedProtocol = strongRouterMatch ? (ctx!.txRouterProtocol) : (KNOWN_STABLE_WETH_CONTRACTS[contractLower] ?? null)
+        return {
+          ...e, direction: reconstructedDirection,
+          swapDetection: {
+            isSwapCandidate: true, confidence: 'high' as const, eventKind: 'swap_candidate' as const,
+            reason: strongRouterMatch
+              ? `Direction reconstructed from wallet-side transfer participant + known router (${ctx!.txRouterProtocol})`
+              : 'Direction reconstructed from wallet-side transfer participant + same-tx opposite leg with stable/WETH quote leg',
+            matchedProtocol, matchedAddress: ctx?.txToAddr ?? null,
+            swapReconstructionConfidence: 'high' as const,
+          },
+        }
+      }
+
+      // Wallet-side direction is proven, but pairing/router evidence is too weak to promote —
+      // per the hard limit, never push this into FIFO. Direction is reconstructed (useful for
+      // tx context and future audits) but the event stays classified as unknown.
+      reconstructedWalletSideUnknownEventsCount++
+      unknownDirectionRejectedLowConfidenceCount++
+      return {
+        ...e, direction: reconstructedDirection,
+        swapDetection: {
+          isSwapCandidate: false, confidence: 'low' as const, eventKind: 'unknown' as const,
+          reason: 'Wallet-side direction reconstructed from transfer participant, but insufficient pairing/router evidence to promote to swap candidate',
+          matchedProtocol: ctx?.txRouterProtocol ?? null, matchedAddress: ctx?.txToAddr ?? null,
+          swapReconstructionConfidence: 'medium' as const,
+        },
+      }
     }
     if (!e.amount || e.amount <= 0) {
       return { ...e, swapDetection: { isSwapCandidate: false, confidence: 'low' as const, eventKind: 'unknown' as const, reason: 'Zero or negligible amount — likely spam or dust transfer', matchedProtocol: null, matchedAddress: null } }
@@ -3926,6 +4027,16 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
   const topUnknownReasonByTxCount = [...unknownReasonBucketBreakdown].sort((a, b) => b.distinctTxCount - a.distinctTxCount)[0] ?? null
   const topUnknownReasonByTokenCount = [...unknownReasonBucketBreakdown].sort((a, b) => b.distinctTokenCount - a.distinctTokenCount)[0] ?? null
 
+  // ── Task B: unverified txTo addresses seen on unknown-direction events (debug-only) ──
+  const topUnknownTxToAddresses = [...unknownTxToAddressCounts.entries()]
+    .map(([address, count]) => ({ address, count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 10)
+  const topUnknownTxToAddressesWithSwapLikeContext = [...unknownTxToAddressSwapLikeContextCounts.entries()]
+    .map(([address, count]) => ({ address, count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 10)
+
   // ── Sample grouped txs (from context groups) ──
   const sampleGroupedTxs = Array.from(byTx.entries()).slice(0, 5).map(([txHash, group]) => ({
     txHash: `${txHash.slice(0, 10)}...${txHash.slice(-6)}`,
@@ -3965,6 +4076,14 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
       unknownPairingEvents, unknownPricingEvents,
       unknownReasonBucketCounts, unknownReasonBucketBreakdown,
       topUnknownReasonByCount, topUnknownReasonByTxCount, topUnknownReasonByTokenCount,
+      reconstructedUnknownDirectionEvents: reconstructedUnknownDirectionEventsCount,
+      reconstructedWalletSideUnknownEvents: reconstructedWalletSideUnknownEventsCount,
+      unknownDirectionUsedAsContextOnly: unknownDirectionUsedAsContextOnlyCount,
+      unknownDirectionPromotedToSwapCandidate: unknownDirectionPromotedToSwapCandidateCount,
+      unknownDirectionRejectedNoWalletSide: unknownDirectionRejectedNoWalletSideCount,
+      unknownDirectionRejectedLowConfidence: unknownDirectionRejectedLowConfidenceCount,
+      unknownTxToAddressCounts: Object.fromEntries(unknownTxToAddressCounts),
+      topUnknownTxToAddresses, topUnknownTxToAddressesWithSwapLikeContext,
       reasons: [],
     },
   }
