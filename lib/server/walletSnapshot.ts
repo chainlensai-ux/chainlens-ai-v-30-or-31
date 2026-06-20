@@ -1283,6 +1283,7 @@ export type WalletSnapshot = {
       swapReconstructionEventsPromoted: number
       swapReconstructionEventsRejected: number
       swapReconstructionRejectedReasons: string[]
+      swapReconstructionRejectedBreakdown?: Record<string, number>
       sampleReconstructedSwaps: Array<{
         txHash: string
         chain: string
@@ -1298,7 +1299,19 @@ export type WalletSnapshot = {
         direction: 'buy' | 'sell' | 'unknown'
         confidence: 'high' | 'medium' | 'low'
         reconstructionReason: string
+        walletOutboundLegs?: number
+        walletInboundLegs?: number
+        quoteLegs?: number
+        tokenLegs?: number
+        rejectedReason?: string | null
+        candidateSymbols?: string[]
       }>
+    }
+    missingCostBasisGuardDebug?: {
+      missingCostBasisGuardApplied: boolean
+      broadHistoricalSkippedMissingCostBasisGuard: boolean
+      syntheticTargetsTooManyForDefaultRecovery: boolean
+      historicalCallsSavedByCostGuard: number
     }
     baseFifoCoverageDebug?: {
       attempted: boolean
@@ -7628,7 +7641,7 @@ async function buildEthRouterSwapReconstructionPass(
 // the token leg — pricing fell back to plain historical token price instead of the stronger,
 // same-tx quote-leg-derived price. Capped to 3 receipts per scan; never touches unrelated txs.
 const SWAP_RECON_V1_TTL_MS = 50 * 60 * 1000
-type SwapReconV1Decode = { txFrom: string | null; logs: Array<{ topics?: string[]; address?: string; data?: unknown }> | null }
+type SwapReconV1Decode = { txFrom: string | null; txTo: string | null; logs: Array<{ topics?: string[]; address?: string; data?: unknown }> | null }
 const swapReconV1ReceiptCache = new Map<string, { data: SwapReconV1Decode; exp: number }>()
 const SWAP_RECON_V1_MAX_RECEIPTS = 3
 
@@ -7647,6 +7660,12 @@ type ReconstructedSwapV1 = {
   direction: 'buy' | 'sell' | 'unknown'
   confidence: 'high' | 'medium' | 'low'
   reconstructionReason: string
+  walletOutboundLegs?: number
+  walletInboundLegs?: number
+  quoteLegs?: number
+  tokenLegs?: number
+  rejectedReason?: string | null
+  candidateSymbols?: string[]
 }
 
 async function buildSwapReconstructionV1(
@@ -7708,6 +7727,12 @@ async function buildSwapReconstructionV1(
   let eventsPromoted = 0
   let eventsRejected = 0
   const rejectedReasons: string[] = []
+  const rejectedBreakdown: Record<string, number> = {}
+  const bumpRejected = (reason: string) => {
+    eventsRejected++
+    rejectedReasons.push(reason)
+    rejectedBreakdown[reason] = (rejectedBreakdown[reason] ?? 0) + 1
+  }
   const sampleReconstructedSwaps: ReconstructedSwapV1[] = []
   const pricedPatches: Array<{ txHash: string; contract: string; priceUsd: number; reason: string; confidence: 'high' | 'medium' }> = []
 
@@ -7725,18 +7750,17 @@ async function buildSwapReconstructionV1(
         receiptsFetched++
         decode = {
           txFrom: typeof receipt?.from === 'string' ? (receipt.from as string).toLowerCase() : null,
+          txTo: typeof receipt?.to === 'string' ? (receipt.to as string).toLowerCase() : null,
           logs: Array.isArray(receipt?.logs) ? receipt.logs : null,
         }
         swapReconV1ReceiptCache.set(cacheKey, { data: decode, exp: now + SWAP_RECON_V1_TTL_MS })
       } catch {
-        eventsRejected++
-        rejectedReasons.push('receipt_fetch_error')
+        bumpRejected('receipt_fetch_error')
         continue
       }
     }
     if (!decode?.logs) {
-      eventsRejected++
-      rejectedReasons.push('no_receipt_or_logs')
+      bumpRejected('no_receipt_or_logs')
       continue
     }
 
@@ -7745,9 +7769,15 @@ async function buildSwapReconstructionV1(
     for (const e of txGroup) if (e.contract) symbolByContract.set(e.contract.toLowerCase(), e.symbol)
     const chain = txGroup[0]?.chain ?? 'base'
     const timestamp = txGroup[0]?.timestamp ?? null
+    const routerAddr = decode.txTo
 
-    const outboundLegs: Array<{ contract: string; amountHex: string }> = []
-    const inboundLegs: Array<{ contract: string; amountHex: string }> = []
+    // Group all Transfer logs in this tx (not just wallet-touching ones) so router/pool-mediated
+    // quote legs — e.g. a router unwrapping WETH to native ETH before paying the wallet, which
+    // leaves no ERC20 Transfer log to the wallet itself — can still be counted/used as evidence.
+    const isQuote = (c: string) => Boolean(STABLE_USD_CONTRACTS[c]) || Boolean(WETH_CONTRACTS_PRICE[c]) || (symbolByContract.get(c) ?? '').toUpperCase() === 'VIRTUAL'
+    const walletOutboundLegs: Array<{ contract: string; amountHex: string }> = []
+    const walletInboundLegs: Array<{ contract: string; amountHex: string }> = []
+    const routerMediatedQuoteLegs: Array<{ contract: string; amountHex: string }> = []
     for (const log of decode.logs) {
       if (!log.topics || log.topics[0]?.toLowerCase() !== ERC20_TRANSFER_TOPIC) continue
       if (log.topics.length < 3) continue
@@ -7756,30 +7786,96 @@ async function buildSwapReconstructionV1(
       const toAddr = '0x' + (log.topics[2]?.toLowerCase() ?? '').slice(-40)
       const contractAddr = (log.address ?? '').toLowerCase()
       const amountHex = typeof log.data === 'string' ? log.data : '0x0'
-      if (fromAddr === walletLower) outboundLegs.push({ contract: contractAddr, amountHex })
-      if (toAddr === walletLower) inboundLegs.push({ contract: contractAddr, amountHex })
+      if (fromAddr === walletLower) walletOutboundLegs.push({ contract: contractAddr, amountHex })
+      if (toAddr === walletLower) walletInboundLegs.push({ contract: contractAddr, amountHex })
+      // Router/pool-mediated quote leg: the router itself receives or sends a quote asset, but
+      // the leg never touches the wallet directly (e.g. router -> pool, or pool -> router before
+      // an ETH unwrap). Only counted as quote-leg evidence, never as a wallet-direct leg.
+      if (
+        isQuote(contractAddr) &&
+        fromAddr !== walletLower &&
+        toAddr !== walletLower &&
+        routerAddr &&
+        (fromAddr === routerAddr || toAddr === routerAddr)
+      ) {
+        routerMediatedQuoteLegs.push({ contract: contractAddr, amountHex })
+      }
     }
-    walletOutboundLegsTotal += outboundLegs.length
-    walletInboundLegsTotal += inboundLegs.length
+    walletOutboundLegsTotal += walletOutboundLegs.length
+    walletInboundLegsTotal += walletInboundLegs.length
 
-    const isQuote = (c: string) => Boolean(STABLE_USD_CONTRACTS[c]) || Boolean(WETH_CONTRACTS_PRICE[c]) || (symbolByContract.get(c) ?? '').toUpperCase() === 'VIRTUAL'
-    const quoteOutbound = outboundLegs.filter(l => isQuote(l.contract))
-    const quoteInbound = inboundLegs.filter(l => isQuote(l.contract))
-    const tokenOutbound = outboundLegs.filter(l => !isQuote(l.contract))
-    const tokenInbound = inboundLegs.filter(l => !isQuote(l.contract))
-    quoteLegsTotal += quoteOutbound.length + quoteInbound.length
+    const quoteOutbound = walletOutboundLegs.filter(l => isQuote(l.contract))
+    const quoteInbound = walletInboundLegs.filter(l => isQuote(l.contract))
+    const tokenOutbound = walletOutboundLegs.filter(l => !isQuote(l.contract))
+    const tokenInbound = walletInboundLegs.filter(l => !isQuote(l.contract))
+    quoteLegsTotal += quoteOutbound.length + quoteInbound.length + routerMediatedQuoteLegs.length
     tokenLegsTotal += tokenOutbound.length + tokenInbound.length
+
+    const candidateSymbols = Array.from(new Set(
+      [...walletOutboundLegs, ...walletInboundLegs, ...routerMediatedQuoteLegs]
+        .map(l => symbolByContract.get(l.contract) ?? l.contract)
+    ))
+    const sampleCounts = {
+      walletOutboundLegs: walletOutboundLegs.length,
+      walletInboundLegs: walletInboundLegs.length,
+      quoteLegs: quoteOutbound.length + quoteInbound.length + routerMediatedQuoteLegs.length,
+      tokenLegs: tokenOutbound.length + tokenInbound.length,
+      candidateSymbols,
+    }
+    const pushRejectedSample = (rejectedReason: string) => {
+      if (sampleReconstructedSwaps.length < 5) {
+        sampleReconstructedSwaps.push({
+          txHash, chain, timestamp,
+          paidToken: null, paidAmount: null, paidUsd: null,
+          receivedToken: null, receivedAmount: null, receivedUsd: null,
+          quoteToken: null, quoteAmount: null,
+          direction: 'unknown', confidence: 'low',
+          reconstructionReason: rejectedReason,
+          rejectedReason,
+          ...sampleCounts,
+        })
+      }
+    }
+
+    // Ambiguity check: more than one distinct non-quote token leg on either side means we can't
+    // cleanly tell which token is "the" swapped token — stay debug-only rather than guess.
+    if (tokenOutbound.length > 1 || tokenInbound.length > 1) {
+      bumpRejected('ambiguous_multiple_token_legs')
+      pushRejectedSample('ambiguous_multiple_token_legs')
+      continue
+    }
+    if (tokenOutbound.length === 0 && quoteOutbound.length === 0) {
+      bumpRejected('no_wallet_outbound_leg')
+      pushRejectedSample('no_wallet_outbound_leg')
+      continue
+    }
+    if (tokenInbound.length === 0 && quoteInbound.length === 0 && routerMediatedQuoteLegs.length === 0) {
+      bumpRejected('no_wallet_inbound_leg')
+      pushRejectedSample('no_wallet_inbound_leg')
+      continue
+    }
 
     let direction: 'buy' | 'sell' | 'unknown' = 'unknown'
     let tokenLeg: { contract: string; amountHex: string } | null = null
     let quoteLeg: { contract: string; amountHex: string } | null = null
+    let routerMediated = false
     if (tokenOutbound.length > 0 && quoteInbound.length > 0) {
       direction = 'sell'; tokenLeg = tokenOutbound[0]; quoteLeg = quoteInbound[0]
     } else if (quoteOutbound.length > 0 && tokenInbound.length > 0) {
       direction = 'buy'; tokenLeg = tokenInbound[0]; quoteLeg = quoteOutbound[0]
+    } else if (tokenOutbound.length > 0 && quoteInbound.length === 0 && routerMediatedQuoteLegs.length > 0) {
+      // Wallet sent a token out but received no ERC20 quote leg directly (likely native-ETH
+      // unwrap by the router) — infer the proceeds from the router/pool-mediated quote leg.
+      direction = 'sell'; tokenLeg = tokenOutbound[0]; quoteLeg = routerMediatedQuoteLegs[0]; routerMediated = true
+    } else if (tokenInbound.length > 0 && quoteOutbound.length === 0 && routerMediatedQuoteLegs.length > 0) {
+      direction = 'buy'; tokenLeg = tokenInbound[0]; quoteLeg = routerMediatedQuoteLegs[0]; routerMediated = true
+    } else if (routerMediatedQuoteLegs.length > 0) {
+      bumpRejected('quote_leg_only_router_mediated')
+      pushRejectedSample('quote_leg_only_router_mediated')
+      continue
     } else {
-      eventsRejected++
-      rejectedReasons.push('no_clean_wallet_paid_received_legs')
+      bumpRejected('no_quote_leg_detected')
+      pushRejectedSample('no_quote_leg_detected')
       continue
     }
     eventsBuilt++
@@ -7796,13 +7892,15 @@ async function buildSwapReconstructionV1(
 
     if (isStableQuote) {
       quoteUsdPrice = 1
-      confidence = 'high'
-      reconstructionReason = 'stable_quote_leg_decoded_from_receipt'
+      confidence = routerMediated ? 'medium' : 'high'
+      reconstructionReason = routerMediated ? 'stable_quote_leg_router_mediated' : 'stable_quote_leg_decoded_from_receipt'
     } else if (isWethQuote) {
       const result = timestamp ? await fetchGoldrushHistoricalPrice(chain, quoteContract, timestamp, reqCache) : { priceUsd: null }
       quoteUsdPrice = result.priceUsd ?? priceByContract?.get(quoteContract) ?? null
-      confidence = quoteUsdPrice ? 'high' : 'low'
-      reconstructionReason = quoteUsdPrice ? 'weth_quote_leg_decoded_from_receipt_priced_historical' : 'weth_quote_leg_found_but_unpriced'
+      confidence = quoteUsdPrice ? (routerMediated ? 'medium' : 'high') : 'low'
+      reconstructionReason = quoteUsdPrice
+        ? (routerMediated ? 'weth_quote_leg_router_mediated_priced_historical' : 'weth_quote_leg_decoded_from_receipt_priced_historical')
+        : 'weth_quote_leg_found_but_unpriced'
     } else {
       // VIRTUAL or other symbol-matched quote leg — price only if an existing price helper can price it.
       quoteUsdPrice = priceByContract?.get(quoteContract) ?? null
@@ -7813,6 +7911,12 @@ async function buildSwapReconstructionV1(
     const quoteUsd = quoteUsdPrice != null ? quoteAmount * quoteUsdPrice : null
     const tokenEv = txGroup.find(e => (e.contract ?? '').toLowerCase() === tokenLeg!.contract)
     const quoteSymbol = symbolByContract.get(quoteContract) ?? (isStableQuote ? STABLE_SYMBOL[quoteContract] : isWethQuote ? 'WETH' : 'UNKNOWN')
+
+    if (quoteUsdPrice == null) {
+      bumpRejected('quote_leg_unpriced')
+      pushRejectedSample('quote_leg_unpriced')
+      continue
+    }
 
     const reconstructed: ReconstructedSwapV1 = {
       txHash, chain, timestamp,
@@ -7827,6 +7931,7 @@ async function buildSwapReconstructionV1(
       direction,
       confidence,
       reconstructionReason,
+      ...sampleCounts,
     }
     if (sampleReconstructedSwaps.length < 5) sampleReconstructedSwaps.push(reconstructed)
 
@@ -7835,8 +7940,7 @@ async function buildSwapReconstructionV1(
     const tokenAmount = tokenEv?.amount ?? null
     const complete = Boolean(tokenEv?.contract && quoteUsd != null && quoteUsd > 0 && tokenAmount != null && tokenAmount > 0)
     if (confidence === 'low' || !complete) {
-      eventsRejected++
-      rejectedReasons.push(quoteUsdPrice == null ? 'quote_unpriced' : 'low_confidence_or_incomplete')
+      bumpRejected('low_confidence_or_incomplete')
       continue
     }
 
@@ -7891,6 +7995,7 @@ async function buildSwapReconstructionV1(
       swapReconstructionEventsPromoted: eventsPromoted,
       swapReconstructionEventsRejected: eventsRejected,
       swapReconstructionRejectedReasons: rejectedReasons,
+      swapReconstructionRejectedBreakdown: rejectedBreakdown,
       sampleReconstructedSwaps,
     },
   }
@@ -10777,10 +10882,25 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _sellsExceedBuysSignal = (_lotEngineDebug.unmatchedSells ?? 0) > 0
   const _syntheticRecoveryTierEligible = _walletValueTier === 'high_value' || _walletValueTier === 'whale' || _walletValueTier === 'standard'
   const _syntheticLotsBeforeHistorical = _syntheticClosedLots.length
+  const _adminOverrideUsed = walletScanBudget?.adminOverrideUsed === true
+
+  // COST-GUARD-FIX-1: if every closed lot found so far is synthetic (no real-backed cost basis at
+  // all), missing-cost-basis is already proven for this scan — broad multi-page historical lookups
+  // chasing those same synthetic lots burn credits without changing the public PnL outcome (which
+  // stays open_check either way unless a real prior buy is found). Cap the *broad* Phase 6A/6D pass
+  // to 0 pages in that case; the cheap, capped (max 2 tokens / 2 pages) targeted synthetic-target
+  // recovery below still runs. This does not remove synthetic lots or change FIFO math.
+  const _earlyRealBackedClosedLots = _closedLots.filter(
+    l => l.evidence?.entrySource !== 'synthetic' &&
+      !(l.missingReasons ?? []).includes('fifo_backfilled_buy') &&
+      !(l.missingReasons ?? []).includes('price_synthetic_fifo') &&
+      (l.coveragePercent ?? 100) !== 0
+  ).length
+  const _missingCostBasisGuardActive = _syntheticLotsDetected && _earlyRealBackedClosedLots === 0 && !_adminOverrideUsed
+  const _syntheticTargetsTooManyForDefaultRecovery = _syntheticLotTokenTargets.length > 2
 
   // Phase 6A: Historical coverage diagnostics — capped, eligible, targeted recovery only.
   // _walletValueTier already computed earlier in the pipeline via computeWalletValueTier(totalValue)
-  const _adminOverrideUsed = walletScanBudget?.adminOverrideUsed === true
   const _tierTarget = _walletValueTier === 'micro' ? 6 : _walletValueTier === 'small' ? 12 : 15
   const _totalCreditTarget = _adminOverrideUsed ? (walletScanBudget?.totalCreditTarget ?? 15) : Math.min(walletScanBudget?.totalCreditTarget ?? _tierTarget, _tierTarget)
   const _totalCreditHardCap = _adminOverrideUsed ? (walletScanBudget?.totalCreditHardCap ?? 18) : Math.min(walletScanBudget?.totalCreditHardCap ?? 18, _walletValueTier === 'micro' ? 6 : 18)
@@ -10793,6 +10913,12 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _pagesAllowed = _adminOverrideUsed
     ? Math.max(0, Math.min(clampedMaxHistoricalPages, _historicalPhaseBudget))
     : Math.max(0, Math.min(clampedMaxHistoricalPages, _defaultPagesByTier, _historicalPhaseBudget, _totalCreditHardCap - _creditsBeforeHistorical))
+  // COST-GUARD-FIX-1 (cont.): the broad Phase 6A/6D pass is capped to 0 pages once missing cost
+  // basis is already proven for this scan — only the page count used for the broad/unscoped
+  // historical lookup is affected; the targeted synthetic-target extra recovery below uses its
+  // own independent, much smaller (max 2 pages) budget and is unaffected by this guard.
+  const _pagesAllowedForBroadPass = _missingCostBasisGuardActive ? 0 : _pagesAllowed
+  const _historicalCallsSavedByCostGuard = _missingCostBasisGuardActive ? _pagesAllowed : 0
 
   const _rankedHistoricalTargets = (() => {
     const byContract = new Map<string, { contract: string; symbol: string; chain: string; score: number; reasons: string[]; estimatedUsd: number }>()
@@ -10864,7 +10990,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     (walletTradeStatsSummary.closedLots < 10 || _coverageTriggersHistorical || _syntheticLotRecoveryTrigger) &&
     ((_lotEngineDebug.unmatchedSells ?? 0) > 0 || (_lotEngineDebug.openedLots ?? 0) > 0 || (walletSwapSummary.swapCandidateEvents ?? 0) > 0) &&
     _targetContracts.size > 0 &&
-    _pagesAllowed > 0 &&
+    _pagesAllowedForBroadPass > 0 &&
     GOLDRUSH_KEY
   )
   const _historicalTriggeredBySyntheticLots = _historicalEligible && !historicalCoverage && _syntheticLotRecoveryTrigger
@@ -10874,7 +11000,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   let _historicalCoverageDebug: NonNullable<WalletSnapshot['_diagnostics']>['walletHistoricalCoverageDebug']
   let _hcEvents: PnlEvent[] = []
   if (_runHistoricalCoverage) {
-    const hcCacheKey = `wallet:historicalCoverage:v2:${addrNorm}:${chainMode}:${_walletValueTier}:${_rankedHistoricalTargets.map(t => t.contract).join(',')}:${_pagesAllowed}`
+    const hcCacheKey = `wallet:historicalCoverage:v2:${addrNorm}:${chainMode}:${_walletValueTier}:${_rankedHistoricalTargets.map(t => t.contract).join(',')}:${_pagesAllowedForBroadPass}`
     const hcCached = historicalCoverageCache.get(hcCacheKey)
     if (hcCached && Date.now() - hcCached.cachedAt < HISTORICAL_COVERAGE_TTL_MS) {
       walletHistoricalCoverageSummary = hcCached.data.summary
@@ -10886,7 +11012,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       if (existingInFlight) {
         hcResult = await existingInFlight
       } else {
-        const hcPromise = buildWalletHistoricalCoverage(addrNorm, GOLDRUSH_KEY, _pagesAllowed, walletTradeStatsSummary.closedLots, _targetContracts)
+        const hcPromise = buildWalletHistoricalCoverage(addrNorm, GOLDRUSH_KEY, _pagesAllowedForBroadPass, walletTradeStatsSummary.closedLots, _targetContracts)
         historicalCoverageInFlight.set(hcCacheKey, hcPromise)
         try {
           hcResult = await hcPromise
@@ -10905,7 +11031,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       }
     }
   } else {
-    walletHistoricalCoverageSummary = { status: historicalCoverage ? 'open_check' : 'not_requested', requested: historicalCoverage, pagesAttempted: 0, maxPages: _pagesAllowed, rawTransactions: 0, rawLogEvents: 0, normalizedEvents: 0, walletSideEvents: 0, swapLikeTransactions: 0, pricedSwapCandidates: null, matchedClosedLotsBefore: null, matchedClosedLotsAfter: null, addedClosedLots: null, coverageLevel: 'none', missing: [], reason: historicalCoverage ? _skipReasons.join('; ') || 'not_eligible' : null }
+    walletHistoricalCoverageSummary = { status: historicalCoverage ? 'open_check' : 'not_requested', requested: historicalCoverage, pagesAttempted: 0, maxPages: _pagesAllowedForBroadPass, rawTransactions: 0, rawLogEvents: 0, normalizedEvents: 0, walletSideEvents: 0, swapLikeTransactions: 0, pricedSwapCandidates: null, matchedClosedLotsBefore: null, matchedClosedLotsAfter: null, addedClosedLots: null, coverageLevel: 'none', missing: [], reason: _missingCostBasisGuardActive ? 'broad_historical_skipped_missing_cost_basis_guard' : historicalCoverage ? _skipReasons.join('; ') || 'not_eligible' : null }
     _historicalCoverageDebug = undefined
   }
 
@@ -10963,10 +11089,14 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   let _syntheticTargetExtraSkippedReason: string | null = null
   if (!_syntheticLotsDetected) _syntheticTargetExtraSkippedReason = 'no_synthetic_lots'
   else if (!_syntheticRecoveryTierEligible) _syntheticTargetExtraSkippedReason = 'wallet_value_tier_not_eligible'
-  else if (!_runHistoricalCoverage) _syntheticTargetExtraSkippedReason = 'historical_recovery_not_run'
+  // COST-GUARD-FIX-1 (cont.): the broad pass being disabled BY the cost guard must not also block
+  // the cheap, capped targeted recovery — that targeted recovery is exactly the mechanism allowed
+  // to keep running per the cost guard's own rules (default: up to 2 synthetic target tokens).
+  else if (!_runHistoricalCoverage && !_missingCostBasisGuardActive) _syntheticTargetExtraSkippedReason = 'historical_recovery_not_run'
   else if (!GOLDRUSH_KEY) _syntheticTargetExtraSkippedReason = 'provider_not_configured'
   else if (_syntheticLotTokenTargets.length === 0) _syntheticTargetExtraSkippedReason = 'no_synthetic_targets'
   else if (_syntheticLotTokenTargets.length > _syntheticTargetExtraMaxTokens && !debug) _syntheticTargetExtraSkippedReason = 'skipped_extra_recovery_too_many_synthetic_targets'
+  else if (_missingCostBasisGuardActive && _syntheticTargetsTooManyForDefaultRecovery) _syntheticTargetExtraSkippedReason = 'synthetic_targets_too_many_for_default_recovery'
   else if (_syntheticTargetExtraEligibleTokens.length === 0) _syntheticTargetExtraSkippedReason = 'already_real_backed_lot_for_target'
   else if (_syntheticTargetExtraPriorBuysFoundSoFar > 0) _syntheticTargetExtraSkippedReason = 'prior_buy_already_found'
   else if (_syntheticTargetExtraPagesAllowed <= 0) _syntheticTargetExtraSkippedReason = 'budget_exhausted'
@@ -11972,6 +12102,12 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       ethSwapReconstructionDebug: _ethSwapReconstructionDebug,
       basePnlReconstructionDebug: _basePnlReconDebug,
       swapReconstructionV1Debug: _swapReconstructionV1Debug,
+      missingCostBasisGuardDebug: {
+        missingCostBasisGuardApplied: _missingCostBasisGuardActive,
+        broadHistoricalSkippedMissingCostBasisGuard: _missingCostBasisGuardActive,
+        syntheticTargetsTooManyForDefaultRecovery: _missingCostBasisGuardActive && _syntheticTargetsTooManyForDefaultRecovery,
+        historicalCallsSavedByCostGuard: _historicalCallsSavedByCostGuard,
+      },
       baseUnknownSwapReconstructionDebug: _baseUnknownSwapReconDebug,
       baseUnknownSwapPricingDebug: _baseUnknownSwapPricingDebug,
       finalSummarySourceDebug: _finalSummarySourceDebug,
