@@ -4,6 +4,13 @@ import { computeWalletProfile, type WalletProfile } from './walletIdentity'
 export { computeWalletProfile, type WalletProfile }
 
 
+// Exhaustive, mutually-exclusive reason buckets for unknownEvents diagnostics
+// (debug-only — see buildSwapDetection's unknownReasonBucketCounts).
+type UnknownReasonBucket =
+  | 'unknown_direction' | 'missing_wallet_side' | 'missing_counterparty' | 'router_not_detected'
+  | 'no_quote_asset' | 'failed_pairing' | 'failed_stable_match' | 'failed_weth_match'
+  | 'failed_multi_token_match' | 'failed_same_tx_match' | 'pricing_unavailable' | 'other'
+
 type TokenUsage = {
   providerFetch: number
   swapDetection: number
@@ -703,6 +710,13 @@ export type WalletSnapshot = {
       unknownCounterpartyEvents: number
       unknownPairingEvents: number
       unknownPricingEvents: number
+      // Exhaustive per-event reason-bucket breakdown of unknownEvents (debug-only, counters
+      // only — does not change classification, FIFO, or pricing behavior).
+      unknownReasonBucketCounts: Record<UnknownReasonBucket, number>
+      unknownReasonBucketBreakdown: Array<{ bucket: UnknownReasonBucket; count: number; distinctTxCount: number; distinctTokenCount: number }>
+      topUnknownReasonByCount: { bucket: UnknownReasonBucket; count: number; distinctTxCount: number; distinctTokenCount: number } | null
+      topUnknownReasonByTxCount: { bucket: UnknownReasonBucket; count: number; distinctTxCount: number; distinctTokenCount: number } | null
+      topUnknownReasonByTokenCount: { bucket: UnknownReasonBucket; count: number; distinctTxCount: number; distinctTokenCount: number } | null
       walletSwapReconstructionAudit?: {
         unknownEventsSeen: number
         unknownEventsUsedForContext: number
@@ -3560,6 +3574,15 @@ function buildTxEvidenceFromEvents(events: PnlEvent[], requested: boolean, provi
   }
 }
 
+const UNKNOWN_REASON_BUCKETS: UnknownReasonBucket[] = [
+  'unknown_direction', 'missing_wallet_side', 'missing_counterparty', 'router_not_detected',
+  'no_quote_asset', 'failed_pairing', 'failed_stable_match', 'failed_weth_match',
+  'failed_multi_token_match', 'failed_same_tx_match', 'pricing_unavailable', 'other',
+]
+function emptyUnknownReasonBucketCounts(): Record<UnknownReasonBucket, number> {
+  return UNKNOWN_REASON_BUCKETS.reduce((acc, k) => { acc[k] = 0; return acc }, {} as Record<UnknownReasonBucket, number>)
+}
+
 function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested: boolean, walletAddress: string): {
   evidenceWithDetection: WalletTxEvidence[]
   summary: WalletSnapshot['walletSwapSummary']
@@ -3582,6 +3605,9 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
     sampleWalletInitiatedSwapLikeTxs: [], sampleGroupedTxs: [], reasons: [],
     unknownRouterEvents: 0, unknownDirectionEvents: 0, unknownCounterpartyEvents: 0,
     unknownPairingEvents: 0, unknownPricingEvents: 0,
+    unknownReasonBucketCounts: emptyUnknownReasonBucketCounts(),
+    unknownReasonBucketBreakdown: UNKNOWN_REASON_BUCKETS.map(bucket => ({ bucket, count: 0, distinctTxCount: 0, distinctTokenCount: 0 })),
+    topUnknownReasonByCount: null, topUnknownReasonByTxCount: null, topUnknownReasonByTokenCount: null,
   })
   const emptySummary = (missing: string[]): WalletSnapshot['walletSwapSummary'] => ({
     status: 'open_check', totalEvidenceEvents: 0, groupedTxCount: 0, swapCandidateEvents: 0,
@@ -3851,6 +3877,55 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
     routerCoverageProtocols: [...new Set([...txCtxMap.values()].map(ctx => ctx.txRouterProtocol).filter((p): p is string => Boolean(p)))].sort(),
   }
 
+  // ── Unknown-event reason-bucket breakdown (debug-only diagnostics) ──
+  // Assigns exactly one bucket per eventKind='unknown' event, in priority order, to explain
+  // which specific structural condition kept it out of swap-candidate classification. This is
+  // read-only instrumentation over the already-computed evidenceWithDetection/txCtxMap — it
+  // does not alter classification, FIFO, or pricing in any way.
+  function classifyUnknownReasonBucket(e: WalletTxEvidence): UnknownReasonBucket {
+    if (e.direction === 'unknown') return 'unknown_direction'
+    if (!e.fromAddress && !e.toAddress) return 'missing_wallet_side'
+    const ctx = txCtxMap.get(e.txHash)
+    if (!ctx || !ctx.txToAddr) return 'missing_counterparty'
+    if (!ctx.hasInboundOutbound) return 'failed_pairing'
+    if (!ctx.hasMultipleDistinctTokens) return 'failed_multi_token_match'
+    const hasStable = [...ctx.distinctContracts].some(c => {
+      const label = KNOWN_STABLE_WETH_CONTRACTS[c] ?? ''
+      return label.startsWith('USDC') || label.startsWith('USDT') || label.startsWith('DAI')
+    })
+    const hasWeth = [...ctx.distinctContracts].some(c => (KNOWN_STABLE_WETH_CONTRACTS[c] ?? '').startsWith('WETH'))
+    if (!hasStable && !hasWeth) return 'no_quote_asset'
+    if (hasWeth && !hasStable) return 'failed_stable_match'
+    if (hasStable && !hasWeth) return 'failed_weth_match'
+    if (!ctx.txToKnownRouter) return 'router_not_detected'
+    return 'failed_same_tx_match'
+  }
+
+  const unknownEventsForBuckets = evidenceWithDetection.filter(e => e.swapDetection?.eventKind === 'unknown')
+  const unknownReasonBucketCounts = emptyUnknownReasonBucketCounts()
+  const unknownReasonBucketTxSets: Record<UnknownReasonBucket, Set<string>> = UNKNOWN_REASON_BUCKETS.reduce((acc, k) => { acc[k] = new Set<string>(); return acc }, {} as Record<UnknownReasonBucket, Set<string>>)
+  const unknownReasonBucketTokenSets: Record<UnknownReasonBucket, Set<string>> = UNKNOWN_REASON_BUCKETS.reduce((acc, k) => { acc[k] = new Set<string>(); return acc }, {} as Record<UnknownReasonBucket, Set<string>>)
+  for (const e of unknownEventsForBuckets) {
+    const bucket = classifyUnknownReasonBucket(e)
+    unknownReasonBucketCounts[bucket]++
+    if (e.txHash) unknownReasonBucketTxSets[bucket].add(e.txHash)
+    if (e.contract) unknownReasonBucketTokenSets[bucket].add(e.contract.toLowerCase())
+  }
+  // pricing_unavailable describes priced-swap-candidate events missing a timestamp (cannot
+  // price-at-time) — a different population than eventKind='unknown' — kept as its own bucket
+  // for parity with the requested list; always 0 within the per-unknown-event loop above.
+  unknownReasonBucketCounts.pricing_unavailable = evidenceWithDetection.filter(e => e.swapDetection?.isSwapCandidate && !e.timestamp).length
+
+  const unknownReasonBucketBreakdown = UNKNOWN_REASON_BUCKETS.map(bucket => ({
+    bucket,
+    count: unknownReasonBucketCounts[bucket],
+    distinctTxCount: unknownReasonBucketTxSets[bucket].size,
+    distinctTokenCount: unknownReasonBucketTokenSets[bucket].size,
+  }))
+  const topUnknownReasonByCount = [...unknownReasonBucketBreakdown].sort((a, b) => b.count - a.count)[0] ?? null
+  const topUnknownReasonByTxCount = [...unknownReasonBucketBreakdown].sort((a, b) => b.distinctTxCount - a.distinctTxCount)[0] ?? null
+  const topUnknownReasonByTokenCount = [...unknownReasonBucketBreakdown].sort((a, b) => b.distinctTokenCount - a.distinctTokenCount)[0] ?? null
+
   // ── Sample grouped txs (from context groups) ──
   const sampleGroupedTxs = Array.from(byTx.entries()).slice(0, 5).map(([txHash, group]) => ({
     txHash: `${txHash.slice(0, 10)}...${txHash.slice(-6)}`,
@@ -3888,6 +3963,8 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
       sampleGroupedTxs,
       unknownRouterEvents, unknownDirectionEvents, unknownCounterpartyEvents,
       unknownPairingEvents, unknownPricingEvents,
+      unknownReasonBucketCounts, unknownReasonBucketBreakdown,
+      topUnknownReasonByCount, topUnknownReasonByTxCount, topUnknownReasonByTokenCount,
       reasons: [],
     },
   }
