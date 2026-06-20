@@ -352,6 +352,17 @@ export type WalletSnapshot = {
     totalProceedsClosedUsd: number | null
     readyForTradeStats: boolean
     missing: string[]
+    // PNL-SAFETY-FIX-1: additive split between FIFO lots that have a recovered real buy/cost
+    // basis vs. lots whose entry was synthetically backfilled (no real buy ever found). Synthetic
+    // lots are still counted in `closedLots` above (raw FIFO mechanics, unchanged) — these fields
+    // let callers separate "FIFO closed a lot" from "we actually know what was paid for it."
+    realClosedLots?: number
+    syntheticClosedLots?: number
+    unknownCostSellLots?: number
+    closedLotsForStats?: number
+    syntheticLotsExcludedFromStats?: number
+    unknownCostSellValueUsd?: number
+    pnlUnavailableReason?: string | null
   }
   walletTradeStatsSummary: {
     status: 'ok' | 'partial' | 'open_check'
@@ -390,7 +401,14 @@ export type WalletSnapshot = {
     meaningfulRealizedPnlUsd: number | null
     dustThresholdUsd: number
     missing: string[]
+    // PNL-SAFETY-FIX-1: additive — when every closed lot behind these stats is synthetic
+    // (no real cost basis recovered), closedLotsForStats is 0 and publicPnlStatus/
+    // pnlUnavailableReason tell the caller realizedPnlUsd above is not a verified real result.
+    closedLotsForStats?: number
+    publicPnlStatus?: 'ok' | 'open_check'
+    pnlUnavailableReason?: string | null
   }
+
   walletTradeStatsSource: 'base_sample' | 'historical_promoted_preview'
   tokenUsage: TokenUsage
   debugAutoDisabled?: true
@@ -10960,6 +10978,60 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         ].sort((a, b) => b.count - a.count)
       : [],
     sampleSyntheticTargetPriorBuys: _syntheticTargetRecovery?.debug.sampleSyntheticTargetPriorBuys ?? [],
+  }
+
+  // PNL-SAFETY-FIX-1: a closed lot is NOT real-backed (i.e. is a synthetic FIFO safety
+  // placeholder, not a real trade) if its entry was never matched to a real buy, or its price
+  // came from the synthetic-FIFO fallback, or it has zero coverage. This does not change FIFO
+  // math or remove synthetic lots — it only classifies which already-computed closed lots are
+  // safe to present as real trade stats vs. which must stay open-check.
+  const _isRealBackedClosedLot = (l: WalletClosedLot): boolean =>
+    l.evidence?.entrySource !== 'synthetic' &&
+    !(l.missingReasons ?? []).includes('fifo_backfilled_buy') &&
+    !(l.missingReasons ?? []).includes('price_synthetic_fifo') &&
+    (l.coveragePercent ?? 100) !== 0
+  const _realBackedClosedLotsFinal = _syntheticLotsAfterSourceLots.filter(_isRealBackedClosedLot)
+  const _syntheticClosedLotsFinal = _syntheticLotsAfterSourceLots.filter(l => !_isRealBackedClosedLot(l))
+  const _closedLotsForStatsFinal = _realBackedClosedLotsFinal.length
+  const _syntheticLotsExcludedFromStatsFinal = _syntheticClosedLotsFinal.length
+  const _unknownCostSellValueUsdFinal = _syntheticClosedLotsFinal.reduce((s, l) => s + (l.proceedsUsd ?? 0), 0)
+  const _pnlUnavailableReasonFinal: string | null =
+    _closedLotsForStatsFinal === 0 && _syntheticLotsExcludedFromStatsFinal > 0 ? 'missing_cost_basis' : null
+
+  promotedLotSummary = {
+    ...promotedLotSummary,
+    realClosedLots: _closedLotsForStatsFinal,
+    syntheticClosedLots: _syntheticLotsExcludedFromStatsFinal,
+    unknownCostSellLots: _syntheticLotsExcludedFromStatsFinal,
+    closedLotsForStats: _closedLotsForStatsFinal,
+    syntheticLotsExcludedFromStats: _syntheticLotsExcludedFromStatsFinal,
+    unknownCostSellValueUsd: _unknownCostSellValueUsdFinal,
+    pnlUnavailableReason: _pnlUnavailableReasonFinal,
+  }
+
+  if (_pnlUnavailableReasonFinal === 'missing_cost_basis') {
+    promotedTradeStatsSummary = {
+      ...promotedTradeStatsSummary,
+      status: 'open_check',
+      closedLotsForStats: 0,
+      winRatePercent: null,
+      scoreUnlocked: false,
+      readyForWalletScore: false,
+      publicPnlStatus: 'open_check',
+      pnlUnavailableReason: 'missing_cost_basis',
+      missing: Array.from(new Set([
+        ...(promotedTradeStatsSummary.missing ?? []),
+        'missing_cost_basis',
+        'synthetic_lots_excluded_from_stats',
+      ])),
+    }
+  } else {
+    promotedTradeStatsSummary = {
+      ...promotedTradeStatsSummary,
+      closedLotsForStats: _closedLotsForStatsFinal,
+      publicPnlStatus: 'ok',
+      pnlUnavailableReason: null,
+    }
   }
 
   // Phase 6F/6G: Build public closed trade samples (max 5) with blockchain verification fields

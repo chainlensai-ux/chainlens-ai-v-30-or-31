@@ -212,6 +212,13 @@ type WalletResult = {
     totalProceedsClosedUsd: number | null
     readyForTradeStats: boolean
     missing: string[]
+    realClosedLots?: number
+    syntheticClosedLots?: number
+    unknownCostSellLots?: number
+    closedLotsForStats?: number
+    syntheticLotsExcludedFromStats?: number
+    unknownCostSellValueUsd?: number
+    pnlUnavailableReason?: string | null
   }
   walletTradeStatsSummary?: {
     status: 'ok' | 'partial' | 'open_check'
@@ -246,6 +253,9 @@ type WalletResult = {
     economicSignificance: 'meaningful' | 'micro_sample' | 'open_check'
     economicSignificanceReason: string
     missing: string[]
+    closedLotsForStats?: number
+    publicPnlStatus?: 'ok' | 'open_check'
+    pnlUnavailableReason?: string | null
   }
   walletTradeStatsSource?: 'base_sample' | 'historical_promoted_preview'
   walletClosedTradeSamples?: Array<{
@@ -708,7 +718,11 @@ function derivePnlOverview(data: WalletResult): WalletIntelligence['pnl'] {
   const pnlEvidenceReady = hasClosedLotEvidence || estimatedUsable
   // No closed lots + null realized PnL → force total/realized/unrealized open check
   const noLotsNullPnl = (ts?.closedLots ?? 0) === 0 && (ls?.realizedPnlUsd ?? null) === null
-  const coreReady = pnlEvidenceReady && !noLotsNullPnl
+  // PNL-SAFETY-FIX-1: every closed lot behind this wallet's stats is a synthetic FIFO safety
+  // placeholder (no real buy/cost basis recovered) — don't present its $0 break-even as a real
+  // verified result. closedLots above stays the raw FIFO count on purpose; this flag is additive.
+  const costBasisMissing = ts?.pnlUnavailableReason === 'missing_cost_basis' || ts?.publicPnlStatus === 'open_check'
+  const coreReady = pnlEvidenceReady && !noLotsNullPnl && !costBasisMissing
   return {
     total:      coreReady ? (safeNum(backend?.total)      ?? (estimatedUsable ? safeNum(estimated?.totalEstimatedPnlUsd) : null)) : null,
     sevenDay:   pnlEvidenceReady ? safeNum(backend?.sevenDay)    : null,
@@ -750,6 +764,13 @@ function buildWalletOpenCheck(data: WalletResult): string[] {
   const closedLots = ts?.closedLots ?? 0
   const openPos = data.walletModuleCoverage?.walletOpenPositionSummary ?? data.walletOpenPositionSummary ?? null
   const hasOpenPosition = openedLots > 0 && closedLots === 0
+  const costBasisMissing = ts?.pnlUnavailableReason === 'missing_cost_basis' || ts?.publicPnlStatus === 'open_check'
+  if (costBasisMissing) {
+    checks.push('PnL open check')
+    checks.push(`${closedLots} sell${closedLots !== 1 ? 's' : ''} found, cost basis missing`)
+    checks.push('Original buys were not recovered, so profit/loss cannot be verified.')
+    return Array.from(new Set([...(data.walletIntelligence?.openChecks ?? []), ...checks])).slice(0, 4)
+  }
   if (!hasEstimatedPnl && (!ts || closedLots === 0) && !hasOpenPosition) {
     checks.push(hasActivityProviderUnavailable(data)
       ? ACTIVITY_UNAVAILABLE_COPY
