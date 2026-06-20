@@ -3164,16 +3164,6 @@ export default function WalletScannerPage() {
                   : !hasEnough && ts && closedLots > 0
                     ? (ts.losingClosedLots === 0 ? 'None found in matched sample' : `${ts.losingClosedLots} matched losing lot${ts.losingClosedLots !== 1 ? 's' : ''}`)
                     : 'Open Check'
-                const avgMatchedWin = deriveAverageMatchedWinUsd(result)
-                const avgMatchedLoss = deriveAverageMatchedLossUsd(result)
-                const avgProfitDisplay = avgMatchedWin !== null
-                  ? fmtSignedUSD(avgMatchedWin)
-                  : hasEnough ? fmtSignedUSD(walletIntel.pnl.avgWin)
-                  : closedLots > 0 && ts.winningClosedLots === 0 ? 'No winning closed lots yet'
-                  : 'Open Check'
-                const avgLossDisplay = ts && closedLots > 0 && ts.losingClosedLots === 0
-                  ? 'No matched losing closed lots found'
-                  : avgMatchedLoss !== null ? fmtSignedUSD(avgMatchedLoss) : 'Open Check'
                 const biggestWinDisplay = hasEnough
                   ? (ts?.largestWinUsd !== null && ts?.largestWinUsd !== undefined ? fmtSignedUSD(ts.largestWinUsd) : fmtSignedUSD(walletIntel.pnl.biggestWin))
                   : ts?.largestWinUsd !== null && ts?.largestWinUsd !== undefined && closedLots > 0
@@ -3197,8 +3187,6 @@ export default function WalletScannerPage() {
                       {[
                         { label: winRateLabel, value: winRateDisplay, early: !hasEnough && closedLots > 0 },
                         { label: lossRateLabel, value: lossRateDisplay, early: !hasEnough && closedLots > 0 },
-                        { label: 'Avg Matched Win', value: avgProfitDisplay },
-                        { label: 'Avg Matched Loss', value: avgLossDisplay, noLoss: avgLossDisplay === 'No matched losing closed lots found' },
                         { label: 'Biggest Matched Win', value: biggestWinDisplay },
                         { label: 'Biggest Matched Loss', value: biggestLossDisplay, noLoss: biggestLossDisplay === 'No matched losing closed lots found' },
                         { label: 'Avg Hold Time', value: avgHoldDisplay },
