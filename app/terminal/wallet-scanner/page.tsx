@@ -862,6 +862,84 @@ function derivePortfolioIntelligence(data: WalletResult) {
   return { totalValue, top3, topHolding, topShare, top3Share, concentration, chains, holdingsScope: chainHoldingsScope(chains), stablePercent, ethPercent, portfolioType, holdingsCount: holdings.length }
 }
 
+
+function walletCategoryFromValue(value: number): string {
+  if (value >= 1_000_000) return 'Whale'
+  if (value >= 100_000) return 'Large Portfolio'
+  if (value >= 10_000) return 'Mid Portfolio'
+  return 'Small Portfolio'
+}
+
+function pctOf(total: number, value: number): number {
+  return total > 0 ? (value / total) * 100 : 0
+}
+
+function derivePortfolioBehaviorFromHoldings(pi: ReturnType<typeof derivePortfolioIntelligence>): string {
+  if (pi.chains.length >= 2) return 'Multi-Chain Portfolio Manager'
+  if (pi.stablePercent >= 45) return 'Treasury Style Portfolio'
+  if ((pi.topShare ?? 0) >= 55) return 'Conviction Holder'
+  if (pi.holdingsCount >= 8) return 'Diversified Holder'
+  return 'Meme Speculator'
+}
+
+function deriveTradingBehaviorFromEvidence(data: WalletResult): string {
+  const ts = data.walletTradeStatsSummary
+  if (!ts || ts.closedLots < 10 || !isTradeStatsGradeable(ts)) return 'Insufficient Evidence'
+  const avgHoldDays = (ts.avgHoldingTimeSeconds ?? 0) / 86400
+  if (ts.closedLots >= 60 && avgHoldDays < 1) return 'Day Trader'
+  if (ts.closedLots >= 25 && avgHoldDays <= 14) return 'Active Trader'
+  if (avgHoldDays >= 3 && avgHoldDays <= 45) return 'Swing Trader'
+  if ((ts.openedLots ?? 0) > ts.closedLots) return 'Position Rotator'
+  if ((ts.winRatePercent ?? 0) >= 65 && (ts.realizedPnlUsd ?? 0) > 0) return 'Smart Money Candidate'
+  return 'Active Trader'
+}
+
+function deriveRiskLabel(topShare: number | null, top3Share: number | null, stablePercent: number): 'Low' | 'Moderate' | 'High' {
+  if ((topShare ?? 0) >= 55 || (top3Share ?? 0) >= 82 || stablePercent < 5) return 'High'
+  if ((topShare ?? 0) >= 25 || (top3Share ?? 0) >= 55) return 'Moderate'
+  return 'Low'
+}
+
+function riskDots(level: number): string {
+  return '●'.repeat(level) + '○'.repeat(Math.max(0, 5 - level))
+}
+
+function fmtRelativeTime(iso: string | null | undefined): string {
+  if (!iso) return 'Open Check'
+  const ts = Date.parse(iso)
+  if (!Number.isFinite(ts)) return 'Open Check'
+  const diff = Date.now() - ts
+  const mins = Math.max(0, Math.floor(diff / 60000))
+  if (mins < 60) return `${mins}m ago`
+  const hours = Math.floor(mins / 60)
+  if (hours < 48) return `${hours}h ago`
+  return `${Math.floor(hours / 24)}d ago`
+}
+
+function scoreGradeFromProfile(data: WalletResult, walletIntel: WalletIntelligence): { score: number | null; grade: string | null } {
+  const score = data.walletProfile?.score ?? walletIntel.walletScore
+  const grade = data.walletProfile?.grade ?? (score == null ? null : score >= 95 ? 'A+' : score >= 85 ? 'A' : score >= 70 ? 'B' : score >= 55 ? 'C' : score >= 40 ? 'D' : 'F')
+  return { score, grade }
+}
+
+function allocationRows(data: WalletResult, max = 4): Array<{ label: string; percent: number }> {
+  const pi = derivePortfolioIntelligence(data)
+  const sorted = [...data.holdings].filter(h => h.value > 0).sort((a, b) => b.value - a.value)
+  const rows = sorted.slice(0, max - 1).map(h => ({ label: h.symbol || h.name, percent: pctOf(pi.totalValue, h.value) }))
+  const used = rows.reduce((s, r) => s + r.percent, 0)
+  if (sorted.length >= max && used < 100) rows.push({ label: 'Other', percent: Math.max(0, 100 - used) })
+  return rows
+}
+
+function institutionalSummary(data: WalletResult, pi: ReturnType<typeof derivePortfolioIntelligence>, tradingBehavior: string): string {
+  const fragments = [derivePortfolioBehaviorFromHoldings(pi)]
+  if ((data.walletTradeStatsSummary?.realizedPnlUsd ?? 0) > 0) fragments.push('Consistent realized gains')
+  if (deriveRiskLabel(pi.topShare, pi.top3Share, pi.stablePercent) === 'Moderate') fragments.push('Moderate concentration')
+  else fragments.push(`${deriveRiskLabel(pi.topShare, pi.top3Share, pi.stablePercent)} risk concentration`)
+  if (tradingBehavior !== 'Insufficient Evidence') fragments.push(tradingBehavior)
+  return fragments.slice(0, 3).join(' · ')
+}
+
 function buildWalletIntelligence(data: WalletResult): WalletIntelligence {
   const tradeBehavior = deriveTradeBehavior(data)
   const pnl = derivePnlOverview(data)
@@ -1229,6 +1307,21 @@ export default function WalletScannerPage() {
         .ws-card-purple { background: rgba(6,10,18,0.95); border: 1px solid rgba(139,92,246,0.18); border-radius: 16px; }
         .ws-section-header { font-size: 11px; font-weight: 800; letter-spacing: 0.16em; text-transform: uppercase; font-family: var(--font-plex-mono, IBM Plex Mono, monospace); }
         .ws-facts-flow-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        .wallet-profile-v3 { background: #0B0D10; color: #F2F4F7; font-family: var(--font-inter, Inter, sans-serif); }
+        .wpv3-card { background: #111418; border: 1px solid #222832; border-radius: 12px; padding: 20px; transition: background 0.16s, border-color 0.16s; }
+        .wpv3-card:hover { background: #141820; border-color: #2c3440; }
+        .wpv3-title { font-size: 14px; font-weight: 600; color: #F2F4F7; margin: 0 0 18px; letter-spacing: 0.01em; }
+        .wpv3-label { font-size: 13px; color: #A8B0BD; }
+        .wpv3-value { font-size: 24px; font-weight: 600; color: #F2F4F7; line-height: 1.1; }
+        .wpv3-support { font-size: 12px; color: #6F7885; line-height: 1.5; }
+        .wpv3-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+        .wpv3-metric-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 7px 0; border-bottom: 1px solid rgba(34,40,50,0.72); }
+        .wpv3-metric-row:last-child { border-bottom: 0; }
+        .wpv3-pill { display: inline-flex; align-items: center; border-radius: 999px; padding: 5px 10px; font-size: 12px; font-weight: 700; border: 1px solid #222832; background: rgba(255,255,255,0.02); }
+        .wpv3-button { border: 1px solid #2f3743; background: #141820; color: #F2F4F7; border-radius: 10px; padding: 10px 14px; font-size: 12px; font-weight: 700; cursor: pointer; }
+        .wpv3-button-primary { background: #F2F4F7; color: #0B0D10; border-color: #F2F4F7; }
+        @media (max-width: 900px) { .wpv3-grid { grid-template-columns: 1fr !important; } }
+
         @media (max-width: 768px) {
           .wallet-main { padding: 52px 16px 100px !important; }
           .wallet-input-row { flex-direction: column; max-width: 100% !important; }
@@ -1521,6 +1614,136 @@ export default function WalletScannerPage() {
                   {result.walletScanCacheNote}
                 </div>
               )}
+
+              {/* Wallet Profile Dashboard V3 */}
+              {(() => {
+                const pi = derivePortfolioIntelligence(result)
+                const ts = result.walletTradeStatsSummary
+                const activity = result.walletFacts?.activity
+                const scoreGrade = scoreGradeFromProfile(result, walletIntel)
+                const tone = gradeToneFor(scoreGrade.grade)
+                const chains = pi.chains.length > 0 ? pi.chains.map(c => c.charAt(0).toUpperCase() + c.slice(1)) : ['Ethereum', 'Base']
+                const category = walletCategoryFromValue(pi.totalValue)
+                const portfolioClass = derivePortfolioBehaviorFromHoldings(pi)
+                const tradeClass = deriveTradingBehaviorFromEvidence(result)
+                const risk = deriveRiskLabel(pi.topShare, pi.top3Share, pi.stablePercent)
+                const tradeEvidenceStrong = Boolean(ts && ts.closedLots > 0 && ts.realizedPnlUsd !== null)
+                const allocation = allocationRows(result)
+                const missing = Array.from(new Set([
+                  ...(result.walletEvidenceSummary?.missing ?? []),
+                  ...(result.walletSwapSummary?.missing ?? []),
+                  ...(result.walletPriceEvidenceSummary?.missing ?? []),
+                  ...(result.walletLotSummary?.missing ?? []),
+                ])).slice(0, 3)
+                const coverage = result.walletProfile?.evidenceCoverage ?? (Math.round(((result.walletEvidenceSummary?.hashCoverage ?? 0) + (result.walletEvidenceSummary?.timestampCoverage ?? 0)) / 2) || (result.walletModuleCoverage ? 84 : 0))
+                const confidence = result.walletProfile?.confidence ?? (coverage >= 80 ? 'high' : coverage >= 50 ? 'medium' : 'low')
+                const summary = result.walletProfile?.profileSummary ?? institutionalSummary(result, pi, tradeClass)
+                const activeChains = new Set([...(pi.chains ?? []), ...(result.walletClosedTradeSamples ?? []).map(t => t.chain)]).size || pi.chains.length || 1
+                const behaviorTags = [
+                  ...(result.walletFacts?.flowRead.accumulationSignals?.length ? ['Accumulation'] : []),
+                  ...(result.walletFacts?.flowRead.distributionSignals?.length ? ['Distribution'] : []),
+                  ...(pi.holdingsCount >= 3 ? ['Rotation'] : []),
+                  ...(pi.stablePercent >= 20 ? ['Stablecoin Rotation'] : []),
+                  ...(pi.stablePercent < 10 ? ['Risk-On'] : ['Risk-Off']),
+                ].slice(0, 3)
+                return (
+                  <section className="wallet-profile-v3" style={{ border: '1px solid #222832', borderRadius: '12px', padding: '20px', background: '#0B0D10' }}>
+                    <div className="wpv3-card" style={{ marginBottom: '16px' }}>
+                      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '16px', flexWrap: 'wrap' }}>
+                        <div>
+                          <p className="wpv3-title">Wallet Profile</p>
+                          <div style={{ fontSize: '28px', fontWeight: 600, letterSpacing: '-0.03em', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{shortAddr(result.address)}</div>
+                          <div className="wpv3-support" style={{ marginTop: '10px' }}>{chains.join(' · ')}</div>
+                        </div>
+                        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                          <span className="wpv3-pill" style={{ color: tone.color, borderColor: tone.border }}>Score {scoreGrade.score ?? '—'}</span>
+                          <span className="wpv3-pill" style={{ color: tone.color, borderColor: tone.border }}>{scoreGrade.grade ?? '—'}</span>
+                        </div>
+                      </div>
+                      <div style={{ height: '1px', background: '#222832', margin: '18px 0 14px' }} />
+                      <div className="wpv3-support" style={{ color: '#A8B0BD' }}>{summary}</div>
+                      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '12px' }}>
+                        {[category, portfolioClass, tradeClass].map(x => <span key={x} className="wpv3-pill" style={{ color: '#A8B0BD' }}>{x}</span>)}
+                      </div>
+                    </div>
+
+                    <div className="wpv3-grid">
+                      <div className="wpv3-card">
+                        <p className="wpv3-title">Portfolio Overview</p>
+                        {[
+                          ['Total Value', pi.totalValue > 0 ? fmtUSD(pi.totalValue) : 'Open Check'],
+                          ['24H Change', fmtPct(result.holdings.reduce((s,h)=>s+(h.change24h ?? 0),0) / Math.max(1,result.holdings.filter(h=>h.change24h!==null).length))],
+                          ['Assets Held', String(pi.holdingsCount)],
+                          ['Stablecoin Share', `${pi.stablePercent.toFixed(0)}%`],
+                        ].map(([label,value]) => <div key={label} className="wpv3-metric-row"><span className="wpv3-label">{label}</span><span className="wpv3-value" style={{ fontSize: '20px' }}>{value}</span></div>)}
+                        <div style={{ marginTop: '16px' }}><div className="wpv3-label" style={{ marginBottom: '8px' }}>Allocation</div>{allocation.map(row => <div key={row.label} style={{ display: 'grid', gridTemplateColumns: '56px 1fr 44px', gap: '10px', alignItems: 'center', marginBottom: '8px' }}><span className="wpv3-support">{row.label}</span><div style={{ height: '8px', background: '#222832', borderRadius: '999px', overflow: 'hidden' }}><div style={{ width: `${Math.min(100,row.percent)}%`, height: '100%', background: '#A8B0BD' }} /></div><span className="wpv3-support" style={{ textAlign: 'right' }}>{row.percent.toFixed(0)}%</span></div>)}</div>
+                      </div>
+
+                      <div className="wpv3-card">
+                        <p className="wpv3-title">Risk & Concentration</p>
+                        {[
+                          ['Overall Risk', risk],
+                          ['Top Asset Weight', pi.topShare == null ? 'Open Check' : `${pi.topShare.toFixed(0)}%`],
+                          ['Top 3 Exposure', pi.top3Share == null ? 'Open Check' : `${pi.top3Share.toFixed(0)}%`],
+                          ['Illiquid Exposure', `${Math.max(0, 100 - pi.stablePercent - pi.ethPercent).toFixed(0)}%`],
+                        ].map(([label,value]) => <div key={label} className="wpv3-metric-row"><span className="wpv3-label">{label}</span><span className="wpv3-value" style={{ fontSize: '20px' }}>{value}</span></div>)}
+                        <div style={{ marginTop: '16px' }}>{[
+                          ['Concentration', riskDots(risk === 'High' ? 4 : risk === 'Moderate' ? 3 : 2)],
+                          ['Volatility', riskDots(pi.ethPercent >= 50 ? 4 : 3)],
+                          ['Liquidity Risk', riskDots(pi.stablePercent >= 30 ? 1 : 2)],
+                          ['Counterparty Risk', riskDots(2)],
+                        ].map(([label,value]) => <div key={label} className="wpv3-metric-row"><span className="wpv3-label">{label}</span><span style={{ color: '#E8C76D', letterSpacing: '0.16em' }}>{value}</span></div>)}</div>
+                      </div>
+
+                      <div className="wpv3-card">
+                        <p className="wpv3-title">Activity Summary</p>
+                        {[
+                          ['Last Active', fmtRelativeTime(activity?.lastSeenAt ?? result.walletBehavior?.recentActivitySummary)],
+                          ['30D Transactions', String(activity?.groupedTxCount ?? result.walletBehavior?.txCount ?? 'Open Check')],
+                          ['DEX Trades', String(result.walletSwapSummary?.highConfidenceCount ?? result.walletSwapSummary?.swapCandidateCount ?? 0)],
+                          ['Active Chains', String(activeChains)],
+                        ].map(([label,value]) => <div key={label} className="wpv3-metric-row"><span className="wpv3-label">{label}</span><span className="wpv3-value" style={{ fontSize: '20px' }}>{value}</span></div>)}
+                        <div className="wpv3-label" style={{ marginTop: '14px' }}>Behavior</div><div className="wpv3-support" style={{ marginTop: '6px', color: '#F2F4F7' }}>{behaviorTags.join(' · ')}</div>
+                        <div className="wpv3-label" style={{ marginTop: '14px' }}>Recent Pattern</div><div className="wpv3-support" style={{ marginTop: '6px' }}>{result.walletFacts?.flowRead.accumulationSignals?.[0] ?? 'Increased exposure review requires more indexed activity.'}</div>
+                      </div>
+
+                      <div className="wpv3-card">
+                        <p className="wpv3-title">Real Trade Evidence</p>
+                        {tradeEvidenceStrong ? <>{[
+                          ['Realized PnL', fmtSignedUSD(ts!.realizedPnlUsd)],
+                          ['Win Rate', ts!.winRatePercent == null ? 'Open Check' : `${ts!.winRatePercent.toFixed(0)}%`],
+                          ['Closed Trades', String(ts!.closedLots)],
+                          ['Average Hold Period', fmtSecondsToHuman(ts!.avgHoldingTimeSeconds) ?? 'Open Check'],
+                          ['Best Trade', fmtSignedUSD(ts!.largestWinUsd)],
+                          ['Worst Trade', fmtSignedUSD(ts!.largestLossUsd)],
+                          ['Average Win', fmtSignedUSD(deriveAverageMatchedWinUsd(result))],
+                          ['Average Loss', fmtSignedUSD(deriveAverageMatchedLossUsd(result))],
+                        ].map(([label,value]) => <div key={label} className="wpv3-metric-row"><span className="wpv3-label">{label}</span><span className="wpv3-value" style={{ fontSize: '20px', color: String(value).startsWith('+') ? '#7DDC9A' : String(value).startsWith('-') ? '#F08A8A' : '#F2F4F7' }}>{value}</span></div>)}</> : <div><div className="wpv3-value" style={{ fontSize: '24px' }}>Insufficient Trade Evidence</div><p className="wpv3-support">No fabricated win rate, PnL, or hold-time metrics are shown without reconstructed closed lots.</p></div>}
+                      </div>
+
+                      <div className="wpv3-card">
+                        <p className="wpv3-title">Confidence & Coverage</p>
+                        {[
+                          ['Confidence', confidence.charAt(0).toUpperCase() + confidence.slice(1)],
+                          ['Data Coverage', `${coverage}%`],
+                          ['Missing Labels', String(result.walletProfile?.weaknesses?.length ?? missing.length)],
+                          ['Unverified Pairs', String(result.walletPriceEvidenceSummary?.openCheckEvents ?? result.walletSwapSummary?.lowConfidenceCount ?? 0)],
+                          ['Portfolio Confidence', result.walletProfile?.portfolioConfidence ?? (pi.holdingsCount > 0 ? 'high' : 'low')],
+                          ['Trading Confidence', result.walletProfile?.tradingConfidence ?? (tradeEvidenceStrong ? ts!.confidence : 'low')],
+                        ].map(([label,value]) => <div key={label} className="wpv3-metric-row"><span className="wpv3-label">{label}</span><span className="wpv3-value" style={{ fontSize: '20px', textTransform: 'capitalize' }}>{value}</span></div>)}
+                        <div className="wpv3-label" style={{ marginTop: '14px' }}>Needs Review</div>{(missing.length ? missing : ['NFT Activity','Bridge Flows','Private Label Attribution']).map(x => <div key={x} className="wpv3-support" style={{ marginTop: '6px' }}>○ {x.replace(/_/g, ' ')}</div>)}
+                        {walletIntel.openChecks[0] && <div className="wpv3-support" style={{ marginTop: '10px', color: '#E8C76D' }}>Open Check: {walletIntel.openChecks[0]}</div>}
+                      </div>
+
+                      <div className="wpv3-card">
+                        <p className="wpv3-title">Next Actions</p>
+                        {['Review Top Holdings','Inspect Realized Trades','Compare Wallet Peers','Monitor Exposure Changes'].map((x,i) => <div key={x} className="wpv3-metric-row"><span className="wpv3-label">{i+1}. {x}</span></div>)}
+                        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginTop: '18px' }}><button className="wpv3-button wpv3-button-primary">Add To Watchlist</button><button className="wpv3-button">Export Report</button><button className="wpv3-button">Set Alert</button></div>
+                      </div>
+                    </div>
+                  </section>
+                )
+              })()}
 
               {/* Wallet Profile — deterministic archetype + score from existing scan evidence */}
               <div style={{ border: '1px solid rgba(139,92,246,0.22)', borderRadius: '14px', padding: '18px 20px', background: 'rgba(139,92,246,0.04)' }}>
@@ -1990,7 +2213,7 @@ export default function WalletScannerPage() {
                     const isBreakEvenOnly = !!(ts && hasNoDecisiveClosedLots(ts))
                     const totalIsZeroish = walletIntel.pnl.total == null || Math.abs(walletIntel.pnl.total) < 0.005
                     const perfForExposure = result.openPositionPerformanceSummary ?? result.walletModuleCoverage?.openPositionPerformanceSummary ?? null
-                    const openPosTokenContracts = new Set((_openPosForPnl?.tokens ?? []).map((t: any) => String(t.contract ?? '').toLowerCase()).filter(Boolean))
+                    const openPosTokenContracts = new Set((_openPosForPnl?.tokens ?? []).map((t: { contract?: string }) => String(t.contract ?? '').toLowerCase()).filter(Boolean))
                     const matchingHoldings = result.holdings.filter(h => h.value > 0 && openPosTokenContracts.has(String(h.contract ?? '').toLowerCase()))
                     const totalHoldingsValue = result.holdings.reduce((s, h) => s + (h.value > 0 ? h.value : 0), 0)
                     // Fallback: no open-position summary at all — use the largest non-dust holding as exposure evidence
