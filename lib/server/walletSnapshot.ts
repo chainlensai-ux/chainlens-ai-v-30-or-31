@@ -644,6 +644,7 @@ export type WalletSnapshot = {
     walletTxEvidenceDebug?: {
       sourceProvider: 'goldrush' | 'alchemy' | 'moralis_fallback' | 'none'
       totalRawEvents: number
+      duplicateTransfersRemoved?: number
       eventsWithHash: number
       eventsWithTimestamp: number
       sampleHashes: string[]
@@ -1398,6 +1399,19 @@ const EXTENDED_DEX_ROUTERS = new Set<string>([
   '0xf0d4c12a5768d806021f80a262b4d39d26c58b8d',
   // BaseSwap
   '0x327df1e6de05895d2ab08513aadd9313fe505d86',
+  // Permit2 — canonical singleton deployed at the same address on Ethereum, Base, and most
+  // other EVM chains. Aggregators (1inch, Uniswap Universal Router, Odos, etc.) route the
+  // approval/transfer leg through this contract, so its presence on a tx's `to` is a strong
+  // router signal even though Permit2 itself isn't a DEX.
+  '0x000000000022d473030f116ddee9f6b43ac78ba9',
+  // LI.FI Diamond — canonical cross-chain aggregator proxy, same address on Base as on
+  // Ethereum/most EVM chains.
+  '0x1231deb6f5749ef6ce6943a275a1d3e7486f4eae',
+  // NOTE: Odos, Bebop, and CoW Protocol router/settlement addresses are intentionally
+  // omitted — this file's policy (see docs/audit-router-swap-candidates-0xe896.md) is to
+  // never add a router address without independent on-chain verification. Add them here
+  // once their Base-deployed addresses are confirmed; until then they fall back to the
+  // inbound/outbound heuristics in buildSwapDetection() below.
 ])
 
 const FIFO_QUOTE_ASSETS = new Set<string>([
@@ -1594,7 +1608,12 @@ function computeWalletValueTier(totalValue: number | null | undefined): WalletVa
 }
 
 const TIER_PRICE_BUDGET: Record<WalletValueTier, number> = {
-  micro: 4,
+  // Micro-wallets were capped at 4 attempts, but a single WETH-leg lookup that was already
+  // cached (e.g. shared by a buy+sell pair in the same tx) used to silently burn one of
+  // those 4 slots anyway (see isGoldrushPriceCached fix above). Now that cached lookups are
+  // free, a small bump from 4 to 6 lets a typical micro-wallet price both legs of 2-3 swaps
+  // instead of starving after the first one.
+  micro: 6,
   small: 8,
   standard: 10,
   high_value: 12,
@@ -2169,7 +2188,12 @@ function selectSameTxStableQuoteLeg(txGroup: WalletTxEvidence[], target: WalletT
   const stableLegs = txGroup
     .filter(ev => {
       const c = ev.contract?.toLowerCase() ?? ''
+      // Airdrop/rebate separation: a stablecoin transfer that's its own airdrop_candidate
+      // (inbound-only, no matching wallet-side outbound) isn't a swap quote leg — merging
+      // it in here would let an unrelated rebate/airdrop set the derived price of a
+      // same-tx swap. Only legs not already classified as their own airdrop count.
       return Boolean(STABLE_USD_CONTRACTS[c]) && ev.direction !== 'unknown' && ev.direction !== target.direction
+        && ev.swapDetection?.eventKind !== 'airdrop_candidate'
     })
     .map(ev => ({
       ev,
@@ -3523,11 +3547,25 @@ function buildTxEvidenceFromEvents(events: PnlEvent[], requested: boolean, provi
       debug: { sourceProvider: 'none', totalRawEvents: 0, eventsWithHash: 0, eventsWithTimestamp: 0, sampleHashes: [], sampleTimestamps: [] },
     }
   }
-  const evidenceList: WalletTxEvidence[] = events
+  // Dedupe: providers occasionally re-emit the same on-chain transfer (log re-delivery,
+  // pagination overlap, multi-provider merge). Without this, the same leg is counted twice,
+  // inflating both swapCandidateEvents and downstream FIFO volumes. Key on the fields that
+  // uniquely identify a single transfer leg; first occurrence wins.
+  const _seenTransferKeys = new Set<string>()
+  const _dedupedEvents = events.filter(e => {
+    if (!e.txHash) return true
+    const _key = `${e.txHash}:${(e.contract ?? '').toLowerCase()}:${(e.fromAddress ?? '').toLowerCase()}:${(e.toAddress ?? '').toLowerCase()}:${e.amountRaw ?? e.amount ?? ''}`
+    if (_seenTransferKeys.has(_key)) return false
+    _seenTransferKeys.add(_key)
+    return true
+  })
+  const _duplicateTransfersRemoved = events.length - _dedupedEvents.length
+
+  const evidenceList: WalletTxEvidence[] = _dedupedEvents
     .filter(e => Boolean(e.txHash))
     .map(e => {
       const txToLower = (e.txToAddress ?? '').toLowerCase()
-      const routerMatch = KNOWN_DEX_ROUTERS[txToLower] ?? null
+      const routerMatch = KNOWN_DEX_ROUTERS[txToLower] ?? (EXTENDED_DEX_ROUTERS.has(txToLower) ? 'KnownDexRouter' : null)
       return {
         txHash: e.txHash!,
         timestamp: e.timestamp,
@@ -3549,9 +3587,9 @@ function buildTxEvidenceFromEvents(events: PnlEvent[], requested: boolean, provi
       }
     })
 
-  const totalEvents = events.length
-  const eventsWithHash = events.filter(e => Boolean(e.txHash)).length
-  const eventsWithTimestamp = events.filter(e => Boolean(e.timestamp)).length
+  const totalEvents = _dedupedEvents.length
+  const eventsWithHash = _dedupedEvents.filter(e => Boolean(e.txHash)).length
+  const eventsWithTimestamp = _dedupedEvents.filter(e => Boolean(e.timestamp)).length
   const hashCoverage = totalEvents > 0 ? Math.round((eventsWithHash / totalEvents) * 100) : 0
   const timestampCoverage = totalEvents > 0 ? Math.round((eventsWithTimestamp / totalEvents) * 100) : 0
   const readyForSwapDetection = eventsWithHash > 0 && eventsWithTimestamp > 0
@@ -3573,8 +3611,8 @@ function buildTxEvidenceFromEvents(events: PnlEvent[], requested: boolean, provi
     : eventsWithHash > 0 ? 'partial'
     : 'missing_hashes'
 
-  const sourceProvider = events.length > 0
-    ? (events[0].chain === 'base' && events.some(e => Boolean(e.usdValue)) ? 'goldrush' : 'alchemy')
+  const sourceProvider = _dedupedEvents.length > 0
+    ? (_dedupedEvents[0].chain === 'base' && _dedupedEvents.some(e => Boolean(e.usdValue)) ? 'goldrush' : 'alchemy')
     : 'none'
 
   return {
@@ -3582,7 +3620,8 @@ function buildTxEvidenceFromEvents(events: PnlEvent[], requested: boolean, provi
     summary: { status, totalEvents, eventsWithHash, eventsWithTimestamp, hashCoverage, timestampCoverage, readyForSwapDetection, missing },
     debug: {
       sourceProvider: sourceProvider as 'goldrush' | 'alchemy' | 'none',
-      totalRawEvents: totalEvents,
+      totalRawEvents: events.length,
+      duplicateTransfersRemoved: _duplicateTransfersRemoved,
       eventsWithHash,
       eventsWithTimestamp,
       sampleHashes: evidenceList.slice(0, 3).map(e => e.txHash),
@@ -3710,11 +3749,24 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
     hasMultipleDistinctTokens: boolean
     group: WalletTxEvidence[]
   }
+  // Grouping-race fix: txTo/txFrom are tx-level metadata that should be identical for every
+  // leg of the same txHash, but multi-page/multi-provider merges can attach a stale or
+  // mismatched value to one leg depending on arrival order. Picking group[0] made router
+  // validation depend on which leg happened to land first. Instead take the majority
+  // (mode) value across the whole group, so a single outlier leg can't flip which router
+  // (or no router) gets credited for the transaction.
+  const _modeOf = (vals: Array<string | null>): string | null => {
+    const counts = new Map<string, number>()
+    for (const v of vals) { if (v) counts.set(v, (counts.get(v) ?? 0) + 1) }
+    let best: string | null = null
+    let bestCount = 0
+    for (const [v, c] of counts.entries()) { if (c > bestCount) { best = v; bestCount = c } }
+    return best
+  }
   const txCtxMap = new Map<string, TxCtx>()
   for (const [txHash, group] of byTx.entries()) {
-    const first = group[0]
-    const txToAddr = first.txToAddress?.toLowerCase() ?? null
-    const txFromAddr = first.txFromAddress?.toLowerCase() ?? null
+    const txToAddr = _modeOf(group.map(g => g.txToAddress?.toLowerCase() ?? null))
+    const txFromAddr = _modeOf(group.map(g => g.txFromAddress?.toLowerCase() ?? null))
     // Router-coverage fix: fall back to EXTENDED_DEX_ROUTERS (Balancer, Curve, SushiSwap,
     // Paraswap, additional Uniswap/1inch/0x addresses) for any address known elsewhere in
     // this file but not yet given a friendly name in KNOWN_DEX_ROUTERS, so Base wallet-side
@@ -5205,6 +5257,24 @@ function buildPerSwapTradeStats(
   }
 }
 
+// Budget-accounting fix: peek whether a (chain, contract, date) lookup is already cached
+// (request-local or process-level) before charging it against the price-attempt budget.
+// Previously every WETH-leg lookup incremented priceAttempts even when it was the same
+// leg already resolved earlier in the same request (e.g. a buy+sell pair sharing one WETH
+// quote leg), silently starving the remaining swap candidates — most visible on
+// micro-wallets where the budget is only a handful of attempts.
+function isGoldrushPriceCached(chain: string, contractAddress: string, timestamp: string, reqCache?: Map<string, number | null>): boolean {
+  if (!contractAddress.startsWith('0x')) return false
+  const dateStr = timestamp.slice(0, 10)
+  if (!dateStr || dateStr.length !== 10) return false
+  const grChain = normalizeChainForGoldrush(chain)
+  const reqKey = `${grChain}:${contractAddress.toLowerCase()}:${dateStr}`
+  if (reqCache?.has(reqKey)) return true
+  const cacheKey = `pat:${grChain}:${contractAddress.toLowerCase()}:${dateStr}`
+  const cached = priceAtTimeMemCache.get(cacheKey)
+  return Boolean(cached && cached.exp > Date.now())
+}
+
 async function fetchGoldrushHistoricalPrice(chain: string, contractAddress: string, timestamp: string, reqCache?: Map<string, number | null>): Promise<{ priceUsd: number | null; cacheHit: boolean; providerAttempted: boolean; error: boolean }> {
   if (!GOLDRUSH_KEY || !contractAddress.startsWith('0x')) return { priceUsd: null, cacheHit: false, providerAttempted: false, error: false }
   const dateStr = timestamp.slice(0, 10)
@@ -5233,8 +5303,26 @@ async function fetchGoldrushHistoricalPrice(chain: string, contractAddress: stri
     const data = Array.isArray(json.data) ? json.data : []
     const tokenData = (data[0] ?? {}) as Record<string, unknown>
     const prices = Array.isArray(tokenData.prices) ? tokenData.prices : []
-    const priceEntry = prices.find((p: unknown) => typeof (p as Record<string, unknown>).date === 'string' && ((p as Record<string, unknown>).date as string).slice(0, 10) === dateStr) ?? prices[0]
-    const priceUsd = typeof (priceEntry as Record<string, unknown>)?.price === 'number' ? (priceEntry as Record<string, unknown>).price as number : null
+    // Fallback fix: prices[0] is whatever the provider happens to return first — not
+    // necessarily the requested date, and on a short window it can be today's price. When
+    // there's no exact date match, fall back to the entry with the smallest date distance
+    // to the requested day instead of blindly taking index 0, so a missing bucket doesn't
+    // silently substitute "current price" for a historical lookup.
+    const targetMs = new Date(dateStr).getTime()
+    let priceEntry: Record<string, unknown> | null = null
+    let bestDeltaMs = Infinity
+    for (const p of prices) {
+      const rec = p as Record<string, unknown>
+      const pDate = typeof rec.date === 'string' ? rec.date.slice(0, 10) : null
+      if (!pDate) continue
+      if (pDate === dateStr) { priceEntry = rec; break }
+      const delta = Math.abs(new Date(pDate).getTime() - targetMs)
+      if (delta < bestDeltaMs) { bestDeltaMs = delta; priceEntry = rec }
+    }
+    const rawPriceUsd = typeof priceEntry?.price === 'number' ? priceEntry.price as number : null
+    // Sanity check: reject non-finite, zero, negative, or implausibly tiny values (a common
+    // symptom of a decimals mismatch upstream) rather than letting them corrupt cost basis.
+    const priceUsd = (rawPriceUsd != null && Number.isFinite(rawPriceUsd) && rawPriceUsd > 1e-12) ? rawPriceUsd : null
     priceAtTimeMemCache.set(cacheKey, { exp: Date.now() + PRICE_AT_TIME_TTL_MS, priceUsd })
     reqCache?.set(reqKey, priceUsd)
     return { priceUsd, cacheHit: false, providerAttempted: true, error: false }
@@ -5331,11 +5419,13 @@ async function buildPriceAtTimeEvidence(
     const hasStableLeg = txGroup.some(ev => {
       const c = (ev.contract ?? '').toLowerCase()
       return Boolean(STABLE_USD_CONTRACTS[c]) && ev.direction !== 'unknown' && ev.direction !== e.direction
+        && ev.swapDetection?.eventKind !== 'airdrop_candidate'
     })
     if (hasStableLeg) return [1, -(e.usdValue ?? 0)]
     const hasWethLeg = txGroup.some(ev => {
       const c = (ev.contract ?? '').toLowerCase()
       return Boolean(WETH_CONTRACTS_PRICE[c]) && ev.direction !== 'unknown' && ev.direction !== e.direction
+        && ev.swapDetection?.eventKind !== 'airdrop_candidate'
     })
     if (hasWethLeg) return [2, -(e.usdValue ?? 0)]
     if ((e.usdValue ?? 0) > 0) return [3, -(e.usdValue ?? 0)]
@@ -5438,17 +5528,20 @@ async function buildPriceAtTimeEvidence(
     if (!isWeth) {
       const wethLegs = txGroup.filter(ev => {
         const c = ev.contract?.toLowerCase() ?? ''
+        // Same airdrop/rebate separation as selectSameTxStableQuoteLeg above.
         return Boolean(WETH_CONTRACTS_PRICE[c]) && ev.direction !== 'unknown' && ev.direction !== e.direction
+          && ev.swapDetection?.eventKind !== 'airdrop_candidate'
       })
       if (wethLegs.length > 0) {
         _resolvedFromWethOrStable = true
         _hadWethLeg = true
         const wl = wethLegs[0]
-        if (priceAttempts >= activeBudget) {
+        const _wethAlreadyCached = isGoldrushPriceCached(wl.chain, wl.contract, e.timestamp, reqCache)
+        if (!_wethAlreadyCached && priceAttempts >= activeBudget) {
           priceAttemptLimitReached = true
           return openCheck(e, 'price_attempt_limit_reached')
         }
-        priceAttempts++
+        if (!_wethAlreadyCached) priceAttempts++
         const result = await fetchGoldrushHistoricalPrice(wl.chain, wl.contract, e.timestamp, reqCache)
         if (result.cacheHit) cacheHits++; else cacheMisses++
         if (result.providerAttempted) providerAttempts++
@@ -5480,11 +5573,12 @@ async function buildPriceAtTimeEvidence(
       skippedProviderUsdMissing++
     }
 
-    if (priceAttempts >= activeBudget) {
+    const _histAlreadyCached = isGoldrushPriceCached(e.chain, e.contract, e.timestamp, reqCache)
+    if (!_histAlreadyCached && priceAttempts >= activeBudget) {
       priceAttemptLimitReached = true
       return openCheck(e, 'price_attempt_limit_reached')
     }
-    priceAttempts++
+    if (!_histAlreadyCached) priceAttempts++
     historicalPriceAttempts++
     const histResult = await fetchGoldrushHistoricalPrice(e.chain, e.contract, e.timestamp, reqCache)
     if (histResult.cacheHit) cacheHits++; else cacheMisses++
