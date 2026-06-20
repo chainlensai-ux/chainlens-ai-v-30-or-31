@@ -37,6 +37,9 @@ export interface LpControllerIntelInput {
     poolId?: string | null
     poolIdentity?: string | null
     poolIdentityType?: 'contract' | 'pool_id' | 'unknown' | null
+    /** Deterministic public ownership-proof state — see ConcentratedOwnershipStatus in lpProof.ts. */
+    ownershipStatus?: string | null
+    ownershipDebug?: { source?: string | null; type?: string | null; confidence?: string | null; proofPath?: string | null } | null
   } | null
 }
 
@@ -76,6 +79,11 @@ export interface LpControllerIntel {
   topPositionOwner: string | null
   topPositionSharePercent: number | null
   controllerRisk: string | null
+  /** Deterministic ownership-proof state (e.g. "ownership_verified_burned") and its human label
+   * (e.g. "Burned"). Null when no concentrated-position proof was attempted. */
+  positionOwnershipStatus: string | null
+  positionOwnershipLabel: string | null
+  ownershipDebug: { source: string | null; type: string | null; confidence: string | null; proofPath: string | null } | null
 }
 
 function asString(value: unknown): string | null {
@@ -165,6 +173,23 @@ function concentratedControllerLabel(proof: LpControllerIntelInput['concentrated
     case 'not_found': return 'Position proof attempted — no active position found'
     case 'open_check':
     default: return 'Position proof attempted — open check'
+  }
+}
+
+// Renders "Position Ownership" UI text from the deterministic ownershipStatus taxonomy
+// (lpProof.ts `ConcentratedOwnershipStatus`) — never set independently of that status.
+function positionOwnershipLabel(ownershipStatus: string | null | undefined): string | null {
+  switch (ownershipStatus) {
+    case 'ownership_verified_team': return 'Team Controlled'
+    case 'ownership_verified_protocol': return 'Protocol Controlled'
+    case 'ownership_verified_multisig': return 'Multisig Controlled'
+    case 'ownership_verified_locked': return 'Locked'
+    case 'ownership_verified_burned': return 'Burned'
+    case 'ownership_verified_contract': return 'Contract Controlled'
+    case 'ownership_verified': return 'Ownership Verified'
+    case 'ownership_open_check': return 'Open Check'
+    case 'ownership_unavailable_with_reason': return 'Open Check'
+    default: return null
   }
 }
 
@@ -367,6 +392,14 @@ export function buildLpControllerIntel(input: LpControllerIntelInput): LpControl
     topPositionOwner: asString(input.concentratedPositionProof?.topPositionOwner) ?? null,
     topPositionSharePercent: asNumber(input.concentratedPositionProof?.topPositionSharePercent ?? null),
     controllerRisk: asString(input.concentratedPositionProof?.controllerRisk) ?? null,
+    positionOwnershipStatus: asString(input.concentratedPositionProof?.ownershipStatus) ?? null,
+    positionOwnershipLabel: positionOwnershipLabel(input.concentratedPositionProof?.ownershipStatus),
+    ownershipDebug: input.concentratedPositionProof?.ownershipDebug ? {
+      source: asString(input.concentratedPositionProof.ownershipDebug.source),
+      type: asString(input.concentratedPositionProof.ownershipDebug.type),
+      confidence: asString(input.concentratedPositionProof.ownershipDebug.confidence),
+      proofPath: asString(input.concentratedPositionProof.ownershipDebug.proofPath),
+    } : null,
   }
 }
 
