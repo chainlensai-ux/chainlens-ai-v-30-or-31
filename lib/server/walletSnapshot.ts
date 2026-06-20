@@ -1562,7 +1562,7 @@ export type WalletSnapshotOptions = {
 
 const SNAPSHOT_TTL_MS         = 5  * 60 * 1000
 const SNAPSHOT_HISTORY_TTL_MS = 15 * 60 * 1000
-const SNAPSHOT_SCHEMA_VERSION = 'v42'
+const SNAPSHOT_SCHEMA_VERSION = 'v43'
 type SnapshotCacheEntry = { snapshot: WalletSnapshot; cachedAt: number; ttlMs: number }
 const snapshotMemCache = new Map<string, SnapshotCacheEntry>()
 
@@ -2927,6 +2927,7 @@ async function buildWalletHistoricalCoverage(
   maxPages: number,
   matchedClosedLotsBefore: number,
   targetContracts?: Set<string>,
+  startPage = 0,
 ): Promise<WalletHistoricalCoverageOutput> {
   const emptyDebug = (reason: string): WalletHistoricalCoverageOutput => ({
     summary: { status: 'open_check', requested: true, pagesAttempted: 0, maxPages, rawTransactions: 0, rawLogEvents: 0, normalizedEvents: 0, walletSideEvents: 0, swapLikeTransactions: 0, pricedSwapCandidates: null, matchedClosedLotsBefore, matchedClosedLotsAfter: null, addedClosedLots: null, coverageLevel: 'none', missing: ['provider_not_configured'], reason },
@@ -2963,12 +2964,12 @@ async function buildWalletHistoricalCoverage(
     // returns fewer than pageSize items (or errors) sets cursor=null and stops the loop, same
     // as a real nextCursor=null would. `_iterGuard` is an explicit infinite-loop guard,
     // independent of `maxPages`, in case maxPages is ever misconfigured to be unbounded.
-    let cursor: number | null = 0
+    let cursor: number | null = startPage
     let _iterGuard = 0
     const _maxIterGuard = Math.max(maxPages, 1) * 2
     while (cursor !== null && _iterGuard < _maxIterGuard) {
       _iterGuard++
-      if (cursor >= maxPages) break
+      if (cursor >= startPage + maxPages) break
       pagesAttempted++
       const r = await fetchGoldrushHistoricalPage(address, chain, apiKey, cursor)
       if (r.error) {
@@ -10577,14 +10578,106 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     ? [..._hcAllHistoricalEvidence, ..._syntheticTargetRecovery.newCandidateEvidence]
     : _hcAllHistoricalEvidence
 
+  // SYNTH-RECOVERY-FIX-12: if synthetic lots still have zero real prior buys after the normal
+  // historical pass, run a small targeted extra-page lookup for ONLY the synthetic lots' own
+  // target tokens (max 2 tokens, max 2 extra pages, stopping the moment a real prior buy is
+  // found). This does not broaden provider calls to other holdings and does not touch FIFO math —
+  // it only feeds additional candidate evidence into the existing pricing/FIFO preview pipeline below.
+  const _syntheticTargetExtraMaxTokens = 2
+  const _syntheticTargetExtraMaxPages = 2
+  const _syntheticHasRealBackedLotForTarget = (contract: string) =>
+    _closedLots.some(
+      l => l.tokenAddress.toLowerCase() === contract &&
+        l.evidence?.entrySource !== 'synthetic' &&
+        !(l.missingReasons ?? []).includes('fifo_backfilled_buy')
+    )
+  const _syntheticTargetExtraEligibleTokens = _syntheticLotTokenTargets
+    .filter(c => !_syntheticHasRealBackedLotForTarget(c))
+    .slice(0, _syntheticTargetExtraMaxTokens)
+  const _syntheticTargetExtraPriorBuysFoundSoFar = _syntheticTargetRecovery?.debug.syntheticTargetPriorBuysFound ?? 0
+  const _syntheticTargetExtraCreditsUsedSoFar = _historicalCoverageDebug?.pagesAttempted ?? 0
+  const _syntheticTargetExtraBudgetRemaining = Math.max(0, _totalCreditHardCap - _creditsBeforeHistorical - _syntheticTargetExtraCreditsUsedSoFar)
+  const _syntheticTargetExtraPagesAllowed = Math.max(0, Math.min(_syntheticTargetExtraMaxPages, _syntheticTargetExtraBudgetRemaining))
+
+  let _syntheticTargetExtraSkippedReason: string | null = null
+  if (!_syntheticLotsDetected) _syntheticTargetExtraSkippedReason = 'no_synthetic_lots'
+  else if (!_syntheticRecoveryTierEligible) _syntheticTargetExtraSkippedReason = 'wallet_value_tier_not_eligible'
+  else if (!_runHistoricalCoverage) _syntheticTargetExtraSkippedReason = 'historical_recovery_not_run'
+  else if (!GOLDRUSH_KEY) _syntheticTargetExtraSkippedReason = 'provider_not_configured'
+  else if (_syntheticLotTokenTargets.length === 0) _syntheticTargetExtraSkippedReason = 'no_synthetic_targets'
+  else if (_syntheticTargetExtraEligibleTokens.length === 0) _syntheticTargetExtraSkippedReason = 'already_real_backed_lot_for_target'
+  else if (_syntheticTargetExtraPriorBuysFoundSoFar > 0) _syntheticTargetExtraSkippedReason = 'prior_buy_already_found'
+  else if (_syntheticTargetExtraPagesAllowed <= 0) _syntheticTargetExtraSkippedReason = 'budget_exhausted'
+
+  const _syntheticTargetExtraRecoveryAttempted = _syntheticTargetExtraSkippedReason === null
+  let _syntheticTargetExtraPagesAttempted = 0
+  let _syntheticTargetExtraRawLogs = 0
+  let _syntheticTargetExtraNormalizedEvents = 0
+  let _syntheticTargetExtraInboundEvents = 0
+  let _syntheticTargetExtraPriorBuysFound = 0
+  let _syntheticTargetExtraCreditUsed = 0
+  let _syntheticTargetExtraStopReason: string | null = null
+  let _syntheticTargetExtraNewEvidence: WalletTxEvidence[] = []
+
+  if (_syntheticTargetExtraRecoveryAttempted) {
+    const _extraTargetContracts = new Set(_syntheticTargetExtraEligibleTokens)
+    const _extraTargetSyntheticLots = _syntheticClosedLots.filter(l => _extraTargetContracts.has(l.tokenAddress.toLowerCase()))
+    let _extraEventsSoFar: PnlEvent[] = []
+    for (let _extraPage = 0; _extraPage < _syntheticTargetExtraPagesAllowed; _extraPage++) {
+      const _startPage = _pagesAllowed + _extraPage
+      const _extraResult = await buildWalletHistoricalCoverage(addrNorm, GOLDRUSH_KEY, 1, walletTradeStatsSummary.closedLots, _extraTargetContracts, _startPage)
+      _trackCall('goldrush', 'log_events_by_address', false, `gr:hc:synthExtra:p${_startPage}:${addrNorm}`)
+      const _extraPagesThisCall = _extraResult.debug?.pagesAttempted ?? 0
+      _syntheticTargetExtraPagesAttempted += _extraPagesThisCall
+      _syntheticTargetExtraCreditUsed += _extraPagesThisCall
+      _syntheticTargetExtraRawLogs += _extraResult.debug?.rawLogEvents ?? 0
+      _extraEventsSoFar = [..._extraEventsSoFar, ..._extraResult.events]
+
+      const _extraRecovery = _extraEventsSoFar.length > 0
+        ? buildSyntheticTargetPriorBuyRecovery(_extraEventsSoFar, _extraTargetSyntheticLots)
+        : null
+      _syntheticTargetExtraNormalizedEvents = _extraRecovery?.debug.syntheticTargetHistoricalNormalizedEvents ?? 0
+      _syntheticTargetExtraInboundEvents = _extraRecovery?.debug.syntheticTargetHistoricalWalletInboundEvents ?? 0
+      _syntheticTargetExtraPriorBuysFound = _extraRecovery?.debug.syntheticTargetPriorBuysFound ?? 0
+      _syntheticTargetExtraNewEvidence = _extraRecovery?.newCandidateEvidence ?? []
+
+      if (_syntheticTargetExtraPriorBuysFound > 0) {
+        _syntheticTargetExtraStopReason = 'real_prior_buy_found'
+        break
+      }
+      if (_extraPagesThisCall === 0) {
+        _syntheticTargetExtraStopReason = 'no_more_pages_available'
+        break
+      }
+    }
+    if (!_syntheticTargetExtraStopReason) {
+      _syntheticTargetExtraStopReason = 'no_prior_buy_found_after_targeted_pages'
+    }
+  }
+
+  const _finalCandidateEvidence = _syntheticTargetExtraNewEvidence.length > 0
+    ? [
+        ..._hcMergedCandidateEvidence,
+        ..._syntheticTargetExtraNewEvidence.filter(
+          se => !_hcMergedCandidateEvidence.some(e => e.txHash === se.txHash && e.contract === se.contract && e.direction === se.direction)
+        ),
+      ]
+    : _hcMergedCandidateEvidence
+  const _finalAllHistoricalEvidence = _syntheticTargetExtraNewEvidence.length > 0
+    ? [..._hcMergedAllHistoricalEvidence, ..._syntheticTargetExtraNewEvidence]
+    : _hcMergedAllHistoricalEvidence
+
   // Phase 6C: Historical pricing preview — price the Phase 6B new swap candidates plus any
-  // synthetic-target direct-recovered prior buys merged in above.
+  // synthetic-target direct-recovered prior buys merged in above (normal pass + targeted extra pages).
   const { summary: walletHistoricalPricingPreviewSummary, debug: _historicalPricingPreviewDebug, pricedEvidence: _hcNewPricedEvidence } =
-    _runHistoricalCoverage && _hcMergedCandidateEvidence.length > 0
-      ? await buildHistoricalPricingPreview(_hcMergedCandidateEvidence, _hcMergedAllHistoricalEvidence, _reqPriceCache)
+    _runHistoricalCoverage && _finalCandidateEvidence.length > 0
+      ? await buildHistoricalPricingPreview(_finalCandidateEvidence, _finalAllHistoricalEvidence, _reqPriceCache)
       : { summary: { status: 'not_requested' as const, requested: false, newSwapCandidateEvents: 0, pricedHistoricalCandidates: 0, unpricedHistoricalCandidates: 0, stableLegPricedEvents: 0, wethLegPricedEvents: 0, historicalPricedEvents: 0, priceAttemptLimitReached: false, readyForHistoricalFifoPreview: false, missing: ['historical_coverage_not_requested'], reason: null }, debug: undefined, pricedEvidence: [] as WalletTxEvidence[] }
   const _syntheticTargetPriorBuysPriced = _syntheticTargetRecovery
     ? _hcNewPricedEvidence.filter(e => _syntheticTargetRecovery!.newCandidateEvidence.some(se => se.txHash === e.txHash && se.contract === e.contract)).length
+    : 0
+  const _syntheticTargetExtraPriorBuysPriced = _syntheticTargetExtraNewEvidence.length > 0
+    ? _hcNewPricedEvidence.filter(e => _syntheticTargetExtraNewEvidence.some(se => se.txHash === e.txHash && se.contract === e.contract)).length
     : 0
   tokenMeter.measure('priceInference', walletHistoricalPricingPreviewSummary, _historicalPricingPreviewDebug, _hcNewPricedEvidence)
   // Track historical pricing preview price calls
@@ -10792,7 +10885,9 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       ? (_skipReasons[0] ?? (!_syntheticRecoveryTierEligible ? 'wallet_value_tier_not_eligible' : 'synthetic_recovery_not_triggered'))
       : _realPriorBuysRecoveredForSyntheticLots > 0
         ? null
-        : (Object.entries(_syntheticTargetRecovery?.debug.syntheticTargetDropBreakdown ?? {}).sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'no_prior_buy_found_in_window')
+        : _syntheticTargetExtraRecoveryAttempted
+          ? _syntheticTargetExtraStopReason
+          : (Object.entries(_syntheticTargetRecovery?.debug.syntheticTargetDropBreakdown ?? {}).sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'no_prior_buy_found_in_window')
   const _syntheticLotRecoveryDebug = {
     syntheticLotsDetected: _syntheticLotsDetected,
     syntheticLotTokenTargets: _syntheticLotTokenTargets,
@@ -10808,6 +10903,19 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     syntheticTargetPriorBuysFound: _syntheticTargetRecovery?.debug.syntheticTargetPriorBuysFound ?? 0,
     syntheticTargetPriorBuysPriced: _syntheticTargetPriorBuysPriced,
     syntheticTargetDropBreakdown: _syntheticTargetRecovery?.debug.syntheticTargetDropBreakdown ?? {},
+    // SYNTH-RECOVERY-FIX-12: targeted extra-page recovery debug (synthetic lots' own target
+    // tokens only, max 2 extra pages) — see block above where _syntheticTargetExtra* is computed.
+    syntheticTargetExtraRecoveryAttempted: _syntheticTargetExtraRecoveryAttempted,
+    syntheticTargetExtraPagesAllowed: _syntheticTargetExtraPagesAllowed,
+    syntheticTargetExtraPagesAttempted: _syntheticTargetExtraPagesAttempted,
+    syntheticTargetExtraRawLogs: _syntheticTargetExtraRawLogs,
+    syntheticTargetExtraNormalizedEvents: _syntheticTargetExtraNormalizedEvents,
+    syntheticTargetExtraInboundEvents: _syntheticTargetExtraInboundEvents,
+    syntheticTargetExtraPriorBuysFound: _syntheticTargetExtraPriorBuysFound,
+    syntheticTargetExtraPriorBuysPriced: _syntheticTargetExtraPriorBuysPriced,
+    syntheticTargetExtraStopReason: _syntheticTargetExtraStopReason,
+    syntheticTargetExtraCreditUsed: _syntheticTargetExtraCreditUsed,
+    syntheticTargetExtraSkippedReason: _syntheticTargetExtraSkippedReason,
     sampleDroppedHistoricalLogs: _historicalCoverageDebug?.logNormalizationDebug
       ? [
           { reason: 'noTxHash', count: _historicalCoverageDebug.logNormalizationDebug.historicalRawLogsDroppedNoTxHash },
@@ -10950,7 +11058,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _logByProvider = (p: 'moralis' | 'goldrush' | 'alchemy') => _apiCallLog.filter(e => e.provider === p)
   const _liveCalls = (p: 'moralis' | 'goldrush' | 'alchemy') => _logByProvider(p).filter(e => !e.cacheHit && !e.duplicate)
   const _dupEntries = _apiCallLog.filter(e => e.duplicate)
-  const _historicalCreditsUsedFinal = _historicalCoverageDebug?.pagesAttempted ?? 0
+  const _historicalCreditsUsedFinal = (_historicalCoverageDebug?.pagesAttempted ?? 0) + _syntheticTargetExtraCreditUsed
   // SYNTH-RECOVERY-FIX-11: buildWalletHistoricalCoverage's `maxPages` argument (passed in as
   // _pagesAllowed) is a PER-CHAIN page cap — it fetches up to maxPages pages from base-mainnet AND
   // up to maxPages pages from eth-mainnet, so pagesAttempted (their sum) can legitimately be up to
