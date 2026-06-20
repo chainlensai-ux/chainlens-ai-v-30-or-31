@@ -11,6 +11,20 @@ import {
   writePersistentCooldown,
 } from '@/lib/server/walletScanPersistentCache'
 
+// BUGFIX: nested debug fields baked into a snapshot at live-fetch time (e.g.
+// walletProfileDebug.cacheSource) stay 'live' forever once that payload is persisted, even after
+// it's served back out as a cache hit — only the top-level dataFreshness was being corrected to
+// 'cached'. Normalize the nested field too whenever a cached payload is about to be returned, so
+// public dataFreshness and walletProfileDebug.cacheSource never contradict each other. Uses the
+// existing 'memory_cache' literal already in WalletSnapshot['walletProfileDebug']['cacheSource']
+// — no public shape change.
+function normalizeCachedFreshness(cp: any): any {
+  if (cp && typeof cp === 'object' && cp.walletProfileDebug && typeof cp.walletProfileDebug === 'object') {
+    cp.walletProfileDebug = { ...cp.walletProfileDebug, cacheSource: 'memory_cache' }
+  }
+  return cp
+}
+
 function corsHeaders(origin: string | null): Record<string, string> {
   const headers: Record<string, string> = {}
   if (origin && origin.endsWith('.vercel.app')) {
@@ -546,7 +560,10 @@ export async function POST(req: Request) {
     const debug = debugAllowed
     const body = await req.json()
     const address = body?.address
-    const refresh = body?.refresh === true
+    // BUGFIX: refresh must accept query-string `?refresh=true` the same way debug/debugFresh do —
+    // previously body-only, so refresh requests sent as query params silently fell through to
+    // memory/persistent cache instead of bypassing it.
+    const refresh = requestUrl.searchParams.get('refresh') === 'true' || body?.refresh === true || body?.refresh === 'true'
     const chain = body?.chain === 'eth' ? 'eth' : 'base'
     const deepScan = body?.deepScan === true || body?.deepScan === 'true'
     const deepActivityFlag = body?.deepActivity === true || body?.deepActivity === 'true'
@@ -688,7 +705,7 @@ export async function POST(req: Request) {
 
     if (cached && cached.exp > Date.now()) {
       const cacheAgeSeconds = Math.floor((Date.now() - cached.cachedAt) / 1000)
-      let cp: any = typeof cached.payload === 'object' && cached.payload ? { ...(cached.payload as any), dataFreshness: 'cached', cacheAgeSeconds } : cached.payload
+      let cp: any = normalizeCachedFreshness(typeof cached.payload === 'object' && cached.payload ? { ...(cached.payload as any), dataFreshness: 'cached', cacheAgeSeconds } : cached.payload)
       if (cp && typeof cp === 'object') {
         const costMode = getCostMode(true)
         cp.walletScanCostMode = costMode
@@ -798,7 +815,7 @@ export async function POST(req: Request) {
       const stale = walletCache.get(cacheKey)
       if (stale) {
         const cacheAgeSeconds = Math.floor((Date.now() - stale.cachedAt) / 1000)
-        const cp: any = typeof stale.payload === 'object' && stale.payload ? { ...(stale.payload as any), dataFreshness: 'cached', cacheAgeSeconds } : stale.payload
+        const cp: any = normalizeCachedFreshness(typeof stale.payload === 'object' && stale.payload ? { ...(stale.payload as any), dataFreshness: 'cached', cacheAgeSeconds } : stale.payload)
         if (cp && typeof cp === 'object') {
           cp.walletScanCostMode = 'blocked_by_cooldown'
           cp.walletScanCacheNote = 'Enhanced scan cooling down. Try again later.'
@@ -814,7 +831,7 @@ export async function POST(req: Request) {
       const stale = walletCache.get(cacheKey)
       if (stale) {
         const cacheAgeSeconds = Math.floor((Date.now() - stale.cachedAt) / 1000)
-        const cp: any = typeof stale.payload === 'object' && stale.payload ? { ...(stale.payload as any), dataFreshness: 'cached', cacheAgeSeconds } : stale.payload
+        const cp: any = normalizeCachedFreshness(typeof stale.payload === 'object' && stale.payload ? { ...(stale.payload as any), dataFreshness: 'cached', cacheAgeSeconds } : stale.payload)
         if (cp && typeof cp === 'object') {
           cp.walletScanCostMode = 'blocked_by_cost_guard'
           cp.walletScanCacheNote = 'Historical scan served from cache — wallet has heavy history.'
@@ -830,7 +847,7 @@ export async function POST(req: Request) {
       const stale = walletCache.get(cacheKey)
       if (stale) {
         const cacheAgeSeconds = Math.floor((Date.now() - stale.cachedAt) / 1000)
-        const cp: any = typeof stale.payload === 'object' && stale.payload ? { ...(stale.payload as any), dataFreshness: 'cached', cacheAgeSeconds } : stale.payload
+        const cp: any = normalizeCachedFreshness(typeof stale.payload === 'object' && stale.payload ? { ...(stale.payload as any), dataFreshness: 'cached', cacheAgeSeconds } : stale.payload)
         if (cp && typeof cp === 'object') {
           cp.walletScanCostMode = 'deep_cached'
           cp.walletScanCacheNote = 'Deep scan cooling down — serving recent result to protect API budget.'
@@ -872,9 +889,9 @@ export async function POST(req: Request) {
           if (!deepCooldownActive) walletDeepCooldown.set(deepCooldownKey, persCache.createdAt.getTime() + WALLET_DEEP_COOLDOWN_MS)
 
           const cacheAgeSeconds = Math.floor((Date.now() - persCache.createdAt.getTime()) / 1000)
-          let cp: any = typeof persCache.payload === 'object' && persCache.payload
+          let cp: any = normalizeCachedFreshness(typeof persCache.payload === 'object' && persCache.payload
             ? { ...(persCache.payload as any), dataFreshness: 'cached', cacheAgeSeconds }
-            : persCache.payload
+            : persCache.payload)
           if (cp && typeof cp === 'object') {
             const costMode = getCostMode(true)
             cp.walletScanCostMode = costMode
@@ -939,9 +956,9 @@ export async function POST(req: Request) {
         const stale = await readStalePersistentWalletCache(cacheKey)
         if (stale) {
           const cacheAgeSeconds = Math.floor((Date.now() - stale.createdAt.getTime()) / 1000)
-          const cp: any = typeof stale.payload === 'object' && stale.payload
+          const cp: any = normalizeCachedFreshness(typeof stale.payload === 'object' && stale.payload
             ? { ...(stale.payload as any), dataFreshness: 'cached', cacheAgeSeconds }
-            : stale.payload
+            : stale.payload)
           if (cp && typeof cp === 'object') {
             cp.walletScanCostMode = 'deep_cached'
             cp.walletScanCacheNote = 'Deep scan cooling down — serving recent result to protect API budget.'

@@ -4669,7 +4669,31 @@ function integrityCheckPnl(input: {
     (input.missingReasonsCount ?? 0) > 5
   const status: 'ok' | 'suspicious' | 'invalid' = isInvalid ? 'invalid' : isSuspicious ? 'suspicious' : 'ok'
 
-  return { ok: violations.length === 0, violations, status }
+  // BUGFIX: `ok` must agree with `status` — previously `ok` was derived only from
+  // `violations.length === 0` while `status` could independently be 'suspicious'/'invalid' from the
+  // coverage/synthetic-lot/missingReasons/priceFailure checks above, producing contradictory output
+  // like { ok: true, status: 'invalid', violations: [] }. ok is now true only when status is 'ok'.
+  // Whenever status downgrades to suspicious/invalid for a reason not already in `violations`
+  // (e.g. low coverage, high synthetic ratio, too many missing reasons, high price-failure ratio),
+  // append a violation reason so the status is never unexplained.
+  if (status !== 'ok') {
+    if (isInvalid && typeof input.coveragePercent === 'number' && input.coveragePercent < 20 && !violations.includes('coverage_percent_below_threshold')) {
+      violations.push('coverage_percent_below_threshold')
+    }
+    if (isInvalid && typeof input.priceFailureRatio === 'number' && input.priceFailureRatio > 0.5 && !violations.includes('price_failure_ratio_above_threshold')) {
+      violations.push('price_failure_ratio_above_threshold')
+    }
+    if (status === 'suspicious') {
+      if (syntheticLotRatio > 0.4 && !violations.includes('synthetic_lot_ratio_above_threshold')) {
+        violations.push('synthetic_lot_ratio_above_threshold')
+      }
+      if ((input.missingReasonsCount ?? 0) > 5 && !violations.includes('missing_reasons_above_threshold')) {
+        violations.push('missing_reasons_above_threshold')
+      }
+    }
+  }
+
+  return { ok: status === 'ok', violations, status }
 }
 
 // PHASE6-FIX-5: heuristic-only (no ML) wallet behavioral signal bundle, derived strictly from
