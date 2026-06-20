@@ -669,6 +669,7 @@ export type WalletSnapshot = {
       missingTimestampCount?: number
       skippedReasons?: string[]
       providerErrorSamples?: string[]
+      providerCoveragePartial?: boolean
     }
     walletSwapDetectionDebug?: {
       totalEvidenceEvents: number
@@ -2797,10 +2798,21 @@ async function buildWalletHistoricalCoverage(
 
   for (const chain of chains) {
     chainCoverage[chain] = { pages: 0, transactions: 0, events: 0 }
-    for (let page = 0; page < maxPages; page++) {
+    // PHASE4-FIX-3: GoldRush's transactions_v3 endpoint is offset/page-number paginated (no
+    // opaque cursor token in the response), so we model the cursor as "next page index, or
+    // null when exhausted" rather than blindly iterating page=0..maxPages-1. A page that
+    // returns fewer than pageSize items (or errors) sets cursor=null and stops the loop, same
+    // as a real nextCursor=null would. `_iterGuard` is an explicit infinite-loop guard,
+    // independent of `maxPages`, in case maxPages is ever misconfigured to be unbounded.
+    let cursor: number | null = 0
+    let _iterGuard = 0
+    const _maxIterGuard = Math.max(maxPages, 1) * 2
+    while (cursor !== null && _iterGuard < _maxIterGuard) {
+      _iterGuard++
+      if (cursor >= maxPages) break
       pagesAttempted++
-      const r = await fetchGoldrushHistoricalPage(address, chain, apiKey, page)
-      if (r.error) { errorSamples.push(`${chain} p${page}: ${r.error}`); stoppedReason = 'provider_error'; break }
+      const r = await fetchGoldrushHistoricalPage(address, chain, apiKey, cursor)
+      if (r.error) { errorSamples.push(`${chain} p${cursor}: ${r.error}`); stoppedReason = 'provider_error'; cursor = null; break }
       chainCoverage[chain].pages++
       chainCoverage[chain].transactions += r.rawItems
       chainCoverage[chain].events += r.events.length
@@ -2808,7 +2820,8 @@ async function buildWalletHistoricalCoverage(
       totalTransferLogs += r.transferLogs
       allEvents.push(...r.events)
       if (r.newestTimestamp) newestTimestamps.push(r.newestTimestamp)
-      if (r.rawItems < pageSize || r.rawItems === 0) { stoppedReason = 'page_partial_or_empty'; break }
+      if (r.rawItems < pageSize || r.rawItems === 0) { stoppedReason = 'page_partial_or_empty'; cursor = null; break }
+      cursor = cursor + 1
     }
   }
 
@@ -2817,16 +2830,21 @@ async function buildWalletHistoricalCoverage(
     ? allEvents.filter(ev => targetContracts.has((ev.contract ?? '').toLowerCase()))
     : allEvents
 
-  // Deduplicate by txHash+contract+direction+rounded-amount
+  // PHASE4-FIX-4: dedupe by chain+contract+from+to+amountRaw(+txHash) instead of a rounded
+  // float amount, which previously let unrelated tokens collide when amountRaw/decimals were
+  // missing. Direction is implied by from/to, so it no longer needs to be in the key.
   const seen = new Set<string>()
   let dupEvents = 0
   const uniqueEvents: PnlEvent[] = []
   for (const ev of preFilterEvents) {
-    const k = `${ev.txHash}|${ev.contract}|${ev.direction}|${Math.round(ev.amount * 1e6)}`
+    const k = pnlEventDedupeKey(ev)
     if (seen.has(k)) { dupEvents++; continue }
     seen.add(k)
     uniqueEvents.push(ev)
   }
+  // PHASE4-FIX-5: globally time-order the merged multi-chain event set (ascending), so
+  // downstream FIFO/cost-basis logic sees a consistent chronology across chains.
+  uniqueEvents.sort((a, b) => (a.timestamp ? new Date(a.timestamp).getTime() : 0) - (b.timestamp ? new Date(b.timestamp).getTime() : 0))
   const allTxHashes = new Set<string>(uniqueEvents.map(e => e.txHash).filter(Boolean) as string[])
   const walletSideEvents = uniqueEvents.filter(e => e.direction !== 'unknown').length
 
@@ -2847,7 +2865,7 @@ async function buildWalletHistoricalCoverage(
 
   return {
     summary: { status, requested: true, pagesAttempted, maxPages, rawTransactions: totalRawTx, rawLogEvents: totalTransferLogs, normalizedEvents: uniqueEvents.length, walletSideEvents, swapLikeTransactions: swapLikeTxs, pricedSwapCandidates: null, matchedClosedLotsBefore, matchedClosedLotsAfter: null, addedClosedLots: null, coverageLevel, missing: errorSamples.length > 0 ? ['provider_errors'] : [], reason: errorSamples.length > 0 ? 'One or more provider pages failed.' : null },
-    debug: { requested: true, providersAttempted: ['goldrush'], pagesAttempted, pageSize, maxPages, cursorUsed: false, stoppedReason, rawTransactions: totalRawTx, rawLogEvents: totalTransferLogs, decodedTransferLogs: totalTransferLogs, walletSideEvents, candidateSwapTxs: swapLikeTxs, candidateSwapEvents: swapLikeEvents, duplicateTxHashes: 0, duplicateEvents: dupEvents, oldestTimestamp, newestTimestamp, chainCoverage, providerErrorSamples: errorSamples.slice(0, 4), skippedReasons: targetContracts && targetContracts.size > 0 ? ['target_contract_filter_applied'] : [], sampleTxHashes: [...allTxHashes].slice(0, 5), sampleSwapLikeTransactions: [], moralisHistoricalConfigured: false, moralisHistoricalAttempted: false, moralisReason: 'moralis_history_not_wired_yet' },
+    debug: { requested: true, providersAttempted: ['goldrush'], pagesAttempted, pageSize, maxPages, cursorUsed: true, stoppedReason, rawTransactions: totalRawTx, rawLogEvents: totalTransferLogs, decodedTransferLogs: totalTransferLogs, walletSideEvents, candidateSwapTxs: swapLikeTxs, candidateSwapEvents: swapLikeEvents, duplicateTxHashes: 0, duplicateEvents: dupEvents, oldestTimestamp, newestTimestamp, chainCoverage, providerErrorSamples: errorSamples.slice(0, 4), skippedReasons: targetContracts && targetContracts.size > 0 ? ['target_contract_filter_applied'] : [], sampleTxHashes: [...allTxHashes].slice(0, 5), sampleSwapLikeTransactions: [], moralisHistoricalConfigured: false, moralisHistoricalAttempted: false, moralisReason: 'moralis_history_not_wired_yet' },
     events: uniqueEvents,
   }
 }
@@ -3027,7 +3045,9 @@ async function runTargetedUnmatchedSellBackfill(address: string, targets: Unmatc
     const buyTxHashes = new Set(priorBuys.map(e => e.txHash).filter(Boolean) as string[])
     const txEvents = candidateEvents.filter(e => e.txHash && buyTxHashes.has(e.txHash))
     for (const ev of txEvents.length > 0 ? txEvents : priorBuys) {
-      const k = `${ev.txHash}|${ev.contract}|${ev.direction}|${Math.round(ev.amount * 1e9)}`
+      // PHASE4-FIX-4: shared dedupe key (chain+contract+from+to+amountRaw+txHash) instead of a
+      // rounded-float amount, to avoid collisions between unrelated tokens.
+      const k = pnlEventDedupeKey(ev)
       if (seenEvents.has(k)) continue
       seenEvents.add(k)
       eventsToAdd.push(ev)
@@ -4176,6 +4196,15 @@ function normalizeChainForGoldrush(chain: string): string {
   if (c === 'base' || c === '8453') return 'base-mainnet'
   if (c === 'eth' || c === '1' || c === 'ethereum') return 'eth-mainnet'
   return c  // already canonical (e.g., 'base-mainnet', 'eth-mainnet') or unknown
+}
+
+// PHASE4-FIX-4: shared dedupe key for merging/deduping raw provider events. Keys on
+// chain+contract+from+to+amountRaw+txHash so unrelated tokens never collide; when amountRaw
+// (or decimals) is missing, falls back to a canonicalAmount+decimals composite instead of a
+// bare rounded float, which previously caused unrelated low-decimal-precision tokens to collide.
+function pnlEventDedupeKey(e: PnlEvent): string {
+  const amountPart = e.amountRaw ?? `canon:${e.amount}:${e.tokenDecimals ?? 'NA'}`
+  return `${normalizeChain(e.chain)}:${e.contract.toLowerCase()}:${e.fromAddress ?? ''}:${e.toAddress ?? ''}:${amountPart}:${e.txHash ?? ''}`
 }
 
 const LOT_EPSILON = 1e-9
@@ -6027,8 +6056,14 @@ function buildWalletFacts(
   const stablecoinExposurePercent = totalVal > 0 ? Math.round((stableVal / totalVal) * 1000) / 10 : 0
   const nativeExposurePercent = totalVal > 0 ? Math.round((nativeVal / totalVal) * 1000) / 10 : 0
 
-  // Activity from evidence (cap at 500)
-  const events = evidenceWithDetection.slice(0, 500)
+  // Activity from evidence (soft cap at 500)
+  // PHASE4-FIX-1: protect every event for a currently-held token from the cap, same rationale
+  // as the main PnL pipeline's budget cap — only trim events for tokens with no open holding.
+  const _factsHeldContracts = new Set(pricedHoldings.map(h => (h.contract ?? '').toLowerCase()).filter(Boolean))
+  const _factsProtectedEvents = evidenceWithDetection.filter(e => _factsHeldContracts.has((e.contract ?? '').toLowerCase()))
+  const _factsTrimmableEvents = evidenceWithDetection.filter(e => !_factsHeldContracts.has((e.contract ?? '').toLowerCase()))
+  const _factsRemainingSlots = Math.max(0, 500 - _factsProtectedEvents.length)
+  const events = [..._factsProtectedEvents, ..._factsTrimmableEvents.slice(0, _factsRemainingSlots)]
   const maxEventsUsed = events.length
 
   const txGroups = new Map<string, WalletTxEvidence[]>()
@@ -8021,7 +8056,11 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   })()
   let alchemyEvents: PnlEvent[] = []
   let _alchemyActivityFallbackAttempted = false
-  if (activityRequested && grEvents.length === 0 && Boolean(ALCHEMY_BASE_KEY)) {
+  // PHASE4-FIX-2: also supplement via Alchemy when GoldRush came back "partial" (a handful of
+  // events for a wallet with real activity), not only when it returned nothing — otherwise a
+  // thin GoldRush result silently starves the merge of Alchemy's fuller dataset below.
+  const _GR_PARTIAL_EVENT_THRESHOLD = 5
+  if (activityRequested && grEvents.length < _GR_PARTIAL_EVENT_THRESHOLD && Boolean(ALCHEMY_BASE_KEY)) {
     _alchemyActivityFallbackAttempted = true
     const _ak1 = `alchemy:transfers:from:base:${addrNorm}`; if (!_alchemyDedup.has(_ak1)) { _alchemyDedup.add(_ak1); _trackCall('alchemy', 'alchemy_getAssetTransfers', false, _ak1) }
     const _ak2 = `alchemy:transfers:to:base:${addrNorm}`;   if (!_alchemyDedup.has(_ak2)) { _alchemyDedup.add(_ak2); _trackCall('alchemy', 'alchemy_getAssetTransfers', false, _ak2) }
@@ -8070,7 +8109,23 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       || /fetch failed|network|timeout|before response|did not expose an HTTP response/i.test(`${(baseTransferDiag as GoldrushHistoryDiag | undefined)?.fetchErrorMessage ?? ''} ${baseTransferDiag?.reason ?? ''}`)
   )
   const valuedGrEvents = grEvents.filter((e) => (e.usdValue ?? 0) > 0)
-  let events: PnlEvent[] = grEvents.length > 0 ? grEvents : alchemyEvents
+  // PHASE4-FIX-2: union-merge GoldRush + Alchemy instead of "non-empty provider wins". A
+  // partial GoldRush payload no longer discards a fuller Alchemy dataset (or vice versa) —
+  // both are kept, deduped by the shared event key, preferring whichever copy of a duplicate
+  // event carries richer fields (amountRaw/usdValue/decimals/timestamp present).
+  const _pnlEventRichness = (e: PnlEvent) => Number(Boolean(e.amountRaw)) + Number(Boolean(e.usdValue)) + Number(e.tokenDecimals != null) + Number(Boolean(e.timestamp))
+  let events: PnlEvent[]
+  if (grEvents.length > 0 && alchemyEvents.length > 0) {
+    const _mergedByKey = new Map<string, PnlEvent>()
+    for (const e of [...grEvents, ...alchemyEvents]) {
+      const k = pnlEventDedupeKey(e)
+      const existing = _mergedByKey.get(k)
+      if (!existing || _pnlEventRichness(e) > _pnlEventRichness(existing)) _mergedByKey.set(k, e)
+    }
+    events = [..._mergedByKey.values()]
+  } else {
+    events = grEvents.length > 0 ? grEvents : alchemyEvents
+  }
 
   // Moralis activity fallback: runs only when deepActivity requested and all primary providers returned nothing.
   // One request max, cached 5 min, in-flight deduped inside fetchMoralisTransfers, 8 s timeout, no pagination.
@@ -8338,7 +8393,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       const _p19SeenKeys = new Set<string>()
       const _p19Merged: PnlEvent[] = []
       for (const e of _p19All) {
-        const mk = `${e.chain ?? ''}|${e.txHash ?? ''}|${e.contract}|${e.direction}|${e.amountRaw ?? String(e.amount)}`
+        // PHASE4-FIX-4: shared dedupe key
+        const mk = pnlEventDedupeKey(e)
         if (!_p19SeenKeys.has(mk)) { _p19SeenKeys.add(mk); _p19Merged.push(e) }
       }
       _p19Merged.sort((a, b) => (a.timestamp ? new Date(a.timestamp).getTime() : 0) - (b.timestamp ? new Date(b.timestamp).getTime() : 0))
@@ -8368,12 +8424,23 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _seenBudgetKeys = new Set<string>()
   const _dedupedBudgetEvents: PnlEvent[] = []
   for (const e of events) {
-    const k = `${e.txHash ?? ''}|${e.contract}|${e.direction}|${e.amountRaw ?? String(e.amount)}`
+    // PHASE4-FIX-4: shared dedupe key
+    const k = pnlEventDedupeKey(e)
     if (!_seenBudgetKeys.has(k)) { _seenBudgetKeys.add(k); _dedupedBudgetEvents.push(e) }
   }
   const _budgetEventsAfterDedup = _dedupedBudgetEvents.length
   const _budgetCapped = _dedupedBudgetEvents.length > _ACTIVITY_MAX_EVENTS
-  events = _dedupedBudgetEvents.slice(0, _ACTIVITY_MAX_EVENTS)
+  // PHASE4-FIX-1: replace the destructive "keep newest 500, drop the rest" cap with a soft cap
+  // that always protects every event for a token currently held (so the earliest buy needed for
+  // that token's cost basis is never dropped). Only events for tokens with no current holding —
+  // i.e. tokens that can no longer affect open/closed lot math — are trimmed to fit the budget.
+  const _heldTokenContracts = new Set(holdings.map(h => (h.contract ?? '').toLowerCase()).filter(Boolean))
+  const _protectedBudgetEvents = _dedupedBudgetEvents.filter(e => _heldTokenContracts.has(e.contract.toLowerCase()))
+  const _trimmableBudgetEvents = _dedupedBudgetEvents.filter(e => !_heldTokenContracts.has(e.contract.toLowerCase()))
+  const _remainingBudgetSlots = Math.max(0, _ACTIVITY_MAX_EVENTS - _protectedBudgetEvents.length)
+  events = [..._protectedBudgetEvents, ..._trimmableBudgetEvents.slice(0, _remainingBudgetSlots)]
+  // PHASE4-FIX-5: keep the post-cap merged set globally time-ordered (ascending) across chains.
+  events.sort((a, b) => (a.timestamp ? new Date(a.timestamp).getTime() : 0) - (b.timestamp ? new Date(b.timestamp).getTime() : 0))
   const _budgetEventsAfterCap = events.length
 
   // Build a current-price map from holdings so events without usdValue can be enriched.
@@ -9824,6 +9891,10 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     missingTimestampCount: _txEvidenceDebugBase.totalRawEvents - _txEvidenceDebugBase.eventsWithTimestamp,
     skippedReasons: _txSkippedReasons,
     providerErrorSamples: _txProviderErrors.slice(0, 3),
+    // PHASE4-FIX-7: surface "one provider failed but we kept going" as a non-fatal partial
+    // state instead of letting a single provider error collapse the whole scan. True only
+    // when at least one provider errored AND at least one other provider still produced events.
+    providerCoveragePartial: _txProviderErrors.length > 0 && events.length > 0,
   }
   const unpricedHoldingsCount = holdings.filter((h) => !h.price || h.price <= 0).length
   const hiddenDustCount = holdings.filter((h) => h.value <= 1).length

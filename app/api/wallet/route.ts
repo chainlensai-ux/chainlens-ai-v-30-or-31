@@ -224,6 +224,13 @@ function getWalletPnlRecoverySignals(snap: any) {
   const historicalRequested = historical.requested === true
   const backfillReason = String(backfill.reason ?? backfill.stopReason ?? '')
   const backfillTimedOut = backfillReason.includes('timeout')
+  // PHASE4-FIX-6: the historical-coverage flag was only ever flipped on by coverage/unmatched-lot
+  // signals, never by the raw shape of the activity itself — so a wallet spanning multiple chains
+  // or with a large event count, but otherwise-"fine-looking" lot stats, never tripped recovery.
+  const chainCount = Array.isArray(snap?.walletFacts?.summary?.chainExposure) ? snap.walletFacts.summary.chainExposure.length : 0
+  const totalEvents = Number(snap?.walletEvidenceSummary?.totalEvents ?? 0) || 0
+  const multiChain = chainCount > 1
+  const highEventVolume = totalEvents > 200
   return {
     walletValueTier,
     coveragePercent: estimatedCoverage,
@@ -235,7 +242,9 @@ function getWalletPnlRecoverySignals(snap: any) {
     historicalStatus,
     historicalRequested,
     backfillTimedOut,
-    needsHistorical: walletValueTier === 'high_value' || walletValueTier === 'whale' || estimatedCoverage < 60 || unmatchedSells > 0 || unmatchedBuys > 0 || closedLots < 10 || stats.status === 'partial' || historicalStatus === 'not_requested',
+    chainCount,
+    totalEvents,
+    needsHistorical: walletValueTier === 'high_value' || walletValueTier === 'whale' || estimatedCoverage < 60 || unmatchedSells > 0 || unmatchedBuys > 0 || closedLots < 10 || stats.status === 'partial' || historicalStatus === 'not_requested' || (multiChain && highEventVolume) || (multiChain && (unmatchedSells > 0 || closedLots === 0)),
   }
 }
 
