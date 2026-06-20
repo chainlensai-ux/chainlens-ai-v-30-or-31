@@ -1434,13 +1434,13 @@ const EXTENDED_DEX_ROUTERS = new Set<string>([
   '0xf0d4c12a5768d806021f80a262b4d39d26c58b8d',
   // BaseSwap
   '0x327df1e6de05895d2ab08513aadd9313fe505d86',
-  // Permit2 — canonical singleton deployed at the same address on Ethereum, Base, and most
-  // other EVM chains. Aggregators (1inch, Uniswap Universal Router, Odos, etc.) route the
-  // approval/transfer leg through this contract, so its presence on a tx's `to` is a strong
-  // router signal even though Permit2 itself isn't a DEX.
+  // PHASE1-FIX-3: Permit2 — canonical singleton deployed at the same address on Ethereum,
+  // Base, and most other EVM chains. Aggregators (1inch, Uniswap Universal Router, Odos,
+  // etc.) route the approval/transfer leg through this contract, so its presence on a tx's
+  // `to` is a strong router signal even though Permit2 itself isn't a DEX.
   '0x000000000022d473030f116ddee9f6b43ac78ba9',
-  // LI.FI Diamond — canonical cross-chain aggregator proxy, same address on Base as on
-  // Ethereum/most EVM chains.
+  // PHASE1-FIX-3: LI.FI Diamond — canonical cross-chain aggregator proxy, same address on
+  // Base as on Ethereum/most EVM chains.
   '0x1231deb6f5749ef6ce6943a275a1d3e7486f4eae',
   // NOTE: Odos, Bebop, and CoW Protocol router/settlement addresses are intentionally
   // omitted — this file's policy (see docs/audit-router-swap-candidates-0xe896.md) is to
@@ -2231,10 +2231,10 @@ function selectSameTxStableQuoteLeg(txGroup: WalletTxEvidence[], target: WalletT
   const stableLegs = txGroup
     .filter(ev => {
       const c = ev.contract?.toLowerCase() ?? ''
-      // Airdrop/rebate separation: a stablecoin transfer that's its own airdrop_candidate
-      // (inbound-only, no matching wallet-side outbound) isn't a swap quote leg — merging
-      // it in here would let an unrelated rebate/airdrop set the derived price of a
-      // same-tx swap. Only legs not already classified as their own airdrop count.
+      // PHASE1-FIX-4: a stablecoin transfer that's its own airdrop_candidate (inbound-only,
+      // no matching wallet-side outbound) isn't a swap quote leg — merging it in here would
+      // let an unrelated rebate/airdrop set the derived price of a same-tx swap. Only legs
+      // not already classified as their own airdrop count as quote legs.
       return Boolean(STABLE_USD_CONTRACTS[c]) && ev.direction !== 'unknown' && ev.direction !== target.direction
         && ev.swapDetection?.eventKind !== 'airdrop_candidate'
     })
@@ -3613,10 +3613,11 @@ function buildTxEvidenceFromEvents(events: PnlEvent[], requested: boolean, provi
       debug: { sourceProvider: 'none', totalRawEvents: 0, eventsWithHash: 0, eventsWithTimestamp: 0, sampleHashes: [], sampleTimestamps: [] },
     }
   }
-  // Dedupe: providers occasionally re-emit the same on-chain transfer (log re-delivery,
-  // pagination overlap, multi-provider merge). Without this, the same leg is counted twice,
-  // inflating both swapCandidateEvents and downstream FIFO volumes. Key on the fields that
-  // uniquely identify a single transfer leg; first occurrence wins.
+  // PHASE1-FIX-1: real dedup of transfer legs, applied BEFORE swap detection runs (this
+  // function's output feeds buildSwapDetection). Providers occasionally re-emit the same
+  // on-chain transfer (log re-delivery, pagination overlap, multi-provider merge); without
+  // this, the same leg is counted twice, inflating both swapCandidateEvents and downstream
+  // FIFO volumes. Key on (txHash + contract + from + to + amountRaw); first occurrence wins.
   const _seenTransferKeys = new Set<string>()
   const _dedupedEvents = events.filter(e => {
     if (!e.txHash) return true
@@ -3815,12 +3816,13 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
     hasMultipleDistinctTokens: boolean
     group: WalletTxEvidence[]
   }
-  // Grouping-race fix: txTo/txFrom are tx-level metadata that should be identical for every
-  // leg of the same txHash, but multi-page/multi-provider merges can attach a stale or
-  // mismatched value to one leg depending on arrival order. Picking group[0] made router
-  // validation depend on which leg happened to land first. Instead take the majority
-  // (mode) value across the whole group, so a single outlier leg can't flip which router
-  // (or no router) gets credited for the transaction.
+  // PHASE1-FIX-2: router/initiator majority vote. txTo/txFrom are tx-level metadata that
+  // should be identical for every leg of the same txHash, but multi-page/multi-provider
+  // merges can attach a stale or mismatched value to one leg depending on arrival order.
+  // Picking group[0] made router validation depend on which leg happened to land first.
+  // Instead take the majority (mode) value across the whole group — for router this is the
+  // most frequent router-like txTo address, for initiator the most frequent txFrom address —
+  // so a single outlier leg can't flip which router (or no router) gets credited.
   const _modeOf = (vals: Array<string | null>): string | null => {
     const counts = new Map<string, number>()
     for (const v of vals) { if (v) counts.set(v, (counts.get(v) ?? 0) + 1) }
@@ -3833,10 +3835,10 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
   for (const [txHash, group] of byTx.entries()) {
     const txToAddr = _modeOf(group.map(g => g.txToAddress?.toLowerCase() ?? null))
     const txFromAddr = _modeOf(group.map(g => g.txFromAddress?.toLowerCase() ?? null))
-    // Router-coverage fix: fall back to EXTENDED_DEX_ROUTERS (Balancer, Curve, SushiSwap,
-    // Paraswap, additional Uniswap/1inch/0x addresses) for any address known elsewhere in
-    // this file but not yet given a friendly name in KNOWN_DEX_ROUTERS, so Base wallet-side
-    // swap classification sees every router this file already knows about.
+    // PHASE1-FIX-3: fall back to EXTENDED_DEX_ROUTERS (Balancer, Curve, SushiSwap, Paraswap,
+    // Permit2, LI.FI Diamond, additional Uniswap/1inch/0x addresses) for any address known
+    // elsewhere in this file but not yet given a friendly name in KNOWN_DEX_ROUTERS, so
+    // Base wallet-side swap classification sees every verified router this file knows about.
     const txRouterProtocol = txToAddr
       ? (KNOWN_DEX_ROUTERS[txToAddr] ?? (EXTENDED_DEX_ROUTERS.has(txToAddr) ? 'KnownDexRouter' : null))
       : null
@@ -5924,14 +5926,25 @@ async function buildPriceAtTimeEvidence(
     if (!isWeth) {
       const wethLegs = txGroup.filter(ev => {
         const c = ev.contract?.toLowerCase() ?? ''
-        // Same airdrop/rebate separation as selectSameTxStableQuoteLeg above.
+        // PHASE1-FIX-4: same airdrop/rebate separation as selectSameTxStableQuoteLeg above —
+        // exclude legs already classified as their own airdrop_candidate from quote selection.
         return Boolean(WETH_CONTRACTS_PRICE[c]) && ev.direction !== 'unknown' && ev.direction !== e.direction
           && ev.swapDetection?.eventKind !== 'airdrop_candidate'
       })
       if (wethLegs.length > 0) {
         _resolvedFromWethOrStable = true
         _hadWethLeg = true
-        const wl = wethLegs[0]
+        // PHASE1-FIX-5: picking wethLegs[0] made the derived price depend on raw provider
+        // arrival order — out-of-order legs from multi-page/multi-provider merges could flip
+        // which WETH leg priced the swap. amountRaw/timestamp don't carry an intra-tx ordinal
+        // (no blockNumber/logIndex is tracked on PnlEvent), so instead of an arrival-order pick,
+        // deterministically select the largest-amount WETH leg — same "dominant leg" principle
+        // already used by selectSameTxStableQuoteLeg, independent of merge/arrival order.
+        const wl = [...wethLegs].sort((a, b) => {
+          const aAmt = parseRawAmount(a.amountRaw, a.tokenDecimals) ?? a.amount
+          const bAmt = parseRawAmount(b.amountRaw, b.tokenDecimals) ?? b.amount
+          return bAmt - aAmt
+        })[0]
         const _wethAlreadyCached = isGoldrushPriceCached(wl.chain, wl.contract, e.timestamp, reqCache)
         if (!_wethAlreadyCached && priceAttempts >= activeBudget) {
           priceAttemptLimitReached = true
