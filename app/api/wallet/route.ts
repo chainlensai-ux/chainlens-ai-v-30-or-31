@@ -211,7 +211,12 @@ function buildPublicWalletScanBudget(scanMode: string, requestedHistoricalScan: 
 function getWalletPnlRecoverySignals(snap: any) {
   const totalValue = Number(snap?.totalValue ?? 0) || 0
   const walletValueTier = getWalletValueTier(totalValue)
+  // PHASE5-FIX-1: read the fields that actually exist on WalletSnapshot — estimatedPnl has
+  // coveragePercent (and now coveragePercentValueWeighted), not `coverage`; closedLots lives on
+  // walletLotSummary/walletTradeStatsSummary, not on estimatedPnl. Each read has an explicit
+  // typed fallback (0 / {} / 'not_requested') rather than silently resolving to null/undefined.
   const estimatedCoverage = Number(snap?.estimatedPnl?.coveragePercent ?? 0) || 0
+  const estimatedCoverageValueWeighted = Number(snap?.estimatedPnl?.coveragePercentValueWeighted ?? estimatedCoverage) || 0
   const lot = snap?.walletLotSummary ?? {}
   const stats = snap?.walletTradeStatsSummary ?? {}
   const historical = snap?.walletHistoricalCoverageSummary ?? {}
@@ -234,6 +239,7 @@ function getWalletPnlRecoverySignals(snap: any) {
   return {
     walletValueTier,
     coveragePercent: estimatedCoverage,
+    coveragePercentValueWeighted: estimatedCoverageValueWeighted,
     closedLots,
     openedLots,
     unmatchedSells,
@@ -244,7 +250,10 @@ function getWalletPnlRecoverySignals(snap: any) {
     backfillTimedOut,
     chainCount,
     totalEvents,
-    needsHistorical: walletValueTier === 'high_value' || walletValueTier === 'whale' || estimatedCoverage < 60 || unmatchedSells > 0 || unmatchedBuys > 0 || closedLots < 10 || stats.status === 'partial' || historicalStatus === 'not_requested' || (multiChain && highEventVolume) || (multiChain && (unmatchedSells > 0 || closedLots === 0)),
+    // PHASE5-FIX-5: a wallet can look "fine" on unweighted coverage while its highest-value
+    // holdings are poorly covered (or vice versa) — checking both keeps recovery from being
+    // skipped just because the tx-count average happened to clear the threshold.
+    needsHistorical: walletValueTier === 'high_value' || walletValueTier === 'whale' || estimatedCoverage < 60 || estimatedCoverageValueWeighted < 60 || unmatchedSells > 0 || unmatchedBuys > 0 || closedLots < 10 || stats.status === 'partial' || historicalStatus === 'not_requested' || (multiChain && highEventVolume) || (multiChain && (unmatchedSells > 0 || closedLots === 0)),
   }
 }
 

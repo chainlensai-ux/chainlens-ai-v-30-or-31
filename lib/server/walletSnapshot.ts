@@ -264,7 +264,11 @@ export type WalletSnapshot = {
   estimatedPnl: {
     status: 'ok' | 'partial' | 'unavailable' | 'error'
     confidence: 'high' | 'medium' | 'low' | null
+    // PHASE5-FIX-5: coveragePercent remains the unweighted per-token average (back-compat).
+    // coveragePercentValueWeighted weights each token's coverage by its current USD value so a
+    // $1 dust position no longer carries the same weight as a $100k holding in the headline metric.
     coveragePercent: number
+    coveragePercentValueWeighted: number
     source: 'activity_layer' | 'fallback_layer' | 'none'
     totalEstimatedPnlUsd: number | null
     unrealizedPnlUsd: number | null
@@ -375,6 +379,11 @@ export type WalletSnapshot = {
     avgCostBasisPerClosedLot: number | null
     economicSignificance: 'meaningful' | 'micro_sample' | 'open_check'
     economicSignificanceReason: string
+    // PHASE5-FIX-4: realizedPnlUsd above always includes dust lots (kept for backward
+    // compatibility with existing API shape). These two fields make the dust-adjusted view
+    // explicit instead of leaving the dust-inclusion/exclusion inconsistency implicit.
+    meaningfulRealizedPnlUsd: number | null
+    dustThresholdUsd: number
     missing: string[]
   }
   walletTradeStatsSource: 'base_sample' | 'historical_promoted_preview'
@@ -3060,6 +3069,10 @@ async function runTargetedUnmatchedSellBackfill(address: string, targets: Unmatc
     result.reason = 'prior_buy_found'
   }
 
+  // PHASE5-FIX-3: GoldRush's transactions_v3 endpoint is page-number (not cursor) paginated —
+  // same as buildWalletHistoricalCoverage's cursor adapter — so this loop is the page-number
+  // side of that same adapter pattern. It already terminates safely via two independent bounds:
+  // a per-token page cap (maxPagesPerToken) and a global page cap (maxPagesTotal via debug.pagesAttempted).
   for (let page = 0; page < maxPagesPerToken; page++) {
     for (const target of targets) {
       const targetKey = `${target.chain}:${target.tokenContract}`
@@ -4858,6 +4871,15 @@ function quarantinePnlOutliers(
   return { cleanLots, quarantinedLots, quarantineReasons: [...new Set(reasons)], sampleQuarantinedLots: sampleQ, maxReturnSeen, maxPnlSeen, publicStatsBlockedByOutliers, scoreBlockedByOutliers }
 }
 
+// PHASE5-FIX-4: dust threshold is relative to wallet size instead of a flat $25, which
+// disproportionately penalized small/Base wallets where every trade is small in absolute USD.
+// Scales with 1% of total wallet value, floored at $1 and capped at the old $25 default.
+function dustThresholdUsdFor(walletTotalValueUsd: number | null | undefined): number {
+  const v = walletTotalValueUsd ?? 0
+  if (v <= 0) return 5
+  return Math.max(1, Math.min(25, v * 0.01))
+}
+
 function buildTradeStatsSummary(
   closedLots: WalletClosedLot[],
   activityRequested: boolean,
@@ -4870,8 +4892,9 @@ function buildTradeStatsSummary(
 } {
   const WIN_RATE_THRESHOLD = 10
   const BREAK_EVEN_EPSILON = 0.01
-  // Lots below this USD cost basis are considered economically insignificant (dust)
-  const DUST_LOT_THRESHOLD = 25
+  // PHASE5-FIX-4: lots below this USD cost basis are dust; threshold is now relative to
+  // wallet size rather than a flat $25 (see dustThresholdUsdFor).
+  const DUST_LOT_THRESHOLD = dustThresholdUsdFor(walletTotalValueUsd)
 
   const emptyResult = (missing: string[]) => ({
     summary: {
@@ -4888,6 +4911,7 @@ function buildTradeStatsSummary(
       meaningfulClosedLots: 0, dustClosedLots: 0, meaningfulCostBasisUsd: 0,
       avgCostBasisPerClosedLot: null,
       economicSignificance: 'open_check' as const, economicSignificanceReason: 'no_closed_lots',
+      meaningfulRealizedPnlUsd: null, dustThresholdUsd: 0,
       missing,
     },
     debug: {
@@ -4965,6 +4989,10 @@ function buildTradeStatsSummary(
   const dustClosedLots = dustLots.length
   const meaningfulCostBasisUsd = meaningfulLots.reduce((s, l) => s + l.costBasisUsd, 0)
   const dustCostBasisUsd = dustLots.reduce((s, l) => s + l.costBasisUsd, 0)
+  // PHASE5-FIX-4: realizedPnlUsd (below) intentionally still includes dust lots for API
+  // back-compat, but meaningfulRealizedPnlUsd gives callers the dust-excluded figure that
+  // matches the population used for confidence/win-rate, so the two no longer silently disagree.
+  const meaningfulRealizedPnlUsd = meaningfulLots.reduce((s, l) => s + l.realizedPnlUsd, 0)
 
   let economicallyMeaningful = false
   let economicSignificanceReason = ''
@@ -5062,6 +5090,10 @@ function buildTradeStatsSummary(
   if (!economicallyMeaningful) missing.push('micro_trade_sample')
   if (returnPcts.length < n) missing.push('some_lots_missing_return_percent')
   if (holdingTimes.length < n) missing.push('some_lots_missing_holding_time')
+  // PHASE5-FIX-6: surface the dust-inclusion mismatch explicitly when it's non-trivial — i.e.
+  // realizedPnlUsd (all lots) and meaningfulRealizedPnlUsd (dust-excluded) actually disagree —
+  // instead of leaving the contradiction implicit between fields.
+  if (dustClosedLots > 0 && Math.abs(totalRealizedPnl - meaningfulRealizedPnlUsd) > 0.01) missing.push(`realized_pnl_includes_dust_lots:dust_adjusted=${meaningfulRealizedPnlUsd.toFixed(2)}`)
 
   const abbr = (addr: string) => `${addr.slice(0, 8)}...${addr.slice(-6)}`
 
@@ -5079,6 +5111,7 @@ function buildTradeStatsSummary(
       meaningfulClosedLots, dustClosedLots, meaningfulCostBasisUsd,
       avgCostBasisPerClosedLot, economicSignificance, economicSignificanceReason,
       missing,
+      meaningfulRealizedPnlUsd, dustThresholdUsd: DUST_LOT_THRESHOLD,
     },
     debug: {
       closedLots: n, uniqueTokensTraded, winningClosedLots: winning.length,
@@ -5111,13 +5144,15 @@ function buildTradeStatsSummary(
 // and a priced sell as a single closed "trade" and computes per-swap PnL.
 function buildPerSwapTradeStats(
   pricedEvidence: WalletTxEvidence[],
-  activityRequested: boolean
+  activityRequested: boolean,
+  walletTotalValueUsd?: number | null,
 ): {
   summary: WalletSnapshot['walletTradeStatsSummary']
   debug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['walletTradeStatsDebug']>
 } {
   const WIN_RATE_THRESHOLD = 10
-  const DUST_LOT_THRESHOLD = 25
+  // PHASE5-FIX-4: relative dust threshold (see dustThresholdUsdFor), not a flat $25.
+  const DUST_LOT_THRESHOLD = dustThresholdUsdFor(walletTotalValueUsd)
   const BREAK_EVEN_EPSILON = 0.01
 
   const emptyResult = (missing: string[]) => ({
@@ -5135,6 +5170,7 @@ function buildPerSwapTradeStats(
       meaningfulClosedLots: 0, dustClosedLots: 0, meaningfulCostBasisUsd: 0,
       avgCostBasisPerClosedLot: null,
       economicSignificance: 'open_check' as const, economicSignificanceReason: 'no_closed_lots',
+      meaningfulRealizedPnlUsd: null, dustThresholdUsd: 0,
       missing,
     },
     debug: {
@@ -5228,6 +5264,8 @@ function buildPerSwapTradeStats(
   const dustClosedLots         = dustTrades.length
   const meaningfulCostBasisUsd = meaningfulTrades.reduce((s, t) => s + t.costBasisUsd, 0)
   const dustCostBasisUsd       = dustTrades.reduce((s, t) => s + t.costBasisUsd, 0)
+  // PHASE5-FIX-4: dust-excluded realized PnL, mirroring buildTradeStatsSummary.
+  const meaningfulRealizedPnlUsd = meaningfulTrades.reduce((s, t) => s + t.pnlUsd, 0)
 
   let economicallyMeaningful = false
   let economicSignificanceReason = ''
@@ -5300,6 +5338,8 @@ function buildPerSwapTradeStats(
   }
   if (breakEven.length > 0) missing.push('break_even_lots_excluded_from_win_rate')
   if (!economicallyMeaningful)   missing.push('micro_trade_sample')
+  // PHASE5-FIX-6: same dust-inclusion disclosure as buildTradeStatsSummary.
+  if (dustClosedLots > 0 && Math.abs(totalRealizedPnl - meaningfulRealizedPnlUsd) > 0.01) missing.push(`realized_pnl_includes_dust_lots:dust_adjusted=${meaningfulRealizedPnlUsd.toFixed(2)}`)
 
   const abbr = (h: string) => `${h.slice(0, 8)}...${h.slice(-6)}`
 
@@ -5316,6 +5356,7 @@ function buildPerSwapTradeStats(
       confidenceLabel, sampleWarning,
       meaningfulClosedLots, dustClosedLots, meaningfulCostBasisUsd,
       avgCostBasisPerClosedLot, economicSignificance, economicSignificanceReason,
+      meaningfulRealizedPnlUsd, dustThresholdUsd: DUST_LOT_THRESHOLD,
       missing,
     },
     debug: {
@@ -8462,7 +8503,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const byToken = new Map<string, PnlEvent[]>()
   for (const e of events.slice(0, 250)) byToken.set(e.contract, [...(byToken.get(e.contract) ?? []), e])
   const pnlTokens: WalletSnapshot['estimatedPnl']['tokens'] = []
-  let realized = 0, unrealized = 0, coverageNum = 0
+  // PHASE5-FIX-5: value-weighted coverage accumulators alongside the existing unweighted ones.
+  let realized = 0, unrealized = 0, coverageNum = 0, coverageWeightedNum = 0, coverageWeightTotal = 0
   for (const h of holdings.slice(0, 25)) {
     const tokenEvents = byToken.get((h.contract ?? '').toLowerCase()) ?? []
     const buys = tokenEvents.filter(e => e.direction === 'buy')
@@ -8485,16 +8527,22 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     if (estimatedUnrealized !== null && coverage >= COV_THRESHOLD) unrealized += estimatedUnrealized
     if (estimatedRealized !== null && coverage >= COV_THRESHOLD) realized += estimatedRealized
     coverageNum += coverage
+    // PHASE5-FIX-5: weight this token's coverage contribution by its USD value.
+    const _coverageWeight = Math.abs(h.value)
+    coverageWeightedNum += coverage * _coverageWeight
+    coverageWeightTotal += _coverageWeight
     pnlTokens.push({ symbol: h.symbol, contract: (h.contract ?? '').toLowerCase(), currentValueUsd: h.value, estimatedCostBasisUsd, estimatedUnrealizedPnlUsd: coverage >= COV_THRESHOLD ? estimatedUnrealized : null, estimatedRealizedPnlUsd: coverage >= COV_THRESHOLD ? estimatedRealized : null, buysDetected: buys.length, sellsDetected: sells.length, unexplainedTransfers: unexplained, coveragePercent: coverage, confidence: conf, reason: coverage < COV_THRESHOLD ? 'PnL partial/unavailable: historical cost basis coverage too low.' : 'Estimated from average-cost using indexed transfers.' })
   }
   const coveragePercent = pnlTokens.length ? Math.round(coverageNum / pnlTokens.length) : 0
+  // PHASE5-FIX-5: coverageScore = sum(weight * coverage) / sum(weight), weight = abs(valueUsd).
+  const coveragePercentValueWeighted = coverageWeightTotal > 0 ? Math.round(coverageWeightedNum / coverageWeightTotal) : coveragePercent
   const status: WalletSnapshot['estimatedPnl']['status'] = pnlTokens.length === 0 || pnlSource === 'none' ? 'unavailable' : coveragePercent >= 40 ? 'ok' : 'partial'
   const filteredPnlTokens = pnlTokens.filter((t) => t.coveragePercent > 0).sort((a, b) => (b.currentValueUsd - a.currentValueUsd)).slice(0, 10)
   const pnlCoverageReason = status === 'unavailable'
     ? (activityProviderUnavailable ? 'Activity source did not return usable history. No PnL was calculated.' : pnlSource === 'none' ? 'Enable Deep Activity Scan for full transfer history and cost-basis estimation.' : 'Historical cost basis coverage is too low for a reliable estimate.')
     : 'Estimated from indexed transfer history with average-cost method.'
   const pnlSourcePublic: 'activity_layer' | 'fallback_layer' | 'unavailable' = pnlSource === 'none' ? 'unavailable' : pnlSource
-  const estimatedPnl: WalletSnapshot['estimatedPnl'] = { status, confidence: status === 'unavailable' ? null : confidenceFromCoverage(coveragePercent), coveragePercent, source: pnlSourcePublic === 'unavailable' ? 'none' : pnlSourcePublic, totalEstimatedPnlUsd: status === 'unavailable' ? null : realized + unrealized, unrealizedPnlUsd: status === 'unavailable' ? null : unrealized, realizedPnlUsd: status === 'unavailable' ? null : realized, method: 'average_cost_estimate', tokens: filteredPnlTokens, reason: status === 'unavailable' ? (activityProviderUnavailable ? 'Activity source did not return usable history. No PnL was calculated.' : 'PnL unavailable — historical cost basis coverage is too low.') : 'Estimated PnL Beta derived from indexed wallet transfer history.' }
+  const estimatedPnl: WalletSnapshot['estimatedPnl'] = { status, confidence: status === 'unavailable' ? null : confidenceFromCoverage(coveragePercent), coveragePercent, coveragePercentValueWeighted, source: pnlSourcePublic === 'unavailable' ? 'none' : pnlSourcePublic, totalEstimatedPnlUsd: status === 'unavailable' ? null : realized + unrealized, unrealizedPnlUsd: status === 'unavailable' ? null : unrealized, realizedPnlUsd: status === 'unavailable' ? null : realized, method: 'average_cost_estimate', tokens: filteredPnlTokens, reason: status === 'unavailable' ? (activityProviderUnavailable ? 'Activity source did not return usable history. No PnL was calculated.' : 'PnL unavailable — historical cost basis coverage is too low.') : 'Estimated PnL Beta derived from indexed wallet transfer history.' }
   let { evidenceList, summary: walletEvidenceSummary, debug: _txEvidenceDebugBase } = buildTxEvidenceFromEvents(events, activityRequested, activityProviderUnavailable)
   tokenMeter.measure('normalization', { events, evidenceList, walletEvidenceSummary, txEvidenceDebug: _txEvidenceDebugBase, estimatedPnl })
   tokenMeter.endTokenMeter('normalization')
@@ -9043,7 +9091,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     walletTradeStatsSummary = { ...walletTradeStatsSummary, missing: [...walletTradeStatsSummary.missing, 'swap_candidates_unpriced_no_closed_lots'] }
   }
   if (_closedLots.length === 0 && activityRequested) {
-    const _perSwap = buildPerSwapTradeStats(_pricedEvidence, activityRequested)
+    const _perSwap = buildPerSwapTradeStats(_pricedEvidence, activityRequested, totalValue)
     if (_perSwap.summary.closedLots > 0) {
       walletTradeStatsSummary = _perSwap.summary
       _tradeStatsDebug = _perSwap.debug
@@ -9093,7 +9141,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     const c = lotSummary.closedLots
     const cb = lotSummary.totalCostBasisClosedUsd ?? 0
     const pnl = Math.abs(lotSummary.realizedPnlUsd ?? 0)
-    const DUST_THRESHOLD = 25
+    // PHASE5-FIX-4: relative dust threshold, consistent with buildTradeStatsSummary.
+    const DUST_THRESHOLD = dustThresholdUsdFor(totalValue)
     const meaningfulLots = lots.filter(l => l.costBasisUsd >= DUST_THRESHOLD)
     const meaningfulCount = meaningfulLots.length
     const meaningfulBasis = meaningfulLots.reduce((s, l) => s + l.costBasisUsd, 0)
@@ -9177,7 +9226,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       }
       tokenMeter.measure('tradeStats', _closedLots, walletTradeStatsSummary, _tradeStatsDebug)
       if (_closedLots.length === 0 && activityRequested) {
-        const _perSwap = buildPerSwapTradeStats(_pricedEvidence, activityRequested)
+        const _perSwap = buildPerSwapTradeStats(_pricedEvidence, activityRequested, totalValue)
         if (_perSwap.summary.closedLots > 0) {
           walletTradeStatsSummary = _perSwap.summary
           _tradeStatsDebug = _perSwap.debug
@@ -9342,7 +9391,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         walletTradeStatsSummary = { ...walletTradeStatsSummary, missing: [...walletTradeStatsSummary.missing, 'swap_candidates_unpriced_no_closed_lots'] }
       }
       if (_closedLots.length === 0 && activityRequested) {
-        const _ps = buildPerSwapTradeStats(_pricedEvidence, activityRequested)
+        const _ps = buildPerSwapTradeStats(_pricedEvidence, activityRequested, totalValue)
         if (_ps.summary.closedLots > 0) { walletTradeStatsSummary = _ps.summary; _tradeStatsDebug = _ps.debug }
       }
       tokenMeter.measure('tradeStats', walletTradeStatsSummary)
@@ -9468,7 +9517,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
           walletTradeStatsSummary = { ...walletTradeStatsSummary, missing: [...walletTradeStatsSummary.missing, 'swap_candidates_unpriced_no_closed_lots'] }
         }
         if (_closedLots.length === 0 && activityRequested) {
-          const _ps = buildPerSwapTradeStats(_pricedEvidence, activityRequested)
+          const _ps = buildPerSwapTradeStats(_pricedEvidence, activityRequested, totalValue)
           if (_ps.summary.closedLots > 0) { walletTradeStatsSummary = _ps.summary; _tradeStatsDebug = _ps.debug }
         }
         _tradeStatsInputDebug = {
