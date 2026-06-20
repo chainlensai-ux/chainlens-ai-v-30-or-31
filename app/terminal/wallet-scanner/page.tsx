@@ -1593,7 +1593,6 @@ export default function WalletScannerPage() {
             const hasPortfolioIntelligence = sorted.length > 0 || result.totalValue > 0
             const hasCortexFacts = Boolean(result.walletFacts)
             const showLegacyPortfolioCards = !(hasPortfolioIntelligence && hasCortexFacts)
-            const walletProfileGradeTone = gradeToneFor(result.walletProfile?.grade)
             const walletCategory = cleanWalletArchetype(result.walletProfile?.walletCategory)
             const portfolioBehavior = cleanWalletArchetype(result.walletProfile?.portfolioBehavior)
             const tradingBehavior = cleanWalletArchetype(result.walletProfile?.tradingBehavior)
@@ -1623,9 +1622,9 @@ export default function WalletScannerPage() {
                 const scoreGrade = scoreGradeFromProfile(result, walletIntel)
                 const tone = gradeToneFor(scoreGrade.grade)
                 const chains = pi.chains.length > 0 ? pi.chains.map(c => c.charAt(0).toUpperCase() + c.slice(1)) : ['Ethereum', 'Base']
-                const category = walletCategoryFromValue(pi.totalValue)
-                const portfolioClass = derivePortfolioBehaviorFromHoldings(pi)
-                const tradeClass = deriveTradingBehaviorFromEvidence(result)
+                const category = walletCategory ?? walletCategoryFromValue(pi.totalValue)
+                const portfolioClass = portfolioBehavior ?? derivePortfolioBehaviorFromHoldings(pi)
+                const tradeClass = tradingBehavior ?? deriveTradingBehaviorFromEvidence(result)
                 const risk = deriveRiskLabel(pi.topShare, pi.top3Share, pi.stablePercent)
                 const tradeEvidenceStrong = Boolean(ts && ts.closedLots > 0 && ts.realizedPnlUsd !== null)
                 const allocation = allocationRows(result)
@@ -1638,6 +1637,17 @@ export default function WalletScannerPage() {
                 const coverage = result.walletProfile?.evidenceCoverage ?? (Math.round(((result.walletEvidenceSummary?.hashCoverage ?? 0) + (result.walletEvidenceSummary?.timestampCoverage ?? 0)) / 2) || (result.walletModuleCoverage ? 84 : 0))
                 const confidence = result.walletProfile?.confidence ?? (coverage >= 80 ? 'high' : coverage >= 50 ? 'medium' : 'low')
                 const summary = result.walletProfile?.profileSummary ?? institutionalSummary(result, pi, tradeClass)
+                const strengths = result.walletProfile?.strengths ?? []
+                const weaknesses = result.walletProfile?.weaknesses ?? []
+                const profileSignals = result.walletProfile?.signals ?? []
+                const profileReasons = result.walletProfile?.reasons ?? []
+                const nextActions = [
+                  result.walletProfile?.nextAction,
+                  'Review Top Holdings',
+                  'Inspect Realized Trades',
+                  'Compare Wallet Peers',
+                  'Monitor Exposure Changes',
+                ].filter((action, index, actions): action is string => Boolean(action && actions.indexOf(action) === index)).slice(0, 4)
                 const activeChains = new Set([...(pi.chains ?? []), ...(result.walletClosedTradeSamples ?? []).map(t => t.chain)]).size || pi.chains.length || 1
                 const behaviorTags = [
                   ...(result.walletFacts?.flowRead.accumulationSignals?.length ? ['Accumulation'] : []),
@@ -1726,18 +1736,21 @@ export default function WalletScannerPage() {
                         {[
                           ['Confidence', confidence.charAt(0).toUpperCase() + confidence.slice(1)],
                           ['Data Coverage', `${coverage}%`],
-                          ['Missing Labels', String(result.walletProfile?.weaknesses?.length ?? missing.length)],
+                          ['Missing Labels', String(weaknesses.length || missing.length)],
                           ['Unverified Pairs', String(result.walletPriceEvidenceSummary?.openCheckEvents ?? result.walletSwapSummary?.lowConfidenceCount ?? 0)],
                           ['Portfolio Confidence', result.walletProfile?.portfolioConfidence ?? (pi.holdingsCount > 0 ? 'high' : 'low')],
                           ['Trading Confidence', result.walletProfile?.tradingConfidence ?? (tradeEvidenceStrong ? ts!.confidence : 'low')],
                         ].map(([label,value]) => <div key={label} className="wpv3-metric-row"><span className="wpv3-label">{label}</span><span className="wpv3-value" style={{ fontSize: '20px', textTransform: 'capitalize' }}>{value}</span></div>)}
-                        <div className="wpv3-label" style={{ marginTop: '14px' }}>Needs Review</div>{(missing.length ? missing : ['NFT Activity','Bridge Flows','Private Label Attribution']).map(x => <div key={x} className="wpv3-support" style={{ marginTop: '6px' }}>○ {x.replace(/_/g, ' ')}</div>)}
+                        <div className="wpv3-label" style={{ marginTop: '14px' }}>Strengths</div>{(strengths.length ? strengths : profileSignals).slice(0, 3).map(x => <div key={x} className="wpv3-support" style={{ marginTop: '6px', color: '#7DDC9A' }}>✓ {x}</div>)}
+                        <div className="wpv3-label" style={{ marginTop: '14px' }}>Needs Review</div>{(weaknesses.length ? weaknesses : (missing.length ? missing.map(x => x.replace(/_/g, ' ')) : ['NFT Activity','Bridge Flows','Private Label Attribution'])).slice(0, 3).map(x => <div key={x} className="wpv3-support" style={{ marginTop: '6px' }}>○ {x}</div>)}
                         {walletIntel.openChecks[0] && <div className="wpv3-support" style={{ marginTop: '10px', color: '#E8C76D' }}>Open Check: {walletIntel.openChecks[0]}</div>}
                       </div>
 
                       <div className="wpv3-card">
                         <p className="wpv3-title">Next Actions</p>
-                        {['Review Top Holdings','Inspect Realized Trades','Compare Wallet Peers','Monitor Exposure Changes'].map((x,i) => <div key={x} className="wpv3-metric-row"><span className="wpv3-label">{i+1}. {x}</span></div>)}
+                        {nextActions.map((x,i) => <div key={x} className="wpv3-metric-row"><span className="wpv3-label">{i+1}. {x}</span></div>)}
+                        <div className="wpv3-label" style={{ marginTop: '14px' }}>Followability</div><div className="wpv3-value" style={{ fontSize: '20px', marginTop: '6px' }}>{result.walletProfile?.followability ?? 'Open Check'}</div>
+                        {profileReasons[0] && <p className="wpv3-support" style={{ marginTop: '10px' }}>{profileReasons[0]}</p>}
                         <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginTop: '18px' }}><button className="wpv3-button wpv3-button-primary">Add To Watchlist</button><button className="wpv3-button">Export Report</button><button className="wpv3-button">Set Alert</button></div>
                       </div>
                     </div>
@@ -1745,70 +1758,6 @@ export default function WalletScannerPage() {
                 )
               })()}
 
-              {/* Wallet Profile — deterministic archetype + score from existing scan evidence */}
-              <div style={{ border: '1px solid rgba(139,92,246,0.22)', borderRadius: '14px', padding: '18px 20px', background: 'rgba(139,92,246,0.04)' }}>
-                <div style={{ fontSize: '12px', fontWeight: 600, color: '#c4b5fd', letterSpacing: '0.04em', textTransform: 'uppercase', marginBottom: '12px' }}>Wallet Profile</div>
-                {result.walletProfile && result.walletProfile.score != null && result.walletProfile.grade != null ? (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '20px', alignItems: 'baseline' }}>
-                      <div>
-                        <div style={{ fontSize: '11px', color: '#94a3b8' }}>Wallet Score</div>
-                        <div style={{ fontSize: '22px', fontWeight: 700, color: walletProfileGradeTone.color }}>{result.walletProfile.score}<span style={{ fontSize: '13px', color: '#94a3b8' }}>/100</span></div>
-                      </div>
-                      <div>
-                        <div style={{ fontSize: '11px', color: '#94a3b8' }}>Grade</div>
-                        <div style={{ display: 'inline-flex', alignItems: 'center', borderRadius: '999px', border: `1px solid ${walletProfileGradeTone.border}`, background: walletProfileGradeTone.bg, color: walletProfileGradeTone.color, padding: '4px 11px', fontSize: '22px', fontWeight: 700, lineHeight: 1 }}>{result.walletProfile.grade}</div>
-                      </div>
-                      <div>
-                        <div style={{ fontSize: '11px', color: '#94a3b8' }}>Portfolio Confidence</div>
-                        <div style={{ fontSize: '14px', fontWeight: 600, color: '#c4b5fd', textTransform: 'capitalize' }}>{result.walletProfile.portfolioConfidence}</div>
-                      </div>
-                      <div>
-                        <div style={{ fontSize: '11px', color: '#94a3b8' }}>Trading Confidence</div>
-                        <div style={{ fontSize: '14px', fontWeight: 600, color: '#c4b5fd', textTransform: 'capitalize' }}>{result.walletProfile.tradingConfidence}</div>
-                      </div>
-                    </div>
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '20px' }}>
-                      <div>
-                        <div style={{ fontSize: '11px', color: '#94a3b8' }}>Category</div>
-                        <div style={{ display: 'inline-flex', alignItems: 'center', borderRadius: '999px', border: '1px solid rgba(148,163,184,0.24)', background: 'rgba(148,163,184,0.08)', padding: '4px 10px', fontSize: '14px', color: '#f1f5f9' }}>{walletCategory ?? 'Not Yet Classified'}</div>
-                      </div>
-                      <div>
-                        <div style={{ fontSize: '11px', color: '#94a3b8' }}>Portfolio Behavior</div>
-                        <div style={{ display: 'inline-flex', alignItems: 'center', borderRadius: '999px', border: '1px solid rgba(45,212,191,0.30)', background: 'rgba(45,212,191,0.10)', padding: '4px 10px', fontSize: '14px', fontWeight: 600, color: '#5eead4' }}>{portfolioBehavior ?? 'Not Yet Classified'}</div>
-                      </div>
-                      <div>
-                        <div style={{ fontSize: '11px', color: '#94a3b8' }}>Trading Behavior</div>
-                        <div style={{ display: 'inline-flex', alignItems: 'center', borderRadius: '999px', border: '1px solid rgba(125,211,252,0.28)', background: 'rgba(125,211,252,0.08)', padding: '4px 10px', fontSize: '14px', fontWeight: 600, color: '#7dd3fc' }}>{tradingBehavior ?? 'Insufficient Evidence'}</div>
-                      </div>
-                    </div>
-                    {result.walletProfile.profileSummary && (
-                      <div style={{ fontSize: '13px', color: '#cbd5e1', lineHeight: 1.6 }}>{result.walletProfile.profileSummary}</div>
-                    )}
-                    {result.walletProfile.signals.length > 0 && (
-                      <div>
-                        <div style={{ fontSize: '11px', color: '#94a3b8', marginBottom: '4px' }}>Signals</div>
-                        <ul style={{ margin: 0, paddingLeft: '18px', fontSize: '12px', color: '#94a3b8', lineHeight: 1.6 }}>
-                          {result.walletProfile.signals.map((s, i) => <li key={i}>{s}</li>)}
-                        </ul>
-                      </div>
-                    )}
-                    {result.walletProfile.reasons.length > 0 && (
-                      <div>
-                        <div style={{ fontSize: '11px', color: '#94a3b8', marginBottom: '4px' }}>Reasons</div>
-                        <ul style={{ margin: 0, paddingLeft: '18px', fontSize: '12px', color: '#94a3b8', lineHeight: 1.6 }}>
-                          {result.walletProfile.reasons.map((r, i) => <li key={i}>{r}</li>)}
-                        </ul>
-                      </div>
-                    )}
-                  </div>
-                ) : (
-                  <div style={{ fontSize: '13px', color: '#94a3b8' }}>
-                    Insufficient evidence to score or classify this wallet yet.
-                    {result.walletProfile?.reasons?.[0] && <div style={{ marginTop: '6px', fontSize: '12px', color: '#64748b' }}>{result.walletProfile.reasons[0]}</div>}
-                  </div>
-                )}
-              </div>
 
               {/* Module coverage strip — shows what was checked vs what had evidence */}
               {result.walletModuleCoverage && (() => {
