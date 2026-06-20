@@ -476,6 +476,22 @@ export type WalletSnapshot = {
   walletHistoricalScanNote?: string | null
   walletFacts?: WalletFacts
   walletProfile?: WalletProfile
+  walletProfileDebug?: {
+    scoreInputs: {
+      totalValueUsd: number
+      holdingsCount: number
+      chainCount: number
+      concentrationLabel: string | null
+      closedLots: number
+      winRatePercent: number | null
+      economicSignificance: string | null | undefined
+      estimatedPnlStatus: string | null | undefined
+      estimatedPnlConfidence: string | null | undefined
+    }
+    evidenceCoverage: number
+    cacheSource: 'live' | 'memory_cache' | 'evidence_guard_restored'
+    profileVersion: string
+  }
   _debug?: {
     walletFactsShapeIssues?: string[]
     walletScannerDiagnostics?: {
@@ -1396,6 +1412,25 @@ const SNAPSHOT_HISTORY_TTL_MS = 15 * 60 * 1000
 const SNAPSHOT_SCHEMA_VERSION = 'v39'
 type SnapshotCacheEntry = { snapshot: WalletSnapshot; cachedAt: number; ttlMs: number }
 const snapshotMemCache = new Map<string, SnapshotCacheEntry>()
+
+// Evidence-regression guard: keyed by address only (independent of the holdings/activity cache
+// split above), so a normal scan can never silently overwrite the strongest trade/PnL evidence a
+// prior deep/historical scan already verified for this wallet. Without this, a scan that hits a
+// provider timeout or skips a fetch (fewer closed lots, downgraded confidence) would otherwise be
+// scored as if that weaker result were the wallet's ground truth, producing score/grade drift
+// across consecutive scans of an unchanged wallet. TTL is generous (matches the historical TTL)
+// since verified trade evidence does not go stale as quickly as live holdings/prices.
+const VERIFIED_EVIDENCE_TTL_MS = 60 * 60 * 1000
+type VerifiedEvidenceEntry = {
+  cachedAt: number
+  closedLots: number
+  estimatedPnlStatus: string | undefined
+  walletLotSummary: WalletSnapshot['walletLotSummary']
+  walletTradeStatsSummary: WalletSnapshot['walletTradeStatsSummary']
+  estimatedPnl: WalletSnapshot['estimatedPnl']
+  walletHistoricalCoverageSummary: WalletSnapshot['walletHistoricalCoverageSummary']
+}
+const verifiedEvidenceCache = new Map<string, VerifiedEvidenceEntry>()
 
 const HISTORICAL_COVERAGE_TTL_MS = 24 * 60 * 60 * 1000
 type WalletHistoricalCoverageOutput = {
@@ -7181,6 +7216,10 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
               refreshBypassedCache: false, cacheAgeSeconds, cacheTtlSeconds: cached.ttlMs / 1000,
             },
           } : undefined,
+          walletProfileDebug: cached.snapshot.walletProfileDebug ? {
+            ...cached.snapshot.walletProfileDebug,
+            cacheSource: 'memory_cache',
+          } : undefined,
         }
         return validateWalletFactsShape(cachedSnapshot)
       }
@@ -9934,7 +9973,66 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     snapshot._diagnostics.apiAudit.warnings = _apiAudit.warnings
   }
   validateWalletFactsShape(snapshot)
+
+  // Evidence-regression guard: never let a transient/partial fetch (provider timeout, skipped
+  // backfill on a normal scan, pagination cut short, etc.) score weaker than the strongest
+  // trade/PnL evidence already verified for this address. Compare against the address-keyed
+  // verifiedEvidenceCache (independent of the holdings/activity cacheKey split above) and restore
+  // the prior verified fields onto this snapshot if the live result regressed.
+  let evidenceCacheSource: 'live' | 'evidence_guard_restored' = 'live'
+  if (/^0x[0-9a-fA-F]{40}$/i.test(addrNorm)) {
+    const liveClosedLots = snapshot.walletTradeStatsSummary?.closedLots ?? snapshot.walletLotSummary?.closedLots ?? 0
+    const livePnlStatus = snapshot.estimatedPnl?.status
+    const verified = verifiedEvidenceCache.get(addrNorm)
+    const verifiedFresh = verified && (Date.now() - verified.cachedAt) <= VERIFIED_EVIDENCE_TTL_MS
+    const livePnlIsWorse = (status: string | undefined) => status === 'unavailable' || status === 'error'
+    const regressed = verifiedFresh && (
+      liveClosedLots < verified.closedLots ||
+      (livePnlIsWorse(livePnlStatus) && !livePnlIsWorse(verified.estimatedPnlStatus))
+    )
+    if (regressed && verified) {
+      snapshot.walletLotSummary = verified.walletLotSummary
+      snapshot.walletTradeStatsSummary = verified.walletTradeStatsSummary
+      snapshot.estimatedPnl = verified.estimatedPnl
+      snapshot.walletHistoricalCoverageSummary = verified.walletHistoricalCoverageSummary
+      evidenceCacheSource = 'evidence_guard_restored'
+    } else {
+      const closedLotsForCache = evidenceCacheSource === 'live' ? liveClosedLots : verified?.closedLots ?? liveClosedLots
+      verifiedEvidenceCache.set(addrNorm, {
+        cachedAt: Date.now(),
+        closedLots: closedLotsForCache,
+        estimatedPnlStatus: livePnlStatus,
+        walletLotSummary: snapshot.walletLotSummary,
+        walletTradeStatsSummary: snapshot.walletTradeStatsSummary,
+        estimatedPnl: snapshot.estimatedPnl,
+        walletHistoricalCoverageSummary: snapshot.walletHistoricalCoverageSummary,
+      })
+    }
+  }
+
   snapshot.walletProfile = computeWalletProfile(snapshot)
+
+  const debugFacts = snapshot.walletFacts
+  const debugSummary = debugFacts?.summary
+  const debugChainExposure = debugSummary?.chainExposure ?? []
+  const debugHoldings = Array.isArray(snapshot.holdings) ? snapshot.holdings : []
+  snapshot.walletProfileDebug = {
+    scoreInputs: {
+      totalValueUsd: Number.isFinite(snapshot.totalValue) ? snapshot.totalValue : 0,
+      holdingsCount: debugHoldings.length,
+      chainCount: debugChainExposure.length || new Set(debugHoldings.map((h) => h.chain).filter(Boolean)).size,
+      concentrationLabel: debugSummary?.concentrationLabel ?? null,
+      closedLots: snapshot.walletTradeStatsSummary?.closedLots ?? snapshot.walletLotSummary?.closedLots ?? 0,
+      winRatePercent: snapshot.walletTradeStatsSummary?.winRatePercent ?? null,
+      economicSignificance: snapshot.walletTradeStatsSummary?.economicSignificance ?? null,
+      estimatedPnlStatus: snapshot.estimatedPnl?.status ?? null,
+      estimatedPnlConfidence: snapshot.estimatedPnl?.confidence ?? null,
+    },
+    evidenceCoverage: snapshot.walletProfile?.evidenceCoverage ?? 0,
+    cacheSource: evidenceCacheSource,
+    profileVersion: SNAPSHOT_SCHEMA_VERSION,
+  }
+
   if (/^0x[0-9a-fA-F]{40}$/i.test(addrNorm)) snapshotMemCache.set(cacheKey, { snapshot, cachedAt: Date.now(), ttlMs: snapshotTtlMs })
   return snapshot
 }
