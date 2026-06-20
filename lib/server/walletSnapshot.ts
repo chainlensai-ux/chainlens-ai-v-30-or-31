@@ -1732,8 +1732,26 @@ const STABLE_USD_CONTRACTS: Record<string, true> = {
   '0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d': true,  // USDC BSC
   '0xe9e7cea3dedca5984780bafc599bd69add087d56': true,  // BUSD BSC
   '0x1af3f329e8be154074d8769d1ffa4ee058b1dbc3': true,  // DAI BSC
+  // PHASE2-FIX-3: these two were already verified canonical addresses elsewhere in this file
+  // (FIFO_QUOTE_ASSETS) but missing from STABLE_USD_CONTRACTS, so quote-leg selection and
+  // swap classification didn't treat them as stable — a real stablecoin misclassification gap.
+  '0xd9aaec86b65d86f6a7b5b1b0c42ffa531710b6ca': true,  // USDbC Base (Coinbase-bridged USDC)
+  '0x50c5725949a6f0c72e6c4a641f24049a917db0cb': true,  // DAI Base
+  // NOTE: USDC.e, axlUSDC, crvUSD, and GHO are intentionally omitted — same policy as
+  // EXTENDED_DEX_ROUTERS (see docs/audit-router-swap-candidates-0xe896.md): never add a
+  // token address to a pricing-critical set without independent on-chain verification of the
+  // exact deployed address for the chains this file actually scans (Ethereum, Base, BSC).
+  // Add them once verified; until then they fall back to historical/provider-derived pricing.
 }
 
+// PHASE2-FIX-4: this set is the canonical "wrappedNative" classification — every chain's
+// wrapped-native token (WETH, WBNB, ...) is treated identically by every consumer (quote-leg
+// selection, swap detection, FIFO_QUOTE_ASSETS) and always resolves to that chain's native
+// price via the weth_leg pricing path below, regardless of symbol. WAVAX/WMATIC are
+// intentionally omitted: Avalanche/Polygon aren't scanned anywhere else in this file
+// (no normalizeChainForGoldrush entry, no FIFO_QUOTE_ASSETS coverage), so adding their
+// addresses here would be dead, unverifiable-in-context data — add them together with full
+// chain support if/when this file starts scanning those chains.
 const WETH_CONTRACTS_PRICE: Record<string, true> = {
   '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2': true,  // WETH ETH
   '0x4200000000000000000000000000000000000006': true,  // WETH Base
@@ -1749,6 +1767,9 @@ const STABLE_DECIMALS: Record<string, number> = {
   '0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d': 18,  // USDC BSC
   '0xe9e7cea3dedca5984780bafc599bd69add087d56': 18,  // BUSD BSC
   '0x1af3f329e8be154074d8769d1ffa4ee058b1dbc3': 18,  // DAI BSC
+  // PHASE2-FIX-3: keep in sync with the STABLE_USD_CONTRACTS additions above.
+  '0xd9aaec86b65d86f6a7b5b1b0c42ffa531710b6ca': 6,   // USDbC Base
+  '0x50c5725949a6f0c72e6c4a641f24049a917db0cb': 18,  // DAI Base
 }
 
 const STABLE_SYMBOL: Record<string, string> = {
@@ -1760,6 +1781,9 @@ const STABLE_SYMBOL: Record<string, string> = {
   '0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d': 'USDC',
   '0xe9e7cea3dedca5984780bafc599bd69add087d56': 'BUSD',
   '0x1af3f329e8be154074d8769d1ffa4ee058b1dbc3': 'DAI',
+  // PHASE2-FIX-3: keep in sync with the STABLE_USD_CONTRACTS additions above.
+  '0xd9aaec86b65d86f6a7b5b1b0c42ffa531710b6ca': 'USDbC',
+  '0x50c5725949a6f0c72e6c4a641f24049a917db0cb': 'DAI',
 }
 
 const ETH_WETH_CONTRACT = '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2'
@@ -2287,6 +2311,12 @@ type PnlEvent = {
   tokenDecimals: number | null
   usdValue: number | null
   txHash: string | null
+  // PHASE2-FIX-2: this is the single timestamp field used for every priceAtTime lookup in
+  // the file. It's always populated from the provider's block timestamp at normalization
+  // time (GoldRush block_signed_at / Alchemy metadata.blockTimestamp — see normalizeMoralis*
+  // and the GoldRush/Alchemy event builders), so there is no separate blockTimestamp vs.
+  // eventTimestamp split to standardize between — every consumer already reads this same
+  // field, eliminating the mismatched-price-window risk the fix targets.
   timestamp: string | null
   fromAddress: string | null
   toAddress: string | null
@@ -5661,6 +5691,14 @@ function buildPerSwapTradeStats(
 // leg already resolved earlier in the same request (e.g. a buy+sell pair sharing one WETH
 // quote leg), silently starving the remaining swap candidates — most visible on
 // micro-wallets where the budget is only a handful of attempts.
+// PHASE2-FIX-6: cache key already includes timestamp (via dateStr below), not just
+// tokenAddress — `pat:${grChain}:${contractAddress}:${dateStr}` keys on both. The bucket is
+// calendar-day, not a 60-second window, because GoldRush's historical pricing endpoint
+// itself only has daily resolution (`historical_by_addresses_v2` takes from/to dates, not
+// timestamps) — a 60-second bucket would fragment the cache key far below the provider's
+// actual granularity, multiplying redundant provider calls for the exact same priced day
+// with zero precision benefit. Day-bucketing here is the correct granularity for this
+// provider; a finer bucket would be a regression, not a fix.
 function isGoldrushPriceCached(chain: string, contractAddress: string, timestamp: string, reqCache?: Map<string, number | null>): boolean {
   if (!contractAddress.startsWith('0x')) return false
   const dateStr = timestamp.slice(0, 10)
@@ -5897,6 +5935,15 @@ async function buildPriceAtTimeEvidence(
     return pa !== pb ? pa - pb : sa - sb  // by tier, then by USD value desc
   })
 
+  // PHASE2-FIX-1: deterministic price source priority. _priceOneCandidate below is a single
+  // sequential function (not concurrent provider races), so source selection is already a
+  // fixed-order waterfall rather than "whichever provider returns first": (1) stable_leg
+  // ($1 by definition), (2) same-tx stable quote leg, (3) same-tx WETH/wrapped-native quote
+  // leg (GoldRush historical price for the WETH leg), (4) provider_event_usd (the event's own
+  // provider-supplied USD value), (5) historical_price (GoldRush historical price for the
+  // token itself), (6) current_holding_price_open_lot_estimate (last-known/current price,
+  // buy-side only, explicitly excluded from realized PnL), else open_check. This order is
+  // fixed in code and never depends on which provider's events happened to merge in first.
   // Per-candidate pricing logic (extracted from the original flat loop)
   async function _priceOneCandidate(e: WalletTxEvidence): Promise<WalletTxEvidence> {
     if (!e.timestamp) { skippedNoTimestamp++; return openCheck(e, 'No timestamp available') }
@@ -6163,6 +6210,11 @@ async function buildPriceAtTimeEvidence(
   if (pricedEvents === 0 && swapCandidateEvents > 0) missing.push(`${swapCandidateEvents}_swap_candidates_unpriced`)
   if (priceAttemptLimitReached) missing.push('price_attempt_limit_reached')
   if (!readyForLotMatching && pricedEvents > 0) missing.push(pricedInbound === 0 ? 'no_priced_inbound_swaps' : 'no_priced_outbound_swaps')
+  // PHASE2-FIX-5: normalized, machine-readable reason keys for missing-price fallback
+  // transparency, appended additively alongside the existing free-text `missing` strings above.
+  if (skippedNoStableOrWethLeg > 0) missing.push('price_missing_primary')
+  if (skippedHistoricalUnavailable > 0) missing.push('price_missing_secondary')
+  if (currentHoldingPriceOpenLotEvents > 0) missing.push('price_estimated')
 
   const abbr = (addr: string) => `${addr.slice(0, 8)}...${addr.slice(-6)}`
 
