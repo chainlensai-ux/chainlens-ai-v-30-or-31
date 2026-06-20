@@ -559,6 +559,17 @@ export type WalletSnapshot = {
     [key: string]: unknown
   }
   _diagnostics?: {
+    // SYNTH-RECOVERY-FIX-5: debug bundle for the synthetic-FIFO-lot-triggered targeted historical
+    // recovery path. Purely additive/optional diagnostics — does not change any existing field.
+    syntheticLotRecoveryDebug?: {
+      syntheticLotsDetected: boolean
+      syntheticLotTokenTargets: string[]
+      historicalTriggeredBySyntheticLots: boolean
+      syntheticLotsBeforeHistorical: number
+      syntheticLotsAfterHistorical: number
+      realPriorBuysRecoveredForSyntheticLots: number
+      syntheticRecoverySkippedReason: string | null
+    }
     providers?: {
       zerion: { configured: boolean; attempted: boolean; succeeded: boolean }
       goldrush: {
@@ -10269,6 +10280,20 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   tokenMeter.measure('fallbackEngine', _moralisFbDebug, events)
   tokenMeter.endTokenMeter('fallbackEngine')
 
+  // SYNTH-RECOVERY-FIX-1: detect synthetic FIFO-backfilled lots before the eligibility gate below
+  // is computed, so high/standard-value wallets with synthetic coverage can trigger targeted
+  // historical recovery even when the caller didn't already pass historicalCoverage:true.
+  // sells_exceed_buys is approximated via unmatchedSells>0, since pnlIntegrityCheck itself is only
+  // computed later in the pipeline (after this point) and isn't available here yet.
+  const _syntheticClosedLots = _closedLots.filter(
+    l => l.evidence?.entrySource === 'synthetic' || (l.missingReasons ?? []).includes('fifo_backfilled_buy')
+  )
+  const _syntheticLotsDetected = _syntheticClosedLots.length > 0
+  const _syntheticLotTokenTargets = Array.from(new Set(_syntheticClosedLots.map(l => l.tokenAddress.toLowerCase())))
+  const _sellsExceedBuysSignal = (_lotEngineDebug.unmatchedSells ?? 0) > 0
+  const _syntheticRecoveryTierEligible = _walletValueTier === 'high_value' || _walletValueTier === 'whale' || _walletValueTier === 'standard'
+  const _syntheticLotsBeforeHistorical = _syntheticClosedLots.length
+
   // Phase 6A: Historical coverage diagnostics — capped, eligible, targeted recovery only.
   // _walletValueTier already computed earlier in the pipeline via computeWalletValueTier(totalValue)
   const _adminOverrideUsed = walletScanBudget?.adminOverrideUsed === true
@@ -10305,9 +10330,19 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       const quoteBoost = STABLE_USD_CONTRACTS[c] || WETH_CONTRACTS_PRICE[c] ? 250 : 0
       add(ev.contract, ev.symbol, ev.chain, 300 + quoteBoost + ((ev.usdValue ?? 0) / 100), quoteBoost ? 'stablecoin_weth_eth_quote_leg_trades' : 'high_value_swap_candidates', ev.usdValue ?? 0)
     }
+    // SYNTH-RECOVERY-FIX-2: synthetic-FIFO-backfilled lot tokens get top priority — these are
+    // exactly the tokens with missing real entry prices that targeted recovery should fetch first.
+    for (const l of _syntheticClosedLots) add(l.tokenAddress, l.tokenSymbol, l.chain, 5000, 'synthetic_fifo_lot_needs_real_buy', l.proceedsUsd ?? 0)
     const ranked = [...byContract.values()].sort((a, b) => b.score - a.score || b.estimatedUsd - a.estimatedUsd)
     const maxTokens = _walletValueTier === 'micro' ? 0 : _walletValueTier === 'small' ? 2 : _walletValueTier === 'standard' ? 3 : _walletValueTier === 'high_value' ? 4 : 5
-    return ranked.slice(0, maxTokens)
+    const baseTargets = ranked.slice(0, maxTokens)
+    if (_syntheticLotsDetected && _syntheticRecoveryTierEligible) {
+      const syntheticTargets = ranked.filter(r => _syntheticLotTokenTargets.includes(r.contract))
+      const merged = [...syntheticTargets]
+      for (const t of baseTargets) if (!merged.some(m => m.contract === t.contract)) merged.push(t)
+      return merged.slice(0, Math.max(maxTokens, syntheticTargets.length))
+    }
+    return baseTargets
   })()
   const _targetContracts = new Set(_rankedHistoricalTargets.map(t => t.contract))
   const _eligibilityReasons: string[] = []
@@ -10326,7 +10361,29 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _HISTORICAL_COVERAGE_TRIGGER_THRESHOLD = 40
   const _coverageTriggersHistorical = coveragePercent < _HISTORICAL_COVERAGE_TRIGGER_THRESHOLD || coveragePercentValueWeighted < _HISTORICAL_COVERAGE_TRIGGER_THRESHOLD
   if (_coverageTriggersHistorical) _eligibilityReasons.push('coverage_historical_triggered'); else _skipReasons.push('coverage_above_threshold')
-  const _historicalEligible = Boolean(historicalCoverage && activityRequested && (_adminOverrideUsed || totalValue >= 100) && (walletTradeStatsSummary.closedLots < 10 || _coverageTriggersHistorical) && ((_lotEngineDebug.unmatchedSells ?? 0) > 0 || (_lotEngineDebug.openedLots ?? 0) > 0 || (walletSwapSummary.swapCandidateEvents ?? 0) > 0) && _targetContracts.size > 0 && _pagesAllowed > 0 && GOLDRUSH_KEY)
+  // SYNTH-RECOVERY-FIX-3: synthetic FIFO-backfilled lots on a high/standard-value wallet are an
+  // independent trigger for targeted historical recovery — it must not depend on the caller having
+  // already passed historicalCoverage:true, since synthetic lots are only known once FIFO has run.
+  const _syntheticLotRecoveryTrigger = Boolean(
+    (_syntheticLotsDetected || _sellsExceedBuysSignal) &&
+    _syntheticRecoveryTierEligible &&
+    activityRequested &&
+    _targetContracts.size > 0 &&
+    _pagesAllowed > 0 &&
+    GOLDRUSH_KEY
+  )
+  if (_syntheticLotRecoveryTrigger) _eligibilityReasons.push('synthetic_fifo_lots_need_real_buys')
+  const _historicalEligible = Boolean(
+    (historicalCoverage || _syntheticLotRecoveryTrigger) &&
+    activityRequested &&
+    (_adminOverrideUsed || totalValue >= 100) &&
+    (walletTradeStatsSummary.closedLots < 10 || _coverageTriggersHistorical || _syntheticLotRecoveryTrigger) &&
+    ((_lotEngineDebug.unmatchedSells ?? 0) > 0 || (_lotEngineDebug.openedLots ?? 0) > 0 || (walletSwapSummary.swapCandidateEvents ?? 0) > 0) &&
+    _targetContracts.size > 0 &&
+    _pagesAllowed > 0 &&
+    GOLDRUSH_KEY
+  )
+  const _historicalTriggeredBySyntheticLots = _historicalEligible && !historicalCoverage && _syntheticLotRecoveryTrigger
   const _runHistoricalCoverage = _historicalEligible
   let walletHistoricalCoverageSummary: WalletSnapshot['walletHistoricalCoverageSummary']
   const _historicalStartedAt = Date.now()
@@ -10572,6 +10629,30 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       readyForTradeStats: true,
       status: 'ok' as const,
     }
+  }
+
+  // SYNTH-RECOVERY-FIX-4: after promotion, count how many synthetic lots remain and how many real
+  // prior buys were recovered for the synthetic lots' own target tokens.
+  const _syntheticLotsAfterSourceLots = _shouldPromote && _hcPreviewClosedLots.length > 0 ? _hcPreviewClosedLots : _closedLots
+  const _syntheticLotsAfterHistorical = _syntheticLotsAfterSourceLots.filter(
+    l => l.evidence?.entrySource === 'synthetic' || (l.missingReasons ?? []).includes('fifo_backfilled_buy')
+  ).length
+  const _realPriorBuysRecoveredForSyntheticLots = _runHistoricalCoverage
+    ? Math.max(0, _syntheticLotsBeforeHistorical - _syntheticLotsAfterHistorical)
+    : 0
+  const _syntheticRecoverySkippedReason = !_syntheticLotsDetected
+    ? null
+    : _runHistoricalCoverage
+      ? null
+      : (_skipReasons[0] ?? (!_syntheticRecoveryTierEligible ? 'wallet_value_tier_not_eligible' : 'synthetic_recovery_not_triggered'))
+  const _syntheticLotRecoveryDebug = {
+    syntheticLotsDetected: _syntheticLotsDetected,
+    syntheticLotTokenTargets: _syntheticLotTokenTargets,
+    historicalTriggeredBySyntheticLots: _historicalTriggeredBySyntheticLots,
+    syntheticLotsBeforeHistorical: _syntheticLotsBeforeHistorical,
+    syntheticLotsAfterHistorical: _syntheticLotsAfterHistorical,
+    realPriorBuysRecoveredForSyntheticLots: _realPriorBuysRecoveredForSyntheticLots,
+    syntheticRecoverySkippedReason: _syntheticRecoverySkippedReason,
   }
 
   // Phase 6F/6G: Build public closed trade samples (max 5) with blockchain verification fields
@@ -10974,6 +11055,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     dataFreshness: 'live',
     cacheAgeSeconds: null,
     _diagnostics: {
+      syntheticLotRecoveryDebug: _syntheticLotRecoveryDebug,
       providers: {
         zerion: { configured: Boolean(ZERION_KEY), attempted: true, succeeded: _zerionValueUsable || _zerionPositionsUsable },
         goldrush: {
