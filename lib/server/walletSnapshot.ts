@@ -1268,6 +1268,38 @@ export type WalletSnapshot = {
       outboundTokenMatches?: number
       sampleUnpricedAfterReceipt?: Array<{ txHash: string; symbol: string; finalReason: string }>
     }
+    swapReconstructionV1Debug?: {
+      swapReconstructionV1Attempted: boolean
+      swapReconstructionV1Reason: string
+      swapReconstructionCandidateTxCount: number
+      swapReconstructionReceiptsFetched: number
+      swapReconstructionReceiptCacheHits: number
+      swapReconstructionTransferLogsDecoded: number
+      swapReconstructionWalletInboundLegs: number
+      swapReconstructionWalletOutboundLegs: number
+      swapReconstructionQuoteLegs: number
+      swapReconstructionTokenLegs: number
+      swapReconstructionEventsBuilt: number
+      swapReconstructionEventsPromoted: number
+      swapReconstructionEventsRejected: number
+      swapReconstructionRejectedReasons: string[]
+      sampleReconstructedSwaps: Array<{
+        txHash: string
+        chain: string
+        timestamp: string | null
+        paidToken: string | null
+        paidAmount: number | null
+        paidUsd: number | null
+        receivedToken: string | null
+        receivedAmount: number | null
+        receivedUsd: number | null
+        quoteToken: string | null
+        quoteAmount: number | null
+        direction: 'buy' | 'sell' | 'unknown'
+        confidence: 'high' | 'medium' | 'low'
+        reconstructionReason: string
+      }>
+    }
     baseFifoCoverageDebug?: {
       attempted: boolean
       reason: string
@@ -2317,7 +2349,7 @@ export type PriceAtTimeEvidence = {
   tokenSymbol?: string | null
   timestamp: string
   priceUsd: number | null
-  source: 'stable_leg' | 'weth_leg' | 'historical_price' | 'swap_derived' | 'provider_event_usd' | 'current_holding_price_open_lot_estimate' | 'eth_native_value_router_reconstruction' | 'current_price_fallback_not_used' | 'unavailable'
+  source: 'stable_leg' | 'weth_leg' | 'historical_price' | 'swap_derived' | 'provider_event_usd' | 'current_holding_price_open_lot_estimate' | 'eth_native_value_router_reconstruction' | 'current_price_fallback_not_used' | 'swap_reconstruction_v1' | 'unavailable'
   confidence: 'high' | 'medium' | 'low' | 'open_check'
   reason: string
 }
@@ -7589,6 +7621,281 @@ async function buildEthRouterSwapReconstructionPass(
   }
 }
 
+// Swap Reconstruction v1 — receipt-level leg reconstruction for swap-candidate txs that already
+// exist (existingSwapCount > 0), which every earlier recon pass above explicitly skips because
+// they only run when swapCandidateEvents === 0. This targets the opposite gap: a wallet-initiated
+// swap tx is already detected, but its quote leg (WETH/USDC/USDT/DAI/VIRTUAL) wasn't used to price
+// the token leg — pricing fell back to plain historical token price instead of the stronger,
+// same-tx quote-leg-derived price. Capped to 3 receipts per scan; never touches unrelated txs.
+const SWAP_RECON_V1_TTL_MS = 50 * 60 * 1000
+type SwapReconV1Decode = { txFrom: string | null; logs: Array<{ topics?: string[]; address?: string; data?: unknown }> | null }
+const swapReconV1ReceiptCache = new Map<string, { data: SwapReconV1Decode; exp: number }>()
+const SWAP_RECON_V1_MAX_RECEIPTS = 3
+
+type ReconstructedSwapV1 = {
+  txHash: string
+  chain: string
+  timestamp: string | null
+  paidToken: string | null
+  paidAmount: number | null
+  paidUsd: number | null
+  receivedToken: string | null
+  receivedAmount: number | null
+  receivedUsd: number | null
+  quoteToken: string | null
+  quoteAmount: number | null
+  direction: 'buy' | 'sell' | 'unknown'
+  confidence: 'high' | 'medium' | 'low'
+  reconstructionReason: string
+}
+
+async function buildSwapReconstructionV1(
+  evidenceWithDetection: WalletTxEvidence[],
+  walletAddress: string,
+  alchemyUrl: string,
+  reqCache: Map<string, number | null> | undefined,
+  priceByContract: Map<string, number> | undefined,
+): Promise<{
+  evidenceWithReconstruction: WalletTxEvidence[]
+  debug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['swapReconstructionV1Debug']>
+}> {
+  const walletLower = walletAddress.toLowerCase()
+  const empty = (reason: string, attempted = false): NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['swapReconstructionV1Debug']> => ({
+    swapReconstructionV1Attempted: attempted,
+    swapReconstructionV1Reason: reason,
+    swapReconstructionCandidateTxCount: 0,
+    swapReconstructionReceiptsFetched: 0,
+    swapReconstructionReceiptCacheHits: 0,
+    swapReconstructionTransferLogsDecoded: 0,
+    swapReconstructionWalletInboundLegs: 0,
+    swapReconstructionWalletOutboundLegs: 0,
+    swapReconstructionQuoteLegs: 0,
+    swapReconstructionTokenLegs: 0,
+    swapReconstructionEventsBuilt: 0,
+    swapReconstructionEventsPromoted: 0,
+    swapReconstructionEventsRejected: 0,
+    swapReconstructionRejectedReasons: [],
+    sampleReconstructedSwaps: [],
+  })
+
+  if (!alchemyUrl) return { evidenceWithReconstruction: evidenceWithDetection, debug: empty('no_alchemy_url') }
+
+  // Candidates: wallet-initiated swap-candidate txs whose pricing isn't already quote-leg-derived
+  // (stable_leg/weth_leg are already as good or better than receipt reconstruction — leave them).
+  const upgradeableSources = new Set<string | undefined>(['historical_price', 'provider_event_usd', 'unavailable', undefined])
+  const seenTx = new Set<string>()
+  const candidateTxHashes: string[] = []
+  for (const e of evidenceWithDetection) {
+    if (!e.txHash || !e.swapDetection?.isSwapCandidate) continue
+    if (e.txFromAddress?.toLowerCase() !== walletLower) continue
+    if (e.priceAtTime?.status === 'priced' && !upgradeableSources.has(e.priceAtTime.source)) continue
+    if (seenTx.has(e.txHash)) continue
+    seenTx.add(e.txHash)
+    candidateTxHashes.push(e.txHash)
+    if (candidateTxHashes.length >= SWAP_RECON_V1_MAX_RECEIPTS) break
+  }
+
+  if (candidateTxHashes.length === 0) return { evidenceWithReconstruction: evidenceWithDetection, debug: empty('no_upgradeable_wallet_initiated_swap_candidates', true) }
+
+  let receiptsFetched = 0
+  let receiptCacheHits = 0
+  let transferLogsDecoded = 0
+  let walletInboundLegsTotal = 0
+  let walletOutboundLegsTotal = 0
+  let quoteLegsTotal = 0
+  let tokenLegsTotal = 0
+  let eventsBuilt = 0
+  let eventsPromoted = 0
+  let eventsRejected = 0
+  const rejectedReasons: string[] = []
+  const sampleReconstructedSwaps: ReconstructedSwapV1[] = []
+  const pricedPatches: Array<{ txHash: string; contract: string; priceUsd: number; reason: string; confidence: 'high' | 'medium' }> = []
+
+  for (const txHash of candidateTxHashes) {
+    const now = Date.now()
+    const cacheKey = `swap_recon_v1:${alchemyUrl.slice(-8)}:${txHash}`
+    let decode: SwapReconV1Decode | null = null
+    const cached = swapReconV1ReceiptCache.get(cacheKey)
+    if (cached && cached.exp > now) {
+      receiptCacheHits++
+      decode = cached.data
+    } else {
+      try {
+        const receipt = await getSharedTxReceipt(alchemyUrl, txHash)
+        receiptsFetched++
+        decode = {
+          txFrom: typeof receipt?.from === 'string' ? (receipt.from as string).toLowerCase() : null,
+          logs: Array.isArray(receipt?.logs) ? receipt.logs : null,
+        }
+        swapReconV1ReceiptCache.set(cacheKey, { data: decode, exp: now + SWAP_RECON_V1_TTL_MS })
+      } catch {
+        eventsRejected++
+        rejectedReasons.push('receipt_fetch_error')
+        continue
+      }
+    }
+    if (!decode?.logs) {
+      eventsRejected++
+      rejectedReasons.push('no_receipt_or_logs')
+      continue
+    }
+
+    const txGroup = evidenceWithDetection.filter(e => e.txHash === txHash)
+    const symbolByContract = new Map<string, string>()
+    for (const e of txGroup) if (e.contract) symbolByContract.set(e.contract.toLowerCase(), e.symbol)
+    const chain = txGroup[0]?.chain ?? 'base'
+    const timestamp = txGroup[0]?.timestamp ?? null
+
+    const outboundLegs: Array<{ contract: string; amountHex: string }> = []
+    const inboundLegs: Array<{ contract: string; amountHex: string }> = []
+    for (const log of decode.logs) {
+      if (!log.topics || log.topics[0]?.toLowerCase() !== ERC20_TRANSFER_TOPIC) continue
+      if (log.topics.length < 3) continue
+      transferLogsDecoded++
+      const fromAddr = '0x' + (log.topics[1]?.toLowerCase() ?? '').slice(-40)
+      const toAddr = '0x' + (log.topics[2]?.toLowerCase() ?? '').slice(-40)
+      const contractAddr = (log.address ?? '').toLowerCase()
+      const amountHex = typeof log.data === 'string' ? log.data : '0x0'
+      if (fromAddr === walletLower) outboundLegs.push({ contract: contractAddr, amountHex })
+      if (toAddr === walletLower) inboundLegs.push({ contract: contractAddr, amountHex })
+    }
+    walletOutboundLegsTotal += outboundLegs.length
+    walletInboundLegsTotal += inboundLegs.length
+
+    const isQuote = (c: string) => Boolean(STABLE_USD_CONTRACTS[c]) || Boolean(WETH_CONTRACTS_PRICE[c]) || (symbolByContract.get(c) ?? '').toUpperCase() === 'VIRTUAL'
+    const quoteOutbound = outboundLegs.filter(l => isQuote(l.contract))
+    const quoteInbound = inboundLegs.filter(l => isQuote(l.contract))
+    const tokenOutbound = outboundLegs.filter(l => !isQuote(l.contract))
+    const tokenInbound = inboundLegs.filter(l => !isQuote(l.contract))
+    quoteLegsTotal += quoteOutbound.length + quoteInbound.length
+    tokenLegsTotal += tokenOutbound.length + tokenInbound.length
+
+    let direction: 'buy' | 'sell' | 'unknown' = 'unknown'
+    let tokenLeg: { contract: string; amountHex: string } | null = null
+    let quoteLeg: { contract: string; amountHex: string } | null = null
+    if (tokenOutbound.length > 0 && quoteInbound.length > 0) {
+      direction = 'sell'; tokenLeg = tokenOutbound[0]; quoteLeg = quoteInbound[0]
+    } else if (quoteOutbound.length > 0 && tokenInbound.length > 0) {
+      direction = 'buy'; tokenLeg = tokenInbound[0]; quoteLeg = quoteOutbound[0]
+    } else {
+      eventsRejected++
+      rejectedReasons.push('no_clean_wallet_paid_received_legs')
+      continue
+    }
+    eventsBuilt++
+
+    const quoteContract = quoteLeg.contract
+    const isStableQuote = Boolean(STABLE_USD_CONTRACTS[quoteContract])
+    const isWethQuote = Boolean(WETH_CONTRACTS_PRICE[quoteContract])
+    const quoteDecimals = isStableQuote ? (STABLE_DECIMALS[quoteContract] ?? 18) : 18
+    const quoteAmount = hexAmountToDecimal(quoteLeg.amountHex, quoteDecimals)
+
+    let quoteUsdPrice: number | null = null
+    let confidence: 'high' | 'medium' | 'low' = 'low'
+    let reconstructionReason: string
+
+    if (isStableQuote) {
+      quoteUsdPrice = 1
+      confidence = 'high'
+      reconstructionReason = 'stable_quote_leg_decoded_from_receipt'
+    } else if (isWethQuote) {
+      const result = timestamp ? await fetchGoldrushHistoricalPrice(chain, quoteContract, timestamp, reqCache) : { priceUsd: null }
+      quoteUsdPrice = result.priceUsd ?? priceByContract?.get(quoteContract) ?? null
+      confidence = quoteUsdPrice ? 'high' : 'low'
+      reconstructionReason = quoteUsdPrice ? 'weth_quote_leg_decoded_from_receipt_priced_historical' : 'weth_quote_leg_found_but_unpriced'
+    } else {
+      // VIRTUAL or other symbol-matched quote leg — price only if an existing price helper can price it.
+      quoteUsdPrice = priceByContract?.get(quoteContract) ?? null
+      confidence = quoteUsdPrice ? 'medium' : 'low'
+      reconstructionReason = quoteUsdPrice ? 'virtual_quote_leg_decoded_from_receipt_priced_current' : 'quote_unpriced'
+    }
+
+    const quoteUsd = quoteUsdPrice != null ? quoteAmount * quoteUsdPrice : null
+    const tokenEv = txGroup.find(e => (e.contract ?? '').toLowerCase() === tokenLeg!.contract)
+    const quoteSymbol = symbolByContract.get(quoteContract) ?? (isStableQuote ? STABLE_SYMBOL[quoteContract] : isWethQuote ? 'WETH' : 'UNKNOWN')
+
+    const reconstructed: ReconstructedSwapV1 = {
+      txHash, chain, timestamp,
+      paidToken: direction === 'sell' ? (tokenEv?.symbol ?? null) : quoteSymbol,
+      paidAmount: direction === 'sell' ? (tokenEv?.amount ?? null) : quoteAmount,
+      paidUsd: direction === 'buy' ? quoteUsd : null,
+      receivedToken: direction === 'buy' ? (tokenEv?.symbol ?? null) : quoteSymbol,
+      receivedAmount: direction === 'buy' ? (tokenEv?.amount ?? null) : quoteAmount,
+      receivedUsd: direction === 'sell' ? quoteUsd : null,
+      quoteToken: quoteSymbol,
+      quoteAmount,
+      direction,
+      confidence,
+      reconstructionReason,
+    }
+    if (sampleReconstructedSwaps.length < 5) sampleReconstructedSwaps.push(reconstructed)
+
+    // Promotion gate: never promote low-confidence reconstructions into official pricing —
+    // medium/high only, and only when the token leg and quote-leg USD are both complete.
+    const tokenAmount = tokenEv?.amount ?? null
+    const complete = Boolean(tokenEv?.contract && quoteUsd != null && quoteUsd > 0 && tokenAmount != null && tokenAmount > 0)
+    if (confidence === 'low' || !complete) {
+      eventsRejected++
+      rejectedReasons.push(quoteUsdPrice == null ? 'quote_unpriced' : 'low_confidence_or_incomplete')
+      continue
+    }
+
+    const tokenPriceUsd = quoteUsd! / tokenAmount!
+    pricedPatches.push({
+      txHash,
+      contract: tokenEv!.contract,
+      priceUsd: tokenPriceUsd,
+      reason: `swap_reconstruction_v1: ${reconstructionReason}`,
+      confidence,
+    })
+    eventsPromoted++
+  }
+
+  let evidenceWithReconstruction = evidenceWithDetection
+  if (pricedPatches.length > 0) {
+    evidenceWithReconstruction = evidenceWithDetection.map(e => {
+      const patch = pricedPatches.find(p => p.txHash === e.txHash && p.contract.toLowerCase() === (e.contract ?? '').toLowerCase())
+      if (!patch) return e
+      // Never downgrade an already quote-leg-priced event — only upgrade open_check/historical/provider sources.
+      if (e.priceAtTime?.status === 'priced' && !upgradeableSources.has(e.priceAtTime.source)) return e
+      return {
+        ...e,
+        priceAtTime: {
+          status: 'priced' as const,
+          tokenAddress: e.contract,
+          tokenSymbol: e.symbol,
+          timestamp: e.timestamp ?? '',
+          priceUsd: patch.priceUsd,
+          source: 'swap_reconstruction_v1' as const,
+          confidence: patch.confidence,
+          reason: patch.reason,
+        },
+      }
+    })
+  }
+
+  return {
+    evidenceWithReconstruction,
+    debug: {
+      swapReconstructionV1Attempted: true,
+      swapReconstructionV1Reason: eventsPromoted > 0 ? 'promoted_reconstructed_swap_events' : eventsBuilt > 0 ? 'built_but_not_promoted' : 'no_reconstructable_swaps',
+      swapReconstructionCandidateTxCount: candidateTxHashes.length,
+      swapReconstructionReceiptsFetched: receiptsFetched,
+      swapReconstructionReceiptCacheHits: receiptCacheHits,
+      swapReconstructionTransferLogsDecoded: transferLogsDecoded,
+      swapReconstructionWalletInboundLegs: walletInboundLegsTotal,
+      swapReconstructionWalletOutboundLegs: walletOutboundLegsTotal,
+      swapReconstructionQuoteLegs: quoteLegsTotal,
+      swapReconstructionTokenLegs: tokenLegsTotal,
+      swapReconstructionEventsBuilt: eventsBuilt,
+      swapReconstructionEventsPromoted: eventsPromoted,
+      swapReconstructionEventsRejected: eventsRejected,
+      swapReconstructionRejectedReasons: rejectedReasons,
+      sampleReconstructedSwaps,
+    },
+  }
+}
+
 async function buildBasePnlReconstructionPass(
   evidenceWithDetection: WalletTxEvidence[],
   walletAddress: string,
@@ -9779,6 +10086,38 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   }
   // ── End Unpriced Candidate Receipt Pass ─────────────────────────────────────────────────
 
+  // ── Swap Reconstruction v1 ───────────────────────────────────────────────────────────────
+  // Targets the gap every recon pass above leaves open: a swap candidate already exists and
+  // already got *some* price (often historical_price), but never used a same-tx quote leg
+  // (WETH/USDC/USDT/DAI/VIRTUAL) decoded straight from the tx receipt. Capped to 3 receipts.
+  let _swapReconstructionV1Debug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['swapReconstructionV1Debug']> = {
+    swapReconstructionV1Attempted: false, swapReconstructionV1Reason: 'not_attempted',
+    swapReconstructionCandidateTxCount: 0, swapReconstructionReceiptsFetched: 0, swapReconstructionReceiptCacheHits: 0,
+    swapReconstructionTransferLogsDecoded: 0, swapReconstructionWalletInboundLegs: 0, swapReconstructionWalletOutboundLegs: 0,
+    swapReconstructionQuoteLegs: 0, swapReconstructionTokenLegs: 0, swapReconstructionEventsBuilt: 0,
+    swapReconstructionEventsPromoted: 0, swapReconstructionEventsRejected: 0, swapReconstructionRejectedReasons: [],
+    sampleReconstructedSwaps: [],
+  }
+  if (activityRequested && walletSwapSummary.swapCandidateEvents > 0 && _enrichAlchemyUrl) {
+    const swapReconResult = await buildSwapReconstructionV1(_pricedEvidence, addrNorm, _enrichAlchemyUrl, _reqPriceCache, priceByContract)
+    _swapReconstructionV1Debug = swapReconResult.debug
+    tokenMeter.measure('priceInference', swapReconResult)
+    for (let _ri = 0; _ri < swapReconResult.debug.swapReconstructionReceiptsFetched; _ri++) {
+      const _rk = `alchemy:swaprecon_v1:receipt:${_ri}:${addrNorm}`
+      if (!_alchemyDedup.has(_rk)) { _alchemyDedup.add(_rk); _trackCall('alchemy', 'eth_getTransactionReceipt', false, _rk) }
+    }
+    if (swapReconResult.debug.swapReconstructionEventsPromoted > 0) {
+      _pricedEvidence = swapReconResult.evidenceWithReconstruction
+    }
+  } else if (!activityRequested) {
+    _swapReconstructionV1Debug = { ..._swapReconstructionV1Debug, swapReconstructionV1Reason: 'activity_not_requested' }
+  } else if (walletSwapSummary.swapCandidateEvents === 0) {
+    _swapReconstructionV1Debug = { ..._swapReconstructionV1Debug, swapReconstructionV1Reason: 'no_swap_candidates' }
+  } else if (!_enrichAlchemyUrl) {
+    _swapReconstructionV1Debug = { ..._swapReconstructionV1Debug, swapReconstructionV1Reason: 'no_alchemy_url' }
+  }
+  // ── End Swap Reconstruction v1 ───────────────────────────────────────────────────────────
+
   tokenMeter.startTokenMeter('fifoEngine')
   const _fifoStartedAt = Date.now()
   _pricedEvidence = normalizeSwapEventsForFifo(_pricedEvidence, tokenMeter.isDebugEnabled())
@@ -11626,6 +11965,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       walletSwapEnrichmentDebug: _swapEnrichmentDebug,
       ethSwapReconstructionDebug: _ethSwapReconstructionDebug,
       basePnlReconstructionDebug: _basePnlReconDebug,
+      swapReconstructionV1Debug: _swapReconstructionV1Debug,
       baseUnknownSwapReconstructionDebug: _baseUnknownSwapReconDebug,
       baseUnknownSwapPricingDebug: _baseUnknownSwapPricingDebug,
       finalSummarySourceDebug: _finalSummarySourceDebug,
