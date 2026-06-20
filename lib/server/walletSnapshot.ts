@@ -2208,6 +2208,11 @@ export type WalletLotOpen = {
   // constructed; never required so existing consumers of WalletLotOpen are unaffected.
   confidenceScore?: number
   confidenceTier?: 'high' | 'medium' | 'low'
+  // PHASE3-FIX-6: optional lot-level coverage/missing-reason metadata, additive alongside the
+  // existing confidence fields. Only populated where a lot's data is genuinely incomplete
+  // (e.g. synthetic backfilled lots); never required so existing consumers are unaffected.
+  coveragePercent?: number
+  missingReasons?: string[]
 }
 
 export type WalletClosedLot = {
@@ -2231,6 +2236,9 @@ export type WalletClosedLot = {
   // PHASE6-FIX-1: see WalletLotOpen.confidenceScore/confidenceTier above — same additive pattern.
   confidenceScore?: number
   confidenceTier?: 'high' | 'medium' | 'low'
+  // PHASE3-FIX-6: see WalletLotOpen.coveragePercent/missingReasons above — same additive pattern.
+  coveragePercent?: number
+  missingReasons?: string[]
 }
 
 export type PriceAtTimeEvidence = {
@@ -4580,7 +4588,7 @@ function buildFifoLotEngine(
   let skippedStableQuoteAssets = 0
   let skippedMissingFields = 0
 
-  const eligible: WalletTxEvidence[] = []
+  let eligible: WalletTxEvidence[] = []
   for (const e of evidenceWithPricing) {
     // PHASE3-FIX-5: isSwapCandidate is already false for airdrop_candidate/transfer/bridge
     // events (see buildSwapDetection), so this gate already excludes non-swap legs from cost
@@ -4594,6 +4602,14 @@ function buildFifoLotEngine(
     // through as a zero/garbage lot later.
     const _canonicalAmount = canonicalFifoAmount(e)
     if (!e.txHash || !e.timestamp || !e.contract || !e.contract.startsWith('0x') || !_canonicalAmount || _canonicalAmount <= 0 || !isFinite(_canonicalAmount)) { skippedMissingFields++; continue }
+    // PHASE3-FIX-8 (item 3): stablecoins are quote assets, never the matched FIFO asset —
+    // QUOTE_ASSET_CONTRACTS already includes every address in STABLE_USD_CONTRACTS (see its
+    // definition above: `...STABLE_USD_CONTRACTS, ...WETH_CONTRACTS_PRICE`), so a stablecoin
+    // event never reaches the buy/sell loop below as the asset being lotted; it's only ever
+    // consumed earlier as a priced quote leg. The literal "force costBasis = amount * 1.0 /
+    // realizedPnlUsd = proceeds - costBasis" fix from the spec has no reachable call site to
+    // attach to without removing this exclusion (which would be an architecture change, not a
+    // fix) — so it is intentionally not implemented as dead code inside the loop below.
     if (QUOTE_ASSET_CONTRACTS[e.contract.toLowerCase()]) { skippedStableQuoteAssets++; continue }
     eligible.push(e)
   }
@@ -4601,8 +4617,22 @@ function buildFifoLotEngine(
   const pricedSwapEvents = eligible.length
   if (pricedSwapEvents === 0) return empty(['no_priced_swap_events'])
 
-  // Sort ascending by timestamp
-  eligible.sort((a, b) => (a.timestamp ?? '').localeCompare(b.timestamp ?? ''))
+  // PHASE3-FIX-7: deterministic multi-chain sort. Plain timestamp sort previously left equal
+  // timestamps (common when merging events from multiple chains in the same second) ordered by
+  // whatever order Array.sort's implementation happened to preserve for ties — i.e. raw
+  // provider-arrival order. Now tie-break on normalized chain, then on original arrival index
+  // (logIndexFallback; no logIndex is tracked on PnlEvent/WalletTxEvidence) so lot ordering is
+  // reproducible across runs regardless of provider response ordering.
+  eligible = eligible
+    .map((e, idx) => ({ e, idx }))
+    .sort((a, b) => {
+      const tsCmp = (a.e.timestamp ?? '').localeCompare(b.e.timestamp ?? '')
+      if (tsCmp !== 0) return tsCmp
+      const chainCmp = normalizeChain(a.e.chain).localeCompare(normalizeChain(b.e.chain))
+      if (chainCmp !== 0) return chainCmp
+      return a.idx - b.idx // logIndexFallback
+    })
+    .map(({ e }) => e)
 
   const buyEvents = eligible.filter(e => e.direction === 'buy').length
   const sellEvents = eligible.filter(e => e.direction === 'sell').length
@@ -4627,6 +4657,9 @@ function buildFifoLotEngine(
   // discovered, so a sell that arrives before any real buy can later be reconciled against an
   // estimate lot instead of being left as a hard "no buy ever found" unmatched sell.
   let backfilledFromEstimateLots = 0
+  // PHASE3-FIX-9 (items 1 & 5): counts sells where neither real nor estimate lots covered the
+  // full sold amount, requiring a synthetic backfilled buy lot for the shortfall.
+  let backfilledBuyLots = 0
 
   for (const e of eligible) {
     const normalChain = normalizeChain(e.chain)
@@ -4662,6 +4695,11 @@ function buildFifoLotEngine(
         confidence: priceSource === 'stable_leg' ? 'high' : priceSource === 'current_holding_price_open_lot_estimate' ? 'low' : 'medium',
         confidenceScore: _lotConfScore.score,
         confidenceTier: _lotConfScore.tier,
+        // PHASE3-FIX-11 (item 6): typed defaults so every open lot carries coverage/missing-
+        // reason metadata rather than leaving it undefined. A real priced buy leg is full
+        // coverage with no missing reasons; estimate lots are flagged as partial coverage.
+        coveragePercent: _isEstimateLot ? 0 : 100,
+        missingReasons: _isEstimateLot ? ['current_holding_price_open_lot_estimate'] : [],
       }
       if (priceSource === 'current_holding_price_open_lot_estimate') {
         // Estimate lots are open-position records only — never matched against sells to prevent fake realized PnL
@@ -4690,16 +4728,20 @@ function buildFifoLotEngine(
           backfilledFromEstimateLots++
         }
       }
-      if (!queue || queue.length === 0) {
-        unmatchedSells++
-        if (sampleUnmatchedReasons.length < 10) sampleUnmatchedReasons.push(`no_prior_buy:${_abbr(e.contract)}(${e.symbol ?? '?'})`)
-        continue
-      }
+      if (!queue) queue = []
 
       let sellRemaining = amount
       // PHASE3-FIX-4: deterministic partial-lot allocation — close the minimum of the
       // remaining sell and the lot's remaining amount, update the lot precisely, and only
       // shift the lot off the queue once its remainder is within the lot-relative epsilon.
+      // PHASE3-FIX-10 (item 2): partial-fill metadata propagation. A split here never copies the
+      // parent lot into two separate objects — `lot` (priceSource, entryPriceUsd, confidence,
+      // confidenceScore/confidenceTier) is mutated in place via `amountRemaining` only, so the
+      // remaining-open "child" always carries every parent field by construction (no copy step
+      // that could drop a field). The closed "child" below recomputes its own confidence from
+      // both legs of the trade (lot.priceSource as entrySource, this sell's priceSource as
+      // exitSource) rather than blindly copying the open lot's score, since a closed lot's
+      // confidence legitimately depends on the exit leg too.
       while (sellRemaining > lotEpsilonFor(amount) && queue.length > 0) {
         const lot = queue[0]
         const closeAmount = Math.min(lot.amountRemaining, sellRemaining)
@@ -4732,6 +4774,11 @@ function buildFifoLotEngine(
           evidence: { entrySource: lot.priceSource, exitSource: priceSource, method: 'fifo' },
           confidenceScore: _closedConfScore.score,
           confidenceTier: _closedConfScore.tier,
+          // PHASE3-FIX-11 (item 6): typed defaults, consistent with the open-lot defaults above —
+          // a real-lot close inherits the parent's coverage flag (missingReasons carries forward
+          // only if the parent lot itself was already a partial/estimate lot).
+          coveragePercent: lot.coveragePercent ?? 100,
+          missingReasons: lot.missingReasons ?? [],
         })
 
         lot.amountRemaining -= closeAmount
@@ -4739,7 +4786,46 @@ function buildFifoLotEngine(
         if (lot.amountRemaining <= lotEpsilonFor(lot.amountOpened)) queue.shift()
       }
 
-      if (sellRemaining > lotEpsilonFor(amount)) unmatchedSells++
+      // PHASE3-FIX-9 (items 1 & 5): negative-balance protection. Real + estimate lots could not
+      // cover the full sell amount — multi-chain merges or missing historical buys can leave a
+      // genuine negative balance — so backfill a synthetic buy lot for exactly the missing
+      // amount instead of silently dropping cost basis. Priced at this sell's own priceAtTime
+      // (the best available price for that timestamp/token), then immediately closed against
+      // the same sell. Realized PnL on the backfilled portion is intentionally 0 (entry price
+      // == exit price) since there is no real historical entry price to compute a gain/loss
+      // against — the goal is completeness/visibility, not invented profit.
+      if (sellRemaining > lotEpsilonFor(amount)) {
+        const missingAmount = sellRemaining
+        const _synthOpenConf = lotConfidenceScore({ entrySource: 'synthetic', isEstimateLot: true })
+        const costBasisUsd = missingAmount * priceUsd
+        const proceedsUsd = missingAmount * priceUsd
+        backfilledBuyLots++
+        closedLots.push({
+          tokenAddress: e.contract.toLowerCase(),
+          tokenSymbol: e.symbol ?? null,
+          chain: normalChain,
+          openedTxHash: e.txHash,
+          closedTxHash: e.txHash,
+          openedAt: e.timestamp!,
+          closedAt: e.timestamp!,
+          amountClosed: missingAmount,
+          entryPriceUsd: priceUsd,
+          exitPriceUsd: priceUsd,
+          costBasisUsd,
+          proceedsUsd,
+          realizedPnlUsd: 0,
+          realizedPnlPercent: 0,
+          holdingTimeSeconds: 0,
+          confidence: 'low',
+          evidence: { entrySource: 'synthetic', exitSource: priceSource, method: 'fifo' },
+          confidenceScore: _synthOpenConf.score,
+          confidenceTier: _synthOpenConf.tier,
+          coveragePercent: Math.max(0, Math.min(100, ((amount - missingAmount) / amount) * 100)),
+          missingReasons: ['fifo_backfilled_buy', 'price_synthetic_fifo'],
+        })
+        sellRemaining = 0
+        if (sampleUnmatchedReasons.length < 10) sampleUnmatchedReasons.push(`fifo_backfilled_buy:${_abbr(e.contract)}(${e.symbol ?? '?'})`)
+      }
     }
     // direction === 'unknown' already filtered by eligible filter (swap candidates are buy/sell)
   }
@@ -4789,6 +4875,11 @@ function buildFifoLotEngine(
   }
   if (unmatchedSells > 0) missing.push('unmatched_sells')
   if (unmatchedBuys > 0) missing.push('unmatched_buys')
+  // PHASE3-FIX-9 (items 1 & 5): debug-visible count of sells that needed a synthetic backfilled
+  // buy lot because real + estimate lots didn't cover the full sold amount. unmatchedSells can
+  // no longer be incremented for this case (it's now backfilled+closed instead of dropped), so
+  // this reason key is the only remaining signal that a negative-balance condition occurred.
+  if (backfilledBuyLots > 0) missing.push(`fifo_backfilled_buy:${backfilledBuyLots}`)
   // PHASE3-FIX-3: debug-visible count of sells reconciled against estimate lots instead of
   // being left as a hard "no buy ever found" unmatched sell.
   if (backfilledFromEstimateLots > 0) missing.push(`backfilled_from_estimate_lots:${backfilledFromEstimateLots}`)
