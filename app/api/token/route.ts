@@ -4364,6 +4364,19 @@ export async function POST(req: Request) {
     const concentratedPositionProofAttempted = Boolean(concentratedPositionProof)
     const concentratedPositionProofStatus: string = concentratedPositionProof?.status ?? 'not_applicable'
 
+    // TEMPORARY DEBUG (pool-selection / concentrated-proof audit) — exposes the exact pool
+    // model/dex selected for THIS scan and why concentrated-position proof was or wasn't
+    // attempted, without changing any scoring/proof logic. _primaryConcentrated is the single
+    // gate that decides eligibility (set from the canonical highest-liquidity pool's poolType,
+    // before lpVerifyPool substitution or any later reconciliation runs).
+    const _concentratedProofSkipReason: string | null = concentratedPositionProofAttempted
+      ? null
+      : !_primaryConcentrated
+        ? `primary_pool_not_concentrated (lpPoolType=${lpPoolType}, highest-liquidity pool was classified as "${lpPoolType}", not v3/concentrated)`
+        : lpVerifyPoolPresent
+          ? `verify_pool_substituted_as_erc20 (lpVerifyPoolType=${lpVerifyPoolType}, hasLpToken=${lpVerifyPool?.hasLpToken}, address=${lpVerifyPoolAddress})`
+          : 'unknown'
+
     // Ensure poolAddressPresent is always correct on the final object — some inner branches
     // replace lpControl wholesale without setting this field (e.g., GoldRush/RPC paths).
     lpControl.poolAddressPresent = _lpProofPresent;
@@ -7172,6 +7185,13 @@ export async function POST(req: Request) {
         lockerRegistryReason: (chain === 'base' && lpDiagnostics.lockerRegistryEmpty)
           ? 'No verified Base locker registry is configured yet.'
           : null,
+        // TEMPORARY DEBUG fields (concentrated-ownership-proof pipeline audit) — remove once
+        // the pool-selection root cause investigation is closed out.
+        selectedPoolModel: lpPoolType,
+        selectedPoolDex: lpDexId ?? lpDexName ?? primaryDexName ?? null,
+        concentratedProofEligible: _primaryConcentrated,
+        concentratedProofAttempted: concentratedPositionProofAttempted,
+        concentratedProofSkipReason: _concentratedProofSkipReason,
       },
 
       // AI summary from Cortex Engine
