@@ -2890,6 +2890,264 @@ function buildWalletMemoryEcho(mem: ClarkSessionMemory): { lastWallet: { address
   };
 }
 
+// ─── Wallet Profile V2 analyst-explanation builders ───
+// All of these answer narrow "why"/"what" follow-ups about an already-computed walletProfile,
+// using only fields already present on it (plus the cached snapshot's totalValue/holdings/chains
+// for category bullets) — never a rescan, never a regenerated/empty profile.
+function formatUsdCompact(value: number): string {
+  const abs = Math.abs(value);
+  if (abs >= 1_000_000) return `$${(value / 1_000_000).toFixed(1)}M`;
+  if (abs >= 1_000) return `$${(value / 1_000).toFixed(1)}K`;
+  return `$${value.toFixed(0)}`;
+}
+
+const WALLET_CATEGORY_WORDS = new Set(["whale", "large portfolio", "mid portfolio", "small portfolio"]);
+
+function normalizeWalletLabel(raw: string): string {
+  const t = raw.trim().toLowerCase().replace(/\s+/g, " ");
+  if (/smart\s+money/.test(t)) return "Smart Money Candidate";
+  if (/meme\s+speculator|meme\s+hunter/.test(t)) return "Meme Speculator";
+  if (/day\s+trader/.test(t)) return "Day Trader";
+  if (/swing\s+trader/.test(t)) return "Swing Trader";
+  if (/diamond\s+holder|conviction\s+holder/.test(t)) return "Conviction Holder";
+  if (/diversified\s+holder/.test(t)) return "Diversified Holder";
+  if (/multi-chain\s+portfolio\s+manager/.test(t)) return "Multi-Chain Portfolio Manager";
+  if (/treasury\s+style\s+portfolio/.test(t)) return "Treasury Style Portfolio";
+  if (/position\s+rotator/.test(t)) return "Position Rotator";
+  if (/active\s+trader/.test(t)) return "Active Trader";
+  if (/stablecoin\s+heavy/.test(t)) return "Stablecoin Heavy";
+  if (/large\s+cap\s+holder/.test(t)) return "Large Cap Holder";
+  if (/yield-seeking\s+portfolio|yield\s+farmer/.test(t)) return "Yield-Seeking Portfolio";
+  if (/airdrop\s+farmer/.test(t)) return "Airdrop Farmer";
+  if (/passive\s+investor/.test(t)) return "Passive Investor";
+  if (/dev\s+wallet/.test(t)) return "Dev Wallet";
+  if (/large\s+portfolio/.test(t)) return "Large Portfolio";
+  if (/mid\s+portfolio/.test(t)) return "Mid Portfolio";
+  if (/small\s+portfolio/.test(t)) return "Small Portfolio";
+  if (/whale/.test(t)) return "Whale";
+  return raw;
+}
+
+function buildWalletCategoryExplanation(category: string | null, mem: Record<string, unknown> | null): string {
+  const totalValue = typeof mem?.totalValue === "number" ? mem.totalValue : null;
+  const holdings = Array.isArray(mem?.holdings) ? (mem!.holdings as Array<Record<string, unknown>>) : [];
+  const holdingsCount = holdings.length;
+  const chainsActive = Array.isArray(mem?.chainsActive) ? (mem!.chainsActive as string[]) : null;
+  const chainCount = chainsActive?.length ?? new Set(holdings.map((h) => h.chain).filter(Boolean)).size;
+
+  const bullets: string[] = [];
+  if (totalValue != null) bullets.push(`Portfolio value is ${formatUsdCompact(totalValue)}`);
+  if (category === "Whale") bullets.push("Whale threshold exceeded");
+  else if (category === "Mid Portfolio") bullets.push("Portfolio value falls within the Mid Portfolio range");
+  else if (category === "Small Portfolio") bullets.push("Portfolio value is below the Mid Portfolio threshold");
+  else if (category === "Large Portfolio") bullets.push("Portfolio value falls within the Large Portfolio range");
+  if (holdingsCount > 0) bullets.push(`Diversified across ${holdingsCount} holdings`);
+  if (chainCount > 0) bullets.push(`Active on ${chainCount} chain${chainCount === 1 ? "" : "s"}`);
+
+  const label = category ?? "Not Yet Classified";
+  return [
+    "ANALYST EXPLANATION",
+    "",
+    `This wallet is classified as a ${label} because:`,
+    "",
+    ...(bullets.length ? bullets.map((b) => `• ${b}`) : ["• Insufficient evidence to classify portfolio size."]),
+    "",
+    "This classification measures size, not trading skill.",
+  ].join("\n");
+}
+
+function buildWalletBehaviorExplanation(matchedLabel: string, walletProfile: Record<string, unknown>, confirm: boolean): string {
+  const portfolioBehavior = typeof walletProfile.portfolioBehavior === "string" ? walletProfile.portfolioBehavior : null;
+  const tradingBehavior = typeof walletProfile.tradingBehavior === "string" ? walletProfile.tradingBehavior : null;
+  const reasons = Array.isArray(walletProfile.reasons) ? (walletProfile.reasons as unknown[]).filter((s): s is string => typeof s === "string") : [];
+  const signals = Array.isArray(walletProfile.signals) ? (walletProfile.signals as unknown[]).filter((s): s is string => typeof s === "string") : [];
+  const weaknesses = Array.isArray(walletProfile.weaknesses) ? (walletProfile.weaknesses as unknown[]).filter((s): s is string => typeof s === "string") : [];
+
+  if (confirm) {
+    const supportingLine = [...signals, ...reasons].find((l) => l.toLowerCase().includes(matchedLabel.toLowerCase()));
+    return [
+      "ANALYST EXPLANATION",
+      "",
+      `This wallet is classified as ${matchedLabel} because:`,
+      "",
+      `• ${supportingLine ?? `${matchedLabel} is supported by current portfolio/trading evidence.`}`,
+      "",
+      "This reflects observed evidence, not a guarantee of future performance.",
+    ].join("\n");
+  }
+
+  const actualLabel = tradingBehavior || portfolioBehavior || "Not Yet Classified";
+  const weaknessLine = weaknesses.find((w) => /confidence|unclassified|missing|weak/i.test(w)) ?? reasons.find((r) => /not classified|insufficient/i.test(r));
+  return [
+    "ANALYST EXPLANATION",
+    "",
+    `This wallet is not classified as ${matchedLabel} because:`,
+    "",
+    `• Current evidence supports "${actualLabel}" instead.`,
+    ...(weaknessLine ? [`• ${weaknessLine}`] : []),
+    "",
+    `${matchedLabel} requires stronger supporting evidence than is currently available.`,
+  ].join("\n");
+}
+
+function buildWalletConfidenceExplanation(kind: "trading" | "portfolio", walletProfile: Record<string, unknown>): string {
+  const confidence = kind === "trading" ? walletProfile.tradingConfidence : walletProfile.portfolioConfidence;
+  const confidenceLabel = typeof confidence === "string" ? confidence : "low";
+  const reasons = Array.isArray(walletProfile.reasons) ? (walletProfile.reasons as unknown[]).filter((s): s is string => typeof s === "string") : [];
+  const weaknesses = Array.isArray(walletProfile.weaknesses) ? (walletProfile.weaknesses as unknown[]).filter((s): s is string => typeof s === "string") : [];
+  const relevant = [...weaknesses, ...reasons].filter((l) => l.toLowerCase().includes(kind));
+
+  const label = kind === "trading" ? "Trading" : "Portfolio";
+  return [
+    "ANALYST EXPLANATION",
+    "",
+    `${label} confidence is ${confidenceLabel} because:`,
+    "",
+    ...(relevant.length ? relevant.slice(0, 3).map((l) => `• ${l}`) : [`• Insufficient verified ${kind} evidence is currently available.`]),
+    "",
+    `${label} confidence reflects evidence quality, not wallet performance.`,
+  ].join("\n");
+}
+
+function buildWalletImproveConfidenceExplanation(walletProfile: Record<string, unknown>): string {
+  const weaknesses = Array.isArray(walletProfile.weaknesses) ? (walletProfile.weaknesses as unknown[]).filter((s): s is string => typeof s === "string") : [];
+  const nextAction = typeof walletProfile.nextAction === "string" ? walletProfile.nextAction : null;
+  return [
+    "ANALYST EXPLANATION",
+    "",
+    "Confidence would increase with:",
+    "",
+    ...(weaknesses.length ? weaknesses.slice(0, 4).map((w) => `• ${w}`) : ["• No specific evidence gaps detected from the current snapshot."]),
+    ...(nextAction ? ["", `Recommended next step: ${nextAction}`] : []),
+  ].join("\n");
+}
+
+function buildWalletEvidenceMissingExplanation(walletProfile: Record<string, unknown>): string {
+  const weaknesses = Array.isArray(walletProfile.weaknesses) ? (walletProfile.weaknesses as unknown[]).filter((s): s is string => typeof s === "string") : [];
+  return [
+    "ANALYST EXPLANATION",
+    "",
+    "Evidence currently missing or weak:",
+    "",
+    ...(weaknesses.length ? weaknesses.slice(0, 5).map((w) => `• ${w}`) : ["• No missing evidence detected — profile evidence coverage is sufficient."]),
+  ].join("\n");
+}
+
+function buildWalletFollowabilityExplanation(walletProfile: Record<string, unknown>): string {
+  const followability = typeof walletProfile.followability === "string" ? walletProfile.followability : "Low";
+  const score = typeof walletProfile.score === "number" ? walletProfile.score : null;
+  const tradingConfidence = typeof walletProfile.tradingConfidence === "string" ? walletProfile.tradingConfidence : "low";
+  const tradingBehavior = typeof walletProfile.tradingBehavior === "string" ? walletProfile.tradingBehavior : null;
+
+  const bullets: string[] = [];
+  if (followability === "High") {
+    bullets.push(tradingBehavior ? `Trading behavior "${tradingBehavior}" is confirmed with ${tradingConfidence} trading confidence` : `Trading confidence is ${tradingConfidence}`);
+    if (score != null) bullets.push(`Wallet score is ${score}/100, above the high-followability threshold`);
+  } else if (followability === "Moderate") {
+    bullets.push(tradingBehavior ? `Trading behavior "${tradingBehavior}" exists, but confidence or score has not cleared the high-followability bar` : "Portfolio behavior is confirmed, but trading evidence is not yet strong enough");
+    if (score != null) bullets.push(`Wallet score is ${score}/100`);
+  } else {
+    bullets.push(tradingConfidence === "low" ? "Trading confidence is low — there is not enough verified trade evidence yet" : "Score or behavior evidence has not met the threshold for higher followability");
+  }
+
+  return [
+    "ANALYST EXPLANATION",
+    "",
+    `Followability is ${followability} because:`,
+    "",
+    ...bullets.map((b) => `• ${b}`),
+    "",
+    "Followability reflects evidence strength, not financial advice.",
+  ].join("\n");
+}
+
+type WalletProfileFollowupKind =
+  | "why_category"
+  | "why_behavior_confirm"
+  | "why_behavior_deny"
+  | "explain_profile"
+  | "why_trading_confidence_low"
+  | "why_portfolio_confidence_low"
+  | "what_would_improve_confidence"
+  | "what_evidence_missing"
+  | "why_followability";
+
+const WALLET_LABEL_PATTERN = "(smart\\s+money(?:\\s+candidate)?|meme\\s+speculator|meme\\s+hunter|day\\s+trader|swing\\s+trader|diamond\\s+holder|conviction\\s+holder|diversified\\s+holder|multi-chain\\s+portfolio\\s+manager|treasury\\s+style\\s+portfolio|position\\s+rotator|active\\s+trader|stablecoin\\s+heavy|large\\s+cap\\s+holder|yield-seeking\\s+portfolio|yield\\s+farmer|airdrop\\s+farmer|dev\\s+wallet|passive\\s+investor|whale|large\\s+portfolio|mid\\s+portfolio|small\\s+portfolio)";
+
+function classifyWalletProfileFollowup(normalizedPrompt: string): { kind: WalletProfileFollowupKind; label?: string } | null {
+  const denyRe = new RegExp(`why\\s+is\\s+(?:this|it)\\s+not\\s+(?:a\\s+|an\\s+)?${WALLET_LABEL_PATTERN}|why\\s+isn'?t\\s+(?:this|it)\\s+(?:a\\s+|an\\s+)?${WALLET_LABEL_PATTERN}|why\\s+not\\s+${WALLET_LABEL_PATTERN}`);
+  const denyMatch = normalizedPrompt.match(denyRe);
+  if (denyMatch) {
+    const label = denyMatch.slice(1).find((g) => typeof g === "string");
+    if (label) return { kind: "why_behavior_deny", label };
+  }
+
+  if (/explain\s+(?:this\s+)?(?:wallet\s+)?profile|explain\s+this\s+wallet'?s?\s+(?:score|profile|archetype)/.test(normalizedPrompt)) {
+    return { kind: "explain_profile" };
+  }
+
+  if (/why\s+is\s+trading\s+confidence\s+low/.test(normalizedPrompt)) return { kind: "why_trading_confidence_low" };
+  if (/why\s+is\s+portfolio\s+confidence\s+low/.test(normalizedPrompt)) return { kind: "why_portfolio_confidence_low" };
+  if (/what\s+would\s+(?:increase|improve)\s+confidence/.test(normalizedPrompt)) return { kind: "what_would_improve_confidence" };
+  if (/what\s+evidence\s+is\s+missing|missing\s+evidence|what\s+evidence\b/.test(normalizedPrompt)) return { kind: "what_evidence_missing" };
+  if (/why\s+is\s+followability\s+(?:low|moderate|high)/.test(normalizedPrompt)) return { kind: "why_followability" };
+
+  if (/why\s+(?:is\s+)?this\s+category\b/.test(normalizedPrompt)) return { kind: "why_category" };
+  if (/why\s+(?:is\s+)?this\s+behavior\b/.test(normalizedPrompt)) return { kind: "why_behavior_confirm" };
+
+  const confirmRe = new RegExp(`why\\s+is\\s+(?:this|it)\\s+(?:a\\s+|an\\s+)?${WALLET_LABEL_PATTERN}|is\\s+(?:this|it)\\s+(?:a\\s+|an\\s+)?${WALLET_LABEL_PATTERN}|why\\s+${WALLET_LABEL_PATTERN}`);
+  const confirmMatch = normalizedPrompt.match(confirmRe);
+  if (confirmMatch) {
+    const label = confirmMatch.slice(1).find((g) => typeof g === "string");
+    if (label) {
+      const isCategoryWord = WALLET_CATEGORY_WORDS.has(label.trim().toLowerCase());
+      return { kind: isCategoryWord ? "why_category" : "why_behavior_confirm", label };
+    }
+  }
+
+  return null;
+}
+
+function buildWalletProfileFollowupAnswer(
+  kind: WalletProfileFollowupKind,
+  walletProfile: Record<string, unknown>,
+  mem: Record<string, unknown> | null,
+  rawLabel: string | undefined,
+): string {
+  switch (kind) {
+    case "why_category": {
+      const category = typeof walletProfile.walletCategory === "string" ? walletProfile.walletCategory : null;
+      return buildWalletCategoryExplanation(category, mem);
+    }
+    case "why_behavior_confirm": {
+      const portfolioBehavior = typeof walletProfile.portfolioBehavior === "string" ? walletProfile.portfolioBehavior : null;
+      const tradingBehavior = typeof walletProfile.tradingBehavior === "string" ? walletProfile.tradingBehavior : null;
+      const matchedLabel = rawLabel ? normalizeWalletLabel(rawLabel) : (tradingBehavior || portfolioBehavior || "Not Yet Classified");
+      const confirm = matchedLabel === tradingBehavior || matchedLabel === portfolioBehavior;
+      return buildWalletBehaviorExplanation(matchedLabel, walletProfile, confirm);
+    }
+    case "why_behavior_deny": {
+      const matchedLabel = rawLabel ? normalizeWalletLabel(rawLabel) : "the queried behavior";
+      return buildWalletBehaviorExplanation(matchedLabel, walletProfile, false);
+    }
+    case "explain_profile":
+      return buildWalletProfileBlock(walletProfile) ?? `WALLET PROFILE\nNo wallet profile available yet for this wallet — scan it first.\nCTA: Scan Wallet`;
+    case "why_trading_confidence_low":
+      return buildWalletConfidenceExplanation("trading", walletProfile);
+    case "why_portfolio_confidence_low":
+      return buildWalletConfidenceExplanation("portfolio", walletProfile);
+    case "what_would_improve_confidence":
+      return buildWalletImproveConfidenceExplanation(walletProfile);
+    case "what_evidence_missing":
+      return buildWalletEvidenceMissingExplanation(walletProfile);
+    case "why_followability":
+      return buildWalletFollowabilityExplanation(walletProfile);
+    default:
+      return buildWalletProfileBlock(walletProfile) ?? `WALLET PROFILE\nNo wallet profile available yet for this wallet — scan it first.\nCTA: Scan Wallet`;
+  }
+}
+
+
 function buildWalletMemoryResult(memWallet: ClarkSessionMemory["lastWallet"]) {
   if (!memWallet) return null;
   const snapshot = (memWallet.snapshot && typeof memWallet.snapshot === "object" ? memWallet.snapshot : {}) as Record<string, unknown>;
@@ -6379,14 +6637,14 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   {
     const normalizedPrompt = prompt.toLowerCase();
     const hasExplicitAddress = Boolean(extractAddress(prompt));
-    const isWalletProfileFollowup =
-      /what\s+type\s+of\s+trader\s+is\s+this|why\s+this\s+score|why\s+(meme\s+hunter|swing\s+trader|day\s+trader|diamond\s+holder|whale|smart\s+money|yield\s+farmer|airdrop\s+farmer|dev\s+wallet|passive\s+investor)|is\s+this\s+smart\s+money|should\s+i\s+follow\s+this\s+wallet|explain\s+wallet\s+profile|explain\s+this\s+wallet'?s?\s+(score|profile|archetype)|what'?s?\s+(its|the)\s+(wallet\s+)?score|what\s+archetype/.test(normalizedPrompt);
+    const followupClassification = classifyWalletProfileFollowup(normalizedPrompt);
 
-    if (sessionMem.lastWallet?.address && isWalletProfileFollowup && !hasExplicitAddress) {
+    if (sessionMem.lastWallet?.address && followupClassification && !hasExplicitAddress) {
       const walletProfile = (sessionMem.lastWallet.cachedEvidence as Record<string, unknown> | null)?.walletProfile as Record<string, unknown> | null | undefined;
       updateMemIntent(sessionMem, "wallet_profile_followup");
+      const memResult = buildWalletMemoryResult(sessionMem.lastWallet) as Record<string, unknown> | null;
       const analysis = walletProfile
-        ? `${buildWalletProfileBlock(walletProfile)}`
+        ? buildWalletProfileFollowupAnswer(followupClassification.kind, walletProfile, memResult, followupClassification.label)
         : `WALLET PROFILE\nNo wallet profile available yet for this wallet — scan it first.\nCTA: Scan Wallet`;
       return {
         feature: "clark-ai", chain, mode: "analysis", intent: "wallet_profile_followup", toolsUsed: ["memory"],
@@ -9274,7 +9532,8 @@ export async function POST(req: NextRequest) {
   const memorySensitivePrompt = Boolean(earlyPrompt) && (
     isWalletFollowupPrompt(earlyPrompt) ||
     /top\s+holdings|active\s+chains|chains\s+active|what\s+chains?|which\s+chains?|should\s+i\s+deep\s+scan|deep\s+scan\?|evidence\s+missing|what\s+evidence|what\s+is\s+missing|is\s+this\s+wallet|why\s+no\s+pnl|profitable/i.test(earlyPrompt) ||
-    /what\s+type\s+of\s+trader|why\s+this\s+score|why\s+(meme\s+hunter|swing\s+trader|day\s+trader|diamond\s+holder|whale|smart\s+money|yield\s+farmer|airdrop\s+farmer|dev\s+wallet|passive\s+investor)|is\s+this\s+smart\s+money|should\s+i\s+follow\s+this\s+wallet|explain\s+wallet\s+profile|wallet'?s?\s+(score|profile|archetype)|what\s+archetype/i.test(earlyPrompt)
+    /what\s+type\s+of\s+trader|why\s+this\s+score|why\s+(meme\s+hunter|swing\s+trader|day\s+trader|diamond\s+holder|whale|smart\s+money|yield\s+farmer|airdrop\s+farmer|dev\s+wallet|passive\s+investor)|is\s+this\s+smart\s+money|should\s+i\s+follow\s+this\s+wallet|explain\s+wallet\s+profile|wallet'?s?\s+(score|profile|archetype)|what\s+archetype/i.test(earlyPrompt) ||
+    /why\s+is\s+(?:this|it)\s+(?:not\s+)?(?:a\s+|an\s+)?(?:whale|smart\s+money|meme\s+speculator|meme\s+hunter|day\s+trader|swing\s+trader|diamond\s+holder|conviction\s+holder|diversified\s+holder|dev\s+wallet|passive\s+investor)|why\s+this\s+category|why\s+this\s+behavior|explain\s+this\s+profile|why\s+is\s+(trading|portfolio)\s+confidence\s+low|what\s+would\s+(increase|improve)\s+confidence|why\s+is\s+followability\s+(low|moderate|high)/i.test(earlyPrompt)
   );
 
   // Check cache before rate limiting — cached responses bypass expensive tool quota
