@@ -55,7 +55,7 @@ const WALLET_ADMIN_FORENSIC_SCAN = process.env.CHAINLENS_WALLET_ADMIN_FORENSIC_S
 const WALLET_ADMIN_HISTORICAL_HARD_CAP = parseInt(process.env.CHAINLENS_WALLET_ADMIN_HISTORICAL_HARD_CAP ?? '50', 10) || 50
 let _goldrushDailyCreditsUsed = 0
 let _goldrushDailyCreditsResetAt = 0
-const WALLET_SNAPSHOT_SCHEMA_VERSION = 'v43'
+const WALLET_SNAPSHOT_SCHEMA_VERSION = 'v44'
 const walletCache = new Map<string, { exp: number; payload: unknown; cachedAt: number }>()
 const walletRate = new Map<string, { count: number; resetAt: number }>()
 const WALLET_RATE_BY_PLAN: Record<string, number> = { free: 20, pro: 60, elite: 180 }
@@ -1491,6 +1491,7 @@ export async function POST(req: Request) {
             historicalPagesAttemptedByChain: (snapshot as any)?._diagnostics?.walletHistoricalScanDebug?.historicalPagesAttemptedByChain ?? {},
             historicalCreditBudget: (snapshot as any)?._diagnostics?.walletHistoricalScanDebug?.historicalCreditBudget ?? 0,
             historicalCreditsUsed: (snapshot as any)?._diagnostics?.walletHistoricalScanDebug?.historicalCreditsUsed ?? 0,
+            syntheticTargetExtraCreditUsed: (snapshot as any)?._diagnostics?.walletHistoricalScanDebug?.syntheticTargetExtraCreditUsed ?? 0,
             historicalCreditsSavedByCache: (snapshot as any)?._diagnostics?.walletHistoricalScanDebug?.cacheHit ? ((snapshot as any)?._diagnostics?.walletHistoricalScanDebug?.historicalCreditBudget ?? 0) : 0,
             historicalBudgetCapHit: (snapshot as any)?._diagnostics?.walletHistoricalScanDebug?.historicalBudgetCapHit ?? false,
             historicalBudgetCapReason: (snapshot as any)?._diagnostics?.walletHistoricalScanDebug?.historicalBudgetCapReason ?? null,

@@ -1562,7 +1562,7 @@ export type WalletSnapshotOptions = {
 
 const SNAPSHOT_TTL_MS         = 5  * 60 * 1000
 const SNAPSHOT_HISTORY_TTL_MS = 15 * 60 * 1000
-const SNAPSHOT_SCHEMA_VERSION = 'v43'
+const SNAPSHOT_SCHEMA_VERSION = 'v44'
 type SnapshotCacheEntry = { snapshot: WalletSnapshot; cachedAt: number; ttlMs: number }
 const snapshotMemCache = new Map<string, SnapshotCacheEntry>()
 
@@ -2928,6 +2928,7 @@ async function buildWalletHistoricalCoverage(
   matchedClosedLotsBefore: number,
   targetContracts?: Set<string>,
   startPage = 0,
+  chainsOverride?: ReadonlyArray<'base-mainnet' | 'eth-mainnet'>,
 ): Promise<WalletHistoricalCoverageOutput> {
   const emptyDebug = (reason: string): WalletHistoricalCoverageOutput => ({
     summary: { status: 'open_check', requested: true, pagesAttempted: 0, maxPages, rawTransactions: 0, rawLogEvents: 0, normalizedEvents: 0, walletSideEvents: 0, swapLikeTransactions: 0, pricedSwapCandidates: null, matchedClosedLotsBefore, matchedClosedLotsAfter: null, addedClosedLots: null, coverageLevel: 'none', missing: ['provider_not_configured'], reason },
@@ -2937,7 +2938,7 @@ async function buildWalletHistoricalCoverage(
   if (!apiKey) return emptyDebug('goldrush_not_configured')
 
   const pageSize = 50
-  const chains = ['base-mainnet', 'eth-mainnet'] as const
+  const chains = chainsOverride && chainsOverride.length > 0 ? chainsOverride : (['base-mainnet', 'eth-mainnet'] as const)
   const chainCoverage: Record<string, { pages: number; transactions: number; events: number }> = {}
   const allEvents: PnlEvent[] = []
   const errorSamples: string[] = []
@@ -10618,40 +10619,64 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   let _syntheticTargetExtraCreditUsed = 0
   let _syntheticTargetExtraStopReason: string | null = null
   let _syntheticTargetExtraNewEvidence: WalletTxEvidence[] = []
+  let _syntheticTargetExtraChainsAttempted: string[] = []
+  let _syntheticTargetExtraSkippedChains: string[] = []
+  let _syntheticTargetExtraPageCapHit = false
+  let _syntheticTargetExtraNoInboundFound = false
+  let _syntheticTargetMarkedUnrecoverable = false
+  let _syntheticTargetUnrecoverableReason: string | null = null
 
   if (_syntheticTargetExtraRecoveryAttempted) {
     const _extraTargetContracts = new Set(_syntheticTargetExtraEligibleTokens)
     const _extraTargetSyntheticLots = _syntheticClosedLots.filter(l => _extraTargetContracts.has(l.tokenAddress.toLowerCase()))
+    // SYNTH-RECOVERY-FIX-13: only query the chain(s) the eligible target tokens actually live on
+    // (e.g. a Base-only token never queries eth-mainnet) — this is what kept the previous version
+    // within its 2-page TOTAL cap instead of 2-pages-per-chain (up to 4 total).
+    const _extraTargetOwnChains = new Set(_extraTargetSyntheticLots.map(l => normalizeChainForGoldrush(l.chain)))
+    const _extraChainOrder: Array<'base-mainnet' | 'eth-mainnet'> = ['base-mainnet', 'eth-mainnet']
+    const _extraChainsToTry = _extraChainOrder.filter(c => _extraTargetOwnChains.has(c))
+    _syntheticTargetExtraSkippedChains = _extraChainOrder.filter(c => !_extraTargetOwnChains.has(c))
+
     let _extraEventsSoFar: PnlEvent[] = []
-    for (let _extraPage = 0; _extraPage < _syntheticTargetExtraPagesAllowed; _extraPage++) {
-      const _startPage = _pagesAllowed + _extraPage
-      const _extraResult = await buildWalletHistoricalCoverage(addrNorm, GOLDRUSH_KEY, 1, walletTradeStatsSummary.closedLots, _extraTargetContracts, _startPage)
-      _trackCall('goldrush', 'log_events_by_address', false, `gr:hc:synthExtra:p${_startPage}:${addrNorm}`)
-      const _extraPagesThisCall = _extraResult.debug?.pagesAttempted ?? 0
-      _syntheticTargetExtraPagesAttempted += _extraPagesThisCall
-      _syntheticTargetExtraCreditUsed += _extraPagesThisCall
-      _syntheticTargetExtraRawLogs += _extraResult.debug?.rawLogEvents ?? 0
-      _extraEventsSoFar = [..._extraEventsSoFar, ..._extraResult.events]
+    let _pagesUsedTotal = 0
+    outer: for (const _chain of _extraChainsToTry) {
+      if (_pagesUsedTotal >= _syntheticTargetExtraPagesAllowed) { _syntheticTargetExtraPageCapHit = true; break }
+      _syntheticTargetExtraChainsAttempted.push(_chain)
+      while (_pagesUsedTotal < _syntheticTargetExtraPagesAllowed) {
+        const _startPage = _pagesAllowed + _pagesUsedTotal
+        const _extraResult = await buildWalletHistoricalCoverage(addrNorm, GOLDRUSH_KEY, 1, walletTradeStatsSummary.closedLots, _extraTargetContracts, _startPage, [_chain])
+        _trackCall('goldrush', 'log_events_by_address', false, `gr:hc:synthExtra:${_chain}:p${_startPage}:${addrNorm}`)
+        const _extraPagesThisCall = _extraResult.debug?.pagesAttempted ?? 0
+        _pagesUsedTotal += _extraPagesThisCall
+        _syntheticTargetExtraPagesAttempted += _extraPagesThisCall
+        _syntheticTargetExtraCreditUsed += _extraPagesThisCall
+        _syntheticTargetExtraRawLogs += _extraResult.debug?.rawLogEvents ?? 0
 
-      const _extraRecovery = _extraEventsSoFar.length > 0
-        ? buildSyntheticTargetPriorBuyRecovery(_extraEventsSoFar, _extraTargetSyntheticLots)
-        : null
-      _syntheticTargetExtraNormalizedEvents = _extraRecovery?.debug.syntheticTargetHistoricalNormalizedEvents ?? 0
-      _syntheticTargetExtraInboundEvents = _extraRecovery?.debug.syntheticTargetHistoricalWalletInboundEvents ?? 0
-      _syntheticTargetExtraPriorBuysFound = _extraRecovery?.debug.syntheticTargetPriorBuysFound ?? 0
-      _syntheticTargetExtraNewEvidence = _extraRecovery?.newCandidateEvidence ?? []
+        // Stop immediately if no target-token logs were found at all on this extra page —
+        // move on to the next eligible chain (if any) rather than burning more page budget here.
+        if (_extraResult.events.length === 0) break
+        _extraEventsSoFar = [..._extraEventsSoFar, ..._extraResult.events]
 
-      if (_syntheticTargetExtraPriorBuysFound > 0) {
-        _syntheticTargetExtraStopReason = 'real_prior_buy_found'
-        break
-      }
-      if (_extraPagesThisCall === 0) {
-        _syntheticTargetExtraStopReason = 'no_more_pages_available'
-        break
+        const _extraRecovery = buildSyntheticTargetPriorBuyRecovery(_extraEventsSoFar, _extraTargetSyntheticLots)
+        _syntheticTargetExtraNormalizedEvents = _extraRecovery.debug.syntheticTargetHistoricalNormalizedEvents
+        _syntheticTargetExtraInboundEvents = _extraRecovery.debug.syntheticTargetHistoricalWalletInboundEvents
+        _syntheticTargetExtraPriorBuysFound = _extraRecovery.debug.syntheticTargetPriorBuysFound
+        _syntheticTargetExtraNewEvidence = _extraRecovery.newCandidateEvidence
+
+        if (_syntheticTargetExtraPriorBuysFound > 0) {
+          _syntheticTargetExtraStopReason = 'real_prior_buy_found'
+          break outer
+        }
+        if (_extraPagesThisCall === 0) break // no more pages available on this chain
       }
     }
+    if (_pagesUsedTotal >= _syntheticTargetExtraPagesAllowed) _syntheticTargetExtraPageCapHit = true
+
     if (!_syntheticTargetExtraStopReason) {
+      _syntheticTargetExtraNoInboundFound = true
       _syntheticTargetExtraStopReason = 'no_prior_buy_found_after_targeted_pages'
+      _syntheticTargetMarkedUnrecoverable = true
+      _syntheticTargetUnrecoverableReason = 'no_inbound_target_token_found_after_capped_extra_recovery'
     }
   }
 
@@ -10916,6 +10941,12 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     syntheticTargetExtraStopReason: _syntheticTargetExtraStopReason,
     syntheticTargetExtraCreditUsed: _syntheticTargetExtraCreditUsed,
     syntheticTargetExtraSkippedReason: _syntheticTargetExtraSkippedReason,
+    syntheticTargetExtraChainsAttempted: _syntheticTargetExtraChainsAttempted,
+    syntheticTargetExtraSkippedChains: _syntheticTargetExtraSkippedChains,
+    syntheticTargetExtraPageCapHit: _syntheticTargetExtraPageCapHit,
+    syntheticTargetExtraNoInboundFound: _syntheticTargetExtraNoInboundFound,
+    syntheticTargetMarkedUnrecoverable: _syntheticTargetMarkedUnrecoverable,
+    syntheticTargetUnrecoverableReason: _syntheticTargetUnrecoverableReason,
     sampleDroppedHistoricalLogs: _historicalCoverageDebug?.logNormalizationDebug
       ? [
           { reason: 'noTxHash', count: _historicalCoverageDebug.logNormalizationDebug.historicalRawLogsDroppedNoTxHash },
@@ -11058,7 +11089,12 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _logByProvider = (p: 'moralis' | 'goldrush' | 'alchemy') => _apiCallLog.filter(e => e.provider === p)
   const _liveCalls = (p: 'moralis' | 'goldrush' | 'alchemy') => _logByProvider(p).filter(e => !e.cacheHit && !e.duplicate)
   const _dupEntries = _apiCallLog.filter(e => e.duplicate)
-  const _historicalCreditsUsedFinal = (_historicalCoverageDebug?.pagesAttempted ?? 0) + _syntheticTargetExtraCreditUsed
+  // SYNTH-RECOVERY-FIX-13: keep base historical-recovery credits and synthetic-extra-recovery
+  // credits as distinct counters — _historicalCreditsUsedFinal/_creditsUsedFinal below is the
+  // TOTAL used for hard-cap enforcement, but the budget debug surfaces them separately so synthetic
+  // extra pages are never mistaken for ordinary historical-recovery pages.
+  const _historicalBaseCreditsUsed = _historicalCoverageDebug?.pagesAttempted ?? 0
+  const _historicalCreditsUsedFinal = _historicalBaseCreditsUsed + _syntheticTargetExtraCreditUsed
   // SYNTH-RECOVERY-FIX-11: buildWalletHistoricalCoverage's `maxPages` argument (passed in as
   // _pagesAllowed) is a PER-CHAIN page cap — it fetches up to maxPages pages from base-mainnet AND
   // up to maxPages pages from eth-mainnet, so pagesAttempted (their sum) can legitimately be up to
@@ -11085,7 +11121,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     portfolioCreditsUsed: _portfolioCreditsUsed,
     activityCreditsUsed: _activityCreditsUsed,
     pricingCreditsUsed: _priceBudgetDebug.finalPriceAttempts ?? 0,
-    historicalCreditsUsed: _historicalCreditsUsedFinal,
+    historicalCreditsUsed: _historicalBaseCreditsUsed,
+    syntheticTargetExtraCreditUsed: _syntheticTargetExtraCreditUsed,
     budgetCapHit: _budgetCapHitFinal,
     budgetCapReason: _creditsUsedFinal >= _totalCreditHardCap ? 'total_hard_cap_reached' : _historicalBudgetCapReason,
     callsSkippedAfterBudgetCap: Math.max(0, clampedMaxHistoricalPages - _pagesAllowed),
@@ -11112,7 +11149,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       Object.entries(_historicalCoverageDebug?.chainCoverage ?? {}).map(([chain, c]) => [chain, c.pages])
     ),
     historicalCreditBudget: _historicalMaxPagesTotal,
-    historicalCreditsUsed: _historicalCreditsUsedFinal,
+    historicalCreditsUsed: _historicalBaseCreditsUsed,
+    syntheticTargetExtraCreditUsed: _syntheticTargetExtraCreditUsed,
     historicalBudgetCapHit: _historicalBudgetCapHit,
     historicalBudgetCapReason: _historicalBudgetCapReason,
     rawEventsFetched: _historicalCoverageDebug?.rawLogEvents ?? 0,
