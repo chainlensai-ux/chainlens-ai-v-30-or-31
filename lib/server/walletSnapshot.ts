@@ -703,6 +703,14 @@ export type WalletSnapshot = {
       unknownCounterpartyEvents: number
       unknownPairingEvents: number
       unknownPricingEvents: number
+      walletSwapReconstructionAudit?: {
+        unknownEventsSeen: number
+        unknownEventsUsedForContext: number
+        reconstructedCandidates: number
+        reconstructedHighConfidence: number
+        routerMatchedTransactions: number
+        routerCoverageProtocols: string[]
+      }
     }
     walletPriceAtTimeDebug?: {
       swapCandidateEvents: number
@@ -1346,6 +1354,12 @@ const EXTENDED_DEX_ROUTERS = new Set<string>([
   // Aerodrome (Base)
   '0xcf77a3ba9a5ca399b7c97c74d54e5b1beb874e43',
   '0x6cb442acf35158d68425b2a89f7e7b02fb5e42d5',
+  '0xbe6d8f0d05cc4be24d5167a3ef062215be6d18a5',
+  // AlienBase (Base)
+  '0x8c1a3cf8f83074169fe5d7ad50b978e1cd6b37c7',
+  '0xb20c411fc84fbb27e78608c24d0056d974ea9411',
+  // Virtuals Protocol (Base)
+  '0xf8dd39c71a278fe9f4377d009d7627ef140f809e',
   // Balancer
   '0xba12222222228d8ba445958a75a0704d566bf2c8',
   // Curve
@@ -1579,6 +1593,10 @@ const KNOWN_DEX_ROUTERS: Record<string, string> = {
   // consulted this map directly (router-coverage audit).
   '0x6cb442acf35158d68425b2a89f7e7b02fb5e42d5': 'AerodromeSecondary',
   '0x327df1e6de05895d2ab08513aadd9313fe505d86': 'BaseSwap',
+  '0xbe6d8f0d05cc4be24d5167a3ef062215be6d18a5': 'AerodromeSlipstream',
+  '0x8c1a3cf8f83074169fe5d7ad50b978e1cd6b37c7': 'AlienBaseRouter',
+  '0xb20c411fc84fbb27e78608c24d0056d974ea9411': 'AlienBaseV3SmartRouter',
+  '0xf8dd39c71a278fe9f4377d009d7627ef140f809e': 'VirtualsProtocolSellOrderExecutor',
 }
 
 const SWAP_ENRICHMENT_TTL_MS = 45 * 60 * 1000
@@ -2038,6 +2056,7 @@ export type WalletSwapDetection = {
   reason: string
   matchedProtocol: string | null
   matchedAddress: string | null
+  swapReconstructionConfidence?: 'high' | 'medium' | 'low'
 }
 
 export type WalletTxEvidence = {
@@ -3603,18 +3622,22 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
     else dedupSeen.add(key)
   }
 
-  // ── Filter to usable events for swap-group analysis ──
-  // Excludes: non-wallet-side transfers (direction=unknown), missing contract, zero amount
+  // ── Filter to directly usable events for pricing/FIFO and context-only events for tx reconstruction ──
+  // Unknown-direction events remain excluded from direct pricing/FIFO, but can provide tx-level context.
   const usableEvents = evidenceList.filter(e =>
     e.direction !== 'unknown' &&
     Boolean(e.contract) && e.contract.startsWith('0x') &&
     e.amount > 0
   )
+  const contextEvents = evidenceList.filter(e =>
+    Boolean(e.contract) && e.contract.startsWith('0x') &&
+    e.amount > 0
+  )
   const usableEventCount = usableEvents.length
 
-  // ── Group ONLY usable events by txHash ──
+  // ── Group context-capable events by txHash ──
   const byTx = new Map<string, WalletTxEvidence[]>()
-  for (const e of usableEvents) {
+  for (const e of contextEvents) {
     byTx.set(e.txHash, [...(byTx.get(e.txHash) ?? []), e])
   }
 
@@ -3687,9 +3710,18 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
   const sampleWalletInitiatedSwapLikeTxsMap = new Map<string, { txHash: string; inboundCount: number; outboundCount: number; tokens: string[]; hasStableOrWeth: boolean }>()
 
   const evidenceWithDetection: WalletTxEvidence[] = evidenceList.map(e => {
-    // Non-wallet-side transfer — explain clearly
+    // Unknown-direction events are context-only unless tx-level evidence is high-confidence enough
+    // to reconstruct direction. Medium/low confidence remains unknown and cannot enter pricing/FIFO.
     if (e.direction === 'unknown') {
-      return { ...e, swapDetection: { isSwapCandidate: false, confidence: 'low' as const, eventKind: 'unknown' as const, reason: 'Transfer does not involve scanned wallet directly (pool-to-pool or third-party)', matchedProtocol: null, matchedAddress: null } }
+      const ctx = txCtxMap.get(e.txHash)
+      const contractLower = e.contract?.toLowerCase() ?? ''
+      const isQuote = Boolean(KNOWN_STABLE_WETH_CONTRACTS[contractLower])
+      const hasNonQuote = Boolean(ctx && [...ctx.distinctContracts].some(c => !KNOWN_STABLE_WETH_CONTRACTS[c]))
+      if (ctx?.txToKnownRouter && ctx.walletIsInitiator && ctx.txHasStableOrWeth && ctx.hasMultipleDistinctTokens && (isQuote ? hasNonQuote : true)) {
+        const direction = isQuote ? 'sell' as const : 'buy' as const
+        return { ...e, direction, swapDetection: { isSwapCandidate: true, confidence: 'high' as const, eventKind: 'swap_candidate' as const, reason: `High-confidence router reconstruction (${ctx.txRouterProtocol}) from unknown-direction Base context`, matchedProtocol: ctx.txRouterProtocol, matchedAddress: ctx.txToAddr, swapReconstructionConfidence: 'high' as const } }
+      }
+      return { ...e, swapDetection: { isSwapCandidate: false, confidence: 'low' as const, eventKind: 'unknown' as const, reason: 'Transfer does not involve scanned wallet directly (pool-to-pool or third-party); retained as tx reconstruction context only', matchedProtocol: ctx?.txRouterProtocol ?? null, matchedAddress: ctx?.txToAddr ?? null, swapReconstructionConfidence: ctx?.txToKnownRouter || ctx?.txHasStableOrWeth || ctx?.hasInboundOutbound ? 'medium' as const : 'low' as const } }
     }
     if (!e.amount || e.amount <= 0) {
       return { ...e, swapDetection: { isSwapCandidate: false, confidence: 'low' as const, eventKind: 'unknown' as const, reason: 'Zero or negligible amount — likely spam or dust transfer', matchedProtocol: null, matchedAddress: null } }
@@ -3810,7 +3842,16 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
   const unknownPricingEvents = evidenceWithDetection.filter(e =>
     e.swapDetection?.isSwapCandidate && !e.timestamp).length
 
-  // ── Sample grouped txs (from usable groups) ──
+  const walletSwapReconstructionAudit = {
+    unknownEventsSeen: directionCounts.unknown,
+    unknownEventsUsedForContext: contextEvents.filter(e => e.direction === 'unknown' && Boolean(txCtxMap.get(e.txHash))).length,
+    reconstructedCandidates: evidenceWithDetection.filter(e => e.swapDetection?.isSwapCandidate && e.swapDetection.swapReconstructionConfidence).length,
+    reconstructedHighConfidence: evidenceWithDetection.filter(e => e.swapDetection?.swapReconstructionConfidence === 'high').length,
+    routerMatchedTransactions: txToKnownRouterCount,
+    routerCoverageProtocols: [...new Set([...txCtxMap.values()].map(ctx => ctx.txRouterProtocol).filter((p): p is string => Boolean(p)))].sort(),
+  }
+
+  // ── Sample grouped txs (from context groups) ──
   const sampleGroupedTxs = Array.from(byTx.entries()).slice(0, 5).map(([txHash, group]) => ({
     txHash: `${txHash.slice(0, 10)}...${txHash.slice(-6)}`,
     walletEventCount: group.length,
@@ -6839,12 +6880,13 @@ async function buildBaseUnknownDirectionSwapReconstructionPass(
     const contractLower = (e.contract ?? '').toLowerCase()
     const swapReason = swapReasons.get(txHashLower) ?? 'base_unknown_recon'
     const confidence: 'high' | 'medium' = d.isKnownRouter ? 'high' : 'medium'
+    const swapReconstructionConfidence: 'high' | 'medium' = d.isKnownRouter ? 'high' : 'medium'
 
     if (e.direction !== 'unknown') {
       // Known buy/sell in a confirmed swap tx — mark as swap candidate, direction already correct
       syntheticSwapEventsAdded++
       if (sampleSyntheticEvents.length < 5) sampleSyntheticEvents.push({ txHash: e.txHash.slice(0, 12) + '…', symbol: e.symbol, direction: e.direction })
-      return { ...e, swapDetection: { isSwapCandidate: true, confidence, eventKind: 'swap_candidate' as const, reason: `Base unknown-dir recon (known event in swap tx): ${swapReason}`, matchedProtocol: d.routerProtocol, matchedAddress: null } satisfies WalletSwapDetection }
+      return { ...e, swapDetection: { isSwapCandidate: true, confidence, eventKind: 'swap_candidate' as const, reason: `Base unknown-dir recon (known event in swap tx): ${swapReason}`, matchedProtocol: d.routerProtocol, matchedAddress: null, swapReconstructionConfidence } satisfies WalletSwapDetection }
     }
 
     // Unknown direction: determine from receipt logs
@@ -6871,6 +6913,10 @@ async function buildBaseUnknownDirectionSwapReconstructionPass(
       direction = (WETH_CONTRACTS_PRICE[contractLower] || STABLE_USD_CONTRACTS[contractLower]) ? 'sell' : 'buy'
     }
 
+    if (swapReconstructionConfidence !== 'high') {
+      return e
+    }
+
     if (direction === null) {
       if (e.txHash.toLowerCase() === BASE_UNKNOWN_RECON_PROBLEM_TX) skippedReasons.push(`problem_tx_event_not_promoted:${contractLower}:${e.symbol}:no_direction_inferred`)
       return e
@@ -6879,7 +6925,7 @@ async function buildBaseUnknownDirectionSwapReconstructionPass(
     if (sampleSyntheticEvents.length < 5) sampleSyntheticEvents.push({ txHash: e.txHash.slice(0, 12) + '…', symbol: e.symbol, direction })
     return {
       ...e, direction,
-      swapDetection: { isSwapCandidate: true, confidence, eventKind: 'swap_candidate' as const, reason: `Base unknown-dir recon: ${swapReason}`, matchedProtocol: d.routerProtocol, matchedAddress: null } satisfies WalletSwapDetection,
+      swapDetection: { isSwapCandidate: true, confidence, eventKind: 'swap_candidate' as const, reason: `Base unknown-dir recon: ${swapReason}`, matchedProtocol: d.routerProtocol, matchedAddress: null, swapReconstructionConfidence } satisfies WalletSwapDetection,
     }
   })
 
