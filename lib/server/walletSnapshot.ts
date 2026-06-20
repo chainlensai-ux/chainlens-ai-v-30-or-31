@@ -1053,6 +1053,10 @@ export type WalletSnapshot = {
       budgetCapped: boolean
       dedupRemoved: number
       capLimit: number
+      // PHASE4-FIX-8/9 (items 3 & 6): additive capping-transparency + coverage reason fields.
+      cappedCount?: number
+      cappedProviders?: string[]
+      reasons?: string[]
     }
     walletScanBudgetDebug?: Record<string, unknown>
     walletSwapEnrichmentDebug?: {
@@ -2333,6 +2337,12 @@ type PnlEvent = {
   txToAddress?: string | null
   txSucceeded?: boolean | null
   isSwapCandidate?: boolean
+  // PHASE4-FIX-6: optional log-level position within its source page/transaction. Most providers
+  // in this file (GoldRush, Alchemy, Moralis) don't expose a real log index, so this is either
+  // the provider's real value (when available) or a synthetic per-page positional index assigned
+  // at merge time (see assignSyntheticLogIndex) — additive/optional so no existing consumer of
+  // PnlEvent is affected.
+  logIndex?: number | null
 }
 type GoldrushHistoryDiag = {
   endpointKind: 'transfers_v2' | 'transactions_v3'
@@ -2875,9 +2885,17 @@ async function buildWalletHistoricalCoverage(
   let pagesAttempted = 0
   let stoppedReason = 'max_pages_reached'
   const newestTimestamps: string[] = []
+  // PHASE4-FIX-7 (item 2): per-provider/chain pagination state. GoldRush's transactions_v3
+  // endpoint never tells us pagesExpected up front (no total-count field), so it stays null;
+  // earlyTermination distinguishes "stopped because a page errored/returned a short page before
+  // maxPages was reached" from "ran all the way to maxPages" (which is a budget limit, not a
+  // provider-side early stop).
+  const paginationReasons: string[] = []
 
   for (const chain of chains) {
     chainCoverage[chain] = { pages: 0, transactions: 0, events: 0 }
+    let _chainPagesFetched = 0
+    let _chainEarlyTermination = false
     // PHASE4-FIX-3: GoldRush's transactions_v3 endpoint is offset/page-number paginated (no
     // opaque cursor token in the response), so we model the cursor as "next page index, or
     // null when exhausted" rather than blindly iterating page=0..maxPages-1. A page that
@@ -2892,16 +2910,39 @@ async function buildWalletHistoricalCoverage(
       if (cursor >= maxPages) break
       pagesAttempted++
       const r = await fetchGoldrushHistoricalPage(address, chain, apiKey, cursor)
-      if (r.error) { errorSamples.push(`${chain} p${cursor}: ${r.error}`); stoppedReason = 'provider_error'; cursor = null; break }
+      if (r.error) {
+        errorSamples.push(`${chain} p${cursor}: ${r.error}`)
+        stoppedReason = 'provider_error'
+        _chainEarlyTermination = true
+        cursor = null
+        break
+      }
       chainCoverage[chain].pages++
+      _chainPagesFetched++
       chainCoverage[chain].transactions += r.rawItems
       chainCoverage[chain].events += r.events.length
       totalRawTx += r.rawItems
       totalTransferLogs += r.transferLogs
-      allEvents.push(...r.events)
+      // PHASE4-FIX-6 (item 5): assign a synthetic per-page logIndex to events GoldRush didn't
+      // already tag with one, before they're merged with other pages/chains.
+      const { events: _pageEventsWithLogIndex, syntheticCount: _pageSynthetic } = assignSyntheticLogIndex(r.events)
+      if (_pageSynthetic > 0 && !paginationReasons.includes('synthetic_log_index')) paginationReasons.push('synthetic_log_index')
+      allEvents.push(..._pageEventsWithLogIndex)
       if (r.newestTimestamp) newestTimestamps.push(r.newestTimestamp)
       if (r.rawItems < pageSize || r.rawItems === 0) { stoppedReason = 'page_partial_or_empty'; cursor = null; break }
       cursor = cursor + 1
+    }
+    // PHASE4-FIX-7 (item 2): a chain that stopped before exhausting maxPages because of a
+    // provider error (not a clean "page came back short/empty") is an early termination, not
+    // just normal pagination completion — flag it distinctly from a generic provider error so
+    // a caller can tell "we hit the wallet's actual history end" from "the provider cut us off."
+    if (_chainEarlyTermination && !paginationReasons.includes('provider_early_termination')) {
+      paginationReasons.push('provider_early_termination')
+    }
+    // A chain that used every page slot up to maxPages without a clean stop signal may still
+    // have more history we didn't fetch — surface that as incomplete pagination coverage.
+    if (_chainPagesFetched >= maxPages && !_chainEarlyTermination && !paginationReasons.includes('provider_pagination_incomplete')) {
+      paginationReasons.push('provider_pagination_incomplete')
     }
   }
 
@@ -2915,16 +2956,18 @@ async function buildWalletHistoricalCoverage(
   // missing. Direction is implied by from/to, so it no longer needs to be in the key.
   const seen = new Set<string>()
   let dupEvents = 0
-  const uniqueEvents: PnlEvent[] = []
+  let uniqueEvents: PnlEvent[] = []
   for (const ev of preFilterEvents) {
     const k = pnlEventDedupeKey(ev)
     if (seen.has(k)) { dupEvents++; continue }
     seen.add(k)
     uniqueEvents.push(ev)
   }
-  // PHASE4-FIX-5: globally time-order the merged multi-chain event set (ascending), so
-  // downstream FIFO/cost-basis logic sees a consistent chronology across chains.
-  uniqueEvents.sort((a, b) => (a.timestamp ? new Date(a.timestamp).getTime() : 0) - (b.timestamp ? new Date(b.timestamp).getTime() : 0))
+  // PHASE4-FIX-5/PHASE4-FIX-3 (item 1): deterministic (timestamp, chainId, logIndex,
+  // providerIndex) order for the merged multi-chain event set, so downstream FIFO/cost-basis
+  // logic sees a consistent chronology across chains even when two chains' events share an
+  // identical timestamp.
+  uniqueEvents = deterministicEventOrder(uniqueEvents)
   const allTxHashes = new Set<string>(uniqueEvents.map(e => e.txHash).filter(Boolean) as string[])
   const walletSideEvents = uniqueEvents.filter(e => e.direction !== 'unknown').length
 
@@ -2943,9 +2986,16 @@ async function buildWalletHistoricalCoverage(
   const newestTimestamp = newestTimestamps.length > 0 ? newestTimestamps[0] : null
   const oldestTimestamp = newestTimestamps.length > 1 ? newestTimestamps[newestTimestamps.length - 1] : newestTimestamp
 
+  // PHASE4-FIX-7 (item 2): merge the pagination reason keys in alongside the existing
+  // target-contract-filter skip reason — both are additive entries in the same string[] field,
+  // so this doesn't change the debug object's shape.
+  const _skippedReasons = [
+    ...(targetContracts && targetContracts.size > 0 ? ['target_contract_filter_applied'] : []),
+    ...paginationReasons,
+  ]
   return {
-    summary: { status, requested: true, pagesAttempted, maxPages, rawTransactions: totalRawTx, rawLogEvents: totalTransferLogs, normalizedEvents: uniqueEvents.length, walletSideEvents, swapLikeTransactions: swapLikeTxs, pricedSwapCandidates: null, matchedClosedLotsBefore, matchedClosedLotsAfter: null, addedClosedLots: null, coverageLevel, missing: errorSamples.length > 0 ? ['provider_errors'] : [], reason: errorSamples.length > 0 ? 'One or more provider pages failed.' : null },
-    debug: { requested: true, providersAttempted: ['goldrush'], pagesAttempted, pageSize, maxPages, cursorUsed: true, stoppedReason, rawTransactions: totalRawTx, rawLogEvents: totalTransferLogs, decodedTransferLogs: totalTransferLogs, walletSideEvents, candidateSwapTxs: swapLikeTxs, candidateSwapEvents: swapLikeEvents, duplicateTxHashes: 0, duplicateEvents: dupEvents, oldestTimestamp, newestTimestamp, chainCoverage, providerErrorSamples: errorSamples.slice(0, 4), skippedReasons: targetContracts && targetContracts.size > 0 ? ['target_contract_filter_applied'] : [], sampleTxHashes: [...allTxHashes].slice(0, 5), sampleSwapLikeTransactions: [], moralisHistoricalConfigured: false, moralisHistoricalAttempted: false, moralisReason: 'moralis_history_not_wired_yet' },
+    summary: { status, requested: true, pagesAttempted, maxPages, rawTransactions: totalRawTx, rawLogEvents: totalTransferLogs, normalizedEvents: uniqueEvents.length, walletSideEvents, swapLikeTransactions: swapLikeTxs, pricedSwapCandidates: null, matchedClosedLotsBefore, matchedClosedLotsAfter: null, addedClosedLots: null, coverageLevel, missing: errorSamples.length > 0 ? ['provider_errors', ...paginationReasons] : [...paginationReasons], reason: errorSamples.length > 0 ? 'One or more provider pages failed.' : null },
+    debug: { requested: true, providersAttempted: ['goldrush'], pagesAttempted, pageSize, maxPages, cursorUsed: true, stoppedReason, rawTransactions: totalRawTx, rawLogEvents: totalTransferLogs, decodedTransferLogs: totalTransferLogs, walletSideEvents, candidateSwapTxs: swapLikeTxs, candidateSwapEvents: swapLikeEvents, duplicateTxHashes: 0, duplicateEvents: dupEvents, oldestTimestamp, newestTimestamp, chainCoverage, providerErrorSamples: errorSamples.slice(0, 4), skippedReasons: _skippedReasons, sampleTxHashes: [...allTxHashes].slice(0, 5), sampleSwapLikeTransactions: [], moralisHistoricalConfigured: false, moralisHistoricalAttempted: false, moralisReason: 'moralis_history_not_wired_yet' },
     events: uniqueEvents,
   }
 }
@@ -4290,7 +4340,47 @@ function normalizeChainForGoldrush(chain: string): string {
 // bare rounded float, which previously caused unrelated low-decimal-precision tokens to collide.
 function pnlEventDedupeKey(e: PnlEvent): string {
   const amountPart = e.amountRaw ?? `canon:${e.amount}:${e.tokenDecimals ?? 'NA'}`
-  return `${normalizeChain(e.chain)}:${e.contract.toLowerCase()}:${e.fromAddress ?? ''}:${e.toAddress ?? ''}:${amountPart}:${e.txHash ?? ''}`
+  // PHASE4-FIX-4 (item 4): chain is already part of this key, which already prevents the
+  // cross-chain txHash collision the spec describes (a bridge/L2-sequencer tx sharing a txHash
+  // across two chains hashes to two different keys here because normalizeChain(e.chain) differs).
+  // logIndex is appended as an additional differentiator (when present, real or synthetic — see
+  // assignSyntheticLogIndex) so two distinct same-tx legs with identical contract/from/to/amount
+  // (e.g. a repeated transfer in a loop) are no longer collapsed into one event.
+  const logIndexPart = e.logIndex ?? ''
+  return `${normalizeChain(e.chain)}:${e.contract.toLowerCase()}:${e.fromAddress ?? ''}:${e.toAddress ?? ''}:${amountPart}:${e.txHash ?? ''}:${logIndexPart}`
+}
+
+// PHASE4-FIX-6 (item 5): assigns a synthetic per-page logIndex to any event in a provider batch
+// that doesn't already carry a real one, so downstream dedupe/sort have a stable tiebreaker even
+// for providers (GoldRush, Alchemy, Moralis) that don't expose a true log index. Returns the
+// patched events plus how many were synthesized, so callers can surface "synthetic_log_index".
+function assignSyntheticLogIndex(events: PnlEvent[]): { events: PnlEvent[]; syntheticCount: number } {
+  let syntheticCount = 0
+  const patched = events.map((e, idx) => {
+    if (e.logIndex !== undefined && e.logIndex !== null) return e
+    syntheticCount++
+    return { ...e, logIndex: idx }
+  })
+  return { events: patched, syntheticCount }
+}
+
+// PHASE4-FIX-3 (item 1): deterministic multi-provider/multi-chain sort comparator —
+// (timestamp ASC, chainId ASC, logIndex ASC, providerIndex ASC). providerIndex is the event's
+// position in the array passed in (stable per merge call), used only as the final tiebreaker
+// when timestamp, chain, and logIndex are all equal.
+function deterministicEventOrder(events: PnlEvent[]): PnlEvent[] {
+  return events
+    .map((e, providerIndex) => ({ e, providerIndex }))
+    .sort((a, b) => {
+      const tsCmp = (a.e.timestamp ? new Date(a.e.timestamp).getTime() : 0) - (b.e.timestamp ? new Date(b.e.timestamp).getTime() : 0)
+      if (tsCmp !== 0) return tsCmp
+      const chainCmp = normalizeChain(a.e.chain).localeCompare(normalizeChain(b.e.chain))
+      if (chainCmp !== 0) return chainCmp
+      const logIdxCmp = (a.e.logIndex ?? 0) - (b.e.logIndex ?? 0)
+      if (logIdxCmp !== 0) return logIdxCmp
+      return a.providerIndex - b.providerIndex
+    })
+    .map(({ e }) => e)
 }
 
 const LOT_EPSILON = 1e-9
@@ -8485,7 +8575,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const grBase = grPnlBaseOut
   const goldrushTransferDiags = [grEth.diag, grBase.diag]
   const baseTransferDiag = goldrushTransferDiags.find((d) => d.chainUsed === '8453' || d.chainUsed === 'base-mainnet') ?? goldrushTransferDiags[0]
-  const grEvents = [...grEth.events, ...grBase.events]
+  let grEvents = [...grEth.events, ...grBase.events]
   // ETH normalization debug: surface raw shape and parse results for the GoldRush ETH provider
   const _walletEthNormalizationDebug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['walletEthNormalizationDebug']> = (() => {
     const grEthDiag = grEth.diag as GoldrushHistoryDiag
@@ -8581,6 +8671,13 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // both are kept, deduped by the shared event key, preferring whichever copy of a duplicate
   // event carries richer fields (amountRaw/usdValue/decimals/timestamp present).
   const _pnlEventRichness = (e: PnlEvent) => Number(Boolean(e.amountRaw)) + Number(Boolean(e.usdValue)) + Number(e.tokenDecimals != null) + Number(Boolean(e.timestamp))
+  // PHASE4-FIX-6 (item 5): assign a synthetic per-provider-batch logIndex to any event that
+  // doesn't already carry one (GoldRush/Alchemy normalize their own raw responses upstream and
+  // don't currently propagate a real log index), so the dedupe key (item 4) and the
+  // deterministic sort (item 1) below both have a stable tiebreaker.
+  let _synthLogIndexAssigned = 0
+  const _grEventsIdx = assignSyntheticLogIndex(grEvents); grEvents = _grEventsIdx.events; _synthLogIndexAssigned += _grEventsIdx.syntheticCount
+  const _alchemyEventsIdx = assignSyntheticLogIndex(alchemyEvents); alchemyEvents = _alchemyEventsIdx.events; _synthLogIndexAssigned += _alchemyEventsIdx.syntheticCount
   let events: PnlEvent[]
   if (grEvents.length > 0 && alchemyEvents.length > 0) {
     const _mergedByKey = new Map<string, PnlEvent>()
@@ -8593,6 +8690,9 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   } else {
     events = grEvents.length > 0 ? grEvents : alchemyEvents
   }
+  // PHASE4-FIX-3 (item 1): deterministic (timestamp, chainId, logIndex, providerIndex) merge
+  // order, replacing dependence on whichever provider's array happened to come first above.
+  events = deterministicEventOrder(events)
 
   // Moralis activity fallback: runs only when deepActivity requested and all primary providers returned nothing.
   // One request max, cached 5 min, in-flight deduped inside fetchMoralisTransfers, 8 s timeout, no pagination.
@@ -8864,9 +8964,9 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         const mk = pnlEventDedupeKey(e)
         if (!_p19SeenKeys.has(mk)) { _p19SeenKeys.add(mk); _p19Merged.push(e) }
       }
-      _p19Merged.sort((a, b) => (a.timestamp ? new Date(a.timestamp).getTime() : 0) - (b.timestamp ? new Date(b.timestamp).getTime() : 0))
+      // PHASE4-FIX-3 (item 1): deterministic (timestamp, chainId, logIndex, providerIndex) order.
       _phase19Debug.mergeDeduped = _p19All.length - _p19Merged.length
-      events = _p19Merged
+      events = deterministicEventOrder(_p19Merged)
     }
   }
 
@@ -8905,9 +9005,23 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _protectedBudgetEvents = _dedupedBudgetEvents.filter(e => _heldTokenContracts.has(e.contract.toLowerCase()))
   const _trimmableBudgetEvents = _dedupedBudgetEvents.filter(e => !_heldTokenContracts.has(e.contract.toLowerCase()))
   const _remainingBudgetSlots = Math.max(0, _ACTIVITY_MAX_EVENTS - _protectedBudgetEvents.length)
+  // PHASE4-FIX-8 (item 3): capping transparency — which events were actually dropped, and which
+  // provider(s) they originated from, so a capped scan is visibly partial rather than silently
+  // shorter. cappedCount/cappedProviders are surfaced via walletBudgetDebug below.
+  const _droppedBudgetEvents = _trimmableBudgetEvents.slice(_remainingBudgetSlots)
+  const _cappedCount = _droppedBudgetEvents.length
+  const _grKeySet = new Set(grEvents.map(pnlEventDedupeKey))
+  const _alchemyKeySet = new Set(alchemyEvents.map(pnlEventDedupeKey))
+  const _cappedProviders = Array.from(new Set(_droppedBudgetEvents.map(e => {
+    const k = pnlEventDedupeKey(e)
+    if (_grKeySet.has(k)) return 'goldrush'
+    if (_alchemyKeySet.has(k)) return 'alchemy'
+    return 'other'
+  })))
   events = [..._protectedBudgetEvents, ..._trimmableBudgetEvents.slice(0, _remainingBudgetSlots)]
-  // PHASE4-FIX-5: keep the post-cap merged set globally time-ordered (ascending) across chains.
-  events.sort((a, b) => (a.timestamp ? new Date(a.timestamp).getTime() : 0) - (b.timestamp ? new Date(b.timestamp).getTime() : 0))
+  // PHASE4-FIX-3 (item 1): deterministic (timestamp, chainId, logIndex, providerIndex) order for
+  // the final post-cap merged set, replacing the timestamp-only sort.
+  events = deterministicEventOrder(events)
   const _budgetEventsAfterCap = events.length
 
   // Build a current-price map from holdings so events without usdValue can be enriched.
@@ -8962,6 +9076,12 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const coveragePercent = pnlTokens.length ? Math.round(coverageNum / pnlTokens.length) : 0
   // PHASE5-FIX-5: coverageScore = sum(weight * coverage) / sum(weight), weight = abs(valueUsd).
   const coveragePercentValueWeighted = coverageWeightTotal > 0 ? Math.round(coverageWeightedNum / coverageWeightTotal) : coveragePercent
+  // PHASE4-FIX-9 (item 6): flag when value-weighted coverage (computed from each token's
+  // priced-event usdValue above, via coverageWeightedNum/coverageWeightTotal) is low even if
+  // simple per-token-count coverage looks fine — i.e. the tokens that DO have full history are
+  // small, and the wallet's real USD exposure is concentrated in poorly-covered tokens.
+  const _COVERAGE_VALUE_WEIGHTED_LOW_THRESHOLD = 40
+  const _coverageValueWeightedLow = coverageWeightTotal > 0 && coveragePercentValueWeighted < _COVERAGE_VALUE_WEIGHTED_LOW_THRESHOLD
   const status: WalletSnapshot['estimatedPnl']['status'] = pnlTokens.length === 0 || pnlSource === 'none' ? 'unavailable' : coveragePercent >= 40 ? 'ok' : 'partial'
   const filteredPnlTokens = pnlTokens.filter((t) => t.coveragePercent > 0).sort((a, b) => (b.currentValueUsd - a.currentValueUsd)).slice(0, 10)
   const pnlCoverageReason = status === 'unavailable'
@@ -8969,6 +9089,14 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     : 'Estimated from indexed transfer history with average-cost method.'
   const pnlSourcePublic: 'activity_layer' | 'fallback_layer' | 'unavailable' = pnlSource === 'none' ? 'unavailable' : pnlSource
   const estimatedPnl: WalletSnapshot['estimatedPnl'] = { status, confidence: status === 'unavailable' ? null : confidenceFromCoverage(coveragePercent), coveragePercent, coveragePercentValueWeighted, source: pnlSourcePublic === 'unavailable' ? 'none' : pnlSourcePublic, totalEstimatedPnlUsd: status === 'unavailable' ? null : realized + unrealized, unrealizedPnlUsd: status === 'unavailable' ? null : unrealized, realizedPnlUsd: status === 'unavailable' ? null : realized, method: 'average_cost_estimate', tokens: filteredPnlTokens, reason: status === 'unavailable' ? (activityProviderUnavailable ? 'Activity source did not return usable history. No PnL was calculated.' : 'PnL unavailable — historical cost basis coverage is too low.') : 'Estimated PnL Beta derived from indexed wallet transfer history.' }
+  // PHASE4-FIX-10 (item 7): `events` here is already the final deterministically-merged,
+  // deduped, sorted, and budget-capped set (every union-merge/cap/sort above reassigns the same
+  // `events` variable in place) — buildTxEvidenceFromEvents/buildSwapDetection below always run
+  // on that final list, never on a raw per-provider array. Later re-invocations of
+  // buildSwapDetection further down this function (after ETH/Base synthetic-swap reconstruction
+  // passes) re-run grouping on an updated evidenceList because those passes add new synthetic
+  // legs to it — that's required re-grouping after new data, not a violation of "merge before
+  // group," so it's left as-is.
   let { evidenceList, summary: walletEvidenceSummary, debug: _txEvidenceDebugBase } = buildTxEvidenceFromEvents(events, activityRequested, activityProviderUnavailable)
   tokenMeter.measure('normalization', { events, evidenceList, walletEvidenceSummary, txEvidenceDebug: _txEvidenceDebugBase, estimatedPnl })
   tokenMeter.endTokenMeter('normalization')
@@ -10841,6 +10969,17 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         budgetCapped: _budgetCapped,
         dedupRemoved: _budgetEventsBefore - _budgetEventsAfterDedup,
         capLimit: _ACTIVITY_MAX_EVENTS,
+        // PHASE4-FIX-8 (item 3): structured event-cap transparency, additive on this already-
+        // diagnostics-only object — cappedCount/cappedProviders plus reason keys for whichever
+        // cap(s) were actually hit (the soft per-token cap above, vs. a hard provider-side cap).
+        cappedCount: _cappedCount,
+        cappedProviders: _cappedProviders,
+        reasons: [
+          ...(_budgetCapped ? ['event_cap_hit'] : []),
+          ...(_cappedProviders.length > 0 ? ['provider_event_cap_hit'] : []),
+          // PHASE4-FIX-9 (item 6): coverage_value_weighted_low, computed above near coveragePercentValueWeighted.
+          ...(_coverageValueWeightedLow ? ['coverage_value_weighted_low'] : []),
+        ],
       },
       walletSwapEnrichmentDebug: _swapEnrichmentDebug,
       ethSwapReconstructionDebug: _ethSwapReconstructionDebug,
