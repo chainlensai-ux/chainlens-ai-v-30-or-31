@@ -529,6 +529,9 @@ export type WalletSnapshot = {
   pnlIntegrityCheck?: {
     ok: boolean
     violations: string[]
+    // PHASE6-FIX-4: additive three-state status alongside the existing ok/violations fields —
+    // 'invalid' for severe data-quality failures, 'suspicious' for elevated-risk-but-usable data.
+    status?: 'ok' | 'suspicious' | 'invalid'
   }
   // PHASE6-FIX-5: heuristic-only (no ML) wallet behavioral signal bundle, derived strictly from
   // values already computed elsewhere in the snapshot (trade stats, lot summary, holdings).
@@ -538,6 +541,9 @@ export type WalletSnapshot = {
     realizedWinRateBucket: 'low' | 'medium' | 'high'
     riskProfileHint: 'concentrated' | 'diversified' | 'dust-heavy'
   }
+  // PHASE6-FIX-5b: separate, additive data-quality hint array (distinct concept from the object
+  // above — does not change walletProfileHints' existing shape). Append-only at the call site.
+  walletDataQualityHints?: string[]
   _debug?: {
     walletFactsShapeIssues?: string[]
     walletScannerDiagnostics?: {
@@ -4429,6 +4435,16 @@ const PHASE6_REASON_KEYS = {
   dustAdjustedPnl: 'dust_adjusted_pnl',
   providerFailure: 'provider_failure',
   truncatedHistory: 'truncated_history',
+  // PHASE6-FIX-6: already-snake_case keys introduced by earlier phases (Phase 2/3/4/5), listed
+  // here so this vocabulary stays the single source of truth — they were already correctly
+  // formatted at their original push sites and are not being renamed, just cross-referenced.
+  priceMissingPrimary: 'price_missing_primary',
+  priceMissingSecondary: 'price_missing_secondary',
+  priceEstimated: 'price_estimated',
+  syntheticLogIndex: 'synthetic_log_index',
+  fifoBackfilledBuy: 'fifo_backfilled_buy',
+  coverageValueWeightedLow: 'coverage_value_weighted_low',
+  partialPnl: 'partial_pnl',
 } as const
 
 type Phase6ReasonKey = typeof PHASE6_REASON_KEYS[keyof typeof PHASE6_REASON_KEYS]
@@ -4448,8 +4464,13 @@ function lotConfidenceScore(opts: {
   exitSource?: string
   isEstimateLot?: boolean
   partialCoverage?: boolean
+  // PHASE6-FIX-1b: optional, additive signals — coveragePercent (0..100, this lot's evidence
+  // coverage) and missingReasonsCount (size of this lot's missingReasons array, if any). Both are
+  // optional so every existing call site without these signals keeps its prior score unchanged.
+  coveragePercent?: number | null
+  missingReasonsCount?: number
 }): { score: number; tier: 'high' | 'medium' | 'low' } {
-  const { entrySource, exitSource, isEstimateLot, partialCoverage } = opts
+  const { entrySource, exitSource, isEstimateLot, partialCoverage, coveragePercent, missingReasonsCount } = opts
   let score = 1
   // Real priced legs (stable_leg / weth_leg / historical_price) keep full weight; derived/estimate
   // legs lose weight progressively.
@@ -4464,8 +4485,17 @@ function lotConfidenceScore(opts: {
   if (exitSource !== undefined) score = Math.min(score, sourceWeight(exitSource))
   if (isEstimateLot) score = Math.min(score, 0.3)
   if (partialCoverage) score = score * 0.85
+  // PHASE6-FIX-1b: factor this lot's own coveragePercent/missingReasons count (Phase 3 fields)
+  // into the score when supplied, on top of the legacy boolean partialCoverage penalty above.
+  if (typeof coveragePercent === 'number') {
+    score = score * Math.max(0.5, Math.min(1, coveragePercent / 100))
+  }
+  if (typeof missingReasonsCount === 'number' && missingReasonsCount > 0) {
+    score = score * Math.max(0.6, 1 - missingReasonsCount * 0.1)
+  }
   score = Math.max(0, Math.min(1, score))
-  const tier: 'high' | 'medium' | 'low' = score >= 0.85 ? 'high' : score >= 0.5 ? 'medium' : 'low'
+  // PHASE6-FIX-1a: medium-tier floor raised from 0.5 to 0.55 per Phase 6 spec.
+  const tier: 'high' | 'medium' | 'low' = score >= 0.85 ? 'high' : score >= 0.55 ? 'medium' : 'low'
   return { score, tier }
 }
 
@@ -4510,23 +4540,35 @@ function walletPnlConfidence(input: {
   if (providerFailures) score *= 0.85
   score = Math.max(0, Math.min(1, score))
 
-  const tier: 'high' | 'medium' | 'low' = score >= 0.8 ? 'high' : score >= 0.5 ? 'medium' : 'low'
+  // PHASE6-FIX-2b: tier thresholds aligned to lot-level thresholds (0.85/0.55) per spec item 2
+  // ("Tier thresholds same as lot-level"). Weighting above is already by abs(valueUsd) — both
+  // costBasisUsd and entryValueUsd are non-negative by construction, so Math.max(x, 0) === abs(x).
+  const tier: 'high' | 'medium' | 'low' = score >= 0.85 ? 'high' : score >= 0.55 ? 'medium' : 'low'
   return { score, tier, reasons: Array.from(new Set(reasons)) }
 }
 
-// PHASE6-FIX-3: completeness threshold below which isPnlPartial flips true.
-const PHASE6_COMPLETENESS_PARTIAL_THRESHOLD = 0.6
+// PHASE6-FIX-3a: completeness threshold below which isPnlPartial flips true, raised from 0.6 to
+// 0.9 per the new Phase 6 spec ("isPnlPartial = true when completeness < 0.9").
+const PHASE6_COMPLETENESS_PARTIAL_THRESHOLD = 0.9
 
 // PHASE6-FIX-3: completeness score based on fraction of tokens with full buy/sell history,
-// fraction of value covered, and whether any event stream was truncated by a cap.
+// fraction of value covered, whether any event stream was truncated by a cap, and (PHASE6-FIX-3b,
+// additive) the fraction of swap-candidate events that ended up unpriced ("missing price events")
+// and the fraction of buy/sell legs that never matched into a closed lot ("missing swap legs").
 function pnlCompletenessScore(input: {
   matchedTokenKeys: number
   buyTokenKeys: number
   sellTokenKeys: number
   coveragePercentValueWeighted: number | null
   truncated: boolean
+  // PHASE6-FIX-3b: optional — swapCandidateEvents/pricedEvents from buildPriceAtTimeEvidence's
+  // summary give the missing-price-events ratio; unmatchedBuys/unmatchedSells + matched lot count
+  // from the FIFO engine give the missing-swap-legs ratio. Optional so existing callers without
+  // these signals keep their prior score.
+  missingPriceEventsRatio?: number | null
+  missingSwapLegsRatio?: number | null
 }): { score: number; isPartial: boolean; reasons: string[] } {
-  const { matchedTokenKeys, buyTokenKeys, sellTokenKeys, coveragePercentValueWeighted, truncated } = input
+  const { matchedTokenKeys, buyTokenKeys, sellTokenKeys, coveragePercentValueWeighted, truncated, missingPriceEventsRatio, missingSwapLegsRatio } = input
   const reasons: string[] = []
   const totalTokenKeys = Math.max(buyTokenKeys, sellTokenKeys, 1)
   const tokenHistoryFraction = Math.max(0, Math.min(1, matchedTokenKeys / totalTokenKeys))
@@ -4537,10 +4579,21 @@ function pnlCompletenessScore(input: {
     score *= 0.8
     reasons.push(PHASE6_REASON_KEYS.truncatedHistory)
   }
+  // PHASE6-FIX-3b: missing price events / missing swap legs each apply a proportional penalty
+  // (capped) on top of the base score above.
+  if (typeof missingPriceEventsRatio === 'number' && missingPriceEventsRatio > 0) {
+    score *= Math.max(0.5, 1 - Math.min(1, missingPriceEventsRatio) * 0.5)
+  }
+  if (typeof missingSwapLegsRatio === 'number' && missingSwapLegsRatio > 0) {
+    score *= Math.max(0.5, 1 - Math.min(1, missingSwapLegsRatio) * 0.5)
+    reasons.push(PHASE6_REASON_KEYS.partialCoverage)
+  }
   score = Math.max(0, Math.min(1, score))
   const isPartial = score < PHASE6_COMPLETENESS_PARTIAL_THRESHOLD
-  if (isPartial) reasons.push(PHASE6_REASON_KEYS.partialCoverage)
-  return { score, isPartial, reasons }
+  // PHASE6-FIX-3a: push the new normalized partial_pnl key (in addition to the legacy
+  // partial_coverage key) whenever completeness falls below the threshold.
+  if (isPartial) reasons.push(PHASE6_REASON_KEYS.partialCoverage, PHASE6_REASON_KEYS.partialPnl)
+  return { score, isPartial, reasons: Array.from(new Set(reasons)) }
 }
 
 // PHASE6-FIX-4: final integrity pass over the assembled snapshot's lot/PnL data. Read-only —
@@ -4552,13 +4605,24 @@ function integrityCheckPnl(input: {
   realizedPnlUsd: number | null
   unrealizedPnlUsd: number | null
   portfolioDeltaUsd: number | null
-}): { ok: boolean; violations: string[] } {
+  // PHASE6-FIX-4: optional, additive inputs feeding the new three-state `status` field below.
+  // coveragePercent: overall wallet evidence coverage (0..100).
+  // syntheticLotCount/totalLotCount: synthetic ("backfilled"/estimate) lots vs all lots, for ratio.
+  // missingReasonsCount: size of the aggregated missingReasons/reasons set for this snapshot.
+  // priceFailureRatio: fraction of priceAtTime attempts that did not resolve to a price.
+  coveragePercent?: number | null
+  syntheticLotCount?: number
+  totalLotCount?: number
+  missingReasonsCount?: number
+  priceFailureRatio?: number | null
+}): { ok: boolean; violations: string[]; status: 'ok' | 'suspicious' | 'invalid' } {
   const violations: string[] = []
   const EPS = 1e-6
+  let hasNegativeBalance = false
 
   // No negative remaining balances.
   for (const lot of input.openLots) {
-    if (lot.amountRemaining < -EPS) { violations.push('negative_remaining_balance'); break }
+    if (lot.amountRemaining < -EPS) { violations.push('negative_remaining_balance'); hasNegativeBalance = true; break }
   }
 
   // No sells > total buys for a token, unless the lot chain is marked estimate/backfilled.
@@ -4590,7 +4654,22 @@ function integrityCheckPnl(input: {
     }
   }
 
-  return { ok: violations.length === 0, violations }
+  // PHASE6-FIX-4: derive the three-state status additively from the existing violations plus the
+  // new optional inputs above. invalid takes precedence over suspicious; both default to 'ok'
+  // when none of the thresholds are met (and the legacy `ok`/`violations` fields are unchanged).
+  const syntheticLotRatio = input.totalLotCount && input.totalLotCount > 0
+    ? Math.max(0, Math.min(1, (input.syntheticLotCount ?? 0) / input.totalLotCount))
+    : 0
+  const isInvalid =
+    (typeof input.coveragePercent === 'number' && input.coveragePercent < 20) ||
+    (typeof input.priceFailureRatio === 'number' && input.priceFailureRatio > 0.5)
+  const isSuspicious =
+    hasNegativeBalance ||
+    syntheticLotRatio > 0.4 ||
+    (input.missingReasonsCount ?? 0) > 5
+  const status: 'ok' | 'suspicious' | 'invalid' = isInvalid ? 'invalid' : isSuspicious ? 'suspicious' : 'ok'
+
+  return { ok: violations.length === 0, violations, status }
 }
 
 // PHASE6-FIX-5: heuristic-only (no ML) wallet behavioral signal bundle, derived strictly from
@@ -4642,6 +4721,27 @@ function deriveWalletProfileHints(input: {
     : 'diversified'
 
   return { tradeFrequency, avgHoldTimeBucket, realizedWinRateBucket, riskProfileHint }
+}
+
+// PHASE6-FIX-5: data-quality hint array, distinct from the existing `walletProfileHints` object
+// (which is a behavioral-bucket bundle, not a string array — its shape predates this Phase 6 pass
+// and is left untouched per "Do NOT change public API shapes"). Returns only the hints whose
+// threshold is met; callers must append (never overwrite) onto any existing array.
+function deriveWalletDataQualityHints(input: {
+  coveragePercent: number | null
+  syntheticLotRatio: number
+  unstablePriceSourceCount: number
+  totalPricedLegCount: number
+  missingSwapLegsRatio: number
+  isPnlPartial: boolean
+}): string[] {
+  const hints: string[] = []
+  if (input.coveragePercent !== null && input.coveragePercent < 60) hints.push('low_coverage')
+  if (input.syntheticLotRatio > 0.4) hints.push('high_synthetic_ratio')
+  if (input.totalPricedLegCount > 0 && input.unstablePriceSourceCount / input.totalPricedLegCount > 0.3) hints.push('unstable_price_sources')
+  if (input.missingSwapLegsRatio > 0.2) hints.push('missing_swap_legs')
+  if (input.isPnlPartial) hints.push(PHASE6_REASON_KEYS.partialPnl)
+  return hints
 }
 
 function buildFifoLotEngine(
@@ -11144,13 +11244,35 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       reasons: [],
     })
 
+    // PHASE6-FIX-3b: missing-price-events ratio from the price-at-time pass summary, and
+    // missing-swap-legs ratio from the FIFO engine's unmatched buy/sell counts vs total lots.
+    const _p6SwapCandidateEvents = walletPriceEvidenceSummary?.swapCandidateEvents ?? 0
+    const _p6PricedEvents = walletPriceEvidenceSummary?.pricedEvents ?? 0
+    const _p6MissingPriceEventsRatio = _p6SwapCandidateEvents > 0
+      ? Math.max(0, Math.min(1, (_p6SwapCandidateEvents - _p6PricedEvents) / _p6SwapCandidateEvents))
+      : 0
+    const _p6UnmatchedLegs = (promotedLotSummary.unmatchedBuys ?? 0) + (promotedLotSummary.unmatchedSells ?? 0)
+    const _p6TotalLegs = _p6UnmatchedLegs + _p6OpenLots.length + _p6ClosedLots.length
+    const _p6MissingSwapLegsRatio = _p6TotalLegs > 0 ? Math.max(0, Math.min(1, _p6UnmatchedLegs / _p6TotalLegs)) : 0
+
     const _p6Completeness = pnlCompletenessScore({
       matchedTokenKeys: _lotEngineDebug?.matchedTokenKeys ?? 0,
       buyTokenKeys: _lotEngineDebug?.uniqueBuyTokenKeys ?? 0,
       sellTokenKeys: _lotEngineDebug?.uniqueSellTokenKeys ?? 0,
       coveragePercentValueWeighted: _p6CoveragePercent,
       truncated: Boolean(_priceBudgetDebug?.budgetCapHit) || Boolean(_walletHistoricalScanDebug?.budgetCapHit),
+      missingPriceEventsRatio: _p6MissingPriceEventsRatio,
+      missingSwapLegsRatio: _p6MissingSwapLegsRatio,
     })
+
+    // PHASE6-FIX-4: synthetic-lot ratio and missing-reasons count feeding the new integrity status.
+    const _p6SyntheticLotCount = [
+      ..._p6ClosedLots.filter(l => l.evidence.entrySource === 'current_holding_price_open_lot_estimate' || l.evidence.exitSource === 'current_holding_price_open_lot_estimate'),
+      ..._p6OpenLots.filter(l => l.priceSource === 'current_holding_price_open_lot_estimate'),
+    ].length
+    const _p6TotalLotCount = _p6OpenLots.length + _p6ClosedLots.length
+    const _p6MissingReasonsCount = snapshot._diagnostics?.missingReasons?.length ?? 0
+    const _p6PriceFailureRatio = _p6SwapCandidateEvents > 0 ? _p6MissingPriceEventsRatio : null
 
     const _p6PortfolioDeltaUsd = snapshot.estimatedPnl?.totalEstimatedPnlUsd ?? null
     const _p6Integrity = integrityCheckPnl({
@@ -11159,6 +11281,11 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       realizedPnlUsd: promotedLotSummary.realizedPnlUsd ?? null,
       unrealizedPnlUsd: snapshot.estimatedPnl?.unrealizedPnlUsd ?? null,
       portfolioDeltaUsd: _p6PortfolioDeltaUsd,
+      coveragePercent: _p6CoveragePercent,
+      syntheticLotCount: _p6SyntheticLotCount,
+      totalLotCount: _p6TotalLotCount,
+      missingReasonsCount: _p6MissingReasonsCount,
+      priceFailureRatio: _p6PriceFailureRatio,
     })
 
     // PHASE5-FIX-6: every reasons/missing array in this file (this Set-deduped spread pattern,
@@ -11182,7 +11309,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     snapshot.pnlConfidenceTier = _p6FinalTier
     snapshot.pnlCompletenessScore = _p6Completeness.score
     snapshot.isPnlPartial = _p6Completeness.isPartial
-    snapshot.pnlIntegrityCheck = { ok: _p6Integrity.ok, violations: _p6Integrity.violations }
+    snapshot.pnlIntegrityCheck = { ok: _p6Integrity.ok, violations: _p6Integrity.violations, status: _p6Integrity.status }
 
     // Append new normalized Phase 6 reason keys to the existing _diagnostics.missingReasons
     // array additively — existing entries are preserved untouched.
@@ -11201,6 +11328,21 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     })
     if ((promotedTradeStatsSummary.dustClosedLots ?? 0) > 0 && snapshot._diagnostics) {
       snapshot._diagnostics.missingReasons = Array.from(new Set([...(snapshot._diagnostics.missingReasons ?? []), PHASE6_REASON_KEYS.dustAdjustedPnl]))
+    }
+
+    // PHASE6-FIX-5b: data-quality hint array — additive field, computed from the same signals
+    // already gathered above. Appended (never overwriting) onto any pre-existing array.
+    const _p6UnstablePriceSourceCount = [..._p6ClosedLots.filter(l => l.evidence.entrySource === 'provider_event_usd' || l.evidence.exitSource === 'provider_event_usd'), ..._p6OpenLots.filter(l => l.priceSource === 'provider_event_usd')].length
+    const _p6NewDataQualityHints = deriveWalletDataQualityHints({
+      coveragePercent: _p6CoveragePercent,
+      syntheticLotRatio: _p6TotalLotCount > 0 ? _p6SyntheticLotCount / _p6TotalLotCount : 0,
+      unstablePriceSourceCount: _p6UnstablePriceSourceCount,
+      totalPricedLegCount: _p6TotalLotCount,
+      missingSwapLegsRatio: _p6MissingSwapLegsRatio,
+      isPnlPartial: _p6Completeness.isPartial,
+    })
+    if (_p6NewDataQualityHints.length > 0) {
+      snapshot.walletDataQualityHints = Array.from(new Set([...(snapshot.walletDataQualityHints ?? []), ..._p6NewDataQualityHints]))
     }
   } catch {
     // PHASE6: confidence/completeness/integrity signals are best-effort diagnostics — never let
