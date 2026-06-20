@@ -769,7 +769,8 @@ function buildWalletOpenCheck(data: WalletResult): string[] {
     checks.push('PnL open check')
     checks.push(`${closedLots} sell${closedLots !== 1 ? 's' : ''} found, cost basis missing`)
     checks.push('Original buys were not recovered, so profit/loss cannot be verified.')
-    return Array.from(new Set([...(data.walletIntelligence?.openChecks ?? []), ...checks])).slice(0, 4)
+    checks.push(`Real closed trades: ${ts?.closedLotsForStats ?? 0}`)
+    return Array.from(new Set([...(data.walletIntelligence?.openChecks ?? []), ...checks])).slice(0, 5)
   }
   if (!hasEstimatedPnl && (!ts || closedLots === 0) && !hasOpenPosition) {
     checks.push(hasActivityProviderUnavailable(data)

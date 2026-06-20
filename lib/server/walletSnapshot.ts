@@ -6866,6 +6866,7 @@ function buildWalletFacts(
   evidenceWithDetection: WalletTxEvidence[],
   walletAddress: string,
   closedLotCount: number,
+  costBasisMissing = false,
 ): { facts: WalletFacts; debug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['walletFactsDebug']> } {
   const t0 = Date.now()
 
@@ -7075,8 +7076,10 @@ function buildWalletFacts(
       limits: {
         sampleBased: events.length < evidenceWithDetection.length,
         maxEventsUsed,
-        noClosedLotPnL: closedLotCount === 0,
-        reason: closedLotCount === 0
+        noClosedLotPnL: closedLotCount === 0 || costBasisMissing,
+        reason: costBasisMissing
+          ? 'Synthetic lots excluded; cost basis missing.'
+          : closedLotCount === 0
           ? 'No closed FIFO lots found. Portfolio and activity data only.'
           : `${closedLotCount} closed lot(s) available for PnL.`,
       },
@@ -11155,7 +11158,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
 
   const hasHistory = estimatedPnl.status !== 'unavailable'
   const snapshotTtlMs = hasHistory ? SNAPSHOT_HISTORY_TTL_MS : SNAPSHOT_TTL_MS
-  const { facts: walletFacts, debug: _walletFactsDebug } = buildWalletFacts(holdings, totalValue, _swapEvidenceWithDetection, addrNorm, _closedLots.length)
+  const { facts: walletFacts, debug: _walletFactsDebug } = buildWalletFacts(holdings, totalValue, _swapEvidenceWithDetection, addrNorm, _closedLotsForStatsFinal, _pnlUnavailableReasonFinal === 'missing_cost_basis')
 
   // Build unified apiAudit from the per-request _apiCallLog (instrumented at each provider call site)
   const _logByProvider = (p: 'moralis' | 'goldrush' | 'alchemy') => _apiCallLog.filter(e => e.provider === p)

@@ -322,8 +322,10 @@ function buildWalletModuleCoverage(snap: any) {
   const priceStatus = pricedEvents > 0 ? (pr?.status ?? 'ok') : swapCandidateEvents > 0 ? 'open_check' : 'open_check'
   const priceReason = pricedEvents > 0 ? `${pricedEvents}_events_priced` : swapCandidateEvents > 0 ? 'swap_candidates_not_priced' : 'no_swap_candidates_to_price'
 
-  // FIFO PnL
-  const closedLots: number = ls?.closedLots ?? 0
+  // FIFO PnL — public fields use real-backed closed lots only; raw closedLots stays available in debug.
+  const rawClosedLots: number = ls?.closedLots ?? 0
+  const costBasisMissing = ls?.pnlUnavailableReason === 'missing_cost_basis'
+  const closedLots: number = costBasisMissing ? (ls?.closedLotsForStats ?? ls?.realClosedLots ?? 0) : rawClosedLots
   const pricedSwapEvents: number = ls?.pricedSwapEvents ?? pricedEvents
   const openedLots: number = ls?.openedLots ?? 0
   // Open-position evidence also covers the estimatedPnl-derived fallback (unsold buy-side tokens),
@@ -331,14 +333,16 @@ function buildWalletModuleCoverage(snap: any) {
   const _estPnlOpenCandidateCount = ((snap.estimatedPnl?.tokens ?? []) as Array<{ buysDetected: number; sellsDetected: number; estimatedCostBasisUsd: number | null }>)
     .filter(t => t.buysDetected > 0 && t.sellsDetected === 0 && (t.estimatedCostBasisUsd ?? 0) > 0).length
   const _hasOpenPositionEvidence = openedLots > 0 || _estPnlOpenCandidateCount > 0
-  const fifoStatus = closedLots > 0 ? (ls?.status ?? 'ok') : pricedSwapEvents > 0 ? 'open_check' : 'open_check'
-  const fifoReason = closedLots > 0 ? `${closedLots}_closed_lots_matched` : pricedSwapEvents > 0 ? 'priced_events_found_no_matched_lots' : _hasOpenPositionEvidence ? 'open_position_evidence_no_closed_trades' : 'no_priced_swap_events'
+  const fifoStatus = costBasisMissing ? 'open_check' : closedLots > 0 ? (ls?.status ?? 'ok') : pricedSwapEvents > 0 ? 'open_check' : 'open_check'
+  const fifoReason = costBasisMissing ? 'sell_side_found_cost_basis_missing' : closedLots > 0 ? `${closedLots}_closed_lots_matched` : pricedSwapEvents > 0 ? 'priced_events_found_no_matched_lots' : _hasOpenPositionEvidence ? 'open_position_evidence_no_closed_trades' : 'no_priced_swap_events'
 
-  // Trade stats
-  const tradeClosedLots: number = ts?.closedLots ?? 0
+  // Trade stats — public count mirrors closedLotsForStats so synthetic lots don't read as real trades.
+  const rawTradeClosedLots: number = ts?.closedLots ?? 0
+  const tsCostBasisMissing = ts?.pnlUnavailableReason === 'missing_cost_basis' || ts?.publicPnlStatus === 'open_check'
+  const tradeClosedLots: number = tsCostBasisMissing ? (ts?.closedLotsForStats ?? 0) : rawTradeClosedLots
   const readyForWinRate = tradeClosedLots >= 10 && ts?.economicSignificance === 'meaningful'
-  const tradeStatus = readyForWinRate ? (ts?.status ?? 'ok') : tradeClosedLots > 0 ? 'partial' : openedLots > 0 ? 'partial' : 'open_check'
-  const tradeReason = tradeClosedLots >= 10 ? `${tradeClosedLots}_closed_lots_ready` : tradeClosedLots > 0 ? `${tradeClosedLots}_closed_lots_below_threshold` : openedLots > 0 ? 'open_lots_tracked_no_closed_trades' : 'no_closed_lots'
+  const tradeStatus = tsCostBasisMissing ? 'open_check' : readyForWinRate ? (ts?.status ?? 'ok') : tradeClosedLots > 0 ? 'partial' : openedLots > 0 ? 'partial' : 'open_check'
+  const tradeReason = tsCostBasisMissing ? 'missing_cost_basis' : tradeClosedLots >= 10 ? `${tradeClosedLots}_closed_lots_ready` : tradeClosedLots > 0 ? `${tradeClosedLots}_closed_lots_below_threshold` : openedLots > 0 ? 'open_lots_tracked_no_closed_trades' : 'no_closed_lots'
 
   // Open position summary — derived from FIFO debug sampleOpenLots (up to 5 lots).
   // Fallback: when FIFO produced zero opened lots but the average-cost estimate layer
@@ -1119,7 +1123,24 @@ export async function POST(req: Request) {
       (snapshot as any).walletBehavior ?? null,
       (snapshot as any).walletTradeStatsSummary ?? null
     )
-    snapshot.walletPnlWindows = computeWindowedPnl(_closedLotsForIntelligence)
+    // Windowed PnL is public-facing, so it must exclude synthetic/cost-basis-missing lots —
+    // a synthetic break-even lot showing $0 PnL would otherwise look like a verified real result.
+    const _realBackedLotsForWindows = _closedLotsForIntelligence.filter((l: any) =>
+      l?.evidence?.entrySource !== 'synthetic' &&
+      !(l?.missingReasons ?? []).includes('fifo_backfilled_buy') &&
+      !(l?.missingReasons ?? []).includes('price_synthetic_fifo') &&
+      l?.coveragePercent !== 0
+    )
+    snapshot.walletPnlWindows = computeWindowedPnl(_realBackedLotsForWindows)
+    if (snapshot.walletTradeStatsSummary?.pnlUnavailableReason === 'missing_cost_basis' || snapshot.walletLotSummary?.pnlUnavailableReason === 'missing_cost_basis') {
+      for (const key of ['3d', '7d', '30d'] as const) {
+        const w = snapshot.walletPnlWindows[key]
+        if (w && w.closedLots === 0 && 'fallback' in w) {
+          (w as any).fallback = 'PnL open check — cost basis missing for closed sells.'
+          ;(w as any).reason = 'missing_cost_basis'
+        }
+      }
+    }
     snapshot.walletBotScore = computeBotScore(
       _closedLotsForIntelligence,
       (snapshot as any).walletBehavior ?? null,
