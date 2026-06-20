@@ -1732,7 +1732,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(dispatcherBlock.includes('top\\s+holdings|what\\s+are\\s+the\\s+top\\s+holdings'), 'dispatcher recognizes top holdings phrasing')
   assert.ok(dispatcherBlock.includes('active\\s+chains|chains\\s+active|which\\s+chains?|what\\s+chains?|what\\s+chain'), 'dispatcher recognizes chains follow-up phrasing')
   assert.ok(dispatcherBlock.includes('should\\s+i\\s+deep\\s+scan'), 'dispatcher recognizes "should I deep scan" phrasing')
-  assert.ok(dispatcherBlock.includes('evidence\\s+is\\s+missing|what\\s+evidence'), 'dispatcher recognizes evidence-gaps phrasing')
+  assert.ok(dispatcherBlock.includes('evidence\\s+is\\s+missing'), 'dispatcher recognizes evidence-gaps phrasing')
   assert.ok(dispatcherBlock.includes('toolsUsed: ["memory"]'), 'dispatcher reports toolsUsed: ["memory"]')
   assert.ok(dispatcherBlock.includes('quotaConsumed: false'), 'dispatcher never consumes quota')
   assert.ok(!dispatcherBlock.includes('runWalletScanner'), 'dispatcher never calls the wallet scanner runner')
@@ -2235,7 +2235,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   // Cost safety: the new memory-sensitive regex covers the new follow-up phrases so cache never
   // replays a stale wallet-profile answer, and no new provider/API call sites were introduced.
   assert.ok(routeFile.includes('is\\s+this\\s+smart\\s+money|should\\s+i\\s+follow\\s+this\\s+wallet'), 'memorySensitivePrompt regex covers the new wallet-profile follow-up phrases')
-  assert.ok(routeFile.includes('why\\s+is\\s+followability\\s+(low|moderate|high)'), 'memorySensitivePrompt regex also covers the expanded V2 follow-up phrases (why is this a whale, confidence, followability, etc.)')
+  assert.ok(routeFile.includes('why\\s+is\\s+followability\\s+(only\\s+)?(low|moderate|high)'), 'memorySensitivePrompt regex also covers the expanded V2 follow-up phrases (why is this a whale, confidence, followability, etc.)')
 
   // Persistence chain regression guard: walletProfile must survive memoryEcho -> sessionStorage ->
   // clientContext -> restore so the memory-only follow-up dispatcher can read it back. Both echo
@@ -2344,6 +2344,55 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.equal(notSmartMoneyResult.kind, 'why_behavior_deny', '"why is this not smart money" classifies as a behavior-deny explanation, never an empty profile rebuild')
   assert.equal(classifyWalletProfileFollowup('why is trading confidence low').kind, 'why_trading_confidence_low', '"why is trading confidence low" classifies as a dedicated confidence explanation, not the generic scanner prompt')
   assert.equal(classifyWalletProfileFollowup('what would increase confidence').kind, 'what_would_improve_confidence', '"what would increase confidence" classifies as a dedicated confidence explanation, not the generic scanner prompt')
+}
+
+// ─── Wallet Profile V2 follow-up routing audit — round 2 ───
+// Regression coverage for the second reported batch of failures: "what evidence supports this
+// classification?" was stolen by the earlier "Hard wallet-memory follow-up dispatcher"'s bare
+// `what\s+evidence\b` pattern and misrouted to WALLET EVIDENCE GAPS; "what would make this Smart
+// Money?" and "what would increase trading confidence?" matched nothing in
+// classifyWalletProfileFollowup() and fell through to the generic Clark prompt. All three (plus the
+// "lower trading confidence" and "followability only moderate" variants) must classify to a
+// dedicated kind and answer from cachedEvidence.walletProfile only.
+{
+  const routeFile = fs.readFileSync(path.join(__dirname, '..', 'app', 'api', 'clark', 'route.ts'), 'utf8')
+
+  assert.ok(routeFile.includes('function buildWalletEvidenceSupportExplanation'), 'buildWalletEvidenceSupportExplanation() exists')
+  assert.ok(routeFile.includes('function buildWalletBehaviorUpgradeExplanation'), 'buildWalletBehaviorUpgradeExplanation() exists')
+  assert.ok(routeFile.includes('function buildWalletTradingConfidenceFullExplanation'), 'buildWalletTradingConfidenceFullExplanation() exists')
+  assert.ok(routeFile.includes('"EVIDENCE SUPPORT"'), 'evidence-support output uses the required EVIDENCE SUPPORT header')
+  assert.ok(routeFile.includes('"SMART MONEY UPGRADE"'), 'smart-money-upgrade output uses the required SMART MONEY UPGRADE header')
+  assert.ok(routeFile.includes('"TRADING CONFIDENCE"'), 'trading-confidence-full output uses the required TRADING CONFIDENCE header')
+
+  // The early "Hard wallet-memory follow-up dispatcher" must no longer steal "evidence supports"
+  // phrasing into wallet_evidence_gaps.
+  const hardDispatcherIdx = routeFile.indexOf('Hard wallet-memory follow-up dispatcher')
+  const hardDispatcherEndIdx = routeFile.indexOf('Wallet Identity Engine memory follow-ups', hardDispatcherIdx)
+  const hardDispatcherBlock = routeFile.slice(hardDispatcherIdx, hardDispatcherEndIdx)
+  assert.ok(hardDispatcherBlock.includes('what\\s+evidence\\b(?!\\s+support)'), 'wallet_evidence_gaps pattern excludes "what evidence support(s)" phrasing so it falls through to the dedicated evidence-support kind')
+
+  const categoryWordsStart = routeFile.indexOf('const WALLET_CATEGORY_WORDS')
+  const categoryWordsEnd = routeFile.indexOf('\n', categoryWordsStart) + 1
+  const categoryWordsSrc = routeFile.slice(categoryWordsStart, categoryWordsEnd)
+  const classifierSrcStart = routeFile.lastIndexOf('const WALLET_LABEL_PATTERN', routeFile.indexOf('function classifyWalletProfileFollowup'))
+  const classifierSrcEnd = routeFile.indexOf('\nfunction buildWalletProfileFollowupAnswer')
+  const classifierSrc = categoryWordsSrc + routeFile.slice(classifierSrcStart, classifierSrcEnd)
+    .replace('function classifyWalletProfileFollowup(normalizedPrompt: string): { kind: WalletProfileFollowupKind; label?: string } | null {', 'function classifyWalletProfileFollowup(normalizedPrompt) {')
+  const sandbox = new Function(`${classifierSrc}\nreturn classifyWalletProfileFollowup;`)
+  const classifyWalletProfileFollowup = sandbox()
+
+  assert.equal(classifyWalletProfileFollowup('what evidence supports this classification?').kind, 'evidence_support', '"what evidence supports this classification?" classifies as evidence_support, not wallet_evidence_gaps')
+  const upgradeResult = classifyWalletProfileFollowup('what would make this smart money?')
+  assert.equal(upgradeResult.kind, 'behavior_upgrade', '"what would make this Smart Money?" classifies as a behavior_upgrade explanation, not a generic profile dump')
+  assert.ok(/smart\s+money/.test(upgradeResult.label ?? ''), 'behavior_upgrade classification captures the "smart money" label')
+  assert.equal(classifyWalletProfileFollowup('what would increase trading confidence?').kind, 'trading_confidence_full', '"what would increase trading confidence?" classifies to a dedicated TRADING CONFIDENCE kind, not the generic Clark fallback')
+  assert.equal(classifyWalletProfileFollowup('what would lower trading confidence?').kind, 'trading_confidence_full', '"what would lower trading confidence?" also classifies to the dedicated TRADING CONFIDENCE kind')
+  assert.equal(classifyWalletProfileFollowup('why is followability only moderate?').kind, 'why_followability', '"why is followability only moderate?" still classifies despite the extra "only" filler word')
+
+  // Also verify these phrases bypass the response cache (memorySensitivePrompt), since stale
+  // cached generic-fallback answers would otherwise keep replaying even after the fix.
+  assert.ok(routeFile.includes('what\\s+evidence\\s+supports?\\s+this'), 'memorySensitivePrompt regex bypasses cache for "what evidence supports this" phrasing')
+  assert.ok(routeFile.includes('what\\s+would\\s+(increase|improve|raise|lower|decrease)\\s+trading\\s+confidence'), 'memorySensitivePrompt regex bypasses cache for trading-confidence increase/decrease phrasing')
 }
 
 console.log('test-clark-execution.mjs: all assertions passed')

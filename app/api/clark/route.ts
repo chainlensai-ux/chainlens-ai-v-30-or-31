@@ -3061,6 +3061,90 @@ function buildWalletFollowabilityExplanation(walletProfile: Record<string, unkno
   ].join("\n");
 }
 
+function buildWalletEvidenceSupportExplanation(walletProfile: Record<string, unknown>, mem: Record<string, unknown> | null): string {
+  const category = typeof walletProfile.walletCategory === "string" ? walletProfile.walletCategory : null;
+  const portfolioBehavior = typeof walletProfile.portfolioBehavior === "string" ? walletProfile.portfolioBehavior : null;
+  const portfolioConfidence = typeof walletProfile.portfolioConfidence === "string" ? walletProfile.portfolioConfidence : "low";
+  const tradingConfidence = typeof walletProfile.tradingConfidence === "string" ? walletProfile.tradingConfidence : "low";
+  const signals = Array.isArray(walletProfile.signals) ? (walletProfile.signals as unknown[]).filter((s): s is string => typeof s === "string") : [];
+  const reasons = Array.isArray(walletProfile.reasons) ? (walletProfile.reasons as unknown[]).filter((s): s is string => typeof s === "string") : [];
+
+  const totalValue = typeof mem?.totalValue === "number" ? mem.totalValue : null;
+  const categoryLine =
+    signals.find((s) => /^category\b/i.test(s)) ??
+    (category ? `Category "${category}"${totalValue != null ? ` based on a portfolio value of ${formatUsdCompact(totalValue)}` : ""}.` : "Category is unclassified — no priced holdings were available.");
+  const portfolioBehaviorLine =
+    signals.find((s) => /^portfolio behavior\b/i.test(s)) ??
+    reasons.find((r) => /portfolio behavior/i.test(r)) ??
+    (portfolioBehavior ? `Portfolio behavior "${portfolioBehavior}" supported by current holdings evidence.` : "Portfolio behavior is unclassified — supported thresholds were not met.");
+
+  return [
+    "EVIDENCE SUPPORT",
+    "",
+    "Why Category Assigned:",
+    `• ${categoryLine}`,
+    "",
+    "Why Portfolio Behavior Assigned:",
+    `• ${portfolioBehaviorLine}`,
+    "",
+    "Evidence Used:",
+    ...(signals.length ? signals.slice(0, 5).map((s) => `• ${s}`) : ["• No verified signals are available from the current snapshot."]),
+    "",
+    "Confidence Explanation:",
+    `• Portfolio confidence: ${portfolioConfidence}`,
+    `• Trading confidence: ${tradingConfidence}`,
+  ].join("\n");
+}
+
+function buildWalletBehaviorUpgradeExplanation(rawLabel: string, walletProfile: Record<string, unknown>): string {
+  const matchedLabel = normalizeWalletLabel(rawLabel);
+  const header = matchedLabel === "Smart Money Candidate" ? "SMART MONEY UPGRADE" : `${matchedLabel.toUpperCase()} UPGRADE`;
+  const weaknesses = Array.isArray(walletProfile.weaknesses) ? (walletProfile.weaknesses as unknown[]).filter((s): s is string => typeof s === "string") : [];
+  const reasons = Array.isArray(walletProfile.reasons) ? (walletProfile.reasons as unknown[]).filter((s): s is string => typeof s === "string") : [];
+  const tradingConfidence = typeof walletProfile.tradingConfidence === "string" ? walletProfile.tradingConfidence : "low";
+  const blockers = weaknesses.length ? weaknesses.slice(0, 3) : reasons.filter((r) => /not classified|insufficient|weak/i.test(r)).slice(0, 3);
+
+  return [
+    header,
+    "",
+    "Current Blockers:",
+    ...(blockers.length ? blockers.map((b) => `• ${b}`) : ["• No specific blockers detected from current evidence."]),
+    "",
+    "Required Evidence:",
+    "• A meaningful sample of closed trades (closed lots) with a verified win rate.",
+    "",
+    "Required Trade Quality:",
+    "• A win rate sustained at or above the Smart Money threshold across multiple closed trades.",
+    "",
+    "Required Confidence:",
+    `• Trading confidence must reach medium or high (currently ${tradingConfidence}).`,
+  ].join("\n");
+}
+
+function buildWalletTradingConfidenceFullExplanation(walletProfile: Record<string, unknown>): string {
+  const tradingConfidence = typeof walletProfile.tradingConfidence === "string" ? walletProfile.tradingConfidence : "low";
+  const reasons = Array.isArray(walletProfile.reasons) ? (walletProfile.reasons as unknown[]).filter((s): s is string => typeof s === "string") : [];
+  const weaknesses = Array.isArray(walletProfile.weaknesses) ? (walletProfile.weaknesses as unknown[]).filter((s): s is string => typeof s === "string") : [];
+  const nextAction = typeof walletProfile.nextAction === "string" ? walletProfile.nextAction : null;
+  const whyLines = [...weaknesses, ...reasons].filter((l) => l.toLowerCase().includes("trading"));
+  const missingLines = weaknesses.filter((w) => /trading|trade|evidence|missing|weak/i.test(w));
+
+  return [
+    "TRADING CONFIDENCE",
+    "",
+    `Current Confidence: ${tradingConfidence}`,
+    "",
+    "Why:",
+    ...(whyLines.length ? whyLines.slice(0, 3).map((l) => `• ${l}`) : [`• Trading confidence is ${tradingConfidence} based on the verified closed-trade evidence currently available.`]),
+    "",
+    "Missing Evidence:",
+    ...(missingLines.length ? missingLines.slice(0, 3).map((l) => `• ${l}`) : ["• No specific evidence gaps detected from the current snapshot."]),
+    "",
+    "What Would Increase Confidence:",
+    ...(nextAction ? [`• ${nextAction}`] : ["• A larger, more recent sample of closed trades with a verified win rate."]),
+  ].join("\n");
+}
+
 type WalletProfileFollowupKind =
   | "why_category"
   | "why_behavior_confirm"
@@ -3070,7 +3154,10 @@ type WalletProfileFollowupKind =
   | "why_portfolio_confidence_low"
   | "what_would_improve_confidence"
   | "what_evidence_missing"
-  | "why_followability";
+  | "why_followability"
+  | "evidence_support"
+  | "behavior_upgrade"
+  | "trading_confidence_full";
 
 const WALLET_LABEL_PATTERN = "(smart\\s+money(?:\\s+candidate)?|meme\\s+speculator|meme\\s+hunter|day\\s+trader|swing\\s+trader|diamond\\s+holder|conviction\\s+holder|diversified\\s+holder|multi-chain\\s+portfolio\\s+manager|treasury\\s+style\\s+portfolio|position\\s+rotator|active\\s+trader|stablecoin\\s+heavy|large\\s+cap\\s+holder|yield-seeking\\s+portfolio|yield\\s+farmer|airdrop\\s+farmer|dev\\s+wallet|passive\\s+investor|whale|large\\s+portfolio|mid\\s+portfolio|small\\s+portfolio)";
 
@@ -3086,11 +3173,23 @@ function classifyWalletProfileFollowup(normalizedPrompt: string): { kind: Wallet
     return { kind: "explain_profile" };
   }
 
+  if (/what\s+evidence\s+supports?\s+this(?:\s+classification)?|what\s+evidence\s+(?:was|is)\s+used/.test(normalizedPrompt)) return { kind: "evidence_support" };
+
+  const upgradeRe = new RegExp(`what\\s+would\\s+make\\s+(?:this|it)\\s+(?:a\\s+|an\\s+)?${WALLET_LABEL_PATTERN}|how\\s+(?:do|can)\\s+i\\s+make\\s+(?:this|it)\\s+(?:a\\s+|an\\s+)?${WALLET_LABEL_PATTERN}`);
+  const upgradeMatch = normalizedPrompt.match(upgradeRe);
+  if (upgradeMatch) {
+    const label = upgradeMatch.slice(1).find((g) => typeof g === "string");
+    if (label) return { kind: "behavior_upgrade", label };
+  }
+
+  if (/what\s+would\s+(?:increase|improve|raise|lower|decrease)\s+trading\s+confidence/.test(normalizedPrompt)) {
+    return { kind: "trading_confidence_full" };
+  }
   if (/why\s+is\s+trading\s+confidence\s+low/.test(normalizedPrompt)) return { kind: "why_trading_confidence_low" };
   if (/why\s+is\s+portfolio\s+confidence\s+low/.test(normalizedPrompt)) return { kind: "why_portfolio_confidence_low" };
   if (/what\s+would\s+(?:increase|improve)\s+confidence/.test(normalizedPrompt)) return { kind: "what_would_improve_confidence" };
-  if (/what\s+evidence\s+is\s+missing|missing\s+evidence|what\s+evidence\b/.test(normalizedPrompt)) return { kind: "what_evidence_missing" };
-  if (/why\s+is\s+followability\s+(?:low|moderate|high)/.test(normalizedPrompt)) return { kind: "why_followability" };
+  if (/what\s+evidence\s+is\s+missing|missing\s+evidence|what\s+evidence\b(?!\s+support)/.test(normalizedPrompt)) return { kind: "what_evidence_missing" };
+  if (/why\s+is\s+followability\s+(?:only\s+)?(?:low|moderate|high)/.test(normalizedPrompt)) return { kind: "why_followability" };
 
   if (/why\s+(?:is\s+)?this\s+category\b/.test(normalizedPrompt)) return { kind: "why_category" };
   if (/why\s+(?:is\s+)?this\s+behavior\b/.test(normalizedPrompt)) return { kind: "why_behavior_confirm" };
@@ -3142,6 +3241,12 @@ function buildWalletProfileFollowupAnswer(
       return buildWalletEvidenceMissingExplanation(walletProfile);
     case "why_followability":
       return buildWalletFollowabilityExplanation(walletProfile);
+    case "evidence_support":
+      return buildWalletEvidenceSupportExplanation(walletProfile, mem);
+    case "behavior_upgrade":
+      return buildWalletBehaviorUpgradeExplanation(rawLabel ?? "smart money", walletProfile);
+    case "trading_confidence_full":
+      return buildWalletTradingConfidenceFullExplanation(walletProfile);
     default:
       return buildWalletProfileBlock(walletProfile) ?? `WALLET PROFILE\nNo wallet profile available yet for this wallet — scan it first.\nCTA: Scan Wallet`;
   }
@@ -6595,7 +6700,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
           ? "wallet_chains"
           : /should\s+i\s+deep\s+scan|should\s+i\s+run\s+deep\s+scan|do\s+i\s+need\s+deep\s+scan|deep\s+scan\?|^deep\s+scan$/.test(normalizedPrompt)
             ? "wallet_deep_scan_advice"
-            : /evidence\s+is\s+missing|what\s+evidence|what\s+is\s+missing|missing\s+evidence/.test(normalizedPrompt)
+            : /evidence\s+is\s+missing|what\s+is\s+missing|missing\s+evidence|what\s+evidence\b(?!\s+support)/.test(normalizedPrompt)
               ? "wallet_evidence_gaps"
               : /summarize\s+this\s+wallet|wallet\s+summary/.test(normalizedPrompt)
                 ? "wallet_summary"
@@ -9533,7 +9638,8 @@ export async function POST(req: NextRequest) {
     isWalletFollowupPrompt(earlyPrompt) ||
     /top\s+holdings|active\s+chains|chains\s+active|what\s+chains?|which\s+chains?|should\s+i\s+deep\s+scan|deep\s+scan\?|evidence\s+missing|what\s+evidence|what\s+is\s+missing|is\s+this\s+wallet|why\s+no\s+pnl|profitable/i.test(earlyPrompt) ||
     /what\s+type\s+of\s+trader|why\s+this\s+score|why\s+(meme\s+hunter|swing\s+trader|day\s+trader|diamond\s+holder|whale|smart\s+money|yield\s+farmer|airdrop\s+farmer|dev\s+wallet|passive\s+investor)|is\s+this\s+smart\s+money|should\s+i\s+follow\s+this\s+wallet|explain\s+wallet\s+profile|wallet'?s?\s+(score|profile|archetype)|what\s+archetype/i.test(earlyPrompt) ||
-    /why\s+is\s+(?:this|it)\s+(?:not\s+)?(?:a\s+|an\s+)?(?:whale|smart\s+money|meme\s+speculator|meme\s+hunter|day\s+trader|swing\s+trader|diamond\s+holder|conviction\s+holder|diversified\s+holder|dev\s+wallet|passive\s+investor)|why\s+this\s+category|why\s+this\s+behavior|explain\s+this\s+profile|why\s+is\s+(trading|portfolio)\s+confidence\s+low|what\s+would\s+(increase|improve)\s+confidence|why\s+is\s+followability\s+(low|moderate|high)/i.test(earlyPrompt)
+    /why\s+is\s+(?:this|it)\s+(?:not\s+)?(?:a\s+|an\s+)?(?:whale|smart\s+money|meme\s+speculator|meme\s+hunter|day\s+trader|swing\s+trader|diamond\s+holder|conviction\s+holder|diversified\s+holder|dev\s+wallet|passive\s+investor)|why\s+this\s+category|why\s+this\s+behavior|explain\s+this\s+profile|why\s+is\s+(trading|portfolio)\s+confidence\s+low|what\s+would\s+(increase|improve)\s+confidence|why\s+is\s+followability\s+(only\s+)?(low|moderate|high)/i.test(earlyPrompt) ||
+    /what\s+evidence\s+supports?\s+this|what\s+would\s+make\s+(this|it)\s+(a\s+|an\s+)?(smart\s+money|whale|day\s+trader|swing\s+trader|diamond\s+holder|conviction\s+holder|diversified\s+holder)|what\s+would\s+(increase|improve|raise|lower|decrease)\s+trading\s+confidence/i.test(earlyPrompt)
   );
 
   // Check cache before rate limiting — cached responses bypass expensive tool quota
