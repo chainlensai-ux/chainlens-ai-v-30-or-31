@@ -261,6 +261,11 @@ export type WalletSnapshot = {
   hiddenDustCount: number
   unpricedHoldingsCount: number
   walletBehavior: WalletBehavior
+  // PHASE5-FIX-1: there is no `closedLots` or `coverage` (unqualified) field on estimatedPnl,
+  // and no `walletOpenPositionSummary` field anywhere on WalletSnapshot — grep confirms zero
+  // references to any of the three across this file. Every fallback site already reads
+  // estimatedPnl.coveragePercent, walletLotSummary.closedLots, and walletLotSummary.openLots
+  // (see e.g. line ~6963, ~9495+). No deprecated-field migration was needed.
   estimatedPnl: {
     status: 'ok' | 'partial' | 'unavailable' | 'error'
     confidence: 'high' | 'medium' | 'low' | null
@@ -3255,6 +3260,10 @@ async function runTargetedUnmatchedSellBackfill(address: string, targets: Unmatc
   // Page-1 is typically a cache hit from Phase 19; page-2 costs one extra call.
   const _moralisBkApiKey = process.env.MORALIS_API_KEY ?? ''
   const _supportedMoralisBackfillChains: string[] = ['bsc', 'polygon', 'arbitrum', 'optimism', 'avalanche', 'fantom', 'cronos', 'gnosis']
+  // PHASE5-FIX-3: Moralis is the cursor-paginated side of the same adapter pattern noted above
+  // GoldRush's page-number loop — fetchMoralisTransfers takes an opaque `cursor` string (not a
+  // page index) and `moralisNextCursor` is threaded from each response into the next call. Do
+  // not convert this to a page-number loop, and do not feed a GoldRush page index into it.
   if (_moralisBkApiKey) {
     for (const target of targets) {
       const targetKey = `${target.chain}:${target.tokenContract}`
@@ -5577,6 +5586,10 @@ function buildTradeStatsSummary(
   // realizedPnlUsd (all lots) and meaningfulRealizedPnlUsd (dust-excluded) actually disagree —
   // instead of leaving the contradiction implicit between fields.
   if (dustClosedLots > 0 && Math.abs(totalRealizedPnl - meaningfulRealizedPnlUsd) > 0.01) missing.push(`realized_pnl_includes_dust_lots:dust_adjusted=${meaningfulRealizedPnlUsd.toFixed(2)}`)
+  // PHASE5-FIX-4: explicit reason key whenever the relative dust threshold (dustThresholdUsdFor)
+  // actually excluded at least one lot, so a caller can tell "dust filtering ran and changed the
+  // result" apart from "there was simply no dust in this wallet."
+  if (dustClosedLots > 0) missing.push(`dust_threshold_applied:${DUST_LOT_THRESHOLD.toFixed(2)}`)
 
   const abbr = (addr: string) => `${addr.slice(0, 8)}...${addr.slice(-6)}`
 
@@ -5823,6 +5836,8 @@ function buildPerSwapTradeStats(
   if (!economicallyMeaningful)   missing.push('micro_trade_sample')
   // PHASE5-FIX-6: same dust-inclusion disclosure as buildTradeStatsSummary.
   if (dustClosedLots > 0 && Math.abs(totalRealizedPnl - meaningfulRealizedPnlUsd) > 0.01) missing.push(`realized_pnl_includes_dust_lots:dust_adjusted=${meaningfulRealizedPnlUsd.toFixed(2)}`)
+  // PHASE5-FIX-4: same dust_threshold_applied disclosure as buildTradeStatsSummary.
+  if (dustClosedLots > 0) missing.push(`dust_threshold_applied:${DUST_LOT_THRESHOLD.toFixed(2)}`)
 
   const abbr = (h: string) => `${h.slice(0, 8)}...${h.slice(-6)}`
 
@@ -10180,7 +10195,14 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   if (_targetContracts.size > 0) _eligibilityReasons.push('exact_token_contracts_known'); else _skipReasons.push('no_useful_token_contracts')
   if (_pagesAllowed > 0) _eligibilityReasons.push('scan_budget_has_room'); else _skipReasons.push('budget_remaining_too_low')
   if (GOLDRUSH_KEY) _eligibilityReasons.push('provider_daily_soft_cap_available'); else _skipReasons.push('provider_not_configured')
-  const _historicalEligible = Boolean(historicalCoverage && activityRequested && (_adminOverrideUsed || totalValue >= 100) && walletTradeStatsSummary.closedLots < 10 && ((_lotEngineDebug.unmatchedSells ?? 0) > 0 || (_lotEngineDebug.openedLots ?? 0) > 0 || (walletSwapSummary.swapCandidateEvents ?? 0) > 0) && _targetContracts.size > 0 && _pagesAllowed > 0 && GOLDRUSH_KEY)
+  // PHASE5-FIX-2: historical coverage previously only triggered off a hard closedLots<10 count,
+  // which never fired for a wallet that already has >=10 closed lots but whose coverage is
+  // still thin (e.g. coveragePercent/coveragePercentValueWeighted both low because most of those
+  // lots are estimate-priced). Trigger on low coverage too, independent of the closed-lot count.
+  const _HISTORICAL_COVERAGE_TRIGGER_THRESHOLD = 40
+  const _coverageTriggersHistorical = coveragePercent < _HISTORICAL_COVERAGE_TRIGGER_THRESHOLD || coveragePercentValueWeighted < _HISTORICAL_COVERAGE_TRIGGER_THRESHOLD
+  if (_coverageTriggersHistorical) _eligibilityReasons.push('coverage_historical_triggered'); else _skipReasons.push('coverage_above_threshold')
+  const _historicalEligible = Boolean(historicalCoverage && activityRequested && (_adminOverrideUsed || totalValue >= 100) && (walletTradeStatsSummary.closedLots < 10 || _coverageTriggersHistorical) && ((_lotEngineDebug.unmatchedSells ?? 0) > 0 || (_lotEngineDebug.openedLots ?? 0) > 0 || (walletSwapSummary.swapCandidateEvents ?? 0) > 0) && _targetContracts.size > 0 && _pagesAllowed > 0 && GOLDRUSH_KEY)
   const _runHistoricalCoverage = _historicalEligible
   let walletHistoricalCoverageSummary: WalletSnapshot['walletHistoricalCoverageSummary']
   const _historicalStartedAt = Date.now()
@@ -11139,8 +11161,13 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       portfolioDeltaUsd: _p6PortfolioDeltaUsd,
     })
 
-    // On integrity violations: downgrade the confidence tier and append normalized reasons —
-    // never mutate the underlying PnL numbers themselves.
+    // PHASE5-FIX-6: every reasons/missing array in this file (this Set-deduped spread pattern,
+    // and the `missing.push(...)` calls throughout buildTradeStatsSummary/buildFifoLotEngine/
+    // buildWalletHistoricalCoverage/walletBudgetDebug.reasons etc.) is append-only — there is no
+    // site in this file that replaces an existing missing/missingReasons/reasons/skippedReasons
+    // array with a literal `= [...]` overwrite. On integrity violations: downgrade the
+    // confidence tier and append normalized reasons — never mutate the underlying PnL numbers
+    // themselves.
     let _p6FinalTier = _p6Confidence.tier
     let _p6Reasons = _p6Confidence.reasons
     if (!_p6Integrity.ok) {
