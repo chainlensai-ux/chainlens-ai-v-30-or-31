@@ -30,7 +30,8 @@
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "viem": "2.7.0",
-    "zod": "4.3.6"
+    "zod": "4.3.6",
+    "@supabase/auth-helpers-nextjs": "file:./packages/auth-helpers-nextjs"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
