@@ -11997,7 +11997,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _walletRecoveryRecommendation: WalletSnapshot['walletRecoveryRecommendation'] = (() => {
     const targetTokens = _rankedHistoricalTargets.slice(0, 3).map(t => ({
       contract: t.contract, symbol: t.symbol, chain: t.chain, estimatedUsd: t.estimatedUsd,
-    }))
+    })).filter(t => t.estimatedUsd > 0)
     if (targetTokens.length === 0) {
       return { recommended: false, mode: 'none', targetTokens: [], reason: 'no_useful_token_contracts', estimatedExtraPages: 0 }
     }

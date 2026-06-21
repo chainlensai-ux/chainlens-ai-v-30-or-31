@@ -33,4 +33,17 @@ assert.match(snap, /verifiedClosedLots\?:\s*number/, 'walletTradeStatsSummary ex
 
 assert.match(ui, /_verifiedClosedLots > 0 && ts\.realizedPnlUsd !== null && ts\.pnlUnavailableReason !== 'missing_cost_basis'/, 'UI trade-evidence-strong gate uses verified closed lots, not raw synthetic closedLots count')
 
+// CACHE-HONESTY-FIX: cached/recovered responses with zero live provider calls must not be
+// mislabeled historical_live/attempted, must not recommend recovery, must not claim publicPnlStatus
+// ok with no verified closed lots, and must explain a missing swap-reconstruction debug honestly.
+assert.match(route, /const liveProviderCalls = recovered\?\.walletScanBudget\?\.creditsUsed \?\? providerCalls/, 'live-call detection uses real provider-call/credit signals, not just pagesAttempted/historicalMs')
+assert.match(route, /if \(!providerFetchNeeded\) return false/, 'zero provider calls cannot be classified as a live historical recovery')
+assert.match(route, /recovered\.walletHistoricalRecoveryReason = 'cached_snapshot_no_live_historical_calls'/, 'cache hits with zero live calls use the exact cached_snapshot_no_live_historical_calls reason')
+assert.match(route, /recovered\.walletRecoveryRecommendation = \{ recommended: false, mode: 'none', targetTokens: \[\], reason: 'cached_snapshot_no_live_recovery', estimatedExtraPages: 0 \}/, 'cache hits with zero live calls force the recovery recommendation to none')
+assert.match(snap, /\}\)\)\.filter\(t => t\.estimatedUsd > 0\)/, 'recovery recommendation target tokens drop zero/negative-value candidates')
+assert.match(route, /function normalizePublicPnlStatus/, 'a response-boundary safety net re-asserts publicPnlStatus regardless of cache origin')
+assert.match(route, /const noVerifiedClosedLots = ts\.status === 'open_check' \|\| \(ts\.closedLotsForStats \?\? 0\) === 0 \|\| \(ts\.verifiedClosedLots \?\? 0\) === 0/, 'open-check/zero-verified-closed-lots cannot emit publicPnlStatus ok')
+assert.match(route, /SWAP_RECONSTRUCTION_V1_DEBUG_UNAVAILABLE_FROM_CACHE/, 'cached responses missing swap-reconstruction diagnostics get an honest not_available_from_cached_snapshot placeholder instead of null')
+assert.match(route, /swapReconstructionV1Reason: 'not_available_from_cached_snapshot'/, 'placeholder swap-reconstruction debug explains why it is unavailable from cache')
+
 console.log('wallet bad-scan classification checks passed')

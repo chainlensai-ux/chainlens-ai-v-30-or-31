@@ -25,6 +25,35 @@ function normalizeCachedFreshness(cp: any): any {
   return cp
 }
 
+// FIX-2: a cached/recovered payload can carry a stale walletTradeStatsSummary.publicPnlStatus
+// computed before an earlier fix, or copied verbatim from cache without re-derivation. Re-assert
+// the safety net at the response boundary: no verified closed lots means publicPnlStatus can
+// never read 'ok', regardless of where the payload came from.
+// FIX-4: slim/persistent cache payloads don't store the full swap-reconstruction diagnostics, so
+// the field falls through to null. Surface an explicit "not available from cache" placeholder
+// instead of a bare null — without running any new receipt fetches.
+const SWAP_RECONSTRUCTION_V1_DEBUG_UNAVAILABLE_FROM_CACHE = {
+  swapReconstructionV1Attempted: false,
+  swapReconstructionV1Reason: 'not_available_from_cached_snapshot',
+  swapReconstructionCandidateTxCount: 0,
+  swapReconstructionReceiptsFetched: 0,
+  swapReconstructionEventsBuilt: 0,
+  swapReconstructionEventsPromoted: 0,
+  swapReconstructionEventsRejected: 0,
+  sampleReconstructedSwaps: [],
+}
+
+function normalizePublicPnlStatus(cp: any): any {
+  const ts = cp?.walletTradeStatsSummary
+  if (ts && typeof ts === 'object') {
+    const noVerifiedClosedLots = ts.status === 'open_check' || (ts.closedLotsForStats ?? 0) === 0 || (ts.verifiedClosedLots ?? 0) === 0
+    if (noVerifiedClosedLots && ts.publicPnlStatus !== 'open_check') {
+      cp.walletTradeStatsSummary = { ...ts, publicPnlStatus: 'open_check' }
+    }
+  }
+  return cp
+}
+
 function corsHeaders(origin: string | null): Record<string, string> {
   const headers: Record<string, string> = {}
   if (origin && origin.endsWith('.vercel.app')) {
@@ -655,9 +684,17 @@ export async function POST(req: Request) {
     // (e.g. it hit its own internal cache) must never be labeled historical_live/attempted —
     // that previously misled callers into thinking a live recovery pass actually ran.
     const _hadLiveHistoricalCalls = (recovered: any): boolean => {
+      const audit = recovered?.apiAudit ?? {}
+      const providerCalls = (audit.moralis?.calls ?? 0) + (audit.goldrush?.calls ?? 0) + (audit.alchemy?.calls ?? 0)
+      const liveProviderCalls = recovered?.walletScanBudget?.creditsUsed ?? providerCalls
+      const providerFetchNeeded = providerCalls > 0
       const pagesAttempted = recovered?.walletHistoricalCoverageSummary?.pagesAttempted ?? 0
       const historicalMs = recovered?._diagnostics?.walletPerformanceDebug?.historicalMs ?? recovered?._debug?.walletPerformanceDebug?.historicalMs ?? 0
-      return pagesAttempted > 0 || historicalMs > 0
+      if (!providerFetchNeeded) return false
+      if (providerCalls === 0) return false
+      if (liveProviderCalls === 0) return false
+      if (historicalMs === 0 && pagesAttempted === 0) return false
+      return true
     }
     const getCostMode = (fromCache: boolean): WalletScanCostMode => {
       if (cooldownActive) return 'blocked_by_cooldown'
@@ -680,13 +717,13 @@ export async function POST(req: Request) {
       annotatePnlCacheQuality(cachedPayload, quality)
       const signals = getWalletPnlRecoverySignals(cachedPayload)
       const canTryHistorical = deepActivity && quality !== 'complete' && !signals.historicalRequested && !cooldownActive && !costGuardHit
-      if (!canTryHistorical) return cachedPayload
+      if (!canTryHistorical) return normalizePublicPnlStatus(cachedPayload)
       const tier = signals.walletValueTier
       const probeBudget = buildPublicWalletScanBudget('historical', true, tier, adminOverrideRequested)
       if (probeBudget.totalCreditHardCap <= 0) {
         cachedPayload.walletHistoricalRecoveryStatus = 'blocked'
         cachedPayload.walletHistoricalRecoveryReason = 'budget_hard_cap_blocks_recovery'
-        return cachedPayload
+        return normalizePublicPnlStatus(cachedPayload)
       }
       try {
         const recovered: any = await fetchWalletSnapshot(address ?? '', {
@@ -709,17 +746,20 @@ export async function POST(req: Request) {
           recovered.dataFreshness = 'live'
         } else {
           recovered.walletScanCostMode = 'cached_preview_only'
-          recovered.walletScanCacheNote = 'Served from cache — no live historical recovery calls were made.'
+          recovered.walletScanCacheNote = 'Cached preview only — no live historical recovery calls were made.'
           recovered.walletHistoricalRecoveryStatus = 'not_attempted'
-          recovered.walletHistoricalRecoveryReason = 'no_live_provider_calls_cache_hit'
+          recovered.walletHistoricalRecoveryReason = 'cached_snapshot_no_live_historical_calls'
           recovered.dataFreshness = 'cached'
+          if (!adminOverrideRequested) {
+            recovered.walletRecoveryRecommendation = { recommended: false, mode: 'none', targetTokens: [], reason: 'cached_snapshot_no_live_recovery', estimatedExtraPages: 0 }
+          }
         }
         recovered.cacheAgeSeconds = cacheAgeSeconds
-        return recovered
+        return normalizePublicPnlStatus(recovered)
       } catch {
         cachedPayload.walletHistoricalRecoveryStatus = 'needed'
         cachedPayload.walletHistoricalRecoveryReason = 'historical_recovery_attempt_failed'
-        return cachedPayload
+        return normalizePublicPnlStatus(cachedPayload)
       }
     }
 
@@ -745,7 +785,7 @@ export async function POST(req: Request) {
         walletScanBudgetDebug: cp?._cachedDiagnosticsSlim?.walletScanBudgetDebug ?? null,
         walletHistoricalScanDebug: cp?._cachedDiagnosticsSlim?.walletHistoricalScanDebug ?? null,
         syntheticLotRecoveryDebug: cp?._cachedDiagnosticsSlim?.syntheticLotRecoveryDebug ?? null,
-        swapReconstructionV1Debug: cp?._cachedDiagnosticsSlim?.swapReconstructionV1Debug ?? null,
+        swapReconstructionV1Debug: cp?._cachedDiagnosticsSlim?.swapReconstructionV1Debug ?? SWAP_RECONSTRUCTION_V1_DEBUG_UNAVAILABLE_FROM_CACHE,
         walletCostGuardDebug: {
           requestedDeepActivity: deepActivity,
           requestedHistoricalCoverage: historicalCoverageRequested,
@@ -957,7 +997,7 @@ export async function POST(req: Request) {
               walletChainActivityMergeDebug: _slim.walletChainActivityMergeDebug ?? null,
               walletEthNormalizationDebug: _slim.walletEthNormalizationDebug ?? null,
               syntheticLotRecoveryDebug: _slim.syntheticLotRecoveryDebug ?? null,
-              swapReconstructionV1Debug: _slim.swapReconstructionV1Debug ?? null,
+              swapReconstructionV1Debug: _slim.swapReconstructionV1Debug ?? SWAP_RECONSTRUCTION_V1_DEBUG_UNAVAILABLE_FROM_CACHE,
               baseFifoMatchDebug: _slim.baseFifoMatchDebug ?? null,
               walletCacheQualityDebug: _slim.walletCacheQualityDebug ?? null,
             }
@@ -1067,6 +1107,7 @@ export async function POST(req: Request) {
       }
     }
     snapshot.pnlCacheQuality = getPnlCacheQuality(snapshot)
+    normalizePublicPnlStatus(snapshot)
     const providers: any = snapshot._diagnostics?.providers ?? {}
     const snapshotCacheDebug = {
       ...(snapshot._diagnostics?.snapshotCache ?? {}),
