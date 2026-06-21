@@ -1100,6 +1100,12 @@ export async function POST(req: Request) {
     }
 
     let snapshot: any = rawSnapshot
+    // PNL-RECOVERY-FIX-7: fetchWalletSnapshot's own internal memory cache (a provider-level
+    // optimization, separate from this route's persistent wallet cache) can mark a freshly-served
+    // snapshot dataFreshness:'cached' even though THIS request never hit the persistent cache
+    // (cacheHit=false at the route level). The top-level dataFreshness must reflect the route's
+    // own cache outcome, not an internal provider cache detail.
+    snapshot.dataFreshness = 'live'
     const _initialRecoverySignals = getWalletPnlRecoverySignals(snapshot)
     const _shouldAutoRequestHistoricalRecovery =
       deepActivity &&

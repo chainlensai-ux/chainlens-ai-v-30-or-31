@@ -948,6 +948,7 @@ export type WalletSnapshot = {
       sampleRecoveredLots: Array<{ tokenAddress: string; symbol: string; realizedPnlUsd: number }>
       sampleRejectedTargets: Array<{ chain: string; tokenContract: string; reason: string }>
     }
+    walletPnlRecoveryV2Debug?: WalletPnlRecoveryV2Debug
     walletHistoricalScanDebug?: {
       requested: boolean; eligible: boolean; eligibilityReasons: string[]
       walletValueTier: WalletValueTier | null
@@ -3697,6 +3698,177 @@ function buildSyntheticTargetPriorBuyRecovery(
       sampleSyntheticTargetPriorBuys: newCandidateEvidence.slice(0, 5).map(e => ({ txHash: e.txHash, contract: e.contract, symbol: e.symbol, amount: e.amount, timestamp: e.timestamp })),
     },
   }
+}
+
+export type WalletPnlRecoveryV2Debug = {
+  attempted: boolean
+  reason: string
+  targetTokens: string[]
+  candidateTxCount: number
+  receiptsFetched: number
+  decodedTransferLogs: number
+  walletTokenInLegs: number
+  walletTokenOutLegs: number
+  quoteInLegs: number
+  quoteOutLegs: number
+  realBuyEventsBuilt: number
+  realSellEventsBuilt: number
+  priorBuysRecovered: number
+  closedLotsBefore: number
+  closedLotsAfter: number
+  realClosedLotsBefore: number
+  realClosedLotsAfter: number
+  syntheticLotsBefore: number
+  syntheticLotsAfter: number
+  stoppedReason: string | null
+  sampleRecoveredBuys: Array<{ txHash: string; contract: string; symbol: string; amount: number; priceUsd: number | null }>
+  sampleRecoveredSells: Array<{ txHash: string; contract: string; symbol: string; amount: number; priceUsd: number | null }>
+  sampleRejectedTxs: Array<{ txHash: string; reason: string }>
+}
+
+// PNL-RECOVERY-V2-BASE: receipt-level cost-basis reconstruction for Base swap-like txs that
+// already have synthetic (missing-cost-basis) lots and zero real-backed closed lots. Unlike
+// buildSyntheticTargetPriorBuyRecovery (which scans normalized provider transfer-log events),
+// this decodes the actual tx receipt's ERC20 Transfer logs to recover the quote-asset leg
+// (USDC/USDT/DAI/WETH paid or received) so a real buy/sell price can be derived from on-chain
+// evidence, instead of giving up at missing_cost_basis. Strictly capped: only reuses already-known
+// candidate tx hashes (no new provider page calls), max 2 target tokens, max `maxReceipts` fetches,
+// stops immediately once one real prior buy is reconstructed.
+async function buildWalletPnlRecoveryV2Base(
+  walletAddress: string,
+  rpcUrl: string | null | undefined,
+  candidateEvidence: WalletTxEvidence[],
+  targetTokenContracts: string[],
+  maxReceipts: number,
+): Promise<{
+  newBuyEvidence: WalletTxEvidence[]
+  newSellEvidence: WalletTxEvidence[]
+  debug: WalletPnlRecoveryV2Debug
+}> {
+  const walletLower = walletAddress.toLowerCase()
+  const targetTokens = targetTokenContracts.slice(0, 2).map(t => t.toLowerCase())
+  const debug: WalletPnlRecoveryV2Debug = {
+    attempted: false, reason: 'not_attempted', targetTokens, candidateTxCount: 0, receiptsFetched: 0,
+    decodedTransferLogs: 0, walletTokenInLegs: 0, walletTokenOutLegs: 0, quoteInLegs: 0, quoteOutLegs: 0,
+    realBuyEventsBuilt: 0, realSellEventsBuilt: 0, priorBuysRecovered: 0,
+    closedLotsBefore: 0, closedLotsAfter: 0, realClosedLotsBefore: 0, realClosedLotsAfter: 0,
+    syntheticLotsBefore: 0, syntheticLotsAfter: 0, stoppedReason: null,
+    sampleRecoveredBuys: [], sampleRecoveredSells: [], sampleRejectedTxs: [],
+  }
+  if (!rpcUrl) { debug.reason = 'no_rpc_url'; return { newBuyEvidence: [], newSellEvidence: [], debug } }
+  if (targetTokens.length === 0) { debug.reason = 'no_target_tokens'; return { newBuyEvidence: [], newSellEvidence: [], debug } }
+
+  // Only reuse tx hashes already surfaced by swap detection / synthetic lots — no new provider spam.
+  const candidateTxHashes = Array.from(new Set(
+    candidateEvidence
+      .filter(e => e.txHash && targetTokens.includes((e.contract ?? '').toLowerCase()))
+      .map(e => e.txHash as string)
+  )).slice(0, Math.max(0, maxReceipts))
+  debug.candidateTxCount = candidateTxHashes.length
+  if (candidateTxHashes.length === 0) { debug.reason = 'no_candidate_txs'; return { newBuyEvidence: [], newSellEvidence: [], debug } }
+
+  debug.attempted = true
+  debug.reason = 'triggered'
+  const newBuyEvidence: WalletTxEvidence[] = []
+  const newSellEvidence: WalletTxEvidence[] = []
+
+  for (const txHash of candidateTxHashes) {
+    if (debug.priorBuysRecovered > 0) { debug.stoppedReason = 'real_buy_found'; break }
+    let receipt: any
+    try {
+      receipt = await getSharedTxReceipt(rpcUrl, txHash)
+    } catch {
+      debug.sampleRejectedTxs.push({ txHash, reason: 'receipt_fetch_error' })
+      continue
+    }
+    debug.receiptsFetched++
+    if (!receipt || !Array.isArray(receipt.logs)) {
+      debug.sampleRejectedTxs.push({ txHash, reason: 'no_receipt' })
+      continue
+    }
+    const blockTimestamp: string | null = candidateEvidence.find(e => e.txHash === txHash)?.timestamp ?? null
+
+    // Per-contract signed wallet delta within this tx (positive = received, negative = sent).
+    const walletDeltas = new Map<string, number>()
+    for (const log of receipt.logs) {
+      if (!log?.topics || log.topics[0]?.toLowerCase() !== ERC20_TRANSFER_TOPIC) continue
+      debug.decodedTransferLogs++
+      const fromAddr = `0x${(log.topics[1] ?? '').slice(-40)}`.toLowerCase()
+      const toAddr = `0x${(log.topics[2] ?? '').slice(-40)}`.toLowerCase()
+      const contractAddr = (log.address ?? '').toLowerCase()
+      const decimals = STABLE_DECIMALS[contractAddr] ?? (WETH_CONTRACTS_PRICE[contractAddr] ? 18 : (targetTokens.includes(contractAddr) ? 18 : null))
+      if (decimals == null) continue
+      const amount = hexAmountToDecimal(log.data ?? '0x0', decimals)
+      if (fromAddr === walletLower) {
+        walletDeltas.set(contractAddr, (walletDeltas.get(contractAddr) ?? 0) - amount)
+        debug.walletTokenOutLegs++
+        if (STABLE_USD_CONTRACTS[contractAddr] || WETH_CONTRACTS_PRICE[contractAddr]) debug.quoteOutLegs++
+      }
+      if (toAddr === walletLower) {
+        walletDeltas.set(contractAddr, (walletDeltas.get(contractAddr) ?? 0) + amount)
+        debug.walletTokenInLegs++
+        if (STABLE_USD_CONTRACTS[contractAddr] || WETH_CONTRACTS_PRICE[contractAddr]) debug.quoteInLegs++
+      }
+    }
+
+    let recoveredOne = false
+    for (const targetContract of targetTokens) {
+      const tokenDelta = walletDeltas.get(targetContract) ?? 0
+      if (tokenDelta === 0) continue
+
+      // Find a quote-asset leg (stable or WETH) with the opposite sign in the same tx.
+      let quoteContract: string | null = null
+      let quoteDelta = 0
+      for (const [contract, delta] of walletDeltas.entries()) {
+        if (contract === targetContract) continue
+        const isQuote = STABLE_USD_CONTRACTS[contract] || WETH_CONTRACTS_PRICE[contract]
+        if (!isQuote) continue
+        if (tokenDelta > 0 && delta < 0) { quoteContract = contract; quoteDelta = delta; break }
+        if (tokenDelta < 0 && delta > 0) { quoteContract = contract; quoteDelta = delta; break }
+      }
+      if (!quoteContract) {
+        debug.sampleRejectedTxs.push({ txHash, reason: 'no_quote_leg_found' })
+        continue
+      }
+
+      let priceUsd: number | null = null
+      if (STABLE_USD_CONTRACTS[quoteContract]) {
+        priceUsd = Math.abs(quoteDelta) / Math.abs(tokenDelta)
+      } else if (WETH_CONTRACTS_PRICE[quoteContract] && blockTimestamp) {
+        const wethPrice = await fetchGoldrushHistoricalPrice('base', quoteContract, blockTimestamp)
+        if (wethPrice.priceUsd != null) priceUsd = (Math.abs(quoteDelta) * wethPrice.priceUsd) / Math.abs(tokenDelta)
+      }
+      if (priceUsd == null) {
+        debug.sampleRejectedTxs.push({ txHash, reason: 'quote_leg_unpriced' })
+        continue
+      }
+
+      const direction: 'buy' | 'sell' = tokenDelta > 0 ? 'buy' : 'sell'
+      const evidenceItem: WalletTxEvidence = {
+        txHash, timestamp: blockTimestamp, fromAddress: direction === 'buy' ? quoteContract : walletLower,
+        toAddress: direction === 'buy' ? walletLower : quoteContract, contract: targetContract,
+        symbol: STABLE_SYMBOL[quoteContract] ?? 'TOKEN', amountRaw: null, tokenDecimals: 18,
+        amount: Math.abs(tokenDelta), usdValue: Math.abs(tokenDelta) * priceUsd, direction, chain: 'base-mainnet',
+        swapDetection: { isSwapCandidate: true, confidence: 'medium', eventKind: 'swap_candidate', reason: 'wallet_pnl_recovery_v2_receipt_reconstruction', matchedProtocol: null, matchedAddress: null },
+        priceAtTime: { status: 'priced', tokenAddress: targetContract, tokenSymbol: null, timestamp: blockTimestamp ?? '', priceUsd, source: 'provider_event_usd', confidence: 'medium', reason: 'wallet_pnl_recovery_v2_receipt_quote_leg' },
+      }
+      if (direction === 'buy') {
+        newBuyEvidence.push(evidenceItem)
+        debug.realBuyEventsBuilt++
+        debug.priorBuysRecovered++
+        if (debug.sampleRecoveredBuys.length < 5) debug.sampleRecoveredBuys.push({ txHash, contract: targetContract, symbol: evidenceItem.symbol, amount: evidenceItem.amount, priceUsd })
+      } else {
+        newSellEvidence.push(evidenceItem)
+        debug.realSellEventsBuilt++
+        if (debug.sampleRecoveredSells.length < 5) debug.sampleRecoveredSells.push({ txHash, contract: targetContract, symbol: evidenceItem.symbol, amount: evidenceItem.amount, priceUsd })
+      }
+      recoveredOne = true
+    }
+    if (!recoveredOne && debug.sampleRejectedTxs.length === 0) debug.sampleRejectedTxs.push({ txHash, reason: 'no_target_token_delta' })
+  }
+
+  if (!debug.stoppedReason) debug.stoppedReason = debug.priorBuysRecovered > 0 ? 'real_buy_found' : 'no_prior_buy_found_after_capped_receipts'
+  return { newBuyEvidence, newSellEvidence, debug }
 }
 
 async function buildHistoricalPricingPreview(
@@ -10787,11 +10959,19 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     allowedBecauseFallbackHadEvents: _bfcAllowedBecauseFallbackHadEvents,
     skippedReason: null as string | null,
   }
+  // Real-backed = not a synthetic/backfilled placeholder lot. syntheticClosedLots must never
+  // count as recovery success — only realClosedLots (or closedLotsForStats) can stop recovery.
+  const _isRealBackedClosedLotEarly = (l: WalletClosedLot): boolean =>
+    l.evidence?.entrySource !== 'synthetic' &&
+    !(l.missingReasons ?? []).includes('fifo_backfilled_buy') &&
+    !(l.missingReasons ?? []).includes('price_synthetic_fifo') &&
+    (l.coveragePercent ?? 100) !== 0
+  const _realBackedClosedLotsCountEarly = _closedLots.filter(_isRealBackedClosedLotEarly).length
   const _shouldRunBaseFifoCoverage = (
     deepActivity &&
     activityRequested &&
     _baseReconChainOk &&
-    walletLotSummary.closedLots === 0 &&
+    _realBackedClosedLotsCountEarly === 0 &&
     walletSwapSummary.swapCandidateEvents > 0 &&
     walletEvidenceSummary.totalEvents > 0 &&
     Boolean(process.env.MORALIS_API_KEY) &&
@@ -10901,7 +11081,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     const _bfcSkipReason = !deepActivity ? 'basic_scan'
       : !activityRequested ? 'activity_not_requested'
       : !_baseReconChainOk ? 'eth_chain'
-      : walletLotSummary.closedLots > 0 ? 'already_has_closed_lots'
+      : _realBackedClosedLotsCountEarly > 0 ? 'already_has_closed_lots'
       : walletSwapSummary.swapCandidateEvents === 0 ? 'no_swap_candidates'
       : walletEvidenceSummary.totalEvents === 0 ? 'no_activity_events'
       : !Boolean(process.env.MORALIS_API_KEY) ? 'moralis_not_configured'
@@ -11356,16 +11536,65 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     }
   }
 
-  const _finalCandidateEvidence = _syntheticTargetExtraNewEvidence.length > 0
+  // PNL-RECOVERY-V2-BASE: if synthetic lots exist with zero real-backed closed lots even after the
+  // provider-log-based targeted recovery above, attempt receipt-level reconstruction (Base only).
+  // Reuses already-known candidate tx hashes only — no new provider page calls.
+  const _realBackedClosedLotsCountForV2 = _closedLots.filter(l =>
+    l.evidence?.entrySource !== 'synthetic' &&
+    !(l.missingReasons ?? []).includes('fifo_backfilled_buy') &&
+    !(l.missingReasons ?? []).includes('price_synthetic_fifo') &&
+    (l.coveragePercent ?? 100) !== 0
+  ).length
+  const _pnlRecoveryV2BaseEligible =
+    _baseReconChainOk &&
+    _syntheticClosedLots.length > 0 &&
+    _realBackedClosedLotsCountForV2 === 0 &&
+    Boolean(baseRpcUrl)
+  const _pnlRecoveryV2Result = _pnlRecoveryV2BaseEligible
+    ? await buildWalletPnlRecoveryV2Base(
+        addrNorm,
+        baseRpcUrl,
+        [..._hcMergedAllHistoricalEvidence, ..._swapEvidenceWithDetection],
+        _syntheticLotTokenTargets.slice(0, 2),
+        2,
+      )
+    : null
+  const walletPnlRecoveryV2Debug: WalletPnlRecoveryV2Debug = _pnlRecoveryV2Result
+    ? {
+        ..._pnlRecoveryV2Result.debug,
+        closedLotsBefore: _closedLots.length,
+        realClosedLotsBefore: _realBackedClosedLotsCountForV2,
+        syntheticLotsBefore: _syntheticClosedLots.length,
+      }
+    : {
+        attempted: false,
+        reason: !_baseReconChainOk ? 'eth_chain' : _syntheticClosedLots.length === 0 ? 'no_synthetic_lots' : _realBackedClosedLotsCountForV2 > 0 ? 'already_has_real_backed_closed_lots' : !baseRpcUrl ? 'no_rpc_url' : 'not_eligible',
+        targetTokens: [], candidateTxCount: 0, receiptsFetched: 0, decodedTransferLogs: 0,
+        walletTokenInLegs: 0, walletTokenOutLegs: 0, quoteInLegs: 0, quoteOutLegs: 0,
+        realBuyEventsBuilt: 0, realSellEventsBuilt: 0, priorBuysRecovered: 0,
+        closedLotsBefore: _closedLots.length, closedLotsAfter: _closedLots.length,
+        realClosedLotsBefore: _realBackedClosedLotsCountForV2, realClosedLotsAfter: _realBackedClosedLotsCountForV2,
+        syntheticLotsBefore: _syntheticClosedLots.length, syntheticLotsAfter: _syntheticClosedLots.length,
+        stoppedReason: null, sampleRecoveredBuys: [], sampleRecoveredSells: [], sampleRejectedTxs: [],
+      }
+  const _pnlRecoveryV2NewEvidence: WalletTxEvidence[] = _pnlRecoveryV2Result
+    ? [..._pnlRecoveryV2Result.newBuyEvidence, ..._pnlRecoveryV2Result.newSellEvidence]
+    : []
+
+  const _finalCandidateEvidence = _syntheticTargetExtraNewEvidence.length > 0 || _pnlRecoveryV2NewEvidence.length > 0
     ? [
         ..._hcMergedCandidateEvidence,
         ..._syntheticTargetExtraNewEvidence.filter(
           se => !_hcMergedCandidateEvidence.some(e => e.txHash === se.txHash && e.contract === se.contract && e.direction === se.direction)
         ),
+        ..._pnlRecoveryV2NewEvidence.filter(
+          se => !_hcMergedCandidateEvidence.some(e => e.txHash === se.txHash && e.contract === se.contract && e.direction === se.direction) &&
+            !_syntheticTargetExtraNewEvidence.some(e => e.txHash === se.txHash && e.contract === se.contract && e.direction === se.direction)
+        ),
       ]
     : _hcMergedCandidateEvidence
-  const _finalAllHistoricalEvidence = _syntheticTargetExtraNewEvidence.length > 0
-    ? [..._hcMergedAllHistoricalEvidence, ..._syntheticTargetExtraNewEvidence]
+  const _finalAllHistoricalEvidence = _syntheticTargetExtraNewEvidence.length > 0 || _pnlRecoveryV2NewEvidence.length > 0
+    ? [..._hcMergedAllHistoricalEvidence, ..._syntheticTargetExtraNewEvidence, ..._pnlRecoveryV2NewEvidence]
     : _hcMergedAllHistoricalEvidence
 
   // Phase 6C: Historical pricing preview — price the Phase 6B new swap candidates plus any
@@ -11394,6 +11623,18 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
 
   tokenMeter.measure('fifoEngine', walletHistoricalFifoPreviewSummary, _historicalFifoPreviewDebug, _hcPreviewClosedLots)
   _perfWalletTimings.historicalMs += Date.now() - _historicalStartedAt
+
+  if (walletPnlRecoveryV2Debug.attempted) {
+    const _realBackedAfterV2 = _hcPreviewClosedLots.filter(l =>
+      l.evidence?.entrySource !== 'synthetic' &&
+      !(l.missingReasons ?? []).includes('fifo_backfilled_buy') &&
+      !(l.missingReasons ?? []).includes('price_synthetic_fifo') &&
+      (l.coveragePercent ?? 100) !== 0
+    ).length
+    walletPnlRecoveryV2Debug.closedLotsAfter = _hcPreviewClosedLots.length
+    walletPnlRecoveryV2Debug.realClosedLotsAfter = _realBackedAfterV2
+    walletPnlRecoveryV2Debug.syntheticLotsAfter = _hcPreviewClosedLots.length - _realBackedAfterV2
+  }
 
   // Phase 6E: Safe historical stats promotion
   const _shouldPromote =
@@ -11581,14 +11822,19 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _realPriorBuysRecoveredForSyntheticLots = _runHistoricalCoverage
     ? Math.max(0, _syntheticLotsBeforeHistorical - _syntheticLotsAfterHistorical)
     : 0
+  // PNL-RECOVERY-FIX-7: targeted recovery (extra-page or receipt-based V2) can run even when the
+  // broad historical pass itself was skipped (e.g. missing-cost-basis guard). Once any targeted
+  // recovery actually attempted, the stale `_skipReasons[0]` (e.g. wallet_value_below_100) from the
+  // broad-pass eligibility check must never override the real, specific stop reason.
+  const _anyTargetedRecoveryAttempted = _syntheticTargetExtraRecoveryAttempted || walletPnlRecoveryV2Debug.attempted
   const _syntheticRecoverySkippedReason = !_syntheticLotsDetected
     ? null
-    : !_runHistoricalCoverage
-      ? (_skipReasons[0] ?? (!_syntheticRecoveryTierEligible ? 'wallet_value_tier_not_eligible' : 'synthetic_recovery_not_triggered'))
-      : _realPriorBuysRecoveredForSyntheticLots > 0
-        ? null
-        : _syntheticTargetExtraRecoveryAttempted
-          ? 'targeted_recovery_attempted_no_prior_buy_found'
+    : _realPriorBuysRecoveredForSyntheticLots > 0
+      ? null
+      : _anyTargetedRecoveryAttempted
+        ? 'targeted_recovery_attempted_no_prior_buy_found'
+        : !_runHistoricalCoverage
+          ? (_skipReasons[0] ?? (!_syntheticRecoveryTierEligible ? 'wallet_value_tier_not_eligible' : 'synthetic_recovery_not_triggered'))
           : (Object.entries(_syntheticTargetRecovery?.debug.syntheticTargetDropBreakdown ?? {}).sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'no_prior_buy_found_in_window')
   const _syntheticLotRecoveryDebug = {
     syntheticLotsDetected: _syntheticLotsDetected,
@@ -12279,6 +12525,9 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     const rankedTargetTokens = _rankedHistoricalTargets.slice(0, 3).map(t => ({
       contract: t.contract, symbol: t.symbol, chain: t.chain, estimatedUsd: t.estimatedUsd,
     })).filter(t => t.estimatedUsd > 0)
+    // PNL-RECOVERY-FIX-7: a synthetic lot's own target token (sold token contract) is a known,
+    // usable target even when it was filtered out of the ranked-by-value list above (e.g. low
+    // estimatedUsd on a micro wallet) — never report no_useful_token_contracts while one exists.
     const syntheticTargetTokens = rankedTargetTokens.length > 0 ? rankedTargetTokens : _syntheticLotTokenTargets.slice(0, 3).map(contract => ({
       contract,
       symbol: _syntheticClosedLots.find(l => l.tokenAddress.toLowerCase() === contract)?.tokenSymbol ?? contract.slice(0, 8),
@@ -12480,6 +12729,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       walletHistoricalScanDebug: _walletHistoricalScanDebug,
       unmatchedSellBackfillDebug: _unmatchedSellBackfillDebug,
       walletLowValueRecoveryDebug: _lowValueRecoveryDebug,
+      walletPnlRecoveryV2Debug,
       walletLotEngineDebug: _lotEngineDebug,
       walletPnlOutlierDebug: _outlierDebug,
       walletTradeStatsDebug: _tradeStatsDebug,
