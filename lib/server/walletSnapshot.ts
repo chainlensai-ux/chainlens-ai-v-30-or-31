@@ -409,6 +409,17 @@ export type WalletSnapshot = {
     pnlUnavailableReason?: string | null
   }
 
+  // FIFO-RECON-FIX-3: per-wallet PnL quality tier, derived from existing closed-lot/sell/holding
+  // signals — never upgrades a tier based on faked data, only labels what evidence actually exists.
+  pnlQuality?: 'exact_fifo' | 'fifo_with_estimates' | 'sell_side_only' | 'open_positions_cost_missing' | 'activity_only' | 'no_trade_evidence'
+  walletRecoveryRecommendation?: {
+    recommended: boolean
+    mode: 'targeted_token_recovery' | 'none'
+    targetTokens: Array<{ contract: string; symbol: string; chain: string; estimatedUsd: number }>
+    reason: string
+    estimatedExtraPages: number
+  }
+
   walletTradeStatsSource: 'base_sample' | 'historical_promoted_preview'
   tokenUsage: TokenUsage
   debugAutoDisabled?: true
@@ -1575,6 +1586,21 @@ const FIFO_QUOTE_ASSETS = new Set<string>([
   '0xd9aaec86b65d86f6a7b5b1b0c42ffa531710b6ca', // USDbC Base
 ])
 
+// FIFO-RECON-FIX-2: verified per-chain native/wrapped-native quote symbols, used only to widen
+// quote-leg recognition for tx-balance-delta swap reconstruction. Gated on the provider's own
+// `chain` field (not user-controlled), so a spoofed token symbol on the wrong chain is rejected.
+const VERIFIED_NATIVE_QUOTE_SYMBOLS_BY_CHAIN: Record<string, Set<string>> = {
+  eth: new Set(['ETH', 'WETH']),
+  base: new Set(['ETH', 'WETH']),
+  bsc: new Set(['BNB', 'WBNB']),
+  avalanche: new Set(['AVAX', 'WAVAX']),
+  polygon: new Set(['MATIC', 'POL', 'WMATIC']),
+}
+function isVerifiedNativeQuoteLeg(chain: string, symbol: string): boolean {
+  const syms = VERIFIED_NATIVE_QUOTE_SYMBOLS_BY_CHAIN[normalizeChain(chain)]
+  return Boolean(syms?.has((symbol ?? '').toUpperCase()))
+}
+
 const CREDIT_TABLE: Record<string, number> = {
   'moralis:erc20_holdings': 1,
   'moralis:erc20_transfers': 1,
@@ -2281,6 +2307,9 @@ export type WalletSwapDetection = {
   matchedProtocol: string | null
   matchedAddress: string | null
   swapReconstructionConfidence?: 'high' | 'medium' | 'low'
+  // FIFO-RECON-FIX-1: marks swap candidates inferred purely from same-tx wallet balance
+  // deltas (quote leg in/out + token leg in/out), not a router label. Additive/optional.
+  reconstructionMethod?: 'tx_balance_delta'
 }
 
 export type WalletTxEvidence = {
@@ -5414,16 +5443,25 @@ function normalizeSwapEventsForFifo(pricedEvidence: WalletTxEvidence[], debug = 
     let cpSymbol: string | null = null
     let cpAmt: number | null = null
 
-    // 1. Same-tx priced counterpart (opposite direction)
+    // 1. Same-tx priced counterpart (opposite direction). Prefer a verified quote/native leg
+    // (stable, WETH, or chain-native) when one exists among the candidates — this is the
+    // tx-balance-delta "clean swap" case even when no router label is present.
     const txPeers = (pricedByTx.get(e.txHash) ?? []).filter(cp =>
       cp.direction !== e.direction && cp.direction !== 'unknown' && !isLPSym(cp.symbol ?? '')
     )
+    const quotePeer = txPeers.find(cp =>
+      QUOTE_ASSET_CONTRACTS[cp.contract.toLowerCase()] || isVerifiedNativeQuoteLeg(cp.chain, cp.symbol)
+    )
+    let cpIsQuoteLeg = false
     if (txPeers.length > 0) {
-      const cp = txPeers[0]
+      const cp = quotePeer ?? txPeers[0]
+      cpIsQuoteLeg = Boolean(quotePeer)
       const peerAmt = parseRawAmount(cp.amountRaw, cp.tokenDecimals) ?? cp.amount
       if (peerAmt && peerAmt > 0 && cp.priceAtTime?.priceUsd) {
         syntheticPriceUsd = (peerAmt * cp.priceAtTime.priceUsd) / thisAmt
-        priceReason = `Swap-derived from same-tx ${cp.symbol} leg`
+        priceReason = cpIsQuoteLeg
+          ? `Swap-derived from same-tx ${cp.symbol} quote leg (no router label needed)`
+          : `Swap-derived from same-tx ${cp.symbol} leg`
         cpSymbol = cp.symbol
         cpAmt = peerAmt
       }
@@ -5452,11 +5490,12 @@ function normalizeSwapEventsForFifo(pricedEvidence: WalletTxEvidence[], debug = 
       ...e,
       swapDetection: {
         isSwapCandidate: true,
-        confidence: 'low',
+        confidence: cpIsQuoteLeg ? 'medium' : 'low',
         eventKind: 'swap_candidate',
         reason: `Normalized outbound transfer → swap candidate (${priceReason})`,
         matchedProtocol: e.swapDetection?.matchedProtocol ?? null,
         matchedAddress: e.swapDetection?.matchedAddress ?? null,
+        reconstructionMethod: 'tx_balance_delta',
       },
       priceAtTime: {
         status: 'priced',
@@ -5542,15 +5581,23 @@ function normalizeSingleLegEventsForFifo(pricedEvidence: WalletTxEvidence[], deb
     let cpSymbol: string | null = null
     let cpAmt: number | null = null
 
-    // 1. Same-tx priced counterpart (any direction, prefer opposite)
+    // 1. Same-tx priced counterpart (any direction, prefer opposite, prefer a verified quote leg)
     const txPeers = (pricedByTx.get(e.txHash) ?? []).filter(cp => !isLPSym(cp.symbol ?? ''))
     const oppPeers = txPeers.filter(cp => cp.direction !== e.direction && cp.direction !== 'unknown')
-    const peer = (oppPeers.length > 0 ? oppPeers : txPeers)[0]
+    const candidatePeers = oppPeers.length > 0 ? oppPeers : txPeers
+    const quotePeer = candidatePeers.find(cp =>
+      QUOTE_ASSET_CONTRACTS[cp.contract.toLowerCase()] || isVerifiedNativeQuoteLeg(cp.chain, cp.symbol)
+    )
+    let peerIsQuoteLeg = false
+    const peer = quotePeer ?? candidatePeers[0]
     if (peer?.priceAtTime?.priceUsd) {
+      peerIsQuoteLeg = Boolean(quotePeer)
       const peerAmt = parseRawAmount(peer.amountRaw, peer.tokenDecimals) ?? peer.amount
       if (peerAmt && peerAmt > 0) {
         syntheticPriceUsd = (peerAmt * peer.priceAtTime.priceUsd) / thisAmt
-        priceReason = `Single-leg derived from same-tx ${peer.symbol} leg`
+        priceReason = peerIsQuoteLeg
+          ? `Single-leg derived from same-tx ${peer.symbol} quote leg (no router label needed)`
+          : `Single-leg derived from same-tx ${peer.symbol} leg`
         cpSymbol = peer.symbol
         cpAmt = peerAmt
       }
@@ -5581,11 +5628,12 @@ function normalizeSingleLegEventsForFifo(pricedEvidence: WalletTxEvidence[], deb
       ...e,
       swapDetection: {
         isSwapCandidate: true,
-        confidence: 'low',
+        confidence: peerIsQuoteLeg ? 'medium' : 'low',
         eventKind: 'swap_candidate',
         reason: `Single-leg promotion: ${priceReason}`,
         matchedProtocol: e.swapDetection?.matchedProtocol ?? null,
         matchedAddress: e.swapDetection?.matchedAddress ?? null,
+        reconstructionMethod: 'tx_balance_delta',
       },
       priceAtTime: {
         status: 'priced',
@@ -11906,7 +11954,43 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     }
   })()
 
+  // FIFO-RECON-FIX-4: derive the public PnL quality tier from signals that already exist on the
+  // promoted summaries — never upgrades a tier based on data that wasn't actually found.
+  const _closedLotsForStats = promotedTradeStatsSummary.closedLots ?? 0
+  const _hasSyntheticOrEstimatedLots = (promotedLotSummary.syntheticClosedLots ?? 0) > 0 ||
+    _closedLots.some(l => l.evidence?.entrySource === 'synthetic' || (l.missingReasons ?? []).includes('price_synthetic_fifo'))
+  const _unmatchedSellsCount = _lotEngineDebug.unmatchedSells ?? 0
+  const _openedLotsCount = promotedLotSummary.openedLots ?? 0
+  const _hasActivityEvidence = (walletEvidenceSummary.totalEvents ?? 0) > 0 || (walletSwapSummary.swapCandidateEvents ?? 0) > 0
+  const _pnlQuality: WalletSnapshot['pnlQuality'] =
+    _closedLotsForStats > 0 && !_hasSyntheticOrEstimatedLots ? 'exact_fifo'
+      : _closedLotsForStats > 0 ? 'fifo_with_estimates'
+        : _unmatchedSellsCount > 0 ? 'sell_side_only'
+          : holdings.length > 0 && _openedLotsCount > 0 ? 'open_positions_cost_missing'
+            : _hasActivityEvidence ? 'activity_only'
+              : 'no_trade_evidence'
+
+  // FIFO-RECON-FIX-5: surfaces the already-computed targeted recovery targets (no new provider
+  // calls — reuses _rankedHistoricalTargets/_missingCostBasisGuardActive computed above).
+  const _walletRecoveryRecommendation: WalletSnapshot['walletRecoveryRecommendation'] = (() => {
+    const targetTokens = _rankedHistoricalTargets.slice(0, 3).map(t => ({
+      contract: t.contract, symbol: t.symbol, chain: t.chain, estimatedUsd: t.estimatedUsd,
+    }))
+    if (targetTokens.length === 0 || _closedLotsForStats > 0) {
+      return { recommended: false, mode: 'none', targetTokens: [], reason: targetTokens.length === 0 ? 'no_useful_token_contracts' : 'closed_lots_already_found', estimatedExtraPages: 0 }
+    }
+    return {
+      recommended: true,
+      mode: 'targeted_token_recovery',
+      targetTokens,
+      reason: _missingCostBasisGuardActive ? 'missing_cost_basis_guard_active_targeted_only' : 'missing_cost_basis_for_top_value_tokens',
+      estimatedExtraPages: Math.min(2, targetTokens.length),
+    }
+  })()
+
   const snapshot: WalletSnapshot = {
+    pnlQuality: _pnlQuality,
+    walletRecoveryRecommendation: _walletRecoveryRecommendation,
     address: addr,
     totalValue,
     holdings,

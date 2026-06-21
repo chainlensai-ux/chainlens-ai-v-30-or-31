@@ -151,6 +151,14 @@ type WalletResult = {
   pnlCoverageReason?: string
   hiddenDustCount?: number
   unpricedHoldingsCount?: number
+  pnlQuality?: 'exact_fifo' | 'fifo_with_estimates' | 'sell_side_only' | 'open_positions_cost_missing' | 'activity_only' | 'no_trade_evidence'
+  walletRecoveryRecommendation?: {
+    recommended: boolean
+    mode: 'targeted_token_recovery' | 'none'
+    targetTokens: Array<{ contract: string; symbol: string; chain: string; estimatedUsd: number }>
+    reason: string
+    estimatedExtraPages: number
+  }
   walletBehavior?: WalletBehavior | null
   estimatedPnl?: {
     status: 'ok' | 'partial' | 'unavailable' | 'error'
@@ -1741,6 +1749,23 @@ export default function WalletScannerPage() {
 
                       <div className="wpv3-card">
                         <p className="wpv3-title">Real Trade Evidence</p>
+                        <div className="wpv3-support" style={{ marginBottom: '8px', color: '#9aa4b2' }}>
+                          {(() => {
+                            const q = result.pnlQuality
+                            if (q === 'exact_fifo') return 'Exact FIFO PnL'
+                            if (q === 'fifo_with_estimates') return 'Estimated FIFO PnL'
+                            if (q === 'sell_side_only') return 'Sell found — buy cost missing'
+                            if (q === 'open_positions_cost_missing') return 'Open position — cost basis missing'
+                            if (q === 'activity_only') return 'Activity found — no matched trade yet'
+                            return null
+                          })()}
+                          {result.walletRecoveryRecommendation?.recommended && (
+                            <span style={{ marginLeft: '8px', color: '#7dd3fc' }}>Targeted recovery recommended</span>
+                          )}
+                        </div>
+                        <p className="wpv3-support" style={{ marginBottom: '8px' }}>
+                          PnL is calculated from matched buy/sell lots. When buys are missing, ChainLens shows sell proceeds or open position value but does not fake profit.
+                        </p>
                         {tradeEvidenceStrong ? <>{[
                           ['Realized PnL', fmtSignedUSD(ts!.realizedPnlUsd)],
                           ['Win Rate', ts!.winRatePercent == null ? 'Open Check' : `${ts!.winRatePercent.toFixed(0)}%`],

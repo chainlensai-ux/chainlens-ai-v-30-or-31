@@ -650,7 +650,15 @@ export async function POST(req: Request) {
     const cached = cachedRaw ?? null
 
     // Determine cost mode
-    type WalletScanCostMode = 'basic' | 'basic_cached' | 'deep_cached' | 'deep_live' | 'historical_cached' | 'historical_live' | 'blocked_by_cooldown' | 'blocked_by_cost_guard'
+    type WalletScanCostMode = 'basic' | 'basic_cached' | 'deep_cached' | 'deep_live' | 'historical_cached' | 'historical_live' | 'blocked_by_cooldown' | 'blocked_by_cost_guard' | 'cached_preview_only'
+    // FIFO-RECON-FIX-9: a recovered snapshot that made zero live historical provider calls
+    // (e.g. it hit its own internal cache) must never be labeled historical_live/attempted —
+    // that previously misled callers into thinking a live recovery pass actually ran.
+    const _hadLiveHistoricalCalls = (recovered: any): boolean => {
+      const pagesAttempted = recovered?.walletHistoricalCoverageSummary?.pagesAttempted ?? 0
+      const historicalMs = recovered?._diagnostics?.walletPerformanceDebug?.historicalMs ?? recovered?._debug?.walletPerformanceDebug?.historicalMs ?? 0
+      return pagesAttempted > 0 || historicalMs > 0
+    }
     const getCostMode = (fromCache: boolean): WalletScanCostMode => {
       if (cooldownActive) return 'blocked_by_cooldown'
       if (costGuardHit) return 'blocked_by_cost_guard'
@@ -693,11 +701,19 @@ export async function POST(req: Request) {
           walletScanBudget: probeBudget,
         } satisfies WalletSnapshotOptions)
         recovered.pnlCacheQuality = getPnlCacheQuality(recovered)
-        recovered.walletScanCostMode = 'historical_live'
-        recovered.walletScanCacheNote = 'Historical PnL recovery ran because the cached deep scan had partial trade coverage.'
-        recovered.walletHistoricalRecoveryStatus = 'attempted'
-        recovered.walletHistoricalRecoveryReason = `cached_${cacheBackend}_needed_historical_recovery`
-        recovered.dataFreshness = 'live'
+        if (_hadLiveHistoricalCalls(recovered)) {
+          recovered.walletScanCostMode = 'historical_live'
+          recovered.walletScanCacheNote = 'Historical PnL recovery ran because the cached deep scan had partial trade coverage.'
+          recovered.walletHistoricalRecoveryStatus = 'attempted'
+          recovered.walletHistoricalRecoveryReason = `cached_${cacheBackend}_needed_historical_recovery`
+          recovered.dataFreshness = 'live'
+        } else {
+          recovered.walletScanCostMode = 'cached_preview_only'
+          recovered.walletScanCacheNote = 'Served from cache — no live historical recovery calls were made.'
+          recovered.walletHistoricalRecoveryStatus = 'not_attempted'
+          recovered.walletHistoricalRecoveryReason = 'no_live_provider_calls_cache_hit'
+          recovered.dataFreshness = 'cached'
+        }
         recovered.cacheAgeSeconds = cacheAgeSeconds
         return recovered
       } catch {
@@ -1042,7 +1058,9 @@ export async function POST(req: Request) {
           maxFallbackPages,
           walletScanBudget: _autoBudget,
         } satisfies WalletSnapshotOptions)
-        snapshot = { ..._historicalSnapshot, walletHistoricalRecoveryStatus: 'attempted', walletHistoricalRecoveryReason: 'auto_trigger_low_pnl_coverage' }
+        snapshot = _hadLiveHistoricalCalls(_historicalSnapshot)
+          ? { ..._historicalSnapshot, walletHistoricalRecoveryStatus: 'attempted', walletHistoricalRecoveryReason: 'auto_trigger_low_pnl_coverage' }
+          : { ..._historicalSnapshot, walletHistoricalRecoveryStatus: 'not_attempted', walletHistoricalRecoveryReason: 'no_live_provider_calls_cache_hit' }
       } else {
         snapshot.walletHistoricalRecoveryStatus = 'blocked'
         snapshot.walletHistoricalRecoveryReason = 'budget_hard_cap_blocks_recovery'
