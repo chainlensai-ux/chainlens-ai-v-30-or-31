@@ -248,6 +248,8 @@ function buildPublicWalletScanBudget(scanMode: string, requestedHistoricalScan: 
     budgetCapReason: null as string | null,
     skippedAfterBudgetCap: 0,
     estimatedCreditsSavedByCache: 0,
+    estimatedCreditsUsed: 0,
+    actualCreditsUsed: 0,
   }
 }
 
@@ -1125,8 +1127,20 @@ export async function POST(req: Request) {
       // COST-GUARD-FIX: real-backed closed lots were already found on the default scan — do not
       // run (or claim to have run) broad historical recovery just because historicalStatus
       // happened to be 'not_requested'.
-      snapshot.walletHistoricalRecoveryStatus = 'not_attempted'
-      snapshot.walletHistoricalRecoveryReason = 'closed_lots_already_found'
+      // HISTORICAL-LABEL-FIX: but if this same scan call DID actually request/attempt historical
+      // pages (e.g. historicalCoverage was explicitly requested on the first call), "not_attempted"
+      // would directly contradict walletHistoricalCoverageSummary.requested/pagesAttempted — label
+      // it by the real page result instead.
+      const _pagesAttemptedThisScan = Number(snapshot.walletHistoricalCoverageSummary?.pagesAttempted ?? 0)
+      const _historicalRequestedThisScan = Boolean(snapshot.walletHistoricalCoverageSummary?.requested) || effectiveHistoricalCoverage
+      if (_historicalRequestedThisScan || _pagesAttemptedThisScan > 0) {
+        const _hadLive = _hadLiveHistoricalCalls(snapshot)
+        snapshot.walletHistoricalRecoveryStatus = _hadLive ? 'attempted_recovered' : 'attempted_no_recovery'
+        snapshot.walletHistoricalRecoveryReason = _hadLive ? 'closed_lots_already_found_with_historical_pages' : 'historical_pages_attempted_no_additional_recovery'
+      } else {
+        snapshot.walletHistoricalRecoveryStatus = 'not_attempted'
+        snapshot.walletHistoricalRecoveryReason = 'closed_lots_already_found'
+      }
     }
     snapshot.pnlCacheQuality = getPnlCacheQuality(snapshot)
     normalizePublicPnlStatus(snapshot)
@@ -1240,7 +1254,14 @@ export async function POST(req: Request) {
     const _scanBudgetDebug = snapshot._diagnostics?.walletScanBudgetDebug ?? null
     const _walletValueTier = getWalletValueTier(Number(snapshot.totalValue ?? 0))
     const _publicBudget = buildPublicWalletScanBudget(scanModeKey, historicalCoverageRequested, _scanBudgetDebug?.walletValueTier ?? _walletValueTier, adminOverrideRequested)
-    _publicBudget.creditsUsed = Math.min(_publicBudget.totalCreditHardCap, Number(_scanBudgetDebug?.creditsUsed ?? 0))
+    // BUDGET-HONESTY-FIX: the budget-debug counter only tallies credits at specific check sites
+    // and can under-count relative to the real per-call audit log (apiAudit.totalCredits). Expose
+    // both numbers instead of silently reporting the lower, estimated one as "creditsUsed".
+    const _estimatedCreditsUsed = Number(_scanBudgetDebug?.creditsUsed ?? 0)
+    const _actualCreditsUsed = Number(snapshot._diagnostics?.apiAudit?.totalCredits ?? _estimatedCreditsUsed)
+    _publicBudget.estimatedCreditsUsed = _estimatedCreditsUsed
+    _publicBudget.actualCreditsUsed = _actualCreditsUsed
+    _publicBudget.creditsUsed = Math.min(_publicBudget.totalCreditHardCap, Math.max(_estimatedCreditsUsed, _actualCreditsUsed))
     _publicBudget.creditsRemaining = Math.max(0, _publicBudget.totalCreditHardCap - _publicBudget.creditsUsed)
     _publicBudget.budgetCapHit = Boolean(_scanBudgetDebug?.budgetCapHit) || _publicBudget.creditsUsed >= _publicBudget.totalCreditHardCap
     _publicBudget.budgetCapReason = _scanBudgetDebug?.budgetCapReason ?? (_publicBudget.budgetCapHit ? 'total_hard_cap_reached' : null)

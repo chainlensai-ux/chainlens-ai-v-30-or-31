@@ -450,7 +450,7 @@ export type WalletSnapshot = {
     confidence: 'low' | 'medium' | 'high'
     entryTxHash: string | null
     exitTxHash: string | null
-    verificationStatus: 'verifiable' | 'partial' | 'not_available' | 'synthetic_cost_basis_missing'
+    verificationStatus: 'verifiable' | 'partial' | 'not_available' | 'synthetic_cost_basis_missing' | 'estimate_only_price_flat' | 'price_independence_missing'
     // PNL-SAFETY-FIX-2: additive — set whenever a sample's lot is synthetic (no real recovered
     // buy), so a synthetic lot is never mistaken for a verified public closed trade even if it
     // happens to carry both an entry and exit tx hash.
@@ -2427,6 +2427,16 @@ export type WalletClosedLot = {
   // PHASE3-FIX-6: see WalletLotOpen.coveragePercent/missingReasons above — same additive pattern.
   coveragePercent?: number
   missingReasons?: string[]
+  // PRICE-INDEPENDENCE-FIX: see computePriceIndependence — a closed lot can only be treated as
+  // a decisive/verified PnL data point when its entry and exit prices come from independent real
+  // evidence; otherwise it is a fake flat (entry===exit) break-even, not a real zero-PnL trade.
+  entryPriceSource?: string
+  exitPriceSource?: string
+  entryPriceEvidenceTxHash?: string | null
+  exitPriceEvidenceTxHash?: string | null
+  priceIndependenceStatus?: 'independent' | 'same_source_flat_estimate' | 'missing'
+  pnlDecisive?: boolean
+  pnlDisplayStatus?: 'verified' | 'estimate_only' | 'open_check'
 }
 
 export type PriceAtTimeEvidence = {
@@ -4692,6 +4702,44 @@ function lotConfidence(entrySource: string, exitSource: string): 'high' | 'mediu
   return 'low'
 }
 
+// PRICE-INDEPENDENCE-FIX: sources with no real per-event price evidence — they reuse a
+// last-known/current price snapshot rather than a value tied to the specific buy or sell event —
+// so a closed lot whose entry and exit prices both come from one of these (and land on the exact
+// same number) is a fake break-even, not a verified zero-PnL trade.
+const NON_INDEPENDENT_PRICE_SOURCES = new Set(['current_holding_price_open_lot_estimate', 'current_price_fallback_not_used', 'unavailable', 'synthetic'])
+
+function computePriceIndependence(
+  entrySource: string,
+  exitSource: string,
+  entryPriceUsd: number,
+  exitPriceUsd: number,
+  openedTxHash: string,
+  closedTxHash: string,
+): {
+  entryPriceSource: string
+  exitPriceSource: string
+  entryPriceEvidenceTxHash: string | null
+  exitPriceEvidenceTxHash: string | null
+  priceIndependenceStatus: 'independent' | 'same_source_flat_estimate' | 'missing'
+  pnlDecisive: boolean
+  pnlDisplayStatus: 'verified' | 'estimate_only' | 'open_check'
+} {
+  const entryHasEvidence = !NON_INDEPENDENT_PRICE_SOURCES.has(entrySource)
+  const exitHasEvidence = !NON_INDEPENDENT_PRICE_SOURCES.has(exitSource)
+  const entryPriceEvidenceTxHash = entryHasEvidence ? openedTxHash : null
+  const exitPriceEvidenceTxHash = exitHasEvidence ? closedTxHash : null
+  const pricesEqual = isFinite(entryPriceUsd) && isFinite(exitPriceUsd) && Math.abs(entryPriceUsd - exitPriceUsd) <= Math.abs(entryPriceUsd) * 1e-9
+  const sameSource = entrySource === exitSource
+  const priceIndependenceStatus: 'independent' | 'same_source_flat_estimate' | 'missing' =
+    !entryHasEvidence && !exitHasEvidence && pricesEqual && sameSource ? 'same_source_flat_estimate'
+      : !entryHasEvidence || !exitHasEvidence ? 'missing'
+      : 'independent'
+  const pnlDecisive = priceIndependenceStatus === 'independent'
+  const pnlDisplayStatus: 'verified' | 'estimate_only' | 'open_check' =
+    pnlDecisive ? 'verified' : priceIndependenceStatus === 'same_source_flat_estimate' ? 'estimate_only' : 'open_check'
+  return { entryPriceSource: entrySource, exitPriceSource: exitSource, entryPriceEvidenceTxHash, exitPriceEvidenceTxHash, priceIndependenceStatus, pnlDecisive, pnlDisplayStatus }
+}
+
 // PHASE6-FIX-6: normalized reason-key vocabulary for all new Phase 6 confidence/completeness/
 // integrity signals. These are appended ADDITIVELY to existing missing/missingReasons-style
 // arrays elsewhere in the file — none of the existing string literals already used in those
@@ -5246,6 +5294,7 @@ function buildFifoLotEngine(
 
         // PHASE6-FIX-1: closed-lot numeric confidence, derived from both legs of the trade.
         const _closedConfScore = lotConfidenceScore({ entrySource: lot.priceSource, exitSource: priceSource })
+        const _priceIndependence = computePriceIndependence(lot.priceSource, priceSource, lot.entryPriceUsd, priceUsd, lot.openedTxHash, e.txHash!)
         closedLots.push({
           tokenAddress: e.contract.toLowerCase(),
           tokenSymbol: e.symbol ?? null,
@@ -5271,6 +5320,7 @@ function buildFifoLotEngine(
           // only if the parent lot itself was already a partial/estimate lot).
           coveragePercent: lot.coveragePercent ?? 100,
           missingReasons: lot.missingReasons ?? [],
+          ..._priceIndependence,
         })
 
         lot.amountRemaining -= closeAmount
@@ -5292,6 +5342,7 @@ function buildFifoLotEngine(
         const costBasisUsd = missingAmount * priceUsd
         const proceedsUsd = missingAmount * priceUsd
         backfilledBuyLots++
+        const _synthPriceIndependence = computePriceIndependence('synthetic', priceSource, priceUsd, priceUsd, e.txHash!, e.txHash!)
         closedLots.push({
           tokenAddress: e.contract.toLowerCase(),
           tokenSymbol: e.symbol ?? null,
@@ -5314,6 +5365,7 @@ function buildFifoLotEngine(
           confidenceTier: _synthOpenConf.tier,
           coveragePercent: Math.max(0, Math.min(100, ((amount - missingAmount) / amount) * 100)),
           missingReasons: ['fifo_backfilled_buy', 'price_synthetic_fifo'],
+          ..._synthPriceIndependence,
         })
         sellRemaining = 0
         if (sampleUnmatchedReasons.length < 10) sampleUnmatchedReasons.push(`fifo_backfilled_buy:${_abbr(e.contract)}(${e.symbol ?? '?'})`)
@@ -5889,9 +5941,14 @@ function buildTradeStatsSummary(
   const n = allLots.length
 
   // ── Per-lot classification ──
+  // PRICE-INDEPENDENCE-FIX: lots whose entry and exit prices both came from the same
+  // non-independent fallback source (a fake flat break-even, not a real zero-PnL trade) must
+  // never be counted as real break-even wins/losses.
+  const _flatEstimateLots = allLots.filter(l => l.priceIndependenceStatus === 'same_source_flat_estimate')
+  const _allLotsFlatEstimate = _flatEstimateLots.length > 0 && _flatEstimateLots.length === allLots.length
   const winning = allLots.filter(l => l.realizedPnlUsd > BREAK_EVEN_EPSILON)
   const losing  = allLots.filter(l => l.realizedPnlUsd < -BREAK_EVEN_EPSILON)
-  const breakEven = allLots.filter(l => Math.abs(l.realizedPnlUsd) <= BREAK_EVEN_EPSILON)
+  const breakEven = allLots.filter(l => Math.abs(l.realizedPnlUsd) <= BREAK_EVEN_EPSILON && l.priceIndependenceStatus !== 'same_source_flat_estimate')
   const uniqueTokensTraded = new Set(allLots.map(l => `${l.chain}:${l.tokenAddress}`)).size
 
   // ── Aggregates ──
@@ -5972,13 +6029,20 @@ function buildTradeStatsSummary(
   // ── Win rate: raw rate always computed when n >= 1; official rate requires decisive lots ──
   const decisiveClosedLots = winning.length + losing.length
   const isBreakEvenOnly = n > 0 && decisiveClosedLots === 0 && breakEven.length === n
-  const winRateComputed = n >= WIN_RATE_THRESHOLD && decisiveClosedLots >= 1 && !isBreakEvenOnly && economicallyMeaningful
-  const winRatePercent = n >= 1 && decisiveClosedLots >= 1 ? (winning.length / n) * 100 : null
+  const winRateComputed = n >= WIN_RATE_THRESHOLD && decisiveClosedLots >= 1 && !isBreakEvenOnly && economicallyMeaningful && !_allLotsFlatEstimate
+  const winRatePercent = _allLotsFlatEstimate ? null : (n >= 1 && decisiveClosedLots >= 1 ? (winning.length / n) * 100 : null)
   const scoreUnlocked = winRateComputed
   const rawStatsAvailable = n >= 1
   if (isBreakEvenOnly) {
     confidenceLabel = 'break_even_only'
     sampleWarning = 'Closed lots reconstructed, but every matched lot is break-even. Score and official win rate need at least one decisive winning or losing closed lot.'
+  }
+  // PRICE-INDEPENDENCE-FIX: when every closed lot is a same-source flat-price estimate, there is
+  // no independently-verified price movement at all — report open_check, not a fake "ok" PnL.
+  if (_allLotsFlatEstimate) {
+    summaryStatus = 'open_check'
+    confidenceLabel = 'open_check'
+    sampleWarning = 'Closed lots found, but price movement is not independently verified.'
   }
 
   const avgPnlUsdPerClosedLot = totalRealizedPnl / n
@@ -6007,6 +6071,8 @@ function buildTradeStatsSummary(
     }
   }
   if (breakEven.length > 0) missing.push('break_even_lots_excluded_from_win_rate')
+  if (_flatEstimateLots.length > 0) missing.push('price_flat_estimate_lots_excluded')
+  if (_allLotsFlatEstimate) missing.push('all_closed_lots_price_flat_estimate')
   if (!economicallyMeaningful) missing.push('micro_trade_sample')
   if (returnPcts.length < n) missing.push('some_lots_missing_return_percent')
   if (holdingTimes.length < n) missing.push('some_lots_missing_holding_time')
@@ -11595,6 +11661,11 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _unknownCostSellValueUsdFinal = _syntheticClosedLotsFinal.reduce((s, l) => s + (l.proceedsUsd ?? 0), 0)
   const _pnlUnavailableReasonFinal: string | null =
     _closedLotsForStatsFinal === 0 && _syntheticLotsExcludedFromStatsFinal > 0 ? 'missing_cost_basis' : null
+  // PRICE-INDEPENDENCE-FIX: verifiedClosedLots must mean real-backed AND independently priced —
+  // a same-source flat-price estimate is real-backed but has no independent evidence of price
+  // movement, so it cannot count as a verified data point.
+  const _verifiedIndependentClosedLotsFinal = _realBackedClosedLotsFinal.filter(l => l.priceIndependenceStatus !== 'same_source_flat_estimate').length
+  const _allRealBackedLotsFlatEstimate = _closedLotsForStatsFinal > 0 && _verifiedIndependentClosedLotsFinal === 0
 
   // LOW-VALUE-RECOVERY-FIX: surfaces the (now evidence-gated, not value-tier-gated) capped
   // targeted recovery pass above — SYNTH-RECOVERY-FIX-12's _syntheticTargetExtra* mechanism — under
@@ -11673,9 +11744,9 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       promotedTradeStatsSummary = {
         ..._realBackedStats.summary,
         closedLotsForStats: _closedLotsForStatsFinal,
-        verifiedClosedLots: _closedLotsForStatsFinal,
-        publicPnlStatus: 'ok',
-        pnlUnavailableReason: null,
+        verifiedClosedLots: _verifiedIndependentClosedLotsFinal,
+        publicPnlStatus: _allRealBackedLotsFlatEstimate ? 'open_check' : 'ok',
+        pnlUnavailableReason: _allRealBackedLotsFlatEstimate ? 'price_independence_missing' : null,
         rawClosedLots: _rawClosedLotsFinal,
         syntheticClosedLotsExcluded: _syntheticLotsExcludedFromStatsFinal,
       }
@@ -11683,9 +11754,9 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       promotedTradeStatsSummary = {
         ...promotedTradeStatsSummary,
         closedLotsForStats: _closedLotsForStatsFinal,
-        verifiedClosedLots: _closedLotsForStatsFinal,
-        publicPnlStatus: 'ok',
-        pnlUnavailableReason: null,
+        verifiedClosedLots: _verifiedIndependentClosedLotsFinal,
+        publicPnlStatus: _allRealBackedLotsFlatEstimate ? 'open_check' : 'ok',
+        pnlUnavailableReason: _allRealBackedLotsFlatEstimate ? 'price_independence_missing' : null,
         rawClosedLots: _rawClosedLotsFinal,
         syntheticClosedLotsExcluded: _syntheticLotsExcludedFromStatsFinal,
       }
@@ -11735,8 +11806,13 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     const entryTxHash = l.openedTxHash ?? null
     const exitTxHash = l.closedTxHash ?? null
     const isRealBacked = _isRealBackedClosedLot(l)
-    const verificationStatus: 'verifiable' | 'partial' | 'not_available' | 'synthetic_cost_basis_missing' =
+    // PRICE-INDEPENDENCE-FIX: a same-source flat-price estimate is never "verifiable", even when
+    // it's real-backed and carries both tx hashes — its entry/exit prices aren't independent
+    // evidence of price movement, so it must be labeled distinctly from a genuinely verified trade.
+    const verificationStatus: 'verifiable' | 'partial' | 'not_available' | 'synthetic_cost_basis_missing' | 'estimate_only_price_flat' | 'price_independence_missing' =
       !isRealBacked ? 'synthetic_cost_basis_missing'
+        : l.priceIndependenceStatus === 'same_source_flat_estimate' ? 'estimate_only_price_flat'
+        : l.priceIndependenceStatus === 'missing' ? 'price_independence_missing'
         : entryTxHash && exitTxHash ? 'verifiable' : (entryTxHash || exitTxHash) ? 'partial' : 'not_available'
     return {
       tokenSymbol: l.tokenSymbol ?? l.tokenAddress.slice(0, 8),
@@ -11754,8 +11830,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       entryTxHash,
       exitTxHash,
       verificationStatus,
-      publicPnlStatus: isRealBacked ? 'ok' : 'open_check',
-      pnlUnavailableReason: isRealBacked ? null : 'missing_cost_basis',
+      publicPnlStatus: isRealBacked && l.priceIndependenceStatus !== 'same_source_flat_estimate' ? 'ok' : 'open_check',
+      pnlUnavailableReason: !isRealBacked ? 'missing_cost_basis' : l.priceIndependenceStatus === 'same_source_flat_estimate' ? 'price_independence_missing' : null,
     }
   }
   // Sort real-backed samples by usefulness: meaningful cost basis first, then confidence,

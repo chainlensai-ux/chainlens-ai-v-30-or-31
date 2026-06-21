@@ -115,4 +115,46 @@ assert.match(routeSrc, /debugFreshAllowed && cacheBust \? `:debug:\$\{cacheBust\
 assert.match(ui, /Fresh scan \/ bypass cache/, 'wallet scanner shows a fresh scan bypass control')
 assert.match(ui, /Do not write cache/, 'wallet scanner shows a no-cache-write control')
 
+// PRICE-INDEPENDENCE-FIX: fake-looking break-even FIFO (entry price === exit price both reused
+// from the same non-independent fallback source) must never be treated as verified/decisive PnL.
+assert.match(snap, /const NON_INDEPENDENT_PRICE_SOURCES = new Set\(\['current_holding_price_open_lot_estimate', 'current_price_fallback_not_used', 'unavailable', 'synthetic'\]\)/, 'non-independent price sources (no real per-event evidence) are explicitly enumerated')
+assert.match(snap, /function computePriceIndependence\(/, 'a price-independence classifier exists for closed lots')
+assert.match(snap, /priceIndependenceStatus: 'independent' \| 'same_source_flat_estimate' \| 'missing'/, 'closed lots expose a priceIndependenceStatus tier')
+assert.match(snap, /pnlDecisive\?:\s*boolean/, 'closed lots expose a pnlDecisive flag')
+assert.match(snap, /pnlDisplayStatus\?:\s*'verified' \| 'estimate_only' \| 'open_check'/, 'closed lots expose a pnlDisplayStatus for UI consumers')
+assert.match(snap, /const _priceIndependence = computePriceIndependence\(lot\.priceSource, priceSource, lot\.entryPriceUsd, priceUsd, lot\.openedTxHash, e\.txHash!\)/, 'real FIFO-matched closed lots compute price independence from both legs')
+assert.match(snap, /const _synthPriceIndependence = computePriceIndependence\('synthetic', priceSource, priceUsd, priceUsd, e\.txHash!, e\.txHash!\)/, 'synthetic backfilled closed lots are also tagged with price-independence status')
+
+// Trade-stats must not count same-source flat estimates as real break-even wins/losses, and must
+// not report a fake "ok" PnL status when every closed lot is a flat estimate.
+assert.match(snap, /const _flatEstimateLots = allLots\.filter\(l => l\.priceIndependenceStatus === 'same_source_flat_estimate'\)/, 'trade stats identify same-source flat-price-estimate lots')
+assert.match(snap, /const _allLotsFlatEstimate = _flatEstimateLots\.length > 0 && _flatEstimateLots\.length === allLots\.length/, 'trade stats know when every closed lot is a flat estimate')
+assert.match(snap, /const breakEven = allLots\.filter\(l => Math\.abs\(l\.realizedPnlUsd\) <= BREAK_EVEN_EPSILON && l\.priceIndependenceStatus !== 'same_source_flat_estimate'\)/, 'breakEvenClosedLots excludes same-source flat estimates')
+assert.match(snap, /const winRateComputed = n >= WIN_RATE_THRESHOLD && decisiveClosedLots >= 1 && !isBreakEvenOnly && economicallyMeaningful && !_allLotsFlatEstimate/, 'winRate is never computed when every closed lot is a flat estimate')
+assert.match(snap, /const winRatePercent = _allLotsFlatEstimate \? null/, 'winRatePercent is forced null when every closed lot is a flat estimate')
+assert.match(snap, /sampleWarning = 'Closed lots found, but price movement is not independently verified\.'/, 'an honest sampleWarning explains the flat-estimate-only case')
+
+// verifiedClosedLots must mean real-backed AND independently priced; publicPnlStatus must not be
+// "ok" when every real-backed closed lot is a flat estimate.
+assert.match(snap, /const _verifiedIndependentClosedLotsFinal = _realBackedClosedLotsFinal\.filter\(l => l\.priceIndependenceStatus !== 'same_source_flat_estimate'\)\.length/, 'verifiedClosedLots excludes same-source flat estimates even when real-backed')
+assert.match(snap, /const _allRealBackedLotsFlatEstimate = _closedLotsForStatsFinal > 0 && _verifiedIndependentClosedLotsFinal === 0/, 'snapshot knows when every real-backed closed lot is a flat estimate')
+assert.match(snap, /verifiedClosedLots: _verifiedIndependentClosedLotsFinal,/, 'public verifiedClosedLots is wired to the independent-pricing-filtered count')
+assert.match(snap, /publicPnlStatus: _allRealBackedLotsFlatEstimate \? 'open_check' : 'ok',/, 'publicPnlStatus cannot be ok when every real-backed closed lot is a flat estimate')
+
+// walletClosedTradeSamples must not label same-source flat estimates as verifiable.
+assert.match(snap, /verificationStatus: 'verifiable' \| 'partial' \| 'not_available' \| 'synthetic_cost_basis_missing' \| 'estimate_only_price_flat' \| 'price_independence_missing'/, 'verificationStatus union includes the new non-verifiable price-independence tiers')
+assert.match(snap, /l\.priceIndependenceStatus === 'same_source_flat_estimate' \? 'estimate_only_price_flat'/, 'flat-estimate lots are labeled estimate_only_price_flat, never verifiable')
+assert.match(snap, /l\.priceIndependenceStatus === 'missing' \? 'price_independence_missing'/, 'lots missing independent evidence on one side are labeled price_independence_missing')
+
+// Budget/audit consistency: walletScanBudget.creditsUsed must not silently understate apiAudit.totalCredits.
+assert.match(routeSrc, /const _actualCreditsUsed = Number\(snapshot\._diagnostics\?\.apiAudit\?\.totalCredits \?\? _estimatedCreditsUsed\)/, 'walletScanBudget reconciles against the real apiAudit.totalCredits figure')
+assert.match(routeSrc, /_publicBudget\.estimatedCreditsUsed = _estimatedCreditsUsed/, 'walletScanBudget exposes the budget-debug estimate distinctly')
+assert.match(routeSrc, /_publicBudget\.actualCreditsUsed = _actualCreditsUsed/, 'walletScanBudget exposes the real audited credits distinctly')
+assert.match(routeSrc, /_publicBudget\.creditsUsed = Math\.min\(_publicBudget\.totalCreditHardCap, Math\.max\(_estimatedCreditsUsed, _actualCreditsUsed\)\)/, 'public creditsUsed never reports less than the real audited credits')
+
+// Historical recovery status must not be not_attempted when pages were actually attempted this scan.
+assert.match(routeSrc, /const _pagesAttemptedThisScan = Number\(snapshot\.walletHistoricalCoverageSummary\?\.pagesAttempted \?\? 0\)/, 'the recoveryAlreadyFound branch checks whether historical pages were actually attempted this scan')
+assert.match(routeSrc, /if \(_historicalRequestedThisScan \|\| _pagesAttemptedThisScan > 0\) \{/, 'not_attempted is never reported once historical coverage was requested or pages were attempted')
+assert.match(routeSrc, /snapshot\.walletHistoricalRecoveryStatus = _hadLive \? 'attempted_recovered' : 'attempted_no_recovery'/, 'historical recovery status reflects the real page result instead of a contradictory not_attempted label')
+
 console.log('wallet bad-scan classification checks passed')
