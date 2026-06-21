@@ -42,8 +42,8 @@ assert.match(route, /walletHistoricalRecoveryStatus = 'not_attempted'/, 'cache h
 // and recovery recommendations must not claim closed lots were "already found" from synthetic lots.
 assert.match(snap, /_missingCostBasisProven && \(promotedLotSummary\.syntheticClosedLots \?\? 0\) > 0 \? 'missing_cost_basis'/, 'synthetic-only closed lots map to missing_cost_basis, not fifo_with_estimates')
 assert.match(snap, /reason: 'missing_cost_basis_synthetic_lots_excluded'/, 'recovery recommendation excludes synthetic-only lots with a clear reason')
-assert.match(snap, /if \(_realClosedLotsCount > 0\) \{\s*\n\s*return \{ recommended: false, mode: 'none', targetTokens, reason: \(promotedTradeStatsSummary\.syntheticClosedLotsExcluded/, 'real-backed closed lots keep targets populated and disclose excluded lots remain')
-assert.match(snap, /verificationStatus: 'verifiable' \| 'partial' \| 'not_available' \| 'synthetic_cost_basis_missing'/, 'synthetic closed-trade samples get a distinct non-verifiable status')
+assert.match(snap, /if \(_realClosedLotsCount > 0\) \{\s*\n\s*return \{ recommended: false, mode: historicalAttempted \? 'attempted_light' : 'none', targetTokens, reason: \(promotedTradeStatsSummary\.syntheticClosedLotsExcluded/, 'real-backed closed lots keep targets populated and disclose excluded lots remain')
+assert.match(snap, /verificationStatus: 'verifiable' \| 'partial' \| 'not_available' \| 'synthetic_cost_basis_missing' \| 'estimate_only_price_flat' \| 'price_independence_missing'/, 'synthetic closed-trade samples get a distinct non-verifiable status')
 assert.match(snap, /_sampleEligibleLots = _closedLotsForStatsFinal === 0 \? \[\] : _sampleSourceLots/, 'no closed-trade samples are exposed when every closed lot is synthetic')
 assert.match(snap, /verifiedClosedLots\?:\s*number/, 'walletTradeStatsSummary exposes a verified-only closed lot count')
 
@@ -195,7 +195,7 @@ assert.match(routeSrc, /const _actualCreditsUsed = Number\(snapshot\._diagnostic
 assert.match(routeSrc, /_publicBudget\.estimatedCreditsUsed = _estimatedCreditsUsed/, 'walletScanBudget exposes the budget-debug estimate distinctly')
 assert.match(routeSrc, /_publicBudget\.actualCreditsUsed = _actualCreditsUsed/, 'walletScanBudget exposes the real audited credits distinctly')
 assert.match(routeSrc, /_publicBudget\.creditsUsed = _actualCreditsUsed/, 'public creditsUsed reports the real audited credits')
-assert.match(routeSrc, /_publicBudget\.totalBudgetCapHit = _actualCreditsUsed >= _publicBudget\.totalCreditHardCap/, 'total budget cap is separate from historical phase cap')
+assert.match(routeSrc, /_publicBudget\.hardCapHit = _actualCreditsUsed > _publicBudget\.totalCreditHardCap[\s\S]*_publicBudget\.totalBudgetCapHit = _publicBudget\.hardCapHit/, 'hard budget cap is based on audited credits and surfaced separately from historical phase cap')
 assert.match(routeSrc, /_publicBudget\.historicalPhaseCapHit = Boolean\(_scanBudgetDebug\?\.historicalBudgetCapHit\)/, 'historical phase cap is surfaced separately')
 
 // Historical recovery status must not be not_attempted when pages were actually attempted this scan.

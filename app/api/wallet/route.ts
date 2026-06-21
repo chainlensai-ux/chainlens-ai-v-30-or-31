@@ -749,7 +749,7 @@ export async function POST(req: Request) {
             ? 'historical_phase_cap_reached_total_pages'
             : pagesAttempted > 0
               ? 'historical_candidates_priced_no_new_closed_lots'
-              : 'page_partial_or_empty'
+              : 'historical_provider_failed_or_no_new_closed_lots'
       } else if (payload?.walletHistoricalRecoveryReason === 'no_live_provider_calls_cache_hit' && !cacheHit) {
         payload.walletHistoricalRecoveryReason = 'historical_not_requested'
       }
@@ -1181,7 +1181,7 @@ export async function POST(req: Request) {
       if (_historicalRequestedThisScan || _pagesAttemptedThisScan > 0) {
         const _hadLive = _hadLiveHistoricalCalls(snapshot)
         snapshot.walletHistoricalRecoveryStatus = _hadLive ? 'attempted_recovered' : 'attempted_no_recovery'
-        snapshot.walletHistoricalRecoveryReason = _hadLive ? 'closed_lots_already_found_with_historical_pages' : 'historical_pages_attempted_no_additional_recovery'
+        snapshot.walletHistoricalRecoveryReason = _hadLive ? 'closed_lots_already_found_with_historical_pages' : 'historical_provider_failed_or_no_new_closed_lots'
       } else {
         snapshot.walletHistoricalRecoveryStatus = 'not_attempted'
         snapshot.walletHistoricalRecoveryReason = 'closed_lots_already_found'
@@ -1286,7 +1286,7 @@ export async function POST(req: Request) {
     // Windowed PnL is public-facing, so it must exclude synthetic/cost-basis-missing lots —
     // a synthetic break-even lot showing $0 PnL would otherwise look like a verified real result.
     const _realBackedLotsForWindows = _performanceLotsForIntelligence
-    snapshot.walletPnlWindows = computeWindowedPnl(_realBackedLotsForWindows, new Date(), { scoreUnlocked: snapshot.walletTradeStatsSummary?.scoreUnlocked === true, publicPnlStatus: snapshot.publicPnlStatus })
+    snapshot.walletPnlWindows = computeWindowedPnl(_realBackedLotsForWindows, new Date(), { scoreUnlocked: snapshot.walletTradeStatsSummary?.scoreUnlocked === true, publicPnlStatus: snapshot.publicPnlStatus, rawMatchedClosedLots: snapshot.rawMatchedClosedLots ?? snapshot.rawClosedLots ?? 0 })
     if (snapshot.walletTradeStatsSummary?.pnlUnavailableReason === 'missing_cost_basis' || snapshot.walletLotSummary?.pnlUnavailableReason === 'missing_cost_basis') {
       for (const key of ['3d', '7d', '30d'] as const) {
         const w = snapshot.walletPnlWindows[key]
@@ -1314,10 +1314,12 @@ export async function POST(req: Request) {
     _publicBudget.actualCreditsUsed = _actualCreditsUsed
     _publicBudget.creditsUsed = _actualCreditsUsed
     _publicBudget.creditsRemaining = Math.max(0, _publicBudget.totalCreditHardCap - _actualCreditsUsed)
-    _publicBudget.totalBudgetCapHit = _actualCreditsUsed >= _publicBudget.totalCreditHardCap
+    _publicBudget.targetExceeded = _actualCreditsUsed > _publicBudget.totalCreditTarget
+    _publicBudget.hardCapHit = _actualCreditsUsed > _publicBudget.totalCreditHardCap
+    _publicBudget.totalBudgetCapHit = _publicBudget.hardCapHit
     _publicBudget.historicalPhaseCapHit = Boolean(_scanBudgetDebug?.historicalBudgetCapHit)
     _publicBudget.budgetCapHit = _publicBudget.totalBudgetCapHit
-    _publicBudget.budgetCapReason = _publicBudget.totalBudgetCapHit ? 'total_hard_cap_reached' : null
+    _publicBudget.budgetCapReason = _publicBudget.hardCapHit ? 'total_hard_cap_reached' : null
     _publicBudget.historicalBudgetCapReason = _scanBudgetDebug?.historicalBudgetCapReason ?? null
     _publicBudget.skippedAfterBudgetCap = Number(_scanBudgetDebug?.callsSkippedAfterBudgetCap ?? 0)
     snapshot.walletScanBudget = _publicBudget
@@ -1330,7 +1332,9 @@ export async function POST(req: Request) {
         coverageLevel: snapshot.walletHistoricalCoverageSummary.coverageLevel ?? 'none',
         reason: snapshot.walletHistoricalRecoveryReason === 'closed_lots_already_found'
           ? 'closed_lots_already_found'
-          : snapshot.walletHistoricalCoverageSummary.reason ?? null,
+          : snapshot.walletHistoricalRecoveryReason === 'historical_provider_failed_or_no_new_closed_lots'
+            ? 'provider page failed'
+            : snapshot.walletHistoricalCoverageSummary.reason ?? null,
       }
     }
 

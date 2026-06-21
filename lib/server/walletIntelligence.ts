@@ -168,7 +168,7 @@ const WINDOW_DEFS: Array<{ key: keyof WalletPnlWindows; days: number }> = [
   { key: '30d', days: 30 },
 ]
 
-export function computeWindowedPnl(closedLots: WalletClosedLot[], now: Date = new Date(), options?: { scoreUnlocked?: boolean; publicPnlStatus?: string }): WalletPnlWindows {
+export function computeWindowedPnl(closedLots: WalletClosedLot[], now: Date = new Date(), options?: { scoreUnlocked?: boolean; publicPnlStatus?: string; rawMatchedClosedLots?: number }): WalletPnlWindows {
   const nowMs = now.getTime()
   const result = {} as WalletPnlWindows
 
@@ -180,7 +180,7 @@ export function computeWindowedPnl(closedLots: WalletClosedLot[], now: Date = ne
     })
 
     if (inWindow.length === 0) {
-      result[key] = { closedLots: 0, fallback: `No closed trades in the last ${days}d.` }
+      result[key] = { closedLots: 0, fallback: (options?.rawMatchedClosedLots ?? 0) > 0 ? `No verified public-grade closed trades in the last ${days}d.` : `No closed trades in the last ${days}d.` }
       continue
     }
 
@@ -194,7 +194,7 @@ export function computeWindowedPnl(closedLots: WalletClosedLot[], now: Date = ne
       closedLots: inWindow.length,
       winRatePercent,
       winRateStatus: winRateUnlocked ? 'unlocked' : 'locked_small_sample',
-      publicPnlStatus: winRateUnlocked ? options?.publicPnlStatus : 'limited_verified_sample',
+      publicPnlStatus: options?.publicPnlStatus ?? (winRateUnlocked ? 'ok' : 'limited_verified_sample'),
     }
   }
 
