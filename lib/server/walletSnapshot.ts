@@ -980,6 +980,11 @@ export type WalletSnapshot = {
       // exactly how many unknown-direction events/transactions the fix recovered.
       recoveredUnknownDirectionEventsBeforeFix: number
       recoveredSwapContextTransactionsBeforeFix: number
+      // WALLET-ATTR-FIX-2: high-confidence transaction-level recovery promotion (debug-only
+      // counters; see eventKind='recovered_swap_context').
+      recoveredEventsPromoted: number
+      recoveredEventsRejected: number
+      sampleRecoveredPromotions: WalletTxEvidence[]
       walletSwapReconstructionAudit?: {
         unknownEventsSeen: number
         unknownEventsUsedForContext: number
@@ -2479,7 +2484,7 @@ async function fetchGoldrushBalances(address: string, chainName: string, apiKey:
 export type WalletSwapDetection = {
   isSwapCandidate: boolean
   confidence: 'high' | 'medium' | 'low'
-  eventKind: 'swap_candidate' | 'transfer' | 'airdrop_candidate' | 'bridge_candidate' | 'contract_interaction' | 'unknown'
+  eventKind: 'swap_candidate' | 'transfer' | 'airdrop_candidate' | 'bridge_candidate' | 'contract_interaction' | 'unknown' | 'recovered_swap_context'
   reason: string
   matchedProtocol: string | null
   matchedAddress: string | null
@@ -4444,6 +4449,7 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
     recoveredUnknownDirectionEvents: 0, recoveredSwapContextTransactions: 0, recoveredRouterTransactions: 0,
     recoveredStableLegTransactions: 0, recoveredWethLegTransactions: 0,
     recoveredUnknownDirectionEventsBeforeFix: 0, recoveredSwapContextTransactionsBeforeFix: 0,
+    recoveredEventsPromoted: 0, recoveredEventsRejected: 0, sampleRecoveredPromotions: [],
   })
   const emptySummary = (missing: string[]): WalletSnapshot['walletSwapSummary'] => ({
     status: 'open_check', totalEvidenceEvents: 0, groupedTxCount: 0, swapCandidateEvents: 0,
@@ -4653,6 +4659,14 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
   // recoveredUnknownDirectionEventsCount shows exactly how many unknown-direction events the
   // fix recovered.
   let recoveredUnknownDirectionEventsBeforeFixCount = 0
+  // WALLET-ATTR-FIX-2: high-confidence transaction-level recovery promotion — only fires when
+  // the event's own from/to could NOT prove wallet-side direction (reconstructedDirection ===
+  // null) AND walletAttributionRecoveryConfidence === 'high' AND ctx.swapContextCandidate. Does
+  // not create a buy/sell direction, a quote leg, or a price; only flips isSwapCandidate with a
+  // distinct eventKind ('recovered_swap_context') and medium confidence for downstream stages.
+  let recoveredEventsPromotedCount = 0
+  let recoveredEventsRejectedCount = 0
+  const sampleRecoveredPromotions: WalletTxEvidence[] = []
   const sampleReconstructedUnknownDirectionEvents: WalletTxEvidence[] = []
   const sampleContextOnlyUnknownDirectionEvents: WalletTxEvidence[] = []
   const inferWalletSideDirection = (event: WalletTxEvidence): 'buy' | 'sell' | null => {
@@ -4724,6 +4738,30 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
       const reconstructedDirection = inferWalletSideDirection(e)
 
       if (reconstructedDirection === null) {
+        // Not provably wallet-side via its OWN from/to — keep out of FIFO/pricing via the
+        // normal unknown path UNLESS the recovered transaction-level attribution clears a high
+        // bar. WALLET-ATTR-FIX-2: promotion here never invents a buy/sell direction, a quote
+        // leg, or a price — it only flags the event as a swap-context candidate (a distinct
+        // eventKind, medium confidence) for downstream reconstruction/pricing stages to decide
+        // what to do with. No FIFO, pricing, scoring, or provider logic is touched here.
+        const eligibleForRecoveredPromotion = walletAttributionRecovered === true &&
+          walletAttributionRecoveryConfidence === 'high' &&
+          Boolean(ctx?.swapContextCandidate)
+        if (eligibleForRecoveredPromotion) {
+          recoveredEventsPromotedCount++
+          const promotedRecoveredEvent = {
+            ...e, walletAttributionRecovered, walletAttributionRecoveryReason, walletAttributionRecoveryConfidence,
+            swapDetection: {
+              isSwapCandidate: true, confidence: 'medium' as const, eventKind: 'recovered_swap_context' as const,
+              reason: walletAttributionRecoveryReason ?? 'Recovered via transaction-level wallet attribution (high confidence)',
+              matchedProtocol: ctx?.txRouterProtocol ?? null, matchedAddress: ctx?.txToAddr ?? null,
+              swapReconstructionConfidence: 'medium' as const,
+            },
+          }
+          if (sampleRecoveredPromotions.length < 5) sampleRecoveredPromotions.push(promotedRecoveredEvent)
+          return promotedRecoveredEvent
+        }
+        recoveredEventsRejectedCount++
         // Not provably wallet-side — keep out of FIFO entirely, but it already improved tx
         // context (grouping, router/quote-leg detection) via contextEvents/txCtxMap above.
         unknownDirectionRejectedNoWalletSideCount++
@@ -5022,6 +5060,9 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
       recoveredWethLegTransactions: recoveredWethLegTransactionsCount,
       recoveredUnknownDirectionEventsBeforeFix: recoveredUnknownDirectionEventsBeforeFixCount,
       recoveredSwapContextTransactionsBeforeFix: recoveredSwapContextTransactionsBeforeFixCount,
+      recoveredEventsPromoted: recoveredEventsPromotedCount,
+      recoveredEventsRejected: recoveredEventsRejectedCount,
+      sampleRecoveredPromotions: sampleRecoveredPromotions.slice(0, 5),
       reasons: [],
     },
   }
