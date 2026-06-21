@@ -5676,6 +5676,11 @@ function numMedian(nums: number[]): number | null {
 // ── PnL outlier quarantine ────────────────────────────────────────────────────
 // Removes lots whose pricing is implausible before they reach trade-stats logic.
 // Returns clean lots, quarantined lots, and reasons for audit.
+// Stable identity key for a closed lot — used to keep public-facing lot lists
+// (samples, walletClosedLotsAll) in sync with which lots the outlier quarantine excluded.
+function _closedLotKey(lot: WalletClosedLot): string {
+  return `${lot.tokenAddress.toLowerCase()}:${lot.closedTxHash}:${lot.amountClosed}`
+}
 function quarantinePnlOutliers(
   lots: WalletClosedLot[],
   walletTotalValueUsd: number | null,
@@ -5762,6 +5767,11 @@ function buildTradeStatsSummary(
   debug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['walletTradeStatsDebug']>
   outlierDebug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['walletPnlOutlierDebug']>
   outlierNote: string | null
+  // Identity keys of closed lots the quarantine excluded — lets callers keep
+  // walletClosedLotsAll/walletClosedTradeSamples/walletPnlWindows in sync with trade stats.
+  quarantinedLotKeys: string[]
+  quarantinedCostBasisUsd: number
+  quarantinedProceedsUsd: number
 } {
   const WIN_RATE_THRESHOLD = 10
   const BREAK_EVEN_EPSILON = 0.01
@@ -5807,6 +5817,9 @@ function buildTradeStatsSummary(
       scoreBlockedByOutliers: false, publicStatsBlockedByOutliers: false,
     },
     outlierNote: null,
+    quarantinedLotKeys: [],
+    quarantinedCostBasisUsd: 0,
+    quarantinedProceedsUsd: 0,
   })
 
   if (!activityRequested) return emptyResult(['activity_not_requested'])
@@ -5827,13 +5840,16 @@ function buildTradeStatsSummary(
     publicStatsBlockedByOutliers: _oq.publicStatsBlockedByOutliers,
   }
   const _outlierNote: string | null = _oq.quarantinedLots.length > 0
-    ? `CORTEX excluded ${_oq.quarantinedLots.length} trade lot${_oq.quarantinedLots.length !== 1 ? 's' : ''} because their pricing looked abnormal. Remaining stats reflect ${_oq.cleanLots.length} verified lot${_oq.cleanLots.length !== 1 ? 's' : ''}.`
+    ? `CORTEX excluded ${_oq.quarantinedLots.length} abnormal trade lot${_oq.quarantinedLots.length !== 1 ? 's' : ''}. Public PnL and trade stats use the remaining ${_oq.cleanLots.length} verified lot${_oq.cleanLots.length !== 1 ? 's' : ''}.`
     : null
+  const _quarantinedLotKeys: string[] = _oq.quarantinedLots.map(_closedLotKey)
+  const _quarantinedCostBasisUsd = _oq.quarantinedLots.reduce((s, l) => s + l.costBasisUsd, 0)
+  const _quarantinedProceedsUsd = _oq.quarantinedLots.reduce((s, l) => s + l.proceedsUsd, 0)
 
   // If ALL lots are quarantined, return open_check with outlier info
   if (_oq.cleanLots.length === 0) {
     const r = emptyResult(['all_lots_quarantined_as_outliers'])
-    return { ...r, outlierDebug: _outlierDebug, outlierNote: _outlierNote }
+    return { ...r, outlierDebug: _outlierDebug, outlierNote: _outlierNote, quarantinedLotKeys: _quarantinedLotKeys, quarantinedCostBasisUsd: _quarantinedCostBasisUsd, quarantinedProceedsUsd: _quarantinedProceedsUsd }
   }
 
   // Use only clean lots from here on
@@ -6013,6 +6029,9 @@ function buildTradeStatsSummary(
     },
     outlierDebug: _outlierDebug,
     outlierNote: _outlierNote,
+    quarantinedLotKeys: _quarantinedLotKeys,
+    quarantinedCostBasisUsd: _quarantinedCostBasisUsd,
+    quarantinedProceedsUsd: _quarantinedProceedsUsd,
   }
 }
 
@@ -10439,6 +10458,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   let _tradeStatsDebug = tradeStatsResult.debug
   let _outlierDebug = tradeStatsResult.outlierDebug
   let _outlierNote: string | null = tradeStatsResult.outlierNote
+  let _quarantinedLotKeys: string[] = tradeStatsResult.quarantinedLotKeys
   if (walletLotSummary.missing.includes('swap_candidates_unpriced_no_fifo') && walletTradeStatsSummary.closedLots === 0) {
     walletTradeStatsSummary = { ...walletTradeStatsSummary, missing: [...walletTradeStatsSummary.missing, 'swap_candidates_unpriced_no_closed_lots'] }
   }
@@ -10573,6 +10593,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       _tradeStatsDebug = tradeStatsPageResult.debug
       _outlierDebug = tradeStatsPageResult.outlierDebug
       _outlierNote = tradeStatsPageResult.outlierNote
+      _quarantinedLotKeys = tradeStatsPageResult.quarantinedLotKeys
       if (walletLotSummary.missing.includes('swap_candidates_unpriced_no_fifo') && walletTradeStatsSummary.closedLots === 0) {
         walletTradeStatsSummary = { ...walletTradeStatsSummary, missing: [...walletTradeStatsSummary.missing, 'swap_candidates_unpriced_no_closed_lots'] }
       }
@@ -10739,6 +10760,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       _tradeStatsDebug = bfcStats.debug
       _outlierDebug = bfcStats.outlierDebug
       _outlierNote = bfcStats.outlierNote
+      _quarantinedLotKeys = bfcStats.quarantinedLotKeys
       if (walletLotSummary.missing.includes('swap_candidates_unpriced_no_fifo') && walletTradeStatsSummary.closedLots === 0) {
         walletTradeStatsSummary = { ...walletTradeStatsSummary, missing: [...walletTradeStatsSummary.missing, 'swap_candidates_unpriced_no_closed_lots'] }
       }
@@ -10865,6 +10887,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         _tradeStatsDebug = _suppTradeStats.debug
         _outlierDebug = _suppTradeStats.outlierDebug
         _outlierNote = _suppTradeStats.outlierNote
+        _quarantinedLotKeys = _suppTradeStats.quarantinedLotKeys
         if (walletLotSummary.missing.includes('swap_candidates_unpriced_no_fifo') && walletTradeStatsSummary.closedLots === 0) {
           walletTradeStatsSummary = { ...walletTradeStatsSummary, missing: [...walletTradeStatsSummary.missing, 'swap_candidates_unpriced_no_closed_lots'] }
         }
@@ -11353,6 +11376,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     _tradeStatsDebug = _reconTradeStats.debug
     _outlierDebug = _reconTradeStats.outlierDebug
     _outlierNote = _reconTradeStats.outlierNote
+    _quarantinedLotKeys = _reconTradeStats.quarantinedLotKeys
     _pricedEvidence = _reconFifoEvidence
     _finalSummarySourceDebug = {
       swapSummarySource: _reconSource,
@@ -11573,8 +11597,39 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     }
   }
 
+  // PNL-OUTLIER-CONSISTENCY-FIX: walletLotSummary is built from raw FIFO closed lots and does not
+  // know about the trade-stats outlier quarantine — so a lot CORTEX excluded as abnormal pricing
+  // (see quarantinePnlOutliers) could still drive walletLotSummary's public realized PnL, while
+  // walletTradeStatsSummary (which already excludes it) showed a contradicting number. Re-derive
+  // the public lot-summary PnL aggregates from the same quarantine-safe set trade stats used.
+  const _quarantinedLotKeySet = new Set(_quarantinedLotKeys)
+  if (_quarantinedLotKeySet.size > 0) {
+    const _quarantinedLotsFinal = _closedLots.filter(l => _quarantinedLotKeySet.has(_closedLotKey(l)))
+    const _quarantinedCostBasisUsdFinal = _quarantinedLotsFinal.reduce((s, l) => s + l.costBasisUsd, 0)
+    const _quarantinedProceedsUsdFinal = _quarantinedLotsFinal.reduce((s, l) => s + l.proceedsUsd, 0)
+    promotedLotSummary = {
+      ...promotedLotSummary,
+      realizedPnlUsd: promotedTradeStatsSummary.realizedPnlUsd,
+      realizedPnlPercent: promotedTradeStatsSummary.realizedPnlPercent,
+      totalCostBasisClosedUsd: promotedLotSummary.totalCostBasisClosedUsd !== null
+        ? promotedLotSummary.totalCostBasisClosedUsd - _quarantinedCostBasisUsdFinal
+        : null,
+      totalProceedsClosedUsd: promotedLotSummary.totalProceedsClosedUsd !== null
+        ? promotedLotSummary.totalProceedsClosedUsd - _quarantinedProceedsUsdFinal
+        : null,
+    }
+  }
+
   // Phase 6F/6G: Build public closed trade samples (max 5) with blockchain verification fields
-  const _sampleSourceLots = _shouldPromote && _hcPreviewClosedLots.length > 0 ? _hcPreviewClosedLots : _closedLots
+  // PNL-OUTLIER-CONSISTENCY-FIX: outlier-quarantined lots are excluded from the public sample
+  // source here too, so walletClosedTradeSamples/walletClosedLotsAll (and anything derived from
+  // walletClosedLotsAll, like wallet personality and windowed PnL) never present a lot trade stats
+  // already treats as abnormal pricing as a normal verified trade. Full pre-quarantine lots remain
+  // available via _closedLots/debug for audit.
+  const _sampleSourceLotsRaw = _shouldPromote && _hcPreviewClosedLots.length > 0 ? _hcPreviewClosedLots : _closedLots
+  const _sampleSourceLots = _quarantinedLotKeySet.size > 0
+    ? _sampleSourceLotsRaw.filter(l => !_quarantinedLotKeySet.has(_closedLotKey(l)))
+    : _sampleSourceLotsRaw
   // PNL-SAFETY-FIX-3: when no real-backed closed lot exists at all, synthetic lots must not be
   // surfaced as public closed-trade samples — they'd otherwise look like verifiable trades.
   const _sampleEligibleLots = _closedLotsForStatsFinal === 0 ? [] : _sampleSourceLots
@@ -11991,8 +12046,13 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _meaningfulClosedLotsCount = promotedTradeStatsSummary.meaningfulClosedLots ?? 0
   const _meaningfulCostBasisUsd = promotedTradeStatsSummary.meaningfulCostBasisUsd ?? 0
   const _exactFifoIsMeaningful = _meaningfulClosedLotsCount > 0 || _meaningfulCostBasisUsd >= (promotedTradeStatsSummary.dustThresholdUsd ?? 5)
+  // PNL-OUTLIER-CONSISTENCY-FIX: lots CORTEX excluded as abnormal pricing are real-backed (not
+  // synthetic/dust), so they'd otherwise still satisfy _exactFifoEligible/_exactFifoIsMeaningful —
+  // exact_fifo must never claim clean FIFO when the public PnL it's describing came from a
+  // quarantined (outlier-filtered) lot set rather than the full raw lot set.
+  const _hasOutlierExclusions = _quarantinedLotKeys.length > 0
   const _pnlQuality: WalletSnapshot['pnlQuality'] =
-    _exactFifoEligible && _exactFifoIsMeaningful ? 'exact_fifo'
+    _exactFifoEligible && _exactFifoIsMeaningful && !_hasOutlierExclusions ? 'exact_fifo'
       : _exactFifoEligible ? 'exact_fifo_micro_sample'
       : _missingCostBasisProven && (promotedLotSummary.syntheticClosedLots ?? 0) > 0 ? 'missing_cost_basis'
         : _unmatchedSellsCount > 0 ? 'sell_side_only'
@@ -12000,7 +12060,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
             : _hasActivityEvidence ? 'activity_only'
               : 'no_trade_evidence'
   const _pnlQualityReason: string =
-    _pnlQuality === 'exact_fifo_micro_sample' ? 'exact_fifo_but_micro_sample'
+    _pnlQuality === 'exact_fifo_micro_sample' && _hasOutlierExclusions ? 'outlier_lots_excluded'
+      : _pnlQuality === 'exact_fifo_micro_sample' ? 'exact_fifo_but_micro_sample'
       : _exactFifoEligible && !_exactFifoIsMeaningful ? 'verified_lots_below_meaningful_threshold'
         : _pnlQuality === 'exact_fifo' ? 'meaningful_verified_closed_lots'
           : _pnlQuality ?? 'unknown'

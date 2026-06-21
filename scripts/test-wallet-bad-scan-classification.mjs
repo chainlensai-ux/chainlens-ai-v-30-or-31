@@ -48,14 +48,28 @@ assert.match(route, /swapReconstructionV1Reason: 'not_available_from_cached_snap
 
 // DUST-FIFO-FIX: verified closed lots that are all dust must not unlock exact_fifo or a
 // Rotator/Sniper/Smart Money/Degen personality label.
-assert.match(snap, /_exactFifoEligible && _exactFifoIsMeaningful \? 'exact_fifo'/, 'exact_fifo requires economically meaningful closed lots, not just any real-backed closed lot')
+assert.match(snap, /_exactFifoEligible && _exactFifoIsMeaningful && !_hasOutlierExclusions \? 'exact_fifo'/, 'exact_fifo requires economically meaningful closed lots, not just any real-backed closed lot')
 assert.match(snap, /: _exactFifoEligible \? 'exact_fifo_micro_sample'/, 'verified dust-only closed lots map to exact_fifo_micro_sample instead of exact_fifo')
-assert.match(snap, /_pnlQuality === 'exact_fifo_micro_sample' \? 'exact_fifo_but_micro_sample'/, 'pnlQualityReason explains the micro-sample downgrade')
+assert.match(snap, /_pnlQuality === 'exact_fifo_micro_sample' && _hasOutlierExclusions \? 'outlier_lots_excluded'\s*\n\s*: _pnlQuality === 'exact_fifo_micro_sample' \? 'exact_fifo_but_micro_sample'/, 'pnlQualityReason explains the micro-sample downgrade')
 assert.match(snap, /_exactFifoEligible && !_exactFifoIsMeaningful \? 'verified_lots_below_meaningful_threshold'/, 'pnlQualityReason flags verified lots below the meaningful threshold')
 assert.match(ui, /q === 'exact_fifo_micro_sample'\) return 'Verified dust trades found, not enough meaningful trade data'/, 'UI shows dust-only verified trades as not-meaningful, not strong exact FIFO performance')
 
 const intel = fs.readFileSync('lib/server/walletIntelligence.ts', 'utf8')
 assert.match(intel, /meaningfulClosedLots === 0 \|\| tradeStats\?\.economicSignificance === 'micro_sample'/, 'wallet personality requires meaningful (non-dust) verified closed lots, not just 3+ raw closed lots')
 assert.match(intel, /personality: 'Not enough data',\s*\n\s*scores: null,\s*\n\s*summary: 'Verified closed trades exist, but are too small \(dust-sized\) to classify/, 'dust-only verified trades return Not enough data / null scores, not a personality label')
+
+// PNL-OUTLIER-CONSISTENCY-FIX: outlier-quarantined lots (real-backed but abnormal pricing, e.g. the
+// STBL 39800% lot) must not let public PnL surfaces (walletLotSummary, walletClosedTradeSamples,
+// pnlQuality) contradict the quarantine-safe walletTradeStatsSummary numbers.
+assert.match(snap, /function _closedLotKey\(lot: WalletClosedLot\): string \{/, 'a stable closed-lot identity key exists to track which lots were quarantined')
+assert.match(snap, /quarantinedLotKeys: string\[\]/, 'buildTradeStatsSummary surfaces which closed lots were quarantined as outliers')
+assert.match(snap, /CORTEX excluded \$\{_oq\.quarantinedLots\.length\} abnormal trade lot\$\{_oq\.quarantinedLots\.length !== 1 \? 's' : ''\}\. Public PnL and trade stats use the remaining \$\{_oq\.cleanLots\.length\} verified lot/, 'outlier note explains that public PnL and trade stats both use only the remaining verified lots')
+assert.match(snap, /const _quarantinedLotKeySet = new Set\(_quarantinedLotKeys\)/, 'public lot summary re-derivation is keyed off the same quarantined-lot identity set as trade stats')
+assert.match(snap, /realizedPnlUsd: promotedTradeStatsSummary\.realizedPnlUsd,\s*\n\s*realizedPnlPercent: promotedTradeStatsSummary\.realizedPnlPercent,/, 'walletLotSummary realized PnL is re-derived from the quarantine-safe trade stats, not raw FIFO lots, once outliers are excluded')
+assert.match(snap, /_sampleSourceLotsRaw\.filter\(l => !_quarantinedLotKeySet\.has\(_closedLotKey\(l\)\)\)/, 'closed-trade samples (and walletClosedLotsAll) drop outlier-quarantined lots so they are never shown as normal verified trades')
+assert.match(snap, /const _hasOutlierExclusions = _quarantinedLotKeys\.length > 0/, 'pnlQuality computation knows whether any outlier lots were excluded')
+assert.match(snap, /_exactFifoEligible && _exactFifoIsMeaningful && !_hasOutlierExclusions \? 'exact_fifo'/, 'exact_fifo is never reported when public PnL is based on an outlier-filtered lot set')
+assert.match(snap, /_pnlQuality === 'exact_fifo_micro_sample' && _hasOutlierExclusions \? 'outlier_lots_excluded'/, 'pnlQualityReason explains the outlier-exclusion downgrade')
+assert.match(ui, /q === 'exact_fifo_micro_sample' && result\.pnlQualityReason === 'outlier_lots_excluded'\) return 'Verified trades found, abnormal-pricing outlier excluded'/, 'UI distinguishes outlier-excluded verified trades from plain dust-only verified trades')
 
 console.log('wallet bad-scan classification checks passed')

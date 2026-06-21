@@ -152,6 +152,7 @@ type WalletResult = {
   hiddenDustCount?: number
   unpricedHoldingsCount?: number
   pnlQuality?: 'exact_fifo' | 'exact_fifo_micro_sample' | 'fifo_with_estimates' | 'sell_side_only' | 'open_positions_cost_missing' | 'activity_only' | 'no_trade_evidence' | 'missing_cost_basis'
+  pnlQualityReason?: string
   walletRecoveryRecommendation?: {
     recommended: boolean
     mode: 'targeted_token_recovery' | 'none'
@@ -1759,6 +1760,7 @@ export default function WalletScannerPage() {
                           {(() => {
                             const q = result.pnlQuality
                             if (q === 'exact_fifo') return 'Exact FIFO PnL'
+                            if (q === 'exact_fifo_micro_sample' && result.pnlQualityReason === 'outlier_lots_excluded') return 'Verified trades found, abnormal-pricing outlier excluded'
                             if (q === 'exact_fifo_micro_sample') return 'Verified dust trades found, not enough meaningful trade data'
                             if (q === 'fifo_with_estimates') return 'Estimated FIFO PnL'
                             if (q === 'missing_cost_basis') return 'Sell found — buy cost missing'
