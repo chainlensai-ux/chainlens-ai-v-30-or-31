@@ -375,7 +375,7 @@ function buildWalletModuleCoverage(snap: any) {
   // FIFO PnL — public fields use real-backed closed lots only; raw closedLots stays available in debug.
   const rawClosedLots: number = ls?.closedLots ?? 0
   const costBasisMissing = ls?.pnlUnavailableReason === 'missing_cost_basis'
-  const closedLots: number = costBasisMissing ? (ls?.closedLotsForStats ?? ls?.realClosedLots ?? 0) : rawClosedLots
+  const closedLots: number = rawClosedLots
   const pricedSwapEvents: number = ls?.pricedSwapEvents ?? pricedEvents
   const openedLots: number = ls?.openedLots ?? 0
   // Open-position evidence also covers the estimatedPnl-derived fallback (unsold buy-side tokens),
@@ -384,15 +384,23 @@ function buildWalletModuleCoverage(snap: any) {
     .filter(t => t.buysDetected > 0 && t.sellsDetected === 0 && (t.estimatedCostBasisUsd ?? 0) > 0).length
   const _hasOpenPositionEvidence = openedLots > 0 || _estPnlOpenCandidateCount > 0
   const fifoStatus = costBasisMissing ? 'open_check' : closedLots > 0 ? (ls?.status ?? 'ok') : pricedSwapEvents > 0 ? 'open_check' : 'open_check'
-  const fifoReason = costBasisMissing ? 'sell_side_found_cost_basis_missing' : closedLots > 0 ? `${closedLots}_closed_lots_matched` : pricedSwapEvents > 0 ? 'priced_events_found_no_matched_lots' : _hasOpenPositionEvidence ? 'open_position_evidence_no_closed_trades' : 'no_priced_swap_events'
+  const fifoReason = costBasisMissing ? 'sell_side_found_cost_basis_missing' : closedLots > 0 ? `${closedLots}_matched_lots_raw` : pricedSwapEvents > 0 ? 'priced_events_found_no_matched_lots' : _hasOpenPositionEvidence ? 'open_position_evidence_no_closed_trades' : 'no_priced_swap_events'
 
   // Trade stats — public count mirrors closedLotsForStats so synthetic lots don't read as real trades.
   const rawTradeClosedLots: number = ts?.closedLots ?? 0
   const tsCostBasisMissing = ts?.pnlUnavailableReason === 'missing_cost_basis' || ts?.publicPnlStatus === 'open_check'
-  const tradeClosedLots: number = tsCostBasisMissing ? (ts?.closedLotsForStats ?? 0) : rawTradeClosedLots
+  const tradeClosedLots: number = ts?.verifiedClosedLots ?? ts?.closedLotsForStats ?? (tsCostBasisMissing ? 0 : rawTradeClosedLots)
+  const estimateOnlyClosedLots: number = ts?.estimateOnlyClosedLots ?? 0
+  const syntheticClosedLotsExcluded: number = ts?.syntheticClosedLotsExcluded ?? ls?.syntheticLotsExcludedFromStats ?? 0
+  const rawStatsClosedLots: number = ts?.rawClosedLots ?? rawTradeClosedLots
+  const excludedLots: number = estimateOnlyClosedLots + syntheticClosedLotsExcluded
   const readyForWinRate = tradeClosedLots >= 10 && ts?.economicSignificance === 'meaningful'
   const tradeStatus = tsCostBasisMissing ? 'open_check' : readyForWinRate ? (ts?.status ?? 'ok') : tradeClosedLots > 0 ? 'partial' : openedLots > 0 ? 'partial' : 'open_check'
-  const tradeReason = tsCostBasisMissing ? 'missing_cost_basis' : tradeClosedLots >= 10 ? `${tradeClosedLots}_closed_lots_ready` : tradeClosedLots > 0 ? `${tradeClosedLots}_closed_lots_below_threshold` : openedLots > 0 ? 'open_lots_tracked_no_closed_trades' : 'no_closed_lots'
+  const tradeReason = tradeClosedLots > 0
+    ? `${tradeClosedLots}_verified_lots_ready_${excludedLots}_excluded`
+    : excludedLots > 0
+      ? `verified_stats_locked_${excludedLots}_excluded`
+      : tsCostBasisMissing ? 'missing_cost_basis' : openedLots > 0 ? 'open_lots_tracked_no_verified_trades' : 'no_verified_closed_lots'
 
   // Open position summary — derived from FIFO debug sampleOpenLots (up to 5 lots).
   // Fallback: when FIFO produced zero opened lots but the average-cost estimate layer
@@ -568,7 +576,7 @@ function buildWalletModuleCoverage(snap: any) {
     swapDetection: { status: swapStatus, evidence: swapCandidates > 0 ? ['same_tx_in_out', 'router_match', 'wallet_initiated_multi_token'] : [], candidateCount: swapCandidates, reason: swapReason },
     priceEvidence: { status: priceStatus, pricedEvents, reason: priceReason },
     fifoPnL: { status: fifoStatus, closedLots, reason: fifoReason },
-    tradeStats: { status: tradeStatus, closedLots: tradeClosedLots, openedLots, readyForWinRate, reason: tradeReason },
+    tradeStats: { status: tradeStatus, closedLots: tradeClosedLots, rawClosedLots: rawStatsClosedLots, excludedLots, estimateOnlyClosedLots, syntheticClosedLotsExcluded, openedLots, readyForWinRate, reason: tradeReason },
     behavior: { status: bhStatus, reason: bhStatus === 'ok' ? 'activity_detected' : bhStatus === 'partial' ? 'limited_activity_signal' : 'no_activity_data' },
     walletOpenPositionSummary,
     openPositionPerformanceSummary,
@@ -720,6 +728,25 @@ export async function POST(req: Request) {
       if (liveProviderCalls === 0) return false
       if (historicalMs === 0 && pagesAttempted === 0) return false
       return true
+    }
+    const _normalizeHistoricalRecoveryLabel = (payload: any) => {
+      const pagesAttempted = Number(payload?.walletHistoricalCoverageSummary?.pagesAttempted ?? payload?._diagnostics?.walletHistoricalScanDebug?.pagesAttempted ?? 0)
+      const requested = Boolean(payload?.walletHistoricalCoverageSummary?.requested ?? payload?._diagnostics?.walletHistoricalScanDebug?.requested)
+      const cacheHit = Boolean(payload?.walletHistoricalCoverage?.cacheHit ?? payload?._diagnostics?.walletHistoricalScanDebug?.cacheHit ?? false)
+      const targetedAttempted = Boolean(payload?._diagnostics?.syntheticLotRecoveryDebug?.syntheticTargetExtraRecoveryAttempted ?? payload?._debug?.syntheticLotRecoveryDebug?.syntheticTargetExtraRecoveryAttempted)
+      if (!cacheHit && (pagesAttempted > 0 || targetedAttempted || requested)) {
+        const historicalCapHit = Boolean(payload?._diagnostics?.walletScanBudgetDebug?.historicalBudgetCapHit)
+        payload.walletHistoricalRecoveryStatus = historicalCapHit ? 'attempted_capped' : 'attempted_light'
+        payload.walletHistoricalRecoveryReason = targetedAttempted
+          ? 'targeted_recovery_attempted_no_prior_buy_found'
+          : historicalCapHit
+            ? 'historical_phase_cap_reached_total_pages'
+            : pagesAttempted > 0
+              ? 'historical_candidates_priced_no_new_closed_lots'
+              : 'page_partial_or_empty'
+      } else if (payload?.walletHistoricalRecoveryReason === 'no_live_provider_calls_cache_hit' && !cacheHit) {
+        payload.walletHistoricalRecoveryReason = 'historical_not_requested'
+      }
     }
     const getCostMode = (fromCache: boolean): WalletScanCostMode => {
       if (cooldownActive) return 'blocked_by_cooldown'
@@ -1129,9 +1156,8 @@ export async function POST(req: Request) {
           maxFallbackPages,
           walletScanBudget: _autoBudget,
         } satisfies WalletSnapshotOptions)
-        snapshot = _hadLiveHistoricalCalls(_historicalSnapshot)
-          ? { ..._historicalSnapshot, walletHistoricalRecoveryStatus: 'attempted', walletHistoricalRecoveryReason: 'auto_trigger_low_pnl_coverage' }
-          : { ..._historicalSnapshot, walletHistoricalRecoveryStatus: 'not_attempted', walletHistoricalRecoveryReason: 'no_live_provider_calls_cache_hit' }
+        snapshot = { ..._historicalSnapshot }
+        _normalizeHistoricalRecoveryLabel(snapshot)
       } else {
         snapshot.walletHistoricalRecoveryStatus = 'blocked'
         snapshot.walletHistoricalRecoveryReason = 'budget_hard_cap_blocks_recovery'
@@ -1155,6 +1181,7 @@ export async function POST(req: Request) {
         snapshot.walletHistoricalRecoveryReason = 'closed_lots_already_found'
       }
     }
+    _normalizeHistoricalRecoveryLabel(snapshot)
     snapshot.pnlCacheQuality = getPnlCacheQuality(snapshot)
     normalizePublicPnlStatus(snapshot)
     const providers: any = snapshot._diagnostics?.providers ?? {}
@@ -1266,7 +1293,7 @@ export async function POST(req: Request) {
 
     const _scanBudgetDebug = snapshot._diagnostics?.walletScanBudgetDebug ?? null
     const _walletValueTier = getWalletValueTier(Number(snapshot.totalValue ?? 0))
-    const _publicBudget = buildPublicWalletScanBudget(scanModeKey, historicalCoverageRequested, _scanBudgetDebug?.walletValueTier ?? _walletValueTier, adminOverrideRequested)
+    const _publicBudget: any = buildPublicWalletScanBudget(scanModeKey, historicalCoverageRequested, _scanBudgetDebug?.walletValueTier ?? _walletValueTier, adminOverrideRequested)
     // BUDGET-HONESTY-FIX: the budget-debug counter only tallies credits at specific check sites
     // and can under-count relative to the real per-call audit log (apiAudit.totalCredits). Expose
     // both numbers instead of silently reporting the lower, estimated one as "creditsUsed".
@@ -1274,17 +1301,20 @@ export async function POST(req: Request) {
     const _actualCreditsUsed = Number(snapshot._diagnostics?.apiAudit?.totalCredits ?? _estimatedCreditsUsed)
     _publicBudget.estimatedCreditsUsed = _estimatedCreditsUsed
     _publicBudget.actualCreditsUsed = _actualCreditsUsed
-    _publicBudget.creditsUsed = Math.min(_publicBudget.totalCreditHardCap, Math.max(_estimatedCreditsUsed, _actualCreditsUsed))
-    _publicBudget.creditsRemaining = Math.max(0, _publicBudget.totalCreditHardCap - _publicBudget.creditsUsed)
-    _publicBudget.budgetCapHit = Boolean(_scanBudgetDebug?.budgetCapHit) || _publicBudget.creditsUsed >= _publicBudget.totalCreditHardCap
-    _publicBudget.budgetCapReason = _scanBudgetDebug?.budgetCapReason ?? (_publicBudget.budgetCapHit ? 'total_hard_cap_reached' : null)
+    _publicBudget.creditsUsed = _actualCreditsUsed
+    _publicBudget.creditsRemaining = Math.max(0, _publicBudget.totalCreditHardCap - _actualCreditsUsed)
+    _publicBudget.totalBudgetCapHit = _actualCreditsUsed >= _publicBudget.totalCreditHardCap
+    _publicBudget.historicalPhaseCapHit = Boolean(_scanBudgetDebug?.historicalBudgetCapHit)
+    _publicBudget.budgetCapHit = _publicBudget.totalBudgetCapHit
+    _publicBudget.budgetCapReason = _publicBudget.totalBudgetCapHit ? 'total_hard_cap_reached' : null
+    _publicBudget.historicalBudgetCapReason = _scanBudgetDebug?.historicalBudgetCapReason ?? null
     _publicBudget.skippedAfterBudgetCap = Number(_scanBudgetDebug?.callsSkippedAfterBudgetCap ?? 0)
     snapshot.walletScanBudget = _publicBudget
     if (snapshot.walletHistoricalCoverageSummary) {
       snapshot.walletHistoricalCoverage = {
         checked: Boolean(snapshot.walletHistoricalCoverageSummary.requested),
         olderEntriesRecovered: Number(snapshot.walletHistoricalCoverageSummary.normalizedEvents ?? 0),
-        cappedForCostSafety: _publicBudget.budgetCapHit || historicalCoverageRequested,
+        cappedForCostSafety: _publicBudget.historicalPhaseCapHit || historicalCoverageRequested,
         highValueWalletPrioritised: (_scanBudgetDebug?.walletValueTier ?? _walletValueTier) === 'whale',
         coverageLevel: snapshot.walletHistoricalCoverageSummary.coverageLevel ?? 'none',
         reason: snapshot.walletHistoricalRecoveryReason === 'closed_lots_already_found'
