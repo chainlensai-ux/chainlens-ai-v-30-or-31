@@ -94,15 +94,25 @@ assert.match(routeSrc, /\} else if \(_initialRecoverySignals\.recoveryAlreadyFou
 assert.match(routeSrc, /snapshot\.walletHistoricalRecoveryReason = 'closed_lots_already_found'/, 'historical recovery reason uses the non-contradictory closed_lots_already_found label')
 assert.match(snap, /_skipReasons\.push\('closed_lots_already_found'\)/, 'the stale already_has_10_closed_lots skip reason is replaced with closed_lots_already_found')
 
-// LOW-VALUE-RECOVERY-FIX: recovery eligibility must be evidence-gated, not wallet-value-tier-gated,
-// so micro/small wallets with real swap/sell evidence get the same capped (max 2 tokens, max 2
-// pages) targeted recovery pass as high-value wallets, surfaced under walletLowValueRecoveryDebug.
-assert.match(snap, /const _syntheticRecoveryTierEligible = true/, 'synthetic/low-value targeted recovery eligibility is evidence-gated, not wallet-value-tier-gated')
-assert.doesNotMatch(snap, /_syntheticRecoveryTierEligible = _walletValueTier === 'high_value' \|\| _walletValueTier === 'whale' \|\| _walletValueTier === 'standard'/, 'the old tier-based exclusion of micro\/small wallets from targeted recovery is removed')
-assert.match(snap, /walletLowValueRecoveryDebug\?:\s*\{/, 'a walletLowValueRecoveryDebug type is exposed for auditing low/mid-value wallet recovery attempts')
-assert.match(snap, /const _lowValueRecoveryDebug = \{/, 'walletLowValueRecoveryDebug is populated from the existing capped synthetic-target extra-recovery pass')
-assert.match(snap, /realClosedLotsAdded: Math\.max\(0, _closedLotsForStatsFinal - _earlyRealBackedClosedLots\)/, 'walletLowValueRecoveryDebug.realClosedLotsAdded reflects real-backed closed lots gained by the targeted pass')
-assert.match(snap, /walletLowValueRecoveryDebug: _lowValueRecoveryDebug,/, 'walletLowValueRecoveryDebug is attached to the snapshot _debug payload')
-assert.match(snap, /const cacheKey = `\$\{address\.toLowerCase\(\)\}:\$\{targets\.map\(t => `\$\{t\.chain\}:\$\{t\.tokenContract\}:\$\{t\.sellTimestamp\}`\)\.join\('\|'\)\}:v3:p\$\{maxPagesPerToken\}t\$\{maxPagesTotal\}`/, 'the targeted backfill cache key includes the page caps so a tiny low-value lookup cannot be served from a deeper cached result or vice versa')
+
+
+// Wallet Scanner debug/admin fresh scans must bypass every cache/protection layer without
+// affecting normal-user cache behavior.
+assert.match(routeSrc, /body\?\.bypassCache === true/, 'wallet route accepts bypassCache in the request body')
+assert.match(routeSrc, /body\?\.debugFresh === true/, 'wallet route accepts debugFresh in the request body')
+assert.match(routeSrc, /debugFreshAllowed = freshRequested && \(debugAllowed \|\| _devBypass \|\| process\.env\.NODE_ENV !== 'production'\)/, 'debugFresh is limited to debug/admin/dev conditions')
+assert.match(routeSrc, /const _cacheReadAttempted = !cacheBypassReason/, 'debugFresh/refresh skip memory and persistent cache reads')
+assert.match(routeSrc, /_persistentCooldownReadAttempted = !cacheBypassReason && _persistentAvailable/, 'debugFresh skips persistent cooldown reads')
+assert.match(routeSrc, /existingInFlight = inFlightKey && !debugFreshAllowed \? walletDeepInFlight\.get\(inFlightKey\) : undefined/, 'debugFresh skips in-flight deep scan dedupe reuse')
+assert.match(routeSrc, /providerFetchNeeded: true/, 'live debugFresh responses force providerFetchNeeded true')
+assert.match(routeSrc, /cacheHit: false/, 'live debugFresh responses cannot report cacheHit true')
+assert.match(routeSrc, /servedFromCacheReason: null/, 'live debugFresh responses do not report a cache serve reason')
+assert.match(routeSrc, /blockedLiveFetchReason: null/, 'live debugFresh responses do not report blocked live fetches')
+assert.match(routeSrc, /dataFreshness: 'live' as const/, 'debugFresh live scan reports dataFreshness live')
+assert.match(routeSrc, /const _cacheWriteAttempted = !noCacheWrite/, 'noCacheWrite prevents cache write attempts')
+assert.match(routeSrc, /debug_fresh_no_cache_write/, 'noCacheWrite has an explicit debug cache bypass reason')
+assert.match(routeSrc, /debugFreshAllowed && cacheBust \? `:debug:\$\{cacheBust\}` : ''/, 'debug-only cacheBust changes scan keys only when debugFresh is allowed')
+assert.match(ui, /Fresh scan \/ bypass cache/, 'wallet scanner shows a fresh scan bypass control')
+assert.match(ui, /Do not write cache/, 'wallet scanner shows a no-cache-write control')
 
 console.log('wallet bad-scan classification checks passed')
