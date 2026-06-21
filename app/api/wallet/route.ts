@@ -1261,20 +1261,25 @@ export async function POST(req: Request) {
       !(l?.missingReasons ?? []).includes('price_synthetic_fifo') &&
       l?.coveragePercent !== 0
     )
+    const _performanceLotsForIntelligence = _closedLotsForIntelligence.filter((l: any) =>
+      l?.pnlDisplayStatus === 'verified_pnl' &&
+      l?.pnlDecisive === true &&
+      l?.costBasisUsd >= Math.max(5, Math.min(25, Number(snapshot.totalValue ?? 0) * 0.00002)) &&
+      Math.abs(Number(l?.realizedPnlUsd ?? 0)) >= Math.max(0.05, Number(l?.costBasisUsd ?? 0) * 0.0005) &&
+      !(l?.evidence?.entrySource === 'synthetic') &&
+      !(l?.missingReasons ?? []).includes('fifo_backfilled_buy') &&
+      !(l?.missingReasons ?? []).includes('price_synthetic_fifo') &&
+      l?.coveragePercent !== 0
+    )
     const _missingCostBasisForIntelligence = snapshot.walletTradeStatsSummary?.pnlUnavailableReason === 'missing_cost_basis' || snapshot.walletLotSummary?.pnlUnavailableReason === 'missing_cost_basis'
     snapshot.walletPersonality = computeWalletPersonality(
-      _missingCostBasisForIntelligence ? [] : _realBackedLotsForIntelligence,
+      _missingCostBasisForIntelligence || snapshot.publicPnlStatus === 'near_flat_verified_sample' || (snapshot.performanceClosedLots ?? 0) < 5 ? [] : _performanceLotsForIntelligence,
       (snapshot as any).walletBehavior ?? null,
       (snapshot as any).walletTradeStatsSummary ?? null
     )
     // Windowed PnL is public-facing, so it must exclude synthetic/cost-basis-missing lots —
     // a synthetic break-even lot showing $0 PnL would otherwise look like a verified real result.
-    const _realBackedLotsForWindows = _closedLotsForIntelligence.filter((l: any) =>
-      l?.evidence?.entrySource !== 'synthetic' &&
-      !(l?.missingReasons ?? []).includes('fifo_backfilled_buy') &&
-      !(l?.missingReasons ?? []).includes('price_synthetic_fifo') &&
-      l?.coveragePercent !== 0
-    )
+    const _realBackedLotsForWindows = _performanceLotsForIntelligence
     snapshot.walletPnlWindows = computeWindowedPnl(_realBackedLotsForWindows)
     if (snapshot.walletTradeStatsSummary?.pnlUnavailableReason === 'missing_cost_basis' || snapshot.walletLotSummary?.pnlUnavailableReason === 'missing_cost_basis') {
       for (const key of ['3d', '7d', '30d'] as const) {
@@ -1286,7 +1291,7 @@ export async function POST(req: Request) {
       }
     }
     snapshot.walletBotScore = computeBotScore(
-      _closedLotsForIntelligence,
+      _performanceLotsForIntelligence,
       (snapshot as any).walletBehavior ?? null,
       (snapshot as any).walletTradeStatsSummary ?? null
     )

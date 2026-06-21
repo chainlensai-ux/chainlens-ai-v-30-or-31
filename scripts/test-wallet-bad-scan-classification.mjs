@@ -95,8 +95,8 @@ assert.match(ui, /q === 'exact_fifo_micro_sample' && result\.pnlQualityReason ==
 assert.match(snap, /const _hasSyntheticExclusions = \(promotedLotSummary\.syntheticLotsExcludedFromStats \?\? 0\) > 0/, 'pnlQuality computation knows whether any synthetic lots were excluded from stats')
 assert.match(snap, /const _allRawLotsRealBacked = _realClosedLotsCount > 0 && _realClosedLotsCount === \(promotedLotSummary\.closedLots \?\? 0\)/, 'exact_fifo requires every raw closed lot to be real-backed, not just some')
 assert.match(snap, /_exactFifoEligible && _exactFifoIsMeaningful && \(_hasSyntheticExclusions \|\| _hasUnknownCostSellLots \|\| _hasFlatEstimateExclusions\) \? 'fifo_with_estimates'/, 'verified real-backed lots alongside excluded synthetic lots map to fifo_with_estimates, not clean exact_fifo')
-assert.match(snap, /_pnlQuality === 'fifo_with_estimates' && _hasFlatEstimateExclusions \? 'verified_fifo_with_estimates_excluded'[\s\S]*: _pnlQuality === 'fifo_with_estimates' \? 'verified_fifo_with_synthetic_lots_excluded'/, 'pnlQualityReason explains the synthetic-lot-exclusion downgrade')
-assert.match(snap, /const _realBackedStats = buildTradeStatsSummary\(_realBackedClosedLotsFinal, activityRequested, totalValue\)/, 'public trade stats are recomputed from the real-backed-only lot set when synthetic lots exist, not the raw mixed set')
+assert.match(snap, /_pnlQuality === 'fifo_with_estimates' && _hasFlatEstimateExclusions \? 'verified_fifo_with_estimate_lots_excluded'[\s\S]*: _pnlQuality === 'fifo_with_estimates' \? 'verified_fifo_with_synthetic_lots_excluded'/, 'pnlQualityReason explains the synthetic-lot-exclusion downgrade')
+assert.match(snap, /const _performanceStatsResult = buildTradeStatsSummary\(_performanceClosedLotsFinal, activityRequested, totalValue\)/, 'public trade stats are recomputed from the performance-grade lot set when synthetic/flat/dust lots exist, not the raw mixed set')
 assert.match(snap, /rawClosedLots: _rawClosedLotsFinal,/, 'walletTradeStatsSummary keeps the raw (pre-synthetic-filter) closed-lot count under a distinct rawClosedLots field')
 assert.match(snap, /syntheticClosedLotsExcluded: _syntheticLotsExcludedFromStatsFinal,/, 'walletTradeStatsSummary surfaces how many synthetic lots were excluded from the public closedLots count')
 assert.match(snap, /const _sampleEligibleLots = _closedLotsForStatsFinal === 0 \? \[\] : _sampleSourceLots\.filter\(_isRealBackedClosedLot\)/, 'public closed-trade samples and walletClosedLotsAll only ever include real-backed lots')
@@ -152,10 +152,10 @@ assert.match(snap, /sampleWarning: 'Closed trades were detected, but entry and e
 
 // verifiedClosedLots must mean real-backed AND independently priced; publicPnlStatus must not be
 // "ok" when every real-backed closed lot is a flat estimate.
-assert.match(snap, /const _verifiedPnlClosedLotsFinal = _realBackedClosedLotsFinal\.filter\(l => l\.pnlDisplayStatus === 'verified_pnl' && l\.pnlDecisive === true\)/, 'verifiedClosedLots excludes same-source flat estimates even when real-backed')
+assert.match(snap, /const _verifiedPnlClosedLotsFinal = _publicLotClassifications\.filter\(x => x\.classification\.verifiedPnlEligible\)\.map\(x => x\.lot\)/, 'verifiedClosedLots excludes same-source flat estimates even when real-backed')
 assert.match(snap, /const _allRealBackedLotsFlatEstimate = _closedLotsForStatsFinal > 0 && _verifiedIndependentClosedLotsFinal === 0 && _estimateOnlyClosedLotsFinal\.length > 0/, 'snapshot knows when every real-backed closed lot is a flat estimate')
 assert.match(snap, /verifiedClosedLots: _verifiedIndependentClosedLotsFinal,/, 'public verifiedClosedLots is wired to the independent-pricing-filtered count')
-assert.match(snap, /publicPnlStatus: _allRealBackedLotsFlatEstimate \? 'open_check' : 'ok',/, 'publicPnlStatus cannot be ok when every real-backed closed lot is a flat estimate')
+assert.match(snap, /publicPnlStatus: _publicPnlStatusFinal,/, 'publicPnlStatus cannot be ok when every real-backed closed lot is a flat estimate')
 
 // walletClosedTradeSamples must not label same-source flat estimates as verifiable.
 assert.match(snap, /verificationStatus: 'verifiable' \| 'partial' \| 'not_available' \| 'synthetic_cost_basis_missing' \| 'estimate_only_price_flat' \| 'price_independence_missing'/, 'verificationStatus union includes the new non-verifiable price-independence tiers')
@@ -174,7 +174,7 @@ assert.match(snap, /sampleVerifiedPnlLots\?: WalletSnapshot\['walletClosedTradeS
 assert.match(snap, /publicStatsLotCountBeforePriceIndependence\?: number/, 'debug exposes publicStatsLotCountBeforePriceIndependence')
 assert.match(snap, /publicStatsLotCountAfterPriceIndependence\?: number/, 'debug exposes publicStatsLotCountAfterPriceIndependence')
 assert.match(snap, /_allRealBackedLotsFlatEstimate \? 'flat_price_estimate_only'/, 'flat-estimate-only wallets receive the flat_price_estimate_only PnL quality reason')
-assert.match(snap, /walletClosedLotsAll: _verifiedPnlClosedLotsFinal/, 'wallet personality/profile inputs receive only verified_pnl closed lots')
+assert.match(snap, /walletClosedLotsAll: _performanceClosedLotsFinal/, 'wallet personality/profile inputs receive only verified_pnl closed lots')
 
 // Budget/audit consistency: walletScanBudget.creditsUsed must not silently understate apiAudit.totalCredits.
 assert.match(routeSrc, /const _actualCreditsUsed = Number\(snapshot\._diagnostics\?\.apiAudit\?\.totalCredits \?\? _estimatedCreditsUsed\)/, 'walletScanBudget reconciles against the real apiAudit.totalCredits figure')
