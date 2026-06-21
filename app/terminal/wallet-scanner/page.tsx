@@ -610,6 +610,73 @@ function publicWinRateUnlocked(ts: WalletResult['walletTradeStatsSummary'] | und
   )
 }
 
+// WIRE-WALLET-ACTIONS-1: client-side, public-safe export. Reuses the same backend signals the
+// page already renders — never derives win rate from raw lots, and only treats the public
+// realized PnL as "final" when it is the same number the public PnL pipeline produced.
+function buildWalletReport(result: WalletResult) {
+  const ts = result.walletTradeStatsSummary
+  const publicLots = result.publicPerformanceClosedLots ?? ts?.publicPerformanceClosedLots ?? 0
+  const rawLots = result.rawMatchedClosedLots ?? ts?.rawMatchedClosedLots ?? ts?.rawClosedLots ?? ts?.closedLots ?? 0
+  const excludedLots = result.excludedClosedLots ?? ts?.excludedClosedLots ?? Math.max(0, rawLots - publicLots)
+  const publicSamplePnlUsd = result.publicPerformanceRealizedPnlUsd ?? ts?.publicRealizedPnlUsd ?? null
+  const winRateUnlocked = publicWinRateUnlocked(ts)
+  const profitSkillProven = publicLots >= 10
+
+  const topHoldings = (result.walletFacts?.summary?.topHoldings ?? [...result.holdings].sort((a, b) => b.value - a.value).slice(0, 5).map(h => ({ symbol: h.symbol, chain: h.chain ?? 'unknown', valueUsd: h.value, percent: null })))
+
+  const activeChains = result.walletFacts?.summary?.chainExposure?.map(c => c.chain)
+    ?? Array.from(new Set([...(result.holdings.map(h => h.chain).filter(Boolean) as string[])]))
+
+  const limitations = [
+    ...(result.tradeIntelligence?.limitations ?? []),
+    ...(!winRateUnlocked ? ['Win rate locked — needs 10+ public-grade closed trades.'] : []),
+    ...(!profitSkillProven ? ['Profit skill not proven — public-grade closed-lot sample below 10.'] : []),
+    excludedLots > 0 ? `${excludedLots} excluded lot(s) are not counted as realized performance.` : null,
+  ].filter((x): x is string => Boolean(x))
+
+  const nextActions = [
+    result.walletProfile?.nextAction,
+    'Review Top Holdings',
+    'Inspect Realized Trades',
+  ].filter((x): x is string => Boolean(x))
+
+  return {
+    walletAddress: result.address,
+    scanTimestamp: new Date().toISOString(),
+    portfolioValueUsd: Number.isFinite(result.totalValue) ? result.totalValue : null,
+    topHoldings,
+    activeChains,
+    activitySummary: result.walletBehavior?.recentActivitySummary ?? null,
+    publicTradeEvidenceSummary: {
+      pnlQuality: result.pnlQuality ?? null,
+      reason: result.pnlQualityReason ?? null,
+    },
+    publicPnlStatus: {
+      status: result.publicPnlStatus ?? ts?.publicPnlStatus ?? null,
+      label: result.publicPnlDisplayLabel ?? ts?.publicPnlDisplayLabel ?? null,
+      reason: result.publicPnlDisplayReason ?? ts?.publicPnlDisplayReason ?? null,
+    },
+    publicSamplePnl: Number.isFinite(publicSamplePnlUsd)
+      ? { label: 'Public-sample PnL', valueUsd: publicSamplePnlUsd }
+      : null,
+    winRate: winRateUnlocked
+      ? { label: 'Win Rate', valuePercent: ts!.publicWinRatePercent }
+      : { label: 'Win Rate: Locked', valuePercent: null },
+    profitSkillStatus: profitSkillProven ? 'Profit skill evidence-eligible' : 'Profit skill not proven',
+    closedLotCounts: {
+      publicGradeTrades: publicLots,
+      rawMatchedLots: rawLots,
+      excludedLots,
+    },
+    tradeIntelligenceSummary: result.tradeIntelligence
+      ? { primaryStyle: result.tradeIntelligence.primaryStyle, summary: result.tradeIntelligence.tradeStyleSummary ?? result.tradeIntelligence.summary }
+      : null,
+    walletProfileSummary: result.walletProfile?.profileSummary ?? null,
+    limitations,
+    nextActions,
+  }
+}
+
 function isTradeStatsGradeable(ts: WalletResult['walletTradeStatsSummary'] | undefined): boolean {
   const decisiveClosedLots = (ts?.winningClosedLots ?? 0) + (ts?.losingClosedLots ?? 0)
   return Boolean(
@@ -1238,6 +1305,8 @@ export default function WalletScannerPage() {
   const [freshScanBypass, setFreshScanBypass] = useState(false)
   const [noCacheWrite, setNoCacheWrite] = useState(false)
   const [addressCopied, setAddressCopied] = useState(false)
+  const [watchlistStatus, setWatchlistStatus] = useState<'idle' | 'saving' | 'success' | 'exists' | 'error'>('idle')
+  const [watchlistMessage, setWatchlistMessage] = useState<string | null>(null)
   const clarkLoading = loading
   const showDebugCacheControls = deepActivity && (plan === 'pro' || plan === 'elite' || betaEliteActive || process.env.NODE_ENV !== 'production')
 
@@ -1246,6 +1315,64 @@ export default function WalletScannerPage() {
       setAddressCopied(true)
       setTimeout(() => setAddressCopied(false), 1500)
     }).catch(() => {})
+  }
+
+  async function handleAddWalletToWatchlist() {
+    if (!result?.address || watchlistStatus === 'saving') return
+    setWatchlistStatus('saving')
+    setWatchlistMessage(null)
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const token = session?.access_token
+      if (!token) {
+        setWatchlistStatus('error')
+        setWatchlistMessage('Sign in to add wallets to your watchlist.')
+        return
+      }
+      const res = await fetch('/api/watchlist/wallets', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          address: result.address,
+          label: result.walletProfile?.walletCategory ?? null,
+          portfolioValue: Number.isFinite(result.totalValue) ? result.totalValue : null,
+          chainMode: result.behaviorChain ?? 'base',
+          source: 'wallet-scanner',
+        }),
+      })
+      const json = await res.json().catch(() => null)
+      if (!res.ok) {
+        setWatchlistStatus('error')
+        setWatchlistMessage(json?.error ?? 'Could not add wallet to watchlist.')
+        return
+      }
+      if (json?.alreadyExists) {
+        setWatchlistStatus('exists')
+        setWatchlistMessage('Already in watchlist')
+      } else {
+        setWatchlistStatus('success')
+        setWatchlistMessage('Added to watchlist')
+      }
+    } catch {
+      setWatchlistStatus('error')
+      setWatchlistMessage('Could not add wallet to watchlist.')
+    }
+  }
+
+  function handleExportWalletReport() {
+    if (!result?.address) return
+    const report = buildWalletReport(result)
+    const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const shortAddress = `${result.address.slice(0, 6)}${result.address.slice(-4)}`
+    const dateStr = new Date().toISOString().slice(0, 10)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `chainlens-wallet-report-${shortAddress}-${dateStr}.json`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
   }
 
   async function handleScan() {
@@ -1449,8 +1576,11 @@ export default function WalletScannerPage() {
         .wpv3-metric-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 7px 0; border-bottom: 1px solid rgba(34,40,50,0.72); }
         .wpv3-metric-row:last-child { border-bottom: 0; }
         .wpv3-pill { display: inline-flex; align-items: center; border-radius: 999px; padding: 5px 10px; font-size: 12px; font-weight: 700; border: 1px solid #222832; background: rgba(255,255,255,0.02); }
-        .wpv3-button { border: 1px solid #2f3743; background: #141820; color: #F2F4F7; border-radius: 10px; padding: 10px 14px; font-size: 12px; font-weight: 700; cursor: pointer; }
+        .wpv3-button { border: 1px solid #2f3743; background: #141820; color: #F2F4F7; border-radius: 10px; padding: 10px 14px; font-size: 12px; font-weight: 700; cursor: pointer; transition: background 0.15s ease, border-color 0.15s ease, opacity 0.15s ease; }
+        .wpv3-button:hover:not(:disabled) { background: #1b212c; border-color: #3f4b5c; }
+        .wpv3-button:disabled { cursor: not-allowed; opacity: 0.55; }
         .wpv3-button-primary { background: #F2F4F7; color: #0B0D10; border-color: #F2F4F7; }
+        .wpv3-button-primary:hover:not(:disabled) { background: #d8dce1; }
         @media (max-width: 900px) { .wpv3-grid { grid-template-columns: 1fr !important; } }
 
         @media (max-width: 768px) {
@@ -2017,7 +2147,27 @@ export default function WalletScannerPage() {
                         {nextActions.map((x,i) => <div key={x} className="wpv3-metric-row"><span className="wpv3-label">{i+1}. {x}</span></div>)}
                         <div className="wpv3-label" style={{ marginTop: '14px' }}>Followability</div><div className="wpv3-value" style={{ fontSize: '20px', marginTop: '6px' }}>{result.walletProfile?.followability ?? 'Open Check'}</div>
                         {profileReasons[0] && <p className="wpv3-support" style={{ marginTop: '10px' }}>{profileReasons[0]}</p>}
-                        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginTop: '18px' }}><button className="wpv3-button wpv3-button-primary">Add To Watchlist</button><button className="wpv3-button">Export Report</button><button className="wpv3-button">Set Alert</button></div>
+                        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginTop: '18px' }}>
+                          <button
+                            type="button"
+                            className="wpv3-button wpv3-button-primary"
+                            disabled={!result?.address || watchlistStatus === 'saving'}
+                            onClick={handleAddWalletToWatchlist}
+                          >
+                            {watchlistStatus === 'saving' ? 'Saving…' : 'Add To Watchlist'}
+                          </button>
+                          <button type="button" className="wpv3-button" disabled={!result?.address} onClick={handleExportWalletReport}>
+                            Export Report
+                          </button>
+                        </div>
+                        {watchlistMessage && (
+                          <p
+                            className="wpv3-support"
+                            style={{ marginTop: '10px', color: watchlistStatus === 'error' ? '#f87171' : watchlistStatus === 'exists' ? '#7dd3fc' : '#4ade80' }}
+                          >
+                            {watchlistMessage}
+                          </p>
+                        )}
                       </div>
                     </div>
                   </section>
