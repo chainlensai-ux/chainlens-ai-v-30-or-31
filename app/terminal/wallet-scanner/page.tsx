@@ -1142,8 +1142,11 @@ export default function WalletScannerPage() {
   const [result, setResult]             = useState<WalletResult | null>(null)
   const [showAllHoldings, setShowAllHoldings] = useState(false)
   const [deepActivity, setDeepActivity] = useState(false)
+  const [freshScanBypass, setFreshScanBypass] = useState(false)
+  const [noCacheWrite, setNoCacheWrite] = useState(false)
   const [addressCopied, setAddressCopied] = useState(false)
   const clarkLoading = loading
+  const showDebugCacheControls = deepActivity && (plan === 'pro' || plan === 'elite' || betaEliteActive || process.env.NODE_ENV !== 'production')
 
   function copyAddress(address: string) {
     navigator.clipboard?.writeText(address).then(() => {
@@ -1163,13 +1166,14 @@ export default function WalletScannerPage() {
       const { data: { session } } = await supabase.auth.getSession()
       const token = session?.access_token
       const canDebug = deepActivity && (plan === 'pro' || plan === 'elite' || betaEliteActive || process.env.NODE_ENV !== 'production')
+      const cacheBust = freshScanBypass ? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}` : undefined
       const res  = await fetch(canDebug ? '/api/wallet?debug=true' : '/api/wallet', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
-        body: JSON.stringify({ address: q, ...(deepActivity ? { deepActivity: true } : {}) }),
+        body: JSON.stringify({ address: q, ...(deepActivity ? { deepActivity: true } : {}), ...(canDebug && freshScanBypass ? { debugFresh: true, bypassCache: true, cacheBust, ...(noCacheWrite ? { noCacheWrite: true } : {}) } : {}) }),
       })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error ?? 'Scan failed')
@@ -1539,6 +1543,19 @@ export default function WalletScannerPage() {
                 ? 'Heavier analysis · cached · rerun returns cached result'
                 : 'Fetches transfer history · slower scan'}
             </span>
+
+            {showDebugCacheControls && (
+              <div style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', padding: '7px 10px', borderRadius: '10px', border: '1px solid rgba(251,191,36,0.24)', background: 'rgba(251,191,36,0.055)' }}>
+                <label style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '10px', color: '#fbbf24', fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                  <input type="checkbox" checked={freshScanBypass} disabled={loading} onChange={e => setFreshScanBypass(e.target.checked)} />
+                  Fresh scan / bypass cache
+                </label>
+                <label style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '10px', color: freshScanBypass ? '#fbbf24' : 'rgba(255,255,255,0.28)', fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                  <input type="checkbox" checked={noCacheWrite} disabled={loading || !freshScanBypass} onChange={e => setNoCacheWrite(e.target.checked)} />
+                  Do not write cache
+                </label>
+              </div>
+            )}
           </div>
 
           {/* Progressive loading state */}

@@ -602,13 +602,15 @@ export async function POST(req: Request) {
     const requestUrl = new URL(req.url)
     const debugRequested = requestUrl.searchParams.get('debug') === 'true'
     const debugAllowed = debugRequested && (plan === 'pro' || plan === 'elite')
-    const debug = debugAllowed
+    let debug = debugAllowed
     const body = await req.json()
     const address = body?.address
     // BUGFIX: refresh must accept query-string `?refresh=true` the same way debug/debugFresh do —
     // previously body-only, so refresh requests sent as query params silently fell through to
     // memory/persistent cache instead of bypassing it.
     const refresh = requestUrl.searchParams.get('refresh') === 'true' || body?.refresh === true || body?.refresh === 'true'
+    const freshRequested = requestUrl.searchParams.get('debugFresh') === 'true' || requestUrl.searchParams.get('bypassCache') === 'true' || body?.debugFresh === true || body?.debugFresh === 'true' || body?.bypassCache === true || body?.bypassCache === 'true'
+    const noCacheWriteRequested = requestUrl.searchParams.get('noCacheWrite') === 'true' || body?.noCacheWrite === true || body?.noCacheWrite === 'true'
     const chain = body?.chain === 'eth' ? 'eth' : 'base'
     const deepScan = body?.deepScan === true || body?.deepScan === 'true'
     const deepActivityFlag = body?.deepActivity === true || body?.deepActivity === 'true'
@@ -628,12 +630,14 @@ export async function POST(req: Request) {
     const maxHistoricalPages = Math.max(1, Math.min(hcPageLimit, Number(body?.maxHistoricalPages ?? (historicalCoverageRequested ? 3 : 1)) || 1))
     const maxFallbackPages = debug ? Math.max(1, Math.min(3, Number(body?.maxFallbackPages ?? 2) || 2)) : 2
 
+    const rawCacheBust = typeof body?.cacheBust === 'string' ? body.cacheBust : requestUrl.searchParams.get('cacheBust')
+    const cacheBust = rawCacheBust && /^[a-zA-Z0-9_-]{1,80}$/.test(rawCacheBust) ? rawCacheBust : null
+    const debugFreshAllowed = freshRequested && (debugAllowed || _devBypass || process.env.NODE_ENV !== 'production')
+    if (debugFreshAllowed) debug = true
+    const noCacheWrite = debugFreshAllowed && noCacheWriteRequested
+    const cacheBypassReason: 'refresh' | 'debug_fresh_requested' | 'debug_fresh_no_cache_write' | null = debugFreshAllowed ? (noCacheWrite ? 'debug_fresh_no_cache_write' : 'debug_fresh_requested') : refresh ? 'refresh' : null
+    const debugFreshBypassedPersistentCache = debugFreshAllowed
     const hcSuffix = historicalCoverageRequested ? `:hcv2p${maxHistoricalPages}:budget15` : ''
-    const debugFresh = requestUrl.searchParams.get('debugFresh') === 'true' || body?.debugFresh === true || body?.debugFresh === 'true'
-    const hasBearerToken = (req.headers.get('authorization') ?? '').startsWith('Bearer ')
-    const allowDebugFresh = debugFresh && (process.env.NODE_ENV !== 'production' || hasBearerToken)
-    const cacheBypassReason: 'refresh' | 'debugFresh' | null = allowDebugFresh ? 'debugFresh' : refresh ? 'refresh' : null
-    const debugFreshBypassedPersistentCache = allowDebugFresh
     const key = String(address ?? '').toLowerCase()
     if (!/^0x[a-fA-F0-9]{40}$/.test(key)) {
       return json({ error: 'Invalid wallet address' }, { status: 400 })
@@ -649,9 +653,9 @@ export async function POST(req: Request) {
 
     // Historical cooldown — 10 min per wallet after a live historical scan
     const hcCooldownKey = `${key}:historical:${plan}`
-    let cooldownActive = historicalCoverageRequested && (walletHistoricalCooldown.get(hcCooldownKey) ?? 0) > Date.now()
+    let cooldownActive = !cacheBypassReason && historicalCoverageRequested && (walletHistoricalCooldown.get(hcCooldownKey) ?? 0) > Date.now()
     // prevents cold-start re-burn of historical scans — fall back to persistent cooldown if memory was reset
-    if (historicalCoverageRequested && !cooldownActive && walletScanPersistentCacheAvailable()) {
+    if (!cacheBypassReason && historicalCoverageRequested && !cooldownActive && walletScanPersistentCacheAvailable()) {
       const persHcCooldown = await readPersistentCooldown(hcCooldownKey)
       if (persHcCooldown && persHcCooldown.expiresAt.getTime() > Date.now()) {
         walletHistoricalCooldown.set(hcCooldownKey, persHcCooldown.expiresAt.getTime())
@@ -662,7 +666,7 @@ export async function POST(req: Request) {
     // Cost guard — skip live re-run if previous scan was very expensive
     const costHintKey = `${key}:${cacheMode}`  // cacheMode kept for costHints (separate map)
     const costHint = walletCostHints.get(costHintKey)
-    const costGuardHit = historicalCoverageRequested && !cooldownActive
+    const costGuardHit = !cacheBypassReason && historicalCoverageRequested && !cooldownActive
       && Boolean(costHint)
       && (costHint!.rawLogEvents > 100_000 || costHint!.requestDurationMs > 25_000)
       && (Date.now() - costHint!.cachedAt < WALLET_COST_HINT_TTL_MS)
@@ -678,7 +682,7 @@ export async function POST(req: Request) {
     // Does NOT include volatile fields (debug, refresh, request id, body order)
     const scanModeKey = effectiveHistoricalCoverage ? 'historical' : deepActivity ? 'deep' : 'basic'
     const chainKey = resolvedChainMode !== 'auto' ? resolvedChainMode : chain
-    const cacheKey = `${key}:${scanModeKey}:${chainKey}:${WALLET_SNAPSHOT_SCHEMA_VERSION}${hcSuffix}`
+    const cacheKey = `${key}:${scanModeKey}:${chainKey}:${WALLET_SNAPSHOT_SCHEMA_VERSION}${hcSuffix}${debugFreshAllowed && cacheBust ? `:debug:${cacheBust}` : ''}`
 
     // Cache bypass: explicit refresh/debugFresh bypass both memory and persistent cache reads.
     const _cacheReadAttempted = !cacheBypassReason
@@ -792,7 +796,7 @@ export async function POST(req: Request) {
       if (cp && typeof cp === 'object' && debug) cp._debug = {
         routeName: '/api/wallet', cacheHit: true, cacheMode,
         requestDurationMs: Date.now() - startedAt,
-        walletSnapshotCache: { memoryHit: true, persistentHit: false, providerFetchNeeded: false, refreshBypassedCache: false, cacheAgeSeconds, cacheTtlSeconds: (effectiveHistoricalCoverage ? WALLET_HISTORICAL_CACHE_TTL_MS : deepActivity ? WALLET_DEEP_CACHE_TTL_MS : WALLET_BASIC_CACHE_TTL_MS) / 1000, cacheVersion: WALLET_SNAPSHOT_SCHEMA_VERSION, cacheBypassReason, debugFreshBypassedPersistentCache },
+        walletSnapshotCache: { memoryHit: true, persistentHit: false, providerFetchNeeded: false, refreshBypassedCache: Boolean(cacheBypassReason), cacheAgeSeconds, cacheTtlSeconds: (effectiveHistoricalCoverage ? WALLET_HISTORICAL_CACHE_TTL_MS : deepActivity ? WALLET_DEEP_CACHE_TTL_MS : WALLET_BASIC_CACHE_TTL_MS) / 1000, cacheVersion: WALLET_SNAPSHOT_SCHEMA_VERSION, cacheBypassReason, debugFreshBypassedPersistentCache },
         providerFlow: null,
         walletScanBudgetDebug: cp?._cachedDiagnosticsSlim?.walletScanBudgetDebug ?? null,
         walletHistoricalScanDebug: cp?._cachedDiagnosticsSlim?.walletHistoricalScanDebug ?? null,
@@ -980,7 +984,7 @@ export async function POST(req: Request) {
             cp._debug = {
               routeName: '/api/wallet', cacheHit: true, cacheMode,
               requestDurationMs: Date.now() - startedAt,
-              walletSnapshotCache: { memoryHit: false, persistentHit: true, providerFetchNeeded: false, refreshBypassedCache: false, cacheAgeSeconds, cacheTtlSeconds: WALLET_DEEP_CACHE_TTL_MS / 1000, cacheVersion: WALLET_SNAPSHOT_SCHEMA_VERSION, cacheBypassReason, debugFreshBypassedPersistentCache },
+              walletSnapshotCache: { memoryHit: false, persistentHit: true, providerFetchNeeded: false, refreshBypassedCache: Boolean(cacheBypassReason), cacheAgeSeconds, cacheTtlSeconds: WALLET_DEEP_CACHE_TTL_MS / 1000, cacheVersion: WALLET_SNAPSHOT_SCHEMA_VERSION, cacheBypassReason, debugFreshBypassedPersistentCache },
               providerFlow: null,
               walletScanCostDebug: {
                 scanId: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
@@ -1062,7 +1066,7 @@ export async function POST(req: Request) {
     const inFlightKey = deepActivity ? `${key}:${scanModeKey}:${chainKey}${effectiveHistoricalCoverage ? `:hc${maxHistoricalPages}` : ''}` : ''
     let rawSnapshot: any
 
-    const existingInFlight = inFlightKey ? walletDeepInFlight.get(inFlightKey) : undefined
+    const existingInFlight = inFlightKey && !debugFreshAllowed ? walletDeepInFlight.get(inFlightKey) : undefined
     if (existingInFlight) {
       inFlightDeduped = true
       rawSnapshot = { ...(await existingInFlight as any) }
@@ -1078,11 +1082,11 @@ export async function POST(req: Request) {
         maxFallbackPages,
         walletScanBudget: buildPublicWalletScanBudget(scanModeKey, historicalCoverageRequested, 'standard', adminOverrideRequested),
       } satisfies WalletSnapshotOptions)
-      if (inFlightKey) walletDeepInFlight.set(inFlightKey, scanPromise)
+      if (inFlightKey && !debugFreshAllowed) walletDeepInFlight.set(inFlightKey, scanPromise)
       try {
         rawSnapshot = { ...(await scanPromise as any) }
       } finally {
-        if (inFlightKey) walletDeepInFlight.delete(inFlightKey)
+        if (inFlightKey && !debugFreshAllowed) walletDeepInFlight.delete(inFlightKey)
       }
     }
 
@@ -1134,7 +1138,7 @@ export async function POST(req: Request) {
       debugFreshBypassedPersistentCache,
       persistentHit: _persistentCacheHit,
       providerFetchNeeded: true,
-      refreshBypassedCache: refresh,
+      refreshBypassedCache: Boolean(cacheBypassReason),
     }
 
     // Daily credit soft cap tracking (in-memory, resets at midnight UTC)
@@ -1161,7 +1165,7 @@ export async function POST(req: Request) {
     }
 
     // Set cooldown after a live historical scan
-    if (effectiveHistoricalCoverage) {
+    if (effectiveHistoricalCoverage && !noCacheWrite) {
       walletHistoricalCooldown.set(hcCooldownKey, Date.now() + WALLET_HC_COOLDOWN_MS)
       // prevents cold-start re-burn of historical scans — persist so cooldown survives Vercel cold starts
       if (_persistentAvailable) {
@@ -1169,7 +1173,7 @@ export async function POST(req: Request) {
       }
     }
     // Set deep scan cooldown after a live deep scan
-    if (deepActivity && !effectiveHistoricalCoverage && !inFlightDeduped) {
+    if (deepActivity && !effectiveHistoricalCoverage && !inFlightDeduped && !noCacheWrite) {
       walletDeepCooldown.set(deepCooldownKey, Date.now() + WALLET_DEEP_COOLDOWN_MS)
     }
 
@@ -1180,7 +1184,7 @@ export async function POST(req: Request) {
 
     // Pre-compute cache write decision for debug observability (Map.set is synchronous, always succeeds)
     const _cacheTtlMs = effectiveHistoricalCoverage ? WALLET_HISTORICAL_CACHE_TTL_MS : deepActivity ? WALLET_DEEP_CACHE_TTL_MS : WALLET_BASIC_CACHE_TTL_MS
-    const _cacheWriteAttempted = !allowDebugFresh  // write after every live scan (even refresh=true)
+    const _cacheWriteAttempted = !noCacheWrite  // write after every live scan unless debug no-cache-write is requested
     const _deepCooldownExpiry = walletDeepCooldown.get(deepCooldownKey) ?? 0
     const _cooldownExpiresInSeconds = _deepCooldownExpiry > Date.now() ? Math.floor((_deepCooldownExpiry - Date.now()) / 1000) : null
 
@@ -1567,6 +1571,9 @@ export async function POST(req: Request) {
             cacheVersion: WALLET_SNAPSHOT_SCHEMA_VERSION,
             cacheBypassReason,
             debugFreshBypassedPersistentCache,
+            debugFreshAllowed,
+            debugFreshRejected: freshRequested && !debugFreshAllowed,
+            noCacheWrite,
             cacheReadAttempted: _cacheReadAttempted,
             cacheWriteAttempted: _cacheWriteAttempted,
             cacheWriteSucceeded: _cacheWriteAttempted && (_persistentCacheWriteSucceeded || !_persistentAvailable),
