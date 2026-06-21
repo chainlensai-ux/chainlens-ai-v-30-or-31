@@ -966,6 +966,14 @@ export type WalletSnapshot = {
       unknownTxToAddressCounts: Record<string, number>
       topUnknownTxToAddresses: Array<{ address: string; count: number }>
       topUnknownTxToAddressesWithSwapLikeContext: Array<{ address: string; count: number }>
+      // Wallet Attribution Reconstruction V1 (diagnostic-only counters; see swapContextCandidate
+      // in buildSwapDetection — never promotes an event to a swap candidate, never alters FIFO,
+      // pricing, PnL, scoring, or public swap-candidate counts).
+      recoveredUnknownDirectionEvents: number
+      recoveredSwapContextTransactions: number
+      recoveredRouterTransactions: number
+      recoveredStableLegTransactions: number
+      recoveredWethLegTransactions: number
       walletSwapReconstructionAudit?: {
         unknownEventsSeen: number
         unknownEventsUsedForContext: number
@@ -2496,6 +2504,13 @@ export type WalletTxEvidence = {
   txMatchedRouterProtocol?: string | null
   swapDetection?: WalletSwapDetection
   priceAtTime?: PriceAtTimeEvidence
+  // Wallet Attribution Reconstruction V1 (diagnostic-only; never promotes an event to a swap
+  // candidate, never alters direction/swapDetection/FIFO/pricing/PnL). Set only for
+  // direction==='unknown' events whose grouped transaction was found to carry wallet-initiated
+  // swap-like context (see swapContextCandidate in buildSwapDetection).
+  walletAttributionRecovered?: boolean
+  walletAttributionRecoveryReason?: string | null
+  walletAttributionRecoveryConfidence?: 'high' | 'medium' | 'low' | null
 }
 
 export type WalletLotOpen = {
@@ -4420,6 +4435,8 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
     unknownDirectionRejectedNoWalletSide: 0, unknownDirectionRejectedLowConfidence: 0,
     sampleReconstructedUnknownDirectionEvents: [], sampleContextOnlyUnknownDirectionEvents: [],
     unknownTxToAddressCounts: {}, topUnknownTxToAddresses: [], topUnknownTxToAddressesWithSwapLikeContext: [],
+    recoveredUnknownDirectionEvents: 0, recoveredSwapContextTransactions: 0, recoveredRouterTransactions: 0,
+    recoveredStableLegTransactions: 0, recoveredWethLegTransactions: 0,
   })
   const emptySummary = (missing: string[]): WalletSnapshot['walletSwapSummary'] => ({
     status: 'open_check', totalEvidenceEvents: 0, groupedTxCount: 0, swapCandidateEvents: 0,
@@ -4499,6 +4516,10 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
     distinctContracts: Set<string>
     hasMultipleDistinctTokens: boolean
     group: WalletTxEvidence[]
+    // Wallet Attribution Reconstruction V1 (diagnostic-only — see usage below).
+    hasStableLeg: boolean
+    hasWethLeg: boolean
+    swapContextCandidate: boolean
   }
   // PHASE1-FIX-2: router/initiator majority vote. txTo/txFrom are tx-level metadata that
   // should be identical for every leg of the same txHash, but multi-page/multi-provider
@@ -4534,7 +4555,21 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
     const txHasStableOrWeth = group.some(t => Boolean(KNOWN_STABLE_WETH_CONTRACTS[t.contract?.toLowerCase() ?? '']))
     const distinctContracts = new Set(group.map(e => e.contract?.toLowerCase() ?? '').filter(Boolean))
     const hasMultipleDistinctTokens = distinctContracts.size > 1
-    txCtxMap.set(txHash, { txToAddr, txFromAddr, txRouterProtocol, txToKnownRouter, walletIsInitiator, hasBuy, hasSell, hasInboundOutbound, txHasStableOrWeth, distinctContracts, hasMultipleDistinctTokens, group })
+    // Wallet Attribution Reconstruction V1: split the combined stable/WETH quote-leg signal
+    // into its two components so router/stable/WETH evidence can be reported separately in
+    // diagnostics (recoveredStableLegTransactions vs recoveredWethLegTransactions below).
+    // This does not change txHasStableOrWeth or anything that already consumes it.
+    const hasStableLeg = group.some(t => {
+      const label = KNOWN_STABLE_WETH_CONTRACTS[t.contract?.toLowerCase() ?? ''] ?? ''
+      return label.startsWith('USDC') || label.startsWith('USDT') || label.startsWith('DAI')
+    })
+    const hasWethLeg = group.some(t => (KNOWN_STABLE_WETH_CONTRACTS[t.contract?.toLowerCase() ?? ''] ?? '').startsWith('WETH'))
+    // swapContextCandidate is diagnostic-only context, never used to promote an event to a
+    // swap candidate or to alter direction/FIFO/pricing/PnL: wallet initiated the tx AND
+    // (a stablecoin or WETH quote leg exists in the tx, OR the wallet received a token in
+    // the tx, OR the tx called a known router).
+    const swapContextCandidate = walletIsInitiator && (hasStableLeg || hasWethLeg || hasBuy || txToKnownRouter)
+    txCtxMap.set(txHash, { txToAddr, txFromAddr, txRouterProtocol, txToKnownRouter, walletIsInitiator, hasBuy, hasSell, hasInboundOutbound, txHasStableOrWeth, distinctContracts, hasMultipleDistinctTokens, group, hasStableLeg, hasWethLeg, swapContextCandidate })
   }
 
   // ── TX-level diagnostics (from usable groups) ──
@@ -4554,6 +4589,22 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
     if (ctx.txHasStableOrWeth) stableOrWethLegMatchCount++
   }
 
+  // ── Wallet Attribution Reconstruction V1 — transaction-level diagnostics (diagnostic-only;
+  // never promotes any event to a swap candidate, never alters FIFO, pricing, scoring, PnL,
+  // or public outputs — see swapContextCandidate above and the per-event recovery fields set
+  // on unknown-direction events further down) ──
+  let recoveredSwapContextTransactionsCount = 0
+  let recoveredRouterTransactionsCount = 0
+  let recoveredStableLegTransactionsCount = 0
+  let recoveredWethLegTransactionsCount = 0
+  for (const ctx of txCtxMap.values()) {
+    if (!ctx.swapContextCandidate) continue
+    recoveredSwapContextTransactionsCount++
+    if (ctx.txToKnownRouter) recoveredRouterTransactionsCount++
+    if (ctx.hasStableLeg) recoveredStableLegTransactionsCount++
+    if (ctx.hasWethLeg) recoveredWethLegTransactionsCount++
+  }
+
   // ── Classify ALL events ──
   let routerSwapCandidateEventsCount = 0
   let walletInitiatedSwapCandidateEventsCount = 0
@@ -4568,6 +4619,10 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
   let unknownDirectionPromotedToSwapCandidateCount = 0
   let unknownDirectionRejectedNoWalletSideCount = 0
   let unknownDirectionRejectedLowConfidenceCount = 0
+  // Wallet Attribution Reconstruction V1 — counts unknown-direction events for which
+  // transaction-level context (swapContextCandidate) was found. Diagnostic-only: does not
+  // affect reconstructedDirection, isSwapCandidate, or any of the counters above.
+  let recoveredUnknownDirectionEventsCount = 0
   const sampleReconstructedUnknownDirectionEvents: WalletTxEvidence[] = []
   const sampleContextOnlyUnknownDirectionEvents: WalletTxEvidence[] = []
   const inferWalletSideDirection = (event: WalletTxEvidence): 'buy' | 'sell' | null => {
@@ -4594,6 +4649,27 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
       const isQuote = Boolean(KNOWN_STABLE_WETH_CONTRACTS[contractLower])
       const hasNonQuote = Boolean(ctx && [...ctx.distinctContracts].some(c => !KNOWN_STABLE_WETH_CONTRACTS[c]))
 
+      // ── Wallet Attribution Reconstruction V1 ──
+      // Diagnostic-only: records that this unknown-direction event's transaction carried
+      // wallet-initiated swap-like context (router / stablecoin or WETH quote leg / inbound
+      // token leg), WITHOUT touching direction, swapDetection, or any classification decision
+      // made below or in Direction Reconstruction V2. Never promotes anything to a swap
+      // candidate — see swapContextCandidate above.
+      let walletAttributionRecovered = false
+      let walletAttributionRecoveryReason: string | null = null
+      let walletAttributionRecoveryConfidence: 'high' | 'medium' | 'low' | null = null
+      if (ctx?.swapContextCandidate) {
+        walletAttributionRecovered = true
+        recoveredUnknownDirectionEventsCount++
+        const recoveryReasons: string[] = []
+        if (ctx.txToKnownRouter) recoveryReasons.push(`known router involvement (${ctx.txRouterProtocol})`)
+        if (ctx.hasStableLeg) recoveryReasons.push('stablecoin quote leg present in transaction')
+        if (ctx.hasWethLeg) recoveryReasons.push('WETH quote leg present in transaction')
+        if (ctx.hasBuy) recoveryReasons.push('wallet-side inbound token leg present in transaction')
+        walletAttributionRecoveryReason = `Wallet-initiated transaction with ${recoveryReasons.join('; ')}`
+        walletAttributionRecoveryConfidence = ctx.txToKnownRouter ? 'high' : (ctx.hasStableLeg || ctx.hasWethLeg) ? 'medium' : 'low'
+      }
+
       // Track unverified txTo addresses seen on unknown-direction events (Task B — debug-only,
       // never used to label or to add anything to KNOWN_DEX_ROUTERS without verification).
       if (ctx?.txToAddr && !ctx.txToKnownRouter) {
@@ -4614,7 +4690,7 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
         // context (grouping, router/quote-leg detection) via contextEvents/txCtxMap above.
         unknownDirectionRejectedNoWalletSideCount++
         unknownDirectionUsedAsContextOnlyCount++
-        const contextOnlyEvent = { ...e, swapDetection: { isSwapCandidate: false, confidence: 'low' as const, eventKind: 'unknown' as const, reason: 'Transfer does not involve scanned wallet directly (pool-to-pool or third-party); retained as tx reconstruction context only', matchedProtocol: ctx?.txRouterProtocol ?? null, matchedAddress: ctx?.txToAddr ?? null, swapReconstructionConfidence: ctx?.txToKnownRouter || ctx?.txHasStableOrWeth || ctx?.hasInboundOutbound ? 'medium' as const : 'low' as const } }
+        const contextOnlyEvent = { ...e, walletAttributionRecovered, walletAttributionRecoveryReason, walletAttributionRecoveryConfidence, swapDetection: { isSwapCandidate: false, confidence: 'low' as const, eventKind: 'unknown' as const, reason: 'Transfer does not involve scanned wallet directly (pool-to-pool or third-party); retained as tx reconstruction context only', matchedProtocol: ctx?.txRouterProtocol ?? null, matchedAddress: ctx?.txToAddr ?? null, swapReconstructionConfidence: ctx?.txToKnownRouter || ctx?.txHasStableOrWeth || ctx?.hasInboundOutbound ? 'medium' as const : 'low' as const } }
         if (sampleContextOnlyUnknownDirectionEvents.length < 5) sampleContextOnlyUnknownDirectionEvents.push(contextOnlyEvent)
         return contextOnlyEvent
       }
@@ -4632,6 +4708,7 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
         const matchedProtocol = strongRouterMatch ? (ctx!.txRouterProtocol) : (KNOWN_STABLE_WETH_CONTRACTS[contractLower] ?? null)
         const promotedEvent = {
           ...e, direction: reconstructedDirection,
+          walletAttributionRecovered, walletAttributionRecoveryReason, walletAttributionRecoveryConfidence,
           swapDetection: {
             isSwapCandidate: true, confidence: 'high' as const, eventKind: 'swap_candidate' as const,
             reason: strongRouterMatch
@@ -4652,6 +4729,7 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
       unknownDirectionRejectedLowConfidenceCount++
       const reconstructedContextEvent = {
         ...e, direction: reconstructedDirection,
+        walletAttributionRecovered, walletAttributionRecoveryReason, walletAttributionRecoveryConfidence,
         swapDetection: {
           isSwapCandidate: false, confidence: 'low' as const, eventKind: 'unknown' as const,
           reason: 'Wallet-side direction reconstructed from transfer participant, but insufficient pairing/router evidence to promote to swap candidate',
@@ -4899,6 +4977,11 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
       sampleContextOnlyUnknownDirectionEvents,
       unknownTxToAddressCounts: Object.fromEntries(unknownTxToAddressCounts),
       topUnknownTxToAddresses, topUnknownTxToAddressesWithSwapLikeContext,
+      recoveredUnknownDirectionEvents: recoveredUnknownDirectionEventsCount,
+      recoveredSwapContextTransactions: recoveredSwapContextTransactionsCount,
+      recoveredRouterTransactions: recoveredRouterTransactionsCount,
+      recoveredStableLegTransactions: recoveredStableLegTransactionsCount,
+      recoveredWethLegTransactions: recoveredWethLegTransactionsCount,
       reasons: [],
     },
   }
