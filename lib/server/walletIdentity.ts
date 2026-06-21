@@ -28,6 +28,34 @@ export type WalletProfile = {
   evidenceCoverage: number
 }
 
+// TRADE-INTEL-WIRING: convert a tradeIntelligence.primaryStyle key into a readable profile
+// label. Covers both the spec's profile-style vocabulary and the behavior-style keys actually
+// emitted by walletSnapshot.tradeIntelligence. Never outputs "sniper" — behavior style is never
+// a profit/skill claim. Unknown keys fall back to a safe title-case of the raw key.
+export function readableTradeStyleLabel(style: string | null | undefined): string | null {
+  if (!style || style === 'not_enough_data') return null
+  const map: Record<string, string> = {
+    // spec profile-style vocabulary
+    high_speed_rotator: 'High-speed rotator',
+    swing_rotator: 'Swing rotator',
+    conviction_accumulator: 'Conviction accumulator',
+    stablecoin_router: 'Stablecoin router',
+    airdrop_farmer: 'Airdrop farmer',
+    low_activity_holder: 'Low-activity holder',
+    mixed_behavior: 'Mixed behavior',
+    // behavior-style keys emitted by walletSnapshot.tradeIntelligence
+    portfolio_rebalancer: 'Portfolio rebalancer',
+    stable_quote_rotator: 'Stablecoin router',
+    accumulator: 'Conviction accumulator',
+    distributor: 'Distributor',
+    mixed_rotator: 'Mixed behavior',
+  }
+  if (map[style]) return map[style]
+  // Safe fallback — title-case the key, but never echo a "sniper" claim.
+  if (/sniper/i.test(style)) return 'Mixed behavior'
+  return style.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
+}
+
 function gradeForScore(score: number): string {
   if (score >= 90) return 'A+'
   if (score >= 80) return 'A'
@@ -176,11 +204,31 @@ export function computeWalletProfile(snapshot: WalletSnapshot): WalletProfile {
 
   tradingCandidates.sort((a, b) => b.weight - a.weight)
   const trading = tradingCandidates[0] ?? null
-  const tradingBehavior = trading?.label ?? null
-  const tradingConfidence = trading?.confidence ?? 'low'
+  let tradingBehavior = trading?.label ?? null
+  let tradingConfidence: ProfileConfidence = trading?.confidence ?? 'low'
   if (trading) {
     signals.push(`Trading behavior "${trading.label}": ${trading.reason}`)
     reasons.push(`Trading behavior assigned from verified trade evidence: ${trading.reason}`)
+  }
+
+  // TRADE-INTEL-WIRING: behavior/style intelligence is separate from profit skill. When the
+  // tradeIntelligence layer has enough verified behavior lots (>=10) and is partial/ready, use
+  // its readable style label + confidence for the *behavior* read even if the legacy
+  // profit-evidence path stayed null (e.g. near-flat public PnL). This never asserts profit:
+  // followability and profit-skill copy below stay gated on public PnL honesty.
+  const tradeIntel = (snapshot as any).tradeIntelligence as
+    | { status?: string; tradeIntelLots?: number; verifiedPnlLots?: number; rawMatchedLots?: number; confidence?: ProfileConfidence; primaryStyle?: string }
+    | undefined
+  const tradeIntelUnlocked = Boolean(tradeIntel) && (tradeIntel!.status === 'partial' || tradeIntel!.status === 'ready') && (tradeIntel!.tradeIntelLots ?? 0) >= 10
+  const tradeIntelStyleLabel = tradeIntelUnlocked ? readableTradeStyleLabel(tradeIntel!.primaryStyle) : null
+  if (tradeIntelUnlocked && tradeIntelStyleLabel) {
+    tradingBehavior = tradeIntelStyleLabel
+    tradingConfidence = tradeIntel!.confidence ?? tradingConfidence
+    const lots = tradeIntel!.tradeIntelLots ?? 0
+    const raw = tradeIntel!.rawMatchedLots ?? 0
+    const swapCandidates = (snapshot as any).walletSwapSummary?.swapCandidateEvents ?? (snapshot as any).walletSwapSummary?.swapCandidateCount ?? 0
+    reasons.push(`Trading style classified from ${lots} verified behavior lots.`)
+    signals.push(`Trade intelligence ${tradeIntel!.status}: ${lots} behavior lots, ${raw} raw matched lots, ${swapCandidates} swap candidates.`)
   }
 
   let score: number | null = null
@@ -213,12 +261,20 @@ export function computeWalletProfile(snapshot: WalletSnapshot): WalletProfile {
   if (concentrationLabel === 'high') weaknesses.push('Portfolio concentration is high.')
   if (!hasHoldings) weaknesses.push('No priced holdings were available in this snapshot.')
 
-  const followability: WalletProfile['followability'] = tradingLockedByPublicPnl ? 'Low' : tradingBehavior && tradingConfidence !== 'low' && score != null && score >= 70 ? 'High' : portfolioBehavior && score != null && score >= 55 ? 'Moderate' : 'Low'
-  const nextAction = tradingLockedByPublicPnl
-    ? 'Use for portfolio read only; trading evidence is locked until more public-grade trades are available.'
-    : tradingConfidence === 'low'
-      ? 'Use this profile for portfolio read only; wait for stronger trade/PnL evidence before copying trades.'
-      : 'Monitor future realized trades and position changes before following.'
+  // PROFIT-HONESTY: a readable trade style does NOT mean the wallet's profit skill is proven.
+  // Keep followability Low whenever public PnL is near-flat/limited, PnL integrity is invalid,
+  // or realized PnL is ~zero — never upgrade to Moderate/High or imply the wallet is copyable.
+  const pnlIntegrityStatus = (tradeStats as any)?.pnlIntegrityStatus ?? snapshot.pnlIntegrityCheck?.status ?? null
+  const realizedNearZero = realizedPnlUsd == null || Math.abs(realizedPnlUsd) < 1
+  const profitNotProven = tradingLockedByPublicPnl || pnlIntegrityStatus === 'invalid' || publicPnlStatus === 'near_flat_verified_sample' || realizedNearZero
+  const followability: WalletProfile['followability'] = profitNotProven ? 'Low' : tradingBehavior && tradingConfidence !== 'low' && score != null && score >= 70 ? 'High' : portfolioBehavior && score != null && score >= 55 ? 'Moderate' : 'Low'
+  const nextAction = (tradeIntelUnlocked && tradingBehavior && profitNotProven)
+    ? 'Use for behavior/style read only; profit skill is not proven because public PnL is near-flat and integrity checks are limited.'
+    : tradingLockedByPublicPnl
+      ? 'Use for portfolio read only; trading evidence is locked until more public-grade trades are available.'
+      : tradingConfidence === 'low'
+        ? 'Use this profile for portfolio read only; wait for stronger trade/PnL evidence before copying trades.'
+        : 'Monitor future realized trades and position changes before following.'
 
   const profileSummary = sufficientEvidence
     ? `${chainCount > 1 ? `Multi-chain (${chainCount} chains)` : 'Single-chain'} ${walletCategory?.toLowerCase() ?? 'wallet'}${portfolioBehavior ? ` with ${portfolioBehavior.toLowerCase()} portfolio behavior` : ''}${tradingBehavior ? ` and ${tradingBehavior.toLowerCase()} trading behavior` : '; trading behavior not yet classified'}.`

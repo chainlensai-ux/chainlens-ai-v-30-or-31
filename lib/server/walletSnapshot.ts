@@ -165,8 +165,8 @@ type NormalizeMoralisDebug = {
 }
 
 export type WalletBehavior = {
-  status: 'ok' | 'partial' | 'unavailable'
-  source: 'activity_layer' | 'unavailable'
+  status: 'ok' | 'partial' | 'unavailable' | 'ready'
+  source: 'activity_layer' | 'unavailable' | 'trade_intelligence'
   txCount: number | null
   activeDays: number | null
   topTokens: string[]
@@ -254,7 +254,7 @@ export type WalletSnapshot = {
   totalUsdAvailable: boolean
   reason: string
   portfolioSource: 'portfolio_layer' | 'holdings_layer' | 'fallback_layer' | 'unverified' | 'none'
-  behaviorSource: 'activity_layer' | 'unavailable'
+  behaviorSource: 'activity_layer' | 'unavailable' | 'trade_intelligence'
   behaviorChain: 'base'
   pnlSource: 'activity_layer' | 'fallback_layer' | 'unavailable'
   pnlCoverageReason: string
@@ -339,6 +339,17 @@ export type WalletSnapshot = {
     summary: string
     signals: { uniqueTokensTraded: number; avgHoldingTimeSeconds: number | null }
     limitations: string[]
+    // Richer behavior descriptors — additive, honest, never a profit claim.
+    behaviorConfidenceReason?: string
+    rotationSpeedLabel?: string
+    avgHoldTimeLabel?: string
+    repeatedTokenPatterns?: string[]
+    lossPattern?: string | null
+    stablePairDependence?: 'high' | 'medium' | 'low' | 'unknown'
+    riskStyle?: string
+    tradeStyleSummary?: string
+    evidenceQuality?: 'high' | 'medium' | 'low'
+    profitSkillStatus?: 'near_flat_not_proven' | 'integrity_invalid_not_proven' | 'locked_small_sample' | 'unlocked'
   }
   walletEvidenceSummary: {
     status: 'ready' | 'partial' | 'missing_hashes' | 'no_events' | 'provider_unavailable' | 'not_requested'
@@ -12618,9 +12629,13 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _moralisLiveCount = _liveCalls('moralis').length
   const _grLiveCount = _liveCalls('goldrush').length
   const _alchemyCount = _logByProvider('alchemy').length
-  if (_apiTotalCredits > 5) _apiWarnings.push(`total_credits_${_apiTotalCredits}_exceeds_target_5`)
+  // BUDGET-WARNING-FIX: warn against the *current* per-scan budget (tier target / hard cap and
+  // the actual phase page budget), not stale hardcoded counts. A scan that uses 9 credits with a
+  // target of 15 is within budget and must not warn.
+  const _grExpectedCalls = Math.max(4, 2 + Number(_historicalCoverageDebug?.pagesAttempted ?? 0) + Number(_syntheticTargetExtraPagesAttempted ?? 0))
+  if (_apiTotalCredits > _totalCreditTarget) _apiWarnings.push(`total_credits_${_apiTotalCredits}_exceeds_target_${_totalCreditTarget}`)
   if (_moralisLiveCount > 3) _apiWarnings.push(`moralis_${_moralisLiveCount}_calls_expected_3`)
-  if (_grLiveCount > 4) _apiWarnings.push(`goldrush_${_grLiveCount}_calls_expected_4`)
+  if (_grLiveCount > _grExpectedCalls) _apiWarnings.push(`goldrush_${_grLiveCount}_calls_expected_${_grExpectedCalls}`)
   if (_alchemyCount > 8) _apiWarnings.push(`alchemy_${_alchemyCount}_calls_expected_8`)
   if (_dupEntries.length > 0) _apiWarnings.push(`${_dupEntries.length}_duplicate_call(s)_detected`)
   const _apiAudit = {
@@ -12918,6 +12933,44 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   if (_verifiedButExcludedClosedLotsFinal > 0) tradeIntelligenceLimitations.push('flat_price_and_dust_lots_excluded_from_behavior_confidence')
   if (!_tradeIntelUnlocked) tradeIntelligenceLimitations.push('insufficient_verified_lots_for_behavior_classification')
 
+  // Richer (additive, honest) behavior descriptors — derived only from already-computed lot data,
+  // never from faked PnL. profitSkillStatus stays near_flat_not_proven whenever the public sample
+  // is near-flat/limited or below the strict performance bar (integrity-invalid is patched later
+  // once the Phase-6 integrity check has run).
+  const _humanizeSeconds = (s: number | null): string | null => {
+    if (s == null || !Number.isFinite(s) || s <= 0) return null
+    if (s < 90) return `~${Math.round(s)}s`
+    if (s < 5400) return `~${Math.round(s / 60)} minutes`
+    if (s < 129600) return `~${Math.round(s / 3600)} hours`
+    return `~${Math.round(s / 86400)} days`
+  }
+  const _STABLE_QUOTE_SYMBOLS = new Set(['USDC', 'USDT', 'DAI', 'EURC', 'USDBC', 'USDC.E', 'FRAX', 'LUSD', 'WETH', 'ETH', 'CBBTC', 'WBTC'])
+  const _intelLotSymbols = _realBackedClosedLotsFinal.map(l => (l.tokenSymbol ?? '').toUpperCase()).filter(Boolean)
+  const _stableLotCount = _intelLotSymbols.filter(s => _STABLE_QUOTE_SYMBOLS.has(s)).length
+  const _stableFraction = _intelLotSymbols.length > 0 ? _stableLotCount / _intelLotSymbols.length : 0
+  const _stablePairDependence: 'high' | 'medium' | 'low' | 'unknown' =
+    _intelLotSymbols.length === 0 ? 'unknown' : _stableFraction >= 0.5 ? 'high' : _stableFraction >= 0.2 ? 'medium' : 'low'
+  const _symbolCounts = _intelLotSymbols.reduce<Record<string, number>>((acc, s) => { acc[s] = (acc[s] ?? 0) + 1; return acc }, {})
+  const _repeatedTokenPatterns = Object.entries(_symbolCounts).filter(([, n]) => n >= 2).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([s]) => s)
+  const _rotationSpeedLabel = _avgHoldSecForIntel == null ? 'unknown'
+    : _avgHoldSecForIntel < 3600 ? 'Fast / high-speed'
+    : _avgHoldSecForIntel < 86400 ? 'Medium / intraday'
+    : 'Slow / swing'
+  const _publicSampleNearFlat = _publicPnlStatusFinal === 'near_flat_verified_sample' || _publicPnlStatusFinal === 'flat_estimate_only'
+  const _profitSkillStatus: 'near_flat_not_proven' | 'integrity_invalid_not_proven' | 'locked_small_sample' | 'unlocked' =
+    _publicSampleNearFlat ? 'near_flat_not_proven'
+    : _performanceClosedLotsFinal.length < 10 ? 'locked_small_sample'
+    : 'unlocked'
+  const _topPatternList = _repeatedTokenPatterns.length > 0 ? _repeatedTokenPatterns.join(', ') : (_intelLotSymbols.slice(0, 5).join(', ') || 'multiple tokens')
+  const _riskStyle = primaryStyle === 'high_speed_rotator' ? 'high-activity diversified rotation'
+    : primaryStyle === 'portfolio_rebalancer' ? 'diversified rebalancing'
+    : primaryStyle === 'stable_quote_rotator' ? 'stable/quote-routed rotation'
+    : 'mixed activity'
+  const _tradeStyleSummary = !_tradeIntelUnlocked
+    ? 'Not enough verified behavior lots to summarize trading style.'
+    : `${_rotationSpeedLabel === 'unknown' ? 'Behavior' : _rotationSpeedLabel} across ${_topPatternList} routes; strong behavior evidence, but profit skill is ${_profitSkillStatus === 'unlocked' ? 'available' : 'not proven'}.`
+  const _behaviorConfidenceReason = `${tradeIntelLots} verified behavior lots (${_verifiedIndependentClosedLotsFinal} independently priced); style derived from rotation speed and token diversity, independent of profit skill.`
+
   const tradeIntelligence: NonNullable<WalletSnapshot['tradeIntelligence']> = {
     status: tradeIntelligenceStatus,
     tradeIntelLots,
@@ -12934,6 +12987,16 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       avgHoldingTimeSeconds: _avgHoldSecForIntel,
     },
     limitations: tradeIntelligenceLimitations,
+    behaviorConfidenceReason: _behaviorConfidenceReason,
+    rotationSpeedLabel: _rotationSpeedLabel,
+    avgHoldTimeLabel: _humanizeSeconds(_avgHoldSecForIntel) ?? 'unknown',
+    repeatedTokenPatterns: _repeatedTokenPatterns,
+    lossPattern: null,
+    stablePairDependence: _stablePairDependence,
+    riskStyle: _riskStyle,
+    tradeStyleSummary: _tradeStyleSummary,
+    evidenceQuality: tradeIntelligenceConfidence,
+    profitSkillStatus: _profitSkillStatus,
   }
 
   const snapshot: WalletSnapshot = {
@@ -13390,6 +13453,11 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     if (snapshot.walletTradeStatsSummary) {
       ;(snapshot.walletTradeStatsSummary as any).pnlIntegrityStatus = _p6Integrity.status
     }
+    // PROFIT-HONESTY: an invalid integrity check means profit skill is not proven, regardless of
+    // how strong the behavior evidence is — keep the behavior style/read, downgrade the profit claim.
+    if (_p6Integrity.status === 'invalid' && snapshot.tradeIntelligence && snapshot.tradeIntelligence.profitSkillStatus === 'unlocked') {
+      snapshot.tradeIntelligence.profitSkillStatus = 'integrity_invalid_not_proven'
+    }
     // PNL-SYNTH-FILTER-FIX: a hard-invalid integrity check (e.g. sells_exceed_buys, portfolio
     // mismatch) means the public PnL numbers are not a clean exact_fifo result even if the
     // earlier eligibility checks passed — downgrade rather than report clean FIFO over evidence
@@ -13472,6 +13540,23 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         estimatedPnl: snapshot.estimatedPnl,
         walletHistoricalCoverageSummary: snapshot.walletHistoricalCoverageSummary,
       })
+    }
+  }
+
+  // TRADE-INTEL-WIRING: when the legacy activity-layer behavior read is unavailable but the
+  // tradeIntelligence layer has verified behavior evidence, surface that instead of a misleading
+  // "Activity data unavailable". No invented activeDays/txCount — those stay null if unknown.
+  {
+    const _ti = snapshot.tradeIntelligence
+    const _bh = snapshot.walletBehavior
+    if (_ti && (_ti.status === 'ready' || _ti.status === 'partial') && (_ti.tradeIntelLots ?? 0) >= 10 && _bh && _bh.status === 'unavailable') {
+      snapshot.walletBehavior = {
+        ..._bh,
+        status: _ti.status === 'ready' ? 'ready' : 'partial',
+        source: 'trade_intelligence',
+        recentActivitySummary: 'Trade behavior detected from swap/FIFO evidence.',
+        reason: _ti.status === 'ready' ? 'trade_intelligence_ready' : 'trade_intelligence_available_profit_skill_limited',
+      }
     }
   }
 

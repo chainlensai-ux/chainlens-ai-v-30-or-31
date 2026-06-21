@@ -595,7 +595,13 @@ function buildWalletModuleCoverage(snap: any) {
     fifoPnL: { status: fifoStatus, closedLots, reason: fifoReason },
     tradeStats: { status: tradeStatus, closedLots: tradeClosedLots, rawClosedLots: rawStatsClosedLots, excludedLots, estimateOnlyClosedLots, syntheticClosedLotsExcluded, openedLots, readyForWinRate, reason: tradeReason },
     tradeIntelligence: { status: tradeIntelStatus, tradeIntelLots, reason: tradeIntelReason },
-    behavior: { status: bhStatus, reason: bhStatus === 'ok' ? 'activity_detected' : bhStatus === 'partial' ? 'limited_activity_signal' : 'no_activity_data' },
+    // BEHAVIOR-COVERAGE: trade intelligence is real behavior evidence — never report
+    // no_activity_data when it exists. Fall back to the legacy activity-layer read otherwise.
+    behavior: tradeIntelStatus === 'ready'
+      ? { status: 'ready', reason: 'trade_intelligence_ready', evidence: ['trade_intelligence', 'swap_candidates', 'verified_behavior_lots'], tradeIntelLots, primaryStyle: ti?.primaryStyle ?? null }
+      : tradeIntelStatus === 'partial'
+        ? { status: 'partial', reason: 'trade_intelligence_available_profit_skill_limited', evidence: ['trade_intelligence', 'verified_behavior_lots'], tradeIntelLots, primaryStyle: ti?.primaryStyle ?? null }
+        : { status: bhStatus, reason: bhStatus === 'ok' ? 'activity_detected' : bhStatus === 'partial' ? 'limited_activity_signal' : 'no_activity_data' },
     walletOpenPositionSummary,
     openPositionPerformanceSummary,
   }
@@ -754,14 +760,24 @@ export async function POST(req: Request) {
       const targetedAttempted = Boolean(payload?._diagnostics?.syntheticLotRecoveryDebug?.syntheticTargetExtraRecoveryAttempted ?? payload?._debug?.syntheticLotRecoveryDebug?.syntheticTargetExtraRecoveryAttempted)
       if (!cacheHit && (pagesAttempted > 0 || targetedAttempted || requested)) {
         const historicalCapHit = Boolean(payload?._diagnostics?.walletScanBudgetDebug?.historicalBudgetCapHit)
+        // HISTORICAL-REASON-CONSISTENCY: only claim "candidates priced, no new closed lots" when the
+        // candidate/pricing summaries actually ran (normalized events were produced). A page-attempt
+        // that returned a provider error / zero normalized events is a provider failure, not a priced
+        // candidate run.
+        const cov = payload?.walletHistoricalCoverageSummary
+        const normalizedEvents = Number(cov?.normalizedEvents ?? 0)
+        const pricingRan = cov?.pricedSwapCandidates != null && normalizedEvents > 0
+        const providerFailed = (typeof cov?.reason === 'string' && /provider.*fail|attempted_provider_failed/i.test(cov.reason)) || (pagesAttempted > 0 && normalizedEvents === 0)
         payload.walletHistoricalRecoveryStatus = historicalCapHit ? 'attempted_capped' : 'attempted_light'
         payload.walletHistoricalRecoveryReason = targetedAttempted
           ? 'targeted_recovery_attempted_no_prior_buy_found'
           : historicalCapHit
             ? 'historical_phase_cap_reached_total_pages'
-            : pagesAttempted > 0
-              ? 'historical_candidates_priced_no_new_closed_lots'
-              : 'historical_provider_failed_or_no_new_closed_lots'
+            : providerFailed
+              ? 'historical_provider_failed_or_no_new_closed_lots'
+              : pricingRan
+                ? 'historical_candidates_priced_no_new_closed_lots'
+                : 'historical_provider_failed_or_no_new_closed_lots'
       } else if (payload?.walletHistoricalRecoveryReason === 'no_live_provider_calls_cache_hit' && !cacheHit) {
         payload.walletHistoricalRecoveryReason = 'historical_not_requested'
       }

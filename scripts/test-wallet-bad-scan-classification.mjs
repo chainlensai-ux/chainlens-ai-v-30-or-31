@@ -216,4 +216,31 @@ assert.match(snap, /tradeIntelligence,\s*\n\s*walletRecoveryRecommendation: _wal
 assert.match(routeSrc, /tradeIntelligence: \{ status: tradeIntelStatus, tradeIntelLots, reason: tradeIntelReason \}/, 'walletModuleCoverage.tradeIntelligence is wired with status/tradeIntelLots/reason')
 assert.match(ui, /Trade Intelligence Read/, 'UI shows the separate Trade Intelligence Read module')
 
+// TRADE-INTEL-WIRING: tradeIntelligence is wired into profile/behavior/module coverage, while
+// profit honesty stays strict.
+assert.match(identity, /export function readableTradeStyleLabel/, 'a single readable trade-style label helper exists')
+assert.match(identity, /high_speed_rotator: 'High-speed rotator'/, 'high_speed_rotator maps to the readable High-speed rotator label')
+assert.doesNotMatch(identity, /'[Ss]niper'/, 'profile trade-style labels never output sniper')
+assert.match(identity, /const tradeIntelUnlocked = Boolean\(tradeIntel\) && \(tradeIntel!\.status === 'partial' \|\| tradeIntel!\.status === 'ready'\) && \(tradeIntel!\.tradeIntelLots \?\? 0\) >= 10/, 'profile unlocks trading behavior from tradeIntelligence when >=10 behavior lots and partial/ready')
+assert.match(identity, /tradingBehavior = tradeIntelStyleLabel/, 'tradingBehavior is set from the tradeIntelligence style label')
+assert.match(identity, /tradingConfidence = tradeIntel!\.confidence \?\? tradingConfidence/, 'tradingConfidence uses tradeIntelligence.confidence when unlocked')
+assert.match(identity, /Trading style classified from \$\{lots\} verified behavior lots\./, 'profile reasons explain the behavior-lot-derived classification')
+// Profit honesty — followability stays Low on near-flat / invalid-integrity / ~zero realized PnL.
+assert.match(identity, /const profitNotProven = tradingLockedByPublicPnl \|\| pnlIntegrityStatus === 'invalid' \|\| publicPnlStatus === 'near_flat_verified_sample' \|\| realizedNearZero/, 'profitNotProven gates on integrity invalid / near-flat / ~zero realized PnL')
+assert.match(identity, /const followability: WalletProfile\['followability'\] = profitNotProven \? 'Low'/, 'followability stays Low whenever profit is not proven')
+assert.match(identity, /Use for behavior\/style read only; profit skill is not proven/, 'nextAction separates behavior read from unproven profit skill')
+// Module coverage behavior — never no_activity_data when trade intelligence exists.
+assert.match(routeSrc, /tradeIntelStatus === 'ready'\s*\n\s*\? \{ status: 'ready', reason: 'trade_intelligence_ready'/, 'walletModuleCoverage.behavior reports ready/trade_intelligence_ready when trade intelligence is ready')
+assert.match(routeSrc, /status: 'partial', reason: 'trade_intelligence_available_profit_skill_limited'/, 'walletModuleCoverage.behavior reports partial/trade_intelligence_available_profit_skill_limited when partial')
+// walletBehavior fallback — not unavailable when trade intelligence exists.
+assert.match(snap, /source: 'trade_intelligence',\s*\n\s*recentActivitySummary: 'Trade behavior detected from swap\/FIFO evidence\.'/, 'walletBehavior falls back to trade_intelligence source instead of unavailable')
+assert.match(snap, /status: 'ok' \| 'partial' \| 'unavailable' \| 'ready'/, 'WalletBehavior status union allows ready')
+// Historical recovery reason — provider failure must not claim candidates were priced.
+assert.match(routeSrc, /const providerFailed = \(typeof cov\?\.reason === 'string' && \/provider\.\*fail\|attempted_provider_failed\/i\.test\(cov\.reason\)\) \|\| \(pagesAttempted > 0 && normalizedEvents === 0\)/, 'provider-failed scans are detected before claiming priced candidates')
+assert.match(routeSrc, /providerFailed\s*\n\s*\? 'historical_provider_failed_or_no_new_closed_lots'\s*\n\s*: pricingRan\s*\n\s*\? 'historical_candidates_priced_no_new_closed_lots'/, 'historical_candidates_priced_no_new_closed_lots is only used when pricing actually ran')
+// Budget warnings — compare against the live per-scan target, not a stale hardcoded 5.
+assert.match(snap, /if \(_apiTotalCredits > _totalCreditTarget\) _apiWarnings\.push\(`total_credits_\$\{_apiTotalCredits\}_exceeds_target_\$\{_totalCreditTarget\}`\)/, 'total-credit warning uses the live totalCreditTarget')
+assert.doesNotMatch(snap, /exceeds_target_5`/, 'no stale hardcoded exceeds_target_5 warning remains')
+assert.doesNotMatch(snap, /goldrush_\$\{_grLiveCount\}_calls_expected_4`/, 'no stale hardcoded goldrush expected_4 warning remains')
+
 console.log('wallet bad-scan classification checks passed')

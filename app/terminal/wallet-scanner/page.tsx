@@ -166,6 +166,16 @@ type WalletResult = {
     summary: string
     signals: { uniqueTokensTraded: number; avgHoldingTimeSeconds: number | null }
     limitations: string[]
+    behaviorConfidenceReason?: string
+    rotationSpeedLabel?: string
+    avgHoldTimeLabel?: string
+    repeatedTokenPatterns?: string[]
+    lossPattern?: string | null
+    stablePairDependence?: 'high' | 'medium' | 'low' | 'unknown'
+    riskStyle?: string
+    tradeStyleSummary?: string
+    evidenceQuality?: 'high' | 'medium' | 'low'
+    profitSkillStatus?: 'near_flat_not_proven' | 'integrity_invalid_not_proven' | 'locked_small_sample' | 'unlocked'
   }
   publicPnlStatus?: 'ok' | 'limited_verified_sample' | 'open_check' | 'near_flat_verified_sample' | 'flat_estimate_only' | 'partial_near_flat'
   publicPnlDisplayLabel?: string
@@ -723,6 +733,28 @@ function fmtSecondsToHuman(seconds: number | null): string | null {
   if (d >= 1) return `${d}d ${h % 24}h`
   if (h >= 1) return `${h}h ${Math.floor((seconds % 3600) / 60)}m`
   return `${Math.floor(seconds / 60)}m`
+}
+
+// Local (client-safe) mirror of the server's trade-style label map — never outputs "sniper".
+function readableTradeStyleLabel(style: string | null | undefined): string | null {
+  if (!style || style === 'not_enough_data') return null
+  const map: Record<string, string> = {
+    high_speed_rotator: 'High-speed rotator',
+    swing_rotator: 'Swing rotator',
+    conviction_accumulator: 'Conviction accumulator',
+    stablecoin_router: 'Stablecoin router',
+    airdrop_farmer: 'Airdrop farmer',
+    low_activity_holder: 'Low-activity holder',
+    mixed_behavior: 'Mixed behavior',
+    portfolio_rebalancer: 'Portfolio rebalancer',
+    stable_quote_rotator: 'Stablecoin router',
+    accumulator: 'Conviction accumulator',
+    distributor: 'Distributor',
+    mixed_rotator: 'Mixed behavior',
+  }
+  if (map[style]) return map[style]
+  if (/sniper/i.test(style)) return 'Mixed behavior'
+  return style.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
 }
 
 function deriveWalletTier(winRate: number | null, closedCount = 0): WalletTier {
@@ -1882,18 +1914,28 @@ export default function WalletScannerPage() {
                           if (!ti || ti.status === 'open_check') {
                             return <div><div className="wpv3-value" style={{ fontSize: '24px' }}>Not Enough Data</div><p className="wpv3-support">Not enough verified behavior lots to classify trading style.</p></div>
                           }
-                          const profitLocked = ti.publicPerformanceLots < 10
+                          const styleLabel = readableTradeStyleLabel(ti.primaryStyle) ?? ti.primaryStyle.replace(/_/g, ' ')
+                          const profitNotProven = ti.profitSkillStatus != null && ti.profitSkillStatus !== 'unlocked'
+                          const profitSkillText = ti.profitSkillStatus === 'near_flat_not_proven' ? 'Near-flat / not proven'
+                            : ti.profitSkillStatus === 'integrity_invalid_not_proven' ? 'Not proven (integrity)'
+                            : ti.profitSkillStatus === 'locked_small_sample' ? 'Locked (small sample)'
+                            : ti.profitSkillStatus === 'unlocked' ? 'Unlocked'
+                            : (ti.publicPerformanceLots < 10 ? 'Locked (small sample)' : 'Unlocked')
+                          const followability = result.walletProfile?.followability ?? 'Low'
                           return <>
-                            <p className="wpv3-support" style={{ marginBottom: '8px' }}>{ti.summary}</p>
+                            <p className="wpv3-support" style={{ marginBottom: '8px' }}>{ti.tradeStyleSummary ?? ti.summary}</p>
                             {[
-                              ['Trade Style', ti.primaryStyle.replace(/_/g, ' ')],
-                              ['Behavior Lots', String(ti.tradeIntelLots)],
-                              ['Verified PnL Lots', String(ti.verifiedPnlLots)],
-                              ['Public Performance Lots', String(ti.publicPerformanceLots)],
-                              ['Profit Skill', profitLocked ? 'Locked' : 'Unlocked'],
-                              ['Tokens Rotated', String(ti.signals.uniqueTokensTraded)],
-                              ['Avg Hold Time', fmtSecondsToHuman(ti.signals.avgHoldingTimeSeconds) ?? 'Open Check'],
+                              ['Style', styleLabel],
+                              ['Status', ti.status === 'ready' ? 'Ready' : 'Partial'],
+                              ['Confidence', (ti.confidence ?? 'low').replace(/^./, c => c.toUpperCase())],
+                              ['Behavior lots', String(ti.tradeIntelLots)],
+                              ['Raw matched lots', String(ti.rawMatchedLots)],
+                              ['Public PnL lots', String(ti.publicPerformanceLots)],
+                              ['Avg hold', ti.avgHoldTimeLabel ?? fmtSecondsToHuman(ti.signals.avgHoldingTimeSeconds) ?? 'Open Check'],
+                              ['Profit skill', profitSkillText],
+                              ['Followability', followability],
                             ].map(([label,value]) => <div key={label} className="wpv3-metric-row"><span className="wpv3-label">{label}</span><span className="wpv3-value" style={{ fontSize: '20px', textTransform: 'capitalize' }}>{value}</span></div>)}
+                            {profitNotProven && <p className="wpv3-support" style={{ marginTop: '10px', color: '#fbbf24' }}>Strong behavior evidence. Profit edge not proven.</p>}
                             {ti.limitations.length > 0 && <div className="wpv3-label" style={{ marginTop: '14px' }}>Limitations</div>}
                             {ti.limitations.map(x => <div key={x} className="wpv3-support" style={{ marginTop: '6px' }}>○ {x.replace(/_/g, ' ')}</div>)}
                           </>
