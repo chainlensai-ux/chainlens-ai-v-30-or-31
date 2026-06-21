@@ -11,6 +11,22 @@ assert.match(snap, /Swap-derived from same-tx \$\{cp\.symbol\} quote leg \(no ro
 assert.match(snap, /Single-leg derived from same-tx \$\{peer\.symbol\} quote leg \(no router label needed\)/, 'single-leg quote-leg swap is reconstructed without a router label')
 assert.match(snap, /isVerifiedNativeQuoteLeg/, 'verified per-chain native quote-leg detection exists')
 
+
+// MICRO-WALLET-TARGETED-RECOVERY-REGRESSION: once the capped target-token recovery pass actually
+// runs for a micro wallet, public/debug labels must describe the attempted-but-unrecovered state
+// instead of stale value-tier/no-target skip reasons.
+assert.match(snap, /_syntheticTargetExtraRecoveryAttempted[\s\S]*\? 'targeted_recovery_attempted_no_prior_buy_found'/, 'targeted micro recovery attempts report targeted_recovery_attempted_no_prior_buy_found, not wallet_value_below_100')
+assert.match(snap, /reason: 'targeted_recovery_attempted_no_prior_buy_found'/, 'wallet recovery recommendation reports the attempted no-prior-buy result')
+assert.match(snap, /const syntheticTargetTokens = rankedTargetTokens\.length > 0 \? rankedTargetTokens : _syntheticLotTokenTargets/, 'synthetic lot targets feed recovery recommendation targets when ranked historical targets are empty')
+assert.match(snap, /closedLots: 0,[\s\S]*closedLotsForStats: 0,[\s\S]*verifiedClosedLots: 0,[\s\S]*winningClosedLots: 0,[\s\S]*losingClosedLots: 0,[\s\S]*breakEvenClosedLots: 0,/, 'synthetic missing-cost-basis lots are excluded from public closed/break-even trade counts')
+assert.match(snap, /syntheticClosedLotsExcluded: _syntheticLotsExcludedFromStatsFinal,/, 'excluded synthetic closed lots remain visible as syntheticClosedLotsExcluded')
+assert.match(route, /closedLots: ts\.closedLotsForStats \?\? 0,[\s\S]*winningClosedLots: 0,[\s\S]*losingClosedLots: 0,[\s\S]*breakEvenClosedLots: 0,[\s\S]*publicPnlStatus: 'open_check'/, 'response boundary keeps public closed-trade count at zero for open-check trade stats')
+assert.match(route, /snapshot\.dataFreshness = 'live'[\s\S]*snapshot\.cacheAgeSeconds = null/, 'live provider fetches cannot retain top-level cached freshness/cacheAge labels')
+
+const identity = fs.readFileSync('lib/server/walletIdentity.ts', 'utf8')
+assert.match(identity, /const nativeExposureAlreadyIncluded = topHoldings\.some/, 'wallet profile detects when ETH/native was already counted as a large-cap holding')
+assert.match(identity, /Math\.max\(0, Math\.min\(100, largeCapTokenExposure \+ \(nativeExposureAlreadyIncluded \? 0 : nativeExposurePercent\)\)\)/, 'large-cap/native exposure is clamped to 0-100 and avoids double-counting native ETH')
+
 // PnL quality tiers — no fake $0 PnL, every tier maps to real evidence
 assert.match(snap, /pnlQuality\?:\s*'exact_fifo' \| 'exact_fifo_micro_sample' \| 'fifo_with_estimates' \| 'sell_side_only' \| 'open_positions_cost_missing' \| 'activity_only' \| 'no_trade_evidence' \| 'missing_cost_basis'/, 'pnlQuality tier union is present')
 assert.match(snap, /_exactFifoEligible = _realClosedLotsCount > 0 && !_missingCostBasisProven/, 'exact FIFO eligibility requires real-backed, non-missing-cost-basis closed lots')

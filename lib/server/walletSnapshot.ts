@@ -11522,7 +11522,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       : _realPriorBuysRecoveredForSyntheticLots > 0
         ? null
         : _syntheticTargetExtraRecoveryAttempted
-          ? _syntheticTargetExtraStopReason
+          ? 'targeted_recovery_attempted_no_prior_buy_found'
           : (Object.entries(_syntheticTargetRecovery?.debug.syntheticTargetDropBreakdown ?? {}).sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'no_prior_buy_found_in_window')
   const _syntheticLotRecoveryDebug = {
     syntheticLotsDetected: _syntheticLotsDetected,
@@ -11614,7 +11614,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     syntheticTargets: _syntheticLotTokenTargets.length,
     targetTokens: _syntheticTargetExtraEligibleTokens.map(c => {
       const lot = _syntheticClosedLots.find(l => l.tokenAddress.toLowerCase() === c)
-      return { chain: lot?.chain ?? 'unknown', tokenContract: c, symbol: lot?.tokenSymbol ?? null }
+      return { chain: lot?.chain ?? 'unknown', tokenContract: c, symbol: lot?.tokenSymbol ?? c.slice(0, 8) }
     }),
     pagesAllowed: _syntheticTargetExtraPagesAllowed,
     pagesAttempted: _syntheticTargetExtraPagesAttempted,
@@ -11647,8 +11647,12 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     promotedTradeStatsSummary = {
       ...promotedTradeStatsSummary,
       status: 'open_check',
+      closedLots: 0,
       closedLotsForStats: 0,
       verifiedClosedLots: 0,
+      winningClosedLots: 0,
+      losingClosedLots: 0,
+      breakEvenClosedLots: 0,
       winRatePercent: null,
       scoreUnlocked: false,
       readyForWalletScore: false,
@@ -12196,9 +12200,19 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // PNL-SAFETY-FIX-6: synthetic closed lots are not "closed lots already found" — only a real
   // recovered buy (realClosedLots > 0) should suppress the recovery recommendation.
   const _walletRecoveryRecommendation: WalletSnapshot['walletRecoveryRecommendation'] = (() => {
-    const targetTokens = _rankedHistoricalTargets.slice(0, 3).map(t => ({
+    const rankedTargetTokens = _rankedHistoricalTargets.slice(0, 3).map(t => ({
       contract: t.contract, symbol: t.symbol, chain: t.chain, estimatedUsd: t.estimatedUsd,
     })).filter(t => t.estimatedUsd > 0)
+    const syntheticTargetTokens = rankedTargetTokens.length > 0 ? rankedTargetTokens : _syntheticLotTokenTargets.slice(0, 3).map(contract => ({
+      contract,
+      symbol: _syntheticClosedLots.find(l => l.tokenAddress.toLowerCase() === contract)?.tokenSymbol ?? contract.slice(0, 8),
+      chain: _syntheticClosedLots.find(l => l.tokenAddress.toLowerCase() === contract)?.chain ?? 'unknown',
+      estimatedUsd: _syntheticClosedLots.filter(l => l.tokenAddress.toLowerCase() === contract).reduce((sum, l) => sum + (l.proceedsUsd ?? 0), 0),
+    })).filter(t => t.contract)
+    const targetTokens = syntheticTargetTokens
+    if (_syntheticTargetExtraRecoveryAttempted && _syntheticTargetExtraPriorBuysFound === 0 && (promotedLotSummary.syntheticClosedLots ?? 0) > 0) {
+      return { recommended: false, mode: 'none', targetTokens, reason: 'targeted_recovery_attempted_no_prior_buy_found', estimatedExtraPages: 0 }
+    }
     if (targetTokens.length === 0) {
       return { recommended: false, mode: 'none', targetTokens: [], reason: 'no_useful_token_contracts', estimatedExtraPages: 0 }
     }
