@@ -323,6 +323,23 @@ export type WalletSnapshot = {
   excludedBreakEvenLots?: number
   winRateDefinition?: 'wins_over_performance_lots_excluding_break_even'
   walletEvidenceModel?: { rawClosedLots: number; reconstructedClosedLots: number; syntheticClosedLotsExcluded: number; estimateOnlyClosedLots: number; flatPriceClosedLotsExcluded: number; verifiedPnlClosedLots: number; decisivePnlClosedLots: number; performanceClosedLots: number; publicClosedLots: number; publicPerformanceClosedLots?: number; verifiedButExcludedClosedLots?: number; excludedClosedLots?: number; rawMatchedClosedLots?: number; publicRealizedPnlUsd: number | null; publicPerformanceRealizedPnlUsd?: number | null; publicWinRatePercent: number | null; publicPnlStatus: string; publicPnlStatusReason: string; publicPnlDisplayLabel?: string; publicPnlDisplayReason?: string }
+  // TRADE-INTEL-V1: behavior/rotation intelligence, additive to the public-PnL evidence model
+  // above — tradeIntelLots can unlock useful trading-style classification even when
+  // publicPerformanceLots is too small for profit skill/win-rate to unlock.
+  tradeIntelligence?: {
+    status: 'ready' | 'partial' | 'open_check'
+    tradeIntelLots: number
+    publicPerformanceLots: number
+    verifiedPnlLots: number
+    rawMatchedLots: number
+    excludedLots: number
+    verifiedButExcludedLots: number
+    confidence: 'high' | 'medium' | 'low'
+    primaryStyle: 'high_speed_rotator' | 'portfolio_rebalancer' | 'stable_quote_rotator' | 'accumulator' | 'distributor' | 'mixed_rotator' | 'not_enough_data'
+    summary: string
+    signals: { uniqueTokensTraded: number; avgHoldingTimeSeconds: number | null }
+    limitations: string[]
+  }
   walletEvidenceSummary: {
     status: 'ready' | 'partial' | 'missing_hashes' | 'no_events' | 'provider_unavailable' | 'not_requested'
     totalEvents: number
@@ -12870,9 +12887,59 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     }
   })()
 
+  // TRADE-INTEL-V1: behavior intelligence is additive to the existing public-PnL evidence model
+  // above — it never changes FIFO math or any performance/win-rate gating. A wallet can have many
+  // real-backed closed lots that are too flat/dust/independence-weak to count as public PnL but
+  // are still real trades, so trading style (rotation speed, token diversity) can be classified
+  // from the broader real-backed set while profit skill stays locked on the strict performance set.
+  const tradeIntelLots = _closedLotsForStatsFinal
+  const _tradeIntelUnlocked = tradeIntelLots >= 10 || _verifiedIndependentClosedLotsFinal >= 10
+  const _profitSkillUnlocked = _performanceClosedLotsFinal.length >= 10
+  const _avgHoldSecForIntel = _realBackedClosedLotsFinal.length > 0
+    ? _realBackedClosedLotsFinal.reduce((s, l) => s + (l.holdingTimeSeconds ?? 0), 0) / _realBackedClosedLotsFinal.length
+    : null
+  const _uniqueTokensForIntel = new Set(_realBackedClosedLotsFinal.map(l => l.tokenAddress.toLowerCase())).size
+  const primaryStyle: 'high_speed_rotator' | 'portfolio_rebalancer' | 'stable_quote_rotator' | 'accumulator' | 'distributor' | 'mixed_rotator' | 'not_enough_data' =
+    !_tradeIntelUnlocked ? 'not_enough_data'
+    : _avgHoldSecForIntel !== null && _avgHoldSecForIntel < 3600 ? 'high_speed_rotator'
+    : _uniqueTokensForIntel >= 5 ? 'portfolio_rebalancer'
+    : _uniqueTokensForIntel <= 2 ? 'stable_quote_rotator'
+    : 'mixed_rotator'
+  const tradeIntelligenceStatus: 'ready' | 'partial' | 'open_check' =
+    !_tradeIntelUnlocked ? 'open_check' : _profitSkillUnlocked ? 'ready' : 'partial'
+  const tradeIntelligenceConfidence: 'high' | 'medium' | 'low' =
+    tradeIntelLots >= 25 ? 'high' : tradeIntelLots >= 10 ? 'medium' : 'low'
+  const tradeIntelligenceSummary = !_tradeIntelUnlocked
+    ? 'Not enough verified trade behavior to classify this wallet yet.'
+    : `Trade intelligence ${tradeIntelligenceStatus === 'ready' ? 'ready' : 'available'}: ${tradeIntelLots} verified behavior lots detected.` +
+      (_profitSkillUnlocked ? '' : ` Profit skill locked because only ${_performanceClosedLotsFinal.length} public-grade performance lot${_performanceClosedLotsFinal.length === 1 ? '' : 's'} passed strict scoring.`)
+  const tradeIntelligenceLimitations: string[] = []
+  if (!_profitSkillUnlocked) tradeIntelligenceLimitations.push('profit_skill_locked_below_10_public_performance_lots')
+  if (_verifiedButExcludedClosedLotsFinal > 0) tradeIntelligenceLimitations.push('flat_price_and_dust_lots_excluded_from_behavior_confidence')
+  if (!_tradeIntelUnlocked) tradeIntelligenceLimitations.push('insufficient_verified_lots_for_behavior_classification')
+
+  const tradeIntelligence: NonNullable<WalletSnapshot['tradeIntelligence']> = {
+    status: tradeIntelligenceStatus,
+    tradeIntelLots,
+    publicPerformanceLots: _performanceClosedLotsFinal.length,
+    verifiedPnlLots: _verifiedIndependentClosedLotsFinal,
+    rawMatchedLots: _rawMatchedClosedLotsFinal,
+    excludedLots: _excludedClosedLotsFinal,
+    verifiedButExcludedLots: _verifiedButExcludedClosedLotsFinal,
+    confidence: tradeIntelligenceConfidence,
+    primaryStyle,
+    summary: tradeIntelligenceSummary,
+    signals: {
+      uniqueTokensTraded: _uniqueTokensForIntel,
+      avgHoldingTimeSeconds: _avgHoldSecForIntel,
+    },
+    limitations: tradeIntelligenceLimitations,
+  }
+
   const snapshot: WalletSnapshot = {
     pnlQuality: _pnlQuality,
     pnlQualityReason: _pnlQualityReason,
+    tradeIntelligence,
     walletRecoveryRecommendation: _walletRecoveryRecommendation,
     address: addr,
     totalValue,

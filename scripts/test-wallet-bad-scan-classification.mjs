@@ -205,4 +205,15 @@ assert.match(routeSrc, /payload\.walletHistoricalRecoveryStatus = historicalCapH
 assert.match(routeSrc, /payload\?\.walletHistoricalRecoveryReason === 'no_live_provider_calls_cache_hit' && !cacheHit/, 'no_live_provider_calls_cache_hit is stripped unless the response is a true cache hit')
 assert.match(ui, /`\$\{tradeClosedLots\} verified trades`/, 'public UI labels trade stats as verified trades, not raw matched lots')
 
+// TRADE-INTEL-V1: trade intelligence unlocks from the broader real-backed lot set even when
+// publicPerformanceLots (the strict profit-skill bar) stays small/locked.
+assert.match(snap, /const tradeIntelLots = _closedLotsForStatsFinal/, 'tradeIntelLots is derived from the real-backed closed-lot count, not the strict performance set')
+assert.match(snap, /const _tradeIntelUnlocked = tradeIntelLots >= 10 \|\| _verifiedIndependentClosedLotsFinal >= 10/, 'trade intelligence unlocks once either tradeIntelLots or verifiedIndependentClosedLots reaches 10')
+assert.match(snap, /const _profitSkillUnlocked = _performanceClosedLotsFinal\.length >= 10/, 'profit skill unlock stays gated on the strict performance lot count, separate from trade intel unlock')
+assert.match(snap, /'high_speed_rotator' \| 'portfolio_rebalancer' \| 'stable_quote_rotator' \| 'accumulator' \| 'distributor' \| 'mixed_rotator' \| 'not_enough_data'/, 'primaryStyle is restricted to the allowed behavior-style set and never includes sniper')
+assert.doesNotMatch(snap, /primaryStyle:[^\n]*'sniper'/, 'primaryStyle never assigns sniper from trade intelligence')
+assert.match(snap, /tradeIntelligence,\s*\n\s*walletRecoveryRecommendation: _walletRecoveryRecommendation,/, 'tradeIntelligence object is wired into the snapshot')
+assert.match(routeSrc, /tradeIntelligence: \{ status: tradeIntelStatus, tradeIntelLots, reason: tradeIntelReason \}/, 'walletModuleCoverage.tradeIntelligence is wired with status/tradeIntelLots/reason')
+assert.match(ui, /Trade Intelligence Read/, 'UI shows the separate Trade Intelligence Read module')
+
 console.log('wallet bad-scan classification checks passed')

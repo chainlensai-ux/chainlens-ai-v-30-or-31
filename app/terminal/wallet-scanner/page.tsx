@@ -153,6 +153,20 @@ type WalletResult = {
   unpricedHoldingsCount?: number
   pnlQuality?: 'exact_fifo' | 'exact_fifo_micro_sample' | 'fifo_with_estimates' | 'sell_side_only' | 'open_positions_cost_missing' | 'activity_only' | 'no_trade_evidence' | 'missing_cost_basis'
   pnlQualityReason?: string
+  tradeIntelligence?: {
+    status: 'ready' | 'partial' | 'open_check'
+    tradeIntelLots: number
+    publicPerformanceLots: number
+    verifiedPnlLots: number
+    rawMatchedLots: number
+    excludedLots: number
+    verifiedButExcludedLots: number
+    confidence: 'high' | 'medium' | 'low'
+    primaryStyle: 'high_speed_rotator' | 'portfolio_rebalancer' | 'stable_quote_rotator' | 'accumulator' | 'distributor' | 'mixed_rotator' | 'not_enough_data'
+    summary: string
+    signals: { uniqueTokensTraded: number; avgHoldingTimeSeconds: number | null }
+    limitations: string[]
+  }
   publicPnlStatus?: 'ok' | 'limited_verified_sample' | 'open_check' | 'near_flat_verified_sample' | 'flat_estimate_only' | 'partial_near_flat'
   publicPnlDisplayLabel?: string
   publicPnlDisplayReason?: string
@@ -1859,6 +1873,31 @@ export default function WalletScannerPage() {
                             {rows.map(([label,value]) => <div key={label} className="wpv3-metric-row"><span className="wpv3-label">{label}</span><span className="wpv3-value" style={{ fontSize: '20px', color: String(value).startsWith('+') ? '#7DDC9A' : String(value).startsWith('-') ? '#F08A8A' : '#F2F4F7' }}>{value}</span></div>)}
                           </>
                         })() : <div><div className="wpv3-value" style={{ fontSize: '24px' }}>Insufficient Trade Evidence</div><p className="wpv3-support">No fabricated win rate, PnL, or hold-time metrics are shown without reconstructed closed lots.</p></div>}
+                      </div>
+
+                      <div className="wpv3-card">
+                        <p className="wpv3-title">Trade Intelligence Read</p>
+                        {(() => {
+                          const ti = result.tradeIntelligence
+                          if (!ti || ti.status === 'open_check') {
+                            return <div><div className="wpv3-value" style={{ fontSize: '24px' }}>Not Enough Data</div><p className="wpv3-support">Not enough verified behavior lots to classify trading style.</p></div>
+                          }
+                          const profitLocked = ti.publicPerformanceLots < 10
+                          return <>
+                            <p className="wpv3-support" style={{ marginBottom: '8px' }}>{ti.summary}</p>
+                            {[
+                              ['Trade Style', ti.primaryStyle.replace(/_/g, ' ')],
+                              ['Behavior Lots', String(ti.tradeIntelLots)],
+                              ['Verified PnL Lots', String(ti.verifiedPnlLots)],
+                              ['Public Performance Lots', String(ti.publicPerformanceLots)],
+                              ['Profit Skill', profitLocked ? 'Locked' : 'Unlocked'],
+                              ['Tokens Rotated', String(ti.signals.uniqueTokensTraded)],
+                              ['Avg Hold Time', fmtSecondsToHuman(ti.signals.avgHoldingTimeSeconds) ?? 'Open Check'],
+                            ].map(([label,value]) => <div key={label} className="wpv3-metric-row"><span className="wpv3-label">{label}</span><span className="wpv3-value" style={{ fontSize: '20px', textTransform: 'capitalize' }}>{value}</span></div>)}
+                            {ti.limitations.length > 0 && <div className="wpv3-label" style={{ marginTop: '14px' }}>Limitations</div>}
+                            {ti.limitations.map(x => <div key={x} className="wpv3-support" style={{ marginTop: '6px' }}>○ {x.replace(/_/g, ' ')}</div>)}
+                          </>
+                        })()}
                       </div>
 
                       <div className="wpv3-card">

@@ -576,6 +576,17 @@ function buildWalletModuleCoverage(snap: any) {
   const txCount: number = bh?.txCount ?? 0
   const bhStatus = bh?.status === 'ok' && txCount > 0 ? 'ok' : bh?.status === 'ok' || bh?.status === 'partial' ? 'partial' : 'open_check'
 
+  // Trade intelligence — separate from fifoPnL/tradeStats: behavior evidence (rotation, hold
+  // time) can be useful even when too few lots pass the strict public-performance bar.
+  const ti = snap.tradeIntelligence
+  const tradeIntelLots: number = ti?.tradeIntelLots ?? 0
+  const tradeIntelStatus: 'ready' | 'partial' | 'open_check' = ti?.status ?? 'open_check'
+  const tradeIntelReason = ti
+    ? tradeIntelStatus === 'ready' ? `${tradeIntelLots}_verified_behavior_lots_ready`
+      : tradeIntelStatus === 'partial' ? `${tradeIntelLots}_verified_behavior_lots_profit_skill_locked`
+      : 'insufficient_verified_lots_for_behavior_classification'
+    : 'no_trade_intelligence_evidence'
+
   return {
     portfolio: { status: portStatus, evidence: holdingsCount > 0 ? ['holdings', ...(totalUsdAvailable ? ['total_value'] : [])] : [], reason: portStatus === 'ok' ? `${holdingsCount}_holdings_loaded` : portStatus === 'partial' ? 'holdings_loaded_value_incomplete' : 'no_holdings_found' },
     activity: { status: actStatus, evidence: totalEvents > 0 ? ['transfer_events', ...(hashCov >= 0.8 ? ['tx_hashes'] : []), ...(tsCov >= 0.8 ? ['timestamps'] : [])] : [], eventCount: totalEvents, reason: actReason },
@@ -583,6 +594,7 @@ function buildWalletModuleCoverage(snap: any) {
     priceEvidence: { status: priceStatus, pricedEvents, reason: priceReason },
     fifoPnL: { status: fifoStatus, closedLots, reason: fifoReason },
     tradeStats: { status: tradeStatus, closedLots: tradeClosedLots, rawClosedLots: rawStatsClosedLots, excludedLots, estimateOnlyClosedLots, syntheticClosedLotsExcluded, openedLots, readyForWinRate, reason: tradeReason },
+    tradeIntelligence: { status: tradeIntelStatus, tradeIntelLots, reason: tradeIntelReason },
     behavior: { status: bhStatus, reason: bhStatus === 'ok' ? 'activity_detected' : bhStatus === 'partial' ? 'limited_activity_signal' : 'no_activity_data' },
     walletOpenPositionSummary,
     openPositionPerformanceSummary,
