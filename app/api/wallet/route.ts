@@ -47,8 +47,15 @@ function normalizePublicPnlStatus(cp: any): any {
   const ts = cp?.walletTradeStatsSummary
   if (ts && typeof ts === 'object') {
     const noVerifiedClosedLots = ts.status === 'open_check' || (ts.closedLotsForStats ?? 0) === 0 || (ts.verifiedClosedLots ?? 0) === 0
-    if (noVerifiedClosedLots && ts.publicPnlStatus !== 'open_check') {
-      cp.walletTradeStatsSummary = { ...ts, publicPnlStatus: 'open_check' }
+    if (noVerifiedClosedLots) {
+      cp.walletTradeStatsSummary = {
+        ...ts,
+        closedLots: ts.closedLotsForStats ?? 0,
+        winningClosedLots: 0,
+        losingClosedLots: 0,
+        breakEvenClosedLots: 0,
+        publicPnlStatus: 'open_check',
+      }
     }
   }
   return cp
@@ -1666,6 +1673,10 @@ export async function POST(req: Request) {
       const _memoryCacheWriteStartedAt = Date.now()
       walletCache.set(cacheKey, { exp: Date.now() + _cacheTtlMs, payload: snapshot, cachedAt: Date.now() })
       _cacheWriteMs += Date.now() - _memoryCacheWriteStartedAt
+    }
+    if (snapshot._debug && typeof snapshot._debug === 'object' && (snapshot._debug as any).cacheHit === false) {
+      snapshot.dataFreshness = 'live'
+      snapshot.cacheAgeSeconds = null
     }
     attachWalletDeepScanTiming(snapshot, buildWalletDeepScanTiming(snapshot, startedAt, _cacheReadMs, _cacheWriteMs, { cacheHit: false, dedupeHit: inFlightDeduped }), debug)
     pruneWalletScannerDebug(snapshot, debug)

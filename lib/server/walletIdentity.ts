@@ -133,7 +133,9 @@ export function computeWalletProfile(snapshot: WalletSnapshot): WalletProfile {
   if (hasHoldings) {
     const memeHoldings = topHoldings.filter((h) => isLikelyMemeSymbol(h.symbol))
     const memeExposure = topHoldings.filter((h) => isLikelyMemeSymbol(h.symbol)).reduce((sum, h) => sum + (h.percent ?? 0), 0)
-    const largeCapExposure = topHoldings.filter((h) => isLargeCapSymbol(h.symbol)).reduce((sum, h) => sum + (h.percent ?? 0), 0) + nativeExposurePercent
+    const largeCapTokenExposure = topHoldings.filter((h) => isLargeCapSymbol(h.symbol)).reduce((sum, h) => sum + (h.percent ?? 0), 0)
+    const nativeExposureAlreadyIncluded = topHoldings.some((h) => isLargeCapSymbol(h.symbol) && /^(eth|weth|steth|wsteth|reth|cbeth)$/i.test(h.symbol ?? ''))
+    const largeCapExposure = Math.max(0, Math.min(100, largeCapTokenExposure + (nativeExposureAlreadyIncluded ? 0 : nativeExposurePercent)))
     const yieldExposure = topHoldings.filter((h) => isYieldSymbol(h.symbol)).reduce((sum, h) => sum + (h.percent ?? 0), 0)
     const largestPercent = topHoldings[0]?.percent ?? 0
 
