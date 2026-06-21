@@ -985,6 +985,14 @@ export type WalletSnapshot = {
       recoveredEventsPromoted: number
       recoveredEventsRejected: number
       sampleRecoveredPromotions: WalletTxEvidence[]
+      // TEMPORARY DEBUG ONLY (wallet attribution recovery audit) — verifies that
+      // walletAttributionRecovered survives unmodified from attachment to the final
+      // evidenceWithDetection output. Remove once the audit is resolved.
+      totalRecoveredEvents: number
+      highConfidenceRecoveredEvents: number
+      mediumConfidenceRecoveredEvents: number
+      lowConfidenceRecoveredEvents: number
+      sampleRecoveredEvents: WalletTxEvidence[]
       walletSwapReconstructionAudit?: {
         unknownEventsSeen: number
         unknownEventsUsedForContext: number
@@ -4450,6 +4458,8 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
     recoveredStableLegTransactions: 0, recoveredWethLegTransactions: 0,
     recoveredUnknownDirectionEventsBeforeFix: 0, recoveredSwapContextTransactionsBeforeFix: 0,
     recoveredEventsPromoted: 0, recoveredEventsRejected: 0, sampleRecoveredPromotions: [],
+    totalRecoveredEvents: 0, highConfidenceRecoveredEvents: 0, mediumConfidenceRecoveredEvents: 0,
+    lowConfidenceRecoveredEvents: 0, sampleRecoveredEvents: [],
   })
   const emptySummary = (missing: string[]): WalletSnapshot['walletSwapSummary'] => ({
     status: 'open_check', totalEvidenceEvents: 0, groupedTxCount: 0, swapCandidateEvents: 0,
@@ -4919,6 +4929,18 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
   const walletSideUnclassified = evidenceWithDetection.filter(e => e.swapDetection?.eventKind === 'unknown' && e.direction !== 'unknown' && e.amount > 0).length
   if (walletSideUnclassified > 0) unknownReasonCounts['wallet_side_no_swap_pattern'] = walletSideUnclassified
 
+  // ── TEMPORARY DEBUG (wallet attribution recovery audit) ──
+  // Verifies that `walletAttributionRecovered` survives from the point it is set (inside the
+  // unknown-direction branch above) through to the final evidenceWithDetection array returned
+  // by this function. If totalRecoveredEvents !== recoveredUnknownDirectionEventsCount, recovery
+  // metadata is being lost/overwritten somewhere between attachment and this point.
+  const recoveredEventsFinal = evidenceWithDetection.filter(e => e.walletAttributionRecovered === true)
+  const totalRecoveredEvents = recoveredEventsFinal.length
+  const highConfidenceRecoveredEvents = recoveredEventsFinal.filter(e => e.walletAttributionRecoveryConfidence === 'high').length
+  const mediumConfidenceRecoveredEvents = recoveredEventsFinal.filter(e => e.walletAttributionRecoveryConfidence === 'medium').length
+  const lowConfidenceRecoveredEvents = recoveredEventsFinal.filter(e => e.walletAttributionRecoveryConfidence === 'low').length
+  const sampleRecoveredEvents = recoveredEventsFinal.slice(0, 5)
+
   // ── TEMPORARY DEBUG (router-coverage / unknown-events audit) ──
   // Breaks unknownEvents down by which exclusion stage produced it, so a future router/
   // direction-resolution fix can be targeted at the highest-volume cause instead of guessing.
@@ -5063,6 +5085,8 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
       recoveredEventsPromoted: recoveredEventsPromotedCount,
       recoveredEventsRejected: recoveredEventsRejectedCount,
       sampleRecoveredPromotions: sampleRecoveredPromotions.slice(0, 5),
+      totalRecoveredEvents, highConfidenceRecoveredEvents, mediumConfidenceRecoveredEvents,
+      lowConfidenceRecoveredEvents, sampleRecoveredEvents,
       reasons: [],
     },
   }
