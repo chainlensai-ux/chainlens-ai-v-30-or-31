@@ -58,4 +58,20 @@ assert.match(snap, /_anyTargetedRecoveryAttempted = _syntheticTargetExtraRecover
 assert.match(snap, /_anyTargetedRecoveryAttempted\s*\n\s*\? 'targeted_recovery_attempted_no_prior_buy_found'/, 'Recovery V2 attempts are folded into the same targeted_recovery_attempted_no_prior_buy_found label as the existing targeted extra-page mechanism')
 assert.match(snap, /syntheticTargetTokens = rankedTargetTokens\.length > 0 \? rankedTargetTokens : _syntheticLotTokenTargets\.slice\(0, 3\)/, 'walletRecoveryRecommendation falls back to synthetic lot target tokens instead of reporting no_useful_token_contracts when one exists')
 
+// RECOVERY-REC-FIX-1: a wallet with synthetic closed lots excluded for missing cost basis, plus
+// known target token contracts, must still be recommended=true (with blockedByCostGuard) rather
+// than silently reporting recommended=false/mode=none — recommendation must never contradict
+// eligibilityReasons that are entirely positive.
+assert.match(snap, /blockedByCostGuard\?:\s*boolean/, 'walletRecoveryRecommendation type includes blockedByCostGuard')
+assert.match(snap, /costGuardReason\?:\s*string/, 'walletRecoveryRecommendation type includes costGuardReason')
+assert.doesNotMatch(snap, /_missingCostBasisProven && \(promotedLotSummary\.syntheticClosedLots \?\? 0\) > 0 && !_adminOverrideUsed\) \{\s*\n\s*return \{ recommended: false, mode: 'none'/, 'cost-basis-guard branch no longer silently returns recommended=false')
+assert.match(snap, /reason: 'missing_cost_basis_synthetic_lots_excluded',\s*\n\s*estimatedExtraPages: Math\.min\(2, targetTokens\.length\),\s*\n\s*blockedByCostGuard: true,/, 'cost-basis-guard branch recommends targeted recovery with blockedByCostGuard=true instead of none')
+
+// Historical eligibility must never report eligible=false alongside an entirely-positive
+// eligibilityReasons list — the cost guard zeroing the broad-pass budget is now a distinguishable,
+// explicit state (notRunDueToCostGuard) instead of an unexplained false.
+assert.match(snap, /notRunDueToCostGuard\?:\s*boolean/, 'walletHistoricalScanDebug type includes notRunDueToCostGuard')
+assert.match(snap, /_historicalNotRunDueToCostGuard = _historicalEligibleCoreCriteria && !_historicalEligible && _missingCostBasisGuardActive/, 'notRunDueToCostGuard is derived from core eligibility criteria passing while only the cost guard blocks the broad pass')
+assert.match(snap, /eligible: _historicalEligible \|\| _historicalNotRunDueToCostGuard,/, 'walletHistoricalScanDebug.eligible reports true when only the cost guard withheld the scan')
+
 console.log('wallet PnL recovery depth checks passed')

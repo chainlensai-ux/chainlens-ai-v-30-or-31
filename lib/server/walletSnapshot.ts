@@ -531,6 +531,10 @@ export type WalletSnapshot = {
     targetTokens: Array<{ contract: string; symbol: string; chain: string; estimatedUsd: number }>
     reason: string
     estimatedExtraPages: number
+    // Set when a recovery is recommended but the cost-basis guard prevents it from running
+    // automatically — never used to flip `recommended` to false on its own.
+    blockedByCostGuard?: boolean
+    costGuardReason?: string
   }
 
   walletTradeStatsSource: 'base_sample' | 'historical_promoted_preview'
@@ -1097,6 +1101,9 @@ export type WalletSnapshot = {
     walletPnlRecoveryV2Debug?: WalletPnlRecoveryV2Debug
     walletHistoricalScanDebug?: {
       requested: boolean; eligible: boolean; eligibilityReasons: string[]
+      // True when every real eligibility criterion passed but the cost-basis guard zeroed the
+      // broad-pass page budget — distinguishes "not eligible" from "eligible, withheld by guard".
+      notRunDueToCostGuard?: boolean
       walletValueTier: WalletValueTier | null
       targetTokens: string[]
       targetTokenRankingReason?: Array<{ contract: string; symbol: string; reasons: string[]; estimatedUsd: number }>
@@ -11765,16 +11772,23 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     GOLDRUSH_KEY
   )
   if (_syntheticLotRecoveryTrigger) _eligibilityReasons.push('synthetic_fifo_lots_need_real_buys')
-  const _historicalEligible = Boolean(
+  const _historicalEligibleCoreCriteria = Boolean(
     (historicalCoverage || _syntheticLotRecoveryTrigger) &&
     activityRequested &&
     (_adminOverrideUsed || totalValue >= 100) &&
     (walletTradeStatsSummary.closedLots < 10 || _coverageTriggersHistorical || _syntheticLotRecoveryTrigger) &&
     ((_lotEngineDebug.unmatchedSells ?? 0) > 0 || (_lotEngineDebug.openedLots ?? 0) > 0 || (walletSwapSummary.swapCandidateEvents ?? 0) > 0) &&
     _targetContracts.size > 0 &&
-    _pagesAllowedForBroadPass > 0 &&
+    _pagesAllowed > 0 &&
     GOLDRUSH_KEY
   )
+  const _historicalEligible = _historicalEligibleCoreCriteria && _pagesAllowedForBroadPass > 0
+  // RECOVERY-REC-FIX-1: when every real eligibility criterion is met but the cost-basis guard
+  // zeroed _pagesAllowedForBroadPass (see above), eligible must not read false next to an
+  // eligibilityReasons list that is entirely positive — that combination is contradictory. Surface
+  // the actual blocker explicitly instead.
+  const _historicalNotRunDueToCostGuard = _historicalEligibleCoreCriteria && !_historicalEligible && _missingCostBasisGuardActive
+  if (_historicalNotRunDueToCostGuard) _skipReasons.push('broad_pass_budget_zeroed_by_cost_guard')
   const _historicalTriggeredBySyntheticLots = _historicalEligible && !historicalCoverage && _syntheticLotRecoveryTrigger
   const _runHistoricalCoverage = _historicalEligible
   let walletHistoricalCoverageSummary: WalletSnapshot['walletHistoricalCoverageSummary']
@@ -12833,7 +12847,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   }
   const _walletHistoricalScanDebug = {
     requested: historicalCoverage,
-    eligible: _historicalEligible,
+    eligible: _historicalEligible || _historicalNotRunDueToCostGuard,
+    notRunDueToCostGuard: _historicalNotRunDueToCostGuard,
     eligibilityReasons: _eligibilityReasons,
     walletValueTier: _walletValueTier,
     targetTokens: _rankedHistoricalTargets.map(t => t.contract),
@@ -13171,8 +13186,21 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     if (_realClosedLotsCount > 0) {
       return { recommended: false, mode: historicalAttempted ? 'attempted_light' : 'none', targetTokens, reason: (promotedTradeStatsSummary.syntheticClosedLotsExcluded ?? 0) > 0 || (promotedTradeStatsSummary.estimateOnlyClosedLots ?? 0) > 0 ? 'verified_stats_available_excluded_lots_remain' : 'closed_lots_already_found', estimatedExtraPages: 0 }
     }
+    // RECOVERY-REC-FIX-1: a wallet with synthetic closed lots excluded for missing cost basis,
+    // plus known target token contracts, IS a real targeted-recovery candidate — the cost guard
+    // blocks it from auto-running, but that is not the same as "nothing to recommend". Surface
+    // recommended=true with blockedByCostGuard=true instead of silently reporting none/false,
+    // which previously made eligibilityReasons and the recommendation contradict each other.
     if (_missingCostBasisProven && (promotedLotSummary.syntheticClosedLots ?? 0) > 0 && !_adminOverrideUsed) {
-      return { recommended: false, mode: 'none', targetTokens, reason: 'missing_cost_basis_synthetic_lots_excluded', estimatedExtraPages: 0 }
+      return {
+        recommended: true,
+        mode: 'targeted_token_recovery',
+        targetTokens,
+        reason: 'missing_cost_basis_synthetic_lots_excluded',
+        estimatedExtraPages: Math.min(2, targetTokens.length),
+        blockedByCostGuard: true,
+        costGuardReason: 'missing_cost_basis_guard_active',
+      }
     }
     return {
       recommended: true,
