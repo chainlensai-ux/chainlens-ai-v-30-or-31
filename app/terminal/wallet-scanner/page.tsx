@@ -263,7 +263,7 @@ type WalletResult = {
     economicSignificanceReason: string
     missing: string[]
     closedLotsForStats?: number
-    publicPnlStatus?: 'ok' | 'open_check'
+    publicPnlStatus?: 'ok' | 'limited_verified_sample' | 'open_check'
     pnlUnavailableReason?: string | null
     verifiedClosedLots?: number
     rawClosedLots?: number
@@ -287,7 +287,7 @@ type WalletResult = {
     entryTxHash?: string | null
     exitTxHash?: string | null
     verificationStatus?: 'verifiable' | 'partial' | 'not_available' | 'synthetic_cost_basis_missing'
-    publicPnlStatus?: 'ok' | 'open_check'
+    publicPnlStatus?: 'ok' | 'limited_verified_sample' | 'open_check'
     pnlUnavailableReason?: string | null
   }>
   walletPersonality?: {
@@ -296,18 +296,18 @@ type WalletResult = {
     summary: string
   }
   walletPnlWindows?: {
-    '3d': { realizedPnlUsd: number; closedLots: number; winRatePercent: number | null } | { closedLots: 0; fallback: string }
-    '7d': { realizedPnlUsd: number; closedLots: number; winRatePercent: number | null } | { closedLots: 0; fallback: string }
-    '30d': { realizedPnlUsd: number; closedLots: number; winRatePercent: number | null } | { closedLots: 0; fallback: string }
+    '3d': { realizedPnlUsd: number; closedLots: number; winRatePercent: number | null; winRateStatus?: 'unlocked' | 'locked_small_sample'; publicPnlStatus?: string } | { closedLots: 0; fallback: string }
+    '7d': { realizedPnlUsd: number; closedLots: number; winRatePercent: number | null; winRateStatus?: 'unlocked' | 'locked_small_sample'; publicPnlStatus?: string } | { closedLots: 0; fallback: string }
+    '30d': { realizedPnlUsd: number; closedLots: number; winRatePercent: number | null; winRateStatus?: 'unlocked' | 'locked_small_sample'; publicPnlStatus?: string } | { closedLots: 0; fallback: string }
   }
   walletBotScore?: {
-    score: number
-    classification: 'Likely bot' | 'Possibly semi-automated' | 'Likely human/manual'
+    score: number | null
+    classification: 'Likely bot' | 'Possibly semi-automated' | 'Likely human/manual' | 'Not enough data'
     reason: string
   }
   walletScanCostMode?: 'basic' | 'basic_cached' | 'deep_cached' | 'deep_live' | 'historical_cached' | 'historical_live' | 'blocked_by_cooldown' | 'blocked_by_cost_guard'
   walletScanCacheNote?: string
-  pnlCacheQuality?: 'complete' | 'partial_needs_historical' | 'stale_low_coverage'
+  pnlCacheQuality?: 'complete' | 'partial_needs_historical' | 'stale_low_coverage' | 'partial_public_performance' | 'partial_invalid_integrity' | 'limited_verified_sample'
   walletPnlRecoveryCta?: string
   walletHistoricalRecoveryStatus?: 'needed' | 'attempted' | 'attempted_light' | 'attempted_capped' | 'attempted_recovered' | 'attempted_no_recovery' | 'not_attempted' | 'blocked' | 'timed_out'
   walletHistoricalRecoveryReason?: string | null

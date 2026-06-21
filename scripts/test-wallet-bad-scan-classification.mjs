@@ -176,6 +176,20 @@ assert.match(snap, /publicStatsLotCountAfterPriceIndependence\?: number/, 'debug
 assert.match(snap, /_allRealBackedLotsFlatEstimate \? 'flat_price_estimate_only'/, 'flat-estimate-only wallets receive the flat_price_estimate_only PnL quality reason')
 assert.match(snap, /walletClosedLotsAll: _performanceClosedLotsFinal/, 'wallet personality/profile inputs receive only verified_pnl closed lots')
 
+
+
+// Public evidence gating regressions for 0x48d4d1d6035326afad16bd061e2620144b2775f1.
+assert.match(intel, /personality:\s*'Not enough data'[\s\S]*Public performance sample is too small or partial to classify trading personality/, 'walletPersonality locks to Not enough data when scoreUnlocked is false or public evidence is partial')
+assert.match(intel, /classification:\s*'Not enough data'[\s\S]*Bot\/automation read is locked until enough performance-grade trades pass public evidence checks/, 'walletBotScore does not classify semi-automated when scoreUnlocked is false or integrity is invalid')
+assert.match(snap, /const winRatePercent = winRateComputed \? \(winning\.length \/ n\) \* 100 : null/, 'winRatePercent is null when sample is below the win-rate threshold')
+assert.match(snap, /publicWinRatePercent: _performanceStats\.scoreUnlocked === true \? _performanceStats\.winRatePercent : null/, 'publicWinRatePercent is null when scoreUnlocked is false')
+assert.match(snap, /winRatePercent: snapshot\.walletTradeStatsSummary\?\.scoreUnlocked === true \? \(snapshot\.walletTradeStatsSummary\?\.winRatePercent \?\? null\) : null/, 'walletProfileDebug.scoreInputs.winRatePercent is null, not zero, while win rate is locked')
+assert.match(snap, /winRateStatus: snapshot\.walletTradeStatsSummary\?\.scoreUnlocked === true[\s\S]*'locked_small_sample'/, 'walletProfileDebug.scoreInputs exposes locked_small_sample for locked win rate')
+assert.match(routeSrc, /if \(snap\?\.pnlIntegrityCheck\?\.status === 'invalid'\) return 'partial_invalid_integrity'/, 'pnlCacheQuality is not complete when PnL integrity is invalid')
+assert.match(routeSrc, /performanceClosedLots > 0 && performanceClosedLots < 10 \? 'limited_verified_sample' : 'partial_public_performance'/, 'pnlCacheQuality marks limited verified samples instead of complete')
+assert.match(routeSrc, /open_lots_tracked_public_pnl_partial/, 'open_lots_tracked_no_closed_trades is not emitted when raw closed lots exist')
+assert.match(routeSrc, /_publicBudget\.actualCreditsUsed = _actualCreditsUsed[\s\S]*_publicBudget\.creditsUsed = _actualCreditsUsed/, 'walletScanBudget.actualCreditsUsed equals public creditsUsed and reconciles to apiAudit totalCredits')
+
 // Budget/audit consistency: walletScanBudget.creditsUsed must not silently understate apiAudit.totalCredits.
 assert.match(routeSrc, /const _actualCreditsUsed = Number\(snapshot\._diagnostics\?\.apiAudit\?\.totalCredits \?\? _estimatedCreditsUsed\)/, 'walletScanBudget reconciles against the real apiAudit.totalCredits figure')
 assert.match(routeSrc, /_publicBudget\.estimatedCreditsUsed = _estimatedCreditsUsed/, 'walletScanBudget exposes the budget-debug estimate distinctly')
