@@ -411,6 +411,12 @@ export type WalletSnapshot = {
     // synthetic FIFO-backfilled lots). verifiedClosedLots is the real-backed-only count callers
     // should treat as the public "trades found" number.
     verifiedClosedLots?: number
+    // PNL-SYNTH-FILTER-FIX: closedLots above (and every win/loss/avg/median/holding-time/largest
+    // win-loss field) is recomputed from the real-backed-only lot set once any synthetic
+    // FIFO-backfilled lots exist, so public trade stats never mix raw and real-backed counts.
+    // rawClosedLots preserves the original (pre-synthetic-filter) count for debug/back-reference.
+    rawClosedLots?: number
+    syntheticClosedLotsExcluded?: number
   }
 
   // FIFO-RECON-FIX-3: per-wallet PnL quality tier, derived from existing closed-lot/sell/holding
@@ -451,6 +457,10 @@ export type WalletSnapshot = {
     publicPnlStatus?: 'ok' | 'open_check'
     pnlUnavailableReason?: string | null
   }>
+  // PNL-SYNTH-FILTER-FIX: synthetic (no real recovered buy) closed lots are never mixed into the
+  // public walletClosedTradeSamples above — they are kept here, debug-only, so internal tooling can
+  // still inspect them without a public consumer mistaking one for a verified trade.
+  walletSyntheticClosedTradeSamples?: WalletSnapshot['walletClosedTradeSamples']
   walletClosedLotsAll: WalletClosedLot[]
   walletHistoricalCoverageSummary: {
     status: 'not_requested' | 'open_check' | 'partial' | 'ok'
@@ -11041,7 +11051,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _skipReasons: string[] = []
   if (totalValue >= 100 || _adminOverrideUsed) _eligibilityReasons.push('wallet_value_meets_threshold'); else _skipReasons.push('wallet_value_below_100')
   if (deepActivity) _eligibilityReasons.push('deep_scan_requested'); else _skipReasons.push('deep_scan_not_requested')
-  if (walletTradeStatsSummary.closedLots < 10) _eligibilityReasons.push('closed_lots_below_score_threshold'); else _skipReasons.push('already_has_10_closed_lots')
+  if (walletTradeStatsSummary.closedLots < 10) _eligibilityReasons.push('closed_lots_below_score_threshold'); else _skipReasons.push('closed_lots_already_found')
   if ((_lotEngineDebug.unmatchedSells ?? 0) > 0 || (_lotEngineDebug.openedLots ?? 0) > 0 || (walletSwapSummary.swapCandidateEvents ?? 0) > 0) _eligibilityReasons.push('fifo_or_swap_evidence_needs_recovery'); else _skipReasons.push('no_swap_or_lot_evidence')
   if (_targetContracts.size > 0) _eligibilityReasons.push('exact_token_contracts_known'); else _skipReasons.push('no_useful_token_contracts')
   if (_pagesAllowed > 0) _eligibilityReasons.push('scan_budget_has_room'); else _skipReasons.push('budget_remaining_too_low')
@@ -11588,12 +11598,34 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       ])),
     }
   } else {
-    promotedTradeStatsSummary = {
-      ...promotedTradeStatsSummary,
-      closedLotsForStats: _closedLotsForStatsFinal,
-      verifiedClosedLots: _closedLotsForStatsFinal,
-      publicPnlStatus: 'ok',
-      pnlUnavailableReason: null,
+    const _rawClosedLotsFinal = promotedTradeStatsSummary.closedLots ?? 0
+    // PNL-SYNTH-FILTER-FIX: when synthetic FIFO-backfilled lots exist alongside real-backed ones,
+    // every public trade-stat aggregate (win/loss counts, win rate, avg/median return, holding
+    // time, largest win/loss) must come from the real-backed lots only — re-run the same trade-
+    // stats computation (no new provider calls, pure re-aggregation) on the real-backed subset so
+    // synthetic lots can never skew a public number.
+    if (_syntheticLotsExcludedFromStatsFinal > 0 && _closedLotsForStatsFinal > 0) {
+      const _realBackedStats = buildTradeStatsSummary(_realBackedClosedLotsFinal, activityRequested, totalValue)
+      for (const k of _realBackedStats.quarantinedLotKeys) _quarantinedLotKeys.push(k)
+      promotedTradeStatsSummary = {
+        ..._realBackedStats.summary,
+        closedLotsForStats: _closedLotsForStatsFinal,
+        verifiedClosedLots: _closedLotsForStatsFinal,
+        publicPnlStatus: 'ok',
+        pnlUnavailableReason: null,
+        rawClosedLots: _rawClosedLotsFinal,
+        syntheticClosedLotsExcluded: _syntheticLotsExcludedFromStatsFinal,
+      }
+    } else {
+      promotedTradeStatsSummary = {
+        ...promotedTradeStatsSummary,
+        closedLotsForStats: _closedLotsForStatsFinal,
+        verifiedClosedLots: _closedLotsForStatsFinal,
+        publicPnlStatus: 'ok',
+        pnlUnavailableReason: null,
+        rawClosedLots: _rawClosedLotsFinal,
+        syntheticClosedLotsExcluded: _syntheticLotsExcludedFromStatsFinal,
+      }
     }
   }
 
@@ -11630,10 +11662,13 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _sampleSourceLots = _quarantinedLotKeySet.size > 0
     ? _sampleSourceLotsRaw.filter(l => !_quarantinedLotKeySet.has(_closedLotKey(l)))
     : _sampleSourceLotsRaw
-  // PNL-SAFETY-FIX-3: when no real-backed closed lot exists at all, synthetic lots must not be
-  // surfaced as public closed-trade samples — they'd otherwise look like verifiable trades.
-  const _sampleEligibleLots = _closedLotsForStatsFinal === 0 ? [] : _sampleSourceLots
-  const walletClosedTradeSamples: WalletSnapshot['walletClosedTradeSamples'] = _sampleEligibleLots.slice(0, 5).map(l => {
+  // PNL-SAFETY-FIX-3 / PNL-SYNTH-FILTER-FIX: when no real-backed closed lot exists at all, OR for
+  // any individual synthetic lot, it must not be surfaced as a public closed-trade sample (or in
+  // walletClosedLotsAll) — it would otherwise look like a verifiable trade. Synthetic lots are
+  // kept separately, debug-only, via walletSyntheticClosedTradeSamples below.
+  const _sampleEligibleLots = _closedLotsForStatsFinal === 0 ? [] : _sampleSourceLots.filter(_isRealBackedClosedLot)
+  const _syntheticSampleLots = _closedLotsForStatsFinal === 0 ? [] : _sampleSourceLots.filter(l => !_isRealBackedClosedLot(l))
+  const _toClosedTradeSample = (l: WalletClosedLot): WalletSnapshot['walletClosedTradeSamples'][number] => {
     const entryTxHash = l.openedTxHash ?? null
     const exitTxHash = l.closedTxHash ?? null
     const isRealBacked = _isRealBackedClosedLot(l)
@@ -11659,7 +11694,23 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       publicPnlStatus: isRealBacked ? 'ok' : 'open_check',
       pnlUnavailableReason: isRealBacked ? null : 'missing_cost_basis',
     }
+  }
+  // Sort real-backed samples by usefulness: meaningful cost basis first, then confidence,
+  // then non-zero realized PnL, then most recently closed.
+  const _confidenceRank = (c: WalletClosedLot['confidence']) => c === 'high' ? 0 : c === 'medium' ? 1 : 2
+  const _sortedSampleEligibleLots = [..._sampleEligibleLots].sort((a, b) => {
+    const aMeaningful = a.costBasisUsd >= (promotedTradeStatsSummary.dustThresholdUsd ?? 5) ? 1 : 0
+    const bMeaningful = b.costBasisUsd >= (promotedTradeStatsSummary.dustThresholdUsd ?? 5) ? 1 : 0
+    if (aMeaningful !== bMeaningful) return bMeaningful - aMeaningful
+    const confDiff = _confidenceRank(a.confidence) - _confidenceRank(b.confidence)
+    if (confDiff !== 0) return confDiff
+    const aNonZero = a.realizedPnlUsd != null && a.realizedPnlUsd !== 0 ? 1 : 0
+    const bNonZero = b.realizedPnlUsd != null && b.realizedPnlUsd !== 0 ? 1 : 0
+    if (aNonZero !== bNonZero) return bNonZero - aNonZero
+    return new Date(b.closedAt).getTime() - new Date(a.closedAt).getTime()
   })
+  const walletClosedTradeSamples: WalletSnapshot['walletClosedTradeSamples'] = _sortedSampleEligibleLots.slice(0, 5).map(_toClosedTradeSample)
+  const walletSyntheticClosedTradeSamples: WalletSnapshot['walletSyntheticClosedTradeSamples'] = _syntheticSampleLots.slice(0, 5).map(_toClosedTradeSample)
 
   const _grEthAttempted = _shouldFetchGrEth
   const _grBaseAttempted = activityRequested && Boolean(GOLDRUSH_KEY)
@@ -12051,8 +12102,18 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // exact_fifo must never claim clean FIFO when the public PnL it's describing came from a
   // quarantined (outlier-filtered) lot set rather than the full raw lot set.
   const _hasOutlierExclusions = _quarantinedLotKeys.length > 0
+  // PNL-SYNTH-FILTER-FIX: a wallet can have plenty of real-backed closed lots and still have
+  // synthetic FIFO-backfilled lots sitting alongside them (e.g. 56 real-backed + 57 synthetic) —
+  // exact_fifo is a "clean FIFO, nothing excluded" claim, so it must require zero synthetic/
+  // unknown-cost exclusions AND that every raw closed lot is accounted for as real-backed.
+  const _hasSyntheticExclusions = (promotedLotSummary.syntheticLotsExcludedFromStats ?? 0) > 0
+    || (promotedTradeStatsSummary.syntheticClosedLotsExcluded ?? 0) > 0
+  const _hasUnknownCostSellLots = (promotedLotSummary.unknownCostSellLots ?? 0) > 0
+  const _allRawLotsRealBacked = _realClosedLotsCount > 0 && _realClosedLotsCount === (promotedLotSummary.closedLots ?? 0)
+  const _exactFifoCleanEligible = _exactFifoEligible && !_hasOutlierExclusions && !_hasSyntheticExclusions && !_hasUnknownCostSellLots && _allRawLotsRealBacked
   const _pnlQuality: WalletSnapshot['pnlQuality'] =
-    _exactFifoEligible && _exactFifoIsMeaningful && !_hasOutlierExclusions ? 'exact_fifo'
+    _exactFifoCleanEligible && _exactFifoIsMeaningful ? 'exact_fifo'
+      : _exactFifoEligible && _exactFifoIsMeaningful && (_hasSyntheticExclusions || _hasUnknownCostSellLots) ? 'fifo_with_estimates'
       : _exactFifoEligible ? 'exact_fifo_micro_sample'
       : _missingCostBasisProven && (promotedLotSummary.syntheticClosedLots ?? 0) > 0 ? 'missing_cost_basis'
         : _unmatchedSellsCount > 0 ? 'sell_side_only'
@@ -12060,7 +12121,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
             : _hasActivityEvidence ? 'activity_only'
               : 'no_trade_evidence'
   const _pnlQualityReason: string =
-    _pnlQuality === 'exact_fifo_micro_sample' && _hasOutlierExclusions ? 'outlier_lots_excluded'
+    _pnlQuality === 'fifo_with_estimates' ? 'verified_fifo_with_synthetic_lots_excluded'
+      : _pnlQuality === 'exact_fifo_micro_sample' && _hasOutlierExclusions ? 'outlier_lots_excluded'
       : _pnlQuality === 'exact_fifo_micro_sample' ? 'exact_fifo_but_micro_sample'
       : _exactFifoEligible && !_exactFifoIsMeaningful ? 'verified_lots_below_meaningful_threshold'
         : _pnlQuality === 'exact_fifo' ? 'meaningful_verified_closed_lots'
@@ -12124,7 +12186,11 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     walletTradeStatsSource,
     tokenUsage: EMPTY_TOKEN_USAGE(),
     walletClosedTradeSamples,
-    walletClosedLotsAll: _sampleSourceLots,
+    walletSyntheticClosedTradeSamples,
+    // PNL-SYNTH-FILTER-FIX: real-backed only — synthetic FIFO-backfilled lots must never be
+    // treated as verified closed trades by downstream consumers (wallet personality, PnL
+    // windows, etc.). Full pre-filter lots remain available via _closedLots/debug for audit.
+    walletClosedLotsAll: _sampleEligibleLots,
     walletHistoricalCoverageSummary,
     walletHistoricalCandidateSummary,
     walletHistoricalPricingPreviewSummary,
@@ -12501,6 +12567,14 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     snapshot.pnlCompletenessScore = _p6Completeness.score
     snapshot.isPnlPartial = _p6Completeness.isPartial
     snapshot.pnlIntegrityCheck = { ok: _p6Integrity.ok, violations: _p6Integrity.violations, status: _p6Integrity.status }
+    // PNL-SYNTH-FILTER-FIX: a hard-invalid integrity check (e.g. sells_exceed_buys, portfolio
+    // mismatch) means the public PnL numbers are not a clean exact_fifo result even if the
+    // earlier eligibility checks passed — downgrade rather than report clean FIFO over evidence
+    // CORTEX itself flagged as invalid.
+    if (_p6Integrity.status === 'invalid' && snapshot.pnlQuality === 'exact_fifo') {
+      snapshot.pnlQuality = 'fifo_with_estimates'
+      snapshot.pnlQualityReason = 'pnl_integrity_check_invalid'
+    }
 
     // Append new normalized Phase 6 reason keys to the existing _diagnostics.missingReasons
     // array additively — existing entries are preserved untouched.

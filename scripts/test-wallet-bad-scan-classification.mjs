@@ -48,9 +48,9 @@ assert.match(route, /swapReconstructionV1Reason: 'not_available_from_cached_snap
 
 // DUST-FIFO-FIX: verified closed lots that are all dust must not unlock exact_fifo or a
 // Rotator/Sniper/Smart Money/Degen personality label.
-assert.match(snap, /_exactFifoEligible && _exactFifoIsMeaningful && !_hasOutlierExclusions \? 'exact_fifo'/, 'exact_fifo requires economically meaningful closed lots, not just any real-backed closed lot')
+assert.match(snap, /_exactFifoCleanEligible && _exactFifoIsMeaningful \? 'exact_fifo'/, 'exact_fifo requires economically meaningful closed lots, not just any real-backed closed lot')
 assert.match(snap, /: _exactFifoEligible \? 'exact_fifo_micro_sample'/, 'verified dust-only closed lots map to exact_fifo_micro_sample instead of exact_fifo')
-assert.match(snap, /_pnlQuality === 'exact_fifo_micro_sample' && _hasOutlierExclusions \? 'outlier_lots_excluded'\s*\n\s*: _pnlQuality === 'exact_fifo_micro_sample' \? 'exact_fifo_but_micro_sample'/, 'pnlQualityReason explains the micro-sample downgrade')
+assert.match(snap, /_pnlQuality === 'fifo_with_estimates' \? 'verified_fifo_with_synthetic_lots_excluded'\s*\n\s*: _pnlQuality === 'exact_fifo_micro_sample' && _hasOutlierExclusions \? 'outlier_lots_excluded'\s*\n\s*: _pnlQuality === 'exact_fifo_micro_sample' \? 'exact_fifo_but_micro_sample'/, 'pnlQualityReason explains the micro-sample downgrade')
 assert.match(snap, /_exactFifoEligible && !_exactFifoIsMeaningful \? 'verified_lots_below_meaningful_threshold'/, 'pnlQualityReason flags verified lots below the meaningful threshold')
 assert.match(ui, /q === 'exact_fifo_micro_sample'\) return 'Verified dust trades found, not enough meaningful trade data'/, 'UI shows dust-only verified trades as not-meaningful, not strong exact FIFO performance')
 
@@ -68,8 +68,30 @@ assert.match(snap, /const _quarantinedLotKeySet = new Set\(_quarantinedLotKeys\)
 assert.match(snap, /realizedPnlUsd: promotedTradeStatsSummary\.realizedPnlUsd,\s*\n\s*realizedPnlPercent: promotedTradeStatsSummary\.realizedPnlPercent,/, 'walletLotSummary realized PnL is re-derived from the quarantine-safe trade stats, not raw FIFO lots, once outliers are excluded')
 assert.match(snap, /_sampleSourceLotsRaw\.filter\(l => !_quarantinedLotKeySet\.has\(_closedLotKey\(l\)\)\)/, 'closed-trade samples (and walletClosedLotsAll) drop outlier-quarantined lots so they are never shown as normal verified trades')
 assert.match(snap, /const _hasOutlierExclusions = _quarantinedLotKeys\.length > 0/, 'pnlQuality computation knows whether any outlier lots were excluded')
-assert.match(snap, /_exactFifoEligible && _exactFifoIsMeaningful && !_hasOutlierExclusions \? 'exact_fifo'/, 'exact_fifo is never reported when public PnL is based on an outlier-filtered lot set')
+assert.match(snap, /_exactFifoCleanEligible && _exactFifoIsMeaningful \? 'exact_fifo'/, 'exact_fifo is never reported when public PnL is based on an outlier-filtered or synthetic-excluded lot set')
 assert.match(snap, /_pnlQuality === 'exact_fifo_micro_sample' && _hasOutlierExclusions \? 'outlier_lots_excluded'/, 'pnlQualityReason explains the outlier-exclusion downgrade')
 assert.match(ui, /q === 'exact_fifo_micro_sample' && result\.pnlQualityReason === 'outlier_lots_excluded'\) return 'Verified trades found, abnormal-pricing outlier excluded'/, 'UI distinguishes outlier-excluded verified trades from plain dust-only verified trades')
+
+// PNL-SYNTH-FILTER-FIX: a wallet with real-backed FIFO closed lots alongside synthetic
+// FIFO-backfilled lots (e.g. 56 real-backed + 57 synthetic) must never report clean exact_fifo,
+// must never surface synthetic lots as public verified samples, and must never mix raw and
+// real-backed counts in walletTradeStatsSummary.
+assert.match(snap, /const _hasSyntheticExclusions = \(promotedLotSummary\.syntheticLotsExcludedFromStats \?\? 0\) > 0/, 'pnlQuality computation knows whether any synthetic lots were excluded from stats')
+assert.match(snap, /const _allRawLotsRealBacked = _realClosedLotsCount > 0 && _realClosedLotsCount === \(promotedLotSummary\.closedLots \?\? 0\)/, 'exact_fifo requires every raw closed lot to be real-backed, not just some')
+assert.match(snap, /_exactFifoEligible && _exactFifoIsMeaningful && \(_hasSyntheticExclusions \|\| _hasUnknownCostSellLots\) \? 'fifo_with_estimates'/, 'verified real-backed lots alongside excluded synthetic lots map to fifo_with_estimates, not clean exact_fifo')
+assert.match(snap, /_pnlQuality === 'fifo_with_estimates' \? 'verified_fifo_with_synthetic_lots_excluded'/, 'pnlQualityReason explains the synthetic-lot-exclusion downgrade')
+assert.match(snap, /const _realBackedStats = buildTradeStatsSummary\(_realBackedClosedLotsFinal, activityRequested, totalValue\)/, 'public trade stats are recomputed from the real-backed-only lot set when synthetic lots exist, not the raw mixed set')
+assert.match(snap, /rawClosedLots: _rawClosedLotsFinal,/, 'walletTradeStatsSummary keeps the raw (pre-synthetic-filter) closed-lot count under a distinct rawClosedLots field')
+assert.match(snap, /syntheticClosedLotsExcluded: _syntheticLotsExcludedFromStatsFinal,/, 'walletTradeStatsSummary surfaces how many synthetic lots were excluded from the public closedLots count')
+assert.match(snap, /const _sampleEligibleLots = _closedLotsForStatsFinal === 0 \? \[\] : _sampleSourceLots\.filter\(_isRealBackedClosedLot\)/, 'public closed-trade samples and walletClosedLotsAll only ever include real-backed lots')
+assert.match(snap, /walletSyntheticClosedTradeSamples\?: WalletSnapshot\['walletClosedTradeSamples'\]/, 'synthetic closed-lot samples are kept available debug-only, not on the public sample list')
+assert.match(snap, /if \(_p6Integrity\.status === 'invalid' && snapshot\.pnlQuality === 'exact_fifo'\) \{/, 'a hard-invalid pnlIntegrityCheck downgrades an already-assigned exact_fifo tier rather than leaving a contradictory clean-FIFO label')
+
+const routeSrc = fs.readFileSync('app/api/wallet/route.ts', 'utf8')
+assert.match(routeSrc, /const recoveryAlreadyFound = snap\?\.walletRecoveryRecommendation\?\.recommended === false/, 'historical-recovery cost guard recognizes when real-backed closed lots were already found')
+assert.match(routeSrc, /needsHistorical: !recoveryAlreadyFound && \(/, 'needsHistorical respects recoveryAlreadyFound instead of always firing on historicalStatus === not_requested')
+assert.match(routeSrc, /\} else if \(_initialRecoverySignals\.recoveryAlreadyFound\) \{/, 'the default scan path explicitly marks historical recovery not_attempted when closed lots were already found, instead of leaving it unset')
+assert.match(routeSrc, /snapshot\.walletHistoricalRecoveryReason = 'closed_lots_already_found'/, 'historical recovery reason uses the non-contradictory closed_lots_already_found label')
+assert.match(snap, /_skipReasons\.push\('closed_lots_already_found'\)/, 'the stale already_has_10_closed_lots skip reason is replaced with closed_lots_already_found')
 
 console.log('wallet bad-scan classification checks passed')

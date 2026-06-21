@@ -279,11 +279,23 @@ function getWalletPnlRecoverySignals(snap: any) {
   const totalEvents = Number(snap?.walletEvidenceSummary?.totalEvents ?? 0) || 0
   const multiChain = chainCount > 1
   const highEventVolume = totalEvents > 200
+  // COST-GUARD-FIX: closedLots above is the RAW FIFO count (can include synthetic lots), so
+  // historicalStatus === 'not_requested' alone used to force needsHistorical=true even when
+  // walletSnapshot already found real-backed closed lots and explicitly recommended against
+  // recovery (walletRecoveryRecommendation.reason === 'closed_lots_already_found') — running a
+  // second, expensive historical scan (historical_by_addresses_v2/log_events_by_address) for no
+  // reason. Real-backed closed lots already found means there is nothing left to recover.
+  const closedLotsForStats = Number(lot.closedLotsForStats ?? lot.realClosedLots ?? stats.closedLotsForStats ?? stats.verifiedClosedLots ?? 0) || 0
+  const recoveryAlreadyFound = snap?.walletRecoveryRecommendation?.recommended === false
+    && snap?.walletRecoveryRecommendation?.reason === 'closed_lots_already_found'
+    && closedLotsForStats > 0
   return {
     walletValueTier,
     coveragePercent: estimatedCoverage,
     coveragePercentValueWeighted: estimatedCoverageValueWeighted,
     closedLots,
+    closedLotsForStats,
+    recoveryAlreadyFound,
     openedLots,
     unmatchedSells,
     unmatchedBuys,
@@ -296,7 +308,7 @@ function getWalletPnlRecoverySignals(snap: any) {
     // PHASE5-FIX-5: a wallet can look "fine" on unweighted coverage while its highest-value
     // holdings are poorly covered (or vice versa) — checking both keeps recovery from being
     // skipped just because the tx-count average happened to clear the threshold.
-    needsHistorical: walletValueTier === 'high_value' || walletValueTier === 'whale' || estimatedCoverage < 60 || estimatedCoverageValueWeighted < 60 || unmatchedSells > 0 || unmatchedBuys > 0 || closedLots < 10 || stats.status === 'partial' || historicalStatus === 'not_requested' || (multiChain && highEventVolume) || (multiChain && (unmatchedSells > 0 || closedLots === 0)),
+    needsHistorical: !recoveryAlreadyFound && (walletValueTier === 'high_value' || walletValueTier === 'whale' || estimatedCoverage < 60 || estimatedCoverageValueWeighted < 60 || unmatchedSells > 0 || unmatchedBuys > 0 || closedLots < 10 || stats.status === 'partial' || historicalStatus === 'not_requested' || (multiChain && highEventVolume) || (multiChain && (unmatchedSells > 0 || closedLots === 0))),
   }
 }
 
@@ -1105,6 +1117,12 @@ export async function POST(req: Request) {
         snapshot.walletHistoricalRecoveryStatus = 'blocked'
         snapshot.walletHistoricalRecoveryReason = 'budget_hard_cap_blocks_recovery'
       }
+    } else if (_initialRecoverySignals.recoveryAlreadyFound) {
+      // COST-GUARD-FIX: real-backed closed lots were already found on the default scan — do not
+      // run (or claim to have run) broad historical recovery just because historicalStatus
+      // happened to be 'not_requested'.
+      snapshot.walletHistoricalRecoveryStatus = 'not_attempted'
+      snapshot.walletHistoricalRecoveryReason = 'closed_lots_already_found'
     }
     snapshot.pnlCacheQuality = getPnlCacheQuality(snapshot)
     normalizePublicPnlStatus(snapshot)
@@ -1231,7 +1249,9 @@ export async function POST(req: Request) {
         cappedForCostSafety: _publicBudget.budgetCapHit || historicalCoverageRequested,
         highValueWalletPrioritised: (_scanBudgetDebug?.walletValueTier ?? _walletValueTier) === 'whale',
         coverageLevel: snapshot.walletHistoricalCoverageSummary.coverageLevel ?? 'none',
-        reason: snapshot.walletHistoricalCoverageSummary.reason ?? null,
+        reason: snapshot.walletHistoricalRecoveryReason === 'closed_lots_already_found'
+          ? 'closed_lots_already_found'
+          : snapshot.walletHistoricalCoverageSummary.reason ?? null,
       }
     }
 
