@@ -1,7 +1,6 @@
 "use client";
 
-// @ts-expect-error -- Project must use the Supabase auth helpers client here; dependency is provided by the app runtime.
-import { createClient } from "@supabase/auth-helpers-nextjs";
+import { supabase } from "@/lib/supabaseClient";
 import { useEffect, useState } from "react";
 
 type TrackedTokensProps = {
@@ -36,7 +35,6 @@ function shortenContract(contract: string): string {
 }
 
 export default function TrackedTokens({ refreshKey, symbolByContract, onScanAgain }: TrackedTokensProps) {
-  const [supabase] = useState(() => createClient());
   const [mounted, setMounted] = useState(false);
   const [tokens, setTokens] = useState<WatchlistToken[]>([]);
   const [loading, setLoading] = useState(true);
@@ -99,7 +97,7 @@ export default function TrackedTokens({ refreshKey, symbolByContract, onScanAgai
     return () => {
       cancelled = true;
     };
-  }, [mounted, refreshKey, supabase]);
+  }, [mounted, refreshKey]);
 
   if (!mounted) return null;
 
