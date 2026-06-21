@@ -1904,7 +1904,32 @@ export default function WalletScannerPage() {
                             {lockedWinRate && <p className="wpv3-support" style={{ marginBottom: '8px', color: '#fbbf24' }}>Needs 10 public-grade trades. Current: {publicLots}.</p>}
                             {rows.map(([label,value]) => <div key={label} className="wpv3-metric-row"><span className="wpv3-label">{label}</span><span className="wpv3-value" style={{ fontSize: '20px', color: String(value).startsWith('+') ? '#7DDC9A' : String(value).startsWith('-') ? '#F08A8A' : '#F2F4F7' }}>{value}</span></div>)}
                           </>
-                        })() : <div><div className="wpv3-value" style={{ fontSize: '24px' }}>Insufficient Trade Evidence</div><p className="wpv3-support">No fabricated win rate, PnL, or hold-time metrics are shown without reconstructed closed lots.</p></div>}
+                        })() : (() => {
+                          // PRESENTATION-ONLY: contextual partial-read copy keyed off the existing
+                          // pnlQuality value — never a generic "Insufficient Trade Evidence" when
+                          // there is any trade-adjacent activity to report.
+                          const q = result.pnlQuality
+                          const recoveryNote = result.walletRecoveryRecommendation?.recommended
+                            ? 'Historical recovery may unlock additional realized trade evidence.'
+                            : null
+                          let title = 'Insufficient Trade Evidence'
+                          let body = 'No fabricated win rate, PnL, or hold-time metrics are shown without reconstructed closed lots.'
+                          if (q === 'open_positions_cost_missing') {
+                            title = 'Partial Trade Read'
+                            body = 'Open positions detected. Historical trading activity was identified but closed-lot reconstruction is incomplete.'
+                          } else if (q === 'missing_cost_basis' || q === 'sell_side_only') {
+                            title = 'Partial Trade Read'
+                            body = 'Sell activity detected but corresponding buy cost basis has not yet been verified.'
+                          } else if (q === 'activity_only') {
+                            title = 'Partial Trade Read'
+                            body = 'Activity identified, but no matched buy/sell pair has been reconstructed yet.'
+                          }
+                          return <div>
+                            <div className="wpv3-value" style={{ fontSize: '24px' }}>{title}</div>
+                            <p className="wpv3-support">{body}</p>
+                            {recoveryNote && <p className="wpv3-support" style={{ marginTop: '6px', color: '#7dd3fc' }}>{recoveryNote}</p>}
+                          </div>
+                        })()}
                       </div>
 
                       <div className="wpv3-card">
@@ -1912,7 +1937,22 @@ export default function WalletScannerPage() {
                         {(() => {
                           const ti = result.tradeIntelligence
                           if (!ti || ti.status === 'open_check') {
-                            return <div><div className="wpv3-value" style={{ fontSize: '24px' }}>Not Enough Data</div><p className="wpv3-support">Not enough verified behavior lots to classify trading style.</p></div>
+                            // PRESENTATION-ONLY: a wallet can have real behavior signals (accumulation,
+                            // distribution, rotation, multi-chain participation) even while the
+                            // performance score stays locked — show what we know instead of a blanket
+                            // "Not Enough Data" when those signals exist.
+                            if (behaviorTags.length > 0 || activeChains > 1) {
+                              return <div>
+                                <div className="wpv3-value" style={{ fontSize: '24px' }}>Behavior Read Available</div>
+                                <p className="wpv3-support" style={{ marginBottom: '8px' }}>Performance score remains locked, but behavior signals are available from indexed activity.</p>
+                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '8px' }}>
+                                  {behaviorTags.map(tag => <span key={tag} className="wpv3-support" style={{ border: '1px solid rgba(125,211,252,0.3)', borderRadius: '999px', padding: '3px 10px', color: '#7dd3fc' }}>{tag}</span>)}
+                                  {activeChains > 1 && <span className="wpv3-support" style={{ border: '1px solid rgba(125,211,252,0.3)', borderRadius: '999px', padding: '3px 10px', color: '#7dd3fc' }}>Multi-chain participation</span>}
+                                </div>
+                                <p className="wpv3-support" style={{ color: '#fbbf24' }}>Performance evidence still developing — profit skill not yet proven.</p>
+                              </div>
+                            }
+                            return <div><div className="wpv3-value" style={{ fontSize: '24px' }}>Not Enough Data</div><p className="wpv3-support">No meaningful wallet behavior signals were found in indexed activity.</p></div>
                           }
                           const styleLabel = readableTradeStyleLabel(ti.primaryStyle) ?? ti.primaryStyle.replace(/_/g, ' ')
                           const profitNotProven = ti.profitSkillStatus != null && ti.profitSkillStatus !== 'unlocked'
@@ -2552,6 +2592,25 @@ export default function WalletScannerPage() {
                     ]
                   : []
                 const combinedSummary = [wp.summary, bot?.reason].filter(Boolean).join(' ')
+                // PRESENTATION-ONLY: derive a friendlier behavior-based read for the personality/bot
+                // cards when the backend has not classified them, without changing any backend value.
+                const localBehaviorTags = [
+                  ...(result.walletFacts?.flowRead.accumulationSignals?.length ? ['Accumulation'] : []),
+                  ...(result.walletFacts?.flowRead.distributionSignals?.length ? ['Distribution'] : []),
+                  ...((result.walletFacts?.summary?.chainExposure?.length ?? 0) > 1 ? ['Multi-Chain Participation'] : []),
+                ]
+                const hasActivityEvidence = (result.walletBehavior?.txCount ?? 0) > 0 || (result.walletBehavior?.activeDays ?? 0) > 0
+                const personalityDisplayLabel = wp.personality !== 'Not enough data'
+                  ? wp.personality
+                  : localBehaviorTags.includes('Accumulation') ? 'Emerging Accumulator'
+                  : localBehaviorTags.includes('Distribution') ? 'Distribution-Oriented Wallet'
+                  : localBehaviorTags.includes('Multi-Chain Participation') ? 'Active Multi-Chain Participant'
+                  : hasActivityEvidence ? 'Conviction Holder'
+                  : null
+                const personalityIsDerived = wp.personality === 'Not enough data' && personalityDisplayLabel != null
+                const botDisplayClassification = bot
+                  ? bot.classification
+                  : hasActivityEvidence ? 'Low Confidence Read' : null
                 return (
                   <div style={{ background: 'rgba(6,10,18,0.95)', border: '1px solid rgba(45,212,191,0.12)', borderRadius: '18px', overflow: 'hidden' }}>
                     <div style={{ padding: '18px 24px 16px', borderBottom: '1px solid rgba(255,255,255,0.06)', display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
@@ -2565,8 +2624,11 @@ export default function WalletScannerPage() {
                         <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '12px', padding: '14px' }}>
                           <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.28)', letterSpacing: '0.13em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '8px' }}>Wallet Personality</div>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: scoreRows.length > 0 ? '12px' : '0' }}>
-                            <span style={{ fontSize: '18px', fontWeight: 800, color: personalityColor, fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{wp.personality}</span>
+                            <span style={{ fontSize: '18px', fontWeight: 800, color: personalityColor, fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{personalityDisplayLabel ?? wp.personality}</span>
                           </div>
+                          {personalityIsDerived && (
+                            <p className="wpv3-support" style={{ marginBottom: '8px', color: '#fbbf24' }}>Performance classification remains locked until enough verified closed lots exist.</p>
+                          )}
                           {scoreRows.length > 0 && (
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                               {scoreRows.map(row => (
@@ -2595,6 +2657,11 @@ export default function WalletScannerPage() {
                               </div>
                               <span style={{ display: 'inline-block', fontSize: '10px', fontWeight: 700, letterSpacing: '0.08em', color: botColor, border: `1px solid ${botColor}33`, background: `${botColor}14`, borderRadius: '999px', padding: '3px 9px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', textTransform: 'uppercase' }}>{bot.classification}</span>
                             </>
+                          ) : botDisplayClassification ? (
+                            <>
+                              <span style={{ display: 'inline-block', fontSize: '10px', fontWeight: 700, letterSpacing: '0.08em', color: '#7dd3fc', border: '1px solid rgba(125,211,252,0.3)', background: 'rgba(125,211,252,0.08)', borderRadius: '999px', padding: '3px 9px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', textTransform: 'uppercase', marginBottom: '8px' }}>{botDisplayClassification}</span>
+                              <p className="wpv3-support" style={{ marginTop: '8px' }}>Automation confidence remains limited due to insufficient performance-grade trade evidence.</p>
+                            </>
                           ) : (
                             <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.35)', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>Not enough data</div>
                           )}
@@ -2602,32 +2669,60 @@ export default function WalletScannerPage() {
                       </div>
 
                       {/* Windowed PnL cards */}
-                      {windows && (
-                        <div>
-                          <div className="ws-stat-label" style={{ marginBottom: '8px' }}>Time-Windowed Realized PnL</div>
-                          <div className="wallet-intel-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: '10px' }}>
-                            {(['3d', '7d', '30d'] as const).map(key => {
-                              const w = windows[key]
-                              const hasData = w.closedLots > 0 && 'realizedPnlUsd' in w
-                              return (
-                                <div key={key} style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '12px', padding: '12px' }}>
-                                  <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.28)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '7px' }}>{key.toUpperCase()} PnL</div>
-                                  {hasData && 'realizedPnlUsd' in w ? (
-                                    <>
-                                      <div style={{ fontSize: '18px', fontWeight: 800, color: w.realizedPnlUsd < 0 ? '#f87171' : '#4ade80', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{fmtUsdSigned(w.realizedPnlUsd)}</div>
-                                      <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.32)', marginTop: '4px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
-                                        {w.closedLots} closed lot{w.closedLots !== 1 ? 's' : ''}{w.winRatePercent != null ? ` · ${w.winRatePercent}% win rate` : ''}
-                                      </div>
-                                    </>
-                                  ) : (
-                                    <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.32)', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{'fallback' in w ? w.fallback : 'Not enough data'}</div>
-                                  )}
-                                </div>
-                              )
-                            })}
+                      {windows && (() => {
+                        const windowKeys = ['3d', '7d', '30d'] as const
+                        const anyWindowHasData = windowKeys.some(key => {
+                          const w = windows[key]
+                          return w.closedLots > 0 && 'realizedPnlUsd' in w
+                        })
+                        if (!anyWindowHasData) {
+                          const _windowsTs = result.walletTradeStatsSummary
+                          const lockedOpenLots = result.walletLotSummary?.openedLots ?? _windowsTs?.openedLots ?? 0
+                          const lockedMatchedTrades = result.rawMatchedClosedLots ?? _windowsTs?.rawMatchedClosedLots ?? _windowsTs?.rawClosedLots ?? 0
+                          return (
+                            <div>
+                              <div className="ws-stat-label" style={{ marginBottom: '8px' }}>Time-Windowed Realized PnL</div>
+                              <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '12px', padding: '14px' }}>
+                                <div style={{ fontSize: '13px', fontWeight: 700, color: '#7dd3fc', fontFamily: 'var(--font-inter, Inter, sans-serif)', marginBottom: '6px' }}>Realized PnL Locked</div>
+                                <p className="wpv3-support" style={{ margin: 0 }}>Verified closed-lot evidence is required before period PnL can be calculated.</p>
+                                {(lockedOpenLots > 0 || lockedMatchedTrades > 0) && (
+                                  <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.32)', marginTop: '8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                                    {lockedOpenLots > 0 ? `${lockedOpenLots} open position${lockedOpenLots !== 1 ? 's' : ''}` : ''}
+                                    {lockedOpenLots > 0 && lockedMatchedTrades > 0 ? ' · ' : ''}
+                                    {lockedMatchedTrades > 0 ? `${lockedMatchedTrades} matched trade${lockedMatchedTrades !== 1 ? 's' : ''}` : ''}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          )
+                        }
+                        return (
+                          <div>
+                            <div className="ws-stat-label" style={{ marginBottom: '8px' }}>Time-Windowed Realized PnL</div>
+                            <div className="wallet-intel-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: '10px' }}>
+                              {windowKeys.map(key => {
+                                const w = windows[key]
+                                const hasData = w.closedLots > 0 && 'realizedPnlUsd' in w
+                                return (
+                                  <div key={key} style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '12px', padding: '12px' }}>
+                                    <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.28)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '7px' }}>{key.toUpperCase()} PnL</div>
+                                    {hasData && 'realizedPnlUsd' in w ? (
+                                      <>
+                                        <div style={{ fontSize: '18px', fontWeight: 800, color: w.realizedPnlUsd < 0 ? '#f87171' : '#4ade80', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{fmtUsdSigned(w.realizedPnlUsd)}</div>
+                                        <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.32)', marginTop: '4px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                                          {w.closedLots} closed lot{w.closedLots !== 1 ? 's' : ''}{w.winRatePercent != null ? ` · ${w.winRatePercent}% win rate` : ''}
+                                        </div>
+                                      </>
+                                    ) : (
+                                      <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.32)', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{'fallback' in w ? w.fallback : 'Not enough data'}</div>
+                                    )}
+                                  </div>
+                                )
+                              })}
+                            </div>
                           </div>
-                        </div>
-                      )}
+                        )
+                      })()}
 
                       {/* Recent trade behavior summary */}
                       {combinedSummary && (
