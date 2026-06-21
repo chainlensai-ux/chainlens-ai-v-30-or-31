@@ -130,7 +130,12 @@ export function computeWalletProfile(snapshot: WalletSnapshot): WalletProfile {
   const winRatePercent = tradeStats?.publicWinRatePercent ?? (snapshot as any).publicWinRatePercent ?? null
   const activeDays = behaviorCtx?.activeDays ?? null
   const tradesPerActiveDay = activeDays && activeDays > 0 ? closedLots / activeDays : null
-  const realizedPnlUsd = tradeStats?.publicRealizedPnlUsd ?? (snapshot as any).publicRealizedPnlUsd ?? lotSummary?.realizedPnlUsd ?? null
+  // CONFIDENCE-AUDIT-FIX-1: do not fall back to the raw FIFO lotSummary.realizedPnlUsd — that
+  // total includes synthetic/estimate-priced closed lots and is explicitly NOT public-safe.
+  // publicRealizedPnlUsd is intentionally null when public PnL is unavailable (e.g.
+  // missing_cost_basis); falling through to the raw total would leak unverified PnL into the
+  // wallet score/followability/personality calculations below.
+  const realizedPnlUsd = tradeStats?.publicRealizedPnlUsd ?? (snapshot as any).publicRealizedPnlUsd ?? null
   const unrealizedPnlUsd = estimatedPnl?.unrealizedPnlUsd ?? null
 
   const coverageChecks = [
