@@ -93,15 +93,16 @@ export function computeWalletProfile(snapshot: WalletSnapshot): WalletProfile {
   const historicalCoverage = snapshot.walletHistoricalCoverageSummary
 
   const missingCostBasis = tradeStats?.pnlUnavailableReason === 'missing_cost_basis' || lotSummary?.pnlUnavailableReason === 'missing_cost_basis'
-  const closedLotsForStats = tradeStats?.closedLotsForStats ?? lotSummary?.closedLotsForStats ?? lotSummary?.realClosedLots ?? 0
-  const closedLots = missingCostBasis ? closedLotsForStats : (tradeStats?.closedLots ?? lotSummary?.closedLots ?? 0)
+  const publicPnlStatus = (snapshot as any).publicPnlStatus ?? tradeStats?.publicPnlStatus
+  const closedLotsForStats = tradeStats?.performanceClosedLots ?? (snapshot as any).performanceClosedLots ?? tradeStats?.publicClosedLots ?? (snapshot as any).publicClosedLots ?? 0
+  const closedLots = missingCostBasis ? closedLotsForStats : closedLotsForStats
   const openLots = lotSummary?.openedLots ?? 0
   const uniqueTokensTraded = missingCostBasis || closedLotsForStats === 0 ? 0 : (tradeStats?.uniqueTokensTraded ?? 0)
   const avgHoldHours = tradeStats?.avgHoldingTimeSeconds != null ? tradeStats.avgHoldingTimeSeconds / 3600 : null
-  const winRatePercent = tradeStats?.winRatePercent ?? null
+  const winRatePercent = tradeStats?.publicWinRatePercent ?? (snapshot as any).publicWinRatePercent ?? null
   const activeDays = behaviorCtx?.activeDays ?? null
   const tradesPerActiveDay = activeDays && activeDays > 0 ? closedLots / activeDays : null
-  const realizedPnlUsd = estimatedPnl?.realizedPnlUsd ?? lotSummary?.realizedPnlUsd ?? null
+  const realizedPnlUsd = tradeStats?.publicRealizedPnlUsd ?? (snapshot as any).publicRealizedPnlUsd ?? lotSummary?.realizedPnlUsd ?? null
   const unrealizedPnlUsd = estimatedPnl?.unrealizedPnlUsd ?? null
 
   const coverageChecks = [
@@ -113,8 +114,9 @@ export function computeWalletProfile(snapshot: WalletSnapshot): WalletProfile {
   ]
   const evidenceCoverage = Math.round((coverageChecks.filter(Boolean).length / coverageChecks.length) * 100)
   const hasHoldings = holdingsCount > 0
-  const tradeEvidenceStrong = !missingCostBasis && closedLotsForStats > 0 && closedLots >= 3 && tradeStats?.economicSignificance === 'meaningful'
-  const tradeEvidenceWeak = !missingCostBasis && closedLotsForStats > 0 && (closedLots > 0 || uniqueTokensTraded > 0 || tradeStats?.status === 'partial')
+  const tradingLockedByPublicPnl = publicPnlStatus === 'open_check' || publicPnlStatus === 'flat_estimate_only' || publicPnlStatus === 'near_flat_verified_sample' || publicPnlStatus === 'partial_near_flat'
+  const tradeEvidenceStrong = !missingCostBasis && !tradingLockedByPublicPnl && closedLotsForStats >= 5 && tradeStats?.economicSignificance === 'meaningful'
+  const tradeEvidenceWeak = !missingCostBasis && !tradingLockedByPublicPnl && closedLotsForStats >= 5 && (closedLots > 0 || uniqueTokensTraded > 0 || tradeStats?.status === 'partial')
 
   let walletCategory: string | null = null
   if (hasHoldings) {
@@ -211,10 +213,12 @@ export function computeWalletProfile(snapshot: WalletSnapshot): WalletProfile {
   if (concentrationLabel === 'high') weaknesses.push('Portfolio concentration is high.')
   if (!hasHoldings) weaknesses.push('No priced holdings were available in this snapshot.')
 
-  const followability: WalletProfile['followability'] = tradingBehavior && tradingConfidence !== 'low' && score != null && score >= 70 ? 'High' : portfolioBehavior && score != null && score >= 55 ? 'Moderate' : 'Low'
-  const nextAction = tradingConfidence === 'low'
-    ? 'Use this profile for portfolio read only; wait for stronger trade/PnL evidence before copying trades.'
-    : 'Monitor future realized trades and position changes before following.'
+  const followability: WalletProfile['followability'] = tradingLockedByPublicPnl ? (portfolioBehavior && score != null && score >= 55 ? 'Moderate' : 'Low') : tradingBehavior && tradingConfidence !== 'low' && score != null && score >= 70 ? 'High' : portfolioBehavior && score != null && score >= 55 ? 'Moderate' : 'Low'
+  const nextAction = tradingLockedByPublicPnl
+    ? 'Monitor only; do not copy yet because public PnL evidence is partial, near-flat, or locked.'
+    : tradingConfidence === 'low'
+      ? 'Use this profile for portfolio read only; wait for stronger trade/PnL evidence before copying trades.'
+      : 'Monitor future realized trades and position changes before following.'
 
   const profileSummary = sufficientEvidence
     ? `${chainCount > 1 ? `Multi-chain (${chainCount} chains)` : 'Single-chain'} ${walletCategory?.toLowerCase() ?? 'wallet'}${portfolioBehavior ? ` with ${portfolioBehavior.toLowerCase()} portfolio behavior` : ''}${tradingBehavior ? ` and ${tradingBehavior.toLowerCase()} trading behavior` : '; trading behavior not yet classified'}.`
