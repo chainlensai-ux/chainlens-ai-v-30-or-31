@@ -266,6 +266,9 @@ type WalletResult = {
     publicPnlStatus?: 'ok' | 'open_check'
     pnlUnavailableReason?: string | null
     verifiedClosedLots?: number
+    rawClosedLots?: number
+    estimateOnlyClosedLots?: number
+    syntheticClosedLotsExcluded?: number
   }
   walletTradeStatsSource?: 'base_sample' | 'historical_promoted_preview'
   walletClosedTradeSamples?: Array<{
@@ -306,7 +309,7 @@ type WalletResult = {
   walletScanCacheNote?: string
   pnlCacheQuality?: 'complete' | 'partial_needs_historical' | 'stale_low_coverage'
   walletPnlRecoveryCta?: string
-  walletHistoricalRecoveryStatus?: 'needed' | 'attempted' | 'blocked' | 'timed_out'
+  walletHistoricalRecoveryStatus?: 'needed' | 'attempted' | 'attempted_light' | 'attempted_capped' | 'attempted_recovered' | 'attempted_no_recovery' | 'not_attempted' | 'blocked' | 'timed_out'
   walletHistoricalRecoveryReason?: string | null
   walletScanBudget?: {
     scanMode: string
@@ -318,6 +321,11 @@ type WalletResult = {
     creditsRemaining: number
     budgetCapHit: boolean
     budgetCapReason: string | null
+    totalBudgetCapHit?: boolean
+    historicalPhaseCapHit?: boolean
+    historicalBudgetCapReason?: string | null
+    estimatedCreditsUsed?: number
+    actualCreditsUsed?: number
     skippedAfterBudgetCap: number
     estimatedCreditsSavedByCache: number
   }
@@ -348,7 +356,7 @@ type WalletResult = {
     swapDetection: { status: 'ok' | 'partial' | 'open_check'; evidence: string[]; candidateCount: number; reason: string }
     priceEvidence: { status: 'ok' | 'partial' | 'open_check'; pricedEvents: number; reason: string }
     fifoPnL:       { status: 'ok' | 'partial' | 'open_check'; closedLots: number; reason: string }
-    tradeStats:    { status: 'ok' | 'partial' | 'open_check'; closedLots: number; openedLots: number; readyForWinRate: boolean; reason: string }
+    tradeStats:    { status: 'ok' | 'partial' | 'open_check'; closedLots: number; rawClosedLots?: number; excludedLots?: number; estimateOnlyClosedLots?: number; syntheticClosedLotsExcluded?: number; openedLots: number; readyForWinRate: boolean; reason: string }
     behavior:      { status: 'ok' | 'partial' | 'open_check'; reason: string }
     walletOpenPositionSummary?: {
       status: 'partial' | 'open_check'
@@ -1796,7 +1804,10 @@ export default function WalletScannerPage() {
                         {tradeEvidenceStrong ? <>{[
                           ['Realized PnL', fmtSignedUSD(ts!.realizedPnlUsd)],
                           ['Win Rate', ts!.winRatePercent == null ? 'Open Check' : `${ts!.winRatePercent.toFixed(0)}%`],
-                          ['Closed Trades', String(ts!.closedLots)],
+                          ['Verified Trades', String(ts!.verifiedClosedLots ?? ts!.closedLotsForStats ?? ts!.closedLots)],
+                                ...((ts!.estimateOnlyClosedLots ?? 0) > 0 ? [['Estimate-only excluded', String(ts!.estimateOnlyClosedLots)]] as [string, string][] : []),
+                                ...((ts!.syntheticClosedLotsExcluded ?? 0) > 0 ? [['Synthetic/missing-cost excluded', String(ts!.syntheticClosedLotsExcluded)]] as [string, string][] : []),
+                                ...((ts!.rawClosedLots ?? 0) > 0 ? [['Raw matched lots', String(ts!.rawClosedLots)]] as [string, string][] : []),
                           ['Average Hold Period', fmtSecondsToHuman(ts!.avgHoldingTimeSeconds) ?? 'Open Check'],
                           ['Best Trade', fmtSignedUSD(ts!.largestWinUsd)],
                           ['Worst Trade', fmtSignedUSD(ts!.largestLossUsd)],
@@ -1849,7 +1860,7 @@ export default function WalletScannerPage() {
                     const openedLots = result.walletLotSummary?.openedLots ?? 0
                     const pricedEvents = mc.priceEvidence?.pricedEvents ?? 0
                     const candidates = mc.swapDetection.candidateCount
-                    if (closedLots > 0) return `${closedLots} closed lots`
+                    if (closedLots > 0) return `${closedLots} matched lots`
                     if (openedLots > 0 && pricedEvents > 0) return `${openedLots} open lot${openedLots !== 1 ? 's' : ''} tracked, no closed sells yet`
                     if (pricedEvents > 0 && openedLots === 0) return 'priced swaps found, no lots opened'
                     if (candidates > 0 && pricedEvents === 0) return 'candidates unpriced'
@@ -1868,10 +1879,11 @@ export default function WalletScannerPage() {
                   { label: 'Trade stats', note: (() => {
                     const tradeClosedLots = mc.tradeStats.closedLots
                     const tradeOpenedLots = mc.tradeStats.openedLots ?? 0
-                    if (tradeClosedLots > 0) return `${tradeClosedLots} lots` + (mc.tradeStats.readyForWinRate ? '' : ' — below threshold')
-                    if (tradeOpenedLots > 0) return `no closed trades yet — ${tradeOpenedLots} open lot${tradeOpenedLots !== 1 ? 's' : ''} tracked`
+                    if (tradeClosedLots > 0) return `${tradeClosedLots} verified trades` + ((mc.tradeStats.excludedLots ?? 0) > 0 ? ` · ${mc.tradeStats.excludedLots} excluded` : '') + (mc.tradeStats.readyForWinRate ? '' : ' — below threshold')
+                    if ((mc.tradeStats.excludedLots ?? 0) > 0) return `Verified stats locked — ${mc.tradeStats.excludedLots} estimate-only/synthetic lots excluded`
+                    if (tradeOpenedLots > 0) return `no verified trades yet — ${tradeOpenedLots} open lot${tradeOpenedLots !== 1 ? 's' : ''} tracked`
                     if (mc.swapDetection.candidateCount > 0 && (mc.priceEvidence?.pricedEvents ?? 0) === 0) return 'no verified closed lots'
-                    return 'no closed lots'
+                    return 'no verified trades for stats yet'
                   })(), status: mc.tradeStats.status },
                 ]
                 return (

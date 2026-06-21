@@ -428,7 +428,7 @@ export type WalletSnapshot = {
   pnlQualityReason?: string
   walletRecoveryRecommendation?: {
     recommended: boolean
-    mode: 'targeted_token_recovery' | 'none'
+    mode: 'targeted_token_recovery' | 'targeted_recovery_attempted' | 'none'
     targetTokens: Array<{ contract: string; symbol: string; chain: string; estimatedUsd: number }>
     reason: string
     estimatedExtraPages: number
@@ -12623,13 +12623,13 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     })).filter(t => t.contract)
     const targetTokens = syntheticTargetTokens
     if (_syntheticTargetExtraRecoveryAttempted && _syntheticTargetExtraPriorBuysFound === 0 && (promotedLotSummary.syntheticClosedLots ?? 0) > 0) {
-      return { recommended: false, mode: 'none', targetTokens, reason: 'targeted_recovery_attempted_no_prior_buy_found', estimatedExtraPages: 0 }
+      return { recommended: false, mode: 'targeted_recovery_attempted', targetTokens, reason: 'targeted_recovery_attempted_no_prior_buy_found', estimatedExtraPages: 0 }
     }
     if (targetTokens.length === 0) {
       return { recommended: false, mode: 'none', targetTokens: [], reason: 'no_useful_token_contracts', estimatedExtraPages: 0 }
     }
     if (_realClosedLotsCount > 0) {
-      return { recommended: false, mode: 'none', targetTokens: [], reason: 'closed_lots_already_found', estimatedExtraPages: 0 }
+      return { recommended: false, mode: 'none', targetTokens, reason: (promotedTradeStatsSummary.syntheticClosedLotsExcluded ?? 0) > 0 || (promotedTradeStatsSummary.estimateOnlyClosedLots ?? 0) > 0 ? 'verified_stats_available_excluded_lots_remain' : 'closed_lots_already_found', estimatedExtraPages: 0 }
     }
     if (_missingCostBasisProven && (promotedLotSummary.syntheticClosedLots ?? 0) > 0 && !_adminOverrideUsed) {
       return { recommended: false, mode: 'none', targetTokens, reason: 'missing_cost_basis_synthetic_lots_excluded', estimatedExtraPages: 0 }

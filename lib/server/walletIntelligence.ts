@@ -56,7 +56,8 @@ export function computeWalletPersonality(
     }
   }
 
-  const n = closedLots.length
+  const n = tradeStats?.verifiedClosedLots ?? tradeStats?.closedLotsForStats ?? closedLots.length
+  const excluded = (tradeStats?.estimateOnlyClosedLots ?? 0) + (tradeStats?.syntheticClosedLotsExcluded ?? 0)
 
   // Average holding time in hours across lots that have a known holding time. If none have a
   // known holding time, fall back to 24h (treated as "neutral / held a day").
@@ -130,6 +131,8 @@ export function computeWalletPersonality(
       summary = 'Not enough closed-trade history yet to classify this wallet\'s trading personality.'
   }
 
+  if (excluded > 0) summary += ` Based on ${n} verified trades; ${excluded} matched lots excluded.`
+
   return { personality, scores, summary }
 }
 
@@ -202,7 +205,8 @@ export function computeBotScore(
     return { score: 0, classification: 'Likely human/manual', reason: 'Not enough trade history to assess automation.' }
   }
 
-  const n = closedLots.length
+  const n = tradeStats?.verifiedClosedLots ?? tradeStats?.closedLotsForStats ?? closedLots.length
+  const excluded = (tradeStats?.estimateOnlyClosedLots ?? 0) + (tradeStats?.syntheticClosedLotsExcluded ?? 0)
   const activeDays = Math.max(walletBehavior?.activeDays ?? 1, 1)
   const tradesPerActiveDay = n / activeDays
 
