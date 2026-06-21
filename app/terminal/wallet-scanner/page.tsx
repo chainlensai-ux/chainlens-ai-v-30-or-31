@@ -596,6 +596,20 @@ function deriveAverageMatchedWinUsd(data: WalletResult): number | null {
 }
 
 
+// WIN-RATE-TRUST-FIX-1: the "Official"/public win rate may only ever be shown as a number when
+// the backend's own public-grade sample is unlocked. Raw/derived win rates (from rawMatchedClosedLots,
+// closedLots, or winningClosedLots) must never be relabeled as official/public once that gate fails.
+function publicWinRateUnlocked(ts: WalletResult['walletTradeStatsSummary'] | undefined): boolean {
+  if (!ts) return false
+  const publicPerfLots = ts.publicPerformanceClosedLots ?? 0
+  return Boolean(
+    Number.isFinite(ts.publicWinRatePercent) &&
+    publicPerfLots >= 10 &&
+    ts.winRateStatus !== 'locked_small_sample' &&
+    (ts.scoreUnlocked === true || ts.readyForWalletScore === true)
+  )
+}
+
 function isTradeStatsGradeable(ts: WalletResult['walletTradeStatsSummary'] | undefined): boolean {
   const decisiveClosedLots = (ts?.winningClosedLots ?? 0) + (ts?.losingClosedLots ?? 0)
   return Boolean(
@@ -1877,22 +1891,23 @@ export default function WalletScannerPage() {
                           const publicLots = result.publicPerformanceClosedLots ?? ts!.publicPerformanceClosedLots ?? ts!.publicClosedLots ?? ts!.performanceClosedLots ?? 0
                           const rawLots = result.rawMatchedClosedLots ?? ts!.rawMatchedClosedLots ?? ts!.rawClosedLots ?? ts!.closedLots ?? 0
                           const excludedLots = result.excludedClosedLots ?? ts!.excludedClosedLots ?? Math.max(0, rawLots - publicLots)
-                          const lockedWinRate = ts!.winRateStatus === 'locked_small_sample' || ts!.scoreUnlocked !== true || ts!.publicWinRatePercent == null
+                          const winRateUnlockedHere = publicWinRateUnlocked(ts)
                           const labelPnl = publicStatus === 'limited_verified_sample' || publicStatus === 'near_flat_verified_sample' || publicStatus === 'open_check' || publicStatus === 'flat_estimate_only' ? 'Public-sample PnL' : 'Realized PnL'
                           const hasPublicWin = (ts!.winningPerformanceLots ?? 0) > 0
+                          const hasPublicLoss = (ts!.losingPerformanceLots ?? 0) > 0
                           const rows: [string, string][] = [
                             [labelPnl, fmtSignedUSD(ts!.publicPerformanceRealizedPnlUsd ?? ts!.publicRealizedPnlUsd ?? ts!.realizedPnlUsd)],
-                            ['Win Rate', lockedWinRate ? 'Locked' : `${(ts!.publicWinRatePercent ?? ts!.winRatePercent ?? 0).toFixed(0)}%`],
+                            ['Win Rate', winRateUnlockedHere ? `${(ts!.publicWinRatePercent as number).toFixed(0)}%` : 'Locked'],
                             ['Public-grade trades', String(publicLots)],
                             ['Verified but limited/excluded', String(result.verifiedButExcludedClosedLots ?? ts!.verifiedButExcludedClosedLots ?? Math.max(0, (ts!.verifiedClosedLots ?? 0) - publicLots))],
                             ['Estimate-only excluded', String(ts!.estimateOnlyClosedLots ?? 0)],
                             ['Synthetic/missing-cost excluded', String(ts!.syntheticClosedLotsExcluded ?? 0)],
                             ['Raw matched lots', String(rawLots)],
                             ['Average Hold Period', fmtSecondsToHuman(ts!.avgHoldingTimeSeconds) ?? 'Open Check'],
-                            ['Best Trade', hasPublicWin ? fmtSignedUSD(ts!.largestWinUsd) : 'Open Check'],
-                            ['Worst Trade', fmtSignedUSD(ts!.largestLossUsd)],
-                            ['Average Win', hasPublicWin ? fmtSignedUSD(deriveAverageMatchedWinUsd(result)) : 'Open Check'],
-                            ['Average Loss', fmtSignedUSD(deriveAverageMatchedLossUsd(result))],
+                            ['Best Trade', hasPublicWin ? fmtSignedUSD(ts!.largestWinUsd) : 'No verified win'],
+                            ['Worst Trade', hasPublicLoss ? fmtSignedUSD(ts!.largestLossUsd) : 'No verified loss'],
+                            ['Average Win', hasPublicWin ? fmtSignedUSD(deriveAverageMatchedWinUsd(result)) : 'No verified win'],
+                            ['Average Loss', hasPublicLoss ? fmtSignedUSD(deriveAverageMatchedLossUsd(result)) : 'No verified loss'],
                           ]
                           return <>
                             <p className="wpv3-support" style={{ marginBottom: '8px', color: '#cbd5e1' }}>
@@ -1901,7 +1916,7 @@ export default function WalletScannerPage() {
                             <p className="wpv3-support" style={{ marginBottom: '8px' }}>
                               Based on {publicLots} public-grade lots, not full wallet history.
                             </p>
-                            {lockedWinRate && <p className="wpv3-support" style={{ marginBottom: '8px', color: '#fbbf24' }}>Needs 10 public-grade trades. Current: {publicLots}.</p>}
+                            {!winRateUnlockedHere && <p className="wpv3-support" style={{ marginBottom: '8px', color: '#fbbf24' }}>Win rate and profit-skill scoring unlock at 10 public-grade trades.</p>}
                             {rows.map(([label,value]) => <div key={label} className="wpv3-metric-row"><span className="wpv3-label">{label}</span><span className="wpv3-value" style={{ fontSize: '20px', color: String(value).startsWith('+') ? '#7DDC9A' : String(value).startsWith('-') ? '#F08A8A' : '#F2F4F7' }}>{value}</span></div>)}
                           </>
                         })() : (() => {
@@ -2354,7 +2369,6 @@ export default function WalletScannerPage() {
                         </>
                       )
                     }
-                    const winRateNote = walletIntel.winRate !== null ? 'Closed lots only' : closedLots > 0 ? officialWinRateLockCopy(ts) : 'No closed lots yet'
                     const confidenceNote = hasNoDecisiveClosedLots(ts) ? 'break-even only' : walletIntel.confidence === 'open check' ? (closedLots > 0 ? `${closedLots} closed lots reconstructed` : 'Closed-lot stats not available yet') : 'Evidence weighted'
                     const scoreReason = walletIntel.walletScore === null ? walletScoreLockCopy(ts) : null
                     return (
@@ -2383,10 +2397,10 @@ export default function WalletScannerPage() {
                         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '10px' }}>
                           {[
                             (() => {
-                              const rawRate = ts && closedLots > 0 && walletIntel.winRate === null && !hasNoDecisiveClosedLots(ts) ? (ts.winRatePercent ?? (ts.winningClosedLots / closedLots) * 100) : null
-                              const label = walletIntel.winRate !== null ? 'Win Rate' : closedLots > 0 && closedLots < 10 ? 'Win Rate (raw)' : closedLots > 0 ? 'Official Win Rate' : 'Win Rate'
-                              const value = hasNoDecisiveClosedLots(ts) ? 'Break-even only' : walletIntel.winRate !== null ? fmtOpenPct(walletIntel.winRate) : rawRate !== null ? `${rawRate.toFixed(1)}%` : fmtOpenPct(null)
-                              const note = walletIntel.winRate !== null ? winRateNote : closedLots > 0 ? officialWinRateLockCopy(ts) : 'No closed lots yet'
+                              const winRateUnlocked = publicWinRateUnlocked(ts)
+                              const label = 'Win Rate'
+                              const value = winRateUnlocked ? `${(ts!.publicWinRatePercent as number).toFixed(1)}%` : 'Locked'
+                              const note = winRateUnlocked ? 'Public-grade closed trades only.' : 'Needs 10+ public-grade closed trades.'
                               return { label, value, note }
                             })(),
                             { label: 'Confidence', value: hasNoDecisiveClosedLots(ts) ? 'break-even only' : ts ? (ts.confidence === 'open_check' ? 'open check' : ts.confidence) : walletIntel.confidence, note: confidenceNote },
@@ -2459,6 +2473,23 @@ export default function WalletScannerPage() {
                           </div>
                           <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.28)', lineHeight: 1.4, marginTop: '10px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
                             Current holding detected, but cost basis is incomplete from indexed activity. Closed-lot realized PnL ({legacyVal === 'Open Check' ? '—' : legacyVal} break-even sample) is shown separately below.
+                          </div>
+                        </div>
+                      )
+                    }
+
+                    // WIN-RATE-TRUST-FIX-1: no open-position summary or open-position performance
+                    // evidence at all — show an explicit no-estimate state instead of an empty
+                    // "Average-Cost Estimate —" box.
+                    if (!_openPosForPnl && !perfForExposure) {
+                      return (
+                        <div style={{ background: '#080c14', border: '1px solid rgba(255,255,255,0.04)', borderRadius: '18px', padding: '16px 20px', opacity: 0.62 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                            <div style={{ fontSize: '9px', fontWeight: 800, letterSpacing: '0.18em', color: 'rgba(45,212,191,0.45)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Position Estimate</div>
+                          </div>
+                          <div style={{ fontSize: '13px', fontWeight: 700, color: 'rgba(255,255,255,0.45)', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>No open position estimate</div>
+                          <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.28)', lineHeight: 1.4, marginTop: '6px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                            No public-safe open-lot estimate is available from this scan.
                           </div>
                         </div>
                       )
@@ -3406,15 +3437,14 @@ export default function WalletScannerPage() {
                   : 'No closed lots yet'
                 const earlyWinPct = closedLots > 0 && ts && !hasNoDecisiveClosedLots(ts) ? Math.round((ts.winningClosedLots / ts.closedLots) * 100) : null
                 const earlyLossPct = closedLots > 0 && ts && !hasNoDecisiveClosedLots(ts) ? Math.round((ts.losingClosedLots / ts.closedLots) * 100) : null
-                const winRateLabel = !hasEnough && closedLots > 0 ? 'Matched Closed-Lot Read' : 'Win Rate'
+                const winRateUnlockedTB = publicWinRateUnlocked(ts)
+                const winRateLabel = winRateUnlockedTB ? 'Win Rate' : 'Matched Closed-Lot Read'
                 const lossRateLabel = !hasEnough && closedLots > 0 ? 'Matched Losing Lots' : 'Loss Rate'
-                const winRateDisplay = hasNoDecisiveClosedLots(ts)
-                  ? 'Break-even only'
-                  : hasEnough && ts?.winRatePercent !== null && ts?.winRatePercent !== undefined
-                    ? `${ts.winRatePercent.toFixed(1)}%`
-                    : !hasEnough && ts && closedLots > 0
-                      ? `${ts.winningClosedLots} matched positive lot${ts.winningClosedLots !== 1 ? 's' : ''}${ts.breakEvenClosedLots > 0 ? `, ${ts.breakEvenClosedLots} break-even` : ''}`
-                      : 'Open Check'
+                const winRateDisplay = winRateUnlockedTB
+                  ? `${(ts!.publicWinRatePercent as number).toFixed(1)}%`
+                  : ts && closedLots > 0
+                    ? `${ts.winningClosedLots} matched positive lot${ts.winningClosedLots !== 1 ? 's' : ''}${ts.breakEvenClosedLots > 0 ? `, ${ts.breakEvenClosedLots} break-even` : ''}`
+                    : 'Open Check'
                 const lossRateDisplay = hasEnough
                   ? fmtOpenPct(walletIntel.lossRate)
                   : !hasEnough && ts && closedLots > 0
