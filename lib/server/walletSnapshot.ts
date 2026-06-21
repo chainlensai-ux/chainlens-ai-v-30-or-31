@@ -993,6 +993,11 @@ export type WalletSnapshot = {
       mediumConfidenceRecoveredEvents: number
       lowConfidenceRecoveredEvents: number
       sampleRecoveredEvents: WalletTxEvidence[]
+      // TEMPORARY DEBUG ONLY (promotion-gate audit) — breakdown of recoveredEventsRejected by
+      // which clause of eligibleForRecoveredPromotion failed.
+      rejectedNotRecovered: number
+      rejectedLowOrMediumConfidence: number
+      rejectedNoSwapContextCandidate: number
       walletSwapReconstructionAudit?: {
         unknownEventsSeen: number
         unknownEventsUsedForContext: number
@@ -4460,6 +4465,7 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
     recoveredEventsPromoted: 0, recoveredEventsRejected: 0, sampleRecoveredPromotions: [],
     totalRecoveredEvents: 0, highConfidenceRecoveredEvents: 0, mediumConfidenceRecoveredEvents: 0,
     lowConfidenceRecoveredEvents: 0, sampleRecoveredEvents: [],
+    rejectedNotRecovered: 0, rejectedLowOrMediumConfidence: 0, rejectedNoSwapContextCandidate: 0,
   })
   const emptySummary = (missing: string[]): WalletSnapshot['walletSwapSummary'] => ({
     status: 'open_check', totalEvidenceEvents: 0, groupedTxCount: 0, swapCandidateEvents: 0,
@@ -4677,6 +4683,11 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
   let recoveredEventsPromotedCount = 0
   let recoveredEventsRejectedCount = 0
   const sampleRecoveredPromotions: WalletTxEvidence[] = []
+  // TEMPORARY DEBUG ONLY (promotion-gate audit) — splits recoveredEventsRejectedCount by which
+  // clause of eligibleForRecoveredPromotion failed, to find the highest-volume rejection cause.
+  let rejectedNotRecoveredCount = 0
+  let rejectedLowOrMediumConfidenceCount = 0
+  let rejectedNoSwapContextCandidateCount = 0
   const sampleReconstructedUnknownDirectionEvents: WalletTxEvidence[] = []
   const sampleContextOnlyUnknownDirectionEvents: WalletTxEvidence[] = []
   const inferWalletSideDirection = (event: WalletTxEvidence): 'buy' | 'sell' | null => {
@@ -4754,8 +4765,13 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
         // leg, or a price — it only flags the event as a swap-context candidate (a distinct
         // eventKind, medium confidence) for downstream reconstruction/pricing stages to decide
         // what to do with. No FIFO, pricing, scoring, or provider logic is touched here.
+        // WALLET-ATTR-FIX-3: confidence is 'high' only when a known router matched; stable/WETH
+        // quote-leg recovery (no router) tops out at 'medium' by design (see confidence
+        // assignment above). Requiring 'high' here made promotion structurally unreachable for
+        // the common non-router recovery case. 'medium' still requires a verified stable/WETH
+        // quote leg or wallet-side inbound leg — never a bare "transaction touched the wallet".
         const eligibleForRecoveredPromotion = walletAttributionRecovered === true &&
-          walletAttributionRecoveryConfidence === 'high' &&
+          (walletAttributionRecoveryConfidence === 'high' || walletAttributionRecoveryConfidence === 'medium') &&
           Boolean(ctx?.swapContextCandidate)
         if (eligibleForRecoveredPromotion) {
           recoveredEventsPromotedCount++
@@ -4772,6 +4788,9 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
           return promotedRecoveredEvent
         }
         recoveredEventsRejectedCount++
+        if (!walletAttributionRecovered) rejectedNotRecoveredCount++
+        else if (walletAttributionRecoveryConfidence === 'low') rejectedLowOrMediumConfidenceCount++
+        else if (!ctx?.swapContextCandidate) rejectedNoSwapContextCandidateCount++
         // Not provably wallet-side — keep out of FIFO entirely, but it already improved tx
         // context (grouping, router/quote-leg detection) via contextEvents/txCtxMap above.
         unknownDirectionRejectedNoWalletSideCount++
@@ -5087,6 +5106,9 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
       sampleRecoveredPromotions: sampleRecoveredPromotions.slice(0, 5),
       totalRecoveredEvents, highConfidenceRecoveredEvents, mediumConfidenceRecoveredEvents,
       lowConfidenceRecoveredEvents, sampleRecoveredEvents,
+      rejectedNotRecovered: rejectedNotRecoveredCount,
+      rejectedLowOrMediumConfidence: rejectedLowOrMediumConfidenceCount,
+      rejectedNoSwapContextCandidate: rejectedNoSwapContextCandidateCount,
       reasons: [],
     },
   }
