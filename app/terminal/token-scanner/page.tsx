@@ -3320,7 +3320,7 @@ export default function TerminalTokenScanner() {
   const [clarkError, setClarkError]     = useState<string | null>(null)
 
   // Tracked tokens
-  type TrackedToken = { address: string; symbol?: string | null; name?: string | null; chain?: string | null; risk_label?: string | null; score?: number | null; saved_at?: string | null }
+  type TrackedToken = { id?: string; user_id?: string; contract_address: string; symbol?: string | null; created_at?: string | null; saved_at?: string | null }
   const [trackedTokens, setTrackedTokens] = useState<TrackedToken[]>([])
   const [trackedLoading, setTrackedLoading] = useState(false)
   const [trackedSaving, setTrackedSaving]   = useState(false)
@@ -3332,19 +3332,30 @@ export default function TerminalTokenScanner() {
     setTrackedLoading(true)
     setTrackedUnavailable(false)
     try {
-      const { data: sd } = await supabase.auth.getSession()
-      const tok = sd.session?.access_token
-      if (!tok) {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) {
         setTrackedTokens([])
         setTrackedLoggedOut(true)
         return
       }
       setTrackedLoggedOut(false)
-      const res = await fetch('/api/watchlist/tokens', { headers: { Authorization: `Bearer ${tok}` } })
-      if (!res.ok) { setTrackedUnavailable(true); return }
-      const json = await res.json()
-      setTrackedTokens(json.tokens ?? [])
-    } catch { setTrackedUnavailable(true) } finally { setTrackedLoading(false) }
+      const { data, error: queryError } = await supabase
+        .from('watchlist_tokens')
+        .select('*')
+        .eq('user_id', session.user.id)
+
+      if (queryError) {
+        console.error('Failed to load tracked tokens', queryError)
+        setTrackedTokens([])
+        setTrackedUnavailable(true)
+        return
+      }
+      setTrackedTokens((data ?? []) as TrackedToken[])
+    } catch (loadError) {
+      console.error('Failed to load tracked tokens', loadError)
+      setTrackedTokens([])
+      setTrackedUnavailable(true)
+    } finally { setTrackedLoading(false) }
   }
 
   useEffect(() => {
@@ -3366,38 +3377,47 @@ export default function TerminalTokenScanner() {
     if (!result?.contract) return
     setTrackedSaving(true)
     try {
-      const { data: sd } = await supabase.auth.getSession()
-      const tok = sd.session?.access_token
-      if (!tok) { setTrackedLoggedOut(true); setTrackedUnavailable(false); return }
-      const scx = calculateCortexScoreV2(result)
-      const res = await fetch('/api/watchlist/tokens', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tok}` },
-        body: JSON.stringify({
-          address: result.contract,
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) { setTrackedLoggedOut(true); setTrackedUnavailable(false); return }
+      const { error: insertError } = await supabase
+        .from('watchlist_tokens')
+        .insert({
+          user_id: session.user.id,
+          contract_address: result.contract.toLowerCase(),
           symbol: result.symbol ?? null,
-          name: result.name ?? null,
-          chain: result.chain ?? chain,
-          riskLabel: result.cortexVerdict ?? scx.cortexVerdict ?? null,
-          score: result.cortexScore ?? scx.cortexScore ?? null,
-        }),
-      })
-      if (!res.ok) { setTrackedUnavailable(true); return }
+        })
+      if (insertError) {
+        console.error('Failed to save tracked token', insertError)
+        setTrackedUnavailable(true)
+        return
+      }
+      setTrackedLoggedOut(false)
       await refreshTrackedTokens()
-    } catch { setTrackedUnavailable(true) } finally { setTrackedSaving(false) }
+    } catch (saveError) {
+      console.error('Failed to save tracked token', saveError)
+      setTrackedUnavailable(true)
+    } finally { setTrackedSaving(false) }
   }
 
   async function removeTrackedToken(address: string) {
-    setTrackedTokens(prev => prev.filter(t => t.address !== address.toLowerCase()))
+    const normalizedAddress = address.toLowerCase()
+    setTrackedTokens(prev => prev.filter(t => t.contract_address !== normalizedAddress))
     try {
-      const { data: sd } = await supabase.auth.getSession()
-      const tok = sd.session?.access_token
-      if (!tok) { setTrackedLoggedOut(true); return }
-      const res = await fetch(`/api/watchlist/tokens?address=${encodeURIComponent(address.toLowerCase())}`, {
-        method: 'DELETE', headers: { Authorization: `Bearer ${tok}` },
-      })
-      if (!res.ok) setTrackedUnavailable(true)
-    } catch { setTrackedUnavailable(true) }
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) { setTrackedLoggedOut(true); return }
+      const { error: deleteError } = await supabase
+        .from('watchlist_tokens')
+        .delete()
+        .eq('user_id', session.user.id)
+        .eq('contract_address', normalizedAddress)
+      if (deleteError) {
+        console.error('Failed to remove tracked token', deleteError)
+        setTrackedUnavailable(true)
+      }
+    } catch (deleteError) {
+      console.error('Failed to remove tracked token', deleteError)
+      setTrackedUnavailable(true)
+    }
   }
   const [devIntelLoading, setDevIntelLoading] = useState(false)
   const [devIntelError, setDevIntelError] = useState<string | null>(null)
@@ -6455,28 +6475,20 @@ export default function TerminalTokenScanner() {
             {!trackedLoggedOut && !trackedUnavailable && !trackedLoading && trackedTokens.length > 0 && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                 {trackedTokens.map(t => {
-                  const initials = (t.symbol ?? t.name ?? '?').slice(0, 2).toUpperCase()
-                  const addr = t.address ?? ''
+                  const initials = (t.symbol ?? '?').slice(0, 2).toUpperCase()
+                  const addr = t.contract_address ?? ''
                   const short = addr.length >= 10 ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : addr
-                  const riskColor = t.risk_label === 'High Risk' ? '#f87171' : t.risk_label === 'Strong' ? '#34d399' : t.risk_label === 'Watch' || t.risk_label === 'Caution' ? '#fbbf24' : '#94a3b8'
-                  const riskBg = t.risk_label === 'High Risk' ? 'rgba(248,113,113,0.10)' : t.risk_label === 'Strong' ? 'rgba(52,211,153,0.10)' : t.risk_label === 'Watch' || t.risk_label === 'Caution' ? 'rgba(251,191,36,0.10)' : 'rgba(148,163,184,0.08)'
                   const savedDate = t.saved_at ? new Date(t.saved_at).toLocaleDateString('en-GB', { day:'2-digit', month:'2-digit', year:'numeric' }).replace(/\//g,'/') : null
                   return (
-                    <div key={t.address} style={{ padding: '12px', borderRadius: '12px', background: 'rgba(8,14,28,.75)', border: '1px solid rgba(255,255,255,0.09)' }}>
+                    <div key={t.id ?? t.contract_address} style={{ padding: '12px', borderRadius: '12px', background: 'rgba(8,14,28,.75)', border: '1px solid rgba(255,255,255,0.09)' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '10px' }}>
                         <div style={{ width: '36px', height: '36px', borderRadius: '50%', background: 'linear-gradient(135deg,rgba(99,102,241,0.25),rgba(167,139,250,0.20))', border: '1px solid rgba(167,139,250,0.35)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, fontSize: '12px', fontWeight: 800, color: '#a78bfa', fontFamily: 'var(--font-plex-mono)' }}>
                           {initials}
                         </div>
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', marginBottom: '3px' }}>
-                            <span style={{ fontSize: '12px', fontWeight: 700, color: '#f1f5f9' }}>{t.symbol ?? t.name ?? '—'}</span>
-                            <span style={{ fontSize: '8px', padding: '1px 7px', borderRadius: '999px', background: 'rgba(34,211,238,0.10)', border: '1px solid rgba(34,211,238,0.28)', color: '#22d3ee', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase' }}>{t.chain ?? 'base'}</span>
-                            {t.risk_label && (
-                              <span style={{ fontSize: '8px', padding: '1px 7px', borderRadius: '999px', background: riskBg, border: `1px solid ${riskColor}44`, color: riskColor, fontFamily: 'var(--font-plex-mono)', fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase' }}>{t.risk_label}</span>
-                            )}
-                            {t.score != null && (
-                              <span style={{ fontSize: '8px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>{t.score}/100</span>
-                            )}
+                            <span style={{ fontSize: '12px', fontWeight: 700, color: '#f1f5f9' }}>{t.symbol ?? 'Tracked Token'}</span>
+                            <span style={{ fontSize: '8px', padding: '1px 7px', borderRadius: '999px', background: 'rgba(34,211,238,0.10)', border: '1px solid rgba(34,211,238,0.28)', color: '#22d3ee', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase' }}>base</span>
                           </div>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                             <span style={{ fontSize: '9px', color: '#334155', fontFamily: 'var(--font-plex-mono)' }}>{short}</span>
@@ -6486,13 +6498,13 @@ export default function TerminalTokenScanner() {
                       </div>
                       <div style={{ display: 'flex', gap: '6px' }}>
                         <button
-                          onClick={() => { setInput(t.address); handleScan(t.address, (t.chain === 'eth' ? 'eth' : 'base') as 'base'|'eth') }}
+                          onClick={() => { setInput(t.contract_address); handleScan(t.contract_address, 'base') }}
                           style={{ flex: 1, padding: '7px 0', borderRadius: '8px', background: 'rgba(34,211,238,0.07)', border: '1px solid rgba(34,211,238,0.25)', color: '#22d3ee', fontSize: '9px', fontWeight: 700, fontFamily: 'var(--font-plex-mono)', cursor: 'pointer', letterSpacing: '.10em' }}
                         >
                           Scan
                         </button>
                         <button
-                          onClick={() => removeTrackedToken(t.address)}
+                          onClick={() => removeTrackedToken(t.contract_address)}
                           style={{ padding: '7px 12px', borderRadius: '8px', background: 'rgba(248,113,113,0.07)', border: '1px solid rgba(248,113,113,0.22)', color: '#f87171', fontSize: '10px', fontWeight: 700, fontFamily: 'var(--font-plex-mono)', cursor: 'pointer' }}
                         >
                           Remove
