@@ -19,8 +19,8 @@ assert.match(snap, /if \(e\.swapDetection\?\.isSwapCandidate\) continue/, 'alrea
 assert.match(snap, /existingSwapKeys\.has\(eventKey\)/, 'single-leg promotion dedupes against existing swap-candidate keys by tx+contract+direction')
 
 // UI copy
-assert.match(ui, /Exact FIFO PnL/, 'UI shows Exact FIFO PnL label')
-assert.match(ui, /Estimated FIFO PnL/, 'UI shows Estimated FIFO PnL label')
+assert.match(ui, /Verified trade evidence/, 'UI shows public-safe verified trade evidence label')
+assert.match(ui, /Public-safe FIFO read/, 'UI shows Public-safe FIFO read label')
 assert.match(ui, /Sell found — buy cost missing/, 'UI shows sell-side-only label')
 assert.match(ui, /Open position — cost basis missing/, 'UI shows open-positions-cost-missing label')
 assert.match(ui, /Activity found — no matched trade yet/, 'UI shows activity-only label')

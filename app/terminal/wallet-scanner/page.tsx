@@ -153,9 +153,17 @@ type WalletResult = {
   unpricedHoldingsCount?: number
   pnlQuality?: 'exact_fifo' | 'exact_fifo_micro_sample' | 'fifo_with_estimates' | 'sell_side_only' | 'open_positions_cost_missing' | 'activity_only' | 'no_trade_evidence' | 'missing_cost_basis'
   pnlQualityReason?: string
+  publicPnlStatus?: 'ok' | 'limited_verified_sample' | 'open_check' | 'near_flat_verified_sample' | 'flat_estimate_only' | 'partial_near_flat'
+  publicPnlDisplayLabel?: string
+  publicPnlDisplayReason?: string
+  publicPerformanceClosedLots?: number
+  verifiedButExcludedClosedLots?: number
+  excludedClosedLots?: number
+  rawMatchedClosedLots?: number
+  publicPerformanceRealizedPnlUsd?: number | null
   walletRecoveryRecommendation?: {
     recommended: boolean
-    mode: 'targeted_token_recovery' | 'none'
+    mode: 'targeted_token_recovery' | 'targeted_recovery_attempted' | 'attempted_light' | 'attempted_provider_failed' | 'skipped_cost_guard' | 'skipped_micro_wallet' | 'none'
     targetTokens: Array<{ contract: string; symbol: string; chain: string; estimatedUsd: number }>
     reason: string
     estimatedExtraPages: number
@@ -263,7 +271,22 @@ type WalletResult = {
     economicSignificanceReason: string
     missing: string[]
     closedLotsForStats?: number
-    publicPnlStatus?: 'ok' | 'limited_verified_sample' | 'open_check'
+    publicClosedLots?: number
+    performanceClosedLots?: number
+    publicPnlStatus?: 'ok' | 'limited_verified_sample' | 'open_check' | 'near_flat_verified_sample' | 'flat_estimate_only' | 'partial_near_flat'
+    publicPnlDisplayLabel?: string
+    publicPnlDisplayReason?: string
+    publicPerformanceClosedLots?: number
+    verifiedButExcludedClosedLots?: number
+    excludedClosedLots?: number
+    rawMatchedClosedLots?: number
+    publicRealizedPnlUsd?: number | null
+    publicPerformanceRealizedPnlUsd?: number | null
+    publicWinRatePercent?: number | null
+    winningPerformanceLots?: number
+    losingPerformanceLots?: number
+    breakEvenPerformanceLots?: number
+    winRateStatus?: 'unlocked' | 'locked_small_sample'
     pnlUnavailableReason?: string | null
     verifiedClosedLots?: number
     rawClosedLots?: number
@@ -286,9 +309,11 @@ type WalletResult = {
     confidence: 'low' | 'medium' | 'high'
     entryTxHash?: string | null
     exitTxHash?: string | null
-    verificationStatus?: 'verifiable' | 'partial' | 'not_available' | 'synthetic_cost_basis_missing'
-    publicPnlStatus?: 'ok' | 'limited_verified_sample' | 'open_check'
+    verificationStatus?: 'verifiable' | 'partial' | 'not_available' | 'synthetic_cost_basis_missing' | 'estimate_only_price_flat' | 'price_independence_missing'
+    publicPnlStatus?: 'ok' | 'limited_verified_sample' | 'open_check' | 'near_flat_verified_sample' | 'flat_estimate_only' | 'partial_near_flat'
     pnlUnavailableReason?: string | null
+    pnlDecisive?: boolean
+    includedInPublicStats?: boolean
   }>
   walletPersonality?: {
     personality: 'Sniper' | 'Smart Money' | 'Rotator' | 'Degen' | 'Not enough data'
@@ -1784,10 +1809,10 @@ export default function WalletScannerPage() {
                         <div className="wpv3-support" style={{ marginBottom: '8px', color: '#9aa4b2' }}>
                           {(() => {
                             const q = result.pnlQuality
-                            if (q === 'exact_fifo') return 'Exact FIFO PnL'
+                            if (q === 'exact_fifo') return 'Verified trade evidence'
                             if (q === 'exact_fifo_micro_sample' && result.pnlQualityReason === 'outlier_lots_excluded') return 'Verified trades found, abnormal-pricing outlier excluded'
                             if (q === 'exact_fifo_micro_sample') return 'Verified dust trades found, not enough meaningful trade data'
-                            if (q === 'fifo_with_estimates') return 'Estimated FIFO PnL'
+                            if (q === 'fifo_with_estimates') return 'Public-safe FIFO read'
                             if (q === 'missing_cost_basis') return 'Sell found — buy cost missing'
                             if (q === 'sell_side_only') return 'Sell found — buy cost missing'
                             if (q === 'open_positions_cost_missing') return 'Open position — cost basis missing'
@@ -1801,19 +1826,39 @@ export default function WalletScannerPage() {
                         <p className="wpv3-support" style={{ marginBottom: '8px' }}>
                           PnL is calculated from matched buy/sell lots. When buys are missing, ChainLens shows sell proceeds or open position value but does not fake profit.
                         </p>
-                        {tradeEvidenceStrong ? <>{[
-                          ['Realized PnL', fmtSignedUSD(ts!.realizedPnlUsd)],
-                          ['Win Rate', ts!.winRatePercent == null ? 'Open Check' : `${ts!.winRatePercent.toFixed(0)}%`],
-                          ['Verified Trades', String(ts!.verifiedClosedLots ?? ts!.closedLotsForStats ?? ts!.closedLots)],
-                                ...((ts!.estimateOnlyClosedLots ?? 0) > 0 ? [['Estimate-only excluded', String(ts!.estimateOnlyClosedLots)]] as [string, string][] : []),
-                                ...((ts!.syntheticClosedLotsExcluded ?? 0) > 0 ? [['Synthetic/missing-cost excluded', String(ts!.syntheticClosedLotsExcluded)]] as [string, string][] : []),
-                                ...((ts!.rawClosedLots ?? 0) > 0 ? [['Raw matched lots', String(ts!.rawClosedLots)]] as [string, string][] : []),
-                          ['Average Hold Period', fmtSecondsToHuman(ts!.avgHoldingTimeSeconds) ?? 'Open Check'],
-                          ['Best Trade', fmtSignedUSD(ts!.largestWinUsd)],
-                          ['Worst Trade', fmtSignedUSD(ts!.largestLossUsd)],
-                          ['Average Win', fmtSignedUSD(deriveAverageMatchedWinUsd(result))],
-                          ['Average Loss', fmtSignedUSD(deriveAverageMatchedLossUsd(result))],
-                        ].map(([label,value]) => <div key={label} className="wpv3-metric-row"><span className="wpv3-label">{label}</span><span className="wpv3-value" style={{ fontSize: '20px', color: String(value).startsWith('+') ? '#7DDC9A' : String(value).startsWith('-') ? '#F08A8A' : '#F2F4F7' }}>{value}</span></div>)}</> : <div><div className="wpv3-value" style={{ fontSize: '24px' }}>Insufficient Trade Evidence</div><p className="wpv3-support">No fabricated win rate, PnL, or hold-time metrics are shown without reconstructed closed lots.</p></div>}
+                        {tradeEvidenceStrong ? (() => {
+                          const publicStatus = result.publicPnlStatus ?? ts!.publicPnlStatus
+                          const publicLots = result.publicPerformanceClosedLots ?? ts!.publicPerformanceClosedLots ?? ts!.publicClosedLots ?? ts!.performanceClosedLots ?? 0
+                          const rawLots = result.rawMatchedClosedLots ?? ts!.rawMatchedClosedLots ?? ts!.rawClosedLots ?? ts!.closedLots ?? 0
+                          const excludedLots = result.excludedClosedLots ?? ts!.excludedClosedLots ?? Math.max(0, rawLots - publicLots)
+                          const lockedWinRate = ts!.winRateStatus === 'locked_small_sample' || ts!.scoreUnlocked !== true || ts!.publicWinRatePercent == null
+                          const labelPnl = publicStatus === 'limited_verified_sample' || publicStatus === 'near_flat_verified_sample' || publicStatus === 'open_check' || publicStatus === 'flat_estimate_only' ? 'Public-sample PnL' : 'Realized PnL'
+                          const hasPublicWin = (ts!.winningPerformanceLots ?? 0) > 0
+                          const rows: [string, string][] = [
+                            [labelPnl, fmtSignedUSD(ts!.publicPerformanceRealizedPnlUsd ?? ts!.publicRealizedPnlUsd ?? ts!.realizedPnlUsd)],
+                            ['Win Rate', lockedWinRate ? 'Locked' : `${(ts!.publicWinRatePercent ?? ts!.winRatePercent ?? 0).toFixed(0)}%`],
+                            ['Public-grade trades', String(publicLots)],
+                            ['Verified but limited/excluded', String(result.verifiedButExcludedClosedLots ?? ts!.verifiedButExcludedClosedLots ?? Math.max(0, (ts!.verifiedClosedLots ?? 0) - publicLots))],
+                            ['Estimate-only excluded', String(ts!.estimateOnlyClosedLots ?? 0)],
+                            ['Synthetic/missing-cost excluded', String(ts!.syntheticClosedLotsExcluded ?? 0)],
+                            ['Raw matched lots', String(rawLots)],
+                            ['Average Hold Period', fmtSecondsToHuman(ts!.avgHoldingTimeSeconds) ?? 'Open Check'],
+                            ['Best Trade', hasPublicWin ? fmtSignedUSD(ts!.largestWinUsd) : 'Open Check'],
+                            ['Worst Trade', fmtSignedUSD(ts!.largestLossUsd)],
+                            ['Average Win', hasPublicWin ? fmtSignedUSD(deriveAverageMatchedWinUsd(result)) : 'Open Check'],
+                            ['Average Loss', fmtSignedUSD(deriveAverageMatchedLossUsd(result))],
+                          ]
+                          return <>
+                            <p className="wpv3-support" style={{ marginBottom: '8px', color: '#cbd5e1' }}>
+                              Based on {publicLots} public-grade lots. {excludedLots} raw matched lots excluded.
+                            </p>
+                            <p className="wpv3-support" style={{ marginBottom: '8px' }}>
+                              Based on {publicLots} public-grade lots, not full wallet history.
+                            </p>
+                            {lockedWinRate && <p className="wpv3-support" style={{ marginBottom: '8px', color: '#fbbf24' }}>Needs 10 public-grade trades. Current: {publicLots}.</p>}
+                            {rows.map(([label,value]) => <div key={label} className="wpv3-metric-row"><span className="wpv3-label">{label}</span><span className="wpv3-value" style={{ fontSize: '20px', color: String(value).startsWith('+') ? '#7DDC9A' : String(value).startsWith('-') ? '#F08A8A' : '#F2F4F7' }}>{value}</span></div>)}
+                          </>
+                        })() : <div><div className="wpv3-value" style={{ fontSize: '24px' }}>Insufficient Trade Evidence</div><p className="wpv3-support">No fabricated win rate, PnL, or hold-time metrics are shown without reconstructed closed lots.</p></div>}
                       </div>
 
                       <div className="wpv3-card">

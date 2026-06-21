@@ -114,7 +114,7 @@ export function computeWalletProfile(snapshot: WalletSnapshot): WalletProfile {
   ]
   const evidenceCoverage = Math.round((coverageChecks.filter(Boolean).length / coverageChecks.length) * 100)
   const hasHoldings = holdingsCount > 0
-  const tradingLockedByPublicPnl = publicPnlStatus === 'open_check' || publicPnlStatus === 'flat_estimate_only' || publicPnlStatus === 'near_flat_verified_sample' || publicPnlStatus === 'partial_near_flat'
+  const tradingLockedByPublicPnl = publicPnlStatus === 'open_check' || publicPnlStatus === 'flat_estimate_only' || publicPnlStatus === 'near_flat_verified_sample' || publicPnlStatus === 'limited_verified_sample' || publicPnlStatus === 'partial_near_flat' || tradeStats?.scoreUnlocked !== true || winRatePercent == null
   const tradeEvidenceStrong = !missingCostBasis && !tradingLockedByPublicPnl && closedLotsForStats >= 5 && tradeStats?.economicSignificance === 'meaningful'
   const tradeEvidenceWeak = !missingCostBasis && !tradingLockedByPublicPnl && closedLotsForStats >= 5 && (closedLots > 0 || uniqueTokensTraded > 0 || tradeStats?.status === 'partial')
 
@@ -213,9 +213,9 @@ export function computeWalletProfile(snapshot: WalletSnapshot): WalletProfile {
   if (concentrationLabel === 'high') weaknesses.push('Portfolio concentration is high.')
   if (!hasHoldings) weaknesses.push('No priced holdings were available in this snapshot.')
 
-  const followability: WalletProfile['followability'] = tradingLockedByPublicPnl ? (portfolioBehavior && score != null && score >= 55 ? 'Moderate' : 'Low') : tradingBehavior && tradingConfidence !== 'low' && score != null && score >= 70 ? 'High' : portfolioBehavior && score != null && score >= 55 ? 'Moderate' : 'Low'
+  const followability: WalletProfile['followability'] = tradingLockedByPublicPnl ? 'Low' : tradingBehavior && tradingConfidence !== 'low' && score != null && score >= 70 ? 'High' : portfolioBehavior && score != null && score >= 55 ? 'Moderate' : 'Low'
   const nextAction = tradingLockedByPublicPnl
-    ? 'Monitor only; do not copy yet because public PnL evidence is partial, near-flat, or locked.'
+    ? 'Use for portfolio read only; trading evidence is locked until more public-grade trades are available.'
     : tradingConfidence === 'low'
       ? 'Use this profile for portfolio read only; wait for stronger trade/PnL evidence before copying trades.'
       : 'Monitor future realized trades and position changes before following.'
