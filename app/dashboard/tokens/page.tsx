@@ -1,21 +1,52 @@
 "use client";
 
-import { useState } from "react";
+import dynamic from "next/dynamic";
+import { useCallback, useState } from "react";
+
+import { addTrackedToken, canUseTrackedTokenStorage, saveTrackedTokenSymbol } from "@/utils/trackedTokens";
+
+type TokenScanResult = {
+  error?: string;
+  status?: string;
+  marketStatus?: string;
+  symbol?: string;
+  name?: string;
+  priceUsd?: number | string | null;
+  liquidityUsd?: number | string | null;
+  marketCapUsd?: number | string | null;
+  holderDistribution?: {
+    topHolders?: unknown[];
+  };
+  aiSummary?: string;
+};
+
+const TrackedTokens = dynamic(() => import("./TrackedTokens"), {
+  loading: () => <p className="mt-10 text-sm text-white/60">Loading tracked tokens…</p>,
+  ssr: false,
+});
+
+function normalizeContract(contract: string): string {
+  return contract.trim().toLowerCase();
+}
 
 export default function TokenScanner() {
   const [token, setToken] = useState("");
   const [chain, setChain] = useState<"base" | "eth">("base");
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<any>(null);
+  const [result, setResult] = useState<TokenScanResult | null>(null);
+  const [trackedTokensRefreshKey, setTrackedTokensRefreshKey] = useState(0);
+  const [trackedTokenStorageError, setTrackedTokenStorageError] = useState(false);
+  const [symbolByContract, setSymbolByContract] = useState<Record<string, string>>({});
 
-  const scanToken = async () => {
-    const contract = token.trim();
+  const scanContract = useCallback(async (contractAddress: string) => {
+    const contract = contractAddress.trim();
     if (!contract) {
       setResult({ error: "Please enter a token contract address before scanning." });
       return;
     }
     setLoading(true);
     setResult(null);
+    setTrackedTokenStorageError(false);
 
     try {
       const res = await fetch(`/api/token`, {
@@ -34,13 +65,33 @@ export default function TokenScanner() {
         setLoading(false);
         return;
       }
+
       setResult(data);
-    } catch (err) {
+
+      // PHASE-TS1-FIX: persist successful scans immediately without changing the scan payload/API shape.
+      if (!canUseTrackedTokenStorage()) {
+        setTrackedTokenStorageError(true);
+      } else {
+        addTrackedToken(contract);
+        const normalizedContract = normalizeContract(contract);
+        const symbol = typeof data?.symbol === "string" && data.symbol.trim() ? data.symbol.trim() : "Tracked Token";
+        saveTrackedTokenSymbol(contract, symbol);
+        setSymbolByContract((previousSymbols) => ({ ...previousSymbols, [normalizedContract]: symbol }));
+        setTrackedTokensRefreshKey((key) => key + 1);
+      }
+    } catch {
       setResult({ error: "Something went wrong" });
     }
 
     setLoading(false);
-  };
+  }, [chain]);
+
+  const scanToken = () => scanContract(token);
+
+  const scanTrackedTokenAgain = useCallback((contractAddress: string) => {
+    setToken(contractAddress);
+    void scanContract(contractAddress);
+  }, [scanContract]);
 
   return (
     <div className="p-10">
@@ -73,6 +124,10 @@ export default function TokenScanner() {
 
       {result?.error && (
         <p className="text-red-400 mt-4">{result.error}</p>
+      )}
+
+      {trackedTokenStorageError && (
+        <p className="text-red-300 mt-4">Could not load tracked tokens (storage unavailable).</p>
       )}
 
       {!loading && !result && (
@@ -121,6 +176,12 @@ export default function TokenScanner() {
           )}
         </div>
       )}
+
+      <TrackedTokens
+        refreshKey={trackedTokensRefreshKey}
+        symbolByContract={symbolByContract}
+        onScanAgain={scanTrackedTokenAgain}
+      />
     </div>
   );
 }
