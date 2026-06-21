@@ -151,7 +151,7 @@ type WalletResult = {
   pnlCoverageReason?: string
   hiddenDustCount?: number
   unpricedHoldingsCount?: number
-  pnlQuality?: 'exact_fifo' | 'fifo_with_estimates' | 'sell_side_only' | 'open_positions_cost_missing' | 'activity_only' | 'no_trade_evidence'
+  pnlQuality?: 'exact_fifo' | 'fifo_with_estimates' | 'sell_side_only' | 'open_positions_cost_missing' | 'activity_only' | 'no_trade_evidence' | 'missing_cost_basis'
   walletRecoveryRecommendation?: {
     recommended: boolean
     mode: 'targeted_token_recovery' | 'none'
@@ -264,6 +264,7 @@ type WalletResult = {
     closedLotsForStats?: number
     publicPnlStatus?: 'ok' | 'open_check'
     pnlUnavailableReason?: string | null
+    verifiedClosedLots?: number
   }
   walletTradeStatsSource?: 'base_sample' | 'historical_promoted_preview'
   walletClosedTradeSamples?: Array<{
@@ -281,7 +282,9 @@ type WalletResult = {
     confidence: 'low' | 'medium' | 'high'
     entryTxHash?: string | null
     exitTxHash?: string | null
-    verificationStatus?: 'verifiable' | 'partial' | 'not_available'
+    verificationStatus?: 'verifiable' | 'partial' | 'not_available' | 'synthetic_cost_basis_missing'
+    publicPnlStatus?: 'ok' | 'open_check'
+    pnlUnavailableReason?: string | null
   }>
   walletPersonality?: {
     personality: 'Sniper' | 'Smart Money' | 'Rotator' | 'Degen' | 'Not enough data'
@@ -1656,7 +1659,10 @@ export default function WalletScannerPage() {
                 const portfolioClass = portfolioBehavior ?? derivePortfolioBehaviorFromHoldings(pi)
                 const tradeClass = tradingBehavior ?? deriveTradingBehaviorFromEvidence(result)
                 const risk = deriveRiskLabel(pi.topShare, pi.top3Share, pi.stablePercent)
-                const tradeEvidenceStrong = Boolean(ts && ts.closedLots > 0 && ts.realizedPnlUsd !== null)
+                // PNL-SAFETY-FIX: must use the verified/real-backed closed-lot count, not the raw
+                // closedLots count, which can still include synthetic FIFO-backfilled lots.
+                const _verifiedClosedLots = ts?.verifiedClosedLots ?? ts?.closedLotsForStats ?? ts?.closedLots ?? 0
+                const tradeEvidenceStrong = Boolean(ts && _verifiedClosedLots > 0 && ts.realizedPnlUsd !== null && ts.pnlUnavailableReason !== 'missing_cost_basis')
                 const allocation = allocationRows(result)
                 const missing = Array.from(new Set([
                   ...(result.walletEvidenceSummary?.missing ?? []),
@@ -1754,6 +1760,7 @@ export default function WalletScannerPage() {
                             const q = result.pnlQuality
                             if (q === 'exact_fifo') return 'Exact FIFO PnL'
                             if (q === 'fifo_with_estimates') return 'Estimated FIFO PnL'
+                            if (q === 'missing_cost_basis') return 'Sell found — buy cost missing'
                             if (q === 'sell_side_only') return 'Sell found — buy cost missing'
                             if (q === 'open_positions_cost_missing') return 'Open position — cost basis missing'
                             if (q === 'activity_only') return 'Activity found — no matched trade yet'

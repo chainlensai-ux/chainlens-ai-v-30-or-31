@@ -407,11 +407,15 @@ export type WalletSnapshot = {
     closedLotsForStats?: number
     publicPnlStatus?: 'ok' | 'open_check'
     pnlUnavailableReason?: string | null
+    // PNL-SAFETY-FIX-4: closedLots above is kept raw for backward compatibility (may include
+    // synthetic FIFO-backfilled lots). verifiedClosedLots is the real-backed-only count callers
+    // should treat as the public "trades found" number.
+    verifiedClosedLots?: number
   }
 
   // FIFO-RECON-FIX-3: per-wallet PnL quality tier, derived from existing closed-lot/sell/holding
   // signals — never upgrades a tier based on faked data, only labels what evidence actually exists.
-  pnlQuality?: 'exact_fifo' | 'fifo_with_estimates' | 'sell_side_only' | 'open_positions_cost_missing' | 'activity_only' | 'no_trade_evidence'
+  pnlQuality?: 'exact_fifo' | 'fifo_with_estimates' | 'sell_side_only' | 'open_positions_cost_missing' | 'activity_only' | 'no_trade_evidence' | 'missing_cost_basis'
   walletRecoveryRecommendation?: {
     recommended: boolean
     mode: 'targeted_token_recovery' | 'none'
@@ -438,7 +442,12 @@ export type WalletSnapshot = {
     confidence: 'low' | 'medium' | 'high'
     entryTxHash: string | null
     exitTxHash: string | null
-    verificationStatus: 'verifiable' | 'partial' | 'not_available'
+    verificationStatus: 'verifiable' | 'partial' | 'not_available' | 'synthetic_cost_basis_missing'
+    // PNL-SAFETY-FIX-2: additive — set whenever a sample's lot is synthetic (no real recovered
+    // buy), so a synthetic lot is never mistaken for a verified public closed trade even if it
+    // happens to carry both an entry and exit tx hash.
+    publicPnlStatus?: 'ok' | 'open_check'
+    pnlUnavailableReason?: string | null
   }>
   walletClosedLotsAll: WalletClosedLot[]
   walletHistoricalCoverageSummary: {
@@ -11540,6 +11549,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       ...promotedTradeStatsSummary,
       status: 'open_check',
       closedLotsForStats: 0,
+      verifiedClosedLots: 0,
       winRatePercent: null,
       scoreUnlocked: false,
       readyForWalletScore: false,
@@ -11555,6 +11565,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     promotedTradeStatsSummary = {
       ...promotedTradeStatsSummary,
       closedLotsForStats: _closedLotsForStatsFinal,
+      verifiedClosedLots: _closedLotsForStatsFinal,
       publicPnlStatus: 'ok',
       pnlUnavailableReason: null,
     }
@@ -11562,11 +11573,16 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
 
   // Phase 6F/6G: Build public closed trade samples (max 5) with blockchain verification fields
   const _sampleSourceLots = _shouldPromote && _hcPreviewClosedLots.length > 0 ? _hcPreviewClosedLots : _closedLots
-  const walletClosedTradeSamples: WalletSnapshot['walletClosedTradeSamples'] = _sampleSourceLots.slice(0, 5).map(l => {
+  // PNL-SAFETY-FIX-3: when no real-backed closed lot exists at all, synthetic lots must not be
+  // surfaced as public closed-trade samples — they'd otherwise look like verifiable trades.
+  const _sampleEligibleLots = _closedLotsForStatsFinal === 0 ? [] : _sampleSourceLots
+  const walletClosedTradeSamples: WalletSnapshot['walletClosedTradeSamples'] = _sampleEligibleLots.slice(0, 5).map(l => {
     const entryTxHash = l.openedTxHash ?? null
     const exitTxHash = l.closedTxHash ?? null
-    const verificationStatus: 'verifiable' | 'partial' | 'not_available' =
-      entryTxHash && exitTxHash ? 'verifiable' : (entryTxHash || exitTxHash) ? 'partial' : 'not_available'
+    const isRealBacked = _isRealBackedClosedLot(l)
+    const verificationStatus: 'verifiable' | 'partial' | 'not_available' | 'synthetic_cost_basis_missing' =
+      !isRealBacked ? 'synthetic_cost_basis_missing'
+        : entryTxHash && exitTxHash ? 'verifiable' : (entryTxHash || exitTxHash) ? 'partial' : 'not_available'
     return {
       tokenSymbol: l.tokenSymbol ?? l.tokenAddress.slice(0, 8),
       tokenAddress: l.tokenAddress,
@@ -11583,6 +11599,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       entryTxHash,
       exitTxHash,
       verificationStatus,
+      publicPnlStatus: isRealBacked ? 'ok' : 'open_check',
+      pnlUnavailableReason: isRealBacked ? null : 'missing_cost_basis',
     }
   })
 
@@ -11956,15 +11974,17 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
 
   // FIFO-RECON-FIX-4: derive the public PnL quality tier from signals that already exist on the
   // promoted summaries — never upgrades a tier based on data that wasn't actually found.
-  const _closedLotsForStats = promotedTradeStatsSummary.closedLots ?? 0
-  const _hasSyntheticOrEstimatedLots = (promotedLotSummary.syntheticClosedLots ?? 0) > 0 ||
-    _closedLots.some(l => l.evidence?.entrySource === 'synthetic' || (l.missingReasons ?? []).includes('price_synthetic_fifo'))
+  // PNL-SAFETY-FIX-5: must use the real-backed closed-lot count (closedLotsForStats /
+  // realClosedLots), NOT the raw closedLots count, which can still include synthetic
+  // FIFO-backfilled lots even when pnlUnavailableReason === 'missing_cost_basis'.
+  const _realClosedLotsCount = promotedLotSummary.realClosedLots ?? promotedLotSummary.closedLotsForStats ?? 0
+  const _missingCostBasisProven = promotedLotSummary.pnlUnavailableReason === 'missing_cost_basis' || _realClosedLotsCount === 0
   const _unmatchedSellsCount = _lotEngineDebug.unmatchedSells ?? 0
   const _openedLotsCount = promotedLotSummary.openedLots ?? 0
   const _hasActivityEvidence = (walletEvidenceSummary.totalEvents ?? 0) > 0 || (walletSwapSummary.swapCandidateEvents ?? 0) > 0
   const _pnlQuality: WalletSnapshot['pnlQuality'] =
-    _closedLotsForStats > 0 && !_hasSyntheticOrEstimatedLots ? 'exact_fifo'
-      : _closedLotsForStats > 0 ? 'fifo_with_estimates'
+    _realClosedLotsCount > 0 && !_missingCostBasisProven ? 'exact_fifo'
+      : _missingCostBasisProven && (promotedLotSummary.syntheticClosedLots ?? 0) > 0 ? 'missing_cost_basis'
         : _unmatchedSellsCount > 0 ? 'sell_side_only'
           : holdings.length > 0 && _openedLotsCount > 0 ? 'open_positions_cost_missing'
             : _hasActivityEvidence ? 'activity_only'
@@ -11972,12 +11992,20 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
 
   // FIFO-RECON-FIX-5: surfaces the already-computed targeted recovery targets (no new provider
   // calls — reuses _rankedHistoricalTargets/_missingCostBasisGuardActive computed above).
+  // PNL-SAFETY-FIX-6: synthetic closed lots are not "closed lots already found" — only a real
+  // recovered buy (realClosedLots > 0) should suppress the recovery recommendation.
   const _walletRecoveryRecommendation: WalletSnapshot['walletRecoveryRecommendation'] = (() => {
     const targetTokens = _rankedHistoricalTargets.slice(0, 3).map(t => ({
       contract: t.contract, symbol: t.symbol, chain: t.chain, estimatedUsd: t.estimatedUsd,
     }))
-    if (targetTokens.length === 0 || _closedLotsForStats > 0) {
-      return { recommended: false, mode: 'none', targetTokens: [], reason: targetTokens.length === 0 ? 'no_useful_token_contracts' : 'closed_lots_already_found', estimatedExtraPages: 0 }
+    if (targetTokens.length === 0) {
+      return { recommended: false, mode: 'none', targetTokens: [], reason: 'no_useful_token_contracts', estimatedExtraPages: 0 }
+    }
+    if (_realClosedLotsCount > 0) {
+      return { recommended: false, mode: 'none', targetTokens: [], reason: 'closed_lots_already_found', estimatedExtraPages: 0 }
+    }
+    if (_missingCostBasisProven && (promotedLotSummary.syntheticClosedLots ?? 0) > 0 && !_adminOverrideUsed) {
+      return { recommended: false, mode: 'none', targetTokens, reason: 'missing_cost_basis_synthetic_lots_excluded', estimatedExtraPages: 0 }
     }
     return {
       recommended: true,
