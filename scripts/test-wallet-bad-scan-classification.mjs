@@ -94,4 +94,15 @@ assert.match(routeSrc, /\} else if \(_initialRecoverySignals\.recoveryAlreadyFou
 assert.match(routeSrc, /snapshot\.walletHistoricalRecoveryReason = 'closed_lots_already_found'/, 'historical recovery reason uses the non-contradictory closed_lots_already_found label')
 assert.match(snap, /_skipReasons\.push\('closed_lots_already_found'\)/, 'the stale already_has_10_closed_lots skip reason is replaced with closed_lots_already_found')
 
+// LOW-VALUE-RECOVERY-FIX: recovery eligibility must be evidence-gated, not wallet-value-tier-gated,
+// so micro/small wallets with real swap/sell evidence get the same capped (max 2 tokens, max 2
+// pages) targeted recovery pass as high-value wallets, surfaced under walletLowValueRecoveryDebug.
+assert.match(snap, /const _syntheticRecoveryTierEligible = true/, 'synthetic/low-value targeted recovery eligibility is evidence-gated, not wallet-value-tier-gated')
+assert.doesNotMatch(snap, /_syntheticRecoveryTierEligible = _walletValueTier === 'high_value' \|\| _walletValueTier === 'whale' \|\| _walletValueTier === 'standard'/, 'the old tier-based exclusion of micro\/small wallets from targeted recovery is removed')
+assert.match(snap, /walletLowValueRecoveryDebug\?:\s*\{/, 'a walletLowValueRecoveryDebug type is exposed for auditing low/mid-value wallet recovery attempts')
+assert.match(snap, /const _lowValueRecoveryDebug = \{/, 'walletLowValueRecoveryDebug is populated from the existing capped synthetic-target extra-recovery pass')
+assert.match(snap, /realClosedLotsAdded: Math\.max\(0, _closedLotsForStatsFinal - _earlyRealBackedClosedLots\)/, 'walletLowValueRecoveryDebug.realClosedLotsAdded reflects real-backed closed lots gained by the targeted pass')
+assert.match(snap, /walletLowValueRecoveryDebug: _lowValueRecoveryDebug,/, 'walletLowValueRecoveryDebug is attached to the snapshot _debug payload')
+assert.match(snap, /const cacheKey = `\$\{address\.toLowerCase\(\)\}:\$\{targets\.map\(t => `\$\{t\.chain\}:\$\{t\.tokenContract\}:\$\{t\.sellTimestamp\}`\)\.join\('\|'\)\}:v3:p\$\{maxPagesPerToken\}t\$\{maxPagesTotal\}`/, 'the targeted backfill cache key includes the page caps so a tiny low-value lookup cannot be served from a deeper cached result or vice versa')
+
 console.log('wallet bad-scan classification checks passed')

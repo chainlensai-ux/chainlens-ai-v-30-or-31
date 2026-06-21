@@ -925,6 +925,29 @@ export type WalletSnapshot = {
       samplePrioritizedCandidates: Array<{ symbol: string | null; priority: number; hasStableLeg: boolean; hasWethLeg: boolean; usdValue: number | null }>
     }
     unmatchedSellBackfillDebug?: UnmatchedSellBackfillDebug
+    // LOW-VALUE-RECOVERY-FIX: a tiny, evidence-gated (not wallet-value-gated) targeted recovery
+    // pass for micro/small-value wallets that have real swap/sell evidence but zero real-backed
+    // closed lots so far. See walletLowValueRecoveryEligible computation for trigger conditions.
+    walletLowValueRecoveryDebug?: {
+      attempted: boolean
+      reason: string
+      triggeredBy: string[]
+      walletValueTier: WalletValueTier | null
+      closedLotsForStatsBefore: number
+      swapCandidates: number
+      unmatchedSellTokens: number
+      syntheticTargets: number
+      targetTokens: Array<{ chain: string; tokenContract: string; symbol: string | null }>
+      pagesAllowed: number
+      pagesAttempted: number
+      receiptsAttempted: number
+      quoteLegsFound: number
+      realBuysRecovered: number
+      realClosedLotsAdded: number
+      skippedReason: string | null
+      sampleRecoveredLots: Array<{ tokenAddress: string; symbol: string; realizedPnlUsd: number }>
+      sampleRejectedTargets: Array<{ chain: string; tokenContract: string; reason: string }>
+    }
     walletHistoricalScanDebug?: {
       requested: boolean; eligible: boolean; eligibilityReasons: string[]
       walletValueTier: WalletValueTier | null
@@ -3303,7 +3326,7 @@ async function fetchAlchemyBasePriorBuysForToken(address: string, baseUrl: strin
   }
 }
 
-async function runTargetedUnmatchedSellBackfill(address: string, targets: UnmatchedSellBackfillTarget[], apiKey: string, baseUrl: string, closedLotsBefore: number, realizedPnlBefore: number | null): Promise<UnmatchedSellBackfillOutput> {
+async function runTargetedUnmatchedSellBackfill(address: string, targets: UnmatchedSellBackfillTarget[], apiKey: string, baseUrl: string, closedLotsBefore: number, realizedPnlBefore: number | null, maxPagesPerToken = 2, maxPagesTotal = 4): Promise<UnmatchedSellBackfillOutput> {
   const makePerTarget = (target: UnmatchedSellBackfillTarget, attempted: boolean, reason: UnmatchedSellBackfillReason | string): UnmatchedSellBackfillPerTargetResult => ({
     chain: target.chain,
     tokenContract: target.tokenContract,
@@ -3344,7 +3367,7 @@ async function runTargetedUnmatchedSellBackfill(address: string, targets: Unmatc
     },
   })
   if (targets.length === 0) return empty(false, 'not_eligible')
-  const cacheKey = `${address.toLowerCase()}:${targets.map(t => `${t.chain}:${t.tokenContract}:${t.sellTimestamp}`).join('|')}:v3`
+  const cacheKey = `${address.toLowerCase()}:${targets.map(t => `${t.chain}:${t.tokenContract}:${t.sellTimestamp}`).join('|')}:v3:p${maxPagesPerToken}t${maxPagesTotal}`
   const cached = unmatchedSellBackfillCache.get(cacheKey)
   if (cached && Date.now() - cached.cachedAt <= UNMATCHED_SELL_BACKFILL_TTL_MS) return { events: cached.data.events, targetBuyKeys: new Set(cached.data.targetBuyKeys), debug: { ...cached.data.debug, attempted: true, reason: cached.data.debug.reason || 'cache_hit' } }
 
@@ -3358,8 +3381,6 @@ async function runTargetedUnmatchedSellBackfill(address: string, targets: Unmatc
   const seenEvents = new Set<string>()
   const foundTargetKeys = new Set<string>()
   let stopReason: UnmatchedSellBackfillReason | string = 'prior_buy_not_found_for_sold_token'
-  const maxPagesPerToken = 2
-  const maxPagesTotal = 4
 
   const addEventsForTarget = (target: UnmatchedSellBackfillTarget, candidateEvents: PnlEvent[], priorBuys: PnlEvent[]) => {
     const targetKey = `${target.chain}:${target.tokenContract}`
@@ -10972,7 +10993,13 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _syntheticLotsDetected = _syntheticClosedLots.length > 0
   const _syntheticLotTokenTargets = Array.from(new Set(_syntheticClosedLots.map(l => l.tokenAddress.toLowerCase())))
   const _sellsExceedBuysSignal = (_lotEngineDebug.unmatchedSells ?? 0) > 0
-  const _syntheticRecoveryTierEligible = _walletValueTier === 'high_value' || _walletValueTier === 'whale' || _walletValueTier === 'standard'
+  // LOW-VALUE-RECOVERY-FIX: this used to exclude 'micro'/'small' wallets, which meant a low-value
+  // wallet with the exact same synthetic-lot/unmatched-sell evidence as a high-value wallet could
+  // never reach the capped (max 2 tokens, max 2 pages — see SYNTH-RECOVERY-FIX-12 below) targeted
+  // recovery pass below. Wallet value says nothing about whether the underlying swap/sell evidence
+  // is real and recoverable, so eligibility is evidence-gated (synthetic lots / unmatched sells,
+  // both already required by every call site below) rather than wallet-value-tier-gated.
+  const _syntheticRecoveryTierEligible = true
   const _syntheticLotsBeforeHistorical = _syntheticClosedLots.length
   const _adminOverrideUsed = walletScanBudget?.adminOverrideUsed === true
 
@@ -11568,6 +11595,42 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _unknownCostSellValueUsdFinal = _syntheticClosedLotsFinal.reduce((s, l) => s + (l.proceedsUsd ?? 0), 0)
   const _pnlUnavailableReasonFinal: string | null =
     _closedLotsForStatsFinal === 0 && _syntheticLotsExcludedFromStatsFinal > 0 ? 'missing_cost_basis' : null
+
+  // LOW-VALUE-RECOVERY-FIX: surfaces the (now evidence-gated, not value-tier-gated) capped
+  // targeted recovery pass above — SYNTH-RECOVERY-FIX-12's _syntheticTargetExtra* mechanism — under
+  // a dedicated debug key so low/mid-value wallets are auditable the same way high-value ones are.
+  const _lowValueTriggeredBy: string[] = []
+  if (_syntheticLotsDetected) _lowValueTriggeredBy.push('synthetic_closed_lots')
+  if (_sellsExceedBuysSignal) _lowValueTriggeredBy.push('unmatched_sells')
+  if ((walletSwapSummary.swapCandidateEvents ?? 0) > 0) _lowValueTriggeredBy.push('swap_candidates')
+  const _lowValueRecoveryDebug = {
+    attempted: _syntheticTargetExtraRecoveryAttempted,
+    reason: _syntheticTargetExtraStopReason ?? _syntheticTargetExtraSkippedReason ?? 'not_eligible',
+    triggeredBy: _lowValueTriggeredBy,
+    walletValueTier: _walletValueTier,
+    closedLotsForStatsBefore: _earlyRealBackedClosedLots,
+    swapCandidates: walletSwapSummary.swapCandidateEvents ?? 0,
+    unmatchedSellTokens: _lotEngineDebug.unmatchedSellTokenKeys.length,
+    syntheticTargets: _syntheticLotTokenTargets.length,
+    targetTokens: _syntheticTargetExtraEligibleTokens.map(c => {
+      const lot = _syntheticClosedLots.find(l => l.tokenAddress.toLowerCase() === c)
+      return { chain: lot?.chain ?? 'unknown', tokenContract: c, symbol: lot?.tokenSymbol ?? null }
+    }),
+    pagesAllowed: _syntheticTargetExtraPagesAllowed,
+    pagesAttempted: _syntheticTargetExtraPagesAttempted,
+    receiptsAttempted: _syntheticTargetExtraRawLogs,
+    quoteLegsFound: _syntheticTargetExtraInboundEvents,
+    realBuysRecovered: _syntheticTargetExtraPriorBuysFound,
+    realClosedLotsAdded: Math.max(0, _closedLotsForStatsFinal - _earlyRealBackedClosedLots),
+    skippedReason: _syntheticTargetExtraSkippedReason,
+    sampleRecoveredLots: _realBackedClosedLotsFinal
+      .filter(l => _syntheticTargetExtraEligibleTokens.includes(l.tokenAddress.toLowerCase()))
+      .slice(0, 5)
+      .map(l => ({ tokenAddress: l.tokenAddress, symbol: l.tokenSymbol ?? l.tokenAddress.slice(0, 8), realizedPnlUsd: l.realizedPnlUsd })),
+    sampleRejectedTargets: _syntheticTargetExtraEligibleTokens.length === 0
+      ? _syntheticLotTokenTargets.slice(0, 5).map(c => ({ chain: 'unknown', tokenContract: c, reason: 'already_real_backed_lot_for_target' }))
+      : [],
+  }
 
   promotedLotSummary = {
     ...promotedLotSummary,
@@ -12326,6 +12389,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       walletScanBudgetDebug: _walletScanBudgetDebug,
       walletHistoricalScanDebug: _walletHistoricalScanDebug,
       unmatchedSellBackfillDebug: _unmatchedSellBackfillDebug,
+      walletLowValueRecoveryDebug: _lowValueRecoveryDebug,
       walletLotEngineDebug: _lotEngineDebug,
       walletPnlOutlierDebug: _outlierDebug,
       walletTradeStatsDebug: _tradeStatsDebug,
