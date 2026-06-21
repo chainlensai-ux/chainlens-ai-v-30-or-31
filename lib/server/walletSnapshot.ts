@@ -308,7 +308,7 @@ export type WalletSnapshot = {
   publicClosedLots?: number
   publicRealizedPnlUsd?: number | null
   publicWinRatePercent?: number | null
-  publicPnlStatus?: 'ok' | 'open_check' | 'flat_estimate_only' | 'near_flat_verified_sample' | 'partial_near_flat'
+  publicPnlStatus?: 'ok' | 'limited_verified_sample' | 'open_check' | 'flat_estimate_only' | 'near_flat_verified_sample' | 'partial_near_flat'
   publicPnlStatusReason?: string
   winningPerformanceLots?: number
   losingPerformanceLots?: number
@@ -392,7 +392,7 @@ export type WalletSnapshot = {
     publicClosedLots?: number
     publicRealizedPnlUsd?: number | null
     publicWinRatePercent?: number | null
-    publicPnlStatus?: 'ok' | 'open_check' | 'flat_estimate_only' | 'near_flat_verified_sample' | 'partial_near_flat'
+    publicPnlStatus?: 'ok' | 'limited_verified_sample' | 'open_check' | 'flat_estimate_only' | 'near_flat_verified_sample' | 'partial_near_flat'
     publicPnlStatusReason?: string
     winningPerformanceLots?: number
     losingPerformanceLots?: number
@@ -460,13 +460,15 @@ export type WalletSnapshot = {
     publicClosedLots?: number
     publicRealizedPnlUsd?: number | null
     publicWinRatePercent?: number | null
-    publicPnlStatus?: 'ok' | 'open_check' | 'flat_estimate_only' | 'near_flat_verified_sample' | 'partial_near_flat'
+    publicPnlStatus?: 'ok' | 'limited_verified_sample' | 'open_check' | 'flat_estimate_only' | 'near_flat_verified_sample' | 'partial_near_flat'
     publicPnlStatusReason?: string
     winningPerformanceLots?: number
     losingPerformanceLots?: number
     breakEvenPerformanceLots?: number
     excludedBreakEvenLots?: number
     winRateDefinition?: 'wins_over_performance_lots_excluding_break_even'
+    winRateStatus?: 'unlocked' | 'locked_small_sample'
+    pnlIntegrityStatus?: 'ok' | 'warning' | 'invalid'
   }
 
   // FIFO-RECON-FIX-3: per-wallet PnL quality tier, derived from existing closed-lot/sell/holding
@@ -504,7 +506,7 @@ export type WalletSnapshot = {
     // PNL-SAFETY-FIX-2: additive — set whenever a sample's lot is synthetic (no real recovered
     // buy), so a synthetic lot is never mistaken for a verified public closed trade even if it
     // happens to carry both an entry and exit tx hash.
-    publicPnlStatus?: 'ok' | 'open_check' | 'flat_estimate_only' | 'near_flat_verified_sample' | 'partial_near_flat'
+    publicPnlStatus?: 'ok' | 'limited_verified_sample' | 'open_check' | 'flat_estimate_only' | 'near_flat_verified_sample' | 'partial_near_flat'
     pnlUnavailableReason?: string | null
     pnlDisplayStatus?: WalletClosedLot['pnlDisplayStatus']
   }>
@@ -615,6 +617,7 @@ export type WalletSnapshot = {
       economicSignificance: string | null | undefined
       estimatedPnlStatus: string | null | undefined
       estimatedPnlConfidence: string | null | undefined
+      winRateStatus?: 'unlocked' | 'locked_small_sample'
     }
     evidenceCoverage: number
     cacheSource: 'live' | 'memory_cache' | 'evidence_guard_restored'
@@ -6316,7 +6319,7 @@ function buildTradeStatsSummary(
   const decisiveClosedLots = winning.length + losing.length
   const isBreakEvenOnly = n > 0 && decisiveClosedLots === 0 && breakEven.length === n
   const winRateComputed = n >= WIN_RATE_THRESHOLD && decisiveClosedLots >= 1 && !isBreakEvenOnly && economicallyMeaningful && !_allLotsFlatEstimate
-  const winRatePercent = _allLotsFlatEstimate ? null : (n >= 1 && decisiveClosedLots >= 1 ? (winning.length / n) * 100 : null)
+  const winRatePercent = winRateComputed ? (winning.length / n) * 100 : null
   const scoreUnlocked = winRateComputed
   const rawStatsAvailable = n >= 1
   if (isBreakEvenOnly) {
@@ -6586,7 +6589,7 @@ function buildPerSwapTradeStats(
   const decisiveClosedLots = winning.length + losing.length
   const isBreakEvenOnly = n > 0 && decisiveClosedLots === 0 && breakEven.length === n
   const winRateComputed = n >= WIN_RATE_THRESHOLD && decisiveClosedLots >= 1 && !isBreakEvenOnly && economicallyMeaningful
-  const winRatePercent = n >= 1 && decisiveClosedLots >= 1 ? (winning.length / n) * 100 : null
+  const winRatePercent = winRateComputed ? (winning.length / n) * 100 : null
   const scoreUnlocked = winRateComputed
   const rawStatsAvailable = n >= 1
   if (isBreakEvenOnly) {
@@ -12038,14 +12041,17 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _performanceRealizedPnlUsd = _performanceClosedLotsFinal.length > 0 ? _performanceClosedLotsFinal.reduce((sum, l) => sum + l.realizedPnlUsd, 0) : null
   const _performanceCostBasisUsd = _performanceClosedLotsFinal.reduce((sum, l) => sum + (l.costBasisUsd ?? 0), 0)
   const _nearFlatPublicSample = _performanceClosedLotsFinal.length > 0 && Math.abs(_performanceRealizedPnlUsd ?? 0) < Math.max(25, _performanceCostBasisUsd * 0.0025)
+  const _limitedVerifiedPublicSample = _performanceClosedLotsFinal.length > 0 && _performanceClosedLotsFinal.length < 10
   const _publicPnlStatusFinal: NonNullable<WalletSnapshot['publicPnlStatus']> = _performanceClosedLotsFinal.length === 0
     ? (_estimateOnlyClosedLotsFinal.length > 0 ? 'flat_estimate_only' : 'open_check')
-    : _nearFlatPublicSample ? 'near_flat_verified_sample' : 'ok'
+    : _nearFlatPublicSample ? 'near_flat_verified_sample'
+      : _limitedVerifiedPublicSample ? 'limited_verified_sample' : 'ok'
   const _publicPnlStatusReasonFinal = _publicPnlStatusFinal === 'near_flat_verified_sample'
     ? `Verified FIFO sample is near-flat (${_performanceClosedLotsFinal.length} performance-grade lots; ${_syntheticLotsExcludedFromStatsFinal + _estimateOnlyClosedLotsFinal.length + _flatPriceClosedLotsExcludedFinal} excluded), so it is not enough profitable evidence to call skill.`
-    : _publicPnlStatusFinal === 'flat_estimate_only' ? 'Closed lots reused flat/non-independent prices; public PnL and win rate are locked.'
-      : _publicPnlStatusFinal === 'open_check' ? 'No performance-grade closed lots after excluding synthetic, flat, dust, or missing-price evidence.'
-        : `Public PnL uses ${_performanceClosedLotsFinal.length} performance-grade FIFO lots; estimate-only/synthetic lots are excluded and coverage is partial, not complete wallet history.`
+    : _publicPnlStatusFinal === 'limited_verified_sample' ? `${_performanceClosedLotsFinal.length} performance-grade FIFO lots found, but sample size is below the win-rate/skill threshold and coverage is partial.`
+      : _publicPnlStatusFinal === 'flat_estimate_only' ? 'Closed lots reused flat/non-independent prices; public PnL and win rate are locked.'
+        : _publicPnlStatusFinal === 'open_check' ? 'No performance-grade closed lots after excluding synthetic, flat, dust, or missing-price evidence.'
+          : `Public PnL uses ${_performanceClosedLotsFinal.length} performance-grade FIFO lots; estimate-only/synthetic lots are excluded and coverage is partial, not complete wallet history.`
   const _allRealBackedLotsFlatEstimate = _closedLotsForStatsFinal > 0 && _verifiedIndependentClosedLotsFinal === 0 && _estimateOnlyClosedLotsFinal.length > 0
 
   // LOW-VALUE-RECOVERY-FIX: surfaces the (now evidence-gated, not value-tier-gated) capped
@@ -12164,7 +12170,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       performanceClosedLots: _performanceClosedLotsFinal.length,
       publicClosedLots: _performanceClosedLotsFinal.length,
       publicRealizedPnlUsd: _performanceRealizedPnlUsd,
-      publicWinRatePercent: _publicPnlStatusFinal === 'near_flat_verified_sample' ? null : _performanceStats.winRatePercent,
+      publicWinRatePercent: _performanceStats.scoreUnlocked === true ? _performanceStats.winRatePercent : null,
       publicPnlStatus: _publicPnlStatusFinal,
       publicPnlStatusReason: _publicPnlStatusReasonFinal,
       winningPerformanceLots: _performanceClosedLotsFinal.filter(l => l.realizedPnlUsd > 0).length,
@@ -12176,9 +12182,10 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       estimateOnlyClosedLots: _estimateOnlyClosedLotsFinal.length,
       flatPriceClosedLotsExcluded: _flatPriceClosedLotsExcludedFinal,
       syntheticClosedLotsExcluded: _syntheticLotsExcludedFromStatsFinal,
-      pnlUnavailableReason: _publicPnlStatusFinal === 'near_flat_verified_sample' ? 'near_flat_verified_sample' : null,
-      confidence: _publicPnlStatusFinal === 'near_flat_verified_sample' ? 'low' : _performanceStats.confidence,
+      pnlUnavailableReason: _publicPnlStatusFinal === 'near_flat_verified_sample' ? 'near_flat_verified_sample' : _publicPnlStatusFinal === 'limited_verified_sample' ? 'limited_verified_sample' : null,
+      confidence: _publicPnlStatusFinal === 'near_flat_verified_sample' || _publicPnlStatusFinal === 'limited_verified_sample' ? 'low' : _performanceStats.confidence,
       sampleWarning: _publicPnlStatusReasonFinal,
+      winRateStatus: _performanceStats.scoreUnlocked === true ? 'unlocked' : 'locked_small_sample',
     }
   } else {
     promotedTradeStatsSummary = {
@@ -12210,6 +12217,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       syntheticClosedLotsExcluded: _syntheticLotsExcludedFromStatsFinal,
       pnlUnavailableReason: _publicPnlStatusFinal,
       sampleWarning: _publicPnlStatusReasonFinal,
+      winRateStatus: _performanceStats.scoreUnlocked === true ? 'unlocked' : 'locked_small_sample',
     }
   }
 
@@ -13240,6 +13248,9 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     snapshot.pnlCompletenessScore = _p6Completeness.score
     snapshot.isPnlPartial = _p6Completeness.isPartial
     snapshot.pnlIntegrityCheck = { ok: _p6Integrity.ok, status: _p6Integrity.status, errors: _p6Integrity.errors, warnings: _p6Integrity.warnings, violations: _p6Integrity.errors }
+    if (snapshot.walletTradeStatsSummary) {
+      ;(snapshot.walletTradeStatsSummary as any).pnlIntegrityStatus = _p6Integrity.status
+    }
     // PNL-SYNTH-FILTER-FIX: a hard-invalid integrity check (e.g. sells_exceed_buys, portfolio
     // mismatch) means the public PnL numbers are not a clean exact_fifo result even if the
     // earlier eligibility checks passed — downgrade rather than report clean FIFO over evidence
@@ -13259,7 +13270,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       closedLotsCount: promotedTradeStatsSummary.closedLots ?? 0,
       walletAgeDays: snapshot.walletAgeDays,
       avgHoldingTimeSeconds: promotedTradeStatsSummary.avgHoldingTimeSeconds ?? null,
-      winRatePercent: promotedTradeStatsSummary.winRatePercent ?? null,
+      winRatePercent: promotedTradeStatsSummary.scoreUnlocked === true ? (promotedTradeStatsSummary.winRatePercent ?? null) : null,
       meaningfulClosedLots: promotedTradeStatsSummary.meaningfulClosedLots ?? 0,
       dustClosedLots: promotedTradeStatsSummary.dustClosedLots ?? 0,
       holdingsValueUsd: holdings.map(h => h.value ?? 0),
@@ -13338,7 +13349,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       chainCount: debugChainExposure.length || new Set(debugHoldings.map((h) => h.chain).filter(Boolean)).size,
       concentrationLabel: debugSummary?.concentrationLabel ?? null,
       closedLots: snapshot.walletTradeStatsSummary?.closedLotsForStats ?? snapshot.walletLotSummary?.closedLotsForStats ?? snapshot.walletLotSummary?.realClosedLots ?? 0,
-      winRatePercent: snapshot.walletTradeStatsSummary?.winRatePercent ?? null,
+      winRatePercent: snapshot.walletTradeStatsSummary?.scoreUnlocked === true ? (snapshot.walletTradeStatsSummary?.winRatePercent ?? null) : null,
+      winRateStatus: snapshot.walletTradeStatsSummary?.scoreUnlocked === true && snapshot.walletTradeStatsSummary?.publicWinRatePercent != null ? 'unlocked' : 'locked_small_sample',
       economicSignificance: snapshot.walletTradeStatsSummary?.economicSignificance ?? null,
       estimatedPnlStatus: snapshot.estimatedPnl?.status ?? null,
       estimatedPnlConfidence: snapshot.estimatedPnl?.confidence ?? null,

@@ -229,7 +229,7 @@ function pruneWalletScannerDebug(payload: any, debug: boolean) {
 }
 
 type WalletValueTier = 'micro' | 'small' | 'standard' | 'high_value' | 'whale'
-type PnlCacheQuality = 'complete' | 'partial_needs_historical' | 'stale_low_coverage'
+type PnlCacheQuality = 'complete' | 'partial_needs_historical' | 'stale_low_coverage' | 'partial_public_performance' | 'partial_invalid_integrity' | 'limited_verified_sample'
 
 function getWalletValueTier(totalValueUsd: number): WalletValueTier {
   if (totalValueUsd >= 1_000_000) return 'whale'
@@ -323,6 +323,12 @@ function getWalletPnlRecoverySignals(snap: any) {
 
 function getPnlCacheQuality(snap: any): PnlCacheQuality {
   const s = getWalletPnlRecoverySignals(snap)
+  const ts = snap?.walletTradeStatsSummary ?? {}
+  const rawClosedLots = Number(ts.rawClosedLots ?? snap?.rawClosedLots ?? 0)
+  const performanceClosedLots = Number(ts.performanceClosedLots ?? snap?.performanceClosedLots ?? s.closedLotsForStats ?? 0)
+  const hasExcludedLots = Number(ts.syntheticClosedLotsExcluded ?? snap?.syntheticClosedLotsExcluded ?? 0) > 0 || Number(ts.estimateOnlyClosedLots ?? snap?.estimateOnlyClosedLots ?? 0) > 0 || Number(ts.flatPriceClosedLotsExcluded ?? snap?.flatPriceClosedLotsExcluded ?? 0) > 0
+  if (snap?.pnlIntegrityCheck?.status === 'invalid') return 'partial_invalid_integrity'
+  if (snap?.isPnlPartial === true || hasExcludedLots || (rawClosedLots > 0 && performanceClosedLots > 0 && performanceClosedLots < rawClosedLots)) return performanceClosedLots > 0 && performanceClosedLots < 10 ? 'limited_verified_sample' : 'partial_public_performance'
   const lowCoverage = s.coveragePercent < 60 || s.closedLots < 10
   if (s.backfillTimedOut && lowCoverage) return 'stale_low_coverage'
   if (!s.historicalRequested && (lowCoverage || s.unmatchedSells > 0 || s.unmatchedBuys > 0)) return 'partial_needs_historical'
@@ -444,7 +450,7 @@ function buildWalletModuleCoverage(snap: any) {
       status: 'partial' as const,
       openLots: openedLots, uniqueTokens,
       totalOpenCostBasisUsd: totalOpenCostBasisUsd > 0 ? totalOpenCostBasisUsd : null,
-      tokens, missing: [], reason: 'open_lots_tracked_no_closed_trades',
+      tokens, missing: [], reason: (snap?.rawClosedLots ?? ts?.rawClosedLots ?? 0) > 0 ? 'open_lots_tracked_public_pnl_partial' : 'open_lots_tracked_no_closed_trades',
     }
   })() : null
 
@@ -473,7 +479,7 @@ function buildWalletModuleCoverage(snap: any) {
         totalOpenCostBasisUsd: totalOpenCostBasisUsd > 0 ? totalOpenCostBasisUsd : null,
         tokens,
         missing: ['fifo_lot_confirmation'],
-        reason: 'open_lots_tracked_no_closed_trades',
+        reason: (snap?.rawClosedLots ?? ts?.rawClosedLots ?? 0) > 0 ? 'open_lots_tracked_public_pnl_partial' : 'open_lots_tracked_no_closed_trades',
       }
     }
   }
@@ -832,7 +838,7 @@ export async function POST(req: Request) {
       if (cp && typeof cp === 'object' && debug) cp._debug = {
         routeName: '/api/wallet', cacheHit: true, cacheMode,
         requestDurationMs: Date.now() - startedAt,
-        walletSnapshotCache: { memoryHit: true, persistentHit: false, providerFetchNeeded: false, refreshBypassedCache: Boolean(cacheBypassReason), cacheAgeSeconds, cacheTtlSeconds: (effectiveHistoricalCoverage ? WALLET_HISTORICAL_CACHE_TTL_MS : deepActivity ? WALLET_DEEP_CACHE_TTL_MS : WALLET_BASIC_CACHE_TTL_MS) / 1000, cacheVersion: WALLET_SNAPSHOT_SCHEMA_VERSION, cacheBypassReason, debugFreshBypassedPersistentCache },
+        walletSnapshotCache: { memoryHit: !cacheBypassReason, memoryPresent: true, memoryBypassed: Boolean(cacheBypassReason), servedFromMemory: !cacheBypassReason, persistentHit: false, providerFetchNeeded: false, refreshBypassedCache: Boolean(cacheBypassReason), cacheAgeSeconds, cacheTtlSeconds: (effectiveHistoricalCoverage ? WALLET_HISTORICAL_CACHE_TTL_MS : deepActivity ? WALLET_DEEP_CACHE_TTL_MS : WALLET_BASIC_CACHE_TTL_MS) / 1000, cacheVersion: WALLET_SNAPSHOT_SCHEMA_VERSION, cacheBypassReason, debugFreshBypassedPersistentCache },
         providerFlow: null,
         walletScanBudgetDebug: cp?._cachedDiagnosticsSlim?.walletScanBudgetDebug ?? null,
         walletHistoricalScanDebug: cp?._cachedDiagnosticsSlim?.walletHistoricalScanDebug ?? null,
@@ -1275,12 +1281,12 @@ export async function POST(req: Request) {
     snapshot.walletPersonality = computeWalletPersonality(
       _missingCostBasisForIntelligence || snapshot.publicPnlStatus === 'near_flat_verified_sample' || (snapshot.performanceClosedLots ?? 0) < 5 ? [] : _performanceLotsForIntelligence,
       (snapshot as any).walletBehavior ?? null,
-      (snapshot as any).walletTradeStatsSummary ?? null
+      { ...((snapshot as any).walletTradeStatsSummary ?? {}), pnlIntegrityStatus: snapshot.pnlIntegrityCheck?.status } as any
     )
     // Windowed PnL is public-facing, so it must exclude synthetic/cost-basis-missing lots —
     // a synthetic break-even lot showing $0 PnL would otherwise look like a verified real result.
     const _realBackedLotsForWindows = _performanceLotsForIntelligence
-    snapshot.walletPnlWindows = computeWindowedPnl(_realBackedLotsForWindows)
+    snapshot.walletPnlWindows = computeWindowedPnl(_realBackedLotsForWindows, new Date(), { scoreUnlocked: snapshot.walletTradeStatsSummary?.scoreUnlocked === true, publicPnlStatus: snapshot.publicPnlStatus })
     if (snapshot.walletTradeStatsSummary?.pnlUnavailableReason === 'missing_cost_basis' || snapshot.walletLotSummary?.pnlUnavailableReason === 'missing_cost_basis') {
       for (const key of ['3d', '7d', '30d'] as const) {
         const w = snapshot.walletPnlWindows[key]
@@ -1293,7 +1299,7 @@ export async function POST(req: Request) {
     snapshot.walletBotScore = computeBotScore(
       _performanceLotsForIntelligence,
       (snapshot as any).walletBehavior ?? null,
-      (snapshot as any).walletTradeStatsSummary ?? null
+      { ...((snapshot as any).walletTradeStatsSummary ?? {}), pnlIntegrityStatus: snapshot.pnlIntegrityCheck?.status } as any
     )
 
     const _scanBudgetDebug = snapshot._diagnostics?.walletScanBudgetDebug ?? null

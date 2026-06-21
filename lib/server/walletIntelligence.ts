@@ -36,11 +36,23 @@ export function computeWalletPersonality(
   walletBehavior: WalletBehavior | null,
   tradeStats: WalletTradeStatsSummary | null
 ): WalletPersonalityResult {
-  if (closedLots.length < 3) {
+  const missing = tradeStats?.missing ?? []
+  const publicPnlStatus = tradeStats?.publicPnlStatus as string | undefined
+  const lockedByPublicEvidence = tradeStats?.readyForWalletScore !== true
+    || tradeStats?.scoreUnlocked !== true
+    || (tradeStats?.performanceClosedLots ?? closedLots.length) < 10
+    || tradeStats?.publicWinRatePercent == null
+    || missing.includes('win_rate_locked_below_threshold')
+    || missing.includes('sample_size_below_win_rate_threshold')
+    || ['open_check', 'near_flat_verified_sample', 'activity_only', 'missing_cost_basis', 'limited_verified_sample'].includes(publicPnlStatus ?? '')
+    || (tradeStats as any)?.pnlIntegrityStatus === 'invalid'
+  if (closedLots.length < 3 || lockedByPublicEvidence) {
     return {
       personality: 'Not enough data',
       scores: null,
-      summary: 'Not enough closed-trade history yet to classify this wallet\'s trading personality.',
+      summary: lockedByPublicEvidence
+        ? 'Public performance sample is too small or partial to classify trading personality.'
+        : 'Not enough closed-trade history yet to classify this wallet\'s trading personality.',
     }
   }
 
@@ -141,7 +153,7 @@ export function computeWalletPersonality(
 // ---------------------------------------------------------------------------
 
 export type WindowStat =
-  | { realizedPnlUsd: number; closedLots: number; winRatePercent: number | null }
+  | { realizedPnlUsd: number; closedLots: number; winRatePercent: number | null; winRateStatus?: 'unlocked' | 'locked_small_sample'; publicPnlStatus?: string }
   | { closedLots: 0; fallback: string }
 
 export type WalletPnlWindows = {
@@ -156,7 +168,7 @@ const WINDOW_DEFS: Array<{ key: keyof WalletPnlWindows; days: number }> = [
   { key: '30d', days: 30 },
 ]
 
-export function computeWindowedPnl(closedLots: WalletClosedLot[], now: Date = new Date()): WalletPnlWindows {
+export function computeWindowedPnl(closedLots: WalletClosedLot[], now: Date = new Date(), options?: { scoreUnlocked?: boolean; publicPnlStatus?: string }): WalletPnlWindows {
   const nowMs = now.getTime()
   const result = {} as WalletPnlWindows
 
@@ -174,12 +186,15 @@ export function computeWindowedPnl(closedLots: WalletClosedLot[], now: Date = ne
 
     const realizedPnlUsd = inWindow.reduce((sum, l) => sum + l.realizedPnlUsd, 0)
     const winners = inWindow.filter(l => l.realizedPnlUsd > 0).length
-    const winRatePercent = Math.round((100 * winners / inWindow.length) * 10) / 10
+    const winRateUnlocked = options?.scoreUnlocked === true && inWindow.length >= 10
+    const winRatePercent = winRateUnlocked ? Math.round((100 * winners / inWindow.length) * 10) / 10 : null
 
     result[key] = {
       realizedPnlUsd,
       closedLots: inWindow.length,
       winRatePercent,
+      winRateStatus: winRateUnlocked ? 'unlocked' : 'locked_small_sample',
+      publicPnlStatus: winRateUnlocked ? options?.publicPnlStatus : 'limited_verified_sample',
     }
   }
 
@@ -191,8 +206,8 @@ export function computeWindowedPnl(closedLots: WalletClosedLot[], now: Date = ne
 // ---------------------------------------------------------------------------
 
 export type WalletBotScoreResult = {
-  score: number
-  classification: 'Likely bot' | 'Possibly semi-automated' | 'Likely human/manual'
+  score: number | null
+  classification: 'Likely bot' | 'Possibly semi-automated' | 'Likely human/manual' | 'Not enough data'
   reason: string
 }
 
@@ -201,8 +216,12 @@ export function computeBotScore(
   walletBehavior: WalletBehavior | null,
   tradeStats: WalletTradeStatsSummary | null
 ): WalletBotScoreResult {
+  if (tradeStats?.scoreUnlocked !== true || (tradeStats as any)?.pnlIntegrityStatus === 'invalid') {
+    return { score: null, classification: 'Not enough data', reason: 'Bot/automation read is locked until enough performance-grade trades pass public evidence checks.' }
+  }
+
   if (closedLots.length < 3) {
-    return { score: 0, classification: 'Likely human/manual', reason: 'Not enough trade history to assess automation.' }
+    return { score: null, classification: 'Not enough data', reason: 'Not enough trade history to assess automation.' }
   }
 
   const n = tradeStats?.verifiedClosedLots ?? tradeStats?.closedLotsForStats ?? closedLots.length
