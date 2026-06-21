@@ -44,6 +44,18 @@ export function computeWalletPersonality(
     }
   }
 
+  // PNL-SAFETY-FIX-7: verified closed lots that are all dust (no economically meaningful trade
+  // value behind them) are real evidence, but not enough to classify trading behavior — a handful
+  // of cents of closed cost basis should never drive a Rotator/Sniper/Smart Money/Degen label.
+  const meaningfulClosedLots = tradeStats?.meaningfulClosedLots ?? closedLots.length
+  if (meaningfulClosedLots === 0 || tradeStats?.economicSignificance === 'micro_sample') {
+    return {
+      personality: 'Not enough data',
+      scores: null,
+      summary: 'Verified closed trades exist, but are too small (dust-sized) to classify this wallet\'s trading personality.',
+    }
+  }
+
   const n = closedLots.length
 
   // Average holding time in hours across lots that have a known holding time. If none have a

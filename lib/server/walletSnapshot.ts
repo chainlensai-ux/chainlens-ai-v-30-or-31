@@ -415,7 +415,9 @@ export type WalletSnapshot = {
 
   // FIFO-RECON-FIX-3: per-wallet PnL quality tier, derived from existing closed-lot/sell/holding
   // signals — never upgrades a tier based on faked data, only labels what evidence actually exists.
-  pnlQuality?: 'exact_fifo' | 'fifo_with_estimates' | 'sell_side_only' | 'open_positions_cost_missing' | 'activity_only' | 'no_trade_evidence' | 'missing_cost_basis'
+  pnlQuality?: 'exact_fifo' | 'exact_fifo_micro_sample' | 'fifo_with_estimates' | 'sell_side_only' | 'open_positions_cost_missing' | 'activity_only' | 'no_trade_evidence' | 'missing_cost_basis'
+  // Explains why pnlQuality landed on its current tier — additive, never used to upgrade a tier.
+  pnlQualityReason?: string
   walletRecoveryRecommendation?: {
     recommended: boolean
     mode: 'targeted_token_recovery' | 'none'
@@ -11982,13 +11984,26 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _unmatchedSellsCount = _lotEngineDebug.unmatchedSells ?? 0
   const _openedLotsCount = promotedLotSummary.openedLots ?? 0
   const _hasActivityEvidence = (walletEvidenceSummary.totalEvents ?? 0) > 0 || (walletSwapSummary.swapCandidateEvents ?? 0) > 0
+  // PNL-SAFETY-FIX-7: verified closed lots that are all dust (e.g. a few cents of cost basis)
+  // are real FIFO evidence, but not strong/meaningful evidence — exact_fifo must require
+  // economically meaningful closed lots, not just any real-backed closed lot.
+  const _exactFifoEligible = _realClosedLotsCount > 0 && !_missingCostBasisProven
+  const _meaningfulClosedLotsCount = promotedTradeStatsSummary.meaningfulClosedLots ?? 0
+  const _meaningfulCostBasisUsd = promotedTradeStatsSummary.meaningfulCostBasisUsd ?? 0
+  const _exactFifoIsMeaningful = _meaningfulClosedLotsCount > 0 || _meaningfulCostBasisUsd >= (promotedTradeStatsSummary.dustThresholdUsd ?? 5)
   const _pnlQuality: WalletSnapshot['pnlQuality'] =
-    _realClosedLotsCount > 0 && !_missingCostBasisProven ? 'exact_fifo'
+    _exactFifoEligible && _exactFifoIsMeaningful ? 'exact_fifo'
+      : _exactFifoEligible ? 'exact_fifo_micro_sample'
       : _missingCostBasisProven && (promotedLotSummary.syntheticClosedLots ?? 0) > 0 ? 'missing_cost_basis'
         : _unmatchedSellsCount > 0 ? 'sell_side_only'
           : holdings.length > 0 && _openedLotsCount > 0 ? 'open_positions_cost_missing'
             : _hasActivityEvidence ? 'activity_only'
               : 'no_trade_evidence'
+  const _pnlQualityReason: string =
+    _pnlQuality === 'exact_fifo_micro_sample' ? 'exact_fifo_but_micro_sample'
+      : _exactFifoEligible && !_exactFifoIsMeaningful ? 'verified_lots_below_meaningful_threshold'
+        : _pnlQuality === 'exact_fifo' ? 'meaningful_verified_closed_lots'
+          : _pnlQuality ?? 'unknown'
 
   // FIFO-RECON-FIX-5: surfaces the already-computed targeted recovery targets (no new provider
   // calls — reuses _rankedHistoricalTargets/_missingCostBasisGuardActive computed above).
@@ -12018,6 +12033,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
 
   const snapshot: WalletSnapshot = {
     pnlQuality: _pnlQuality,
+    pnlQualityReason: _pnlQualityReason,
     walletRecoveryRecommendation: _walletRecoveryRecommendation,
     address: addr,
     totalValue,
