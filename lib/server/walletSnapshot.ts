@@ -1599,7 +1599,9 @@ export type WalletSnapshot = {
     apiAudit?: {
       moralis: { calls: number; endpoints: string[]; credits: number }
       goldrush: { calls: number; endpoints: string[]; credits: number }
-      alchemy: { calls: number; endpoints: string[]; credits: number }
+      alchemy: { calls: number; endpoints: string[]; credits: number; loadUnits: number }
+      zerion: { calls: number; endpoints: string[]; credits: number }
+      costByPurpose: { holdings: number; activity: number; pricing: number; historical_recovery: number; portfolio: number; other: number }
       duplicates: string[]
       warnings: string[]
       totalCredits: number
@@ -1773,10 +1775,12 @@ const CREDIT_TABLE: Record<string, number> = {
   'alchemy:eth_getTransactionByHash': 0,
   'alchemy:getFirstTx': 0,
   'alchemy:behavior_getAssetTransfers': 0,
+  'zerion:portfolio': 1,
+  'zerion:positions': 1,
 }
 
 type _ApiCallEntry = {
-  provider: 'moralis' | 'goldrush' | 'alchemy'
+  provider: 'moralis' | 'goldrush' | 'alchemy' | 'zerion'
   endpoint: string
   credits: number
   cacheHit: boolean
@@ -3838,6 +3842,7 @@ export type WalletPnlRecoveryV2Debug = {
   sampleRecoveredBuys: Array<{ txHash: string; contract: string; symbol: string; amount: number; priceUsd: number | null }>
   sampleRecoveredSells: Array<{ txHash: string; contract: string; symbol: string; amount: number; priceUsd: number | null }>
   sampleRejectedTxs: Array<{ txHash: string; reason: string }>
+  priceAttempts: number
 }
 
 // PNL-RECOVERY-V2-BASE: receipt-level cost-basis reconstruction for Base swap-like txs that
@@ -3854,6 +3859,7 @@ async function buildWalletPnlRecoveryV2Base(
   candidateEvidence: WalletTxEvidence[],
   targetTokenContracts: string[],
   maxReceipts: number,
+  reqPriceCache?: Map<string, number | null>,
 ): Promise<{
   newBuyEvidence: WalletTxEvidence[]
   newSellEvidence: WalletTxEvidence[]
@@ -3867,7 +3873,7 @@ async function buildWalletPnlRecoveryV2Base(
     realBuyEventsBuilt: 0, realSellEventsBuilt: 0, priorBuysRecovered: 0,
     closedLotsBefore: 0, closedLotsAfter: 0, realClosedLotsBefore: 0, realClosedLotsAfter: 0,
     syntheticLotsBefore: 0, syntheticLotsAfter: 0, stoppedReason: null,
-    sampleRecoveredBuys: [], sampleRecoveredSells: [], sampleRejectedTxs: [],
+    sampleRecoveredBuys: [], sampleRecoveredSells: [], sampleRejectedTxs: [], priceAttempts: 0,
   }
   if (!rpcUrl) { debug.reason = 'no_rpc_url'; return { newBuyEvidence: [], newSellEvidence: [], debug } }
   if (targetTokens.length === 0) { debug.reason = 'no_target_tokens'; return { newBuyEvidence: [], newSellEvidence: [], debug } }
@@ -3949,7 +3955,8 @@ async function buildWalletPnlRecoveryV2Base(
       if (STABLE_USD_CONTRACTS[quoteContract]) {
         priceUsd = Math.abs(quoteDelta) / Math.abs(tokenDelta)
       } else if (WETH_CONTRACTS_PRICE[quoteContract] && blockTimestamp) {
-        const wethPrice = await fetchGoldrushHistoricalPrice('base', quoteContract, blockTimestamp)
+        const wethPrice = await fetchGoldrushHistoricalPrice('base', quoteContract, blockTimestamp, reqPriceCache)
+        if (wethPrice.providerAttempted) debug.priceAttempts++
         if (wethPrice.priceUsd != null) priceUsd = (Math.abs(quoteDelta) * wethPrice.priceUsd) / Math.abs(tokenDelta)
       }
       if (priceUsd == null) {
@@ -3988,13 +3995,17 @@ async function buildWalletPnlRecoveryV2Base(
 async function buildHistoricalPricingPreview(
   newCandidateEvidence: WalletTxEvidence[],
   allHistoricalEvidence: WalletTxEvidence[],
-  reqCache?: Map<string, number | null>
+  reqCache?: Map<string, number | null>,
+  maxPriceAttemptsOverride?: number
 ): Promise<{
   summary: WalletSnapshot['walletHistoricalPricingPreviewSummary']
   debug: NonNullable<WalletSnapshot['_diagnostics']>['walletHistoricalPricingPreviewDebug']
   pricedEvidence: WalletTxEvidence[]
 }> {
-  const MAX_PRICE_ATTEMPTS = 10
+  // Shared-historical-budget: caller passes the scan's remaining shared historical credit pool so
+  // this pass — itself one of six historical/pricing paths drawing from one pool — cannot overspend
+  // it even when it still has attempts left under its own previous fixed cap of 10.
+  const MAX_PRICE_ATTEMPTS = Math.max(1, Math.min(10, maxPriceAttemptsOverride ?? 10))
   const abbr = (addr: string) => `${addr.slice(0, 8)}...${addr.slice(-6)}`
 
   const newSwapCandidateEvents = newCandidateEvidence.filter(e => e.swapDetection?.isSwapCandidate === true).length
@@ -4081,12 +4092,16 @@ async function buildHistoricalPricingPreview(
       const wethLegs = txGroup.filter(ev => Boolean(WETH_CONTRACTS_PRICE[ev.contract?.toLowerCase() ?? '']) && ev.direction !== 'unknown' && ev.direction !== e.direction)
       if (wethLegs.length > 0) {
         const wl = wethLegs[0]
-        if (priceAttempts >= MAX_PRICE_ATTEMPTS) {
+        // Skip the budget check entirely for a price already resolved (success or failure) by an
+        // earlier pass within this scan — re-asking for the same chain/contract/date wastes a shared
+        // attempt slot for a lookup that's already a guaranteed cache hit.
+        const _wlAlreadyCached = isGoldrushPriceCached(wl.chain, wl.contract, e.timestamp, reqCache)
+        if (!_wlAlreadyCached && priceAttempts >= MAX_PRICE_ATTEMPTS) {
           priceAttemptLimitReached = true; unpricedHistoricalCandidates++
           if (sampleUnpricedRaw.length < 5) sampleUnpricedRaw.push({ txHash: abbr(e.txHash), contract: abbr(e.contract), symbol: e.symbol, direction: e.direction, reason: 'price_attempt_limit_reached' })
           continue
         }
-        priceAttempts++
+        if (!_wlAlreadyCached) priceAttempts++
         const result = await fetchGoldrushHistoricalPrice(wl.chain, wl.contract, e.timestamp, reqCache)
         if (result.priceUsd !== null) {
           const wethAmt = parseRawAmount(wl.amountRaw, wl.tokenDecimals) ?? wl.amount
@@ -4104,12 +4119,13 @@ async function buildHistoricalPricingPreview(
     }
 
     // Direct historical price lookup
-    if (priceAttempts >= MAX_PRICE_ATTEMPTS) {
+    const _histAlreadyCached = isGoldrushPriceCached(e.chain, e.contract, e.timestamp, reqCache)
+    if (!_histAlreadyCached && priceAttempts >= MAX_PRICE_ATTEMPTS) {
       priceAttemptLimitReached = true; unpricedHistoricalCandidates++
       if (sampleUnpricedRaw.length < 5) sampleUnpricedRaw.push({ txHash: abbr(e.txHash), contract: abbr(e.contract), symbol: e.symbol, direction: e.direction, reason: 'price_attempt_limit_reached' })
       continue
     }
-    priceAttempts++
+    if (!_histAlreadyCached) priceAttempts++
     const histResult = await fetchGoldrushHistoricalPrice(e.chain, e.contract, e.timestamp, reqCache)
     if (histResult.priceUsd !== null) {
       pricedHistoricalCandidates++; historicalPricedEventsCount++
@@ -9437,7 +9453,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _apiCallLog: _ApiCallEntry[] = []
   const _dupKeysSeen = new Set<string>()
   const _trackCall = (
-    provider: 'moralis' | 'goldrush' | 'alchemy',
+    provider: 'moralis' | 'goldrush' | 'alchemy' | 'zerion',
     endpoint: string,
     cacheHit: boolean,
     dupKey: string,
@@ -9558,6 +9574,13 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
 
   _perfPhaseTs.phase1_done = Date.now()
   _perfWalletTimings.holdingsMs = _perfPhaseTs.phase1_done - startedAt
+  // F1 cost-visibility fix: Zerion calls were previously invisible to apiAudit/credit estimates —
+  // every scan reaching this point already fired both Zerion requests above when ZERION_KEY is
+  // configured (no cache layer sits in front of them), so track them now that we know the key state.
+  if (ZERION_KEY) {
+    _trackCall('zerion', 'portfolio', false, `zerion:portfolio:${addrNorm}`)
+    _trackCall('zerion', 'positions', false, `zerion:positions:${addrNorm}`)
+  }
   // ── Tx / age / nonce ──
   const firstCandidates: Date[] = []
   if (ethFirst.status === 'fulfilled' && ethFirst.value) firstCandidates.push(ethFirst.value)
@@ -10577,6 +10600,22 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   tokenMeter.endTokenMeter('priceInference')
   _perfWalletTimings.pricingMs += Date.now() - _pricingStartedAt
 
+  // SHARED-HISTORICAL-BUDGET: a single accumulator, established right after the base price-at-time
+  // pass, that every downstream historical/pricing recovery path (unpriced-recon re-price, BFC
+  // re-price, broad coverage pages, synthetic-target extra pages, FIFO preview pricing) consults
+  // and decrements from — replacing the previous pattern where each path independently recomputed
+  // `hardCap - creditsBeforeHistorical` with no visibility into what sibling paths had already spent.
+  const _adminOverrideUsed = walletScanBudget?.adminOverrideUsed === true
+  const _tierTarget = _walletValueTier === 'micro' ? 6 : _walletValueTier === 'small' ? 12 : 15
+  const _totalCreditTarget = _adminOverrideUsed ? (walletScanBudget?.totalCreditTarget ?? 15) : Math.min(walletScanBudget?.totalCreditTarget ?? _tierTarget, _tierTarget)
+  const _totalCreditHardCap = _adminOverrideUsed ? (walletScanBudget?.totalCreditHardCap ?? 18) : Math.min(walletScanBudget?.totalCreditHardCap ?? 18, _walletValueTier === 'micro' ? 6 : 18)
+  const _portfolioCreditsUsed = 1
+  const _activityCreditsUsed = activityRequested ? 1 : 0
+  const _pricingCreditsUsed = _priceBudgetDebug.finalPriceAttempts ?? _priceAtTimeDebug.priceAttempts ?? 0
+  const _creditsBeforeHistorical = _portfolioCreditsUsed + _activityCreditsUsed + _pricingCreditsUsed
+  let _sharedHistoricalCreditsUsed = 0
+  const _sharedHistoricalBudgetRemaining = () => Math.max(0, _totalCreditHardCap - _creditsBeforeHistorical - _sharedHistoricalCreditsUsed)
+
   // Save ETH reconstruction results AFTER pricing so BFC/fallback phases cannot permanently wipe them.
   // Even when pricedEvents = 0 (all buys unpriced), we preserve swapCandidates so open-position
   // evidence is not lost when the pipeline re-runs buildSwapDetection on raw (non-synthetic) events.
@@ -10682,9 +10721,10 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         _swapEvidenceWithDetection = _unpricedReceiptResult.enrichedEvidence
         tokenMeter.startTokenMeter('priceInference')
         tokenMeter.measure('priceInference', _swapEvidenceWithDetection)
-        const _rePriceResult = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache, priceByContract, totalValue, historicalCoverage ? 6 : null)
+        const _rePriceResult = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache, priceByContract, totalValue, historicalCoverage ? Math.max(1, Math.min(6, _sharedHistoricalBudgetRemaining())) : null)
         for (let _pp = 0; _pp < (_rePriceResult.debug?.providerAttempts ?? 0); _pp++) {
           _trackCall('goldrush', 'historical_by_addresses_v2', false, `gr:price:unpriced_recon:${_pp}:${addrNorm}`)
+          _sharedHistoricalCreditsUsed++
         }
         _pricedEvidence = _rePriceResult.evidenceWithPricing
         walletPriceEvidenceSummary = _rePriceResult.summary
@@ -11188,10 +11228,11 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       tokenMeter.measure('normalization', bfcAllEvents, evidenceList, walletEvidenceSummary)
       ;({ evidenceWithDetection: _swapEvidenceWithDetection, summary: walletSwapSummary, debug: _swapDetectionDebug } = buildSwapDetection(evidenceList, activityRequested, addrNorm))
       tokenMeter.measure('swapDetection', _swapEvidenceWithDetection, walletSwapSummary)
-      ;({ evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache, priceByContract, totalValue, historicalCoverage ? 6 : null))
+      ;({ evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache, priceByContract, totalValue, historicalCoverage ? Math.max(1, Math.min(6, _sharedHistoricalBudgetRemaining())) : null))
       tokenMeter.measure('priceInference', _pricedEvidence, walletPriceEvidenceSummary)
       for (let _pp = 0; _pp < (_priceAtTimeDebug?.providerAttempts ?? 0); _pp++) {
         _trackCall('goldrush', 'historical_by_addresses_v2', false, `gr:price:bfc:p${bfcPagesAttempted}_${_pp}:${addrNorm}`)
+        _sharedHistoricalCreditsUsed++
       }
       _pricedEvidence = normalizeSwapEventsForFifo(_pricedEvidence, tokenMeter.isDebugEnabled())
       _pricedEvidence = normalizeSingleLegEventsForFifo(_pricedEvidence, tokenMeter.isDebugEnabled())
@@ -11418,7 +11459,6 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // both already required by every call site below) rather than wallet-value-tier-gated.
   const _syntheticRecoveryTierEligible = true
   const _syntheticLotsBeforeHistorical = _syntheticClosedLots.length
-  const _adminOverrideUsed = walletScanBudget?.adminOverrideUsed === true
 
   // COST-GUARD-FIX-1: if every closed lot found so far is synthetic (no real-backed cost basis at
   // all), missing-cost-basis is already proven for this scan — broad multi-page historical lookups
@@ -11437,18 +11477,14 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
 
   // Phase 6A: Historical coverage diagnostics — capped, eligible, targeted recovery only.
   // _walletValueTier already computed earlier in the pipeline via computeWalletValueTier(totalValue)
-  const _tierTarget = _walletValueTier === 'micro' ? 6 : _walletValueTier === 'small' ? 12 : 15
-  const _totalCreditTarget = _adminOverrideUsed ? (walletScanBudget?.totalCreditTarget ?? 15) : Math.min(walletScanBudget?.totalCreditTarget ?? _tierTarget, _tierTarget)
-  const _totalCreditHardCap = _adminOverrideUsed ? (walletScanBudget?.totalCreditHardCap ?? 18) : Math.min(walletScanBudget?.totalCreditHardCap ?? 18, _walletValueTier === 'micro' ? 6 : 18)
-  const _pricingCreditsUsed = _priceBudgetDebug.finalPriceAttempts ?? _priceAtTimeDebug.priceAttempts ?? 0
-  const _portfolioCreditsUsed = 1
-  const _activityCreditsUsed = activityRequested ? 1 : 0
-  const _creditsBeforeHistorical = _portfolioCreditsUsed + _activityCreditsUsed + _pricingCreditsUsed
-  const _historicalPhaseBudget = Math.max(0, Math.min(6, _totalCreditHardCap - _creditsBeforeHistorical))
+  // _tierTarget/_totalCreditTarget/_totalCreditHardCap/_creditsBeforeHistorical/_sharedHistoricalBudgetRemaining
+  // are declared once, right after the base price-at-time pass, and shared by every historical/pricing
+  // recovery path below (see SHARED-HISTORICAL-BUDGET comment).
+  const _historicalPhaseBudget = Math.max(0, Math.min(6, _sharedHistoricalBudgetRemaining()))
   const _defaultPagesByTier = _walletValueTier === 'micro' ? 0 : 1
   const _pagesAllowed = _adminOverrideUsed
     ? Math.max(0, Math.min(clampedMaxHistoricalPages, _historicalPhaseBudget))
-    : Math.max(0, Math.min(clampedMaxHistoricalPages, _defaultPagesByTier, _historicalPhaseBudget, _totalCreditHardCap - _creditsBeforeHistorical))
+    : Math.max(0, Math.min(clampedMaxHistoricalPages, _defaultPagesByTier, _historicalPhaseBudget, _sharedHistoricalBudgetRemaining()))
   // COST-GUARD-FIX-1 (cont.): the broad Phase 6A/6D pass is capped to 0 pages once missing cost
   // basis is already proven for this scan — only the page count used for the broad/unscoped
   // historical lookup is affected; the targeted synthetic-target extra recovery below uses its
@@ -11562,8 +11598,9 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       _hcEvents = hcResult!.events
       // Track historical coverage page calls (one entry per page per chain attempted)
       const _hcPages = _historicalCoverageDebug?.pagesAttempted ?? 0
-      for (let _hp = 0; _hp < Math.min(_hcPages, Math.max(0, _totalCreditHardCap - _creditsBeforeHistorical)); _hp++) {
+      for (let _hp = 0; _hp < Math.min(_hcPages, _sharedHistoricalBudgetRemaining()); _hp++) {
         _trackCall('goldrush', 'log_events_by_address', false, `gr:hc:p${_hp}:${addrNorm}`)
+        _sharedHistoricalCreditsUsed++
       }
     }
   } else {
@@ -11618,8 +11655,9 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     .filter(c => !_syntheticHasRealBackedLotForTarget(c))
     .slice(0, _syntheticTargetExtraMaxTokens)
   const _syntheticTargetExtraPriorBuysFoundSoFar = _syntheticTargetRecovery?.debug.syntheticTargetPriorBuysFound ?? 0
-  const _syntheticTargetExtraCreditsUsedSoFar = _historicalCoverageDebug?.pagesAttempted ?? 0
-  const _syntheticTargetExtraBudgetRemaining = Math.max(0, _totalCreditHardCap - _creditsBeforeHistorical - _syntheticTargetExtraCreditsUsedSoFar)
+  // Shared accumulator already reflects broad-pass page credits spent above, so the remaining
+  // pool here is what's actually left for the whole scan — not a locally re-derived estimate.
+  const _syntheticTargetExtraBudgetRemaining = _sharedHistoricalBudgetRemaining()
   const _syntheticTargetExtraPagesAllowed = Math.max(0, Math.min(_syntheticTargetExtraMaxPages, _syntheticTargetExtraBudgetRemaining))
 
   let _syntheticTargetExtraSkippedReason: string | null = null
@@ -11677,6 +11715,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         _pagesUsedTotal += _extraPagesThisCall
         _syntheticTargetExtraPagesAttempted += _extraPagesThisCall
         _syntheticTargetExtraCreditUsed += _extraPagesThisCall
+        _sharedHistoricalCreditsUsed += _extraPagesThisCall
         _syntheticTargetExtraRawLogs += _extraResult.debug?.rawLogEvents ?? 0
 
         // Stop immediately if no target-token logs were found at all on this extra page —
@@ -11728,8 +11767,13 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         [..._hcMergedAllHistoricalEvidence, ..._swapEvidenceWithDetection],
         _syntheticLotTokenTargets.slice(0, 2),
         2,
+        _reqPriceCache,
       )
     : null
+  for (let _pp = 0; _pp < (_pnlRecoveryV2Result?.debug.priceAttempts ?? 0); _pp++) {
+    _trackCall('goldrush', 'historical_by_addresses_v2', false, `gr:price:pnlv2:${_pp}:${addrNorm}`)
+    _sharedHistoricalCreditsUsed++
+  }
   const walletPnlRecoveryV2Debug: WalletPnlRecoveryV2Debug = _pnlRecoveryV2Result
     ? {
         ..._pnlRecoveryV2Result.debug,
@@ -11746,7 +11790,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         closedLotsBefore: _closedLots.length, closedLotsAfter: _closedLots.length,
         realClosedLotsBefore: _realBackedClosedLotsCountForV2, realClosedLotsAfter: _realBackedClosedLotsCountForV2,
         syntheticLotsBefore: _syntheticClosedLots.length, syntheticLotsAfter: _syntheticClosedLots.length,
-        stoppedReason: null, sampleRecoveredBuys: [], sampleRecoveredSells: [], sampleRejectedTxs: [],
+        stoppedReason: null, sampleRecoveredBuys: [], sampleRecoveredSells: [], sampleRejectedTxs: [], priceAttempts: 0,
       }
   const _pnlRecoveryV2NewEvidence: WalletTxEvidence[] = _pnlRecoveryV2Result
     ? [..._pnlRecoveryV2Result.newBuyEvidence, ..._pnlRecoveryV2Result.newSellEvidence]
@@ -11772,7 +11816,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // synthetic-target direct-recovered prior buys merged in above (normal pass + targeted extra pages).
   const { summary: walletHistoricalPricingPreviewSummary, debug: _historicalPricingPreviewDebug, pricedEvidence: _hcNewPricedEvidence } =
     _runHistoricalCoverage && _finalCandidateEvidence.length > 0
-      ? await buildHistoricalPricingPreview(_finalCandidateEvidence, _finalAllHistoricalEvidence, _reqPriceCache)
+      ? await buildHistoricalPricingPreview(_finalCandidateEvidence, _finalAllHistoricalEvidence, _reqPriceCache, _sharedHistoricalBudgetRemaining())
       : { summary: { status: 'not_requested' as const, requested: false, newSwapCandidateEvents: 0, pricedHistoricalCandidates: 0, unpricedHistoricalCandidates: 0, stableLegPricedEvents: 0, wethLegPricedEvents: 0, historicalPricedEvents: 0, priceAttemptLimitReached: false, readyForHistoricalFifoPreview: false, missing: ['historical_coverage_not_requested'], reason: null }, debug: undefined, pricedEvidence: [] as WalletTxEvidence[] }
   const _syntheticTargetPriorBuysPriced = _syntheticTargetRecovery
     ? _hcNewPricedEvidence.filter(e => _syntheticTargetRecovery!.newCandidateEvidence.some(se => se.txHash === e.txHash && se.contract === e.contract)).length
@@ -11784,6 +11828,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // Track historical pricing preview price calls
   for (let _hp2 = 0; _hp2 < (_historicalPricingPreviewDebug?.priceAttempts ?? 0); _hp2++) {
     _trackCall('goldrush', 'historical_by_addresses_v2', false, `gr:price:hc:${_hp2}:${addrNorm}`)
+    _sharedHistoricalCreditsUsed++
   }
 
   // Phase 6D: Historical FIFO preview — run FIFO on baseline + new priced historical candidates
@@ -12532,8 +12577,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   if (walletFacts?.limits) walletFacts.limits.reason = `${_syntheticLotsAfterSourceLots.length} matched lots found; ${_performanceClosedLotsFinal.length} performance-grade lots used; ${Math.max(0, _syntheticLotsAfterSourceLots.length - _performanceClosedLotsFinal.length)} excluded.`
 
   // Build unified apiAudit from the per-request _apiCallLog (instrumented at each provider call site)
-  const _logByProvider = (p: 'moralis' | 'goldrush' | 'alchemy') => _apiCallLog.filter(e => e.provider === p)
-  const _liveCalls = (p: 'moralis' | 'goldrush' | 'alchemy') => _logByProvider(p).filter(e => !e.cacheHit && !e.duplicate)
+  const _logByProvider = (p: 'moralis' | 'goldrush' | 'alchemy' | 'zerion') => _apiCallLog.filter(e => e.provider === p)
+  const _liveCalls = (p: 'moralis' | 'goldrush' | 'alchemy' | 'zerion') => _logByProvider(p).filter(e => !e.cacheHit && !e.duplicate)
   const _dupEntries = _apiCallLog.filter(e => e.duplicate)
   // SYNTH-RECOVERY-FIX-13: keep base historical-recovery credits and synthetic-extra-recovery
   // credits as distinct counters — _historicalCreditsUsedFinal/_creditsUsedFinal below is the
@@ -12638,6 +12683,22 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   if (_grLiveCount > _grExpectedCalls) _apiWarnings.push(`goldrush_${_grLiveCount}_calls_expected_${_grExpectedCalls}`)
   if (_alchemyCount > 8) _apiWarnings.push(`alchemy_${_alchemyCount}_calls_expected_8`)
   if (_dupEntries.length > 0) _apiWarnings.push(`${_dupEntries.length}_duplicate_call(s)_detected`)
+  // Provider cost breakdown by purpose — distinguishes WHAT the credits were spent on (holdings
+  // discovery vs. activity ingestion vs. price-at-time inference vs. historical recovery) rather
+  // than just which provider billed them, since two scans with identical totalCredits can have
+  // very different cost profiles (e.g. one all-historical-recovery, one all-multi-chain-holdings).
+  const _purposeOfEntry = (e: _ApiCallEntry): 'holdings' | 'activity' | 'pricing' | 'historical_recovery' | 'portfolio' | 'other' => {
+    if (e.provider === 'zerion') return 'portfolio'
+    if (e.endpoint === 'historical_by_addresses_v2') return 'pricing'
+    if (e.endpoint === 'log_events_by_address') return 'historical_recovery'
+    if (e.endpoint === 'erc20_holdings' || e.endpoint === 'balances_v2') return 'holdings'
+    if (e.endpoint === 'erc20_transfers' || e.endpoint === 'transactions_v3') return 'activity'
+    return 'other'
+  }
+  const _liveLog = _apiCallLog.filter(e => !e.cacheHit && !e.duplicate)
+  const _costByPurpose = { holdings: 0, activity: 0, pricing: 0, historical_recovery: 0, portfolio: 0, other: 0 }
+  for (const e of _liveLog) _costByPurpose[_purposeOfEntry(e)] += e.credits
+  const _zerionLiveCount = _liveCalls('zerion').length
   const _apiAudit = {
     moralis: {
       calls: _moralisLiveCount,
@@ -12651,9 +12712,19 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     },
     alchemy: {
       calls: _alchemyCount,
+      // F2 cost-visibility: alchemy:* is billed 0 credits in CREDIT_TABLE, but the raw call count
+      // here still reflects real RPC fan-out (receipts/tx-by-hash/getAssetTransfers) so it stays
+      // visible as load even though it contributes 0 to totalCredits.
       endpoints: _logByProvider('alchemy').map(e => e.endpoint),
       credits: 0,
+      loadUnits: _alchemyCount,
     },
+    zerion: {
+      calls: _zerionLiveCount,
+      endpoints: _liveCalls('zerion').map(e => e.endpoint),
+      credits: _logByProvider('zerion').reduce((s, e) => s + e.credits, 0),
+    },
+    costByPurpose: _costByPurpose,
     duplicates: _dupEntries.map(e => `${e.provider}:${e.endpoint}:${e.dupKey}`),
     warnings: _apiWarnings,
     totalCredits: _apiTotalCredits,

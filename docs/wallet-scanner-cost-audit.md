@@ -138,3 +138,16 @@ Ranking is by worst-case billable credits on a cache-miss deep/historical scan o
 5. Consider a value/coverage gate on per-chain holdings fan-out (F5).
 
 No code in scope was modified in this audit pass.
+
+---
+
+## 7. Follow-up implementation pass (2026-06-21)
+
+Items 1–4 above were implemented in a later pass on `lib/server/walletSnapshot.ts`:
+
+- **F1 fixed:** `zerion:portfolio` / `zerion:positions` added to `CREDIT_TABLE` (1 credit each) and tracked via `_trackCall` right after the Phase 1 `Promise.allSettled` resolves.
+- **F2 addressed:** `apiAudit.alchemy.loadUnits` now exposes the raw Alchemy call count alongside the (still 0) billable `credits`, so receipt/RPC fan-out stays visible even though it's free.
+- **Cost breakdown added:** `apiAudit.costByPurpose` buckets live (non-cached, non-duplicate) credit spend into `holdings` / `activity` / `pricing` / `historical_recovery` / `portfolio` / `other`, surfaced to the API response via the existing `_diagnostics.apiAudit` passthrough in `route.ts`.
+- **F4 fixed:** a single `_sharedHistoricalBudgetRemaining()` accumulator (established right after the base price-at-time pass, once `_creditsBeforeHistorical` is known) now backs every downstream historical/pricing path — broad coverage pages, synthetic-target extra pages, BFC re-pricing, unpriced-recon re-pricing, and FIFO preview pricing — replacing the previous per-site `hardCap - creditsBeforeHistorical` recomputation. `buildHistoricalPricingPreview`'s internal `MAX_PRICE_ATTEMPTS` (F3) is now an override capped by this same shared remaining budget instead of a fixed 10.
+- **Duplicate pricing / failed-price caching:** `buildHistoricalPricingPreview` now calls `isGoldrushPriceCached` before charging a price-attempt slot (matching the pattern already used by `buildPriceAtTimeEvidence`), so a price already resolved — successfully or as a known failure — by an earlier pass no longer consumes a second budget slot. `buildWalletPnlRecoveryV2Base`'s WETH-leg price lookup is now threaded through the shared per-request `_reqPriceCache` instead of bypassing it.
+- No scan-quality, evidence-standard, or PnL-accuracy regressions: every change either adds visibility (Zerion tracking, cost breakdown, load units) or removes genuinely redundant/wasted provider calls (shared budget, cache-aware price-attempt gating); no legitimate price lookup or recovery pass that would have found real evidence is skipped.
