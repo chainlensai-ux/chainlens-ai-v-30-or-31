@@ -537,6 +537,31 @@ export type WalletSnapshot = {
     costGuardReason?: string
   }
 
+  // HIGH-ACTIVITY-RECON: public-safe presentation state for a heavily-active wallet whose trade
+  // reconstruction is incomplete (many events/swap candidates, zero public-grade closed lots).
+  // Additive only — never changes FIFO math, public PnL, win-rate gating, or scoring.
+  walletReconstructionRecovery?: {
+    highActivityPoorReconstruction: boolean
+    reason: 'high_activity_trade_reconstruction_incomplete' | null
+    evidenceEvents: number
+    swapCandidateEvents: number
+    rawMatchedClosedLots: number
+    excludedClosedLots: number
+    publicPerformanceClosedLots: number
+    topFailureReason: string | null
+    summary: string | null
+    recoveryAttempted: boolean
+    recoveryCapped: boolean
+    budget: {
+      extraPagesAllowed: number
+      extraPagesUsed: number
+      extraPriceAttemptsAllowed: number
+      extraPriceAttemptsUsed: number
+      creditsUsed: number
+      capHitReason: string | null
+    }
+  }
+
   walletTradeStatsSource: 'base_sample' | 'historical_promoted_preview'
   tokenUsage: TokenUsage
   debugAutoDisabled?: true
@@ -11698,10 +11723,31 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // are declared once, right after the base price-at-time pass, and shared by every historical/pricing
   // recovery path below (see SHARED-HISTORICAL-BUDGET comment).
   const _historicalPhaseBudget = Math.max(0, Math.min(6, _sharedHistoricalBudgetRemaining()))
-  const _defaultPagesByTier = _walletValueTier === 'micro' ? 0 : 1
+  // HIGH-ACTIVITY-RECON-1: a heavily-active wallet (many indexed events / swap candidates) whose raw
+  // matched lots are still too few to yield public-grade evidence is the "120 candidates → 6 excluded
+  // lots" failure mode. The final public-grade count is not known until after FIFO classification far
+  // below, so this is an early proxy using values already available at budget time (raw matched lots
+  // stand in for rawMatchedClosedLots). It is ONLY used to grant a small, hard-capped page expansion —
+  // it never changes FIFO math, public stats, or win-rate gating.
+  const _earlyHighActivityPoorReconstruction = Boolean(
+    (walletEvidenceSummary.totalEvents >= 500 || walletSwapSummary.swapCandidateEvents >= 50) &&
+    walletSwapSummary.swapCandidateEvents >= 25 &&
+    walletTradeStatsSummary.closedLots <= 10
+  )
+  // Smarter-but-safe budget: a high_value wallet hitting that failure mode gets a small explicit page
+  // expansion for its top target tokens. Every Math.min clamp below still bounds the final page count
+  // by the shared historical budget and the total hard cap, so this can never exceed the hard cap.
+  const _highActivityExtraPagesAllowed =
+    _earlyHighActivityPoorReconstruction && _walletValueTier === 'high_value' && !_missingCostBasisGuardActive && !_adminOverrideUsed
+      ? 2
+      : 0
+  const _defaultPagesByTier = (_walletValueTier === 'micro' ? 0 : 1) + _highActivityExtraPagesAllowed
   const _pagesAllowed = _adminOverrideUsed
     ? Math.max(0, Math.min(clampedMaxHistoricalPages, _historicalPhaseBudget))
     : Math.max(0, Math.min(clampedMaxHistoricalPages, _defaultPagesByTier, _historicalPhaseBudget, _sharedHistoricalBudgetRemaining()))
+  // Exact pages actually granted by the expansion, after every cap above — never negative, never more
+  // than the allowance. extraPagesUsed reflects what the budget could afford, not what providers spent.
+  const _highActivityExtraPagesUsed = Math.max(0, Math.min(_highActivityExtraPagesAllowed, _pagesAllowed - (_walletValueTier === 'micro' ? 0 : 1)))
   // COST-GUARD-FIX-1 (cont.): the broad Phase 6A/6D pass is capped to 0 pages once missing cost
   // basis is already proven for this scan — only the page count used for the broad/unscoped
   // historical lookup is affected; the targeted synthetic-target extra recovery below uses its
@@ -13154,6 +13200,66 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         : _pnlQuality === 'exact_fifo' ? 'meaningful_verified_closed_lots'
           : _pnlQuality ?? 'unknown'
 
+  // HIGH-ACTIVITY-RECON-2: the public-safe "heavy activity but thin trade reconstruction" state.
+  // This is the exact failure mode where a wallet indexes hundreds of events / dozens of swap
+  // candidates yet yields zero public-grade closed lots because all matched lots are excluded as
+  // estimate-only/synthetic/missing-cost. It is additive and presentation-facing only — it does NOT
+  // change FIFO math, public PnL, win-rate gating, or scoring. publicPerformanceClosedLots stays 0.
+  const _reconEvidenceEvents = walletEvidenceSummary.totalEvents ?? 0
+  const _reconSwapCandidateEvents = walletSwapSummary.swapCandidateEvents ?? 0
+  const _reconRawMatchedLots = _rawMatchedClosedLotsFinal
+  const _reconExcludedLots = _excludedClosedLotsFinal
+  const _reconPublicLots = _performanceClosedLotsFinal.length
+  const _highActivityPoorReconstruction = Boolean(
+    (_reconEvidenceEvents >= 500 || _reconSwapCandidateEvents >= 50) &&
+    _reconPublicLots === 0 &&
+    _reconRawMatchedLots <= 10 &&
+    _reconSwapCandidateEvents >= 25
+  )
+  // Compact, public-safe failure reason — derived from signals that already exist, never exposing
+  // provider names or raw debug. Used to drive the UI's "why" line.
+  const _reconTopFailureReason: string | null = !_highActivityPoorReconstruction ? null
+    : (promotedLotSummary.unmatchedSells ?? 0) > 0 && _realClosedLotsCount === 0 ? 'prior_buy_cost_basis_missing'
+    : _reconSwapCandidateEvents > 0 && (walletPriceEvidenceSummary.pricedEvents ?? 0) === 0 ? 'quote_leg_or_price_missing'
+    : (promotedTradeStatsSummary.syntheticClosedLotsExcluded ?? 0) > 0 ? 'synthetic_cost_basis_estimate_only'
+    : _estimateOnlyClosedLotsFinal.length > 0 ? 'flat_price_estimate_only'
+    : _baseFifoCoverageDebug.reason === 'historical_depth_insufficient' ? 'historical_depth_insufficient'
+    : _budgetCapHitFinal ? 'budget_cap_reached'
+    : 'trade_reconstruction_incomplete'
+  const _reconRecoveryAttempted = Boolean(
+    _baseFifoCoverageDebug.attempted ||
+    Number(walletHistoricalCoverageSummary?.pagesAttempted ?? 0) > 0 ||
+    _syntheticTargetExtraRecoveryAttempted
+  )
+  const _reconRecoveryCapped = Boolean(
+    _budgetCapHitFinal ||
+    _historicalBudgetCapHit ||
+    _baseFifoCoverageDebug.stopReason === 'max_pages_reached'
+  )
+  const _walletReconstructionRecovery: WalletSnapshot['walletReconstructionRecovery'] = {
+    highActivityPoorReconstruction: _highActivityPoorReconstruction,
+    reason: _highActivityPoorReconstruction ? 'high_activity_trade_reconstruction_incomplete' : null,
+    evidenceEvents: _reconEvidenceEvents,
+    swapCandidateEvents: _reconSwapCandidateEvents,
+    rawMatchedClosedLots: _reconRawMatchedLots,
+    excludedClosedLots: _reconExcludedLots,
+    publicPerformanceClosedLots: _reconPublicLots,
+    topFailureReason: _reconTopFailureReason,
+    summary: _highActivityPoorReconstruction
+      ? 'High activity detected, but most trade candidates could not be promoted because quote legs/cost basis/prices were incomplete.'
+      : null,
+    recoveryAttempted: _reconRecoveryAttempted,
+    recoveryCapped: _reconRecoveryCapped,
+    budget: {
+      extraPagesAllowed: _highActivityExtraPagesAllowed,
+      extraPagesUsed: _highActivityExtraPagesUsed,
+      extraPriceAttemptsAllowed: 0,
+      extraPriceAttemptsUsed: 0,
+      creditsUsed: _creditsUsedFinal,
+      capHitReason: _budgetCapHitFinal ? (_creditsUsedFinal >= _totalCreditHardCap ? 'total_hard_cap_reached' : _historicalBudgetCapReason) : null,
+    },
+  }
+
   // FIFO-RECON-FIX-5: surfaces the already-computed targeted recovery targets (no new provider
   // calls — reuses _rankedHistoricalTargets/_missingCostBasisGuardActive computed above).
   // PNL-SAFETY-FIX-6: synthetic closed lots are not "closed lots already found" — only a real
@@ -13184,7 +13290,16 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       return { recommended: false, mode: 'none', targetTokens: [], reason: 'no_useful_token_contracts', estimatedExtraPages: 0 }
     }
     if (_realClosedLotsCount > 0) {
-      return { recommended: false, mode: historicalAttempted ? 'attempted_light' : 'none', targetTokens, reason: (promotedTradeStatsSummary.syntheticClosedLotsExcluded ?? 0) > 0 || (promotedTradeStatsSummary.estimateOnlyClosedLots ?? 0) > 0 ? 'verified_stats_available_excluded_lots_remain' : 'closed_lots_already_found', estimatedExtraPages: 0 }
+      const _hasExcludedLots = (promotedTradeStatsSummary.syntheticClosedLotsExcluded ?? 0) > 0 || (promotedTradeStatsSummary.estimateOnlyClosedLots ?? 0) > 0
+      // HIGH-ACTIVITY-RECON-3: real-backed lots exist, but they produced ZERO public-grade
+      // performance evidence (every matched lot was excluded as estimate-only/synthetic). That is
+      // NOT "closed lots already found" — deeper history can still supply real cost basis, so keep
+      // recommending targeted recovery. Advisory only: this never unlocks PnL or win rate, and
+      // publicPerformanceClosedLots stays 0.
+      if (_performanceClosedLotsFinal.length === 0 && _hasExcludedLots) {
+        return { recommended: true, mode: 'targeted_token_recovery', targetTokens, reason: 'high_activity_excluded_lots_no_public_evidence', estimatedExtraPages: Math.min(2, targetTokens.length) }
+      }
+      return { recommended: false, mode: historicalAttempted ? 'attempted_light' : 'none', targetTokens, reason: _hasExcludedLots ? 'verified_stats_available_excluded_lots_remain' : 'closed_lots_already_found', estimatedExtraPages: 0 }
     }
     // RECOVERY-REC-FIX-1: a wallet with synthetic closed lots excluded for missing cost basis,
     // plus known target token contracts, IS a real targeted-recovery candidate — the cost guard
@@ -13313,6 +13428,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     pnlQualityReason: _pnlQualityReason,
     tradeIntelligence,
     walletRecoveryRecommendation: _walletRecoveryRecommendation,
+    walletReconstructionRecovery: _walletReconstructionRecovery,
     address: addr,
     totalValue,
     holdings,

@@ -192,6 +192,27 @@ type WalletResult = {
     reason: string
     estimatedExtraPages: number
   }
+  walletReconstructionRecovery?: {
+    highActivityPoorReconstruction: boolean
+    reason: 'high_activity_trade_reconstruction_incomplete' | null
+    evidenceEvents: number
+    swapCandidateEvents: number
+    rawMatchedClosedLots: number
+    excludedClosedLots: number
+    publicPerformanceClosedLots: number
+    topFailureReason: string | null
+    summary: string | null
+    recoveryAttempted: boolean
+    recoveryCapped: boolean
+    budget: {
+      extraPagesAllowed: number
+      extraPagesUsed: number
+      extraPriceAttemptsAllowed: number
+      extraPriceAttemptsUsed: number
+      creditsUsed: number
+      capHitReason: string | null
+    }
+  }
   walletBehavior?: WalletBehavior | null
   estimatedPnl?: {
     status: 'ok' | 'partial' | 'unavailable' | 'error'
@@ -1375,9 +1396,12 @@ export default function WalletScannerPage() {
     URL.revokeObjectURL(url)
   }
 
-  async function handleScan() {
+  async function handleScan(forceDeep = false) {
     const q = input.trim()
     if (!q) return
+    // forceDeep lets the "Run deep recovery scan" CTA opt into deep activity on the immediate rescan
+    // without waiting for the deepActivity state update to flush through this closure.
+    const useDeep = deepActivity || forceDeep
     setLoading(true)
     setError(null)
     setShowAllHoldings(false)
@@ -1385,7 +1409,7 @@ export default function WalletScannerPage() {
     try {
       const { data: { session } } = await supabase.auth.getSession()
       const token = session?.access_token
-      const canDebug = deepActivity && (plan === 'pro' || plan === 'elite' || betaEliteActive || process.env.NODE_ENV !== 'production')
+      const canDebug = useDeep && (plan === 'pro' || plan === 'elite' || betaEliteActive || process.env.NODE_ENV !== 'production')
       const cacheBust = freshScanBypass ? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}` : undefined
       const res  = await fetch(canDebug ? '/api/wallet?debug=true' : '/api/wallet', {
         method: 'POST',
@@ -1393,7 +1417,7 @@ export default function WalletScannerPage() {
           'Content-Type': 'application/json',
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
-        body: JSON.stringify({ address: q, ...(deepActivity ? { deepActivity: true } : {}), ...(canDebug && freshScanBypass ? { debugFresh: true, bypassCache: true, cacheBust, ...(noCacheWrite ? { noCacheWrite: true } : {}) } : {}) }),
+        body: JSON.stringify({ address: q, ...(useDeep ? { deepActivity: true } : {}), ...(canDebug && freshScanBypass ? { debugFresh: true, bypassCache: true, cacheBust, ...(noCacheWrite ? { noCacheWrite: true } : {}) } : {}) }),
       })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error ?? 'Scan failed')
@@ -1702,7 +1726,7 @@ export default function WalletScannerPage() {
             </div>
             <button
               className="ws-scan-btn"
-              onClick={handleScan}
+              onClick={() => handleScan()}
               disabled={loading || !input.trim()}
               style={{
                 padding: '14px 24px', borderRadius: '13px', border: 'none',
@@ -1993,6 +2017,59 @@ export default function WalletScannerPage() {
                         <div className="wpv3-label" style={{ marginTop: '14px' }}>Behavior</div><div className="wpv3-support" style={{ marginTop: '6px', color: '#F2F4F7' }}>{behaviorTags.join(' · ')}</div>
                         <div className="wpv3-label" style={{ marginTop: '14px' }}>Recent Pattern</div><div className="wpv3-support" style={{ marginTop: '6px' }}>{result.walletFacts?.flowRead.accumulationSignals?.[0] ?? 'Increased exposure review requires more indexed activity.'}</div>
                       </div>
+
+                      {result.walletReconstructionRecovery?.highActivityPoorReconstruction && (() => {
+                        const rr = result.walletReconstructionRecovery!
+                        const failureCopy: Record<string, string> = {
+                          prior_buy_cost_basis_missing: 'Exit activity found, but the matching buy cost basis was not in the indexed window.',
+                          quote_leg_or_price_missing: 'Swap candidates were found, but quote legs/prices were incomplete.',
+                          synthetic_cost_basis_estimate_only: 'Matched lots relied on synthetic/estimated cost basis, not verifiable buys.',
+                          flat_price_estimate_only: 'Matched lots priced from flat/estimate-only data, excluded from public performance.',
+                          historical_depth_insufficient: 'Deeper transaction history is needed to complete trade reconstruction.',
+                          budget_cap_reached: 'Scan budget cap was reached before reconstruction completed.',
+                          trade_reconstruction_incomplete: 'Trade candidates could not be promoted to public-grade closed lots.',
+                        }
+                        const deepPathExists = typeof setDeepActivity === 'function'
+                        return (
+                          <div className="wpv3-card" style={{ border: '1px solid rgba(251,191,36,0.22)', background: 'rgba(251,191,36,0.03)' }}>
+                            <p className="wpv3-title" style={{ color: '#fbbf24' }}>Trade reconstruction incomplete</p>
+                            <p className="wpv3-support" style={{ marginBottom: '10px', color: '#cbd5e1' }}>
+                              ChainLens found heavy activity and many swap candidates, but could not build public-grade performance evidence from this scan.
+                            </p>
+                            {[
+                              ['Events indexed', String(rr.evidenceEvents)],
+                              ['Swap candidates', String(rr.swapCandidateEvents)],
+                              ['Raw matched lots', String(rr.rawMatchedClosedLots)],
+                              ['Excluded lots', String(rr.excludedClosedLots)],
+                              ['Public-grade lots', String(rr.publicPerformanceClosedLots)],
+                            ].map(([label, value]) => (
+                              <div key={label} className="wpv3-metric-row"><span className="wpv3-label">{label}</span><span className="wpv3-value" style={{ fontSize: '20px' }}>{value}</span></div>
+                            ))}
+                            {rr.topFailureReason && (
+                              <p className="wpv3-support" style={{ marginTop: '10px' }}>{failureCopy[rr.topFailureReason] ?? rr.summary}</p>
+                            )}
+                            <p className="wpv3-support" style={{ marginTop: '8px', color: '#9aa4b2' }}>
+                              {rr.recoveryAttempted
+                                ? (rr.recoveryCapped ? 'Targeted recovery was attempted but reached its safe budget cap.' : 'Targeted recovery was attempted this scan.')
+                                : 'Targeted recovery has not been attempted yet for this wallet.'}
+                            </p>
+                            <p className="wpv3-support" style={{ marginTop: '10px', color: '#fbbf24', fontWeight: 700 }}>
+                              {deepPathExists && !deepActivity ? 'Try deeper recovery' : 'Deep recovery recommended'}
+                            </p>
+                            {deepPathExists && !deepActivity && (
+                              <button
+                                type="button"
+                                className="wpv3-button"
+                                style={{ marginTop: '8px' }}
+                                disabled={loading}
+                                onClick={() => { setDeepActivity(true); void handleScan(true) }}
+                              >
+                                Run deep recovery scan
+                              </button>
+                            )}
+                          </div>
+                        )
+                      })()}
 
                       <div className="wpv3-card">
                         <p className="wpv3-title">Real Trade Evidence</p>
