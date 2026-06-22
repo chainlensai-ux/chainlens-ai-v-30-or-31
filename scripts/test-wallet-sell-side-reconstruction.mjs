@@ -70,4 +70,13 @@ assert.match(snap, /async function buildBaseUnknownDirectionSwapReconstructionPa
 assert.match(snap, /tokenAddress: l\.tokenAddress\.toLowerCase\(\), symbol: l\.tokenSymbol \?\? '', chain: l\.chain,\s*\n\s*openedAt: l\.openedAt, amountRemaining: l\.amountRemaining,/, 'sampleOpenLots keeps the full lowercased contract instead of an abbreviated display address')
 assert.match(route, /const matchedHolding = _snapHoldings\.find\(h => \{/, 'route.ts open-position performance matching still exists')
 
+
+// 10. Receipt call accounting should use tx-hash keys so cross-pass receipt cache/dedupe prevents
+// the same tx from being counted as a fresh Alchemy receipt call under different reconstruction names.
+assert.match(snap, /candidateTxHashes\?: string\[\]/, 'sell-side debug exposes candidateTxHashes for receipt call dedupe')
+assert.match(snap, /const _tx = sellSideResult\.debug\.candidateTxHashes\?\.\[_ri\] \?\? String\(_ri\)/, 'sell-side Alchemy audit keys receipt calls by tx hash, not pass-local index')
+assert.match(snap, /const _rk = `alchemy:receipt:\$\{_tx\}:\$\{addrNorm\}`/, 'sell-side receipt audit shares the cross-pass receipt key namespace')
+assert.match(snap, /const _alchemyExpectedCalls = 8 \+ \(_sellSideReconDebug\.sellSideRecoveryAttempted \? Math\.min\(15, _sellSideReconDebug\.sellSideCandidateTxs \?\? 0\) : 0\)/, 'Alchemy expected budget includes explicit sell-side deep proof receipts instead of stale expected_8 warning')
+assert.doesNotMatch(snap, /alchemy_\$\{_alchemyCount\}_calls_expected_8/, 'stale alchemy expected_8 warning is removed')
+
 console.log('wallet sell-side reconstruction checks passed')

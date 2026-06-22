@@ -43,7 +43,7 @@ assert.match(route, /walletHistoricalRecoveryStatus = 'not_attempted'/, 'cache h
 assert.match(snap, /_missingCostBasisProven && \(promotedLotSummary\.syntheticClosedLots \?\? 0\) > 0 \? 'missing_cost_basis'/, 'synthetic-only closed lots map to missing_cost_basis, not fifo_with_estimates')
 assert.match(snap, /reason: 'missing_cost_basis_synthetic_lots_excluded'/, 'recovery recommendation excludes synthetic-only lots with a clear reason')
 assert.match(snap, /if \(_realClosedLotsCount > 0\) \{\s*\n\s*const _hasExcludedLots = \(promotedTradeStatsSummary\.syntheticClosedLotsExcluded \?\? 0\) > 0 \|\| \(promotedTradeStatsSummary\.estimateOnlyClosedLots \?\? 0\) > 0/, 'real-backed closed lots branch keys off whether excluded lots remain')
-assert.match(snap, /return \{ recommended: false, mode: historicalAttempted \? 'attempted_light' : 'none', targetTokens, reason: _hasExcludedLots \? 'verified_stats_available_excluded_lots_remain' : 'closed_lots_already_found', estimatedExtraPages: 0 \}/, 'real-backed closed lots keep targets populated and disclose excluded lots remain when public evidence exists')
+assert.match(snap, /reason: _performanceClosedLotsFinal\.length === 0 \? 'raw_closed_lots_found_but_public_grade_zero' : _hasExcludedLots \? 'verified_stats_available_excluded_lots_remain' : 'closed_lots_already_found'/, 'real-backed closed lots keep targets populated and use public-grade-zero wording when public evidence is unavailable')
 // HIGH-ACTIVITY-RECON: real-backed lots that produced ZERO public-grade evidence (all excluded)
 // must still recommend targeted recovery, not silently report "closed lots already found".
 assert.match(snap, /if \(_performanceClosedLotsFinal\.length === 0 && _hasExcludedLots\) \{\s*\n\s*return \{ recommended: true, mode: 'targeted_token_recovery', targetTokens, reason: 'high_activity_excluded_lots_no_public_evidence'/, 'real-backed-but-all-excluded lots keep recommending targeted recovery instead of closed_lots_already_found')
@@ -111,8 +111,8 @@ const routeSrc = fs.readFileSync('app/api/wallet/route.ts', 'utf8')
 assert.match(routeSrc, /const recoveryAlreadyFound = snap\?\.walletRecoveryRecommendation\?\.recommended === false/, 'historical-recovery cost guard recognizes when real-backed closed lots were already found')
 assert.match(routeSrc, /needsHistorical: !recoveryAlreadyFound && \(/, 'needsHistorical respects recoveryAlreadyFound instead of always firing on historicalStatus === not_requested')
 assert.match(routeSrc, /\} else if \(_initialRecoverySignals\.recoveryAlreadyFound\) \{/, 'the default scan path explicitly marks historical recovery not_attempted when closed lots were already found, instead of leaving it unset')
-assert.match(routeSrc, /snapshot\.walletHistoricalRecoveryReason = 'closed_lots_already_found'/, 'historical recovery reason uses the non-contradictory closed_lots_already_found label')
-assert.match(snap, /_skipReasons\.push\('closed_lots_already_found'\)/, 'the stale already_has_10_closed_lots skip reason is replaced with closed_lots_already_found')
+assert.match(routeSrc, /snapshot\.walletHistoricalRecoveryReason = Number\(snapshot\.publicPerformanceClosedLots/, 'historical recovery reason is gated by publicPerformanceClosedLots before using already-found wording')
+assert.match(snap, /raw_closed_lots_found_but_public_grade_zero/, 'skip/recovery reasons use raw_closed_lots_found_but_public_grade_zero when public-grade lots are zero')
 
 
 
