@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import ProjectOverviewDrawer from './ProjectOverviewDrawer'
@@ -55,7 +55,7 @@ interface RadarData {
 
 type RadarStatus = 'HOT' | 'WATCH' | 'EARLY' | 'UNVERIFIED' | 'RISKY' | 'DEAD'
 type MomentumLevel = 'HIGH' | 'MEDIUM' | 'LOW' | 'NONE'
-type RadarFilter = 'ALL' | RadarStatus
+type RadarFilter = 'TRENDING' | 'NEW' | 'VOLUME' | 'LIQUIDITY' | 'RISK_WATCH' | 'WATCHLIST'
 type SortMode = 'NEWEST' | 'HIGHEST_SCORE' | 'HIGHEST_LIQUIDITY' | 'HIGHEST_VOLUME' | 'HIGHEST_MOMENTUM'
 
 type QualityLevel = 'Weak' | 'OK' | 'Strong' | 'None' | 'Low' | 'Medium' | 'High' | 'Fresh' | 'New' | 'Older' | 'Clean' | 'Unknown' | 'Verified' | 'Security Unknown'
@@ -127,12 +127,12 @@ const STATUS_BORDER: Record<RadarStatus, string> = {
 }
 
 const FILTER_CHIPS: Array<{ key: RadarFilter; label: string }> = [
-  { key: 'ALL', label: 'Trending' },
-  { key: 'EARLY', label: 'New' },
-  { key: 'HOT', label: 'Volume' },
-  { key: 'WATCH', label: 'Liquidity' },
-  { key: 'UNVERIFIED', label: 'Evidence Gaps' },
-  { key: 'RISKY', label: 'High Risk' },
+  { key: 'TRENDING', label: 'Trending' },
+  { key: 'NEW', label: 'New' },
+  { key: 'VOLUME', label: 'Volume' },
+  { key: 'LIQUIDITY', label: 'Liquidity' },
+  { key: 'RISK_WATCH', label: 'Risk Watch' },
+  { key: 'WATCHLIST', label: 'Watchlist Candidates' },
 ]
 
 const SORT_OPTIONS: Array<{ key: SortMode; label: string }> = [
@@ -341,7 +341,25 @@ function getStageLabel(token: TokenIntel): string {
 }
 
 function getSignalInsight(token: TokenIntel): string {
-  return token.displayModel.whyOnRadar
+  const needsScan = token.simulationStatus !== 'passed'
+  const activeLiquidity = token.liquidityUsd >= 10_000
+  const highVolume = token.volume24h >= 5_000
+  const fresh = token.ageMinutes <= 30
+
+  if (token.momentum === 'HIGH' && activeLiquidity) return `Volume is rising while liquidity remains active. ${needsScan ? 'Needs Token Scanner confirmation before trusting risk.' : 'Risk checks are visible, but keep monitoring holders and liquidity.'}`
+  if (fresh && token.momentum !== 'NONE') return `Fresh momentum detected${activeLiquidity ? ' with active liquidity' : ''}. ${needsScan ? 'Holder and liquidity safety still need deeper scan.' : 'Still a watchlist candidate, not a confirmed safe token.'}`
+  if (highVolume) return `High activity token with ${needsScan ? 'risk checks still open' : 'simulation checks visible'}. Review liquidity and holder context before acting.`
+  if (token.status === 'RISKY' || token.status === 'UNVERIFIED') return `${needsScan ? 'Needs scan' : 'Open check'}: activity is visible, but unresolved risk signals keep this in watch mode.`
+  if (activeLiquidity) return `Liquidity remains active with developing activity. Watchlist candidate, not a confirmed safe token.`
+  return token.displayModel.whyOnRadar || 'Open check: radar placement comes from current liquidity, volume, and evidence signals.'
+}
+
+function getOpportunityLabel(token: TokenIntel, index: number): string {
+  if (index === 0) return 'Top Opportunity'
+  if (token.momentum === 'HIGH') return 'High Momentum'
+  if (token.ageMinutes <= 30 && token.liquidityUsd >= 10_000) return 'Fresh Liquidity'
+  if (token.status === 'RISKY' || token.status === 'UNVERIFIED' || token.simulationStatus !== 'passed') return 'Risk Watch'
+  return 'Needs Token Scan'
 }
 
 function simulationStatusLabel(token: RadarToken): string {
@@ -407,7 +425,8 @@ function TokenCard({
   const statusBorder = priorityAccent.border
   const identity = getTokenIdentity(token)
   const avatarText = (identity.symbol || identity.primary || '?').slice(0, 2).toUpperCase()
-  const highSignal = token.radarScore >= 75
+  const highSignal = token.radarScore >= 75 || index < 3
+  const opportunityLabel = getOpportunityLabel(token, index)
   const stageLabel = getStageLabel(token)
   const insight = getSignalInsight(token)
   const valuationDisplay = getValuationCardMetric(token)
@@ -456,16 +475,19 @@ function TokenCard({
               <span style={{ fontSize: '11px', fontWeight: 800, color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap' }}>{identity.symbol}</span>
             </div>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '6px' }}>
+              <MiniPill label={`#${index + 1}`} color={index < 3 ? '#99f6e4' : '#94a3b8'} background={index < 3 ? 'rgba(45,212,191,0.13)' : 'rgba(255,255,255,0.06)'} border={index < 3 ? 'rgba(45,212,191,0.30)' : 'rgba(255,255,255,0.10)'} />
               <span style={{ fontSize: '10px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>{shortAddr(token.contract)}</span>
               <MiniPill label={identity.context} />
+              <MiniPill label={opportunityLabel} color={statusColor} background={statusBg} border={statusBorder} />
               <MiniPill label={stageLabel} color={statusColor} background={statusBg} border={statusBorder} />
             </div>
           </div>
         </div>
 
         <div style={{ minWidth: '86px', borderRadius: '16px', padding: '7px 9px', textAlign: 'center', background: `linear-gradient(180deg, ${statusBg}, rgba(255,255,255,0.035))`, border: `1px solid ${statusBorder}`, boxShadow: highSignal ? `0 0 22px ${statusBg}` : 'none' }}>
-          <p style={{ margin: '0 0 2px', fontSize: '8px', color: '#94a3b8', letterSpacing: '0.14em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', fontWeight: 800 }}>Radar Score</p>
+          <p style={{ margin: '0 0 2px', fontSize: '8px', color: '#94a3b8', letterSpacing: '0.14em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', fontWeight: 800 }}>Radar Status</p>
           <p style={{ margin: 0, color: statusColor, fontSize: '25px', lineHeight: 1, fontWeight: 900, fontFamily: 'var(--font-plex-mono)' }}>{token.radarScore}</p>
+          <p style={{ margin: '3px 0 0', color: statusColor, fontSize: '8px', fontWeight: 900, fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.10em' }}>{token.status}</p>
         </div>
       </div>
 
@@ -488,9 +510,9 @@ function TokenCard({
       )}
 
       <div className='token-card-actions' style={{ display: 'flex', alignItems: 'center', gap: '8px', paddingTop: '9px', borderTop: '1px solid rgba(148,163,184,0.12)' }}>
-        <ActionButton label='Scan' variant='primary' onClick={onScan} />
+        <ActionButton label='Scan Token' variant='primary' onClick={onScan} />
         <ActionButton label='Ask CORTEX' variant='secondary' hint='Analyze with CORTEX' onClick={onAskCortex} />
-        <ActionButton label={tracking ? 'Tracking' : 'Track'} variant='ghost' active={tracking} onClick={onTrackToggle} />
+        <ActionButton label={tracking ? 'Watching' : 'Add to Watchlist'} variant='ghost' active={tracking} onClick={onTrackToggle} />
       </div>
     </div>
   )
@@ -746,12 +768,24 @@ function Stat({ label, value, loading }: { label: string; value: string; loading
   )
 }
 
+function StagedRadarLoading() {
+  const stages = ['Loading radar feed…', 'Ranking opportunities…', 'Checking momentum…', 'Preparing risk context…', 'Finalizing Base Radar…']
+  return (
+    <div style={{ borderRadius: '14px', border: '1px solid rgba(45,212,191,0.18)', background: 'rgba(45,212,191,0.06)', padding: '14px 16px', color: '#99f6e4', fontFamily: 'var(--font-plex-mono)', fontSize: '11px', display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+      {stages.map((stage, i) => (
+        <span key={stage} style={{ padding: '5px 8px', borderRadius: '99px', border: '1px solid rgba(45,212,191,0.18)', background: i === 0 ? 'rgba(45,212,191,0.12)' : 'rgba(255,255,255,0.03)', color: i === 0 ? '#99f6e4' : '#64748b' }}>{stage}</span>
+      ))}
+    </div>
+  )
+}
+
 function EmptyFeed({ limited }: { limited: boolean }) {
   return (
-    <div style={{ textAlign: 'center', padding: '42px 20px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>
-      <div style={{ fontSize: '30px', marginBottom: '12px', opacity: 0.4 }}>◈</div>
-      <p style={{ fontSize: '13px', fontWeight: 600, margin: '0 0 8px' }}>
-        {limited ? 'Limited live feed right now. Radar will refresh shortly.' : 'No new Base pools detected right now. Radar will refresh shortly.'}
+    <div style={{ textAlign: 'center', padding: '42px 20px', color: '#64748b', fontFamily: 'var(--font-plex-mono)', border: '1px solid rgba(148,163,184,0.12)', borderRadius: '16px', background: 'rgba(255,255,255,0.025)' }}>
+      <div style={{ fontSize: '30px', marginBottom: '12px', opacity: 0.45 }}>◈</div>
+      <p style={{ fontSize: '14px', fontWeight: 800, margin: '0 0 8px', color: '#cbd5e1' }}>No strong radar candidates right now.</p>
+      <p style={{ fontSize: '12px', fontWeight: 600, margin: 0, lineHeight: 1.45 }}>
+        {limited ? 'Live feed is limited. Try refreshing, changing filters, or scanning a token directly.' : 'Try refreshing, changing filters, or scanning a token directly.'}
       </p>
     </div>
   )
@@ -771,11 +805,12 @@ export default function BaseRadarPage() {
   const { plan, loading: planLoading, elitePass } = usePlanWithLoading()
   const router = useRouter()
   const [data, setData] = useState<RadarData | null>(null)
+  const hasRadarDataRef = useRef(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [countdown, setCountdown] = useState(120)
   const [refreshKey, setRefreshKey] = useState(0)
-  const [activeFilter, setActiveFilter] = useState<RadarFilter>('ALL')
+  const [activeFilter, setActiveFilter] = useState<RadarFilter>('TRENDING')
   const [sortMode, setSortMode] = useState<SortMode>('NEWEST')
   const [trackedContracts, setTrackedContracts] = useState<Record<string, boolean>>({})
   const [selectedToken, setSelectedToken] = useState<TokenIntel | null>(null)
@@ -793,12 +828,13 @@ export default function BaseRadarPage() {
       const res = await fetch('/api/radar', { cache: 'no-store', headers: _tok ? { Authorization: `Bearer ${_tok}` } : {} })
       const json = await res.json()
       if (!res.ok || json.error) {
-        setError('Base Radar current checks did not return a fresh signal. Try refresh.')
+        setError(hasRadarDataRef.current ? 'Radar refresh failed. Showing last available read.' : 'Radar refresh failed. Try refreshing or scanning a token directly.')
       } else {
+        hasRadarDataRef.current = true
         setData(json as RadarData)
       }
     } catch {
-      setError('Base Radar current checks did not return a fresh signal. Try refresh.')
+      setError(hasRadarDataRef.current ? 'Radar refresh failed. Showing last available read.' : 'Radar refresh failed. Try refreshing or scanning a token directly.')
     } finally {
       setLoading(false)
     }
@@ -915,9 +951,15 @@ export default function BaseRadarPage() {
   }, [intelTokens])
 
   const filteredAndSortedTokens = useMemo(() => {
-    const filtered = activeFilter === 'ALL'
-      ? intelTokens
-      : intelTokens.filter(token => token.status === activeFilter)
+    const filtered = intelTokens.filter(token => {
+      if (activeFilter === 'TRENDING') return token.status === 'HOT' || token.momentum === 'HIGH' || token.volume24h >= 5_000
+      if (activeFilter === 'NEW') return token.ageMinutes <= 120 || token.status === 'EARLY'
+      if (activeFilter === 'VOLUME') return token.volume24h >= 5_000 || token.momentum !== 'NONE'
+      if (activeFilter === 'LIQUIDITY') return token.liquidityUsd >= 10_000
+      if (activeFilter === 'RISK_WATCH') return token.status === 'RISKY' || token.status === 'UNVERIFIED' || token.simulationStatus !== 'passed'
+      if (activeFilter === 'WATCHLIST') return token.radarScore >= 60 && token.status !== 'DEAD' && token.status !== 'RISKY'
+      return true
+    })
 
     const sorted = [...filtered]
 
@@ -989,7 +1031,7 @@ export default function BaseRadarPage() {
 
           <div className="radar-controls" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', flexWrap: 'wrap' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-              <span style={{ fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>Refresh in {countdown}s</span>
+              <span style={{ fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>{loading && tokens.length > 0 ? 'Refreshing radar…' : `Refresh in ${countdown}s`}</span>
               <button
                 onClick={handleManualRefresh}
                 disabled={loading}
@@ -1001,7 +1043,7 @@ export default function BaseRadarPage() {
                   <path d='M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16' />
                   <path d='M8 16H3v5' />
                 </svg>
-                {loading ? 'Scanning…' : 'Refresh'}
+                {loading ? (tokens.length > 0 ? 'Refreshing…' : 'Loading…') : 'Refresh'}
               </button>
             </div>
 
@@ -1072,6 +1114,7 @@ export default function BaseRadarPage() {
 
             {loading && tokens.length === 0 && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                <StagedRadarLoading />
                 {[...Array(4)].map((_, i) => (
                   <div key={i} style={{ height: '120px', borderRadius: '12px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', animation: 'radarSlideIn 0.3s ease both', animationDelay: `${i * 80}ms` }} />
                 ))}
