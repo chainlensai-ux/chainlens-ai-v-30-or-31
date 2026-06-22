@@ -1052,6 +1052,22 @@ export type WalletSnapshot = {
       sampleSyntheticEvents: Array<{ txHash: string; symbol: string; direction: string }>
       skippedReasons: string[]
     }
+    sellSideReconstructionDebug?: {
+      sellSideRecoveryAttempted: boolean
+      reason: string
+      sellSideCandidateTxs: number
+      sellSideReceiptsFetched: number
+      sellSideWalletOutboundLegs: number
+      sellSideQuoteProceedsLegs: number
+      sellSideNativeProceedsDetected: number
+      sellSideSyntheticEventsAdded: number
+      sellSideEventsPromoted: number
+      sellSideEventsRejected: number
+      sellSideRejectedBreakdown: Record<string, number>
+      sampleSellSidePromotions: Array<{ txHash: string; symbol: string; quoteSymbol: string | null }>
+      sampleSellSideRejected: Array<{ txHash: string; symbol: string; reason: string }>
+      sellSidePromotionSource: string
+    }
     finalSummarySourceDebug?: {
       swapSummarySource: string
       priceSummarySource: string
@@ -4347,8 +4363,12 @@ function buildFifoLotEngine(
       unmatchedBuyTokenKeys,
       unmatchedSellTokenKeys,
       totalCostBasisClosedUsd, totalProceedsClosedUsd, realizedPnlUsd, realizedPnlPercent,
+      // PHASE-SELLSIDE-FIX-7: tokenAddress here must stay the full normalized contract — this
+      // field is used by route.ts's open-position-performance matching to look up the current
+      // holding by contract, and an abbreviated address can never match a full holdings.contract.
+      // Display-level truncation belongs only at the UI/output formatting layer, not here.
       sampleOpenLots: allOpenLots.slice(0, 5).map(l => ({
-        tokenAddress: abbr(l.tokenAddress), symbol: l.tokenSymbol ?? '', chain: l.chain,
+        tokenAddress: l.tokenAddress.toLowerCase(), symbol: l.tokenSymbol ?? '', chain: l.chain,
         openedAt: l.openedAt, amountRemaining: l.amountRemaining,
         entryPriceUsd: l.entryPriceUsd, confidence: l.confidence,
       })),
@@ -6786,6 +6806,189 @@ async function buildBasePnlReconstructionPass(
   }
 }
 
+// ── Base Sell-Side Reconstruction Pass ────────────────────────────────────────────────────
+// Targets outbound wallet-side token transfers that the normalized activity feed already
+// classifies as direction='sell' (wallet sent a non-quote token) but that never became a
+// swapDetection candidate, because the feed only surfaces the outbound leg and never showed
+// the matching inbound quote leg that proves it was a real sale rather than a transfer/airdrop/
+// distributor send. This pass fetches the tx receipt for a capped set of those candidates and
+// promotes to a real sell-swap candidate ONLY when receipt evidence proves the wallet received
+// quote proceeds (ETH/WETH/USDC/USDT/DAI/cbETH/wstETH) in the SAME transaction. No promotion
+// happens, and no PnL is fabricated, when proceeds cannot be proven — those stay as plain
+// transfer/open-check events exactly as before.
+async function buildBaseSellSideReconstructionPass(
+  evidenceWithDetection: WalletTxEvidence[],
+  walletAddress: string,
+  rpcUrl: string,
+  deepScan: boolean,
+  priorityTokenContracts: Set<string>,
+): Promise<{
+  enrichedEvidence: WalletTxEvidence[]
+  debug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['sellSideReconstructionDebug']>
+}> {
+  const walletLower = walletAddress.toLowerCase()
+  const emptyDebug = (reason: string, attempted = false): NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['sellSideReconstructionDebug']> => ({
+    sellSideRecoveryAttempted: attempted, reason,
+    sellSideCandidateTxs: 0, sellSideReceiptsFetched: 0, sellSideWalletOutboundLegs: 0,
+    sellSideQuoteProceedsLegs: 0, sellSideNativeProceedsDetected: 0, sellSideSyntheticEventsAdded: 0,
+    sellSideEventsPromoted: 0, sellSideEventsRejected: 0, sellSideRejectedBreakdown: {},
+    sampleSellSidePromotions: [], sampleSellSideRejected: [], sellSidePromotionSource: 'none',
+  })
+
+  if (!rpcUrl) return { enrichedEvidence: evidenceWithDetection, debug: emptyDebug('no_rpc_available') }
+
+  // Candidate selection: wallet-side outbound (direction='sell') events on Base, for non-quote
+  // tokens, that the normal swap detector did not already mark as a swap candidate. Do not require
+  // tx.from === wallet (relayer/aggregator txs still count as wallet-initiated outbound legs as
+  // long as the wallet itself is the token sender per the activity feed's fromAddress).
+  const outboundCandidates = evidenceWithDetection.filter(e =>
+    (e.chain ?? '').toLowerCase().includes('base') &&
+    e.direction === 'sell' &&
+    !e.swapDetection?.isSwapCandidate &&
+    Boolean(e.contract) && e.contract.startsWith('0x') &&
+    !STABLE_USD_CONTRACTS[e.contract.toLowerCase()] && !WETH_CONTRACTS_PRICE[e.contract.toLowerCase()] &&
+    e.amount > 0
+  )
+  if (outboundCandidates.length === 0) return { enrichedEvidence: evidenceWithDetection, debug: emptyDebug('no_outbound_sell_candidates', true) }
+
+  // Prioritize: tokens with existing open lots/unmatched buys first, then repeated tokens, then
+  // larger sent amounts — then cap and dedupe by tx hash for receipt-fetch cost safety.
+  const tokenRepeatCount = new Map<string, number>()
+  for (const e of outboundCandidates) {
+    const k = e.contract.toLowerCase()
+    tokenRepeatCount.set(k, (tokenRepeatCount.get(k) ?? 0) + 1)
+  }
+  const scored = [...outboundCandidates].sort((a, b) => {
+    const aPriority = priorityTokenContracts.has(a.contract.toLowerCase()) ? 1 : 0
+    const bPriority = priorityTokenContracts.has(b.contract.toLowerCase()) ? 1 : 0
+    if (aPriority !== bPriority) return bPriority - aPriority
+    const aRepeat = tokenRepeatCount.get(a.contract.toLowerCase()) ?? 0
+    const bRepeat = tokenRepeatCount.get(b.contract.toLowerCase()) ?? 0
+    if (aRepeat !== bRepeat) return bRepeat - aRepeat
+    return (b.amount ?? 0) - (a.amount ?? 0)
+  })
+  const maxCandidates = deepScan ? 40 : 15
+  const seenTx = new Set<string>()
+  const candidateTxHashes: string[] = []
+  const txToEvents = new Map<string, WalletTxEvidence[]>()
+  for (const e of scored) {
+    const txHash = (e.txHash ?? '').toLowerCase()
+    if (!txHash) continue
+    if (!txToEvents.has(txHash)) txToEvents.set(txHash, [])
+    txToEvents.get(txHash)!.push(e)
+    if (seenTx.has(txHash)) continue
+    seenTx.add(txHash)
+    candidateTxHashes.push(txHash)
+    if (candidateTxHashes.length >= maxCandidates) break
+  }
+
+  const now = Date.now()
+  let receiptsFetched = 0
+  let walletOutboundLegs = 0
+  let quoteProceedsLegs = 0
+  const rejectedBreakdown: Record<string, number> = {}
+  const sampleRejected: Array<{ txHash: string; symbol: string; reason: string }> = []
+
+  type SellDecode = { txTo: string | null; walletInbound: Array<{ contract: string; amountHex: string }>; walletOutbound: Array<{ contract: string; amountHex: string }>; decodeStatus: 'ok' | 'no_receipt' }
+  const txDecodes = new Map<string, SellDecode>()
+
+  await Promise.allSettled(candidateTxHashes.map(async (txHash) => {
+    const cacheKey = `sell_recon:${txHash}`
+    const cached = basePnlReceiptCache.get(cacheKey)
+    if (cached && cached.exp > now) { txDecodes.set(txHash, cached.data as unknown as SellDecode); return }
+    try {
+      const receipt = await getSharedTxReceipt(rpcUrl, txHash)
+      receiptsFetched++
+      if (!receipt) {
+        const d: SellDecode = { txTo: null, walletInbound: [], walletOutbound: [], decodeStatus: 'no_receipt' }
+        txDecodes.set(txHash, d)
+        return
+      }
+      const txTo = typeof receipt.to === 'string' ? (receipt.to as string).toLowerCase() : null
+      const logs: Array<{ topics?: string[]; address?: string }> = Array.isArray(receipt.logs) ? receipt.logs : []
+      const inbound: SellDecode['walletInbound'] = []
+      const outbound: SellDecode['walletOutbound'] = []
+      for (const log of logs) {
+        if (!log.topics || log.topics[0]?.toLowerCase() !== ERC20_TRANSFER_TOPIC) continue
+        if (log.topics.length < 3) continue
+        const fromAddr = '0x' + (log.topics[1]?.toLowerCase() ?? '').slice(-40)
+        const toAddr = '0x' + (log.topics[2]?.toLowerCase() ?? '').slice(-40)
+        const contractAddr = (log.address ?? '').toLowerCase()
+        const amountHex = typeof (log as Record<string, unknown>).data === 'string' ? (log as Record<string, unknown>).data as string : '0x0'
+        if (toAddr === walletLower) inbound.push({ contract: contractAddr, amountHex })
+        if (fromAddr === walletLower) outbound.push({ contract: contractAddr, amountHex })
+      }
+      const d: SellDecode = { txTo, walletInbound: inbound, walletOutbound: outbound, decodeStatus: 'ok' }
+      basePnlReceiptCache.set(cacheKey, { data: d as unknown as BasePnlReceiptDecode, exp: now + BASE_PNL_RECON_TTL_MS })
+      txDecodes.set(txHash, d)
+      walletOutboundLegs += outbound.length
+    } catch {
+      // Receipt fetch failure leaves the candidate undecoded — it stays a plain transfer below.
+    }
+  }))
+
+  let syntheticSwapEventsAdded = 0
+  const samplePromotions: Array<{ txHash: string; symbol: string; quoteSymbol: string | null }> = []
+
+  const enrichedEvidence: WalletTxEvidence[] = evidenceWithDetection.map(e => {
+    const txHash = (e.txHash ?? '').toLowerCase()
+    const isCandidate = outboundCandidates.includes(e)
+    if (!isCandidate) return e
+    const d = txDecodes.get(txHash)
+    if (!d || d.decodeStatus !== 'ok') {
+      rejectedBreakdown['no_receipt'] = (rejectedBreakdown['no_receipt'] ?? 0) + 1
+      if (sampleRejected.length < 5) sampleRejected.push({ txHash, symbol: e.symbol ?? '?', reason: 'no_receipt' })
+      return e
+    }
+    // Promotion proof: wallet must have an inbound leg in this SAME tx for a supported quote
+    // asset (WETH or a stablecoin). This is the only proceeds proof this pass relies on — native
+    // ETH-only proceeds without an ERC20 quote leg cannot be safely attributed without a trace,
+    // so they are intentionally left unpromoted (transfer/open check) per the no-fake-PnL rule.
+    const quoteLeg = d.walletInbound.find(leg => Boolean(WETH_CONTRACTS_PRICE[leg.contract]) || Boolean(STABLE_USD_CONTRACTS[leg.contract]))
+    if (!quoteLeg) {
+      const hasAnyInbound = d.walletInbound.length > 0
+      const reason = hasAnyInbound ? 'inbound_leg_not_quote_asset' : 'no_quote_proceeds_found'
+      rejectedBreakdown[reason] = (rejectedBreakdown[reason] ?? 0) + 1
+      if (sampleRejected.length < 5) sampleRejected.push({ txHash, symbol: e.symbol ?? '?', reason })
+      return e
+    }
+    quoteProceedsLegs++
+    syntheticSwapEventsAdded++
+    const quoteSymbol = WETH_CONTRACTS_PRICE[quoteLeg.contract] ? 'WETH' : STABLE_USD_CONTRACTS[quoteLeg.contract] ? 'STABLE' : null
+    if (samplePromotions.length < 5) samplePromotions.push({ txHash, symbol: e.symbol ?? '?', quoteSymbol })
+    return {
+      ...e,
+      swapDetection: {
+        isSwapCandidate: true, confidence: 'medium' as const, eventKind: 'swap_candidate' as const,
+        reason: `Sell-side recon: wallet-outbound token + same-tx wallet-inbound quote leg (${quoteSymbol ?? 'quote'})`,
+        matchedProtocol: null, matchedAddress: d.txTo,
+      } satisfies WalletSwapDetection,
+    }
+  })
+
+  const eventsRejected = Object.values(rejectedBreakdown).reduce((s, v) => s + v, 0)
+
+  return {
+    enrichedEvidence,
+    debug: {
+      sellSideRecoveryAttempted: true,
+      reason: syntheticSwapEventsAdded > 0 ? `promoted_${syntheticSwapEventsAdded}_sell_events` : 'candidates_checked_none_promoted',
+      sellSideCandidateTxs: candidateTxHashes.length,
+      sellSideReceiptsFetched: receiptsFetched,
+      sellSideWalletOutboundLegs: walletOutboundLegs,
+      sellSideQuoteProceedsLegs: quoteProceedsLegs,
+      sellSideNativeProceedsDetected: 0,
+      sellSideSyntheticEventsAdded: syntheticSwapEventsAdded,
+      sellSideEventsPromoted: syntheticSwapEventsAdded,
+      sellSideEventsRejected: eventsRejected,
+      sellSideRejectedBreakdown: rejectedBreakdown,
+      sampleSellSidePromotions: samplePromotions,
+      sampleSellSideRejected: sampleRejected,
+      sellSidePromotionSource: 'wallet_outbound_token_plus_inbound_quote_leg',
+    },
+  }
+}
+
 // ── Base Unknown-Direction Swap Reconstruction Pass ───────────────────────────────────────
 // Handles two cases the primary recon misses:
 // 1. ALL events are direction=unknown (primary recon finds zero candidates).
@@ -8542,6 +8745,64 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     _ethSwapReconstructionDebug = { ..._ethSwapReconstructionDebug, reason: 'eth_wallet_initiated_but_no_token_receive', stopReason: 'eth_wallet_initiated_but_no_token_receive', ethEventsAvailable: _ethActivityEvents, inboundTokenLegsFound: _ethInboundTokenEvents.length }
   }
 
+  // ── Base Sell-Side Reconstruction Pass ──────────────────────────────────────────────────
+  // Runs AFTER normal swap detection and native ETH buy recovery (above). Targets wallet-side
+  // outbound token transfers that the activity feed already classifies direction='sell' but
+  // never produced a swap candidate, because the feed never surfaced the matching inbound quote
+  // leg. Promotion requires same-tx receipt proof of wallet-inbound quote proceeds — see
+  // buildBaseSellSideReconstructionPass for the exact gate. Never invents cost basis or PnL.
+  let _sellSideReconDebug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['sellSideReconstructionDebug']> = {
+    sellSideRecoveryAttempted: false, reason: 'not_attempted',
+    sellSideCandidateTxs: 0, sellSideReceiptsFetched: 0, sellSideWalletOutboundLegs: 0,
+    sellSideQuoteProceedsLegs: 0, sellSideNativeProceedsDetected: 0, sellSideSyntheticEventsAdded: 0,
+    sellSideEventsPromoted: 0, sellSideEventsRejected: 0, sellSideRejectedBreakdown: {},
+    sampleSellSidePromotions: [], sampleSellSideRejected: [], sellSidePromotionSource: 'none',
+  }
+  const _sellSideUnpromotedOutbound = _swapEvidenceWithDetection.some(e =>
+    (e.chain ?? '').toLowerCase().includes('base') &&
+    e.direction === 'sell' &&
+    !e.swapDetection?.isSwapCandidate &&
+    Boolean(e.contract) && e.contract.startsWith('0x') &&
+    !STABLE_USD_CONTRACTS[e.contract.toLowerCase()] && !WETH_CONTRACTS_PRICE[e.contract.toLowerCase()]
+  )
+  if (activityRequested && Boolean(baseRpcUrl) && _sellSideUnpromotedOutbound) {
+    const _priorityTokenContracts = new Set(
+      holdings.slice().sort((a, b) => (b.value ?? 0) - (a.value ?? 0)).slice(0, 8)
+        .map(h => (h.contract ?? '').toLowerCase()).filter(Boolean)
+    )
+    const sellSideResult = await buildBaseSellSideReconstructionPass(
+      _swapEvidenceWithDetection,
+      addrNorm,
+      baseRpcUrl,
+      deepScan,
+      _priorityTokenContracts,
+    )
+    _sellSideReconDebug = sellSideResult.debug
+    tokenMeter.measure('swapDetection', sellSideResult)
+    for (let _ri = 0; _ri < sellSideResult.debug.sellSideReceiptsFetched; _ri++) {
+      const _rk = `alchemy:sellsiderecon:receipt:${_ri}:${addrNorm}`
+      if (!_alchemyDedup.has(_rk)) { _alchemyDedup.add(_rk); _trackCall('alchemy', 'eth_getTransactionReceipt', false, _rk) }
+    }
+    if (sellSideResult.debug.sellSideSyntheticEventsAdded > 0) {
+      // This pass mutates swapDetection directly on existing events (same pattern as the
+      // Base unknown-direction recon pass above) rather than inserting new synthetic legs, so
+      // re-running buildSwapDetection here would recompute from scratch and discard the
+      // promotion — use the enriched evidence directly instead.
+      evidenceList = sellSideResult.enrichedEvidence
+      _swapEvidenceWithDetection = sellSideResult.enrichedEvidence
+      const _sellSideSwapCount = _swapEvidenceWithDetection.filter(e => e.swapDetection?.isSwapCandidate).length
+      walletSwapSummary = { ...walletSwapSummary, swapCandidateEvents: _sellSideSwapCount, readyForPriceAtTime: _sellSideSwapCount > 0 }
+      tokenMeter.measure('swapDetection', _swapEvidenceWithDetection, walletSwapSummary)
+    }
+  } else if (!activityRequested) {
+    _sellSideReconDebug = { ..._sellSideReconDebug, reason: 'activity_not_requested' }
+  } else if (!baseRpcUrl) {
+    _sellSideReconDebug = { ..._sellSideReconDebug, reason: 'no_rpc_available' }
+  } else if (!_sellSideUnpromotedOutbound) {
+    _sellSideReconDebug = { ..._sellSideReconDebug, reason: 'no_unpromoted_outbound_sell_events' }
+  }
+  // ── End Base Sell-Side Reconstruction Pass ───────────────────────────────────────────────
+
   tokenMeter.startTokenMeter('priceInference')
   const _pricingStartedAt = Date.now()
   tokenMeter.measure('priceInference', _swapEvidenceWithDetection)
@@ -10174,6 +10435,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       ethSwapReconstructionDebug: _ethSwapReconstructionDebug,
       basePnlReconstructionDebug: _basePnlReconDebug,
       baseUnknownSwapReconstructionDebug: _baseUnknownSwapReconDebug,
+      sellSideReconstructionDebug: _sellSideReconDebug,
       baseUnknownSwapPricingDebug: _baseUnknownSwapPricingDebug,
       finalSummarySourceDebug: _finalSummarySourceDebug,
       baseFifoCoverageDebug: _baseFifoCoverageDebug,
