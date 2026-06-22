@@ -6556,9 +6556,11 @@ async function buildBasePnlReconstructionPass(
 
   if (!alchemyBaseUrl) return { mergedEvidence: evidenceWithDetection, debug: emptyDebug('no_alchemy_base_url') }
 
-  // Already has swap candidates — no reconstruction needed
-  const existingSwapCount = evidenceWithDetection.filter(e => e.swapDetection?.isSwapCandidate).length
-  if (existingSwapCount > 0) return { mergedEvidence: evidenceWithDetection, debug: emptyDebug('swap_candidates_already_present') }
+  // Already has SELL-side swap candidates — no reconstruction needed. Buy-only candidates
+  // (common when sell proceeds arrive as native ETH/WETH/stable with no priced quote leg yet)
+  // must still go through this pass, since it's the one that decodes WETH/stable inbound legs.
+  const existingSellSwapCount = evidenceWithDetection.filter(e => e.swapDetection?.isSwapCandidate && e.direction === 'sell').length
+  if (existingSellSwapCount > 0) return { mergedEvidence: evidenceWithDetection, debug: emptyDebug('sell_swap_candidates_already_present') }
 
   // Collect candidate tx hashes: inbound-only (airdrop_candidate) transfers,
   // most-recent first, wallet must be tx initiator (txFromAddress = wallet)
@@ -6572,8 +6574,11 @@ async function buildBasePnlReconstructionPass(
     // Include buy (inbound-only) events — these are the native ETH buy candidates
     // Also include sell-only events that might have a hidden stable/native leg
     if (e.direction !== 'buy' && e.direction !== 'sell') continue
-    // Require txFromAddress = wallet OR be permissive for cases where it's not set
-    if (e.txFromAddress && e.txFromAddress.toLowerCase() !== walletLower) continue
+    // Native-ETH-spend buy detection relies on tx.value being attributable to the sender, so it
+    // still requires the wallet to be the tx initiator. Sell legs are already wallet-side evidence
+    // (the Transfer log itself has from === wallet), so router/relayer-initiated swaps (tx.from is
+    // a smart-account/relayer, not the wallet) must still be considered — do not gate those on tx.from.
+    if (e.direction === 'buy' && e.txFromAddress && e.txFromAddress.toLowerCase() !== walletLower) continue
     seen.add(e.txHash)
     candidateTxHashes.push(e.txHash)
     if (candidateTxHashes.length >= 10) break
@@ -6818,8 +6823,12 @@ async function buildBaseUnknownDirectionSwapReconstructionPass(
   })
 
   if (!rpcUrl) return { enrichedEvidence: evidenceWithDetection, debug: emptyDebug('no_rpc_available') }
-  const existingSwapCount = evidenceWithDetection.filter(e => e.swapDetection?.isSwapCandidate).length
-  if (existingSwapCount > 0) return { enrichedEvidence: evidenceWithDetection, debug: emptyDebug('swap_candidates_already_present') }
+  // Only skip when a SELL-side swap candidate already exists. This pass exists specifically to
+  // recover MIXED txs where the buy leg is already classified but a same-tx sell/WETH/stable leg
+  // is still direction=unknown — bailing out just because buys produced candidates would defeat
+  // the whole point of this pass and is exactly why sellEvents stayed at 0 despite buyEvents > 0.
+  const existingSellSwapCount = evidenceWithDetection.filter(e => e.swapDetection?.isSwapCandidate && e.direction === 'sell').length
+  if (existingSellSwapCount > 0) return { enrichedEvidence: evidenceWithDetection, debug: emptyDebug('sell_swap_candidates_already_present') }
 
   // Group raw normalized evidence by txHash so all-unknown multi-leg Base swaps survive
   // even when the main detector's usable-event grouping excludes unknown directions.
@@ -8337,10 +8346,16 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // Run Base recon when: (a) not using ETH Alchemy, OR (b) chainMode includes Base (base_eth/all_supported)
   // so that Base-leg events from multi-chain scans also get receipt-level swap detection.
   const _baseReconChainOk = !useEthAlchemy || chainMode === 'base_eth' || chainMode === 'all_supported'
+  // Re-run when there are no swap candidates at all yet, OR when buys exist but no sell-side
+  // swap candidate has been found yet — the latter is exactly the case where sell proceeds
+  // arrive as native ETH/WETH/stable with no decoded quote leg, leaving sellEvents stuck at 0
+  // even though buyEvents > 0. buildBasePnlReconstructionPass itself re-checks for existing
+  // sell candidates before doing any work, so this is safe to broaden.
+  const _existingSellSwapCandidates = _swapEvidenceWithDetection.filter(e => e.swapDetection?.isSwapCandidate && e.direction === 'sell').length
   const _shouldRunBaseRecon = (
     activityRequested &&
     _baseReconChainOk &&
-    walletSwapSummary.swapCandidateEvents === 0 &&
+    _existingSellSwapCandidates === 0 &&
     walletEvidenceSummary.totalEvents > 0 &&
     Boolean(baseRpcUrl)
   )
@@ -8397,10 +8412,15 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     sampleTxs: [], sampleSyntheticEvents: [], skippedReasons: [],
   }
   const _hasUnknownDirEvents = _swapEvidenceWithDetection.some(e => e.direction === 'unknown')
+  // Same broadening as the Base PnL recon pass above: this pass specifically targets mixed txs
+  // where a buy leg is already classified but a same-tx sell/quote leg is still direction=unknown,
+  // so it must still run even once buys have produced swap candidates — gating on "no sell
+  // candidate yet" instead of "no candidate at all" is what lets sells get recovered.
+  const _existingSellSwapCandidatesForUnknownDir = _swapEvidenceWithDetection.filter(e => e.swapDetection?.isSwapCandidate && e.direction === 'sell').length
   const _shouldRunUnknownDirRecon = (
     activityRequested &&
     _baseReconChainOk &&
-    walletSwapSummary.swapCandidateEvents === 0 &&
+    _existingSellSwapCandidatesForUnknownDir === 0 &&
     _hasUnknownDirEvents &&
     Boolean(baseRpcUrl)
   )
