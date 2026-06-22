@@ -140,4 +140,17 @@ assert.match(identity, /reasons\[i\]\.startsWith\('Trading behavior not classifi
 assert.match(identity, /pnlIntegrityStatus === 'invalid'\s*\n\s*\? \(tradeIntelUnlocked && tradingBehavior/, 'nextAction branches specifically on pnlIntegrityStatus invalid')
 assert.match(identity, /profit skill is not proven because PnL integrity failed\./, 'nextAction cites PnL integrity failed specifically')
 
+
+// Fix 16: public-locked PnL also nulls legacy walletTradeStatsSummary profit fields and keeps
+// raw values only behind explicit raw/debug aliases.
+assert.match(snap, /const _sanitizePublicLockedTradeStats = \(\) => \{/, 'locked public PnL has a legacy trade-stats sanitizer')
+assert.match(snap, /ts\.rawRealizedPnlUsd = ts\.realizedPnlUsd[\s\S]{0,900}ts\.realizedPnlUsd = null/, 'realizedPnlUsd is preserved as raw-only then nulled for public legacy output')
+assert.match(snap, /ts\.rawRealizedPnlPercent = ts\.realizedPnlPercent[\s\S]{0,900}ts\.realizedPnlPercent = null/, 'realizedPnlPercent is preserved as raw-only then nulled for public legacy output')
+assert.match(snap, /ts\.rawWinningClosedLots = ts\.winningClosedLots[\s\S]{0,900}ts\.winningClosedLots = 0/, 'winningClosedLots is preserved as raw-only then public legacy output is zeroed')
+assert.match(snap, /ts\.rawAvgPnlUsdPerClosedLot = ts\.avgPnlUsdPerClosedLot[\s\S]{0,900}ts\.avgPnlUsdPerClosedLot = null/, 'avg PnL per lot is preserved as raw-only then nulled')
+assert.match(snap, /ts\.rawLargestWinUsd = ts\.largestWinUsd[\s\S]{0,900}ts\.largestWinUsd = null/, 'largest win is preserved as raw-only then nulled')
+assert.match(snap, /ts\.meaningfulRealizedPnlUsd = null/, 'meaningfulRealizedPnlUsd is nulled in locked public output')
+assert.match(snap, /ts\.rawDebugOnly = true/, 'raw aliases are marked debug-only')
+assert.match(snap, /_sanitizePublicLockedTradeStats\(\)/, 'legacy trade-stats sanitizer runs after canonical public PnL display')
+
 console.log('wallet PnL integrity gate checks passed')

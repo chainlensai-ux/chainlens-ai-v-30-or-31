@@ -1212,7 +1212,7 @@ export async function POST(req: Request) {
         snapshot.walletHistoricalRecoveryReason = _hadLive ? 'closed_lots_already_found_with_historical_pages' : 'historical_provider_failed_or_no_new_closed_lots'
       } else {
         snapshot.walletHistoricalRecoveryStatus = 'not_attempted'
-        snapshot.walletHistoricalRecoveryReason = 'closed_lots_already_found'
+        snapshot.walletHistoricalRecoveryReason = Number(snapshot.publicPerformanceClosedLots ?? snapshot.walletTradeStatsSummary?.publicPerformanceClosedLots ?? 0) === 0 ? 'raw_closed_lots_found_but_public_grade_zero' : 'closed_lots_already_found'
       }
     }
     _normalizeHistoricalRecoveryLabel(snapshot)
@@ -1387,6 +1387,8 @@ export async function POST(req: Request) {
         coverageLevel: snapshot.walletHistoricalCoverageSummary.coverageLevel ?? 'none',
         reason: snapshot.walletHistoricalRecoveryReason === 'closed_lots_already_found'
           ? 'closed_lots_already_found'
+          : snapshot.walletHistoricalRecoveryReason === 'raw_closed_lots_found_but_public_grade_zero'
+            ? 'raw_closed_lots_found_but_public_grade_zero'
           : snapshot.walletHistoricalRecoveryReason === 'historical_provider_failed_or_no_new_closed_lots'
             ? 'provider page failed'
             : snapshot.walletHistoricalCoverageSummary.reason ?? null,

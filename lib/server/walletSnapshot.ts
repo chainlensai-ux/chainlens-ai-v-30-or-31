@@ -1637,6 +1637,7 @@ export type WalletSnapshot = {
       promotedSellEvents?: number
       rejectedSellEvents?: number
       sampleRejectedCandidates?: Array<{ txHash: string; symbol: string; reason: string }>
+      candidateTxHashes?: string[]
       sellSideReceiptsFetched: number
       sellSideWalletOutboundLegs: number
       sellSideQuoteProceedsLegs: number
@@ -9831,7 +9832,7 @@ async function buildBaseSellSideReconstructionPass(
     sellSideCandidateTxs: 0, candidateCount: 0, sellSideReceiptsFetched: 0, receiptsFetched: 0, sellSideWalletOutboundLegs: 0, walletOutboundLegsFound: 0,
     sellSideQuoteProceedsLegs: 0, inboundQuoteLegsFound: 0, sellSideNativeProceedsDetected: 0, sellSideSyntheticEventsAdded: 0,
     sellSideEventsPromoted: 0, promotedSellEvents: 0, sellSideEventsRejected: 0, rejectedSellEvents: 0, sellSideRejectedBreakdown: {},
-    sampleSellSidePromotions: [], sampleSellSideRejected: [], sampleRejectedCandidates: [], sellSidePromotionSource: 'none',
+    sampleSellSidePromotions: [], sampleSellSideRejected: [], sampleRejectedCandidates: [], candidateTxHashes: [], sellSidePromotionSource: 'none',
   })
 
   if (!rpcUrl) return { enrichedEvidence: evidenceWithDetection, debug: emptyDebug('no_rpc_available') }
@@ -9974,6 +9975,7 @@ async function buildBaseSellSideReconstructionPass(
       reason: syntheticSwapEventsAdded > 0 ? `promoted_${syntheticSwapEventsAdded}_sell_events` : 'candidates_checked_none_promoted',
       sellSideCandidateTxs: candidateTxHashes.length,
       candidateCount: candidateTxHashes.length,
+      candidateTxHashes,
       sellSideReceiptsFetched: receiptsFetched,
       receiptsFetched,
       sellSideWalletOutboundLegs: walletOutboundLegs,
@@ -12041,7 +12043,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     sellSideCandidateTxs: 0, candidateCount: 0, sellSideReceiptsFetched: 0, receiptsFetched: 0, sellSideWalletOutboundLegs: 0, walletOutboundLegsFound: 0,
     sellSideQuoteProceedsLegs: 0, inboundQuoteLegsFound: 0, sellSideNativeProceedsDetected: 0, sellSideSyntheticEventsAdded: 0,
     sellSideEventsPromoted: 0, promotedSellEvents: 0, sellSideEventsRejected: 0, rejectedSellEvents: 0, sellSideRejectedBreakdown: {},
-    sampleSellSidePromotions: [], sampleSellSideRejected: [], sampleRejectedCandidates: [], sellSidePromotionSource: 'none',
+    sampleSellSidePromotions: [], sampleSellSideRejected: [], sampleRejectedCandidates: [], candidateTxHashes: [], sellSidePromotionSource: 'none',
   }
   const _sellSideUnpromotedOutbound = _swapEvidenceWithDetection.some(e =>
     (e.chain ?? '').toLowerCase().includes('base') &&
@@ -12065,8 +12067,10 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     _sellSideReconDebug = sellSideResult.debug
     tokenMeter.measure('swapDetection', sellSideResult)
     for (let _ri = 0; _ri < sellSideResult.debug.sellSideReceiptsFetched; _ri++) {
-      const _rk = `alchemy:sellsiderecon:receipt:${_ri}:${addrNorm}`
+      const _tx = sellSideResult.debug.candidateTxHashes?.[_ri] ?? String(_ri)
+      const _rk = `alchemy:receipt:${_tx}:${addrNorm}`
       if (!_alchemyDedup.has(_rk)) { _alchemyDedup.add(_rk); _trackCall('alchemy', 'eth_getTransactionReceipt', false, _rk) }
+      else _trackCall('alchemy', 'eth_getTransactionReceipt', false, _rk)
     }
     if (sellSideResult.debug.sellSideSyntheticEventsAdded > 0) {
       // This pass mutates swapDetection directly on existing events (same pattern as the
@@ -13054,7 +13058,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _skipReasons: string[] = []
   if (totalValue >= 100 || _adminOverrideUsed) _eligibilityReasons.push('wallet_value_meets_threshold'); else _skipReasons.push('wallet_value_below_100')
   if (deepActivity) _eligibilityReasons.push('deep_scan_requested'); else _skipReasons.push('deep_scan_not_requested')
-  if (walletTradeStatsSummary.closedLots < 10) _eligibilityReasons.push('closed_lots_below_score_threshold'); else _skipReasons.push('closed_lots_already_found')
+  if (walletTradeStatsSummary.closedLots < 10) _eligibilityReasons.push('closed_lots_below_score_threshold'); else _skipReasons.push((walletTradeStatsSummary.publicPerformanceClosedLots ?? 0) === 0 ? 'raw_closed_lots_found_but_public_grade_zero' : 'closed_lots_already_found')
   if ((_lotEngineDebug.unmatchedSells ?? 0) > 0 || (_lotEngineDebug.openedLots ?? 0) > 0 || (walletSwapSummary.swapCandidateEvents ?? 0) > 0) _eligibilityReasons.push('fifo_or_swap_evidence_needs_recovery'); else _skipReasons.push('no_swap_or_lot_evidence')
   if (_targetContracts.size > 0) _eligibilityReasons.push('exact_token_contracts_known'); else _skipReasons.push('no_useful_token_contracts')
   if (_pagesAllowed > 0) _eligibilityReasons.push('scan_budget_has_room'); else _skipReasons.push('budget_remaining_too_low')
@@ -14515,7 +14519,9 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   if (_apiTotalCredits > _totalCreditTarget) _apiWarnings.push(`total_credits_${_apiTotalCredits}_exceeds_target_${_totalCreditTarget}`)
   if (_moralisLiveCount > 3) _apiWarnings.push(`moralis_${_moralisLiveCount}_calls_expected_3`)
   if (_grLiveCount > _grExpectedCalls) _apiWarnings.push(`goldrush_${_grLiveCount}_calls_expected_${_grExpectedCalls}`)
-  if (_alchemyCount > 8) _apiWarnings.push(`alchemy_${_alchemyCount}_calls_expected_8`)
+  const _alchemyExpectedCalls = 8 + (_sellSideReconDebug.sellSideRecoveryAttempted ? Math.min(15, _sellSideReconDebug.sellSideCandidateTxs ?? 0) : 0)
+  if (_alchemyCount > _alchemyExpectedCalls) _apiWarnings.push(`alchemy_${_alchemyCount}_calls_expected_${_alchemyExpectedCalls}`)
+  if (sharedReceiptCacheCounters.sharedReceiptCallsSavedByCache > 0 || sharedReceiptCacheCounters.sharedReceiptCallsSavedByDedupe > 0) _apiWarnings.push(`alchemy_receipt_cache_saved_${sharedReceiptCacheCounters.sharedReceiptCallsSavedByCache + sharedReceiptCacheCounters.sharedReceiptCallsSavedByDedupe}_calls`)
   if (_dupEntries.length > 0) _apiWarnings.push(`${_dupEntries.length}_duplicate_call(s)_detected`)
   // Provider cost breakdown by purpose — distinguishes WHAT the credits were spent on (holdings
   // discovery vs. activity ingestion vs. price-at-time inference vs. historical recovery) rather
@@ -14936,7 +14942,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       if (_performanceClosedLotsFinal.length === 0 && _hasExcludedLots) {
         return { recommended: true, mode: 'targeted_token_recovery', targetTokens, reason: 'high_activity_excluded_lots_no_public_evidence', estimatedExtraPages: Math.min(2, targetTokens.length) }
       }
-      return { recommended: false, mode: historicalAttempted ? 'attempted_light' : 'none', targetTokens, reason: _hasExcludedLots ? 'verified_stats_available_excluded_lots_remain' : 'closed_lots_already_found', estimatedExtraPages: 0 }
+      return { recommended: false, mode: historicalAttempted ? 'attempted_light' : 'none', targetTokens, reason: _performanceClosedLotsFinal.length === 0 ? 'raw_closed_lots_found_but_public_grade_zero' : _hasExcludedLots ? 'verified_stats_available_excluded_lots_remain' : 'closed_lots_already_found', estimatedExtraPages: 0 }
     }
     // RECOVERY-REC-FIX-1: a wallet with synthetic closed lots excluded for missing cost basis,
     // plus known target token contracts, IS a real targeted-recovery candidate — the cost guard
@@ -15614,6 +15620,39 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       }
     }
 
+    const _PUBLIC_PNL_LOCKED_STATUSES = new Set(['flat_estimate_only', 'open_check', 'locked_small_sample', 'limited_verified_sample'])
+    const _sanitizePublicLockedTradeStats = () => {
+      const ts = snapshot.walletTradeStatsSummary as any
+      if (!ts) return
+      const status = (snapshot as any).publicPnlStatus ?? ts.publicPnlStatus
+      const publicLots = Number((snapshot as any).publicPerformanceClosedLots ?? ts.publicPerformanceClosedLots ?? 0)
+      if (publicLots !== 0 && !_PUBLIC_PNL_LOCKED_STATUSES.has(String(status))) return
+      // Public-safe legacy fields must not expose raw profit numbers while the public PnL grade is locked.
+      // Preserve the pre-sanitized values only under explicit raw/debug-only aliases.
+      if (ts.realizedPnlUsd !== undefined) ts.rawRealizedPnlUsd = ts.realizedPnlUsd
+      if (ts.realizedPnlPercent !== undefined) ts.rawRealizedPnlPercent = ts.realizedPnlPercent
+      if (ts.winningClosedLots !== undefined) ts.rawWinningClosedLots = ts.winningClosedLots
+      if (ts.avgPnlUsdPerClosedLot !== undefined) ts.rawAvgPnlUsdPerClosedLot = ts.avgPnlUsdPerClosedLot
+      if (ts.largestWinUsd !== undefined) ts.rawLargestWinUsd = ts.largestWinUsd
+      ts.realizedPnlUsd = null
+      ts.realizedPnlPercent = null
+      ts.winRatePercent = null
+      ts.winningClosedLots = 0
+      ts.losingClosedLots = 0
+      ts.avgPnlUsdPerClosedLot = null
+      ts.avgReturnPercentPerClosedLot = null
+      ts.medianReturnPercentPerClosedLot = null
+      ts.largestWinUsd = null
+      ts.largestLossUsd = null
+      ts.meaningfulRealizedPnlUsd = null
+      ts.publicRealizedPnlUsd = null
+      ts.publicPerformanceRealizedPnlUsd = null
+      ts.publicWinRatePercent = null
+      ts.readyForWalletScore = false
+      ts.scoreUnlocked = false
+      ts.rawDebugOnly = true
+    }
+
     if (_p6GateApplies && _p6HardInvalid) {
       const _reasonText = `PnL integrity check failed: ${_p6IntegrityErrors.join(', ')}.`
       ;(snapshot as any).publicPnlStatus = 'open_check_integrity_invalid'
@@ -15736,6 +15775,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       ;(snapshot.walletTradeStatsSummary as any).pnlIntegrityStatus = _p6Integrity.status
     }
     _applyCanonicalPublicPnlDisplay()
+    _sanitizePublicLockedTradeStats()
 
     snapshot.publicPnlIntegrityGate = {
       applied: _p6GateApplies && (_p6HardInvalid || _p6SoftPartialOnly),
