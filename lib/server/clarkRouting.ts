@@ -1018,6 +1018,11 @@ export type TokenScanEvidence = {
     lockStatus?: string | null;
     burnStatus?: string | null;
     proofStatus?: string | null;
+    rawLpState?: string | null;
+    lpController?: string | null;
+    lpControllerType?: string | null;
+    positionProofStatus?: string | null;
+    positionProofReason?: string | null;
   } | null;
   liquidity?: { pools?: number; topPoolLiquidity?: number | null } | null;
   warnings?: string[];
@@ -1105,10 +1110,31 @@ function isConcentratedLp(lp: TokenScanEvidence["lpControl"]): boolean {
 }
 
 function concentratedLpPrimary(lp: TokenScanEvidence["lpControl"]): string {
-  const label = lp?.poolType || lp?.reason || lp?.displayLpModel || "concentrated liquidity";
+  const label = lp?.poolType || lp?.displayLpModel || lp?.reason || "concentrated liquidity";
   if (/uniswap\s*v4/i.test(label)) return "Uniswap V4 concentrated";
   if (/uniswap\s*v3/i.test(label)) return "Uniswap V3 concentrated";
   return label.replace(/_/g, " ");
+}
+
+function publicSafeEvidenceReason(reason: string | null | undefined): string | null {
+  if (!reason) return null;
+  let out = String(reason)
+    .replace(/not supported by current provider path/gi, "unavailable in this read")
+    .replace(/current provider path/gi, "this read")
+    .replace(/provider path/gi, "this read")
+    .replace(/API path|route path/gi, "read");
+  out = out.replace(/Position proof attempted\s*[—-]\s*unavailable in this read/gi, "Position/controller proof is unavailable in this read");
+  return out;
+}
+
+function concentratedControllerProofStatus(lp: TokenScanEvidence["lpControl"]): { hasProof: boolean; state: string } {
+  const status = String(lp?.positionProofStatus ?? lp?.proofStatus ?? lp?.status ?? "open_check").toLowerCase();
+  const reason = publicSafeEvidenceReason(lp?.positionProofReason ?? lp?.reason) ?? "";
+  const hasController = Boolean(lp?.lpController && /^0x[a-f0-9]{40}$/i.test(lp.lpController));
+  const unavailable = /not_supported|not supported|unavailable|open_check|unverified|required|no controller|not confirmed/i.test(`${status} ${reason}`);
+  if (hasController && !unavailable) return { hasProof: true, state: `${lp?.lpControllerType ?? "controller"} ${lp?.lpController}` };
+  if (!unavailable && status && !["concentrated_liquidity", "open_check", "unverified", "not_applicable"].includes(status)) return { hasProof: true, state: publicSafeEvidenceReason(lp?.positionProofReason ?? lp?.reason) ?? status };
+  return { hasProof: false, state: "Open Check" };
 }
 
 function lpStatusLine(ev: TokenScanEvidence): string {
@@ -1123,7 +1149,11 @@ function lpStatusLine(ev: TokenScanEvidence): string {
   // Concentrated/v3/v4 pools don't mint ERC-20 LP tokens, so the standard lock/burn-proof
   // check genuinely does not apply — this is not the same as "proof should exist but
   // couldn't be confirmed" (that case stays Open Check below).
-  if (concentrated) return `LP proof: Not Applicable — concentrated pool; standard LP-token lock/burn proof does not apply, a position/controller proof may still be needed${reason ? ` (${reason})` : ""}`;
+  if (concentrated) {
+    const proof = concentratedControllerProofStatus(lp);
+    if (proof.hasProof) return `LP proof: Open Check — Concentrated liquidity detected. Controller/position evidence: ${proof.state}.`;
+    return "LP proof: Open Check — Concentrated liquidity detected. Standard LP-token lock/burn proof does not apply. Position/controller proof is still Open Check.";
+  }
   if (status === "locked" || lp.lockStatus === "locked") return `LP proof: Locked/Burned — confirmed by LP proof${reason ? ` (${reason})` : ""}`;
   if (status === "burned" || lp.burnStatus === "burned") return `LP proof: Locked/Burned — confirmed by LP proof${reason ? ` (${reason})` : ""}`;
   if (status === "team_controlled" || status === "wallet_controlled") return `LP proof: Team Controlled — LP tokens appear wallet-controlled${reason ? ` (${reason})` : ""}`;
@@ -1142,6 +1172,7 @@ function verdictLabel(ev: TokenScanEvidence): ClarkVerdict {
   const lp = ev.lpControl;
   if (sec?.honeypot === true) return "Avoid";
   if (sec?.riskLevel === "high") return "Caution";
+  if (isConcentratedLp(lp) && !concentratedControllerProofStatus(lp).hasProof) return "Open Check";
   if (lp?.status === "wallet_controlled" || lp?.status === "team_controlled") return "Caution";
   if (sec?.mintable === true && sec?.ownerRenounced === false) return "Caution";
   // Active (non-renounced) owner is a confirmed risk signal on its own, even without a
@@ -1180,8 +1211,8 @@ export function formatTokenSecurityStatus(sec: NonNullable<TokenScanEvidence["se
   if (sec.buyTax != null || sec.sellTax != null) return "Tax data returned, honeypot simulation unavailable";
   // simulationStatus explains why no honeypot verdict exists — prefer it over
   // the generic securityStatus field.
-  if (sec.simulationStatus === "not_supported") return "Open Check — simulation not supported for this chain yet.";
-  if (sec.simulationStatus === "timeout") return "Open Check — simulation timed out.";
+  if (sec.simulationStatus === "not_supported") return "Open Check — Security simulation unavailable.";
+  if (sec.simulationStatus === "timeout" || sec.simulationStatus === "timed_out") return "Open Check — Simulation timed out.";
   if (sec.simulationStatus === "failed" || sec.simulationStatus === "unavailable") return "Open Check — Security simulation unavailable.";
   const reason = sec.securityStatus && sec.securityStatus !== "unverified" && sec.securityStatus !== "unknown"
     ? sec.securityStatus
@@ -1224,6 +1255,14 @@ export function formatTokenScanResult(ev: TokenScanEvidence, chain = "Base"): st
 
   const { verdict } = tokenScanVerdictMeta(ev, hasUsableTokenEvidence(ev));
   lines.push(`- Verdict: ${verdict}`);
+  if (verdict === "Open Check") {
+    const reasons: string[] = [];
+    if (!sec || sec.honeypot == null) reasons.push("Security simulation unavailable");
+    if (isConcentratedLp(ev.lpControl) && !concentratedControllerProofStatus(ev.lpControl).hasProof) reasons.push("Concentrated LP position/controller proof unavailable");
+    if (h?.top1 != null && h.top1 >= 40) reasons.push(`Major single-wallet dominance: top-1 holder ${h.top1.toFixed(1)}%`);
+    if (h?.top10 != null && h.top10 >= 40) reasons.push(`Elevated holder concentration: top-10 ${h.top10.toFixed(1)}%`);
+    if (reasons.length) lines.push(`- Reasons: ${reasons.join("; ")}`);
+  }
 
   // Filter raw field-name tokens (e.g. "honeypot", "buyTax") out of the warnings dump —
   // only surface real sentences, since those tokens are already covered by the
@@ -1323,7 +1362,9 @@ export function formatTokenSafetyAnswer(ev: TokenScanEvidence, chain = "Base"): 
     risks.push("LP wallet/team controlled — liquidity can be pulled.");
   } else if (lpConcentrated) {
     visible.push("LP: concentrated pool; standard LP-token lock/burn proof does not apply.");
-    risks.push("LP position/control proof: required for concentrated liquidity.");
+    const proof = concentratedControllerProofStatus(lp);
+    if (proof.hasProof) visible.push(`LP controller/position evidence: ${proof.state}.`);
+    else openChecks.push("LP proof is open check — position/controller proof is unavailable in this read.");
   } else if (lp && lp.status && lp.status !== "open_check" && lp.status !== "unverified") {
     visible.push(`${lpStatusLine(ev)}.`);
   } else {
@@ -1517,11 +1558,14 @@ export function formatLpLockCheck(ev: TokenScanEvidence, chain = "Base"): string
   if (isConcentratedLp(lp)) {
     lines.push(`- Primary liquidity: ${concentratedLpPrimary(lp)}`);
     lines.push("- Lock/burn proof: Not Applicable — standard ERC-20 LP-token lock/burn proof does not apply.");
-    lines.push("- Control proof: Position/controller proof required.");
+    {
+      const proof = concentratedControllerProofStatus(lp);
+      lines.push(`- Control proof: ${proof.hasProof ? `Controller/position evidence: ${proof.state}` : "Position/controller proof is still Open Check."}`);
+    }
     lines.push("- Exit risk: Monitor / Watch based on current LP evidence.");
     if (mkt?.liquidity != null) lines.push(`- Liquidity depth: ${fmtUsdShort(mkt.liquidity)}`);
     else lines.push("- Liquidity depth: open check");
-    const hasControllerProof = Boolean(lp?.reason && !/not supported|unavailable|open check|not confirmed/i.test(lp.reason));
+    const hasControllerProof = concentratedControllerProofStatus(lp).hasProof;
     lines.push(`- Confidence: ${hasControllerProof ? (lp?.confidence ?? "partial") : "open_check"}`);
     lines.push("", "CTA: Run LP Check");
     return lines.join("\n");
@@ -1557,7 +1601,7 @@ export function formatRiskExplanation(ev: TokenScanEvidence, chain = "Base"): st
     const label = lp.status === "team_controlled" ? "Team Controlled" : "Wallet Controlled";
     mainSignals.push(`LP control: ${label}${lp.reason ? ` — ${lp.reason}` : ""}`);
   } else if (isConcentratedLp(lp)) {
-    mainSignals.push("LP control: concentrated liquidity — position/controller proof required.");
+    mainSignals.push("LP control: concentrated liquidity — position/controller proof is Open Check.");
   } else if (lp?.status === "open_check" || lp?.status === "unverified") {
     mainSignals.push(`LP control: Open Check${lp.reason ? ` — ${lp.reason}` : ""}`);
   }

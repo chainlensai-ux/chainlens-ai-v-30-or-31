@@ -7648,7 +7648,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   // opts.fullScan is kept as a legacy alias for "use Token Core" (both now mean the same
   // thing: real security/LP/holders/dev evidence, not the market-only fast preview).
   // opts.fastPreview is the only way to request the weak clark_fast market-only path.
-  async function fetchTokenEvidence(tokenAddress: string, opts?: { fullScan?: boolean; fastPreview?: boolean }): Promise<TokenScanEvidence & { _tokenApiStatus?: string; _tokenApiHttpStatus?: number; _tokenScanFailureReason?: string; _tokenScanDebug?: Record<string, unknown>; _partialEvidenceUsed?: boolean; _evidenceSectionsPresent?: string[]; _evidenceSectionsMissing?: Array<{ section: string; reason: string }>; _tokenRouteStatus?: string; _tokenRouteDurationMs?: number; _honeypotStatus?: string; _honeypotDurationMs?: number; _tokenEvidenceMappedKeys?: string[]; _tokenApiMode?: string; _securityPathsFound?: string[]; _honeypotMappedFrom?: string | null; _honeypotValue?: boolean | null; _taxMappedFrom?: string | null; _lpMappedFrom?: string | null; _lpStatus?: string | null; _lpReason?: string | null }> {
+  async function fetchTokenEvidence(tokenAddress: string, opts?: { fullScan?: boolean; fastPreview?: boolean }): Promise<TokenScanEvidence & { _tokenApiStatus?: string; _tokenApiHttpStatus?: number; _tokenScanFailureReason?: string; _tokenScanDebug?: Record<string, unknown>; _partialEvidenceUsed?: boolean; _evidenceSectionsPresent?: string[]; _evidenceSectionsMissing?: Array<{ section: string; reason: string }>; _tokenRouteStatus?: string; _tokenRouteDurationMs?: number; _honeypotStatus?: string; _honeypotDurationMs?: number; _tokenEvidenceMappedKeys?: string[]; _tokenApiMode?: string; _securityPathsFound?: string[]; _honeypotMappedFrom?: string | null; _honeypotValue?: boolean | null; _taxMappedFrom?: string | null; _lpMappedFrom?: string | null; _lpStatus?: string | null; _lpReason?: string | null; _securityMissingReason?: string | null; _securitySourceMappedFromTokenRoute?: boolean; _lpProofApplicability?: string | null; _lpMissingReason?: string | null; _concentratedLpDetected?: boolean; _positionControllerProofStatus?: string | null }> {
 
     // ── Branch 1: /api/token (market, security, LP, holders, dev/contract flags) ──
     const tokenRouteStart = Date.now();
@@ -7753,13 +7753,17 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const hasHolders = tokenApiOk && (typeof hd.top10 === "number" || typeof holdersSection.top10 === "number");
     const hasLp = tokenApiOk && t.lpControl && typeof t.lpControl === "object";
     const hasContractFlags = tokenApiOk && (typeof tDevOwnership.isRenounced === "boolean" || typeof tContractFlags.mint === "boolean");
-    const hasHoneypot = !honeypotFailed && _hp != null;
+    const mappedSecurityHoneypot = typeof tSectSecurity.honeypot === "boolean" ? tSectSecurity.honeypot : (typeof tSecSim.honeypot === "boolean" ? tSecSim.honeypot : (typeof hp.isHoneypot === "boolean" ? hp.isHoneypot : null));
+    const mappedSecurityBuyTax = typeof tSectSecurity.buyTax === "number" ? tSectSecurity.buyTax : (typeof tSecSim.buyTax === "number" ? tSecSim.buyTax : (typeof hp.buyTax === "number" ? hp.buyTax : null));
+    const mappedSecuritySellTax = typeof tSectSecurity.sellTax === "number" ? tSectSecurity.sellTax : (typeof tSecSim.sellTax === "number" ? tSecSim.sellTax : (typeof hp.sellTax === "number" ? hp.sellTax : null));
+    const tokenRouteSecurityMapped = mappedSecurityHoneypot != null || mappedSecurityBuyTax != null || mappedSecuritySellTax != null;
+    const hasHoneypot = (!honeypotFailed && _hp != null) || tokenRouteSecurityMapped;
     const noPoolData = tokenApiOk && !t.priceUsd && !t.liquidityUsd && !t.name;
 
     // Both branches completely failed → total failure
     const totalFailure = tokenRouteFailed && honeypotFailed;
     // Partial = at least one branch has data
-    const partialEvidenceUsed = !totalFailure && (tokenRouteFailed || honeypotFailed || noPoolData);
+    const partialEvidenceUsed = !totalFailure && (tokenRouteFailed || (!hasHoneypot && honeypotFailed) || noPoolData);
 
     // ── Sections present/missing tracking ──
     const sectionsPresent: string[] = [];
@@ -7778,7 +7782,10 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     else sectionsMissing.push({ section: "contract_flags", reason: tokenRouteFailed ? `token route ${tokenRouteStatus}` : "unavailable" });
 
     if (hasHoneypot) sectionsPresent.push("security_sim");
-    else sectionsMissing.push({ section: "security_sim", reason: honeypotFailed ? `honeypot ${honeypotStatus}` : "unavailable" });
+    else {
+      const securityMissingReason = tokenRouteStatus === "auth_failed" ? "auth_failed" : honeypotStatus === "timed_out" ? "security_simulation_timed_out" : honeypotStatus === "failed" ? "security_simulation_failed" : toTokenApiChain(chain) === null ? "unsupported_chain" : "security_simulation_unavailable";
+      sectionsMissing.push({ section: "security_sim", reason: securityMissingReason });
+    }
 
     // ── Build public missing evidence reasons ──
     const missingEvidence: string[] = _hp?.missing ? [..._hp.missing] : [];
@@ -7803,7 +7810,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       missingEvidence.push("Token not found on Base or no active pool data");
     }
 
-    if (honeypotFailed) {
+    if (!hasHoneypot) {
       if (honeypotStatus === "timed_out") missingEvidence.push("Security simulation: timed out / Open Check");
       else if (honeypotStatus === "failed") missingEvidence.push("Security simulation: network error / Open Check");
       else missingEvidence.push("Security simulation: unavailable / Open Check");
@@ -7886,14 +7893,14 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         status: typeof holdersSection.status === "string" ? holdersSection.status : (tokenRouteFailed ? "timed out" : "unavailable"),
       },
       security: {
-        honeypot: _hp?.honeypot ?? (typeof tSectSecurity.honeypot === "boolean" ? tSectSecurity.honeypot : (typeof tSecSim.honeypot === "boolean" ? tSecSim.honeypot : (typeof hp.isHoneypot === "boolean" ? hp.isHoneypot : null))),
-        buyTax: _hp?.buyTax ?? (typeof tSectSecurity.buyTax === "number" ? tSectSecurity.buyTax : (typeof tSecSim.buyTax === "number" ? tSecSim.buyTax : (typeof hp.buyTax === "number" ? hp.buyTax : null))),
-        sellTax: _hp?.sellTax ?? (typeof tSectSecurity.sellTax === "number" ? tSectSecurity.sellTax : (typeof tSecSim.sellTax === "number" ? tSecSim.sellTax : (typeof hp.sellTax === "number" ? hp.sellTax : null))),
+        honeypot: _hp?.honeypot ?? mappedSecurityHoneypot,
+        buyTax: _hp?.buyTax ?? mappedSecurityBuyTax,
+        sellTax: _hp?.sellTax ?? mappedSecuritySellTax,
         ownerRenounced: typeof tDevOwnership.isRenounced === "boolean" ? tDevOwnership.isRenounced : null,
         mintable: typeof tContractFlags.mint === "boolean" ? tContractFlags.mint : null,
         proxy: typeof tContractFlags.proxy === "boolean" ? tContractFlags.proxy : null,
-        securityStatus: _hp?.securityStatus ?? (honeypotFailed ? "timed out" : "unverified"),
-        simulationStatus: _hp?.simulationStatus ?? (honeypotAborted ? "timed_out" : honeypotFailed ? "unavailable" : null),
+        securityStatus: _hp?.securityStatus ?? (tokenRouteSecurityMapped ? "mapped_from_token_route" : (honeypotFailed ? "Security simulation unavailable" : "unverified")),
+        simulationStatus: _hp?.simulationStatus ?? (honeypotAborted ? "timeout" : (!hasHoneypot && honeypotFailed ? "unavailable" : null)),
         riskLevel: _hp?.riskLevel ?? "unknown",
         missing: missingEvidence,
       },
@@ -7907,6 +7914,11 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         lockStatus: typeof (t.lpControl as Record<string, unknown>).lockStatus === "string" ? String((t.lpControl as Record<string, unknown>).lockStatus) : null,
         burnStatus: typeof (t.lpControl as Record<string, unknown>).burnStatus === "string" ? String((t.lpControl as Record<string, unknown>).burnStatus) : null,
         proofStatus: typeof (t.lpControl as Record<string, unknown>).proofStatus === "string" ? String((t.lpControl as Record<string, unknown>).proofStatus) : null,
+        rawLpState: typeof (t.lpControl as Record<string, unknown>).rawLpState === "string" ? String((t.lpControl as Record<string, unknown>).rawLpState) : null,
+        lpController: typeof (t.lpControl as Record<string, unknown>).lpController === "string" ? String((t.lpControl as Record<string, unknown>).lpController) : null,
+        lpControllerType: typeof (t.lpControl as Record<string, unknown>).lpControllerType === "string" ? String((t.lpControl as Record<string, unknown>).lpControllerType) : null,
+        positionProofStatus: typeof (t.lpControl as Record<string, unknown>).positionProofStatus === "string" ? String((t.lpControl as Record<string, unknown>).positionProofStatus) : null,
+        positionProofReason: typeof (t.lpControl as Record<string, unknown>).positionProofReason === "string" ? String((t.lpControl as Record<string, unknown>).positionProofReason) : null,
       } : null,
       liquidity: { pools: Array.isArray(t.pools) ? (t.pools as unknown[]).length : 0 },
       warnings: missingEvidence,
@@ -7934,12 +7946,18 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         : typeof tSecSim.honeypot === "boolean" ? "security.simulation.honeypot"
         : typeof hp.isHoneypot === "boolean" ? "honeypot.isHoneypot"
         : null,
-      _honeypotValue: _hp?.honeypot ?? (typeof tSectSecurity.honeypot === "boolean" ? tSectSecurity.honeypot : (typeof tSecSim.honeypot === "boolean" ? tSecSim.honeypot : (typeof hp.isHoneypot === "boolean" ? hp.isHoneypot : null))),
+      _honeypotValue: _hp?.honeypot ?? mappedSecurityHoneypot,
       _taxMappedFrom: _hp?.buyTax != null || _hp?.sellTax != null ? "clark_independent_honeypot_check"
         : typeof tSectSecurity.buyTax === "number" ? "sections.security.buyTax/sellTax"
         : typeof tSecSim.buyTax === "number" ? "security.simulation.buyTax/sellTax"
         : typeof hp.buyTax === "number" ? "honeypot.buyTax/sellTax"
         : null,
+      _securitySourceMappedFromTokenRoute: tokenRouteSecurityMapped && _hp?.honeypot == null,
+      _securityMissingReason: sectionsMissing.find(s => s.section === "security_sim")?.reason ?? null,
+      _lpProofApplicability: (t.lpControl && typeof t.lpControl === "object") ? String((t.lpControl as Record<string, unknown>).proofApplicability ?? t.lpProofApplicability ?? "unknown") : (typeof t.lpProofApplicability === "string" ? String(t.lpProofApplicability) : null),
+      _lpMissingReason: sectionsMissing.find(s => s.section === "lp")?.reason ?? null,
+      _concentratedLpDetected: (t.lpControl && typeof t.lpControl === "object") ? /concentrated|not_applicable|clmm|v3|v4/i.test(JSON.stringify(t.lpControl)) : false,
+      _positionControllerProofStatus: (t.lpControl && typeof t.lpControl === "object") ? String((t.lpControl as Record<string, unknown>).positionProofStatus ?? (t.lpControl as Record<string, unknown>).proofStatus ?? "unknown") : null,
       _lpMappedFrom: (t.lpControl && typeof t.lpControl === "object") ? "lpControl" : null,
       _lpStatus: (t.lpControl && typeof t.lpControl === "object") ? String((t.lpControl as Record<string, unknown>).status ?? "unverified") : null,
       _lpReason: (t.lpControl && typeof t.lpControl === "object" && typeof (t.lpControl as Record<string, unknown>).reason === "string") ? String((t.lpControl as Record<string, unknown>).reason) : null,
@@ -7965,9 +7983,14 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const hasDev = sectionsPresent.includes("contract_flags");
     const routeStatus = (ev as Record<string, unknown>)._tokenRouteStatus;
     const hpStatus = (ev as Record<string, unknown>)._honeypotStatus;
+    const lp = ev.lpControl;
+    const lpText = JSON.stringify(lp ?? {}).toLowerCase();
+    const concentratedMissingController = /concentrated|not_applicable|clmm|v3|v4/.test(lpText) && !(/0x[a-f0-9]{40}/i.test(String(lp?.lpController ?? "")) && !/unavailable|not_supported|open_check|unverified|required|not confirmed/i.test(String(lp?.positionProofStatus ?? lp?.positionProofReason ?? lp?.reason ?? "")));
+    const coreMissing = sectionsMissing.some(s => ["lp", "security_sim", "holders"].includes(s.section)) || concentratedMissingController;
     if (!usableEvidence) return routeStatus === "auth_failed" || routeStatus === "timed_out" || hpStatus === "timed_out" ? "failed" : "open_check";
+    if (coreMissing) return "open_check";
     if (hasMarket && hasLp && hasHolders && hasSecurity && hasDev && sectionsMissing.length === 0) return "high";
-    if (hasMarket && (hasLp || hasSecurity)) return "medium";
+    if (hasMarket && (hasLp || hasSecurity || hasDev) && !coreMissing) return "medium";
     if (hasMarket) return "low";
     return "open_check";
   }
@@ -7994,6 +8017,13 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       if (n >= 1_000) return `$${(n / 1_000).toFixed(1)}K`;
       return `$${n.toFixed(2)}`;
     };
+    const publicReason = (reason: string | null | undefined): string => {
+      const raw = String(reason ?? "Evidence unavailable.");
+      if (/security_simulation_timed_out|timed_out/i.test(raw)) return "Simulation timed out.";
+      if (/security_simulation_unavailable|honeypot unavailable|unavailable/i.test(raw) && /security|honeypot/i.test(raw)) return "Security simulation unavailable.";
+      if (/auth_failed|unauthor/i.test(raw)) return "Evidence unavailable.";
+      return raw.replace(/not supported by current provider path/gi, "Position/controller proof is unavailable in this read.").replace(/current provider path|provider path|provider|API path|route path/gi, "read");
+    };
     const sectionsPresent = (evDebugRaw._evidenceSectionsPresent as string[] | undefined) ?? [];
     const sectionsMissing = (evDebugRaw._evidenceSectionsMissing as Array<{ section: string; reason: string }> | undefined) ?? [];
     const partial = Boolean(evDebugRaw._partialEvidenceUsed) || sectionsMissing.length > 0;
@@ -8003,24 +8033,33 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const sec = ev.security;
     const lp = ev.lpControl;
     const missing = missingNames(sectionsMissing);
-    const missingSentence = missing.length ? `Open Check because ${missing.join(" and ")} ${missing.length === 1 ? "was" : "were"} unavailable.` : null;
+    const lpText = JSON.stringify(lp ?? {}).toLowerCase();
+    const concentrated = /concentrated|not_applicable|clmm|v3|v4/.test(lpText);
+    const hasControllerProof = concentrated && /0x[a-f0-9]{40}/i.test(String((lp as any)?.lpController ?? "")) && !/unavailable|not_supported|open_check|unverified|required|not confirmed/i.test(String((lp as any)?.positionProofStatus ?? (lp as any)?.positionProofReason ?? lp?.reason ?? ""));
+    const openReasons: string[] = [];
+    if (sectionsMissing.some(s => s.section === "security_sim") || sec?.honeypot == null) openReasons.push("Security simulation unavailable");
+    if (concentrated && !hasControllerProof) openReasons.push("Concentrated LP position/controller proof unavailable");
+    if (h?.top1 != null && h.top1 >= 40) openReasons.push(`Major single-wallet dominance: top-1 holder ${h.top1.toFixed(1)}%`);
+    if (h?.top10 != null && h.top10 >= 40) openReasons.push(`Elevated holder concentration: top-10 ${h.top10.toFixed(1)}%`);
     const hasRisk = sec?.honeypot === true || sec?.mintable === true || sec?.ownerRenounced === false || lp?.status === "wallet_controlled" || lp?.status === "team_controlled" || (h?.top10 != null && h.top10 > 80);
-    const verdict = sec?.honeypot === true ? "Avoid — honeypot detected." : missing.length > 0 || confidence === "open_check" || confidence === "failed" ? `Open Check.${missingSentence ? ` ${missingSentence}` : " Not enough evidence to conclude."}` : hasRisk ? "High Risk — available evidence shows risk signals." : confidence === "high" ? "Evidence shows no confirmed core red flags; verify before trading." : "Available evidence suggests no confirmed core red flags; verify missing checks before trading.";
+    const verdict = sec?.honeypot === true ? "Avoid — honeypot detected." : openReasons.length > 0 || missing.length > 0 || confidence === "open_check" || confidence === "failed" ? `Open Check. Reasons: ${openReasons.length ? openReasons.join("; ") : "Evidence unavailable."}` : hasRisk ? "High Risk — available evidence shows risk signals." : confidence === "high" ? "Evidence shows no confirmed core red flags; verify before trading." : "Available evidence suggests no confirmed core red flags; verify missing checks before trading.";
     const marketLine = sectionsPresent.includes("market") && (mkt?.price != null || mkt?.liquidity != null || mkt?.volume24h != null)
       ? `loaded${mkt?.liquidity != null ? ` — liquidity ${pFmtUsd(mkt.liquidity)}` : ""}${mkt?.volume24h != null ? `, volume ${pFmtUsd(mkt.volume24h)}` : ""}`
-      : `unavailable — ${sectionsMissing.find(s => s.section === "market")?.reason ?? "market missing"}`;
-    const lpLine = sectionsPresent.includes("lp") && lp?.status
-      ? `${lp.status}${lp.reason ? ` — ${lp.reason}` : ""}`
-      : `unavailable — ${sectionsMissing.find(s => s.section === "lp")?.reason ?? "LP proof unavailable"}`;
+      : `unavailable — ${publicReason(sectionsMissing.find(s => s.section === "market")?.reason ?? "Evidence unavailable.")}`;
+    const lpLine = concentrated
+      ? (hasControllerProof ? `Concentrated liquidity detected. Controller/position evidence: ${publicReason((lp as any)?.positionProofReason ?? lp?.reason ?? lp?.status)}.` : "Concentrated liquidity detected. Standard LP-token lock/burn proof does not apply. Position/controller proof is still Open Check.")
+      : sectionsPresent.includes("lp") && lp?.status
+      ? `${lp.status}${lp.reason ? ` — ${publicReason(lp.reason)}` : ""}`
+      : `LP proof is open check — ${publicReason(sectionsMissing.find(s => s.section === "lp")?.reason ?? "Evidence unavailable.")}`;
     const holdersLine = sectionsPresent.includes("holders") && h?.top10 != null
       ? `loaded — top-10 ${h.top10.toFixed(1)}%${h.holderCount != null ? `, holders ${h.holderCount}` : ""}`
-      : `unavailable — ${sectionsMissing.find(s => s.section === "holders")?.reason ?? "holders unavailable"}`;
+      : `unavailable — ${publicReason(sectionsMissing.find(s => s.section === "holders")?.reason ?? "Evidence unavailable.")}`;
     const devLine = sectionsPresent.includes("contract_flags")
       ? `loaded — ownership ${sec?.ownerRenounced === true ? "renounced" : sec?.ownerRenounced === false ? "active" : "open check"}${sec?.mintable != null ? `, mintable ${sec.mintable ? "yes" : "no"}` : ""}`
-      : `unavailable — ${sectionsMissing.find(s => s.section === "contract_flags")?.reason ?? "dev control unavailable"}`;
+      : `unavailable — ${publicReason(sectionsMissing.find(s => s.section === "contract_flags")?.reason ?? "Evidence unavailable.")}`;
     const securityLine = sectionsPresent.includes("security_sim") && (sec?.honeypot != null || sec?.buyTax != null || sec?.sellTax != null)
       ? `loaded — ${sec?.honeypot === true ? "honeypot flagged" : sec?.honeypot === false ? "no honeypot signal" : "simulation available"}${sec?.buyTax != null ? `, buy tax ${sec.buyTax.toFixed(1)}%, sell tax ${sec.sellTax?.toFixed(1) ?? "open"}%` : ""}`
-      : `unavailable — ${sectionsMissing.find(s => s.section === "security_sim")?.reason ?? "security simulation timed out"}`;
+      : `unavailable — ${publicReason(sectionsMissing.find(s => s.section === "security_sim")?.reason ?? "Security simulation unavailable.")}`;
 
     return [
       `TOKEN READ — ${title}`,
@@ -8032,7 +8071,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       `Holders: ${holdersLine}.`,
       `Dev control: ${devLine}.`,
       `Security: ${securityLine}.`,
-      `Missing evidence: ${missing.length ? sectionsMissing.map(s => `${s.section} (${s.reason})`).join("; ") : "none flagged"}.`,
+      `Missing evidence: ${missing.length ? sectionsMissing.map(s => `${s.section} (${publicReason(s.reason)})`).join("; ") : "none flagged"}.`,
       `Next action: ${missing.length ? "Open Token Scanner or run LP Check." : "Use Token Scanner / LP Check before making any trade decision."}`,
     ].join("\n");
   }
@@ -8227,6 +8266,16 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       honeypotAttempted: true,
       honeypotStatus: evDebug._honeypotStatus ?? null,
       honeypotDurationMs: evDebug._honeypotDurationMs ?? null,
+      securityAttempted: true,
+      securityStatus: evDebug._honeypotStatus ?? null,
+      securityDurationMs: evDebug._honeypotDurationMs ?? null,
+      securitySourceMappedFromTokenRoute: evDebug._securitySourceMappedFromTokenRoute ?? false,
+      securityMissingReason: evDebug._securityMissingReason ?? null,
+      lpAttempted: true,
+      lpProofApplicability: evDebug._lpProofApplicability ?? null,
+      lpMissingReason: evDebug._lpMissingReason ?? null,
+      concentratedLpDetected: evDebug._concentratedLpDetected ?? false,
+      positionControllerProofStatus: evDebug._positionControllerProofStatus ?? null,
       partialEvidenceUsed,
       memoryUpdated: true,
       walletScanAttempted: false,
