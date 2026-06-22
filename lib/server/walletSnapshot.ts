@@ -1533,12 +1533,19 @@ export type WalletSnapshot = {
     // tx receipt before being promoted into swap-candidate evidence.
     acquisitionRecoveryDebug?: {
       acquisitionRecoveryAttempted: boolean
+      acquisitionRecoveryEligible?: boolean
       acquisitionRecoveryReason: string
       acquisitionTargetTokens: Array<{ contract: string; symbol: string; chain: string; estimatedUsd: number }>
       acquisitionPagesUsed: number
       acquisitionEventsFetched: number
       acquisitionInboundTransfersFound: number
+      acquisitionRecoveryInboundFound?: number
       acquisitionCandidateTxs: Array<{ txHash: string; tokenContract: string; amount: number; timestamp: string | null; fromAddress: string | null }>
+      acquisitionRecoveryOutboundFound?: number
+      acquisitionRecoveryEventsAddedToFifo?: number
+      acquisitionRecoveryOpenedLotsAfter?: number
+      acquisitionRecoveryClosedLotsAfter?: number
+      acquisitionRecoverySkippedReason?: string | null
       acquisitionStopReason: string | null
       acquisitionReceiptsChecked: number
       acquisitionQuoteLegVerified: number
@@ -1604,6 +1611,13 @@ export type WalletSnapshot = {
       wethLegsFound: number
       stableLegsFound: number
       syntheticSwapEventsAdded: number
+      nativeEthSpendDetected?: boolean
+      nativeEthSpendUsd?: number | null
+      nativeEthSpendSource?: string | null
+      nativeEthBuyPromoted?: boolean
+      nativeEthBuyRejectedReason?: string | null
+      noWalletOutboundLegButNativeSpendCount?: number
+      sampleNativeEthBuyPromotions?: Array<{ txHash: string; symbol: string; nativeEthAmount: number; source: string }>
       sampleTxs: Array<{ txHash: string; swapReason: string; walletInbound: number; walletOutbound: number; wethAnywhere: boolean; stableAnywhere: boolean; txFromIsWallet: boolean }>
       sampleSyntheticEvents: Array<{ txHash: string; symbol: string; direction: string }>
       skippedReasons: string[]
@@ -2690,8 +2704,8 @@ async function enrichSwapCandidatesFromReceipts(
 type AcquisitionRecoveryDebug = NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['acquisitionRecoveryDebug']>
 
 const ACQ_DUST_HOLDING_USD = 5
-const ACQ_MAX_PAGES_PER_TOKEN = 2
-const ACQ_MAX_TOTAL_PAGES = 6
+const ACQ_MAX_PAGES_PER_TOKEN = 3
+const ACQ_MAX_TOTAL_PAGES = 8
 const ACQ_MAX_RECEIPT_CHECKS = 15
 
 async function runAcquisitionHistoryRecovery(
@@ -2704,12 +2718,19 @@ async function runAcquisitionHistoryRecovery(
   const walletLower = walletAddress.toLowerCase()
   const emptyDebug = (reason: string): AcquisitionRecoveryDebug => ({
     acquisitionRecoveryAttempted: false,
+    acquisitionRecoveryEligible: false,
     acquisitionRecoveryReason: reason,
     acquisitionTargetTokens: targetTokens,
     acquisitionPagesUsed: 0,
     acquisitionEventsFetched: 0,
     acquisitionInboundTransfersFound: 0,
+    acquisitionRecoveryInboundFound: 0,
     acquisitionCandidateTxs: [],
+    acquisitionRecoveryOutboundFound: 0,
+    acquisitionRecoveryEventsAddedToFifo: 0,
+    acquisitionRecoveryOpenedLotsAfter: 0,
+    acquisitionRecoveryClosedLotsAfter: 0,
+    acquisitionRecoverySkippedReason: reason,
     acquisitionStopReason: null,
     acquisitionReceiptsChecked: 0,
     acquisitionQuoteLegVerified: 0,
@@ -2724,6 +2745,7 @@ async function runAcquisitionHistoryRecovery(
   let pagesUsed = 0
   let eventsFetched = 0
   const inboundTransfers: Array<{ txHash: string; tokenContract: string; symbol: string; chain: string; amount: number; timestamp: string | null; fromAddress: string | null }> = []
+  let outboundTransfersFound = 0
   let stopReason: string | null = null
 
   outerAcq: for (const target of targetTokens) {
@@ -2747,6 +2769,7 @@ async function runAcquisitionHistoryRecovery(
       if (!page.usable) { stopReason = page.reason || 'fetch_failed'; break }
       for (const item of page.items) {
         if ((item.token_address ?? '').toLowerCase() !== target.contract) continue
+        if ((item.from_address ?? '').toLowerCase() === walletLower) outboundTransfersFound++
         if ((item.to_address ?? '').toLowerCase() !== walletLower) continue
         if (!item.transaction_hash) continue
         const decimals = Number.parseInt(item.token_decimals ?? '18', 10)
@@ -2779,6 +2802,8 @@ async function runAcquisitionHistoryRecovery(
         acquisitionRecoveryAttempted: true,
         acquisitionPagesUsed: pagesUsed,
         acquisitionEventsFetched: eventsFetched,
+        acquisitionRecoveryOutboundFound: outboundTransfersFound,
+        acquisitionRecoverySkippedReason: 'no_inbound_transfers_found',
         acquisitionStopReason: stopReason,
       },
     }
@@ -2799,6 +2824,7 @@ async function runAcquisitionHistoryRecovery(
     const rpcUrl = rpcUrlForChain(cand.chain)
     if (!rpcUrl) { noQuoteLegCount++; continue }
     let receipt: any
+    let nativeValue: string | null = null
     try {
       receipt = await getSharedTxReceipt(rpcUrl, cand.txHash)
       receiptsChecked++
@@ -2825,8 +2851,13 @@ async function runAcquisitionHistoryRecovery(
     }
     // Native ETH payment leg: tx itself carries value and the wallet is the sender.
     const txFrom = ((receipt.from as string) ?? '').toLowerCase()
-    const nativeValue = receipt.effectiveGasPrice || receipt.value ? receipt.value : null
-    if (!hasQuoteLeg && txFrom === walletLower && typeof nativeValue === 'string' && nativeValue !== '0x0' && nativeValue !== '0x') hasQuoteLeg = true
+    if (!hasQuoteLeg && txFrom === walletLower) {
+      try {
+        const txData = await getSharedTxByHash(rpcUrl, cand.txHash)
+        nativeValue = txData && typeof txData.value === 'string' ? txData.value : null
+      } catch { nativeValue = null }
+    }
+    if (!hasQuoteLeg && txFrom === walletLower && typeof nativeValue === 'string' && nativeValue !== '0x0' && nativeValue !== '0x' && hexAmountToDecimal(nativeValue, 18) > 0) hasQuoteLeg = true
 
     if (hasQuoteLeg) quoteLegVerified++
     // Require: wallet-side target-token leg, a real quote/payment leg, and more than one leg in
@@ -2866,12 +2897,19 @@ async function runAcquisitionHistoryRecovery(
     newEvidence,
     debug: {
       acquisitionRecoveryAttempted: true,
+      acquisitionRecoveryEligible: true,
       acquisitionRecoveryReason: newEvidence.length > 0 ? 'acquisition_history_recovery_for_top_holdings' : 'acquisition_no_quote_leg',
       acquisitionTargetTokens: targetTokens,
       acquisitionPagesUsed: pagesUsed,
       acquisitionEventsFetched: eventsFetched,
       acquisitionInboundTransfersFound: inboundTransfers.length,
+      acquisitionRecoveryInboundFound: inboundTransfers.length,
       acquisitionCandidateTxs: toCheck.map(c => ({ txHash: c.txHash, tokenContract: c.tokenContract, amount: c.amount, timestamp: c.timestamp, fromAddress: c.fromAddress })),
+      acquisitionRecoveryOutboundFound: outboundTransfersFound,
+      acquisitionRecoveryEventsAddedToFifo: newEvidence.length,
+      acquisitionRecoveryOpenedLotsAfter: newEvidence.length,
+      acquisitionRecoveryClosedLotsAfter: 0,
+      acquisitionRecoverySkippedReason: newEvidence.length > 0 ? null : 'no_inbound_target_token_found_after_capped_recovery_or_no_quote_leg',
       acquisitionStopReason: stopReason,
       acquisitionReceiptsChecked: receiptsChecked,
       acquisitionQuoteLegVerified: quoteLegVerified,
@@ -9769,7 +9807,7 @@ async function buildBaseUnknownDirectionSwapReconstructionPass(
   const emptyDebug = (reason: string, attempted = false, triggerMatched = false): NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['baseUnknownSwapReconstructionDebug']> => ({
     attempted, reason, triggerMatched, ...baseDebugProof(), candidateTxsChecked: 0, candidateTxHashes: [], mixedKnownUnknownTxs: 0,
     receiptsFetched: 0, decodedTransferLogs: 0, walletSideLegsFound: 0, quoteLegsFound: 0, tokenLegsFound: 0,
-    wethLegsFound: 0, stableLegsFound: 0, syntheticSwapEventsAdded: 0, sampleTxs: [], sampleSyntheticEvents: [], skippedReasons: [],
+    wethLegsFound: 0, stableLegsFound: 0, syntheticSwapEventsAdded: 0, nativeEthSpendDetected: false, nativeEthSpendUsd: null, nativeEthSpendSource: null, nativeEthBuyPromoted: false, nativeEthBuyRejectedReason: null, noWalletOutboundLegButNativeSpendCount: 0, sampleNativeEthBuyPromotions: [], sampleTxs: [], sampleSyntheticEvents: [], skippedReasons: [],
   })
 
   if (!rpcUrl) return { enrichedEvidence: evidenceWithDetection, debug: emptyDebug('no_rpc_available') }
@@ -9847,6 +9885,15 @@ async function buildBaseUnknownDirectionSwapReconstructionPass(
   let wethLegsFound = 0
   let stableLegsFound = 0
   const skippedReasons: string[] = []
+  const txNativeValues = new Map<string, string>()
+  let transactionsFetched = 0
+  let nativeEthSpendDetected = false
+  let nativeEthSpendUsd: number | null = null
+  let nativeEthSpendSource: string | null = null
+  let nativeEthBuyPromoted = false
+  let nativeEthBuyRejectedReason: string | null = null
+  let noWalletOutboundLegButNativeSpendCount = 0
+  const sampleNativeEthBuyPromotions: Array<{ txHash: string; symbol: string; nativeEthAmount: number; source: string }> = []
 
   // Extended decode: also track WETH/stable presence ANYWHERE in receipt (pool-internal flows)
   type ExtendedDecode = BasePnlReceiptDecode & { hasWethAnywhere: boolean; hasStableAnywhere: boolean }
@@ -9934,6 +9981,28 @@ async function buildBaseUnknownDirectionSwapReconstructionPass(
                     + base.walletOutbound.filter(o => !STABLE_USD_CONTRACTS[o.contract] && !WETH_CONTRACTS_PRICE[o.contract]).length
   }))
 
+  await Promise.allSettled(toFetch.map(async (txHash) => {
+    const d = txDecodes.get(txHash)
+    if (!d || d.decodeStatus !== 'ok') return
+    const hasInboundToken = d.walletInbound.some(i => !STABLE_USD_CONTRACTS[i.contract] && !WETH_CONTRACTS_PRICE[i.contract])
+    if (d.txFrom !== walletLower || !hasInboundToken || d.walletOutbound.length > 0) return
+    const txCacheKey = `base_recon_tx:${txHash}`
+    const txCached = basePnlTxCache.get(txCacheKey)
+    if (txCached && txCached.exp > now) {
+      if (txCached.value && txCached.value !== '0x0' && txCached.value !== '0x' && hexAmountToDecimal(txCached.value, 18) > 0) txNativeValues.set(txHash, txCached.value)
+      return
+    }
+    try {
+      const txData = await getSharedTxByHash(rpcUrl, txHash)
+      transactionsFetched++
+      const val = txData && typeof txData.value === 'string' ? txData.value : '0x0'
+      basePnlTxCache.set(txCacheKey, { value: val, exp: now + BASE_PNL_RECON_TTL_MS })
+      if (val && val !== '0x0' && val !== '0x' && hexAmountToDecimal(val, 18) > 0) txNativeValues.set(txHash, val)
+    } catch {
+      skippedReasons.push(`tx_value_fetch_error:${txHash.slice(0, 10)}`)
+    }
+  }))
+
   // Classify each tx as swap or not
   const swapTxHashes = new Set<string>()
   const swapReasons = new Map<string, string>()
@@ -9956,6 +10025,9 @@ async function buildBaseUnknownDirectionSwapReconstructionPass(
     const receiptContracts = new Set(d.allTransferContracts ?? [])
     const receiptHasQuote = [...receiptContracts].some(c => Boolean(STABLE_USD_CONTRACTS[c] || WETH_CONTRACTS_PRICE[c])) || d.hasWethAnywhere || d.hasStableAnywhere
     const receiptHasRawNonQuote = [...rawContracts].some(c => receiptContracts.has(c) && !STABLE_USD_CONTRACTS[c] && !WETH_CONTRACTS_PRICE[c])
+    const nativeValueHex = txNativeValues.get(txHash)
+    const hasNativeEthSpend = Boolean(nativeValueHex && hexAmountToDecimal(nativeValueHex, 18) > 0)
+    if (hasNativeEthSpend) { nativeEthSpendDetected = true; nativeEthSpendSource = 'native_tx_value'; noWalletOutboundLegButNativeSpendCount += d.walletOutbound.length === 0 ? 1 : 0 }
     const hasMixedKnownToken = txEvents.some(e => (e.direction === 'buy' || e.direction === 'sell') && !STABLE_USD_CONTRACTS[(e.contract ?? '').toLowerCase()] && !WETH_CONTRACTS_PRICE[(e.contract ?? '').toLowerCase()])
 
     let swapReason: string | null = null
@@ -9965,10 +10037,13 @@ async function buildBaseUnknownDirectionSwapReconstructionPass(
       swapReason = 'token_in_stable_weth_out'
     } else if (hasOutboundToken && hasInboundStableOrWeth) {
       swapReason = 'token_out_stable_weth_in'
-    } else if (hasInboundToken && (txFromIsWallet || hasMixedKnownToken) && d.walletOutbound.length === 0 && (d.hasWethAnywhere || d.hasStableAnywhere)) {
-      // Token received, no ERC20 outbound from wallet, WETH/stable moved in tx (native ETH buy via DEX/aggregator)
-      // Also fires when provider confirmed a buy event (hasMixedKnownToken) even if tx.from is relayer
-      swapReason = txFromIsWallet ? 'native_eth_buy' : 'aggregator_eth_buy_weth_in_receipt'
+    } else if (hasInboundToken && txFromIsWallet && d.walletOutbound.length === 0 && (hasNativeEthSpend || d.hasWethAnywhere || d.hasStableAnywhere || rawHasQuote || receiptHasQuote)) {
+      // Native ETH buy: tx.from is wallet, target token is inbound, and native tx.value or
+      // quote/router context proves a payment even though ERC-20 Transfer has no wallet outbound.
+      swapReason = 'native_eth_buy'
+    } else if (hasInboundToken && hasMixedKnownToken && d.walletOutbound.length === 0 && (d.hasWethAnywhere || d.hasStableAnywhere)) {
+      // Token received, no ERC20 outbound from wallet, WETH/stable moved in tx (aggregator/relayer)
+      swapReason = 'aggregator_eth_buy_weth_in_receipt'
     } else if (hasInboundToken && hasMixedKnownToken && d.walletOutbound.length === 0) {
       // Provider confirmed token buy in this tx even if no WETH/stable in wallet-side logs
       swapReason = 'provider_confirmed_buy_no_erc20_outbound'
@@ -9990,7 +10065,7 @@ async function buildBaseUnknownDirectionSwapReconstructionPass(
       // Mixed tx: provider-confirmed token event + WETH/stable somewhere in receipt
       swapReason = 'mixed_provider_token_weth_in_receipt'
     } else {
-      const detail = `inT:${hasInboundToken} outT:${hasOutboundToken} inQ:${hasInboundStableOrWeth} outQ:${hasOutboundStableOrWeth} txFrom:${txFromIsWallet} mixed:${hasMixedKnownToken} rawQ:${rawHasQuote} rawT:${rawHasNonQuote} receiptQ:${receiptHasQuote} receiptRawT:${receiptHasRawNonQuote} wethAny:${d.hasWethAnywhere}`
+      const detail = `inT:${hasInboundToken} outT:${hasOutboundToken} inQ:${hasInboundStableOrWeth} outQ:${hasOutboundStableOrWeth} txFrom:${txFromIsWallet} mixed:${hasMixedKnownToken} rawQ:${rawHasQuote} rawT:${rawHasNonQuote} receiptQ:${receiptHasQuote} receiptRawT:${receiptHasRawNonQuote} wethAny:${d.hasWethAnywhere} native:${hasNativeEthSpend}`
       skippedReasons.push(`no_swap_pattern(${txHash}):${detail}`)
     }
 
@@ -10005,7 +10080,7 @@ async function buildBaseUnknownDirectionSwapReconstructionPass(
         ...emptyDebug('no_swap_txs_found', true, true),
         candidateTxsChecked: toFetch.length, candidateTxHashes: toFetch, includesProblemTx: toFetch.includes(BASE_UNKNOWN_RECON_PROBLEM_TX), mixedKnownUnknownTxs,
         receiptsFetched, decodedTransferLogs: totalTransferLogs, walletSideLegsFound, quoteLegsFound, tokenLegsFound,
-        wethLegsFound, stableLegsFound, sampleTxs, skippedReasons: skippedReasons.slice(0, 15),
+        wethLegsFound, stableLegsFound, nativeEthSpendDetected, nativeEthSpendUsd, nativeEthSpendSource, nativeEthBuyPromoted, nativeEthBuyRejectedReason, noWalletOutboundLegButNativeSpendCount, sampleNativeEthBuyPromotions, sampleTxs, skippedReasons: skippedReasons.slice(0, 15),
       },
     }
   }
@@ -10015,8 +10090,29 @@ async function buildBaseUnknownDirectionSwapReconstructionPass(
   // - known buy/sell: mark as swap candidate (they're in a confirmed swap tx)
   let syntheticSwapEventsAdded = 0
   const sampleSyntheticEvents: Array<{ txHash: string; symbol: string; direction: string }> = []
+  const syntheticNativeEthLegs: WalletTxEvidence[] = []
 
-  const enrichedEvidence: WalletTxEvidence[] = evidenceWithDetection.map(e => {
+  for (const [txHash, d] of txDecodes) {
+    if (!swapTxHashes.has(txHash) || swapReasons.get(txHash) !== 'native_eth_buy') continue
+    const nativeValHex = txNativeValues.get(txHash)
+    const nativeEthAmount = nativeValHex ? hexAmountToDecimal(nativeValHex, 18) : 0
+    if (nativeEthAmount <= 0) { nativeEthBuyRejectedReason = 'native_value_missing_or_zero'; continue }
+    const refEvent = evidenceWithDetection.find(e => e.txHash === txHash && d.walletInbound.some(i => i.contract === (e.contract ?? '').toLowerCase()))
+    if (!refEvent) { nativeEthBuyRejectedReason = 'inbound_event_missing'; continue }
+    const BASE_WETH = '0x4200000000000000000000000000000000000006'
+    const alreadyEthPresent = evidenceWithDetection.some(e => e.txHash === txHash && WETH_CONTRACTS_PRICE[(e.contract ?? '').toLowerCase()] && e.direction === 'sell')
+    if (alreadyEthPresent) continue
+    syntheticNativeEthLegs.push({
+      txHash, timestamp: refEvent.timestamp, fromAddress: walletLower, toAddress: d.txTo,
+      contract: BASE_WETH, symbol: 'ETH', amountRaw: null, tokenDecimals: 18, amount: nativeEthAmount, usdValue: null, direction: 'sell', chain: refEvent.chain ?? 'base',
+      txFromAddress: walletLower, txToAddress: d.txTo ?? undefined, txSucceeded: true,
+      swapDetection: { isSwapCandidate: true, confidence: 'high', eventKind: 'swap_candidate', reason: 'Base native ETH buy reconstruction: native tx.value spend', matchedProtocol: d.routerProtocol, matchedAddress: null, swapReconstructionConfidence: 'high' },
+    })
+    nativeEthBuyPromoted = true
+    if (sampleNativeEthBuyPromotions.length < 5) sampleNativeEthBuyPromotions.push({ txHash: txHash.slice(0, 12) + '…', symbol: refEvent.symbol, nativeEthAmount, source: 'native_tx_value' })
+  }
+
+  const enrichedEvidenceBase: WalletTxEvidence[] = evidenceWithDetection.map(e => {
     const txHashLower = (e.txHash ?? '').toLowerCase()
     if (!txHashLower || !swapTxHashes.has(txHashLower)) return e
     if (e.swapDetection?.isSwapCandidate) return e
@@ -10024,8 +10120,8 @@ async function buildBaseUnknownDirectionSwapReconstructionPass(
     if (!d || d.decodeStatus !== 'ok') return e
     const contractLower = (e.contract ?? '').toLowerCase()
     const swapReason = swapReasons.get(txHashLower) ?? 'base_unknown_recon'
-    const confidence: 'high' | 'medium' = d.isKnownRouter ? 'high' : 'medium'
-    const swapReconstructionConfidence: 'high' | 'medium' = d.isKnownRouter ? 'high' : 'medium'
+    const confidence: 'high' | 'medium' = d.isKnownRouter || swapReason === 'native_eth_buy' ? 'high' : 'medium'
+    const swapReconstructionConfidence: 'high' | 'medium' = d.isKnownRouter || swapReason === 'native_eth_buy' ? 'high' : 'medium'
 
     if (e.direction !== 'unknown') {
       // Known buy/sell in a confirmed swap tx — mark as swap candidate, direction already correct
@@ -10074,6 +10170,9 @@ async function buildBaseUnknownDirectionSwapReconstructionPass(
     }
   })
 
+  const enrichedEvidence = syntheticNativeEthLegs.length > 0 ? [...enrichedEvidenceBase, ...syntheticNativeEthLegs] : enrichedEvidenceBase
+  syntheticSwapEventsAdded += syntheticNativeEthLegs.length
+
   return {
     enrichedEvidence,
     debug: {
@@ -10083,7 +10182,7 @@ async function buildBaseUnknownDirectionSwapReconstructionPass(
       reason: syntheticSwapEventsAdded > 0 ? `promoted_${syntheticSwapEventsAdded}_from_${swapTxHashes.size}_swap_txs` : 'swap_txs_found_but_no_events_promoted',
       candidateTxsChecked: toFetch.length, candidateTxHashes: toFetch, includesProblemTx: toFetch.includes(BASE_UNKNOWN_RECON_PROBLEM_TX), mixedKnownUnknownTxs,
       receiptsFetched, decodedTransferLogs: totalTransferLogs, walletSideLegsFound, quoteLegsFound, tokenLegsFound,
-      wethLegsFound, stableLegsFound, syntheticSwapEventsAdded, sampleTxs, sampleSyntheticEvents, skippedReasons: skippedReasons.slice(0, 15),
+      wethLegsFound, stableLegsFound, syntheticSwapEventsAdded, nativeEthSpendDetected, nativeEthSpendUsd, nativeEthSpendSource, nativeEthBuyPromoted, nativeEthBuyRejectedReason, noWalletOutboundLegButNativeSpendCount, sampleNativeEthBuyPromotions, sampleTxs, sampleSyntheticEvents, skippedReasons: skippedReasons.slice(0, 15),
     },
   }
 }
@@ -13040,13 +13139,14 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // eligible here; when that is the active path, the surfaced reason is
   // 'acquisition_history_recovery_for_top_holdings', never 'no_swap_or_lot_evidence'.
   const _acqHighValueWallet = _walletValueTier === 'high_value' || _walletValueTier === 'whale' || totalValue >= 1000
-  const _acqTopHoldingsExist = holdings.some(h => (h.value ?? 0) >= ACQ_DUST_HOLDING_USD)
-  const _acqLowSwapOrLotEvidence = (walletSwapSummary.swapCandidateEvents ?? 0) === 0 || (walletTradeStatsSummary.closedLots ?? 0) === 0
-  const _acqPublicLotsLow = (walletTradeStatsSummary.closedLots ?? 0) < 10
+  const _acqTopHoldingsExist = holdings.some(h => (h.value ?? 0) >= 100)
+  const _acqTopHoldingsDominant = totalValue > 0 && holdings.slice(0, 5).reduce((sum, h) => sum + (h.value ?? 0), 0) / totalValue >= 0.5
+  const _acqLowSwapOrLotEvidence = (walletLotSummary.openedLots ?? 0) === 0 || (walletTradeStatsSummary.closedLots ?? 0) === 0
+  const _acqPublicLotsLow = (walletTradeStatsSummary.closedLots ?? 0) === 0
   const _acquisitionRecoveryEligible = Boolean(
     activityRequested &&
     _acqHighValueWallet &&
-    _acqTopHoldingsExist &&
+    (_acqTopHoldingsExist || _acqTopHoldingsDominant) &&
     _acqPublicLotsLow &&
     _acqLowSwapOrLotEvidence &&
     _targetContracts.size > 0 &&
@@ -13072,12 +13172,19 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   let _acquisitionRecoveryNewEvidence: WalletTxEvidence[] = []
   let _acquisitionRecoveryDebug: AcquisitionRecoveryDebug = {
     acquisitionRecoveryAttempted: false,
+    acquisitionRecoveryEligible: false,
     acquisitionRecoveryReason: _acquisitionRecoveryEligible ? 'not_run' : 'not_eligible_for_acquisition_recovery',
     acquisitionTargetTokens: _acquisitionTargetTokens,
     acquisitionPagesUsed: 0,
     acquisitionEventsFetched: 0,
     acquisitionInboundTransfersFound: 0,
+    acquisitionRecoveryInboundFound: 0,
     acquisitionCandidateTxs: [],
+    acquisitionRecoveryOutboundFound: 0,
+    acquisitionRecoveryEventsAddedToFifo: 0,
+    acquisitionRecoveryOpenedLotsAfter: 0,
+    acquisitionRecoveryClosedLotsAfter: 0,
+    acquisitionRecoverySkippedReason: reason,
     acquisitionStopReason: null,
     acquisitionReceiptsChecked: 0,
     acquisitionQuoteLegVerified: 0,
@@ -13931,8 +14038,13 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const hiddenDustCount = holdings.filter((h) => h.value <= 1).length
   const behaviorTxCount = behaviorValue.txCount ?? 0
   const hasHistoricalBaseActivity = grEvents.length > 0
+  const _activityNoLotsSummary = (walletLotSummary.openedLots ?? 0) > 0
+    ? 'Open position evidence found; no matching sell lots yet.'
+    : _acquisitionRecoveryEligible && !_acquisitionRecoveryDebug.acquisitionRecoveryAttempted
+      ? 'Top holdings need deeper acquisition history to verify cost basis.'
+      : 'Activity found, but no wallet-side buy/sell lots could be verified yet.'
   const walletBehavior = behaviorTxCount === 0 && hasHistoricalBaseActivity
-    ? { ...behaviorValue, recentActivitySummary: 'Historical Base activity found, but no recent activity in checked window.' }
+    ? { ...behaviorValue, recentActivitySummary: _activityNoLotsSummary }
     : behaviorValue
   const goldrushConfigured = Boolean(GOLDRUSH_KEY)
   const goldrushReason = !goldrushConfigured
