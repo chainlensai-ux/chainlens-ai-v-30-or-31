@@ -88,6 +88,14 @@ assert.match(routeSrc, /integrityInvalid: snapshot\.publicPnlStatus === 'open_ch
 assert.match(page, /const integrityInvalid = \(result\.publicPnlStatus \?\? ts\?\.publicPnlStatus\) === 'open_check_integrity_invalid'/, 'buildWalletReport computes an integrityInvalid flag')
 assert.match(page, /const profitSkillProven = publicLots >= 10 && !integrityInvalid/, 'buildWalletReport profitSkillProven requires integrity to not be invalid')
 assert.match(snap, /Public PnL and win rate remain locked; behavior-only reads may still be shown\./, 'integrity gate wording never implies public PnL is visible when public fields are null')
+assert.match(snap, /const _canonicalPublicPnlDisplay = \(/, 'final gate defines one canonical public PnL display mapper')
+assert.match(snap, /label: 'Open check — flat\/estimate-only lots excluded'[\s\S]{0,180}reason: 'Public PnL and win rate remain locked because matched lots use flat or estimate-only pricing\.'/,
+  'flat_estimate_only canonical label/reason are exact')
+assert.match(snap, /label: 'Open check — no public-grade performance lots'/, 'open_check canonical label is exact')
+assert.match(snap, /label: 'Profit skill locked — sample too small'/, 'locked_small_sample canonical label is exact')
+assert.match(snap, /_applyCanonicalPublicPnlDisplay\(\)/, 'canonical public PnL display is applied after integrity gates')
+assert.match(snap, /ts\.publicPnlDisplayLabel = display\.label[\s\S]{0,120}ts\.publicPnlDisplayReason = display\.reason/, 'canonical display is applied to walletTradeStatsSummary')
+assert.match(snap, /em\.publicPnlDisplayLabel = display\.label[\s\S]{0,120}em\.publicPnlDisplayReason = display\.reason/, 'canonical display is applied to walletEvidenceModel')
 
 // Fix 13: top-level publicRealizedPnlUsd/publicPerformanceRealizedPnlUsd (computed pre-integrity,
 // same as publicWinRatePercent) must also be nulled on hard-invalid, not just the win rate.
@@ -108,6 +116,10 @@ assert.match(snap, /_sanitizeSampleLotsForIntegrity\(snapshot\.sampleFlatPriceEx
 assert.match(snap, /_sanitizeSampleLotsForIntegrity\(snapshot\.sampleVerifiedPnlLots\)/, 'sanitizer applied to sampleVerifiedPnlLots')
 assert.match(snap, /_sanitizeSampleLotsForIntegrity\(snapshot\.samplePublicPerformanceLots\)/, 'sanitizer applied to samplePublicPerformanceLots')
 assert.match(snap, /_sanitizeSampleLotsForIntegrity\(snapshot\.sampleVerifiedButExcludedLots\)/, 'sanitizer applied to sampleVerifiedButExcludedLots')
+assert.match(snap, /if \(s\.pnlDisplayStatus === 'verified_pnl'\) s\.pnlDisplayStatus = _publicPnlStatusFinal === 'flat_estimate_only' \? 'flat_estimate_only' : 'pnl_locked_excluded'/,
+  'locked/excluded samples do not keep pnlDisplayStatus verified_pnl in flat_estimate_only/open_check/small-sample states')
+assert.match(snap, /if \(s\.pnlDisplayStatus === 'verified_pnl'\) s\.pnlDisplayStatus = 'pnl_locked_excluded'/,
+  'integrity-locked samples do not keep pnlDisplayStatus verified_pnl')
 
 // Fix 16: stale walletPnlOutlierNote wording ("Public PnL and trade stats use the remaining
 // verified lots") must be rewritten once integrity is hard-invalid, since it implies a still-valid

@@ -3116,7 +3116,7 @@ export type WalletClosedLot = {
   exitPriceEvidenceTxHash?: string | null
   priceIndependenceStatus?: 'independent_quote_legs' | 'independent_provider_prices' | 'mixed_independent' | 'same_source_flat_estimate' | 'current_price_reused' | 'fallback_price_reused' | 'missing_independent_price' | 'unknown'
   pnlDecisive?: boolean
-  pnlDisplayStatus?: 'verified_pnl' | 'estimate_only_price_flat' | 'open_check'
+  pnlDisplayStatus?: 'verified_pnl' | 'estimate_only_price_flat' | 'open_check' | 'pnl_locked_excluded' | 'flat_estimate_only'
 }
 
 export type PriceAtTimeEvidence = {
@@ -13355,7 +13355,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     return c === 'base' || c === 'eth' || c === 'polygon' || c === 'bsc' || c === 'arbitrum' || c === 'optimism' || c === 'avalanche' || c === 'fantom' || c === 'cronos' || c === 'gnosis' ? c as MoralisChain : null
   }
   const _moralisHistoricalSkipReason = !_syntheticLotsDetected ? 'no_synthetic_lots'
-    : _earlyRealBackedClosedLots >= 10 ? 'public_grade_lots_already_sufficient'
+    : _earlyRealBackedClosedLots >= 10 ? 'recovery_attempted_no_public_grade_lots'
     : _moralisHistoricalTargetTokens.length === 0 ? 'no_synthetic_targets'
     : !Boolean(process.env.MORALIS_API_KEY) ? 'moralis_not_configured'
     : _sharedHistoricalBudgetRemaining() <= 0 ? 'budget_exhausted'
@@ -14284,6 +14284,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       if (!excluded) continue
       if (s.realizedPnlUsd !== undefined) { s.rawRealizedPnlUsd = s.realizedPnlUsd; s.realizedPnlUsd = null }
       if (s.realizedPnlPercent !== undefined) { s.rawRealizedPnlPercent = s.realizedPnlPercent; s.realizedPnlPercent = null }
+      if (s.pnlDisplayStatus === 'verified_pnl') s.pnlDisplayStatus = _publicPnlStatusFinal === 'flat_estimate_only' ? 'flat_estimate_only' : 'pnl_locked_excluded'
       if (_publicPnlLockedForSamples) {
         s.includedInPublicStats = false
         s.publicPnlStatus = _publicPnlStatusFinal
@@ -15553,6 +15554,65 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     const _p6GateApplies = _p6Integrity.status !== 'ok' || _p6Integrity.ok !== true
     const _publicPnlBeforeGate = (snapshot as any).publicPnlStatus ?? snapshot.walletTradeStatsSummary?.publicPnlStatus ?? null
     const _winRateBeforeGate = snapshot.walletTradeStatsSummary?.publicWinRatePercent ?? (snapshot as any).publicWinRatePercent ?? null
+    const _canonicalPublicPnlDisplay = (
+      status: unknown,
+      publicRealizedPnlUsd: unknown,
+      publicWinRatePercent: unknown,
+      publicPerformanceClosedLots: unknown,
+    ): { label: string; reason: string } | null => {
+      if (status === 'open_check_integrity_invalid') return null
+      if (status === 'flat_estimate_only') {
+        return {
+          label: 'Open check — flat/estimate-only lots excluded',
+          reason: 'Public PnL and win rate remain locked because matched lots use flat or estimate-only pricing.',
+        }
+      }
+      if (status === 'open_check') {
+        return {
+          label: 'Open check — no public-grade performance lots',
+          reason: 'Public PnL and win rate remain locked because no public-grade performance lots are usable.',
+        }
+      }
+      if (status === 'locked_small_sample' || status === 'limited_verified_sample') {
+        return {
+          label: 'Profit skill locked — sample too small',
+          reason: 'Public PnL and win rate remain locked because the verified public-grade sample is too small.',
+        }
+      }
+      if ((publicRealizedPnlUsd == null || publicWinRatePercent == null) && Number(publicPerformanceClosedLots ?? 0) === 0) {
+        return {
+          label: 'Open check — no public-grade performance lots',
+          reason: 'Public PnL and win rate remain locked because no public-grade performance lots are usable.',
+        }
+      }
+      if (publicRealizedPnlUsd == null || publicWinRatePercent == null) {
+        return {
+          label: 'Profit skill locked — sample too small',
+          reason: 'Public PnL and win rate remain locked because the verified public-grade sample is too small.',
+        }
+      }
+      return null
+    }
+    const _applyCanonicalPublicPnlDisplay = () => {
+      const ts = snapshot.walletTradeStatsSummary as any
+      const em = snapshot.walletEvidenceModel as any
+      const status = (snapshot as any).publicPnlStatus ?? ts?.publicPnlStatus ?? em?.publicPnlStatus
+      const publicRealizedPnlUsd = (snapshot as any).publicRealizedPnlUsd ?? ts?.publicRealizedPnlUsd ?? em?.publicRealizedPnlUsd
+      const publicWinRatePercent = (snapshot as any).publicWinRatePercent ?? ts?.publicWinRatePercent ?? em?.publicWinRatePercent
+      const publicPerformanceClosedLots = (snapshot as any).publicPerformanceClosedLots ?? ts?.publicPerformanceClosedLots ?? em?.publicPerformanceClosedLots
+      const display = _canonicalPublicPnlDisplay(status, publicRealizedPnlUsd, publicWinRatePercent, publicPerformanceClosedLots)
+      if (!display) return
+      ;(snapshot as any).publicPnlDisplayLabel = display.label
+      ;(snapshot as any).publicPnlDisplayReason = display.reason
+      if (ts) {
+        ts.publicPnlDisplayLabel = display.label
+        ts.publicPnlDisplayReason = display.reason
+      }
+      if (em) {
+        em.publicPnlDisplayLabel = display.label
+        em.publicPnlDisplayReason = display.reason
+      }
+    }
 
     if (_p6GateApplies && _p6HardInvalid) {
       const _reasonText = `PnL integrity check failed: ${_p6IntegrityErrors.join(', ')}.`
@@ -15611,6 +15671,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
               s.rawRealizedPnlPercent = s.realizedPnlPercent
               s.realizedPnlPercent = null
             }
+            if (s.pnlDisplayStatus === 'verified_pnl') s.pnlDisplayStatus = 'pnl_locked_excluded'
           }
         }
       }
@@ -15674,6 +15735,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     } else if (snapshot.walletTradeStatsSummary) {
       ;(snapshot.walletTradeStatsSummary as any).pnlIntegrityStatus = _p6Integrity.status
     }
+    _applyCanonicalPublicPnlDisplay()
 
     snapshot.publicPnlIntegrityGate = {
       applied: _p6GateApplies && (_p6HardInvalid || _p6SoftPartialOnly),
