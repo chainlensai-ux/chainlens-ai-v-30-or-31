@@ -2151,7 +2151,6 @@ export default function WalletScannerPage() {
                         // swap candidates never looks like "no activity" when the pipeline simply failed
                         // to promote those candidates to verified lots.
                         const f = result.walletTradeReconstructionFunnel
-                        if (!f || (f.swapCandidateEvents === 0 && f.rawClosedLots === 0)) return null
                         const reasonLabels: Record<string, string> = {
                           estimateOnly: 'Estimate-only price',
                           syntheticCostBasis: 'Synthetic/missing cost basis',
@@ -2167,24 +2166,41 @@ export default function WalletScannerPage() {
                           budgetCapped: 'Scan budget capped',
                         }
                         return (
-                          <details className="wpv3-card">
-                            <summary className="wpv3-title" style={{ cursor: 'pointer' }}>Trade Reconstruction Funnel</summary>
-                            {[
-                              ['Swap candidates found', String(f.swapCandidateEvents)],
-                              ['Parsed swap transactions', String(f.parsedSwapTransactions)],
-                              ['Matched buy/sell pairs', String(f.matchedBuySellPairs)],
-                              ['Raw matched lots', String(f.rawClosedLots)],
-                              ['Public-grade trades', String(f.publicGradeClosedLots)],
-                              ['Excluded lots', String(f.excludedClosedLots)],
-                            ].map(([label, value]) => (
-                              <div key={label} className="wpv3-metric-row"><span className="wpv3-label">{label}</span><span className="wpv3-value" style={{ fontSize: '20px' }}>{value}</span></div>
-                            ))}
-                            {f.topFailureReasons.length > 0 && (
-                              <p className="wpv3-support" style={{ marginTop: '10px', color: '#9aa4b2' }}>
-                                Top exclusion reasons: {f.topFailureReasons.map(r => reasonLabels[r] ?? r).join(', ')}
-                              </p>
+                          <div className="wpv3-card">
+                            <p className="wpv3-title">Trade Reconstruction Funnel</p>
+                            {!f ? (
+                              <p className="wpv3-support" style={{ marginTop: '10px', color: '#9aa4b2' }}>No reconstruction funnel available for this scan.</p>
+                            ) : (
+                              <>
+                                {[
+                                  ['Wallet-side transactions', String(f.walletSideTransactions)],
+                                  ['Swap candidate events', String(f.swapCandidateEvents)],
+                                  ['Parsed swap transactions', String(f.parsedSwapTransactions)],
+                                  ['Candidate buy legs', String(f.candidateBuyLegs)],
+                                  ['Candidate sell legs', String(f.candidateSellLegs)],
+                                  ['Matched buy/sell pairs', String(f.matchedBuySellPairs)],
+                                  ['Raw closed lots', String(f.rawClosedLots)],
+                                  ['Public-grade closed lots', String(f.publicGradeClosedLots)],
+                                  ['Excluded closed lots', String(f.excludedClosedLots)],
+                                ].map(([label, value]) => (
+                                  <div key={label} className="wpv3-metric-row"><span className="wpv3-label">{label}</span><span className="wpv3-value" style={{ fontSize: '20px' }}>{value}</span></div>
+                                ))}
+                                {f.topFailureReasons.length > 0 && (
+                                  <p className="wpv3-support" style={{ marginTop: '10px', color: '#9aa4b2' }}>
+                                    Top failure reasons: {f.topFailureReasons.map(r => reasonLabels[r] ?? r).join(', ')}
+                                  </p>
+                                )}
+                                {Object.entries(f.exclusionBreakdown).some(([, count]) => count > 0) && (
+                                  <p className="wpv3-support" style={{ marginTop: '8px', color: '#9aa4b2' }}>
+                                    Exclusion breakdown: {Object.entries(f.exclusionBreakdown)
+                                      .filter(([, count]) => count > 0)
+                                      .map(([reason, count]) => `${reasonLabels[reason] ?? reason}: ${count}`)
+                                      .join(', ')}
+                                  </p>
+                                )}
+                              </>
                             )}
-                          </details>
+                          </div>
                         )
                       })()}
 
