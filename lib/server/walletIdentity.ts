@@ -256,13 +256,18 @@ export function computeWalletProfile(snapshot: WalletSnapshot): WalletProfile {
     const activityQuality = clampPct(closedLots === 0 ? 40 : tradeStats?.economicSignificance === 'meaningful' ? 60 + Math.min(40, closedLots * 2) : 30)
     const pnlQuality = clampPct(estimatedPnl?.status !== 'ok' ? 30 : (winRatePercent ?? 50) * 0.7 + ((realizedPnlUsd ?? 0) + (unrealizedPnlUsd ?? 0) > 0 ? 30 : 10))
     const chainIntelligence = clampPct(40 + Math.min(60, chainCount * 20))
-    score = Math.round(clampPct(portfolioQuality * 0.25 + diversification * 0.15 + activityQuality * 0.20 + pnlQuality * 0.25 + chainIntelligence * 0.15))
+    const profitSkillLocked = tradingLockedByPublicPnl || pnlIntegrityStatusForLock === 'invalid' || publicPnlStatus === 'open_check' || winRatePercent == null
+    score = profitSkillLocked
+      ? Math.round(clampPct(portfolioQuality * 0.35 + diversification * 0.20 + activityQuality * 0.25 + chainIntelligence * 0.20))
+      : Math.round(clampPct(portfolioQuality * 0.25 + diversification * 0.15 + activityQuality * 0.20 + pnlQuality * 0.25 + chainIntelligence * 0.15))
     grade = gradeForScore(score)
     const highConfidenceInputs = [portfolioConfidence === 'high', tradingConfidence === 'high', estimatedPnl?.status === 'ok' && estimatedPnl?.confidence === 'high', historicalCoverage?.coverageLevel === 'medium' || historicalCoverage?.coverageLevel === 'deep'].filter(Boolean).length
     if (portfolioConfidence === 'high' && evidenceCoverage >= 60 && highConfidenceInputs >= 1) confidence = 'high'
     else if (portfolioBehavior || evidenceCoverage >= 55) confidence = 'medium'
     else confidence = 'low'
-    signals.push(`Wallet score ${score}/100 (grade ${grade}) from portfolio quality, diversification, activity quality, PnL quality, and chain intelligence.`)
+    signals.push(profitSkillLocked
+      ? `Wallet score ${score}/100 (grade ${grade}) from portfolio quality, diversification, activity evidence, and chain exposure. Profit skill is not scored because public PnL is locked.`
+      : `Wallet score ${score}/100 (grade ${grade}) from portfolio quality, diversification, activity quality, PnL quality, and chain intelligence.`)
   }
 
   if (portfolioBehavior) strengths.push(`${portfolioBehavior} supported by current holdings/portfolio evidence.`)
