@@ -1,4 +1,4 @@
-import { fetchMoralisBalances, fetchMoralisTransfers, type MoralisFetchResult, type MoralisChain, type MoralisTransferItem } from './moralis'
+import { fetchMoralisBalances, fetchMoralisTransfers, fetchMoralisTransfersPaginated, type MoralisFetchResult, type MoralisChain, type MoralisTransferItem } from './moralis'
 import { computeWalletProfile, type WalletProfile } from './walletIdentity'
 
 export { computeWalletProfile, type WalletProfile }
@@ -625,6 +625,31 @@ export type WalletSnapshot = {
       budgetCapped: number
     }
     topFailureReasons: string[]
+  }
+
+  // DATA-SOURCE-PRIORITY-1: debug surfaces for the gated Moralis-first/GoldRush-backup/
+  // Alchemy-paginated-supplement deep-recovery merge phase. Additive only — never feeds FIFO,
+  // synthetic lots, confidence scoring, public-grade rules, or scoring directly; those all
+  // continue to consume the same `events`/PnlEvent pipeline as before, just with (optionally)
+  // more deduped real transfer events merged in upstream of it.
+  walletSourceMergeDebug?: {
+    moralisEvents: number
+    goldRushEvents: number
+    alchemyEvents: number
+    mergedBefore: number
+    mergedAfter: number
+    duplicatesRemoved: number
+    sourcePriorityUsed: string[]
+  }
+  walletHistoricalSourceBudget?: {
+    moralisAttempted: boolean
+    moralisPagesUsed: number
+    moralisEventsFetched: number
+    alchemyPagesUsed: number
+    goldRushBackupUsed: boolean
+    creditsUsedEstimate: number
+    hardCapHit: boolean
+    stoppedReason: string
   }
 
   walletTradeStatsSource: 'base_sample' | 'historical_promoted_preview'
@@ -3087,6 +3112,59 @@ async function fetchAlchemyPnlEvents(address: string, baseUrl: string): Promise<
   } catch { return [] }
 }
 
+// ALCHEMY-PAGINATION-1: Base-chain-only pageKey pagination for alchemy_getAssetTransfers, used
+// only by the deep/recovery source-priority path (buildDeepRecoveryTransferSet). The existing
+// single-page fetchAlchemyPnlEvents() above is left untouched so normal scans keep their current
+// behavior/speed. Never throws — returns a structured result so the caller can fall back.
+type AlchemyTransfersPaginatedResult = {
+  transfers: Record<string, unknown>[]
+  pagesUsed: number
+  eventsFetched: number
+  stoppedReason: 'page_key_null' | 'page_cap' | 'fetch_failed'
+  error: string | null
+}
+
+async function fetchAlchemyBaseTransfersPaginated(
+  baseUrl: string,
+  addressParam: 'fromAddress' | 'toAddress',
+  address: string,
+  opts?: { maxPages?: number },
+): Promise<AlchemyTransfersPaginatedResult> {
+  const maxPages = Math.min(5, Math.max(1, opts?.maxPages ?? 3))
+  const transfers: Record<string, unknown>[] = []
+  let pageKey: string | undefined
+  let pagesUsed = 0
+  let stoppedReason: AlchemyTransfersPaginatedResult['stoppedReason'] = 'page_key_null'
+  let error: string | null = null
+
+  while (pagesUsed < maxPages) {
+    let resp: { transfers?: Record<string, unknown>[]; pageKey?: string } | null
+    try {
+      resp = await alchemyRpc(baseUrl, 'alchemy_getAssetTransfers', [{
+        fromBlock: '0x0',
+        category: ['erc20'],
+        withMetadata: true,
+        maxCount: '0x64',
+        order: 'desc',
+        [addressParam]: address,
+        ...(pageKey ? { pageKey } : {}),
+      }])
+    } catch (e) {
+      error = e instanceof Error ? e.message : 'fetch_failed'
+      stoppedReason = 'fetch_failed'
+      break
+    }
+    pagesUsed++
+    if (!resp) { error = 'fetch_failed'; stoppedReason = 'fetch_failed'; break }
+    transfers.push(...(resp.transfers ?? []))
+    if (!resp.pageKey) { stoppedReason = 'page_key_null'; break }
+    pageKey = resp.pageKey
+    if (pagesUsed >= maxPages) { stoppedReason = 'page_cap'; break }
+  }
+
+  return { transfers, pagesUsed, eventsFetched: transfers.length, stoppedReason, error }
+}
+
 type FifoClosedLot = {
   contract: string; symbol: string
   buyTxHash: string; sellTxHash: string
@@ -5279,6 +5357,57 @@ function assignSyntheticLogIndex(events: PnlEvent[]): { events: PnlEvent[]; synt
     return { ...e, logIndex: idx }
   })
   return { events: patched, syntheticCount }
+}
+
+// DATA-SOURCE-PRIORITY-1 (Task 3): unified transfer-event shape used by the deep-recovery source
+// merge phase. Wraps an already-normalized PnlEvent (each provider's raw record is normalized into
+// PnlEvent by the existing per-provider normalizers — normalizeMoralisTransfers, the GoldRush
+// page builders, fetchAlchemyPnlEvents/fetchAlchemyBaseTransfersPaginated) and tags it with its
+// source/confidence for merge debugging. Does not replace or change PnlEvent itself.
+type UnifiedTransferEvent = {
+  source: 'moralis' | 'goldrush' | 'alchemy'
+  chainId: string
+  txHash: string | null
+  logIndex: number
+  blockNumber: number | null
+  timestamp: string | null
+  tokenAddress: string
+  tokenSymbol: string
+  tokenDecimals: number | null
+  fromAddress: string | null
+  toAddress: string | null
+  amountRaw: string | null
+  amountDecimal: number
+  direction: 'in' | 'out' | 'unknown'
+  walletSide: boolean
+  valueUsd: number | null
+  sourceConfidence: 'high' | 'medium' | 'low'
+}
+
+function normalizeTransferEvent(source: 'moralis' | 'goldrush' | 'alchemy', e: PnlEvent, syntheticIndex: number): UnifiedTransferEvent {
+  const direction: 'in' | 'out' | 'unknown' = e.direction === 'buy' ? 'in' : e.direction === 'sell' ? 'out' : 'unknown'
+  // GoldRush has its own log-derived events (highest trust); Alchemy/Moralis lack a real log index
+  // for this method, so they're treated as medium-confidence unless a real logIndex is present.
+  const sourceConfidence: 'high' | 'medium' | 'low' = source === 'goldrush' ? 'high' : e.logIndex != null ? 'medium' : 'medium'
+  return {
+    source,
+    chainId: normalizeChain(e.chain),
+    txHash: e.txHash,
+    logIndex: e.logIndex ?? syntheticIndex,
+    blockNumber: null,
+    timestamp: e.timestamp,
+    tokenAddress: e.contract,
+    tokenSymbol: e.symbol,
+    tokenDecimals: e.tokenDecimals,
+    fromAddress: e.fromAddress,
+    toAddress: e.toAddress,
+    amountRaw: e.amountRaw,
+    amountDecimal: e.amount,
+    direction,
+    walletSide: e.direction !== 'unknown',
+    valueUsd: e.usdValue,
+    sourceConfidence,
+  }
 }
 
 // PHASE4-FIX-3 (item 1): deterministic multi-provider/multi-chain sort comparator —
@@ -10569,6 +10698,148 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     }
   }
 
+  // Phase 20: DATA-SOURCE-PRIORITY-1 — Moralis-first deep/recovery transfer source. Strictly
+  // additive and gated: only attempts extra fetches when (a) a deep scan was requested, AND
+  // (b) at least one genuine recovery signal is present (current activity looks thin relative to
+  // what GoldRush returned, or there's at least one sell with no matching buy yet in the merged
+  // events so far). Normal scans never reach this block, so normal-scan latency is unaffected.
+  // Source priority for this phase only: Moralis paginated transfers -> GoldRush historical page
+  // backup (only if Moralis came back empty/unusable) -> Alchemy Base paginated supplement.
+  // GoldRush remains the source for balances_v2/historical pricing elsewhere — untouched here.
+  // Merged events feed into the SAME `events` variable consumed by the unchanged downstream
+  // swap-detection/FIFO/synthetic-lot/confidence/public-grade pipeline — none of that logic is
+  // modified by this phase.
+  type _Phase20SourceDebug = { attempted: boolean; pagesUsed: number; eventsFetched: number; stoppedReason: string; usedReason: string | null }
+  const _p20UnmatchedSellSignal = (() => {
+    const buyKeys = new Set(events.filter(e => e.direction === 'buy').map(e => e.contract.toLowerCase()))
+    return events.some(e => e.direction === 'sell' && !buyKeys.has(e.contract.toLowerCase()))
+  })()
+  const _p20GoldrushThin = events.length < 20
+  const _p20ShouldRun = (
+    (deepScan || deepActivity) &&
+    Boolean(process.env.MORALIS_API_KEY) &&
+    (_p20GoldrushThin || _p20UnmatchedSellSignal)
+  )
+  let _p20Moralis: _Phase20SourceDebug = { attempted: false, pagesUsed: 0, eventsFetched: 0, stoppedReason: 'not_run', usedReason: null }
+  let _p20Goldrush: _Phase20SourceDebug = { attempted: false, pagesUsed: 0, eventsFetched: 0, stoppedReason: 'not_run', usedReason: null }
+  let _p20Alchemy: _Phase20SourceDebug = { attempted: false, pagesUsed: 0, eventsFetched: 0, stoppedReason: 'not_run', usedReason: null }
+  const _p20MoralisEvents: PnlEvent[] = []
+  const _p20GoldrushEvents: PnlEvent[] = []
+  const _p20AlchemyEvents: PnlEvent[] = []
+  let _p20SourcePriorityUsed: string[] = []
+  let _p20CreditsUsedEstimate = 0
+
+  if (_p20ShouldRun) {
+    const _p20Chain: MoralisChain = 'base'
+    const _p20MoralisResult = await fetchMoralisTransfersPaginated(addr, _p20Chain, { maxEvents: 1000, maxPages: 10, pageSize: 100 })
+    _trackCall('moralis', 'erc20_transfers', false, `moralis:transfers:p20:${addrNorm}`)
+    _p20Moralis = { attempted: true, pagesUsed: _p20MoralisResult.pagesUsed, eventsFetched: _p20MoralisResult.eventsFetched, stoppedReason: _p20MoralisResult.stoppedReason, usedReason: _p20MoralisResult.eventsFetched > 0 ? 'moralis_primary' : null }
+    _p20CreditsUsedEstimate += _p20MoralisResult.pagesUsed
+    if (_p20MoralisResult.eventsFetched > 0) {
+      const { events: moralisNormalized } = normalizeMoralisTransfers(_p20MoralisResult.events, addr, 'base-mainnet')
+      _p20MoralisEvents.push(...moralisNormalized)
+      _p20SourcePriorityUsed.push('moralis')
+    }
+
+    // GoldRush historical backup only runs if Moralis came back empty/unusable for this wallet.
+    if (_p20MoralisEvents.length === 0 && GOLDRUSH_KEY) {
+      const _p20GrPage = await fetchGoldrushHistoricalPage(addr, 'base-mainnet', GOLDRUSH_KEY, 1, 50)
+      _trackCall('goldrush', 'transactions_v3_backup', false, `goldrush:backup:p20:${addrNorm}`)
+      _p20Goldrush = { attempted: true, pagesUsed: 1, eventsFetched: _p20GrPage.events.length, stoppedReason: _p20GrPage.error ? 'fetch_failed' : 'page_cap', usedReason: _p20GrPage.events.length > 0 ? 'goldrush_backup' : null }
+      _p20CreditsUsedEstimate += 1
+      if (_p20GrPage.events.length > 0) {
+        _p20GoldrushEvents.push(..._p20GrPage.events)
+        _p20SourcePriorityUsed.push('goldrush')
+      }
+    }
+
+    // Alchemy Base supplement — paginated, capped, runs alongside the above (never gates them).
+    if (ALCHEMY_BASE_KEY) {
+      const _p20AlchemyResult = await fetchAlchemyBaseTransfersPaginated(baseUrl, 'fromAddress', addr, { maxPages: 3 })
+      const _p20AlchemyResult2 = await fetchAlchemyBaseTransfersPaginated(baseUrl, 'toAddress', addr, { maxPages: 3 })
+      _trackCall('alchemy', 'alchemy_getAssetTransfers_paginated', false, `alchemy:transfers:p20:${addrNorm}`)
+      const _p20AlchemyRaw = [...(_p20AlchemyResult.transfers ?? []), ...(_p20AlchemyResult2.transfers ?? [])]
+      const _p20AlchemyMapped: PnlEvent[] = _p20AlchemyRaw.map((t) => {
+        const tr = t as Record<string, unknown>
+        const meta = tr.metadata as Record<string, unknown> | undefined
+        const toAddrLower = typeof tr.to === 'string' ? (tr.to as string).toLowerCase() : null
+        const fromAddrLower = typeof tr.from === 'string' ? (tr.from as string).toLowerCase() : null
+        const direction: 'buy' | 'sell' | 'unknown' = toAddrLower === addrNorm ? 'buy' : fromAddrLower === addrNorm ? 'sell' : 'unknown'
+        return {
+          contract: String(((tr.rawContract as Record<string, unknown> | undefined)?.address) ?? '').toLowerCase(),
+          symbol: String(tr.asset ?? '?'),
+          direction,
+          amount: Number(tr.value ?? 0),
+          amountRaw: String((tr.rawContract as Record<string, unknown> | undefined)?.value ?? '') || null,
+          tokenDecimals: null,
+          usdValue: null,
+          txHash: typeof tr.hash === 'string' ? tr.hash : null,
+          timestamp: typeof meta?.blockTimestamp === 'string' ? meta.blockTimestamp : null,
+          fromAddress: fromAddrLower,
+          toAddress: toAddrLower,
+          chain: 'base',
+        }
+      }).filter(e => e.direction !== 'unknown' && e.contract.startsWith('0x') && Number.isFinite(e.amount) && e.amount > 0)
+      _p20Alchemy = {
+        attempted: true,
+        pagesUsed: _p20AlchemyResult.pagesUsed + _p20AlchemyResult2.pagesUsed,
+        eventsFetched: _p20AlchemyMapped.length,
+        stoppedReason: _p20AlchemyResult.stoppedReason === 'fetch_failed' || _p20AlchemyResult2.stoppedReason === 'fetch_failed' ? 'fetch_failed' : 'page_cap',
+        usedReason: _p20AlchemyMapped.length > 0 ? 'alchemy_supplement' : null,
+      }
+      _p20CreditsUsedEstimate += _p20Alchemy.pagesUsed
+      if (_p20AlchemyMapped.length > 0) {
+        _p20AlchemyEvents.push(..._p20AlchemyMapped)
+        _p20SourcePriorityUsed.push('alchemy')
+      }
+    }
+  }
+
+  // Tag each newly-fetched event with its unified shape (Task 3) so source/confidence is visible
+  // in the merge debug below, then dedupe on the existing PnlEvent pipeline as usual.
+  const _p20Unified: UnifiedTransferEvent[] = [
+    ..._p20MoralisEvents.map((e, i) => normalizeTransferEvent('moralis', e, i)),
+    ..._p20GoldrushEvents.map((e, i) => normalizeTransferEvent('goldrush', e, i)),
+    ..._p20AlchemyEvents.map((e, i) => normalizeTransferEvent('alchemy', e, i)),
+  ]
+  const _p20WalletSideNewEvents = _p20Unified.filter(u => u.walletSide).length
+  const _p20AllNewEvents = [..._p20MoralisEvents, ..._p20GoldrushEvents, ..._p20AlchemyEvents]
+  let _walletSourceMergeDebug = {
+    moralisEvents: _p20MoralisEvents.length,
+    goldRushEvents: _p20GoldrushEvents.length,
+    alchemyEvents: _p20AlchemyEvents.length,
+    mergedBefore: events.length + _p20AllNewEvents.length,
+    mergedAfter: events.length,
+    duplicatesRemoved: 0,
+    sourcePriorityUsed: _p20SourcePriorityUsed,
+  }
+  if (_p20AllNewEvents.length > 0) {
+    const _p20Combined = [...events, ...assignSyntheticLogIndex(_p20AllNewEvents).events]
+    const _p20Seen = new Set<string>()
+    const _p20Merged: PnlEvent[] = []
+    for (const e of _p20Combined) {
+      const mk = pnlEventDedupeKey(e)
+      if (!_p20Seen.has(mk)) { _p20Seen.add(mk); _p20Merged.push(e) }
+    }
+    _walletSourceMergeDebug = {
+      ..._walletSourceMergeDebug,
+      mergedBefore: _p20Combined.length,
+      mergedAfter: _p20Merged.length,
+      duplicatesRemoved: _p20Combined.length - _p20Merged.length,
+    }
+    events = deterministicEventOrder(_p20Merged)
+  }
+  const _walletHistoricalSourceBudget = {
+    moralisAttempted: _p20Moralis.attempted,
+    moralisPagesUsed: _p20Moralis.pagesUsed,
+    moralisEventsFetched: _p20Moralis.eventsFetched,
+    alchemyPagesUsed: _p20Alchemy.pagesUsed,
+    goldRushBackupUsed: _p20Goldrush.attempted && _p20Goldrush.eventsFetched > 0,
+    creditsUsedEstimate: _p20CreditsUsedEstimate,
+    hardCapHit: _p20Moralis.stoppedReason === 'event_cap' || _p20Moralis.stoppedReason === 'page_cap',
+    stoppedReason: !_p20ShouldRun ? 'not_eligible' : _p20Moralis.stoppedReason,
+  }
+
   const _pnlSourceRaw: 'goldrush' | 'alchemy' | 'moralis_fallback' | 'none' =
     grEvents.length > 0 ? 'goldrush'
     : alchemyEvents.length > 0 ? 'alchemy'
@@ -13611,6 +13882,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     walletRecoveryRecommendation: _walletRecoveryRecommendation,
     walletReconstructionRecovery: _walletReconstructionRecovery,
     walletTradeReconstructionFunnel: _walletTradeReconstructionFunnel,
+    walletSourceMergeDebug: _walletSourceMergeDebug,
+    walletHistoricalSourceBudget: _walletHistoricalSourceBudget,
     walletActivitySummary: _walletActivitySummary,
     address: addr,
     totalValue,

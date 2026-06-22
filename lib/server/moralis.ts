@@ -290,3 +290,75 @@ export async function fetchMoralisTransfers(
   _transfersInFlight.set(cacheKey, run)
   try { return await run } finally { _transfersInFlight.delete(cacheKey) }
 }
+
+// ── Paginated ERC20 Transfer History (deep/recovery scans only) ────────────
+// MORALIS-PAGINATION-1: loops fetchMoralisTransfers() following its cursor, bounded by an event
+// cap (default 500-1500, never 5000 unless admin/debug) and a page cap, so a deep/recovery scan
+// can pull real multi-page history without ever making an unbounded number of calls. Never throws
+// — any failure mid-loop returns the events collected so far with a structured stoppedReason so
+// the caller can fall back to GoldRush.
+export type MoralisPaginatedResult = {
+  events: MoralisTransferItem[]
+  pagesUsed: number
+  eventsFetched: number
+  stoppedReason: 'cursor_null' | 'event_cap' | 'page_cap' | 'budget_cap' | 'fetch_failed' | 'not_configured'
+  durationMs: number
+  error: string | null
+}
+
+export async function fetchMoralisTransfersPaginated(
+  address: string,
+  chain: MoralisChain,
+  opts?: { maxEvents?: number; maxPages?: number; pageSize?: number; adminOverride?: boolean },
+): Promise<MoralisPaginatedResult> {
+  const start = Date.now()
+  const apiKey = process.env.MORALIS_API_KEY ?? ''
+  if (!apiKey) {
+    return { events: [], pagesUsed: 0, eventsFetched: 0, stoppedReason: 'not_configured', durationMs: Date.now() - start, error: null }
+  }
+
+  const adminOverride = opts?.adminOverride === true
+  // Hard safety: never exceed 5000 events unless an explicit admin/debug override is passed.
+  const requestedMaxEvents = opts?.maxEvents ?? 1000
+  const maxEvents = adminOverride ? Math.min(5000, Math.max(1, requestedMaxEvents)) : Math.min(1500, Math.max(500, requestedMaxEvents))
+  const maxPages = Math.min(adminOverride ? 50 : 15, Math.max(1, opts?.maxPages ?? 10))
+  const pageSize = Math.min(100, Math.max(1, opts?.pageSize ?? 100))
+
+  const events: MoralisTransferItem[] = []
+  let cursor: string | undefined
+  let pagesUsed = 0
+  let stoppedReason: MoralisPaginatedResult['stoppedReason'] = 'cursor_null'
+  let error: string | null = null
+
+  while (pagesUsed < maxPages) {
+    let page: MoralisTransferFetchResult
+    try {
+      page = await fetchMoralisTransfers(address, chain, pageSize, cursor)
+    } catch (e) {
+      error = e instanceof Error ? e.message : 'fetch_failed'
+      stoppedReason = 'fetch_failed'
+      break
+    }
+    pagesUsed++
+    if (!page.usable) {
+      error = page.reason || 'fetch_failed'
+      stoppedReason = 'fetch_failed'
+      break
+    }
+    events.push(...page.items)
+    if (events.length >= maxEvents) { stoppedReason = 'event_cap'; break }
+    if (!page.nextCursor) { stoppedReason = 'cursor_null'; break }
+    cursor = page.nextCursor
+    if (pagesUsed >= maxPages) { stoppedReason = 'page_cap'; break }
+  }
+
+  const trimmed = events.length > maxEvents ? events.slice(0, maxEvents) : events
+  return {
+    events: trimmed,
+    pagesUsed,
+    eventsFetched: trimmed.length,
+    stoppedReason,
+    durationMs: Date.now() - start,
+    error,
+  }
+}
