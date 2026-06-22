@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { usePlanWithLoading, LockedPanel, canAccessFeature } from '@/lib/usePlan'
 import { supabase } from '@/lib/supabaseClient'
 
@@ -40,6 +40,16 @@ type ClarkVerdict = {
   keySignals: string[]
   risks: string[]
   nextAction: string
+}
+
+type WatchlistWallet = {
+  id?: string
+  address: string
+  label?: string | null
+  portfolio_value?: number | null
+  chain_mode?: string | null
+  source?: string | null
+  saved_at?: string | null
 }
 
 type WalletTier = 'Smart Money' | 'Positive Early Read' | 'Average Trader' | 'Losing Wallet' | 'Open Check'
@@ -1393,8 +1403,35 @@ export default function WalletScannerPage() {
   const [addressCopied, setAddressCopied] = useState(false)
   const [watchlistStatus, setWatchlistStatus] = useState<'idle' | 'saving' | 'success' | 'exists' | 'error'>('idle')
   const [watchlistMessage, setWatchlistMessage] = useState<string | null>(null)
+  const [watchlistWallets, setWatchlistWallets] = useState<WatchlistWallet[]>([])
+  const [watchlistLoading, setWatchlistLoading] = useState(false)
+  const [watchlistDeleting, setWatchlistDeleting] = useState<string | null>(null)
   const clarkLoading = loading
   const showDebugCacheControls = deepActivity && (plan === 'pro' || plan === 'elite' || betaEliteActive || process.env.NODE_ENV !== 'production')
+
+  async function loadWalletWatchlist() {
+    setWatchlistLoading(true)
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const token = session?.access_token
+      if (!token) {
+        setWatchlistWallets([])
+        return
+      }
+      const res = await fetch('/api/watchlist/wallets', { headers: { Authorization: `Bearer ${token}` } })
+      const json = await res.json().catch(() => null)
+      if (res.ok) setWatchlistWallets(Array.isArray(json?.wallets) ? json.wallets : [])
+    } finally {
+      setWatchlistLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void loadWalletWatchlist()
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [])
 
   function copyAddress(address: string) {
     navigator.clipboard?.writeText(address).then(() => {
@@ -1439,9 +1476,43 @@ export default function WalletScannerPage() {
         setWatchlistStatus('success')
         setWatchlistMessage('Added to watchlist')
       }
+      await loadWalletWatchlist()
     } catch {
       setWatchlistStatus('error')
       setWatchlistMessage('Could not add wallet to watchlist.')
+    }
+  }
+
+  async function handleRemoveWalletFromWatchlist(address: string) {
+    if (!address || watchlistDeleting) return
+    setWatchlistDeleting(address)
+    setWatchlistMessage(null)
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const token = session?.access_token
+      if (!token) {
+        setWatchlistStatus('error')
+        setWatchlistMessage('Sign in to manage your watchlist.')
+        return
+      }
+      const res = await fetch(`/api/watchlist/wallets?address=${encodeURIComponent(address)}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      const json = await res.json().catch(() => null)
+      if (!res.ok) {
+        setWatchlistStatus('error')
+        setWatchlistMessage(json?.error ?? 'Could not remove wallet.')
+        return
+      }
+      setWatchlistWallets((wallets) => wallets.filter((wallet) => wallet.address.toLowerCase() !== address.toLowerCase()))
+      setWatchlistStatus('idle')
+      setWatchlistMessage('Removed from watchlist')
+    } catch {
+      setWatchlistStatus('error')
+      setWatchlistMessage('Could not remove wallet.')
+    } finally {
+      setWatchlistDeleting(null)
     }
   }
 
@@ -4501,6 +4572,52 @@ export default function WalletScannerPage() {
                 </div>
               </div>
             )}
+
+            <div style={{ marginTop: '4px', background: 'rgba(45,212,191,0.035)', border: '1px solid rgba(45,212,191,0.12)', borderRadius: '14px', padding: '14px', boxShadow: '0 0 24px rgba(45,212,191,0.035)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', marginBottom: '12px' }}>
+                <div>
+                  <p style={{ margin: 0, fontSize: '9px', fontWeight: 800, color: 'rgba(45,212,191,0.70)', letterSpacing: '0.16em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Wallet Watchlist</p>
+                  <p style={{ margin: '5px 0 0', fontSize: '11px', color: 'rgba(148,163,184,0.68)', lineHeight: 1.4 }}>Saved wallets stay here until you remove them.</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleAddWalletToWatchlist}
+                  disabled={!result?.address || watchlistStatus === 'saving'}
+                  style={{ border: '1px solid rgba(45,212,191,0.30)', background: result?.address ? 'rgba(45,212,191,0.10)' : 'rgba(148,163,184,0.06)', color: result?.address ? '#2DD4BF' : 'rgba(148,163,184,0.35)', borderRadius: '999px', padding: '7px 10px', fontSize: '9px', fontWeight: 800, letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', cursor: result?.address && watchlistStatus !== 'saving' ? 'pointer' : 'not-allowed' }}
+                >
+                  {watchlistStatus === 'saving' ? 'Saving…' : 'Save'}
+                </button>
+              </div>
+
+              {watchlistMessage && (
+                <p style={{ margin: '0 0 10px', fontSize: '11px', color: watchlistStatus === 'error' ? '#f87171' : watchlistStatus === 'exists' ? '#7dd3fc' : '#4ade80', lineHeight: 1.4 }}>
+                  {watchlistMessage}
+                </p>
+              )}
+
+              {watchlistLoading ? (
+                <p style={{ margin: 0, fontSize: '12px', color: 'rgba(148,163,184,0.55)' }}>Loading saved wallets…</p>
+              ) : watchlistWallets.length === 0 ? (
+                <p style={{ margin: 0, fontSize: '12px', color: 'rgba(148,163,184,0.45)', lineHeight: 1.55 }}>No saved wallets yet. Scan a wallet, then click Save.</p>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  {watchlistWallets.map((wallet) => {
+                    const deleting = watchlistDeleting?.toLowerCase() === wallet.address.toLowerCase()
+                    return (
+                      <div key={wallet.id ?? wallet.address} style={{ display: 'flex', alignItems: 'center', gap: '9px', padding: '10px', borderRadius: '11px', background: 'rgba(6,10,18,0.72)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                        <button type="button" onClick={() => setInput(wallet.address)} title="Load wallet address" style={{ minWidth: 0, flex: 1, textAlign: 'left', border: 0, background: 'transparent', padding: 0, cursor: 'pointer' }}>
+                          <p style={{ margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '11px', color: '#e2e8f0', fontWeight: 700, fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{wallet.address.slice(0, 8)}…{wallet.address.slice(-6)}</p>
+                          <p style={{ margin: '4px 0 0', fontSize: '10px', color: 'rgba(148,163,184,0.55)' }}>{wallet.portfolio_value ? fmtUSD(wallet.portfolio_value) : 'Value not saved'}{wallet.label ? ` · ${wallet.label}` : ''}</p>
+                        </button>
+                        <button type="button" aria-label="Remove wallet from watchlist" disabled={deleting} onClick={() => handleRemoveWalletFromWatchlist(wallet.address)} style={{ width: '30px', height: '30px', flexShrink: 0, borderRadius: '9px', border: '1px solid rgba(248,113,113,0.22)', background: 'rgba(248,113,113,0.08)', color: deleting ? 'rgba(248,113,113,0.45)' : '#f87171', cursor: deleting ? 'wait' : 'pointer', fontSize: '14px', lineHeight: 1 }}>
+                          🗑
+                        </button>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
           </div>
 
           {/* Footer */}
