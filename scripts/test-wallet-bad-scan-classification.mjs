@@ -184,7 +184,8 @@ assert.match(snap, /walletClosedLotsAll: _performanceClosedLotsFinal/, 'wallet p
 
 // Public evidence gating regressions for 0x48d4d1d6035326afad16bd061e2620144b2775f1.
 assert.match(intel, /personality:\s*'Not enough data'[\s\S]*Public performance sample is too small or partial to classify trading personality/, 'walletPersonality locks to Not enough data when scoreUnlocked is false or public evidence is partial')
-assert.match(intel, /classification:\s*'Not enough data'[\s\S]*Bot\/automation read is locked until enough performance-grade trades pass public evidence checks/, 'walletBotScore does not classify semi-automated when scoreUnlocked is false or integrity is invalid')
+assert.match(intel, /classification: 'Human-like' \| 'Assisted \/ semi-automated' \| 'Likely bot' \| 'High-frequency bot' \| 'Not enough behavior data'/, 'walletBotScore uses behavior-only automation classifications')
+assert.match(intel, /const enoughBehaviorEvidence = tradeIntelLots >= 20 \|\| walletSideTxs >= 50 \|\| swapLikeTxs >= 30/, 'walletBotScore unlocks from behavior evidence even when public PnL is locked')
 assert.match(snap, /const winRatePercent = winRateComputed \? \(winning\.length \/ n\) \* 100 : null/, 'winRatePercent is null when sample is below the win-rate threshold')
 assert.match(snap, /publicWinRatePercent: _performanceStats\.scoreUnlocked === true \? _performanceStats\.winRatePercent : null/, 'publicWinRatePercent is null when scoreUnlocked is false')
 assert.match(snap, /winRatePercent: snapshot\.walletTradeStatsSummary\?\.scoreUnlocked === true \? \(snapshot\.walletTradeStatsSummary\?\.winRatePercent \?\? null\) : null/, 'walletProfileDebug.scoreInputs.winRatePercent is null, not zero, while win rate is locked')
