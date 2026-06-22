@@ -863,6 +863,20 @@ export type WalletSnapshot = {
       syntheticTargetHistoricalWalletOutboundEvents: number
       syntheticTargetPriorBuysFound: number
       syntheticTargetPriorBuysPriced: number
+      moralisHistoricalAttempted: boolean
+      moralisHistoricalPagesUsed: number
+      moralisHistoricalEventsFetched: number
+      moralisHistoricalPriorBuysFound: number
+      moralisHistoricalPriorBuysPriced: number
+      moralisHistoricalStopReason: string | null
+      targetTokensAttempted: string[]
+      targetTokensRecovered: string[]
+      syntheticLotsBeforeRecovery: number
+      syntheticLotsAfterRecovery: number
+      realPriorBuysRecovered: number
+      publicGradeLotsBeforeRecovery: number
+      publicGradeLotsAfterRecovery: number
+      recoverySkippedReason: string | null
       syntheticTargetDropBreakdown: Record<string, number>
       sampleDroppedHistoricalLogs: Array<{ reason: string; count: number }>
       sampleSyntheticTargetPriorBuys: Array<{ txHash: string | null; contract: string; symbol: string; amount: number; timestamp: string | null }>
@@ -1336,6 +1350,11 @@ export type WalletSnapshot = {
       sampleSwapLikeTransactions: unknown[]
       moralisHistoricalConfigured: boolean
       moralisHistoricalAttempted: boolean
+      moralisHistoricalPagesUsed?: number
+      moralisHistoricalEventsFetched?: number
+      moralisHistoricalPriorBuysFound?: number
+      moralisHistoricalPriorBuysPriced?: number
+      moralisHistoricalStopReason?: string | null
       moralisReason: string
       // SYNTH-RECOVERY-FIX-6: granular drop-bucket breakdown for the raw-log-to-normalized-event
       // pipeline, additive/optional — explains why rawLogEvents collapses to a small normalizedEvents
@@ -12389,15 +12408,25 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // target tokens (max 2 tokens, max 2 extra pages, stopping the moment a real prior buy is
   // found). This does not broaden provider calls to other holdings and does not touch FIFO math —
   // it only feeds additional candidate evidence into the existing pricing/FIFO preview pipeline below.
-  const _syntheticTargetExtraMaxTokens = 2
-  const _syntheticTargetExtraMaxPages = 2
+  const _syntheticTargetExtraMaxTokens = _walletValueTier === 'high_value' ? 4 : 2
+  const _syntheticTargetExtraMaxPages = _walletValueTier === 'high_value' ? 4 : 2
   const _syntheticHasRealBackedLotForTarget = (contract: string) =>
     _closedLots.some(
       l => l.tokenAddress.toLowerCase() === contract &&
         l.evidence?.entrySource !== 'synthetic' &&
         !(l.missingReasons ?? []).includes('fifo_backfilled_buy')
     )
-  const _syntheticTargetExtraEligibleTokens = _syntheticLotTokenTargets
+  const _syntheticTargetRankedTokens = Array.from(new Map(_syntheticClosedLots.map(l => {
+    const contract = l.tokenAddress.toLowerCase()
+    const lots = _syntheticClosedLots.filter(x => x.tokenAddress.toLowerCase() === contract)
+    return [contract, {
+      contract,
+      symbol: l.tokenSymbol ?? contract.slice(0, 8),
+      excludedUsd: lots.reduce((sum, x) => sum + (x.proceedsUsd ?? 0), 0),
+      lotCount: lots.length,
+    }]
+  })).values()).sort((a, b) => b.excludedUsd - a.excludedUsd || b.lotCount - a.lotCount).map(t => t.contract)
+  const _syntheticTargetExtraEligibleTokens = _syntheticTargetRankedTokens
     .filter(c => !_syntheticHasRealBackedLotForTarget(c))
     .slice(0, _syntheticTargetExtraMaxTokens)
   const _syntheticTargetExtraPriorBuysFoundSoFar = _syntheticTargetRecovery?.debug.syntheticTargetPriorBuysFound ?? 0
@@ -12415,8 +12444,6 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   else if (!_runHistoricalCoverage && !_missingCostBasisGuardActive) _syntheticTargetExtraSkippedReason = 'historical_recovery_not_run'
   else if (!GOLDRUSH_KEY) _syntheticTargetExtraSkippedReason = 'provider_not_configured'
   else if (_syntheticLotTokenTargets.length === 0) _syntheticTargetExtraSkippedReason = 'no_synthetic_targets'
-  else if (_syntheticLotTokenTargets.length > _syntheticTargetExtraMaxTokens && !debug) _syntheticTargetExtraSkippedReason = 'skipped_extra_recovery_too_many_synthetic_targets'
-  else if (_missingCostBasisGuardActive && _syntheticTargetsTooManyForDefaultRecovery) _syntheticTargetExtraSkippedReason = 'synthetic_targets_too_many_for_default_recovery'
   else if (_syntheticTargetExtraEligibleTokens.length === 0) _syntheticTargetExtraSkippedReason = 'already_real_backed_lot_for_target'
   else if (_syntheticTargetExtraPriorBuysFoundSoFar > 0) _syntheticTargetExtraSkippedReason = 'prior_buy_already_found'
   else if (_syntheticTargetExtraPagesAllowed <= 0) _syntheticTargetExtraSkippedReason = 'budget_exhausted'
@@ -12542,7 +12569,85 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     ? [..._pnlRecoveryV2Result.newBuyEvidence, ..._pnlRecoveryV2Result.newSellEvidence]
     : []
 
-  const _finalCandidateEvidence = _syntheticTargetExtraNewEvidence.length > 0 || _pnlRecoveryV2NewEvidence.length > 0
+  // MORALIS-MISSING-BUY-RECOVERY: targeted ERC20-transfer recovery for synthetic lots. This is
+  // intentionally token-scoped and page-capped; it does not raise the normal 500-event scan cap and
+  // it does not promote anything until the existing historical pricing + FIFO checks verify price
+  // independence. Moralis is tried before broader log/receipt expansion because wallet-side ERC20
+  // transfers directly expose older inbound target-token buys for synthetic-cost-basis lots.
+  const _moralisHistoricalMaxPagesPerToken = 2
+  const _moralisHistoricalMaxTotalPages = _walletValueTier === 'high_value' ? 6 : 4
+  const _moralisHistoricalPageSize = 100
+  const _moralisHistoricalTargetTokens = _syntheticTargetExtraEligibleTokens.slice(0, _walletValueTier === 'high_value' ? 4 : 2)
+  let _moralisHistoricalAttempted = false
+  let _moralisHistoricalPagesUsed = 0
+  let _moralisHistoricalEventsFetched = 0
+  let _moralisHistoricalPriorBuysFound = 0
+  let _moralisHistoricalStopReason: string | null = null
+  let _moralisHistoricalNewEvidence: WalletTxEvidence[] = []
+  const _moralisHistoricalTargetTokensRecovered = new Set<string>()
+  const _toMoralisChain = (chain: string): MoralisChain | null => {
+    const c = normalizeChain(chain)
+    return c === 'base' || c === 'eth' || c === 'polygon' || c === 'bsc' || c === 'arbitrum' || c === 'optimism' || c === 'avalanche' || c === 'fantom' || c === 'cronos' || c === 'gnosis' ? c as MoralisChain : null
+  }
+  const _moralisHistoricalSkipReason = !_syntheticLotsDetected ? 'no_synthetic_lots'
+    : _earlyRealBackedClosedLots >= 10 ? 'public_grade_lots_already_sufficient'
+    : _moralisHistoricalTargetTokens.length === 0 ? 'no_synthetic_targets'
+    : !Boolean(process.env.MORALIS_API_KEY) ? 'moralis_not_configured'
+    : _sharedHistoricalBudgetRemaining() <= 0 ? 'budget_exhausted'
+    : null
+  if (_moralisHistoricalSkipReason === null) {
+    _moralisHistoricalAttempted = true
+    const _moralisEvents: PnlEvent[] = []
+    outerMoralis: for (const contract of _moralisHistoricalTargetTokens) {
+      const lots = _syntheticClosedLots.filter(l => l.tokenAddress.toLowerCase() === contract)
+      const chain = _toMoralisChain(lots[0]?.chain ?? 'base')
+      if (!chain) continue
+      let cursor: string | undefined
+      for (let pageNo = 0; pageNo < _moralisHistoricalMaxPagesPerToken; pageNo++) {
+        if (_moralisHistoricalPagesUsed >= _moralisHistoricalMaxTotalPages || _sharedHistoricalBudgetRemaining() <= 0) {
+          _moralisHistoricalStopReason = 'budget_cap'
+          break outerMoralis
+        }
+        const page = await fetchMoralisTransfers(addrNorm, chain, _moralisHistoricalPageSize, cursor)
+        _trackCall('moralis', 'erc20_transfers', page.cacheHit, `moralis:transfers:synthRecovery:${chain}:${contract}:p${pageNo}:${addrNorm}`)
+        _moralisHistoricalAttempted = true
+        _moralisHistoricalPagesUsed++
+        _sharedHistoricalCreditsUsed++
+        if (!page.usable) { _moralisHistoricalStopReason = page.reason || 'fetch_failed'; break }
+        _moralisHistoricalEventsFetched += page.rawCount
+        const targetItems = page.items.filter(it => (it.token_address ?? '').toLowerCase() === contract)
+        const { events: normalized } = normalizeMoralisTransfers(targetItems, addrNorm, normalizeChainForGoldrush(chain))
+        const recovery = buildSyntheticTargetPriorBuyRecovery(normalized, lots)
+        _moralisEvents.push(...normalized)
+        if (recovery.newCandidateEvidence.length > 0) {
+          _moralisHistoricalPriorBuysFound += recovery.newCandidateEvidence.length
+          _moralisHistoricalTargetTokensRecovered.add(contract)
+          _moralisHistoricalNewEvidence = [
+            ..._moralisHistoricalNewEvidence,
+            ...recovery.newCandidateEvidence.filter(se => !_moralisHistoricalNewEvidence.some(e => e.txHash === se.txHash && e.contract === se.contract && e.direction === se.direction)),
+          ]
+          _moralisHistoricalStopReason = 'real_prior_buy_found'
+          break
+        }
+        if (!page.nextCursor) { _moralisHistoricalStopReason = 'cursor_null'; break }
+        cursor = page.nextCursor
+      }
+    }
+    if (!_moralisHistoricalStopReason) _moralisHistoricalStopReason = _moralisHistoricalPagesUsed >= _moralisHistoricalMaxTotalPages ? 'budget_cap' : 'no_prior_buy_found_after_targeted_pages'
+  } else {
+    _moralisHistoricalStopReason = _moralisHistoricalSkipReason
+  }
+  if (_historicalCoverageDebug) {
+    _historicalCoverageDebug.moralisHistoricalConfigured = Boolean(process.env.MORALIS_API_KEY)
+    _historicalCoverageDebug.moralisHistoricalAttempted = _moralisHistoricalAttempted
+    _historicalCoverageDebug.moralisHistoricalPagesUsed = _moralisHistoricalPagesUsed
+    _historicalCoverageDebug.moralisHistoricalEventsFetched = _moralisHistoricalEventsFetched
+    _historicalCoverageDebug.moralisHistoricalPriorBuysFound = _moralisHistoricalPriorBuysFound
+    _historicalCoverageDebug.moralisHistoricalStopReason = _moralisHistoricalStopReason
+    _historicalCoverageDebug.moralisReason = _moralisHistoricalAttempted ? (_moralisHistoricalStopReason ?? 'attempted') : (_moralisHistoricalStopReason ?? 'not_attempted')
+  }
+
+  const _finalCandidateEvidence = _syntheticTargetExtraNewEvidence.length > 0 || _pnlRecoveryV2NewEvidence.length > 0 || _moralisHistoricalNewEvidence.length > 0
     ? [
         ..._hcMergedCandidateEvidence,
         ..._syntheticTargetExtraNewEvidence.filter(
@@ -12552,16 +12657,21 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
           se => !_hcMergedCandidateEvidence.some(e => e.txHash === se.txHash && e.contract === se.contract && e.direction === se.direction) &&
             !_syntheticTargetExtraNewEvidence.some(e => e.txHash === se.txHash && e.contract === se.contract && e.direction === se.direction)
         ),
+        ..._moralisHistoricalNewEvidence.filter(
+          se => !_hcMergedCandidateEvidence.some(e => e.txHash === se.txHash && e.contract === se.contract && e.direction === se.direction) &&
+            !_syntheticTargetExtraNewEvidence.some(e => e.txHash === se.txHash && e.contract === se.contract && e.direction === se.direction) &&
+            !_pnlRecoveryV2NewEvidence.some(e => e.txHash === se.txHash && e.contract === se.contract && e.direction === se.direction)
+        ),
       ]
     : _hcMergedCandidateEvidence
-  const _finalAllHistoricalEvidence = _syntheticTargetExtraNewEvidence.length > 0 || _pnlRecoveryV2NewEvidence.length > 0
-    ? [..._hcMergedAllHistoricalEvidence, ..._syntheticTargetExtraNewEvidence, ..._pnlRecoveryV2NewEvidence]
+  const _finalAllHistoricalEvidence = _syntheticTargetExtraNewEvidence.length > 0 || _pnlRecoveryV2NewEvidence.length > 0 || _moralisHistoricalNewEvidence.length > 0
+    ? [..._hcMergedAllHistoricalEvidence, ..._syntheticTargetExtraNewEvidence, ..._pnlRecoveryV2NewEvidence, ..._moralisHistoricalNewEvidence]
     : _hcMergedAllHistoricalEvidence
 
   // Phase 6C: Historical pricing preview — price the Phase 6B new swap candidates plus any
   // synthetic-target direct-recovered prior buys merged in above (normal pass + targeted extra pages).
   const { summary: walletHistoricalPricingPreviewSummary, debug: _historicalPricingPreviewDebug, pricedEvidence: _hcNewPricedEvidence } =
-    _runHistoricalCoverage && _finalCandidateEvidence.length > 0
+    _finalCandidateEvidence.length > 0
       ? await buildHistoricalPricingPreview(_finalCandidateEvidence, _finalAllHistoricalEvidence, _reqPriceCache, _sharedHistoricalBudgetRemaining())
       : { summary: { status: 'not_requested' as const, requested: false, newSwapCandidateEvents: 0, pricedHistoricalCandidates: 0, unpricedHistoricalCandidates: 0, stableLegPricedEvents: 0, wethLegPricedEvents: 0, historicalPricedEvents: 0, priceAttemptLimitReached: false, readyForHistoricalFifoPreview: false, missing: ['historical_coverage_not_requested'], reason: null }, debug: undefined, pricedEvidence: [] as WalletTxEvidence[] }
   const _syntheticTargetPriorBuysPriced = _syntheticTargetRecovery
@@ -12570,6 +12680,10 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _syntheticTargetExtraPriorBuysPriced = _syntheticTargetExtraNewEvidence.length > 0
     ? _hcNewPricedEvidence.filter(e => _syntheticTargetExtraNewEvidence.some(se => se.txHash === e.txHash && se.contract === e.contract)).length
     : 0
+  const _moralisHistoricalPriorBuysPriced = _moralisHistoricalNewEvidence.length > 0
+    ? _hcNewPricedEvidence.filter(e => _moralisHistoricalNewEvidence.some(se => se.txHash === e.txHash && se.contract === e.contract)).length
+    : 0
+  if (_historicalCoverageDebug) _historicalCoverageDebug.moralisHistoricalPriorBuysPriced = _moralisHistoricalPriorBuysPriced
   tokenMeter.measure('priceInference', walletHistoricalPricingPreviewSummary, _historicalPricingPreviewDebug, _hcNewPricedEvidence)
   // Track historical pricing preview price calls
   for (let _hp2 = 0; _hp2 < (_historicalPricingPreviewDebug?.priceAttempts ?? 0); _hp2++) {
@@ -12579,7 +12693,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
 
   // Phase 6D: Historical FIFO preview — run FIFO on baseline + new priced historical candidates
   const { summary: walletHistoricalFifoPreviewSummary, debug: _historicalFifoPreviewDebug, previewClosedLots: _hcPreviewClosedLots } =
-    _runHistoricalCoverage && _hcNewPricedEvidence.length > 0
+    _hcNewPricedEvidence.length > 0
       ? buildHistoricalFifoPreview(_pricedEvidence, _hcNewPricedEvidence, _closedLots, walletTradeStatsSummary.realizedPnlUsd, walletTradeStatsSummary.realizedPnlPercent ?? null, walletHistoricalPricingPreviewSummary.unpricedHistoricalCandidates)
       : { summary: { status: 'not_requested' as const, requested: false, baselineClosedLots: 0, previewClosedLots: 0, addedClosedLots: 0, baselineRealizedPnlUsd: null, previewRealizedPnlUsd: null, addedRealizedPnlUsd: null, baselineRealizedPnlPercent: null, previewRealizedPnlPercent: null, winningClosedLotsPreview: 0, losingClosedLotsPreview: 0, breakEvenClosedLotsPreview: 0, uniqueTokensPreview: 0, previewConfidence: 'low' as const, readyForHistoricalTradeStatsPreview: false, safeToPromoteToPublicStats: false, missing: ['historical_coverage_not_requested'], reason: null }, debug: undefined, previewClosedLots: [] as WalletClosedLot[] }
 
@@ -12600,7 +12714,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
 
   // Phase 6E: Safe historical stats promotion
   const _shouldPromote =
-    _runHistoricalCoverage &&
+    (_runHistoricalCoverage || _moralisHistoricalAttempted || _syntheticTargetExtraRecoveryAttempted || walletPnlRecoveryV2Debug.attempted) &&
     walletHistoricalFifoPreviewSummary.safeToPromoteToPublicStats === true &&
     walletHistoricalFifoPreviewSummary.previewClosedLots > walletHistoricalFifoPreviewSummary.baselineClosedLots &&
     walletHistoricalFifoPreviewSummary.previewRealizedPnlUsd !== null &&
@@ -12781,14 +12895,14 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _syntheticLotsAfterHistorical = _syntheticLotsAfterSourceLots.filter(
     l => l.evidence?.entrySource === 'synthetic' || (l.missingReasons ?? []).includes('fifo_backfilled_buy')
   ).length
-  const _realPriorBuysRecoveredForSyntheticLots = _runHistoricalCoverage
+  const _realPriorBuysRecoveredForSyntheticLots = (_runHistoricalCoverage || _moralisHistoricalAttempted || _syntheticTargetExtraRecoveryAttempted || walletPnlRecoveryV2Debug.attempted)
     ? Math.max(0, _syntheticLotsBeforeHistorical - _syntheticLotsAfterHistorical)
     : 0
   // PNL-RECOVERY-FIX-7: targeted recovery (extra-page or receipt-based V2) can run even when the
   // broad historical pass itself was skipped (e.g. missing-cost-basis guard). Once any targeted
   // recovery actually attempted, the stale `_skipReasons[0]` (e.g. wallet_value_below_100) from the
   // broad-pass eligibility check must never override the real, specific stop reason.
-  const _anyTargetedRecoveryAttempted = _syntheticTargetExtraRecoveryAttempted || walletPnlRecoveryV2Debug.attempted
+  const _anyTargetedRecoveryAttempted = _syntheticTargetExtraRecoveryAttempted || walletPnlRecoveryV2Debug.attempted || _moralisHistoricalAttempted
   const _syntheticRecoverySkippedReason = !_syntheticLotsDetected
     ? null
     : _realPriorBuysRecoveredForSyntheticLots > 0
@@ -12812,6 +12926,20 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     syntheticTargetHistoricalWalletOutboundEvents: _syntheticTargetRecovery?.debug.syntheticTargetHistoricalWalletOutboundEvents ?? 0,
     syntheticTargetPriorBuysFound: _syntheticTargetRecovery?.debug.syntheticTargetPriorBuysFound ?? 0,
     syntheticTargetPriorBuysPriced: _syntheticTargetPriorBuysPriced,
+    moralisHistoricalAttempted: _moralisHistoricalAttempted,
+    moralisHistoricalPagesUsed: _moralisHistoricalPagesUsed,
+    moralisHistoricalEventsFetched: _moralisHistoricalEventsFetched,
+    moralisHistoricalPriorBuysFound: _moralisHistoricalPriorBuysFound,
+    moralisHistoricalPriorBuysPriced: _moralisHistoricalPriorBuysPriced,
+    moralisHistoricalStopReason: _moralisHistoricalStopReason,
+    targetTokensAttempted: _moralisHistoricalTargetTokens,
+    targetTokensRecovered: [..._moralisHistoricalTargetTokensRecovered],
+    syntheticLotsBeforeRecovery: _syntheticLotsBeforeHistorical,
+    syntheticLotsAfterRecovery: _syntheticLotsAfterHistorical,
+    realPriorBuysRecovered: _realPriorBuysRecoveredForSyntheticLots,
+    publicGradeLotsBeforeRecovery: _earlyRealBackedClosedLots,
+    publicGradeLotsAfterRecovery: walletHistoricalFifoPreviewSummary.safeToPromoteToPublicStats ? walletHistoricalFifoPreviewSummary.previewClosedLots : _earlyRealBackedClosedLots,
+    recoverySkippedReason: _moralisHistoricalAttempted ? null : _moralisHistoricalStopReason,
     syntheticTargetDropBreakdown: _syntheticTargetRecovery?.debug.syntheticTargetDropBreakdown ?? {},
     // SYNTH-RECOVERY-FIX-12: targeted extra-page recovery debug (synthetic lots' own target
     // tokens only, max 2 extra pages) — see block above where _syntheticTargetExtra* is computed.
@@ -12849,7 +12977,10 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
           { reason: 'duplicate', count: _historicalCoverageDebug.logNormalizationDebug.historicalRawLogsDroppedDuplicate },
         ].sort((a, b) => b.count - a.count)
       : [],
-    sampleSyntheticTargetPriorBuys: _syntheticTargetRecovery?.debug.sampleSyntheticTargetPriorBuys ?? [],
+    sampleSyntheticTargetPriorBuys: [
+      ...(_syntheticTargetRecovery?.debug.sampleSyntheticTargetPriorBuys ?? []),
+      ..._moralisHistoricalNewEvidence.slice(0, 5).map(e => ({ txHash: e.txHash, contract: e.contract, symbol: e.symbol, amount: e.amount, timestamp: e.timestamp })),
+    ].slice(0, 5),
   }
 
   // PNL-SAFETY-FIX-1: a closed lot is NOT real-backed (i.e. is a synthetic FIFO safety
