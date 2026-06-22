@@ -15151,6 +15151,13 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         ts.pnlIntegrityStatus = _p6Integrity.status
         ts.scoreUnlocked = false
         ts.readyForWalletScore = false
+        // PUBLIC-PNL-INTEGRITY-GATE-14: walletTradeStatsSummary.realizedPnlUsd/winRatePercent stay
+        // populated — page.tsx's "Real trade evidence" sentences read them as internal/raw FIFO
+        // disclosure (not a public profit claim) and must keep working. Add explicit raw-only
+        // aliases so any public consumer can unambiguously prefer the raw-labeled name instead of
+        // the bare field once integrity is hard-invalid.
+        if (ts.realizedPnlUsd !== undefined) ts.rawRealizedPnlUsd = ts.realizedPnlUsd
+        if (ts.winRatePercent !== undefined) ts.rawWinRatePercent = ts.winRatePercent
       }
       // PUBLIC-PNL-INTEGRITY-GATE-5: closed-trade sample arrays are built well before the
       // integrity verdict exists (same pre-integrity pass as walletTradeStatsSummary/
@@ -15161,8 +15168,22 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         if (!Array.isArray(samples)) return
         for (const sample of samples) {
           if (sample && typeof sample === 'object') {
-            (sample as any).publicPnlStatus = 'open_check_integrity_invalid'
-            ;(sample as any).includedInPublicStats = false
+            const s = sample as any
+            s.publicPnlStatus = 'open_check_integrity_invalid'
+            s.includedInPublicStats = false
+            s.pnlLockedReason = 'PnL integrity check failed'
+            // PUBLIC-PNL-INTEGRITY-GATE-15: realizedPnlUsd/realizedPnlPercent on sample lots are
+            // public-facing profit numbers (UI/export/Clark read them directly) — move them under
+            // raw-only fields instead of deleting them, so internal diagnostics/tests keep the
+            // underlying data without the public-safe field ever looking like verified public PnL.
+            if (s.realizedPnlUsd !== undefined) {
+              s.rawRealizedPnlUsd = s.realizedPnlUsd
+              s.realizedPnlUsd = null
+            }
+            if (s.realizedPnlPercent !== undefined) {
+              s.rawRealizedPnlPercent = s.realizedPnlPercent
+              s.realizedPnlPercent = null
+            }
           }
         }
       }

@@ -1,4 +1,5 @@
 import type { WalletBehavior, WalletClosedLot, WalletSnapshot } from './walletSnapshot'
+import { readableTradeStyleLabel } from './walletIdentity'
 
 type WalletTradeStatsSummary = WalletSnapshot['walletTradeStatsSummary']
 
@@ -26,18 +27,36 @@ function popStdDev(values: number[]): number {
 // ---------------------------------------------------------------------------
 
 export type WalletPersonalityResult = {
-  personality: 'Sniper' | 'Smart Money' | 'Rotator' | 'Degen' | 'Not enough data'
+  personality: string
   scores: { sniperScore: number; smartMoneyScore: number; rotatorScore: number; degenScore: number } | null
   summary: string
+  basis: 'behavior_only' | 'pnl_verified'
+  pnlUsed: boolean
+  profitSkillStatus: 'not_proven' | 'integrity_invalid_not_proven' | 'unlocked'
+  signals?: string[]
+  limitations?: string[]
+}
+
+type PersonalityBehaviorEvidence = {
+  tradeIntelStatus?: string | null
+  tradeIntelLots?: number | null
+  walletSideTransactions?: number | null
+  swapLikeWalletTransactions?: number | null
+  uniqueTokensTraded?: number | null
+  repeatedTokenPatterns?: string[] | null
+  primaryStyle?: string | null
+  botClassification?: string | null
 }
 
 export function computeWalletPersonality(
   closedLots: WalletClosedLot[],
   walletBehavior: WalletBehavior | null,
-  tradeStats: WalletTradeStatsSummary | null
+  tradeStats: WalletTradeStatsSummary | null,
+  behaviorEvidence: PersonalityBehaviorEvidence = {}
 ): WalletPersonalityResult {
   const missing = tradeStats?.missing ?? []
   const publicPnlStatus = tradeStats?.publicPnlStatus as string | undefined
+  const pnlIntegrityInvalid = (tradeStats as any)?.pnlIntegrityStatus === 'invalid' || publicPnlStatus === 'open_check_integrity_invalid'
   const lockedByPublicEvidence = tradeStats?.readyForWalletScore !== true
     || tradeStats?.scoreUnlocked !== true
     || (tradeStats?.performanceClosedLots ?? closedLots.length) < 10
@@ -45,14 +64,59 @@ export function computeWalletPersonality(
     || missing.includes('win_rate_locked_below_threshold')
     || missing.includes('sample_size_below_win_rate_threshold')
     || ['open_check', 'near_flat_verified_sample', 'activity_only', 'missing_cost_basis', 'limited_verified_sample'].includes(publicPnlStatus ?? '')
-    || (tradeStats as any)?.pnlIntegrityStatus === 'invalid'
+    || pnlIntegrityInvalid
   if (closedLots.length < 3 || lockedByPublicEvidence) {
+    // BEHAVIOR-ONLY-PERSONALITY: the PnL-gated path above is locked (small/partial public sample,
+    // or PnL integrity failed), but tradeIntelligence may still carry strong behavior evidence
+    // (lots, swap-like txs, repeated token rotation) — use that instead of defaulting to
+    // "Not enough data" whenever behavior evidence is actually strong. Mirrors computeBotScore's
+    // behavior-only fallback so personality and bot score never disagree about data availability.
+    const tradeIntelLots = behaviorEvidence.tradeIntelLots ?? 0
+    const swapLikeTxs = behaviorEvidence.swapLikeWalletTransactions ?? 0
+    const walletSideTxs = behaviorEvidence.walletSideTransactions ?? 0
+    const uniqueTokens = behaviorEvidence.uniqueTokensTraded ?? 0
+    const repeatedPatterns = behaviorEvidence.repeatedTokenPatterns ?? []
+    const tradeIntelReady = behaviorEvidence.tradeIntelStatus === 'ready' || behaviorEvidence.tradeIntelStatus === 'partial'
+    const enoughBehaviorEvidence = tradeIntelReady && (tradeIntelLots >= 20 || walletSideTxs >= 50 || swapLikeTxs >= 30)
+    const profitSkillStatus: WalletPersonalityResult['profitSkillStatus'] = pnlIntegrityInvalid ? 'integrity_invalid_not_proven' : 'not_proven'
+
+    if (!enoughBehaviorEvidence) {
+      return {
+        personality: 'Not enough data',
+        scores: null,
+        summary: lockedByPublicEvidence
+          ? 'Public performance sample is too small or partial to classify trading personality.'
+          : 'Not enough closed-trade history yet to classify this wallet\'s trading personality.',
+        basis: 'behavior_only',
+        pnlUsed: false,
+        profitSkillStatus,
+      }
+    }
+
+    const styleLabel = readableTradeStyleLabel(behaviorEvidence.primaryStyle) ?? 'Mixed behavior'
+    const botLike = behaviorEvidence.botClassification === 'Likely bot' || behaviorEvidence.botClassification === 'High-frequency bot'
+    const personality = botLike ? `${styleLabel} / Bot-like Rotator` : styleLabel
+
+    const signals: string[] = []
+    if (tradeIntelLots > 0) signals.push(`${tradeIntelLots} behavior lots`)
+    if (swapLikeTxs > 0) signals.push(`${swapLikeTxs} swap-like transactions`)
+    if (repeatedPatterns.length > 0) signals.push(`Repeated token rotation: ${repeatedPatterns.slice(0, 5).join(', ')}`)
+    if (uniqueTokens > 0) signals.push(`${uniqueTokens} unique tokens traded`)
+
+    const profitReason = pnlIntegrityInvalid
+      ? 'Profit skill is not proven because PnL integrity failed.'
+      : 'Profit skill is not proven because public PnL sample is too small or partial.'
+    const summary = `Strong behavior evidence from ${tradeIntelLots} behavior lots, ${swapLikeTxs} swap-like transactions, ${repeatedPatterns.length > 0 ? 'repeated token rotation, ' : ''}and ${uniqueTokens} unique tokens. ${profitReason}`
+
     return {
-      personality: 'Not enough data',
+      personality,
       scores: null,
-      summary: lockedByPublicEvidence
-        ? 'Public performance sample is too small or partial to classify trading personality.'
-        : 'Not enough closed-trade history yet to classify this wallet\'s trading personality.',
+      summary,
+      basis: 'behavior_only',
+      pnlUsed: false,
+      profitSkillStatus,
+      signals,
+      limitations: [profitReason],
     }
   }
 
@@ -65,6 +129,9 @@ export function computeWalletPersonality(
       personality: 'Not enough data',
       scores: null,
       summary: 'Verified closed trades exist, but are too small (dust-sized) to classify this wallet\'s trading personality.',
+      basis: 'behavior_only',
+      pnlUsed: false,
+      profitSkillStatus: 'not_proven',
     }
   }
 
@@ -145,7 +212,7 @@ export function computeWalletPersonality(
 
   if (excluded > 0) summary += ` Based on ${n} verified trades; ${excluded} matched lots excluded.`
 
-  return { personality, scores, summary }
+  return { personality, scores, summary, basis: 'pnl_verified', pnlUsed: true, profitSkillStatus: 'unlocked' }
 }
 
 // ---------------------------------------------------------------------------

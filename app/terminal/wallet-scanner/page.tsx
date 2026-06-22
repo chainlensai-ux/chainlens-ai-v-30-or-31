@@ -425,11 +425,19 @@ type WalletResult = {
     pnlUnavailableReason?: string | null
     pnlDecisive?: boolean
     includedInPublicStats?: boolean
+    pnlLockedReason?: string | null
+    rawRealizedPnlUsd?: number | null
+    rawRealizedPnlPercent?: number | null
   }>
   walletPersonality?: {
-    personality: 'Sniper' | 'Smart Money' | 'Rotator' | 'Degen' | 'Not enough data'
+    personality: string
     scores: { sniperScore: number; smartMoneyScore: number; rotatorScore: number; degenScore: number } | null
     summary: string
+    basis?: 'behavior_only' | 'pnl_verified'
+    pnlUsed?: boolean
+    profitSkillStatus?: 'not_proven' | 'integrity_invalid_not_proven' | 'unlocked'
+    signals?: string[]
+    limitations?: string[]
   }
   walletPnlWindows?: {
     '3d': { realizedPnlUsd: number | null; closedLots: number; winRatePercent: number | null; winRateStatus?: 'unlocked' | 'locked_small_sample' | 'locked_integrity_invalid'; publicPnlStatus?: string; reason?: string } | { closedLots: 0; fallback: string }
@@ -3125,6 +3133,9 @@ export default function WalletScannerPage() {
                           {personalityIsDerived && (
                             <p className="wpv3-support" style={{ marginBottom: '8px', color: '#fbbf24' }}>Performance classification remains locked until enough verified closed lots exist.</p>
                           )}
+                          {wp.basis === 'behavior_only' && wp.profitSkillStatus !== 'unlocked' && (
+                            <p className="wpv3-support" style={{ marginBottom: '8px', color: '#fbbf24' }}>Behavior-only read. Profit skill locked because {wp.profitSkillStatus === 'integrity_invalid_not_proven' ? 'PnL integrity failed' : 'public PnL sample is too small or partial'}.</p>
+                          )}
                           {scoreRows.length > 0 && (
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                               {scoreRows.map(row => (
@@ -3834,10 +3845,16 @@ export default function WalletScannerPage() {
                               </div>
                               <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                                 {samples.map((s, i) => {
-                                  const pnlColor = s.realizedPnlUsd === null ? '#94a3b8' : s.realizedPnlUsd >= 0 ? '#4ade80' : '#f87171'
+                                  // SAMPLE-LOT-INTEGRITY-FIX: when integrity is hard-invalid, the public-safe
+                                  // realizedPnlUsd/realizedPnlPercent fields are nulled at the source — fall
+                                  // back to the raw-labeled aliases for this internal "matched lots" disclosure,
+                                  // which is explicitly scoped (caption above) as non-public matched PnL.
+                                  const lotPnlUsd = s.realizedPnlUsd ?? s.rawRealizedPnlUsd ?? null
+                                  const lotPnlPercent = s.realizedPnlPercent ?? s.rawRealizedPnlPercent ?? null
+                                  const pnlColor = lotPnlUsd === null ? '#94a3b8' : lotPnlUsd >= 0 ? '#4ade80' : '#f87171'
                                   const holdStr = fmtHoldTime(s.holdingTimeSeconds)
-                                  const pnlStr = s.realizedPnlUsd !== null ? `${s.realizedPnlUsd >= 0 ? '+' : '-'}$${Math.abs(s.realizedPnlUsd).toFixed(2)}` : '—'
-                                  const pctStr = s.realizedPnlPercent !== null ? ` (${s.realizedPnlPercent >= 0 ? '+' : ''}${s.realizedPnlPercent.toFixed(1)}%)` : ''
+                                  const pnlStr = lotPnlUsd !== null ? `${lotPnlUsd >= 0 ? '+' : '-'}$${Math.abs(lotPnlUsd).toFixed(2)}` : '—'
+                                  const pctStr = lotPnlPercent !== null ? ` (${lotPnlPercent >= 0 ? '+' : ''}${lotPnlPercent.toFixed(1)}%)` : ''
                                   const vStatus = s.verificationStatus ?? 'not_available'
                                   const entryUrl = s.entryTxHash ? explorerBase(s.chain, s.entryTxHash) : null
                                   const exitUrl = s.exitTxHash ? explorerBase(s.chain, s.exitTxHash) : null

@@ -1306,10 +1306,38 @@ export async function POST(req: Request) {
       l?.coveragePercent !== 0
     )
     const _missingCostBasisForIntelligence = snapshot.walletTradeStatsSummary?.pnlUnavailableReason === 'missing_cost_basis' || snapshot.walletLotSummary?.pnlUnavailableReason === 'missing_cost_basis'
+    // BEHAVIOR-ONLY-PERSONALITY: computeBotScore runs first so its classification can feed the
+    // wallet personality's bot-like-rotator label below — both reads must agree on automation.
+    snapshot.walletBotScore = computeBotScore(
+      _performanceLotsForIntelligence,
+      (snapshot as any).walletBehavior ?? null,
+      { ...((snapshot as any).walletTradeStatsSummary ?? {}), pnlIntegrityStatus: snapshot.pnlIntegrityCheck?.status } as any,
+      {
+        walletSideTransactions: snapshot.walletActivitySummary?.walletSideTransactions ?? snapshot.walletTradeReconstructionFunnel?.walletSideTransactions ?? 0,
+        swapLikeWalletTransactions: snapshot.walletActivitySummary?.swapLikeWalletTransactions ?? 0,
+        tradeIntelLots: snapshot.tradeIntelligence?.tradeIntelLots ?? 0,
+        uniqueTokensTraded: snapshot.tradeIntelligence?.signals?.uniqueTokensTraded ?? snapshot.walletTradeStatsSummary?.uniqueTokensTraded ?? null,
+        avgHoldingTimeSeconds: snapshot.tradeIntelligence?.signals?.avgHoldingTimeSeconds ?? snapshot.walletTradeStatsSummary?.avgHoldingTimeSeconds ?? null,
+        repeatedTokenPatterns: snapshot.tradeIntelligence?.repeatedTokenPatterns ?? [],
+        sameTxInboundOutboundCandidates: snapshot.walletSwapSummary?.sameTxInboundOutboundCandidates ?? 0,
+        topCounterparties: snapshot.walletFacts?.flowRead?.topCounterparties ?? [],
+        activityWindowDays: snapshot.walletActivitySummary?.trueActivityWindowDays ?? null,
+      }
+    )
     snapshot.walletPersonality = computeWalletPersonality(
       _missingCostBasisForIntelligence || snapshot.publicPnlStatus === 'near_flat_verified_sample' || (snapshot.performanceClosedLots ?? 0) < 5 ? [] : _performanceLotsForIntelligence,
       (snapshot as any).walletBehavior ?? null,
-      { ...((snapshot as any).walletTradeStatsSummary ?? {}), pnlIntegrityStatus: snapshot.pnlIntegrityCheck?.status } as any
+      { ...((snapshot as any).walletTradeStatsSummary ?? {}), pnlIntegrityStatus: snapshot.pnlIntegrityCheck?.status } as any,
+      {
+        tradeIntelStatus: snapshot.tradeIntelligence?.status ?? null,
+        tradeIntelLots: snapshot.tradeIntelligence?.tradeIntelLots ?? 0,
+        walletSideTransactions: snapshot.walletActivitySummary?.walletSideTransactions ?? snapshot.walletTradeReconstructionFunnel?.walletSideTransactions ?? 0,
+        swapLikeWalletTransactions: snapshot.walletActivitySummary?.swapLikeWalletTransactions ?? 0,
+        uniqueTokensTraded: snapshot.tradeIntelligence?.signals?.uniqueTokensTraded ?? snapshot.walletTradeStatsSummary?.uniqueTokensTraded ?? null,
+        repeatedTokenPatterns: snapshot.tradeIntelligence?.repeatedTokenPatterns ?? [],
+        primaryStyle: snapshot.tradeIntelligence?.primaryStyle ?? null,
+        botClassification: snapshot.walletBotScore?.classification ?? null,
+      }
     )
     // Windowed PnL is public-facing, so it must exclude synthetic/cost-basis-missing lots —
     // a synthetic break-even lot showing $0 PnL would otherwise look like a verified real result.
@@ -1329,23 +1357,6 @@ export async function POST(req: Request) {
         }
       }
     }
-    snapshot.walletBotScore = computeBotScore(
-      _performanceLotsForIntelligence,
-      (snapshot as any).walletBehavior ?? null,
-      { ...((snapshot as any).walletTradeStatsSummary ?? {}), pnlIntegrityStatus: snapshot.pnlIntegrityCheck?.status } as any,
-      {
-        walletSideTransactions: snapshot.walletActivitySummary?.walletSideTransactions ?? snapshot.walletTradeReconstructionFunnel?.walletSideTransactions ?? 0,
-        swapLikeWalletTransactions: snapshot.walletActivitySummary?.swapLikeWalletTransactions ?? 0,
-        tradeIntelLots: snapshot.tradeIntelligence?.tradeIntelLots ?? 0,
-        uniqueTokensTraded: snapshot.tradeIntelligence?.signals?.uniqueTokensTraded ?? snapshot.walletTradeStatsSummary?.uniqueTokensTraded ?? null,
-        avgHoldingTimeSeconds: snapshot.tradeIntelligence?.signals?.avgHoldingTimeSeconds ?? snapshot.walletTradeStatsSummary?.avgHoldingTimeSeconds ?? null,
-        repeatedTokenPatterns: snapshot.tradeIntelligence?.repeatedTokenPatterns ?? [],
-        sameTxInboundOutboundCandidates: snapshot.walletSwapSummary?.sameTxInboundOutboundCandidates ?? 0,
-        topCounterparties: snapshot.walletFacts?.flowRead?.topCounterparties ?? [],
-        activityWindowDays: snapshot.walletActivitySummary?.trueActivityWindowDays ?? null,
-      }
-    )
-
     const _scanBudgetDebug = snapshot._diagnostics?.walletScanBudgetDebug ?? null
     const _walletValueTier = getWalletValueTier(Number(snapshot.totalValue ?? 0))
     const _publicBudget: any = buildPublicWalletScanBudget(scanModeKey, historicalCoverageRequested, _scanBudgetDebug?.walletValueTier ?? _walletValueTier, adminOverrideRequested)
