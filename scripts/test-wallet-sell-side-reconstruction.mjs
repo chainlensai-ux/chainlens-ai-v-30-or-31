@@ -57,6 +57,7 @@ for (const field of [
 }
 assert.match(snap, /candidateOutboundLegs: _sellSideReconDebug\.candidateCount/, 'funnel exposes candidateOutboundLegs so outbound candidates are not hidden as zero sell legs')
 assert.match(snap, /receiptProvenSellLegs: _sellSideReconDebug\.promotedSellEvents/, 'funnel separates receipt-proven sell legs from outbound candidates')
+assert.match(snap, /receiptProvenQuoteSellEvents: _sellSideReconDebug\.promotedSellEvents/, 'funnel clearly names receipt-proven quote sell events')
 assert.match(snap, /publicSellEvents: _performanceClosedLotsFinal\.length/, 'funnel separates public sell events from raw outbound candidates')
 
 

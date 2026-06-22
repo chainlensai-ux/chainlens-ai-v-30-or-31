@@ -46,10 +46,9 @@ assert.match(snap, /s\.pnlLockedReason = 'PnL integrity check failed'/, 'sample 
 assert.match(snap, /s\.rawRealizedPnlUsd = s\.realizedPnlUsd\s*\n\s*s\.realizedPnlUsd = null/, 'sample lot sanitizer nulls realizedPnlUsd and preserves it under rawRealizedPnlUsd')
 assert.match(snap, /s\.rawRealizedPnlPercent = s\.realizedPnlPercent\s*\n\s*s\.realizedPnlPercent = null/, 'sample lot sanitizer nulls realizedPnlPercent and preserves it under rawRealizedPnlPercent')
 
-// page.tsx's "Matched Closed Trades" panel must fall back to the raw aliases so internal disclosure
-// still renders once the public-safe fields are nulled.
-assert.match(page, /const lotPnlUsd = s\.realizedPnlUsd \?\? s\.rawRealizedPnlUsd \?\? null/, 'page.tsx matched-trades panel falls back to rawRealizedPnlUsd when realizedPnlUsd is nulled')
-assert.match(page, /const lotPnlPercent = s\.realizedPnlPercent \?\? s\.rawRealizedPnlPercent \?\? null/, 'page.tsx matched-trades panel falls back to rawRealizedPnlPercent when realizedPnlPercent is nulled')
+// page.tsx's "Matched Closed Trades" panel must not fall back to raw aliases when public PnL is locked.
+assert.match(page, /const lotPnlUsd = samplePnlLocked \? null : \(s\.realizedPnlUsd \?\? null\)/, 'page.tsx matched-trades panel does not fall back to rawRealizedPnlUsd when public PnL is locked')
+assert.match(page, /const lotPnlPercent = samplePnlLocked \? null : \(s\.realizedPnlPercent \?\? null\)/, 'page.tsx matched-trades panel does not fall back to rawRealizedPnlPercent when public PnL is locked')
 
 // 9: walletProfile.reasons must not include the stale "Trading behavior not classified" reason
 // once tradeIntelligence resolves a real style label (already fixed in the prior pass; verify it
