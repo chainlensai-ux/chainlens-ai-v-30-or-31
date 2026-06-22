@@ -6,7 +6,7 @@ const ui = fs.readFileSync('app/terminal/wallet-scanner/page.tsx', 'utf8')
 
 // HIGH-ACTIVITY-RECON-1: an early, budget-time proxy for the "heavy activity, thin reconstruction"
 // failure mode drives ONLY a small, hard-capped page expansion — never FIFO/PnL/scoring.
-assert.match(snap, /const _earlyHighActivityPoorReconstruction = Boolean\(\s*\n\s*\(walletEvidenceSummary\.totalEvents >= 500 \|\| walletSwapSummary\.swapCandidateEvents >= 50\) &&\s*\n\s*walletSwapSummary\.swapCandidateEvents >= 25 &&\s*\n\s*walletTradeStatsSummary\.closedLots <= 10\s*\n\s*\)/, 'early high-activity-poor-reconstruction proxy exists at budget time')
+assert.match(snap, /const _earlyHighActivityPoorReconstruction = Boolean\(\s*\n\s*\(\(walletEvidenceSummary\.walletSideEvents \?\? 0\) >= 100 \|\| walletSwapSummary\.swapCandidateEvents >= 50\) &&\s*\n\s*walletTradeStatsSummary\.closedLots <= 10\s*\n\s*\)/, 'early high-activity-poor-reconstruction proxy uses wallet-side events, not total evidence events')
 assert.match(snap, /_earlyHighActivityPoorReconstruction && _walletValueTier === 'high_value' && !_missingCostBasisGuardActive && !_adminOverrideUsed\s*\n\s*\? 2\s*\n\s*: 0/, 'budget expansion is gated on high_value tier + the failure mode, capped at +2 pages')
 
 // Budget expansion must stay inside the existing Math.min clamps so the hard cap can never be exceeded.
@@ -15,7 +15,10 @@ assert.match(snap, /const _highActivityExtraPagesUsed = Math\.max\(0, Math\.min\
 
 // HIGH-ACTIVITY-RECON-2: the final public-safe state uses the REAL public-grade count (zero) and
 // the raw matched lot count — it never derives or unlocks anything.
-assert.match(snap, /const _highActivityPoorReconstruction = Boolean\(\s*\n\s*\(_reconEvidenceEvents >= 500 \|\| _reconSwapCandidateEvents >= 50\) &&\s*\n\s*_reconPublicLots === 0 &&\s*\n\s*_reconRawMatchedLots <= 10 &&\s*\n\s*_reconSwapCandidateEvents >= 25\s*\n\s*\)/, 'final highActivityPoorReconstruction requires zero public-grade lots, low raw matched lots, and high activity')
+assert.match(snap, /const _highActivityPoorReconstruction = Boolean\(\s*\n\s*\(_reconHasGenuineWalletActivity \|\| _reconHasHighSwapCandidates\) &&\s*\n\s*_reconPublicLots === 0 &&\s*\n\s*_reconRawMatchedLots <= 10\s*\n\s*\)/, 'final highActivityPoorReconstruction requires genuine wallet-side activity or swap candidates (not total evidence), zero public-grade lots, and low raw matched lots')
+assert.match(snap, /const _reconHasGenuineWalletActivity = _reconWalletSideEvents >= 100 \|\| _reconWalletSideTxns >= 50/, 'genuine wallet activity uses wallet-side events/transactions, not total evidence')
+assert.match(snap, /_reconEvidenceEvents >= 500 \? 'evidence_context_only'/, 'a busy-looking wallet with only context logs is classified evidence_context_only')
+assert.match(snap, /highActivityReason: _reconHighActivityReason,/, 'highActivityReason is exposed on the reconstruction state')
 assert.match(snap, /reason: _highActivityPoorReconstruction \? 'high_activity_trade_reconstruction_incomplete' : null/, 'public-safe reason string is exposed')
 assert.match(snap, /'High activity detected, but most trade candidates could not be promoted because quote legs\/cost basis\/prices were incomplete\.'/, 'compact public-safe summary is present')
 
@@ -37,9 +40,10 @@ assert.match(snap, /publicPerformanceClosedLots: _performanceClosedLotsFinal\.le
 // "Try deeper recovery" when a deep path exists, else "Deep recovery recommended".
 assert.match(ui, /walletReconstructionRecovery\?\.highActivityPoorReconstruction && \(\(\) =>/, 'UI gates the card on the backend flag')
 assert.match(ui, /Trade reconstruction incomplete/, 'UI card title present')
-assert.match(ui, /ChainLens found heavy activity and many swap candidates, but could not build public-grade performance evidence from this scan\./, 'UI card explains heavy activity, not no activity')
+assert.match(ui, /ChainLens found genuine wallet-side activity, but could not build public-grade performance evidence from this scan\./, 'UI card explains genuine wallet activity, not no activity')
+assert.match(ui, /ChainLens found many swap candidates, but could not build public-grade performance evidence from this scan\./, 'UI card has a swap-candidate-specific variant')
 assert.match(ui, /deepPathExists && !deepActivity \? 'Try deeper recovery' : 'Deep recovery recommended'/, 'UI CTA copy depends on whether a deep path exists')
-for (const label of ['Events indexed', 'Swap candidates', 'Raw matched lots', 'Excluded lots', 'Public-grade lots']) {
+for (const label of ['Evidence events indexed', 'Wallet-side transfers', 'Swap candidates', 'Raw matched lots', 'Excluded lots', 'Public-grade lots']) {
   assert.match(ui, new RegExp(`'${label}'`), `UI card shows ${label}`)
 }
 

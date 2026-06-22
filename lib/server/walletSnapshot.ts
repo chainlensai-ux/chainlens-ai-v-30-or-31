@@ -360,6 +360,34 @@ export type WalletSnapshot = {
     timestampCoverage: number
     readyForSwapDetection: boolean
     missing: string[]
+    // ACTIVITY-ATTRIBUTION-FIX: "evidence collected for reconstruction" is NOT the same as "wallet
+    // actions". totalEvents/totalEvidenceEvents counts every indexed transfer leg (including
+    // context-only logs the wallet is not directly the from/to of, which are pulled in for swap
+    // reconstruction / quote-leg discovery). walletSideEvents counts only events where the scanned
+    // wallet is the transfer's from or to (direction !== 'unknown'). These fields let the public UI
+    // stop presenting reconstruction context as wallet activity. None of them change FIFO/PnL.
+    totalEvidenceEvents?: number
+    walletSideEvents?: number
+    reconstructionContextEvents?: number
+    unknownContextEvents?: number
+    totalRawLogs?: number
+  }
+  // ACTIVITY-ATTRIBUTION-FIX: public-safe, wallet-side-only activity. Built from the same evidence
+  // the reconstruction pipeline uses, but counts ONLY events/transactions the scanned wallet is
+  // directly involved in (transfer from/to the wallet, or wallet-initiated tx). Context-only logs
+  // are excluded here while remaining available internally for reconstruction.
+  walletActivitySummary?: {
+    walletSideEvents: number
+    walletSideTransactions: number
+    walletInitiatedTransactions: number
+    receivedCount: number
+    sentCount: number
+    swapLikeWalletTransactions: number
+    transferOnlyWalletTransactions: number
+    claimOrAirdropLikeWalletTransactions: number
+    trueActivityWindowDays: number | null
+    firstWalletSideActivityAt: string | null
+    lastWalletSideActivityAt: string | null
   }
   walletSwapSummary: {
     status: 'ok' | 'partial' | 'open_check'
@@ -542,8 +570,13 @@ export type WalletSnapshot = {
   // Additive only — never changes FIFO math, public PnL, win-rate gating, or scoring.
   walletReconstructionRecovery?: {
     highActivityPoorReconstruction: boolean
+    // wallet_side_activity / swap_candidates = genuine activity; evidence_context_only = busy-looking
+    // only because of context logs — never treated as high wallet activity.
+    highActivityReason: 'wallet_side_activity' | 'swap_candidates' | 'evidence_context_only' | null
     reason: 'high_activity_trade_reconstruction_incomplete' | null
     evidenceEvents: number
+    walletSideEvents: number
+    walletSideTransactions: number
     swapCandidateEvents: number
     rawMatchedClosedLots: number
     excludedClosedLots: number
@@ -4410,6 +4443,13 @@ function buildTxEvidenceFromEvents(events: PnlEvent[], requested: boolean, provi
     })
 
   const totalEvents = _dedupedEvents.length
+  // ACTIVITY-ATTRIBUTION-FIX: direction is assigned at normalization time from whether the scanned
+  // wallet is the transfer's `to` (buy) or `from` (sell); 'unknown' means the wallet is NOT directly
+  // the from/to — i.e. a context-only reconstruction log (pool-to-pool, router-internal, third-party
+  // leg). Wallet-side = direction !== 'unknown'. This split never alters which events flow into
+  // swap detection / FIFO below; it only powers honest public activity counts.
+  const walletSideEvents = _dedupedEvents.filter(e => e.direction !== 'unknown').length
+  const reconstructionContextEvents = totalEvents - walletSideEvents
   const eventsWithHash = _dedupedEvents.filter(e => Boolean(e.txHash)).length
   const eventsWithTimestamp = _dedupedEvents.filter(e => Boolean(e.timestamp)).length
   const hashCoverage = totalEvents > 0 ? Math.round((eventsWithHash / totalEvents) * 100) : 0
@@ -4439,7 +4479,14 @@ function buildTxEvidenceFromEvents(events: PnlEvent[], requested: boolean, provi
 
   return {
     evidenceList,
-    summary: { status, totalEvents, eventsWithHash, eventsWithTimestamp, hashCoverage, timestampCoverage, readyForSwapDetection, missing },
+    summary: {
+      status, totalEvents, eventsWithHash, eventsWithTimestamp, hashCoverage, timestampCoverage, readyForSwapDetection, missing,
+      totalEvidenceEvents: totalEvents,
+      walletSideEvents,
+      reconstructionContextEvents,
+      unknownContextEvents: reconstructionContextEvents,
+      totalRawLogs: events.length,
+    },
     debug: {
       sourceProvider: sourceProvider as 'goldrush' | 'alchemy' | 'none',
       totalRawEvents: events.length,
@@ -7688,7 +7735,7 @@ function buildWalletFacts(
   walletAddress: string,
   closedLotCount: number,
   costBasisMissing = false,
-): { facts: WalletFacts; debug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['walletFactsDebug']> } {
+): { facts: WalletFacts; walletActivitySummary: WalletSnapshot['walletActivitySummary']; debug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['walletFactsDebug']> } {
   const t0 = Date.now()
 
   const pricedHoldings = holdings.filter(h => h.value > 0)
@@ -7854,7 +7901,37 @@ function buildWalletFacts(
   const hasActivity = events.length > 0
   const status: WalletFacts['status'] = hasPortfolio && hasActivity ? 'ok' : hasPortfolio || hasActivity ? 'partial' : 'open_check'
 
+  // ACTIVITY-ATTRIBUTION-FIX: wallet-side-only public activity. Counts only events the scanned
+  // wallet is directly party to (direction buy/sell), and transactions that contain at least one
+  // such wallet-side leg — context-only logs are excluded here (still used internally above).
+  const _walletSideEventsForActivity = events.filter(e => e.direction !== 'unknown')
+  let _walletSideTxCount = 0
+  for (const [, txEvs] of txGroups) {
+    if (txEvs.some(e => e.direction !== 'unknown')) _walletSideTxCount++
+  }
+  const _walletSideTimestamps = _walletSideEventsForActivity.map(e => e.timestamp).filter(Boolean) as string[]
+  const _walletSideSortedTs = [..._walletSideTimestamps].sort()
+  const _firstWalletSideAt = _walletSideSortedTs[0] ?? null
+  const _lastWalletSideAt = _walletSideSortedTs[_walletSideSortedTs.length - 1] ?? null
+  const _trueActivityWindowDays = _firstWalletSideAt && _lastWalletSideAt
+    ? Math.round((new Date(_lastWalletSideAt).getTime() - new Date(_firstWalletSideAt).getTime()) / (1000 * 60 * 60 * 24))
+    : null
+  const walletActivitySummary: WalletSnapshot['walletActivitySummary'] = {
+    walletSideEvents: inboundCount + outboundCount,
+    walletSideTransactions: _walletSideTxCount,
+    walletInitiatedTransactions: walletInitiatedTxCount,
+    receivedCount: inboundCount,
+    sentCount: outboundCount,
+    swapLikeWalletTransactions: swapLikeTxs,
+    transferOnlyWalletTransactions: transferOnlyTxs,
+    claimOrAirdropLikeWalletTransactions: claimOrAirdropLikeTxs,
+    trueActivityWindowDays: _trueActivityWindowDays,
+    firstWalletSideActivityAt: _firstWalletSideAt,
+    lastWalletSideActivityAt: _lastWalletSideAt,
+  }
+
   return {
+    walletActivitySummary,
     facts: {
       status,
       summary: {
@@ -11729,9 +11806,11 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // below, so this is an early proxy using values already available at budget time (raw matched lots
   // stand in for rawMatchedClosedLots). It is ONLY used to grant a small, hard-capped page expansion —
   // it never changes FIFO math, public stats, or win-rate gating.
+  // ACTIVITY-ATTRIBUTION-FIX: gate the budget expansion on genuine WALLET-SIDE activity or real swap
+  // candidates — never on total evidence events, which include context-only reconstruction logs. A
+  // wallet that only looks "busy" because of pulled-in context logs must NOT earn extra provider pages.
   const _earlyHighActivityPoorReconstruction = Boolean(
-    (walletEvidenceSummary.totalEvents >= 500 || walletSwapSummary.swapCandidateEvents >= 50) &&
-    walletSwapSummary.swapCandidateEvents >= 25 &&
+    ((walletEvidenceSummary.walletSideEvents ?? 0) >= 100 || walletSwapSummary.swapCandidateEvents >= 50) &&
     walletTradeStatsSummary.closedLots <= 10
   )
   // Smarter-but-safe budget: a high_value wallet hitting that failure mode gets a small explicit page
@@ -12843,7 +12922,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
 
   const hasHistory = estimatedPnl.status !== 'unavailable'
   const snapshotTtlMs = hasHistory ? SNAPSHOT_HISTORY_TTL_MS : SNAPSHOT_TTL_MS
-  const { facts: walletFacts, debug: _walletFactsDebug } = buildWalletFacts(holdings, totalValue, _swapEvidenceWithDetection, addrNorm, _performanceClosedLotsFinal.length, _pnlUnavailableReasonFinal === 'missing_cost_basis')
+  const { facts: walletFacts, walletActivitySummary: _walletActivitySummary, debug: _walletFactsDebug } = buildWalletFacts(holdings, totalValue, _swapEvidenceWithDetection, addrNorm, _performanceClosedLotsFinal.length, _pnlUnavailableReasonFinal === 'missing_cost_basis')
   if (walletFacts?.limits) walletFacts.limits.reason = `${_syntheticLotsAfterSourceLots.length} matched lots found; ${_performanceClosedLotsFinal.length} performance-grade lots used; ${Math.max(0, _syntheticLotsAfterSourceLots.length - _performanceClosedLotsFinal.length)} excluded.`
 
   // Build unified apiAudit from the per-request _apiCallLog (instrumented at each provider call site)
@@ -13205,16 +13284,30 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // candidates yet yields zero public-grade closed lots because all matched lots are excluded as
   // estimate-only/synthetic/missing-cost. It is additive and presentation-facing only — it does NOT
   // change FIFO math, public PnL, win-rate gating, or scoring. publicPerformanceClosedLots stays 0.
+  // ACTIVITY-ATTRIBUTION-FIX: this trigger must reflect genuine wallet-side activity or real swap
+  // candidates — NOT total evidence events (which include context-only reconstruction logs). A wallet
+  // that only looks busy because of pulled-in context logs is "evidence_context_only" and must never
+  // be labeled high wallet activity.
   const _reconEvidenceEvents = walletEvidenceSummary.totalEvents ?? 0
+  const _reconWalletSideEvents = _walletActivitySummary?.walletSideEvents ?? 0
+  const _reconWalletSideTxns = _walletActivitySummary?.walletSideTransactions ?? 0
   const _reconSwapCandidateEvents = walletSwapSummary.swapCandidateEvents ?? 0
   const _reconRawMatchedLots = _rawMatchedClosedLotsFinal
   const _reconExcludedLots = _excludedClosedLotsFinal
   const _reconPublicLots = _performanceClosedLotsFinal.length
+  const _reconHasGenuineWalletActivity = _reconWalletSideEvents >= 100 || _reconWalletSideTxns >= 50
+  const _reconHasHighSwapCandidates = _reconSwapCandidateEvents >= 50
+  const _reconHighActivityReason: 'wallet_side_activity' | 'swap_candidates' | 'evidence_context_only' | null =
+    _reconHasGenuineWalletActivity ? 'wallet_side_activity'
+    : _reconHasHighSwapCandidates ? 'swap_candidates'
+    : _reconEvidenceEvents >= 500 ? 'evidence_context_only'
+    : null
+  // Only genuine wallet-side activity OR real swap candidates can ever trigger this state. An
+  // evidence_context_only wallet (busy-looking only via context logs) never does.
   const _highActivityPoorReconstruction = Boolean(
-    (_reconEvidenceEvents >= 500 || _reconSwapCandidateEvents >= 50) &&
+    (_reconHasGenuineWalletActivity || _reconHasHighSwapCandidates) &&
     _reconPublicLots === 0 &&
-    _reconRawMatchedLots <= 10 &&
-    _reconSwapCandidateEvents >= 25
+    _reconRawMatchedLots <= 10
   )
   // Compact, public-safe failure reason — derived from signals that already exist, never exposing
   // provider names or raw debug. Used to drive the UI's "why" line.
@@ -13238,8 +13331,11 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   )
   const _walletReconstructionRecovery: WalletSnapshot['walletReconstructionRecovery'] = {
     highActivityPoorReconstruction: _highActivityPoorReconstruction,
+    highActivityReason: _reconHighActivityReason,
     reason: _highActivityPoorReconstruction ? 'high_activity_trade_reconstruction_incomplete' : null,
     evidenceEvents: _reconEvidenceEvents,
+    walletSideEvents: _reconWalletSideEvents,
+    walletSideTransactions: _reconWalletSideTxns,
     swapCandidateEvents: _reconSwapCandidateEvents,
     rawMatchedClosedLots: _reconRawMatchedLots,
     excludedClosedLots: _reconExcludedLots,
@@ -13429,6 +13525,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     tradeIntelligence,
     walletRecoveryRecommendation: _walletRecoveryRecommendation,
     walletReconstructionRecovery: _walletReconstructionRecovery,
+    walletActivitySummary: _walletActivitySummary,
     address: addr,
     totalValue,
     holdings,

@@ -194,8 +194,11 @@ type WalletResult = {
   }
   walletReconstructionRecovery?: {
     highActivityPoorReconstruction: boolean
+    highActivityReason: 'wallet_side_activity' | 'swap_candidates' | 'evidence_context_only' | null
     reason: 'high_activity_trade_reconstruction_incomplete' | null
     evidenceEvents: number
+    walletSideEvents: number
+    walletSideTransactions: number
     swapCandidateEvents: number
     rawMatchedClosedLots: number
     excludedClosedLots: number
@@ -212,6 +215,19 @@ type WalletResult = {
       creditsUsed: number
       capHitReason: string | null
     }
+  }
+  walletActivitySummary?: {
+    walletSideEvents: number
+    walletSideTransactions: number
+    walletInitiatedTransactions: number
+    receivedCount: number
+    sentCount: number
+    swapLikeWalletTransactions: number
+    transferOnlyWalletTransactions: number
+    claimOrAirdropLikeWalletTransactions: number
+    trueActivityWindowDays: number | null
+    firstWalletSideActivityAt: string | null
+    lastWalletSideActivityAt: string | null
   }
   walletBehavior?: WalletBehavior | null
   estimatedPnl?: {
@@ -238,6 +254,11 @@ type WalletResult = {
     sampleHashes?: string[]
     sampleTimestamps?: string[]
     missing: string[]
+    totalEvidenceEvents?: number
+    walletSideEvents?: number
+    reconstructionContextEvents?: number
+    unknownContextEvents?: number
+    totalRawLogs?: number
   }
   walletSwapSummary?: {
     status: 'ok' | 'partial' | 'open_check'
@@ -2006,17 +2027,40 @@ export default function WalletScannerPage() {
                         ].map(([label,value]) => <div key={label} className="wpv3-metric-row"><span className="wpv3-label">{label}</span><span style={{ color: '#E8C76D', letterSpacing: '0.16em' }}>{value}</span></div>)}</div>
                       </div>
 
-                      <div className="wpv3-card">
-                        <p className="wpv3-title">Activity Summary</p>
-                        {[
-                          ['Last Active', fmtRelativeTime(activity?.lastSeenAt ?? result.walletBehavior?.recentActivitySummary)],
-                          ['30D Transactions', String(activity?.groupedTxCount ?? result.walletBehavior?.txCount ?? 'Open Check')],
-                          ['DEX Trades', String(result.walletSwapSummary?.highConfidenceCount ?? result.walletSwapSummary?.swapCandidateCount ?? 0)],
-                          ['Active Chains', String(activeChains)],
-                        ].map(([label,value]) => <div key={label} className="wpv3-metric-row"><span className="wpv3-label">{label}</span><span className="wpv3-value" style={{ fontSize: '20px' }}>{value}</span></div>)}
-                        <div className="wpv3-label" style={{ marginTop: '14px' }}>Behavior</div><div className="wpv3-support" style={{ marginTop: '6px', color: '#F2F4F7' }}>{behaviorTags.join(' · ')}</div>
-                        <div className="wpv3-label" style={{ marginTop: '14px' }}>Recent Pattern</div><div className="wpv3-support" style={{ marginTop: '6px' }}>{result.walletFacts?.flowRead.accumulationSignals?.[0] ?? 'Increased exposure review requires more indexed activity.'}</div>
-                      </div>
+                      {(() => {
+                        // ACTIVITY-ATTRIBUTION-FIX: public Activity Summary shows WALLET-SIDE activity,
+                        // not total evidence (which includes context-only reconstruction logs).
+                        const act = result.walletActivitySummary
+                        const evidenceTotal = result.walletEvidenceSummary?.totalEvidenceEvents ?? result.walletEvidenceSummary?.totalEvents ?? 0
+                        const walletSide = act?.walletSideEvents ?? result.walletEvidenceSummary?.walletSideEvents ?? 0
+                        const contextOnly = result.walletEvidenceSummary?.reconstructionContextEvents ?? Math.max(0, evidenceTotal - walletSide)
+                        const walletSideTxns = act?.walletSideTransactions ?? null
+                        const contextHeavy = evidenceTotal >= 100 && walletSide > 0 && walletSide < evidenceTotal * 0.4
+                        return (
+                          <div className="wpv3-card">
+                            <p className="wpv3-title">Activity Summary</p>
+                            {[
+                              ['Last Active', fmtRelativeTime(act?.lastWalletSideActivityAt ?? activity?.lastSeenAt ?? result.walletBehavior?.recentActivitySummary)],
+                              ['Wallet-side transfers', String(walletSide)],
+                              ['Wallet-side transactions', walletSideTxns != null ? String(walletSideTxns) : String(activity?.groupedTxCount ?? result.walletBehavior?.txCount ?? 'Open Check')],
+                              ['DEX Trades', String(result.walletSwapSummary?.highConfidenceCount ?? result.walletSwapSummary?.swapCandidateCount ?? 0)],
+                              ['Active Chains', String(activeChains)],
+                            ].map(([label,value]) => <div key={label} className="wpv3-metric-row"><span className="wpv3-label">{label}</span><span className="wpv3-value" style={{ fontSize: '20px' }}>{value}</span></div>)}
+                            {contextOnly > 0 && (
+                              <p className="wpv3-support" style={{ marginTop: '10px', color: '#9aa4b2' }}>
+                                {evidenceTotal} evidence events indexed for reconstruction · {contextOnly} context-only log{contextOnly !== 1 ? 's' : ''} used for transaction reconstruction are not counted as wallet activity.
+                              </p>
+                            )}
+                            {contextHeavy && (
+                              <p className="wpv3-support" style={{ marginTop: '6px', color: '#fbbf24' }}>
+                                High reconstruction context, limited direct wallet activity.
+                              </p>
+                            )}
+                            <div className="wpv3-label" style={{ marginTop: '14px' }}>Behavior</div><div className="wpv3-support" style={{ marginTop: '6px', color: '#F2F4F7' }}>{behaviorTags.join(' · ')}</div>
+                            <div className="wpv3-label" style={{ marginTop: '14px' }}>Recent Pattern</div><div className="wpv3-support" style={{ marginTop: '6px' }}>{result.walletFacts?.flowRead.accumulationSignals?.[0] ?? 'Increased exposure review requires more indexed activity.'}</div>
+                          </div>
+                        )
+                      })()}
 
                       {result.walletReconstructionRecovery?.highActivityPoorReconstruction && (() => {
                         const rr = result.walletReconstructionRecovery!
@@ -2034,10 +2078,13 @@ export default function WalletScannerPage() {
                           <div className="wpv3-card" style={{ border: '1px solid rgba(251,191,36,0.22)', background: 'rgba(251,191,36,0.03)' }}>
                             <p className="wpv3-title" style={{ color: '#fbbf24' }}>Trade reconstruction incomplete</p>
                             <p className="wpv3-support" style={{ marginBottom: '10px', color: '#cbd5e1' }}>
-                              ChainLens found heavy activity and many swap candidates, but could not build public-grade performance evidence from this scan.
+                              {rr.highActivityReason === 'swap_candidates'
+                                ? 'ChainLens found many swap candidates, but could not build public-grade performance evidence from this scan.'
+                                : 'ChainLens found genuine wallet-side activity, but could not build public-grade performance evidence from this scan.'}
                             </p>
                             {[
-                              ['Events indexed', String(rr.evidenceEvents)],
+                              ['Evidence events indexed', String(rr.evidenceEvents)],
+                              ['Wallet-side transfers', String(rr.walletSideEvents)],
                               ['Swap candidates', String(rr.swapCandidateEvents)],
                               ['Raw matched lots', String(rr.rawMatchedClosedLots)],
                               ['Excluded lots', String(rr.excludedClosedLots)],
@@ -2384,6 +2431,7 @@ export default function WalletScannerPage() {
                 if (pi.holdingsCount === 0 && pi.totalValue === 0) return null
                 const mc = result.walletModuleCoverage
                 const totalEvents = result.walletEvidenceSummary?.totalEvents ?? 0
+                const walletSideEventsRow = result.walletActivitySummary?.walletSideEvents ?? result.walletEvidenceSummary?.walletSideEvents ?? null
                 const swapCandidates = mc?.swapDetection.candidateCount ?? 0
                 const concentrationLabel = pi.concentration === 'high' ? 'High concentration' : pi.concentration === 'medium' ? 'Medium concentration' : pi.concentration === 'balanced' ? 'Balanced spread' : null
                 const concentrationColor = pi.concentration === 'high' ? '#fbbf24' : pi.concentration === 'medium' ? '#a78bfa' : '#4ade80'
@@ -2465,9 +2513,9 @@ export default function WalletScannerPage() {
                       <div style={{ borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '14px' }}>
                         {totalEvents > 0 ? (
                           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
-                            <span style={{ fontSize: '11px', fontWeight: 600, color: '#4ade80', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>Activity indexed</span>
+                            <span style={{ fontSize: '11px', fontWeight: 600, color: '#4ade80', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>Evidence indexed</span>
                             <span style={{ fontSize: '11px', color: 'rgba(255,255,255,0.40)', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>·</span>
-                            <span style={{ fontSize: '11px', color: 'rgba(255,255,255,0.40)', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{totalEvents} transfer events</span>
+                            <span style={{ fontSize: '11px', color: 'rgba(255,255,255,0.40)', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{totalEvents} evidence events{walletSideEventsRow != null ? ` · ${walletSideEventsRow} wallet-side` : ''}</span>
                             {swapCandidates === 0 ? (
                               <span style={{ fontSize: '10px', color: '#7dd3fc', border: '1px solid rgba(125,211,252,0.15)', background: 'rgba(56,189,248,0.04)', borderRadius: '6px', padding: '2px 8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>no swap pairs in sample</span>
                             ) : (
