@@ -125,7 +125,8 @@ type ClarkSessionMemory = {
     chain?: "base" | "eth";
     normalizedEvidenceSummary?: string | null;
     missingEvidence?: string[];
-    confidence?: "full" | "partial" | "none";
+    confidence?: "high" | "medium" | "low" | "open_check" | "failed";
+    normalizedEvidence?: TokenScanEvidence | null;
     cachedEvidence?: TokenScanEvidence | null;
     ts: number;
   } | null;
@@ -247,7 +248,8 @@ function updateMemToken(
   opts?: {
     normalizedEvidenceSummary?: string | null;
     missingEvidence?: string[];
-    confidence?: "full" | "partial" | "none";
+    confidence?: "high" | "medium" | "low" | "open_check" | "failed";
+    normalizedEvidence?: TokenScanEvidence | null;
     cachedEvidence?: TokenScanEvidence | null;
     chain?: "base" | "eth";
   }
@@ -266,8 +268,9 @@ function updateMemToken(
     address, symbol, name, scanSummary, chain: evidenceChain, ts: Date.now(),
     normalizedEvidenceSummary: opts?.normalizedEvidenceSummary ?? null,
     missingEvidence: opts?.missingEvidence ?? [],
-    confidence: opts?.confidence ?? "none",
-    cachedEvidence: opts?.cachedEvidence ?? null,
+    confidence: opts?.confidence ?? "failed",
+    normalizedEvidence: opts?.normalizedEvidence ?? opts?.cachedEvidence ?? null,
+    cachedEvidence: opts?.cachedEvidence ?? opts?.normalizedEvidence ?? null,
   };
   mem.lastTokenSymbol = symbol;
   mem.lastTokenName = name;
@@ -6812,7 +6815,8 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
 
     if (!fromMemory) {
       updateMemToken(sessionMem, tokenAddress, ev.token?.symbol ?? null, ev.token?.name ?? null, analysis, {
-        confidence: (ev as Record<string, unknown>)._partialEvidenceUsed ? "partial" : ev.ok ? "full" : "none",
+        confidence: hasUsableTokenEvidence(ev) ? ((ev as Record<string, unknown>)._partialEvidenceUsed ? "medium" : "high") : "open_check",
+        normalizedEvidence: ev.ok || (ev as Record<string, unknown>)._partialEvidenceUsed ? ev : null,
         cachedEvidence: ev.ok || (ev as Record<string, unknown>)._partialEvidenceUsed ? ev : null,
       });
     }
@@ -7712,22 +7716,21 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const tokenJson = tokenApiOk ? _td!.json : null;
 
     let tokenRouteStatus: string;
-    if (tokenRouteAborted) tokenRouteStatus = "timeout";
-    else if (tokenRouteNetworkError) tokenRouteStatus = "network_error";
-    else if (!tokenData) tokenRouteStatus = "no_response";
-    else if (tokenApiHttpStatus === 401) tokenRouteStatus = "http_401";
-    else if (tokenApiHttpStatus === 500) tokenRouteStatus = "http_500";
-    else if (!tokenApiOk) tokenRouteStatus = `http_${tokenApiHttpStatus}`;
-    else tokenRouteStatus = "ok";
+    if (tokenRouteAborted) tokenRouteStatus = "timed_out";
+    else if (tokenRouteNetworkError) tokenRouteStatus = "failed";
+    else if (!tokenData) tokenRouteStatus = "unavailable";
+    else if (tokenApiHttpStatus === 401 || tokenApiHttpStatus === 403) tokenRouteStatus = "auth_failed";
+    else if (!tokenApiOk) tokenRouteStatus = "failed";
+    else tokenRouteStatus = "loaded";
 
     let honeypotStatus: string;
-    if (honeypotAborted) honeypotStatus = "timeout";
-    else if (honeypotNetworkError) honeypotStatus = "network_error";
-    else if (!securitySim) honeypotStatus = "no_response";
-    else honeypotStatus = "ok";
+    if (honeypotAborted) honeypotStatus = "timed_out";
+    else if (honeypotNetworkError) honeypotStatus = "failed";
+    else if (!securitySim) honeypotStatus = "unavailable";
+    else honeypotStatus = "loaded";
 
-    const tokenRouteFailed = tokenRouteStatus !== "ok" && tokenRouteStatus !== "no_pool_data";
-    const honeypotFailed = honeypotStatus !== "ok";
+    const tokenRouteFailed = tokenRouteStatus !== "loaded" && tokenRouteStatus !== "partial" && tokenRouteStatus !== "open_check";
+    const honeypotFailed = honeypotStatus !== "loaded";
 
     // ── Extract token route payload ──
     const t = (tokenJson ?? {}) as Record<string, unknown>;
@@ -7782,13 +7785,13 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     let tokenScanFailureReason: string | undefined;
 
     if (tokenRouteFailed) {
-      if (tokenRouteStatus === "http_401") {
+      if (tokenRouteStatus === "auth_failed") {
         tokenScanFailureReason = "token_route_unauthorized";
         missingEvidence.push("Token Scanner authorization failed. Reconnect/sign in and try again.");
-      } else if (tokenRouteStatus === "timeout") {
+      } else if (tokenRouteStatus === "timed_out") {
         tokenScanFailureReason = "timeout";
         missingEvidence.push("Market, LP, and holder data: timed out / Open Check");
-      } else if (tokenRouteStatus === "network_error") {
+      } else if (tokenRouteStatus === "failed") {
         tokenScanFailureReason = "network_error";
         missingEvidence.push("Market, LP, and holder data: network error / Open Check");
       } else if (tokenData !== null) {
@@ -7801,8 +7804,8 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     }
 
     if (honeypotFailed) {
-      if (honeypotStatus === "timeout") missingEvidence.push("Security simulation: timed out / Open Check");
-      else if (honeypotStatus === "network_error") missingEvidence.push("Security simulation: network error / Open Check");
+      if (honeypotStatus === "timed_out") missingEvidence.push("Security simulation: timed out / Open Check");
+      else if (honeypotStatus === "failed") missingEvidence.push("Security simulation: network error / Open Check");
       else missingEvidence.push("Security simulation: unavailable / Open Check");
     }
 
@@ -7850,7 +7853,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       sectionsPresent.length >= 1 ? "partial" :
       "none";
 
-    const finalTokenRouteStatus = noPoolData ? "no_pool_data" : tokenRouteStatus;
+    const finalTokenRouteStatus = noPoolData ? "open_check" : (!tokenRouteFailed && !hasMarket ? "partial" : tokenRouteStatus);
 
     // Keys of TokenScanEvidence that actually received real (non-null) mapped data —
     // proves the formatter-facing object, not just the raw /api/token payload, carries evidence.
@@ -7890,7 +7893,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         mintable: typeof tContractFlags.mint === "boolean" ? tContractFlags.mint : null,
         proxy: typeof tContractFlags.proxy === "boolean" ? tContractFlags.proxy : null,
         securityStatus: _hp?.securityStatus ?? (honeypotFailed ? "timed out" : "unverified"),
-        simulationStatus: _hp?.simulationStatus ?? (honeypotAborted ? "timeout" : honeypotFailed ? "unavailable" : null),
+        simulationStatus: _hp?.simulationStatus ?? (honeypotAborted ? "timed_out" : honeypotFailed ? "unavailable" : null),
         riskLevel: _hp?.riskLevel ?? "unknown",
         missing: missingEvidence,
       },
@@ -7952,91 +7955,86 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     return { address: addr, name: String(j.name ?? sym), symbol: String(j.symbol ?? sym) };
   }
 
-  // Build partial TOKEN READ output when some but not all evidence branches succeeded.
-  function formatPartialTokenRead(ev: TokenScanEvidence, tokenAddress: string, evDebugRaw: Record<string, unknown>): string {
+  type TokenConfidenceLabel = "high" | "medium" | "low" | "open_check" | "failed";
+
+  function tokenCoreConfidence(ev: TokenScanEvidence, sectionsPresent: string[], sectionsMissing: Array<{ section: string; reason: string }>, usableEvidence: boolean): TokenConfidenceLabel {
+    const hasMarket = sectionsPresent.includes("market");
+    const hasLp = sectionsPresent.includes("lp");
+    const hasHolders = sectionsPresent.includes("holders");
+    const hasSecurity = sectionsPresent.includes("security_sim");
+    const hasDev = sectionsPresent.includes("contract_flags");
+    const routeStatus = (ev as Record<string, unknown>)._tokenRouteStatus;
+    const hpStatus = (ev as Record<string, unknown>)._honeypotStatus;
+    if (!usableEvidence) return routeStatus === "auth_failed" || routeStatus === "timed_out" || hpStatus === "timed_out" ? "failed" : "open_check";
+    if (hasMarket && hasLp && hasHolders && hasSecurity && hasDev && sectionsMissing.length === 0) return "high";
+    if (hasMarket && (hasLp || hasSecurity)) return "medium";
+    if (hasMarket) return "low";
+    return "open_check";
+  }
+
+  function statusTitleForTokenRead(confidence: TokenConfidenceLabel, partial: boolean, usableEvidence: boolean, ev: TokenScanEvidence): string {
+    const routeStatus = (ev as Record<string, unknown>)._tokenRouteStatus;
+    const hpStatus = (ev as Record<string, unknown>)._honeypotStatus;
+    if (!usableEvidence && (routeStatus === "timed_out" || hpStatus === "timed_out")) return "timed out";
+    if (!usableEvidence) return "open check";
+    if (partial) return "partial evidence";
+    return confidence === "open_check" ? "open check" : "loaded";
+  }
+
+  function missingNames(sectionsMissing: Array<{ section: string; reason: string }>): string[] {
+    const labels: Record<string, string> = { market: "market", holders: "holders", lp: "LP proof", contract_flags: "dev control", security_sim: "security simulation" };
+    return sectionsMissing.map(s => labels[s.section] ?? s.section);
+  }
+
+  // Build section-aware TOKEN READ output. Missing sections are always Open Check with a reason.
+  function formatPartialTokenRead(ev: TokenScanEvidence, tokenAddress: string, evDebugRaw: Record<string, unknown>, confidence: TokenConfidenceLabel, usableEvidence = true): string {
     const pFmtUsd = (n: number | null | undefined): string => {
       if (n == null) return "N/A";
       if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(2)}M`;
       if (n >= 1_000) return `$${(n / 1_000).toFixed(1)}K`;
       return `$${n.toFixed(2)}`;
     };
-    const pFmtPct = (n: number | null | undefined): string => n == null ? "N/A" : `${n >= 0 ? "+" : ""}${n.toFixed(1)}%`;
-    const pFmtTax = (n: number | null | undefined): string => n == null ? "open check" : `${n.toFixed(1)}%`;
-
-    const sym = ev.token?.symbol ? String(ev.token.symbol).toUpperCase() : "?";
-    const name = ev.token?.name ?? null;
     const sectionsPresent = (evDebugRaw._evidenceSectionsPresent as string[] | undefined) ?? [];
     const sectionsMissing = (evDebugRaw._evidenceSectionsMissing as Array<{ section: string; reason: string }> | undefined) ?? [];
+    const partial = Boolean(evDebugRaw._partialEvidenceUsed) || sectionsMissing.length > 0;
+    const title = statusTitleForTokenRead(confidence, partial, usableEvidence, ev);
     const mkt = ev.market;
     const h = ev.holders;
     const sec = ev.security;
     const lp = ev.lpControl;
+    const missing = missingNames(sectionsMissing);
+    const missingSentence = missing.length ? `Open Check because ${missing.join(" and ")} ${missing.length === 1 ? "was" : "were"} unavailable.` : null;
+    const hasRisk = sec?.honeypot === true || sec?.mintable === true || sec?.ownerRenounced === false || lp?.status === "wallet_controlled" || lp?.status === "team_controlled" || (h?.top10 != null && h.top10 > 80);
+    const verdict = sec?.honeypot === true ? "Avoid — honeypot detected." : missing.length > 0 || confidence === "open_check" || confidence === "failed" ? `Open Check.${missingSentence ? ` ${missingSentence}` : " Not enough evidence to conclude."}` : hasRisk ? "High Risk — available evidence shows risk signals." : confidence === "high" ? "Evidence shows no confirmed core red flags; verify before trading." : "Available evidence suggests no confirmed core red flags; verify missing checks before trading.";
+    const marketLine = sectionsPresent.includes("market") && (mkt?.price != null || mkt?.liquidity != null || mkt?.volume24h != null)
+      ? `loaded${mkt?.liquidity != null ? ` — liquidity ${pFmtUsd(mkt.liquidity)}` : ""}${mkt?.volume24h != null ? `, volume ${pFmtUsd(mkt.volume24h)}` : ""}`
+      : `unavailable — ${sectionsMissing.find(s => s.section === "market")?.reason ?? "market missing"}`;
+    const lpLine = sectionsPresent.includes("lp") && lp?.status
+      ? `${lp.status}${lp.reason ? ` — ${lp.reason}` : ""}`
+      : `unavailable — ${sectionsMissing.find(s => s.section === "lp")?.reason ?? "LP proof unavailable"}`;
+    const holdersLine = sectionsPresent.includes("holders") && h?.top10 != null
+      ? `loaded — top-10 ${h.top10.toFixed(1)}%${h.holderCount != null ? `, holders ${h.holderCount}` : ""}`
+      : `unavailable — ${sectionsMissing.find(s => s.section === "holders")?.reason ?? "holders unavailable"}`;
+    const devLine = sectionsPresent.includes("contract_flags")
+      ? `loaded — ownership ${sec?.ownerRenounced === true ? "renounced" : sec?.ownerRenounced === false ? "active" : "open check"}${sec?.mintable != null ? `, mintable ${sec.mintable ? "yes" : "no"}` : ""}`
+      : `unavailable — ${sectionsMissing.find(s => s.section === "contract_flags")?.reason ?? "dev control unavailable"}`;
+    const securityLine = sectionsPresent.includes("security_sim") && (sec?.honeypot != null || sec?.buyTax != null || sec?.sellTax != null)
+      ? `loaded — ${sec?.honeypot === true ? "honeypot flagged" : sec?.honeypot === false ? "no honeypot signal" : "simulation available"}${sec?.buyTax != null ? `, buy tax ${sec.buyTax.toFixed(1)}%, sell tax ${sec.sellTax?.toFixed(1) ?? "open"}%` : ""}`
+      : `unavailable — ${sectionsMissing.find(s => s.section === "security_sim")?.reason ?? "security simulation timed out"}`;
 
-    const lines: string[] = [`TOKEN READ — ${sym} (partial evidence)`];
-    lines.push(`- Token: ${name && name !== sym ? `${name} (${sym})` : sym}`);
-    lines.push(`- Address: ${ev.token?.address ?? tokenAddress}`);
-    lines.push(`- Chain: ${chainDisplayLabel(chain)}`);
-
-    // Market
-    if (sectionsPresent.includes("market") && (mkt?.price != null || mkt?.liquidity != null)) {
-      lines.push(`- Market: loaded`);
-      if (mkt?.liquidity != null) lines.push(`  Liquidity: ${pFmtUsd(mkt.liquidity)}`);
-      if (mkt?.volume24h != null) lines.push(`  24h volume: ${pFmtUsd(mkt.volume24h)}`);
-      if (mkt?.change24h != null) lines.push(`  24h change: ${pFmtPct(mkt.change24h)}`);
-    } else {
-      const marketMissing = sectionsMissing.find(s => s.section === "market");
-      lines.push(`- Market: ${marketMissing ? marketMissing.reason : "unavailable"} / Open Check`);
-    }
-
-    // LP
-    if (sectionsPresent.includes("lp") && lp?.status) {
-      lines.push(`- LP: ${lp.status}${lp.poolType ? ` (${lp.poolType})` : ""}`);
-    } else {
-      const lpMissing = sectionsMissing.find(s => s.section === "lp");
-      lines.push(`- LP: ${lpMissing ? lpMissing.reason : "unavailable"} / Open Check`);
-    }
-
-    // Holders
-    if (sectionsPresent.includes("holders") && h?.top10 != null) {
-      lines.push(`- Holders: top-10 at ${h.top10.toFixed(1)}%${h.holderCount != null ? `, ${h.holderCount} holders` : ""}`);
-    } else {
-      const holdersMissing = sectionsMissing.find(s => s.section === "holders");
-      lines.push(`- Holders: ${holdersMissing ? holdersMissing.reason : "unavailable"} / Open Check`);
-    }
-
-    // Security
-    const hasHoneypot = sectionsPresent.includes("security_sim");
-    const hasContractFlags = sectionsPresent.includes("contract_flags");
-    if (hasHoneypot && sec?.honeypot != null) {
-      lines.push(`- Security simulation: ${sec.honeypot ? "HONEYPOT — flagged" : "no honeypot signal"}`);
-      if (sec.buyTax != null) lines.push(`  Buy tax: ${pFmtTax(sec.buyTax)} / Sell tax: ${pFmtTax(sec.sellTax)}`);
-    } else {
-      const secMissing = sectionsMissing.find(s => s.section === "security_sim");
-      lines.push(`- Security simulation: ${secMissing ? secMissing.reason : "unavailable"} / Open Check`);
-    }
-    if (hasContractFlags) {
-      if (sec?.ownerRenounced != null) lines.push(`- Ownership: ${sec.ownerRenounced ? "renounced" : "active owner"}`);
-      if (sec?.mintable != null) lines.push(`- Mintable: ${sec.mintable ? "YES" : "no"}`);
-    } else if (!hasHoneypot) {
-      lines.push(`- Contract flags: Open Check`);
-    }
-
-    // Verdict — only assert avoid when honeypot evidence is present
-    if (sec?.honeypot === true) {
-      lines.push(`- Verdict: Avoid — honeypot detected`);
-    } else {
-      lines.push(`- Verdict: Open Check — insufficient evidence`);
-    }
-
-    if (sectionsMissing.length > 0) {
-      lines.push(`- Missing evidence:`);
-      sectionsMissing.forEach(s => lines.push(`  • ${s.section}: ${s.reason}`));
-    }
-
-    lines.push("");
-    lines.push(`Open Token Scanner for a full read, or paste the address to retry.`);
-    lines.push("CTA: Open Token Scanner / Run LP Check");
-    return lines.join("\n");
+    return [
+      `TOKEN READ — ${title}`,
+      "",
+      `Verdict: ${verdict}`,
+      `Confidence: ${confidence}.`,
+      `Market: ${marketLine}.`,
+      `LP: ${lpLine}.`,
+      `Holders: ${holdersLine}.`,
+      `Dev control: ${devLine}.`,
+      `Security: ${securityLine}.`,
+      `Missing evidence: ${missing.length ? sectionsMissing.map(s => `${s.section} (${s.reason})`).join("; ") : "none flagged"}.`,
+      `Next action: ${missing.length ? "Open Token Scanner or run LP Check." : "Use Token Scanner / LP Check before making any trade decision."}`,
+    ].join("\n");
   }
 
   async function resolveTokenForFollowup(opts?: { fromMemoryOnly?: boolean }): Promise<{ ev: TokenScanEvidence; address: string; fromMemory?: boolean } | { needsAddress: true }> {
@@ -8112,17 +8110,16 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const partialEvidenceUsed = Boolean(evDebug._partialEvidenceUsed);
     const totalFailure = !ev.ok && !partialEvidenceUsed;
     const tokenApiMode = (evDebug._tokenApiMode as string | undefined) ?? (wantsFullScan ? "clark_core" : "clark_fast");
-    const tokenRouteTimedOut = evDebug._tokenRouteStatus === "timeout" || evDebug._honeypotStatus === "timeout";
+    const tokenRouteTimedOut = evDebug._tokenRouteStatus === "timed_out" || evDebug._honeypotStatus === "timed_out";
 
-    // Determine confidence for memory storage
     const sectionsPresent = (evDebug._evidenceSectionsPresent as string[] | undefined) ?? [];
     const sectionsMissing = (evDebug._evidenceSectionsMissing as Array<{ section: string; reason: string }> | undefined) ?? [];
-    const memConfidence: "full" | "partial" | "none" = sectionsPresent.length >= 4 ? "full" : sectionsPresent.length >= 1 ? "partial" : "none";
-    const memMissingEvidence = sectionsMissing.map(s => `${s.section}: ${s.reason}`);
 
     // Task 1/2: usable-evidence gate — quota is never charged unless Clark actually
     // returned something the user can use (token identity, market, holders, LP, or security).
     const usableEvidence = hasUsableTokenEvidence(ev);
+    const memConfidence = tokenCoreConfidence(ev, sectionsPresent, sectionsMissing, usableEvidence);
+    const memMissingEvidence = sectionsMissing.map(s => `${s.section}: ${s.reason}`);
     const tokenVerdictMeta = tokenScanVerdictMeta(ev, usableEvidence);
 
     let analysis: string;
@@ -8131,18 +8128,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     if (!usableEvidence) {
       // No usable evidence at all (every major section timed out / unavailable) —
       // be honest about it and never charge quota for this read.
-      analysis = [
-        `TOKEN READ — failed`,
-        `- Address: ${tokenAddress}`,
-        `- Chain: ${chainDisplayLabel(chain)}`,
-        ...(tokenApiHttpStatus === 401
-          ? ["- Token Scanner authorization failed. Reconnect/sign in and try again."]
-          : (ev.warnings && ev.warnings.length > 0 ? ev.warnings.map((w) => `- ${w}`) : ["- Token Scanner returned no usable evidence"])
-        ),
-        ``,
-        `Paste the contract address and try again, or open Token Scanner directly.`,
-        `CTA: Open Token Scanner`,
-      ].join("\n");
+      analysis = formatPartialTokenRead(ev, tokenAddress, evDebug, memConfidence, usableEvidence);
       formatterUsed = "inline_fallback_total";
     } else if (tokenApiMode === "clark_fast" && !ev.ok) {
       // Clark fast mode: market/pool identity present, deeper sections intentionally skipped.
@@ -8153,21 +8139,22 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       formatterUsed = "formatTokenScanResult";
     } else {
       // Partial evidence — at least one branch succeeded
-      analysis = formatPartialTokenRead(ev, tokenAddress, evDebug);
+      analysis = formatPartialTokenRead(ev, tokenAddress, evDebug, memConfidence, usableEvidence);
       formatterUsed = "formatPartialTokenRead";
     }
 
     updateMemToken(sessionMem, tokenAddress, ev.token?.symbol ?? resolvedSymbol, ev.token?.name ?? null, analysis, {
-      normalizedEvidenceSummary: ev.ok ? "full" : partialEvidenceUsed ? "partial" : "none",
+      normalizedEvidenceSummary: ev.ok ? "loaded" : partialEvidenceUsed ? "partial" : memConfidence,
       missingEvidence: memMissingEvidence,
       confidence: memConfidence,
-      cachedEvidence: memConfidence !== "none" ? ev : null,
+      normalizedEvidence: memConfidence !== "failed" ? ev : null,
+      cachedEvidence: memConfidence !== "failed" ? ev : null,
       chain: tokenEvidenceChain(ev, chain) === "ethereum" ? "eth" : "base",
     });
     updateMemIntent(sessionMem, "token_analysis");
 
     const evScanDebug = (evDebug._tokenScanDebug ?? {}) as Record<string, unknown>;
-    const finalAnswerType: string = !usableEvidence ? "token_read_failed" : (tokenApiMode === "clark_fast" && !ev.ok) ? "fast_token_read" : (ev.ok && !partialEvidenceUsed) ? "full_token_read" : "partial_token_read";
+    const finalAnswerType: string = !usableEvidence ? "token_read_failed_or_open_check" : (tokenApiMode === "clark_fast" && !ev.ok) ? "fast_token_read" : (ev.ok && !partialEvidenceUsed) ? "full_token_read" : "partial_token_read";
 
     // Task 2: quota is only consumed when there's usable evidence to charge for.
     const quotaEligible = usableEvidence;
@@ -8280,7 +8267,8 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const analysis = formatTokenSafetyAnswer(r.ev, chainDisplayLabel(tokenEvidenceChain(r.ev, chain)));
     if (!r.fromMemory) {
       updateMemToken(sessionMem, r.address, r.ev.token?.symbol ?? null, r.ev.token?.name ?? null, analysis, {
-        confidence: (r.ev as Record<string, unknown>)._partialEvidenceUsed ? "partial" : r.ev.ok ? "full" : "none",
+        confidence: tokenCoreConfidence(r.ev, ((r.ev as Record<string, unknown>)._evidenceSectionsPresent as string[] | undefined) ?? [], ((r.ev as Record<string, unknown>)._evidenceSectionsMissing as Array<{ section: string; reason: string }> | undefined) ?? [], hasUsableTokenEvidence(r.ev)),
+        normalizedEvidence: r.ev.ok || (r.ev as Record<string, unknown>)._partialEvidenceUsed ? r.ev : null,
         cachedEvidence: r.ev.ok || (r.ev as Record<string, unknown>)._partialEvidenceUsed ? r.ev : null,
       });
     }
