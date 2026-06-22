@@ -6,7 +6,7 @@ const snap = fs.readFileSync('lib/server/walletSnapshot.ts', 'utf8')
 // Scenario 1: high-value holdings + zero swap candidates -> acquisition recovery eligible,
 // independent of (and never blocked by) the old no_swap_or_lot_evidence gate.
 assert.match(snap, /const _acqHighValueWallet = _walletValueTier === 'high_value' \|\| _walletValueTier === 'whale' \|\| totalValue >= 1000/, 'acquisition recovery has a high-value/meaningful-totalValue eligibility signal')
-assert.match(snap, /const _acqLowSwapOrLotEvidence = \(walletSwapSummary\.swapCandidateEvents \?\? 0\) === 0 \|\| \(walletTradeStatsSummary\.closedLots \?\? 0\) === 0/, 'acquisition recovery eligibility allows zero swap candidates / zero closed lots')
+assert.match(snap, /const _acqLowSwapOrLotEvidence = \(walletLotSummary\.openedLots \?\? 0\) === 0 \|\| \(walletTradeStatsSummary\.closedLots \?\? 0\) === 0/, 'acquisition recovery eligibility allows zero open lots / zero closed lots')
 assert.match(snap, /const _acquisitionRecoveryEligible = Boolean\(/, 'a dedicated acquisitionRecoveryEligible flag exists')
 assert.doesNotMatch(snap.match(/const _acquisitionRecoveryEligible = Boolean\(([\s\S]{0,400})\)/)[1], /no_swap_or_lot_evidence/, 'acquisition recovery eligibility is never gated on no_swap_or_lot_evidence')
 assert.match(snap, /if \(_acquisitionRecoveryEligible\) _eligibilityReasons\.push\('acquisition_history_recovery_for_top_holdings'\)/, 'eligible acquisition recovery surfaces acquisition_history_recovery_for_top_holdings as its reason')
@@ -21,8 +21,8 @@ assert.match(snap, /const _acquisitionTargetTokens = _rankedHistoricalTargets\s*
 // Scenario 3: Moralis inbound target-token transfer found -> acquisition inbound candidate created.
 assert.match(snap, /if \(\(item\.token_address \?\? ''\)\.toLowerCase\(\) !== target\.contract\) continue/, 'Moralis transfer items are filtered to the target contract')
 assert.match(snap, /if \(\(item\.to_address \?\? ''\)\.toLowerCase\(\) !== walletLower\) continue/, 'Moralis transfer items are filtered to wallet-side INBOUND transfers only')
-assert.match(snap, /const ACQ_MAX_PAGES_PER_TOKEN = 2/, 'acquisition recovery caps pages per token at 2')
-assert.match(snap, /const ACQ_MAX_TOTAL_PAGES = 6/, 'acquisition recovery caps total pages at 6')
+assert.match(snap, /const ACQ_MAX_PAGES_PER_TOKEN = 3/, 'deep acquisition recovery caps pages per token at 3')
+assert.match(snap, /const ACQ_MAX_TOTAL_PAGES = 8/, 'deep acquisition recovery caps total pages at 8')
 
 // Scenario 4: receipt has a quote leg -> safe acquisition swap candidate created (requires BOTH a
 // wallet-side target-token leg AND a verified quote/payment leg, and more than one leg in the tx).
@@ -49,7 +49,7 @@ assert.doesNotMatch(snap, /_acquisitionRecoveryNewEvidence[\s\S]{0,80}realizedPn
 assert.doesNotMatch(snap, /_acquisitionRecoveryNewEvidence[\s\S]{0,80}publicPerformanceClosedLots\s*=/, 'acquisition recovery code never directly writes publicPerformanceClosedLots')
 
 // Debug field coverage (Task 3 requested field names).
-for (const field of ['acquisitionRecoveryAttempted', 'acquisitionRecoveryReason', 'acquisitionTargetTokens', 'acquisitionPagesUsed', 'acquisitionEventsFetched', 'acquisitionInboundTransfersFound', 'acquisitionCandidateTxs', 'acquisitionStopReason']) {
+for (const field of ['acquisitionRecoveryAttempted', 'acquisitionRecoveryEligible', 'acquisitionRecoveryReason', 'acquisitionTargetTokens', 'acquisitionPagesUsed', 'acquisitionEventsFetched', 'acquisitionInboundTransfersFound', 'acquisitionRecoveryInboundFound', 'acquisitionCandidateTxs', 'acquisitionRecoveryOutboundFound', 'acquisitionRecoveryEventsAddedToFifo', 'acquisitionRecoveryOpenedLotsAfter', 'acquisitionRecoveryClosedLotsAfter', 'acquisitionRecoverySkippedReason', 'acquisitionStopReason']) {
   assert.match(snap, new RegExp(`${field}[?:]`), `acquisitionRecoveryDebug exposes ${field}`)
 }
 
