@@ -313,9 +313,9 @@ export type WalletSnapshot = {
   publicRealizedPnlUsd?: number | null
   publicPerformanceRealizedPnlUsd?: number | null
   publicWinRatePercent?: number | null
-  publicPnlStatus?: 'ok' | 'limited_verified_sample' | 'open_check' | 'flat_estimate_only' | 'near_flat_verified_sample' | 'partial_near_flat'
+  publicPnlStatus?: 'ok' | 'limited_verified_sample' | 'open_check' | 'flat_estimate_only' | 'near_flat_verified_sample' | 'partial_near_flat' | 'open_check_integrity_invalid'
   publicPnlStatusReason?: string
-  publicPnlDisplayLabel?: 'Limited verified sample' | 'Near-flat verified sample' | 'Open check' | 'Verified FIFO sample'
+  publicPnlDisplayLabel?: 'Limited verified sample' | 'Near-flat verified sample' | 'Open check' | 'Verified FIFO sample' | 'Verified FIFO sample — partial coverage' | 'PnL integrity check failed'
   publicPnlDisplayReason?: string
   winningPerformanceLots?: number
   losingPerformanceLots?: number
@@ -467,9 +467,9 @@ export type WalletSnapshot = {
     publicRealizedPnlUsd?: number | null
     publicPerformanceRealizedPnlUsd?: number | null
     publicWinRatePercent?: number | null
-    publicPnlStatus?: 'ok' | 'limited_verified_sample' | 'open_check' | 'flat_estimate_only' | 'near_flat_verified_sample' | 'partial_near_flat'
+    publicPnlStatus?: 'ok' | 'limited_verified_sample' | 'open_check' | 'flat_estimate_only' | 'near_flat_verified_sample' | 'partial_near_flat' | 'open_check_integrity_invalid'
     publicPnlStatusReason?: string
-    publicPnlDisplayLabel?: 'Limited verified sample' | 'Near-flat verified sample' | 'Open check' | 'Verified FIFO sample'
+    publicPnlDisplayLabel?: 'Limited verified sample' | 'Near-flat verified sample' | 'Open check' | 'Verified FIFO sample' | 'Verified FIFO sample — partial coverage' | 'PnL integrity check failed'
     publicPnlDisplayReason?: string
     winningPerformanceLots?: number
     losingPerformanceLots?: number
@@ -542,9 +542,9 @@ export type WalletSnapshot = {
     publicRealizedPnlUsd?: number | null
     publicPerformanceRealizedPnlUsd?: number | null
     publicWinRatePercent?: number | null
-    publicPnlStatus?: 'ok' | 'limited_verified_sample' | 'open_check' | 'flat_estimate_only' | 'near_flat_verified_sample' | 'partial_near_flat'
+    publicPnlStatus?: 'ok' | 'limited_verified_sample' | 'open_check' | 'flat_estimate_only' | 'near_flat_verified_sample' | 'partial_near_flat' | 'open_check_integrity_invalid'
     publicPnlStatusReason?: string
-    publicPnlDisplayLabel?: 'Limited verified sample' | 'Near-flat verified sample' | 'Open check' | 'Verified FIFO sample'
+    publicPnlDisplayLabel?: 'Limited verified sample' | 'Near-flat verified sample' | 'Open check' | 'Verified FIFO sample' | 'Verified FIFO sample — partial coverage' | 'PnL integrity check failed'
     publicPnlDisplayReason?: string
     winningPerformanceLots?: number
     losingPerformanceLots?: number
@@ -685,7 +685,7 @@ export type WalletSnapshot = {
     // PNL-SAFETY-FIX-2: additive — set whenever a sample's lot is synthetic (no real recovered
     // buy), so a synthetic lot is never mistaken for a verified public closed trade even if it
     // happens to carry both an entry and exit tx hash.
-    publicPnlStatus?: 'ok' | 'limited_verified_sample' | 'open_check' | 'flat_estimate_only' | 'near_flat_verified_sample' | 'partial_near_flat'
+    publicPnlStatus?: 'ok' | 'limited_verified_sample' | 'open_check' | 'flat_estimate_only' | 'near_flat_verified_sample' | 'partial_near_flat' | 'open_check_integrity_invalid'
     pnlUnavailableReason?: string | null
     pnlDisplayStatus?: WalletClosedLot['pnlDisplayStatus']
     pnlDecisive?: boolean
@@ -826,6 +826,19 @@ export type WalletSnapshot = {
     errors: string[]
     warnings: string[]
     violations: string[]
+  }
+  // PUBLIC-PNL-INTEGRITY-GATE: debug trail for the final gate that reconciles publicPnlStatus/
+  // win rate/profit-skill against pnlIntegrityCheck once both are known.
+  publicPnlIntegrityGate?: {
+    applied: boolean
+    hardInvalid: boolean
+    softPartialOnly: boolean
+    integrityErrors: string[]
+    publicPnlBeforeGate: string | null
+    publicPnlAfterGate: string | null
+    winRateBeforeGate: number | null
+    winRateAfterGate: number | null
+    reason: string
   }
   // PHASE6-FIX-5: heuristic-only (no ML) wallet behavioral signal bundle, derived strictly from
   // values already computed elsewhere in the snapshot (trade stats, lot summary, holdings).
@@ -15080,11 +15093,6 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     if (snapshot.walletTradeStatsSummary) {
       ;(snapshot.walletTradeStatsSummary as any).pnlIntegrityStatus = _p6Integrity.status
     }
-    // PROFIT-HONESTY: an invalid integrity check means profit skill is not proven, regardless of
-    // how strong the behavior evidence is — keep the behavior style/read, downgrade the profit claim.
-    if (_p6Integrity.status === 'invalid' && snapshot.tradeIntelligence && snapshot.tradeIntelligence.profitSkillStatus === 'unlocked') {
-      snapshot.tradeIntelligence.profitSkillStatus = 'integrity_invalid_not_proven'
-    }
     // PNL-SYNTH-FILTER-FIX: a hard-invalid integrity check (e.g. sells_exceed_buys, portfolio
     // mismatch) means the public PnL numbers are not a clean exact_fifo result even if the
     // earlier eligibility checks passed — downgrade rather than report clean FIFO over evidence
@@ -15092,6 +15100,90 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     if (_p6Integrity.status === 'invalid' && snapshot.pnlQuality === 'exact_fifo') {
       snapshot.pnlQuality = 'fifo_with_estimates'
       snapshot.pnlQualityReason = 'pnl_integrity_check_invalid'
+    }
+
+    // PUBLIC-PNL-INTEGRITY-GATE: a single, final pass that runs after lot classification and
+    // pnlIntegrityCheck are both known. Earlier call sites compute publicPnlStatus/winRate/labels
+    // before this integrity check exists, so they cannot themselves account for it — this gate
+    // re-applies their result against the integrity verdict instead of trusting it blindly.
+    // Hard-invalid errors (impossible accounting, not just thin sample) must never be presented
+    // as a clean public PnL/win-rate/profit-skill read; coverage-only shortfalls may still show a
+    // labeled partial sample.
+    const HARD_INVALID_PNL_ERRORS = new Set([
+      'sells_exceed_buys',
+      'pnl_portfolio_delta_mismatch',
+      'negative_remaining_balance',
+      'impossible_negative_cost_basis',
+      'invalid_fifo_accounting',
+      'missing_required_price_evidence',
+      'price_failure_ratio_above_threshold',
+      'synthetic_lot_ratio_above_threshold',
+      'missing_reasons_above_threshold',
+    ])
+    const _p6IntegrityErrors = _p6Integrity.errors ?? []
+    const _p6HardInvalid = _p6IntegrityErrors.some(e => HARD_INVALID_PNL_ERRORS.has(e))
+    const _p6SoftPartialOnly = !_p6HardInvalid && _p6IntegrityErrors.length > 0 && _p6IntegrityErrors.every(e => e === 'coverage_percent_below_threshold')
+    const _p6GateApplies = _p6Integrity.status !== 'ok' || _p6Integrity.ok !== true
+    const _publicPnlBeforeGate = (snapshot as any).publicPnlStatus ?? snapshot.walletTradeStatsSummary?.publicPnlStatus ?? null
+    const _winRateBeforeGate = snapshot.walletTradeStatsSummary?.publicWinRatePercent ?? (snapshot as any).publicWinRatePercent ?? null
+
+    if (_p6GateApplies && _p6HardInvalid) {
+      const _reasonText = `PnL integrity check failed: ${_p6IntegrityErrors.join(', ')}.`
+      ;(snapshot as any).publicPnlStatus = 'open_check_integrity_invalid'
+      ;(snapshot as any).publicPnlDisplayLabel = 'PnL integrity check failed'
+      ;(snapshot as any).publicPnlDisplayReason = _reasonText
+      ;(snapshot as any).publicPnlStatusReason = _reasonText
+      ;(snapshot as any).publicWinRatePercent = null
+      if (snapshot.walletTradeStatsSummary) {
+        const ts = snapshot.walletTradeStatsSummary as any
+        ts.publicPnlStatus = 'open_check_integrity_invalid'
+        ts.publicPnlDisplayLabel = 'PnL integrity check failed'
+        ts.publicPnlDisplayReason = _reasonText
+        ts.publicWinRatePercent = null
+        ts.winRateStatus = 'locked_small_sample'
+        ts.pnlIntegrityStatus = _p6Integrity.status
+      }
+      if (snapshot.walletEvidenceModel) {
+        ;(snapshot.walletEvidenceModel as any).publicPnlStatus = 'open_check_integrity_invalid'
+      }
+      if (snapshot.tradeIntelligence) {
+        snapshot.tradeIntelligence.profitSkillStatus = 'integrity_invalid_not_proven'
+      }
+    } else if (_p6GateApplies && _p6SoftPartialOnly) {
+      const _publicPerfLots = snapshot.walletTradeStatsSummary?.publicPerformanceClosedLots ?? 0
+      ;(snapshot as any).publicPnlDisplayLabel = 'Verified FIFO sample — partial coverage'
+      ;(snapshot as any).publicPnlDisplayReason = 'This reflects a verified FIFO sample, not complete wallet history.'
+      if (snapshot.walletTradeStatsSummary) {
+        const ts = snapshot.walletTradeStatsSummary as any
+        ts.publicPnlDisplayLabel = 'Verified FIFO sample — partial coverage'
+        ts.publicPnlDisplayReason = 'This reflects a verified FIFO sample, not complete wallet history.'
+        ts.pnlIntegrityStatus = _p6Integrity.status
+        if (_publicPerfLots < 10) {
+          ts.publicWinRatePercent = null
+          ts.winRateStatus = 'locked_small_sample'
+        }
+      }
+      if (snapshot.tradeIntelligence && snapshot.tradeIntelligence.profitSkillStatus === 'unlocked') {
+        snapshot.tradeIntelligence.profitSkillStatus = 'locked_small_sample'
+      }
+    } else if (snapshot.walletTradeStatsSummary) {
+      ;(snapshot.walletTradeStatsSummary as any).pnlIntegrityStatus = _p6Integrity.status
+    }
+
+    snapshot.publicPnlIntegrityGate = {
+      applied: _p6GateApplies && (_p6HardInvalid || _p6SoftPartialOnly),
+      hardInvalid: _p6HardInvalid,
+      softPartialOnly: _p6SoftPartialOnly,
+      integrityErrors: _p6IntegrityErrors,
+      publicPnlBeforeGate: _publicPnlBeforeGate,
+      publicPnlAfterGate: (snapshot as any).publicPnlStatus ?? snapshot.walletTradeStatsSummary?.publicPnlStatus ?? null,
+      winRateBeforeGate: _winRateBeforeGate,
+      winRateAfterGate: snapshot.walletTradeStatsSummary?.publicWinRatePercent ?? (snapshot as any).publicWinRatePercent ?? null,
+      reason: _p6HardInvalid
+        ? 'Hard-invalid PnL integrity error present — public PnL/win-rate/profit-skill downgraded.'
+        : _p6SoftPartialOnly
+          ? 'Only coverage-below-threshold present — public PnL shown as a labeled partial sample.'
+          : 'Integrity check passed — no gate applied.',
     }
 
     // Append new normalized Phase 6 reason keys to the existing _diagnostics.missingReasons

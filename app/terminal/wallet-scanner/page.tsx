@@ -177,9 +177,16 @@ type WalletResult = {
     evidenceQuality?: 'high' | 'medium' | 'low'
     profitSkillStatus?: 'near_flat_not_proven' | 'integrity_invalid_not_proven' | 'locked_small_sample' | 'unlocked'
   }
-  publicPnlStatus?: 'ok' | 'limited_verified_sample' | 'open_check' | 'near_flat_verified_sample' | 'flat_estimate_only' | 'partial_near_flat'
+  publicPnlStatus?: 'ok' | 'limited_verified_sample' | 'open_check' | 'near_flat_verified_sample' | 'flat_estimate_only' | 'partial_near_flat' | 'open_check_integrity_invalid'
   publicPnlDisplayLabel?: string
   publicPnlDisplayReason?: string
+  pnlIntegrityCheck?: {
+    ok: boolean
+    status: 'ok' | 'warning' | 'invalid'
+    errors: string[]
+    warnings: string[]
+    violations: string[]
+  }
   publicPerformanceClosedLots?: number
   verifiedButExcludedClosedLots?: number
   excludedClosedLots?: number
@@ -366,7 +373,7 @@ type WalletResult = {
     closedLotsForStats?: number
     publicClosedLots?: number
     performanceClosedLots?: number
-    publicPnlStatus?: 'ok' | 'limited_verified_sample' | 'open_check' | 'near_flat_verified_sample' | 'flat_estimate_only' | 'partial_near_flat'
+    publicPnlStatus?: 'ok' | 'limited_verified_sample' | 'open_check' | 'near_flat_verified_sample' | 'flat_estimate_only' | 'partial_near_flat' | 'open_check_integrity_invalid'
     publicPnlDisplayLabel?: string
     publicPnlDisplayReason?: string
     publicPerformanceClosedLots?: number
@@ -385,6 +392,7 @@ type WalletResult = {
     rawClosedLots?: number
     estimateOnlyClosedLots?: number
     syntheticClosedLotsExcluded?: number
+    pnlIntegrityStatus?: 'ok' | 'warning' | 'invalid' | null
   }
   walletTradeStatsSource?: 'base_sample' | 'historical_promoted_preview'
   walletClosedTradeSamples?: Array<{
@@ -403,7 +411,7 @@ type WalletResult = {
     entryTxHash?: string | null
     exitTxHash?: string | null
     verificationStatus?: 'verifiable' | 'partial' | 'not_available' | 'synthetic_cost_basis_missing' | 'estimate_only_price_flat' | 'price_independence_missing'
-    publicPnlStatus?: 'ok' | 'limited_verified_sample' | 'open_check' | 'near_flat_verified_sample' | 'flat_estimate_only' | 'partial_near_flat'
+    publicPnlStatus?: 'ok' | 'limited_verified_sample' | 'open_check' | 'near_flat_verified_sample' | 'flat_estimate_only' | 'partial_near_flat' | 'open_check_integrity_invalid'
     pnlUnavailableReason?: string | null
     pnlDecisive?: boolean
     includedInPublicStats?: boolean
@@ -756,6 +764,7 @@ function isTradeStatsGradeable(ts: WalletResult['walletTradeStatsSummary'] | und
     ts.economicSignificance === 'meaningful' &&
     ts.confidence !== 'low' &&
     ts.confidence !== 'open_check' &&
+    ts.pnlIntegrityStatus !== 'invalid' &&
     ts.readyForWalletScore
   )
 }
@@ -2226,7 +2235,23 @@ export default function WalletScannerPage() {
                         <p className="wpv3-support" style={{ marginBottom: '8px' }}>
                           PnL is calculated from matched buy/sell lots. When buys are missing, ChainLens shows sell proceeds or open position value but does not fake profit.
                         </p>
-                        {tradeEvidenceStrong ? (() => {
+                        {tradeEvidenceStrong && (result.publicPnlStatus ?? ts!.publicPnlStatus) === 'open_check_integrity_invalid' ? (() => {
+                          const integrityErrors = result.pnlIntegrityCheck?.errors ?? []
+                          const reasonLabel = (e: string) => e === 'sells_exceed_buys' ? 'Sells exceed buys'
+                            : e === 'pnl_portfolio_delta_mismatch' ? 'Portfolio delta mismatch'
+                            : e === 'coverage_percent_below_threshold' ? 'Low coverage'
+                            : e
+                          return <div>
+                            <div className="wpv3-value" style={{ fontSize: '22px', color: '#F08A8A' }}>PnL integrity check failed</div>
+                            <p className="wpv3-support" style={{ marginTop: '6px' }}>Trades were reconstructed, but profit stats are not public-grade yet.</p>
+                            {integrityErrors.length > 0 && (
+                              <ul style={{ marginTop: '8px', paddingLeft: '18px', color: '#9aa4b2' }}>
+                                {integrityErrors.slice(0, 3).map(e => <li key={e}>{reasonLabel(e)}</li>)}
+                              </ul>
+                            )}
+                            <p className="wpv3-support" style={{ marginTop: '8px', color: '#fbbf24' }}>Win rate and profit-skill scoring are locked.</p>
+                          </div>
+                        })() : tradeEvidenceStrong ? (() => {
                           const publicStatus = result.publicPnlStatus ?? ts!.publicPnlStatus
                           const publicLots = result.publicPerformanceClosedLots ?? ts!.publicPerformanceClosedLots ?? ts!.publicClosedLots ?? ts!.performanceClosedLots ?? 0
                           const rawLots = result.rawMatchedClosedLots ?? ts!.rawMatchedClosedLots ?? ts!.rawClosedLots ?? ts!.closedLots ?? 0

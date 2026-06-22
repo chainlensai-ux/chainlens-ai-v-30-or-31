@@ -147,7 +147,8 @@ export function computeWalletProfile(snapshot: WalletSnapshot): WalletProfile {
   ]
   const evidenceCoverage = Math.round((coverageChecks.filter(Boolean).length / coverageChecks.length) * 100)
   const hasHoldings = holdingsCount > 0
-  const tradingLockedByPublicPnl = publicPnlStatus === 'open_check' || publicPnlStatus === 'flat_estimate_only' || publicPnlStatus === 'near_flat_verified_sample' || publicPnlStatus === 'limited_verified_sample' || publicPnlStatus === 'partial_near_flat' || tradeStats?.scoreUnlocked !== true || winRatePercent == null
+  const pnlIntegrityStatusForLock = (tradeStats as any)?.pnlIntegrityStatus ?? snapshot.pnlIntegrityCheck?.status ?? null
+  const tradingLockedByPublicPnl = publicPnlStatus === 'open_check' || publicPnlStatus === 'flat_estimate_only' || publicPnlStatus === 'near_flat_verified_sample' || publicPnlStatus === 'limited_verified_sample' || publicPnlStatus === 'partial_near_flat' || publicPnlStatus === 'open_check_integrity_invalid' || pnlIntegrityStatusForLock === 'invalid' || tradeStats?.scoreUnlocked !== true || winRatePercent == null
   const tradeEvidenceStrong = !missingCostBasis && !tradingLockedByPublicPnl && closedLotsForStats >= 5 && tradeStats?.economicSignificance === 'meaningful'
   const tradeEvidenceWeak = !missingCostBasis && !tradingLockedByPublicPnl && closedLotsForStats >= 5 && (closedLots > 0 || uniqueTokensTraded > 0 || tradeStats?.status === 'partial')
 
