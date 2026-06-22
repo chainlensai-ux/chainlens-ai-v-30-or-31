@@ -406,6 +406,11 @@ export type WalletSnapshot = {
     unknownEvents: number
     readyForPriceAtTime: boolean
     missing: string[]
+    // SWAP-DETECT-FIX-4: when swapCandidateEvents stays 0 despite real activity, callers must
+    // not imply the wallet has "no trades" — surface a specific reason plus a UI-safe message
+    // instead. Only populated when swapCandidateEvents === 0 && totalEvidenceEvents > 0.
+    noTradesReason?: 'sample_too_small' | 'no_router_matches' | 'no_quote_leg' | 'transfer_only_activity' | 'reconstruction_budget_capped'
+    noTradesMessage?: string
   }
   walletPriceEvidenceSummary: {
     status: 'ok' | 'partial' | 'open_check'
@@ -1143,6 +1148,16 @@ export type WalletSnapshot = {
         routerMatchedTransactions: number
         routerCoverageProtocols: string[]
       }
+      // SWAP-DETECT-FIX-1: wallet-initiated tx detection diagnostics. txFromMissingCount /
+      // txToMissingCount surface how often provider events lack tx-level from/to entirely
+      // (a structural reason swaps can't be detected, independent of router coverage).
+      txFromMissingCount?: number
+      txToMissingCount?: number
+      walletInitiatedDerivationSource?: 'provider_tx_from' | 'receipt_tx_from' | 'unavailable'
+      // SWAP-DETECT-FIX-2: router-match diagnostics, additive to the existing
+      // knownRouterMatchCount/sampleRouterMatches above.
+      routerMatchedTxs?: string[]
+      routerProtocolBreakdown?: Record<string, number>
     }
     walletPriceAtTimeDebug?: {
       swapCandidateEvents: number
@@ -1481,6 +1496,19 @@ export type WalletSnapshot = {
       cacheHits: number
       errors: number
       enrichedTxHashes: string[]
+      // SWAP-DETECT-FIX-3: capped receipt/log reconstruction diagnostics — additive fields
+      // describing the wallet-leg/quote-leg decode pipeline so "no swaps found" can be
+      // distinguished from "reconstruction never ran" or "reconstruction hit its budget cap".
+      receiptReconstructionAttempted?: boolean
+      candidateTxsChecked?: number
+      transferLogsDecoded?: number
+      walletSideLegsFound?: number
+      quoteLegsFound?: number
+      syntheticSwapEventsAdded?: number
+      reconstructedSwapCandidateEvents?: number
+      skippedNoQuoteLeg?: number
+      skippedNoWalletLeg?: number
+      skippedBudgetCap?: number
     }
     ethSwapReconstructionDebug?: {
       attempted: boolean
@@ -2457,6 +2485,7 @@ async function enrichSwapCandidatesFromReceipts(
   walletAddress: string,
   alchemyUrl: string,
   activityRequested: boolean,
+  deepScan = false,
 ): Promise<{
   enrichedEvidence: WalletTxEvidence[]
   debug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['walletSwapEnrichmentDebug']>
@@ -2465,6 +2494,9 @@ async function enrichSwapCandidatesFromReceipts(
     skipped: true, reason,
     candidateTxCount: 0, receiptsFetched: 0, enrichedTxCount: 0, cacheHits: 0, errors: 0,
     enrichedTxHashes: [] as string[],
+    receiptReconstructionAttempted: false, candidateTxsChecked: 0, transferLogsDecoded: 0,
+    walletSideLegsFound: 0, quoteLegsFound: 0, syntheticSwapEventsAdded: 0,
+    reconstructedSwapCandidateEvents: 0, skippedNoQuoteLeg: 0, skippedNoWalletLeg: 0, skippedBudgetCap: 0,
   })
 
   if (!activityRequested || !alchemyUrl) return { enrichedEvidence: evidenceWithDetection, debug: emptyDebug('activity_not_requested') }
@@ -2472,27 +2504,42 @@ async function enrichSwapCandidatesFromReceipts(
   const existingSwapCount = evidenceWithDetection.filter(e => e.swapDetection?.isSwapCandidate === true).length
   if (existingSwapCount > 0) return { enrichedEvidence: evidenceWithDetection, debug: emptyDebug('swap_candidates_already_present') }
 
+  // SWAP-DETECT-FIX-3: candidate selection widened beyond "wallet is tx.from" to also include
+  // txs touching a known router and txs with multiple distinct token movements in the same tx —
+  // both are real signals the wallet may have swapped even when the tx sender is a relayer/
+  // aggregator/smart-account rather than the wallet itself. Still never includes plain transfer-
+  // only/airdrop activity (those have neither a router match nor multiple token legs).
   const walletLower = walletAddress.toLowerCase()
-  const seenTxHashes = new Set<string>()
-  const candidateTxHashes: string[] = []
+  const byTxForCandidates = new Map<string, WalletTxEvidence[]>()
   for (const e of evidenceWithDetection) {
-    if (!e.txHash || !e.txFromAddress) continue
-    if (e.swapDetection?.isSwapCandidate === true) continue
-    if (e.txFromAddress.toLowerCase() !== walletLower) continue
-    if (e.direction !== 'buy' && e.direction !== 'unknown') continue
-    if (seenTxHashes.has(e.txHash)) continue
-    seenTxHashes.add(e.txHash)
-    candidateTxHashes.push(e.txHash)
-    if (candidateTxHashes.length >= 10) break
+    if (!e.txHash || e.swapDetection?.isSwapCandidate === true) continue
+    byTxForCandidates.set(e.txHash, [...(byTxForCandidates.get(e.txHash) ?? []), e])
+  }
+  const candidateTxHashes: string[] = []
+  for (const [txHash, group] of byTxForCandidates.entries()) {
+    const walletInitiated = group.some(e => e.txFromAddress && e.txFromAddress.toLowerCase() === walletLower)
+    const knownRouter = group.some(e => e.txToAddress && EXTENDED_DEX_ROUTERS.has(e.txToAddress.toLowerCase()))
+    const distinctTokens = new Set(group.map(e => e.contract?.toLowerCase()).filter(Boolean))
+    const hasMultipleTokenMovements = distinctTokens.size > 1
+    if (!walletInitiated && !knownRouter && !hasMultipleTokenMovements) continue
+    candidateTxHashes.push(txHash)
   }
 
-  if (candidateTxHashes.length === 0) return { enrichedEvidence: evidenceWithDetection, debug: emptyDebug('no_wallet_initiated_candidates') }
+  // SWAP-DETECT-FIX-3: cap 20 candidate txs for normal scans, 50 for deep scans, per spec.
+  const maxCandidates = deepScan ? 50 : 20
+  if (candidateTxHashes.length === 0) return { enrichedEvidence: evidenceWithDetection, debug: emptyDebug('no_candidate_transactions') }
 
-  const toFetch = candidateTxHashes.slice(0, 8)
+  const skippedBudgetCap = Math.max(0, candidateTxHashes.length - maxCandidates)
+  const toFetch = candidateTxHashes.slice(0, maxCandidates)
   const now = Date.now()
   let receiptsFetched = 0
   let cacheHits = 0
   let errors = 0
+  let transferLogsDecoded = 0
+  let walletSideLegsFound = 0
+  let quoteLegsFound = 0
+  let skippedNoQuoteLeg = 0
+  let skippedNoWalletLeg = 0
   const enrichedTxSet = new Set<string>()
   const urlSuffix = alchemyUrl.slice(-8)
 
@@ -2515,20 +2562,38 @@ async function enrichSwapCandidatesFromReceipts(
       let enrichReason = 'no_swap_evidence'
       const txTo = ((receipt.to as string) ?? '').toLowerCase()
       if (txTo && EXTENDED_DEX_ROUTERS.has(txTo)) {
+        // Router match alone is sufficient — same bar used elsewhere in this file (e.g. the
+        // high-confidence router branch in buildSwapDetection) for a verified known-router call.
         isSwap = true
         enrichReason = 'router_match:known_dex_router'
       }
       if (!isSwap && Array.isArray(receipt.logs)) {
+        // SWAP-DETECT-FIX-3: decode every ERC20 Transfer log in the receipt and require BOTH a
+        // wallet-side leg (a Transfer with the wallet as from or to) AND a quote leg (a Transfer
+        // of a known stable/WETH contract) before promoting — never promote a single-leg transfer.
+        let hasWalletLeg = false
+        let hasQuoteLeg = false
         for (const log of receipt.logs as Array<{ topics?: string[]; address?: string }>) {
           if (!log.topics || log.topics[0]?.toLowerCase() !== ERC20_TRANSFER_TOPIC) continue
           if (log.topics.length < 3) continue
+          transferLogsDecoded++
           const fromPadded = log.topics[1]?.toLowerCase() ?? ''
+          const toPadded = log.topics[2]?.toLowerCase() ?? ''
           const fromAddr = '0x' + fromPadded.slice(-40)
-          if (fromAddr === walletLower) {
-            isSwap = true
-            enrichReason = 'outbound_erc20_from_wallet_in_receipt'
-            break
-          }
+          const toAddr = '0x' + toPadded.slice(-40)
+          if (fromAddr === walletLower || toAddr === walletLower) hasWalletLeg = true
+          const logAddr = (log.address ?? '').toLowerCase()
+          if (logAddr && KNOWN_STABLE_WETH_CONTRACTS[logAddr]) hasQuoteLeg = true
+        }
+        if (hasWalletLeg) walletSideLegsFound++
+        if (hasQuoteLeg) quoteLegsFound++
+        if (hasWalletLeg && hasQuoteLeg) {
+          isSwap = true
+          enrichReason = 'wallet_leg_plus_quote_leg_in_receipt'
+        } else if (!hasWalletLeg) {
+          skippedNoWalletLeg++
+        } else if (!hasQuoteLeg) {
+          skippedNoQuoteLeg++
         }
       }
       swapEnrichmentReceiptCache.set(cacheKey, { data: { isSwap, reason: enrichReason }, exp: now + SWAP_ENRICHMENT_TTL_MS })
@@ -2541,7 +2606,12 @@ async function enrichSwapCandidatesFromReceipts(
   if (enrichedTxSet.size === 0) {
     return {
       enrichedEvidence: evidenceWithDetection,
-      debug: { skipped: false, reason: 'no_swap_evidence_found', candidateTxCount: toFetch.length, receiptsFetched, enrichedTxCount: 0, cacheHits, errors, enrichedTxHashes: [] },
+      debug: {
+        skipped: false, reason: 'no_swap_evidence_found', candidateTxCount: toFetch.length, receiptsFetched, enrichedTxCount: 0, cacheHits, errors, enrichedTxHashes: [],
+        receiptReconstructionAttempted: true, candidateTxsChecked: toFetch.length, transferLogsDecoded,
+        walletSideLegsFound, quoteLegsFound, syntheticSwapEventsAdded: 0, reconstructedSwapCandidateEvents: 0,
+        skippedNoQuoteLeg, skippedNoWalletLeg, skippedBudgetCap,
+      },
     }
   }
 
@@ -2556,7 +2626,7 @@ async function enrichSwapCandidatesFromReceipts(
         isSwapCandidate: true,
         confidence: 'medium' as const,
         eventKind: 'swap_candidate' as const,
-        reason: 'Receipt enrichment: router match or outbound ERC20 payment leg detected',
+        reason: 'Receipt enrichment: router match, or wallet-side leg + quote leg detected in receipt logs',
         matchedProtocol: e.txMatchedRouterProtocol ?? null,
         matchedAddress: null,
       } satisfies WalletSwapDetection,
@@ -2565,7 +2635,12 @@ async function enrichSwapCandidatesFromReceipts(
 
   return {
     enrichedEvidence,
-    debug: { skipped: false, reason: 'enriched', candidateTxCount: toFetch.length, receiptsFetched, enrichedTxCount: enrichedTxSet.size, cacheHits, errors, enrichedTxHashes },
+    debug: {
+      skipped: false, reason: 'enriched', candidateTxCount: toFetch.length, receiptsFetched, enrichedTxCount: enrichedTxSet.size, cacheHits, errors, enrichedTxHashes,
+      receiptReconstructionAttempted: true, candidateTxsChecked: toFetch.length, transferLogsDecoded,
+      walletSideLegsFound, quoteLegsFound, syntheticSwapEventsAdded: enrichedTxHashes.length,
+      reconstructedSwapCandidateEvents: enrichedTxHashes.length, skippedNoQuoteLeg, skippedNoWalletLeg, skippedBudgetCap,
+    },
   }
 }
 
@@ -4678,6 +4753,8 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
     totalRecoveredEvents: 0, highConfidenceRecoveredEvents: 0, mediumConfidenceRecoveredEvents: 0,
     lowConfidenceRecoveredEvents: 0, sampleRecoveredEvents: [],
     rejectedNotRecovered: 0, rejectedLowOrMediumConfidence: 0, rejectedNoSwapContextCandidate: 0,
+    txFromMissingCount: 0, txToMissingCount: 0, walletInitiatedDerivationSource: 'unavailable',
+    routerProtocolBreakdown: {}, routerMatchedTxs: [],
   })
   const emptySummary = (missing: string[]): WalletSnapshot['walletSwapSummary'] => ({
     status: 'open_check', totalEvidenceEvents: 0, groupedTxCount: 0, swapCandidateEvents: 0,
@@ -5267,6 +5344,43 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
     tokens: [...new Set(group.map(e => e.symbol))].slice(0, 5),
   }))
 
+  // SWAP-DETECT-FIX-1: tx-level from/to coverage diagnostics. txFromAddress/txToAddress are
+  // already normalized onto every event by the providers' tx-metadata extraction upstream of
+  // this function (see e.g. the GoldRush from_address/to_address normalization) — these counts
+  // surface how often that normalization came back empty, which is a structural reason swaps
+  // can go undetected independent of router coverage.
+  const txFromMissingCount = evidenceList.filter(e => !e.txFromAddress).length
+  const txToMissingCount = evidenceList.filter(e => !e.txToAddress).length
+  const walletInitiatedDerivationSource: 'provider_tx_from' | 'receipt_tx_from' | 'unavailable' =
+    walletInitiatedTxCount > 0 ? 'provider_tx_from' : 'unavailable'
+
+  // SWAP-DETECT-FIX-2: per-protocol breakdown of router matches, additive to sampleRouterMatches.
+  const routerProtocolBreakdown: Record<string, number> = {}
+  const routerMatchedTxs: string[] = []
+  for (const [txHash, ctx] of txCtxMap.entries()) {
+    if (!ctx.txToKnownRouter || !ctx.txRouterProtocol) continue
+    routerProtocolBreakdown[ctx.txRouterProtocol] = (routerProtocolBreakdown[ctx.txRouterProtocol] ?? 0) + 1
+    routerMatchedTxs.push(txHash)
+  }
+
+  // SWAP-DETECT-FIX-4: when no swap candidates were found despite real activity, classify why
+  // so downstream/UI layers report "no swap evidence found in current sample" instead of
+  // implying the wallet has no trades at all.
+  let noTradesReason: 'sample_too_small' | 'no_router_matches' | 'no_quote_leg' | 'transfer_only_activity' | undefined
+  let noTradesMessage: string | undefined
+  if (swapCandidateEvents === 0 && totalEvidenceEvents > 0) {
+    if (totalEvidenceEvents < 5) {
+      noTradesReason = 'sample_too_small'
+    } else if (transferEvents + airdropCandidateEvents >= totalEvidenceEvents - duplicateEventCount) {
+      noTradesReason = 'transfer_only_activity'
+    } else if (knownRouterMatchCount === 0 && walletInitiatedSwapLikeTxCount === 0) {
+      noTradesReason = 'no_router_matches'
+    } else {
+      noTradesReason = 'no_quote_leg'
+    }
+    noTradesMessage = 'No swap evidence found in current sample'
+  }
+
   return {
     evidenceWithDetection,
     summary: {
@@ -5274,13 +5388,15 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
       routerSwapCandidateEvents, walletInitiatedSwapCandidateEvents, sameTxInboundOutboundCandidates,
       highConfidenceSwapCandidates, mediumConfidenceSwapCandidates, lowConfidenceSwapCandidates,
       transferEvents, airdropCandidateEvents, bridgeCandidateEvents, unknownEvents,
-      readyForPriceAtTime, missing,
+      readyForPriceAtTime, missing, noTradesReason, noTradesMessage,
     },
     debug: {
       totalEvidenceEvents, usableEventCount, groupedTxCount,
       txWithMultipleTokenMovements, txWithInboundOutboundMovement,
       txToKnownRouterCount, walletInitiatedTxCount, walletInitiatedSwapLikeTxCount,
       knownRouterMatchCount, stableOrWethLegMatchCount,
+      txFromMissingCount, txToMissingCount, walletInitiatedDerivationSource,
+      routerProtocolBreakdown, routerMatchedTxs,
       swapCandidateEvents, routerSwapCandidateEvents, walletInitiatedSwapCandidateEvents, sameTxInboundOutboundCandidates,
       highConfidenceSwapCandidates, mediumConfidenceSwapCandidates, lowConfidenceSwapCandidates,
       transferEvents, airdropCandidateEvents, bridgeCandidateEvents, unknownEvents, readyForPriceAtTime,
@@ -11093,7 +11209,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _enrichAlchemyUrl = useEthAlchemy ? ethUrl : baseUrl
   let _swapEnrichmentDebug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['walletSwapEnrichmentDebug']>
   if (_shouldEnrich) {
-    const enrichResult = await enrichSwapCandidatesFromReceipts(_swapEvidenceWithDetection, addrNorm, _enrichAlchemyUrl, activityRequested)
+    const enrichResult = await enrichSwapCandidatesFromReceipts(_swapEvidenceWithDetection, addrNorm, _enrichAlchemyUrl, activityRequested, deepScan)
     _swapEvidenceWithDetection = enrichResult.enrichedEvidence
     _swapEnrichmentDebug = enrichResult.debug
     tokenMeter.measure('swapDetection', enrichResult)
@@ -11105,7 +11221,21 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       else _trackCall('alchemy', 'eth_getTransactionReceipt', false, _rk) // dedup records it
     }
     if (enrichResult.debug.enrichedTxCount > 0) {
-      walletSwapSummary = { ...walletSwapSummary, swapCandidateEvents: walletSwapSummary.swapCandidateEvents + enrichResult.debug.enrichedTxCount, readyForPriceAtTime: true }
+      walletSwapSummary = {
+        ...walletSwapSummary,
+        swapCandidateEvents: walletSwapSummary.swapCandidateEvents + enrichResult.debug.enrichedTxCount,
+        readyForPriceAtTime: true,
+        noTradesReason: undefined,
+        noTradesMessage: undefined,
+      }
+    } else if ((enrichResult.debug.skippedBudgetCap ?? 0) > 0) {
+      // SWAP-DETECT-FIX-4: reconstruction ran but stopped at its candidate-tx cap before
+      // finding evidence — report that distinctly from "checked everything, found nothing".
+      walletSwapSummary = {
+        ...walletSwapSummary,
+        noTradesReason: 'reconstruction_budget_capped',
+        noTradesMessage: 'No swap evidence found in current sample',
+      }
     }
   } else {
     const _skipReason = !activityRequested ? 'activity_not_requested' : walletSwapSummary.swapCandidateEvents > 0 ? 'swap_candidates_already_present' : 'no_events'
