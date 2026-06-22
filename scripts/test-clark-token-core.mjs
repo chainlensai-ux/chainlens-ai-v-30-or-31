@@ -62,4 +62,34 @@ assert.ok(routing.includes('standard LP-token lock/burn proof does not apply'), 
 assert.ok(!/intent:\s*"wallet_analysis"[\s\S]{0,120}token_scan/.test(route), 'token scan branch must not route to Wallet Read')
 assert.ok(route.includes('walletScanAttempted: false'), 'token scan debug must confirm wallet scanner was not attempted')
 
+
+
+// 9. Ethereum Token Core compatibility: prompt chain must be preserved end-to-end.
+assert.ok(routing.includes('ETH_CHAIN_WORD_RE'), 'routing must recognize ETH/Ethereum token prompts')
+assert.ok(routing.includes('on\\s+eth') && routing.includes('ethereum\\s+token'), 'ETH token prompts must be treated as token prompts, not wallet prompts')
+assert.ok(route.includes('const chain: SupportedChain = promptChain ?? body.chain ?? memSelectedChain'), 'explicit ETH prompt chain must override UI/default chain')
+assert.ok(route.includes('tokenInternalApiPayload = { contract: tokenAddress, chain: toTokenApiChain(chain) ?? "base"'), '/api/token payload must use resolved ETH chain')
+assert.ok(route.includes('fetchHoneypotSecurity(tokenAddress, toTokenApiChain(chain) ?? "base")'), 'independent security check must use ETH chain when requested')
+assert.ok(route.includes('chainDisplayLabel(tokenEvidenceChain(ev, chain))'), 'formatter/debug path must preserve Ethereum chain label')
+assert.ok(route.includes('Chain: ${chainDisplayLabel(tokenEvidenceChain(ev, chain))}'), 'partial TOKEN READ must print resolved chain')
+assert.ok(route.includes('followUpUsedMemory') && route.includes('evidenceSource: fromMemory ? "lastToken"'), 'ETH follow-ups must use lastToken memory debug')
+assert.ok(route.includes('toolsUsed: fromMemory ? ["memory"]'), 'token follow-ups from lastToken must report memory tools')
+assert.ok(route.includes('LP proof is open check'), 'missing LP evidence must remain Open Check')
+assert.ok(!route.includes('no active pool data on Base"'), 'Token Core must not hardcode Base no-pool wording')
+assert.ok(!route.includes('Token not found on Base or no active pool data'), 'Token Core missing evidence must not hardcode Base')
+
+// 10. Required ETH prompts should classify as Token Core / follow-up intents.
+const ethPrompts = [
+  'scan token 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48 on eth',
+  'scan this ethereum token 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
+]
+for (const prompt of ethPrompts) {
+  const classified = routing.match(/export function classifyClarkPrompt/)
+  assert.ok(classified, 'classifyClarkPrompt must exist for ETH token routing checks')
+  assert.ok(/on\\s\+eth|ethereum\\s\+token/.test(routing), `ETH prompt must have token routing coverage: ${prompt}`)
+}
+for (const prompt of ['is it safe?', 'is LP locked?', 'can dev rug?', 'why high risk?']) {
+  assert.ok(routing.includes('TOKEN_FOLLOWUP_RE') && routing.toLowerCase().includes(prompt.replace('?', '').toLowerCase().split(' ')[0]), `token follow-up must be covered: ${prompt}`)
+}
+
 console.log('Clark Token Core checks passed')
