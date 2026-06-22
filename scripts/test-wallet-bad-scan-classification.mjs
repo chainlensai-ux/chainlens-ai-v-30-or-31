@@ -138,7 +138,7 @@ assert.match(ui, /Do not write cache/, 'wallet scanner shows a no-cache-write co
 // PRICE-INDEPENDENCE-FIX: fake-looking break-even FIFO (entry price === exit price both reused
 // from the same non-independent fallback source) must never be treated as verified/decisive PnL.
 assert.match(snap, /const CURRENT_PRICE_REUSE_SOURCES = new Set\(\['current_holding_price_open_lot_estimate', 'current_price_fallback_not_used'\]\)/, 'current-price reuse sources are explicitly enumerated')
-assert.match(snap, /const FALLBACK_PRICE_REUSE_SOURCES = new Set\(\['historical_price', 'unavailable', 'synthetic'\]\)/, 'fallback price reuse sources are explicitly enumerated')
+assert.match(snap, /const FALLBACK_PRICE_REUSE_SOURCES = new Set\(\['historical_price', 'unavailable', 'synthetic', 'fallback'\]\)/, 'fallback price reuse sources are explicitly enumerated')
 assert.match(snap, /function computePriceIndependence\(/, 'a price-independence classifier exists for closed lots')
 assert.match(snap, /priceIndependenceStatus\?: 'independent_quote_legs' \| 'independent_provider_prices' \| 'mixed_independent' \| 'same_source_flat_estimate' \| 'current_price_reused' \| 'fallback_price_reused' \| 'missing_independent_price' \| 'unknown'/, 'closed lots expose a priceIndependenceStatus tier')
 assert.match(snap, /pnlDecisive\?:\s*boolean/, 'closed lots expose a pnlDecisive flag')

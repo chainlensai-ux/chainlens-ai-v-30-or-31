@@ -2729,7 +2729,7 @@ export type PriceAtTimeEvidence = {
   tokenSymbol?: string | null
   timestamp: string
   priceUsd: number | null
-  source: 'stable_leg' | 'weth_leg' | 'historical_price' | 'swap_derived' | 'provider_event_usd' | 'current_holding_price_open_lot_estimate' | 'eth_native_value_router_reconstruction' | 'current_price_fallback_not_used' | 'swap_reconstruction_v1' | 'unavailable'
+  source: 'stable_leg' | 'weth_leg' | 'historical_price' | 'swap_derived' | 'provider_event_usd' | 'current_holding_price_open_lot_estimate' | 'eth_native_value_router_reconstruction' | 'current_price_fallback_not_used' | 'swap_reconstruction_v1' | 'fallback' | 'unavailable'
   confidence: 'high' | 'medium' | 'low' | 'open_check'
   reason: string
 }
@@ -5463,7 +5463,7 @@ function lotConfidence(entrySource: string, exitSource: string): 'high' | 'mediu
 // so a closed lot whose entry and exit prices both come from one of these (and land on the exact
 // same number) is a fake break-even, not a verified zero-PnL trade.
 const CURRENT_PRICE_REUSE_SOURCES = new Set(['current_holding_price_open_lot_estimate', 'current_price_fallback_not_used'])
-const FALLBACK_PRICE_REUSE_SOURCES = new Set(['historical_price', 'unavailable', 'synthetic'])
+const FALLBACK_PRICE_REUSE_SOURCES = new Set(['historical_price', 'unavailable', 'synthetic', 'fallback'])
 const QUOTE_LEG_PRICE_SOURCES = new Set(['stable_leg', 'weth_leg', 'eth_native_value_router_reconstruction', 'swap_reconstruction_v1'])
 const PROVIDER_PRICE_SOURCES = new Set(['provider_event_usd'])
 const NON_INDEPENDENT_PRICE_SOURCES = new Set([...CURRENT_PRICE_REUSE_SOURCES, ...FALLBACK_PRICE_REUSE_SOURCES])
@@ -7275,13 +7275,93 @@ async function fetchGoldrushHistoricalPrice(chain: string, contractAddress: stri
   }
 }
 
+// FALLBACK-PRICEATTIME-1: tier-3 priceAtTime fallback. Only reached once the existing GoldRush
+// (fetchGoldrushHistoricalPrice) and provider/Moralis-derived price tiers above have already
+// returned null for an event — never used to override an existing priced result. Tries
+// Dexscreener's pair price first (free, no key, covers most listed tokens), then Coingecko's
+// historical-by-date contract price. Always reported as source:'fallback'/confidence:'low' and
+// classified as a non-independent price (see FALLBACK_PRICE_REUSE_SOURCES), so it can never count
+// as verified/public-grade PnL — it only keeps OpenCheck PnL from collapsing to a fake flat price.
+// Cached per (contract, day) so a deep scan never re-fetches the same token/day twice, and never
+// runs at all unless deepScan=true (normal scans are completely unaffected).
+const FALLBACK_PRICE_TTL_MS = 60 * 60 * 1000
+const _fallbackPriceCache = new Map<string, { exp: number; priceUsd: number | null }>()
+
+async function fetchDexscreenerFallbackPrice(contractAddress: string): Promise<number | null> {
+  try {
+    const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${contractAddress}`, {
+      cache: 'no-store',
+      signal: AbortSignal.timeout(4_000),
+    })
+    if (!res.ok) return null
+    const json = await res.json() as Record<string, unknown>
+    const pairs = Array.isArray(json.pairs) ? json.pairs as Record<string, unknown>[] : []
+    if (pairs.length === 0) return null
+    // Dexscreener's free tier has no historical-candle endpoint — the most-liquid pair's current
+    // priceUsd is the best available tier-3 approximation, which is exactly why this source is
+    // always 'low' confidence and never independent/public-grade.
+    const best = pairs.reduce((a, b) => {
+      const aLiq = Number((a.liquidity as Record<string, unknown> | undefined)?.usd ?? 0)
+      const bLiq = Number((b.liquidity as Record<string, unknown> | undefined)?.usd ?? 0)
+      return bLiq > aLiq ? b : a
+    })
+    const priceUsd = Number(best.priceUsd)
+    return Number.isFinite(priceUsd) && priceUsd > 0 ? priceUsd : null
+  } catch {
+    return null
+  }
+}
+
+async function fetchCoingeckoFallbackPrice(contractAddress: string, dateStr: string): Promise<number | null> {
+  const [y, m, d] = dateStr.split('-')
+  if (!y || !m || !d) return null
+  try {
+    const res = await fetch(
+      `https://api.coingecko.com/api/v3/coins/ethereum/contract/${contractAddress}/history?date=${d}-${m}-${y}`,
+      { cache: 'no-store', signal: AbortSignal.timeout(4_000) },
+    )
+    if (!res.ok) return null
+    const json = await res.json() as Record<string, unknown>
+    const marketData = json.market_data as Record<string, unknown> | undefined
+    const usd = (marketData?.current_price as Record<string, unknown> | undefined)?.usd
+    const priceUsd = typeof usd === 'number' ? usd : null
+    return priceUsd != null && Number.isFinite(priceUsd) && priceUsd > 0 ? priceUsd : null
+  } catch {
+    return null
+  }
+}
+
+async function fallbackPriceAtTime(
+  contractAddress: string,
+  timestamp: string,
+  deepScan: boolean,
+): Promise<{ priceUsd: number; source: 'fallback'; confidence: 'low' } | null> {
+  if (!deepScan) return null
+  if (!contractAddress || !contractAddress.startsWith('0x')) return null
+  const dateStr = (timestamp ?? '').slice(0, 10)
+  if (!dateStr || dateStr.length !== 10) return null
+  const cacheKey = `fallback:${contractAddress.toLowerCase()}:${dateStr}`
+  const cached = _fallbackPriceCache.get(cacheKey)
+  if (cached && cached.exp > Date.now()) {
+    return cached.priceUsd != null ? { priceUsd: cached.priceUsd, source: 'fallback', confidence: 'low' } : null
+  }
+  // Tier 3a: Dexscreener pair price. Tier 3b: Coingecko historical-by-date contract price.
+  // (Uniswap TWAP is intentionally not attempted here — it requires an on-chain RPC client this
+  // file does not otherwise maintain — so this fallback covers the two HTTP-only sources.)
+  let priceUsd = await fetchDexscreenerFallbackPrice(contractAddress)
+  if (priceUsd == null) priceUsd = await fetchCoingeckoFallbackPrice(contractAddress, dateStr)
+  _fallbackPriceCache.set(cacheKey, { exp: Date.now() + FALLBACK_PRICE_TTL_MS, priceUsd })
+  return priceUsd != null ? { priceUsd, source: 'fallback', confidence: 'low' } : null
+}
+
 async function buildPriceAtTimeEvidence(
   evidenceWithDetection: WalletTxEvidence[],
   activityRequested: boolean,
   reqCache?: Map<string, number | null>,
   priceByContract?: Map<string, number>,
   totalValueUsd?: number | null,
-  maxBudgetOverride?: number | null
+  maxBudgetOverride?: number | null,
+  deepScan = false,
 ): Promise<{
   evidenceWithPricing: WalletTxEvidence[]
   summary: WalletSnapshot['walletPriceEvidenceSummary']
@@ -7551,6 +7631,16 @@ async function buildPriceAtTimeEvidence(
       return priced(e, histResult.priceUsd, 'historical_price', 'medium', `Historical token price from on-chain pricing data`)
     }
     skippedHistoricalUnavailable++
+
+    // FALLBACK-PRICEATTIME-1: GoldRush/provider historical price (tiers 1-2 above) is null —
+    // try the tier-3 fallback (Dexscreener/Coingecko) before falling through to the current-
+    // holding-price estimate. Skipped entirely for normal scans (deepScan=false) and never
+    // blocks/slows them since this branch is unreachable unless deepScan is true.
+    const _fallback = await fallbackPriceAtTime(e.contract, e.timestamp ?? '', deepScan)
+    if (_fallback) {
+      return priced(e, _fallback.priceUsd, 'fallback', 'low',
+        'Tier-3 fallback price (Dexscreener/Coingecko) — not independently verified, excluded from verified/public-grade PnL')
+    }
 
     if (e.direction === 'buy' && priceByContract) {
       currentHoldingPriceAttempts++
@@ -11217,7 +11307,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   tokenMeter.startTokenMeter('priceInference')
   const _pricingStartedAt = Date.now()
   tokenMeter.measure('priceInference', _swapEvidenceWithDetection)
-  let { evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug, budgetDebug: _priceBudgetDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache, priceByContract, totalValue, historicalCoverage ? 6 : null)
+  let { evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug, budgetDebug: _priceBudgetDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache, priceByContract, totalValue, historicalCoverage ? 6 : null, deepScan)
   // Track base evidence historical price calls
   for (let _pp = 0; _pp < (_priceAtTimeDebug?.providerAttempts ?? 0); _pp++) {
     _trackCall('goldrush', 'historical_by_addresses_v2', false, `gr:price:base:${_pp}:${addrNorm}`)
@@ -11347,7 +11437,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         _swapEvidenceWithDetection = _unpricedReceiptResult.enrichedEvidence
         tokenMeter.startTokenMeter('priceInference')
         tokenMeter.measure('priceInference', _swapEvidenceWithDetection)
-        const _rePriceResult = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache, priceByContract, totalValue, historicalCoverage ? Math.max(1, Math.min(6, _sharedHistoricalBudgetRemaining())) : null)
+        const _rePriceResult = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache, priceByContract, totalValue, historicalCoverage ? Math.max(1, Math.min(6, _sharedHistoricalBudgetRemaining())) : null, deepScan)
         for (let _pp = 0; _pp < (_rePriceResult.debug?.providerAttempts ?? 0); _pp++) {
           _trackCall('goldrush', 'historical_by_addresses_v2', false, `gr:price:unpriced_recon:${_pp}:${addrNorm}`)
           _sharedHistoricalCreditsUsed++
@@ -11516,7 +11606,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
           }
         })
       }
-      ;({ evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache, priceByContract, totalValue, historicalCoverage ? 6 : null))
+      ;({ evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache, priceByContract, totalValue, historicalCoverage ? 6 : null, deepScan))
       _pricedEvidence = normalizeSwapEventsForFifo(_pricedEvidence, tokenMeter.isDebugEnabled())
       _pricedEvidence = normalizeSingleLegEventsForFifo(_pricedEvidence, tokenMeter.isDebugEnabled())
       const _rerunFifo = buildFifoLotEngine(_pricedEvidence, activityRequested)
@@ -11682,7 +11772,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       tokenMeter.measure('normalization', allFbEvents, evidenceList, walletEvidenceSummary, _txEvidenceDebugBase)
       ;({ evidenceWithDetection: _swapEvidenceWithDetection, summary: walletSwapSummary, debug: _swapDetectionDebug } = buildSwapDetection(evidenceList, activityRequested, addrNorm))
       tokenMeter.measure('swapDetection', evidenceList, _swapEvidenceWithDetection, walletSwapSummary, _swapDetectionDebug)
-      ;({ evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache, priceByContract, totalValue, historicalCoverage ? 6 : null))
+      ;({ evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache, priceByContract, totalValue, historicalCoverage ? 6 : null, deepScan))
       tokenMeter.measure('priceInference', _swapEvidenceWithDetection, _pricedEvidence, walletPriceEvidenceSummary, _priceAtTimeDebug)
       _pricedEvidence = normalizeSwapEventsForFifo(_pricedEvidence, tokenMeter.isDebugEnabled())
       _pricedEvidence = normalizeSingleLegEventsForFifo(_pricedEvidence, tokenMeter.isDebugEnabled())
@@ -11854,7 +11944,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       tokenMeter.measure('normalization', bfcAllEvents, evidenceList, walletEvidenceSummary)
       ;({ evidenceWithDetection: _swapEvidenceWithDetection, summary: walletSwapSummary, debug: _swapDetectionDebug } = buildSwapDetection(evidenceList, activityRequested, addrNorm))
       tokenMeter.measure('swapDetection', _swapEvidenceWithDetection, walletSwapSummary)
-      ;({ evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache, priceByContract, totalValue, historicalCoverage ? Math.max(1, Math.min(6, _sharedHistoricalBudgetRemaining())) : null))
+      ;({ evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache, priceByContract, totalValue, historicalCoverage ? Math.max(1, Math.min(6, _sharedHistoricalBudgetRemaining())) : null, deepScan))
       tokenMeter.measure('priceInference', _pricedEvidence, walletPriceEvidenceSummary)
       for (let _pp = 0; _pp < (_priceAtTimeDebug?.providerAttempts ?? 0); _pp++) {
         _trackCall('goldrush', 'historical_by_addresses_v2', false, `gr:price:bfc:p${bfcPagesAttempted}_${_pp}:${addrNorm}`)
@@ -11989,7 +12079,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
             }
           })
         }
-        ;({ evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache, priceByContract, totalValue, historicalCoverage ? 6 : null))
+        ;({ evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache, priceByContract, totalValue, historicalCoverage ? 6 : null, deepScan))
         _pricedEvidence = normalizeSwapEventsForFifo(_pricedEvidence, tokenMeter.isDebugEnabled())
         _pricedEvidence = normalizeSingleLegEventsForFifo(_pricedEvidence, tokenMeter.isDebugEnabled())
         const _suppRerunFifo = buildFifoLotEngine(_pricedEvidence, activityRequested)
