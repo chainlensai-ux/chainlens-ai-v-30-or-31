@@ -410,6 +410,8 @@ export type WalletSnapshot = {
     // not imply the wallet has "no trades" — surface a specific reason plus a UI-safe message
     // instead. Only populated when swapCandidateEvents === 0 && totalEvidenceEvents > 0.
     noTradesReason?: 'sample_too_small' | 'no_router_matches' | 'no_quote_leg' | 'transfer_only_activity' | 'reconstruction_budget_capped'
+      | 'acquisition_history_recovery_attempted_no_quote_leg' | 'acquisition_history_recovery_found_transfers_no_swaps'
+      | 'acquisition_history_recovery_budget_capped' | 'acquisition_history_recovery_no_inbound_found'
     noTradesMessage?: string
   }
   walletPriceEvidenceSummary: {
@@ -1509,6 +1511,26 @@ export type WalletSnapshot = {
       skippedNoQuoteLeg?: number
       skippedNoWalletLeg?: number
       skippedBudgetCap?: number
+    }
+    // ACQUISITION-RECOVERY-1: top-holding acquisition-history recovery. Independent of the
+    // FIFO/swap-evidence-gated historical recovery above — runs when a wallet has meaningful top
+    // holdings but zero swap candidates/closed lots, so the scanner can still attempt to find how
+    // those holdings were acquired. Never infers a buy from holdings alone: every candidate must
+    // have a real wallet-side inbound transfer (Moralis) AND a verified quote/payment leg in the
+    // tx receipt before being promoted into swap-candidate evidence.
+    acquisitionRecoveryDebug?: {
+      acquisitionRecoveryAttempted: boolean
+      acquisitionRecoveryReason: string
+      acquisitionTargetTokens: Array<{ contract: string; symbol: string; chain: string; estimatedUsd: number }>
+      acquisitionPagesUsed: number
+      acquisitionEventsFetched: number
+      acquisitionInboundTransfersFound: number
+      acquisitionCandidateTxs: Array<{ txHash: string; tokenContract: string; amount: number; timestamp: string | null; fromAddress: string | null }>
+      acquisitionStopReason: string | null
+      acquisitionReceiptsChecked: number
+      acquisitionQuoteLegVerified: number
+      acquisitionNoQuoteLegCount: number
+      acquisitionPromotedSwapCandidates: number
     }
     ethSwapReconstructionDebug?: {
       attempted: boolean
@@ -2640,6 +2662,208 @@ async function enrichSwapCandidatesFromReceipts(
       receiptReconstructionAttempted: true, candidateTxsChecked: toFetch.length, transferLogsDecoded,
       walletSideLegsFound, quoteLegsFound, syntheticSwapEventsAdded: enrichedTxHashes.length,
       reconstructedSwapCandidateEvents: enrichedTxHashes.length, skippedNoQuoteLeg, skippedNoWalletLeg, skippedBudgetCap,
+    },
+  }
+}
+
+// ACQUISITION-RECOVERY-1: top-holding acquisition-history recovery. For a wallet with meaningful
+// top holdings but zero swap candidates/closed lots, this fetches Moralis ERC20 transfer history
+// for the ranked top-value target tokens only (never the whole wallet), keeps only wallet-side
+// INBOUND transfers of the target contract, then validates each candidate tx's receipt for a real
+// quote/payment leg (stable/WETH/native ETH) before ever promoting it to swap-candidate evidence.
+// Never infers a buy from holdings alone, never promotes a one-leg/airdrop transfer, never writes
+// PnL directly — it only returns additional WalletTxEvidence entries shaped exactly like other
+// swap-candidate evidence so the existing pricing/FIFO pipeline can pick them up unmodified.
+type AcquisitionRecoveryDebug = NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['acquisitionRecoveryDebug']>
+
+const ACQ_DUST_HOLDING_USD = 5
+const ACQ_MAX_PAGES_PER_TOKEN = 2
+const ACQ_MAX_TOTAL_PAGES = 6
+const ACQ_MAX_RECEIPT_CHECKS = 15
+
+async function runAcquisitionHistoryRecovery(
+  walletAddress: string,
+  targetTokens: Array<{ contract: string; symbol: string; chain: string; estimatedUsd: number }>,
+  rpcUrlForChain: (chain: string) => string | null,
+  moralisChainForChain: (chain: string) => MoralisChain | null,
+  budgetRemaining: () => number,
+): Promise<{ newEvidence: WalletTxEvidence[]; debug: AcquisitionRecoveryDebug }> {
+  const walletLower = walletAddress.toLowerCase()
+  const emptyDebug = (reason: string): AcquisitionRecoveryDebug => ({
+    acquisitionRecoveryAttempted: false,
+    acquisitionRecoveryReason: reason,
+    acquisitionTargetTokens: targetTokens,
+    acquisitionPagesUsed: 0,
+    acquisitionEventsFetched: 0,
+    acquisitionInboundTransfersFound: 0,
+    acquisitionCandidateTxs: [],
+    acquisitionStopReason: null,
+    acquisitionReceiptsChecked: 0,
+    acquisitionQuoteLegVerified: 0,
+    acquisitionNoQuoteLegCount: 0,
+    acquisitionPromotedSwapCandidates: 0,
+  })
+
+  if (targetTokens.length === 0) return { newEvidence: [], debug: emptyDebug('no_target_tokens') }
+  if (!process.env.MORALIS_API_KEY) return { newEvidence: [], debug: emptyDebug('moralis_not_configured') }
+  if (budgetRemaining() <= 0) return { newEvidence: [], debug: emptyDebug('budget_exhausted') }
+
+  let pagesUsed = 0
+  let eventsFetched = 0
+  const inboundTransfers: Array<{ txHash: string; tokenContract: string; symbol: string; chain: string; amount: number; timestamp: string | null; fromAddress: string | null }> = []
+  let stopReason: string | null = null
+
+  outerAcq: for (const target of targetTokens) {
+    const chain = moralisChainForChain(target.chain)
+    if (!chain) continue
+    let cursor: string | undefined
+    for (let pageNo = 0; pageNo < ACQ_MAX_PAGES_PER_TOKEN; pageNo++) {
+      if (pagesUsed >= ACQ_MAX_TOTAL_PAGES || budgetRemaining() <= 0) {
+        stopReason = 'budget_cap'
+        break outerAcq
+      }
+      let page
+      try {
+        page = await fetchMoralisTransfers(walletAddress, chain, 100, cursor)
+      } catch {
+        stopReason = 'fetch_failed'
+        break outerAcq
+      }
+      pagesUsed++
+      eventsFetched += page.rawCount
+      if (!page.usable) { stopReason = page.reason || 'fetch_failed'; break }
+      for (const item of page.items) {
+        if ((item.token_address ?? '').toLowerCase() !== target.contract) continue
+        if ((item.to_address ?? '').toLowerCase() !== walletLower) continue
+        if (!item.transaction_hash) continue
+        const decimals = Number.parseInt(item.token_decimals ?? '18', 10)
+        const amount = item.value_decimal != null
+          ? Number.parseFloat(item.value_decimal)
+          : (Number.parseFloat(item.value ?? '0') / Math.pow(10, Number.isFinite(decimals) ? decimals : 18))
+        if (!Number.isFinite(amount) || amount <= 0) continue
+        inboundTransfers.push({
+          txHash: item.transaction_hash,
+          tokenContract: target.contract,
+          symbol: item.token_symbol || target.symbol,
+          chain: target.chain,
+          amount,
+          timestamp: item.block_timestamp,
+          fromAddress: item.from_address,
+        })
+      }
+      if (!page.nextCursor) break
+      cursor = page.nextCursor
+    }
+  }
+
+  if (!stopReason) stopReason = pagesUsed >= ACQ_MAX_TOTAL_PAGES ? 'budget_cap' : 'cursor_null'
+
+  if (inboundTransfers.length === 0) {
+    return {
+      newEvidence: [],
+      debug: {
+        ...emptyDebug('no_inbound_transfers_found'),
+        acquisitionRecoveryAttempted: true,
+        acquisitionPagesUsed: pagesUsed,
+        acquisitionEventsFetched: eventsFetched,
+        acquisitionStopReason: stopReason,
+      },
+    }
+  }
+
+  // Receipt/quote-leg validation (Task 4) — never promote a candidate without a real quote/
+  // payment leg, and never promote a simple one-leg airdrop/claim transfer.
+  const toCheck = inboundTransfers.slice(0, ACQ_MAX_RECEIPT_CHECKS)
+  const newEvidence: WalletTxEvidence[] = []
+  let receiptsChecked = 0
+  let quoteLegVerified = 0
+  let noQuoteLegCount = 0
+  const seenTx = new Set<string>()
+
+  for (const cand of toCheck) {
+    if (seenTx.has(cand.txHash)) continue
+    seenTx.add(cand.txHash)
+    const rpcUrl = rpcUrlForChain(cand.chain)
+    if (!rpcUrl) { noQuoteLegCount++; continue }
+    let receipt: any
+    try {
+      receipt = await getSharedTxReceipt(rpcUrl, cand.txHash)
+      receiptsChecked++
+    } catch {
+      noQuoteLegCount++
+      continue
+    }
+    if (!receipt || !Array.isArray(receipt.logs)) { noQuoteLegCount++; continue }
+
+    let hasWalletLeg = false
+    let hasQuoteLeg = false
+    let distinctLegs = 0
+    for (const log of receipt.logs as Array<{ topics?: string[]; address?: string }>) {
+      if (!log.topics || log.topics[0]?.toLowerCase() !== ERC20_TRANSFER_TOPIC) continue
+      if (log.topics.length < 3) continue
+      distinctLegs++
+      const fromPadded = log.topics[1]?.toLowerCase() ?? ''
+      const toPadded = log.topics[2]?.toLowerCase() ?? ''
+      const fromAddr = '0x' + fromPadded.slice(-40)
+      const toAddr = '0x' + toPadded.slice(-40)
+      if ((fromAddr === walletLower || toAddr === walletLower) && (log.address ?? '').toLowerCase() === cand.tokenContract) hasWalletLeg = true
+      const logAddr = (log.address ?? '').toLowerCase()
+      if (logAddr && KNOWN_STABLE_WETH_CONTRACTS[logAddr] && (fromAddr === walletLower || toAddr === walletLower)) hasQuoteLeg = true
+    }
+    // Native ETH payment leg: tx itself carries value and the wallet is the sender.
+    const txFrom = ((receipt.from as string) ?? '').toLowerCase()
+    const nativeValue = receipt.effectiveGasPrice || receipt.value ? receipt.value : null
+    if (!hasQuoteLeg && txFrom === walletLower && typeof nativeValue === 'string' && nativeValue !== '0x0' && nativeValue !== '0x') hasQuoteLeg = true
+
+    if (hasQuoteLeg) quoteLegVerified++
+    // Require: wallet-side target-token leg, a real quote/payment leg, and more than one leg in
+    // the tx (never promote a simple one-leg airdrop/claim/transfer).
+    if (hasWalletLeg && hasQuoteLeg && distinctLegs > 1) {
+      newEvidence.push({
+        txHash: cand.txHash,
+        timestamp: cand.timestamp,
+        fromAddress: cand.fromAddress,
+        toAddress: walletAddress,
+        contract: cand.tokenContract,
+        symbol: cand.symbol,
+        amountRaw: null,
+        tokenDecimals: null,
+        amount: cand.amount,
+        usdValue: null,
+        direction: 'buy',
+        chain: cand.chain,
+        txFromAddress: cand.fromAddress,
+        txToAddress: walletAddress,
+        txSucceeded: true,
+        swapDetection: {
+          isSwapCandidate: true,
+          confidence: 'medium',
+          eventKind: 'swap_candidate',
+          reason: 'Acquisition recovery: inbound target-token transfer with verified quote/payment leg in receipt',
+          matchedProtocol: null,
+          matchedAddress: null,
+        },
+      })
+    } else {
+      noQuoteLegCount++
+    }
+  }
+
+  return {
+    newEvidence,
+    debug: {
+      acquisitionRecoveryAttempted: true,
+      acquisitionRecoveryReason: newEvidence.length > 0 ? 'acquisition_history_recovery_for_top_holdings' : 'acquisition_no_quote_leg',
+      acquisitionTargetTokens: targetTokens,
+      acquisitionPagesUsed: pagesUsed,
+      acquisitionEventsFetched: eventsFetched,
+      acquisitionInboundTransfersFound: inboundTransfers.length,
+      acquisitionCandidateTxs: toCheck.map(c => ({ txHash: c.txHash, tokenContract: c.tokenContract, amount: c.amount, timestamp: c.timestamp, fromAddress: c.fromAddress })),
+      acquisitionStopReason: stopReason,
+      acquisitionReceiptsChecked: receiptsChecked,
+      acquisitionQuoteLegVerified: quoteLegVerified,
+      acquisitionNoQuoteLegCount: noQuoteLegCount,
+      acquisitionPromotedSwapCandidates: newEvidence.length,
     },
   }
 }
@@ -12777,7 +13001,92 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     _historicalCoverageDebug.moralisReason = _moralisHistoricalAttempted ? (_moralisHistoricalStopReason ?? 'attempted') : (_moralisHistoricalStopReason ?? 'not_attempted')
   }
 
-  const _finalCandidateEvidence = _syntheticTargetExtraNewEvidence.length > 0 || _pnlRecoveryV2NewEvidence.length > 0 || _moralisHistoricalNewEvidence.length > 0
+  // ACQUISITION-RECOVERY-1: independent eligibility — deliberately does NOT require the
+  // fifo_or_swap_evidence_needs_recovery signal used by _historicalEligibleCoreCriteria above.
+  // A wallet can have meaningful top holdings with ZERO swap candidates/closed lots and still be
+  // eligible here; when that is the active path, the surfaced reason is
+  // 'acquisition_history_recovery_for_top_holdings', never 'no_swap_or_lot_evidence'.
+  const _acqHighValueWallet = _walletValueTier === 'high_value' || _walletValueTier === 'whale' || totalValue >= 1000
+  const _acqTopHoldingsExist = holdings.some(h => (h.value ?? 0) >= ACQ_DUST_HOLDING_USD)
+  const _acqLowSwapOrLotEvidence = (walletSwapSummary.swapCandidateEvents ?? 0) === 0 || (walletTradeStatsSummary.closedLots ?? 0) === 0
+  const _acqPublicLotsLow = (walletTradeStatsSummary.closedLots ?? 0) < 10
+  const _acquisitionRecoveryEligible = Boolean(
+    activityRequested &&
+    _acqHighValueWallet &&
+    _acqTopHoldingsExist &&
+    _acqPublicLotsLow &&
+    _acqLowSwapOrLotEvidence &&
+    _targetContracts.size > 0 &&
+    Boolean(process.env.MORALIS_API_KEY) &&
+    _sharedHistoricalBudgetRemaining() > 0
+  )
+  if (_acquisitionRecoveryEligible) _eligibilityReasons.push('acquisition_history_recovery_for_top_holdings')
+  const _acqMaxTargetTokens = (_walletValueTier === 'high_value' || _walletValueTier === 'whale' || deepScan) ? 4 : 3
+  const _acquisitionTargetTokens = _rankedHistoricalTargets
+    .filter(t => t.estimatedUsd >= ACQ_DUST_HOLDING_USD)
+    .slice(0, _acqMaxTargetTokens)
+    .map(t => ({ contract: t.contract, symbol: t.symbol, chain: t.chain, estimatedUsd: t.estimatedUsd }))
+  const _acqRpcUrlForChain = (chain: string): string | null => {
+    const c = normalizeChain(chain)
+    if (c === 'base') return ALCHEMY_BASE_KEY ? baseUrl : null
+    if (c === 'eth') return ALCHEMY_ETH_KEY ? ethUrl : null
+    return null
+  }
+  const _acqMoralisChainForChain = (chain: string): MoralisChain | null => {
+    const c = normalizeChain(chain)
+    return c === 'base' || c === 'eth' || c === 'polygon' || c === 'bsc' || c === 'arbitrum' || c === 'optimism' || c === 'avalanche' || c === 'fantom' || c === 'cronos' || c === 'gnosis' ? c as MoralisChain : null
+  }
+  let _acquisitionRecoveryNewEvidence: WalletTxEvidence[] = []
+  let _acquisitionRecoveryDebug: AcquisitionRecoveryDebug = {
+    acquisitionRecoveryAttempted: false,
+    acquisitionRecoveryReason: _acquisitionRecoveryEligible ? 'not_run' : 'not_eligible_for_acquisition_recovery',
+    acquisitionTargetTokens: _acquisitionTargetTokens,
+    acquisitionPagesUsed: 0,
+    acquisitionEventsFetched: 0,
+    acquisitionInboundTransfersFound: 0,
+    acquisitionCandidateTxs: [],
+    acquisitionStopReason: null,
+    acquisitionReceiptsChecked: 0,
+    acquisitionQuoteLegVerified: 0,
+    acquisitionNoQuoteLegCount: 0,
+    acquisitionPromotedSwapCandidates: 0,
+  }
+  if (_acquisitionRecoveryEligible && _acquisitionTargetTokens.length > 0) {
+    const _acqResult = await runAcquisitionHistoryRecovery(addrNorm, _acquisitionTargetTokens, _acqRpcUrlForChain, _acqMoralisChainForChain, _sharedHistoricalBudgetRemaining)
+    _acquisitionRecoveryNewEvidence = _acqResult.newEvidence
+    _acquisitionRecoveryDebug = _acqResult.debug
+    _trackCall('moralis', 'erc20_transfers', false, `moralis:acquisitionRecovery:${addrNorm}`)
+    _sharedHistoricalCreditsUsed += _acqResult.debug.acquisitionPagesUsed
+  }
+  // Task 6: more specific noTradesReason/noTradesMessage when acquisition recovery ran. Never
+  // overwrites a wallet that already has real swap candidates from elsewhere.
+  if (walletSwapSummary.swapCandidateEvents === 0) {
+    if (_acquisitionRecoveryNewEvidence.length > 0) {
+      walletSwapSummary = {
+        ...walletSwapSummary,
+        swapCandidateEvents: _acquisitionRecoveryNewEvidence.length,
+        readyForPriceAtTime: true,
+        noTradesReason: undefined,
+        noTradesMessage: undefined,
+      }
+    } else if (_acquisitionRecoveryDebug.acquisitionRecoveryAttempted) {
+      const _acqSymbolList = _acquisitionTargetTokens.map(t => t.symbol).join(', ')
+      const _acqNoTradesReason =
+        _acquisitionRecoveryDebug.acquisitionStopReason === 'budget_cap' ? 'acquisition_history_recovery_budget_capped'
+        : _acquisitionRecoveryDebug.acquisitionInboundTransfersFound === 0 ? 'acquisition_history_recovery_no_inbound_found'
+        : _acquisitionRecoveryDebug.acquisitionNoQuoteLegCount > 0 ? 'acquisition_history_recovery_attempted_no_quote_leg'
+        : 'acquisition_history_recovery_found_transfers_no_swaps'
+      walletSwapSummary = {
+        ...walletSwapSummary,
+        noTradesReason: _acqNoTradesReason,
+        noTradesMessage: _acqSymbolList
+          ? `No swap evidence found in the current sample. Top-holding acquisition recovery checked ${_acqSymbolList}, but no quote/payment legs were verified.`
+          : walletSwapSummary.noTradesMessage,
+      }
+    }
+  }
+
+  const _finalCandidateEvidence = _syntheticTargetExtraNewEvidence.length > 0 || _pnlRecoveryV2NewEvidence.length > 0 || _moralisHistoricalNewEvidence.length > 0 || _acquisitionRecoveryNewEvidence.length > 0
     ? [
         ..._hcMergedCandidateEvidence,
         ..._syntheticTargetExtraNewEvidence.filter(
@@ -12792,10 +13101,16 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
             !_syntheticTargetExtraNewEvidence.some(e => e.txHash === se.txHash && e.contract === se.contract && e.direction === se.direction) &&
             !_pnlRecoveryV2NewEvidence.some(e => e.txHash === se.txHash && e.contract === se.contract && e.direction === se.direction)
         ),
+        ..._acquisitionRecoveryNewEvidence.filter(
+          se => !_hcMergedCandidateEvidence.some(e => e.txHash === se.txHash && e.contract === se.contract && e.direction === se.direction) &&
+            !_syntheticTargetExtraNewEvidence.some(e => e.txHash === se.txHash && e.contract === se.contract && e.direction === se.direction) &&
+            !_pnlRecoveryV2NewEvidence.some(e => e.txHash === se.txHash && e.contract === se.contract && e.direction === se.direction) &&
+            !_moralisHistoricalNewEvidence.some(e => e.txHash === se.txHash && e.contract === se.contract && e.direction === se.direction)
+        ),
       ]
     : _hcMergedCandidateEvidence
-  const _finalAllHistoricalEvidence = _syntheticTargetExtraNewEvidence.length > 0 || _pnlRecoveryV2NewEvidence.length > 0 || _moralisHistoricalNewEvidence.length > 0
-    ? [..._hcMergedAllHistoricalEvidence, ..._syntheticTargetExtraNewEvidence, ..._pnlRecoveryV2NewEvidence, ..._moralisHistoricalNewEvidence]
+  const _finalAllHistoricalEvidence = _syntheticTargetExtraNewEvidence.length > 0 || _pnlRecoveryV2NewEvidence.length > 0 || _moralisHistoricalNewEvidence.length > 0 || _acquisitionRecoveryNewEvidence.length > 0
+    ? [..._hcMergedAllHistoricalEvidence, ..._syntheticTargetExtraNewEvidence, ..._pnlRecoveryV2NewEvidence, ..._moralisHistoricalNewEvidence, ..._acquisitionRecoveryNewEvidence]
     : _hcMergedAllHistoricalEvidence
 
   // Phase 6C: Historical pricing preview — price the Phase 6B new swap candidates plus any
@@ -13716,8 +14031,14 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     estimatedCreditUnits: _historicalCreditsUsedFinal,
     cacheHit: false,
     budgetCapHit: _walletScanBudgetDebug.budgetCapHit,
-    stopReason: _historicalCoverageDebug?.stoppedReason ?? (_skipReasons[0] ?? null),
-    skippedReasons: _skipReasons,
+    // Task 1: a wallet eligible for top-holding acquisition recovery must never report
+    // no_swap_or_lot_evidence as its blocking reason — surface acquisition_history_recovery_for_top_holdings
+    // instead, even though the original GoldRush-coverage gate above remains unchanged for other wallets.
+    stopReason: _historicalCoverageDebug?.stoppedReason
+      ?? (_acquisitionRecoveryEligible ? 'acquisition_history_recovery_for_top_holdings' : (_skipReasons[0] ?? null)),
+    skippedReasons: _acquisitionRecoveryEligible
+      ? _skipReasons.filter(r => r !== 'no_swap_or_lot_evidence')
+      : _skipReasons,
     sampleTargets: _rankedHistoricalTargets.slice(0, 5),
     sampleRecoveredEvents: _historicalCandidateDebug?.sampleNewSwapCandidates ?? [],
   }
@@ -14522,6 +14843,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         ],
       },
       walletSwapEnrichmentDebug: _swapEnrichmentDebug,
+      acquisitionRecoveryDebug: _acquisitionRecoveryDebug,
       ethSwapReconstructionDebug: _ethSwapReconstructionDebug,
       basePnlReconstructionDebug: _basePnlReconDebug,
       swapReconstructionV1Debug: _swapReconstructionV1Debug,
