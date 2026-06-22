@@ -546,6 +546,10 @@ export type WalletSnapshot = {
     winRateDefinition?: 'wins_over_performance_lots_excluding_break_even'
     winRateStatus?: 'unlocked' | 'locked_small_sample'
     pnlIntegrityStatus?: 'ok' | 'warning' | 'invalid'
+    // OPENCHECK-PNL-1: 'open-check' means matchedLots > 0 but performance/verified-grade lots are
+    // below the public threshold — realizedPnlUsd/closedLotsForStats below still reflect the real
+    // (non-synthetic) matched lots, but win rate/score/personality stay locked (see scoreUnlocked).
+    pnlMode?: 'verified' | 'open-check' | 'unavailable'
   }
 
   // FIFO-RECON-FIX-3: per-wallet PnL quality tier, derived from existing closed-lot/sell/holding
@@ -12955,6 +12959,53 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       confidence: _publicPnlStatusFinal === 'near_flat_verified_sample' || _publicPnlStatusFinal === 'limited_verified_sample' ? 'low' : _performanceStats.confidence,
       sampleWarning: _publicPnlStatusReasonFinal,
       winRateStatus: _performanceStats.scoreUnlocked === true ? 'unlocked' : 'locked_small_sample',
+      pnlMode: 'verified',
+    }
+  } else if (_closedLotsForStatsFinal > 0) {
+    // OPENCHECK-PNL-1: matchedLots (real, non-synthetic FIFO-closed lots) exist, but none of them
+    // clear the performance/public-grade bar — instead of collapsing realizedPnlUsd/closedLots to
+    // zero (which made PnL look unavailable even though real matched trades exist), keep the
+    // already-computed real-backed PnL (...promotedTradeStatsSummary, set above from
+    // _realBackedClosedLotsFinal) visible in "open-check" mode. Public-grade-only fields, win
+    // rate, and score stay locked exactly as before — only the base PnL numbers stop being zeroed.
+    promotedTradeStatsSummary = {
+      ...promotedTradeStatsSummary,
+      decisivePnlClosedLots: 0,
+      performanceClosedLots: 0,
+      publicClosedLots: 0,
+      publicPerformanceClosedLots: 0,
+      verifiedButExcludedClosedLots: _verifiedButExcludedClosedLotsFinal,
+      excludedClosedLots: _excludedClosedLotsFinal,
+      rawMatchedClosedLots: _rawMatchedClosedLotsFinal,
+      publicRealizedPnlUsd: null,
+      publicPerformanceRealizedPnlUsd: null,
+      publicWinRatePercent: null,
+      publicPnlStatus: _publicPnlStatusFinal,
+      publicPnlStatusReason: _publicPnlStatusReasonFinal,
+      publicPnlDisplayLabel: _publicPnlDisplayLabelFinal,
+      publicPnlDisplayReason: _publicPnlDisplayReasonFinal,
+      winningPerformanceLots: 0,
+      losingPerformanceLots: 0,
+      breakEvenPerformanceLots: 0,
+      excludedBreakEvenLots: _excludedBreakEvenLotsFinal,
+      // Win rate/score/profit-skill stay locked — only performance-grade-eligible lots may ever
+      // unlock these, never the open-check matched-lot count.
+      winRatePercent: null,
+      readyForWalletScore: false,
+      scoreUnlocked: false,
+      confidence: 'open_check',
+      confidenceLabel: _publicPnlStatusFinal === 'flat_estimate_only' ? 'flat_estimate_only' : 'open_check',
+      winRateDefinition: 'wins_over_performance_lots_excluding_break_even',
+      rawClosedLots: _syntheticLotsAfterSourceLots.length,
+      reconstructedClosedLots: _syntheticLotsAfterSourceLots.length,
+      verifiedClosedLots: _verifiedIndependentClosedLotsFinal,
+      estimateOnlyClosedLots: _estimateOnlyClosedLotsFinal.length,
+      flatPriceClosedLotsExcluded: _flatPriceClosedLotsExcludedFinal,
+      syntheticClosedLotsExcluded: _syntheticLotsExcludedFromStatsFinal,
+      pnlUnavailableReason: _publicPnlStatusFinal,
+      sampleWarning: _publicPnlStatusReasonFinal,
+      winRateStatus: 'locked_small_sample',
+      pnlMode: 'open-check',
     }
   } else {
     promotedTradeStatsSummary = {
@@ -12994,6 +13045,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       pnlUnavailableReason: _publicPnlStatusFinal,
       sampleWarning: _publicPnlStatusReasonFinal,
       winRateStatus: _performanceStats.scoreUnlocked === true ? 'unlocked' : 'locked_small_sample',
+      pnlMode: 'unavailable',
     }
   }
 
@@ -13018,6 +13070,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       sampleWarning: 'Closed trades were detected, but entry and exit prices reuse the same non-independent estimate, so PnL and win rate are locked.',
       pnlUnavailableReason: 'flat_price_estimate_only',
       estimateOnlyClosedLots: _estimateOnlyClosedLotsFinal.length,
+      pnlMode: 'unavailable',
     }
   }
 
