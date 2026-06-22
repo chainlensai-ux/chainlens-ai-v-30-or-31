@@ -386,7 +386,7 @@ type WalletResult = {
     winningPerformanceLots?: number
     losingPerformanceLots?: number
     breakEvenPerformanceLots?: number
-    winRateStatus?: 'unlocked' | 'locked_small_sample'
+    winRateStatus?: 'unlocked' | 'locked_small_sample' | 'locked_integrity_invalid'
     pnlUnavailableReason?: string | null
     verifiedClosedLots?: number
     rawClosedLots?: number
@@ -422,9 +422,9 @@ type WalletResult = {
     summary: string
   }
   walletPnlWindows?: {
-    '3d': { realizedPnlUsd: number; closedLots: number; winRatePercent: number | null; winRateStatus?: 'unlocked' | 'locked_small_sample'; publicPnlStatus?: string } | { closedLots: 0; fallback: string }
-    '7d': { realizedPnlUsd: number; closedLots: number; winRatePercent: number | null; winRateStatus?: 'unlocked' | 'locked_small_sample'; publicPnlStatus?: string } | { closedLots: 0; fallback: string }
-    '30d': { realizedPnlUsd: number; closedLots: number; winRatePercent: number | null; winRateStatus?: 'unlocked' | 'locked_small_sample'; publicPnlStatus?: string } | { closedLots: 0; fallback: string }
+    '3d': { realizedPnlUsd: number | null; closedLots: number; winRatePercent: number | null; winRateStatus?: 'unlocked' | 'locked_small_sample' | 'locked_integrity_invalid'; publicPnlStatus?: string; reason?: string } | { closedLots: 0; fallback: string }
+    '7d': { realizedPnlUsd: number | null; closedLots: number; winRatePercent: number | null; winRateStatus?: 'unlocked' | 'locked_small_sample' | 'locked_integrity_invalid'; publicPnlStatus?: string; reason?: string } | { closedLots: 0; fallback: string }
+    '30d': { realizedPnlUsd: number | null; closedLots: number; winRatePercent: number | null; winRateStatus?: 'unlocked' | 'locked_small_sample' | 'locked_integrity_invalid'; publicPnlStatus?: string; reason?: string } | { closedLots: 0; fallback: string }
   }
   walletBotScore?: {
     score: number | null
@@ -683,6 +683,9 @@ function publicWinRateUnlocked(ts: WalletResult['walletTradeStatsSummary'] | und
     Number.isFinite(ts.publicWinRatePercent) &&
     publicPerfLots >= 10 &&
     ts.winRateStatus !== 'locked_small_sample' &&
+    ts.winRateStatus !== 'locked_integrity_invalid' &&
+    ts.pnlIntegrityStatus !== 'invalid' &&
+    ts.publicPnlStatus !== 'open_check_integrity_invalid' &&
     (ts.scoreUnlocked === true || ts.readyForWalletScore === true)
   )
 }
@@ -695,9 +698,10 @@ function buildWalletReport(result: WalletResult) {
   const publicLots = result.publicPerformanceClosedLots ?? ts?.publicPerformanceClosedLots ?? 0
   const rawLots = result.rawMatchedClosedLots ?? ts?.rawMatchedClosedLots ?? ts?.rawClosedLots ?? ts?.closedLots ?? 0
   const excludedLots = result.excludedClosedLots ?? ts?.excludedClosedLots ?? Math.max(0, rawLots - publicLots)
-  const publicSamplePnlUsd = result.publicPerformanceRealizedPnlUsd ?? ts?.publicRealizedPnlUsd ?? null
+  const integrityInvalid = (result.publicPnlStatus ?? ts?.publicPnlStatus) === 'open_check_integrity_invalid' || ts?.pnlIntegrityStatus === 'invalid' || result.pnlIntegrityCheck?.status === 'invalid'
+  const publicSamplePnlUsd = integrityInvalid ? null : (result.publicPerformanceRealizedPnlUsd ?? ts?.publicRealizedPnlUsd ?? null)
   const winRateUnlocked = publicWinRateUnlocked(ts)
-  const profitSkillProven = publicLots >= 10
+  const profitSkillProven = publicLots >= 10 && !integrityInvalid
 
   const topHoldings = (result.walletFacts?.summary?.topHoldings ?? [...result.holdings].sort((a, b) => b.value - a.value).slice(0, 5).map(h => ({ symbol: h.symbol, chain: h.chain ?? 'unknown', valueUsd: h.value, percent: null })))
 
@@ -3090,7 +3094,7 @@ export default function WalletScannerPage() {
                         const windowKeys = ['3d', '7d', '30d'] as const
                         const anyWindowHasData = windowKeys.some(key => {
                           const w = windows[key]
-                          return w.closedLots > 0 && 'realizedPnlUsd' in w
+                          return w.closedLots > 0 && 'realizedPnlUsd' in w && w.realizedPnlUsd != null
                         })
                         if (!anyWindowHasData) {
                           const _windowsTs = result.walletTradeStatsSummary
@@ -3119,17 +3123,20 @@ export default function WalletScannerPage() {
                             <div className="wallet-intel-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: '10px' }}>
                               {windowKeys.map(key => {
                                 const w = windows[key]
-                                const hasData = w.closedLots > 0 && 'realizedPnlUsd' in w
+                                const hasData = w.closedLots > 0 && 'realizedPnlUsd' in w && w.realizedPnlUsd != null
+                                const integrityLocked = 'winRateStatus' in w && w.winRateStatus === 'locked_integrity_invalid'
                                 return (
                                   <div key={key} style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '12px', padding: '12px' }}>
                                     <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.28)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '7px' }}>{key.toUpperCase()} PnL</div>
-                                    {hasData && 'realizedPnlUsd' in w ? (
+                                    {hasData && 'realizedPnlUsd' in w && w.realizedPnlUsd != null ? (
                                       <>
                                         <div style={{ fontSize: '18px', fontWeight: 800, color: w.realizedPnlUsd < 0 ? '#f87171' : '#4ade80', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{fmtUsdSigned(w.realizedPnlUsd)}</div>
                                         <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.32)', marginTop: '4px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
                                           {w.closedLots} closed lot{w.closedLots !== 1 ? 's' : ''}{w.winRatePercent != null ? ` · ${w.winRatePercent}% win rate` : ''}
                                         </div>
                                       </>
+                                    ) : integrityLocked ? (
+                                      <div style={{ fontSize: '12px', color: '#fbbf24', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{('reason' in w && w.reason) || 'PnL integrity check failed, so window PnL and win rate are locked.'}</div>
                                     ) : (
                                       <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.32)', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{'fallback' in w ? w.fallback : 'Not enough data'}</div>
                                     )}

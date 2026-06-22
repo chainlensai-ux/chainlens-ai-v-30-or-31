@@ -153,7 +153,7 @@ export function computeWalletPersonality(
 // ---------------------------------------------------------------------------
 
 export type WindowStat =
-  | { realizedPnlUsd: number; closedLots: number; winRatePercent: number | null; winRateStatus?: 'unlocked' | 'locked_small_sample'; publicPnlStatus?: string }
+  | { realizedPnlUsd: number | null; closedLots: number; winRatePercent: number | null; winRateStatus?: 'unlocked' | 'locked_small_sample' | 'locked_integrity_invalid'; publicPnlStatus?: string; reason?: string }
   | { closedLots: 0; fallback: string }
 
 export type WalletPnlWindows = {
@@ -168,9 +168,10 @@ const WINDOW_DEFS: Array<{ key: keyof WalletPnlWindows; days: number }> = [
   { key: '30d', days: 30 },
 ]
 
-export function computeWindowedPnl(closedLots: WalletClosedLot[], now: Date = new Date(), options?: { scoreUnlocked?: boolean; publicPnlStatus?: string; rawMatchedClosedLots?: number }): WalletPnlWindows {
+export function computeWindowedPnl(closedLots: WalletClosedLot[], now: Date = new Date(), options?: { scoreUnlocked?: boolean; publicPnlStatus?: string; rawMatchedClosedLots?: number; integrityInvalid?: boolean }): WalletPnlWindows {
   const nowMs = now.getTime()
   const result = {} as WalletPnlWindows
+  const integrityInvalid = options?.integrityInvalid === true || options?.publicPnlStatus === 'open_check_integrity_invalid'
 
   for (const { key, days } of WINDOW_DEFS) {
     const windowMs = days * 24 * 60 * 60 * 1000
@@ -181,6 +182,21 @@ export function computeWindowedPnl(closedLots: WalletClosedLot[], now: Date = ne
 
     if (inWindow.length === 0) {
       result[key] = { closedLots: 0, fallback: (options?.rawMatchedClosedLots ?? 0) > 0 ? `No verified public-grade closed trades in the last ${days}d.` : `No closed trades in the last ${days}d.` }
+      continue
+    }
+
+    // PUBLIC-PNL-INTEGRITY-GATE: a window's realized PnL/win rate must never be shown once the
+    // parent pnlIntegrityCheck is hard-invalid — these numbers are derived from the same lots the
+    // integrity check flagged, so they cannot be presented as a clean public-grade read.
+    if (integrityInvalid) {
+      result[key] = {
+        realizedPnlUsd: null,
+        closedLots: inWindow.length,
+        winRatePercent: null,
+        winRateStatus: 'locked_integrity_invalid',
+        publicPnlStatus: 'open_check_integrity_invalid',
+        reason: 'PnL integrity check failed, so window PnL and win rate are locked.',
+      }
       continue
     }
 

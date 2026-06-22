@@ -6,7 +6,7 @@ const ui = fs.readFileSync('app/terminal/wallet-scanner/page.tsx', 'utf8')
 // WIN-RATE-TRUST-FIX-1: a strict public-grade gate must exist and be the only path that allows
 // rendering a numeric win rate labeled as official/public.
 assert.match(ui, /function publicWinRateUnlocked\(/, 'publicWinRateUnlocked gating helper exists')
-assert.match(ui, /Number\.isFinite\(ts\.publicWinRatePercent\) &&\s*\n\s*publicPerfLots >= 10 &&\s*\n\s*ts\.winRateStatus !== 'locked_small_sample' &&\s*\n\s*\(ts\.scoreUnlocked === true \|\| ts\.readyForWalletScore === true\)/, 'publicWinRateUnlocked requires a finite public win rate, 10+ public-grade lots, an unlocked winRateStatus, and an unlocked score')
+assert.match(ui, /Number\.isFinite\(ts\.publicWinRatePercent\) &&\s*\n\s*publicPerfLots >= 10 &&\s*\n\s*ts\.winRateStatus !== 'locked_small_sample' &&\s*\n\s*ts\.winRateStatus !== 'locked_integrity_invalid' &&\s*\n\s*ts\.pnlIntegrityStatus !== 'invalid' &&\s*\n\s*ts\.publicPnlStatus !== 'open_check_integrity_invalid' &&\s*\n\s*\(ts\.scoreUnlocked === true \|\| ts\.readyForWalletScore === true\)/, 'publicWinRateUnlocked requires a finite public win rate, 10+ public-grade lots, an unlocked winRateStatus, no invalid PnL integrity, and an unlocked score')
 
 // The Instant Wallet Score card must never compute a raw win rate from winningClosedLots/closedLots
 // and must never label it "Official Win Rate" or "Win Rate (raw)".

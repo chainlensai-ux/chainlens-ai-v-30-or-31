@@ -1314,7 +1314,12 @@ export async function POST(req: Request) {
     // Windowed PnL is public-facing, so it must exclude synthetic/cost-basis-missing lots —
     // a synthetic break-even lot showing $0 PnL would otherwise look like a verified real result.
     const _realBackedLotsForWindows = _performanceLotsForIntelligence
-    snapshot.walletPnlWindows = computeWindowedPnl(_realBackedLotsForWindows, new Date(), { scoreUnlocked: snapshot.walletTradeStatsSummary?.scoreUnlocked === true, publicPnlStatus: snapshot.publicPnlStatus, rawMatchedClosedLots: snapshot.rawMatchedClosedLots ?? snapshot.rawClosedLots ?? 0 })
+    snapshot.walletPnlWindows = computeWindowedPnl(_realBackedLotsForWindows, new Date(), {
+      scoreUnlocked: snapshot.walletTradeStatsSummary?.scoreUnlocked === true,
+      publicPnlStatus: snapshot.publicPnlStatus,
+      rawMatchedClosedLots: snapshot.rawMatchedClosedLots ?? snapshot.rawClosedLots ?? 0,
+      integrityInvalid: snapshot.publicPnlStatus === 'open_check_integrity_invalid' || snapshot.pnlIntegrityCheck?.status === 'invalid',
+    })
     if (snapshot.walletTradeStatsSummary?.pnlUnavailableReason === 'missing_cost_basis' || snapshot.walletLotSummary?.pnlUnavailableReason === 'missing_cost_basis') {
       for (const key of ['3d', '7d', '30d'] as const) {
         const w = snapshot.walletPnlWindows[key]

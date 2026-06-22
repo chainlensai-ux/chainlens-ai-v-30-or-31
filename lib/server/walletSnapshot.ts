@@ -322,7 +322,7 @@ export type WalletSnapshot = {
   breakEvenPerformanceLots?: number
   excludedBreakEvenLots?: number
   winRateDefinition?: 'wins_over_performance_lots_excluding_break_even'
-  walletEvidenceModel?: { rawClosedLots: number; reconstructedClosedLots: number; syntheticClosedLotsExcluded: number; estimateOnlyClosedLots: number; flatPriceClosedLotsExcluded: number; verifiedPnlClosedLots: number; decisivePnlClosedLots: number; performanceClosedLots: number; publicClosedLots: number; publicPerformanceClosedLots?: number; verifiedButExcludedClosedLots?: number; excludedClosedLots?: number; rawMatchedClosedLots?: number; publicRealizedPnlUsd: number | null; publicPerformanceRealizedPnlUsd?: number | null; publicWinRatePercent: number | null; publicPnlStatus: string; publicPnlStatusReason: string; publicPnlDisplayLabel?: string; publicPnlDisplayReason?: string }
+  walletEvidenceModel?: { rawClosedLots: number; reconstructedClosedLots: number; syntheticClosedLotsExcluded: number; estimateOnlyClosedLots: number; flatPriceClosedLotsExcluded: number; verifiedPnlClosedLots: number; decisivePnlClosedLots: number; performanceClosedLots: number; publicClosedLots: number; publicPerformanceClosedLots?: number; verifiedButExcludedClosedLots?: number; excludedClosedLots?: number; rawMatchedClosedLots?: number; publicRealizedPnlUsd: number | null; publicPerformanceRealizedPnlUsd?: number | null; publicWinRatePercent: number | null; publicPnlStatus: string; publicPnlStatusReason: string; publicPnlDisplayLabel?: string; publicPnlDisplayReason?: string; publicPnlBlockedReason?: string | null }
   // TRADE-INTEL-V1: behavior/rotation intelligence, additive to the public-PnL evidence model
   // above — tradeIntelLots can unlock useful trading-style classification even when
   // publicPerformanceLots is too small for profit skill/win-rate to unlock.
@@ -551,7 +551,7 @@ export type WalletSnapshot = {
     breakEvenPerformanceLots?: number
     excludedBreakEvenLots?: number
     winRateDefinition?: 'wins_over_performance_lots_excluding_break_even'
-    winRateStatus?: 'unlocked' | 'locked_small_sample'
+    winRateStatus?: 'unlocked' | 'locked_small_sample' | 'locked_integrity_invalid'
     pnlIntegrityStatus?: 'ok' | 'warning' | 'invalid'
     // OPENCHECK-PNL-1: 'open-check' means matchedLots > 0 but performance/verified-grade lots are
     // below the public threshold — realizedPnlUsd/closedLotsForStats below still reflect the real
@@ -15140,14 +15140,37 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         ts.publicPnlDisplayLabel = 'PnL integrity check failed'
         ts.publicPnlDisplayReason = _reasonText
         ts.publicWinRatePercent = null
-        ts.winRateStatus = 'locked_small_sample'
+        ts.winRateStatus = 'locked_integrity_invalid'
         ts.pnlIntegrityStatus = _p6Integrity.status
+        ts.scoreUnlocked = false
+        ts.readyForWalletScore = false
       }
+      // PUBLIC-PNL-INTEGRITY-GATE-2: walletEvidenceModel is built from the same pre-integrity
+      // snapshot fields as walletTradeStatsSummary above and must be sanitized the same way —
+      // it is read directly by the UI/export/Clark facts and must never retain a "verified" label
+      // or a stale win rate once integrity is hard-invalid.
       if (snapshot.walletEvidenceModel) {
-        ;(snapshot.walletEvidenceModel as any).publicPnlStatus = 'open_check_integrity_invalid'
+        const em = snapshot.walletEvidenceModel as any
+        em.publicPnlStatus = 'open_check_integrity_invalid'
+        em.publicPnlDisplayLabel = 'PnL integrity check failed'
+        em.publicPnlDisplayReason = _reasonText
+        em.publicPnlStatusReason = _reasonText
+        em.publicWinRatePercent = null
+        em.publicRealizedPnlUsd = null
+        em.publicPerformanceRealizedPnlUsd = null
+        em.publicPnlBlockedReason = _reasonText
       }
       if (snapshot.tradeIntelligence) {
         snapshot.tradeIntelligence.profitSkillStatus = 'integrity_invalid_not_proven'
+        // PUBLIC-PNL-INTEGRITY-GATE-3: the free-text style summary is generated before the
+        // integrity verdict exists, so it can describe profit skill as "available" even though
+        // profitSkillStatus is now locked — rewrite it to match the locked status.
+        if (/profit skill is available|profitable|smart money|winning/i.test(snapshot.tradeIntelligence.tradeStyleSummary ?? '')) {
+          const _style = snapshot.tradeIntelligence.rotationSpeedLabel && snapshot.tradeIntelligence.rotationSpeedLabel !== 'unknown'
+            ? snapshot.tradeIntelligence.rotationSpeedLabel
+            : 'Behavior'
+          snapshot.tradeIntelligence.tradeStyleSummary = `${_style} pattern detected — strong behavior evidence, but profit skill is not proven because PnL integrity failed.`
+        }
       }
     } else if (_p6GateApplies && _p6SoftPartialOnly) {
       const _publicPerfLots = snapshot.walletTradeStatsSummary?.publicPerformanceClosedLots ?? 0

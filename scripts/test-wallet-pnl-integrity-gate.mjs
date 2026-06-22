@@ -50,4 +50,41 @@ assert.match(page, /'open_check_integrity_invalid'/, 'page.tsx PnL card branches
 assert.match(page, /PnL integrity check failed/, 'page.tsx shows the PnL integrity check failed message')
 assert.match(page, /ts\.pnlIntegrityStatus !== 'invalid' &&/, 'isTradeStatsGradeable requires pnlIntegrityStatus to not be invalid before treating stats as gradeable (blocks Smart Money Candidate leak)')
 
+// Fix 8: walletEvidenceModel is a separately-built nested object and must be sanitized by the
+// same gate — not just the top-level/walletTradeStatsSummary fields — since the UI/export/Clark
+// facts read it directly and previously kept stale "Verified FIFO sample" labels and win rates.
+assert.match(snap, /em\.publicPnlStatus = 'open_check_integrity_invalid'/, 'walletEvidenceModel.publicPnlStatus is downgraded on hard-invalid')
+assert.match(snap, /em\.publicWinRatePercent = null/, 'walletEvidenceModel.publicWinRatePercent is nulled on hard-invalid')
+assert.match(snap, /em\.publicPnlDisplayLabel = 'PnL integrity check failed'/, 'walletEvidenceModel.publicPnlDisplayLabel reflects the integrity failure')
+assert.match(snap, /em\.publicPnlBlockedReason = _reasonText/, 'walletEvidenceModel carries a publicPnlBlockedReason explaining the gate')
+
+// Fix 9: walletTradeStatsSummary must also lock scoreUnlocked/readyForWalletScore and use the
+// integrity-specific winRateStatus value (not just the small-sample one), since several downstream
+// reads (computeWindowedPnl's scoreUnlocked gate, the wallet score pipeline) key off these flags.
+assert.match(snap, /ts\.winRateStatus = 'locked_integrity_invalid'/, 'walletTradeStatsSummary.winRateStatus uses the integrity-specific locked value')
+assert.match(snap, /ts\.scoreUnlocked = false\s*\n\s*ts\.readyForWalletScore = false/, 'hard-invalid locks scoreUnlocked and readyForWalletScore on walletTradeStatsSummary')
+
+// Fix 10: the free-text tradeStyleSummary generated before the integrity verdict exists must be
+// rewritten when it would otherwise claim profit skill is available/profitable/winning while
+// profitSkillStatus is now integrity_invalid_not_proven.
+assert.match(snap, /profit skill is available\|profitable\|smart money\|winning/i, 'gate detects and rewrites stale profit-skill wording in tradeStyleSummary')
+assert.match(snap, /profit skill is not proven because PnL integrity failed/, 'rewritten tradeStyleSummary explains the integrity failure')
+
+const intelSrc = fs.readFileSync('lib/server/walletIntelligence.ts', 'utf8')
+
+// Fix 11: walletPnlWindows (3d/7d/30d) must not show stale realizedPnlUsd/winRatePercent once the
+// parent integrity check is hard-invalid — these are computed from the same lots, downstream of
+// walletSnapshot, in a separate computeWindowedPnl call, so the gate must be wired through there too.
+assert.match(intelSrc, /integrityInvalid\?: boolean/, 'computeWindowedPnl accepts an integrityInvalid option')
+assert.match(intelSrc, /realizedPnlUsd: null,[\s\S]{0,200}winRateStatus: 'locked_integrity_invalid'/, 'computeWindowedPnl nulls realizedPnlUsd/winRatePercent and locks winRateStatus when integrity is invalid')
+
+const routeSrc = fs.readFileSync('app/api/wallet/route.ts', 'utf8')
+assert.match(routeSrc, /integrityInvalid: snapshot\.publicPnlStatus === 'open_check_integrity_invalid' \|\| snapshot\.pnlIntegrityCheck\?\.status === 'invalid'/, 'route.ts wires the integrity-invalid flag into computeWindowedPnl')
+
+// Fix 12: the client-side export report (buildWalletReport) must not show a public-sample PnL
+// number or claim "Profit skill evidence-eligible" once integrity is invalid, even though
+// publicLots >= 10 might otherwise satisfy the old, integrity-unaware threshold check.
+assert.match(page, /const integrityInvalid = \(result\.publicPnlStatus \?\? ts\?\.publicPnlStatus\) === 'open_check_integrity_invalid'/, 'buildWalletReport computes an integrityInvalid flag')
+assert.match(page, /const profitSkillProven = publicLots >= 10 && !integrityInvalid/, 'buildWalletReport profitSkillProven requires integrity to not be invalid')
+
 console.log('wallet PnL integrity gate checks passed')
