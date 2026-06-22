@@ -8039,7 +8039,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
 
   async function resolveTokenForFollowup(opts?: { fromMemoryOnly?: boolean }): Promise<{ ev: TokenScanEvidence; address: string; fromMemory?: boolean } | { needsAddress: true }> {
     // Check memory first — follow-ups do not re-call providers if cached evidence exists
-    if (opts?.fromMemoryOnly || (!routed.address && !routed.symbol)) {
+    if (opts?.fromMemoryOnly || (!tokenFollowupRefreshRequested && !routed.address && !routed.symbol)) {
       const mem = sessionMem?.lastToken;
       if (mem?.cachedEvidence && mem.address) {
         return { ev: mem.cachedEvidence, address: mem.address, fromMemory: true };
@@ -8051,8 +8051,8 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       tokenAddress = resolved?.address ?? null;
     }
     if (!tokenAddress && sessionMem?.lastToken) {
-      // Use cached evidence from memory if available
-      if (sessionMem.lastToken.cachedEvidence) {
+      // Use cached evidence from memory if available and refresh was not requested.
+      if (!tokenFollowupRefreshRequested && sessionMem.lastToken.cachedEvidence) {
         return { ev: sessionMem.lastToken.cachedEvidence, address: sessionMem.lastToken.address, fromMemory: true };
       }
       tokenAddress = sessionMem.lastToken.address;
@@ -8060,6 +8060,18 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     if (!tokenAddress) return { needsAddress: true };
     const ev = await fetchTokenEvidence(tokenAddress);
     return { ev, address: tokenAddress };
+  }
+
+  const tokenFollowupRefreshRequested = /\b(refresh|rescan|re-scan|deep\s+scan|full\s+scan|retry)\b/i.test(prompt);
+  function tokenFollowupDebug(r: { ev: TokenScanEvidence; address: string; fromMemory?: boolean } | { needsAddress: true }) {
+    const fromMemory = !("needsAddress" in r) && r.fromMemory === true;
+    const age = fromMemory && sessionMem?.lastToken?.ts ? Date.now() - sessionMem.lastToken.ts : null;
+    return {
+      followUpUsedMemory: fromMemory,
+      followUpTriggeredRefresh: tokenFollowupRefreshRequested && !fromMemory,
+      tokenMemoryAgeMs: age,
+      evidenceSource: fromMemory ? "lastToken" : (("needsAddress" in r) ? "partialMemory" : "freshScan"),
+    };
   }
 
   if (routed.intent === "token_scan") {
@@ -8283,6 +8295,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       intentBadge: "token_safety",
       actions: buildRoutedActions(["Open Token Scanner", "Run LP Check"]),
       quotaConsumed: r.fromMemory ? false : (r.ev.ok ?? false),
+      clarkDebugReceipt: tokenFollowupDebug(r),
     };
   }
 
@@ -8311,16 +8324,33 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       intentBadge: "dev_rug_check",
       actions: buildRoutedActions(["Open Token Scanner", "Run LP Check"]),
       quotaConsumed: r.fromMemory ? false : (r.ev.ok ?? false),
+      clarkDebugReceipt: tokenFollowupDebug(r),
     };
   }
 
   if (routed.intent === "lp_lock_check") {
+    // Memory-first for LP follow-ups; only explicit refresh/rescan/deep/full/retry requests may call live LP evidence.
+    if (!tokenFollowupRefreshRequested) {
+      const r = await resolveTokenForFollowup({ fromMemoryOnly: true });
+      if (!("needsAddress" in r)) {
+        const analysis = formatLpLockCheck(r.ev, chainDisplayLabel(tokenEvidenceChain(r.ev, chain)));
+        updateMemIntent(sessionMem, "lp_lock_check");
+        return {
+          feature: "clark-ai", chain, mode: "analysis", intent: "lp_lock_check", toolsUsed: ["memory"],
+          analysis,
+          intentBadge: "lp_lock_check",
+          actions: buildRoutedActions(["Run LP Check"]),
+          quotaConsumed: false,
+          clarkDebugReceipt: tokenFollowupDebug(r),
+        };
+      }
+    }
     let tokenAddress = routed.address;
-    if (!tokenAddress && sessionMem.lastToken) tokenAddress = sessionMem.lastToken.address;
     if (!tokenAddress && routed.symbol) {
       const resolved = await resolveTokenSymbolToAddress(routed.symbol);
       tokenAddress = resolved?.address ?? null;
     }
+    if (!tokenAddress && sessionMem.lastToken) tokenAddress = sessionMem.lastToken.address;
     if (!tokenAddress) {
       return {
         feature: "clark-ai", chain, mode: "analysis", intent: "lp_lock_check", toolsUsed: [],
@@ -8328,6 +8358,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         intentBadge: "lp_lock_check",
         actions: buildRoutedActions(["Run LP Check"]),
         quotaConsumed: false,
+        clarkDebugReceipt: tokenFollowupDebug({ needsAddress: true }),
       };
     }
     const liqRes = await callInternalApi(origin, "/api/liquidity-safety", { contract: tokenAddress, chain: "base" }, authHeader ?? undefined, verifiedPlan);
@@ -8343,6 +8374,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         intentBadge: "lp_lock_check",
         actions: buildRoutedActions(["Run LP Check", "Open Token Scanner"]),
         quotaConsumed: false,
+        clarkDebugReceipt: { followUpUsedMemory: false, followUpTriggeredRefresh: tokenFollowupRefreshRequested, tokenMemoryAgeMs: sessionMem?.lastToken?.ts ? Date.now() - sessionMem.lastToken.ts : null, evidenceSource: "freshScan" },
       };
     }
     const displayModel = typeof data.displayLpModel === "string" ? data.displayLpModel : null;
@@ -8363,6 +8395,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       intentBadge: "lp_lock_check",
       actions: buildRoutedActions(["Run LP Check", "Open Token Scanner"]),
       quotaConsumed: true,
+      clarkDebugReceipt: { followUpUsedMemory: false, followUpTriggeredRefresh: tokenFollowupRefreshRequested, tokenMemoryAgeMs: sessionMem?.lastToken?.ts ? Date.now() - sessionMem.lastToken.ts : null, evidenceSource: "freshScan" },
     };
   }
 
@@ -8391,6 +8424,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       intentBadge: "risk_explanation",
       actions: buildRoutedActions(["Open Token Scanner"]),
       quotaConsumed: r.fromMemory ? false : (r.ev.ok ?? false),
+      clarkDebugReceipt: tokenFollowupDebug(r),
     };
   }
 

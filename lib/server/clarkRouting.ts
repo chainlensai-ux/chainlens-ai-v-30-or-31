@@ -1178,11 +1178,11 @@ export function formatTokenSecurityStatus(sec: NonNullable<TokenScanEvidence["se
   if (sec.honeypot === false) return "Honeypot not detected";
   if (sec.honeypot === true) return "Honeypot detected";
   if (sec.buyTax != null || sec.sellTax != null) return "Tax data returned, honeypot simulation unavailable";
-  // simulationStatus comes straight from the honeypot provider call and is specific about
-  // *why* no honeypot verdict exists — prefer it over the generic securityStatus field.
+  // simulationStatus explains why no honeypot verdict exists — prefer it over
+  // the generic securityStatus field.
   if (sec.simulationStatus === "not_supported") return "Open Check — simulation not supported for this chain yet.";
   if (sec.simulationStatus === "timeout") return "Open Check — simulation timed out.";
-  if (sec.simulationStatus === "failed" || sec.simulationStatus === "unavailable") return "Open Check — simulation unavailable from current provider.";
+  if (sec.simulationStatus === "failed" || sec.simulationStatus === "unavailable") return "Open Check — Security simulation unavailable.";
   const reason = sec.securityStatus && sec.securityStatus !== "unverified" && sec.securityStatus !== "unknown"
     ? sec.securityStatus
     : "security simulation not returned";
@@ -1233,7 +1233,7 @@ export function formatTokenScanResult(ev: TokenScanEvidence, chain = "Base"): st
 
   lines.push("");
   lines.push(`Next: Ask "is it safe", "can dev rug", "explain LP", or "why high risk"`);
-  lines.push("CTA: Open Token Scanner / Run LP Check");
+  lines.push("CTA: Open Token Scanner");
   return lines.join("\n");
 }
 
@@ -1276,7 +1276,7 @@ export function formatFastTokenRead(ev: TokenScanEvidence, chain = "Base"): stri
   lines.push(`- Verdict: ${verdictKnown ? "Avoid — honeypot detected" : "Open Check unless enough evidence exists"}`);
 
   lines.push(`- Missing evidence: holders, LP proof, dev-risk require full Token Scanner scan`);
-  lines.push("CTA: Open Token Scanner / Run LP Check");
+  lines.push("CTA: Open Token Scanner");
   return lines.join("\n");
 }
 
@@ -1314,7 +1314,7 @@ export function formatTokenSafetyAnswer(ev: TokenScanEvidence, chain = "Base"): 
     openChecks.push("Honeypot: tax data returned, honeypot simulation unavailable.");
     openTopics.push("honeypot");
   } else {
-    openChecks.push(`Honeypot/security: ${sec ? formatTokenSecurityStatus(sec).replace(/^Open Check — /, "") : "simulation unavailable from current provider."}`);
+    openChecks.push(`Honeypot/security: ${sec ? formatTokenSecurityStatus(sec).replace(/^Open Check — /, "") : "Security simulation unavailable."}`);
     openTopics.push("honeypot/security");
   }
 
@@ -1331,8 +1331,12 @@ export function formatTokenSafetyAnswer(ev: TokenScanEvidence, chain = "Base"): 
     openTopics.push("LP control");
   }
 
+  if (h?.top1 != null) {
+    if (h.top1 >= 40) risks.push(`Major single-wallet dominance: top-1 holder controls ${h.top1.toFixed(1)}% of supply.`);
+    else if (h.top1 >= 20) risks.push(`Top-1 holder controls ${h.top1.toFixed(1)}% of supply — concentration risk.`);
+  }
   if (h?.top10 != null) {
-    if (h.top10 > 80) risks.push(`Top-10 holders control ${h.top10.toFixed(1)}% of supply — high concentration.`);
+    if (h.top10 >= 40) risks.push(`Elevated holder concentration: top-10 holders control ${h.top10.toFixed(1)}% of supply.`);
     else visible.push(`Holders: top-10 at ${h.top10.toFixed(1)}%.`);
   } else {
     openChecks.push("Holders: holder concentration not confirmed.");
@@ -1382,7 +1386,7 @@ export function formatTokenSafetyAnswer(ev: TokenScanEvidence, chain = "Base"): 
     lines.push("No confirmed red flags from available checks. This is evidence-based routing, not financial advice.");
   }
 
-  lines.push("", "CTA: Open Token Scanner / Run LP Check");
+  lines.push("", "CTA: Open Token Scanner");
   return lines.join("\n");
 }
 
@@ -1408,7 +1412,9 @@ export function formatTokenAnalystFollowup(ev: TokenScanEvidence, chain = "Base"
   if (sec?.ownerRenounced === false) bear.push("Ownership is active.");
   if (sec?.mintable === true) bear.push("Mint authority is present.");
   if (lp?.status === "wallet_controlled" || lp?.status === "team_controlled") bear.push("LP is wallet/team controlled.");
-  if (h?.top10 != null && h.top10 > 80) bear.push(`Top-10 holders control ${h.top10.toFixed(1)}% of supply.`);
+  if (h?.top1 != null && h.top1 >= 40) bear.push(`Major single-wallet dominance: top-1 holder controls ${h.top1.toFixed(1)}% of supply.`);
+  else if (h?.top1 != null && h.top1 >= 20) bear.push(`Top-1 holder controls ${h.top1.toFixed(1)}% of supply.`);
+  if (h?.top10 != null && h.top10 >= 40) bear.push(`Elevated holder concentration: top-10 holders control ${h.top10.toFixed(1)}% of supply.`);
   if (!h || h.top10 == null) gaps.push("Holder concentration not confirmed.");
   if (!lp || !lp.status || lp.status === "open_check" || lp.status === "unverified") gaps.push("LP control/lock proof not confirmed.");
   if (!sec || sec.honeypot == null) gaps.push("Honeypot/security simulation not confirmed.");
@@ -1448,7 +1454,13 @@ export function formatDevRugCheck(ev: TokenScanEvidence, chain = "Base"): string
   const h = ev.holders;
   const lp = ev.lpControl;
 
-  const lines = [`DEV/RUG CHECK — ${sym} (${chain})`, ""];
+  const conclusion = sec?.ownerRenounced === true && sec?.mintable === false && sec?.proxy === false
+    ? "Conclusion: Contract-level rug powers look reduced because ownership is renounced, minting is disabled, and no proxy is detected. But that does not clear liquidity or holder-distribution risk."
+    : sec?.honeypot === true || sec?.mintable === true || sec?.ownerRenounced === false || sec?.proxy === true
+    ? "Conclusion: Dev/rug risk is not cleared — contract-control risk signals are present in this read."
+    : "Conclusion: Dev/rug risk is Open Check — available evidence is not enough to clear contract control, LP control, and holder-distribution risk.";
+
+  const lines = [`DEV/RUG CHECK — ${sym} (${chain})`, "", conclusion, ""];
 
   if (sec?.ownerRenounced != null) lines.push(`- Ownership: ${sec.ownerRenounced ? "renounced — owner cannot call privileged functions" : "NOT renounced — active owner present"}`);
   else lines.push("- Ownership: open check — renounce status not confirmed");
@@ -1469,7 +1481,7 @@ export function formatDevRugCheck(ev: TokenScanEvidence, chain = "Base"): string
   if (h?.top1 != null) lines.push(`- Top-1 holder: ${h.top1.toFixed(1)}% of supply`);
   else lines.push("- Top-1 holder: open check");
 
-  if (h?.top10 != null) lines.push(`- Top-10 holders: ${h.top10.toFixed(1)}% of supply${h.top10 > 50 ? " — high concentration" : ""}`);
+  if (h?.top10 != null) lines.push(`- Top-10 holders: ${h.top10.toFixed(1)}% of supply${h.top10 >= 40 ? " — elevated concentration" : ""}`);
 
   const missingChecks: string[] = [];
   if (sec?.ownerRenounced == null) missingChecks.push("ownership status");
@@ -1477,7 +1489,7 @@ export function formatDevRugCheck(ev: TokenScanEvidence, chain = "Base"): string
   if (!lp) missingChecks.push("LP controller identity");
   if (missingChecks.length > 0) lines.push("", `- Missing evidence: ${missingChecks.join(", ")}`);
 
-  lines.push("", "CTA: Open Token Scanner / Run LP Check");
+  lines.push("", "CTA: Review Dev Control / Open Token Scanner");
   return lines.join("\n");
 }
 
@@ -1509,8 +1521,9 @@ export function formatLpLockCheck(ev: TokenScanEvidence, chain = "Base"): string
     lines.push("- Exit risk: Monitor / Watch based on current LP evidence.");
     if (mkt?.liquidity != null) lines.push(`- Liquidity depth: ${fmtUsdShort(mkt.liquidity)}`);
     else lines.push("- Liquidity depth: open check");
-    lines.push(`- Confidence: ${lp?.confidence ?? "medium"}`);
-    lines.push("", "CTA: Open Token Scanner / Run LP Check");
+    const hasControllerProof = Boolean(lp?.reason && !/not supported|unavailable|open check|not confirmed/i.test(lp.reason));
+    lines.push(`- Confidence: ${hasControllerProof ? (lp?.confidence ?? "partial") : "open_check"}`);
+    lines.push("", "CTA: Run LP Check");
     return lines.join("\n");
   }
 
@@ -1525,7 +1538,7 @@ export function formatLpLockCheck(ev: TokenScanEvidence, chain = "Base"): string
   if (!lp?.reason) missing.push("controller/holder identity");
   if (missing.length > 0) lines.push(`- Missing: ${missing.join(", ")}`);
 
-  lines.push("", "CTA: Run LP Check / Open Token Scanner");
+  lines.push("", "CTA: Run LP Check")
   return lines.join("\n");
 }
 
@@ -1552,8 +1565,9 @@ export function formatRiskExplanation(ev: TokenScanEvidence, chain = "Base"): st
   if (sec?.mintable === true) mainSignals.push(`Mint authority: YES — new tokens can be minted${sec?.ownerRenounced === false ? " and the owner is still active." : "."}`);
   if (sec?.proxy === true) mainSignals.push("Proxy/upgradeable: YES — contract logic can be replaced by the deployer.");
   if (sec?.ownerRenounced === false) mainSignals.push("Ownership: NOT renounced — an active owner can still call privileged functions.");
-  if (h?.top10 != null && h.top10 > 50) mainSignals.push(`Holder concentration: top-10 holders control ${h.top10.toFixed(1)}% of supply.`);
-  if (h?.top1 != null && h.top1 > 20) mainSignals.push(`Single-wallet dominance: top-1 holder controls ${h.top1.toFixed(1)}% of supply.`);
+  if (h?.top1 != null && h.top1 >= 40) mainSignals.push(`Major single-wallet dominance: top-1 holder controls ${h.top1.toFixed(1)}% of supply.`);
+  else if (h?.top1 != null && h.top1 >= 20) mainSignals.push(`Single-wallet dominance: top-1 holder controls ${h.top1.toFixed(1)}% of supply.`);
+  if (h?.top10 != null && h.top10 >= 40) mainSignals.push(`Elevated holder concentration: top-10 holders control ${h.top10.toFixed(1)}% of supply.`);
   if (sec?.buyTax != null && sec.buyTax > 10) mainSignals.push(`High buy tax: ${fmtTaxPct(sec.buyTax)}.`);
   if (sec?.sellTax != null && sec.sellTax > 10) mainSignals.push(`High sell tax: ${fmtTaxPct(sec.sellTax)}.`);
 
@@ -1565,14 +1579,13 @@ export function formatRiskExplanation(ev: TokenScanEvidence, chain = "Base"): st
   if (sec?.ownerRenounced === true) positiveSignals.push("Ownership: renounced.");
   if (sec?.proxy === false) positiveSignals.push("Proxy: no proxy detected.");
   if (lp?.status === "locked" || lp?.status === "burned") positiveSignals.push(`LP control: ${lp.status === "burned" ? "burned" : "locked"}${lp.reason ? ` — ${lp.reason}` : ""}.`);
-  if (h?.top10 != null && h.top10 <= 50) positiveSignals.push(`Holder concentration: top-10 holders control ${h.top10.toFixed(1)}% of supply.`);
   if (sec?.mintable === false) positiveSignals.push("Mint authority: no mint authority detected.");
-  if (h?.holderCount != null) positiveSignals.push(`Holder base: ${h.holderCount.toLocaleString()} holders.`);
+  if (h?.holderCount != null && !(h?.top1 != null && h.top1 >= 20) && !(h?.top10 != null && h.top10 >= 40)) positiveSignals.push(`Holder base: ${h.holderCount.toLocaleString()} holders.`);
 
   // Open checks: real fields that are simply missing — never claimed as risk or safety.
   const openChecks: string[] = [];
   if (!lp) openChecks.push("LP lock/burn proof — not yet checked.");
-  if (!sec || sec.honeypot == null) openChecks.push(sec ? `Security: ${formatTokenSecurityStatus(sec)}` : "Security: Open Check — simulation unavailable from current provider.");
+  if (!sec || sec.honeypot == null) openChecks.push(sec ? `Security: ${formatTokenSecurityStatus(sec)}` : "Security: Open Check — Security simulation unavailable.");
   if (sec?.mintable == null) openChecks.push("Mint authority — not verified.");
   if (sec?.proxy == null) openChecks.push("Proxy/upgradeable status — not verified.");
   if (sec?.ownerRenounced == null) openChecks.push("Ownership status — not verified.");
