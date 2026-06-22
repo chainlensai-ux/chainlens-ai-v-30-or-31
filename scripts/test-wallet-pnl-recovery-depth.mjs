@@ -72,6 +72,6 @@ assert.match(snap, /reason: 'missing_cost_basis_synthetic_lots_excluded',\s*\n\s
 // explicit state (notRunDueToCostGuard) instead of an unexplained false.
 assert.match(snap, /notRunDueToCostGuard\?:\s*boolean/, 'walletHistoricalScanDebug type includes notRunDueToCostGuard')
 assert.match(snap, /_historicalNotRunDueToCostGuard = _historicalEligibleCoreCriteria && !_historicalEligible && _missingCostBasisGuardActive/, 'notRunDueToCostGuard is derived from core eligibility criteria passing while only the cost guard blocks the broad pass')
-assert.match(snap, /eligible: _historicalEligible \|\| _historicalNotRunDueToCostGuard,/, 'walletHistoricalScanDebug.eligible reports true when only the cost guard withheld the scan')
+assert.match(snap, /eligible: _historicalEligible \|\| _historicalNotRunDueToCostGuard \|\| _acquisitionRecoveryEligible,/, 'walletHistoricalScanDebug.eligible reports true when recovery eligibility exists even if the broad scan is withheld')
 
 console.log('wallet PnL recovery depth checks passed')

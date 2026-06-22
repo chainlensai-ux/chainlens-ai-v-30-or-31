@@ -7,7 +7,7 @@ const route = fs.readFileSync('app/api/wallet/route.ts', 'utf8')
 // 1. Candidate selection: wallet-side outbound direction='sell' events on Base that the normal
 // swap detector did not already classify as a swap candidate, excluding quote assets themselves.
 assert.match(snap, /async function buildBaseSellSideReconstructionPass\(/, 'buildBaseSellSideReconstructionPass exists')
-assert.match(snap, /e\.direction === 'sell' &&\s*\n\s*!e\.swapDetection\?\.isSwapCandidate &&/, 'sell-side recon selects outbound sell-direction events lacking an existing swap candidate flag')
+assert.match(snap, /e\.direction === 'sell' \|\| \(e\.direction as string\) === 'outbound' \|\| \(e as any\)\.side === 'outbound' \|\| \(e as any\)\.side === 'outflow' \|\| \(e as any\)\.outflow === true/, 'sell-side recon selects sell-direction and outbound/outflow wallet-side token events')
 assert.match(snap, /!STABLE_USD_CONTRACTS\[e\.contract\.toLowerCase\(\)\] && !WETH_CONTRACTS_PRICE\[e\.contract\.toLowerCase\(\)\]/, 'sell-side recon excludes quote-asset tokens from outbound candidate selection')
 
 // 2. Candidate cap: 15 normal / 40 deep scan, deduplicated by tx hash.
@@ -48,6 +48,17 @@ for (const field of [
   assert.ok(snap.includes(field), `sellSideReconstructionDebug includes ${field}`)
 }
 assert.match(snap, /sellSideReconstructionDebug: _sellSideReconDebug,/, 'sell-side recon debug is wired into _diagnostics output')
+
+for (const field of [
+  'candidateCount', 'receiptsFetched', 'walletOutboundLegsFound', 'inboundQuoteLegsFound',
+  'promotedSellEvents', 'rejectedSellEvents', 'sampleRejectedCandidates',
+]) {
+  assert.ok(snap.includes(field), `sellSideReconstructionDebug includes spec alias ${field}`)
+}
+assert.match(snap, /candidateOutboundLegs: _sellSideReconDebug\.candidateCount/, 'funnel exposes candidateOutboundLegs so outbound candidates are not hidden as zero sell legs')
+assert.match(snap, /receiptProvenSellLegs: _sellSideReconDebug\.promotedSellEvents/, 'funnel separates receipt-proven sell legs from outbound candidates')
+assert.match(snap, /publicSellEvents: _performanceClosedLotsFinal\.length/, 'funnel separates public sell events from raw outbound candidates')
+
 
 // 8. Native ETH buy recovery and FIFO integrity gates must still exist untouched.
 assert.match(snap, /async function buildEthRouterSwapReconstructionPass\(/, 'native ETH buy recovery pass still exists')

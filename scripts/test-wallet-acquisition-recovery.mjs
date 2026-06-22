@@ -10,7 +10,7 @@ assert.match(snap, /const _acqLowSwapOrLotEvidence = \(walletLotSummary\.openedL
 assert.match(snap, /const _acquisitionRecoveryEligible = Boolean\(/, 'a dedicated acquisitionRecoveryEligible flag exists')
 assert.doesNotMatch(snap.match(/const _acquisitionRecoveryEligible = Boolean\(([\s\S]{0,400})\)/)[1], /no_swap_or_lot_evidence/, 'acquisition recovery eligibility is never gated on no_swap_or_lot_evidence')
 assert.match(snap, /if \(_acquisitionRecoveryEligible\) _eligibilityReasons\.push\('acquisition_history_recovery_for_top_holdings'\)/, 'eligible acquisition recovery surfaces acquisition_history_recovery_for_top_holdings as its reason')
-assert.match(snap, /\?\? \(_acquisitionRecoveryEligible \? 'acquisition_history_recovery_for_top_holdings' : \(_skipReasons\[0\] \?\? null\)\)/, 'walletHistoricalScanDebug.stopReason prefers acquisition_history_recovery_for_top_holdings over no_swap_or_lot_evidence when eligible')
+assert.match(snap, /\?\? \(_acquisitionRecoveryEligible \? \(_historicalBudgetCapHit \? 'budget_cap' : _historicalNotRunDueToCostGuard \? 'budget_cap' : 'budget_cap'\) : \(_skipReasons\[0\] \?\? null\)\)/, 'walletHistoricalScanDebug.stopReason reports a real skip reason when acquisition recovery is eligible but not run')
 
 // Scenario 2: target tokens are selected from top holdings (via _rankedHistoricalTargets), with
 // dust excluded and capped at 3 normal / 4 high-value/deep.

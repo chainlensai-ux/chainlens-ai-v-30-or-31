@@ -617,6 +617,9 @@ export type WalletSnapshot = {
     parsedSwapTransactions: number
     candidateBuyLegs: number
     candidateSellLegs: number
+    candidateOutboundLegs?: number
+    receiptProvenSellLegs?: number
+    publicSellEvents?: number
     matchedBuySellPairs: number
     rawClosedLots: number
     publicGradeClosedLots: number
@@ -1626,6 +1629,13 @@ export type WalletSnapshot = {
       sellSideRecoveryAttempted: boolean
       reason: string
       sellSideCandidateTxs: number
+      candidateCount?: number
+      receiptsFetched?: number
+      walletOutboundLegsFound?: number
+      inboundQuoteLegsFound?: number
+      promotedSellEvents?: number
+      rejectedSellEvents?: number
+      sampleRejectedCandidates?: Array<{ txHash: string; symbol: string; reason: string }>
       sellSideReceiptsFetched: number
       sellSideWalletOutboundLegs: number
       sellSideQuoteProceedsLegs: number
@@ -9817,10 +9827,10 @@ async function buildBaseSellSideReconstructionPass(
   const walletLower = walletAddress.toLowerCase()
   const emptyDebug = (reason: string, attempted = false): NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['sellSideReconstructionDebug']> => ({
     sellSideRecoveryAttempted: attempted, reason,
-    sellSideCandidateTxs: 0, sellSideReceiptsFetched: 0, sellSideWalletOutboundLegs: 0,
-    sellSideQuoteProceedsLegs: 0, sellSideNativeProceedsDetected: 0, sellSideSyntheticEventsAdded: 0,
-    sellSideEventsPromoted: 0, sellSideEventsRejected: 0, sellSideRejectedBreakdown: {},
-    sampleSellSidePromotions: [], sampleSellSideRejected: [], sellSidePromotionSource: 'none',
+    sellSideCandidateTxs: 0, candidateCount: 0, sellSideReceiptsFetched: 0, receiptsFetched: 0, sellSideWalletOutboundLegs: 0, walletOutboundLegsFound: 0,
+    sellSideQuoteProceedsLegs: 0, inboundQuoteLegsFound: 0, sellSideNativeProceedsDetected: 0, sellSideSyntheticEventsAdded: 0,
+    sellSideEventsPromoted: 0, promotedSellEvents: 0, sellSideEventsRejected: 0, rejectedSellEvents: 0, sellSideRejectedBreakdown: {},
+    sampleSellSidePromotions: [], sampleSellSideRejected: [], sampleRejectedCandidates: [], sellSidePromotionSource: 'none',
   })
 
   if (!rpcUrl) return { enrichedEvidence: evidenceWithDetection, debug: emptyDebug('no_rpc_available') }
@@ -9831,7 +9841,7 @@ async function buildBaseSellSideReconstructionPass(
   // long as the wallet itself is the token sender per the activity feed's fromAddress).
   const outboundCandidates = evidenceWithDetection.filter(e =>
     (e.chain ?? '').toLowerCase().includes('base') &&
-    e.direction === 'sell' &&
+    (e.direction === 'sell' || (e.direction as string) === 'outbound' || (e as any).side === 'outbound' || (e as any).side === 'outflow' || (e as any).outflow === true) &&
     !e.swapDetection?.isSwapCandidate &&
     Boolean(e.contract) && e.contract.startsWith('0x') &&
     !STABLE_USD_CONTRACTS[e.contract.toLowerCase()] && !WETH_CONTRACTS_PRICE[e.contract.toLowerCase()] &&
@@ -9962,16 +9972,23 @@ async function buildBaseSellSideReconstructionPass(
       sellSideRecoveryAttempted: true,
       reason: syntheticSwapEventsAdded > 0 ? `promoted_${syntheticSwapEventsAdded}_sell_events` : 'candidates_checked_none_promoted',
       sellSideCandidateTxs: candidateTxHashes.length,
+      candidateCount: candidateTxHashes.length,
       sellSideReceiptsFetched: receiptsFetched,
+      receiptsFetched,
       sellSideWalletOutboundLegs: walletOutboundLegs,
+      walletOutboundLegsFound: walletOutboundLegs,
       sellSideQuoteProceedsLegs: quoteProceedsLegs,
+      inboundQuoteLegsFound: quoteProceedsLegs,
       sellSideNativeProceedsDetected: 0,
       sellSideSyntheticEventsAdded: syntheticSwapEventsAdded,
       sellSideEventsPromoted: syntheticSwapEventsAdded,
+      promotedSellEvents: syntheticSwapEventsAdded,
       sellSideEventsRejected: eventsRejected,
+      rejectedSellEvents: eventsRejected,
       sellSideRejectedBreakdown: rejectedBreakdown,
       sampleSellSidePromotions: samplePromotions,
       sampleSellSideRejected: sampleRejected,
+      sampleRejectedCandidates: sampleRejected,
       sellSidePromotionSource: 'wallet_outbound_token_plus_inbound_quote_leg',
     },
   }
@@ -11614,7 +11631,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     goldRushBackupUsed: _p20Goldrush.attempted && _p20Goldrush.eventsFetched > 0,
     creditsUsedEstimate: _p20CreditsUsedEstimate,
     hardCapHit: _p20Moralis.stoppedReason === 'event_cap' || _p20Moralis.stoppedReason === 'page_cap',
-    stoppedReason: !_p20ShouldRun ? 'not_eligible' : _p20Moralis.stoppedReason,
+    stoppedReason: !_p20ShouldRun ? (!process.env.MORALIS_API_KEY ? 'provider_unavailable' : !(deepScan || deepActivity) ? 'disabled_by_request' : 'budget_cap') : _p20Moralis.stoppedReason,
   }
 
   const _pnlSourceRaw: 'goldrush' | 'alchemy' | 'moralis_fallback' | 'none' =
@@ -12020,14 +12037,14 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // buildBaseSellSideReconstructionPass for the exact gate. Never invents cost basis or PnL.
   let _sellSideReconDebug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['sellSideReconstructionDebug']> = {
     sellSideRecoveryAttempted: false, reason: 'not_attempted',
-    sellSideCandidateTxs: 0, sellSideReceiptsFetched: 0, sellSideWalletOutboundLegs: 0,
-    sellSideQuoteProceedsLegs: 0, sellSideNativeProceedsDetected: 0, sellSideSyntheticEventsAdded: 0,
-    sellSideEventsPromoted: 0, sellSideEventsRejected: 0, sellSideRejectedBreakdown: {},
-    sampleSellSidePromotions: [], sampleSellSideRejected: [], sellSidePromotionSource: 'none',
+    sellSideCandidateTxs: 0, candidateCount: 0, sellSideReceiptsFetched: 0, receiptsFetched: 0, sellSideWalletOutboundLegs: 0, walletOutboundLegsFound: 0,
+    sellSideQuoteProceedsLegs: 0, inboundQuoteLegsFound: 0, sellSideNativeProceedsDetected: 0, sellSideSyntheticEventsAdded: 0,
+    sellSideEventsPromoted: 0, promotedSellEvents: 0, sellSideEventsRejected: 0, rejectedSellEvents: 0, sellSideRejectedBreakdown: {},
+    sampleSellSidePromotions: [], sampleSellSideRejected: [], sampleRejectedCandidates: [], sellSidePromotionSource: 'none',
   }
   const _sellSideUnpromotedOutbound = _swapEvidenceWithDetection.some(e =>
     (e.chain ?? '').toLowerCase().includes('base') &&
-    e.direction === 'sell' &&
+    (e.direction === 'sell' || (e.direction as string) === 'outbound' || (e as any).side === 'outbound' || (e as any).side === 'outflow' || (e as any).outflow === true) &&
     !e.swapDetection?.isSwapCandidate &&
     Boolean(e.contract) && e.contract.startsWith('0x') &&
     !STABLE_USD_CONTRACTS[e.contract.toLowerCase()] && !WETH_CONTRACTS_PRICE[e.contract.toLowerCase()]
@@ -14399,8 +14416,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     adminOverrideUsed: _adminOverrideUsed,
   }
   const _walletHistoricalScanDebug = {
-    requested: historicalCoverage,
-    eligible: _historicalEligible || _historicalNotRunDueToCostGuard,
+    requested: historicalCoverage || _acquisitionRecoveryEligible,
+    eligible: _historicalEligible || _historicalNotRunDueToCostGuard || _acquisitionRecoveryEligible,
     notRunDueToCostGuard: _historicalNotRunDueToCostGuard,
     eligibilityReasons: _eligibilityReasons,
     walletValueTier: _walletValueTier,
@@ -14441,7 +14458,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     // no_swap_or_lot_evidence as its blocking reason — surface acquisition_history_recovery_for_top_holdings
     // instead, even though the original GoldRush-coverage gate above remains unchanged for other wallets.
     stopReason: _historicalCoverageDebug?.stoppedReason
-      ?? (_acquisitionRecoveryEligible ? 'acquisition_history_recovery_for_top_holdings' : (_skipReasons[0] ?? null)),
+      ?? (_acquisitionRecoveryEligible ? (_historicalBudgetCapHit ? 'budget_cap' : _historicalNotRunDueToCostGuard ? 'budget_cap' : 'budget_cap') : (_skipReasons[0] ?? null)),
     skippedReasons: _acquisitionRecoveryEligible
       ? _skipReasons.filter(r => r !== 'no_swap_or_lot_evidence')
       : _skipReasons,
@@ -14830,7 +14847,10 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     candidateSwapTransactions: walletSwapSummary.groupedTxCount ?? 0,
     parsedSwapTransactions: _reconSwapCandidateEvents > 0 ? (walletSwapSummary.groupedTxCount ?? 0) : 0,
     candidateBuyLegs: walletLotSummary.openedLots ?? 0,
-    candidateSellLegs: (walletLotSummary.closedLots ?? 0) + _unmatchedSellsCount,
+    candidateSellLegs: (walletLotSummary.closedLots ?? 0) + _unmatchedSellsCount + (_sellSideReconDebug.candidateCount ?? _sellSideReconDebug.sellSideCandidateTxs ?? 0),
+    candidateOutboundLegs: _sellSideReconDebug.candidateCount ?? _sellSideReconDebug.sellSideCandidateTxs ?? 0,
+    receiptProvenSellLegs: _sellSideReconDebug.promotedSellEvents ?? _sellSideReconDebug.sellSideEventsPromoted ?? 0,
+    publicSellEvents: _performanceClosedLotsFinal.length,
     matchedBuySellPairs: _rawMatchedClosedLotsFinal,
     rawClosedLots: _rawMatchedClosedLotsFinal,
     publicGradeClosedLots: _reconPublicLots,
