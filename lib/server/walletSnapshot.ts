@@ -315,7 +315,7 @@ export type WalletSnapshot = {
   publicWinRatePercent?: number | null
   publicPnlStatus?: 'ok' | 'limited_verified_sample' | 'open_check' | 'flat_estimate_only' | 'near_flat_verified_sample' | 'partial_near_flat' | 'open_check_integrity_invalid'
   publicPnlStatusReason?: string
-  publicPnlDisplayLabel?: 'Limited verified sample' | 'Near-flat verified sample' | 'Open check' | 'Verified FIFO sample' | 'Verified FIFO sample — partial coverage' | 'PnL integrity check failed'
+  publicPnlDisplayLabel?: 'Limited verified sample' | 'Near-flat verified sample' | 'Open check' | 'Open check — flat/estimate-only lots excluded' | 'Open check — no public-grade performance lots' | 'Verified FIFO sample' | 'Verified FIFO sample — partial coverage' | 'PnL integrity check failed' | 'Profit skill locked — sample too small'
   publicPnlDisplayReason?: string
   winningPerformanceLots?: number
   losingPerformanceLots?: number
@@ -469,7 +469,7 @@ export type WalletSnapshot = {
     publicWinRatePercent?: number | null
     publicPnlStatus?: 'ok' | 'limited_verified_sample' | 'open_check' | 'flat_estimate_only' | 'near_flat_verified_sample' | 'partial_near_flat' | 'open_check_integrity_invalid'
     publicPnlStatusReason?: string
-    publicPnlDisplayLabel?: 'Limited verified sample' | 'Near-flat verified sample' | 'Open check' | 'Verified FIFO sample' | 'Verified FIFO sample — partial coverage' | 'PnL integrity check failed'
+    publicPnlDisplayLabel?: 'Limited verified sample' | 'Near-flat verified sample' | 'Open check' | 'Open check — flat/estimate-only lots excluded' | 'Open check — no public-grade performance lots' | 'Verified FIFO sample' | 'Verified FIFO sample — partial coverage' | 'PnL integrity check failed' | 'Profit skill locked — sample too small'
     publicPnlDisplayReason?: string
     winningPerformanceLots?: number
     losingPerformanceLots?: number
@@ -544,7 +544,7 @@ export type WalletSnapshot = {
     publicWinRatePercent?: number | null
     publicPnlStatus?: 'ok' | 'limited_verified_sample' | 'open_check' | 'flat_estimate_only' | 'near_flat_verified_sample' | 'partial_near_flat' | 'open_check_integrity_invalid'
     publicPnlStatusReason?: string
-    publicPnlDisplayLabel?: 'Limited verified sample' | 'Near-flat verified sample' | 'Open check' | 'Verified FIFO sample' | 'Verified FIFO sample — partial coverage' | 'PnL integrity check failed'
+    publicPnlDisplayLabel?: 'Limited verified sample' | 'Near-flat verified sample' | 'Open check' | 'Open check — flat/estimate-only lots excluded' | 'Open check — no public-grade performance lots' | 'Verified FIFO sample' | 'Verified FIFO sample — partial coverage' | 'PnL integrity check failed' | 'Profit skill locked — sample too small'
     publicPnlDisplayReason?: string
     winningPerformanceLots?: number
     losingPerformanceLots?: number
@@ -619,6 +619,7 @@ export type WalletSnapshot = {
     candidateSellLegs: number
     candidateOutboundLegs?: number
     receiptProvenSellLegs?: number
+    receiptProvenQuoteSellEvents?: number
     publicSellEvents?: number
     matchedBuySellPairs: number
     rawClosedLots: number
@@ -13896,12 +13897,19 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _excludedClosedLotsFinal = Math.max(0, _rawMatchedClosedLotsFinal - _performanceClosedLotsFinal.length)
   const _publicPnlDisplayLabelFinal: NonNullable<WalletSnapshot['publicPnlDisplayLabel']> =
     _publicPnlStatusFinal === 'near_flat_verified_sample' ? 'Near-flat verified sample'
-      : _publicPnlStatusFinal === 'limited_verified_sample' ? 'Limited verified sample'
+      : _publicPnlStatusFinal === 'limited_verified_sample' ? 'Profit skill locked — sample too small'
         : _publicPnlStatusFinal === 'ok' ? 'Verified FIFO sample'
-          : 'Open check'
-  const _publicPnlDisplayReasonFinal = _performanceClosedLotsFinal.length > 0
-    ? `Only ${_performanceClosedLotsFinal.length} public-grade performance lots are usable. ${_excludedClosedLotsFinal} raw matched lots were excluded from public performance scoring because of flat estimates, missing cost basis, or weak independence.`
-    : `No public-grade performance lots are usable. ${_excludedClosedLotsFinal} raw matched lots were excluded from public performance scoring because of flat estimates, missing cost basis, or weak independence.`
+          : _publicPnlStatusFinal === 'flat_estimate_only' ? 'Open check — flat/estimate-only lots excluded'
+            : 'Open check — no public-grade performance lots'
+  const _publicPnlDisplayReasonFinal = _publicPnlStatusFinal === 'flat_estimate_only'
+    ? `Public PnL and win rate remain locked because matched lots use flat or estimate-only pricing. ${_excludedClosedLotsFinal} raw matched lots were excluded from public performance scoring.`
+    : _publicPnlStatusFinal === 'open_check'
+      ? `Public PnL and win rate remain locked because no public-grade performance lots are usable. ${_excludedClosedLotsFinal} raw matched lots were excluded from public performance scoring.`
+      : _publicPnlStatusFinal === 'limited_verified_sample'
+        ? `Profit skill and win rate remain locked because only ${_performanceClosedLotsFinal.length} public-grade performance lots are usable.`
+        : _performanceClosedLotsFinal.length > 0
+          ? `Only ${_performanceClosedLotsFinal.length} public-grade performance lots are usable. ${_excludedClosedLotsFinal} raw matched lots were excluded from public performance scoring because of flat estimates, missing cost basis, or weak independence.`
+          : `No public-grade performance lots are usable. ${_excludedClosedLotsFinal} raw matched lots were excluded from public performance scoring because of flat estimates, missing cost basis, or weak independence.`
   const _allRealBackedLotsFlatEstimate = _closedLotsForStatsFinal > 0 && _verifiedIndependentClosedLotsFinal === 0 && _estimateOnlyClosedLotsFinal.length > 0
 
   // LOW-VALUE-RECOVERY-FIX: surfaces the (now evidence-gated, not value-tier-gated) capped
@@ -14266,6 +14274,30 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const sampleVerifiedButExcludedLots = _verifiedPnlClosedLotsFinal.filter(l => !classifyClosedLotForPublicPerformance(l, totalValue).performanceEligible).slice(0, 5).map(_toClosedTradeSample)
   const sampleSyntheticClosedTradeSamples = walletSyntheticClosedTradeSamples
 
+  const _publicPnlLockedForSamples = _publicPnlStatusFinal !== 'ok' || _performanceClosedLotsFinal.length === 0 || _performanceRealizedPnlUsd === null
+  const _sanitizePublicSampleLotsForLock = (samples: unknown) => {
+    if (!Array.isArray(samples)) return
+    for (const sample of samples) {
+      if (!sample || typeof sample !== 'object') continue
+      const s = sample as any
+      const excluded = s.includedInPublicStats === false || _publicPnlLockedForSamples
+      if (!excluded) continue
+      if (s.realizedPnlUsd !== undefined) { s.rawRealizedPnlUsd = s.realizedPnlUsd; s.realizedPnlUsd = null }
+      if (s.realizedPnlPercent !== undefined) { s.rawRealizedPnlPercent = s.realizedPnlPercent; s.realizedPnlPercent = null }
+      if (_publicPnlLockedForSamples) {
+        s.includedInPublicStats = false
+        s.publicPnlStatus = _publicPnlStatusFinal
+        s.pnlLockedReason = _publicPnlDisplayReasonFinal
+      }
+    }
+  }
+  _sanitizePublicSampleLotsForLock(walletClosedTradeSamples)
+  _sanitizePublicSampleLotsForLock(walletSyntheticClosedTradeSamples)
+  _sanitizePublicSampleLotsForLock(sampleFlatPriceExcludedLots)
+  _sanitizePublicSampleLotsForLock(sampleVerifiedPnlLots)
+  _sanitizePublicSampleLotsForLock(samplePublicPerformanceLots)
+  _sanitizePublicSampleLotsForLock(sampleVerifiedButExcludedLots)
+  _sanitizePublicSampleLotsForLock(sampleSyntheticClosedTradeSamples)
 
   const _grEthAttempted = _shouldFetchGrEth
   const _grBaseAttempted = activityRequested && Boolean(GOLDRUSH_KEY)
@@ -14850,6 +14882,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     candidateSellLegs: (walletLotSummary.closedLots ?? 0) + _unmatchedSellsCount + (_sellSideReconDebug.candidateCount ?? _sellSideReconDebug.sellSideCandidateTxs ?? 0),
     candidateOutboundLegs: _sellSideReconDebug.candidateCount ?? _sellSideReconDebug.sellSideCandidateTxs ?? 0,
     receiptProvenSellLegs: _sellSideReconDebug.promotedSellEvents ?? _sellSideReconDebug.sellSideEventsPromoted ?? 0,
+    receiptProvenQuoteSellEvents: _sellSideReconDebug.promotedSellEvents ?? _sellSideReconDebug.sellSideEventsPromoted ?? 0,
     publicSellEvents: _performanceClosedLotsFinal.length,
     matchedBuySellPairs: _rawMatchedClosedLotsFinal,
     rawClosedLots: _rawMatchedClosedLotsFinal,
@@ -15582,9 +15615,12 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         }
       }
       _sanitizeSampleLotsForIntegrity(snapshot.walletClosedTradeSamples)
+      _sanitizeSampleLotsForIntegrity(snapshot.walletSyntheticClosedTradeSamples)
+      _sanitizeSampleLotsForIntegrity(snapshot.sampleFlatPriceExcludedLots)
       _sanitizeSampleLotsForIntegrity(snapshot.sampleVerifiedPnlLots)
       _sanitizeSampleLotsForIntegrity(snapshot.samplePublicPerformanceLots)
       _sanitizeSampleLotsForIntegrity(snapshot.sampleVerifiedButExcludedLots)
+      _sanitizeSampleLotsForIntegrity(snapshot.sampleSyntheticClosedTradeSamples)
       // PUBLIC-PNL-INTEGRITY-GATE-6: the outlier note is generated from quarantine stats before
       // the integrity verdict exists and can claim "Public PnL and trade stats use the remaining
       // verified lots" even though public PnL is now locked — rewrite it to match.
@@ -15620,11 +15656,11 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       }
     } else if (_p6GateApplies && _p6SoftPartialOnly) {
       const _publicPerfLots = snapshot.walletTradeStatsSummary?.publicPerformanceClosedLots ?? 0
-      ;(snapshot as any).publicPnlDisplayLabel = 'Verified FIFO sample — partial coverage'
+      ;(snapshot as any).publicPnlDisplayLabel = _publicPerfLots >= 10 ? 'Verified FIFO sample — partial coverage' : 'Profit skill locked — sample too small'
       ;(snapshot as any).publicPnlDisplayReason = 'This reflects a verified FIFO sample, not complete wallet history.'
       if (snapshot.walletTradeStatsSummary) {
         const ts = snapshot.walletTradeStatsSummary as any
-        ts.publicPnlDisplayLabel = 'Verified FIFO sample — partial coverage'
+        ts.publicPnlDisplayLabel = _publicPerfLots >= 10 ? 'Verified FIFO sample — partial coverage' : 'Profit skill locked — sample too small'
         ts.publicPnlDisplayReason = 'This reflects a verified FIFO sample, not complete wallet history.'
         ts.pnlIntegrityStatus = _p6Integrity.status
         if (_publicPerfLots < 10) {
@@ -15651,7 +15687,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       reason: _p6HardInvalid
         ? 'Hard-invalid PnL integrity error present — public PnL/win-rate/profit-skill downgraded.'
         : _p6SoftPartialOnly
-          ? 'Only coverage-below-threshold present — public PnL shown as a labeled partial sample.'
+          ? 'Public PnL and win rate remain locked; behavior-only reads may still be shown.'
           : 'Integrity check passed — no gate applied.',
     }
 

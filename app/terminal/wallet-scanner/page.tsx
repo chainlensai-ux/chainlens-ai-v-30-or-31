@@ -202,6 +202,8 @@ type WalletResult = {
   excludedClosedLots?: number
   rawMatchedClosedLots?: number
   publicPerformanceRealizedPnlUsd?: number | null
+  publicRealizedPnlUsd?: number | null
+  publicWinRatePercent?: number | null
   walletRecoveryRecommendation?: {
     recommended: boolean
     mode: 'targeted_token_recovery' | 'targeted_recovery_attempted' | 'attempted_light' | 'attempted_provider_failed' | 'skipped_cost_guard' | 'skipped_micro_wallet' | 'none'
@@ -698,6 +700,12 @@ function deriveAverageMatchedWinUsd(data: WalletResult): number | null {
 // WIN-RATE-TRUST-FIX-1: the "Official"/public win rate may only ever be shown as a number when
 // the backend's own public-grade sample is unlocked. Raw/derived win rates (from rawMatchedClosedLots,
 // closedLots, or winningClosedLots) must never be relabeled as official/public once that gate fails.
+
+function publicPnlLocked(result: WalletResult, ts: WalletResult['walletTradeStatsSummary'] | undefined = result.walletTradeStatsSummary): boolean {
+  const status = result.publicPnlStatus ?? ts?.publicPnlStatus ?? null
+  return result.publicRealizedPnlUsd == null || result.publicWinRatePercent == null || ts?.publicRealizedPnlUsd == null || ts?.publicWinRatePercent == null || status !== 'ok' || ts?.pnlIntegrityStatus === 'invalid' || (ts?.publicPerformanceClosedLots ?? 0) === 0
+}
+
 function publicWinRateUnlocked(ts: WalletResult['walletTradeStatsSummary'] | undefined): boolean {
   if (!ts) return false
   const publicPerfLots = ts.publicPerformanceClosedLots ?? 0
@@ -721,7 +729,7 @@ function buildWalletReport(result: WalletResult) {
   const rawLots = result.rawMatchedClosedLots ?? ts?.rawMatchedClosedLots ?? ts?.rawClosedLots ?? ts?.closedLots ?? 0
   const excludedLots = result.excludedClosedLots ?? ts?.excludedClosedLots ?? Math.max(0, rawLots - publicLots)
   const integrityInvalid = (result.publicPnlStatus ?? ts?.publicPnlStatus) === 'open_check_integrity_invalid' || ts?.pnlIntegrityStatus === 'invalid' || result.pnlIntegrityCheck?.status === 'invalid'
-  const publicSamplePnlUsd = integrityInvalid ? null : (result.publicPerformanceRealizedPnlUsd ?? ts?.publicRealizedPnlUsd ?? null)
+  const publicSamplePnlUsd = (integrityInvalid || publicPnlLocked(result, ts)) ? null : (result.publicPerformanceRealizedPnlUsd ?? ts?.publicRealizedPnlUsd ?? null)
   const winRateUnlocked = publicWinRateUnlocked(ts)
   const profitSkillProven = publicLots >= 10 && !integrityInvalid
 
@@ -751,8 +759,8 @@ function buildWalletReport(result: WalletResult) {
     activeChains,
     activitySummary: result.walletBehavior?.recentActivitySummary ?? null,
     publicTradeEvidenceSummary: {
-      pnlQuality: result.pnlQuality ?? null,
-      reason: result.pnlQualityReason ?? null,
+      pnlQuality: publicPnlLocked(result, ts) ? null : (result.pnlQuality ?? null),
+      reason: publicPnlLocked(result, ts) ? 'Public PnL and win rate are locked; behavior-only reads may still be shown.' : (result.pnlQualityReason ?? null),
     },
     publicPnlStatus: {
       status: result.publicPnlStatus ?? ts?.publicPnlStatus ?? null,
@@ -2348,7 +2356,7 @@ export default function WalletScannerPage() {
                           const hasPublicWin = (ts!.winningPerformanceLots ?? 0) > 0
                           const hasPublicLoss = (ts!.losingPerformanceLots ?? 0) > 0
                           const rows: [string, string][] = [
-                            [labelPnl, fmtSignedUSD(ts!.publicPerformanceRealizedPnlUsd ?? ts!.publicRealizedPnlUsd ?? ts!.realizedPnlUsd)],
+                            [labelPnl, publicPnlLocked(result, ts) ? 'Locked' : fmtSignedUSD(ts!.publicPerformanceRealizedPnlUsd ?? ts!.publicRealizedPnlUsd ?? null)],
                             ['Win Rate', winRateUnlockedHere ? `${(ts!.publicWinRatePercent as number).toFixed(0)}%` : 'Locked'],
                             ['Public-grade trades', String(publicLots)],
                             ['Verified but limited/excluded', String(result.verifiedButExcludedClosedLots ?? ts!.verifiedButExcludedClosedLots ?? Math.max(0, (ts!.verifiedClosedLots ?? 0) - publicLots))],
@@ -3845,12 +3853,11 @@ export default function WalletScannerPage() {
                               </div>
                               <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                                 {samples.map((s, i) => {
-                                  // SAMPLE-LOT-INTEGRITY-FIX: when integrity is hard-invalid, the public-safe
-                                  // realizedPnlUsd/realizedPnlPercent fields are nulled at the source — fall
-                                  // back to the raw-labeled aliases for this internal "matched lots" disclosure,
-                                  // which is explicitly scoped (caption above) as non-public matched PnL.
-                                  const lotPnlUsd = s.realizedPnlUsd ?? s.rawRealizedPnlUsd ?? null
-                                  const lotPnlPercent = s.realizedPnlPercent ?? s.rawRealizedPnlPercent ?? null
+                                  // SAMPLE-LOT-INTEGRITY-FIX: when public PnL is locked or this lot is excluded,
+                                  // do not fall back to raw-labeled aliases in the public UI; raw values remain debug-only.
+                                  const samplePnlLocked = publicPnlLocked(result, ts) || s.includedInPublicStats === false || s.publicPnlStatus !== 'ok'
+                                  const lotPnlUsd = samplePnlLocked ? null : (s.realizedPnlUsd ?? null)
+                                  const lotPnlPercent = samplePnlLocked ? null : (s.realizedPnlPercent ?? null)
                                   const pnlColor = lotPnlUsd === null ? '#94a3b8' : lotPnlUsd >= 0 ? '#4ade80' : '#f87171'
                                   const holdStr = fmtHoldTime(s.holdingTimeSeconds)
                                   const pnlStr = lotPnlUsd !== null ? `${lotPnlUsd >= 0 ? '+' : '-'}$${Math.abs(lotPnlUsd).toFixed(2)}` : '—'

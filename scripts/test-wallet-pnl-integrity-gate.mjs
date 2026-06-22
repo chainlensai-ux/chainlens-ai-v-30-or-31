@@ -21,7 +21,7 @@ assert.match(snap, /snapshot\.tradeIntelligence\.profitSkillStatus = 'integrity_
 // Fix 3: soft-partial-only (coverage_percent_below_threshold alone) still allows a labeled
 // partial-sample read, and only unlocks win rate at >= 10 public-grade closed lots.
 assert.match(snap, /else if \(_p6GateApplies && _p6SoftPartialOnly\) \{/, 'gate branches on soft-partial-only case')
-assert.match(snap, /'Verified FIFO sample — partial coverage'/, 'soft-partial case uses the partial-coverage label wording')
+assert.match(snap, /_publicPerfLots >= 10 \? 'Verified FIFO sample — partial coverage' : 'Profit skill locked — sample too small'/, 'soft-partial case keeps partial label only when public fields can be visible')
 assert.match(snap, /if \(_publicPerfLots < 10\) \{/, 'soft-partial win rate only unlocks at 10+ public-grade closed lots')
 
 // Fix 4: debug field exposing the gate's before/after state.
@@ -87,6 +87,7 @@ assert.match(routeSrc, /integrityInvalid: snapshot\.publicPnlStatus === 'open_ch
 // publicLots >= 10 might otherwise satisfy the old, integrity-unaware threshold check.
 assert.match(page, /const integrityInvalid = \(result\.publicPnlStatus \?\? ts\?\.publicPnlStatus\) === 'open_check_integrity_invalid'/, 'buildWalletReport computes an integrityInvalid flag')
 assert.match(page, /const profitSkillProven = publicLots >= 10 && !integrityInvalid/, 'buildWalletReport profitSkillProven requires integrity to not be invalid')
+assert.match(snap, /Public PnL and win rate remain locked; behavior-only reads may still be shown\./, 'integrity gate wording never implies public PnL is visible when public fields are null')
 
 // Fix 13: top-level publicRealizedPnlUsd/publicPerformanceRealizedPnlUsd (computed pre-integrity,
 // same as publicWinRatePercent) must also be nulled on hard-invalid, not just the win rate.
@@ -102,6 +103,8 @@ assert.match(snap, /ts\.publicPerformanceRealizedPnlUsd = null/, 'walletTradeSta
 // publicPnlStatus: 'ok' / includedInPublicStats: true once integrity is hard-invalid.
 assert.match(snap, /_sanitizeSampleLotsForIntegrity/, 'gate defines a sample-lot sanitizer for hard-invalid')
 assert.match(snap, /_sanitizeSampleLotsForIntegrity\(snapshot\.walletClosedTradeSamples\)/, 'sanitizer applied to walletClosedTradeSamples')
+assert.match(snap, /_sanitizeSampleLotsForIntegrity\(snapshot\.walletSyntheticClosedTradeSamples\)/, 'sanitizer applied to walletSyntheticClosedTradeSamples')
+assert.match(snap, /_sanitizeSampleLotsForIntegrity\(snapshot\.sampleFlatPriceExcludedLots\)/, 'sanitizer applied to sampleFlatPriceExcludedLots')
 assert.match(snap, /_sanitizeSampleLotsForIntegrity\(snapshot\.sampleVerifiedPnlLots\)/, 'sanitizer applied to sampleVerifiedPnlLots')
 assert.match(snap, /_sanitizeSampleLotsForIntegrity\(snapshot\.samplePublicPerformanceLots\)/, 'sanitizer applied to samplePublicPerformanceLots')
 assert.match(snap, /_sanitizeSampleLotsForIntegrity\(snapshot\.sampleVerifiedButExcludedLots\)/, 'sanitizer applied to sampleVerifiedButExcludedLots')
