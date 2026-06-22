@@ -845,7 +845,7 @@ export type WalletSnapshot = {
   walletProfileHints?: {
     tradeFrequency: 'low' | 'medium' | 'high'
     avgHoldTimeBucket: 'short' | 'mid' | 'long'
-    realizedWinRateBucket: 'low' | 'medium' | 'high'
+    realizedWinRateBucket: 'low' | 'medium' | 'high' | 'locked'
     riskProfileHint: 'concentrated' | 'diversified' | 'dust-heavy'
   }
   // PHASE6-FIX-5b: separate, additive data-quality hint array (distinct concept from the object
@@ -15134,16 +15134,47 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       ;(snapshot as any).publicPnlDisplayReason = _reasonText
       ;(snapshot as any).publicPnlStatusReason = _reasonText
       ;(snapshot as any).publicWinRatePercent = null
+      // PUBLIC-PNL-INTEGRITY-GATE-4: top-level publicRealizedPnlUsd/publicPerformanceRealizedPnlUsd
+      // are computed pre-integrity, same as publicWinRatePercent above — null them too so the
+      // top-level snapshot never carries a stale public profit number once integrity is hard-invalid.
+      ;(snapshot as any).publicRealizedPnlUsd = null
+      ;(snapshot as any).publicPerformanceRealizedPnlUsd = null
       if (snapshot.walletTradeStatsSummary) {
         const ts = snapshot.walletTradeStatsSummary as any
         ts.publicPnlStatus = 'open_check_integrity_invalid'
         ts.publicPnlDisplayLabel = 'PnL integrity check failed'
         ts.publicPnlDisplayReason = _reasonText
         ts.publicWinRatePercent = null
+        ts.publicRealizedPnlUsd = null
+        ts.publicPerformanceRealizedPnlUsd = null
         ts.winRateStatus = 'locked_integrity_invalid'
         ts.pnlIntegrityStatus = _p6Integrity.status
         ts.scoreUnlocked = false
         ts.readyForWalletScore = false
+      }
+      // PUBLIC-PNL-INTEGRITY-GATE-5: closed-trade sample arrays are built well before the
+      // integrity verdict exists (same pre-integrity pass as walletTradeStatsSummary/
+      // walletEvidenceModel), so each sample can still carry a stale publicPnlStatus: 'ok' and
+      // includedInPublicStats: true. Raw verificationStatus/PnL stay for internal diagnostics, but
+      // the public-facing fields must reflect the integrity failure like everything else.
+      const _sanitizeSampleLotsForIntegrity = (samples: unknown) => {
+        if (!Array.isArray(samples)) return
+        for (const sample of samples) {
+          if (sample && typeof sample === 'object') {
+            (sample as any).publicPnlStatus = 'open_check_integrity_invalid'
+            ;(sample as any).includedInPublicStats = false
+          }
+        }
+      }
+      _sanitizeSampleLotsForIntegrity(snapshot.walletClosedTradeSamples)
+      _sanitizeSampleLotsForIntegrity(snapshot.sampleVerifiedPnlLots)
+      _sanitizeSampleLotsForIntegrity(snapshot.samplePublicPerformanceLots)
+      _sanitizeSampleLotsForIntegrity(snapshot.sampleVerifiedButExcludedLots)
+      // PUBLIC-PNL-INTEGRITY-GATE-6: the outlier note is generated from quarantine stats before
+      // the integrity verdict exists and can claim "Public PnL and trade stats use the remaining
+      // verified lots" even though public PnL is now locked — rewrite it to match.
+      if (snapshot.walletPnlOutlierNote && /Public PnL and trade stats use the remaining/.test(snapshot.walletPnlOutlierNote)) {
+        snapshot.walletPnlOutlierNote = 'PnL integrity failed, so public PnL, win rate, and profit skill are locked. Trade behavior can still be shown from non-profit evidence.'
       }
       // PUBLIC-PNL-INTEGRITY-GATE-2: walletEvidenceModel is built from the same pre-integrity
       // snapshot fields as walletTradeStatsSummary above and must be sanitized the same way —
@@ -15224,6 +15255,12 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       dustClosedLots: promotedTradeStatsSummary.dustClosedLots ?? 0,
       holdingsValueUsd: holdings.map(h => h.value ?? 0),
     })
+    // PUBLIC-PNL-INTEGRITY-GATE-7: a null win rate (locked) must never default to a "medium"
+    // bucket hint once PnL integrity is invalid — that would imply an unknown-but-plausible win
+    // rate instead of an explicitly locked one.
+    if ((promotedTradeStatsSummary as any)?.pnlIntegrityStatus === 'invalid' || (snapshot as any).publicPnlStatus === 'open_check_integrity_invalid') {
+      snapshot.walletProfileHints.realizedWinRateBucket = 'locked'
+    }
     if ((promotedTradeStatsSummary.dustClosedLots ?? 0) > 0 && snapshot._diagnostics) {
       snapshot._diagnostics.missingReasons = Array.from(new Set([...(snapshot._diagnostics.missingReasons ?? []), PHASE6_REASON_KEYS.dustAdjustedPnl]))
     }

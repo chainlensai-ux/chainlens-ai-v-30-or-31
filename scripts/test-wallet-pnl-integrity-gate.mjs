@@ -88,4 +88,41 @@ assert.match(routeSrc, /integrityInvalid: snapshot\.publicPnlStatus === 'open_ch
 assert.match(page, /const integrityInvalid = \(result\.publicPnlStatus \?\? ts\?\.publicPnlStatus\) === 'open_check_integrity_invalid'/, 'buildWalletReport computes an integrityInvalid flag')
 assert.match(page, /const profitSkillProven = publicLots >= 10 && !integrityInvalid/, 'buildWalletReport profitSkillProven requires integrity to not be invalid')
 
+// Fix 13: top-level publicRealizedPnlUsd/publicPerformanceRealizedPnlUsd (computed pre-integrity,
+// same as publicWinRatePercent) must also be nulled on hard-invalid, not just the win rate.
+assert.match(snap, /\(snapshot as any\)\.publicRealizedPnlUsd = null/, 'hard-invalid nulls top-level publicRealizedPnlUsd')
+assert.match(snap, /\(snapshot as any\)\.publicPerformanceRealizedPnlUsd = null/, 'hard-invalid nulls top-level publicPerformanceRealizedPnlUsd')
+
+// Fix 14: walletTradeStatsSummary's public realized PnL fields must mirror the top-level nulling
+// since the frontend can read either surface.
+assert.match(snap, /ts\.publicRealizedPnlUsd = null/, 'walletTradeStatsSummary.publicRealizedPnlUsd nulled on hard-invalid')
+assert.match(snap, /ts\.publicPerformanceRealizedPnlUsd = null/, 'walletTradeStatsSummary.publicPerformanceRealizedPnlUsd nulled on hard-invalid')
+
+// Fix 15: closed-trade sample arrays (built before the integrity verdict exists) must not expose
+// publicPnlStatus: 'ok' / includedInPublicStats: true once integrity is hard-invalid.
+assert.match(snap, /_sanitizeSampleLotsForIntegrity/, 'gate defines a sample-lot sanitizer for hard-invalid')
+assert.match(snap, /_sanitizeSampleLotsForIntegrity\(snapshot\.walletClosedTradeSamples\)/, 'sanitizer applied to walletClosedTradeSamples')
+assert.match(snap, /_sanitizeSampleLotsForIntegrity\(snapshot\.sampleVerifiedPnlLots\)/, 'sanitizer applied to sampleVerifiedPnlLots')
+assert.match(snap, /_sanitizeSampleLotsForIntegrity\(snapshot\.samplePublicPerformanceLots\)/, 'sanitizer applied to samplePublicPerformanceLots')
+assert.match(snap, /_sanitizeSampleLotsForIntegrity\(snapshot\.sampleVerifiedButExcludedLots\)/, 'sanitizer applied to sampleVerifiedButExcludedLots')
+
+// Fix 16: stale walletPnlOutlierNote wording ("Public PnL and trade stats use the remaining
+// verified lots") must be rewritten once integrity is hard-invalid, since it implies a still-valid
+// public PnL read.
+assert.match(snap, /PnL integrity failed, so public PnL, win rate, and profit skill are locked\. Trade behavior can still be shown from non-profit evidence\./, 'gate rewrites stale walletPnlOutlierNote wording on hard-invalid')
+
+// Fix 17: walletProfileHints.realizedWinRateBucket must not default to "medium" once integrity is
+// hard-invalid — it must be explicitly 'locked' so the UI cannot imply a plausible-but-unknown win rate.
+assert.match(snap, /snapshot\.walletProfileHints\.realizedWinRateBucket = 'locked'/, 'walletProfileHints.realizedWinRateBucket forced to locked on hard-invalid')
+assert.match(snap, /realizedWinRateBucket: 'low' \| 'medium' \| 'high' \| 'locked'/, 'walletProfileHints type declares the locked bucket value')
+
+// Fix 18: computeWalletProfile must not let a stale "Trading behavior not classified" reason
+// coexist with a properly-set tradingBehavior once tradeIntelligence resolves a style label.
+assert.match(identity, /reasons\[i\]\.startsWith\('Trading behavior not classified'\)/, 'computeWalletProfile strips stale not-classified reason once tradeIntel resolves a style label')
+
+// Fix 19: nextAction must cite the specific PnL-integrity-failed cause, not the generic
+// near-flat/limited-sample wording, when pnlIntegrityStatus is actually invalid.
+assert.match(identity, /pnlIntegrityStatus === 'invalid'\s*\n\s*\? \(tradeIntelUnlocked && tradingBehavior/, 'nextAction branches specifically on pnlIntegrityStatus invalid')
+assert.match(identity, /profit skill is not proven because PnL integrity failed\./, 'nextAction cites PnL integrity failed specifically')
+
 console.log('wallet PnL integrity gate checks passed')

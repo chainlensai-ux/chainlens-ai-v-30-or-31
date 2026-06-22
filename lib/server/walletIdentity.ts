@@ -233,6 +233,12 @@ export function computeWalletProfile(snapshot: WalletSnapshot): WalletProfile {
     const lots = tradeIntel!.tradeIntelLots ?? 0
     const raw = tradeIntel!.rawMatchedLots ?? 0
     const swapCandidates = (snapshot as any).walletSwapSummary?.swapCandidateEvents ?? (snapshot as any).walletSwapSummary?.swapCandidateCount ?? 0
+    // PUBLIC-PNL-INTEGRITY-GATE-8: tradeIntelligence resolved a real behavior label after the
+    // earlier "not classified" reason was pushed (legacy profit-evidence path stayed null) — drop
+    // the stale reason so it doesn't coexist with a properly-set tradingBehavior.
+    for (let i = reasons.length - 1; i >= 0; i--) {
+      if (reasons[i].startsWith('Trading behavior not classified')) reasons.splice(i, 1)
+    }
     reasons.push(`Trading style classified from ${lots} verified behavior lots.`)
     signals.push(`Trade intelligence ${tradeIntel!.status}: ${lots} behavior lots, ${raw} raw matched lots, ${swapCandidates} swap candidates.`)
   }
@@ -274,13 +280,17 @@ export function computeWalletProfile(snapshot: WalletSnapshot): WalletProfile {
   const realizedNearZero = realizedPnlUsd == null || Math.abs(realizedPnlUsd) < 1
   const profitNotProven = tradingLockedByPublicPnl || pnlIntegrityStatus === 'invalid' || publicPnlStatus === 'near_flat_verified_sample' || realizedNearZero
   const followability: WalletProfile['followability'] = profitNotProven ? 'Low' : tradingBehavior && tradingConfidence !== 'low' && score != null && score >= 70 ? 'High' : portfolioBehavior && score != null && score >= 55 ? 'Moderate' : 'Low'
-  const nextAction = (tradeIntelUnlocked && tradingBehavior && profitNotProven)
-    ? 'Use for behavior/style read only; profit skill is not proven because public PnL is near-flat and integrity checks are limited.'
-    : tradingLockedByPublicPnl
-      ? 'Use for portfolio read only; trading evidence is locked until more public-grade trades are available.'
-      : tradingConfidence === 'low'
-        ? 'Use this profile for portfolio read only; wait for stronger trade/PnL evidence before copying trades.'
-        : 'Monitor future realized trades and position changes before following.'
+  const nextAction = pnlIntegrityStatus === 'invalid'
+    ? (tradeIntelUnlocked && tradingBehavior
+      ? 'Use for behavior/style read only; profit skill is not proven because PnL integrity failed.'
+      : 'Use for portfolio read only; profit skill is not proven because PnL integrity failed.')
+    : (tradeIntelUnlocked && tradingBehavior && profitNotProven)
+      ? 'Use for behavior/style read only; profit skill is not proven because public PnL is near-flat and integrity checks are limited.'
+      : tradingLockedByPublicPnl
+        ? 'Use for portfolio read only; trading evidence is locked until more public-grade trades are available.'
+        : tradingConfidence === 'low'
+          ? 'Use this profile for portfolio read only; wait for stronger trade/PnL evidence before copying trades.'
+          : 'Monitor future realized trades and position changes before following.'
 
   const profileSummary = sufficientEvidence
     ? `${chainCount > 1 ? `Multi-chain (${chainCount} chains)` : 'Single-chain'} ${walletCategory?.toLowerCase() ?? 'wallet'}${portfolioBehavior ? ` with ${portfolioBehavior.toLowerCase()} portfolio behavior` : ''}${tradingBehavior ? ` and ${tradingBehavior.toLowerCase()} trading behavior` : '; trading behavior not yet classified'}.`
