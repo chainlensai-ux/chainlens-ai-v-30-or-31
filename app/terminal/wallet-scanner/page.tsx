@@ -216,6 +216,33 @@ type WalletResult = {
       capHitReason: string | null
     }
   }
+  walletTradeReconstructionFunnel?: {
+    walletSideTransactions: number
+    swapCandidateEvents: number
+    candidateSwapTransactions: number
+    parsedSwapTransactions: number
+    candidateBuyLegs: number
+    candidateSellLegs: number
+    matchedBuySellPairs: number
+    rawClosedLots: number
+    publicGradeClosedLots: number
+    excludedClosedLots: number
+    exclusionBreakdown: {
+      estimateOnly: number
+      syntheticCostBasis: number
+      flatPrice: number
+      missingCost: number
+      missingSellPrice: number
+      missingBuyPrice: number
+      weakIndependence: number
+      dust: number
+      unsupportedRouter: number
+      noQuoteLeg: number
+      noPriorBuy: number
+      budgetCapped: number
+    }
+    topFailureReasons: string[]
+  }
   walletActivitySummary?: {
     walletSideEvents: number
     walletSideTransactions: number
@@ -2115,6 +2142,49 @@ export default function WalletScannerPage() {
                               </button>
                             )}
                           </div>
+                        )
+                      })()}
+
+                      {(() => {
+                        // RECON-FUNNEL-1: compact debug-style funnel — shows where candidates were lost
+                        // between "evidence collected" and "public-grade closed lot" so a wallet with real
+                        // swap candidates never looks like "no activity" when the pipeline simply failed
+                        // to promote those candidates to verified lots.
+                        const f = result.walletTradeReconstructionFunnel
+                        if (!f || (f.swapCandidateEvents === 0 && f.rawClosedLots === 0)) return null
+                        const reasonLabels: Record<string, string> = {
+                          estimateOnly: 'Estimate-only price',
+                          syntheticCostBasis: 'Synthetic/missing cost basis',
+                          flatPrice: 'Flat price / near-zero PnL',
+                          missingCost: 'Missing cost basis',
+                          missingSellPrice: 'Missing sell price',
+                          missingBuyPrice: 'Missing buy price',
+                          weakIndependence: 'Weak price independence',
+                          dust: 'Dust / micro lot',
+                          unsupportedRouter: 'Unsupported router/aggregator',
+                          noQuoteLeg: 'No quote leg found',
+                          noPriorBuy: 'No prior buy found',
+                          budgetCapped: 'Scan budget capped',
+                        }
+                        return (
+                          <details className="wpv3-card">
+                            <summary className="wpv3-title" style={{ cursor: 'pointer' }}>Trade Reconstruction Funnel</summary>
+                            {[
+                              ['Swap candidates found', String(f.swapCandidateEvents)],
+                              ['Parsed swap transactions', String(f.parsedSwapTransactions)],
+                              ['Matched buy/sell pairs', String(f.matchedBuySellPairs)],
+                              ['Raw matched lots', String(f.rawClosedLots)],
+                              ['Public-grade trades', String(f.publicGradeClosedLots)],
+                              ['Excluded lots', String(f.excludedClosedLots)],
+                            ].map(([label, value]) => (
+                              <div key={label} className="wpv3-metric-row"><span className="wpv3-label">{label}</span><span className="wpv3-value" style={{ fontSize: '20px' }}>{value}</span></div>
+                            ))}
+                            {f.topFailureReasons.length > 0 && (
+                              <p className="wpv3-support" style={{ marginTop: '10px', color: '#9aa4b2' }}>
+                                Top exclusion reasons: {f.topFailureReasons.map(r => reasonLabels[r] ?? r).join(', ')}
+                              </p>
+                            )}
+                          </details>
                         )
                       })()}
 

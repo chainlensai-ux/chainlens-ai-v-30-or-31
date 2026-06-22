@@ -595,6 +595,38 @@ export type WalletSnapshot = {
     }
   }
 
+  // RECON-FUNNEL-1: compact, additive diagnostic funnel — never feeds FIFO/PnL/scoring. Shows
+  // where candidates were lost between "evidence collected" and "public-grade closed lot", so a
+  // busy wallet that ends with weak stats can be diagnosed (router parsing failure vs missing buy
+  // vs missing price vs budget cap) instead of looking like "no activity".
+  walletTradeReconstructionFunnel?: {
+    walletSideTransactions: number
+    swapCandidateEvents: number
+    candidateSwapTransactions: number
+    parsedSwapTransactions: number
+    candidateBuyLegs: number
+    candidateSellLegs: number
+    matchedBuySellPairs: number
+    rawClosedLots: number
+    publicGradeClosedLots: number
+    excludedClosedLots: number
+    exclusionBreakdown: {
+      estimateOnly: number
+      syntheticCostBasis: number
+      flatPrice: number
+      missingCost: number
+      missingSellPrice: number
+      missingBuyPrice: number
+      weakIndependence: number
+      dust: number
+      unsupportedRouter: number
+      noQuoteLeg: number
+      noPriorBuy: number
+      budgetCapped: number
+    }
+    topFailureReasons: string[]
+  }
+
   walletTradeStatsSource: 'base_sample' | 'historical_promoted_preview'
   tokenUsage: TokenUsage
   debugAutoDisabled?: true
@@ -13356,6 +13388,59 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     },
   }
 
+  // RECON-FUNNEL-1: compact diagnostic funnel built entirely from values already computed above —
+  // no new provider calls, no new pipeline behavior. Buckets that the existing classification
+  // pipeline does not separately track (missingCost/missingSellPrice/missingBuyPrice/
+  // unsupportedRouter/noQuoteLeg/budgetCapped) are left at their honest measured value (0 when no
+  // dedicated signal exists yet) rather than guessed — this is a diagnostics surface, not a new
+  // exclusion rule, so it never changes which lots are public-grade.
+  const _reconExclusionTally = { estimateOnly: 0, syntheticCostBasis: 0, flatPrice: 0, weakIndependence: 0, dust: 0 }
+  for (const x of _publicLotClassifications) {
+    if (x.classification.performanceEligible) continue
+    switch (x.classification.rejectReason) {
+      case 'estimate_only_price_flat': _reconExclusionTally.estimateOnly++; break
+      case 'synthetic_cost_basis_missing': _reconExclusionTally.syntheticCostBasis++; break
+      case 'same_price_or_near_zero_pnl': _reconExclusionTally.flatPrice++; break
+      case 'missing_independent_price': _reconExclusionTally.weakIndependence++; break
+      case 'dust_or_micro_lot': _reconExclusionTally.dust++; break
+      case 'stable_or_treasury_spread':
+      case 'routing_or_treasury_shuffle': _reconExclusionTally.weakIndependence++; break
+      default: break
+    }
+  }
+  const _reconExclusionBreakdown = {
+    estimateOnly: _reconExclusionTally.estimateOnly,
+    syntheticCostBasis: _reconExclusionTally.syntheticCostBasis,
+    flatPrice: _reconExclusionTally.flatPrice,
+    missingCost: 0,
+    missingSellPrice: 0,
+    missingBuyPrice: 0,
+    weakIndependence: _reconExclusionTally.weakIndependence,
+    dust: _reconExclusionTally.dust,
+    unsupportedRouter: 0,
+    noQuoteLeg: 0,
+    noPriorBuy: _unmatchedSellsCount,
+    budgetCapped: 0,
+  }
+  const _walletTradeReconstructionFunnel: WalletSnapshot['walletTradeReconstructionFunnel'] = {
+    walletSideTransactions: _reconWalletSideTxns,
+    swapCandidateEvents: _reconSwapCandidateEvents,
+    candidateSwapTransactions: walletSwapSummary.groupedTxCount ?? 0,
+    parsedSwapTransactions: _reconSwapCandidateEvents > 0 ? (walletSwapSummary.groupedTxCount ?? 0) : 0,
+    candidateBuyLegs: walletLotSummary.openedLots ?? 0,
+    candidateSellLegs: (walletLotSummary.closedLots ?? 0) + _unmatchedSellsCount,
+    matchedBuySellPairs: _rawMatchedClosedLotsFinal,
+    rawClosedLots: _rawMatchedClosedLotsFinal,
+    publicGradeClosedLots: _reconPublicLots,
+    excludedClosedLots: _reconExcludedLots,
+    exclusionBreakdown: _reconExclusionBreakdown,
+    topFailureReasons: Object.entries(_reconExclusionBreakdown)
+      .filter(([, v]) => v > 0)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 2)
+      .map(([k]) => k),
+  }
+
   // FIFO-RECON-FIX-5: surfaces the already-computed targeted recovery targets (no new provider
   // calls — reuses _rankedHistoricalTargets/_missingCostBasisGuardActive computed above).
   // PNL-SAFETY-FIX-6: synthetic closed lots are not "closed lots already found" — only a real
@@ -13525,6 +13610,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     tradeIntelligence,
     walletRecoveryRecommendation: _walletRecoveryRecommendation,
     walletReconstructionRecovery: _walletReconstructionRecovery,
+    walletTradeReconstructionFunnel: _walletTradeReconstructionFunnel,
     walletActivitySummary: _walletActivitySummary,
     address: addr,
     totalValue,
