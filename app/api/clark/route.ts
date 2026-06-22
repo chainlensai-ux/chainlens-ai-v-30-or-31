@@ -7674,7 +7674,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     let securitySim: Awaited<ReturnType<typeof fetchHoneypotSecurity>> | null = null;
     let honeypotAborted = false;
     let honeypotNetworkError = false;
-    const honeypotPromise = fetchHoneypotSecurity(tokenAddress, "base")
+    const honeypotPromise = fetchHoneypotSecurity(tokenAddress, toTokenApiChain(chain) ?? "base")
       .then((r) => { securitySim = r; return r; })
       .catch((e: unknown) => {
         const msg = e instanceof Error ? e.message : String(e);
@@ -7770,7 +7770,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const sectionsMissing: Array<{ section: string; reason: string }> = [];
 
     if (hasMarket) sectionsPresent.push("market");
-    else sectionsMissing.push({ section: "market", reason: noPoolData ? "no active pool data on Base" : tokenRouteFailed ? `token route ${tokenRouteStatus}` : "unavailable" });
+    else sectionsMissing.push({ section: "market", reason: noPoolData ? `no active pool data on ${chainDisplayLabel(chain)}` : tokenRouteFailed ? `token route ${tokenRouteStatus}` : "unavailable" });
 
     if (hasHolders) sectionsPresent.push("holders");
     else sectionsMissing.push({ section: "holders", reason: tokenRouteFailed ? `token route ${tokenRouteStatus}` : "unavailable" });
@@ -7807,7 +7807,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         missingEvidence.push("Market, LP, and holder data: no response from token route / Open Check");
       }
     } else if (noPoolData) {
-      missingEvidence.push("Token not found on Base or no active pool data");
+      missingEvidence.push(`Token not found on ${chainDisplayLabel(chain)} or no active pool data`);
     }
 
     if (!hasHoneypot) {
@@ -8066,6 +8066,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       "",
       `Verdict: ${verdict}`,
       `Confidence: ${confidence}.`,
+      `Chain: ${chainDisplayLabel(tokenEvidenceChain(ev, chain))}.`,
       `Market: ${marketLine}.`,
       `LP: ${lpLine}.`,
       `Holders: ${holdersLine}.`,
@@ -9692,9 +9693,10 @@ export async function POST(req: NextRequest) {
   if (!sessionMem.lastWallet && body.clientContext?.lastWallet?.address) sessionMem.lastWallet = body.clientContext.lastWallet;
   // Sync page and chain into session memory
   setMemPage(sessionMem, body.uiModeHint);
-  setMemChain(sessionMem, body.chain);
   const earlyPrompt = (body.prompt ?? '').trim()
-  sessionMem.selectedChain = body.chain === "ethereum" ? "eth" : "base"
+  const earlyPromptChain = earlyPrompt ? extractRequestedChainFromPrompt(earlyPrompt) : null
+  setMemChain(sessionMem, earlyPromptChain ?? body.chain);
+  sessionMem.selectedChain = (earlyPromptChain ?? body.chain) === "ethereum" ? "eth" : "base"
   rememberMessage(sessionMem, "user", earlyPrompt)
   const isMoreFollowup = earlyPrompt ? (MORE_CONTEXT_RE.test(earlyPrompt) && (sessionMem.lastMomentumList.length > 0 || Boolean(sessionMem.lastToken))) : false
   const earlyRank = earlyPrompt ? parseRankFollowup(earlyPrompt) : null
