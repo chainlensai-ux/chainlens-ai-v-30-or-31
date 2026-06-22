@@ -223,97 +223,80 @@ export function computeWindowedPnl(closedLots: WalletClosedLot[], now: Date = ne
 
 export type WalletBotScoreResult = {
   score: number | null
-  classification: 'Likely bot' | 'Possibly semi-automated' | 'Likely human/manual' | 'Not enough data'
+  classification: 'Human-like' | 'Assisted / semi-automated' | 'Likely bot' | 'High-frequency bot' | 'Not enough behavior data'
   reason: string
+  basis?: 'behavior_only' | 'behavior_with_public_performance'
+  profitSkillStatus?: 'not_proven' | 'unlocked'
+  pnlUsed: false
+  signals: string[]
+}
+
+type BotBehaviorEvidence = {
+  walletSideTransactions?: number | null
+  swapLikeWalletTransactions?: number | null
+  tradeIntelLots?: number | null
+  uniqueTokensTraded?: number | null
+  avgHoldingTimeSeconds?: number | null
+  repeatedTokenPatterns?: string[] | null
+  sameTxInboundOutboundCandidates?: number | null
+  topCounterparties?: Array<{ count?: number | null }> | null
+  activityWindowDays?: number | null
 }
 
 export function computeBotScore(
   closedLots: WalletClosedLot[],
   walletBehavior: WalletBehavior | null,
-  tradeStats: WalletTradeStatsSummary | null
+  tradeStats: WalletTradeStatsSummary | null,
+  behaviorEvidence: BotBehaviorEvidence = {}
 ): WalletBotScoreResult {
-  if (tradeStats?.scoreUnlocked !== true || (tradeStats as any)?.pnlIntegrityStatus === 'invalid') {
-    return { score: null, classification: 'Not enough data', reason: 'Bot/automation read is locked until enough performance-grade trades pass public evidence checks.' }
+  const pnlIntegrityInvalid = (tradeStats as any)?.pnlIntegrityStatus === 'invalid' || tradeStats?.publicPnlStatus === 'open_check_integrity_invalid'
+  const walletSideTxs = behaviorEvidence.walletSideTransactions ?? 0
+  const swapLikeTxs = behaviorEvidence.swapLikeWalletTransactions ?? 0
+  const tradeIntelLots = behaviorEvidence.tradeIntelLots ?? closedLots.length
+  const enoughBehaviorEvidence = tradeIntelLots >= 20 || walletSideTxs >= 50 || swapLikeTxs >= 30
+
+  if (!enoughBehaviorEvidence) {
+    return { score: null, classification: 'Not enough behavior data', reason: 'Not enough wallet-side activity or swap behavior to assess automation.', basis: pnlIntegrityInvalid ? 'behavior_only' : 'behavior_with_public_performance', profitSkillStatus: pnlIntegrityInvalid ? 'not_proven' : (tradeStats?.scoreUnlocked === true ? 'unlocked' : 'not_proven'), pnlUsed: false, signals: [] }
   }
 
-  if (closedLots.length < 3) {
-    return { score: null, classification: 'Not enough data', reason: 'Not enough trade history to assess automation.' }
+  const n = Math.max(tradeIntelLots, closedLots.length, 1)
+  const activeDays = Math.max(behaviorEvidence.activityWindowDays ?? walletBehavior?.activeDays ?? 1, 1)
+  const uniqueTokens = behaviorEvidence.uniqueTokensTraded ?? tradeStats?.uniqueTokensTraded ?? new Set(closedLots.map(l => l.tokenAddress.toLowerCase())).size
+  const avgHoldSeconds = behaviorEvidence.avgHoldingTimeSeconds ?? tradeStats?.avgHoldingTimeSeconds ?? mean(closedLots.map(l => l.holdingTimeSeconds).filter((v): v is number => v != null))
+  const repeatedPatterns = behaviorEvidence.repeatedTokenPatterns ?? []
+  const sameTxCandidates = behaviorEvidence.sameTxInboundOutboundCandidates ?? 0
+  const topCounterpartyMax = Math.max(0, ...(behaviorEvidence.topCounterparties ?? []).map(c => Number(c.count ?? 0)).filter(Number.isFinite))
+
+  const swapActivityScore = clamp((swapLikeTxs / 120) * 35 + (walletSideTxs / 180) * 15, 0, 45)
+  const repeatedTokenScore = clamp(repeatedPatterns.length * 7, 0, 25)
+  const avgHoldHours = avgHoldSeconds != null ? avgHoldSeconds / 3600 : null
+  const holdingScore = avgHoldHours == null ? 5 : avgHoldHours < 0.25 ? 25 : avgHoldHours < 1 ? 18 : avgHoldHours < 6 ? 10 : avgHoldHours < 24 ? 3 : 0
+  const counterpartyScore = clamp((topCounterpartyMax / Math.max(walletSideTxs, 1)) * 25 + (sameTxCandidates / Math.max(swapLikeTxs, 1)) * 15, 0, 20)
+  const burstScore = clamp((swapLikeTxs / activeDays) * 2, 0, 15)
+  const diversityReduction = uniqueTokens >= 25 ? 12 : uniqueTokens >= 15 ? 7 : 0
+  const longerHoldReduction = avgHoldHours != null && avgHoldHours >= 6 ? 8 : 0
+
+  const score = Math.round(clamp(swapActivityScore + repeatedTokenScore + holdingScore + counterpartyScore + burstScore - diversityReduction - longerHoldReduction, 0, 100))
+  const classification: WalletBotScoreResult['classification'] = score >= 85 ? 'High-frequency bot' : score >= 65 ? 'Likely bot' : score >= 35 ? 'Assisted / semi-automated' : 'Human-like'
+
+  const signals: string[] = []
+  if (swapLikeTxs >= 30) signals.push(`${swapLikeTxs} swap-like wallet transactions`)
+  if (walletSideTxs >= 50) signals.push(`${walletSideTxs} wallet-side transactions`)
+  if (tradeIntelLots >= 20) signals.push(`${tradeIntelLots} behavior lots`)
+  if (repeatedPatterns.length > 0) signals.push(`Repeated token rotation: ${repeatedPatterns.slice(0, 5).join(', ')}`)
+  if (avgHoldHours != null) signals.push(`Average holding time around ${avgHoldHours.toFixed(1)}h`)
+  if (topCounterpartyMax > 0) signals.push(`Repeated counterparty/router usage up to ${topCounterpartyMax} interactions`)
+  if (uniqueTokens >= 15) signals.push(`${uniqueTokens} unique tokens adds diversification context`)
+
+  const reason = `${swapLikeTxs >= 30 ? 'High swap activity' : 'Wallet-side activity'}${repeatedPatterns.length > 0 ? ' and repeated token rotation' : ''} detected. ${avgHoldHours != null && avgHoldHours >= 6 ? 'Holding times are not pure rapid-fire, so the read is moderated.' : 'Timing and rotation patterns are used for this automation read.'}`
+
+  return {
+    score,
+    classification,
+    reason,
+    basis: pnlIntegrityInvalid ? 'behavior_only' : 'behavior_with_public_performance',
+    profitSkillStatus: pnlIntegrityInvalid ? 'not_proven' : (tradeStats?.scoreUnlocked === true ? 'unlocked' : 'not_proven'),
+    pnlUsed: false,
+    signals,
   }
-
-  const n = tradeStats?.verifiedClosedLots ?? tradeStats?.closedLotsForStats ?? closedLots.length
-  const excluded = (tradeStats?.estimateOnlyClosedLots ?? 0) + (tradeStats?.syntheticClosedLotsExcluded ?? 0)
-  const activeDays = Math.max(walletBehavior?.activeDays ?? 1, 1)
-  const tradesPerActiveDay = n / activeDays
-
-  const uniqueTokens = tradeStats?.uniqueTokensTraded ?? new Set(closedLots.map(l => l.tokenAddress.toLowerCase())).size
-  const rotationRatio = n > 0 ? uniqueTokens / n : 0
-
-  // frequencyScore: trades per active day. More frequent trading => more bot-like.
-  const frequencyScore = clamp(tradesPerActiveDay * 15, 0, 100)
-
-  // repetitionScore: low unique-token ratio (same pairs traded repeatedly) => more bot-like.
-  const repetitionScore = clamp(100 - rotationRatio * 100, 0, 100)
-
-  // sizeConsistencyScore: low variance (coefficient of variation) in trade size => more bot-like.
-  const sizes = closedLots.map(l => l.amountClosed ?? l.costBasisUsd ?? 0)
-  const sizeMean = mean(sizes) ?? 0
-  const sizeStdDev = popStdDev(sizes)
-  const sizeCv = sizeMean !== 0 ? sizeStdDev / Math.abs(sizeMean) : 0
-  const sizeConsistencyScore = clamp(100 - sizeCv * 100, 0, 100)
-
-  // timingRegularityScore: low variance (coefficient of variation) in gaps between consecutive
-  // closes => regular intervals => more bot-like.
-  const sortedCloseTimes = closedLots
-    .map(l => new Date(l.closedAt).getTime())
-    .filter(t => Number.isFinite(t))
-    .sort((a, b) => a - b)
-  const gaps: number[] = []
-  for (let i = 1; i < sortedCloseTimes.length; i++) {
-    gaps.push(sortedCloseTimes[i] - sortedCloseTimes[i - 1])
-  }
-  const gapMean = mean(gaps) ?? 0
-  const gapStdDev = popStdDev(gaps)
-  const gapCv = gapMean !== 0 ? gapStdDev / Math.abs(gapMean) : 0
-  const timingRegularityScore = gaps.length > 0 ? clamp(100 - gapCv * 100, 0, 100) : 0
-
-  // fastFlipScore: fraction of lots held for less than 5 minutes => more bot-like.
-  const fastFlips = closedLots.filter(l => l.holdingTimeSeconds != null && l.holdingTimeSeconds < 300).length
-  const fastFlipScore = (fastFlips / n) * 100
-
-  // humanNoiseRaw: stablecoin activity and a wider variety of top tokens suggest a human managing
-  // a diversified portfolio rather than a single-purpose bot. Higher humanNoiseRaw => lower bot score.
-  const humanNoiseRaw = clamp(
-    (walletBehavior?.stablecoinActivity ? 30 : 0) + (walletBehavior?.topTokens?.length ?? 0) * 5,
-    0,
-    100
-  )
-
-  const botSignalScore =
-    0.20 * frequencyScore +
-    0.20 * repetitionScore +
-    0.20 * sizeConsistencyScore +
-    0.20 * timingRegularityScore +
-    0.10 * fastFlipScore +
-    0.10 * (100 - humanNoiseRaw)
-
-  const score = Math.round(clamp(botSignalScore, 0, 100))
-
-  let classification: WalletBotScoreResult['classification']
-  if (score >= 80) classification = 'Likely bot'
-  else if (score >= 60) classification = 'Possibly semi-automated'
-  else classification = 'Likely human/manual'
-
-  // Pick a dominant-signal explanation.
-  let reason: string
-  if (score >= 60 && (frequencyScore >= 60 || repetitionScore >= 60) && timingRegularityScore >= 50) {
-    reason = `High trade frequency (${tradesPerActiveDay.toFixed(1)}/day) and repetitive token pairs (${uniqueTokens} unique of ${n} trades) with regular timing point to automated execution.`
-  } else if (score >= 60 && fastFlipScore >= 40) {
-    reason = `A large share of trades (${fastFlipScore.toFixed(0)}%) were closed in under 5 minutes, consistent with automated execution.`
-  } else if (score >= 60) {
-    reason = `Trade sizing and timing show low variance, which is consistent with scripted or semi-automated execution.`
-  } else {
-    reason = 'Trade sizes and timing show natural variance consistent with manual decisions.'
-  }
-
-  return { score, classification, reason }
 }

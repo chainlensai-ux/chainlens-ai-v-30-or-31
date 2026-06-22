@@ -1332,7 +1332,18 @@ export async function POST(req: Request) {
     snapshot.walletBotScore = computeBotScore(
       _performanceLotsForIntelligence,
       (snapshot as any).walletBehavior ?? null,
-      { ...((snapshot as any).walletTradeStatsSummary ?? {}), pnlIntegrityStatus: snapshot.pnlIntegrityCheck?.status } as any
+      { ...((snapshot as any).walletTradeStatsSummary ?? {}), pnlIntegrityStatus: snapshot.pnlIntegrityCheck?.status } as any,
+      {
+        walletSideTransactions: snapshot.walletActivitySummary?.walletSideTransactions ?? snapshot.walletTradeReconstructionFunnel?.walletSideTransactions ?? 0,
+        swapLikeWalletTransactions: snapshot.walletActivitySummary?.swapLikeWalletTransactions ?? 0,
+        tradeIntelLots: snapshot.tradeIntelligence?.tradeIntelLots ?? 0,
+        uniqueTokensTraded: snapshot.tradeIntelligence?.signals?.uniqueTokensTraded ?? snapshot.walletTradeStatsSummary?.uniqueTokensTraded ?? null,
+        avgHoldingTimeSeconds: snapshot.tradeIntelligence?.signals?.avgHoldingTimeSeconds ?? snapshot.walletTradeStatsSummary?.avgHoldingTimeSeconds ?? null,
+        repeatedTokenPatterns: snapshot.tradeIntelligence?.repeatedTokenPatterns ?? [],
+        sameTxInboundOutboundCandidates: snapshot.walletSwapSummary?.sameTxInboundOutboundCandidates ?? 0,
+        topCounterparties: snapshot.walletFacts?.flowRead?.topCounterparties ?? [],
+        activityWindowDays: snapshot.walletActivitySummary?.trueActivityWindowDays ?? null,
+      }
     )
 
     const _scanBudgetDebug = snapshot._diagnostics?.walletScanBudgetDebug ?? null

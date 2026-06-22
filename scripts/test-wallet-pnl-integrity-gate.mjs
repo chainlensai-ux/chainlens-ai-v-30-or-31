@@ -37,11 +37,12 @@ assert.match(identity, /publicPnlStatus === 'open_check_integrity_invalid' \|\| 
 
 const page = fs.readFileSync('app/terminal/wallet-scanner/page.tsx', 'utf8')
 
-// Fix 6: walletPersonality/walletBotScore stay locked on invalid integrity — these already key
-// off pnlIntegrityStatus directly in walletIntelligence.ts, independent of this gate.
+// Fix 6: walletPersonality stays locked on invalid integrity, while walletBotScore remains
+// behavior-only and explicitly avoids PnL use.
 const intel = fs.readFileSync('lib/server/walletIntelligence.ts', 'utf8')
 assert.match(intel, /\(tradeStats as any\)\?\.pnlIntegrityStatus === 'invalid'/, 'computeWalletPersonality locks on invalid pnlIntegrityStatus')
-assert.match(intel, /tradeStats\?\.scoreUnlocked !== true \|\| \(tradeStats as any\)\?\.pnlIntegrityStatus === 'invalid'/, 'computeBotScore locks on invalid pnlIntegrityStatus')
+assert.match(intel, /basis: pnlIntegrityInvalid \? 'behavior_only'/, 'computeBotScore switches to behavior-only basis on invalid pnlIntegrityStatus')
+assert.match(intel, /pnlUsed: false/, 'computeBotScore reports no PnL use')
 
 // Fix 7: UI shows a clear integrity-failure message instead of a clean PnL/win-rate read, and the
 // "Smart Money Candidate" derivation is gated off the same integrity status so it cannot leak from

@@ -428,8 +428,12 @@ type WalletResult = {
   }
   walletBotScore?: {
     score: number | null
-    classification: 'Likely bot' | 'Possibly semi-automated' | 'Likely human/manual' | 'Not enough data'
+    classification: 'Human-like' | 'Assisted / semi-automated' | 'Likely bot' | 'High-frequency bot' | 'Not enough behavior data'
     reason: string
+    basis?: 'behavior_only' | 'behavior_with_public_performance'
+    profitSkillStatus?: 'not_proven' | 'unlocked'
+    pnlUsed?: false
+    signals?: string[]
   }
   walletScanCostMode?: 'basic' | 'basic_cached' | 'deep_cached' | 'deep_live' | 'historical_cached' | 'historical_live' | 'blocked_by_cooldown' | 'blocked_by_cost_guard'
   walletScanCacheNote?: string
@@ -3000,8 +3004,8 @@ export default function WalletScannerPage() {
                   : wp.personality === 'Degen' ? '#f87171'
                   : '#7dd3fc'
                 const botColor =
-                  bot?.classification === 'Likely bot' ? '#f87171'
-                  : bot?.classification === 'Possibly semi-automated' ? '#fbbf24'
+                  bot?.classification === 'High-frequency bot' || bot?.classification === 'Likely bot' ? '#f87171'
+                  : bot?.classification === 'Assisted / semi-automated' ? '#fbbf24'
                   : '#4ade80'
                 const fmtUsdSigned = (v: number) => `${v < 0 ? '-' : '+'}$${Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
                 const scoreRows: Array<{ label: string; value: number }> = wp.scores
@@ -3077,11 +3081,14 @@ export default function WalletScannerPage() {
                                 <div style={{ height: '100%', width: `${bot.score}%`, borderRadius: '3px', background: botColor }} />
                               </div>
                               <span style={{ display: 'inline-block', fontSize: '10px', fontWeight: 700, letterSpacing: '0.08em', color: botColor, border: `1px solid ${botColor}33`, background: `${botColor}14`, borderRadius: '999px', padding: '3px 9px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', textTransform: 'uppercase' }}>{bot.classification}</span>
+                              {bot.basis === 'behavior_only' && bot.profitSkillStatus === 'not_proven' && (
+                                <p className="wpv3-support" style={{ marginTop: '8px', color: '#fbbf24' }}>Bot score is behavior-only. Profit skill is locked because PnL integrity failed.</p>
+                              )}
                             </>
                           ) : botDisplayClassification ? (
                             <>
                               <span style={{ display: 'inline-block', fontSize: '10px', fontWeight: 700, letterSpacing: '0.08em', color: '#7dd3fc', border: '1px solid rgba(125,211,252,0.3)', background: 'rgba(125,211,252,0.08)', borderRadius: '999px', padding: '3px 9px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', textTransform: 'uppercase', marginBottom: '8px' }}>{botDisplayClassification}</span>
-                              <p className="wpv3-support" style={{ marginTop: '8px' }}>Automation confidence remains limited due to insufficient performance-grade trade evidence.</p>
+                              <p className="wpv3-support" style={{ marginTop: '8px' }}>Automation confidence remains limited until enough wallet-side behavior is observed.</p>
                             </>
                           ) : (
                             <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.35)', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>Not enough data</div>

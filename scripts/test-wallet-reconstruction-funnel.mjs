@@ -36,10 +36,10 @@ assert.match(snap, /walletTradeReconstructionFunnel: _walletTradeReconstructionF
 // claims "no activity" when swap candidates exist.
 assert.match(ui, /walletTradeReconstructionFunnel\?:\s*\{/, 'WalletResult type declares walletTradeReconstructionFunnel')
 assert.match(ui, /Trade Reconstruction Funnel/, 'UI funnel card title present')
-assert.match(ui, /if \(!f \|\| \(f\.swapCandidateEvents === 0 && f\.rawClosedLots === 0\)\) return null/, 'funnel card is hidden only when there is truly nothing to explain')
-for (const label of ['Swap candidates found', 'Parsed swap transactions', 'Matched buy/sell pairs', 'Raw matched lots', 'Public-grade trades', 'Excluded lots']) {
+assert.match(ui, /No reconstruction funnel available for this scan\./, 'funnel card explains when no reconstruction funnel is available')
+for (const label of ['Swap candidate events', 'Parsed swap transactions', 'Matched buy/sell pairs', 'Raw closed lots', 'Public-grade closed lots', 'Excluded closed lots']) {
   assert.match(ui, new RegExp(`'${label}'`), `UI funnel card shows ${label}`)
 }
-assert.match(ui, /Top exclusion reasons:/, 'UI funnel card surfaces top exclusion reasons')
+assert.match(ui, /Top failure reasons:/, 'UI funnel card surfaces top exclusion reasons')
 
 console.log('wallet reconstruction funnel checks passed')
