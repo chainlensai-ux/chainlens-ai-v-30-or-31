@@ -1649,6 +1649,25 @@ export type WalletSnapshot = {
       sampleSellSideRejected: Array<{ txHash: string; symbol: string; reason: string }>
       sellSidePromotionSource: string
     }
+    closedLotPriceUpgradeDebug?: {
+      receiptPriceUpgradeAttempted: boolean
+      entryReceiptsFetched: number
+      exitReceiptsFetched: number
+      receiptCacheHits: number
+      entryQuoteLegsFound: number
+      exitQuoteLegsFound: number
+      lotsUpgradedWithEntryQuote: number
+      lotsUpgradedWithExitQuote: number
+      lotsUpgradedWithBothSides: number
+      lotsStillFlatPrice: number
+      lotsStillSyntheticCostBasis: number
+      lotsStillDust: number
+      publicPerformanceLotsBefore: number
+      publicPerformanceLotsAfter: number
+      sampleUpgradedLots: Array<{ tokenAddress: string; symbol: string; entryPriceSource: string; exitPriceSource: string }>
+      sampleStillRejectedLots: Array<{ tokenAddress: string; symbol: string; reason: string }>
+      rejectedReasonBreakdown: Record<string, number>
+    }
     finalSummarySourceDebug?: {
       swapSummarySource: string
       priceSummarySource: string
@@ -5901,7 +5920,10 @@ function lotConfidence(entrySource: string, exitSource: string): 'high' | 'mediu
 // same number) is a fake break-even, not a verified zero-PnL trade.
 const CURRENT_PRICE_REUSE_SOURCES = new Set(['current_holding_price_open_lot_estimate', 'current_price_fallback_not_used'])
 const FALLBACK_PRICE_REUSE_SOURCES = new Set(['historical_price', 'unavailable', 'synthetic', 'fallback'])
-const QUOTE_LEG_PRICE_SOURCES = new Set(['stable_leg', 'weth_leg', 'eth_native_value_router_reconstruction', 'swap_reconstruction_v1'])
+// CLOSED-LOT-PRICE-UPGRADE-FIX: receipt-derived quote-leg sources (same-tx wallet-side WETH/
+// stable/native transfer decoded directly from chain data) are genuinely independent per-event
+// evidence, same category as stable_leg/weth_leg above — additive only, never a relaxation.
+const QUOTE_LEG_PRICE_SOURCES = new Set(['stable_leg', 'weth_leg', 'eth_native_value_router_reconstruction', 'swap_reconstruction_v1', 'quote_leg_receipt_weth', 'quote_leg_receipt_stable', 'quote_leg_receipt_native'])
 const PROVIDER_PRICE_SOURCES = new Set(['provider_event_usd'])
 const NON_INDEPENDENT_PRICE_SOURCES = new Set([...CURRENT_PRICE_REUSE_SOURCES, ...FALLBACK_PRICE_REUSE_SOURCES])
 const PRICE_FLAT_EPSILON = 1e-9
@@ -9995,6 +10017,256 @@ async function buildBaseSellSideReconstructionPass(
   }
 }
 
+// ── Closed-Lot Price-Upgrade Pass ─────────────────────────────────────────────────────────
+// Public PnL unlock gates (classifyClosedLotForPublicPerformance / computePriceIndependence) are
+// never weakened here. This pass only improves the INPUT those gates read: when a closed lot's
+// entry or exit price came from a non-independent source (provider_event_usd reused flat, a
+// current-holding estimate, etc.), it inspects the lot's own entryTxHash/exitTxHash receipts for
+// a same-tx wallet-side quote leg (WETH or a stablecoin) and, if found, derives an independent
+// price straight from the on-chain transfer amounts — never from a flat/current/provider number.
+// A lot that has no such receipt proof is left exactly as it was: still flat, still locked.
+type ClosedLotReceiptDecode = {
+  walletInbound: Array<{ contract: string; amountHex: string }>
+  walletOutbound: Array<{ contract: string; amountHex: string }>
+  decodeStatus: 'ok' | 'no_receipt'
+}
+
+async function buildClosedLotPriceUpgradePass(
+  closedLots: WalletClosedLot[],
+  walletAddress: string,
+  rpcUrlForChain: (chain: string) => string | null,
+  reqCache: Map<string, number | null>,
+  walletValueUsd: number,
+): Promise<{
+  upgradedLots: WalletClosedLot[]
+  debug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['closedLotPriceUpgradeDebug']>
+}> {
+  const walletLower = walletAddress.toLowerCase()
+  const emptyDebug = (): NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['closedLotPriceUpgradeDebug']> => ({
+    receiptPriceUpgradeAttempted: false,
+    entryReceiptsFetched: 0, exitReceiptsFetched: 0, receiptCacheHits: 0,
+    entryQuoteLegsFound: 0, exitQuoteLegsFound: 0,
+    lotsUpgradedWithEntryQuote: 0, lotsUpgradedWithExitQuote: 0, lotsUpgradedWithBothSides: 0,
+    lotsStillFlatPrice: 0, lotsStillSyntheticCostBasis: 0, lotsStillDust: 0,
+    publicPerformanceLotsBefore: 0, publicPerformanceLotsAfter: 0,
+    sampleUpgradedLots: [], sampleStillRejectedLots: [], rejectedReasonBreakdown: {},
+  })
+
+  // PRICE-INDEPENDENCE-FIX sources that already carry independent evidence don't need a receipt
+  // re-check — only weak/flat/reused sources are candidates for upgrade.
+  const WEAK_PRICE_SOURCES = new Set(['provider_event_usd', ...CURRENT_PRICE_REUSE_SOURCES, ...FALLBACK_PRICE_REUSE_SOURCES])
+  const isSyntheticOrDust = (l: WalletClosedLot): boolean =>
+    l.evidence?.entrySource === 'synthetic' || (l.missingReasons ?? []).includes('fifo_backfilled_buy') || (l.coveragePercent ?? 100) === 0
+
+  const candidates = closedLots.filter(l =>
+    !isSyntheticOrDust(l) &&
+    Boolean(l.openedTxHash) && Boolean(l.closedTxHash) &&
+    (WEAK_PRICE_SOURCES.has(l.entryPriceSource ?? '') || WEAK_PRICE_SOURCES.has(l.exitPriceSource ?? '') || l.pnlDisplayStatus === 'estimate_only_price_flat')
+  )
+
+  const publicPerformanceLotsBefore = closedLots.filter(l => classifyClosedLotForPublicPerformance(l, walletValueUsd).performanceEligible).length
+
+  if (candidates.length === 0) {
+    return { upgradedLots: closedLots, debug: { ...emptyDebug(), publicPerformanceLotsBefore } }
+  }
+
+  const now = Date.now()
+  let entryReceiptsFetched = 0
+  let exitReceiptsFetched = 0
+  let receiptCacheHits = 0
+  let entryQuoteLegsFound = 0
+  let exitQuoteLegsFound = 0
+  const rejectedBreakdown: Record<string, number> = {}
+  const sampleRejected: Array<{ tokenAddress: string; symbol: string; reason: string }> = []
+  const sampleUpgraded: Array<{ tokenAddress: string; symbol: string; entryPriceSource: string; exitPriceSource: string }> = []
+
+  const txHashesNeeded = new Set<string>()
+  for (const l of candidates) {
+    if (l.openedTxHash) txHashesNeeded.add(`${normalizeChain(l.chain)}:${l.openedTxHash.toLowerCase()}`)
+    if (l.closedTxHash) txHashesNeeded.add(`${normalizeChain(l.chain)}:${l.closedTxHash.toLowerCase()}`)
+  }
+
+  const decodeCache = new Map<string, ClosedLotReceiptDecode>()
+  await Promise.allSettled(Array.from(txHashesNeeded).map(async (key) => {
+    const [chain, txHash] = key.split(':')
+    const rpcUrl = rpcUrlForChain(chain)
+    if (!rpcUrl) { decodeCache.set(key, { walletInbound: [], walletOutbound: [], decodeStatus: 'no_receipt' }); return }
+    const cacheKey = `closed_lot_price_upgrade:${key}`
+    const cached = basePnlReceiptCache.get(cacheKey)
+    if (cached && cached.exp > now) {
+      receiptCacheHits++
+      decodeCache.set(key, cached.data as unknown as ClosedLotReceiptDecode)
+      return
+    }
+    try {
+      const receipt = await getSharedTxReceipt(rpcUrl, txHash)
+      if (!receipt) { decodeCache.set(key, { walletInbound: [], walletOutbound: [], decodeStatus: 'no_receipt' }); return }
+      const logs: Array<{ topics?: string[]; address?: string }> = Array.isArray(receipt.logs) ? receipt.logs : []
+      const inbound: ClosedLotReceiptDecode['walletInbound'] = []
+      const outbound: ClosedLotReceiptDecode['walletOutbound'] = []
+      for (const log of logs) {
+        if (!log.topics || log.topics[0]?.toLowerCase() !== ERC20_TRANSFER_TOPIC) continue
+        if (log.topics.length < 3) continue
+        const fromAddr = '0x' + (log.topics[1]?.toLowerCase() ?? '').slice(-40)
+        const toAddr = '0x' + (log.topics[2]?.toLowerCase() ?? '').slice(-40)
+        const contractAddr = (log.address ?? '').toLowerCase()
+        const amountHex = typeof (log as Record<string, unknown>).data === 'string' ? (log as Record<string, unknown>).data as string : '0x0'
+        if (toAddr === walletLower) inbound.push({ contract: contractAddr, amountHex })
+        if (fromAddr === walletLower) outbound.push({ contract: contractAddr, amountHex })
+      }
+      const d: ClosedLotReceiptDecode = { walletInbound: inbound, walletOutbound: outbound, decodeStatus: 'ok' }
+      basePnlReceiptCache.set(cacheKey, { data: d as unknown as BasePnlReceiptDecode, exp: now + BASE_PNL_RECON_TTL_MS })
+      decodeCache.set(key, d)
+    } catch {
+      decodeCache.set(key, { walletInbound: [], walletOutbound: [], decodeStatus: 'no_receipt' })
+    }
+  }))
+  // Receipts fetched are counted per side (a tx can be both an entry and exit elsewhere).
+  for (const l of candidates) {
+    const ek = `${normalizeChain(l.chain)}:${(l.openedTxHash ?? '').toLowerCase()}`
+    const xk = `${normalizeChain(l.chain)}:${(l.closedTxHash ?? '').toLowerCase()}`
+    if (decodeCache.get(ek)?.decodeStatus === 'ok') entryReceiptsFetched++
+    if (decodeCache.get(xk)?.decodeStatus === 'ok') exitReceiptsFetched++
+  }
+
+  // Quote leg lookup: the wallet-side leg opposite the token's own direction. For an entry (buy),
+  // the wallet's token leg is inbound, so the quote leg it paid with is outbound. For an exit
+  // (sell), the wallet's token leg is outbound, so the quote leg it received is inbound.
+  function findQuoteLeg(decode: ClosedLotReceiptDecode | undefined, legs: 'inbound' | 'outbound'): { contract: string; amountHex: string } | null {
+    if (!decode || decode.decodeStatus !== 'ok') return null
+    const pool = legs === 'inbound' ? decode.walletInbound : decode.walletOutbound
+    return pool.find(leg => Boolean(WETH_CONTRACTS_PRICE[leg.contract]) || Boolean(STABLE_USD_CONTRACTS[leg.contract])) ?? null
+  }
+
+  async function quoteLegUsd(leg: { contract: string; amountHex: string }, chain: string, timestamp: string): Promise<number | null> {
+    if (STABLE_USD_CONTRACTS[leg.contract]) {
+      const decimals = STABLE_DECIMALS[leg.contract] ?? 18
+      return hexAmountToDecimal(leg.amountHex, decimals)
+    }
+    if (WETH_CONTRACTS_PRICE[leg.contract]) {
+      const wethAmt = hexAmountToDecimal(leg.amountHex, 18)
+      if (wethAmt <= 0) return null
+      const result = await fetchGoldrushHistoricalPrice(chain, leg.contract, timestamp, reqCache)
+      if (result.priceUsd === null) return null
+      return wethAmt * result.priceUsd
+    }
+    return null
+  }
+
+  let lotsUpgradedWithEntryQuote = 0
+  let lotsUpgradedWithExitQuote = 0
+  let lotsUpgradedWithBothSides = 0
+  let lotsStillFlatPrice = 0
+  let lotsStillSyntheticCostBasis = 0
+  let lotsStillDust = 0
+
+  const upgradedByIdentity = new Map<WalletClosedLot, WalletClosedLot>()
+
+  for (const lot of candidates) {
+    const chain = normalizeChain(lot.chain)
+    const ek = `${chain}:${(lot.openedTxHash ?? '').toLowerCase()}`
+    const xk = `${chain}:${(lot.closedTxHash ?? '').toLowerCase()}`
+    const entryDecode = decodeCache.get(ek)
+    const exitDecode = decodeCache.get(xk)
+
+    let newEntryPriceUsd: number | null = null
+    let newEntryPriceSource: string | null = null
+    if (WEAK_PRICE_SOURCES.has(lot.entryPriceSource ?? '') || lot.pnlDisplayStatus === 'estimate_only_price_flat') {
+      const entryLeg = findQuoteLeg(entryDecode, 'outbound')
+      if (entryLeg) {
+        const tokenAmount = lot.amountClosed
+        const usd = tokenAmount > 0 ? await quoteLegUsd(entryLeg, chain, lot.openedAt) : null
+        if (usd !== null && usd > 0) {
+          newEntryPriceUsd = usd / tokenAmount
+          newEntryPriceSource = STABLE_USD_CONTRACTS[entryLeg.contract] ? 'quote_leg_receipt_stable' : 'quote_leg_receipt_weth'
+          entryQuoteLegsFound++
+        }
+      }
+    }
+
+    let newExitPriceUsd: number | null = null
+    let newExitPriceSource: string | null = null
+    if (WEAK_PRICE_SOURCES.has(lot.exitPriceSource ?? '') || lot.pnlDisplayStatus === 'estimate_only_price_flat') {
+      const exitLeg = findQuoteLeg(exitDecode, 'inbound')
+      if (exitLeg) {
+        const tokenAmount = lot.amountClosed
+        const usd = tokenAmount > 0 ? await quoteLegUsd(exitLeg, chain, lot.closedAt) : null
+        if (usd !== null && usd > 0) {
+          newExitPriceUsd = usd / tokenAmount
+          newExitPriceSource = STABLE_USD_CONTRACTS[exitLeg.contract] ? 'quote_leg_receipt_stable' : 'quote_leg_receipt_weth'
+          exitQuoteLegsFound++
+        }
+      }
+    }
+
+    if (newEntryPriceUsd === null && newExitPriceUsd === null) {
+      lotsStillFlatPrice++
+      if (sampleRejected.length < 5) sampleRejected.push({ tokenAddress: lot.tokenAddress, symbol: lot.tokenSymbol ?? '', reason: 'no_quote_leg_receipt_proof' })
+      rejectedBreakdown['no_quote_leg_receipt_proof'] = (rejectedBreakdown['no_quote_leg_receipt_proof'] ?? 0) + 1
+      continue
+    }
+
+    const finalEntryPriceUsd = newEntryPriceUsd ?? lot.entryPriceUsd
+    const finalExitPriceUsd = newExitPriceUsd ?? lot.exitPriceUsd
+    const finalEntrySource = newEntryPriceSource ?? lot.entryPriceSource ?? 'unavailable'
+    const finalExitSource = newExitPriceSource ?? lot.exitPriceSource ?? 'unavailable'
+
+    // Requirement #8: one side independently priced is only sufficient if the OTHER side is not
+    // itself still flat/reused/current-only — i.e. genuinely had independent evidence already.
+    const otherSideStillWeak = newEntryPriceUsd !== null
+      ? WEAK_PRICE_SOURCES.has(lot.exitPriceSource ?? '') && newExitPriceUsd === null
+      : WEAK_PRICE_SOURCES.has(lot.entryPriceSource ?? '') && newEntryPriceUsd === null
+    if (otherSideStillWeak && !(newEntryPriceUsd !== null && newExitPriceUsd !== null)) {
+      lotsStillFlatPrice++
+      if (sampleRejected.length < 5) sampleRejected.push({ tokenAddress: lot.tokenAddress, symbol: lot.tokenSymbol ?? '', reason: 'one_sided_quote_leg_other_side_still_flat' })
+      rejectedBreakdown['one_sided_quote_leg_other_side_still_flat'] = (rejectedBreakdown['one_sided_quote_leg_other_side_still_flat'] ?? 0) + 1
+      continue
+    }
+
+    const costBasisUsd = lot.amountClosed * finalEntryPriceUsd
+    const proceedsUsd = lot.amountClosed * finalExitPriceUsd
+    const realizedPnlUsd = proceedsUsd - costBasisUsd
+    const _independence = computePriceIndependence(finalEntrySource, finalExitSource, finalEntryPriceUsd, finalExitPriceUsd, lot.openedTxHash, lot.closedTxHash)
+    const upgradedLot: WalletClosedLot = {
+      ...lot,
+      entryPriceUsd: finalEntryPriceUsd,
+      exitPriceUsd: finalExitPriceUsd,
+      costBasisUsd,
+      proceedsUsd,
+      realizedPnlUsd,
+      realizedPnlPercent: costBasisUsd > 0 ? (realizedPnlUsd / costBasisUsd) * 100 : null,
+      ..._independence,
+    }
+    upgradedByIdentity.set(lot, upgradedLot)
+    if (newEntryPriceUsd !== null) lotsUpgradedWithEntryQuote++
+    if (newExitPriceUsd !== null) lotsUpgradedWithExitQuote++
+    if (newEntryPriceUsd !== null && newExitPriceUsd !== null) lotsUpgradedWithBothSides++
+    if (sampleUpgraded.length < 5) sampleUpgraded.push({ tokenAddress: upgradedLot.tokenAddress, symbol: upgradedLot.tokenSymbol ?? '', entryPriceSource: finalEntrySource, exitPriceSource: finalExitSource })
+  }
+
+  const upgradedLots = closedLots.map(l => upgradedByIdentity.get(l) ?? l)
+  for (const l of upgradedLots) {
+    if (l.evidence?.entrySource === 'synthetic' || (l.missingReasons ?? []).includes('fifo_backfilled_buy')) lotsStillSyntheticCostBasis++
+    if (classifyClosedLotForPublicPerformance(l, walletValueUsd).rejectReason === 'dust_or_micro_lot') lotsStillDust++
+  }
+  const publicPerformanceLotsAfter = upgradedLots.filter(l => classifyClosedLotForPublicPerformance(l, walletValueUsd).performanceEligible).length
+
+  return {
+    upgradedLots,
+    debug: {
+      receiptPriceUpgradeAttempted: true,
+      entryReceiptsFetched, exitReceiptsFetched, receiptCacheHits,
+      entryQuoteLegsFound, exitQuoteLegsFound,
+      lotsUpgradedWithEntryQuote, lotsUpgradedWithExitQuote, lotsUpgradedWithBothSides,
+      lotsStillFlatPrice, lotsStillSyntheticCostBasis, lotsStillDust,
+      publicPerformanceLotsBefore, publicPerformanceLotsAfter,
+      sampleUpgradedLots: sampleUpgraded,
+      sampleStillRejectedLots: sampleRejected,
+      rejectedReasonBreakdown: rejectedBreakdown,
+    },
+  }
+}
+
 // ── Base Unknown-Direction Swap Reconstruction Pass ───────────────────────────────────────
 // Handles two cases the primary recon misses:
 // 1. ALL events are direction=unknown (primary recon finds zero candidates).
@@ -13755,7 +14027,36 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
 
   // SYNTH-RECOVERY-FIX-4: after promotion, count how many synthetic lots remain and how many real
   // prior buys were recovered for the synthetic lots' own target tokens.
-  const _syntheticLotsAfterSourceLots = _shouldPromote && _hcPreviewClosedLots.length > 0 ? _hcPreviewClosedLots : _closedLots
+  const _syntheticLotsAfterSourceLotsRaw = _shouldPromote && _hcPreviewClosedLots.length > 0 ? _hcPreviewClosedLots : _closedLots
+
+  // ── Closed-Lot Price-Upgrade Pass ───────────────────────────────────────────────────────
+  // Upgrades entry/exit pricing for closed lots whose price came from a flat/reused/non-
+  // independent source, using same-tx receipt quote-leg proof only. Never weakens
+  // classifyClosedLotForPublicPerformance/computePriceIndependence — only feeds them better
+  // evidence when real proof exists; lots without proof stay exactly as flat/locked as before.
+  let _closedLotPriceUpgradeDebug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['closedLotPriceUpgradeDebug']> = {
+    receiptPriceUpgradeAttempted: false,
+    entryReceiptsFetched: 0, exitReceiptsFetched: 0, receiptCacheHits: 0,
+    entryQuoteLegsFound: 0, exitQuoteLegsFound: 0,
+    lotsUpgradedWithEntryQuote: 0, lotsUpgradedWithExitQuote: 0, lotsUpgradedWithBothSides: 0,
+    lotsStillFlatPrice: 0, lotsStillSyntheticCostBasis: 0, lotsStillDust: 0,
+    publicPerformanceLotsBefore: 0, publicPerformanceLotsAfter: 0,
+    sampleUpgradedLots: [], sampleStillRejectedLots: [], rejectedReasonBreakdown: {},
+  }
+  let _syntheticLotsAfterSourceLots = _syntheticLotsAfterSourceLotsRaw
+  if (activityRequested && _syntheticLotsAfterSourceLotsRaw.length > 0) {
+    const _priceUpgradeResult = await buildClosedLotPriceUpgradePass(
+      _syntheticLotsAfterSourceLotsRaw,
+      addrNorm,
+      _acqRpcUrlForChain,
+      _reqPriceCache,
+      totalValue,
+    )
+    _syntheticLotsAfterSourceLots = _priceUpgradeResult.upgradedLots
+    _closedLotPriceUpgradeDebug = _priceUpgradeResult.debug
+  }
+  // ── End Closed-Lot Price-Upgrade Pass ───────────────────────────────────────────────────
+
   const _syntheticLotsAfterHistorical = _syntheticLotsAfterSourceLots.filter(
     l => l.evidence?.entrySource === 'synthetic' || (l.missingReasons ?? []).includes('fifo_backfilled_buy')
   ).length
@@ -15315,6 +15616,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       },
       baseUnknownSwapReconstructionDebug: _baseUnknownSwapReconDebug,
       sellSideReconstructionDebug: _sellSideReconDebug,
+      closedLotPriceUpgradeDebug: _closedLotPriceUpgradeDebug,
       baseUnknownSwapPricingDebug: _baseUnknownSwapPricingDebug,
       finalSummarySourceDebug: _finalSummarySourceDebug,
       baseFifoCoverageDebug: _baseFifoCoverageDebug,
