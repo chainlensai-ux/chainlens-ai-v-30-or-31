@@ -207,6 +207,18 @@ type WalletResult = {
   limitedSampleRealizedPnlUsd?: number | null
   limitedSampleClosedLots?: number
   limitedSampleReason?: string | null
+  estimatedPerformanceRead?: {
+    status: 'available' | 'unavailable'
+    realizedPnlUsd: number | null
+    realizedPnlPercent: number | null
+    closedLots: number
+    sourceLots: number
+    confidence: 'low' | 'medium'
+    label: 'Estimated PnL'
+    warning: 'Estimated only — not verified.'
+    reason: string
+    excludedFrom: ['win_rate', 'profit_skill', 'wallet_score', 'verified_pnl']
+  }
   walletRecoveryRecommendation?: {
     recommended: boolean
     mode: 'targeted_token_recovery' | 'targeted_recovery_attempted' | 'attempted_light' | 'attempted_provider_failed' | 'skipped_cost_guard' | 'skipped_micro_wallet' | 'none'
@@ -2905,6 +2917,38 @@ export default function WalletScannerPage() {
                     )
                   })()}
                 </div>
+
+                {(() => {
+                  const est = result.estimatedPerformanceRead
+                  if (!est || est.status !== 'available') return null
+                  return (
+                    <div style={{ background: 'rgba(251,191,36,0.045)', border: '1px solid rgba(251,191,36,0.18)', borderRadius: '18px', padding: '18px 20px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', marginBottom: '12px', flexWrap: 'wrap' }}>
+                        <div style={{ fontSize: '10px', fontWeight: 850, letterSpacing: '0.18em', color: '#fbbf24', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Estimated PnL</div>
+                        <span style={{ fontSize: '9px', fontWeight: 800, letterSpacing: '0.08em', color: '#fbbf24', border: '1px solid rgba(251,191,36,0.28)', background: 'rgba(251,191,36,0.08)', borderRadius: '999px', padding: '3px 8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Not verified</span>
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: '10px' }}>
+                        {[
+                          { label: 'Estimated realized PnL', value: fmtSignedUSD(est.realizedPnlUsd) },
+                          { label: 'Estimated return', value: Number.isFinite(est.realizedPnlPercent) ? `${est.realizedPnlPercent!.toFixed(1)}%` : '—' },
+                          { label: 'Source lots', value: String(est.sourceLots || est.closedLots) },
+                          { label: 'Confidence', value: est.confidence },
+                        ].map(card => (
+                          <div key={card.label} style={{ background: 'rgba(255,255,255,0.025)', border: '1px solid rgba(251,191,36,0.12)', borderRadius: '12px', padding: '12px' }}>
+                            <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.30)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '6px' }}>{card.label}</div>
+                            <div style={{ fontSize: '18px', fontWeight: 800, color: '#fbbf24', textTransform: card.label === 'Confidence' ? 'capitalize' : 'none', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{card.value}</div>
+                          </div>
+                        ))}
+                      </div>
+                      <div style={{ fontSize: '11px', color: 'rgba(251,191,36,0.72)', lineHeight: 1.5, marginTop: '12px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                        {est.warning} Estimated only. Not used for win rate, wallet score, or profit skill.
+                      </div>
+                      <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.34)', lineHeight: 1.45, marginTop: '6px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                        Reason: {est.reason}
+                      </div>
+                    </div>
+                  )
+                })()}
 
                 {(() => {
                   const hasRealTrade = (result.walletTradeStatsSummary?.closedLots ?? 0) > 0

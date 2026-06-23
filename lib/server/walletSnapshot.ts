@@ -315,6 +315,18 @@ export type WalletSnapshot = {
   limitedSampleRealizedPnlUsd?: number | null
   limitedSampleClosedLots?: number
   limitedSampleReason?: string | null
+  estimatedPerformanceRead?: {
+    status: 'available' | 'unavailable'
+    realizedPnlUsd: number | null
+    realizedPnlPercent: number | null
+    closedLots: number
+    sourceLots: number
+    confidence: 'low' | 'medium'
+    label: 'Estimated PnL'
+    warning: 'Estimated only — not verified.'
+    reason: string
+    excludedFrom: ['win_rate', 'profit_skill', 'wallet_score', 'verified_pnl']
+  }
   publicWinRatePercent?: number | null
   publicPnlStatus?: 'ok' | 'limited_verified_sample' | 'locked_small_sample' | 'open_check' | 'flat_estimate_only' | 'near_flat_verified_sample' | 'partial_near_flat' | 'open_check_integrity_invalid'
   publicPnlStatusReason?: string
@@ -14296,6 +14308,38 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
           ? `Only ${_performanceClosedLotsFinal.length} public-grade performance lots are usable. ${_excludedClosedLotsFinal} raw matched lots were excluded from public performance scoring because of flat estimates, missing cost basis, or weak independence.`
           : `No public-grade performance lots are usable. ${_excludedClosedLotsFinal} raw matched lots were excluded from public performance scoring because of flat estimates, missing cost basis, or weak independence.`
   const _allRealBackedLotsFlatEstimate = _closedLotsForStatsFinal > 0 && _verifiedIndependentClosedLotsFinal === 0 && _estimateOnlyClosedLotsFinal.length > 0
+  const _estimatedPerformanceReadExcludedFrom: ['win_rate', 'profit_skill', 'wallet_score', 'verified_pnl'] = ['win_rate', 'profit_skill', 'wallet_score', 'verified_pnl']
+  const _rawEstimatedRealizedPnlUsd = _syntheticLotsAfterSourceLots.length > 0
+    ? _syntheticLotsAfterSourceLots.reduce((sum, l) => sum + (Number.isFinite(l.realizedPnlUsd) ? l.realizedPnlUsd : 0), 0)
+    : null
+  const _rawEstimatedCostBasisUsd = _syntheticLotsAfterSourceLots.reduce((sum, l) => sum + (Number.isFinite(l.costBasisUsd ?? NaN) ? (l.costBasisUsd ?? 0) : 0), 0)
+  const _estimatedPerformanceReadUseful = _rawEstimatedRealizedPnlUsd !== null && _syntheticLotsAfterSourceLots.length > 0 && _rawEstimatedCostBasisUsd > 0
+  const _estimatedPerformanceReadLocked = _publicPnlStatusFinal !== 'ok' || _performanceClosedLotsFinal.length < 10
+  const _estimatedPerformanceRead: NonNullable<WalletSnapshot['estimatedPerformanceRead']> = _estimatedPerformanceReadLocked && _estimatedPerformanceReadUseful
+    ? {
+      status: 'available',
+      realizedPnlUsd: _rawEstimatedRealizedPnlUsd,
+      realizedPnlPercent: (_rawEstimatedRealizedPnlUsd / _rawEstimatedCostBasisUsd) * 100,
+      closedLots: _syntheticLotsAfterSourceLots.length,
+      sourceLots: _rawMatchedClosedLotsFinal,
+      confidence: _closedLotsForStatsFinal >= 10 && _verifiedIndependentClosedLotsFinal > 0 ? 'medium' : 'low',
+      label: 'Estimated PnL',
+      warning: 'Estimated only — not verified.',
+      reason: `${_syntheticLotsAfterSourceLots.length} reconstructed lots, but ${_performanceClosedLotsFinal.length < 10 ? 'the public-grade sample is below threshold' : 'public verified PnL is locked'} after strict public-grade checks.`,
+      excludedFrom: _estimatedPerformanceReadExcludedFrom,
+    }
+    : {
+      status: 'unavailable',
+      realizedPnlUsd: null,
+      realizedPnlPercent: null,
+      closedLots: 0,
+      sourceLots: _rawMatchedClosedLotsFinal,
+      confidence: 'low',
+      label: 'Estimated PnL',
+      warning: 'Estimated only — not verified.',
+      reason: _estimatedPerformanceReadLocked ? 'No useful reconstructed cost-basis estimate is available from existing lots.' : 'Verified public PnL is available; estimated PnL is not shown as a substitute.',
+      excludedFrom: _estimatedPerformanceReadExcludedFrom,
+    }
 
   // LOW-VALUE-RECOVERY-FIX: surfaces the (now evidence-gated, not value-tier-gated) capped
   // targeted recovery pass above — SYNTH-RECOVERY-FIX-12's _syntheticTargetExtra* mechanism — under
@@ -15605,6 +15649,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     publicPnlStatusReason: _publicPnlStatusReasonFinal,
     publicPnlDisplayLabel: _publicPnlDisplayLabelFinal,
     publicPnlDisplayReason: _publicPnlDisplayReasonFinal,
+    estimatedPerformanceRead: _estimatedPerformanceRead,
     winningPerformanceLots: promotedTradeStatsSummary.winningPerformanceLots ?? 0,
     losingPerformanceLots: promotedTradeStatsSummary.losingPerformanceLots ?? 0,
     breakEvenPerformanceLots: promotedTradeStatsSummary.breakEvenPerformanceLots ?? 0,

@@ -27,7 +27,7 @@ assert.match(page, /label: 'Matched Realized PnL', value: summaryPublicLocked \?
 // verify-entry/exit buttons intact.
 assert.match(page, /const samplePnlLocked = publicPnlLocked\(result, ts\) \|\| s\.includedInPublicStats === false \|\| s\.publicPnlStatus !== 'ok'/, 'sample row lock condition includes includedInPublicStats false')
 assert.match(page, /\(samplePnlLocked \? 'Locked' : '—'\)/, 'locked sample rows show Locked instead of raw PnL')
-assert.match(page, /Not public-grade: integrity check failed \/ estimate-only price \/ missing independent entry price\./, 'locked sample row explains why')
+assert.match(page, /Not public-grade: estimate-only price, missing independent entry price, synthetic cost basis, dust lot, or integrity lock\./, 'locked sample row explains why')
 assert.match(page, /Verify entry ↗/, 'verify entry button retained')
 assert.match(page, /Verify exit ↗/, 'verify exit button retained')
 
@@ -61,5 +61,15 @@ assert.match(snap, /excludedLots = Math\.max\(0, rawLots - publicLots\)/, 'exclu
 // 10. UI shows locked small-sample cards and only a diagnostic limited sample disclosure.
 assert.match(page, /Limited sample: \{result\.limitedSampleClosedLots \?\? ts\.limitedSampleClosedLots\} lot/, 'limited sample diagnostic copy is present')
 assert.match(page, /not enough to publish/, 'limited sample is explicitly not publishable')
+
+
+// 11. Separate Estimated PnL lane is additive and excluded from verified performance consumers.
+assert.match(snap, /estimatedPerformanceRead\?: \{[\s\S]*status: 'available' \| 'unavailable'[\s\S]*excludedFrom: \['win_rate', 'profit_skill', 'wallet_score', 'verified_pnl'\]/, 'estimatedPerformanceRead shape is explicit and excluded from verified metrics')
+assert.match(snap, /const _estimatedPerformanceReadLocked = _publicPnlStatusFinal !== 'ok' \|\| _performanceClosedLotsFinal\.length < 10/, 'estimatedPerformanceRead only targets locked or limited public-PnL cases')
+assert.match(snap, /status: 'unavailable',[\s\S]*No useful reconstructed cost-basis estimate is available from existing lots\./, 'estimatedPerformanceRead is unavailable when no useful raw estimate exists')
+assert.match(page, /Estimated only — not verified\./, 'UI includes estimated-only not-verified warning')
+assert.match(page, /Not used for win rate, wallet score, or profit skill\./, 'UI says estimated PnL is excluded from score metrics')
+assert.match(page, /label: 'Estimated realized PnL'/, 'UI labels the number as estimated realized PnL')
+assert.match(page, /color: '#fbbf24'/, 'estimated PnL uses amber/neutral styling, not verified profit styling')
 
 console.log('wallet public PnL display-lock checks passed')
