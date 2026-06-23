@@ -566,9 +566,12 @@ export type WalletSnapshot = {
   pnlQualityReason?: string
   walletRecoveryRecommendation?: {
     recommended: boolean
-    mode: 'targeted_token_recovery' | 'targeted_recovery_attempted' | 'attempted_light' | 'attempted_provider_failed' | 'skipped_cost_guard' | 'skipped_micro_wallet' | 'none'
+    mode: 'targeted_token_recovery' | 'targeted_recovery_attempted' | 'attempted_light' | 'attempted_light_no_new_candidates' | 'attempted_provider_failed' | 'skipped_cost_guard' | 'skipped_micro_wallet' | 'none'
     targetTokens: Array<{ contract: string; symbol: string; chain: string; estimatedUsd: number }>
     reason: string
+    // Human-readable explanation of the reason code, kept honest about whether the historical
+    // provider actually failed vs. simply ran a capped light window and found nothing new.
+    detail?: string
     estimatedExtraPages: number
     // Set when a recovery is recommended but the cost-basis guard prevents it from running
     // automatically — never used to flip `recommended` to false on its own.
@@ -662,6 +665,10 @@ export type WalletSnapshot = {
     moralisEventsFetched: number
     alchemyPagesUsed: number
     goldRushBackupUsed: boolean
+    // BUDGET-NAMING-FIX: this is a PAGE/UNIT estimate for the historical source pass, not paid
+    // provider credits — renamed so it can't be confused with apiAudit.totalCredits. The legacy
+    // creditsUsedEstimate alias is kept for back-compat and carries the identical value.
+    historicalSourcePageUnitsUsed: number
     creditsUsedEstimate: number
     hardCapHit: boolean
     stoppedReason: string
@@ -712,8 +719,16 @@ export type WalletSnapshot = {
   walletHistoricalCoverageSummary: {
     status: 'not_requested' | 'open_check' | 'partial' | 'ok'
     requested: boolean
+    // HISTORICAL-PAGE-SHAPE-FIX: maxPages is applied PER CHAIN (base + eth), so the legacy flat
+    // pagesAttempted (a cross-chain total) could read "2 attempted vs max 1" and look contradictory.
+    // The explicit fields below disambiguate per-chain vs total; the legacy aliases stay consistent:
+    // pagesAttempted === pagesAttemptedTotal and maxPages === maxPagesTotal.
     pagesAttempted: number
     maxPages: number
+    maxPagesPerChain: number
+    maxPagesTotal: number
+    pagesAttemptedTotal: number
+    pagesAttemptedByChain: Record<string, number>
     rawTransactions: number
     rawLogEvents: number
     normalizedEvents: number
@@ -3864,8 +3879,9 @@ async function buildWalletHistoricalCoverage(
   startPage = 0,
   chainsOverride?: ReadonlyArray<'base-mainnet' | 'eth-mainnet'>,
 ): Promise<WalletHistoricalCoverageOutput> {
+  const _emptyChainCount = chainsOverride && chainsOverride.length > 0 ? chainsOverride.length : 2
   const emptyDebug = (reason: string): WalletHistoricalCoverageOutput => ({
-    summary: { status: 'open_check', requested: true, pagesAttempted: 0, maxPages, rawTransactions: 0, rawLogEvents: 0, normalizedEvents: 0, walletSideEvents: 0, swapLikeTransactions: 0, pricedSwapCandidates: null, matchedClosedLotsBefore, matchedClosedLotsAfter: null, addedClosedLots: null, coverageLevel: 'none', missing: ['provider_not_configured'], reason },
+    summary: { status: 'open_check', requested: true, pagesAttempted: 0, maxPages: maxPages * _emptyChainCount, maxPagesPerChain: maxPages, maxPagesTotal: maxPages * _emptyChainCount, pagesAttemptedTotal: 0, pagesAttemptedByChain: {}, rawTransactions: 0, rawLogEvents: 0, normalizedEvents: 0, walletSideEvents: 0, swapLikeTransactions: 0, pricedSwapCandidates: null, matchedClosedLotsBefore, matchedClosedLotsAfter: null, addedClosedLots: null, coverageLevel: 'none', missing: ['provider_not_configured'], reason },
     debug: { requested: true, providersAttempted: [], pagesAttempted: 0, pageSize: 50, maxPages, cursorUsed: false, stoppedReason: reason, rawTransactions: 0, rawLogEvents: 0, decodedTransferLogs: 0, walletSideEvents: 0, candidateSwapTxs: 0, candidateSwapEvents: 0, duplicateTxHashes: 0, duplicateEvents: 0, oldestTimestamp: null, newestTimestamp: null, chainCoverage: {}, providerErrorSamples: [], skippedReasons: [reason], sampleTxHashes: [], sampleSwapLikeTransactions: [], moralisHistoricalConfigured: false, moralisHistoricalAttempted: false, moralisReason: 'moralis_history_not_wired_yet' },
     events: [],
   })
@@ -3879,6 +3895,7 @@ async function buildWalletHistoricalCoverage(
   let totalRawTx = 0
   let totalTransferLogs = 0
   let pagesAttempted = 0
+  const _chainPagesAttempted: Record<string, number> = {}
   const _dropAgg = { seen: 0, noTxHash: 0, noTimestamp: 0, noContract: 0, noAmount: 0, decodeFailed: 0 }
   let stoppedReason = 'max_pages_reached'
   const newestTimestamps: string[] = []
@@ -3906,6 +3923,7 @@ async function buildWalletHistoricalCoverage(
       _iterGuard++
       if (cursor >= startPage + maxPages) break
       pagesAttempted++
+      _chainPagesAttempted[chain] = (_chainPagesAttempted[chain] ?? 0) + 1
       const r = await fetchGoldrushHistoricalPage(address, chain, apiKey, cursor)
       if (r.error) {
         errorSamples.push(`${chain} p${cursor}: ${r.error}`)
@@ -4011,8 +4029,9 @@ async function buildWalletHistoricalCoverage(
     historicalRawLogsNormalizedTransferEvents: uniqueEvents.length,
     historicalRawLogsWalletSideTransferEvents: walletSideEvents,
   }
+  const _maxPagesTotal = maxPages * chains.length
   return {
-    summary: { status, requested: true, pagesAttempted, maxPages, rawTransactions: totalRawTx, rawLogEvents: totalTransferLogs, normalizedEvents: uniqueEvents.length, walletSideEvents, swapLikeTransactions: swapLikeTxs, pricedSwapCandidates: null, matchedClosedLotsBefore, matchedClosedLotsAfter: null, addedClosedLots: null, coverageLevel, missing: errorSamples.length > 0 ? ['provider_errors', ...paginationReasons] : [...paginationReasons], reason: errorSamples.length > 0 ? 'One or more provider pages failed.' : null },
+    summary: { status, requested: true, pagesAttempted, maxPages: _maxPagesTotal, maxPagesPerChain: maxPages, maxPagesTotal: _maxPagesTotal, pagesAttemptedTotal: pagesAttempted, pagesAttemptedByChain: { ..._chainPagesAttempted }, rawTransactions: totalRawTx, rawLogEvents: totalTransferLogs, normalizedEvents: uniqueEvents.length, walletSideEvents, swapLikeTransactions: swapLikeTxs, pricedSwapCandidates: null, matchedClosedLotsBefore, matchedClosedLotsAfter: null, addedClosedLots: null, coverageLevel, missing: errorSamples.length > 0 ? ['provider_errors', ...paginationReasons] : [...paginationReasons], reason: errorSamples.length > 0 ? 'One or more provider pages failed.' : null },
     debug: { requested: true, providersAttempted: ['goldrush'], pagesAttempted, pageSize, maxPages, cursorUsed: true, stoppedReason, rawTransactions: totalRawTx, rawLogEvents: totalTransferLogs, decodedTransferLogs: totalTransferLogs, walletSideEvents, candidateSwapTxs: swapLikeTxs, candidateSwapEvents: swapLikeEvents, duplicateTxHashes: 0, duplicateEvents: dupEvents, oldestTimestamp, newestTimestamp, chainCoverage, providerErrorSamples: errorSamples.slice(0, 4), skippedReasons: _skippedReasons, sampleTxHashes: [...allTxHashes].slice(0, 5), sampleSwapLikeTransactions: [], moralisHistoricalConfigured: false, moralisHistoricalAttempted: false, moralisReason: 'moralis_history_not_wired_yet', logNormalizationDebug: _logNormalizationDebug },
     events: uniqueEvents,
   }
@@ -9258,6 +9277,14 @@ const SWAP_RECON_V1_TTL_MS = 50 * 60 * 1000
 type SwapReconV1Decode = { txFrom: string | null; txTo: string | null; logs: Array<{ topics?: string[]; address?: string; data?: unknown }> | null }
 const swapReconV1ReceiptCache = new Map<string, { data: SwapReconV1Decode; exp: number }>()
 const SWAP_RECON_V1_MAX_RECEIPTS = 3
+// ALCHEMY-WARNING-FIX: aggregate ceiling for INTENTIONAL receipt-reconstruction RPC load across all
+// capped passes (acquisition recovery ACQ_MAX_RECEIPT_CHECKS=15 + swap-recon-v1=3 + sell-side /
+// base-pnl / eth-router / unknown-swap passes, each individually bounded and cross-pass deduped via
+// getSharedTxReceipt). Alchemy receipts are billed 0 credits (load only), so staying within this cap
+// is expected, not an overspend — it must not surface as a scary credit warning in a successful scan.
+const ALCHEMY_RECEIPT_CALL_CAP = 36
+// Baseline non-receipt alchemy calls (activity transfer pagination etc.) — the real overspend signal.
+const ALCHEMY_NON_RECEIPT_CALL_BASELINE = 8
 
 type ReconstructedSwapV1 = {
   txHash: string
@@ -11953,6 +11980,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     moralisEventsFetched: _p20Moralis.eventsFetched,
     alchemyPagesUsed: _p20Alchemy.pagesUsed,
     goldRushBackupUsed: _p20Goldrush.attempted && _p20Goldrush.eventsFetched > 0,
+    historicalSourcePageUnitsUsed: _p20CreditsUsedEstimate,
     creditsUsedEstimate: _p20CreditsUsedEstimate,
     hardCapHit: _p20Moralis.stoppedReason === 'event_cap' || _p20Moralis.stoppedReason === 'page_cap',
     stoppedReason: !_p20ShouldRun ? (!process.env.MORALIS_API_KEY ? 'provider_unavailable' : !(deepScan || deepActivity) ? 'disabled_by_request' : 'budget_cap') : _p20Moralis.stoppedReason,
@@ -13458,7 +13486,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       }
     }
   } else {
-    walletHistoricalCoverageSummary = { status: historicalCoverage ? 'open_check' : 'not_requested', requested: historicalCoverage, pagesAttempted: 0, maxPages: _pagesAllowedForBroadPass, rawTransactions: 0, rawLogEvents: 0, normalizedEvents: 0, walletSideEvents: 0, swapLikeTransactions: 0, pricedSwapCandidates: null, matchedClosedLotsBefore: null, matchedClosedLotsAfter: null, addedClosedLots: null, coverageLevel: 'none', missing: [], reason: _missingCostBasisGuardActive ? 'broad_historical_skipped_missing_cost_basis_guard' : historicalCoverage ? _skipReasons.join('; ') || 'not_eligible' : null }
+    walletHistoricalCoverageSummary = { status: historicalCoverage ? 'open_check' : 'not_requested', requested: historicalCoverage, pagesAttempted: 0, maxPages: _pagesAllowedForBroadPass, maxPagesPerChain: _pagesAllowedForBroadPass, maxPagesTotal: _pagesAllowedForBroadPass, pagesAttemptedTotal: 0, pagesAttemptedByChain: {}, rawTransactions: 0, rawLogEvents: 0, normalizedEvents: 0, walletSideEvents: 0, swapLikeTransactions: 0, pricedSwapCandidates: null, matchedClosedLotsBefore: null, matchedClosedLotsAfter: null, addedClosedLots: null, coverageLevel: 'none', missing: [], reason: _missingCostBasisGuardActive ? 'broad_historical_skipped_missing_cost_basis_guard' : historicalCoverage ? _skipReasons.join('; ') || 'not_eligible' : null }
     _historicalCoverageDebug = undefined
   }
 
@@ -14786,7 +14814,12 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     walletValueTier: _walletValueTier,
     totalCreditTarget: _totalCreditTarget,
     totalCreditHardCap: _totalCreditHardCap,
+    // BUDGET-NAMING-FIX: this debug `creditsUsed` is a PLANNING ESTIMATE tallied at budget check
+    // sites — it can legitimately under-count the real per-call audit (apiAudit.totalCredits). It is
+    // NOT the same meaning as the public card's actualProviderCreditsUsed. estimatedPlanningCreditsUsed
+    // is the unambiguous alias; the public-facing budget card always reads actual provider credits.
     creditsUsed: _creditsUsedFinal,
+    estimatedPlanningCreditsUsed: _creditsUsedFinal,
     creditsRemaining: Math.max(0, _totalCreditHardCap - _creditsUsedFinal),
     budgetByPhase: { portfolio: 2, activity: 3, pricing: historicalCoverage ? 6 : (_priceBudgetDebug.maxBudget ?? 12), historicalRecovery: 6 },
     portfolioCreditsUsed: _portfolioCreditsUsed,
@@ -14868,7 +14901,20 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   if (_apiTotalCredits > _totalCreditTarget) _apiWarnings.push(`total_credits_${_apiTotalCredits}_exceeds_target_${_totalCreditTarget}`)
   if (_moralisLiveCount > 3) _apiWarnings.push(`moralis_${_moralisLiveCount}_calls_expected_3`)
   if (_grLiveCount > _grExpectedCalls) _apiWarnings.push(`goldrush_${_grLiveCount}_calls_expected_${_grExpectedCalls}`)
-  if (_alchemyCount > 8) _apiWarnings.push(`alchemy_${_alchemyCount}_calls_expected_8`)
+  // ALCHEMY-WARNING-FIX: split intentional receipt-reconstruction load (billed 0 credits, capped per
+  // pass) from baseline activity calls so a healthy receipt-heavy scan does not emit a scary
+  // "31 calls expected 8" credit warning. Only flag a genuine overspend: baseline calls over the
+  // baseline, or receipt calls over the aggregate receipt cap (which would mean a cap is not holding).
+  const _alchemyReceiptEndpoints = new Set(['eth_getTransactionReceipt', 'eth_getTransactionByHash'])
+  const _alchemyLog = _logByProvider('alchemy')
+  const _alchemyReceiptCalls = _alchemyLog.filter(e => _alchemyReceiptEndpoints.has(e.endpoint)).length
+  const _alchemyNonReceiptCalls = _alchemyCount - _alchemyReceiptCalls
+  if (_alchemyNonReceiptCalls > ALCHEMY_NON_RECEIPT_CALL_BASELINE) _apiWarnings.push(`alchemy_${_alchemyNonReceiptCalls}_non_receipt_calls_expected_${ALCHEMY_NON_RECEIPT_CALL_BASELINE}`)
+  if (_alchemyReceiptCalls > 0) {
+    _apiWarnings.push(_alchemyReceiptCalls <= ALCHEMY_RECEIPT_CALL_CAP
+      ? `alchemy_receipt_calls_within_cap_${_alchemyReceiptCalls}_of_${ALCHEMY_RECEIPT_CALL_CAP}`
+      : `alchemy_receipt_calls_over_cap_${_alchemyReceiptCalls}_of_${ALCHEMY_RECEIPT_CALL_CAP}`)
+  }
   if (_dupEntries.length > 0) _apiWarnings.push(`${_dupEntries.length}_duplicate_call(s)_detected`)
   // Provider cost breakdown by purpose — distinguishes WHAT the credits were spent on (holdings
   // discovery vs. activity ingestion vs. price-at-time inference vs. historical recovery) rather
@@ -15353,12 +15399,20 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     })).filter(t => t.contract)
     const targetTokens = syntheticTargetTokens
     const historicalAttempted = Boolean(walletHistoricalCoverageSummary?.requested) || Number(walletHistoricalCoverageSummary?.pagesAttempted ?? 0) > 0 || _syntheticTargetExtraRecoveryAttempted
-    const historicalProviderFailed = historicalAttempted && Number(walletHistoricalCoverageSummary?.normalizedEvents ?? 0) === 0 && Number(walletHistoricalCoverageSummary?.pricedSwapCandidates ?? 0) === 0
+    // HISTORICAL-RECOVERY-REASON-FIX: only call it a provider failure when the provider ACTUALLY
+    // errored (a page failed / it cut us off). A successful scan that simply found no new
+    // public-grade candidates is NOT a failure — it ran a capped light window and found nothing new.
+    const _historicalMissing = walletHistoricalCoverageSummary?.missing ?? []
+    const _historicalProviderErrored = _historicalMissing.includes('provider_errors') || _historicalMissing.includes('provider_early_termination') || _historicalCoverageDebug?.stoppedReason === 'provider_error'
+    const historicalRanNoNewCandidates = historicalAttempted && !_historicalProviderErrored && Number(walletHistoricalCoverageSummary?.normalizedEvents ?? 0) === 0 && Number(walletHistoricalCoverageSummary?.pricedSwapCandidates ?? 0) === 0
     if (_syntheticTargetExtraRecoveryAttempted && _syntheticTargetExtraPriorBuysFound === 0 && (promotedLotSummary.syntheticClosedLots ?? 0) > 0) {
       return { recommended: false, mode: 'targeted_recovery_attempted', targetTokens, reason: 'targeted_recovery_attempted_no_prior_buy_found', estimatedExtraPages: 0 }
     }
-    if (historicalProviderFailed) {
-      return { recommended: false, mode: 'attempted_provider_failed', targetTokens, reason: 'historical_provider_failed_or_no_new_closed_lots', estimatedExtraPages: 0 }
+    if (_historicalProviderErrored) {
+      return { recommended: false, mode: 'attempted_provider_failed', targetTokens, reason: 'historical_provider_error', detail: 'The historical provider returned an error or cut pagination short before the page cap.', estimatedExtraPages: 0 }
+    }
+    if (historicalRanNoNewCandidates) {
+      return { recommended: false, mode: 'attempted_light_no_new_candidates', targetTokens, reason: 'attempted_light_no_new_candidates', detail: 'Historical scan ran with a capped light window but found no additional public-grade buy/sell evidence.', estimatedExtraPages: 0 }
     }
     if (targetTokens.length === 0) {
       return { recommended: false, mode: 'none', targetTokens: [], reason: 'no_useful_token_contracts', estimatedExtraPages: 0 }

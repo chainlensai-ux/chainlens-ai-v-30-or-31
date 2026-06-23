@@ -2903,6 +2903,9 @@ export default function WalletScannerPage() {
                   const _openedLotsForPnl = (result.walletTradeStatsSummary?.openedLots ?? result.walletLotSummary?.openedLots ?? 0)
                   const _openPosForPnl = result.walletModuleCoverage?.walletOpenPositionSummary ?? result.walletOpenPositionSummary ?? null
                   const hasOpenLotsForPnl = (_openedLotsForPnl > 0 || !!_openPosForPnl) && !hasRealTrade
+                  // ESTIMATED-PNL-LOCK-FIX: when public PnL is locked (integrity invalid / 0 public
+                  // lots), a $0 average-cost estimate must not read as a useful break-even result.
+                  const _estPnlLocked = publicPnlLocked(result, result.walletTradeStatsSummary ?? undefined)
                   if (hasRealTrade) {
                     const legacyVal = fmtSignedUSD(walletIntel.pnl.total)
                     const ts = result.walletTradeStatsSummary
@@ -2985,15 +2988,15 @@ export default function WalletScannerPage() {
                         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
                           <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '10px', padding: '10px' }}>
                             <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.22)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '5px' }}>Average-Cost Estimate</div>
-                            <div style={{ fontSize: '15px', fontWeight: 700, color: legacyVal === 'Open Check' ? 'rgba(255,255,255,0.22)' : legacyVal.startsWith('-') ? '#f87171' : '#4ade80', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{legacyVal === 'Open Check' ? '—' : legacyVal}</div>
+                            <div style={{ fontSize: '15px', fontWeight: 700, color: _estPnlLocked ? '#fbbf24' : legacyVal === 'Open Check' ? 'rgba(255,255,255,0.22)' : legacyVal.startsWith('-') ? '#f87171' : '#4ade80', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{_estPnlLocked ? 'Locked' : legacyVal === 'Open Check' ? '—' : legacyVal}</div>
                           </div>
                           <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '10px', padding: '10px' }}>
                             <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.22)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '5px' }}>Method</div>
                             <div style={{ fontSize: '13px', fontWeight: 700, color: 'rgba(255,255,255,0.45)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Avg cost basis</div>
                           </div>
                         </div>
-                        <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.22)', lineHeight: 1.4, marginTop: '10px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
-                          Average-cost position estimate. Matched closed-lot evidence is shown separately below.
+                        <div style={{ fontSize: '10px', color: _estPnlLocked ? 'rgba(251,191,36,0.55)' : 'rgba(255,255,255,0.22)', lineHeight: 1.4, marginTop: '10px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                          {_estPnlLocked ? 'Estimated PnL is locked because public-grade performance evidence failed integrity checks.' : 'Average-cost position estimate. Matched closed-lot evidence is shown separately below.'}
                         </div>
                       </div>
                     )

@@ -495,6 +495,11 @@ function buildWalletModuleCoverage(snap: any) {
       costBasisUsd: number
       unrealizedPnlUsd: number | null
       unrealizedPnlPercent: number | null
+      // OPEN-POSITION-PNL-HONESTY: when current price just reuses the entry/provider estimate
+      // (current ≈ entry), unrealized PnL is a flat estimate, not an independent public read.
+      priceEstimateOnly: boolean
+      rawUnrealizedPnlUsd: number | null
+      rawUnrealizedPnlPercent: number | null
     }
     const perfTokens: PerfToken[] = walletOpenPositionSummary.tokens.map(t => {
       const tokenContract = t.contract.toLowerCase()
@@ -507,14 +512,23 @@ function buildWalletModuleCoverage(snap: any) {
       const currentPriceUsd = matchedHolding?.price ?? null
       const currentValueUsd = currentPriceUsd !== null ? t.totalAmount * currentPriceUsd : null
       const costBasisUsd = t.totalCostBasisUsd
-      const unrealizedPnlUsd = currentValueUsd !== null ? currentValueUsd - costBasisUsd : null
-      const unrealizedPnlPercent = unrealizedPnlUsd !== null && costBasisUsd > 0 ? (unrealizedPnlUsd / costBasisUsd) * 100 : null
+      const rawUnrealizedPnlUsd = currentValueUsd !== null ? currentValueUsd - costBasisUsd : null
+      const rawUnrealizedPnlPercent = rawUnrealizedPnlUsd !== null && costBasisUsd > 0 ? (rawUnrealizedPnlUsd / costBasisUsd) * 100 : null
+      // Flat-estimate detection: current price within epsilon of the avg entry price means the
+      // "current value" is just the entry estimate echoed back — a fake 0% unrealized read.
+      const priceEstimateOnly = currentPriceUsd !== null && t.avgEntryPriceUsd !== null && t.avgEntryPriceUsd !== 0
+        && Math.abs(currentPriceUsd - t.avgEntryPriceUsd) <= Math.max(1, Math.abs(t.avgEntryPriceUsd)) * 1e-6
+      // Public-facing unrealized PnL is null when it is not independent (flat estimate); the raw
+      // value stays available for debug only.
+      const unrealizedPnlUsd = priceEstimateOnly ? null : rawUnrealizedPnlUsd
+      const unrealizedPnlPercent = priceEstimateOnly ? null : rawUnrealizedPnlPercent
       return {
         contract: t.contract, symbol: t.symbol, chain: t.chain, openLots: t.openLots,
         amountRemaining: t.totalAmount,
         avgEntryPriceUsd: t.avgEntryPriceUsd,
         currentPriceUsd, currentValueUsd, costBasisUsd,
         unrealizedPnlUsd, unrealizedPnlPercent,
+        priceEstimateOnly, rawUnrealizedPnlUsd, rawUnrealizedPnlPercent,
       }
     })
     const totalCostBasis = perfTokens.reduce((s, t) => s + t.costBasisUsd, 0)
@@ -551,21 +565,39 @@ function buildWalletModuleCoverage(snap: any) {
 
     const unmatchedSymbols = unmatchedTokens.map(t => t.symbol)
 
+    // OPEN-POSITION-PNL-HONESTY: if every matched token is priced from a flat/estimate-only source
+    // (current ≈ entry), the unrealized PnL is not public-grade — do not present $0/0% as a real
+    // break-even. Null the public unrealized aggregates and surface a clear estimate_only status,
+    // keeping the raw aggregates for debug.
+    const _matchedIndependentTokens = matchedTokens.filter(t => !t.priceEstimateOnly)
+    const _allMatchedEstimateOnly = matchedTokenCount > 0 && _matchedIndependentTokens.length === 0
+    const openPositionPnlStatus: 'priced' | 'estimate_only' | 'cost_basis_only' =
+      matchedTokenCount === 0 ? 'cost_basis_only' : _allMatchedEstimateOnly ? 'estimate_only' : 'priced'
+    const openPositionPnlReason = openPositionPnlStatus === 'estimate_only'
+      ? 'Current value reuses estimate-only pricing; unrealized PnL is not public-grade.'
+      : openPositionPnlStatus === 'cost_basis_only'
+        ? 'No independent current price matched to open lots; only cost basis is known.'
+        : null
+
     return {
       status: 'partial' as const,
       openLots: walletOpenPositionSummary.openLots,
       uniqueTokens: walletOpenPositionSummary.uniqueTokens,
       totalOpenCostBasisUsd: totalCostBasis > 0 ? totalCostBasis : null,
       totalCurrentValueUsd,
-      totalUnrealizedPnlUsd,
-      totalUnrealizedPnlPercent,
+      totalUnrealizedPnlUsd: _allMatchedEstimateOnly ? null : totalUnrealizedPnlUsd,
+      totalUnrealizedPnlPercent: _allMatchedEstimateOnly ? null : totalUnrealizedPnlPercent,
       allTokensMatched: matchedTokenCount === perfTokens.length,
       matchedTokenCount,
       unmatchedTokenCount,
       matchedOpenCostBasisUsd: matchedOpenCostBasisUsd > 0 ? matchedOpenCostBasisUsd : null,
       matchedCurrentOpenValueUsd,
-      matchedUnrealizedPnlUsd,
-      matchedUnrealizedPnlPercent,
+      matchedUnrealizedPnlUsd: _allMatchedEstimateOnly ? null : matchedUnrealizedPnlUsd,
+      matchedUnrealizedPnlPercent: _allMatchedEstimateOnly ? null : matchedUnrealizedPnlPercent,
+      openPositionPnlStatus,
+      openPositionPnlReason,
+      rawTotalUnrealizedPnlUsd: totalUnrealizedPnlUsd,
+      rawMatchedUnrealizedPnlUsd: matchedUnrealizedPnlUsd,
       coverageLabel,
       unmatchedSymbols,
       tokens: perfTokens,
@@ -1368,6 +1400,15 @@ export async function POST(req: Request) {
     _publicBudget.estimatedCreditsUsed = _estimatedCreditsUsed
     _publicBudget.actualCreditsUsed = _actualCreditsUsed
     _publicBudget.creditsUsed = _actualCreditsUsed
+    // BUDGET-NAMING-FIX: the legacy creditsUsed/estimatedCreditsUsed names were ambiguous (planning
+    // estimate vs. real billed credits vs. alchemy load vs. historical page units). Expose
+    // unmistakable, source-of-truth names so no two numbers labelled "creditsUsed" mean different
+    // things. The public card reads actualProviderCreditsUsed (= apiAudit.totalCredits) only.
+    const _apiAuditForBudget: any = snapshot._diagnostics?.apiAudit ?? null
+    _publicBudget.actualProviderCreditsUsed = _actualCreditsUsed
+    _publicBudget.estimatedPlanningCreditsUsed = _estimatedCreditsUsed
+    _publicBudget.historicalPageUnitsUsed = Number(_apiAuditForBudget?.costByPurpose?.historical_recovery ?? 0)
+    _publicBudget.alchemyLoadUnitsUsed = Number(_apiAuditForBudget?.alchemy?.loadUnits ?? _apiAuditForBudget?.alchemy?.calls ?? 0)
     _publicBudget.creditsRemaining = Math.max(0, _publicBudget.totalCreditHardCap - _actualCreditsUsed)
     _publicBudget.targetExceeded = _actualCreditsUsed > _publicBudget.totalCreditTarget
     _publicBudget.hardCapHit = _actualCreditsUsed > _publicBudget.totalCreditHardCap
