@@ -187,7 +187,7 @@ type WalletResult = {
     evidenceQuality?: 'high' | 'medium' | 'low'
     profitSkillStatus?: 'near_flat_not_proven' | 'integrity_invalid_not_proven' | 'locked_small_sample' | 'unlocked'
   }
-  publicPnlStatus?: 'ok' | 'limited_verified_sample' | 'open_check' | 'near_flat_verified_sample' | 'flat_estimate_only' | 'partial_near_flat' | 'open_check_integrity_invalid'
+  publicPnlStatus?: 'ok' | 'limited_verified_sample' | 'locked_small_sample' | 'open_check' | 'near_flat_verified_sample' | 'flat_estimate_only' | 'partial_near_flat' | 'open_check_integrity_invalid'
   publicPnlDisplayLabel?: string
   publicPnlDisplayReason?: string
   pnlIntegrityCheck?: {
@@ -204,6 +204,9 @@ type WalletResult = {
   publicPerformanceRealizedPnlUsd?: number | null
   publicRealizedPnlUsd?: number | null
   publicWinRatePercent?: number | null
+  limitedSampleRealizedPnlUsd?: number | null
+  limitedSampleClosedLots?: number
+  limitedSampleReason?: string | null
   walletRecoveryRecommendation?: {
     recommended: boolean
     mode: 'targeted_token_recovery' | 'targeted_recovery_attempted' | 'attempted_light' | 'attempted_provider_failed' | 'skipped_cost_guard' | 'skipped_micro_wallet' | 'none'
@@ -385,7 +388,7 @@ type WalletResult = {
     closedLotsForStats?: number
     publicClosedLots?: number
     performanceClosedLots?: number
-    publicPnlStatus?: 'ok' | 'limited_verified_sample' | 'open_check' | 'near_flat_verified_sample' | 'flat_estimate_only' | 'partial_near_flat' | 'open_check_integrity_invalid'
+    publicPnlStatus?: 'ok' | 'limited_verified_sample' | 'locked_small_sample' | 'open_check' | 'near_flat_verified_sample' | 'flat_estimate_only' | 'partial_near_flat' | 'open_check_integrity_invalid'
     publicPnlDisplayLabel?: string
     publicPnlDisplayReason?: string
     publicPerformanceClosedLots?: number
@@ -395,6 +398,9 @@ type WalletResult = {
     publicRealizedPnlUsd?: number | null
     publicPerformanceRealizedPnlUsd?: number | null
     publicWinRatePercent?: number | null
+    limitedSampleRealizedPnlUsd?: number | null
+    limitedSampleClosedLots?: number
+    limitedSampleReason?: string | null
     winningPerformanceLots?: number
     losingPerformanceLots?: number
     breakEvenPerformanceLots?: number
@@ -3817,7 +3823,10 @@ export default function WalletScannerPage() {
                             <>
                             {publicLocked && (
                               <div style={{ fontSize: '11px', color: '#fbbf24', background: 'rgba(251,191,36,0.06)', border: '1px solid rgba(251,191,36,0.18)', borderRadius: '8px', padding: '9px 12px', marginBottom: '12px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', lineHeight: 1.55 }}>
-                                Profit is locked. {_rawLotsCopy} raw matched lots were found, but {_pubLotsCopy} passed public-grade performance checks. Trade behavior is usable; profit skill is not proven.<br />{_rawLotsCopy} raw matched lots found, but {_pubLotsCopy} passed public-grade performance checks. Trade behavior is usable. Profit skill is not proven.<br />Reasons: estimate-only prices, synthetic/missing cost basis, dust/micro lots, and PnL integrity mismatch.
+                                {_rawLotsCopy} raw matched lots found, but {_pubLotsCopy} passed public-grade performance checks. Trade behavior is usable. Profit skill is not proven.
+                                {((result.limitedSampleClosedLots ?? ts.limitedSampleClosedLots ?? 0) > 0) && (
+                                  <div style={{ marginTop: '5px', color: 'rgba(251,191,36,0.72)' }}>Limited sample: {result.limitedSampleClosedLots ?? ts.limitedSampleClosedLots} lot{(result.limitedSampleClosedLots ?? ts.limitedSampleClosedLots) === 1 ? '' : 's'}, {fmtSignedUSD(result.limitedSampleRealizedPnlUsd ?? ts.limitedSampleRealizedPnlUsd ?? null)}, not enough to publish.</div>
+                                )}
                               </div>
                             )}
                             <div className="wallet-intel-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: '10px', marginBottom: '14px' }}>

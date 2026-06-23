@@ -312,8 +312,11 @@ export type WalletSnapshot = {
   rawMatchedClosedLots?: number
   publicRealizedPnlUsd?: number | null
   publicPerformanceRealizedPnlUsd?: number | null
+  limitedSampleRealizedPnlUsd?: number | null
+  limitedSampleClosedLots?: number
+  limitedSampleReason?: string | null
   publicWinRatePercent?: number | null
-  publicPnlStatus?: 'ok' | 'limited_verified_sample' | 'open_check' | 'flat_estimate_only' | 'near_flat_verified_sample' | 'partial_near_flat' | 'open_check_integrity_invalid'
+  publicPnlStatus?: 'ok' | 'limited_verified_sample' | 'locked_small_sample' | 'open_check' | 'flat_estimate_only' | 'near_flat_verified_sample' | 'partial_near_flat' | 'open_check_integrity_invalid'
   publicPnlStatusReason?: string
   publicPnlDisplayLabel?: 'Limited verified sample' | 'Near-flat verified sample' | 'Open check' | 'Open check — flat/estimate-only lots excluded' | 'Open check — no public-grade performance lots' | 'Verified FIFO sample' | 'Verified FIFO sample — partial coverage' | 'PnL integrity check failed' | 'Profit skill locked — sample too small'
   publicPnlDisplayReason?: string
@@ -711,6 +714,7 @@ export type WalletSnapshot = {
   sampleFlatPriceExcludedLots?: WalletSnapshot['walletClosedTradeSamples']
   sampleVerifiedPnlLots?: WalletSnapshot['walletClosedTradeSamples']
   samplePublicPerformanceLots?: WalletSnapshot['walletClosedTradeSamples']
+  sampleLimitedPerformanceLots?: WalletSnapshot['walletClosedTradeSamples']
   sampleVerifiedButExcludedLots?: WalletSnapshot['walletClosedTradeSamples']
   sampleSyntheticClosedTradeSamples?: WalletSnapshot['walletClosedTradeSamples']
   publicStatsLotCountBeforePriceIndependence?: number
@@ -16288,6 +16292,90 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   } catch {
     // PHASE6: confidence/completeness/integrity signals are best-effort diagnostics — never let
     // a failure here block returning the otherwise-valid snapshot.
+  }
+
+
+  // PUBLIC-PNL-SMALL-SAMPLE-FINAL: final consistency pass for the product rule that
+  // fewer than 10 public-grade FIFO lots is behavior evidence only, not publishable
+  // profit skill. This runs after reconstruction/integrity labeling and before profile
+  // derivation, without changing FIFO math or provider fetching.
+  {
+    const ts = snapshot.walletTradeStatsSummary as any
+    const em = snapshot.walletEvidenceModel as any
+    const publicLots = Number((snapshot as any).publicPerformanceClosedLots ?? ts?.publicPerformanceClosedLots ?? em?.publicPerformanceClosedLots ?? 0)
+    if (publicLots > 0 && publicLots < 10) {
+      const rawLots = Number((snapshot as any).rawMatchedClosedLots ?? ts?.rawMatchedClosedLots ?? em?.rawMatchedClosedLots ?? (snapshot as any).rawClosedLots ?? ts?.rawClosedLots ?? em?.rawClosedLots ?? 0)
+      const excludedLots = Math.max(0, rawLots - publicLots)
+      const status = 'locked_small_sample'
+      const limitedReason = `${publicLots} public-grade FIFO lot${publicLots === 1 ? ' was' : 's were'} found, but the sample is too small to publish performance PnL or win rate.`
+      const displayReason = `${rawLots} raw matched lots were found, but only ${publicLots} public-grade performance lot${publicLots === 1 ? '' : 's'} passed strict checks. Public PnL and win rate are locked.`
+      const limitedPnl = (snapshot as any).publicPerformanceRealizedPnlUsd ?? (snapshot as any).publicRealizedPnlUsd ?? ts?.publicPerformanceRealizedPnlUsd ?? ts?.publicRealizedPnlUsd ?? em?.publicPerformanceRealizedPnlUsd ?? em?.publicRealizedPnlUsd ?? null
+      const samplePublic = Array.isArray((snapshot as any).samplePublicPerformanceLots) ? (snapshot as any).samplePublicPerformanceLots : []
+      const limitedSamples = samplePublic
+        .filter((s: any) => s && typeof s === 'object')
+        .map((s: any) => ({
+          ...s,
+          includedInPublicStats: false,
+          publicPnlStatus: status,
+          pnlLockedReason: limitedReason,
+          rawRealizedPnlUsd: s.rawRealizedPnlUsd ?? s.realizedPnlUsd ?? null,
+          rawRealizedPnlPercent: s.rawRealizedPnlPercent ?? s.realizedPnlPercent ?? null,
+          realizedPnlUsd: null,
+          realizedPnlPercent: null,
+          pnlDisplayStatus: s.pnlDisplayStatus === 'verified_pnl' ? 'pnl_locked_excluded' : s.pnlDisplayStatus,
+        }))
+      ;(snapshot as any).sampleLimitedPerformanceLots = limitedSamples
+      ;(snapshot as any).samplePublicPerformanceLots = samplePublic.filter((s: any) => s?.includedInPublicStats === true)
+      ;(snapshot as any).limitedSampleRealizedPnlUsd = limitedPnl
+      ;(snapshot as any).limitedSampleClosedLots = publicLots
+      ;(snapshot as any).limitedSampleReason = limitedReason
+      ;(snapshot as any).publicRealizedPnlUsd = null
+      ;(snapshot as any).publicPerformanceRealizedPnlUsd = null
+      ;(snapshot as any).publicWinRatePercent = null
+      ;(snapshot as any).publicPnlStatus = status
+      ;(snapshot as any).publicPnlStatusReason = limitedReason
+      ;(snapshot as any).publicPnlDisplayLabel = 'Profit skill locked — sample too small'
+      ;(snapshot as any).publicPnlDisplayReason = displayReason
+      ;(snapshot as any).excludedClosedLots = excludedLots
+      if (ts) {
+        ts.publicRealizedPnlUsd = null
+        ts.publicPerformanceRealizedPnlUsd = null
+        ts.publicWinRatePercent = null
+        ts.publicPnlStatus = status
+        ts.publicPnlStatusReason = limitedReason
+        ts.publicPnlDisplayLabel = 'Profit skill locked — sample too small'
+        ts.publicPnlDisplayReason = displayReason
+        ts.publicPerformanceClosedLots = publicLots
+        ts.publicClosedLots = publicLots
+        ts.excludedClosedLots = excludedLots
+        ts.rawMatchedClosedLots = rawLots
+        ts.winRateStatus = 'locked_small_sample'
+        ts.scoreUnlocked = false
+        ts.readyForWalletScore = false
+        ts.limitedSampleRealizedPnlUsd = limitedPnl
+        ts.limitedSampleClosedLots = publicLots
+        ts.limitedSampleReason = limitedReason
+      }
+      if (em) {
+        em.publicRealizedPnlUsd = null
+        em.publicPerformanceRealizedPnlUsd = null
+        em.publicWinRatePercent = null
+        em.publicPnlStatus = status
+        em.publicPnlStatusReason = limitedReason
+        em.publicPnlDisplayLabel = 'Profit skill locked — sample too small'
+        em.publicPnlDisplayReason = displayReason
+        em.publicPerformanceClosedLots = publicLots
+        em.publicClosedLots = publicLots
+        em.excludedClosedLots = excludedLots
+        em.rawMatchedClosedLots = rawLots
+        em.limitedSampleRealizedPnlUsd = limitedPnl
+        em.limitedSampleClosedLots = publicLots
+        em.limitedSampleReason = limitedReason
+      }
+      if (snapshot.tradeIntelligence) {
+        snapshot.tradeIntelligence.profitSkillStatus = 'locked_small_sample'
+      }
+    }
   }
 
   validateWalletFactsShape(snapshot)
