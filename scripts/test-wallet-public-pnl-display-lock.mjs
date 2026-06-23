@@ -45,4 +45,21 @@ assert.match(snap, /_reconExclusionTally\.missingBuyPrice \+= _receiptProvenSell
 assert.match(snap, /const _receiptProvenSellsWithWeakBuy = Math\.max\(0, \(_swapReconstructionV1Debug\.swapReconstructionEventsPromotedSell \?\? 0\) - _receiptProvenPublicGradeSells\)/, 'honest measure: promoted receipt sells minus receipt-priced public-grade sells')
 assert.match(snap, /'sell_price_receipt_proven \| buy_price_not_public_grade'/, 'lock reason matches spec wording')
 
+
+// 9. Small public-performance samples are canonicalized to locked_small_sample, with the tiny
+// public-grade sample retained only under limitedSample* diagnostics.
+assert.match(snap, /const status = 'locked_small_sample'/, 'small public-grade sample uses locked_small_sample')
+assert.match(snap, /limitedSampleRealizedPnlUsd = limitedPnl/, 'limited sample PnL is preserved separately')
+assert.match(snap, /publicRealizedPnlUsd = null/, 'top-level publicRealizedPnlUsd is locked/null for small samples')
+assert.match(snap, /publicPerformanceRealizedPnlUsd = null/, 'top-level publicPerformanceRealizedPnlUsd is locked/null for small samples')
+assert.match(snap, /sampleLimitedPerformanceLots = limitedSamples/, 'below-threshold public-grade lots move to sampleLimitedPerformanceLots')
+assert.match(snap, /samplePublicPerformanceLots = samplePublic\.filter\(\(s: any\) => s\?\.includedInPublicStats === true\)/, 'samplePublicPerformanceLots contains only included public stats rows')
+assert.match(snap, /em\.publicPnlStatus = status/, 'walletEvidenceModel status aligns to locked_small_sample')
+assert.match(snap, /ts\.publicPnlStatus = status/, 'walletTradeStatsSummary status aligns to locked_small_sample')
+assert.match(snap, /excludedLots = Math\.max\(0, rawLots - publicLots\)/, 'excluded lot count has one source of truth')
+
+// 10. UI shows locked small-sample cards and only a diagnostic limited sample disclosure.
+assert.match(page, /Limited sample: \{result\.limitedSampleClosedLots \?\? ts\.limitedSampleClosedLots\} lot/, 'limited sample diagnostic copy is present')
+assert.match(page, /not enough to publish/, 'limited sample is explicitly not publishable')
+
 console.log('wallet public PnL display-lock checks passed')
