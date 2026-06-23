@@ -45,7 +45,7 @@ assert.match(snap, /receiptQuoteReconstructionDebug: _receiptQuoteReconstruction
 
 // 6. Requirement #7: when only the sell side is receipt-proven and the buy side is still
 // provider_event_usd, the debug must say sell_price_receipt_proven / buy_price_not_public_grade.
-assert.match(snap, /sell_price_receipt_proven\|buy_price_not_public_grade/, 'lock reason attributes the lock to a non-public-grade buy, not a flat price')
+assert.match(snap, /sell_price_receipt_proven \| buy_price_not_public_grade/, 'lock reason attributes the lock to a non-public-grade buy, not a flat price')
 
 // 7. Price source tagging for receipt-priced sample events per spec (receipt_quote_weth/stable).
 assert.match(snap, /priceSource: s\.quoteToken === 'WETH' \? 'receipt_quote_weth'/, 'WETH quote leg tagged receipt_quote_weth')

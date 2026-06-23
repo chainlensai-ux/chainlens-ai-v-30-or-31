@@ -15227,6 +15227,14 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       default: break
     }
   }
+  // RECEIPT-QUOTE-PROMOTION-FIX: a receipt/WETH-quote-proven sell (swap-reconstruction-v1) that did
+  // NOT yield a public-grade closed lot is locked because the BUY side is not public-grade — either
+  // the matching buy was provider_event_usd/flat, or no independent-priced buy exists inside the
+  // window. That belongs in missingBuyPrice (buy_price_not_public_grade), never flatPrice or
+  // noPriorBuy alone. Honest measure: promoted receipt sells minus receipt-priced public-grade sells.
+  const _receiptProvenPublicGradeSells = _performanceClosedLotsFinal.filter(l => _isReceiptQuoteSource(l.exitPriceSource)).length
+  const _receiptProvenSellsWithWeakBuy = Math.max(0, (_swapReconstructionV1Debug.swapReconstructionEventsPromotedSell ?? 0) - _receiptProvenPublicGradeSells)
+  _reconExclusionTally.missingBuyPrice += _receiptProvenSellsWithWeakBuy
   const _reconExclusionBreakdown = {
     estimateOnly: _reconExclusionTally.estimateOnly,
     syntheticCostBasis: _reconExclusionTally.syntheticCostBasis,
@@ -15282,8 +15290,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _receiptPromotedBuy = _swapReconstructionV1Debug.swapReconstructionEventsPromotedBuy ?? 0
   const _receiptPromotedTotal = _swapReconstructionV1Debug.swapReconstructionEventsPromoted ?? 0
   const _receiptLockReason: string | null =
-    _reconExclusionTally.missingBuyPrice > 0 || _sellReceiptProvenButBuyNotPublic ? 'sell_price_receipt_proven|buy_price_not_public_grade'
-    : _reconExclusionTally.missingSellPrice > 0 ? 'buy_price_receipt_proven|sell_price_not_public_grade'
+    _reconExclusionTally.missingBuyPrice > 0 || _sellReceiptProvenButBuyNotPublic ? 'sell_price_receipt_proven | buy_price_not_public_grade'
+    : _reconExclusionTally.missingSellPrice > 0 ? 'buy_price_receipt_proven | sell_price_not_public_grade'
     : null
   const _receiptQuoteReconstructionDebug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['receiptQuoteReconstructionDebug']> = {
     attempted: _swapReconstructionV1Debug.swapReconstructionV1Attempted,
@@ -15320,8 +15328,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       pnlDisplayStatus: x.lot.pnlDisplayStatus ?? 'unknown',
       performanceEligible: x.classification.performanceEligible,
       lockReason: x.classification.performanceEligible ? null
-        : (_isReceiptQuoteSource(x.lot.exitPriceSource) && _isProviderSource(x.lot.entryPriceSource)) ? 'sell_price_receipt_proven|buy_price_not_public_grade'
-        : (_isReceiptQuoteSource(x.lot.entryPriceSource) && _isProviderSource(x.lot.exitPriceSource)) ? 'buy_price_receipt_proven|sell_price_not_public_grade'
+        : (_isReceiptQuoteSource(x.lot.exitPriceSource) && _isProviderSource(x.lot.entryPriceSource)) ? 'sell_price_receipt_proven | buy_price_not_public_grade'
+        : (_isReceiptQuoteSource(x.lot.entryPriceSource) && _isProviderSource(x.lot.exitPriceSource)) ? 'buy_price_receipt_proven | sell_price_not_public_grade'
         : (x.classification.rejectReason ?? null),
     })),
   }
