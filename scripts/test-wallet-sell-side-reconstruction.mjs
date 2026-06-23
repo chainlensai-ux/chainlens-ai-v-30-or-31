@@ -56,8 +56,8 @@ for (const field of [
   assert.ok(snap.includes(field), `sellSideReconstructionDebug includes spec alias ${field}`)
 }
 assert.match(snap, /candidateOutboundLegs: _sellSideReconDebug\.candidateCount/, 'funnel exposes candidateOutboundLegs so outbound candidates are not hidden as zero sell legs')
-assert.match(snap, /receiptProvenSellLegs: _sellSideReconDebug\.promotedSellEvents/, 'funnel separates receipt-proven sell legs from outbound candidates')
-assert.match(snap, /receiptProvenQuoteSellEvents: _sellSideReconDebug\.promotedSellEvents/, 'funnel clearly names receipt-proven quote sell events')
+assert.match(snap, /receiptProvenSellLegs: \(_sellSideReconDebug\.promotedSellEvents \?\? _sellSideReconDebug\.sellSideEventsPromoted \?\? 0\) \+ \(_swapReconstructionV1Debug\.swapReconstructionEventsPromotedSell \?\? 0\)/, 'funnel separates receipt-proven sell legs (Base sell-side + swap-recon-v1) from outbound candidates')
+assert.match(snap, /receiptProvenQuoteSellEvents: \(_sellSideReconDebug\.promotedSellEvents \?\? _sellSideReconDebug\.sellSideEventsPromoted \?\? 0\) \+ \(_swapReconstructionV1Debug\.swapReconstructionEventsPromotedSell \?\? 0\)/, 'funnel clearly names receipt-proven quote sell events from both recon passes')
 assert.match(snap, /publicSellEvents: _performanceClosedLotsFinal\.length/, 'funnel separates public sell events from raw outbound candidates')
 
 

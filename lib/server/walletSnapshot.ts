@@ -1751,6 +1751,8 @@ export type WalletSnapshot = {
       swapReconstructionTokenLegs: number
       swapReconstructionEventsBuilt: number
       swapReconstructionEventsPromoted: number
+      swapReconstructionEventsPromotedBuy: number
+      swapReconstructionEventsPromotedSell: number
       swapReconstructionEventsRejected: number
       swapReconstructionRejectedReasons: string[]
       swapReconstructionRejectedBreakdown?: Record<string, number>
@@ -1775,6 +1777,40 @@ export type WalletSnapshot = {
         tokenLegs?: number
         rejectedReason?: string | null
         candidateSymbols?: string[]
+      }>
+    }
+    receiptQuoteReconstructionDebug?: {
+      attempted: boolean
+      reconstructedPromotedEvents: number
+      reconstructedEventsInjectedIntoPricing: number
+      reconstructedEventsInjectedIntoFifo: number
+      receiptProvenBuyLegs: number
+      receiptProvenSellLegs: number
+      receiptProvenQuoteSellEvents: number
+      publicSellEvents: number
+      publicGradeLotsBeforeReceiptUpgrade: number
+      publicGradeLotsAfterReceiptUpgrade: number
+      lockReason: string | null
+      sampleReceiptPricedEvents: Array<{
+        txHash: string
+        paidToken: string | null
+        receivedToken: string | null
+        receivedUsd: number | null
+        quoteToken: string | null
+        quoteAmount: number | null
+        priceSource: string
+        verificationStatus: string
+        reconstructionReason: string
+      }>
+      sampleReceiptPricedClosedLots: Array<{
+        tokenAddress: string
+        symbol: string
+        entryPriceSource: string
+        exitPriceSource: string
+        priceIndependenceStatus: string
+        pnlDisplayStatus: string
+        performanceEligible: boolean
+        lockReason: string | null
       }>
     }
     missingCostBasisGuardDebug?: {
@@ -5968,6 +6004,13 @@ function computePriceIndependence(
     priceIndependenceStatus = 'independent_quote_legs'
   } else if (PROVIDER_PRICE_SOURCES.has(entrySource) && PROVIDER_PRICE_SOURCES.has(exitSource) && !sameSource) {
     priceIndependenceStatus = 'independent_provider_prices'
+  } else if (PROVIDER_PRICE_SOURCES.has(entrySource) !== PROVIDER_PRICE_SOURCES.has(exitSource)) {
+    // RECEIPT-QUOTE-PROMOTION-FIX: exactly one side is a provider_event_usd estimate while the
+    // other is a receipt/quote-leg source. The receipt side is genuine per-event evidence, but a
+    // provider_event_usd leg is behavior-only/estimate-only and must NOT be laundered into a
+    // public-grade realized PnL by pairing it with the receipt side. Keep the lot locked: the sell
+    // leg may be receipt-proven, but the buy leg (or vice versa) is not public-grade.
+    priceIndependenceStatus = 'missing_independent_price'
   } else if (!pricesEqual && !sameSource) {
     priceIndependenceStatus = 'mixed_independent'
   } else {
@@ -9263,6 +9306,8 @@ async function buildSwapReconstructionV1(
     swapReconstructionTokenLegs: 0,
     swapReconstructionEventsBuilt: 0,
     swapReconstructionEventsPromoted: 0,
+    swapReconstructionEventsPromotedBuy: 0,
+    swapReconstructionEventsPromotedSell: 0,
     swapReconstructionEventsRejected: 0,
     swapReconstructionRejectedReasons: [],
     sampleReconstructedSwaps: [],
@@ -9296,6 +9341,8 @@ async function buildSwapReconstructionV1(
   let tokenLegsTotal = 0
   let eventsBuilt = 0
   let eventsPromoted = 0
+  let eventsPromotedBuy = 0
+  let eventsPromotedSell = 0
   let eventsRejected = 0
   const rejectedReasons: string[] = []
   const rejectedBreakdown: Record<string, number> = {}
@@ -9524,6 +9571,8 @@ async function buildSwapReconstructionV1(
       confidence,
     })
     eventsPromoted++
+    if (direction === 'sell') eventsPromotedSell++
+    else if (direction === 'buy') eventsPromotedBuy++
   }
 
   let evidenceWithReconstruction = evidenceWithDetection
@@ -9564,6 +9613,8 @@ async function buildSwapReconstructionV1(
       swapReconstructionTokenLegs: tokenLegsTotal,
       swapReconstructionEventsBuilt: eventsBuilt,
       swapReconstructionEventsPromoted: eventsPromoted,
+      swapReconstructionEventsPromotedBuy: eventsPromotedBuy,
+      swapReconstructionEventsPromotedSell: eventsPromotedSell,
       swapReconstructionEventsRejected: eventsRejected,
       swapReconstructionRejectedReasons: rejectedReasons,
       swapReconstructionRejectedBreakdown: rejectedBreakdown,
@@ -12530,7 +12581,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     swapReconstructionCandidateTxCount: 0, swapReconstructionReceiptsFetched: 0, swapReconstructionReceiptCacheHits: 0,
     swapReconstructionTransferLogsDecoded: 0, swapReconstructionWalletInboundLegs: 0, swapReconstructionWalletOutboundLegs: 0,
     swapReconstructionQuoteLegs: 0, swapReconstructionTokenLegs: 0, swapReconstructionEventsBuilt: 0,
-    swapReconstructionEventsPromoted: 0, swapReconstructionEventsRejected: 0, swapReconstructionRejectedReasons: [],
+    swapReconstructionEventsPromoted: 0, swapReconstructionEventsPromotedBuy: 0, swapReconstructionEventsPromotedSell: 0,
+    swapReconstructionEventsRejected: 0, swapReconstructionRejectedReasons: [],
     sampleReconstructedSwaps: [],
   }
   if (activityRequested && walletSwapSummary.swapCandidateEvents > 0 && _enrichAlchemyUrl) {
@@ -15147,9 +15199,23 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // unsupportedRouter/noQuoteLeg/budgetCapped) are left at their honest measured value (0 when no
   // dedicated signal exists yet) rather than guessed — this is a diagnostics surface, not a new
   // exclusion rule, so it never changes which lots are public-grade.
-  const _reconExclusionTally = { estimateOnly: 0, syntheticCostBasis: 0, flatPrice: 0, weakIndependence: 0, dust: 0 }
+  // RECEIPT-QUOTE-PROMOTION-FIX: a lot whose sell (exit) leg is a receipt/quote-leg source but
+  // whose buy (entry) leg is still provider_event_usd is NOT flat-priced — it is locked precisely
+  // because the entry side is not public-grade. Route it to the missingBuyPrice bucket (and the
+  // mirror case to missingSellPrice) instead of letting it masquerade as flatPrice/weakIndependence.
+  const _isReceiptQuoteSource = (s: string | undefined): boolean =>
+    Boolean(s) && QUOTE_LEG_PRICE_SOURCES.has(s as string)
+  const _isProviderSource = (s: string | undefined): boolean =>
+    Boolean(s) && PROVIDER_PRICE_SOURCES.has(s as string)
+  const _reconExclusionTally = { estimateOnly: 0, syntheticCostBasis: 0, flatPrice: 0, weakIndependence: 0, dust: 0, missingBuyPrice: 0, missingSellPrice: 0 }
   for (const x of _publicLotClassifications) {
     if (x.classification.performanceEligible) continue
+    const _entrySrc = x.lot.entryPriceSource
+    const _exitSrc = x.lot.exitPriceSource
+    // Receipt-proven sell + non-public-grade buy (or mirror): bucket it honestly so the funnel
+    // reason becomes entry_not_receipt_priced rather than flat_price.
+    if (_isReceiptQuoteSource(_exitSrc) && _isProviderSource(_entrySrc)) { _reconExclusionTally.missingBuyPrice++; continue }
+    if (_isReceiptQuoteSource(_entrySrc) && _isProviderSource(_exitSrc)) { _reconExclusionTally.missingSellPrice++; continue }
     switch (x.classification.rejectReason) {
       case 'estimate_only_price_flat': _reconExclusionTally.estimateOnly++; break
       case 'synthetic_cost_basis_missing': _reconExclusionTally.syntheticCostBasis++; break
@@ -15166,8 +15232,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     syntheticCostBasis: _reconExclusionTally.syntheticCostBasis,
     flatPrice: _reconExclusionTally.flatPrice,
     missingCost: 0,
-    missingSellPrice: 0,
-    missingBuyPrice: 0,
+    missingSellPrice: _reconExclusionTally.missingSellPrice,
+    missingBuyPrice: _reconExclusionTally.missingBuyPrice,
     weakIndependence: _reconExclusionTally.weakIndependence,
     dust: _reconExclusionTally.dust,
     unsupportedRouter: 0,
@@ -15183,9 +15249,13 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     candidateBuyLegs: walletLotSummary.openedLots ?? 0,
     candidateSellLegs: (walletLotSummary.closedLots ?? 0) + _unmatchedSellsCount + (_sellSideReconDebug.candidateCount ?? _sellSideReconDebug.sellSideCandidateTxs ?? 0),
     candidateOutboundLegs: _sellSideReconDebug.candidateCount ?? _sellSideReconDebug.sellSideCandidateTxs ?? 0,
-    receiptProvenSellLegs: _sellSideReconDebug.promotedSellEvents ?? _sellSideReconDebug.sellSideEventsPromoted ?? 0,
-    receiptProvenQuoteSellEvents: _sellSideReconDebug.promotedSellEvents ?? _sellSideReconDebug.sellSideEventsPromoted ?? 0,
-    publicSellEvents: _performanceClosedLotsFinal.length,
+    // RECEIPT-QUOTE-PROMOTION-FIX: receipt-proven sell legs come from BOTH the older Base sell-side
+    // recon pass AND swap-reconstruction-v1 (the WETH/stable quote-leg path that proved the SEARXLY
+    // sell). The funnel previously only read _sellSideReconDebug, so a swap-recon-v1 promotion never
+    // surfaced — that is the exact reported bug (eventsPromoted=1 but receiptProvenSellLegs=0).
+    receiptProvenSellLegs: (_sellSideReconDebug.promotedSellEvents ?? _sellSideReconDebug.sellSideEventsPromoted ?? 0) + (_swapReconstructionV1Debug.swapReconstructionEventsPromotedSell ?? 0),
+    receiptProvenQuoteSellEvents: (_sellSideReconDebug.promotedSellEvents ?? _sellSideReconDebug.sellSideEventsPromoted ?? 0) + (_swapReconstructionV1Debug.swapReconstructionEventsPromotedSell ?? 0),
+    publicSellEvents: _performanceClosedLotsFinal.length + _swapReconstructionV1Debug.swapReconstructionEventsPromotedSell,
     matchedBuySellPairs: _rawMatchedClosedLotsFinal,
     rawClosedLots: _rawMatchedClosedLotsFinal,
     publicGradeClosedLots: _reconPublicLots,
@@ -15196,6 +15266,64 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       .sort((a, b) => b[1] - a[1])
       .slice(0, 2)
       .map(([k]) => k),
+  }
+
+  // RECEIPT-QUOTE-PROMOTION-FIX: dedicated diagnostic surface proving that swap-reconstruction-v1
+  // promoted receipt/quote-leg sells actually reach price evidence + FIFO + public-grade
+  // classification (not just the older Base sell-side pass). Built entirely from values already
+  // computed above — no new provider calls. When only the sell side is receipt-proven and the buy
+  // side is still provider_event_usd, lockReason states sell_price_receipt_proven /
+  // buy_price_not_public_grade so the lock is attributed correctly, not to flat_price.
+  const _receiptPricedClosedLots = _publicLotClassifications.filter(x =>
+    _isReceiptQuoteSource(x.lot.entryPriceSource) || _isReceiptQuoteSource(x.lot.exitPriceSource))
+  const _sellReceiptProvenButBuyNotPublic = _publicLotClassifications.some(x =>
+    !x.classification.performanceEligible && _isReceiptQuoteSource(x.lot.exitPriceSource) && _isProviderSource(x.lot.entryPriceSource))
+  const _receiptPromotedSell = _swapReconstructionV1Debug.swapReconstructionEventsPromotedSell ?? 0
+  const _receiptPromotedBuy = _swapReconstructionV1Debug.swapReconstructionEventsPromotedBuy ?? 0
+  const _receiptPromotedTotal = _swapReconstructionV1Debug.swapReconstructionEventsPromoted ?? 0
+  const _receiptLockReason: string | null =
+    _reconExclusionTally.missingBuyPrice > 0 || _sellReceiptProvenButBuyNotPublic ? 'sell_price_receipt_proven|buy_price_not_public_grade'
+    : _reconExclusionTally.missingSellPrice > 0 ? 'buy_price_receipt_proven|sell_price_not_public_grade'
+    : null
+  const _receiptQuoteReconstructionDebug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['receiptQuoteReconstructionDebug']> = {
+    attempted: _swapReconstructionV1Debug.swapReconstructionV1Attempted,
+    reconstructedPromotedEvents: _receiptPromotedTotal,
+    reconstructedEventsInjectedIntoPricing: _receiptPromotedTotal,
+    reconstructedEventsInjectedIntoFifo: _receiptPromotedTotal,
+    receiptProvenBuyLegs: _receiptPromotedBuy,
+    receiptProvenSellLegs: (_sellSideReconDebug.promotedSellEvents ?? _sellSideReconDebug.sellSideEventsPromoted ?? 0) + _receiptPromotedSell,
+    receiptProvenQuoteSellEvents: _receiptPromotedSell,
+    publicSellEvents: _performanceClosedLotsFinal.length + _receiptPromotedSell,
+    publicGradeLotsBeforeReceiptUpgrade: _reconPublicLots,
+    publicGradeLotsAfterReceiptUpgrade: _reconPublicLots,
+    lockReason: _receiptLockReason,
+    sampleReceiptPricedEvents: (_swapReconstructionV1Debug.sampleReconstructedSwaps ?? [])
+      .filter(s => s.confidence !== 'low')
+      .slice(0, 5)
+      .map(s => ({
+        txHash: s.txHash,
+        paidToken: s.paidToken,
+        receivedToken: s.receivedToken,
+        receivedUsd: s.receivedUsd,
+        quoteToken: s.quoteToken,
+        quoteAmount: s.quoteAmount,
+        priceSource: s.quoteToken === 'WETH' ? 'receipt_quote_weth' : (s.quoteToken && ['USDC', 'USDT', 'DAI', 'BUSD'].includes(s.quoteToken)) ? 'receipt_quote_stable' : 'receipt_quote_priced',
+        verificationStatus: 'receipt_quote_priced',
+        reconstructionReason: s.reconstructionReason,
+      })),
+    sampleReceiptPricedClosedLots: _receiptPricedClosedLots.slice(0, 5).map(x => ({
+      tokenAddress: x.lot.tokenAddress,
+      symbol: x.lot.tokenSymbol ?? '?',
+      entryPriceSource: x.lot.entryPriceSource ?? 'unknown',
+      exitPriceSource: x.lot.exitPriceSource ?? 'unknown',
+      priceIndependenceStatus: x.lot.priceIndependenceStatus ?? 'unknown',
+      pnlDisplayStatus: x.lot.pnlDisplayStatus ?? 'unknown',
+      performanceEligible: x.classification.performanceEligible,
+      lockReason: x.classification.performanceEligible ? null
+        : (_isReceiptQuoteSource(x.lot.exitPriceSource) && _isProviderSource(x.lot.entryPriceSource)) ? 'sell_price_receipt_proven|buy_price_not_public_grade'
+        : (_isReceiptQuoteSource(x.lot.entryPriceSource) && _isProviderSource(x.lot.exitPriceSource)) ? 'buy_price_receipt_proven|sell_price_not_public_grade'
+        : (x.classification.rejectReason ?? null),
+    })),
   }
 
   // FIFO-RECON-FIX-5: surfaces the already-computed targeted recovery targets (no new provider
@@ -15608,6 +15736,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       ethSwapReconstructionDebug: _ethSwapReconstructionDebug,
       basePnlReconstructionDebug: _basePnlReconDebug,
       swapReconstructionV1Debug: _swapReconstructionV1Debug,
+      receiptQuoteReconstructionDebug: _receiptQuoteReconstructionDebug,
       missingCostBasisGuardDebug: {
         missingCostBasisGuardApplied: _missingCostBasisGuardActive,
         broadHistoricalSkippedMissingCostBasisGuard: _missingCostBasisGuardActive,
