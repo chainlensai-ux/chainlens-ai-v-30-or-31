@@ -518,6 +518,7 @@ type WalletResult = {
       reason: string
     } | null
     openPositionPerformanceSummary?: OpenPositionPerformanceSummary
+  openPositionPnlStatus?: 'estimate_only' | 'public_grade' | 'unavailable' | string
   }
   walletOpenPositionSummary?: {
     status: 'partial' | 'open_check'
@@ -529,6 +530,7 @@ type WalletResult = {
     reason: string
   } | null
   openPositionPerformanceSummary?: OpenPositionPerformanceSummary
+  openPositionPnlStatus?: 'estimate_only' | 'public_grade' | 'unavailable' | string
   walletProfile?: {
     score: number | null
     grade: string | null
@@ -2309,7 +2311,7 @@ export default function WalletScannerPage() {
                       })()}
 
                       <div className="wpv3-card">
-                        <p className="wpv3-title">Real Trade Evidence</p>
+                        <p className="wpv3-title">Trade Evidence</p>
                         <div className="wpv3-support" style={{ marginBottom: '8px', color: '#9aa4b2' }}>
                           {(() => {
                             const q = result.pnlQuality
@@ -3612,14 +3614,15 @@ export default function WalletScannerPage() {
                             {(() => {
                               const perf = result.openPositionPerformanceSummary ?? result.walletModuleCoverage?.openPositionPerformanceSummary ?? null
                               const coverage = perf?.coverageLabel ?? 'cost_basis_only'
+                              const openEstimateOnly = result.openPositionPnlStatus === 'estimate_only'
                               const openLotsCount = result.walletLotSummary?.openedLots ?? openPos?.openLots ?? 0
                               const costBasis = perf?.totalOpenCostBasisUsd ?? openPos?.totalOpenCostBasisUsd ?? null
                               const fmtUsd2 = (v: number) => `$${Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
                               const fmtPct2 = (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`
 
                               // Pick display values based on coverage tier
-                              const currentValueLabel = coverage === 'full' ? 'Current Open Value' : coverage === 'partial' ? 'Matched Open Value (Partial)' : null
-                              const unrealizedLabel = coverage === 'full' ? 'Open Position PnL' : coverage === 'partial' ? 'Open Position PnL (Partial)' : null
+                              const currentValueLabel = coverage === 'full' ? 'Open position value' : coverage === 'partial' ? 'Open position value (partial)' : null
+                              const unrealizedLabel = openEstimateOnly ? 'Unrealized PnL' : coverage === 'full' ? 'Unrealized PnL' : coverage === 'partial' ? 'Unrealized PnL (Partial)' : null
                               const displayCurrentValue = coverage === 'full' ? (perf?.totalCurrentValueUsd ?? null) : coverage === 'partial' ? (perf?.matchedCurrentOpenValueUsd ?? null) : null
                               const displayUnrealizedPnl = coverage === 'full' ? (perf?.totalUnrealizedPnlUsd ?? null) : coverage === 'partial' ? (perf?.matchedUnrealizedPnlUsd ?? null) : null
                               const displayUnrealizedPct = coverage === 'full' ? (perf?.totalUnrealizedPnlPercent ?? null) : coverage === 'partial' ? (perf?.matchedUnrealizedPnlPercent ?? null) : null
@@ -3627,11 +3630,13 @@ export default function WalletScannerPage() {
                               const summaryCards = [
                                 { label: 'Tracked Entry Cost', value: costBasis != null ? `~${fmtUsd2(costBasis)}` : '—', color: '#e2e8f0', dim: false },
                                 ...(currentValueLabel ? [{ label: currentValueLabel, value: displayCurrentValue != null ? fmtUsd2(displayCurrentValue) : '—', color: '#e2e8f0', dim: displayCurrentValue == null }] : []),
-                                ...(unrealizedLabel ? [{ label: unrealizedLabel, value: displayUnrealizedPnl != null ? `${displayUnrealizedPnl >= 0 ? '+' : '-'}${fmtUsd2(displayUnrealizedPnl)}${displayUnrealizedPct != null ? ` (${fmtPct2(displayUnrealizedPct)})` : ''}` : '—', color: displayUnrealizedPnl == null ? '#94a3b8' : displayUnrealizedPnl >= 0 ? '#4ade80' : '#f87171', dim: displayUnrealizedPnl == null }] : []),
+                                ...(unrealizedLabel ? [{ label: unrealizedLabel, value: openEstimateOnly ? 'Locked' : displayUnrealizedPnl != null ? `${displayUnrealizedPnl >= 0 ? '+' : '-'}${fmtUsd2(displayUnrealizedPnl)}${displayUnrealizedPct != null ? ` (${fmtPct2(displayUnrealizedPct)})` : ''}` : '—', color: openEstimateOnly ? '#fbbf24' : displayUnrealizedPnl == null ? '#94a3b8' : displayUnrealizedPnl >= 0 ? '#4ade80' : '#f87171', dim: displayUnrealizedPnl == null && !openEstimateOnly }] : []),
                               ]
 
                               const perfTokens = perf?.tokens ?? []
-                              const footerNote = coverage === 'full'
+                              const footerNote = openEstimateOnly
+                                ? 'Current value uses estimate-only pricing, so unrealized PnL is not public-grade.'
+                                : coverage === 'full'
                                 ? 'Unrealized. Still open — not banked profit. Not realized PnL.'
                                 : coverage === 'partial'
                                   ? `Partial coverage — Unrealized matched open lots only. ${perf!.unmatchedSymbols.join(', ')} current value unavailable, excluded from Open Position PnL.`
@@ -3672,7 +3677,10 @@ export default function WalletScannerPage() {
                                             <span style={{ fontSize: '10px', color: 'rgba(255,255,255,0.35)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{t.openLots} lot{t.openLots !== 1 ? 's' : ''}</span>
                                             <span style={{ fontSize: '10px', color: 'rgba(255,255,255,0.35)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>cost {fmtUsd2(t.costBasisUsd)}</span>
                                             {tCurrent != null && <span style={{ fontSize: '10px', color: 'rgba(255,255,255,0.45)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>now {fmtUsd2(tCurrent)}</span>}
-                                            {tUnrealized != null && (
+                                            {openEstimateOnly && tCurrent != null && (
+                                              <span style={{ fontSize: '11px', fontWeight: 700, color: '#fbbf24', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Unrealized PnL: Locked</span>
+                                            )}
+                                            {!openEstimateOnly && tUnrealized != null && (
                                               <span style={{ fontSize: '11px', fontWeight: 700, color: tUnrealized >= 0 ? '#4ade80' : '#f87171', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
                                                 {tUnrealized >= 0 ? '+' : '-'}{fmtUsd2(tUnrealized)}{tUnrealizedPct != null ? ` (${fmtPct2(tUnrealizedPct)})` : ''}
                                               </span>
@@ -3758,14 +3766,14 @@ export default function WalletScannerPage() {
                           return (
                             <div style={{ background: 'rgba(125,211,252,0.04)', border: '1px solid rgba(125,211,252,0.14)', borderRadius: '10px', padding: '10px 12px', marginBottom: '12px' }}>
                               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
-                                <span style={{ fontSize: '9px', fontWeight: 800, letterSpacing: '0.14em', color: '#7dd3fc', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Raw Early Read</span>
+                                <span style={{ fontSize: '9px', fontWeight: 800, letterSpacing: '0.14em', color: '#7dd3fc', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Early Evidence Read</span>
                                 <span style={{ fontSize: '8px', fontWeight: 700, color: 'rgba(125,211,252,0.55)', border: '1px solid rgba(125,211,252,0.18)', background: 'rgba(125,211,252,0.04)', borderRadius: '999px', padding: '1px 6px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{dm.dataMode}</span>
                               </div>
                               <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.45)', lineHeight: 1.6, fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
                                 {dm.rawSampleLabel === 'break-even only'
                                   ? `Break-even sample only — ${dm.rawClosedLots} closed lot${dm.rawClosedLots !== 1 ? 's' : ''}, $0.00 matched realized PnL, no decisive win or loss.`
                                   : dm.rawSampleLabel
-                                    ? `${dm.rawSampleLabel.charAt(0).toUpperCase()}${dm.rawSampleLabel.slice(1)} — ${dm.rawWinningLots}W / ${dm.rawLosingLots}L${dm.rawBreakEvenLots > 0 ? ` / ${dm.rawBreakEvenLots} break-even` : ''}${dm.rawWinRatePercent !== null ? `, raw win rate ~${dm.rawWinRatePercent.toFixed(1)}%` : ''}.`
+                                    ? `${dm.rawSampleLabel.charAt(0).toUpperCase()}${dm.rawSampleLabel.slice(1)} — ${dm.rawWinningLots}W / ${dm.rawLosingLots}L${dm.rawBreakEvenLots > 0 ? ` / ${dm.rawBreakEvenLots} break-even` : ''}${dm.rawWinRatePercent !== null ? `, win rate locked` : ''}.`
                                     : 'Limited evidence indexed for this wallet.'}
                               </div>
                               <div style={{ fontSize: '10px', color: 'rgba(125,211,252,0.55)', marginTop: '6px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', lineHeight: 1.5 }}>
@@ -3785,18 +3793,21 @@ export default function WalletScannerPage() {
                           // They are behavior-only estimates and must show "Locked" instead.
                           const publicLocked = publicPnlLocked(result, ts)
                           const lockedPnlCard = (label: string) => ({ label, value: 'Locked', publicLock: true })
+                          const profitSkillCard = { label: 'Profit Skill', value: 'Not Proven', publicLock: true }
                           const earlyCards: Array<{ label: string; value: string | null; locked?: boolean; lockNote?: string; pnl?: number | null; raw?: boolean; breakEven?: boolean; publicLock?: boolean }> = [
                             publicLocked ? lockedPnlCard('Win Rate') : {
-                              label: hasEnough ? 'Win Rate' : isSmallSample ? 'Win Rate (raw)' : 'Win Rate',
+                              label: 'Win Rate',
                               value: isBreakEvenOnly ? 'Break-even only' : rawWinRate !== null ? `${rawWinRate.toFixed(1)}%` : null,
                               locked: !isBreakEvenOnly && rawWinRate === null,
                               lockNote: officialWinRateLockCopy(ts),
                               raw: !isBreakEvenOnly && isSmallSample && rawWinRate !== null,
                               breakEven: isBreakEvenOnly,
                             },
+                            publicLocked ? lockedPnlCard('Realized PnL') : { label: 'Realized PnL', value: ts.publicRealizedPnlUsd !== null && ts.publicRealizedPnlUsd !== undefined ? fmtSignedUSD(ts.publicRealizedPnlUsd) : '—', pnl: ts.publicRealizedPnlUsd },
                             publicLocked ? lockedPnlCard('Avg PnL / Lot') : { label: 'Avg PnL / Lot', value: ts.avgPnlUsdPerClosedLot !== null ? fmtSignedUSD(ts.avgPnlUsdPerClosedLot) : '—', pnl: ts.avgPnlUsdPerClosedLot },
                             publicLocked ? lockedPnlCard('Avg Return / Lot') : { label: 'Avg Return / Lot', value: ts.avgReturnPercentPerClosedLot !== null ? `${ts.avgReturnPercentPerClosedLot >= 0 ? '+' : ''}${ts.avgReturnPercentPerClosedLot.toFixed(1)}%` : '—', pnl: ts.avgReturnPercentPerClosedLot },
                             publicLocked ? lockedPnlCard('Median Return') : { label: 'Median Return', value: ts.medianReturnPercentPerClosedLot !== null ? `${ts.medianReturnPercentPerClosedLot >= 0 ? '+' : ''}${ts.medianReturnPercentPerClosedLot.toFixed(1)}%` : '—', pnl: ts.medianReturnPercentPerClosedLot },
+                            publicLocked ? profitSkillCard : { label: 'Profit Skill', value: 'Public-grade', pnl: null },
                             { label: 'Avg Hold Time', value: fmtHoldTime(ts.avgHoldingTimeSeconds) },
                             { label: 'Median Hold Time', value: fmtHoldTime(ts.medianHoldingTimeSeconds) },
                           ]
@@ -3806,7 +3817,7 @@ export default function WalletScannerPage() {
                             <>
                             {publicLocked && (
                               <div style={{ fontSize: '11px', color: '#fbbf24', background: 'rgba(251,191,36,0.06)', border: '1px solid rgba(251,191,36,0.18)', borderRadius: '8px', padding: '9px 12px', marginBottom: '12px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', lineHeight: 1.55 }}>
-                                {_rawLotsCopy} raw matched lots found, but {_pubLotsCopy} passed public-grade performance checks. Trade behavior is usable. Profit skill is not proven.
+                                Profit is locked. {_rawLotsCopy} raw matched lots were found, but {_pubLotsCopy} passed public-grade performance checks. Trade behavior is usable; profit skill is not proven.<br />{_rawLotsCopy} raw matched lots found, but {_pubLotsCopy} passed public-grade performance checks. Trade behavior is usable. Profit skill is not proven.<br />Reasons: estimate-only prices, synthetic/missing cost basis, dust/micro lots, and PnL integrity mismatch.
                               </div>
                             )}
                             <div className="wallet-intel-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: '10px', marginBottom: '14px' }}>
@@ -3827,7 +3838,7 @@ export default function WalletScannerPage() {
                                     <div style={{ fontSize: card.breakEven ? '13px' : '16px', fontWeight: 800, fontFamily: 'var(--font-inter, Inter, sans-serif)', color: card.breakEven ? 'rgba(148,163,184,0.80)' : card.raw ? '#fbbf24' : ('pnl' in card && card.pnl !== null && card.pnl !== undefined ? (card.pnl >= 0 ? '#4ade80' : '#f87171') : '#e2e8f0') }}>{card.value}</div>
                                   )}
                                   {card.breakEven && <div style={{ fontSize: '9px', color: 'rgba(148,163,184,0.50)', marginTop: '3px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>no decisive trades · score unlocks at 10+</div>}
-                                  {card.raw && !card.breakEven && <div style={{ fontSize: '9px', color: 'rgba(251,191,36,0.50)', marginTop: '3px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>raw · score unlocks at 10+</div>}
+                                  {card.raw && !card.breakEven && <div style={{ fontSize: '9px', color: 'rgba(251,191,36,0.50)', marginTop: '3px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>score unlocks at 10+</div>}
                                 </div>
                               ))}
                             </div>
@@ -3880,7 +3891,7 @@ export default function WalletScannerPage() {
                           return (
                             <div style={{ marginTop: '18px' }}>
                               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
-                                <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: 'rgba(255,255,255,0.55)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Matched Closed Trades</div>
+                                <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: 'rgba(255,255,255,0.55)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Matched Trade Evidence</div>
                                 <span style={{ fontSize: '9px', color: 'rgba(255,255,255,0.28)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Sample of reconstructed buy → sell lots. These are behavior evidence only unless they pass public-grade PnL checks.</span>
                               </div>
                               <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.28)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', lineHeight: 1.5, marginBottom: '10px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '8px', padding: '8px 10px' }}>
@@ -3903,7 +3914,7 @@ export default function WalletScannerPage() {
                                     : s.verificationStatus === 'synthetic_cost_basis_missing' ? 'Not public-grade: missing independent entry price (synthetic cost basis).'
                                     : s.verificationStatus === 'price_independence_missing' ? 'Not public-grade: missing independent entry price.'
                                     : s.verificationStatus === 'estimate_only_price_flat' ? 'Not public-grade: estimate-only / flat price.'
-                                    : s.pnlLockedReason ?? 'Not public-grade: integrity check failed / estimate-only price / missing independent entry price.'
+                                    : s.pnlLockedReason ?? 'Not public-grade: estimate-only price, missing independent entry price, synthetic cost basis, dust lot, or integrity lock.'
                                   const vStatus = s.verificationStatus ?? 'not_available'
                                   const entryUrl = s.entryTxHash ? explorerBase(s.chain, s.entryTxHash) : null
                                   const exitUrl = s.exitTxHash ? explorerBase(s.chain, s.exitTxHash) : null
@@ -4022,8 +4033,11 @@ export default function WalletScannerPage() {
                         </div>
                       ))}
                     </div>
+                    <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.34)', marginTop: '14px', fontFamily: 'var(--font-inter, Inter, sans-serif)', lineHeight: 1.6 }}>
+                      Behavior confidence is based on verified movement patterns, not public profit.
+                    </div>
                     {!hasEnough && closedLots > 0 && (
-                      <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.28)', marginTop: '14px', fontFamily: 'var(--font-inter, Inter, sans-serif)', lineHeight: 1.6 }}>
+                      <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.28)', marginTop: '8px', fontFamily: 'var(--font-inter, Inter, sans-serif)', lineHeight: 1.6 }}>
                         Not calculated yet — requires 10+ verified closed lots. This does not prove the wallet has never lost money.
                       </div>
                     )}
