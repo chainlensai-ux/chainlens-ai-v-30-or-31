@@ -225,6 +225,11 @@ type WalletFacts = {
     bridgeLikeTxs: number
     unknownTxs: number
     notes: string[]
+    // WALLET-ADDRESS-TYPE-1: classification of the scanned address itself, derived only from
+    // existing evidence already computed above (walletInitiatedTxCount, inbound/outbound ratio,
+    // claim/airdrop-like tx count, and whether the address is itself a currently-held token contract).
+    walletAddressType: 'normal_wallet' | 'contract_wallet' | 'token_contract_like' | 'treasury_or_distributor_like' | 'unknown'
+    walletAddressTypeReason: string
   }
   limits: {
     sampleBased: boolean
@@ -1112,6 +1117,18 @@ export type WalletSnapshot = {
       duplicatePositionsRemoved: number
       holdingsCount: number
       totalValue: number | null
+    }
+    // WALLET-ACTIVITY-DEDUPE-1/WALLET-MORALIS-COST-GATE-1: activity dedupe and Moralis transfer
+    // supplement cost-gating transparency, additive on this already-diagnostics-only object.
+    walletActivityDedupeDebug?: {
+      activityEventsBeforeDedupe: number
+      activityEventsAfterDedupe: number
+      activityDuplicatesRemoved: number
+      duplicateChainAliasCount: number
+      walletAddressType: WalletFacts['sourceClassification']['walletAddressType']
+      walletAddressTypeReason: string
+      moralisSupplementSkippedChains: string[]
+      moralisSupplementSkipReasons: Record<string, string>
     }
     walletClosedLotDedupeDebug?: {
       rawClosedLotsBeforeDedupe: number
@@ -2046,6 +2063,8 @@ export type WalletSnapshot = {
       classificationCounts: { swapLike: number; transferOnly: number; claimOrAirdrop: number; bridge: number; unknown: number }
       missingFields: string[]
       reason: string
+      walletAddressType?: WalletFacts['sourceClassification']['walletAddressType']
+      walletAddressTypeReason?: string
     }
     apiAudit?: {
       moralis: { calls: number; endpoints: string[]; credits: number }
@@ -5103,7 +5122,7 @@ function buildTxEvidenceFromEvents(events: PnlEvent[], requested: boolean, provi
   const _seenTransferKeys = new Set<string>()
   const _dedupedEvents = events.filter(e => {
     if (!e.txHash) return true
-    const _key = `${e.txHash}:${(e.contract ?? '').toLowerCase()}:${(e.fromAddress ?? '').toLowerCase()}:${(e.toAddress ?? '').toLowerCase()}:${e.amountRaw ?? e.amount ?? ''}`
+    const _key = `${normalizeChain(e.chain ?? '')}:${e.txHash}:${(e.contract ?? '').toLowerCase()}:${(e.fromAddress ?? '').toLowerCase()}:${(e.toAddress ?? '').toLowerCase()}:${e.amountRaw ?? e.amount ?? ''}`
     if (_seenTransferKeys.has(_key)) return false
     _seenTransferKeys.add(_key)
     return true
@@ -8907,6 +8926,34 @@ function buildWalletFacts(
   if (claimOrAirdropLikeTxs > 0) classificationNotes.push(`${claimOrAirdropLikeTxs} possible airdrop/claim tx(s)`)
   if (bridgeLikeTxs > 0) classificationNotes.push(`${bridgeLikeTxs} possible bridge tx(s)`)
 
+  // WALLET-ADDRESS-TYPE-1: classify the scanned address itself using only the evidence already
+  // computed above. Distinguishes a normal trader/holder wallet from a contract/token/treasury
+  // address that should not be treated as if it were a trader wallet for PnL purposes.
+  const _walletAddressLower = walletAddress.toLowerCase()
+  const _addressIsHeldTokenContract = pricedHoldings.some(h => (h.contract ?? '').toLowerCase() === _walletAddressLower)
+  const _totalClassifiedTxs = swapLikeTxs + transferOnlyTxs + claimOrAirdropLikeTxs + bridgeLikeTxs + unknownTxs
+  let walletAddressType: WalletFacts['sourceClassification']['walletAddressType'] = 'unknown'
+  let walletAddressTypeReason = 'insufficient_evidence_to_classify'
+  if (_addressIsHeldTokenContract) {
+    walletAddressType = 'token_contract_like'
+    walletAddressTypeReason = 'scanned_address_matches_a_currently_held_token_contract'
+  } else if (_totalClassifiedTxs === 0) {
+    walletAddressType = 'unknown'
+    walletAddressTypeReason = 'no_classifiable_activity'
+  } else if (walletInitiatedTxCount === 0 && claimOrAirdropLikeTxs > 0 && claimOrAirdropLikeTxs >= _totalClassifiedTxs * 0.5) {
+    walletAddressType = 'treasury_or_distributor_like'
+    walletAddressTypeReason = 'wallet_never_initiates_txs_and_mostly_distributes_claim_or_airdrop_like_transfers'
+  } else if (walletInitiatedTxCount === 0 && outboundCount > 0 && outboundCount >= inboundCount * 3) {
+    walletAddressType = 'treasury_or_distributor_like'
+    walletAddressTypeReason = 'wallet_never_initiates_txs_and_outbound_heavily_exceeds_inbound'
+  } else if (walletInitiatedTxCount === 0 && swapLikeTxs === 0) {
+    walletAddressType = 'contract_wallet'
+    walletAddressTypeReason = 'wallet_never_initiates_transactions_and_shows_no_swap_like_activity'
+  } else {
+    walletAddressType = 'normal_wallet'
+    walletAddressTypeReason = 'wallet_initiates_transactions_with_trader_or_holder_like_activity'
+  }
+
   const hasPortfolio = pricedHoldings.length > 0
   const hasActivity = events.length > 0
   const status: WalletFacts['status'] = hasPortfolio && hasActivity ? 'ok' : hasPortfolio || hasActivity ? 'partial' : 'open_check'
@@ -8980,6 +9027,8 @@ function buildWalletFacts(
         bridgeLikeTxs,
         unknownTxs,
         notes: classificationNotes,
+        walletAddressType,
+        walletAddressTypeReason,
       },
       limits: {
         sampleBased: events.length < evidenceWithDetection.length,
@@ -9014,6 +9063,8 @@ function buildWalletFacts(
         ...(totalVal === 0 ? ['totalValueUsd'] : []),
       ],
       reason: `Built from ${pricedHoldings.length} holdings and ${maxEventsUsed} activity events`,
+      walletAddressType,
+      walletAddressTypeReason,
     },
   }
 }
@@ -9116,7 +9167,7 @@ export function validateWalletFactsShape(snapshot: WalletSnapshot): WalletSnapsh
 
   if (!walletFacts.sourceClassification || typeof walletFacts.sourceClassification !== 'object') {
     noteMissing('walletFacts.sourceClassification')
-    walletFacts.sourceClassification = { transferOnlyTxs: 0, claimOrAirdropLikeTxs: 0, swapLikeTxs: 0, bridgeLikeTxs: 0, unknownTxs: activity.unknownCount ?? 0, notes: [] }
+    walletFacts.sourceClassification = { transferOnlyTxs: 0, claimOrAirdropLikeTxs: 0, swapLikeTxs: 0, bridgeLikeTxs: 0, unknownTxs: activity.unknownCount ?? 0, notes: [], walletAddressType: 'unknown', walletAddressTypeReason: 'insufficient_evidence_to_classify' }
   }
   const sourceClassification = walletFacts.sourceClassification as WalletFacts['sourceClassification'] & Record<string, unknown>
   const classificationDefaults: WalletFacts['sourceClassification'] = {
@@ -9126,6 +9177,8 @@ export function validateWalletFactsShape(snapshot: WalletSnapshot): WalletSnapsh
     bridgeLikeTxs: 0,
     unknownTxs: typeof activity.unknownCount === 'number' ? activity.unknownCount : 0,
     notes: [],
+    walletAddressType: 'unknown',
+    walletAddressTypeReason: 'insufficient_evidence_to_classify',
   }
   for (const [key, fallback] of Object.entries(classificationDefaults)) {
     if (sourceClassification[key] === undefined) { noteMissing(`walletFacts.sourceClassification.${key}`); sourceClassification[key] = fallback }
@@ -12060,9 +12113,13 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       _phase18Debug.mergeTotal = _p18All.length
       const _p18SeenKeys = new Set<string>()
       const _p18Merged: PnlEvent[] = []
+      let _p18ChainAliasDupes = 0
       for (const e of _p18All) {
-        const mk = `${e.chain ?? ''}|${e.txHash ?? ''}|${e.contract}|${e.direction}|${e.amountRaw ?? String(e.amount)}`
+        // WALLET-DEDUPE-1: chain-normalized dedupe key (was raw e.chain, which let
+        // 'base'/'base-mainnet' aliases of the same transfer both survive the merge).
+        const mk = pnlEventDedupeKey(e)
         if (!_p18SeenKeys.has(mk)) { _p18SeenKeys.add(mk); _p18Merged.push(e) }
+        else if ((e.chain ?? '') !== normalizeChain(e.chain ?? '')) _p18ChainAliasDupes++
       }
       _p18Merged.sort((a, b) => {
         const ta = a.timestamp ? new Date(a.timestamp).getTime() : 0
@@ -12070,6 +12127,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         return tb - ta
       })
       _phase18Debug.mergeDeduped = _p18All.length - _p18Merged.length
+      ;(_phase18Debug as any).mergeDedupedChainAliasCount = _p18ChainAliasDupes
       events = _p18Merged
     } else {
       _phase18Debug.skippedReason = 'supplement_returned_empty'
@@ -12090,11 +12148,24 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   type _Phase19ChainResult = { chain: string; rawCount: number; normalizedEvents: number; cacheHit: boolean; skippedReason: string | null }
   type _Phase19Debug = { attempted: boolean; skippedReason: string | null; chainsConsidered: Array<{ chain: string; usdValue: number }>; chainResults: _Phase19ChainResult[]; totalNewEvents: number; mergeTotal: number; mergeDeduped: number }
   const _p19MaxAdditionalChains = 2
-  const _p19EligibleChains = discoveredChains.filter(c =>
-    supportedMoralisChains.includes(c.chain) &&
-    c.chain !== 'eth' && c.chain !== 'base' &&
-    c.usdValue >= minChainValueUsd
-  ).slice(0, _p19MaxAdditionalChains)
+  // WALLET-MORALIS-COST-GATE-1: low-value side chains (e.g. $1-$9 of dust) should not trigger a
+  // paid Moralis transfer supplement just because they cleared the global $1 dust threshold used
+  // elsewhere for holdings display. Require a more meaningful chain value before spending a call.
+  const _p19MeaningfulChainValueUsd = 10
+  const moralisSupplementSkippedChains: string[] = []
+  const moralisSupplementSkipReasons: Record<string, string> = {}
+  const _p19CandidateChains = discoveredChains.filter(c => supportedMoralisChains.includes(c.chain) && c.chain !== 'eth' && c.chain !== 'base')
+  const _p19PassedValueChains = _p19CandidateChains.filter(c => {
+    if (c.usdValue >= _p19MeaningfulChainValueUsd) return true
+    moralisSupplementSkippedChains.push(c.chain)
+    moralisSupplementSkipReasons[c.chain] = 'below_meaningful_chain_value_threshold'
+    return false
+  })
+  const _p19EligibleChains = _p19PassedValueChains.slice(0, _p19MaxAdditionalChains)
+  for (const c of _p19PassedValueChains.slice(_p19MaxAdditionalChains)) {
+    moralisSupplementSkippedChains.push(c.chain)
+    moralisSupplementSkipReasons[c.chain] = 'max_additional_chains_reached'
+  }
   const _p19ShouldRun = deepActivity && !historicalCoverage && _p19EligibleChains.length > 0 && Boolean(process.env.MORALIS_API_KEY)
   let _phase19Debug: _Phase19Debug = {
     attempted: _p19ShouldRun,
@@ -16320,6 +16391,16 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       walletChainActivityMergeDebug: _walletChainActivityMergeDebug,
       walletEthNormalizationDebug: _walletEthNormalizationDebug,
       walletFactsDebug: _walletFactsDebug,
+      walletActivityDedupeDebug: {
+        activityEventsBeforeDedupe: _budgetEventsBefore,
+        activityEventsAfterDedupe: _budgetEventsAfterDedup,
+        activityDuplicatesRemoved: _budgetEventsBefore - _budgetEventsAfterDedup,
+        duplicateChainAliasCount: (_phase18Debug as any).mergeDedupedChainAliasCount ?? 0,
+        walletAddressType: walletFacts.sourceClassification?.walletAddressType ?? 'unknown',
+        walletAddressTypeReason: walletFacts.sourceClassification?.walletAddressTypeReason ?? 'insufficient_evidence_to_classify',
+        moralisSupplementSkippedChains,
+        moralisSupplementSkipReasons,
+      },
       apiAudit: _apiAudit,
       alchemyEnvDebug: _alchemyEnvDebug,
       tradeStatsInputDebug: _tradeStatsInputDebug,
@@ -16764,6 +16845,30 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         : _p6SoftPartialOnly
           ? 'Public PnL and win rate remain locked; behavior-only reads may still be shown.'
           : 'Integrity check passed — no gate applied.',
+    }
+
+    // WALLET-ADDRESS-TYPE-GATE-1: a token-contract/treasury/distributor-like address is not a
+    // trader wallet — never recommend PnL recovery or show the profit-skill path for it, even if
+    // some lots technically exist. Additive on top of the existing integrity gates above; never
+    // unlocks anything the gates above already locked.
+    const _walletAddressTypeForGate = walletFacts.sourceClassification?.walletAddressType ?? 'unknown'
+    const _walletIsContractLikeForPnl = _walletAddressTypeForGate === 'token_contract_like' || _walletAddressTypeForGate === 'treasury_or_distributor_like'
+    if (_walletIsContractLikeForPnl) {
+      const _contractLikeLabel = 'Portfolio/activity read only — not a trader wallet'
+      const _contractLikeReason = `Scanned address is classified as ${_walletAddressTypeForGate.replace(/_/g, ' ')}; PnL recovery is not recommended for non-trader addresses.`
+      if (snapshot.tradeIntelligence) {
+        snapshot.tradeIntelligence.profitSkillStatus = 'integrity_invalid_not_proven'
+        snapshot.tradeIntelligence.tradeStyleSummary = `Portfolio/activity read only — this address looks ${_walletAddressTypeForGate === 'token_contract_like' ? 'like a token contract' : 'like a treasury or distributor'}, not a trader wallet, so profit skill is not evaluated.`
+      }
+      ;(snapshot as any).publicPnlDisplayLabel = _contractLikeLabel
+      ;(snapshot as any).publicPnlDisplayReason = _contractLikeReason
+      if (snapshot.walletTradeStatsSummary) {
+        const ts = snapshot.walletTradeStatsSummary as any
+        ts.publicWinRatePercent = null
+        ts.winRateStatus = 'locked_small_sample'
+        ts.publicPnlDisplayLabel = _contractLikeLabel
+        ts.publicPnlDisplayReason = _contractLikeReason
+      }
     }
 
     // Append new normalized Phase 6 reason keys to the existing _diagnostics.missingReasons
