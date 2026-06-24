@@ -16,7 +16,9 @@ import {
   formatEoaLpCheckReply,
   formatLpReadResult,
   formatCouldNotComplete,
+  formatNoFreshMarketData,
   buildRoutedActions,
+  toClarkUiActions,
   extractAllAddressesForRouting,
   isWalletComparePrompt,
   isWalletPnlFollowupPrompt,
@@ -7580,11 +7582,13 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     if (Array.isArray(dashboardRows) && dashboardRows.length > 0) {
       const formatted = formatBaseMarketReadFromRows(dashboardRows);
       if (formatted) {
+        const actions = buildRoutedActions(["Open Base Radar", "Open Token Scanner", "Refresh Market Data"]);
         return {
           feature: "clark-ai", chain, mode: "analysis", intent: "base_market_discovery", toolsUsed: [],
           analysis: formatted,
           intentBadge: "base_market_discovery",
-          actions: buildRoutedActions(["Open Base Radar", "Open Token Scanner", "Refresh Market Data"]),
+          actions,
+          ui: { intentBadge: "Base Market Read", actions: toClarkUiActions(actions) },
           quotaConsumed: true,
         };
       }
@@ -7599,25 +7603,26 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       }));
       const formatted = formatBaseMarketReadFromCandidates(mappedCandidates);
       if (formatted) {
+        const actions = buildRoutedActions(["Open Base Radar", "Open Token Scanner", "Refresh Market Data"]);
         return {
           feature: "clark-ai", chain, mode: "analysis", intent: "base_market_discovery", toolsUsed: ["base_market_universe"],
           analysis: formatted,
           intentBadge: "base_market_discovery",
-          actions: buildRoutedActions(["Open Base Radar", "Open Token Scanner", "Refresh Market Data"]),
+          actions,
+          ui: { intentBadge: "Base Market Read", actions: toClarkUiActions(actions) },
           quotaConsumed: true,
         };
       }
     }
+    // No dashboard rows and no live candidates — this is a genuine no-data state, not a
+    // crash, so Clark must answer gracefully (per spec) instead of a scary could-not-complete block.
+    const noDataActions = buildRoutedActions(["Refresh Market Data"]);
     return {
       feature: "clark-ai", chain, mode: "analysis", intent: "base_market_discovery", toolsUsed: ["base_market_universe"],
-      analysis: formatCouldNotComplete({
-        intentBadge: "base_market_discovery",
-        attempted: ["dashboard market view", "live Base market data"],
-        reason: "no dashboard market rows were supplied and the live Base market universe returned no candidates",
-        actions: buildRoutedActions(["Open Base Radar", "Refresh Market Data"]),
-      }),
+      analysis: formatNoFreshMarketData(),
       intentBadge: "base_market_discovery",
-      actions: buildRoutedActions(["Open Base Radar", "Refresh Market Data"]),
+      actions: noDataActions,
+      ui: { intentBadge: "Base Market Read", actions: toClarkUiActions(noDataActions) },
       quotaConsumed: false,
     };
   }

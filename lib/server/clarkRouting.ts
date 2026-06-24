@@ -266,7 +266,7 @@ export function classifyClarkPrompt(prompt: string): {
 
   // ---- Base market discovery (generic "pumping/trending on base", no "radar") ----
   const BASE_MARKET_DISCOVERY_RE =
-    /(?:who'?s\s+pumping\s+on\s+base|whos\s+pumping\s+on\s+base|what\s+is\s+pumping\s+on\s+base|what'?s\s+pumping\s+on\s+base|base\s+pairs?\s+(?:are\s+)?pumping|(?:show\s+me\s+)?trending\s+base\s+tokens?|hot\s+base\s+tokens?|base\s+gainers|base\s+pumps|trending\s+base|base\s+(?:movers|trending)|new\s+base\s+pools|what'?s\s+(?:moving|hot|running|happening)\s+on\s+base|base\s+market|top\s+base\s+tokens|base\s+momentum)/i;
+    /(?:who'?s\s+pumping\s+on\s+base|whos\s+pumping\s+on\s+base|what\s+is\s+pumping\s+on\s+base|what'?s\s+pumping\s+on\s+base|base\s+pairs?\s+(?:are\s+)?pumping|(?:show\s+me\s+)?trending\s+base\s+tokens?|hot\s+base\s+tokens?|base\s+gainers|base\s+pumps|trending\s+base|base\s+(?:movers|trending)|new\s+base\s+pools|what'?s\s+(?:moving|hot|running|happening)\s+on\s+base|base\s+market|top\s+base\s+tokens|base\s+momentum|top\s+gainers\s+on\s+base|highest\s+volume\s+base\s+tokens|what\s+(?:tokens|coins)\s+are\s+moving|what\s+should\s+i\s+scan\s+on\s+base)/i;
   if (BASE_MARKET_DISCOVERY_RE.test(t)) {
     return { intent: "base_market_discovery", address: null, addresses, deep: false, symbol: null };
   }
@@ -384,9 +384,11 @@ function fmtUsdShort(n: number | null | undefined): string {
  * Build the "BASE MARKET READ" reply from dashboard-supplied market rows.
  * Returns null if rows is empty/missing — caller should fall through to the live endpoint.
  */
+const PUMPING_EXCLUDED_SYMBOLS = new Set(["USDC", "USDBC", "USDT", "DAI", "WETH", "ETH", "CBETH", "CBBTC", "WBTC", "BTC"]);
+
 export function formatBaseMarketReadFromRows(rows: MarketLikeRow[] | undefined | null): string | null {
   if (!rows || rows.length === 0) return null;
-  const valid = rows.filter((r) => r && r.symbol);
+  const valid = rows.filter((r) => r && r.symbol && !PUMPING_EXCLUDED_SYMBOLS.has(String(r.symbol).toUpperCase()));
   if (valid.length === 0) return null;
 
   const ranked = [...valid]
@@ -1158,6 +1160,33 @@ export function buildRoutedActions(actions: ClarkAction[]): ClarkAction[] {
     }
   }
   return out.length > 0 ? out : ["Refresh Market Data"];
+}
+
+// Maps the fixed CLARK_ACTIONS vocabulary to the app routes the frontend actually
+// navigates to, so routed (string-only) action lists can be rendered as clickable
+// CTAs by the Clark UI, which only reads { label, href } pairs from ui.actions.
+const CLARK_ACTION_HREF: Record<ClarkAction, string> = {
+  "Open Base Radar": "/terminal/base-radar",
+  "Open Token Scanner": "/terminal/token-scanner",
+  "Scan Wallet": "/terminal/wallet-scanner",
+  "Deep Scan Wallet": "/terminal/wallet-scanner",
+  "Run LP Check": "/terminal/token-scanner",
+  "Open Whale Alerts": "/terminal/whale-alerts",
+  "Refresh Market Data": "/terminal/clark-ai",
+};
+
+export function toClarkUiActions(actions: ClarkAction[]): Array<{ label: string; href: string }> {
+  return actions.map((a) => ({ label: a, href: CLARK_ACTION_HREF[a] }));
+}
+
+/** Graceful, non-scary reply for "no fresh Base market rows available right now". */
+export function formatNoFreshMarketData(): string {
+  return [
+    "I can't see fresh Base market rows in this pass.",
+    "Market data may be cooling down or temporarily unavailable.",
+    "",
+    "CTA: Refresh Market Data",
+  ].join("\n");
 }
 
 // ─────────────────────────────────────────────────────────────────────────
