@@ -327,6 +327,21 @@ export type WalletSnapshot = {
     reason: string
     excludedFrom: ['win_rate', 'profit_skill', 'wallet_score', 'verified_pnl']
   }
+  publicSamplePerformanceRead?: {
+    status: 'available' | 'unavailable'
+    sampleLocked: boolean
+    closedLots: number
+    realizedPnlUsd: number | null
+    realizedPnlPercent: number | null
+    avgPnlUsdPerLot: number | null
+    avgReturnPercentPerLot: number | null
+    medianReturnPercent: number | null
+    winRatePercent: number | null
+    label: 'Limited public PnL sample'
+    warning: 'Limited sample — not enough to prove profit skill.'
+    reason: string
+    excludedFrom: ['profit_skill', 'wallet_score', 'official_win_rate']
+  }
   publicWinRatePercent?: number | null
   publicPnlStatus?: 'ok' | 'limited_verified_sample' | 'locked_small_sample' | 'open_check' | 'flat_estimate_only' | 'near_flat_verified_sample' | 'partial_near_flat' | 'open_check_integrity_invalid'
   publicPnlStatusReason?: string
@@ -2181,7 +2196,7 @@ export type WalletSnapshotOptions = {
 
 const SNAPSHOT_TTL_MS         = 5  * 60 * 1000
 const SNAPSHOT_HISTORY_TTL_MS = 15 * 60 * 1000
-const SNAPSHOT_SCHEMA_VERSION = 'v45'
+const SNAPSHOT_SCHEMA_VERSION = 'v47'
 type SnapshotCacheEntry = { snapshot: WalletSnapshot; cachedAt: number; ttlMs: number }
 const snapshotMemCache = new Map<string, SnapshotCacheEntry>()
 
@@ -14341,6 +14356,44 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       excludedFrom: _estimatedPerformanceReadExcludedFrom,
     }
 
+  // PUBLIC-SAMPLE-PNL: separates "is there public-grade PnL evidence at all" from "is the sample
+  // big enough to call profit skill / score win rate." Any time at least one public-grade
+  // performance lot exists, the sample PnL is surfaced here for display — but it is never wired
+  // into profitSkillStatus, scoreUnlocked, or wallet score, which keep using the existing
+  // _performanceClosedLotsFinal.length >= 10 gate untouched below.
+  const _publicSamplePerformanceReadExcludedFrom: ['profit_skill', 'wallet_score', 'official_win_rate'] = ['profit_skill', 'wallet_score', 'official_win_rate']
+  const _publicSamplePerformanceRead: NonNullable<WalletSnapshot['publicSamplePerformanceRead']> = _performanceClosedLotsFinal.length > 0
+    ? {
+      status: 'available',
+      sampleLocked: _limitedVerifiedPublicSample,
+      closedLots: _performanceClosedLotsFinal.length,
+      realizedPnlUsd: _performanceRealizedPnlUsd,
+      realizedPnlPercent: _performanceCostBasisUsd > 0 && _performanceRealizedPnlUsd !== null ? (_performanceRealizedPnlUsd / _performanceCostBasisUsd) * 100 : null,
+      avgPnlUsdPerLot: _performanceStats.avgPnlUsdPerClosedLot ?? null,
+      avgReturnPercentPerLot: _performanceStats.avgReturnPercentPerClosedLot ?? null,
+      medianReturnPercent: _performanceStats.medianReturnPercentPerClosedLot ?? null,
+      winRatePercent: _performanceStats.winRatePercent ?? null,
+      label: 'Limited public PnL sample',
+      warning: 'Limited sample — not enough to prove profit skill.',
+      reason: `${_performanceClosedLotsFinal.length} public-grade performance lot${_performanceClosedLotsFinal.length === 1 ? '' : 's'} passed strict checks. This sample PnL is not used for profit skill, wallet score, or official win rate.`,
+      excludedFrom: _publicSamplePerformanceReadExcludedFrom,
+    }
+    : {
+      status: 'unavailable',
+      sampleLocked: true,
+      closedLots: 0,
+      realizedPnlUsd: null,
+      realizedPnlPercent: null,
+      avgPnlUsdPerLot: null,
+      avgReturnPercentPerLot: null,
+      medianReturnPercent: null,
+      winRatePercent: null,
+      label: 'Limited public PnL sample',
+      warning: 'Limited sample — not enough to prove profit skill.',
+      reason: 'No public-grade performance lots are usable.',
+      excludedFrom: _publicSamplePerformanceReadExcludedFrom,
+    }
+
   // LOW-VALUE-RECOVERY-FIX: surfaces the (now evidence-gated, not value-tier-gated) capped
   // targeted recovery pass above — SYNTH-RECOVERY-FIX-12's _syntheticTargetExtra* mechanism — under
   // a dedicated debug key so low/mid-value wallets are auditable the same way high-value ones are.
@@ -14703,7 +14756,11 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const sampleVerifiedButExcludedLots = _verifiedPnlClosedLotsFinal.filter(l => !classifyClosedLotForPublicPerformance(l, totalValue).performanceEligible).slice(0, 5).map(_toClosedTradeSample)
   const sampleSyntheticClosedTradeSamples = walletSyntheticClosedTradeSamples
 
-  const _publicPnlLockedForSamples = _publicPnlStatusFinal !== 'ok' || _performanceClosedLotsFinal.length === 0 || _performanceRealizedPnlUsd === null
+  // PUBLIC-SAMPLE-PNL-UNLOCK: a small-but-nonzero public-grade sample (locked_small_sample /
+  // limited_verified_sample) still has real public-grade lots — only fully scrub per-lot PnL when
+  // there are zero usable performance lots. includedInPublicStats === false (set above per lot)
+  // still hides any lot that individually failed the public-grade bar.
+  const _publicPnlLockedForSamples = _performanceClosedLotsFinal.length === 0 || _performanceRealizedPnlUsd === null
   const _sanitizePublicSampleLotsForLock = (samples: unknown) => {
     if (!Array.isArray(samples)) return
     for (const sample of samples) {
@@ -15650,6 +15707,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     publicPnlDisplayLabel: _publicPnlDisplayLabelFinal,
     publicPnlDisplayReason: _publicPnlDisplayReasonFinal,
     estimatedPerformanceRead: _estimatedPerformanceRead,
+    publicSamplePerformanceRead: _publicSamplePerformanceRead,
     winningPerformanceLots: promotedTradeStatsSummary.winningPerformanceLots ?? 0,
     losingPerformanceLots: promotedTradeStatsSummary.losingPerformanceLots ?? 0,
     breakEvenPerformanceLots: promotedTradeStatsSummary.breakEvenPerformanceLots ?? 0,
@@ -16168,6 +16226,21 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       // top-level snapshot never carries a stale public profit number once integrity is hard-invalid.
       ;(snapshot as any).publicRealizedPnlUsd = null
       ;(snapshot as any).publicPerformanceRealizedPnlUsd = null
+      if (snapshot.publicSamplePerformanceRead) {
+        snapshot.publicSamplePerformanceRead = {
+          ...snapshot.publicSamplePerformanceRead,
+          status: 'unavailable',
+          sampleLocked: true,
+          closedLots: 0,
+          realizedPnlUsd: null,
+          realizedPnlPercent: null,
+          avgPnlUsdPerLot: null,
+          avgReturnPercentPerLot: null,
+          medianReturnPercent: null,
+          winRatePercent: null,
+          reason: 'PnL integrity check failed; no public-grade performance sample can be shown.',
+        }
+      }
       if (snapshot.walletTradeStatsSummary) {
         const ts = snapshot.walletTradeStatsSummary as any
         ts.publicPnlStatus = 'open_check_integrity_invalid'
