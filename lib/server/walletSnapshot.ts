@@ -348,6 +348,38 @@ export type WalletSnapshot = {
     excludedFrom: ['profit_skill', 'wallet_score', 'official_win_rate']
   }
   publicWinRatePercent?: number | null
+  // WALLET-OPEN-PNL-1: a read-only view of open (unrealized) position PnL, computed entirely from
+  // existing FIFO open lots + estimatedPnl current-value pricing — never used for realized PnL,
+  // win rate, profit skill, or wallet score, and never unlocks any of those gates.
+  walletOpenPositionPnlRead?: {
+    status: 'available' | 'unavailable'
+    unrealizedPnlUsd: number | null
+    unrealizedPnlPercent: number | null
+    openLots: number
+    uniqueTokens: number
+    costBasisUsd: number | null
+    currentValueUsd: number | null
+    pricedTokenCount: number
+    estimateOnlyTokenCount: number
+    label: 'Open-position PnL'
+    warning: 'Unrealized only — open positions, not a closed trade result.'
+    reason: string
+    excludedFrom: ['realized_pnl', 'win_rate', 'profit_skill', 'wallet_score']
+  }
+  pnlDisplayMode?: 'realized' | 'open_position_only' | 'locked'
+  pnlDisplayLabel?: string
+  pnlDisplayReason?: string
+  // WALLET-OPEN-PNL-1: surfaces exactly which closed lots/tokens are missing real prior-buy cost
+  // basis, and what (if anything) the existing low-cost recovery passes already attempted for them.
+  missingCostBasisRead?: {
+    affectedTokens: Array<{ contract: string; symbol: string }>
+    syntheticClosedLots: number
+    unknownCostSellValueUsd: number
+    recoveryAttempted: boolean
+    recoveryResult: 'recovered' | 'not_recovered' | 'not_attempted'
+    reason: string
+    nextAction: string
+  }
   publicPnlStatus?: 'ok' | 'limited_verified_sample' | 'locked_small_sample' | 'open_check' | 'flat_estimate_only' | 'near_flat_verified_sample' | 'partial_near_flat' | 'open_check_integrity_invalid'
   publicPnlStatusReason?: string
   publicPnlDisplayLabel?: 'Limited verified sample' | 'Near-flat verified sample' | 'Open check' | 'Open check — flat/estimate-only lots excluded' | 'Open check — no public-grade performance lots' | 'Verified FIFO sample' | 'Verified FIFO sample — partial coverage' | 'PnL integrity check failed' | 'Profit skill locked — sample too small'
@@ -14725,7 +14757,15 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     ? _syntheticLotsAfterSourceLots.reduce((sum, l) => sum + (Number.isFinite(l.realizedPnlUsd) ? l.realizedPnlUsd : 0), 0)
     : null
   const _rawEstimatedCostBasisUsd = _syntheticLotsAfterSourceLots.reduce((sum, l) => sum + (Number.isFinite(l.costBasisUsd ?? NaN) ? (l.costBasisUsd ?? 0) : 0), 0)
-  const _estimatedPerformanceReadUseful = _rawEstimatedRealizedPnlUsd !== null && _syntheticLotsAfterSourceLots.length > 0 && _rawEstimatedCostBasisUsd > 0
+  // WALLET-OPEN-PNL-1 (#3): a wallet whose closed lots are all synthetic cost-basis (or whose
+  // realized PnL nets to break-even) must not show realizedPnlUsd as a useful estimate — a
+  // synthetic-cost-basis $0 reads as "verified flat trading," not "no real data."
+  const _estimatedLotsAllSynthetic = _syntheticLotsAfterSourceLots.length > 0 && _syntheticLotsAfterSourceLots.every(
+    l => l.evidence?.entrySource === 'synthetic' || (l.missingReasons ?? []).includes('fifo_backfilled_buy')
+  )
+  const _estimatedRealizedPnlIsBreakeven = _rawEstimatedRealizedPnlUsd !== null && Math.abs(_rawEstimatedRealizedPnlUsd) < 0.01
+  const _estimatedPerformanceReadSyntheticBreakeven = _estimatedLotsAllSynthetic || _estimatedRealizedPnlIsBreakeven
+  const _estimatedPerformanceReadUseful = _rawEstimatedRealizedPnlUsd !== null && _syntheticLotsAfterSourceLots.length > 0 && _rawEstimatedCostBasisUsd > 0 && !_estimatedPerformanceReadSyntheticBreakeven
   const _estimatedPerformanceReadLocked = _publicPnlStatusFinal !== 'ok' || _performanceClosedLotsFinal.length < 10
   const _estimatedPerformanceRead: NonNullable<WalletSnapshot['estimatedPerformanceRead']> = _estimatedPerformanceReadLocked && _estimatedPerformanceReadUseful
     ? {
@@ -14749,7 +14789,9 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       confidence: 'low',
       label: 'Estimated PnL',
       warning: 'Estimated only — not verified.',
-      reason: _estimatedPerformanceReadLocked ? 'No useful reconstructed cost-basis estimate is available from existing lots.' : 'Verified public PnL is available; estimated PnL is not shown as a substitute.',
+      reason: _estimatedPerformanceReadSyntheticBreakeven && _syntheticLotsAfterSourceLots.length > 0
+        ? 'Closed-lot estimate is synthetic break-even cost basis only.'
+        : _estimatedPerformanceReadLocked ? 'No useful reconstructed cost-basis estimate is available from existing lots.' : 'Verified public PnL is available; estimated PnL is not shown as a substitute.',
       excludedFrom: _estimatedPerformanceReadExcludedFrom,
     }
 
@@ -14790,6 +14832,96 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       reason: 'No public-grade performance lots are usable.',
       excludedFrom: _publicSamplePerformanceReadExcludedFrom,
     }
+
+  // WALLET-OPEN-PNL-1 (#1/#2): read-only open-position PnL, built entirely from the existing FIFO
+  // open lots + the already-computed estimatedPnl current-value pricing above — no new provider
+  // calls, no new pricing pass. Never feeds realized PnL, win rate, profit skill, or wallet score.
+  const _openLotsForRead = fifoResult.openLots ?? []
+  const _openLotUniqueTokens = new Set(_openLotsForRead.map(l => l.tokenAddress.toLowerCase())).size
+  const _openLotTokenContracts = new Set(_openLotsForRead.map(l => l.tokenAddress.toLowerCase()))
+  const _openPositionTokenReads = estimatedPnl.tokens.filter(t => _openLotTokenContracts.has(t.contract.toLowerCase()))
+  const _openPositionPricedTokenCount = _openPositionTokenReads.filter(t => t.confidence === 'high' || t.confidence === 'medium').length
+  const _openPositionEstimateOnlyTokenCount = _openLotsForRead.filter(l => l.priceSource === 'current_holding_price_open_lot_estimate').length
+  const _openPositionCostBasisUsd = _openLotsForRead.reduce((sum, l) => sum + (l.amountOpened > 0 ? l.entryValueUsd * (l.amountRemaining / l.amountOpened) : l.entryValueUsd), 0)
+  const _openPositionUnrealizedPnlUsd = estimatedPnl.unrealizedPnlUsd
+  const _openPositionCurrentValueUsd = _openPositionUnrealizedPnlUsd !== null ? _openPositionCostBasisUsd + _openPositionUnrealizedPnlUsd : null
+  const _openPositionAvailable = _openLotsForRead.length > 0 && _openPositionUnrealizedPnlUsd !== null
+  const _walletOpenPositionPnlRead: NonNullable<WalletSnapshot['walletOpenPositionPnlRead']> = _openPositionAvailable
+    ? {
+      status: 'available',
+      unrealizedPnlUsd: _openPositionUnrealizedPnlUsd,
+      unrealizedPnlPercent: _openPositionCostBasisUsd > 0 ? (_openPositionUnrealizedPnlUsd! / _openPositionCostBasisUsd) * 100 : null,
+      openLots: _openLotsForRead.length,
+      uniqueTokens: _openLotUniqueTokens,
+      costBasisUsd: _openPositionCostBasisUsd,
+      currentValueUsd: _openPositionCurrentValueUsd,
+      pricedTokenCount: _openPositionPricedTokenCount,
+      estimateOnlyTokenCount: _openPositionEstimateOnlyTokenCount,
+      label: 'Open-position PnL',
+      warning: 'Unrealized only — open positions, not a closed trade result.',
+      reason: `${_openLotsForRead.length} open lot${_openLotsForRead.length === 1 ? '' : 's'} across ${_openLotUniqueTokens} token${_openLotUniqueTokens === 1 ? '' : 's'}, priced from current holdings value. Not used for realized PnL, win rate, profit skill, or wallet score.`,
+      excludedFrom: ['realized_pnl', 'win_rate', 'profit_skill', 'wallet_score'],
+    }
+    : {
+      status: 'unavailable',
+      unrealizedPnlUsd: null,
+      unrealizedPnlPercent: null,
+      openLots: _openLotsForRead.length,
+      uniqueTokens: _openLotUniqueTokens,
+      costBasisUsd: _openLotsForRead.length > 0 ? _openPositionCostBasisUsd : null,
+      currentValueUsd: null,
+      pricedTokenCount: _openPositionPricedTokenCount,
+      estimateOnlyTokenCount: _openPositionEstimateOnlyTokenCount,
+      label: 'Open-position PnL',
+      warning: 'Unrealized only — open positions, not a closed trade result.',
+      reason: _openLotsForRead.length === 0 ? 'No open lots are currently tracked.' : 'Open lots exist but current pricing could not be resolved.',
+      excludedFrom: ['realized_pnl', 'win_rate', 'profit_skill', 'wallet_score'],
+    }
+
+  // WALLET-OPEN-PNL-1 (#2): if realized PnL is locked but open-position PnL is available, surface
+  // that distinction explicitly instead of letting the checklist read as "nothing worked."
+  const _pnlDisplayMode: NonNullable<WalletSnapshot['pnlDisplayMode']> = _publicPnlStatusFinal === 'ok'
+    ? 'realized'
+    : _walletOpenPositionPnlRead.status === 'available'
+      ? 'open_position_only'
+      : 'locked'
+  const _pnlDisplayLabel = _pnlDisplayMode === 'open_position_only'
+    ? 'Open-position PnL available — realized PnL locked'
+    : undefined
+  const _pnlDisplayReason = _pnlDisplayMode === 'open_position_only'
+    ? 'Open lots are priced, but realized PnL is locked because prior buy cost basis is missing for sold tokens.'
+    : undefined
+
+  // WALLET-OPEN-PNL-1 (#4): which closed lots/tokens are missing real prior-buy cost basis, and
+  // whether the existing low-cost recovery passes already tried to fix that — reusing the same
+  // recovery debug already computed above, not a new pass.
+  const _missingCostBasisSyntheticLots = _syntheticLotsAfterSourceLots.filter(
+    l => l.evidence?.entrySource === 'synthetic' || (l.missingReasons ?? []).includes('fifo_backfilled_buy')
+  )
+  const _missingCostBasisAffectedTokens = Array.from(new Map(_missingCostBasisSyntheticLots.map(l => {
+    const contract = l.tokenAddress.toLowerCase()
+    return [contract, { contract, symbol: l.tokenSymbol ?? contract.slice(0, 8) }]
+  })).values())
+  const _missingCostBasisUnknownSellValueUsd = _missingCostBasisSyntheticLots.reduce((sum, l) => sum + (Number.isFinite(l.proceedsUsd) ? l.proceedsUsd : 0), 0)
+  const _missingCostBasisRecoveryAttempted = _syntheticTargetExtraRecoveryAttempted || walletPnlRecoveryV2Debug.attempted
+  const _missingCostBasisRecoveryResult: NonNullable<WalletSnapshot['missingCostBasisRead']>['recoveryResult'] = !_missingCostBasisRecoveryAttempted
+    ? 'not_attempted'
+    : (_syntheticTargetExtraPriorBuysFound > 0 || walletPnlRecoveryV2Debug.priorBuysRecovered > 0) ? 'recovered' : 'not_recovered'
+  const _missingCostBasisRead: NonNullable<WalletSnapshot['missingCostBasisRead']> | null = _missingCostBasisSyntheticLots.length > 0
+    ? {
+      affectedTokens: _missingCostBasisAffectedTokens,
+      syntheticClosedLots: _missingCostBasisSyntheticLots.length,
+      unknownCostSellValueUsd: _missingCostBasisUnknownSellValueUsd,
+      recoveryAttempted: _missingCostBasisRecoveryAttempted,
+      recoveryResult: _missingCostBasisRecoveryResult,
+      reason: `${_missingCostBasisSyntheticLots.length} closed lot${_missingCostBasisSyntheticLots.length === 1 ? '' : 's'} across ${_missingCostBasisAffectedTokens.length} token${_missingCostBasisAffectedTokens.length === 1 ? '' : 's'} are missing real prior-buy cost basis, so realized PnL for those sells is locked.`,
+      nextAction: _missingCostBasisRecoveryResult === 'recovered'
+        ? 'Recovery already found at least one real prior buy; re-scan to pick up the updated lots.'
+        : _missingCostBasisRecoveryAttempted
+          ? 'Low-cost recovery already attempted and found no prior buy — scan full history for older buy evidence.'
+          : 'Run a deeper historical scan to recover the missing buy leg(s).',
+    }
+    : null
 
   // LOW-VALUE-RECOVERY-FIX: surfaces the (now evidence-gated, not value-tier-gated) capped
   // targeted recovery pass above — SYNTH-RECOVERY-FIX-12's _syntheticTargetExtra* mechanism — under
@@ -16202,6 +16334,11 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     publicPnlDisplayReason: _publicPnlDisplayReasonFinal,
     estimatedPerformanceRead: _estimatedPerformanceRead,
     publicSamplePerformanceRead: _publicSamplePerformanceRead,
+    walletOpenPositionPnlRead: _walletOpenPositionPnlRead,
+    pnlDisplayMode: _pnlDisplayMode,
+    ...(_pnlDisplayLabel ? { pnlDisplayLabel: _pnlDisplayLabel } : {}),
+    ...(_pnlDisplayReason ? { pnlDisplayReason: _pnlDisplayReason } : {}),
+    ...(_missingCostBasisRead ? { missingCostBasisRead: _missingCostBasisRead } : {}),
     winningPerformanceLots: promotedTradeStatsSummary.winningPerformanceLots ?? 0,
     losingPerformanceLots: promotedTradeStatsSummary.losingPerformanceLots ?? 0,
     breakEvenPerformanceLots: promotedTradeStatsSummary.breakEvenPerformanceLots ?? 0,

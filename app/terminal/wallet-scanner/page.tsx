@@ -234,6 +234,33 @@ type WalletResult = {
     reason: string
     excludedFrom: ['profit_skill', 'wallet_score', 'official_win_rate']
   }
+  walletOpenPositionPnlRead?: {
+    status: 'available' | 'unavailable'
+    unrealizedPnlUsd: number | null
+    unrealizedPnlPercent: number | null
+    openLots: number
+    uniqueTokens: number
+    costBasisUsd: number | null
+    currentValueUsd: number | null
+    pricedTokenCount: number
+    estimateOnlyTokenCount: number
+    label: 'Open-position PnL'
+    warning: string
+    reason: string
+    excludedFrom: string[]
+  }
+  pnlDisplayMode?: 'realized' | 'open_position_only' | 'locked'
+  pnlDisplayLabel?: string
+  pnlDisplayReason?: string
+  missingCostBasisRead?: {
+    affectedTokens: Array<{ contract: string; symbol: string }>
+    syntheticClosedLots: number
+    unknownCostSellValueUsd: number
+    recoveryAttempted: boolean
+    recoveryResult: 'recovered' | 'not_recovered' | 'not_attempted'
+    reason: string
+    nextAction: string
+  }
   walletRecoveryRecommendation?: {
     recommended: boolean
     mode: 'targeted_token_recovery' | 'targeted_recovery_attempted' | 'attempted_light' | 'attempted_provider_failed' | 'skipped_cost_guard' | 'skipped_micro_wallet' | 'none'
@@ -2611,18 +2638,34 @@ export default function WalletScannerPage() {
                       if (openedLots > 0 && pricedEvents > 0) return 'partial' as const
                       return mc.fifoPnL.status
                     })() },
-                    { label: result.walletNoPnlReason ? 'PnL' : 'Trade stats', note: (() => {
-                      if (result.walletNoPnlReason && mc.tradeStats.closedLots === 0) {
-                        return `locked because ${result.walletNoPnlReasonLabel ?? result.walletNoPnlReason.replace(/_/g, ' ')}${result.walletNoPnlNextAction ? ` — ${result.walletNoPnlNextAction}` : ''}`
-                      }
-                      const tradeClosedLots = mc.tradeStats.closedLots
-                      const tradeOpenedLots = mc.tradeStats.openedLots ?? 0
-                      if (tradeClosedLots > 0) return `${tradeClosedLots} verified trades` + ((mc.tradeStats.excludedLots ?? 0) > 0 ? ` · ${mc.tradeStats.excludedLots} excluded` : '') + (mc.tradeStats.readyForWinRate ? '' : ' — below threshold')
-                      if ((mc.tradeStats.excludedLots ?? 0) > 0) return `Verified stats locked — ${mc.tradeStats.excludedLots} estimate-only/synthetic lots excluded`
-                      if (tradeOpenedLots > 0) return `no verified trades yet — ${tradeOpenedLots} open lot${tradeOpenedLots !== 1 ? 's' : ''} tracked`
-                      if (mc.swapDetection.candidateCount > 0 && (mc.priceEvidence?.pricedEvents ?? 0) === 0) return 'no verified closed lots'
-                      return 'no verified trades for stats yet'
-                    })(), status: mc.tradeStats.status },
+                    // WALLET-OPEN-PNL-1: when open-position PnL is priced and available but realized
+                    // PnL is locked, show it explicitly instead of letting the checklist read as a
+                    // dead end — a $103k wallet with 4 priced open lots should not look like "nothing
+                    // worked" just because realized PnL is correctly locked for missing cost basis.
+                    ...(result.pnlDisplayMode === 'open_position_only' && result.walletOpenPositionPnlRead?.status === 'available' ? [
+                      { label: 'Open PnL', note: (() => {
+                          const v = result.walletOpenPositionPnlRead!.unrealizedPnlUsd ?? 0
+                          const sign = v >= 0 ? '+' : ''
+                          return `${sign}$${Math.abs(v).toLocaleString(undefined, { maximumFractionDigits: 0 })} unrealized, partial`
+                        })(), status: 'partial' as const },
+                      { label: 'Realized PnL', note: result.missingCostBasisRead
+                          ? `Locked — missing prior buys for ${result.missingCostBasisRead.syntheticClosedLots} sell${result.missingCostBasisRead.syntheticClosedLots !== 1 ? 's' : ''}`
+                          : (result.walletNoPnlReasonLabel ? `Locked — ${result.walletNoPnlReasonLabel.toLowerCase()}` : 'Locked'), status: 'open_check' as const },
+                      { label: 'Trade Stats', note: 'Not proven — closed lots are synthetic cost-basis only', status: 'open_check' as const },
+                    ] : [
+                      { label: result.walletNoPnlReason ? 'PnL' : 'Trade stats', note: (() => {
+                          if (result.walletNoPnlReason && mc.tradeStats.closedLots === 0) {
+                            return `locked because ${result.walletNoPnlReasonLabel ?? result.walletNoPnlReason.replace(/_/g, ' ')}${result.walletNoPnlNextAction ? ` — ${result.walletNoPnlNextAction}` : ''}`
+                          }
+                          const tradeClosedLots = mc.tradeStats.closedLots
+                          const tradeOpenedLots = mc.tradeStats.openedLots ?? 0
+                          if (tradeClosedLots > 0) return `${tradeClosedLots} verified trades` + ((mc.tradeStats.excludedLots ?? 0) > 0 ? ` · ${mc.tradeStats.excludedLots} excluded` : '') + (mc.tradeStats.readyForWinRate ? '' : ' — below threshold')
+                          if ((mc.tradeStats.excludedLots ?? 0) > 0) return `Verified stats locked — ${mc.tradeStats.excludedLots} estimate-only/synthetic lots excluded`
+                          if (tradeOpenedLots > 0) return `no verified trades yet — ${tradeOpenedLots} open lot${tradeOpenedLots !== 1 ? 's' : ''} tracked`
+                          if (mc.swapDetection.candidateCount > 0 && (mc.priceEvidence?.pricedEvents ?? 0) === 0) return 'no verified closed lots'
+                          return 'no verified trades for stats yet'
+                        })(), status: mc.tradeStats.status },
+                    ]),
                   ]),
                 ]
 
