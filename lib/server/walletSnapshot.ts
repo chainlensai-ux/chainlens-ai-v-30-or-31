@@ -1068,6 +1068,29 @@ export type WalletSnapshot = {
       goldrushBalancesSkipped: boolean
       deepScan: boolean
     }
+    walletHoldingsProviderRoutingDebug?: {
+      moralisConfigured: boolean
+      moralisAttempted: boolean
+      moralisUsable: boolean
+      moralisSkippedReason: string | null
+      moralisRawHoldingsCount: number
+      moralisNormalizedHoldingsCount: number
+      zerionConfigured: boolean
+      zerionAttempted: boolean
+      zerionUsable: boolean
+      zerionSkippedReason: string | null
+      zerionRawHoldingsCount: number
+      zerionNormalizedHoldingsCount: number
+      goldrushAttempted: boolean
+      goldrushUsable: boolean
+      goldrushSkippedReason: string | null
+      goldrushRawHoldingsCount: number
+      goldrushNormalizedHoldingsCount: number
+      selectedProvider: 'moralis' | 'zerion' | 'goldrush' | 'none'
+      selectedReason: string
+      fallbackUsed: boolean
+      fallbackReason: string | null
+    }
     walletActivityRequestDebug?: {
       primaryActivityAttempted: boolean
       primaryActivityFailed: boolean
@@ -11263,8 +11286,10 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const rawPos: any[] = positionsRes.status === 'fulfilled' ? (positionsRes.value?.data ?? []) : []
   const _zerionPositionsUsable = rawPos.length > 0
 
-  // Moralis holdings are fetched once in the multi-chain holdings phase below.
-  const _moralisResult: MoralisFetchResult = { holdings: [], attempted: false, usable: false, cacheHit: false, reason: 'moralis_warmup_removed' }
+  // Moralis holdings are fetched once in the multi-chain holdings phase below (after chain discovery).
+  // _moralisHoldingsUsable starts false and only flips true there if a real Moralis call returns
+  // priced holdings — at this point in the function nothing has called Moralis yet, so this is not a
+  // disabled/fake state, just "not attempted yet".
   let _moralisHoldingsUsable = false
 
   // ── Track Phase 1 provider calls ──
@@ -11285,24 +11310,18 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     const _ak6 = `alchemy:behavior:to:base:${addrNorm}`;   if (!_alchemyDedup.has(_ak6)) { _alchemyDedup.add(_ak6); _trackCall('alchemy', 'behavior_getAssetTransfers', false, _ak6) }
   }
 
-  // ── Provider selection: Moralis (primary) → Zerion positions (fallback) → GoldRush ──
+  // ── Provider selection: Moralis (primary, fetched below after chain discovery) → Zerion positions
+  // (provisional fallback, used here so we have holdings to show before Moralis runs) → GoldRush
+  // (final fallback). Moralis has not been called yet at this point, so the only real choice here is
+  // Zerion vs. nothing; Moralis overrides this provisional selection further down if it returns data.
   let holdings: Holding[] = []
   let totalValue = 0
   let providerUsed: 'portfolio_layer' | 'holdings_layer' | 'fallback_layer' | 'unverified' | 'none' = 'none'
   let providerStatus: 'ok' | 'partial' | 'failed' = 'failed'
   let reason = ''
 
-  if (_moralisHoldingsUsable) {
-    // Moralis is primary — use its holdings with Zerion portfolio value when available
-    holdings = _moralisResult.holdings as Holding[]
-    totalValue = _zerionValueUsable
-      ? _zerionPortfolioTotal!
-      : holdings.reduce((s, h) => s + h.value, 0)
-    providerUsed = _zerionValueUsable ? 'portfolio_layer' : 'holdings_layer'
-    providerStatus = _zerionValueUsable ? 'ok' : 'partial'
-    if (!_zerionValueUsable) reason = 'Portfolio value estimated from holdings — could not verify total.'
-  } else if (_zerionPositionsUsable) {
-    // Moralis failed — use Zerion positions as fallback_layer for holdings
+  if (_zerionPositionsUsable) {
+    // Provisional: Zerion positions as fallback_layer holdings, pending the real Moralis call below.
     holdings = rawPos
       .map((pos) => {
         const a  = pos.attributes ?? {}
@@ -11386,12 +11405,16 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _lowBalanceOverrideUsed = chainMode === 'auto' && _activeChainsAfterValueGate.length === 0
   const _fallbackChainsUsed: MoralisChain[] = _lowBalanceOverrideUsed ? [...activeChains] : []
 
-  // Moralis holdings layer for active chains.
+  // Moralis holdings layer for active chains. Set MORALIS_HOLDINGS_DISABLED=1 to explicitly turn this
+  // off (e.g. cost guard) without leaving an ambiguous "configured but always empty" state — routing
+  // diagnostics below report the disabled state honestly instead of implying a failed call.
   let grEthRes: PromiseSettledResult<Holding[]>
   let grBaseRes: PromiseSettledResult<Holding[]>
   const _moralisByChain = new Map<MoralisChain, MoralisFetchResult>()
   let _moralisUsed = false
-  if (Boolean(process.env.MORALIS_API_KEY)) {
+  const _moralisConfigured = Boolean(process.env.MORALIS_API_KEY)
+  const _moralisHoldingsDisabled = process.env.MORALIS_HOLDINGS_DISABLED === '1'
+  if (_moralisConfigured && !_moralisHoldingsDisabled) {
     // Fetch all active chain balances in parallel instead of sequentially
     await Promise.allSettled(activeChains.map(async (c) => {
       const _mbRes = await fetchMoralisBalances(addr, c)
@@ -11410,6 +11433,17 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       _moralisHoldingsUsable = true
     }
   }
+  const _moralisChainResultsFinal = [..._moralisByChain.values()]
+  const _moralisAttemptedFinal = _moralisChainResultsFinal.some((r) => r.attempted)
+  const _moralisFailedFinal = _moralisChainResultsFinal.some((r) => r.attempted && !r.usable)
+  const _moralisRawHoldingsCountFinal = _moralisChainResultsFinal.reduce((n, r) => n + r.holdings.length, 0)
+  const _moralisSkippedReasonFinal: string | null =
+    !_moralisConfigured ? 'moralis_not_configured'
+    : _moralisHoldingsDisabled ? 'moralis_holdings_disabled'
+    : _moralisUsed ? null
+    : _moralisFailedFinal ? 'moralis_failed'
+    : _moralisAttemptedFinal ? 'moralis_empty_response'
+    : 'moralis_skipped_cost_guard'
   // GoldRush balances fallback only when Moralis has no usable holdings for active chains, or deepScan=true.
   const _goldrushBalancesSkipped = !deepScan && _moralisUsed
   const _goldrushSkippedReason = _goldrushBalancesSkipped ? 'moralis_holdings_available' : null
@@ -11427,19 +11461,28 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   }
   const _grPrimaryAttempted = Boolean(GOLDRUSH_KEY) && (deepScan || !_moralisUsed)
   const _preFallbackReason = reason
-  const _grPrimaryUsable = false
+  // _grHoldingsRescueCount/_goldrushHoldingsUsed reflect whether GoldRush balances actually ended up
+  // populating holdings as the final fallback layer — previously _grPrimaryUsable was hardcoded false,
+  // which made providerFallback.primaryUsable/tertiaryUsed report false even when GoldRush had in fact
+  // supplied the holdings, contradicting the real selected provider.
+  let _goldrushHoldingsUsed = false
+  let _grHoldingsRescueCount = 0
   if (holdings.length === 0) {
     const grHoldings = [
       ...(grEthRes.status === 'fulfilled' ? grEthRes.value : []),
       ...(grBaseRes.status === 'fulfilled' ? grBaseRes.value : []),
     ].sort((a, b) => b.value - a.value)
+    _grHoldingsRescueCount = grHoldings.length
     if (grHoldings.length > 0) {
       holdings = grHoldings
       totalValue = holdings.reduce((s, h) => s + h.value, 0)
+      providerUsed = 'fallback_layer'
       providerStatus = 'partial'
       reason = ''
+      _goldrushHoldingsUsed = true
     }
   }
+  const _grPrimaryUsable = _goldrushHoldingsUsed
 
   if (holdings.length === 0 && !reason) {
     reason = 'No token balances found on supported chains.'
@@ -11545,7 +11588,6 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   tokenMeter.measure('providerFetch', {
     portfolioRes,
     positionsRes,
-    moralisResult: _moralisResult,
     moralisByChain: [..._moralisByChain.entries()],
     goldrushBalances: [grEthRes, grBaseRes],
     holdings,
@@ -14884,6 +14926,60 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     deepScan,
   }
 
+  // HOLDINGS-PROVIDER-ROUTING-HONESTY: separates "is Moralis configured" from "did Moralis actually
+  // resolve holdings this scan" so public/debug fields can never claim Moralis when Zerion or
+  // GoldRush were the ones that actually supplied the holdings array (or vice versa). selectedProvider
+  // is derived from the same flags that decided `holdings` above — moralis override wins if it ran and
+  // returned data, then the goldrush rescue, then the provisional Zerion fallback, else none.
+  const _zerionConfiguredForRouting = Boolean(ZERION_KEY)
+  const _zerionUsableForRouting = _zerionValueUsable || _zerionPositionsUsable
+  const _zerionNormalizedHoldingsCountForRouting = rawPos.filter((pos) => ((pos.attributes ?? {}).value ?? 0) > 0.01).length
+  const _zerionSkippedReasonForRouting: string | null = !_zerionConfiguredForRouting
+    ? 'zerion_not_configured'
+    : _zerionUsableForRouting ? null : 'zerion_empty_response'
+  const _goldrushConfiguredForRouting = Boolean(GOLDRUSH_KEY)
+  const _goldrushSkippedReasonForRouting: string | null = !_goldrushConfiguredForRouting
+    ? 'goldrush_not_configured'
+    : !_grPrimaryAttempted ? 'goldrush_holdings_available_elsewhere'
+    : _goldrushHoldingsUsed ? null
+    : 'goldrush_empty_response'
+  const _selectedHoldingsProvider: 'moralis' | 'zerion' | 'goldrush' | 'none' =
+    _moralisUsed ? 'moralis'
+    : _goldrushHoldingsUsed ? 'goldrush'
+    : (providerUsed === 'fallback_layer' && _zerionUsableForRouting && holdings.length > 0) ? 'zerion'
+    : 'none'
+  const _selectedReasonForRouting: string = _selectedHoldingsProvider === 'moralis'
+    ? `moralis returned ${_moralisRawHoldingsCountFinal} priced holdings across ${activeChains.length} active chain(s)`
+    : _selectedHoldingsProvider === 'zerion'
+    ? 'moralis unusable — zerion fallback layer holdings used'
+    : _selectedHoldingsProvider === 'goldrush'
+    ? 'moralis and zerion unusable — goldrush balances used as final fallback'
+    : 'no provider returned usable holdings'
+  const _fallbackUsedForRouting = _selectedHoldingsProvider !== 'moralis'
+  const walletHoldingsProviderRoutingDebug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['walletHoldingsProviderRoutingDebug']> = {
+    moralisConfigured: _moralisConfigured,
+    moralisAttempted: _moralisAttemptedFinal,
+    moralisUsable: _moralisHoldingsUsable,
+    moralisSkippedReason: _moralisSkippedReasonFinal,
+    moralisRawHoldingsCount: _moralisRawHoldingsCountFinal,
+    moralisNormalizedHoldingsCount: _moralisRawHoldingsCountFinal,
+    zerionConfigured: _zerionConfiguredForRouting,
+    zerionAttempted: _zerionConfiguredForRouting,
+    zerionUsable: _zerionUsableForRouting,
+    zerionSkippedReason: _zerionSkippedReasonForRouting,
+    zerionRawHoldingsCount: rawPos.length,
+    zerionNormalizedHoldingsCount: _zerionNormalizedHoldingsCountForRouting,
+    goldrushAttempted: _grPrimaryAttempted,
+    goldrushUsable: _goldrushHoldingsUsed,
+    goldrushSkippedReason: _goldrushSkippedReasonForRouting,
+    goldrushRawHoldingsCount: _grHoldingsRescueCount,
+    goldrushNormalizedHoldingsCount: _grHoldingsRescueCount,
+    selectedProvider: _selectedHoldingsProvider,
+    selectedReason: _selectedReasonForRouting,
+    fallbackUsed: _fallbackUsedForRouting,
+    fallbackReason: _fallbackUsedForRouting ? (_moralisSkippedReasonFinal ?? 'moralis_unusable') : null,
+  }
+
   const hasHistory = estimatedPnl.status !== 'unavailable'
   const snapshotTtlMs = hasHistory ? SNAPSHOT_HISTORY_TTL_MS : SNAPSHOT_TTL_MS
   const { facts: walletFacts, walletActivitySummary: _walletActivitySummary, debug: _walletFactsDebug } = buildWalletFacts(holdings, totalValue, _swapEvidenceWithDetection, addrNorm, _performanceClosedLotsFinal.length, _pnlUnavailableReasonFinal === 'missing_cost_basis')
@@ -15854,6 +15950,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
           : 'fallback_base_eth',
       },
       walletProviderRouting,
+      walletHoldingsProviderRoutingDebug,
       walletActivityRequestDebug: {
         primaryActivityAttempted,
         primaryActivityFailed,

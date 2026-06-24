@@ -22,6 +22,17 @@ function normalizeCachedFreshness(cp: any): any {
   if (cp && typeof cp === 'object' && cp.walletProfileDebug && typeof cp.walletProfileDebug === 'object') {
     cp.walletProfileDebug = { ...cp.walletProfileDebug, cacheSource: 'memory_cache' }
   }
+  // HOLDINGS-PROVIDER-ROUTING-HONESTY: a cached snapshot already carries the holdings provider that
+  // was actually selected when it was live-fetched (providerUsed/portfolioSource/
+  // walletHoldingsProviderRoutingDebug.selectedProvider) — preserve those as-is, just make sure
+  // walletModuleCoverageRaw.portfolioProvider (re-derived per request in this route file, not stored
+  // verbatim) can't disagree with the cached selection by falling back to a "configured" guess.
+  if (cp && typeof cp === 'object' && cp.walletModuleCoverageRaw && typeof cp.walletModuleCoverageRaw === 'object') {
+    const _cachedSelected = cp._diagnostics?.walletHoldingsProviderRoutingDebug?.selectedProvider
+    if (_cachedSelected) {
+      cp.walletModuleCoverageRaw = { ...cp.walletModuleCoverageRaw, portfolioProvider: _cachedSelected }
+    }
+  }
   return cp
 }
 
@@ -1605,7 +1616,10 @@ export async function POST(req: Request) {
         },
         apiAudit: snapshot._diagnostics?.apiAudit ?? null,
         walletModuleCoverageRaw: {
-          portfolioProvider: providers.goldrush?.configured ? 'goldrush' : providers.zerion?.configured ? 'zerion' : 'none',
+          // Reflects the holdings provider actually selected this scan (walletHoldingsProviderRoutingDebug),
+          // not just which providers are configured — "configured" doesn't mean "used".
+          portfolioProvider: snapshot._diagnostics?.walletHoldingsProviderRoutingDebug?.selectedProvider
+            ?? (providers.goldrush?.configured ? 'goldrush' : providers.zerion?.configured ? 'zerion' : 'none'),
           activityProvider: snapshot._diagnostics?.walletActivityFallbackDebug?.fallbackActivityProvider ?? (providers.goldrush?.configured ? 'goldrush' : 'none'),
           swapDetectionSource: 'wallet_snapshot_engine',
           priceSource: 'price_at_time_cache',
@@ -1805,8 +1819,10 @@ export async function POST(req: Request) {
       }
     }
     if (!debug) {
-      ;snapshot.providerUsed = 'holdings_layer'
-      ;snapshot.portfolioSource = 'portfolio_layer'
+      // HOLDINGS-PROVIDER-ROUTING-HONESTY: previously this forced providerUsed/portfolioSource to the
+      // literal 'holdings_layer'/'portfolio_layer' on every non-debug response, even when the actual
+      // selected provider was the Zerion or GoldRush fallback layer — preserve the real values computed
+      // in walletSnapshot.ts instead of overwriting them with a provider-agnostic guess.
       ;snapshot.behaviorSource = snapshot.behaviorSource === 'unavailable' ? 'unavailable' : 'activity_layer'
       ;snapshot.pnlSource = snapshot.pnlSource === 'unavailable' ? 'unavailable' : 'activity_layer'
     }
