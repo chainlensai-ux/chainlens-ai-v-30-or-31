@@ -2088,6 +2088,15 @@ export type WalletSnapshot = {
       providerCallsMade: string[]
       evidenceEvents: number
       finalEvidenceStatus: string
+      // WALLET-ETH-ACTIVITY-GATE-1: canonical per-chain value map (built from the final, merged
+      // holdings) and the gate's input/decision trail, so the eligibility decision can never
+      // silently disagree with chainExposure/selectedPrimaryChain.
+      canonicalChainValueByChain: Record<string, number>
+      chainValueSource: string
+      ethValueSource: string
+      activityGateInputValues: { ethValueUsd: number; baseValueUsd: number; ethActivityThresholdUsd: number; ethIsDominantChain: boolean }
+      activityGateDecisions: { ethDeferredActivityCandidate: boolean; ethClearsActivityGate: boolean; ethActivityEligible: boolean }
+      contradictionFlags: string[]
     }
     walletChainActivityMergeDebug?: {
       chainMode: string
@@ -2103,6 +2112,7 @@ export type WalletSnapshot = {
       selectedPrimaryChain: string
       reasonPrimaryChainSelected: string
       baseOnlyActivityWouldBeMisleading: boolean
+      baseOnlyActivityWouldBeMisleadingReason: string | null
       ethSkippedReason: string | null
       baseSkippedReason: string | null
       sampleEthEvents: Array<{ txHash: string | null; symbol: string; direction: string; chain: string }>
@@ -11859,16 +11869,46 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // and discovered ETH holdings clear a meaningful activity threshold (not just dust). Skips the
   // credit burn for Base-heavy wallets that hold only a few dollars of ETH.
   let _goldrushEthSkippedReason: string | null = null
-  const _ethDiscoveredValue = discoveredChains.find(c => c.chain === 'eth')?.usdValue ?? 0
+  // WALLET-ETH-ACTIVITY-GATE-1: `discoveredChains` above was computed from `holdings` BEFORE the
+  // Moralis holdings merge and GoldRush balances rescue could reassign `holdings`/`totalValue` —
+  // using that stale snapshot here could report ethValueUsd=0 for a wallet whose final, canonical
+  // holdings are ETH-dominant. Recompute the per-chain value map from the current (already merged)
+  // `holdings`, with the same mapChain normalization used everywhere else, so this gate always
+  // agrees with chainExposure/selectedPrimaryChain — no new provider calls, just a single reuse of
+  // the holdings already fetched above.
+  const _canonicalChainValueByChain: Record<string, number> = {}
+  for (const h of holdings) {
+    const mapped = mapChain(String(h.chain ?? ''))
+    if (!mapped) continue
+    _canonicalChainValueByChain[mapped] = (_canonicalChainValueByChain[mapped] ?? 0) + (h.value ?? 0)
+  }
+  const _chainValueSource = 'final_merged_holdings'
+  const _ethValueSource = 'canonical_chain_value_map'
+  const _ethDiscoveredValue = _canonicalChainValueByChain.eth ?? 0
   const _ethActivityThresholdUsd = Math.max(10, totalValue * 0.02)
-  const _ethIsDominantChain = discoveredChains.length > 0 && discoveredChains[0].chain === 'eth'
+  const _canonicalChainEntriesSorted = Object.entries(_canonicalChainValueByChain).sort((a, b) => b[1] - a[1])
+  const _ethIsDominantChain = _canonicalChainEntriesSorted.length > 0 && _canonicalChainEntriesSorted[0][0] === 'eth'
   const _ethClearsActivityGate = _ethDiscoveredValue >= _ethActivityThresholdUsd || _ethIsDominantChain
   const _ethDeferredActivityCandidate = activityRequested && Boolean(GOLDRUSH_KEY) && !_shouldFetchGrEthEager
     && (chainMode === 'base_eth' || chainMode === 'all_supported')
   const _ethActivityEligible = _shouldFetchGrEthEager || (_ethDeferredActivityCandidate && _ethClearsActivityGate)
-  const _ethActivitySkippedReason = _ethDeferredActivityCandidate && !_ethClearsActivityGate
-    ? 'eth_below_activity_value_gate'
-    : null
+  const _ethActivitySkippedReason: string | null = _ethActivityEligible
+    ? null
+    : !activityRequested
+      ? null
+      : !Boolean(GOLDRUSH_KEY)
+        ? 'provider_unavailable'
+        : _ethDeferredActivityCandidate && !_ethClearsActivityGate
+          ? 'eth_below_activity_value_gate'
+          : (chainMode !== 'base_eth' && chainMode !== 'all_supported' && chainMode !== 'eth' && requestedChain !== 'eth')
+            ? 'unsupported_chain'
+            : null
+  // Impossible-by-construction now that ethValueUsd comes from the canonical map, but kept as an
+  // explicit, surfaced check rather than a silent assumption.
+  const _ethGateContradictionFlags: string[] = []
+  if (_ethActivitySkippedReason === 'eth_below_activity_value_gate' && _ethDiscoveredValue === 0 && _ethIsDominantChain) {
+    _ethGateContradictionFlags.push('eth_below_activity_value_gate_with_dominant_eth_value')
+  }
   const _grEthDeferredEligible = _ethDeferredActivityCandidate && _ethClearsActivityGate
   if (_grEthDeferredEligible) {
     _trackCall('goldrush', 'transactions_v3', false, `gr:tx3:eth:${addrNorm}`)
@@ -15802,6 +15842,21 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       ],
       evidenceEvents: walletEvidenceSummary.totalEvents,
       finalEvidenceStatus: walletEvidenceSummary.status,
+      canonicalChainValueByChain: _canonicalChainValueByChain,
+      chainValueSource: _chainValueSource,
+      ethValueSource: _ethValueSource,
+      activityGateInputValues: {
+        ethValueUsd: _ethDiscoveredValue,
+        baseValueUsd: _canonicalChainValueByChain.base ?? 0,
+        ethActivityThresholdUsd: _ethActivityThresholdUsd,
+        ethIsDominantChain: _ethIsDominantChain,
+      },
+      activityGateDecisions: {
+        ethDeferredActivityCandidate: _ethDeferredActivityCandidate,
+        ethClearsActivityGate: _ethClearsActivityGate,
+        ethActivityEligible: _ethActivityEligible,
+      },
+      contradictionFlags: _ethGateContradictionFlags,
     }
   })()
 
@@ -15821,17 +15876,19 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     const _actChainsForMerge: string[] = []
     if (_ethAttempted) _actChainsForMerge.push('eth')
     if (_baseAttempted) _actChainsForMerge.push('base')
-    // Compute portfolio value by chain directly from holdings using the same strip logic as walletFacts
-    // so 'eth-mainnet' → 'eth', 'ethereum' → 'eth', etc. — avoids mapChain returning null for some formats
-    let _ethTotalValue = 0, _baseTotalValue = 0
-    for (const h of holdings) {
-      const _hc = (h.chain ?? '').toLowerCase().replace(/-mainnet$/, '')
-      if (_hc === 'eth' || _hc.includes('ethereum')) _ethTotalValue += h.value ?? 0
-      else if (_hc === 'base' || _hc.includes('base')) _baseTotalValue += h.value ?? 0
-    }
+    // WALLET-ETH-ACTIVITY-GATE-1: reuse the same canonical chain-value map used for the ETH
+    // activity gate above instead of a second, independent eth/base value computation — one
+    // source of truth for activity gating, primary-chain selection, and debug.
+    const _ethTotalValue = _canonicalChainValueByChain.eth ?? 0
+    const _baseTotalValue = _canonicalChainValueByChain.base ?? 0
     const _primaryChain = _ethTotalValue > _baseTotalValue ? 'eth' : 'base'
     const _baseOnlyMisleading = _ethTotalValue > 1 && _baseEvCount > 0 && _ethEvCount === 0
       && (_ethTotalValue / Math.max(_ethTotalValue + _baseTotalValue, 1)) > 0.5
+    const _baseOnlyMisleadingReason = !_baseOnlyMisleading
+      ? null
+      : _ethAttempted
+        ? null
+        : (_ethActivitySkippedReason ?? _goldrushEthSkippedReason ?? 'eth_activity_not_scanned_budget_or_provider_safety')
     const _ethGateSkippedReason = (
       _ethActivitySkippedReason === 'eth_below_activity_value_gate' ||
       _goldrushEthSkippedReason === 'eth_below_activity_value_gate'
@@ -15872,6 +15929,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       selectedPrimaryChain: _primaryChain,
       reasonPrimaryChainSelected: _reasonPrimary,
       baseOnlyActivityWouldBeMisleading: _baseOnlyMisleading,
+      baseOnlyActivityWouldBeMisleadingReason: _baseOnlyMisleadingReason,
       ethSkippedReason: _ethSkipReason,
       baseSkippedReason: _baseSkipReason,
       sampleEthEvents: _toSample(_sampleEth),
