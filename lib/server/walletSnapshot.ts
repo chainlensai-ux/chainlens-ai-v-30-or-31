@@ -1091,6 +1091,28 @@ export type WalletSnapshot = {
       fallbackUsed: boolean
       fallbackReason: string | null
     }
+    walletHoldingsRoutingDebug?: {
+      moralisHoldingsAttempted: boolean
+      moralisHoldingsCallCount: number
+      moralisHoldingsCacheHit: boolean
+      moralisHoldingsReturned: number
+      moralisHoldingsNormalized: number
+      moralisHoldingsUsable: boolean
+      moralisHoldingsRejectedReason: string | null
+      fallbackHoldingsAvailable: boolean
+      fallbackHoldingsCount: number
+      fallbackTotalValue: number | null
+      selectedHoldingsLayer: 'moralis' | 'fallback' | 'merged' | 'none'
+      selectedHoldingsReason: string
+      fallbackUsed: boolean
+      fallbackReason: string | null
+      mergedHoldingsCount: number | null
+      moralisPositionsMerged: number
+      fallbackPositionsKept: number
+      duplicatePositionsRemoved: number
+      holdingsCount: number
+      totalValue: number | null
+    }
     walletActivityRequestDebug?: {
       primaryActivityAttempted: boolean
       primaryActivityFailed: boolean
@@ -11414,23 +11436,76 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   let _moralisUsed = false
   const _moralisConfigured = Boolean(process.env.MORALIS_API_KEY)
   const _moralisHoldingsDisabled = process.env.MORALIS_HOLDINGS_DISABLED === '1'
+  // Fallback holdings as computed before Moralis runs — the provisional Zerion fallback_layer
+  // (or empty). Captured so the coverage-aware merge below can tell exactly which positions came
+  // from the fallback layer vs. Moralis, without ever issuing an extra provider call.
+  const _fallbackHoldingsBeforeMoralis: Holding[] = [...holdings]
+  const _fallbackTotalValueBeforeMoralis = totalValue
+  let _moralisNormalizedHoldings: Holding[] = []
+  let _moralisRejectedReasonFinal: string | null = null
+  let _moralisPositionsMergedFinal = 0
+  let _fallbackPositionsKeptFinal = 0
+  let _duplicatePositionsRemovedFinal = 0
+  let _selectedHoldingsLayerFinal: 'moralis' | 'fallback' | 'merged' | 'none' = 'none'
   if (_moralisConfigured && !_moralisHoldingsDisabled) {
-    // Fetch all active chain balances in parallel instead of sequentially
+    // Fetch all active chain balances in parallel instead of sequentially. activeChains is already
+    // deduped per scan (line ~11388), and fetchMoralisBalances itself caches/dedupes in-flight
+    // requests per address+chain, so this can never issue more than one Moralis holdings call per
+    // active chain per scan.
     await Promise.allSettled(activeChains.map(async (c) => {
       const _mbRes = await fetchMoralisBalances(addr, c)
       _moralisByChain.set(c, _mbRes)
       _trackCall('moralis', 'erc20_holdings', _mbRes.cacheHit, `moralis:holdings:${c}:${addrNorm}`)
     }))
-    const moralisHoldings = [..._moralisByChain.values()].flatMap((r) => r.holdings).sort((a, b) => b.value - a.value)
+    const moralisHoldingsRaw = [..._moralisByChain.values()].flatMap((r) => r.holdings)
 
-    if (moralisHoldings.length > 0) {
-      holdings = moralisHoldings as Holding[]
-      totalValue = holdings.reduce((s, h) => s + h.value, 0)
+    // Strict normalization + usability: drop malformed rows individually instead of letting a few
+    // bad rows poison the whole source. A row is trusted only if it has valid token identity
+    // (contract address, or a real symbol paired with a chain) and a finite, positive balance.
+    _moralisNormalizedHoldings = (moralisHoldingsRaw as Holding[]).filter((h) => {
+      const hasIdentity = Boolean(h.contract) || (Boolean(h.symbol) && h.symbol !== '?' && Boolean(h.chain))
+      const hasPositiveBalance = Number.isFinite(h.balance) && h.balance > 0
+      const hasFiniteValue = h.value === undefined || h.value === null || Number.isFinite(h.value)
+      return hasIdentity && hasPositiveBalance && hasFiniteValue
+    }).sort((a, b) => b.value - a.value)
+
+    const _moralisTotalValueCheck = _moralisNormalizedHoldings.reduce((s, h) => s + (h.value ?? 0), 0)
+    const _moralisUsableStrict = _moralisNormalizedHoldings.length > 0 && Number.isFinite(_moralisTotalValueCheck)
+
+    if (!_moralisUsableStrict) {
+      _moralisRejectedReasonFinal = moralisHoldingsRaw.length === 0
+        ? 'moralis_empty_holdings'
+        : 'moralis_holdings_malformed'
+    } else {
+      // Coverage-aware merge: Moralis only covers `activeChains`. Keep fallback positions for any
+      // chain Moralis did not reach, so multi-chain fallback coverage is never narrowed just
+      // because Moralis returned usable data for the chains it does cover.
+      const _moralisChainKeys = new Set(activeChains)
+      const _moralisDedupeKeys = new Set(
+        _moralisNormalizedHoldings.map((h) => `${mapChain(String(h.chain ?? ''))}:${h.contract ?? h.symbol.toLowerCase()}`)
+      )
+      const _fallbackKept = _fallbackHoldingsBeforeMoralis.filter((h) => {
+        const mapped = mapChain(String(h.chain ?? ''))
+        if (mapped && _moralisChainKeys.has(mapped)) {
+          // Moralis covers this chain — only keep the fallback row if Moralis didn't already
+          // return the same position, so the merge never double-counts a holding.
+          const key = `${mapped}:${h.contract ?? h.symbol.toLowerCase()}`
+          return !_moralisDedupeKeys.has(key)
+        }
+        return true // chain Moralis doesn't cover this scan — keep fallback coverage as-is
+      })
+
+      holdings = [..._moralisNormalizedHoldings, ..._fallbackKept]
+      totalValue = holdings.reduce((s, h) => s + (h.value ?? 0), 0)
       providerUsed = _zerionValueUsable ? 'portfolio_layer' : 'holdings_layer'
       providerStatus = _zerionValueUsable ? 'ok' : 'partial'
       reason = !_zerionValueUsable ? 'Portfolio value estimated from holdings — could not verify total.' : ''
       _moralisUsed = true
       _moralisHoldingsUsable = true
+      _moralisPositionsMergedFinal = _moralisNormalizedHoldings.length
+      _fallbackPositionsKeptFinal = _fallbackKept.length
+      _duplicatePositionsRemovedFinal = _fallbackHoldingsBeforeMoralis.length - _fallbackKept.length
+      _selectedHoldingsLayerFinal = _fallbackKept.length > 0 ? 'merged' : 'moralis'
     }
   }
   const _moralisChainResultsFinal = [..._moralisByChain.values()]
@@ -11486,6 +11561,9 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
 
   if (holdings.length === 0 && !reason) {
     reason = 'No token balances found on supported chains.'
+  }
+  if (_selectedHoldingsLayerFinal === 'none') {
+    _selectedHoldingsLayerFinal = holdings.length > 0 ? 'fallback' : 'none'
   }
 
   // Compute wallet value tier early so pricing budget and historical scan can use it
@@ -14962,7 +15040,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     moralisUsable: _moralisHoldingsUsable,
     moralisSkippedReason: _moralisSkippedReasonFinal,
     moralisRawHoldingsCount: _moralisRawHoldingsCountFinal,
-    moralisNormalizedHoldingsCount: _moralisRawHoldingsCountFinal,
+    moralisNormalizedHoldingsCount: _moralisNormalizedHoldings.length,
     zerionConfigured: _zerionConfiguredForRouting,
     zerionAttempted: _zerionConfiguredForRouting,
     zerionUsable: _zerionUsableForRouting,
@@ -14978,6 +15056,43 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     selectedReason: _selectedReasonForRouting,
     fallbackUsed: _fallbackUsedForRouting,
     fallbackReason: _fallbackUsedForRouting ? (_moralisSkippedReasonFinal ?? 'moralis_unusable') : null,
+  }
+
+  // walletHoldingsRoutingDebug: coverage-aware Moralis-vs-fallback routing diagnostics. Distinct from
+  // walletHoldingsProviderRoutingDebug above (which predates the merge model) — this one explains
+  // exactly why Moralis holdings were used, merged, or rejected, and proves no extra Moralis calls
+  // were made beyond one attempt per active chain.
+  const _moralisHoldingsCallCountFinal = [..._moralisByChain.values()].filter((r) => r.attempted).length
+  const _moralisHoldingsCacheHitFinal = [..._moralisByChain.values()].some((r) => r.cacheHit)
+  const walletHoldingsRoutingDebug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['walletHoldingsRoutingDebug']> = {
+    moralisHoldingsAttempted: _moralisAttemptedFinal,
+    moralisHoldingsCallCount: _moralisHoldingsCallCountFinal,
+    moralisHoldingsCacheHit: _moralisHoldingsCacheHitFinal,
+    moralisHoldingsReturned: _moralisRawHoldingsCountFinal,
+    moralisHoldingsNormalized: _moralisNormalizedHoldings.length,
+    moralisHoldingsUsable: _moralisHoldingsUsable,
+    moralisHoldingsRejectedReason: _moralisRejectedReasonFinal,
+    fallbackHoldingsAvailable: _fallbackHoldingsBeforeMoralis.length > 0,
+    fallbackHoldingsCount: _fallbackHoldingsBeforeMoralis.length,
+    fallbackTotalValue: _fallbackHoldingsBeforeMoralis.length > 0 ? _fallbackTotalValueBeforeMoralis : null,
+    selectedHoldingsLayer: _selectedHoldingsLayerFinal,
+    selectedHoldingsReason: _selectedHoldingsLayerFinal === 'merged'
+      ? `moralis covered ${_moralisPositionsMergedFinal} position(s) on ${activeChains.length} active chain(s); fallback layer kept ${_fallbackPositionsKeptFinal} position(s) outside moralis coverage`
+      : _selectedHoldingsLayerFinal === 'moralis'
+      ? `moralis returned ${_moralisPositionsMergedFinal} usable position(s) across ${activeChains.length} active chain(s); no fallback positions outside moralis coverage`
+      : _selectedHoldingsLayerFinal === 'fallback'
+      ? `moralis holdings unusable (${_moralisRejectedReasonFinal ?? 'not configured or disabled'}) — fallback layer used as-is`
+      : 'no provider returned usable holdings',
+    fallbackUsed: _selectedHoldingsLayerFinal === 'fallback' || _selectedHoldingsLayerFinal === 'merged',
+    fallbackReason: _selectedHoldingsLayerFinal === 'fallback'
+      ? (_moralisRejectedReasonFinal ?? _moralisSkippedReasonFinal ?? 'moralis_unusable')
+      : null,
+    mergedHoldingsCount: _selectedHoldingsLayerFinal === 'merged' ? holdings.length : null,
+    moralisPositionsMerged: _moralisPositionsMergedFinal,
+    fallbackPositionsKept: _fallbackPositionsKeptFinal,
+    duplicatePositionsRemoved: _duplicatePositionsRemovedFinal,
+    holdingsCount: holdings.length,
+    totalValue: holdings.length > 0 ? totalValue : null,
   }
 
   const hasHistory = estimatedPnl.status !== 'unavailable'
@@ -15893,19 +16008,24 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         refreshBypassedCache: refresh, cacheAgeSeconds: null, cacheTtlSeconds: snapshotTtlMs / 1000,
         cacheVersion: SNAPSHOT_SCHEMA_VERSION, cacheBypassReason: refresh ? 'refresh' : null, debugFreshBypassedPersistentCache: false,
       },
+      // primary = Moralis (the documented primary holdings provider, see "Provider selection" comment
+      // above chain discovery); fallback = the Zerion provisional layer; tertiary = the GoldRush rescue.
+      // Previously this object had primary/fallback inverted (GoldRush reported as primary, Moralis as
+      // fallback), which produced contradictory debug like primaryUsable=false + fallbackUsed=false
+      // while the public result still showed holdings from a different layer entirely.
       providerFallback: {
-        primaryAttempted: _grPrimaryAttempted,
-        primaryUsable: _grPrimaryUsable,
-        fallbackAttempted: [..._moralisByChain.values()].some((r) => r.attempted),
-        fallbackUsed: _moralisUsed,
+        primaryAttempted: _moralisAttemptedFinal,
+        primaryUsable: _moralisHoldingsUsable,
+        fallbackAttempted: _zerionConfiguredForRouting,
+        fallbackUsed: _selectedHoldingsLayerFinal === 'fallback' && providerUsed === 'fallback_layer' && !_goldrushHoldingsUsed,
         tertiaryAttempted: _grPrimaryAttempted,
-        tertiaryUsed: !_moralisUsed && _grPrimaryUsable,
-        fallbackReason: _preFallbackReason,
+        tertiaryUsed: _goldrushHoldingsUsed,
+        fallbackReason: _selectedReasonForRouting,
         cacheHit: [..._moralisByChain.values()].some((r) => r.cacheHit),
-        reason: _moralisUsed
+        reason: _selectedHoldingsLayerFinal === 'moralis' || _selectedHoldingsLayerFinal === 'merged'
           ? 'moralis_holdings_used'
-          : holdings.length > 0
-          ? 'primary_ok'
+          : _selectedHoldingsLayerFinal === 'fallback'
+          ? (holdings.length > 0 ? 'fallback_layer_used' : 'all_providers_empty')
           : 'all_providers_empty',
       },
       moralisUsage: {
@@ -15951,6 +16071,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       },
       walletProviderRouting,
       walletHoldingsProviderRoutingDebug,
+      walletHoldingsRoutingDebug,
       walletActivityRequestDebug: {
         primaryActivityAttempted,
         primaryActivityFailed,
