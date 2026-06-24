@@ -380,6 +380,42 @@ export type WalletSnapshot = {
     reason: string
     nextAction: string
   }
+  // WALLET-PNL-READ-1: a single read hierarchy across all already-computed PnL signals — official,
+  // limited-sample, open-position, estimated transfer-flow, and raw reconstruction — so a wallet
+  // with real activity/holdings/estimates never displays as flatly "no PnL." No new provider calls;
+  // every field below reuses values already assembled elsewhere in this function.
+  walletPnlRead?: {
+    displayMode: 'official_realized' | 'limited_sample' | 'open_position_only' | 'estimated_transfer_flow_only' | 'raw_reconstruction_locked' | 'activity_only'
+    headlineLabel: string
+    headlineValueUsd: number | null
+    headlineWarning: string | null
+    officialRealized: { available: boolean; realizedPnlUsd: number | null; closedLots: number; reason: string }
+    limitedSample: { available: boolean; realizedPnlUsd: number | null; closedLots: number; reason: string }
+    openPosition: { available: boolean; unrealizedPnlUsd: number | null; openLots: number; reason: string }
+    estimatedTransferFlow: {
+      available: boolean
+      realizedPnlUsd: number | null
+      unrealizedPnlUsd: number | null
+      coveragePercent: number | null
+      confidence: string | null
+      source: string | null
+      method: string | null
+      label: 'Estimated transfer-flow PnL'
+      warning: 'Estimated only — not verified from matched swap cost basis.'
+      excludedFrom: ['official_realized_pnl', 'win_rate', 'profit_skill', 'wallet_score', 'verified_pnl']
+    }
+    rawReconstruction: {
+      rawClosedLots: number
+      excludedClosedLots: number
+      syntheticClosedLotsExcluded: number
+      estimateOnlyClosedLots: number
+      flatPriceClosedLotsExcluded: number
+      topFailureReasons: string[]
+      lockedReason: string
+    }
+    lockedReasons: string[]
+    excludedFrom: string[]
+  }
   publicPnlStatus?: 'ok' | 'limited_verified_sample' | 'locked_small_sample' | 'open_check' | 'flat_estimate_only' | 'near_flat_verified_sample' | 'partial_near_flat' | 'open_check_integrity_invalid'
   publicPnlStatusReason?: string
   publicPnlDisplayLabel?: 'Limited verified sample' | 'Near-flat verified sample' | 'Open check' | 'Open check — flat/estimate-only lots excluded' | 'Open check — no public-grade performance lots' | 'Verified FIFO sample' | 'Verified FIFO sample — partial coverage' | 'PnL integrity check failed' | 'Profit skill locked — sample too small'
@@ -14764,7 +14800,12 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     l => l.evidence?.entrySource === 'synthetic' || (l.missingReasons ?? []).includes('fifo_backfilled_buy')
   )
   const _estimatedRealizedPnlIsBreakeven = _rawEstimatedRealizedPnlUsd !== null && Math.abs(_rawEstimatedRealizedPnlUsd) < 0.01
-  const _estimatedPerformanceReadSyntheticBreakeven = _estimatedLotsAllSynthetic || _estimatedRealizedPnlIsBreakeven
+  // WALLET-PNL-READ-1: flat-priced or non-independent-priced (estimate-only) lots are just as
+  // unreliable as fully synthetic ones for a "useful" estimate — broaden the guard accordingly.
+  const _estimatedLotsAllFlatOrEstimateOnly = _syntheticLotsAfterSourceLots.length > 0 && _syntheticLotsAfterSourceLots.every(
+    l => l.priceIndependenceStatus === 'same_source_flat_estimate' || l.priceIndependenceStatus === 'current_price_reused' || l.priceIndependenceStatus === 'fallback_price_reused' || l.priceIndependenceStatus === 'missing_independent_price'
+  )
+  const _estimatedPerformanceReadSyntheticBreakeven = _estimatedLotsAllSynthetic || _estimatedRealizedPnlIsBreakeven || _estimatedLotsAllFlatOrEstimateOnly
   const _estimatedPerformanceReadUseful = _rawEstimatedRealizedPnlUsd !== null && _syntheticLotsAfterSourceLots.length > 0 && _rawEstimatedCostBasisUsd > 0 && !_estimatedPerformanceReadSyntheticBreakeven
   const _estimatedPerformanceReadLocked = _publicPnlStatusFinal !== 'ok' || _performanceClosedLotsFinal.length < 10
   const _estimatedPerformanceRead: NonNullable<WalletSnapshot['estimatedPerformanceRead']> = _estimatedPerformanceReadLocked && _estimatedPerformanceReadUseful
@@ -14789,9 +14830,11 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       confidence: 'low',
       label: 'Estimated PnL',
       warning: 'Estimated only — not verified.',
-      reason: _estimatedPerformanceReadSyntheticBreakeven && _syntheticLotsAfterSourceLots.length > 0
-        ? 'Closed-lot estimate is synthetic break-even cost basis only.'
-        : _estimatedPerformanceReadLocked ? 'No useful reconstructed cost-basis estimate is available from existing lots.' : 'Verified public PnL is available; estimated PnL is not shown as a substitute.',
+      reason: (_estimatedLotsAllSynthetic || _estimatedLotsAllFlatOrEstimateOnly) && _syntheticLotsAfterSourceLots.length > 0
+        ? 'Closed lots were detected, but they are synthetic/flat/estimate-only and cannot produce verified realized PnL.'
+        : _estimatedRealizedPnlIsBreakeven && _syntheticLotsAfterSourceLots.length > 0
+          ? 'Closed-lot estimate is synthetic break-even cost basis only.'
+          : _estimatedPerformanceReadLocked ? 'No useful reconstructed cost-basis estimate is available from existing lots.' : 'Verified public PnL is available; estimated PnL is not shown as a substitute.',
       excludedFrom: _estimatedPerformanceReadExcludedFrom,
     }
 
@@ -17015,6 +17058,102 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         : _p6SoftPartialOnly
           ? 'Public PnL and win rate remain locked; behavior-only reads may still be shown.'
           : 'Integrity check passed — no gate applied.',
+    }
+
+    // WALLET-PNL-READ-1: build a single read hierarchy from already-computed signals only — no
+    // new provider calls, no recomputation, no unlocking of official PnL/win-rate/profit-skill.
+    const _pnlReadOfficialAvailable = _publicPnlStatusFinal === 'ok'
+    const _pnlReadLimitedSampleAvailable = !_pnlReadOfficialAvailable && snapshot.publicSamplePerformanceRead?.status === 'available'
+    const _pnlReadOpenPositionAvailable = !_pnlReadOfficialAvailable && !_pnlReadLimitedSampleAvailable && snapshot.walletOpenPositionPnlRead?.status === 'available'
+    const _pnlReadIntegrityInvalid = _p6HardInvalid || _p6SoftPartialOnly || !_pnlReadOfficialAvailable
+    const _pnlReadEstimatedTransferAvailable = !_pnlReadOfficialAvailable && !_pnlReadLimitedSampleAvailable && !_pnlReadOpenPositionAvailable
+      && (Number.isFinite((estimatedPnl as any)?.realizedPnlUsd) || Number.isFinite((estimatedPnl as any)?.unrealizedPnlUsd))
+      && _pnlReadIntegrityInvalid
+    const _pnlReadRawReconstructionOnly = !_pnlReadOfficialAvailable && !_pnlReadLimitedSampleAvailable && !_pnlReadOpenPositionAvailable && !_pnlReadEstimatedTransferAvailable && _rawMatchedClosedLotsFinal > 0
+    const _pnlReadDisplayMode: NonNullable<WalletSnapshot['walletPnlRead']>['displayMode'] = _pnlReadOfficialAvailable
+      ? 'official_realized'
+      : _pnlReadLimitedSampleAvailable
+        ? 'limited_sample'
+        : _pnlReadOpenPositionAvailable
+          ? 'open_position_only'
+          : _pnlReadEstimatedTransferAvailable
+            ? 'estimated_transfer_flow_only'
+            : _pnlReadRawReconstructionOnly
+              ? 'raw_reconstruction_locked'
+              : 'activity_only'
+
+    const _pnlReadTopFailureReasons = Array.from(new Set([
+      ..._syntheticLotsAfterSourceLots.some(l => l.evidence?.entrySource === 'synthetic') ? ['synthetic_cost_basis'] : [],
+      ..._estimateOnlyClosedLotsFinal.length > 0 ? ['estimate_only_flat_price'] : [],
+      ..._flatPriceClosedLotsExcludedFinal > 0 ? ['flat_or_near_zero_pnl'] : [],
+      ...(_p6HardInvalid ? ['integrity_invalid'] : []),
+    ])).slice(0, 5)
+    const _pnlReadLockedReason = _pnlReadRawReconstructionOnly
+      ? `${_rawMatchedClosedLotsFinal} raw lots reconstructed, but excluded from public PnL (synthetic/flat/estimate-only or integrity-invalid).`
+      : 'No raw reconstructed lots are available yet.'
+
+    const _pnlReadHeadline: { label: string; valueUsd: number | null; warning: string | null } = _pnlReadDisplayMode === 'official_realized'
+      ? { label: 'Realized PnL', valueUsd: _performanceRealizedPnlUsd ?? null, warning: null }
+      : _pnlReadDisplayMode === 'limited_sample'
+        ? { label: 'Limited public PnL sample', valueUsd: snapshot.publicSamplePerformanceRead?.realizedPnlUsd ?? null, warning: snapshot.publicSamplePerformanceRead?.warning ?? null }
+        : _pnlReadDisplayMode === 'open_position_only'
+          ? { label: 'Open-position PnL', valueUsd: snapshot.walletOpenPositionPnlRead?.unrealizedPnlUsd ?? null, warning: snapshot.walletOpenPositionPnlRead?.warning ?? null }
+          : _pnlReadDisplayMode === 'estimated_transfer_flow_only'
+            ? { label: 'Estimated transfer-flow PnL', valueUsd: (estimatedPnl as any)?.realizedPnlUsd ?? null, warning: 'Estimated only — not verified from matched swap cost basis.' }
+            : _pnlReadDisplayMode === 'raw_reconstruction_locked'
+              ? { label: 'Raw lots found — locked', valueUsd: null, warning: _pnlReadLockedReason }
+              : { label: 'Activity found — no PnL yet', valueUsd: null, warning: null }
+
+    snapshot.walletPnlRead = {
+      displayMode: _pnlReadDisplayMode,
+      headlineLabel: _pnlReadHeadline.label,
+      headlineValueUsd: _pnlReadHeadline.valueUsd,
+      headlineWarning: _pnlReadHeadline.warning,
+      officialRealized: {
+        available: _pnlReadOfficialAvailable,
+        realizedPnlUsd: _pnlReadOfficialAvailable ? (_performanceRealizedPnlUsd ?? null) : null,
+        closedLots: _performanceClosedLotsFinal.length,
+        reason: _publicPnlStatusReasonFinal ?? '',
+      },
+      limitedSample: {
+        available: _pnlReadLimitedSampleAvailable,
+        realizedPnlUsd: snapshot.publicSamplePerformanceRead?.realizedPnlUsd ?? null,
+        closedLots: snapshot.publicSamplePerformanceRead?.closedLots ?? 0,
+        reason: snapshot.publicSamplePerformanceRead?.reason ?? '',
+      },
+      openPosition: {
+        available: _pnlReadOpenPositionAvailable,
+        unrealizedPnlUsd: snapshot.walletOpenPositionPnlRead?.unrealizedPnlUsd ?? null,
+        openLots: snapshot.walletOpenPositionPnlRead?.openLots ?? 0,
+        reason: snapshot.walletOpenPositionPnlRead?.reason ?? '',
+      },
+      estimatedTransferFlow: {
+        available: _pnlReadEstimatedTransferAvailable,
+        realizedPnlUsd: (estimatedPnl as any)?.realizedPnlUsd ?? null,
+        unrealizedPnlUsd: (estimatedPnl as any)?.unrealizedPnlUsd ?? null,
+        coveragePercent: (estimatedPnl as any)?.coveragePercent ?? null,
+        confidence: (estimatedPnl as any)?.confidence ?? null,
+        source: (estimatedPnl as any)?.source ?? null,
+        method: (estimatedPnl as any)?.method ?? null,
+        label: 'Estimated transfer-flow PnL',
+        warning: 'Estimated only — not verified from matched swap cost basis.',
+        excludedFrom: ['official_realized_pnl', 'win_rate', 'profit_skill', 'wallet_score', 'verified_pnl'],
+      },
+      rawReconstruction: {
+        rawClosedLots: _rawMatchedClosedLotsFinal,
+        excludedClosedLots: _excludedClosedLotsFinal,
+        syntheticClosedLotsExcluded: _syntheticLotsExcludedFromStatsFinal,
+        estimateOnlyClosedLots: _estimateOnlyClosedLotsFinal.length,
+        flatPriceClosedLotsExcluded: _flatPriceClosedLotsExcludedFinal,
+        topFailureReasons: _pnlReadTopFailureReasons,
+        lockedReason: _pnlReadLockedReason,
+      },
+      lockedReasons: [
+        ...(!_pnlReadOfficialAvailable ? [_publicPnlStatusReasonFinal ?? 'Official realized PnL is locked.'] : []),
+        ...(_pnlReadEstimatedTransferAvailable ? ['Estimated transfer-flow PnL is not verified from matched swap cost basis.'] : []),
+        ...(_pnlReadRawReconstructionOnly ? [_pnlReadLockedReason] : []),
+      ],
+      excludedFrom: ['official_realized_pnl', 'win_rate', 'profit_skill', 'wallet_score', 'verified_pnl'],
     }
 
     // WALLET-ADDRESS-TYPE-GATE-1: a token-contract/treasury/distributor-like address is not a

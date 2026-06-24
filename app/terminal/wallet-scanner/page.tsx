@@ -261,6 +261,38 @@ type WalletResult = {
     reason: string
     nextAction: string
   }
+  walletPnlRead?: {
+    displayMode: 'official_realized' | 'limited_sample' | 'open_position_only' | 'estimated_transfer_flow_only' | 'raw_reconstruction_locked' | 'activity_only'
+    headlineLabel: string
+    headlineValueUsd: number | null
+    headlineWarning: string | null
+    officialRealized: { available: boolean; realizedPnlUsd: number | null; closedLots: number; reason: string }
+    limitedSample: { available: boolean; realizedPnlUsd: number | null; closedLots: number; reason: string }
+    openPosition: { available: boolean; unrealizedPnlUsd: number | null; openLots: number; reason: string }
+    estimatedTransferFlow: {
+      available: boolean
+      realizedPnlUsd: number | null
+      unrealizedPnlUsd: number | null
+      coveragePercent: number | null
+      confidence: string | null
+      source: string | null
+      method: string | null
+      label: 'Estimated transfer-flow PnL'
+      warning: string
+      excludedFrom: string[]
+    }
+    rawReconstruction: {
+      rawClosedLots: number
+      excludedClosedLots: number
+      syntheticClosedLotsExcluded: number
+      estimateOnlyClosedLots: number
+      flatPriceClosedLotsExcluded: number
+      topFailureReasons: string[]
+      lockedReason: string
+    }
+    lockedReasons: string[]
+    excludedFrom: string[]
+  }
   walletRecoveryRecommendation?: {
     recommended: boolean
     mode: 'targeted_token_recovery' | 'targeted_recovery_attempted' | 'attempted_light' | 'attempted_provider_failed' | 'skipped_cost_guard' | 'skipped_micro_wallet' | 'none'
@@ -2595,6 +2627,48 @@ export default function WalletScannerPage() {
               })()}
 
 
+              {/* PnL Read — the single PnL read hierarchy, shown above Trade Stats so a wallet with
+                  activity/holdings/estimates/raw lots never looks like flatly "no PnL." */}
+              {result.walletPnlRead && (() => {
+                const pr = result.walletPnlRead!
+                const fmtUsd = (v: number | null) => v === null ? null : `${v >= 0 ? '+' : ''}$${Math.abs(v).toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+                const modeCopy: Record<typeof pr.displayMode, { title: string; body: string }> = {
+                  official_realized: { title: 'Realized PnL', body: 'Verified realized PnL from matched closed lots.' },
+                  limited_sample: { title: 'Limited public PnL sample', body: pr.limitedSample.reason || 'Limited sample — not enough to prove profit skill.' },
+                  open_position_only: { title: 'Open-position PnL', body: pr.openPosition.reason || 'Unrealized only — open positions, not a closed trade result.' },
+                  estimated_transfer_flow_only: { title: 'Estimated transfer-flow PnL', body: 'Estimated only — not verified from matched swap cost basis.' },
+                  raw_reconstruction_locked: { title: 'Raw lots found, but locked', body: pr.rawReconstruction.lockedReason },
+                  activity_only: { title: 'Activity found — no PnL yet', body: 'No closed lots or priced positions are available yet.' },
+                }
+                const copy = modeCopy[pr.displayMode]
+                return (
+                  <div style={{ padding: '14px 16px', background: 'rgba(255,255,255,0.015)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '12px' }}>
+                    <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.16em', color: 'rgba(255,255,255,0.22)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>PnL Read</span>
+                    <div style={{ marginTop: '8px', display: 'flex', alignItems: 'baseline', gap: '10px', flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0' }}>{copy.title}</span>
+                      {pr.headlineValueUsd !== null && <span style={{ fontSize: '13px', color: '#e2e8f0' }}>{fmtUsd(pr.headlineValueUsd)}</span>}
+                    </div>
+                    <p style={{ marginTop: '6px', fontSize: '11px', color: 'rgba(255,255,255,0.45)' }}>{copy.body}</p>
+                    {pr.headlineWarning && <p style={{ marginTop: '4px', fontSize: '10px', color: '#fbbf24' }}>{pr.headlineWarning}</p>}
+                    {pr.displayMode === 'estimated_transfer_flow_only' && (
+                      <p style={{ marginTop: '6px', fontSize: '10px', color: 'rgba(255,255,255,0.35)' }}>
+                        Estimated PnL: {fmtUsd(pr.estimatedTransferFlow.realizedPnlUsd) ?? 'n/a'}, not verified
+                      </p>
+                    )}
+                    {(pr.displayMode === 'raw_reconstruction_locked' || pr.rawReconstruction.rawClosedLots > 0) && (
+                      <p style={{ marginTop: '4px', fontSize: '10px', color: 'rgba(255,255,255,0.35)' }}>
+                        Raw lots found: {pr.rawReconstruction.rawClosedLots}, excluded: {pr.rawReconstruction.excludedClosedLots}
+                      </p>
+                    )}
+                    {pr.displayMode !== 'official_realized' && (
+                      <p style={{ marginTop: '4px', fontSize: '10px', color: 'rgba(255,255,255,0.35)' }}>
+                        Realized stats locked: {pr.officialRealized.reason || 'integrity failed / flat price / synthetic cost basis'}
+                      </p>
+                    )}
+                  </div>
+                )
+              })()}
+
               {/* Module coverage strip — shows what was checked vs what had evidence */}
               {result.walletModuleCoverage && (() => {
                 const mc = result.walletModuleCoverage!
@@ -2662,6 +2736,11 @@ export default function WalletScannerPage() {
                           if (tradeClosedLots > 0) return `${tradeClosedLots} verified trades` + ((mc.tradeStats.excludedLots ?? 0) > 0 ? ` · ${mc.tradeStats.excludedLots} excluded` : '') + (mc.tradeStats.readyForWinRate ? '' : ' — below threshold')
                           if ((mc.tradeStats.excludedLots ?? 0) > 0) return `Verified stats locked — ${mc.tradeStats.excludedLots} estimate-only/synthetic lots excluded`
                           if (tradeOpenedLots > 0) return `no verified trades yet — ${tradeOpenedLots} open lot${tradeOpenedLots !== 1 ? 's' : ''} tracked`
+                          // WALLET-PNL-READ-1: don't claim a bare "no verified trades" when an
+                          // estimated transfer-flow read or raw reconstruction read exists — point
+                          // at the PnL Read card instead of implying there is nothing at all.
+                          if (result.walletPnlRead?.displayMode === 'estimated_transfer_flow_only') return 'no verified trades — see Estimated transfer-flow PnL above'
+                          if (result.walletPnlRead?.displayMode === 'raw_reconstruction_locked') return `no verified trades — ${result.walletPnlRead.rawReconstruction.rawClosedLots} raw lots found, see PnL Read above`
                           if (mc.swapDetection.candidateCount > 0 && (mc.priceEvidence?.pricedEvents ?? 0) === 0) return 'no verified closed lots'
                           return 'no verified trades for stats yet'
                         })(), status: mc.tradeStats.status },
