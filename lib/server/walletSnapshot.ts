@@ -1329,6 +1329,16 @@ export type WalletSnapshot = {
         finalReason: string
       }>
       reasons: string[]
+      // QUOTE-LEG-PROOF-FIX: same-tx quote-leg proof extraction signals, additive alongside the
+      // existing stable/weth counters above — never relaxes any gate, only reports how many
+      // candidates had quote-leg evidence available vs. how many were actually usable as proof.
+      nativeLegPricedEvents: number
+      quoteLegCandidates: number
+      stableQuoteProofsUsed: number
+      wethQuoteProofsUsed: number
+      nativeQuoteProofsUsed: number
+      quoteProofsRejected: number
+      quoteProofsRejectedReasons: Record<string, number>
     }
     walletPriceBudgetDebug?: {
       baseBudget: number; expandedBudget: number; maxBudget: number
@@ -1764,6 +1774,11 @@ export type WalletSnapshot = {
       lotsStillDust: number
       publicPerformanceLotsBefore: number
       publicPerformanceLotsAfter: number
+      // QUOTE-LEG-PROOF-FIX: same counts as publicPerformanceLotsBefore/After above, exposed
+      // under the public-grade-lot naming used by the quote-leg proof transparency requirement —
+      // additive alias, not a second computation.
+      publicGradeLotsBefore: number
+      publicGradeLotsAfter: number
       sampleUpgradedLots: Array<{ tokenAddress: string; symbol: string; entryPriceSource: string; exitPriceSource: string }>
       sampleStillRejectedLots: Array<{ tokenAddress: string; symbol: string; reason: string }>
       rejectedReasonBreakdown: Record<string, number>
@@ -2496,6 +2511,16 @@ const WETH_CONTRACTS_PRICE: Record<string, true> = {
   '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2': true,  // WETH ETH
   '0x4200000000000000000000000000000000000006': true,  // WETH Base
   '0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c': true,  // WBNB BSC
+}
+
+// QUOTE-LEG-PROOF-FIX: chain -> wrapped-native contract, used only to price a same-tx NATIVE
+// (unwrapped ETH/BNB) quote leg via the same trusted wrapped-native price as weth_leg above —
+// scoped to the exact chains already covered by WETH_CONTRACTS_PRICE so it never introduces a
+// new provider call path, only reuses fetchGoldrushHistoricalPrice with the wrapped address.
+const WRAPPED_NATIVE_CONTRACT_BY_CHAIN: Record<string, string> = {
+  eth: '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2',
+  base: '0x4200000000000000000000000000000000000006',
+  bsc: '0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c',
 }
 
 const STABLE_DECIMALS: Record<string, number> = {
@@ -3280,7 +3305,7 @@ export type PriceAtTimeEvidence = {
   tokenSymbol?: string | null
   timestamp: string
   priceUsd: number | null
-  source: 'stable_leg' | 'weth_leg' | 'historical_price' | 'swap_derived' | 'provider_event_usd' | 'current_holding_price_open_lot_estimate' | 'eth_native_value_router_reconstruction' | 'current_price_fallback_not_used' | 'swap_reconstruction_v1' | 'fallback' | 'unavailable'
+  source: 'stable_leg' | 'weth_leg' | 'native_leg' | 'historical_price' | 'swap_derived' | 'provider_event_usd' | 'current_holding_price_open_lot_estimate' | 'eth_native_value_router_reconstruction' | 'current_price_fallback_not_used' | 'swap_reconstruction_v1' | 'fallback' | 'unavailable'
   confidence: 'high' | 'medium' | 'low' | 'open_check'
   reason: string
 }
@@ -6113,7 +6138,7 @@ const FALLBACK_PRICE_REUSE_SOURCES = new Set(['historical_price', 'unavailable',
 // CLOSED-LOT-PRICE-UPGRADE-FIX: receipt-derived quote-leg sources (same-tx wallet-side WETH/
 // stable/native transfer decoded directly from chain data) are genuinely independent per-event
 // evidence, same category as stable_leg/weth_leg above — additive only, never a relaxation.
-const QUOTE_LEG_PRICE_SOURCES = new Set(['stable_leg', 'weth_leg', 'eth_native_value_router_reconstruction', 'swap_reconstruction_v1', 'quote_leg_receipt_weth', 'quote_leg_receipt_stable', 'quote_leg_receipt_native'])
+const QUOTE_LEG_PRICE_SOURCES = new Set(['stable_leg', 'weth_leg', 'native_leg', 'eth_native_value_router_reconstruction', 'swap_reconstruction_v1', 'quote_leg_receipt_weth', 'quote_leg_receipt_stable', 'quote_leg_receipt_native'])
 const PROVIDER_PRICE_SOURCES = new Set(['provider_event_usd'])
 const NON_INDEPENDENT_PRICE_SOURCES = new Set([...CURRENT_PRICE_REUSE_SOURCES, ...FALLBACK_PRICE_REUSE_SOURCES])
 const PRICE_FLAT_EPSILON = 1e-9
@@ -8061,6 +8086,9 @@ async function buildPriceAtTimeEvidence(
       historicalPriceAttempts: 0, historicalPricePricedEvents: 0,
       cacheHits: 0, cacheMisses: 0, providerAttempts: 0, providerErrors: 0,
       samplePricedEvents: [], sampleOpenCheckEvents: [], sampleUnpricedReasons: [], reasons: missing,
+      nativeLegPricedEvents: 0, quoteLegCandidates: 0, stableQuoteProofsUsed: 0,
+      wethQuoteProofsUsed: 0, nativeQuoteProofsUsed: 0, quoteProofsRejected: 0,
+      quoteProofsRejectedReasons: {},
     },
     budgetDebug: _emptyBudgetDebug(),
   })
@@ -8110,7 +8138,19 @@ async function buildPriceAtTimeEvidence(
   const unavailableEvents = 0
   let stableLegPricedEvents = 0
   let wethLegPricedEvents = 0
+  let nativeLegPricedEvents = 0
   let historicalPricedEvents = 0
+  // QUOTE-LEG-PROOF-FIX: same-tx quote-leg proof extraction signals (additive — never gates).
+  let quoteLegCandidates = 0
+  let stableQuoteProofsUsed = 0
+  let wethQuoteProofsUsed = 0
+  let nativeQuoteProofsUsed = 0
+  let quoteProofsRejected = 0
+  const quoteProofsRejectedReasons: Record<string, number> = {}
+  const rejectQuoteProof = (reason: string) => {
+    quoteProofsRejected++
+    quoteProofsRejectedReasons[reason] = (quoteProofsRejectedReasons[reason] ?? 0) + 1
+  }
   let providerEventUsdAttempts = 0
   let providerEventUsdPricedEvents = 0
   let priceAttemptLimitReached = false
@@ -8153,6 +8193,7 @@ async function buildPriceAtTimeEvidence(
     pricedEvents++
     if (source === 'stable_leg') stableLegPricedEvents++
     else if (source === 'weth_leg') wethLegPricedEvents++
+    else if (source === 'native_leg') nativeLegPricedEvents++
     else if (source === 'historical_price') historicalPricedEvents++
     else if (source === 'provider_event_usd') providerEventUsdPricedEvents++
     if (samplePricedRaw.length < 5) samplePricedRaw.push(ev)
@@ -8198,10 +8239,13 @@ async function buildPriceAtTimeEvidence(
 
     const stableQuote = selectSameTxStableQuoteLeg(txGroup, e)
     if (stableQuote) {
+      quoteLegCandidates++
       const derivedPrice = stableQuote.amountUsd / tokenAmount
       if (derivedPrice > 0 && isFinite(derivedPrice)) {
+        stableQuoteProofsUsed++
         return priced(e, derivedPrice, 'stable_leg', 'high', stableQuote.reason)
       }
+      rejectQuoteProof('stable_quote_derived_price_invalid')
     }
 
     let _resolvedFromWethOrStable = Boolean(stableQuote)
@@ -8214,6 +8258,7 @@ async function buildPriceAtTimeEvidence(
           && ev.swapDetection?.eventKind !== 'airdrop_candidate'
       })
       if (wethLegs.length > 0) {
+        quoteLegCandidates++
         _resolvedFromWethOrStable = true
         _hadWethLeg = true
         // PHASE1-FIX-5: picking wethLegs[0] made the derived price depend on raw provider
@@ -8242,10 +8287,64 @@ async function buildPriceAtTimeEvidence(
           if (wethAmt > 0) {
             const derivedPrice = (wethAmt * result.priceUsd) / tokenAmount
             if (derivedPrice > 0 && isFinite(derivedPrice)) {
+              wethQuoteProofsUsed++
               return priced(e, derivedPrice, 'weth_leg', 'medium', `Derived from WETH leg (WETH×${result.priceUsd.toFixed(0)} × WETH amount / token amount)`)
             }
           }
         }
+        rejectQuoteProof('weth_quote_derived_price_invalid')
+      }
+    }
+
+    // QUOTE-LEG-PROOF-FIX: wrapped/native quote equivalents — a same-tx NATIVE (unwrapped)
+    // transfer of the chain's native asset (ETH/BNB, no contract address) is just as valid a
+    // quote leg as its wrapped ERC20 form, but the branches above only ever match a contract
+    // address against WETH_CONTRACTS_PRICE so a native-only leg was silently dropped to
+    // skippedNoStableOrWethLeg even when real proof existed in the same tx. Only trusted,
+    // chain-verified native symbols (isVerifiedNativeQuoteLeg) on a chain we already have a
+    // wrapped-native price contract for are accepted; price is derived the same way as weth_leg
+    // (same trusted historical price source, zero new provider calls), opposite direction,
+    // wallet-side-or-strong-tx-context (same-tx group) required, and only positive finite
+    // amounts on both legs are used.
+    if (!_resolvedFromWethOrStable) {
+      const chainKey = normalizeChain(e.chain)
+      const wrappedContract = WRAPPED_NATIVE_CONTRACT_BY_CHAIN[chainKey]
+      const nativeLegs = wrappedContract
+        ? txGroup.filter(ev => {
+            return !ev.contract && ev.direction !== 'unknown' && ev.direction !== e.direction
+              && ev.swapDetection?.eventKind !== 'airdrop_candidate'
+              && isVerifiedNativeQuoteLeg(ev.chain, ev.symbol ?? '')
+          })
+        : []
+      if (nativeLegs.length > 0) {
+        quoteLegCandidates++
+        _resolvedFromWethOrStable = true
+        const nl = [...nativeLegs].sort((a, b) => {
+          const aAmt = parseRawAmount(a.amountRaw, a.tokenDecimals) ?? a.amount
+          const bAmt = parseRawAmount(b.amountRaw, b.tokenDecimals) ?? b.amount
+          return bAmt - aAmt
+        })[0]
+        const nativeAmt = parseRawAmount(nl.amountRaw, nl.tokenDecimals) ?? nl.amount
+        if (nativeAmt > 0 && isFinite(nativeAmt)) {
+          const _nativeAlreadyCached = isGoldrushPriceCached(chainKey, wrappedContract!, e.timestamp, reqCache)
+          if (!_nativeAlreadyCached && priceAttempts >= activeBudget) {
+            priceAttemptLimitReached = true
+            return openCheck(e, 'price_attempt_limit_reached')
+          }
+          if (!_nativeAlreadyCached) priceAttempts++
+          const result = await fetchGoldrushHistoricalPrice(chainKey, wrappedContract!, e.timestamp, reqCache)
+          if (result.cacheHit) cacheHits++; else cacheMisses++
+          if (result.providerAttempted) providerAttempts++
+          if (result.error) providerErrors++
+          if (result.priceUsd !== null) {
+            const derivedPrice = (nativeAmt * result.priceUsd) / tokenAmount
+            if (derivedPrice > 0 && isFinite(derivedPrice)) {
+              nativeQuoteProofsUsed++
+              return priced(e, derivedPrice, 'native_leg', 'medium', `Derived from native quote leg (native×${result.priceUsd.toFixed(0)} × native amount / token amount)`)
+            }
+          }
+        }
+        rejectQuoteProof('native_quote_derived_price_invalid')
       }
     }
     if (!_resolvedFromWethOrStable) { skippedNoStableOrWethLeg++; skippedNoQuoteLeg++ }
@@ -8497,6 +8596,13 @@ async function buildPriceAtTimeEvidence(
       })),
       sampleUnpricedReasons: sampleUnpricedRaw,
       reasons: missing,
+      nativeLegPricedEvents,
+      quoteLegCandidates,
+      stableQuoteProofsUsed,
+      wethQuoteProofsUsed,
+      nativeQuoteProofsUsed,
+      quoteProofsRejected,
+      quoteProofsRejectedReasons,
     },
     budgetDebug: {
       baseBudget: BASE_BUDGET, expandedBudget: EXPANDED_BUDGET, maxBudget: MAX_BUDGET,
@@ -10251,6 +10357,7 @@ async function buildClosedLotPriceUpgradePass(
     lotsUpgradedWithEntryQuote: 0, lotsUpgradedWithExitQuote: 0, lotsUpgradedWithBothSides: 0,
     lotsStillFlatPrice: 0, lotsStillSyntheticCostBasis: 0, lotsStillDust: 0,
     publicPerformanceLotsBefore: 0, publicPerformanceLotsAfter: 0,
+    publicGradeLotsBefore: 0, publicGradeLotsAfter: 0,
     sampleUpgradedLots: [], sampleStillRejectedLots: [], rejectedReasonBreakdown: {},
   })
 
@@ -10269,7 +10376,7 @@ async function buildClosedLotPriceUpgradePass(
   const publicPerformanceLotsBefore = closedLots.filter(l => classifyClosedLotForPublicPerformance(l, walletValueUsd).performanceEligible).length
 
   if (candidates.length === 0) {
-    return { upgradedLots: closedLots, debug: { ...emptyDebug(), publicPerformanceLotsBefore } }
+    return { upgradedLots: closedLots, debug: { ...emptyDebug(), publicPerformanceLotsBefore, publicGradeLotsBefore: publicPerformanceLotsBefore, publicGradeLotsAfter: publicPerformanceLotsBefore } }
   }
 
   const now = Date.now()
@@ -10462,6 +10569,7 @@ async function buildClosedLotPriceUpgradePass(
       lotsUpgradedWithEntryQuote, lotsUpgradedWithExitQuote, lotsUpgradedWithBothSides,
       lotsStillFlatPrice, lotsStillSyntheticCostBasis, lotsStillDust,
       publicPerformanceLotsBefore, publicPerformanceLotsAfter,
+      publicGradeLotsBefore: publicPerformanceLotsBefore, publicGradeLotsAfter: publicPerformanceLotsAfter,
       sampleUpgradedLots: sampleUpgraded,
       sampleStillRejectedLots: sampleRejected,
       rejectedReasonBreakdown: rejectedBreakdown,
@@ -14342,6 +14450,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     lotsUpgradedWithEntryQuote: 0, lotsUpgradedWithExitQuote: 0, lotsUpgradedWithBothSides: 0,
     lotsStillFlatPrice: 0, lotsStillSyntheticCostBasis: 0, lotsStillDust: 0,
     publicPerformanceLotsBefore: 0, publicPerformanceLotsAfter: 0,
+    publicGradeLotsBefore: 0, publicGradeLotsAfter: 0,
     sampleUpgradedLots: [], sampleStillRejectedLots: [], rejectedReasonBreakdown: {},
   }
   let _syntheticLotsAfterSourceLots = _syntheticLotsAfterSourceLotsRaw

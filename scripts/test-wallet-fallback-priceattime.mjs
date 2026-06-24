@@ -31,7 +31,7 @@ for (const line of callLines) {
 // stay locked) but remain real-backed (not synthetic), so OpenCheck PnL — which is computed from
 // real-backed lots regardless of verified status (see OPENCHECK-PNL-1) — still includes them.
 assert.match(snap, /const FALLBACK_PRICE_REUSE_SOURCES = new Set\(\['historical_price', 'unavailable', 'synthetic', 'fallback'\]\)/, "'fallback' source is enumerated as a non-independent price source")
-assert.match(snap, /source: 'stable_leg' \| 'weth_leg' \| 'historical_price' \| 'swap_derived' \| 'provider_event_usd' \| 'current_holding_price_open_lot_estimate' \| 'eth_native_value_router_reconstruction' \| 'current_price_fallback_not_used' \| 'swap_reconstruction_v1' \| 'fallback' \| 'unavailable'/, "PriceAtTimeEvidence['source'] includes 'fallback'")
+assert.match(snap, /source: 'stable_leg' \| 'weth_leg' \| 'native_leg' \| 'historical_price' \| 'swap_derived' \| 'provider_event_usd' \| 'current_holding_price_open_lot_estimate' \| 'eth_native_value_router_reconstruction' \| 'current_price_fallback_not_used' \| 'swap_reconstruction_v1' \| 'fallback' \| 'unavailable'/, "PriceAtTimeEvidence['source'] includes 'fallback'")
 // classifyClosedLotForPublicPerformance already rejects missing_independent_price/current_price_reused/
 // fallback_price_reused as not performanceEligible/verifiedPnlEligible — unchanged by this patch,
 // confirming fallback lots can never unlock win rate or profit skill (verified=true path ignores them).
