@@ -47,7 +47,7 @@ for (const field of [
 ]) {
   assert.match(snap, new RegExp(`${field}[?:]`), `WalletPnlRecoveryV2Debug includes ${field}`)
 }
-assert.match(snap, /_pnlRecoveryV2BaseEligible =\s*\n\s*_baseReconChainOk &&\s*\n\s*_syntheticClosedLots\.length > 0 &&\s*\n\s*_realBackedClosedLotsCountForV2 === 0/, 'Recovery V2 remains eligible whenever realClosedLots=0 and syntheticClosedLots>0')
+assert.match(snap, /_pnlRecoveryV2BaseEligible =\s*\n\s*_baseReconChainOk &&\s*\n\s*Boolean\(baseRpcUrl\) &&\s*\n\s*\(\(_syntheticClosedLots\.length > 0 && _realBackedClosedLotsCountForV2 === 0\) \|\| _noSwapCandidateRecoveryEligible\)/, 'Recovery V2 remains eligible whenever realClosedLots=0 and syntheticClosedLots>0, and is also eligible for the no-swap-candidate normal-wallet case')
 assert.match(snap, /targetTokens = targetTokenContracts\.slice\(0, 2\)/, 'Recovery V2 caps target tokens to 2')
 assert.match(snap, /\.slice\(0, Math\.max\(0, maxReceipts\)\)/, 'Recovery V2 caps receipt fetches to the passed maxReceipts budget')
 assert.match(snap, /debug\.priorBuysRecovered > 0\) \{ debug\.stoppedReason = 'real_buy_found'; break \}/, 'Recovery V2 stops immediately once a real prior buy is reconstructed')
@@ -72,6 +72,6 @@ assert.match(snap, /reason: 'missing_cost_basis_synthetic_lots_excluded',\s*\n\s
 // explicit state (notRunDueToCostGuard) instead of an unexplained false.
 assert.match(snap, /notRunDueToCostGuard\?:\s*boolean/, 'walletHistoricalScanDebug type includes notRunDueToCostGuard')
 assert.match(snap, /_historicalNotRunDueToCostGuard = _historicalEligibleCoreCriteria && !_historicalEligible && _missingCostBasisGuardActive/, 'notRunDueToCostGuard is derived from core eligibility criteria passing while only the cost guard blocks the broad pass')
-assert.match(snap, /eligible: _historicalEligible \|\| _historicalNotRunDueToCostGuard \|\| _acquisitionRecoveryEligible,/, 'walletHistoricalScanDebug.eligible reports true when recovery eligibility exists even if the broad scan is withheld')
+assert.match(snap, /\(_historicalEligible \|\| _historicalNotRunDueToCostGuard \|\| _acquisitionRecoveryEligible\),/, 'walletHistoricalScanDebug.eligible reports true when recovery eligibility exists even if the broad scan is withheld')
 
 console.log('wallet PnL recovery depth checks passed')

@@ -613,6 +613,14 @@ export type WalletSnapshot = {
     blockedByCostGuard?: boolean
     costGuardReason?: string
   }
+  // WALLET-NO-PNL-UX-1/2: honest, specific explanation of why a wallet has no trader PnL, set
+  // either because the address itself isn't a trader (non_trader_address_type) or because a
+  // normal_wallet's real activity didn't produce closed FIFO lots for one of several precise
+  // reasons. Never set when public PnL is actually available.
+  walletNoPnlReason?: 'non_trader_address_type' | 'no_wallet_initiated_transactions' | 'no_swap_candidates' | 'transfer_or_airdrop_only_activity' | 'missing_counterparty_direction_data' | 'budget_capped_before_recovery' | 'historical_recovery_needed' | 'unsupported_router_or_unparsed_receipts'
+  walletNoPnlReasonLabel?: string
+  walletNoPnlNextAction?: string
+  walletNoPnlCanRecover?: boolean
 
   // HIGH-ACTIVITY-RECON: public-safe presentation state for a heavily-active wallet whose trade
   // reconstruction is incomplete (many events/swap candidates, zero public-grade closed lots).
@@ -14023,17 +14031,32 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     !(l.missingReasons ?? []).includes('price_synthetic_fifo') &&
     (l.coveragePercent ?? 100) !== 0
   ).length
+  // WALLET-NO-PNL-UX-2: a normal_wallet with wallet-initiated activity but zero swap candidates
+  // (and no synthetic lots either) gets the same cheap receipt-level reconstruction, sourced from
+  // the existing value-ranked target tokens instead of synthetic-lot targets. Same function, same
+  // 2-receipt cap, same reused candidate tx hashes — no new provider calls, no raised caps.
+  // walletFacts.sourceClassification (walletAddressType) isn't built yet at this point in the
+  // function, so non-trader addresses are excluded downstream instead — see
+  // WALLET-ADDRESS-TYPE-GATE-1, which never reports walletNoPnlReason for them regardless of
+  // whatever this recovery attempt found.
+  const _noSwapCandidateRecoveryEligible =
+    _syntheticClosedLots.length === 0 &&
+    _realBackedClosedLotsCountForV2 === 0 &&
+    walletSwapSummary.swapCandidateEvents === 0 &&
+    _rankedHistoricalTargets.length > 0
   const _pnlRecoveryV2BaseEligible =
     _baseReconChainOk &&
-    _syntheticClosedLots.length > 0 &&
-    _realBackedClosedLotsCountForV2 === 0 &&
-    Boolean(baseRpcUrl)
+    Boolean(baseRpcUrl) &&
+    ((_syntheticClosedLots.length > 0 && _realBackedClosedLotsCountForV2 === 0) || _noSwapCandidateRecoveryEligible)
+  const _pnlRecoveryV2TargetTokens = _syntheticLotTokenTargets.length > 0
+    ? _syntheticLotTokenTargets.slice(0, 2)
+    : _rankedHistoricalTargets.slice(0, 2).map(t => t.contract)
   const _pnlRecoveryV2Result = _pnlRecoveryV2BaseEligible
     ? await buildWalletPnlRecoveryV2Base(
         addrNorm,
         baseRpcUrl,
         [..._hcMergedAllHistoricalEvidence, ..._swapEvidenceWithDetection],
-        _syntheticLotTokenTargets.slice(0, 2),
+        _pnlRecoveryV2TargetTokens,
         2,
         _reqPriceCache,
       )
@@ -14051,7 +14074,11 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       }
     : {
         attempted: false,
-        reason: !_baseReconChainOk ? 'eth_chain' : _syntheticClosedLots.length === 0 ? 'no_synthetic_lots' : _realBackedClosedLotsCountForV2 > 0 ? 'already_has_real_backed_closed_lots' : !baseRpcUrl ? 'no_rpc_url' : 'not_eligible',
+        reason: !_baseReconChainOk ? 'eth_chain'
+          : !baseRpcUrl ? 'no_rpc_url'
+          : _realBackedClosedLotsCountForV2 > 0 ? 'already_has_real_backed_closed_lots'
+          : (_syntheticClosedLots.length === 0 && !_noSwapCandidateRecoveryEligible) ? 'no_synthetic_lots_and_no_swap_candidate_targets'
+          : 'not_eligible',
         targetTokens: [], candidateTxCount: 0, receiptsFetched: 0, decodedTransferLogs: 0,
         walletTokenInLegs: 0, walletTokenOutLegs: 0, quoteInLegs: 0, quoteOutLegs: 0,
         realBuyEventsBuilt: 0, realSellEventsBuilt: 0, priorBuysRecovered: 0,
@@ -15402,7 +15429,9 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   }
   const _walletHistoricalScanDebug = {
     requested: historicalCoverage || _acquisitionRecoveryEligible,
-    eligible: _historicalEligible || _historicalNotRunDueToCostGuard || _acquisitionRecoveryEligible,
+    // WALLET-NO-PNL-UX-1: token-contract/treasury/distributor-like addresses are not trader
+    // wallets — never report PnL-recovery eligibility for them, regardless of cost-guard state.
+    eligible: (walletFacts.sourceClassification?.walletAddressType !== 'token_contract_like' && walletFacts.sourceClassification?.walletAddressType !== 'treasury_or_distributor_like') && (_historicalEligible || _historicalNotRunDueToCostGuard || _acquisitionRecoveryEligible),
     notRunDueToCostGuard: _historicalNotRunDueToCostGuard,
     eligibilityReasons: _eligibilityReasons,
     walletValueTier: _walletValueTier,
@@ -15950,7 +15979,11 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // calls — reuses _rankedHistoricalTargets/_missingCostBasisGuardActive computed above).
   // PNL-SAFETY-FIX-6: synthetic closed lots are not "closed lots already found" — only a real
   // recovered buy (realClosedLots > 0) should suppress the recovery recommendation.
-  const _walletRecoveryRecommendation: WalletSnapshot['walletRecoveryRecommendation'] = (() => {
+  const _walletAddressTypeForRecovery = walletFacts.sourceClassification?.walletAddressType ?? 'unknown'
+  const _walletIsNonTraderAddressType = _walletAddressTypeForRecovery === 'token_contract_like' || _walletAddressTypeForRecovery === 'treasury_or_distributor_like'
+  const _walletRecoveryRecommendation: WalletSnapshot['walletRecoveryRecommendation'] = _walletIsNonTraderAddressType
+    ? { recommended: false, mode: 'none', targetTokens: [], reason: 'non_trader_address_type', estimatedExtraPages: 0 }
+    : (() => {
     const rankedTargetTokens = _rankedHistoricalTargets.slice(0, 3).map(t => ({
       contract: t.contract, symbol: t.symbol, chain: t.chain, estimatedUsd: t.estimatedUsd,
     })).filter(t => t.estimatedUsd > 0)
@@ -16855,19 +16888,81 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     const _walletIsContractLikeForPnl = _walletAddressTypeForGate === 'token_contract_like' || _walletAddressTypeForGate === 'treasury_or_distributor_like'
     if (_walletIsContractLikeForPnl) {
       const _contractLikeLabel = 'Portfolio/activity read only — not a trader wallet'
-      const _contractLikeReason = `Scanned address is classified as ${_walletAddressTypeForGate.replace(/_/g, ' ')}; PnL recovery is not recommended for non-trader addresses.`
+      const _contractLikeReason = `This address looks like a token contract/distributor, so trader PnL is not evaluated.`
       if (snapshot.tradeIntelligence) {
         snapshot.tradeIntelligence.profitSkillStatus = 'integrity_invalid_not_proven'
         snapshot.tradeIntelligence.tradeStyleSummary = `Portfolio/activity read only — this address looks ${_walletAddressTypeForGate === 'token_contract_like' ? 'like a token contract' : 'like a treasury or distributor'}, not a trader wallet, so profit skill is not evaluated.`
       }
+      ;(snapshot as any).publicPnlStatus = 'open_check'
       ;(snapshot as any).publicPnlDisplayLabel = _contractLikeLabel
       ;(snapshot as any).publicPnlDisplayReason = _contractLikeReason
       if (snapshot.walletTradeStatsSummary) {
         const ts = snapshot.walletTradeStatsSummary as any
         ts.publicWinRatePercent = null
         ts.winRateStatus = 'locked_small_sample'
+        ts.publicPnlStatus = 'open_check'
         ts.publicPnlDisplayLabel = _contractLikeLabel
         ts.publicPnlDisplayReason = _contractLikeReason
+        // WALLET-NO-PNL-UX-1: a non-trader address must report a specific, honest reason for
+        // having no trader PnL instead of the generic 'no_closed_lots' bucket.
+        ts.economicSignificance = 'open_check'
+        ts.economicSignificanceReason = 'non_trader_address_type'
+        ts.missing = [...(ts.missing ?? []).filter((m: string) => m !== 'no_closed_lots'), 'non_trader_address_type']
+      }
+      ;(snapshot as any).walletNoPnlReason = 'non_trader_address_type'
+      ;(snapshot as any).walletNoPnlReasonLabel = 'Not applicable — token/distributor address'
+      ;(snapshot as any).walletNoPnlNextAction = 'No action — this address type is not evaluated for trader PnL.'
+      ;(snapshot as any).walletNoPnlCanRecover = false
+    } else {
+      // WALLET-NO-PNL-UX-2: for a normal_wallet (or unknown) address with real activity but no
+      // closed FIFO lots, classify precisely why instead of leaving the UI to infer a generic
+      // "no verified trades yet" from an empty closedLots count.
+      const _rawClosedLotsForNoPnl = promotedTradeStatsSummary.rawClosedLots ?? promotedTradeStatsSummary.closedLots ?? 0
+      const _activityEventsForNoPnl = walletFacts.activity?.eventCount ?? 0
+      if (_activityEventsForNoPnl > 0 && _rawClosedLotsForNoPnl === 0) {
+        const _budgetCappedBeforeRecovery = Boolean((snapshot._diagnostics as any)?.walletBudgetDebug?.budgetCapped)
+        const _swapCandidateCount = walletFacts.sourceClassification?.swapLikeTxs ?? 0
+        const _claimOrTransferOnly = (walletFacts.sourceClassification?.transferOnlyTxs ?? 0) + (walletFacts.sourceClassification?.claimOrAirdropLikeTxs ?? 0) >= _activityEventsForNoPnl - (walletFacts.sourceClassification?.unknownTxs ?? 0) && _swapCandidateCount === 0
+        const _missingCounterpartyData = (walletFacts.activity?.unknownCount ?? 0) > 0 && (walletFacts.activity?.inboundCount ?? 0) + (walletFacts.activity?.outboundCount ?? 0) === 0
+        const _historicalRecoveryNeeded = Boolean(_walletHistoricalScanDebug.eligible) && !_walletHistoricalScanDebug.notRunDueToCostGuard
+        let _noPnlReason: string
+        let _noPnlLabel: string
+        let _noPnlNextAction: string
+        let _canRecover: boolean
+        if (_budgetCappedBeforeRecovery) {
+          _noPnlReason = 'budget_capped_before_recovery'; _noPnlLabel = 'Event budget capped before recovery ran'
+          _noPnlNextAction = 'Re-scan with a deeper budget to recover earlier history.'; _canRecover = true
+        } else if ((walletFacts.activity?.walletInitiatedTxCount ?? 0) === 0) {
+          _noPnlReason = 'no_wallet_initiated_transactions'; _noPnlLabel = 'No wallet-initiated transactions found'
+          _noPnlNextAction = 'No action — this wallet has not initiated any on-chain transactions in the sample.'; _canRecover = false
+        } else if (_missingCounterpartyData) {
+          _noPnlReason = 'missing_counterparty_direction_data'; _noPnlLabel = 'Counterparty/direction data unavailable'
+          _noPnlNextAction = 'Re-scan the exact chain to recover counterparty/direction data.'; _canRecover = true
+        } else if (_claimOrTransferOnly) {
+          _noPnlReason = 'transfer_or_airdrop_only_activity'; _noPnlLabel = 'Activity is transfer/airdrop-only — no swaps to price'
+          _noPnlNextAction = 'No action — no swap-like activity exists to produce trader PnL.'; _canRecover = false
+        } else if (_swapCandidateCount === 0) {
+          _noPnlReason = 'no_swap_candidates'
+          // WALLET-NO-PNL-UX-2: report the exact outcome of the low-cost receipt recovery attempt
+          // (buildWalletPnlRecoveryV2Base) instead of a generic "scan full history" suggestion —
+          // that recovery already ran against this wallet's own ranked target tokens above.
+          if (walletPnlRecoveryV2Debug.attempted && walletPnlRecoveryV2Debug.priorBuysRecovered === 0) {
+            _noPnlLabel = 'No swap candidates — low-cost recovery found no prior buy/sell legs'
+          } else {
+            _noPnlLabel = 'No swap candidates detected in sample'
+          }
+          _noPnlNextAction = 'Scan full history for swap evidence outside the current sample.'; _canRecover = true
+        } else if (_historicalRecoveryNeeded) {
+          _noPnlReason = 'historical_recovery_needed'; _noPnlLabel = 'Earlier buy-side history is needed to complete cost basis'
+          _noPnlNextAction = 'Run a deeper historical scan to recover the missing buy leg(s).'; _canRecover = true
+        } else {
+          _noPnlReason = 'unsupported_router_or_unparsed_receipts'; _noPnlLabel = 'Swap activity found but could not be parsed'
+          _noPnlNextAction = 'No action — this wallet uses a router/receipt shape not yet supported for recovery.'; _canRecover = false
+        }
+        ;(snapshot as any).walletNoPnlReason = _noPnlReason
+        ;(snapshot as any).walletNoPnlReasonLabel = _noPnlLabel
+        ;(snapshot as any).walletNoPnlNextAction = _noPnlNextAction
+        ;(snapshot as any).walletNoPnlCanRecover = _canRecover
       }
     }
 

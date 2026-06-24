@@ -240,7 +240,13 @@ type WalletResult = {
     targetTokens: Array<{ contract: string; symbol: string; chain: string; estimatedUsd: number }>
     reason: string
     estimatedExtraPages: number
+    blockedByCostGuard?: boolean
+    costGuardReason?: string
   }
+  walletNoPnlReason?: 'non_trader_address_type' | 'no_wallet_initiated_transactions' | 'no_swap_candidates' | 'transfer_or_airdrop_only_activity' | 'missing_counterparty_direction_data' | 'budget_capped_before_recovery' | 'historical_recovery_needed' | 'unsupported_router_or_unparsed_receipts'
+  walletNoPnlReasonLabel?: string
+  walletNoPnlNextAction?: string
+  walletNoPnlCanRecover?: boolean
   walletReconstructionRecovery?: {
     highActivityPoorReconstruction: boolean
     highActivityReason: 'wallet_side_activity' | 'swap_candidates' | 'evidence_context_only' | null
@@ -2569,41 +2575,57 @@ export default function WalletScannerPage() {
                   s === 'ok' ? '✓' : s === 'partial' ? '~' : '○'
                 const statusColor = (s: 'ok' | 'partial' | 'open_check') =>
                   s === 'ok' ? '#4ade80' : s === 'partial' ? '#fbbf24' : '#7dd3fc'
+                // WALLET-NO-PNL-UX-3: derived from the backend's non-trader gate signal — no
+                // new field needed on the page's result type, just reuse walletNoPnlReason.
+                const isNonTraderAddressType = result.walletNoPnlReason === 'non_trader_address_type'
                 const chips: { label: string; note: string; status: 'ok' | 'partial' | 'open_check' }[] = [
                   { label: 'Portfolio', note: mc.portfolio.status === 'ok' ? `${(mc.portfolio.evidence.includes('total_value') ? 'value + ' : '')}holdings` : mc.portfolio.reason.replace(/_/g, ' '), status: mc.portfolio.status },
                   { label: 'Activity', note: mc.activity.eventCount > 0 ? `${mc.activity.eventCount} events indexed` : mc.activity.status === 'open_check' && mc.activity.reason === 'provider_unavailable' ? 'unavailable' : 'not checked', status: mc.activity.status },
-                  { label: 'Swap pairs', note: mc.swapDetection.candidateCount > 0 ? `${mc.swapDetection.candidateCount} candidates` : mc.activity.eventCount > 0 ? 'none found in sample' : 'no activity', status: mc.swapDetection.status },
-                  { label: 'FIFO PnL', note: (() => {
-                    const closedLots = mc.fifoPnL.closedLots
-                    const openedLots = result.walletLotSummary?.openedLots ?? 0
-                    const pricedEvents = mc.priceEvidence?.pricedEvents ?? 0
-                    const candidates = mc.swapDetection.candidateCount
-                    if (closedLots > 0) return `${closedLots} matched lots`
-                    if (openedLots > 0 && pricedEvents > 0) return `${openedLots} open lot${openedLots !== 1 ? 's' : ''} tracked, no closed sells yet`
-                    if (pricedEvents > 0 && openedLots === 0) return 'priced swaps found, no lots opened'
-                    if (candidates > 0 && pricedEvents === 0) return 'candidates unpriced'
-                    if (mc.walletOpenPositionSummary) return 'Open position detected — no matched sells yet'
-                    if ((result.walletLotSummary?.unmatchedSells ?? 0) > 0) return 'Exit detected — entry missing from indexed window'
-                    if (candidates > 0) return 'no swap evidence priced'
-                    return 'no swap evidence'
-                  })(), status: (() => {
-                    const closedLots = mc.fifoPnL.closedLots
-                    const openedLots = result.walletLotSummary?.openedLots ?? 0
-                    const pricedEvents = mc.priceEvidence?.pricedEvents ?? 0
-                    if (closedLots > 0) return mc.fifoPnL.status
-                    if (openedLots > 0 && pricedEvents > 0) return 'partial' as const
-                    return mc.fifoPnL.status
-                  })() },
-                  { label: 'Trade stats', note: (() => {
-                    const tradeClosedLots = mc.tradeStats.closedLots
-                    const tradeOpenedLots = mc.tradeStats.openedLots ?? 0
-                    if (tradeClosedLots > 0) return `${tradeClosedLots} verified trades` + ((mc.tradeStats.excludedLots ?? 0) > 0 ? ` · ${mc.tradeStats.excludedLots} excluded` : '') + (mc.tradeStats.readyForWinRate ? '' : ' — below threshold')
-                    if ((mc.tradeStats.excludedLots ?? 0) > 0) return `Verified stats locked — ${mc.tradeStats.excludedLots} estimate-only/synthetic lots excluded`
-                    if (tradeOpenedLots > 0) return `no verified trades yet — ${tradeOpenedLots} open lot${tradeOpenedLots !== 1 ? 's' : ''} tracked`
-                    if (mc.swapDetection.candidateCount > 0 && (mc.priceEvidence?.pricedEvents ?? 0) === 0) return 'no verified closed lots'
-                    return 'no verified trades for stats yet'
-                  })(), status: mc.tradeStats.status },
+                  // WALLET-NO-PNL-UX-3: a token-contract/treasury/distributor-like address is not a
+                  // trader wallet — the checklist must say so plainly instead of implying broken/empty
+                  // trader PnL with "none found"/"no verified trades yet" copy.
+                  ...(isNonTraderAddressType ? [
+                    { label: 'Trader PnL', note: 'Not applicable — token/distributor address', status: 'open_check' as const },
+                    { label: 'Flow read', note: 'available', status: 'ok' as const },
+                    { label: 'Trade stats', note: 'Not evaluated for this address type', status: 'open_check' as const },
+                  ] : [
+                    { label: 'Swap pairs', note: mc.swapDetection.candidateCount > 0 ? `${mc.swapDetection.candidateCount} candidates` : mc.activity.eventCount > 0 ? 'none found in sample' : 'no activity', status: mc.swapDetection.status },
+                    { label: 'FIFO PnL', note: (() => {
+                      const closedLots = mc.fifoPnL.closedLots
+                      const openedLots = result.walletLotSummary?.openedLots ?? 0
+                      const pricedEvents = mc.priceEvidence?.pricedEvents ?? 0
+                      const candidates = mc.swapDetection.candidateCount
+                      if (closedLots > 0) return `${closedLots} matched lots`
+                      if (openedLots > 0 && pricedEvents > 0) return `${openedLots} open lot${openedLots !== 1 ? 's' : ''} tracked, no closed sells yet`
+                      if (pricedEvents > 0 && openedLots === 0) return 'priced swaps found, no lots opened'
+                      if (candidates > 0 && pricedEvents === 0) return 'candidates unpriced'
+                      if (mc.walletOpenPositionSummary) return 'Open position detected — no matched sells yet'
+                      if ((result.walletLotSummary?.unmatchedSells ?? 0) > 0) return 'Exit detected — entry missing from indexed window'
+                      if (candidates > 0) return 'no swap evidence priced'
+                      return 'no swap evidence'
+                    })(), status: (() => {
+                      const closedLots = mc.fifoPnL.closedLots
+                      const openedLots = result.walletLotSummary?.openedLots ?? 0
+                      const pricedEvents = mc.priceEvidence?.pricedEvents ?? 0
+                      if (closedLots > 0) return mc.fifoPnL.status
+                      if (openedLots > 0 && pricedEvents > 0) return 'partial' as const
+                      return mc.fifoPnL.status
+                    })() },
+                    { label: result.walletNoPnlReason ? 'PnL' : 'Trade stats', note: (() => {
+                      if (result.walletNoPnlReason && mc.tradeStats.closedLots === 0) {
+                        return `locked because ${result.walletNoPnlReasonLabel ?? result.walletNoPnlReason.replace(/_/g, ' ')}${result.walletNoPnlNextAction ? ` — ${result.walletNoPnlNextAction}` : ''}`
+                      }
+                      const tradeClosedLots = mc.tradeStats.closedLots
+                      const tradeOpenedLots = mc.tradeStats.openedLots ?? 0
+                      if (tradeClosedLots > 0) return `${tradeClosedLots} verified trades` + ((mc.tradeStats.excludedLots ?? 0) > 0 ? ` · ${mc.tradeStats.excludedLots} excluded` : '') + (mc.tradeStats.readyForWinRate ? '' : ' — below threshold')
+                      if ((mc.tradeStats.excludedLots ?? 0) > 0) return `Verified stats locked — ${mc.tradeStats.excludedLots} estimate-only/synthetic lots excluded`
+                      if (tradeOpenedLots > 0) return `no verified trades yet — ${tradeOpenedLots} open lot${tradeOpenedLots !== 1 ? 's' : ''} tracked`
+                      if (mc.swapDetection.candidateCount > 0 && (mc.priceEvidence?.pricedEvents ?? 0) === 0) return 'no verified closed lots'
+                      return 'no verified trades for stats yet'
+                    })(), status: mc.tradeStats.status },
+                  ]),
                 ]
+
                 return (
                   <div style={{ padding: '12px 16px', background: 'rgba(255,255,255,0.015)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '12px', display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
                     <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.16em', color: 'rgba(255,255,255,0.22)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', flexShrink: 0 }}>Checks</span>
