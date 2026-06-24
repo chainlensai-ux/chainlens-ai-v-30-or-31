@@ -1113,6 +1113,15 @@ export type WalletSnapshot = {
       holdingsCount: number
       totalValue: number | null
     }
+    walletClosedLotDedupeDebug?: {
+      rawClosedLotsBeforeDedupe: number
+      duplicateClosedLotsRemoved: number
+      closedLotsAfterDedupe: number
+      dedupeKeyFields: string[]
+      sellsExceedBuysBeforeDedupe: boolean
+      sellsExceedBuysAfterDedupe: boolean
+      sellsExceedBuysCausedByDuplicateLots: boolean
+    }
     walletActivityRequestDebug?: {
       primaryActivityAttempted: boolean
       primaryActivityFailed: boolean
@@ -5920,6 +5929,56 @@ function normalizeChainForGoldrush(chain: string): string {
   return c  // already canonical (e.g., 'base-mainnet', 'eth-mainnet') or unknown
 }
 
+// FALSE-PNL-LOCK-FIX: closed lots can legitimately reach the same array twice — e.g. a base-FIFO
+// pass plus a historical-recovery preview pass that re-derives the same trade, or a chain alias
+// ('base' vs 'base-mainnet') that slipped past upstream event dedupe. A duplicated closed lot
+// double-counts that sell against the buy side it already closed, which can make a wallet that
+// truly has matching buys look like sells_exceed_buys. Key on normalizedChain+openTx+closeTx+
+// token+amountClosed+entry/exit price — distinct partial fills (different amountClosed, or a
+// different logIndex-driven closeTx) are never collapsed, only exact re-derivations of the same
+// trade are removed.
+function dedupeClosedLots(lots: WalletClosedLot[]): { deduped: WalletClosedLot[]; duplicatesRemoved: number } {
+  const round = (n: number) => Math.round(n * 1e6) / 1e6
+  const seen = new Set<string>()
+  const deduped: WalletClosedLot[] = []
+  for (const lot of lots) {
+    const key = [
+      normalizeChain(lot.chain),
+      lot.openedTxHash,
+      lot.closedTxHash,
+      lot.tokenAddress.toLowerCase(),
+      round(lot.amountClosed),
+      round(lot.entryPriceUsd),
+      round(lot.exitPriceUsd),
+    ].join(':')
+    if (seen.has(key)) continue
+    seen.add(key)
+    deduped.push(lot)
+  }
+  return { deduped, duplicatesRemoved: lots.length - deduped.length }
+}
+
+// Shared sells_exceed_buys detector, extracted so the integrity check (integrityCheckPnl below)
+// and the duplicate-lot diagnostics in buildWalletSnapshot use the exact same logic — one place
+// to answer "is this violation caused by a true missing buy, or by a duplicated sell".
+function detectSellsExceedBuys(openLots: WalletLotOpen[], closedLots: WalletClosedLot[]): boolean {
+  const EPS = 1e-6
+  const buysByToken = new Map<string, number>()
+  for (const lot of openLots) {
+    const key = `${normalizeChain(lot.chain)}:${lot.tokenAddress.toLowerCase()}`
+    buysByToken.set(key, (buysByToken.get(key) ?? 0) + lot.amountOpened)
+  }
+  const sellsByToken = new Map<string, number>()
+  for (const lot of closedLots) {
+    if (lot.evidence.entrySource === 'current_holding_price_open_lot_estimate') continue
+    const key = `${normalizeChain(lot.chain)}:${lot.tokenAddress.toLowerCase()}`
+    sellsByToken.set(key, (sellsByToken.get(key) ?? 0) + lot.amountClosed)
+    const boughtSoFar = buysByToken.get(key) ?? 0
+    if ((sellsByToken.get(key) ?? 0) > boughtSoFar + EPS + (lot.amountClosed * 1e-6)) return true
+  }
+  return false
+}
+
 // PHASE4-FIX-4: shared dedupe key for merging/deduping raw provider events. Keys on
 // chain+contract+from+to+amountRaw+txHash so unrelated tokens never collide; when amountRaw
 // (or decimals) is missing, falls back to a canonicalAmount+decimals composite instead of a
@@ -6349,21 +6408,10 @@ function integrityCheckPnl(input: {
   }
 
   // No sells > total buys for a token, unless the lot chain is marked estimate/backfilled.
-  const buysByToken = new Map<string, number>()
-  for (const lot of input.openLots) {
-    const key = `${lot.chain}:${lot.tokenAddress}`
-    buysByToken.set(key, (buysByToken.get(key) ?? 0) + lot.amountOpened)
-  }
-  const sellsByToken = new Map<string, number>()
-  for (const lot of input.closedLots) {
-    if (lot.evidence.entrySource === 'current_holding_price_open_lot_estimate') continue
-    const key = `${lot.chain}:${lot.tokenAddress}`
-    sellsByToken.set(key, (sellsByToken.get(key) ?? 0) + lot.amountClosed)
-    const boughtSoFar = buysByToken.get(key) ?? 0
-    if ((sellsByToken.get(key) ?? 0) > boughtSoFar + EPS + (lot.amountClosed * 1e-6)) {
-      violations.push('sells_exceed_buys')
-      break
-    }
+  // Uses the shared detector so chain aliasing (base vs base-mainnet) is normalized the same way
+  // everywhere this check runs — see detectSellsExceedBuys above.
+  if (detectSellsExceedBuys(input.openLots, input.closedLots)) {
+    violations.push('sells_exceed_buys')
   }
 
   // Realized + unrealized PnL should roughly match portfolio delta within a generous tolerance
@@ -14258,7 +14306,29 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
 
   // SYNTH-RECOVERY-FIX-4: after promotion, count how many synthetic lots remain and how many real
   // prior buys were recovered for the synthetic lots' own target tokens.
-  const _syntheticLotsAfterSourceLotsRaw = _shouldPromote && _hcPreviewClosedLots.length > 0 ? _hcPreviewClosedLots : _closedLots
+  const _syntheticLotsAfterSourceLotsBeforeDedupe = _shouldPromote && _hcPreviewClosedLots.length > 0 ? _hcPreviewClosedLots : _closedLots
+
+  // FALSE-PNL-LOCK-FIX: dedupe the assembled closed-lot list before it feeds public performance
+  // classification or the integrity check. This is a final safety net, independent of which
+  // upstream pass (base FIFO vs historical-recovery preview) the lots came from — duplicate
+  // re-derivations of the same trade (or a base/base-mainnet alias slipping through earlier event
+  // dedupe) would otherwise double-count a sell against the buy side it already closed, producing
+  // a false sells_exceed_buys lock even though every individual trade nets out correctly.
+  const { deduped: _syntheticLotsAfterSourceLotsRaw, duplicatesRemoved: _closedLotDuplicatesRemoved } =
+    dedupeClosedLots(_syntheticLotsAfterSourceLotsBeforeDedupe)
+  const _sellsExceedBuysBeforeDedupe = _closedLotDuplicatesRemoved > 0
+    ? detectSellsExceedBuys(fifoResult.openLots, _syntheticLotsAfterSourceLotsBeforeDedupe)
+    : false
+  const _sellsExceedBuysAfterDedupe = detectSellsExceedBuys(fifoResult.openLots, _syntheticLotsAfterSourceLotsRaw)
+  const walletClosedLotDedupeDebug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['walletClosedLotDedupeDebug']> = {
+    rawClosedLotsBeforeDedupe: _syntheticLotsAfterSourceLotsBeforeDedupe.length,
+    duplicateClosedLotsRemoved: _closedLotDuplicatesRemoved,
+    closedLotsAfterDedupe: _syntheticLotsAfterSourceLotsRaw.length,
+    dedupeKeyFields: ['canonicalChain', 'openedTxHash', 'closedTxHash', 'tokenAddress', 'amountClosed', 'entryPriceUsd', 'exitPriceUsd'],
+    sellsExceedBuysBeforeDedupe: _sellsExceedBuysBeforeDedupe,
+    sellsExceedBuysAfterDedupe: _sellsExceedBuysAfterDedupe,
+    sellsExceedBuysCausedByDuplicateLots: _sellsExceedBuysBeforeDedupe && !_sellsExceedBuysAfterDedupe,
+  }
 
   // ── Closed-Lot Price-Upgrade Pass ───────────────────────────────────────────────────────
   // Upgrades entry/exit pricing for closed lots whose price came from a flat/reused/non-
@@ -16072,6 +16142,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       walletProviderRouting,
       walletHoldingsProviderRoutingDebug,
       walletHoldingsRoutingDebug,
+      walletClosedLotDedupeDebug,
       walletActivityRequestDebug: {
         primaryActivityAttempted,
         primaryActivityFailed,
