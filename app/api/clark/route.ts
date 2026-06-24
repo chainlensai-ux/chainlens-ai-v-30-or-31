@@ -20,6 +20,9 @@ import {
   extractAllAddressesForRouting,
   isWalletComparePrompt,
   isWalletPnlFollowupPrompt,
+  buildWalletPnlRead,
+  formatWalletPnlRead,
+  type ClarkWalletPnlRead,
   type ClarkAction,
   formatTokenScanResult,
   formatTokenSafetyAnswer,
@@ -2628,7 +2631,7 @@ function buildWalletQualityVerdict(
       "Next check:"
     ),
     address
-  );
+  ) + "\n\n" + formatWalletPnlRead(snapshot.walletPnlRead ?? null);
 }
 
 function formatInt(value: number | null | undefined): string {
@@ -2672,6 +2675,7 @@ function normalizeWalletSnapshotEvidence(rawWallet: Record<string, unknown>, add
     txCount,
     walletAgeDays,
     dataQuality,
+    walletPnlRead: buildWalletPnlRead(rawWallet),
   };
 }
 
@@ -2727,6 +2731,8 @@ function formatWalletBalanceSummary(snapshot: NonNullable<ClarkToolEvidence["wal
     "",
     "Next check:",
     "Monitor entries/exits before trusting this wallet. Run token scans on major holdings. No trade call.",
+    "",
+    formatWalletPnlRead(snapshot.walletPnlRead ?? null),
   ].join("\n");
 }
 
@@ -4644,6 +4650,7 @@ type ClarkToolEvidence = {
     dataQuality: "Complete" | "Partial" | "Limited";
     errorSafeMessage?: string;
     walletProfile?: Record<string, unknown> | null;
+    walletPnlRead?: ClarkWalletPnlRead | null;
   };
   walletQuality?: {
     ok: boolean;

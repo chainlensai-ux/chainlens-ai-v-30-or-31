@@ -671,6 +671,190 @@ export function formatWalletScanResult(address: string, result: WalletApiResult 
   return lines.join("\n");
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// Clark-facing wallet PnL lane read — public-safe, derived only from existing
+// /api/wallet response fields. Never unlocks official PnL/win rate/profit
+// skill/wallet score on its own; never exposes provider names or raw debug
+// fields.
+// ─────────────────────────────────────────────────────────────────────────
+
+export const REQUIRED_PUBLIC_GRADE_LOTS = 10;
+
+export type ClarkWalletPnlRead = {
+  officialStatus: 'unlocked' | 'locked';
+  officialLabel: string;
+  officialReason: string | null;
+  officialRealizedPnlUsd: number | null;
+  officialWinRatePercent: number | null;
+  officialClosedLots: number;
+  publicGradeLots: number;
+  requiredPublicGradeLots: number;
+  profitSkillStatus: string;
+  walletScoreStatus: 'locked' | 'unlocked';
+  pnlIntegrityStatus: string;
+  estimatedPerformanceRead: {
+    status: 'available';
+    realizedPnlUsd: number | null;
+    confidence: string | null;
+    sourceLots: number | null;
+    excludedFrom: string[];
+  } | null;
+  publicSamplePerformanceRead: {
+    status: 'available';
+    closedLots: number;
+    realizedPnlUsd: number | null;
+    winRatePercent: number | null;
+    excludedFrom: string[];
+  } | null;
+  displayMode: 'verified_public' | 'limited_sample' | 'estimated_only' | 'locked';
+  displayWarning: string | null;
+  excludedFrom: string[];
+};
+
+/**
+ * Derive a public-safe wallet performance read for Clark from the raw
+ * /api/wallet response. Returns null when the response carries no PnL-lane
+ * fields at all (a holdings/activity-only read) — callers must say this read
+ * only includes holdings/activity, not performance, in that case.
+ */
+export function buildWalletPnlRead(raw: Record<string, unknown> | null | undefined): ClarkWalletPnlRead | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const ts = (raw.walletTradeStatsSummary && typeof raw.walletTradeStatsSummary === 'object') ? raw.walletTradeStatsSummary as Record<string, unknown> : {};
+  const tradeIntelligence = (raw.tradeIntelligence && typeof raw.tradeIntelligence === 'object') ? raw.tradeIntelligence as Record<string, unknown> : {};
+  const rawEstimated = raw.estimatedPerformanceRead && typeof raw.estimatedPerformanceRead === 'object' ? raw.estimatedPerformanceRead as Record<string, unknown> : null;
+  const rawSample = raw.publicSamplePerformanceRead && typeof raw.publicSamplePerformanceRead === 'object' ? raw.publicSamplePerformanceRead as Record<string, unknown> : null;
+
+  const hasPnlFields = raw.publicPnlStatus != null || ts.publicPnlStatus != null || rawEstimated != null || rawSample != null;
+  if (!hasPnlFields) return null;
+
+  const publicPnlStatus = String(raw.publicPnlStatus ?? ts.publicPnlStatus ?? 'open_check');
+  const publicClosedLots = Number(raw.publicPerformanceClosedLots ?? ts.publicPerformanceClosedLots ?? 0);
+  const publicRealizedPnlUsd = (raw.publicRealizedPnlUsd ?? raw.publicPerformanceRealizedPnlUsd ?? ts.publicRealizedPnlUsd ?? null) as number | null;
+  const publicWinRatePercent = (raw.publicWinRatePercent ?? ts.publicWinRatePercent ?? null) as number | null;
+  const pnlIntegrityStatus = String(ts.pnlIntegrityStatus ?? raw.pnlIntegrityStatus ?? 'ok');
+  const profitSkillStatus = String(tradeIntelligence.profitSkillStatus ?? ts.profitSkillStatus ?? 'locked_small_sample');
+  const walletScoreStatus: 'locked' | 'unlocked' = ts.scoreUnlocked === true ? 'unlocked' : 'locked';
+
+  const officialUnlocked = publicPnlStatus === 'ok' && pnlIntegrityStatus !== 'invalid' && publicClosedLots >= REQUIRED_PUBLIC_GRADE_LOTS;
+  const officialStatus: 'unlocked' | 'locked' = officialUnlocked ? 'unlocked' : 'locked';
+  const officialReason = officialUnlocked ? null : String(raw.publicPnlStatusReason ?? ts.publicPnlStatusReason ?? 'Official PnL is locked.');
+  const officialLabel = officialUnlocked ? 'Verified public PnL' : 'Locked';
+
+  const estimatedPerformanceRead = rawEstimated && rawEstimated.status === 'available' ? {
+    status: 'available' as const,
+    realizedPnlUsd: (rawEstimated.realizedPnlUsd ?? null) as number | null,
+    confidence: (rawEstimated.confidence ?? null) as string | null,
+    sourceLots: (rawEstimated.sourceLots ?? null) as number | null,
+    excludedFrom: Array.isArray(rawEstimated.excludedFrom) ? rawEstimated.excludedFrom as string[] : ['win_rate', 'profit_skill', 'wallet_score', 'verified_pnl'],
+  } : null;
+
+  const publicSamplePerformanceRead = rawSample && rawSample.status === 'available' ? {
+    status: 'available' as const,
+    closedLots: Number(rawSample.closedLots ?? publicClosedLots),
+    realizedPnlUsd: (rawSample.realizedPnlUsd ?? null) as number | null,
+    winRatePercent: (rawSample.winRatePercent ?? null) as number | null,
+    excludedFrom: Array.isArray(rawSample.excludedFrom) ? rawSample.excludedFrom as string[] : ['profit_skill', 'wallet_score', 'official_win_rate'],
+  } : null;
+
+  const displayMode: ClarkWalletPnlRead['displayMode'] = officialUnlocked
+    ? 'verified_public'
+    : estimatedPerformanceRead
+      ? 'estimated_only'
+      : publicSamplePerformanceRead
+        ? 'limited_sample'
+        : 'locked';
+
+  const excludedFrom = displayMode === 'estimated_only'
+    ? (estimatedPerformanceRead?.excludedFrom ?? [])
+    : displayMode === 'limited_sample'
+      ? (publicSamplePerformanceRead?.excludedFrom ?? [])
+      : [];
+
+  const displayWarning = displayMode === 'estimated_only'
+    ? 'Estimated PnL exists, but it is not verified and is excluded from win rate, profit skill, wallet score, and verified PnL.'
+    : displayMode === 'limited_sample'
+      ? `Limited sample exists, but it is below the required ${REQUIRED_PUBLIC_GRADE_LOTS} public-grade lots.`
+      : displayMode === 'locked'
+        ? officialReason
+        : null;
+
+  return {
+    officialStatus,
+    officialLabel,
+    officialReason,
+    officialRealizedPnlUsd: officialUnlocked ? publicRealizedPnlUsd : null,
+    officialWinRatePercent: officialUnlocked ? publicWinRatePercent : null,
+    officialClosedLots: publicClosedLots,
+    publicGradeLots: publicClosedLots,
+    requiredPublicGradeLots: REQUIRED_PUBLIC_GRADE_LOTS,
+    profitSkillStatus,
+    walletScoreStatus,
+    pnlIntegrityStatus,
+    estimatedPerformanceRead,
+    publicSamplePerformanceRead,
+    displayMode,
+    displayWarning,
+    excludedFrom,
+  };
+}
+
+/**
+ * Render Clark's wallet-performance answer from a ClarkWalletPnlRead. When
+ * read is null, the wallet context only had holdings/activity evidence, not
+ * a performance read.
+ */
+export function formatWalletPnlRead(read: ClarkWalletPnlRead | null): string {
+  if (!read) return "This read only includes holdings/activity, not performance.";
+
+  if (read.displayMode === 'verified_public') {
+    return [
+      "WALLET PNL",
+      "Status: Verified public PnL",
+      `Realized PnL: ${read.officialRealizedPnlUsd != null ? fmtUsdShort(read.officialRealizedPnlUsd) : "unavailable"}`,
+      `Win rate: ${read.officialWinRatePercent != null ? `${read.officialWinRatePercent.toFixed(1)}%` : "unavailable"}`,
+      `Closed lots: ${read.officialClosedLots}`,
+    ].join("\n");
+  }
+
+  if (read.displayMode === 'estimated_only') {
+    const e = read.estimatedPerformanceRead;
+    return [
+      "WALLET PNL",
+      "Status: Estimated only — not verified",
+      `Estimated realized PnL: ${e?.realizedPnlUsd != null ? fmtUsdShort(e.realizedPnlUsd) : "unavailable"}`,
+      `Source lots: ${e?.sourceLots ?? "unknown"} / Confidence: ${e?.confidence ?? "unknown"}`,
+      "Estimated PnL exists, but it is not verified and is excluded from win rate, profit skill, wallet score, and verified PnL.",
+      "Profit skill remains locked.",
+      "Wallet score remains locked.",
+      "Official win rate remains locked.",
+    ].join("\n");
+  }
+
+  if (read.displayMode === 'limited_sample') {
+    const s = read.publicSamplePerformanceRead;
+    return [
+      "WALLET PNL",
+      "Status: Limited sample",
+      `Limited sample PnL: ${s?.realizedPnlUsd != null ? fmtUsdShort(s.realizedPnlUsd) : "unavailable"}`,
+      `Public-grade lots: ${s?.closedLots ?? read.publicGradeLots} of required ${read.requiredPublicGradeLots}`,
+      `Limited sample exists, but it is below the required ${read.requiredPublicGradeLots} public-grade lots.`,
+      "Profit skill remains locked.",
+      "Wallet score remains locked.",
+      "Official win rate remains locked.",
+    ].join("\n");
+  }
+
+  return [
+    "WALLET PNL",
+    "Status: Locked",
+    "Official PnL is locked.",
+    `Reason: ${read.officialReason ?? "Official PnL is locked."}`,
+    "Profit skill remains locked.",
+    "Wallet score remains locked.",
+    "Official win rate remains locked.",
+  ].join("\n");
+}
+
 /**
  * Build an honest "unsupported compare" reply that names both wallet addresses
  * (or the last wallet + the typed one) and never silently scans only one.
