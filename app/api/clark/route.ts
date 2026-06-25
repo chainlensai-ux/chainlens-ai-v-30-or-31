@@ -66,6 +66,12 @@ import {
   resolveClarkFollowupCommand,
   type ClarkWalletContextSummary,
   type ClarkTokenContextSummary,
+  isTokenSafetyPrompt,
+  isDevRugHistoryPrompt,
+  classifyTokenOrWalletAddress,
+  formatTokenApeRiskRead,
+  formatDevHistoryRead,
+  deriveDevHistoryFromTokenEvidence,
 } from "@/lib/server/clarkRouting";
 
 const {
@@ -8893,6 +8899,131 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       actions: buildRoutedActions(["Open Token Scanner", "Run LP Check"]),
       quotaConsumed,
       ...(clarkDebugReceipt ? { clarkDebugReceipt } : {}),
+    };
+  }
+
+  if (routed.intent === "token_ape_risk") {
+    // Memory-first: reuse the same Token Scanner evidence the token_safety/token_scan
+    // flows already gather — no new provider calls, no rewrite of scan logic.
+    const r = await resolveTokenForFollowup();
+    if ("needsAddress" in r) {
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "token_ape_risk", toolsUsed: [],
+        analysis: formatNoTokenInMemory(),
+        intentBadge: "token_ape_risk",
+        actions: buildRoutedActions(["Open Token Scanner"]),
+        quotaConsumed: false,
+        clarkRiskIntent: "token_ape_risk",
+        clarkAddressType: "token",
+        clarkSafetyResolvedFrom: "none",
+        clarkEvidenceGaps: ["address"],
+      };
+    }
+    const toolsUsed: string[] = r.fromMemory ? ["memory"] : ["token_scan"];
+    const analysis = formatTokenApeRiskRead(r.ev, chainDisplayLabel(tokenEvidenceChain(r.ev, chain)));
+    updateMemIntent(sessionMem, "token_ape_risk");
+    const apeMeta = tokenScanVerdictMeta(r.ev, hasUsableTokenEvidence(r.ev));
+    return {
+      feature: "clark-ai", chain, mode: "analysis", intent: "token_ape_risk", toolsUsed,
+      analysis,
+      verdict: apeMeta.verdict,
+      confidence: apeMeta.confidence,
+      source: apeMeta.source,
+      intentBadge: "token_ape_risk",
+      actions: buildRoutedActions(["Open Token Scanner", "Run LP Check"]),
+      quotaConsumed: r.fromMemory ? false : (r.ev.ok ?? false),
+      clarkDebugReceipt: tokenFollowupDebug(r),
+      clarkRiskIntent: "token_ape_risk",
+      clarkAddressType: "token",
+      clarkSafetyResolvedFrom: r.fromMemory ? "memory" : "token_scan",
+      clarkEvidenceGaps: hasUsableTokenEvidence(r.ev) ? [] : ["token_identity", "market", "holders", "security", "lp_control"],
+    };
+  }
+
+  if (routed.intent === "dev_rug_history") {
+    const addressType = classifyTokenOrWalletAddress(prompt);
+    const resolvedAddress = routed.address
+      ?? (body.appContext?.tokenSummary?.address ?? null)
+      ?? (typeof body.appContext?.selectedWallet === "string" ? body.appContext.selectedWallet : body.appContext?.selectedWallet?.address ?? null)
+      ?? sessionMem?.lastDevWallet?.address
+      ?? sessionMem?.lastWallet?.address
+      ?? sessionMem?.lastToken?.address
+      ?? null;
+
+    if (!resolvedAddress) {
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "dev_rug_history", toolsUsed: [],
+        analysis: "Paste a token contract address (CA) or a dev/deployer wallet address and I'll check it for rug-history signals.",
+        intentBadge: "dev_rug_history",
+        actions: buildRoutedActions(["Open Token Scanner"]),
+        quotaConsumed: false,
+        clarkRiskIntent: "dev_rug_history",
+        clarkAddressType: "none",
+        clarkDevHistoryResolvedFrom: "none",
+        clarkEvidenceGaps: ["address"],
+      };
+    }
+
+    if (addressType === "ambiguous") {
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "dev_rug_history", toolsUsed: [],
+        analysis: "Is this a token contract or a dev wallet?",
+        intentBadge: "dev_rug_history",
+        actions: buildRoutedActions(["Open Token Scanner"]),
+        quotaConsumed: false,
+        clarkRiskIntent: "dev_rug_history",
+        clarkAddressType: "ambiguous",
+        clarkDevHistoryResolvedFrom: "none",
+      };
+    }
+
+    if (addressType === "wallet") {
+      // Route through the existing dev-wallet/wallet-intelligence pipeline unchanged —
+      // we only rewrite the prompt text into a phrasing detectIntent already recognizes.
+      const devResult: unknown = await handleClarkAI({ ...body, prompt: `check dev wallet ${resolvedAddress}` }, origin, authHeader, verifiedPlan, sessionMem);
+      const devObj = (devResult && typeof devResult === "object") ? devResult as Record<string, unknown> : {};
+      return {
+        ...devObj,
+        intent: "dev_rug_history",
+        intentBadge: "dev_rug_history",
+        clarkRiskIntent: "dev_rug_history",
+        clarkAddressType: "wallet",
+        clarkDevHistoryResolvedFrom: "dev_wallet_route",
+      };
+    }
+
+    // Token CA: resolve deployer/dev signals from existing token-scan evidence — no
+    // new provider, no cross-token deployer-history database (none exists), so we never
+    // claim confirmed rug history; only contract-control signals actually in evidence.
+    const r = await resolveTokenForFollowup();
+    if ("needsAddress" in r) {
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "dev_rug_history", toolsUsed: [],
+        analysis: formatDevHistoryRead({ status: "open_check", gaps: ["token evidence"] }),
+        intentBadge: "dev_rug_history",
+        actions: buildRoutedActions(["Open Token Scanner"]),
+        quotaConsumed: false,
+        clarkRiskIntent: "dev_rug_history",
+        clarkAddressType: "token",
+        clarkDevHistoryResolvedFrom: "none",
+        clarkEvidenceGaps: ["address"],
+      };
+    }
+    const toolsUsed: string[] = r.fromMemory ? ["memory"] : ["token_scan"];
+    const derived = deriveDevHistoryFromTokenEvidence(r.ev);
+    const analysis = formatDevHistoryRead({ status: derived.status, deployer: derived.deployer, riskSignals: derived.riskSignals, gaps: derived.gaps });
+    updateMemIntent(sessionMem, "dev_rug_history");
+    return {
+      feature: "clark-ai", chain, mode: "analysis", intent: "dev_rug_history", toolsUsed,
+      analysis,
+      intentBadge: "dev_rug_history",
+      actions: buildRoutedActions(["Open Token Scanner", "Run LP Check"]),
+      quotaConsumed: r.fromMemory ? false : (r.ev.ok ?? false),
+      clarkDebugReceipt: tokenFollowupDebug(r),
+      clarkRiskIntent: "dev_rug_history",
+      clarkAddressType: "token",
+      clarkDevHistoryResolvedFrom: r.fromMemory ? "memory" : "token_scan",
+      clarkEvidenceGaps: derived.gaps,
     };
   }
 

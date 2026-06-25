@@ -42,6 +42,8 @@ export type ClarkRoutedIntent =
   | "token_scan"
   | "token_safety"
   | "dev_rug_check"
+  | "token_ape_risk"
+  | "dev_rug_history"
   | "lp_lock_check"
   | "risk_explanation"
   | "none";
@@ -72,6 +74,31 @@ export function extractRequestedChainFromPrompt(prompt: string): ClarkPromptChai
 }
 const TOKEN_SAFETY_RE = /\b(is\s+this\s+(?:token\s+)?safe|is\s+it\s+safe|should\s+i\s+buy(?:\s+this(?:\s+token)?)?|is\s+this\s+(?:a\s+)?rug(?:\s+pull)?|is\s+this\s+token\s+risky|is\s+(?:it|this)\s+risky|safe\s+to\s+buy|rug\s+check|is\s+it\s+legit)\b/i;
 const DEV_RUG_RE = /\b(can\s+(?:the\s+)?dev(?:s?|eloper)?\s+rug|can\s+deployer\s+rug|does\s+dev\s+control|dev\s+control(?:s?|led)?|is\s+ownership\s+renounced|ownership\s+renounced|can\s+they\s+mint|dev\s+(?:wallet\s+)?risk|deployer\s+risk|mint\s+risk|blacklist\s+risk|proxy\s+risk|is\s+owner\s+renounced|who\s+controls\s+(?:the\s+)?supply|supply\s+control)\b/i;
+
+// "Ape"/"full risk breakdown"/"is this CA safe" — natural high-intent token-ape-risk prompts.
+// Kept separate from TOKEN_SAFETY_RE so the existing token_safety formatting/behavior is untouched.
+const TOKEN_APE_RISK_RE = /\b(safe\s+to\s+ape|ape\s+(?:this|it)(?:\s+right\s+now)?|full\s+risk\s+breakdown|risk\s+breakdown(?:\s+for\s+this\s+(?:contract|token|ca))?|is\s+this\s+ca\s+safe)\b/i;
+
+// "Has this dev rugged before" / "check this wallet/dev history" — rug-HISTORY questions, distinct
+// from DEV_RUG_RE (which asks whether the dev/contract *could* rug this token, not whether they
+// *have* rugged before). Never implies confirmed history without evidence — see formatDevHistoryRead.
+const DEV_RUG_HISTORY_RE = /\b(has\s+(?:this|the)\s+dev(?:eloper)?\s+(?:ever\s+)?rugged|dev(?:eloper)?\s+(?:ever\s+)?rugged\s+before|rugged\s+before|dev\s+rug\s+history|dev\s+history|deployer\s+history|check\s+this\s+(?:wallet|dev)(?:'s)?\s+history|wallet\s+history|is\s+this\s+deployer\s+safe|is\s+the\s+deployer\s+safe)\b/i;
+
+/** True for natural high-intent token-safety/ape-risk prompts ("is this safe to ape", "full risk breakdown"). */
+export function isTokenSafetyPrompt(prompt: string): boolean {
+  const t = String(prompt ?? "").trim().toLowerCase();
+  return TOKEN_SAFETY_RE.test(t) || TOKEN_APE_RISK_RE.test(t);
+}
+
+/** True for dev/deployer rug-HISTORY prompts ("has this dev ever rugged before", "check this dev's history"). */
+export function isDevRugHistoryPrompt(prompt: string): boolean {
+  return DEV_RUG_HISTORY_RE.test(String(prompt ?? "").trim().toLowerCase());
+}
+
+/** Single source of truth for "is this address a token CA or a wallet/dev address" routing. */
+export function classifyTokenOrWalletAddress(prompt: string): "token" | "wallet" | "ambiguous" | "none" {
+  return getClarkAddressRouteHint(prompt);
+}
 const LP_LOCK_RE = /\b(is\s+lp\s+locked|lp\s+locked|can\s+liquidity\s+be\s+pulled|is\s+liquidity\s+safe|who\s+controls\s+(?:the\s+)?lp|lp\s+(?:burned|burn)|burned\s+lp|explain\s+(?:the\s+)?lp|lp\s+(?:lock|control|safety)|liquidity\s+(?:lock|locked|safety|control|pulled))\b/i;
 const RISK_EXPL_RE = /\b(why\s+(?:is\s+(?:this|it)\s+)?(?:high|low)\s+risk|why\s+did\s+it\s+score\s+low|explain\s+(?:the\s+)?risk|what\s+are\s+the\s+red\s+flags|red\s+flags|why\s+(?:the\s+)?caution|why\s+risky|explain\s+(?:the\s+)?score|what\s+makes\s+(?:it|this)\s+risky|what\s+are\s+the\s+risks|explain\s+(?:the\s+)?verdict)\b/i;
 const TOKEN_NAME_RE = /\b(scan|check|analyze|tell\s+me\s+about|token\s+scan|is|look\s+up)\s+([A-Z][A-Z0-9]{1,10})\b/;
@@ -236,6 +263,16 @@ export function classifyClarkPrompt(prompt: string): {
   // can resolve the address from memory instead of asking again.
   if (isWalletFollowupPrompt(t)) {
     return { intent: "wallet_pnl_followup", address, addresses, deep: false, symbol: null };
+  }
+
+  // ---- Token ape-risk / full risk breakdown (must run before address-based wallet_scan fallback) ----
+  if (TOKEN_APE_RISK_RE.test(t)) {
+    return { intent: "token_ape_risk", address, addresses, deep: false, symbol };
+  }
+
+  // ---- Dev rug HISTORY ("has this dev ever rugged before") — distinct from dev_rug_check ----
+  if (DEV_RUG_HISTORY_RE.test(t)) {
+    return { intent: "dev_rug_history", address, addresses, deep: false, symbol };
   }
 
   // ---- LP / liquidity check (classify by phrase; contract-vs-EOA decided by caller via eth_getCode) ----
@@ -1354,7 +1391,7 @@ export function classifyAppContextFollowup(prompt: string): ClarkAppFollowupKind
   if (/\bpnl\s+(?:is\s+)?locked\b/.test(t) || /\bwhy\s+(?:is\s+|are\s+)?(?:the\s+|my\s+)?(?:pnl|win\s*rate|profit)\b[^.?!]*\b(lock|locked|hidden|missing|unavailable|not\s+show)/.test(t)) return "pnl_locked";
   if (/\bscan\s+(?:this|the|that)\s+token\b/.test(t)) return "scan_token";
   if (/\b(?:explain|what'?s|what\s+is)\s+(?:this\s+)?token\b/.test(t)) return "token_explain";
-  if (/\bwhat\s+are\s+(?:the\s+)?risks?\b|\brisk\s+breakdown\b|\bwhat'?s\s+risky\b|\bhow\s+risky\b/.test(t)) return "token_risks";
+  if (/\bwhat\s+are\s+(?:the\s+)?risks?\b|\brisk\s+breakdown\b|\bwhat'?s\s+risky\b|\bhow\s+risky\b|\bis\s+this\s+safe\b|\bsafe\s+to\s+ape\b|\bape\s+(?:this|it)\b/.test(t)) return "token_risks";
   if (/\bwhat\s+(?:should|do|can)\s+i\s+do\s+next\b|\bwhat'?s\s+next\b|\bnext\s+steps?\b/.test(t)) return "next_step";
   if (/\bis\s+(?:this|the)\s+wallet\s+(?:good|worth|safe|legit|solid|ok|clean)\b/.test(t)) return "wallet_quality";
   if (/\bexplain\s+(?:this|the|it)(?:\s+wallet|\s+result|\s+scan)?\b|\bwhat\s+does\s+this\s+mean\b|\bbreak\s+(?:this|it)\s+down\b/.test(t)) return "explain";
@@ -2355,6 +2392,124 @@ export function formatDevRugCheck(ev: TokenScanEvidence, chain = "Base"): string
 
   lines.push("", "CTA: Review Dev Control / Open Token Scanner");
   return lines.join("\n");
+}
+
+// Maps a canonical ClarkVerdict to an "ape risk" label. Cleaner -> Low, everything that isn't
+// a confirmed-clean read defaults toward higher caution; Open Check (insufficient evidence) is
+// reported as Unknown, never as a false "Low".
+function apeRiskFromVerdict(verdict: ClarkVerdict): "Low" | "Medium" | "High" | "Unknown" {
+  if (verdict === "Avoid") return "High";
+  if (verdict === "Caution") return "Medium";
+  if (verdict === "Cleaner") return "Low";
+  return "Unknown";
+}
+
+/**
+ * "Is this safe to ape / full risk breakdown" — natural-language token-ape-risk read.
+ * Reuses the same TokenScanEvidence used by the Token Scanner flow; never fabricates evidence,
+ * never says "safe" as a guarantee, and is explicit about what's missing.
+ */
+export function formatTokenApeRiskRead(ev: TokenScanEvidence | null | undefined, chain = "Base"): string {
+  const usable = hasUsableTokenEvidence(ev);
+  if (!ev || !usable) {
+    return [
+      "TOKEN APE RISK READ",
+      "- Verdict: Open Check",
+      "- Ape risk: Unknown",
+      "- Main risks: Not enough confirmed evidence to read this token yet.",
+      "- Evidence gaps: token identity, market, holders, security, and LP control are all unconfirmed.",
+      "- What I'd check next: Run a Token Scanner scan on the contract before doing anything with it.",
+      "- Bottom line: I can't guarantee safety. This is a risk read, not financial advice.",
+    ].join("\n");
+  }
+
+  const meta = tokenScanVerdictMeta(ev, usable);
+  const sec = ev.security, h = ev.holders, lp = ev.lpControl, mkt = ev.market;
+  const risks: string[] = [];
+  const gaps: string[] = [];
+
+  if (sec?.honeypot === true) risks.push("honeypot flag detected");
+  if (sec?.ownerRenounced === false) risks.push("ownership not renounced — active owner present");
+  if (sec?.mintable === true) risks.push("mint authority present");
+  if (lp?.status === "wallet_controlled" || lp?.status === "team_controlled") risks.push("LP wallet/team controlled");
+  if (h?.top1 != null && h.top1 >= 20) risks.push(`top-1 holder controls ${h.top1.toFixed(1)}% of supply`);
+  if (h?.top10 != null && h.top10 >= 40) risks.push(`top-10 holders control ${h.top10.toFixed(1)}% of supply`);
+
+  if (sec?.honeypot == null) gaps.push("honeypot/security simulation");
+  if (!lp || !lp.status || lp.status === "open_check" || lp.status === "unverified") gaps.push("LP lock/control proof");
+  if (!h || h.top10 == null) gaps.push("holder concentration");
+  if (sec?.ownerRenounced == null) gaps.push("ownership/dev control");
+  if (mkt?.liquidity == null) gaps.push("liquidity depth");
+
+  const apeRisk = apeRiskFromVerdict(meta.verdict);
+  const whatNext = gaps.length > 0
+    ? `Confirm ${gaps.slice(0, 3).join(", ")} before entering.`
+    : "Re-check liquidity depth and holder moves right before entering — confirmed evidence can still change.";
+
+  return [
+    "TOKEN APE RISK READ",
+    `- Verdict: ${meta.verdict}`,
+    `- Ape risk: ${apeRisk}`,
+    `- Main risks: ${risks.length > 0 ? risks.join("; ") : "No confirmed red flags from available checks."}`,
+    `- Evidence gaps: ${gaps.length > 0 ? gaps.join("; ") : "None — core safety sections are confirmed."}`,
+    `- What I'd check next: ${whatNext}`,
+    "- Bottom line: I can't guarantee safety. This is a risk read, not financial advice.",
+  ].join("\n");
+}
+
+export type DevHistoryStatus = "no_evidence" | "risk_signals" | "open_check";
+
+/**
+ * "Has this dev ever rugged before / check this dev's history" — never claims confirmed rug
+ * history; only reports contract-control/LP signals actually present in available evidence,
+ * or states plainly that no confirmed rug evidence exists in available data.
+ */
+export function formatDevHistoryRead(opts: {
+  status: DevHistoryStatus;
+  deployer?: string | null;
+  riskSignals?: string[];
+  gaps?: string[];
+}): string {
+  const { status, deployer, riskSignals = [], gaps = [] } = opts;
+  const statusLine =
+    status === "risk_signals" ? "I found signals consistent with risky deployer behavior"
+    : status === "no_evidence" ? "No confirmed rug evidence in available data"
+    : "Open Check — not enough data to make a call";
+
+  return [
+    "DEV HISTORY READ",
+    `- Status: ${statusLine}`,
+    `- Deployer/dev: ${deployer ?? "Open check — deployer/dev address not confirmed in available data."}`,
+    `- Risk signals: ${riskSignals.length > 0 ? riskSignals.join("; ") : "None confirmed in available data."}`,
+    `- Evidence gaps: ${gaps.length > 0 ? gaps.join("; ") : "None."}`,
+    "- Bottom line: I can't confirm or rule out past rug behavior from available data. This is a risk read, not financial advice.",
+  ].join("\n");
+}
+
+/** Derives a DevHistoryStatus + risk signals/gaps from existing token-scan evidence (contract-control signals). */
+export function deriveDevHistoryFromTokenEvidence(ev: TokenScanEvidence | null | undefined): { status: DevHistoryStatus; deployer: string | null; riskSignals: string[]; gaps: string[] } {
+  if (!ev || !hasUsableTokenEvidence(ev)) {
+    return { status: "open_check", deployer: null, riskSignals: [], gaps: ["deployer identity", "ownership/mint history", "LP control history"] };
+  }
+  const sec = ev.security, lp = ev.lpControl;
+  const riskSignals: string[] = [];
+  const gaps: string[] = [];
+
+  if (sec?.ownerRenounced === false) riskSignals.push("ownership not renounced on this token");
+  if (sec?.mintable === true) riskSignals.push("mint authority present on this token");
+  if (lp?.status === "wallet_controlled" || lp?.status === "team_controlled") riskSignals.push("LP wallet/team controlled on this token");
+
+  if (sec?.ownerRenounced == null) gaps.push("ownership status");
+  if (sec?.mintable == null) gaps.push("mint authority");
+  if (!lp || !lp.status) gaps.push("LP control history");
+  gaps.push("cross-token deployer history");
+
+  return {
+    status: riskSignals.length > 0 ? "risk_signals" : "open_check",
+    deployer: null,
+    riskSignals,
+    gaps,
+  };
 }
 
 export function formatLpLockCheck(ev: TokenScanEvidence, chain = "Base"): string {
