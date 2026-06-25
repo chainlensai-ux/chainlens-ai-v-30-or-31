@@ -2205,7 +2205,7 @@ async function handleBasePumpMap(prompt: string, origin: string) {
   }
 
   if (!merged.length) {
-    return { analysis: "BASE MOMENTUM READ\n\nLive Base pool data is incomplete right now. I can still show the available momentum signals, but verify liquidity before acting.\n\nTry again in a moment, or paste a contract address for a direct token scan.", items: [] };
+    return { analysis: formatNoFreshMarketData(), items: [] };
   }
 
   // Rank: 24h change desc, then volume, then liquidity — filter zero-liquidity noise
@@ -7085,6 +7085,8 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   if (isBaseMomentumPrompt(prompt)) {
     // Free users get a limited 3-mover preview; gate is applied in the response below
     if (process.env.NODE_ENV === "development") console.log("[clark-render]", { matchedIntent: "base_pump_map", rendererUsed: "base_pump_map", featureFromClient: body.feature, normalizedPrompt: normalizePromptForIntent(prompt) });
+    const baseMomentumActions = buildRoutedActions(["Open Base Radar", "Open Token Scanner", "Refresh Market Data"]);
+    const baseMomentumUi = { intentBadge: "market", actions: toClarkUiActions(baseMomentumActions) };
     const universe = await getBaseMarketUniverse({ origin, mode: "pumping", requestedCount: 30, followup: false, excludeAddresses: [], includePoolVariants: false }).catch(() => null);
     const stored = (universe?.candidates ?? [])
       .filter((c) => !isMajorOrStableLike(c.symbol ?? "?", c.name ?? null))
@@ -7126,14 +7128,36 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
             reasonTag: c.reasonTags[0] ?? null, price: c.priceUsd ?? null, liquidity: c.liquidityUsd ?? null, volume24h: c.volume24h ?? null, change24h: c.change24h ?? null,
           })),
         },
+        intentBadge: "market",
+        actions: baseMomentumActions,
+        ui: baseMomentumUi,
+        clarkMarketFallbackReason: null,
       };
     }
     if (!isPlanFull) {
-      return { feature: "clark-ai", chain, mode: "analysis", intent: "market", toolsUsed: [],
-        analysis: "BASE MOMENTUM READ\n\nMarket preview is loading. Upgrade to Pro or Elite for the full Base momentum map." };
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "market", toolsUsed: [],
+        analysis: "BASE MOMENTUM READ\n\nMarket preview is loading. Upgrade to Pro or Elite for the full Base momentum map.",
+        intentBadge: "market", actions: baseMomentumActions, ui: baseMomentumUi,
+        clarkMarketFallbackReason: "data_unavailable",
+      };
     }
-    const analysis = await handleBasePumpMap(prompt, origin);
-    return { feature: "clark-ai", chain, mode: "analysis", intent: "market", toolsUsed: ["base_market_feed", "pump_alerts_feed"], analysis };
+    // handleBasePumpMap returns { analysis, items } — the inner "analysis" string must be
+    // promoted to this handler's own "analysis" field, never left nested, or the generic
+    // reply-shape normalizer below sees a non-string analysis and overwrites it with a
+    // could-not-complete fallback even though a usable market read was already built.
+    const basePumpResult = await handleBasePumpMap(prompt, origin);
+    const basePumpHasRows = Array.isArray(basePumpResult.items) && basePumpResult.items.length > 0;
+    return {
+      feature: "clark-ai", chain, mode: "analysis", intent: "market", toolsUsed: ["base_market_feed", "pump_alerts_feed"],
+      analysis: basePumpResult.analysis,
+      marketContext: { items: basePumpResult.items },
+      intentBadge: "market",
+      actions: baseMomentumActions,
+      ui: baseMomentumUi,
+      clarkMarketFallbackReason: basePumpHasRows ? null : "no_rows",
+      quotaConsumed: basePumpHasRows,
+    };
   }
   if (isPumpFeedPrompt(prompt)) {
     if (!planAllows(verifiedPlan, 'pump_alerts')) {

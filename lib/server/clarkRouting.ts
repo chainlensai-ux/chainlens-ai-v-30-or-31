@@ -1172,7 +1172,7 @@ const CLARK_ACTION_HREF: Record<ClarkAction, string> = {
   "Deep Scan Wallet": "/terminal/wallet-scanner",
   "Run LP Check": "/terminal/token-scanner",
   "Open Whale Alerts": "/terminal/whale-alerts",
-  "Refresh Market Data": "/terminal/clark-ai",
+  "Refresh Market Data": "/terminal?refresh=market",
 };
 
 export function toClarkUiActions(actions: ClarkAction[]): Array<{ label: string; href: string }> {
@@ -1182,8 +1182,8 @@ export function toClarkUiActions(actions: ClarkAction[]): Array<{ label: string;
 /** Graceful, non-scary reply for "no fresh Base market rows available right now". */
 export function formatNoFreshMarketData(): string {
   return [
-    "I can't see fresh Base market rows in this pass.",
-    "Market data may be cooling down or temporarily unavailable.",
+    "Base market data is incomplete right now.",
+    "I can't see fresh Base market rows in this pass — market data may be cooling down or temporarily unavailable.",
     "",
     "CTA: Refresh Market Data",
   ].join("\n");
