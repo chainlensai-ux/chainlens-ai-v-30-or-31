@@ -101,7 +101,7 @@ export function classifyTokenOrWalletAddress(prompt: string): "token" | "wallet"
 }
 const LP_LOCK_RE = /\b(is\s+lp\s+locked|lp\s+locked|can\s+liquidity\s+be\s+pulled|is\s+liquidity\s+safe|who\s+controls\s+(?:the\s+)?lp|lp\s+(?:burned|burn)|burned\s+lp|explain\s+(?:the\s+)?lp|lp\s+(?:lock|control|safety)|liquidity\s+(?:lock|locked|safety|control|pulled))\b/i;
 const RISK_EXPL_RE = /\b(why\s+(?:is\s+(?:this|it)\s+)?(?:high|low)\s+risk|why\s+did\s+it\s+score\s+low|explain\s+(?:the\s+)?risk|what\s+are\s+the\s+red\s+flags|red\s+flags|why\s+(?:the\s+)?caution|why\s+risky|explain\s+(?:the\s+)?score|what\s+makes\s+(?:it|this)\s+risky|what\s+are\s+the\s+risks|explain\s+(?:the\s+)?verdict)\b/i;
-const TOKEN_NAME_RE = /\b(scan|check|analyze|tell\s+me\s+about|token\s+scan|is|look\s+up)\s+([A-Z][A-Z0-9]{1,10})\b/;
+const TOKEN_NAME_RE = /\b([Ss]can|[Cc]heck|[Aa]nalyze|[Tt]ell\s+me\s+about|[Tt]oken\s+scan|[Ii]s|[Ll]ook\s+up)\s+([A-Z][A-Z0-9]{1,10})\b/;
 
 /**
  * Single source of truth for address routing hint.
@@ -276,8 +276,10 @@ export function classifyClarkPrompt(prompt: string): {
   }
 
   // ---- LP / liquidity check (classify by phrase; contract-vs-EOA decided by caller via eth_getCode) ----
-  if (/\b(lp\s+check|liquidity\s+check)\b/i.test(t) && address) {
-    return { intent: "liquidity_scan", address, addresses, deep: false, symbol: null };
+  // Symbol-only ("liquidity check AERO") is allowed too — caller resolves the symbol to a
+  // Base-preferred contract before calling /api/liquidity-safety.
+  if (/\b(lp\s+check|liquidity\s+check)\b/i.test(t) && (address || symbol)) {
+    return { intent: "liquidity_scan", address, addresses, deep: false, symbol: address ? null : symbol };
   }
 
   // ---- Wallet scan ----
@@ -339,6 +341,13 @@ export function classifyClarkPrompt(prompt: string): {
   }
   // Named token scan without address ("scan VIRTUAL", "check AERO")
   if (symbol && TOKEN_SCAN_RE.test(t)) {
+    return { intent: "token_scan", address: null, addresses, deep: false, symbol };
+  }
+
+  // ---- Bare named-token fallback ("Scan BRETT") — symbol extracted but no other intent
+  // matched (no literal "token" keyword required). Caller resolves the symbol to a
+  // Base-preferred contract before calling the token scan tool.
+  if (symbol) {
     return { intent: "token_scan", address: null, addresses, deep: false, symbol };
   }
 
