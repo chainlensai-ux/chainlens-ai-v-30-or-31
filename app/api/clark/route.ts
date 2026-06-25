@@ -54,6 +54,16 @@ import {
   describeTrendingShape,
   pickScanIdentifiers,
   tokenScannerHref,
+  classifyAppContextFollowup,
+  formatWalletPnlLockedExplanation,
+  formatWalletContextRead,
+  formatWalletQualityRead,
+  formatWalletNextSteps,
+  formatTokenContextRead,
+  formatTokenRiskRead,
+  formatAppContextMissingAsk,
+  type ClarkWalletContextSummary,
+  type ClarkTokenContextSummary,
 } from "@/lib/server/clarkRouting";
 
 const {
@@ -479,6 +489,12 @@ interface ClarkRequestBody {
     baseRadarSummary?: unknown;
     whaleSyncStatus?: string | null;
     currentTool?: string | null;
+    activeFeature?: string | null;
+    currentWalletAddress?: string | null;
+    currentTokenAddress?: string | null;
+    walletSummary?: ClarkWalletContextSummary | null;
+    tokenSummary?: ClarkTokenContextSummary | null;
+    marketContext?: { items?: unknown } | null;
     dashboardMarketRows?: Array<{ symbol: string; name?: string; chain?: string; priceUsd?: number; change24h?: number; volume24hUsd?: number; marketCapUsd?: number; liquidityUsd?: number; contract?: string; poolAddress?: string; updatedAt?: string }>;
   };
   clarkContext?: {
@@ -6858,6 +6874,84 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   const routeHint = getClarkAddressRouteHint(prompt);
   const clarkDebugMode = Boolean((body as unknown as Record<string, unknown>).debug) || process.env.NODE_ENV !== 'production';
   const appIntentTools = appIntent.cta.map((a) => a.label).join(' · ');
+
+  // ─── App-context follow-up dispatcher ───
+  // Answer "explain this / why is pnl locked / what should I do next / what are the
+  // risks / explain this token" directly from the current page's scan summary
+  // (body.appContext.walletSummary | tokenSummary), preferring it over guessing. Falls
+  // through silently when the needed context lives only in session memory (handled below),
+  // and gives a short helpful ask — never COULD NOT COMPLETE — when nothing is in view.
+  {
+    const ac = body.appContext ?? {};
+    const followupKind = classifyAppContextFollowup(prompt);
+    const hasExplicitAddress = Boolean(extractAddress(prompt));
+    const walletCtx: ClarkWalletContextSummary | null = (ac.walletSummary && typeof ac.walletSummary === "object") ? ac.walletSummary : null;
+    const tokenCtx: ClarkTokenContextSummary | null = (ac.tokenSummary && typeof ac.tokenSummary === "object") ? ac.tokenSummary : null;
+    const acDebug = {
+      appContextReceived: Boolean(body.appContext),
+      appContextRoute: ac.route ?? null,
+      appContextFeature: ac.activeFeature ?? ac.currentTool ?? null,
+    };
+    const memHasWallet = Boolean(sessionMem.lastWallet?.address);
+    const memHasToken = Boolean(sessionMem.lastTokenAddress);
+
+    if (followupKind && !hasExplicitAddress) {
+      const wantsToken = followupKind === "scan_token" || followupKind === "token_explain" || followupKind === "token_risks";
+      const wantsWallet = followupKind === "pnl_locked" || followupKind === "wallet_quality";
+      const routeIsWallet = /wallet/i.test(String(ac.route ?? ac.activeFeature ?? ac.currentTool ?? ""));
+
+      let analysis: string | null = null;
+      let resolvedFrom: "wallet_context" | "token_context" | "none" = "none";
+      let intent = "feature_context";
+
+      if (wantsWallet) {
+        if (walletCtx) {
+          analysis = followupKind === "pnl_locked" ? formatWalletPnlLockedExplanation(walletCtx) : formatWalletQualityRead(walletCtx);
+          resolvedFrom = "wallet_context"; intent = "wallet_analysis";
+        }
+      } else if (wantsToken) {
+        const tokenAddr = tokenCtx?.address ?? ac.currentTokenAddress ?? null;
+        if (followupKind === "scan_token" && tokenAddr) {
+          return await handleClarkAI({ ...body, prompt: `scan ${tokenAddr}` }, origin, authHeader, verifiedPlan, sessionMem);
+        }
+        if (tokenCtx) {
+          analysis = followupKind === "token_risks" ? formatTokenRiskRead(tokenCtx) : formatTokenContextRead(tokenCtx);
+          resolvedFrom = "token_context"; intent = "token_analysis";
+        }
+      } else {
+        // "explain" / "next_step" — resolve from whichever context exists, biased by route.
+        if ((routeIsWallet || !tokenCtx) && walletCtx) {
+          analysis = followupKind === "next_step" ? formatWalletNextSteps(walletCtx) : formatWalletContextRead(walletCtx);
+          resolvedFrom = "wallet_context"; intent = "wallet_analysis";
+        } else if (tokenCtx) {
+          analysis = formatTokenContextRead(tokenCtx);
+          resolvedFrom = "token_context"; intent = "token_analysis";
+        }
+      }
+
+      if (analysis) {
+        updateMemIntent(sessionMem, intent);
+        return {
+          feature: "clark-ai", chain, mode: "analysis", intent, toolsUsed: ["memory"], source: "feature_context",
+          analysis,
+          ...acDebug, appContextUsed: true, appContextMissingReason: null, clarkFollowupResolvedFrom: resolvedFrom,
+        };
+      }
+
+      // No appContext summary for this follow-up. If session memory can serve it, fall through to
+      // the existing dispatchers below; otherwise give a short, helpful ask.
+      const canDeferToMemory = (wantsWallet && memHasWallet) || (wantsToken && memHasToken) || (!wantsWallet && !wantsToken && (memHasWallet || memHasToken));
+      if (!canDeferToMemory) {
+        return {
+          feature: "clark-ai", chain, mode: "analysis", intent: "feature_context", toolsUsed: [], source: "feature_context",
+          analysis: formatAppContextMissingAsk(followupKind),
+          ...acDebug, appContextUsed: false,
+          appContextMissingReason: wantsToken ? "no_token_context" : wantsWallet ? "no_wallet_context" : "no_scan_context",
+          clarkFollowupResolvedFrom: "none",
+        };
+      }
+    }
+  }
 
   // ─── Hard wallet-memory follow-up dispatcher ───
   // Explicit phrase guards, independent of classifyClarkPrompt()/classifyWalletFollowupKind(),

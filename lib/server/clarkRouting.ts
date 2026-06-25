@@ -1311,6 +1311,194 @@ export function describeTrendingShape(payload: unknown): string {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
+// App-context follow-ups — let Clark answer "explain this / why is pnl locked /
+// what should I do next / what are the risks" from the current page's scan summary
+// instead of asking the user to paste JSON. All copy is provider-name-free.
+// ─────────────────────────────────────────────────────────────────────────
+
+export type ClarkWalletContextSummary = {
+  address?: string | null;
+  totalValue?: number | null;
+  holdingsCount?: number | null;
+  publicPnlStatus?: string | null;
+  publicPnlDisplayLabel?: string | null;
+  publicPnlDisplayReason?: string | null;
+  walletPnlRead?: { mode?: string | null; label?: string | null; reason?: string | null } | null;
+  walletModuleCoverage?: Record<string, string | null> | null;
+  walletOpenPositionSummary?: { summary?: string | null } | null;
+};
+
+export type ClarkTokenContextSummary = {
+  chain?: string | null;
+  address?: string | null;
+  symbol?: string | null;
+  name?: string | null;
+  score?: number | null;
+  verdict?: string | null;
+  topRisks?: string[] | null;
+  sectionStatus?: Record<string, string | null> | null;
+};
+
+export type ClarkAppFollowupKind =
+  | "explain"
+  | "pnl_locked"
+  | "next_step"
+  | "wallet_quality"
+  | "scan_token"
+  | "token_explain"
+  | "token_risks";
+
+/** Classify a context-dependent follow-up ("explain this", "why is pnl locked", …). */
+export function classifyAppContextFollowup(prompt: string): ClarkAppFollowupKind | null {
+  const t = prompt.toLowerCase().trim();
+  if (/\bpnl\s+(?:is\s+)?locked\b/.test(t) || /\bwhy\s+(?:is\s+|are\s+)?(?:the\s+|my\s+)?(?:pnl|win\s*rate|profit)\b[^.?!]*\b(lock|locked|hidden|missing|unavailable|not\s+show)/.test(t)) return "pnl_locked";
+  if (/\bscan\s+(?:this|the|that)\s+token\b/.test(t)) return "scan_token";
+  if (/\b(?:explain|what'?s|what\s+is)\s+(?:this\s+)?token\b/.test(t)) return "token_explain";
+  if (/\bwhat\s+are\s+(?:the\s+)?risks?\b|\brisk\s+breakdown\b|\bwhat'?s\s+risky\b|\bhow\s+risky\b/.test(t)) return "token_risks";
+  if (/\bwhat\s+(?:should|do|can)\s+i\s+do\s+next\b|\bwhat'?s\s+next\b|\bnext\s+steps?\b/.test(t)) return "next_step";
+  if (/\bis\s+(?:this|the)\s+wallet\s+(?:good|worth|safe|legit|solid|ok|clean)\b/.test(t)) return "wallet_quality";
+  if (/\bexplain\s+(?:this|the|it)(?:\s+wallet|\s+result|\s+scan)?\b|\bwhat\s+does\s+this\s+mean\b|\bbreak\s+(?:this|it)\s+down\b/.test(t)) return "explain";
+  return null;
+}
+
+function fmtUsdCompact(n: number | null | undefined): string {
+  if (n == null || !Number.isFinite(n)) return "n/a";
+  const abs = Math.abs(n);
+  if (abs >= 1_000_000) return `$${(n / 1_000_000).toFixed(2)}M`;
+  if (abs >= 1_000) return `$${(n / 1_000).toFixed(1)}K`;
+  return `$${n.toFixed(2)}`;
+}
+
+function shortenAddr(a: string | null | undefined): string {
+  if (!a || a.length < 12) return a ?? "";
+  return `${a.slice(0, 6)}…${a.slice(-4)}`;
+}
+
+/** Explains why wallet PnL/win-rate is locked, strictly from the provided summary. */
+export function formatWalletPnlLockedExplanation(s: ClarkWalletContextSummary): string {
+  const reason = s.walletPnlRead?.reason || s.publicPnlDisplayReason
+    || "the verified, integrity-valid trade sample is too small to prove realized PnL and win rate.";
+  const label = s.walletPnlRead?.label || s.publicPnlDisplayLabel || "PnL locked";
+  return [
+    "WALLET PnL — WHY IT'S LOCKED",
+    "",
+    `Status: ${label}`,
+    `Reason: ${reason}`,
+    "",
+    "What this means: behavior-only reads (rotation speed, holdings, activity) can still be shown, but realized PnL and win rate stay hidden until there's a large enough verified, integrity-valid trade sample.",
+    "",
+    "Next: run a deep scan to try to recover more closed-lot history, or open Wallet Scanner for the full breakdown.",
+  ].join("\n");
+}
+
+function walletPnlIsLocked(s: ClarkWalletContextSummary): boolean {
+  const status = (s.publicPnlStatus ?? "").toLowerCase();
+  const mode = (s.walletPnlRead?.mode ?? "").toLowerCase();
+  return /lock|integrity_invalid|open_check|flat_estimate|near_flat/.test(status) || /lock|hidden/.test(mode);
+}
+
+/** Wallet read built from the current scan summary (never a generic fallback). */
+export function formatWalletContextRead(s: ClarkWalletContextSummary): string {
+  const lines: string[] = ["WALLET READ (from your current scan)", ""];
+  if (s.address) lines.push(`Address: ${shortenAddr(s.address)}`);
+  if (s.totalValue != null) lines.push(`Portfolio value: ${fmtUsdCompact(s.totalValue)}`);
+  if (s.holdingsCount != null) lines.push(`Holdings tracked: ${s.holdingsCount}`);
+  const pnlReason = s.walletPnlRead?.reason || s.publicPnlDisplayReason;
+  if (s.publicPnlDisplayLabel || s.walletPnlRead?.label) {
+    lines.push(`PnL: ${s.walletPnlRead?.label ?? s.publicPnlDisplayLabel}${pnlReason ? ` — ${pnlReason}` : ""}`);
+  }
+  if (s.walletOpenPositionSummary?.summary) lines.push(`Open positions: ${s.walletOpenPositionSummary.summary}`);
+  const coverage = s.walletModuleCoverage ? Object.entries(s.walletModuleCoverage).filter(([, v]) => v) : [];
+  if (coverage.length) lines.push(`Module coverage: ${coverage.map(([k, v]) => `${k}=${v}`).join(", ")}`);
+  lines.push("", 'Ask "what should I do next" for a recommended action, or "why is pnl locked" if PnL is hidden.');
+  return lines.join("\n");
+}
+
+/** Wallet quality read — behavior-only when PnL is locked, never invents performance. */
+export function formatWalletQualityRead(s: ClarkWalletContextSummary): string {
+  const locked = walletPnlIsLocked(s);
+  const lines: string[] = ["IS THIS WALLET WORTH WATCHING?", ""];
+  if (s.totalValue != null) lines.push(`- Portfolio value: ${fmtUsdCompact(s.totalValue)}`);
+  if (s.holdingsCount != null) lines.push(`- Holdings tracked: ${s.holdingsCount}`);
+  lines.push(locked
+    ? "- Realized PnL/win rate are locked, so I can't grade profitability yet — only behavior."
+    : `- Public PnL read: ${s.walletPnlRead?.label ?? s.publicPnlDisplayLabel ?? "available"}.`);
+  if (s.walletOpenPositionSummary?.summary) lines.push(`- Open positions: ${s.walletOpenPositionSummary.summary}`);
+  lines.push("",
+    "I won't tell you to copy-trade it. Monitoring is fine; conviction needs verified PnL plus a clean holdings/concentration read.",
+    "",
+    "Next: run a deep scan for more history, or check the top holdings for concentration risk.");
+  return lines.join("\n");
+}
+
+/** Recommended next action from wallet context. */
+export function formatWalletNextSteps(s: ClarkWalletContextSummary): string {
+  const steps: string[] = [];
+  if (walletPnlIsLocked(s)) steps.push("Run a deep scan to recover more closed-lot history and try to unlock PnL/win rate.");
+  steps.push("Check the top holdings for concentration risk before any conviction.");
+  steps.push("Open Wallet Scanner for the full module breakdown.");
+  return ["WHAT TO DO NEXT", "", ...steps.map((s, i) => `${i + 1}. ${s}`)].join("\n");
+}
+
+/** Token read built from the current scan summary's section statuses. */
+export function formatTokenContextRead(s: ClarkTokenContextSummary): string {
+  const sym = s.symbol ?? "this token";
+  const label = s.name && s.symbol && s.name.toUpperCase() !== s.symbol.toUpperCase() ? `${s.symbol} (${s.name})` : sym;
+  const lines: string[] = [`TOKEN READ — ${label}`, ""];
+  if (s.verdict) lines.push(`Verdict: ${s.verdict}`);
+  if (s.score != null) lines.push(`Score: ${s.score}`);
+  if (s.chain) lines.push(`Chain: ${s.chain}`);
+  if (s.address) lines.push(`Contract: ${shortenAddr(s.address)}`);
+  const statuses = s.sectionStatus ? Object.entries(s.sectionStatus).filter(([, v]) => v) : [];
+  if (statuses.length) {
+    lines.push("", "Section status:");
+    for (const [k, v] of statuses) lines.push(`- ${k}: ${v}`);
+  }
+  if (s.topRisks && s.topRisks.length) {
+    lines.push("", "Top risks:");
+    for (const r of s.topRisks.slice(0, 5)) lines.push(`- ${r}`);
+  }
+  lines.push("", 'Ask "what are the risks" for the risk breakdown, or paste a new contract to scan another token.');
+  return lines.join("\n");
+}
+
+/** Token risk breakdown that cites the section statuses from context. */
+export function formatTokenRiskRead(s: ClarkTokenContextSummary): string {
+  const sym = s.symbol ?? "this token";
+  const lines: string[] = [`RISK READ — ${sym}`, ""];
+  if (s.topRisks && s.topRisks.length) {
+    for (const r of s.topRisks.slice(0, 6)) lines.push(`- ${r}`);
+  } else {
+    lines.push("- No critical risk flag confirmed yet in the current scan.");
+  }
+  const statuses = s.sectionStatus ? Object.entries(s.sectionStatus).filter(([, v]) => v) : [];
+  if (statuses.length) {
+    lines.push("", "Coverage (what's verified vs pending):");
+    for (const [k, v] of statuses) lines.push(`- ${k}: ${v}`);
+  }
+  lines.push("", "Anything marked partial/unavailable isn't a clean bill of health — it's unverified. Re-scan or open Token Scanner to fill the gaps.");
+  return lines.join("\n");
+}
+
+/** Short, friendly ask when the follow-up needs context Clark doesn't have yet. */
+export function formatAppContextMissingAsk(kind: ClarkAppFollowupKind): string {
+  switch (kind) {
+    case "pnl_locked":
+      return "I don't have a wallet scan in view yet. Open Wallet Scanner and run a scan, then ask me why PnL is locked.";
+    case "next_step":
+    case "wallet_quality":
+    case "explain":
+      return "I don't have a scan in view yet. Run a Wallet or Token scan (or ask \"what's pumping on Base?\"), then I can break it down.";
+    case "scan_token":
+    case "token_explain":
+    case "token_risks":
+      return "I don't have a token in view yet. Paste a contract or open Token Scanner, then ask me to explain it.";
+    default:
+      return "I need a bit more context. Run a scan or paste an address and I'll take it from there.";
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 // Pack 1: Token Core Pipeline formatting helpers
 // ─────────────────────────────────────────────────────────────────────────
 

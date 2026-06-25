@@ -3373,6 +3373,42 @@ export default function TerminalTokenScanner() {
     }
   }, [])
 
+  // Persist a SAFE token summary (verdict/score/section statuses only — no provider names,
+  // no raw provider payloads) so Clark can explain the current scan. Scan logic is untouched.
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    try {
+      if (!result?.contract) return
+      const sectionStatus: Record<string, string> = {}
+      const sec = result.sections
+      if (sec) {
+        for (const [k, v] of Object.entries(sec)) {
+          const st = (v as { status?: string } | null)?.status
+          if (st) sectionStatus[k] = st
+        }
+      }
+      if (result.lpControl?.status) sectionStatus.lp = result.lpControl.status
+      const topRisks: string[] = []
+      if (result.honeypot?.isHoneypot === true) topRisks.push('Honeypot simulation flagged — selling may be blocked.')
+      if ((result.honeypot?.sellTax ?? 0) >= 10) topRisks.push(`High sell tax (${result.honeypot?.sellTax}%).`)
+      if ((result.honeypot?.buyTax ?? 0) >= 10) topRisks.push(`High buy tax (${result.honeypot?.buyTax}%).`)
+      if (result.analysis?.has_mint === true) topRisks.push('Mint function present — supply can be inflated.')
+      if ((result.holderDistribution?.top10 ?? 0) >= 70) topRisks.push(`Concentrated holders — top 10 hold ${result.holderDistribution?.top10}%.`)
+      const summary = {
+        chain: result.chain ?? 'base',
+        address: result.contract,
+        symbol: result.symbol ?? null,
+        name: result.name ?? null,
+        score: result.riskScore ?? null,
+        verdict: result.cortexVerdict ?? null,
+        topRisks,
+        sectionStatus: Object.keys(sectionStatus).length ? sectionStatus : null,
+        ts: Date.now(),
+      }
+      localStorage.setItem('chainlens:clark:lastTokenSummary', JSON.stringify(summary))
+    } catch { /* non-critical */ }
+  }, [result])
+
   async function saveTrackedToken() {
     if (!result?.contract) return
     setTrackedSaving(true)

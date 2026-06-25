@@ -196,11 +196,31 @@ function ClarkAiContent() {
       const { data: { session: authSession } } = await supabase.auth.getSession()
       const accessToken = authSession?.access_token ?? null
       const clientClarkContext = getClientClarkContext()
+      // Pull the latest safe Wallet/Token scan summaries the scanner pages persisted, so Clark can
+      // answer "explain this / why is pnl locked / what are the risks" without pasted JSON.
+      const readJson = (key: string): Record<string, unknown> | null => {
+        try {
+          if (typeof localStorage === 'undefined') return null
+          const raw = localStorage.getItem(key)
+          return raw ? JSON.parse(raw) as Record<string, unknown> : null
+        } catch { return null }
+      }
+      const walletSummary = readJson('chainlens:clark:lastWalletSummary')
+      const tokenSummary = readJson('chainlens:clark:lastTokenSummary')
+      const latestMarketContext = clarkContextRef.current.lastMarketList?.length
+        ? { items: clarkContextRef.current.lastMarketList }
+        : null
       const appContext = {
         route: pathname,
         chain: 'base',
+        activeFeature: activeMode ?? 'clark-ai',
         selectedToken: clarkContextRef.current.lastMarketList?.[0]?.tokenAddress ?? clientClarkContext.lastToken ?? null,
         selectedWallet: clientClarkContext.lastWallet ?? null,
+        currentWalletAddress: (walletSummary?.address as string | undefined) ?? clientClarkContext.lastWallet ?? null,
+        currentTokenAddress: (tokenSummary?.address as string | undefined) ?? clientClarkContext.lastToken ?? null,
+        walletSummary,
+        tokenSummary,
+        marketContext: latestMarketContext,
         baseRadarSummary: clarkContextRef.current.lastMarketList ?? clientClarkContext.lastMomentumList ?? null,
         whaleSyncStatus: typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('chainlens:whale-alerts:sync-status') ?? 'unknown' : 'unknown',
         currentTool: activeMode ?? null,

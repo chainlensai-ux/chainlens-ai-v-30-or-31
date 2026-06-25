@@ -1566,6 +1566,39 @@ export default function WalletScannerPage() {
     return () => window.clearTimeout(timer)
   }, [])
 
+  // Persist a SAFE wallet summary (statuses/labels only — no provider names, no raw provider
+  // payloads) so Clark can answer follow-ups about the current scan. Scan logic is untouched.
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    try {
+      if (!result?.address) return
+      const coverage = result.walletModuleCoverage
+      const moduleStatuses: Record<string, string> = {}
+      if (coverage) {
+        for (const k of ['portfolio', 'activity', 'swapDetection', 'priceEvidence', 'fifoPnL', 'tradeStats', 'behavior'] as const) {
+          const st = (coverage as Record<string, { status?: string }>)[k]?.status
+          if (st) moduleStatuses[k] = st
+        }
+      }
+      const openPos = result.walletModuleCoverage?.walletOpenPositionSummary ?? result.walletOpenPositionSummary ?? null
+      const summary = {
+        address: result.address,
+        totalValue: Number.isFinite(result.totalValue) ? result.totalValue : null,
+        holdingsCount: result.holdingsCount ?? result.holdings?.length ?? null,
+        publicPnlStatus: result.publicPnlStatus ?? null,
+        publicPnlDisplayLabel: result.publicPnlDisplayLabel ?? null,
+        publicPnlDisplayReason: result.publicPnlDisplayReason ?? null,
+        walletPnlRead: result.walletPnlRead
+          ? { mode: result.walletPnlRead.displayMode ?? null, label: result.walletPnlRead.headlineLabel ?? null, reason: result.walletPnlRead.headlineWarning ?? null }
+          : null,
+        walletModuleCoverage: Object.keys(moduleStatuses).length ? moduleStatuses : null,
+        walletOpenPositionSummary: openPos ? { summary: openPos.reason ?? `${openPos.openLots ?? 0} open lots across ${openPos.uniqueTokens ?? 0} tokens` } : null,
+        ts: Date.now(),
+      }
+      localStorage.setItem('chainlens:clark:lastWalletSummary', JSON.stringify(summary))
+    } catch { /* non-critical */ }
+  }, [result])
+
   function copyAddress(address: string) {
     navigator.clipboard?.writeText(address).then(() => {
       setAddressCopied(true)
