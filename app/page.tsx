@@ -5,6 +5,7 @@ import { useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import dynamic from 'next/dynamic'
 import Navbar from '@/components/Navbar'
+import IntelligenceHero from '@/components/home/IntelligenceHero'
 const ConnectWallet = dynamic(() => import('@/components/ConnectWallet'), { ssr: false })
 const ClaimTrialButton = dynamic(() => import('@/components/ClaimTrialButton'), { ssr: false })
 const Reveal = ({ children }: { children: ReactNode; [key: string]: unknown }) => <>{children}</>
@@ -173,214 +174,15 @@ function AvatarOrInitials({ src, initials, grad, name, imgPos, imgFilter }: { sr
   );
 }
 
-export default function HomePage() {
 
+// ─── Reversible hero experiment ────────────────────────────────────────────
+// Flip USE_INTELLIGENCE_HERO below to false to instantly restore this legacy
+// hero. LegacyHomeHero is kept verbatim (unmodified) for an easy revert.
+const USE_INTELLIGENCE_HERO = true
+
+function LegacyHomeHero() {
   return (
     <>
-            {/* Keyframes */}
-      <style>{`
-        @keyframes ticker-scroll {
-          0%   { transform: translateX(0); }
-          100% { transform: translateX(-50%); }
-        }
-        ::placeholder { color: rgba(255,255,255,0.3); }
-
-        @keyframes orb-teal {
-          0%,100% { transform: translate(0, 0) scale(1); opacity: 0.55; }
-          33%      { transform: translate(60px, -40px) scale(1.12); opacity: 0.70; }
-          66%      { transform: translate(-40px, 30px) scale(0.90); opacity: 0.45; }
-        }
-        @keyframes orb-purple {
-          0%,100% { transform: translate(0, 0) scale(1); opacity: 0.45; }
-          33%      { transform: translate(-50px, 50px) scale(1.08); opacity: 0.60; }
-          66%      { transform: translate(70px, -30px) scale(0.92); opacity: 0.38; }
-        }
-        @keyframes aurora-drift {
-          0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
-          50% { transform: translate3d(-2.4%, 1.6%, 0) scale(1.05); }
-        }
-        @keyframes glow-drift {
-          0%, 100% { transform: translate3d(0, 0, 0) scale(1); opacity: 0.72; }
-          50% { transform: translate3d(2%, -1.8%, 0) scale(1.08); opacity: 0.9; }
-        }
-        @keyframes arc-sway {
-          0%,100% { transform: translate3d(0,0,0) rotate(0deg); opacity: 0.22; }
-          50% { transform: translate3d(1.2%, -0.8%, 0) rotate(2.2deg); opacity: 0.33; }
-        }
-        @keyframes streak-drift-left {
-          0%,100% { transform: translate3d(0,0,0) rotate(-9deg); opacity: 0.24; }
-          50% { transform: translate3d(2.5%, -2%, 0) rotate(-7deg); opacity: 0.32; }
-        }
-        @keyframes streak-drift-right {
-          0%,100% { transform: translate3d(0,0,0) rotate(13deg); opacity: 0.22; }
-          50% { transform: translate3d(-2.4%, 1.8%, 0) rotate(11deg); opacity: 0.30; }
-        }
-        @keyframes particle-float {
-          0%,100% { transform: translate3d(0,0,0); opacity: 0.18; }
-          50% { transform: translate3d(0,-8px,0); opacity: 0.3; }
-        }
-        @keyframes halo-drift {
-          0%,100% { transform: translate3d(0,0,0) scale(1); opacity: 0.55; }
-          50% { transform: translate3d(1.4%, -1.2%, 0) scale(1.06); opacity: 0.72; }
-        }
-        @keyframes ambient-shift {
-          0%,100% { transform: translate3d(0,0,0); opacity: 0.28; }
-          50% { transform: translate3d(0, -1.6%, 0); opacity: 0.4; }
-        }
-        @keyframes texture-shift {
-          0% { transform: translateY(0); opacity: 0.14; }
-          50% { transform: translateY(-10px); opacity: 0.2; }
-          100% { transform: translateY(0); opacity: 0.14; }
-        }
-        @keyframes feat-in {
-          from { opacity: 0; transform: translateY(22px); }
-          to   { opacity: 1; transform: translateY(0); }
-        }
-        .feat-card {
-          transition: transform 0.24s cubic-bezier(0.22,1,0.36,1),
-                      box-shadow 0.24s ease, border-color 0.24s ease;
-          animation: feat-in 0.55s ease-out both;
-        }
-        .feat-card:hover { transform: translateY(-6px); }
-
-        @keyframes arc-rotate {
-          from { transform: rotate(0deg); }
-          to   { transform: rotate(360deg); }
-        }
-        @keyframes horizon-breathe {
-          0%,100% { opacity: 0.55; transform: scaleX(1); }
-          50%      { opacity: 0.75; transform: scaleX(1.04); }
-        }
-        .hero-horizon { animation: horizon-breathe 8s ease-in-out infinite; }
-
-        @media (prefers-reduced-motion: reduce) {
-          .hero-premium-bg *, .home-ambient *, .home-particles *, .pricing-card, .feat-card, .home-ticker-track {
-            animation: none !important;
-            transition: none !important;
-            transform: none !important;
-          }
-          .home-particles, .home-heavy-visual { display: none !important; }
-          .home-ticker-track { animation: none !important; transform: translateX(0) !important; }
-        }
-
-        @media (max-width: 1200px), (pointer: coarse) {
-          .home-heavy-visual, .home-particles { display: none !important; }
-          .card-pro, .card-elite, .cortex-badge, .hero-horizon { animation: none !important; }
-          .pricing-card, .feat-card { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
-        }
-
-        /* Laptop/short-screen hero fix: reduce padding + feature row padding so buttons stay visible */
-        @media (min-width: 768px) and (max-height: 860px) {
-          .mob-hero-main { padding: 56px 20px 36px !important; }
-          .hero-feat-row > div { padding: 14px 12px !important; }
-        }
-        @media (min-width: 768px) and (max-height: 960px) and (min-height: 861px) {
-          .mob-hero-main { padding: 64px 20px 44px !important; }
-        }
-
-        @media (max-width: 767px) {
-          .home-heavy-visual { display: none !important; }
-          .home-reveal-anim, .feat-card { animation: none !important; transform: none !important; }
-          .home-reveal-anim:hover, .feat-card:hover { transform: none !important; }
-          .home-ticker-track { animation: none !important; transform: translateX(0) !important; }
-          .mob-hero-main { padding: 80px 16px 60px !important; }
-          .feat-grid { grid-template-columns: 1fr !important; }
-          .feat-section { padding: 56px 16px 64px !important; }
-          .hero-feat-row { flex-direction: column !important; gap: 16px !important; }
-          .hero-feat-row > div { border-right: none !important; border-bottom: 1px solid rgba(255,255,255,0.06) !important; padding-bottom: 16px !important; }
-          .hero-feat-row > div:last-child { border-bottom: none !important; }
-          .hero-cta-row { flex-direction: column !important; width: 100%; }
-          .hero-cta-row > * { width: 100% !important; }
-          .hero-premium-bg { opacity: 0.68; }
-        }
-        @media (max-width: 1023px) {
-          .hero-feat-row { gap: 16px !important; }
-        }
-
-        /* CORTEX badge teal pulse */
-        @keyframes cortex-pulse {
-          0%,100% {
-            box-shadow: 0 0 12px rgba(45,212,191,0.16), 0 1px 0 rgba(255,255,255,0.04) inset;
-            border-color: rgba(45,212,191,0.32);
-          }
-          50% {
-            box-shadow: 0 0 38px rgba(45,212,191,0.52), 0 0 76px rgba(45,212,191,0.20), 0 1px 0 rgba(255,255,255,0.04) inset;
-            border-color: rgba(45,212,191,0.68);
-          }
-        }
-        .cortex-badge { animation: cortex-pulse 2.8s ease-in-out infinite; }
-
-        /* Particle twinkle */
-        @keyframes particle-twinkle {
-          0%,100% { opacity: 0.10; transform: scale(1); }
-          50%      { opacity: 0.38; transform: scale(1.9); }
-        }
-
-        /* Section heading teal glow */
-        .section-heading {
-          text-shadow: 0 0 40px rgba(45,212,191,0.30), 0 0 80px rgba(45,212,191,0.12);
-        }
-
-        /* Capability card top border slides in on hover */
-        .feat-top-line {
-          transform: scaleX(0);
-          transform-origin: left center;
-          transition: transform 0.34s cubic-bezier(0.22,1,0.36,1);
-        }
-        .feat-card:hover .feat-top-line { transform: scaleX(1); }
-
-        /* Pricing card animations */
-        @keyframes pro-glow {
-          0%,100% { box-shadow: 0 0 40px rgba(139,92,246,0.18), inset 0 0 0 1px rgba(139,92,246,0.55); }
-          50%      { box-shadow: 0 0 64px rgba(139,92,246,0.32), inset 0 0 0 1px rgba(139,92,246,0.80); }
-        }
-        @keyframes elite-glow {
-          0%,100% { box-shadow: 0 0 50px rgba(251,191,36,0.18), 0 0 100px rgba(251,191,36,0.08), inset 0 0 0 1px rgba(251,191,36,0.40); }
-          50%      { box-shadow: 0 0 80px rgba(251,191,36,0.32), 0 0 140px rgba(251,191,36,0.14), inset 0 0 0 1px rgba(251,191,36,0.70); }
-        }
-        @keyframes shine-sweep {
-          0%   { transform: translateX(-100%) skewX(-15deg); }
-          100% { transform: translateX(300%) skewX(-15deg); }
-        }
-        .card-pro   { animation: pro-glow   4s ease-in-out infinite; }
-        .card-elite { animation: elite-glow 3.5s ease-in-out infinite; }
-        .pricing-card {
-          transition: transform 0.28s cubic-bezier(0.22,1,0.36,1), box-shadow 0.28s ease;
-          overflow: hidden;
-        }
-        .pricing-card::before {
-          content: ''; position: absolute; top:0; left:0; right:0; bottom:0;
-          background: linear-gradient(105deg, transparent 40%, rgba(255,255,255,0.04) 50%, transparent 60%);
-          opacity: 0; transition: opacity 0.3s; pointer-events: none; z-index: 2;
-        }
-        .pricing-card:hover { transform: translateY(-8px); }
-        .pricing-card:hover::before { opacity: 1; animation: shine-sweep 0.6s ease forwards; }
-        .pricing-card.card-free:hover { box-shadow: 0 20px 60px rgba(0,0,0,0.55), 0 0 40px rgba(236,72,153,0.18); border-color: rgba(236,72,153,0.35) !important; }
-        .pricing-card.card-pro:hover  { box-shadow: 0 14px 38px rgba(0,0,0,0.50), 0 0 36px rgba(139,92,246,0.28), inset 0 0 0 1px rgba(139,92,246,0.82); animation-play-state: paused; }
-        .pricing-card.card-elite:hover { box-shadow: 0 16px 44px rgba(0,0,0,0.56), 0 0 44px rgba(251,191,36,0.30), inset 0 0 0 1px rgba(251,191,36,0.82); animation-play-state: paused; }
-        .home-heavy-visual * {
-          animation-duration: 0s !important;
-          animation-iteration-count: 1 !important;
-          will-change: auto !important;
-        }
-        .home-heavy-visual [style*='filter: blur(24px)'],
-        .home-heavy-visual [style*='filter: blur(26px)'],
-        .home-heavy-visual [style*='filter: blur(30px)'] {
-          filter: blur(10px) !important;
-        }
-        .cta-outline  { background:transparent; border:1px solid rgba(255,255,255,0.18); color:rgba(255,255,255,0.70); transition:border-color 0.15s,color 0.15s,background 0.15s; }
-        .cta-outline:hover { border-color:rgba(255,255,255,0.40); color:#fff; background:rgba(255,255,255,0.05); }
-        .cta-gradient { background:linear-gradient(135deg,#8b5cf6 0%,#ec4899 100%); border:none; color:#fff; transition:opacity 0.15s,transform 0.15s; }
-        .cta-gradient:hover { opacity:0.88; transform:translateY(-1px); }
-        .cta-gold { background:linear-gradient(135deg,#f59e0b 0%,#fbbf24 50%,#f59e0b 100%); border:none; color:#0a0800; font-weight:800; transition:opacity 0.15s,transform 0.15s,box-shadow 0.15s; box-shadow:0 0 20px rgba(251,191,36,0.35); }
-        .cta-gold:hover { opacity:0.90; transform:translateY(-2px); box-shadow:0 0 32px rgba(251,191,36,0.55); }
-      `}</style>
-
-      <Navbar />
-
-      <div className={`home-page relative min-h-dvh w-full bg-[#05050b]`} style={{ display: 'flex', flexDirection: 'column' }}>
-
-        {/* ── Full-page edge energy — left cyan, right purple ── */}
         <div className="home-heavy-visual" style={{
           position: 'absolute', top: 0, bottom: 0, left: 0, width: '38%',
           background: 'radial-gradient(ellipse at 0% 38%, rgba(45,212,191,0.07) 0%, transparent 62%)',
@@ -774,6 +576,220 @@ export default function HomePage() {
           </div>
 
         </main>
+    </>
+  )
+}
+
+export default function HomePage() {
+
+  return (
+    <>
+            {/* Keyframes */}
+      <style>{`
+        @keyframes ticker-scroll {
+          0%   { transform: translateX(0); }
+          100% { transform: translateX(-50%); }
+        }
+        ::placeholder { color: rgba(255,255,255,0.3); }
+
+        @keyframes orb-teal {
+          0%,100% { transform: translate(0, 0) scale(1); opacity: 0.55; }
+          33%      { transform: translate(60px, -40px) scale(1.12); opacity: 0.70; }
+          66%      { transform: translate(-40px, 30px) scale(0.90); opacity: 0.45; }
+        }
+        @keyframes orb-purple {
+          0%,100% { transform: translate(0, 0) scale(1); opacity: 0.45; }
+          33%      { transform: translate(-50px, 50px) scale(1.08); opacity: 0.60; }
+          66%      { transform: translate(70px, -30px) scale(0.92); opacity: 0.38; }
+        }
+        @keyframes aurora-drift {
+          0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+          50% { transform: translate3d(-2.4%, 1.6%, 0) scale(1.05); }
+        }
+        @keyframes glow-drift {
+          0%, 100% { transform: translate3d(0, 0, 0) scale(1); opacity: 0.72; }
+          50% { transform: translate3d(2%, -1.8%, 0) scale(1.08); opacity: 0.9; }
+        }
+        @keyframes arc-sway {
+          0%,100% { transform: translate3d(0,0,0) rotate(0deg); opacity: 0.22; }
+          50% { transform: translate3d(1.2%, -0.8%, 0) rotate(2.2deg); opacity: 0.33; }
+        }
+        @keyframes streak-drift-left {
+          0%,100% { transform: translate3d(0,0,0) rotate(-9deg); opacity: 0.24; }
+          50% { transform: translate3d(2.5%, -2%, 0) rotate(-7deg); opacity: 0.32; }
+        }
+        @keyframes streak-drift-right {
+          0%,100% { transform: translate3d(0,0,0) rotate(13deg); opacity: 0.22; }
+          50% { transform: translate3d(-2.4%, 1.8%, 0) rotate(11deg); opacity: 0.30; }
+        }
+        @keyframes particle-float {
+          0%,100% { transform: translate3d(0,0,0); opacity: 0.18; }
+          50% { transform: translate3d(0,-8px,0); opacity: 0.3; }
+        }
+        @keyframes halo-drift {
+          0%,100% { transform: translate3d(0,0,0) scale(1); opacity: 0.55; }
+          50% { transform: translate3d(1.4%, -1.2%, 0) scale(1.06); opacity: 0.72; }
+        }
+        @keyframes ambient-shift {
+          0%,100% { transform: translate3d(0,0,0); opacity: 0.28; }
+          50% { transform: translate3d(0, -1.6%, 0); opacity: 0.4; }
+        }
+        @keyframes texture-shift {
+          0% { transform: translateY(0); opacity: 0.14; }
+          50% { transform: translateY(-10px); opacity: 0.2; }
+          100% { transform: translateY(0); opacity: 0.14; }
+        }
+        @keyframes feat-in {
+          from { opacity: 0; transform: translateY(22px); }
+          to   { opacity: 1; transform: translateY(0); }
+        }
+        .feat-card {
+          transition: transform 0.24s cubic-bezier(0.22,1,0.36,1),
+                      box-shadow 0.24s ease, border-color 0.24s ease;
+          animation: feat-in 0.55s ease-out both;
+        }
+        .feat-card:hover { transform: translateY(-6px); }
+
+        @keyframes arc-rotate {
+          from { transform: rotate(0deg); }
+          to   { transform: rotate(360deg); }
+        }
+        @keyframes horizon-breathe {
+          0%,100% { opacity: 0.55; transform: scaleX(1); }
+          50%      { opacity: 0.75; transform: scaleX(1.04); }
+        }
+        .hero-horizon { animation: horizon-breathe 8s ease-in-out infinite; }
+
+        @media (prefers-reduced-motion: reduce) {
+          .hero-premium-bg *, .home-ambient *, .home-particles *, .pricing-card, .feat-card, .home-ticker-track {
+            animation: none !important;
+            transition: none !important;
+            transform: none !important;
+          }
+          .home-particles, .home-heavy-visual { display: none !important; }
+          .home-ticker-track { animation: none !important; transform: translateX(0) !important; }
+        }
+
+        @media (max-width: 1200px), (pointer: coarse) {
+          .home-heavy-visual, .home-particles { display: none !important; }
+          .card-pro, .card-elite, .cortex-badge, .hero-horizon { animation: none !important; }
+          .pricing-card, .feat-card { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
+        }
+
+        /* Laptop/short-screen hero fix: reduce padding + feature row padding so buttons stay visible */
+        @media (min-width: 768px) and (max-height: 860px) {
+          .mob-hero-main { padding: 56px 20px 36px !important; }
+          .hero-feat-row > div { padding: 14px 12px !important; }
+        }
+        @media (min-width: 768px) and (max-height: 960px) and (min-height: 861px) {
+          .mob-hero-main { padding: 64px 20px 44px !important; }
+        }
+
+        @media (max-width: 767px) {
+          .home-heavy-visual { display: none !important; }
+          .home-reveal-anim, .feat-card { animation: none !important; transform: none !important; }
+          .home-reveal-anim:hover, .feat-card:hover { transform: none !important; }
+          .home-ticker-track { animation: none !important; transform: translateX(0) !important; }
+          .mob-hero-main { padding: 80px 16px 60px !important; }
+          .feat-grid { grid-template-columns: 1fr !important; }
+          .feat-section { padding: 56px 16px 64px !important; }
+          .hero-feat-row { flex-direction: column !important; gap: 16px !important; }
+          .hero-feat-row > div { border-right: none !important; border-bottom: 1px solid rgba(255,255,255,0.06) !important; padding-bottom: 16px !important; }
+          .hero-feat-row > div:last-child { border-bottom: none !important; }
+          .hero-cta-row { flex-direction: column !important; width: 100%; }
+          .hero-cta-row > * { width: 100% !important; }
+          .hero-premium-bg { opacity: 0.68; }
+        }
+        @media (max-width: 1023px) {
+          .hero-feat-row { gap: 16px !important; }
+        }
+
+        /* CORTEX badge teal pulse */
+        @keyframes cortex-pulse {
+          0%,100% {
+            box-shadow: 0 0 12px rgba(45,212,191,0.16), 0 1px 0 rgba(255,255,255,0.04) inset;
+            border-color: rgba(45,212,191,0.32);
+          }
+          50% {
+            box-shadow: 0 0 38px rgba(45,212,191,0.52), 0 0 76px rgba(45,212,191,0.20), 0 1px 0 rgba(255,255,255,0.04) inset;
+            border-color: rgba(45,212,191,0.68);
+          }
+        }
+        .cortex-badge { animation: cortex-pulse 2.8s ease-in-out infinite; }
+
+        /* Particle twinkle */
+        @keyframes particle-twinkle {
+          0%,100% { opacity: 0.10; transform: scale(1); }
+          50%      { opacity: 0.38; transform: scale(1.9); }
+        }
+
+        /* Section heading teal glow */
+        .section-heading {
+          text-shadow: 0 0 40px rgba(45,212,191,0.30), 0 0 80px rgba(45,212,191,0.12);
+        }
+
+        /* Capability card top border slides in on hover */
+        .feat-top-line {
+          transform: scaleX(0);
+          transform-origin: left center;
+          transition: transform 0.34s cubic-bezier(0.22,1,0.36,1);
+        }
+        .feat-card:hover .feat-top-line { transform: scaleX(1); }
+
+        /* Pricing card animations */
+        @keyframes pro-glow {
+          0%,100% { box-shadow: 0 0 40px rgba(139,92,246,0.18), inset 0 0 0 1px rgba(139,92,246,0.55); }
+          50%      { box-shadow: 0 0 64px rgba(139,92,246,0.32), inset 0 0 0 1px rgba(139,92,246,0.80); }
+        }
+        @keyframes elite-glow {
+          0%,100% { box-shadow: 0 0 50px rgba(251,191,36,0.18), 0 0 100px rgba(251,191,36,0.08), inset 0 0 0 1px rgba(251,191,36,0.40); }
+          50%      { box-shadow: 0 0 80px rgba(251,191,36,0.32), 0 0 140px rgba(251,191,36,0.14), inset 0 0 0 1px rgba(251,191,36,0.70); }
+        }
+        @keyframes shine-sweep {
+          0%   { transform: translateX(-100%) skewX(-15deg); }
+          100% { transform: translateX(300%) skewX(-15deg); }
+        }
+        .card-pro   { animation: pro-glow   4s ease-in-out infinite; }
+        .card-elite { animation: elite-glow 3.5s ease-in-out infinite; }
+        .pricing-card {
+          transition: transform 0.28s cubic-bezier(0.22,1,0.36,1), box-shadow 0.28s ease;
+          overflow: hidden;
+        }
+        .pricing-card::before {
+          content: ''; position: absolute; top:0; left:0; right:0; bottom:0;
+          background: linear-gradient(105deg, transparent 40%, rgba(255,255,255,0.04) 50%, transparent 60%);
+          opacity: 0; transition: opacity 0.3s; pointer-events: none; z-index: 2;
+        }
+        .pricing-card:hover { transform: translateY(-8px); }
+        .pricing-card:hover::before { opacity: 1; animation: shine-sweep 0.6s ease forwards; }
+        .pricing-card.card-free:hover { box-shadow: 0 20px 60px rgba(0,0,0,0.55), 0 0 40px rgba(236,72,153,0.18); border-color: rgba(236,72,153,0.35) !important; }
+        .pricing-card.card-pro:hover  { box-shadow: 0 14px 38px rgba(0,0,0,0.50), 0 0 36px rgba(139,92,246,0.28), inset 0 0 0 1px rgba(139,92,246,0.82); animation-play-state: paused; }
+        .pricing-card.card-elite:hover { box-shadow: 0 16px 44px rgba(0,0,0,0.56), 0 0 44px rgba(251,191,36,0.30), inset 0 0 0 1px rgba(251,191,36,0.82); animation-play-state: paused; }
+        .home-heavy-visual * {
+          animation-duration: 0s !important;
+          animation-iteration-count: 1 !important;
+          will-change: auto !important;
+        }
+        .home-heavy-visual [style*='filter: blur(24px)'],
+        .home-heavy-visual [style*='filter: blur(26px)'],
+        .home-heavy-visual [style*='filter: blur(30px)'] {
+          filter: blur(10px) !important;
+        }
+        .cta-outline  { background:transparent; border:1px solid rgba(255,255,255,0.18); color:rgba(255,255,255,0.70); transition:border-color 0.15s,color 0.15s,background 0.15s; }
+        .cta-outline:hover { border-color:rgba(255,255,255,0.40); color:#fff; background:rgba(255,255,255,0.05); }
+        .cta-gradient { background:linear-gradient(135deg,#8b5cf6 0%,#ec4899 100%); border:none; color:#fff; transition:opacity 0.15s,transform 0.15s; }
+        .cta-gradient:hover { opacity:0.88; transform:translateY(-1px); }
+        .cta-gold { background:linear-gradient(135deg,#f59e0b 0%,#fbbf24 50%,#f59e0b 100%); border:none; color:#0a0800; font-weight:800; transition:opacity 0.15s,transform 0.15s,box-shadow 0.15s; box-shadow:0 0 20px rgba(251,191,36,0.35); }
+        .cta-gold:hover { opacity:0.90; transform:translateY(-2px); box-shadow:0 0 32px rgba(251,191,36,0.55); }
+      `}</style>
+
+      <Navbar />
+
+      <div className={`home-page relative min-h-dvh w-full bg-[#05050b]`} style={{ display: 'flex', flexDirection: 'column' }}>
+
+        {/* ── Full-page edge energy — left cyan, right purple ── */}
+        {USE_INTELLIGENCE_HERO ? <IntelligenceHero /> : <LegacyHomeHero />}
+
 
         {/* Base momentum ticker */}
         <div style={{
