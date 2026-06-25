@@ -48,6 +48,7 @@ import {
   classifyWalletFollowupKind,
   formatWalletFollowupFromMemory,
   formatNoPumpCandidates,
+  parseExplicitExclusions,
 } from "@/lib/server/clarkRouting";
 
 const {
@@ -2155,6 +2156,8 @@ async function handlePumpFeedSnapshot(origin: string) {
 async function handleBasePumpMap(prompt: string, origin: string) {
   const authHeader = clarkInternalCtx.authToken ? `Bearer ${clarkInternalCtx.authToken}` : undefined;
   const EXCLUDED = new Set(['USDC', 'USDT', 'DAI', 'USDBC', 'WETH', 'ETH', 'CBBTC', 'BTC', 'WBTC', 'CBETH', 'STETH', 'WSTETH', 'EURC', 'BUSD', 'FRAX', 'USD+', 'AXLUSDC', 'BSDETH']);
+  // Honour explicit per-prompt exclusions ("...excluding cbBTC WETH USDC") on top of the defaults.
+  for (const sym of parseExplicitExclusions(prompt)) EXCLUDED.add(sym);
 
   const marketProviderAttempted: string[] = ["trending_feed", "pump_alerts_feed"];
   const marketProviderStatus: Record<string, string> = { trending_feed: "not_attempted", pump_alerts_feed: "not_attempted" };
@@ -7130,10 +7133,13 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     if (process.env.NODE_ENV === "development") console.log("[clark-render]", { matchedIntent: "base_pump_map", rendererUsed: "base_pump_map", featureFromClient: body.feature, normalizedPrompt: normalizePromptForIntent(prompt) });
     const baseMomentumActions = buildRoutedActions(["Open Base Radar", "Open Token Scanner", "Refresh Market Data"]);
     const baseMomentumUi = { intentBadge: "market", actions: toClarkUiActions(baseMomentumActions) };
+    const explicitExcludedSymbols = parseExplicitExclusions(prompt);
+    const momentumExclusionSet = new Set(explicitExcludedSymbols);
     const universe = await getBaseMarketUniverse({ origin, mode: "pumping", requestedCount: 30, followup: false, excludeAddresses: [], includePoolVariants: false }).catch(() => null);
     const universeRowsBeforeFilter = universe?.candidates.length ?? 0;
     const stored = (universe?.candidates ?? [])
       .filter((c) => !isMajorOrStableLike(c.symbol ?? "?", c.name ?? null))
+      .filter((c) => !momentumExclusionSet.has((c.symbol ?? "").toUpperCase()))
       .slice(0, 30);
     const universeRowsAfterFilter = stored.length;
     const universeDroppedAsMajorOrStable = universeRowsBeforeFilter - universeRowsAfterFilter;
@@ -7186,6 +7192,9 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         marketProviderAttempted: ["base_market_universe"],
         marketProviderStatus: { base_market_universe: "ok" },
         marketFallbackReason: null,
+        clarkMarketSource: "market_universe",
+        explicitExcludedSymbols,
+        routedWithoutBaseRadar: true,
       };
     }
     // The Base market universe came back empty (or only majors/stables survived its filter) —
@@ -7205,6 +7214,9 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         marketProviderAttempted: ["base_market_universe"],
         marketProviderStatus: { base_market_universe: "ok" },
         marketFallbackReason: "all_rows_filtered",
+        clarkMarketSource: "market_universe",
+        explicitExcludedSymbols,
+        routedWithoutBaseRadar: true,
       };
     }
     if (!isPlanFull) {
@@ -7220,6 +7232,9 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         marketProviderAttempted: ["base_market_universe"],
         marketProviderStatus: { base_market_universe: universeRowsBeforeFilter > 0 ? "ok" : "market_cache_empty" },
         marketFallbackReason: "data_unavailable",
+        clarkMarketSource: "market_universe",
+        explicitExcludedSymbols,
+        routedWithoutBaseRadar: true,
       };
     }
     // handleBasePumpMap returns { analysis, items } — the inner "analysis" string must be
@@ -7247,6 +7262,9 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       ui: baseMomentumUi,
       clarkMarketFallbackReason: basePumpHasRows ? null : basePumpResult.marketFallbackReason,
       quotaConsumed: basePumpHasRows,
+      clarkMarketSource: basePumpHasRows ? "trending_api" : "fallback",
+      explicitExcludedSymbols,
+      routedWithoutBaseRadar: true,
     };
   }
   if (isPumpFeedPrompt(prompt)) {
@@ -9256,6 +9274,12 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const seenAddressArray = [...seen.addresses];
     const extended = /\b(100|show 100|list 100|give me 100|500)\b/i.test(prompt);
     const requestedCount = /\b500\b/.test(prompt) ? 100 : req.count;
+    // Explicit per-prompt exclusions ("...excluding cbBTC WETH USDC", "without stables/majors").
+    // These market/mover/trending questions must NEVER depend on or fall back to Base Radar —
+    // they use the same /api/trending + getBaseMarketUniverse source as the dashboard screener.
+    const explicitExcludedSymbols = parseExplicitExclusions(prompt);
+    const exclusionSet = new Set(explicitExcludedSymbols);
+    let marketUniverseError = false;
     const universe = await getBaseMarketUniverse({
       origin,
       mode: req.mode,
@@ -9263,7 +9287,10 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       followup: req.wantsMore,
       excludeAddresses: req.wantsMore ? seenAddressArray : [],
       includePoolVariants: req.includePoolVariants,
-    }).catch(() => ({ candidates: [] as BaseMarketCandidate[], clamped: /\b500\b/.test(prompt), cappedMessage: /\b500\b/.test(prompt) ? "I can show up to 100 usable Base candidates at a time." : null }));
+    }).catch(() => {
+      marketUniverseError = true;
+      return { candidates: [] as BaseMarketCandidate[], clamped: /\b500\b/.test(prompt), cappedMessage: /\b500\b/.test(prompt) ? "I can show up to 100 usable Base candidates at a time." : null };
+    });
 
     const take = extended
       ? Math.min(requestedCount, 100)
@@ -9294,13 +9321,21 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       if (marketRows.length >= take) break;
     }
     const offsetBase = req.wantsMore ? startOffset : 0;
-    const cappedRemainingMessage = req.wantsMore && marketRows.length < take
-      ? `I can only see ${marketRows.length} more usable Base candidates from the current feed.`
+    // Apply explicit prompt exclusions on top of the universe's built-in stable/major filter.
+    const marketRowsBeforeFilter = marketRows.length;
+    const filteredMarketRows = exclusionSet.size
+      ? marketRows.filter((c) => !exclusionSet.has((c.symbol ?? "").toUpperCase()))
+      : marketRows;
+    const marketRowsAfterFilter = filteredMarketRows.length;
+    const marketRowsDroppedByReason = { explicit_exclusion: marketRowsBeforeFilter - marketRowsAfterFilter };
+    const cappedRemainingMessage = req.wantsMore && filteredMarketRows.length < take
+      ? `I can only see ${filteredMarketRows.length} more usable Base candidates from the current feed.`
       : null;
     // Free plan: limit Base market preview to 3 movers
-    const marketPreviewLimit = planAllows(verifiedPlan, 'base_radar_full') ? marketRows.length : Math.min(marketRows.length, 3);
-    const displayRows = marketRows.slice(0, marketPreviewLimit);
-    const isPreviewLimitedMarket = !planAllows(verifiedPlan, 'base_radar_full') && marketRows.length > 3;
+    const marketPreviewLimit = planAllows(verifiedPlan, 'base_radar_full') ? filteredMarketRows.length : Math.min(filteredMarketRows.length, 3);
+    const displayRows = filteredMarketRows.slice(0, marketPreviewLimit);
+    const isPreviewLimitedMarket = !planAllows(verifiedPlan, 'base_radar_full') && filteredMarketRows.length > 3;
+    const marketCtaUi = { intentBadge: "market", actions: toClarkUiActions(buildRoutedActions(["Open Base Radar", "Open Token Scanner", "Refresh Market Data"])) };
     if (displayRows.length > 0) {
       const headerLine = strictDifferent
         ? "Clark is showing a fresh set of different Base candidates from the current pool feed."
@@ -9355,20 +9390,61 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         },
         intent: plan.intent,
         toolsUsed: [...new Set([...toolsUsed, "market_get_base_movers"])],
+        ui: marketCtaUi,
+        clarkMarketSource: "market_universe",
+        clarkMarketFallbackReason: null,
+        explicitExcludedSymbols,
+        marketRowsBeforeFilter,
+        marketRowsAfterFilter,
+        marketRowsDroppedByReason,
+        routedWithoutBaseRadar: true,
       };
     }
     if (evidence.market?.ok) {
-      const list = evidence.market.candidates.slice(0, 10).map((c) => ({
-        attributes: {
-          name: `${c.token} / USDC`,
-          reserve_in_usd: c.liquidity,
-          volume_usd: { h24: c.volume24h },
-          price_change_percentage: { h24: c.change24h },
-        },
-      }));
-      return { feature: "clark-ai", chain, mode: "general_market", analysis: buildGTMarketBriefing(list), intent: plan.intent, toolsUsed };
+      const filteredMarketEvidence = exclusionSet.size
+        ? evidence.market.candidates.filter((c) => !exclusionSet.has(String(c.token ?? "").toUpperCase()))
+        : evidence.market.candidates;
+      if (filteredMarketEvidence.length > 0) {
+        const list = filteredMarketEvidence.slice(0, 10).map((c) => ({
+          attributes: {
+            name: `${c.token} / USDC`,
+            reserve_in_usd: c.liquidity,
+            volume_usd: { h24: c.volume24h },
+            price_change_percentage: { h24: c.change24h },
+          },
+        }));
+        return {
+          feature: "clark-ai", chain, mode: "general_market", analysis: buildGTMarketBriefing(list), intent: plan.intent, toolsUsed,
+          ui: marketCtaUi, clarkMarketSource: "trending_api", clarkMarketFallbackReason: null,
+          explicitExcludedSymbols, marketRowsBeforeFilter: evidence.market.candidates.length,
+          marketRowsAfterFilter: filteredMarketEvidence.length,
+          marketRowsDroppedByReason: { explicit_exclusion: evidence.market.candidates.length - filteredMarketEvidence.length },
+          routedWithoutBaseRadar: true,
+        };
+      }
     }
-    return { feature: "clark-ai", chain, mode: "general_market", ui: { intentBadge: 'Base Radar', actions: [{ label: 'Open Base Radar', href: '/terminal/base-radar' }] }, analysis: "Base Radar data is temporarily unavailable. Try opening Base Radar or rescan in 30 seconds. I can still scan any token contract you paste and build a watchlist from partial data. CTA: Open Base Radar", intent: plan.intent, toolsUsed };
+    // Market/mover/trending questions never fall back to Base Radar availability. Distinguish:
+    //  - rows existed but the exclusion/strict filter removed them all -> all_rows_filtered
+    //  - the universe lookup errored               -> source_error
+    //  - no rows reached us from the market source  -> no_rows
+    const hadAnyRows = universe.candidates.length > 0 || (evidence.market?.ok ? evidence.market.candidates.length : 0) > 0;
+    const clarkMarketFallbackReason = marketUniverseError
+      ? "source_error"
+      : (hadAnyRows ? "all_rows_filtered" : "no_rows");
+    const fallbackAnalysis = clarkMarketFallbackReason === "all_rows_filtered"
+      ? formatNoPumpCandidates()
+      : formatNoFreshMarketData();
+    return {
+      feature: "clark-ai", chain, mode: "general_market", analysis: fallbackAnalysis, intent: plan.intent, toolsUsed,
+      ui: marketCtaUi,
+      clarkMarketSource: "fallback",
+      clarkMarketFallbackReason,
+      explicitExcludedSymbols,
+      marketRowsBeforeFilter,
+      marketRowsAfterFilter,
+      marketRowsDroppedByReason,
+      routedWithoutBaseRadar: true,
+    };
   }
 
   if (plan.intent === "wallet_balance") {

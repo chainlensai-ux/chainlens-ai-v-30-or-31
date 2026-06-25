@@ -1196,10 +1196,42 @@ export function formatNoPumpCandidates(): string {
   return [
     "BASE MARKET READ",
     "",
-    "Market data is available, but no clear pump candidates right now — current Base rows are dominated by majors/stablecoins (e.g. WETH, cbBTC, USDC).",
+    "Market data is available, but no clear pump candidates match your filters right now.",
     "",
     "CTA: Refresh Market Data",
   ].join("\n");
+}
+
+// Symbol groups used when a prompt says "without stables" / "exclude majors".
+const EXCLUSION_STABLE_SYMS = ["USDC", "USDT", "DAI", "USDBC", "EURC", "BUSD", "FRAX", "USD+", "AXLUSDC"];
+const EXCLUSION_MAJOR_SYMS = ["WETH", "ETH", "CBBTC", "BTC", "WBTC", "CBETH", "STETH", "WSTETH", "BSDETH"];
+const EXCLUSION_STOPWORDS = new Set([
+  "stable", "stables", "stablecoin", "stablecoins", "major", "majors", "and", "the",
+  "tokens", "token", "coins", "coin", "on", "base", "please", "right", "now", "only", "just",
+]);
+
+/**
+ * Parse explicit token exclusions from a market prompt, e.g.
+ *   "excluding cbBTC WETH USDC"  -> ["CBBTC","WETH","USDC"]
+ *   "exclude cbBTC, WETH, USDC"  -> ["CBBTC","WETH","USDC"]
+ *   "without stables/majors"      -> stable + major symbol groups
+ * Returns an empty array when no exclusion clause is present.
+ */
+export function parseExplicitExclusions(prompt: string): string[] {
+  const m = prompt.match(/\b(?:excluding|exclude|without|except(?:\s+for)?|other than|besides|minus|no)\s+(.+)$/i);
+  if (!m) return [];
+  const tail = m[1].toLowerCase();
+  const out = new Set<string>();
+  if (/\bstable(?:coin)?s?\b/.test(tail)) EXCLUSION_STABLE_SYMS.forEach((s) => out.add(s));
+  if (/\bmajors?\b/.test(tail)) EXCLUSION_MAJOR_SYMS.forEach((s) => out.add(s));
+  const tokens = tail.replace(/[,/&]|\band\b/g, " ").split(/\s+/).filter(Boolean);
+  for (const raw of tokens) {
+    if (EXCLUSION_STOPWORDS.has(raw)) continue;
+    const sym = raw.toUpperCase().replace(/[^A-Z0-9+]/g, "");
+    if (sym.length < 2 || sym.length > 12) continue;
+    out.add(sym);
+  }
+  return [...out];
 }
 
 // ─────────────────────────────────────────────────────────────────────────

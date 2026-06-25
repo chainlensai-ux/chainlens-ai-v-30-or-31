@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
-import { classifyClarkPrompt, formatBaseMarketReadFromRows, formatNoFreshMarketData, formatNoPumpCandidates, toClarkUiActions, buildRoutedActions } from '../lib/server/clarkRouting.ts'
+import { classifyClarkPrompt, formatBaseMarketReadFromRows, formatNoFreshMarketData, formatNoPumpCandidates, parseExplicitExclusions, toClarkUiActions, buildRoutedActions } from '../lib/server/clarkRouting.ts'
 
 // 1. all required market phrasings route to base_market_discovery, not a generic fallback.
 const phrases = [
@@ -102,5 +102,42 @@ for (const reason of ['all_rows_filtered', 'market_endpoint_failed', 'market_cac
 const noPumpCopy = formatNoPumpCandidates()
 assert.ok(!noPumpCopy.includes('COULD NOT COMPLETE'), 'no-pump-candidates reply is not the scary could-not-complete block')
 assert.ok(noPumpCopy.toLowerCase().includes('no clear pump candidates'), 'no-pump-candidates reply states rows exist but no clear pump candidates')
+assert.ok(noPumpCopy.toLowerCase().includes('match your filters'), 'no-pump-candidates reply references the active filters')
+
+// 8. Explicit prompt exclusions are parsed into uppercase symbol lists and applied.
+{
+  const cases = [
+    ['what base tokens are moving excluding cbBTC WETH USDC', ['CBBTC', 'WETH', 'USDC']],
+    ['exclude cbBTC, WETH, USDC', ['CBBTC', 'WETH', 'USDC']],
+    ['top gainers on base except for usdc', ['USDC']],
+  ]
+  for (const [p, expected] of cases) {
+    const got = parseExplicitExclusions(p)
+    for (const sym of expected) assert.ok(got.includes(sym), `"${p}" excludes ${sym} (got ${JSON.stringify(got)})`)
+  }
+  // "without stables/majors" expands to the stable + major groups.
+  const grouped = parseExplicitExclusions('show base movers without stables and majors')
+  assert.ok(grouped.includes('USDC') && grouped.includes('WETH'), 'without stables/majors expands to symbol groups')
+  // No exclusion clause -> empty list.
+  assert.deepEqual(parseExplicitExclusions('what is pumping on base'), [], 'no exclusion clause yields empty list')
+}
+
+// 9. Market/mover/trending questions must NEVER fall back to "Base Radar data is temporarily
+//    unavailable" — that copy is removed from the market intent path, replaced by graceful
+//    market fallbacks that carry the new clarkMarketSource / clarkMarketFallbackReason debug fields.
+assert.ok(
+  !/Base Radar data is temporarily unavailable/.test(routeSrc),
+  'the "Base Radar data is temporarily unavailable" market fallback copy is gone',
+)
+for (const field of ['clarkMarketSource', 'explicitExcludedSymbols', 'routedWithoutBaseRadar']) {
+  assert.ok(routeSrc.includes(field), `route.ts exposes debug field ${field}`)
+}
+for (const reason of ['source_error', 'no_rows', 'all_rows_filtered']) {
+  assert.ok(routeSrc.includes(reason), `route.ts market path distinguishes fallback reason "${reason}"`)
+}
+assert.ok(
+  /clarkMarketSource:\s*"market_universe"/.test(routeSrc) && /clarkMarketSource:\s*"trending_api"/.test(routeSrc) && /clarkMarketSource:\s*"fallback"/.test(routeSrc),
+  'route.ts tags all three clarkMarketSource values',
+)
 
 console.log('clark base market routing checks passed')
