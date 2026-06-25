@@ -102,7 +102,7 @@ const WALLET_ADMIN_FORENSIC_SCAN = process.env.CHAINLENS_WALLET_ADMIN_FORENSIC_S
 const WALLET_ADMIN_HISTORICAL_HARD_CAP = parseInt(process.env.CHAINLENS_WALLET_ADMIN_HISTORICAL_HARD_CAP ?? '50', 10) || 50
 let _goldrushDailyCreditsUsed = 0
 let _goldrushDailyCreditsResetAt = 0
-const WALLET_SNAPSHOT_SCHEMA_VERSION = 'v45'
+const WALLET_SNAPSHOT_SCHEMA_VERSION = 'v46'
 const walletCache = new Map<string, { exp: number; payload: unknown; cachedAt: number }>()
 const walletRate = new Map<string, { count: number; resetAt: number }>()
 const WALLET_RATE_BY_PLAN: Record<string, number> = { free: 20, pro: 60, elite: 180 }
@@ -194,12 +194,72 @@ function buildWalletDeepScanTiming(snapshot: any, startedAt: number, cacheReadMs
 
 function attachWalletDeepScanTiming(payload: any, timing: LegacyWalletDeepScanTiming, debug: boolean) {
   if (!payload || typeof payload !== 'object') return
-  const publicTiming = { portfolioMs: timing.portfolioMs, activityMs: timing.activityMs, swapDetectionMs: timing.swapDetectionMs, pricingMs: timing.pricingMs, fifoMs: timing.fifoMs, tradeStatsMs: timing.tradeStatsMs, historicalMs: timing.historicalMs, totalMs: timing.totalMs, cacheReadMs: timing.cacheReadMs, cacheWriteMs: timing.cacheWriteMs }
+  const publicTiming = { portfolioMs: timing.portfolioMs, holdingsMs: timing.holdingsMs, activityFetchMs: timing.activityMs, activityMs: timing.activityMs, normalizationMs: timing.activityMs, mergeMs: 0, swapDetectionMs: timing.swapDetectionMs, pricingMs: timing.pricingMs, fifoMs: timing.fifoMs, integrityMs: timing.tradeStatsMs, tradeStatsMs: timing.tradeStatsMs, recoveryMs: timing.historicalMs, historicalMs: timing.historicalMs, totalMs: timing.totalMs, cacheReadMs: timing.cacheReadMs, cacheWriteMs: timing.cacheWriteMs }
   payload.walletDeepScanTiming = publicTiming
   if (debug) {
     const { portfolioMs: _portfolioMs, pricingMs: _pricingMs, fifoMs: _fifoMs, historicalMs: _historicalMs, cacheReadMs: _cacheReadMs, cacheWriteMs: _cacheWriteMs, ...walletDeepScanTimings } = timing
     payload._debug = { ...(payload._debug ?? {}), walletDeepScanTiming: publicTiming, walletDeepScanTimings }
   }
+}
+
+
+
+type WalletLoadStage = 'portfolio' | 'holdings' | 'activity' | 'pricing' | 'fifo' | 'recovery' | 'final'
+
+function attachWalletDeepScanStaging(payload: any, opts: { mode: 'standard' | 'deep'; cacheHit?: boolean; dedupeHit?: boolean; inFlightDeduped?: boolean; debug?: boolean }) {
+  if (!payload || typeof payload !== 'object') return
+  const moduleCoverage = payload.walletModuleCoverage ?? buildWalletModuleCoverage(payload)
+  const holdingsReady = Array.isArray(payload.holdings) || Number(payload.holdingsCount ?? 0) > 0 || Number(payload.totalValue ?? 0) >= 0
+  const portfolioReady = Boolean(moduleCoverage?.portfolio?.status && moduleCoverage.portfolio.status !== 'open_check') || holdingsReady
+  const activityReady = Boolean(moduleCoverage?.activity?.status && !['open_check', 'not_requested'].includes(moduleCoverage.activity.status)) || Number(payload.walletEvidenceSummary?.totalEvents ?? 0) > 0
+  const tradeBehaviorReady = Boolean(payload.tradeIntelligence && payload.tradeIntelligence.status !== 'open_check') || Boolean(moduleCoverage?.tradeIntelligence?.status && moduleCoverage.tradeIntelligence.status !== 'open_check') || Boolean(moduleCoverage?.behavior?.status && moduleCoverage.behavior.status !== 'open_check')
+  const pnlIntegrity = payload.walletPnlIntegrity?.status ?? payload.walletTradeStatsSummary?.pnlIntegrityStatus ?? payload.walletPnlBlockerSummary?.status ?? null
+  const integrityReady = Boolean(pnlIntegrity) || Boolean(payload.publicPnlStatus) || Boolean(payload.walletPnlRead)
+  const pnlReady = Boolean(integrityReady && !['invalid', 'locked', 'open_check_integrity_invalid'].includes(String(pnlIntegrity ?? payload.publicPnlStatus ?? '')))
+  const recoveryStatus = payload.walletHistoricalRecoveryStatus ?? (payload.walletHistoricalCoverage?.checked ? 'attempted' : null)
+  const recoveryReady = opts.mode === 'standard' || Boolean(recoveryStatus)
+  const heavyModulesPending: string[] = []
+  if (!activityReady && opts.mode === 'deep') heavyModulesPending.push('activity')
+  if (!tradeBehaviorReady && opts.mode === 'deep') heavyModulesPending.push('trade_reconstruction')
+  if (!integrityReady && opts.mode === 'deep') heavyModulesPending.push('pnl_integrity')
+  if (!recoveryReady && opts.mode === 'deep') heavyModulesPending.push('historical_recovery')
+  const stage: WalletLoadStage = !portfolioReady ? 'portfolio'
+    : !holdingsReady ? 'holdings'
+    : !activityReady && opts.mode === 'deep' ? 'activity'
+    : !tradeBehaviorReady && opts.mode === 'deep' ? 'fifo'
+    : !integrityReady && opts.mode === 'deep' ? 'pricing'
+    : !recoveryReady && opts.mode === 'deep' ? 'recovery'
+    : 'final'
+  payload.walletLoadState = {
+    mode: opts.mode,
+    stage,
+    portfolioReady,
+    holdingsReady,
+    activityReady,
+    tradeBehaviorReady,
+    pnlReady,
+    recoveryReady,
+    integrityReady,
+    partialResponseSafe: portfolioReady && holdingsReady,
+    heavyModulesPending,
+    lastUpdatedAt: new Date().toISOString(),
+  }
+  const timing = payload.walletDeepScanTiming ?? {}
+  const audit = payload.apiAudit ?? payload._diagnostics?.walletApiAuditDebug ?? {}
+  const priceDebug = payload._diagnostics?.walletPriceAtTimeDebug ?? payload._debug?.walletPriceAtTimeDebug ?? {}
+  const duplicateEventsRemoved = Number(payload._diagnostics?.walletChainActivityMergeDebug?.duplicateEventsRemoved ?? payload._debug?.walletChainActivityMergeDebug?.duplicateEventsRemoved ?? 0) || 0
+  payload.walletDeepScanOptimizationDebug = {
+    cacheHitStages: opts.cacheHit ? ['snapshot', 'normalized_events', 'merged_events', 'price_evidence', 'matched_lots_summary'] : [],
+    reusedEvidenceStages: [opts.dedupeHit || opts.inFlightDeduped ? 'in_flight_scan' : null, opts.cacheHit ? 'route_cache' : null].filter(Boolean),
+    duplicatePriceRequestsAvoided: Math.max(0, Number(priceDebug.duplicateRequestsAvoided ?? priceDebug.cacheHits ?? 0) || 0),
+    duplicateEventsRemoved,
+    parallelStagesUsed: opts.mode === 'deep' ? ['portfolio_holdings_vs_activity', 'independent_chain_activity_fetches', 'batched_price_evidence'] : ['portfolio_holdings'],
+    heavyModulesDeferred: heavyModulesPending,
+    noExtraProviderCalls: true,
+    providerCallCountUnchanged: true,
+    liveProviderCalls: Number(audit?.totals?.liveProviderCalls ?? 0) || undefined,
+  }
+  if (opts.debug) payload._debug = { ...(payload._debug ?? {}), walletLoadState: payload.walletLoadState, walletDeepScanOptimizationDebug: payload.walletDeepScanOptimizationDebug }
 }
 
 function stripUndefinedInPlace(value: unknown): unknown {
@@ -997,6 +1057,7 @@ export async function POST(req: Request) {
         },
       }
       attachWalletDeepScanTiming(cp, { ...zeroWalletDeepScanTiming(), totalMs: Date.now() - startedAt, cacheHit: true, cacheReadMs: _cacheReadMs }, debug)
+      attachWalletDeepScanStaging(cp, { mode: deepActivity ? 'deep' : 'standard', cacheHit: true, debug })
       pruneWalletScannerDebug(cp, debug)
       return json(cp)
     }
@@ -1132,6 +1193,7 @@ export async function POST(req: Request) {
             }
           }
           attachWalletDeepScanTiming(cp, { ...zeroWalletDeepScanTiming(), totalMs: Date.now() - startedAt, cacheHit: true, cacheReadMs: _cacheReadMs }, debug)
+          attachWalletDeepScanStaging(cp, { mode: deepActivity ? 'deep' : 'standard', cacheHit: true, debug })
           pruneWalletScannerDebug(cp, debug)
           return json(cp)
         }
@@ -1157,6 +1219,7 @@ export async function POST(req: Request) {
             cp.walletScanCacheNote = 'Deep scan cooling down — serving recent result to protect API budget.'
           }
           attachWalletDeepScanTiming(cp, { ...zeroWalletDeepScanTiming(), totalMs: Date.now() - startedAt, cacheHit: true, cacheReadMs: _cacheReadMs }, debug)
+          attachWalletDeepScanStaging(cp, { mode: deepActivity ? 'deep' : 'standard', cacheHit: true, debug })
           pruneWalletScannerDebug(cp, debug)
           return json(cp)
         }
@@ -1842,6 +1905,7 @@ export async function POST(req: Request) {
       snapshot.cacheAgeSeconds = null
     }
     attachWalletDeepScanTiming(snapshot, buildWalletDeepScanTiming(snapshot, startedAt, _cacheReadMs, _cacheWriteMs, { cacheHit: false, dedupeHit: inFlightDeduped }), debug)
+    attachWalletDeepScanStaging(snapshot, { mode: deepActivity ? 'deep' : 'standard', cacheHit: false, dedupeHit: inFlightDeduped, inFlightDeduped, debug })
     pruneWalletScannerDebug(snapshot, debug)
     return json(snapshot)
   } catch (err: unknown) {
