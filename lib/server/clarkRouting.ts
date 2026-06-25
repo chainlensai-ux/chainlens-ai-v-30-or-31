@@ -2663,6 +2663,7 @@ export function formatTokenApeRiskRead(ev: TokenScanEvidence | null | undefined,
 }
 
 export type DevHistoryStatus = "no_evidence" | "risk_signals" | "open_check";
+export type DevHistoryEvidenceLevel = "none" | "token_local_only" | "cross_token_confirmed";
 
 /**
  * "Has this dev ever rugged before / check this dev's history" — premium CORTEX-style dev
@@ -2671,21 +2672,23 @@ export type DevHistoryStatus = "no_evidence" | "risk_signals" | "open_check";
  */
 export function formatDevHistoryRead(opts: {
   status: DevHistoryStatus;
+  target?: string | null;
   deployer?: string | null;
-  linkedWallets?: string[];
-  riskSignals?: string[];
+  devIdentityConfirmed?: boolean;
+  tokenLocalSignals?: string[];
+  crossTokenEvidence?: string[];
   gaps?: string[];
 }): string {
-  const { status, deployer, linkedWallets = [], riskSignals = [], gaps = [] } = opts;
+  const { status, target, deployer, devIdentityConfirmed = false, tokenLocalSignals = [], crossTokenEvidence = [], gaps = [] } = opts;
   const statusLine =
     status === "risk_signals" ? "Risk signals found"
     : status === "no_evidence" ? "No confirmed rug evidence"
     : "Open Check";
 
   const bottomLine =
-    status === "risk_signals" ? "I found signals consistent with risky deployer behavior — that is not the same as a confirmed past rug."
-    : status === "no_evidence" ? "No confirmed rug evidence in available data."
-    : "Not enough data to make a call either way.";
+    status === "risk_signals" ? "Confirmed deployer-linked signals found — that reads as elevated dev-history risk."
+    : status === "no_evidence" ? "Deployer identity and cross-token history were checked and came back clean — no confirmed rug evidence."
+    : "Deployer identity and cross-token history are not confirmed, so dev rug-history can't be confirmed or ruled out yet — that is not the same as a clean history.";
 
   return [
     "CORTEX DEV HISTORY READ",
@@ -2693,12 +2696,18 @@ export function formatDevHistoryRead(opts: {
     "Status:",
     `- ${statusLine}`,
     "",
-    "Dev / deployer:",
-    `- Address: ${deployer ?? "Open check — deployer/dev address not confirmed in available data."}`,
-    `- Linked wallets / cluster influence: ${linkedWallets.length > 0 ? linkedWallets.join(", ") : "Open check — not confirmed in available data."}`,
+    "Target:",
+    `- ${target ?? "Open check — no target address resolved."}`,
     "",
-    "Risk signals:",
-    riskSignals.length > 0 ? riskSignals.map((r) => `- ${r}`).join("\n") : "- None confirmed in available data.",
+    "Deployer identity:",
+    `- ${devIdentityConfirmed && deployer ? deployer : "Open check — deployer/dev address not confirmed in available data."}`,
+    "",
+    "Token-local risk signals:",
+    tokenLocalSignals.length > 0 ? tokenLocalSignals.map((r) => `- ${r}`).join("\n") : "- None confirmed in available data.",
+    "- Note: these describe this token's own contract, not the deployer's history on other tokens.",
+    "",
+    "Cross-token evidence:",
+    crossTokenEvidence.length > 0 ? crossTokenEvidence.map((r) => `- ${r}`).join("\n") : "- None available — no cross-token deployer-history data source exists yet.",
     "",
     "Evidence gaps:",
     gaps.length > 0 ? gaps.map((g) => `- ${g}`).join("\n") : "- None.",
@@ -2708,31 +2717,63 @@ export function formatDevHistoryRead(opts: {
   ].join("\n");
 }
 
-/** Derives a DevHistoryStatus + risk signals/gaps from existing token-scan evidence (contract-control signals). */
-export function deriveDevHistoryFromTokenEvidence(ev: TokenScanEvidence | null | undefined): { status: DevHistoryStatus; deployer: string | null; riskSignals: string[]; gaps: string[] } {
+/**
+ * Derives dev-history evidence from existing token-scan evidence. Deployer identity and
+ * cross-token deployer-history are never available from a single token scan — there is no
+ * cross-token deployer-history database — so Status must always be "open_check": it is never
+ * inferred from this token's own contract-control signals alone. Token-local signals are still
+ * surfaced separately (informational), since they are real, just not dev-history evidence.
+ */
+export function deriveDevHistoryFromTokenEvidence(ev: TokenScanEvidence | null | undefined): {
+  status: DevHistoryStatus;
+  deployer: string | null;
+  devIdentityConfirmed: boolean;
+  evidenceLevel: DevHistoryEvidenceLevel;
+  statusReason: string;
+  tokenLocalSignals: string[];
+  crossTokenEvidence: string[];
+  riskSignals: string[];
+  gaps: string[];
+} {
   if (!ev || !hasUsableTokenEvidence(ev)) {
-    return { status: "open_check", deployer: null, riskSignals: [], gaps: ["deployer identity", "ownership/mint history", "LP control history", "cross-token deployer history"] };
+    return {
+      status: "open_check",
+      deployer: null,
+      devIdentityConfirmed: false,
+      evidenceLevel: "none",
+      statusReason: "No token scan evidence available — deployer identity and cross-token history cannot be checked.",
+      tokenLocalSignals: [],
+      crossTokenEvidence: [],
+      riskSignals: [],
+      gaps: ["deployer identity", "ownership/mint history", "LP control history", "cross-token deployer history"],
+    };
   }
   const sec = ev.security, lp = ev.lpControl;
-  const riskSignals: string[] = [];
+  const tokenLocalSignals: string[] = [];
   const gaps: string[] = [];
 
-  if (sec?.ownerRenounced === false) riskSignals.push("ownership not renounced on this token");
-  if (sec?.mintable === true) riskSignals.push("mint authority present on this token");
-  if (lp?.status === "wallet_controlled" || lp?.status === "team_controlled") riskSignals.push("LP wallet/team controlled on this token");
+  if (sec?.ownerRenounced === false) tokenLocalSignals.push("ownership not renounced on this token");
+  if (sec?.mintable === true) tokenLocalSignals.push("mint authority present on this token");
+  if (lp?.status === "wallet_controlled" || lp?.status === "team_controlled") tokenLocalSignals.push("LP wallet/team controlled on this token");
 
   if (sec?.ownerRenounced == null) gaps.push("ownership status");
   if (sec?.mintable == null) gaps.push("mint authority");
   if (!lp || !lp.status) gaps.push("LP control history");
+  gaps.push("deployer identity");
   gaps.push("cross-token deployer history");
 
-  const coreConfirmed = sec?.ownerRenounced != null && sec?.mintable != null && lp?.status != null;
-  const status: DevHistoryStatus = riskSignals.length > 0 ? "risk_signals" : coreConfirmed ? "no_evidence" : "open_check";
-
+  // No cross-token deployer-history database exists in this product, so deployer identity
+  // is never confirmed and dev rug-history Status must always be Open Check — never
+  // "risk_signals" or "no_evidence" derived from this token's own signals alone.
   return {
-    status,
+    status: "open_check",
     deployer: null,
-    riskSignals,
+    devIdentityConfirmed: false,
+    evidenceLevel: "token_local_only",
+    statusReason: "Deployer identity is not confirmed and no cross-token deployer-history data source exists — dev rug-history can't be confirmed or ruled out from this token's own signals.",
+    tokenLocalSignals,
+    crossTokenEvidence: [],
+    riskSignals: tokenLocalSignals,
     gaps,
   };
 }

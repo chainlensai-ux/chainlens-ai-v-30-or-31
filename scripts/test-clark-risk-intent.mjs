@@ -87,17 +87,33 @@ const walletAddr = '0x' + '2'.repeat(40)
   assert.ok(!/confirmed rug|has rugged/i.test(historyOut))
 }
 
-// 9. Dev-history read never claims confirmed rug history when only contract-control signals
-//    (not actual cross-token deployer history) are present — wording stays "signals consistent
-//    with risky deployer behavior", never an outright accusation.
+// 9. Dev-history Status is NEVER derived from this token's own contract-control signals alone —
+//    only actual deployer-identity / cross-token evidence can move Status off "open_check". Since
+//    no cross-token deployer-history database exists, Status always stays Open Check; the
+//    token-local signals are still surfaced, but separately, and explicitly labeled as not being
+//    dev-history evidence.
 {
   const riskyEv = { token: { symbol: 'X' }, security: { ownerRenounced: false, mintable: true }, lpControl: null, ok: true }
   const derived = deriveDevHistoryFromTokenEvidence(riskyEv)
-  assert.equal(derived.status, 'risk_signals')
-  const out = formatDevHistoryRead({ status: derived.status, riskSignals: derived.riskSignals, gaps: derived.gaps })
-  assert.ok(/I found signals consistent with risky deployer behavior/.test(out))
+  assert.equal(derived.status, 'open_check', 'token-local signals alone never produce a non-open_check dev-history status')
+  assert.equal(derived.devIdentityConfirmed, false)
+  assert.deepEqual(derived.tokenLocalSignals, ['ownership not renounced on this token', 'mint authority present on this token'])
+  assert.deepEqual(derived.crossTokenEvidence, [])
+  const out = formatDevHistoryRead({
+    status: derived.status,
+    deployer: derived.deployer,
+    devIdentityConfirmed: derived.devIdentityConfirmed,
+    tokenLocalSignals: derived.tokenLocalSignals,
+    crossTokenEvidence: derived.crossTokenEvidence,
+    gaps: derived.gaps,
+  })
+  assert.ok(/Token-local risk signals:/.test(out))
+  assert.ok(/ownership not renounced on this token/.test(out))
+  assert.ok(/Cross-token evidence:/.test(out))
+  assert.ok(/no cross-token deployer-history data source exists/.test(out))
   assert.ok(!/\bhas\s+rugged\b/i.test(out))
   assert.ok(!/confirmed rug history/i.test(out))
+  assert.ok(!/Risk signals found/.test(out), 'token-local signals must never be reported as a confirmed dev-history Status')
 }
 
 // 10. No provider names in the new public-facing risk-read output.
@@ -163,16 +179,32 @@ const walletAddr = '0x' + '2'.repeat(40)
   assert.ok(!/\bsafe to ape\b/i.test(out))
 }
 
-// Dev-history output format.
+// Dev-history output format (new CORTEX DEV HISTORY READ section set).
 {
-  const out = formatDevHistoryRead({ status: 'open_check' })
+  const out = formatDevHistoryRead({ status: 'open_check', target: '0x' + '5'.repeat(40) })
   const lines = out.split('\n')
   assert.equal(lines[0], 'CORTEX DEV HISTORY READ')
   assert.ok(lines.includes('Status:'))
-  assert.ok(lines.includes('Dev / deployer:'))
-  assert.ok(lines.includes('Risk signals:'))
+  assert.ok(lines.includes('Target:'))
+  assert.ok(lines.includes('Deployer identity:'))
+  assert.ok(lines.includes('Token-local risk signals:'))
+  assert.ok(lines.includes('Cross-token evidence:'))
   assert.ok(lines.includes('Evidence gaps:'))
   assert.ok(lines.includes('Bottom line:'))
+}
+
+// Debug fields for the new evidence-honesty rules.
+{
+  for (const field of ['clarkActiveTokenContextSource', 'clarkPromptActionBoundAddress', 'clarkFollowupTokenContextResolvedFrom', 'clarkDevIdentityConfirmed', 'clarkDevHistoryEvidenceLevel', 'clarkDevHistoryStatusReason']) {
+    assert.ok(routeSrc.includes(field), `route exposes debug field ${field}`)
+  }
+}
+
+// Prompt actions bind the resolved address from the risk read directly into the follow-up
+// prompt text, so a click never falls back to a stale token in session memory.
+{
+  assert.ok(/has this dev ever rugged before for \$\{address\}/.test(routeSrc))
+  assert.ok(/is lp locked for \$\{address\}/.test(routeSrc))
 }
 
 // Debug fields are wired through route.ts for the new CORTEX risk-read branches.
