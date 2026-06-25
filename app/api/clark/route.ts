@@ -9007,16 +9007,19 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     } else {
       actions.push({ label: "Open Token Scanner", href: "/terminal/token-scanner", kind: "link" });
     }
-    actions.push({ label: "Check Dev History", prompt: "has this dev ever rugged before", kind: "prompt" });
-    actions.push({ label: "Explain LP Risk", prompt: "is lp locked", kind: "prompt" });
+    // Bind the address from the risk read that produced these actions directly into the prompt
+    // text — extractAddressForRouting picks it back up as an explicit address on click, so the
+    // follow-up never silently falls back to a different (older) token in session memory.
+    actions.push({ label: "Check Dev History", prompt: address ? `has this dev ever rugged before for ${address}` : "has this dev ever rugged before", kind: "prompt" });
+    actions.push({ label: "Explain LP Risk", prompt: address ? `is lp locked for ${address}` : "is lp locked", kind: "prompt" });
     return actions;
   }
 
   function buildDevHistoryActions(tokenAddress: string | null, chainLabel: string): ClarkUiAction[] {
     const actions: ClarkUiAction[] = [];
     if (tokenAddress) actions.push({ label: "Open Token Scanner", href: tokenScannerHref(tokenAddress, chainLabel), kind: "link" });
-    actions.push({ label: "Check Token Risk", prompt: "is this token safe to ape right now", kind: "prompt" });
-    actions.push({ label: "Explain Dev Control", prompt: "does dev control supply", kind: "prompt" });
+    actions.push({ label: "Check Token Risk", prompt: tokenAddress ? `is this token safe to ape right now for ${tokenAddress}` : "is this token safe to ape right now", kind: "prompt" });
+    actions.push({ label: "Explain Dev Control", prompt: tokenAddress ? `does dev control supply for ${tokenAddress}` : "does dev control supply", kind: "prompt" });
     return actions;
   }
 
@@ -9086,6 +9089,13 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     updateMemIntent(sessionMem, "token_ape_risk");
     const usableApeEvidence = hasUsableTokenEvidence(r.ev);
     const apeMeta = tokenScanVerdictMeta(r.ev, usableApeEvidence);
+    // This risk read becomes the latest active token context — bind sessionMem.lastToken to it
+    // so a follow-up ("explain LP risk") with no address resolves against THIS read, not a
+    // stale, older token left over from before this read.
+    updateMemToken(sessionMem, r.address, r.ev.token?.symbol ?? null, r.ev.token?.name ?? null, analysis, {
+      cachedEvidence: r.ev,
+      confidence: apeMeta.confidence === "full" ? "high" : apeMeta.confidence === "partial" ? "medium" : "open_check",
+    });
     return {
       feature: "clark-ai", chain, mode: "analysis", intent: "token_ape_risk", toolsUsed,
       analysis,
@@ -9103,12 +9113,18 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       clarkRiskReportFormat: "cortex_token_risk_read",
       clarkRiskSectionsIncluded: usableApeEvidence ? RISK_REPORT_SECTIONS : [],
       clarkRiskConfidence: apeMeta.confidence,
+      clarkActiveTokenContextSource: routed.address ? "explicit_address" : (r.fromMemory ? "token_risk_read" : "token_scan"),
+      clarkPromptActionBoundAddress: r.address,
     };
   }
 
   if (routed.intent === "dev_rug_history") {
     const addressType = classifyTokenOrWalletAddress(prompt);
+    // Priority order: explicit/prompt-action-bound address > the latest token risk read in
+    // session memory > appContext.tokenSummary > wallet memory — a follow-up must never fall
+    // back to an older market/wallet context ahead of the token just analyzed in this session.
     const resolvedAddress = routed.address
+      ?? sessionMem?.lastToken?.address
       ?? (body.appContext?.tokenSummary?.address ?? null)
       ?? sessionMem?.lastToken?.address
       ?? (typeof body.appContext?.selectedWallet === "string" ? body.appContext.selectedWallet : body.appContext?.selectedWallet?.address ?? null)
@@ -9181,6 +9197,9 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         clarkDevHistoryResolvedFrom: "none",
         clarkEvidenceGaps: ["address"],
         clarkRiskReportFormat: "cortex_dev_history_read",
+        clarkDevIdentityConfirmed: false,
+        clarkDevHistoryEvidenceLevel: "none",
+        clarkDevHistoryStatusReason: "No token evidence available — deployer identity and cross-token history cannot be checked.",
       };
     }
     const collected = await collectDevHistoryEvidence({ address: tokenAddress, inputType: "token" });
@@ -9189,6 +9208,9 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const devTokenChainLabel = collected.tokenEvidence ? chainDisplayLabel(tokenEvidenceChain(collected.tokenEvidence, chain)) : chainDisplayLabel(chain);
     const analysis = formatDevHistoryRead({ status: derived.status, inputType: derived.inputType, chain: derived.chain ?? devTokenChainLabel, address: derived.address ?? tokenAddress, deployer: derived.deployer, owner: derived.owner, linkedWallets: derived.linkedWallets, confidence: derived.confidence, tokenLocalRiskSignals: derived.tokenLocalRiskSignals, previousLaunchedTokens: derived.previousLaunchedTokens, repeatedRiskyPatterns: derived.repeatedRiskyPatterns, linkedWalletClusterSignals: derived.linkedWalletClusterSignals, suspiciousFundingPatterns: derived.suspiciousFundingPatterns, priorConfirmedRugEvidence: derived.priorConfirmedRugEvidence, gaps: derived.evidenceGaps });
     updateMemIntent(sessionMem, "dev_rug_history");
+    // This dev-history read becomes the latest active token context too, same reasoning as the
+    // token_ape_risk branch — a follow-up must bind to THIS token, not an older one.
+    updateMemToken(sessionMem, r.address, r.ev.token?.symbol ?? null, r.ev.token?.name ?? null, analysis, { cachedEvidence: r.ev });
     return {
       feature: "clark-ai", chain, mode: "analysis", intent: "dev_rug_history", toolsUsed,
       analysis,
@@ -9203,6 +9225,12 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       clarkDevIdentityConfirmed: Boolean(derived.deployer), clarkDevHistoryEvidenceLevel: derived.evidenceLevel, clarkDevHistorySourcesUsed: derived.sourcesUsed, clarkDevHistoryApiPathsUsed: derived.apiPathsUsed, clarkDevHistoryStatusReason: derived.statusReason,
       clarkEvidenceGaps: derived.evidenceGaps,
       clarkRiskReportFormat: "cortex_dev_history_read",
+      clarkActiveTokenContextSource: routed.address ? "explicit_address" : (r.fromMemory ? "token_risk_read" : "token_scan"),
+      clarkPromptActionBoundAddress: r.address,
+      clarkFollowupTokenContextResolvedFrom: r.fromMemory ? "memory" : "token_scan",
+      clarkDevIdentityConfirmed: derived.devIdentityConfirmed,
+      clarkDevHistoryEvidenceLevel: derived.evidenceLevel,
+      clarkDevHistoryStatusReason: derived.statusReason,
     };
   }
 

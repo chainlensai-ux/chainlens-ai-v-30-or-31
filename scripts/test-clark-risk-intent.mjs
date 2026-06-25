@@ -96,6 +96,7 @@ const walletAddr = '0x' + '2'.repeat(40)
   const out = formatDevHistoryRead({ status: derived.status, tokenLocalRiskSignals: derived.tokenLocalRiskSignals, gaps: derived.evidenceGaps })
   assert.ok(/This token has risk signals, but I cannot confirm this dev has rugged before/.test(out))
   assert.ok(!/confirmed rug history/i.test(out))
+  assert.ok(!/Risk signals found/.test(out), 'token-local signals must never be reported as a confirmed dev-history Status')
 }
 
 // 10. No provider names in the new public-facing risk-read output.
@@ -161,9 +162,9 @@ const walletAddr = '0x' + '2'.repeat(40)
   assert.ok(!/\bsafe to ape\b/i.test(out))
 }
 
-// Dev-history output format.
+// Dev-history output format (new CORTEX DEV HISTORY READ section set).
 {
-  const out = formatDevHistoryRead({ status: 'open_check' })
+  const out = formatDevHistoryRead({ status: 'open_check', target: '0x' + '5'.repeat(40) })
   const lines = out.split('\n')
   assert.equal(lines[0], 'CORTEX DEV HISTORY READ')
   assert.ok(lines.includes('Status:'))
@@ -173,6 +174,20 @@ const walletAddr = '0x' + '2'.repeat(40)
   assert.ok(lines.includes('Cross-token / wallet-history evidence:'))
   assert.ok(lines.includes('Evidence gaps:'))
   assert.ok(lines.includes('Bottom line:'))
+}
+
+// Debug fields for the new evidence-honesty rules.
+{
+  for (const field of ['clarkActiveTokenContextSource', 'clarkPromptActionBoundAddress', 'clarkFollowupTokenContextResolvedFrom', 'clarkDevIdentityConfirmed', 'clarkDevHistoryEvidenceLevel', 'clarkDevHistoryStatusReason']) {
+    assert.ok(routeSrc.includes(field), `route exposes debug field ${field}`)
+  }
+}
+
+// Prompt actions bind the resolved address from the risk read directly into the follow-up
+// prompt text, so a click never falls back to a stale token in session memory.
+{
+  assert.ok(/has this dev ever rugged before for \$\{address\}/.test(routeSrc))
+  assert.ok(/is lp locked for \$\{address\}/.test(routeSrc))
 }
 
 // Debug fields are wired through route.ts for the new CORTEX risk-read branches.
