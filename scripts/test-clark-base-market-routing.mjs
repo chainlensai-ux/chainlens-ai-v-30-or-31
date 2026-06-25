@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
-import { classifyClarkPrompt, formatBaseMarketReadFromRows, formatNoFreshMarketData, toClarkUiActions, buildRoutedActions } from '../lib/server/clarkRouting.ts'
+import { classifyClarkPrompt, formatBaseMarketReadFromRows, formatNoFreshMarketData, formatNoPumpCandidates, toClarkUiActions, buildRoutedActions } from '../lib/server/clarkRouting.ts'
 
 // 1. all required market phrasings route to base_market_discovery, not a generic fallback.
 const phrases = [
@@ -77,5 +77,30 @@ assert.ok(
 
 const noDataCopy = formatNoFreshMarketData()
 assert.ok(noDataCopy.includes('Base market data is incomplete right now'), 'no-data reply leads with the required exact phrase')
+
+// 7. Clark's Base market path reuses the same canonical source as the dashboard (/api/trending),
+//    distinguishes "rows exist but all filtered" from genuine no-data, and exposes the
+//    requested debug fields instead of silently reporting no_rows while rows exist upstream.
+assert.ok(
+  /async function handleBasePumpMap[\s\S]{0,1200}fetch\(`\$\{origin\}\/api\/trending`/.test(routeSrc),
+  'handleBasePumpMap reuses the same /api/trending source as the dashboard Token Screener',
+)
+assert.ok(
+  /formatNoPumpCandidates/.test(routeSrc) && /formatNoPumpCandidates/.test(routingSrc),
+  'a distinct "no clear pump candidates" path exists for rows-exist-but-all-filtered',
+)
+for (const field of [
+  'marketRowsSource', 'marketRowsBeforeFilter', 'marketRowsAfterFilter', 'marketRowsDroppedByReason',
+  'marketDataCacheHit', 'marketProviderAttempted', 'marketProviderStatus', 'marketFallbackReason',
+]) {
+  assert.ok(routeSrc.includes(field), `route.ts exposes debug field ${field}`)
+}
+for (const reason of ['all_rows_filtered', 'market_endpoint_failed', 'market_cache_empty']) {
+  assert.ok(routeSrc.includes(reason), `route.ts distinguishes fallback reason "${reason}" from no_rows`)
+}
+
+const noPumpCopy = formatNoPumpCandidates()
+assert.ok(!noPumpCopy.includes('COULD NOT COMPLETE'), 'no-pump-candidates reply is not the scary could-not-complete block')
+assert.ok(noPumpCopy.toLowerCase().includes('no clear pump candidates'), 'no-pump-candidates reply states rows exist but no clear pump candidates')
 
 console.log('clark base market routing checks passed')

@@ -1189,6 +1189,19 @@ export function formatNoFreshMarketData(): string {
   ].join("\n");
 }
 
+/** Used when the canonical market source returned rows, but every row was a
+ * stablecoin/major filtered out of "pumping" rankings — distinct from having
+ * no rows at all, so Clark never reports no_rows when the dashboard has data. */
+export function formatNoPumpCandidates(): string {
+  return [
+    "BASE MARKET READ",
+    "",
+    "Market data is available, but no clear pump candidates right now — current Base rows are dominated by majors/stablecoins (e.g. WETH, cbBTC, USDC).",
+    "",
+    "CTA: Refresh Market Data",
+  ].join("\n");
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // Pack 1: Token Core Pipeline formatting helpers
 // ─────────────────────────────────────────────────────────────────────────

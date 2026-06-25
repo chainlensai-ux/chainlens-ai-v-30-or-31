@@ -47,6 +47,7 @@ import {
   isWalletFollowupPrompt,
   classifyWalletFollowupKind,
   formatWalletFollowupFromMemory,
+  formatNoPumpCandidates,
 } from "@/lib/server/clarkRouting";
 
 const {
@@ -2155,7 +2156,11 @@ async function handleBasePumpMap(prompt: string, origin: string) {
   const authHeader = clarkInternalCtx.authToken ? `Bearer ${clarkInternalCtx.authToken}` : undefined;
   const EXCLUDED = new Set(['USDC', 'USDT', 'DAI', 'USDBC', 'WETH', 'ETH', 'CBBTC', 'BTC', 'WBTC', 'CBETH', 'STETH', 'WSTETH', 'EURC', 'BUSD', 'FRAX', 'USD+', 'AXLUSDC', 'BSDETH']);
 
-  // Primary: live Base market/pool data from trending feed
+  const marketProviderAttempted: string[] = ["trending_feed", "pump_alerts_feed"];
+  const marketProviderStatus: Record<string, string> = { trending_feed: "not_attempted", pump_alerts_feed: "not_attempted" };
+
+  // Primary: same canonical Base market source the dashboard Token Screener uses.
+  let rawTrendingRows: Record<string, unknown>[] = [];
   let tokens: Record<string, unknown>[] = [];
   try {
     const res = await fetch(`${origin}/api/trending`, {
@@ -2164,14 +2169,19 @@ async function handleBasePumpMap(prompt: string, origin: string) {
     });
     if (res.ok) {
       const json = await res.json();
-      const all = Array.isArray(json?.data) ? (json.data as Record<string, unknown>[]) : [];
-      tokens = all.filter(t => {
+      rawTrendingRows = Array.isArray(json?.data) ? (json.data as Record<string, unknown>[]) : [];
+      tokens = rawTrendingRows.filter(t => {
         const sym = String(t.symbol ?? '').toUpperCase();
         const ch = String(t.chain ?? '');
         return sym && !EXCLUDED.has(sym) && (ch === 'base' || ch === 'geckoterminal' || !ch);
       });
+      marketProviderStatus.trending_feed = "ok";
+    } else {
+      marketProviderStatus.trending_feed = "market_endpoint_failed";
     }
-  } catch { /* fallback to pump-alerts only */ }
+  } catch {
+    marketProviderStatus.trending_feed = "market_endpoint_failed";
+  }
 
   // Enrichment: pump-alerts as secondary source
   let pumpAlerts: Record<string, unknown>[] = [];
@@ -2183,16 +2193,23 @@ async function handleBasePumpMap(prompt: string, origin: string) {
     if (res.ok) {
       const json = await res.json();
       pumpAlerts = Array.isArray(json?.alerts) ? (json.alerts as Record<string, unknown>[]) : [];
+      marketProviderStatus.pump_alerts_feed = "ok";
+    } else {
+      marketProviderStatus.pump_alerts_feed = "market_endpoint_failed";
     }
-  } catch { /* optional — ignore */ }
+  } catch {
+    marketProviderStatus.pump_alerts_feed = "market_endpoint_failed";
+  }
 
   // Merge: trending tokens first, then non-duplicate pump-alert items
   const merged: Record<string, unknown>[] = [...tokens];
   const seenSymbols = new Set(tokens.map(t => String(t.symbol ?? '').toUpperCase()));
+  let pumpAlertsAddedAfterExclusion = 0;
   for (const pa of pumpAlerts) {
     const sym = String(pa.symbol ?? '').toUpperCase();
     if (sym && !seenSymbols.has(sym) && !EXCLUDED.has(sym)) {
       seenSymbols.add(sym);
+      pumpAlertsAddedAfterExclusion += 1;
       merged.push({
         symbol: pa.symbol,
         name: pa.name,
@@ -2204,8 +2221,34 @@ async function handleBasePumpMap(prompt: string, origin: string) {
     }
   }
 
+  const marketRowsBeforeFilter = rawTrendingRows.length + pumpAlerts.length;
+  const marketRowsAfterFilter = merged.length;
+  const stablecoinOrMajorDropped = rawTrendingRows.filter(t => EXCLUDED.has(String(t.symbol ?? '').toUpperCase())).length
+    + pumpAlerts.filter(t => EXCLUDED.has(String(t.symbol ?? '').toUpperCase()) && !pumpAlertsAddedAfterExclusion).length;
+  const marketRowsDroppedByReason = {
+    stablecoin_or_major: stablecoinOrMajorDropped,
+    chain_mismatch: rawTrendingRows.length - tokens.length - stablecoinOrMajorDropped,
+  };
+  const debug = {
+    marketRowsSource: "trending_feed+pump_alerts_feed",
+    marketRowsBeforeFilter,
+    marketRowsAfterFilter,
+    marketRowsDroppedByReason,
+    marketDataCacheHit: false,
+    marketProviderAttempted,
+    marketProviderStatus,
+  };
+
+  // No rows reached us at all from either source — genuine data outage, not a filter artifact.
+  if (rawTrendingRows.length === 0 && pumpAlerts.length === 0) {
+    const reason = marketProviderStatus.trending_feed === "market_endpoint_failed" ? "market_endpoint_failed" : "market_cache_empty";
+    return { analysis: formatNoFreshMarketData(), items: [], ...debug, marketFallbackReason: reason };
+  }
+
+  // Rows existed upstream (same source the dashboard reads), but every single one was a
+  // stablecoin/major — that's a real "no clear pump candidates" answer, never a no_rows lie.
   if (!merged.length) {
-    return { analysis: formatNoFreshMarketData(), items: [] };
+    return { analysis: formatNoPumpCandidates(), items: [], ...debug, marketFallbackReason: "all_rows_filtered" };
   }
 
   // Rank: 24h change desc, then volume, then liquidity — filter zero-liquidity noise
@@ -2310,7 +2353,7 @@ async function handleBasePumpMap(prompt: string, origin: string) {
     })(),
   }));
 
-  return { analysis: lines.join("\n"), items };
+  return { analysis: lines.join("\n"), items, ...debug, marketFallbackReason: null };
 }
 
 async function handleBaseRadarSnapshot(origin: string, prompt = "") {
@@ -7088,9 +7131,12 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const baseMomentumActions = buildRoutedActions(["Open Base Radar", "Open Token Scanner", "Refresh Market Data"]);
     const baseMomentumUi = { intentBadge: "market", actions: toClarkUiActions(baseMomentumActions) };
     const universe = await getBaseMarketUniverse({ origin, mode: "pumping", requestedCount: 30, followup: false, excludeAddresses: [], includePoolVariants: false }).catch(() => null);
+    const universeRowsBeforeFilter = universe?.candidates.length ?? 0;
     const stored = (universe?.candidates ?? [])
       .filter((c) => !isMajorOrStableLike(c.symbol ?? "?", c.name ?? null))
       .slice(0, 30);
+    const universeRowsAfterFilter = stored.length;
+    const universeDroppedAsMajorOrStable = universeRowsBeforeFilter - universeRowsAfterFilter;
     const fullTop = stored.slice(0, 7);
     const isPlanFull = planAllows(verifiedPlan, 'base_radar_full');
     const top = isPlanFull ? fullTop : fullTop.slice(0, 3);
@@ -7132,6 +7178,33 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         actions: baseMomentumActions,
         ui: baseMomentumUi,
         clarkMarketFallbackReason: null,
+        marketRowsSource: "base_market_universe",
+        marketRowsBeforeFilter: universeRowsBeforeFilter,
+        marketRowsAfterFilter: universeRowsAfterFilter,
+        marketRowsDroppedByReason: { stablecoin_or_major: universeDroppedAsMajorOrStable },
+        marketDataCacheHit: universeRowsBeforeFilter > 0,
+        marketProviderAttempted: ["base_market_universe"],
+        marketProviderStatus: { base_market_universe: "ok" },
+        marketFallbackReason: null,
+      };
+    }
+    // The Base market universe came back empty (or only majors/stables survived its filter) —
+    // before declaring no data, fall through to the same canonical /api/trending source the
+    // dashboard Token Screener reads, so Clark never reports no_rows while the dashboard has rows.
+    if (universeRowsBeforeFilter > 0 && universeRowsAfterFilter === 0 && !isPlanFull) {
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "market", toolsUsed: ["base_market_feed"],
+        analysis: formatNoPumpCandidates(),
+        intentBadge: "market", actions: baseMomentumActions, ui: baseMomentumUi,
+        clarkMarketFallbackReason: "all_rows_filtered",
+        marketRowsSource: "base_market_universe",
+        marketRowsBeforeFilter: universeRowsBeforeFilter,
+        marketRowsAfterFilter: universeRowsAfterFilter,
+        marketRowsDroppedByReason: { stablecoin_or_major: universeDroppedAsMajorOrStable },
+        marketDataCacheHit: true,
+        marketProviderAttempted: ["base_market_universe"],
+        marketProviderStatus: { base_market_universe: "ok" },
+        marketFallbackReason: "all_rows_filtered",
       };
     }
     if (!isPlanFull) {
@@ -7140,12 +7213,21 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         analysis: "BASE MOMENTUM READ\n\nMarket preview is loading. Upgrade to Pro or Elite for the full Base momentum map.",
         intentBadge: "market", actions: baseMomentumActions, ui: baseMomentumUi,
         clarkMarketFallbackReason: "data_unavailable",
+        marketRowsSource: "base_market_universe",
+        marketRowsBeforeFilter: universeRowsBeforeFilter,
+        marketRowsAfterFilter: universeRowsAfterFilter,
+        marketDataCacheHit: universeRowsBeforeFilter > 0,
+        marketProviderAttempted: ["base_market_universe"],
+        marketProviderStatus: { base_market_universe: universeRowsBeforeFilter > 0 ? "ok" : "market_cache_empty" },
+        marketFallbackReason: "data_unavailable",
       };
     }
     // handleBasePumpMap returns { analysis, items } — the inner "analysis" string must be
     // promoted to this handler's own "analysis" field, never left nested, or the generic
     // reply-shape normalizer below sees a non-string analysis and overwrites it with a
     // could-not-complete fallback even though a usable market read was already built.
+    // This call reuses the same canonical /api/trending source the dashboard Token Screener
+    // reads — it is the fallback when the Base market universe itself came back empty.
     const basePumpResult = await handleBasePumpMap(prompt, origin);
     const basePumpHasRows = Array.isArray(basePumpResult.items) && basePumpResult.items.length > 0;
     return {
@@ -7154,8 +7236,16 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       marketContext: { items: basePumpResult.items },
       intentBadge: "market",
       actions: baseMomentumActions,
+      marketRowsSource: basePumpResult.marketRowsSource,
+      marketRowsBeforeFilter: basePumpResult.marketRowsBeforeFilter,
+      marketRowsAfterFilter: basePumpResult.marketRowsAfterFilter,
+      marketRowsDroppedByReason: basePumpResult.marketRowsDroppedByReason,
+      marketDataCacheHit: basePumpResult.marketDataCacheHit,
+      marketProviderAttempted: basePumpResult.marketProviderAttempted,
+      marketProviderStatus: basePumpResult.marketProviderStatus,
+      marketFallbackReason: basePumpResult.marketFallbackReason,
       ui: baseMomentumUi,
-      clarkMarketFallbackReason: basePumpHasRows ? null : "no_rows",
+      clarkMarketFallbackReason: basePumpHasRows ? null : basePumpResult.marketFallbackReason,
       quotaConsumed: basePumpHasRows,
     };
   }
