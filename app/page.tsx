@@ -6,6 +6,7 @@ import Link from 'next/link'
 import dynamic from 'next/dynamic'
 import Navbar from '@/components/Navbar'
 import IntelligenceHero from '@/components/home/IntelligenceHero'
+import ReferenceHero from '@/components/home/ReferenceHero'
 const ConnectWallet = dynamic(() => import('@/components/ConnectWallet'), { ssr: false })
 const ClaimTrialButton = dynamic(() => import('@/components/ClaimTrialButton'), { ssr: false })
 const Reveal = ({ children }: { children: ReactNode; [key: string]: unknown }) => <>{children}</>
@@ -178,6 +179,8 @@ function AvatarOrInitials({ src, initials, grad, name, imgPos, imgFilter }: { sr
 // ─── Reversible hero experiment ────────────────────────────────────────────
 // Flip USE_INTELLIGENCE_HERO below to false to instantly restore this legacy
 // hero. LegacyHomeHero is kept verbatim (unmodified) for an easy revert.
+// Reversible homepage experiment: flip USE_REFERENCE_HERO to false to restore legacy homepage.
+const USE_REFERENCE_HERO = true
 const USE_INTELLIGENCE_HERO = true
 
 function LegacyHomeHero() {
@@ -788,7 +791,7 @@ export default function HomePage() {
       <div className={`home-page relative min-h-dvh w-full bg-[#05050b]`} style={{ display: 'flex', flexDirection: 'column' }}>
 
         {/* ── Full-page edge energy — left cyan, right purple ── */}
-        {USE_INTELLIGENCE_HERO ? <IntelligenceHero /> : <LegacyHomeHero />}
+        {USE_REFERENCE_HERO ? <ReferenceHero /> : (USE_INTELLIGENCE_HERO ? <IntelligenceHero /> : <LegacyHomeHero />)}
 
 
         {/* Base momentum ticker */}
