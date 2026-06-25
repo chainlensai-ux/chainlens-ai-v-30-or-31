@@ -1499,6 +1499,113 @@ export function formatAppContextMissingAsk(kind: ClarkAppFollowupKind): string {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
+// Route-aware ui.actions — safe next-step CTAs built only from real app routes
+// and the current appContext/result. Never invents an action: a CTA is only
+// included when the underlying address/route it needs actually exists.
+// ─────────────────────────────────────────────────────────────────────────
+
+export type ClarkUiActionKind = "link" | "prompt";
+
+/** Normalized action shape the frontend renders: a route link, or a prompt it resends to Clark. */
+export type ClarkUiAction = {
+  label: string;
+  href?: string;
+  prompt?: string;
+  kind: ClarkUiActionKind;
+};
+
+export type ClarkContextActionsAppContext = {
+  walletSummary?: ClarkWalletContextSummary | null;
+  tokenSummary?: ClarkTokenContextSummary | null;
+  marketContext?: { items?: unknown } | null;
+  promptActionsEnabled?: boolean;
+};
+
+export type ClarkContextActionsResult = {
+  scanTarget?: string | null;
+  symbol?: string | null;
+  chain?: string | null;
+} | null;
+
+/**
+ * Builds the safe, route-aware CTA set for a Clark answer from the real appContext
+ * the frontend sent plus the handler's own result, scoped to the answer's intent.
+ * Every href maps to a real app route; every prompt action is only included when
+ * the caller says the frontend can actually resend a prompt. Nothing is invented:
+ * missing addresses/routes omit the CTA (with a reason) instead of faking one.
+ */
+export function buildClarkContextActions(
+  appContext: ClarkContextActionsAppContext | null | undefined,
+  intent: string,
+  result?: ClarkContextActionsResult,
+): { actions: ClarkUiAction[]; omittedReasons: string[] } {
+  const ac = appContext ?? {};
+  const promptActionsEnabled = ac.promptActionsEnabled !== false;
+  const wallet = ac.walletSummary ?? null;
+  const token = ac.tokenSummary ?? null;
+  const intentLc = String(intent ?? "").toLowerCase();
+  const isWalletIntent = /wallet/.test(intentLc);
+  const isTokenIntent = /token/.test(intentLc);
+  const isMarketIntent = /market|momentum/.test(intentLc);
+
+  const actions: ClarkUiAction[] = [];
+  const omittedReasons: string[] = [];
+
+  if (isWalletIntent) {
+    if (wallet?.address) {
+      actions.push({ label: "Rescan Wallet", href: `/terminal/wallet-scanner?address=${wallet.address}`, kind: "link" });
+    } else {
+      omittedReasons.push("rescan_wallet_no_address");
+    }
+    actions.push({ label: "Open Wallet Scanner", href: "/terminal/wallet-scanner", kind: "link" });
+    if (promptActionsEnabled) {
+      actions.push({ label: "Explain PnL Lock", prompt: "why is pnl locked", kind: "prompt" });
+    } else {
+      omittedReasons.push("explain_pnl_lock_prompt_actions_disabled");
+    }
+  }
+
+  if (isTokenIntent) {
+    const addr = token?.address ?? (typeof result?.scanTarget === "string" ? result.scanTarget : null);
+    const chain = token?.chain ?? result?.chain ?? "base";
+    if (addr) {
+      actions.push({ label: "Open Token Scanner", href: tokenScannerHref(addr, chain), kind: "link" });
+      actions.push({ label: "Rescan Token", href: tokenScannerHref(addr, chain), kind: "link" });
+    } else {
+      omittedReasons.push("token_scanner_no_address");
+    }
+    if (promptActionsEnabled) {
+      actions.push({ label: "Explain Risks", prompt: "what are the risks", kind: "prompt" });
+    } else {
+      omittedReasons.push("explain_risks_prompt_actions_disabled");
+    }
+  }
+
+  if (isMarketIntent) {
+    const scanTarget = typeof result?.scanTarget === "string" ? result.scanTarget : null;
+    if (scanTarget) {
+      const symbol = result?.symbol ?? null;
+      actions.push({
+        label: symbol ? `Scan ${symbol} in Token Scanner` : "Open Token Scanner",
+        href: tokenScannerHref(scanTarget, result?.chain ?? "base"),
+        kind: "link",
+      });
+    } else {
+      omittedReasons.push("top_mover_no_scan_target");
+    }
+    actions.push({ label: "Open Base Radar", href: "/terminal/base-radar", kind: "link" });
+    actions.push({ label: "Refresh Market Data", href: "/terminal?refresh=market", kind: "link" });
+  }
+
+  if (actions.length === 0) {
+    actions.push({ label: "Refresh Market Data", href: "/terminal?refresh=market", kind: "link" });
+    omittedReasons.push("no_specific_context_default_refresh");
+  }
+
+  return { actions, omittedReasons };
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 // Pack 1: Token Core Pipeline formatting helpers
 // ─────────────────────────────────────────────────────────────────────────
 

@@ -6,7 +6,7 @@ import { supabase } from '@/lib/supabaseClient'
 import { getClarkSessionId as getOrCreateSessionId, readClarkClientContext as getClientClarkContext, persistClarkMemoryEcho, persistClarkMomentumList } from '@/lib/client/clarkMemory'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
-type ClarkAction = { label: string; href: string; requiresInput?: boolean }
+type ClarkAction = { label: string; href?: string; prompt?: string; kind?: 'link' | 'prompt'; requiresInput?: boolean }
 type Message = { role: 'user' | 'clark'; text: string; intentBadge?: string | null; actions?: ClarkAction[] }
 type UiTab   = 'analyst' | 'chat'
 
@@ -279,7 +279,12 @@ function ClarkAiContent() {
         ? (payload?.reply ?? payload?.analysis ?? payload?.response ?? json.reply ?? json.analysis ?? 'No response from Clark.')
         : (json.error ?? 'Something went wrong.')
       const ui = payload.ui && typeof payload.ui === 'object' ? payload.ui as { intentBadge?: unknown; actions?: unknown } : null
-      const actions = Array.isArray(ui?.actions) ? ui.actions.filter((a): a is ClarkAction => Boolean(a && typeof a === 'object' && typeof (a as ClarkAction).label === 'string' && typeof (a as ClarkAction).href === 'string')) : []
+      const actions = Array.isArray(ui?.actions) ? ui.actions.filter((a): a is ClarkAction => {
+        if (!a || typeof a !== 'object' || typeof (a as ClarkAction).label !== 'string') return false
+        const href = (a as ClarkAction).href
+        const prompt = (a as ClarkAction).prompt
+        return typeof href === 'string' || typeof prompt === 'string'
+      }) : []
       setMessages((prev) => { const next = [...prev]; next[next.length - 1] = { role: 'clark', text: String(reply), intentBadge: typeof ui?.intentBadge === 'string' ? ui.intentBadge : null, actions }; return next })
     } catch {
       setMessages((prev) => { const next = [...prev]; next[next.length - 1] = { role: 'clark', text: FALLBACK_ERROR_MESSAGE }; return next })
@@ -400,6 +405,7 @@ function ClarkAiContent() {
         .clk-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
         .clk-action { border:1px solid rgba(45,212,191,.25); border-radius:999px; padding:7px 10px; color:#ccfbf1; background:rgba(45,212,191,.07); font-size:12px; font-weight:700; text-decoration:none; }
         .clk-action--disabled { opacity:.45; cursor:not-allowed; pointer-events:none; }
+        .clk-action--btn { cursor:pointer; font-family:inherit; }
         .clk-thinking { display:block; min-width:260px; }
         .clk-thinking-stage { color:#dbeafe; font:800 12px var(--font-plex-mono, monospace); letter-spacing:.04em; transition:opacity .2s; }
         .clk-scanline { position:relative; height:2px; margin-top:10px; overflow:hidden; background:rgba(148,163,184,.12); }
@@ -565,7 +571,16 @@ function ClarkAiContent() {
                         <p className='clk-msg-text'>{msg.text}</p>
                         {msg.actions && msg.actions.length > 0 && (
                           <div className='clk-actions'>
-                            {msg.actions.map((action) => (
+                            {msg.actions.map((action) => action.kind === 'prompt' && action.prompt ? (
+                              <button
+                                key={`${action.label}-${action.prompt}`}
+                                type='button'
+                                className='clk-action clk-action--btn'
+                                onClick={() => { void handleSendText(action.prompt as string) }}
+                              >
+                                {action.label}
+                              </button>
+                            ) : (
                               <a key={`${action.label}-${action.href}`} className={`clk-action${action.requiresInput ? ' clk-action--disabled' : ''}`} href={action.requiresInput ? undefined : action.href} aria-disabled={action.requiresInput || undefined}>
                                 {action.label}
                               </a>

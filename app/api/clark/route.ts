@@ -62,6 +62,7 @@ import {
   formatTokenContextRead,
   formatTokenRiskRead,
   formatAppContextMissingAsk,
+  buildClarkContextActions,
   type ClarkWalletContextSummary,
   type ClarkTokenContextSummary,
 } from "@/lib/server/clarkRouting";
@@ -6931,10 +6932,21 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
 
       if (analysis) {
         updateMemIntent(sessionMem, intent);
+        const promptActionsEnabled = true;
+        const { actions: contextActions, omittedReasons: contextActionsOmitted } = buildClarkContextActions(
+          { walletSummary: walletCtx, tokenSummary: tokenCtx, marketContext: ac.marketContext ?? null, promptActionsEnabled },
+          intent,
+          null,
+        );
         return {
           feature: "clark-ai", chain, mode: "analysis", intent, toolsUsed: ["memory"], source: "feature_context",
           analysis,
+          ui: { intentBadge: resolvedFrom === "wallet_context" ? "Wallet Read" : "Token Read", actions: contextActions },
           ...acDebug, appContextUsed: true, appContextMissingReason: null, clarkFollowupResolvedFrom: resolvedFrom,
+          clarkActionsBuilt: contextActions.length,
+          clarkActionsSource: resolvedFrom,
+          clarkActionsOmittedReasons: contextActionsOmitted,
+          clarkPromptActionsEnabled: promptActionsEnabled,
         };
       }
 
@@ -7381,6 +7393,12 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       sessionMem.lastIntentTs = Date.now();
       sessionMem.lastActionableIntent = "base_momentum";
       sessionMem.lastActionableIntentTs = Date.now();
+      const topScanIds = top[0] ? pickScanIdentifiers({ tokenAddress: top[0].tokenAddress, poolAddress: top[0].poolAddress }) : null;
+      const { actions: topMomentumActions, omittedReasons: topMomentumOmitted } = buildClarkContextActions(
+        { marketContext: { items: top }, promptActionsEnabled: true },
+        "market",
+        { scanTarget: topScanIds?.scanTarget ?? null, symbol: top[0]?.symbol ?? null, chain: "base" },
+      );
       return {
         feature: "clark-ai",
         chain,
@@ -7396,7 +7414,11 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         },
         intentBadge: "market",
         actions: baseMomentumActions,
-        ui: baseMomentumUi,
+        ui: { intentBadge: "market", actions: topMomentumActions },
+        clarkActionsBuilt: topMomentumActions.length,
+        clarkActionsSource: "market_context",
+        clarkActionsOmittedReasons: topMomentumOmitted,
+        clarkPromptActionsEnabled: true,
         clarkMarketFallbackReason: null,
         marketRowsSource: "base_market_universe",
         marketRowsBeforeFilter: universeRowsBeforeFilter,
@@ -7477,12 +7499,12 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     }
     // First scannable mover drives a Token Scanner deep-link CTA (auto-runs on ?contract=).
     const firstScanItem = basePumpItems.find((it) => it.scanTarget);
-    const basePumpUi = firstScanItem
-      ? { intentBadge: "market", actions: [
-          { label: `Scan ${firstScanItem.symbol ?? "top mover"} in Token Scanner`, href: tokenScannerHref(firstScanItem.scanTarget as string) },
-          ...toClarkUiActions(buildRoutedActions(["Open Base Radar", "Refresh Market Data"])),
-        ] }
-      : baseMomentumUi;
+    const { actions: basePumpContextActions, omittedReasons: basePumpActionsOmitted } = buildClarkContextActions(
+      { marketContext: { items: basePumpItems }, promptActionsEnabled: true },
+      "market",
+      { scanTarget: firstScanItem?.scanTarget ?? null, symbol: firstScanItem?.symbol ?? null, chain: "base" },
+    );
+    const basePumpUi = { intentBadge: "market", actions: basePumpContextActions };
     return {
       feature: "clark-ai", chain, mode: "analysis", intent: "market", toolsUsed: ["base_market_feed", "pump_alerts_feed"],
       analysis: basePumpResult.analysis,
@@ -7512,6 +7534,10 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       pumpAlertsOptionalFailed: basePumpResult.pumpAlertsOptionalFailed,
       marketEndpointFailureReason: basePumpResult.marketEndpointFailureReason,
       ui: basePumpUi,
+      clarkActionsBuilt: basePumpContextActions.length,
+      clarkActionsSource: "market_context",
+      clarkActionsOmittedReasons: basePumpActionsOmitted,
+      clarkPromptActionsEnabled: true,
       clarkMarketFallbackReason: basePumpHasRows ? null : basePumpResult.marketFallbackReason,
       quotaConsumed: basePumpHasRows,
       clarkMarketSource: basePumpResult.clarkMarketSource,
