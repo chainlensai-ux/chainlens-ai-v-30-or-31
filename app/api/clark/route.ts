@@ -9210,7 +9210,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     updateMemIntent(sessionMem, "dev_rug_history");
     // This dev-history read becomes the latest active token context too, same reasoning as the
     // token_ape_risk branch — a follow-up must bind to THIS token, not an older one.
-    updateMemToken(sessionMem, r.address, r.ev.token?.symbol ?? null, r.ev.token?.name ?? null, analysis, { cachedEvidence: r.ev });
+    updateMemToken(sessionMem, tokenAddress, collected.tokenEvidence?.token?.symbol ?? null, collected.tokenEvidence?.token?.name ?? null, analysis, { cachedEvidence: collected.tokenEvidence ?? null });
     return {
       feature: "clark-ai", chain, mode: "analysis", intent: "dev_rug_history", toolsUsed,
       analysis,
@@ -9225,12 +9225,9 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       clarkDevIdentityConfirmed: Boolean(derived.deployer), clarkDevHistoryEvidenceLevel: derived.evidenceLevel, clarkDevHistorySourcesUsed: derived.sourcesUsed, clarkDevHistoryApiPathsUsed: derived.apiPathsUsed, clarkDevHistoryStatusReason: derived.statusReason,
       clarkEvidenceGaps: derived.evidenceGaps,
       clarkRiskReportFormat: "cortex_dev_history_read",
-      clarkActiveTokenContextSource: routed.address ? "explicit_address" : (r.fromMemory ? "token_risk_read" : "token_scan"),
-      clarkPromptActionBoundAddress: r.address,
-      clarkFollowupTokenContextResolvedFrom: r.fromMemory ? "memory" : "token_scan",
-      clarkDevIdentityConfirmed: derived.devIdentityConfirmed,
-      clarkDevHistoryEvidenceLevel: derived.evidenceLevel,
-      clarkDevHistoryStatusReason: derived.statusReason,
+      clarkActiveTokenContextSource: routed.address ? "explicit_address" : "token_scan",
+      clarkPromptActionBoundAddress: tokenAddress,
+      clarkFollowupTokenContextResolvedFrom: "token_scan",
     };
   }
 
