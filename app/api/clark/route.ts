@@ -54,6 +54,8 @@ import {
   describeTrendingShape,
   pickScanIdentifiers,
   tokenScannerHref,
+  getBaseMarketLastGoodCache,
+  setBaseMarketLastGoodCache,
   classifyAppContextFollowup,
   formatWalletPnlLockedExplanation,
   formatWalletContextRead,
@@ -2197,11 +2199,20 @@ function resolveInternalUrl(origin: string, path: string): { url: string; kind: 
   return null;
 }
 
+const BASE_PUMP_DEFAULT_EXCLUDED = ['USDC', 'USDT', 'DAI', 'USDBC', 'WETH', 'ETH', 'CBBTC', 'BTC', 'WBTC', 'CBETH', 'STETH', 'WSTETH', 'EURC', 'BUSD', 'FRAX', 'USD+', 'AXLUSDC', 'BSDETH'];
+
+function isBaseChainRow(t: Record<string, unknown>) {
+  const sym = String(t.symbol ?? '').toUpperCase();
+  const ch = String(t.chain ?? '');
+  return Boolean(sym) && (ch === 'base' || ch === 'geckoterminal' || !ch);
+}
+
 async function handleBasePumpMap(prompt: string, origin: string) {
   const authHeader = clarkInternalCtx.authToken ? `Bearer ${clarkInternalCtx.authToken}` : undefined;
-  const EXCLUDED = new Set(['USDC', 'USDT', 'DAI', 'USDBC', 'WETH', 'ETH', 'CBBTC', 'BTC', 'WBTC', 'CBETH', 'STETH', 'WSTETH', 'EURC', 'BUSD', 'FRAX', 'USD+', 'AXLUSDC', 'BSDETH']);
+  const EXCLUDED = new Set(BASE_PUMP_DEFAULT_EXCLUDED);
   // Honour explicit per-prompt exclusions ("...excluding cbBTC WETH USDC") on top of the defaults.
   for (const sym of parseExplicitExclusions(prompt)) EXCLUDED.add(sym);
+  const DEFAULT_EXCLUDED = new Set(BASE_PUMP_DEFAULT_EXCLUDED);
 
   const marketProviderAttempted: string[] = ["trending_feed", "pump_alerts_feed"];
   const marketProviderStatus: Record<string, string> = { trending_feed: "not_attempted", pump_alerts_feed: "not_attempted" };
@@ -2251,12 +2262,34 @@ async function handleBasePumpMap(prompt: string, origin: string) {
     }
   }
   const trendingRowsRaw = rawTrendingRows.length;
-  tokens = rawTrendingRows.filter(t => {
-    const sym = String(t.symbol ?? '').toUpperCase();
-    const ch = String(t.chain ?? '');
-    return sym && !EXCLUDED.has(sym) && (ch === 'base' || ch === 'geckoterminal' || !ch);
-  });
+  tokens = rawTrendingRows.filter(t => isBaseChainRow(t) && !EXCLUDED.has(String(t.symbol ?? '').toUpperCase()));
   const trendingRowsNormalized = tokens.length;
+
+  // Last-good cache: fresh live rows refresh the cache (never a fake/empty row set is stored —
+  // setBaseMarketLastGoodCache() itself refuses empty arrays). When the live feed returned
+  // nothing, fall back to the last real Base market snapshot (hard 15-minute TTL) instead of
+  // losing market context entirely.
+  let marketCacheMode: "fresh" | "last_good" | "miss" = "miss";
+  let marketUsedLastGoodCache = false;
+  let marketCacheAgeMs: number | null = null;
+  let marketCacheRows = 0;
+  if (rawTrendingRows.length > 0) {
+    const cacheSafeRows = rawTrendingRows.filter(t => isBaseChainRow(t) && !DEFAULT_EXCLUDED.has(String(t.symbol ?? '').toUpperCase()));
+    setBaseMarketLastGoodCache(cacheSafeRows);
+    marketCacheMode = "fresh";
+  } else {
+    const cached = getBaseMarketLastGoodCache();
+    if (cached) {
+      marketCacheRows = cached.rows.length;
+      marketCacheAgeMs = cached.ageMs;
+      const cachedTokens = cached.rows.filter(t => isBaseChainRow(t) && !EXCLUDED.has(String(t.symbol ?? '').toUpperCase()));
+      if (cachedTokens.length > 0) {
+        tokens = cachedTokens;
+        marketUsedLastGoodCache = true;
+        marketCacheMode = "last_good";
+      }
+    }
+  }
 
   // Enrichment ONLY: pump-alerts is optional. A pump-alerts failure must never zero out
   // trending rows — it is purely additive to the merged candidate list below.
@@ -2319,11 +2352,11 @@ async function handleBasePumpMap(prompt: string, origin: string) {
   };
   const debug = {
     marketRowsSource: "trending_feed+pump_alerts_feed",
-    clarkMarketSource: trendingRowsNormalized > 0 ? "trending_api" : "fallback",
+    clarkMarketSource: marketUsedLastGoodCache ? "trending_cache" : (trendingRowsNormalized > 0 ? "trending_api" : "fallback"),
     marketRowsBeforeFilter,
     marketRowsAfterFilter,
     marketRowsDroppedByReason,
-    marketDataCacheHit: false,
+    marketDataCacheHit: marketUsedLastGoodCache,
     marketProviderAttempted,
     marketProviderStatus,
     trendingFetchUrlKind,
@@ -2333,6 +2366,13 @@ async function handleBasePumpMap(prompt: string, origin: string) {
     trendingRowsNormalized,
     pumpAlertsOptionalFailed,
     marketEndpointFailureReason,
+    marketCacheMode,
+    marketCacheAgeMs,
+    marketCacheRows,
+    marketLiveRowsRaw: trendingRowsRaw,
+    marketLiveRowsNormalized: trendingRowsNormalized,
+    marketLiveFailureReason: marketEndpointFailureReason,
+    marketUsedLastGoodCache,
   };
 
   const emptyScanDebug = {
@@ -2346,7 +2386,7 @@ async function handleBasePumpMap(prompt: string, origin: string) {
 
   // No usable rows reached us from the trending source at all — genuine data outage.
   // (Pump-alerts failing alone never lands here: if trending had rows, merged is non-empty.)
-  if (rawTrendingRows.length === 0 && pumpAlerts.length === 0) {
+  if (!marketUsedLastGoodCache && rawTrendingRows.length === 0 && pumpAlerts.length === 0) {
     const reason = marketProviderStatus.trending_feed === "market_endpoint_failed" ? "market_endpoint_failed" : "market_cache_empty";
     return { analysis: formatNoFreshMarketData(), items: [], ...debug, ...emptyScanDebug, marketFallbackReason: reason };
   }
@@ -2487,6 +2527,7 @@ async function handleBasePumpMap(prompt: string, origin: string) {
   const lines: string[] = [
     "BASE MOMENTUM READ",
     "",
+    ...(marketUsedLastGoodCache ? ["Using the latest saved Base market read because the live feed is temporarily incomplete.", ""] : []),
     `Market read:`,
     `${marketRead} ${breadthNote}`,
     "",

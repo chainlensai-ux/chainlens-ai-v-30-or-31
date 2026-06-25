@@ -1330,6 +1330,43 @@ export function tokenScannerHref(tokenAddress: string, chain = "base"): string {
   return `/terminal/token-scanner?chain=${chain}&contract=${tokenAddress}`;
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// Base market "last-good" cache — when the live trending feed returns 0 rows
+// or throws, Clark falls back to the last real (never fabricated) set of Base
+// market rows instead of losing all market context. Module-scoped on
+// globalThis so it survives across requests within the same server instance,
+// same pattern as lib/coingeckoCache.ts. 15-minute TTL, hard cap — never read
+// past that, never written with an empty/fake row set.
+// ─────────────────────────────────────────────────────────────────────────
+
+const BASE_MARKET_LAST_GOOD_KEY = "base_market_last_good";
+const BASE_MARKET_LAST_GOOD_TTL_MS = 15 * 60_000;
+
+type BaseMarketLastGoodEntry = { rows: Record<string, unknown>[]; createdAt: number; expiresAt: number };
+
+function getBaseMarketLastGoodStore(): Map<string, BaseMarketLastGoodEntry> {
+  const g = globalThis as typeof globalThis & { __clarkBaseMarketLastGood?: Map<string, BaseMarketLastGoodEntry> };
+  if (!g.__clarkBaseMarketLastGood) g.__clarkBaseMarketLastGood = new Map();
+  return g.__clarkBaseMarketLastGood;
+}
+
+/** Stores normalized, real Base market rows as the last-good fallback. Never call with a fake/empty row set. */
+export function setBaseMarketLastGoodCache(rows: Record<string, unknown>[]): void {
+  if (!Array.isArray(rows) || rows.length === 0) return;
+  const now = Date.now();
+  getBaseMarketLastGoodStore().set(BASE_MARKET_LAST_GOOD_KEY, { rows, createdAt: now, expiresAt: now + BASE_MARKET_LAST_GOOD_TTL_MS });
+}
+
+/** Reads the last-good Base market cache; returns null if missing or older than the 15-minute TTL. */
+export function getBaseMarketLastGoodCache(): { rows: Record<string, unknown>[]; ageMs: number } | null {
+  const entry = getBaseMarketLastGoodStore().get(BASE_MARKET_LAST_GOOD_KEY);
+  if (!entry) return null;
+  const now = Date.now();
+  if (now >= entry.expiresAt) return null;
+  if (!entry.rows.length) return null;
+  return { rows: entry.rows, ageMs: now - entry.createdAt };
+}
+
 /** Human-readable tag for which trending response shape was received (debug only). */
 export function describeTrendingShape(payload: unknown): string {
   if (Array.isArray(payload)) return "array";

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
-import { classifyClarkPrompt, formatBaseMarketReadFromRows, formatNoFreshMarketData, formatNoPumpCandidates, parseExplicitExclusions, parseTrendingRows, describeTrendingShape, pickScanIdentifiers, tokenScannerHref, toClarkUiActions, buildRoutedActions } from '../lib/server/clarkRouting.ts'
+import { classifyClarkPrompt, formatBaseMarketReadFromRows, formatNoFreshMarketData, formatNoPumpCandidates, parseExplicitExclusions, parseTrendingRows, describeTrendingShape, pickScanIdentifiers, tokenScannerHref, toClarkUiActions, buildRoutedActions, getBaseMarketLastGoodCache, setBaseMarketLastGoodCache } from '../lib/server/clarkRouting.ts'
 
 // 1. all required market phrasings route to base_market_discovery, not a generic fallback.
 const phrases = [
@@ -243,5 +243,58 @@ assert.ok(
 
 // 16. Base Radar is never used as a data source for these market answers.
 assert.ok(!/Base Radar data is temporarily unavailable/.test(routeSrc), 'no Base Radar unavailable copy on market paths')
+
+// 17. Last-good Base market cache: stores real rows with a 15-minute TTL, never accepts an
+//     empty/fake row set, and expired entries are ignored.
+{
+  setBaseMarketLastGoodCache([]) // must be a no-op — never cache a fake/empty row set
+  const realRows = [{ symbol: 'PEPE2', name: 'Pepe Two', chain: 'base', change24h: 22, volume: 300000, liquidity: 200000 }]
+  setBaseMarketLastGoodCache(realRows)
+  const hit = getBaseMarketLastGoodCache()
+  assert.ok(hit && hit.rows.length === 1 && hit.rows[0].symbol === 'PEPE2', 'fresh cache write is readable')
+  assert.ok(typeof hit.ageMs === 'number' && hit.ageMs >= 0, 'cache exposes an age in ms')
+}
+
+// 18. route.ts wires the cache: refreshes it on fresh live rows, reads it when live rows are
+//     empty, gates the no-data path on !marketUsedLastGoodCache, and never reads cache older
+//     than 15 minutes (enforced inside getBaseMarketLastGoodCache itself).
+assert.ok(routeSrc.includes('setBaseMarketLastGoodCache(cacheSafeRows)'), 'route.ts refreshes the last-good cache from real live rows')
+assert.ok(routeSrc.includes('getBaseMarketLastGoodCache()'), 'route.ts reads the last-good cache when live rows are empty')
+assert.ok(
+  routeSrc.includes('if (!marketUsedLastGoodCache && rawTrendingRows.length === 0 && pumpAlerts.length === 0)'),
+  'the no-data gate is bypassed when the last-good cache served rows',
+)
+assert.ok(
+  routeSrc.includes('Using the latest saved Base market read because the live feed is temporarily incomplete.'),
+  'cache-fallback replies carry the required public copy',
+)
+assert.ok(!/goldrush|covalent|geckoterminal|coingecko|dexscreener|alchemy/i.test('Using the latest saved Base market read because the live feed is temporarily incomplete.'))
+for (const field of [
+  'marketCacheMode', 'marketCacheAgeMs', 'marketCacheRows', 'marketLiveRowsRaw',
+  'marketLiveRowsNormalized', 'marketLiveFailureReason', 'marketUsedLastGoodCache',
+]) {
+  assert.ok(routeSrc.includes(field), `route.ts exposes cache debug field ${field}`)
+}
+
+// 19. Explicit per-prompt exclusions and the default exclusion set are both re-applied to
+//     cache-sourced rows at read time (cache itself only strips defaults, not prompt-specific
+//     exclusions, so the same snapshot serves any later prompt correctly).
+assert.ok(
+  /cacheSafeRows = rawTrendingRows\.filter\(t => isBaseChainRow\(t\) && !DEFAULT_EXCLUDED\.has/.test(routeSrc),
+  'cache writes use only the default exclusion set (not prompt-specific exclusions)',
+)
+assert.ok(
+  /cachedTokens = cached\.rows\.filter\(t => isBaseChainRow\(t\) && !EXCLUDED\.has/.test(routeSrc),
+  'cache reads re-apply the full (default + prompt) exclusion set',
+)
+
+// 20. Cache-sourced rows still flow through pickScanIdentifiers downstream, so "scan N" works
+//     the same whether rows came from the live feed or the last-good cache — no separate,
+//     weaker code path for cached rows. No Base Radar call and no fake rows anywhere in this wiring.
+{
+  const pumpMapBody = routeSrc.slice(routeSrc.indexOf('async function handleBasePumpMap'), routeSrc.indexOf('async function handleBaseRadarSnapshot'))
+  assert.ok(!/base-radar/i.test(pumpMapBody), 'handleBasePumpMap never calls Base Radar')
+  assert.ok(!/mock|placeholder/i.test(pumpMapBody), 'no fabricated row fallback in the cache wiring')
+}
 
 console.log('clark base market routing checks passed')

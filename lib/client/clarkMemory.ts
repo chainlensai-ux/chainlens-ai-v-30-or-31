@@ -109,6 +109,9 @@ export type ClarkMarketMomentumItem = {
 /** Persists the latest Clark market momentum list to localStorage with a 15-minute expiry. */
 export function persistMarketMomentum(items: ClarkMarketMomentumItem[]): void {
   if (typeof window === 'undefined') return
+  // Never overwrite a previously persisted, still-valid market momentum list with an empty one —
+  // an empty server response (e.g. a transient market read) must not erase real prior context.
+  if (!Array.isArray(items) || items.length === 0) return
   try {
     const createdAt = Date.now()
     localStorage.setItem(MARKET_MOMENTUM_KEY, JSON.stringify({ items, createdAt, expiresAt: createdAt + MARKET_MOMENTUM_TTL_MS }))

@@ -99,4 +99,14 @@ assert.ok(/handleSendText\(action\.prompt/.test(pageSrc), 'prompt actions still 
 // 11. No new provider names anywhere touched.
 assert.ok(!PROVIDER_RE.test(routingSrc.slice(routingSrc.indexOf('isMarketIntent'), routingSrc.indexOf('isMarketIntent') + 800)))
 
+// 12. persistMarketMomentum() never overwrites a previously persisted list with an empty one —
+//     a transient empty market response must not erase real prior context.
+{
+  globalThis.localStorage.removeItem('chainlens:lastMarketMomentum')
+  persistMarketMomentum([{ rank: 1, symbol: 'VELVET', scanTarget: tokenAddr }])
+  persistMarketMomentum([])
+  const read = readMarketMomentum()
+  assert.ok(read && read.length === 1 && read[0].symbol === 'VELVET', 'empty momentum write does not clear prior persisted context')
+}
+
 console.log('clark market persistence checks passed')
