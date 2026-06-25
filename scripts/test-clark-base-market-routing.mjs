@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
-import { classifyClarkPrompt, formatBaseMarketReadFromRows, formatNoFreshMarketData, formatNoPumpCandidates, parseExplicitExclusions, parseTrendingRows, describeTrendingShape, toClarkUiActions, buildRoutedActions } from '../lib/server/clarkRouting.ts'
+import { classifyClarkPrompt, formatBaseMarketReadFromRows, formatNoFreshMarketData, formatNoPumpCandidates, parseExplicitExclusions, parseTrendingRows, describeTrendingShape, pickScanIdentifiers, tokenScannerHref, toClarkUiActions, buildRoutedActions } from '../lib/server/clarkRouting.ts'
 
 // 1. all required market phrasings route to base_market_discovery, not a generic fallback.
 const phrases = [
@@ -193,5 +193,55 @@ assert.ok(
   /export async function getMergedTrendingTokens\(/.test(fs.readFileSync(path.join(__dirname, '../app/api/trending/route.ts'), 'utf8')),
   'trending/route.ts exports getMergedTrendingTokens for safe server-side reuse',
 )
+
+// 13. pickScanIdentifiers extracts a usable token scan target from any address field,
+//     rejects non-onchain ids, and never claims a pool as a scannable token target.
+{
+  const ADDR = '0x' + 'a'.repeat(40)
+  const POOL = '0x' + 'b'.repeat(40)
+  assert.deepEqual(
+    pickScanIdentifiers({ contract: ADDR }),
+    { tokenAddress: ADDR, poolAddress: null, scanTarget: ADDR, scanTargetType: 'token' },
+    'token address from `contract` becomes the scan target',
+  )
+  assert.deepEqual(
+    pickScanIdentifiers({ tokenAddress: ADDR, pairAddress: POOL }),
+    { tokenAddress: ADDR, poolAddress: POOL, scanTarget: ADDR, scanTargetType: 'token' },
+    'tokenAddress wins as scan target; pool captured separately',
+  )
+  const poolOnly = pickScanIdentifiers({ poolAddress: POOL })
+  assert.equal(poolOnly.scanTarget, null, 'pool-only row has no scan target (Token Scanner scans tokens)')
+  assert.equal(poolOnly.poolAddress, POOL, 'pool-only row still records the pool address')
+  assert.equal(pickScanIdentifiers({ contract: 'pepe' }).scanTarget, null, 'CoinGecko slug id is rejected as a scan target')
+  const href = tokenScannerHref(ADDR)
+  assert.ok(href.includes('chain=base') && href.includes(`contract=${ADDR}`), 'token scanner href carries chain=base and the contract')
+}
+
+// 14. handleBasePumpMap normalizes scan identifiers, gates the "scan 1" invite on a real
+//     target, ranks positives first with a labelled negative fallback, and surfaces the
+//     new scan-coverage + selection debug fields.
+assert.ok(/pickScanIdentifiers\(t\)/.test(routeSrc), 'handleBasePumpMap normalizes rows via pickScanIdentifiers')
+assert.ok(/scanTarget: ids\.scanTarget/.test(routeSrc), 'marketContext items carry scanTarget')
+assert.ok(/Open Token Scanner and paste the contract when available/.test(routeSrc), 'no-scan-target rows avoid the "scan 1" invite')
+assert.ok(/const positives = ranked\.filter\(t => Number\(t\.change24h \?\? 0\) > 0\)/.test(routeSrc), 'pumping ranks positive movers first')
+assert.ok(/positives\.length >= 5 \? positives : \[\.\.\.positives, \.\.\.nonPositives\]/.test(routeSrc), 'negatives only fill in when positives are scarce')
+assert.ok(/high-volume mover, but not currently green/.test(routeSrc), 'negative movers are labelled, not sold as strongest pump')
+for (const field of [
+  'marketRowsWithTokenAddress', 'marketRowsWithPoolAddress', 'marketRowsWithScanTarget',
+  'marketScanTargetCoverage', 'marketScanTargetMissingReasons', 'clarkScanSelectionResolved', 'clarkScanSelectionReason',
+]) {
+  assert.ok(routeSrc.includes(field), `route.ts exposes scan debug field ${field}`)
+}
+// "scan 1" follow-up persists movers to session memory so the rank resolves to a real address.
+assert.ok(/updateMemMomentum\(sessionMem, basePumpItems\.map/.test(routeSrc), 'base pump movers are stored for scan-N resolution')
+
+// 15. Top-level source reflects the real market source, never "fallback" when trending_api ran.
+assert.ok(
+  /marketSourceTag === "trending_api" \? "trending_api"/.test(routeSrc) && /marketSourceTag === "market_universe" \? "market_feed"/.test(routeSrc),
+  'normalizeApiReplyShape maps clarkMarketSource onto the top-level source',
+)
+
+// 16. Base Radar is never used as a data source for these market answers.
+assert.ok(!/Base Radar data is temporarily unavailable/.test(routeSrc), 'no Base Radar unavailable copy on market paths')
 
 console.log('clark base market routing checks passed')

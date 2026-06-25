@@ -52,6 +52,8 @@ import {
   parseExplicitExclusions,
   parseTrendingRows,
   describeTrendingShape,
+  pickScanIdentifiers,
+  tokenScannerHref,
 } from "@/lib/server/clarkRouting";
 
 const {
@@ -583,7 +585,7 @@ type ClarkToolPlan = {
   };
 };
 
-type ClarkSource = "casual" | "feature_context" | "tool_call" | "fallback" | "token_core" | "wallet_scanner_runner" | "memory";
+type ClarkSource = "casual" | "feature_context" | "tool_call" | "fallback" | "token_core" | "wallet_scanner_runner" | "memory" | "trending_api" | "market_feed";
 type ClarkReplyMode =
   | "casual_help"
   | "general_market"
@@ -2271,6 +2273,9 @@ async function handleBasePumpMap(prompt: string, origin: string) {
         volume: pa.volume24hUsd ?? pa.volume_usd,
         liquidity: pa.liquidityUsd ?? pa.liquidity_usd,
         fdv: pa.fdvUsd ?? pa.fdv_usd,
+        // Preserve any scan identifiers the pump-alert row carries so "scan N" stays runnable.
+        tokenAddress: pa.tokenAddress ?? pa.address ?? pa.contract ?? null,
+        poolAddress: pa.poolAddress ?? pa.pairAddress ?? null,
       });
     }
   }
@@ -2301,17 +2306,26 @@ async function handleBasePumpMap(prompt: string, origin: string) {
     marketEndpointFailureReason,
   };
 
+  const emptyScanDebug = {
+    marketRowsWithTokenAddress: 0,
+    marketRowsWithPoolAddress: 0,
+    marketRowsWithScanTarget: 0,
+    marketScanTargetCoverage: 0,
+    marketScanTargetMissingReasons: [] as string[],
+    hasScanTarget: false,
+  };
+
   // No usable rows reached us from the trending source at all — genuine data outage.
   // (Pump-alerts failing alone never lands here: if trending had rows, merged is non-empty.)
   if (rawTrendingRows.length === 0 && pumpAlerts.length === 0) {
     const reason = marketProviderStatus.trending_feed === "market_endpoint_failed" ? "market_endpoint_failed" : "market_cache_empty";
-    return { analysis: formatNoFreshMarketData(), items: [], ...debug, marketFallbackReason: reason };
+    return { analysis: formatNoFreshMarketData(), items: [], ...debug, ...emptyScanDebug, marketFallbackReason: reason };
   }
 
   // Rows existed upstream (same source the dashboard reads), but every single one was a
   // stablecoin/major — that's a real "no clear pump candidates" answer, never a no_rows lie.
   if (!merged.length) {
-    return { analysis: formatNoPumpCandidates(), items: [], ...debug, marketFallbackReason: "all_rows_filtered" };
+    return { analysis: formatNoPumpCandidates(), items: [], ...debug, ...emptyScanDebug, marketFallbackReason: "all_rows_filtered" };
   }
 
   // Rank: 24h change desc, then volume, then liquidity — filter zero-liquidity noise
@@ -2325,7 +2339,16 @@ async function handleBasePumpMap(prompt: string, origin: string) {
     return Number(b.liquidity ?? 0) - Number(a.liquidity ?? 0);
   });
 
-  const candidates = ranked.slice(0, 12);
+  // "Pumping" must lead with green movers. Positive 24h rows first (already change-desc);
+  // negative/flat rows are only mixed in as high-volume fallback when there aren't enough
+  // positive candidates, and are labelled so they're never sold as "strongest pump".
+  const positives = ranked.filter(t => Number(t.change24h ?? 0) > 0);
+  const nonPositives = ranked
+    .filter(t => Number(t.change24h ?? 0) <= 0)
+    .sort((a, b) => Number(b.volume ?? 0) - Number(a.volume ?? 0));
+  const ordered = positives.length >= 5 ? positives : [...positives, ...nonPositives];
+
+  const candidates = ordered.slice(0, 12);
   const top = candidates.slice(0, 7);
 
   const liquidCount = top.filter(t => Number(t.liquidity ?? 0) >= 100_000).length;
@@ -2354,15 +2377,67 @@ async function handleBasePumpMap(prompt: string, origin: string) {
     const fdvNum = t.fdv != null ? Number(t.fdv) : null;
     const cls = classifyMarketTokenLabel(liqNum, volNum, fdvNum, sym);
     // Map internal labels to quality tags
-    const qualityTag = cls === "liquid mover" ? "tradable depth"
+    const qualityTag = ch <= 0
+      ? "high-volume, not green"
+      : cls === "liquid mover" ? "tradable depth"
       : cls === "volume-led" ? "volume-led"
       : cls === "thin pump" ? "thin liquidity"
       : cls === "microcap noise" ? "microcap noise"
       : cls === "base asset" ? "base asset"
       : "watchlist only";
-    const reason = buildReasonLine(cls);
+    const reason = ch <= 0
+      ? "high-volume mover, but not currently green — momentum is fading, treat as watchlist."
+      : buildReasonLine(cls);
     return `${i + 1}. ${label} — ${chStr} | Vol ${vol} | Liq ${liq} | [${qualityTag}]\n   Read: ${reason}`;
   });
+
+  // Normalized, scan-ready items: preserve token/pool identifiers from whichever field the
+  // source used so "scan N" has a real target instead of address: null.
+  const items = top.map((t, i) => {
+    const ch = Number(t.change24h ?? 0);
+    const ids = pickScanIdentifiers(t);
+    const sym = String(t.symbol ?? '?').toUpperCase();
+    const liqNum = Number(t.liquidity ?? 0) || null;
+    const volNum = Number(t.volume ?? 0) || null;
+    const fdvNum = t.fdv != null ? Number(t.fdv) : null;
+    const cls = classifyMarketTokenLabel(liqNum, volNum, fdvNum, sym);
+    const tag = ch <= 0
+      ? "high-volume, not green"
+      : cls === "liquid mover" ? "tradable depth"
+      : cls === "volume-led" ? "volume-led"
+      : cls === "thin pump" ? "thin liquidity"
+      : cls === "microcap noise" ? "microcap noise"
+      : cls === "base asset" ? "base asset"
+      : "watchlist only";
+    return {
+      rank: i + 1,
+      symbol: sym,
+      name: String(t.name ?? '').trim() || null,
+      chain: "base",
+      // Back-compat: keep `address` (consumed by updateMemMomentum / scan-N) = token address.
+      address: ids.tokenAddress,
+      tokenAddress: ids.tokenAddress,
+      poolAddress: ids.poolAddress,
+      scanTarget: ids.scanTarget,
+      scanTargetType: ids.scanTargetType,
+      liquidity: liqNum,
+      volume24h: volNum,
+      change24h: ch,
+      tag,
+    };
+  });
+
+  const scanTargetCount = items.filter(it => it.scanTarget).length;
+  const hasScanTarget = scanTargetCount > 0;
+  const scanDebug = {
+    marketRowsWithTokenAddress: items.filter(it => it.tokenAddress).length,
+    marketRowsWithPoolAddress: items.filter(it => it.poolAddress).length,
+    marketRowsWithScanTarget: scanTargetCount,
+    marketScanTargetCoverage: items.length ? scanTargetCount / items.length : 0,
+    marketScanTargetMissingReasons: items
+      .filter(it => !it.scanTarget)
+      .map(it => (it.poolAddress ? "pool_only_not_scannable" : "no_onchain_address")),
+  };
 
   const thinCount = top.filter(t => Number(t.liquidity ?? 0) < 50_000).length;
   const qualityLine = thinCount >= 3
@@ -2374,6 +2449,11 @@ async function handleBasePumpMap(prompt: string, origin: string) {
   const pumpNote = pumpAlerts.length > 0
     ? `Pump-alert filter also flags additional momentum candidates — say "show pump alerts" for the dedicated high-momentum filtered feed.`
     : null;
+
+  // Only invite "scan N" when at least one displayed row actually has a scan target.
+  const nextActionLine = hasScanTarget
+    ? "Pick a number and say \"scan 1\" to run a deeper token scan."
+    : "Open Token Scanner and paste the contract when available — these rows don't carry a scannable address yet.";
 
   const lines: string[] = [
     "BASE MOMENTUM READ",
@@ -2390,33 +2470,10 @@ async function handleBasePumpMap(prompt: string, origin: string) {
     "",
     pumpNote,
     "Next action:",
-    "Pick a number and say \"scan 1\" to run a deeper token scan.",
+    nextActionLine,
   ].filter((l): l is string => l !== null && l !== undefined);
 
-  const items = top.map((t, i) => ({
-    rank: i + 1,
-    symbol: String(t.symbol ?? '?').toUpperCase(),
-    name: String(t.name ?? '').trim() || null,
-    address: typeof t.address === 'string' ? t.address : null,
-    liquidity: Number(t.liquidity ?? 0) || null,
-    volume24h: Number(t.volume ?? 0) || null,
-    change24h: Number(t.change24h ?? 0),
-    tag: (() => {
-      const liqNum = Number(t.liquidity ?? 0) || null;
-      const volNum = Number(t.volume ?? 0) || null;
-      const fdvNum = t.fdv != null ? Number(t.fdv) : null;
-      const sym = String(t.symbol ?? '?').toUpperCase();
-      const cls = classifyMarketTokenLabel(liqNum, volNum, fdvNum, sym);
-      return cls === "liquid mover" ? "tradable depth"
-        : cls === "volume-led" ? "volume-led"
-        : cls === "thin pump" ? "thin liquidity"
-        : cls === "microcap noise" ? "microcap noise"
-        : cls === "base asset" ? "base asset"
-        : "watchlist only";
-    })(),
-  }));
-
-  return { analysis: lines.join("\n"), items, ...debug, marketFallbackReason: null };
+  return { analysis: lines.join("\n"), items, ...debug, ...scanDebug, hasScanTarget, marketFallbackReason: null };
 }
 
 async function handleBaseRadarSnapshot(origin: string, prompt = "") {
@@ -7307,13 +7364,44 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     // This call reuses the same canonical /api/trending source the dashboard Token Screener
     // reads — it is the fallback when the Base market universe itself came back empty.
     const basePumpResult = await handleBasePumpMap(prompt, origin);
-    const basePumpHasRows = Array.isArray(basePumpResult.items) && basePumpResult.items.length > 0;
+    const basePumpItems = Array.isArray(basePumpResult.items) ? basePumpResult.items : [];
+    const basePumpHasRows = basePumpItems.length > 0;
+    // Persist the shown movers so a follow-up "scan 1" resolves to a real token address.
+    if (basePumpHasRows) {
+      updateMemMomentum(sessionMem, basePumpItems.map((it) => ({
+        rank: it.rank, symbol: it.symbol ?? "?", name: it.name ?? null,
+        address: it.scanTarget ?? it.tokenAddress ?? null,
+        liquidity: it.liquidity ?? null, volume24h: it.volume24h ?? null, change24h: it.change24h ?? null, tag: it.tag ?? null,
+      })));
+      sessionMem.lastMomentumShownCount = basePumpItems.length;
+      sessionMem.allowedRankScanUntil = Date.now() + 60_000;
+      sessionMem.allowedRankScanUsed = false;
+      sessionMem.lastIntent = "base_momentum";
+      sessionMem.lastIntentTs = Date.now();
+      sessionMem.lastActionableIntent = "base_momentum";
+      sessionMem.lastActionableIntentTs = Date.now();
+    }
+    // First scannable mover drives a Token Scanner deep-link CTA (auto-runs on ?contract=).
+    const firstScanItem = basePumpItems.find((it) => it.scanTarget);
+    const basePumpUi = firstScanItem
+      ? { intentBadge: "market", actions: [
+          { label: `Scan ${firstScanItem.symbol ?? "top mover"} in Token Scanner`, href: tokenScannerHref(firstScanItem.scanTarget as string) },
+          ...toClarkUiActions(buildRoutedActions(["Open Base Radar", "Refresh Market Data"])),
+        ] }
+      : baseMomentumUi;
     return {
       feature: "clark-ai", chain, mode: "analysis", intent: "market", toolsUsed: ["base_market_feed", "pump_alerts_feed"],
       analysis: basePumpResult.analysis,
       marketContext: { items: basePumpResult.items },
       intentBadge: "market",
       actions: baseMomentumActions,
+      marketRowsWithTokenAddress: basePumpResult.marketRowsWithTokenAddress,
+      marketRowsWithPoolAddress: basePumpResult.marketRowsWithPoolAddress,
+      marketRowsWithScanTarget: basePumpResult.marketRowsWithScanTarget,
+      marketScanTargetCoverage: basePumpResult.marketScanTargetCoverage,
+      marketScanTargetMissingReasons: basePumpResult.marketScanTargetMissingReasons,
+      clarkScanSelectionResolved: basePumpHasRows && Boolean(firstScanItem),
+      clarkScanSelectionReason: basePumpHasRows ? (firstScanItem ? "scan_target_available" : "no_scan_target_in_rows") : "no_rows",
       marketRowsSource: basePumpResult.marketRowsSource,
       marketRowsBeforeFilter: basePumpResult.marketRowsBeforeFilter,
       marketRowsAfterFilter: basePumpResult.marketRowsAfterFilter,
@@ -7329,7 +7417,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       trendingRowsNormalized: basePumpResult.trendingRowsNormalized,
       pumpAlertsOptionalFailed: basePumpResult.pumpAlertsOptionalFailed,
       marketEndpointFailureReason: basePumpResult.marketEndpointFailureReason,
-      ui: baseMomentumUi,
+      ui: basePumpUi,
       clarkMarketFallbackReason: basePumpHasRows ? null : basePumpResult.marketFallbackReason,
       quotaConsumed: basePumpHasRows,
       clarkMarketSource: basePumpResult.clarkMarketSource,
@@ -9445,18 +9533,24 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
             requestedCount: take,
             totalCandidates: universe.candidates.length,
           },
-          items: displayRows.map((c, i) => ({
-            rank: offsetBase + i + 1,
-            symbol: c.symbol ?? "?",
-            name: c.name ?? null,
-            tokenAddress: c.tokenAddress ?? null,
-            poolAddress: c.poolAddress ?? null,
-            reasonTag: c.reasonTags[0] ?? null,
-            price: c.priceUsd ?? null,
-            liquidity: c.liquidityUsd ?? null,
-            volume24h: c.volume24h ?? null,
-            change24h: c.change24h ?? null,
-          })),
+          items: displayRows.map((c, i) => {
+            const ids = pickScanIdentifiers({ tokenAddress: c.tokenAddress ?? undefined, poolAddress: c.poolAddress ?? undefined });
+            return {
+              rank: offsetBase + i + 1,
+              symbol: c.symbol ?? "?",
+              name: c.name ?? null,
+              chain: "base",
+              tokenAddress: ids.tokenAddress,
+              poolAddress: ids.poolAddress,
+              scanTarget: ids.scanTarget,
+              scanTargetType: ids.scanTargetType,
+              reasonTag: c.reasonTags[0] ?? null,
+              price: c.priceUsd ?? null,
+              liquidity: c.liquidityUsd ?? null,
+              volume24h: c.volume24h ?? null,
+              change24h: c.change24h ?? null,
+            };
+          }),
         },
         intent: plan.intent,
         toolsUsed: [...new Set([...toolsUsed, "market_get_base_movers"])],
@@ -10360,11 +10454,19 @@ function normalizeApiReplyShape(result: unknown, body: ClarkRequestBody) {
   const confidence = (typeof obj.confidence === "string" && obj.confidence.length > 0)
     ? (obj.confidence as string)
     : (confMatch ? `${confMatch[1].charAt(0).toUpperCase()}${confMatch[1].slice(1).toLowerCase()}` : null);
+  // A market handler reports its real data source via clarkMarketSource — surface that as the
+  // top-level source so it never reads "fallback" while live trending/market rows were used.
+  const marketSourceTag = typeof obj.clarkMarketSource === "string" ? obj.clarkMarketSource : null;
+  const mappedMarketSource: ClarkSource | null =
+    marketSourceTag === "trending_api" ? "trending_api"
+    : marketSourceTag === "market_universe" ? "market_feed"
+    : null;
   const source: ClarkSource = (typeof obj.source === "string" && obj.source.length > 0)
     ? (obj.source as ClarkSource)
-    : (verdict
-      ? (body.feature === "clark-ai" ? "feature_context" : "tool_call")
-      : (isCasualAssistantPrompt(body.prompt ?? "") ? "casual" : "fallback"));
+    : (mappedMarketSource
+      ?? (verdict
+        ? (body.feature === "clark-ai" ? "feature_context" : "tool_call")
+        : (isCasualAssistantPrompt(body.prompt ?? "") ? "casual" : "fallback")));
 
   // Prefer a handler-provided ui.intentBadge (a clean human label like "Wallet Scan") so the
   // public/top-level intentBadge never disagrees with the one already shown in ui.intentBadge —

@@ -1254,6 +1254,45 @@ export function parseTrendingRows(payload: unknown): Array<Record<string, unknow
   return [];
 }
 
+const ONCHAIN_ADDR_RE = /^0x[a-fA-F0-9]{40}$/;
+
+/**
+ * Pulls usable scan identifiers out of a raw market row, regardless of which field
+ * the upstream source used (tokenAddress/address/contract/contractAddress for the
+ * token; poolAddress/pairAddress for the pool). Only real on-chain 0x addresses are
+ * accepted — CoinGecko-style slug ids (e.g. "pepe") are rejected so they never become
+ * a bogus scan target. scanTarget is the token address only, because Token Scanner
+ * scans token contracts (not pools); pool-only rows get scanTarget=null so Clark never
+ * claims a scan is runnable when it isn't.
+ */
+export function pickScanIdentifiers(row: Record<string, unknown>): {
+  tokenAddress: string | null;
+  poolAddress: string | null;
+  scanTarget: string | null;
+  scanTargetType: "token" | "pool" | null;
+} {
+  const firstAddr = (keys: string[]): string | null => {
+    for (const k of keys) {
+      const v = row[k];
+      if (typeof v === "string" && ONCHAIN_ADDR_RE.test(v)) return v;
+    }
+    return null;
+  };
+  const tokenAddress = firstAddr(["tokenAddress", "address", "contract", "contractAddress"]);
+  const poolAddress = firstAddr(["poolAddress", "pairAddress"]);
+  return {
+    tokenAddress,
+    poolAddress,
+    scanTarget: tokenAddress,
+    scanTargetType: tokenAddress ? "token" : null,
+  };
+}
+
+/** Token Scanner deep-link that the scanner page auto-runs (it reads ?contract= + ?chain=). */
+export function tokenScannerHref(tokenAddress: string, chain = "base"): string {
+  return `/terminal/token-scanner?chain=${chain}&contract=${tokenAddress}`;
+}
+
 /** Human-readable tag for which trending response shape was received (debug only). */
 export function describeTrendingShape(payload: unknown): string {
   if (Array.isArray(payload)) return "array";
