@@ -602,13 +602,42 @@ type WalletResult = {
     reason: string | null
     cacheHit?: boolean
   }
+  walletLoadState?: {
+    mode: 'standard' | 'deep'
+    stage: 'portfolio' | 'holdings' | 'activity' | 'pricing' | 'fifo' | 'recovery' | 'final'
+    portfolioReady: boolean
+    holdingsReady: boolean
+    activityReady: boolean
+    tradeBehaviorReady: boolean
+    pnlReady: boolean
+    recoveryReady: boolean
+    integrityReady: boolean
+    partialResponseSafe: boolean
+    heavyModulesPending: string[]
+    lastUpdatedAt: string
+  }
+  walletDeepScanOptimizationDebug?: {
+    cacheHitStages: string[]
+    reusedEvidenceStages: string[]
+    duplicatePriceRequestsAvoided: number
+    duplicateEventsRemoved: number
+    parallelStagesUsed: string[]
+    heavyModulesDeferred: string[]
+    noExtraProviderCalls: boolean
+  }
   walletDeepScanTiming?: {
     portfolioMs: number
+    holdingsMs?: number
+    activityFetchMs?: number
     activityMs: number
+    normalizationMs?: number
+    mergeMs?: number
     swapDetectionMs: number
     pricingMs: number
     fifoMs: number
+    integrityMs?: number
     tradeStatsMs: number
+    recoveryMs?: number
     historicalMs: number
     totalMs: number
     cacheReadMs: number
@@ -1491,12 +1520,14 @@ function ClarkDots() {
 
 function WalletScanProgress({ hasPreviousResult, deepScan }: { hasPreviousResult: boolean; deepScan: boolean }) {
   const modules = [
-    { label: 'Portfolio loading', detail: 'Reading visible holdings and value first.' },
-    { label: 'Activity indexing', detail: 'Indexing wallet-side transfer history.' },
-    { label: 'Swap pairs', detail: 'Grouping token legs into CORTEX candidates.' },
-    { label: 'Pricing evidence', detail: 'Resolving cost-basis evidence without synthetic numbers.' },
-    { label: 'FIFO matching', detail: 'Matching buys and sells with existing safety rules.' },
-    { label: 'Trade stats', detail: 'Unlocking stats only after verified closed lots.' },
+    { label: 'Loading portfolio…', detail: 'Reading visible value first.' },
+    { label: 'Loading holdings…', detail: 'Keeping holdings visible before PnL finishes.' },
+    { label: 'Fetching wallet activity…', detail: 'Indexing wallet-side transfer history.' },
+    { label: 'Reconstructing trades…', detail: 'Grouping token legs into CORTEX candidates.' },
+    { label: 'Checking price evidence…', detail: 'Resolving cost-basis evidence without synthetic numbers.' },
+    { label: 'Running FIFO integrity…', detail: 'Matching buys and sells with existing safety rules.' },
+    { label: 'Recovering historical buys…', detail: 'Only when deep recovery is requested or required.' },
+    { label: 'Finalizing wallet intelligence…', detail: 'Unlocking stats only after integrity gates pass.' },
   ]
   return (
     <div style={{ maxWidth: '760px', marginTop: hasPreviousResult ? '0' : '24px' }}>
@@ -2145,6 +2176,32 @@ export default function WalletScannerPage() {
             </div></>
           )}
           {loading && result && <WalletScanProgress hasPreviousResult deepScan={deepActivity} />}
+
+          {result?.walletLoadState && (
+            <div style={{ maxWidth: '760px', marginTop: '14px', background: 'rgba(8,12,20,0.82)', border: '1px solid rgba(125,211,252,0.14)', borderRadius: '14px', padding: '14px 16px' }}>
+              <div style={{ fontSize: '10px', fontWeight: 900, letterSpacing: '0.14em', color: '#7dd3fc', textTransform: 'uppercase', marginBottom: '10px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Deep Scan Progress</div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: '8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                {[
+                  ['Portfolio ready', result.walletLoadState.portfolioReady],
+                  ['Holdings ready', result.walletLoadState.holdingsReady],
+                  ['Activity indexed', result.walletLoadState.activityReady],
+                  ['Trades reconstructed', result.walletLoadState.tradeBehaviorReady],
+                  ['PnL integrity checked', result.walletLoadState.integrityReady],
+                  [`Historical recovery ${result.walletHistoricalRecoveryStatus === 'attempted_capped' || result.walletScanBudget?.historicalPhaseCapHit ? 'capped' : result.walletLoadState.recoveryReady ? 'attempted / skipped' : 'pending'}`, result.walletLoadState.recoveryReady],
+                ].map(([label, ready]) => (
+                  <div key={String(label)} style={{ border: '1px solid rgba(255,255,255,0.07)', borderRadius: '10px', padding: '8px 10px', background: ready ? 'rgba(74,222,128,0.045)' : 'rgba(251,191,36,0.035)' }}>
+                    <span style={{ color: ready ? '#4ade80' : '#fbbf24', marginRight: '7px' }}>{ready ? '✓' : '…'}</span>
+                    <span style={{ fontSize: '10px', color: 'rgba(226,232,240,0.78)' }}>{String(label)}</span>
+                  </div>
+                ))}
+              </div>
+              {result.walletLoadState.heavyModulesPending.length > 0 && (
+                <div style={{ marginTop: '9px', fontSize: '10px', color: 'rgba(251,191,36,0.70)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                  Pending heavy modules: {result.walletLoadState.heavyModulesPending.map(s => s.replaceAll('_', ' ')).join(', ')}. Already-ready holdings remain visible.
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Error */}
           {error && (
