@@ -8,6 +8,7 @@ export type ClarkHistoryPanelProps = {
   chats: ClarkChatSummary[]
   activeChatId: string | null
   historySaveFailed: boolean
+  historyStatusMessage?: string | null
   onNewChat: () => void
   onSelectChat: (id: string) => void
   onSearch: (query: string) => void
@@ -19,7 +20,7 @@ export type ClarkHistoryPanelProps = {
 }
 
 export default function ClarkHistoryPanel({
-  folders, chats, activeChatId, historySaveFailed,
+  folders, chats, activeChatId, historySaveFailed, historyStatusMessage,
   onNewChat, onSelectChat, onSearch, onCreateFolder, onRenameChat, onMoveChat, onDeleteChat, onDeleteFolder,
 }: ClarkHistoryPanelProps) {
   const [query, setQuery] = useState('')
@@ -52,7 +53,11 @@ export default function ClarkHistoryPanel({
       `}</style>
 
       <button type='button' className='clk-histpanel-new' onClick={onNewChat}>+ New Chat</button>
-      {historySaveFailed && <span className='clk-histpanel-fail'>History not saved — Clark still works, but this chat won&apos;t persist.</span>}
+      {historySaveFailed && (
+        <span className='clk-histpanel-fail'>
+          {historyStatusMessage ?? 'History not saved — Clark still works, but this chat won’t persist.'}
+        </span>
+      )}
       <input
         className='clk-histpanel-search'
         placeholder='Search chats...'

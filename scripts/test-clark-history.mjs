@@ -2,13 +2,14 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
-import { generateChatTitle, buildMessagePreview, sanitizeMessageMetadata } from '../lib/server/clarkHistory.ts'
+import { generateChatTitle, buildMessagePreview, sanitizeMessageMetadata, classifyDbError } from '../lib/server/clarkHistory.ts'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const sqlSrc = fs.readFileSync(path.join(__dirname, '../supabase/clark-chat-history.sql'), 'utf8')
 const apiSrc = fs.readFileSync(path.join(__dirname, '../app/api/clark/history/route.ts'), 'utf8')
 const pageSrc = fs.readFileSync(path.join(__dirname, '../app/terminal/clark-ai/page.tsx'), 'utf8')
 const panelSrc = fs.readFileSync(path.join(__dirname, '../components/ClarkHistoryPanel.tsx'), 'utf8')
+const clientSrc = fs.readFileSync(path.join(__dirname, '../lib/client/clarkHistoryClient.ts'), 'utf8')
 const PROVIDER_RE = /goldrush|covalent|geckoterminal|coingecko|dexscreener|alchemy/i
 
 const tokenAddr = '0x' + '1'.repeat(40)
@@ -95,7 +96,7 @@ assert.ok(/folder_id uuid null references public\.clark_chat_folders\(id\) on de
 
 // 10. API: every handler scopes reads/writes by the authenticated user_id (RLS-respecting even
 //     though the route uses the service client, exactly like the existing watchlist routes).
-assert.ok(/getUserId/.test(apiSrc) && /eq\('user_id', userId\)/.test(apiSrc), "history route scopes queries by the caller's user_id")
+assert.ok(/authenticate/.test(apiSrc) && /eq\('user_id', userId\)/.test(apiSrc), "history route scopes queries by the caller's user_id")
 assert.ok(/sanitizeMessageMetadata/.test(apiSrc), 'history route sanitizes metadata before persisting it')
 assert.ok(!PROVIDER_RE.test(apiSrc), 'history route source has no provider names')
 
@@ -109,5 +110,47 @@ assert.ok(/chatIdPromise\.then/.test(pageSrc), 'message history is appended asyn
 
 // 12. Search wiring: typing in the panel calls back into the page, which re-queries the API by q.
 assert.ok(/onSearch/.test(panelSrc) && /onSearch=\{.*refreshHistory/.test(pageSrc.replace(/\s+/g, ' ')), 'search input is wired to the history API')
+
+// 13. classifyDbError maps Postgres error signatures to stable history error codes.
+{
+  assert.equal(classifyDbError({ code: '42P01', message: 'relation "public.clark_chats" does not exist' }, 'select_failed'), 'table_missing')
+  assert.equal(classifyDbError({ message: 'relation "x" does not exist' }, 'insert_failed'), 'table_missing')
+  assert.equal(classifyDbError({ code: '42501', message: 'permission denied' }, 'select_failed'), 'rls_blocked')
+  assert.equal(classifyDbError({ message: 'new row violates row-level security policy' }, 'insert_failed'), 'rls_blocked')
+  assert.equal(classifyDbError({ message: 'connection refused' }, 'select_failed'), 'select_failed')
+  assert.equal(classifyDbError({ message: 'connection refused' }, 'insert_failed'), 'insert_failed')
+}
+
+// 14. API route distinguishes auth_missing (no token) from auth_invalid (bad/expired token), and
+//     every error response carries historyErrorCode/historyErrorMessage/historyAction for the
+//     frontend to act on — never a bare generic message.
+{
+  assert.ok(/errorCode === 'auth_missing'/.test(apiSrc) || /auth_missing/.test(apiSrc), 'route distinguishes auth_missing')
+  assert.ok(/auth_invalid/.test(apiSrc), 'route distinguishes auth_invalid')
+  assert.ok(/historyErrorCode/.test(apiSrc) && /historyErrorMessage/.test(apiSrc) && /historyAction/.test(apiSrc), 'route returns historyErrorCode/historyErrorMessage/historyAction')
+  assert.ok(/classifyDbError/.test(apiSrc), 'route classifies DB errors instead of returning generic 500s')
+}
+
+// 15. Frontend history client always sends an Authorization bearer header when a session exists,
+//     and throws a typed ClarkHistoryError (carrying the API's error code) when a call fails —
+//     callers can branch on auth_missing vs table_missing vs rls_blocked instead of guessing.
+{
+  assert.ok(/class ClarkHistoryError extends Error/.test(clientSrc), 'client exposes a typed history error with a code')
+  assert.ok(/Authorization: `Bearer \$\{token\}`/.test(clientSrc), 'client sends the bearer token on every request')
+  assert.ok(/auth_missing/.test(clientSrc), 'client throws auth_missing immediately when there is no session')
+  assert.ok(/historyErrorCode/.test(clientSrc), 'client reads the API historyErrorCode from failed responses')
+}
+
+// 16. Page-level wiring: failures are classified by error code, mapped to a specific non-blocking
+//     status message (sign in / tables not installed / permissions / temporarily unavailable),
+//     and Clark's own reply is never blocked by a history failure.
+{
+  assert.ok(/reportHistoryFailure/.test(pageSrc), 'page centralizes history-failure handling')
+  assert.ok(/HISTORY_STATUS_MESSAGE/.test(pageSrc), 'page maps error codes to specific status copy')
+  assert.ok(/Sign in to save Clark history/.test(pageSrc))
+  assert.ok(/History tables not installed/.test(pageSrc))
+  assert.ok(/History save blocked by permissions/.test(pageSrc))
+  assert.ok(/historyStatusMessage/.test(panelSrc), 'panel renders the specific status message, not just a fixed string')
+}
 
 console.log('clark chat history checks passed')

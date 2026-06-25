@@ -8,11 +8,21 @@ import ClarkHistoryPanel from '@/components/ClarkHistoryPanel'
 import {
   fetchClarkHistory, fetchClarkChatMessages, createClarkChat, createClarkFolder, appendClarkMessage,
   renameClarkChat, renameClarkFolder, moveClarkChatToFolder, deleteClarkChat, deleteClarkFolder,
-  type ClarkChatFolder, type ClarkChatSummary,
+  ClarkHistoryError, type ClarkChatFolder, type ClarkChatSummary, type ClarkHistoryErrorCode,
 } from '@/lib/client/clarkHistoryClient'
 import { generateChatTitle } from '@/lib/server/clarkHistory'
 
 const ACTIVE_CHAT_ID_KEY = 'chainlens:clark:active-chat-id'
+
+const HISTORY_STATUS_MESSAGE: Record<ClarkHistoryErrorCode, string> = {
+  auth_missing: 'Sign in to save Clark history',
+  auth_invalid: 'Sign in to save Clark history',
+  table_missing: 'History tables not installed',
+  rls_blocked: 'History save blocked by permissions',
+  insert_failed: 'History temporarily unavailable',
+  select_failed: 'History temporarily unavailable',
+  network_error: 'History temporarily unavailable',
+}
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 type ClarkAction = { label: string; href?: string; prompt?: string; kind?: 'link' | 'prompt'; requiresInput?: boolean }
@@ -135,14 +145,25 @@ function ClarkAiContent() {
   const [chats, setChats] = useState<ClarkChatSummary[]>([])
   const [activeChatId, setActiveChatId] = useState<string | null>(null)
   const [historySaveFailed, setHistorySaveFailed] = useState(false)
+  const [historyErrorCode, setHistoryErrorCode] = useState<ClarkHistoryErrorCode | null>(null)
   const activeChatIdRef = useRef<string | null>(null)
   activeChatIdRef.current = activeChatId
+
+  function reportHistoryFailure(err: unknown) {
+    const code = err instanceof ClarkHistoryError ? err.code : 'network_error'
+    setHistorySaveFailed(true)
+    setHistoryErrorCode(code)
+  }
+  function reportHistoryOk() {
+    setHistorySaveFailed(false)
+    setHistoryErrorCode(null)
+  }
 
   async function refreshHistory(query?: string) {
     try {
       const { folders: f, chats: c } = await fetchClarkHistory(query)
-      setFolders(f); setChats(c); setHistorySaveFailed(false)
-    } catch { setHistorySaveFailed(true) }
+      setFolders(f); setChats(c); reportHistoryOk()
+    } catch (err) { reportHistoryFailure(err) }
   }
 
   useEffect(() => {
@@ -158,7 +179,7 @@ function ClarkAiContent() {
       setMessages(rows.map((r) => ({ role: r.role === 'assistant' ? 'clark' : 'user', text: r.content })))
       setActiveChatId(chatId)
       if (persistAsActive && typeof window !== 'undefined') sessionStorage.setItem(ACTIVE_CHAT_ID_KEY, chatId)
-    } catch { setHistorySaveFailed(true) }
+    } catch (err) { reportHistoryFailure(err) }
   }
 
   function handleNewChat() {
@@ -177,8 +198,8 @@ function ClarkAiContent() {
       if (typeof window !== 'undefined') sessionStorage.setItem(ACTIVE_CHAT_ID_KEY, chat.id)
       setChats((prev) => [chat, ...prev])
       return chat.id
-    } catch {
-      setHistorySaveFailed(true)
+    } catch (err) {
+      reportHistoryFailure(err)
       return null
     }
   }
@@ -381,8 +402,8 @@ function ClarkAiContent() {
       // Fire-and-forget: persist the exchange without blocking or affecting the Clark UI.
       void chatIdPromise.then((chatId) => {
         if (!chatId) return
-        appendClarkMessage(chatId, 'user', text).catch(() => setHistorySaveFailed(true))
-        appendClarkMessage(chatId, 'assistant', String(reply), payload).catch(() => setHistorySaveFailed(true))
+        appendClarkMessage(chatId, 'user', text).catch(reportHistoryFailure)
+        appendClarkMessage(chatId, 'assistant', String(reply), payload).catch(reportHistoryFailure)
         void refreshHistory()
       })
     } catch {
@@ -782,16 +803,17 @@ function ClarkAiContent() {
               chats={chats}
               activeChatId={activeChatId}
               historySaveFailed={historySaveFailed}
+              historyStatusMessage={historyErrorCode ? HISTORY_STATUS_MESSAGE[historyErrorCode] : null}
               onNewChat={handleNewChat}
               onSelectChat={(id) => { void loadChat(id) }}
               onSearch={(q) => { void refreshHistory(q || undefined) }}
-              onCreateFolder={(name) => { createClarkFolder(name).then(() => refreshHistory()).catch(() => setHistorySaveFailed(true)) }}
-              onRenameChat={(id, title) => { renameClarkChat(id, title).then(() => refreshHistory()).catch(() => setHistorySaveFailed(true)) }}
-              onMoveChat={(id, folderId) => { moveClarkChatToFolder(id, folderId).then(() => refreshHistory()).catch(() => setHistorySaveFailed(true)) }}
+              onCreateFolder={(name) => { createClarkFolder(name).then(() => refreshHistory()).catch(reportHistoryFailure) }}
+              onRenameChat={(id, title) => { renameClarkChat(id, title).then(() => refreshHistory()).catch(reportHistoryFailure) }}
+              onMoveChat={(id, folderId) => { moveClarkChatToFolder(id, folderId).then(() => refreshHistory()).catch(reportHistoryFailure) }}
               onDeleteChat={(id) => {
-                deleteClarkChat(id).then(() => { if (id === activeChatId) handleNewChat(); return refreshHistory() }).catch(() => setHistorySaveFailed(true))
+                deleteClarkChat(id).then(() => { if (id === activeChatId) handleNewChat(); return refreshHistory() }).catch(reportHistoryFailure)
               }}
-              onDeleteFolder={(id) => { deleteClarkFolder(id).then(() => refreshHistory()).catch(() => setHistorySaveFailed(true)) }}
+              onDeleteFolder={(id) => { deleteClarkFolder(id).then(() => refreshHistory()).catch(reportHistoryFailure) }}
             />
           </section>
 

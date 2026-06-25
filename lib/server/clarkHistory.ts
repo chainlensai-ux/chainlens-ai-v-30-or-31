@@ -45,6 +45,30 @@ export function buildMessagePreview(text: string, maxLen = 140): string {
   return `${trimmed.slice(0, maxLen)}…`;
 }
 
+export type ClarkHistoryErrorCode =
+  | "auth_missing"
+  | "auth_invalid"
+  | "table_missing"
+  | "rls_blocked"
+  | "insert_failed"
+  | "select_failed";
+
+/**
+ * Classifies a Postgres/Supabase error into a stable error code so the frontend can show a
+ * specific, non-generic message instead of a blanket failure. Falls back to the caller-supplied
+ * default when the error doesn't match a known missing-table or permission signature.
+ */
+export function classifyDbError(
+  error: { code?: string | null; message?: string | null } | null | undefined,
+  fallback: "insert_failed" | "select_failed",
+): ClarkHistoryErrorCode {
+  const code = error?.code ?? "";
+  const message = error?.message ?? "";
+  if (code === "42P01" || /relation .* does not exist/i.test(message)) return "table_missing";
+  if (code === "42501" || /row-level security|permission denied/i.test(message)) return "rls_blocked";
+  return fallback;
+}
+
 export type ClarkSafeMessageMetadata = {
   intent?: string | null;
   chain?: string | null;
