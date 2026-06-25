@@ -190,6 +190,22 @@ type WalletResult = {
   publicPnlStatus?: 'ok' | 'limited_verified_sample' | 'locked_small_sample' | 'open_check' | 'near_flat_verified_sample' | 'flat_estimate_only' | 'partial_near_flat' | 'open_check_integrity_invalid'
   publicPnlDisplayLabel?: string
   publicPnlDisplayReason?: string
+  walletPnlBlockerSummary?: {
+    status: 'ready' | 'locked_recoverable' | 'locked_integrity' | 'locked_insufficient_evidence'
+    headline: string
+    reasons: string[]
+    recoverable: boolean
+    recoveryMode: 'deep_history' | 'price_evidence' | 'none'
+    affectedTokens: string[]
+    syntheticCostBasisLots: number
+    excludedLots: number
+    publicPerformanceLots: number
+    verifiedBehaviorLots: number
+    coveragePercent: number | null
+    coveragePercentValueWeighted: number | null
+    integrityErrors: string[]
+    nextAction: string
+  }
   pnlIntegrityCheck?: {
     ok: boolean
     status: 'ok' | 'warning' | 'invalid'
@@ -2481,11 +2497,42 @@ export default function WalletScannerPage() {
                           PnL is calculated from matched buy/sell lots. When buys are missing, ChainLens shows sell proceeds or open position value but does not fake profit.
                         </p>
                         {tradeEvidenceStrong && (result.publicPnlStatus ?? ts!.publicPnlStatus) === 'open_check_integrity_invalid' ? (() => {
-                          const integrityErrors = result.pnlIntegrityCheck?.errors ?? []
+                          const blocker = result.walletPnlBlockerSummary
+                          const integrityErrors = blocker?.integrityErrors ?? result.pnlIntegrityCheck?.errors ?? []
                           const reasonLabel = (e: string) => e === 'sells_exceed_buys' ? 'Sells exceed buys'
                             : e === 'pnl_portfolio_delta_mismatch' ? 'Portfolio delta mismatch'
                             : e === 'coverage_percent_below_threshold' ? 'Low coverage'
                             : e
+                          if (blocker) {
+                            return <div>
+                              <div className="wpv3-value" style={{ fontSize: '18px', color: '#7dd3fc' }}>Trade behavior ready</div>
+                              <p className="wpv3-support" style={{ marginTop: '6px' }}>{blocker.verifiedBehaviorLots} verified behavior lots detected.</p>
+                              <div className="wpv3-value" style={{ fontSize: '22px', color: '#F08A8A', marginTop: '14px' }}>Public PnL locked</div>
+                              {blocker.recoverable && (
+                                <p className="wpv3-support" style={{ marginTop: '4px', color: '#7dd3fc' }}>Recovery available</p>
+                              )}
+                              {blocker.reasons.length > 0 && (
+                                <div style={{ marginTop: '8px' }}>
+                                  <p className="wpv3-support" style={{ color: '#9aa4b2' }}>Why locked</p>
+                                  <ul style={{ marginTop: '4px', paddingLeft: '18px', color: '#9aa4b2' }}>
+                                    {blocker.reasons.slice(0, 5).map(r => <li key={r}>{r}</li>)}
+                                  </ul>
+                                </div>
+                              )}
+                              {integrityErrors.length > 0 && (
+                                <ul style={{ marginTop: '8px', paddingLeft: '18px', color: '#9aa4b2' }}>
+                                  {integrityErrors.slice(0, 3).map(e => <li key={e}>{reasonLabel(e)}</li>)}
+                                </ul>
+                              )}
+                              <p className="wpv3-support" style={{ marginTop: '8px', color: '#fbbf24' }}>Win rate and profit-skill scoring are locked.</p>
+                              {blocker.nextAction && (
+                                <div style={{ marginTop: '8px' }}>
+                                  <p className="wpv3-support" style={{ color: '#9aa4b2' }}>What ChainLens needs next</p>
+                                  <p className="wpv3-support" style={{ marginTop: '2px', color: '#7dd3fc' }}>{blocker.nextAction}</p>
+                                </div>
+                              )}
+                            </div>
+                          }
                           return <div>
                             <div className="wpv3-value" style={{ fontSize: '22px', color: '#F08A8A' }}>PnL integrity check failed</div>
                             <p className="wpv3-support" style={{ marginTop: '6px' }}>Trades were reconstructed, but profit stats are not public-grade yet.</p>

@@ -416,6 +416,25 @@ export type WalletSnapshot = {
     lockedReasons: string[]
     excludedFrom: string[]
   }
+  // WALLET-PNL-BLOCKER-SUMMARY-1: a single public-facing object that translates the raw
+  // integrity-gate/read-hierarchy signals above into "what is verified, what is locked, why,
+  // and what (if anything) the user can do about it" — never changes the underlying gates.
+  walletPnlBlockerSummary?: {
+    status: 'ready' | 'locked_recoverable' | 'locked_integrity' | 'locked_insufficient_evidence'
+    headline: string
+    reasons: string[]
+    recoverable: boolean
+    recoveryMode: 'deep_history' | 'price_evidence' | 'none'
+    affectedTokens: string[]
+    syntheticCostBasisLots: number
+    excludedLots: number
+    publicPerformanceLots: number
+    verifiedBehaviorLots: number
+    coveragePercent: number | null
+    coveragePercentValueWeighted: number | null
+    integrityErrors: string[]
+    nextAction: string
+  }
   publicPnlStatus?: 'ok' | 'limited_verified_sample' | 'locked_small_sample' | 'open_check' | 'flat_estimate_only' | 'near_flat_verified_sample' | 'partial_near_flat' | 'open_check_integrity_invalid'
   publicPnlStatusReason?: string
   publicPnlDisplayLabel?: 'Limited verified sample' | 'Near-flat verified sample' | 'Open check' | 'Open check — flat/estimate-only lots excluded' | 'Open check — no public-grade performance lots' | 'Verified FIFO sample' | 'Verified FIFO sample — partial coverage' | 'PnL integrity check failed' | 'Profit skill locked — sample too small'
@@ -17116,6 +17135,100 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         : _p6SoftPartialOnly
           ? 'Public PnL and win rate remain locked; behavior-only reads may still be shown.'
           : 'Integrity check passed — no gate applied.',
+    }
+
+    // WALLET-PNL-BLOCKER-SUMMARY-1: built from the same already-computed integrity-gate signals
+    // above (_p6HardInvalid/_p6SoftPartialOnly/_p6IntegrityErrors/_p6SyntheticLotCount/etc) — no
+    // new provider calls, no recomputation, never unlocks PnL/win-rate/profit-skill.
+    try {
+      const NON_RECOVERABLE_HARD_ERRORS = new Set([
+        'sells_exceed_buys',
+        'negative_remaining_balance',
+        'impossible_negative_cost_basis',
+        'invalid_fifo_accounting',
+      ])
+      const _blockerOfficialAvailable = ((snapshot as any).publicPnlStatus ?? null) === 'ok'
+      const _blockerLockedByGate = _p6GateApplies && (_p6HardInvalid || _p6SoftPartialOnly)
+      const _blockerHasNonRecoverableError = _p6IntegrityErrors.some(e => NON_RECOVERABLE_HARD_ERRORS.has(e))
+      const _blockerHistoricalCapHit = Boolean(_historicalBudgetCapHit) || Boolean(_walletHistoricalSourceBudget?.hardCapHit)
+      const _blockerRecoverable = _blockerLockedByGate && !_blockerHasNonRecoverableError && (_p6SyntheticLotCount > 0 || _blockerHistoricalCapHit)
+      const _blockerAffectedTokens = Array.from(new Set(
+        _p6ClosedLots
+          .filter(l => l.evidence.entrySource === 'synthetic' || l.evidence.entrySource === 'current_holding_price_open_lot_estimate' || l.evidence.exitSource === 'current_holding_price_open_lot_estimate')
+          .map(l => l.tokenSymbol)
+          .filter((s): s is string => Boolean(s)),
+      )).slice(0, 10)
+
+      const _blockerStatus: NonNullable<WalletSnapshot['walletPnlBlockerSummary']>['status'] = _blockerOfficialAvailable
+        ? 'ready'
+        : _blockerLockedByGate
+          ? (_blockerRecoverable ? 'locked_recoverable' : 'locked_integrity')
+          : 'locked_insufficient_evidence'
+
+      const _blockerRecoveryMode: NonNullable<WalletSnapshot['walletPnlBlockerSummary']>['recoveryMode'] = !_blockerRecoverable
+        ? 'none'
+        : (_p6SyntheticLotCount > 0 || _blockerHistoricalCapHit)
+          ? 'deep_history'
+          : 'price_evidence'
+
+      const _blockerReasons: string[] = []
+      if (_blockerStatus !== 'ready') {
+        if (_p6SyntheticLotCount > 0) _blockerReasons.push(`${_p6SyntheticLotCount} closed lots are missing real prior-buy cost basis`)
+        if (_p6IntegrityErrors.includes('coverage_percent_below_threshold')) _blockerReasons.push('coverage is below public PnL threshold')
+        if (_p6IntegrityErrors.includes('pnl_portfolio_delta_mismatch')) _blockerReasons.push('portfolio delta integrity check failed')
+        if (_blockerHistoricalCapHit) _blockerReasons.push('historical recovery hit event cap')
+        for (const err of _p6IntegrityErrors) {
+          if (err === 'coverage_percent_below_threshold' || err === 'pnl_portfolio_delta_mismatch') continue
+          _blockerReasons.push(`integrity check failed: ${err}`)
+        }
+        if (_blockerReasons.length === 0) _blockerReasons.push('verified public-grade sample is too small to show public PnL')
+      }
+
+      const _blockerHeadline = _blockerStatus === 'ready'
+        ? 'Public PnL is verified and ready.'
+        : _blockerStatus === 'locked_recoverable'
+          ? `Trade intelligence is ready: ${_verifiedIndependentClosedLotsFinal} verified behavior lots detected. Public PnL is locked because ${_blockerReasons.join('; ')}.`
+          : _blockerStatus === 'locked_integrity'
+            ? `Public PnL is locked because the PnL integrity check failed (${_p6IntegrityErrors.join(', ')}).`
+            : 'Public PnL is locked because there is not yet enough verified evidence to show it.'
+
+      const _blockerNextAction = _blockerStatus === 'ready'
+        ? 'No action needed.'
+        : _blockerRecoveryMode === 'deep_history'
+          ? 'Run deeper historical recovery for prior buys before showing public PnL.'
+          : _blockerRecoveryMode === 'price_evidence'
+            ? 'Recover additional price evidence before showing public PnL.'
+            : 'No action available — this PnL read is not recoverable.'
+
+      snapshot.walletPnlBlockerSummary = {
+        status: _blockerStatus,
+        headline: _blockerHeadline,
+        reasons: _blockerReasons,
+        recoverable: _blockerRecoverable,
+        recoveryMode: _blockerRecoveryMode,
+        affectedTokens: _blockerAffectedTokens,
+        syntheticCostBasisLots: _p6SyntheticLotCount,
+        excludedLots: _excludedClosedLotsFinal,
+        publicPerformanceLots: _performanceClosedLotsFinal.length,
+        verifiedBehaviorLots: _verifiedIndependentClosedLotsFinal,
+        coveragePercent: _p6CoveragePercent,
+        coveragePercentValueWeighted: coveragePercentValueWeighted ?? _p6CoveragePercent,
+        integrityErrors: _p6IntegrityErrors,
+        nextAction: _blockerNextAction,
+      }
+
+      if (snapshot._diagnostics) {
+        ;(snapshot._diagnostics as any).pnlBlockerSummarySource = 'wallet_pnl_blocker_summary_1'
+        ;(snapshot._diagnostics as any).pnlRecoverableReason = _blockerRecoverable
+          ? (_blockerRecoveryMode === 'deep_history' ? 'synthetic_cost_basis_or_historical_cap_recoverable_via_deep_history' : 'price_evidence_recoverable')
+          : (_blockerStatus === 'ready' ? 'not_applicable_pnl_ready' : 'no_recovery_path_available')
+        ;(snapshot._diagnostics as any).syntheticCostBasisLotsBlocking = _p6SyntheticLotCount
+        ;(snapshot._diagnostics as any).historicalRecoveryCapHit = _blockerHistoricalCapHit
+        ;(snapshot._diagnostics as any).historicalRecoveryCapReason = _blockerHistoricalCapHit ? (_historicalBudgetCapReason ?? 'historical_source_budget_hard_cap_hit') : null
+        ;(snapshot._diagnostics as any).pnlOpenCheckReducedToSpecificStatus = (_blockerOfficialAvailable ? null : _blockerStatus)
+      }
+    } catch {
+      // WALLET-PNL-BLOCKER-SUMMARY-1: best-effort additive summary — never block the snapshot.
     }
 
     // WALLET-PNL-READ-1: build a single read hierarchy from already-computed signals only — no
