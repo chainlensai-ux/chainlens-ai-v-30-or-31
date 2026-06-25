@@ -297,4 +297,32 @@ assert.ok(
   assert.ok(!/mock|placeholder/i.test(pumpMapBody), 'no fabricated row fallback in the cache wiring')
 }
 
+// 21. Unify: the "general_market"/market_get_base_movers branch (the planner path the
+//     classifyClarkPrompt/isBaseMomentumPrompt phrase-regexes miss, e.g. "what base tokens are
+//     moving excluding cbBTC WETH USDC") must fall through to the SAME canonical, cached
+//     handleBasePumpMap() pipeline instead of reporting no_rows while the cache has good data.
+{
+  const generalMarketBlock = routeSrc.slice(
+    routeSrc.indexOf('if (plan.intent === "market" || plan.intent === "strategy" || replyMode === "general_market")'),
+    routeSrc.indexOf('if (plan.intent === "market" || plan.intent === "strategy" || replyMode === "general_market")') + 16000,
+  )
+  assert.ok(/if \(!hadAnyRows\)/.test(generalMarketBlock), 'general_market branch checks for the no-rows case before giving up')
+  assert.ok(/await handleBasePumpMap\(prompt, origin\)/.test(generalMarketBlock), 'general_market branch falls through to the canonical cached handleBasePumpMap pipeline')
+  for (const field of [
+    'marketCacheMode: basePumpResult.marketCacheMode', 'marketCacheAgeMs: basePumpResult.marketCacheAgeMs',
+    'marketCacheRows: basePumpResult.marketCacheRows', 'marketLiveRowsRaw: basePumpResult.marketLiveRowsRaw',
+    'marketLiveRowsNormalized: basePumpResult.marketLiveRowsNormalized', 'marketLiveFailureReason: basePumpResult.marketLiveFailureReason',
+    'marketUsedLastGoodCache: basePumpResult.marketUsedLastGoodCache',
+  ]) {
+    assert.ok(generalMarketBlock.includes(field), `general_market branch surfaces cache debug field: ${field}`)
+  }
+  assert.ok(!/Open Base Radar/.test(generalMarketBlock), 'general_market cache-fallback branch never offers Open Base Radar')
+}
+
+// 22. No second market path can return no_rows while the cache (or a fresh getMergedTrendingTokens
+//     call) has rows — "all_rows_filtered"/"source_error" are the only remaining bare-fallback
+//     reasons left in the general_market block, and both require rows to have genuinely existed
+//     or the universe call to have actually errored, never a silent cache-bypassing no_rows.
+assert.ok(!/clarkMarketFallbackReason:\s*"no_rows"/.test(routeSrc), 'no_rows is never hardcoded as a literal fallback reason — it only ever comes from handleBasePumpMap\'s own debug fields')
+
 console.log('clark base market routing checks passed')

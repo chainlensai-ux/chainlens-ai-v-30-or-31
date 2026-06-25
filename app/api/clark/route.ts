@@ -10123,12 +10123,77 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     //  - the universe lookup errored               -> source_error
     //  - no rows reached us from the market source  -> no_rows
     const hadAnyRows = universe.candidates.length > 0 || (evidence.market?.ok ? evidence.market.candidates.length : 0) > 0;
+    if (!hadAnyRows) {
+      // The base_market_universe source came back empty/errored — before reporting no data,
+      // fall through to the SAME canonical, last-good-cached pipeline handleBasePumpMap uses
+      // (getMergedTrendingTokens() + the 15-minute base_market_last_good cache). Without this,
+      // "general_market" prompts (e.g. "...excluding cbBTC WETH USDC") could report no_rows
+      // even while the cache had a perfectly good recent snapshot.
+      const basePumpResult = await handleBasePumpMap(prompt, origin);
+      const basePumpItems = Array.isArray(basePumpResult.items) ? basePumpResult.items : [];
+      const basePumpHasRows = basePumpItems.length > 0;
+      if (basePumpHasRows) {
+        updateMemMomentum(sessionMem, basePumpItems.map((it) => ({
+          rank: it.rank, symbol: it.symbol ?? "?", name: it.name ?? null,
+          address: it.scanTarget ?? it.tokenAddress ?? null,
+          liquidity: it.liquidity ?? null, volume24h: it.volume24h ?? null, change24h: it.change24h ?? null, tag: it.tag ?? null,
+        })));
+        sessionMem.lastMomentumShownCount = basePumpItems.length;
+        sessionMem.allowedRankScanUntil = Date.now() + 60_000;
+        sessionMem.allowedRankScanUsed = false;
+        updateMemIntent(sessionMem, "market");
+      }
+      const firstScanItem = basePumpItems.find((it) => it.scanTarget);
+      const { actions: basePumpContextActions, omittedReasons: basePumpActionsOmitted } = buildClarkContextActions(
+        { marketContext: { items: basePumpItems }, promptActionsEnabled: true },
+        "market",
+        { scanTarget: firstScanItem?.scanTarget ?? null, symbol: firstScanItem?.symbol ?? null, chain: "base" },
+      );
+      return {
+        feature: "clark-ai", chain, mode: "general_market", intent: plan.intent,
+        toolsUsed: [...new Set([...toolsUsed, "market_get_base_movers"])],
+        analysis: basePumpResult.analysis,
+        marketContext: { items: basePumpResult.items },
+        ui: { intentBadge: "market", actions: basePumpContextActions },
+        marketRowsWithTokenAddress: basePumpResult.marketRowsWithTokenAddress,
+        marketRowsWithPoolAddress: basePumpResult.marketRowsWithPoolAddress,
+        marketRowsWithScanTarget: basePumpResult.marketRowsWithScanTarget,
+        marketScanTargetCoverage: basePumpResult.marketScanTargetCoverage,
+        marketScanTargetMissingReasons: basePumpResult.marketScanTargetMissingReasons,
+        clarkScanSelectionResolved: basePumpHasRows && Boolean(firstScanItem),
+        clarkScanSelectionReason: basePumpHasRows ? (firstScanItem ? "scan_target_available" : "no_scan_target_in_rows") : "no_rows",
+        marketRowsSource: basePumpResult.marketRowsSource,
+        marketRowsBeforeFilter: basePumpResult.marketRowsBeforeFilter,
+        marketRowsAfterFilter: basePumpResult.marketRowsAfterFilter,
+        marketRowsDroppedByReason: basePumpResult.marketRowsDroppedByReason,
+        marketDataCacheHit: basePumpResult.marketDataCacheHit,
+        marketProviderAttempted: basePumpResult.marketProviderAttempted,
+        marketProviderStatus: basePumpResult.marketProviderStatus,
+        marketFallbackReason: basePumpResult.marketFallbackReason,
+        trendingFetchUrlKind: basePumpResult.trendingFetchUrlKind,
+        trendingHttpStatus: basePumpResult.trendingHttpStatus,
+        trendingResponseShape: basePumpResult.trendingResponseShape,
+        trendingRowsRaw: basePumpResult.trendingRowsRaw,
+        trendingRowsNormalized: basePumpResult.trendingRowsNormalized,
+        pumpAlertsOptionalFailed: basePumpResult.pumpAlertsOptionalFailed,
+        marketEndpointFailureReason: basePumpResult.marketEndpointFailureReason,
+        marketCacheMode: basePumpResult.marketCacheMode,
+        marketCacheAgeMs: basePumpResult.marketCacheAgeMs,
+        marketCacheRows: basePumpResult.marketCacheRows,
+        marketLiveRowsRaw: basePumpResult.marketLiveRowsRaw,
+        marketLiveRowsNormalized: basePumpResult.marketLiveRowsNormalized,
+        marketLiveFailureReason: basePumpResult.marketLiveFailureReason,
+        marketUsedLastGoodCache: basePumpResult.marketUsedLastGoodCache,
+        clarkMarketFallbackReason: basePumpHasRows ? null : basePumpResult.marketFallbackReason,
+        clarkMarketSource: basePumpResult.clarkMarketSource,
+        explicitExcludedSymbols,
+        routedWithoutBaseRadar: true,
+      };
+    }
     const clarkMarketFallbackReason = marketUniverseError
       ? "source_error"
-      : (hadAnyRows ? "all_rows_filtered" : "no_rows");
-    const fallbackAnalysis = clarkMarketFallbackReason === "all_rows_filtered"
-      ? formatNoPumpCandidates()
-      : formatNoFreshMarketData();
+      : "all_rows_filtered";
+    const fallbackAnalysis = formatNoPumpCandidates();
     return {
       feature: "clark-ai", chain, mode: "general_market", analysis: fallbackAnalysis, intent: plan.intent, toolsUsed,
       ui: marketCtaUi,
