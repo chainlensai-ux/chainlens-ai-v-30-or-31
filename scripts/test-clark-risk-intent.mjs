@@ -9,6 +9,8 @@ import {
   formatDevHistoryRead,
   deriveDevHistoryFromTokenEvidence,
   classifyAppContextFollowup,
+  tokenRiskSections,
+  tokenEvidenceCoverage,
 } from '../lib/server/clarkRouting.ts'
 
 const routeSrc = fs.readFileSync(new URL('../app/api/clark/route.ts', import.meta.url), 'utf8')
@@ -267,6 +269,97 @@ const walletAddr = '0x' + '2'.repeat(40)
   assert.ok(routeSrc.includes('Explain LP Risk'))
   assert.ok(routeSrc.includes('Check Token Risk'))
   assert.ok(routeSrc.includes('Explain Dev Control'))
+}
+
+// 11. Honeypot/security: if tax data exists but honeypot is unavailable, show tax data plus a
+//     specific simulation-unavailable reason, not a vague generic Open Check.
+{
+  const ev = { token: { symbol: 'X' }, security: { honeypot: null, buyTax: 2, sellTax: 3, missingReason: 'security_simulation_timed_out' }, ok: true }
+  const sections = tokenRiskSections(ev)
+  const sec = sections.find((s) => s.title === 'Security / Honeypot')
+  assert.ok(sec.status.includes('buy tax'), 'tax data must be shown even when honeypot is unavailable')
+  assert.ok(sec.status.includes('timed out'), 'specific unavailable reason must be surfaced')
+  assert.ok(sec.openCheck, 'still an open check since honeypot itself is unconfirmed')
+}
+
+// 12. Honeypot/security: if honeypot/security fields exist, Clark does not show a generic
+//     security Open Check.
+{
+  const ev = { token: { symbol: 'X' }, security: { honeypot: false, buyTax: 1, sellTax: 1 }, ok: true }
+  const sec = tokenRiskSections(ev).find((s) => s.title === 'Security / Honeypot')
+  assert.ok(!sec.openCheck)
+  assert.ok(!sec.status.startsWith('Open Check'))
+}
+
+// 13. Concentrated LP with verified pool depth does not make the whole LP section Open Check —
+//     only the controller/proof half is Open Check.
+{
+  const ev = { token: { symbol: 'X' }, market: { liquidity: 50000 }, lpControl: { status: 'open_check', poolType: 'uniswap v3', proofApplicability: 'not_applicable' }, ok: true }
+  const lpSec = tokenRiskSections(ev).find((s) => s.title === 'Liquidity / LP')
+  assert.ok(lpSec.status.includes('Liquidity depth: Verified'), 'depth must read verified when pool liquidity is confirmed')
+  assert.ok(lpSec.status.includes('LP/control proof'), 'controller proof must be reported as its own sub-status')
+}
+
+// 14. Concentrated LP missing both depth and controller proof remains a genuine Open Check.
+{
+  const ev = { token: { symbol: 'X' }, lpControl: { status: 'open_check', poolType: 'uniswap v3', proofApplicability: 'not_applicable' }, ok: true }
+  const lpSec = tokenRiskSections(ev).find((s) => s.title === 'Liquidity / LP')
+  assert.ok(lpSec.openCheck)
+}
+
+// 15. Linked-wallet existence alone never becomes "Risk signals found" — only confirmed risky
+//     cluster behavior (elevated/high/critical cluster risk or meaningful cluster supply share) does.
+{
+  const ev = { token: { symbol: 'X' }, ok: true, deployerAddress: '0x' + '9'.repeat(40), linkedWallets: [{ address: '0x' + '8'.repeat(40) }] }
+  const derived = deriveDevHistoryFromTokenEvidence(ev)
+  assert.notEqual(derived.status, 'risk_signals', 'a single linked wallet with no risky behavior must not be reported as a risk signal')
+  assert.ok(derived.linkedWalletClusterSignals.some((s) => s.includes('linked wallet')), 'linked-wallet context should still be displayed')
+}
+
+// 16. Deployer found means dev identity is confirmed, not Open Check.
+{
+  const ev = { token: { symbol: 'X' }, ok: true, deployerAddress: '0x' + '9'.repeat(40) }
+  const derived = deriveDevHistoryFromTokenEvidence(ev)
+  assert.equal(derived.deployer, '0x' + '9'.repeat(40))
+  assert.notEqual(derived.evidenceLevel, 'none')
+}
+
+// 17. Previous tokens / funding patterns genuinely unavailable (no dev-wallet evidence fetched)
+//     read as a clear "not checked" reason, not a vague Open Check with no explanation.
+{
+  const ev = { token: { symbol: 'X' }, ok: true, deployerAddress: '0x' + '9'.repeat(40) }
+  const derived = deriveDevHistoryFromTokenEvidence(ev, null)
+  const out = formatDevHistoryRead({ status: derived.status, previousLaunchedTokens: derived.previousLaunchedTokens, walletEvidenceChecked: derived.walletEvidenceChecked })
+  assert.ok(out.includes('previous launched tokens: Open Check — not checked'))
+}
+
+// 18. Previous tokens checked (dev-wallet evidence fetched) but empty reads as "none found", not Open Check.
+{
+  const ev = { token: { symbol: 'X' }, ok: true, deployerAddress: '0x' + '9'.repeat(40) }
+  const derived = deriveDevHistoryFromTokenEvidence(ev, { previousProjects: [] })
+  assert.equal(derived.walletEvidenceChecked, true)
+  const out = formatDevHistoryRead({ status: derived.status, previousLaunchedTokens: derived.previousLaunchedTokens, walletEvidenceChecked: derived.walletEvidenceChecked })
+  assert.ok(out.includes('previous launched tokens: None found in available dev-wallet evidence'))
+  assert.ok(!out.includes('previous launched tokens: Open Check'))
+}
+
+// 19. Token-local ownership risk never becomes dev-history rug evidence (no cross-token/wallet
+//     data was ever consulted).
+{
+  const ev = { token: { symbol: 'X' }, security: { ownerRenounced: false, mintable: true }, ok: true }
+  const derived = deriveDevHistoryFromTokenEvidence(ev)
+  assert.notEqual(derived.status, 'confirmed_rug')
+  assert.notEqual(derived.status, 'risk_signals')
+}
+
+// 20. evidenceCoverage map never fakes a verified status when the underlying field is missing.
+{
+  const cov = tokenEvidenceCoverage(null)
+  assert.ok(Object.values(cov).every((v) => v === 'open_check'))
+  const covVerified = tokenEvidenceCoverage({ token: { symbol: 'X' }, market: { liquidity: 1 }, security: { honeypot: false }, ok: true })
+  assert.equal(covVerified.lpDepth, 'verified')
+  assert.equal(covVerified.security, 'verified')
+  assert.equal(covVerified.deployerIdentity, 'open_check')
 }
 
 console.log('clark risk-intent (token safety / dev rug history) checks passed')

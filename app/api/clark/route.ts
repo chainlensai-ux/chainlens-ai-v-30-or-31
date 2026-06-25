@@ -74,6 +74,8 @@ import {
   formatTokenApeRiskRead,
   formatDevHistoryRead,
   deriveDevHistoryFromTokenEvidence,
+  tokenEvidenceCoverage,
+  tokenRiskSections,
   type ClarkUiAction,
 } from "@/lib/server/clarkRouting";
 
@@ -8580,6 +8582,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         simulationStatus: _hp?.simulationStatus ?? (honeypotAborted ? "timeout" : (!hasHoneypot && honeypotFailed ? "unavailable" : null)),
         riskLevel: _hp?.riskLevel ?? "unknown",
         missing: missingEvidence,
+        missingReason: sectionsMissing.find(s => s.section === "security_sim")?.reason ?? null,
       },
       lpControl: (t.lpControl && typeof t.lpControl === "object") ? {
         status: String((t.lpControl as Record<string, unknown>).status ?? "unverified"),
@@ -9048,6 +9051,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
           evidenceGaps: ["previous token history unavailable", "linked wallet evidence unavailable", "wallet activity unavailable"],
           sourcesUsed: [],
           apiPathsUsed: [],
+          walletEvidenceChecked: false,
         },
         walletAddress: input.address,
       };
@@ -9061,6 +9065,17 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     }
     const evidence = deriveDevHistoryFromTokenEvidence(tokenEvidence, walletEvidence);
     return { evidence, tokenEvidence, walletEvidence, tokenAddress: input.address, walletAddress: evidence.deployer ?? null };
+  }
+
+  function openCheckSummary(ev: TokenScanEvidence | null | undefined) {
+    if (!ev) return { clarkOpenCheckCount: 0, clarkOpenCheckReasons: [] as string[], clarkEvidenceCoverage: tokenEvidenceCoverage(null) };
+    const sections = tokenRiskSections(ev);
+    const openSections = sections.filter((s) => s.openCheck);
+    return {
+      clarkOpenCheckCount: openSections.length,
+      clarkOpenCheckReasons: openSections.map((s) => `${s.title}: ${s.status}`),
+      clarkEvidenceCoverage: tokenEvidenceCoverage(ev),
+    };
   }
 
   if (routed.intent === "token_ape_risk") {
@@ -9115,6 +9130,8 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       clarkRiskConfidence: apeMeta.confidence,
       clarkActiveTokenContextSource: routed.address ? "explicit_address" : (r.fromMemory ? "token_risk_read" : "token_scan"),
       clarkPromptActionBoundAddress: r.address,
+      ...openCheckSummary(r.ev),
+      clarkOpenChecksReducedFromTokenEvidence: usableApeEvidence,
     };
   }
 
@@ -9168,7 +9185,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         feature: "clark-ai", chain, mode: "analysis",
         intent: "dev_rug_history",
         toolsUsed: evidence.sourcesUsed,
-        analysis: formatDevHistoryRead({ status: evidence.status, inputType: evidence.inputType, chain: evidence.chain, address: evidence.address, deployer: evidence.deployer, owner: evidence.owner, linkedWallets: evidence.linkedWallets, confidence: evidence.confidence, tokenLocalRiskSignals: evidence.tokenLocalRiskSignals, previousLaunchedTokens: evidence.previousLaunchedTokens, repeatedRiskyPatterns: evidence.repeatedRiskyPatterns, linkedWalletClusterSignals: evidence.linkedWalletClusterSignals, suspiciousFundingPatterns: evidence.suspiciousFundingPatterns, priorConfirmedRugEvidence: evidence.priorConfirmedRugEvidence, gaps: evidence.evidenceGaps }),
+        analysis: formatDevHistoryRead({ status: evidence.status, inputType: evidence.inputType, chain: evidence.chain, address: evidence.address, deployer: evidence.deployer, owner: evidence.owner, linkedWallets: evidence.linkedWallets, confidence: evidence.confidence, tokenLocalRiskSignals: evidence.tokenLocalRiskSignals, previousLaunchedTokens: evidence.previousLaunchedTokens, repeatedRiskyPatterns: evidence.repeatedRiskyPatterns, linkedWalletClusterSignals: evidence.linkedWalletClusterSignals, suspiciousFundingPatterns: evidence.suspiciousFundingPatterns, priorConfirmedRugEvidence: evidence.priorConfirmedRugEvidence, gaps: evidence.evidenceGaps, walletEvidenceChecked: evidence.walletEvidenceChecked }),
         intentBadge: "dev_rug_history",
         actions: buildDevHistoryActions(null, chainDisplayLabel(chain)),
         quotaConsumed: false,
@@ -9206,7 +9223,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const derived = collected.evidence;
     const toolsUsed: string[] = derived.sourcesUsed;
     const devTokenChainLabel = collected.tokenEvidence ? chainDisplayLabel(tokenEvidenceChain(collected.tokenEvidence, chain)) : chainDisplayLabel(chain);
-    const analysis = formatDevHistoryRead({ status: derived.status, inputType: derived.inputType, chain: derived.chain ?? devTokenChainLabel, address: derived.address ?? tokenAddress, deployer: derived.deployer, owner: derived.owner, linkedWallets: derived.linkedWallets, confidence: derived.confidence, tokenLocalRiskSignals: derived.tokenLocalRiskSignals, previousLaunchedTokens: derived.previousLaunchedTokens, repeatedRiskyPatterns: derived.repeatedRiskyPatterns, linkedWalletClusterSignals: derived.linkedWalletClusterSignals, suspiciousFundingPatterns: derived.suspiciousFundingPatterns, priorConfirmedRugEvidence: derived.priorConfirmedRugEvidence, gaps: derived.evidenceGaps });
+    const analysis = formatDevHistoryRead({ status: derived.status, inputType: derived.inputType, chain: derived.chain ?? devTokenChainLabel, address: derived.address ?? tokenAddress, deployer: derived.deployer, owner: derived.owner, linkedWallets: derived.linkedWallets, confidence: derived.confidence, tokenLocalRiskSignals: derived.tokenLocalRiskSignals, previousLaunchedTokens: derived.previousLaunchedTokens, repeatedRiskyPatterns: derived.repeatedRiskyPatterns, linkedWalletClusterSignals: derived.linkedWalletClusterSignals, suspiciousFundingPatterns: derived.suspiciousFundingPatterns, priorConfirmedRugEvidence: derived.priorConfirmedRugEvidence, gaps: derived.evidenceGaps, walletEvidenceChecked: derived.walletEvidenceChecked });
     updateMemIntent(sessionMem, "dev_rug_history");
     // This dev-history read becomes the latest active token context too, same reasoning as the
     // token_ape_risk branch — a follow-up must bind to THIS token, not an older one.
@@ -9228,6 +9245,8 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       clarkActiveTokenContextSource: routed.address ? "explicit_address" : "token_scan",
       clarkPromptActionBoundAddress: tokenAddress,
       clarkFollowupTokenContextResolvedFrom: "token_scan",
+      ...(collected.tokenEvidence ? openCheckSummary(collected.tokenEvidence) : { clarkOpenCheckCount: 0, clarkOpenCheckReasons: [], clarkEvidenceCoverage: tokenEvidenceCoverage(null) }),
+      clarkOpenChecksReducedFromTokenEvidence: Boolean(derived.walletEvidenceChecked),
     };
   }
 
