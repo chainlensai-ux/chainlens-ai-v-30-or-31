@@ -520,6 +520,10 @@ interface ClarkRequestBody {
   marketContext?: unknown;
   recentMovers?: unknown;
   moversContext?: unknown;
+  // Set internally on the recursive handleClarkAI call below for market-mover follow-up
+  // scans ("scan 1", "scan velvet") so the token contract address can never be
+  // reclassified as a plain EOA and routed into wallet_scan.
+  forcedTokenScan?: { address: string; chain: SupportedChain } | null;
   clientContext?: {
     lastMomentumList?: ClarkSessionMemory["lastMomentumList"];
     lastMomentumShownCount?: number;
@@ -7004,20 +7008,64 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         clarkFollowupStatusMessage: null as string | null,
         clarkFollowupAmbiguousMatches: cmd.ambiguousMatches,
         clarkFollowupOmittedReason: cmd.omittedReason,
+        clarkFollowupForcedIntent: null as string | null,
+        clarkFollowupScanSource: null as string | null,
+        clarkFollowupScanTargetType: null as string | null,
+        clarkFollowupTokenAddress: null as string | null,
+        clarkFollowupWalletFallbackBlocked: false,
+        clarkFollowupBlockedReason: null as string | null,
       };
 
       if ((cmd.intent === "scan_rank" || cmd.intent === "scan_symbol" || cmd.intent === "open_rank") && cmd.address) {
         updateMemIntent(sessionMem, "token_analysis");
         const statusLabel = cmd.symbol ? String(cmd.symbol).toUpperCase() : "this token";
         const statusMessage = `Scanning ${statusLabel} on Base…\nContract: ${cmd.address}`;
-        const scanResult: unknown = await handleClarkAI({ ...body, prompt: `scan ${cmd.address}` }, origin, authHeader, verifiedPlan, sessionMem);
+        const scanSource = cmd.resolvedFrom === "market_context" ? "market_context" : "session_momentum";
+        // Forced token_scan: a market-mover follow-up scan must never fall through to
+        // wallet_scan, even though "scan <address>" alone would otherwise classify as a
+        // plain EOA wallet read.
+        const scanResult: unknown = await handleClarkAI(
+          { ...body, prompt: `scan ${cmd.address}`, forcedTokenScan: { address: cmd.address, chain: "base" } },
+          origin, authHeader, verifiedPlan, sessionMem,
+        );
         const { actions: scanActions } = buildClarkContextActions(
           { tokenSummary: { address: cmd.address, chain: "base", symbol: cmd.symbol ?? null }, promptActionsEnabled: true },
           "token_analysis",
           { scanTarget: cmd.address, symbol: cmd.symbol, chain: "base" },
         );
         const resultObj: Record<string, unknown> = (scanResult && typeof scanResult === "object") ? scanResult as Record<string, unknown> : {};
-        return { ...resultObj, ui: { intentBadge: "Token Read", actions: scanActions }, ...cmdDebug, clarkFollowupStatusMessage: statusMessage };
+        return {
+          ...resultObj,
+          ui: { intentBadge: "Token Read", actions: scanActions },
+          ...cmdDebug,
+          clarkFollowupStatusMessage: statusMessage,
+          clarkFollowupForcedIntent: "token_scan",
+          clarkFollowupScanSource: scanSource,
+          clarkFollowupScanTargetType: "token",
+          clarkFollowupTokenAddress: cmd.address,
+          clarkFollowupWalletFallbackBlocked: true,
+        };
+      }
+
+      // Market row resolved but only a pool/market address was available, never a token
+      // contract — never wallet-scan a pool address; ask for the real contract instead.
+      if (
+        (cmd.intent === "scan_rank" || cmd.intent === "open_rank" || cmd.intent === "scan_symbol")
+        && (cmd.omittedReason === "no_scan_target_for_rank" || cmd.omittedReason === "no_scan_target_for_symbol")
+      ) {
+        const scanSource = cmd.resolvedFrom === "market_context" ? "market_context" : "session_momentum";
+        const statusLabel = cmd.symbol ? String(cmd.symbol).toUpperCase() : "that token";
+        return {
+          feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [], source: "feature_context",
+          analysis: `I found ${statusLabel}, but I only have a pool/market row, not the token contract yet. Open Token Scanner and paste the token contract.`,
+          ...cmdDebug,
+          clarkFollowupForcedIntent: "token_scan",
+          clarkFollowupScanSource: scanSource,
+          clarkFollowupScanTargetType: "pool",
+          clarkFollowupTokenAddress: null,
+          clarkFollowupWalletFallbackBlocked: true,
+          clarkFollowupBlockedReason: "missing_token_contract",
+        };
       }
 
       if (cmd.intent === "scan_symbol" && cmd.ambiguousMatches.length > 1) {
@@ -7033,20 +7081,6 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         };
       }
 
-      if ((cmd.intent === "scan_rank" || cmd.intent === "open_rank" || cmd.intent === "scan_symbol") && cmd.omittedReason === "no_scan_target_for_rank") {
-        return {
-          feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [], source: "feature_context",
-          analysis: "I found that market row, but there is no contract address attached yet. Open Token Scanner and paste the contract when available.",
-          ...cmdDebug,
-        };
-      }
-      if (cmd.intent === "scan_symbol" && cmd.omittedReason === "no_scan_target_for_symbol") {
-        return {
-          feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [], source: "feature_context",
-          analysis: "I found that token, but I don't have a contract address for it yet. Paste the contract directly and I'll scan it.",
-          ...cmdDebug,
-        };
-      }
       if (cmd.intent === "scan_symbol" && cmd.omittedReason === "no_symbol_match") {
         return {
           feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [], source: "feature_context",
@@ -7982,6 +8016,13 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
 
   // ── New routed intents (classifyClarkPrompt) — intercept before legacy logic ──
   const routed = classifyClarkPrompt(prompt);
+  // Market-mover follow-up scans ("scan 1", "scan velvet") are forced to token_scan by
+  // the recursive call below — never let the plain-address classifier reclassify the
+  // contract as a wallet EOA and fall through to wallet_scan.
+  if (body.forcedTokenScan?.address) {
+    routed.intent = "token_scan";
+    routed.address = body.forcedTokenScan.address;
+  }
   if (sessionMem.lastWallet?.address && !routed.address && isWalletFollowupPrompt(prompt)) {
     const memResult = buildWalletMemoryResult(sessionMem.lastWallet);
     if (memResult) {

@@ -119,4 +119,52 @@ for (const field of [
   assert.ok(routeSrc.includes(field), `route exposes debug field ${field}`)
 }
 
+// 13. Market-mover follow-up scans ("scan 1") must force token_scan and can never fall
+//     through to wallet_scan — route.ts wires a forcedTokenScan override through the
+//     recursive handleClarkAI call instead of recursing on a bare, reclassifiable prompt.
+assert.ok(routeSrc.includes('forcedTokenScan'), 'route.ts forces token_scan for market follow-up scans')
+assert.ok(routeSrc.includes('routed.intent = "token_scan"'), 'forcedTokenScan overrides the classifier result to token_scan')
+assert.ok(routeSrc.includes('clarkFollowupForcedIntent'), 'route exposes clarkFollowupForcedIntent debug field')
+assert.ok(routeSrc.includes('clarkFollowupScanSource'), 'route exposes clarkFollowupScanSource debug field')
+assert.ok(routeSrc.includes('clarkFollowupScanTargetType'), 'route exposes clarkFollowupScanTargetType debug field')
+assert.ok(routeSrc.includes('clarkFollowupTokenAddress'), 'route exposes clarkFollowupTokenAddress debug field')
+assert.ok(routeSrc.includes('clarkFollowupWalletFallbackBlocked'), 'route exposes clarkFollowupWalletFallbackBlocked debug field')
+assert.ok(routeSrc.includes('clarkFollowupBlockedReason'), 'route exposes clarkFollowupBlockedReason debug field')
+
+// 14. A market-context item with a real token address resolves cleanly to a token scan
+//     target (never a pool/wallet target) — this is what feeds the forced-token-scan path.
+{
+  const r = resolveClarkFollowupCommand('scan 1', { marketContext: { items: marketItems } }, [])
+  assert.equal(r.intent, 'scan_rank')
+  assert.equal(r.address, tokenAddr1)
+}
+{
+  const r = resolveClarkFollowupCommand('scan velvet', { marketContext: { items: marketItems } }, [])
+  assert.equal(r.intent, 'scan_symbol')
+  assert.equal(r.address, tokenAddr1)
+}
+
+// 15. A market row with only a pool/market address (no token contract) must never resolve
+//     an address to wallet-scan — it comes back address=null with an explicit omittedReason,
+//     and route.ts's pool-aware branch turns that into a "paste the token contract" ask
+//     rather than ever reaching the wallet_scan dispatcher.
+{
+  const r = resolveClarkFollowupCommand('scan 3', { marketContext: { items: marketItems } }, [])
+  assert.equal(r.address, null)
+  assert.equal(r.omittedReason, 'no_scan_target_for_rank')
+}
+assert.ok(routeSrc.includes('pool/market row, not the token contract yet'), 'pool-only market rows never get wallet-scanned')
+
+// 16. Direct address prompts with no market-follow-up context still classify independently —
+//     resolveClarkFollowupCommand defers to "unknown" with no marketContext/momentum list,
+//     leaving the existing address classifier (wallet vs token) to route them as before.
+{
+  const walletAddr = '0x' + 'b'.repeat(40)
+  const r = resolveClarkFollowupCommand(`scan ${walletAddr}`, {}, [])
+  assert.equal(r.intent, 'unknown', 'a bare address with no market context is left to the existing classifier, not forced')
+}
+
+// 17. The forced-token-scan output must never read as a wallet read.
+assert.ok(!/WALLET READ/.test(routeSrc.match(/forcedTokenScan[\s\S]{0,400}/)?.[0] ?? ''), 'forced token-scan wiring stays clear of wallet-read output')
+
 console.log('clark followup command checks passed')
