@@ -99,6 +99,58 @@ const walletAddr = '0x' + '2'.repeat(40)
   assert.ok(!/Risk signals found/.test(out), 'token-local signals must never be reported as a confirmed dev-history Status')
 }
 
+
+// Dev-history evidence levels: linked-wallet context alone is identity/context, not risk.
+{
+  const ev = { token: { symbol: 'CTX' }, ok: true, deployerAddress: walletAddr, linkedWallets: [{ address: '0x' + '3'.repeat(40) }], security: { ownerRenounced: true } }
+  const derived = deriveDevHistoryFromTokenEvidence(ev)
+  assert.equal(derived.status, 'no_evidence')
+  assert.equal(derived.evidenceLevel, 'deployer_confirmed')
+  assert.equal(derived.linkedWalletsFound, true)
+  assert.equal(derived.linkedWalletRiskConfirmed, false)
+  assert.equal(derived.crossTokenRiskConfirmed, false)
+  const out = formatDevHistoryRead({ status: derived.status, deployer: derived.deployer, linkedWallets: derived.linkedWallets, linkedWalletClusterSignals: derived.linkedWalletClusterSignals })
+  assert.ok(/No confirmed rug evidence in available data/.test(out))
+  assert.ok(/linked-wallet context: 1 linked wallet found, but no suspicious behavior confirmed/.test(out))
+  assert.ok(!/Risk signals found/.test(out))
+  assert.ok(/I found a deployer and linked-wallet context, but no confirmed rug evidence or risky cross-token pattern in available data/.test(out))
+}
+
+// Token-local ownership risk plus a deployer remains token-local/open-check, not cross-token risk.
+{
+  const ev = { token: { symbol: 'LOCAL' }, ok: true, deployerAddress: walletAddr, security: { ownerRenounced: false } }
+  const derived = deriveDevHistoryFromTokenEvidence(ev)
+  assert.equal(derived.evidenceLevel, 'deployer_confirmed')
+  assert.equal(derived.status, 'no_evidence')
+  assert.ok(derived.tokenLocalRiskSignals.includes('ownership not renounced'))
+}
+
+// Actual linked-wallet or cross-token risky behavior still promotes to Risk signals found.
+{
+  const suspiciousLinked = deriveDevHistoryFromTokenEvidence({ token: { symbol: 'SUS' }, ok: true, deployerAddress: walletAddr, security: { ownerRenounced: true }, linkedWallets: [{ address: '0x' + '4'.repeat(40), suspicious: true }] })
+  assert.equal(suspiciousLinked.evidenceLevel, 'cross_token_signals')
+  assert.equal(suspiciousLinked.status, 'risk_signals')
+  assert.equal(suspiciousLinked.linkedWalletRiskConfirmed, true)
+
+  const riskyCrossToken = deriveDevHistoryFromTokenEvidence({ token: { symbol: 'CROSS' }, ok: true, deployerAddress: walletAddr, security: { ownerRenounced: true }, previousProjects: [{ tokenAddress: '0x' + '5'.repeat(40), verdict: 'risky' }] })
+  assert.equal(riskyCrossToken.evidenceLevel, 'cross_token_signals')
+  assert.equal(riskyCrossToken.status, 'risk_signals')
+  assert.equal(riskyCrossToken.crossTokenRiskConfirmed, true)
+}
+
+// Explicit prior rug/scam labels remain the strongest dev-history status.
+{
+  const priorRug = deriveDevHistoryFromTokenEvidence({ token: { symbol: 'RUG' }, ok: true, deployerAddress: walletAddr, security: { ownerRenounced: true }, devIntel: { label: 'confirmed prior rug' } })
+  assert.equal(priorRug.evidenceLevel, 'confirmed_rug')
+  assert.equal(priorRug.status, 'confirmed_rug')
+}
+
+// No deployer identity remains Open Check even if isolated local evidence exists.
+{
+  const noDeployer = deriveDevHistoryFromTokenEvidence({ token: { symbol: 'NODEV' }, ok: true, security: { ownerRenounced: false }, linkedWallets: [{ address: '0x' + '6'.repeat(40), suspicious: true }] })
+  assert.equal(noDeployer.status, 'open_check')
+}
+
 // 10. No provider names in the new public-facing risk-read output.
 {
   assert.ok(!PROVIDER_RE.test(formatTokenApeRiskRead(null)))
@@ -178,7 +230,7 @@ const walletAddr = '0x' + '2'.repeat(40)
 
 // Debug fields for the new evidence-honesty rules.
 {
-  for (const field of ['clarkActiveTokenContextSource', 'clarkPromptActionBoundAddress', 'clarkFollowupTokenContextResolvedFrom', 'clarkDevIdentityConfirmed', 'clarkDevHistoryEvidenceLevel', 'clarkDevHistoryStatusReason']) {
+  for (const field of ['clarkActiveTokenContextSource', 'clarkPromptActionBoundAddress', 'clarkFollowupTokenContextResolvedFrom', 'clarkDevIdentityConfirmed', 'clarkLinkedWalletsFound', 'clarkLinkedWalletRiskConfirmed', 'clarkCrossTokenRiskConfirmed', 'clarkDevHistoryEvidenceLevel', 'clarkDevHistoryStatusReason']) {
     assert.ok(routeSrc.includes(field), `route exposes debug field ${field}`)
   }
 }
