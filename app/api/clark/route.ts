@@ -72,6 +72,7 @@ import {
   formatTokenApeRiskRead,
   formatDevHistoryRead,
   deriveDevHistoryFromTokenEvidence,
+  type ClarkUiAction,
 } from "@/lib/server/clarkRouting";
 
 const {
@@ -8902,6 +8903,29 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     };
   }
 
+  function buildTokenRiskActions(address: string | null, chainLabel: string): ClarkUiAction[] {
+    const actions: ClarkUiAction[] = [];
+    if (address) {
+      actions.push({ label: "Open Token Scanner", href: tokenScannerHref(address, chainLabel), kind: "link" });
+      actions.push({ label: "Rescan Token", href: tokenScannerHref(address, chainLabel), kind: "link" });
+    } else {
+      actions.push({ label: "Open Token Scanner", href: "/terminal/token-scanner", kind: "link" });
+    }
+    actions.push({ label: "Check Dev History", prompt: "has this dev ever rugged before", kind: "prompt" });
+    actions.push({ label: "Explain LP Risk", prompt: "is lp locked", kind: "prompt" });
+    return actions;
+  }
+
+  function buildDevHistoryActions(tokenAddress: string | null, chainLabel: string): ClarkUiAction[] {
+    const actions: ClarkUiAction[] = [];
+    if (tokenAddress) actions.push({ label: "Open Token Scanner", href: tokenScannerHref(tokenAddress, chainLabel), kind: "link" });
+    actions.push({ label: "Check Token Risk", prompt: "is this token safe to ape right now", kind: "prompt" });
+    actions.push({ label: "Explain Dev Control", prompt: "does dev control supply", kind: "prompt" });
+    return actions;
+  }
+
+  const RISK_REPORT_SECTIONS = ["liquidity_lp", "ownership_contract_control", "holder_concentration", "dev_deployer", "security_honeypot", "market_quality"];
+
   if (routed.intent === "token_ape_risk") {
     // Memory-first: reuse the same Token Scanner evidence the token_safety/token_scan
     // flows already gather — no new provider calls, no rewrite of scan logic.
@@ -8911,18 +8935,23 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         feature: "clark-ai", chain, mode: "analysis", intent: "token_ape_risk", toolsUsed: [],
         analysis: formatNoTokenInMemory(),
         intentBadge: "token_ape_risk",
-        actions: buildRoutedActions(["Open Token Scanner"]),
+        actions: buildTokenRiskActions(null, chainDisplayLabel(chain)),
         quotaConsumed: false,
         clarkRiskIntent: "token_ape_risk",
         clarkAddressType: "token",
         clarkSafetyResolvedFrom: "none",
         clarkEvidenceGaps: ["address"],
+        clarkRiskReportFormat: "cortex_token_risk_read",
+        clarkRiskSectionsIncluded: [],
+        clarkRiskConfidence: "none",
       };
     }
     const toolsUsed: string[] = r.fromMemory ? ["memory"] : ["token_scan"];
-    const analysis = formatTokenApeRiskRead(r.ev, chainDisplayLabel(tokenEvidenceChain(r.ev, chain)));
+    const tokenChainLabel = chainDisplayLabel(tokenEvidenceChain(r.ev, chain));
+    const analysis = formatTokenApeRiskRead(r.ev, tokenChainLabel);
     updateMemIntent(sessionMem, "token_ape_risk");
-    const apeMeta = tokenScanVerdictMeta(r.ev, hasUsableTokenEvidence(r.ev));
+    const usableApeEvidence = hasUsableTokenEvidence(r.ev);
+    const apeMeta = tokenScanVerdictMeta(r.ev, usableApeEvidence);
     return {
       feature: "clark-ai", chain, mode: "analysis", intent: "token_ape_risk", toolsUsed,
       analysis,
@@ -8930,13 +8959,16 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       confidence: apeMeta.confidence,
       source: apeMeta.source,
       intentBadge: "token_ape_risk",
-      actions: buildRoutedActions(["Open Token Scanner", "Run LP Check"]),
+      actions: buildTokenRiskActions(r.address, tokenChainLabel),
       quotaConsumed: r.fromMemory ? false : (r.ev.ok ?? false),
       clarkDebugReceipt: tokenFollowupDebug(r),
       clarkRiskIntent: "token_ape_risk",
       clarkAddressType: "token",
       clarkSafetyResolvedFrom: r.fromMemory ? "memory" : "token_scan",
-      clarkEvidenceGaps: hasUsableTokenEvidence(r.ev) ? [] : ["token_identity", "market", "holders", "security", "lp_control"],
+      clarkEvidenceGaps: usableApeEvidence ? [] : ["token_identity", "market", "holders", "security", "lp_control"],
+      clarkRiskReportFormat: "cortex_token_risk_read",
+      clarkRiskSectionsIncluded: usableApeEvidence ? RISK_REPORT_SECTIONS : [],
+      clarkRiskConfidence: apeMeta.confidence,
     };
   }
 
@@ -8955,12 +8987,13 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         feature: "clark-ai", chain, mode: "analysis", intent: "dev_rug_history", toolsUsed: [],
         analysis: "Paste a token contract address (CA) or a dev/deployer wallet address and I'll check it for rug-history signals.",
         intentBadge: "dev_rug_history",
-        actions: buildRoutedActions(["Open Token Scanner"]),
+        actions: buildDevHistoryActions(null, chainDisplayLabel(chain)),
         quotaConsumed: false,
         clarkRiskIntent: "dev_rug_history",
         clarkAddressType: "none",
         clarkDevHistoryResolvedFrom: "none",
         clarkEvidenceGaps: ["address"],
+        clarkRiskReportFormat: "cortex_dev_history_read",
       };
     }
 
@@ -8969,11 +9002,12 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         feature: "clark-ai", chain, mode: "analysis", intent: "dev_rug_history", toolsUsed: [],
         analysis: "Is this a token contract or a dev wallet?",
         intentBadge: "dev_rug_history",
-        actions: buildRoutedActions(["Open Token Scanner"]),
+        actions: buildDevHistoryActions(null, chainDisplayLabel(chain)),
         quotaConsumed: false,
         clarkRiskIntent: "dev_rug_history",
         clarkAddressType: "ambiguous",
         clarkDevHistoryResolvedFrom: "none",
+        clarkRiskReportFormat: "cortex_dev_history_read",
       };
     }
 
@@ -9001,15 +9035,17 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         feature: "clark-ai", chain, mode: "analysis", intent: "dev_rug_history", toolsUsed: [],
         analysis: formatDevHistoryRead({ status: "open_check", gaps: ["token evidence"] }),
         intentBadge: "dev_rug_history",
-        actions: buildRoutedActions(["Open Token Scanner"]),
+        actions: buildDevHistoryActions(null, chainDisplayLabel(chain)),
         quotaConsumed: false,
         clarkRiskIntent: "dev_rug_history",
         clarkAddressType: "token",
         clarkDevHistoryResolvedFrom: "none",
         clarkEvidenceGaps: ["address"],
+        clarkRiskReportFormat: "cortex_dev_history_read",
       };
     }
     const toolsUsed: string[] = r.fromMemory ? ["memory"] : ["token_scan"];
+    const devTokenChainLabel = chainDisplayLabel(tokenEvidenceChain(r.ev, chain));
     const derived = deriveDevHistoryFromTokenEvidence(r.ev);
     const analysis = formatDevHistoryRead({ status: derived.status, deployer: derived.deployer, riskSignals: derived.riskSignals, gaps: derived.gaps });
     updateMemIntent(sessionMem, "dev_rug_history");
@@ -9017,13 +9053,14 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       feature: "clark-ai", chain, mode: "analysis", intent: "dev_rug_history", toolsUsed,
       analysis,
       intentBadge: "dev_rug_history",
-      actions: buildRoutedActions(["Open Token Scanner", "Run LP Check"]),
+      actions: buildDevHistoryActions(r.address, devTokenChainLabel),
       quotaConsumed: r.fromMemory ? false : (r.ev.ok ?? false),
       clarkDebugReceipt: tokenFollowupDebug(r),
       clarkRiskIntent: "dev_rug_history",
       clarkAddressType: "token",
       clarkDevHistoryResolvedFrom: r.fromMemory ? "memory" : "token_scan",
       clarkEvidenceGaps: derived.gaps,
+      clarkRiskReportFormat: "cortex_dev_history_read",
     };
   }
 

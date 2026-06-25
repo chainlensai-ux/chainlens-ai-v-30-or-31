@@ -74,8 +74,11 @@ const walletAddr = '0x' + '2'.repeat(40)
 // 8. Missing evidence returns Open Check, never a fabricated clean or rugged verdict.
 {
   const out = formatTokenApeRiskRead(null)
-  assert.equal(out.split('\n')[1], '- Verdict: Open Check')
-  assert.equal(out.split('\n')[2], '- Ape risk: Unknown')
+  const lines = out.split('\n')
+  assert.equal(lines[0], 'CORTEX TOKEN RISK READ')
+  assert.equal(lines[2], 'Verdict:')
+  assert.equal(lines[3], '- Open Check')
+  assert.equal(lines[4], '- Ape risk: Unknown')
 
   const derivedEmpty = deriveDevHistoryFromTokenEvidence(null)
   assert.equal(derivedEmpty.status, 'open_check')
@@ -103,30 +106,76 @@ const walletAddr = '0x' + '2'.repeat(40)
   assert.ok(!PROVIDER_RE.test(formatDevHistoryRead({ status: 'open_check' })))
 }
 
-// Output format: exact section header + bullet labels for the token ape-risk read.
+// Output format: exact CORTEX header + section structure for the token risk read.
 {
   const out = formatTokenApeRiskRead(null)
   const lines = out.split('\n')
-  assert.equal(lines[0], 'TOKEN APE RISK READ')
-  assert.ok(lines.some(l => l.startsWith('- Verdict:')))
-  assert.ok(lines.some(l => l.startsWith('- Ape risk:')))
-  assert.ok(lines.some(l => l.startsWith('- Main risks:')))
-  assert.ok(lines.some(l => l.startsWith('- Evidence gaps:')))
-  assert.ok(lines.some(l => l.startsWith("- What I'd check next:")))
-  assert.ok(lines.some(l => l.startsWith('- Bottom line:')))
+  assert.equal(lines[0], 'CORTEX TOKEN RISK READ')
+  assert.ok(lines.includes('Verdict:'))
+  assert.ok(lines.includes('Risk sections:'))
+  assert.ok(lines.includes('Evidence gaps:'))
+  assert.ok(lines.includes('Ape checklist:'))
+  assert.ok(lines.includes('Bottom line:'))
+  assert.ok(lines.some((l) => l.startsWith('- Ape risk:')))
+  assert.ok(lines.some((l) => l.startsWith('- Confidence:')))
 }
+
+// All 6 numbered risk sections are present (Open Check / no evidence case).
+{
+  const out = formatTokenApeRiskRead(null)
+  assert.ok(out.includes('1. Liquidity / LP'))
+  assert.ok(out.includes('2. Ownership / Contract Control'))
+  assert.ok(out.includes('3. Holder Concentration'))
+  assert.ok(out.includes('4. Dev / Deployer'))
+  assert.ok(out.includes('5. Security / Honeypot'))
+  assert.ok(out.includes('6. Market Quality'))
+  // Missing evidence -> every section reads as Open Check, never a fabricated verdict.
+  const sectionLines = out.split('\n').filter((l) => l.trim().startsWith('- Status:'))
+  assert.equal(sectionLines.length, 6)
+  for (const l of sectionLines) assert.ok(l.includes('Open Check'))
+}
+
+// All 6 risk sections are present with real evidence too, each with a Status + Why it matters line.
+{
+  const ev = {
+    token: { symbol: 'X' },
+    security: { ownerRenounced: false, mintable: true, honeypot: false, buyTax: 1, sellTax: 1 },
+    lpControl: { status: 'wallet_controlled', reason: 'dev wallet holds LP' },
+    holders: { top1: 30, top10: 55 },
+    market: { liquidity: 5000, volume24h: 1000 },
+    ok: true,
+  }
+  const out = formatTokenApeRiskRead(ev)
+  for (const title of ['Liquidity / LP', 'Ownership / Contract Control', 'Holder Concentration', 'Dev / Deployer', 'Security / Honeypot', 'Market Quality']) {
+    assert.ok(out.includes(title), `missing section: ${title}`)
+  }
+  const statusLines = out.split('\n').filter((l) => l.trim().startsWith('- Status:'))
+  const whyLines = out.split('\n').filter((l) => l.trim().startsWith('- Why it matters:'))
+  assert.equal(statusLines.length, 6)
+  assert.equal(whyLines.length, 6)
+
+  // Bad LP/team control + non-renounced owner + concentrated holders -> Caution/Avoid verdict,
+  // and the bottom line must not sound bullish.
+  assert.ok(/^- (Caution|Avoid)$/m.test(out))
+  const bottomLine = out.split('Bottom line:\n')[1]
+  assert.ok(!/\b(strong buy|moon|guaranteed|safe to ape|bullish)\b/i.test(bottomLine))
+  assert.ok(/I can't guarantee safety\. This is a risk read, not financial advice\./.test(bottomLine))
+  assert.ok(!/\bsafe to ape\b/i.test(out))
+}
+
+// Dev-history output format.
 {
   const out = formatDevHistoryRead({ status: 'open_check' })
   const lines = out.split('\n')
-  assert.equal(lines[0], 'DEV HISTORY READ')
-  assert.ok(lines.some(l => l.startsWith('- Status:')))
-  assert.ok(lines.some(l => l.startsWith('- Deployer/dev:')))
-  assert.ok(lines.some(l => l.startsWith('- Risk signals:')))
-  assert.ok(lines.some(l => l.startsWith('- Evidence gaps:')))
-  assert.ok(lines.some(l => l.startsWith('- Bottom line:')))
+  assert.equal(lines[0], 'CORTEX DEV HISTORY READ')
+  assert.ok(lines.includes('Status:'))
+  assert.ok(lines.includes('Dev / deployer:'))
+  assert.ok(lines.includes('Risk signals:'))
+  assert.ok(lines.includes('Evidence gaps:'))
+  assert.ok(lines.includes('Bottom line:'))
 }
 
-// Debug fields are wired through route.ts for the new risk-read branches.
+// Debug fields are wired through route.ts for the new CORTEX risk-read branches.
 {
   assert.ok(routeSrc.includes('clarkRiskIntent: "token_ape_risk"'))
   assert.ok(routeSrc.includes('clarkRiskIntent: "dev_rug_history"'))
@@ -134,6 +183,21 @@ const walletAddr = '0x' + '2'.repeat(40)
   assert.ok(routeSrc.includes('clarkSafetyResolvedFrom:'))
   assert.ok(routeSrc.includes('clarkDevHistoryResolvedFrom:'))
   assert.ok(routeSrc.includes('clarkEvidenceGaps:'))
+  assert.ok(routeSrc.includes('clarkRiskReportFormat: "cortex_token_risk_read"'))
+  assert.ok(routeSrc.includes('clarkRiskReportFormat: "cortex_dev_history_read"'))
+  assert.ok(routeSrc.includes('clarkRiskSectionsIncluded'))
+  assert.ok(routeSrc.includes('clarkRiskConfidence'))
+}
+
+// Actions: token-risk reads include a Token Scanner link plus prompt-based follow-up actions;
+// dev-history reads include the reciprocal prompt actions.
+{
+  assert.ok(routeSrc.includes('function buildTokenRiskActions'))
+  assert.ok(routeSrc.includes('function buildDevHistoryActions'))
+  assert.ok(routeSrc.includes('Check Dev History'))
+  assert.ok(routeSrc.includes('Explain LP Risk'))
+  assert.ok(routeSrc.includes('Check Token Risk'))
+  assert.ok(routeSrc.includes('Explain Dev Control'))
 }
 
 console.log('clark risk-intent (token safety / dev rug history) checks passed')
