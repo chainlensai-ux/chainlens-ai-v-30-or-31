@@ -8082,6 +8082,20 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     }
   }
 
+  if (routed.intent === "liquidity_scan" && !routed.address && routed.symbol) {
+    const resolved = await resolveTokenSymbolToAddress(routed.symbol);
+    if (!resolved) {
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_scan", toolsUsed: ["token_resolve"],
+        analysis: `No Base pool found for ${routed.symbol}. Paste the contract address if you have it.`,
+        intentBadge: "liquidity_scan",
+        actions: buildRoutedActions(["Open Token Scanner", "Run LP Check"]),
+        quotaConsumed: false,
+      };
+    }
+    routed.address = resolved.address;
+  }
+
   if (routed.intent === "liquidity_scan" && routed.address) {
     const isContract = await isContractAddress(routed.address, origin);
     if (!isContract) {

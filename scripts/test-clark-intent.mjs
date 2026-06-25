@@ -286,4 +286,37 @@ assert.equal(extractRequestedChainFromPrompt('scan this token 0xabc'), null, 'no
   assert.notEqual(r.intent, 'wallet_scan', 'eth token prompt must not route to wallet_scan')
 }
 
+// ─── Dashboard quick actions (Clark drawer hint chips) ────────────────────────
+{
+  // "Scan BRETT" — bare named-token scan, no literal "token" keyword
+  const r = classifyClarkPrompt('Scan BRETT')
+  assert.equal(r.intent, 'token_scan', 'Scan BRETT => token_scan')
+  assert.equal(r.symbol, 'BRETT')
+  assert.equal(r.address, null)
+}
+{
+  // "Liquidity check AERO" — symbol-only liquidity check, no address
+  const r = classifyClarkPrompt('Liquidity check AERO')
+  assert.equal(r.intent, 'liquidity_scan', 'Liquidity check AERO => liquidity_scan')
+  assert.equal(r.symbol, 'AERO')
+  assert.equal(r.address, null)
+}
+{
+  // "Show Base whales" — whale_alert, already worked pre-fix
+  const r = classifyClarkPrompt('Show Base whales')
+  assert.equal(r.intent, 'whale_alert', 'Show Base whales => whale_alert')
+}
+{
+  // "What's pumping on Base?" — base_market_discovery, already worked pre-fix
+  const r = classifyClarkPrompt("What's pumping on Base?")
+  assert.equal(r.intent, 'base_market_discovery', "What's pumping on Base? => base_market_discovery")
+}
+{
+  // liquidity_scan with an address still does not carry a redundant symbol
+  const r = classifyClarkPrompt('liquidity check 0x1234567890123456789012345678901234567890')
+  assert.equal(r.intent, 'liquidity_scan')
+  assert.equal(r.address, '0x1234567890123456789012345678901234567890')
+  assert.equal(r.symbol, null)
+}
+
 console.log('test-clark-intent.mjs: all assertions passed')
