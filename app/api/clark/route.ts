@@ -9175,7 +9175,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         clarkRiskIntent: "dev_rug_history",
         clarkAddressType: "wallet", clarkDevHistoryResolvedFrom: "wallet_input",
         clarkDevHistoryInputType: "wallet", clarkDevHistoryTokenAddress: null, clarkDevHistoryWalletAddress: resolvedAddress, clarkDevHistoryDeployerAddress: evidence.deployer,
-        clarkDevIdentityConfirmed: Boolean(evidence.deployer), clarkDevHistoryEvidenceLevel: evidence.evidenceLevel, clarkDevHistorySourcesUsed: evidence.sourcesUsed, clarkDevHistoryApiPathsUsed: evidence.apiPathsUsed, clarkDevHistoryStatusReason: evidence.statusReason,
+        clarkDevIdentityConfirmed: Boolean(evidence.deployer), clarkLinkedWalletsFound: evidence.linkedWalletsFound, clarkLinkedWalletRiskConfirmed: evidence.linkedWalletRiskConfirmed, clarkCrossTokenRiskConfirmed: evidence.crossTokenRiskConfirmed, clarkDevHistoryEvidenceLevel: evidence.evidenceLevel, clarkDevHistorySourcesUsed: evidence.sourcesUsed, clarkDevHistoryApiPathsUsed: evidence.apiPathsUsed, clarkDevHistoryStatusReason: evidence.statusReason,
         clarkEvidenceGaps: evidence.evidenceGaps,
         clarkRiskReportFormat: "cortex_dev_history_read",
       };
@@ -9222,7 +9222,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       clarkAddressType: "token",
       clarkDevHistoryResolvedFrom: "token_scan",
       clarkDevHistoryInputType: "token", clarkDevHistoryTokenAddress: tokenAddress, clarkDevHistoryWalletAddress: derived.deployer ?? null, clarkDevHistoryDeployerAddress: derived.deployer,
-      clarkDevIdentityConfirmed: Boolean(derived.deployer), clarkDevHistoryEvidenceLevel: derived.evidenceLevel, clarkDevHistorySourcesUsed: derived.sourcesUsed, clarkDevHistoryApiPathsUsed: derived.apiPathsUsed, clarkDevHistoryStatusReason: derived.statusReason,
+      clarkDevIdentityConfirmed: Boolean(derived.deployer), clarkLinkedWalletsFound: derived.linkedWalletsFound, clarkLinkedWalletRiskConfirmed: derived.linkedWalletRiskConfirmed, clarkCrossTokenRiskConfirmed: derived.crossTokenRiskConfirmed, clarkDevHistoryEvidenceLevel: derived.evidenceLevel, clarkDevHistorySourcesUsed: derived.sourcesUsed, clarkDevHistoryApiPathsUsed: derived.apiPathsUsed, clarkDevHistoryStatusReason: derived.statusReason,
       clarkEvidenceGaps: derived.evidenceGaps,
       clarkRiskReportFormat: "cortex_dev_history_read",
       clarkActiveTokenContextSource: routed.address ? "explicit_address" : "token_scan",
