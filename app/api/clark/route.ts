@@ -8410,6 +8410,11 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const sections = (t.sections ?? {}) as Record<string, unknown>;
     const holdersSection = (sections.holders ?? {}) as Record<string, unknown>;
     const tSecurity = (t.security ?? {}) as Record<string, unknown>;
+    const tOwnership = (t.ownership ?? (tSecurity.ownership ?? {})) as Record<string, unknown>;
+    const tDevIntel = (t.devIntel ?? {}) as Record<string, unknown>;
+    const tDeployerProfile = (t.deployerProfile ?? {}) as Record<string, unknown>;
+    const tSupplyControl = (t.supplyControl ?? {}) as Record<string, unknown>;
+    const tClusterMap = (t.clusterMap ?? {}) as Record<string, unknown>;
     const tDevOwnership = (tSecurity.devOwnership ?? {}) as Record<string, unknown>;
     const tContractFlags = (tSecurity.contractFlags ?? {}) as Record<string, unknown>;
     const tSecSim = (tSecurity.simulation ?? {}) as Record<string, unknown>;
@@ -8594,6 +8599,15 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       } : null,
       liquidity: { pools: Array.isArray(t.pools) ? (t.pools as unknown[]).length : 0 },
       warnings: missingEvidence,
+      devIntel: t.devIntel && typeof t.devIntel === "object" ? tDevIntel : null,
+      deployerProfile: t.deployerProfile && typeof t.deployerProfile === "object" ? tDeployerProfile : null,
+      ownership: (t.ownership && typeof t.ownership === "object") || (tSecurity.ownership && typeof tSecurity.ownership === "object") ? tOwnership : null,
+      supplyControl: t.supplyControl && typeof t.supplyControl === "object" ? tSupplyControl : null,
+      clusterMap: t.clusterMap && typeof t.clusterMap === "object" ? tClusterMap : null,
+      previousProjects: Array.isArray(t.previousProjects) ? t.previousProjects as Array<Record<string, unknown>> : [],
+      deployerAddress: typeof t.deployerAddress === "string" ? t.deployerAddress : (typeof tDevIntel.deployerAddress === "string" ? String(tDevIntel.deployerAddress) : (typeof tDeployerProfile.deployer === "string" ? String(tDeployerProfile.deployer) : null)),
+      ownerAddress: typeof t.ownerAddress === "string" ? t.ownerAddress : (typeof tOwnership.ownerAddress === "string" ? String(tOwnership.ownerAddress) : (typeof tOwnership.owner === "string" ? String(tOwnership.owner) : null)),
+      linkedWallets: Array.isArray(t.linkedWallets) ? t.linkedWallets as Array<Record<string, unknown>> : (Array.isArray(tDevIntel.linkedWallets) ? tDevIntel.linkedWallets as Array<Record<string, unknown>> : []),
       _tokenApiStatus: finalTokenRouteStatus,
       _tokenApiHttpStatus: tokenApiHttpStatus,
       _tokenScanFailureReason: tokenScanFailureReason,
@@ -9011,6 +9025,44 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
 
   const RISK_REPORT_SECTIONS = ["liquidity_lp", "ownership_contract_control", "holder_concentration", "dev_deployer", "security_honeypot", "market_quality"];
 
+  async function collectDevHistoryEvidence(input: { address: string; inputType: "token" | "wallet" | "unknown" }): Promise<{ evidence: ReturnType<typeof deriveDevHistoryFromTokenEvidence>; tokenEvidence?: TokenScanEvidence | null; walletEvidence?: Record<string, unknown> | null; tokenAddress?: string | null; walletAddress?: string | null }> {
+    if (input.inputType === "wallet") {
+      return {
+        evidence: {
+          evidenceLevel: "none",
+          status: "open_check",
+          statusReason: "Wallet dev-history support is unavailable from this Clark path.",
+          inputType: "Dev wallet",
+          chain: chainDisplayLabel(chain),
+          address: input.address,
+          deployer: input.address,
+          owner: null,
+          linkedWallets: [],
+          confidence: "Open Check",
+          tokenLocalRiskSignals: [],
+          previousLaunchedTokens: [],
+          repeatedRiskyPatterns: [],
+          linkedWalletClusterSignals: [],
+          suspiciousFundingPatterns: [],
+          priorConfirmedRugEvidence: [],
+          evidenceGaps: ["previous token history unavailable", "linked wallet evidence unavailable", "wallet activity unavailable"],
+          sourcesUsed: [],
+          apiPathsUsed: [],
+        },
+        walletAddress: input.address,
+      };
+    }
+    const tokenEvidence = await fetchTokenEvidence(input.address);
+    const provisional = deriveDevHistoryFromTokenEvidence(tokenEvidence);
+    let walletEvidence: Record<string, unknown> | null = null;
+    if (provisional.deployer) {
+      const devRes = await callInternalApi(origin, "/api/dev-wallet", { contractAddress: input.address, chain: toTokenApiChain(chain) ?? "base" }, authHeader ?? undefined, verifiedPlan).catch(() => null);
+      if (devRes?.ok && devRes.json && typeof devRes.json === "object") walletEvidence = devRes.json as Record<string, unknown>;
+    }
+    const evidence = deriveDevHistoryFromTokenEvidence(tokenEvidence, walletEvidence);
+    return { evidence, tokenEvidence, walletEvidence, tokenAddress: input.address, walletAddress: evidence.deployer ?? null };
+  }
+
   if (routed.intent === "token_ape_risk") {
     // Memory-first: reuse the same Token Scanner evidence the token_safety/token_scan
     // flows already gather — no new provider calls, no rewrite of scan logic.
@@ -9074,6 +9126,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const resolvedAddress = routed.address
       ?? sessionMem?.lastToken?.address
       ?? (body.appContext?.tokenSummary?.address ?? null)
+      ?? sessionMem?.lastToken?.address
       ?? (typeof body.appContext?.selectedWallet === "string" ? body.appContext.selectedWallet : body.appContext?.selectedWallet?.address ?? null)
       ?? sessionMem?.lastDevWallet?.address
       ?? sessionMem?.lastWallet?.address
@@ -9109,25 +9162,30 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     }
 
     if (addressType === "wallet") {
-      // Route through the existing dev-wallet/wallet-intelligence pipeline unchanged —
-      // we only rewrite the prompt text into a phrasing detectIntent already recognizes.
-      const devResult: unknown = await handleClarkAI({ ...body, prompt: `check dev wallet ${resolvedAddress}` }, origin, authHeader, verifiedPlan, sessionMem);
-      const devObj = (devResult && typeof devResult === "object") ? devResult as Record<string, unknown> : {};
+      const collected = await collectDevHistoryEvidence({ address: resolvedAddress, inputType: "wallet" });
+      const evidence = collected.evidence;
       return {
-        ...devObj,
+        feature: "clark-ai", chain, mode: "analysis",
         intent: "dev_rug_history",
+        toolsUsed: evidence.sourcesUsed,
+        analysis: formatDevHistoryRead({ status: evidence.status, inputType: evidence.inputType, chain: evidence.chain, address: evidence.address, deployer: evidence.deployer, owner: evidence.owner, linkedWallets: evidence.linkedWallets, confidence: evidence.confidence, tokenLocalRiskSignals: evidence.tokenLocalRiskSignals, previousLaunchedTokens: evidence.previousLaunchedTokens, repeatedRiskyPatterns: evidence.repeatedRiskyPatterns, linkedWalletClusterSignals: evidence.linkedWalletClusterSignals, suspiciousFundingPatterns: evidence.suspiciousFundingPatterns, priorConfirmedRugEvidence: evidence.priorConfirmedRugEvidence, gaps: evidence.evidenceGaps }),
         intentBadge: "dev_rug_history",
+        actions: buildDevHistoryActions(null, chainDisplayLabel(chain)),
+        quotaConsumed: false,
         clarkRiskIntent: "dev_rug_history",
-        clarkAddressType: "wallet",
-        clarkDevHistoryResolvedFrom: "dev_wallet_route",
+        clarkAddressType: "wallet", clarkDevHistoryResolvedFrom: "wallet_input",
+        clarkDevHistoryInputType: "wallet", clarkDevHistoryTokenAddress: null, clarkDevHistoryWalletAddress: resolvedAddress, clarkDevHistoryDeployerAddress: evidence.deployer,
+        clarkDevIdentityConfirmed: Boolean(evidence.deployer), clarkDevHistoryEvidenceLevel: evidence.evidenceLevel, clarkDevHistorySourcesUsed: evidence.sourcesUsed, clarkDevHistoryApiPathsUsed: evidence.apiPathsUsed, clarkDevHistoryStatusReason: evidence.statusReason,
+        clarkEvidenceGaps: evidence.evidenceGaps,
+        clarkRiskReportFormat: "cortex_dev_history_read",
       };
     }
 
     // Token CA: resolve deployer/dev signals from existing token-scan evidence — no
     // new provider, no cross-token deployer-history database (none exists), so we never
     // claim confirmed rug history; only contract-control signals actually in evidence.
-    const r = await resolveTokenForFollowup();
-    if ("needsAddress" in r) {
+    const tokenAddress = resolvedAddress ?? ("address" in routed ? routed.address : null);
+    if (!tokenAddress) {
       return {
         feature: "clark-ai", chain, mode: "analysis", intent: "dev_rug_history", toolsUsed: [],
         analysis: formatDevHistoryRead({ status: "open_check", gaps: ["token evidence"] }),
@@ -9144,18 +9202,11 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         clarkDevHistoryStatusReason: "No token evidence available — deployer identity and cross-token history cannot be checked.",
       };
     }
-    const toolsUsed: string[] = r.fromMemory ? ["memory"] : ["token_scan"];
-    const devTokenChainLabel = chainDisplayLabel(tokenEvidenceChain(r.ev, chain));
-    const derived = deriveDevHistoryFromTokenEvidence(r.ev);
-    const analysis = formatDevHistoryRead({
-      status: derived.status,
-      target: r.address,
-      deployer: derived.deployer,
-      devIdentityConfirmed: derived.devIdentityConfirmed,
-      tokenLocalSignals: derived.tokenLocalSignals,
-      crossTokenEvidence: derived.crossTokenEvidence,
-      gaps: derived.gaps,
-    });
+    const collected = await collectDevHistoryEvidence({ address: tokenAddress, inputType: "token" });
+    const derived = collected.evidence;
+    const toolsUsed: string[] = derived.sourcesUsed;
+    const devTokenChainLabel = collected.tokenEvidence ? chainDisplayLabel(tokenEvidenceChain(collected.tokenEvidence, chain)) : chainDisplayLabel(chain);
+    const analysis = formatDevHistoryRead({ status: derived.status, inputType: derived.inputType, chain: derived.chain ?? devTokenChainLabel, address: derived.address ?? tokenAddress, deployer: derived.deployer, owner: derived.owner, linkedWallets: derived.linkedWallets, confidence: derived.confidence, tokenLocalRiskSignals: derived.tokenLocalRiskSignals, previousLaunchedTokens: derived.previousLaunchedTokens, repeatedRiskyPatterns: derived.repeatedRiskyPatterns, linkedWalletClusterSignals: derived.linkedWalletClusterSignals, suspiciousFundingPatterns: derived.suspiciousFundingPatterns, priorConfirmedRugEvidence: derived.priorConfirmedRugEvidence, gaps: derived.evidenceGaps });
     updateMemIntent(sessionMem, "dev_rug_history");
     // This dev-history read becomes the latest active token context too, same reasoning as the
     // token_ape_risk branch — a follow-up must bind to THIS token, not an older one.
@@ -9164,13 +9215,15 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       feature: "clark-ai", chain, mode: "analysis", intent: "dev_rug_history", toolsUsed,
       analysis,
       intentBadge: "dev_rug_history",
-      actions: buildDevHistoryActions(r.address, devTokenChainLabel),
-      quotaConsumed: r.fromMemory ? false : (r.ev.ok ?? false),
-      clarkDebugReceipt: tokenFollowupDebug(r),
+      actions: buildDevHistoryActions(tokenAddress, devTokenChainLabel),
+      quotaConsumed: collected.tokenEvidence?.ok ?? false,
+      clarkDebugReceipt: { evidenceSource: "freshScan" },
       clarkRiskIntent: "dev_rug_history",
       clarkAddressType: "token",
-      clarkDevHistoryResolvedFrom: r.fromMemory ? "memory" : "token_scan",
-      clarkEvidenceGaps: derived.gaps,
+      clarkDevHistoryResolvedFrom: "token_scan",
+      clarkDevHistoryInputType: "token", clarkDevHistoryTokenAddress: tokenAddress, clarkDevHistoryWalletAddress: derived.deployer ?? null, clarkDevHistoryDeployerAddress: derived.deployer,
+      clarkDevIdentityConfirmed: Boolean(derived.deployer), clarkDevHistoryEvidenceLevel: derived.evidenceLevel, clarkDevHistorySourcesUsed: derived.sourcesUsed, clarkDevHistoryApiPathsUsed: derived.apiPathsUsed, clarkDevHistoryStatusReason: derived.statusReason,
+      clarkEvidenceGaps: derived.evidenceGaps,
       clarkRiskReportFormat: "cortex_dev_history_read",
       clarkActiveTokenContextSource: routed.address ? "explicit_address" : (r.fromMemory ? "token_risk_read" : "token_scan"),
       clarkPromptActionBoundAddress: r.address,

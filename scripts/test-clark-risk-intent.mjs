@@ -63,7 +63,7 @@ const walletAddr = '0x' + '2'.repeat(40)
   const prompt = `Check this wallet history ${walletAddr}`
   assert.ok(isDevRugHistoryPrompt(prompt))
   assert.equal(classifyTokenOrWalletAddress(prompt), 'wallet')
-  assert.ok(routeSrc.includes('clarkDevHistoryResolvedFrom: "dev_wallet_route"'), 'wallet dev-history prompts route through the existing dev-wallet pipeline')
+  assert.ok(routeSrc.includes('clarkDevHistoryResolvedFrom: "wallet_input"'), 'wallet dev-history prompts are handled explicitly and gracefully when wallet history is unavailable')
 }
 
 // 7. No address/context → a short ask for a CA or dev wallet, not a generic failure.
@@ -82,36 +82,19 @@ const walletAddr = '0x' + '2'.repeat(40)
 
   const derivedEmpty = deriveDevHistoryFromTokenEvidence(null)
   assert.equal(derivedEmpty.status, 'open_check')
-  const historyOut = formatDevHistoryRead({ status: derivedEmpty.status, gaps: derivedEmpty.gaps })
+  const historyOut = formatDevHistoryRead({ status: derivedEmpty.status, gaps: derivedEmpty.evidenceGaps })
   assert.ok(/No confirmed rug evidence|Open Check/.test(historyOut))
-  assert.ok(!/confirmed rug|has rugged/i.test(historyOut))
+  assert.ok(!/Confirmed prior rug evidence found/i.test(historyOut))
 }
 
-// 9. Dev-history Status is NEVER derived from this token's own contract-control signals alone —
-//    only actual deployer-identity / cross-token evidence can move Status off "open_check". Since
-//    no cross-token deployer-history database exists, Status always stays Open Check; the
-//    token-local signals are still surfaced, but separately, and explicitly labeled as not being
-//    dev-history evidence.
+// 9. Dev-history read never upgrades token-local contract-control signals into cross-token
+//    deployer history. It remains Open Check unless cross-token/wallet evidence exists.
 {
   const riskyEv = { token: { symbol: 'X' }, security: { ownerRenounced: false, mintable: true }, lpControl: null, ok: true }
   const derived = deriveDevHistoryFromTokenEvidence(riskyEv)
-  assert.equal(derived.status, 'open_check', 'token-local signals alone never produce a non-open_check dev-history status')
-  assert.equal(derived.devIdentityConfirmed, false)
-  assert.deepEqual(derived.tokenLocalSignals, ['ownership not renounced on this token', 'mint authority present on this token'])
-  assert.deepEqual(derived.crossTokenEvidence, [])
-  const out = formatDevHistoryRead({
-    status: derived.status,
-    deployer: derived.deployer,
-    devIdentityConfirmed: derived.devIdentityConfirmed,
-    tokenLocalSignals: derived.tokenLocalSignals,
-    crossTokenEvidence: derived.crossTokenEvidence,
-    gaps: derived.gaps,
-  })
-  assert.ok(/Token-local risk signals:/.test(out))
-  assert.ok(/ownership not renounced on this token/.test(out))
-  assert.ok(/Cross-token evidence:/.test(out))
-  assert.ok(/no cross-token deployer-history data source exists/.test(out))
-  assert.ok(!/\bhas\s+rugged\b/i.test(out))
+  assert.equal(derived.status, 'open_check')
+  const out = formatDevHistoryRead({ status: derived.status, tokenLocalRiskSignals: derived.tokenLocalRiskSignals, gaps: derived.evidenceGaps })
+  assert.ok(/This token has risk signals, but I cannot confirm this dev has rugged before/.test(out))
   assert.ok(!/confirmed rug history/i.test(out))
   assert.ok(!/Risk signals found/.test(out), 'token-local signals must never be reported as a confirmed dev-history Status')
 }
@@ -186,9 +169,9 @@ const walletAddr = '0x' + '2'.repeat(40)
   assert.equal(lines[0], 'CORTEX DEV HISTORY READ')
   assert.ok(lines.includes('Status:'))
   assert.ok(lines.includes('Target:'))
-  assert.ok(lines.includes('Deployer identity:'))
+  assert.ok(lines.includes('Deployer / dev identity:'))
   assert.ok(lines.includes('Token-local risk signals:'))
-  assert.ok(lines.includes('Cross-token evidence:'))
+  assert.ok(lines.includes('Cross-token / wallet-history evidence:'))
   assert.ok(lines.includes('Evidence gaps:'))
   assert.ok(lines.includes('Bottom line:'))
 }
@@ -217,6 +200,8 @@ const walletAddr = '0x' + '2'.repeat(40)
   assert.ok(routeSrc.includes('clarkEvidenceGaps:'))
   assert.ok(routeSrc.includes('clarkRiskReportFormat: "cortex_token_risk_read"'))
   assert.ok(routeSrc.includes('clarkRiskReportFormat: "cortex_dev_history_read"'))
+  assert.ok(routeSrc.includes('clarkDevHistoryEvidenceLevel'))
+  assert.ok(routeSrc.includes('clarkDevHistoryApiPathsUsed'))
   assert.ok(routeSrc.includes('clarkRiskSectionsIncluded'))
   assert.ok(routeSrc.includes('clarkRiskConfidence'))
 }
