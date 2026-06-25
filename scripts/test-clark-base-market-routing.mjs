@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
-import { classifyClarkPrompt, formatBaseMarketReadFromRows, formatNoFreshMarketData, formatNoPumpCandidates, parseExplicitExclusions, toClarkUiActions, buildRoutedActions } from '../lib/server/clarkRouting.ts'
+import { classifyClarkPrompt, formatBaseMarketReadFromRows, formatNoFreshMarketData, formatNoPumpCandidates, parseExplicitExclusions, parseTrendingRows, describeTrendingShape, toClarkUiActions, buildRoutedActions } from '../lib/server/clarkRouting.ts'
 
 // 1. all required market phrasings route to base_market_discovery, not a generic fallback.
 const phrases = [
@@ -82,8 +82,8 @@ assert.ok(noDataCopy.includes('Base market data is incomplete right now'), 'no-d
 //    distinguishes "rows exist but all filtered" from genuine no-data, and exposes the
 //    requested debug fields instead of silently reporting no_rows while rows exist upstream.
 assert.ok(
-  /async function handleBasePumpMap[\s\S]{0,1200}fetch\(`\$\{origin\}\/api\/trending`/.test(routeSrc),
-  'handleBasePumpMap reuses the same /api/trending source as the dashboard Token Screener',
+  /async function handleBasePumpMap[\s\S]{0,1600}getMergedTrendingTokens\(\)/.test(routeSrc),
+  'handleBasePumpMap reuses the same trending merge logic as the dashboard Token Screener',
 )
 assert.ok(
   /formatNoPumpCandidates/.test(routeSrc) && /formatNoPumpCandidates/.test(routingSrc),
@@ -138,6 +138,60 @@ for (const reason of ['source_error', 'no_rows', 'all_rows_filtered']) {
 assert.ok(
   /clarkMarketSource:\s*"market_universe"/.test(routeSrc) && /clarkMarketSource:\s*"trending_api"/.test(routeSrc) && /clarkMarketSource:\s*"fallback"/.test(routeSrc),
   'route.ts tags all three clarkMarketSource values',
+)
+
+// 10. parseTrendingRows handles every response shape the app uses, so a successful
+//     /api/trending payload always yields rows for Clark (never silently 0).
+{
+  const sampleRow = { symbol: 'PEPE2', name: 'Pepe Two', chain: 'base', change24h: 22, volume: 300000, liquidity: 200000 }
+  const shapes = [
+    [[sampleRow], 'array'],
+    [{ items: [sampleRow] }, '{items:[]}'],
+    [{ tokens: [sampleRow] }, '{tokens:[]}'],
+    [{ data: [sampleRow] }, '{data:[]}'],
+    [{ data: { items: [sampleRow] } }, '{data:{items:[]}}'],
+  ]
+  for (const [payload, shapeName] of shapes) {
+    const rows = parseTrendingRows(payload)
+    assert.equal(rows.length, 1, `parseTrendingRows reads ${shapeName}`)
+    assert.equal(rows[0].symbol, 'PEPE2', `parseTrendingRows preserves rows for ${shapeName}`)
+    assert.equal(describeTrendingShape(payload), shapeName, `describeTrendingShape tags ${shapeName}`)
+  }
+  assert.deepEqual(parseTrendingRows(null), [], 'parseTrendingRows handles null safely')
+  assert.deepEqual(parseTrendingRows({ error: 'x' }), [], 'parseTrendingRows handles error-only payload safely')
+}
+
+// 11. Clark reuses the trending merge logic IN-PROCESS (no fragile server self-fetch),
+//     pump-alerts is optional, and the new fetch-diagnostic debug fields are wired.
+assert.ok(
+  /import\s*\{\s*getMergedTrendingTokens\s*\}\s*from\s*"@\/app\/api\/trending\/route"/.test(routeSrc),
+  'route.ts reuses getMergedTrendingTokens() directly instead of self-fetching /api/trending',
+)
+assert.ok(
+  /const result = await getMergedTrendingTokens\(\);/.test(routeSrc),
+  'handleBasePumpMap calls getMergedTrendingTokens() as its primary trending source',
+)
+assert.ok(
+  /pumpAlertsOptionalFailed/.test(routeSrc),
+  'pump-alerts failure is tracked as optional, never gating trending rows',
+)
+for (const field of [
+  'trendingFetchUrlKind', 'trendingHttpStatus', 'trendingResponseShape',
+  'trendingRowsRaw', 'trendingRowsNormalized', 'pumpAlertsOptionalFailed', 'marketEndpointFailureReason',
+]) {
+  assert.ok(routeSrc.includes(field), `route.ts exposes fetch-diagnostic debug field ${field}`)
+}
+// market_endpoint_failed must be gated on trending actually having no normalized rows, so it
+// can never show while trending rows exist.
+assert.ok(
+  /trendingRowsNormalized > 0 \? "trending_api" : "fallback"/.test(routeSrc),
+  'clarkMarketSource is trending_api whenever normalized trending rows exist',
+)
+
+// 12. trending/route.ts exports the shared in-process merge function used above.
+assert.ok(
+  /export async function getMergedTrendingTokens\(/.test(fs.readFileSync(path.join(__dirname, '../app/api/trending/route.ts'), 'utf8')),
+  'trending/route.ts exports getMergedTrendingTokens for safe server-side reuse',
 )
 
 console.log('clark base market routing checks passed')

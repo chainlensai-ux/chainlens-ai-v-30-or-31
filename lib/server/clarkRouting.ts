@@ -1234,6 +1234,43 @@ export function parseExplicitExclusions(prompt: string): string[] {
   return [...out];
 }
 
+/**
+ * Accepts any trending response shape the app has used and returns the row array:
+ * a bare array, or an object keyed by data/items/tokens/results (including nested
+ * {data:{items|tokens:[]}}). Lets Clark read the dashboard's market rows regardless
+ * of which serialization the source returns.
+ */
+export function parseTrendingRows(payload: unknown): Array<Record<string, unknown>> {
+  if (Array.isArray(payload)) return payload as Array<Record<string, unknown>>;
+  if (!payload || typeof payload !== "object") return [];
+  const p = payload as Record<string, unknown>;
+  const direct = p.data ?? p.items ?? p.tokens ?? p.results;
+  if (Array.isArray(direct)) return direct as Array<Record<string, unknown>>;
+  if (direct && typeof direct === "object") {
+    const d = direct as Record<string, unknown>;
+    const nested = d.items ?? d.tokens ?? d.data;
+    if (Array.isArray(nested)) return nested as Array<Record<string, unknown>>;
+  }
+  return [];
+}
+
+/** Human-readable tag for which trending response shape was received (debug only). */
+export function describeTrendingShape(payload: unknown): string {
+  if (Array.isArray(payload)) return "array";
+  if (!payload || typeof payload !== "object") return "none";
+  const p = payload as Record<string, unknown>;
+  if (Array.isArray(p.data)) return "{data:[]}";
+  if (Array.isArray(p.items)) return "{items:[]}";
+  if (Array.isArray(p.tokens)) return "{tokens:[]}";
+  if (Array.isArray(p.results)) return "{results:[]}";
+  if (p.data && typeof p.data === "object") {
+    const d = p.data as Record<string, unknown>;
+    if (Array.isArray(d.items)) return "{data:{items:[]}}";
+    if (Array.isArray(d.tokens)) return "{data:{tokens:[]}}";
+  }
+  return "unknown_object";
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // Pack 1: Token Core Pipeline formatting helpers
 // ─────────────────────────────────────────────────────────────────────────

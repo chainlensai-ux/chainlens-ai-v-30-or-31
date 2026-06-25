@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getBaseMarketUniverse, type BaseMarketCandidate, type BaseMarketMode } from "@/lib/server/baseMarketUniverse";
+import { getMergedTrendingTokens } from "@/app/api/trending/route";
 import { fetchHoneypotSecurity } from "@/lib/server/honeypotSecurity";
 import { runWalletScanner } from "@/lib/server/walletScannerRunner";
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
@@ -49,6 +50,8 @@ import {
   formatWalletFollowupFromMemory,
   formatNoPumpCandidates,
   parseExplicitExclusions,
+  parseTrendingRows,
+  describeTrendingShape,
 } from "@/lib/server/clarkRouting";
 
 const {
@@ -2153,6 +2156,16 @@ async function handlePumpFeedSnapshot(origin: string) {
   ].join("\n");
 }
 
+// Builds an absolute URL for an internal route, preferring the request origin, then a
+// configured app URL env, so a server-side self-fetch never relies on a relative URL.
+function resolveInternalUrl(origin: string, path: string): { url: string; kind: "absolute_origin" | "env_app_url" } | null {
+  if (origin && /^https?:\/\//i.test(origin)) return { url: `${origin}${path}`, kind: "absolute_origin" };
+  const envBase = process.env.NEXT_PUBLIC_APP_URL || process.env.APP_URL
+    || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "");
+  if (envBase && /^https?:\/\//i.test(envBase)) return { url: `${envBase.replace(/\/$/, "")}${path}`, kind: "env_app_url" };
+  return null;
+}
+
 async function handleBasePumpMap(prompt: string, origin: string) {
   const authHeader = clarkInternalCtx.authToken ? `Bearer ${clarkInternalCtx.authToken}` : undefined;
   const EXCLUDED = new Set(['USDC', 'USDT', 'DAI', 'USDBC', 'WETH', 'ETH', 'CBBTC', 'BTC', 'WBTC', 'CBETH', 'STETH', 'WSTETH', 'EURC', 'BUSD', 'FRAX', 'USD+', 'AXLUSDC', 'BSDETH']);
@@ -2162,46 +2175,84 @@ async function handleBasePumpMap(prompt: string, origin: string) {
   const marketProviderAttempted: string[] = ["trending_feed", "pump_alerts_feed"];
   const marketProviderStatus: Record<string, string> = { trending_feed: "not_attempted", pump_alerts_feed: "not_attempted" };
 
-  // Primary: same canonical Base market source the dashboard Token Screener uses.
+  // Primary: the SAME merged rows the dashboard Token Screener shows. Reuse the trending
+  // logic IN-PROCESS (getMergedTrendingTokens) instead of a server-to-server self-fetch to
+  // /api/trending — that self-fetch was failing (no reliable absolute origin / rate-limit on
+  // the shared server IP), which is why Clark saw market_endpoint_failed while the dashboard
+  // rendered rows. A self-fetch is only used as a last-ditch fallback.
   let rawTrendingRows: Record<string, unknown>[] = [];
   let tokens: Record<string, unknown>[] = [];
+  let trendingFetchUrlKind: "direct_function" | "absolute_origin" | "env_app_url" | "none" = "none";
+  let trendingHttpStatus: number | null = null;
+  let trendingResponseShape = "none";
+  let marketEndpointFailureReason: string | null = null;
   try {
-    const res = await fetch(`${origin}/api/trending`, {
-      signal: AbortSignal.timeout(5500),
-      headers: authHeader ? { authorization: authHeader } : {},
-    });
-    if (res.ok) {
-      const json = await res.json();
-      rawTrendingRows = Array.isArray(json?.data) ? (json.data as Record<string, unknown>[]) : [];
-      tokens = rawTrendingRows.filter(t => {
-        const sym = String(t.symbol ?? '').toUpperCase();
-        const ch = String(t.chain ?? '');
-        return sym && !EXCLUDED.has(sym) && (ch === 'base' || ch === 'geckoterminal' || !ch);
-      });
-      marketProviderStatus.trending_feed = "ok";
+    const result = await getMergedTrendingTokens();
+    rawTrendingRows = parseTrendingRows(result);
+    trendingResponseShape = describeTrendingShape(result);
+    trendingFetchUrlKind = "direct_function";
+    marketProviderStatus.trending_feed = "ok";
+  } catch (err) {
+    marketEndpointFailureReason = err instanceof Error ? err.message.slice(0, 120) : "direct_function_threw";
+    // Last-ditch: self-fetch the route (works locally where origin is reliable).
+    const selfUrl = resolveInternalUrl(origin, "/api/trending");
+    if (selfUrl) {
+      try {
+        const res = await fetch(selfUrl.url, { signal: AbortSignal.timeout(5500), headers: authHeader ? { authorization: authHeader } : {} });
+        trendingHttpStatus = res.status;
+        if (res.ok) {
+          const json = await res.json();
+          rawTrendingRows = parseTrendingRows(json);
+          trendingResponseShape = describeTrendingShape(json);
+          trendingFetchUrlKind = selfUrl.kind;
+          marketProviderStatus.trending_feed = "ok";
+          marketEndpointFailureReason = null;
+        } else {
+          marketProviderStatus.trending_feed = "market_endpoint_failed";
+          marketEndpointFailureReason = `http_${res.status}`;
+        }
+      } catch (err2) {
+        marketProviderStatus.trending_feed = "market_endpoint_failed";
+        marketEndpointFailureReason = err2 instanceof Error ? err2.message.slice(0, 120) : "self_fetch_threw";
+      }
     } else {
       marketProviderStatus.trending_feed = "market_endpoint_failed";
     }
-  } catch {
-    marketProviderStatus.trending_feed = "market_endpoint_failed";
   }
+  const trendingRowsRaw = rawTrendingRows.length;
+  tokens = rawTrendingRows.filter(t => {
+    const sym = String(t.symbol ?? '').toUpperCase();
+    const ch = String(t.chain ?? '');
+    return sym && !EXCLUDED.has(sym) && (ch === 'base' || ch === 'geckoterminal' || !ch);
+  });
+  const trendingRowsNormalized = tokens.length;
 
-  // Enrichment: pump-alerts as secondary source
+  // Enrichment ONLY: pump-alerts is optional. A pump-alerts failure must never zero out
+  // trending rows — it is purely additive to the merged candidate list below.
   let pumpAlerts: Record<string, unknown>[] = [];
-  try {
-    const res = await fetch(`${origin}/api/pump-alerts`, {
-      signal: AbortSignal.timeout(4000),
-      headers: authHeader ? { authorization: authHeader } : {},
-    });
-    if (res.ok) {
-      const json = await res.json();
-      pumpAlerts = Array.isArray(json?.alerts) ? (json.alerts as Record<string, unknown>[]) : [];
-      marketProviderStatus.pump_alerts_feed = "ok";
-    } else {
+  let pumpAlertsOptionalFailed = false;
+  const pumpUrl = resolveInternalUrl(origin, "/api/pump-alerts");
+  if (pumpUrl) {
+    try {
+      const res = await fetch(pumpUrl.url, {
+        signal: AbortSignal.timeout(4000),
+        headers: authHeader ? { authorization: authHeader } : {},
+      });
+      if (res.ok) {
+        const json = await res.json();
+        pumpAlerts = Array.isArray(json?.alerts) ? (json.alerts as Record<string, unknown>[]) : [];
+        marketProviderStatus.pump_alerts_feed = "ok";
+      } else {
+        marketProviderStatus.pump_alerts_feed = "market_endpoint_failed";
+        pumpAlertsOptionalFailed = true;
+      }
+    } catch {
       marketProviderStatus.pump_alerts_feed = "market_endpoint_failed";
+      pumpAlertsOptionalFailed = true;
     }
-  } catch {
+  } else {
     marketProviderStatus.pump_alerts_feed = "market_endpoint_failed";
+    pumpAlertsOptionalFailed = true;
   }
 
   // Merge: trending tokens first, then non-duplicate pump-alert items
@@ -2234,15 +2285,24 @@ async function handleBasePumpMap(prompt: string, origin: string) {
   };
   const debug = {
     marketRowsSource: "trending_feed+pump_alerts_feed",
+    clarkMarketSource: trendingRowsNormalized > 0 ? "trending_api" : "fallback",
     marketRowsBeforeFilter,
     marketRowsAfterFilter,
     marketRowsDroppedByReason,
     marketDataCacheHit: false,
     marketProviderAttempted,
     marketProviderStatus,
+    trendingFetchUrlKind,
+    trendingHttpStatus,
+    trendingResponseShape,
+    trendingRowsRaw,
+    trendingRowsNormalized,
+    pumpAlertsOptionalFailed,
+    marketEndpointFailureReason,
   };
 
-  // No rows reached us at all from either source — genuine data outage, not a filter artifact.
+  // No usable rows reached us from the trending source at all — genuine data outage.
+  // (Pump-alerts failing alone never lands here: if trending had rows, merged is non-empty.)
   if (rawTrendingRows.length === 0 && pumpAlerts.length === 0) {
     const reason = marketProviderStatus.trending_feed === "market_endpoint_failed" ? "market_endpoint_failed" : "market_cache_empty";
     return { analysis: formatNoFreshMarketData(), items: [], ...debug, marketFallbackReason: reason };
@@ -3609,22 +3669,25 @@ async function callGeckoTerminal(network: "base" | "eth", origin: string, option
   return res.json();
 }
 
-// Uses req.nextUrl.origin so the call always targets the same deployment
+// Reuses the trending merge logic in-process so it never depends on a server-side
+// self-fetch; falls back to an absolute self-fetch only if the direct call throws.
 async function callTrending(origin: string): Promise<unknown[]> {
-  const authHeader = clarkInternalCtx.authToken ? `Bearer ${clarkInternalCtx.authToken}` : undefined
-  const res = await fetch(`${origin}/api/trending`, {
-    next: { revalidate: 30 },
-    signal: AbortSignal.timeout(8000),
-    headers: authHeader ? { Authorization: authHeader } : {},
-  });
-
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new Error(`Trending ${res.status}: ${body.slice(0, 200)}`);
+  try {
+    const { data } = await getMergedTrendingTokens();
+    return data;
+  } catch {
+    const authHeader = clarkInternalCtx.authToken ? `Bearer ${clarkInternalCtx.authToken}` : undefined
+    const selfUrl = resolveInternalUrl(origin, "/api/trending");
+    if (!selfUrl) return [];
+    const res = await fetch(selfUrl.url, {
+      next: { revalidate: 30 },
+      signal: AbortSignal.timeout(8000),
+      headers: authHeader ? { Authorization: authHeader } : {},
+    });
+    if (!res.ok) return [];
+    const json = await res.json();
+    return parseTrendingRows(json);
   }
-
-  const json = await res.json();
-  return json.data ?? [];
 }
 
 // Calls the new /api/scan-token endpoint — GeckoTerminal only, no external keys needed
@@ -7259,10 +7322,17 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       marketProviderAttempted: basePumpResult.marketProviderAttempted,
       marketProviderStatus: basePumpResult.marketProviderStatus,
       marketFallbackReason: basePumpResult.marketFallbackReason,
+      trendingFetchUrlKind: basePumpResult.trendingFetchUrlKind,
+      trendingHttpStatus: basePumpResult.trendingHttpStatus,
+      trendingResponseShape: basePumpResult.trendingResponseShape,
+      trendingRowsRaw: basePumpResult.trendingRowsRaw,
+      trendingRowsNormalized: basePumpResult.trendingRowsNormalized,
+      pumpAlertsOptionalFailed: basePumpResult.pumpAlertsOptionalFailed,
+      marketEndpointFailureReason: basePumpResult.marketEndpointFailureReason,
       ui: baseMomentumUi,
       clarkMarketFallbackReason: basePumpHasRows ? null : basePumpResult.marketFallbackReason,
       quotaConsumed: basePumpHasRows,
-      clarkMarketSource: basePumpHasRows ? "trending_api" : "fallback",
+      clarkMarketSource: basePumpResult.clarkMarketSource,
       explicitExcludedSymbols,
       routedWithoutBaseRadar: true,
     };
