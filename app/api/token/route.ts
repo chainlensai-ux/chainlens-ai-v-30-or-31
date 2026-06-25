@@ -23,6 +23,7 @@ import {
   classifyPoolByRpc,
   computeLpExitRisk,
   attemptConcentratedPositionProof,
+  buildConcentratedPositionProofRead,
   type ProofApplicability,
   type ConcentratedPositionProof,
 } from '@/lib/server/lpProof'
@@ -4252,6 +4253,28 @@ export async function POST(req: Request) {
       }
     }
 
+    // Safety net: every branch above that finds a concentrated/V3-style primary pool should
+    // already call attemptConcentratedPositionProof, but the RPC-probe fallback inside the
+    // "_lpProofType === unknown" branch (v3Like sub-case) can resolve lpControl to
+    // concentrated_liquidity without running the proof attempt. Never leave
+    // concentratedPositionProof null when the primary pool is concentrated — attempt it here
+    // using only the pool identity already resolved above (no new provider calls).
+    if (_primaryConcentrated && !concentratedPositionProof) {
+      concentratedPositionProof = await attemptConcentratedPositionProof(
+        chain as "eth" | "base",
+        primaryPoolAddress ?? lpVerifyPoolAddress ?? null,
+        primaryMarketPoolId ?? lpPool?.poolId ?? lpVerifyPool?.poolId ?? null,
+        primaryMarketPoolAddressType ?? lpPool?.poolAddressType ?? lpVerifyPool?.poolAddressType ?? "unknown",
+        lpDexId ?? lpDexName ?? null,
+      )
+      lpControl = {
+        ...lpControl,
+        status: "concentrated_liquidity",
+        poolType: lpControl.poolType ?? lpPoolType,
+        reason: `Position proof attempted — ${concentratedPositionProof.status === "not_supported" ? "not supported by current provider path" : concentratedPositionProof.reason}`,
+      };
+    }
+
     // Selection rules 3/4 (shared with Liquidity Safety via lib/server/lpIntelligence):
     // when the PRIMARY pool is concentrated/CLMM but a SEPARATE V2/Aerodrome ERC-20 LP
     // pool was checked above, demote that result to a secondary signal and report the
@@ -4363,6 +4386,14 @@ export async function POST(req: Request) {
     const standardLpProofStatus: string = lpControl.status === 'concentrated_liquidity' ? 'not_applicable' : (lpSafetyUsable ? 'verified' : 'open_check')
     const concentratedPositionProofAttempted = Boolean(concentratedPositionProof)
     const concentratedPositionProofStatus: string = concentratedPositionProof?.status ?? 'not_applicable'
+    // Canonical public read for concentrated primary pools — never left null when the primary
+    // pool is concentrated, even before a real position-owner indexer is wired in (Part 1/4).
+    const concentratedPositionProofRead = (_primaryConcentrated && concentratedPositionProof)
+      ? buildConcentratedPositionProofRead(concentratedPositionProof, {
+          protocol: lpDexId ?? lpDexName ?? null,
+          poolPair: marketPair ?? null,
+        })
+      : null
 
     // TEMPORARY DEBUG (pool-selection / concentrated-proof audit) — exposes the exact pool
     // model/dex selected for THIS scan and why concentrated-position proof was or wasn't
@@ -7161,6 +7192,7 @@ export async function POST(req: Request) {
       lpEvidenceSummary,
       lpControllerIntel,
       concentratedPositionProof,
+      concentratedPositionProofRead,
       lpMovementWatch,
       lpLockBurnIntel,
       lpUnlockTimeline,

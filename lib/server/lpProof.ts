@@ -1485,3 +1485,50 @@ export async function attemptConcentratedPositionProof(
     nextAction: "Check position ownership via the protocol's official position-manager UI or a subgraph indexer.",
   }, "rpc_liquidity_probe", "pool_liquidity_confirmed_no_owner");
 }
+
+/** Public canonical fields layered on top of a real ConcentratedPositionProof attempt — never
+ * invented separately from it. positionOwnershipStatus mirrors `status` under the public name
+ * the dashboard/API contract uses; summary/evidenceGaps/nextActions restate the same
+ * evidence/missingEvidence/nextAction the engine already produced, in the stable public shape. */
+export interface ConcentratedPositionProofRead {
+  proofType: "concentrated_position";
+  protocol: string | null;
+  poolPair: string | null;
+  positionOwnershipStatus: ConcentratedPositionProofStatus;
+  activePositionCount: number | null;
+  totalLiquidityTracked: string | number | null;
+  summary: string;
+  evidenceGaps: string[];
+  nextActions: string[];
+}
+
+export function buildConcentratedPositionProofRead(
+  proof: ConcentratedPositionProof,
+  ctx?: { protocol?: string | null; poolPair?: string | null },
+): ConcentratedPositionProofRead {
+  const status = proof.status === "verified" || proof.status === "partial" ? proof.status : "open_check";
+  const summary = status === "verified" || status === "partial"
+    ? proof.reason
+    : "Concentrated pool detected; position ownership proof is not yet verified.";
+  const evidenceGaps = proof.missingEvidence.length > 0
+    ? proof.missingEvidence
+    : ["protocol-specific position ownership not verified"];
+  const nextActions = proof.nextAction
+    ? [proof.nextAction]
+    : [
+        "verify protocol-specific liquidity positions",
+        "monitor pool liquidity changes",
+        "rescan after position proof support is available",
+      ];
+  return {
+    proofType: "concentrated_position",
+    protocol: ctx?.protocol ?? null,
+    poolPair: ctx?.poolPair ?? null,
+    positionOwnershipStatus: status,
+    activePositionCount: proof.positionCount,
+    totalLiquidityTracked: proof.totalPositionLiquidity,
+    summary,
+    evidenceGaps,
+    nextActions,
+  };
+}

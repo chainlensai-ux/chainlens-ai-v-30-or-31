@@ -237,9 +237,43 @@ async function main() {
     assert.ok(ui.includes('Attempted — verified'), 'UI uses exact verified status label, not raw snake_case')
     assert.ok(ui.includes('Attempted — partial'), 'UI uses exact partial status label')
     assert.ok(ui.includes('Attempted — unsupported'), 'UI uses exact unsupported status label')
-    assert.ok(ui.includes('Not attempted — no concentrated pool detected'), 'UI uses exact not-attempted status label')
+    assert.ok(!ui.includes('Not attempted — no concentrated pool detected'), 'UI never claims no concentrated pool was detected when a concentrated pool WAS detected')
+    assert.ok(ui.includes('Open Check — concentrated pool detected, position ownership proof pending'), 'UI uses correct pending copy for concentrated pools without a resolved proof yet')
     assert.ok(route.includes('positionProofStatus'), 'public lpControl exposes positionProofStatus')
     assert.ok(route.includes('positionProofReason'), 'public lpControl exposes positionProofReason')
+  }
+
+  // ── Canonical concentratedPositionProofRead never claims fake ownership and always carries
+  // the required summary/evidenceGaps/nextActions shape when V1 proof is still an open check ──
+  {
+    const { buildConcentratedPositionProofRead } = await import('../lib/server/lpProof.ts')
+    const proof = await attemptConcentratedPositionProof('eth', null, '0x' + 'd'.repeat(64), 'pool_id', 'uniswap_v4')
+    const read = buildConcentratedPositionProofRead(proof, { protocol: 'uniswap_v4', poolPair: 'TOKEN/WETH' })
+    assert.equal(read.proofType, 'concentrated_position')
+    assert.equal(read.positionOwnershipStatus, 'open_check')
+    assert.equal(read.summary, 'Concentrated pool detected; position ownership proof is not yet verified.')
+    assert.ok(Array.isArray(read.evidenceGaps) && read.evidenceGaps.length > 0)
+    assert.ok(Array.isArray(read.nextActions) && read.nextActions.length > 0)
+    assert.equal(read.protocol, 'uniswap_v4')
+    assert.equal(read.poolPair, 'TOKEN/WETH')
+  }
+
+  // ── Canonical read reflects a real verified proof rather than re-flattening to open_check ──
+  {
+    const poolAddr = '0x6666666666666666666666666666666666666666'
+    const fixtureOwners = [{ address: '0x7777777777777777777777777777777777777777', liquidityRaw: '1000' }]
+    const proof = await attemptConcentratedPositionProof('eth', poolAddr, null, 'contract', 'uniswap_v3', async () => fixtureOwners)
+    const { buildConcentratedPositionProofRead } = await import('../lib/server/lpProof.ts')
+    const read = buildConcentratedPositionProofRead(proof)
+    assert.equal(read.positionOwnershipStatus, 'verified')
+    assert.equal(read.summary, proof.reason)
+  }
+
+  // ── route.ts never leaves concentratedPositionProof null when the primary pool is eligible ──
+  {
+    const route = readFileSync(new URL('../app/api/token/route.ts', import.meta.url), 'utf8')
+    assert.ok(route.includes('_primaryConcentrated && !concentratedPositionProof'), 'safety-net fallback attempts the proof whenever the primary pool is concentrated but no earlier branch ran it')
+    assert.ok(route.includes('concentratedPositionProofRead'), 'route exposes the canonical concentratedPositionProofRead')
   }
 
   console.log('test-concentrated-position-proof.mjs: all assertions passed')

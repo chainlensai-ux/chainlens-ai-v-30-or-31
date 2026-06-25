@@ -5138,7 +5138,7 @@ export default function TerminalTokenScanner() {
                           : `${cpp.poolIdentityType === 'pool_id' && cpp.poolIdentity ? `Pool ID: ${cpp.poolIdentity} · ` : ''}Controller risk: ${cpp.controllerRisk ?? 'unknown'} · ${missingProofHuman.length ? `Missing proof: ${missingProofHuman.join(', ')} · ` : ''}Confidence: ${cpp.confidence ?? 'low'}`,
                       }] : (protocolPosition ? [{
                         label: 'Position Ownership',
-                        value: 'Not attempted — no concentrated pool detected',
+                        value: 'Open Check — concentrated pool detected, position ownership proof pending',
                       }] : [])),
                       { label: 'Exit Risk', value: exitRisk, color: exitRisk === 'Low' ? '#34d399' : exitRisk === 'Watch' || exitRisk === 'Monitor' ? '#fbbf24' : exitRisk === 'High' ? '#f87171' : undefined },
                       { label: 'Liquidity Depth', value: liquidityDepth, color: liquidityDepth === 'Deep' ? '#34d399' : liquidityDepth === 'Moderate' ? '#fbbf24' : liquidityDepth === 'Thin' ? '#f87171' : undefined },
