@@ -63,6 +63,7 @@ import {
   formatTokenRiskRead,
   formatAppContextMissingAsk,
   buildClarkContextActions,
+  resolveClarkFollowupCommand,
   type ClarkWalletContextSummary,
   type ClarkTokenContextSummary,
 } from "@/lib/server/clarkRouting";
@@ -6962,6 +6963,161 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
           clarkFollowupResolvedFrom: "none",
         };
       }
+    }
+  }
+
+  // ─── Natural follow-up command dispatcher ───
+  // Resolves phrasings the rest of the pipeline doesn't (yet) cover — "scan the
+  // first one", "scan number 2", "scan velvet", "open third", "rescan this",
+  // "explain risk on 1" — strictly from real market/token/wallet context. Runs
+  // only when the prompt carries no explicit address (those already route
+  // correctly elsewhere) and defers (returns nothing) on "unknown" so every
+  // existing dispatcher below keeps working unchanged.
+  {
+    const hasExplicitAddress = Boolean(extractAddress(prompt));
+    if (!hasExplicitAddress) {
+      const followupAc = {
+        route: body.appContext?.route ?? null,
+        activeFeature: body.appContext?.activeFeature ?? null,
+        currentTool: body.appContext?.currentTool ?? null,
+        walletSummary: (body.appContext?.walletSummary && typeof body.appContext.walletSummary === "object") ? body.appContext.walletSummary : null,
+        tokenSummary: (body.appContext?.tokenSummary && typeof body.appContext.tokenSummary === "object") ? body.appContext.tokenSummary : null,
+        marketContext: extractStructuredMarketItems(body).length ? { items: extractStructuredMarketItems(body) } : null,
+      };
+      const memMomentumForFollowup = sessionMem.lastMomentumList.map((m) => ({ rank: m.rank, symbol: m.symbol, name: m.name, scanTarget: m.address }));
+      const cmd = resolveClarkFollowupCommand(prompt, followupAc, memMomentumForFollowup);
+      const cmdDebug = {
+        clarkFollowupCommandIntent: cmd.intent,
+        clarkFollowupResolvedFrom: cmd.resolvedFrom,
+        clarkFollowupResolvedRank: cmd.rank,
+        clarkFollowupResolvedSymbol: cmd.symbol,
+        clarkFollowupResolvedAddress: cmd.address,
+        clarkFollowupAmbiguousMatches: cmd.ambiguousMatches,
+        clarkFollowupOmittedReason: cmd.omittedReason,
+      };
+
+      if ((cmd.intent === "scan_rank" || cmd.intent === "scan_symbol" || cmd.intent === "open_rank") && cmd.address) {
+        updateMemIntent(sessionMem, "token_analysis");
+        const scanResult: unknown = await handleClarkAI({ ...body, prompt: `scan ${cmd.address}` }, origin, authHeader, verifiedPlan, sessionMem);
+        const { actions: scanActions } = buildClarkContextActions(
+          { tokenSummary: { address: cmd.address, chain: "base", symbol: cmd.symbol ?? null }, promptActionsEnabled: true },
+          "token_analysis",
+          { scanTarget: cmd.address, symbol: cmd.symbol, chain: "base" },
+        );
+        const resultObj: Record<string, unknown> = (scanResult && typeof scanResult === "object") ? scanResult as Record<string, unknown> : {};
+        return { ...resultObj, ui: { intentBadge: "Token Read", actions: scanActions }, ...cmdDebug };
+      }
+
+      if (cmd.intent === "scan_symbol" && cmd.ambiguousMatches.length > 1) {
+        updateMemIntent(sessionMem, "token_analysis");
+        return {
+          feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [], source: "feature_context",
+          analysis: [
+            `I found multiple movers matching "${cmd.symbol}".`,
+            "Reply with the rank number:",
+            ...cmd.ambiguousMatches.map((m) => `- #${m.rank} ${m.symbol}${m.name ? ` (${m.name})` : ""}`),
+          ].join("\n"),
+          ...cmdDebug,
+        };
+      }
+
+      if ((cmd.intent === "scan_rank" || cmd.intent === "open_rank" || cmd.intent === "scan_symbol") && cmd.omittedReason === "no_scan_target_for_rank") {
+        return {
+          feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [], source: "feature_context",
+          analysis: "I found the row, but I don't have a contract address for it yet. Try a different mover or paste the contract directly.",
+          ...cmdDebug,
+        };
+      }
+      if (cmd.intent === "scan_symbol" && cmd.omittedReason === "no_scan_target_for_symbol") {
+        return {
+          feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [], source: "feature_context",
+          analysis: "I found that token, but I don't have a contract address for it yet. Paste the contract directly and I'll scan it.",
+          ...cmdDebug,
+        };
+      }
+      if (cmd.intent === "scan_symbol" && cmd.omittedReason === "no_symbol_match") {
+        return {
+          feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [], source: "feature_context",
+          analysis: `I don't see "${cmd.symbol}" in the current Base movers. Paste its contract, or ask "what's pumping on Base?" first.`,
+          ...cmdDebug,
+        };
+      }
+      if ((cmd.intent === "scan_rank" || cmd.intent === "open_rank") && (cmd.omittedReason === "no_market_context" || cmd.omittedReason === "rank_not_in_list")) {
+        return {
+          feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [], source: "feature_context",
+          analysis: "Ask \"what's pumping on Base?\" first, or send a token symbol/contract.",
+          ...cmdDebug,
+        };
+      }
+
+      if (cmd.intent === "explain_rank_risk") {
+        if (cmd.address && followupAc.tokenSummary?.address?.toLowerCase() === cmd.address.toLowerCase()) {
+          updateMemIntent(sessionMem, "token_analysis");
+          return {
+            feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: ["memory"], source: "feature_context",
+            analysis: formatTokenRiskRead(followupAc.tokenSummary),
+            ...cmdDebug,
+          };
+        }
+        return {
+          feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [], source: "feature_context",
+          analysis: cmd.rank
+            ? `I haven't scanned #${cmd.rank} yet, so I can't break down its risk. Say "scan ${cmd.rank}" first.`
+            : "I need a number to know which mover you mean — try \"explain risk on 1\".",
+          ...cmdDebug,
+        };
+      }
+
+      if (cmd.intent === "rescan_current_token" && cmd.address) {
+        const { actions: rescanActions } = buildClarkContextActions(
+          { tokenSummary: { address: cmd.address, chain: "base" }, promptActionsEnabled: true },
+          "token_analysis",
+          { scanTarget: cmd.address, chain: "base" },
+        );
+        return {
+          feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [], source: "feature_context",
+          analysis: "Open Token Scanner to rescan this token with the latest data.",
+          ui: { intentBadge: "Token Read", actions: rescanActions },
+          ...cmdDebug,
+        };
+      }
+      if (cmd.intent === "rescan_current_wallet" && cmd.address) {
+        const { actions: rescanActions } = buildClarkContextActions(
+          { walletSummary: { address: cmd.address }, promptActionsEnabled: true },
+          "wallet_analysis",
+          null,
+        );
+        return {
+          feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: [], source: "feature_context",
+          analysis: "Open Wallet Scanner to rescan this wallet with the latest data.",
+          ui: { intentBadge: "Wallet Read", actions: rescanActions },
+          ...cmdDebug,
+        };
+      }
+
+      if (cmd.intent === "explain_current_wallet" && followupAc.walletSummary) {
+        updateMemIntent(sessionMem, "wallet_analysis");
+        return {
+          feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: ["memory"], source: "feature_context",
+          analysis: formatWalletContextRead(followupAc.walletSummary), ...cmdDebug,
+        };
+      }
+      if (cmd.intent === "explain_current_token" && followupAc.tokenSummary) {
+        updateMemIntent(sessionMem, "token_analysis");
+        return {
+          feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: ["memory"], source: "feature_context",
+          analysis: formatTokenContextRead(followupAc.tokenSummary), ...cmdDebug,
+        };
+      }
+      if (cmd.intent === "explain_pnl_lock" && followupAc.walletSummary) {
+        updateMemIntent(sessionMem, "wallet_analysis");
+        return {
+          feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: ["memory"], source: "feature_context",
+          analysis: formatWalletPnlLockedExplanation(followupAc.walletSummary), ...cmdDebug,
+        };
+      }
+      // intent === "unknown" (or an intent we couldn't resolve safely) — fall through silently
+      // to every existing dispatcher below.
     }
   }
 

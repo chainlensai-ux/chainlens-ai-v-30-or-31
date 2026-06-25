@@ -1499,6 +1499,200 @@ export function formatAppContextMissingAsk(kind: ClarkAppFollowupKind): string {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
+// Natural follow-up commands — "scan the first one", "scan velvet", "rescan
+// this", "explain risk on 1" — resolved strictly from real context (the
+// current market/token/wallet summaries). Never guesses a contract from a
+// symbol and never picks between ambiguous matches.
+// ─────────────────────────────────────────────────────────────────────────
+
+export type ClarkFollowupCommandIntent =
+  | "scan_rank"
+  | "scan_symbol"
+  | "open_rank"
+  | "explain_rank_risk"
+  | "rescan_current_token"
+  | "rescan_current_wallet"
+  | "explain_current_wallet"
+  | "explain_current_token"
+  | "explain_pnl_lock"
+  | "unknown";
+
+export type ClarkFollowupMarketItem = {
+  rank: number;
+  symbol?: string | null;
+  name?: string | null;
+  scanTarget?: string | null;
+  tokenAddress?: string | null;
+};
+
+export type ClarkFollowupAppContext = {
+  route?: string | null;
+  activeFeature?: string | null;
+  currentTool?: string | null;
+  walletSummary?: ClarkWalletContextSummary | null;
+  tokenSummary?: ClarkTokenContextSummary | null;
+  marketContext?: { items?: ClarkFollowupMarketItem[] | null } | null;
+};
+
+export type ClarkFollowupCommandResult = {
+  intent: ClarkFollowupCommandIntent;
+  resolvedFrom: "market_context" | "session_memory" | "token_context" | "wallet_context" | "none";
+  rank: number | null;
+  symbol: string | null;
+  address: string | null;
+  ambiguousMatches: Array<{ rank: number; symbol: string; name: string | null }>;
+  omittedReason: string | null;
+};
+
+const ORDINAL_WORD_MAP: Record<string, number> = {
+  first: 1, second: 2, third: 3, fourth: 4, fifth: 5,
+  sixth: 6, seventh: 7, eighth: 8, ninth: 9, tenth: 10,
+};
+
+const RANK_VERB_RE = "(?:scan|check|open)";
+
+function parseFollowupRank(text: string): number | null {
+  const t = text.trim().toLowerCase();
+  const ordinal = t.match(new RegExp(`\\b${RANK_VERB_RE}\\s+(?:the\\s+)?(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)(?:\\s+one)?\\b`));
+  if (ordinal) return ORDINAL_WORD_MAP[ordinal[1]] ?? null;
+  const numbered = t.match(new RegExp(`\\b${RANK_VERB_RE}\\s+(?:number\\s+)?([1-9]\\d{0,2})\\b`));
+  if (numbered) return Number(numbered[1]);
+  const bare = t.match(/^([1-9]\d{0,2})$/);
+  if (bare) return Number(bare[1]);
+  return null;
+}
+
+const EXPLAIN_RANK_RISK_RE = /\bexplain\s+risk\s+on\s+(?:the\s+)?(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|number\s+)?([1-9]\d{0,2})?\b|\bwhy\s+is\s+(?:number\s+)?([1-9]\d{0,2})\s+risky\b|\bwhy\s+is\s+(?:the\s+)?(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)\s+(?:one\s+)?risky\b/;
+
+function parseExplainRankRisk(text: string): number | null {
+  const t = text.trim().toLowerCase();
+  const m = t.match(EXPLAIN_RANK_RISK_RE);
+  if (!m) return null;
+  const word = m[1] ?? m[4];
+  if (word && ORDINAL_WORD_MAP[word.trim()]) return ORDINAL_WORD_MAP[word.trim()];
+  const num = m[2] ?? m[3];
+  return num ? Number(num) : null;
+}
+
+const RESCAN_THIS_RE = /^\s*rescan\s+(?:this|it)\b.*$|^\s*rescan\??\s*$/i;
+const SCAN_SYMBOL_RE = new RegExp(`\\b${RANK_VERB_RE}\\s+(?:this\\s+)?([a-zA-Z][a-zA-Z0-9]{1,14})\\b`);
+const STOPWORDS = new Set(["this", "that", "it", "token", "wallet", "one", "number"]);
+
+function findMomentumMatches(
+  list: ClarkFollowupMarketItem[],
+  predicate: (item: ClarkFollowupMarketItem) => boolean,
+): ClarkFollowupMarketItem[] {
+  return list.filter(predicate);
+}
+
+/**
+ * Classifies a natural follow-up command and resolves it strictly from the
+ * current market/token/wallet context — appContext.marketContext.items first,
+ * then the sessionMemMomentumList fallback. Never invents an address: a rank
+ * or symbol that resolves to a row without a real on-chain address comes back
+ * with address=null and an omittedReason instead of a guess.
+ */
+export function resolveClarkFollowupCommand(
+  prompt: string,
+  appContext: ClarkFollowupAppContext | null | undefined,
+  sessionMemMomentumList?: ClarkFollowupMarketItem[] | null,
+): ClarkFollowupCommandResult {
+  const ac = appContext ?? {};
+  const t = String(prompt ?? "").trim();
+  const empty: ClarkFollowupCommandResult = {
+    intent: "unknown", resolvedFrom: "none", rank: null, symbol: null, address: null,
+    ambiguousMatches: [], omittedReason: null,
+  };
+  if (!t) return empty;
+
+  const fromMarketContext = Array.isArray(ac.marketContext?.items) ? (ac.marketContext!.items as ClarkFollowupMarketItem[]) : [];
+  const fromSessionMem = Array.isArray(sessionMemMomentumList) ? sessionMemMomentumList : [];
+  const list = fromMarketContext.length ? fromMarketContext : fromSessionMem;
+  const listSource: "market_context" | "session_memory" = fromMarketContext.length ? "market_context" : "session_memory";
+
+  const routeTag = String(ac.route ?? ac.activeFeature ?? ac.currentTool ?? "").toLowerCase();
+
+  // 1. PnL-locked — wallet context only, never guesses from a token.
+  if (/\bpnl\s+(?:is\s+)?locked\b/.test(t.toLowerCase()) || /\bwhy\s+(?:is\s+|are\s+)?(?:the\s+|my\s+)?(?:pnl|win\s*rate|profit)\b[^.?!]*\b(lock|locked|hidden|missing|unavailable|not\s+show)/i.test(t)) {
+    if (ac.walletSummary) return { ...empty, intent: "explain_pnl_lock", resolvedFrom: "wallet_context" };
+    return { ...empty, intent: "explain_pnl_lock", omittedReason: "no_wallet_context" };
+  }
+
+  // 2. "explain risk on 1" / "why is 2 risky" — rank-scoped risk explanation.
+  const riskRank = parseExplainRankRisk(t);
+  if (riskRank != null) {
+    const match = list.find((m) => m.rank === riskRank) ?? null;
+    if (!match) return { ...empty, intent: "explain_rank_risk", rank: riskRank, omittedReason: "rank_not_in_list" };
+    const addr = match.scanTarget ?? match.tokenAddress ?? null;
+    if (!addr) return { ...empty, intent: "explain_rank_risk", rank: riskRank, symbol: match.symbol ?? null, resolvedFrom: listSource, omittedReason: "no_scan_target_for_rank" };
+    return { ...empty, intent: "explain_rank_risk", rank: riskRank, symbol: match.symbol ?? null, address: addr, resolvedFrom: listSource };
+  }
+
+  // 3. "rescan this" — current token or wallet page, never both.
+  if (RESCAN_THIS_RE.test(t)) {
+    const isWalletRoute = /wallet/.test(routeTag);
+    const isTokenRoute = /token/.test(routeTag);
+    if (isWalletRoute && ac.walletSummary?.address) return { ...empty, intent: "rescan_current_wallet", address: ac.walletSummary.address, resolvedFrom: "wallet_context" };
+    if (isTokenRoute && ac.tokenSummary?.address) return { ...empty, intent: "rescan_current_token", address: ac.tokenSummary.address, resolvedFrom: "token_context" };
+    if (ac.tokenSummary?.address && !ac.walletSummary?.address) return { ...empty, intent: "rescan_current_token", address: ac.tokenSummary.address, resolvedFrom: "token_context" };
+    if (ac.walletSummary?.address && !ac.tokenSummary?.address) return { ...empty, intent: "rescan_current_wallet", address: ac.walletSummary.address, resolvedFrom: "wallet_context" };
+    return { ...empty, intent: "unknown", omittedReason: "ambiguous_rescan_target" };
+  }
+
+  // 4. Rank-based scan/open ("scan the first one", "scan number 2", "open third").
+  const rank = parseFollowupRank(t);
+  if (rank != null) {
+    const intent: ClarkFollowupCommandIntent = /^\s*open\b/i.test(t) ? "open_rank" : "scan_rank";
+    if (!list.length) return { ...empty, intent, rank, omittedReason: "no_market_context" };
+    const match = list.find((m) => m.rank === rank) ?? null;
+    if (!match) return { ...empty, intent, rank, resolvedFrom: listSource, omittedReason: "rank_not_in_list" };
+    const addr = match.scanTarget ?? match.tokenAddress ?? null;
+    if (!addr) return { ...empty, intent, rank, symbol: match.symbol ?? null, resolvedFrom: listSource, omittedReason: "no_scan_target_for_rank" };
+    return { ...empty, intent, rank, symbol: match.symbol ?? null, address: addr, resolvedFrom: listSource };
+  }
+
+  // 5. Symbol-based scan/check/open ("scan velvet", "check VELVET", "open O") — exact match only.
+  const symbolMatch = t.match(SCAN_SYMBOL_RE);
+  const rawSymbol = symbolMatch?.[1]?.toLowerCase() ?? null;
+  if (rawSymbol && !STOPWORDS.has(rawSymbol) && !/^\d+$/.test(rawSymbol)) {
+    const intent: ClarkFollowupCommandIntent = /^\s*open\b/i.test(t) ? "open_rank" : "scan_symbol";
+    if (!list.length) return { ...empty, intent: "scan_symbol", symbol: rawSymbol, omittedReason: "no_market_context" };
+    const exactSymbol = findMomentumMatches(list, (m) => (m.symbol ?? "").toLowerCase() === rawSymbol);
+    const exactName = exactSymbol.length ? [] : findMomentumMatches(list, (m) => (m.name ?? "").toLowerCase() === rawSymbol);
+    const matches = exactSymbol.length ? exactSymbol : exactName;
+    if (matches.length === 1) {
+      const m = matches[0];
+      const addr = m.scanTarget ?? m.tokenAddress ?? null;
+      if (!addr) return { ...empty, intent: "scan_symbol", symbol: rawSymbol, resolvedFrom: listSource, omittedReason: "no_scan_target_for_symbol" };
+      return { ...empty, intent: "scan_symbol", symbol: rawSymbol, address: addr, resolvedFrom: listSource };
+    }
+    if (matches.length > 1) {
+      return {
+        ...empty, intent: "scan_symbol", symbol: rawSymbol, resolvedFrom: listSource,
+        ambiguousMatches: matches.slice(0, 5).map((m) => ({ rank: m.rank, symbol: m.symbol ?? "?", name: m.name ?? null })),
+        omittedReason: "ambiguous_symbol",
+      };
+    }
+    return { ...empty, intent: "scan_symbol", symbol: rawSymbol, omittedReason: "no_symbol_match" };
+  }
+
+  // 6. "explain this" / "what are the risks" current-page reads (no rank/symbol given).
+  const followupKind = classifyAppContextFollowup(t);
+  if (followupKind === "explain" || followupKind === "next_step" || followupKind === "wallet_quality") {
+    if (/token/.test(routeTag) && ac.tokenSummary) return { ...empty, intent: "explain_current_token", resolvedFrom: "token_context" };
+    if (ac.walletSummary) return { ...empty, intent: "explain_current_wallet", resolvedFrom: "wallet_context" };
+    if (ac.tokenSummary) return { ...empty, intent: "explain_current_token", resolvedFrom: "token_context" };
+    return { ...empty, intent: "unknown", omittedReason: "no_context_in_view" };
+  }
+  if (followupKind === "token_risks" || followupKind === "token_explain") {
+    if (ac.tokenSummary) return { ...empty, intent: "explain_current_token", resolvedFrom: "token_context" };
+    return { ...empty, intent: "explain_current_token", omittedReason: "no_token_context" };
+  }
+
+  return empty;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 // Route-aware ui.actions — safe next-step CTAs built only from real app routes
 // and the current appContext/result. Never invents an action: a CTA is only
 // included when the underlying address/route it needs actually exists.
