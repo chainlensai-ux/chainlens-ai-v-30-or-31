@@ -3,7 +3,7 @@
 import { Suspense, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { usePathname, useSearchParams } from 'next/navigation'
 import { supabase } from '@/lib/supabaseClient'
-import { getClarkSessionId as getOrCreateSessionId, readClarkClientContext as getClientClarkContext, persistClarkMemoryEcho, persistClarkMomentumList } from '@/lib/client/clarkMemory'
+import { getClarkSessionId as getOrCreateSessionId, readClarkClientContext as getClientClarkContext, persistClarkMemoryEcho, persistClarkMomentumList, persistMarketMomentum, readMarketMomentum } from '@/lib/client/clarkMemory'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 type ClarkAction = { label: string; href?: string; prompt?: string; kind?: 'link' | 'prompt'; requiresInput?: boolean }
@@ -207,9 +207,12 @@ function ClarkAiContent() {
       }
       const walletSummary = readJson('chainlens:clark:lastWalletSummary')
       const tokenSummary = readJson('chainlens:clark:lastTokenSummary')
+      const persistedMomentum = readMarketMomentum()
       const latestMarketContext = clarkContextRef.current.lastMarketList?.length
         ? { items: clarkContextRef.current.lastMarketList }
-        : null
+        : persistedMomentum?.length
+          ? { items: persistedMomentum }
+          : null
       const appContext = {
         route: pathname,
         chain: 'base',
@@ -253,6 +256,20 @@ function ClarkAiContent() {
       const nextItems = Array.isArray(marketContext?.items) ? marketContext?.items : null
       if (nextItems && nextItems.length > 0) {
         persistClarkMomentumList(nextItems)
+        persistMarketMomentum((nextItems as Array<Record<string, unknown>>).map((item, i) => ({
+          rank: typeof item.rank === 'number' ? item.rank : i + 1,
+          symbol: typeof item.symbol === 'string' ? item.symbol : '?',
+          name: typeof item.name === 'string' ? item.name : null,
+          chain: 'base',
+          tokenAddress: typeof item.tokenAddress === 'string' ? item.tokenAddress : null,
+          poolAddress: typeof item.poolAddress === 'string' ? item.poolAddress : null,
+          scanTarget: typeof item.scanTarget === 'string' ? item.scanTarget : (typeof item.tokenAddress === 'string' ? item.tokenAddress : (typeof item.poolAddress === 'string' ? item.poolAddress : null)),
+          scanTargetType: typeof item.scanTargetType === 'string' ? item.scanTargetType : null,
+          liquidity: typeof item.liquidity === 'number' ? item.liquidity : null,
+          volume24h: typeof item.volume24h === 'number' ? item.volume24h : null,
+          change24h: typeof item.change24h === 'number' ? item.change24h : null,
+          tag: typeof item.reasonTag === 'string' ? item.reasonTag : null,
+        })))
         clarkContextRef.current.lastMarketList = nextItems as ClarkContextState['lastMarketList']
         const addrSet = new Set((clarkContextRef.current.seenMarketAddresses ?? []).map((x) => x.toLowerCase()))
         const symSet  = new Set((clarkContextRef.current.seenMarketSymbols ?? []).map((x) => x.toUpperCase()))
@@ -285,7 +302,18 @@ function ClarkAiContent() {
         const prompt = (a as ClarkAction).prompt
         return typeof href === 'string' || typeof prompt === 'string'
       }) : []
-      setMessages((prev) => { const next = [...prev]; next[next.length - 1] = { role: 'clark', text: String(reply), intentBadge: typeof ui?.intentBadge === 'string' ? ui.intentBadge : null, actions }; return next })
+      const statusMessage = typeof payload.clarkFollowupStatusMessage === 'string' ? payload.clarkFollowupStatusMessage : null
+      setMessages((prev) => {
+        const next = [...prev]
+        const finalMsg: Message = { role: 'clark', text: String(reply), intentBadge: typeof ui?.intentBadge === 'string' ? ui.intentBadge : null, actions }
+        if (statusMessage) {
+          next[next.length - 1] = { role: 'clark', text: statusMessage }
+          next.push(finalMsg)
+        } else {
+          next[next.length - 1] = finalMsg
+        }
+        return next
+      })
     } catch {
       setMessages((prev) => { const next = [...prev]; next[next.length - 1] = { role: 'clark', text: FALLBACK_ERROR_MESSAGE }; return next })
     } finally { setLoading(false) }

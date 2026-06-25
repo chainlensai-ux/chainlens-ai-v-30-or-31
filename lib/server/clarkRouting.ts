@@ -418,7 +418,7 @@ export function formatBaseMarketReadFromRows(rows: MarketLikeRow[] | undefined |
   });
   lines.push("");
   lines.push("Want me to scan the top one in Token Scanner?");
-  lines.push("CTA: Open Base Radar / Open Token Scanner / Refresh Market Data");
+  lines.push("CTA: Scan top token / Open Token Scanner / Refresh Market Data");
   return lines.join("\n");
 }
 
@@ -1787,7 +1787,7 @@ export function buildClarkContextActions(
     } else {
       omittedReasons.push("top_mover_no_scan_target");
     }
-    actions.push({ label: "Open Base Radar", href: "/terminal/base-radar", kind: "link" });
+    actions.push({ label: "Open Token Scanner", href: "/terminal/token-scanner", kind: "link" });
     actions.push({ label: "Refresh Market Data", href: "/terminal?refresh=market", kind: "link" });
   }
 

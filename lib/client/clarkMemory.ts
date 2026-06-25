@@ -87,6 +87,49 @@ export function persistClarkMomentumList(items: unknown[]): void {
   sessionStorage.setItem(LAST_MOMENTUM_SHOWN_COUNT_KEY, String(Math.min(7, items.length)))
 }
 
+// ── Persisted market momentum (survives page refresh, 15-minute expiry) ────────────────────────
+const MARKET_MOMENTUM_KEY = 'chainlens:lastMarketMomentum'
+const MARKET_MOMENTUM_TTL_MS = 15 * 60 * 1000
+
+export type ClarkMarketMomentumItem = {
+  rank: number
+  symbol: string
+  name?: string | null
+  chain?: string | null
+  tokenAddress?: string | null
+  poolAddress?: string | null
+  scanTarget?: string | null
+  scanTargetType?: string | null
+  liquidity?: number | null
+  volume24h?: number | null
+  change24h?: number | null
+  tag?: string | null
+}
+
+/** Persists the latest Clark market momentum list to localStorage with a 15-minute expiry. */
+export function persistMarketMomentum(items: ClarkMarketMomentumItem[]): void {
+  if (typeof window === 'undefined') return
+  try {
+    const createdAt = Date.now()
+    localStorage.setItem(MARKET_MOMENTUM_KEY, JSON.stringify({ items, createdAt, expiresAt: createdAt + MARKET_MOMENTUM_TTL_MS }))
+  } catch { /* localStorage unavailable or quota exceeded — safe to ignore */ }
+}
+
+/** Reads the persisted market momentum list from localStorage, ignoring expired or malformed entries. */
+export function readMarketMomentum(): ClarkMarketMomentumItem[] | null {
+  if (typeof window === 'undefined') return null
+  try {
+    const raw = localStorage.getItem(MARKET_MOMENTUM_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as { items?: unknown; createdAt?: unknown; expiresAt?: unknown }
+    if (!Array.isArray(parsed.items) || typeof parsed.expiresAt !== 'number') return null
+    if (Date.now() > parsed.expiresAt) return null
+    return parsed.items as ClarkMarketMomentumItem[]
+  } catch {
+    return null
+  }
+}
+
 /** Headers + body fields every Clark request must send so the backend can route/restore memory. */
 export function buildClarkRequestMeta(): { headers: { 'x-clark-session': string }; body: { sessionId: string; clientContext: ClarkClientContext } } {
   const sessionId = getClarkSessionId()

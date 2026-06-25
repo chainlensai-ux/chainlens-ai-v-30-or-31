@@ -6988,16 +6988,21 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       const cmd = resolveClarkFollowupCommand(prompt, followupAc, memMomentumForFollowup);
       const cmdDebug = {
         clarkFollowupCommandIntent: cmd.intent,
+        clarkFollowupCommand: cmd.intent,
         clarkFollowupResolvedFrom: cmd.resolvedFrom,
         clarkFollowupResolvedRank: cmd.rank,
         clarkFollowupResolvedSymbol: cmd.symbol,
         clarkFollowupResolvedAddress: cmd.address,
+        clarkFollowupScanTargetPresent: Boolean(cmd.address),
+        clarkFollowupStatusMessage: null as string | null,
         clarkFollowupAmbiguousMatches: cmd.ambiguousMatches,
         clarkFollowupOmittedReason: cmd.omittedReason,
       };
 
       if ((cmd.intent === "scan_rank" || cmd.intent === "scan_symbol" || cmd.intent === "open_rank") && cmd.address) {
         updateMemIntent(sessionMem, "token_analysis");
+        const statusLabel = cmd.symbol ? String(cmd.symbol).toUpperCase() : "this token";
+        const statusMessage = `Scanning ${statusLabel} on Base…\nContract: ${cmd.address}`;
         const scanResult: unknown = await handleClarkAI({ ...body, prompt: `scan ${cmd.address}` }, origin, authHeader, verifiedPlan, sessionMem);
         const { actions: scanActions } = buildClarkContextActions(
           { tokenSummary: { address: cmd.address, chain: "base", symbol: cmd.symbol ?? null }, promptActionsEnabled: true },
@@ -7005,7 +7010,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
           { scanTarget: cmd.address, symbol: cmd.symbol, chain: "base" },
         );
         const resultObj: Record<string, unknown> = (scanResult && typeof scanResult === "object") ? scanResult as Record<string, unknown> : {};
-        return { ...resultObj, ui: { intentBadge: "Token Read", actions: scanActions }, ...cmdDebug };
+        return { ...resultObj, ui: { intentBadge: "Token Read", actions: scanActions }, ...cmdDebug, clarkFollowupStatusMessage: statusMessage };
       }
 
       if (cmd.intent === "scan_symbol" && cmd.ambiguousMatches.length > 1) {
@@ -7024,7 +7029,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       if ((cmd.intent === "scan_rank" || cmd.intent === "open_rank" || cmd.intent === "scan_symbol") && cmd.omittedReason === "no_scan_target_for_rank") {
         return {
           feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [], source: "feature_context",
-          analysis: "I found the row, but I don't have a contract address for it yet. Try a different mover or paste the contract directly.",
+          analysis: "I found that market row, but there is no contract address attached yet. Open Token Scanner and paste the contract when available.",
           ...cmdDebug,
         };
       }
@@ -7513,7 +7518,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   if (isBaseMomentumPrompt(prompt)) {
     // Free users get a limited 3-mover preview; gate is applied in the response below
     if (process.env.NODE_ENV === "development") console.log("[clark-render]", { matchedIntent: "base_pump_map", rendererUsed: "base_pump_map", featureFromClient: body.feature, normalizedPrompt: normalizePromptForIntent(prompt) });
-    const baseMomentumActions = buildRoutedActions(["Open Base Radar", "Open Token Scanner", "Refresh Market Data"]);
+    const baseMomentumActions = buildRoutedActions(["Open Token Scanner", "Refresh Market Data"]);
     const baseMomentumUi = { intentBadge: "market", actions: toClarkUiActions(baseMomentumActions) };
     const explicitExcludedSymbols = parseExplicitExclusions(prompt);
     const momentumExclusionSet = new Set(explicitExcludedSymbols);
@@ -8148,7 +8153,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     if (Array.isArray(dashboardRows) && dashboardRows.length > 0) {
       const formatted = formatBaseMarketReadFromRows(dashboardRows);
       if (formatted) {
-        const actions = buildRoutedActions(["Open Base Radar", "Open Token Scanner", "Refresh Market Data"]);
+        const actions = buildRoutedActions(["Open Token Scanner", "Refresh Market Data"]);
         return {
           feature: "clark-ai", chain, mode: "analysis", intent: "base_market_discovery", toolsUsed: [],
           analysis: formatted,
@@ -8169,7 +8174,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       }));
       const formatted = formatBaseMarketReadFromCandidates(mappedCandidates);
       if (formatted) {
-        const actions = buildRoutedActions(["Open Base Radar", "Open Token Scanner", "Refresh Market Data"]);
+        const actions = buildRoutedActions(["Open Token Scanner", "Refresh Market Data"]);
         return {
           feature: "clark-ai", chain, mode: "analysis", intent: "base_market_discovery", toolsUsed: ["base_market_universe"],
           analysis: formatted,
@@ -9769,7 +9774,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const marketPreviewLimit = planAllows(verifiedPlan, 'base_radar_full') ? filteredMarketRows.length : Math.min(filteredMarketRows.length, 3);
     const displayRows = filteredMarketRows.slice(0, marketPreviewLimit);
     const isPreviewLimitedMarket = !planAllows(verifiedPlan, 'base_radar_full') && filteredMarketRows.length > 3;
-    const marketCtaUi = { intentBadge: "market", actions: toClarkUiActions(buildRoutedActions(["Open Base Radar", "Open Token Scanner", "Refresh Market Data"])) };
+    const marketCtaUi = { intentBadge: "market", actions: toClarkUiActions(buildRoutedActions(["Open Token Scanner", "Refresh Market Data"])) };
     if (displayRows.length > 0) {
       const headerLine = strictDifferent
         ? "Clark is showing a fresh set of different Base candidates from the current pool feed."
