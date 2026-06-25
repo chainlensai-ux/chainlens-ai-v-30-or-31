@@ -1924,6 +1924,15 @@ export type TokenScanEvidence = {
   liquidity?: { pools?: number; topPoolLiquidity?: number | null } | null;
   warnings?: string[];
   ok?: boolean;
+  devIntel?: Record<string, unknown> | null;
+  deployerProfile?: Record<string, unknown> | null;
+  ownership?: Record<string, unknown> | null;
+  supplyControl?: Record<string, unknown> | null;
+  clusterMap?: Record<string, unknown> | null;
+  previousProjects?: Array<Record<string, unknown>>;
+  deployerAddress?: string | null;
+  ownerAddress?: string | null;
+  linkedWallets?: Array<Record<string, unknown>>;
 };
 
 // Returns true only if at least one useful evidence section is present —
@@ -2662,79 +2671,106 @@ export function formatTokenApeRiskRead(ev: TokenScanEvidence | null | undefined,
   ].join("\n");
 }
 
-export type DevHistoryStatus = "no_evidence" | "risk_signals" | "open_check";
+export type DevHistoryEvidenceLevel = "confirmed_rug" | "cross_token_signals" | "deployer_confirmed" | "token_local_only" | "none";
+export type DevHistoryStatus = "confirmed_rug" | "risk_signals" | "no_evidence" | "open_check";
 
-/**
- * "Has this dev ever rugged before / check this dev's history" — premium CORTEX-style dev
- * history read. Never claims confirmed rug history; only reports contract-control/LP signals
- * actually present in available evidence, or states plainly that none was found.
- */
+const DEV_HISTORY_ADDR_RE = /^0x[a-fA-F0-9]{40}$/;
+function devHistoryObj(value: unknown): Record<string, unknown> { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}; }
+function devHistoryArray(value: unknown): unknown[] { return Array.isArray(value) ? value : []; }
+function devHistoryAddr(value: unknown): string | null { return typeof value === "string" && DEV_HISTORY_ADDR_RE.test(value.trim()) ? value.trim() : null; }
+function devHistoryNum(value: unknown): number | null { return typeof value === "number" && Number.isFinite(value) ? value : null; }
+function devHistoryBool(value: unknown): boolean | null { return typeof value === "boolean" ? value : null; }
+function devHistoryUnique(values: Array<string | null | undefined>): string[] { const seen = new Set<string>(); return values.filter((v): v is string => { if (!v) return false; const key = v.toLowerCase(); if (seen.has(key)) return false; seen.add(key); return true; }); }
+function devHistoryExplicitRug(value: unknown): boolean { const text = JSON.stringify(value ?? "").toLowerCase(); return /\b(confirmed|explicit|known|prior|previous)\b.{0,80}\b(rug|scam|rugpull|rug-pull)\b|\b(rug|scam|rugpull|rug-pull)\b.{0,80}\b(confirmed|explicit|known)\b/.test(text); }
+
+export type DevHistoryEvidence = {
+  evidenceLevel: DevHistoryEvidenceLevel;
+  status: DevHistoryStatus;
+  statusReason: string;
+  inputType: "Token contract" | "Dev wallet" | "Unknown";
+  chain?: string | null;
+  address?: string | null;
+  deployer?: string | null;
+  owner?: string | null;
+  linkedWallets: string[];
+  confidence: string;
+  tokenLocalRiskSignals: string[];
+  previousLaunchedTokens: string[];
+  repeatedRiskyPatterns: string[];
+  linkedWalletClusterSignals: string[];
+  suspiciousFundingPatterns: string[];
+  priorConfirmedRugEvidence: string[];
+  evidenceGaps: string[];
+  sourcesUsed: string[];
+  apiPathsUsed: string[];
+  /** Back-compat aliases for older local scripts. Prefer evidenceGaps/tokenLocalRiskSignals. */
+  gaps?: string[];
+  riskSignals?: string[];
+};
+
 export function formatDevHistoryRead(opts: {
   status: DevHistoryStatus;
+  inputType?: "Token contract" | "Dev wallet" | "Unknown";
+  chain?: string | null;
+  address?: string | null;
   deployer?: string | null;
+  owner?: string | null;
   linkedWallets?: string[];
-  riskSignals?: string[];
+  confidence?: string | null;
+  tokenLocalRiskSignals?: string[];
+  previousLaunchedTokens?: string[];
+  repeatedRiskyPatterns?: string[];
+  linkedWalletClusterSignals?: string[];
+  suspiciousFundingPatterns?: string[];
+  priorConfirmedRugEvidence?: string[];
   gaps?: string[];
 }): string {
-  const { status, deployer, linkedWallets = [], riskSignals = [], gaps = [] } = opts;
-  const statusLine =
-    status === "risk_signals" ? "Risk signals found"
-    : status === "no_evidence" ? "No confirmed rug evidence"
-    : "Open Check";
-
-  const bottomLine =
-    status === "risk_signals" ? "I found signals consistent with risky deployer behavior — that is not the same as a confirmed past rug."
-    : status === "no_evidence" ? "No confirmed rug evidence in available data."
-    : "Not enough data to make a call either way.";
-
+  const { status, inputType = "Unknown", chain = "Open Check", address = null, deployer = null, owner = null, linkedWallets = [], confidence = "Open Check", tokenLocalRiskSignals = [], previousLaunchedTokens = [], repeatedRiskyPatterns = [], linkedWalletClusterSignals = [], suspiciousFundingPatterns = [], priorConfirmedRugEvidence = [], gaps = [] } = opts;
+  const statusLine = status === "confirmed_rug" ? "Confirmed prior rug evidence found" : status === "risk_signals" ? "Risk signals found" : status === "no_evidence" ? "No confirmed rug evidence in available data" : "Open Check";
+  const bottomLine = status === "confirmed_rug" ? "Confirmed prior rug evidence found in available data." : status === "risk_signals" ? "I found signals consistent with risky deployer behavior, but that is not the same as a confirmed past rug." : status === "no_evidence" ? "No confirmed rug evidence was found in available data, but this is not a guarantee." : tokenLocalRiskSignals.length > 0 ? "This token has risk signals, but I cannot confirm this dev has rugged before from available evidence." : "This is an Open Check because available evidence is incomplete.";
+  const list = (items: string[], fallback = "Open Check") => items.length > 0 ? items.map((r) => `- ${r}`).join("\n") : `- ${fallback}`;
   return [
-    "CORTEX DEV HISTORY READ",
-    "",
-    "Status:",
-    `- ${statusLine}`,
-    "",
-    "Dev / deployer:",
-    `- Address: ${deployer ?? "Open check — deployer/dev address not confirmed in available data."}`,
-    `- Linked wallets / cluster influence: ${linkedWallets.length > 0 ? linkedWallets.join(", ") : "Open check — not confirmed in available data."}`,
-    "",
-    "Risk signals:",
-    riskSignals.length > 0 ? riskSignals.map((r) => `- ${r}`).join("\n") : "- None confirmed in available data.",
-    "",
-    "Evidence gaps:",
-    gaps.length > 0 ? gaps.map((g) => `- ${g}`).join("\n") : "- None.",
-    "",
-    "Bottom line:",
-    `- ${bottomLine} I can't guarantee safety. This is a risk read, not financial advice.`,
+    "CORTEX DEV HISTORY READ", "", "Status:", `- ${statusLine}`, "", "Target:",
+    `- Input type: ${inputType}`, `- Chain: ${chain ?? "Open Check"}`, `- Address: ${address ?? "Open Check"}`, "",
+    "Deployer / dev identity:", `- Deployer: ${deployer ?? "Open Check"}`, `- Owner: ${owner ?? "Open Check"}`, `- Linked wallets: ${linkedWallets.length > 0 ? linkedWallets.join(", ") : "Open Check"}`, `- Confidence: ${confidence ?? "Open Check"}`, "",
+    "Token-local risk signals:", list(tokenLocalRiskSignals), "", "Cross-token / wallet-history evidence:",
+    `- previous launched tokens: ${previousLaunchedTokens.length > 0 ? previousLaunchedTokens.join(", ") : "Open Check"}`,
+    `- repeated risky patterns: ${repeatedRiskyPatterns.length > 0 ? repeatedRiskyPatterns.join("; ") : "Open Check"}`,
+    `- linked-wallet/cluster signals: ${linkedWalletClusterSignals.length > 0 ? linkedWalletClusterSignals.join("; ") : "Open Check"}`,
+    `- suspicious funding/transfer patterns: ${suspiciousFundingPatterns.length > 0 ? suspiciousFundingPatterns.join("; ") : "Open Check"}`,
+    `- prior confirmed rug evidence: ${priorConfirmedRugEvidence.length > 0 ? priorConfirmedRugEvidence.join("; ") : "Open Check"}`,
+    "", "Evidence gaps:", gaps.length > 0 ? gaps.map((g) => `- ${g}`).join("\n") : "- None.", "", "Bottom line:", `- ${bottomLine} I can't guarantee safety. This is a risk read, not financial advice.`,
   ].join("\n");
 }
 
-/** Derives a DevHistoryStatus + risk signals/gaps from existing token-scan evidence (contract-control signals). */
-export function deriveDevHistoryFromTokenEvidence(ev: TokenScanEvidence | null | undefined): { status: DevHistoryStatus; deployer: string | null; riskSignals: string[]; gaps: string[] } {
-  if (!ev || !hasUsableTokenEvidence(ev)) {
-    return { status: "open_check", deployer: null, riskSignals: [], gaps: ["deployer identity", "ownership/mint history", "LP control history", "cross-token deployer history"] };
-  }
-  const sec = ev.security, lp = ev.lpControl;
-  const riskSignals: string[] = [];
-  const gaps: string[] = [];
-
-  if (sec?.ownerRenounced === false) riskSignals.push("ownership not renounced on this token");
-  if (sec?.mintable === true) riskSignals.push("mint authority present on this token");
-  if (lp?.status === "wallet_controlled" || lp?.status === "team_controlled") riskSignals.push("LP wallet/team controlled on this token");
-
-  if (sec?.ownerRenounced == null) gaps.push("ownership status");
-  if (sec?.mintable == null) gaps.push("mint authority");
-  if (!lp || !lp.status) gaps.push("LP control history");
-  gaps.push("cross-token deployer history");
-
-  const coreConfirmed = sec?.ownerRenounced != null && sec?.mintable != null && lp?.status != null;
-  const status: DevHistoryStatus = riskSignals.length > 0 ? "risk_signals" : coreConfirmed ? "no_evidence" : "open_check";
-
-  return {
-    status,
-    deployer: null,
-    riskSignals,
-    gaps,
-  };
+export function deriveDevHistoryFromTokenEvidence(ev: TokenScanEvidence | null | undefined, walletEvidence?: Record<string, unknown> | null): DevHistoryEvidence {
+  const base: DevHistoryEvidence = { evidenceLevel: "none", status: "open_check", statusReason: "No useful dev-history evidence was available.", inputType: "Token contract", chain: ev?.chain ?? null, address: ev?.token?.address ?? null, deployer: null, owner: null, linkedWallets: [], confidence: "Open Check", tokenLocalRiskSignals: [], previousLaunchedTokens: [], repeatedRiskyPatterns: [], linkedWalletClusterSignals: [], suspiciousFundingPatterns: [], priorConfirmedRugEvidence: [], evidenceGaps: [], sourcesUsed: [], apiPathsUsed: [] };
+  if (!ev || !hasUsableTokenEvidence(ev)) return { ...base, evidenceGaps: ["deployer not confirmed", "previous token history unavailable", "linked wallet evidence unavailable", "wallet activity unavailable"], gaps: ["deployer not confirmed", "previous token history unavailable", "linked wallet evidence unavailable", "wallet activity unavailable"], riskSignals: [] };
+  const sec = ev.security, lp = ev.lpControl, h = ev.holders;
+  const devIntel = devHistoryObj(ev.devIntel), deployerProfile = devHistoryObj(ev.deployerProfile), supplyControl = devHistoryObj(ev.supplyControl), ownership = devHistoryObj(ev.ownership), wallet = devHistoryObj(walletEvidence), walletDevIntel = devHistoryObj(wallet.devIntel);
+  const deployer = devHistoryAddr(ev.deployerAddress) ?? devHistoryAddr(devIntel.deployerAddress) ?? devHistoryAddr(deployerProfile.deployer) ?? devHistoryAddr(wallet.deployerAddress) ?? devHistoryAddr(walletDevIntel.deployerAddress);
+  const owner = devHistoryAddr(ev.ownerAddress) ?? devHistoryAddr(ownership.owner) ?? devHistoryAddr(ownership.ownerAddress);
+  const linkedWallets = devHistoryUnique([...devHistoryArray(ev.linkedWallets).map((w) => devHistoryAddr(devHistoryObj(w).address)), ...devHistoryArray(devIntel.linkedWallets).map((w) => devHistoryAddr(devHistoryObj(w).address)), ...devHistoryArray(wallet.linkedWallets).map((w) => devHistoryAddr(devHistoryObj(w).address))]);
+  const previous = [...devHistoryArray(ev.previousProjects), ...devHistoryArray(wallet.previousProjects)];
+  const previousLaunchedTokens = devHistoryUnique(previous.map((p) => devHistoryAddr(devHistoryObj(p).contractAddress) ?? devHistoryAddr(devHistoryObj(p).tokenAddress)));
+  const tokenLocalRiskSignals: string[] = [];
+  if (sec?.ownerRenounced === false) tokenLocalRiskSignals.push("ownership not renounced");
+  if (sec?.mintable === true) tokenLocalRiskSignals.push("mint authority");
+  if (lp?.status === "wallet_controlled" || lp?.status === "team_controlled") tokenLocalRiskSignals.push("LP/team control");
+  if (h?.top10 != null && h.top10 >= 50) tokenLocalRiskSignals.push(`supply concentration: top-10 ${h.top10.toFixed(1)}%`);
+  if (sec?.honeypot === true) tokenLocalRiskSignals.push("security/honeypot flags");
+  const repeatedRiskyPatterns = previousLaunchedTokens.length > 0 ? [`${previousLaunchedTokens.length} previous launched token(s) returned by wallet history`] : [];
+  const suspiciousReasons = [...devHistoryArray(devIntel.suspiciousTransferReasons), ...devHistoryArray(wallet.suspiciousTransferReasons)].map(String).filter(Boolean).slice(0, 4);
+  const suspiciousFundingPatterns = (devHistoryBool(devIntel.suspiciousTransfers) === true || devHistoryBool(wallet.suspiciousTransfers) === true || suspiciousReasons.length > 0) ? (suspiciousReasons.length ? suspiciousReasons : ["suspicious funding/transfer behavior returned by wallet history"]) : [];
+  const clusterSupply = devHistoryNum(supplyControl.devClusterSupplyPercent) ?? devHistoryNum(devIntel.devClusterSupplyPercent) ?? devHistoryNum(walletDevIntel.devClusterSupplyPercent);
+  const linkedWalletClusterSignals = [...(linkedWallets.length > 0 ? [`${linkedWallets.length} linked wallet(s) found`] : []), ...(clusterSupply != null && clusterSupply > 0 ? [`dev cluster supply influence ${clusterSupply.toFixed(2)}%`] : [])];
+  const priorConfirmedRugEvidence = devHistoryExplicitRug(ev) || devHistoryExplicitRug(walletEvidence) ? ["explicit prior rug/scam label found in available evidence"] : [];
+  const evidenceGaps = [!deployer ? "deployer not confirmed" : null, previousLaunchedTokens.length === 0 ? "previous token history unavailable" : null, linkedWallets.length === 0 ? "linked wallet evidence unavailable" : null, !walletEvidence ? "wallet activity unavailable" : null].filter((v): v is string => Boolean(v));
+  const cross = previousLaunchedTokens.length > 0 || repeatedRiskyPatterns.length > 0 || linkedWalletClusterSignals.length > 0 || suspiciousFundingPatterns.length > 0;
+  const evidenceLevel: DevHistoryEvidenceLevel = priorConfirmedRugEvidence.length > 0 ? "confirmed_rug" : cross ? "cross_token_signals" : deployer ? "deployer_confirmed" : tokenLocalRiskSignals.length > 0 ? "token_local_only" : "none";
+  const status: DevHistoryStatus = evidenceLevel === "confirmed_rug" ? "confirmed_rug" : evidenceLevel === "cross_token_signals" ? "risk_signals" : evidenceLevel === "deployer_confirmed" ? "no_evidence" : "open_check";
+  const statusReason = evidenceLevel === "confirmed_rug" ? "Direct prior rug evidence exists." : evidenceLevel === "cross_token_signals" ? "Cross-token or linked-wallet history signals exist." : evidenceLevel === "deployer_confirmed" ? "Deployer was identified but no risky history was found." : evidenceLevel === "token_local_only" ? "Only current-token risk signals were found." : "No useful dev-history evidence was available.";
+  return { ...base, status, evidenceLevel, statusReason, deployer, owner, linkedWallets, confidence: String(devIntel.confidence ?? deployerProfile.status ?? (deployer ? "medium" : "Open Check")), tokenLocalRiskSignals, previousLaunchedTokens, repeatedRiskyPatterns, linkedWalletClusterSignals, suspiciousFundingPatterns, priorConfirmedRugEvidence, evidenceGaps, sourcesUsed: ["token_evidence", ...(walletEvidence ? ["dev_wallet_evidence"] : [])], apiPathsUsed: ["/api/token", ...(walletEvidence ? ["/api/dev-wallet"] : [])], gaps: evidenceGaps, riskSignals: tokenLocalRiskSignals };
 }
 
 export function formatLpLockCheck(ev: TokenScanEvidence, chain = "Base"): string {
