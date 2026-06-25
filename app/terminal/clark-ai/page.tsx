@@ -4,6 +4,15 @@ import { Suspense, useEffect, useMemo, useRef, useState, type CSSProperties } fr
 import { usePathname, useSearchParams } from 'next/navigation'
 import { supabase } from '@/lib/supabaseClient'
 import { getClarkSessionId as getOrCreateSessionId, readClarkClientContext as getClientClarkContext, persistClarkMemoryEcho, persistClarkMomentumList, persistMarketMomentum, readMarketMomentum } from '@/lib/client/clarkMemory'
+import ClarkHistoryPanel from '@/components/ClarkHistoryPanel'
+import {
+  fetchClarkHistory, fetchClarkChatMessages, createClarkChat, createClarkFolder, appendClarkMessage,
+  renameClarkChat, renameClarkFolder, moveClarkChatToFolder, deleteClarkChat, deleteClarkFolder,
+  type ClarkChatFolder, type ClarkChatSummary,
+} from '@/lib/client/clarkHistoryClient'
+import { generateChatTitle } from '@/lib/server/clarkHistory'
+
+const ACTIVE_CHAT_ID_KEY = 'chainlens:clark:active-chat-id'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 type ClarkAction = { label: string; href?: string; prompt?: string; kind?: 'link' | 'prompt'; requiresInput?: boolean }
@@ -121,6 +130,59 @@ function ClarkAiContent() {
   const autoSentRef     = useRef(false)
   const threadRef       = useRef<HTMLDivElement>(null)
 
+  // ── Persistent chat history (folders/chats/messages) ─────────────────────
+  const [folders, setFolders] = useState<ClarkChatFolder[]>([])
+  const [chats, setChats] = useState<ClarkChatSummary[]>([])
+  const [activeChatId, setActiveChatId] = useState<string | null>(null)
+  const [historySaveFailed, setHistorySaveFailed] = useState(false)
+  const activeChatIdRef = useRef<string | null>(null)
+  activeChatIdRef.current = activeChatId
+
+  async function refreshHistory(query?: string) {
+    try {
+      const { folders: f, chats: c } = await fetchClarkHistory(query)
+      setFolders(f); setChats(c); setHistorySaveFailed(false)
+    } catch { setHistorySaveFailed(true) }
+  }
+
+  useEffect(() => {
+    void refreshHistory()
+    const savedChatId = typeof window !== 'undefined' ? sessionStorage.getItem(ACTIVE_CHAT_ID_KEY) : null
+    if (savedChatId) void loadChat(savedChatId, false)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  async function loadChat(chatId: string, persistAsActive = true) {
+    try {
+      const rows = await fetchClarkChatMessages(chatId)
+      setMessages(rows.map((r) => ({ role: r.role === 'assistant' ? 'clark' : 'user', text: r.content })))
+      setActiveChatId(chatId)
+      if (persistAsActive && typeof window !== 'undefined') sessionStorage.setItem(ACTIVE_CHAT_ID_KEY, chatId)
+    } catch { setHistorySaveFailed(true) }
+  }
+
+  function handleNewChat() {
+    setMessages([])
+    setActiveChatId(null)
+    if (typeof window !== 'undefined') sessionStorage.removeItem(ACTIVE_CHAT_ID_KEY)
+  }
+
+  async function ensureActiveChat(firstPrompt: string): Promise<string | null> {
+    if (activeChatIdRef.current) return activeChatIdRef.current
+    try {
+      const title = generateChatTitle(firstPrompt)
+      const chat = await createClarkChat(title)
+      setActiveChatId(chat.id)
+      activeChatIdRef.current = chat.id
+      if (typeof window !== 'undefined') sessionStorage.setItem(ACTIVE_CHAT_ID_KEY, chat.id)
+      setChats((prev) => [chat, ...prev])
+      return chat.id
+    } catch {
+      setHistorySaveFailed(true)
+      return null
+    }
+  }
+
   useEffect(() => {
     if (importedPrompt) {
       queueMicrotask(() => {
@@ -189,6 +251,8 @@ function ClarkAiContent() {
     setMessages((prev) => [...prev, { role: 'user', text }, { role: 'clark', text: THINKING_MESSAGE }])
     setInput('')
     setLoading(true)
+    // History save is best-effort and must never block or break sending the message.
+    const chatIdPromise = ensureActiveChat(text)
     try {
       const history = [...messages, { role: 'user', text }]
         .slice(-10)
@@ -314,6 +378,13 @@ function ClarkAiContent() {
         }
         return next
       })
+      // Fire-and-forget: persist the exchange without blocking or affecting the Clark UI.
+      void chatIdPromise.then((chatId) => {
+        if (!chatId) return
+        appendClarkMessage(chatId, 'user', text).catch(() => setHistorySaveFailed(true))
+        appendClarkMessage(chatId, 'assistant', String(reply), payload).catch(() => setHistorySaveFailed(true))
+        void refreshHistory()
+      })
     } catch {
       setMessages((prev) => { const next = [...prev]; next[next.length - 1] = { role: 'clark', text: FALLBACK_ERROR_MESSAGE }; return next })
     } finally { setLoading(false) }
@@ -337,10 +408,6 @@ function ClarkAiContent() {
     ? 'Ask Clark anything about tokens, wallets, liquidity, dev wallets, or Base movers...'
     : 'Chat with Clark about Base, wallets, tokens, or risk...'
   const hasMessages = messages.length > 0
-  const historyRows = messages
-    .filter((msg) => msg.role === 'user' && msg.text.trim())
-    .slice(-5)
-    .reverse()
   const memoryStats = [
     { label: 'Tokens analyzed', value: clarkContextRef.current.lastMarketList?.length ?? 0 },
     { label: 'Wallet scanned', value: getClientClarkContext().lastWallet ? 1 : 0 },
@@ -709,12 +776,23 @@ function ClarkAiContent() {
           </section>
 
           <section className='clk-side-card'>
-            <h2 className='clk-side-title'><svg width='19' height='19' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' strokeLinecap='round' strokeLinejoin='round'><path d='M3 12a9 9 0 1 0 3-6.7'/><path d='M3 3v6h6'/><path d='M12 7v5l3 2'/></svg>Clark Conversation History</h2>
-            {historyRows.length > 0 ? (
-              <div className='clk-history-list'>
-                {historyRows.map((row, idx) => <div className='clk-history-row' key={`${row.text}-${idx}`}><span>{row.text}</span><span className='clk-history-time'>Recent</span></div>)}
-              </div>
-            ) : <p className='clk-empty'>No Clark history yet. Start a scan to build context.</p>}
+            <h2 className='clk-side-title'><svg width='19' height='19' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' strokeLinecap='round' strokeLinejoin='round'><path d='M3 12a9 9 0 1 0 3-6.7'/><path d='M3 3v6h6'/><path d='M12 7v5l3 2'/></svg>Clark Chat History</h2>
+            <ClarkHistoryPanel
+              folders={folders}
+              chats={chats}
+              activeChatId={activeChatId}
+              historySaveFailed={historySaveFailed}
+              onNewChat={handleNewChat}
+              onSelectChat={(id) => { void loadChat(id) }}
+              onSearch={(q) => { void refreshHistory(q || undefined) }}
+              onCreateFolder={(name) => { createClarkFolder(name).then(() => refreshHistory()).catch(() => setHistorySaveFailed(true)) }}
+              onRenameChat={(id, title) => { renameClarkChat(id, title).then(() => refreshHistory()).catch(() => setHistorySaveFailed(true)) }}
+              onMoveChat={(id, folderId) => { moveClarkChatToFolder(id, folderId).then(() => refreshHistory()).catch(() => setHistorySaveFailed(true)) }}
+              onDeleteChat={(id) => {
+                deleteClarkChat(id).then(() => { if (id === activeChatId) handleNewChat(); return refreshHistory() }).catch(() => setHistorySaveFailed(true))
+              }}
+              onDeleteFolder={(id) => { deleteClarkFolder(id).then(() => refreshHistory()).catch(() => setHistorySaveFailed(true)) }}
+            />
           </section>
 
           <section className='clk-side-card'>
