@@ -140,39 +140,39 @@ function concentratedPoolModelLabel(poolModel: string | null | undefined): strin
 }
 
 function concentratedControlProofLabel(proof: LpControllerIntelInput['concentratedPositionProof']): string {
-  if (!proof) return 'Position verification required'
+  if (!proof) return 'Liquidity ownership is still being verified.'
   switch (proof.status) {
     case 'verified': {
-      const who = proof.topPositionOwner ?? proof.topPositionOwnerType ?? 'a resolved controller'
+      const who = proof.topPositionOwner ?? proof.topPositionOwnerType ?? 'the resolved owner'
       const pct = typeof proof.topPositionSharePercent === 'number' && Number.isFinite(proof.topPositionSharePercent)
-        ? ` controls ${proof.topPositionSharePercent.toFixed(2)}% of concentrated liquidity`
+        ? ` controls ${proof.topPositionSharePercent.toFixed(2)}% of active liquidity`
         : ''
-      return `Verified — top position owner ${who}${pct}`
+      return `Verified — ${who}${pct}`
     }
     case 'partial':
-      return 'Partial — pool confirmed, but position ownership could not be fully resolved.'
+      return 'The pool is confirmed active but ownership of concentrated liquidity positions could not be fully resolved.'
     case 'not_supported':
-      return `Not Supported — current provider path cannot resolve ${concentratedPoolModelLabel(proof.poolModel)} position ownership.`
+      return `The largest liquidity owner could not be verified for this ${concentratedPoolModelLabel(proof.poolModel)} pool.`
     case 'not_found':
-      return 'Open Check — pool confirmed with zero active liquidity; no position to attribute ownership to.'
+      return 'The pool is confirmed active with zero current liquidity, so there is no position to attribute ownership to.'
     case 'failed':
-      return 'Open Check — position proof attempt failed; no position ownership evidence returned.'
+      return 'Liquidity ownership is still being verified.'
     case 'open_check':
     default:
-      return 'Open Check — no position ownership evidence returned.'
+      return 'Liquidity ownership is still being verified.'
   }
 }
 
 function concentratedControllerLabel(proof: LpControllerIntelInput['concentratedPositionProof']): string {
-  if (!proof) return 'Position verification required'
+  if (!proof) return 'Liquidity ownership is still being verified.'
   switch (proof.status) {
-    case 'verified': return 'Position ownership verified'
-    case 'partial': return 'Position proof partial'
-    case 'not_supported': return 'Position proof unsupported'
-    case 'failed': return 'Position proof attempted — provider failed'
-    case 'not_found': return 'Position proof attempted — no active position found'
+    case 'verified': return 'Liquidity ownership verified'
+    case 'partial': return 'Liquidity ownership is still being verified.'
+    case 'not_supported': return 'The largest liquidity owner could not be verified.'
+    case 'failed': return 'Liquidity ownership is still being verified.'
+    case 'not_found': return 'No active liquidity position currently exists.'
     case 'open_check':
-    default: return 'Position proof attempted — open check'
+    default: return 'Liquidity ownership is still being verified.'
   }
 }
 
@@ -199,9 +199,9 @@ function controllerLabel(type: string): string {
     case 'lock_contract': return 'Lock contract'
     case 'burn': return 'Burn address'
     case 'protocol': return 'Protocol controller'
-    case 'concentrated_liquidity': return 'Position verification required'
+    case 'concentrated_liquidity': return 'Liquidity ownership is still being verified.'
     case 'contract': return 'Contract controller'
-    default: return 'Position verification required'
+    default: return 'Liquidity ownership is still being verified.'
   }
 }
 
@@ -339,7 +339,7 @@ export function buildLpControllerIntel(input: LpControllerIntelInput): LpControl
   } else if (lockBurnProof === 'not_applicable') {
     evidenceGaps.push('protocol-specific liquidity position verification required')
     if (input.concentratedPositionProof && input.concentratedPositionProof.status !== 'verified' && input.concentratedPositionProof.status !== 'not_found') {
-      for (const gap of ['Position manager not resolved', 'Top position owner not resolved', 'Position count unavailable']) {
+      for (const gap of ['the largest liquidity owner is not yet verified', 'the number of active liquidity positions is not yet verified']) {
         if (!evidenceGaps.includes(gap)) evidenceGaps.push(gap)
       }
     }

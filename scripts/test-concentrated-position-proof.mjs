@@ -31,7 +31,7 @@ async function main() {
     assert.equal(r.poolIdentityType, 'pool_id')
     assert.equal(r.topPositionOwner, null, 'never fakes a position owner when unsupported')
     assert.equal(r.lockedOrManagedPositionFound, null, 'never fakes locked/managed-position evidence')
-    assert.ok(r.reason.toLowerCase().includes('not configured'), 'reason explains no position-owner source is configured')
+    assert.ok(r.reason.toLowerCase().includes('could not be fully resolved'), 'reason explains ownership could not be fully resolved')
     assert.ok(Array.isArray(r.missingEvidence) && r.missingEvidence.length > 0)
     assert.notEqual(r.status, 'verified', 'never claims verified ownership for V4')
   }
@@ -145,12 +145,11 @@ async function main() {
         poolIdentityType: 'pool_id',
       },
     })
-    assert.equal(intel.controllerLabel, 'Position proof unsupported')
-    assert.equal(intel.controlProofLabel, 'Not Supported — current provider path cannot resolve Uniswap V4 position ownership.')
+    assert.equal(intel.controllerLabel, 'The largest liquidity owner could not be verified.')
+    assert.equal(intel.controlProofLabel, 'The largest liquidity owner could not be verified for this Uniswap V4 pool.')
     assert.notEqual(intel.controllerLabel, 'Position verification required')
-    assert.ok(intel.evidenceGaps.includes('Position manager not resolved'))
-    assert.ok(intel.evidenceGaps.includes('Top position owner not resolved'))
-    assert.ok(intel.evidenceGaps.includes('Position count unavailable'))
+    assert.ok(intel.evidenceGaps.includes('the largest liquidity owner is not yet verified'))
+    assert.ok(intel.evidenceGaps.includes('the number of active liquidity positions is not yet verified'))
     assert.equal(intel.controller, null, 'no fake verified position owner/controller')
     // V4 pool ID must never be exposed as poolAddress — only poolId/poolIdentity.
     assert.equal(intel.poolAddress, null, 'V4 pool ID is not a contract address')
@@ -177,7 +176,7 @@ async function main() {
         poolIdentityType: 'contract',
       },
     })
-    assert.equal(intel.controllerLabel, 'Position ownership verified')
+    assert.equal(intel.controllerLabel, 'Liquidity ownership verified')
     assert.ok(intel.controlProofLabel.includes('Verified'))
     assert.ok(intel.controlProofLabel.includes('82.5'))
     assert.equal(intel.topPositionOwner, '0x3333333333333333333333333333333333333333')

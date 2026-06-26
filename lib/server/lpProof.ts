@@ -1062,6 +1062,46 @@ const POSITION_MANAGER_BY_CHAIN: Record<LpChain, string> = {
   base: "0x03a520b32c04bf3beef7beb72e919cf822ed34f1",
 };
 
+/** Stage 1 — protocol resolver. Centralizes the protocol/position-manager knowledge that was
+ * previously only implicit in `_classifyConcentratedPoolModel`/`POSITION_MANAGER_BY_CHAIN`, so
+ * this lookup lives in exactly one place instead of being re-derived ad hoc by callers. Only
+ * returns a `positionManager` address when it is one already verified/used elsewhere in this
+ * file (Uniswap V3's standard NonfungiblePositionManager) — never guesses an address for a
+ * protocol/chain this codebase has not already confirmed, since an unverified address fed into
+ * the on-chain candidate probe could misattribute ownership to the wrong contract. */
+export interface ConcentratedProtocolInfo {
+  protocol: ConcentratedPoolModel;
+  positionManager: string | null;
+  factory: string | null;
+  router: string | null;
+  nftManager: string | null;
+  /** "high" only when a verified position-manager address is known for this protocol+chain;
+   * "low" means the pool model was classified but no position-manager address is confirmed. */
+  confidence: "high" | "low";
+}
+
+export function resolveConcentratedProtocol(
+  chain: LpChain,
+  dexId: string | null | undefined,
+  poolAddressType: "contract" | "pool_id" | "unknown",
+): ConcentratedProtocolInfo {
+  const protocol = _classifyConcentratedPoolModel(dexId, poolAddressType);
+  // Only Uniswap V3's NonfungiblePositionManager is a verified address in this codebase today.
+  // Aerodrome Slipstream/Pancake V3/other Base concentrated forks are detected and labeled
+  // correctly, but their position-manager addresses are not yet confirmed here — reporting one
+  // without verification would risk probing the wrong contract, so this stays null/low-confidence
+  // for them rather than guessing.
+  const positionManager = protocol === "uniswap_v3" ? (POSITION_MANAGER_BY_CHAIN[chain] ?? null) : null;
+  return {
+    protocol,
+    positionManager,
+    factory: null,
+    router: null,
+    nftManager: positionManager,
+    confidence: positionManager ? "high" : "low",
+  };
+}
+
 /** Address-keyed (chain:poolIdentity) regression guard so a transient RPC hiccup on a later scan
  * can never downgrade a previously-verified ownership result back to open check/unavailable —
  * mirrors the same pattern used for wallet evidence in lib/server/walletSnapshot.ts. */
@@ -1335,7 +1375,8 @@ export async function attemptConcentratedPositionProof(
   dexId: string | null | undefined,
   resolveOwners?: ConcentratedOwnerResolver,
 ): Promise<ConcentratedPositionProof> {
-  const poolModel = _classifyConcentratedPoolModel(dexId, poolAddressType);
+  const protocolInfo = resolveConcentratedProtocol(chain, dexId, poolAddressType);
+  const poolModel = protocolInfo.protocol;
   const normalizedPoolAddress = poolAddressType === "contract" ? (poolAddress ?? null) : null;
   const normalizedPoolId = poolId ?? (poolAddressType === "pool_id" ? (poolAddress ?? null) : null);
   const poolIdentity = normalizedPoolId ?? normalizedPoolAddress ?? null;
@@ -1352,7 +1393,7 @@ export async function attemptConcentratedPositionProof(
     poolId: normalizedPoolId,
     poolIdentity,
     poolIdentityType: normalizedPoolId ? "pool_id" : normalizedPoolAddress ? "contract" : "unknown",
-    positionManager: null,
+    positionManager: protocolInfo.positionManager,
     positionCount: null,
     totalPositionLiquidity: null,
     topPositionOwner: null,
@@ -1411,10 +1452,10 @@ export async function attemptConcentratedPositionProof(
       ...base,
       status: "not_supported",
       confidence: "low",
-      reason: "Uniswap V4 position ownership source not configured",
+      reason: "The pool is confirmed active but ownership of its concentrated liquidity positions could not be fully resolved.",
       evidence: poolId ? [`poolId=${poolId}`] : [],
       missingEvidence: ["positionManager", "topPositionOwner", "positionCount", "positionLiquidityShare"],
-      nextAction: "Verify position ownership via the protocol's official position-manager UI or a subgraph indexer.",
+      nextAction: "Liquidity ownership is still being verified — re-check after the next scan.",
     }, "no_pool_identity", "v4_not_supported");
   }
 
@@ -1476,13 +1517,13 @@ export async function attemptConcentratedPositionProof(
     totalPositionLiquidity: liquidityBig != null ? liquidityBig.toString() : null,
     status: "partial",
     confidence: "low",
-    reason: "Pool liquidity confirmed on-chain via RPC, but individual position-NFT ownership could not be fully resolved — that requires position-manager event indexing not available in the current provider path.",
+    reason: "The pool is confirmed active, but the largest liquidity owner could not be verified from currently available evidence.",
     evidence: [
       liquidityResolved ? `liquidity probe: resolved (${liquidityBig != null ? liquidityBig.toString() : "nonzero"})` : `liquidity probe: unresolved`,
       slot0Resolved ? `slot0 probe: resolved (pool active)` : `slot0 probe: unresolved`,
     ],
     missingEvidence: ["positionManager", "topPositionOwner", "positionCount", "topPositionSharePercent"],
-    nextAction: "Check position ownership via the protocol's official position-manager UI or a subgraph indexer.",
+    nextAction: "Liquidity ownership is still being verified — re-check after the next scan.",
   }, "rpc_liquidity_probe", "pool_liquidity_confirmed_no_owner");
 }
 
