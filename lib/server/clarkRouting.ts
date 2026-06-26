@@ -52,7 +52,7 @@ const WALLET_DEEP_RE = /\b(deep\s+scan|deep|full\s+scan|full\s+wallet\s+scan|sca
 const WALLET_FOLLOWUP_RE = /\b(dig\s+deeper|why\s+is\s+pnl\s+(?:missing|zero|wrong)|why\s+is\s+the\s+pnl|why\s+no\s+pnl|recover\s+(?:more\s+)?history|what\s+about\s+this\s+wallet|why\s+is\s+history\s+missing|pnl\s+missing|pnl\s+coverage)\b/i;
 const WALLET_COMPARE_RE = /\b(compare\s+(?:this\s+)?wallet(?:\s+with|\s+vs|\s+to|\s+and)|compare\s+wallets|wallet\s+comparison|wallet\s+a\s+vs|wallet\s+compare)\b/i;
 
-const TOKEN_SCAN_RE = /\b(scan\s+this\s+(?:(?:eth|ethereum|base|bnb|bsc|polygon)\s+)?token|token\s+scan|scan\s+token|what\s+is\s+this\s+token|tell\s+me\s+about\s+(?:this\s+)?token|check\s+this\s+token|analyze\s+(?:this\s+)?token|token\s+check|run\s+token\s+scan)\b/i;
+const TOKEN_SCAN_RE = /\b(scan\s+this\s+(?:(?:eth|ethereum|base|bnb|bsc|polygon)\s+)?token|token\s+scan|scan\s+token|scan|check|what\s+is\s+this\s+token|tell\s+me\s+about\s+(?:this\s+)?token|check\s+this\s+token|analyze\s+(?:this\s+)?token|token\s+check|run\s+token\s+scan)\b/i;
 const TOKEN_SCAN_ON_CHAIN_RE = /\bscan\b.{0,80}\bon\s+(?:base|eth|ethereum|bnb|bsc|polygon)\b|\bon\s+(?:base|eth|ethereum|bnb|bsc|polygon)\b.{0,80}\bscan\b/i;
 
 // Chain keywords explicitly named in a Clark prompt. Order doesn't matter — the
@@ -99,9 +99,9 @@ export function isDevRugHistoryPrompt(prompt: string): boolean {
 export function classifyTokenOrWalletAddress(prompt: string): "token" | "wallet" | "ambiguous" | "none" {
   return getClarkAddressRouteHint(prompt);
 }
-const LP_LOCK_RE = /\b(is\s+lp\s+locked|lp\s+locked|can\s+liquidity\s+be\s+pulled|is\s+liquidity\s+safe|who\s+controls\s+(?:the\s+)?lp|lp\s+(?:burned|burn)|burned\s+lp|explain\s+(?:the\s+)?lp|lp\s+(?:lock|control|safety)|liquidity\s+(?:lock|locked|safety|control|pulled))\b/i;
+const LP_LOCK_RE = /\b(is\s+lp\s+locked|lp\s+locked|can\s+liquidity\s+be\s+pulled|is\s+liquidity\s+safe|who\s+controls\s+(?:the\s+)?(?:lp|liquidity)|lp\s+(?:burned|burn)|burned\s+lp|explain\s+(?:the\s+)?(?:lp|liquidity)|what\s+about\s+lp|lp\s+(?:lock|control|safety)|liquidity\s+(?:lock|locked|safety|control|pulled))\b/i;
 const RISK_EXPL_RE = /\b(why\s+(?:is\s+(?:this|it)\s+)?(?:high|low)\s+risk|why\s+did\s+it\s+score\s+low|explain\s+(?:the\s+)?risk|what\s+are\s+the\s+red\s+flags|red\s+flags|why\s+(?:the\s+)?caution|why\s+risky|explain\s+(?:the\s+)?score|what\s+makes\s+(?:it|this)\s+risky|what\s+are\s+the\s+risks|explain\s+(?:the\s+)?verdict)\b/i;
-const TOKEN_NAME_RE = /\b([Ss]can|[Cc]heck|[Aa]nalyze|[Tt]ell\s+me\s+about|[Tt]oken\s+scan|[Ii]s|[Ll]ook\s+up)\s+([A-Z][A-Z0-9]{1,10})\b/;
+const TOKEN_NAME_RE = /\b([Ss]can|[Cc]heck|[Aa]nalyze|[Tt]ell\s+me\s+about|[Tt]oken\s+scan|[Ii]s|[Ll]ook\s+up)\s+\$?([A-Z][A-Z0-9]{1,10})\b/;
 
 /**
  * Single source of truth for address routing hint.
@@ -247,8 +247,10 @@ export function classifyClarkPrompt(prompt: string): {
   const address = extractAddressForRouting(raw);
   const addresses = extractAllAddressesForRouting(raw);
   const deep = WALLET_DEEP_RE.test(t);
-  const symbolMatch = raw.match(TOKEN_NAME_RE);
-  const symbol = symbolMatch ? symbolMatch[2].toUpperCase() : null;
+  const tokenNameMatch = raw.match(TOKEN_NAME_RE);
+  const liquiditySymbolMatch = raw.match(/\b(?:liquidity|lp)\s+(?:check\s+)?\$?([A-Z][A-Z0-9]{1,10})\b/)
+    ?? raw.match(/\b(?:explain\s+liquidity|check\s+lp|lp\s+check)\s+\$?([A-Z][A-Z0-9]{1,10})\b/);
+  const symbol = (tokenNameMatch?.[2] ?? liquiditySymbolMatch?.[1] ?? null)?.toUpperCase() ?? null;
 
   // ---- Wallet compare (must run before generic wallet_scan) ----
   if (WALLET_COMPARE_RE.test(t)) {
@@ -278,7 +280,7 @@ export function classifyClarkPrompt(prompt: string): {
   // ---- LP / liquidity check (classify by phrase; contract-vs-EOA decided by caller via eth_getCode) ----
   // Symbol-only ("liquidity check AERO") is allowed too — caller resolves the symbol to a
   // Base-preferred contract before calling /api/liquidity-safety.
-  if (/\b(lp\s+check|liquidity\s+check)\b/i.test(t) && (address || symbol)) {
+  if (/\b(lp\s+check|check\s+lp|liquidity(?:\s+check)?|explain\s+liquidity)\b/i.test(t) && (address || symbol)) {
     return { intent: "liquidity_scan", address, addresses, deep: false, symbol: address ? null : symbol };
   }
 

@@ -3123,17 +3123,30 @@ function buildWalletProfileBlock(walletProfile: Record<string, unknown> | null |
 // Compact, JSON-safe echo of lastWallet sent back to the client so the frontend can persist it
 // (sessionStorage) as a redundancy layer for the server-side in-memory session map — never the
 // primary store, just a fallback restore source for the next request's clientContext.lastWallet.
-function buildWalletMemoryEcho(mem: ClarkSessionMemory): { lastWallet: { address: string; chainMode: string | null; lastScannedAt: number; cachedEvidence?: { walletProfile: unknown } } } | undefined {
-  if (!mem.lastWallet?.address) return undefined;
-  const walletProfile = (mem.lastWallet.cachedEvidence as Record<string, unknown> | null | undefined)?.walletProfile ?? null;
-  return {
-    lastWallet: {
+function buildWalletMemoryEcho(mem: ClarkSessionMemory): { lastWallet?: { address: string; chainMode: string | null; lastScannedAt: number; cachedEvidence?: { walletProfile: unknown } }; lastToken?: { address: string; symbol: string | null; name: string | null; chain: string | null; lastTool: string | null; lastScannedAt: number; cachedEvidence?: TokenScanEvidence | null }; recentTokens?: ClarkSessionMemory["recentTokens"] } | undefined {
+  const echo: { lastWallet?: { address: string; chainMode: string | null; lastScannedAt: number; cachedEvidence?: { walletProfile: unknown } }; lastToken?: { address: string; symbol: string | null; name: string | null; chain: string | null; lastTool: string | null; lastScannedAt: number; cachedEvidence?: TokenScanEvidence | null }; recentTokens?: ClarkSessionMemory["recentTokens"] } = {};
+  if (mem.lastWallet?.address) {
+    const walletProfile = (mem.lastWallet.cachedEvidence as Record<string, unknown> | null | undefined)?.walletProfile ?? null;
+    echo.lastWallet = {
       address: mem.lastWallet.address,
       chainMode: mem.lastWallet.chainMode ?? null,
       lastScannedAt: mem.lastWallet.lastScannedAt ?? mem.lastWallet.ts,
       ...(walletProfile ? { cachedEvidence: { walletProfile } } : {}),
-    },
-  };
+    };
+  }
+  if (mem.lastToken?.address) {
+    echo.lastToken = {
+      address: mem.lastToken.address,
+      symbol: mem.lastToken.symbol,
+      name: mem.lastToken.name,
+      chain: mem.lastToken.chain ?? mem.lastTokenChain ?? null,
+      lastTool: mem.lastActionableIntent ?? mem.lastIntent,
+      lastScannedAt: mem.lastToken.ts,
+      cachedEvidence: mem.lastToken.cachedEvidence ?? null,
+    };
+    echo.recentTokens = mem.recentTokens;
+  }
+  return Object.keys(echo).length ? echo : undefined;
 }
 
 // ─── Wallet Profile V2 analyst-explanation builders ───
@@ -8084,10 +8097,10 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
 
   if (routed.intent === "liquidity_scan" && !routed.address && routed.symbol) {
     const resolved = await resolveTokenSymbolToAddress(routed.symbol);
-    if (!resolved) {
+    if (!resolved || !resolved.address) {
       return {
         feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_scan", toolsUsed: ["token_resolve"],
-        analysis: `No Base pool found for ${routed.symbol}. Paste the contract address if you have it.`,
+        analysis: resolved?.status === "timed_out" ? `I understood this as a liquidity check, but token resolution timed out before I could run LP analysis.` : `I couldn’t resolve ${routed.symbol} confidently on Base from the current market index. Paste the contract address or try again.`,
         intentBadge: "liquidity_scan",
         actions: buildRoutedActions(["Open Token Scanner", "Run LP Check"]),
         quotaConsumed: false,
@@ -8141,12 +8154,16 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       missingEvidence: concentrated ? ["ERC20 LP lock/burn proof does not apply to this pool model. Position/control verification is required.", ...gaps] : gaps,
       nextAction: "Open Liquidity Safety / Open Token Scanner",
     };
+    const lpAnalysis = formatLpReadResult(mapped);
+    updateMemToken(sessionMem, routed.address, mapped.token.symbol, mapped.token.name, lpAnalysis, { cachedEvidence: { ok: true, token: { ...mapped.token, address: routed.address }, chain: "base", market: { liquidity: typeof data.lp_total_liquidity_usd === "number" ? data.lp_total_liquidity_usd : null }, lpControl: { status: mapped.lpProofStatus ?? "open_check", reason: mapped.controllerStatus, confidence: null, poolType: mapped.poolModel } } as TokenScanEvidence, chain: "base" });
+    updateMemIntent(sessionMem, "liquidity_scan");
     return {
       feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_scan", toolsUsed: ["liquidity_analyze"],
-      analysis: formatLpReadResult(mapped),
+      analysis: lpAnalysis,
       intentBadge: "liquidity_scan",
       actions: buildRoutedActions(["Open Token Scanner", "Run LP Check"]),
       quotaConsumed: true,
+      memoryEcho: buildWalletMemoryEcho(sessionMem),
     };
   }
 
@@ -8667,13 +8684,28 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     };
   }
 
-  async function resolveTokenSymbolToAddress(sym: string): Promise<{ address: string; name: string; symbol: string } | null> {
-    const res = await callInternalApi(origin, "/api/resolve", { query: sym, chain: "base" }, authHeader ?? undefined, verifiedPlan).catch(() => null);
-    if (!res?.ok) return null;
+  async function resolveTokenSymbolToAddress(sym: string): Promise<{ address: string; name: string; symbol: string; status: "resolved" | "not_found" | "timed_out" | "ambiguous"; confidence?: string } | null> {
+    if (/^0x[a-fA-F0-9]{40}$/.test(sym.trim())) return { address: sym.trim(), name: sym, symbol: sym, status: "resolved", confidence: "high" };
+    const res = await callInternalApi(origin, "/api/resolve", { query: sym, chain: "base" }, authHeader ?? undefined, verifiedPlan).catch((err) => {
+      const msg = String(err?.message ?? err ?? "");
+      return { ok: false, json: { status: /timeout|abort/i.test(msg) ? "timed_out" : "not_found", reason: msg } } as Awaited<ReturnType<typeof callInternalApi>>;
+    });
+    if (!res?.ok) {
+      const status = String((res?.json as Record<string, unknown> | undefined)?.status ?? (res?.json as Record<string, unknown> | undefined)?.reason ?? "");
+      return status && /timeout|abort|timed_out/i.test(status) ? { address: "", name: sym, symbol: sym.toUpperCase(), status: "timed_out" } : null;
+    }
     const j = (res.json ?? {}) as Record<string, unknown>;
-    const addr = typeof j.address === "string" ? j.address : (typeof j.contract === "string" ? j.contract : null);
-    if (!addr || !/^0x[a-fA-F0-9]{40}$/.test(addr)) return null;
-    return { address: addr, name: String(j.name ?? sym), symbol: String(j.symbol ?? sym) };
+    const candidates = Array.isArray(j.candidates) ? j.candidates as Array<Record<string, unknown>> : Array.isArray(j.alternates) ? j.alternates as Array<Record<string, unknown>> : [];
+    const exact = candidates
+      .filter((c) => String(c.chain ?? c.chainLabel ?? "base").toLowerCase().includes("base"))
+      .filter((c) => String(c.symbol ?? "").toUpperCase() === sym.toUpperCase())
+      .sort((a, b) => Number(b.liquidityUsd ?? b.liquidity ?? 0) - Number(a.liquidityUsd ?? a.liquidity ?? 0) || Number(b.volume24hUsd ?? b.volume24h ?? 0) - Number(a.volume24hUsd ?? a.volume24h ?? 0))[0];
+    const addr = typeof j.address === "string" ? j.address : (typeof j.contract === "string" ? j.contract : (typeof j.contractAddress === "string" ? j.contractAddress : (typeof exact?.contractAddress === "string" ? exact.contractAddress : null)));
+    if (!addr || !/^0x[a-fA-F0-9]{40}$/.test(addr)) {
+      const status = String(j.status ?? j.reason ?? "");
+      return /timeout|abort|timed_out/i.test(status) ? { address: "", name: sym, symbol: sym.toUpperCase(), status: "timed_out" } : null;
+    }
+    return { address: addr, name: String(j.name ?? exact?.name ?? sym), symbol: String(j.symbol ?? exact?.symbol ?? sym).toUpperCase(), status: "resolved", confidence: String(j.confidence ?? exact?.confidence ?? "high") };
   }
 
   type TokenConfidenceLabel = "high" | "medium" | "low" | "open_check" | "failed";
@@ -8838,10 +8870,10 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const wantsFullScan = !wantsFastPreview;
     if (!tokenAddress && resolvedSymbol) {
       const resolved = await resolveTokenSymbolToAddress(resolvedSymbol);
-      if (!resolved) {
+      if (!resolved || !resolved.address) {
         return {
           feature: "clark-ai", chain, mode: "analysis", intent: "token_scan", toolsUsed: ["token_resolve"],
-          analysis: `No Base pool found for ${resolvedSymbol}. Paste the contract address if you have it.`,
+          analysis: resolved?.status === "timed_out" ? `Could not resolve token right now. Paste the contract address or try again.` : `I couldn’t resolve ${resolvedSymbol} confidently on Base from the current market index. Paste the contract address or try again.`,
           intentBadge: "token_scan",
           actions: buildRoutedActions(["Open Token Scanner"]),
           quotaConsumed: false,

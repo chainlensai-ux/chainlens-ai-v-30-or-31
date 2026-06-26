@@ -648,6 +648,11 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
 
   // Task 6: follow-up intents use memory-first
   assert.ok(routeFile.includes('fromMemory: true'), 'resolveTokenForFollowup returns fromMemory flag')
+
+  assert.ok(routeFile.includes('I understood this as a liquidity check, but token resolution timed out before I could run LP analysis.'), 'liquidity resolver timeout keeps liquidity intent in the public failure message')
+  assert.ok(routeFile.includes('I couldn’t resolve ${resolvedSymbol} confidently on Base from the current market index.'), 'token resolver fallback avoids false no-pool claims on unresolved symbols')
+  assert.ok(routeFile.includes('memoryEcho: buildWalletMemoryEcho(sessionMem)'), 'successful routed tool results echo Clark token/session memory')
+
   assert.ok(routeFile.includes('cachedEvidence && mem.address'), 'follow-up checks cached evidence before re-calling')
   // Follow-up intents set toolsUsed to ["memory"] from memory
   assert.ok(routeFile.includes("r.fromMemory ? [\"memory\"] : [\"token_scan\"]"), 'token_safety uses memory tool label when from cache')

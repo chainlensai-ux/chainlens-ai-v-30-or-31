@@ -286,6 +286,29 @@ assert.equal(extractRequestedChainFromPrompt('scan this token 0xabc'), null, 'no
   assert.notEqual(r.intent, 'wallet_scan', 'eth token prompt must not route to wallet_scan')
 }
 
+
+{
+  const phrases = ['scan brett', 'scan $BRETT', 'token scan BRETT', 'check BRETT']
+  for (const phrase of phrases) {
+    const r = classifyClarkPrompt(phrase)
+    assert.equal(r.intent, 'token_scan', `${phrase} => token_scan`)
+    assert.equal(r.symbol, 'BRETT', `${phrase} extracts BRETT`)
+  }
+}
+{
+  const phrases = ['liquidity check aero', 'liquidity AERO', 'explain liquidity AERO', 'check LP AERO', 'LP check AERO']
+  for (const phrase of phrases) {
+    const r = classifyClarkPrompt(phrase)
+    assert.equal(r.intent, 'liquidity_scan', `${phrase} => liquidity_scan`)
+    assert.equal(r.symbol, 'AERO', `${phrase} extracts AERO`)
+  }
+}
+{
+  const r = classifyClarkPrompt('explain liquidity')
+  assert.equal(r.intent, 'lp_lock_check', 'explain liquidity uses last token LP context when available')
+  assert.equal(r.symbol, null)
+}
+
 // ─── Dashboard quick actions (Clark drawer hint chips) ────────────────────────
 {
   // "Scan BRETT" — bare named-token scan, no literal "token" keyword
