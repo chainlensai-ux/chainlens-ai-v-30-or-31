@@ -4408,7 +4408,19 @@ export async function POST(req: Request) {
     // LP Safety debug flags — track proof quality for this scan
     const lpSafetyAttempted = needsLpHolderFetch
     const lpSafetyUsable = lpControl.status === 'burned' || lpControl.status === 'locked' || lpControl.status === 'team_controlled'
-    const lpOwnershipVerified = Boolean(ownerAddrEarlyForLp && _lpProofPresent)
+    // LP ownership/control is only "verified" when burn, lock, or controller dominance is
+    // actually confirmed — having a contract owner address and a detected pool (the previous
+    // check) proves neither; it was misleadingly marking open-check V2 pools as verified.
+    const lpOwnershipVerified = lpSafetyUsable
+      || lpControl.lockStatus === 'locked'
+      || lpControl.burnStatus === 'burned'
+      || lpControl.proofStatus === 'verified'
+    // Partial LP-holder evidence (e.g. a single holder's LP share) proves *something* was
+    // found, but never proves safe control on its own — keep it distinct from "verified".
+    const lpOwnershipHolderEvidenceFound = !lpOwnershipVerified && (
+      lpControl.status === 'partial'
+      || (Array.isArray(lpControl.evidence) && lpControl.evidence.some((e) => /^(top_share|owner_lp_share|locker_share|burn_share|top_holder)=/i.test(e)))
+    )
     // Standard ERC-20 LP lock/burn proof vs concentrated-position proof are distinct attempts —
     // expose both so "lpSafetyAttempted=false" never reads as "no LP proof was attempted at all"
     // when a concentrated-position proof was in fact attempted (e.g. Uniswap V4 pools).
@@ -7354,7 +7366,9 @@ export async function POST(req: Request) {
           // them previously made "lpOwnershipStatus: not_applicable" the only ownership signal
           // shown for concentrated pools even when a real position proof (partial/open_check/
           // verified) existed. Both are now exposed; old fields are kept for compatibility.
-          erc20LpOwnershipStatus: (lpState === 'protocol' || lpState === 'concentrated_liquidity') ? 'not_applicable' : (lpOwnershipVerified ? 'verified' : 'inferred'),
+          erc20LpOwnershipStatus: (lpState === 'protocol' || lpState === 'concentrated_liquidity')
+            ? 'not_applicable'
+            : (lpOwnershipVerified ? 'verified' : (lpOwnershipHolderEvidenceFound ? 'partial' : 'open_check')),
           erc20LockBurnProofStatus: standardLpProofStatus,
           positionOwnershipStatus: lpState === 'concentrated_liquidity'
             ? (concentratedPositionProof?.ownershipStatus
@@ -7364,7 +7378,7 @@ export async function POST(req: Request) {
           positionProofConfidence: lpState === 'concentrated_liquidity' ? (concentratedPositionProof?.confidence ?? null) : null,
           lpOwnershipStatus: lpState === 'concentrated_liquidity'
             ? (concentratedPositionProofStatus === 'verified' ? 'position_verified' : concentratedPositionProofStatus === 'partial' ? 'position_proof_partial' : 'position_open_check')
-            : ((lpState === 'protocol') ? 'erc20_not_applicable' : (lpOwnershipVerified ? 'verified' : 'inferred')),
+            : ((lpState === 'protocol') ? 'erc20_not_applicable' : (lpOwnershipVerified ? 'verified' : (lpOwnershipHolderEvidenceFound ? 'partial' : 'open_check'))),
           lpControl: {
             ...lpControl,
             canonicalStatus: toCanonical(lpControl.status),
