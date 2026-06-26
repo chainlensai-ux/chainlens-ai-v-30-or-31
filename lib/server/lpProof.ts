@@ -1486,6 +1486,160 @@ export async function attemptConcentratedPositionProof(
   }, "rpc_liquidity_probe", "pool_liquidity_confirmed_no_owner");
 }
 
+// ─── Canonical pool identity — cross-scan stability for the same pool address ──────────────
+// A pool's model (concentrated vs constant-product) must not flip between scans of the same
+// token just because one scan only had generic/fallback market data while another had richer
+// primary-market or RPC-probe evidence. mergeCanonicalPoolIdentity() never lets a less specific
+// classification overwrite a more specific one for the same address; the in-memory cache below
+// lets that hold across separate requests within one server process, without any new provider
+// calls or persistent storage.
+
+export type CanonicalPoolModel = "constant_product" | "concentrated" | "unknown" | "protocol_managed" | "virtual";
+export type CanonicalPoolIdentitySource = "primary_market" | "fallback_market" | "rpc_probe" | "merged";
+
+export interface CanonicalPoolIdentity {
+  poolAddress: string | null;
+  poolId: string | null;
+  pair: string | null;
+  protocol: string | null;
+  protocolVariant: string | null;
+  dexName: string | null;
+  model: CanonicalPoolModel;
+  confidence: "low" | "medium" | "high";
+  source: CanonicalPoolIdentitySource;
+  evidence: string[];
+  canApplyErc20LpProof: boolean;
+  requiresPositionProof: boolean;
+  standardLockBurnApplies: boolean;
+  reason: string;
+}
+
+// Higher number = more specific/trustworthy classification. unknown must never outrank a
+// known model; concentrated/protocol-specific evidence outranks a generic constant-product
+// guess derived only from a bare dex-name string.
+const _CANONICAL_MODEL_SPECIFICITY: Record<CanonicalPoolModel, number> = {
+  unknown: 0,
+  constant_product: 1,
+  protocol_managed: 2,
+  virtual: 2,
+  concentrated: 3,
+};
+const _CANONICAL_SOURCE_SPECIFICITY: Record<CanonicalPoolIdentitySource, number> = {
+  fallback_market: 0,
+  primary_market: 1,
+  merged: 1,
+  rpc_probe: 2,
+};
+
+/** Pure merge — given the previously known identity for a pool address (if any) and a newly
+ * computed one, returns whichever is more specific, never letting a generic/lower-confidence
+ * read downgrade a model that was already established with stronger evidence. */
+export function mergeCanonicalPoolIdentity(
+  prev: CanonicalPoolIdentity | null,
+  next: CanonicalPoolIdentity,
+): CanonicalPoolIdentity {
+  if (!prev) return next;
+  const prevRank = _CANONICAL_MODEL_SPECIFICITY[prev.model];
+  const nextRank = _CANONICAL_MODEL_SPECIFICITY[next.model];
+  if (nextRank > prevRank) return { ...next, source: "merged", evidence: [...next.evidence, `previous_read=${prev.model}`] };
+  if (nextRank < prevRank) {
+    // Generic/lower-specificity data must not erase a previously established richer model —
+    // keep the prior model, but record that a weaker read was observed for this address.
+    return { ...prev, source: "merged", evidence: [...prev.evidence, `weaker_read_ignored=${next.model} (source=${next.source})`] };
+  }
+  // Same model rank — prefer the more specific source (e.g. rpc_probe over fallback_market),
+  // and on a tie keep the previous read to avoid unnecessary churn.
+  const prevSourceRank = _CANONICAL_SOURCE_SPECIFICITY[prev.source];
+  const nextSourceRank = _CANONICAL_SOURCE_SPECIFICITY[next.source];
+  return nextSourceRank > prevSourceRank ? { ...next, source: "merged" } : { ...prev, source: "merged" };
+}
+
+// Process-lifetime cache only — no new provider calls, no persistent storage. Keyed by
+// lowercased pool address. Best-effort: a cold/restarted process simply starts empty again,
+// which only ever means "less stability", never a fabricated/incorrect classification.
+const _canonicalPoolIdentityCache = new Map<string, CanonicalPoolIdentity>();
+
+export function getCachedCanonicalPoolIdentity(poolAddress: string | null): CanonicalPoolIdentity | null {
+  if (!poolAddress) return null;
+  return _canonicalPoolIdentityCache.get(poolAddress.toLowerCase()) ?? null;
+}
+
+/** Merges `next` against any cached identity for the same address, stores the merged result,
+ * and returns it. This is the single entry point route handlers should call so cross-scan
+ * stability and the in-process cache stay consistent with each other. */
+export function reconcileCanonicalPoolIdentity(next: CanonicalPoolIdentity): CanonicalPoolIdentity {
+  if (!next.poolAddress) return next;
+  const key = next.poolAddress.toLowerCase();
+  const merged = mergeCanonicalPoolIdentity(_canonicalPoolIdentityCache.get(key) ?? null, next);
+  _canonicalPoolIdentityCache.set(key, merged);
+  return merged;
+}
+
+/** Builds a CanonicalPoolIdentity from the same dex-id classification already used elsewhere
+ * (classifyPoolModel) plus the caller's confidence/source — never a separate fabricated
+ * classification. A bare "aerodrome" dex id with no concentrated/v2 marker and no RPC
+ * confirmation is intentionally classified "unknown", not assumed constant_product. */
+export function buildCanonicalPoolIdentity(input: {
+  poolAddress: string | null;
+  poolId: string | null;
+  pair: string | null;
+  dexId: string | null;
+  dexName: string | null;
+  source: CanonicalPoolIdentitySource;
+  rpcConfirmedModel?: "v2" | "concentrated" | "unknown" | null;
+}): CanonicalPoolIdentity {
+  const id = (input.dexId ?? "").toLowerCase().trim();
+  const isAerodrome = id.includes("aerodrome") || id.includes("velodrome");
+  const hasConcentratedMarker = /(slipstream|concentrated|algebra|\bv4\b|[-_]v4|^v4|\bcl\b|[-_]cl[-_]?|[-_]cl$)|(?:^|[-_])v3(?:[-_]|$)/.test(id);
+  const hasV2Marker = /(?:^|[-_])v2(?:[-_]|$)/.test(id);
+  const protocol = isAerodrome ? "Aerodrome" : (input.dexName ?? input.dexId ?? null);
+  const isGenericAerodromeOnly = isAerodrome && !hasConcentratedMarker && !hasV2Marker && input.source === "fallback_market" && input.rpcConfirmedModel !== "v2";
+
+  let model: CanonicalPoolModel;
+  let protocolVariant: string | null;
+  let reason: string;
+  if (hasConcentratedMarker || input.rpcConfirmedModel === "concentrated") {
+    model = "concentrated";
+    protocolVariant = isAerodrome ? "Aerodrome Slipstream" : "concentrated";
+    reason = isAerodrome
+      ? "Aerodrome Slipstream (concentrated-liquidity) pool — standard ERC-20 LP lock/burn proof does not apply."
+      : "Concentrated-liquidity (V3/V4) pool — standard ERC-20 LP lock/burn proof does not apply.";
+  } else if (isGenericAerodromeOnly) {
+    // Bare "Aerodrome" dex name from fallback market data alone, with no v2/slipstream
+    // marker and no RPC confirmation — pool model is unverified, never assumed CPMM.
+    model = "unknown";
+    protocolVariant = null;
+    reason = "Fallback market data names an Aerodrome pool, but provides no model evidence — pool model requires verification before standard ERC-20 LP proof can apply.";
+  } else if (hasV2Marker || input.rpcConfirmedModel === "v2" || (isAerodrome === false && id.length > 0)) {
+    model = id.length > 0 ? "constant_product" : "unknown";
+    protocolVariant = isAerodrome ? "Aerodrome V2" : null;
+    reason = id.length > 0
+      ? "Constant-product V2-style pool — pool contract is an ERC-20 LP token."
+      : "No DEX metadata available to classify pool model.";
+  } else {
+    model = "unknown";
+    protocolVariant = null;
+    reason = "Pool model could not be determined from available evidence.";
+  }
+
+  return {
+    poolAddress: input.poolAddress,
+    poolId: input.poolId,
+    pair: input.pair,
+    protocol,
+    protocolVariant,
+    dexName: input.dexName ?? input.dexId ?? null,
+    model,
+    confidence: model === "unknown" ? "low" : (input.source === "rpc_probe" ? "high" : "medium"),
+    source: input.source,
+    evidence: [`dexId=${input.dexId ?? "unknown"}`, `source=${input.source}`],
+    canApplyErc20LpProof: model === "constant_product",
+    requiresPositionProof: model === "concentrated",
+    standardLockBurnApplies: model === "constant_product",
+    reason,
+  };
+}
+
 /** Public canonical fields layered on top of a real ConcentratedPositionProof attempt — never
  * invented separately from it. positionOwnershipStatus mirrors `status` under the public name
  * the dashboard/API contract uses; summary/evidenceGaps/nextActions restate the same

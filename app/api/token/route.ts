@@ -24,8 +24,11 @@ import {
   computeLpExitRisk,
   attemptConcentratedPositionProof,
   buildConcentratedPositionProofRead,
+  buildCanonicalPoolIdentity,
+  reconcileCanonicalPoolIdentity,
   type ProofApplicability,
   type ConcentratedPositionProof,
+  type CanonicalPoolIdentity,
 } from '@/lib/server/lpProof'
 import {
   computeDisplayLpModel,
@@ -3591,7 +3594,28 @@ export async function POST(req: Request) {
       (canonicalPrimaryPool.liquidityUsd ?? 0) > 0
     )
     const lpPool = canonicalPrimaryUsable ? canonicalPrimaryPool : selectedLpPool.pool;
-    const lpPoolType = lpPool?.poolType ?? "unknown";
+    let lpPoolType: NormalizedPool['poolType'] | "unknown" = lpPool?.poolType ?? "unknown";
+    // Canonical pool identity (cross-scan stability): a pool address previously classified
+    // concentrated (from richer primary-market/RPC evidence) must never be downgraded to
+    // constant_product just because a later scan only has generic fallback market data for
+    // the same address. mergeCanonicalPoolIdentity() never lets a less-specific read win —
+    // see lib/server/lpProof.ts. This never adds a provider call: it only reconciles data
+    // already resolved above.
+    const _canonicalPoolAddressForIdentity = lpPool?.address ?? primaryPoolAddress ?? null
+    const canonicalPoolIdentity = _canonicalPoolAddressForIdentity
+      ? reconcileCanonicalPoolIdentity(buildCanonicalPoolIdentity({
+          poolAddress: _canonicalPoolAddressForIdentity,
+          poolId: lpPool?.poolId ?? primaryMarketPoolId ?? null,
+          pair: lpPool?.pairName ?? null,
+          dexId: lpPool?.dexId ?? null,
+          dexName: lpPool?.dexName ?? null,
+          source: canonicalPrimaryUsable ? "primary_market" : "fallback_market",
+          rpcConfirmedModel: lpPoolType === "v2" ? "v2" : (lpPoolType === "v3" || lpPoolType === "concentrated") ? "concentrated" : null,
+        }))
+      : null
+    if (canonicalPoolIdentity?.model === "concentrated" && lpPoolType !== "v3" && lpPoolType !== "concentrated") {
+      lpPoolType = "concentrated"
+    }
     // Canonical LP proof target: the PRIMARY/highest-liquidity pool (lpPool) is the single
     // source of truth for whether standard ERC-20 LP lock/burn proof applies (selection
     // rules 1/2). If it's concentrated/CLMM/V3, standard proof never applies to it —
@@ -3675,8 +3699,14 @@ export async function POST(req: Request) {
     const hasSecurityData = Boolean(hpResult.ok)
     // lpPoolAddress is the market display pool address (used for display/evidence)
     const lpPoolAddress = lpPool?.address ?? null
-    const lpDexId = lpPool?.dexId ?? null
-    const lpDexName = lpPool?.dexName ?? null
+    // When the canonical pool identity (cross-scan merge) established this address as
+    // concentrated but the raw dex id string lacks a concentrated marker (e.g. a fallback
+    // scan only saw a generic "aerodrome" string), prefer the canonical protocol variant so
+    // lpModelProof/classifyPoolModel downstream agree with the upgraded lpPoolType above.
+    const lpDexId = (canonicalPoolIdentity?.model === "concentrated" && lpPool?.dexId == null)
+      ? (canonicalPoolIdentity.protocolVariant ?? "concentrated").toLowerCase().replace(/\s+/g, "-")
+      : lpPool?.dexId ?? null
+    const lpDexName = canonicalPoolIdentity?.protocolVariant ?? lpPool?.dexName ?? null
     // Computed early so the "Normalize split-pool and proof-status fields" block below can use
     // standardLockApplies to keep displayLpModel/proofApplicability consistent with lpModelProof.
     const lpModelProof = _deriveLpModelProof(lpDexId)
@@ -7283,17 +7313,25 @@ export async function POST(req: Request) {
           supply_spread: supplySpread,
           holderDataComplete,
         },
-        liquidity: {
-          status: toCanonical(liquidityStatus),
-          rawStatus: liquidityStatus,
-          reason: liquidityReason,
+        liquidity: (() => {
+          // Fallback inheritance: when GeckoTerminal's pools array is empty but fallback
+          // market data already proved liquidity exists (liquidityUsd>0 / a synthesized
+          // pool / pair address present), the liquidity section must not collapse to
+          // "no pools" — it should report the fallback-sourced pool as a partial read
+          // instead of contradicting lpControl/lpControllerIntel elsewhere in the response.
+          const _hasFallbackPoolEvidence = matchingPools.length === 0 && Boolean(_fallbackLiquidityDetected || lpPool)
+          const _liquiditySectionPoolCount = matchingPools.length > 0 ? matchingPools.length : (_hasFallbackPoolEvidence ? 1 : 0)
+          return {
+          status: _hasFallbackPoolEvidence ? 'partial' : toCanonical(liquidityStatus),
+          rawStatus: _hasFallbackPoolEvidence ? 'partial' : liquidityStatus,
+          reason: _hasFallbackPoolEvidence ? 'liquidity_from_fallback_market_read' : liquidityReason,
           source: "lp_layer",
-          poolCount: matchingPools.length,
-          primaryPair: mainPool?.attributes?.name ?? null,
+          poolCount: _liquiditySectionPoolCount,
+          primaryPair: mainPool?.attributes?.name ?? (_hasFallbackPoolEvidence ? (_primaryPair ?? null) : null),
           liquidityDepth: liquidityUsd,
           pool_age: pairCreatedAt ?? _dexFb?.pairCreatedAt ?? null,
-          pool_protocol: primaryDexName ?? normalizeDexLabel(lpPool?.dexName ?? null),
-          pool_fragmentation: matchingPools.length > 2 ? 'fragmented' : matchingPools.length === 2 ? 'split' : matchingPools.length === 1 ? 'single' : 'none',
+          pool_protocol: primaryDexName ?? normalizeDexLabel(lpDexName ?? lpPool?.dexName ?? null),
+          pool_fragmentation: matchingPools.length > 2 ? 'fragmented' : matchingPools.length === 2 ? 'split' : matchingPools.length === 1 ? 'single' : (_liquiditySectionPoolCount === 1 ? 'single_pool' : 'none'),
           lpSafetyAttempted,
           lpSafetyUsable,
           lpOwnershipVerified,
@@ -7324,7 +7362,8 @@ export async function POST(req: Request) {
             lpControlState: lpDiagnostics.lpState ?? null,
             selectedPrimaryPoolStrategy: lpDiagnostics.selectedPrimaryPoolStrategy,
           },
-        },
+          }
+        })(),
         ownership: {
           status: ownershipVerified ? 'verified' : (isRenounced ? 'verified' : (ownerAddr ? 'partial' : 'inferred')),
           is_renounced: isRenounced,
