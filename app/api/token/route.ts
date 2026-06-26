@@ -4492,18 +4492,27 @@ export async function POST(req: Request) {
       // it must never overwrite or be confused with the primary pool's lpControllerIntel/
       // lpLockBurnIntel/lpMovementWatch, which describe the primary (concentrated) pool model.
       // reconcileSecondaryLpSignal() above already derives secondaryLpControlSignals from the
-      // SECONDARY pool's own pre-reconciliation holder evidence/status — do not overwrite it
-      // here with lpControl.status, which has since been reset to "concentrated_liquidity"
-      // (the PRIMARY pool's canonical status).
+      // SECONDARY pool's own pre-reconciliation holder evidence/status. This fallback branch
+      // covers the case where a secondary verify pool exists but no holder-proof check ran
+      // against it in this codepath — its status must come from the SECONDARY pool's own
+      // model (_lpProofType), never copied from lpControl.status (which by this point is the
+      // PRIMARY pool's reconciled "concentrated_liquidity" status). Copying it produced the
+      // impossible combination status="concentrated_liquidity" + poolType="unknown".
       if (!lpControl.secondaryLpControlSignals && _notApplicable && lpVerifyPoolPresent && lpVerifyPoolAddress && lpPool !== lpVerifyPool) {
+        const _secondaryModelConcentrated = _lpProofType === 'v3' || _lpProofType === 'concentrated'
+        const _secondaryModelKnownErc20 = _lpProofType === 'v2' || _lpProofType === 'aerodrome'
         lpControl.secondaryLpControlSignals = {
-          status: lpControl.status,
-          confidence: lpControl.confidence,
+          status: _secondaryModelConcentrated ? 'concentrated_liquidity' : 'open_check',
+          confidence: 'low',
           poolAddress: lpVerifyPoolAddress,
           poolDex: lpDiagnostics.lpVerificationDex ?? null,
           poolType: _lpProofType,
-          reason: typeof lpControl.reason === "string" ? lpControl.reason : "",
-          evidence: Array.isArray(lpControl.evidence) ? [...lpControl.evidence] : [],
+          reason: _secondaryModelConcentrated
+            ? "Secondary LP pool detected; pool model is concentrated liquidity, but no position-control proof has run against it in this codepath."
+            : _secondaryModelKnownErc20
+              ? "Secondary LP pool detected and pool model confirmed as a standard ERC-20 LP token, but lock/burn/controller proof has not been run against it in this codepath."
+              : "Secondary LP pool detected, but pool model/control proof could not be confirmed.",
+          evidence: [`Secondary pool: ${lpVerifyPoolAddress}`, `Secondary pool model: ${_lpProofType}`],
         }
       }
       // For concentrated/no-pool models there is no ERC-20 LP verification pool — report
@@ -7340,7 +7349,22 @@ export async function POST(req: Request) {
           concentratedPositionProofAttempted,
           concentratedPositionProofStatus,
           lpLockBurnProofStatus: lpProofStatus,
-          lpOwnershipStatus: (lpState === 'protocol' || lpState === 'concentrated_liquidity') ? 'not_applicable' : (lpOwnershipVerified ? 'verified' : 'inferred'),
+          // Ownership status split: ERC-20 LP token ownership (lock/burn/holder proof) is a
+          // different ownership model from concentrated-position ownership, and conflating
+          // them previously made "lpOwnershipStatus: not_applicable" the only ownership signal
+          // shown for concentrated pools even when a real position proof (partial/open_check/
+          // verified) existed. Both are now exposed; old fields are kept for compatibility.
+          erc20LpOwnershipStatus: (lpState === 'protocol' || lpState === 'concentrated_liquidity') ? 'not_applicable' : (lpOwnershipVerified ? 'verified' : 'inferred'),
+          erc20LockBurnProofStatus: standardLpProofStatus,
+          positionOwnershipStatus: lpState === 'concentrated_liquidity'
+            ? (concentratedPositionProof?.ownershipStatus
+                ?? (concentratedPositionProofStatus === 'verified' ? 'verified' : concentratedPositionProofStatus === 'partial' ? 'partial' : 'open_check'))
+            : null,
+          positionProofStatus: lpState === 'concentrated_liquidity' ? (concentratedPositionProof?.status ?? 'open_check') : null,
+          positionProofConfidence: lpState === 'concentrated_liquidity' ? (concentratedPositionProof?.confidence ?? null) : null,
+          lpOwnershipStatus: lpState === 'concentrated_liquidity'
+            ? (concentratedPositionProofStatus === 'verified' ? 'position_verified' : concentratedPositionProofStatus === 'partial' ? 'position_proof_partial' : 'position_open_check')
+            : ((lpState === 'protocol') ? 'erc20_not_applicable' : (lpOwnershipVerified ? 'verified' : 'inferred')),
           lpControl: {
             ...lpControl,
             canonicalStatus: toCanonical(lpControl.status),
