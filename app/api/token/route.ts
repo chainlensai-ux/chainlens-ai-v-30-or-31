@@ -3282,11 +3282,19 @@ export async function POST(req: Request) {
     _scanStage = 'chain_detection'
     // Chain auto-detection for address inputs: if selected chain has no pools,
     // try the opposite chain before continuing full scan.
+    // The result is cached in `_earlyGtData` and reused for the main pools fetch below
+    // instead of being requested a second time — GeckoTerminal's public API is rate-limited,
+    // and re-requesting the same contract+chain pools twice per scan was silently starving
+    // well-known/high-traffic tokens of pool data whenever the second request got rate-limited
+    // (fetchGeckoTerminal swallows non-2xx responses and returns null, which downstream reads
+    // as "no pools" — the token then reports name: Unknown / poolCount: 0 / noActivePools: true).
+    let _earlyGtData: any = null
     if (isAddressInput) {
       _diagPoolAttempted = true
       const selectedPools = await fetchGeckoTerminal(contract, chain)
       const selectedCount = Array.isArray(selectedPools?.data) ? selectedPools.data.length : 0
       _diagPoolCount = selectedCount
+      _earlyGtData = selectedPools
       if (selectedCount === 0) {
         const altChain: ChainKey = chain === 'eth' ? 'base' : 'eth'
         const altPools = await fetchGeckoTerminal(contract, altChain)
@@ -3294,6 +3302,7 @@ export async function POST(req: Request) {
         if (altCount > 0) {
           chain = altChain
           _diagPoolCount = altCount
+          _earlyGtData = altPools
         }
       }
     }
@@ -3441,7 +3450,7 @@ export async function POST(req: Request) {
       isFullScanChain ? fetchGoldRush(chain, contract) : Promise.resolve(null),
       // GoldRush holders: ETH + BASE only (LP Safety + holder distribution)
       goldrushEnabled ? fetchTokenHolders(chain, contract) : Promise.resolve({ __status: 'not_configured', __reason: 'chain_not_supported' }),
-      fetchGeckoTerminal(contract, chain),
+      _earlyGtData != null ? Promise.resolve(_earlyGtData) : fetchGeckoTerminal(contract, chain),
       fetchGeckoTerminalToken(contract, chain),
       fetchGMGN(contract),
       fetchTokenMetadata(chain, contract),
@@ -6784,6 +6793,33 @@ export async function POST(req: Request) {
       marketDataSource,
       marketConfidence,
       marketStatus,
+
+      // Temporary debug — traces the resolver → metadata → GeckoTerminal → DexScreener →
+      // normalizePools() → selectedPool pipeline for diagnosing market-discovery regressions.
+      // Safe to remove once the upstream regression class is confirmed fixed.
+      _marketDebug: {
+        resolverWorked: Boolean(resolvedAddress),
+        resolvedAddress,
+        requestedChain: rawChain,
+        metadataResolved: _diagMetadataResolved,
+        metadataName: finalResolvedName,
+        metadataSymbol: finalResolvedSymbol,
+        geckoAttempted: true,
+        geckoSucceeded: gtData != null,
+        geckoPoolCount: gtAllPools.length,
+        geckoError: gtData == null ? 'no_data_or_request_failed' : null,
+        dexAttempted: isFullScanChain,
+        dexSucceeded: _dexFb != null,
+        dexPairCount: _dexFb != null ? 1 : 0,
+        dexError: (isFullScanChain && _dexFb == null) ? 'no_data_or_request_failed' : null,
+        normalizedPoolCount: normalizedPools.length,
+        selectedPoolAddress: lpPoolAddress,
+        selectedPoolDex: lpDexName,
+        selectedPoolType: lpPoolType,
+        noActivePoolsReason: noActivePools
+          ? (gtAllPools.length === 0 && _dexFb == null ? 'no_pools_from_any_provider' : 'no_usable_pool_selected')
+          : null,
+      },
 
       // Extra data
       ...(debugMode ? { holders: goldrush?.holders || null } : {}),
