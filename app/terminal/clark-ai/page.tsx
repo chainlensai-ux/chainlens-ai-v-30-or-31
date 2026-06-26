@@ -447,10 +447,10 @@ function ClarkAiContent() {
   const recentTokens = (clarkContextRef.current.lastMarketList ?? []).slice(0, 3)
   const recentWalletValue = clientContext.lastWallet ? formatContextValue(clientContext.lastWallet) : null
   const quickActions = [
-    { title: 'Scan Token', sub: 'Analyze any token', icon: '◎', accent: '#22d3ee', prompt: 'Analyze token ' },
-    { title: 'Check LP', sub: 'Verify liquidity', icon: '⌘', accent: '#34d399', prompt: 'Check LP lock ' },
-    { title: 'Wallet PnL', sub: 'Analyze performance', icon: '▣', accent: '#8b5cf6', prompt: 'Analyze wallet PnL ' },
-    { title: 'Base Movers', sub: 'Top tokens today', icon: '✧', accent: '#ec4899', prompt: "What's pumping on Base?" },
+    { title: "What's pumping on Base?", sub: 'Top tokens today', icon: '✧', accent: '#ec4899', prompt: "What's pumping on Base?" },
+    { title: 'Scan BRETT', sub: 'Run Token Scanner', icon: '◎', accent: '#22d3ee', prompt: 'Scan BRETT' },
+    { title: 'Show Base whales', sub: 'Open whale flow read', icon: '▣', accent: '#8b5cf6', prompt: 'Show Base whales' },
+    { title: 'Liquidity check AERO', sub: 'Run LP safety check', icon: '⌘', accent: '#34d399', prompt: 'Liquidity check AERO' },
   ]
   void activeModeConfig; void applyMode; void handleImportFromRadar; void handlePasteContract; void handlePasteWallet; void chips
 
@@ -631,7 +631,7 @@ function ClarkAiContent() {
                 key={action.title}
                 className='clk-quick-card'
                 style={{ '--accent': action.accent } as CSSProperties}
-                onClick={() => setInput(action.prompt)}
+                onClick={() => { void handleSendText(action.prompt) }}
               >
                 <span className='clk-quick-icon'>{action.icon}</span>
                 <span className='clk-quick-copy'>
