@@ -4408,11 +4408,12 @@ export async function POST(req: Request) {
     // LP Safety debug flags — track proof quality for this scan
     const lpSafetyAttempted = needsLpHolderFetch
     const lpSafetyUsable = lpControl.status === 'burned' || lpControl.status === 'locked' || lpControl.status === 'team_controlled'
-    // LP ownership/control is only "verified" when burn, lock, or controller dominance is
-    // actually confirmed — having a contract owner address and a detected pool (the previous
-    // check) proves neither; it was misleadingly marking open-check V2 pools as verified.
-    const lpOwnershipVerified = lpSafetyUsable
-      || lpControl.lockStatus === 'locked'
+    // LP ownership/control is only "verified" when burn, lock, or proof status itself is
+    // actually confirmed. Controller/dominance detection (lpSafetyUsable, lpControl.status,
+    // team_controlled, canonicalStatus, "controller found") is a SEPARATE concept from
+    // ownership-proof verification and must never promote ownership to "verified" — a
+    // dominant wallet controller with no real lock/burn proof is an open check, not verified.
+    const lpOwnershipVerified = lpControl.lockStatus === 'locked'
       || lpControl.burnStatus === 'burned'
       || lpControl.proofStatus === 'verified'
     // Partial LP-holder evidence (e.g. a single holder's LP share) proves *something* was
@@ -4425,7 +4426,9 @@ export async function POST(req: Request) {
     // expose both so "lpSafetyAttempted=false" never reads as "no LP proof was attempted at all"
     // when a concentrated-position proof was in fact attempted (e.g. Uniswap V4 pools).
     const standardLpProofAttempted = lpSafetyAttempted
-    const standardLpProofStatus: string = lpControl.status === 'concentrated_liquidity' ? 'not_applicable' : (lpSafetyUsable ? 'verified' : 'open_check')
+    const standardLpProofStatus: string = lpControl.status === 'concentrated_liquidity'
+      ? 'not_applicable'
+      : (lpOwnershipVerified ? 'verified' : (lpOwnershipHolderEvidenceFound ? 'partial' : 'open_check'))
     const concentratedPositionProofAttempted = Boolean(concentratedPositionProof)
     const concentratedPositionProofStatus: string = concentratedPositionProof?.status ?? 'not_applicable'
     // Canonical public read for concentrated primary pools — never left null when the primary

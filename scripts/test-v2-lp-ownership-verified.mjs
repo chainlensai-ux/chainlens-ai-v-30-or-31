@@ -10,9 +10,11 @@ const route = readFileSync(new URL('../app/api/token/route.ts', import.meta.url)
 //    was detected" — that proved nothing about lock/burn/controller dominance (the BSWAP bug).
 assert.ok(!route.includes('Boolean(ownerAddrEarlyForLp && _lpProofPresent)'), 'lpOwnershipVerified no longer derives from owner-address-plus-pool-detected alone')
 
-// 2. lpOwnershipVerified must require real lock/burn/controller-verified proof.
-assert.ok(route.includes('const lpOwnershipVerified = lpSafetyUsable'), 'lpOwnershipVerified is gated on lpSafetyUsable (burned/locked/team_controlled)')
-assert.ok(route.includes("lpControl.lockStatus === 'locked'"), 'lpOwnershipVerified also accepts a confirmed lockStatus')
+// 2. lpOwnershipVerified must require real lock/burn/proof-status evidence — never derived
+//    from lpSafetyUsable/lpControl.status/team_controlled/controller-dominance alone, since
+//    controller detection and ownership-proof verification are separate concepts.
+assert.ok(route.includes("const lpOwnershipVerified = lpControl.lockStatus === 'locked'"), 'lpOwnershipVerified is gated on a confirmed lockStatus, not on lpSafetyUsable/team_controlled')
+assert.ok(!/lpOwnershipVerified = lpSafetyUsable/.test(route), 'lpOwnershipVerified never derives from lpSafetyUsable (which includes team_controlled)')
 assert.ok(route.includes("lpControl.burnStatus === 'burned'"), 'lpOwnershipVerified also accepts a confirmed burnStatus')
 assert.ok(route.includes("lpControl.proofStatus === 'verified'"), 'lpOwnershipVerified also accepts a verified proofStatus')
 
@@ -31,5 +33,10 @@ assert.ok(route.includes("erc20LpOwnershipStatus: (lpState === 'protocol' || lpS
 assert.ok(route.includes("'position_proof_partial'"), 'concentrated lpOwnershipStatus can still report position_proof_partial')
 assert.ok(route.includes("'position_open_check'"), 'concentrated lpOwnershipStatus can still report position_open_check')
 assert.ok(route.includes("'position_verified'"), 'concentrated lpOwnershipStatus can still report position_verified')
+
+// 6. Standard ERC-20 LP proof status now mirrors the same verified/partial/open_check ladder
+//    (derived from lpOwnershipVerified/lpOwnershipHolderEvidenceFound), not lpSafetyUsable —
+//    so a wallet-controlled pool with no lock/burn proof is "open_check", not "verified".
+assert.ok(route.includes(": (lpOwnershipVerified ? 'verified' : (lpOwnershipHolderEvidenceFound ? 'partial' : 'open_check'))"), 'standardLpProofStatus uses the verified/partial/open_check ladder, not lpSafetyUsable')
 
 console.log('test-v2-lp-ownership-verified.mjs: all assertions passed')
