@@ -3911,8 +3911,8 @@ export default function TerminalTokenScanner() {
         @media (prefers-reduced-motion:reduce){.live-dot,.radar-ring,.shimmer-line,.scan-btn-live,.cortex-score-hero{animation:none !important;} .scan-btn-live:hover,.cortex-chip:hover{transform:none !important;} .cortex-bdrow:hover{background:none !important;}}
         .metric-grid{grid-template-columns:repeat(auto-fit,minmax(150px,1fr)) !important;gap:clamp(8px,1vw,12px) !important;}
         .activity-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;}
-        @media (min-width:1536px){.token-shell{grid-template-columns:minmax(0,1fr) clamp(360px,22vw,420px);} .token-main{max-width:1260px;margin:0 auto;}}
-        @media (min-width:1280px) and (max-width:1535px){.token-shell{grid-template-columns:minmax(0,1fr) clamp(320px,24vw,360px);} .token-main{max-width:1120px;margin:0 auto;} .mob-verdict-panel{padding:24px 16px;font-size:12px;} .activity-grid{gap:8px;}}
+        @media (min-width:1536px){.token-shell{grid-template-columns:minmax(0,1fr) clamp(360px,22vw,420px);column-gap:28px;} .token-main{max-width:1180px;margin:0 auto;} .token-shell .mob-verdict-panel{width:auto !important;max-width:420px !important;}}
+        @media (min-width:1280px) and (max-width:1535px){.token-shell{display:block;height:auto;overflow:visible;} .token-main{max-width:1120px;margin:0 auto;} .mob-scan-main{overflow-y:visible !important;} .token-shell .mob-verdict-panel{position:static !important;width:100% !important;max-width:1120px !important;height:auto !important;min-height:0 !important;margin:0 auto !important;border-left:none !important;border-top:1px solid rgba(255,255,255,0.08) !important;overflow-y:visible !important;padding:24px 18px !important;font-size:12px;} .activity-grid{gap:8px;}}
         @media (max-width:1279px){.token-shell{display:block;height:auto;overflow:visible;} .mob-scan-main{overflow-y:visible !important;} .token-shell .mob-verdict-panel{position:static !important;width:100% !important;max-width:100% !important;height:auto !important;min-height:0 !important;border-left:none !important;border-top:1px solid rgba(255,255,255,0.08) !important;overflow-y:visible !important;}}
         @media (max-width:1023px){.metric-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;} .holders-grid,.intel-grid{grid-template-columns:1fr !important;} .activity-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;}}
         @media (max-width:768px){.token-main{padding:36px 14px 120px !important;} .token-input-row{flex-direction:column;max-width:100% !important;} .token-input-row button{width:100%;} .top-holder-head{display:none !important;} .top-holder-row{display:block !important;padding:12px !important;} .top-holder-mobile-meta{display:flex !important;align-items:center;justify-content:space-between;gap:8px;} .top-holder-mobile-amt{display:block !important;margin-top:6px !important;text-align:left !important;} .pools-scroll{overflow-x:auto !important;-webkit-overflow-scrolling:touch;margin:0 -12px;padding:0 12px;} .mob-verdict-panel{padding:18px 14px !important;gap:12px !important;} .glass-card{padding:14px !important;} .preview-module-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;}}
@@ -5141,27 +5141,27 @@ export default function TerminalTokenScanner() {
                       : 'Pool structure could not be classified from this scan.'
                     void lpStatus
                     return (
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(190px,1fr))', gap: '10px', marginBottom: '14px' }}>
-                        <div style={{ padding: '15px 17px', background: lockInfo.bg, border: `1px solid ${lockInfo.border}`, borderRadius: '14px' }}>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(220px,1fr))', gap: '12px', marginBottom: '16px', alignItems: 'stretch' }}>
+                        <div style={{ padding: '18px 19px', background: lockInfo.bg, border: `1px solid ${lockInfo.border}`, borderRadius: '14px' }}>
                           <div style={{ fontSize: '9px', letterSpacing: '.15em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', marginBottom: '9px', fontWeight: 700, textTransform: 'uppercase' }}>LP Status</div>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
-                            <span style={{ width: 7, height: 7, borderRadius: '50%', background: lockInfo.color, flexShrink: 0, boxShadow: `0 0 8px ${lockInfo.color}` }} />
-                            <span style={{ fontSize: '16px', fontWeight: 800, color: lockInfo.color, fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.03em' }}>{lockInfo.label}</span>
+                          <div style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', marginBottom: '8px' }}>
+                            <span style={{ width: 7, height: 7, borderRadius: '50%', background: lockInfo.color, flexShrink: 0, boxShadow: `0 0 8px ${lockInfo.color}`, marginTop: '6px' }} />
+                            <span style={{ minWidth: 0, fontSize: '16px', fontWeight: 800, color: lockInfo.color, fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.03em', lineHeight: 1.25, overflowWrap: 'anywhere' }}>{lockInfo.label}</span>
                           </div>
-                          <p style={{ margin: 0, fontSize: '11px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>{lockInfo.description}</p>
+                          <p style={{ margin: 0, fontSize: '11px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6, overflowWrap: 'anywhere' }}>{lockInfo.description}</p>
                         </div>
-                        <div style={{ padding: '15px 17px', background: `${exitInfo.color}08`, border: `1px solid ${exitInfo.color}28`, borderRadius: '14px' }}>
+                        <div style={{ padding: '18px 19px', background: `${exitInfo.color}08`, border: `1px solid ${exitInfo.color}28`, borderRadius: '14px' }}>
                           <div style={{ fontSize: '9px', letterSpacing: '.15em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', marginBottom: '9px', fontWeight: 700, textTransform: 'uppercase' }}>Exit Risk</div>
                           <div style={{ marginBottom: '8px' }}>
                             <span style={{ padding: '4px 13px', borderRadius: '999px', background: `${exitInfo.color}14`, border: `1px solid ${exitInfo.color}45`, color: exitInfo.color, fontSize: '14px', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.05em' }}>{exitInfo.label}</span>
                           </div>
                           <p style={{ margin: 0, fontSize: '11px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>{exitInfo.description}</p>
                         </div>
-                        <div style={{ padding: '15px 17px', background: `${modelColor}08`, border: `1px solid ${modelColor}28`, borderRadius: '14px' }}>
+                        <div style={{ padding: '18px 19px', background: `${modelColor}08`, border: `1px solid ${modelColor}28`, borderRadius: '14px' }}>
                           <div style={{ fontSize: '9px', letterSpacing: '.15em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', marginBottom: '9px', fontWeight: 700, textTransform: 'uppercase' }}>Primary Liquidity Model</div>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
                             <span style={{ width: 7, height: 7, borderRadius: '50%', background: modelColor, flexShrink: 0, boxShadow: `0 0 8px ${modelColor}` }} />
-                            <span style={{ fontSize: '16px', fontWeight: 800, color: modelColor, fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.03em' }}>{modelLabel}</span>
+                            <span style={{ minWidth: 0, fontSize: '16px', fontWeight: 800, color: modelColor, fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.03em', lineHeight: 1.25, overflowWrap: 'anywhere' }}>{modelLabel}</span>
                           </div>
                           <p style={{ margin: 0, fontSize: '11px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>{modelDesc}</p>
                         </div>
