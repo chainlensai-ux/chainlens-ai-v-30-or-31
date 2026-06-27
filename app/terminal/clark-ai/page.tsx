@@ -503,7 +503,7 @@ function ClarkAiContent() {
         .clk-tab { min-height:58px; border:0; border-right:1px solid rgba(148,163,184,.12); background:rgba(15,23,42,.22); color:#b7c2d4; font-weight:750; font-size:16px; cursor:pointer; display:flex; gap:10px; align-items:center; justify-content:center; }
         .clk-tab:last-child { border-right:0; }
         .clk-tab--active { color:#22d3ee; background:linear-gradient(180deg, rgba(34,211,238,.10), rgba(34,211,238,.025)); box-shadow: inset 0 1px 0 rgba(34,211,238,.24); }
-        .clk-thread { position:relative; min-height:230px; max-height:430px; overflow-y:auto; padding:20px 20px 14px; display:flex; flex-direction:column; gap:14px; background-image: linear-gradient(rgba(34,211,238,.035) 1px, transparent 1px), linear-gradient(90deg, rgba(34,211,238,.028) 1px, transparent 1px), repeating-linear-gradient(180deg, rgba(255,255,255,.018) 0 1px, transparent 1px 7px); background-size:32px 32px, 32px 32px, 100% 8px; }
+        .clk-thread { position:relative; min-height:360px; max-height:560px; overflow-y:auto; padding:26px 24px 18px; display:flex; flex-direction:column; gap:16px; background-image: linear-gradient(rgba(34,211,238,.035) 1px, transparent 1px), linear-gradient(90deg, rgba(34,211,238,.028) 1px, transparent 1px), repeating-linear-gradient(180deg, rgba(255,255,255,.018) 0 1px, transparent 1px 7px); background-size:32px 32px, 32px 32px, 100% 8px; }
         .clk-thread-top { display:flex; justify-content:flex-end; }
         .clk-clear-btn { border:0; background:transparent; color:#98a6ba; cursor:pointer; font-size:13px; }
         .clk-intro { display:grid; grid-template-columns:38px minmax(0,1fr); gap:14px; max-width:720px; padding:16px; border:1px solid rgba(45,212,191,.18); border-radius:16px; background:linear-gradient(135deg, rgba(14,24,42,.78), rgba(4,9,20,.78)); box-shadow:inset 0 1px 0 rgba(255,255,255,.045); }
@@ -511,12 +511,12 @@ function ClarkAiContent() {
         .clk-intro-text { margin:0; color:#c4cede; line-height:1.55; font-size:14px; white-space:pre-line; }
         .clk-capabilities { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
         .clk-capability { border:1px solid rgba(45,212,191,.22); border-radius:999px; padding:5px 8px; color:#a7f3d0; background:rgba(45,212,191,.07); font:800 10px var(--font-plex-mono, monospace); letter-spacing:.08em; text-transform:uppercase; }
-        .clk-msg { max-width:84%; padding:10px 12px; border-radius:8px; border:1px solid rgba(148,163,184,.14); background:rgba(8,13,24,.82); box-shadow:inset 0 1px 0 rgba(255,255,255,.035); }
-        .clk-msg--user { align-self:flex-end; border-color:rgba(34,211,238,.20); background:rgba(7,24,34,.72); }
-        .clk-msg--clark { align-self:flex-start; border-left-color:rgba(45,212,191,.34); }
-        .clk-msg-role { display:flex; gap:8px; align-items:center; margin-bottom:7px; color:#22d3ee; font:800 10px var(--font-plex-mono, monospace); letter-spacing:.14em; text-transform:uppercase; }
-        .clk-msg-role::after { content:attr(data-intent); color:#64748b; font-weight:700; letter-spacing:.10em; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-        .clk-msg-text { margin:0; font-size:14px; line-height:1.62; color:#dbe6f6; white-space:pre-wrap; word-break:break-word; overflow-wrap:anywhere; }
+        .clk-msg { max-width:min(88%, 760px); padding:15px 17px; border-radius:20px; border:1px solid rgba(148,163,184,.13); background:linear-gradient(145deg, rgba(13,22,38,.92), rgba(6,11,24,.88)); box-shadow:0 14px 30px rgba(0,0,0,.18), inset 0 1px 0 rgba(255,255,255,.05); }
+        .clk-msg--user { align-self:flex-end; border-color:rgba(34,211,238,.22); border-bottom-right-radius:8px; background:linear-gradient(145deg, rgba(9,44,55,.82), rgba(7,24,34,.76)); }
+        .clk-msg--clark { align-self:flex-start; border-color:rgba(45,212,191,.18); border-bottom-left-radius:8px; }
+        .clk-msg-role { display:flex; gap:8px; align-items:center; margin-bottom:8px; color:#67e8f9; font:750 11px var(--font-inter, sans-serif); letter-spacing:.02em; text-transform:none; }
+        .clk-msg-role::after { content:attr(data-intent); color:#7c8aa1; font-weight:600; letter-spacing:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; opacity:.72; }
+        .clk-msg-text { margin:0; font-size:15px; line-height:1.68; color:#e1e9f5; white-space:pre-wrap; word-break:break-word; overflow-wrap:anywhere; }
         .clk-intent-badge { display:inline-flex; width:max-content; margin:0 0 8px; padding:4px 8px; border:1px solid rgba(45,212,191,.28); border-radius:999px; color:#67e8f9; background:rgba(45,212,191,.08); font-size:10px; font-weight:800; letter-spacing:.12em; text-transform:uppercase; }
         .clk-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
         .clk-action { border:1px solid rgba(45,212,191,.25); border-radius:999px; padding:7px 10px; color:#ccfbf1; background:rgba(45,212,191,.07); font-size:12px; font-weight:700; text-decoration:none; }
@@ -527,13 +527,13 @@ function ClarkAiContent() {
         .clk-scanline { position:relative; height:2px; margin-top:10px; overflow:hidden; background:rgba(148,163,184,.12); }
         .clk-scanline::before { content:''; position:absolute; inset:0 auto 0 0; width:42%; background:linear-gradient(90deg, transparent, rgba(45,212,191,.9), transparent); animation:clkScan 1.15s linear infinite; }
         @keyframes clkScan { from{ transform:translateX(-100%);} to{ transform:translateX(260%);} }
-        .clk-input-wrap { margin:0 18px 16px; border:1px solid rgba(34,211,238,.50); border-radius:14px; background:linear-gradient(180deg, rgba(2,8,20,.86), rgba(2,6,16,.94)); box-shadow:0 0 24px rgba(34,211,238,.09), inset 0 1px 0 rgba(255,255,255,.045); }
-        .clk-input-row { display:grid; grid-template-columns:42px minmax(0, 1fr) auto 46px; gap:10px; align-items:center; min-height:62px; padding:8px 10px 8px 12px; }
-        .clk-prompt-mark { height:34px; border-radius:10px; display:grid; place-items:center; color:#22d3ee; font:900 16px var(--font-plex-mono, monospace); background:rgba(34,211,238,.08); border:1px solid rgba(34,211,238,.18); box-shadow:inset 0 1px 0 rgba(255,255,255,.04); }
-        .clk-panel-input { width:100%; background:transparent; border:0; outline:0; color:#e5edf8; font-size:16px; caret-color:#22d3ee; }
+        .clk-input-wrap { margin:0 18px 18px; border:1px solid rgba(34,211,238,.55); border-radius:18px; background:linear-gradient(180deg, rgba(2,8,20,.88), rgba(2,6,16,.96)); box-shadow:0 0 28px rgba(34,211,238,.11), inset 0 1px 0 rgba(255,255,255,.055); }
+        .clk-input-row { display:grid; grid-template-columns:48px minmax(0, 1fr) auto 54px; gap:12px; align-items:center; min-height:78px; padding:10px 12px 10px 14px; }
+        .clk-prompt-mark { height:44px; border-radius:12px; display:grid; place-items:center; color:#22d3ee; font:900 18px var(--font-plex-mono, monospace); background:rgba(34,211,238,.08); border:1px solid rgba(34,211,238,.18); box-shadow:inset 0 1px 0 rgba(255,255,255,.04); }
+        .clk-panel-input { width:100%; background:transparent; border:0; outline:0; color:#e5edf8; font-size:18px; caret-color:#22d3ee; }
         .clk-panel-input::placeholder { color:#8d99ab; }
         .clk-helper { color:#94a3b8; font-size:12px; white-space:nowrap; }
-        .clk-send-btn { width:42px; height:42px; border-radius:12px; border:1px solid rgba(34,211,238,.62); color:#67e8f9; background:linear-gradient(180deg, rgba(34,211,238,.14), rgba(14,22,36,.72)); display:grid; place-items:center; cursor:pointer; transition:transform .16s, box-shadow .16s, border-color .16s, background .16s; }
+        .clk-send-btn { width:48px; height:48px; border-radius:14px; border:1px solid rgba(34,211,238,.62); color:#67e8f9; background:linear-gradient(180deg, rgba(34,211,238,.14), rgba(14,22,36,.72)); display:grid; place-items:center; cursor:pointer; transition:transform .16s, box-shadow .16s, border-color .16s, background .16s; }
         .clk-send-btn:not(:disabled):hover { transform:translateY(-1px); box-shadow:0 0 22px rgba(34,211,238,.24); border-color:rgba(94,234,212,.74); }
         .clk-send-btn:disabled { opacity:.38; cursor:not-allowed; box-shadow:none; }
         .clk-upgrade-note { margin:0 18px 12px; padding:11px 14px; border:1px solid rgba(139,92,246,.28); border-radius:12px; background:rgba(139,92,246,.08); color:#c4b5fd; display:flex; justify-content:space-between; gap:12px; font-size:13px; }
