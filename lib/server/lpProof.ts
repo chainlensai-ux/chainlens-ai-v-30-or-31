@@ -1697,6 +1697,27 @@ export interface ConcentratedPositionProofRead {
   nextActions: string[];
 }
 
+/** Humanizes raw missingEvidence keys into user-facing copy. Protocol-aware: Uniswap V4 gets a
+ * model-specific "position manager" label, every other pool model gets neutral wording rather than
+ * guessing a protocol that wasn't actually resolved. */
+function humanizeConcentratedEvidenceGap(key: string, poolModel: string | null | undefined): string {
+  const isV4 = poolModel === "uniswap_v4";
+  switch (key) {
+    case "positionManager":
+      return isV4
+        ? "Uniswap V4 concentrated position manager not supported yet"
+        : "Concentrated position manager not supported yet for this pool model";
+    case "topPositionOwner":
+      return "Top liquidity owner not verified";
+    case "positionCount":
+      return "Active liquidity positions not indexed";
+    case "topPositionSharePercent":
+      return "Position liquidity share not available";
+    default:
+      return "Protocol-specific position ownership not verified";
+  }
+}
+
 export function buildConcentratedPositionProofRead(
   proof: ConcentratedPositionProof,
   ctx?: { protocol?: string | null; poolPair?: string | null },
@@ -1706,8 +1727,8 @@ export function buildConcentratedPositionProofRead(
     ? proof.reason
     : "Concentrated pool detected; position ownership proof is not yet verified.";
   const evidenceGaps = proof.missingEvidence.length > 0
-    ? proof.missingEvidence
-    : ["protocol-specific position ownership not verified"];
+    ? proof.missingEvidence.map((key) => humanizeConcentratedEvidenceGap(key, proof.poolModel))
+    : ["Protocol-specific position ownership not verified"];
   const nextActions = proof.nextAction
     ? [proof.nextAction]
     : [

@@ -28,4 +28,12 @@ assert.ok(route.includes('holderCount: resolvedHolderCount,\n          holderCou
 assert.ok(route.includes('holderCount: holderResolverResult.holders.length,'), 'devIntel.holderEvidence.holderCount stays row-count-based')
 assert.ok(route.includes("{ holderCount: holderResolverResult.holders.length }"), 'holderResolver.holderCount stays row-count-based')
 
+// 6. aiSummary (via _buildDeterministicSummary) must say "partially indexed" with real holder
+//    rows + concentration % when holderDistributionStatus.status === 'partial', never claim
+//    holder data is "not indexed" or fall back to the generic inferred-concentration wording.
+assert.ok(route.includes("holderDistributionPartial?: boolean"), '_buildDeterministicSummary accepts a holderDistributionPartial flag')
+assert.ok(route.includes('Holder distribution is partially indexed: ${holderCount.toLocaleString()} holder rows were returned, with top-10 concentration around ${top10Pct.toFixed(1)}%${riskNote}.'), 'partial-holder branch produces the partially-indexed sentence with row count + top-10 %')
+assert.ok(route.includes("', which is a major concentration risk'"), 'high top-10 concentration in the partial-holder branch is still flagged as a major risk')
+assert.ok(route.includes('_buildDeterministicSummary(_chainName, noActivePools, hpResult, analysis, holderDataComplete, resolvedHolderCount, top10Pct ?? null, _ownershipStatusFinal, lpPoolType ?? lpVerifyPoolType, lpControl.status, holderDistributionStatus.status === \'partial\')'), 'call site passes resolvedHolderCount + the partial flag, not the raw provider-only holderCount')
+
 console.log('test-holder-count-not-fake-zero.mjs: all assertions passed')

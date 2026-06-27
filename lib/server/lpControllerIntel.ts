@@ -17,7 +17,7 @@ export interface LpControllerIntelInput {
   lpExitRisk?: string | null
   liquidityDepthRisk?: string | null
   lpMigrationProof?: Record<string, unknown> | null
-  lpEvidenceGaps?: Array<{ label?: unknown }> | null
+  lpEvidenceGaps?: Array<{ id?: unknown; label?: unknown }> | null
   lpMeta?: Record<string, unknown> | null
   lpDataMode?: string | null
   /** Real attempted position/controller proof for concentrated-liquidity pools (V3/V4/etc) —
@@ -333,14 +333,23 @@ export function buildLpControllerIntel(input: LpControllerIntelInput): LpControl
   else if (liquidityDepth === 'moderate') signals.push('liquidity depth is moderate')
   else if (liquidityDepth === 'thin') signals.push('liquidity depth is thin')
 
+  // Structured, concentrated-position-specific gaps (POSITION_MANAGER_UNSUPPORTED,
+  // TOP_LIQUIDITY_OWNER_NOT_VERIFIED, ACTIVE_POSITIONS_NOT_INDEXED) supersede the generic
+  // "largest liquidity owner"/"active liquidity positions" wording below — when they're present,
+  // pushing both would surface the same gap twice under two different labels.
+  const _structuredConcentratedGapIds = new Set(['POSITION_MANAGER_UNSUPPORTED', 'TOP_LIQUIDITY_OWNER_NOT_VERIFIED', 'ACTIVE_POSITIONS_NOT_INDEXED'])
+  const hasStructuredConcentratedGaps = Array.isArray(input.lpEvidenceGaps) && input.lpEvidenceGaps.some((g) => _structuredConcentratedGapIds.has(asString(g.id) ?? ''))
+
   const evidenceGaps: string[] = []
   if (lockBurnProof === 'open_check') {
     evidenceGaps.push('active LP lock not confirmed', 'LP burn proof not confirmed')
   } else if (lockBurnProof === 'not_applicable') {
-    evidenceGaps.push('protocol-specific liquidity position verification required')
-    if (input.concentratedPositionProof && input.concentratedPositionProof.status !== 'verified' && input.concentratedPositionProof.status !== 'not_found') {
-      for (const gap of ['the largest liquidity owner is not yet verified', 'the number of active liquidity positions is not yet verified']) {
-        if (!evidenceGaps.includes(gap)) evidenceGaps.push(gap)
+    if (!hasStructuredConcentratedGaps) {
+      evidenceGaps.push('protocol-specific liquidity position verification required')
+      if (input.concentratedPositionProof && input.concentratedPositionProof.status !== 'verified' && input.concentratedPositionProof.status !== 'not_found') {
+        for (const gap of ['the largest liquidity owner is not yet verified', 'the number of active liquidity positions is not yet verified']) {
+          if (!evidenceGaps.includes(gap)) evidenceGaps.push(gap)
+        }
       }
     }
   }

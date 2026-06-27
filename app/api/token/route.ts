@@ -3127,7 +3127,8 @@ function _buildDeterministicSummary(
   top10Pct: number | null,
   ownerStatus: string,
   lpPoolType: string | null | undefined,
-  lpControlStatus?: string | null
+  lpControlStatus?: string | null,
+  holderDistributionPartial?: boolean
 ): string {
   const confirmed: string[] = []
   const risks: string[] = []
@@ -3156,6 +3157,15 @@ function _buildDeterministicSummary(
     if (top10Pct > 70) risks.push(`top-10 holder concentration is very high (${top10Pct.toFixed(1)}%${countNote}) — strong centralization risk`)
     else if (top10Pct > 50) risks.push(`top-10 holder concentration is elevated (${top10Pct.toFixed(1)}%${countNote}) — monitor for large dump risk`)
     else confirmed.push(`Holder distribution verified: top-10 at ${top10Pct.toFixed(1)}%${countNote}.`)
+  } else if (holderDistributionPartial && holderCount != null && holderCount > 0) {
+    if (top10Pct != null) {
+      const riskNote = top10Pct > 70 ? ', which is a major concentration risk'
+        : top10Pct > 50 ? ', which is an elevated concentration risk'
+        : ''
+      confirmed.push(`Holder distribution is partially indexed: ${holderCount.toLocaleString()} holder rows were returned, with top-10 concentration around ${top10Pct.toFixed(1)}%${riskNote}.`)
+    } else {
+      confirmed.push(`Holder distribution is partially indexed: ${holderCount.toLocaleString()} holder rows were returned, with reconstructed concentration percentages.`)
+    }
   } else {
     inferred.push('holder concentration inferred as moderate-to-high — cross-check top wallets before sizing a position')
   }
@@ -5644,7 +5654,7 @@ export async function POST(req: Request) {
     // Always use deterministic summary when holder data is complete — AI prompt is built before
     // holder data resolves so AI text can contain stale "holders not indexed" wording.
     // Fall back to AI text only when holder data is incomplete.
-    const _deterministicSummary = _buildDeterministicSummary(_chainName, noActivePools, hpResult, analysis, holderDataComplete, holderCount ?? null, top10Pct ?? null, _ownershipStatusFinal, lpPoolType ?? lpVerifyPoolType, lpControl.status)
+    const _deterministicSummary = _buildDeterministicSummary(_chainName, noActivePools, hpResult, analysis, holderDataComplete, resolvedHolderCount, top10Pct ?? null, _ownershipStatusFinal, lpPoolType ?? lpVerifyPoolType, lpControl.status, holderDistributionStatus.status === 'partial')
     const aiSummary: string = holderDataComplete ? _deterministicSummary : (_aiTextEarly ?? _deterministicSummary)
 
     if (marketCapFromGt != null) riskVerifiedSignals.push('Market data verified: market cap is available.')

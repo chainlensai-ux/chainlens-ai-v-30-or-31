@@ -159,6 +159,39 @@ async function main() {
     assert.equal(intel.topPositionOwner, null)
   }
 
+  // ── Controller intel evidenceGaps dedupe: when route.ts already supplied the structured
+  // concentrated-position labels, the old generic duplicate wording must not also appear ──
+  {
+    const intel = buildLpControllerIntel({
+      lpControl: { status: 'concentrated_liquidity', proofApplicability: 'not_applicable' },
+      selectedPool: { model: 'concentrated', dex: 'Uniswap V4' },
+      concentratedPositionProof: {
+        status: 'not_supported',
+        topPositionOwner: null,
+        topPositionOwnerType: null,
+        controllerRisk: 'unknown',
+        reason: 'Uniswap V4 position ownership source not configured',
+        poolModel: 'uniswap_v4',
+        poolId: '0xdc55f2e5718fe52ebfcfde3a97d14d7d963c3c3a5000798596b7f1027ec84a9d',
+        poolIdentity: '0xdc55f2e5718fe52ebfcfde3a97d14d7d963c3c3a5000798596b7f1027ec84a9d',
+        poolIdentityType: 'pool_id',
+      },
+      lpEvidenceGaps: [
+        { id: 'POSITION_MANAGER_UNSUPPORTED', label: 'Uniswap V4 concentrated position manager not supported yet' },
+        { id: 'TOP_LIQUIDITY_OWNER_NOT_VERIFIED', label: 'Top liquidity owner not verified' },
+        { id: 'ACTIVE_POSITIONS_NOT_INDEXED', label: 'Active liquidity positions not indexed' },
+      ],
+    })
+    assert.deepEqual(intel.evidenceGaps, [
+      'Uniswap V4 concentrated position manager not supported yet',
+      'Top liquidity owner not verified',
+      'Active liquidity positions not indexed',
+    ], 'evidenceGaps contains only the new structured labels, no duplicate generic wording')
+    assert.ok(!intel.evidenceGaps.includes('the largest liquidity owner is not yet verified'))
+    assert.ok(!intel.evidenceGaps.includes('the number of active liquidity positions is not yet verified'))
+    assert.ok(!intel.evidenceGaps.includes('protocol-specific liquidity position verification required'))
+  }
+
   // ── Controller intel "verified" wording names the real top owner and share percent ─────────
   {
     const intel = buildLpControllerIntel({
@@ -268,6 +301,25 @@ async function main() {
     const read = buildConcentratedPositionProofRead(proof)
     assert.equal(read.positionOwnershipStatus, 'verified')
     assert.equal(read.summary, proof.reason)
+  }
+
+  // ── concentratedPositionProofRead.evidenceGaps never leaks raw backend keys; uses humanized,
+  // protocol-aware wording instead (Task 14 Patch 2) ──
+  {
+    const { buildConcentratedPositionProofRead } = await import('../lib/server/lpProof.ts')
+    const v4Proof = await attemptConcentratedPositionProof('eth', null, '0x' + 'd'.repeat(64), 'pool_id', 'uniswap_v4')
+    const v4Read = buildConcentratedPositionProofRead(v4Proof, { protocol: 'uniswap_v4', poolPair: 'TOKEN/WETH' })
+    for (const rawKey of ['positionManager', 'topPositionOwner', 'positionCount', 'topPositionSharePercent', 'positionLiquidityShare']) {
+      assert.ok(!v4Read.evidenceGaps.includes(rawKey), `evidenceGaps never exposes raw key "${rawKey}"`)
+    }
+    assert.ok(v4Read.evidenceGaps.some((g) => g.includes('Uniswap V4 concentrated position manager not supported yet')), 'V4 evidenceGaps uses protocol-specific position manager wording')
+    assert.ok(v4Read.evidenceGaps.some((g) => g === 'Top liquidity owner not verified'), 'evidenceGaps uses humanized top-owner wording')
+    assert.ok(v4Read.evidenceGaps.some((g) => g === 'Active liquidity positions not indexed'), 'evidenceGaps uses humanized position-count wording')
+
+    const slipProof = await attemptConcentratedPositionProof('base', '0x' + '2'.repeat(40), null, 'contract', 'slipstream')
+    const slipRead = buildConcentratedPositionProofRead(slipProof)
+    assert.ok(!slipRead.evidenceGaps.some((g) => g.includes('Uniswap V4')), 'non-V4 protocol never gets V4-specific wording')
+    assert.ok(!slipRead.evidenceGaps.some((g) => /positionManager|topPositionOwner|positionCount|topPositionSharePercent|positionLiquidityShare/.test(g)), 'non-V4 evidenceGaps never leaks raw backend keys either')
   }
 
   // ── route.ts never leaves concentratedPositionProof null when the primary pool is eligible ──
