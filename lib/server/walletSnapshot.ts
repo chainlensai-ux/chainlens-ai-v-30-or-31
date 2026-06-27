@@ -1983,6 +1983,11 @@ export type WalletSnapshot = {
       swapReconstructionEventsRejected: number
       swapReconstructionRejectedReasons: string[]
       swapReconstructionRejectedBreakdown?: Record<string, number>
+      buyQuoteProofAttempted?: number
+      buyQuoteProofPromoted?: number
+      buyQuoteProofRejected?: number
+      buyQuoteProofRejectedReasons?: Record<string, number>
+      sampleBuyQuoteProofPromotions?: Array<{ txHash: string; symbol: string | null; quoteToken: string; nativeAmount: number; priceUsd: number }>
       sampleReconstructedSwaps: Array<{
         txHash: string
         chain: string
@@ -9823,6 +9828,16 @@ async function buildSwapReconstructionV1(
     rejectedReasons.push(reason)
     rejectedBreakdown[reason] = (rejectedBreakdown[reason] ?? 0) + 1
   }
+  // BUY-QUOTE-PROOF-FIX counters (additive, debug-only — see native-tx-value recovery below).
+  let buyQuoteProofAttempted = 0
+  let buyQuoteProofPromoted = 0
+  let buyQuoteProofRejected = 0
+  const buyQuoteProofRejectedReasons: Record<string, number> = {}
+  const sampleBuyQuoteProofPromotions: Array<{ txHash: string; symbol: string | null; quoteToken: string; nativeAmount: number; priceUsd: number }> = []
+  const bumpBuyQuoteProofRejected = (reason: string) => {
+    buyQuoteProofRejected++
+    buyQuoteProofRejectedReasons[reason] = (buyQuoteProofRejectedReasons[reason] ?? 0) + 1
+  }
   const sampleReconstructedSwaps: ReconstructedSwapV1[] = []
   const pricedPatches: Array<{ txHash: string; contract: string; priceUsd: number; reason: string; confidence: 'high' | 'medium' }> = []
 
@@ -9934,7 +9949,45 @@ async function buildSwapReconstructionV1(
       pushRejectedSample('ambiguous_multiple_token_legs')
       continue
     }
-    if (tokenOutbound.length === 0 && quoteOutbound.length === 0) {
+    // BUY-QUOTE-PROOF-FIX: a buy paid entirely in the chain's raw native asset (ETH/BNB, no WETH
+    // wrap) leaves no ERC20 Transfer log for the paid leg at all, so tokenOutbound/quoteOutbound
+    // both stay empty even though the wallet plainly paid native value for this tx — previously
+    // always rejected below as "no_wallet_outbound_leg". Recover that leg from tx.value, the same
+    // trusted source already used by the analogous native-leg path elsewhere in this file (no new
+    // provider, no new RPC call type — getSharedTxByHash + the shared tx-value cache already exist).
+    // Only fires when there is exactly one received token (no ambiguity) and no quote leg was
+    // already found by other means.
+    let usedNativeBuyQuoteLeg = false
+    if (tokenOutbound.length === 0 && quoteOutbound.length === 0 && tokenInbound.length === 1 && routerMediatedQuoteLegs.length === 0) {
+      buyQuoteProofAttempted++
+      const wrappedContract = WRAPPED_NATIVE_CONTRACT_BY_CHAIN[normalizeChain(chain)]
+      if (!wrappedContract) {
+        bumpBuyQuoteProofRejected('no_wrapped_native_for_chain')
+      } else {
+        try {
+          const txValueCacheKey = `swap_recon_v1_tx_value:${alchemyUrl.slice(-8)}:${txHash}`
+          let nativeHex: string
+          const cachedTxValue = ethRouterTxValueCache.get(txValueCacheKey)
+          if (cachedTxValue && cachedTxValue.exp > now) {
+            nativeHex = cachedTxValue.value
+          } else {
+            const tx = await getSharedTxByHash(alchemyUrl, txHash)
+            nativeHex = typeof tx?.value === 'string' ? tx.value : '0x0'
+            ethRouterTxValueCache.set(txValueCacheKey, { value: nativeHex, exp: now + SWAP_RECON_V1_TTL_MS })
+          }
+          const nativeAmount = hexAmountToDecimal(nativeHex, 18)
+          if (nativeAmount > 0) {
+            routerMediatedQuoteLegs.push({ contract: wrappedContract, amountHex: nativeHex })
+            usedNativeBuyQuoteLeg = true
+          } else {
+            bumpBuyQuoteProofRejected('tx_value_zero_or_unavailable')
+          }
+        } catch {
+          bumpBuyQuoteProofRejected('tx_value_fetch_error')
+        }
+      }
+    }
+    if (tokenOutbound.length === 0 && quoteOutbound.length === 0 && routerMediatedQuoteLegs.length === 0) {
       bumpRejected('no_wallet_outbound_leg')
       pushRejectedSample('no_wallet_outbound_leg')
       continue
@@ -9989,7 +10042,7 @@ async function buildSwapReconstructionV1(
       quoteUsdPrice = result.priceUsd ?? priceByContract?.get(quoteContract) ?? null
       confidence = quoteUsdPrice ? (routerMediated ? 'medium' : 'high') : 'low'
       reconstructionReason = quoteUsdPrice
-        ? (routerMediated ? 'weth_quote_leg_router_mediated_priced_historical' : 'weth_quote_leg_decoded_from_receipt_priced_historical')
+        ? (usedNativeBuyQuoteLeg ? 'native_buy_quote_leg_decoded_from_tx_value_priced_historical' : routerMediated ? 'weth_quote_leg_router_mediated_priced_historical' : 'weth_quote_leg_decoded_from_receipt_priced_historical')
         : 'weth_quote_leg_found_but_unpriced'
     } else {
       // VIRTUAL or other symbol-matched quote leg — price only if an existing price helper can price it.
@@ -10005,6 +10058,7 @@ async function buildSwapReconstructionV1(
     if (quoteUsdPrice == null) {
       bumpRejected('quote_leg_unpriced')
       pushRejectedSample('quote_leg_unpriced')
+      if (usedNativeBuyQuoteLeg) bumpBuyQuoteProofRejected('quote_leg_unpriced')
       continue
     }
 
@@ -10031,6 +10085,7 @@ async function buildSwapReconstructionV1(
     const complete = Boolean(tokenEv?.contract && quoteUsd != null && quoteUsd > 0 && tokenAmount != null && tokenAmount > 0)
     if (confidence === 'low' || !complete) {
       bumpRejected('low_confidence_or_incomplete')
+      if (usedNativeBuyQuoteLeg) bumpBuyQuoteProofRejected('low_confidence_or_incomplete')
       continue
     }
 
@@ -10045,6 +10100,12 @@ async function buildSwapReconstructionV1(
     eventsPromoted++
     if (direction === 'sell') eventsPromotedSell++
     else if (direction === 'buy') eventsPromotedBuy++
+    if (usedNativeBuyQuoteLeg) {
+      buyQuoteProofPromoted++
+      if (sampleBuyQuoteProofPromotions.length < 5) {
+        sampleBuyQuoteProofPromotions.push({ txHash, symbol: tokenEv?.symbol ?? null, quoteToken: quoteSymbol, nativeAmount: quoteAmount, priceUsd: tokenPriceUsd })
+      }
+    }
   }
 
   let evidenceWithReconstruction = evidenceWithDetection
@@ -10090,6 +10151,11 @@ async function buildSwapReconstructionV1(
       swapReconstructionEventsRejected: eventsRejected,
       swapReconstructionRejectedReasons: rejectedReasons,
       swapReconstructionRejectedBreakdown: rejectedBreakdown,
+      buyQuoteProofAttempted,
+      buyQuoteProofPromoted,
+      buyQuoteProofRejected,
+      buyQuoteProofRejectedReasons,
+      sampleBuyQuoteProofPromotions,
       sampleReconstructedSwaps,
     },
   }
