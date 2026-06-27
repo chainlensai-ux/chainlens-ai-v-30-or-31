@@ -9697,6 +9697,40 @@ const ALCHEMY_RECEIPT_CALL_CAP = 36
 // Baseline non-receipt alchemy calls (activity transfer pagination etc.) — the real overspend signal.
 const ALCHEMY_NON_RECEIPT_CALL_BASELINE = 8
 
+// RECON-PROMOTION-STATS-FIX: swap_reconstruction_v1 upgrades a priced event's source in place
+// (see buildSwapReconstructionV1's pricedPatches merge below), but walletPriceEvidenceSummary's
+// per-source counters are computed earlier, inside buildPriceAtTimeEvidence, before this upgrade
+// runs — so a receipt-proven WETH/stable quote-leg promotion would otherwise still be reported
+// as "still provider_event_usd/historical_price" in diagnostics even though the actual priced
+// event already carries the stronger source. Diagnostics-only: recounts the same already-priced
+// events' source labels; never reorders FIFO input, never touches gates/thresholds.
+function recomputePricingSourceCounts(evidence: WalletTxEvidence[]): {
+  stableLegPricedEvents: number
+  wethLegPricedEvents: number
+  historicalPricedEvents: number
+  providerEventUsdPricedEvents: number
+} {
+  let stableLegPricedEvents = 0
+  let wethLegPricedEvents = 0
+  let historicalPricedEvents = 0
+  let providerEventUsdPricedEvents = 0
+  for (const ev of evidence) {
+    if (ev.priceAtTime?.status !== 'priced') continue
+    const source = ev.priceAtTime.source
+    const reason = ev.priceAtTime.reason ?? ''
+    if (source === 'stable_leg' || (source === 'swap_reconstruction_v1' && reason.includes('stable_quote_leg'))) {
+      stableLegPricedEvents++
+    } else if (source === 'weth_leg' || (source === 'swap_reconstruction_v1' && reason.includes('weth_quote_leg'))) {
+      wethLegPricedEvents++
+    } else if (source === 'historical_price') {
+      historicalPricedEvents++
+    } else if (source === 'provider_event_usd') {
+      providerEventUsdPricedEvents++
+    }
+  }
+  return { stableLegPricedEvents, wethLegPricedEvents, historicalPricedEvents, providerEventUsdPricedEvents }
+}
+
 type ReconstructedSwapV1 = {
   txHash: string
   chain: string
@@ -13159,6 +13193,10 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     }
     if (swapReconResult.debug.swapReconstructionEventsPromoted > 0) {
       _pricedEvidence = swapReconResult.evidenceWithReconstruction
+      // Recount per-source pricing stats so receipt-proven quote-leg promotions show up as such
+      // in diagnostics instead of the stale provider_event_usd/historical_price counts taken
+      // before this pass ran. Counts only — does not change which events feed buildFifoLotEngine.
+      walletPriceEvidenceSummary = { ...walletPriceEvidenceSummary, ...recomputePricingSourceCounts(_pricedEvidence) }
     }
   } else if (!activityRequested) {
     _swapReconstructionV1Debug = { ..._swapReconstructionV1Debug, swapReconstructionV1Reason: 'activity_not_requested' }
