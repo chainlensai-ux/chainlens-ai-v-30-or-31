@@ -5068,7 +5068,7 @@ export default function TerminalTokenScanner() {
                       switch (cpp.status) {
                         case 'verified': return `Verified — top position controlled by ${cpp.topPositionOwner ?? cpp.topPositionOwnerType ?? 'unknown'}`
                         case 'partial': return 'Partial — pool confirmed, but position ownership could not be fully resolved.'
-                        case 'not_supported': return `Not Supported — current provider path cannot resolve ${poolModelLabel} position ownership.`
+                        case 'not_supported': return `${poolModelLabel} position ownership is not supported yet — top liquidity owner not verified.`
                         case 'not_found': return 'Open Check — pool confirmed with zero active liquidity.'
                         case 'failed': return 'Open Check — position proof attempt failed; no position ownership evidence returned.'
                         default: return 'Open Check — no position ownership evidence returned.'

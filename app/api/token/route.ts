@@ -363,6 +363,9 @@ type HolderDistribution = {
   top20: number | null
   others: number | null
   holderCount: number | null
+  /** How holderCount was derived — exact provider total, a fallback row count, or unavailable.
+   * Never lets real holder rows be reported alongside a false holderCount: 0. */
+  holderCountReason: "holder_count_from_provider_total" | "holder_count_from_normalized_rows" | "holder_count_from_resolver" | "holder_count_unavailable_with_reason"
   topHolders: Array<{ rank: number; address: string; amount: string | number | null; percent: number | null }>
 }
 type HolderDistributionStatus = {
@@ -2392,9 +2395,9 @@ type LpDiagnostics = {
 
 function humanizeConcentratedMissingEvidence(key: string): string {
   switch (key) {
-    case "positionManager": return "Position manager not resolved";
-    case "topPositionOwner": return "Top position owner not resolved";
-    case "positionCount": return "Position count unavailable";
+    case "positionManager": return "Position ownership is not supported yet for this pool model";
+    case "topPositionOwner": return "Top liquidity owner not verified";
+    case "positionCount": return "Active liquidity positions not indexed";
     default: return key.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
   }
 }
@@ -4016,7 +4019,7 @@ export async function POST(req: Request) {
         confidence: "medium",
         poolType: lpPoolType,
         source: "dex_data",
-        reason: `Position proof attempted — ${concentratedPositionProof.status === "not_supported" ? "not supported by current provider path" : concentratedPositionProof.reason}`,
+        reason: `Position proof attempted — ${concentratedPositionProof.status === "not_supported" ? "not supported yet for this pool model" : concentratedPositionProof.reason}`,
         evidence: [
           `Market pool: ${marketPair} (${concentratedPoolDisplayLabel(concentratedPositionProof.poolModel, lpDexId ?? lpDexName)})`,
           `pool=${primaryPoolAddress ?? primaryMarketPoolId ?? lpPool?.poolId ?? "unknown"}`,
@@ -4036,7 +4039,7 @@ export async function POST(req: Request) {
         confidence: 'medium',
         poolType: _lpProofType,
         source: 'dex_data',
-        reason: `Position proof attempted — ${concentratedPositionProof.status === "not_supported" ? "not supported by current provider path" : concentratedPositionProof.reason}`,
+        reason: `Position proof attempted — ${concentratedPositionProof.status === "not_supported" ? "not supported yet for this pool model" : concentratedPositionProof.reason}`,
         evidence: [
           `Market pool: ${marketPair} (${concentratedPoolDisplayLabel(concentratedPositionProof.poolModel, lpDexId ?? lpDexName)})`,
           `pool=${_lpAddrSnippet}`, `dex=${lpDexId ?? lpDexName ?? 'unknown'}`, `hasLpToken=false`, `poolModel=${concentratedPositionProof.poolModel}`,
@@ -4310,7 +4313,7 @@ export async function POST(req: Request) {
         ...lpControl,
         status: "concentrated_liquidity",
         poolType: lpControl.poolType ?? lpPoolType,
-        reason: `Position proof attempted — ${concentratedPositionProof.status === "not_supported" ? "not supported by current provider path" : concentratedPositionProof.reason}`,
+        reason: `Position proof attempted — ${concentratedPositionProof.status === "not_supported" ? "not supported yet for this pool model" : concentratedPositionProof.reason}`,
       };
     }
 
@@ -4812,9 +4815,23 @@ export async function POST(req: Request) {
 
     const normalizedTop = topHolders.slice(0, 200)
     holderSanityDebug.finalPercentSource = percentSource
+    // Holder count priority: 1) exact provider total (when >0) 2) normalized/indexed holder row
+    // count 3) raw resolver holder count 4) null. Real holder rows must never be reported
+    // alongside a false holderCount: 0 — a provider total_count of 0/null with rows present just
+    // means the exact total wasn't returned, not that there are no holders.
+    const holderCountReason: HolderDistribution["holderCountReason"] =
+      holderCount != null && holderCount > 0 ? "holder_count_from_provider_total"
+      : normalizedTop.length > 0 ? "holder_count_from_normalized_rows"
+      : holderResolverResult.holders.length > 0 ? "holder_count_from_resolver"
+      : "holder_count_unavailable_with_reason"
+    const resolvedHolderCount: number | null =
+      holderCount != null && holderCount > 0 ? holderCount
+      : normalizedTop.length > 0 ? normalizedTop.length
+      : holderResolverResult.holders.length > 0 ? holderResolverResult.holders.length
+      : null
     let holderDistribution: HolderDistribution = normalizedTop.length
-      ? { top1, top5, top10, top20, others: hasPct && top20 != null ? Math.max(0, 100 - top20) : null, holderCount, topHolders: normalizedTop }
-      : { top1: null, top5: null, top10: null, top20: null, others: null, holderCount: holderCount ?? null, topHolders: [] }
+      ? { top1, top5, top10, top20, others: hasPct && top20 != null ? Math.max(0, 100 - top20) : null, holderCount: resolvedHolderCount, holderCountReason, topHolders: normalizedTop }
+      : { top1: null, top5: null, top10: null, top20: null, others: null, holderCount: resolvedHolderCount, holderCountReason, topHolders: [] }
     let holderDistributionStatus: HolderDistributionStatus = normalizedTop.length > 0
       ? (hasPct
           ? {
@@ -6083,15 +6100,29 @@ export async function POST(req: Request) {
       poolAgeMs: _poolAgeMsForGaps,
     })
     if (concentratedPositionProof && ['not_supported', 'partial', 'failed', 'open_check'].includes(concentratedPositionProof.status)) {
-      for (const label of ['Position manager not resolved', 'Top position owner not resolved', 'Position count unavailable']) {
-        if (!lpEvidenceGaps.some((gap) => gap.label === label)) {
-          lpEvidenceGaps.push({
-            id: label.toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_|_$/g, ''),
-            label,
-            explanation: 'Concentrated-liquidity position proof was attempted but this ownership field was not resolved by the current provider path.',
-            nextAction: 'Verify position ownership in the protocol position manager or a subgraph-backed explorer.',
-          })
-        }
+      const _cppPoolModelLabel = concentratedPoolDisplayLabel(concentratedPositionProof.poolModel, lpDexId ?? lpDexName)
+      const _concentratedGaps: Array<{ id: string; label: string; explanation: string; nextAction: string }> = [
+        {
+          id: 'POSITION_MANAGER_UNSUPPORTED',
+          label: `${_cppPoolModelLabel} position manager not supported yet`,
+          explanation: `ChainLens detected the concentrated pool, but this pool model needs model-specific position ownership support before liquidity owners can be verified.`,
+          nextAction: 'Verify position ownership through the protocol\'s official position-manager UI.',
+        },
+        {
+          id: 'TOP_LIQUIDITY_OWNER_NOT_VERIFIED',
+          label: 'Top liquidity owner not verified',
+          explanation: 'ChainLens could not confirm who holds the largest concentrated-liquidity position for this pool.',
+          nextAction: 'Re-check after the next scan once stronger evidence is available.',
+        },
+        {
+          id: 'ACTIVE_POSITIONS_NOT_INDEXED',
+          label: 'Active liquidity positions not indexed',
+          explanation: 'The total number of active concentrated-liquidity positions could not be counted for this pool.',
+          nextAction: 'Re-check after the next scan once stronger evidence is available.',
+        },
+      ]
+      for (const gap of _concentratedGaps) {
+        if (!lpEvidenceGaps.some((g) => g.id === gap.id)) lpEvidenceGaps.push(gap)
       }
     }
 
@@ -6439,7 +6470,8 @@ export async function POST(req: Request) {
           holderDistribution = {
             top1, top5, top10, top20,
             others: top20 != null ? Math.max(0, 100 - top20) : null,
-            holderCount,
+            holderCount: resolvedHolderCount,
+            holderCountReason,
             topHolders: normalizedTop,
           }
           holderDistributionStatus = {
@@ -7366,7 +7398,8 @@ export async function POST(req: Request) {
           rawStatus: holdersRawStatus,
           reason: holdersReason,
           source: "holders_layer",
-          holderCount: holderCount ?? null,
+          holderCount: resolvedHolderCount,
+          holderCountReason,
           top1, top5, top10, top20,
           whale_pressure: whalePressure,
           holder_risk: holderRisk,
