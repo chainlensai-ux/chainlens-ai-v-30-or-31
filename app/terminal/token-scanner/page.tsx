@@ -83,14 +83,26 @@ function primaryLiquidityModelLabel(result: ScanResult): string {
 
 
 function isUniswapV3ConcentratedPartial(result: ScanResult): boolean {
+  const liquiditySection = result.sections?.liquidity
+  const lpMeta = result.lpMeta ?? liquiditySection?.lpMeta ?? {}
+  const selectedPool = result.selectedPool ?? (result.pools?.[0] as (Pool & { dex?: string | null; model?: string | null }) | undefined)
   const cpp = result.concentratedPositionProof
-  const primaryDexName = result.lpHistoryTimeline?.primaryDex || result.primaryDexName || result.lpControl?.primaryPoolDex || result.lpControl?.dexName || result.lpModelProof?.dexName || ''
-  const selectedPoolModel = result.lpControl?.displayLpModel === 'concentrated_liquidity' || result.lpHistoryTimeline?.poolModel === 'concentrated_liquidity' || cpp?.poolModel === 'uniswap_v3'
+  const primaryDexName = result.primaryDexName
+    ?? selectedPool?.dex
+    ?? (typeof lpMeta?.primaryMarketDex === 'string' ? lpMeta.primaryMarketDex : undefined)
+    ?? liquiditySection?.pool_protocol
+    ?? result.lpHistoryTimeline?.primaryDex
+    ?? result.lpControl?.primaryPoolDex
+    ?? result.lpControl?.dexName
+    ?? result.lpModelProof?.dexName
+    ?? ''
+
   return Boolean(
-    selectedPoolModel
-    && /uniswap\s*v?3/i.test(primaryDexName)
+    selectedPool?.model === 'concentrated'
+    && /uniswap v3/i.test(String(selectedPool?.dex || primaryDexName || lpMeta?.primaryMarketDex || ''))
+    && lpMeta?.concentratedProofAttempted === true
+    && cpp?.status === 'partial'
     && cpp?.positionManager
-    && cpp.status === 'partial'
   )
 }
 
@@ -2532,20 +2544,21 @@ function hasResolvedConcentratedManager(result: ScanResult): boolean {
 }
 
 function hasPartialConcentratedOwnershipGap(result: ScanResult): boolean {
-  const cpp = result.concentratedPositionProof
-  return isConcentratedV3Position(result) && Boolean(cpp) && cpp?.status !== 'verified' && cpp?.status !== 'not_supported'
+  return isUniswapV3ConcentratedPartial(result)
 }
 
 function concentratedOwnerGapLabels(result: ScanResult): string[] {
-  if (!isConcentratedV3Position(result)) return []
+  if (!isUniswapV3ConcentratedPartial(result)) return []
   const labels = [
-    ...(result.lpControlRead?.couldNotVerify ?? []),
     ...(result.concentratedPositionProofRead?.evidenceGaps ?? []),
     ...(result.lpEvidenceGaps?.map((gap) => gap.label) ?? []),
-    ...(result.lpControllerIntel?.evidenceGaps ?? []),
   ]
-  const out = CONCENTRATED_OWNER_GAPS.filter((gap) => labels.some((label) => label.toLowerCase().includes(gap.toLowerCase())))
+    .filter(Boolean)
+    .filter((label) => !/lock\/burn|erc-20 lp-token|protocol-specific liquidity movement|verify protocol position ownership/i.test(label))
+  if (labels.length === 0) return CONCENTRATED_OWNER_GAPS
+  const out = Array.from(new Set(labels)).slice(0, 3)
   for (const fallback of CONCENTRATED_OWNER_GAPS) {
+    if (out.length >= 3) break
     if (!out.includes(fallback)) out.push(fallback)
   }
   return out
@@ -2574,7 +2587,7 @@ function getLpRiskSummary(result: ScanResult): { goodSigns: string[]; riskSigns:
   else if (liqDepth != null && liqDepth > 100_000) goodSigns.push(`Moderate liquidity — ${fmtLarge(liqDepth)} pool depth.`)
   if (concentratedV3) {
     if (lp?.poolAddressPresent || result.concentratedPositionProof?.poolAddress) goodSigns.push('Primary concentrated pool found')
-    if (result.concentratedPositionProof?.positionManager) goodSigns.push('Position manager resolved')
+    if (result.concentratedPositionProof?.positionManager) goodSigns.push(isUniswapV3ConcentratedPartial(result) ? 'Uniswap V3 position manager resolved' : 'Position manager resolved')
     if (result.concentratedPositionProof?.status === 'partial' || result.concentratedPositionProof?.evidence?.some((e) => /liquidity|slot0|active/i.test(e))) goodSigns.push('Pool active/liquidity confirmed')
     if (result.security?.devOwnership?.isRenounced) goodSigns.push('Ownership renounced')
   } else {
@@ -2605,14 +2618,11 @@ function getLpRiskSummary(result: ScanResult): { goodSigns: string[]; riskSigns:
   }
   if (concentratedV3) {
     if (hasPartialConcentratedOwnershipGap(result)) {
-      riskSigns.push('Top liquidity owner not verified')
-      riskSigns.push('Active liquidity positions not indexed')
-      riskSigns.push('Position liquidity share not available')
-      riskSigns.push('Owner sample unavailable from current evidence')
+      riskSigns.push('Concentrated position owner not verified')
+      riskSigns.push('Active position count unavailable')
+      riskSigns.push('Position liquidity share unavailable')
     }
-    missingProofs.push('Full concentrated position ownership not verified')
-    missingProofs.push('Position count not indexed')
-    missingProofs.push('Position liquidity share unavailable')
+    missingProofs.push(...concentratedOwnerGapLabels(result))
   }
   if (!lockBurnApplicable && dm !== 'concentrated_liquidity' && dm !== 'protocol_or_gauge' && lpMode === 'unknown' && !result.noActivePools) missingProofs.push('LP token model could not be classified.')
   if (!lp?.poolAddressPresent && !result.noActivePools && liqDepth == null) missingProofs.push('Pool address not yet indexed.')
@@ -5720,7 +5730,7 @@ export default function TerminalTokenScanner() {
                           )) : <p style={{ margin: 0, fontSize: '11px', color: '#3a2020', fontFamily: 'var(--font-plex-mono)' }}>No confirmed risk signals in this pass.</p>}
                         </div>
                         <div style={{ padding: '12px 14px', background: 'rgba(251,191,36,0.04)', border: '1px solid rgba(251,191,36,0.15)', borderRadius: '12px' }}>
-                          <p style={{ margin: '0 0 8px', fontSize: '9px', fontWeight: 800, letterSpacing: '.15em', color: '#fbbf24', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Missing Proofs</p>
+                          <p style={{ margin: '0 0 8px', fontSize: '9px', fontWeight: 800, letterSpacing: '.15em', color: '#fbbf24', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{isUniswapV3ConcentratedPartial(result) ? 'Missing concentrated ownership proofs' : 'Missing Proofs'}</p>
                           {rs.missingProofs.length > 0 ? rs.missingProofs.map((s, i) => (
                             <div key={i} style={{ display: 'flex', gap: '7px', marginBottom: '5px' }}>
                               <span style={{ color: '#fbbf24', flexShrink: 0, fontWeight: 800, fontSize: '11px', lineHeight: '16px' }}>—</span>
