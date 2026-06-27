@@ -3891,7 +3891,7 @@ export default function TerminalTokenScanner() {
         .cortex-chip:hover{transform:translateY(-2px);}
         .cortex-bdrow{border-radius:6px;transition:background .14s ease;}
         .cortex-bdrow:hover{background:rgba(255,255,255,.028) !important;}
-        .token-shell{position:relative;display:grid;grid-template-columns:minmax(0,1fr);height:100%;overflow-x:hidden;color:#e2e8f0;background-image:linear-gradient(rgba(45,212,191,.020) 1px,transparent 1px),linear-gradient(90deg,rgba(45,212,191,.020) 1px,transparent 1px),radial-gradient(circle at 18% 4%,rgba(34,211,238,.10),transparent 38%),radial-gradient(circle at 86% 92%,rgba(217,70,239,.09),transparent 42%),radial-gradient(circle at 88% 14%,rgba(139,92,246,.08),transparent 36%),radial-gradient(circle at 22% 0%,rgba(20,35,68,.52),rgba(2,6,23,1) 56%);background-size:52px 52px,52px 52px,100% 100%,100% 100%,100% 100%,100% 100%;background-color:rgba(2,6,23,1);background-attachment:fixed,fixed,fixed,fixed,fixed,fixed;}
+        .token-shell{position:relative;display:grid;grid-template-columns:minmax(0,1fr);min-height:100vh;align-items:start;overflow-x:hidden;color:#e2e8f0;background-image:linear-gradient(rgba(45,212,191,.020) 1px,transparent 1px),linear-gradient(90deg,rgba(45,212,191,.020) 1px,transparent 1px),radial-gradient(circle at 18% 4%,rgba(34,211,238,.10),transparent 38%),radial-gradient(circle at 86% 92%,rgba(217,70,239,.09),transparent 42%),radial-gradient(circle at 88% 14%,rgba(139,92,246,.08),transparent 36%),radial-gradient(circle at 22% 0%,rgba(20,35,68,.52),rgba(2,6,23,1) 56%);background-size:52px 52px,52px 52px,100% 100%,100% 100%,100% 100%,100% 100%;background-color:rgba(2,6,23,1);background-attachment:fixed,fixed,fixed,fixed,fixed,fixed;}
         @media (max-width:1279px){.token-shell{background-attachment:scroll !important;}}
         .token-main,.mob-verdict-panel,.glass-card,.metric-grid,.holders-grid,.activity-grid,.intel-grid{min-width:0;}
         .token-main{max-width:none;}
@@ -5244,7 +5244,7 @@ export default function TerminalTokenScanner() {
                       : protocolPosition ? (controlProofFromAttempt ?? (hasResolvedConcentratedManager(result) ? 'Position manager resolved — owner verification pending' : 'Position check unavailable')) : 'Open Check'
                     const lockBurnProof = result.lpControl?.lockStatus === 'locked' || result.lpControl?.burnStatus === 'burned'
                       ? 'Confirmed'
-                      : isV3Partial ? 'Not Applicable — concentrated position model'
+                      : isV3Partial ? 'ERC-20 LP proof not used'
                       : notApplicable ? 'Not Applicable — standard ERC-20 LP-token lock/burn proof does not apply.' : 'Open Check'
                     const liquidityDepth = result.liquidityDepthRisk === 'low'
                       ? 'Deep'
@@ -5278,9 +5278,9 @@ export default function TerminalTokenScanner() {
                     function getV3PartialPositionRows(samplingReason: string | null | undefined, primaryPool: string): { label: string; value: string; color?: string; note?: string }[] {
                       return [
                         { label: 'Primary Liquidity', value: 'Uniswap V3 Concentrated', color: '#c084fc', note: 'Position manager resolved. Pool active/liquidity confirmed.' },
-                        { label: 'LP Control', value: 'Position proof attempted — partial', color: '#c084fc', note: 'Uniswap V3 position manager resolved; owner verification is still pending.' },
-                        { label: 'Control Proof', value: 'Owner verification pending', color: '#c084fc', note: samplingReason || 'No bounded position-candidate source is available yet for this pool.' },
-                        { label: 'Lock/Burn Proof', value: 'Not Applicable — concentrated position model', color: '#c084fc', note: 'Standard ERC-20 LP-token lock/burn proof does not apply to this Uniswap V3 pool.' },
+                        { label: 'LP Control', value: 'Position proof attempted — partial', color: '#fbbf24', note: 'Uniswap V3 position manager resolved; owner verification is still pending.' },
+                        { label: 'Control Proof', value: 'Owner verification pending', color: '#fbbf24', note: samplingReason || 'No bounded position-candidate source is available yet for this pool.' },
+                        { label: 'Lock/Burn Proof', value: 'ERC-20 LP proof not used', note: 'This Uniswap V3 pool uses position-based liquidity, not standard LP tokens.' },
                         { label: 'Position Ownership', value: 'Owner not verified — bounded sample unavailable', color: '#fbbf24', note: 'Top liquidity owner, active position count, and liquidity share are not verified yet.' },
                         { label: 'Exit Risk', value: 'Monitor', color: '#fbbf24', note: 'Deep liquidity is present, but concentrated position ownership is still unresolved.' },
                         { label: 'Liquidity Depth', value: 'Deep', color: '#34d399', note: 'Primary pool liquidity is strong.' },
@@ -5290,9 +5290,9 @@ export default function TerminalTokenScanner() {
                     }
                     const rows: { label: string; value: string; color?: string; note?: string }[] = isV3PartialPositionProof ? getV3PartialPositionRows(concentratedPositionProof?.samplingReason, canonicalSelectedPool?.address ?? '') : [
                       { label: 'Primary Liquidity', value: primaryLiquidityModelLabel(result), color: protocolPosition ? '#c084fc' : undefined },
-                      { label: 'LP Control', value: isV3Partial ? 'Position proof attempted — partial' : protocolPosition ? (lpControlFromAttempt ?? (hasResolvedConcentratedManager(result) ? 'Position proof attempted — partial' : 'Position check unavailable')) : lpControlDisplay, color: lpControlDisplay === 'Wallet Controlled' ? '#fbbf24' : undefined, note: isV3Partial ? 'Position manager resolved and pool liquidity confirmed.' : protocolPosition ? (hasResolvedConcentratedManager(result) ? 'Position manager resolved and pool active/liquidity confirmed. Full owner verification is still unavailable.' : protocolPositionSubtext('control')) : undefined },
-                      { label: 'Control Proof', value: controlProof, color: controlProof === 'Confirmed' ? '#34d399' : protocolPosition ? '#c084fc' : undefined, note: isV3Partial ? 'Top liquidity owner, active position count, and position share are not verified yet.' : protocolPosition ? (hasResolvedConcentratedManager(result) ? 'The Uniswap V3 position manager was resolved and the pool is active, but ChainLens could not verify the largest liquidity owner from current evidence.' : protocolPositionSubtext('control')) : undefined },
-                      { label: 'Lock/Burn Proof', value: lockBurnProof, color: lockBurnProof === 'Confirmed' ? '#34d399' : lockBurnProof === 'Open Check' ? '#fbbf24' : protocolPosition ? '#c084fc' : undefined, note: protocolPosition ? protocolPositionSubtext('lock') : undefined },
+                      { label: 'LP Control', value: isV3Partial ? 'Position proof attempted — partial' : protocolPosition ? (lpControlFromAttempt ?? (hasResolvedConcentratedManager(result) ? 'Position proof attempted — partial' : 'Position check unavailable')) : lpControlDisplay, color: isV3Partial ? '#fbbf24' : lpControlDisplay === 'Wallet Controlled' ? '#fbbf24' : undefined, note: isV3Partial ? 'Position manager resolved and pool liquidity confirmed.' : protocolPosition ? (hasResolvedConcentratedManager(result) ? 'Position manager resolved and pool active/liquidity confirmed. Full owner verification is still unavailable.' : protocolPositionSubtext('control')) : undefined },
+                      { label: 'Control Proof', value: controlProof, color: controlProof === 'Confirmed' ? '#34d399' : isV3Partial ? '#fbbf24' : protocolPosition ? '#c084fc' : undefined, note: isV3Partial ? 'Top liquidity owner, active position count, and position share are not verified yet.' : protocolPosition ? (hasResolvedConcentratedManager(result) ? 'The Uniswap V3 position manager was resolved and the pool is active, but ChainLens could not verify the largest liquidity owner from current evidence.' : protocolPositionSubtext('control')) : undefined },
+                      { label: 'Lock/Burn Proof', value: lockBurnProof, color: lockBurnProof === 'Confirmed' ? '#34d399' : isV3Partial ? undefined : lockBurnProof === 'Open Check' ? '#fbbf24' : protocolPosition ? '#c084fc' : undefined, note: isV3Partial ? 'This Uniswap V3 pool uses position-based liquidity, not standard LP tokens.' : protocolPosition ? protocolPositionSubtext('lock') : undefined },
                       ...(protocolPosition && cpp ? [{
                         label: 'Position Ownership',
                         value: cpp.status === 'verified' ? 'Attempted — verified'
@@ -5324,11 +5324,11 @@ export default function TerminalTokenScanner() {
                       { label: 'Primary Pool', value: result.primaryDexName ?? result.pools?.[0]?.name ?? 'Pool detected' },
                     ]
                     return (
-                      <div style={{ marginBottom: '14px', padding: '10px 14px', background: 'rgba(8,14,28,0.55)', border: '1px solid rgba(148,163,184,0.10)', borderRadius: '12px' }}>
+                      <div style={{ marginBottom: '14px', padding: '6px 16px', background: 'rgba(8,14,28,0.55)', border: '1px solid rgba(148,163,184,0.10)', borderRadius: '12px' }}>
                         {rows.map(({ label, value, color, note }, i) => (
-                          <div key={label} style={{ display: 'grid', gridTemplateColumns: '120px 1fr', gap: '12px', alignItems: 'center', padding: '7px 4px', borderBottom: i < rows.length - 1 ? '1px solid rgba(255,255,255,.04)' : 'none' }}>
-                            <span style={{ fontSize: '10px', color: '#64748b', fontFamily: 'var(--font-plex-mono)', letterSpacing: '.08em' }}>{label}</span>
-                            <span style={{ fontSize: '11px', color: color ?? (value === 'Open Check' ? '#fbbf24' : value === 'Confirmed' ? '#34d399' : '#e2e8f0'), fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{value}{note && <span style={{ display: 'block', marginTop: '3px', color: '#94a3b8', fontWeight: 500, lineHeight: 1.45 }}>{note}</span>}</span>
+                          <div key={label} style={{ display: 'grid', gridTemplateColumns: '128px 1fr', gap: '14px', alignItems: 'start', padding: '11px 2px', borderBottom: i < rows.length - 1 ? '1px solid rgba(148,163,184,.07)' : 'none' }}>
+                            <span style={{ fontSize: '10px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', letterSpacing: '.08em', paddingTop: '1px' }}>{label}</span>
+                            <span style={{ fontSize: '11.5px', color: color ?? (value === 'Open Check' ? '#fbbf24' : value === 'Confirmed' ? '#34d399' : '#e2e8f0'), fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{value}{note && <span style={{ display: 'block', marginTop: '4px', color: '#7c8aa0', fontWeight: 500, lineHeight: 1.55 }}>{note}</span>}</span>
                           </div>
                         ))}
                       </div>
