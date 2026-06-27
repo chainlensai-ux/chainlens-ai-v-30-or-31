@@ -3352,6 +3352,9 @@ export type WalletTxEvidence = {
   txSucceeded?: boolean | null
   txToKnownRouter?: boolean
   txMatchedRouterProtocol?: string | null
+  // Real (provider-supplied) or synthetic (assignSyntheticLogIndex) per-event log index, carried
+  // over from PnlEvent so same-tx legs stay distinguishable through dedupe and FIFO ordering.
+  logIndex?: number | null
   swapDetection?: WalletSwapDetection
   priceAtTime?: PriceAtTimeEvidence
   // Wallet Attribution Reconstruction V1 (diagnostic-only; never promotes an event to a swap
@@ -5227,7 +5230,7 @@ function buildTxEvidenceFromEvents(events: PnlEvent[], requested: boolean, provi
   const _seenTransferKeys = new Set<string>()
   const _dedupedEvents = events.filter(e => {
     if (!e.txHash) return true
-    const _key = `${normalizeChain(e.chain ?? '')}:${e.txHash}:${(e.contract ?? '').toLowerCase()}:${(e.fromAddress ?? '').toLowerCase()}:${(e.toAddress ?? '').toLowerCase()}:${e.amountRaw ?? e.amount ?? ''}`
+    const _key = `${normalizeChain(e.chain ?? '')}:${e.txHash}:${(e.contract ?? '').toLowerCase()}:${(e.fromAddress ?? '').toLowerCase()}:${(e.toAddress ?? '').toLowerCase()}:${e.amountRaw ?? e.amount ?? ''}:${e.logIndex ?? ''}`
     if (_seenTransferKeys.has(_key)) return false
     _seenTransferKeys.add(_key)
     return true
@@ -5257,6 +5260,7 @@ function buildTxEvidenceFromEvents(events: PnlEvent[], requested: boolean, provi
         txSucceeded: e.txSucceeded ?? null,
         txToKnownRouter: Boolean(routerMatch),
         txMatchedRouterProtocol: routerMatch,
+        logIndex: e.logIndex ?? null,
       }
     })
 
@@ -6765,9 +6769,10 @@ function buildFifoLotEngine(
   // PHASE3-FIX-7: deterministic multi-chain sort. Plain timestamp sort previously left equal
   // timestamps (common when merging events from multiple chains in the same second) ordered by
   // whatever order Array.sort's implementation happened to preserve for ties — i.e. raw
-  // provider-arrival order. Now tie-break on normalized chain, then on original arrival index
-  // (logIndexFallback; no logIndex is tracked on PnlEvent/WalletTxEvidence) so lot ordering is
-  // reproducible across runs regardless of provider response ordering.
+  // provider-arrival order. Now tie-break on normalized chain, then on logIndex (real or
+  // synthetic, see assignSyntheticLogIndex/pnlEventDedupeKey), then on original arrival index
+  // as a final fallback when logIndex is also equal, so lot ordering is reproducible across
+  // runs regardless of provider response ordering.
   eligible = eligible
     .map((e, idx) => ({ e, idx }))
     .sort((a, b) => {
@@ -6775,7 +6780,9 @@ function buildFifoLotEngine(
       if (tsCmp !== 0) return tsCmp
       const chainCmp = normalizeChain(a.e.chain).localeCompare(normalizeChain(b.e.chain))
       if (chainCmp !== 0) return chainCmp
-      return a.idx - b.idx // logIndexFallback
+      const logIdxCmp = (a.e.logIndex ?? 0) - (b.e.logIndex ?? 0)
+      if (logIdxCmp !== 0) return logIdxCmp
+      return a.idx - b.idx // arrival index fallback
     })
     .map(({ e }) => e)
 
