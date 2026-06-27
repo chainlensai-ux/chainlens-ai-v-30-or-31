@@ -7,6 +7,7 @@ import {
   computeLpExitRisk,
 } from '../lib/server/lpProof.ts'
 import { buildLpControllerIntel } from '../lib/server/lpControllerIntel.ts'
+import { sanitizePublicTokenResponse } from '../lib/server/tokenPublicResponse.ts'
 
 const VALID_STATUSES = new Set(['verified', 'partial', 'not_found', 'not_supported', 'failed', 'open_check'])
 
@@ -482,9 +483,24 @@ async function main() {
 
     const { buildConcentratedPositionProofRead } = await import('../lib/server/lpProof.ts')
     const read = buildConcentratedPositionProofRead(r, { protocol: 'uniswap_v3', poolPair: 'BRETT/WETH' })
+    assert.ok(read.summary.includes('Position manager resolved'))
+    assert.ok(read.summary.includes('pool active/liquidity confirmed'))
+    assert.ok(read.summary.includes('No bounded position-candidate source is available yet for this pool'))
     assert.ok(read.evidenceGaps.includes('Top liquidity owner not verified'))
     assert.ok(read.evidenceGaps.includes('Active liquidity positions not indexed'))
     assert.ok(read.evidenceGaps.includes('Position liquidity share not available'))
+    const publicPayload = sanitizePublicTokenResponse({ concentratedPositionProof: r, concentratedPositionProofRead: read }, false)
+    assert.equal(publicPayload.concentratedPositionProof.samplingDebug, undefined, 'debug=false hides raw samplingDebug')
+    assert.equal(publicPayload.concentratedPositionProof.samplingReason, 'No bounded position-candidate source is available yet for this pool.')
+    const publicText = JSON.stringify(publicPayload.concentratedPositionProofRead)
+    for (const forbidden of ['no_bounded_candidate_source', 'attempted_no_candidates', 'topPositionSharePercent', 'positionCount', 'Position manager unsupported']) {
+      assert.ok(!publicText.includes(forbidden), `public read output does not include ${forbidden}`)
+    }
+    const debugPayload = sanitizePublicTokenResponse({ concentratedPositionProof: r }, true)
+    assert.ok(debugPayload.concentratedPositionProof.samplingDebug, 'debug=true preserves samplingDebug')
+    assert.equal(debugPayload.concentratedPositionProof.topPositionOwner, null, 'full top owner stays null without full coverage')
+    assert.equal(debugPayload.concentratedPositionProof.positionCount, null, 'full position count stays null without full coverage')
+    assert.equal(debugPayload.concentratedPositionProof.topPositionSharePercent, null, 'full share stays null without full coverage')
   }
 
   // (2) V3 sampled candidates with one matching position: sampledPositionCount=1, sampledOwners
@@ -571,6 +587,9 @@ async function main() {
     assert.equal(r.status, 'not_supported')
     assert.equal(r.samplingStatus, 'not_attempted', 'V4 never attempts sampling — no resolved Uniswap V3 manager')
     assert.equal(r.sampledOwners.length, 0)
+    const { buildConcentratedPositionProofRead } = await import('../lib/server/lpProof.ts')
+    const read = buildConcentratedPositionProofRead(r, { protocol: 'uniswap_v4', poolPair: 'TOKEN/WETH' })
+    assert.ok(read.evidenceGaps.some((gap) => /not supported yet/i.test(gap)), 'V4 still shows unsupported/not supported behavior')
   }
 
   // (7) V2/Aerodrome unchanged — sampling fields stay at not_attempted defaults.

@@ -132,6 +132,13 @@ function sanitizePublicString(value: string): string {
   return PROVIDER_NAME_REPLACEMENTS.reduce((text, [pattern, replacement]) => text.replace(pattern, replacement), value)
 }
 
+function publicSamplingReason(value: unknown): unknown {
+  if (value === 'no_bounded_candidate_source') return 'No bounded position-candidate source is available yet for this pool.'
+  if (value === 'no_matching_candidates') return 'No matching position candidates were available from current indexed evidence.'
+  if (value === 'sampling_attempt_failed') return 'Position-owner sampling could not be completed from current evidence.'
+  return value
+}
+
 function sanitizePublicValue(value: unknown): unknown {
   if (typeof value === 'string') return sanitizePublicString(value)
   if (Array.isArray(value)) return value.map(sanitizePublicValue)
@@ -140,6 +147,11 @@ function sanitizePublicValue(value: unknown): unknown {
   for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
     if (key === 'sourceTrail') continue
     if (key === 'cortexScoreDebug') continue
+    if (key === 'samplingDebug') continue
+    if (key === 'samplingReason') {
+      out[key] = sanitizePublicValue(publicSamplingReason(raw))
+      continue
+    }
     if (key === 'holders' && Array.isArray(raw)) continue
     if (key === 'transfers' && Array.isArray(raw)) continue
     out[key] = sanitizePublicValue(raw)
