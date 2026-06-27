@@ -3328,6 +3328,9 @@ export default function WalletScannerPage() {
                           <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.28)', lineHeight: 1.4, marginTop: '10px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
                             Current holding detected, but cost basis is incomplete from indexed activity. Closed-lot realized PnL ({legacyVal === 'Open Check' ? '—' : legacyVal} break-even sample) is shown separately below.
                           </div>
+                          <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.22)', lineHeight: 1.5, marginTop: '5px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                            Holding value uses a current or last-known estimate, not a verified entry price.
+                          </div>
                         </div>
                       )
                     }
@@ -3367,6 +3370,9 @@ export default function WalletScannerPage() {
                         </div>
                         <div style={{ fontSize: '10px', color: _estPnlLocked ? 'rgba(251,191,36,0.55)' : 'rgba(255,255,255,0.22)', lineHeight: 1.4, marginTop: '10px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
                           {_estPnlLocked ? 'Estimated PnL is locked because public-grade performance evidence failed integrity checks.' : 'Average-cost position estimate. Matched closed-lot evidence is shown separately below.'}
+                        </div>
+                        <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.20)', lineHeight: 1.5, marginTop: '5px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                          Holding value uses a current or last-known estimate, not a verified entry price.
                         </div>
                       </div>
                     )
@@ -3446,6 +3452,9 @@ export default function WalletScannerPage() {
                           }
                           return 'Closed-lot stats not available yet. PnL values only appear when priced buy/sell lot pairs are reconstructed.'
                         })()}
+                      </div>
+                      <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.22)', lineHeight: 1.5, marginTop: '6px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                        Holding value uses a current or last-known estimate, not a verified entry price.
                       </div>
                     </div>
                   )
@@ -4063,6 +4072,10 @@ export default function WalletScannerPage() {
                                   <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.28)', lineHeight: 1.5, fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', background: 'rgba(251,191,36,0.03)', border: '1px solid rgba(251,191,36,0.08)', borderRadius: '7px', padding: '7px 10px' }}>
                                     {footerNote} Still open — not banked profit. Realized PnL locked until matched buy → sell closed lots exist.
                                   </div>
+                                  {/* Estimate-value honesty note */}
+                                  <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.22)', lineHeight: 1.5, fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginTop: '5px' }}>
+                                    Holding value uses a current or last-known estimate, not a verified entry price.
+                                  </div>
                                 </div>
                               )
                             })()}
@@ -4663,6 +4676,11 @@ export default function WalletScannerPage() {
                         </span>
                       )}
                     </div>
+                    {result.totalValue > 0 && (
+                      <div style={{ padding: '0 24px 12px', fontSize: '9px', color: 'rgba(255,255,255,0.20)', lineHeight: 1.5, fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                        Holding value uses a current or last-known estimate, not a verified entry price.
+                      </div>
+                    )}
 
                     {/* Mobile cards */}
                     <div className="md:hidden" style={{ display: 'flex', flexDirection: 'column', gap: '8px', padding: '16px' }}>
