@@ -1908,10 +1908,15 @@ export function buildConcentratedPositionProofRead(
 ): ConcentratedPositionProofRead {
   const status = proof.status === "verified" || proof.status === "partial" ? proof.status : "open_check";
   const hasSampledEvidence = proof.samplingStatus === "sampled_partial" && proof.sampledOwners.length > 0;
+  const managerResolvedNoCandidates = status === "partial"
+    && Boolean(proof.positionManager)
+    && proof.samplingStatus === "attempted_no_candidates";
   const summary = status === "verified" || status === "partial"
     ? (hasSampledEvidence
         ? "The Uniswap V3 position manager was resolved and sampled position-owner evidence was found, but full-pool ownership is not yet verified."
-        : proof.reason)
+        : managerResolvedNoCandidates
+          ? "Position manager resolved and pool active/liquidity confirmed. No bounded position-candidate source is available yet for this pool, so full owner verification is still unavailable."
+          : proof.reason)
     : "Concentrated pool detected; position ownership proof is not yet verified.";
   const evidenceGaps = proof.missingEvidence.length > 0
     ? proof.missingEvidence.map((key) => humanizeConcentratedEvidenceGap(key, proof.poolModel, hasSampledEvidence))

@@ -336,6 +336,10 @@ export function buildLpControllerIntel(input: LpControllerIntelInput): LpControl
   if (controllerTypeValue === 'wallet') signals.push('controller wallet detected')
   else if (controllerTypeValue === 'protocol') signals.push('protocol-controlled pool detected')
   else if (status === 'concentrated_liquidity') signals.push('concentrated-liquidity pool detected')
+  if (status === 'concentrated_liquidity'
+    && input.concentratedPositionProof?.samplingStatus === 'attempted_no_candidates') {
+    signals.push('bounded owner sampling not available from current evidence')
+  }
   if (share != null && share >= 50) signals.push('dominant LP share detected')
   if (lockBurnProof === 'confirmed' && (lockStatus === 'locked' || status === 'locked')) signals.push('lock proof confirmed')
   else if (lockBurnProof === 'not_applicable') signals.push('protocol-specific lock proof model')

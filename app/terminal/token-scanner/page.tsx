@@ -254,6 +254,14 @@ type ScanResult = {
     topPositionOwner?: string | null
     topPositionOwnerType?: 'wallet' | 'locker' | 'protocol' | 'unknown' | null
     topPositionSharePercent?: number | null
+    sampledPositionCount?: number | null
+    sampledOwnerCount?: number | null
+    sampledOwners?: Array<{ owner?: string | null; ownerType?: string | null; liquidityRaw?: string | number | null; sampledPositionCount?: number | null }>
+    topSampledOwner?: string | null
+    topSampledOwnerType?: string | null
+    topSampledOwnerShareOfSamplePercent?: number | null
+    samplingStatus?: 'not_attempted' | 'attempted_no_candidates' | 'sampled_partial' | 'failed' | string
+    samplingReason?: string | null
     lockedOrManagedPositionFound?: boolean | null
     controllerRisk?: 'low' | 'watch' | 'caution' | 'high' | 'unknown'
     confidence?: 'high' | 'medium' | 'low'
@@ -5075,15 +5083,15 @@ export default function TerminalTokenScanner() {
                       }
                     })()
                     const missingProofHuman = (cpp?.missingEvidence ?? []).map((m) =>
-                      m === 'positionManager' ? 'position manager'
-                      : m === 'topPositionOwner' ? 'top owner'
-                      : m === 'positionCount' ? 'position count'
-                      : m === 'topPositionSharePercent' ? 'top position share'
-                      : m === 'liquidity' ? 'liquidity'
-                      : m === 'slot0' ? 'pool state'
-                      : m === 'poolAddress' ? 'pool address'
-                      : m === 'poolId' ? 'pool id'
-                      : m
+                      m === 'positionManager' ? 'Position manager not supported for this pool model'
+                      : m === 'topPositionOwner' ? 'Top liquidity owner not verified'
+                      : m === 'positionCount' ? 'Active liquidity positions not indexed'
+                      : m === 'topPositionSharePercent' ? 'Position liquidity share not available'
+                      : m === 'liquidity' ? 'Liquidity not confirmed'
+                      : m === 'slot0' ? 'Pool active state not confirmed'
+                      : m === 'poolAddress' ? 'Pool address not confirmed'
+                      : m === 'poolId' ? 'Pool ID not confirmed'
+                      : String(m).replace(/([a-z])([A-Z])/g, '$1 $2').replace(/_/g, ' ')
                     )
                     const controlProof = result.lpControl?.status === 'team_controlled' || result.lpControl?.proofStatus === 'verified'
                       ? 'Confirmed'
@@ -5135,7 +5143,15 @@ export default function TerminalTokenScanner() {
                         color: cpp.status === 'verified' ? '#34d399' : cpp.status === 'partial' ? '#fbbf24' : undefined,
                         note: cpp.status === 'verified'
                           ? `Top position owner: ${cpp.topPositionOwner ?? 'unknown'} (${cpp.topPositionOwnerType ?? 'unknown'}) · Top share: ${cpp.topPositionSharePercent != null ? `${cpp.topPositionSharePercent.toFixed(2)}%` : 'unknown'} · Controller risk: ${cpp.controllerRisk ?? 'unknown'} · Confidence: ${cpp.confidence ?? 'low'}`
-                          : `${cpp.poolIdentityType === 'pool_id' && cpp.poolIdentity ? `Pool ID: ${cpp.poolIdentity} · ` : ''}Controller risk: ${cpp.controllerRisk ?? 'unknown'} · ${missingProofHuman.length ? `Missing proof: ${missingProofHuman.join(', ')} · ` : ''}Confidence: ${cpp.confidence ?? 'low'}`,
+                          : (() => {
+                            const proofLines = [
+                              cpp.positionManager ? 'Position manager resolved' : null,
+                              cpp.status === 'partial' && cpp.positionManager ? 'Pool active/liquidity confirmed' : null,
+                              cpp.samplingStatus === 'attempted_no_candidates' ? 'Owner sample unavailable from current evidence' : null,
+                              ...missingProofHuman,
+                            ].filter(Boolean)
+                            return `${cpp.poolIdentityType === 'pool_id' && cpp.poolIdentity ? `Pool ID: ${cpp.poolIdentity} · ` : ''}${proofLines.join(' · ')} · Controller risk: ${cpp.controllerRisk ?? 'unknown'} · Confidence: ${cpp.confidence ?? 'low'}`
+                          })(),
                       }] : (protocolPosition ? [{
                         label: 'Position Ownership',
                         value: 'Open Check — concentrated pool detected, position ownership proof pending',
