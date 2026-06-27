@@ -1538,6 +1538,12 @@ export type WalletSnapshot = {
       sampleSellEvents: Array<{ tokenAddress: string; symbol: string; chain: string; amount: number; priceUsd: number }>
       sampleUnmatchedReasons: string[]
       reasons: string[]
+      duplicatePricedEventsRemoved?: number
+      duplicatePricedEventsRemovedByReason?: Record<string, number>
+      sampleDuplicatePricedEventsRemoved?: Array<{
+        txHash: string; contract: string; direction: string; chain: string
+        keptSource: string; removedSource: string; reconstructionReplacedProvider: boolean
+      }>
     }
     walletPnlOutlierDebug?: {
       attempted: boolean
@@ -6768,6 +6774,64 @@ function buildFifoLotEngine(
     eligible.push(e)
   }
 
+  // DUPLICATE-PRICED-EVENT-FIX: separate enrichment/reconstruction passes (provider ingestion,
+  // swap_reconstruction_v1, sell-side/base-pnl recon, etc.) can each independently land a priced
+  // event for the *same* economic leg — same tx, same token, same side, same amount — once the
+  // chain alias (base vs base-mainnet vs 8453) is normalized. Left alone, FIFO would open/close
+  // two lots for one real trade. Dedupe key intentionally omits logIndex (real or synthetic
+  // logIndex differs across passes for the same leg and must never block this dedupe), but keeps
+  // amountRaw (or a rounded canonical amount when amountRaw is absent) so a genuinely distinct
+  // partial fill in the same tx — different amount, different transfer log — is never collapsed.
+  let duplicatePricedEventsRemoved = 0
+  const duplicatePricedEventsRemovedByReason: Record<string, number> = {}
+  const sampleDuplicatePricedEventsRemoved: NonNullable<NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['walletLotEngineDebug']>['sampleDuplicatePricedEventsRemoved']> = []
+  const PRICE_SOURCE_RANK: Record<string, number> = {
+    stable_leg: 5, weth_leg: 5, native_leg: 5, swap_reconstruction_v1: 5,
+    eth_native_value_router_reconstruction: 4, quote_leg_receipt_weth: 4, quote_leg_receipt_stable: 4, quote_leg_receipt_native: 4,
+    historical_price: 3, swap_derived: 2, provider_event_usd: 1,
+    current_holding_price_open_lot_estimate: 0, current_price_fallback_not_used: 0, fallback: 0, unavailable: 0,
+  }
+  const sourceRank = (e: WalletTxEvidence): number => PRICE_SOURCE_RANK[e.priceAtTime?.status === 'priced' ? e.priceAtTime.source : 'unavailable'] ?? 0
+  {
+    const byKey = new Map<string, WalletTxEvidence>()
+    const dedupedEligible: WalletTxEvidence[] = []
+    for (const e of eligible) {
+      const amountKey = e.amountRaw != null && e.amountRaw !== '' ? e.amountRaw : String(Math.round((canonicalFifoAmount(e) ?? 0) * 1e6) / 1e6)
+      const key = `${normalizeChain(e.chain)}:${(e.txHash ?? '').toLowerCase()}:${e.contract.toLowerCase()}:${e.direction}:${amountKey}`
+      const existing = byKey.get(key)
+      if (!existing) {
+        byKey.set(key, e)
+        dedupedEligible.push(e)
+        continue
+      }
+      // Same economic leg seen twice — keep the stronger price source, drop the weaker duplicate.
+      const existingRank = sourceRank(existing)
+      const newRank = sourceRank(e)
+      const keep = newRank > existingRank ? e : existing
+      const drop = newRank > existingRank ? existing : e
+      if (keep !== existing) {
+        const idx = dedupedEligible.indexOf(existing)
+        if (idx >= 0) dedupedEligible[idx] = keep
+        byKey.set(key, keep)
+      }
+      duplicatePricedEventsRemoved++
+      const reason = existing.priceAtTime?.status === 'priced' && e.priceAtTime?.status === 'priced' && existing.priceAtTime.source !== e.priceAtTime.source
+        ? 'same_leg_different_price_source'
+        : 'same_leg_repeated_event'
+      duplicatePricedEventsRemovedByReason[reason] = (duplicatePricedEventsRemovedByReason[reason] ?? 0) + 1
+      if (sampleDuplicatePricedEventsRemoved.length < 5) {
+        sampleDuplicatePricedEventsRemoved.push({
+          txHash: e.txHash ?? '', contract: e.contract, direction: e.direction ?? 'unknown', chain: normalizeChain(e.chain),
+          keptSource: keep.priceAtTime?.status === 'priced' ? keep.priceAtTime.source : 'unavailable',
+          removedSource: drop.priceAtTime?.status === 'priced' ? drop.priceAtTime.source : 'unavailable',
+          reconstructionReplacedProvider: keep.priceAtTime?.status === 'priced' && keep.priceAtTime.source === 'swap_reconstruction_v1'
+            && drop.priceAtTime?.status === 'priced' && drop.priceAtTime.source === 'provider_event_usd',
+        })
+      }
+    }
+    eligible = dedupedEligible
+  }
+
   const pricedSwapEvents = eligible.length
   if (pricedSwapEvents === 0) return empty(['no_priced_swap_events'])
 
@@ -7101,6 +7165,9 @@ function buildFifoLotEngine(
       sampleSellEvents,
       sampleUnmatchedReasons,
       reasons: missing,
+      duplicatePricedEventsRemoved,
+      duplicatePricedEventsRemovedByReason,
+      sampleDuplicatePricedEventsRemoved,
     },
     closedLots,
     openLots: allOpenLots,
