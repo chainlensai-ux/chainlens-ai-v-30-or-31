@@ -339,10 +339,15 @@ export function buildLpControllerIntel(input: LpControllerIntelInput): LpControl
   // pushing both would surface the same gap twice under two different labels.
   const _structuredConcentratedGapIds = new Set(['POSITION_MANAGER_UNSUPPORTED', 'TOP_LIQUIDITY_OWNER_NOT_VERIFIED', 'ACTIVE_POSITIONS_NOT_INDEXED'])
   const hasStructuredConcentratedGaps = Array.isArray(input.lpEvidenceGaps) && input.lpEvidenceGaps.some((g) => _structuredConcentratedGapIds.has(asString(g.id) ?? ''))
+  // Same dedup for the standard ERC-20 LP lock/burn/controller gaps — buildEvidenceGaps() already
+  // produces humanized LOCK_STATUS_UNVERIFIED/BURN_PROOF_UNCONFIRMED/CONTROLLER_UNKNOWN labels for
+  // this exact case, so the hardcoded strings below would otherwise duplicate the same gap.
+  const _structuredLpLockBurnGapIds = new Set(['LOCK_STATUS_UNVERIFIED', 'BURN_PROOF_UNCONFIRMED'])
+  const hasStructuredLpLockBurnGaps = Array.isArray(input.lpEvidenceGaps) && input.lpEvidenceGaps.some((g) => _structuredLpLockBurnGapIds.has(asString(g.id) ?? ''))
 
   const evidenceGaps: string[] = []
   if (lockBurnProof === 'open_check') {
-    evidenceGaps.push('active LP lock not confirmed', 'LP burn proof not confirmed')
+    if (!hasStructuredLpLockBurnGaps) evidenceGaps.push('active LP lock not confirmed', 'LP burn proof not confirmed')
   } else if (lockBurnProof === 'not_applicable') {
     if (!hasStructuredConcentratedGaps) {
       evidenceGaps.push('protocol-specific liquidity position verification required')

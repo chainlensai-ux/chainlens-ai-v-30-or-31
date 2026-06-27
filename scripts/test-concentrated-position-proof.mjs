@@ -192,6 +192,31 @@ async function main() {
     assert.ok(!intel.evidenceGaps.includes('protocol-specific liquidity position verification required'))
   }
 
+  // ── VIRTUAL-like standard ERC20 LP (Aerodrome constant_product, not concentrated): structured
+  // LOCK_STATUS_UNVERIFIED/BURN_PROOF_UNCONFIRMED/CONTROLLER_UNKNOWN gaps are humanized (no
+  // all-caps public labels) and dedupe against the hardcoded open_check strings ──
+  {
+    const { buildEvidenceGaps } = await import('../lib/server/lpProof.ts')
+    const gaps = buildEvidenceGaps({ lpLockStatus: 'unverified', lpController: 'unknown', proofApplicability: 'applicable' })
+    const lpLockBurnControllerGaps = gaps.filter((g) => ['LOCK_STATUS_UNVERIFIED', 'BURN_PROOF_UNCONFIRMED', 'CONTROLLER_UNKNOWN'].includes(g.id))
+    for (const gap of gaps) assert.ok(gap.label !== gap.label.toUpperCase() || !/[A-Z]/.test(gap.label), `public label "${gap.label}" is not all-caps`)
+    assert.ok(gaps.some((g) => g.id === 'LOCK_STATUS_UNVERIFIED' && g.label === 'LP lock not confirmed'))
+    assert.ok(gaps.some((g) => g.id === 'BURN_PROOF_UNCONFIRMED' && g.label === 'LP burn proof not confirmed'))
+    assert.ok(gaps.some((g) => g.id === 'CONTROLLER_UNKNOWN' && g.label === 'LP controller not verified'))
+
+    const intel = buildLpControllerIntel({
+      lpControl: { status: 'open_check', proofApplicability: 'applicable' },
+      selectedPool: { model: 'constant_product', dex: 'Aerodrome' },
+      concentratedPositionProof: null,
+      lpEvidenceGaps: lpLockBurnControllerGaps,
+    })
+    assert.deepEqual(intel.evidenceGaps, [
+      'LP lock not confirmed',
+      'LP burn proof not confirmed',
+      'LP controller not verified',
+    ], 'standard ERC20 LP evidenceGaps is deduped and humanized, no duplicate generic strings')
+  }
+
   // ── Controller intel "verified" wording names the real top owner and share percent ─────────
   {
     const intel = buildLpControllerIntel({
