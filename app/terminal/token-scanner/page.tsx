@@ -105,6 +105,8 @@ function protocolPositionSubtext(kind: 'lock' | 'control' | 'movement'): string 
 type Pool = {
   name?: string
   address?: string
+  dex?: string | null
+  model?: string | null
   price?: number | null
   liquidity?: number | null
   volume24h?: number | null
@@ -149,6 +151,7 @@ type ScanResult = {
   displayMarketValueReason?: string
   estimatedMarketCap?: number | null
   pools?: Pool[]
+  selectedPool?: (Pool & { dex?: string | null; model?: string | null }) | null
   contractSecurity?: Record<string, Record<string, unknown>> | null
   analysis?: {
     has_mint?: boolean
@@ -181,7 +184,7 @@ type ScanResult = {
     market?: { status?: string; reason?: string; source?: string } | null
     security?: { status?: string; reason?: string; source?: string } | null
     holders?: { status?: string; reason?: string; source?: string } | null
-    liquidity?: { status?: string; reason?: string; source?: string } | null
+    liquidity?: { status?: string; reason?: string; source?: string; lpMeta?: Record<string, unknown> | null; pool_protocol?: string | null } | null
     contractChecks?: { status?: string; reason?: string; source?: string } | null
   } | null
   lpControl?: {
@@ -3741,7 +3744,10 @@ export default function TerminalTokenScanner() {
             liquidity:      num(attr(p).reserve_in_usd),
             volume24h:      num((attr(p).volume_usd as Record<string, unknown> | undefined)?.h24),
             priceChange24h: num((attr(p).price_change_percentage as Record<string, unknown> | undefined)?.h24),
+            dex:            ((p.dex as string | undefined) ?? (attr(p).dex as string | undefined) ?? (attr(p).dex_name as string | undefined) ?? null),
+            model:          ((p.model as string | undefined) ?? (attr(p).model as string | undefined) ?? null),
           })),
+          selectedPool: json.selectedPool ?? null,
           contractSecurity: json.contractSecurity ?? null,
           honeypot: json.honeypot ?? null,
           holderDistribution: json.holderDistribution ?? null,
@@ -3770,6 +3776,8 @@ export default function TerminalTokenScanner() {
           lpMigrationProof: json.lpMigrationProof ?? null,
           cortexLpRead: json.cortexLpRead ?? null,
           lpMeta: json.lpMeta ?? null,
+          concentratedPositionProof: json.concentratedPositionProof ?? null,
+          concentratedPositionProofRead: json.concentratedPositionProofRead ?? null,
           poolActivity: json.poolActivity ?? null,
           priceChart: json.priceChart ?? null,
           chartStatus: json.chartStatus ?? null,
@@ -5074,8 +5082,8 @@ export default function TerminalTokenScanner() {
 
                   {/* ── 3-card hero: LP Status · Exit Risk · LP Model ─── */}
                   {(() => {
-                    const lockInfo = getLpLockLabel(result)
-                    const exitInfo = getLpExitRiskInfo(result)
+                    const rawLockInfo = getLpLockLabel(result)
+                    const rawExitInfo = getLpExitRiskInfo(result)
                     const lpModeVal = getLpMode(result)
                     const lpStatus = result.lpControl?.status
                     const hasPool = (result.liquidity ?? 0) > 0 || result.lpControl?.poolAddressPresent
@@ -5083,6 +5091,27 @@ export default function TerminalTokenScanner() {
                     const dm2 = result.lpControl?.displayLpModel
                     const effectiveDm = (dm2 === 'no_pool' && hasPool) ? 'open_check' : dm2
                     const lpProofConfirmed = lpStatus2 === 'burned' || lpStatus2 === 'locked'
+                    const liquiditySection = result.sections?.liquidity
+                    const canonicalLpMeta = result.lpMeta ?? liquiditySection?.lpMeta ?? {}
+                    const canonicalSelectedPool = result.selectedPool ?? (result.pools?.[0] as (Pool & { dex?: string | null; model?: string | null }) | undefined)
+                    const canonicalConcentratedProof = result.concentratedPositionProof
+                    const canonicalPrimaryDexName = result.primaryDexName
+                      ?? canonicalSelectedPool?.dex
+                      ?? (typeof canonicalLpMeta?.primaryMarketDex === 'string' ? canonicalLpMeta.primaryMarketDex : undefined)
+                      ?? liquiditySection?.pool_protocol
+                      ?? ''
+                    const isV3PartialPositionProof =
+                      canonicalSelectedPool?.model === 'concentrated' &&
+                      /uniswap v3/i.test(String(canonicalSelectedPool?.dex || canonicalPrimaryDexName || canonicalLpMeta?.primaryMarketDex || '')) &&
+                      canonicalLpMeta?.concentratedProofAttempted === true &&
+                      canonicalConcentratedProof?.status === 'partial' &&
+                      Boolean(canonicalConcentratedProof?.positionManager)
+                    const lockInfo = isV3PartialPositionProof
+                      ? { ...rawLockInfo, description: 'Uniswap V3 concentrated liquidity position proof is partial; owner verification is pending.' }
+                      : rawLockInfo
+                    const exitInfo = isV3PartialPositionProof
+                      ? { ...rawExitInfo, description: 'Deep liquidity is present, but concentrated position ownership is still unresolved.' }
+                      : rawExitInfo
                     const modelLabel = primaryLiquidityModelLabel(result)
                     const modelColor = effectiveDm === 'concentrated_liquidity' ? '#c084fc'
                       : effectiveDm === 'protocol_or_gauge' ? '#a78bfa'
@@ -5092,7 +5121,8 @@ export default function TerminalTokenScanner() {
                       : lpModeVal === 'lp_token' ? (lpProofConfirmed ? '#34d399' : '#60a5fa')
                       : hasPool ? '#fbbf24'
                       : '#94a3b8'
-                    const modelDesc = isUniswapV3ConcentratedPartial(result) ? 'Position manager resolved. Pool active/liquidity confirmed.'
+                    const modelDesc = isV3PartialPositionProof ? 'Position manager resolved. Pool active/liquidity confirmed.'
+                      : isUniswapV3ConcentratedPartial(result) ? 'Position manager resolved. Pool active/liquidity confirmed.'
                       : isProtocolPositionModel(result) ? protocolPositionSubtext('lock')
                       : effectiveDm === 'erc20_lp_token' ? (lpProofConfirmed ? 'Standard ERC-20 LP token — lock or burn proof confirmed.' : 'Standard ERC-20 LP token detected. Lock or burn proof has not been verified.')
                       : effectiveDm === 'no_pool' ? 'No active liquidity pool detected for this token.'
@@ -5138,22 +5168,29 @@ export default function TerminalTokenScanner() {
                     const hasPool = hasLiquidity || result.lpControl?.poolAddressPresent
                     const notApplicable = dm3 === 'concentrated_liquidity' || dm3 === 'protocol_or_gauge' || result.lpControl?.proofStatus === 'not_applicable'
                     const protocolPosition = isProtocolPositionModel(result)
-                    const selectedPool = result.pools?.[0] as (Pool & { dex?: string | null; model?: string | null }) | undefined
-                    const primaryDexName = result.primaryDexName
-                    const lpMeta = result.lpMeta
-                    const concentratedPositionProof = result.concentratedPositionProof
+                    const liquiditySection = result.sections?.liquidity
+                    const canonicalLpMeta = result.lpMeta ?? liquiditySection?.lpMeta ?? {}
+                    const canonicalSelectedPool = result.selectedPool ?? (result.pools?.[0] as (Pool & { dex?: string | null; model?: string | null }) | undefined)
+                    const canonicalConcentratedProof = result.concentratedPositionProof
+                    const canonicalPrimaryDexName = result.primaryDexName
+                      ?? canonicalSelectedPool?.dex
+                      ?? (typeof canonicalLpMeta?.primaryMarketDex === 'string' ? canonicalLpMeta.primaryMarketDex : undefined)
+                      ?? liquiditySection?.pool_protocol
+                      ?? ''
                     const isV3PartialPositionProof =
-                      selectedPool?.model === 'concentrated' &&
-                      /uniswap v3/i.test(String(selectedPool?.dex || primaryDexName || lpMeta?.primaryMarketDex || '')) &&
-                      lpMeta?.concentratedProofAttempted === true &&
-                      concentratedPositionProof?.status === 'partial' &&
-                      !!concentratedPositionProof?.positionManager
+                      canonicalSelectedPool?.model === 'concentrated' &&
+                      /uniswap v3/i.test(String(canonicalSelectedPool?.dex || canonicalPrimaryDexName || canonicalLpMeta?.primaryMarketDex || '')) &&
+                      canonicalLpMeta?.concentratedProofAttempted === true &&
+                      canonicalConcentratedProof?.status === 'partial' &&
+                      Boolean(canonicalConcentratedProof?.positionManager)
+                    const concentratedPositionProof = canonicalConcentratedProof
                     const isV3Partial = isV3PartialPositionProof || isUniswapV3ConcentratedPartial(result)
                     // Migration risk comes from real migration evidence (lpMigrationProof / riskEngine.lpIntelligence),
                     // never inferred from pool count alone.
                     const migProofStatus = result.lpMigrationProof?.status
                     const migEngineRisk = result.riskEngine?.lpIntelligence?.migrationRisk
-                    const migrationRisk = isUniswapV3ConcentratedPartial(result) ? 'Low'
+                    const migrationRisk = isV3PartialPositionProof ? 'Low'
+                      : isUniswapV3ConcentratedPartial(result) ? 'Low'
                       : (migProofStatus === 'low' || migEngineRisk === 'low') ? 'Low'
                       : (migProofStatus === 'flagged' || migEngineRisk === 'high') ? 'Elevated'
                       : (migProofStatus === 'watch' || migEngineRisk === 'medium') ? 'Monitor'
@@ -5230,18 +5267,18 @@ export default function TerminalTokenScanner() {
                       : null
                     function getV3PartialPositionRows(samplingReason: string | null | undefined, primaryPool: string): { label: string; value: string; color?: string; note?: string }[] {
                       return [
-                        { label: 'Primary Liquidity', value: 'Uniswap V3 Concentrated', color: '#c084fc' },
-                        { label: 'LP Control', value: 'Position proof attempted — partial', color: '#c084fc', note: 'Position manager resolved. Pool active/liquidity confirmed.' },
-                        { label: 'Control Proof', value: 'Owner verification pending', color: '#c084fc', note: 'Top liquidity owner is not verified because no bounded position-candidate source is available yet.' },
-                        { label: 'Lock/Burn Proof', value: 'Not Applicable — standard ERC-20 LP-token lock/burn proof does not apply.', color: '#c084fc', note: 'Uniswap V3 uses NFT-style concentrated liquidity positions, not standard ERC-20 LP tokens.' },
-                        { label: 'Position Ownership', value: 'Owner not verified — bounded sample unavailable', color: '#fbbf24', note: samplingReason || 'No bounded position-candidate source is available yet for this pool.' },
-                        { label: 'Exit Risk', value: 'Monitor', color: '#fbbf24', note: 'Pool depth is strong — monitor liquidity concentration and position migration.' },
-                        { label: 'Liquidity Depth', value: 'Deep', color: '#34d399' },
-                        { label: 'Migration Risk', value: 'Low', color: '#34d399' },
-                        { label: 'Primary Pool', value: primaryPool },
+                        { label: 'Primary Liquidity', value: 'Uniswap V3 Concentrated', color: '#c084fc', note: 'Position manager resolved. Pool active/liquidity confirmed.' },
+                        { label: 'LP Control', value: 'Position proof attempted — partial', color: '#c084fc', note: 'Uniswap V3 position manager resolved; owner verification is still pending.' },
+                        { label: 'Control Proof', value: 'Owner verification pending', color: '#c084fc', note: samplingReason || 'No bounded position-candidate source is available yet for this pool.' },
+                        { label: 'Lock/Burn Proof', value: 'Not Applicable — concentrated position model', color: '#c084fc', note: 'Standard ERC-20 LP-token lock/burn proof does not apply to this Uniswap V3 pool.' },
+                        { label: 'Position Ownership', value: 'Owner not verified — bounded sample unavailable', color: '#fbbf24', note: 'Top liquidity owner, active position count, and liquidity share are not verified yet.' },
+                        { label: 'Exit Risk', value: 'Monitor', color: '#fbbf24', note: 'Deep liquidity is present, but concentrated position ownership is still unresolved.' },
+                        { label: 'Liquidity Depth', value: 'Deep', color: '#34d399', note: 'Primary pool liquidity is strong.' },
+                        { label: 'Migration Risk', value: 'Low', color: '#34d399', note: 'Primary Uniswap V3 pool remains the dominant liquidity venue.' },
+                        { label: 'Primary Pool', value: 'Uniswap V3', note: primaryPool },
                       ]
                     }
-                    const rows: { label: string; value: string; color?: string; note?: string }[] = isV3PartialPositionProof ? getV3PartialPositionRows(concentratedPositionProof?.samplingReason, result.primaryDexName ?? result.pools?.[0]?.name ?? 'Pool detected') : [
+                    const rows: { label: string; value: string; color?: string; note?: string }[] = isV3PartialPositionProof ? getV3PartialPositionRows(concentratedPositionProof?.samplingReason, canonicalSelectedPool?.address ?? '') : [
                       { label: 'Primary Liquidity', value: primaryLiquidityModelLabel(result), color: protocolPosition ? '#c084fc' : undefined },
                       { label: 'LP Control', value: isV3Partial ? 'Position proof attempted — partial' : protocolPosition ? (lpControlFromAttempt ?? (hasResolvedConcentratedManager(result) ? 'Position proof attempted — partial' : 'Position check unavailable')) : lpControlDisplay, color: lpControlDisplay === 'Wallet Controlled' ? '#fbbf24' : undefined, note: isV3Partial ? 'Position manager resolved and pool liquidity confirmed.' : protocolPosition ? (hasResolvedConcentratedManager(result) ? 'Position manager resolved and pool active/liquidity confirmed. Full owner verification is still unavailable.' : protocolPositionSubtext('control')) : undefined },
                       { label: 'Control Proof', value: controlProof, color: controlProof === 'Confirmed' ? '#34d399' : protocolPosition ? '#c084fc' : undefined, note: isV3Partial ? 'Top liquidity owner, active position count, and position share are not verified yet.' : protocolPosition ? (hasResolvedConcentratedManager(result) ? 'The Uniswap V3 position manager was resolved and the pool is active, but ChainLens could not verify the largest liquidity owner from current evidence.' : protocolPositionSubtext('control')) : undefined },
