@@ -1522,7 +1522,11 @@ export async function attemptConcentratedPositionProof(
       liquidityResolved ? `liquidity probe: resolved (${liquidityBig != null ? liquidityBig.toString() : "nonzero"})` : `liquidity probe: unresolved`,
       slot0Resolved ? `slot0 probe: resolved (pool active)` : `slot0 probe: unresolved`,
     ],
-    missingEvidence: ["positionManager", "topPositionOwner", "positionCount", "topPositionSharePercent"],
+    // positionManager is already resolved here (base.positionManager comes from the verified
+    // protocol registry) — only the remaining ownership evidence is actually missing.
+    missingEvidence: base.positionManager
+      ? ["topPositionOwner", "positionCount", "topPositionSharePercent"]
+      : ["positionManager", "topPositionOwner", "positionCount", "topPositionSharePercent"],
     nextAction: "Liquidity ownership is still being verified — re-check after the next scan.",
   }, "rpc_liquidity_probe", "pool_liquidity_confirmed_no_owner");
 }

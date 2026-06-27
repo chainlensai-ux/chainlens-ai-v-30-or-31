@@ -283,22 +283,37 @@ export function reconcileSecondaryLpSignal<T extends ReconcilableLpControl>(
     primaryMarketPoolId?: string | null
     marketPairLabel: string
     canonicalStatus?: T['status']
+    // Snapshot of lpControl taken from secondary-pool holder classification, before any
+    // primary-pool safety net could overwrite lpControl.status to "concentrated_liquidity".
+    // Without this, the secondary signal would blindly inherit the primary pool's own status,
+    // producing impossible combinations like poolType=v2 + status=concentrated_liquidity.
+    secondarySource?: { status: string; confidence: string; reason: string; evidence: string[] }
   }
 ): { lpControl: T & { secondaryLpControlSignals?: SecondaryLpSignal | null }; secondary: SecondaryLpSignal | null } {
-  const { primaryConcentrated, verifyPool, primaryPoolAddress, primaryPoolType, primaryDexId, primaryMarketPoolId, marketPairLabel, canonicalStatus } = params
+  const { primaryConcentrated, verifyPool, primaryPoolAddress, primaryPoolType, primaryDexId, primaryMarketPoolId, marketPairLabel, canonicalStatus, secondarySource } = params
 
   if (!(primaryConcentrated && verifyPool?.address && verifyPool.address !== primaryPoolAddress)) {
     return { lpControl, secondary: null }
   }
 
+  const _source = secondarySource ?? lpControl
+  // A secondary V2/Aerodrome pool can never legitimately carry a "concentrated_liquidity"
+  // or "protocol" status — those describe the PRIMARY pool's own model, not a holder-based
+  // classification of this separate pool. Guard against propagating that mismatch.
+  // "team_controlled" implies a verified team/contract entity, which secondary holder checks
+  // cannot establish — a dominant holder here is only known to be a non-burn/non-locker
+  // address (i.e. a wallet), so report it as wallet_controlled instead.
+  const _secondaryStatus = (_source.status === 'concentrated_liquidity' || _source.status === 'protocol') ? 'open_check'
+    : _source.status === 'team_controlled' ? 'wallet_controlled'
+    : _source.status
   const secondary: SecondaryLpSignal = {
-    status: lpControl.status,
-    confidence: lpControl.confidence,
+    status: _secondaryStatus,
+    confidence: _source.confidence,
     poolAddress: verifyPool.address,
     poolDex: verifyPool.dexId ?? verifyPool.dexName ?? null,
     poolType: verifyPool.poolType,
-    reason: lpControl.reason,
-    evidence: lpControl.evidence,
+    reason: _source.reason,
+    evidence: _source.evidence,
   }
 
   const reconciled: T & { secondaryLpControlSignals?: SecondaryLpSignal | null } = {

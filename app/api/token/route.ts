@@ -2268,7 +2268,7 @@ async function fetchTokenHoldersUncached(_chain: ChainKey, contract: string): Pr
 }
 
 type LpControlResult = {
-  status: "burned" | "locked" | "protocol" | "team_controlled" | "concentrated_liquidity" | "partial" | "no_pool" | "open_check" | "insufficient_data" | "error";
+  status: "burned" | "locked" | "protocol" | "team_controlled" | "wallet_controlled" | "concentrated_liquidity" | "partial" | "no_pool" | "open_check" | "insufficient_data" | "error";
   confidence: "high" | "medium" | "low";
   poolType: "v2" | "v3" | "aerodrome" | "concentrated" | "unknown";
   source: string;
@@ -2473,6 +2473,7 @@ function computeLpControlRead(lp: LpControlResult, pairName?: string | null, con
           "Primary concentrated pool found",
           "Primary market pool selected",
           "Pool structure reviewed",
+          ...(positionProof?.positionManager ? ["Position manager resolved"] : []),
           ...(positionProof ? [`Position proof attempted — ${positionProof.status === "not_supported" ? "not supported" : positionProof.status.replace(/_/g, " ")}`] : []),
           ...(lp.secondaryLpControlSignals ? ["Secondary ERC-20 LP exposure detected"] : []),
         ],
@@ -3971,7 +3972,7 @@ export async function POST(req: Request) {
     const _classifySecondaryLpHolders = async (
       items: Array<Record<string, unknown>>,
       poolAddress: string
-    ): Promise<{ status: "burned" | "locked" | "team_controlled" | "partial"; confidence: "high" | "low"; reason: string; evidence: string[] } | null> => {
+    ): Promise<{ status: "burned" | "locked" | "wallet_controlled" | "partial"; confidence: "high" | "low"; reason: string; evidence: string[] } | null> => {
       if (items.length === 0) return null
       const grSupply = items.find((i) => i?.total_supply != null)?.total_supply
       let supplyStr = grSupply != null ? String(grSupply) : null
@@ -3999,7 +4000,7 @@ export async function POST(req: Request) {
       if (lockerPct >= 50) return { status: 'locked', confidence: _secConfidence(lockerPct), reason: 'Dominant LP share in this secondary pool appears in known lockers.', evidence: [`locker_share=${lockerPct.toFixed(2)}%`] }
       if (topHolder && (topHolder.pct ?? 0) > 0 && !DEAD.has(topHolder.address) && !KNOWN_LOCKERS.has(topHolder.address)) {
         return {
-          status: (topHolder.pct ?? 0) >= 80 ? 'team_controlled' : 'partial',
+          status: (topHolder.pct ?? 0) >= 80 ? 'wallet_controlled' : 'partial',
           confidence: (topHolder.pct ?? 0) >= 80 ? 'high' : 'low',
           reason: "Secondary pool LP-holder evidence — informational only, does not affect this token's primary LP verdict.",
           evidence: [`top_holder=${topHolder.address}`, `top_share=${(topHolder.pct ?? 0).toFixed(2)}%`],
@@ -4305,6 +4306,13 @@ export async function POST(req: Request) {
       }
     }
 
+    // Snapshot lpControl as it stood from secondary-pool holder classification, BEFORE the
+    // safety net below can overwrite it to the primary pool's "concentrated_liquidity" status.
+    // reconcileSecondaryLpSignal() needs this pre-overwrite snapshot — otherwise it would copy
+    // the primary pool's own "concentrated_liquidity" status into secondaryLpControlSignals,
+    // producing the impossible combination poolType=v2 + status=concentrated_liquidity.
+    const _preOverwriteLpControlSnapshot = { status: lpControl.status, confidence: lpControl.confidence, reason: lpControl.reason, evidence: lpControl.evidence }
+
     // Safety net: every branch above that finds a concentrated/V3-style primary pool should
     // already call attemptConcentratedPositionProof, but the RPC-probe fallback inside the
     // "_lpProofType === unknown" branch (v3Like sub-case) can resolve lpControl to
@@ -4352,6 +4360,7 @@ export async function POST(req: Request) {
         primaryDexId: lpDexId ?? lpDexName ?? "unknown",
         primaryMarketPoolId: primaryMarketPoolId ?? lpPool?.poolId ?? null,
         marketPairLabel: marketPair,
+        secondarySource: _preOverwriteLpControlSnapshot,
       })
       lpControl = _reconciled
     }
@@ -6111,13 +6120,20 @@ export async function POST(req: Request) {
     })
     if (concentratedPositionProof && ['not_supported', 'partial', 'failed', 'open_check'].includes(concentratedPositionProof.status)) {
       const _cppPoolModelLabel = concentratedPoolDisplayLabel(concentratedPositionProof.poolModel, lpDexId ?? lpDexName)
-      const _concentratedGaps: Array<{ id: string; label: string; explanation: string; nextAction: string }> = [
-        {
+      const _cppManagerResolved = concentratedPositionProof.positionManager != null
+      const _concentratedGaps: Array<{ id: string; label: string; explanation: string; nextAction: string }> = []
+      // Only show "manager not supported" when the position manager genuinely wasn't resolved —
+      // once it's resolved (e.g. Uniswap V3 on Base), the remaining gap is ownership evidence,
+      // not the manager itself.
+      if (!_cppManagerResolved) {
+        _concentratedGaps.push({
           id: 'POSITION_MANAGER_UNSUPPORTED',
           label: `${_cppPoolModelLabel} position manager not supported yet`,
           explanation: `ChainLens detected the concentrated pool, but this pool model needs model-specific position ownership support before liquidity owners can be verified.`,
           nextAction: 'Verify position ownership through the protocol\'s official position-manager UI.',
-        },
+        })
+      }
+      _concentratedGaps.push(
         {
           id: 'TOP_LIQUIDITY_OWNER_NOT_VERIFIED',
           label: 'Top liquidity owner not verified',
@@ -6130,7 +6146,15 @@ export async function POST(req: Request) {
           explanation: 'The total number of active concentrated-liquidity positions could not be counted for this pool.',
           nextAction: 'Re-check after the next scan once stronger evidence is available.',
         },
-      ]
+      )
+      if (_cppManagerResolved) {
+        _concentratedGaps.push({
+          id: 'POSITION_LIQUIDITY_SHARE_NOT_AVAILABLE',
+          label: 'Position liquidity share not available',
+          explanation: 'The largest position\'s share of this pool\'s total concentrated liquidity could not be computed.',
+          nextAction: 'Re-check after the next scan once stronger evidence is available.',
+        })
+      }
       for (const gap of _concentratedGaps) {
         if (!lpEvidenceGaps.some((g) => g.id === gap.id)) lpEvidenceGaps.push(gap)
       }

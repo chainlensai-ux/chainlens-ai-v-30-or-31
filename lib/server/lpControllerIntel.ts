@@ -34,6 +34,10 @@ export interface LpControllerIntelInput {
     /** Concrete pool model (e.g. "uniswap_v4") so labels name the real protocol instead of
      * defaulting to "Uniswap V4" for every concentrated-liquidity pool. */
     poolModel?: string | null
+    /** Verified position-manager address (e.g. Uniswap V3's NonfungiblePositionManager on this
+     * chain), when resolved — distinguishes "manager unsupported" from "manager resolved but
+     * ownership not yet verified" in the partial-status summary. */
+    positionManager?: string | null
     poolId?: string | null
     poolIdentity?: string | null
     poolIdentityType?: 'contract' | 'pool_id' | 'unknown' | null
@@ -150,7 +154,9 @@ function concentratedControlProofLabel(proof: LpControllerIntelInput['concentrat
       return `Verified — ${who}${pct}`
     }
     case 'partial':
-      return 'The pool is confirmed active but ownership of concentrated liquidity positions could not be fully resolved.'
+      return proof.positionManager
+        ? `The ${concentratedPoolModelLabel(proof.poolModel)} position manager was resolved and the pool is active, but ChainLens could not verify the largest liquidity owner from current evidence.`
+        : 'The pool is confirmed active but ownership of concentrated liquidity positions could not be fully resolved.'
     case 'not_supported':
       return `The largest liquidity owner could not be verified for this ${concentratedPoolModelLabel(proof.poolModel)} pool.`
     case 'not_found':

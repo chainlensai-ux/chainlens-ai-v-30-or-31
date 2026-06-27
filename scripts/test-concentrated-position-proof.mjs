@@ -354,6 +354,98 @@ async function main() {
     assert.ok(route.includes('concentratedPositionProofRead'), 'route exposes the canonical concentratedPositionProofRead')
   }
 
+  // ── BRETT-like Uniswap V3 on Base, positionManager resolved, no owner attributable yet:
+  // missingEvidence must NOT include "positionManager" once it's resolved (Task 15 Patch 1) ──
+  {
+    const poolAddr = '0x8888888888888888888888888888888888888888'
+    const r = await attemptConcentratedPositionProof('base', poolAddr, null, 'contract', 'uniswap_v3', async () => [])
+    assert.equal(r.status, 'partial')
+    assert.ok(r.positionManager != null, 'Base Uniswap V3 position manager resolves from the verified registry')
+    assert.ok(!r.missingEvidence.includes('positionManager'), 'missingEvidence excludes positionManager once it resolves')
+    assert.ok(r.missingEvidence.includes('topPositionOwner') && r.missingEvidence.includes('positionCount'), 'remaining ownership gaps are still reported')
+    assert.equal(r.topPositionOwner, null, 'never fakes a top owner')
+    assert.equal(r.positionCount, null, 'never fakes a position count')
+
+    const { buildConcentratedPositionProofRead } = await import('../lib/server/lpProof.ts')
+    const read = buildConcentratedPositionProofRead(r, { protocol: 'uniswap_v3', poolPair: 'BRETT/WETH' })
+    assert.ok(!read.evidenceGaps.some((g) => /position manager not supported yet/i.test(g)), 'concentratedPositionProofRead never claims the resolved manager is unsupported')
+    assert.ok(read.evidenceGaps.some((g) => g === 'Top liquidity owner not verified'))
+    assert.ok(read.evidenceGaps.some((g) => g === 'Active liquidity positions not indexed'))
+  }
+
+  // ── DUAL-like Uniswap V4 with null positionManager: still reports V4 unsupported manager
+  // wording unchanged (Task 15 Patch 6 regression guard) ──
+  {
+    const poolId = '0x' + 'e'.repeat(64)
+    const r = await attemptConcentratedPositionProof('eth', null, poolId, 'pool_id', 'uniswap_v4')
+    assert.equal(r.positionManager, null, 'V4 has no verified position-manager registry entry')
+    assert.ok(r.missingEvidence.includes('positionManager'), 'V4 missingEvidence still includes positionManager when unresolved')
+
+    const { buildConcentratedPositionProofRead } = await import('../lib/server/lpProof.ts')
+    const read = buildConcentratedPositionProofRead(r, { protocol: 'uniswap_v4', poolPair: 'DUAL/WETH' })
+    assert.ok(read.evidenceGaps.some((g) => g.includes('Uniswap V4 concentrated position manager not supported yet')), 'V4 unsupported-manager wording is unchanged')
+  }
+
+  // ── lpControllerIntel: BRETT-like resolved-manager evidenceGaps are deduped and never mention
+  // an unsupported manager (Task 15 Patch 5) ──
+  {
+    const poolAddr = '0x9999999999999999999999999999999999999999'
+    const proof = await attemptConcentratedPositionProof('base', poolAddr, null, 'contract', 'uniswap_v3', async () => [])
+    const intel = buildLpControllerIntel({
+      lpControl: { status: 'concentrated_liquidity', proofApplicability: 'not_applicable' },
+      selectedPool: { model: 'concentrated', dex: 'Uniswap V3' },
+      concentratedPositionProof: {
+        status: proof.status,
+        topPositionOwner: proof.topPositionOwner,
+        topPositionOwnerType: proof.topPositionOwnerType,
+        controllerRisk: proof.controllerRisk,
+        reason: proof.reason,
+        poolModel: proof.poolModel,
+        poolAddress: proof.poolAddress,
+        poolIdentity: proof.poolIdentity,
+        poolIdentityType: proof.poolIdentityType,
+      },
+      lpEvidenceGaps: [
+        { id: 'TOP_LIQUIDITY_OWNER_NOT_VERIFIED', label: 'Top liquidity owner not verified' },
+        { id: 'ACTIVE_POSITIONS_NOT_INDEXED', label: 'Active liquidity positions not indexed' },
+        { id: 'POSITION_LIQUIDITY_SHARE_NOT_AVAILABLE', label: 'Position liquidity share not available' },
+      ],
+    })
+    assert.ok(!intel.evidenceGaps.some((g) => /not supported yet/i.test(g)), 'lpControllerIntel evidenceGaps never mention an unsupported manager once resolved')
+    const dedupedCount = intel.evidenceGaps.filter((g) => g === 'Top liquidity owner not verified').length
+    assert.ok(dedupedCount <= 1, 'evidenceGaps are deduped, not repeated')
+  }
+
+  // ── secondaryLpControlSignals must never report status="concentrated_liquidity" for a V2/
+  // Aerodrome secondary pool, even when the primary lpControl was already overwritten to
+  // concentrated_liquidity before reconciliation runs (Task 15 Patch 7 — BRETT regression).
+  // lib/server/lpIntelligence.ts can't be live-imported from a plain .mjs test (Node's native
+  // TS type-stripping requires explicit file extensions on its relative imports, e.g. `./lpProof`
+  // resolves under tsc/Next.js but not under `node`), so this is a static source-pattern check
+  // mirroring the same convention used by scripts/test-lp-intelligence.mjs ──
+  {
+    const intel = readFileSync(new URL('../lib/server/lpIntelligence.ts', import.meta.url), 'utf8')
+    assert.ok(intel.includes('secondarySource?:'), 'reconcileSecondaryLpSignal accepts a pre-overwrite secondarySource snapshot')
+    assert.ok(intel.includes("const _source = secondarySource ?? lpControl"), 'secondary signal prefers the pre-overwrite snapshot over the (possibly already-overwritten) live lpControl')
+    assert.ok(/_source\.status === 'concentrated_liquidity' \|\| _source\.status === 'protocol'\) \? 'open_check'/.test(intel), 'secondary status can never be concentrated_liquidity/protocol — falls back to open_check')
+    assert.ok(/_source\.status === 'team_controlled' \? 'wallet_controlled'/.test(intel), "secondary 'team_controlled' is reported as wallet_controlled — secondary holder checks can't verify a team/contract entity")
+    assert.ok(!/status: lpControl\.status,/.test(intel), 'the old blind lpControl.status copy into the secondary signal is gone')
+
+    const route = readFileSync(new URL('../app/api/token/route.ts', import.meta.url), 'utf8')
+    assert.ok(route.includes('_preOverwriteLpControlSnapshot'), 'route.ts snapshots lpControl before the concentrated-liquidity safety net can overwrite it')
+    assert.ok(route.includes('secondarySource: _preOverwriteLpControlSnapshot'), 'route.ts passes the pre-overwrite snapshot into reconcileSecondaryLpSignal')
+    assert.ok(route.includes('"wallet_controlled"') || route.includes("'wallet_controlled'"), 'wallet_controlled is a valid LpControlResult/secondaryLpControlSignals status')
+    assert.ok(!/'team_controlled' : 'partial',\s*\n\s*confidence: \(topHolder\.pct \?\? 0\) >= 80 \? 'high' : 'low',\s*\n\s*reason: "Secondary pool LP-holder evidence/.test(route), '_classifySecondaryLpHolders no longer returns team_controlled for secondary dominant-holder evidence')
+    assert.ok(/status: \(topHolder\.pct \?\? 0\) >= 80 \? 'wallet_controlled' : 'partial',\s*\n\s*confidence: \(topHolder\.pct \?\? 0\) >= 80 \? 'high' : 'low',\s*\n\s*reason: "Secondary pool LP-holder evidence/.test(route), '_classifySecondaryLpHolders dominant-holder branch reports wallet_controlled')
+  }
+
+  // ── V2/Aerodrome standard LP (non-concentrated) pools never get a positionManager-resolved
+  // path applied to them — positionManager stays null since only uniswap_v3 resolves one ──
+  {
+    const r = await attemptConcentratedPositionProof('base', null, null, 'unknown', 'aerodrome')
+    assert.equal(r.positionManager, null, 'non-Uniswap-V3 protocols never get a guessed position manager')
+  }
+
   console.log('test-concentrated-position-proof.mjs: all assertions passed')
 }
 
