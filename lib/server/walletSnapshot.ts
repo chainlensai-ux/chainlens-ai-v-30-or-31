@@ -8117,12 +8117,27 @@ async function fetchDexscreenerFallbackPrice(contractAddress: string): Promise<n
   }
 }
 
-async function fetchCoingeckoFallbackPrice(contractAddress: string, dateStr: string): Promise<number | null> {
+// Maps a normalized chain identifier to its CoinGecko asset-platform id. CoinGecko's
+// /coins/{platform}/contract endpoint resolves the contract address ONLY within that platform,
+// so a wrong mapping (e.g. always 'ethereum') can return a same-address token's Ethereum price
+// for a Base or BSC token. Unmapped/ambiguous chains return null so the caller skips this
+// fallback tier entirely rather than risk a cross-chain price.
+function coingeckoPlatformForChain(chain: string): string | null {
+  const c = (chain ?? '').toLowerCase()
+  if (c === 'eth' || c === 'ethereum' || c === 'eth-mainnet' || c === '1') return 'ethereum'
+  if (c === 'base' || c === 'base-mainnet' || c === '8453') return 'base'
+  if (c === 'bsc' || c === 'bnb' || c.includes('binance')) return 'binance-smart-chain'
+  return null
+}
+
+async function fetchCoingeckoFallbackPrice(contractAddress: string, dateStr: string, chain: string): Promise<number | null> {
+  const platform = coingeckoPlatformForChain(chain)
+  if (!platform) return null
   const [y, m, d] = dateStr.split('-')
   if (!y || !m || !d) return null
   try {
     const res = await fetch(
-      `https://api.coingecko.com/api/v3/coins/ethereum/contract/${contractAddress}/history?date=${d}-${m}-${y}`,
+      `https://api.coingecko.com/api/v3/coins/${platform}/contract/${contractAddress}/history?date=${d}-${m}-${y}`,
       { cache: 'no-store', signal: AbortSignal.timeout(4_000) },
     )
     if (!res.ok) return null
@@ -8140,21 +8155,22 @@ async function fallbackPriceAtTime(
   contractAddress: string,
   timestamp: string,
   deepScan: boolean,
+  chain: string,
 ): Promise<{ priceUsd: number; source: 'fallback'; confidence: 'low' } | null> {
   if (!deepScan) return null
   if (!contractAddress || !contractAddress.startsWith('0x')) return null
   const dateStr = (timestamp ?? '').slice(0, 10)
   if (!dateStr || dateStr.length !== 10) return null
-  const cacheKey = `fallback:${contractAddress.toLowerCase()}:${dateStr}`
+  const cacheKey = `fallback:${normalizeChain(chain)}:${contractAddress.toLowerCase()}:${dateStr}`
   const cached = _fallbackPriceCache.get(cacheKey)
   if (cached && cached.exp > Date.now()) {
     return cached.priceUsd != null ? { priceUsd: cached.priceUsd, source: 'fallback', confidence: 'low' } : null
   }
-  // Tier 3a: Dexscreener pair price. Tier 3b: Coingecko historical-by-date contract price.
-  // (Uniswap TWAP is intentionally not attempted here — it requires an on-chain RPC client this
-  // file does not otherwise maintain — so this fallback covers the two HTTP-only sources.)
+  // Tier 3a: Dexscreener pair price. Tier 3b: Coingecko historical-by-date contract price,
+  // scoped to the event's own chain (coingeckoPlatformForChain) so a Base/BSC token can never
+  // be priced off Ethereum's same-address contract.
   let priceUsd = await fetchDexscreenerFallbackPrice(contractAddress)
-  if (priceUsd == null) priceUsd = await fetchCoingeckoFallbackPrice(contractAddress, dateStr)
+  if (priceUsd == null) priceUsd = await fetchCoingeckoFallbackPrice(contractAddress, dateStr, chain)
   _fallbackPriceCache.set(cacheKey, { exp: Date.now() + FALLBACK_PRICE_TTL_MS, priceUsd })
   return priceUsd != null ? { priceUsd, source: 'fallback', confidence: 'low' } : null
 }
@@ -8515,7 +8531,7 @@ async function buildPriceAtTimeEvidence(
     // try the tier-3 fallback (Dexscreener/Coingecko) before falling through to the current-
     // holding-price estimate. Skipped entirely for normal scans (deepScan=false) and never
     // blocks/slows them since this branch is unreachable unless deepScan is true.
-    const _fallback = await fallbackPriceAtTime(e.contract, e.timestamp ?? '', deepScan)
+    const _fallback = await fallbackPriceAtTime(e.contract, e.timestamp ?? '', deepScan, e.chain)
     if (_fallback) {
       return priced(e, _fallback.priceUsd, 'fallback', 'low',
         'Tier-3 fallback price (Dexscreener/Coingecko) — not independently verified, excluded from verified/public-grade PnL')

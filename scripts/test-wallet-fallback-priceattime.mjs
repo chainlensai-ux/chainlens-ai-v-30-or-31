@@ -8,13 +8,13 @@ const snap = fs.readFileSync('lib/server/walletSnapshot.ts', 'utf8')
 assert.match(snap, /async function fallbackPriceAtTime\(/, 'fallbackPriceAtTime is defined')
 assert.match(snap, /if \(!deepScan\) return null/, 'fallbackPriceAtTime is skipped entirely when deepScan=false')
 assert.match(snap, /source: 'fallback', confidence: 'low'/, 'fallbackPriceAtTime returns the required { source, confidence } shape')
-assert.match(snap, /const cacheKey = `fallback:\$\{contractAddress\.toLowerCase\(\)\}:\$\{dateStr\}`/, 'fallback price is cached per (token, day)')
+assert.match(snap, /const cacheKey = `fallback:\$\{normalizeChain\(chain\)\}:\$\{contractAddress\.toLowerCase\(\)\}:\$\{dateStr\}`/, 'fallback price is cached per (chain, token, day)')
 assert.match(snap, /const _fallbackPriceCache = new Map<string, \{ exp: number; priceUsd: number \| null \}>\(\)/, 'fallback price cache is a module-level Map keyed per (token, day)')
 
 // Case 1: GoldRush/provider tiers missing -> fallback is attempted before falling through to the
 // current-holding-price estimate tier, only inside buildPriceAtTimeEvidence's per-event resolution
 // (i.e. only after both existing tiers above have already returned null for that event).
-assert.match(snap, /skippedHistoricalUnavailable\+\+\s*\n\s*\n\s*\/\/ FALLBACK-PRICEATTIME-1[\s\S]{0,400}const _fallback = await fallbackPriceAtTime\(e\.contract, e\.timestamp \?\? '', deepScan\)/, 'fallback is only attempted after the existing historical-price tier returns null')
+assert.match(snap, /skippedHistoricalUnavailable\+\+\s*\n\s*\n\s*\/\/ FALLBACK-PRICEATTIME-1[\s\S]{0,400}const _fallback = await fallbackPriceAtTime\(e\.contract, e\.timestamp \?\? '', deepScan, e\.chain\)/, 'fallback is only attempted after the existing historical-price tier returns null')
 assert.match(snap, /if \(_fallback\) \{\s*\n\s*return priced\(e, _fallback\.priceUsd, 'fallback', 'low',/, 'a successful fallback price marks the event priced with source=fallback (non-zero PnL becomes possible)')
 
 // Case 2: fallback disabled (deepScan=false) -> buildPriceAtTimeEvidence is called with deepScan
