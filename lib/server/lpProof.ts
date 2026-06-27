@@ -999,6 +999,58 @@ export interface ConcentratedTopOwner {
   reason: string;
 }
 
+/** One owner aggregated from a *bounded sample* of NonfungiblePositionManager positions — never
+ * full-pool coverage. `liquidityShareOfSamplePercent` is the owner's share of the sampled
+ * liquidity only, never the pool's total liquidity (which sampling never proves). */
+export interface ConcentratedSampledOwner {
+  owner: string;
+  ownerType: ConcentratedOwnerType;
+  liquidityRaw: string;
+  liquidityShareOfSamplePercent: number | null;
+  tokenIds: string[];
+  confidence: "high" | "medium" | "low";
+  evidence: string[];
+}
+
+export type ConcentratedSamplingStatus = "not_attempted" | "attempted_no_candidates" | "sampled_partial" | "failed";
+
+export interface ConcentratedSamplingDebug {
+  candidateSource: string | null;
+  candidateCount: number;
+  candidateCap: number;
+  matchingPositionCount: number;
+  ownerOfCalls: number;
+  positionCalls: number;
+  failures: number;
+  cacheHit: boolean;
+}
+
+/** One bounded candidate position, already pre-filtered by the caller to this pool's token
+ * pair/fee — this module never enumerates or filters candidates itself, it only aggregates
+ * whatever a bounded source already produced. */
+export interface ConcentratedSampleCandidate {
+  tokenId: string | number;
+  owner: string;
+  liquidityRaw: string | number;
+  ownerType?: ConcentratedOwnerType;
+}
+
+/** Pluggable bounded candidate source for position-owner sampling. Returns null when no source
+ * is available/configured — production has no real bounded source today (no log helper, no
+ * indexed NFT-transfer rows, no enumerable position-manager interface), so this stays unconfigured
+ * in production and the proof reports samplingStatus="attempted_no_candidates" with reason
+ * "no_bounded_candidate_source" rather than inventing one. Exists so a real bounded source (e.g.
+ * cached manager logs) can be wired in later, and so the aggregation logic can be exercised with
+ * fixture data in tests without production ever fabricating sampled ownership. */
+export type ConcentratedSampleCandidateResolver = (input: {
+  chain: LpChain;
+  poolModel: ConcentratedPoolModel;
+  poolAddress: string | null;
+  poolId: string | null;
+}) => Promise<ConcentratedSampleCandidate[] | null>;
+
+const SAMPLE_CANDIDATE_CAP = 20;
+
 export interface ConcentratedPositionProof {
   status: ConcentratedPositionProofStatus;
   poolModel: ConcentratedPoolModel;
@@ -1024,6 +1076,19 @@ export interface ConcentratedPositionProof {
   /** Deterministic public ownership-proof state — see `ConcentratedOwnershipStatus`. */
   ownershipStatus: ConcentratedOwnershipStatus;
   ownershipDebug: ConcentratedOwnershipDebug;
+  /** Bounded position-owner sampling — distinct from `topPositionOwner`/`positionCount`/
+   * `topPositionSharePercent` above, which describe FULL pool coverage and stay null until that's
+   * actually proven. These fields describe evidence from a bounded, capped sample only; never
+   * promoted to the full-pool fields without complete coverage. */
+  sampledPositionCount: number | null;
+  sampledOwnerCount: number | null;
+  sampledOwners: ConcentratedSampledOwner[];
+  topSampledOwner: string | null;
+  topSampledOwnerType: ConcentratedOwnerType | null;
+  topSampledOwnerShareOfSamplePercent: number | null;
+  samplingStatus: ConcentratedSamplingStatus;
+  samplingReason: string;
+  samplingDebug: ConcentratedSamplingDebug;
 }
 
 /** Raw owner/liquidity record returned by a position-owner source (real indexer, or a test
@@ -1178,6 +1243,64 @@ export function computeTopOwnerShare(owners: Array<{ address: string; liquidityR
     topPositionOwner: top ? top.address : null,
     topPositionOwnerType: top ? top.ownerType : null,
     topPositionSharePercent: top && total > BigInt(0) ? Math.round(Number((top.liq * BigInt(10000)) / total) / 100 * 100) / 100 : null,
+  };
+}
+
+/** Pure, deterministic aggregation of a bounded sample of NFT-position candidates into unique
+ * owners — no network calls. Per spec: sort candidates liquidity desc / tokenId asc / owner asc
+ * before aggregating, then report each owner's share of the SAMPLE's total liquidity only (never
+ * the pool's full liquidity, which a bounded sample never proves). */
+function computeSampledOwnerAggregate(
+  candidates: Array<{ tokenId: string | number; owner: string; liquidityRaw: string | number; ownerType: ConcentratedOwnerType }>,
+): {
+  sampledOwners: ConcentratedSampledOwner[];
+  sampledPositionCount: number;
+  sampledOwnerCount: number;
+  topSampledOwner: string | null;
+  topSampledOwnerType: ConcentratedOwnerType | null;
+  topSampledOwnerShareOfSamplePercent: number | null;
+} {
+  const parsed = candidates.map((c) => ({
+    tokenId: String(c.tokenId),
+    tokenIdBig: (() => { try { return BigInt(c.tokenId); } catch { return BigInt(0); } })(),
+    owner: c.owner.toLowerCase(),
+    ownerType: c.ownerType,
+    liq: typeof c.liquidityRaw === "number" ? BigInt(Math.trunc(c.liquidityRaw)) : BigInt(c.liquidityRaw || "0"),
+  })).sort((a, b) => {
+    if (a.liq !== b.liq) return a.liq > b.liq ? -1 : 1;
+    if (a.tokenIdBig !== b.tokenIdBig) return a.tokenIdBig < b.tokenIdBig ? -1 : 1;
+    return a.owner < b.owner ? -1 : a.owner > b.owner ? 1 : 0;
+  });
+
+  const byOwner = new Map<string, { owner: string; ownerType: ConcentratedOwnerType; liq: bigint; tokenIds: string[] }>();
+  for (const c of parsed) {
+    const entry = byOwner.get(c.owner) ?? { owner: c.owner, ownerType: c.ownerType, liq: BigInt(0), tokenIds: [] };
+    entry.liq += c.liq;
+    entry.tokenIds.push(c.tokenId);
+    byOwner.set(c.owner, entry);
+  }
+  const total = parsed.reduce((sum, c) => sum + c.liq, BigInt(0));
+  const ordered = [...byOwner.values()].sort((a, b) => {
+    if (a.liq !== b.liq) return a.liq > b.liq ? -1 : 1;
+    return a.owner < b.owner ? -1 : a.owner > b.owner ? 1 : 0;
+  });
+  const sampledOwners: ConcentratedSampledOwner[] = ordered.map((o) => ({
+    owner: o.owner,
+    ownerType: o.ownerType,
+    liquidityRaw: o.liq.toString(),
+    liquidityShareOfSamplePercent: total > BigInt(0) ? Math.round(Number((o.liq * BigInt(10000)) / total) / 100 * 100) / 100 : null,
+    tokenIds: o.tokenIds.sort(),
+    confidence: o.ownerType === "unknown" ? "low" : parsed.length >= 5 ? "medium" : "low",
+    evidence: [`sampled_liquidity=${o.liq.toString()}`, `sampled_position_count=${o.tokenIds.length}`],
+  }));
+  const top = ordered[0] ?? null;
+  return {
+    sampledOwners,
+    sampledPositionCount: parsed.length,
+    sampledOwnerCount: byOwner.size,
+    topSampledOwner: top ? top.owner : null,
+    topSampledOwnerType: top ? top.ownerType : null,
+    topSampledOwnerShareOfSamplePercent: top && total > BigInt(0) ? Math.round(Number((top.liq * BigInt(10000)) / total) / 100 * 100) / 100 : null,
   };
 }
 
@@ -1374,6 +1497,7 @@ export async function attemptConcentratedPositionProof(
   poolAddressType: "contract" | "pool_id" | "unknown",
   dexId: string | null | undefined,
   resolveOwners?: ConcentratedOwnerResolver,
+  sampleCandidates?: ConcentratedSampleCandidateResolver,
 ): Promise<ConcentratedPositionProof> {
   const protocolInfo = resolveConcentratedProtocol(chain, dexId, poolAddressType);
   const poolModel = protocolInfo.protocol;
@@ -1382,11 +1506,12 @@ export async function attemptConcentratedPositionProof(
   const poolIdentity = normalizedPoolId ?? normalizedPoolAddress ?? null;
 
   const cacheKey = poolIdentity ? `${chain}:${poolIdentity}` : null;
-  if (cacheKey && !resolveOwners) {
+  if (cacheKey && !resolveOwners && !sampleCandidates) {
     const cached = concentratedProofCache.get(cacheKey);
     if (cached && cached.exp > Date.now()) return cached.data;
   }
 
+  const _noSamplingDebug: ConcentratedSamplingDebug = { candidateSource: null, candidateCount: 0, candidateCap: SAMPLE_CANDIDATE_CAP, matchingPositionCount: 0, ownerOfCalls: 0, positionCalls: 0, failures: 0, cacheHit: false };
   const base: Omit<ConcentratedPositionProofCore, "status" | "reason" | "evidence" | "missingEvidence" | "nextAction" | "confidence"> = {
     poolModel,
     poolAddress: normalizedPoolAddress,
@@ -1402,6 +1527,59 @@ export async function attemptConcentratedPositionProof(
     topOwners: [],
     lockedOrManagedPositionFound: null,
     controllerRisk: "unknown",
+    sampledPositionCount: null,
+    sampledOwnerCount: null,
+    sampledOwners: [],
+    topSampledOwner: null,
+    topSampledOwnerType: null,
+    topSampledOwnerShareOfSamplePercent: null,
+    samplingStatus: "not_attempted",
+    samplingReason: "Sampling is only attempted for a Uniswap V3 pool with a resolved position manager and a confirmed-active contract pool.",
+    samplingDebug: _noSamplingDebug,
+  };
+
+  // Bounded position-owner sampling (Stage 14): only meaningful for Uniswap V3 with a verified
+  // position manager and a real pool contract address — V4/other models have no verified manager
+  // to sample against, and this never replaces the full-pool ownership proof below.
+  const _attemptSampling = async (): Promise<Pick<ConcentratedPositionProofCore, "sampledPositionCount" | "sampledOwnerCount" | "sampledOwners" | "topSampledOwner" | "topSampledOwnerType" | "topSampledOwnerShareOfSamplePercent" | "samplingStatus" | "samplingReason" | "samplingDebug">> => {
+    if (poolModel !== "uniswap_v3" || !base.positionManager) {
+      return { sampledPositionCount: null, sampledOwnerCount: null, sampledOwners: [], topSampledOwner: null, topSampledOwnerType: null, topSampledOwnerShareOfSamplePercent: null, samplingStatus: "not_attempted", samplingReason: base.samplingReason, samplingDebug: _noSamplingDebug };
+    }
+    if (!sampleCandidates) {
+      return { sampledPositionCount: null, sampledOwnerCount: null, sampledOwners: [], topSampledOwner: null, topSampledOwnerType: null, topSampledOwnerShareOfSamplePercent: null, samplingStatus: "attempted_no_candidates", samplingReason: "no_bounded_candidate_source", samplingDebug: _noSamplingDebug };
+    }
+    try {
+      const raw = await sampleCandidates({ chain, poolModel, poolAddress: normalizedPoolAddress, poolId: normalizedPoolId });
+      const cappedAll = Array.isArray(raw) ? raw : [];
+      const capped = cappedAll.slice(0, SAMPLE_CANDIDATE_CAP);
+      if (capped.length === 0) {
+        return {
+          sampledPositionCount: null, sampledOwnerCount: null, sampledOwners: [], topSampledOwner: null, topSampledOwnerType: null, topSampledOwnerShareOfSamplePercent: null,
+          samplingStatus: "attempted_no_candidates",
+          samplingReason: raw == null ? "no_bounded_candidate_source" : "no_matching_candidates",
+          samplingDebug: { candidateSource: "sample_candidate_resolver", candidateCount: cappedAll.length, candidateCap: SAMPLE_CANDIDATE_CAP, matchingPositionCount: 0, ownerOfCalls: 0, positionCalls: 0, failures: 0, cacheHit: false },
+        };
+      }
+      let failures = 0;
+      const classified = await Promise.all(capped.map(async (c) => {
+        if (c.ownerType) return { ...c, ownerType: c.ownerType };
+        try {
+          return { ...c, ownerType: await classifyConcentratedOwnerType(chain, c.owner) };
+        } catch {
+          failures += 1;
+          return { ...c, ownerType: "unknown" as ConcentratedOwnerType };
+        }
+      }));
+      const agg = computeSampledOwnerAggregate(classified);
+      return {
+        ...agg,
+        samplingStatus: "sampled_partial",
+        samplingReason: `Sampled ${agg.sampledPositionCount} position(s) across ${agg.sampledOwnerCount} owner(s) from a bounded candidate source — not full-pool coverage.`,
+        samplingDebug: { candidateSource: "sample_candidate_resolver", candidateCount: cappedAll.length, candidateCap: SAMPLE_CANDIDATE_CAP, matchingPositionCount: capped.length, ownerOfCalls: 0, positionCalls: 0, failures, cacheHit: false },
+      };
+    } catch {
+      return { sampledPositionCount: null, sampledOwnerCount: null, sampledOwners: [], topSampledOwner: null, topSampledOwnerType: null, topSampledOwnerShareOfSamplePercent: null, samplingStatus: "failed", samplingReason: "sampling_attempt_failed", samplingDebug: _noSamplingDebug };
+    }
   };
 
   const finish = (core: ConcentratedPositionProofCore, source: ConcentratedOwnershipDebug["source"], proofPath: string): ConcentratedPositionProof => {
@@ -1424,7 +1602,7 @@ export async function attemptConcentratedPositionProof(
       }
     }
 
-    if (cacheKey && !resolveOwners) concentratedProofCache.set(cacheKey, { exp: Date.now() + CONCENTRATED_PROOF_CACHE_TTL_MS, data: result });
+    if (cacheKey && !resolveOwners && !sampleCandidates) concentratedProofCache.set(cacheKey, { exp: Date.now() + CONCENTRATED_PROOF_CACHE_TTL_MS, data: result });
     return result;
   };
 
@@ -1512,8 +1690,10 @@ export async function attemptConcentratedPositionProof(
       nextAction: "Re-check if liquidity is added to this pool; no active position currently exists.",
     }, "rpc_liquidity_probe", "pool_liquidity_zero");
   }
+  const sampling = await _attemptSampling();
   return finish({
     ...base,
+    ...sampling,
     totalPositionLiquidity: liquidityBig != null ? liquidityBig.toString() : null,
     status: "partial",
     confidence: "low",
@@ -1704,7 +1884,7 @@ export interface ConcentratedPositionProofRead {
 /** Humanizes raw missingEvidence keys into user-facing copy. Protocol-aware: Uniswap V4 gets a
  * model-specific "position manager" label, every other pool model gets neutral wording rather than
  * guessing a protocol that wasn't actually resolved. */
-function humanizeConcentratedEvidenceGap(key: string, poolModel: string | null | undefined): string {
+function humanizeConcentratedEvidenceGap(key: string, poolModel: string | null | undefined, sampled?: boolean): string {
   const isV4 = poolModel === "uniswap_v4";
   switch (key) {
     case "positionManager":
@@ -1712,11 +1892,11 @@ function humanizeConcentratedEvidenceGap(key: string, poolModel: string | null |
         ? "Uniswap V4 concentrated position manager not supported yet"
         : "Concentrated position manager not supported yet for this pool model";
     case "topPositionOwner":
-      return "Top liquidity owner not verified";
+      return sampled ? "Full-pool top liquidity owner not verified" : "Top liquidity owner not verified";
     case "positionCount":
-      return "Active liquidity positions not indexed";
+      return sampled ? "Full active position count not indexed" : "Active liquidity positions not indexed";
     case "topPositionSharePercent":
-      return "Position liquidity share not available";
+      return sampled ? "Full-pool liquidity share not available" : "Position liquidity share not available";
     default:
       return "Protocol-specific position ownership not verified";
   }
@@ -1727,11 +1907,14 @@ export function buildConcentratedPositionProofRead(
   ctx?: { protocol?: string | null; poolPair?: string | null },
 ): ConcentratedPositionProofRead {
   const status = proof.status === "verified" || proof.status === "partial" ? proof.status : "open_check";
+  const hasSampledEvidence = proof.samplingStatus === "sampled_partial" && proof.sampledOwners.length > 0;
   const summary = status === "verified" || status === "partial"
-    ? proof.reason
+    ? (hasSampledEvidence
+        ? "The Uniswap V3 position manager was resolved and sampled position-owner evidence was found, but full-pool ownership is not yet verified."
+        : proof.reason)
     : "Concentrated pool detected; position ownership proof is not yet verified.";
   const evidenceGaps = proof.missingEvidence.length > 0
-    ? proof.missingEvidence.map((key) => humanizeConcentratedEvidenceGap(key, proof.poolModel))
+    ? proof.missingEvidence.map((key) => humanizeConcentratedEvidenceGap(key, proof.poolModel, hasSampledEvidence))
     : ["Protocol-specific position ownership not verified"];
   const nextActions = proof.nextAction
     ? [proof.nextAction]

@@ -44,6 +44,9 @@ export interface LpControllerIntelInput {
     /** Deterministic public ownership-proof state — see ConcentratedOwnershipStatus in lpProof.ts. */
     ownershipStatus?: string | null
     ownershipDebug?: { source?: string | null; type?: string | null; confidence?: string | null; proofPath?: string | null } | null
+    /** Bounded sample-only owner evidence (Stage 14) — never claims full-pool coverage. */
+    samplingStatus?: 'not_attempted' | 'attempted_no_candidates' | 'sampled_partial' | 'failed' | null
+    sampledOwners?: Array<unknown> | null
   } | null
 }
 
@@ -153,10 +156,15 @@ function concentratedControlProofLabel(proof: LpControllerIntelInput['concentrat
         : ''
       return `Verified — ${who}${pct}`
     }
-    case 'partial':
+    case 'partial': {
+      const hasSampledEvidence = proof.samplingStatus === 'sampled_partial' && Array.isArray(proof.sampledOwners) && proof.sampledOwners.length > 0
+      if (hasSampledEvidence) {
+        return 'The Uniswap V3 position manager was resolved and sampled position-owner evidence was found, but full-pool ownership is not yet verified.'
+      }
       return proof.positionManager
         ? `The ${concentratedPoolModelLabel(proof.poolModel)} position manager was resolved and the pool is active, but ChainLens could not verify the largest liquidity owner from current evidence.`
         : 'The pool is confirmed active but ownership of concentrated liquidity positions could not be fully resolved.'
+    }
     case 'not_supported':
       return `The largest liquidity owner could not be verified for this ${concentratedPoolModelLabel(proof.poolModel)} pool.`
     case 'not_found':

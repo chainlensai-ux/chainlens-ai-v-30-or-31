@@ -2393,11 +2393,12 @@ type LpDiagnostics = {
   poolModelStatus: "confirmed" | "partial" | "unknown";
 };
 
-function humanizeConcentratedMissingEvidence(key: string): string {
+function humanizeConcentratedMissingEvidence(key: string, sampled?: boolean): string {
   switch (key) {
     case "positionManager": return "Position ownership is not supported yet for this pool model";
-    case "topPositionOwner": return "Top liquidity owner not verified";
-    case "positionCount": return "Active liquidity positions not indexed";
+    case "topPositionOwner": return sampled ? "Full-pool top liquidity owner not verified" : "Top liquidity owner not verified";
+    case "positionCount": return sampled ? "Full active position count not indexed" : "Active liquidity positions not indexed";
+    case "topPositionSharePercent": return sampled ? "Full-pool liquidity share not available" : "Position liquidity share not available";
     default: return key.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
   }
 }
@@ -2462,8 +2463,9 @@ function computeLpControlRead(lp: LpControlResult, pairName?: string | null, con
         nextAction: "Check LP positions on-chain via the protocol-specific position manager or explorer.",
       };
     case "concentrated_liquidity": {
+      const hasSampledEvidence = positionProof?.samplingStatus === "sampled_partial" && (positionProof?.sampledOwners?.length ?? 0) > 0;
       const couldNotVerify = positionProof
-        ? (positionProof.status === "verified" ? [] : positionProof.missingEvidence.length ? positionProof.missingEvidence.map(humanizeConcentratedMissingEvidence) : ["Position ownership not resolved"])
+        ? (positionProof.status === "verified" ? [] : positionProof.missingEvidence.length ? positionProof.missingEvidence.map((key) => humanizeConcentratedMissingEvidence(key, hasSampledEvidence)) : ["Position ownership not resolved"])
         : ["Position proof not attempted"];
       return {
         title: "Concentrated liquidity — protocol-specific position checks",
@@ -2474,6 +2476,8 @@ function computeLpControlRead(lp: LpControlResult, pairName?: string | null, con
           "Primary market pool selected",
           "Pool structure reviewed",
           ...(positionProof?.positionManager ? ["Position manager resolved"] : []),
+          ...(positionProof?.status === "partial" && positionProof.positionManager ? ["Pool active/liquidity confirmed"] : []),
+          ...(hasSampledEvidence ? ["Sampled V3 position owners found"] : []),
           ...(positionProof ? [`Position proof attempted — ${positionProof.status === "not_supported" ? "not supported" : positionProof.status.replace(/_/g, " ")}`] : []),
           ...(lp.secondaryLpControlSignals ? ["Secondary ERC-20 LP exposure detected"] : []),
         ],
@@ -6133,16 +6137,17 @@ export async function POST(req: Request) {
           nextAction: 'Verify position ownership through the protocol\'s official position-manager UI.',
         })
       }
+      const _cppHasSampledEvidence = concentratedPositionProof.samplingStatus === 'sampled_partial' && concentratedPositionProof.sampledOwners.length > 0
       _concentratedGaps.push(
         {
           id: 'TOP_LIQUIDITY_OWNER_NOT_VERIFIED',
-          label: 'Top liquidity owner not verified',
+          label: _cppHasSampledEvidence ? 'Full-pool top liquidity owner not verified' : 'Top liquidity owner not verified',
           explanation: 'ChainLens could not confirm who holds the largest concentrated-liquidity position for this pool.',
           nextAction: 'Re-check after the next scan once stronger evidence is available.',
         },
         {
           id: 'ACTIVE_POSITIONS_NOT_INDEXED',
-          label: 'Active liquidity positions not indexed',
+          label: _cppHasSampledEvidence ? 'Full active position count not indexed' : 'Active liquidity positions not indexed',
           explanation: 'The total number of active concentrated-liquidity positions could not be counted for this pool.',
           nextAction: 'Re-check after the next scan once stronger evidence is available.',
         },
@@ -6150,7 +6155,7 @@ export async function POST(req: Request) {
       if (_cppManagerResolved) {
         _concentratedGaps.push({
           id: 'POSITION_LIQUIDITY_SHARE_NOT_AVAILABLE',
-          label: 'Position liquidity share not available',
+          label: _cppHasSampledEvidence ? 'Full-pool liquidity share not available' : 'Position liquidity share not available',
           explanation: 'The largest position\'s share of this pool\'s total concentrated liquidity could not be computed.',
           nextAction: 'Re-check after the next scan once stronger evidence is available.',
         })
