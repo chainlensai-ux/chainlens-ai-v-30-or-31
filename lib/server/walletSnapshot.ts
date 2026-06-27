@@ -1234,6 +1234,19 @@ export type WalletSnapshot = {
       sellsExceedBuysAfterDedupe: boolean
       sellsExceedBuysCausedByDuplicateLots: boolean
     }
+    walletEconomicClosedLotDedupeDebug?: {
+      duplicateClosedLotsRemoved: number
+      duplicateClosedLotsRemovedByReason: Record<string, number>
+      sampleDuplicateClosedLotsRemoved: Array<{
+        token: string
+        entryTxHash: string
+        exitTxHash: string
+        keptAmount: number
+        removedAmount: number
+        keptEvidenceSource: string
+        removedEvidenceSource: string
+      }>
+    }
     walletActivityRequestDebug?: {
       primaryActivityAttempted: boolean
       primaryActivityFailed: boolean
@@ -6120,6 +6133,105 @@ function dedupeClosedLots(lots: WalletClosedLot[]): { deduped: WalletClosedLot[]
     deduped.push(lot)
   }
   return { deduped, duplicatesRemoved: lots.length - deduped.length }
+}
+
+// ECONOMIC-CLOSED-LOT-DEDUPE-FIX: dedupeClosedLots above runs before the closed-lot price-upgrade
+// pass and keys on fixed 6-decimal rounding, so it can miss two closed lots that represent the
+// exact same economic trade but diverge only by sub-wei floating point noise introduced by
+// separate enrichment/upgrade passes (e.g. 10653260.930471554 vs 10653260.930471553, or entry/exit
+// prices nudged at the same scale during price upgrade). This pass runs after the price-upgrade
+// step, right before trade stats/sample/public-performance consumers, and compares amount/price
+// with a relative tolerance instead of exact rounding. It never changes FIFO matching order, never
+// touches computePriceIndependence/classifyClosedLotForPublicPerformance, and never collapses two
+// lots whose amounts genuinely differ (a real partial fill) by more than the tolerance.
+const CLOSED_LOT_AMOUNT_REL_TOL = 1e-9
+const CLOSED_LOT_PRICE_REL_TOL = 1e-6
+function _closedLotEvidenceRank(source: string | undefined | null): number {
+  switch (source) {
+    case 'swap_reconstruction_v1':
+    case 'eth_native_value_router_reconstruction':
+    case 'quote_leg_receipt_weth':
+    case 'quote_leg_receipt_stable':
+    case 'quote_leg_receipt_native':
+    case 'stable_leg':
+    case 'weth_leg':
+    case 'native_leg':
+      return 4
+    case 'historical_price':
+      return 3
+    case 'provider_event_usd':
+    case 'swap_derived':
+      return 2
+    default:
+      return 0
+  }
+}
+function _closedLotEvidenceScore(lot: WalletClosedLot): number {
+  return Math.min(_closedLotEvidenceRank(lot.entryPriceSource), _closedLotEvidenceRank(lot.exitPriceSource))
+}
+function _closedLotNearlyEqual(a: number, b: number, relTol: number): boolean {
+  if (a === b) return true
+  const diff = Math.abs(a - b)
+  const scale = Math.max(Math.abs(a), Math.abs(b), 1e-9)
+  return diff / scale <= relTol
+}
+function dedupeClosedLotsEconomic(lots: WalletClosedLot[]): {
+  deduped: WalletClosedLot[]
+  duplicatesRemoved: number
+  duplicatesRemovedByReason: Record<string, number>
+  sampleRemoved: Array<{ token: string; entryTxHash: string; exitTxHash: string; keptAmount: number; removedAmount: number; keptEvidenceSource: string; removedEvidenceSource: string }>
+} {
+  const groups = new Map<string, WalletClosedLot[]>()
+  for (const lot of lots) {
+    const chain = normalizeChain(lot.chain)
+    const token = lot.tokenAddress.toLowerCase()
+    const entryTx = (lot.openedTxHash ?? '').toLowerCase()
+    const exitTx = (lot.closedTxHash ?? '').toLowerCase()
+    const baseKey = `${chain}:${token}:${entryTx}:${exitTx}:${lot.openedAt}:${lot.closedAt}`
+    const arr = groups.get(baseKey)
+    if (arr) arr.push(lot)
+    else groups.set(baseKey, [lot])
+  }
+  const deduped: WalletClosedLot[] = []
+  let duplicatesRemoved = 0
+  const duplicatesRemovedByReason: Record<string, number> = {}
+  const sampleRemoved: Array<{ token: string; entryTxHash: string; exitTxHash: string; keptAmount: number; removedAmount: number; keptEvidenceSource: string; removedEvidenceSource: string }> = []
+  for (const group of groups.values()) {
+    const kept: WalletClosedLot[] = []
+    for (const lot of group) {
+      const matchIdx = kept.findIndex(k =>
+        _closedLotNearlyEqual(lot.amountClosed ?? 0, k.amountClosed ?? 0, CLOSED_LOT_AMOUNT_REL_TOL) &&
+        _closedLotNearlyEqual(lot.entryPriceUsd ?? 0, k.entryPriceUsd ?? 0, CLOSED_LOT_PRICE_REL_TOL) &&
+        _closedLotNearlyEqual(lot.exitPriceUsd ?? 0, k.exitPriceUsd ?? 0, CLOSED_LOT_PRICE_REL_TOL)
+      )
+      if (matchIdx === -1) {
+        kept.push(lot)
+        continue
+      }
+      const existing = kept[matchIdx]
+      const existingScore = _closedLotEvidenceScore(existing)
+      const newScore = _closedLotEvidenceScore(lot)
+      const keep = newScore > existingScore ? lot : existing
+      const drop = newScore > existingScore ? existing : lot
+      kept[matchIdx] = keep
+      duplicatesRemoved++
+      const reason = (drop.amountClosed ?? 0) !== (keep.amountClosed ?? 0) ? 'same_trade_float_amount_noise' : 'same_trade_repeated_lot'
+      duplicatesRemovedByReason[reason] = (duplicatesRemovedByReason[reason] ?? 0) + 1
+      if (sampleRemoved.length < 5) {
+        sampleRemoved.push({
+          token: lot.tokenAddress,
+          entryTxHash: lot.openedTxHash ?? '',
+          exitTxHash: lot.closedTxHash ?? '',
+          keptAmount: keep.amountClosed,
+          removedAmount: drop.amountClosed,
+          keptEvidenceSource: keep.entryPriceSource ?? keep.evidence?.entrySource ?? 'unknown',
+          removedEvidenceSource: drop.entryPriceSource ?? drop.evidence?.entrySource ?? 'unknown',
+        })
+      }
+    }
+    deduped.push(...kept)
+  }
+  return { deduped, duplicatesRemoved, duplicatesRemovedByReason, sampleRemoved }
 }
 
 // Shared sells_exceed_buys detector, extracted so the integrity check (integrityCheckPnl below)
@@ -14886,6 +14998,17 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   }
   // ── End Closed-Lot Price-Upgrade Pass ───────────────────────────────────────────────────
 
+  // ECONOMIC-CLOSED-LOT-DEDUPE-FIX: final tolerance-based dedupe, shared by every downstream
+  // consumer (trade stats, trade intelligence, closed-trade samples, public performance counters)
+  // since they all read _syntheticLotsAfterSourceLots from this point forward.
+  const _economicClosedLotDedupeResult = dedupeClosedLotsEconomic(_syntheticLotsAfterSourceLots)
+  _syntheticLotsAfterSourceLots = _economicClosedLotDedupeResult.deduped
+  const walletEconomicClosedLotDedupeDebug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['walletEconomicClosedLotDedupeDebug']> = {
+    duplicateClosedLotsRemoved: _economicClosedLotDedupeResult.duplicatesRemoved,
+    duplicateClosedLotsRemovedByReason: _economicClosedLotDedupeResult.duplicatesRemovedByReason,
+    sampleDuplicateClosedLotsRemoved: _economicClosedLotDedupeResult.sampleRemoved,
+  }
+
   const _syntheticLotsAfterHistorical = _syntheticLotsAfterSourceLots.filter(
     l => l.evidence?.entrySource === 'synthetic' || (l.missingReasons ?? []).includes('fifo_backfilled_buy')
   ).length
@@ -16807,6 +16930,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       walletHoldingsProviderRoutingDebug,
       walletHoldingsRoutingDebug,
       walletClosedLotDedupeDebug,
+      walletEconomicClosedLotDedupeDebug,
       walletActivityRequestDebug: {
         primaryActivityAttempted,
         primaryActivityFailed,
