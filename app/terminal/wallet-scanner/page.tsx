@@ -2287,6 +2287,101 @@ export default function WalletScannerPage() {
                 </div>
               )}
 
+              {/* Behavior Intelligence — surfaces real, already-computed wallet-read fields when
+                  public realized PnL / win rate is locked, so a locked-PnL scan doesn't read as a
+                  failed scan. Never displays a PnL number itself — that stays gated exactly as
+                  before (publicPnlFullyLocked / publicPerformanceLots checks are untouched). */}
+              {(() => {
+                const blocker = result.walletPnlBlockerSummary
+                const ts = result.walletTradeStatsSummary
+                const locked = publicPnlFullyLocked(result, ts) || blocker?.status?.startsWith('locked') === true
+                const ti = result.tradeIntelligence
+                const wp = result.walletPersonality
+                const wf = result.walletFacts
+                const bot = result.walletBotScore
+                const profile = result.walletProfile
+                const recovery = result.walletRecoveryRecommendation
+                const hasEvidence = Boolean(ti || wp || wf)
+                if (!locked || !hasEvidence) return null
+
+                const portfolioStyle = cleanWalletArchetype(profile?.portfolioBehavior) ?? null
+                const tradingStyle = wp?.personality ?? (ti ? readableTradeStyleLabel(ti.primaryStyle) : null)
+                const repeatedTokens = ti?.repeatedTokenPatterns ?? []
+                const largestHolding = wf?.summary?.largestHolding ?? null
+                const concentrationLabel = wf?.summary?.concentrationLabel ?? null
+                const recoverable = blocker?.recoverable ?? recovery?.recommended ?? false
+
+                const canSay: string[] = []
+                if (largestHolding && concentrationLabel === 'high') canSay.push(`This wallet is heavily concentrated in ${largestHolding}.`)
+                if (repeatedTokens.length > 0) canSay.push(`The wallet rotates mainly through ${repeatedTokens.slice(0, 3).join(' and ')}.`)
+                if (ti?.avgHoldTimeLabel) canSay.push(`Average hold time is around ${ti.avgHoldTimeLabel.replace(/^~?/, '')}.`)
+                if (bot?.classification && bot.classification !== 'Not enough behavior data') canSay.push(`Wallet behavior reads as ${bot.classification.toLowerCase()}.`)
+                if ((result.publicPnlStatus ?? ts?.publicPnlStatus) === 'open_check_integrity_invalid') canSay.push('Profit skill is not proven because public PnL failed integrity checks.')
+                if (recoverable) canSay.push('Deep recovery may recover missing prior buys.')
+
+                const reasonLabel = (e: string) => e === 'sells_exceed_buys' ? 'Sells exceed buys'
+                  : e === 'pnl_portfolio_delta_mismatch' ? 'Portfolio delta integrity check failed'
+                  : e === 'coverage_percent_below_threshold' ? 'Coverage below public PnL threshold'
+                  : e.replace(/_/g, ' ')
+                const cannotProve = Array.from(new Set([
+                  ...(blocker?.reasons ?? []),
+                  ...(blocker?.integrityErrors ?? result.pnlIntegrityCheck?.errors ?? []).map(reasonLabel),
+                ])).slice(0, 5)
+
+                const cards: Array<{ label: string; value: string }> = [
+                  ...(portfolioStyle ? [{ label: 'Portfolio style', value: portfolioStyle }] : []),
+                  ...(tradingStyle ? [{ label: 'Trading style', value: tradingStyle }] : []),
+                  ...(ti?.avgHoldTimeLabel ? [{ label: 'Avg hold time', value: ti.avgHoldTimeLabel }] : []),
+                  ...(repeatedTokens.length > 0 ? [{ label: 'Repeated tokens', value: repeatedTokens.slice(0, 3).join(', ') }] : []),
+                  ...(bot?.classification ? [{ label: 'Automation read', value: bot.classification }] : []),
+                  { label: 'Recovery status', value: recoverable ? 'Recoverable' : 'Not recoverable yet' },
+                ].slice(0, 6)
+
+                return (
+                  <div style={{ background: '#080c14', border: '1px solid rgba(125,211,252,0.18)', borderRadius: '18px', padding: '20px 22px' }}>
+                    <div style={{ fontSize: '15px', fontWeight: 800, color: '#7dd3fc', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>Behavior intelligence available</div>
+                    <p style={{ fontSize: '12px', color: 'rgba(255,255,255,0.45)', marginTop: '4px', fontFamily: 'var(--font-inter, Inter, sans-serif)', lineHeight: 1.5 }}>
+                      Profit skill is locked, but this wallet still has enough evidence for a behavior read.
+                    </p>
+
+                    {cards.length > 0 && (
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '8px', marginTop: '16px' }}>
+                        {cards.map(c => (
+                          <div key={c.label} style={{ background: 'rgba(125,211,252,0.04)', border: '1px solid rgba(125,211,252,0.12)', borderRadius: '10px', padding: '10px 12px' }}>
+                            <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.28)', letterSpacing: '0.10em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '5px' }}>{c.label}</div>
+                            <div style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{c.value}</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {canSay.length > 0 && (
+                      <div style={{ marginTop: '16px' }}>
+                        <div style={{ fontSize: '10px', fontWeight: 700, color: 'rgba(125,211,252,0.65)', letterSpacing: '0.10em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '6px' }}>What ChainLens can say</div>
+                        <ul style={{ margin: 0, paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                          {canSay.map(s => <li key={s} style={{ fontSize: '12px', color: 'rgba(255,255,255,0.55)', fontFamily: 'var(--font-inter, Inter, sans-serif)', lineHeight: 1.5 }}>{s}</li>)}
+                        </ul>
+                      </div>
+                    )}
+
+                    {cannotProve.length > 0 && (
+                      <div style={{ marginTop: '14px' }}>
+                        <div style={{ fontSize: '10px', fontWeight: 700, color: 'rgba(251,191,36,0.65)', letterSpacing: '0.10em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '6px' }}>What ChainLens cannot prove yet</div>
+                        <ul style={{ margin: 0, paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                          {cannotProve.map(s => <li key={s} style={{ fontSize: '12px', color: 'rgba(255,255,255,0.45)', fontFamily: 'var(--font-inter, Inter, sans-serif)', lineHeight: 1.5 }}>{s}</li>)}
+                        </ul>
+                      </div>
+                    )}
+
+                    {recoverable && (
+                      <p style={{ fontSize: '10px', color: 'rgba(255,255,255,0.28)', marginTop: '16px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', lineHeight: 1.5 }}>
+                        Run deeper recovery only if you want ChainLens to search for missing prior buys.
+                      </p>
+                    )}
+                  </div>
+                )
+              })()}
+
               {/* Wallet Profile Dashboard V3 */}
               {(() => {
                 const pi = derivePortfolioIntelligence(result)
@@ -2591,8 +2686,8 @@ export default function WalletScannerPage() {
                             </div>
                           }
                           return <div>
-                            <div className="wpv3-value" style={{ fontSize: '22px', color: '#F08A8A' }}>PnL integrity check failed</div>
-                            <p className="wpv3-support" style={{ marginTop: '6px' }}>Trades were reconstructed, but profit stats are not public-grade yet.</p>
+                            <div className="wpv3-value" style={{ fontSize: '22px', color: '#F08A8A' }}>Realized PnL locked</div>
+                            <p className="wpv3-support" style={{ marginTop: '6px' }}>Trades were reconstructed, but profit stats are not public-grade yet (PnL integrity check failed).</p>
                             {integrityErrors.length > 0 && (
                               <ul style={{ marginTop: '8px', paddingLeft: '18px', color: '#9aa4b2' }}>
                                 {integrityErrors.slice(0, 3).map(e => <li key={e}>{reasonLabel(e)}</li>)}
