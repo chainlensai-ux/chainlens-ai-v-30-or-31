@@ -81,6 +81,19 @@ function primaryLiquidityModelLabel(result: ScanResult): string {
   return 'Model Open Check'
 }
 
+
+function isUniswapV3ConcentratedPartial(result: ScanResult): boolean {
+  const cpp = result.concentratedPositionProof
+  const primaryDexName = result.lpHistoryTimeline?.primaryDex || result.primaryDexName || result.lpControl?.primaryPoolDex || result.lpControl?.dexName || result.lpModelProof?.dexName || ''
+  const selectedPoolModel = result.lpControl?.displayLpModel === 'concentrated_liquidity' || result.lpHistoryTimeline?.poolModel === 'concentrated_liquidity' || cpp?.poolModel === 'uniswap_v3'
+  return Boolean(
+    selectedPoolModel
+    && /uniswap\s*v?3/i.test(primaryDexName)
+    && cpp?.positionManager
+    && cpp.status === 'partial'
+  )
+}
+
 function protocolPositionSubtext(kind: 'lock' | 'control' | 'movement'): string {
   if (kind === 'lock') return 'Standard ERC-20 LP-token lock/burn proof does not apply to this primary pool.'
   if (kind === 'control') return 'Liquidity control requires protocol-specific position checks.'
@@ -2427,6 +2440,7 @@ function getLpLockLabel(result: ScanResult): { label: string; color: string; bg:
     return { label: 'Locked', color: '#34d399', bg: 'rgba(52,211,153,0.07)', border: 'rgba(52,211,153,0.22)', description: `${lp?.reason ?? `Active LP lock proof found${result.lpLockProvider ? ` via ${result.lpLockProvider}` : ''}.`}${unlockStr}` }
   }
   if (status === 'partial') return { label: 'Partial Proof', color: '#fbbf24', bg: 'rgba(251,191,36,0.06)', border: 'rgba(251,191,36,0.20)', description: lp?.reason ?? 'LP proof is partially confirmed — some evidence is still missing.' }
+  if (isUniswapV3ConcentratedPartial(result)) return { label: 'Protocol / Concentrated Liquidity', color: '#c084fc', bg: 'rgba(192,132,252,0.07)', border: 'rgba(192,132,252,0.22)', description: 'Primary pool uses Uniswap V3 concentrated liquidity. Standard ERC-20 LP lock/burn proof does not apply.' }
   if (dm === 'concentrated_liquidity' || status === 'concentrated_liquidity') return { label: 'Protocol / Concentrated Liquidity', color: '#c084fc', bg: 'rgba(192,132,252,0.07)', border: 'rgba(192,132,252,0.22)', description: 'V3/V4-style pool — standard ERC-20 LP lock/burn proof does not apply.' }
   if (dm === 'protocol_or_gauge' || status === 'protocol' || lpMode === 'protocol') return { label: 'Protocol Managed', color: '#a78bfa', bg: 'rgba(167,139,250,0.07)', border: 'rgba(167,139,250,0.22)', description: lp?.reason ?? 'Protocol-managed liquidity pool. LP lock/burn proof does not apply in this model.' }
   if (status === 'no_pool' && result.noActivePools) return { label: 'No Pool Found', color: '#94a3b8', bg: 'rgba(148,163,184,0.07)', border: 'rgba(148,163,184,0.20)', description: 'No active liquidity pool detected on this chain. Token may be illiquid.' }
@@ -2466,6 +2480,10 @@ function getLpExitRiskInfo(result: ScanResult): { label: string; color: string; 
     const description = result.lpExitRiskReason
       ?? `A single wallet${controllerAddr ? ` (${shorten(controllerAddr)})` : ''} holds${shareStr ? ` ${shareStr} of` : ''} the dominant LP share and can remove liquidity from this pool.`
     return { label, color, description }
+  }
+
+  if (isUniswapV3ConcentratedPartial(result)) {
+    return { label: 'Monitor', color: '#a78bfa', description: 'Pool depth is strong, but concentrated position ownership is still unverified.' }
   }
 
   if (dm === 'concentrated_liquidity' || dm === 'protocol_or_gauge' || lpMode === 'protocol') {
@@ -2546,7 +2564,8 @@ function getLpRiskSummary(result: ScanResult): { goodSigns: string[]; riskSigns:
   else if (status === 'locked') goodSigns.push('LP tokens verified as locked in a locker contract.')
   // concentrated/protocol pools: informational note only — not a "good sign" since ERC-20 LP lock/burn proof was never checked
   const concentratedV3 = isConcentratedV3Position(result)
-  if (liqDepth != null && liqDepth > 500_000) goodSigns.push(`Deep liquidity — ${fmtLarge(liqDepth)} pool depth.`)
+  if (isUniswapV3ConcentratedPartial(result) && liqDepth != null && liqDepth > 500_000) goodSigns.push('Deep liquidity observed')
+  else if (liqDepth != null && liqDepth > 500_000) goodSigns.push(`Deep liquidity — ${fmtLarge(liqDepth)} pool depth.`)
   else if (liqDepth != null && liqDepth > 100_000) goodSigns.push(`Moderate liquidity — ${fmtLarge(liqDepth)} pool depth.`)
   if (concentratedV3) {
     if (lp?.poolAddressPresent || result.concentratedPositionProof?.poolAddress) goodSigns.push('Primary concentrated pool found')
@@ -2580,8 +2599,15 @@ function getLpRiskSummary(result: ScanResult): { goodSigns: string[]; riskSigns:
     missingProofs.push('Burn proof unconfirmed.')
   }
   if (concentratedV3) {
-    if (hasPartialConcentratedOwnershipGap(result)) riskSigns.push('No confirmed malicious LP-control signal. Ownership verification remains partial.')
-    missingProofs.push(...concentratedOwnerGapLabels(result))
+    if (hasPartialConcentratedOwnershipGap(result)) {
+      riskSigns.push('Top liquidity owner not verified')
+      riskSigns.push('Active liquidity positions not indexed')
+      riskSigns.push('Position liquidity share not available')
+      riskSigns.push('Owner sample unavailable from current evidence')
+    }
+    missingProofs.push('Full concentrated position ownership not verified')
+    missingProofs.push('Position count not indexed')
+    missingProofs.push('Position liquidity share unavailable')
   }
   if (!lockBurnApplicable && dm !== 'concentrated_liquidity' && dm !== 'protocol_or_gauge' && lpMode === 'unknown' && !result.noActivePools) missingProofs.push('LP token model could not be classified.')
   if (!lp?.poolAddressPresent && !result.noActivePools && liqDepth == null) missingProofs.push('Pool address not yet indexed.')
@@ -2598,7 +2624,7 @@ function getLpEliteSummary(result: ScanResult): { chips: LpEliteChip[]; verdict:
   const ht = result.lpHistoryTimeline
 
   const protocolPosition = isProtocolPositionModel(result)
-  const controllerValue = protocolPosition ? (ci?.controllerLabel ?? (hasResolvedConcentratedManager(result) ? 'Position proof attempted — partial' : 'Position check unavailable')) : cleanStatusLabel(ci?.status)
+  const controllerValue = isUniswapV3ConcentratedPartial(result) ? 'Position proof attempted — partial' : protocolPosition ? (ci?.controllerLabel ?? (hasResolvedConcentratedManager(result) ? 'Position proof attempted — partial' : 'Position check unavailable')) : cleanStatusLabel(ci?.status)
   const controllerColor = (ci?.status === 'locked' || ci?.status === 'burned' || ci?.status === 'protected') ? '#34d399'
     : (ci?.status === 'protocol_controlled' || ci?.status === 'concentrated_liquidity' || ci?.status === 'no_pool') ? '#94a3b8'
     : '#fbbf24'
@@ -5064,7 +5090,8 @@ export default function TerminalTokenScanner() {
                       : lpModeVal === 'lp_token' ? (lpProofConfirmed ? '#34d399' : '#60a5fa')
                       : hasPool ? '#fbbf24'
                       : '#94a3b8'
-                    const modelDesc = isProtocolPositionModel(result) ? protocolPositionSubtext('lock')
+                    const modelDesc = isUniswapV3ConcentratedPartial(result) ? 'Position manager resolved. Pool active/liquidity confirmed.'
+                      : isProtocolPositionModel(result) ? protocolPositionSubtext('lock')
                       : effectiveDm === 'erc20_lp_token' ? (lpProofConfirmed ? 'Standard ERC-20 LP token — lock or burn proof confirmed.' : 'Standard ERC-20 LP token detected. Lock or burn proof has not been verified.')
                       : effectiveDm === 'no_pool' ? 'No active liquidity pool detected for this token.'
                       : lpModeVal === 'lp_token' ? (lpProofConfirmed ? 'Standard ERC-20 LP token — lock or burn proof confirmed.' : 'Standard ERC-20 LP token detected. Lock or burn proof has not been verified.')
@@ -5109,11 +5136,13 @@ export default function TerminalTokenScanner() {
                     const hasPool = hasLiquidity || result.lpControl?.poolAddressPresent
                     const notApplicable = dm3 === 'concentrated_liquidity' || dm3 === 'protocol_or_gauge' || result.lpControl?.proofStatus === 'not_applicable'
                     const protocolPosition = isProtocolPositionModel(result)
+                    const isV3Partial = isUniswapV3ConcentratedPartial(result)
                     // Migration risk comes from real migration evidence (lpMigrationProof / riskEngine.lpIntelligence),
                     // never inferred from pool count alone.
                     const migProofStatus = result.lpMigrationProof?.status
                     const migEngineRisk = result.riskEngine?.lpIntelligence?.migrationRisk
-                    const migrationRisk = (migProofStatus === 'low' || migEngineRisk === 'low') ? 'Low'
+                    const migrationRisk = isUniswapV3ConcentratedPartial(result) ? 'Low'
+                      : (migProofStatus === 'low' || migEngineRisk === 'low') ? 'Low'
                       : (migProofStatus === 'flagged' || migEngineRisk === 'high') ? 'Elevated'
                       : (migProofStatus === 'watch' || migEngineRisk === 'medium') ? 'Monitor'
                       : (migProofStatus === 'unknown' || migEngineRisk === 'inferred') ? 'Open Check'
@@ -5152,9 +5181,11 @@ export default function TerminalTokenScanner() {
                     )
                     const controlProof = result.lpControl?.status === 'team_controlled' || result.lpControl?.proofStatus === 'verified'
                       ? 'Confirmed'
+                      : isV3Partial ? 'Owner verification pending'
                       : protocolPosition ? (controlProofFromAttempt ?? (hasResolvedConcentratedManager(result) ? 'Position manager resolved — owner verification pending' : 'Position check unavailable')) : 'Open Check'
                     const lockBurnProof = result.lpControl?.lockStatus === 'locked' || result.lpControl?.burnStatus === 'burned'
                       ? 'Confirmed'
+                      : isV3Partial ? 'Not Applicable — concentrated position model'
                       : notApplicable ? 'Not Applicable — standard ERC-20 LP-token lock/burn proof does not apply.' : 'Open Check'
                     const liquidityDepth = result.liquidityDepthRisk === 'low'
                       ? 'Deep'
@@ -5163,7 +5194,8 @@ export default function TerminalTokenScanner() {
                       : (result.liquidity ?? 0) > 500_000 ? 'Deep'
                       : (result.liquidity ?? 0) > 50_000 ? 'Moderate'
                       : hasPool ? 'Thin' : 'Open Check'
-                    const exitRisk = result.lpExitRisk === 'low' ? 'Low'
+                    const exitRisk = isV3Partial ? (result.lpExitRisk === 'watch' ? 'Watch' : 'Monitor')
+                      : result.lpExitRisk === 'low' ? 'Low'
                       : result.lpExitRisk === 'watch' || result.lpExitRisk === 'monitor' ? 'Watch'
                       : result.lpExitRisk === 'medium' ? 'Monitor'
                       : result.lpExitRisk === 'high' ? 'High' : 'Open Check'
@@ -5186,8 +5218,8 @@ export default function TerminalTokenScanner() {
                       : null
                     const rows: { label: string; value: string; color?: string; note?: string }[] = [
                       { label: 'Primary Liquidity', value: primaryLiquidityModelLabel(result), color: protocolPosition ? '#c084fc' : undefined },
-                      { label: 'LP Control', value: protocolPosition ? (lpControlFromAttempt ?? (hasResolvedConcentratedManager(result) ? 'Position proof attempted — partial' : 'Position check unavailable')) : lpControlDisplay, color: lpControlDisplay === 'Wallet Controlled' ? '#fbbf24' : undefined, note: protocolPosition ? (hasResolvedConcentratedManager(result) ? 'Position manager resolved and pool active/liquidity confirmed. Full owner verification is still unavailable.' : protocolPositionSubtext('control')) : undefined },
-                      { label: 'Control Proof', value: controlProof, color: controlProof === 'Confirmed' ? '#34d399' : protocolPosition ? '#c084fc' : undefined, note: protocolPosition ? (hasResolvedConcentratedManager(result) ? 'The Uniswap V3 position manager was resolved and the pool is active, but ChainLens could not verify the largest liquidity owner from current evidence.' : protocolPositionSubtext('control')) : undefined },
+                      { label: 'LP Control', value: isV3Partial ? 'Position proof attempted — partial' : protocolPosition ? (lpControlFromAttempt ?? (hasResolvedConcentratedManager(result) ? 'Position proof attempted — partial' : 'Position check unavailable')) : lpControlDisplay, color: lpControlDisplay === 'Wallet Controlled' ? '#fbbf24' : undefined, note: isV3Partial ? 'Position manager resolved and pool liquidity confirmed.' : protocolPosition ? (hasResolvedConcentratedManager(result) ? 'Position manager resolved and pool active/liquidity confirmed. Full owner verification is still unavailable.' : protocolPositionSubtext('control')) : undefined },
+                      { label: 'Control Proof', value: controlProof, color: controlProof === 'Confirmed' ? '#34d399' : protocolPosition ? '#c084fc' : undefined, note: isV3Partial ? 'Top liquidity owner, active position count, and position share are not verified yet.' : protocolPosition ? (hasResolvedConcentratedManager(result) ? 'The Uniswap V3 position manager was resolved and the pool is active, but ChainLens could not verify the largest liquidity owner from current evidence.' : protocolPositionSubtext('control')) : undefined },
                       { label: 'Lock/Burn Proof', value: lockBurnProof, color: lockBurnProof === 'Confirmed' ? '#34d399' : lockBurnProof === 'Open Check' ? '#fbbf24' : protocolPosition ? '#c084fc' : undefined, note: protocolPosition ? protocolPositionSubtext('lock') : undefined },
                       ...(protocolPosition && cpp ? [{
                         label: 'Position Ownership',
@@ -5201,7 +5233,7 @@ export default function TerminalTokenScanner() {
                         note: cpp.status === 'verified'
                           ? `Top position owner: ${cpp.topPositionOwner ?? 'unknown'} (${cpp.topPositionOwnerType ?? 'unknown'}) · Top share: ${cpp.topPositionSharePercent != null ? `${cpp.topPositionSharePercent.toFixed(2)}%` : 'unknown'} · Controller risk: ${cpp.controllerRisk ?? 'unknown'} · Confidence: ${cpp.confidence ?? 'low'}`
                           : (() => {
-                            if (hasResolvedConcentratedManager(result) && cpp.status === 'partial') return 'No bounded position-candidate source is available yet for this pool.'
+                            if (hasResolvedConcentratedManager(result) && cpp.status === 'partial') return cpp.samplingReason ?? 'No bounded position-candidate source is available yet for this pool.'
                             const proofLines = [
                               cpp.positionManager ? 'Position manager resolved' : null,
                               cpp.status === 'partial' && cpp.positionManager ? 'Pool active/liquidity confirmed' : null,
@@ -5268,7 +5300,7 @@ export default function TerminalTokenScanner() {
                           ['Controller', result.lpControllerIntel.controller ?? result.lpControllerIntel.controllerLabel ?? 'Open check'],
                           ['Controller Type', isProtocolPositionModel(result) ? 'Protocol Position Model' : cleanStatusLabel(result.lpControllerIntel.controllerType)],
                           ['Controller Share', isProtocolPositionModel(result) ? (result.concentratedPositionProof?.status === 'not_supported' ? 'Position proof attempted — not supported' : 'Position proof attempted — owner unresolved') : result.lpControllerIntel.controllerSharePercent != null ? `${result.lpControllerIntel.controllerSharePercent.toFixed(2)}%` : 'Open Check'],
-                          ['Control Proof', isProtocolPositionModel(result) ? (result.lpControllerIntel.controlProofLabel ?? (hasResolvedConcentratedManager(result) ? 'Position manager resolved — owner verification pending' : 'Position check unavailable')) : cleanStatusLabel(result.lpControllerIntel.controlProof)],
+                          ['Control Proof', isUniswapV3ConcentratedPartial(result) ? (result.lpControllerIntel.controlProofLabel ?? 'Owner verification pending') : isProtocolPositionModel(result) ? (result.lpControllerIntel.controlProofLabel ?? (hasResolvedConcentratedManager(result) ? 'Position manager resolved — owner verification pending' : 'Position check unavailable')) : cleanStatusLabel(result.lpControllerIntel.controlProof)],
                           ['Lock/Burn Proof', isProtocolPositionModel(result) ? 'Not Applicable — standard ERC-20 LP-token lock/burn proof does not apply.' : cleanStatusLabel(result.lpControllerIntel.lockBurnProof)],
                           ['Exit Risk', cleanStatusLabel(result.lpControllerIntel.exitRisk)],
                           ['Liquidity Depth', cleanStatusLabel(result.lpControllerIntel.liquidityDepth)],
@@ -5460,7 +5492,7 @@ export default function TerminalTokenScanner() {
                           ['Evidence Model', isProtocolPositionModel(result) ? protocolPositionSubtext('movement') : 'ERC-20 LP-token transfers'],
                           ['Transfer Count', isProtocolPositionModel(result) ? 'Protocol-specific' : result.lpMovementWatch.recentTransferCount == null ? 'Open Check' : String(result.lpMovementWatch.recentTransferCount)],
                           ['Last Movement', isProtocolPositionModel(result) ? 'Position movement required' : result.lpMovementWatch.lastMovementAt ? new Date(result.lpMovementWatch.lastMovementAt).toLocaleString() : 'Open Check'],
-                          ['Controller', isProtocolPositionModel(result) ? (hasResolvedConcentratedManager(result) ? 'Position manager resolved — owner verification pending' : 'Position check unavailable') : result.lpMovementWatch.controller ?? cleanStatusLabel(result.lpMovementWatch.controllerType)],
+                          ['Controller', isUniswapV3ConcentratedPartial(result) ? 'Position manager resolved — owner verification pending' : isProtocolPositionModel(result) ? (hasResolvedConcentratedManager(result) ? 'Position manager resolved — owner verification pending' : 'Position check unavailable') : result.lpMovementWatch.controller ?? cleanStatusLabel(result.lpMovementWatch.controllerType)],
                         ] as Array<[string, string]>).map(([label, value]) => (
                           <div key={label} style={{ padding: '8px 9px', borderRadius: '10px', background: 'rgba(2,6,23,0.42)', border: '1px solid rgba(148,163,184,0.10)', minWidth: 0 }}>
                             <div style={{ fontSize: '9px', color: '#64748b', letterSpacing: '.10em', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '4px' }}>{label}</div>
