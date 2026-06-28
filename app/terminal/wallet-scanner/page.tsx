@@ -369,7 +369,7 @@ type WalletResult = {
     blockedByCostGuard?: boolean
     costGuardReason?: string
   }
-  walletNoPnlReason?: 'non_trader_address_type' | 'no_wallet_initiated_transactions' | 'no_swap_candidates' | 'transfer_or_airdrop_only_activity' | 'missing_counterparty_direction_data' | 'budget_capped_before_recovery' | 'historical_recovery_needed' | 'unsupported_router_or_unparsed_receipts' | 'relayed_trader_needs_deeper_reconstruction' | 'provider_summary_available_fifo_missing'
+  walletNoPnlReason?: 'non_trader_address_type' | 'no_wallet_initiated_transactions' | 'no_swap_candidates' | 'transfer_or_airdrop_only_activity' | 'missing_counterparty_direction_data' | 'budget_capped_before_recovery' | 'historical_recovery_needed' | 'unsupported_router_or_unparsed_receipts' | 'relayed_trader_needs_deeper_reconstruction' | 'provider_summary_available_fifo_missing' | 'relayed_trader_provider_summary_available'
   walletNoPnlReasonLabel?: string
   walletNoPnlNextAction?: string
   walletNoPnlCanRecover?: boolean

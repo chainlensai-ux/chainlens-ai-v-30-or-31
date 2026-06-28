@@ -234,12 +234,22 @@ function attachWalletDeepScanStaging(payload: any, opts: { mode: 'standard' | 'd
   // already reached its final verdict (PnL not applicable) without needing the heavy recovery
   // modules — load state must report 'final' with nothing pending instead of looking stuck mid-scan.
   const nonTraderEarlyExit = payload.walletNoPnlReason === 'non_trader_address_type'
+  // CLEAN-PROVIDER-SUMMARY-STATE-1: a wallet with a usable provider PnL summary has already
+  // reached its final verdict (provider PnL available, FIFO proof open check) — it must not be
+  // left looking stuck mid-scan with heavyModulesPending populated, the same way non-trader
+  // wallets are not. Unlike the non-trader case, pnlReady is true here: provider PnL IS available.
+  const providerSummaryFinal = payload.walletNoPnlReason === 'provider_summary_available_fifo_missing' || payload.walletNoPnlReason === 'relayed_trader_provider_summary_available'
   let finalPnlReady = pnlReady
   let finalRecoveryReady = recoveryReady
   let finalHeavyModulesPending = heavyModulesPending
   if (nonTraderEarlyExit) {
     stage = 'final'
     finalPnlReady = false
+    finalRecoveryReady = true
+    finalHeavyModulesPending = []
+  } else if (providerSummaryFinal) {
+    stage = 'final'
+    finalPnlReady = true
     finalRecoveryReady = true
     finalHeavyModulesPending = []
   }
@@ -256,6 +266,7 @@ function attachWalletDeepScanStaging(payload: any, opts: { mode: 'standard' | 'd
     partialResponseSafe: portfolioReady && holdingsReady,
     heavyModulesPending: finalHeavyModulesPending,
     ...(nonTraderEarlyExit ? { skippedReason: 'non_trader_address_type: trade reconstruction and historical recovery were skipped because this address does not show trader behavior.' } : {}),
+    ...(providerSummaryFinal ? { skippedReason: 'provider_summary_available_fifo_missing' } : {}),
     lastUpdatedAt: new Date().toISOString(),
   }
   const timing = payload.walletDeepScanTiming ?? {}
@@ -1440,6 +1451,21 @@ export async function POST(req: Request) {
       snapshot.walletPersonality.profitSkillStatus = 'not_applicable'
       snapshot.walletPersonality.summary = 'Trader PnL not applicable — this wallet looks like a holder/distributor/treasury address, not an active trading wallet.'
       snapshot.walletPersonality.limitations = ['Trader PnL not applicable for this address type.']
+    } else if (
+      ((snapshot as any).walletNoPnlReason === 'provider_summary_available_fifo_missing' || (snapshot as any).walletNoPnlReason === 'relayed_trader_provider_summary_available')
+    ) {
+      // CLEAN-PROVIDER-SUMMARY-STATE-1: computeWalletPersonality/computeBotScore above run after
+      // walletSnapshot.ts already patched walletPersonality/walletBotScore for the provider-PnL
+      // fallback, overwriting that patch — re-apply the same provider-summary copy here so it
+      // survives the route-level recompute.
+      if (snapshot.walletPersonality) {
+        ;(snapshot.walletPersonality as any).profitSkillStatus = 'provider_summary_available'
+        snapshot.walletPersonality.summary = 'Provider PnL is available, but trading personality is locked until verified ChainLens FIFO lots exist.'
+      }
+      if (snapshot.walletBotScore) {
+        ;(snapshot.walletBotScore as any).profitSkillStatus = 'provider_summary_available'
+        snapshot.walletBotScore.reason = 'Provider-level PnL is excluded from bot scoring until verified ChainLens FIFO behavior lots exist.'
+      }
     }
     // Windowed PnL is public-facing, so it must exclude synthetic/cost-basis-missing lots —
     // a synthetic break-even lot showing $0 PnL would otherwise look like a verified real result.

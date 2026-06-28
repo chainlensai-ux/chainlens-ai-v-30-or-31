@@ -855,7 +855,7 @@ export type WalletSnapshot = {
   // either because the address itself isn't a trader (non_trader_address_type) or because a
   // normal_wallet's real activity didn't produce closed FIFO lots for one of several precise
   // reasons. Never set when public PnL is actually available.
-  walletNoPnlReason?: 'non_trader_address_type' | 'no_wallet_initiated_transactions' | 'no_swap_candidates' | 'transfer_or_airdrop_only_activity' | 'missing_counterparty_direction_data' | 'budget_capped_before_recovery' | 'historical_recovery_needed' | 'unsupported_router_or_unparsed_receipts' | 'relayed_trader_needs_deeper_reconstruction' | 'provider_summary_available_fifo_missing'
+  walletNoPnlReason?: 'non_trader_address_type' | 'no_wallet_initiated_transactions' | 'no_swap_candidates' | 'transfer_or_airdrop_only_activity' | 'missing_counterparty_direction_data' | 'budget_capped_before_recovery' | 'historical_recovery_needed' | 'unsupported_router_or_unparsed_receipts' | 'relayed_trader_needs_deeper_reconstruction' | 'provider_summary_available_fifo_missing' | 'relayed_trader_provider_summary_available'
   walletNoPnlReasonLabel?: string
   walletNoPnlNextAction?: string
   walletNoPnlCanRecover?: boolean
@@ -16560,6 +16560,26 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     zerionInFlightDeduped: _zerionCacheDebug.inFlightDeduped,
     zerionCallsSavedByCache: _zerionCacheDebug.callsSavedByCache,
     costByPurpose: _costByPurpose,
+    // CLEAN-PROVIDER-SUMMARY-STATE-1 / API-AUDIT-CLEANUP-1: per-bucket endpoint detail so the
+    // costByPurpose totals can be audited against the exact calls that produced them (e.g.
+    // confirming historical_by_addresses_v2 never lands under historical_recovery).
+    costByPurposeDetail: {
+      holdings: _liveLog.filter(e => _purposeOfEntry(e) === 'holdings').map(e => `${e.provider}:${e.endpoint}`),
+      activity: _liveLog.filter(e => _purposeOfEntry(e) === 'activity').map(e => `${e.provider}:${e.endpoint}`),
+      pricing: _liveLog.filter(e => _purposeOfEntry(e) === 'pricing').map(e => `${e.provider}:${e.endpoint}`),
+      historical_recovery: _liveLog.filter(e => _purposeOfEntry(e) === 'historical_recovery').map(e => `${e.provider}:${e.endpoint}`),
+      portfolio: _liveLog.filter(e => _purposeOfEntry(e) === 'portfolio').map(e => `${e.provider}:${e.endpoint}`),
+      provider_pnl_summary: _liveLog.filter(e => _purposeOfEntry(e) === 'provider_pnl_summary').map(e => `${e.provider}:${e.endpoint}`),
+      other: _liveLog.filter(e => _purposeOfEntry(e) === 'other').map(e => `${e.provider}:${e.endpoint}`),
+    },
+    auditNotes: [
+      'historical_by_addresses_v2 (GoldRush historical price lookups) is bucketed under pricing, not historical_recovery, since it supplies price-at-time evidence rather than recovering new trade legs.',
+      'log_events_by_address is the only goldrush endpoint bucketed under historical_recovery.',
+    ],
+    callsPrevented: {
+      zerionCallsSavedByCache: _zerionCacheDebug.callsSavedByCache,
+      providerPnlSkippedChains: _providerPnlSkippedChains as string[],
+    },
     duplicates: _dupEntries.map(e => `${e.provider}:${e.endpoint}:${e.dupKey}`),
     warnings: _apiWarnings,
     totalCredits: _apiTotalCredits,
@@ -18355,11 +18375,19 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
 
         if (_usedAsFallback && _s) {
           // Suppress the non-trader/no-PnL verdict — the provider proves this is a real trader even
-          // though our own FIFO reconstruction missed the routed/provider trades.
-          ;(snapshot as any).walletNoPnlReason = 'provider_summary_available_fifo_missing'
+          // though our own FIFO reconstruction missed the routed/provider trades. When the relayed-
+          // trader signal also fired, surface that more specific reason instead of the generic one.
+          const _providerSummaryNoPnlReason = _possibleRelayedTrader ? 'relayed_trader_provider_summary_available' : 'provider_summary_available_fifo_missing'
+          ;(snapshot as any).walletNoPnlReason = _providerSummaryNoPnlReason
           ;(snapshot as any).walletNoPnlReasonLabel = 'Provider PnL available — FIFO reconstruction still open check'
           ;(snapshot as any).walletNoPnlNextAction = 'Run a deeper historical scan to reconstruct verified FIFO lots.'
           ;(snapshot as any).walletNoPnlCanRecover = true
+          // CLEAN-PROVIDER-SUMMARY-STATE-1: walletRecoveryRecommendation is computed earlier, before
+          // this fallback runs, from the address-type gate only — never leave it pointing at
+          // non_trader_address_type once the provider summary has proven this is a real trader.
+          if (snapshot.walletRecoveryRecommendation?.reason === 'non_trader_address_type') {
+            snapshot.walletRecoveryRecommendation = { ...snapshot.walletRecoveryRecommendation, reason: _providerSummaryNoPnlReason }
+          }
           ;(snapshot as any).publicPnlDisplayLabel = 'Provider PnL available'
           ;(snapshot as any).publicPnlDisplayReason = 'Provider trade summary available; FIFO reconstruction still open check.'
           ;(snapshot as any).publicPnlStatus = 'open_check'
@@ -18387,7 +18415,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
           if (snapshot.walletTradeStatsSummary) {
             const ts = snapshot.walletTradeStatsSummary as any
             ts.economicSignificance = 'open_check'
-            ts.economicSignificanceReason = 'provider_summary_available_fifo_missing'
+            ts.economicSignificanceReason = _providerSummaryNoPnlReason
             ts.publicPnlDisplayLabel = 'Provider PnL available'
             ts.publicPnlDisplayReason = 'Provider trade summary available; FIFO reconstruction still open check.'
             ts.missing = [...(ts.missing ?? []).filter((m: string) => m !== 'non_trader_address_type'), 'fifo_proof_open_check']
@@ -18720,6 +18748,18 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   }
 
   snapshot.walletProfile = computeWalletProfile(snapshot)
+
+  // CLEAN-PROVIDER-SUMMARY-STATE-1: computeWalletProfile only special-cases the non_trader/
+  // integrity-invalid copy paths — it has no awareness of the provider-PnL-summary fallback, so its
+  // generic "locked until more public-grade trades" copy stays stale once provider PnL is proven
+  // available. Patch the profile copy in place; never touches score/grade/followability gating.
+  if ((snapshot as any).walletNoPnlReason === 'provider_summary_available_fifo_missing' || (snapshot as any).walletNoPnlReason === 'relayed_trader_provider_summary_available') {
+    if (snapshot.walletProfile) {
+      snapshot.walletProfile.nextAction = 'Provider PnL is available. Profit skill, win rate, and wallet score remain locked until ChainLens reconstructs verified FIFO lots.'
+      snapshot.walletProfile.weaknesses = snapshot.walletProfile.weaknesses.filter(w => !/pnl integrity failed/i.test(w))
+      snapshot.walletProfile.weaknesses.push('Provider PnL is available, but FIFO proof is still open check — profit skill, win rate, and wallet score stay locked.')
+    }
+  }
 
   const debugFacts = snapshot.walletFacts
   const debugSummary = debugFacts?.summary
