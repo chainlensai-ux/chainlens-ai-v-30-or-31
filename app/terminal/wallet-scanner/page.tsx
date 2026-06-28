@@ -2340,9 +2340,11 @@ export default function WalletScannerPage() {
 
                 return (
                   <div style={{ background: '#080c14', border: '1px solid rgba(125,211,252,0.18)', borderRadius: '18px', padding: '20px 22px' }}>
-                    <div style={{ fontSize: '15px', fontWeight: 800, color: '#7dd3fc', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>Behavior intelligence available</div>
+                    <div style={{ fontSize: '15px', fontWeight: 800, color: '#7dd3fc', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{result.walletNoPnlReason === 'non_trader_address_type' ? 'Portfolio / Holder Read' : 'Behavior intelligence available'}</div>
                     <p style={{ fontSize: '12px', color: 'rgba(255,255,255,0.45)', marginTop: '4px', fontFamily: 'var(--font-inter, Inter, sans-serif)', lineHeight: 1.5 }}>
-                      Profit skill is locked, but this wallet still has enough evidence for a behavior read.
+                      {result.walletNoPnlReason === 'non_trader_address_type'
+                        ? 'Trader PnL not applicable — this wallet looks like a holder/distributor/treasury address, not an active trading wallet. Portfolio and flow read are available.'
+                        : 'Profit skill is locked, but this wallet still has enough evidence for a behavior read.'}
                     </p>
 
                     {cards.length > 0 && (
@@ -3631,7 +3633,7 @@ export default function WalletScannerPage() {
                             <p className="wpv3-support" style={{ marginBottom: '8px', color: '#fbbf24' }}>Performance classification remains locked until enough verified closed lots exist.</p>
                           )}
                           {wp.basis === 'behavior_only' && wp.profitSkillStatus !== 'unlocked' && (
-                            <p className="wpv3-support" style={{ marginBottom: '8px', color: '#fbbf24' }}>Behavior-only read. Profit skill locked because {wp.profitSkillStatus === 'integrity_invalid_not_proven' ? 'PnL integrity failed' : 'public PnL sample is too small or partial'}.</p>
+                            <p className="wpv3-support" style={{ marginBottom: '8px', color: '#fbbf24' }}>{result.walletNoPnlReason === 'non_trader_address_type' ? 'Trader PnL not applicable for this address type.' : `Behavior-only read. Profit skill locked because ${wp.profitSkillStatus === 'integrity_invalid_not_proven' ? 'PnL integrity failed' : 'public PnL sample is too small or partial'}.`}</p>
                           )}
                           {scoreRows.length > 0 && (
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
@@ -3661,7 +3663,7 @@ export default function WalletScannerPage() {
                               </div>
                               <span style={{ display: 'inline-block', fontSize: '10px', fontWeight: 700, letterSpacing: '0.08em', color: botColor, border: `1px solid ${botColor}33`, background: `${botColor}14`, borderRadius: '999px', padding: '3px 9px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', textTransform: 'uppercase' }}>{bot.classification}</span>
                               {bot.basis === 'behavior_only' && bot.profitSkillStatus === 'not_proven' && (
-                                <p className="wpv3-support" style={{ marginTop: '8px', color: '#fbbf24' }}>Bot score is behavior-only. Profit skill is locked because PnL integrity failed.</p>
+                                <p className="wpv3-support" style={{ marginTop: '8px', color: '#fbbf24' }}>{result.walletNoPnlReason === 'non_trader_address_type' ? 'Bot score is behavior-only. Trader PnL not applicable for this address type.' : 'Bot score is behavior-only. Profit skill is locked because PnL integrity failed.'}</p>
                               )}
                             </>
                           ) : botDisplayClassification ? (

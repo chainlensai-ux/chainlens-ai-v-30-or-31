@@ -424,7 +424,7 @@ export type WalletSnapshot = {
   // invalid, the headline says "Profit skill locked" — the technical integrity reason is kept out of
   // the hero and pushed into integrityErrors/reason instead.
   walletLockedPnlRead?: {
-    status: 'ok' | 'open_check_integrity_invalid' | 'locked_small_sample' | 'locked_integrity' | 'locked_insufficient_evidence'
+    status: 'ok' | 'open_check_integrity_invalid' | 'locked_small_sample' | 'locked_integrity' | 'locked_insufficient_evidence' | 'open_check_non_trader'
     headline: string
     reason: string
     behaviorLots: number
@@ -14173,6 +14173,47 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _syntheticRecoveryTierEligible = true
   const _syntheticLotsBeforeHistorical = _syntheticClosedLots.length
 
+  // NON-TRADER-EARLY-EXIT-1: a confidently non-trader address (treasury/distributor/token-contract
+  // -like — zero wallet-initiated txs, zero sell legs, zero closed lots, no swap candidates) gets
+  // none of the recovery/pricing modules below — they exist only to recover trader PnL evidence,
+  // and this address has none to recover. walletFacts.sourceClassification isn't built yet here
+  // (see WALLET-ADDRESS-TYPE-GATE-1 below), so the same heuristic is approximated from the
+  // swap-detection signals already computed above; this is intentionally a strict (low-false-
+  // positive) trigger — it never fires for a wallet with any wallet-initiated/outbound activity.
+  const _earlyAddressIsHeldTokenContract = holdings.some(h => (h.contract ?? '').toLowerCase() === addrNorm.toLowerCase())
+  const _earlyWalletInitiatedTxCount = _swapDetectionDebug?.walletInitiatedTxCount ?? 0
+  const _earlyInboundCount = _swapDetectionDebug?.directionCounts?.inbound ?? 0
+  const _earlyOutboundCount = _swapDetectionDebug?.directionCounts?.outbound ?? 0
+  const _earlyClaimOrAirdropEvents = _swapDetectionDebug?.airdropCandidateEvents ?? 0
+  const _earlyTotalClassifiedEvents =
+    _earlyClaimOrAirdropEvents +
+    (_swapDetectionDebug?.transferEvents ?? 0) +
+    (walletSwapSummary.swapCandidateEvents ?? 0) +
+    (_swapDetectionDebug?.bridgeCandidateEvents ?? 0) +
+    (_swapDetectionDebug?.unknownEvents ?? 0)
+  const _earlyNonTraderAddressType = Boolean(
+    _earlyAddressIsHeldTokenContract ||
+    (_earlyWalletInitiatedTxCount === 0 && _earlyClaimOrAirdropEvents > 0 && _earlyClaimOrAirdropEvents >= _earlyTotalClassifiedEvents * 0.5) ||
+    (_earlyWalletInitiatedTxCount === 0 && _earlyOutboundCount > 0 && _earlyOutboundCount >= _earlyInboundCount * 3) ||
+    (_earlyWalletInitiatedTxCount === 0 && (walletSwapSummary.swapCandidateEvents ?? 0) === 0 && _earlyTotalClassifiedEvents > 0)
+  )
+  const _nonTraderEarlyExit = Boolean(
+    _earlyNonTraderAddressType &&
+    _earlyWalletInitiatedTxCount === 0 &&
+    _earlyOutboundCount === 0 &&
+    _closedLots.length === 0 &&
+    (walletSwapSummary.swapCandidateEvents ?? 0) === 0
+  )
+  const _nonTraderEarlyExitReason = !_nonTraderEarlyExit ? null
+    : _earlyAddressIsHeldTokenContract ? 'token_contract_like'
+    : _earlyClaimOrAirdropEvents > 0 ? 'treasury_or_distributor_like_claim_airdrop'
+    : 'treasury_or_distributor_like_no_outbound'
+  const _modulesSkippedForNonTrader: string[] = []
+  const _skipModuleForNonTrader = (moduleName: string) => {
+    if (_nonTraderEarlyExit && !_modulesSkippedForNonTrader.includes(moduleName)) _modulesSkippedForNonTrader.push(moduleName)
+  }
+  const _creditsPreventedByNonTraderExit = _nonTraderEarlyExit ? _sharedHistoricalBudgetRemaining() : 0
+
   // COST-GUARD-FIX-1: if every closed lot found so far is synthetic (no real-backed cost basis at
   // all), missing-cost-basis is already proven for this scan — broad multi-page historical lookups
   // chasing those same synthetic lots burn credits without changing the public PnL outcome (which
@@ -14294,6 +14335,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   )
   if (_syntheticLotRecoveryTrigger) _eligibilityReasons.push('synthetic_fifo_lots_need_real_buys')
   const _historicalEligibleCoreCriteria = Boolean(
+    !_nonTraderEarlyExit &&
     (historicalCoverage || _syntheticLotRecoveryTrigger) &&
     activityRequested &&
     (_adminOverrideUsed || totalValue >= 100) &&
@@ -14303,6 +14345,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     _pagesAllowed > 0 &&
     GOLDRUSH_KEY
   )
+  if (_nonTraderEarlyExit) _skipModuleForNonTrader('historical_coverage')
   const _historicalEligible = _historicalEligibleCoreCriteria && _pagesAllowedForBroadPass > 0
   // RECOVERY-REC-FIX-1: when every real eligibility criterion is met but the cost-basis guard
   // zeroed _pagesAllowedForBroadPass (see above), eligible must not read false next to an
@@ -14519,14 +14562,17 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // WALLET-ADDRESS-TYPE-GATE-1, which never reports walletNoPnlReason for them regardless of
   // whatever this recovery attempt found.
   const _noSwapCandidateRecoveryEligible =
+    !_nonTraderEarlyExit &&
     _syntheticClosedLots.length === 0 &&
     _realBackedClosedLotsCountForV2 === 0 &&
     walletSwapSummary.swapCandidateEvents === 0 &&
     _rankedHistoricalTargets.length > 0
   const _pnlRecoveryV2BaseEligible =
+    !_nonTraderEarlyExit &&
     _baseReconChainOk &&
     Boolean(baseRpcUrl) &&
     ((_syntheticClosedLots.length > 0 && _realBackedClosedLotsCountForV2 === 0) || _noSwapCandidateRecoveryEligible)
+  if (_nonTraderEarlyExit) { _skipModuleForNonTrader('acquisition_history_recovery_v2'); }
   const _pnlRecoveryV2TargetTokens = _syntheticLotTokenTargets.length > 0
     ? _syntheticLotTokenTargets.slice(0, 2)
     : _rankedHistoricalTargets.slice(0, 2).map(t => t.contract)
@@ -14590,12 +14636,14 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     const c = normalizeChain(chain)
     return c === 'base' || c === 'eth' || c === 'polygon' || c === 'bsc' || c === 'arbitrum' || c === 'optimism' || c === 'avalanche' || c === 'fantom' || c === 'cronos' || c === 'gnosis' ? c as MoralisChain : null
   }
-  const _moralisHistoricalSkipReason = !_syntheticLotsDetected ? 'no_synthetic_lots'
+  const _moralisHistoricalSkipReason = _nonTraderEarlyExit ? 'non_trader_early_exit'
+    : !_syntheticLotsDetected ? 'no_synthetic_lots'
     : _earlyRealBackedClosedLots >= 10 ? 'recovery_attempted_no_public_grade_lots'
     : _moralisHistoricalTargetTokens.length === 0 ? 'no_synthetic_targets'
     : !Boolean(process.env.MORALIS_API_KEY) ? 'moralis_not_configured'
     : _sharedHistoricalBudgetRemaining() <= 0 ? 'budget_exhausted'
     : null
+  if (_nonTraderEarlyExit) _skipModuleForNonTrader('moralis_synthetic_recovery')
   if (_moralisHistoricalSkipReason === null) {
     _moralisHistoricalAttempted = true
     const _moralisEvents: PnlEvent[] = []
@@ -14659,6 +14707,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _acqLowSwapOrLotEvidence = (walletLotSummary.openedLots ?? 0) === 0 || (walletTradeStatsSummary.closedLots ?? 0) === 0
   const _acqPublicLotsLow = (walletTradeStatsSummary.closedLots ?? 0) === 0
   const _acquisitionRecoveryEligible = Boolean(
+    !_nonTraderEarlyExit &&
     activityRequested &&
     _acqHighValueWallet &&
     (_acqTopHoldingsExist || _acqTopHoldingsDominant) &&
@@ -14669,6 +14718,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     _sharedHistoricalBudgetRemaining() > 0
   )
   if (_acquisitionRecoveryEligible) _eligibilityReasons.push('acquisition_history_recovery_for_top_holdings')
+  if (_nonTraderEarlyExit) _skipModuleForNonTrader('acquisition_history_recovery_for_top_holdings')
   const _acqMaxTargetTokens = (_walletValueTier === 'high_value' || _walletValueTier === 'whale' || deepScan) ? 4 : 3
   const _acquisitionTargetTokens = _rankedHistoricalTargets
     .filter(t => t.estimatedUsd >= ACQ_DUST_HOLDING_USD)
@@ -14801,6 +14851,21 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
 
   tokenMeter.measure('fifoEngine', walletHistoricalFifoPreviewSummary, _historicalFifoPreviewDebug, _hcPreviewClosedLots)
   _perfWalletTimings.historicalMs += Date.now() - _historicalStartedAt
+
+  // NON-TRADER-EARLY-EXIT-2: defensive safety net — every recovery path that could feed
+  // _finalCandidateEvidence is already gated off above for a non-trader wallet, so these should
+  // already read not_requested/false; force it explicitly so a future recovery path added above
+  // can never silently re-introduce a priced historical preview for a non-trader address.
+  if (_nonTraderEarlyExit) {
+    walletHistoricalPricingPreviewSummary.status = 'not_requested'
+    walletHistoricalPricingPreviewSummary.requested = false
+    walletHistoricalPricingPreviewSummary.reason = 'non_trader_early_exit'
+    walletHistoricalFifoPreviewSummary.status = 'not_requested'
+    walletHistoricalFifoPreviewSummary.requested = false
+    walletHistoricalFifoPreviewSummary.reason = 'non_trader_early_exit'
+    _skipModuleForNonTrader('historical_pricing_preview')
+    _skipModuleForNonTrader('historical_fifo_preview')
+  }
 
   if (walletPnlRecoveryV2Debug.attempted) {
     const _realBackedAfterV2 = _hcPreviewClosedLots.filter(l =>
@@ -16066,6 +16131,10 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     callsSkippedAfterHardCap: _callsSkippedAfterHardCap,
     creditsPreventedByHardCap: _hardCapReachedAtPhase ? Math.max(0, _totalCreditTarget - _totalCreditHardCap) + _callsSkippedAfterHardCap.length : 0,
     providerCallsBlockedByHardCap: _providerCallsBlockedByHardCap,
+    nonTraderEarlyExit: _nonTraderEarlyExit,
+    nonTraderEarlyExitReason: _nonTraderEarlyExitReason,
+    modulesSkippedForNonTrader: _modulesSkippedForNonTrader,
+    creditsPreventedByNonTraderExit: _creditsPreventedByNonTraderExit,
   }
   const _walletHistoricalScanDebug = {
     requested: historicalCoverage || _acquisitionRecoveryEligible,
@@ -17740,32 +17809,45 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       excludedFrom: ['official_realized_pnl', 'win_rate', 'profit_skill', 'wallet_score', 'verified_pnl'],
     }
 
+    // WALLET-ADDRESS-TYPE-GATE-1 (hoisted): a token-contract/treasury/distributor-like address, or
+    // one that triggered the non-trader early-exit gate, is never a trader wallet — computed here,
+    // ahead of PUBLIC-READ-MODEL-CLEANUP-1 below, so walletLockedPnlRead reflects it with top
+    // precedence instead of falling through to the generic integrity-locked wording.
+    const _walletAddressTypeForGate = walletFacts.sourceClassification?.walletAddressType ?? 'unknown'
+    const _walletIsContractLikeForPnl = Boolean(_nonTraderEarlyExit) || _walletAddressTypeForGate === 'token_contract_like' || _walletAddressTypeForGate === 'treasury_or_distributor_like'
+
     // PUBLIC-READ-MODEL-CLEANUP-1: final public summary — behaviorLots always reads from
     // tradeIntelligence.tradeIntelLots (never gated by integrity), verifiedPnlLots is the official
     // integrity-gated count. The two are never conflated under one label.
     {
       const _lockedIntegrityHardInvalid = _p6HardInvalid || (snapshot as any).publicPnlStatus === 'open_check_integrity_invalid' || snapshot.pnlIntegrityCheck?.status === 'invalid'
-      const _lockedStatus: NonNullable<WalletSnapshot['walletLockedPnlRead']>['status'] = _pnlReadOfficialAvailable
-        ? 'ok'
-        : _lockedIntegrityHardInvalid
-          ? 'open_check_integrity_invalid'
-          : _pnlReadLimitedSampleAvailable
-            ? 'locked_small_sample'
-            : (_rawMatchedClosedLotsFinal > 0 ? 'locked_integrity' : 'locked_insufficient_evidence')
-      const _lockedHeadline = _pnlReadOfficialAvailable
-        ? 'Profit skill verified'
-        : _lockedIntegrityHardInvalid
-          ? 'Profit skill locked'
-          : _pnlReadLimitedSampleAvailable
-            ? 'Profit skill locked — sample too small'
-            : 'Profit skill not yet provable'
+      const _lockedStatus: NonNullable<WalletSnapshot['walletLockedPnlRead']>['status'] = _walletIsContractLikeForPnl
+        ? 'open_check_non_trader'
+        : _pnlReadOfficialAvailable
+          ? 'ok'
+          : _lockedIntegrityHardInvalid
+            ? 'open_check_integrity_invalid'
+            : _pnlReadLimitedSampleAvailable
+              ? 'locked_small_sample'
+              : (_rawMatchedClosedLotsFinal > 0 ? 'locked_integrity' : 'locked_insufficient_evidence')
+      const _lockedHeadline = _walletIsContractLikeForPnl
+        ? 'Trader PnL not applicable'
+        : _pnlReadOfficialAvailable
+          ? 'Profit skill verified'
+          : _lockedIntegrityHardInvalid
+            ? 'Profit skill locked'
+            : _pnlReadLimitedSampleAvailable
+              ? 'Profit skill locked — sample too small'
+              : 'Profit skill not yet provable'
       snapshot.walletLockedPnlRead = {
         status: _lockedStatus,
         headline: _lockedHeadline,
         // Technical integrity reasons stay here (detail), never promoted to the headline above.
-        reason: _lockedIntegrityHardInvalid
-          ? (snapshot.pnlIntegrityCheck?.errors?.[0] ?? _publicPnlStatusReasonFinal ?? 'PnL integrity check did not pass.')
-          : (_publicPnlStatusReasonFinal ?? _pnlReadLockedReason),
+        reason: _walletIsContractLikeForPnl
+          ? 'This address does not show wallet-initiated trading activity.'
+          : _lockedIntegrityHardInvalid
+            ? (snapshot.pnlIntegrityCheck?.errors?.[0] ?? _publicPnlStatusReasonFinal ?? 'PnL integrity check did not pass.')
+            : (_publicPnlStatusReasonFinal ?? _pnlReadLockedReason),
         behaviorLots: tradeIntelLots,
         verifiedPnlLots: _performanceClosedLotsFinal.length,
         publicPerformanceLots: Number((snapshot as any).publicPerformanceClosedLots ?? 0),
@@ -17790,15 +17872,14 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     // WALLET-ADDRESS-TYPE-GATE-1: a token-contract/treasury/distributor-like address is not a
     // trader wallet — never recommend PnL recovery or show the profit-skill path for it, even if
     // some lots technically exist. Additive on top of the existing integrity gates above; never
-    // unlocks anything the gates above already locked.
-    const _walletAddressTypeForGate = walletFacts.sourceClassification?.walletAddressType ?? 'unknown'
-    const _walletIsContractLikeForPnl = _walletAddressTypeForGate === 'token_contract_like' || _walletAddressTypeForGate === 'treasury_or_distributor_like'
+    // unlocks anything the gates above already locked. _walletAddressTypeForGate/
+    // _walletIsContractLikeForPnl are declared above, ahead of PUBLIC-READ-MODEL-CLEANUP-1.
     if (_walletIsContractLikeForPnl) {
-      const _contractLikeLabel = 'Portfolio/activity read only — not a trader wallet'
-      const _contractLikeReason = `This address looks like a token contract/distributor, so trader PnL is not evaluated.`
+      const _contractLikeLabel = 'Trader PnL not applicable'
+      const _contractLikeReason = 'This wallet looks like a holder/distributor/treasury address, not an active trading wallet. Portfolio and flow read are available.'
       if (snapshot.tradeIntelligence) {
         snapshot.tradeIntelligence.profitSkillStatus = 'integrity_invalid_not_proven'
-        snapshot.tradeIntelligence.tradeStyleSummary = `Portfolio/activity read only — this address looks ${_walletAddressTypeForGate === 'token_contract_like' ? 'like a token contract' : 'like a treasury or distributor'}, not a trader wallet, so profit skill is not evaluated.`
+        snapshot.tradeIntelligence.tradeStyleSummary = `Trader PnL not applicable — this wallet looks like a holder/distributor/treasury address, not an active trading wallet. Portfolio and flow read are available.`
       }
       ;(snapshot as any).publicPnlStatus = 'open_check'
       ;(snapshot as any).publicPnlDisplayLabel = _contractLikeLabel

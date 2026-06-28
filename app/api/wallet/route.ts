@@ -223,25 +223,39 @@ function attachWalletDeepScanStaging(payload: any, opts: { mode: 'standard' | 'd
   if (!tradeBehaviorReady && opts.mode === 'deep') heavyModulesPending.push('trade_reconstruction')
   if (!integrityReady && opts.mode === 'deep') heavyModulesPending.push('pnl_integrity')
   if (!recoveryReady && opts.mode === 'deep') heavyModulesPending.push('historical_recovery')
-  const stage: WalletLoadStage = !portfolioReady ? 'portfolio'
+  let stage: WalletLoadStage = !portfolioReady ? 'portfolio'
     : !holdingsReady ? 'holdings'
     : !activityReady && opts.mode === 'deep' ? 'activity'
     : !tradeBehaviorReady && opts.mode === 'deep' ? 'fifo'
     : !integrityReady && opts.mode === 'deep' ? 'pricing'
     : !recoveryReady && opts.mode === 'deep' ? 'recovery'
     : 'final'
+  // NON-TRADER-EARLY-EXIT-3: walletNoPnlReason === 'non_trader_address_type' means the engine
+  // already reached its final verdict (PnL not applicable) without needing the heavy recovery
+  // modules — load state must report 'final' with nothing pending instead of looking stuck mid-scan.
+  const nonTraderEarlyExit = payload.walletNoPnlReason === 'non_trader_address_type'
+  let finalPnlReady = pnlReady
+  let finalRecoveryReady = recoveryReady
+  let finalHeavyModulesPending = heavyModulesPending
+  if (nonTraderEarlyExit) {
+    stage = 'final'
+    finalPnlReady = false
+    finalRecoveryReady = true
+    finalHeavyModulesPending = []
+  }
   payload.walletLoadState = {
     mode: opts.mode,
     stage,
     portfolioReady,
     holdingsReady,
     activityReady,
-    tradeBehaviorReady,
-    pnlReady,
-    recoveryReady,
+    tradeBehaviorReady: nonTraderEarlyExit ? Boolean(payload.walletFacts?.sourceClassification) || tradeBehaviorReady : tradeBehaviorReady,
+    pnlReady: finalPnlReady,
+    recoveryReady: finalRecoveryReady,
     integrityReady,
     partialResponseSafe: portfolioReady && holdingsReady,
-    heavyModulesPending,
+    heavyModulesPending: finalHeavyModulesPending,
+    ...(nonTraderEarlyExit ? { skippedReason: 'non_trader_address_type: trade reconstruction and historical recovery were skipped because this address does not show trader behavior.' } : {}),
     lastUpdatedAt: new Date().toISOString(),
   }
   const timing = payload.walletDeepScanTiming ?? {}
