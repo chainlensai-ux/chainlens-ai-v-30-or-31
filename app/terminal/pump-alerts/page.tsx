@@ -105,17 +105,17 @@ function metricBarValue(v: number | null, cap: number): number {
   return Math.max(8, Math.min(100, (v / cap) * 100))
 }
 
-function fdvTier(v: number | null): { color: string; bg: string; border: string; label: string } {
-  if (v == null) return { color: '#64748b', bg: 'rgba(100,116,139,0.10)', border: 'rgba(148,163,184,0.16)', label: 'Open' }
-  if (v < 500_000) return { color: '#4ade80', bg: 'rgba(74,222,128,0.08)', border: 'rgba(74,222,128,0.24)', label: 'Low' }
-  if (v < 5_000_000) return { color: '#22d3ee', bg: 'rgba(34,211,238,0.08)', border: 'rgba(34,211,238,0.24)', label: 'Mid' }
-  return { color: '#c084fc', bg: 'rgba(192,132,252,0.08)', border: 'rgba(192,132,252,0.24)', label: 'High' }
+function fdvTier(v: number | null): { color: string; bg: string; border: string; label: string; glow: string } {
+  if (v == null) return { color: '#94a3b8', bg: 'linear-gradient(135deg, rgba(100,116,139,0.13), rgba(148,163,184,0.055))', border: 'rgba(148,163,184,0.18)', label: 'FDV open', glow: 'rgba(148,163,184,0.08)' }
+  if (v < 500_000) return { color: '#4ade80', bg: 'linear-gradient(135deg, rgba(74,222,128,0.12), rgba(45,212,191,0.050))', border: 'rgba(74,222,128,0.28)', label: 'Low FDV', glow: 'rgba(74,222,128,0.12)' }
+  if (v < 5_000_000) return { color: '#22d3ee', bg: 'linear-gradient(135deg, rgba(34,211,238,0.13), rgba(45,212,191,0.045))', border: 'rgba(34,211,238,0.28)', label: 'Mid FDV', glow: 'rgba(34,211,238,0.12)' }
+  return { color: '#c084fc', bg: 'linear-gradient(135deg, rgba(192,132,252,0.13), rgba(168,85,247,0.050))', border: 'rgba(192,132,252,0.30)', label: 'High FDV', glow: 'rgba(192,132,252,0.13)' }
 }
 
 function MiniMetricBar({ value, color, cap }: { value: number | null; color: string; cap: number }) {
   const width = metricBarValue(value, cap)
   return (
-    <span className="pump-mini-bar" style={{ display: 'block', width: '58px', height: '4px', borderRadius: '99px', overflow: 'hidden', background: 'linear-gradient(90deg, rgba(148,163,184,0.14), rgba(148,163,184,0.06))', boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.045), inset 0 1px 4px rgba(2,6,23,0.55)' }}>
+    <span className="pump-mini-bar" style={{ display: 'block', width: '64px', height: '5px', borderRadius: '99px', overflow: 'hidden', background: 'linear-gradient(90deg, rgba(148,163,184,0.14), rgba(148,163,184,0.06))', boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.045), inset 0 1px 4px rgba(2,6,23,0.55)' }}>
       <span style={{ display: 'block', width: `${width}%`, height: '100%', borderRadius: 'inherit', background: `linear-gradient(90deg, ${color}4d, ${color})`, boxShadow: `0 0 10px ${color}45` }} />
     </span>
   )
@@ -123,7 +123,7 @@ function MiniMetricBar({ value, color, cap }: { value: number | null; color: str
 
 function StatMetric({ label, value, dimValue, children }: { label: string; value: string; dimValue?: boolean; children?: React.ReactNode }) {
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '5px', minWidth: 0, padding: '6px 8px', borderRadius: '10px', background: 'linear-gradient(180deg, rgba(255,255,255,0.030), rgba(255,255,255,0.012))', border: '1px solid rgba(148,163,184,0.085)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.035)' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', minWidth: 0, padding: '7px 9px', borderRadius: '12px', background: 'linear-gradient(180deg, rgba(255,255,255,0.045), rgba(255,255,255,0.016))', border: '1px solid rgba(148,163,184,0.10)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.050), inset 0 -10px 18px rgba(2,6,23,0.16)' }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: '5px' }}>
         <span style={{ fontSize: '8px', fontWeight: 850, color: '#58708a', letterSpacing: '0.13em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', flexShrink: 0, lineHeight: 1 }}>
           {label}
@@ -148,7 +148,11 @@ function AlertCard({ alert, onScan, onAskClark }: {
   const catBorder = CATEGORY_BORDER[alert.category]
   const riskColor = RISK_COLOR[alert.riskLevel]
   const riskBg = RISK_BG[alert.riskLevel]
-  const changePositive = (alert.change24h ?? 0) >= 0
+  const change = alert.change24h ?? 0
+  const changePositive = change >= 0
+  const changeAbs = Math.abs(change)
+  const changeColor = changePositive ? (changeAbs >= 50 ? '#22d3ee' : '#4ade80') : (changeAbs >= 25 ? '#fb7185' : '#f87171')
+  const changeBg = changePositive ? (changeAbs >= 50 ? 'rgba(34,211,238,0.10)' : 'rgba(74,222,128,0.09)') : 'rgba(248,113,113,0.10)'
   const avatarText = (alert.symbol || '?').slice(0, 2).toUpperCase()
   const fdvStyle = fdvTier(alert.fdvUsd)
   const showWhaleIcon = alert.tags?.some(tag => /whale/i.test(tag))
@@ -161,12 +165,13 @@ function AlertCard({ alert, onScan, onAskClark }: {
       onMouseLeave={() => setHovered(false)}
       style={{
         background: hovered
-          ? `radial-gradient(circle at 12% 0%, ${catColor}10, transparent 28%), radial-gradient(circle at 92% 18%, rgba(168,85,247,0.06), transparent 34%), linear-gradient(135deg, rgba(45,212,191,0.055), rgba(168,85,247,0.045)), rgba(255,255,255,0.050)`
-          : 'radial-gradient(circle at 12% 0%, rgba(45,212,191,0.045), transparent 26%), radial-gradient(circle at 92% 16%, rgba(168,85,247,0.038), transparent 32%), linear-gradient(135deg, rgba(45,212,191,0.030), rgba(168,85,247,0.024)), rgba(255,255,255,0.026)',
+          ? `radial-gradient(circle at 12% 0%, ${catColor}12, transparent 30%), radial-gradient(circle at 92% 18%, rgba(168,85,247,0.060), transparent 36%), radial-gradient(circle at 48% 120%, rgba(45,212,191,0.035), transparent 42%), linear-gradient(135deg, rgba(255,255,255,0.070), rgba(255,255,255,0.030)), rgba(8,13,28,0.72)`
+          : 'radial-gradient(circle at 12% 0%, rgba(45,212,191,0.050), transparent 28%), radial-gradient(circle at 92% 16%, rgba(168,85,247,0.040), transparent 34%), radial-gradient(circle at 48% 120%, rgba(45,212,191,0.030), transparent 40%), linear-gradient(135deg, rgba(255,255,255,0.045), rgba(255,255,255,0.018)), rgba(8,13,28,0.58)',
         border: `1px solid ${hovered ? `${catColor}38` : 'rgba(255,255,255,0.09)'}`,
         borderLeft: `3px solid ${catColor}`,
-        borderRadius: '18px',
-        padding: '14px 15px',
+        borderRadius: '20px',
+        padding: '15px 16px',
+        backdropFilter: 'blur(14px)',
         transform: hovered ? 'scale(1.012)' : 'scale(1)',
         transition: 'background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease',
         boxShadow: hovered ? `0 18px 42px rgba(2,6,23,0.38), inset 0 1px 0 rgba(255,255,255,0.08), inset 0 -18px 36px rgba(255,255,255,0.018), 0 0 30px ${catColor}18, 0 0 54px rgba(168,85,247,0.055)` : '0 12px 30px rgba(2,6,23,0.24), inset 0 1px 0 rgba(255,255,255,0.055), inset 0 -16px 30px rgba(255,255,255,0.012), 0 0 32px rgba(45,212,191,0.035)',
@@ -183,12 +188,12 @@ function AlertCard({ alert, onScan, onAskClark }: {
         className="pump-card-left"
         style={{
           display: 'flex', alignItems: 'center', gap: '11px',
-          width: '218px', flexShrink: 0,
-          paddingRight: '12px', borderRight: '1px solid rgba(255,255,255,0.06)',
+          width: '238px', flexShrink: 0,
+          paddingRight: '12px', borderRight: '1px solid rgba(45,212,191,0.10)',
         }}
       >
         <div style={{
-          width: '28px', height: '28px', borderRadius: '8px', flexShrink: 0,
+          width: '34px', height: '34px', borderRadius: '11px', flexShrink: 0,
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           fontSize: '9.5px', fontWeight: 800, color: catColor,
           background: `${catColor}1a`, border: `1px solid ${catColor}2e`,
@@ -201,7 +206,7 @@ function AlertCard({ alert, onScan, onAskClark }: {
           {showWhaleIcon && <span title='Whale activity' style={{ filter: 'drop-shadow(0 0 7px rgba(45,212,191,0.42))', fontSize: '13px', lineHeight: 1 }}>🐋</span>}
         </div>
         <div style={{ minWidth: 0 }}>
-          <div style={{ fontSize: '15px', fontWeight: 850, color: '#f1f5f9', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+          <div style={{ fontSize: '16.5px', fontWeight: 900, color: '#f1f5f9', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
             {alert.name}
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '9px', fontFamily: 'var(--font-plex-mono)' }}>
@@ -217,14 +222,14 @@ function AlertCard({ alert, onScan, onAskClark }: {
         className="pump-card-center"
         style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', padding: '0 12px', gap: '4px', minWidth: 0 }}
       >
-        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: '9px', flexWrap: 'wrap', alignItems: 'center', padding: '6px', borderRadius: '16px', background: 'rgba(2,6,23,0.18)', border: '1px solid rgba(148,163,184,0.070)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.028)' }}>
           <StatMetric label="Price" value={fmtPrice(alert.priceUsd)} />
           {alert.change24h != null && (
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: '3px' }}>
-              <span style={{ fontSize: '11px', color: changePositive ? '#4ade80' : '#f87171', filter: `drop-shadow(0 0 8px ${changePositive ? 'rgba(74,222,128,0.35)' : 'rgba(248,113,113,0.32)'})` }}>{changePositive ? '↗' : '↘'}</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '4px', padding: '7px 9px', borderRadius: '12px', background: changeBg, border: `1px solid ${changeColor}33`, boxShadow: `inset 0 1px 0 rgba(255,255,255,0.045), 0 0 16px ${changeColor}14` }}>
+              <span style={{ fontSize: '11px', color: changeColor, filter: `drop-shadow(0 0 8px ${changeColor}55)` }}>{changePositive ? '↗' : '↘'}</span>
               <span style={{ fontSize: '8px', fontWeight: 850, color: '#58708a', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>24h</span>
-              <span style={{ fontSize: '13.5px', fontWeight: 900, color: changePositive ? '#4ade80' : '#f87171', fontFamily: 'var(--font-plex-mono)' }}>
-                {changePositive ? '▲' : '▼'}{Math.abs(alert.change24h).toFixed(1)}%
+              <span style={{ fontSize: '13.5px', fontWeight: 900, color: changeColor, fontFamily: 'var(--font-plex-mono)' }}>
+                {changePositive ? '▲' : '▼'}{changeAbs.toFixed(1)}%
               </span>
             </div>
           )}
@@ -236,7 +241,7 @@ function AlertCard({ alert, onScan, onAskClark }: {
           </StatMetric>
           <div style={{ display: 'flex', alignItems: 'center', gap: '7px' }}>
             <StatMetric label="FDV" value={fmtUSD(alert.fdvUsd)} dimValue={alert.fdvUsd == null} />
-            <span style={{ padding: '2px 7px', borderRadius: '999px', fontSize: '7.5px', fontWeight: 800, letterSpacing: '0.10em', textTransform: 'uppercase', color: fdvStyle.color, background: fdvStyle.bg, border: `1px solid ${fdvStyle.border}`, fontFamily: 'var(--font-plex-mono)', lineHeight: 1.15 }}>
+            <span style={{ padding: '5px 9px', borderRadius: '999px', fontSize: '7.5px', fontWeight: 800, letterSpacing: '0.10em', textTransform: 'uppercase', color: fdvStyle.color, background: fdvStyle.bg, border: `1px solid ${fdvStyle.border}`, boxShadow: `inset 0 1px 0 rgba(255,255,255,0.045), 0 0 16px ${fdvStyle.glow}`, fontFamily: 'var(--font-plex-mono)', lineHeight: 1.15 }}>
               {fdvStyle.label}
             </span>
           </div>
@@ -253,19 +258,19 @@ function AlertCard({ alert, onScan, onAskClark }: {
         style={{
           display: 'flex', flexDirection: 'column', alignItems: 'flex-end',
           justifyContent: 'space-between', gap: '6px',
-          flexShrink: 0, paddingLeft: '12px', borderLeft: '1px solid rgba(255,255,255,0.06)',
+          flexShrink: 0, paddingLeft: '12px', borderLeft: '1px solid rgba(168,85,247,0.10)',
         }}
       >
         <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', alignItems: 'flex-end' }}>
           <span className="pump-pill" style={{
-            padding: '5px 10px', borderRadius: '999px', fontSize: '8px', fontWeight: 800, letterSpacing: '0.07em',
+            padding: '6px 11px', borderRadius: '999px', fontSize: '8px', fontWeight: 800, letterSpacing: '0.07em',
             color: catColor, background: catBg, border: `1px solid ${catBorder}`,
             fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap',
           }}>
             {alert.category === 'HIGH_MOMENTUM' ? '🔥 ' : ''}{CATEGORY_LABEL[alert.category]}
           </span>
           <span className="pump-pill" style={{
-            padding: '5px 10px', borderRadius: '999px', fontSize: '8px', fontWeight: 800, letterSpacing: '0.07em',
+            padding: '6px 11px', borderRadius: '999px', fontSize: '8px', fontWeight: 800, letterSpacing: '0.07em',
             color: riskColor, background: riskBg, border: `1px solid ${riskColor}33`,
             fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap',
           }}>
@@ -273,7 +278,7 @@ function AlertCard({ alert, onScan, onAskClark }: {
           </span>
           {alert.tags?.map(tag => (
             <span key={tag} className="pump-pill" style={{
-              padding: '5px 10px', borderRadius: '999px', fontSize: '8px', fontWeight: 800, letterSpacing: '0.07em',
+              padding: '6px 11px', borderRadius: '999px', fontSize: '8px', fontWeight: 800, letterSpacing: '0.07em',
               color: '#94a3b8', background: 'rgba(148,163,184,0.10)', border: '1px solid rgba(148,163,184,0.18)',
               fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap',
             }}>
@@ -290,7 +295,7 @@ function AlertCard({ alert, onScan, onAskClark }: {
               letterSpacing: '0.07em', textTransform: 'uppercase',
               border: '1px solid rgba(45,212,191,0.32)', background: 'rgba(45,212,191,0.09)',
               color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)', cursor: 'pointer',
-              transition: 'background 0.16s ease, border-color 0.16s ease, transform 0.16s ease, box-shadow 0.16s ease', boxShadow: hovered ? '0 0 14px rgba(45,212,191,0.16)' : 'none', transform: hovered ? 'translateY(-1px) scale(1.03)' : 'translateY(0) scale(1)',
+              transition: 'background 0.16s ease, border-color 0.16s ease, transform 0.16s ease, box-shadow 0.16s ease', boxShadow: hovered ? '0 0 18px rgba(45,212,191,0.18), inset 0 1px 0 rgba(255,255,255,0.05)' : 'inset 0 1px 0 rgba(255,255,255,0.035)', transform: hovered ? 'translateY(-1px) scale(1.03)' : 'translateY(0) scale(1)',
             }}
           >
             ⌕ Scan
@@ -303,7 +308,7 @@ function AlertCard({ alert, onScan, onAskClark }: {
               letterSpacing: '0.07em', textTransform: 'uppercase',
               border: '1px solid rgba(45,212,191,0.28)', background: 'linear-gradient(135deg, rgba(45,212,191,0.10), rgba(168,85,247,0.10))',
               color: '#c4b5fd', fontFamily: 'var(--font-plex-mono)', cursor: 'pointer',
-              transition: 'background 0.16s ease, border-color 0.16s ease, transform 0.16s ease, box-shadow 0.16s ease', boxShadow: hovered ? '0 0 14px rgba(45,212,191,0.16)' : 'none', transform: hovered ? 'translateY(-1px) scale(1.03)' : 'translateY(0) scale(1)',
+              transition: 'background 0.16s ease, border-color 0.16s ease, transform 0.16s ease, box-shadow 0.16s ease', boxShadow: hovered ? '0 0 18px rgba(45,212,191,0.18), inset 0 1px 0 rgba(255,255,255,0.05)' : 'inset 0 1px 0 rgba(255,255,255,0.035)', transform: hovered ? 'translateY(-1px) scale(1.03)' : 'translateY(0) scale(1)',
             }}
           >
             ✦ Clark
@@ -458,7 +463,10 @@ export default function PumpAlertsPage() {
         .pump-pill:hover { animation: tagPulse 760ms ease-in-out; box-shadow: 0 0 16px rgba(45,212,191,0.10), 0 0 22px rgba(168,85,247,0.08); }
         .pump-action-btn:hover { transform: translateY(-2px) scale(1.045) !important; box-shadow: 0 0 18px rgba(45,212,191,0.20), 0 0 22px rgba(168,85,247,0.12) !important; }
         .pump-clark-preview { max-height: 0; opacity: 0; overflow: hidden; transform: translateY(-4px); transition: max-height 220ms ease, opacity 180ms ease, transform 180ms ease; }
-        .pump-card:hover .pump-clark-preview { max-height: 64px; opacity: 1; transform: translateY(0); }
+        .pump-card:hover .pump-clark-preview { max-height: 74px; opacity: 1; transform: translateY(0); }
+        @media (prefers-reduced-motion: reduce) {
+          .pump-card, .pump-pill, .pump-action-btn, .pump-clark-preview, .pump-mini-bar > span { animation: none !important; transition: none !important; }
+        }
         @media (max-width: 768px) {
           /* 60px top clears the fixed hamburger button (top:12 + height:36 + 12 buffer) */
           .pump-main        { padding: 60px 12px 120px !important; }
