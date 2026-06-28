@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { getBaseMarketUniverse, type BaseMarketCandidate, type BaseMarketMode } from "@/lib/server/baseMarketUniverse";
 import { getMergedTrendingTokens } from "@/app/api/trending/route";
 import { fetchHoneypotSecurity } from "@/lib/server/honeypotSecurity";
+import { buildTokenFullReportPlan, executeClarkToolPlan as executeClarkToolLayerPlan, normalizeClarkScannerCacheKey } from "@/lib/clark/tools";
+import { buildTokenFullReport } from "@/lib/clark/reportBuilders";
 import { runWalletScanner } from "@/lib/server/walletScannerRunner";
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { getVerifiedUserPlan } from '@/lib/supabase/userSettings'
@@ -6943,6 +6945,46 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   const routeHint = getClarkAddressRouteHint(prompt);
   const clarkDebugMode = Boolean((body as unknown as Record<string, unknown>).debug) || process.env.NODE_ENV !== 'production';
   const appIntentTools = appIntent.cta.map((a) => a.label).join(' · ');
+
+  if (routedClassification.intent === "token_full_report") {
+    if (!planAllows(verifiedPlan, "token_full_report")) {
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "token.fullReport", toolsUsed: [],
+        analysis: buildLockedResponse("token_full_report", "ask about token concepts or request a basic preview."),
+        clarkToolPlan: null, clarkToolsExecuted: [], clarkToolStatuses: {}, clarkEvidenceMissing: [], clarkToolLatencyMs: 0,
+      };
+    }
+    const tokenAddress = routedClassification.address;
+    if (!tokenAddress) {
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "token.fullReport", toolsUsed: [],
+        analysis: "Paste a token contract address and I’ll run the full analyst report.",
+        clarkToolPlan: null, clarkToolsExecuted: [], clarkToolStatuses: {}, clarkEvidenceMissing: ["token contract address missing"], clarkToolLatencyMs: 0,
+      };
+    }
+    const tokenPlan = buildTokenFullReportPlan(tokenAddress, toTokenApiChain(chain) ?? "base", "full");
+    const evidenceBundle = await executeClarkToolLayerPlan(tokenPlan, {
+      chain: toTokenApiChain(chain) ?? "base",
+      prompt,
+      callInternalApi: (path, payload, timeoutMs) => callInternalApi(origin, path, payload, authHeader ?? undefined, verifiedPlan, timeoutMs),
+    });
+    const analysis = buildTokenFullReport(evidenceBundle);
+    const scanResult = evidenceBundle.results.find((r) => r.tool === "token.scan");
+    const scanData = (scanResult?.data && typeof scanResult.data === "object") ? scanResult.data as Record<string, unknown> : {};
+    updateMemToken(sessionMem, tokenAddress, typeof scanData.symbol === "string" ? scanData.symbol : null, typeof scanData.name === "string" ? scanData.name : null, analysis);
+    updateMemIntent(sessionMem, "token_analysis");
+    return {
+      feature: "clark-ai", chain, mode: "analysis", intent: "token.fullReport", toolsUsed: evidenceBundle.results.map((r) => r.tool),
+      analysis,
+      clarkToolPlan: tokenPlan,
+      clarkToolsExecuted: evidenceBundle.results.map((r) => r.tool),
+      clarkToolStatuses: Object.fromEntries(evidenceBundle.results.map((r) => [r.tool, r.status])),
+      clarkEvidenceMissing: evidenceBundle.missing,
+      clarkToolLatencyMs: evidenceBundle.latencyMs,
+      clarkScannerCacheKey: normalizeClarkScannerCacheKey({ intent: "token.fullReport", address: tokenAddress, chain: toTokenApiChain(chain) ?? "base", prompt }),
+      groundedEvidenceBundle: evidenceBundle,
+    };
+  }
 
   // ─── App-context follow-up dispatcher ───
   // Answer "explain this / why is pnl locked / what should I do next / what are the

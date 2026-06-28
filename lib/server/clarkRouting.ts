@@ -40,6 +40,7 @@ export type ClarkRoutedIntent =
   | "liquidity_scan"
   | "whale_alert"
   | "token_scan"
+  | "token_full_report"
   | "token_safety"
   | "dev_rug_check"
   | "token_ape_risk"
@@ -78,6 +79,7 @@ const DEV_RUG_RE = /\b(can\s+(?:the\s+)?dev(?:s?|eloper)?\s+rug|can\s+deployer\s
 // "Ape"/"full risk breakdown"/"is this CA safe" — natural high-intent token-ape-risk prompts.
 // Kept separate from TOKEN_SAFETY_RE so the existing token_safety formatting/behavior is untouched.
 const TOKEN_APE_RISK_RE = /\b(safe\s+to\s+ape|ape\s+(?:this|it)(?:\s+right\s+now)?|full\s+risk\s+breakdown|risk\s+breakdown(?:\s+for\s+this\s+(?:contract|token|ca))?|is\s+this\s+ca\s+safe)\b/i;
+const TOKEN_FULL_REPORT_RE = /\b(full\s+(?:analyst\s+)?report|full\s+breakdown|scan\s+everything|full\s+risk|complete\s+report|run\s+all\s+checks|is\s+this\s+safe|safe\s+to\s+ape)\b/i;
 
 // "Has this dev rugged before" / "check this wallet/dev history" — rug-HISTORY questions, distinct
 // from DEV_RUG_RE (which asks whether the dev/contract *could* rug this token, not whether they
@@ -265,6 +267,11 @@ export function classifyClarkPrompt(prompt: string): {
   // can resolve the address from memory instead of asking again.
   if (isWalletFollowupPrompt(t)) {
     return { intent: "wallet_pnl_followup", address, addresses, deep: false, symbol: null };
+  }
+
+  // ---- Deterministic full token report (must run before address-based wallet_scan fallback) ----
+  if (TOKEN_FULL_REPORT_RE.test(t) && (address || symbol) && getClarkAddressRouteHint(raw) !== "wallet") {
+    return { intent: "token_full_report", address, addresses, deep: false, symbol };
   }
 
   // ---- Token ape-risk / full risk breakdown (must run before address-based wallet_scan fallback) ----
