@@ -353,7 +353,7 @@ type WalletResult = {
     blockedByCostGuard?: boolean
     costGuardReason?: string
   }
-  walletNoPnlReason?: 'non_trader_address_type' | 'no_wallet_initiated_transactions' | 'no_swap_candidates' | 'transfer_or_airdrop_only_activity' | 'missing_counterparty_direction_data' | 'budget_capped_before_recovery' | 'historical_recovery_needed' | 'unsupported_router_or_unparsed_receipts'
+  walletNoPnlReason?: 'non_trader_address_type' | 'no_wallet_initiated_transactions' | 'no_swap_candidates' | 'transfer_or_airdrop_only_activity' | 'missing_counterparty_direction_data' | 'budget_capped_before_recovery' | 'historical_recovery_needed' | 'unsupported_router_or_unparsed_receipts' | 'relayed_trader_needs_deeper_reconstruction'
   walletNoPnlReasonLabel?: string
   walletNoPnlNextAction?: string
   walletNoPnlCanRecover?: boolean
@@ -2374,10 +2374,12 @@ export default function WalletScannerPage() {
 
                 return (
                   <div style={{ background: '#080c14', border: '1px solid rgba(125,211,252,0.18)', borderRadius: '18px', padding: '20px 22px' }}>
-                    <div style={{ fontSize: '15px', fontWeight: 800, color: '#7dd3fc', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{result.walletNoPnlReason === 'non_trader_address_type' ? 'Portfolio / Holder Read' : 'Behavior intelligence available'}</div>
+                    <div style={{ fontSize: '15px', fontWeight: 800, color: '#7dd3fc', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{result.walletNoPnlReason === 'non_trader_address_type' ? 'Portfolio / Holder Read' : result.walletNoPnlReason === 'relayed_trader_needs_deeper_reconstruction' ? 'Trader PnL Open Check' : 'Behavior intelligence available'}</div>
                     <p style={{ fontSize: '12px', color: 'rgba(255,255,255,0.45)', marginTop: '4px', fontFamily: 'var(--font-inter, Inter, sans-serif)', lineHeight: 1.5 }}>
                       {result.walletNoPnlReason === 'non_trader_address_type'
                         ? 'Trader PnL not applicable — this wallet looks like a holder/distributor/treasury address, not an active trading wallet. Portfolio and flow read are available.'
+                        : result.walletNoPnlReason === 'relayed_trader_needs_deeper_reconstruction'
+                        ? 'Activity may be routed through contracts/relayers. ChainLens found portfolio and flow, but needs deeper trade reconstruction before showing realized PnL.'
                         : 'Profit skill is locked, but this wallet still has enough evidence for a behavior read.'}
                     </p>
 
@@ -3060,6 +3062,10 @@ export default function WalletScannerPage() {
                 // WALLET-NO-PNL-UX-3: derived from the backend's non-trader gate signal — no
                 // new field needed on the page's result type, just reuse walletNoPnlReason.
                 const isNonTraderAddressType = result.walletNoPnlReason === 'non_trader_address_type'
+                // RELAYED-TRADER-DETECTION-1: distinct from isNonTraderAddressType — this wallet may
+                // still be a real trader routed through a contract/relayer, so the checklist must say
+                // "open check", never "not applicable" or "token/distributor address".
+                const isRelayedTraderOpenCheck = result.walletNoPnlReason === 'relayed_trader_needs_deeper_reconstruction'
                 const chips: { label: string; note: string; status: 'ok' | 'partial' | 'open_check' }[] = [
                   { label: 'Portfolio', note: mc.portfolio.status === 'ok' ? `${(mc.portfolio.evidence.includes('total_value') ? 'value + ' : '')}holdings` : mc.portfolio.reason.replace(/_/g, ' '), status: mc.portfolio.status },
                   { label: 'Activity', note: mc.activity.eventCount > 0 ? `${mc.activity.eventCount} events indexed` : mc.activity.status === 'open_check' && mc.activity.reason === 'provider_unavailable' ? 'unavailable' : 'not checked', status: mc.activity.status },
@@ -3070,6 +3076,10 @@ export default function WalletScannerPage() {
                     { label: 'Trader PnL', note: 'Not applicable — token/distributor address', status: 'open_check' as const },
                     { label: 'Flow read', note: 'available', status: 'ok' as const },
                     { label: 'Trade stats', note: 'Not evaluated for this address type', status: 'open_check' as const },
+                  ] : isRelayedTraderOpenCheck ? [
+                    { label: 'Trader PnL', note: 'Open check — may be routed through contracts/relayers', status: 'open_check' as const },
+                    { label: 'Flow read', note: 'available', status: 'ok' as const },
+                    { label: 'Trade stats', note: 'Needs deeper trade reconstruction', status: 'open_check' as const },
                   ] : [
                     { label: 'Swap pairs', note: mc.swapDetection.candidateCount > 0 ? `${mc.swapDetection.candidateCount} candidates` : mc.activity.eventCount > 0 ? 'none found in sample' : 'no activity', status: mc.swapDetection.status },
                     { label: 'FIFO PnL', note: (() => {
@@ -3779,7 +3789,7 @@ export default function WalletScannerPage() {
                             <p className="wpv3-support" style={{ marginBottom: '8px', color: '#fbbf24' }}>Performance classification remains locked until enough verified closed lots exist.</p>
                           )}
                           {wp.basis === 'behavior_only' && wp.profitSkillStatus !== 'unlocked' && (
-                            <p className="wpv3-support" style={{ marginBottom: '8px', color: '#fbbf24' }}>{result.walletNoPnlReason === 'non_trader_address_type' ? 'Trader PnL not applicable for this address type.' : `Behavior-only read. Profit skill locked because ${wp.profitSkillStatus === 'integrity_invalid_not_proven' ? 'PnL integrity failed' : 'public PnL sample is too small or partial'}.`}</p>
+                            <p className="wpv3-support" style={{ marginBottom: '8px', color: '#fbbf24' }}>{result.walletNoPnlReason === 'non_trader_address_type' ? 'Trader PnL not applicable for this address type.' : result.walletNoPnlReason === 'relayed_trader_needs_deeper_reconstruction' ? 'Activity may be routed through contracts/relayers. Needs deeper trade reconstruction before showing realized PnL.' : `Behavior-only read. Profit skill locked because ${wp.profitSkillStatus === 'integrity_invalid_not_proven' ? 'PnL integrity failed' : 'public PnL sample is too small or partial'}.`}</p>
                           )}
                           {scoreRows.length > 0 && (
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
@@ -3809,7 +3819,7 @@ export default function WalletScannerPage() {
                               </div>
                               <span style={{ display: 'inline-block', fontSize: '10px', fontWeight: 700, letterSpacing: '0.08em', color: botColor, border: `1px solid ${botColor}33`, background: `${botColor}14`, borderRadius: '999px', padding: '3px 9px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', textTransform: 'uppercase' }}>{bot.classification}</span>
                               {bot.basis === 'behavior_only' && bot.profitSkillStatus === 'not_proven' && (
-                                <p className="wpv3-support" style={{ marginTop: '8px', color: '#fbbf24' }}>{result.walletNoPnlReason === 'non_trader_address_type' ? 'Bot score is behavior-only. Trader PnL not applicable for this address type.' : 'Bot score is behavior-only. Profit skill is locked because PnL integrity failed.'}</p>
+                                <p className="wpv3-support" style={{ marginTop: '8px', color: '#fbbf24' }}>{result.walletNoPnlReason === 'non_trader_address_type' ? 'Bot score is behavior-only. Trader PnL not applicable for this address type.' : result.walletNoPnlReason === 'relayed_trader_needs_deeper_reconstruction' ? 'Bot score is behavior-only. Trader PnL is an open check — activity may be routed through contracts/relayers.' : 'Bot score is behavior-only. Profit skill is locked because PnL integrity failed.'}</p>
                               )}
                             </>
                           ) : botDisplayClassification ? (

@@ -490,6 +490,26 @@ export type WalletSnapshot = {
     unavailableReasons: Record<string, string>
     providerCallsAdded: 0
   }
+  // RELAYED-TRADER-DETECTION-1: debug-only signal that a wallet with zero wallet-initiated/outbound
+  // txs may still be a real trader routed through a relayer/contract — used to suppress
+  // nonTraderEarlyExit so the existing reconstruction modules still run. Never alters FIFO/PnL math
+  // itself; only gates whether the early exit fires.
+  walletRelayedTraderDetectionDebug?: {
+    checked: boolean
+    possibleRelayedTrader: boolean
+    reasons: string[]
+    walletSideEvents: number
+    walletSideTransactions: number
+    unknownDirectionEvents: number
+    recoveredUnknownDirectionEvents: number
+    recoveredSwapContextTransactions: number
+    candidateSwapTransactions: number
+    txWithMultipleTokenMovements: number
+    topUnknownTxToAddresses: Array<{ address: string; count: number }>
+    largePortfolioValueUsd: number
+    dominantTokenSymbols: string[]
+    nonTraderEarlyExitSuppressed: boolean
+  }
   // PUBLIC-READ-MODEL-CLEANUP-1: a single, final public-facing summary that never confuses verified
   // PnL with behavior intelligence. behaviorLots is sourced from tradeIntelligence.tradeIntelLots
   // (trade-style/rotation evidence, never gated by PnL integrity) — it is NEVER the same count as
@@ -799,7 +819,7 @@ export type WalletSnapshot = {
   // either because the address itself isn't a trader (non_trader_address_type) or because a
   // normal_wallet's real activity didn't produce closed FIFO lots for one of several precise
   // reasons. Never set when public PnL is actually available.
-  walletNoPnlReason?: 'non_trader_address_type' | 'no_wallet_initiated_transactions' | 'no_swap_candidates' | 'transfer_or_airdrop_only_activity' | 'missing_counterparty_direction_data' | 'budget_capped_before_recovery' | 'historical_recovery_needed' | 'unsupported_router_or_unparsed_receipts'
+  walletNoPnlReason?: 'non_trader_address_type' | 'no_wallet_initiated_transactions' | 'no_swap_candidates' | 'transfer_or_airdrop_only_activity' | 'missing_counterparty_direction_data' | 'budget_capped_before_recovery' | 'historical_recovery_needed' | 'unsupported_router_or_unparsed_receipts' | 'relayed_trader_needs_deeper_reconstruction'
   walletNoPnlReasonLabel?: string
   walletNoPnlNextAction?: string
   walletNoPnlCanRecover?: boolean
@@ -14270,8 +14290,48 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     (_earlyWalletInitiatedTxCount === 0 && _earlyOutboundCount > 0 && _earlyOutboundCount >= _earlyInboundCount * 3) ||
     (_earlyWalletInitiatedTxCount === 0 && (walletSwapSummary.swapCandidateEvents ?? 0) === 0 && _earlyTotalClassifiedEvents > 0)
   )
+  // RELAYED-TRADER-DETECTION-1: a wallet with zero wallet-initiated/outbound txs can still be a real
+  // trader whose swaps are routed through a relayer/contract (tx.from is the relayer, not the
+  // wallet) — in that case wallet-side direction/router heuristics above under-count and would
+  // otherwise mislabel it non-trader. Detect that case from signals already computed by
+  // buildSwapDetection (no new provider calls) and suppress the early exit so the existing
+  // historical/swap-reconstruction modules below still run for it.
+  const _relayedHighValueNonStableHoldingUsd = holdings
+    .filter(h => !/^(USDC|USDT|DAI|WETH|ETH)$/i.test(h.symbol ?? '') && Number.isFinite(h.value))
+    .reduce((max, h) => Math.max(max, h.value), 0)
+  const _relayedWalletAttributionRecoveredCount = _swapDetectionDebug?.totalRecoveredEvents ?? 0
+  const _relayedCandidateSwapTransactions = walletSwapSummary.groupedTxCount ?? 0
+  const _relayedTxWithMultipleTokenMovements = _swapDetectionDebug?.txWithMultipleTokenMovements ?? 0
+  const _relayedUnknownDirectionEvents = _swapDetectionDebug?.unknownDirectionEvents ?? 0
+  const _relayedRecoveredUnknownDirectionEvents = _swapDetectionDebug?.recoveredUnknownDirectionEvents ?? 0
+  const _relayedRecoveredSwapContextTransactions = _swapDetectionDebug?.recoveredSwapContextTransactions ?? 0
+  const _relayedReasons: string[] = []
+  if (_relayedRecoveredUnknownDirectionEvents > 0) _relayedReasons.push('recovered_unknown_direction_events')
+  if (_relayedRecoveredSwapContextTransactions > 0) _relayedReasons.push('recovered_swap_context_transactions')
+  if (_relayedTxWithMultipleTokenMovements >= 3) _relayedReasons.push('multiple_token_movement_transactions')
+  if (_relayedCandidateSwapTransactions >= 3) _relayedReasons.push('candidate_swap_transactions')
+  if (_relayedUnknownDirectionEvents >= 20) _relayedReasons.push('high_unknown_direction_events')
+  if (_relayedWalletAttributionRecoveredCount > 0 && _relayedHighValueNonStableHoldingUsd >= 1000) _relayedReasons.push('attribution_recovered_with_high_value_holdings')
+  const _possibleRelayedTrader = Boolean(totalValue >= 10000 && _relayedReasons.length > 0)
+  const _walletRelayedTraderDetectionDebug: NonNullable<WalletSnapshot['walletRelayedTraderDetectionDebug']> = {
+    checked: true,
+    possibleRelayedTrader: _possibleRelayedTrader,
+    reasons: _relayedReasons,
+    walletSideEvents: walletEvidenceSummary.walletSideEvents ?? 0,
+    walletSideTransactions: _earlyWalletInitiatedTxCount,
+    unknownDirectionEvents: _relayedUnknownDirectionEvents,
+    recoveredUnknownDirectionEvents: _relayedRecoveredUnknownDirectionEvents,
+    recoveredSwapContextTransactions: _relayedRecoveredSwapContextTransactions,
+    candidateSwapTransactions: _relayedCandidateSwapTransactions,
+    txWithMultipleTokenMovements: _relayedTxWithMultipleTokenMovements,
+    topUnknownTxToAddresses: _swapDetectionDebug?.topUnknownTxToAddresses ?? [],
+    largePortfolioValueUsd: Math.round(totalValue * 100) / 100,
+    dominantTokenSymbols: [...holdings].sort((a, b) => b.value - a.value).slice(0, 5).map(h => h.symbol),
+    nonTraderEarlyExitSuppressed: Boolean(_earlyNonTraderAddressType && _possibleRelayedTrader),
+  }
   const _nonTraderEarlyExit = Boolean(
     _earlyNonTraderAddressType &&
+    !_possibleRelayedTrader &&
     _earlyWalletInitiatedTxCount === 0 &&
     _earlyOutboundCount === 0 &&
     _closedLots.length === 0 &&
@@ -18013,7 +18073,14 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         let _noPnlLabel: string
         let _noPnlNextAction: string
         let _canRecover: boolean
-        if (_budgetCappedBeforeRecovery) {
+        if (_possibleRelayedTrader) {
+          // RELAYED-TRADER-DETECTION-1: takes priority over the generic no-wallet-initiated-txs
+          // bucket below — this wallet has high-value holdings plus recovered/unknown-direction
+          // swap-context evidence suggesting trading routed through a contract/relayer, so it must
+          // not be reported as "no wallet-initiated transactions" or non-trader.
+          _noPnlReason = 'relayed_trader_needs_deeper_reconstruction'; _noPnlLabel = 'Trading activity may be routed through contracts/relayers'
+          _noPnlNextAction = 'Run a deeper historical scan to reconstruct relayed trade legs.'; _canRecover = true
+        } else if (_budgetCappedBeforeRecovery) {
           _noPnlReason = 'budget_capped_before_recovery'; _noPnlLabel = 'Event budget capped before recovery ran'
           _noPnlNextAction = 'Re-scan with a deeper budget to recover earlier history.'; _canRecover = true
         } else if ((walletFacts.activity?.walletInitiatedTxCount ?? 0) === 0) {
@@ -18145,6 +18212,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         warning: 'Mark-to-market portfolio movement. Not realized trader PnL.',
         excludedFrom: ['trader_pnl', 'win_rate', 'profit_skill'],
       }
+
+      ;(snapshot as any).walletRelayedTraderDetectionDebug = _walletRelayedTraderDetectionDebug
 
       ;(snapshot as any).walletPortfolioHistoryPnlDebug = {
         sourceUsed: _phSourceUsed,

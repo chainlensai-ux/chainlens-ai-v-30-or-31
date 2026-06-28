@@ -7,7 +7,19 @@ const route = fs.readFileSync('app/api/wallet/route.ts', 'utf8')
 // The early-exit gate must be computed before the historical pricing/recovery eligibility checks
 // it gates, using a strict (zero-initiated, zero-outbound, zero-closed-lots, zero-swap-candidate)
 // trigger so it never fires for a wallet with any real trading activity.
-assert.match(snap, /const _nonTraderEarlyExit = Boolean\(\s*\n\s*_earlyNonTraderAddressType &&\s*\n\s*_earlyWalletInitiatedTxCount === 0 &&\s*\n\s*_earlyOutboundCount === 0 &&\s*\n\s*_closedLots\.length === 0 &&\s*\n\s*\(walletSwapSummary\.swapCandidateEvents \?\? 0\) === 0\s*\n\s*\)/, 'non-trader early-exit gate requires zero initiated txs, zero outbound, zero closed lots, zero swap candidates')
+assert.match(snap, /const _nonTraderEarlyExit = Boolean\(\s*\n\s*_earlyNonTraderAddressType &&\s*\n\s*!_possibleRelayedTrader &&\s*\n\s*_earlyWalletInitiatedTxCount === 0 &&\s*\n\s*_earlyOutboundCount === 0 &&\s*\n\s*_closedLots\.length === 0 &&\s*\n\s*\(walletSwapSummary\.swapCandidateEvents \?\? 0\) === 0\s*\n\s*\)/, 'non-trader early-exit gate requires zero initiated txs, zero outbound, zero closed lots, zero swap candidates, and no possible-relayed-trader signal')
+
+// RELAYED-TRADER-DETECTION-1: a wallet with high-value holdings plus recovered/unknown-direction
+// swap-context evidence must suppress nonTraderEarlyExit instead of being locked as non-trader —
+// this is the regression fixture for the 0x4dbb-style wallet (zero wallet-initiated txs, high
+// value, recoveredUnknownDirectionEvents>0, recoveredSwapContextTransactions>0, unknownDirectionEvents>20).
+assert.match(snap, /const _possibleRelayedTrader = Boolean\(totalValue >= 10000 && _relayedReasons\.length > 0\)/, 'possibleRelayedTrader requires totalValue >= 10000 and at least one relayed-trader signal')
+assert.match(snap, /if \(_relayedRecoveredUnknownDirectionEvents > 0\) _relayedReasons\.push\('recovered_unknown_direction_events'\)/, 'relayed-trader detection checks recoveredUnknownDirectionEvents')
+assert.match(snap, /if \(_relayedRecoveredSwapContextTransactions > 0\) _relayedReasons\.push\('recovered_swap_context_transactions'\)/, 'relayed-trader detection checks recoveredSwapContextTransactions')
+assert.match(snap, /if \(_relayedUnknownDirectionEvents >= 20\) _relayedReasons\.push\('high_unknown_direction_events'\)/, 'relayed-trader detection checks unknownDirectionEvents >= 20')
+assert.match(snap, /_noPnlReason = 'relayed_trader_needs_deeper_reconstruction'; _noPnlLabel = 'Trading activity may be routed through contracts\/relayers'/, 'relayed-trader case sets walletNoPnlReason to relayed_trader_needs_deeper_reconstruction, not non_trader_address_type')
+assert.match(snap, /walletRelayedTraderDetectionDebug\?:/, 'WalletSnapshot exposes walletRelayedTraderDetectionDebug')
+assert.match(snap, /nonTraderEarlyExitSuppressed: Boolean\(_earlyNonTraderAddressType && _possibleRelayedTrader\)/, 'walletRelayedTraderDetectionDebug exposes nonTraderEarlyExitSuppressed')
 
 // Every recovery/pricing eligibility path that could spend provider credits for a non-trader
 // wallet must be gated off, including the acquisition-recovery-for-top-holdings path that fires
