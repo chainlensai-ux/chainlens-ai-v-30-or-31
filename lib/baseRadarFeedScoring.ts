@@ -56,10 +56,28 @@ export function applyBaseRadarScoreCaps(input: RadarFeedScoreInput): { score: nu
   const simulationUnconfirmed = input.simulationStatus !== 'passed' || missingTaxEvidence
   const youngTimeout = simulationUnconfirmed && input.ageMinutes != null && input.ageMinutes < 15
   const erc20LpNeedsProof = input.lpModel == null || input.lpModel === 'erc20_lp_token' || input.lpModel === 'open_check'
+  const lpBurnMissing = erc20LpNeedsProof && !input.lpLockBurnConfirmed && !input.strongProtection
 
-  if (simulationUnconfirmed) caps.push({ cap: 74, reason: 'Simulation or tax evidence is not confirmed.' })
+  // TOKEN-SAVER: only the two critical evidence categories we actually track
+  // (LP/burn proof, simulation) should drive the hard fallback. One missing
+  // category gets its own, less punishing cap so partial evidence still
+  // produces a real score; the 49 floor only applies when BOTH are missing.
+  const criticalMissingCount = (lpBurnMissing ? 1 : 0) + (simulationUnconfirmed ? 1 : 0)
+  if (process.env.NODE_ENV !== 'production') {
+    console.debug('[baseRadarFeedScoring] critical evidence check', {
+      lpBurnMissing, simulationUnconfirmed, criticalMissingCount,
+      missingFields: [lpBurnMissing ? 'lpLockBurnProof' : null, simulationUnconfirmed ? 'simulationStatus' : null].filter(Boolean),
+    })
+  }
+
+  if (criticalMissingCount >= 2) {
+    caps.push({ cap: 49, reason: 'LP/burn proof and simulation evidence are both missing.' })
+  } else if (simulationUnconfirmed) {
+    caps.push({ cap: 74, reason: 'Simulation or tax evidence is not confirmed.' })
+  } else if (lpBurnMissing) {
+    caps.push({ cap: 64, reason: 'ERC20 LP lock/burn proof is missing.' })
+  }
   if (youngTimeout) caps.push({ cap: 59, reason: 'New token with unresolved simulation.' })
-  if (erc20LpNeedsProof && !input.lpLockBurnConfirmed && !input.strongProtection) caps.push({ cap: 49, reason: 'ERC20 LP lock/burn proof is missing.' })
   if (input.activeOwner && (input.highHolderConcentration || (input.top10 != null && input.top10 > 70) || (input.top20 != null && input.top20 > 90))) caps.push({ cap: 59, reason: 'Active owner/admin with high holder concentration.' })
   if (input.top10 != null && input.top10 > 70) caps.push({ cap: 59, reason: 'Top 10 holders exceed 70%.' })
   if (input.top20 != null && input.top20 > 90) caps.push({ cap: 49, reason: 'Top 20 holders exceed 90%.' })
@@ -73,7 +91,7 @@ export function applyBaseRadarScoreCaps(input: RadarFeedScoreInput): { score: nu
     && !input.majorControlOrHolderOrLpRedFlag
     && !(input.top10 != null && input.top10 > 70)
     && !(input.top20 != null && input.top20 > 90)
-    && !(erc20LpNeedsProof && !input.lpLockBurnConfirmed && !input.strongProtection)
+    && !lpBurnMissing
 
   if (!highScoreAllowed) caps.push({ cap: 79, reason: '80+ requires confirmed simulation, sane valuation, liquidity, and no major red flags.' })
 
@@ -97,7 +115,7 @@ export function applyBaseRadarScoreCaps(input: RadarFeedScoreInput): { score: nu
   if (input.top20 != null && input.top20 > 90) penalties += 18
   if (input.activeOwner) penalties += 10
   if (input.missingSocials) penalties += 4
-  if (erc20LpNeedsProof && !input.lpLockBurnConfirmed && !input.strongProtection) penalties += 15
+  if (lpBurnMissing) penalties += 15
 
   const confidenceBoost = input.valuationVerified ? 3 : 0
   const cap = caps.length ? Math.min(...caps.map(c => c.cap)) : null

@@ -314,7 +314,10 @@ export async function GET(req: NextRequest) {
   let sourcesSucceeded = 0
   const sourcesAttempted = sourceSpecs.length
   const sourcePayloads: Record<string, unknown>[] = []
-  for (const spec of sourceSpecs) {
+  // TOKEN-SAVER: these 3 source fetches are independent (different URLs/cache
+  // keys) — fetching them in parallel instead of one-by-one cuts radar feed
+  // load latency without changing what is fetched or how results are scored.
+  const sourceResults = await Promise.all(sourceSpecs.map(async (spec) => {
     try {
       const result = await getOrFetchCached<Record<string, unknown>>({
         key: `coingecko:base-radar:${spec.key}`,
@@ -331,13 +334,16 @@ export async function GET(req: NextRequest) {
         },
       })
       const count = Array.isArray(result.data?.data) ? result.data.data.length : 0
-      sourceCounts[spec.key] = count
-      if (count > 0) {
-        sourcesSucceeded += 1
-        sourcePayloads.push(result.data)
-      }
+      return { key: spec.key, count, data: count > 0 ? result.data : null }
     } catch {
-      sourceCounts[spec.key] = 0
+      return { key: spec.key, count: 0, data: null }
+    }
+  }))
+  for (const r of sourceResults) {
+    sourceCounts[r.key] = r.count
+    if (r.data) {
+      sourcesSucceeded += 1
+      sourcePayloads.push(r.data)
     }
   }
 
