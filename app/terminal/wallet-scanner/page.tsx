@@ -290,6 +290,7 @@ type WalletResult = {
     realizedPnlUsd: number | null
     realizedPnlPercent: number | null
     timeframe: 'all' | '7' | '30' | '60' | '90'
+    chain?: string | null
     warning: string
     usedForTraderPnLRead: boolean
   }
@@ -601,7 +602,7 @@ type WalletResult = {
     summary: string
     basis?: 'behavior_only' | 'pnl_verified'
     pnlUsed?: boolean
-    profitSkillStatus?: 'not_proven' | 'integrity_invalid_not_proven' | 'unlocked'
+    profitSkillStatus?: 'not_proven' | 'integrity_invalid_not_proven' | 'unlocked' | 'provider_summary_available' | 'provider_summary_only'
     signals?: string[]
     limitations?: string[]
   }
@@ -615,7 +616,7 @@ type WalletResult = {
     classification: 'Human-like' | 'Assisted / semi-automated' | 'Likely bot' | 'High-frequency bot' | 'Not enough behavior data'
     reason: string
     basis?: 'behavior_only' | 'behavior_with_public_performance'
-    profitSkillStatus?: 'not_proven' | 'unlocked'
+    profitSkillStatus?: 'not_proven' | 'unlocked' | 'provider_summary_available' | 'provider_summary_only'
     pnlUsed?: false
     signals?: string[]
   }
@@ -2957,7 +2958,7 @@ export default function WalletScannerPage() {
                             Realized PnL: {fmtUsd(ps.realizedPnlUsd) ?? 'n/a'}{ps.realizedPnlPercent !== null ? ` (${ps.realizedPnlPercent >= 0 ? '+' : ''}${ps.realizedPnlPercent.toFixed(1)}%)` : ''}
                           </p>
                           <p style={{ marginTop: '4px', fontSize: '10px', color: 'rgba(255,255,255,0.35)' }}>
-                            Trades: {ps.totalTrades ?? 'n/a'} ({ps.totalBuys ?? 'n/a'} buys / {ps.totalSells ?? 'n/a'} sells), Volume: {ps.totalTradeVolumeUsd !== null ? `$${ps.totalTradeVolumeUsd.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : 'n/a'}
+                            {ps.chain ? `Chain: ${ps.chain} · ` : ''}Trades: {ps.totalTrades ?? 'n/a'} ({ps.totalBuys ?? 'n/a'} buys / {ps.totalSells ?? 'n/a'} sells), Volume: {ps.totalTradeVolumeUsd !== null ? `$${ps.totalTradeVolumeUsd.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : 'n/a'}
                           </p>
                           <p style={{ marginTop: '6px', fontSize: '10px', color: '#fbbf24' }}>
                             Provider-level summary. ChainLens FIFO lot reconstruction still open check.
@@ -3821,7 +3822,7 @@ export default function WalletScannerPage() {
                             <p className="wpv3-support" style={{ marginBottom: '8px', color: '#fbbf24' }}>Performance classification remains locked until enough verified closed lots exist.</p>
                           )}
                           {wp.basis === 'behavior_only' && wp.profitSkillStatus !== 'unlocked' && (
-                            <p className="wpv3-support" style={{ marginBottom: '8px', color: '#fbbf24' }}>{result.walletNoPnlReason === 'non_trader_address_type' ? 'Trader PnL not applicable for this address type.' : result.walletNoPnlReason === 'relayed_trader_needs_deeper_reconstruction' ? 'Activity may be routed through contracts/relayers. Needs deeper trade reconstruction before showing realized PnL.' : `Behavior-only read. Profit skill locked because ${wp.profitSkillStatus === 'integrity_invalid_not_proven' ? 'PnL integrity failed' : 'public PnL sample is too small or partial'}.`}</p>
+                            <p className="wpv3-support" style={{ marginBottom: '8px', color: '#fbbf24' }}>{result.walletNoPnlReason === 'provider_summary_available_fifo_missing' ? 'Provider PnL available; FIFO proof remains an open check.' : result.walletNoPnlReason === 'non_trader_address_type' ? 'Trader PnL not applicable for this address type.' : result.walletNoPnlReason === 'relayed_trader_needs_deeper_reconstruction' ? 'Activity may be routed through contracts/relayers. Needs deeper trade reconstruction before showing realized PnL.' : `Behavior-only read. Profit skill locked because ${wp.profitSkillStatus === 'integrity_invalid_not_proven' ? 'PnL integrity failed' : 'public PnL sample is too small or partial'}.`}</p>
                           )}
                           {scoreRows.length > 0 && (
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
@@ -3851,7 +3852,7 @@ export default function WalletScannerPage() {
                               </div>
                               <span style={{ display: 'inline-block', fontSize: '10px', fontWeight: 700, letterSpacing: '0.08em', color: botColor, border: `1px solid ${botColor}33`, background: `${botColor}14`, borderRadius: '999px', padding: '3px 9px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', textTransform: 'uppercase' }}>{bot.classification}</span>
                               {bot.basis === 'behavior_only' && bot.profitSkillStatus === 'not_proven' && (
-                                <p className="wpv3-support" style={{ marginTop: '8px', color: '#fbbf24' }}>{result.walletNoPnlReason === 'non_trader_address_type' ? 'Bot score is behavior-only. Trader PnL not applicable for this address type.' : result.walletNoPnlReason === 'relayed_trader_needs_deeper_reconstruction' ? 'Bot score is behavior-only. Trader PnL is an open check — activity may be routed through contracts/relayers.' : 'Bot score is behavior-only. Profit skill is locked because PnL integrity failed.'}</p>
+                                <p className="wpv3-support" style={{ marginTop: '8px', color: '#fbbf24' }}>{result.walletNoPnlReason === 'provider_summary_available_fifo_missing' ? 'Bot score is behavior-only. Provider PnL is available; FIFO proof is an open check.' : result.walletNoPnlReason === 'non_trader_address_type' ? 'Bot score is behavior-only. Trader PnL not applicable for this address type.' : result.walletNoPnlReason === 'relayed_trader_needs_deeper_reconstruction' ? 'Bot score is behavior-only. Trader PnL is an open check — activity may be routed through contracts/relayers.' : 'Bot score is behavior-only. Profit skill is locked because PnL integrity failed.'}</p>
                               )}
                             </>
                           ) : botDisplayClassification ? (
@@ -3873,6 +3874,17 @@ export default function WalletScannerPage() {
                           return w.closedLots > 0 && 'realizedPnlUsd' in w && w.realizedPnlUsd != null
                         })
                         if (!anyWindowHasData) {
+                          if (result.walletPnlRead?.displayMode === 'provider_summary' && result.walletProviderPnlSummary?.status === 'ok') {
+                            return (
+                              <div>
+                                <div className="ws-stat-label" style={{ marginBottom: '8px' }}>FIFO Proof Open Check</div>
+                                <div style={{ background: 'rgba(125,211,252,0.06)', border: '1px solid rgba(125,211,252,0.18)', borderRadius: '12px', padding: '14px' }}>
+                                  <div style={{ fontSize: '13px', fontWeight: 700, color: '#7dd3fc', fontFamily: 'var(--font-inter, Inter, sans-serif)', marginBottom: '6px' }}>Provider PnL available</div>
+                                  <p className="wpv3-support" style={{ margin: 0 }}>Windowed FIFO cards are hidden because provider-level PnL is not ChainLens FIFO proof.</p>
+                                </div>
+                              </div>
+                            )
+                          }
                           const _windowsTs = result.walletTradeStatsSummary
                           const lockedOpenLots = result.walletLotSummary?.openedLots ?? _windowsTs?.openedLots ?? 0
                           const lockedMatchedTrades = result.rawMatchedClosedLots ?? _windowsTs?.rawMatchedClosedLots ?? _windowsTs?.rawClosedLots ?? 0

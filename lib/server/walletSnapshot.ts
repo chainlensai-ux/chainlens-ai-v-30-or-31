@@ -1,4 +1,4 @@
-import { fetchMoralisBalances, fetchMoralisTransfers, fetchMoralisTransfersPaginated, fetchMoralisProfitabilitySummary, type MoralisFetchResult, type MoralisChain, type MoralisTransferItem, type MoralisProfitabilitySummary } from './moralis'
+import { fetchMoralisBalances, fetchMoralisTransfers, fetchMoralisTransfersPaginated, fetchMoralisProfitabilitySummary, isUsableProviderPnlSummary, type MoralisFetchResult, type MoralisChain, type MoralisTransferItem, type MoralisProfitabilitySummary } from './moralis'
 import { computeWalletProfile, type WalletProfile } from './walletIdentity'
 
 export { computeWalletProfile, type WalletProfile }
@@ -526,6 +526,7 @@ export type WalletSnapshot = {
     realizedPnlUsd: number | null
     realizedPnlPercent: number | null
     timeframe: 'all' | '7' | '30' | '60' | '90'
+    chain: MoralisChain | null
     confidence: 'medium'
     warning: string
     excludedFrom: string[]
@@ -533,6 +534,9 @@ export type WalletSnapshot = {
   }
   walletMoralisProfitabilityDebug?: {
     attempted: boolean
+    attemptedChains: MoralisChain[]
+    selectedChain: MoralisChain | null
+    rejectedSummaries: Array<{ chain: MoralisChain; totalTrades: number | null; realizedPnlUsd: number | null; totalTradeVolumeUsd: number | null; reason: string }>
     reason: string
     statusCode: number | null
     cacheHit: boolean
@@ -16271,20 +16275,40 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // below, so the credit is correctly counted in apiAudit.totalCredits. Only attempted when our own
   // FIFO reconstruction found zero closed lots and the wallet is high-value (or a debug/deep scan),
   // and only when doing so would not push the scan over its own credit hard cap.
-  let _providerProfitResult: Awaited<ReturnType<typeof fetchMoralisProfitabilitySummary>> | null = null
+  type ProviderProfitAttempt = Awaited<ReturnType<typeof fetchMoralisProfitabilitySummary>> & { chain: MoralisChain }
+  let _providerProfitResult: ProviderProfitAttempt | null = null
+  const _providerProfitAttempts: ProviderProfitAttempt[] = []
   const _providerProfitFifoFoundNoLots = _rawMatchedClosedLotsFinal === 0
   const _providerProfitBudgetOk = _adminOverrideUsed || _creditsUsedFinal < _totalCreditHardCap
   const _providerProfitEligible = _providerProfitFifoFoundNoLots && (totalValue >= 1000 || debug || deepScan) && _providerProfitBudgetOk
+  const _providerProfitCandidateChains: MoralisChain[] = []
+  const _pushProviderProfitChain = (chain: MoralisChain | null | undefined) => {
+    if (chain && supportedMoralisChains.includes(chain) && !_providerProfitCandidateChains.includes(chain)) _providerProfitCandidateChains.push(chain)
+  }
+  _pushProviderProfitChain((requestedChain as MoralisChain) ?? null)
+  activeChains.forEach(_pushProviderProfitChain)
+  _pushProviderProfitChain('eth')
+  _pushProviderProfitChain('base')
+  const _providerProfitMaxAttempts = debug ? 3 : 2
   if (_providerProfitEligible) {
-    try {
-      const _moralisProfitChain: MoralisChain = (requestedChain as MoralisChain) ?? 'base'
-      _providerProfitResult = await fetchMoralisProfitabilitySummary(addr, _moralisProfitChain, 'all')
-      if (_providerProfitResult.attempted || _providerProfitResult.cacheHit) {
-        _trackCall('moralis', 'profitability_summary', _providerProfitResult.cacheHit, `moralis:profitability:${_moralisProfitChain}:${addrNorm}:all`)
+    for (const _moralisProfitChain of _providerProfitCandidateChains.slice(0, _providerProfitMaxAttempts)) {
+      try {
+        const _res = await fetchMoralisProfitabilitySummary(addr, _moralisProfitChain, 'all')
+        const _attempt = { ..._res, chain: _moralisProfitChain }
+        _providerProfitAttempts.push(_attempt)
+        if (_res.attempted || _res.cacheHit) {
+          _trackCall('moralis', 'profitability_summary', _res.cacheHit, `moralis:profitability:${_moralisProfitChain}:${addrNorm}:all`)
+        }
+      } catch {
+        _providerProfitAttempts.push({ chain: _moralisProfitChain, summary: null, attempted: true, usable: false, cacheHit: false, reason: 'fetch_failed' })
       }
-    } catch {
-      _providerProfitResult = { summary: null, attempted: true, usable: false, cacheHit: false, reason: 'fetch_failed' }
     }
+    const _usableAttempts = _providerProfitAttempts.filter(a => isUsableProviderPnlSummary(a.summary))
+    _providerProfitResult = _usableAttempts.sort((a, b) =>
+      ((b.summary?.totalTradeVolumeUsd ?? 0) - (a.summary?.totalTradeVolumeUsd ?? 0))
+      || (Math.abs(b.summary?.realizedPnlUsd ?? 0) - Math.abs(a.summary?.realizedPnlUsd ?? 0))
+      || ((b.summary?.totalTrades ?? 0) - (a.summary?.totalTrades ?? 0))
+    )[0] ?? _providerProfitAttempts[0] ?? null
   }
   const _walletScanBudgetDebug = {
     scanMode: historicalCoverage ? 'historical' : activityRequested ? 'deep' : 'basic',
@@ -18182,12 +18206,12 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
           status: 'not_requested', source: 'moralis_profitability_summary',
           totalTrades: null, totalBuys: null, totalSells: null,
           totalTradeVolumeUsd: null, totalBoughtVolumeUsd: null, totalSoldVolumeUsd: null,
-          realizedPnlUsd: null, realizedPnlPercent: null, timeframe: 'all', confidence: 'medium',
+          realizedPnlUsd: null, realizedPnlPercent: null, timeframe: 'all', chain: null, confidence: 'medium',
           warning: 'Provider-level realized PnL. Not reconstructed by ChainLens FIFO.',
           excludedFrom: ['fifo_lots', 'lot_samples'], usedForTraderPnLRead: false,
         }
         ;(snapshot as any).walletMoralisProfitabilityDebug = {
-          attempted: false, reason: 'not_eligible', statusCode: null, cacheHit: false,
+          attempted: false, attemptedChains: [], selectedChain: null, rejectedSummaries: [], reason: 'not_eligible', statusCode: null, cacheHit: false,
           totalTrades: null, realizedPnlUsd: null, usedAsFallback: false,
           skippedReason: !_providerProfitFifoFoundNoLots
             ? 'fifo_lots_already_present'
@@ -18198,9 +18222,10 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       } else {
         const _profitRes = _providerProfitResult
         const _s = _profitRes?.summary ?? null
-        const _usedAsFallback = Boolean(_profitRes?.usable && _s && _s.totalTrades > 0 && _providerProfitFifoFoundNoLots)
+        const _usableProviderSummary = isUsableProviderPnlSummary(_s)
+        const _usedAsFallback = Boolean(_usableProviderSummary && _providerProfitFifoFoundNoLots)
         ;(snapshot as any).walletProviderPnlSummary = {
-          status: _profitRes?.usable && _s ? 'ok' : (_profitRes?.attempted ? 'error' : 'unavailable'),
+          status: _usableProviderSummary ? 'ok' : (_profitRes?.attempted ? 'error' : 'unavailable'),
           source: 'moralis_profitability_summary',
           totalTrades: _s?.totalTrades ?? null,
           totalBuys: _s?.totalBuys ?? null,
@@ -18211,13 +18236,17 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
           realizedPnlUsd: _s?.realizedPnlUsd ?? null,
           realizedPnlPercent: _s?.realizedPnlPercent ?? null,
           timeframe: 'all',
+          chain: _usableProviderSummary ? (_profitRes?.chain ?? null) : null,
           confidence: 'medium',
           warning: 'Provider-level realized PnL. Not reconstructed by ChainLens FIFO.',
           excludedFrom: ['fifo_lots', 'lot_samples'],
           usedForTraderPnLRead: _usedAsFallback,
         }
         ;(snapshot as any).walletMoralisProfitabilityDebug = {
-          attempted: _profitRes?.attempted ?? false,
+          attempted: _providerProfitAttempts.some(a => a.attempted || a.cacheHit),
+          attemptedChains: _providerProfitAttempts.map(a => a.chain),
+          selectedChain: _usableProviderSummary ? (_profitRes?.chain ?? null) : null,
+          rejectedSummaries: _providerProfitAttempts.filter(a => a !== _profitRes || !isUsableProviderPnlSummary(a.summary)).map(a => ({ chain: a.chain, totalTrades: a.summary?.totalTrades ?? null, realizedPnlUsd: a.summary?.realizedPnlUsd ?? null, totalTradeVolumeUsd: a.summary?.totalTradeVolumeUsd ?? null, reason: isUsableProviderPnlSummary(a.summary) ? 'lower_ranked_usable_summary' : (a.reason || 'economically_unusable') })),
           reason: _profitRes?.reason ?? 'unknown',
           statusCode: _profitRes?.httpStatus ?? null,
           cacheHit: _profitRes?.cacheHit ?? false,
@@ -18244,9 +18273,43 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
             snapshot.walletPnlRead.headlineValueUsd = _s.realizedPnlUsd
             snapshot.walletPnlRead.headlineWarning = 'Provider-level summary. ChainLens FIFO lot reconstruction still open check.'
           }
+          if (snapshot.walletLockedPnlRead) {
+            snapshot.walletLockedPnlRead.status = 'locked_insufficient_evidence'
+            snapshot.walletLockedPnlRead.headline = 'Provider PnL available'
+            snapshot.walletLockedPnlRead.reason = 'Provider trade summary available; ChainLens FIFO proof is still open check.'
+          }
+          if (snapshot.walletEvidenceModel) {
+            const em = snapshot.walletEvidenceModel as any
+            em.publicPnlDisplayLabel = 'Provider PnL available'
+            em.publicPnlDisplayReason = 'Provider trade summary available; FIFO reconstruction still open check.'
+            em.publicPnlStatus = 'open_check'
+            em.publicRealizedPnlUsd = _s.realizedPnlUsd
+            em.publicPerformanceRealizedPnlUsd = _s.realizedPnlUsd
+          }
+          if (snapshot.walletTradeStatsSummary) {
+            const ts = snapshot.walletTradeStatsSummary as any
+            ts.economicSignificance = 'open_check'
+            ts.economicSignificanceReason = 'provider_summary_available_fifo_missing'
+            ts.publicPnlDisplayLabel = 'Provider PnL available'
+            ts.publicPnlDisplayReason = 'Provider trade summary available; FIFO reconstruction still open check.'
+            ts.missing = [...(ts.missing ?? []).filter((m: string) => m !== 'non_trader_address_type'), 'fifo_proof_open_check']
+          }
+          if (snapshot.walletPnlBlockerSummary) {
+            snapshot.walletPnlBlockerSummary.headline = 'Provider PnL available — FIFO proof open check.'
+            snapshot.walletPnlBlockerSummary.reasons = ['Provider-level realized PnL exists; ChainLens has not reconstructed verified FIFO lots yet.']
+            snapshot.walletPnlBlockerSummary.nextAction = 'Run a deeper historical scan to reconstruct verified FIFO lots.'
+          }
           if (snapshot.tradeIntelligence) {
             snapshot.tradeIntelligence.profitSkillStatus = 'provider_summary_available'
             snapshot.tradeIntelligence.tradeStyleSummary = 'Provider trade summary available; FIFO reconstruction still open check.'
+          }
+          const _providerSkillTargets = [(snapshot as any).walletPersonality, (snapshot as any).walletBotScore]
+          for (const _target of _providerSkillTargets) {
+            if (_target && typeof _target === 'object') {
+              _target.profitSkillStatus = 'provider_summary_available'
+              if (typeof _target.reason === 'string') _target.reason = _target.reason.replace(/Trader PnL not applicable[^.]*\.?/gi, 'Provider PnL available; FIFO proof is still open check.')
+              if (typeof _target.summary === 'string') _target.summary = _target.summary.replace(/Trader PnL not applicable[^.]*\.?/gi, 'Provider PnL available; FIFO proof is still open check.')
+            }
           }
         }
       }
