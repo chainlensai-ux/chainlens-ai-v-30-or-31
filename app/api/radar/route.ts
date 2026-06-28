@@ -204,9 +204,10 @@ async function getClarkVerdicts(tokens: Omit<RadarToken, 'clarkVerdict'>[]): Pro
 const EMPTY_STATS: RadarStats = { totalNewTokens: 0, averageLiquidity: 0, mostCommonRisk: 'SAFE', dangerCount: 0, cautionCount: 0, watchCount: 0, safeCount: 0 }
 
 const HONEYPOT_CACHE_TTL_MS = 5 * 60 * 1000
-const RADAR_CACHE_TTL_MS = 5 * 60 * 1000
+const RADAR_FULL_CACHE_TTL_MS = 45 * 1000
+const RADAR_SHALLOW_CACHE_TTL_MS = 15 * 1000
 export const DEX_MARKET_CAP_RESCUE_TTL_MS = 2 * 60 * 1000
-const radarPayloadCache = new Map<string, { cachedAt: number; payload: { tokens: RadarToken[]; stats: RadarStats; fetchedAt: string; limitedLiveFeed: boolean; _debug?: Record<string, unknown> } }>()
+const radarPayloadCache = new Map<string, { cachedAt: number; ttlMs: number; payload: { tokens: RadarToken[]; stats: RadarStats; fetchedAt: string; limitedLiveFeed: boolean; mode: 'shallow' | 'full'; _debug?: Record<string, unknown> } }>()
 const honeypotCache = new Map<string, { result: HoneypotResult | null; cachedAt: number }>()
 const honeypotInflight = new Map<string, Promise<HoneypotResult | null>>()
 const dexMarketCapRescueCache = new Map<string, { result: DexScreenerMarketCapRescueResult; cachedAt: number }>()
@@ -295,15 +296,28 @@ export async function GET(req: NextRequest) {
   const minLiquidityUsd = Number(req.nextUrl.searchParams.get('minLiquidityUsd')) || DEFAULT_RADAR_MIN_LIQUIDITY_USD
   const allowFdvFallback = req.nextUrl.searchParams.get('allowFdvFallback') === 'false' ? false : DEFAULT_RADAR_ALLOW_FDV_FALLBACK
   const now = Date.now()
-  const cacheKey = `plan:${plan}:minValuation:${minValuationUsd}:minLiquidity:${minLiquidityUsd}:fdvFallback:${allowFdvFallback}`
-  const cachedPayload = radarPayloadCache.get(cacheKey)
-  if (cachedPayload && now - cachedPayload.cachedAt <= RADAR_CACHE_TTL_MS) {
+  const requestedMode: 'shallow' | 'full' = req.nextUrl.searchParams.get('mode') === 'full' ? 'full' : 'shallow'
+  const cacheKeyBase = `plan:${plan}:minValuation:${minValuationUsd}:minLiquidity:${minLiquidityUsd}:fdvFallback:${allowFdvFallback}`
+  const fullCacheKey = `${cacheKeyBase}:mode:full`
+  const shallowCacheKey = `${cacheKeyBase}:mode:shallow`
+  const preferredCacheKey = requestedMode === 'full' ? fullCacheKey : shallowCacheKey
+  const fullCachedPayload = radarPayloadCache.get(fullCacheKey)
+  if (fullCachedPayload && now - fullCachedPayload.cachedAt <= fullCachedPayload.ttlMs) {
+    const payload = fullCachedPayload.payload
+    return NextResponse.json({
+      ...payload,
+      ...(debug ? { _debug: { ...(payload._debug ?? {}), cacheHit: true, cacheMode: 'full', effectivePlan: plan, upsellVisible: false } } : {}),
+    })
+  }
+  const cachedPayload = radarPayloadCache.get(preferredCacheKey)
+  if (cachedPayload && now - cachedPayload.cachedAt <= cachedPayload.ttlMs) {
     const payload = cachedPayload.payload
     return NextResponse.json({
       ...payload,
-      ...(debug ? { _debug: { ...(payload._debug ?? {}), cacheHit: true, effectivePlan: plan, upsellVisible: false } } : {}),
+      ...(debug ? { _debug: { ...(payload._debug ?? {}), cacheHit: true, cacheMode: requestedMode, effectivePlan: plan, upsellVisible: false } } : {}),
     })
   }
+  const shallowMode = requestedMode === 'shallow'
 
   const sourceSpecs = [
     { key: 'new_p1', url: 'https://api.geckoterminal.com/api/v2/networks/base/new_pools?page=1&include=base_token%2Cquote_token&per_page=20' },
@@ -321,7 +335,7 @@ export async function GET(req: NextRequest) {
     try {
       const result = await getOrFetchCached<Record<string, unknown>>({
         key: `coingecko:base-radar:${spec.key}`,
-        ttlMs: RADAR_CACHE_TTL_MS,
+        ttlMs: shallowMode ? RADAR_SHALLOW_CACHE_TTL_MS : RADAR_FULL_CACHE_TTL_MS,
         onLog: msg => console.info(`[radar] ${msg}`),
         fetcher: async () => {
           const ac = new AbortController()
@@ -461,15 +475,18 @@ export async function GET(req: NextRequest) {
     })
     const toCheck = candidates.slice(0, 50)
 
-    // 2. Honeypot checks in parallel with 5s timeout each
-    const hpCacheHitFlags = toCheck.map(t => { const c = honeypotCache.get(t.contract.toLowerCase()); return !!(c && Date.now() - c.cachedAt <= HONEYPOT_CACHE_TTL_MS) })
-    const hpResults = await Promise.allSettled(
+    // 2. Full mode runs honeypot/simulation enrichment; shallow mode keeps the
+    // feed to market data plus basic risk flags and does not invent evidence.
+    const hpCacheHitFlags = shallowMode ? [] : toCheck.map(t => { const c = honeypotCache.get(t.contract.toLowerCase()); return !!(c && Date.now() - c.cachedAt <= HONEYPOT_CACHE_TTL_MS) })
+    const hpResults = shallowMode ? [] : await Promise.allSettled(
       toCheck.map(t => withTimeout(getCachedHoneypot(t.contract, true), 5000, null))
     )
 
     const scored: Candidate[] = toCheck.map((token, i) => {
-      const hp = hpResults[i].status === 'fulfilled' ? hpResults[i].value : null
-      const simulation = getRadarSimulationDisplay({ contract: token.contract, liquidityUsd: token.liquidityUsd, pairAddress: token.pairAddress ?? null, honeypot: hp })
+      const hp = shallowMode ? null : hpResults[i]?.status === 'fulfilled' ? hpResults[i].value : null
+      const simulation = shallowMode
+        ? { status: 'open_check' as const, reason: null, label: 'Buy/sell simulation not checked in shallow mode', cortexLine: 'Simulation evidence not fetched in shallow mode.' }
+        : getRadarSimulationDisplay({ contract: token.contract, liquidityUsd: token.liquidityUsd, pairAddress: token.pairAddress ?? null, honeypot: hp })
       return {
         ...token,
         honeypot: hp,
@@ -488,9 +505,9 @@ export async function GET(req: NextRequest) {
       }
     })
 
-    // 3. Clark verdicts for top 5 by liquidity
-    const top5     = [...scored].sort((a, b) => b.liquidityUsd - a.liquidityUsd).slice(0, 5)
-    const verdicts = await getClarkVerdicts(top5)
+    // 3. Clark verdicts for top 5 by liquidity. Shallow mode skips AI verdicts.
+    const top5     = shallowMode ? [] : [...scored].sort((a, b) => b.liquidityUsd - a.liquidityUsd).slice(0, 5)
+    const verdicts = shallowMode ? new Map<string, string>() : await getClarkVerdicts(top5)
 
     // 4. Final output — newest first for live feed
     const tokens: RadarToken[] = [...scored]
@@ -521,7 +538,7 @@ export async function GET(req: NextRequest) {
 
     const limitedLiveFeed = tokens.length > 0 && tokens.length < 5
     const hpHitCount = hpCacheHitFlags.filter(Boolean).length
-    const payload = { tokens, stats, fetchedAt: new Date().toISOString(), limitedLiveFeed }
+    const payload = { tokens, stats, fetchedAt: new Date().toISOString(), limitedLiveFeed, mode: requestedMode }
     const debugPayload = {
       sourcesAttempted,
       sourcesSucceeded,
@@ -530,12 +547,13 @@ export async function GET(req: NextRequest) {
       filters: { minValuationUsd, minLiquidityUsd, allowFdvFallback },
       finalTokenCount: tokens.length,
       cacheHit: false,
+      mode: requestedMode,
       effectivePlan: plan,
       upsellVisible: false,
       honeypotCacheHits: hpHitCount,
       honeypotCacheMisses: hpCacheHitFlags.length - hpHitCount,
     }
-    radarPayloadCache.set(cacheKey, { cachedAt: Date.now(), payload: { ...payload, _debug: debugPayload } })
+    radarPayloadCache.set(preferredCacheKey, { cachedAt: Date.now(), ttlMs: shallowMode ? RADAR_SHALLOW_CACHE_TTL_MS : RADAR_FULL_CACHE_TTL_MS, payload: { ...payload, _debug: debugPayload } })
     return NextResponse.json({ ...payload, ...(debug ? { _debug: debugPayload } : {}) })
   } catch (err) {
     console.error('[radar] processing error:', err)
