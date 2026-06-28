@@ -291,6 +291,84 @@ export async function fetchMoralisTransfers(
   try { return await run } finally { _transfersInFlight.delete(cacheKey) }
 }
 
+// ── Wallet Profitability Summary (provider-level realized PnL, not lot-level) ──
+export type MoralisProfitabilitySummary = {
+  totalTrades: number
+  totalBuys: number
+  totalSells: number
+  totalTradeVolumeUsd: number
+  totalBoughtVolumeUsd: number
+  totalSoldVolumeUsd: number
+  realizedPnlUsd: number
+  realizedPnlPercent: number
+}
+
+export type MoralisProfitabilityFetchResult = {
+  summary: MoralisProfitabilitySummary | null
+  attempted: boolean
+  usable: boolean
+  cacheHit: boolean
+  reason: string
+  httpStatus?: number | null
+}
+
+const MORALIS_PROFITABILITY_TTL_MS = 30 * 60 * 1000
+const _profitabilityCache = new Map<string, { summary: MoralisProfitabilitySummary; cachedAt: number }>()
+const _profitabilityInFlight = new Map<string, Promise<MoralisProfitabilityFetchResult>>()
+
+export async function fetchMoralisProfitabilitySummary(
+  address: string,
+  chain: MoralisChain,
+  timeframe: 'all' | '7' | '30' | '60' | '90' = 'all',
+): Promise<MoralisProfitabilityFetchResult> {
+  const apiKey = process.env.MORALIS_API_KEY ?? ''
+  if (!apiKey) return { summary: null, attempted: false, usable: false, cacheHit: false, reason: 'not_configured' }
+
+  const cacheKey = `moralis:profitability:${chain}:${address.toLowerCase()}:${timeframe}`
+  const hit = _profitabilityCache.get(cacheKey)
+  if (hit && Date.now() - hit.cachedAt <= MORALIS_PROFITABILITY_TTL_MS) {
+    return { summary: hit.summary, attempted: false, usable: true, cacheHit: true, reason: '' }
+  }
+
+  const inflight = _profitabilityInFlight.get(cacheKey)
+  if (inflight) return inflight
+
+  const url = `https://deep-index.moralis.io/api/v2.2/wallets/${address}/profitability/summary?chain=${CHAIN_PARAM[chain]}&days=${timeframe}`
+
+  const run = (async (): Promise<MoralisProfitabilityFetchResult> => {
+    try {
+      const res = await fetch(url, {
+        headers: { 'X-API-Key': apiKey, Accept: 'application/json' },
+        cache: 'no-store',
+        signal: AbortSignal.timeout(6_000),
+      })
+      if (!res.ok) {
+        return { summary: null, attempted: true, usable: false, cacheHit: false, reason: `http_${res.status}`, httpStatus: res.status }
+      }
+      const json: unknown = await res.json()
+      const raw = (json ?? {}) as Record<string, unknown>
+      const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
+      const summary: MoralisProfitabilitySummary = {
+        totalTrades: num(raw.total_count_of_trades),
+        totalBuys: num(raw.total_buys),
+        totalSells: num(raw.total_sells),
+        totalTradeVolumeUsd: num(raw.total_trade_volume),
+        totalBoughtVolumeUsd: num(raw.total_buy_volume ?? raw.total_bought_volume_usd),
+        totalSoldVolumeUsd: num(raw.total_sell_volume ?? raw.total_sold_volume_usd),
+        realizedPnlUsd: num(raw.total_realized_profit_usd),
+        realizedPnlPercent: num(raw.total_realized_profit_percentage),
+      }
+      _profitabilityCache.set(cacheKey, { summary, cachedAt: Date.now() })
+      return { summary, attempted: true, usable: true, cacheHit: false, reason: '', httpStatus: res.status }
+    } catch {
+      return { summary: null, attempted: true, usable: false, cacheHit: false, reason: 'fetch_failed' }
+    }
+  })()
+
+  _profitabilityInFlight.set(cacheKey, run)
+  try { return await run } finally { _profitabilityInFlight.delete(cacheKey) }
+}
+
 // ── Paginated ERC20 Transfer History (deep/recovery scans only) ────────────
 // MORALIS-PAGINATION-1: loops fetchMoralisTransfers() following its cursor, bounded by an event
 // cap (default 500-1500, never 5000 unless admin/debug) and a page cap, so a deep/recovery scan

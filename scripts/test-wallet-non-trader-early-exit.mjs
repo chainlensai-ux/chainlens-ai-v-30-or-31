@@ -61,4 +61,20 @@ assert.match(route, /const nonTraderEarlyExit = payload\.walletNoPnlReason === '
 assert.match(route, /if \(nonTraderEarlyExit\) \{\s*\n\s*stage = 'final'\s*\n\s*finalPnlReady = false\s*\n\s*finalRecoveryReady = true\s*\n\s*finalHeavyModulesPending = \[\]\s*\n\s*\}/, 'route.ts forces stage=final, pnlReady=false, recoveryReady=true, heavyModulesPending=[] for a non-trader wallet')
 assert.match(route, /skippedReason: 'non_trader_address_type: trade reconstruction and historical recovery were skipped/, 'route.ts records a skipped-reason note for the non-trader case')
 
+// WALLET-PROVIDER-PNL-SUMMARY-1: a wallet with zero FIFO closed lots but a Moralis profitability
+// summary proving real trade history (the 0x4dbb-style case: 0 raw closed lots, 77 provider trades)
+// must suppress the no-PnL/non-trader verdict instead of reporting 0 trades, while never mixing the
+// provider summary into FIFO/public-grade lot stats.
+assert.match(snap, /const _providerProfitFifoFoundNoLots = _rawMatchedClosedLotsFinal === 0/, 'provider PnL summary fallback is gated on zero raw FIFO closed lots')
+assert.match(snap, /const _providerProfitEligible = _providerProfitFifoFoundNoLots && \(totalValue >= 1000 \|\| debug \|\| deepScan\) && _providerProfitBudgetOk/, 'provider PnL summary fallback requires zero FIFO lots, a value/debug/deepScan trigger, and budget headroom')
+assert.match(snap, /const _usedAsFallback = Boolean\(_profitRes\?\.usable && _s && _s\.totalTrades > 0 && _providerProfitFifoFoundNoLots\)/, 'provider PnL summary is only used as a fallback when the provider reports trades and FIFO found none')
+assert.match(snap, /walletNoPnlReason = 'provider_summary_available_fifo_missing'/, 'provider-trade-proven wallets get provider_summary_available_fifo_missing instead of a non-trader/no-PnL verdict')
+assert.match(snap, /snapshot\.walletPnlRead\.displayMode = 'provider_summary'/, 'walletPnlRead.displayMode switches to provider_summary when the Moralis fallback is used')
+assert.match(snap, /walletProviderPnlSummary\?:/, 'WalletSnapshot exposes walletProviderPnlSummary')
+assert.match(snap, /walletMoralisProfitabilityDebug\?:/, 'WalletSnapshot exposes walletMoralisProfitabilityDebug')
+assert.match(snap, /usedForTraderPnLRead: boolean/, 'walletProviderPnlSummary exposes usedForTraderPnLRead')
+// No fake FIFO lots are created by this fallback — it only reads from _rawMatchedClosedLotsFinal,
+// it never pushes synthetic lots into _closedLots/_syntheticLotsAfterSourceLots.
+assert.doesNotMatch(snap, /_closedLots\.push\(.*moralis_profitability/i, 'provider PnL summary fallback never fabricates FIFO closed lots')
+
 console.log('wallet non-trader early-exit checks passed')

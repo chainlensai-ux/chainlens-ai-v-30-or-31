@@ -1,4 +1,4 @@
-import { fetchMoralisBalances, fetchMoralisTransfers, fetchMoralisTransfersPaginated, type MoralisFetchResult, type MoralisChain, type MoralisTransferItem } from './moralis'
+import { fetchMoralisBalances, fetchMoralisTransfers, fetchMoralisTransfersPaginated, fetchMoralisProfitabilitySummary, type MoralisFetchResult, type MoralisChain, type MoralisTransferItem, type MoralisProfitabilitySummary } from './moralis'
 import { computeWalletProfile, type WalletProfile } from './walletIdentity'
 
 export { computeWalletProfile, type WalletProfile }
@@ -386,7 +386,7 @@ export type WalletSnapshot = {
   // with real activity/holdings/estimates never displays as flatly "no PnL." No new provider calls;
   // every field below reuses values already assembled elsewhere in this function.
   walletPnlRead?: {
-    displayMode: 'official_realized' | 'limited_sample' | 'open_position_only' | 'estimated_transfer_flow_only' | 'raw_reconstruction_locked' | 'activity_only' | 'not_applicable'
+    displayMode: 'official_realized' | 'limited_sample' | 'open_position_only' | 'estimated_transfer_flow_only' | 'raw_reconstruction_locked' | 'activity_only' | 'not_applicable' | 'provider_summary'
     headlineLabel: string
     headlineValueUsd: number | null
     headlineWarning: string | null
@@ -510,6 +510,37 @@ export type WalletSnapshot = {
     dominantTokenSymbols: string[]
     nonTraderEarlyExitSuppressed: boolean
   }
+  // WALLET-PROVIDER-PNL-SUMMARY-1: a provider-level (Moralis) realized-PnL summary used only as a
+  // fallback display when ChainLens's own FIFO reconstruction found zero closed lots but the
+  // provider proves real trading activity exists. This is NOT lot-level data — never mixed with
+  // FIFO/public-grade lots, never used for win rate/profit skill/wallet score.
+  walletProviderPnlSummary?: {
+    status: 'ok' | 'unavailable' | 'error' | 'not_requested'
+    source: 'moralis_profitability_summary'
+    totalTrades: number | null
+    totalBuys: number | null
+    totalSells: number | null
+    totalTradeVolumeUsd: number | null
+    totalBoughtVolumeUsd: number | null
+    totalSoldVolumeUsd: number | null
+    realizedPnlUsd: number | null
+    realizedPnlPercent: number | null
+    timeframe: 'all' | '7' | '30' | '60' | '90'
+    confidence: 'medium'
+    warning: string
+    excludedFrom: string[]
+    usedForTraderPnLRead: boolean
+  }
+  walletMoralisProfitabilityDebug?: {
+    attempted: boolean
+    reason: string
+    statusCode: number | null
+    cacheHit: boolean
+    totalTrades: number | null
+    realizedPnlUsd: number | null
+    usedAsFallback: boolean
+    skippedReason: string | null
+  }
   // PUBLIC-READ-MODEL-CLEANUP-1: a single, final public-facing summary that never confuses verified
   // PnL with behavior intelligence. behaviorLots is sourced from tradeIntelligence.tradeIntelLots
   // (trade-style/rotation evidence, never gated by PnL integrity) — it is NEVER the same count as
@@ -586,7 +617,7 @@ export type WalletSnapshot = {
     riskStyle?: string
     tradeStyleSummary?: string
     evidenceQuality?: 'high' | 'medium' | 'low'
-    profitSkillStatus?: 'near_flat_not_proven' | 'integrity_invalid_not_proven' | 'locked_small_sample' | 'unlocked' | 'not_applicable'
+    profitSkillStatus?: 'near_flat_not_proven' | 'integrity_invalid_not_proven' | 'locked_small_sample' | 'unlocked' | 'not_applicable' | 'provider_summary_available'
   }
   walletEvidenceSummary: {
     status: 'ready' | 'partial' | 'missing_hashes' | 'no_events' | 'provider_unavailable' | 'not_requested'
@@ -819,7 +850,7 @@ export type WalletSnapshot = {
   // either because the address itself isn't a trader (non_trader_address_type) or because a
   // normal_wallet's real activity didn't produce closed FIFO lots for one of several precise
   // reasons. Never set when public PnL is actually available.
-  walletNoPnlReason?: 'non_trader_address_type' | 'no_wallet_initiated_transactions' | 'no_swap_candidates' | 'transfer_or_airdrop_only_activity' | 'missing_counterparty_direction_data' | 'budget_capped_before_recovery' | 'historical_recovery_needed' | 'unsupported_router_or_unparsed_receipts' | 'relayed_trader_needs_deeper_reconstruction'
+  walletNoPnlReason?: 'non_trader_address_type' | 'no_wallet_initiated_transactions' | 'no_swap_candidates' | 'transfer_or_airdrop_only_activity' | 'missing_counterparty_direction_data' | 'budget_capped_before_recovery' | 'historical_recovery_needed' | 'unsupported_router_or_unparsed_receipts' | 'relayed_trader_needs_deeper_reconstruction' | 'provider_summary_available_fifo_missing'
   walletNoPnlReasonLabel?: string
   walletNoPnlNextAction?: string
   walletNoPnlCanRecover?: boolean
@@ -2479,6 +2510,7 @@ function isVerifiedNativeQuoteLeg(chain: string, symbol: string): boolean {
 const CREDIT_TABLE: Record<string, number> = {
   'moralis:erc20_holdings': 1,
   'moralis:erc20_transfers': 1,
+  'moralis:profitability_summary': 1,
   'goldrush:balances_v2': 1,
   'goldrush:transactions_v3': 1,
   'goldrush:log_events_by_address': 1,
@@ -16234,6 +16266,26 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _hardCapHitFinal = !_adminOverrideUsed && _creditsUsedFinal >= _totalCreditHardCap
   // budgetCapHit must never be false while hardCapHit is true — hard cap hit implies budget cap hit.
   const _budgetCapHitFinal = _hardCapHitFinal || _creditsUsedFinal >= _totalCreditHardCap || _historicalBudgetCapHit
+
+  // WALLET-PROVIDER-PNL-SUMMARY-1: fetch (if eligible) happens here, ahead of the apiAudit build
+  // below, so the credit is correctly counted in apiAudit.totalCredits. Only attempted when our own
+  // FIFO reconstruction found zero closed lots and the wallet is high-value (or a debug/deep scan),
+  // and only when doing so would not push the scan over its own credit hard cap.
+  let _providerProfitResult: Awaited<ReturnType<typeof fetchMoralisProfitabilitySummary>> | null = null
+  const _providerProfitFifoFoundNoLots = _rawMatchedClosedLotsFinal === 0
+  const _providerProfitBudgetOk = _adminOverrideUsed || _creditsUsedFinal < _totalCreditHardCap
+  const _providerProfitEligible = _providerProfitFifoFoundNoLots && (totalValue >= 1000 || debug || deepScan) && _providerProfitBudgetOk
+  if (_providerProfitEligible) {
+    try {
+      const _moralisProfitChain: MoralisChain = (requestedChain as MoralisChain) ?? 'base'
+      _providerProfitResult = await fetchMoralisProfitabilitySummary(addr, _moralisProfitChain, 'all')
+      if (_providerProfitResult.attempted || _providerProfitResult.cacheHit) {
+        _trackCall('moralis', 'profitability_summary', _providerProfitResult.cacheHit, `moralis:profitability:${_moralisProfitChain}:${addrNorm}:all`)
+      }
+    } catch {
+      _providerProfitResult = { summary: null, attempted: true, usable: false, cacheHit: false, reason: 'fetch_failed' }
+    }
+  }
   const _walletScanBudgetDebug = {
     scanMode: historicalCoverage ? 'historical' : activityRequested ? 'deep' : 'basic',
     requestedHistoricalScan: historicalCoverage,
@@ -16362,7 +16414,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // discovery vs. activity ingestion vs. price-at-time inference vs. historical recovery) rather
   // than just which provider billed them, since two scans with identical totalCredits can have
   // very different cost profiles (e.g. one all-historical-recovery, one all-multi-chain-holdings).
-  const _purposeOfEntry = (e: _ApiCallEntry): 'holdings' | 'activity' | 'pricing' | 'historical_recovery' | 'portfolio' | 'other' => {
+  const _purposeOfEntry = (e: _ApiCallEntry): 'holdings' | 'activity' | 'pricing' | 'historical_recovery' | 'portfolio' | 'provider_pnl_summary' | 'other' => {
+    if (e.endpoint === 'profitability_summary') return 'provider_pnl_summary'
     if (e.provider === 'zerion') return 'portfolio'
     if (e.endpoint === 'historical_by_addresses_v2') return 'pricing'
     if (e.endpoint === 'log_events_by_address') return 'historical_recovery'
@@ -16371,7 +16424,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     return 'other'
   }
   const _liveLog = _apiCallLog.filter(e => !e.cacheHit && !e.duplicate)
-  const _costByPurpose = { holdings: 0, activity: 0, pricing: 0, historical_recovery: 0, portfolio: 0, other: 0 }
+  const _costByPurpose = { holdings: 0, activity: 0, pricing: 0, historical_recovery: 0, portfolio: 0, provider_pnl_summary: 0, other: 0 }
   for (const e of _liveLog) _costByPurpose[_purposeOfEntry(e)] += e.credits
   const _zerionLiveCount = _liveCalls('zerion').length
   const _apiAudit = {
@@ -18115,6 +18168,90 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         ;(snapshot as any).walletNoPnlNextAction = _noPnlNextAction
         ;(snapshot as any).walletNoPnlCanRecover = _canRecover
       }
+    }
+
+    // WALLET-PROVIDER-PNL-SUMMARY-1: Moralis profitability-summary fallback. ChainLens's own FIFO
+    // reconstruction sometimes finds zero closed lots for a wallet that routes trades through a
+    // relayer/contract or a router our recovery doesn't yet parse, even though the wallet really is
+    // a trader. Only attempted when our own read is otherwise open_check/not_applicable/0-lot, and
+    // only for high-value wallets (or debug/deep scans) to avoid provider spam. Never mixed with
+    // FIFO/public-grade lots — surfaced purely as a separate provider-level summary.
+    try {
+      if (!_providerProfitEligible) {
+        ;(snapshot as any).walletProviderPnlSummary = {
+          status: 'not_requested', source: 'moralis_profitability_summary',
+          totalTrades: null, totalBuys: null, totalSells: null,
+          totalTradeVolumeUsd: null, totalBoughtVolumeUsd: null, totalSoldVolumeUsd: null,
+          realizedPnlUsd: null, realizedPnlPercent: null, timeframe: 'all', confidence: 'medium',
+          warning: 'Provider-level realized PnL. Not reconstructed by ChainLens FIFO.',
+          excludedFrom: ['fifo_lots', 'lot_samples'], usedForTraderPnLRead: false,
+        }
+        ;(snapshot as any).walletMoralisProfitabilityDebug = {
+          attempted: false, reason: 'not_eligible', statusCode: null, cacheHit: false,
+          totalTrades: null, realizedPnlUsd: null, usedAsFallback: false,
+          skippedReason: !_providerProfitFifoFoundNoLots
+            ? 'fifo_lots_already_present'
+            : !_providerProfitBudgetOk
+              ? 'credit_hard_cap_reached'
+              : 'wallet_value_below_threshold',
+        }
+      } else {
+        const _profitRes = _providerProfitResult
+        const _s = _profitRes?.summary ?? null
+        const _usedAsFallback = Boolean(_profitRes?.usable && _s && _s.totalTrades > 0 && _providerProfitFifoFoundNoLots)
+        ;(snapshot as any).walletProviderPnlSummary = {
+          status: _profitRes?.usable && _s ? 'ok' : (_profitRes?.attempted ? 'error' : 'unavailable'),
+          source: 'moralis_profitability_summary',
+          totalTrades: _s?.totalTrades ?? null,
+          totalBuys: _s?.totalBuys ?? null,
+          totalSells: _s?.totalSells ?? null,
+          totalTradeVolumeUsd: _s?.totalTradeVolumeUsd ?? null,
+          totalBoughtVolumeUsd: _s?.totalBoughtVolumeUsd ?? null,
+          totalSoldVolumeUsd: _s?.totalSoldVolumeUsd ?? null,
+          realizedPnlUsd: _s?.realizedPnlUsd ?? null,
+          realizedPnlPercent: _s?.realizedPnlPercent ?? null,
+          timeframe: 'all',
+          confidence: 'medium',
+          warning: 'Provider-level realized PnL. Not reconstructed by ChainLens FIFO.',
+          excludedFrom: ['fifo_lots', 'lot_samples'],
+          usedForTraderPnLRead: _usedAsFallback,
+        }
+        ;(snapshot as any).walletMoralisProfitabilityDebug = {
+          attempted: _profitRes?.attempted ?? false,
+          reason: _profitRes?.reason ?? 'unknown',
+          statusCode: _profitRes?.httpStatus ?? null,
+          cacheHit: _profitRes?.cacheHit ?? false,
+          totalTrades: _s?.totalTrades ?? null,
+          realizedPnlUsd: _s?.realizedPnlUsd ?? null,
+          usedAsFallback: _usedAsFallback,
+          skippedReason: null,
+        }
+
+        if (_usedAsFallback && _s) {
+          // Suppress the non-trader/no-PnL verdict — the provider proves this is a real trader even
+          // though our own FIFO reconstruction missed the routed/provider trades.
+          ;(snapshot as any).walletNoPnlReason = 'provider_summary_available_fifo_missing'
+          ;(snapshot as any).walletNoPnlReasonLabel = 'Provider PnL available — FIFO reconstruction still open check'
+          ;(snapshot as any).walletNoPnlNextAction = 'Run a deeper historical scan to reconstruct verified FIFO lots.'
+          ;(snapshot as any).walletNoPnlCanRecover = true
+          ;(snapshot as any).publicPnlDisplayLabel = 'Provider PnL available'
+          ;(snapshot as any).publicPnlDisplayReason = 'Provider trade summary available; FIFO reconstruction still open check.'
+          ;(snapshot as any).publicPnlStatus = 'open_check'
+
+          if (snapshot.walletPnlRead) {
+            snapshot.walletPnlRead.displayMode = 'provider_summary'
+            snapshot.walletPnlRead.headlineLabel = 'Provider PnL Summary'
+            snapshot.walletPnlRead.headlineValueUsd = _s.realizedPnlUsd
+            snapshot.walletPnlRead.headlineWarning = 'Provider-level summary. ChainLens FIFO lot reconstruction still open check.'
+          }
+          if (snapshot.tradeIntelligence) {
+            snapshot.tradeIntelligence.profitSkillStatus = 'provider_summary_available'
+            snapshot.tradeIntelligence.tradeStyleSummary = 'Provider trade summary available; FIFO reconstruction still open check.'
+          }
+        }
+      }
+    } catch {
+      // WALLET-PROVIDER-PNL-SUMMARY-1: best-effort additive fallback — never block the snapshot.
     }
 
     // WALLET-PORTFOLIO-PNL-READ-1: mark-to-market portfolio value movement, separate from trader

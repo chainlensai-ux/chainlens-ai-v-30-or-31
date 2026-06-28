@@ -278,8 +278,23 @@ type WalletResult = {
     reason: string
     nextAction: string
   }
+  walletProviderPnlSummary?: {
+    status: 'ok' | 'unavailable' | 'error' | 'not_requested'
+    source: 'moralis_profitability_summary'
+    totalTrades: number | null
+    totalBuys: number | null
+    totalSells: number | null
+    totalTradeVolumeUsd: number | null
+    totalBoughtVolumeUsd: number | null
+    totalSoldVolumeUsd: number | null
+    realizedPnlUsd: number | null
+    realizedPnlPercent: number | null
+    timeframe: 'all' | '7' | '30' | '60' | '90'
+    warning: string
+    usedForTraderPnLRead: boolean
+  }
   walletPnlRead?: {
-    displayMode: 'official_realized' | 'limited_sample' | 'open_position_only' | 'estimated_transfer_flow_only' | 'raw_reconstruction_locked' | 'activity_only'
+    displayMode: 'official_realized' | 'limited_sample' | 'open_position_only' | 'estimated_transfer_flow_only' | 'raw_reconstruction_locked' | 'activity_only' | 'provider_summary'
     headlineLabel: string
     headlineValueUsd: number | null
     headlineWarning: string | null
@@ -353,7 +368,7 @@ type WalletResult = {
     blockedByCostGuard?: boolean
     costGuardReason?: string
   }
-  walletNoPnlReason?: 'non_trader_address_type' | 'no_wallet_initiated_transactions' | 'no_swap_candidates' | 'transfer_or_airdrop_only_activity' | 'missing_counterparty_direction_data' | 'budget_capped_before_recovery' | 'historical_recovery_needed' | 'unsupported_router_or_unparsed_receipts' | 'relayed_trader_needs_deeper_reconstruction'
+  walletNoPnlReason?: 'non_trader_address_type' | 'no_wallet_initiated_transactions' | 'no_swap_candidates' | 'transfer_or_airdrop_only_activity' | 'missing_counterparty_direction_data' | 'budget_capped_before_recovery' | 'historical_recovery_needed' | 'unsupported_router_or_unparsed_receipts' | 'relayed_trader_needs_deeper_reconstruction' | 'provider_summary_available_fifo_missing'
   walletNoPnlReasonLabel?: string
   walletNoPnlNextAction?: string
   walletNoPnlCanRecover?: boolean
@@ -2910,6 +2925,7 @@ export default function WalletScannerPage() {
                   estimated_transfer_flow_only: { title: 'Estimated transfer-flow PnL', body: 'Estimated only — not verified from matched swap cost basis.' },
                   raw_reconstruction_locked: { title: 'Raw lots found, but locked', body: pr.rawReconstruction.lockedReason },
                   activity_only: { title: 'Activity found — no PnL yet', body: 'No closed lots or priced positions are available yet.' },
+                  provider_summary: { title: 'Provider PnL Summary', body: 'Provider-level summary. ChainLens FIFO lot reconstruction still open check.' },
                 }
                 const hasTitle = (x: unknown): x is { title: string; body: string } =>
                   !!x && typeof x === 'object' && typeof (x as any).title === 'string'
@@ -2933,12 +2949,28 @@ export default function WalletScannerPage() {
                         Estimated PnL: {fmtUsd(pr.estimatedTransferFlow.realizedPnlUsd) ?? 'n/a'}, not verified
                       </p>
                     )}
+                    {pr.displayMode === 'provider_summary' && result.walletProviderPnlSummary && (() => {
+                      const ps = result.walletProviderPnlSummary
+                      return (
+                        <>
+                          <p style={{ marginTop: '6px', fontSize: '10px', color: 'rgba(255,255,255,0.35)' }}>
+                            Realized PnL: {fmtUsd(ps.realizedPnlUsd) ?? 'n/a'}{ps.realizedPnlPercent !== null ? ` (${ps.realizedPnlPercent >= 0 ? '+' : ''}${ps.realizedPnlPercent.toFixed(1)}%)` : ''}
+                          </p>
+                          <p style={{ marginTop: '4px', fontSize: '10px', color: 'rgba(255,255,255,0.35)' }}>
+                            Trades: {ps.totalTrades ?? 'n/a'} ({ps.totalBuys ?? 'n/a'} buys / {ps.totalSells ?? 'n/a'} sells), Volume: {ps.totalTradeVolumeUsd !== null ? `$${ps.totalTradeVolumeUsd.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : 'n/a'}
+                          </p>
+                          <p style={{ marginTop: '6px', fontSize: '10px', color: '#fbbf24' }}>
+                            Provider-level summary. ChainLens FIFO lot reconstruction still open check.
+                          </p>
+                        </>
+                      )
+                    })()}
                     {(pr.displayMode === 'raw_reconstruction_locked' || pr.rawReconstruction.rawClosedLots > 0) && (
                       <p style={{ marginTop: '4px', fontSize: '10px', color: 'rgba(255,255,255,0.35)' }}>
                         Raw lots found: {pr.rawReconstruction.rawClosedLots}, excluded: {pr.rawReconstruction.excludedClosedLots}
                       </p>
                     )}
-                    {pr.displayMode !== 'official_realized' && (
+                    {pr.displayMode !== 'official_realized' && pr.displayMode !== 'provider_summary' && (
                       <p style={{ marginTop: '4px', fontSize: '10px', color: 'rgba(255,255,255,0.35)' }}>
                         Realized stats locked: {pr.officialRealized.reason || 'integrity failed / flat price / synthetic cost basis'}
                       </p>
