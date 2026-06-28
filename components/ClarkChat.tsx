@@ -351,6 +351,67 @@ export default function ClarkChat({
           0%, 100% { box-shadow: 0 0 6px rgba(45,212,191,0.80), 0 0 14px rgba(45,212,191,0.40); opacity: 1; }
           50%       { box-shadow: 0 0 12px rgba(45,212,191,1.0), 0 0 24px rgba(45,212,191,0.65); opacity: 0.85; }
         }
+        @keyframes clarkShellGlow {
+          0%, 100% { box-shadow: 0 0 40px rgba(45,212,191,0.10), 0 0 70px rgba(139,92,246,0.08), inset 0 1px 0 rgba(255,255,255,0.04); }
+          50%       { box-shadow: 0 0 56px rgba(45,212,191,0.18), 0 0 90px rgba(139,92,246,0.14), inset 0 1px 0 rgba(255,255,255,0.06); }
+        }
+        .clark-chat-glow-shell {
+          position: relative;
+          border-radius: 24px;
+          background: linear-gradient(135deg, rgba(45,212,191,0.55), rgba(139,92,246,0.45));
+          padding: 1.5px;
+          animation: clarkShellGlow 5s ease-in-out infinite;
+        }
+        .clark-chat-glow-inner {
+          border-radius: 22.5px;
+          overflow: hidden;
+        }
+        .clark-bubble-fade {
+          animation: clarkBubbleIn 0.32s cubic-bezier(0.22, 1, 0.36, 1) both;
+        }
+        @keyframes clarkBubbleIn {
+          0%   { opacity: 0; transform: translateY(6px) scale(0.985); }
+          100% { opacity: 1; transform: translateY(0) scale(1); }
+        }
+        .clark-bubble-glass {
+          backdrop-filter: blur(18px) saturate(140%);
+          -webkit-backdrop-filter: blur(18px) saturate(140%);
+        }
+        @keyframes clarkWaveA {
+          0%, 100% { transform: translateY(0) scale(1); opacity: 0.55; }
+          50%       { transform: translateY(-5px) scale(1.18); opacity: 1; }
+        }
+        @keyframes clarkWaveB {
+          0%, 100% { transform: translateY(0) scale(1); opacity: 0.45; }
+          50%       { transform: translateY(-5px) scale(1.18); opacity: 0.95; }
+        }
+        @keyframes clarkWaveC {
+          0%, 100% { transform: translateY(0) scale(1); opacity: 0.55; }
+          50%       { transform: translateY(-5px) scale(1.18); opacity: 1; }
+        }
+        @keyframes clarkTypingOrbPulse {
+          0%, 100% { box-shadow: 0 0 12px rgba(45,212,191,0.55), 0 0 26px rgba(139,92,246,0.35); }
+          50%       { box-shadow: 0 0 20px rgba(45,212,191,0.85), 0 0 38px rgba(139,92,246,0.55); }
+        }
+        .clark-typing-orb {
+          width: 13px; height: 13px; border-radius: 50%;
+          background: linear-gradient(135deg, #4ef2c5, #8b5cf6);
+          animation: clarkTypingOrbPulse 1.8s ease-in-out infinite;
+          flex-shrink: 0;
+        }
+        .clark-typing-wave { display: inline-flex; align-items: center; gap: 4px; }
+        .clark-typing-wave span {
+          width: 5px; height: 5px; border-radius: 50%;
+          background: linear-gradient(135deg, #4ef2c5, #8b5cf6);
+        }
+        .clark-typing-wave span:nth-child(1) { animation: clarkWaveA 1.2s ease-in-out infinite; }
+        .clark-typing-wave span:nth-child(2) { animation: clarkWaveB 1.2s ease-in-out infinite 0.15s; }
+        .clark-typing-wave span:nth-child(3) { animation: clarkWaveC 1.2s ease-in-out infinite 0.3s; }
+        @media (prefers-reduced-motion: reduce) {
+          .clark-chat-glow-shell, .clark-typing-orb, .clark-typing-wave span, .clark-bubble-fade {
+            animation: none !important;
+          }
+        }
         @media (max-width: 768px) {
           .clark-chat-shell { padding-bottom: 96px; }
           .clark-chat-input-row {
@@ -430,10 +491,15 @@ export default function ClarkChat({
         )}
 
         {/* ── Chat UI ──────────────────────────────────── */}
-        {mode !== 'hero' && <div className="clark-chat-shell" style={{
+        {mode !== 'hero' && <div
+          className={mode === 'chat-only' ? 'clark-chat-glow-shell' : undefined}
+          style={mode === 'chat-only' ? { flex: 1, minHeight: 0, margin: '12px', maxWidth: '880px', width: 'calc(100% - 24px)', alignSelf: 'center' } : undefined}
+        >
+        <div className={`clark-chat-shell${mode === 'chat-only' ? ' clark-chat-glow-inner' : ''}`} style={{
           display: 'flex', flexDirection: 'column',
           flex: mode === 'chat-only' ? 1 : 'none',
-          minHeight: 0,
+          minHeight: mode === 'chat-only' ? '640px' : 0,
+          height: mode === 'chat-only' ? '100%' : undefined,
           position: 'relative',
           borderTop: mode !== 'chat-only' ? '1px solid rgba(123,92,255,0.14)' : 'none',
           background: mode === 'chat-only' ? '#06060e' : 'rgba(5,8,22,0.80)',
@@ -483,8 +549,8 @@ export default function ClarkChat({
               flex: mode === 'chat-only' ? 1 : 'none',
               height: mode === 'chat-only' ? undefined : 'min(380px, 48vh)',
               overflowY: 'auto',
-              padding: mode === 'chat-only' ? '20px 16px' : '16px 20px',
-              display: 'flex', flexDirection: 'column', gap: '14px',
+              padding: mode === 'chat-only' ? '32px 28px' : '16px 20px',
+              display: 'flex', flexDirection: 'column', gap: '22px',
               minHeight: 0,
               position: 'relative', zIndex: 1,
             }}
@@ -507,46 +573,49 @@ export default function ClarkChat({
               return (
                 <div
                   key={i}
+                  className="clark-bubble-fade"
                   style={{
                     display: 'flex',
                     justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start',
                   }}
                 >
-                  {msg.role === 'clark' && <div style={{ flexShrink: 0, marginRight: '8px', alignSelf: 'flex-end', marginBottom: '4px' }}><ClarkOrb thinking={isThinking} /></div>}
+                  {msg.role === 'clark' && <div style={{ flexShrink: 0, marginRight: '10px', alignSelf: 'flex-end', marginBottom: '4px' }}><ClarkOrb thinking={isThinking} /></div>}
 
                   {isThinking ? (
-                    <div style={{
-                      border: '1px solid rgba(255,255,255,0.10)',
-                      borderRadius: '12px',
-                      padding: '10px 16px',
-                      display: 'flex', alignItems: 'center', gap: '8px',
+                    <div className="clark-bubble-glass" style={{
+                      border: '1px solid rgba(139,92,246,0.22)',
+                      borderRadius: '16px',
+                      padding: '14px 20px',
+                      display: 'flex', alignItems: 'center', gap: '12px',
+                      background: 'linear-gradient(135deg, rgba(45,212,191,0.08), rgba(139,92,246,0.10))',
                       animation: 'clarkThinkingShimmer 2s ease-in-out infinite',
                     }}>
-                      <ClarkOrb thinking />
-                      <span style={{ fontSize: '12px', color: 'rgba(255,255,255,0.58)', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.04em' }}>Clark is thinking…</span>
+                      <span className="clark-typing-orb" />
+                      <span className="clark-typing-wave"><span /><span /><span /></span>
+                      <span style={{ fontSize: '13px', color: 'rgba(255,255,255,0.62)', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.04em' }}>Clark is thinking…</span>
                     </div>
                   ) : (
-                    <div style={{
+                    <div className="clark-bubble-glass" style={{
                       maxWidth: '88%',
-                      paddingTop: '10px',
-                      paddingBottom: '10px',
-                      paddingRight: '14px',
-                      paddingLeft: msg.role === 'clark' ? '12px' : '14px',
+                      paddingTop: '18px',
+                      paddingBottom: '18px',
+                      paddingRight: '22px',
+                      paddingLeft: '22px',
                       borderRadius: msg.role === 'user'
-                        ? '14px 14px 3px 14px'
-                        : '14px 14px 14px 3px',
+                        ? '18px 18px 4px 18px'
+                        : '18px 18px 18px 4px',
                       background: msg.role === 'user'
-                        ? 'rgba(45,212,191,0.10)'
-                        : 'rgba(123,92,255,0.10)',
-                      borderTop: `1px solid ${msg.role === 'user' ? 'rgba(45,212,191,0.18)' : 'rgba(123,92,255,0.18)'}`,
-                      borderRight: `1px solid ${msg.role === 'user' ? 'rgba(45,212,191,0.18)' : 'rgba(123,92,255,0.18)'}`,
-                      borderBottom: `1px solid ${msg.role === 'user' ? 'rgba(45,212,191,0.18)' : 'rgba(123,92,255,0.18)'}`,
-                      borderLeft: msg.role === 'clark'
-                        ? '2px solid rgba(0,82,255,0.40)'
-                        : '1px solid rgba(45,212,191,0.18)',
-                      color: '#dde4f0',
-                      fontSize: msg.role === 'clark' ? '15px' : '12.5px',
-                      lineHeight: msg.role === 'clark' ? 1.75 : 1.65,
+                        ? 'linear-gradient(135deg, rgba(45,212,191,0.14), rgba(15,23,42,0.62))'
+                        : 'linear-gradient(135deg, rgba(123,92,255,0.13), rgba(15,23,42,0.66) 55%, rgba(45,212,191,0.08))',
+                      border: msg.role === 'user'
+                        ? '1px solid rgba(45,212,191,0.26)'
+                        : '1px solid rgba(139,92,246,0.26)',
+                      boxShadow: msg.role === 'clark'
+                        ? '0 0 24px rgba(139,92,246,0.16), 0 0 40px rgba(45,212,191,0.08), inset 0 1px 0 rgba(255,255,255,0.05)'
+                        : 'inset 0 1px 0 rgba(255,255,255,0.04)',
+                      color: '#e7ecf6',
+                      fontSize: msg.role === 'clark' ? '17px' : '16px',
+                      lineHeight: 1.5,
                       fontFamily: msg.text.startsWith('{') || msg.text.startsWith('[')
                         ? 'var(--font-plex-mono)'
                         : 'var(--font-inter), Inter, sans-serif',
@@ -641,6 +710,7 @@ export default function ClarkChat({
               </div>
             </div>
           )}
+        </div>
         </div>}
 
       </div>
