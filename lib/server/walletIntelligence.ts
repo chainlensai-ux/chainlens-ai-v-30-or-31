@@ -32,7 +32,7 @@ export type WalletPersonalityResult = {
   summary: string
   basis: 'behavior_only' | 'pnl_verified'
   pnlUsed: boolean
-  profitSkillStatus: 'not_proven' | 'integrity_invalid_not_proven' | 'unlocked'
+  profitSkillStatus: 'not_proven' | 'integrity_invalid_not_proven' | 'unlocked' | 'not_applicable'
   signals?: string[]
   limitations?: string[]
 }

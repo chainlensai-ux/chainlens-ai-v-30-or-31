@@ -101,6 +101,7 @@ export function computeWalletProfile(snapshot: WalletSnapshot): WalletProfile {
   const signals: string[] = []
   const strengths: string[] = []
   const weaknesses: string[] = []
+  const isNonTraderAddressType = (snapshot as any).walletNoPnlReason === 'non_trader_address_type'
 
   const totalValueUsd = Number.isFinite(snapshot.totalValue) ? snapshot.totalValue : 0
   const holdings = Array.isArray(snapshot.holdings) ? snapshot.holdings : []
@@ -265,20 +266,21 @@ export function computeWalletProfile(snapshot: WalletSnapshot): WalletProfile {
     if (portfolioConfidence === 'high' && evidenceCoverage >= 60 && highConfidenceInputs >= 1) confidence = 'high'
     else if (portfolioBehavior || evidenceCoverage >= 55) confidence = 'medium'
     else confidence = 'low'
-    signals.push(profitSkillLocked
-      ? `Wallet score ${score}/100 (grade ${grade}) from portfolio quality, diversification, activity evidence, and chain exposure. Profit skill is not scored because public PnL is locked.`
-      : `Wallet score ${score}/100 (grade ${grade}) from portfolio quality, diversification, activity quality, PnL quality, and chain intelligence.`)
+    signals.push(isNonTraderAddressType
+      ? `Wallet score ${score}/100 (grade ${grade}) from portfolio quality, diversification, activity evidence, and chain exposure. Trader PnL not applicable for this address type.`
+      : profitSkillLocked
+        ? `Wallet score ${score}/100 (grade ${grade}) from portfolio quality, diversification, activity evidence, and chain exposure. Profit skill is not scored because public PnL is locked.`
+        : `Wallet score ${score}/100 (grade ${grade}) from portfolio quality, diversification, activity quality, PnL quality, and chain intelligence.`)
   }
 
   if (portfolioBehavior) strengths.push(`${portfolioBehavior} supported by current holdings/portfolio evidence.`)
   if (tradingBehavior) strengths.push(`${tradingBehavior} supported by closed-lot/trade evidence.`)
   if (chainCount >= 3) strengths.push(`Multi-chain exposure across ${chainCount} chains.`)
-  const isNonTraderAddressTypeForWeaknesses = (snapshot as any).walletNoPnlReason === 'non_trader_address_type'
-  if (!isNonTraderAddressTypeForWeaknesses && tradingConfidence === 'low') weaknesses.push('Trading confidence is low because meaningful verified trade evidence is missing or weak.')
+  if (!isNonTraderAddressType && tradingConfidence === 'low') weaknesses.push('Trading confidence is low because meaningful verified trade evidence is missing or weak.')
   if (!portfolioBehavior) weaknesses.push('Portfolio behavior is unclassified because supported portfolio thresholds were not met.')
   if (concentrationLabel === 'high') weaknesses.push('Portfolio concentration is high.')
   if (!hasHoldings) weaknesses.push('No priced holdings were available in this snapshot.')
-  if (isNonTraderAddressTypeForWeaknesses) weaknesses.push('Trader PnL not applicable — this address does not show wallet-initiated trading activity.')
+  if (isNonTraderAddressType) weaknesses.push('Trader PnL not applicable — this address does not show wallet-initiated trading activity.')
 
   // PROFIT-HONESTY: a readable trade style does NOT mean the wallet's profit skill is proven.
   // Keep followability Low whenever public PnL is near-flat/limited, PnL integrity is invalid,
@@ -287,7 +289,6 @@ export function computeWalletProfile(snapshot: WalletSnapshot): WalletProfile {
   const realizedNearZero = realizedPnlUsd == null || Math.abs(realizedPnlUsd) < 1
   const profitNotProven = tradingLockedByPublicPnl || pnlIntegrityStatus === 'invalid' || publicPnlStatus === 'near_flat_verified_sample' || realizedNearZero
   const followability: WalletProfile['followability'] = profitNotProven ? 'Low' : tradingBehavior && tradingConfidence !== 'low' && score != null && score >= 70 ? 'High' : portfolioBehavior && score != null && score >= 55 ? 'Moderate' : 'Low'
-  const isNonTraderAddressType = (snapshot as any).walletNoPnlReason === 'non_trader_address_type'
   const nextAction = isNonTraderAddressType
     ? 'Trader PnL not applicable — this wallet looks like a holder/distributor/treasury address, not an active trading wallet. Portfolio and flow read are available.'
     : pnlIntegrityStatus === 'invalid'

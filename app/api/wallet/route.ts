@@ -1459,6 +1459,11 @@ export async function POST(req: Request) {
         botClassification: snapshot.walletBotScore?.classification ?? null,
       }
     )
+    if ((snapshot as any).walletNoPnlReason === 'non_trader_address_type' && snapshot.walletPersonality) {
+      snapshot.walletPersonality.profitSkillStatus = 'not_applicable'
+      snapshot.walletPersonality.summary = 'Trader PnL not applicable — this wallet looks like a holder/distributor/treasury address, not an active trading wallet.'
+      snapshot.walletPersonality.limitations = ['Trader PnL not applicable for this address type.']
+    }
     // Windowed PnL is public-facing, so it must exclude synthetic/cost-basis-missing lots —
     // a synthetic break-even lot showing $0 PnL would otherwise look like a verified real result.
     const _realBackedLotsForWindows = _performanceLotsForIntelligence

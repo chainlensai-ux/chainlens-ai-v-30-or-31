@@ -386,7 +386,7 @@ export type WalletSnapshot = {
   // with real activity/holdings/estimates never displays as flatly "no PnL." No new provider calls;
   // every field below reuses values already assembled elsewhere in this function.
   walletPnlRead?: {
-    displayMode: 'official_realized' | 'limited_sample' | 'open_position_only' | 'estimated_transfer_flow_only' | 'raw_reconstruction_locked' | 'activity_only'
+    displayMode: 'official_realized' | 'limited_sample' | 'open_position_only' | 'estimated_transfer_flow_only' | 'raw_reconstruction_locked' | 'activity_only' | 'not_applicable'
     headlineLabel: string
     headlineValueUsd: number | null
     headlineWarning: string | null
@@ -493,7 +493,7 @@ export type WalletSnapshot = {
     riskStyle?: string
     tradeStyleSummary?: string
     evidenceQuality?: 'high' | 'medium' | 'low'
-    profitSkillStatus?: 'near_flat_not_proven' | 'integrity_invalid_not_proven' | 'locked_small_sample' | 'unlocked'
+    profitSkillStatus?: 'near_flat_not_proven' | 'integrity_invalid_not_proven' | 'locked_small_sample' | 'unlocked' | 'not_applicable'
   }
   walletEvidenceSummary: {
     status: 'ready' | 'partial' | 'missing_hashes' | 'no_events' | 'provider_unavailable' | 'not_requested'
@@ -17736,17 +17736,19 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       && (Number.isFinite((estimatedPnl as any)?.realizedPnlUsd) || Number.isFinite((estimatedPnl as any)?.unrealizedPnlUsd))
       && _pnlReadIntegrityInvalid
     const _pnlReadRawReconstructionOnly = !_pnlReadOfficialAvailable && !_pnlReadLimitedSampleAvailable && !_pnlReadOpenPositionAvailable && !_pnlReadEstimatedTransferAvailable && _rawMatchedClosedLotsFinal > 0
-    const _pnlReadDisplayMode: NonNullable<WalletSnapshot['walletPnlRead']>['displayMode'] = _pnlReadOfficialAvailable
-      ? 'official_realized'
-      : _pnlReadLimitedSampleAvailable
-        ? 'limited_sample'
-        : _pnlReadOpenPositionAvailable
-          ? 'open_position_only'
-          : _pnlReadEstimatedTransferAvailable
-            ? 'estimated_transfer_flow_only'
-            : _pnlReadRawReconstructionOnly
-              ? 'raw_reconstruction_locked'
-              : 'activity_only'
+    const _pnlReadDisplayMode: NonNullable<WalletSnapshot['walletPnlRead']>['displayMode'] = _walletIsContractLikeForPnl
+      ? 'not_applicable'
+      : _pnlReadOfficialAvailable
+        ? 'official_realized'
+        : _pnlReadLimitedSampleAvailable
+          ? 'limited_sample'
+          : _pnlReadOpenPositionAvailable
+            ? 'open_position_only'
+            : _pnlReadEstimatedTransferAvailable
+              ? 'estimated_transfer_flow_only'
+              : _pnlReadRawReconstructionOnly
+                ? 'raw_reconstruction_locked'
+                : 'activity_only'
 
     const _pnlReadTopFailureReasons = Array.from(new Set([
       ..._syntheticLotsAfterSourceLots.some(l => l.evidence?.entrySource === 'synthetic') ? ['synthetic_cost_basis'] : [],
@@ -17797,8 +17799,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       },
       estimatedTransferFlow: {
         available: _pnlReadEstimatedTransferAvailable,
-        realizedPnlUsd: (estimatedPnl as any)?.realizedPnlUsd ?? null,
-        unrealizedPnlUsd: (estimatedPnl as any)?.unrealizedPnlUsd ?? null,
+        realizedPnlUsd: _walletIsContractLikeForPnl ? null : ((estimatedPnl as any)?.realizedPnlUsd ?? null),
+        unrealizedPnlUsd: _walletIsContractLikeForPnl ? null : ((estimatedPnl as any)?.unrealizedPnlUsd ?? null),
         coveragePercent: (estimatedPnl as any)?.coveragePercent ?? null,
         confidence: (estimatedPnl as any)?.confidence ?? null,
         source: (estimatedPnl as any)?.source ?? null,
@@ -17886,8 +17888,21 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       const _contractLikeLabel = 'Trader PnL not applicable'
       const _contractLikeReason = 'This wallet looks like a holder/distributor/treasury address, not an active trading wallet. Portfolio and flow read are available.'
       if (snapshot.tradeIntelligence) {
-        snapshot.tradeIntelligence.profitSkillStatus = 'integrity_invalid_not_proven'
+        snapshot.tradeIntelligence.profitSkillStatus = 'not_applicable'
         snapshot.tradeIntelligence.tradeStyleSummary = `Trader PnL not applicable — this wallet looks like a holder/distributor/treasury address, not an active trading wallet. Portfolio and flow read are available.`
+      }
+      if (snapshot.walletEvidenceModel) {
+        const em = snapshot.walletEvidenceModel as any
+        em.publicPnlDisplayLabel = _contractLikeLabel
+        em.publicPnlDisplayReason = _contractLikeReason
+        em.publicPnlStatus = 'open_check'
+        em.publicRealizedPnlUsd = null
+        em.publicPerformanceRealizedPnlUsd = null
+      }
+      if (snapshot.estimatedPnl) {
+        ;(snapshot.estimatedPnl as any).realizedPnlUsd = null
+        ;(snapshot.estimatedPnl as any).unrealizedPnlUsd = null
+        ;(snapshot.estimatedPnl as any).totalEstimatedPnlUsd = null
       }
       ;(snapshot as any).publicPnlStatus = 'open_check'
       ;(snapshot as any).publicPnlDisplayLabel = _contractLikeLabel
