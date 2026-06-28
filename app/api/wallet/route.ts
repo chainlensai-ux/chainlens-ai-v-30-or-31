@@ -915,58 +915,24 @@ export async function POST(req: Request) {
       if (mode === 'blocked_by_cost_guard') return 'Historical scan cached due to cost guard — wallet has heavy history.'
       return undefined
     }
-    const recoverHistoricalFromCachedPayload = async (cachedPayload: any, cacheAgeSeconds: number, cacheBackend: 'memory' | 'persistent') => {
+    // CACHE-FAST-PATH-1: a true route-level cache hit must never re-run the full snapshot pipeline
+    // (FIFO, swap detection, activity normalization, historical recovery) just to discover that it
+    // would have made zero live provider calls — that CPU-bound recompute was the actual cost of a
+    // "cached" response taking ~13s despite a ~600ms cache read. On a genuine cache hit we only do
+    // cheap, in-memory decoration (quality/status annotation) and never attempt live recovery.
+    let _lastCacheDecorationSkippedRecovery = false
+    const recoverHistoricalFromCachedPayload = (cachedPayload: any, cacheAgeSeconds: number, _cacheBackend: 'memory' | 'persistent') => {
       const quality = getPnlCacheQuality(cachedPayload)
       annotatePnlCacheQuality(cachedPayload, quality)
       const signals = getWalletPnlRecoverySignals(cachedPayload)
-      const canTryHistorical = deepActivity && quality !== 'complete' && !signals.historicalRequested && !cooldownActive && !costGuardHit
-      if (!canTryHistorical) return normalizePublicPnlStatus(cachedPayload)
-      const tier = signals.walletValueTier
-      const probeBudget = buildPublicWalletScanBudget('historical', true, tier, adminOverrideRequested)
-      if (probeBudget.totalCreditHardCap <= 0) {
-        cachedPayload.walletHistoricalRecoveryStatus = 'blocked'
-        cachedPayload.walletHistoricalRecoveryReason = 'budget_hard_cap_blocks_recovery'
-        return normalizePublicPnlStatus(cachedPayload)
-      }
-      try {
-        const recovered: any = await fetchWalletSnapshot(address ?? '', {
-          refresh,
-          chain,
-          deepScan: true,
-          deepActivity: true,
-          chainMode: resolvedChainMode,
-          historicalCoverage: true,
-          maxHistoricalPages,
-          maxFallbackPages,
-          walletScanBudget: probeBudget,
-        } satisfies WalletSnapshotOptions)
-        recovered.pnlCacheQuality = getPnlCacheQuality(recovered)
-        if (_hadLiveHistoricalCalls(recovered)) {
-          recovered.walletScanCostMode = 'historical_live'
-          recovered.walletScanCacheNote = 'Historical PnL recovery ran because the cached deep scan had partial trade coverage.'
-          recovered.walletHistoricalRecoveryStatus = 'attempted'
-          recovered.walletHistoricalRecoveryReason = `cached_${cacheBackend}_needed_historical_recovery`
-          recovered.dataFreshness = 'live'
-        } else {
-          recovered.walletScanCostMode = 'cached_preview_only'
-          recovered.walletScanCacheNote = 'Cached preview only — no live historical recovery calls were made.'
-          recovered.walletHistoricalRecoveryStatus = 'not_attempted'
-          recovered.walletHistoricalRecoveryReason = 'cached_snapshot_no_live_historical_calls'
-          recovered.dataFreshness = 'cached'
-          if (!adminOverrideRequested) {
-            recovered.walletRecoveryRecommendation = { recommended: false, mode: 'none', targetTokens: [], reason: 'cached_snapshot_no_live_recovery', estimatedExtraPages: 0 }
-          }
-        }
-        recovered.cacheAgeSeconds = cacheAgeSeconds
-        return normalizePublicPnlStatus(recovered)
-      } catch {
-        cachedPayload.walletHistoricalRecoveryStatus = 'needed'
-        cachedPayload.walletHistoricalRecoveryReason = 'historical_recovery_attempt_failed'
-        return normalizePublicPnlStatus(cachedPayload)
-      }
+      const wouldHaveTriedHistorical = deepActivity && quality !== 'complete' && !signals.historicalRequested && !cooldownActive && !costGuardHit
+      _lastCacheDecorationSkippedRecovery = wouldHaveTriedHistorical
+      cachedPayload.cacheAgeSeconds = cacheAgeSeconds
+      return normalizePublicPnlStatus(cachedPayload)
     }
 
     if (cached && cached.exp > Date.now()) {
+      const _postCacheDecorationStartedAt = Date.now()
       const cacheAgeSeconds = Math.floor((Date.now() - cached.cachedAt) / 1000)
       let cp: any = normalizeCachedFreshness(typeof cached.payload === 'object' && cached.payload ? { ...(cached.payload as any), dataFreshness: 'cached', cacheAgeSeconds } : cached.payload)
       if (cp && typeof cp === 'object') {
@@ -976,13 +942,18 @@ export async function POST(req: Request) {
         if (cp.walletHistoricalCoverage) cp.walletHistoricalCoverage = { ...cp.walletHistoricalCoverage, cacheHit: true }
         const note = getCacheNote(costMode, cacheAgeSeconds)
         if (note) cp.walletScanCacheNote = note
-        cp = await recoverHistoricalFromCachedPayload(cp, cacheAgeSeconds, 'memory')
+        cp = recoverHistoricalFromCachedPayload(cp, cacheAgeSeconds, 'memory')
       }
+      const _postCacheDecorationMs = Date.now() - _postCacheDecorationStartedAt
+      const _providerCallsSkippedBecauseCacheHit = _lastCacheDecorationSkippedRecovery ? 1 : 0
       const _deepCooldownExpiry = walletDeepCooldown.get(deepCooldownKey) ?? 0
       const _cooldownExpiresInSeconds = _deepCooldownExpiry > Date.now() ? Math.floor((_deepCooldownExpiry - Date.now()) / 1000) : null
       if (cp && typeof cp === 'object' && debug) cp._debug = {
         routeName: '/api/wallet', cacheHit: true, cacheMode,
         requestDurationMs: Date.now() - startedAt,
+        cacheHitEarlyReturn: true,
+        postCacheDecorationMs: _postCacheDecorationMs,
+        providerCallsSkippedBecauseCacheHit: _providerCallsSkippedBecauseCacheHit,
         walletSnapshotCache: { memoryHit: !cacheBypassReason, memoryPresent: true, memoryBypassed: Boolean(cacheBypassReason), servedFromMemory: !cacheBypassReason, persistentHit: false, providerFetchNeeded: false, refreshBypassedCache: Boolean(cacheBypassReason), cacheAgeSeconds, cacheTtlSeconds: (effectiveHistoricalCoverage ? WALLET_HISTORICAL_CACHE_TTL_MS : deepActivity ? WALLET_DEEP_CACHE_TTL_MS : WALLET_BASIC_CACHE_TTL_MS) / 1000, cacheVersion: WALLET_SNAPSHOT_SCHEMA_VERSION, cacheBypassReason, debugFreshBypassedPersistentCache },
         providerFlow: null,
         walletScanBudgetDebug: cp?._cachedDiagnosticsSlim?.walletScanBudgetDebug ?? null,
@@ -1154,6 +1125,7 @@ export async function POST(req: Request) {
           walletCache.set(cacheKey, { exp: persCache.expiresAt.getTime(), payload: persCache.payload, cachedAt: persCache.createdAt.getTime() })
           if (!deepCooldownActive) walletDeepCooldown.set(deepCooldownKey, persCache.createdAt.getTime() + WALLET_DEEP_COOLDOWN_MS)
 
+          const _postCacheDecorationStartedAt = Date.now()
           const cacheAgeSeconds = Math.floor((Date.now() - persCache.createdAt.getTime()) / 1000)
           let cp: any = normalizeCachedFreshness(typeof persCache.payload === 'object' && persCache.payload
             ? { ...(persCache.payload as any), dataFreshness: 'cached', cacheAgeSeconds }
@@ -1163,8 +1135,10 @@ export async function POST(req: Request) {
             cp.walletScanCostMode = costMode
             const note = getCacheNote(costMode, cacheAgeSeconds)
             if (note) cp.walletScanCacheNote = note
-            cp = await recoverHistoricalFromCachedPayload(cp, cacheAgeSeconds, 'persistent')
+            cp = recoverHistoricalFromCachedPayload(cp, cacheAgeSeconds, 'persistent')
           }
+          const _postCacheDecorationMs = Date.now() - _postCacheDecorationStartedAt
+          const _providerCallsSkippedBecauseCacheHit = _lastCacheDecorationSkippedRecovery ? 1 : 0
           const _dce = walletDeepCooldown.get(deepCooldownKey) ?? 0
           const _dces = _dce > Date.now() ? Math.floor((_dce - Date.now()) / 1000) : null
           if (cp && typeof cp === 'object' && debug) {
@@ -1172,6 +1146,9 @@ export async function POST(req: Request) {
             cp._debug = {
               routeName: '/api/wallet', cacheHit: true, cacheMode,
               requestDurationMs: Date.now() - startedAt,
+              cacheHitEarlyReturn: true,
+              postCacheDecorationMs: _postCacheDecorationMs,
+              providerCallsSkippedBecauseCacheHit: _providerCallsSkippedBecauseCacheHit,
               walletSnapshotCache: { memoryHit: false, persistentHit: true, providerFetchNeeded: false, refreshBypassedCache: Boolean(cacheBypassReason), cacheAgeSeconds, cacheTtlSeconds: WALLET_DEEP_CACHE_TTL_MS / 1000, cacheVersion: WALLET_SNAPSHOT_SCHEMA_VERSION, cacheBypassReason, debugFreshBypassedPersistentCache },
               providerFlow: null,
               walletScanCostDebug: {

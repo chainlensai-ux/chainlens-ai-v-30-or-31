@@ -66,7 +66,7 @@ assert.match(route, /skippedReason: 'non_trader_address_type: trade reconstructi
 // must suppress the no-PnL/non-trader verdict instead of reporting 0 trades, while never mixing the
 // provider summary into FIFO/public-grade lot stats.
 assert.match(snap, /const _providerProfitFifoFoundNoLots = _rawMatchedClosedLotsFinal === 0/, 'provider PnL summary fallback is gated on zero raw FIFO closed lots')
-assert.match(snap, /const _providerProfitEligible = _providerProfitFifoFoundNoLots && \(totalValue >= 1000 \|\| debug \|\| deepScan\) && _providerProfitBudgetOk/, 'provider PnL summary fallback requires zero FIFO lots, a value/debug/deepScan trigger, and budget headroom')
+assert.match(snap, /const _providerProfitEligible = _providerProfitDeepActivityRequested && _providerProfitFifoFoundNoLots && \(totalValue >= 1000 \|\| debug \|\| deepScan\) && _providerProfitBudgetOk/, 'provider PnL summary fallback requires deep activity, zero FIFO lots, a value/debug/deepScan trigger, and budget headroom')
 assert.match(snap, /const _usableProviderSummary = isUsableProviderPnlSummary\(_s\)/, 'provider PnL summary must pass economic usability before it can be used')
 assert.match(snap, /const _usedAsFallback = Boolean\(_usableProviderSummary && _providerProfitFifoFoundNoLots\)/, 'provider PnL summary is only used as a fallback when usable and FIFO found none')
 assert.match(snap, /walletNoPnlReason = 'provider_summary_available_fifo_missing'/, 'provider-trade-proven wallets get provider_summary_available_fifo_missing instead of a non-trader/no-PnL verdict')

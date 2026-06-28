@@ -16314,7 +16314,12 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _providerProfitAttempts: ProviderProfitAttempt[] = []
   const _providerProfitFifoFoundNoLots = _rawMatchedClosedLotsFinal === 0
   const _providerProfitBudgetOk = _adminOverrideUsed || _creditsUsedFinal < _totalCreditHardCap
-  const _providerProfitEligible = _providerProfitFifoFoundNoLots && (totalValue >= 1000 || debug || deepScan) && _providerProfitBudgetOk
+  // WALLET-PNL-BASIC-GATE-1: Provider PnL Summary is a deep-activity-only feature — basic/portfolio
+  // scans (no deepActivity/deepScan/includeActivity requested) must never spend a live
+  // profitability_summary call, regardless of value/debug/budget. Debug alone no longer overrides
+  // a basic scan's deepActivity requirement.
+  const _providerProfitDeepActivityRequested = Boolean(deepScan || deepActivity)
+  const _providerProfitEligible = _providerProfitDeepActivityRequested && _providerProfitFifoFoundNoLots && (totalValue >= 1000 || debug || deepScan) && _providerProfitBudgetOk
   const _providerProfitCandidateChains: MoralisChain[] = []
   const _pushProviderProfitChain = (chain: MoralisChain | null | undefined) => {
     if (chain && supportedMoralisChains.includes(chain) && !_providerProfitCandidateChains.includes(chain)) _providerProfitCandidateChains.push(chain)
@@ -18292,11 +18297,20 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         ;(snapshot as any).walletMoralisProfitabilityDebug = {
           attempted: false, attemptedChains: [], selectedChain: null, rejectedSummaries: [], reason: 'not_eligible', statusCode: null, cacheHit: false,
           totalTrades: null, realizedPnlUsd: null, usedAsFallback: false,
-          skippedReason: !_providerProfitFifoFoundNoLots
-            ? 'fifo_lots_already_present'
-            : !_providerProfitBudgetOk
-              ? 'credit_hard_cap_reached'
-              : 'wallet_value_below_threshold',
+          skippedReason: !_providerProfitDeepActivityRequested
+            ? 'basic_scan_deep_activity_required'
+            : !_providerProfitFifoFoundNoLots
+              ? 'fifo_lots_already_present'
+              : !_providerProfitBudgetOk
+                ? 'credit_hard_cap_reached'
+                : 'wallet_value_below_threshold',
+          providerPnlSkippedReason: !_providerProfitDeepActivityRequested ? 'basic_scan_deep_activity_required' : null,
+          providerPnlLiveCallBlockedInBasic: !_providerProfitDeepActivityRequested,
+          providerPnlReusedFromCache: false,
+        }
+        if (!_providerProfitDeepActivityRequested) {
+          ;(snapshot as any).walletProviderPnlSummary.status = 'not_requested'
+          ;(snapshot as any).walletProviderPnlSummary.skippedReason = 'deep_activity_required'
         }
       } else {
         const _profitRes = _providerProfitResult
@@ -18334,6 +18348,9 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
           realizedPnlUsd: _s?.realizedPnlUsd ?? null,
           usedAsFallback: _usedAsFallback,
           skippedReason: null,
+          providerPnlSkippedReason: null,
+          providerPnlLiveCallBlockedInBasic: false,
+          providerPnlReusedFromCache: Boolean(_profitRes?.cacheHit),
         }
 
         if (_usedAsFallback && _s) {
