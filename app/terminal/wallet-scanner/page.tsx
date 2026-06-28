@@ -330,6 +330,20 @@ type WalletResult = {
     warning?: string | null
     excludedFrom?: string[]
   }
+  walletPortfolioHistoryPnlRead?: {
+    status?: 'ok' | 'partial' | 'unavailable'
+    mode?: 'mark_to_market_history'
+    label?: string
+    currentValueUsd?: number | null
+    periods?: {
+      '24h'?: { status?: 'ok' | 'partial' | 'unavailable'; estimatedChangeUsd?: number | null; estimatedChangePercent?: number | null; basis?: string; reason?: string | null }
+      '14d'?: { status?: 'ok' | 'partial' | 'unavailable'; estimatedChangeUsd?: number | null; estimatedChangePercent?: number | null; basis?: string; reason?: string | null }
+      '30d'?: { status?: 'ok' | 'partial' | 'unavailable'; estimatedChangeUsd?: number | null; estimatedChangePercent?: number | null; basis?: string; reason?: string | null }
+    }
+    basis?: string
+    warning?: string | null
+    excludedFrom?: string[]
+  }
   walletRecoveryRecommendation?: {
     recommended: boolean
     mode: 'targeted_token_recovery' | 'targeted_recovery_attempted' | 'attempted_light' | 'attempted_provider_failed' | 'skipped_cost_guard' | 'skipped_micro_wallet' | 'none'
@@ -2983,9 +2997,55 @@ export default function WalletScannerPage() {
                   <div style={{ padding: '14px 16px', background: 'rgba(255,255,255,0.015)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '12px' }}>
                     <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.16em', color: 'rgba(255,255,255,0.22)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Portfolio P&L</span>
                     <p style={{ marginTop: '6px', fontSize: '11px', color: 'rgba(255,255,255,0.45)' }}>Current value: {currentValueUsd !== null ? `$${currentValueUsd.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : 'n/a'}</p>
-                    {periodRow('24h holdings change', period24h)}
+                    {periodRow('24h holdings movement', period24h)}
                     {periodRow('14d holdings change', period14d)}
                     <p style={{ marginTop: '8px', fontSize: '10px', color: '#fbbf24' }}>Estimated from holdings value changes. Not realized trader PnL.</p>
+                  </div>
+                )
+              })()}
+
+              {/* Portfolio History P&L — adds 14d/30d mark-to-market periods on top of the 24h
+                  holdings-only read above, when a cheap snapshot/history source is available. */}
+              {result.walletPortfolioHistoryPnlRead && (() => {
+                const ph = result.walletPortfolioHistoryPnlRead!
+                type SafeHistoryPeriod = { status: 'ok' | 'partial' | 'unavailable'; estimatedChangeUsd: number | null; estimatedChangePercent: number | null; reason: string | null }
+                const getPortfolioHistoryPeriod = (read: typeof ph | null | undefined, period: '24h' | '14d' | '30d'): SafeHistoryPeriod => {
+                  const fallback: SafeHistoryPeriod = { status: 'unavailable', estimatedChangeUsd: null, estimatedChangePercent: null, reason: null }
+                  if (!read || typeof read !== 'object') return fallback
+                  const p = read.periods && typeof read.periods === 'object' ? read.periods[period] : undefined
+                  if (!p || typeof p !== 'object') return fallback
+                  return {
+                    status: p.status === 'ok' || p.status === 'partial' ? p.status : 'unavailable',
+                    estimatedChangeUsd: typeof p.estimatedChangeUsd === 'number' ? p.estimatedChangeUsd : null,
+                    estimatedChangePercent: typeof p.estimatedChangePercent === 'number' ? p.estimatedChangePercent : null,
+                    reason: typeof p.reason === 'string' ? p.reason : null,
+                  }
+                }
+                const fmtUsd = (v: number | null) => v === null || !Number.isFinite(v) ? null : `${v >= 0 ? '+' : ''}$${Math.abs(v).toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+                const fmtPct = (v: number | null) => v === null || !Number.isFinite(v) ? null : `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`
+                const currentValueUsd = typeof ph.currentValueUsd === 'number' ? ph.currentValueUsd : null
+                const period14d = getPortfolioHistoryPeriod(ph, '14d')
+                const period30d = getPortfolioHistoryPeriod(ph, '30d')
+                const periodRow = (rowLabel: string, p: SafeHistoryPeriod) => (
+                  <div style={{ marginTop: '8px' }}>
+                    <div style={{ display: 'flex', alignItems: 'baseline', gap: '10px', flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: '11px', color: 'rgba(255,255,255,0.55)' }}>{rowLabel}</span>
+                      {p.status === 'unavailable'
+                        ? <span style={{ fontSize: '11px', color: 'rgba(255,255,255,0.35)' }}>unavailable</span>
+                        : <span style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0' }}>{fmtUsd(p.estimatedChangeUsd) ?? 'n/a'}{p.estimatedChangePercent !== null ? ` (${fmtPct(p.estimatedChangePercent)})` : ''}</span>}
+                    </div>
+                    {p.status === 'unavailable' && p.reason && (
+                      <p style={{ marginTop: '2px', fontSize: '10px', color: 'rgba(255,255,255,0.35)' }}>{p.reason}</p>
+                    )}
+                  </div>
+                )
+                return (
+                  <div style={{ padding: '14px 16px', background: 'rgba(255,255,255,0.015)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '12px' }}>
+                    <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.16em', color: 'rgba(255,255,255,0.22)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Portfolio History P&L</span>
+                    <p style={{ marginTop: '6px', fontSize: '11px', color: 'rgba(255,255,255,0.45)' }}>Portfolio value: {currentValueUsd !== null ? `$${currentValueUsd.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : 'n/a'}</p>
+                    {periodRow('14d Portfolio P&L', period14d)}
+                    {periodRow('30d Portfolio P&L', period30d)}
+                    <p style={{ marginTop: '8px', fontSize: '10px', color: '#fbbf24' }}>{typeof ph.warning === 'string' ? ph.warning : 'Mark-to-market portfolio movement. Not realized trader PnL.'}</p>
                   </div>
                 )
               })()}

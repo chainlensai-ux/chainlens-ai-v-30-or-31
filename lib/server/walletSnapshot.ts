@@ -446,6 +446,50 @@ export type WalletSnapshot = {
     warning: string | null
     excludedFrom: string[]
   }
+  // WALLET-PORTFOLIO-HISTORY-PNL-READ-1: portfolio/account value-history mark-to-market read,
+  // distinct from both trader PnL and the holdings-only walletPortfolioPnlRead above. Adds 14d/30d
+  // periods when a cheap existing source (saved snapshot cache, provider-supplied balance history)
+  // is available; otherwise reports those periods honestly as unavailable. Never a provider call by
+  // itself, never feeds win rate, profit skill, or wallet score.
+  walletPortfolioHistoryPnlRead?: {
+    status: 'ok' | 'partial' | 'unavailable'
+    mode: 'mark_to_market_history'
+    label: 'Portfolio History P&L'
+    currentValueUsd: number | null
+    periods: {
+      '24h': {
+        status: 'ok' | 'partial' | 'unavailable'
+        estimatedChangeUsd: number | null
+        estimatedChangePercent: number | null
+        basis: 'portfolio_snapshots' | 'historical_token_balances' | 'current_holdings_only' | 'unavailable'
+        reason: string | null
+      }
+      '14d': {
+        status: 'ok' | 'partial' | 'unavailable'
+        estimatedChangeUsd: number | null
+        estimatedChangePercent: number | null
+        basis: 'portfolio_snapshots' | 'historical_token_balances' | 'current_holdings_only' | 'unavailable'
+        reason: string | null
+      }
+      '30d': {
+        status: 'ok' | 'partial' | 'unavailable'
+        estimatedChangeUsd: number | null
+        estimatedChangePercent: number | null
+        basis: 'portfolio_snapshots' | 'historical_token_balances' | 'current_holdings_only' | 'unavailable'
+        reason: string | null
+      }
+    }
+    basis: 'portfolio_snapshots' | 'historical_token_balances' | 'current_holdings_only' | 'unavailable'
+    warning: string
+    excludedFrom: string[]
+  }
+  walletPortfolioHistoryPnlDebug?: {
+    sourceUsed: 'portfolio_snapshots' | 'historical_token_balances' | 'current_holdings_only' | 'unavailable'
+    snapshotsFound: number
+    periodsAvailable: Array<'24h' | '14d' | '30d'>
+    unavailableReasons: Record<string, string>
+    providerCallsAdded: 0
+  }
   // PUBLIC-READ-MODEL-CLEANUP-1: a single, final public-facing summary that never confuses verified
   // PnL with behavior intelligence. behaviorLots is sourced from tradeIntelligence.tradeIntelLots
   // (trade-style/rotation evidence, never gated by PnL integrity) — it is NEVER the same count as
@@ -18063,6 +18107,54 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
           ? null
           : 'Estimated from holdings value changes. Not realized trader PnL.',
         excludedFrom: ['trader_pnl', 'win_rate', 'profit_skill'],
+      }
+
+      // WALLET-PORTFOLIO-HISTORY-PNL-READ-1: reuses the same holdings-based 24h evidence computed
+      // above. 14d/30d would need a saved portfolio-value-snapshot store or provider-supplied
+      // historical balance/portfolio chart data — neither exists anywhere in this pipeline (the
+      // snapshotMemCache above is a whole-response TTL cache, not a value-history time series, and
+      // no provider response fetched here includes a historical portfolio chart) — so both are
+      // reported honestly as unavailable rather than triggering a new provider call.
+      const _phSourceUsed: 'current_holdings_only' | 'unavailable' = _pfStatus === 'unavailable' ? 'unavailable' : 'current_holdings_only'
+      const _phUnavailableReason = 'Portfolio history needs saved value snapshots or provider-supplied historical balance/portfolio chart data.'
+      const _phPeriod14d30dUnavailable = {
+        status: 'unavailable' as const,
+        estimatedChangeUsd: null as number | null,
+        estimatedChangePercent: null as number | null,
+        basis: 'unavailable' as const,
+        reason: _phUnavailableReason,
+      }
+
+      ;(snapshot as any).walletPortfolioHistoryPnlRead = {
+        status: _pfStatus,
+        mode: 'mark_to_market_history',
+        label: 'Portfolio History P&L',
+        currentValueUsd: _pfCurrentValueUsd > 0 ? Math.round(_pfCurrentValueUsd * 100) / 100 : null,
+        periods: {
+          '24h': {
+            status: _pfStatus,
+            estimatedChangeUsd: _pfStatus === 'unavailable' ? null : Math.round(_pfEstimatedChangeUsd * 100) / 100,
+            estimatedChangePercent: _pfStatus === 'unavailable' ? null : (_pfEstimatedChangePercent != null ? Math.round(_pfEstimatedChangePercent * 100) / 100 : null),
+            basis: _pfStatus === 'unavailable' ? 'unavailable' : 'current_holdings_only',
+            reason: _pfStatus === 'unavailable' ? 'Portfolio P&L needs balance history or prior value snapshots.' : null,
+          },
+          '14d': _phPeriod14d30dUnavailable,
+          '30d': _phPeriod14d30dUnavailable,
+        },
+        basis: _phSourceUsed,
+        warning: 'Mark-to-market portfolio movement. Not realized trader PnL.',
+        excludedFrom: ['trader_pnl', 'win_rate', 'profit_skill'],
+      }
+
+      ;(snapshot as any).walletPortfolioHistoryPnlDebug = {
+        sourceUsed: _phSourceUsed,
+        snapshotsFound: 0,
+        periodsAvailable: _pfStatus === 'unavailable' ? [] : ['24h'],
+        unavailableReasons: {
+          '14d': _phUnavailableReason,
+          '30d': _phUnavailableReason,
+        },
+        providerCallsAdded: 0,
       }
     }
 
