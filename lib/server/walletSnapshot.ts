@@ -17602,6 +17602,11 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     }
     _applyCanonicalPublicPnlDisplay()
 
+    // WALLET-ADDRESS-TYPE-GATE-1 (hoisted earlier still): needed by walletPnlBlockerSummary and
+    // walletPnlRead below, both of which run ahead of the original WALLET-ADDRESS-TYPE-GATE-1 site.
+    const _walletAddressTypeForGate = walletFacts.sourceClassification?.walletAddressType ?? 'unknown'
+    const _walletIsContractLikeForPnl = Boolean(_nonTraderEarlyExit) || _walletAddressTypeForGate === 'token_contract_like' || _walletAddressTypeForGate === 'treasury_or_distributor_like'
+
     snapshot.publicPnlIntegrityGate = {
       applied: _p6GateApplies && (_p6HardInvalid || _p6SoftPartialOnly),
       hardInvalid: _p6HardInvalid,
@@ -17640,20 +17645,24 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
           .filter((s): s is string => Boolean(s)),
       )).slice(0, 10)
 
-      const _blockerStatus: NonNullable<WalletSnapshot['walletPnlBlockerSummary']>['status'] = _blockerOfficialAvailable
-        ? 'ready'
-        : _blockerLockedByGate
-          ? (_blockerRecoverable ? 'locked_recoverable' : 'locked_integrity')
-          : 'locked_insufficient_evidence'
+      const _blockerStatus: NonNullable<WalletSnapshot['walletPnlBlockerSummary']>['status'] = _walletIsContractLikeForPnl
+        ? 'locked_insufficient_evidence'
+        : _blockerOfficialAvailable
+          ? 'ready'
+          : _blockerLockedByGate
+            ? (_blockerRecoverable ? 'locked_recoverable' : 'locked_integrity')
+            : 'locked_insufficient_evidence'
 
-      const _blockerRecoveryMode: NonNullable<WalletSnapshot['walletPnlBlockerSummary']>['recoveryMode'] = !_blockerRecoverable
+      const _blockerRecoveryMode: NonNullable<WalletSnapshot['walletPnlBlockerSummary']>['recoveryMode'] = (_walletIsContractLikeForPnl || !_blockerRecoverable)
         ? 'none'
         : (_p6SyntheticLotCount > 0 || _blockerHistoricalCapHit)
           ? 'deep_history'
           : 'price_evidence'
 
       const _blockerReasons: string[] = []
-      if (_blockerStatus !== 'ready') {
+      if (_walletIsContractLikeForPnl) {
+        _blockerReasons.push('This address does not show wallet-initiated trading activity.')
+      } else if (_blockerStatus !== 'ready') {
         if (_p6SyntheticLotCount > 0) _blockerReasons.push(`${_p6SyntheticLotCount} closed lots are missing real prior-buy cost basis`)
         if (_p6IntegrityErrors.includes('coverage_percent_below_threshold')) _blockerReasons.push('coverage is below public PnL threshold')
         if (_p6IntegrityErrors.includes('pnl_portfolio_delta_mismatch')) _blockerReasons.push('portfolio delta integrity check failed')
@@ -17665,21 +17674,25 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         if (_blockerReasons.length === 0) _blockerReasons.push('verified public-grade sample is too small to show public PnL')
       }
 
-      const _blockerHeadline = _blockerStatus === 'ready'
-        ? 'Public PnL is verified and ready.'
-        : _blockerStatus === 'locked_recoverable'
-          ? `Trade intelligence is ready: ${_verifiedIndependentClosedLotsFinal} verified behavior lots detected. Public PnL is locked because ${_blockerReasons.join('; ')}.`
-          : _blockerStatus === 'locked_integrity'
-            ? `Public PnL is locked because the PnL integrity check failed (${_p6IntegrityErrors.join(', ')}).`
-            : 'Public PnL is locked because there is not yet enough verified evidence to show it.'
+      const _blockerHeadline = _walletIsContractLikeForPnl
+        ? 'Trader PnL not applicable.'
+        : _blockerStatus === 'ready'
+          ? 'Public PnL is verified and ready.'
+          : _blockerStatus === 'locked_recoverable'
+            ? `Trade intelligence is ready: ${_verifiedIndependentClosedLotsFinal} verified behavior lots detected. Public PnL is locked because ${_blockerReasons.join('; ')}.`
+            : _blockerStatus === 'locked_integrity'
+              ? `Public PnL is locked because the PnL integrity check failed (${_p6IntegrityErrors.join(', ')}).`
+              : 'Public PnL is locked because there is not yet enough verified evidence to show it.'
 
-      const _blockerNextAction = _blockerStatus === 'ready'
-        ? 'No action needed.'
-        : _blockerRecoveryMode === 'deep_history'
-          ? 'Run deeper historical recovery for prior buys before showing public PnL.'
-          : _blockerRecoveryMode === 'price_evidence'
-            ? 'Recover additional price evidence before showing public PnL.'
-            : 'No action available — this PnL read is not recoverable.'
+      const _blockerNextAction = _walletIsContractLikeForPnl
+        ? 'No action — this address type is not evaluated for trader PnL.'
+        : _blockerStatus === 'ready'
+          ? 'No action needed.'
+          : _blockerRecoveryMode === 'deep_history'
+            ? 'Run deeper historical recovery for prior buys before showing public PnL.'
+            : _blockerRecoveryMode === 'price_evidence'
+              ? 'Recover additional price evidence before showing public PnL.'
+              : 'No action available — this PnL read is not recoverable.'
 
       snapshot.walletPnlBlockerSummary = {
         status: _blockerStatus,
@@ -17719,7 +17732,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     const _pnlReadOpenPositionAvailable = !_pnlReadOfficialAvailable && !_pnlReadLimitedSampleAvailable &&
       (snapshot.walletOpenPositionPnlRead?.status === 'available' || snapshot.walletOpenPositionPnlRead?.status === 'estimate_only')
     const _pnlReadIntegrityInvalid = _p6HardInvalid || _p6SoftPartialOnly || !_pnlReadOfficialAvailable
-    const _pnlReadEstimatedTransferAvailable = !_pnlReadOfficialAvailable && !_pnlReadLimitedSampleAvailable && !_pnlReadOpenPositionAvailable
+    const _pnlReadEstimatedTransferAvailable = !_walletIsContractLikeForPnl && !_pnlReadOfficialAvailable && !_pnlReadLimitedSampleAvailable && !_pnlReadOpenPositionAvailable
       && (Number.isFinite((estimatedPnl as any)?.realizedPnlUsd) || Number.isFinite((estimatedPnl as any)?.unrealizedPnlUsd))
       && _pnlReadIntegrityInvalid
     const _pnlReadRawReconstructionOnly = !_pnlReadOfficialAvailable && !_pnlReadLimitedSampleAvailable && !_pnlReadOpenPositionAvailable && !_pnlReadEstimatedTransferAvailable && _rawMatchedClosedLotsFinal > 0
@@ -17745,7 +17758,9 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       ? `${_rawMatchedClosedLotsFinal} raw lots reconstructed, but excluded from public PnL (synthetic/flat/estimate-only or integrity-invalid).`
       : 'No raw reconstructed lots are available yet.'
 
-    const _pnlReadHeadline: { label: string; valueUsd: number | null; warning: string | null } = _pnlReadDisplayMode === 'official_realized'
+    const _pnlReadHeadline: { label: string; valueUsd: number | null; warning: string | null } = _walletIsContractLikeForPnl
+      ? { label: 'Trader PnL not applicable', valueUsd: null, warning: null }
+      : _pnlReadDisplayMode === 'official_realized'
       ? { label: 'Realized PnL', valueUsd: _performanceRealizedPnlUsd ?? null, warning: null }
       : _pnlReadDisplayMode === 'limited_sample'
         ? { label: 'Limited public PnL sample', valueUsd: snapshot.publicSamplePerformanceRead?.realizedPnlUsd ?? null, warning: snapshot.publicSamplePerformanceRead?.warning ?? null }
@@ -17809,13 +17824,6 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       excludedFrom: ['official_realized_pnl', 'win_rate', 'profit_skill', 'wallet_score', 'verified_pnl'],
     }
 
-    // WALLET-ADDRESS-TYPE-GATE-1 (hoisted): a token-contract/treasury/distributor-like address, or
-    // one that triggered the non-trader early-exit gate, is never a trader wallet — computed here,
-    // ahead of PUBLIC-READ-MODEL-CLEANUP-1 below, so walletLockedPnlRead reflects it with top
-    // precedence instead of falling through to the generic integrity-locked wording.
-    const _walletAddressTypeForGate = walletFacts.sourceClassification?.walletAddressType ?? 'unknown'
-    const _walletIsContractLikeForPnl = Boolean(_nonTraderEarlyExit) || _walletAddressTypeForGate === 'token_contract_like' || _walletAddressTypeForGate === 'treasury_or_distributor_like'
-
     // PUBLIC-READ-MODEL-CLEANUP-1: final public summary — behaviorLots always reads from
     // tradeIntelligence.tradeIntelLots (never gated by integrity), verifiedPnlLots is the official
     // integrity-gated count. The two are never conflated under one label.
@@ -17859,7 +17867,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
           ...(tradeIntelLots > 0 ? [`${tradeIntelLots} behavior-evidence lots observed (trade style, rotation speed).`] : []),
           ...(_pnlReadOfficialAvailable ? [`${_performanceClosedLotsFinal.length} verified closed lots with public-grade realized PnL.`] : []),
         ],
-        cannotProve: _pnlReadOfficialAvailable ? [] : [
+        cannotProve: _walletIsContractLikeForPnl ? [] : _pnlReadOfficialAvailable ? [] : [
           'Verified realized PnL (profit skill) for this wallet.',
           ...(_lockedIntegrityHardInvalid ? ['PnL integrity check did not pass — underlying lots are not trustworthy enough to publish.'] : []),
         ],

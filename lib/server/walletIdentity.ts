@@ -273,10 +273,12 @@ export function computeWalletProfile(snapshot: WalletSnapshot): WalletProfile {
   if (portfolioBehavior) strengths.push(`${portfolioBehavior} supported by current holdings/portfolio evidence.`)
   if (tradingBehavior) strengths.push(`${tradingBehavior} supported by closed-lot/trade evidence.`)
   if (chainCount >= 3) strengths.push(`Multi-chain exposure across ${chainCount} chains.`)
-  if (tradingConfidence === 'low') weaknesses.push('Trading confidence is low because meaningful verified trade evidence is missing or weak.')
+  const isNonTraderAddressTypeForWeaknesses = (snapshot as any).walletNoPnlReason === 'non_trader_address_type'
+  if (!isNonTraderAddressTypeForWeaknesses && tradingConfidence === 'low') weaknesses.push('Trading confidence is low because meaningful verified trade evidence is missing or weak.')
   if (!portfolioBehavior) weaknesses.push('Portfolio behavior is unclassified because supported portfolio thresholds were not met.')
   if (concentrationLabel === 'high') weaknesses.push('Portfolio concentration is high.')
   if (!hasHoldings) weaknesses.push('No priced holdings were available in this snapshot.')
+  if (isNonTraderAddressTypeForWeaknesses) weaknesses.push('Trader PnL not applicable — this address does not show wallet-initiated trading activity.')
 
   // PROFIT-HONESTY: a readable trade style does NOT mean the wallet's profit skill is proven.
   // Keep followability Low whenever public PnL is near-flat/limited, PnL integrity is invalid,
@@ -285,17 +287,20 @@ export function computeWalletProfile(snapshot: WalletSnapshot): WalletProfile {
   const realizedNearZero = realizedPnlUsd == null || Math.abs(realizedPnlUsd) < 1
   const profitNotProven = tradingLockedByPublicPnl || pnlIntegrityStatus === 'invalid' || publicPnlStatus === 'near_flat_verified_sample' || realizedNearZero
   const followability: WalletProfile['followability'] = profitNotProven ? 'Low' : tradingBehavior && tradingConfidence !== 'low' && score != null && score >= 70 ? 'High' : portfolioBehavior && score != null && score >= 55 ? 'Moderate' : 'Low'
-  const nextAction = pnlIntegrityStatus === 'invalid'
-    ? (tradeIntelUnlocked && tradingBehavior
-      ? 'Use for behavior/style read only; profit skill is not proven because PnL integrity failed.'
-      : 'Use for portfolio read only; profit skill is not proven because PnL integrity failed.')
-    : (tradeIntelUnlocked && tradingBehavior && profitNotProven)
-      ? 'Use for behavior/style read only; profit skill is not proven because public PnL is near-flat and integrity checks are limited.'
-      : tradingLockedByPublicPnl
-        ? 'Use for portfolio read only; trading evidence is locked until more public-grade trades are available.'
-        : tradingConfidence === 'low'
-          ? 'Use this profile for portfolio read only; wait for stronger trade/PnL evidence before copying trades.'
-          : 'Monitor future realized trades and position changes before following.'
+  const isNonTraderAddressType = (snapshot as any).walletNoPnlReason === 'non_trader_address_type'
+  const nextAction = isNonTraderAddressType
+    ? 'Trader PnL not applicable — this wallet looks like a holder/distributor/treasury address, not an active trading wallet. Portfolio and flow read are available.'
+    : pnlIntegrityStatus === 'invalid'
+      ? (tradeIntelUnlocked && tradingBehavior
+        ? 'Use for behavior/style read only; profit skill is not proven because PnL integrity failed.'
+        : 'Use for portfolio read only; profit skill is not proven because PnL integrity failed.')
+      : (tradeIntelUnlocked && tradingBehavior && profitNotProven)
+        ? 'Use for behavior/style read only; profit skill is not proven because public PnL is near-flat and integrity checks are limited.'
+        : tradingLockedByPublicPnl
+          ? 'Use for portfolio read only; trading evidence is locked until more public-grade trades are available.'
+          : tradingConfidence === 'low'
+            ? 'Use this profile for portfolio read only; wait for stronger trade/PnL evidence before copying trades.'
+            : 'Monitor future realized trades and position changes before following.'
 
   const profileSummary = sufficientEvidence
     ? `${chainCount > 1 ? `Multi-chain (${chainCount} chains)` : 'Single-chain'} ${walletCategory?.toLowerCase() ?? 'wallet'}${portfolioBehavior ? ` with ${portfolioBehavior.toLowerCase()} portfolio behavior` : ''}${tradingBehavior ? ` and ${tradingBehavior.toLowerCase()} trading behavior` : '; trading behavior not yet classified'}.`
