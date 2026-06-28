@@ -2923,18 +2923,51 @@ function zerionAuth(): string | null {
   return `Basic ${Buffer.from(`${ZERION_KEY}:`).toString('base64')}`
 }
 
+const ZERION_CACHE_TTL_MS = 120 * 1000
+const _zerionMemCache = new Map<string, { exp: number; data: unknown }>()
+const _zerionInFlight = new Map<string, Promise<unknown>>()
+// debug counters surfaced via apiAudit — never cleared mid-process, read-only diagnostics
+const _zerionCacheDebug = { portfolioCacheHit: 0, positionsCacheHit: 0, inFlightDeduped: 0, callsSavedByCache: 0 }
+
 async function zerionGet(path: string, params: Record<string, string> = {}) {
   const auth = zerionAuth()
   if (!auth) throw new Error('Zerion key not configured')
   const url = new URL(`https://api.zerion.io/v1/${path}`)
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v)
-  const res = await fetch(url.toString(), {
-    headers: { Accept: 'application/json', Authorization: auth },
-    cache: 'no-store',
-    signal: AbortSignal.timeout(10_000),
-  })
-  if (!res.ok) throw new Error(`Zerion ${res.status} ${path}`)
-  return res.json()
+  const cacheKey = url.toString()
+
+  const cached = _zerionMemCache.get(cacheKey)
+  if (cached && cached.exp > Date.now()) {
+    _zerionCacheDebug.callsSavedByCache++
+    if (path.includes('/portfolio/')) _zerionCacheDebug.portfolioCacheHit++
+    else if (path.includes('/positions/')) _zerionCacheDebug.positionsCacheHit++
+    return cached.data
+  }
+
+  const inFlight = _zerionInFlight.get(cacheKey)
+  if (inFlight) {
+    _zerionCacheDebug.inFlightDeduped++
+    _zerionCacheDebug.callsSavedByCache++
+    return inFlight
+  }
+
+  const promise = (async () => {
+    const res = await fetch(url.toString(), {
+      headers: { Accept: 'application/json', Authorization: auth },
+      cache: 'no-store',
+      signal: AbortSignal.timeout(10_000),
+    })
+    if (!res.ok) throw new Error(`Zerion ${res.status} ${path}`)
+    const data = await res.json()
+    _zerionMemCache.set(cacheKey, { exp: Date.now() + ZERION_CACHE_TTL_MS, data })
+    return data
+  })()
+  _zerionInFlight.set(cacheKey, promise)
+  try {
+    return await promise
+  } finally {
+    _zerionInFlight.delete(cacheKey)
+  }
 }
 
 async function alchemyRpc(url: string, method: string, params: unknown[]) {
@@ -16291,8 +16324,22 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   _pushProviderProfitChain('eth')
   _pushProviderProfitChain('base')
   const _providerProfitMaxAttempts = debug ? 3 : 2
+  const _providerProfitCandidatesBeforeCap = _providerProfitCandidateChains.length
+  const _providerProfitCappedChains = _providerProfitCandidateChains.slice(0, _providerProfitMaxAttempts)
+  // COST-SAFE-RANKING-1: in non-debug, candidates are already value-ranked (requestedChain, then
+  // activeChains which derives from discoveredChains' usdValue-descending order). If the most
+  // dominant chain by value already returns a usable Provider PnL Summary, the remaining capped
+  // candidates would only ever be used as a fallback for an unusable dominant result — so skip them
+  // and record the skip explicitly. Debug always attempts every capped candidate (no ranking skip)
+  // so multi-chain behavior in debug is unchanged. Any chain that is attempted and unusable always
+  // falls through to the next candidate within the existing cap — this never skips the only chain
+  // that could have produced a usable summary.
+  const _providerPnlSkippedChains: MoralisChain[] = []
+  let _providerPnlSkipReason: string | null = null
+  let _providerPnlFallbackUsed = false
   if (_providerProfitEligible) {
-    for (const _moralisProfitChain of _providerProfitCandidateChains.slice(0, _providerProfitMaxAttempts)) {
+    for (let _i = 0; _i < _providerProfitCappedChains.length; _i++) {
+      const _moralisProfitChain = _providerProfitCappedChains[_i]
       try {
         const _res = await fetchMoralisProfitabilitySummary(addr, _moralisProfitChain, 'all')
         const _attempt = { ..._res, chain: _moralisProfitChain }
@@ -16300,6 +16347,15 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         if (_res.attempted || _res.cacheHit) {
           _trackCall('moralis', 'profitability_summary', _res.cacheHit, `moralis:profitability:${_moralisProfitChain}:${addrNorm}:all`)
         }
+        if (!debug && _i === 0 && isUsableProviderPnlSummary(_res.summary)) {
+          const _remaining = _providerProfitCappedChains.slice(_i + 1)
+          if (_remaining.length > 0) {
+            _providerPnlSkippedChains.push(..._remaining)
+            _providerPnlSkipReason = 'dominant_chain_already_usable_no_fallback_needed'
+          }
+          break
+        }
+        if (_i > 0) _providerPnlFallbackUsed = true
       } catch {
         _providerProfitAttempts.push({ chain: _moralisProfitChain, summary: null, attempted: true, usable: false, cacheHit: false, reason: 'fetch_failed' })
       }
@@ -16310,6 +16366,13 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       || (Math.abs(b.summary?.realizedPnlUsd ?? 0) - Math.abs(a.summary?.realizedPnlUsd ?? 0))
       || ((b.summary?.totalTrades ?? 0) - (a.summary?.totalTrades ?? 0))
     )[0] ?? _providerProfitAttempts[0] ?? null
+  }
+  const _providerPnlDebug = {
+    providerPnlCandidateChainsBeforeCap: _providerProfitCandidatesBeforeCap,
+    providerPnlCandidateChainsAttempted: _providerProfitAttempts.length,
+    providerPnlSkippedChains: _providerPnlSkippedChains as string[],
+    providerPnlSkipReason: _providerPnlSkipReason,
+    providerPnlFallbackUsed: _providerPnlFallbackUsed,
   }
   const _walletScanBudgetDebug = {
     scanMode: historicalCoverage ? 'historical' : activityRequested ? 'deep' : 'basic',
@@ -16345,6 +16408,16 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     nonTraderEarlyExitReason: _nonTraderEarlyExitReason,
     modulesSkippedForNonTrader: _modulesSkippedForNonTrader,
     creditsPreventedByNonTraderExit: _creditsPreventedByNonTraderExit,
+    ..._providerPnlDebug,
+    // PHASE19-SAFE-SKIP-1: the conditions required to safely skip Phase 19 (no wallet-initiated
+    // tx, no outbound/sell legs, no swap candidates, no unmatched sells, no relayed-trader signal)
+    // are only knowable AFTER FIFO/swap-detection runs on the full event set — which itself depends
+    // on Phase 19's own data. Skipping Phase 19 ahead of that would risk hiding the only evidence
+    // that could have produced those signals, so Phase 19 always runs unchanged; these fields report
+    // that no skip was applied rather than claim a saving that didn't happen.
+    phase19SkippedForSafeNonTraderCase: false,
+    phase19SkipReason: null as string | null,
+    phase19CallsPrevented: 0,
   }
   const _walletHistoricalScanDebug = {
     requested: historicalCoverage || _acquisitionRecoveryEligible,
@@ -16477,10 +16550,15 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       endpoints: _liveCalls('zerion').map(e => e.endpoint),
       credits: _logByProvider('zerion').reduce((s, e) => s + e.credits, 0),
     },
+    zerionPortfolioCacheHit: _zerionCacheDebug.portfolioCacheHit,
+    zerionPositionsCacheHit: _zerionCacheDebug.positionsCacheHit,
+    zerionInFlightDeduped: _zerionCacheDebug.inFlightDeduped,
+    zerionCallsSavedByCache: _zerionCacheDebug.callsSavedByCache,
     costByPurpose: _costByPurpose,
     duplicates: _dupEntries.map(e => `${e.provider}:${e.endpoint}:${e.dupKey}`),
     warnings: _apiWarnings,
     totalCredits: _apiTotalCredits,
+    totalEstimatedCallsPrevented: _zerionCacheDebug.callsSavedByCache + _providerPnlSkippedChains.length,
   }
   // Activity routing debug: summarises all chain/activity routing decisions for observability
   const _walletActivityRoutingDebug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['walletActivityRoutingDebug']> = (() => {
