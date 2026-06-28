@@ -115,20 +115,20 @@ function fdvTier(v: number | null): { color: string; bg: string; border: string;
 function MiniMetricBar({ value, color, cap }: { value: number | null; color: string; cap: number }) {
   const width = metricBarValue(value, cap)
   return (
-    <span style={{ display: 'block', width: '54px', height: '3px', borderRadius: '99px', overflow: 'hidden', background: 'rgba(148,163,184,0.10)', boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.03)' }}>
-      <span style={{ display: 'block', width: `${width}%`, height: '100%', borderRadius: 'inherit', background: `linear-gradient(90deg, ${color}55, ${color})`, boxShadow: `0 0 8px ${color}33` }} />
+    <span className="pump-mini-bar" style={{ display: 'block', width: '58px', height: '4px', borderRadius: '99px', overflow: 'hidden', background: 'linear-gradient(90deg, rgba(148,163,184,0.14), rgba(148,163,184,0.06))', boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.045), inset 0 1px 4px rgba(2,6,23,0.55)' }}>
+      <span style={{ display: 'block', width: `${width}%`, height: '100%', borderRadius: 'inherit', background: `linear-gradient(90deg, ${color}4d, ${color})`, boxShadow: `0 0 10px ${color}45` }} />
     </span>
   )
 }
 
 function StatMetric({ label, value, dimValue, children }: { label: string; value: string; dimValue?: boolean; children?: React.ReactNode }) {
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', minWidth: 0 }}>
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: '4px' }}>
-        <span style={{ fontSize: '8px', fontWeight: 800, color: '#496177', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', flexShrink: 0, lineHeight: 1 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '5px', minWidth: 0, padding: '6px 8px', borderRadius: '10px', background: 'linear-gradient(180deg, rgba(255,255,255,0.030), rgba(255,255,255,0.012))', border: '1px solid rgba(148,163,184,0.085)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.035)' }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: '5px' }}>
+        <span style={{ fontSize: '8px', fontWeight: 850, color: '#58708a', letterSpacing: '0.13em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', flexShrink: 0, lineHeight: 1 }}>
           {label}
         </span>
-        <span style={{ fontSize: '11.5px', fontWeight: 750, color: dimValue ? '#64748b' : '#e2e8f0', fontFamily: 'var(--font-plex-mono)', lineHeight: 1 }}>
+        <span style={{ fontSize: label === 'Price' ? '10.5px' : '12px', fontWeight: label === 'Price' ? 650 : 800, color: dimValue ? '#64748b' : (label === 'Price' ? '#8aa0b5' : '#edf6ff'), fontFamily: 'var(--font-plex-mono)', lineHeight: 1 }}>
           {value}
         </span>
       </div>
@@ -151,6 +151,8 @@ function AlertCard({ alert, onScan, onAskClark }: {
   const changePositive = (alert.change24h ?? 0) >= 0
   const avatarText = (alert.symbol || '?').slice(0, 2).toUpperCase()
   const fdvStyle = fdvTier(alert.fdvUsd)
+  const showWhaleIcon = alert.tags?.some(tag => /whale/i.test(tag))
+  const showRiskIcon = alert.riskLevel === 'HIGH' || alert.riskLevel === 'MEDIUM'
 
   return (
     <div
@@ -159,16 +161,17 @@ function AlertCard({ alert, onScan, onAskClark }: {
       onMouseLeave={() => setHovered(false)}
       style={{
         background: hovered
-          ? `linear-gradient(135deg, rgba(45,212,191,0.055), rgba(168,85,247,0.045)), rgba(255,255,255,0.046)`
-          : 'linear-gradient(135deg, rgba(45,212,191,0.030), rgba(168,85,247,0.024)), rgba(255,255,255,0.024)',
+          ? `radial-gradient(circle at 12% 0%, ${catColor}10, transparent 28%), radial-gradient(circle at 92% 18%, rgba(168,85,247,0.06), transparent 34%), linear-gradient(135deg, rgba(45,212,191,0.055), rgba(168,85,247,0.045)), rgba(255,255,255,0.050)`
+          : 'radial-gradient(circle at 12% 0%, rgba(45,212,191,0.045), transparent 26%), radial-gradient(circle at 92% 16%, rgba(168,85,247,0.038), transparent 32%), linear-gradient(135deg, rgba(45,212,191,0.030), rgba(168,85,247,0.024)), rgba(255,255,255,0.026)',
         border: `1px solid ${hovered ? `${catColor}38` : 'rgba(255,255,255,0.09)'}`,
         borderLeft: `3px solid ${catColor}`,
-        borderRadius: '14px',
-        padding: '13px 14px',
+        borderRadius: '18px',
+        padding: '14px 15px',
         transform: hovered ? 'scale(1.012)' : 'scale(1)',
         transition: 'background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease',
-        boxShadow: hovered ? `0 16px 34px rgba(2,6,23,0.30), 0 0 26px ${catColor}18, 0 0 48px rgba(168,85,247,0.05)` : '0 10px 24px rgba(2,6,23,0.18), 0 0 28px rgba(45,212,191,0.03)',
+        boxShadow: hovered ? `0 18px 42px rgba(2,6,23,0.38), inset 0 1px 0 rgba(255,255,255,0.08), inset 0 -18px 36px rgba(255,255,255,0.018), 0 0 30px ${catColor}18, 0 0 54px rgba(168,85,247,0.055)` : '0 12px 30px rgba(2,6,23,0.24), inset 0 1px 0 rgba(255,255,255,0.055), inset 0 -16px 30px rgba(255,255,255,0.012), 0 0 32px rgba(45,212,191,0.035)',
         display: 'flex',
+        flexWrap: 'wrap',
         alignItems: 'stretch',
         gap: '0',
         animation: 'pumpSlideIn 0.3s ease both',
@@ -180,7 +183,7 @@ function AlertCard({ alert, onScan, onAskClark }: {
         className="pump-card-left"
         style={{
           display: 'flex', alignItems: 'center', gap: '11px',
-          width: '198px', flexShrink: 0,
+          width: '218px', flexShrink: 0,
           paddingRight: '12px', borderRight: '1px solid rgba(255,255,255,0.06)',
         }}
       >
@@ -193,12 +196,16 @@ function AlertCard({ alert, onScan, onAskClark }: {
         }}>
           {avatarText}
         </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flexShrink: 0 }}>
+          {alert.category === 'HIGH_MOMENTUM' && <span title='High momentum' style={{ filter: `drop-shadow(0 0 7px ${catColor}66)`, fontSize: '13px', lineHeight: 1 }}>🔥</span>}
+          {showWhaleIcon && <span title='Whale activity' style={{ filter: 'drop-shadow(0 0 7px rgba(45,212,191,0.42))', fontSize: '13px', lineHeight: 1 }}>🐋</span>}
+        </div>
         <div style={{ minWidth: 0 }}>
-          <div style={{ fontSize: '13.5px', fontWeight: 760, color: '#f1f5f9', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+          <div style={{ fontSize: '15px', fontWeight: 850, color: '#f1f5f9', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
             {alert.name}
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '9px', fontFamily: 'var(--font-plex-mono)' }}>
-            <span style={{ color: '#64748b', fontWeight: 700 }}>{alert.symbol}</span>
+            <span style={{ color: '#9bb4ca', fontWeight: 850 }}>{alert.symbol}</span>
             <span style={{ color: '#2d3f52' }}>·</span>
             <span style={{ color: '#374a5c' }}>{shortAddr(alert.contract)}</span>
           </div>
@@ -210,12 +217,13 @@ function AlertCard({ alert, onScan, onAskClark }: {
         className="pump-card-center"
         style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', padding: '0 12px', gap: '4px', minWidth: 0 }}
       >
-        <div style={{ display: 'flex', gap: '18px', flexWrap: 'wrap', alignItems: 'baseline' }}>
+        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
           <StatMetric label="Price" value={fmtPrice(alert.priceUsd)} />
           {alert.change24h != null && (
             <div style={{ display: 'flex', alignItems: 'baseline', gap: '3px' }}>
-              <span style={{ fontSize: '8px', fontWeight: 700, color: '#3a5268', letterSpacing: '0.10em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>24h</span>
-              <span style={{ fontSize: '12px', fontWeight: 800, color: changePositive ? '#4ade80' : '#f87171', fontFamily: 'var(--font-plex-mono)' }}>
+              <span style={{ fontSize: '11px', color: changePositive ? '#4ade80' : '#f87171', filter: `drop-shadow(0 0 8px ${changePositive ? 'rgba(74,222,128,0.35)' : 'rgba(248,113,113,0.32)'})` }}>{changePositive ? '↗' : '↘'}</span>
+              <span style={{ fontSize: '8px', fontWeight: 850, color: '#58708a', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>24h</span>
+              <span style={{ fontSize: '13.5px', fontWeight: 900, color: changePositive ? '#4ade80' : '#f87171', fontFamily: 'var(--font-plex-mono)' }}>
                 {changePositive ? '▲' : '▼'}{Math.abs(alert.change24h).toFixed(1)}%
               </span>
             </div>
@@ -234,7 +242,7 @@ function AlertCard({ alert, onScan, onAskClark }: {
           </div>
         </div>
         <p style={{ margin: 0, fontSize: '10.5px', color: '#6f8498', lineHeight: 1.25, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {alert.riskLevel === 'HIGH' && <span style={{ color: '#f87171' }}>⚠ </span>}
+          {showRiskIcon && <span style={{ color: riskColor }}>△ </span>}
           {alert.reason}
         </p>
       </div>
@@ -249,23 +257,23 @@ function AlertCard({ alert, onScan, onAskClark }: {
         }}
       >
         <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', alignItems: 'flex-end' }}>
-          <span style={{
-            padding: '4px 9px', borderRadius: '999px', fontSize: '8px', fontWeight: 800, letterSpacing: '0.07em',
+          <span className="pump-pill" style={{
+            padding: '5px 10px', borderRadius: '999px', fontSize: '8px', fontWeight: 800, letterSpacing: '0.07em',
             color: catColor, background: catBg, border: `1px solid ${catBorder}`,
             fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap',
           }}>
-            {CATEGORY_LABEL[alert.category]}
+            {alert.category === 'HIGH_MOMENTUM' ? '🔥 ' : ''}{CATEGORY_LABEL[alert.category]}
           </span>
-          <span style={{
-            padding: '4px 9px', borderRadius: '999px', fontSize: '8px', fontWeight: 800, letterSpacing: '0.07em',
+          <span className="pump-pill" style={{
+            padding: '5px 10px', borderRadius: '999px', fontSize: '8px', fontWeight: 800, letterSpacing: '0.07em',
             color: riskColor, background: riskBg, border: `1px solid ${riskColor}33`,
             fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap',
           }}>
-            {RISK_LABEL[alert.riskLevel]}
+            {showRiskIcon ? '△ ' : ''}{RISK_LABEL[alert.riskLevel]}
           </span>
           {alert.tags?.map(tag => (
-            <span key={tag} style={{
-              padding: '4px 9px', borderRadius: '999px', fontSize: '8px', fontWeight: 800, letterSpacing: '0.07em',
+            <span key={tag} className="pump-pill" style={{
+              padding: '5px 10px', borderRadius: '999px', fontSize: '8px', fontWeight: 800, letterSpacing: '0.07em',
               color: '#94a3b8', background: 'rgba(148,163,184,0.10)', border: '1px solid rgba(148,163,184,0.18)',
               fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap',
             }}>
@@ -276,6 +284,7 @@ function AlertCard({ alert, onScan, onAskClark }: {
         <div style={{ display: 'flex', gap: '4px' }}>
           <button
             onClick={onScan}
+            className="pump-action-btn"
             style={{
               padding: '6px 11px', borderRadius: '999px', fontSize: '8px', fontWeight: 800,
               letterSpacing: '0.07em', textTransform: 'uppercase',
@@ -284,10 +293,11 @@ function AlertCard({ alert, onScan, onAskClark }: {
               transition: 'background 0.16s ease, border-color 0.16s ease, transform 0.16s ease, box-shadow 0.16s ease', boxShadow: hovered ? '0 0 14px rgba(45,212,191,0.16)' : 'none', transform: hovered ? 'translateY(-1px) scale(1.03)' : 'translateY(0) scale(1)',
             }}
           >
-            Scan
+            ⌕ Scan
           </button>
           <button
             onClick={onAskClark}
+            className="pump-action-btn"
             style={{
               padding: '6px 11px', borderRadius: '999px', fontSize: '8px', fontWeight: 800,
               letterSpacing: '0.07em', textTransform: 'uppercase',
@@ -296,8 +306,13 @@ function AlertCard({ alert, onScan, onAskClark }: {
               transition: 'background 0.16s ease, border-color 0.16s ease, transform 0.16s ease, box-shadow 0.16s ease', boxShadow: hovered ? '0 0 14px rgba(45,212,191,0.16)' : 'none', transform: hovered ? 'translateY(-1px) scale(1.03)' : 'translateY(0) scale(1)',
             }}
           >
-            Clark
+            ✦ Clark
           </button>
+        </div>
+      </div>
+      <div className="pump-clark-preview" style={{ flexBasis: '100%' }}>
+        <div style={{ marginTop: '12px', padding: '10px 12px', borderRadius: '14px', background: 'linear-gradient(135deg, rgba(45,212,191,0.055), rgba(168,85,247,0.060)), rgba(2,6,23,0.30)', border: '1px solid rgba(167,139,250,0.13)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.045), 0 0 22px rgba(168,85,247,0.045)', color: '#9fb6ca', fontSize: '10px', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.04em' }}>
+          <span style={{ color: '#c4b5fd', fontWeight: 900 }}>✦ Clark preview</span> · Momentum, liquidity, FDV tier, and risk notes are ready for an AI read.
         </div>
       </div>
     </div>
@@ -430,6 +445,20 @@ export default function PumpAlertsPage() {
           0%   { transform: rotate(0deg); }
           100% { transform: rotate(360deg); }
         }
+        @keyframes tagPulse {
+          0%, 100% { transform: translateY(0) scale(1); }
+          50% { transform: translateY(-1px) scale(1.035); }
+        }
+        @keyframes miniBarReveal {
+          from { transform: scaleX(0); opacity: 0.35; }
+          to { transform: scaleX(1); opacity: 1; }
+        }
+        .pump-mini-bar > span { transform-origin: left center; animation: miniBarReveal 720ms cubic-bezier(.2,.8,.2,1) both; }
+        .pump-pill { transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease, background 160ms ease; }
+        .pump-pill:hover { animation: tagPulse 760ms ease-in-out; box-shadow: 0 0 16px rgba(45,212,191,0.10), 0 0 22px rgba(168,85,247,0.08); }
+        .pump-action-btn:hover { transform: translateY(-2px) scale(1.045) !important; box-shadow: 0 0 18px rgba(45,212,191,0.20), 0 0 22px rgba(168,85,247,0.12) !important; }
+        .pump-clark-preview { max-height: 0; opacity: 0; overflow: hidden; transform: translateY(-4px); transition: max-height 220ms ease, opacity 180ms ease, transform 180ms ease; }
+        .pump-card:hover .pump-clark-preview { max-height: 64px; opacity: 1; transform: translateY(0); }
         @media (max-width: 768px) {
           /* 60px top clears the fixed hamburger button (top:12 + height:36 + 12 buffer) */
           .pump-main        { padding: 60px 12px 120px !important; }
