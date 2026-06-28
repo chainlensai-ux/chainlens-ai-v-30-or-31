@@ -112,10 +112,10 @@ function fdvTier(v: number | null): { color: string; bg: string; border: string;
   return { color: '#c084fc', bg: 'linear-gradient(135deg, rgba(192,132,252,0.13), rgba(168,85,247,0.050))', border: 'rgba(192,132,252,0.30)', label: 'High FDV', glow: 'rgba(192,132,252,0.13)' }
 }
 
-function MiniMetricBar({ value, color, cap }: { value: number | null; color: string; cap: number }) {
+function MiniMetricBar({ value, color, cap, depth = false }: { value: number | null; color: string; cap: number; depth?: boolean }) {
   const width = metricBarValue(value, cap)
   return (
-    <span className="pump-mini-bar" style={{ display: 'block', width: '64px', height: '5px', borderRadius: '99px', overflow: 'hidden', background: 'linear-gradient(90deg, rgba(148,163,184,0.14), rgba(148,163,184,0.06))', boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.045), inset 0 1px 4px rgba(2,6,23,0.55)' }}>
+    <span className={depth ? "pump-mini-bar pump-liq-depth" : "pump-mini-bar"} style={{ display: 'block', width: '64px', height: '5px', borderRadius: '99px', overflow: 'hidden', background: 'linear-gradient(90deg, rgba(15,23,42,0.74), rgba(15,23,42,0.42))', boxShadow: 'inset 0 0 0 1px rgba(45,212,191,0.055), inset 0 1px 4px rgba(2,6,23,0.62)' }}>
       <span style={{ display: 'block', width: `${width}%`, height: '100%', borderRadius: 'inherit', background: `linear-gradient(90deg, ${color}4d, ${color})`, boxShadow: `0 0 10px ${color}45` }} />
     </span>
   )
@@ -157,6 +157,7 @@ function AlertCard({ alert, onScan, onAskClark }: {
   const fdvStyle = fdvTier(alert.fdvUsd)
   const showWhaleIcon = alert.tags?.some(tag => /whale/i.test(tag))
   const showRiskIcon = alert.riskLevel === 'HIGH' || alert.riskLevel === 'MEDIUM'
+  const identityColor = alert.riskLevel === 'HIGH' ? riskColor : alert.category === 'HIGH_MOMENTUM' ? catColor : alert.riskLevel === 'MEDIUM' ? '#c084fc' : '#2DD4BF'
 
   return (
     <div
@@ -168,7 +169,9 @@ function AlertCard({ alert, onScan, onAskClark }: {
           ? `radial-gradient(circle at 12% 0%, ${catColor}12, transparent 30%), radial-gradient(circle at 92% 18%, rgba(168,85,247,0.060), transparent 36%), radial-gradient(circle at 48% 120%, rgba(45,212,191,0.035), transparent 42%), linear-gradient(135deg, rgba(255,255,255,0.070), rgba(255,255,255,0.030)), rgba(8,13,28,0.72)`
           : 'radial-gradient(circle at 12% 0%, rgba(45,212,191,0.050), transparent 28%), radial-gradient(circle at 92% 16%, rgba(168,85,247,0.040), transparent 34%), radial-gradient(circle at 48% 120%, rgba(45,212,191,0.030), transparent 40%), linear-gradient(135deg, rgba(255,255,255,0.045), rgba(255,255,255,0.018)), rgba(8,13,28,0.58)',
         border: `1px solid ${hovered ? `${catColor}38` : 'rgba(255,255,255,0.09)'}`,
-        borderLeft: `3px solid ${catColor}`,
+        borderLeft: `1px solid ${identityColor}44`,
+        ['--pump-identity-color' as string]: identityColor,
+        ['--pump-accent-color' as string]: catColor,
         borderRadius: '20px',
         padding: '15px 16px',
         backdropFilter: 'blur(14px)',
@@ -202,7 +205,7 @@ function AlertCard({ alert, onScan, onAskClark }: {
           {avatarText}
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flexShrink: 0 }}>
-          {alert.category === 'HIGH_MOMENTUM' && <span title='High momentum' style={{ filter: `drop-shadow(0 0 7px ${catColor}66)`, fontSize: '13px', lineHeight: 1 }}>🔥</span>}
+          {alert.category === 'HIGH_MOMENTUM' && <span className="pump-flame" title='High momentum' style={{ filter: `drop-shadow(0 0 7px ${catColor}66)`, fontSize: '13px', lineHeight: 1 }}>🔥</span>}
           {showWhaleIcon && <span title='Whale activity' style={{ filter: 'drop-shadow(0 0 7px rgba(45,212,191,0.42))', fontSize: '13px', lineHeight: 1 }}>🐋</span>}
         </div>
         <div style={{ minWidth: 0 }}>
@@ -222,7 +225,7 @@ function AlertCard({ alert, onScan, onAskClark }: {
         className="pump-card-center"
         style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', padding: '0 12px', gap: '4px', minWidth: 0 }}
       >
-        <div style={{ display: 'flex', gap: '9px', flexWrap: 'wrap', alignItems: 'center', padding: '6px', borderRadius: '16px', background: 'rgba(2,6,23,0.18)', border: '1px solid rgba(148,163,184,0.070)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.028)' }}>
+        <div className="pump-metric-band" style={{ display: 'flex', gap: '9px', flexWrap: 'wrap', alignItems: 'center', padding: '6px', borderRadius: '16px', background: 'rgba(2,6,23,0.22)', border: '1px solid rgba(45,212,191,0.085)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.032), 0 0 22px rgba(45,212,191,0.025)' }}>
           <StatMetric label="Price" value={fmtPrice(alert.priceUsd)} />
           {alert.change24h != null && (
             <div style={{ display: 'flex', alignItems: 'center', gap: '4px', padding: '7px 9px', borderRadius: '12px', background: changeBg, border: `1px solid ${changeColor}33`, boxShadow: `inset 0 1px 0 rgba(255,255,255,0.045), 0 0 16px ${changeColor}14` }}>
@@ -237,7 +240,7 @@ function AlertCard({ alert, onScan, onAskClark }: {
             <MiniMetricBar value={alert.volume24hUsd} color="#22d3ee" cap={1_000_000} />
           </StatMetric>
           <StatMetric label="Liq" value={fmtUSD(alert.liquidityUsd)} dimValue={alert.liquidityUsd == null}>
-            <MiniMetricBar value={alert.liquidityUsd} color="#2DD4BF" cap={250_000} />
+            <MiniMetricBar value={alert.liquidityUsd} color="#2DD4BF" cap={250_000} depth />
           </StatMetric>
           <div style={{ display: 'flex', alignItems: 'center', gap: '7px' }}>
             <StatMetric label="FDV" value={fmtUSD(alert.fdvUsd)} dimValue={alert.fdvUsd == null} />
@@ -279,7 +282,7 @@ function AlertCard({ alert, onScan, onAskClark }: {
           {alert.tags?.map(tag => (
             <span key={tag} className="pump-pill" style={{
               padding: '6px 11px', borderRadius: '999px', fontSize: '8px', fontWeight: 800, letterSpacing: '0.07em',
-              color: '#94a3b8', background: 'rgba(148,163,184,0.10)', border: '1px solid rgba(148,163,184,0.18)',
+              color: '#b7c7d8', background: 'linear-gradient(135deg, rgba(45,212,191,0.075), rgba(168,85,247,0.065), rgba(34,211,238,0.045))', border: '1px solid rgba(45,212,191,0.16)',
               fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap',
             }}>
               {tag}
@@ -316,7 +319,7 @@ function AlertCard({ alert, onScan, onAskClark }: {
         </div>
       </div>
       <div className="pump-clark-preview" style={{ flexBasis: '100%' }}>
-        <div style={{ marginTop: '12px', padding: '10px 12px', borderRadius: '14px', background: 'linear-gradient(135deg, rgba(45,212,191,0.055), rgba(168,85,247,0.060)), rgba(2,6,23,0.30)', border: '1px solid rgba(167,139,250,0.13)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.045), 0 0 22px rgba(168,85,247,0.045)', color: '#9fb6ca', fontSize: '10px', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.04em' }}>
+        <div className="pump-clark-intel" style={{ marginTop: '12px', padding: '10px 12px', borderRadius: '14px', background: 'linear-gradient(135deg, rgba(45,212,191,0.075), rgba(168,85,247,0.080), rgba(34,211,238,0.040)), rgba(2,6,23,0.34)', border: '1px solid rgba(167,139,250,0.20)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.055), 0 0 22px rgba(168,85,247,0.070), 0 0 34px rgba(45,212,191,0.045)', color: '#a9bfd1', fontSize: '10px', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.04em' }}>
           <span style={{ color: '#c4b5fd', fontWeight: 900 }}>✦ Clark preview</span> · Momentum, liquidity, FDV tier, and risk notes are ready for an AI read.
         </div>
       </div>
@@ -458,14 +461,66 @@ export default function PumpAlertsPage() {
           from { transform: scaleX(0); opacity: 0.35; }
           to { transform: scaleX(1); opacity: 1; }
         }
-        .pump-mini-bar > span { transform-origin: left center; animation: miniBarReveal 720ms cubic-bezier(.2,.8,.2,1) both; }
+        @keyframes clarkIntelGlow {
+          0%, 100% { box-shadow: inset 0 1px 0 rgba(255,255,255,0.055), 0 0 22px rgba(168,85,247,0.070), 0 0 34px rgba(45,212,191,0.045); }
+          50% { box-shadow: inset 0 1px 0 rgba(255,255,255,0.065), 0 0 28px rgba(168,85,247,0.105), 0 0 44px rgba(34,211,238,0.060); }
+        }
+        @keyframes flameMomentumPulse {
+          0%, 100% { transform: scale(1); opacity: 0.18; }
+          50% { transform: scale(1.018); opacity: 0.28; }
+        }
+        .pump-card { position: relative; isolation: isolate; }
+        .pump-card::before {
+          content: '';
+          position: absolute;
+          inset: 10px auto 10px 0;
+          width: 4px;
+          border-radius: 0 999px 999px 0;
+          background: linear-gradient(180deg, var(--pump-identity-color), rgba(168,85,247,0.72), rgba(34,211,238,0.46));
+          box-shadow: 0 0 16px color-mix(in srgb, var(--pump-identity-color) 36%, transparent), 0 0 26px rgba(45,212,191,0.055);
+          opacity: 0.86;
+          z-index: 1;
+        }
+        .pump-card > * { position: relative; z-index: 2; }
+        .pump-metric-band { position: relative; overflow: hidden; }
+        .pump-metric-band::before {
+          content: '';
+          position: absolute;
+          inset: 0;
+          background-image: linear-gradient(rgba(45,212,191,0.055) 1px, transparent 1px), linear-gradient(90deg, rgba(34,211,238,0.045) 1px, transparent 1px);
+          background-size: 18px 18px;
+          opacity: 0.45;
+          pointer-events: none;
+        }
+        .pump-metric-band > * { position: relative; z-index: 1; }
+        .pump-mini-bar { position: relative; }
+        .pump-mini-bar::before {
+          content: '';
+          position: absolute;
+          inset: 0;
+          background-image: repeating-linear-gradient(90deg, rgba(255,255,255,0.070) 0 1px, transparent 1px 8px), linear-gradient(90deg, rgba(45,212,191,0.12), rgba(168,85,247,0.08), rgba(34,211,238,0.10));
+          opacity: 0.22;
+        }
+        .pump-liq-depth::before { opacity: 0.34; }
+        .pump-mini-bar > span { position: relative; z-index: 1; transform-origin: left center; animation: miniBarReveal 720ms cubic-bezier(.2,.8,.2,1) both; }
+        .pump-flame { position: relative; display: inline-flex; align-items: center; justify-content: center; }
+        .pump-flame::before {
+          content: '';
+          position: absolute;
+          inset: -4px;
+          border-radius: 999px;
+          background: radial-gradient(circle, rgba(34,211,238,0.16), rgba(168,85,247,0.055) 42%, transparent 70%);
+          animation: flameMomentumPulse 3.8s ease-in-out infinite;
+          z-index: -1;
+        }
         .pump-pill { transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease, background 160ms ease; }
         .pump-pill:hover { animation: tagPulse 760ms ease-in-out; box-shadow: 0 0 16px rgba(45,212,191,0.10), 0 0 22px rgba(168,85,247,0.08); }
         .pump-action-btn:hover { transform: translateY(-2px) scale(1.045) !important; box-shadow: 0 0 18px rgba(45,212,191,0.20), 0 0 22px rgba(168,85,247,0.12) !important; }
         .pump-clark-preview { max-height: 0; opacity: 0; overflow: hidden; transform: translateY(-4px); transition: max-height 220ms ease, opacity 180ms ease, transform 180ms ease; }
         .pump-card:hover .pump-clark-preview { max-height: 74px; opacity: 1; transform: translateY(0); }
+        .pump-card:hover .pump-clark-intel { animation: clarkIntelGlow 3.4s ease-in-out infinite; }
         @media (prefers-reduced-motion: reduce) {
-          .pump-card, .pump-pill, .pump-action-btn, .pump-clark-preview, .pump-mini-bar > span { animation: none !important; transition: none !important; }
+          .pump-card, .pump-pill, .pump-action-btn, .pump-clark-preview, .pump-mini-bar > span, .pump-card:hover .pump-clark-intel, .pump-flame::before { animation: none !important; transition: none !important; }
         }
         @media (max-width: 768px) {
           /* 60px top clears the fixed hamburger button (top:12 + height:36 + 12 buffer) */
