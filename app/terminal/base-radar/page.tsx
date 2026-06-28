@@ -308,7 +308,30 @@ function getLaunchQuality(token: RadarToken): LaunchQuality {
 function enrichToken(token: RadarToken): TokenIntel {
   const suspiciousBranding = hasSuspiciousBranding(token.name, token.symbol)
   const { level: momentum, ratio: momentumRatio } = getMomentum(token.volume24h, token.liquidityUsd)
-  const displayModel = buildBaseRadarDisplayModel(token)
+  // TOKEN-SAVER: the feed list only carries the evidence the /api/radar scan already
+  // produced (simulation/honeypot result). LP lock/burn, dev-wallet, and holder evidence
+  // require the deep per-token scan from /api/base-radar/enrichment (fetched on-demand in
+  // the drawer) — never fabricate it here. Passing this real, already-computed evidence
+  // explicitly (instead of omitting it) keeps the scoring engine on the same evidence path
+  // the drawer uses, so the scoring logs and caps reflect what is actually known per token.
+  let displayModel: BaseRadarDisplayModel
+  try {
+    displayModel = buildBaseRadarDisplayModel(token, {
+      security: { honeypot: token.honeypot ? { ...token.honeypot, simulationSuccess: token.simulationStatus === 'passed' } : null },
+    })
+  } catch (err) {
+    console.error('[base-radar] scoring failed for', token.contract, err)
+    displayModel = {
+      score: 49,
+      riskLabel: 'MODERATE',
+      whyOnRadar: 'Open check: evidence could not be scored.',
+      valuation: { label: 'Valuation', valueUsd: null, status: 'open_check', sublabel: 'Open check', warning: null },
+      simulation: { status: 'open_check', reason: null, label: 'Simulation pending', cortexLine: 'Buy/sell simulation remains open check.', buyTax: null, sellTax: null },
+      evidenceGaps: ['Scoring error — evidence unavailable'],
+      signalChips: ['Valuation Open Check', 'Simulation Pending', 'MODERATE'],
+      marketSnapshot: { liquidityUsd: null, volume24hUsd: null, fdvUsd: null, marketCapUsd: null, marketCapStatus: null, valuationBasis: 'unavailable' },
+    }
+  }
   const radarScore = displayModel.score
   const status = displayModel.simulation.status !== 'passed' ? getRadarFeedStatusFromScore(radarScore) : getStatus(token, radarScore, momentum)
 

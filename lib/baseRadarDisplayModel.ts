@@ -131,6 +131,24 @@ function why(raw: AnyRecord, score: number, valuation: BaseRadarDisplayValuation
 export function buildBaseRadarDisplayModel(rawToken: AnyRecord, enrichment?: AnyRecord | null): BaseRadarDisplayModel {
   const simulation = buildSimulation(rawToken, enrichment)
   const { valuation, snapshot } = buildValuation(rawToken, enrichment)
+  const lpLockBurnConfirmed = bool(
+    enrichment?.lp?.lpLockStatus === 'locked'
+    || enrichment?.lp?.lpProofApplicability === 'not_applicable'
+    || rawToken.lpLocked === true
+    || rawToken.lpBurned === true,
+  )
+  const lpModel = enrichment?.lp?.displayLpModel ?? rawToken.lpModel ?? 'open_check'
+  // TOKEN-SAVER: log what evidence scoring actually received so a stuck/fallback score is
+  // traceable to a missing-evidence cause instead of a silent default.
+  if (process.env.NODE_ENV !== 'production') {
+    console.debug('[baseRadarDisplayModel] scoring evidence', {
+      contract: rawToken.contract ?? rawToken.address ?? null,
+      simulationStatus: simulation.status,
+      hasEnrichment: enrichment != null,
+      lpLockBurnConfirmed,
+      lpModel,
+    })
+  }
   const scoreResult = applyBaseRadarScoreCaps({
     baseScore: baseScore(rawToken, simulation),
     liquidityUsd: snapshot.liquidityUsd,
@@ -143,8 +161,8 @@ export function buildBaseRadarDisplayModel(rawToken: AnyRecord, enrichment?: Any
     honeypotPresent: Boolean(rawToken.honeypot || enrichment?.security?.honeypot),
     valuationVerified: valuation.status === 'verified',
     valuationUsd: valuation.valueUsd,
-    lpLockBurnConfirmed: bool(enrichment?.lp?.lpLockStatus === 'locked' || enrichment?.lp?.lpProofApplicability === 'not_applicable'),
-    lpModel: enrichment?.lp?.displayLpModel ?? 'open_check',
+    lpLockBurnConfirmed,
+    lpModel,
     strongProtection: false,
     majorControlOrHolderOrLpRedFlag: false,
   })

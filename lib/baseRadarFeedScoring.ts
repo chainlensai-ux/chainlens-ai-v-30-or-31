@@ -103,5 +103,11 @@ export function applyBaseRadarScoreCaps(input: RadarFeedScoreInput): { score: nu
   const cap = caps.length ? Math.min(...caps.map(c => c.cap)) : null
   const penalizedScore = input.baseScore - penalties + confidenceBoost
   const score = clampScore(cap == null ? penalizedScore : Math.min(penalizedScore, cap))
-  return { score, cap, caps: caps.filter(c => cap == null || c.cap === cap).map(c => c.reason), riskLabel: getRadarFeedRiskLabel(score) }
+  const activeCapReasons = caps.filter(c => cap == null || c.cap === cap).map(c => c.reason)
+  // TOKEN-SAVER: log why a cap won so a fallback score is traceable to its evidence gap
+  // rather than looking like a stuck/hardcoded value.
+  if (process.env.NODE_ENV !== 'production' && cap != null) {
+    console.debug('[baseRadarFeedScoring] cap applied', { baseScore: input.baseScore, cap, score, reasons: activeCapReasons })
+  }
+  return { score, cap, caps: activeCapReasons, riskLabel: getRadarFeedRiskLabel(score) }
 }
