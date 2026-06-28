@@ -99,15 +99,40 @@ function shortAddr(addr: string): string {
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`
 }
 
-function StatMetric({ label, value, dimValue }: { label: string; value: string; dimValue?: boolean }) {
+
+function metricBarValue(v: number | null, cap: number): number {
+  if (v == null || cap <= 0) return 0
+  return Math.max(8, Math.min(100, (v / cap) * 100))
+}
+
+function fdvTier(v: number | null): { color: string; bg: string; border: string; label: string } {
+  if (v == null) return { color: '#64748b', bg: 'rgba(100,116,139,0.10)', border: 'rgba(148,163,184,0.16)', label: 'Open' }
+  if (v < 500_000) return { color: '#4ade80', bg: 'rgba(74,222,128,0.08)', border: 'rgba(74,222,128,0.24)', label: 'Low' }
+  if (v < 5_000_000) return { color: '#22d3ee', bg: 'rgba(34,211,238,0.08)', border: 'rgba(34,211,238,0.24)', label: 'Mid' }
+  return { color: '#c084fc', bg: 'rgba(192,132,252,0.08)', border: 'rgba(192,132,252,0.24)', label: 'High' }
+}
+
+function MiniMetricBar({ value, color, cap }: { value: number | null; color: string; cap: number }) {
+  const width = metricBarValue(value, cap)
   return (
-    <div style={{ display: 'flex', alignItems: 'baseline', gap: '3px' }}>
-      <span style={{ fontSize: '8px', fontWeight: 700, color: '#3a5268', letterSpacing: '0.10em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', flexShrink: 0 }}>
-        {label}
-      </span>
-      <span style={{ fontSize: '11.5px', fontWeight: 700, color: dimValue ? '#64748b' : '#e2e8f0', fontFamily: 'var(--font-plex-mono)' }}>
-        {value}
-      </span>
+    <span style={{ display: 'block', width: '54px', height: '3px', borderRadius: '99px', overflow: 'hidden', background: 'rgba(148,163,184,0.10)', boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.03)' }}>
+      <span style={{ display: 'block', width: `${width}%`, height: '100%', borderRadius: 'inherit', background: `linear-gradient(90deg, ${color}55, ${color})`, boxShadow: `0 0 8px ${color}33` }} />
+    </span>
+  )
+}
+
+function StatMetric({ label, value, dimValue, children }: { label: string; value: string; dimValue?: boolean; children?: React.ReactNode }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', minWidth: 0 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: '4px' }}>
+        <span style={{ fontSize: '8px', fontWeight: 800, color: '#496177', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', flexShrink: 0, lineHeight: 1 }}>
+          {label}
+        </span>
+        <span style={{ fontSize: '11.5px', fontWeight: 750, color: dimValue ? '#64748b' : '#e2e8f0', fontFamily: 'var(--font-plex-mono)', lineHeight: 1 }}>
+          {value}
+        </span>
+      </div>
+      {children}
     </div>
   )
 }
@@ -125,6 +150,7 @@ function AlertCard({ alert, onScan, onAskClark }: {
   const riskBg = RISK_BG[alert.riskLevel]
   const changePositive = (alert.change24h ?? 0) >= 0
   const avatarText = (alert.symbol || '?').slice(0, 2).toUpperCase()
+  const fdvStyle = fdvTier(alert.fdvUsd)
 
   return (
     <div
@@ -132,13 +158,16 @@ function AlertCard({ alert, onScan, onAskClark }: {
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{
-        background: hovered ? 'rgba(255,255,255,0.048)' : 'rgba(255,255,255,0.026)',
-        border: `1px solid ${hovered ? `${catColor}28` : 'rgba(255,255,255,0.08)'}`,
+        background: hovered
+          ? `linear-gradient(135deg, rgba(45,212,191,0.055), rgba(168,85,247,0.045)), rgba(255,255,255,0.046)`
+          : 'linear-gradient(135deg, rgba(45,212,191,0.030), rgba(168,85,247,0.024)), rgba(255,255,255,0.024)',
+        border: `1px solid ${hovered ? `${catColor}38` : 'rgba(255,255,255,0.09)'}`,
         borderLeft: `3px solid ${catColor}`,
-        borderRadius: '10px',
-        padding: '10px 12px',
-        transition: 'background 0.15s, border-color 0.15s, box-shadow 0.15s',
-        boxShadow: hovered ? `0 0 22px ${catColor}16` : 'none',
+        borderRadius: '14px',
+        padding: '13px 14px',
+        transform: hovered ? 'scale(1.012)' : 'scale(1)',
+        transition: 'background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease',
+        boxShadow: hovered ? `0 16px 34px rgba(2,6,23,0.30), 0 0 26px ${catColor}18, 0 0 48px rgba(168,85,247,0.05)` : '0 10px 24px rgba(2,6,23,0.18), 0 0 28px rgba(45,212,191,0.03)',
         display: 'flex',
         alignItems: 'stretch',
         gap: '0',
@@ -150,8 +179,8 @@ function AlertCard({ alert, onScan, onAskClark }: {
       <div
         className="pump-card-left"
         style={{
-          display: 'flex', alignItems: 'center', gap: '9px',
-          width: '185px', flexShrink: 0,
+          display: 'flex', alignItems: 'center', gap: '11px',
+          width: '198px', flexShrink: 0,
           paddingRight: '12px', borderRight: '1px solid rgba(255,255,255,0.06)',
         }}
       >
@@ -165,7 +194,7 @@ function AlertCard({ alert, onScan, onAskClark }: {
           {avatarText}
         </div>
         <div style={{ minWidth: 0 }}>
-          <div style={{ fontSize: '13px', fontWeight: 700, color: '#f1f5f9', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+          <div style={{ fontSize: '13.5px', fontWeight: 760, color: '#f1f5f9', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
             {alert.name}
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '9px', fontFamily: 'var(--font-plex-mono)' }}>
@@ -181,7 +210,7 @@ function AlertCard({ alert, onScan, onAskClark }: {
         className="pump-card-center"
         style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', padding: '0 12px', gap: '4px', minWidth: 0 }}
       >
-        <div style={{ display: 'flex', gap: '14px', flexWrap: 'wrap', alignItems: 'baseline' }}>
+        <div style={{ display: 'flex', gap: '18px', flexWrap: 'wrap', alignItems: 'baseline' }}>
           <StatMetric label="Price" value={fmtPrice(alert.priceUsd)} />
           {alert.change24h != null && (
             <div style={{ display: 'flex', alignItems: 'baseline', gap: '3px' }}>
@@ -191,11 +220,20 @@ function AlertCard({ alert, onScan, onAskClark }: {
               </span>
             </div>
           )}
-          <StatMetric label="Vol" value={fmtUSD(alert.volume24hUsd)} dimValue={alert.volume24hUsd == null} />
-          <StatMetric label="Liq" value={fmtUSD(alert.liquidityUsd)} dimValue={alert.liquidityUsd == null} />
-          <StatMetric label="FDV" value={fmtUSD(alert.fdvUsd)} dimValue={alert.fdvUsd == null} />
+          <StatMetric label="Vol" value={fmtUSD(alert.volume24hUsd)} dimValue={alert.volume24hUsd == null}>
+            <MiniMetricBar value={alert.volume24hUsd} color="#22d3ee" cap={1_000_000} />
+          </StatMetric>
+          <StatMetric label="Liq" value={fmtUSD(alert.liquidityUsd)} dimValue={alert.liquidityUsd == null}>
+            <MiniMetricBar value={alert.liquidityUsd} color="#2DD4BF" cap={250_000} />
+          </StatMetric>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '7px' }}>
+            <StatMetric label="FDV" value={fmtUSD(alert.fdvUsd)} dimValue={alert.fdvUsd == null} />
+            <span style={{ padding: '2px 7px', borderRadius: '999px', fontSize: '7.5px', fontWeight: 800, letterSpacing: '0.10em', textTransform: 'uppercase', color: fdvStyle.color, background: fdvStyle.bg, border: `1px solid ${fdvStyle.border}`, fontFamily: 'var(--font-plex-mono)', lineHeight: 1.15 }}>
+              {fdvStyle.label}
+            </span>
+          </div>
         </div>
-        <p style={{ margin: 0, fontSize: '10px', color: '#4a6278', lineHeight: 1.3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        <p style={{ margin: 0, fontSize: '10.5px', color: '#6f8498', lineHeight: 1.25, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {alert.riskLevel === 'HIGH' && <span style={{ color: '#f87171' }}>⚠ </span>}
           {alert.reason}
         </p>
@@ -212,14 +250,14 @@ function AlertCard({ alert, onScan, onAskClark }: {
       >
         <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', alignItems: 'flex-end' }}>
           <span style={{
-            padding: '2px 7px', borderRadius: '99px', fontSize: '8px', fontWeight: 700, letterSpacing: '0.07em',
+            padding: '4px 9px', borderRadius: '999px', fontSize: '8px', fontWeight: 800, letterSpacing: '0.07em',
             color: catColor, background: catBg, border: `1px solid ${catBorder}`,
             fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap',
           }}>
             {CATEGORY_LABEL[alert.category]}
           </span>
           <span style={{
-            padding: '2px 7px', borderRadius: '99px', fontSize: '8px', fontWeight: 700, letterSpacing: '0.07em',
+            padding: '4px 9px', borderRadius: '999px', fontSize: '8px', fontWeight: 800, letterSpacing: '0.07em',
             color: riskColor, background: riskBg, border: `1px solid ${riskColor}33`,
             fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap',
           }}>
@@ -227,7 +265,7 @@ function AlertCard({ alert, onScan, onAskClark }: {
           </span>
           {alert.tags?.map(tag => (
             <span key={tag} style={{
-              padding: '2px 7px', borderRadius: '99px', fontSize: '8px', fontWeight: 700, letterSpacing: '0.07em',
+              padding: '4px 9px', borderRadius: '999px', fontSize: '8px', fontWeight: 800, letterSpacing: '0.07em',
               color: '#94a3b8', background: 'rgba(148,163,184,0.10)', border: '1px solid rgba(148,163,184,0.18)',
               fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap',
             }}>
@@ -239,11 +277,11 @@ function AlertCard({ alert, onScan, onAskClark }: {
           <button
             onClick={onScan}
             style={{
-              padding: '4px 9px', borderRadius: '6px', fontSize: '8px', fontWeight: 700,
+              padding: '6px 11px', borderRadius: '999px', fontSize: '8px', fontWeight: 800,
               letterSpacing: '0.07em', textTransform: 'uppercase',
               border: '1px solid rgba(45,212,191,0.32)', background: 'rgba(45,212,191,0.09)',
               color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)', cursor: 'pointer',
-              transition: 'background 0.12s, border-color 0.12s',
+              transition: 'background 0.16s ease, border-color 0.16s ease, transform 0.16s ease, box-shadow 0.16s ease', boxShadow: hovered ? '0 0 14px rgba(45,212,191,0.16)' : 'none', transform: hovered ? 'translateY(-1px) scale(1.03)' : 'translateY(0) scale(1)',
             }}
           >
             Scan
@@ -251,11 +289,11 @@ function AlertCard({ alert, onScan, onAskClark }: {
           <button
             onClick={onAskClark}
             style={{
-              padding: '4px 9px', borderRadius: '6px', fontSize: '8px', fontWeight: 700,
+              padding: '6px 11px', borderRadius: '999px', fontSize: '8px', fontWeight: 800,
               letterSpacing: '0.07em', textTransform: 'uppercase',
-              border: '1px solid rgba(168,85,247,0.30)', background: 'rgba(168,85,247,0.09)',
-              color: '#a855f7', fontFamily: 'var(--font-plex-mono)', cursor: 'pointer',
-              transition: 'background 0.12s, border-color 0.12s',
+              border: '1px solid rgba(45,212,191,0.28)', background: 'linear-gradient(135deg, rgba(45,212,191,0.10), rgba(168,85,247,0.10))',
+              color: '#c4b5fd', fontFamily: 'var(--font-plex-mono)', cursor: 'pointer',
+              transition: 'background 0.16s ease, border-color 0.16s ease, transform 0.16s ease, box-shadow 0.16s ease', boxShadow: hovered ? '0 0 14px rgba(45,212,191,0.16)' : 'none', transform: hovered ? 'translateY(-1px) scale(1.03)' : 'translateY(0) scale(1)',
             }}
           >
             Clark
@@ -507,7 +545,7 @@ export default function PumpAlertsPage() {
 
           {/* Loading skeletons */}
           {loading && alerts.length === 0 && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '9px' }}>
               {[...Array(7)].map((_, i) => (
                 <div key={i} style={{ height: '66px', borderRadius: '10px', borderLeft: '3px solid rgba(45,212,191,0.18)', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', animation: 'pumpSlideIn 0.3s ease both', animationDelay: `${i * 55}ms` }} />
               ))}
@@ -537,9 +575,9 @@ export default function PumpAlertsPage() {
           )}
 
           {/* Alert cards */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '9px' }}>
             {filtered.map((alert, i) => (
-              <div key={alert.contract} style={{ animationDelay: `${i * 30}ms` }}>
+              <div key={alert.contract} style={{ animationDelay: `${i * 30}ms`, paddingTop: i === 0 ? 0 : '3px', borderTop: i === 0 ? 'none' : '1px solid rgba(148,163,184,0.10)' }}>
                 <AlertCard
                   alert={alert}
                   onScan={() => openToken(alert.contract)}
