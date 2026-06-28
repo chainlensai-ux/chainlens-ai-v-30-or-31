@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo } from 'react'
+import { useEffect, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { assessBaseRadarSeverity, creatorTopHolderDisplay, normalizePairCreatedAt, ageLabelFromIso, extractLpControllerSharePercent, getBaseRadarDetailSeverityCap, getScoreSeverityLabel } from '@/lib/baseRadarSeverity'
 import { getRadarDrawerValuation, getRadarValuationCardDisplay, DEFAULT_RADAR_MIN_LIQUIDITY_USD } from '@/lib/baseRadarValuation'
@@ -43,11 +43,30 @@ type RadarDrawerToken = {
   simulationCortexLine?: string | null
 }
 
+type DrawerSimulationPayload = {
+  simulationStatus: 'passed' | 'open_check'
+  simulationReason?: string | null
+  simulationLabel?: string | null
+  simulationCortexLine?: string | null
+  buySellSimulation?: {
+    buyTax?: number | null
+    sellTax?: number | null
+    slippage?: number | null
+    failureRate?: number | null
+    isHoneypot?: boolean | null
+    simulationSuccess?: boolean | null
+    providerStatus?: string | null
+  } | null
+  riskFlags?: string[]
+  security?: { honeypot?: { isHoneypot?: boolean | null; buyTax?: number | null; sellTax?: number | null; simulationSuccess?: boolean | null; failureReason?: string | null } | null; openChecks?: string[] } | null
+}
+
 type DrawerProps = {
   token: RadarDrawerToken | null
   open: boolean
   chain?: ChainKey
   onClose: () => void
+  onSimulationUpdate?: (address: string, payload: DrawerSimulationPayload) => void
 }
 
 type ApiState<T> = { data?: T; isLoading: boolean; error?: unknown }
@@ -451,10 +470,25 @@ function MiniChart({ points }: { points: ChartPoint[] }) {
   )
 }
 
-export default function ProjectOverviewDrawer({ token, open, chain = 'base', onClose }: DrawerProps) {
+export default function ProjectOverviewDrawer({ token, open, chain = 'base', onClose, onSimulationUpdate }: DrawerProps) {
   const address = token?.contract ?? ''
   const enabled = open && Boolean(address)
   const query = address ? `contract=${encodeURIComponent(address)}&chain=${chain}` : ''
+  const simulationQuery = address ? `address=${encodeURIComponent(address)}&chain=${chain}&liquidityUsd=${encodeURIComponent(String(token?.liquidityUsd ?? ''))}` : ''
+
+  const simulation = useQuery({
+    queryKey: ['base-radar-drawer-simulation', chain, address, token?.liquidityUsd ?? null],
+    queryFn: () => fetchJson<DrawerSimulationPayload>(`/api/radar/simulation?${simulationQuery}`),
+    enabled,
+    staleTime: 60_000,
+    gcTime: 5 * 60_000,
+    retry: 1,
+    refetchOnWindowFocus: false,
+  })
+
+  useEffect(() => {
+    if (address && simulation.data) onSimulationUpdate?.(address, simulation.data)
+  }, [address, onSimulationUpdate, simulation.data])
 
   const enrichment = useQuery({
     queryKey: ['base-radar-drawer-enrichment', chain, address],
@@ -467,7 +501,18 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
   })
 
   const enrichmentState: ApiState<unknown> = { data: enrichment.data, isLoading: enrichment.isLoading, error: enrichment.error }
-  const enriched = enrichment.data
+  const enriched = useMemo(() => {
+    if (!enrichment.data && !simulation.data?.security) return enrichment.data
+    return {
+      ...(enrichment.data ?? {}),
+      security: {
+        ...(enrichment.data?.security ?? {}),
+        ...(simulation.data?.security ?? {}),
+        honeypot: simulation.data?.security?.honeypot ?? enrichment.data?.security?.honeypot,
+        openChecks: simulation.data?.simulationStatus === 'passed' ? [] : (enrichment.data?.security?.openChecks ?? simulation.data?.security?.openChecks),
+      },
+    } as DrawerEnrichmentPayload
+  }, [enrichment.data, simulation.data])
   const socials = enriched?.socials ?? {}
   const dexScreener = address ? `https://dexscreener.com/${chain}/${address}` : null
   const geckoTerminal = address ? `https://www.geckoterminal.com/${GT_NETWORK[chain]}/tokens/${address}` : null
@@ -491,16 +536,11 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
   const clusterLabel = clusterEvidenceLabel(deployer?.clusterEvidence)
   const deployerMethod = publicMethodLabel(deployer?.methodLabel)
   const holderStatusLabel = holderStatus(concentration.status, concentration.confidence, concentration.reason)
-  const securityTax = security?.honeypot?.simulationSuccess
-    ? `${percent(security.honeypot.buyTax)} buy · ${percent(security.honeypot.sellTax)} sell`
-    : (token?.simulationLabel ?? 'Open Check')
   const ownershipLabel = security?.devOwnership?.ownershipLabel ?? (security?.devOwnership?.ownershipVerified === true && security.devOwnership.isRenounced === true ? 'Renounced ownership' : security?.devOwnership?.ownershipVerified === true && (security.devOwnership.ownerAddress || security.devOwnership.adminAddress) ? 'Active owner/admin verified' : 'Open Check / Not verified')
 
   const normalizedPairCreatedAt = normalizePairCreatedAt(market?.poolActivity?.pairCreatedAt ?? null)
   const pairAgeLabel = ageLabelFromIso(normalizedPairCreatedAt)
-  const poolAgeMinutes = normalizedPairCreatedAt
-    ? Math.max(0, Math.floor((Date.now() - new Date(normalizedPairCreatedAt).getTime()) / 60_000))
-    : (Number.isFinite(token?.ageMinutes) ? token!.ageMinutes : null)
+  const poolAgeMinutes = Number.isFinite(token?.ageMinutes) ? token!.ageMinutes : null
   const hasSocials = Boolean(asLink(socials.website) || asLink(socials.twitter) || asLink(socials.telegram))
 
   const lockBurnConfirmed = hasVerifiedLock(lp?.lpLockStatus) || lp?.lpProofApplicability === 'not_applicable'
@@ -527,7 +567,7 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
     poolAgeMinutes,
     marketCapUsd: market?.marketCapUsd ?? null,
     fdvUsd: market?.fdvUsd ?? token?.fdvUsd ?? null,
-    simulationStatus: token?.simulationStatus ?? null,
+    simulationStatus: displayModel?.simulation.status ?? token?.simulationStatus ?? null,
     lpModelUnknown: (lp?.displayLpModel ?? null) === 'unknown',
     liquidityUsd,
     creatorHolderPercent,
@@ -614,8 +654,8 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
     rugHistory: deployer?.rugHistory ?? null,
   })
   const simulationEvidence = getRadarSimulationEvidence({
-    status: token?.simulationStatus ?? null,
-    reason: token?.simulationReason ?? null,
+    status: displayModel?.simulation.status ?? token?.simulationStatus ?? null,
+    reason: displayModel?.simulation.reason ?? token?.simulationReason ?? null,
   })
   const ageEvidence = getRadarAgeEvidence({ ageMinutes: poolAgeMinutes })
   const lpPositionEvidence = getRadarLpPositionEvidence({
@@ -685,7 +725,7 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
     { label: 'Telegram', href: asLink(socials.telegram) },
   ].filter((item): item is { label: string; href: string } => Boolean(item.href))
   const marketSignals = Array.from(new Set([pairAgeLabel ? 'New Pool' : null, token?.momentum ? `${publicStatus(token.momentum)} Momentum` : null, marketValuation.basis === 'verified_market_cap' ? 'Market Cap Verified' : marketValuation.basis === 'fdv_fallback' ? 'FDV Fallback' : 'Valuation Open Check'].filter(Boolean) as string[])).slice(0, 5)
-  const riskSignals = Array.from(new Set([excludedFromFeed ? 'Liquidity Watch' : null, concentrationRisk === 'Extreme' ? 'Extreme Holder Control' : concentrationRisk === 'High' ? 'High Holder Control' : null, !hasVerifiedLock(lp?.lpLockStatus) && lp?.lpProofApplicability !== 'not_applicable' ? 'No Lock Detected' : null, displayModel?.simulation.status === 'passed' ? 'Simulation Clear' : displayModel?.simulation.status === 'open_check' ? 'Simulation Pending' : null, ...severity.evidenceTags].filter(Boolean) as string[])).slice(0, 6)
+  const riskSignals = Array.from(new Set([excludedFromFeed ? 'Liquidity Watch' : null, concentrationRisk === 'Extreme' ? 'Extreme Holder Control' : concentrationRisk === 'High' ? 'High Holder Control' : null, !hasVerifiedLock(lp?.lpLockStatus) && lp?.lpProofApplicability !== 'not_applicable' ? 'No Lock Detected' : null, displayModel?.simulation.status === 'passed' ? 'Simulation Checked' : simulation.data ? 'Simulation Checked Inconclusive' : displayModel?.simulation.status === 'open_check' ? 'Simulation Pending' : null, ...severity.evidenceTags].filter(Boolean) as string[])).slice(0, 6)
   const controlSignals = Array.from(new Set([activeOwner ? 'Active Owner/Admin' : ownershipLabel, lpControlStatus ? publicStatus(lpControlStatus) : 'LP Control Open Check', deployer?.clusterEvidence?.confirmed ? 'Cluster Evidence' : 'Cluster Open Check'].filter(Boolean) as string[])).slice(0, 5)
   const cortexFound = [severity.cortexSevereLine, poolDistributionLine, holderCortexLine].filter(Boolean).slice(0, 3)
   const cortexMainRisk = activeOwner ? 'Active owner/admin remains the primary control risk.' : concentrationRisk === 'Extreme' ? 'Extreme holder concentration is the primary risk driver.' : lpRiskLabelValue
