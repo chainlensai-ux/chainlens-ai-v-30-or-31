@@ -310,6 +310,20 @@ type WalletResult = {
     lockedReasons: string[]
     excludedFrom: string[]
   }
+  walletPortfolioPnlRead?: {
+    status: 'ok' | 'partial' | 'unavailable'
+    mode: 'mark_to_market_portfolio'
+    label: string
+    currentValueUsd: number | null
+    estimatedChangeUsd: number | null
+    estimatedChangePercent: number | null
+    basis: 'balance_history' | 'current_holdings_only' | 'unavailable'
+    timeframe: string | null
+    confidence: 'high' | 'medium' | 'low' | null
+    warning: string | null
+    reason: string | null
+    excludedFrom: string[]
+  }
   walletRecoveryRecommendation?: {
     recommended: boolean
     mode: 'targeted_token_recovery' | 'targeted_recovery_attempted' | 'attempted_light' | 'attempted_provider_failed' | 'skipped_cost_guard' | 'skipped_micro_wallet' | 'none'
@@ -2899,6 +2913,31 @@ export default function WalletScannerPage() {
                       <p style={{ marginTop: '4px', fontSize: '10px', color: 'rgba(255,255,255,0.35)' }}>
                         Realized stats locked: {pr.officialRealized.reason || 'integrity failed / flat price / synthetic cost basis'}
                       </p>
+                    )}
+                  </div>
+                )
+              })()}
+
+              {/* Portfolio P&L — mark-to-market holdings performance, separate from Trader PnL.
+                  Shown even when Trader PnL is not applicable (non-trader address types). */}
+              {result.walletPortfolioPnlRead && (() => {
+                const pp = result.walletPortfolioPnlRead!
+                const fmtUsd = (v: number | null) => v === null ? null : `${v >= 0 ? '+' : ''}$${Math.abs(v).toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+                const fmtPct = (v: number | null) => v === null ? null : `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`
+                return (
+                  <div style={{ padding: '14px 16px', background: 'rgba(255,255,255,0.015)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '12px' }}>
+                    <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.16em', color: 'rgba(255,255,255,0.22)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Portfolio P&L</span>
+                    {pp.status === 'unavailable' ? (
+                      <p style={{ marginTop: '6px', fontSize: '11px', color: 'rgba(255,255,255,0.45)' }}>{pp.reason || 'Portfolio P&L unavailable.'}</p>
+                    ) : (
+                      <>
+                        <div style={{ marginTop: '8px', display: 'flex', alignItems: 'baseline', gap: '10px', flexWrap: 'wrap' }}>
+                          <span style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0' }}>Estimated holdings performance ({pp.timeframe})</span>
+                          {pp.estimatedChangeUsd !== null && <span style={{ fontSize: '13px', color: '#e2e8f0' }}>{fmtUsd(pp.estimatedChangeUsd)}{pp.estimatedChangePercent !== null ? ` (${fmtPct(pp.estimatedChangePercent)})` : ''}</span>}
+                        </div>
+                        <p style={{ marginTop: '6px', fontSize: '11px', color: 'rgba(255,255,255,0.45)' }}>Current value: {pp.currentValueUsd !== null ? `$${pp.currentValueUsd.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : 'n/a'}</p>
+                        {pp.warning && <p style={{ marginTop: '4px', fontSize: '10px', color: '#fbbf24' }}>{pp.warning}</p>}
+                      </>
                     )}
                   </div>
                 )

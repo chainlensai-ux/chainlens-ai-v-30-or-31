@@ -417,6 +417,23 @@ export type WalletSnapshot = {
     lockedReasons: string[]
     excludedFrom: string[]
   }
+  // WALLET-PORTFOLIO-PNL-READ-1: mark-to-market portfolio value movement, distinct from trader
+  // PnL — built only from already-fetched current holdings + per-token 24h price change. Never
+  // contributes to win rate, profit skill, or wallet score.
+  walletPortfolioPnlRead?: {
+    status: 'ok' | 'partial' | 'unavailable'
+    mode: 'mark_to_market_portfolio'
+    label: 'Portfolio P&L'
+    currentValueUsd: number | null
+    estimatedChangeUsd: number | null
+    estimatedChangePercent: number | null
+    basis: 'balance_history' | 'current_holdings_only' | 'unavailable'
+    timeframe: string | null
+    confidence: 'high' | 'medium' | 'low' | null
+    warning: string | null
+    reason: string | null
+    excludedFrom: string[]
+  }
   // PUBLIC-READ-MODEL-CLEANUP-1: a single, final public-facing summary that never confuses verified
   // PnL with behavior intelligence. behaviorLots is sourced from tradeIntelligence.tradeIntelLots
   // (trade-style/rotation evidence, never gated by PnL integrity) — it is NEVER the same count as
@@ -17974,6 +17991,43 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         ;(snapshot as any).walletNoPnlReasonLabel = _noPnlLabel
         ;(snapshot as any).walletNoPnlNextAction = _noPnlNextAction
         ;(snapshot as any).walletNoPnlCanRecover = _canRecover
+      }
+    }
+
+    // WALLET-PORTFOLIO-PNL-READ-1: mark-to-market portfolio value movement, separate from trader
+    // PnL. Built only from already-fetched holdings (current value + per-token change24h from the
+    // existing price provider response) — no new provider calls, no FIFO/closed-lot involvement.
+    {
+      const _pfHoldingsWithChange = holdings.filter(h => Number.isFinite(h.change24h) && Number.isFinite(h.value) && h.value > 0)
+      const _pfValueWithChange = _pfHoldingsWithChange.reduce((s, h) => s + h.value, 0)
+      const _pfCurrentValueUsd = Number.isFinite(totalValue) ? totalValue : 0
+      const _pfCoverage = _pfCurrentValueUsd > 0 ? _pfValueWithChange / _pfCurrentValueUsd : 0
+      const _pfHasUsableEvidence = _pfCurrentValueUsd > 0 && _pfValueWithChange > 0
+      const _pfEstimatedChangeUsd = _pfHoldingsWithChange.reduce((s, h) => s + h.value * ((h.change24h as number) / 100), 0)
+      const _pfPriorValueUsd = _pfValueWithChange - _pfEstimatedChangeUsd
+      const _pfEstimatedChangePercent = _pfPriorValueUsd > 0 ? (_pfEstimatedChangeUsd / _pfPriorValueUsd) * 100 : null
+      const _pfStatus: 'ok' | 'partial' | 'unavailable' = !_pfHasUsableEvidence
+        ? 'unavailable'
+        : _pfCoverage >= 0.8
+          ? 'ok'
+          : 'partial'
+      ;(snapshot as any).walletPortfolioPnlRead = {
+        status: _pfStatus,
+        mode: 'mark_to_market_portfolio',
+        label: 'Portfolio P&L',
+        currentValueUsd: _pfCurrentValueUsd > 0 ? Math.round(_pfCurrentValueUsd * 100) / 100 : null,
+        estimatedChangeUsd: _pfStatus === 'unavailable' ? null : Math.round(_pfEstimatedChangeUsd * 100) / 100,
+        estimatedChangePercent: _pfStatus === 'unavailable' ? null : (_pfEstimatedChangePercent != null ? Math.round(_pfEstimatedChangePercent * 100) / 100 : null),
+        basis: _pfStatus === 'unavailable' ? 'unavailable' : 'current_holdings_only',
+        timeframe: _pfStatus === 'unavailable' ? null : '24h',
+        confidence: _pfStatus === 'ok' ? 'medium' : _pfStatus === 'partial' ? 'low' : null,
+        warning: _pfStatus === 'unavailable'
+          ? null
+          : 'Estimated from current holdings and 24h price change — not a realized trade-by-trade PnL.',
+        reason: _pfStatus === 'unavailable'
+          ? 'Portfolio P&L needs balance history or prior value snapshots.'
+          : null,
+        excludedFrom: ['trader_pnl', 'win_rate', 'profit_skill'],
       }
     }
 
