@@ -18051,6 +18051,14 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
           },
           '14d': _pf14dPeriod,
         },
+        // Legacy flat fields kept alongside `periods` for backwards compatibility with any
+        // client still reading the pre-eceb025 shape — UI should read `periods` only.
+        estimatedChangeUsd: _pfStatus === 'unavailable' ? null : Math.round(_pfEstimatedChangeUsd * 100) / 100,
+        estimatedChangePercent: _pfStatus === 'unavailable' ? null : (_pfEstimatedChangePercent != null ? Math.round(_pfEstimatedChangePercent * 100) / 100 : null),
+        timeframe: '24h',
+        basis: _pfStatus === 'unavailable' ? 'unavailable' : 'current_holdings_only',
+        confidence: _pfStatus === 'ok' ? 'medium' : _pfStatus === 'partial' ? 'low' : null,
+        reason: _pfStatus === 'unavailable' ? 'Portfolio P&L needs balance history or prior value snapshots.' : null,
         warning: _pfStatus === 'unavailable'
           ? null
           : 'Estimated from holdings value changes. Not realized trader PnL.',

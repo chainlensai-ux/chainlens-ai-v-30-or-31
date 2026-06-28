@@ -311,16 +311,24 @@ type WalletResult = {
     excludedFrom: string[]
   }
   walletPortfolioPnlRead?: {
-    status: 'ok' | 'partial' | 'unavailable'
-    mode: 'mark_to_market_portfolio'
-    label: string
-    currentValueUsd: number | null
-    periods: {
-      '24h': { status: 'ok' | 'partial' | 'unavailable'; estimatedChangeUsd: number | null; estimatedChangePercent: number | null; basis: 'balance_history' | 'current_holdings_only' | 'unavailable'; confidence: 'high' | 'medium' | 'low' | null; reason: string | null }
-      '14d': { status: 'ok' | 'partial' | 'unavailable'; estimatedChangeUsd: number | null; estimatedChangePercent: number | null; basis: 'balance_history' | 'current_holdings_only' | 'unavailable'; confidence: 'high' | 'medium' | 'low' | null; reason: string | null }
+    status?: 'ok' | 'partial' | 'unavailable'
+    mode?: 'mark_to_market_portfolio'
+    label?: string
+    currentValueUsd?: number | null
+    periods?: {
+      '24h'?: { status?: 'ok' | 'partial' | 'unavailable'; estimatedChangeUsd?: number | null; estimatedChangePercent?: number | null; basis?: 'balance_history' | 'current_holdings_only' | 'unavailable'; confidence?: 'high' | 'medium' | 'low' | null; reason?: string | null }
+      '14d'?: { status?: 'ok' | 'partial' | 'unavailable'; estimatedChangeUsd?: number | null; estimatedChangePercent?: number | null; basis?: 'balance_history' | 'current_holdings_only' | 'unavailable'; confidence?: 'high' | 'medium' | 'low' | null; reason?: string | null }
     }
-    warning: string | null
-    excludedFrom: string[]
+    // legacy flat fields kept optional for backwards compatibility with older cached responses —
+    // never read directly in the UI, only used as a fallback inside getPortfolioPnlPeriod.
+    estimatedChangeUsd?: number | null
+    estimatedChangePercent?: number | null
+    timeframe?: string | null
+    basis?: 'balance_history' | 'current_holdings_only' | 'unavailable'
+    confidence?: 'high' | 'medium' | 'low' | null
+    reason?: string | null
+    warning?: string | null
+    excludedFrom?: string[]
   }
   walletRecoveryRecommendation?: {
     recommended: boolean
@@ -2920,15 +2928,44 @@ export default function WalletScannerPage() {
                   Shown even when Trader PnL is not applicable (non-trader address types). */}
               {result.walletPortfolioPnlRead && (() => {
                 const pp = result.walletPortfolioPnlRead!
-                const fmtUsd = (v: number | null) => v === null ? null : `${v >= 0 ? '+' : ''}$${Math.abs(v).toLocaleString(undefined, { maximumFractionDigits: 0 })}`
-                const fmtPct = (v: number | null) => v === null ? null : `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`
-                const periodRow = (rowLabel: string, p: typeof pp.periods['24h']) => (
+                type SafePeriod = { status: 'ok' | 'partial' | 'unavailable'; estimatedChangeUsd: number | null; estimatedChangePercent: number | null; reason: string | null }
+                // Defensive accessor: never assumes `periods` exists or is fully shaped — falls
+                // back to legacy flat 24h fields (pre-eceb025 cached responses) and otherwise to a
+                // safe "unavailable" stub so the UI can never crash on a malformed/older payload.
+                const getPortfolioPnlPeriod = (read: typeof pp | null | undefined, period: '24h' | '14d'): SafePeriod => {
+                  const fallback: SafePeriod = { status: 'unavailable', estimatedChangeUsd: null, estimatedChangePercent: null, reason: null }
+                  if (!read || typeof read !== 'object') return fallback
+                  const p = read.periods && typeof read.periods === 'object' ? read.periods[period] : undefined
+                  if (p && typeof p === 'object') {
+                    return {
+                      status: p.status === 'ok' || p.status === 'partial' ? p.status : 'unavailable',
+                      estimatedChangeUsd: typeof p.estimatedChangeUsd === 'number' ? p.estimatedChangeUsd : null,
+                      estimatedChangePercent: typeof p.estimatedChangePercent === 'number' ? p.estimatedChangePercent : null,
+                      reason: typeof p.reason === 'string' ? p.reason : null,
+                    }
+                  }
+                  if (period === '24h' && (typeof read.estimatedChangeUsd === 'number' || typeof read.estimatedChangePercent === 'number')) {
+                    return {
+                      status: read.status === 'ok' || read.status === 'partial' ? read.status : 'unavailable',
+                      estimatedChangeUsd: typeof read.estimatedChangeUsd === 'number' ? read.estimatedChangeUsd : null,
+                      estimatedChangePercent: typeof read.estimatedChangePercent === 'number' ? read.estimatedChangePercent : null,
+                      reason: typeof read.reason === 'string' ? read.reason : null,
+                    }
+                  }
+                  return fallback
+                }
+                const fmtUsd = (v: number | null) => v === null || !Number.isFinite(v) ? null : `${v >= 0 ? '+' : ''}$${Math.abs(v).toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+                const fmtPct = (v: number | null) => v === null || !Number.isFinite(v) ? null : `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`
+                const currentValueUsd = typeof pp.currentValueUsd === 'number' ? pp.currentValueUsd : null
+                const period24h = getPortfolioPnlPeriod(pp, '24h')
+                const period14d = getPortfolioPnlPeriod(pp, '14d')
+                const periodRow = (rowLabel: string, p: SafePeriod) => (
                   <div style={{ marginTop: '8px' }}>
                     <div style={{ display: 'flex', alignItems: 'baseline', gap: '10px', flexWrap: 'wrap' }}>
                       <span style={{ fontSize: '11px', color: 'rgba(255,255,255,0.55)' }}>{rowLabel}</span>
                       {p.status === 'unavailable'
                         ? <span style={{ fontSize: '11px', color: 'rgba(255,255,255,0.35)' }}>unavailable</span>
-                        : <span style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0' }}>{fmtUsd(p.estimatedChangeUsd)}{p.estimatedChangePercent !== null ? ` (${fmtPct(p.estimatedChangePercent)})` : ''}</span>}
+                        : <span style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0' }}>{fmtUsd(p.estimatedChangeUsd) ?? 'n/a'}{p.estimatedChangePercent !== null ? ` (${fmtPct(p.estimatedChangePercent)})` : ''}</span>}
                     </div>
                     {p.status === 'unavailable' && p.reason && (
                       <p style={{ marginTop: '2px', fontSize: '10px', color: 'rgba(255,255,255,0.35)' }}>{p.reason}</p>
@@ -2938,9 +2975,9 @@ export default function WalletScannerPage() {
                 return (
                   <div style={{ padding: '14px 16px', background: 'rgba(255,255,255,0.015)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '12px' }}>
                     <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.16em', color: 'rgba(255,255,255,0.22)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Portfolio P&L</span>
-                    <p style={{ marginTop: '6px', fontSize: '11px', color: 'rgba(255,255,255,0.45)' }}>Current value: {pp.currentValueUsd !== null ? `$${pp.currentValueUsd.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : 'n/a'}</p>
-                    {periodRow('24h holdings change', pp.periods['24h'])}
-                    {periodRow('14d holdings change', pp.periods['14d'])}
+                    <p style={{ marginTop: '6px', fontSize: '11px', color: 'rgba(255,255,255,0.45)' }}>Current value: {currentValueUsd !== null ? `$${currentValueUsd.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : 'n/a'}</p>
+                    {periodRow('24h holdings change', period24h)}
+                    {periodRow('14d holdings change', period14d)}
                     <p style={{ marginTop: '8px', fontSize: '10px', color: '#fbbf24' }}>Estimated from holdings value changes. Not realized trader PnL.</p>
                   </div>
                 )
