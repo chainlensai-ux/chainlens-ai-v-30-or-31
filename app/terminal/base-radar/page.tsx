@@ -8,6 +8,7 @@ import { usePlanWithLoading, LockedPanel, canAccessFeature } from '@/lib/usePlan
 import { supabase } from '@/lib/supabaseClient'
 import { getRadarFeedStatusFromScore } from '@/lib/baseRadarFeedScoring'
 import { buildBaseRadarDisplayModel, type BaseRadarDisplayModel } from '@/lib/baseRadarDisplayModel'
+import { useDrawerPreload } from '@/lib/useDrawerPreload'
 
 interface HoneypotResult {
   isHoneypot: boolean | null
@@ -443,6 +444,7 @@ function TokenCard({
   onAskCortex,
   onOpenOverview,
   onTrackToggle,
+  onPreload,
   tracking,
 }: {
   token: TokenIntel
@@ -451,9 +453,11 @@ function TokenCard({
   onAskCortex: () => void
   onOpenOverview: () => void
   onTrackToggle: () => void
+  onPreload: () => void
   tracking: boolean
 }) {
   const [hovered, setHovered] = useState(false)
+  const { preload, registerPreloadTarget, state: preloadState } = useDrawerPreload(token.contract, { liquidityUsd: token.liquidityUsd })
   const priorityAccent = getPriorityAccent(token)
   const statusColor = priorityAccent.color
   const statusBg = priorityAccent.background
@@ -478,7 +482,9 @@ function TokenCard({
     <div
       className='opportunity-card'
       onClick={onOpenOverview}
-      onMouseEnter={() => setHovered(true)}
+      ref={registerPreloadTarget}
+      onMouseEnter={() => { setHovered(true); preload(); onPreload() }}
+      onFocus={() => { preload(); onPreload() }}
       onMouseLeave={() => setHovered(false)}
       style={{
         background: hovered
@@ -515,6 +521,7 @@ function TokenCard({
               <MiniPill label={identity.context} />
               <MiniPill label={opportunityLabel} color={statusColor} background={statusBg} border={statusBorder} />
               <MiniPill label={stageLabel} color={statusColor} background={statusBg} border={statusBorder} />
+              {preloadState === 'cached' ? <MiniPill label='Drawer Cached' color='#99f6e4' background='rgba(45,212,191,0.11)' border='rgba(45,212,191,0.25)' /> : null}
             </div>
           </div>
         </div>
@@ -952,6 +959,10 @@ export default function BaseRadarPage() {
     setDrawerOpen(true)
   }
 
+  function preloadProjectOverview(token: TokenIntel) {
+    setSelectedToken(prev => prev?.contract === token.contract ? prev : token)
+  }
+
   function toggleTrack(contract: string) {
     setTrackedContracts(prev => ({ ...prev, [contract]: !prev[contract] }))
   }
@@ -1072,6 +1083,9 @@ export default function BaseRadarPage() {
           .token-card-header > div:last-child { width: 100%; }
           .token-card-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
           .token-card-actions { flex-direction: column !important; align-items: stretch !important; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .opportunity-card, .radar-mini-chart-svg *, .radar-main * { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
         }
       `}</style>
 
@@ -1207,6 +1221,7 @@ export default function BaseRadarPage() {
                   onAskCortex={() => askCortex(token)}
                   onOpenOverview={() => openProjectOverview(token)}
                   onTrackToggle={() => toggleTrack(token.contract)}
+                  onPreload={() => preloadProjectOverview(token)}
                   tracking={Boolean(trackedContracts[token.contract])}
                 />
               ))}
