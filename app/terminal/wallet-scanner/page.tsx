@@ -2895,7 +2895,14 @@ export default function WalletScannerPage() {
                   raw_reconstruction_locked: { title: 'Raw lots found, but locked', body: pr.rawReconstruction.lockedReason },
                   activity_only: { title: 'Activity found — no PnL yet', body: 'No closed lots or priced positions are available yet.' },
                 }
-                const copy = modeCopy[pr.displayMode]
+                const hasTitle = (x: unknown): x is { title: string; body: string } =>
+                  !!x && typeof x === 'object' && typeof (x as any).title === 'string'
+                const fallbackCopy = { title: 'Unavailable', body: 'No PnL read available for this wallet.' }
+                const rawCopy = modeCopy[pr.displayMode]
+                if (!hasTitle(rawCopy) && process.env.NODE_ENV !== 'production') {
+                  console.warn('[wallet-scanner] skipping unknown walletPnlRead.displayMode:', pr.displayMode)
+                }
+                const copy = hasTitle(rawCopy) ? rawCopy : fallbackCopy
                 return (
                   <div style={{ padding: '14px 16px', background: 'rgba(255,255,255,0.015)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '12px' }}>
                     <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.16em', color: 'rgba(255,255,255,0.22)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>PnL Read</span>
