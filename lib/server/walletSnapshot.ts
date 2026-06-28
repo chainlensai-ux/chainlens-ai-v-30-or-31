@@ -352,17 +352,18 @@ export type WalletSnapshot = {
   // existing FIFO open lots + estimatedPnl current-value pricing — never used for realized PnL,
   // win rate, profit skill, or wallet score, and never unlocks any of those gates.
   walletOpenPositionPnlRead?: {
-    status: 'available' | 'unavailable'
+    status: 'available' | 'unavailable' | 'estimate_only'
     unrealizedPnlUsd: number | null
     unrealizedPnlPercent: number | null
+    headlineValueUsd: number | null
     openLots: number
     uniqueTokens: number
     costBasisUsd: number | null
     currentValueUsd: number | null
     pricedTokenCount: number
     estimateOnlyTokenCount: number
-    label: 'Open-position PnL'
-    warning: 'Unrealized only — open positions, not a closed trade result.'
+    label: 'Open-position PnL' | 'Open value tracked'
+    warning: string
     reason: string
     excludedFrom: ['realized_pnl', 'win_rate', 'profit_skill', 'wallet_score']
   }
@@ -415,6 +416,27 @@ export type WalletSnapshot = {
     }
     lockedReasons: string[]
     excludedFrom: string[]
+  }
+  // PUBLIC-READ-MODEL-CLEANUP-1: a single, final public-facing summary that never confuses verified
+  // PnL with behavior intelligence. behaviorLots is sourced from tradeIntelligence.tradeIntelLots
+  // (trade-style/rotation evidence, never gated by PnL integrity) — it is NEVER the same count as
+  // verifiedPnlLots (officially realized, integrity-gated closed lots). When integrity is hard
+  // invalid, the headline says "Profit skill locked" — the technical integrity reason is kept out of
+  // the hero and pushed into integrityErrors/reason instead.
+  walletLockedPnlRead?: {
+    status: 'ok' | 'open_check_integrity_invalid' | 'locked_small_sample' | 'locked_integrity' | 'locked_insufficient_evidence'
+    headline: string
+    reason: string
+    behaviorLots: number
+    verifiedPnlLots: number
+    publicPerformanceLots: number
+    rawMatchedLots: number
+    excludedLots: number
+    integrityErrors: string[]
+    topBlockers: string[]
+    canSay: string[]
+    cannotProve: string[]
+    nextAction: string | null
   }
   // WALLET-PNL-BLOCKER-SUMMARY-1: a single public-facing object that translates the raw
   // integrity-gate/read-hierarchy signals above into "what is verified, what is locked, why,
@@ -13278,9 +13300,29 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _portfolioCreditsUsed = 1
   const _activityCreditsUsed = activityRequested ? 1 : 0
   const _pricingCreditsUsed = _priceBudgetDebug.finalPriceAttempts ?? _priceAtTimeDebug.priceAttempts ?? 0
-  const _creditsBeforeHistorical = _portfolioCreditsUsed + _activityCreditsUsed + _pricingCreditsUsed
+  // HARD-CAP-REAL-ACCOUNTING-FIX: the placeholder estimate above (portfolio=1, activity<=1, pricing
+  // attempts) does not reflect the real fan-out already recorded in _apiCallLog by this point in
+  // execution (e.g. goldrush/moralis pagination during portfolio+activity fetch). Take the larger of
+  // the placeholder estimate and the real non-cached/non-duplicate spend so every downstream
+  // historical/pricing/coverage path gated by _sharedHistoricalBudgetRemaining() sees true spend.
+  const _realCreditsBeforeHistorical = _apiCallLog.reduce((s, e) => s + (e.cacheHit || e.duplicate ? 0 : e.credits), 0)
+  const _creditsBeforeHistorical = Math.max(_portfolioCreditsUsed + _activityCreditsUsed + _pricingCreditsUsed, _realCreditsBeforeHistorical)
   let _sharedHistoricalCreditsUsed = 0
+  let _hardCapReachedAtPhase: string | null = null
+  const _callsSkippedAfterHardCap: string[] = []
+  const _providerCallsBlockedByHardCap: string[] = []
   const _sharedHistoricalBudgetRemaining = () => Math.max(0, _totalCreditHardCap - _creditsBeforeHistorical - _sharedHistoricalCreditsUsed)
+  const _noteHardCapReached = (phase: string) => {
+    if (!_adminOverrideUsed && _sharedHistoricalBudgetRemaining() <= 0 && !_hardCapReachedAtPhase) {
+      _hardCapReachedAtPhase = phase
+    }
+  }
+  const _noteCallBlockedByHardCap = (phase: string, provider: string) => {
+    if (_hardCapReachedAtPhase) {
+      _callsSkippedAfterHardCap.push(phase)
+      _providerCallsBlockedByHardCap.push(provider)
+    }
+  }
 
   // Save ETH reconstruction results AFTER pricing so BFC/fallback phases cannot permanently wipe them.
   // Even when pricedEvents = 0 (all buys unpriced), we preserve swapCandidates so open-position
@@ -14151,6 +14193,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // _tierTarget/_totalCreditTarget/_totalCreditHardCap/_creditsBeforeHistorical/_sharedHistoricalBudgetRemaining
   // are declared once, right after the base price-at-time pass, and shared by every historical/pricing
   // recovery path below (see SHARED-HISTORICAL-BUDGET comment).
+  _noteHardCapReached('historical_coverage')
+  if (_sharedHistoricalBudgetRemaining() <= 0) _noteCallBlockedByHardCap('historical_coverage', 'goldrush')
   const _historicalPhaseBudget = Math.max(0, Math.min(6, _sharedHistoricalBudgetRemaining()))
   // HIGH-ACTIVITY-RECON-1: a heavily-active wallet (many indexed events / swap candidates) whose raw
   // matched lots are still too few to yield public-grade evidence is the "120 candidates → 6 excluded
@@ -14368,6 +14412,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _syntheticTargetExtraPriorBuysFoundSoFar = _syntheticTargetRecovery?.debug.syntheticTargetPriorBuysFound ?? 0
   // Shared accumulator already reflects broad-pass page credits spent above, so the remaining
   // pool here is what's actually left for the whole scan — not a locally re-derived estimate.
+  _noteHardCapReached('synthetic_target_extra_pricing')
+  if (_sharedHistoricalBudgetRemaining() <= 0) _noteCallBlockedByHardCap('synthetic_target_extra_pricing', 'goldrush')
   const _syntheticTargetExtraBudgetRemaining = _sharedHistoricalBudgetRemaining()
   const _syntheticTargetExtraPagesAllowed = Math.max(0, Math.min(_syntheticTargetExtraMaxPages, _syntheticTargetExtraBudgetRemaining))
 
@@ -14660,7 +14706,9 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     acquisitionNoQuoteLegCount: 0,
     acquisitionPromotedSwapCandidates: 0,
   }
-  if (_acquisitionRecoveryEligible && _acquisitionTargetTokens.length > 0) {
+  _noteHardCapReached('acquisition_history_recovery')
+  if (_sharedHistoricalBudgetRemaining() <= 0) _noteCallBlockedByHardCap('acquisition_history_recovery', 'moralis')
+  if (_acquisitionRecoveryEligible && _acquisitionTargetTokens.length > 0 && _sharedHistoricalBudgetRemaining() > 0) {
     const _acqResult = await runAcquisitionHistoryRecovery(addrNorm, _acquisitionTargetTokens, _acqRpcUrlForChain, _acqMoralisChainForChain, _sharedHistoricalBudgetRemaining)
     _acquisitionRecoveryNewEvidence = _acqResult.newEvidence
     _acquisitionRecoveryDebug = _acqResult.debug
@@ -15265,11 +15313,37 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _openPositionUnrealizedPnlUsd = estimatedPnl.unrealizedPnlUsd
   const _openPositionCurrentValueUsd = _openPositionUnrealizedPnlUsd !== null ? _openPositionCostBasisUsd + _openPositionUnrealizedPnlUsd : null
   const _openPositionAvailable = _openLotsForRead.length > 0 && _openPositionUnrealizedPnlUsd !== null
-  const _walletOpenPositionPnlRead: NonNullable<WalletSnapshot['walletOpenPositionPnlRead']> = _openPositionAvailable
+  // OPEN-POSITION-ESTIMATE-ONLY-FIX: when every open lot's current pricing reuses the estimate-only
+  // current-holding-price fallback (no real priced-token evidence backs it), the "unrealized PnL"
+  // figure is not public-grade — reporting it as $0/real PnL misrepresents an untracked estimate as a
+  // verified result. Surface current value only, not a PnL number, in that mode.
+  const _openPositionEstimateOnlyMode = _openPositionAvailable &&
+    _openLotsForRead.length > 0 &&
+    _openPositionEstimateOnlyTokenCount >= _openLotsForRead.length &&
+    _openPositionPricedTokenCount === 0
+  const _walletOpenPositionPnlRead: NonNullable<WalletSnapshot['walletOpenPositionPnlRead']> = _openPositionEstimateOnlyMode
+    ? {
+      status: 'estimate_only',
+      unrealizedPnlUsd: null,
+      unrealizedPnlPercent: null,
+      headlineValueUsd: _openPositionCurrentValueUsd,
+      openLots: _openLotsForRead.length,
+      uniqueTokens: _openLotUniqueTokens,
+      costBasisUsd: _openPositionCostBasisUsd,
+      currentValueUsd: _openPositionCurrentValueUsd,
+      pricedTokenCount: _openPositionPricedTokenCount,
+      estimateOnlyTokenCount: _openPositionEstimateOnlyTokenCount,
+      label: 'Open value tracked',
+      warning: 'PnL not public-grade — current value reuses estimate-only pricing.',
+      reason: `${_openLotsForRead.length} open lot${_openLotsForRead.length === 1 ? '' : 's'} across ${_openLotUniqueTokens} token${_openLotUniqueTokens === 1 ? '' : 's'}, valued from estimate-only current-holding pricing. Not used for realized PnL, win rate, profit skill, or wallet score.`,
+      excludedFrom: ['realized_pnl', 'win_rate', 'profit_skill', 'wallet_score'],
+    }
+    : _openPositionAvailable
     ? {
       status: 'available',
       unrealizedPnlUsd: _openPositionUnrealizedPnlUsd,
       unrealizedPnlPercent: _openPositionCostBasisUsd > 0 ? (_openPositionUnrealizedPnlUsd! / _openPositionCostBasisUsd) * 100 : null,
+      headlineValueUsd: _openPositionUnrealizedPnlUsd,
       openLots: _openLotsForRead.length,
       uniqueTokens: _openLotUniqueTokens,
       costBasisUsd: _openPositionCostBasisUsd,
@@ -15285,6 +15359,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       status: 'unavailable',
       unrealizedPnlUsd: null,
       unrealizedPnlPercent: null,
+      headlineValueUsd: null,
       openLots: _openLotsForRead.length,
       uniqueTokens: _openLotUniqueTokens,
       costBasisUsd: _openLotsForRead.length > 0 ? _openPositionCostBasisUsd : null,
@@ -15301,7 +15376,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // that distinction explicitly instead of letting the checklist read as "nothing worked."
   const _pnlDisplayMode: NonNullable<WalletSnapshot['pnlDisplayMode']> = _publicPnlStatusFinal === 'ok'
     ? 'realized'
-    : _walletOpenPositionPnlRead.status === 'available'
+    : (_walletOpenPositionPnlRead.status === 'available' || _walletOpenPositionPnlRead.status === 'estimate_only')
       ? 'open_position_only'
       : 'locked'
   const _pnlDisplayLabel = _pnlDisplayMode === 'open_position_only'
@@ -15948,10 +16023,19 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _historicalChainCount = 2 // chains fetched inside buildWalletHistoricalCoverage: base-mainnet + eth-mainnet
   const _historicalMaxPagesPerChain = _pagesAllowed
   const _historicalMaxPagesTotal = _pagesAllowed * _historicalChainCount
-  const _creditsUsedFinal = _portfolioCreditsUsed + _activityCreditsUsed + (_priceBudgetDebug.finalPriceAttempts ?? 0) + _historicalCreditsUsedFinal
+  // BUDGET-ACCOUNTING-CONSISTENCY-FIX: estimatedPlanningCreditsUsed must never under-report the real
+  // _apiCallLog audit total — take the larger of the two so budgetCapHit/hardCapHit agree with
+  // apiAudit.totalCredits instead of silently diverging from the real per-call spend.
+  const _apiTotalCreditsForBudget = _apiCallLog.reduce((s, e) => s + (e.cacheHit || e.duplicate ? 0 : e.credits), 0)
+  const _creditsUsedFinal = Math.max(
+    _portfolioCreditsUsed + _activityCreditsUsed + (_priceBudgetDebug.finalPriceAttempts ?? 0) + _historicalCreditsUsedFinal,
+    _apiTotalCreditsForBudget,
+  )
   const _historicalBudgetCapHit = _runHistoricalCoverage && _historicalCreditsUsedFinal >= _historicalMaxPagesTotal && walletHistoricalCoverageSummary.coverageLevel !== 'none'
   const _historicalBudgetCapReason = _historicalBudgetCapHit ? 'historical_phase_cap_reached_total_pages' : null
-  const _budgetCapHitFinal = _creditsUsedFinal >= _totalCreditHardCap || _historicalBudgetCapHit
+  const _hardCapHitFinal = !_adminOverrideUsed && _creditsUsedFinal >= _totalCreditHardCap
+  // budgetCapHit must never be false while hardCapHit is true — hard cap hit implies budget cap hit.
+  const _budgetCapHitFinal = _hardCapHitFinal || _creditsUsedFinal >= _totalCreditHardCap || _historicalBudgetCapHit
   const _walletScanBudgetDebug = {
     scanMode: historicalCoverage ? 'historical' : activityRequested ? 'deep' : 'basic',
     requestedHistoricalScan: historicalCoverage,
@@ -15972,11 +16056,16 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     historicalCreditsUsed: _historicalBaseCreditsUsed,
     syntheticTargetExtraCreditUsed: _syntheticTargetExtraCreditUsed,
     budgetCapHit: _budgetCapHitFinal,
+    hardCapHit: _hardCapHitFinal,
     budgetCapReason: _creditsUsedFinal >= _totalCreditHardCap ? 'total_hard_cap_reached' : _historicalBudgetCapReason,
     callsSkippedAfterBudgetCap: Math.max(0, clampedMaxHistoricalPages - _pagesAllowed),
     estimatedCreditsSavedByCache: 0,
     whalePrioritisationUsed: _walletValueTier === 'whale',
     adminOverrideUsed: _adminOverrideUsed,
+    hardCapReachedAtPhase: _hardCapReachedAtPhase,
+    callsSkippedAfterHardCap: _callsSkippedAfterHardCap,
+    creditsPreventedByHardCap: _hardCapReachedAtPhase ? Math.max(0, _totalCreditTarget - _totalCreditHardCap) + _callsSkippedAfterHardCap.length : 0,
+    providerCallsBlockedByHardCap: _providerCallsBlockedByHardCap,
   }
   const _walletHistoricalScanDebug = {
     requested: historicalCoverage || _acquisitionRecoveryEligible,
@@ -16062,6 +16151,11 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       : `alchemy_receipt_calls_over_cap_${_alchemyReceiptCalls}_of_${ALCHEMY_RECEIPT_CALL_CAP}`)
   }
   if (_dupEntries.length > 0) _apiWarnings.push(`${_dupEntries.length}_duplicate_call(s)_detected`)
+  // BUDGET-ACCOUNTING-CONSISTENCY-FIX: surface it explicitly whenever the real audit total exceeds
+  // the budget's own estimate, instead of letting the two diverge silently.
+  if (_apiTotalCredits > _walletScanBudgetDebug.estimatedPlanningCreditsUsed) {
+    _apiWarnings.push(`api_audit_total_${_apiTotalCredits}_exceeds_budget_estimate_${_walletScanBudgetDebug.estimatedPlanningCreditsUsed}`)
+  }
   // Provider cost breakdown by purpose — distinguishes WHAT the credits were spent on (holdings
   // discovery vs. activity ingestion vs. price-at-time inference vs. historical recovery) rather
   // than just which provider billed them, since two scans with identical totalCredits can have
@@ -17553,7 +17647,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     // new provider calls, no recomputation, no unlocking of official PnL/win-rate/profit-skill.
     const _pnlReadOfficialAvailable = _publicPnlStatusFinal === 'ok'
     const _pnlReadLimitedSampleAvailable = !_pnlReadOfficialAvailable && snapshot.publicSamplePerformanceRead?.status === 'available'
-    const _pnlReadOpenPositionAvailable = !_pnlReadOfficialAvailable && !_pnlReadLimitedSampleAvailable && snapshot.walletOpenPositionPnlRead?.status === 'available'
+    const _pnlReadOpenPositionAvailable = !_pnlReadOfficialAvailable && !_pnlReadLimitedSampleAvailable &&
+      (snapshot.walletOpenPositionPnlRead?.status === 'available' || snapshot.walletOpenPositionPnlRead?.status === 'estimate_only')
     const _pnlReadIntegrityInvalid = _p6HardInvalid || _p6SoftPartialOnly || !_pnlReadOfficialAvailable
     const _pnlReadEstimatedTransferAvailable = !_pnlReadOfficialAvailable && !_pnlReadLimitedSampleAvailable && !_pnlReadOpenPositionAvailable
       && (Number.isFinite((estimatedPnl as any)?.realizedPnlUsd) || Number.isFinite((estimatedPnl as any)?.unrealizedPnlUsd))
@@ -17586,7 +17681,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       : _pnlReadDisplayMode === 'limited_sample'
         ? { label: 'Limited public PnL sample', valueUsd: snapshot.publicSamplePerformanceRead?.realizedPnlUsd ?? null, warning: snapshot.publicSamplePerformanceRead?.warning ?? null }
         : _pnlReadDisplayMode === 'open_position_only'
-          ? { label: 'Open-position PnL', valueUsd: snapshot.walletOpenPositionPnlRead?.unrealizedPnlUsd ?? null, warning: snapshot.walletOpenPositionPnlRead?.warning ?? null }
+          ? { label: snapshot.walletOpenPositionPnlRead?.label ?? 'Open-position PnL', valueUsd: snapshot.walletOpenPositionPnlRead?.status === 'estimate_only' ? (snapshot.walletOpenPositionPnlRead?.headlineValueUsd ?? null) : (snapshot.walletOpenPositionPnlRead?.unrealizedPnlUsd ?? null), warning: snapshot.walletOpenPositionPnlRead?.warning ?? null }
           : _pnlReadDisplayMode === 'estimated_transfer_flow_only'
             ? { label: 'Estimated transfer-flow PnL', valueUsd: (estimatedPnl as any)?.realizedPnlUsd ?? null, warning: 'Estimated only — not verified from matched swap cost basis.' }
             : _pnlReadDisplayMode === 'raw_reconstruction_locked'
@@ -17643,6 +17738,53 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         ...(_pnlReadRawReconstructionOnly ? [_pnlReadLockedReason] : []),
       ],
       excludedFrom: ['official_realized_pnl', 'win_rate', 'profit_skill', 'wallet_score', 'verified_pnl'],
+    }
+
+    // PUBLIC-READ-MODEL-CLEANUP-1: final public summary — behaviorLots always reads from
+    // tradeIntelligence.tradeIntelLots (never gated by integrity), verifiedPnlLots is the official
+    // integrity-gated count. The two are never conflated under one label.
+    {
+      const _lockedIntegrityHardInvalid = _p6HardInvalid || (snapshot as any).publicPnlStatus === 'open_check_integrity_invalid' || snapshot.pnlIntegrityCheck?.status === 'invalid'
+      const _lockedStatus: NonNullable<WalletSnapshot['walletLockedPnlRead']>['status'] = _pnlReadOfficialAvailable
+        ? 'ok'
+        : _lockedIntegrityHardInvalid
+          ? 'open_check_integrity_invalid'
+          : _pnlReadLimitedSampleAvailable
+            ? 'locked_small_sample'
+            : (_rawMatchedClosedLotsFinal > 0 ? 'locked_integrity' : 'locked_insufficient_evidence')
+      const _lockedHeadline = _pnlReadOfficialAvailable
+        ? 'Profit skill verified'
+        : _lockedIntegrityHardInvalid
+          ? 'Profit skill locked'
+          : _pnlReadLimitedSampleAvailable
+            ? 'Profit skill locked — sample too small'
+            : 'Profit skill not yet provable'
+      snapshot.walletLockedPnlRead = {
+        status: _lockedStatus,
+        headline: _lockedHeadline,
+        // Technical integrity reasons stay here (detail), never promoted to the headline above.
+        reason: _lockedIntegrityHardInvalid
+          ? (snapshot.pnlIntegrityCheck?.errors?.[0] ?? _publicPnlStatusReasonFinal ?? 'PnL integrity check did not pass.')
+          : (_publicPnlStatusReasonFinal ?? _pnlReadLockedReason),
+        behaviorLots: tradeIntelLots,
+        verifiedPnlLots: _performanceClosedLotsFinal.length,
+        publicPerformanceLots: Number((snapshot as any).publicPerformanceClosedLots ?? 0),
+        rawMatchedLots: _rawMatchedClosedLotsFinal,
+        excludedLots: _excludedClosedLotsFinal,
+        integrityErrors: snapshot.pnlIntegrityCheck?.errors ?? [],
+        topBlockers: _pnlReadTopFailureReasons,
+        canSay: [
+          ...(tradeIntelLots > 0 ? [`${tradeIntelLots} behavior-evidence lots observed (trade style, rotation speed).`] : []),
+          ...(_pnlReadOfficialAvailable ? [`${_performanceClosedLotsFinal.length} verified closed lots with public-grade realized PnL.`] : []),
+        ],
+        cannotProve: _pnlReadOfficialAvailable ? [] : [
+          'Verified realized PnL (profit skill) for this wallet.',
+          ...(_lockedIntegrityHardInvalid ? ['PnL integrity check did not pass — underlying lots are not trustworthy enough to publish.'] : []),
+        ],
+        nextAction: _pnlReadOfficialAvailable ? null : (snapshot.walletPnlBlockerSummary?.recoveryMode && snapshot.walletPnlBlockerSummary.recoveryMode !== 'none'
+          ? `Try ${snapshot.walletPnlBlockerSummary.recoveryMode.replace(/_/g, ' ')} to recover more verifiable history.`
+          : null),
+      }
     }
 
     // WALLET-ADDRESS-TYPE-GATE-1: a token-contract/treasury/distributor-like address is not a
@@ -17783,8 +17925,19 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   {
     const ts = snapshot.walletTradeStatsSummary as any
     const em = snapshot.walletEvidenceModel as any
+    // PUBLIC-PNL-STATUS-PRECEDENCE-FIX: a hard-invalid integrity check must always outrank the
+    // small-sample lock — 'locked_small_sample' can only apply when integrity is NOT hard-invalid.
+    // Without this guard, this block unconditionally overwrote an already-correct
+    // 'open_check_integrity_invalid' status (set above by the integrity gate) back to
+    // 'locked_small_sample' whenever the public lot count happened to be 1-9, producing the
+    // contradictory live state: top-level publicPnlStatus=locked_small_sample while
+    // publicPnlIntegrityGate.publicPnlAfterGate/pnlIntegrityCheck.status both said invalid.
+    const _integrityHardInvalidAlready =
+      snapshot.pnlIntegrityCheck?.status === 'invalid' ||
+      snapshot.publicPnlIntegrityGate?.hardInvalid === true ||
+      (snapshot as any).publicPnlStatus === 'open_check_integrity_invalid'
     const publicLots = Number((snapshot as any).publicPerformanceClosedLots ?? ts?.publicPerformanceClosedLots ?? em?.publicPerformanceClosedLots ?? 0)
-    if (publicLots > 0 && publicLots < 10) {
+    if (!_integrityHardInvalidAlready && publicLots > 0 && publicLots < 10) {
       const rawLots = Number((snapshot as any).rawMatchedClosedLots ?? ts?.rawMatchedClosedLots ?? em?.rawMatchedClosedLots ?? (snapshot as any).rawClosedLots ?? ts?.rawClosedLots ?? em?.rawClosedLots ?? 0)
       const excludedLots = Math.max(0, rawLots - publicLots)
       const status = 'locked_small_sample'

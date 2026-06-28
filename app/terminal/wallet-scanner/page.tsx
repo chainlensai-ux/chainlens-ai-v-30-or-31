@@ -251,16 +251,17 @@ type WalletResult = {
     excludedFrom: ['profit_skill', 'wallet_score', 'official_win_rate']
   }
   walletOpenPositionPnlRead?: {
-    status: 'available' | 'unavailable'
+    status: 'available' | 'unavailable' | 'estimate_only'
     unrealizedPnlUsd: number | null
     unrealizedPnlPercent: number | null
+    headlineValueUsd: number | null
     openLots: number
     uniqueTokens: number
     costBasisUsd: number | null
     currentValueUsd: number | null
     pricedTokenCount: number
     estimateOnlyTokenCount: number
-    label: 'Open-position PnL'
+    label: 'Open-position PnL' | 'Open value tracked'
     warning: string
     reason: string
     excludedFrom: string[]
@@ -2948,7 +2949,18 @@ export default function WalletScannerPage() {
                     // PnL is locked, show it explicitly instead of letting the checklist read as a
                     // dead end — a $103k wallet with 4 priced open lots should not look like "nothing
                     // worked" just because realized PnL is correctly locked for missing cost basis.
-                    ...(result.pnlDisplayMode === 'open_position_only' && result.walletOpenPositionPnlRead?.status === 'available' ? [
+                    ...(result.pnlDisplayMode === 'open_position_only' && result.walletOpenPositionPnlRead?.status === 'estimate_only' ? [
+                      { label: 'Open value tracked', note: (() => {
+                          const v = result.walletOpenPositionPnlRead!.headlineValueUsd ?? result.walletOpenPositionPnlRead!.currentValueUsd ?? null
+                          return v == null
+                            ? 'Current value not public-grade — estimate-only pricing'
+                            : `$${Math.abs(v).toLocaleString(undefined, { maximumFractionDigits: 0 })} current value, estimate-only`
+                        })(), status: 'open_check' as const },
+                      { label: 'Realized PnL', note: result.missingCostBasisRead
+                          ? `Locked — missing prior buys for ${result.missingCostBasisRead.syntheticClosedLots} sell${result.missingCostBasisRead.syntheticClosedLots !== 1 ? 's' : ''}`
+                          : (result.walletNoPnlReasonLabel ? `Locked — ${result.walletNoPnlReasonLabel.toLowerCase()}` : 'Locked'), status: 'open_check' as const },
+                      { label: 'Trade Stats', note: 'Not proven — closed lots are synthetic cost-basis only', status: 'open_check' as const },
+                    ] : result.pnlDisplayMode === 'open_position_only' && result.walletOpenPositionPnlRead?.status === 'available' ? [
                       { label: 'Open PnL', note: (() => {
                           const v = result.walletOpenPositionPnlRead!.unrealizedPnlUsd ?? 0
                           const sign = v >= 0 ? '+' : ''
