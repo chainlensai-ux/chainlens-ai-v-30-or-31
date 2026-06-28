@@ -18285,8 +18285,9 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
             em.publicPnlDisplayLabel = 'Provider PnL available'
             em.publicPnlDisplayReason = 'Provider trade summary available; FIFO reconstruction still open check.'
             em.publicPnlStatus = 'open_check'
-            em.publicRealizedPnlUsd = _s.realizedPnlUsd
-            em.publicPerformanceRealizedPnlUsd = _s.realizedPnlUsd
+            // Provider-level PnL must not populate FIFO/public-grade realized PnL fields.
+            em.publicRealizedPnlUsd = null
+            em.publicPerformanceRealizedPnlUsd = null
           }
           if (snapshot.walletTradeStatsSummary) {
             const ts = snapshot.walletTradeStatsSummary as any

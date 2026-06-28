@@ -2840,7 +2840,8 @@ export default function WalletScannerPage() {
                           }
                           const styleLabel = readableTradeStyleLabel(ti.primaryStyle) ?? ti.primaryStyle.replace(/_/g, ' ')
                           const profitNotProven = ti.profitSkillStatus != null && ti.profitSkillStatus !== 'unlocked'
-                          const profitSkillText = ti.profitSkillStatus === 'near_flat_not_proven' ? 'Near-flat / not proven'
+                          const profitSkillText = result.walletPnlRead?.displayMode === 'provider_summary' ? 'Provider Summary Available'
+                            : ti.profitSkillStatus === 'near_flat_not_proven' ? 'Near-flat / not proven'
                             : ti.profitSkillStatus === 'integrity_invalid_not_proven' ? 'Not proven (integrity)'
                             : ti.profitSkillStatus === 'locked_small_sample' ? 'Locked (small sample)'
                             : ti.profitSkillStatus === 'unlocked' ? 'Unlocked'
@@ -2936,6 +2937,59 @@ export default function WalletScannerPage() {
                   console.warn('[wallet-scanner] skipping unknown walletPnlRead.displayMode:', pr.displayMode)
                 }
                 const copy = hasTitle(rawCopy) ? rawCopy : fallbackCopy
+                if (pr.displayMode === 'provider_summary' && result.walletProviderPnlSummary) {
+                  const ps = result.walletProviderPnlSummary
+                  const pnlTone = (ps.realizedPnlUsd ?? 0) < 0 ? '#f87171' : '#4ade80'
+                  const pct = ps.realizedPnlPercent !== null ? `${ps.realizedPnlPercent >= 0 ? '+' : ''}${ps.realizedPnlPercent.toFixed(1)}%` : '—'
+                  const metricCards = [
+                    ['Chain', ps.chain ?? '—'],
+                    ['Trades', ps.totalTrades?.toLocaleString() ?? '—'],
+                    ['Buys / Sells', `${ps.totalBuys?.toLocaleString() ?? '—'} / ${ps.totalSells?.toLocaleString() ?? '—'}`],
+                    ['Volume', ps.totalTradeVolumeUsd !== null ? `$${ps.totalTradeVolumeUsd.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : '—'],
+                    ['Source', 'Moralis'],
+                    ['FIFO Proof', 'Open Check'],
+                  ]
+                  return (
+                    <div style={{ position: 'relative', overflow: 'hidden', padding: '22px', background: 'linear-gradient(135deg, rgba(20,184,166,0.13), rgba(15,23,42,0.96) 42%, rgba(56,189,248,0.09))', border: '1px solid rgba(125,211,252,0.22)', borderRadius: '20px', boxShadow: '0 24px 80px rgba(0,0,0,0.32), inset 0 1px 0 rgba(255,255,255,0.07)' }}>
+                      <div style={{ position: 'absolute', inset: 0, background: 'radial-gradient(circle at top right, rgba(74,222,128,0.16), transparent 34%)', pointerEvents: 'none' }} />
+                      <div style={{ position: 'relative' }}>
+                        <span style={{ fontSize: '9px', fontWeight: 800, letterSpacing: '0.18em', color: 'rgba(125,211,252,0.78)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>PnL Read</span>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: '18px', flexWrap: 'wrap', marginTop: '10px' }}>
+                          <div style={{ minWidth: '240px', flex: '1 1 320px' }}>
+                            <h3 style={{ margin: 0, fontSize: '22px', lineHeight: 1.1, fontWeight: 900, letterSpacing: '-0.03em', color: '#f8fafc', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>Provider PnL Summary</h3>
+                            <p style={{ margin: '8px 0 0', maxWidth: '620px', fontSize: '13px', lineHeight: 1.55, color: 'rgba(226,232,240,0.72)', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>CORTEX found provider-level trading performance, while ChainLens FIFO proof remains open check.</p>
+                          </div>
+                          <div style={{ textAlign: 'right' }}>
+                            <div style={{ fontSize: '42px', lineHeight: 0.95, fontWeight: 950, letterSpacing: '-0.06em', color: pnlTone, fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{fmtUsd(ps.realizedPnlUsd) ?? '—'}</div>
+                            <div style={{ marginTop: '6px', fontSize: '13px', fontWeight: 800, color: pnlTone, fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{pct} realized</div>
+                          </div>
+                        </div>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, minmax(110px, 1fr))', gap: '10px', marginTop: '18px' }} className="wallet-intel-grid">
+                          {metricCards.map(([label, value]) => (
+                            <div key={label} style={{ background: 'rgba(2,6,23,0.52)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '12px', padding: '12px' }}>
+                              <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.34)', letterSpacing: '0.13em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '6px' }}>{label}</div>
+                              <div style={{ fontSize: '15px', fontWeight: 850, color: label === 'FIFO Proof' ? '#fbbf24' : '#e2e8f0', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{value}</div>
+                            </div>
+                          ))}
+                        </div>
+                        <div style={{ marginTop: '16px', background: 'rgba(15,23,42,0.68)', border: '1px solid rgba(125,211,252,0.16)', borderRadius: '14px', padding: '14px' }}>
+                          <div style={{ fontSize: '11px', fontWeight: 850, color: '#e2e8f0', letterSpacing: '0.08em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '10px' }}>Two CORTEX reads were attempted</div>
+                          {[
+                            ['Provider Summary', 'Available', 'Moralis reports wallet-level realized PnL and trade volume.'],
+                            ['ChainLens FIFO Proof', 'Open Check', 'ChainLens has not reconstructed verified buy/sell lots from indexed swap evidence yet.'],
+                          ].map(([name, status, body]) => (
+                            <div key={name} style={{ display: 'grid', gridTemplateColumns: '170px 110px 1fr', gap: '10px', alignItems: 'baseline', padding: '9px 0', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+                              <span style={{ fontSize: '12px', fontWeight: 800, color: '#f8fafc', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{name}</span>
+                              <span style={{ fontSize: '10px', fontWeight: 800, color: status === 'Available' ? '#4ade80' : '#fbbf24', letterSpacing: '0.08em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{status}</span>
+                              <span style={{ fontSize: '12px', lineHeight: 1.45, color: 'rgba(226,232,240,0.62)', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{body}</span>
+                            </div>
+                          ))}
+                        </div>
+                        <p style={{ margin: '14px 0 0', fontSize: '11px', lineHeight: 1.55, color: 'rgba(251,191,36,0.86)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Provider PnL is wallet-level and useful for quick performance context. It is not token-level FIFO proof and is excluded from win rate, profit skill, wallet score, and lot samples.</p>
+                      </div>
+                    </div>
+                  )
+                }
                 return (
                   <div style={{ padding: '14px 16px', background: 'rgba(255,255,255,0.015)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '12px' }}>
                     <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.16em', color: 'rgba(255,255,255,0.22)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>PnL Read</span>
@@ -3163,6 +3217,7 @@ export default function WalletScannerPage() {
                       { label: 'Trade Stats', note: 'Not proven — closed lots are synthetic cost-basis only', status: 'open_check' as const },
                     ] : [
                       { label: result.walletNoPnlReason ? 'PnL' : 'Trade stats', note: (() => {
+                          if (result.walletPnlRead?.displayMode === 'provider_summary') return 'Provider PnL available · FIFO proof open check'
                           if (result.walletNoPnlReason && mc.tradeStats.closedLots === 0) {
                             return `locked because ${result.walletNoPnlReasonLabel ?? result.walletNoPnlReason.replace(/_/g, ' ')}${result.walletNoPnlNextAction ? ` — ${result.walletNoPnlNextAction}` : ''}`
                           }
@@ -3394,6 +3449,7 @@ export default function WalletScannerPage() {
                     const openPos = result.walletModuleCoverage?.walletOpenPositionSummary ?? result.walletOpenPositionSummary ?? null
                     const hasOpenLots = (openedLots > 0 || !!openPos) && !hasClosedTradeEvidence
                     const tradeOpenCheck = closedLots === 0
+                    const providerSummaryAvailable = result.walletPnlRead?.displayMode === 'provider_summary' && result.walletProviderPnlSummary?.status === 'ok'
                     if (portfolioActive && hasOpenLots) {
                       const costBasis = openPos?.totalOpenCostBasisUsd ?? null
                       const uniqueTokens = openPos?.uniqueTokens ?? 0
@@ -3409,8 +3465,13 @@ export default function WalletScannerPage() {
                             <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', fontSize: '13px', fontWeight: 800, color: '#4ade80', border: '1px solid rgba(74,222,128,0.30)', background: 'rgba(74,222,128,0.08)', borderRadius: '8px', padding: '7px 14px', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
                               <span style={{ fontSize: '10px' }}>●</span> Portfolio Active
                             </span>
+                            {providerSummaryAvailable && (
+                              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', fontSize: '13px', fontWeight: 800, color: '#4ade80', border: '1px solid rgba(74,222,128,0.30)', background: 'rgba(74,222,128,0.08)', borderRadius: '8px', padding: '7px 14px', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
+                                <span style={{ fontSize: '10px' }}>●</span> Provider PnL Available
+                              </span>
+                            )}
                             <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', fontSize: '13px', fontWeight: 800, color: '#fbbf24', border: '1px solid rgba(251,191,36,0.30)', background: 'rgba(251,191,36,0.08)', borderRadius: '8px', padding: '7px 14px', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
-                              <span style={{ fontSize: '10px' }}>◑</span> Trading Active Entries
+                              <span style={{ fontSize: '10px' }}>◑</span> {providerSummaryAvailable ? 'FIFO Proof Open Check' : 'Trading Active Entries'}
                             </span>
                           </div>
                           <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.45)', lineHeight: 1.55, fontFamily: 'var(--font-inter, Inter, sans-serif)', marginBottom: '16px' }}>
@@ -3462,14 +3523,19 @@ export default function WalletScannerPage() {
                             <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', fontSize: '13px', fontWeight: 800, color: '#4ade80', border: '1px solid rgba(74,222,128,0.30)', background: 'rgba(74,222,128,0.08)', borderRadius: '8px', padding: '7px 14px', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
                               <span style={{ fontSize: '10px' }}>●</span> Portfolio Active
                             </span>
+                            {providerSummaryAvailable && (
+                              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', fontSize: '13px', fontWeight: 800, color: '#4ade80', border: '1px solid rgba(74,222,128,0.30)', background: 'rgba(74,222,128,0.08)', borderRadius: '8px', padding: '7px 14px', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
+                                <span style={{ fontSize: '10px' }}>●</span> Provider PnL Available
+                              </span>
+                            )}
                             <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', fontSize: '13px', fontWeight: 800, color: '#7dd3fc', border: '1px solid rgba(125,211,252,0.25)', background: 'rgba(56,189,248,0.07)', borderRadius: '8px', padding: '7px 14px', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
-                              <span style={{ fontSize: '10px' }}>○</span> Trading Open Check
+                              <span style={{ fontSize: '10px' }}>○</span> {providerSummaryAvailable ? 'FIFO Proof Open Check' : 'Trading Open Check'}
                             </span>
                           </div>
                           <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.45)', lineHeight: 1.55, fontFamily: 'var(--font-inter, Inter, sans-serif)', marginBottom: '16px' }}>
                             {(result.walletModuleCoverage?.swapDetection?.candidateCount ?? 0) > 0 && (result.walletModuleCoverage?.priceEvidence?.pricedEvents ?? 0) === 0
                               ? 'CORTEX found swap-like movement, but could not verify quote-side price evidence from the available sample.'
-                              : 'CORTEX can read current holdings and exposure. Trading skill needs matched swap exits.'}
+                              : providerSummaryAvailable ? 'Provider PnL is available. ChainLens FIFO proof remains open check until indexed buy/sell lots are reconstructed.' : 'CORTEX can read current holdings and exposure. Trading skill needs matched swap exits.'}
                           </div>
                           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '10px' }}>
                             <div style={{ background: 'rgba(255,255,255,0.035)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '12px', padding: '12px' }}>
@@ -3720,12 +3786,12 @@ export default function WalletScannerPage() {
                       </div>
                       <div className="wallet-intel-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: '10px' }}>
                         {[
-                          { label: 'Total PnL All Time', value: fmtSignedUSD(walletIntel.pnl.total) },
-                          { label: '7D PnL', value: fmtSignedUSD(walletIntel.pnl.sevenDay) },
-                          { label: '30D PnL', value: fmtSignedUSD(walletIntel.pnl.thirtyDay) },
-                          { label: 'This Month PnL', value: fmtSignedUSD(walletIntel.pnl.thisMonth) },
-                          { label: 'Realized PnL', value: fmtSignedUSD(walletIntel.pnl.realized) },
-                          { label: 'Unrealized PnL', value: fmtSignedUSD(walletIntel.pnl.unrealized) },
+                          { label: 'ChainLens FIFO PnL All Time', value: fmtSignedUSD(walletIntel.pnl.total) },
+                          { label: '7D FIFO PnL', value: fmtSignedUSD(walletIntel.pnl.sevenDay) },
+                          { label: '30D FIFO PnL', value: fmtSignedUSD(walletIntel.pnl.thirtyDay) },
+                          { label: 'This Month FIFO PnL', value: fmtSignedUSD(walletIntel.pnl.thisMonth) },
+                          { label: 'FIFO Realized PnL', value: fmtSignedUSD(walletIntel.pnl.realized) },
+                          { label: 'FIFO Unrealized PnL', value: fmtSignedUSD(walletIntel.pnl.unrealized) },
                         ].map(card => (
                           <div key={card.label} style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '12px', padding: '12px' }}>
                             <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.28)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '7px' }}>{card.label}</div>
@@ -3822,7 +3888,7 @@ export default function WalletScannerPage() {
                             <p className="wpv3-support" style={{ marginBottom: '8px', color: '#fbbf24' }}>Performance classification remains locked until enough verified closed lots exist.</p>
                           )}
                           {wp.basis === 'behavior_only' && wp.profitSkillStatus !== 'unlocked' && (
-                            <p className="wpv3-support" style={{ marginBottom: '8px', color: '#fbbf24' }}>{result.walletNoPnlReason === 'provider_summary_available_fifo_missing' ? 'Provider PnL available; FIFO proof remains an open check.' : result.walletNoPnlReason === 'non_trader_address_type' ? 'Trader PnL not applicable for this address type.' : result.walletNoPnlReason === 'relayed_trader_needs_deeper_reconstruction' ? 'Activity may be routed through contracts/relayers. Needs deeper trade reconstruction before showing realized PnL.' : `Behavior-only read. Profit skill locked because ${wp.profitSkillStatus === 'integrity_invalid_not_proven' ? 'PnL integrity failed' : 'public PnL sample is too small or partial'}.`}</p>
+                            <p className="wpv3-support" style={{ marginBottom: '8px', color: '#fbbf24' }}>{result.walletNoPnlReason === 'provider_summary_available_fifo_missing' ? 'Provider trading performance is available. ChainLens trading personality remains locked until verified FIFO lots exist.' : result.walletNoPnlReason === 'non_trader_address_type' ? 'Trader PnL not applicable for this address type.' : result.walletNoPnlReason === 'relayed_trader_needs_deeper_reconstruction' ? 'Activity may be routed through contracts/relayers. Needs deeper trade reconstruction before showing realized PnL.' : `Behavior-only read. Profit skill locked because ${wp.profitSkillStatus === 'integrity_invalid_not_proven' ? 'PnL integrity failed' : 'public PnL sample is too small or partial'}.`}</p>
                           )}
                           {scoreRows.length > 0 && (
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
@@ -3852,7 +3918,7 @@ export default function WalletScannerPage() {
                               </div>
                               <span style={{ display: 'inline-block', fontSize: '10px', fontWeight: 700, letterSpacing: '0.08em', color: botColor, border: `1px solid ${botColor}33`, background: `${botColor}14`, borderRadius: '999px', padding: '3px 9px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', textTransform: 'uppercase' }}>{bot.classification}</span>
                               {bot.basis === 'behavior_only' && bot.profitSkillStatus === 'not_proven' && (
-                                <p className="wpv3-support" style={{ marginTop: '8px', color: '#fbbf24' }}>{result.walletNoPnlReason === 'provider_summary_available_fifo_missing' ? 'Bot score is behavior-only. Provider PnL is available; FIFO proof is an open check.' : result.walletNoPnlReason === 'non_trader_address_type' ? 'Bot score is behavior-only. Trader PnL not applicable for this address type.' : result.walletNoPnlReason === 'relayed_trader_needs_deeper_reconstruction' ? 'Bot score is behavior-only. Trader PnL is an open check — activity may be routed through contracts/relayers.' : 'Bot score is behavior-only. Profit skill is locked because PnL integrity failed.'}</p>
+                                <p className="wpv3-support" style={{ marginTop: '8px', color: '#fbbf24' }}>{result.walletNoPnlReason === 'provider_summary_available_fifo_missing' ? 'Bot score excludes provider PnL and remains behavior-only until ChainLens FIFO proof is available.' : result.walletNoPnlReason === 'non_trader_address_type' ? 'Bot score is behavior-only. Trader PnL not applicable for this address type.' : result.walletNoPnlReason === 'relayed_trader_needs_deeper_reconstruction' ? 'Bot score is behavior-only. Trader PnL is an open check — activity may be routed through contracts/relayers.' : 'Bot score is behavior-only. Profit skill is locked because PnL integrity failed.'}</p>
                               )}
                             </>
                           ) : botDisplayClassification ? (
