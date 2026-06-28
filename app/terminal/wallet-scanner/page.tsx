@@ -315,13 +315,11 @@ type WalletResult = {
     mode: 'mark_to_market_portfolio'
     label: string
     currentValueUsd: number | null
-    estimatedChangeUsd: number | null
-    estimatedChangePercent: number | null
-    basis: 'balance_history' | 'current_holdings_only' | 'unavailable'
-    timeframe: string | null
-    confidence: 'high' | 'medium' | 'low' | null
+    periods: {
+      '24h': { status: 'ok' | 'partial' | 'unavailable'; estimatedChangeUsd: number | null; estimatedChangePercent: number | null; basis: 'balance_history' | 'current_holdings_only' | 'unavailable'; confidence: 'high' | 'medium' | 'low' | null; reason: string | null }
+      '14d': { status: 'ok' | 'partial' | 'unavailable'; estimatedChangeUsd: number | null; estimatedChangePercent: number | null; basis: 'balance_history' | 'current_holdings_only' | 'unavailable'; confidence: 'high' | 'medium' | 'low' | null; reason: string | null }
+    }
     warning: string | null
-    reason: string | null
     excludedFrom: string[]
   }
   walletRecoveryRecommendation?: {
@@ -2924,21 +2922,26 @@ export default function WalletScannerPage() {
                 const pp = result.walletPortfolioPnlRead!
                 const fmtUsd = (v: number | null) => v === null ? null : `${v >= 0 ? '+' : ''}$${Math.abs(v).toLocaleString(undefined, { maximumFractionDigits: 0 })}`
                 const fmtPct = (v: number | null) => v === null ? null : `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`
+                const periodRow = (rowLabel: string, p: typeof pp.periods['24h']) => (
+                  <div style={{ marginTop: '8px' }}>
+                    <div style={{ display: 'flex', alignItems: 'baseline', gap: '10px', flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: '11px', color: 'rgba(255,255,255,0.55)' }}>{rowLabel}</span>
+                      {p.status === 'unavailable'
+                        ? <span style={{ fontSize: '11px', color: 'rgba(255,255,255,0.35)' }}>unavailable</span>
+                        : <span style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0' }}>{fmtUsd(p.estimatedChangeUsd)}{p.estimatedChangePercent !== null ? ` (${fmtPct(p.estimatedChangePercent)})` : ''}</span>}
+                    </div>
+                    {p.status === 'unavailable' && p.reason && (
+                      <p style={{ marginTop: '2px', fontSize: '10px', color: 'rgba(255,255,255,0.35)' }}>{p.reason}</p>
+                    )}
+                  </div>
+                )
                 return (
                   <div style={{ padding: '14px 16px', background: 'rgba(255,255,255,0.015)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '12px' }}>
                     <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.16em', color: 'rgba(255,255,255,0.22)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Portfolio P&L</span>
-                    {pp.status === 'unavailable' ? (
-                      <p style={{ marginTop: '6px', fontSize: '11px', color: 'rgba(255,255,255,0.45)' }}>{pp.reason || 'Portfolio P&L unavailable.'}</p>
-                    ) : (
-                      <>
-                        <div style={{ marginTop: '8px', display: 'flex', alignItems: 'baseline', gap: '10px', flexWrap: 'wrap' }}>
-                          <span style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0' }}>Estimated holdings performance ({pp.timeframe})</span>
-                          {pp.estimatedChangeUsd !== null && <span style={{ fontSize: '13px', color: '#e2e8f0' }}>{fmtUsd(pp.estimatedChangeUsd)}{pp.estimatedChangePercent !== null ? ` (${fmtPct(pp.estimatedChangePercent)})` : ''}</span>}
-                        </div>
-                        <p style={{ marginTop: '6px', fontSize: '11px', color: 'rgba(255,255,255,0.45)' }}>Current value: {pp.currentValueUsd !== null ? `$${pp.currentValueUsd.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : 'n/a'}</p>
-                        {pp.warning && <p style={{ marginTop: '4px', fontSize: '10px', color: '#fbbf24' }}>{pp.warning}</p>}
-                      </>
-                    )}
+                    <p style={{ marginTop: '6px', fontSize: '11px', color: 'rgba(255,255,255,0.45)' }}>Current value: {pp.currentValueUsd !== null ? `$${pp.currentValueUsd.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : 'n/a'}</p>
+                    {periodRow('24h holdings change', pp.periods['24h'])}
+                    {periodRow('14d holdings change', pp.periods['14d'])}
+                    <p style={{ marginTop: '8px', fontSize: '10px', color: '#fbbf24' }}>Estimated from holdings value changes. Not realized trader PnL.</p>
                   </div>
                 )
               })()}

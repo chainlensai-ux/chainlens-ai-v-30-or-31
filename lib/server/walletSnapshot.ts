@@ -425,13 +425,25 @@ export type WalletSnapshot = {
     mode: 'mark_to_market_portfolio'
     label: 'Portfolio P&L'
     currentValueUsd: number | null
-    estimatedChangeUsd: number | null
-    estimatedChangePercent: number | null
-    basis: 'balance_history' | 'current_holdings_only' | 'unavailable'
-    timeframe: string | null
-    confidence: 'high' | 'medium' | 'low' | null
+    periods: {
+      '24h': {
+        status: 'ok' | 'partial' | 'unavailable'
+        estimatedChangeUsd: number | null
+        estimatedChangePercent: number | null
+        basis: 'balance_history' | 'current_holdings_only' | 'unavailable'
+        confidence: 'high' | 'medium' | 'low' | null
+        reason: string | null
+      }
+      '14d': {
+        status: 'ok' | 'partial' | 'unavailable'
+        estimatedChangeUsd: number | null
+        estimatedChangePercent: number | null
+        basis: 'balance_history' | 'current_holdings_only' | 'unavailable'
+        confidence: 'high' | 'medium' | 'low' | null
+        reason: string | null
+      }
+    }
     warning: string | null
-    reason: string | null
     excludedFrom: string[]
   }
   // PUBLIC-READ-MODEL-CLEANUP-1: a single, final public-facing summary that never confuses verified
@@ -18011,22 +18023,37 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         : _pfCoverage >= 0.8
           ? 'ok'
           : 'partial'
+      // 14d: no cheap existing source provides 14d token price change, balance history, or saved
+      // portfolio snapshots anywhere in this pipeline (only change24h is fetched from the price
+      // provider) — reporting this honestly as unavailable rather than fetching new history.
+      const _pf14dPeriod = {
+        status: 'unavailable' as const,
+        estimatedChangeUsd: null as number | null,
+        estimatedChangePercent: null as number | null,
+        basis: 'unavailable' as const,
+        confidence: null as 'high' | 'medium' | 'low' | null,
+        reason: '14d portfolio P&L needs saved snapshots, balance history, or cached historical prices.',
+      }
+
       ;(snapshot as any).walletPortfolioPnlRead = {
         status: _pfStatus,
         mode: 'mark_to_market_portfolio',
         label: 'Portfolio P&L',
         currentValueUsd: _pfCurrentValueUsd > 0 ? Math.round(_pfCurrentValueUsd * 100) / 100 : null,
-        estimatedChangeUsd: _pfStatus === 'unavailable' ? null : Math.round(_pfEstimatedChangeUsd * 100) / 100,
-        estimatedChangePercent: _pfStatus === 'unavailable' ? null : (_pfEstimatedChangePercent != null ? Math.round(_pfEstimatedChangePercent * 100) / 100 : null),
-        basis: _pfStatus === 'unavailable' ? 'unavailable' : 'current_holdings_only',
-        timeframe: _pfStatus === 'unavailable' ? null : '24h',
-        confidence: _pfStatus === 'ok' ? 'medium' : _pfStatus === 'partial' ? 'low' : null,
+        periods: {
+          '24h': {
+            status: _pfStatus,
+            estimatedChangeUsd: _pfStatus === 'unavailable' ? null : Math.round(_pfEstimatedChangeUsd * 100) / 100,
+            estimatedChangePercent: _pfStatus === 'unavailable' ? null : (_pfEstimatedChangePercent != null ? Math.round(_pfEstimatedChangePercent * 100) / 100 : null),
+            basis: _pfStatus === 'unavailable' ? 'unavailable' : 'current_holdings_only',
+            confidence: _pfStatus === 'ok' ? 'medium' : _pfStatus === 'partial' ? 'low' : null,
+            reason: _pfStatus === 'unavailable' ? 'Portfolio P&L needs balance history or prior value snapshots.' : null,
+          },
+          '14d': _pf14dPeriod,
+        },
         warning: _pfStatus === 'unavailable'
           ? null
-          : 'Estimated from current holdings and 24h price change — not a realized trade-by-trade PnL.',
-        reason: _pfStatus === 'unavailable'
-          ? 'Portfolio P&L needs balance history or prior value snapshots.'
-          : null,
+          : 'Estimated from holdings value changes. Not realized trader PnL.',
         excludedFrom: ['trader_pnl', 'win_rate', 'profit_skill'],
       }
     }
