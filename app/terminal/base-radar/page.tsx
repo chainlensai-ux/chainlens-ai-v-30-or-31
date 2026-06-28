@@ -80,6 +80,21 @@ interface TokenIntel extends RadarToken {
   displayModel: BaseRadarDisplayModel
 }
 
+
+type DrawerSimulationPayload = {
+  simulationStatus: 'passed' | 'open_check'
+  simulationReason?: string | null
+  simulationLabel?: string | null
+  simulationCortexLine?: string | null
+  buySellSimulation?: {
+    buyTax?: number | null
+    sellTax?: number | null
+    isHoneypot?: boolean | null
+    simulationSuccess?: boolean | null
+  } | null
+  riskFlags?: string[]
+}
+
 interface RadarSummary {
   newPools: number
   worthWatching: number
@@ -266,16 +281,13 @@ function getCortexSignal(status: RadarStatus): string {
 
 function getFlags(token: RadarToken, status: RadarStatus, momentum: MomentumLevel, suspiciousBranding: boolean): string[] {
   const flags: string[] = []
-  const buyTax = token.honeypot?.buyTax ?? 0
-  const sellTax = token.honeypot?.sellTax ?? 0
-
   if (momentum === 'HIGH') flags.push('Momentum')
   if (token.ageMinutes <= 30) flags.push('New Pool')
   if (token.volume24h >= 5_000) flags.push('Volume Spike')
   if (token.liquidityUsd >= 30_000) flags.push('Liquidity Watch')
   if (token.liquidityUsd < 2_000) flags.push('Tax check pending')
-  if (token.simulationStatus === 'open_check' || buyTax > 5 || sellTax > 5) flags.push('Simulation pending')
-  if (token.simulationStatus === 'passed' && buyTax === 0 && sellTax === 0) flags.push('Simulation confirmed')
+  if (token.simulationStatus === 'open_check') flags.push('Simulation pending')
+  if (token.simulationStatus === 'passed') flags.push('Simulation checked')
   if (suspiciousBranding) flags.push('CORTEX Watch')
   if (status === 'UNVERIFIED') flags.push('Pending Evidence')
   if (status === 'RISKY') flags.push('High Risk')
@@ -418,7 +430,7 @@ function getPriorityAccent(token: TokenIntel): { color: string; background: stri
 }
 
 function getBadgeStyle(flag: string): { color: string; background: string; border: string } {
-  if (['Momentum', 'Volume Spike', 'Simulation confirmed'].includes(flag)) return { color: '#99f6e4', background: 'rgba(45,212,191,0.13)', border: 'rgba(45,212,191,0.30)' }
+  if (['Momentum', 'Volume Spike', 'Simulation confirmed', 'Simulation checked'].includes(flag)) return { color: '#99f6e4', background: 'rgba(45,212,191,0.13)', border: 'rgba(45,212,191,0.30)' }
   if (['Tax check pending', 'Simulation pending', 'Pending Evidence', 'Liquidity Watch'].includes(flag)) return { color: '#fde68a', background: 'rgba(251,191,36,0.12)', border: 'rgba(251,191,36,0.28)' }
   if (['High Risk', 'CORTEX Watch'].includes(flag)) return { color: '#fecaca', background: 'rgba(248,113,113,0.11)', border: 'rgba(248,113,113,0.28)' }
   return { color: '#bfdbfe', background: 'rgba(96,165,250,0.13)', border: 'rgba(96,165,250,0.30)' }
@@ -902,6 +914,39 @@ export default function BaseRadarPage() {
     router.push(`/terminal/token-scanner?contract=${contract}`)
   }
 
+  const handleDrawerSimulationUpdate = useCallback((address: string, payload: DrawerSimulationPayload) => {
+    const normalizedAddress = address.toLowerCase()
+    const mergeTokenEvidence = (token: RadarToken): RadarToken => {
+      if (token.contract.toLowerCase() !== normalizedAddress) return token
+      const buyTax = payload.buySellSimulation?.buyTax ?? null
+      const sellTax = payload.buySellSimulation?.sellTax ?? null
+      return {
+        ...token,
+        honeypot: {
+          isHoneypot: payload.buySellSimulation?.isHoneypot ?? token.honeypot?.isHoneypot ?? null,
+          buyTax,
+          sellTax,
+          simulationSuccess: payload.simulationStatus === 'passed' ? true : payload.buySellSimulation?.simulationSuccess ?? false,
+        },
+        simulationStatus: payload.simulationStatus,
+        simulationReason: payload.simulationReason ?? null,
+        simulationLabel: payload.simulationStatus === 'passed' && buyTax != null && sellTax != null
+          ? `Simulation checked — B ${buyTax.toFixed(1)}% / S ${sellTax.toFixed(1)}%`
+          : payload.simulationLabel ?? 'Simulation checked — inconclusive',
+        simulationCortexLine: payload.simulationCortexLine ?? token.simulationCortexLine ?? null,
+        evidenceGaps: payload.simulationStatus === 'passed'
+          ? (token.evidenceGaps ?? []).filter((gap) => !/simulation|honeypot\/tax|buy\/sell/i.test(gap))
+          : Array.from(new Set([...(token.evidenceGaps ?? []), 'Simulation checked but inconclusive'])),
+      }
+    }
+
+    setData((prev) => prev ? { ...prev, tokens: prev.tokens.map((token) => enrichToken(mergeTokenEvidence(token))) } : prev)
+    setSelectedToken((prev) => {
+      if (!prev || prev.contract.toLowerCase() !== normalizedAddress) return prev
+      return enrichToken(mergeTokenEvidence(prev))
+    })
+  }, [])
+
   function openProjectOverview(token: TokenIntel) {
     setSelectedToken(token)
     setDrawerOpen(true)
@@ -1185,6 +1230,7 @@ export default function BaseRadarPage() {
         token={selectedToken}
         open={drawerOpen}
         onClose={() => setDrawerOpen(false)}
+        onSimulationUpdate={handleDrawerSimulationUpdate}
       />
     </>
   )
