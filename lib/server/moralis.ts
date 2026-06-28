@@ -303,6 +303,14 @@ export type MoralisProfitabilitySummary = {
   realizedPnlPercent: number
 }
 
+export function isUsableProviderPnlSummary(summary: MoralisProfitabilitySummary | null | undefined): summary is MoralisProfitabilitySummary {
+  if (!summary || summary.totalTrades <= 0) return false
+  return Math.abs(summary.realizedPnlUsd) > 0.01
+    || summary.totalTradeVolumeUsd > 1
+    || summary.totalBoughtVolumeUsd > 1
+    || summary.totalSoldVolumeUsd > 1
+}
+
 export type MoralisProfitabilityFetchResult = {
   summary: MoralisProfitabilitySummary | null
   attempted: boolean
@@ -327,7 +335,7 @@ export async function fetchMoralisProfitabilitySummary(
   const cacheKey = `moralis:profitability:${chain}:${address.toLowerCase()}:${timeframe}`
   const hit = _profitabilityCache.get(cacheKey)
   if (hit && Date.now() - hit.cachedAt <= MORALIS_PROFITABILITY_TTL_MS) {
-    return { summary: hit.summary, attempted: false, usable: true, cacheHit: true, reason: '' }
+    return { summary: hit.summary, attempted: false, usable: isUsableProviderPnlSummary(hit.summary), cacheHit: true, reason: '' }
   }
 
   const inflight = _profitabilityInFlight.get(cacheKey)
@@ -359,7 +367,7 @@ export async function fetchMoralisProfitabilitySummary(
         realizedPnlPercent: num(raw.total_realized_profit_percentage),
       }
       _profitabilityCache.set(cacheKey, { summary, cachedAt: Date.now() })
-      return { summary, attempted: true, usable: true, cacheHit: false, reason: '', httpStatus: res.status }
+      return { summary, attempted: true, usable: isUsableProviderPnlSummary(summary), cacheHit: false, reason: isUsableProviderPnlSummary(summary) ? '' : 'economically_unusable', httpStatus: res.status }
     } catch {
       return { summary: null, attempted: true, usable: false, cacheHit: false, reason: 'fetch_failed' }
     }
