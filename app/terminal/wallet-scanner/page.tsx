@@ -2990,46 +2990,54 @@ export default function WalletScannerPage() {
                     </div>
                   )
                 }
+                const pnlTone = pr.headlineValueUsd === null ? '#f8fafc' : pr.headlineValueUsd < 0 ? '#f87171' : '#4ade80'
                 return (
-                  <div style={{ padding: '14px 16px', background: 'rgba(255,255,255,0.015)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '12px' }}>
-                    <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.16em', color: 'rgba(255,255,255,0.22)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>PnL Read</span>
-                    <div style={{ marginTop: '8px', display: 'flex', alignItems: 'baseline', gap: '10px', flexWrap: 'wrap' }}>
-                      <span style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0' }}>{copy.title}</span>
-                      {pr.headlineValueUsd !== null && <span style={{ fontSize: '13px', color: '#e2e8f0' }}>{fmtUsd(pr.headlineValueUsd)}</span>}
+                  <div style={{ position: 'relative', overflow: 'hidden', padding: '22px', background: 'linear-gradient(135deg, rgba(20,184,166,0.13), rgba(15,23,42,0.96) 42%, rgba(56,189,248,0.09))', border: '1px solid rgba(125,211,252,0.22)', borderRadius: '20px', boxShadow: '0 24px 80px rgba(0,0,0,0.32), inset 0 1px 0 rgba(255,255,255,0.07)' }}>
+                    <div style={{ position: 'absolute', inset: 0, background: 'radial-gradient(circle at top right, rgba(74,222,128,0.16), transparent 34%)', pointerEvents: 'none' }} />
+                    <div style={{ position: 'relative' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '18px', flexWrap: 'wrap' }}>
+                        <div style={{ minWidth: '240px', flex: '1 1 320px' }}>
+                          <span style={{ fontSize: '9px', fontWeight: 800, letterSpacing: '0.18em', color: 'rgba(125,211,252,0.78)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>PnL Read</span>
+                          <h3 style={{ margin: '10px 0 0', fontSize: '22px', lineHeight: 1.1, fontWeight: 900, letterSpacing: '-0.03em', color: '#f8fafc', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{copy.title}</h3>
+                          <p style={{ margin: '8px 0 0', maxWidth: '620px', fontSize: '13px', lineHeight: 1.55, color: 'rgba(226,232,240,0.72)', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{copy.body}</p>
+                        </div>
+                        <div style={{ textAlign: 'right' }}>
+                          <div style={{ fontSize: '42px', lineHeight: 0.95, fontWeight: 950, letterSpacing: '-0.06em', color: pnlTone, fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{fmtUsd(pr.headlineValueUsd) ?? '—'}</div>
+                        </div>
+                      </div>
+                      {pr.headlineWarning && <p style={{ marginTop: '14px', fontSize: '11px', lineHeight: 1.55, color: 'rgba(251,191,36,0.86)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{pr.headlineWarning}</p>}
+                      {pr.displayMode === 'estimated_transfer_flow_only' && (
+                        <p style={{ marginTop: '10px', fontSize: '11px', color: 'rgba(226,232,240,0.6)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                          Estimated PnL: {fmtUsd(pr.estimatedTransferFlow.realizedPnlUsd) ?? 'n/a'}, not verified
+                        </p>
+                      )}
+                      {pr.displayMode === 'provider_summary' && result.walletProviderPnlSummary && (() => {
+                        const ps = result.walletProviderPnlSummary
+                        return (
+                          <>
+                            <p style={{ marginTop: '10px', fontSize: '11px', color: 'rgba(226,232,240,0.6)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                              Realized PnL: {fmtUsd(ps.realizedPnlUsd) ?? 'n/a'}{ps.realizedPnlPercent !== null ? ` (${ps.realizedPnlPercent >= 0 ? '+' : ''}${ps.realizedPnlPercent.toFixed(1)}%)` : ''}
+                            </p>
+                            <p style={{ marginTop: '4px', fontSize: '11px', color: 'rgba(226,232,240,0.6)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                              {ps.chain ? `Chain: ${ps.chain} · ` : ''}Trades: {ps.totalTrades ?? 'n/a'} ({ps.totalBuys ?? 'n/a'} buys / {ps.totalSells ?? 'n/a'} sells), Volume: {ps.totalTradeVolumeUsd !== null ? `$${ps.totalTradeVolumeUsd.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : 'n/a'}
+                            </p>
+                            <p style={{ marginTop: '10px', fontSize: '11px', lineHeight: 1.55, color: 'rgba(251,191,36,0.86)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                              Provider-level summary. ChainLens FIFO lot reconstruction still open check.
+                            </p>
+                          </>
+                        )
+                      })()}
+                      {(pr.displayMode === 'raw_reconstruction_locked' || pr.rawReconstruction.rawClosedLots > 0) && (
+                        <p style={{ marginTop: '10px', fontSize: '11px', color: 'rgba(226,232,240,0.6)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                          Raw lots found: {pr.rawReconstruction.rawClosedLots}, excluded: {pr.rawReconstruction.excludedClosedLots}
+                        </p>
+                      )}
+                      {pr.displayMode !== 'official_realized' && pr.displayMode !== 'provider_summary' && (
+                        <p style={{ marginTop: '10px', fontSize: '11px', color: 'rgba(226,232,240,0.6)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                          Realized stats locked: {pr.officialRealized.reason || 'integrity failed / flat price / synthetic cost basis'}
+                        </p>
+                      )}
                     </div>
-                    <p style={{ marginTop: '6px', fontSize: '11px', color: 'rgba(255,255,255,0.45)' }}>{copy.body}</p>
-                    {pr.headlineWarning && <p style={{ marginTop: '4px', fontSize: '10px', color: '#fbbf24' }}>{pr.headlineWarning}</p>}
-                    {pr.displayMode === 'estimated_transfer_flow_only' && (
-                      <p style={{ marginTop: '6px', fontSize: '10px', color: 'rgba(255,255,255,0.35)' }}>
-                        Estimated PnL: {fmtUsd(pr.estimatedTransferFlow.realizedPnlUsd) ?? 'n/a'}, not verified
-                      </p>
-                    )}
-                    {pr.displayMode === 'provider_summary' && result.walletProviderPnlSummary && (() => {
-                      const ps = result.walletProviderPnlSummary
-                      return (
-                        <>
-                          <p style={{ marginTop: '6px', fontSize: '10px', color: 'rgba(255,255,255,0.35)' }}>
-                            Realized PnL: {fmtUsd(ps.realizedPnlUsd) ?? 'n/a'}{ps.realizedPnlPercent !== null ? ` (${ps.realizedPnlPercent >= 0 ? '+' : ''}${ps.realizedPnlPercent.toFixed(1)}%)` : ''}
-                          </p>
-                          <p style={{ marginTop: '4px', fontSize: '10px', color: 'rgba(255,255,255,0.35)' }}>
-                            {ps.chain ? `Chain: ${ps.chain} · ` : ''}Trades: {ps.totalTrades ?? 'n/a'} ({ps.totalBuys ?? 'n/a'} buys / {ps.totalSells ?? 'n/a'} sells), Volume: {ps.totalTradeVolumeUsd !== null ? `$${ps.totalTradeVolumeUsd.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : 'n/a'}
-                          </p>
-                          <p style={{ marginTop: '6px', fontSize: '10px', color: '#fbbf24' }}>
-                            Provider-level summary. ChainLens FIFO lot reconstruction still open check.
-                          </p>
-                        </>
-                      )
-                    })()}
-                    {(pr.displayMode === 'raw_reconstruction_locked' || pr.rawReconstruction.rawClosedLots > 0) && (
-                      <p style={{ marginTop: '4px', fontSize: '10px', color: 'rgba(255,255,255,0.35)' }}>
-                        Raw lots found: {pr.rawReconstruction.rawClosedLots}, excluded: {pr.rawReconstruction.excludedClosedLots}
-                      </p>
-                    )}
-                    {pr.displayMode !== 'official_realized' && pr.displayMode !== 'provider_summary' && (
-                      <p style={{ marginTop: '4px', fontSize: '10px', color: 'rgba(255,255,255,0.35)' }}>
-                        Realized stats locked: {pr.officialRealized.reason || 'integrity failed / flat price / synthetic cost basis'}
-                      </p>
-                    )}
                   </div>
                 )
               })()}
