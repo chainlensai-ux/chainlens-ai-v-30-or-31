@@ -107,6 +107,15 @@ function IcRadar() {
 }
 
 
+function IcWatchlist() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M5 5a3 3 0 0 1 3-3h8a3 3 0 0 1 3 3v16l-7-4-7 4V5z"/>
+      <path d="M9 8h6"/><path d="M9 12h4"/>
+    </svg>
+  )
+}
+
 function IcPumpAlerts() {
   return (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -140,6 +149,7 @@ const TOOLS: Item[] = [
   { key: 'whale-alerts',        label: 'Whale Alerts',        icon: <IcWhaleAlerts />,        accent: PINK,   iconColor: PINK,   href: '/terminal/whale-alerts'   },
   { key: 'pump-alerts',         label: 'Pump Alerts',         icon: <IcPumpAlerts />,         accent: PINK,   iconColor: PINK,   href: '/terminal/pump-alerts'    },
   { key: 'base-radar',          label: 'Base Radar',          icon: <IcRadar />,              accent: PURPLE, iconColor: PURPLE, href: '/terminal/base-radar'     },
+  { key: 'watchlist',           label: 'Watchlist',           icon: <IcWatchlist />,          accent: MINT,   iconColor: MINT,   href: '/terminal/watchlist'      },
   { key: 'clark-ai',            label: 'Clark AI',            icon: <IcClarkAI />,            accent: PURPLE, iconColor: PURPLE, href: '/terminal/clark-ai'       },
 ]
 
