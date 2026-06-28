@@ -303,6 +303,39 @@ export type MoralisProfitabilitySummary = {
   realizedPnlPercent: number
 }
 
+export function parseNumberish(v: unknown): number | null {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null
+  if (typeof v === 'string') {
+    const trimmed = v.trim()
+    if (!trimmed) return null
+    const parsed = Number(trimmed)
+    return Number.isFinite(parsed) ? parsed : null
+  }
+  return null
+}
+
+const numberishOrZero = (v: unknown): number => parseNumberish(v) ?? 0
+
+const pickNumberish = (raw: Record<string, unknown>, snakeKey: string, camelKey: string): number => {
+  const snake = parseNumberish(raw[snakeKey])
+  if (snake !== null) return snake
+  return numberishOrZero(raw[camelKey])
+}
+
+export function parseMoralisProfitabilitySummary(rawInput: unknown): MoralisProfitabilitySummary {
+  const raw = (rawInput ?? {}) as Record<string, unknown>
+  return {
+    totalTrades: pickNumberish(raw, 'total_count_of_trades', 'totalCountOfTrades'),
+    totalBuys: pickNumberish(raw, 'total_buys', 'totalBuys'),
+    totalSells: pickNumberish(raw, 'total_sells', 'totalSells'),
+    totalTradeVolumeUsd: pickNumberish(raw, 'total_trade_volume', 'totalTradeVolume'),
+    totalBoughtVolumeUsd: pickNumberish(raw, 'total_bought_volume_usd', 'totalBoughtVolumeUsd'),
+    totalSoldVolumeUsd: pickNumberish(raw, 'total_sold_volume_usd', 'totalSoldVolumeUsd'),
+    realizedPnlUsd: pickNumberish(raw, 'total_realized_profit_usd', 'totalRealizedProfitUsd'),
+    realizedPnlPercent: pickNumberish(raw, 'total_realized_profit_percentage', 'totalRealizedProfitPercentage'),
+  }
+}
+
 export function isUsableProviderPnlSummary(summary: MoralisProfitabilitySummary | null | undefined): summary is MoralisProfitabilitySummary {
   if (!summary || summary.totalTrades <= 0) return false
   return Math.abs(summary.realizedPnlUsd) > 0.01
@@ -354,18 +387,7 @@ export async function fetchMoralisProfitabilitySummary(
         return { summary: null, attempted: true, usable: false, cacheHit: false, reason: `http_${res.status}`, httpStatus: res.status }
       }
       const json: unknown = await res.json()
-      const raw = (json ?? {}) as Record<string, unknown>
-      const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
-      const summary: MoralisProfitabilitySummary = {
-        totalTrades: num(raw.total_count_of_trades),
-        totalBuys: num(raw.total_buys),
-        totalSells: num(raw.total_sells),
-        totalTradeVolumeUsd: num(raw.total_trade_volume),
-        totalBoughtVolumeUsd: num(raw.total_buy_volume ?? raw.total_bought_volume_usd),
-        totalSoldVolumeUsd: num(raw.total_sell_volume ?? raw.total_sold_volume_usd),
-        realizedPnlUsd: num(raw.total_realized_profit_usd),
-        realizedPnlPercent: num(raw.total_realized_profit_percentage),
-      }
+      const summary = parseMoralisProfitabilitySummary(json)
       _profitabilityCache.set(cacheKey, { summary, cachedAt: Date.now() })
       return { summary, attempted: true, usable: isUsableProviderPnlSummary(summary), cacheHit: false, reason: isUsableProviderPnlSummary(summary) ? '' : 'economically_unusable', httpStatus: res.status }
     } catch {

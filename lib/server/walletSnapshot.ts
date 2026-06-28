@@ -536,7 +536,8 @@ export type WalletSnapshot = {
     attempted: boolean
     attemptedChains: MoralisChain[]
     selectedChain: MoralisChain | null
-    rejectedSummaries: Array<{ chain: MoralisChain; totalTrades: number | null; realizedPnlUsd: number | null; totalTradeVolumeUsd: number | null; reason: string }>
+    chainSummaries: Array<{ chain: MoralisChain; totalTrades: number | null; realizedPnlUsd: number | null; totalTradeVolumeUsd: number | null; totalBoughtVolumeUsd: number | null; totalSoldVolumeUsd: number | null; reason: string }>
+    rejectedSummaries: Array<{ chain: MoralisChain; totalTrades: number | null; realizedPnlUsd: number | null; totalTradeVolumeUsd: number | null; totalBoughtVolumeUsd: number | null; totalSoldVolumeUsd: number | null; reason: string }>
     reason: string
     statusCode: number | null
     cacheHit: boolean
@@ -18246,7 +18247,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
           attempted: _providerProfitAttempts.some(a => a.attempted || a.cacheHit),
           attemptedChains: _providerProfitAttempts.map(a => a.chain),
           selectedChain: _usableProviderSummary ? (_profitRes?.chain ?? null) : null,
-          rejectedSummaries: _providerProfitAttempts.filter(a => a !== _profitRes || !isUsableProviderPnlSummary(a.summary)).map(a => ({ chain: a.chain, totalTrades: a.summary?.totalTrades ?? null, realizedPnlUsd: a.summary?.realizedPnlUsd ?? null, totalTradeVolumeUsd: a.summary?.totalTradeVolumeUsd ?? null, reason: isUsableProviderPnlSummary(a.summary) ? 'lower_ranked_usable_summary' : (a.reason || 'economically_unusable') })),
+          chainSummaries: _providerProfitAttempts.map(a => ({ chain: a.chain, totalTrades: a.summary?.totalTrades ?? null, realizedPnlUsd: a.summary?.realizedPnlUsd ?? null, totalTradeVolumeUsd: a.summary?.totalTradeVolumeUsd ?? null, totalBoughtVolumeUsd: a.summary?.totalBoughtVolumeUsd ?? null, totalSoldVolumeUsd: a.summary?.totalSoldVolumeUsd ?? null, reason: a === _profitRes && isUsableProviderPnlSummary(a.summary) ? 'accepted_best_usable_summary' : isUsableProviderPnlSummary(a.summary) ? 'rejected_lower_ranked_usable_summary' : (a.reason || 'rejected_economically_unusable') })),
+          rejectedSummaries: _providerProfitAttempts.filter(a => a !== _profitRes || !isUsableProviderPnlSummary(a.summary)).map(a => ({ chain: a.chain, totalTrades: a.summary?.totalTrades ?? null, realizedPnlUsd: a.summary?.realizedPnlUsd ?? null, totalTradeVolumeUsd: a.summary?.totalTradeVolumeUsd ?? null, totalBoughtVolumeUsd: a.summary?.totalBoughtVolumeUsd ?? null, totalSoldVolumeUsd: a.summary?.totalSoldVolumeUsd ?? null, reason: isUsableProviderPnlSummary(a.summary) ? 'lower_ranked_usable_summary' : (a.reason || 'economically_unusable') })),
           reason: _profitRes?.reason ?? 'unknown',
           statusCode: _profitRes?.httpStatus ?? null,
           cacheHit: _profitRes?.cacheHit ?? false,
