@@ -139,15 +139,22 @@ type LegacyWalletDeepScanTiming = WalletDeepScanTimings & {
   historicalMs: number
   cacheReadMs: number
   cacheWriteMs: number
+  recoveryEligibilityMs: number
+  historicalTargetRankingMs: number
+  historicalPricingPreviewMs: number
+  historicalFifoPreviewMs: number
+  recoveryRecommendationMs: number
+  routeDecorationMs: number
 }
 
 const zeroWalletDeepScanTiming = (): LegacyWalletDeepScanTiming => ({
   totalMs: 0, chainDiscoveryMs: 0, holdingsMs: 0, activityMs: 0, swapDetectionMs: 0, priceEvidenceMs: 0, lotEngineMs: 0, tradeStatsMs: 0,
   cacheHit: false, dedupeHit: false, chainsAttempted: 0, chainsSkipped: 0,
   portfolioMs: 0, pricingMs: 0, fifoMs: 0, historicalMs: 0, cacheReadMs: 0, cacheWriteMs: 0,
+  recoveryEligibilityMs: 0, historicalTargetRankingMs: 0, historicalPricingPreviewMs: 0, historicalFifoPreviewMs: 0, recoveryRecommendationMs: 0, routeDecorationMs: 0,
 })
 
-function buildWalletDeepScanTiming(snapshot: any, startedAt: number, cacheReadMs: number, cacheWriteMs: number, opts: { totalOverrideMs?: number; cacheHit?: boolean; dedupeHit?: boolean } = {}): LegacyWalletDeepScanTiming {
+function buildWalletDeepScanTiming(snapshot: any, startedAt: number, cacheReadMs: number, cacheWriteMs: number, opts: { totalOverrideMs?: number; cacheHit?: boolean; dedupeHit?: boolean; routeDecorationMs?: number } = {}): LegacyWalletDeepScanTiming {
   const perf = snapshot?._diagnostics?.walletPerformanceDebug ?? snapshot?._debug?.walletPerformanceDebug ?? null
   const phases = perf?.phaseDurations ?? {}
   const provider = perf?.providerDurations ?? {}
@@ -189,12 +196,18 @@ function buildWalletDeepScanTiming(snapshot: any, startedAt: number, cacheReadMs
     historicalMs: Math.max(0, Number(perf?.historicalMs ?? phases?.historical ?? 0) || 0),
     cacheReadMs: Math.max(0, cacheReadMs),
     cacheWriteMs: Math.max(0, cacheWriteMs),
+    recoveryEligibilityMs: Math.max(0, Number(perf?.recoveryEligibilityMs ?? 0) || 0),
+    historicalTargetRankingMs: Math.max(0, Number(perf?.historicalTargetRankingMs ?? 0) || 0),
+    historicalPricingPreviewMs: Math.max(0, Number(perf?.historicalPricingPreviewMs ?? 0) || 0),
+    historicalFifoPreviewMs: Math.max(0, Number(perf?.historicalFifoPreviewMs ?? 0) || 0),
+    recoveryRecommendationMs: Math.max(0, Number(perf?.recoveryRecommendationMs ?? 0) || 0),
+    routeDecorationMs: Math.max(0, opts.routeDecorationMs ?? 0),
   }
 }
 
 function attachWalletDeepScanTiming(payload: any, timing: LegacyWalletDeepScanTiming, debug: boolean) {
   if (!payload || typeof payload !== 'object') return
-  const publicTiming = { portfolioMs: timing.portfolioMs, holdingsMs: timing.holdingsMs, activityFetchMs: timing.activityMs, activityMs: timing.activityMs, normalizationMs: timing.activityMs, mergeMs: 0, swapDetectionMs: timing.swapDetectionMs, pricingMs: timing.pricingMs, fifoMs: timing.fifoMs, integrityMs: timing.tradeStatsMs, tradeStatsMs: timing.tradeStatsMs, recoveryMs: timing.historicalMs, historicalMs: timing.historicalMs, totalMs: timing.totalMs, cacheReadMs: timing.cacheReadMs, cacheWriteMs: timing.cacheWriteMs }
+  const publicTiming = { portfolioMs: timing.portfolioMs, holdingsMs: timing.holdingsMs, activityFetchMs: timing.activityMs, activityMs: timing.activityMs, normalizationMs: timing.activityMs, mergeMs: 0, swapDetectionMs: timing.swapDetectionMs, pricingMs: timing.pricingMs, fifoMs: timing.fifoMs, integrityMs: timing.tradeStatsMs, tradeStatsMs: timing.tradeStatsMs, recoveryMs: timing.historicalMs, historicalMs: timing.historicalMs, totalMs: timing.totalMs, cacheReadMs: timing.cacheReadMs, cacheWriteMs: timing.cacheWriteMs, recoveryEligibilityMs: timing.recoveryEligibilityMs, historicalTargetRankingMs: timing.historicalTargetRankingMs, historicalPricingPreviewMs: timing.historicalPricingPreviewMs, historicalFifoPreviewMs: timing.historicalFifoPreviewMs, recoveryRecommendationMs: timing.recoveryRecommendationMs, routeDecorationMs: timing.routeDecorationMs }
   payload.walletDeepScanTiming = publicTiming
   if (debug) {
     const { portfolioMs: _portfolioMs, pricingMs: _pricingMs, fifoMs: _fifoMs, historicalMs: _historicalMs, cacheReadMs: _cacheReadMs, cacheWriteMs: _cacheWriteMs, ...walletDeepScanTimings } = timing
@@ -1324,6 +1337,7 @@ export async function POST(req: Request) {
       }
     }
     _normalizeHistoricalRecoveryLabel(snapshot)
+    const _routeDecorationStartedAt = Date.now()
     snapshot.pnlCacheQuality = getPnlCacheQuality(snapshot)
     normalizePublicPnlStatus(snapshot)
     const providers: any = snapshot._diagnostics?.providers ?? {}
@@ -1926,7 +1940,8 @@ export async function POST(req: Request) {
       snapshot.dataFreshness = 'live'
       snapshot.cacheAgeSeconds = null
     }
-    attachWalletDeepScanTiming(snapshot, buildWalletDeepScanTiming(snapshot, startedAt, _cacheReadMs, _cacheWriteMs, { cacheHit: false, dedupeHit: inFlightDeduped }), debug)
+    const _routeDecorationMs = Math.max(0, Date.now() - _routeDecorationStartedAt - _cacheWriteMs)
+    attachWalletDeepScanTiming(snapshot, buildWalletDeepScanTiming(snapshot, startedAt, _cacheReadMs, _cacheWriteMs, { cacheHit: false, dedupeHit: inFlightDeduped, routeDecorationMs: _routeDecorationMs }), debug)
     attachWalletDeepScanStaging(snapshot, { mode: deepActivity ? 'deep' : 'standard', cacheHit: false, dedupeHit: inFlightDeduped, inFlightDeduped, debug })
     pruneWalletScannerDebug(snapshot, debug)
     return json(snapshot)

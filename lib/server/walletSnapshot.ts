@@ -1046,7 +1046,7 @@ export type WalletSnapshot = {
     reason: string | null
   }
   walletHistoricalPricingPreviewSummary: {
-    status: 'not_requested' | 'open_check' | 'partial' | 'ok'
+    status: 'not_requested' | 'open_check' | 'partial' | 'ok' | 'skipped'
     requested: boolean
     newSwapCandidateEvents: number
     pricedHistoricalCandidates: number
@@ -1060,7 +1060,7 @@ export type WalletSnapshot = {
     reason: string | null
   }
   walletHistoricalFifoPreviewSummary: {
-    status: 'not_requested' | 'open_check' | 'partial' | 'ok'
+    status: 'not_requested' | 'open_check' | 'partial' | 'ok' | 'skipped'
     requested: boolean
     baselineClosedLots: number
     previewClosedLots: number
@@ -12007,7 +12007,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
 
   const startedAt = Date.now()
   const _perfPhaseTs: Record<string, number> = { start: startedAt }
-  const _perfWalletTimings = { chainDiscoveryMs: 0, holdingsMs: 0, activityMs: 0, swapDetectionMs: 0, pricingMs: 0, fifoMs: 0, tradeStatsMs: 0, historicalMs: 0 }
+  const _perfWalletTimings = { chainDiscoveryMs: 0, holdingsMs: 0, activityMs: 0, swapDetectionMs: 0, pricingMs: 0, fifoMs: 0, tradeStatsMs: 0, historicalMs: 0, recoveryEligibilityMs: 0, historicalTargetRankingMs: 0, historicalPricingPreviewMs: 0, historicalFifoPreviewMs: 0, recoveryRecommendationMs: 0 }
   const _perfTimedOut: string[] = []
   const _perfSkipped: string[] = []
   const _perfParallelized: string[] = ['phase1_holdings_activity', 'receipt_fetches_base_recon', 'receipt_fetches_eth_router_recon', 'receipt_fetches_unpriced_pass', 'moralis_chain_balances', 'moralis_multichain_activity_supplement']
@@ -14474,6 +14474,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _pagesAllowedForBroadPass = _missingCostBasisGuardActive ? 0 : _pagesAllowed
   const _historicalCallsSavedByCostGuard = _missingCostBasisGuardActive ? _pagesAllowed : 0
 
+  const _historicalTargetRankingStartedAt = Date.now()
   const _rankedHistoricalTargets = (() => {
     const byContract = new Map<string, { contract: string; symbol: string; chain: string; score: number; reasons: string[]; estimatedUsd: number }>()
     const add = (contract: string | null | undefined, symbol: string | null | undefined, chain: string | null | undefined, score: number, reason: string, estimatedUsd = 0) => {
@@ -14508,6 +14509,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     }
     return baseTargets
   })()
+  _perfWalletTimings.historicalTargetRankingMs += Date.now() - _historicalTargetRankingStartedAt
+  const _recoveryEligibilityStartedAt = Date.now()
   const _targetContracts = new Set(_rankedHistoricalTargets.map(t => t.contract))
   const _eligibilityReasons: string[] = []
   const _skipReasons: string[] = []
@@ -14558,6 +14561,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   if (_historicalNotRunDueToCostGuard) _skipReasons.push('broad_pass_budget_zeroed_by_cost_guard')
   const _historicalTriggeredBySyntheticLots = _historicalEligible && !historicalCoverage && _syntheticLotRecoveryTrigger
   const _runHistoricalCoverage = _historicalEligible
+  _perfWalletTimings.recoveryEligibilityMs += Date.now() - _recoveryEligibilityStartedAt
   let walletHistoricalCoverageSummary: WalletSnapshot['walletHistoricalCoverageSummary']
   const _historicalStartedAt = Date.now()
   let _historicalCoverageDebug: NonNullable<WalletSnapshot['_diagnostics']>['walletHistoricalCoverageDebug']
@@ -15023,12 +15027,33 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     ? [..._hcMergedAllHistoricalEvidence, ..._syntheticTargetExtraNewEvidence, ..._pnlRecoveryV2NewEvidence, ..._moralisHistoricalNewEvidence, ..._acquisitionRecoveryNewEvidence]
     : _hcMergedAllHistoricalEvidence
 
+  // LIVE-SPEED-1: when there is no FIFO/evidence shape that could ever produce a new closed lot
+  // (no baseline closed lots, no synthetic lots, no sell-direction candidates, no swap/acquisition
+  // recovery eligibility, no admin override), the pricing/FIFO preview below can only ever price
+  // unmatched buy candidates — it cannot create a closed lot regardless of provider-summary status,
+  // which is computed later in this function. Skipping it here removes the blocking GoldRush
+  // historical_by_addresses_v2 price-at-time calls without touching any FIFO/public-PnL safety gate.
+  const _skipHistoricalPreviewNoSellPath = Boolean(
+    !_adminOverrideUsed &&
+    _closedLots.length === 0 &&
+    _syntheticClosedLots.length === 0 &&
+    !_finalCandidateEvidence.some(e => e.direction === 'sell') &&
+    !_syntheticLotRecoveryTrigger &&
+    !_pnlRecoveryV2BaseEligible &&
+    !_acquisitionRecoveryEligible &&
+    !_noSwapCandidateRecoveryEligible
+  )
+
   // Phase 6C: Historical pricing preview — price the Phase 6B new swap candidates plus any
   // synthetic-target direct-recovered prior buys merged in above (normal pass + targeted extra pages).
+  const _historicalPricingPreviewStartedAt = Date.now()
   const { summary: walletHistoricalPricingPreviewSummary, debug: _historicalPricingPreviewDebug, pricedEvidence: _hcNewPricedEvidence } =
-    _finalCandidateEvidence.length > 0
-      ? await buildHistoricalPricingPreview(_finalCandidateEvidence, _finalAllHistoricalEvidence, _reqPriceCache, _sharedHistoricalBudgetRemaining())
-      : { summary: { status: 'not_requested' as const, requested: false, newSwapCandidateEvents: 0, pricedHistoricalCandidates: 0, unpricedHistoricalCandidates: 0, stableLegPricedEvents: 0, wethLegPricedEvents: 0, historicalPricedEvents: 0, priceAttemptLimitReached: false, readyForHistoricalFifoPreview: false, missing: ['historical_coverage_not_requested'], reason: null }, debug: undefined, pricedEvidence: [] as WalletTxEvidence[] }
+    _skipHistoricalPreviewNoSellPath
+      ? { summary: { status: 'skipped' as const, requested: false, newSwapCandidateEvents: 0, pricedHistoricalCandidates: 0, unpricedHistoricalCandidates: 0, stableLegPricedEvents: 0, wethLegPricedEvents: 0, historicalPricedEvents: 0, priceAttemptLimitReached: false, readyForHistoricalFifoPreview: false, missing: ['provider_summary_available_no_fifo_sell_path'], reason: 'provider_summary_available_no_fifo_sell_path' }, debug: undefined, pricedEvidence: [] as WalletTxEvidence[] }
+      : _finalCandidateEvidence.length > 0
+        ? await buildHistoricalPricingPreview(_finalCandidateEvidence, _finalAllHistoricalEvidence, _reqPriceCache, _sharedHistoricalBudgetRemaining())
+        : { summary: { status: 'not_requested' as const, requested: false, newSwapCandidateEvents: 0, pricedHistoricalCandidates: 0, unpricedHistoricalCandidates: 0, stableLegPricedEvents: 0, wethLegPricedEvents: 0, historicalPricedEvents: 0, priceAttemptLimitReached: false, readyForHistoricalFifoPreview: false, missing: ['historical_coverage_not_requested'], reason: null }, debug: undefined, pricedEvidence: [] as WalletTxEvidence[] }
+  _perfWalletTimings.historicalPricingPreviewMs += Date.now() - _historicalPricingPreviewStartedAt
   const _syntheticTargetPriorBuysPriced = _syntheticTargetRecovery
     ? _hcNewPricedEvidence.filter(e => _syntheticTargetRecovery!.newCandidateEvidence.some(se => se.txHash === e.txHash && se.contract === e.contract)).length
     : 0
@@ -15047,10 +15072,14 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   }
 
   // Phase 6D: Historical FIFO preview — run FIFO on baseline + new priced historical candidates
+  const _historicalFifoPreviewStartedAt = Date.now()
   const { summary: walletHistoricalFifoPreviewSummary, debug: _historicalFifoPreviewDebug, previewClosedLots: _hcPreviewClosedLots } =
-    _hcNewPricedEvidence.length > 0
-      ? buildHistoricalFifoPreview(_pricedEvidence, _hcNewPricedEvidence, _closedLots, walletTradeStatsSummary.realizedPnlUsd, walletTradeStatsSummary.realizedPnlPercent ?? null, walletHistoricalPricingPreviewSummary.unpricedHistoricalCandidates)
-      : { summary: { status: 'not_requested' as const, requested: false, baselineClosedLots: 0, previewClosedLots: 0, addedClosedLots: 0, baselineRealizedPnlUsd: null, previewRealizedPnlUsd: null, addedRealizedPnlUsd: null, baselineRealizedPnlPercent: null, previewRealizedPnlPercent: null, winningClosedLotsPreview: 0, losingClosedLotsPreview: 0, breakEvenClosedLotsPreview: 0, uniqueTokensPreview: 0, previewConfidence: 'low' as const, readyForHistoricalTradeStatsPreview: false, safeToPromoteToPublicStats: false, missing: ['historical_coverage_not_requested'], reason: null }, debug: undefined, previewClosedLots: [] as WalletClosedLot[] }
+    _skipHistoricalPreviewNoSellPath
+      ? { summary: { status: 'skipped' as const, requested: false, baselineClosedLots: _closedLots.length, previewClosedLots: _closedLots.length, addedClosedLots: 0, baselineRealizedPnlUsd: walletTradeStatsSummary.realizedPnlUsd, previewRealizedPnlUsd: walletTradeStatsSummary.realizedPnlUsd, addedRealizedPnlUsd: 0, baselineRealizedPnlPercent: walletTradeStatsSummary.realizedPnlPercent ?? null, previewRealizedPnlPercent: walletTradeStatsSummary.realizedPnlPercent ?? null, winningClosedLotsPreview: 0, losingClosedLotsPreview: 0, breakEvenClosedLotsPreview: 0, uniqueTokensPreview: 0, previewConfidence: 'low' as const, readyForHistoricalTradeStatsPreview: false, safeToPromoteToPublicStats: false, missing: ['provider_summary_available_no_fifo_sell_path'], reason: 'provider_summary_available_no_fifo_sell_path' }, debug: undefined, previewClosedLots: _closedLots as WalletClosedLot[] }
+      : _hcNewPricedEvidence.length > 0
+        ? buildHistoricalFifoPreview(_pricedEvidence, _hcNewPricedEvidence, _closedLots, walletTradeStatsSummary.realizedPnlUsd, walletTradeStatsSummary.realizedPnlPercent ?? null, walletHistoricalPricingPreviewSummary.unpricedHistoricalCandidates)
+        : { summary: { status: 'not_requested' as const, requested: false, baselineClosedLots: 0, previewClosedLots: 0, addedClosedLots: 0, baselineRealizedPnlUsd: null, previewRealizedPnlUsd: null, addedRealizedPnlUsd: null, baselineRealizedPnlPercent: null, previewRealizedPnlPercent: null, winningClosedLotsPreview: 0, losingClosedLotsPreview: 0, breakEvenClosedLotsPreview: 0, uniqueTokensPreview: 0, previewConfidence: 'low' as const, readyForHistoricalTradeStatsPreview: false, safeToPromoteToPublicStats: false, missing: ['historical_coverage_not_requested'], reason: null }, debug: undefined, previewClosedLots: [] as WalletClosedLot[] }
+  _perfWalletTimings.historicalFifoPreviewMs += Date.now() - _historicalFifoPreviewStartedAt
 
   tokenMeter.measure('fifoEngine', walletHistoricalFifoPreviewSummary, _historicalFifoPreviewDebug, _hcPreviewClosedLots)
   _perfWalletTimings.historicalMs += Date.now() - _historicalStartedAt
@@ -17057,6 +17086,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // recovered buy (realClosedLots > 0) should suppress the recovery recommendation.
   const _walletAddressTypeForRecovery = walletFacts.sourceClassification?.walletAddressType ?? 'unknown'
   const _walletIsNonTraderAddressType = _walletAddressTypeForRecovery === 'token_contract_like' || _walletAddressTypeForRecovery === 'treasury_or_distributor_like'
+  const _recoveryRecommendationStartedAt = Date.now()
   const _walletRecoveryRecommendation: WalletSnapshot['walletRecoveryRecommendation'] = _walletIsNonTraderAddressType
     ? { recommended: false, mode: 'none', targetTokens: [], reason: 'non_trader_address_type', estimatedExtraPages: 0 }
     : (() => {
@@ -17128,6 +17158,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       estimatedExtraPages: Math.min(2, targetTokens.length),
     }
   })()
+  _perfWalletTimings.recoveryRecommendationMs += Date.now() - _recoveryRecommendationStartedAt
 
   // TRADE-INTEL-V1: behavior intelligence is additive to the existing public-PnL evidence model
   // above — it never changes FIFO math or any performance/win-rate gating. A wallet can have many
@@ -17541,6 +17572,11 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
           fifoMs: _perfWalletTimings.fifoMs,
           tradeStatsMs: _perfWalletTimings.tradeStatsMs,
           historicalMs: _perfWalletTimings.historicalMs,
+          recoveryEligibilityMs: _perfWalletTimings.recoveryEligibilityMs,
+          historicalTargetRankingMs: _perfWalletTimings.historicalTargetRankingMs,
+          historicalPricingPreviewMs: _perfWalletTimings.historicalPricingPreviewMs,
+          historicalFifoPreviewMs: _perfWalletTimings.historicalFifoPreviewMs,
+          recoveryRecommendationMs: _perfWalletTimings.recoveryRecommendationMs,
           phaseDurations,
           providerDurations: {
             phase1_providers: (_perfPhaseTs.phase1_done ?? now) - startedAt,
@@ -17604,7 +17640,9 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   snapshot.walletValueTier = _walletValueTier
 
   // Set historical scan note
-  if (!historicalCoverage || !activityRequested) {
+  if (_skipHistoricalPreviewNoSellPath) {
+    snapshot.walletHistoricalScanNote = 'Provider PnL available. FIFO reconstruction remains open check; deeper recovery can be run separately if needed.'
+  } else if (!historicalCoverage || !activityRequested) {
     if (_walletValueTier !== 'micro' && activityRequested) {
       snapshot.walletHistoricalScanNote = 'Recent activity sample only — deeper history available on request.'
     }
