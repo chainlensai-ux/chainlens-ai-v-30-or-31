@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import assert from 'node:assert/strict'
 
 const snap = fs.readFileSync('lib/server/walletSnapshot.ts', 'utf8')
+const route = fs.readFileSync('app/api/wallet/route.ts', 'utf8')
 
 // API-AUDIT-CLEANUP-2: the stale hardcoded "expected 3 / expected 4" warnings must be gone — they
 // fired on raw call counts that didn't account for legitimate provider-summary / price-at-time
@@ -52,3 +53,20 @@ assert.match(snap, /callsPrevented: \{\s*\n\s*zerionCallsSavedByCache: _zerionCa
 assert.match(snap, /totalEstimatedCallsPrevented: _zerionCacheDebug\.callsSavedByCache \+ _providerPnlSkippedChains\.length,/, 'totalEstimatedCallsPrevented stays based only on real prevented calls')
 
 console.log('wallet provider-summary apiAudit cleanup checks passed')
+
+// --- Wallet Scanner Moralis hard gate ---
+assert.match(snap, /walletMoralisHardGateDebug\?: \{[\s\S]*holdingsAttemptedByChain: string\[\][\s\S]*ethDustMoralisBlocked: boolean[\s\S]*\}/, 'walletMoralisHardGateDebug exposes the required gate fields')
+assert.match(snap, /const _moralisHoldingsFallbackAlreadyUsable = _zerionValueUsable \|\| _zerionPositionsUsable\s*\n\s*const _shouldAttemptMoralisHoldings = _moralisConfigured && !_moralisHoldingsDisabled && !_moralisHoldingsFallbackAlreadyUsable/, 'Moralis holdings is skipped when Zerion/portfolio fallback is already usable')
+assert.match(snap, /holdingsAttemptedByChain\.includes\(c\)[\s\S]{0,160}moralisDuplicateHoldingsPrevented = true/, 'Moralis holdings has a per-chain duplicate prevention guard')
+assert.match(snap, /const _shouldTryMoralisFallback = deepActivity && !historicalCoverage && events\.length === 0 && !_goldrushActivityUsableForMoralisGate && _fbChainPassesValueGate && _moralisTransferHardBudgetHasRoom && Boolean\(process\.env\.MORALIS_API_KEY\)/, 'GoldRush usable activity, value gate, and hard budget gate Moralis transfer fallback')
+assert.match(snap, /moralisTransfersBlockedBecauseGoldrushUsable = true/, 'debug records Moralis transfers blocked by usable GoldRush activity')
+assert.match(snap, /if \(_fbChain === 'eth' && !_fbChainPassesValueGate\) _walletMoralisHardGateDebug\.ethDustMoralisBlocked = true/, 'ETH dust blocks Moralis transfer fallback and is recorded')
+assert.match(snap, /const _p19ShouldRun = deepActivity && !historicalCoverage && events\.length === 0 && !_goldrushActivityUsableForMoralisGate/, 'multi-chain Moralis transfer supplement is blocked when GoldRush activity is usable')
+assert.match(snap, /const _p20ShouldRun = \(\s*\n\s*\(deepScan \|\| deepActivity\) &&\s*\n\s*events\.length === 0 &&\s*\n\s*!_goldrushActivityUsableForMoralisGate/, 'legacy Moralis-first phase is hard-gated behind empty/unusable GoldRush activity')
+assert.match(snap, /const _providerProfitMaxAttempts = 1/, 'Moralis provider PnL is capped to one dominant-chain attempt')
+assert.match(snap, /profitabilityAttemptedByChain\.push\(_moralisProfitChain\)[\s\S]{0,120}fetchMoralisProfitabilitySummary/, 'provider PnL hard-gate debug records the single attempted chain')
+assert.doesNotMatch(snap, /fetch\w*Moralis\w*Owners|fetchMoralisTokenOwners|erc20\/:token_address\/owners|\/erc20\/\$\{[^}]+\}\/owners/i, 'Wallet Scanner source does not call Moralis token owner endpoints')
+assert.match(snap, /providerPnlLiveCallBlockedInBasic: !_providerProfitDeepActivityRequested/, 'basic scans block live provider PnL')
+assert.match(route, /providerCalls: \[\],/, 'cached scan path returns without live provider calls')
+assert.match(snap, /usedForTraderPnLRead: _usedAsFallback/, 'provider summary only changes display read state')
+assert.match(snap, /excludedFrom: \['fifo_lots', 'lot_samples'\]/, 'provider summary remains excluded from FIFO lots and lot samples')

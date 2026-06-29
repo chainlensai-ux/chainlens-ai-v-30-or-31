@@ -546,6 +546,19 @@ export type WalletSnapshot = {
     usedAsFallback: boolean
     skippedReason: string | null
   }
+  walletMoralisHardGateDebug?: {
+    holdingsAttemptedByChain: string[]
+    holdingsSkippedByChain: Record<string, string>
+    transfersAttemptedByChain: string[]
+    transfersSkippedByChain: Record<string, string>
+    profitabilityAttemptedByChain: string[]
+    profitabilitySkippedByChain: Record<string, string>
+    ownerEndpointBlocked: boolean
+    goldrushActivityUsable: boolean
+    moralisTransfersBlockedBecauseGoldrushUsable: boolean
+    moralisDuplicateHoldingsPrevented: boolean
+    ethDustMoralisBlocked: boolean
+  }
   // PUBLIC-READ-MODEL-CLEANUP-1: a single, final public-facing summary that never confuses verified
   // PnL with behavior intelligence. behaviorLots is sourced from tradeIntelligence.tradeIntelLots
   // (trade-style/rotation evidence, never gated by PnL integrity) — it is NEVER the same count as
@@ -1857,6 +1870,19 @@ export type WalletSnapshot = {
       sampleAddedClosedLots: Array<{ tokenAddress: string; symbol: string; openedAt: string; closedAt: string; entryPriceUsd: number; exitPriceUsd: number; realizedPnlUsd: number; confidence: string }>
       skippedReasons: string[]
       reasons: string[]
+    }
+    walletMoralisHardGateDebug?: {
+      holdingsAttemptedByChain: string[]
+      holdingsSkippedByChain: Record<string, string>
+      transfersAttemptedByChain: string[]
+      transfersSkippedByChain: Record<string, string>
+      profitabilityAttemptedByChain: string[]
+      profitabilitySkippedByChain: Record<string, string>
+      ownerEndpointBlocked: boolean
+      goldrushActivityUsable: boolean
+      moralisTransfersBlockedBecauseGoldrushUsable: boolean
+      moralisDuplicateHoldingsPrevented: boolean
+      ethDustMoralisBlocked: boolean
     }
     walletActivityFallbackDebug?: {
       primaryActivityAttempted: boolean
@@ -12262,6 +12288,19 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   let _moralisUsed = false
   const _moralisConfigured = Boolean(process.env.MORALIS_API_KEY)
   const _moralisHoldingsDisabled = process.env.MORALIS_HOLDINGS_DISABLED === '1'
+  const _walletMoralisHardGateDebug = {
+    holdingsAttemptedByChain: [] as string[],
+    holdingsSkippedByChain: {} as Record<string, string>,
+    transfersAttemptedByChain: [] as string[],
+    transfersSkippedByChain: {} as Record<string, string>,
+    profitabilityAttemptedByChain: [] as string[],
+    profitabilitySkippedByChain: {} as Record<string, string>,
+    ownerEndpointBlocked: true,
+    goldrushActivityUsable: false,
+    moralisTransfersBlockedBecauseGoldrushUsable: false,
+    moralisDuplicateHoldingsPrevented: false,
+    ethDustMoralisBlocked: false,
+  }
   // Fallback holdings as computed before Moralis runs — the provisional Zerion fallback_layer
   // (or empty). Captured so the coverage-aware merge below can tell exactly which positions came
   // from the fallback layer vs. Moralis, without ever issuing an extra provider call.
@@ -12284,12 +12323,26 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   let _duplicatePositionsRemovedFinal = 0
   let _selectedHoldingsLayerFinal: 'moralis' | 'fallback' | 'merged' | 'none' = 'none'
   let _moralisHoldingsDurationMs = 0
-  if (_moralisConfigured && !_moralisHoldingsDisabled) {
+  const _moralisHoldingsFallbackAlreadyUsable = _zerionValueUsable || _zerionPositionsUsable
+  const _shouldAttemptMoralisHoldings = _moralisConfigured && !_moralisHoldingsDisabled && !_moralisHoldingsFallbackAlreadyUsable
+  if (!_moralisConfigured) {
+    for (const c of activeChains) _walletMoralisHardGateDebug.holdingsSkippedByChain[c] = 'moralis_not_configured'
+  } else if (_moralisHoldingsDisabled) {
+    for (const c of activeChains) _walletMoralisHardGateDebug.holdingsSkippedByChain[c] = 'moralis_holdings_disabled'
+  } else if (_moralisHoldingsFallbackAlreadyUsable) {
+    for (const c of activeChains) _walletMoralisHardGateDebug.holdingsSkippedByChain[c] = 'zerion_or_goldrush_holdings_fallback_usable'
+  }
+  if (_shouldAttemptMoralisHoldings) {
     // Fetch all active chain balances in parallel instead of sequentially. activeChains is already
     // deduped per scan (line ~11388), and fetchMoralisBalances itself caches/dedupes in-flight
     // requests per address+chain, so this can never issue more than one Moralis holdings call per
     // active chain per scan.
     await Promise.allSettled(activeChains.map(async (c) => {
+      if (_walletMoralisHardGateDebug.holdingsAttemptedByChain.includes(c)) {
+        _walletMoralisHardGateDebug.moralisDuplicateHoldingsPrevented = true
+        return
+      }
+      _walletMoralisHardGateDebug.holdingsAttemptedByChain.push(c)
       const _mbPromise = fetchMoralisBalances(addr, c)
       if (!_moralisHoldingsTimeoutRaceEligible) {
         const _mbRes = await _mbPromise
@@ -12382,6 +12435,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     : _moralisUsed ? null
     : _moralisFailedFinal ? 'moralis_failed'
     : _moralisAttemptedFinal ? 'moralis_empty_response'
+    : _moralisHoldingsFallbackAlreadyUsable ? 'fallback_holdings_already_usable'
     : 'moralis_skipped_cost_guard'
   // GoldRush balances fallback only when Moralis has no usable holdings for active chains, or deepScan=true.
   const _goldrushBalancesSkipped = !deepScan && _moralisUsed
@@ -12584,6 +12638,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       || /fetch failed|network|timeout|before response|did not expose an HTTP response/i.test(`${(baseTransferDiag as GoldrushHistoryDiag | undefined)?.fetchErrorMessage ?? ''} ${baseTransferDiag?.reason ?? ''}`)
   )
   const valuedGrEvents = grEvents.filter((e) => (e.usdValue ?? 0) > 0)
+  const _goldrushActivityUsableForMoralisGate = grEvents.length > 0
+  _walletMoralisHardGateDebug.goldrushActivityUsable = _goldrushActivityUsableForMoralisGate
   // PHASE4-FIX-2: union-merge GoldRush + Alchemy instead of "non-empty provider wins". A
   // partial GoldRush payload no longer discards a fuller Alchemy dataset (or vice versa) —
   // both are kept, deduped by the shared event key, preferring whichever copy of a duplicate
@@ -12683,8 +12739,23 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   }
   tokenMeter.startTokenMeter('fallbackEngine')
   tokenMeter.measure('fallbackEngine', { activityRequested, historicalCoverage, initialEventCount: events.length, fallbackChain: _fbChain, primaryActivityFailed })
-  const _shouldTryMoralisFallback = activityRequested && !historicalCoverage && events.length === 0 && Boolean(process.env.MORALIS_API_KEY)
+  const _moralisTransferHardBudgetHasRoom = _apiCallLog.reduce((s, e) => s + e.credits, 0) < 18
+  const _fbChainValueForGate = chainValueMap.get(_fbChain) ?? (_fbChain === 'eth' ? _fbEthValue : _fbBaseValue)
+  const _fbChainPassesValueGate = _fbChainValueForGate >= minChainValueUsd
+  if (_fbChain === 'eth' && !_fbChainPassesValueGate) _walletMoralisHardGateDebug.ethDustMoralisBlocked = true
+  const _shouldTryMoralisFallback = deepActivity && !historicalCoverage && events.length === 0 && !_goldrushActivityUsableForMoralisGate && _fbChainPassesValueGate && _moralisTransferHardBudgetHasRoom && Boolean(process.env.MORALIS_API_KEY)
+  if (!_shouldTryMoralisFallback) {
+    _walletMoralisHardGateDebug.transfersSkippedByChain[_fbChain] = !deepActivity ? 'deep_activity_required'
+      : historicalCoverage ? 'historical_coverage_enabled'
+      : (events.length > 0 || _goldrushActivityUsableForMoralisGate) ? 'goldrush_activity_usable'
+      : !_fbChainPassesValueGate ? 'below_value_activity_gate'
+      : !_moralisTransferHardBudgetHasRoom ? 'hard_budget_no_room'
+      : !Boolean(process.env.MORALIS_API_KEY) ? 'moralis_not_configured'
+      : 'not_triggered'
+    if (events.length > 0 || _goldrushActivityUsableForMoralisGate) _walletMoralisHardGateDebug.moralisTransfersBlockedBecauseGoldrushUsable = true
+  }
   if (_shouldTryMoralisFallback) {
+    _walletMoralisHardGateDebug.transfersAttemptedByChain.push(_fbChain)
     const fbResult = await fetchMoralisTransfers(addr, _fbChain, 100)
     _trackCall('moralis', 'erc20_transfers', fbResult.cacheHit, `moralis:transfers:p1:${_fbChain}:${addrNorm}`)
     _fbNextCursor = fbResult.nextCursor
@@ -12851,12 +12922,13 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     moralisSupplementSkippedChains.push(c.chain)
     moralisSupplementSkipReasons[c.chain] = 'max_additional_chains_reached'
   }
-  const _p19ShouldRun = deepActivity && !historicalCoverage && _p19EligibleChains.length > 0 && Boolean(process.env.MORALIS_API_KEY)
+  const _p19ShouldRun = deepActivity && !historicalCoverage && events.length === 0 && !_goldrushActivityUsableForMoralisGate && _p19EligibleChains.length > 0 && Boolean(process.env.MORALIS_API_KEY)
   let _phase19Debug: _Phase19Debug = {
     attempted: _p19ShouldRun,
     skippedReason: _p19ShouldRun ? null
       : !deepActivity ? 'basic_scan'
       : historicalCoverage ? 'historical_coverage_enabled'
+      : (events.length > 0 || _goldrushActivityUsableForMoralisGate) ? 'goldrush_activity_usable'
       : _p19EligibleChains.length === 0 ? 'no_eligible_non_eth_base_chains'
       : 'moralis_unavailable',
     chainsConsidered: _p19EligibleChains.map(c => ({ chain: c.chain as string, usdValue: c.usdValue })),
@@ -12867,6 +12939,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     let p19NewEvents: PnlEvent[] = []
     const p19Results = await Promise.allSettled(_p19EligibleChains.map(async (eligible) => {
       const p19ChainName = eligible.chain  // 'bsc', 'polygon', etc.
+      _walletMoralisHardGateDebug.transfersAttemptedByChain.push(eligible.chain)
       const p19Result = await fetchMoralisTransfers(addr, eligible.chain, 100)
       _trackCall('moralis', 'erc20_transfers', p19Result.cacheHit, `moralis:transfers:p1:${eligible.chain}:p19:${addrNorm}`)
       const { events: p19ChainEvents } = (p19Result.usable && p19Result.items.length > 0)
@@ -12925,6 +12998,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _p20GoldrushThin = events.length < 20
   const _p20ShouldRun = (
     (deepScan || deepActivity) &&
+    events.length === 0 &&
+    !_goldrushActivityUsableForMoralisGate &&
     Boolean(process.env.MORALIS_API_KEY) &&
     (_p20GoldrushThin || _p20UnmatchedSellSignal)
   )
@@ -12939,6 +13014,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
 
   if (_p20ShouldRun) {
     const _p20Chain: MoralisChain = 'base'
+    _walletMoralisHardGateDebug.transfersAttemptedByChain.push(_p20Chain)
     const _p20MoralisResult = await fetchMoralisTransfersPaginated(addr, _p20Chain, { maxEvents: 1000, maxPages: 10, pageSize: 100 })
     _trackCall('moralis', 'erc20_transfers', false, `moralis:transfers:p20:${addrNorm}`)
     _p20Moralis = { attempted: true, pagesUsed: _p20MoralisResult.pagesUsed, eventsFetched: _p20MoralisResult.eventsFetched, stoppedReason: _p20MoralisResult.stoppedReason, usedReason: _p20MoralisResult.eventsFetched > 0 ? 'moralis_primary' : null }
@@ -13046,7 +13122,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     historicalSourcePageUnitsUsed: _p20CreditsUsedEstimate,
     creditsUsedEstimate: _p20CreditsUsedEstimate,
     hardCapHit: _p20Moralis.stoppedReason === 'event_cap' || _p20Moralis.stoppedReason === 'page_cap',
-    stoppedReason: !_p20ShouldRun ? (!process.env.MORALIS_API_KEY ? 'provider_unavailable' : !(deepScan || deepActivity) ? 'disabled_by_request' : 'budget_cap') : _p20Moralis.stoppedReason,
+    stoppedReason: !_p20ShouldRun ? (!process.env.MORALIS_API_KEY ? 'provider_unavailable' : !(deepScan || deepActivity) ? 'disabled_by_request' : (events.length > 0 || _goldrushActivityUsableForMoralisGate) ? 'goldrush_activity_usable' : 'budget_cap') : _p20Moralis.stoppedReason,
   }
 
   const _pnlSourceRaw: 'goldrush' | 'alchemy' | 'moralis_fallback' | 'none' =
@@ -16460,11 +16536,9 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _pushProviderProfitChain = (chain: MoralisChain | null | undefined) => {
     if (chain && supportedMoralisChains.includes(chain) && !_providerProfitCandidateChains.includes(chain)) _providerProfitCandidateChains.push(chain)
   }
-  _pushProviderProfitChain((requestedChain as MoralisChain) ?? null)
-  activeChains.forEach(_pushProviderProfitChain)
-  _pushProviderProfitChain('eth')
-  _pushProviderProfitChain('base')
-  const _providerProfitMaxAttempts = debug ? 3 : 2
+  const _dominantUsableChainForProviderPnl = (discoveredChains.find(c => supportedMoralisChains.includes(c.chain) && c.usdValue >= minChainValueUsd)?.chain ?? (requestedChain === 'eth' ? 'eth' : 'base')) as MoralisChain
+  _pushProviderProfitChain(_dominantUsableChainForProviderPnl)
+  const _providerProfitMaxAttempts = 1
   const _providerProfitCandidatesBeforeCap = _providerProfitCandidateChains.length
   const _providerProfitCappedChains = _providerProfitCandidateChains.slice(0, _providerProfitMaxAttempts)
   // COST-SAFE-RANKING-1: in non-debug, candidates are already value-ranked (requestedChain, then
@@ -16482,6 +16556,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     for (let _i = 0; _i < _providerProfitCappedChains.length; _i++) {
       const _moralisProfitChain = _providerProfitCappedChains[_i]
       try {
+        _walletMoralisHardGateDebug.profitabilityAttemptedByChain.push(_moralisProfitChain)
         const _res = await fetchMoralisProfitabilitySummary(addr, _moralisProfitChain, 'all')
         const _attempt = { ..._res, chain: _moralisProfitChain }
         _providerProfitAttempts.push(_attempt)
@@ -16672,7 +16747,12 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       ? `alchemy_receipt_calls_within_cap_${_alchemyReceiptCalls}_of_${ALCHEMY_RECEIPT_CALL_CAP}`
       : `alchemy_receipt_calls_over_cap_${_alchemyReceiptCalls}_of_${ALCHEMY_RECEIPT_CALL_CAP}`)
   }
-  if (_dupEntries.length > 0) _apiWarnings.push(`${_dupEntries.length}_duplicate_call(s)_detected`)
+  const _moralisDuplicateHoldings = _dupEntries.some(e => e.provider === 'moralis' && e.endpoint === 'erc20_holdings')
+  const _moralisOwnerEndpointLeakage = _moralisLiveCalls.some(e => /owners/i.test(e.endpoint))
+  const _moralisTransfersDespiteGoldrushUsable = _walletMoralisHardGateDebug.goldrushActivityUsable && _moralisLiveCalls.some(e => e.endpoint === 'erc20_transfers')
+  if (_moralisDuplicateHoldings) _apiWarnings.push('moralis_duplicate_holdings_detected')
+  if (_moralisOwnerEndpointLeakage) _apiWarnings.push('moralis_owner_endpoint_leakage_detected')
+  if (_moralisTransfersDespiteGoldrushUsable) _apiWarnings.push('moralis_transfers_ran_despite_usable_goldrush_activity')
   // BUDGET-ACCOUNTING-CONSISTENCY-FIX: surface it explicitly whenever the real audit total exceeds
   // the budget's own estimate, instead of letting the two diverge silently. API-AUDIT-CLEANUP-2:
   // only fire when the overage is actually unexplained (unknown-purpose calls or a real recovery
@@ -17612,6 +17692,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       walletHistoricalCandidateDebug: _historicalCandidateDebug,
       walletHistoricalPricingPreviewDebug: _historicalPricingPreviewDebug,
       walletHistoricalFifoPreviewDebug: _historicalFifoPreviewDebug,
+      walletMoralisHardGateDebug: _walletMoralisHardGateDebug,
       walletActivityFallbackDebug: { ..._moralisFbDebug, finalEvidenceStatus: walletEvidenceSummary.status },
       walletBudgetDebug: {
         eventsBefore: _budgetEventsBefore,
