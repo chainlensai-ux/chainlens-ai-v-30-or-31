@@ -145,6 +145,15 @@ type LegacyWalletDeepScanTiming = WalletDeepScanTimings & {
   historicalFifoPreviewMs: number
   recoveryRecommendationMs: number
   routeDecorationMs: number
+  recoveryPrecheckMs: number
+  recoverySkipGateMs: number
+  recoveryDebugBuildMs: number
+  historicalScanDebugBuildMs: number
+  historicalCandidateSummaryMs: number
+  historicalPreviewPrepMs: number
+  syntheticRecoveryDebugMs: number
+  recoveryPostProcessingMs: number
+  recoveryUnaccountedMs: number
 }
 
 const zeroWalletDeepScanTiming = (): LegacyWalletDeepScanTiming => ({
@@ -152,6 +161,7 @@ const zeroWalletDeepScanTiming = (): LegacyWalletDeepScanTiming => ({
   cacheHit: false, dedupeHit: false, chainsAttempted: 0, chainsSkipped: 0,
   portfolioMs: 0, pricingMs: 0, fifoMs: 0, historicalMs: 0, cacheReadMs: 0, cacheWriteMs: 0,
   recoveryEligibilityMs: 0, historicalTargetRankingMs: 0, historicalPricingPreviewMs: 0, historicalFifoPreviewMs: 0, recoveryRecommendationMs: 0, routeDecorationMs: 0,
+  recoveryPrecheckMs: 0, recoverySkipGateMs: 0, recoveryDebugBuildMs: 0, historicalScanDebugBuildMs: 0, historicalCandidateSummaryMs: 0, historicalPreviewPrepMs: 0, syntheticRecoveryDebugMs: 0, recoveryPostProcessingMs: 0, recoveryUnaccountedMs: 0,
 })
 
 function buildWalletDeepScanTiming(snapshot: any, startedAt: number, cacheReadMs: number, cacheWriteMs: number, opts: { totalOverrideMs?: number; cacheHit?: boolean; dedupeHit?: boolean; routeDecorationMs?: number } = {}): LegacyWalletDeepScanTiming {
@@ -202,12 +212,21 @@ function buildWalletDeepScanTiming(snapshot: any, startedAt: number, cacheReadMs
     historicalFifoPreviewMs: Math.max(0, Number(perf?.historicalFifoPreviewMs ?? 0) || 0),
     recoveryRecommendationMs: Math.max(0, Number(perf?.recoveryRecommendationMs ?? 0) || 0),
     routeDecorationMs: Math.max(0, opts.routeDecorationMs ?? 0),
+    recoveryPrecheckMs: Math.max(0, Number(perf?.recoveryPrecheckMs ?? 0) || 0),
+    recoverySkipGateMs: Math.max(0, Number(perf?.recoverySkipGateMs ?? 0) || 0),
+    recoveryDebugBuildMs: Math.max(0, Number(perf?.recoveryDebugBuildMs ?? 0) || 0),
+    historicalScanDebugBuildMs: Math.max(0, Number(perf?.historicalScanDebugBuildMs ?? 0) || 0),
+    historicalCandidateSummaryMs: Math.max(0, Number(perf?.historicalCandidateSummaryMs ?? 0) || 0),
+    historicalPreviewPrepMs: Math.max(0, Number(perf?.historicalPreviewPrepMs ?? 0) || 0),
+    syntheticRecoveryDebugMs: Math.max(0, Number(perf?.syntheticRecoveryDebugMs ?? 0) || 0),
+    recoveryPostProcessingMs: Math.max(0, Number(perf?.recoveryPostProcessingMs ?? 0) || 0),
+    recoveryUnaccountedMs: Math.max(0, Number(perf?.recoveryUnaccountedMs ?? 0) || 0),
   }
 }
 
 function attachWalletDeepScanTiming(payload: any, timing: LegacyWalletDeepScanTiming, debug: boolean) {
   if (!payload || typeof payload !== 'object') return
-  const publicTiming = { portfolioMs: timing.portfolioMs, holdingsMs: timing.holdingsMs, activityFetchMs: timing.activityMs, activityMs: timing.activityMs, normalizationMs: timing.activityMs, mergeMs: 0, swapDetectionMs: timing.swapDetectionMs, pricingMs: timing.pricingMs, fifoMs: timing.fifoMs, integrityMs: timing.tradeStatsMs, tradeStatsMs: timing.tradeStatsMs, recoveryMs: timing.historicalMs, historicalMs: timing.historicalMs, totalMs: timing.totalMs, cacheReadMs: timing.cacheReadMs, cacheWriteMs: timing.cacheWriteMs, recoveryEligibilityMs: timing.recoveryEligibilityMs, historicalTargetRankingMs: timing.historicalTargetRankingMs, historicalPricingPreviewMs: timing.historicalPricingPreviewMs, historicalFifoPreviewMs: timing.historicalFifoPreviewMs, recoveryRecommendationMs: timing.recoveryRecommendationMs, routeDecorationMs: timing.routeDecorationMs }
+  const publicTiming = { portfolioMs: timing.portfolioMs, holdingsMs: timing.holdingsMs, activityFetchMs: timing.activityMs, activityMs: timing.activityMs, normalizationMs: timing.activityMs, mergeMs: 0, swapDetectionMs: timing.swapDetectionMs, pricingMs: timing.pricingMs, fifoMs: timing.fifoMs, integrityMs: timing.tradeStatsMs, tradeStatsMs: timing.tradeStatsMs, recoveryMs: timing.historicalMs, historicalMs: timing.historicalMs, totalMs: timing.totalMs, cacheReadMs: timing.cacheReadMs, cacheWriteMs: timing.cacheWriteMs, recoveryEligibilityMs: timing.recoveryEligibilityMs, historicalTargetRankingMs: timing.historicalTargetRankingMs, historicalPricingPreviewMs: timing.historicalPricingPreviewMs, historicalFifoPreviewMs: timing.historicalFifoPreviewMs, recoveryRecommendationMs: timing.recoveryRecommendationMs, routeDecorationMs: timing.routeDecorationMs, recoveryPrecheckMs: timing.recoveryPrecheckMs, recoverySkipGateMs: timing.recoverySkipGateMs, recoveryDebugBuildMs: timing.recoveryDebugBuildMs, historicalScanDebugBuildMs: timing.historicalScanDebugBuildMs, historicalCandidateSummaryMs: timing.historicalCandidateSummaryMs, historicalPreviewPrepMs: timing.historicalPreviewPrepMs, syntheticRecoveryDebugMs: timing.syntheticRecoveryDebugMs, recoveryPostProcessingMs: timing.recoveryPostProcessingMs, recoveryUnaccountedMs: timing.recoveryUnaccountedMs }
   payload.walletDeepScanTiming = publicTiming
   if (debug) {
     const { portfolioMs: _portfolioMs, pricingMs: _pricingMs, fifoMs: _fifoMs, historicalMs: _historicalMs, cacheReadMs: _cacheReadMs, cacheWriteMs: _cacheWriteMs, ...walletDeepScanTimings } = timing
