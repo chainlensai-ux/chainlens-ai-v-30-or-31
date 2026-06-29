@@ -554,6 +554,8 @@ export type WalletSnapshot = {
       providerUsdPricedEvents: number
       historicalPricedEvents: number
       currentHoldingPricedEvents: number
+      priceAttempts: number
+      priceAttemptLimitReached: boolean
       creditsUsed: number
       fieldsPowered: string[]
       canBeCached?: boolean
@@ -584,16 +586,20 @@ export type WalletSnapshot = {
       currentPriceSource: string
       status: string
       lockedReason: string | null
+      useInOfficialPnl?: boolean
       fieldsPowered: string[]
     }
     walletScore: {
       source: 'chainlens_internal'
       pnlUsed: boolean
+      profitSkillUsed?: boolean
       portfolioUsed: boolean
       behaviorUsed: boolean
       providerCallsAdded: 0
       fieldsPowered: string[]
     }
+    auditBuiltFromExistingDiagnosticsOnly?: true
+    providerCallsAddedByAudit?: 0
     totalCost: {
       zerionCredits: number
       goldrushCredits: number
@@ -1033,6 +1039,8 @@ export type WalletSnapshot = {
       receiptsAttempted: number
       receiptsSucceeded: number
       receiptsFailed: number
+      receiptsFetched?: number
+      receiptsRejected?: number
       historicalPagesAttempted: number
       targetedRecoveryPagesAttempted: number
     }
@@ -1732,6 +1740,7 @@ export type WalletSnapshot = {
       skippedHistoricalUnavailable: number
       currentHoldingPriceAttempts: number
       currentHoldingPriceOpenLotEvents: number
+      currentHoldingPricedEvents?: number
       skippedCurrentPriceNotAllowedForRealized: number
       historicalPriceAttempts: number
       historicalPricePricedEvents: number
@@ -9292,7 +9301,7 @@ async function buildPriceAtTimeEvidence(
       skippedNoTimestamp, skippedNoTokenAddress, skippedNoAmount,
       skippedNoStableOrWethLeg, skippedNoQuoteLeg,
       skippedProviderUsdMissing, skippedProviderUsdInvalid, skippedHistoricalUnavailable,
-      currentHoldingPriceAttempts, currentHoldingPriceOpenLotEvents,
+      currentHoldingPriceAttempts, currentHoldingPriceOpenLotEvents, currentHoldingPricedEvents: currentHoldingPriceOpenLotEvents,
       skippedCurrentPriceNotAllowedForRealized,
       historicalPriceAttempts, historicalPricePricedEvents,
       cacheHits, cacheMisses, providerAttempts, providerErrors,
@@ -17772,8 +17781,12 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     _sellSideReconDebug,
     _closedLotPriceUpgradeDebug,
   ].filter(Boolean) as Array<Record<string, any>>
-  const _coverageReceiptsAttempted = _coverageReceiptStats.reduce((sum, d) => sum + Number(d.candidateTxCount ?? d.candidateCount ?? d.sellSideCandidateTxs ?? d.receiptsAttempted ?? 0), 0)
-  const _coverageReceiptsSucceeded = _coverageReceiptStats.reduce((sum, d) => sum + Number(d.receiptsFetched ?? d.swapReconstructionReceiptsFetched ?? d.sellSideReceiptsFetched ?? d.receiptsSucceeded ?? 0), 0)
+  const _coverageReceiptAttemptsFromFetches = _coverageReceiptStats.reduce((sum, d) => sum + Number(d.swapReconstructionReceiptsFetched ?? d.receiptsFetched ?? d.sellSideReceiptsFetched ?? d.entryReceiptsFetched ?? d.exitReceiptsFetched ?? 0), 0)
+  const _coverageReceiptCandidatesRejected = _coverageReceiptStats.reduce((sum, d) => sum + Number(d.sampleRejectedTxs?.length ?? d.rejectedTxCount ?? 0), 0)
+  const _coverageReceiptsFetched = Math.max(0, _coverageReceiptAttemptsFromFetches)
+  const _coverageReceiptsRejected = Math.max(0, _coverageReceiptCandidatesRejected)
+  const _coverageReceiptsAttempted = _coverageReceiptsFetched + _coverageReceiptsRejected
+  const _coverageReceiptsSucceeded = Math.min(_coverageReceiptsFetched, _coverageReceiptsAttempted)
   const _coverageProviderRawTxs = Number(grEth.diag?.rawItemCount ?? 0) + Number(grBase.diag?.rawItemCount ?? 0)
   const _coverageHistoricalPagesAttempted = Number(_historicalCoverageDebug?.pagesAttempted ?? 0)
   const _coverageTargetedPagesAttempted = Number(_syntheticTargetExtraPagesAttempted ?? 0)
@@ -17803,6 +17816,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       receiptsAttempted: _coverageReceiptsAttempted,
       receiptsSucceeded: _coverageReceiptsSucceeded,
       receiptsFailed: Math.max(0, _coverageReceiptsAttempted - _coverageReceiptsSucceeded),
+      receiptsFetched: _coverageReceiptsFetched,
+      receiptsRejected: _coverageReceiptsRejected,
       historicalPagesAttempted: _coverageHistoricalPagesAttempted,
       targetedRecoveryPagesAttempted: _coverageTargetedPagesAttempted,
     },
@@ -19597,10 +19612,12 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       },
       priceEvidence: {
         sourcesUsed: ['stable_leg', 'goldrush_historical', 'goldrush_current'],
-        stableLegPricedEvents: walletEvidenceSummary.totalEvents ?? 0,
-        providerUsdPricedEvents: _apiAudit.goldrush.calls,
-        historicalPricedEvents: _historicalFifoPreviewDebug?.newPricedHistoricalEvents ?? 0,
-        currentHoldingPricedEvents: _openPositionPricedTokenCount ?? 0,
+        stableLegPricedEvents: _priceAtTimeDebug.stableLegPricedEvents ?? 0,
+        providerUsdPricedEvents: _priceAtTimeDebug.providerEventUsdPricedEvents ?? 0,
+        historicalPricedEvents: _priceAtTimeDebug.historicalPricedEvents ?? 0,
+        currentHoldingPricedEvents: _priceAtTimeDebug.currentHoldingPricedEvents ?? _priceAtTimeDebug.currentHoldingPriceOpenLotEvents ?? 0,
+        priceAttempts: _priceAtTimeDebug.priceAttempts ?? 0,
+        priceAttemptLimitReached: _priceAtTimeDebug.priceAttemptLimitReached ?? false,
         creditsUsed: _costByPurpose.pricing,
         fieldsPowered: ['walletTradeStatsSummary', 'walletLotSummary', 'walletOpenPositionPnlRead'],
         canBeCached: true,
@@ -19630,17 +19647,21 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         source: 'chainlens_internal_fifo',
         currentPriceSource: providerUsed,
         status: _walletOpenPositionPnlRead.status,
-        lockedReason: _walletOpenPositionPnlRead.status === 'unavailable' ? _walletOpenPositionPnlRead.reason : null,
+        lockedReason: _walletOpenPositionPnlRead.reason ?? null,
+        useInOfficialPnl: false,
         fieldsPowered: ['walletOpenPositionPnlRead'],
       },
       walletScore: {
         source: 'chainlens_internal',
-        pnlUsed: snapshot.publicPnlStatus === 'ok',
-        portfolioUsed: Number.isFinite(snapshot.totalValue),
-        behaviorUsed: snapshot.walletBehavior?.status === 'ready' || snapshot.walletBehavior?.status === 'partial',
+        pnlUsed: typeof (snapshot as any).publicRealizedPnlUsd === 'number' || typeof (snapshot as any).publicPerformanceRealizedPnlUsd === 'number' || typeof (snapshot as any).publicWinRatePercent === 'number',
+        profitSkillUsed: typeof (snapshot as any).publicRealizedPnlUsd === 'number' || typeof (snapshot as any).publicPerformanceRealizedPnlUsd === 'number' || typeof (snapshot as any).publicWinRatePercent === 'number',
+        portfolioUsed: Boolean(snapshot.walletProfile?.portfolioBehavior || snapshot.walletProfile?.walletCategory),
+        behaviorUsed: Boolean(snapshot.walletProfile?.tradingBehavior && snapshot.walletProfile.tradingConfidence !== 'low' && (snapshot as any).tradeIntelligence && (((snapshot as any).tradeIntelligence.status === 'ready') || ((snapshot as any).tradeIntelligence.status === 'partial')) && Number((snapshot as any).tradeIntelligence.tradeIntelLots ?? 0) >= 10),
         providerCallsAdded: 0,
         fieldsPowered: ['walletBotScore', 'walletPersonality', 'walletProfile'],
       },
+      auditBuiltFromExistingDiagnosticsOnly: true,
+      providerCallsAddedByAudit: 0,
       totalCost: {
         zerionCredits: _apiAudit.zerion.credits,
         goldrushCredits: _apiAudit.goldrush.credits,
