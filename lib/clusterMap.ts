@@ -67,6 +67,10 @@ type BuildClusterMapInput = {
   suspiciousTransfers?: boolean | null
   suspiciousTransferReasons?: string[] | null
   holderRowsAvailable?: boolean | null
+  lpLockBurnConfirmed?: boolean | null
+  adminFunctionsDetected?: boolean | null
+  upgradeabilityDetected?: boolean | null
+  simulationStatus?: string | null
 }
 
 const ZERO_ADDR = '0x0000000000000000000000000000000000000000'
@@ -104,8 +108,15 @@ function dominanceFromSupply(percent: number | null): ClusterMap['summary']['clu
   return 'critical'
 }
 
-function riskFromSupply(percent: number | null, suspiciousTransfers: boolean): { score: number | null; label: ClusterMap['summary']['clusterRiskLabel'] } {
-  if (percent == null) return { score: suspiciousTransfers ? 55 : null, label: suspiciousTransfers ? 'elevated' : 'open_check' }
+function riskFromSupply(percent: number | null, suspiciousTransfers: boolean, otherCriticalEvidence: boolean): { score: number | null; label: ClusterMap['summary']['clusterRiskLabel'] } {
+  if (percent == null) {
+    if (suspiciousTransfers) return { score: 55, label: 'elevated' }
+    if (!otherCriticalEvidence) return { score: null, label: 'open_check' }
+    // Cluster supply itself is unconfirmed, but other critical evidence (deployer,
+    // linked wallets, LP lock/burn, admin functions, upgradeability, simulation) is
+    // present, so this is a real (low) reading rather than a fabricated "open check".
+    return { score: 25, label: 'low' }
+  }
   const base = percent >= 50 ? 88 : percent >= 35 ? 76 : percent >= 20 ? 63 : percent >= 10 ? 47 : percent > 0 ? 28 : 12
   const score = Math.max(0, Math.min(100, base + (suspiciousTransfers ? 10 : 0)))
   const label = score <= 20 ? 'low' : score <= 40 ? 'watch' : score <= 60 ? 'elevated' : score <= 80 ? 'high' : 'critical'
@@ -277,11 +288,28 @@ export function buildClusterMap(input: BuildClusterMapInput): ClusterMap {
   if (clusterSupplyPercent === 0) pushUniqueSignal(signals, 'No cluster supply found in indexed holders')
   if (input.holderRowsAvailable === false || holderRows.length === 0) pushUniqueSignal(signals, 'Holder evidence incomplete')
   if (holderRows.length > 0 && matchedLinkedByAddress.size === 0 && linkedWallets.length > 0) pushUniqueSignal(signals, 'Top holder overlap not confirmed')
+  if (input.lpLockBurnConfirmed === true) pushUniqueSignal(signals, 'LP lock/burn confirmed')
+  if (input.adminFunctionsDetected === true) pushUniqueSignal(signals, 'Admin functions detected')
+  if (input.upgradeabilityDetected === true) pushUniqueSignal(signals, 'Contract is upgradeable')
+  if (input.simulationStatus && input.simulationStatus !== 'open_check') pushUniqueSignal(signals, `Simulation status: ${input.simulationStatus}`)
+
+  // OPEN_CHECK is only appropriate when every critical evidence category Dev Control,
+  // Token Scanner, and Base Radar share is missing: deployer, linked wallets, cluster
+  // supply, LP lock/burn, admin functions, upgradeability, and simulation status.
+  const hasCriticalEvidence = Boolean(
+    deployerAddress
+    || linkedWallets.length > 0
+    || (clusterSupplyPercent != null)
+    || input.lpLockBurnConfirmed === true
+    || input.adminFunctionsDetected != null
+    || input.upgradeabilityDetected != null
+    || (input.simulationStatus != null && input.simulationStatus !== 'open_check'),
+  )
 
   const nodeList = [...nodes.values()]
-  const { score, label } = riskFromSupply(clusterSupplyPercent, Boolean(input.suspiciousTransfers))
+  const { score, label } = riskFromSupply(clusterSupplyPercent, Boolean(input.suspiciousTransfers), hasCriticalEvidence)
   const status: CanonicalStatus = nodeList.length === 0
-    ? 'unavailable_with_reason'
+    ? (hasCriticalEvidence ? 'partial' : 'unavailable_with_reason')
     : edges.some((edge) => edge.confidence === 'high') || (clusterSupplyPercent != null && clusterSupplyPercent > 0)
       ? 'verified'
       : edges.length > 0 || Boolean(input.suspiciousTransfers)
@@ -290,7 +318,9 @@ export function buildClusterMap(input: BuildClusterMapInput): ClusterMap {
           ? 'partial'
           : 'unavailable_with_reason'
   const reason = nodeList.length === 0
-    ? 'No deployer, linked-wallet, or holder evidence is available for a reliable cluster map.'
+    ? (hasCriticalEvidence
+      ? 'No deployer, linked-wallet, or holder rows yet, but other Dev Control/Token Scanner evidence (LP lock/burn, admin functions, upgradeability, or simulation) is present.'
+      : 'No deployer, linked-wallet, or holder evidence is available for a reliable cluster map.')
     : clusterSupplyPercent != null
       ? `Cluster map built from existing Dev Control and holder evidence; cluster supply is ${clusterSupplyPercent.toFixed(1)}%.`
       : 'Cluster map built from available actor evidence; cluster supply remains an open check until holder percentages confirm overlap.'

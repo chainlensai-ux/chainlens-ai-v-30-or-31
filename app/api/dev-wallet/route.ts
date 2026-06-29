@@ -1936,6 +1936,8 @@ export async function POST(req: Request) {
       suspiciousTransfers,
       suspiciousTransferReasons,
       holderRowsAvailable: holderDataAvailable,
+      lpLockBurnConfirmed: liqLpLocked,
+      simulationStatus: secHoneypot === false ? 'ok' : secHoneypot === true ? 'risk' : null,
     })
 
     const { verdict: clarkVerdict, clarkError } = await getClarkVerdict(origin, {

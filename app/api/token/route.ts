@@ -6730,6 +6730,10 @@ export async function POST(req: Request) {
       suspiciousTransfers: false,
       suspiciousTransferReasons: [],
       holderRowsAvailable: holderRowsConfirmed,
+      lpLockBurnConfirmed: lpProofStatus === 'verified' ? true : lpProofStatus === 'inferred' ? false : null,
+      adminFunctionsDetected: [cortexContractFlags.mint.status, cortexContractFlags.pause.status, cortexContractFlags.blacklist.status].some((s) => s === 'verified' || s === 'possible') ? true : null,
+      upgradeabilityDetected: cortexContractFlags.proxy.status === 'verified' || cortexContractFlags.proxy.status === 'possible' ? true : null,
+      simulationStatus: hpResult.ok ? 'ok' : 'open_check',
     })
     if (clusterMap.summary.clusterSupplyPercent != null && clusterMap.summary.clusterSupplyPercent >= 20) {
       const driver = `Dev cluster supply is elevated at ${clusterMap.summary.clusterSupplyPercent.toFixed(1)}% from matched holder evidence.`

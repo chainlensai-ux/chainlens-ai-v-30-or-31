@@ -325,6 +325,51 @@ function devFactor(label: string, score: number | null, weight: number, reason: 
   return { label, score, weight, reason }
 }
 
+// Reuses the same Dev Control / Token Scanner / Base Radar evidence already
+// attached to `result` (devIntel, clusterMap, lpControl, contractFlags,
+// rugRisk) — never fabricates new evidence, only reads what other enrichment
+// functions already computed.
+function getDevControlEvidence(result: AnyRecord) {
+  const devIntel = asRecord(result.devIntel)
+  const clusterMap = asRecord(devIntel?.clusterMap)
+  const clusterSummary = asRecord(clusterMap?.summary)
+  const supplyControl = asRecord(devIntel?.supplyControl)
+  const rugRisk = asRecord(result.rugRisk)
+  const deployerReputation = asRecord(rugRisk?.deployer_reputation)
+  const lp = asRecord(result.lpControl)
+
+  const deployerStatus = str(devIntel?.deployerStatus)
+  const deployerConfirmed = deployerStatus == null ? null : deployerStatus === 'confirmed'
+  const linkedWallets = Array.isArray(devIntel?.linkedWallets) ? devIntel!.linkedWallets as unknown[] : null
+  const clusterDominancePercent = firstPresent(num(devIntel?.devClusterSupplyPercent), num(supplyControl?.devClusterSupplyPercent), num(clusterSummary?.clusterSupplyPercent))
+  const holderOverlapPercent = firstPresent(num(devIntel?.linkedWalletSupplyPercent), num(supplyControl?.linkedWalletSupplyPercent))
+  const creatorHolderPercent = firstPresent(num(devIntel?.creatorHolderPercent), num(supplyControl?.creatorHolderPercent))
+  const supplyControlPercent = creatorHolderPercent != null || holderOverlapPercent != null
+    ? clamp((creatorHolderPercent ?? 0) + (holderOverlapPercent ?? 0))
+    : clusterDominancePercent
+  const lpOwnershipPercent = firstPresent(num(lp?.lpHolderConcentration), extractLpControllerSharePercent(Array.isArray(lp?.evidence) ? lp!.evidence as string[] : null))
+  const previousProjects = Array.isArray(deployerReputation?.previous_projects) ? deployerReputation!.previous_projects as unknown[] : null
+  const deployerRotationDetected = previousProjects == null ? null : previousProjects.length > 1
+  const riskFlags = [
+    ...(Array.isArray(devIntel?.reasons) ? devIntel!.reasons.map(String) : []),
+    ...(Array.isArray(devIntel?.suspiciousTransferReasons) ? devIntel!.suspiciousTransferReasons.map(String) : []),
+    ...(Array.isArray(deployerReputation?.deploy_patterns) ? deployerReputation!.deploy_patterns.map(String) : []),
+  ]
+  const simulationStatus = firstPresent(str(asRecord(result.security)?.simulationStatus), bool(getHoneypot(result)) === false ? 'ok' : bool(getHoneypot(result)) === true ? 'risk' : null)
+
+  return {
+    deployerConfirmed,
+    linkedWallets,
+    clusterDominancePercent,
+    holderOverlapPercent,
+    supplyControlPercent,
+    lpOwnershipPercent,
+    deployerRotationDetected,
+    riskFlags,
+    simulationStatus,
+  }
+}
+
 function calculateDevScore(result: AnyRecord): Factor & { devBreakdown: CortexScoreResultV2['devBreakdown'] } {
   const security = asRecord(result.security)
   const devOwnership = asRecord(security?.devOwnership)
@@ -337,21 +382,27 @@ function calculateDevScore(result: AnyRecord): Factor & { devBreakdown: CortexSc
   const devIntel = asRecord(result.devIntel)
   const rugRisk = asRecord(result.rugRisk)
   const deployerReputation = asRecord(rugRisk?.deployer_reputation)
+  const evidence = getDevControlEvidence(result)
   const reasons = [
     ...(Array.isArray(devIntel?.reasons) ? devIntel.reasons.map(String) : []),
     ...(Array.isArray(devIntel?.suspiciousTransferReasons) ? devIntel.suspiciousTransferReasons.map(String) : []),
     ...(Array.isArray(deployerReputation?.deploy_patterns) ? deployerReputation.deploy_patterns.map(String) : []),
+    ...evidence.riskFlags,
   ]
   const reasonText = reasons.join(' ')
 
   const isRenounced = bool(devOwnership?.isRenounced)
-  const ownershipScore = isRenounced == null ? null : isRenounced ? 100 : 35
-  const lpOwnershipScore = lpStatus == null
-    ? null
-    : lpStatus === 'burned' ? 100
+  const ownershipScore = isRenounced == null
+    ? (evidence.deployerConfirmed == null ? null : evidence.deployerConfirmed ? 35 : 55)
+    : isRenounced ? 100 : 35
+  const lpOwnershipScore = lpStatus != null
+    ? (lpStatus === 'burned' ? 100
       : lpStatus === 'locked' ? 60
         : lpStatus === 'team_controlled' || lpStatus === 'risky' ? 15
-          : 35
+          : 35)
+    : evidence.lpOwnershipPercent != null
+      ? clamp(100 - evidence.lpOwnershipPercent)
+      : null
   const adminKnown = [mint, pause, blacklist].every((value) => value != null)
   const adminFunctionsScore = adminKnown ? clamp(100 - ([mint, pause, blacklist].filter(Boolean).length * 28)) : null
   const upgradeabilityScore = proxy == null ? null : proxy ? 35 : 100
@@ -359,32 +410,57 @@ function calculateDevScore(result: AnyRecord): Factor & { devBreakdown: CortexSc
   const bytecodeSimilarityScore = includesAny(reasons, /bytecode|similarity|clone|copycat|suspicious/i)
     ? 35
     : asRecord(result.contractFlags)?.bytecodeChecked === true ? 70
+    : evidence.simulationStatus === 'ok' ? 60
+    : evidence.simulationStatus === 'risk' ? 35
     : 55  // neutral: bytecode not checked but no suspicious signal detected
-  const suspiciousDeploy = includesAny(reasons, /suspicious deploy|factory burst|reused deploy|rug|pattern/i)
-  // neutral (55) when no deployer data at all; confirmed clean (70) when data present but no suspicious signals
-  const deployPatternScore = suspiciousDeploy ? 30 : (reasons.length > 0 || deployerReputation != null) ? 70 : 55
+  const suspiciousDeploy = includesAny(reasons, /suspicious deploy|factory burst|reused deploy|rug|pattern/i) || evidence.deployerRotationDetected === true
+  const clusterRiskPenalty = evidence.clusterDominancePercent != null ? Math.round(clamp(evidence.clusterDominancePercent) * 0.4) : 0
+  // neutral (55) when no deployer data at all; confirmed clean (70) when data present but no suspicious signals;
+  // real evidence (cluster dominance / linked wallets / supply control) shifts the score instead of staying neutral.
+  const deployPatternScore = suspiciousDeploy
+    ? 30
+    : (evidence.clusterDominancePercent != null || (evidence.linkedWallets?.length ?? 0) > 0)
+      ? clamp(70 - clusterRiskPenalty)
+      : (reasons.length > 0 || deployerReputation != null) ? 70 : 55
   const suspiciousTransfers = bool(devIntel?.suspiciousTransfers)
   const devSelling = includesAny(reasons, /sell|dump|distributed|outbound|wash|relay/i)
-  // neutral (55) when no dev wallet data; confirmed clean (70) when data present but no suspicious signals
-  const devWalletScore = (suspiciousTransfers || devSelling) ? 30 : (suspiciousTransfers != null || reasons.length > 0) ? 70 : 55
+  const holderOverlapPenalty = evidence.holderOverlapPercent != null ? Math.round(clamp(evidence.holderOverlapPercent) * 0.4) : 0
+  // neutral (55) when no dev wallet data; confirmed clean (70) when data present but no suspicious signals;
+  // holder-overlap/supply-control evidence shifts the score instead of staying neutral.
+  const devWalletScore = (suspiciousTransfers || devSelling)
+    ? 30
+    : (evidence.holderOverlapPercent != null || evidence.supplyControlPercent != null)
+      ? clamp(70 - holderOverlapPenalty)
+      : (suspiciousTransfers != null || reasons.length > 0) ? 70 : 55
 
   const breakdown = [
-    devFactor('Ownership', ownershipScore, DEV_WEIGHTS.ownership, isRenounced == null ? 'Ownership status missing.' : isRenounced ? 'Ownership renounced.' : 'Ownership/admin appears held.'),
-    devFactor('LP Ownership', lpOwnershipScore, DEV_WEIGHTS.lpOwnership, lpStatus == null ? 'LP ownership missing.' : lpStatus === 'burned' ? 'LP burned.' : lpStatus === 'locked' ? 'LP locked.' : 'LP ownership is not fully protected.'),
+    devFactor('Ownership', ownershipScore, DEV_WEIGHTS.ownership, isRenounced == null ? (evidence.deployerConfirmed != null ? 'Ownership renounce status missing; deployer confirmation used as a proxy signal.' : 'Ownership status missing.') : isRenounced ? 'Ownership renounced.' : 'Ownership/admin appears held.'),
+    devFactor('LP Ownership', lpOwnershipScore, DEV_WEIGHTS.lpOwnership, lpStatus != null ? (lpStatus === 'burned' ? 'LP burned.' : lpStatus === 'locked' ? 'LP locked.' : 'LP ownership is not fully protected.') : evidence.lpOwnershipPercent != null ? `LP lock/burn status missing; LP controller holds ${evidence.lpOwnershipPercent.toFixed(1)}% of LP supply.` : 'LP ownership missing.'),
     devFactor('Admin Functions', adminFunctionsScore, DEV_WEIGHTS.adminFunctions, adminKnown ? 'Mint, pause, and blacklist flags evaluated.' : 'Admin function flags incomplete.'),
     devFactor('Upgradeability', upgradeabilityScore, DEV_WEIGHTS.upgradeability, proxy == null ? 'Proxy status missing.' : proxy ? 'Proxy/upgradeability detected.' : 'Proxy not detected.'),
     devFactor('Contract Age', contractAgeScore, DEV_WEIGHTS.contractAge, poolAgeDays == null ? 'Contract/pool age missing.' : 'Age normalized with sigmoid fallback median.'),
     devFactor('Bytecode Similarity', bytecodeSimilarityScore, DEV_WEIGHTS.bytecodeSimilarity, bytecodeSimilarityScore < 50 ? 'Suspicious bytecode/clone signal present.' : bytecodeSimilarityScore === 55 ? 'Bytecode check unavailable — neutral assumed (no suspicious signals).' : 'No suspicious bytecode similarity signal detected.'),
-    devFactor('Dev Wallet Behavior', devWalletScore, DEV_WEIGHTS.devWalletBehavior, devWalletScore < 50 ? 'Suspicious transfer/selling behavior present.' : devWalletScore === 55 ? 'Dev wallet data unavailable — neutral assumed (no suspicious signals).' : 'No suspicious dev wallet behavior in existing data.'),
-    devFactor('Deployment Pattern', deployPatternScore, DEV_WEIGHTS.deploymentPattern, deployPatternScore < 50 ? 'Suspicious deployment pattern present.' : deployPatternScore === 55 ? 'Deployment data unavailable — neutral assumed (no suspicious signals).' : 'No suspicious deployment pattern in existing data.'),
+    devFactor('Dev Wallet Behavior', devWalletScore, DEV_WEIGHTS.devWalletBehavior, devWalletScore < 50 ? 'Suspicious transfer/selling behavior present.' : devWalletScore === 55 ? 'Dev wallet data unavailable — neutral assumed (no suspicious signals).' : evidence.holderOverlapPercent != null || evidence.supplyControlPercent != null ? 'Dev wallet behavior reflects holder-overlap/supply-control evidence.' : 'No suspicious dev wallet behavior in existing data.'),
+    devFactor('Deployment Pattern', deployPatternScore, DEV_WEIGHTS.deploymentPattern, deployPatternScore < 50 ? 'Suspicious deployment pattern present.' : deployPatternScore === 55 ? 'Deployment data unavailable — neutral assumed (no suspicious signals).' : (evidence.clusterDominancePercent != null || (evidence.linkedWallets?.length ?? 0) > 0) ? 'Deployment pattern reflects cluster dominance/linked-wallet evidence.' : 'No suspicious deployment pattern in existing data.'),
   ]
 
-  if (breakdown.some((item) => item.score == null)) {
-    return { score: null, status: 'open_check', reason: 'DevScore V2 requires all ownership, admin, age, bytecode, wallet, and deployment factors.', devBreakdown: breakdown }
+  const available = breakdown.filter((item) => item.score != null)
+  // Only fall back to OPEN_CHECK when every critical category — ownership, LP,
+  // admin, upgradeability, bytecode, wallet behavior, and deployment pattern —
+  // is missing. Any real evidence (deployer/linked-wallets/cluster supply/LP
+  // lock-burn/admin/upgradeability/simulation, via getDevControlEvidence) means
+  // a real partial score is produced instead of a fabricated fallback band.
+  if (available.length === 0) {
+    return { score: null, status: 'open_check', reason: 'DevScore V2 has no usable ownership, admin, bytecode, wallet, or deployment evidence.', devBreakdown: breakdown }
   }
 
-  const score = breakdown.reduce((sum, item) => sum + (item.score! * item.weight), 0)
-  return { score: roundScore(score), status: score < 45 ? 'risk' : 'ok', reason: 'DevScore V2 dynamically weights ownership, LP, admin, proxy, age, bytecode, wallet behavior, and deployment pattern.', devBreakdown: breakdown }
+  const availableWeight = available.reduce((sum, item) => sum + item.weight, 0)
+  const score = available.reduce((sum, item) => sum + (item.score! * item.weight), 0) / availableWeight
+  const status = available.length < breakdown.length ? 'partial' : score < 45 ? 'risk' : 'ok'
+  const reason = available.length < breakdown.length
+    ? `DevScore V2 reflects partial evidence (${available.length}/${breakdown.length} categories available); score is reweighted across available categories only.`
+    : 'DevScore V2 dynamically weights ownership, LP, admin, proxy, age, bytecode, wallet behavior, and deployment pattern.'
+  return { score: roundScore(score), status, reason, devBreakdown: breakdown }
 }
 
 function categoryLabel(key: CortexCategoryKey): string {
