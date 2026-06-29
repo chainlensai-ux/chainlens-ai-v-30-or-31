@@ -377,7 +377,7 @@ export type WalletSnapshot = {
     syntheticClosedLots: number
     unknownCostSellValueUsd: number
     recoveryAttempted: boolean
-    recoveryResult: 'recovered' | 'not_recovered' | 'not_attempted'
+    recoveryResult: 'recovered' | 'attempted_no_new_public_lots' | 'not_recovered' | 'not_attempted'
     reason: string
     nextAction: string
   }
@@ -16026,10 +16026,26 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     return [contract, { contract, symbol: l.tokenSymbol ?? contract.slice(0, 8) }]
   })).values())
   const _missingCostBasisUnknownSellValueUsd = _missingCostBasisSyntheticLots.reduce((sum, l) => sum + (Number.isFinite(l.proceedsUsd) ? l.proceedsUsd : 0), 0)
+  // RECOVERY-RESULT-FIX-1: "a prior-buy candidate was found/priced" (syntheticTargetExtraPriorBuysFound,
+  // walletPnlRecoveryV2Debug.priorBuysRecovered) is NOT the same as "a synthetic lot was actually
+  // converted to a public-grade lot" — a candidate can be found and priced and still get deduped away
+  // with zero new closed lots (e.g. walletHistoricalFifoPreviewDebug.reasons includes
+  // no_new_priced_historical_events_after_dedup). recoveryResult must only say "recovered" when the
+  // recovery actually changed the synthetic/public-grade lot counts, not merely when it ran.
   const _missingCostBasisRecoveryAttempted = _syntheticTargetExtraRecoveryAttempted || walletPnlRecoveryV2Debug.attempted
+  const _missingCostBasisRecoveryApplied =
+    _syntheticLotsAfterHistorical < _syntheticLotsBeforeHistorical ||
+    _realPriorBuysRecoveredForSyntheticLots > 0 ||
+    _moralisHistoricalTargetTokensRecovered.size > 0 ||
+    (walletHistoricalFifoPreviewSummary.safeToPromoteToPublicStats ? walletHistoricalFifoPreviewSummary.previewClosedLots : _earlyRealBackedClosedLots) > _earlyRealBackedClosedLots ||
+    walletHistoricalFifoPreviewSummary.addedClosedLots > 0
   const _missingCostBasisRecoveryResult: NonNullable<WalletSnapshot['missingCostBasisRead']>['recoveryResult'] = !_missingCostBasisRecoveryAttempted
     ? 'not_attempted'
-    : (_syntheticTargetExtraPriorBuysFound > 0 || walletPnlRecoveryV2Debug.priorBuysRecovered > 0) ? 'recovered' : 'not_recovered'
+    : _missingCostBasisRecoveryApplied
+      ? 'recovered'
+      : (_syntheticTargetExtraPriorBuysFound > 0 || walletPnlRecoveryV2Debug.priorBuysRecovered > 0)
+        ? 'attempted_no_new_public_lots'
+        : 'not_recovered'
   const _missingCostBasisRead: NonNullable<WalletSnapshot['missingCostBasisRead']> | null = _missingCostBasisSyntheticLots.length > 0
     ? {
       affectedTokens: _missingCostBasisAffectedTokens,
@@ -16037,12 +16053,16 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       unknownCostSellValueUsd: _missingCostBasisUnknownSellValueUsd,
       recoveryAttempted: _missingCostBasisRecoveryAttempted,
       recoveryResult: _missingCostBasisRecoveryResult,
-      reason: `${_missingCostBasisSyntheticLots.length} closed lot${_missingCostBasisSyntheticLots.length === 1 ? '' : 's'} across ${_missingCostBasisAffectedTokens.length} token${_missingCostBasisAffectedTokens.length === 1 ? '' : 's'} are missing real prior-buy cost basis, so realized PnL for those sells is locked.`,
+      reason: _missingCostBasisRecoveryResult === 'attempted_no_new_public_lots'
+        ? 'Targeted recovery found historical candidate(s), but none created additional public-grade FIFO lots after dedupe.'
+        : `${_missingCostBasisSyntheticLots.length} closed lot${_missingCostBasisSyntheticLots.length === 1 ? '' : 's'} across ${_missingCostBasisAffectedTokens.length} token${_missingCostBasisAffectedTokens.length === 1 ? '' : 's'} are missing real prior-buy cost basis, so realized PnL for those sells is locked.`,
       nextAction: _missingCostBasisRecoveryResult === 'recovered'
         ? 'Recovery already found at least one real prior buy; re-scan to pick up the updated lots.'
-        : _missingCostBasisRecoveryAttempted
-          ? 'Low-cost recovery already attempted and found no prior buy — scan full history for older buy evidence.'
-          : 'Run a deeper historical scan to recover the missing buy leg(s).',
+        : _missingCostBasisRecoveryResult === 'attempted_no_new_public_lots'
+          ? 'Targeted recovery already attempted and found no additional public-grade lot — scan full history for older buy evidence.'
+          : _missingCostBasisRecoveryAttempted
+            ? 'Low-cost recovery already attempted and found no prior buy — scan full history for older buy evidence.'
+            : 'Run a deeper historical scan to recover the missing buy leg(s).',
     }
     : null
 

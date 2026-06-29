@@ -416,3 +416,35 @@ for (const field of [
 }
 
 console.log('wallet targeted-recovery lot-level-eligibility and reserved-budget-split checks passed')
+
+// RECOVERY-RESULT-FIX-1 checks: candidate-found/priced must not be conflated with recovery-applied.
+// missingCostBasisRead.recoveryResult must only say "recovered" when the synthetic/public-grade lot
+// counts actually changed, and must say "attempted_no_new_public_lots" (not "recovered") when a
+// targeted pass found/priced a candidate but created zero new public-grade closed lots.
+assert.match(
+  snap,
+  /recoveryResult: 'recovered' \| 'attempted_no_new_public_lots' \| 'not_recovered' \| 'not_attempted'/,
+  'missingCostBasisRead type distinguishes attempted_no_new_public_lots from recovered',
+)
+assert.match(
+  snap,
+  /const _missingCostBasisRecoveryApplied =\s*\n\s*_syntheticLotsAfterHistorical < _syntheticLotsBeforeHistorical \|\|\s*\n\s*_realPriorBuysRecoveredForSyntheticLots > 0 \|\|\s*\n\s*_moralisHistoricalTargetTokensRecovered\.size > 0 \|\|\s*\n\s*\(walletHistoricalFifoPreviewSummary\.safeToPromoteToPublicStats[\s\S]{0,160}> _earlyRealBackedClosedLots \|\|\s*\n\s*walletHistoricalFifoPreviewSummary\.addedClosedLots > 0/,
+  'recoveryResult is only "recovered" when synthetic lots were actually converted to public-grade lots',
+)
+assert.match(
+  snap,
+  /\? 'attempted_no_new_public_lots'\s*\n\s*: 'not_recovered'/,
+  'a found-but-not-applied candidate resolves to attempted_no_new_public_lots, not recovered',
+)
+assert.match(
+  snap,
+  /Targeted recovery found historical candidate\(s\), but none created additional public-grade FIFO lots after dedupe\./,
+  'attempted_no_new_public_lots reason explains the candidate-found-but-not-applied case',
+)
+assert.doesNotMatch(
+  snap,
+  /nextAction: _missingCostBasisRecoveryResult === 'attempted_no_new_public_lots'\s*\n\s*\? '[^']*re-scan[^']*'/,
+  'nextAction for attempted_no_new_public_lots must not tell the caller to re-scan to pick up updated lots',
+)
+
+console.log('wallet targeted-recovery-result-semantics fix checks passed')

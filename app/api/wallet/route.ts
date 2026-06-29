@@ -925,6 +925,13 @@ export async function POST(req: Request) {
       const requested = Boolean(payload?.walletHistoricalCoverageSummary?.requested ?? payload?._diagnostics?.walletHistoricalScanDebug?.requested)
       const cacheHit = Boolean(payload?.walletHistoricalCoverage?.cacheHit ?? payload?._diagnostics?.walletHistoricalScanDebug?.cacheHit ?? false)
       const targetedAttempted = Boolean(payload?._diagnostics?.syntheticLotRecoveryDebug?.syntheticTargetExtraRecoveryAttempted ?? payload?._debug?.syntheticLotRecoveryDebug?.syntheticTargetExtraRecoveryAttempted)
+      // RECOVERY-RESULT-FIX-1: a targeted pass that found/priced a prior-buy candidate but still
+      // produced zero new public-grade closed lots is "attempted, no new public lots" — not the
+      // generic "no prior buy found" reason, and never "recovered". Reuse the snapshot's own
+      // syntheticRecoverySkippedReason (already lot-level-correct) instead of re-deriving this here.
+      const _syntheticRecoverySkippedReason = payload?._diagnostics?.syntheticLotRecoveryDebug?.syntheticRecoverySkippedReason
+        ?? payload?._debug?.syntheticLotRecoveryDebug?.syntheticRecoverySkippedReason
+        ?? null
       if (!cacheHit && (pagesAttempted > 0 || targetedAttempted || requested)) {
         const historicalCapHit = Boolean(payload?._diagnostics?.walletScanBudgetDebug?.historicalBudgetCapHit)
         // HISTORICAL-REASON-CONSISTENCY: only claim "candidates priced, no new closed lots" when the
@@ -937,7 +944,9 @@ export async function POST(req: Request) {
         const providerFailed = (typeof cov?.reason === 'string' && /provider.*fail|attempted_provider_failed/i.test(cov.reason)) || (pagesAttempted > 0 && normalizedEvents === 0)
         payload.walletHistoricalRecoveryStatus = historicalCapHit ? 'attempted_capped' : 'attempted_light'
         payload.walletHistoricalRecoveryReason = targetedAttempted
-          ? 'targeted_recovery_attempted_no_prior_buy_found'
+          ? (_syntheticRecoverySkippedReason === 'targeted_recovery_attempted_no_public_grade_lots'
+              ? 'targeted_recovery_attempted_no_public_grade_lots'
+              : 'targeted_recovery_attempted_no_prior_buys_found')
           : historicalCapHit
             ? 'historical_phase_cap_reached_total_pages'
             : providerFailed
