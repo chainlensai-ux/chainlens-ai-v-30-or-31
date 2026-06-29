@@ -2285,6 +2285,8 @@ export type WalletSnapshot = {
       deepActivityRequested: boolean
       chainMode: string
       requestedChain: string
+      selectedPrimaryChain: string
+      activityPrimaryChain: string
       discoveredChains: Array<{ chain: string; usdValue: number }>
       activeChainsBeforeValueGate: string[]
       activeChainsAfterValueGate: string[]
@@ -2323,6 +2325,7 @@ export type WalletSnapshot = {
     walletChainActivityMergeDebug?: {
       chainMode: string
       requestedChain: string
+      activityPrimaryChain: string
       portfolioValueByChain: { eth: number; base: number }
       activeChainsUsedForActivity: string[]
       ethActivityAttempted: boolean
@@ -12100,8 +12103,6 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     baseFirst,
     nonceRes,
     behaviorRes,
-    grPnlEthRes,
-    grPnlBaseRes,
   ] = await Promise.allSettled([
     ZERION_KEY
       ? zerionGet(`wallets/${addr}/portfolio/`, { currency: 'usd' })
@@ -12119,10 +12120,6 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     getFirstTxOnChain(addr, baseUrl),
     alchemyRpc(nonceUrl, 'eth_getTransactionCount', [addr, 'latest']),
     deepScan && !(activityRequested && Boolean(ALCHEMY_BASE_KEY)) ? fetchWalletBehavior(addr, baseUrl) : Promise.resolve(BEHAVIOR_EMPTY),
-    // ETH mainnet PnL transfers only when activity is requested AND ETH chain is selected.
-    // Default (base) scans skip this to avoid a wasted transactions_v3 call.
-    _shouldFetchGrEthEager ? fetchGoldrushPnlEvents(addr, 'eth-mainnet', GOLDRUSH_KEY, tokenMeter.isDebugEnabled()) : Promise.resolve({ events: [] as PnlEvent[], diag: { endpointKind: 'transactions_v3' as const, chainUsed: 'eth-mainnet', urlTemplate: 'https://api.covalenthq.com/v1/eth-mainnet/address/{wallet}/transactions_v3/?page-size=50&page-number=0&with-logs=true&no-spam=true', httpStatus: null, fetchFailed: true, failureStage: 'build_url' as const, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], transferArrayCount: 0, firstTransferKeys: [], reason: activityRequested ? 'ETH chain not requested — skipped to reduce API usage.' : 'Activity scan not requested — skipped.' } }),
-    activityRequested && GOLDRUSH_KEY ? fetchGoldrushPnlEvents(addr, 'base-mainnet', GOLDRUSH_KEY, tokenMeter.isDebugEnabled()) : Promise.resolve({ events: [] as PnlEvent[], diag: { endpointKind: 'transactions_v3' as const, chainUsed: 'base-mainnet', urlTemplate: 'https://api.covalenthq.com/v1/base-mainnet/address/{wallet}/transactions_v3/?page-size=50&page-number=0&with-logs=true&no-spam=true', httpStatus: null, fetchFailed: true, failureStage: 'build_url' as const, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], transferArrayCount: 0, firstTransferKeys: [], reason: activityRequested ? 'GoldRush activity fetch skipped — provider not configured.' : 'Activity scan not requested — skipped.' } }),
   ])
 
   _perfPhaseTs.phase1_done = Date.now()
@@ -12167,8 +12164,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   let _moralisHoldingsUsable = false
 
   // ── Track Phase 1 provider calls ──
-  if (activityRequested && Boolean(GOLDRUSH_KEY)) _trackCall('goldrush', 'transactions_v3', false, `gr:tx3:base:${addrNorm}`)
-  if (_shouldFetchGrEthEager) _trackCall('goldrush', 'transactions_v3', false, `gr:tx3:eth:${addrNorm}`)
+  // GoldRush activity is intentionally deferred until final chain-value/dust gates are known.
   if (activityRequested && Boolean(ALCHEMY_BASE_KEY)) {
     // Alchemy Base activity is intentionally deferred until GoldRush returns no activity.
   }
@@ -12487,7 +12483,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // Compute wallet value tier early so pricing budget and historical scan can use it
   const _walletValueTier = computeWalletValueTier(totalValue)
 
-  let grEth = grPnlEthRes.status === 'fulfilled' ? grPnlEthRes.value : { events: [] as PnlEvent[], diag: { endpointKind: 'transactions_v3' as const, chainUsed: 'eth-mainnet', urlTemplate: 'https://api.covalenthq.com/v1/eth-mainnet/address/{wallet}/transactions_v3/?page-size=50&page-number=0&with-logs=true&no-spam=true', httpStatus: null, fetchFailed: true, failureStage: 'fetch' as const, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], transferArrayCount: 0, firstTransferKeys: [], reason: 'GoldRush transaction history request failed before response.' } }
+  let grEth: { events: PnlEvent[]; diag: GoldrushHistoryDiag } = { events: [] as PnlEvent[], diag: { endpointKind: 'transactions_v3' as const, chainUsed: 'eth-mainnet', urlTemplate: 'https://api.covalenthq.com/v1/eth-mainnet/address/{wallet}/transactions_v3/?page-size=50&page-number=0&with-logs=true&no-spam=true', httpStatus: null, fetchFailed: true, failureStage: 'build_url' as const, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], transferArrayCount: 0, firstTransferKeys: [], reason: activityRequested ? 'ETH activity skipped pending value gate.' : 'Activity scan not requested — skipped.' } }
   // Deferred ETH GoldRush fetch — only when chainMode is ambiguous about ETH (base_eth/all_supported)
   // and discovered ETH holdings clear a meaningful activity threshold (not just dust). Skips the
   // credit burn for Base-heavy wallets that hold only a few dollars of ETH.
@@ -12513,7 +12509,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _ethIsDominantChain = _canonicalChainEntriesSorted.length > 0 && _canonicalChainEntriesSorted[0][0] === 'eth'
   const _ethClearsActivityGate = _ethDiscoveredValue >= _ethActivityThresholdUsd || _ethIsDominantChain
   const _ethDeferredActivityCandidate = activityRequested && Boolean(GOLDRUSH_KEY) && !_shouldFetchGrEthEager
-    && (chainMode === 'base_eth' || chainMode === 'all_supported')
+    && (chainMode === 'base_eth' || chainMode === 'all_supported' || chainMode === 'auto' || requestedChain === 'eth')
   const _ethActivityEligible = _shouldFetchGrEthEager || (_ethDeferredActivityCandidate && _ethClearsActivityGate)
   const _ethActivitySkippedReason: string | null = _ethActivityEligible
     ? null
@@ -12532,8 +12528,26 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   if (_ethActivitySkippedReason === 'eth_below_activity_value_gate' && _ethDiscoveredValue === 0 && _ethIsDominantChain) {
     _ethGateContradictionFlags.push('eth_below_activity_value_gate_with_dominant_eth_value')
   }
-  const _grEthDeferredEligible = _ethDeferredActivityCandidate && _ethClearsActivityGate
-  if (_grEthDeferredEligible) {
+  const _baseValueForActivity = _canonicalChainValueByChain.base ?? 0
+  const _baseClearsActivityGate = _baseValueForActivity >= minChainValueUsd
+  const _baseActivityCandidate = activityRequested && Boolean(GOLDRUSH_KEY) && (chainMode === 'base' || chainMode === 'base_eth' || chainMode === 'all_supported' || chainMode === 'auto' || requestedChain === 'base')
+  const _baseActivityEligible = _baseActivityCandidate && (_baseClearsActivityGate || _lowBalanceOverrideUsed)
+  const _goldrushBaseSkippedReason: string | null = !_baseActivityCandidate
+    ? null
+    : !Boolean(GOLDRUSH_KEY)
+      ? 'provider_unavailable'
+      : !_baseClearsActivityGate && !_lowBalanceOverrideUsed
+        ? 'base_below_activity_value_gate'
+        : null
+  const _grEthDeferredEligible = _ethDeferredActivityCandidate && (_ethClearsActivityGate || _lowBalanceOverrideUsed)
+  if (_shouldFetchGrEthEager) {
+    _trackCall('goldrush', 'transactions_v3', false, `gr:tx3:eth:${addrNorm}`)
+    try {
+      grEth = await fetchGoldrushPnlEvents(addr, 'eth-mainnet', GOLDRUSH_KEY, tokenMeter.isDebugEnabled())
+    } catch {
+      // keep placeholder grEth on failure
+    }
+  } else if (_grEthDeferredEligible) {
     _trackCall('goldrush', 'transactions_v3', false, `gr:tx3:eth:${addrNorm}`)
     try {
       grEth = await fetchGoldrushPnlEvents(addr, 'eth-mainnet', GOLDRUSH_KEY, tokenMeter.isDebugEnabled())
@@ -12544,8 +12558,16 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     _goldrushEthSkippedReason = _ethActivitySkippedReason
   }
   const _shouldFetchGrEth = _shouldFetchGrEthEager || _grEthDeferredEligible
-  const grPnlBaseOut = grPnlBaseRes.status === 'fulfilled' ? grPnlBaseRes.value : { events: [] as PnlEvent[], diag: { endpointKind: 'transactions_v3' as const, chainUsed: 'base-mainnet', urlTemplate: 'https://api.covalenthq.com/v1/base-mainnet/address/{wallet}/transactions_v3/?page-size=50&page-number=0&with-logs=true&no-spam=true', httpStatus: null, fetchFailed: true, failureStage: 'fetch' as const, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], transferArrayCount: 0, firstTransferKeys: [], reason: 'GoldRush transaction history request failed before response.' } }
-  const grBase = grPnlBaseOut
+  let grBase: { events: PnlEvent[]; diag: GoldrushHistoryDiag } = { events: [] as PnlEvent[], diag: { endpointKind: 'transactions_v3' as const, chainUsed: 'base-mainnet', urlTemplate: 'https://api.covalenthq.com/v1/base-mainnet/address/{wallet}/transactions_v3/?page-size=50&page-number=0&with-logs=true&no-spam=true', httpStatus: null, fetchFailed: true, failureStage: 'build_url' as const, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], transferArrayCount: 0, firstTransferKeys: [], reason: _goldrushBaseSkippedReason ?? (activityRequested ? 'Base activity skipped by value gate.' : 'Activity scan not requested — skipped.') } }
+  const _shouldFetchGrBase = _baseActivityEligible
+  if (_shouldFetchGrBase) {
+    _trackCall('goldrush', 'transactions_v3', false, `gr:tx3:base:${addrNorm}`)
+    try {
+      grBase = await fetchGoldrushPnlEvents(addr, 'base-mainnet', GOLDRUSH_KEY, tokenMeter.isDebugEnabled())
+    } catch {
+      // keep placeholder grBase on failure
+    }
+  }
   const goldrushTransferDiags = [grEth.diag, grBase.diag]
   const baseTransferDiag = goldrushTransferDiags.find((d) => d.chainUsed === '8453' || d.chainUsed === 'base-mainnet') ?? goldrushTransferDiags[0]
   let grEvents = [...grEth.events, ...grBase.events]
@@ -12590,7 +12612,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // events for a wallet with real activity), not only when it returned nothing — otherwise a
   // thin GoldRush result silently starves the merge of Alchemy's fuller dataset below.
   const _GR_PARTIAL_EVENT_THRESHOLD = 5
-  if (activityRequested && grEvents.length < _GR_PARTIAL_EVENT_THRESHOLD && Boolean(ALCHEMY_BASE_KEY)) {
+  if (_shouldFetchGrBase && grEvents.length < _GR_PARTIAL_EVENT_THRESHOLD && Boolean(ALCHEMY_BASE_KEY)) {
     _alchemyActivityFallbackAttempted = true
     const _ak1 = `alchemy:transfers:from:base:${addrNorm}`; if (!_alchemyDedup.has(_ak1)) { _alchemyDedup.add(_ak1); _trackCall('alchemy', 'alchemy_getAssetTransfers', false, _ak1) }
     const _ak2 = `alchemy:transfers:to:base:${addrNorm}`;   if (!_alchemyDedup.has(_ak2)) { _alchemyDedup.add(_ak2); _trackCall('alchemy', 'alchemy_getAssetTransfers', false, _ak2) }
@@ -16290,7 +16312,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   _sanitizePublicSampleLotsForLock(sampleSyntheticClosedTradeSamples)
 
   const _grEthAttempted = _shouldFetchGrEth
-  const _grBaseAttempted = activityRequested && Boolean(GOLDRUSH_KEY)
+  const _grBaseAttempted = _shouldFetchGrBase
   const _alchemyAttempted = _alchemyActivityFallbackAttempted
   const _txSkippedReasons: string[] = []
   if (!activityRequested) {
@@ -16862,10 +16884,28 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       c.chain !== _fbChain && !(_p19ScannedChains as string[]).includes(c.chain as string)
     ).map(c => c.chain as string)
     const _notScannedForActivity = _significantDiscovered.filter(c => !(_actChainsUsed as string[]).includes(c.chain as string)).map(c => c.chain as string)
+    const _dustSet = new Set((skippedDustChains as string[]))
+    const _activityPrimaryChain = ((_canonicalChainValueByChain.eth ?? 0) > (_canonicalChainValueByChain.base ?? 0) ? 'eth' : 'base')
+    const _providerCallsMade = [
+      ...(_grEthAttempted ? ['goldrush:eth'] : []),
+      ...(_grBaseAttempted ? ['goldrush:base'] : []),
+      ...(_alchemyAttempted ? ['alchemy:base'] : []),
+      ...(_moralisFbDebug.fallbackActivityAttempted ? [`moralis:${_fbChain}`] : []),
+      ...(_phase18Debug.attempted ? [`moralis:${_p18SupplementChain}_supplement`] : []),
+      ..._p19ScannedChains.map(c => `moralis:${c}_p19`),
+    ]
+    const _contradictionFlags = [..._ethGateContradictionFlags]
+    for (const c of _actChainsUsed as string[]) if (_dustSet.has(c)) _contradictionFlags.push(`dust_chain_used_for_activity:${c}`)
+    for (const call of _providerCallsMade) {
+      const chain = call.split(':')[1]?.split('_')[0]
+      if (chain && _dustSet.has(chain)) _contradictionFlags.push(`provider_call_used_skipped_dust_chain:${call}`)
+    }
     return {
       deepActivityRequested: deepActivity,
       chainMode,
       requestedChain,
+      selectedPrimaryChain: _activityPrimaryChain,
+      activityPrimaryChain: _activityPrimaryChain,
       discoveredChains: discoveredChains.slice(0, 10).map(c => ({ chain: c.chain as string, usdValue: c.usdValue })),
       activeChainsBeforeValueGate: _activeChainsBeforeValueGate as string[],
       activeChainsAfterValueGate: _activeChainsAfterValueGate as string[],
@@ -16895,14 +16935,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         ...(_p18ShouldRun ? [`moralis:${_p18SupplementChain}_supplement`] : []),
         ...(_p19ShouldRun ? _p19EligibleChains.map(c => `moralis:${c.chain}_p19_supplement`) : []),
       ],
-      providerCallsMade: [
-        ...(_grEthAttempted ? ['goldrush:eth'] : []),
-        ...(_grBaseAttempted ? ['goldrush:base'] : []),
-        ...(_alchemyAttempted ? ['alchemy:base'] : []),
-        ...(_moralisFbDebug.fallbackActivityAttempted ? [`moralis:${_fbChain}`] : []),
-        ...(_phase18Debug.attempted ? [`moralis:${_p18SupplementChain}_supplement`] : []),
-        ..._p19ScannedChains.map(c => `moralis:${c}_p19`),
-      ],
+      providerCallsMade: _providerCallsMade,
       evidenceEvents: walletEvidenceSummary.totalEvents,
       finalEvidenceStatus: walletEvidenceSummary.status,
       canonicalChainValueByChain: _canonicalChainValueByChain,
@@ -16919,7 +16952,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         ethClearsActivityGate: _ethClearsActivityGate,
         ethActivityEligible: _ethActivityEligible,
       },
-      contradictionFlags: _ethGateContradictionFlags,
+      contradictionFlags: _contradictionFlags,
     }
   })()
 
@@ -16981,6 +17014,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     return {
       chainMode,
       requestedChain,
+      activityPrimaryChain: _primaryChain,
       portfolioValueByChain: { eth: _ethTotalValue, base: _baseTotalValue },
       activeChainsUsedForActivity: _actChainsForMerge,
       ethActivityAttempted: _ethAttempted,

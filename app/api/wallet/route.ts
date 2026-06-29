@@ -285,6 +285,13 @@ function attachWalletDeepScanStaging(payload: any, opts: { mode: 'standard' | 'd
     finalRecoveryReady = true
     finalHeavyModulesPending = []
   }
+  const finalFullApiPayload = !payload.partialResponse && !payload.progressiveResponse
+  if (finalFullApiPayload) {
+    stage = 'final'
+    finalPnlReady = true
+    finalRecoveryReady = true
+    finalHeavyModulesPending = []
+  }
   payload.walletLoadState = {
     mode: opts.mode,
     stage,
