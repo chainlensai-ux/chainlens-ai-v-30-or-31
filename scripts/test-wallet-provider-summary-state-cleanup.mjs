@@ -32,3 +32,6 @@ assert.match(route, /\} else if \(providerSummaryFinal\) \{\s*\n\s*stage = 'fina
 assert.match(route, /providerSummaryFinal \? \{ skippedReason: 'provider_summary_available_fifo_missing' \} : \{\}/, 'route.ts records the provider-summary skippedReason note')
 
 console.log('wallet provider-summary state cleanup checks passed')
+
+
+assert.match(route, /const finalFullApiPayload = !payload\.partialResponse && !payload\.progressiveResponse\s*\n\s*if \(finalFullApiPayload\) \{\s*\n\s*stage = 'final'\s*\n\s*finalPnlReady = true\s*\n\s*finalRecoveryReady = true\s*\n\s*finalHeavyModulesPending = \[\]/, 'full wallet API payloads force final load state with no pending heavy modules')

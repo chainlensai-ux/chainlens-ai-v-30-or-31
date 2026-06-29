@@ -45,7 +45,7 @@ for (const field of [
 
 // 9. no new provider calls were added — only the already-intended deferred ETH GoldRush fetch
 // (_grEthDeferredEligible) is gated by this logic, and it is unchanged.
-assert.match(snap, /const _grEthDeferredEligible = _ethDeferredActivityCandidate && _ethClearsActivityGate/, 'the deferred ETH GoldRush fetch trigger is unchanged — only its upstream inputs were fixed')
+assert.match(snap, /const _grEthDeferredEligible = _ethDeferredActivityCandidate && \(_ethClearsActivityGate \|\| _lowBalanceOverrideUsed\)/, 'the deferred ETH GoldRush fetch is value-gated with only the explicit low-balance override as an escape hatch')
 const gateSection = snap.slice(snap.indexOf('WALLET-ETH-ACTIVITY-GATE-1: `discoveredChains` above'), snap.indexOf('_ethGateContradictionFlags.push'))
 assert.doesNotMatch(gateSection, /fetchMoralisBalances\(|fetchGoldrushBalances\(|fetchGoldrushPnlEvents\(|fetchMoralisTransfers\(/, 'the gate fix itself makes no new provider calls — it only re-reads holdings already fetched above')
 
@@ -54,3 +54,14 @@ assert.match(snap, /if \(lot\.priceIndependenceStatus === 'missing_independent_p
 assert.match(snap, /snapshot\.publicPnlIntegrityGate = \{/, 'the existing publicPnlIntegrityGate construction is unchanged')
 
 console.log('wallet ETH activity routing checks passed')
+
+
+// 11. Activity providers run only after final value/dust gates; dust chains cannot be reported as
+// scanned or called without surfacing a contradiction.
+assert.match(snap, /GoldRush activity is intentionally deferred until final chain-value\/dust gates are known\./, 'GoldRush activity fetches are deferred until dust gates are known')
+assert.match(snap, /const _baseActivityEligible = _baseActivityCandidate && \(_baseClearsActivityGate \|\| _lowBalanceOverrideUsed\)/, 'Base activity requires the value gate unless the explicit low-balance override is active')
+assert.match(snap, /const _grBaseAttempted = _shouldFetchGrBase/, 'Base providerCallsMade reflects actual gated Base execution, not the raw activity request')
+assert.match(snap, /if \(_shouldFetchGrBase && grEvents\.length < _GR_PARTIAL_EVENT_THRESHOLD && Boolean\(ALCHEMY_BASE_KEY\)\)/, 'Alchemy Base fallback cannot run when Base failed the activity gate')
+assert.match(snap, /dust_chain_used_for_activity:\$\{c\}/, 'diagnostics flag if a skipped dust chain is still reported as active')
+assert.match(snap, /provider_call_used_skipped_dust_chain:\$\{call\}/, 'diagnostics flag if providerCallsMade includes a skipped dust chain')
+assert.match(snap, /selectedPrimaryChain: _activityPrimaryChain,\s*\n\s*activityPrimaryChain: _activityPrimaryChain,/, 'activity debug exposes the selected/activity primary chain instead of relying on requestedChain wording')
