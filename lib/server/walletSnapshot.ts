@@ -514,6 +514,100 @@ export type WalletSnapshot = {
   // fallback display when ChainLens's own FIFO reconstruction found zero closed lots but the
   // provider proves real trading activity exists. This is NOT lot-level data — never mixed with
   // FIFO/public-grade lots, never used for win rate/profit skill/wallet score.
+  // API-SOURCE-AUDIT-1: top-level, read-only source/cost map for every major Wallet Scanner output —
+  // which provider (if any) powers it, what it cost, and whether it's already used for official PnL.
+  // Purely a visibility layer over values already computed elsewhere; adds no provider calls and
+  // changes no PnL/recovery behavior.
+  walletApiSourceAudit?: {
+    portfolio: {
+      valueSource: string
+      holdingsSource: string
+      providersUsed: string[]
+      cacheHit: boolean
+      creditsUsed: number
+      confidence: string
+      fieldsPowered: string[]
+      canBeCached?: boolean
+      canBeMovedToFullRecovery?: boolean
+    }
+    activity: {
+      source: string
+      chainsScanned: string[]
+      eventsIndexed: number
+      providersUsed: string[]
+      creditsUsed: number
+      skippedProviders: string[]
+      skippedReasons: string[]
+      fieldsPowered: string[]
+      canBeCached?: boolean
+      canBeMovedToFullRecovery?: boolean
+    }
+    swapDetection: {
+      source: 'chainlens_internal'
+      inputSource: string
+      providerCallsAdded: 0
+      fieldsPowered: string[]
+    }
+    priceEvidence: {
+      sourcesUsed: string[]
+      stableLegPricedEvents: number
+      providerUsdPricedEvents: number
+      historicalPricedEvents: number
+      currentHoldingPricedEvents: number
+      creditsUsed: number
+      fieldsPowered: string[]
+      canBeCached?: boolean
+      canBeMovedToFullRecovery?: boolean
+    }
+    fifoPnl: {
+      source: 'chainlens_internal'
+      inputSources: string[]
+      providerCallsAdded: 0
+      publicGradeLots: number
+      excludedLots: number
+      lockedReasons: string[]
+      fieldsPowered: string[]
+    }
+    providerPnl: {
+      source: 'moralis_profitability_summary'
+      attempted: boolean
+      used: boolean
+      skippedReason: string | null
+      creditsOrCuUsedEstimate: number
+      excludedFrom: string[]
+      fieldsPowered: string[]
+      canBeCached?: boolean
+      canBeMovedToFullRecovery?: boolean
+    }
+    openPosition: {
+      source: 'chainlens_internal_fifo'
+      currentPriceSource: string
+      status: string
+      lockedReason: string | null
+      fieldsPowered: string[]
+    }
+    walletScore: {
+      source: 'chainlens_internal'
+      pnlUsed: boolean
+      portfolioUsed: boolean
+      behaviorUsed: boolean
+      providerCallsAdded: 0
+      fieldsPowered: string[]
+    }
+    totalCost: {
+      zerionCredits: number
+      goldrushCredits: number
+      moralisCalls: number
+      moralisCuEstimate: number
+      alchemyCalls: number
+      alchemyLoadUnits: number
+      totalProviderCredits: number
+      targetCredits: number
+      hardCap: number
+      exceededTarget: boolean
+      exceededReason: string | null
+    }
+  }
   walletProviderPnlSummary?: {
     status: 'ok' | 'unavailable' | 'error' | 'not_requested'
     source: 'moralis_profitability_summary'
@@ -19291,6 +19385,117 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     evidenceCoverage: snapshot.walletProfile?.evidenceCoverage ?? 0,
     cacheSource: evidenceCacheSource,
     profileVersion: SNAPSHOT_SCHEMA_VERSION,
+  }
+
+  // API-SOURCE-AUDIT-1: assembled last, purely from values already computed above — no new provider
+  // calls, no PnL/recovery logic changes. walletScore's pnlUsed/portfolioUsed/behaviorUsed flags and
+  // botScore/personality providerCallsAdded are filled in by computeBotScore/computeWalletPersonality
+  // callers in app/api/wallet/route.ts since those run after this function returns.
+  {
+    const _providersUsedPortfolio: string[] = []
+    if (_apiAudit.zerion.calls > 0) _providersUsedPortfolio.push('zerion')
+    if (_selectedHoldingsLayerFinal === 'moralis' || _selectedHoldingsLayerFinal === 'merged') _providersUsedPortfolio.push('moralis')
+    if (providerUsed === 'fallback_layer' && _apiAudit.goldrush.calls > 0) _providersUsedPortfolio.push('goldrush')
+
+    const _activityProvidersUsed: string[] = []
+    if (_grEthAttempted || _grBaseAttempted) _activityProvidersUsed.push('goldrush')
+    if (_alchemyAttempted) _activityProvidersUsed.push('alchemy')
+    if (_moralisFbDebug.fallbackActivityAttempted) _activityProvidersUsed.push('moralis')
+
+    const _providerPnl = (snapshot as any).walletProviderPnlSummary as WalletSnapshot['walletProviderPnlSummary'] | undefined
+    const _moralisCreditTable: Record<string, number> = { erc20_holdings: 1, erc20_transfers: 1, profitability_summary: 1 }
+    const _moralisCuEstimate = _apiAudit.moralis.endpoints.reduce((s, e) => s + (_moralisCreditTable[e] ?? 1), 0)
+
+    snapshot.walletApiSourceAudit = {
+      portfolio: {
+        valueSource: providerUsed,
+        holdingsSource: _selectedHoldingsLayerFinal,
+        providersUsed: _providersUsedPortfolio,
+        cacheHit: _apiAudit.zerionPortfolioCacheHit > 0,
+        creditsUsed: _costByPurpose.portfolio,
+        confidence: providerUsed === 'portfolio_layer' ? 'high' : providerUsed === 'holdings_layer' ? 'medium' : 'low',
+        fieldsPowered: ['totalValue', 'holdings', 'chainExposure'],
+        canBeCached: true,
+        canBeMovedToFullRecovery: false,
+      },
+      activity: {
+        source: _walletActivityRoutingDebug.activeChainsUsedForActivity.length ? _walletActivityRoutingDebug.activeChainsUsedForActivity.join('+') : 'none',
+        chainsScanned: _walletActivityRoutingDebug.activeChainsUsedForActivity,
+        eventsIndexed: walletEvidenceSummary.totalEvents ?? 0,
+        providersUsed: _activityProvidersUsed,
+        creditsUsed: _costByPurpose.activity,
+        skippedProviders: [..._walletActivityRoutingDebug.chainsExcludedByCap, ..._walletActivityRoutingDebug.chainsExcludedByUnsupported, ..._walletActivityRoutingDebug.chainsExcludedByProviderSafety],
+        skippedReasons: _walletActivityRoutingDebug.activitySkippedReason ? [_walletActivityRoutingDebug.activitySkippedReason] : [],
+        fieldsPowered: ['walletActivitySummary', 'walletBehavior', 'tradeIntelligence'],
+        canBeCached: true,
+        canBeMovedToFullRecovery: _walletActivityRoutingDebug.chainsExcludedByCap.length > 0,
+      },
+      swapDetection: {
+        source: 'chainlens_internal',
+        inputSource: 'activity_layer_events',
+        providerCallsAdded: 0,
+        fieldsPowered: ['walletSwapSummary'],
+      },
+      priceEvidence: {
+        sourcesUsed: ['stable_leg', 'goldrush_historical', 'goldrush_current'],
+        stableLegPricedEvents: walletEvidenceSummary.totalEvents ?? 0,
+        providerUsdPricedEvents: _apiAudit.goldrush.calls,
+        historicalPricedEvents: _historicalFifoPreviewDebug?.newPricedHistoricalEvents ?? 0,
+        currentHoldingPricedEvents: _openPositionPricedTokenCount ?? 0,
+        creditsUsed: _costByPurpose.pricing,
+        fieldsPowered: ['walletTradeStatsSummary', 'walletLotSummary', 'walletOpenPositionPnlRead'],
+        canBeCached: true,
+        canBeMovedToFullRecovery: false,
+      },
+      fifoPnl: {
+        source: 'chainlens_internal',
+        inputSources: ['activity_layer_events', 'historical_recovery_events'],
+        providerCallsAdded: 0,
+        publicGradeLots: _performanceClosedLotsFinal.length,
+        excludedLots: _excludedClosedLotsFinal,
+        lockedReasons: snapshot.publicPnlStatus !== 'ok' && snapshot.publicPnlStatusReason ? [snapshot.publicPnlStatusReason] : [],
+        fieldsPowered: ['walletTradeStatsSummary', 'publicRealizedPnlUsd', 'walletPnlRead'],
+      },
+      providerPnl: {
+        source: 'moralis_profitability_summary',
+        attempted: _providerProfitAttempts.length > 0,
+        used: Boolean(_providerPnl?.usedForTraderPnLRead),
+        skippedReason: _providerPnlSkipReason ?? null,
+        creditsOrCuUsedEstimate: _apiAudit.moralis.endpoints.filter(e => e === 'profitability_summary').length,
+        excludedFrom: _providerPnl?.excludedFrom ?? ['fifo_pnl', 'win_rate', 'wallet_score'],
+        fieldsPowered: ['walletProviderPnlSummary'],
+        canBeCached: true,
+        canBeMovedToFullRecovery: false,
+      },
+      openPosition: {
+        source: 'chainlens_internal_fifo',
+        currentPriceSource: providerUsed,
+        status: _walletOpenPositionPnlRead.status,
+        lockedReason: _walletOpenPositionPnlRead.status === 'unavailable' ? _walletOpenPositionPnlRead.reason : null,
+        fieldsPowered: ['walletOpenPositionPnlRead'],
+      },
+      walletScore: {
+        source: 'chainlens_internal',
+        pnlUsed: snapshot.publicPnlStatus === 'ok',
+        portfolioUsed: Number.isFinite(snapshot.totalValue),
+        behaviorUsed: snapshot.walletBehavior?.status === 'ready' || snapshot.walletBehavior?.status === 'partial',
+        providerCallsAdded: 0,
+        fieldsPowered: ['walletBotScore', 'walletPersonality', 'walletProfile'],
+      },
+      totalCost: {
+        zerionCredits: _apiAudit.zerion.credits,
+        goldrushCredits: _apiAudit.goldrush.credits,
+        moralisCalls: _apiAudit.moralis.calls,
+        moralisCuEstimate: _moralisCuEstimate,
+        alchemyCalls: _apiAudit.alchemy.calls,
+        alchemyLoadUnits: _apiAudit.alchemy.loadUnits,
+        totalProviderCredits: _apiAudit.totalCredits,
+        targetCredits: _totalCreditTarget,
+        hardCap: _totalCreditHardCap,
+        exceededTarget: _apiAudit.totalCredits > _totalCreditTarget,
+        exceededReason: _apiAudit.totalCredits > _totalCreditTarget ? (_apiAudit.totalCredits >= _totalCreditHardCap ? 'total_hard_cap_reached' : 'recovery_or_pricing_spent_above_target') : null,
+      },
+    }
   }
 
   if (/^0x[0-9a-fA-F]{40}$/i.test(addrNorm)) snapshotMemCache.set(cacheKey, { snapshot, cachedAt: Date.now(), ttlMs: snapshotTtlMs })

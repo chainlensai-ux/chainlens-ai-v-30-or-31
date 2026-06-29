@@ -1555,6 +1555,13 @@ export async function POST(req: Request) {
         snapshot.walletBotScore.reason = 'Provider-level PnL is excluded from bot scoring until verified ChainLens FIFO behavior lots exist.'
       }
     }
+    // API-SOURCE-AUDIT-1: walletBotScore/walletPersonality only exist after the calls above, so the
+    // walletScore section of the source/cost audit (built earlier in walletSnapshot.ts) is finalized
+    // here rather than there — read-only, no new provider calls, no PnL behavior change.
+    if ((snapshot as any).walletApiSourceAudit?.walletScore) {
+      (snapshot as any).walletApiSourceAudit.walletScore.pnlUsed = (snapshot as any).walletApiSourceAudit.walletScore.pnlUsed || Boolean(snapshot.walletBotScore)
+      ;(snapshot as any).walletApiSourceAudit.walletScore.fieldsPowered = ['walletBotScore', 'walletPersonality', 'walletProfile']
+    }
     // Windowed PnL is public-facing, so it must exclude synthetic/cost-basis-missing lots —
     // a synthetic break-even lot showing $0 PnL would otherwise look like a verified real result.
     const _realBackedLotsForWindows = _performanceLotsForIntelligence
