@@ -932,6 +932,12 @@ export async function POST(req: Request) {
       const _syntheticRecoverySkippedReason = payload?._diagnostics?.syntheticLotRecoveryDebug?.syntheticRecoverySkippedReason
         ?? payload?._debug?.syntheticLotRecoveryDebug?.syntheticRecoverySkippedReason
         ?? null
+      // RECOVERY-PROMOTE-FIX-2: priorBuysFound>0 means evidence was found — never collapse that to
+      // "no_prior_buys_found" here. Prefer the snapshot's own specific recovered_preview_only_<reason>
+      // / promoted_recovered_public_lot result when available, since it already reconciles the
+      // FIFO-preview promotion decision with the missingCostBasisRead reason text.
+      const _priorBuysFound = Number(payload?._diagnostics?.syntheticLotRecoveryDebug?.syntheticTargetExtraPriorBuysFound ?? payload?._debug?.syntheticLotRecoveryDebug?.syntheticTargetExtraPriorBuysFound ?? 0)
+      const _recoveryResult = payload?.missingCostBasisRead?.recoveryResult ?? null
       if (!cacheHit && (pagesAttempted > 0 || targetedAttempted || requested)) {
         const historicalCapHit = Boolean(payload?._diagnostics?.walletScanBudgetDebug?.historicalBudgetCapHit)
         // HISTORICAL-REASON-CONSISTENCY: only claim "candidates priced, no new closed lots" when the
@@ -944,9 +950,13 @@ export async function POST(req: Request) {
         const providerFailed = (typeof cov?.reason === 'string' && /provider.*fail|attempted_provider_failed/i.test(cov.reason)) || (pagesAttempted > 0 && normalizedEvents === 0)
         payload.walletHistoricalRecoveryStatus = historicalCapHit ? 'attempted_capped' : 'attempted_light'
         payload.walletHistoricalRecoveryReason = targetedAttempted
-          ? (_syntheticRecoverySkippedReason === 'targeted_recovery_attempted_no_public_grade_lots'
-              ? 'targeted_recovery_attempted_no_public_grade_lots'
-              : 'targeted_recovery_attempted_no_prior_buys_found')
+          ? (typeof _recoveryResult === 'string' && (_recoveryResult === 'promoted_recovered_public_lot' || _recoveryResult.startsWith('recovered_preview_only_'))
+              ? _recoveryResult
+              : _syntheticRecoverySkippedReason === 'targeted_recovery_attempted_no_public_grade_lots'
+                ? 'targeted_recovery_attempted_no_public_grade_lots'
+                : _priorBuysFound > 0
+                  ? 'targeted_recovery_attempted_no_public_grade_lots'
+                  : 'targeted_recovery_attempted_no_prior_buys_found')
           : historicalCapHit
             ? 'historical_phase_cap_reached_total_pages'
             : providerFailed

@@ -377,7 +377,7 @@ export type WalletSnapshot = {
     syntheticClosedLots: number
     unknownCostSellValueUsd: number
     recoveryAttempted: boolean
-    recoveryResult: 'recovered' | 'attempted_no_new_public_lots' | 'not_recovered' | 'not_attempted'
+    recoveryResult: 'promoted_recovered_public_lot' | 'recovered_preview_only_integrity_locked' | 'recovered_preview_only_small_sample' | 'recovered_preview_only_weak_independence' | 'recovered_preview_only_dust' | 'recovered_preview_only_remaining_synthetic_lots' | 'attempted_no_new_public_lots' | 'not_recovered' | 'not_attempted'
     reason: string
     nextAction: string
   }
@@ -2077,6 +2077,10 @@ export type WalletSnapshot = {
       cappedCount?: number
       cappedProviders?: string[]
       reasons?: string[]
+      eventsBeforeDedupe?: number
+      eventsAfterDedupe?: number
+      duplicatesRemovedBeforeCap?: number
+      capAppliedAfterDedupe?: boolean
     }
     walletScanBudgetDebug?: Record<string, unknown>
     walletSwapEnrichmentDebug?: {
@@ -5817,6 +5821,11 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
   const zeroAmountEventCount = evidenceList.filter(e => !e.amount || e.amount <= 0).length
 
   // Deduplicate check: same txHash + contract + direction + amountRaw
+  // RECOVERY-PROMOTE-FIX-3: this is a coarser, earlier-stage evidence-quality counter (no chain/logIndex/
+  // from/to in its key) than the budget-cap dedupe (pnlEventDedupeKey + walletBudgetDebug.dedupRemoved /
+  // duplicatesRemovedBeforeCap below) — it can legitimately be non-zero while the budget-cap dedupe finds
+  // nothing new to remove, because multi-leg same-tx events that are NOT true duplicates under the
+  // stricter budget key (different chain/logIndex/from/to) still collide under this looser key.
   const dedupSeen = new Set<string>()
   let duplicateEventCount = 0
   for (const e of evidenceList) {
@@ -6660,7 +6669,10 @@ function pnlEventDedupeKey(e: PnlEvent): string {
   // assignSyntheticLogIndex) so two distinct same-tx legs with identical contract/from/to/amount
   // (e.g. a repeated transfer in a loop) are no longer collapsed into one event.
   const logIndexPart = e.logIndex ?? ''
-  return `${normalizeChain(e.chain)}:${e.contract.toLowerCase()}:${e.fromAddress ?? ''}:${e.toAddress ?? ''}:${amountPart}:${e.txHash ?? ''}:${logIndexPart}`
+  // RECOVERY-PROMOTE-FIX-3: direction is now part of the dedupe key — two legs with identical
+  // chain/contract/from/to/amount/txHash/logIndex but opposite direction (seen on some
+  // self-transfer/wrap transactions) are economically distinct events, not duplicates.
+  return `${normalizeChain(e.chain)}:${e.contract.toLowerCase()}:${e.direction}:${e.fromAddress ?? ''}:${e.toAddress ?? ''}:${amountPart}:${e.txHash ?? ''}:${logIndexPart}`
 }
 
 // PHASE4-FIX-6 (item 5): assigns a synthetic per-page logIndex to any event in a provider batch
@@ -6740,6 +6752,11 @@ function deterministicEventOrder(events: PnlEvent[]): PnlEvent[] {
       if (tsCmp !== 0) return tsCmp
       const chainCmp = normalizeChain(a.e.chain).localeCompare(normalizeChain(b.e.chain))
       if (chainCmp !== 0) return chainCmp
+      // RECOVERY-PROMOTE-FIX-3: txHash ASC before logIndex ASC, per the deterministic ordering
+      // spec (timestamp, chain, txHash, logIndex) — keeps multi-leg events from the same tx
+      // contiguous and stable regardless of provider merge order.
+      const txCmp = (a.e.txHash ?? '').localeCompare(b.e.txHash ?? '')
+      if (txCmp !== 0) return txCmp
       const logIdxCmp = (a.e.logIndex ?? 0) - (b.e.logIndex ?? 0)
       if (logIdxCmp !== 0) return logIdxCmp
       return a.providerIndex - b.providerIndex
@@ -15833,9 +15850,19 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // same vague reason. Also: when recovery never ran solely because the reserved credit never
   // materialized (hard cap before reservation), say that specifically instead of falling through to
   // the generic budget/hard-cap fallback string.
+  // RECOVERY-PROMOTE-FIX-2: "no prior buys found" must never be reported when a targeted/preview
+  // path actually found priced prior-buy candidates — that contradicts
+  // syntheticTargetExtraPriorBuysFound/addedClosedLots in the same debug payload. Check every path
+  // that can find a candidate (extra-page target recovery, receipt-based V2, broad Moralis pass,
+  // and the historical FIFO preview itself), not just the lot-count delta used below.
+  const _anyPriorBuysFoundAcrossPaths =
+    _syntheticTargetExtraPriorBuysFound > 0 ||
+    (walletPnlRecoveryV2Debug.priorBuysRecovered ?? 0) > 0 ||
+    _moralisHistoricalPriorBuysFound > 0 ||
+    walletHistoricalFifoPreviewSummary.addedClosedLots > 0
   const _syntheticRecoverySkippedReason = !_syntheticLotsDetected
     ? null
-    : _realPriorBuysRecoveredForSyntheticLots > 0
+    : (_realPriorBuysRecoveredForSyntheticLots > 0 || _anyPriorBuysFoundAcrossPaths)
       ? (walletHistoricalFifoPreviewSummary?.safeToPromoteToPublicStats ? null : 'targeted_recovery_attempted_no_public_grade_lots')
       : _anyTargetedRecoveryAttempted
         ? 'targeted_recovery_attempted_no_prior_buys_found'
@@ -16171,19 +16198,38 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // no_new_priced_historical_events_after_dedup). recoveryResult must only say "recovered" when the
   // recovery actually changed the synthetic/public-grade lot counts, not merely when it ran.
   const _missingCostBasisRecoveryAttempted = _syntheticTargetExtraRecoveryAttempted || walletPnlRecoveryV2Debug.attempted
-  const _missingCostBasisRecoveryApplied =
+  // RECOVERY-PROMOTE-FIX-1: addedClosedLots>0 alone used to count as "applied"/"recovered", even
+  // when walletHistoricalFifoPreviewSummary.safeToPromoteToPublicStats was false (e.g. only 1 of 3
+  // found candidates got priced, leaving the preview as a whole unsafe to publish) — that produced
+  // the exact contradiction reported: recoveryResult="recovered" + nextAction "re-scan to pick up
+  // the updated lots", while publicPerformanceLots stayed 0 and publicRealizedPnlUsd stayed null.
+  // "Promoted" now requires the preview to have actually cleared the same public-grade promotion
+  // gate the rest of the pipeline uses (_shouldPromote, computed above from this same summary).
+  const _missingCostBasisRecoveryPromoted =
     _syntheticLotsAfterHistorical < _syntheticLotsBeforeHistorical ||
     _realPriorBuysRecoveredForSyntheticLots > 0 ||
     _moralisHistoricalTargetTokensRecovered.size > 0 ||
-    (walletHistoricalFifoPreviewSummary.safeToPromoteToPublicStats ? walletHistoricalFifoPreviewSummary.previewClosedLots : _earlyRealBackedClosedLots) > _earlyRealBackedClosedLots ||
+    (walletHistoricalFifoPreviewSummary.safeToPromoteToPublicStats && walletHistoricalFifoPreviewSummary.addedClosedLots > 0)
+  const _missingCostBasisRecoveryEvidenceFound =
+    _syntheticTargetExtraPriorBuysFound > 0 ||
+    (walletPnlRecoveryV2Debug.priorBuysRecovered ?? 0) > 0 ||
     walletHistoricalFifoPreviewSummary.addedClosedLots > 0
+  // Evidence was found and even produced an added FIFO-preview closed lot, but the lot wasn't
+  // cleared for public promotion — pick the most specific honest reason from signals already
+  // computed above (never a generic "no prior buy found", since one clearly was).
+  const _missingCostBasisPreviewOnlyReason: 'recovered_preview_only_small_sample' | 'recovered_preview_only_weak_independence' | 'recovered_preview_only_dust' | 'recovered_preview_only_remaining_synthetic_lots' =
+    _syntheticLotsAfterHistorical > 0 ? 'recovered_preview_only_remaining_synthetic_lots'
+      : walletHistoricalFifoPreviewSummary.previewClosedLots < 10 ? 'recovered_preview_only_small_sample'
+      : Math.abs(walletHistoricalFifoPreviewSummary.addedRealizedPnlUsd ?? 0) < 1 ? 'recovered_preview_only_dust'
+      : 'recovered_preview_only_weak_independence'
   const _missingCostBasisRecoveryResult: NonNullable<WalletSnapshot['missingCostBasisRead']>['recoveryResult'] = !_missingCostBasisRecoveryAttempted
     ? 'not_attempted'
-    : _missingCostBasisRecoveryApplied
-      ? 'recovered'
-      : (_syntheticTargetExtraPriorBuysFound > 0 || walletPnlRecoveryV2Debug.priorBuysRecovered > 0)
-        ? 'attempted_no_new_public_lots'
+    : _missingCostBasisRecoveryPromoted
+      ? 'promoted_recovered_public_lot'
+      : _missingCostBasisRecoveryEvidenceFound
+        ? (walletHistoricalFifoPreviewSummary.addedClosedLots > 0 ? _missingCostBasisPreviewOnlyReason : 'attempted_no_new_public_lots')
         : 'not_recovered'
+  const _missingCostBasisRecoveryResultIsPreviewOnly = _missingCostBasisRecoveryResult.startsWith('recovered_preview_only')
   const _missingCostBasisRead: NonNullable<WalletSnapshot['missingCostBasisRead']> | null = _missingCostBasisSyntheticLots.length > 0
     ? {
       affectedTokens: _missingCostBasisAffectedTokens,
@@ -16191,18 +16237,28 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       unknownCostSellValueUsd: _missingCostBasisUnknownSellValueUsd,
       recoveryAttempted: _missingCostBasisRecoveryAttempted,
       recoveryResult: _missingCostBasisRecoveryResult,
-      reason: _missingCostBasisRecoveryResult === 'attempted_no_new_public_lots'
-        ? 'Targeted recovery found historical candidate(s), but none created additional public-grade FIFO lots after dedupe.'
-        : `${_missingCostBasisSyntheticLots.length} closed lot${_missingCostBasisSyntheticLots.length === 1 ? '' : 's'} across ${_missingCostBasisAffectedTokens.length} token${_missingCostBasisAffectedTokens.length === 1 ? '' : 's'} are missing real prior-buy cost basis, so realized PnL for those sells is locked.`,
-      nextAction: _missingCostBasisRecoveryResult === 'recovered'
-        ? 'Recovery already found at least one real prior buy; re-scan to pick up the updated lots.'
+      reason: _missingCostBasisRecoveryResultIsPreviewOnly
+        ? `Targeted recovery found and priced a real prior buy that added a closed lot in preview, but it was not promoted to public stats (${_missingCostBasisRecoveryResult.replace('recovered_preview_only_', '').replace(/_/g, ' ')}).`
         : _missingCostBasisRecoveryResult === 'attempted_no_new_public_lots'
-          ? 'Targeted recovery already attempted and found no additional public-grade lot — scan full history for older buy evidence.'
-          : _missingCostBasisRecoveryAttempted
-            ? 'Low-cost recovery already attempted and found no prior buy — scan full history for older buy evidence.'
-            : 'Run a deeper historical scan to recover the missing buy leg(s).',
+          ? 'Targeted recovery found historical candidate(s), but none created additional public-grade FIFO lots after dedupe.'
+          : `${_missingCostBasisSyntheticLots.length} closed lot${_missingCostBasisSyntheticLots.length === 1 ? '' : 's'} across ${_missingCostBasisAffectedTokens.length} token${_missingCostBasisAffectedTokens.length === 1 ? '' : 's'} are missing real prior-buy cost basis, so realized PnL for those sells is locked.`,
+      nextAction: _missingCostBasisRecoveryResult === 'promoted_recovered_public_lot'
+        ? 'Recovery already found at least one real prior buy; re-scan to pick up the updated lots.'
+        : _missingCostBasisRecoveryResultIsPreviewOnly
+          ? 'Recovered evidence is preview-only and was not promoted to public stats this scan — no further action needed unless the wallet is scanned again and conditions change.'
+          : _missingCostBasisRecoveryResult === 'attempted_no_new_public_lots'
+            ? 'Targeted recovery already attempted and found no additional public-grade lot — scan full history for older buy evidence.'
+            : _missingCostBasisRecoveryAttempted
+              ? 'Low-cost recovery already attempted and found no prior buy — scan full history for older buy evidence.'
+              : 'Run a deeper historical scan to recover the missing buy leg(s).',
     }
     : null
+  // RECOVERY-PROMOTE-FIX-2: walletHistoricalFifoPreviewSummary.reason must agree with
+  // missingCostBasisRead.recoveryResult — previously it stayed null whenever addedClosedLots>0,
+  // even when that added lot was not actually promoted to public stats.
+  if (_missingCostBasisRecoveryResultIsPreviewOnly && !walletHistoricalFifoPreviewSummary.reason) {
+    walletHistoricalFifoPreviewSummary.reason = _missingCostBasisRecoveryResult
+  }
 
   // LOW-VALUE-RECOVERY-FIX: surfaces the (now evidence-gated, not value-tier-gated) capped
   // targeted recovery pass above — SYNTH-RECOVERY-FIX-12's _syntheticTargetExtra* mechanism — under
@@ -17702,6 +17758,15 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       estimatedExtraPages: Math.min(2, targetTokens.length),
     }
   })()
+  // RECOVERY-PROMOTE-FIX-2: keep walletRecoveryRecommendation.reason aligned with
+  // missingCostBasisRead.recoveryResult — once recovery found and priced real evidence that added a
+  // preview closed lot, the recommendation must say so (recovered_preview_only_<reason>) instead of
+  // an unrelated/contradictory reason from the branches above (e.g. missing_cost_basis_for_top_value_tokens).
+  if (_missingCostBasisRead && _missingCostBasisRecoveryResultIsPreviewOnly) {
+    _walletRecoveryRecommendation.recommended = false
+    _walletRecoveryRecommendation.mode = 'targeted_recovery_attempted'
+    _walletRecoveryRecommendation.reason = _missingCostBasisRecoveryResult
+  }
   _perfWalletTimings.recoveryRecommendationMs += Date.now() - _recoveryRecommendationStartedAt
 
   // TRADE-INTEL-V1: behavior intelligence is additive to the existing public-PnL evidence model
@@ -18184,6 +18249,13 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         budgetCapped: _budgetCapped,
         dedupRemoved: _budgetEventsBefore - _budgetEventsAfterDedup,
         capLimit: _ACTIVITY_MAX_EVENTS,
+        // RECOVERY-PROMOTE-FIX-3: explicit dedupe-before-cap audit names, distinct from the
+        // legacy eventsBefore/eventsAfterDedup/eventsAfterCap fields above (kept for compatibility
+        // with existing readers) — same underlying counters, named per the audit spec.
+        eventsBeforeDedupe: _budgetEventsBefore,
+        eventsAfterDedupe: _budgetEventsAfterDedup,
+        duplicatesRemovedBeforeCap: _budgetEventsBefore - _budgetEventsAfterDedup,
+        capAppliedAfterDedupe: _budgetCapped,
         // PHASE4-FIX-8 (item 3): structured event-cap transparency, additive on this already-
         // diagnostics-only object — cappedCount/cappedProviders plus reason keys for whichever
         // cap(s) were actually hit (the soft per-token cap above, vs. a hard provider-side cap).
@@ -19468,6 +19540,24 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         snapshot.tradeIntelligence.profitSkillStatus = 'locked_small_sample'
       }
     }
+    // RECOVERY-PROMOTE-FIX-2b: integrity status is only known by this point in the pipeline — if the
+    // recovered preview lot was blocked from promotion because integrity later failed/hard-invalidated,
+    // upgrade the generic preview-only reason to the precise recovered_preview_only_integrity_locked
+    // label instead of leaving a weaker guessed reason (small_sample/weak_independence/dust).
+    const _missingCostBasisIntegrityHardInvalid =
+      snapshot.pnlIntegrityCheck?.status === 'invalid' ||
+      snapshot.publicPnlIntegrityGate?.hardInvalid === true ||
+      (snapshot as any).publicPnlStatus === 'open_check_integrity_invalid'
+    if (_missingCostBasisIntegrityHardInvalid && snapshot.missingCostBasisRead?.recoveryResult?.startsWith('recovered_preview_only_')) {
+      snapshot.missingCostBasisRead.recoveryResult = 'recovered_preview_only_integrity_locked'
+      snapshot.missingCostBasisRead.reason = 'Targeted recovery found and priced a real prior buy that added a closed lot in preview, but it was not promoted to public stats (integrity check locked the result).'
+      if (walletHistoricalFifoPreviewSummary.reason?.startsWith('recovered_preview_only_')) {
+        walletHistoricalFifoPreviewSummary.reason = 'recovered_preview_only_integrity_locked'
+      }
+      if (_walletRecoveryRecommendation.reason?.startsWith('recovered_preview_only_')) {
+        _walletRecoveryRecommendation.reason = 'recovered_preview_only_integrity_locked'
+      }
+    }
   }
 
   validateWalletFactsShape(snapshot)
@@ -19646,8 +19736,18 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       openPosition: {
         source: 'chainlens_internal_fifo',
         currentPriceSource: providerUsed,
-        status: _walletOpenPositionPnlRead.status,
-        lockedReason: _walletOpenPositionPnlRead.reason ?? null,
+        // SOURCE-AUDIT-FIX-4: must not claim a fully-priced open position when the underlying read is
+        // locked/partial/estimate-only — map the internal read status to an honest audit-facing label.
+        status: _walletOpenPositionPnlRead.status === 'available'
+          ? 'priced_open_position'
+          : _walletOpenPositionPnlRead.status === 'partial'
+            ? 'partial_priced_open_position'
+            : _walletOpenPositionPnlRead.status === 'estimate_only'
+              ? 'partial_priced_open_position'
+              : _walletOpenPositionPnlRead.status === 'cost_basis_only'
+                ? 'cost_basis_only'
+                : 'locked',
+        lockedReason: _walletOpenPositionPnlRead.status === 'unavailable' ? _walletOpenPositionPnlRead.reason : null,
         useInOfficialPnl: false,
         fieldsPowered: ['walletOpenPositionPnlRead'],
       },

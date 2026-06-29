@@ -274,7 +274,7 @@ type WalletResult = {
     syntheticClosedLots: number
     unknownCostSellValueUsd: number
     recoveryAttempted: boolean
-    recoveryResult: 'recovered' | 'not_recovered' | 'not_attempted'
+    recoveryResult: 'promoted_recovered_public_lot' | 'recovered_preview_only_integrity_locked' | 'recovered_preview_only_small_sample' | 'recovered_preview_only_weak_independence' | 'recovered_preview_only_dust' | 'recovered_preview_only_remaining_synthetic_lots' | 'attempted_no_new_public_lots' | 'not_recovered' | 'not_attempted'
     reason: string
     nextAction: string
   }

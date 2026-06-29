@@ -353,8 +353,13 @@ assert.match(
 )
 assert.match(
   snap,
-  /_realPriorBuysRecoveredForSyntheticLots > 0\s*\n\s*\? \(walletHistoricalFifoPreviewSummary\?\.safeToPromoteToPublicStats \? null : 'targeted_recovery_attempted_no_public_grade_lots'\)\s*\n\s*: _anyTargetedRecoveryAttempted\s*\n\s*\? 'targeted_recovery_attempted_no_prior_buys_found'\s*\n\s*: \(_recoveryReservationNeeded && !_recoveryBudgetReserved\)\s*\n\s*\? 'reserved_recovery_budget_unavailable'/,
-  'syntheticRecoverySkippedReason distinguishes attempted-no-prior-buys, attempted-no-public-grade-lots, and reserved-budget-unavailable',
+  /\(_realPriorBuysRecoveredForSyntheticLots > 0 \|\| _anyPriorBuysFoundAcrossPaths\)\s*\n\s*\? \(walletHistoricalFifoPreviewSummary\?\.safeToPromoteToPublicStats \? null : 'targeted_recovery_attempted_no_public_grade_lots'\)\s*\n\s*: _anyTargetedRecoveryAttempted\s*\n\s*\? 'targeted_recovery_attempted_no_prior_buys_found'\s*\n\s*: \(_recoveryReservationNeeded && !_recoveryBudgetReserved\)\s*\n\s*\? 'reserved_recovery_budget_unavailable'/,
+  'syntheticRecoverySkippedReason distinguishes attempted-no-prior-buys, attempted-no-public-grade-lots, and reserved-budget-unavailable, and never reports no-prior-buys when any recovery path actually found priced evidence',
+)
+assert.match(
+  snap,
+  /const _anyPriorBuysFoundAcrossPaths =\s*\n\s*_syntheticTargetExtraPriorBuysFound > 0 \|\|\s*\n\s*\(walletPnlRecoveryV2Debug\.priorBuysRecovered \?\? 0\) > 0 \|\|\s*\n\s*_moralisHistoricalPriorBuysFound > 0 \|\|\s*\n\s*walletHistoricalFifoPreviewSummary\.addedClosedLots > 0/,
+  '_anyPriorBuysFoundAcrossPaths checks every recovery path that can find a priced prior-buy candidate',
 )
 for (const field of [
   'targetedRecoveryAttemptedBeforeBroadPricing: _syntheticTargetExtraRecoveryAttempted',
@@ -423,28 +428,59 @@ console.log('wallet targeted-recovery lot-level-eligibility and reserved-budget-
 // targeted pass found/priced a candidate but created zero new public-grade closed lots.
 assert.match(
   snap,
-  /recoveryResult: 'recovered' \| 'attempted_no_new_public_lots' \| 'not_recovered' \| 'not_attempted'/,
-  'missingCostBasisRead type distinguishes attempted_no_new_public_lots from recovered',
+  /recoveryResult: 'promoted_recovered_public_lot' \| 'recovered_preview_only_integrity_locked' \| 'recovered_preview_only_small_sample' \| 'recovered_preview_only_weak_independence' \| 'recovered_preview_only_dust' \| 'recovered_preview_only_remaining_synthetic_lots' \| 'attempted_no_new_public_lots' \| 'not_recovered' \| 'not_attempted'/,
+  'missingCostBasisRead type distinguishes promoted_recovered_public_lot, every recovered_preview_only_<reason>, and attempted_no_new_public_lots',
 )
 assert.match(
   snap,
-  /const _missingCostBasisRecoveryApplied =\s*\n\s*_syntheticLotsAfterHistorical < _syntheticLotsBeforeHistorical \|\|\s*\n\s*_realPriorBuysRecoveredForSyntheticLots > 0 \|\|\s*\n\s*_moralisHistoricalTargetTokensRecovered\.size > 0 \|\|\s*\n\s*\(walletHistoricalFifoPreviewSummary\.safeToPromoteToPublicStats[\s\S]{0,160}> _earlyRealBackedClosedLots \|\|\s*\n\s*walletHistoricalFifoPreviewSummary\.addedClosedLots > 0/,
-  'recoveryResult is only "recovered" when synthetic lots were actually converted to public-grade lots',
+  /const _missingCostBasisRecoveryPromoted =\s*\n\s*_syntheticLotsAfterHistorical < _syntheticLotsBeforeHistorical \|\|\s*\n\s*_realPriorBuysRecoveredForSyntheticLots > 0 \|\|\s*\n\s*_moralisHistoricalTargetTokensRecovered\.size > 0 \|\|\s*\n\s*\(walletHistoricalFifoPreviewSummary\.safeToPromoteToPublicStats && walletHistoricalFifoPreviewSummary\.addedClosedLots > 0\)/,
+  'recoveryResult is only "promoted_recovered_public_lot" when the preview actually cleared safeToPromoteToPublicStats',
 )
 assert.match(
   snap,
-  /\? 'attempted_no_new_public_lots'\s*\n\s*: 'not_recovered'/,
-  'a found-but-not-applied candidate resolves to attempted_no_new_public_lots, not recovered',
+  /const _missingCostBasisRecoveryEvidenceFound =\s*\n\s*_syntheticTargetExtraPriorBuysFound > 0 \|\|\s*\n\s*\(walletPnlRecoveryV2Debug\.priorBuysRecovered \?\? 0\) > 0 \|\|\s*\n\s*walletHistoricalFifoPreviewSummary\.addedClosedLots > 0/,
+  'evidence-found is tracked separately from promoted, so a found-but-unpromoted preview lot is never silently dropped',
+)
+assert.match(
+  snap,
+  /\? \(walletHistoricalFifoPreviewSummary\.addedClosedLots > 0 \? _missingCostBasisPreviewOnlyReason : 'attempted_no_new_public_lots'\)\s*\n\s*: 'not_recovered'/,
+  'a found-but-not-promoted preview-added lot resolves to a specific recovered_preview_only_<reason>, never recovered or no-prior-buys-found',
 )
 assert.match(
   snap,
   /Targeted recovery found historical candidate\(s\), but none created additional public-grade FIFO lots after dedupe\./,
   'attempted_no_new_public_lots reason explains the candidate-found-but-not-applied case',
 )
+assert.match(
+  snap,
+  /Targeted recovery found and priced a real prior buy that added a closed lot in preview, but it was not promoted to public stats/,
+  'recovered_preview_only_<reason> gets an honest reason explaining the found-but-not-promoted preview lot',
+)
 assert.doesNotMatch(
   snap,
   /nextAction: _missingCostBasisRecoveryResult === 'attempted_no_new_public_lots'\s*\n\s*\? '[^']*re-scan[^']*'/,
   'nextAction for attempted_no_new_public_lots must not tell the caller to re-scan to pick up updated lots',
 )
+assert.doesNotMatch(
+  snap,
+  /nextAction: _missingCostBasisRecoveryResultIsPreviewOnly\s*\n\s*\? '[^']*re-scan[^']*'/,
+  'nextAction for a preview-only recovered result must not tell the caller to re-scan to pick up updated lots',
+)
 
 console.log('wallet targeted-recovery-result-semantics fix checks passed')
+
+// RECOVERY-PROMOTE-FIX checks: a targeted pass that found priced prior-buy evidence must never be
+// reported as "no prior buys found" anywhere, and the route-level recovery reason must prefer the
+// snapshot's own specific recovered_preview_only_<reason>/promoted_recovered_public_lot result.
+assert.match(
+  route,
+  /typeof _recoveryResult === 'string' && \(_recoveryResult === 'promoted_recovered_public_lot' \|\| _recoveryResult\.startsWith\('recovered_preview_only_'\)\)\s*\n\s*\? _recoveryResult\s*\n\s*: _syntheticRecoverySkippedReason === 'targeted_recovery_attempted_no_public_grade_lots'\s*\n\s*\? 'targeted_recovery_attempted_no_public_grade_lots'\s*\n\s*: _priorBuysFound > 0\s*\n\s*\? 'targeted_recovery_attempted_no_public_grade_lots'\s*\n\s*: 'targeted_recovery_attempted_no_prior_buys_found'/,
+  'route-level walletHistoricalRecoveryReason prefers the snapshot recoveryResult and never reports no-prior-buys-found when priorBuysFound > 0',
+)
+assert.match(
+  snap,
+  /const _missingCostBasisIntegrityHardInvalid =\s*\n\s*snapshot\.pnlIntegrityCheck\?\.status === 'invalid' \|\|\s*\n\s*snapshot\.publicPnlIntegrityGate\?\.hardInvalid === true \|\|\s*\n\s*\(snapshot as any\)\.publicPnlStatus === 'open_check_integrity_invalid'/,
+  'integrity-hard-invalid is rechecked post-hoc to upgrade a preview-only reason to recovered_preview_only_integrity_locked',
+)
+
+console.log('wallet recovery-promotion-consistency fix checks passed')
