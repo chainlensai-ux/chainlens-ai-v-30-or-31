@@ -251,7 +251,7 @@ type WalletResult = {
     excludedFrom: ['profit_skill', 'wallet_score', 'official_win_rate']
   }
   walletOpenPositionPnlRead?: {
-    status: 'available' | 'unavailable' | 'estimate_only'
+    status: 'available' | 'unavailable' | 'estimate_only' | 'partial' | 'cost_basis_only'
     unrealizedPnlUsd: number | null
     unrealizedPnlPercent: number | null
     headlineValueUsd: number | null
@@ -261,7 +261,7 @@ type WalletResult = {
     currentValueUsd: number | null
     pricedTokenCount: number
     estimateOnlyTokenCount: number
-    label: 'Open-position PnL' | 'Open value tracked'
+    label: 'Open-position PnL' | 'Open value tracked' | 'Open-position cost basis'
     warning: string
     reason: string
     excludedFrom: string[]
@@ -2923,7 +2923,7 @@ export default function WalletScannerPage() {
                 const modeCopy: Record<typeof pr.displayMode, { title: string; body: string }> = {
                   official_realized: { title: 'Realized PnL', body: 'Verified realized PnL from matched closed lots.' },
                   limited_sample: { title: 'Limited public PnL sample', body: pr.limitedSample.reason || 'Limited sample — not enough to prove profit skill.' },
-                  open_position_only: { title: 'Open-position PnL', body: pr.openPosition.reason || 'Unrealized only — open positions, not a closed trade result.' },
+                  open_position_only: { title: pr.headlineValueUsd === null ? 'Open-position PnL locked' : 'Open-position PnL', body: pr.openPosition.reason || 'Unrealized only — open positions, not a closed trade result.' },
                   estimated_transfer_flow_only: { title: 'Estimated transfer-flow PnL', body: 'Estimated only — not verified from matched swap cost basis.' },
                   raw_reconstruction_locked: { title: 'Raw lots found, but locked', body: pr.rawReconstruction.lockedReason },
                   activity_only: { title: 'Activity found — no PnL yet', body: 'No closed lots or priced positions are available yet.' },
@@ -2990,7 +2990,10 @@ export default function WalletScannerPage() {
                     </div>
                   )
                 }
-                const pnlTone = pr.headlineValueUsd === null ? '#f8fafc' : pr.headlineValueUsd < 0 ? '#f87171' : '#4ade80'
+                const openCostBasisOnly = pr.displayMode === 'open_position_only' && (pr.headlineValueUsd === null || result.walletOpenPositionPnlRead?.status === 'cost_basis_only' || result.walletOpenPositionPnlRead?.status === 'partial')
+                const pnlTone = openCostBasisOnly ? '#fbbf24' : pr.headlineValueUsd === null ? '#f8fafc' : pr.headlineValueUsd < 0 ? '#f87171' : '#4ade80'
+                const openCostBasisUsd = result.walletOpenPositionPnlRead?.costBasisUsd ?? result.openPositionPerformanceSummary?.totalOpenCostBasisUsd ?? result.walletModuleCoverage?.openPositionPerformanceSummary?.totalOpenCostBasisUsd ?? null
+                const openPositionLockedReason = result.walletOpenPositionPnlRead?.reason ?? pr.openPosition.reason
                 return (
                   <div style={{ position: 'relative', overflow: 'hidden', padding: '22px', background: 'linear-gradient(135deg, rgba(20,184,166,0.13), rgba(15,23,42,0.96) 42%, rgba(56,189,248,0.09))', border: '1px solid rgba(125,211,252,0.22)', borderRadius: '20px', boxShadow: '0 24px 80px rgba(0,0,0,0.32), inset 0 1px 0 rgba(255,255,255,0.07)' }}>
                     <div style={{ position: 'absolute', inset: 0, background: 'radial-gradient(circle at top right, rgba(74,222,128,0.16), transparent 34%)', pointerEvents: 'none' }} />
@@ -3002,10 +3005,20 @@ export default function WalletScannerPage() {
                           <p style={{ margin: '8px 0 0', maxWidth: '620px', fontSize: '13px', lineHeight: 1.55, color: 'rgba(226,232,240,0.72)', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{copy.body}</p>
                         </div>
                         <div style={{ textAlign: 'right' }}>
-                          <div style={{ fontSize: '42px', lineHeight: 0.95, fontWeight: 950, letterSpacing: '-0.06em', color: pnlTone, fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{fmtUsd(pr.headlineValueUsd) ?? '—'}</div>
+                          <div style={{ fontSize: '42px', lineHeight: 0.95, fontWeight: 950, letterSpacing: '-0.06em', color: pnlTone, fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{openCostBasisOnly ? 'Cost basis only' : (fmtUsd(pr.headlineValueUsd) ?? '—')}</div>
                         </div>
                       </div>
                       {pr.headlineWarning && <p style={{ marginTop: '14px', fontSize: '11px', lineHeight: 1.55, color: 'rgba(251,191,36,0.86)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{pr.headlineWarning}</p>}
+                      {openCostBasisOnly && (
+                        <>
+                          <p style={{ marginTop: '10px', fontSize: '11px', color: 'rgba(226,232,240,0.68)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                            Cost basis tracked: {openCostBasisUsd !== null ? `$${openCostBasisUsd.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : '—'}
+                          </p>
+                          <p style={{ marginTop: '8px', fontSize: '11px', lineHeight: 1.55, color: 'rgba(251,191,36,0.86)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                            {openPositionLockedReason || 'Current price was not independently matched, so unrealized PnL is locked.'}
+                          </p>
+                        </>
+                      )}
                       {pr.displayMode === 'estimated_transfer_flow_only' && (
                         <p style={{ marginTop: '10px', fontSize: '11px', color: 'rgba(226,232,240,0.6)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
                           Estimated PnL: {fmtUsd(pr.estimatedTransferFlow.realizedPnlUsd) ?? 'n/a'}, not verified
@@ -4383,6 +4396,7 @@ export default function WalletScannerPage() {
                               const perf = result.openPositionPerformanceSummary ?? result.walletModuleCoverage?.openPositionPerformanceSummary ?? null
                               const coverage = perf?.coverageLabel ?? 'cost_basis_only'
                               const openEstimateOnly = result.openPositionPnlStatus === 'estimate_only'
+                              const openCostBasisOnly = result.openPositionPnlStatus === 'cost_basis_only' || coverage === 'cost_basis_only' || perf?.totalCurrentValueUsd == null || perf?.totalUnrealizedPnlUsd == null
                               const openLotsCount = result.walletLotSummary?.openedLots ?? openPos?.openLots ?? 0
                               const costBasis = perf?.totalOpenCostBasisUsd ?? openPos?.totalOpenCostBasisUsd ?? null
                               const fmtUsd2 = (v: number) => `$${Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
@@ -4390,19 +4404,21 @@ export default function WalletScannerPage() {
 
                               // Pick display values based on coverage tier
                               const currentValueLabel = coverage === 'full' ? 'Open position value' : coverage === 'partial' ? 'Open position value (partial)' : null
-                              const unrealizedLabel = openEstimateOnly ? 'Unrealized PnL' : coverage === 'full' ? 'Unrealized PnL' : coverage === 'partial' ? 'Unrealized PnL (Partial)' : null
+                              const unrealizedLabel = openCostBasisOnly ? 'Open-position PnL' : openEstimateOnly ? 'Unrealized PnL' : coverage === 'full' ? 'Unrealized PnL' : coverage === 'partial' ? 'Unrealized PnL (Partial)' : null
                               const displayCurrentValue = coverage === 'full' ? (perf?.totalCurrentValueUsd ?? null) : coverage === 'partial' ? (perf?.matchedCurrentOpenValueUsd ?? null) : null
                               const displayUnrealizedPnl = coverage === 'full' ? (perf?.totalUnrealizedPnlUsd ?? null) : coverage === 'partial' ? (perf?.matchedUnrealizedPnlUsd ?? null) : null
                               const displayUnrealizedPct = coverage === 'full' ? (perf?.totalUnrealizedPnlPercent ?? null) : coverage === 'partial' ? (perf?.matchedUnrealizedPnlPercent ?? null) : null
 
                               const summaryCards = [
-                                { label: 'Tracked Entry Cost', value: costBasis != null ? `~${fmtUsd2(costBasis)}` : '—', color: '#e2e8f0', dim: false },
+                                { label: 'Cost basis tracked', value: costBasis != null ? fmtUsd2(costBasis) : '—', color: '#e2e8f0', dim: false },
                                 ...(currentValueLabel ? [{ label: currentValueLabel, value: displayCurrentValue != null ? fmtUsd2(displayCurrentValue) : '—', color: '#e2e8f0', dim: displayCurrentValue == null }] : []),
-                                ...(unrealizedLabel ? [{ label: unrealizedLabel, value: openEstimateOnly ? 'Locked' : displayUnrealizedPnl != null ? `${displayUnrealizedPnl >= 0 ? '+' : '-'}${fmtUsd2(displayUnrealizedPnl)}${displayUnrealizedPct != null ? ` (${fmtPct2(displayUnrealizedPct)})` : ''}` : '—', color: openEstimateOnly ? '#fbbf24' : displayUnrealizedPnl == null ? '#94a3b8' : displayUnrealizedPnl >= 0 ? '#4ade80' : '#f87171', dim: displayUnrealizedPnl == null && !openEstimateOnly }] : []),
+                                ...(unrealizedLabel ? [{ label: unrealizedLabel, value: openCostBasisOnly ? 'Cost basis only' : openEstimateOnly ? 'Locked' : displayUnrealizedPnl != null ? `${displayUnrealizedPnl >= 0 ? '+' : '-'}${fmtUsd2(displayUnrealizedPnl)}${displayUnrealizedPct != null ? ` (${fmtPct2(displayUnrealizedPct)})` : ''}` : '—', color: (openCostBasisOnly || openEstimateOnly) ? '#fbbf24' : displayUnrealizedPnl == null ? '#94a3b8' : displayUnrealizedPnl >= 0 ? '#4ade80' : '#f87171', dim: displayUnrealizedPnl == null && !openEstimateOnly && !openCostBasisOnly }] : []),
                               ]
 
                               const perfTokens = perf?.tokens ?? []
-                              const footerNote = openEstimateOnly
+                              const footerNote = openCostBasisOnly
+                                ? `${perf?.unmatchedSymbols?.length ? `${perf.unmatchedSymbols.join(', ')} current price was not independently matched` : 'Current value unavailable'}, so unrealized PnL is locked.`
+                                : openEstimateOnly
                                 ? 'Current value uses estimate-only pricing, so unrealized PnL is not public-grade.'
                                 : coverage === 'full'
                                 ? 'Unrealized. Still open — not banked profit. Not realized PnL.'

@@ -352,7 +352,7 @@ export type WalletSnapshot = {
   // existing FIFO open lots + estimatedPnl current-value pricing — never used for realized PnL,
   // win rate, profit skill, or wallet score, and never unlocks any of those gates.
   walletOpenPositionPnlRead?: {
-    status: 'available' | 'unavailable' | 'estimate_only'
+    status: 'available' | 'unavailable' | 'estimate_only' | 'partial' | 'cost_basis_only'
     unrealizedPnlUsd: number | null
     unrealizedPnlPercent: number | null
     headlineValueUsd: number | null
@@ -362,7 +362,7 @@ export type WalletSnapshot = {
     currentValueUsd: number | null
     pricedTokenCount: number
     estimateOnlyTokenCount: number
-    label: 'Open-position PnL' | 'Open value tracked'
+    label: 'Open-position PnL' | 'Open value tracked' | 'Open-position cost basis'
     warning: string
     reason: string
     excludedFrom: ['realized_pnl', 'win_rate', 'profit_skill', 'wallet_score']
