@@ -863,6 +863,11 @@ export type WalletSnapshot = {
     // automatically — never used to flip `recommended` to false on its own.
     blockedByCostGuard?: boolean
     costGuardReason?: string
+    // PNL-RECOVERY-EXCL-FIX-1: honest signal for "is this actually recoverable", independent of
+    // whether the budget/hard cap already prevented it from running this pass. Lets the blocker
+    // summary/copy say "recovery available but budget-capped" instead of "not recoverable".
+    recoverable?: boolean
+    recoveryBlockedReason?: 'hard_cap_reached_after_pricing' | null
   }
   // WALLET-NO-PNL-UX-1/2: honest, specific explanation of why a wallet has no trader PnL, set
   // either because the address itself isn't a trader (non_trader_address_type) or because a
@@ -14207,12 +14212,18 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     allowedBecauseFallbackHadEvents: _bfcAllowedBecauseFallbackHadEvents,
     skippedReason: null as string | null,
   }
-  // Real-backed = not a synthetic/backfilled placeholder lot. syntheticClosedLots must never
-  // count as recovery success — only realClosedLots (or closedLotsForStats) can stop recovery.
+  // Real-backed = not a synthetic/backfilled placeholder lot AND not a flat/estimate-only lot.
+  // syntheticClosedLots must never count as recovery success — only realClosedLots (or
+  // closedLotsForStats) can stop recovery. PNL-RECOVERY-EXCL-FIX-1: estimate-only/flat-price lots
+  // (pnlDisplayStatus === 'estimate_only_price_flat') were previously still counted as "real
+  // backed", which let a wallet whose only matched lots are flat/estimate-only silently skip the
+  // Phase 5C coverage pass as already_has_closed_lots — those lots carry zero public-grade
+  // evidence and must not block recovery either.
   const _isRealBackedClosedLotEarly = (l: WalletClosedLot): boolean =>
     l.evidence?.entrySource !== 'synthetic' &&
     !(l.missingReasons ?? []).includes('fifo_backfilled_buy') &&
     !(l.missingReasons ?? []).includes('price_synthetic_fifo') &&
+    l.pnlDisplayStatus !== 'estimate_only_price_flat' &&
     (l.coveragePercent ?? 100) !== 0
   const _realBackedClosedLotsCountEarly = _closedLots.filter(_isRealBackedClosedLotEarly).length
   const _shouldRunBaseFifoCoverage = (
@@ -15570,6 +15581,16 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // recovery actually attempted, the stale `_skipReasons[0]` (e.g. wallet_value_below_100) from the
   // broad-pass eligibility check must never override the real, specific stop reason.
   const _anyTargetedRecoveryAttempted = _syntheticTargetExtraRecoveryAttempted || walletPnlRecoveryV2Debug.attempted || _moralisHistoricalAttempted
+  // PNL-RECOVERY-EXCL-FIX-1: `_skipReasons[0]` can resolve to 'closed_lots_already_found' (or
+  // 'coverage_above_threshold') even when those raw lots are non-public/synthetic/estimate-only —
+  // i.e. exactly the case that still needs recovery. Never surface those two as the skipped
+  // reason here; fall back to the honest budget/hard-cap signal or the generic "needs a real prior
+  // buy" reason instead.
+  const _syntheticRecoverySkipReasonFallback = Boolean(_hardCapReachedAtPhase)
+    ? 'hard_cap_reached'
+    : (_skipReasons.includes('budget_remaining_too_low') || _skipReasons.includes('broad_pass_budget_zeroed_by_cost_guard'))
+      ? 'budget_remaining_too_low'
+      : 'synthetic_lots_need_real_prior_buy'
   const _syntheticRecoverySkippedReason = !_syntheticLotsDetected
     ? null
     : _realPriorBuysRecoveredForSyntheticLots > 0
@@ -15577,7 +15598,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       : _anyTargetedRecoveryAttempted
         ? 'targeted_recovery_attempted_no_prior_buy_found'
         : !_runHistoricalCoverage
-          ? (_skipReasons[0] ?? (!_syntheticRecoveryTierEligible ? 'wallet_value_tier_not_eligible' : 'synthetic_recovery_not_triggered'))
+          ? _syntheticRecoverySkipReasonFallback
           : (Object.entries(_syntheticTargetRecovery?.debug.syntheticTargetDropBreakdown ?? {}).sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'no_prior_buy_found_in_window')
   const _syntheticLotRecoveryDebug = {
     syntheticLotsDetected: _syntheticLotsDetected,
@@ -17355,7 +17376,12 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       // recommending targeted recovery. Advisory only: this never unlocks PnL or win rate, and
       // publicPerformanceClosedLots stays 0.
       if (_performanceClosedLotsFinal.length === 0 && _hasExcludedLots) {
-        return { recommended: true, mode: 'targeted_token_recovery', targetTokens, reason: 'high_activity_excluded_lots_no_public_evidence', estimatedExtraPages: Math.min(2, targetTokens.length) }
+        // PNL-RECOVERY-EXCL-FIX-1: this is genuinely recoverable evidence — only the already-spent
+        // credit hard cap (computed above at _hardCapHitFinal) can prevent the next pass from
+        // running, so say so honestly instead of letting downstream copy read "not recoverable".
+        return _hardCapHitFinal
+          ? { recommended: true, mode: 'targeted_token_recovery', targetTokens, reason: 'high_activity_excluded_lots_no_public_evidence', estimatedExtraPages: 2, recoverable: true, recoveryBlockedReason: 'hard_cap_reached_after_pricing' }
+          : { recommended: true, mode: 'targeted_token_recovery', targetTokens, reason: 'high_activity_excluded_lots_no_public_evidence', estimatedExtraPages: Math.min(2, targetTokens.length), recoverable: true, recoveryBlockedReason: null }
       }
       return { recommended: false, mode: historicalAttempted ? 'attempted_light' : 'none', targetTokens, reason: _hasExcludedLots ? 'verified_stats_available_excluded_lots_remain' : 'closed_lots_already_found', estimatedExtraPages: 0 }
     }
@@ -18260,7 +18286,15 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       const _blockerLockedByGate = _p6GateApplies && (_p6HardInvalid || _p6SoftPartialOnly)
       const _blockerHasNonRecoverableError = _p6IntegrityErrors.some(e => NON_RECOVERABLE_HARD_ERRORS.has(e))
       const _blockerHistoricalCapHit = Boolean(_historicalBudgetCapHit) || Boolean(_walletHistoricalSourceBudget?.hardCapHit)
-      const _blockerRecoverable = _blockerLockedByGate && !_blockerHasNonRecoverableError && (_p6SyntheticLotCount > 0 || _blockerHistoricalCapHit)
+      // PNL-RECOVERY-EXCL-FIX-1: _p6SyntheticLotCount only tracks current_holding_price_open_lot_estimate
+      // lots — a wallet whose raw matched lots are excluded as synthetic/estimate-only/flat-price (this
+      // task's target case) was never counted here, so a genuinely recoverable wallet read as
+      // not-recoverable. Fold in the already-computed, already-honest walletRecoveryRecommendation
+      // signal (set above; budget-capped excluded lots still recommend recovery) instead of
+      // re-deriving lot exclusion counts.
+      const _blockerRecoverableViaTargetedRecovery = Boolean(snapshot.walletRecoveryRecommendation?.recommended)
+      const _blockerBudgetCappedRecovery = snapshot.walletRecoveryRecommendation?.recoveryBlockedReason === 'hard_cap_reached_after_pricing'
+      const _blockerRecoverable = _blockerLockedByGate && !_blockerHasNonRecoverableError && (_p6SyntheticLotCount > 0 || _blockerHistoricalCapHit || _blockerRecoverableViaTargetedRecovery)
       const _blockerAffectedTokens = Array.from(new Set(
         _p6ClosedLots
           .filter(l => l.evidence.entrySource === 'synthetic' || l.evidence.entrySource === 'current_holding_price_open_lot_estimate' || l.evidence.exitSource === 'current_holding_price_open_lot_estimate')
@@ -18278,7 +18312,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
 
       const _blockerRecoveryMode: NonNullable<WalletSnapshot['walletPnlBlockerSummary']>['recoveryMode'] = (_walletIsContractLikeForPnl || !_blockerRecoverable)
         ? 'none'
-        : (_p6SyntheticLotCount > 0 || _blockerHistoricalCapHit)
+        : (_p6SyntheticLotCount > 0 || _blockerHistoricalCapHit || _blockerRecoverableViaTargetedRecovery)
           ? 'deep_history'
           : 'price_evidence'
 
@@ -18307,15 +18341,22 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
               ? `Public PnL is locked because the PnL integrity check failed (${_p6IntegrityErrors.join(', ')}).`
               : 'Public PnL is locked because there is not yet enough verified evidence to show it.'
 
+      // PNL-RECOVERY-EXCL-FIX-1: a budget-capped-but-recommended targeted recovery is not "not
+      // recoverable" — say plainly that the scan hit the cost cap, and name the actual next action.
+      const _blockerTargetTokenSymbols = (snapshot.walletRecoveryRecommendation?.targetTokens ?? []).map(t => t.symbol).filter(Boolean)
       const _blockerNextAction = _walletIsContractLikeForPnl
         ? 'No action — this address type is not evaluated for trader PnL.'
         : _blockerStatus === 'ready'
           ? 'No action needed.'
-          : _blockerRecoveryMode === 'deep_history'
-            ? 'Run deeper historical recovery for prior buys before showing public PnL.'
-            : _blockerRecoveryMode === 'price_evidence'
-              ? 'Recover additional price evidence before showing public PnL.'
-              : 'No action available — this PnL read is not recoverable.'
+          : _blockerBudgetCappedRecovery
+            ? `Recovery available, but this scan hit the cost cap before deeper buy-leg recovery could run. Next action: run targeted recovery for ${_blockerTargetTokenSymbols.join(' and ') || 'the affected tokens'}.`
+            : _blockerRecoveryMode === 'deep_history'
+              ? 'Run deeper historical recovery for prior buys before showing public PnL.'
+              : _blockerRecoveryMode === 'price_evidence'
+                ? 'Recover additional price evidence before showing public PnL.'
+                : _blockerRecoverable
+                  ? `Recovery available, but this scan hit the cost cap before deeper buy-leg recovery could run. Next action: run targeted recovery for ${_blockerTargetTokenSymbols.join(' and ') || 'the affected tokens'}.`
+                  : 'No action available — this PnL read is not recoverable.'
 
       snapshot.walletPnlBlockerSummary = {
         status: _blockerStatus,

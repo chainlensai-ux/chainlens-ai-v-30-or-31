@@ -204,3 +204,59 @@ assert.match(_raceBlock, /const _mbRes = await Promise\.race\(\[_mbPromise, _tim
 assert.doesNotMatch(_raceBlock, /await _mbPromise(?!\.then)/, 'the real Moralis promise is never directly awaited inside the race-eligible branch — only raced or fire-and-forget .then()-chained')
 
 console.log('wallet live-speed pass: early no-sell skip + Moralis holdings timeout checks passed')
+
+// --- PNL-RECOVERY-EXCL-FIX-1: raw closed lots must not block recovery when those lots carry no ---
+// --- public-grade performance evidence (synthetic / estimate-only / flat-price / integrity-invalid) ---
+
+// Phase 5C's "real backed" filter must also exclude flat/estimate-only lots — previously only
+// synthetic/backfilled/zero-coverage lots were excluded, so a wallet whose only matched lots were
+// estimate-only (this task's ETH wallet shape: rawMatchedClosedLots=11, publicPerformanceClosedLots=0,
+// estimateOnlyClosedLots=8) still read as "real backed" and silently skipped Phase 5C recovery as
+// already_has_closed_lots.
+assert.match(
+  snap,
+  /l\.pnlDisplayStatus !== 'estimate_only_price_flat' &&\s*\n\s*\(l\.coveragePercent \?\? 100\) !== 0/,
+  'the early real-backed-closed-lot filter excludes estimate-only/flat-price lots, not just synthetic ones',
+)
+
+// The synthetic-recovery skip reason must never resolve to closed_lots_already_found (or the
+// equally-stale coverage_above_threshold) when recovery is actually still needed — it must report
+// the honest budget/hard-cap blocker, or a generic "needs a real prior buy" reason, instead.
+assert.match(
+  snap,
+  /_syntheticRecoverySkipReasonFallback = Boolean\(_hardCapReachedAtPhase\)\s*\n\s*\? 'hard_cap_reached'\s*\n\s*: \(_skipReasons\.includes\('budget_remaining_too_low'\) \|\| _skipReasons\.includes\('broad_pass_budget_zeroed_by_cost_guard'\)\)\s*\n\s*\? 'budget_remaining_too_low'\s*\n\s*: 'synthetic_lots_need_real_prior_buy'/,
+  'synthetic recovery skip reason maps to hard_cap_reached / budget_remaining_too_low / synthetic_lots_need_real_prior_buy, never the stale closed_lots_already_found',
+)
+assert.doesNotMatch(
+  snap,
+  /: !_runHistoricalCoverage\s*\n\s*\? \(_skipReasons\[0\]/,
+  'the synthetic recovery skip reason no longer falls back to the raw, possibly-stale _skipReasons[0] value',
+)
+
+// walletRecoveryRecommendation must expose recoverable/recoveryBlockedReason honestly when the
+// high-activity excluded-lots case is hit but the credit hard cap already prevented the next pass.
+assert.match(
+  snap,
+  /recoverable: true, recoveryBlockedReason: 'hard_cap_reached_after_pricing' \}/,
+  'walletRecoveryRecommendation reports recoverable:true with a hard_cap_reached_after_pricing block reason, not a bare not-recoverable result',
+)
+assert.match(
+  snap,
+  /recoverable\?: boolean\s*\n\s*recoveryBlockedReason\?: 'hard_cap_reached_after_pricing' \| null/,
+  'walletRecoveryRecommendation type declares the recoverable/recoveryBlockedReason fields',
+)
+
+// walletPnlBlockerSummary must treat a budget-capped-but-recommended recovery as recoverable, and
+// must never say "No action available" while walletRecoveryRecommendation.recommended is true.
+assert.match(
+  snap,
+  /_blockerRecoverableViaTargetedRecovery = Boolean\(snapshot\.walletRecoveryRecommendation\?\.recommended\)/,
+  'walletPnlBlockerSummary.recoverable is fed by the already-computed walletRecoveryRecommendation signal',
+)
+assert.match(
+  snap,
+  /_blockerBudgetCappedRecovery\s*\n\s*\? `Recovery available, but this scan hit the cost cap before deeper buy-leg recovery could run\. Next action: run targeted recovery for \$\{_blockerTargetTokenSymbols\.join\(' and '\) \|\| 'the affected tokens'\}\.`/,
+  'walletPnlBlockerSummary.nextAction uses the honest cost-cap copy instead of "not recoverable" when budget blocked an otherwise-recommended recovery',
+)
+
+console.log('wallet pnl-recovery-exclusion pass: raw closed lots no longer block recovery checks passed')
