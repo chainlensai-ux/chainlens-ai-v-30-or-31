@@ -348,7 +348,7 @@ export async function GET(req: NextRequest) {
         },
       })
       const count = Array.isArray(result.data?.data) ? result.data.data.length : 0
-      return { key: spec.key, count, data: count > 0 ? result.data : null }
+      return { key: spec.key, count, data: count > 0 ? { ...result.data, __radarSourceKey: spec.key } : null }
     } catch {
       return { key: spec.key, count: 0, data: null }
     }
@@ -367,7 +367,8 @@ export async function GET(req: NextRequest) {
     for (const src of sourcePayloads) {
       const pools = Array.isArray(src?.data) ? (src.data as Record<string, unknown>[]) : []
       const included = Array.isArray(src?.included) ? (src.included as Record<string, unknown>[]) : []
-      pooled.push(...pools)
+      const sourceKey = typeof src?.__radarSourceKey === 'string' ? src.__radarSourceKey : 'unknown'
+      pooled.push(...pools.map(pool => ({ ...pool, __radarSourceKey: sourceKey })))
       includedAll.push(...included)
     }
 
@@ -391,6 +392,7 @@ export async function GET(req: NextRequest) {
 
     type Candidate = Omit<RadarToken, 'clarkVerdict'> & { pairAddress?: string | null }
     const candidates: Candidate[] = []
+    const fallbackCandidates: Candidate[] = []
     const allDay24h:  number[]    = []
     const seenContracts = new Set<string>()
     const seenPools = new Set<string>()
@@ -401,6 +403,7 @@ export async function GET(req: NextRequest) {
       if (poolId) seenPools.add(poolId)
       const attrs = pool.attributes  as Record<string, unknown>         | undefined
       const rels  = pool.relationships as Record<string, unknown>       | undefined
+      const radarSourceKey = typeof pool.__radarSourceKey === 'string' ? pool.__radarSourceKey : 'unknown'
       const volObj = attrs?.volume_usd as Record<string, string>        | undefined
       const createdAt = attrs?.pool_created_at as string | undefined
       if (!createdAt) continue
@@ -412,7 +415,9 @@ export async function GET(req: NextRequest) {
 
       if (ageMs < DAY_MS && liquidityUsd >= 1000) allDay24h.push(liquidityUsd)
 
-      if (ageMs  >= 6 * 60 * 60 * 1000) continue
+      const isPrimaryAgeWindow = ageMs < 6 * 60 * 60 * 1000
+      const isFallbackAgeWindow = radarSourceKey.startsWith('trending') && ageMs < DAY_MS
+      if (!isPrimaryAgeWindow && !isFallbackAgeWindow) continue
 
       const baseData    = ((rels?.base_token as Record<string, unknown>)?.data) as Record<string, string> | undefined
       const baseToken   = baseData?.id ? tokenMap.get(baseData.id) : undefined
@@ -437,12 +442,19 @@ export async function GET(req: NextRequest) {
       const marketCapFieldPath = resolvedMarketCap.marketCapUsd != null ? resolvedMarketCap.marketCapFieldPath : rescue?.marketCapFieldPath ?? resolvedMarketCap.marketCapFieldPath
       const resolverReason = resolvedMarketCap.marketCapUsd != null ? resolvedMarketCap.reason : rescue?.reason ?? resolvedMarketCap.reason
       const filterResult = tokenPassesRadarValuationFilters({ marketCapUsd, marketCapStatus, fdvUsd, liquidityUsd, minValuationUsd, minLiquidityUsd, allowFdvFallback })
-      if (!filterResult.included) continue
+      const shouldHoldAsFallback = !filterResult.included
+        && isFallbackAgeWindow
+        && liquidityUsd >= minLiquidityUsd
+        && (volume24h >= 5_000 || (liquidityUsd > 0 && volume24h / liquidityUsd >= 0.2))
+      if (!filterResult.included && !shouldHoldAsFallback) continue
       const valuation = filterResult.valuation
       const valuationCardDisplay = getRadarValuationCardDisplay(valuation, fmtK)
       const valuationEvidenceGap = getRadarValuationEvidenceGap(valuation)
-      const evidenceGaps = valuationEvidenceGap ? [valuationEvidenceGap] : []
-      candidates.push({
+      const evidenceGaps = [
+        ...(valuationEvidenceGap ? [valuationEvidenceGap] : []),
+        ...(!filterResult.included ? ['Relaxed fallback: default valuation filter did not pass, but liquidity/volume is active'] : []),
+      ]
+      const candidate = {
         name: baseToken.name, symbol: baseToken.symbol, contract: baseToken.address,
         ageMinutes, liquidityUsd, volume24h, fdvUsd, marketCapUsd, marketCapStatus, valuationBasis: valuation.basis, valuationUsd: valuation.valueUsd, valuationLabel: valuation.label, valuationSublabel: valuationCardDisplay.sublabel, valuationVerified: valuation.verified, valuationReason: valuation.reason, valuationCortexLine: getRadarCortexValuationLine(valuation), evidenceGaps, riskLevel: 'SAFE', honeypot: null,
         simulationStatus: 'open_check', simulationReason: null, simulationLabel: '', simulationCortexLine: '', pairAddress: primaryPoolAddress,
@@ -462,7 +474,13 @@ export async function GET(req: NextRequest) {
           rescueSelectedLiquidityUsd: rescue?.selectedLiquidityUsd ?? null,
           rescueRawCandidates: rescue?.rawCandidates ?? [],
         } } : {}),
-      })
+      } satisfies Candidate
+      if (filterResult.included && isPrimaryAgeWindow) candidates.push(candidate)
+      else fallbackCandidates.push(candidate)
+    }
+
+    if (candidates.length === 0 && fallbackCandidates.length > 0) {
+      candidates.push(...fallbackCandidates)
     }
 
     // Sort by blend of momentum/liquidity/volume/freshness
