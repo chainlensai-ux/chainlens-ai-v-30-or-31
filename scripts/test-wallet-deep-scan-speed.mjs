@@ -320,7 +320,7 @@ assert.match(
 // 6. MORALIS-MISSING-BUY-RECOVERY is capped to 1 page per target token unless an admin override exists.
 assert.match(
   snap,
-  /const _moralisHistoricalMaxPagesPerToken = _adminOverrideUsed \? 2 : 1/,
+  /const _moralisHistoricalMaxPagesPerToken = scanModeConfig\?\.targetedRecoveryPages \?\? \(_adminOverrideUsed \? 2 : 1\)/,
   'targeted synthetic-lot recovery is capped to 1 page per target token unless an admin override exists',
 )
 
