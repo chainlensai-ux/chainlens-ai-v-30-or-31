@@ -12267,17 +12267,23 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // from the fallback layer vs. Moralis, without ever issuing an extra provider call.
   const _fallbackHoldingsBeforeMoralis: Holding[] = [...holdings]
   const _fallbackTotalValueBeforeMoralis = totalValue
-  // LIVE-SPEED-3: only race Moralis holdings against a timeout when Zerion/GoldRush already left us
-  // a usable fallback to fall back on — if Moralis is the only source, never cut it off early.
+  // LIVE-SPEED-4: only race Moralis holdings against a timeout when Zerion already left us a usable
+  // fallback to fall back on — if Moralis is the only source, never cut it off early. Gate on the
+  // canonical _zerionValueUsable/_zerionPositionsUsable flags (computed straight from the Zerion
+  // response in Phase 1) rather than re-deriving from holdings.length/totalValue — those go through
+  // the `value > 0.01` dust filter above and can read as empty even when Zerion genuinely succeeded,
+  // which silently disabled the race and let the slow, unguarded Moralis await through.
   const MORALIS_WALLET_HOLDINGS_TIMEOUT_MS = Number(process.env.MORALIS_WALLET_HOLDINGS_TIMEOUT_MS) || 2500
-  const _moralisHoldingsTimeoutRaceEligible = _fallbackHoldingsBeforeMoralis.length > 0 && _fallbackTotalValueBeforeMoralis > 0
+  const _moralisHoldingsTimeoutRaceEligible = _zerionValueUsable || _zerionPositionsUsable
   let _moralisHoldingsTimedOut = false
+  const _moralisHoldingsStartedAt = Date.now()
   let _moralisNormalizedHoldings: Holding[] = []
   let _moralisRejectedReasonFinal: string | null = null
   let _moralisPositionsMergedFinal = 0
   let _fallbackPositionsKeptFinal = 0
   let _duplicatePositionsRemovedFinal = 0
   let _selectedHoldingsLayerFinal: 'moralis' | 'fallback' | 'merged' | 'none' = 'none'
+  let _moralisHoldingsDurationMs = 0
   if (_moralisConfigured && !_moralisHoldingsDisabled) {
     // Fetch all active chain balances in parallel instead of sequentially. activeChains is already
     // deduped per scan (line ~11388), and fetchMoralisBalances itself caches/dedupes in-flight
@@ -12314,6 +12320,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         _trackCall('moralis', 'erc20_holdings', _mbRes.cacheHit, `moralis:holdings:${c}:${addrNorm}`)
       }
     }))
+    _moralisHoldingsDurationMs = Date.now() - _moralisHoldingsStartedAt
     const moralisHoldingsRaw = [..._moralisByChain.values()].flatMap((r) => r.holdings)
 
     // Strict normalization + usability: drop malformed rows individually instead of letting a few
@@ -17534,7 +17541,11 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         callCount: [..._moralisByChain.values()].filter((r) => r.attempted).length,
         cacheHit: [..._moralisByChain.values()].some((r) => r.cacheHit),
         deduped: false,
-        durationMs: Date.now() - startedAt,
+        // LIVE-SPEED-4: scoped to the holdings fetch phase itself (_moralisHoldingsStartedAt to the end
+        // of the Promise.allSettled above), not the full scan elapsed time — the previous Date.now() -
+        // startedAt measurement double-counted every phase that ran before and after this fetch,
+        // making it look like Moralis was still blocking long after the timeout had already engaged.
+        durationMs: _moralisHoldingsDurationMs,
         skippedReason: [..._moralisByChain.values()].length === 0 ? 'fallback_not_needed' : null,
         timeoutMs: _moralisHoldingsTimeoutRaceEligible ? MORALIS_WALLET_HOLDINGS_TIMEOUT_MS : null,
         timedOut: _moralisHoldingsTimedOut,

@@ -146,8 +146,8 @@ assert.match(
 )
 assert.match(
   snap,
-  /const _moralisHoldingsTimeoutRaceEligible = _fallbackHoldingsBeforeMoralis\.length > 0 && _fallbackTotalValueBeforeMoralis > 0/,
-  'timeout race is only enabled when a usable pre-Moralis fallback already exists',
+  /const _moralisHoldingsTimeoutRaceEligible = _zerionValueUsable \|\| _zerionPositionsUsable/,
+  'timeout race is gated on the canonical Zerion usability flags, not on the post-dust-filter holdings array (which can read empty even when Zerion succeeded)',
 )
 assert.match(
   snap,
@@ -180,5 +180,27 @@ assert.doesNotMatch(
   /fetchMoralisProfitabilitySummary[^\n]*MORALIS_WALLET_HOLDINGS_TIMEOUT_MS/,
   'the holdings timeout does not touch the Provider PnL summary call',
 )
+
+// --- LIVE-SPEED-4: honest, scoped duration metric + timeout actually unblocks the response ---
+
+// durationMs must be scoped to the Moralis holdings fetch phase itself (started right where
+// eligibility is computed, measured right after the Promise.allSettled resolves) rather than
+// Date.now() - startedAt (full scan elapsed time), which kept reporting large numbers even once
+// the timeout had already engaged and stopped blocking the response.
+assert.match(snap, /const _moralisHoldingsStartedAt = Date\.now\(\)/, 'a dedicated start timestamp is captured for the Moralis holdings fetch phase')
+assert.match(
+  snap,
+  /_moralisHoldingsDurationMs = Date\.now\(\) - _moralisHoldingsStartedAt/,
+  'Moralis holdings duration is measured from its own dedicated start timestamp, immediately after the allSettled call resolves',
+)
+assert.match(snap, /durationMs: _moralisHoldingsDurationMs,/, 'moralisUsage.durationMs reports the scoped fetch-phase duration, not the full scan elapsed time')
+assert.doesNotMatch(snap, /durationMs: Date\.now\(\) - startedAt,/, 'the old full-scan-elapsed duration measurement is removed')
+
+// The timeout branch must resolve and let the per-chain async function return WITHOUT awaiting the
+// real (slow) Moralis promise — only a fire-and-forget .then() touches it afterwards, so the
+// Promise.allSettled() driving _moralisHoldingsDurationMs can never be held open by the real call.
+const _raceBlock = snap.slice(snap.indexOf('const _timeoutPromise = new Promise<MoralisFetchResult>'), snap.indexOf('_moralisHoldingsDurationMs = Date.now()'))
+assert.match(_raceBlock, /const _mbRes = await Promise\.race\(\[_mbPromise, _timeoutPromise\]\)/, 'the per-chain result comes from the race, not a direct await of the real Moralis promise')
+assert.doesNotMatch(_raceBlock, /await _mbPromise(?!\.then)/, 'the real Moralis promise is never directly awaited inside the race-eligible branch — only raced or fire-and-forget .then()-chained')
 
 console.log('wallet live-speed pass: early no-sell skip + Moralis holdings timeout checks passed')
