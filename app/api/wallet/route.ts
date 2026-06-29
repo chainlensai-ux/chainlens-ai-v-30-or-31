@@ -1613,7 +1613,9 @@ export async function POST(req: Request) {
     _publicBudget.alchemyLoadUnitsUsed = Number(_apiAuditForBudget?.alchemy?.loadUnits ?? _apiAuditForBudget?.alchemy?.calls ?? 0)
     _publicBudget.creditsRemaining = Math.max(0, _publicBudget.totalCreditHardCap - _actualCreditsUsed)
     _publicBudget.targetExceeded = _actualCreditsUsed > _publicBudget.totalCreditTarget
-    _publicBudget.hardCapHit = _actualCreditsUsed > _publicBudget.totalCreditHardCap
+    // AUDIT-CONSISTENCY-FIX-4: must mirror _debug.walletScanBudgetDebug.hardCapHit exactly (it uses
+    // >=, not >) so an exact-cap scan (e.g. 18/18) reports hardCapHit true consistently top-level too.
+    _publicBudget.hardCapHit = Boolean(_scanBudgetDebug?.hardCapHit) || _actualCreditsUsed >= _publicBudget.totalCreditHardCap
     _publicBudget.totalBudgetCapHit = _publicBudget.hardCapHit
     _publicBudget.historicalPhaseCapHit = Boolean(_scanBudgetDebug?.historicalBudgetCapHit)
     _publicBudget.budgetCapHit = _publicBudget.totalBudgetCapHit

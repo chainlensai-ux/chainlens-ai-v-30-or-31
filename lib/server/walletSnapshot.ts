@@ -583,7 +583,7 @@ export type WalletSnapshot = {
     }
     openPosition: {
       source: 'chainlens_internal_fifo'
-      currentPriceSource: string
+      currentPriceSource: string | null
       status: string
       lockedReason: string | null
       useInOfficialPnl?: boolean
@@ -691,7 +691,7 @@ export type WalletSnapshot = {
     headline: string
     reasons: string[]
     recoverable: boolean
-    recoveryMode: 'deep_history' | 'price_evidence' | 'none'
+    recoveryMode: 'deep_history' | 'price_evidence' | 'full_recovery_only' | 'none'
     affectedTokens: string[]
     syntheticCostBasisLots: number
     excludedLots: number
@@ -1045,7 +1045,7 @@ export type WalletSnapshot = {
       targetedRecoveryPagesAttempted: number
     }
     possibleGapReasons: Array<{
-      reasonKey: 'provider_recent_window_limited' | 'provider_tx_count_below_external_trade_count' | 'unknown_direction_context_only_events' | 'receipt_reconstruction_failed' | 'historical_recovery_capped' | 'synthetic_cost_basis_remaining' | 'flat_price_estimate_only' | 'relayed_or_router_attribution_gap' | 'normal_scan_cost_cap_hit'
+      reasonKey: 'provider_recent_window_limited' | 'provider_tx_count_below_external_trade_count' | 'unknown_direction_context_only_events' | 'receipt_reconstruction_failed' | 'historical_recovery_capped' | 'synthetic_cost_basis_remaining' | 'flat_price_estimate_only' | 'relayed_or_router_attribution_gap' | 'normal_scan_cost_cap_hit' | 'quote_or_price_independence_not_proven'
       label: string
       evidence: string
       canFixInNormalScan: boolean
@@ -16150,7 +16150,10 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       excludedFrom: ['realized_pnl', 'win_rate', 'profit_skill', 'wallet_score'],
     }
     : {
-      status: 'unavailable',
+      // AUDIT-CONSISTENCY-FIX-1: open lots with known cost basis but unresolved current pricing are
+      // "cost_basis_only" — distinct from "unavailable" (no open lots at all) — so the source audit
+      // never reports a priced open position when only the cost basis is actually known.
+      status: _openLotsForRead.length > 0 ? 'cost_basis_only' : 'unavailable',
       unrealizedPnlUsd: null,
       unrealizedPnlPercent: null,
       headlineValueUsd: null,
@@ -16162,7 +16165,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       estimateOnlyTokenCount: _openPositionEstimateOnlyTokenCount,
       label: 'Open-position PnL',
       warning: 'Unrealized only — open positions, not a closed trade result.',
-      reason: _openLotsForRead.length === 0 ? 'No open lots are currently tracked.' : 'Open lots exist but current pricing could not be resolved.',
+      reason: _openLotsForRead.length === 0 ? 'No open lots are currently tracked.' : 'Open lots exist and cost basis is known, but current pricing could not be resolved — unrealized PnL is locked.',
       excludedFrom: ['realized_pnl', 'win_rate', 'profit_skill', 'wallet_score'],
     }
 
@@ -17861,6 +17864,10 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       ? 'medium'
       : 'low'
   const _officialPnlStillLocked = _performanceClosedLotsFinal.length === 0 || _performanceRealizedPnlUsd == null || (promotedTradeStatsSummary.publicPnlStatus ?? _publicPnlStatusFinal) !== 'ok'
+  // AUDIT-CONSISTENCY-FIX-2: receipt_reconstruction_failed must only appear when receipts actually
+  // failed/were incomplete — not whenever official PnL happens to still be locked for other reasons.
+  const _coverageReceiptsAllSucceeded = _coverageReceiptsAttempted > 0 && _coverageReceiptsSucceeded >= _coverageReceiptsAttempted
+  const _coverageReceiptReconstructionFailed = _coverageReceiptsAttempted > 0 && _coverageReceiptsSucceeded < _coverageReceiptsAttempted
   const walletExternalCoverageGapAudit: NonNullable<WalletSnapshot['walletExternalCoverageGapAudit']> = {
     enabled: true,
     wallet: addr,
@@ -17911,14 +17918,22 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         requiresFullRecovery: true,
         likelyCostImpact: 'medium',
       },
-      {
-        reasonKey: 'receipt_reconstruction_failed',
+      ...(_coverageReceiptReconstructionFailed ? [{
+        reasonKey: 'receipt_reconstruction_failed' as const,
         label: 'Receipt reconstruction did not prove every candidate',
         evidence: `${_coverageReceiptsSucceeded}/${_coverageReceiptsAttempted} candidate receipt(s) succeeded across capped reconstruction passes; ${Math.max(0, _coverageReceiptsAttempted - _coverageReceiptsSucceeded)} failed or unavailable.`,
         canFixInNormalScan: false,
         requiresFullRecovery: true,
-        likelyCostImpact: 'medium',
-      },
+        likelyCostImpact: 'medium' as const,
+      }] : []),
+      ...(_coverageReceiptsAllSucceeded && _officialPnlStillLocked ? [{
+        reasonKey: 'quote_or_price_independence_not_proven' as const,
+        label: 'Receipts succeeded, but quote/price independence did not unlock public-grade lots',
+        evidence: `${_coverageReceiptsSucceeded}/${_coverageReceiptsAttempted} candidate receipt(s) fetched successfully, but the resulting quote/price legs did not prove independent enough cost basis to unlock public-grade lots.`,
+        canFixInNormalScan: false,
+        requiresFullRecovery: true,
+        likelyCostImpact: 'medium' as const,
+      }] : []),
       {
         reasonKey: 'historical_recovery_capped',
         label: 'Historical recovery is capped for scan cost safety',
@@ -18807,11 +18822,17 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
             ? (_blockerRecoverable ? 'locked_recoverable' : 'locked_integrity')
             : 'locked_insufficient_evidence'
 
-      const _blockerRecoveryMode: NonNullable<WalletSnapshot['walletPnlBlockerSummary']>['recoveryMode'] = (_walletIsContractLikeForPnl || !_blockerRecoverable)
+      // AUDIT-CONSISTENCY-FIX-3: "not recoverable via normal scan" must not collapse to "no action
+      // available" — a full recovery pass can still try older wallet-side legs and quote proofs even
+      // when the normal-scan recovery signals above are false. Only address types excluded from PnL
+      // entirely (contract-like) genuinely have no recovery path.
+      const _blockerRecoveryMode: NonNullable<WalletSnapshot['walletPnlBlockerSummary']>['recoveryMode'] = _walletIsContractLikeForPnl
         ? 'none'
-        : (_p6SyntheticLotCount > 0 || _blockerHistoricalCapHit || _blockerRecoverableViaTargetedRecovery)
-          ? 'deep_history'
-          : 'price_evidence'
+        : !_blockerRecoverable
+          ? (_blockerStatus === 'ready' ? 'none' : 'full_recovery_only')
+          : (_p6SyntheticLotCount > 0 || _blockerHistoricalCapHit || _blockerRecoverableViaTargetedRecovery)
+            ? 'deep_history'
+            : 'price_evidence'
 
       const _blockerReasons: string[] = []
       if (_walletIsContractLikeForPnl) {
@@ -18856,7 +18877,9 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
                 ? 'Recover additional price evidence before showing public PnL.'
                 : _blockerRecoverable
                   ? `Recovery available, but this scan hit the cost cap before deeper buy-leg recovery could run. Next action: run targeted recovery for ${_blockerTargetTokenSymbols.join(' and ') || 'the affected tokens'}.`
-                  : 'No action available — this PnL read is not recoverable.'
+                  : _blockerRecoveryMode === 'full_recovery_only'
+                    ? 'Normal scan cannot unlock this. Full recovery may try older wallet-side legs and quote proofs, but is not guaranteed.'
+                    : 'No action available — this PnL read is not recoverable.'
 
       snapshot.walletPnlBlockerSummary = {
         status: _blockerStatus,
@@ -19735,7 +19758,9 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       },
       openPosition: {
         source: 'chainlens_internal_fifo',
-        currentPriceSource: providerUsed,
+        // AUDIT-CONSISTENCY-FIX-1: mirror walletOpenPositionPnlRead exactly — no currentPriceSource
+        // when currentValueUsd is null, since nothing was actually priced in that case.
+        currentPriceSource: _walletOpenPositionPnlRead.currentValueUsd === null ? null : providerUsed,
         // SOURCE-AUDIT-FIX-4: must not claim a fully-priced open position when the underlying read is
         // locked/partial/estimate-only — map the internal read status to an honest audit-facing label.
         status: _walletOpenPositionPnlRead.status === 'available'
@@ -19747,7 +19772,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
               : _walletOpenPositionPnlRead.status === 'cost_basis_only'
                 ? 'cost_basis_only'
                 : 'locked',
-        lockedReason: _walletOpenPositionPnlRead.status === 'unavailable' ? _walletOpenPositionPnlRead.reason : null,
+        lockedReason: _walletOpenPositionPnlRead.status === 'available' ? null : _walletOpenPositionPnlRead.reason,
         useInOfficialPnl: false,
         fieldsPowered: ['walletOpenPositionPnlRead'],
       },
