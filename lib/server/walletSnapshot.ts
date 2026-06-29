@@ -433,8 +433,25 @@ export type WalletSnapshot = {
   // limited-sample, open-position, estimated transfer-flow, and raw reconstruction — so a wallet
   // with real activity/holdings/estimates never displays as flatly "no PnL." No new provider calls;
   // every field below reuses values already assembled elsewhere in this function.
+  walletEstimatedPnlRead?: {
+    available: boolean
+    status: 'available' | 'partial' | 'unavailable'
+    confidence: 'low' | 'medium'
+    label: 'Estimated PnL Beta'
+    warning: 'Estimated only — not verified. Excluded from win rate, score, and profit skill.'
+    realizedEstimateUsd: number | null
+    rawFifoRealizedEstimateUsd: number | null
+    historicalPreviewRealizedEstimateUsd: number | null
+    addedHistoricalPreviewPnlUsd: number | null
+    matchedOpenPositionUnrealizedUsd: number | null
+    totalEstimateUsd: number | null
+    source: 'raw_fifo_and_historical_preview'
+    basis: string[]
+    excludedFrom: ['official_realized_pnl', 'win_rate', 'profit_skill', 'wallet_score', 'verified_pnl']
+    reasons: string[]
+  }
   walletPnlRead?: {
-    displayMode: 'official_realized' | 'limited_sample' | 'open_position_only' | 'estimated_transfer_flow_only' | 'raw_reconstruction_locked' | 'activity_only' | 'not_applicable' | 'provider_summary'
+    displayMode: 'official_realized' | 'limited_sample' | 'open_position_only' | 'estimated_transfer_flow_only' | 'raw_reconstruction_locked' | 'activity_only' | 'not_applicable' | 'provider_summary' | 'official_locked_estimated_available'
     headlineLabel: string
     headlineValueUsd: number | null
     headlineWarning: string | null
@@ -453,6 +470,7 @@ export type WalletSnapshot = {
       warning: 'Estimated only — not verified from matched swap cost basis.'
       excludedFrom: ['official_realized_pnl', 'win_rate', 'profit_skill', 'wallet_score', 'verified_pnl']
     }
+    estimatedBeta?: NonNullable<WalletSnapshot['walletEstimatedPnlRead']>
     rawReconstruction: {
       rawClosedLots: number
       excludedClosedLots: number
@@ -1004,7 +1022,7 @@ export type WalletSnapshot = {
   pnlQualityReason?: string
   walletRecoveryRecommendation?: {
     recommended: boolean
-    mode: 'targeted_token_recovery' | 'targeted_recovery_attempted' | 'attempted_light' | 'attempted_light_no_new_candidates' | 'attempted_provider_failed' | 'skipped_cost_guard' | 'skipped_micro_wallet' | 'none'
+    mode: 'targeted_token_recovery' | 'targeted_recovery_attempted' | 'already_attempted_full_recovery' | 'attempted_light' | 'attempted_light_no_new_candidates' | 'attempted_provider_failed' | 'skipped_cost_guard' | 'skipped_micro_wallet' | 'none'
     targetTokens: Array<{ contract: string; symbol: string; chain: string; estimatedUsd: number }>
     reason: string
     // Human-readable explanation of the reason code, kept honest about whether the historical
@@ -16333,7 +16351,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // with zero new closed lots (e.g. walletHistoricalFifoPreviewDebug.reasons includes
   // no_new_priced_historical_events_after_dedup). recoveryResult must only say "recovered" when the
   // recovery actually changed the synthetic/public-grade lot counts, not merely when it ran.
-  const _missingCostBasisRecoveryAttempted = _syntheticTargetExtraRecoveryAttempted || walletPnlRecoveryV2Debug.attempted
+  const _missingCostBasisRecoveryAttempted = _syntheticTargetExtraRecoveryAttempted || walletPnlRecoveryV2Debug.attempted || Boolean(walletHistoricalCoverageSummary?.requested) || Number(walletHistoricalCoverageSummary?.pagesAttempted ?? 0) > 0 || Number(walletHistoricalFifoPreviewSummary.addedClosedLots ?? 0) > 0
   // RECOVERY-PROMOTE-FIX-1: addedClosedLots>0 alone used to count as "applied"/"recovered", even
   // when walletHistoricalFifoPreviewSummary.safeToPromoteToPublicStats was false (e.g. only 1 of 3
   // found candidates got priced, leaving the preview as a whole unsafe to publish) — that produced
@@ -17910,8 +17928,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // an unrelated/contradictory reason from the branches above (e.g. missing_cost_basis_for_top_value_tokens).
   if (_missingCostBasisRead && _missingCostBasisRecoveryResultIsPreviewOnly) {
     _walletRecoveryRecommendation.recommended = false
-    _walletRecoveryRecommendation.mode = 'targeted_recovery_attempted'
-    _walletRecoveryRecommendation.reason = _missingCostBasisRecoveryResult
+    _walletRecoveryRecommendation.mode = _gatewayScanMode === 'full_recovery' ? 'already_attempted_full_recovery' : 'targeted_recovery_attempted'
+    _walletRecoveryRecommendation.reason = _gatewayScanMode === 'full_recovery' ? 'full_recovery_attempted_preview_only_integrity_locked' : _missingCostBasisRecoveryResult
   }
   _perfWalletTimings.recoveryRecommendationMs += Date.now() - _recoveryRecommendationStartedAt
 
@@ -19074,10 +19092,52 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     const _pnlReadOpenPositionAvailable = !_pnlReadOfficialAvailable && !_pnlReadLimitedSampleAvailable &&
       (snapshot.walletOpenPositionPnlRead?.status === 'available' || snapshot.walletOpenPositionPnlRead?.status === 'estimate_only')
     const _pnlReadIntegrityInvalid = _p6HardInvalid || _p6SoftPartialOnly || !_pnlReadOfficialAvailable
-    const _pnlReadEstimatedTransferAvailable = !_walletIsContractLikeForPnl && !_pnlReadOfficialAvailable && !_pnlReadLimitedSampleAvailable && !_pnlReadOpenPositionAvailable
+    const _estimatedRawFifo = !_pnlReadOfficialAvailable && _rawMatchedClosedLotsFinal > 0 && Number.isFinite(walletLotSummary.realizedPnlUsd as any)
+      ? walletLotSummary.realizedPnlUsd
+      : null
+    const _estimatedHistoricalPreview = !_pnlReadOfficialAvailable && walletHistoricalFifoPreviewSummary.safeToPromoteToPublicStats === false && walletHistoricalFifoPreviewSummary.previewClosedLots > walletHistoricalFifoPreviewSummary.baselineClosedLots && Number.isFinite(walletHistoricalFifoPreviewSummary.previewRealizedPnlUsd as any)
+      ? walletHistoricalFifoPreviewSummary.previewRealizedPnlUsd
+      : null
+    const _estimatedHistoricalAdded = !_pnlReadOfficialAvailable && walletHistoricalFifoPreviewSummary.safeToPromoteToPublicStats === false && walletHistoricalFifoPreviewSummary.previewClosedLots > walletHistoricalFifoPreviewSummary.baselineClosedLots && Number.isFinite(walletHistoricalFifoPreviewSummary.addedRealizedPnlUsd as any)
+      ? walletHistoricalFifoPreviewSummary.addedRealizedPnlUsd
+      : null
+    const _estimatedOpenUnrealized = !_pnlReadOfficialAvailable && snapshot.walletOpenPositionPnlRead?.status !== 'available' && Number.isFinite(((snapshot as any).openPositionPerformanceSummary ?? (snapshot as any).walletModuleCoverage?.openPositionPerformanceSummary)?.rawMatchedUnrealizedPnlUsd)
+      ? (((snapshot as any).openPositionPerformanceSummary ?? (snapshot as any).walletModuleCoverage?.openPositionPerformanceSummary) as any).rawMatchedUnrealizedPnlUsd
+      : null
+    const _estimatedPnlBasis = [
+      ...(_estimatedRawFifo !== null ? ['raw_fifo_closed_lots'] : []),
+      ...(_estimatedHistoricalPreview !== null ? ['historical_fifo_preview_not_promoted'] : []),
+      ...(_estimatedOpenUnrealized !== null ? ['matched_open_position_unrealized_locked'] : []),
+    ]
+    const _estimatedPnlComponents = [_estimatedRawFifo, _estimatedHistoricalPreview, _estimatedOpenUnrealized].filter((v): v is number => typeof v === 'number' && Number.isFinite(v))
+    const _estimatedPnlTotal = _estimatedPnlComponents.length > 0 ? _estimatedPnlComponents.reduce((sum, v) => sum + v, 0) : null
+    const _walletEstimatedPnlRead: NonNullable<WalletSnapshot['walletEstimatedPnlRead']> = {
+      available: _estimatedPnlComponents.length > 0,
+      status: _estimatedPnlComponents.length > 1 ? 'available' : _estimatedPnlComponents.length === 1 ? 'partial' : 'unavailable',
+      confidence: _estimatedHistoricalPreview !== null && _estimatedRawFifo !== null ? 'medium' : 'low',
+      label: 'Estimated PnL Beta',
+      warning: 'Estimated only — not verified. Excluded from win rate, score, and profit skill.',
+      realizedEstimateUsd: _estimatedHistoricalPreview ?? _estimatedRawFifo,
+      rawFifoRealizedEstimateUsd: _estimatedRawFifo,
+      historicalPreviewRealizedEstimateUsd: _estimatedHistoricalPreview,
+      addedHistoricalPreviewPnlUsd: _estimatedHistoricalAdded,
+      matchedOpenPositionUnrealizedUsd: _estimatedOpenUnrealized,
+      totalEstimateUsd: _estimatedPnlTotal,
+      source: 'raw_fifo_and_historical_preview',
+      basis: _estimatedPnlBasis,
+      excludedFrom: ['official_realized_pnl', 'win_rate', 'profit_skill', 'wallet_score', 'verified_pnl'],
+      reasons: [
+        ...(!_pnlReadOfficialAvailable ? [_publicPnlStatusReasonFinal ?? 'Official realized PnL is locked.'] : []),
+        ...(_estimatedHistoricalPreview !== null ? ['Historical preview exists but was not promoted to public stats.'] : []),
+        ...(_estimatedOpenUnrealized !== null ? ['Open-position aggregate PnL is locked, but matched-token raw unrealized evidence exists.'] : []),
+      ],
+    }
+    if (_walletEstimatedPnlRead.available) snapshot.walletEstimatedPnlRead = _walletEstimatedPnlRead
+    const _pnlReadEstimatedBetaAvailable = !_walletIsContractLikeForPnl && !_pnlReadOfficialAvailable && _walletEstimatedPnlRead.available
+    const _pnlReadEstimatedTransferAvailable = !_walletIsContractLikeForPnl && !_pnlReadOfficialAvailable && !_pnlReadLimitedSampleAvailable && !_pnlReadOpenPositionAvailable && !_pnlReadEstimatedBetaAvailable
       && (Number.isFinite((estimatedPnl as any)?.realizedPnlUsd) || Number.isFinite((estimatedPnl as any)?.unrealizedPnlUsd))
       && _pnlReadIntegrityInvalid
-    const _pnlReadRawReconstructionOnly = !_pnlReadOfficialAvailable && !_pnlReadLimitedSampleAvailable && !_pnlReadOpenPositionAvailable && !_pnlReadEstimatedTransferAvailable && _rawMatchedClosedLotsFinal > 0
+    const _pnlReadRawReconstructionOnly = !_pnlReadOfficialAvailable && !_pnlReadLimitedSampleAvailable && !_pnlReadOpenPositionAvailable && !_pnlReadEstimatedTransferAvailable && !_pnlReadEstimatedBetaAvailable && _rawMatchedClosedLotsFinal > 0
     const _pnlReadDisplayMode: NonNullable<WalletSnapshot['walletPnlRead']>['displayMode'] = _walletIsContractLikeForPnl
       ? 'not_applicable'
       : _pnlReadOfficialAvailable
@@ -19086,6 +19146,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
           ? 'limited_sample'
           : _pnlReadOpenPositionAvailable
             ? 'open_position_only'
+            : _pnlReadEstimatedBetaAvailable
+              ? 'official_locked_estimated_available'
             : _pnlReadEstimatedTransferAvailable
               ? 'estimated_transfer_flow_only'
               : _pnlReadRawReconstructionOnly
@@ -19110,6 +19172,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         ? { label: 'Limited public PnL sample', valueUsd: snapshot.publicSamplePerformanceRead?.realizedPnlUsd ?? null, warning: snapshot.publicSamplePerformanceRead?.warning ?? null }
         : _pnlReadDisplayMode === 'open_position_only'
           ? { label: snapshot.walletOpenPositionPnlRead?.label ?? 'Open-position PnL', valueUsd: snapshot.walletOpenPositionPnlRead?.status === 'estimate_only' ? (snapshot.walletOpenPositionPnlRead?.headlineValueUsd ?? null) : (snapshot.walletOpenPositionPnlRead?.unrealizedPnlUsd ?? null), warning: snapshot.walletOpenPositionPnlRead?.warning ?? null }
+          : _pnlReadDisplayMode === 'official_locked_estimated_available'
+            ? { label: 'Official PnL locked — estimated beta available', valueUsd: null, warning: _walletEstimatedPnlRead.warning }
           : _pnlReadDisplayMode === 'estimated_transfer_flow_only'
             ? { label: 'Estimated transfer-flow PnL', valueUsd: (estimatedPnl as any)?.realizedPnlUsd ?? null, warning: 'Estimated only — not verified from matched swap cost basis.' }
             : _pnlReadDisplayMode === 'raw_reconstruction_locked'
@@ -19139,6 +19203,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         openLots: snapshot.walletOpenPositionPnlRead?.openLots ?? 0,
         reason: snapshot.walletOpenPositionPnlRead?.reason ?? '',
       },
+      estimatedBeta: _walletEstimatedPnlRead,
       estimatedTransferFlow: {
         available: _pnlReadEstimatedTransferAvailable,
         realizedPnlUsd: _walletIsContractLikeForPnl ? null : ((estimatedPnl as any)?.realizedPnlUsd ?? null),
@@ -19732,8 +19797,10 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       if (walletHistoricalFifoPreviewSummary.reason?.startsWith('recovered_preview_only_')) {
         walletHistoricalFifoPreviewSummary.reason = 'recovered_preview_only_integrity_locked'
       }
-      if (_walletRecoveryRecommendation.reason?.startsWith('recovered_preview_only_')) {
-        _walletRecoveryRecommendation.reason = 'recovered_preview_only_integrity_locked'
+      if (_walletRecoveryRecommendation.reason?.startsWith('recovered_preview_only_') || _walletRecoveryRecommendation.reason === 'full_recovery_attempted_preview_only_integrity_locked') {
+        _walletRecoveryRecommendation.recommended = false
+        _walletRecoveryRecommendation.mode = _gatewayScanMode === 'full_recovery' ? 'already_attempted_full_recovery' : _walletRecoveryRecommendation.mode
+        _walletRecoveryRecommendation.reason = _gatewayScanMode === 'full_recovery' ? 'full_recovery_attempted_preview_only_integrity_locked' : 'recovered_preview_only_integrity_locked'
       }
     }
   }

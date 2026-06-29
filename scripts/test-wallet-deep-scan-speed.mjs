@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 
 const snap = fs.readFileSync('lib/server/walletSnapshot.ts', 'utf8')
 const route = fs.readFileSync('app/api/wallet/route.ts', 'utf8')
+const page = fs.readFileSync('app/terminal/wallet-scanner/page.tsx', 'utf8')
 const providerBudget = fs.readFileSync('lib/server/walletProviders/budget.ts', 'utf8')
 
 // LIVE-SPEED-2: skip gate is a dedicated helper, derivable purely from FIFO/evidence shape signals
@@ -511,5 +512,27 @@ assert.match(
   'walletApiSourceAudit.totalCost.totalProviderCredits matches canonical/api audit total',
 )
 assert.ok(route.includes('walletProviderGatewayDebug') && route.includes('walletProviderCallAudit'), 'route exposes debug-only provider gateway fields')
+
+
+assert.match(
+  snap,
+  /walletEstimatedPnlRead\?: \{[\s\S]*Estimated PnL Beta[\s\S]*rawFifoRealizedEstimateUsd[\s\S]*historicalPreviewRealizedEstimateUsd[\s\S]*matchedOpenPositionUnrealizedUsd[\s\S]*excludedFrom: \['official_realized_pnl', 'win_rate', 'profit_skill', 'wallet_score', 'verified_pnl'\]/,
+  'walletEstimatedPnlRead exposes the separate low-confidence Estimated PnL Beta lane excluded from official metrics',
+)
+assert.match(
+  snap,
+  /official_locked_estimated_available/,
+  'walletPnlRead has official_locked_estimated_available display mode when official PnL is locked but estimated beta evidence exists',
+)
+assert.match(
+  snap,
+  /const _pnlReadEstimatedTransferAvailable = [\s\S]*!_pnlReadEstimatedBetaAvailable/,
+  'estimated transfer-flow is not used as the main headline when Estimated PnL Beta evidence exists',
+)
+assert.match(
+  page,
+  /Estimated PnL Beta[\s\S]*Raw FIFO estimate[\s\S]*Historical preview estimate[\s\S]*Matched open-position estimate[\s\S]*Total estimate[\s\S]*Low confidence estimate — excluded from score, win rate, and profit skill\./,
+  'wallet scanner renders a clearly labeled Estimated PnL Beta card with component estimates',
+)
 
 console.log('wallet provider gateway checks passed')
