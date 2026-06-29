@@ -16483,16 +16483,41 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   if (_walletBehaviorReusedActivityEvents) _apiWarnings.push('wallet_behavior_reused_activity_events')
   if (_walletBehaviorSkippedDuplicateAlchemy) _apiWarnings.push('wallet_behavior_skipped_duplicate_alchemy')
   _apiWarnings.push('moralis_warmup_removed')
-  const _moralisLiveCount = _liveCalls('moralis').length
-  const _grLiveCount = _liveCalls('goldrush').length
+  const _moralisLiveCalls = _liveCalls('moralis')
+  const _moralisLiveCount = _moralisLiveCalls.length
+  const _grLiveCalls = _liveCalls('goldrush')
+  const _grLiveCount = _grLiveCalls.length
   const _alchemyCount = _logByProvider('alchemy').length
   // BUDGET-WARNING-FIX: warn against the *current* per-scan budget (tier target / hard cap and
   // the actual phase page budget), not stale hardcoded counts. A scan that uses 9 credits with a
   // target of 15 is within budget and must not warn.
-  const _grExpectedCalls = Math.max(4, 2 + Number(_historicalCoverageDebug?.pagesAttempted ?? 0) + Number(_syntheticTargetExtraPagesAttempted ?? 0))
   if (_apiTotalCredits > _totalCreditTarget) _apiWarnings.push(`total_credits_${_apiTotalCredits}_exceeds_target_${_totalCreditTarget}`)
-  if (_moralisLiveCount > 3) _apiWarnings.push(`moralis_${_moralisLiveCount}_calls_expected_3`)
-  if (_grLiveCount > _grExpectedCalls) _apiWarnings.push(`goldrush_${_grLiveCount}_calls_expected_${_grExpectedCalls}`)
+  // API-AUDIT-CLEANUP-2: stop warning on raw call counts (moralis_4_calls_expected_3,
+  // goldrush_8_calls_expected_4) when every single call is already explained by a known purpose
+  // in costByPurposeDetail (e.g. 2x erc20_holdings + 1x erc20_transfers + 1x profitability_summary
+  // for the provider-summary path, or 1x transactions_v3 + 2x balances_v2 + 5x
+  // historical_by_addresses_v2 price-at-time lookups). Only the genuinely unexplained remainder —
+  // calls to endpoints outside the known purpose set — is real waste worth flagging.
+  const _moralisKnownPurposeEndpoints = new Set(['erc20_holdings', 'erc20_transfers', 'profitability_summary'])
+  const _moralisUnexplainedCalls = _moralisLiveCalls.filter(e => !_moralisKnownPurposeEndpoints.has(e.endpoint)).length
+  if (_moralisUnexplainedCalls > 0) {
+    _apiWarnings.push(`moralis_${_moralisUnexplainedCalls}_unexplained_calls_beyond_known_purpose_endpoints`)
+  }
+  const _grKnownPurposeEndpoints = new Set(['transactions_v3', 'balances_v2', 'historical_by_addresses_v2', 'log_events_by_address'])
+  const _grUnexplainedCalls = _grLiveCalls.filter(e => !_grKnownPurposeEndpoints.has(e.endpoint)).length
+  if (_grUnexplainedCalls > 0) {
+    _apiWarnings.push(`goldrush_${_grUnexplainedCalls}_unexplained_calls_beyond_known_purpose_endpoints`)
+  }
+  // log_events_by_address is the only goldrush endpoint that performs real historical recovery —
+  // it alone is bounded by the actual recovery page budget; the price-at-time lookups
+  // (historical_by_addresses_v2) and baseline holdings/activity calls are not recovery spend and
+  // must never be compared against the recovery page budget.
+  const _grRecoveryCalls = _grLiveCalls.filter(e => e.endpoint === 'log_events_by_address').length
+  const _grRecoveryBudget = Number(_historicalCoverageDebug?.pagesAttempted ?? 0) + Number(_syntheticTargetExtraPagesAttempted ?? 0)
+  const _grRecoveryOverBudget = _grRecoveryCalls > _grRecoveryBudget
+  if (_grRecoveryOverBudget) {
+    _apiWarnings.push(`goldrush_recovery_${_grRecoveryCalls}_calls_exceeds_budget_${_grRecoveryBudget}`)
+  }
   // ALCHEMY-WARNING-FIX: split intentional receipt-reconstruction load (billed 0 credits, capped per
   // pass) from baseline activity calls so a healthy receipt-heavy scan does not emit a scary
   // "31 calls expected 8" credit warning. Only flag a genuine overspend: baseline calls over the
@@ -16509,8 +16534,12 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   }
   if (_dupEntries.length > 0) _apiWarnings.push(`${_dupEntries.length}_duplicate_call(s)_detected`)
   // BUDGET-ACCOUNTING-CONSISTENCY-FIX: surface it explicitly whenever the real audit total exceeds
-  // the budget's own estimate, instead of letting the two diverge silently.
-  if (_apiTotalCredits > _walletScanBudgetDebug.estimatedPlanningCreditsUsed) {
+  // the budget's own estimate, instead of letting the two diverge silently. API-AUDIT-CLEANUP-2:
+  // only fire when the overage is actually unexplained (unknown-purpose calls or a real recovery
+  // page overrun) — a totalCredits/estimate mismatch fully accounted for by known-purpose calls
+  // (e.g. extra price-at-time lookups) is not a budget problem and must not warn.
+  const _apiAuditOverageUnexplained = _moralisUnexplainedCalls > 0 || _grUnexplainedCalls > 0 || _grRecoveryOverBudget
+  if (_apiTotalCredits > _walletScanBudgetDebug.estimatedPlanningCreditsUsed && _apiAuditOverageUnexplained) {
     _apiWarnings.push(`api_audit_total_${_apiTotalCredits}_exceeds_budget_estimate_${_walletScanBudgetDebug.estimatedPlanningCreditsUsed}`)
   }
   // Provider cost breakdown by purpose — distinguishes WHAT the credits were spent on (holdings
@@ -16575,6 +16604,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     auditNotes: [
       'historical_by_addresses_v2 (GoldRush historical price lookups) is bucketed under pricing, not historical_recovery, since it supplies price-at-time evidence rather than recovering new trade legs.',
       'log_events_by_address is the only goldrush endpoint bucketed under historical_recovery.',
+      'moralis/goldrush call-count warnings only fire for calls to endpoints outside the known purpose set, or for log_events_by_address recovery calls exceeding the actual recovery page budget — calls fully explained by costByPurposeDetail never warn regardless of raw count.',
     ],
     callsPrevented: {
       zerionCallsSavedByCache: _zerionCacheDebug.callsSavedByCache,
