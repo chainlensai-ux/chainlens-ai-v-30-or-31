@@ -583,7 +583,7 @@ export type WalletSnapshot = {
     }
     openPosition: {
       source: 'chainlens_internal_fifo'
-      currentPriceSource: string
+      currentPriceSource: string | null
       status: string
       lockedReason: string | null
       useInOfficialPnl?: boolean
@@ -691,7 +691,7 @@ export type WalletSnapshot = {
     headline: string
     reasons: string[]
     recoverable: boolean
-    recoveryMode: 'deep_history' | 'price_evidence' | 'none'
+    recoveryMode: 'deep_history' | 'price_evidence' | 'full_recovery_only' | 'none'
     affectedTokens: string[]
     syntheticCostBasisLots: number
     excludedLots: number
@@ -1045,7 +1045,7 @@ export type WalletSnapshot = {
       targetedRecoveryPagesAttempted: number
     }
     possibleGapReasons: Array<{
-      reasonKey: 'provider_recent_window_limited' | 'provider_tx_count_below_external_trade_count' | 'unknown_direction_context_only_events' | 'receipt_reconstruction_failed' | 'historical_recovery_capped' | 'synthetic_cost_basis_remaining' | 'flat_price_estimate_only' | 'relayed_or_router_attribution_gap' | 'normal_scan_cost_cap_hit'
+      reasonKey: 'provider_recent_window_limited' | 'provider_tx_count_below_external_trade_count' | 'unknown_direction_context_only_events' | 'receipt_reconstruction_failed' | 'historical_recovery_capped' | 'synthetic_cost_basis_remaining' | 'flat_price_estimate_only' | 'relayed_or_router_attribution_gap' | 'normal_scan_cost_cap_hit' | 'quote_or_price_independence_not_proven'
       label: string
       evidence: string
       canFixInNormalScan: boolean
@@ -17846,14 +17846,22 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         requiresFullRecovery: true,
         likelyCostImpact: 'medium',
       },
-      {
-        reasonKey: 'receipt_reconstruction_failed',
+      ...((_coverageReceiptsAttempted > 0 && (_coverageReceiptsAttempted - _coverageReceiptsSucceeded > 0 || _coverageReceiptsSucceeded < _coverageReceiptsAttempted)) ? [{
+        reasonKey: 'receipt_reconstruction_failed' as const,
         label: 'Receipt reconstruction did not prove every candidate',
         evidence: `${_coverageReceiptsSucceeded}/${_coverageReceiptsAttempted} candidate receipt(s) succeeded across capped reconstruction passes; ${Math.max(0, _coverageReceiptsAttempted - _coverageReceiptsSucceeded)} failed or unavailable.`,
         canFixInNormalScan: false,
         requiresFullRecovery: true,
-        likelyCostImpact: 'medium',
-      },
+        likelyCostImpact: 'medium' as const,
+      }] : []),
+      ...((_coverageReceiptsAttempted > 0 && _coverageReceiptsSucceeded >= _coverageReceiptsAttempted && _performanceClosedLotsFinal.length === 0) ? [{
+        reasonKey: 'quote_or_price_independence_not_proven' as const,
+        label: 'Quote/price independence was not proven',
+        evidence: `${_coverageReceiptsSucceeded}/${_coverageReceiptsAttempted} candidate receipt fetch(es) succeeded, but quote/price independence did not unlock public-grade lots.`,
+        canFixInNormalScan: false,
+        requiresFullRecovery: true,
+        likelyCostImpact: 'medium' as const,
+      }] : []),
       {
         reasonKey: 'historical_recovery_capped',
         label: 'Historical recovery is capped for scan cost safety',
@@ -18735,11 +18743,16 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
             ? (_blockerRecoverable ? 'locked_recoverable' : 'locked_integrity')
             : 'locked_insufficient_evidence'
 
-      const _blockerRecoveryMode: NonNullable<WalletSnapshot['walletPnlBlockerSummary']>['recoveryMode'] = (_walletIsContractLikeForPnl || !_blockerRecoverable)
+      const _blockerFullRecoveryOnly = !_walletIsContractLikeForPnl && !_blockerRecoverable && !_blockerOfficialAvailable && Boolean(_officialPnlStillLocked && (walletExternalCoverageGapAudit?.possibleGapReasons?.some(r => r.requiresFullRecovery)))
+      const _blockerRecoveryMode: NonNullable<WalletSnapshot['walletPnlBlockerSummary']>['recoveryMode'] = _walletIsContractLikeForPnl
         ? 'none'
-        : (_p6SyntheticLotCount > 0 || _blockerHistoricalCapHit || _blockerRecoverableViaTargetedRecovery)
-          ? 'deep_history'
-          : 'price_evidence'
+        : _blockerFullRecoveryOnly
+          ? 'full_recovery_only'
+          : !_blockerRecoverable
+            ? 'none'
+            : (_p6SyntheticLotCount > 0 || _blockerHistoricalCapHit || _blockerRecoverableViaTargetedRecovery)
+              ? 'deep_history'
+              : 'price_evidence'
 
       const _blockerReasons: string[] = []
       if (_walletIsContractLikeForPnl) {
@@ -18782,9 +18795,11 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
               ? 'Run deeper historical recovery for prior buys before showing public PnL.'
               : _blockerRecoveryMode === 'price_evidence'
                 ? 'Recover additional price evidence before showing public PnL.'
-                : _blockerRecoverable
-                  ? `Recovery available, but this scan hit the cost cap before deeper buy-leg recovery could run. Next action: run targeted recovery for ${_blockerTargetTokenSymbols.join(' and ') || 'the affected tokens'}.`
-                  : 'No action available — this PnL read is not recoverable.'
+                : _blockerRecoveryMode === 'full_recovery_only'
+                  ? 'Normal scan cannot unlock this. Full recovery may try older wallet-side legs and quote proofs, but is not guaranteed.'
+                  : _blockerRecoverable
+                    ? `Recovery available, but this scan hit the cost cap before deeper buy-leg recovery could run. Next action: run targeted recovery for ${_blockerTargetTokenSymbols.join(' and ') || 'the affected tokens'}.`
+                    : 'No action available — this PnL read is not recoverable.'
 
       snapshot.walletPnlBlockerSummary = {
         status: _blockerStatus,
@@ -19645,7 +19660,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       },
       openPosition: {
         source: 'chainlens_internal_fifo',
-        currentPriceSource: providerUsed,
+        currentPriceSource: _walletOpenPositionPnlRead.currentValueUsd === null ? null : providerUsed,
         status: _walletOpenPositionPnlRead.status,
         lockedReason: _walletOpenPositionPnlRead.reason ?? null,
         useInOfficialPnl: false,
