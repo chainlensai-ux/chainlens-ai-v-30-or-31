@@ -1465,6 +1465,12 @@ export async function POST(req: Request) {
           warning: 'Current value unavailable — not real unrealized PnL.',
           reason: unmatchedReason,
         }
+        if ((snapshot as any).walletApiSourceAudit?.openPosition) {
+          ;(snapshot as any).walletApiSourceAudit.openPosition.status = snapshot.walletOpenPositionPnlRead.status
+          ;(snapshot as any).walletApiSourceAudit.openPosition.useInOfficialPnl = false
+          ;(snapshot as any).walletApiSourceAudit.openPosition.currentPriceSource = snapshot.walletOpenPositionPnlRead.currentValueUsd === null ? null : (snapshot as any).walletApiSourceAudit.openPosition.currentPriceSource
+          ;(snapshot as any).walletApiSourceAudit.openPosition.lockedReason = snapshot.walletOpenPositionPnlRead.reason
+        }
         snapshot.pnlDisplayMode = 'open_position_only'
         snapshot.pnlDisplayLabel = 'Open-position PnL locked'
         snapshot.pnlDisplayReason = unmatchedReason
@@ -1603,7 +1609,7 @@ export async function POST(req: Request) {
     _publicBudget.alchemyLoadUnitsUsed = Number(_apiAuditForBudget?.alchemy?.loadUnits ?? _apiAuditForBudget?.alchemy?.calls ?? 0)
     _publicBudget.creditsRemaining = Math.max(0, _publicBudget.totalCreditHardCap - _actualCreditsUsed)
     _publicBudget.targetExceeded = _actualCreditsUsed > _publicBudget.totalCreditTarget
-    _publicBudget.hardCapHit = _actualCreditsUsed > _publicBudget.totalCreditHardCap
+    _publicBudget.hardCapHit = Boolean(_scanBudgetDebug?.hardCapHit) || _actualCreditsUsed >= _publicBudget.totalCreditHardCap
     _publicBudget.totalBudgetCapHit = _publicBudget.hardCapHit
     _publicBudget.historicalPhaseCapHit = Boolean(_scanBudgetDebug?.historicalBudgetCapHit)
     _publicBudget.budgetCapHit = _publicBudget.totalBudgetCapHit
