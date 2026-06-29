@@ -397,6 +397,35 @@ type WalletResult = {
       capHitReason: string | null
     }
   }
+  walletExternalCoverageGapAudit?: {
+    enabled: true
+    wallet: string
+    windowDays: 30
+    chain: 'eth'
+    chainlens: {
+      rawProviderTxs: number
+      normalizedEvents: number
+      walletSideEvents: number
+      groupedTxCount: number
+      swapCandidateEvents: number
+      matchedLots: number
+      publicGradeLots: number
+      verifiedPnlLots: number
+      excludedLots: number
+      unknownDirectionEvents: number
+      contextOnlyEvents: number
+      receiptsAttempted: number
+      receiptsSucceeded: number
+      receiptsFailed: number
+      historicalPagesAttempted: number
+      targetedRecoveryPagesAttempted: number
+    }
+    externalStyleExpectedTradeCount?: number | null
+    possibleGapReasons: Array<{ reasonKey: string; label: string; evidence: string; canFixInNormalScan: boolean; requiresFullRecovery: boolean; likelyCostImpact: 'low' | 'medium' | 'high' }>
+    recommendedNextStep: string
+    safeToShowEstimatedPnl: boolean
+    officialPnlStillLocked: boolean
+  }
   walletTradeReconstructionFunnel?: {
     walletSideTransactions: number
     swapCandidateEvents: number
@@ -2744,6 +2773,40 @@ export default function WalletScannerPage() {
                                   </p>
                                 )}
                               </>
+                            )}
+                          </div>
+                        )
+                      })()}
+
+                      {(() => {
+                        const audit = result.walletExternalCoverageGapAudit
+                        if (!audit?.enabled) return null
+                        const costTier = audit.possibleGapReasons.find(r => r.reasonKey === 'normal_scan_cost_cap_hit')?.likelyCostImpact ?? 'medium'
+                        const externalExpected = audit.externalStyleExpectedTradeCount ?? '—'
+                        return (
+                          <div className="wpv3-card">
+                            <p className="wpv3-title">Coverage gap audit</p>
+                            <div className="wpv3-metric-row"><span className="wpv3-label">ChainLens reconstructed lots</span><span className="wpv3-value" style={{ fontSize: '20px' }}>{audit.chainlens.matchedLots}</span></div>
+                            <div className="wpv3-metric-row"><span className="wpv3-label">External-style expected trades</span><span className="wpv3-value" style={{ fontSize: '20px' }}>{externalExpected}</span></div>
+                            <div className="wpv3-metric-row"><span className="wpv3-label">Public-grade / verified PnL lots</span><span className="wpv3-value" style={{ fontSize: '20px' }}>{audit.chainlens.publicGradeLots} / {audit.chainlens.verifiedPnlLots}</span></div>
+                            <p className="wpv3-support" style={{ marginTop: '10px', color: audit.officialPnlStillLocked ? '#fbbf24' : '#9aa4b2' }}>
+                              Why official PnL is locked: {audit.officialPnlStillLocked
+                                ? `0 public-grade lots means estimated/provider-style PnL must stay separate from official PnL, win rate, wallet score, and profit skill.`
+                                : 'Official PnL is available, but this audit still explains residual coverage gaps.'}
+                            </p>
+                            <p className="wpv3-support" style={{ marginTop: '8px', color: '#9aa4b2' }}>
+                              What full recovery would try next: fetch older wallet-side transfer pages, targeted prior buys, and receipt quote legs for unresolved router/relayed candidates. Coverage may improve but is not guaranteed.
+                            </p>
+                            <p className="wpv3-support" style={{ marginTop: '8px', color: '#9aa4b2' }}>
+                              Estimated cost tier: <span style={{ color: costTier === 'high' ? '#f87171' : costTier === 'medium' ? '#fbbf24' : '#4ade80', fontWeight: 800 }}>{costTier}</span>
+                            </p>
+                            <p className="wpv3-support" style={{ marginTop: '8px', color: '#9aa4b2' }}>
+                              Key evidence: {audit.chainlens.rawProviderTxs} raw provider txs · {audit.chainlens.normalizedEvents} normalized events · {audit.chainlens.swapCandidateEvents} swap candidates · {audit.chainlens.contextOnlyEvents} context-only logs · receipts {audit.chainlens.receiptsSucceeded}/{audit.chainlens.receiptsAttempted}.
+                            </p>
+                            {audit.possibleGapReasons.length > 0 && (
+                              <p className="wpv3-support" style={{ marginTop: '8px', color: '#9aa4b2' }}>
+                                Gap reasons: {audit.possibleGapReasons.slice(0, 4).map(r => r.label).join('; ')}.
+                              </p>
                             )}
                           </div>
                         )

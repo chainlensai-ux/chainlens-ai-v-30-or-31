@@ -1013,6 +1013,41 @@ export type WalletSnapshot = {
   // where candidates were lost between "evidence collected" and "public-grade closed lot", so a
   // busy wallet that ends with weak stats can be diagnosed (router parsing failure vs missing buy
   // vs missing price vs budget cap) instead of looking like "no activity".
+  walletExternalCoverageGapAudit?: {
+    enabled: true
+    wallet: string
+    windowDays: 30
+    chain: 'eth'
+    chainlens: {
+      rawProviderTxs: number
+      normalizedEvents: number
+      walletSideEvents: number
+      groupedTxCount: number
+      swapCandidateEvents: number
+      matchedLots: number
+      publicGradeLots: number
+      verifiedPnlLots: number
+      excludedLots: number
+      unknownDirectionEvents: number
+      contextOnlyEvents: number
+      receiptsAttempted: number
+      receiptsSucceeded: number
+      receiptsFailed: number
+      historicalPagesAttempted: number
+      targetedRecoveryPagesAttempted: number
+    }
+    possibleGapReasons: Array<{
+      reasonKey: 'provider_recent_window_limited' | 'provider_tx_count_below_external_trade_count' | 'unknown_direction_context_only_events' | 'receipt_reconstruction_failed' | 'historical_recovery_capped' | 'synthetic_cost_basis_remaining' | 'flat_price_estimate_only' | 'relayed_or_router_attribution_gap' | 'normal_scan_cost_cap_hit'
+      label: string
+      evidence: string
+      canFixInNormalScan: boolean
+      requiresFullRecovery: boolean
+      likelyCostImpact: 'low' | 'medium' | 'high'
+    }>
+    recommendedNextStep: string
+    safeToShowEstimatedPnl: boolean
+    officialPnlStillLocked: boolean
+  }
   walletTradeReconstructionFunnel?: {
     walletSideTransactions: number
     swapCandidateEvents: number
@@ -17729,6 +17764,129 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     : `${_rotationSpeedLabel === 'unknown' ? 'Behavior' : _rotationSpeedLabel} across ${_topPatternList} routes; strong behavior evidence, but profit skill is ${_profitSkillStatus === 'unlocked' ? 'available' : 'not proven'}.`
   const _behaviorConfidenceReason = `${tradeIntelLots} verified behavior lots (${_verifiedIndependentClosedLotsFinal} independently priced); style derived from rotation speed and token diversity, independent of profit skill.`
 
+  const _coverageReceiptStats = [
+    _swapReconstructionV1Debug,
+    _basePnlReconDebug,
+    _ethSwapReconstructionDebug,
+    _baseUnknownSwapReconDebug,
+    _sellSideReconDebug,
+    _closedLotPriceUpgradeDebug,
+  ].filter(Boolean) as Array<Record<string, any>>
+  const _coverageReceiptsAttempted = _coverageReceiptStats.reduce((sum, d) => sum + Number(d.candidateTxCount ?? d.candidateCount ?? d.sellSideCandidateTxs ?? d.receiptsAttempted ?? 0), 0)
+  const _coverageReceiptsSucceeded = _coverageReceiptStats.reduce((sum, d) => sum + Number(d.receiptsFetched ?? d.swapReconstructionReceiptsFetched ?? d.sellSideReceiptsFetched ?? d.receiptsSucceeded ?? 0), 0)
+  const _coverageProviderRawTxs = Number(grEth.diag?.rawItemCount ?? 0) + Number(grBase.diag?.rawItemCount ?? 0)
+  const _coverageHistoricalPagesAttempted = Number(_historicalCoverageDebug?.pagesAttempted ?? 0)
+  const _coverageTargetedPagesAttempted = Number(_syntheticTargetExtraPagesAttempted ?? 0)
+  const _coverageEstimatedCostTier: 'low' | 'medium' | 'high' = _walletScanBudgetDebug.hardCapHit || _coverageHistoricalPagesAttempted + _coverageTargetedPagesAttempted >= 4
+    ? 'high'
+    : _coverageHistoricalPagesAttempted + _coverageTargetedPagesAttempted > 0 || _walletRecoveryRecommendation.recommended
+      ? 'medium'
+      : 'low'
+  const _officialPnlStillLocked = _performanceClosedLotsFinal.length === 0 || _performanceRealizedPnlUsd == null || (promotedTradeStatsSummary.publicPnlStatus ?? _publicPnlStatusFinal) !== 'ok'
+  const walletExternalCoverageGapAudit: NonNullable<WalletSnapshot['walletExternalCoverageGapAudit']> = {
+    enabled: true,
+    wallet: addr,
+    windowDays: 30,
+    chain: 'eth',
+    chainlens: {
+      rawProviderTxs: _coverageProviderRawTxs,
+      normalizedEvents: walletEvidenceSummary.totalEvidenceEvents ?? walletEvidenceSummary.totalEvents,
+      walletSideEvents: walletEvidenceSummary.walletSideEvents ?? (_walletActivitySummary?.walletSideEvents ?? 0),
+      groupedTxCount: walletSwapSummary.groupedTxCount,
+      swapCandidateEvents: walletSwapSummary.swapCandidateEvents,
+      matchedLots: _rawMatchedClosedLotsFinal,
+      publicGradeLots: _performanceClosedLotsFinal.length,
+      verifiedPnlLots: _verifiedIndependentClosedLotsFinal,
+      excludedLots: _excludedClosedLotsFinal,
+      unknownDirectionEvents: _swapDetectionDebug.unknownDirectionEvents ?? 0,
+      contextOnlyEvents: walletEvidenceSummary.reconstructionContextEvents ?? (_swapDetectionDebug.unknownDirectionUsedAsContextOnly ?? 0),
+      receiptsAttempted: _coverageReceiptsAttempted,
+      receiptsSucceeded: _coverageReceiptsSucceeded,
+      receiptsFailed: Math.max(0, _coverageReceiptsAttempted - _coverageReceiptsSucceeded),
+      historicalPagesAttempted: _coverageHistoricalPagesAttempted,
+      targetedRecoveryPagesAttempted: _coverageTargetedPagesAttempted,
+    },
+    possibleGapReasons: [
+      {
+        reasonKey: 'provider_recent_window_limited',
+        label: 'Provider activity window may be recent/sample-limited',
+        evidence: `${_coverageProviderRawTxs} raw provider transaction(s) yielded ${walletEvidenceSummary.totalEvents} normalized event(s); profiler-style systems may use broader indexed histories.` ,
+        canFixInNormalScan: false,
+        requiresFullRecovery: true,
+        likelyCostImpact: 'medium',
+      },
+      {
+        reasonKey: 'provider_tx_count_below_external_trade_count',
+        label: 'Provider tx count is below external-style trade count',
+        evidence: `ChainLens reconstructed ${_rawMatchedClosedLotsFinal} matched lot(s), not an external profiler's trade count; raw provider txs available in this scan: ${_coverageProviderRawTxs}.`,
+        canFixInNormalScan: false,
+        requiresFullRecovery: true,
+        likelyCostImpact: 'medium',
+      },
+      {
+        reasonKey: 'unknown_direction_context_only_events',
+        label: 'Unknown-direction logs are retained as context only',
+        evidence: `${_swapDetectionDebug.unknownDirectionEvents ?? 0} unknown-direction event(s), ${walletEvidenceSummary.reconstructionContextEvents ?? (_swapDetectionDebug.unknownDirectionUsedAsContextOnly ?? 0)} context-only event(s).`,
+        canFixInNormalScan: false,
+        requiresFullRecovery: true,
+        likelyCostImpact: 'medium',
+      },
+      {
+        reasonKey: 'receipt_reconstruction_failed',
+        label: 'Receipt reconstruction did not prove every candidate',
+        evidence: `${_coverageReceiptsSucceeded}/${_coverageReceiptsAttempted} candidate receipt(s) succeeded across capped reconstruction passes; ${Math.max(0, _coverageReceiptsAttempted - _coverageReceiptsSucceeded)} failed or unavailable.`,
+        canFixInNormalScan: false,
+        requiresFullRecovery: true,
+        likelyCostImpact: 'medium',
+      },
+      {
+        reasonKey: 'historical_recovery_capped',
+        label: 'Historical recovery is capped for scan cost safety',
+        evidence: `${_coverageHistoricalPagesAttempted} broad historical page(s) and ${_coverageTargetedPagesAttempted} targeted page(s) attempted; cap hit: ${_walletScanBudgetDebug.budgetCapHit ? 'yes' : 'no'}.`,
+        canFixInNormalScan: false,
+        requiresFullRecovery: true,
+        likelyCostImpact: 'high',
+      },
+      {
+        reasonKey: 'synthetic_cost_basis_remaining',
+        label: 'Some matched lots still lack real prior-buy cost basis',
+        evidence: `${_syntheticLotsExcludedFromStatsFinal} synthetic/missing-cost-basis lot(s) excluded from public stats.`,
+        canFixInNormalScan: false,
+        requiresFullRecovery: true,
+        likelyCostImpact: 'medium',
+      },
+      {
+        reasonKey: 'flat_price_estimate_only',
+        label: 'Flat/estimate-only pricing cannot unlock official PnL',
+        evidence: `${_flatPriceClosedLotsExcludedFinal} flat-price lot(s) and ${_estimateOnlyClosedLotsFinal.length} estimate-only lot(s) excluded from public PnL.`,
+        canFixInNormalScan: false,
+        requiresFullRecovery: true,
+        likelyCostImpact: 'medium',
+      },
+      {
+        reasonKey: 'relayed_or_router_attribution_gap',
+        label: 'Relayers/routers can hide wallet-side attribution',
+        evidence: `${walletSwapSummary.swapCandidateEvents} swap candidate event(s), ${_swapDetectionDebug.unknownRouterEvents ?? 0} unknown-router event(s), ${_relayedUnknownDirectionEvents} unknown-direction event(s).`,
+        canFixInNormalScan: false,
+        requiresFullRecovery: true,
+        likelyCostImpact: 'medium',
+      },
+      {
+        reasonKey: 'normal_scan_cost_cap_hit',
+        label: 'Normal scan cost cap prevents broad recovery by default',
+        evidence: `Scan used ${_apiAudit.totalCredits} provider credit(s); hard cap ${_walletScanBudgetDebug.totalCreditHardCap}; cap hit: ${_walletScanBudgetDebug.budgetCapHit ? 'yes' : 'no'}.`,
+        canFixInNormalScan: false,
+        requiresFullRecovery: true,
+        likelyCostImpact: _coverageEstimatedCostTier,
+      },
+    ],
+    recommendedNextStep: _officialPnlStillLocked
+      ? 'Keep official PnL locked. If the user requests more coverage, run a full/targeted recovery pass to fetch older wallet-side legs and receipt quote legs; this may improve coverage but is not guaranteed.'
+      : 'Official PnL is available from public-grade lots; use the audit only to explain residual coverage limitations.',
+    safeToShowEstimatedPnl: true,
+    officialPnlStillLocked: _officialPnlStillLocked,
+  }
+
   const tradeIntelligence: NonNullable<WalletSnapshot['tradeIntelligence']> = {
     status: tradeIntelligenceStatus,
     tradeIntelLots,
@@ -17764,6 +17922,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     walletRecoveryRecommendation: _walletRecoveryRecommendation,
     walletReconstructionRecovery: _walletReconstructionRecovery,
     walletTradeReconstructionFunnel: _walletTradeReconstructionFunnel,
+    walletExternalCoverageGapAudit,
     walletSourceMergeDebug: _walletSourceMergeDebug,
     walletHistoricalSourceBudget: _walletHistoricalSourceBudget,
     walletActivitySummary: _walletActivitySummary,
