@@ -1848,6 +1848,8 @@ export async function POST(req: Request) {
           providerStatus: _snapProviderStatus,
         },
         apiAudit: snapshot._diagnostics?.apiAudit ?? null,
+        walletProviderGatewayDebug: (snapshot._diagnostics as any)?.walletProviderGatewayDebug ?? null,
+        walletProviderCallAudit: (snapshot._diagnostics as any)?.walletProviderCallAudit ?? null,
         walletModuleCoverageRaw: {
           // Reflects the holdings provider actually selected this scan (walletHoldingsProviderRoutingDebug),
           // not just which providers are configured — "configured" doesn't mean "used".

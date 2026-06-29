@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 
 const snap = fs.readFileSync('lib/server/walletSnapshot.ts', 'utf8')
 const route = fs.readFileSync('app/api/wallet/route.ts', 'utf8')
+const providerBudget = fs.readFileSync('lib/server/walletProviders/budget.ts', 'utf8')
 
 // LIVE-SPEED-2: skip gate is a dedicated helper, derivable purely from FIFO/evidence shape signals
 // available BEFORE the pricing/FIFO preview runs (provider-summary status is computed later in the
@@ -484,3 +485,31 @@ assert.match(
 )
 
 console.log('wallet recovery-promotion-consistency fix checks passed')
+
+// WALLET-PROVIDER-GATEWAY checks: provider authorization and audit totals are centralized.
+assert.match(
+  snap,
+  /deep:\s*\{[\s\S]*?targetCredits:\s*15,[\s\S]*?hardCapCredits:\s*18,/,
+  'deep scan keeps target 15 and hard cap 18',
+)
+assert.match(
+  snap,
+  /deep:\s*\{[\s\S]*?allowMoralisTransfers:\s*false,[\s\S]*?allowMoralisProviderPnl:\s*false,/,
+  'deep scan blocks Moralis transfers and provider PnL',
+)
+assert.match(
+  route,
+  /rawRequestedMode === 'full_recovery' && !fullRecoveryAllowed \? 'deep' : rawRequestedMode/,
+  'non-admin full_recovery resolves to deep',
+)
+assert.ok(snap.includes('createWalletProviderCallAudit'), 'snapshot creates canonical wallet provider audit')
+assert.ok(snap.includes('blockedByMode') && snap.includes('blockedByAdmin') || providerBudget.includes('blockedByMode') && providerBudget.includes('blockedByAdmin'), 'provider audit records mode/admin blocks')
+assert.ok(snap.includes('moralis_recovery_requires_admin_full_recovery') || providerBudget.includes('moralis_recovery_requires_admin_full_recovery'), 'Moralis transfers/provider PnL are blocked unless admin full_recovery')
+assert.match(
+  snap,
+  /totalProviderCredits:\s*_apiAudit\.totalCredits/,
+  'walletApiSourceAudit.totalCost.totalProviderCredits matches canonical/api audit total',
+)
+assert.ok(route.includes('walletProviderGatewayDebug') && route.includes('walletProviderCallAudit'), 'route exposes debug-only provider gateway fields')
+
+console.log('wallet provider gateway checks passed')
