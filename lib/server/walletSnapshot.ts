@@ -14888,12 +14888,11 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // it only feeds additional candidate evidence into the existing pricing/FIFO preview pipeline below.
   const _syntheticTargetExtraMaxTokens = _walletValueTier === 'high_value' ? 4 : 2
   const _syntheticTargetExtraMaxPages = _walletValueTier === 'high_value' ? 4 : 2
-  const _syntheticHasRealBackedLotForTarget = (contract: string) =>
-    _closedLots.some(
-      l => l.tokenAddress.toLowerCase() === contract &&
-        l.evidence?.entrySource !== 'synthetic' &&
-        !(l.missingReasons ?? []).includes('fifo_backfilled_buy')
-    )
+  // RECOVERY-EXEC-FIX-2: eligibility for the targeted recovery pass must be evaluated per
+  // still-synthetic lot, not per token. _syntheticTargetRankedTokens is already derived purely
+  // from _syntheticClosedLots (the early, static snapshot of lots that still lack real backing),
+  // so any token appearing here by construction still has at least one unconverted synthetic lot —
+  // a token must never be excluded just because it ALSO has some other, already real-backed lot.
   const _syntheticTargetRankedTokens = Array.from(new Map(_syntheticClosedLots.map(l => {
     const contract = l.tokenAddress.toLowerCase()
     const lots = _syntheticClosedLots.filter(x => x.tokenAddress.toLowerCase() === contract)
@@ -14905,15 +14904,35 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     }]
   })).values()).sort((a, b) => b.excludedUsd - a.excludedUsd || b.lotCount - a.lotCount).map(t => t.contract)
   const _syntheticTargetExtraEligibleTokens = _syntheticTargetRankedTokens
-    .filter(c => !_syntheticHasRealBackedLotForTarget(c))
     .slice(0, _syntheticTargetExtraMaxTokens)
+  // RECOVERY-EXEC-FIX-2 (cont.): when the reserved recovery credit is smaller than the number of
+  // eligible targets, attempt the highest-priority target(s) first (up to what the reserved credit
+  // can actually pay for) and explicitly record the rest as budget-skipped rather than silently
+  // dropping them or starving the first target too.
+  const _syntheticTargetExtraMaxPagesPerToken = _adminOverrideUsed ? 2 : 1
+  const _syntheticTargetExtraTokensAffordableByReservedBudget = _recoveryBudgetReserved
+    ? Math.max(1, Math.min(_syntheticTargetExtraEligibleTokens.length, _recoveryReservedCredits))
+    : _syntheticTargetExtraEligibleTokens.length
+  const _syntheticTargetExtraAttemptedTokens = _syntheticTargetExtraEligibleTokens
+    .slice(0, _syntheticTargetExtraTokensAffordableByReservedBudget)
+  const _syntheticTargetExtraSkippedTargets = _syntheticTargetExtraEligibleTokens
+    .slice(_syntheticTargetExtraTokensAffordableByReservedBudget)
+    .map(contract => ({ contract, reason: 'reserved_credit_insufficient_for_remaining_target' as const }))
   const _syntheticTargetExtraPriorBuysFoundSoFar = _syntheticTargetRecovery?.debug.syntheticTargetPriorBuysFound ?? 0
   // Shared accumulator already reflects broad-pass page credits spent above, so the remaining
   // pool here is what's actually left for the whole scan — not a locally re-derived estimate.
   _noteHardCapReached('synthetic_target_extra_pricing')
   if (_sharedHistoricalBudgetRemaining() <= 0) _noteCallBlockedByHardCap('synthetic_target_extra_pricing', 'goldrush')
   const _syntheticTargetExtraBudgetRemaining = _sharedHistoricalBudgetRemaining()
-  const _syntheticTargetExtraPagesAllowed = Math.max(0, Math.min(_syntheticTargetExtraMaxPages, _syntheticTargetExtraBudgetRemaining))
+  // RECOVERY-EXEC-FIX-2 (cont.): "use at most the reserved credits" — when this pass is running on
+  // a reserved credit, the page allowance must be capped to that reservation specifically (not just
+  // the broader shared remaining budget), and to 1 page per attempted target (2 with admin override).
+  const _syntheticTargetExtraPagesAllowed = Math.max(0, Math.min(
+    _syntheticTargetExtraMaxPages,
+    _syntheticTargetExtraBudgetRemaining,
+    _recoveryBudgetReserved ? _recoveryReservedCredits : _syntheticTargetExtraBudgetRemaining,
+    _syntheticTargetExtraAttemptedTokens.length * _syntheticTargetExtraMaxPagesPerToken
+  ))
 
   let _syntheticTargetExtraSkippedReason: string | null = null
   if (!_syntheticLotsDetected) _syntheticTargetExtraSkippedReason = 'no_synthetic_lots'
@@ -14956,7 +14975,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   let _syntheticTargetUnrecoverableReason: string | null = null
 
   if (_syntheticTargetExtraRecoveryAttempted) {
-    const _extraTargetContracts = new Set(_syntheticTargetExtraEligibleTokens)
+    const _extraTargetContracts = new Set(_syntheticTargetExtraAttemptedTokens)
     const _extraTargetSyntheticLots = _syntheticClosedLots.filter(l => _extraTargetContracts.has(l.tokenAddress.toLowerCase()))
     // SYNTH-RECOVERY-FIX-13: only query the chain(s) the eligible target tokens actually live on
     // (e.g. a Base-only token never queries eth-mainnet) — this is what kept the previous version
@@ -16047,6 +16066,13 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       const lot = _syntheticClosedLots.find(l => l.tokenAddress.toLowerCase() === c)
       return { chain: lot?.chain ?? 'unknown', tokenContract: c, symbol: lot?.tokenSymbol ?? c.slice(0, 8) }
     }),
+    targetTokensAttempted: _syntheticTargetExtraAttemptedTokens.map(c => {
+      const lot = _syntheticClosedLots.find(l => l.tokenAddress.toLowerCase() === c)
+      return { chain: lot?.chain ?? 'unknown', tokenContract: c, symbol: lot?.tokenSymbol ?? c.slice(0, 8) }
+    }),
+    // RECOVERY-EXEC-FIX-2 (cont.): targets dropped purely for lack of reserved budget, kept distinct
+    // from targets dropped because they were never eligible in the first place (see skippedReason).
+    targetTokensSkippedForBudget: _syntheticTargetExtraSkippedTargets,
     pagesAllowed: _syntheticTargetExtraPagesAllowed,
     pagesAttempted: _syntheticTargetExtraPagesAttempted,
     receiptsAttempted: _syntheticTargetExtraRawLogs,

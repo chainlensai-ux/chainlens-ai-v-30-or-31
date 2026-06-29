@@ -366,3 +366,53 @@ for (const field of [
 }
 
 console.log('wallet targeted-recovery-execution fix checks passed')
+
+// RECOVERY-EXEC-FIX-2 checks: eligibility for targeted synthetic recovery must be evaluated
+// per still-synthetic lot (via _syntheticTargetRankedTokens, derived purely from
+// _syntheticClosedLots), not re-excluded just because the token also has some other, already
+// real-backed lot. The old token-wide _syntheticHasRealBackedLotForTarget filter must be gone.
+assert.doesNotMatch(
+  snap,
+  /_syntheticTargetRankedTokens\s*\.filter\(c => !_syntheticHasRealBackedLotForTarget\(c\)\)/,
+  'eligible targets must no longer be filtered by the token-wide real-backed-lot check',
+)
+assert.doesNotMatch(
+  snap,
+  /_syntheticHasRealBackedLotForTarget/,
+  'the token-wide eligibility check must be fully removed, not just unused',
+)
+assert.match(
+  snap,
+  /const _syntheticTargetExtraEligibleTokens = _syntheticTargetRankedTokens\s*\n\s*\.slice\(0, _syntheticTargetExtraMaxTokens\)/,
+  'eligible targets come directly from the lot-level-correct ranked-token list',
+)
+// Reserved-credit-aware attempt/skip split: highest-priority targets first, rest reported with an
+// explicit budget-insufficient reason rather than silently dropped.
+assert.match(
+  snap,
+  /const _syntheticTargetExtraTokensAffordableByReservedBudget = _recoveryBudgetReserved\s*\n\s*\? Math\.max\(1, Math\.min\(_syntheticTargetExtraEligibleTokens\.length, _recoveryReservedCredits\)\)\s*\n\s*: _syntheticTargetExtraEligibleTokens\.length/,
+  'attempted-token count is capped by the reserved recovery credit when a reservation is active',
+)
+assert.match(
+  snap,
+  /reason: 'reserved_credit_insufficient_for_remaining_target' as const/,
+  'targets dropped purely for lack of reserved budget get the reserved_credit_insufficient_for_remaining_target reason',
+)
+assert.match(
+  snap,
+  /const _extraTargetContracts = new Set\(_syntheticTargetExtraAttemptedTokens\)/,
+  'the GoldRush fetch loop queries only the budget-affordable attempted targets, not all eligible targets',
+)
+assert.match(
+  snap,
+  /const _syntheticTargetExtraPagesAllowed = Math\.max\(0, Math\.min\(\s*\n\s*_syntheticTargetExtraMaxPages,\s*\n\s*_syntheticTargetExtraBudgetRemaining,\s*\n\s*_recoveryBudgetReserved \? _recoveryReservedCredits : _syntheticTargetExtraBudgetRemaining,\s*\n\s*_syntheticTargetExtraAttemptedTokens\.length \* _syntheticTargetExtraMaxPagesPerToken\s*\n\s*\)\)/,
+  'pages allowed for the targeted pass are capped to at most the reserved credits and 1 page per attempted target',
+)
+for (const field of [
+  'targetTokensAttempted:',
+  'targetTokensSkippedForBudget: _syntheticTargetExtraSkippedTargets',
+]) {
+  assert.ok(snap.includes(field), `walletLowValueRecoveryDebug must expose ${field.split(':')[0].trim()}`)
+}
+
+console.log('wallet targeted-recovery lot-level-eligibility and reserved-budget-split checks passed')
