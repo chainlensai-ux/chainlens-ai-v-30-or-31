@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 const snap = fs.readFileSync('lib/server/walletSnapshot.ts', 'utf8')
 const route = fs.readFileSync('app/api/wallet/route.ts', 'utf8')
 const providerBudget = fs.readFileSync('lib/server/walletProviders/budget.ts', 'utf8')
+const providerTypes = fs.readFileSync('lib/server/walletProviders/types.ts', 'utf8')
 
 // LIVE-SPEED-2: skip gate is a dedicated helper, derivable purely from FIFO/evidence shape signals
 // available BEFORE the pricing/FIFO preview runs (provider-summary status is computed later in the
@@ -513,3 +514,35 @@ assert.match(
 assert.ok(route.includes('walletProviderGatewayDebug') && route.includes('walletProviderCallAudit'), 'route exposes debug-only provider gateway fields')
 
 console.log('wallet provider gateway checks passed')
+
+// --- ALCHEMY-RECEIPT-RECON-FIX: receipt shapes, log decode debug, and mode caps ---
+assert.match(snap, /function normalizeAlchemyReceiptShape\(raw: any, expectedTxHash: string\): SwapReconV1Decode/, 'Alchemy receipt normalizer supports raw JSON-RPC and unwrapped receipt shapes')
+assert.match(snap, /raw && typeof raw === 'object' && raw\.result && typeof raw\.result === 'object' \? raw\.result : raw/, 'receipt normalizer unwraps JSON-RPC result.result when present')
+for (const reason of ['receipt_null', 'receipt_logs_missing', 'receipt_logs_empty', 'receipt_status_failed', 'receipt_shape_unexpected']) {
+  assert.match(snap, new RegExp(reason), `receipt reconstruction exposes specific ${reason} rejection reason`)
+}
+assert.match(snap, /function decodeSwapReconV1TransferLog/, 'deterministic ERC20 Transfer log decoder is present')
+assert.match(snap, /log\.topics\[0\]\?\.toLowerCase\(\) !== ERC20_TRANSFER_TOPIC/, 'decoder path filters on the canonical ERC20 Transfer topic')
+assert.match(snap, /from: `0x\$\{fromTopic\.toLowerCase\(\)\.slice\(-40\)\}`/, 'decoder normalizes from address from the last 20 bytes of topics[1]')
+assert.match(snap, /to: `0x\$\{toTopic\.toLowerCase\(\)\.slice\(-40\)\}`/, 'decoder normalizes to address from the last 20 bytes of topics[2]')
+assert.match(snap, /rawAmount: log\.data,/, 'decoder carries the raw uint256 amount from log.data')
+assert.match(snap, /logIndex: Number\.isFinite\(logIndex\) \? logIndex : 0,/, 'decoder normalizes numeric logIndex')
+assert.match(snap, /receiptLogsSeen \+= decode\.logs\.length/, 'swap reconstruction reports receiptLogsSeen whenever receipt logs are present')
+assert.match(snap, /transferLogsSeen\+\+/, 'swap reconstruction reports transferLogsSeen')
+assert.match(snap, /transferLogsDecodeFailed\+\+; malformedTransferLogsSkipped\+\+/, 'swap reconstruction reports malformed transfer logs separately from non-transfer logs')
+assert.match(snap, /nonTransferLogsSkipped\+\+/, 'swap reconstruction reports non-transfer logs skipped')
+assert.doesNotMatch(snap, /bumpRejected\('no_receipt_or_logs'\)/, 'swap reconstruction no longer collapses receipt failures into no_receipt_or_logs')
+assert.match(snap, /if \(!decode\?\.logs \|\| decode\.shapeReason !== 'ok'\) \{\s*\n\s*bumpRejected\(decode\?\.shapeReason \?\? 'receipt_shape_unexpected'\)/, 'receipt reconstruction rejects with the exact normalized receipt shape reason')
+assert.match(snap, /receiptChecksBudget = SWAP_RECON_V1_MAX_RECEIPTS/, 'swap reconstruction accepts an explicit receipt budget while preserving the deep-mode default cap')
+assert.match(snap, /candidateTxHashes\.length >= Math\.max\(0, receiptChecksBudget\)/, 'selected candidate tx receipts are capped by scan-mode receiptChecks')
+assert.match(snap, /buildSwapReconstructionV1\(_pricedEvidence, addrNorm, _enrichAlchemyUrl, _reqPriceCache, priceByContract, scanModeConfig\?\.receiptChecks \?\? SWAP_RECON_V1_MAX_RECEIPTS\)/, 'full_recovery can pass the configured receiptChecks budget without increasing normal-mode receipt usage')
+assert.match(snap, /receiptsRequested: candidateTxHashes\.length/, 'swapReconstructionV1Debug exposes receiptsRequested')
+assert.match(snap, /receiptsWithLogs,\s*\n\s*receiptLogsSeen,\s*\n\s*transferLogsSeen,/, 'swapReconstructionV1Debug exposes receiptsWithLogs, receiptLogsSeen, and transferLogsSeen')
+assert.match(snap, /alchemyReconstructedEventsBuilt: eventsBuilt,\s*\n\s*alchemyEventsMerged: eventsPromoted,\s*\n\s*alchemyEventsEnriched: eventsPromoted,\s*\n\s*alchemyDuplicatesSkipped: 0,/, 'Alchemy reconstruction merge/enrichment counters are exposed without broad provider expansion')
+assert.match(providerTypes, /receipt_proof/, 'wallet provider audit types classify receipt calls as receipt_proof')
+assert.match(snap, /receiptChecks:\s*0,/, 'normal scan mode has zero receipt checks and therefore does not run receipt proof')
+assert.match(snap, /receiptChecks:\s*3,/, 'deep scan mode retains a capped selected receipt proof budget')
+assert.match(snap, /receiptChecks:\s*20,/, 'full_recovery mode may use the larger configured receipt proof budget')
+assert.match(snap, /publicPnlStatus: _publicPnlStatusFinal/, 'official PnL remains driven by the existing public integrity gate result')
+assert.doesNotMatch(snap, /publicPnlStatus:\s*'available'[^\n]*swapReconstruction/, 'receipt reconstruction does not directly unlock official public PnL')
+console.log('wallet Alchemy receipt reconstruction checks passed')
