@@ -635,6 +635,7 @@ export type WalletSnapshot = {
       status: string
       lockedReason: string | null
       useInOfficialPnl?: boolean
+      notes?: { matchedTokens?: number; unmatchedTokens?: number; unmatchedSymbols?: string[]; aggregateLockedReason?: string | null }
       fieldsPowered: string[]
     }
     walletScore: {
@@ -12241,9 +12242,10 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     return duplicate
   }
   const _walletProviderCallAudit = createWalletProviderCallAudit()
-  const _gatewayScanMode: WalletScanMode = walletScanBudget?.adminOverrideUsed && walletScanBudget?.scanMode === 'full_recovery'
-    ? 'full_recovery'
-    : (deepScan || deepActivity || historicalCoverage) ? 'deep' : 'normal'
+  const _budgetScanMode = walletScanBudget?.scanMode === 'full_recovery' || walletScanBudget?.scanMode === 'deep' || walletScanBudget?.scanMode === 'normal'
+    ? walletScanBudget.scanMode
+    : null
+  const _gatewayScanMode: WalletScanMode = _budgetScanMode ?? ((deepScan || deepActivity || historicalCoverage) ? 'deep' : 'normal')
   const _isAdminFullRecovery = _gatewayScanMode === 'full_recovery' && Boolean(walletScanBudget?.adminOverrideUsed)
   const _purposeForEndpoint = (provider: WalletProviderCallRequest['provider'], endpointName: string): WalletProviderPurpose => {
     if (provider === 'zerion') return 'portfolio'
@@ -13479,9 +13481,18 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // Using current price as a proxy is imprecise for historical trades but is consistent
   // with the average_cost_estimate method and prevents valid wallets from returning "unavailable".
   const priceByContract = new Map<string, number>()
+  const _normalizeHoldingChainForPrice = (chain: string | null | undefined) => {
+    const c = String(chain ?? '').toLowerCase()
+    if (c === 'ethereum' || c === 'mainnet') return 'eth'
+    return c
+  }
+  const priceByChainContract = new Map<string, number>()
   for (const h of holdings) {
     if (h.contract && h.price && h.price > 0) {
-      priceByContract.set(h.contract.toLowerCase(), h.price)
+      const contractLower = h.contract.toLowerCase()
+      priceByContract.set(contractLower, h.price)
+      const chainKey = _normalizeHoldingChainForPrice(h.chain)
+      if (chainKey) priceByChainContract.set(`${chainKey}:${contractLower}`, h.price)
     }
   }
   events = events.map(e => {
@@ -16202,12 +16213,33 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _openLotUniqueTokens = new Set(_openLotsForRead.map(l => l.tokenAddress.toLowerCase())).size
   const _openLotTokenContracts = new Set(_openLotsForRead.map(l => l.tokenAddress.toLowerCase()))
   const _openPositionTokenReads = estimatedPnl.tokens.filter(t => _openLotTokenContracts.has(t.contract.toLowerCase()))
-  const _openPositionPricedTokenCount = _openPositionTokenReads.filter(t => t.confidence === 'high' || t.confidence === 'medium').length
   const _openPositionEstimateOnlyTokenCount = _openLotsForRead.filter(l => l.priceSource === 'current_holding_price_open_lot_estimate').length
   const _openPositionCostBasisUsd = _openLotsForRead.reduce((sum, l) => sum + (l.amountOpened > 0 ? l.entryValueUsd * (l.amountRemaining / l.amountOpened) : l.entryValueUsd), 0)
-  const _openPositionUnrealizedPnlUsd = estimatedPnl.unrealizedPnlUsd
-  const _openPositionCurrentValueUsd = _openPositionUnrealizedPnlUsd !== null ? _openPositionCostBasisUsd + _openPositionUnrealizedPnlUsd : null
+  const _openTokenKeys = new Map<string, { symbol: string; chain: string; contract: string }>()
+  for (const l of _openLotsForRead) {
+    const contract = l.tokenAddress.toLowerCase()
+    const chain = _normalizeHoldingChainForPrice(l.chain)
+    _openTokenKeys.set(`${chain}:${contract}`, { symbol: l.tokenSymbol ?? contract.slice(0, 8), chain, contract })
+  }
+  const _openPositionMatchedTokens = Array.from(_openTokenKeys.values()).filter(t => priceByChainContract.has(`${t.chain}:${t.contract}`))
+  const _openPositionUnmatchedTokens = Array.from(_openTokenKeys.values()).filter(t => !priceByChainContract.has(`${t.chain}:${t.contract}`))
+  const _openPositionPricedTokenCount = _openPositionMatchedTokens.length
+  const _openPositionRequiredTokenCount = _openTokenKeys.size
+  const _openPositionAllTokensPriced = _openPositionRequiredTokenCount > 0 && _openPositionPricedTokenCount === _openPositionRequiredTokenCount
+  const _openPositionCurrentValueUsd = _openPositionAllTokensPriced
+    ? _openLotsForRead.reduce((sum, l) => {
+      const price = priceByChainContract.get(`${_normalizeHoldingChainForPrice(l.chain)}:${l.tokenAddress.toLowerCase()}`) ?? 0
+      return sum + Math.max(0, l.amountRemaining) * price
+    }, 0)
+    : null
+  const _openPositionUnrealizedPnlUsd = _openPositionCurrentValueUsd !== null ? _openPositionCurrentValueUsd - _openPositionCostBasisUsd : null
   const _openPositionAvailable = _openLotsForRead.length > 0 && _openPositionUnrealizedPnlUsd !== null
+  const _openPositionAuditNotes = {
+    matchedTokens: _openPositionPricedTokenCount,
+    unmatchedTokens: _openPositionUnmatchedTokens.length,
+    unmatchedSymbols: _openPositionUnmatchedTokens.map(t => t.symbol).filter(Boolean),
+    aggregateLockedReason: _openPositionUnmatchedTokens.length > 0 ? 'aggregate unrealized PnL locked because partial coverage is not enough' : null,
+  }
   // OPEN-POSITION-ESTIMATE-ONLY-FIX: when every open lot's current pricing reuses the estimate-only
   // current-holding-price fallback (no real priced-token evidence backs it), the "unrealized PnL"
   // figure is not public-grade — reporting it as $0/real PnL misrepresents an untracked estimate as a
@@ -16254,7 +16286,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       // AUDIT-CONSISTENCY-FIX-1: open lots with known cost basis but unresolved current pricing are
       // "cost_basis_only" — distinct from "unavailable" (no open lots at all) — so the source audit
       // never reports a priced open position when only the cost basis is actually known.
-      status: _openLotsForRead.length > 0 ? 'cost_basis_only' : 'unavailable',
+      status: _openLotsForRead.length > 0 ? (_openPositionPricedTokenCount > 0 ? 'partial' : 'cost_basis_only') : 'unavailable',
       unrealizedPnlUsd: null,
       unrealizedPnlPercent: null,
       headlineValueUsd: null,
@@ -16266,7 +16298,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       estimateOnlyTokenCount: _openPositionEstimateOnlyTokenCount,
       label: 'Open-position PnL',
       warning: 'Unrealized only — open positions, not a closed trade result.',
-      reason: _openLotsForRead.length === 0 ? 'No open lots are currently tracked.' : 'Open lots exist and cost basis is known, but current pricing could not be resolved — unrealized PnL is locked.',
+      reason: _openLotsForRead.length === 0 ? 'No open lots are currently tracked.' : `${_openPositionAuditNotes.unmatchedSymbols.join(', ') || 'Some open tokens'} current price was not independently matched; aggregate unrealized PnL locked because partial coverage is not enough.`,
       excludedFrom: ['realized_pnl', 'win_rate', 'profit_skill', 'wallet_score'],
     }
 
@@ -17065,7 +17097,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     providerPnlFallbackUsed: _providerPnlFallbackUsed,
   }
   const _walletScanBudgetDebug = {
-    scanMode: historicalCoverage ? 'historical' : activityRequested ? 'deep' : 'basic',
+    scanMode: _gatewayScanMode,
     requestedHistoricalScan: historicalCoverage,
     walletValueTier: _walletValueTier,
     totalCreditTarget: _totalCreditTarget,
@@ -17090,6 +17122,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     estimatedCreditsSavedByCache: 0,
     whalePrioritisationUsed: _walletValueTier === 'whale',
     adminOverrideUsed: _adminOverrideUsed,
+    scanModeConfigUsed: scanModeConfig ?? null,
     hardCapReachedAtPhase: _hardCapReachedAtPhase,
     callsSkippedAfterHardCap: _callsSkippedAfterHardCap,
     creditsPreventedByHardCap: _hardCapReachedAtPhase ? Math.max(0, _totalCreditTarget - _totalCreditHardCap) + _callsSkippedAfterHardCap.length : 0,
@@ -19885,17 +19918,10 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         currentPriceSource: _walletOpenPositionPnlRead.currentValueUsd === null ? null : providerUsed,
         // SOURCE-AUDIT-FIX-4: must not claim a fully-priced open position when the underlying read is
         // locked/partial/estimate-only — map the internal read status to an honest audit-facing label.
-        status: _walletOpenPositionPnlRead.status === 'available'
-          ? 'priced_open_position'
-          : _walletOpenPositionPnlRead.status === 'partial'
-            ? 'partial_priced_open_position'
-            : _walletOpenPositionPnlRead.status === 'estimate_only'
-              ? 'partial_priced_open_position'
-              : _walletOpenPositionPnlRead.status === 'cost_basis_only'
-                ? 'cost_basis_only'
-                : 'locked',
+        status: _walletOpenPositionPnlRead.status,
         lockedReason: _walletOpenPositionPnlRead.status === 'available' ? null : _walletOpenPositionPnlRead.reason,
         useInOfficialPnl: false,
+        notes: _openPositionAuditNotes,
         fieldsPowered: ['walletOpenPositionPnlRead'],
       },
       walletScore: {

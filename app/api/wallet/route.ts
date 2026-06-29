@@ -226,7 +226,11 @@ function buildWalletDeepScanTiming(snapshot: any, startedAt: number, cacheReadMs
 
 function attachWalletDeepScanTiming(payload: any, timing: LegacyWalletDeepScanTiming, debug: boolean) {
   if (!payload || typeof payload !== 'object') return
-  const publicTiming = { portfolioMs: timing.portfolioMs, holdingsMs: timing.holdingsMs, activityFetchMs: timing.activityMs, activityMs: timing.activityMs, normalizationMs: timing.activityMs, mergeMs: 0, swapDetectionMs: timing.swapDetectionMs, pricingMs: timing.pricingMs, fifoMs: timing.fifoMs, integrityMs: timing.tradeStatsMs, tradeStatsMs: timing.tradeStatsMs, recoveryMs: timing.historicalMs, historicalMs: timing.historicalMs, totalMs: timing.totalMs, cacheReadMs: timing.cacheReadMs, cacheWriteMs: timing.cacheWriteMs, recoveryEligibilityMs: timing.recoveryEligibilityMs, historicalTargetRankingMs: timing.historicalTargetRankingMs, historicalPricingPreviewMs: timing.historicalPricingPreviewMs, historicalFifoPreviewMs: timing.historicalFifoPreviewMs, recoveryRecommendationMs: timing.recoveryRecommendationMs, routeDecorationMs: timing.routeDecorationMs, recoveryPrecheckMs: timing.recoveryPrecheckMs, recoverySkipGateMs: timing.recoverySkipGateMs, recoveryDebugBuildMs: timing.recoveryDebugBuildMs, historicalScanDebugBuildMs: timing.historicalScanDebugBuildMs, historicalCandidateSummaryMs: timing.historicalCandidateSummaryMs, historicalPreviewPrepMs: timing.historicalPreviewPrepMs, syntheticRecoveryDebugMs: timing.syntheticRecoveryDebugMs, recoveryPostProcessingMs: timing.recoveryPostProcessingMs, recoveryUnaccountedMs: timing.recoveryUnaccountedMs }
+  const childTimingValues = [timing.portfolioMs, timing.holdingsMs, timing.activityMs, timing.swapDetectionMs, timing.pricingMs, timing.fifoMs, timing.tradeStatsMs, timing.historicalMs, timing.cacheReadMs, timing.cacheWriteMs, timing.recoveryEligibilityMs, timing.historicalTargetRankingMs, timing.historicalPricingPreviewMs, timing.historicalFifoPreviewMs, timing.recoveryRecommendationMs, timing.routeDecorationMs, timing.recoveryPrecheckMs, timing.recoverySkipGateMs, timing.recoveryDebugBuildMs, timing.historicalScanDebugBuildMs, timing.historicalCandidateSummaryMs, timing.historicalPreviewPrepMs, timing.syntheticRecoveryDebugMs, timing.recoveryPostProcessingMs, timing.recoveryUnaccountedMs]
+  const maxChildMs = Math.max(0, ...childTimingValues.map(v => Number(v) || 0))
+  const routeTotalMs = Math.max(0, Number(timing.totalMs) || 0)
+  const publicTotalMs = Math.max(routeTotalMs, maxChildMs)
+  const publicTiming = { portfolioMs: timing.portfolioMs, holdingsMs: timing.holdingsMs, activityFetchMs: timing.activityMs, activityMs: timing.activityMs, normalizationMs: timing.activityMs, mergeMs: 0, swapDetectionMs: timing.swapDetectionMs, pricingMs: timing.pricingMs, fifoMs: timing.fifoMs, integrityMs: timing.tradeStatsMs, tradeStatsMs: timing.tradeStatsMs, recoveryMs: timing.historicalMs, historicalMs: timing.historicalMs, totalMs: publicTotalMs, routeTotalMs, cacheReadMs: timing.cacheReadMs, cacheWriteMs: timing.cacheWriteMs, recoveryEligibilityMs: timing.recoveryEligibilityMs, historicalTargetRankingMs: timing.historicalTargetRankingMs, historicalPricingPreviewMs: timing.historicalPricingPreviewMs, historicalFifoPreviewMs: timing.historicalFifoPreviewMs, recoveryRecommendationMs: timing.recoveryRecommendationMs, routeDecorationMs: timing.routeDecorationMs, recoveryPrecheckMs: timing.recoveryPrecheckMs, recoverySkipGateMs: timing.recoverySkipGateMs, recoveryDebugBuildMs: timing.recoveryDebugBuildMs, historicalScanDebugBuildMs: timing.historicalScanDebugBuildMs, historicalCandidateSummaryMs: timing.historicalCandidateSummaryMs, historicalPreviewPrepMs: timing.historicalPreviewPrepMs, syntheticRecoveryDebugMs: timing.syntheticRecoveryDebugMs, recoveryPostProcessingMs: timing.recoveryPostProcessingMs, recoveryUnaccountedMs: timing.recoveryUnaccountedMs }
   payload.walletDeepScanTiming = publicTiming
   if (debug) {
     const { portfolioMs: _portfolioMs, pricingMs: _pricingMs, fifoMs: _fifoMs, historicalMs: _historicalMs, cacheReadMs: _cacheReadMs, cacheWriteMs: _cacheWriteMs, ...walletDeepScanTimings } = timing
@@ -238,7 +242,7 @@ function attachWalletDeepScanTiming(payload: any, timing: LegacyWalletDeepScanTi
 
 type WalletLoadStage = 'portfolio' | 'holdings' | 'activity' | 'pricing' | 'fifo' | 'recovery' | 'final'
 
-function attachWalletDeepScanStaging(payload: any, opts: { mode: 'standard' | 'deep'; cacheHit?: boolean; dedupeHit?: boolean; inFlightDeduped?: boolean; debug?: boolean }) {
+function attachWalletDeepScanStaging(payload: any, opts: { mode: 'standard' | 'deep' | 'full_recovery'; cacheHit?: boolean; dedupeHit?: boolean; inFlightDeduped?: boolean; debug?: boolean }) {
   if (!payload || typeof payload !== 'object') return
   const moduleCoverage = payload.walletModuleCoverage ?? buildWalletModuleCoverage(payload)
   const holdingsReady = Array.isArray(payload.holdings) || Number(payload.holdingsCount ?? 0) > 0 || Number(payload.totalValue ?? 0) >= 0
@@ -317,7 +321,7 @@ function attachWalletDeepScanStaging(payload: any, opts: { mode: 'standard' | 'd
     reusedEvidenceStages: [opts.dedupeHit || opts.inFlightDeduped ? 'in_flight_scan' : null, opts.cacheHit ? 'route_cache' : null].filter(Boolean),
     duplicatePriceRequestsAvoided: Math.max(0, Number(priceDebug.duplicateRequestsAvoided ?? priceDebug.cacheHits ?? 0) || 0),
     duplicateEventsRemoved,
-    parallelStagesUsed: opts.mode === 'deep' ? ['portfolio_holdings_vs_activity', 'independent_chain_activity_fetches', 'batched_price_evidence'] : ['portfolio_holdings'],
+    parallelStagesUsed: opts.mode === 'deep' || opts.mode === 'full_recovery' ? ['portfolio_holdings_vs_activity', 'independent_chain_activity_fetches', 'batched_price_evidence'] : ['portfolio_holdings'],
     heavyModulesDeferred: heavyModulesPending,
     noExtraProviderCalls: true,
     providerCallCountUnchanged: true,
@@ -380,7 +384,7 @@ function buildPublicWalletScanBudget(scanMode: string, requestedHistoricalScan: 
   const target = modeConfig.targetCredits
   const hardCap = modeConfig.hardCapCredits
   return {
-    scanMode,
+    scanMode: walletScanConfigMode,
     requestedHistoricalScan,
     walletValueTier,
     totalCreditTarget: target,
@@ -388,6 +392,7 @@ function buildPublicWalletScanBudget(scanMode: string, requestedHistoricalScan: 
     creditsUsed: 0,
     creditsRemaining: hardCap,
     budgetByPhase: { portfolio: 2, activity: 3, pricing: 6, historicalRecovery: 6 },
+    adminOverrideUsed,
     scanModeConfig: modeConfig,
     budgetCapHit: false,
     budgetCapReason: null as string | null,
@@ -1105,7 +1110,7 @@ export async function POST(req: Request) {
           requestedHistoricalCoverage: historicalCoverageRequested,
           requestedMaxHistoricalPages: body?.maxHistoricalPages ?? null,
           effectiveMaxHistoricalPages: maxHistoricalPages,
-          scanMode: scanModeKey,
+          scanMode: walletScanModeResolved,
           dataFreshness: 'cached' as const,
           cacheKey,
           cacheReadAttempted: _cacheReadAttempted,
@@ -1145,7 +1150,7 @@ export async function POST(req: Request) {
         },
       }
       attachWalletDeepScanTiming(cp, { ...zeroWalletDeepScanTiming(), totalMs: Date.now() - startedAt, cacheHit: true, cacheReadMs: _cacheReadMs }, debug)
-      attachWalletDeepScanStaging(cp, { mode: resolvedDeepActivity ? 'deep' : 'standard', cacheHit: true, debug })
+      attachWalletDeepScanStaging(cp, { mode: walletScanModeResolved === 'full_recovery' ? 'full_recovery' : resolvedDeepActivity ? 'deep' : 'standard', cacheHit: true, debug })
       Object.assign(cp, requestedModeFields)
       pruneWalletScannerDebug(cp, debug)
       return json(cp)
@@ -1260,7 +1265,7 @@ export async function POST(req: Request) {
               providerFlow: null,
               walletScanCostDebug: {
                 scanId: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-                address: key, scanMode: scanModeKey, dataFreshness: 'cached' as const,
+                address: key, scanMode: walletScanModeResolved, dataFreshness: 'cached' as const,
                 cacheKey, cacheVersion: WALLET_SNAPSHOT_SCHEMA_VERSION, cacheBypassReason, debugFreshBypassedPersistentCache, cacheReadAttempted: _cacheReadAttempted,
                 cacheWriteAttempted: false, cacheWriteSucceeded: false,
                 cooldownKey: deepCooldownKey, cooldownHit: deepCooldownActive,
@@ -1291,7 +1296,7 @@ export async function POST(req: Request) {
             }
           }
           attachWalletDeepScanTiming(cp, { ...zeroWalletDeepScanTiming(), totalMs: Date.now() - startedAt, cacheHit: true, cacheReadMs: _cacheReadMs }, debug)
-          attachWalletDeepScanStaging(cp, { mode: resolvedDeepActivity ? 'deep' : 'standard', cacheHit: true, debug })
+          attachWalletDeepScanStaging(cp, { mode: walletScanModeResolved === 'full_recovery' ? 'full_recovery' : resolvedDeepActivity ? 'deep' : 'standard', cacheHit: true, debug })
           if (cp && typeof cp === 'object') Object.assign(cp, requestedModeFields)
           pruneWalletScannerDebug(cp, debug)
           return json(cp)
@@ -1318,7 +1323,7 @@ export async function POST(req: Request) {
             cp.walletScanCacheNote = 'Deep scan cooling down — serving recent result to protect API budget.'
           }
           attachWalletDeepScanTiming(cp, { ...zeroWalletDeepScanTiming(), totalMs: Date.now() - startedAt, cacheHit: true, cacheReadMs: _cacheReadMs }, debug)
-          attachWalletDeepScanStaging(cp, { mode: resolvedDeepActivity ? 'deep' : 'standard', cacheHit: true, debug })
+          attachWalletDeepScanStaging(cp, { mode: walletScanModeResolved === 'full_recovery' ? 'full_recovery' : resolvedDeepActivity ? 'deep' : 'standard', cacheHit: true, debug })
           if (cp && typeof cp === 'object') Object.assign(cp, requestedModeFields)
           pruneWalletScannerDebug(cp, debug)
           return json(cp)
@@ -1985,7 +1990,7 @@ export async function POST(req: Request) {
             requestedHistoricalCoverage: historicalCoverageRequested,
             requestedMaxHistoricalPages: body?.maxHistoricalPages ?? null,
             effectiveMaxHistoricalPages: maxHistoricalPages,
-            scanMode: scanModeKey,
+            scanMode: walletScanModeResolved,
             resolvedChainMode,
             testCacheOnly: WALLET_TEST_CACHE_ONLY,
             goldrushDailyCreditsUsed: GOLDRUSH_DAILY_SOFT_CAP > 0 ? _goldrushDailyCreditsUsed : null,
@@ -2078,7 +2083,7 @@ export async function POST(req: Request) {
     }
     const _routeDecorationMs = Math.max(0, Date.now() - _routeDecorationStartedAt - _cacheWriteMs)
     attachWalletDeepScanTiming(snapshot, buildWalletDeepScanTiming(snapshot, startedAt, _cacheReadMs, _cacheWriteMs, { cacheHit: false, dedupeHit: inFlightDeduped, routeDecorationMs: _routeDecorationMs }), debug)
-    attachWalletDeepScanStaging(snapshot, { mode: resolvedDeepActivity ? 'deep' : 'standard', cacheHit: false, dedupeHit: inFlightDeduped, inFlightDeduped, debug })
+    attachWalletDeepScanStaging(snapshot, { mode: walletScanModeResolved === 'full_recovery' ? 'full_recovery' : resolvedDeepActivity ? 'deep' : 'standard', cacheHit: false, dedupeHit: inFlightDeduped, inFlightDeduped, debug })
     Object.assign(snapshot, requestedModeFields)
     pruneWalletScannerDebug(snapshot, debug)
     return json(snapshot)
