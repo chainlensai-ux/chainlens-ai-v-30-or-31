@@ -1,6 +1,53 @@
 import { fetchMoralisBalances, fetchMoralisTransfers, fetchMoralisTransfersPaginated, fetchMoralisProfitabilitySummary, isUsableProviderPnlSummary, type MoralisFetchResult, type MoralisChain, type MoralisTransferItem, type MoralisProfitabilitySummary } from './moralis'
 import { computeWalletProfile, type WalletProfile } from './walletIdentity'
 
+
+export type WalletScanMode = 'normal' | 'deep' | 'full_recovery'
+
+export type WalletScanModeConfig = {
+  targetCredits: number
+  hardCapCredits: number
+  activityChainsMax: number
+  priceAttempts: number
+  targetedRecoveryPages: number
+  receiptChecks: number
+  allowMoralisTransfers: boolean
+  allowMoralisProviderPnl: boolean
+}
+
+export const WALLET_SCAN_MODE_CONFIG: Record<WalletScanMode, WalletScanModeConfig> = {
+  normal: {
+    targetCredits: 8,
+    hardCapCredits: 10,
+    activityChainsMax: 1,
+    priceAttempts: 6,
+    targetedRecoveryPages: 0,
+    receiptChecks: 0,
+    allowMoralisTransfers: false,
+    allowMoralisProviderPnl: false,
+  },
+  deep: {
+    targetCredits: 15,
+    hardCapCredits: 18,
+    activityChainsMax: 2,
+    priceAttempts: 11,
+    targetedRecoveryPages: 1,
+    receiptChecks: 3,
+    allowMoralisTransfers: false,
+    allowMoralisProviderPnl: false,
+  },
+  full_recovery: {
+    targetCredits: 80,
+    hardCapCredits: 100,
+    activityChainsMax: 5,
+    priceAttempts: 40,
+    targetedRecoveryPages: 6,
+    receiptChecks: 20,
+    allowMoralisTransfers: true,
+    allowMoralisProviderPnl: true,
+  },
+}
+
 export { computeWalletProfile, type WalletProfile }
 
 
@@ -2744,6 +2791,7 @@ export type WalletSnapshotOptions = {
     creditsUsed?: number
     budgetByPhase?: { portfolio: number; activity: number; pricing: number; historicalRecovery: number }
     adminOverrideUsed?: boolean
+    scanModeConfig?: WalletScanModeConfig
   }
   maxFallbackPages?: number
   debug?: boolean
@@ -12167,9 +12215,10 @@ async function buildUnpricedCandidateReceiptPass(
 
 export async function fetchWalletSnapshot(address: string, options: WalletSnapshotOptions = {}): Promise<WalletSnapshot> {
   const { refresh = false, chain: requestedChain = 'base', deepScan = false, deepActivity = false, chainMode = 'auto', historicalCoverage = false, maxHistoricalPages: rawMaxHistoricalPages, maxFallbackPages: rawMaxFallbackPages, walletScanBudget, debug = false, maxDebugTokens = DEFAULT_MAX_DEBUG_TOKENS } = options
-  const clampedMaxHistoricalPages = Math.max(1, Math.min(5, rawMaxHistoricalPages ?? 3))
-  const MAX_MORALIS_FALLBACK_PAGES = 5
-  const clampedMaxFallbackPages = Math.max(1, Math.min(MAX_MORALIS_FALLBACK_PAGES, rawMaxFallbackPages ?? 2))
+  const scanModeConfig = walletScanBudget?.scanModeConfig
+  const clampedMaxHistoricalPages = Math.max(1, Math.min(scanModeConfig?.targetedRecoveryPages ?? 5, rawMaxHistoricalPages ?? 3))
+  const MAX_MORALIS_FALLBACK_PAGES = scanModeConfig?.allowMoralisTransfers ? Math.max(1, scanModeConfig.targetedRecoveryPages) : 0
+  const clampedMaxFallbackPages = MAX_MORALIS_FALLBACK_PAGES <= 0 ? 0 : Math.max(1, Math.min(MAX_MORALIS_FALLBACK_PAGES, rawMaxFallbackPages ?? 2))
   const tokenMeter = createTokenMeter(debug, maxDebugTokens)
   // Per-request price cache: prevents duplicate GoldRush historical price calls within a single scan
   // when the same contract/date appears in both base evidence and historical coverage pipelines.
@@ -12934,13 +12983,15 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   }
   tokenMeter.startTokenMeter('fallbackEngine')
   tokenMeter.measure('fallbackEngine', { activityRequested, historicalCoverage, initialEventCount: events.length, fallbackChain: _fbChain, primaryActivityFailed })
-  const _moralisTransferHardBudgetHasRoom = _apiCallLog.reduce((s, e) => s + e.credits, 0) < 18
+  const _moralisTransfersAllowedByMode = Boolean(scanModeConfig?.allowMoralisTransfers)
+  const _moralisTransferHardBudgetHasRoom = _moralisTransfersAllowedByMode && _apiCallLog.reduce((s, e) => s + e.credits, 0) < (scanModeConfig?.hardCapCredits ?? 18)
   const _fbChainValueForGate = chainValueMap.get(_fbChain) ?? (_fbChain === 'eth' ? _fbEthValue : _fbBaseValue)
   const _fbChainPassesValueGate = _fbChainValueForGate >= minChainValueUsd
   if (_fbChain === 'eth' && !_fbChainPassesValueGate) _walletMoralisHardGateDebug.ethDustMoralisBlocked = true
-  const _shouldTryMoralisFallback = deepActivity && !historicalCoverage && events.length === 0 && !_goldrushActivityUsableForMoralisGate && _fbChainPassesValueGate && _moralisTransferHardBudgetHasRoom && Boolean(process.env.MORALIS_API_KEY)
+  const _shouldTryMoralisFallback = _moralisTransfersAllowedByMode && deepActivity && !historicalCoverage && events.length === 0 && !_goldrushActivityUsableForMoralisGate && _fbChainPassesValueGate && _moralisTransferHardBudgetHasRoom && Boolean(process.env.MORALIS_API_KEY)
   if (!_shouldTryMoralisFallback) {
-    _walletMoralisHardGateDebug.transfersSkippedByChain[_fbChain] = !deepActivity ? 'deep_activity_required'
+    _walletMoralisHardGateDebug.transfersSkippedByChain[_fbChain] = !_moralisTransfersAllowedByMode ? 'scan_mode_blocks_moralis_transfers'
+      : !deepActivity ? 'deep_activity_required'
       : historicalCoverage ? 'historical_coverage_enabled'
       : (events.length > 0 || _goldrushActivityUsableForMoralisGate) ? 'goldrush_activity_usable'
       : !_fbChainPassesValueGate ? 'below_value_activity_gate'
@@ -13031,7 +13082,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _p18SupplementValue = chainValueMap.get(_p18SupplementChain as MoralisChain) ?? 0
   const _p18GrAlreadyCovered = _p18SupplementChain === 'eth' ? grEth.events.length > 0 : grBase.events.length > 0
   const _p18ShouldRun = (
-    deepActivity && !historicalCoverage &&
+    _moralisTransfersAllowedByMode && deepActivity && !historicalCoverage &&
     _moralisFbDebug.fallbackActivityUsed &&
     _p18SupplementValue > 1 &&
     !_p18GrAlreadyCovered &&
@@ -13084,7 +13135,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       _phase18Debug.skippedReason = 'supplement_returned_empty'
     }
   } else {
-    _phase18Debug.skippedReason = !deepActivity ? 'basic_scan'
+    _phase18Debug.skippedReason = !_moralisTransfersAllowedByMode ? 'scan_mode_blocks_moralis_transfers'
+      : !deepActivity ? 'basic_scan'
       : historicalCoverage ? 'historical_coverage_enabled'
       : !_moralisFbDebug.fallbackActivityUsed ? 'primary_activity_ok_no_supplement_needed'
       : _p18GrAlreadyCovered ? 'supplement_chain_already_covered_by_goldrush'
@@ -13117,10 +13169,11 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     moralisSupplementSkippedChains.push(c.chain)
     moralisSupplementSkipReasons[c.chain] = 'max_additional_chains_reached'
   }
-  const _p19ShouldRun = deepActivity && !historicalCoverage && events.length === 0 && !_goldrushActivityUsableForMoralisGate && _p19EligibleChains.length > 0 && Boolean(process.env.MORALIS_API_KEY)
+  const _p19ShouldRun = _moralisTransfersAllowedByMode && deepActivity && !historicalCoverage && events.length === 0 && !_goldrushActivityUsableForMoralisGate && _p19EligibleChains.length > 0 && Boolean(process.env.MORALIS_API_KEY)
   let _phase19Debug: _Phase19Debug = {
     attempted: _p19ShouldRun,
     skippedReason: _p19ShouldRun ? null
+      : !_moralisTransfersAllowedByMode ? 'scan_mode_blocks_moralis_transfers'
       : !deepActivity ? 'basic_scan'
       : historicalCoverage ? 'historical_coverage_enabled'
       : (events.length > 0 || _goldrushActivityUsableForMoralisGate) ? 'goldrush_activity_usable'
@@ -13192,6 +13245,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   })()
   const _p20GoldrushThin = events.length < 20
   const _p20ShouldRun = (
+    _moralisTransfersAllowedByMode &&
     (deepScan || deepActivity) &&
     events.length === 0 &&
     !_goldrushActivityUsableForMoralisGate &&
@@ -13317,7 +13371,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     historicalSourcePageUnitsUsed: _p20CreditsUsedEstimate,
     creditsUsedEstimate: _p20CreditsUsedEstimate,
     hardCapHit: _p20Moralis.stoppedReason === 'event_cap' || _p20Moralis.stoppedReason === 'page_cap',
-    stoppedReason: !_p20ShouldRun ? (!process.env.MORALIS_API_KEY ? 'provider_unavailable' : !(deepScan || deepActivity) ? 'disabled_by_request' : (events.length > 0 || _goldrushActivityUsableForMoralisGate) ? 'goldrush_activity_usable' : 'budget_cap') : _p20Moralis.stoppedReason,
+    stoppedReason: !_p20ShouldRun ? (!_moralisTransfersAllowedByMode ? 'scan_mode_blocks_moralis_transfers' : !process.env.MORALIS_API_KEY ? 'provider_unavailable' : !(deepScan || deepActivity) ? 'disabled_by_request' : (events.length > 0 || _goldrushActivityUsableForMoralisGate) ? 'goldrush_activity_usable' : 'budget_cap') : _p20Moralis.stoppedReason,
   }
 
   const _pnlSourceRaw: 'goldrush' | 'alchemy' | 'moralis_fallback' | 'none' =
@@ -13776,7 +13830,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   tokenMeter.startTokenMeter('priceInference')
   const _pricingStartedAt = Date.now()
   tokenMeter.measure('priceInference', _swapEvidenceWithDetection)
-  let { evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug, budgetDebug: _priceBudgetDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache, priceByContract, totalValue, historicalCoverage ? 6 : null, deepScan)
+  let { evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug, budgetDebug: _priceBudgetDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache, priceByContract, totalValue, scanModeConfig?.priceAttempts ?? (historicalCoverage ? 6 : null), deepScan)
   // Track base evidence historical price calls
   for (let _pp = 0; _pp < (_priceAtTimeDebug?.providerAttempts ?? 0); _pp++) {
     _trackCall('goldrush', 'historical_by_addresses_v2', false, `gr:price:base:${_pp}:${addrNorm}`)
@@ -13792,8 +13846,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // `hardCap - creditsBeforeHistorical` with no visibility into what sibling paths had already spent.
   const _adminOverrideUsed = walletScanBudget?.adminOverrideUsed === true
   const _tierTarget = _walletValueTier === 'micro' ? 6 : _walletValueTier === 'small' ? 12 : 15
-  const _totalCreditTarget = _adminOverrideUsed ? (walletScanBudget?.totalCreditTarget ?? 15) : Math.min(walletScanBudget?.totalCreditTarget ?? _tierTarget, _tierTarget)
-  const _totalCreditHardCap = _adminOverrideUsed ? (walletScanBudget?.totalCreditHardCap ?? 18) : Math.min(walletScanBudget?.totalCreditHardCap ?? 18, _walletValueTier === 'micro' ? 6 : 18)
+  const _totalCreditTarget = scanModeConfig?.targetCredits ?? (_adminOverrideUsed ? (walletScanBudget?.totalCreditTarget ?? 15) : Math.min(walletScanBudget?.totalCreditTarget ?? _tierTarget, _tierTarget))
+  const _totalCreditHardCap = scanModeConfig?.hardCapCredits ?? (_adminOverrideUsed ? (walletScanBudget?.totalCreditHardCap ?? 18) : Math.min(walletScanBudget?.totalCreditHardCap ?? 18, _walletValueTier === 'micro' ? 6 : 18))
   const _portfolioCreditsUsed = 1
   const _activityCreditsUsed = activityRequested ? 1 : 0
   const _pricingCreditsUsed = _priceBudgetDebug.finalPriceAttempts ?? _priceAtTimeDebug.priceAttempts ?? 0
@@ -15264,7 +15318,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // BUDGET-RESERVATION-FIX-1: max 1 page per target token for recovery unless an admin override
   // already exists — the reserved budget is small and intentionally scoped to a quick prior-buy
   // check per token, not a deep per-token scan.
-  const _moralisHistoricalMaxPagesPerToken = _adminOverrideUsed ? 2 : 1
+  const _moralisHistoricalMaxPagesPerToken = scanModeConfig?.targetedRecoveryPages ?? (_adminOverrideUsed ? 2 : 1)
   const _moralisHistoricalMaxTotalPages = _walletValueTier === 'high_value' ? 6 : 4
   const _moralisHistoricalPageSize = 100
   const _moralisHistoricalTargetTokens = _syntheticTargetExtraEligibleTokens.slice(0, _walletValueTier === 'high_value' ? 4 : 2)
@@ -16903,7 +16957,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // scans (no deepActivity/deepScan/includeActivity requested) must never spend a live
   // profitability_summary call, regardless of value/debug/budget. Debug alone no longer overrides
   // a basic scan's deepActivity requirement.
-  const _providerProfitDeepActivityRequested = Boolean(deepScan || deepActivity)
+  const _providerProfitDeepActivityRequested = Boolean(deepScan || deepActivity) && Boolean(scanModeConfig?.allowMoralisProviderPnl)
   const _providerProfitEligible = _providerProfitDeepActivityRequested && _providerProfitFifoFoundNoLots && (totalValue >= 1000 || debug || deepScan) && _providerProfitBudgetOk
   const _providerProfitCandidateChains: MoralisChain[] = []
   const _pushProviderProfitChain = (chain: MoralisChain | null | undefined) => {

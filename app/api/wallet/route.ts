@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { fetchWalletSnapshot, type WalletSnapshotOptions } from '@/lib/server/walletSnapshot'
+import { fetchWalletSnapshot, WALLET_SCAN_MODE_CONFIG, type WalletScanMode, type WalletSnapshotOptions } from '@/lib/server/walletSnapshot'
 import { computeWalletPersonality, computeWindowedPnl, computeBotScore } from '@/lib/server/walletIntelligence'
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import {
@@ -375,8 +375,10 @@ function getWalletValueTier(totalValueUsd: number): WalletValueTier {
 }
 
 function buildPublicWalletScanBudget(scanMode: string, requestedHistoricalScan: boolean, walletValueTier: WalletValueTier, adminOverrideUsed = false) {
-  const target = adminOverrideUsed ? 15 : walletValueTier === 'micro' ? 6 : walletValueTier === 'small' ? 12 : 15
-  const hardCap = adminOverrideUsed ? WALLET_ADMIN_HISTORICAL_HARD_CAP : walletValueTier === 'micro' ? 6 : 18
+  const walletScanConfigMode: WalletScanMode = adminOverrideUsed || scanMode === 'full_recovery' ? 'full_recovery' : scanMode === 'deep' || scanMode === 'historical' ? 'deep' : 'normal'
+  const modeConfig = WALLET_SCAN_MODE_CONFIG[walletScanConfigMode]
+  const target = modeConfig.targetCredits
+  const hardCap = modeConfig.hardCapCredits
   return {
     scanMode,
     requestedHistoricalScan,
@@ -386,6 +388,7 @@ function buildPublicWalletScanBudget(scanMode: string, requestedHistoricalScan: 
     creditsUsed: 0,
     creditsRemaining: hardCap,
     budgetByPhase: { portfolio: 2, activity: 3, pricing: 6, historicalRecovery: 6 },
+    scanModeConfig: modeConfig,
     budgetCapHit: false,
     budgetCapReason: null as string | null,
     skippedAfterBudgetCap: 0,
@@ -774,20 +777,21 @@ function buildWalletModuleCoverage(snap: any) {
   }
 }
 
-async function walletPlan(req: Request): Promise<'free' | 'pro' | 'elite'> {
+async function walletAuth(req: Request): Promise<{ plan: 'free' | 'pro' | 'elite'; email: string | null }> {
   const auth = req.headers.get('authorization') ?? ''
   const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : ''
-  if (!token) return 'free'
+  if (!token) return { plan: 'free', email: null }
   try {
     const result = await getCurrentUserPlanFromBearerToken(token)
     const { plan, userId, settingsRowFound } = result
     console.log("planCheck", { userId, plan })
     // Defensive fallback: authenticated user with no settings row yet → treat as elite for this request
     // This prevents false-negatives for newly-subscribed users whose row hasn't propagated yet.
-    if (userId && !settingsRowFound) return 'elite'
-    return plan
-  } catch { return 'free' }
+    if (userId && !settingsRowFound) return { plan: 'elite', email: result.email ?? null }
+    return { plan, email: result.email ?? null }
+  } catch { return { plan: 'free', email: null } }
 }
+async function walletPlan(req: Request): Promise<'free' | 'pro' | 'elite'> { return (await walletAuth(req)).plan }
 function walletIp(req: Request): string { return req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown' }
 async function walletAllowed(req: Request): Promise<boolean> { const plan=await walletPlan(req); const key=`${plan}:${walletIp(req)}`; const now=Date.now(); const cur=walletRate.get(key); const lim=WALLET_RATE_BY_PLAN[plan]; if(!cur||cur.resetAt<=now){walletRate.set(key,{count:1,resetAt:now+60000}); return true} if(cur.count>=lim)return false; cur.count+=1; return true }
 
@@ -802,7 +806,8 @@ export async function POST(req: Request) {
   // Dev-only auth bypass: NODE_ENV check guarantees this NEVER activates in production.
   // In production NODE_ENV is always 'production' so _devBypass evaluates to false unconditionally.
   const _devBypass = process.env.NODE_ENV !== 'production' && req.headers.get('x-dev-test') === 'chainlens-local'
-  const plan = _devBypass ? 'elite' : await walletPlan(req)
+  const authInfo = _devBypass ? { plan: 'elite' as const, email: 'chainlensai@gmail.com' } : await walletAuth(req)
+  const plan = authInfo.plan
   if (plan === 'free') return json({ error: 'Included in Pro and Elite.' }, { status: 403 })
   if (!_devBypass && !(await walletAllowed(req))) return json({ error: "Rate limit reached. Try again shortly." }, { status: 429 })
   try {
@@ -823,20 +828,49 @@ export async function POST(req: Request) {
     const deepScan = body?.deepScan === true || body?.deepScan === 'true'
     const deepActivityFlag = body?.deepActivity === true || body?.deepActivity === 'true'
     const includeActivityFlag = body?.includeActivity === true || body?.includeActivity === 'true'
-    const deepActivity = deepScan || deepActivityFlag || includeActivityFlag
-    const cacheMode: 'activity' | 'holdings' = (deepScan || deepActivity) ? 'activity' : 'holdings'
+    const deepActivityRequested = deepScan || deepActivityFlag || includeActivityFlag
     const chainMode = body?.chainMode === 'base' || body?.chainMode === 'eth' || body?.chainMode === 'base_eth' || body?.chainMode === 'all_supported' ? body.chainMode : 'auto'
+    const rawRequestedMode = body?.walletScanMode === 'full_recovery' || body?.scanMode === 'full_recovery'
+      ? 'full_recovery'
+      : body?.walletScanMode === 'deep' || body?.scanMode === 'deep' || deepActivityRequested
+        ? 'deep'
+        : 'normal'
+    const fullRecoveryAllowed = (authInfo.email ?? '').toLowerCase() === 'chainlensai@gmail.com'
+    const walletScanModeResolved: WalletScanMode = rawRequestedMode === 'full_recovery' && !fullRecoveryAllowed ? 'deep' : rawRequestedMode
+    const fullRecoveryBlockedReason = rawRequestedMode === 'full_recovery' && !fullRecoveryAllowed ? 'admin_only' as const : null
+    const walletScanModeConfigUsed = WALLET_SCAN_MODE_CONFIG[walletScanModeResolved]
+    const resolvedDeepActivity = walletScanModeResolved !== 'normal'
+    const resolvedDeepScan = walletScanModeResolved !== 'normal'
+    const cacheMode: 'activity' | 'holdings' = resolvedDeepActivity ? 'activity' : 'holdings'
+    const requestedModeFields = {
+      walletScanModeRequested: rawRequestedMode,
+      walletScanModeResolved,
+      walletScanModeConfigUsed,
+      fullRecoveryAllowed: walletScanModeResolved === 'full_recovery' && fullRecoveryAllowed,
+      fullRecoveryBlockedReason,
+      walletScanModeBudget: {
+        targetCredits: walletScanModeConfigUsed.targetCredits,
+        hardCapCredits: walletScanModeConfigUsed.hardCapCredits,
+        activityChainsMax: walletScanModeConfigUsed.activityChainsMax,
+        priceAttempts: walletScanModeConfigUsed.priceAttempts,
+        targetedRecoveryPages: walletScanModeConfigUsed.targetedRecoveryPages,
+        receiptChecks: walletScanModeConfigUsed.receiptChecks,
+        moralisTransfersAllowed: walletScanModeConfigUsed.allowMoralisTransfers,
+        moralisProviderPnlAllowed: walletScanModeConfigUsed.allowMoralisProviderPnl,
+      },
+      walletScanModeSafety: { pnlGatesChanged: false, publicPnlRulesChanged: false, providerCallsAddedByModeOnly: true },
+    }
 
     // Historical coverage: ONLY when explicitly requested — debug=true no longer auto-triggers it
-    const explicitHistoricalCoverageRequested = (body?.historicalCoverage === true || body?.historicalCoverage === 'true' || body?.historicalScan === true || body?.historicalScan === 'true') && deepActivity
+    const explicitHistoricalCoverageRequested = (body?.historicalCoverage === true || body?.historicalCoverage === 'true' || body?.historicalScan === true || body?.historicalScan === 'true') && resolvedDeepActivity
     let historicalCoverageRequested = explicitHistoricalCoverageRequested
     const adminOverrideRequested = WALLET_ADMIN_FORENSIC_SCAN && (body?.adminForensicScan === true || body?.adminForensicScan === 'true') && debugAllowed
 
     // Production page cap: max 2 in prod unless WALLET_DEEP_DEBUG_ENABLED=true, default 1
     const isProd = process.env.NODE_ENV === 'production'
-    const hcPageLimit = adminOverrideRequested ? Math.max(5, WALLET_ADMIN_HISTORICAL_HARD_CAP) : (!isProd || WALLET_DEEP_DEBUG_ENABLED) ? 5 : 3
-    const maxHistoricalPages = Math.max(1, Math.min(hcPageLimit, Number(body?.maxHistoricalPages ?? (historicalCoverageRequested ? 3 : 1)) || 1))
-    const maxFallbackPages = debug ? Math.max(1, Math.min(3, Number(body?.maxFallbackPages ?? 2) || 2)) : 2
+    const hcPageLimit = walletScanModeResolved === 'full_recovery' ? walletScanModeConfigUsed.targetedRecoveryPages : adminOverrideRequested ? Math.max(5, WALLET_ADMIN_HISTORICAL_HARD_CAP) : (!isProd || WALLET_DEEP_DEBUG_ENABLED) ? 5 : 3
+    const maxHistoricalPages = Math.max(1, Math.min(hcPageLimit, Number(body?.maxHistoricalPages ?? (historicalCoverageRequested ? walletScanModeConfigUsed.targetedRecoveryPages : 1)) || 1))
+    const maxFallbackPages = walletScanModeConfigUsed.allowMoralisTransfers ? Math.max(0, Math.min(walletScanModeConfigUsed.targetedRecoveryPages, Number(body?.maxFallbackPages ?? walletScanModeConfigUsed.targetedRecoveryPages) || walletScanModeConfigUsed.targetedRecoveryPages)) : 0
 
     const rawCacheBust = typeof body?.cacheBust === 'string' ? body.cacheBust : requestUrl.searchParams.get('cacheBust')
     const cacheBust = rawCacheBust && /^[a-zA-Z0-9_-]{1,80}$/.test(rawCacheBust) ? rawCacheBust : null
@@ -884,11 +918,11 @@ export async function POST(req: Request) {
 
     // Deep scan cooldown — prevents rapid repeat deep scans from burning credits
     const deepCooldownKey = `${key}:deep:${plan}`
-    const deepCooldownActive = !cacheBypassReason && deepActivity && !effectiveHistoricalCoverage && (walletDeepCooldown.get(deepCooldownKey) ?? 0) > Date.now()
+    const deepCooldownActive = !cacheBypassReason && resolvedDeepActivity && !effectiveHistoricalCoverage && (walletDeepCooldown.get(deepCooldownKey) ?? 0) > Date.now()
 
     // Stable, deterministic cache key: address + logical scan mode + chain + schema version
     // Does NOT include volatile fields (debug, refresh, request id, body order)
-    const scanModeKey = effectiveHistoricalCoverage ? 'historical' : deepActivity ? 'deep' : 'basic'
+    const scanModeKey = walletScanModeResolved === 'full_recovery' ? 'full_recovery' : effectiveHistoricalCoverage ? 'historical' : resolvedDeepActivity ? 'deep' : 'basic'
     const chainKey = resolvedChainMode !== 'auto' ? resolvedChainMode : chain
     const cacheKey = `${key}:${scanModeKey}:${chainKey}:${WALLET_SNAPSHOT_SCHEMA_VERSION}${hcSuffix}${debugFreshAllowed && cacheBust ? `:debug:${cacheBust}` : ''}`
 
@@ -972,7 +1006,7 @@ export async function POST(req: Request) {
       if (cooldownActive) return 'blocked_by_cooldown'
       if (costGuardHit) return 'blocked_by_cost_guard'
       if (effectiveHistoricalCoverage) return fromCache ? 'historical_cached' : 'historical_live'
-      if (deepActivity) return fromCache ? 'deep_cached' : 'deep_live'
+      if (resolvedDeepActivity) return fromCache ? 'deep_cached' : 'deep_live'
       return fromCache ? 'basic_cached' : 'basic'
     }
     const getCacheNote = (mode: WalletScanCostMode, cacheAgeSeconds?: number): string | undefined => {
@@ -994,7 +1028,7 @@ export async function POST(req: Request) {
       const quality = getPnlCacheQuality(cachedPayload)
       annotatePnlCacheQuality(cachedPayload, quality)
       const signals = getWalletPnlRecoverySignals(cachedPayload)
-      const wouldHaveTriedHistorical = deepActivity && quality !== 'complete' && !signals.historicalRequested && !cooldownActive && !costGuardHit
+      const wouldHaveTriedHistorical = resolvedDeepActivity && quality !== 'complete' && !signals.historicalRequested && !cooldownActive && !costGuardHit
       _lastCacheDecorationSkippedRecovery = wouldHaveTriedHistorical
       cachedPayload.cacheAgeSeconds = cacheAgeSeconds
       return normalizePublicPnlStatus(cachedPayload)
@@ -1023,14 +1057,14 @@ export async function POST(req: Request) {
         cacheHitEarlyReturn: true,
         postCacheDecorationMs: _postCacheDecorationMs,
         providerCallsSkippedBecauseCacheHit: _providerCallsSkippedBecauseCacheHit,
-        walletSnapshotCache: { memoryHit: !cacheBypassReason, memoryPresent: true, memoryBypassed: Boolean(cacheBypassReason), servedFromMemory: !cacheBypassReason, persistentHit: false, providerFetchNeeded: false, refreshBypassedCache: Boolean(cacheBypassReason), cacheAgeSeconds, cacheTtlSeconds: (effectiveHistoricalCoverage ? WALLET_HISTORICAL_CACHE_TTL_MS : deepActivity ? WALLET_DEEP_CACHE_TTL_MS : WALLET_BASIC_CACHE_TTL_MS) / 1000, cacheVersion: WALLET_SNAPSHOT_SCHEMA_VERSION, cacheBypassReason, debugFreshBypassedPersistentCache },
+        walletSnapshotCache: { memoryHit: !cacheBypassReason, memoryPresent: true, memoryBypassed: Boolean(cacheBypassReason), servedFromMemory: !cacheBypassReason, persistentHit: false, providerFetchNeeded: false, refreshBypassedCache: Boolean(cacheBypassReason), cacheAgeSeconds, cacheTtlSeconds: (effectiveHistoricalCoverage ? WALLET_HISTORICAL_CACHE_TTL_MS : resolvedDeepActivity ? WALLET_DEEP_CACHE_TTL_MS : WALLET_BASIC_CACHE_TTL_MS) / 1000, cacheVersion: WALLET_SNAPSHOT_SCHEMA_VERSION, cacheBypassReason, debugFreshBypassedPersistentCache },
         providerFlow: null,
         walletScanBudgetDebug: cp?._cachedDiagnosticsSlim?.walletScanBudgetDebug ?? null,
         walletHistoricalScanDebug: cp?._cachedDiagnosticsSlim?.walletHistoricalScanDebug ?? null,
         syntheticLotRecoveryDebug: cp?._cachedDiagnosticsSlim?.syntheticLotRecoveryDebug ?? null,
         swapReconstructionV1Debug: cp?._cachedDiagnosticsSlim?.swapReconstructionV1Debug ?? SWAP_RECONSTRUCTION_V1_DEBUG_UNAVAILABLE_FROM_CACHE,
         walletCostGuardDebug: {
-          requestedDeepActivity: deepActivity,
+          requestedDeepActivity: resolvedDeepActivity,
           requestedHistoricalCoverage: historicalCoverageRequested,
           requestedMaxHistoricalPages: body?.maxHistoricalPages ?? null,
           effectiveMaxHistoricalPages: maxHistoricalPages,
@@ -1042,7 +1076,7 @@ export async function POST(req: Request) {
           reason: 'route_cache_hit',
         },
         walletActivityRequestDebug: {
-          deepActivityRequested: deepScan || deepActivity,
+          deepActivityRequested: resolvedDeepActivity,
           deepActivityFlagSent: deepActivityFlag,
           includeActivityFlagSent: includeActivityFlag,
           deepScanFlagSent: deepScan,
@@ -1067,7 +1101,7 @@ export async function POST(req: Request) {
         walletScanCostDebug: {
           scanId: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
           address: key,
-          requestedDeepActivity: deepActivity,
+          requestedDeepActivity: resolvedDeepActivity,
           requestedHistoricalCoverage: historicalCoverageRequested,
           requestedMaxHistoricalPages: body?.maxHistoricalPages ?? null,
           effectiveMaxHistoricalPages: maxHistoricalPages,
@@ -1111,7 +1145,8 @@ export async function POST(req: Request) {
         },
       }
       attachWalletDeepScanTiming(cp, { ...zeroWalletDeepScanTiming(), totalMs: Date.now() - startedAt, cacheHit: true, cacheReadMs: _cacheReadMs }, debug)
-      attachWalletDeepScanStaging(cp, { mode: deepActivity ? 'deep' : 'standard', cacheHit: true, debug })
+      attachWalletDeepScanStaging(cp, { mode: resolvedDeepActivity ? 'deep' : 'standard', cacheHit: true, debug })
+      Object.assign(cp, requestedModeFields)
       pruneWalletScannerDebug(cp, debug)
       return json(cp)
     }
@@ -1126,10 +1161,11 @@ export async function POST(req: Request) {
           cp.walletScanCostMode = 'blocked_by_cooldown'
           cp.walletScanCacheNote = 'Enhanced scan cooling down. Try again later.'
         }
+        if (cp && typeof cp === 'object') Object.assign(cp, requestedModeFields)
         pruneWalletScannerDebug(cp, debug)
         return json(cp)
       }
-      return json({ error: 'Enhanced historical scan is cooling down. Try again in a few minutes.', walletScanCostMode: 'blocked_by_cooldown' }, { status: 429 })
+      return json({ error: 'Enhanced historical scan is cooling down. Try again in a few minutes.', walletScanCostMode: 'blocked_by_cooldown', ...requestedModeFields }, { status: 429 })
     }
 
     // Blocked by cost guard — serve from cache if available
@@ -1142,6 +1178,7 @@ export async function POST(req: Request) {
           cp.walletScanCostMode = 'blocked_by_cost_guard'
           cp.walletScanCacheNote = 'Historical scan served from cache — wallet has heavy history.'
         }
+        if (cp && typeof cp === 'object') Object.assign(cp, requestedModeFields)
         pruneWalletScannerDebug(cp, debug)
         return json(cp)
       }
@@ -1158,6 +1195,7 @@ export async function POST(req: Request) {
           cp.walletScanCostMode = 'deep_cached'
           cp.walletScanCacheNote = 'Deep scan cooling down — serving recent result to protect API budget.'
         }
+        if (cp && typeof cp === 'object') Object.assign(cp, requestedModeFields)
         pruneWalletScannerDebug(cp, debug)
         return json(cp)
       }
@@ -1177,7 +1215,7 @@ export async function POST(req: Request) {
     let _cacheBackend: 'memory' | 'persistent' | 'none' = 'none'
     let _cacheMissReason: string | null = null
 
-    if (deepActivity && !cooldownActive && !costGuardHit) {
+    if (resolvedDeepActivity && !cooldownActive && !costGuardHit) {
       _persistentAvailable = walletScanPersistentCacheAvailable()
 
       // --- Persistent cache read (same bypass rules as memory cache: skip for refresh/debugFresh) ---
@@ -1253,7 +1291,8 @@ export async function POST(req: Request) {
             }
           }
           attachWalletDeepScanTiming(cp, { ...zeroWalletDeepScanTiming(), totalMs: Date.now() - startedAt, cacheHit: true, cacheReadMs: _cacheReadMs }, debug)
-          attachWalletDeepScanStaging(cp, { mode: deepActivity ? 'deep' : 'standard', cacheHit: true, debug })
+          attachWalletDeepScanStaging(cp, { mode: resolvedDeepActivity ? 'deep' : 'standard', cacheHit: true, debug })
+          if (cp && typeof cp === 'object') Object.assign(cp, requestedModeFields)
           pruneWalletScannerDebug(cp, debug)
           return json(cp)
         }
@@ -1279,27 +1318,28 @@ export async function POST(req: Request) {
             cp.walletScanCacheNote = 'Deep scan cooling down — serving recent result to protect API budget.'
           }
           attachWalletDeepScanTiming(cp, { ...zeroWalletDeepScanTiming(), totalMs: Date.now() - startedAt, cacheHit: true, cacheReadMs: _cacheReadMs }, debug)
-          attachWalletDeepScanStaging(cp, { mode: deepActivity ? 'deep' : 'standard', cacheHit: true, debug })
+          attachWalletDeepScanStaging(cp, { mode: resolvedDeepActivity ? 'deep' : 'standard', cacheHit: true, debug })
+          if (cp && typeof cp === 'object') Object.assign(cp, requestedModeFields)
           pruneWalletScannerDebug(cp, debug)
           return json(cp)
         }
-        return json({ error: 'Deep scan is cooling down. Try again in a few minutes.', walletScanCostMode: 'deep_cached' }, { status: 429 })
+        return json({ error: 'Deep scan is cooling down. Try again in a few minutes.', walletScanCostMode: 'deep_cached', ...requestedModeFields }, { status: 429 })
       }
 
       _cacheMissReason = _persistentAvailable ? 'persistent_cache_miss' : 'persistent_cache_unavailable'
 
       // Hard block for cache-only test mode
       if (WALLET_TEST_CACHE_ONLY) {
-        return json({ error: 'No cached result available (CHAINLENS_WALLET_TEST_CACHE_ONLY=true — live GoldRush calls blocked)', walletScanCostMode: 'deep_cached' }, { status: 503 })
+        return json({ error: 'No cached result available (CHAINLENS_WALLET_TEST_CACHE_ONLY=true — live GoldRush calls blocked)', walletScanCostMode: 'deep_cached', ...requestedModeFields }, { status: 503 })
       }
     } else if (deepCooldownActive) {
       // Fell through memory cooldown with no memory stale — final 429 guard
-      return json({ error: 'Deep scan is cooling down. Try again in a few minutes.', walletScanCostMode: 'deep_cached' }, { status: 429 })
+      return json({ error: 'Deep scan is cooling down. Try again in a few minutes.', walletScanCostMode: 'deep_cached', ...requestedModeFields }, { status: 429 })
     }
 
     // In-flight dedup for deep/historical scans
     let inFlightDeduped = false
-    const inFlightKey = deepActivity ? `${key}:${scanModeKey}:${chainKey}${effectiveHistoricalCoverage ? `:hc${maxHistoricalPages}` : ''}` : ''
+    const inFlightKey = resolvedDeepActivity ? `${key}:${scanModeKey}:${chainKey}${effectiveHistoricalCoverage ? `:hc${maxHistoricalPages}` : ''}` : ''
     let rawSnapshot: any
 
     const existingInFlight = inFlightKey && !debugFreshAllowed ? walletDeepInFlight.get(inFlightKey) : undefined
@@ -1310,13 +1350,13 @@ export async function POST(req: Request) {
       const scanPromise: Promise<unknown> = fetchWalletSnapshot(address ?? '', {
         refresh,
         chain,
-        deepScan,
-        deepActivity,
+        deepScan: resolvedDeepScan,
+        deepActivity: resolvedDeepActivity,
         chainMode: resolvedChainMode,
         historicalCoverage: effectiveHistoricalCoverage,
         maxHistoricalPages,
         maxFallbackPages,
-        walletScanBudget: buildPublicWalletScanBudget(scanModeKey, historicalCoverageRequested, 'standard', adminOverrideRequested),
+        walletScanBudget: buildPublicWalletScanBudget(scanModeKey, historicalCoverageRequested, 'standard', walletScanModeResolved === 'full_recovery'),
       } satisfies WalletSnapshotOptions)
       if (inFlightKey && !debugFreshAllowed) walletDeepInFlight.set(inFlightKey, scanPromise)
       try {
@@ -1335,7 +1375,7 @@ export async function POST(req: Request) {
     snapshot.dataFreshness = 'live'
     const _initialRecoverySignals = getWalletPnlRecoverySignals(snapshot)
     const _shouldAutoRequestHistoricalRecovery =
-      deepActivity &&
+      resolvedDeepActivity &&
       !effectiveHistoricalCoverage &&
       !explicitHistoricalCoverageRequested &&
       !cooldownActive &&
@@ -1343,7 +1383,7 @@ export async function POST(req: Request) {
       _initialRecoverySignals.needsHistorical
     if (_shouldAutoRequestHistoricalRecovery) {
       historicalCoverageRequested = true
-      const _autoBudget = buildPublicWalletScanBudget('historical', true, _initialRecoverySignals.walletValueTier, adminOverrideRequested)
+      const _autoBudget = buildPublicWalletScanBudget('historical', true, _initialRecoverySignals.walletValueTier, walletScanModeResolved === 'full_recovery')
       if (_autoBudget.totalCreditHardCap > 0) {
         const _historicalSnapshot: any = await fetchWalletSnapshot(address ?? '', {
           refresh,
@@ -1404,7 +1444,7 @@ export async function POST(req: Request) {
         _goldrushDailyCreditsResetAt = nowUtcDay
       }
       // Each deep scan costs ~2-6 GR credits (1 balances + 1 tx + up to 6 price calls)
-      _goldrushDailyCreditsUsed += deepActivity ? 3 : 1
+      _goldrushDailyCreditsUsed += resolvedDeepActivity ? 3 : 1
       if (_goldrushDailyCreditsUsed > GOLDRUSH_DAILY_SOFT_CAP) {
         console.warn(`[wallet-route] GOLDRUSH DAILY SOFT CAP EXCEEDED: ${_goldrushDailyCreditsUsed}/${GOLDRUSH_DAILY_SOFT_CAP} credits used today`)
       }
@@ -1415,7 +1455,7 @@ export async function POST(req: Request) {
       ?? snapshot._diagnostics?.providers?.goldrush?.rawItemCount
       ?? 0
     const diagRequestDurationMs: number = Date.now() - startedAt
-    if (deepActivity && diagRawLogEvents >= 0) {
+    if (resolvedDeepActivity && diagRawLogEvents >= 0) {
       walletCostHints.set(costHintKey, { rawLogEvents: diagRawLogEvents, requestDurationMs: diagRequestDurationMs, cachedAt: Date.now() })
     }
 
@@ -1428,7 +1468,7 @@ export async function POST(req: Request) {
       }
     }
     // Set deep scan cooldown after a live deep scan
-    if (deepActivity && !effectiveHistoricalCoverage && !inFlightDeduped && !noCacheWrite) {
+    if (resolvedDeepActivity && !effectiveHistoricalCoverage && !inFlightDeduped && !noCacheWrite) {
       walletDeepCooldown.set(deepCooldownKey, Date.now() + WALLET_DEEP_COOLDOWN_MS)
     }
 
@@ -1438,7 +1478,7 @@ export async function POST(req: Request) {
     if (cacheNote) snapshot.walletScanCacheNote = cacheNote
 
     // Pre-compute cache write decision for debug observability (Map.set is synchronous, always succeeds)
-    const _cacheTtlMs = effectiveHistoricalCoverage ? WALLET_HISTORICAL_CACHE_TTL_MS : deepActivity ? WALLET_DEEP_CACHE_TTL_MS : WALLET_BASIC_CACHE_TTL_MS
+    const _cacheTtlMs = effectiveHistoricalCoverage ? WALLET_HISTORICAL_CACHE_TTL_MS : resolvedDeepActivity ? WALLET_DEEP_CACHE_TTL_MS : WALLET_BASIC_CACHE_TTL_MS
     const _cacheWriteAttempted = !noCacheWrite  // write after every live scan unless debug no-cache-write is requested
     const _deepCooldownExpiry = walletDeepCooldown.get(deepCooldownKey) ?? 0
     const _cooldownExpiresInSeconds = _deepCooldownExpiry > Date.now() ? Math.floor((_deepCooldownExpiry - Date.now()) / 1000) : null
@@ -1593,7 +1633,7 @@ export async function POST(req: Request) {
     }
     const _scanBudgetDebug = snapshot._diagnostics?.walletScanBudgetDebug ?? null
     const _walletValueTier = getWalletValueTier(Number(snapshot.totalValue ?? 0))
-    const _publicBudget: any = buildPublicWalletScanBudget(scanModeKey, historicalCoverageRequested, _scanBudgetDebug?.walletValueTier ?? _walletValueTier, adminOverrideRequested)
+    const _publicBudget: any = buildPublicWalletScanBudget(scanModeKey, historicalCoverageRequested, _scanBudgetDebug?.walletValueTier ?? _walletValueTier, walletScanModeResolved === 'full_recovery')
     // BUDGET-HONESTY-FIX: the budget-debug counter only tallies credits at specific check sites
     // and can under-count relative to the real per-call audit log (apiAudit.totalCredits). Expose
     // both numbers instead of silently reporting the lower, estimated one as "creditsUsed".
@@ -1660,7 +1700,7 @@ export async function POST(req: Request) {
     // Historical scans now persist under their own 'historical' scanMode/cacheKey + WALLET_HISTORICAL_CACHE_TTL_MS
     // (via cacheKey/_cacheTtlMs, which already resolve to the historical variants when effectiveHistoricalCoverage
     // is true) so expensive historical scans can be served from persistent cache instead of rerunning live.
-    if (_cacheWriteAttempted && deepActivity && !inFlightDeduped && _persistentAvailable && !_cacheWriteBlocked) {
+    if (_cacheWriteAttempted && resolvedDeepActivity && !inFlightDeduped && _persistentAvailable && !_cacheWriteBlocked) {
       _persistentCacheWriteAttempted = true
       const _ppayload: any = { ...snapshot }
       // Extract slim diagnostics before pruning so cached responses can surface them with debug=true
@@ -1822,7 +1862,7 @@ export async function POST(req: Request) {
         walletScanBudgetDebug: snapshot._diagnostics?.walletScanBudgetDebug ?? null,
         walletHistoricalScanDebug: snapshot._diagnostics?.walletHistoricalScanDebug ?? null,
         walletCostGuardDebug: {
-          requestedDeepActivity: deepActivity,
+          requestedDeepActivity: resolvedDeepActivity,
           requestedHistoricalCoverage: historicalCoverageRequested,
           requestedMaxHistoricalPages: body?.maxHistoricalPages ?? null,
           effectiveMaxHistoricalPages: maxHistoricalPages,
@@ -1836,7 +1876,7 @@ export async function POST(req: Request) {
           reason: costGuardHit ? 'historical_scan_cached_due_to_cost_guard' : cooldownActive ? 'historical_scan_cached_due_to_cooldown' : null,
         },
         walletActivityRequestDebug: {
-          deepActivityRequested: deepActivity || deepScan,
+          deepActivityRequested: resolvedDeepActivity,
           deepActivityFlagSent: deepActivityFlag,
           includeActivityFlagSent: includeActivityFlag,
           deepScanFlagSent: deepScan,
@@ -1860,7 +1900,7 @@ export async function POST(req: Request) {
           fallbackActivityUsed: snapshot._diagnostics?.walletActivityRequestDebug?.fallbackActivityUsed ?? false,
           fallbackActivityReason: snapshot._diagnostics?.walletActivityRequestDebug?.fallbackActivityReason ?? 'not_wired',
           finalEvidenceStatus: snapshot._diagnostics?.walletActivityRequestDebug?.finalEvidenceStatus ?? snapshot.walletEvidenceSummary?.status ?? 'unknown',
-          reason: (deepActivity || deepScan) ? null : 'deep_activity_not_requested',
+          reason: resolvedDeepActivity ? null : 'deep_activity_not_requested',
           // Activity fallback telemetry (populated when primary providers returned nothing)
           ...(() => {
             const fb = snapshot._diagnostics?.walletActivityFallbackDebug
@@ -1902,15 +1942,15 @@ export async function POST(req: Request) {
           const grConf = Boolean(providers.goldrush?.configured)
           const grCache = Boolean(snapshotCacheDebug?.memoryHit)
           const alchAtt = Boolean(providers.alchemy?.behaviorAttempted)
-          const txPg: number = hcSum?.pagesAttempted ?? (deepActivity ? 1 : 0)
+          const txPg: number = hcSum?.pagesAttempted ?? (resolvedDeepActivity ? 1 : 0)
           type PC = { provider: string; endpointName: string; attempted: boolean; cacheHit: boolean; statusCode?: number | null; durationMs?: number | null; pagesFetched?: number | null; rawItems?: number | null; rawLogEvents?: number | null; normalizedEvents?: number | null; estimatedCreditUnits?: number | null; failureKind?: string | null; reason?: string | null }
           const calls: PC[] = []
           const activityDbg = snapshot._diagnostics?.walletActivityRequestDebug ?? null
           const grFailureKind = activityDbg?.primaryActivityFailed ? activityDbg.primaryActivityErrorKind ?? 'fetch_failed' : null
           const grReason = activityDbg?.primaryActivityFailed ? 'primary_activity_failed' : null
           const grStatusCode = activityDbg?.primaryActivityFailed ? null : providers.goldrush?.httpStatus ?? null
-          const grCredits = (inFlightDeduped || grCache) ? 0 : activityDbg?.primaryActivityFailed ? 1 : grConf ? (1 + (deepActivity ? txPg : 0)) : 0
-          calls.push({ provider: 'goldrush', endpointName: deepActivity ? 'balances_v2 + transactions_v3' : 'balances_v2', attempted: grConf, cacheHit: grCache, statusCode: grStatusCode, durationMs: null, pagesFetched: deepActivity ? txPg : null, rawItems: providers.goldrush?.rawItemCount ?? null, rawLogEvents: null, normalizedEvents: providers.goldrush?.normalizedEventCount ?? null, estimatedCreditUnits: grCredits, failureKind: grFailureKind, reason: grReason })
+          const grCredits = (inFlightDeduped || grCache) ? 0 : activityDbg?.primaryActivityFailed ? 1 : grConf ? (1 + (resolvedDeepActivity ? txPg : 0)) : 0
+          calls.push({ provider: 'goldrush', endpointName: resolvedDeepActivity ? 'balances_v2 + transactions_v3' : 'balances_v2', attempted: grConf, cacheHit: grCache, statusCode: grStatusCode, durationMs: null, pagesFetched: resolvedDeepActivity ? txPg : null, rawItems: providers.goldrush?.rawItemCount ?? null, rawLogEvents: null, normalizedEvents: providers.goldrush?.normalizedEventCount ?? null, estimatedCreditUnits: grCredits, failureKind: grFailureKind, reason: grReason })
           if (effectiveHistoricalCoverage) {
             const hcPg: number = hcSum?.pagesAttempted ?? maxHistoricalPages
             calls.push({ provider: 'goldrush', endpointName: 'log_events_by_address (historical)', attempted: true, cacheHit: false, statusCode: null, durationMs: null, pagesFetched: hcPg, rawItems: null, rawLogEvents: hcDbg?.rawLogEvents ?? hcSum?.rawLogEvents ?? null, normalizedEvents: hcDbg?.normalizedEvents ?? hcSum?.normalizedEvents ?? null, estimatedCreditUnits: inFlightDeduped ? 0 : hcPg })
@@ -1939,7 +1979,7 @@ export async function POST(req: Request) {
           return {
             scanId: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
             address: key,
-            requestedDeepActivity: deepActivity,
+            requestedDeepActivity: resolvedDeepActivity,
             requestedHistoricalCoverage: historicalCoverageRequested,
             requestedMaxHistoricalPages: body?.maxHistoricalPages ?? null,
             effectiveMaxHistoricalPages: maxHistoricalPages,
@@ -2036,7 +2076,8 @@ export async function POST(req: Request) {
     }
     const _routeDecorationMs = Math.max(0, Date.now() - _routeDecorationStartedAt - _cacheWriteMs)
     attachWalletDeepScanTiming(snapshot, buildWalletDeepScanTiming(snapshot, startedAt, _cacheReadMs, _cacheWriteMs, { cacheHit: false, dedupeHit: inFlightDeduped, routeDecorationMs: _routeDecorationMs }), debug)
-    attachWalletDeepScanStaging(snapshot, { mode: deepActivity ? 'deep' : 'standard', cacheHit: false, dedupeHit: inFlightDeduped, inFlightDeduped, debug })
+    attachWalletDeepScanStaging(snapshot, { mode: resolvedDeepActivity ? 'deep' : 'standard', cacheHit: false, dedupeHit: inFlightDeduped, inFlightDeduped, debug })
+    Object.assign(snapshot, requestedModeFields)
     pruneWalletScannerDebug(snapshot, debug)
     return json(snapshot)
   } catch (err: unknown) {

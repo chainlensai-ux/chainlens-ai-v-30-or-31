@@ -650,6 +650,13 @@ type WalletResult = {
     signals?: string[]
   }
   walletScanCostMode?: 'basic' | 'basic_cached' | 'deep_cached' | 'deep_live' | 'historical_cached' | 'historical_live' | 'blocked_by_cooldown' | 'blocked_by_cost_guard'
+  walletScanModeRequested?: 'normal' | 'deep' | 'full_recovery'
+  walletScanModeResolved?: 'normal' | 'deep' | 'full_recovery'
+  walletScanModeConfigUsed?: { targetCredits: number; hardCapCredits: number; activityChainsMax: number; priceAttempts: number; targetedRecoveryPages: number; receiptChecks: number; allowMoralisTransfers: boolean; allowMoralisProviderPnl: boolean }
+  fullRecoveryAllowed?: boolean
+  fullRecoveryBlockedReason?: 'admin_only' | null
+  walletScanModeBudget?: { targetCredits: number; hardCapCredits: number; activityChainsMax: number; priceAttempts: number; targetedRecoveryPages: number; receiptChecks: number; moralisTransfersAllowed: boolean; moralisProviderPnlAllowed: boolean }
+  walletScanModeSafety?: { pnlGatesChanged: false; publicPnlRulesChanged: false; providerCallsAddedByModeOnly: true }
   walletScanCacheNote?: string
   pnlCacheQuality?: 'complete' | 'partial_needs_historical' | 'stale_low_coverage' | 'partial_public_performance' | 'partial_invalid_integrity' | 'limited_verified_sample'
   walletPnlRecoveryCta?: string
@@ -681,9 +688,11 @@ type WalletResult = {
     historicalBudgetCapReason?: string | null
     estimatedCreditsUsed?: number
     actualCreditsUsed?: number
+    actualProviderCreditsUsed?: number
     skippedAfterBudgetCap: number
     estimatedCreditsSavedByCache: number
   }
+  walletHistoricalCoverageSummary?: { pagesAttempted?: number; requested?: boolean; normalizedEvents?: number; coverageLevel?: 'none' | 'light' | 'medium' | 'deep'; reason?: string | null }
   walletHistoricalCoverage?: {
     checked: boolean
     olderEntriesRecovered: number
@@ -1669,6 +1678,7 @@ export default function WalletScannerPage() {
   const [result, setResult]             = useState<WalletResult | null>(null)
   const [showAllHoldings, setShowAllHoldings] = useState(false)
   const [deepActivity, setDeepActivity] = useState(false)
+  const [signedInEmail, setSignedInEmail] = useState<string | null>(null)
   const [freshScanBypass, setFreshScanBypass] = useState(false)
   const [noCacheWrite, setNoCacheWrite] = useState(false)
   const [addressCopied, setAddressCopied] = useState(false)
@@ -1680,6 +1690,17 @@ export default function WalletScannerPage() {
   const [watchlistDeleting, setWatchlistDeleting] = useState<string | null>(null)
   const clarkLoading = loading
   const showDebugCacheControls = deepActivity && (plan === 'pro' || plan === 'elite' || betaEliteActive || process.env.NODE_ENV !== 'production')
+  const isFullRecoveryAdmin = (signedInEmail ?? '').toLowerCase() === 'chainlensai@gmail.com'
+
+  useEffect(() => {
+    let cancelled = false
+    supabase.auth.getSession().then(({ data }) => {
+      if (!cancelled) setSignedInEmail(data.session?.user?.email ?? null)
+    }).catch(() => {
+      if (!cancelled) setSignedInEmail(null)
+    })
+    return () => { cancelled = true }
+  }, [])
 
   async function loadWalletWatchlist() {
     setWatchlistLoading(true)
@@ -1837,12 +1858,15 @@ export default function WalletScannerPage() {
     URL.revokeObjectURL(url)
   }
 
-  async function handleScan(forceDeep = false) {
+  async function handleScan(mode: 'normal' | 'deep' | 'full_recovery' = 'normal') {
     const q = input.trim()
     if (!q) return
-    // forceDeep lets the "Run deep recovery scan" CTA opt into deep activity on the immediate rescan
-    // without waiting for the deepActivity state update to flush through this closure.
-    const useDeep = deepActivity || forceDeep
+    if (mode === 'full_recovery' && !isFullRecoveryAdmin) {
+      setError('Full Recovery is admin-only.')
+      return
+    }
+    const useDeep = mode !== 'normal'
+    setDeepActivity(useDeep)
     setLoading(true)
     setError(null)
     setShowAllHoldings(false)
@@ -1858,7 +1882,7 @@ export default function WalletScannerPage() {
           'Content-Type': 'application/json',
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
-        body: JSON.stringify({ address: q, ...(useDeep ? { deepActivity: true } : {}), ...(canDebug && freshScanBypass ? { debugFresh: true, bypassCache: true, cacheBust, ...(noCacheWrite ? { noCacheWrite: true } : {}) } : {}) }),
+        body: JSON.stringify({ address: q, walletScanMode: mode, ...(useDeep ? { deepActivity: true } : {}), ...(canDebug && freshScanBypass ? { debugFresh: true, bypassCache: true, cacheBust, ...(noCacheWrite ? { noCacheWrite: true } : {}) } : {}) }),
       })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error ?? 'Scan failed')
@@ -2196,41 +2220,40 @@ export default function WalletScannerPage() {
             </button>
           </div>
 
-          {/* Deep Activity Scan toggle */}
+          {/* Deep Scan and admin-only Full Recovery controls */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginTop: '12px', flexWrap: 'wrap' }}>
             <button
-              onClick={() => setDeepActivity(v => !v)}
-              disabled={loading}
-              title="Fetches transfer history for estimated PnL and future trade reconstruction. Slower scan."
+              onClick={() => void handleScan('deep')}
+              disabled={loading || !input.trim()}
+              title="Deep public scan. Fetches transfer history and targeted recovery within the current public budget."
               style={{
                 display: 'inline-flex', alignItems: 'center', gap: '6px',
                 padding: '6px 13px', borderRadius: '8px',
-                border: `1px solid ${deepActivity ? 'rgba(45,212,191,0.45)' : 'rgba(255,255,255,0.08)'}`,
-                background: deepActivity ? 'rgba(45,212,191,0.08)' : 'rgba(255,255,255,0.02)',
-                color: deepActivity ? '#2DD4BF' : 'rgba(255,255,255,0.35)',
+                border: '1px solid rgba(45,212,191,0.45)',
+                background: 'rgba(45,212,191,0.08)',
+                color: '#2DD4BF',
                 fontSize: '10px', fontWeight: 700, letterSpacing: '0.10em', textTransform: 'uppercase',
-                cursor: loading ? 'not-allowed' : 'pointer',
+                cursor: (loading || !input.trim()) ? 'not-allowed' : 'pointer',
                 fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
-                transition: 'all 0.18s',
-                boxShadow: deepActivity ? '0 0 14px rgba(45,212,191,0.12)' : 'none',
+                transition: 'all 0.18s', boxShadow: '0 0 14px rgba(45,212,191,0.12)',
               }}
             >
-              {deepActivity ? (
-                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="20 6 9 17 4 12"/>
-                </svg>
-              ) : (
-                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/>
-                </svg>
-              )}
-              {deepActivity ? 'Deep Activity On' : 'Deep Activity Scan'}
+              Deep Scan
             </button>
             <span style={{ fontSize: '10px', color: 'rgba(255,255,255,0.22)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', letterSpacing: '0.04em' }}>
-              {deepActivity
-                ? 'Heavier analysis · cached · rerun returns cached result'
-                : 'Fetches transfer history · slower scan'}
+              Public heavy scan · targeted recovery · Moralis transfers blocked
             </span>
+            {isFullRecoveryAdmin && (
+              <button
+                onClick={() => void handleScan('full_recovery')}
+                disabled={loading || !input.trim()}
+                title="Heavy recovery attempt. Uses extra provider budget. Not guaranteed."
+                style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'flex-start', gap: '2px', padding: '7px 13px', borderRadius: '8px', border: '1px solid rgba(251,191,36,0.55)', background: 'rgba(251,191,36,0.10)', color: '#fbbf24', fontSize: '10px', fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase', cursor: (loading || !input.trim()) ? 'not-allowed' : 'pointer', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}
+              >
+                <span>Admin Full Recovery</span>
+                <span style={{ fontSize: '9px', fontWeight: 600, letterSpacing: 0, textTransform: 'none', color: 'rgba(251,191,36,0.78)' }}>Heavy recovery attempt. Uses extra provider budget. Not guaranteed.</span>
+              </button>
+            )}
 
             {showDebugCacheControls && (
               <div style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', padding: '7px 10px', borderRadius: '10px', border: '1px solid rgba(251,191,36,0.24)', background: 'rgba(251,191,36,0.055)' }}>
@@ -2435,6 +2458,27 @@ export default function WalletScannerPage() {
                   {result.walletScanCacheNote}
                 </div>
               )}
+
+              {/* Scan mode audit */}
+              {result.walletScanModeResolved && (() => {
+                const budget = result.walletScanModeBudget
+                const audit = result.walletApiSourceAudit
+                const providersTouched = Array.from(new Set([
+                  ...(audit?.portfolio?.providersUsed ?? []),
+                  ...(audit?.activity?.providersUsed ?? []),
+                  ...(audit?.providerPnl?.attempted ? ['moralis'] : []),
+                ].filter(Boolean))).join(', ') || 'none'
+                const recoveryPagesUsed = result.walletHistoricalCoverageSummary?.pagesAttempted ?? result.walletHistoricalCoverage?.olderEntriesRecovered ?? 0
+                return (
+                  <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.62)', background: 'rgba(15,23,42,0.46)', border: '1px solid rgba(148,163,184,0.16)', borderRadius: '12px', padding: '12px 14px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', lineHeight: 1.7 }}>
+                    <div style={{ color: '#7dd3fc', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.12em', marginBottom: '6px' }}>Scan mode audit</div>
+                    <div>Mode requested: {result.walletScanModeRequested ?? 'normal'} · Mode used: {result.walletScanModeResolved}</div>
+                    <div>Target credits: {budget?.targetCredits ?? result.walletScanBudget?.totalCreditTarget ?? '—'} · Hard cap: {budget?.hardCapCredits ?? result.walletScanBudget?.totalCreditHardCap ?? '—'} · Credits used: {result.walletScanBudget?.actualProviderCreditsUsed ?? result.walletScanBudget?.creditsUsed ?? '—'}</div>
+                    <div>Providers touched: {providersTouched} · Moralis allowed: {budget?.moralisTransfersAllowed || budget?.moralisProviderPnlAllowed ? 'yes' : 'no'}</div>
+                    <div>Recovery pages used: {recoveryPagesUsed} · Full Recovery {result.fullRecoveryAllowed ? 'allowed' : 'not allowed'}{result.fullRecoveryBlockedReason ? ` (${result.fullRecoveryBlockedReason})` : ''}</div>
+                  </div>
+                )
+              })()}
 
               {/* Behavior Intelligence — surfaces real, already-computed wallet-read fields when
                   public realized PnL / win rate is locked, so a locked-PnL scan doesn't read as a
@@ -2711,7 +2755,7 @@ export default function WalletScannerPage() {
                                 className="wpv3-button"
                                 style={{ marginTop: '8px' }}
                                 disabled={loading}
-                                onClick={() => { setDeepActivity(true); void handleScan(true) }}
+                                onClick={() => { setDeepActivity(true); void handleScan('deep') }}
                               >
                                 Run deep recovery scan
                               </button>
