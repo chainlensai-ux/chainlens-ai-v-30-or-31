@@ -558,6 +558,9 @@ export type WalletSnapshot = {
     moralisTransfersBlockedBecauseGoldrushUsable: boolean
     moralisDuplicateHoldingsPrevented: boolean
     ethDustMoralisBlocked: boolean
+    transfersBlockedBecauseGoldRushUsable: boolean
+    transferLeakPath: string | null
+    moralisTransferAttemptsBlocked: number
   }
   // PUBLIC-READ-MODEL-CLEANUP-1: a single, final public-facing summary that never confuses verified
   // PnL with behavior intelligence. behaviorLots is sourced from tradeIntelligence.tradeIntelLots
@@ -867,7 +870,11 @@ export type WalletSnapshot = {
     // whether the budget/hard cap already prevented it from running this pass. Lets the blocker
     // summary/copy say "recovery available but budget-capped" instead of "not recoverable".
     recoverable?: boolean
-    recoveryBlockedReason?: 'hard_cap_reached_after_pricing' | null
+    // BUDGET-RESERVATION-FIX-1: 'hard_cap_reached_after_pricing' is retired — it implied the budget
+    // was spent in an order beyond the engine's control, which is no longer true now that recovery
+    // budget is reserved before the broad pricing pass runs. These four reasons are the exhaustive,
+    // honest set for why a reserved-but-recommended recovery still didn't run this pass.
+    recoveryBlockedReason?: 'recovery_budget_reserved_but_provider_unavailable' | 'recovery_budget_reserved_but_no_targets' | 'recovery_budget_reserved_but_no_pages_allowed' | 'hard_cap_reached_before_reservation' | null
   }
   // WALLET-NO-PNL-UX-1/2: honest, specific explanation of why a wallet has no trader PnL, set
   // either because the address itself isn't a trader (non_trader_address_type) or because a
@@ -1888,6 +1895,9 @@ export type WalletSnapshot = {
       moralisTransfersBlockedBecauseGoldrushUsable: boolean
       moralisDuplicateHoldingsPrevented: boolean
       ethDustMoralisBlocked: boolean
+      transfersBlockedBecauseGoldRushUsable: boolean
+      transferLeakPath: string | null
+      moralisTransferAttemptsBlocked: number
     }
     walletActivityFallbackDebug?: {
       primaryActivityAttempted: boolean
@@ -12301,6 +12311,9 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     moralisTransfersBlockedBecauseGoldrushUsable: false,
     moralisDuplicateHoldingsPrevented: false,
     ethDustMoralisBlocked: false,
+    transfersBlockedBecauseGoldRushUsable: false,
+    transferLeakPath: null as string | null,
+    moralisTransferAttemptsBlocked: 0,
   }
   // Fallback holdings as computed before Moralis runs — the provisional Zerion fallback_layer
   // (or empty). Captured so the coverage-aware merge below can tell exactly which positions came
@@ -14226,6 +14239,12 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     l.pnlDisplayStatus !== 'estimate_only_price_flat' &&
     (l.coveragePercent ?? 100) !== 0
   const _realBackedClosedLotsCountEarly = _closedLots.filter(_isRealBackedClosedLotEarly).length
+  // MORALIS-LEAK-FIX-1: this gate predates the PNL-RECOVERY-EXCL-FIX-1 change above and never checked
+  // GoldRush usability — it relied on _realBackedClosedLotsCountEarly === 0 alone, which used to stay
+  // false (and so never trigger) for wallets whose only lots were estimate-only/flat-price. Now that
+  // those lots correctly count as not-real-backed, this gate fires for wallets where GoldRush activity
+  // was already usable, re-fetching the same activity from Moralis for no reason. Every other Moralis
+  // erc20_transfers call site already gates on !_goldrushActivityUsableForMoralisGate; this one must too.
   const _shouldRunBaseFifoCoverage = (
     deepActivity &&
     activityRequested &&
@@ -14235,8 +14254,14 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     walletEvidenceSummary.totalEvents > 0 &&
     Boolean(process.env.MORALIS_API_KEY) &&
     !historicalCoverage &&
-    !_bfcFallbackBlocked
+    !_bfcFallbackBlocked &&
+    !_goldrushActivityUsableForMoralisGate
   )
+  if (_goldrushActivityUsableForMoralisGate && _realBackedClosedLotsCountEarly === 0 && deepActivity && activityRequested && _baseReconChainOk && walletSwapSummary.swapCandidateEvents > 0 && walletEvidenceSummary.totalEvents > 0 && Boolean(process.env.MORALIS_API_KEY) && !historicalCoverage && !_bfcFallbackBlocked) {
+    _walletMoralisHardGateDebug.transfersBlockedBecauseGoldRushUsable = true
+    _walletMoralisHardGateDebug.transferLeakPath = 'base_fifo_coverage'
+    _walletMoralisHardGateDebug.moralisTransferAttemptsBlocked += _BASE_FIFO_COVERAGE_MAX_PAGES
+  }
   if (_shouldRunBaseFifoCoverage) {
     _baseFifoCoverageDebug.attempted = true
     _baseFifoCoverageDebug.reason = 'triggered'
@@ -14620,6 +14645,31 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _missingCostBasisGuardActive = _syntheticLotsDetected && _earlyRealBackedClosedLots === 0 && !_adminOverrideUsed
   const _syntheticTargetsTooManyForDefaultRecovery = _syntheticLotTokenTargets.length > 2
 
+  // BUDGET-RESERVATION-FIX-1: reserve recovery budget for targeted synthetic-lot recovery (the
+  // synthetic-target-extra pass and MORALIS-MISSING-BUY-RECOVERY below) BEFORE the broad Phase
+  // 6A/6D pass spends from the shared historical budget. Without this, a heavily-active wallet
+  // whose raw lots are all synthetic/estimate-only can have the entire remaining budget consumed by
+  // the broad pass, leaving zero credits for the cheap, targeted recovery the engine already knows
+  // it needs — surfacing the dishonest "hard cap reached" reason even though the targets were known
+  // before pricing ran. Late Phase-6 fields (estimateOnlyClosedLots etc.) aren't computed yet at this
+  // point, so this uses early proxy signals already available: known synthetic-lot targets plus "no
+  // real-backed evidence yet" stands in for "recovery is needed and has real targets".
+  const _recoveryReservationNeeded = _syntheticLotTokenTargets.length > 0 && _realBackedClosedLotsCountEarly === 0 && !_adminOverrideUsed
+  const _recoveryReservedCredits = _recoveryReservationNeeded
+    ? Math.max(0, Math.min(2, _syntheticLotTokenTargets.length, _sharedHistoricalBudgetRemaining()))
+    : 0
+  const _recoveryBudgetReserved = _recoveryReservedCredits > 0
+  const _recoveryReservationReason = !_recoveryReservationNeeded
+    ? 'recovery_budget_reserved_but_no_targets'
+    : _recoveryBudgetReserved
+      ? 'reserved_for_targeted_recovery'
+      : 'hard_cap_reached_before_reservation'
+  // Only the broad/unscoped pass below reads from this reduced view of the shared budget — the
+  // synthetic-target-extra and MORALIS-MISSING-BUY-RECOVERY paths further down keep calling the real
+  // _sharedHistoricalBudgetRemaining() directly, so the reservation actually protects credits for
+  // them instead of merely bookkeeping a number nothing respects.
+  const _sharedHistoricalBudgetRemainingForBroadPass = () => Math.max(0, _sharedHistoricalBudgetRemaining() - _recoveryReservedCredits)
+
   // Phase 6A: Historical coverage diagnostics — capped, eligible, targeted recovery only.
   // _walletValueTier already computed earlier in the pipeline via computeWalletValueTier(totalValue)
   // _tierTarget/_totalCreditTarget/_totalCreditHardCap/_creditsBeforeHistorical/_sharedHistoricalBudgetRemaining
@@ -14627,7 +14677,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // recovery path below (see SHARED-HISTORICAL-BUDGET comment).
   _noteHardCapReached('historical_coverage')
   if (_sharedHistoricalBudgetRemaining() <= 0) _noteCallBlockedByHardCap('historical_coverage', 'goldrush')
-  const _historicalPhaseBudget = Math.max(0, Math.min(6, _sharedHistoricalBudgetRemaining()))
+  const _historicalPhaseBudget = Math.max(0, Math.min(6, _sharedHistoricalBudgetRemainingForBroadPass()))
   // HIGH-ACTIVITY-RECON-1: a heavily-active wallet (many indexed events / swap candidates) whose raw
   // matched lots are still too few to yield public-grade evidence is the "120 candidates → 6 excluded
   // lots" failure mode. The final public-grade count is not known until after FIFO classification far
@@ -14649,9 +14699,14 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       ? 2
       : 0
   const _defaultPagesByTier = (_walletValueTier === 'micro' ? 0 : 1) + _highActivityExtraPagesAllowed
+  // BUDGET-RESERVATION-FIX-1: buildWalletHistoricalCoverage fans `_pagesAllowed` out PER CHAIN
+  // (base-mainnet AND eth-mainnet, see _historicalChainCount below) — each unit of `_pagesAllowed`
+  // actually spends up to 2 real provider credits, not 1. The non-admin budget clamp below must
+  // divide the remaining pool by that fan-out, or the broad pass alone can blow past the hard cap
+  // before any recovery path even runs (the real source of creditsUsed exceeding totalCreditHardCap).
   const _pagesAllowed = _adminOverrideUsed
     ? Math.max(0, Math.min(clampedMaxHistoricalPages, _historicalPhaseBudget))
-    : Math.max(0, Math.min(clampedMaxHistoricalPages, _defaultPagesByTier, _historicalPhaseBudget, _sharedHistoricalBudgetRemaining()))
+    : Math.max(0, Math.min(clampedMaxHistoricalPages, _defaultPagesByTier, _historicalPhaseBudget, Math.floor(_sharedHistoricalBudgetRemainingForBroadPass() / 2)))
   // Exact pages actually granted by the expansion, after every cap above — never negative, never more
   // than the allowance. extraPagesUsed reflects what the budget could afford, not what providers spent.
   const _highActivityExtraPagesUsed = Math.max(0, Math.min(_highActivityExtraPagesAllowed, _pagesAllowed - (_walletValueTier === 'micro' ? 0 : 1)))
@@ -15021,7 +15076,10 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // it does not promote anything until the existing historical pricing + FIFO checks verify price
   // independence. Moralis is tried before broader log/receipt expansion because wallet-side ERC20
   // transfers directly expose older inbound target-token buys for synthetic-cost-basis lots.
-  const _moralisHistoricalMaxPagesPerToken = 2
+  // BUDGET-RESERVATION-FIX-1: max 1 page per target token for recovery unless an admin override
+  // already exists — the reserved budget is small and intentionally scoped to a quick prior-buy
+  // check per token, not a deep per-token scan.
+  const _moralisHistoricalMaxPagesPerToken = _adminOverrideUsed ? 2 : 1
   const _moralisHistoricalMaxTotalPages = _walletValueTier === 'high_value' ? 6 : 4
   const _moralisHistoricalPageSize = 100
   const _moralisHistoricalTargetTokens = _syntheticTargetExtraEligibleTokens.slice(0, _walletValueTier === 'high_value' ? 4 : 2)
@@ -15040,9 +15098,14 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     : !_syntheticLotsDetected ? 'no_synthetic_lots'
     : _earlyRealBackedClosedLots >= 10 ? 'recovery_attempted_no_public_grade_lots'
     : _moralisHistoricalTargetTokens.length === 0 ? 'no_synthetic_targets'
-    : !Boolean(process.env.MORALIS_API_KEY) ? 'moralis_not_configured'
+    : !Boolean(process.env.MORALIS_API_KEY) ? 'recovery_budget_reserved_but_provider_unavailable'
+    : _moralisHistoricalMaxPagesPerToken <= 0 ? 'recovery_budget_reserved_but_no_pages_allowed'
     : _sharedHistoricalBudgetRemaining() <= 0 ? 'budget_exhausted'
     : null
+  // BUDGET-RESERVATION-FIX-1: honest signal for whether the reserved recovery budget actually got a
+  // chance to run before the hard cap closed it out — distinct from the broad pass's own cap state.
+  const _targetedRecoveryAttemptedBeforeHardCap = _moralisHistoricalSkipReason === null && _sharedHistoricalBudgetRemaining() > 0
+  const _hardCapPreventedAfterReservation = _recoveryBudgetReserved && _moralisHistoricalSkipReason === 'budget_exhausted'
   if (_nonTraderEarlyExit) _skipModuleForNonTrader('moralis_synthetic_recovery')
   if (_moralisHistoricalSkipReason === null) {
     _moralisHistoricalAttempted = true
@@ -16677,6 +16740,14 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     phase19SkippedForSafeNonTraderCase: false,
     phase19SkipReason: null as string | null,
     phase19CallsPrevented: 0,
+    // BUDGET-RESERVATION-FIX-1: surfaces whether targeted recovery budget was reserved before the
+    // broad pricing/historical pass spent the shared pool, and what happened to that reservation.
+    recoveryBudgetReserved: _recoveryBudgetReserved,
+    recoveryReservedCredits: _recoveryReservedCredits,
+    recoveryReservationReason: _recoveryReservationReason,
+    pricingCreditsReducedForRecovery: _recoveryReservedCredits,
+    targetedRecoveryAttemptedBeforeHardCap: _targetedRecoveryAttemptedBeforeHardCap,
+    hardCapPreventedAfterReservation: _hardCapPreventedAfterReservation,
   }
   _perfWalletTimings.recoveryPostProcessingMs += Date.now() - _recoveryPostProcessingStartedAt
   const _historicalScanDebugBuildStartedAt = Date.now()
@@ -17379,9 +17450,16 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         // PNL-RECOVERY-EXCL-FIX-1: this is genuinely recoverable evidence — only the already-spent
         // credit hard cap (computed above at _hardCapHitFinal) can prevent the next pass from
         // running, so say so honestly instead of letting downstream copy read "not recoverable".
-        return _hardCapHitFinal
-          ? { recommended: true, mode: 'targeted_token_recovery', targetTokens, reason: 'high_activity_excluded_lots_no_public_evidence', estimatedExtraPages: 2, recoverable: true, recoveryBlockedReason: 'hard_cap_reached_after_pricing' }
-          : { recommended: true, mode: 'targeted_token_recovery', targetTokens, reason: 'high_activity_excluded_lots_no_public_evidence', estimatedExtraPages: Math.min(2, targetTokens.length), recoverable: true, recoveryBlockedReason: null }
+        // BUDGET-RESERVATION-FIX-1: 'hard_cap_reached_after_pricing' was dishonest about WHY recovery
+        // didn't run — recovery budget is now reserved before the broad pricing pass, so when the cap
+        // is still hit, attribute it to the specific reservation outcome instead.
+        const _recoveryBlockedReasonHonest: 'recovery_budget_reserved_but_provider_unavailable' | 'recovery_budget_reserved_but_no_targets' | 'recovery_budget_reserved_but_no_pages_allowed' | 'hard_cap_reached_before_reservation' | null =
+          !_hardCapHitFinal ? null
+          : !_recoveryReservationNeeded ? 'recovery_budget_reserved_but_no_targets'
+          : !_recoveryBudgetReserved ? 'hard_cap_reached_before_reservation'
+          : !Boolean(process.env.MORALIS_API_KEY) ? 'recovery_budget_reserved_but_provider_unavailable'
+          : 'recovery_budget_reserved_but_no_pages_allowed'
+        return { recommended: true, mode: 'targeted_token_recovery', targetTokens, reason: 'high_activity_excluded_lots_no_public_evidence', estimatedExtraPages: _hardCapHitFinal ? Math.min(2, targetTokens.length) : Math.min(2, targetTokens.length), recoverable: true, recoveryBlockedReason: _recoveryBlockedReasonHonest }
       }
       return { recommended: false, mode: historicalAttempted ? 'attempted_light' : 'none', targetTokens, reason: _hasExcludedLots ? 'verified_stats_available_excluded_lots_remain' : 'closed_lots_already_found', estimatedExtraPages: 0 }
     }
@@ -18293,7 +18371,9 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       // signal (set above; budget-capped excluded lots still recommend recovery) instead of
       // re-deriving lot exclusion counts.
       const _blockerRecoverableViaTargetedRecovery = Boolean(snapshot.walletRecoveryRecommendation?.recommended)
-      const _blockerBudgetCappedRecovery = snapshot.walletRecoveryRecommendation?.recoveryBlockedReason === 'hard_cap_reached_after_pricing'
+      // BUDGET-RESERVATION-FIX-1: 'hard_cap_reached_after_pricing' is retired in favor of the four
+      // honest reservation-outcome reasons — any of them still means "recommended but didn't run".
+      const _blockerBudgetCappedRecovery = Boolean(snapshot.walletRecoveryRecommendation?.recoveryBlockedReason)
       const _blockerRecoverable = _blockerLockedByGate && !_blockerHasNonRecoverableError && (_p6SyntheticLotCount > 0 || _blockerHistoricalCapHit || _blockerRecoverableViaTargetedRecovery)
       const _blockerAffectedTokens = Array.from(new Set(
         _p6ClosedLots
@@ -18336,7 +18416,10 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         : _blockerStatus === 'ready'
           ? 'Public PnL is verified and ready.'
           : _blockerStatus === 'locked_recoverable'
-            ? `Trade intelligence is ready: ${_verifiedIndependentClosedLotsFinal} verified behavior lots detected. Public PnL is locked because ${_blockerReasons.join('; ')}.`
+            // COPY-FIX-1: these are behavior lots (tradeIntelligence.tradeIntelLots), not verified PnL
+            // lots — _verifiedIndependentClosedLotsFinal can read 0 here precisely because the lots are
+            // estimate-only/synthetic, which is the case this headline exists to describe honestly.
+            ? `Trade intelligence is ready: ${tradeIntelLots} behavior lots detected. Public PnL is locked because ${_blockerReasons.join('; ')}.`
             : _blockerStatus === 'locked_integrity'
               ? `Public PnL is locked because the PnL integrity check failed (${_p6IntegrityErrors.join(', ')}).`
               : 'Public PnL is locked because there is not yet enough verified evidence to show it.'

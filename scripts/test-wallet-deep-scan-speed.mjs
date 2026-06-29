@@ -237,13 +237,18 @@ assert.doesNotMatch(
 // high-activity excluded-lots case is hit but the credit hard cap already prevented the next pass.
 assert.match(
   snap,
-  /recoverable: true, recoveryBlockedReason: 'hard_cap_reached_after_pricing' \}/,
-  'walletRecoveryRecommendation reports recoverable:true with a hard_cap_reached_after_pricing block reason, not a bare not-recoverable result',
+  /reason: 'high_activity_excluded_lots_no_public_evidence', estimatedExtraPages: _hardCapHitFinal[\s\S]{0,80}recoverable: true, recoveryBlockedReason: _recoveryBlockedReasonHonest/,
+  'walletRecoveryRecommendation reports recoverable:true with an honest reservation-outcome block reason, not a bare not-recoverable result',
 )
 assert.match(
   snap,
-  /recoverable\?: boolean\s*\n\s*recoveryBlockedReason\?: 'hard_cap_reached_after_pricing' \| null/,
-  'walletRecoveryRecommendation type declares the recoverable/recoveryBlockedReason fields',
+  /recoverable\?: boolean[\s\S]{0,400}recoveryBlockedReason\?: 'recovery_budget_reserved_but_provider_unavailable' \| 'recovery_budget_reserved_but_no_targets' \| 'recovery_budget_reserved_but_no_pages_allowed' \| 'hard_cap_reached_before_reservation' \| null/,
+  'walletRecoveryRecommendation type declares the recoverable/recoveryBlockedReason fields with the four honest reservation-outcome reasons',
+)
+assert.doesNotMatch(
+  snap,
+  /recoveryBlockedReason: 'hard_cap_reached_after_pricing'/,
+  'hard_cap_reached_after_pricing must never be assigned — it is retired in favor of the four honest reservation-outcome reasons',
 )
 
 // walletPnlBlockerSummary must treat a budget-capped-but-recommended recovery as recoverable, and
@@ -260,3 +265,76 @@ assert.match(
 )
 
 console.log('wallet pnl-recovery-exclusion pass: raw closed lots no longer block recovery checks passed')
+
+// BUDGET-RESERVATION-FIX-1 / MORALIS-LEAK-FIX-1 checks.
+
+// 1. Recovery budget must be reserved before the broad pricing/historical pass spends the shared pool.
+assert.match(
+  snap,
+  /const _recoveryReservedCredits = _recoveryReservationNeeded\s*\n\s*\? Math\.max\(0, Math\.min\(2, _syntheticLotTokenTargets\.length, _sharedHistoricalBudgetRemaining\(\)\)\)/,
+  'recovery budget is reserved from the shared historical pool before the broad pass computes its own page allowance',
+)
+assert.match(
+  snap,
+  /const _historicalPhaseBudget = Math\.max\(0, Math\.min\(6, _sharedHistoricalBudgetRemainingForBroadPass\(\)\)\)/,
+  'the broad pass page budget reads from the reservation-aware view of the shared pool, not the raw remaining credits',
+)
+
+// 2. Credits used must never exceed totalCreditHardCap — the broad historical pass fans pages out
+// per chain (2x), so the non-admin page allowance must divide the remaining pool by the chain count.
+assert.match(
+  snap,
+  /Math\.min\(clampedMaxHistoricalPages, _defaultPagesByTier, _historicalPhaseBudget, Math\.floor\(_sharedHistoricalBudgetRemainingForBroadPass\(\) \/ 2\)\)/,
+  'non-admin broad-pass page allowance accounts for the per-chain (2x) fan-out so total credits used cannot exceed the hard cap',
+)
+
+// 3. walletScanBudgetDebug exposes the six new reservation fields.
+for (const field of [
+  'recoveryBudgetReserved: _recoveryBudgetReserved',
+  'recoveryReservedCredits: _recoveryReservedCredits',
+  'recoveryReservationReason: _recoveryReservationReason',
+  'pricingCreditsReducedForRecovery: _recoveryReservedCredits',
+  'targetedRecoveryAttemptedBeforeHardCap: _targetedRecoveryAttemptedBeforeHardCap',
+  'hardCapPreventedAfterReservation: _hardCapPreventedAfterReservation',
+]) {
+  assert.ok(snap.includes(field), `walletScanBudgetDebug must expose ${field.split(':')[0].trim()}`)
+}
+
+// 4. walletMoralisHardGateDebug exposes the three new transfer-leak fields and the type declarations
+// for them, distinct from the existing moralisTransfersBlockedBecauseGoldrushUsable field.
+for (const field of [
+  'transfersBlockedBecauseGoldRushUsable: boolean',
+  'transferLeakPath: string | null',
+  'moralisTransferAttemptsBlocked: number',
+]) {
+  assert.ok(snap.includes(field), `walletMoralisHardGateDebug type must declare ${field.split(':')[0].trim()}`)
+}
+
+// 5. _shouldRunBaseFifoCoverage (Phase 5C) must never trigger when GoldRush activity is already usable.
+assert.match(
+  snap,
+  /!_bfcFallbackBlocked &&\s*\n\s*!_goldrushActivityUsableForMoralisGate\s*\n\s*\)/,
+  'Phase 5C base-FIFO-coverage gate is blocked when GoldRush activity is already usable, closing the Moralis transfer leak',
+)
+
+// 6. MORALIS-MISSING-BUY-RECOVERY is capped to 1 page per target token unless an admin override exists.
+assert.match(
+  snap,
+  /const _moralisHistoricalMaxPagesPerToken = _adminOverrideUsed \? 2 : 1/,
+  'targeted synthetic-lot recovery is capped to 1 page per target token unless an admin override exists',
+)
+
+// 7. The blocker-summary headline must read "behavior lots" (not "verified behavior lots") and must
+// be sourced from tradeIntelLots, not the gated _verifiedIndependentClosedLotsFinal count.
+assert.match(
+  snap,
+  /`Trade intelligence is ready: \$\{tradeIntelLots\} behavior lots detected\. Public PnL is locked because \$\{_blockerReasons\.join\('; '\)\}\.`/,
+  'walletPnlBlockerSummary headline reads tradeIntelLots behavior lots, not verified behavior lots gated by _verifiedIndependentClosedLotsFinal',
+)
+assert.doesNotMatch(
+  snap,
+  /Trade intelligence is ready: \$\{_verifiedIndependentClosedLotsFinal\} verified behavior lots detected/,
+  'the stale verified-behavior-lots headline copy must be fully replaced',
+)
+
+console.log('wallet budget-reservation and moralis-transfer-leak fix checks passed')

@@ -47,7 +47,7 @@ assert.match(snap, /return \{ recommended: false, mode: historicalAttempted \? '
 // HIGH-ACTIVITY-RECON: real-backed lots that produced ZERO public-grade evidence (all excluded)
 // must still recommend targeted recovery, not silently report "closed lots already found".
 assert.match(snap, /if \(_performanceClosedLotsFinal\.length === 0 && _hasExcludedLots\) \{[\s\S]{0,600}reason: 'high_activity_excluded_lots_no_public_evidence'/, 'real-backed-but-all-excluded lots keep recommending targeted recovery instead of closed_lots_already_found')
-assert.match(snap, /recoverable: true, recoveryBlockedReason: 'hard_cap_reached_after_pricing' \}/, 'high-activity excluded-lot recovery is honest about being budget-capped rather than not-recoverable')
+assert.match(snap, /reason: 'high_activity_excluded_lots_no_public_evidence', estimatedExtraPages: _hardCapHitFinal[\s\S]{0,80}recoverable: true, recoveryBlockedReason: _recoveryBlockedReasonHonest/, 'high-activity excluded-lot recovery is honest about being budget-capped rather than not-recoverable')
 assert.match(snap, /verificationStatus: 'verifiable' \| 'partial' \| 'not_available' \| 'synthetic_cost_basis_missing' \| 'estimate_only_price_flat' \| 'price_independence_missing'/, 'synthetic closed-trade samples get a distinct non-verifiable status')
 assert.match(snap, /_sampleEligibleLots = _closedLotsForStatsFinal === 0 \? \[\] : _sampleSourceLots/, 'no closed-trade samples are exposed when every closed lot is synthetic')
 assert.match(snap, /verifiedClosedLots\?:\s*number/, 'walletTradeStatsSummary exposes a verified-only closed lot count')
