@@ -1,5 +1,6 @@
 import { fetchMoralisBalances, fetchMoralisTransfers, fetchMoralisTransfersPaginated, fetchMoralisProfitabilitySummary, isUsableProviderPnlSummary, type MoralisFetchResult, type MoralisChain, type MoralisTransferItem, type MoralisProfitabilitySummary } from './moralis'
 import { computeWalletProfile, type WalletProfile } from './walletIdentity'
+import { canUseWalletProviderCall, createWalletProviderCallAudit, recordWalletProviderCall, type WalletProviderCallRequest, type WalletProviderPurpose } from './walletProviders'
 
 
 export type WalletScanMode = 'normal' | 'deep' | 'full_recovery'
@@ -12239,6 +12240,52 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     _apiCallLog.push({ provider, endpoint, credits, cacheHit, duplicate, dupKey })
     return duplicate
   }
+  const _walletProviderCallAudit = createWalletProviderCallAudit()
+  const _gatewayScanMode: WalletScanMode = walletScanBudget?.adminOverrideUsed && walletScanBudget?.scanMode === 'full_recovery'
+    ? 'full_recovery'
+    : (deepScan || deepActivity || historicalCoverage) ? 'deep' : 'normal'
+  const _isAdminFullRecovery = _gatewayScanMode === 'full_recovery' && Boolean(walletScanBudget?.adminOverrideUsed)
+  const _purposeForEndpoint = (provider: WalletProviderCallRequest['provider'], endpointName: string): WalletProviderPurpose => {
+    if (provider === 'zerion') return 'portfolio'
+    if (endpointName === 'historical_by_addresses_v2') return 'pricing'
+    if (endpointName === 'log_events_by_address') return 'historical_recovery'
+    if (endpointName === 'eth_getTransactionReceipt' || endpointName === 'eth_getTransactionByHash') return 'receipt_proof'
+    if (endpointName === 'profitability_summary') return 'provider_pnl_summary'
+    if (endpointName === 'erc20_holdings' || endpointName === 'balances_v2') return 'holdings'
+    return 'activity'
+  }
+  const _allowedByModeForProvider = (provider: WalletProviderCallRequest['provider'], purpose: WalletProviderPurpose): boolean => {
+    if (_gatewayScanMode === 'normal') return provider === 'zerion' || (provider === 'goldrush' && (purpose === 'holdings' || purpose === 'activity'))
+    if (_gatewayScanMode === 'deep') return provider === 'zerion' || (provider === 'goldrush' && (purpose === 'holdings' || purpose === 'activity' || purpose === 'pricing')) || (provider === 'alchemy' && purpose === 'receipt_proof')
+    return _isAdminFullRecovery
+  }
+  const _authorizeWalletProviderCall = (call: Omit<WalletProviderCallRequest, 'scanMode' | 'allowedByMode'>): boolean => {
+    const request: WalletProviderCallRequest = { ...call, scanMode: _gatewayScanMode, allowedByMode: _allowedByModeForProvider(call.provider, call.purpose) }
+    const decision = canUseWalletProviderCall({
+      ...request,
+      currentCreditsUsed: _apiCallLog.reduce((s, e) => s + e.credits, 0),
+      targetCredits: walletScanBudget?.totalCreditTarget ?? scanModeConfig?.targetCredits ?? (_gatewayScanMode === 'normal' ? 8 : 15),
+      hardCapCredits: walletScanBudget?.totalCreditHardCap ?? scanModeConfig?.hardCapCredits ?? (_gatewayScanMode === 'normal' ? 10 : 18),
+      isAdminFullRecovery: _isAdminFullRecovery,
+    })
+    if (!decision.allowed) recordWalletProviderCall(_walletProviderCallAudit, { provider: call.provider, endpointName: call.endpointName, purpose: call.purpose, attempted: true, allowed: false, blockedReason: decision.blockedReason, cacheHit: false, creditsEstimated: call.estimatedCredits, durationMs: 0 })
+    return decision.allowed
+  }
+  const _trackGatewayProviderCall = (
+    provider: WalletProviderCallRequest['provider'],
+    endpointName: string,
+    cacheHit: boolean,
+    dupKey: string,
+    durationMs = 0,
+    purpose: WalletProviderPurpose = _purposeForEndpoint(provider, endpointName),
+  ): boolean => {
+    const estimatedCredits = CREDIT_TABLE[`${provider}:${endpointName}`] ?? 1
+    const allowed = _authorizeWalletProviderCall({ provider, endpointName, purpose, estimatedCredits, cacheKey: dupKey, timeoutMs: 0 })
+    if (!allowed) return true
+    const duplicate = _trackCall(provider, endpointName, cacheHit, dupKey)
+    recordWalletProviderCall(_walletProviderCallAudit, { provider, endpointName, purpose, attempted: true, allowed: true, blockedReason: null, cacheHit: cacheHit || duplicate, creditsEstimated: cacheHit || duplicate ? 0 : estimatedCredits, durationMs })
+    return duplicate
+  }
 
   // Unified Alchemy dedup — tracks (method, address, chain) to catch redundant concurrent calls
   const _alchemyDedup = new Set<string>()
@@ -12347,8 +12394,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // every scan reaching this point already fired both Zerion requests above when ZERION_KEY is
   // configured (no cache layer sits in front of them), so track them now that we know the key state.
   if (ZERION_KEY) {
-    _trackCall('zerion', 'portfolio', false, `zerion:portfolio:${addrNorm}`)
-    _trackCall('zerion', 'positions', false, `zerion:positions:${addrNorm}`)
+    _trackGatewayProviderCall('zerion', 'portfolio', false, `zerion:portfolio:${addrNorm}`)
+    _trackGatewayProviderCall('zerion', 'positions', false, `zerion:positions:${addrNorm}`)
   }
   // ── Tx / age / nonce ──
   const firstCandidates: Date[] = []
@@ -12388,15 +12435,15 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     // Alchemy Base activity is intentionally deferred until GoldRush returns no activity.
   }
   if (Boolean(ALCHEMY_BASE_KEY)) {
-    const _ak3 = `alchemy:firstTx:base:${addrNorm}`; if (!_alchemyDedup.has(_ak3)) { _alchemyDedup.add(_ak3); _trackCall('alchemy', 'getFirstTx', false, _ak3) }
-    _trackCall('alchemy', 'eth_getTransactionCount', false, `alchemy:nonce:${addrNorm}`)
+    const _ak3 = `alchemy:firstTx:base:${addrNorm}`; if (!_alchemyDedup.has(_ak3)) { _alchemyDedup.add(_ak3); _trackGatewayProviderCall('alchemy', 'getFirstTx', false, _ak3) }
+    _trackGatewayProviderCall('alchemy', 'eth_getTransactionCount', false, `alchemy:nonce:${addrNorm}`)
   }
   if (useEthAlchemy) {
-    const _ak4 = `alchemy:firstTx:eth:${addrNorm}`; if (!_alchemyDedup.has(_ak4)) { _alchemyDedup.add(_ak4); _trackCall('alchemy', 'getFirstTx', false, _ak4) }
+    const _ak4 = `alchemy:firstTx:eth:${addrNorm}`; if (!_alchemyDedup.has(_ak4)) { _alchemyDedup.add(_ak4); _trackGatewayProviderCall('alchemy', 'getFirstTx', false, _ak4) }
   }
   if (deepScan && Boolean(ALCHEMY_BASE_KEY) && !activityRequested) {
-    const _ak5 = `alchemy:behavior:from:base:${addrNorm}`; if (!_alchemyDedup.has(_ak5)) { _alchemyDedup.add(_ak5); _trackCall('alchemy', 'behavior_getAssetTransfers', false, _ak5) }
-    const _ak6 = `alchemy:behavior:to:base:${addrNorm}`;   if (!_alchemyDedup.has(_ak6)) { _alchemyDedup.add(_ak6); _trackCall('alchemy', 'behavior_getAssetTransfers', false, _ak6) }
+    const _ak5 = `alchemy:behavior:from:base:${addrNorm}`; if (!_alchemyDedup.has(_ak5)) { _alchemyDedup.add(_ak5); _trackGatewayProviderCall('alchemy', 'behavior_getAssetTransfers', false, _ak5) }
+    const _ak6 = `alchemy:behavior:to:base:${addrNorm}`;   if (!_alchemyDedup.has(_ak6)) { _alchemyDedup.add(_ak6); _trackGatewayProviderCall('alchemy', 'behavior_getAssetTransfers', false, _ak6) }
   }
 
   // ── Provider selection: Moralis (primary, fetched below after chain discovery) → Zerion positions
@@ -12565,7 +12612,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       if (!_moralisHoldingsTimeoutRaceEligible) {
         const _mbRes = await _mbPromise
         _moralisByChain.set(c, _mbRes)
-        _trackCall('moralis', 'erc20_holdings', _mbRes.cacheHit, `moralis:holdings:${c}:${addrNorm}`)
+        _trackGatewayProviderCall('moralis', 'erc20_holdings', _mbRes.cacheHit, `moralis:holdings:${c}:${addrNorm}`)
         return
       }
       // LIVE-SPEED-3: race against a conservative timeout only — never retry, never issue an extra
@@ -12585,10 +12632,10 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       if (_timedOutThisChain) {
         _moralisHoldingsTimedOut = true
         _mbPromise
-          .then((realRes) => _trackCall('moralis', 'erc20_holdings', realRes.cacheHit, `moralis:holdings:${c}:${addrNorm}`))
+          .then((realRes) => _trackGatewayProviderCall('moralis', 'erc20_holdings', realRes.cacheHit, `moralis:holdings:${c}:${addrNorm}`))
           .catch(() => {})
       } else {
-        _trackCall('moralis', 'erc20_holdings', _mbRes.cacheHit, `moralis:holdings:${c}:${addrNorm}`)
+        _trackGatewayProviderCall('moralis', 'erc20_holdings', _mbRes.cacheHit, `moralis:holdings:${c}:${addrNorm}`)
       }
     }))
     _moralisHoldingsDurationMs = Date.now() - _moralisHoldingsStartedAt
@@ -12666,8 +12713,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       GOLDRUSH_KEY && (deepScan || !_moralisUsed) ? fetchGoldrushBalances(addr, 'base-mainnet', GOLDRUSH_KEY) : Promise.resolve([] as Holding[]),
     ])
     if (Boolean(GOLDRUSH_KEY) && (deepScan || !_moralisUsed)) {
-      _trackCall('goldrush', 'balances_v2', false, `gr:balances:eth:${addrNorm}`)
-      _trackCall('goldrush', 'balances_v2', false, `gr:balances:base:${addrNorm}`)
+      _trackGatewayProviderCall('goldrush', 'balances_v2', false, `gr:balances:eth:${addrNorm}`)
+      _trackGatewayProviderCall('goldrush', 'balances_v2', false, `gr:balances:base:${addrNorm}`)
     }
   }
   const _grPrimaryAttempted = Boolean(GOLDRUSH_KEY) && (deepScan || !_moralisUsed)
@@ -12763,14 +12810,14 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         : null
   const _grEthDeferredEligible = _ethDeferredActivityCandidate && (_ethClearsActivityGate || _lowBalanceOverrideUsed)
   if (_shouldFetchGrEthEager) {
-    _trackCall('goldrush', 'transactions_v3', false, `gr:tx3:eth:${addrNorm}`)
+    _trackGatewayProviderCall('goldrush', 'transactions_v3', false, `gr:tx3:eth:${addrNorm}`)
     try {
       grEth = await fetchGoldrushPnlEvents(addr, 'eth-mainnet', GOLDRUSH_KEY, tokenMeter.isDebugEnabled())
     } catch {
       // keep placeholder grEth on failure
     }
   } else if (_grEthDeferredEligible) {
-    _trackCall('goldrush', 'transactions_v3', false, `gr:tx3:eth:${addrNorm}`)
+    _trackGatewayProviderCall('goldrush', 'transactions_v3', false, `gr:tx3:eth:${addrNorm}`)
     try {
       grEth = await fetchGoldrushPnlEvents(addr, 'eth-mainnet', GOLDRUSH_KEY, tokenMeter.isDebugEnabled())
     } catch {
@@ -12783,7 +12830,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   let grBase: { events: PnlEvent[]; diag: GoldrushHistoryDiag } = { events: [] as PnlEvent[], diag: { endpointKind: 'transactions_v3' as const, chainUsed: 'base-mainnet', urlTemplate: 'https://api.covalenthq.com/v1/base-mainnet/address/{wallet}/transactions_v3/?page-size=50&page-number=0&with-logs=true&no-spam=true', httpStatus: null, fetchFailed: true, failureStage: 'build_url' as const, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], transferArrayCount: 0, firstTransferKeys: [], reason: _goldrushBaseSkippedReason ?? (activityRequested ? 'Base activity skipped by value gate.' : 'Activity scan not requested — skipped.') } }
   const _shouldFetchGrBase = _baseActivityEligible
   if (_shouldFetchGrBase) {
-    _trackCall('goldrush', 'transactions_v3', false, `gr:tx3:base:${addrNorm}`)
+    _trackGatewayProviderCall('goldrush', 'transactions_v3', false, `gr:tx3:base:${addrNorm}`)
     try {
       grBase = await fetchGoldrushPnlEvents(addr, 'base-mainnet', GOLDRUSH_KEY, tokenMeter.isDebugEnabled())
     } catch {
@@ -12836,8 +12883,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _GR_PARTIAL_EVENT_THRESHOLD = 5
   if (_shouldFetchGrBase && grEvents.length < _GR_PARTIAL_EVENT_THRESHOLD && Boolean(ALCHEMY_BASE_KEY)) {
     _alchemyActivityFallbackAttempted = true
-    const _ak1 = `alchemy:transfers:from:base:${addrNorm}`; if (!_alchemyDedup.has(_ak1)) { _alchemyDedup.add(_ak1); _trackCall('alchemy', 'alchemy_getAssetTransfers', false, _ak1) }
-    const _ak2 = `alchemy:transfers:to:base:${addrNorm}`;   if (!_alchemyDedup.has(_ak2)) { _alchemyDedup.add(_ak2); _trackCall('alchemy', 'alchemy_getAssetTransfers', false, _ak2) }
+    const _ak1 = `alchemy:transfers:from:base:${addrNorm}`; if (!_alchemyDedup.has(_ak1)) { _alchemyDedup.add(_ak1); _trackGatewayProviderCall('alchemy', 'alchemy_getAssetTransfers', false, _ak1) }
+    const _ak2 = `alchemy:transfers:to:base:${addrNorm}`;   if (!_alchemyDedup.has(_ak2)) { _alchemyDedup.add(_ak2); _trackGatewayProviderCall('alchemy', 'alchemy_getAssetTransfers', false, _ak2) }
     try {
       alchemyEvents = await fetchAlchemyPnlEvents(addr, baseUrl)
     } catch {
@@ -13003,7 +13050,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   if (_shouldTryMoralisFallback) {
     _walletMoralisHardGateDebug.transfersAttemptedByChain.push(_fbChain)
     const fbResult = await fetchMoralisTransfers(addr, _fbChain, 100)
-    _trackCall('moralis', 'erc20_transfers', fbResult.cacheHit, `moralis:transfers:p1:${_fbChain}:${addrNorm}`)
+    _trackGatewayProviderCall('moralis', 'erc20_transfers', fbResult.cacheHit, `moralis:transfers:p1:${_fbChain}:${addrNorm}`)
     _fbNextCursor = fbResult.nextCursor
     const { events: fbEvents, debug: fbNormDebug } = (fbResult.usable && fbResult.items.length > 0)
       ? normalizeMoralisTransfers(fbResult.items, addr, _fbChainName)
@@ -13099,7 +13146,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   if (_p18ShouldRun) {
     _phase18Debug.attempted = true
     const p18Result = await fetchMoralisTransfers(addr, _p18SupplementChain, 100)
-    _trackCall('moralis', 'erc20_transfers', p18Result.cacheHit, `moralis:transfers:p1:${_p18SupplementChain}:supplement:${addrNorm}`)
+    _trackGatewayProviderCall('moralis', 'erc20_transfers', p18Result.cacheHit, `moralis:transfers:p1:${_p18SupplementChain}:supplement:${addrNorm}`)
     _phase18Debug.supplementCacheHit = p18Result.cacheHit
     _phase18Debug.moralisSupplementRawCount = p18Result.rawCount
     const { events: p18Events } = (p18Result.usable && p18Result.items.length > 0)
@@ -13189,7 +13236,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       const p19ChainName = eligible.chain  // 'bsc', 'polygon', etc.
       _walletMoralisHardGateDebug.transfersAttemptedByChain.push(eligible.chain)
       const p19Result = await fetchMoralisTransfers(addr, eligible.chain, 100)
-      _trackCall('moralis', 'erc20_transfers', p19Result.cacheHit, `moralis:transfers:p1:${eligible.chain}:p19:${addrNorm}`)
+      _trackGatewayProviderCall('moralis', 'erc20_transfers', p19Result.cacheHit, `moralis:transfers:p1:${eligible.chain}:p19:${addrNorm}`)
       const { events: p19ChainEvents } = (p19Result.usable && p19Result.items.length > 0)
         ? normalizeMoralisTransfers(p19Result.items, addr, p19ChainName)
         : { events: [] as PnlEvent[] }
@@ -13265,7 +13312,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     const _p20Chain: MoralisChain = 'base'
     _walletMoralisHardGateDebug.transfersAttemptedByChain.push(_p20Chain)
     const _p20MoralisResult = await fetchMoralisTransfersPaginated(addr, _p20Chain, { maxEvents: 1000, maxPages: 10, pageSize: 100 })
-    _trackCall('moralis', 'erc20_transfers', false, `moralis:transfers:p20:${addrNorm}`)
+    _trackGatewayProviderCall('moralis', 'erc20_transfers', false, `moralis:transfers:p20:${addrNorm}`)
     _p20Moralis = { attempted: true, pagesUsed: _p20MoralisResult.pagesUsed, eventsFetched: _p20MoralisResult.eventsFetched, stoppedReason: _p20MoralisResult.stoppedReason, usedReason: _p20MoralisResult.eventsFetched > 0 ? 'moralis_primary' : null }
     _p20CreditsUsedEstimate += _p20MoralisResult.pagesUsed
     if (_p20MoralisResult.eventsFetched > 0) {
@@ -13277,7 +13324,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     // GoldRush historical backup only runs if Moralis came back empty/unusable for this wallet.
     if (_p20MoralisEvents.length === 0 && GOLDRUSH_KEY) {
       const _p20GrPage = await fetchGoldrushHistoricalPage(addr, 'base-mainnet', GOLDRUSH_KEY, 1, 50)
-      _trackCall('goldrush', 'transactions_v3_backup', false, `goldrush:backup:p20:${addrNorm}`)
+      _trackGatewayProviderCall('goldrush', 'transactions_v3_backup', false, `goldrush:backup:p20:${addrNorm}`)
       _p20Goldrush = { attempted: true, pagesUsed: 1, eventsFetched: _p20GrPage.events.length, stoppedReason: _p20GrPage.error ? 'fetch_failed' : 'page_cap', usedReason: _p20GrPage.events.length > 0 ? 'goldrush_backup' : null }
       _p20CreditsUsedEstimate += 1
       if (_p20GrPage.events.length > 0) {
@@ -13290,7 +13337,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     if (ALCHEMY_BASE_KEY) {
       const _p20AlchemyResult = await fetchAlchemyBaseTransfersPaginated(baseUrl, 'fromAddress', addr, { maxPages: 3 })
       const _p20AlchemyResult2 = await fetchAlchemyBaseTransfersPaginated(baseUrl, 'toAddress', addr, { maxPages: 3 })
-      _trackCall('alchemy', 'alchemy_getAssetTransfers_paginated', false, `alchemy:transfers:p20:${addrNorm}`)
+      _trackGatewayProviderCall('alchemy', 'alchemy_getAssetTransfers_paginated', false, `alchemy:transfers:p20:${addrNorm}`)
       const _p20AlchemyRaw = [...(_p20AlchemyResult.transfers ?? []), ...(_p20AlchemyResult2.transfers ?? [])]
       const _p20AlchemyMapped: PnlEvent[] = _p20AlchemyRaw.map((t) => {
         const tr = t as Record<string, unknown>
@@ -13522,8 +13569,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     const _liveReceipts = enrichResult.debug.receiptsFetched - enrichResult.debug.cacheHits
     for (let _ri = 0; _ri < _liveReceipts; _ri++) {
       const _rk = `alchemy:receipt:${enrichResult.debug.enrichedTxHashes[_ri] ?? _ri}:${addrNorm}`
-      if (!_alchemyDedup.has(_rk)) { _alchemyDedup.add(_rk); _trackCall('alchemy', 'eth_getTransactionReceipt', false, _rk) }
-      else _trackCall('alchemy', 'eth_getTransactionReceipt', false, _rk) // dedup records it
+      if (!_alchemyDedup.has(_rk)) { _alchemyDedup.add(_rk); _trackGatewayProviderCall('alchemy', 'eth_getTransactionReceipt', false, _rk) }
+      else _trackGatewayProviderCall('alchemy', 'eth_getTransactionReceipt', false, _rk) // dedup records it
     }
     if (enrichResult.debug.enrichedTxCount > 0) {
       walletSwapSummary = {
@@ -13604,7 +13651,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       const liveReceipts = reconResult.debug.receiptsFetched
       for (let _ri = 0; _ri < liveReceipts; _ri++) {
         const _rk = `alchemy:baserecon:receipt:${_ri}:${addrNorm}`
-        if (!_alchemyDedup.has(_rk)) { _alchemyDedup.add(_rk); _trackCall('alchemy', 'eth_getTransactionReceipt', false, _rk) }
+        if (!_alchemyDedup.has(_rk)) { _alchemyDedup.add(_rk); _trackGatewayProviderCall('alchemy', 'eth_getTransactionReceipt', false, _rk) }
       }
     }
   } else if (!activityRequested) {
@@ -13668,7 +13715,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       tokenMeter.measure('swapDetection', _swapEvidenceWithDetection, walletSwapSummary)
       for (let _ri = 0; _ri < unknownReconResult.debug.receiptsFetched; _ri++) {
         const _rk = `alchemy:unknownrecon:receipt:${_ri}:${addrNorm}`
-        if (!_alchemyDedup.has(_rk)) { _alchemyDedup.add(_rk); _trackCall('alchemy', 'eth_getTransactionReceipt', false, _rk) }
+        if (!_alchemyDedup.has(_rk)) { _alchemyDedup.add(_rk); _trackGatewayProviderCall('alchemy', 'eth_getTransactionReceipt', false, _rk) }
       }
     }
   } else if (!activityRequested) {
@@ -13730,11 +13777,11 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     tokenMeter.measure('swapDetection', ethReconResult)
     for (let _ri = 0; _ri < ethReconResult.debug.receiptsFetched; _ri++) {
       const _rk = `alchemy:ethrouterrecon:receipt:${_ri}:${addrNorm}`
-      if (!_alchemyDedup.has(_rk)) { _alchemyDedup.add(_rk); _trackCall('alchemy', 'eth_getTransactionReceipt', false, _rk) }
+      if (!_alchemyDedup.has(_rk)) { _alchemyDedup.add(_rk); _trackGatewayProviderCall('alchemy', 'eth_getTransactionReceipt', false, _rk) }
     }
     for (let _ti = 0; _ti < (ethReconResult.debug.transactionsFetched ?? 0); _ti++) {
       const _rk = `alchemy:ethrouterrecon:tx:${_ti}:${addrNorm}`
-      if (!_alchemyDedup.has(_rk)) { _alchemyDedup.add(_rk); _trackCall('alchemy', 'eth_getTransactionByHash', false, _rk) }
+      if (!_alchemyDedup.has(_rk)) { _alchemyDedup.add(_rk); _trackGatewayProviderCall('alchemy', 'eth_getTransactionByHash', false, _rk) }
     }
     // Populate extended debug fields
     _ethSwapReconstructionDebug = {
@@ -13805,7 +13852,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     tokenMeter.measure('swapDetection', sellSideResult)
     for (let _ri = 0; _ri < sellSideResult.debug.sellSideReceiptsFetched; _ri++) {
       const _rk = `alchemy:sellsiderecon:receipt:${_ri}:${addrNorm}`
-      if (!_alchemyDedup.has(_rk)) { _alchemyDedup.add(_rk); _trackCall('alchemy', 'eth_getTransactionReceipt', false, _rk) }
+      if (!_alchemyDedup.has(_rk)) { _alchemyDedup.add(_rk); _trackGatewayProviderCall('alchemy', 'eth_getTransactionReceipt', false, _rk) }
     }
     if (sellSideResult.debug.sellSideSyntheticEventsAdded > 0) {
       // This pass mutates swapDetection directly on existing events (same pattern as the
@@ -13833,7 +13880,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   let { evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug, budgetDebug: _priceBudgetDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache, priceByContract, totalValue, scanModeConfig?.priceAttempts ?? (historicalCoverage ? 6 : null), deepScan)
   // Track base evidence historical price calls
   for (let _pp = 0; _pp < (_priceAtTimeDebug?.providerAttempts ?? 0); _pp++) {
-    _trackCall('goldrush', 'historical_by_addresses_v2', false, `gr:price:base:${_pp}:${addrNorm}`)
+    _trackGatewayProviderCall('goldrush', 'historical_by_addresses_v2', false, `gr:price:base:${_pp}:${addrNorm}`)
   }
   tokenMeter.measure('priceInference', _pricedEvidence, walletPriceEvidenceSummary, _priceAtTimeDebug)
   tokenMeter.endTokenMeter('priceInference')
@@ -13968,11 +14015,11 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       // Track API calls
       for (let _ri = 0; _ri < _unpricedReceiptResult.debug.receiptsFetched; _ri++) {
         const _rk = `alchemy:unpricedrecon:receipt:${_ri}:${addrNorm}`
-        if (!_alchemyDedup.has(_rk)) { _alchemyDedup.add(_rk); _trackCall('alchemy', 'eth_getTransactionReceipt', false, _rk) }
+        if (!_alchemyDedup.has(_rk)) { _alchemyDedup.add(_rk); _trackGatewayProviderCall('alchemy', 'eth_getTransactionReceipt', false, _rk) }
       }
       for (let _ri = 0; _ri < (_unpricedReceiptResult.debug.transactionsFetched ?? 0); _ri++) {
         const _rk = `alchemy:unpricedrecon:tx:${_ri}:${addrNorm}`
-        if (!_alchemyDedup.has(_rk)) { _alchemyDedup.add(_rk); _trackCall('alchemy', 'eth_getTransactionByHash', false, _rk) }
+        if (!_alchemyDedup.has(_rk)) { _alchemyDedup.add(_rk); _trackGatewayProviderCall('alchemy', 'eth_getTransactionByHash', false, _rk) }
       }
       tokenMeter.measure('priceInference', _unpricedReceiptResult)
       if (_unpricedReceiptResult.debug.enrichedSwapEvents > 0) {
@@ -13982,7 +14029,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         tokenMeter.measure('priceInference', _swapEvidenceWithDetection)
         const _rePriceResult = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache, priceByContract, totalValue, historicalCoverage ? Math.max(1, Math.min(6, _sharedHistoricalBudgetRemaining())) : null, deepScan)
         for (let _pp = 0; _pp < (_rePriceResult.debug?.providerAttempts ?? 0); _pp++) {
-          _trackCall('goldrush', 'historical_by_addresses_v2', false, `gr:price:unpriced_recon:${_pp}:${addrNorm}`)
+          _trackGatewayProviderCall('goldrush', 'historical_by_addresses_v2', false, `gr:price:unpriced_recon:${_pp}:${addrNorm}`)
           _sharedHistoricalCreditsUsed++
         }
         _pricedEvidence = _rePriceResult.evidenceWithPricing
@@ -14027,7 +14074,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     tokenMeter.measure('priceInference', swapReconResult)
     for (let _ri = 0; _ri < swapReconResult.debug.swapReconstructionReceiptsFetched; _ri++) {
       const _rk = `alchemy:swaprecon_v1:receipt:${_ri}:${addrNorm}`
-      if (!_alchemyDedup.has(_rk)) { _alchemyDedup.add(_rk); _trackCall('alchemy', 'eth_getTransactionReceipt', false, _rk) }
+      if (!_alchemyDedup.has(_rk)) { _alchemyDedup.add(_rk); _trackGatewayProviderCall('alchemy', 'eth_getTransactionReceipt', false, _rk) }
     }
     if (swapReconResult.debug.swapReconstructionEventsPromoted > 0) {
       _pricedEvidence = swapReconResult.evidenceWithReconstruction
@@ -14296,7 +14343,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       fbPagesAttempted++
       fbCursorsSeen++
       const pageResult = await fetchMoralisTransfers(addr, _fbChain, 100, fbCursor)
-      _trackCall('moralis', 'erc20_transfers', pageResult.cacheHit, `moralis:transfers:p${fbPagesAttempted}:${_fbChain}:${addrNorm}`)
+      _trackGatewayProviderCall('moralis', 'erc20_transfers', pageResult.cacheHit, `moralis:transfers:p${fbPagesAttempted}:${_fbChain}:${addrNorm}`)
       if (!pageResult.usable || pageResult.items.length === 0) {
         fbPaginationStoppedReason = pageResult.usable ? 'no_cursor' : 'provider_error_keep_existing'
         break
@@ -14484,7 +14531,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       bfcPagesAttempted++
       _baseFifoCoverageDebug.extraPagesAttempted = bfcPagesAttempted
       const bfcPageResult = await fetchMoralisTransfers(addr, 'base', 100, bfcCursor ?? undefined)
-      _trackCall('moralis', 'erc20_transfers', bfcPageResult.cacheHit, `moralis:transfers:bfc_p${bfcPagesAttempted}:base:${addrNorm}`)
+      _trackGatewayProviderCall('moralis', 'erc20_transfers', bfcPageResult.cacheHit, `moralis:transfers:bfc_p${bfcPagesAttempted}:base:${addrNorm}`)
       if (!bfcPageResult.usable || bfcPageResult.items.length === 0) {
         bfcStopReason = bfcPageResult.usable ? 'no_more_pages' : 'provider_error'
         break
@@ -14513,7 +14560,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       ;({ evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache, priceByContract, totalValue, historicalCoverage ? Math.max(1, Math.min(6, _sharedHistoricalBudgetRemaining())) : null, deepScan))
       tokenMeter.measure('priceInference', _pricedEvidence, walletPriceEvidenceSummary)
       for (let _pp = 0; _pp < (_priceAtTimeDebug?.providerAttempts ?? 0); _pp++) {
-        _trackCall('goldrush', 'historical_by_addresses_v2', false, `gr:price:bfc:p${bfcPagesAttempted}_${_pp}:${addrNorm}`)
+        _trackGatewayProviderCall('goldrush', 'historical_by_addresses_v2', false, `gr:price:bfc:p${bfcPagesAttempted}_${_pp}:${addrNorm}`)
         _sharedHistoricalCreditsUsed++
       }
       _pricedEvidence = normalizeSwapEventsForFifo(_pricedEvidence, tokenMeter.isDebugEnabled())
@@ -15047,7 +15094,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       // Track historical coverage page calls (one entry per page per chain attempted)
       const _hcPages = _historicalCoverageDebug?.pagesAttempted ?? 0
       for (let _hp = 0; _hp < Math.min(_hcPages, _sharedHistoricalBudgetRemaining()); _hp++) {
-        _trackCall('goldrush', 'log_events_by_address', false, `gr:hc:p${_hp}:${addrNorm}`)
+        _trackGatewayProviderCall('goldrush', 'log_events_by_address', false, `gr:hc:p${_hp}:${addrNorm}`)
         _sharedHistoricalCreditsUsed++
       }
     }
@@ -15202,7 +15249,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       while (_pagesUsedTotal < _syntheticTargetExtraPagesAllowed) {
         const _startPage = _pagesAllowed + _pagesUsedTotal
         const _extraResult = await buildWalletHistoricalCoverage(addrNorm, GOLDRUSH_KEY, 1, walletTradeStatsSummary.closedLots, _extraTargetContracts, _startPage, [_chain])
-        _trackCall('goldrush', 'log_events_by_address', false, `gr:hc:synthExtra:${_chain}:p${_startPage}:${addrNorm}`)
+        _trackGatewayProviderCall('goldrush', 'log_events_by_address', false, `gr:hc:synthExtra:${_chain}:p${_startPage}:${addrNorm}`)
         const _extraPagesThisCall = _extraResult.debug?.pagesAttempted ?? 0
         _pagesUsedTotal += _extraPagesThisCall
         _syntheticTargetExtraPagesAttempted += _extraPagesThisCall
@@ -15281,7 +15328,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       )
     : null
   for (let _pp = 0; _pp < (_pnlRecoveryV2Result?.debug.priceAttempts ?? 0); _pp++) {
-    _trackCall('goldrush', 'historical_by_addresses_v2', false, `gr:price:pnlv2:${_pp}:${addrNorm}`)
+    _trackGatewayProviderCall('goldrush', 'historical_by_addresses_v2', false, `gr:price:pnlv2:${_pp}:${addrNorm}`)
     _sharedHistoricalCreditsUsed++
   }
   const walletPnlRecoveryV2Debug: WalletPnlRecoveryV2Debug = _pnlRecoveryV2Result
@@ -15366,7 +15413,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
           break outerMoralis
         }
         const page = await fetchMoralisTransfers(addrNorm, chain, _moralisHistoricalPageSize, cursor)
-        _trackCall('moralis', 'erc20_transfers', page.cacheHit, `moralis:transfers:synthRecovery:${chain}:${contract}:p${pageNo}:${addrNorm}`)
+        _trackGatewayProviderCall('moralis', 'erc20_transfers', page.cacheHit, `moralis:transfers:synthRecovery:${chain}:${contract}:p${pageNo}:${addrNorm}`)
         _moralisHistoricalAttempted = true
         _moralisHistoricalPagesUsed++
         _sharedHistoricalCreditsUsed++
@@ -15478,7 +15525,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     const _acqResult = await runAcquisitionHistoryRecovery(addrNorm, _acquisitionTargetTokens, _acqRpcUrlForChain, _acqMoralisChainForChain, _sharedHistoricalBudgetRemaining)
     _acquisitionRecoveryNewEvidence = _acqResult.newEvidence
     _acquisitionRecoveryDebug = _acqResult.debug
-    _trackCall('moralis', 'erc20_transfers', false, `moralis:acquisitionRecovery:${addrNorm}`)
+    _trackGatewayProviderCall('moralis', 'erc20_transfers', false, `moralis:acquisitionRecovery:${addrNorm}`)
     _sharedHistoricalCreditsUsed += _acqResult.debug.acquisitionPagesUsed
   }
   // Task 6: more specific noTradesReason/noTradesMessage when acquisition recovery ran. Never
@@ -15576,7 +15623,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   tokenMeter.measure('priceInference', walletHistoricalPricingPreviewSummary, _historicalPricingPreviewDebug, _hcNewPricedEvidence)
   // Track historical pricing preview price calls
   for (let _hp2 = 0; _hp2 < (_historicalPricingPreviewDebug?.priceAttempts ?? 0); _hp2++) {
-    _trackCall('goldrush', 'historical_by_addresses_v2', false, `gr:price:hc:${_hp2}:${addrNorm}`)
+    _trackGatewayProviderCall('goldrush', 'historical_by_addresses_v2', false, `gr:price:hc:${_hp2}:${addrNorm}`)
     _sharedHistoricalCreditsUsed++
   }
 
@@ -16988,7 +17035,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         const _attempt = { ..._res, chain: _moralisProfitChain }
         _providerProfitAttempts.push(_attempt)
         if (_res.attempted || _res.cacheHit) {
-          _trackCall('moralis', 'profitability_summary', _res.cacheHit, `moralis:profitability:${_moralisProfitChain}:${addrNorm}:all`)
+          _trackGatewayProviderCall('moralis', 'profitability_summary', _res.cacheHit, `moralis:profitability:${_moralisProfitChain}:${addrNorm}:all`)
         }
         if (!debug && _i === 0 && isUsableProviderPnlSummary(_res.summary)) {
           const _remaining = _providerProfitCappedChains.slice(_i + 1)
@@ -17276,6 +17323,15 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     warnings: _apiWarnings,
     totalCredits: _apiTotalCredits,
     totalEstimatedCallsPrevented: _zerionCacheDebug.callsSavedByCache + _providerPnlSkippedChains.length,
+  }
+  _walletProviderCallAudit.totals = {
+    zerionCredits: _apiAudit.zerion.credits,
+    goldrushCredits: _apiAudit.goldrush.credits,
+    moralisCalls: _apiAudit.moralis.calls,
+    moralisCuEstimate: _apiAudit.moralis.endpoints.reduce((s, e) => s + (({ erc20_holdings: 1, erc20_transfers: 1, profitability_summary: 1 } as Record<string, number>)[e] ?? 1), 0),
+    alchemyCalls: _apiAudit.alchemy.calls,
+    alchemyLoadUnits: _apiAudit.alchemy.loadUnits,
+    totalProviderCredits: _apiAudit.totalCredits,
   }
   // Activity routing debug: summarises all chain/activity routing decisions for observability
   const _walletActivityRoutingDebug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['walletActivityRoutingDebug']> = (() => {
@@ -18427,6 +18483,18 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   }
   // Attach Phase 19 debug (typed as any — not in the strict diagnostics type)
   if (snapshot._diagnostics) (snapshot._diagnostics as Record<string, unknown>).phase19MultiChainSupplementDebug = _phase19Debug
+  if (snapshot._diagnostics) {
+    ;(snapshot._diagnostics as Record<string, unknown>).walletProviderGatewayDebug = {
+      scanMode: _gatewayScanMode,
+      targetCredits: walletScanBudget?.totalCreditTarget ?? scanModeConfig?.targetCredits ?? null,
+      hardCapCredits: walletScanBudget?.totalCreditHardCap ?? scanModeConfig?.hardCapCredits ?? null,
+      isAdminFullRecovery: _isAdminFullRecovery,
+      moralisTransfersAllowed: _isAdminFullRecovery,
+      moralisProviderPnlAllowed: _isAdminFullRecovery,
+      callsAudited: _walletProviderCallAudit.calls.length,
+    }
+    ;(snapshot._diagnostics as Record<string, unknown>).walletProviderCallAudit = _walletProviderCallAudit
+  }
   tokenMeter.startTokenMeter('debugLogging')
   tokenMeter.measure('debugLogging', snapshot._debug, snapshot._diagnostics, walletFacts)
   tokenMeter.endTokenMeter('debugLogging')
