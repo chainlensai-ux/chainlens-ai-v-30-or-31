@@ -1432,6 +1432,45 @@ export async function POST(req: Request) {
     }
     if (walletModuleCoverage.openPositionPerformanceSummary) {
       snapshot.openPositionPerformanceSummary = walletModuleCoverage.openPositionPerformanceSummary
+
+      const perf = walletModuleCoverage.openPositionPerformanceSummary as any
+      const costBasisOnlyOpenPnl = perf.openPositionPnlStatus === 'cost_basis_only'
+        || perf.totalUnrealizedPnlUsd == null
+        || perf.totalCurrentValueUsd == null
+      if (costBasisOnlyOpenPnl && snapshot.walletOpenPositionPnlRead) {
+        const unmatchedSymbols = Array.isArray(perf.unmatchedSymbols)
+          ? perf.unmatchedSymbols.filter((symbol: unknown): symbol is string => typeof symbol === 'string' && symbol.length > 0)
+          : []
+        const unmatchedReason = unmatchedSymbols.length > 0
+          ? `${unmatchedSymbols.join(', ')} current price was not independently matched, so unrealized PnL is locked.`
+          : 'Current price was not independently matched for the open tokens, so unrealized PnL is locked.'
+        snapshot.walletOpenPositionPnlRead = {
+          ...snapshot.walletOpenPositionPnlRead,
+          status: perf.openPositionPnlStatus === 'cost_basis_only' ? 'cost_basis_only' : 'partial',
+          headlineValueUsd: null,
+          unrealizedPnlUsd: null,
+          unrealizedPnlPercent: null,
+          currentValueUsd: null,
+          costBasisUsd: perf.totalOpenCostBasisUsd ?? snapshot.walletOpenPositionPnlRead.costBasisUsd ?? null,
+          label: 'Open-position cost basis',
+          warning: 'Current value unavailable — not real unrealized PnL.',
+          reason: unmatchedReason,
+        }
+        snapshot.pnlDisplayMode = 'open_position_only'
+        snapshot.pnlDisplayLabel = 'Open-position PnL locked'
+        snapshot.pnlDisplayReason = unmatchedReason
+        if (snapshot.walletPnlRead?.displayMode === 'open_position_only') {
+          snapshot.walletPnlRead.headlineLabel = 'Open-position cost basis'
+          snapshot.walletPnlRead.headlineValueUsd = null
+          snapshot.walletPnlRead.headlineWarning = 'Current value unavailable — not real unrealized PnL.'
+          snapshot.walletPnlRead.openPosition = {
+            ...snapshot.walletPnlRead.openPosition,
+            available: false,
+            unrealizedPnlUsd: null,
+            reason: unmatchedReason,
+          }
+        }
+      }
     }
 
     // Wallet personality classification, time-windowed PnL, and bot detection — derived purely
