@@ -1282,6 +1282,8 @@ export type WalletSnapshot = {
       deduped: boolean
       durationMs: number
       skippedReason: string | null
+      timeoutMs: number | null
+      timedOut: boolean
     }
     providerFlow?: {
       chainMode: 'auto' | 'base' | 'eth' | 'base_eth' | 'all_supported'
@@ -12265,6 +12267,11 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // from the fallback layer vs. Moralis, without ever issuing an extra provider call.
   const _fallbackHoldingsBeforeMoralis: Holding[] = [...holdings]
   const _fallbackTotalValueBeforeMoralis = totalValue
+  // LIVE-SPEED-3: only race Moralis holdings against a timeout when Zerion/GoldRush already left us
+  // a usable fallback to fall back on — if Moralis is the only source, never cut it off early.
+  const MORALIS_WALLET_HOLDINGS_TIMEOUT_MS = Number(process.env.MORALIS_WALLET_HOLDINGS_TIMEOUT_MS) || 2500
+  const _moralisHoldingsTimeoutRaceEligible = _fallbackHoldingsBeforeMoralis.length > 0 && _fallbackTotalValueBeforeMoralis > 0
+  let _moralisHoldingsTimedOut = false
   let _moralisNormalizedHoldings: Holding[] = []
   let _moralisRejectedReasonFinal: string | null = null
   let _moralisPositionsMergedFinal = 0
@@ -12277,9 +12284,35 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     // requests per address+chain, so this can never issue more than one Moralis holdings call per
     // active chain per scan.
     await Promise.allSettled(activeChains.map(async (c) => {
-      const _mbRes = await fetchMoralisBalances(addr, c)
+      const _mbPromise = fetchMoralisBalances(addr, c)
+      if (!_moralisHoldingsTimeoutRaceEligible) {
+        const _mbRes = await _mbPromise
+        _moralisByChain.set(c, _mbRes)
+        _trackCall('moralis', 'erc20_holdings', _mbRes.cacheHit, `moralis:holdings:${c}:${addrNorm}`)
+        return
+      }
+      // LIVE-SPEED-3: race against a conservative timeout only — never retry, never issue an extra
+      // call. If the real call wins, behavior is identical to before. If the timeout wins, the slow
+      // call keeps running in the background so its cost is still tracked once it resolves, but it no
+      // longer blocks this scan's response.
+      let _timedOutThisChain = false
+      const _timeoutResult: MoralisFetchResult = { holdings: [], attempted: true, usable: false, cacheHit: false, reason: 'timeout' }
+      const _timeoutPromise = new Promise<MoralisFetchResult>((resolve) => {
+        setTimeout(() => {
+          _timedOutThisChain = true
+          resolve(_timeoutResult)
+        }, MORALIS_WALLET_HOLDINGS_TIMEOUT_MS)
+      })
+      const _mbRes = await Promise.race([_mbPromise, _timeoutPromise])
       _moralisByChain.set(c, _mbRes)
-      _trackCall('moralis', 'erc20_holdings', _mbRes.cacheHit, `moralis:holdings:${c}:${addrNorm}`)
+      if (_timedOutThisChain) {
+        _moralisHoldingsTimedOut = true
+        _mbPromise
+          .then((realRes) => _trackCall('moralis', 'erc20_holdings', realRes.cacheHit, `moralis:holdings:${c}:${addrNorm}`))
+          .catch(() => {})
+      } else {
+        _trackCall('moralis', 'erc20_holdings', _mbRes.cacheHit, `moralis:holdings:${c}:${addrNorm}`)
+      }
     }))
     const moralisHoldingsRaw = [..._moralisByChain.values()].flatMap((r) => r.holdings)
 
@@ -14357,6 +14390,22 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // is real and recoverable, so eligibility is evidence-gated (synthetic lots / unmatched sells,
   // both already required by every call site below) rather than wallet-value-tier-gated.
   const _syntheticRecoveryTierEligible = true
+  // LIVE-SPEED-3: compute the no-sell-path skip gate as early as possible, using only evidence
+  // already finalized above (closed lots, synthetic lots, unmatched sells, existing swap-detected
+  // evidence) — before target ranking and the acquisition/historical recovery network calls below.
+  // Every recovery pass further down (synthetic-target, PnL-recovery-v2, Moralis historical,
+  // acquisition recovery) only ever adds buy/acquisition-direction evidence, never sell-direction,
+  // so this early read of "any sell evidence" is equivalent to the final candidateEvidence check
+  // performed later for the public pricing/FIFO preview summaries (see _skipHistoricalPreviewNoSellPath
+  // below). Used to skip the acquisition recovery Moralis fetch — which would otherwise run and be
+  // discarded once the preview is skipped — without changing the FIFO/eligibility math itself.
+  const _earlySkipHistoricalPreviewNoSellPath = shouldSkipHistoricalPreviewForNoSellPath({
+    adminOverrideUsed: _adminOverrideUsed,
+    closedLotsCount: _closedLots.length,
+    syntheticClosedLotsCount: _syntheticClosedLots.length,
+    unmatchedSells: _lotEngineDebug.unmatchedSells ?? 0,
+    candidateEvidence: _swapEvidenceWithDetection,
+  })
   const _syntheticLotsBeforeHistorical = _syntheticClosedLots.length
 
   // NON-TRADER-EARLY-EXIT-1: a confidently non-trader address (treasury/distributor/token-contract
@@ -14945,6 +14994,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _acqPublicLotsLow = (walletTradeStatsSummary.closedLots ?? 0) === 0
   const _acquisitionRecoveryEligible = Boolean(
     !_nonTraderEarlyExit &&
+    !_earlySkipHistoricalPreviewNoSellPath &&
     activityRequested &&
     _acqHighValueWallet &&
     (_acqTopHoldingsExist || _acqTopHoldingsDominant) &&
@@ -14956,6 +15006,11 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   )
   if (_acquisitionRecoveryEligible) _eligibilityReasons.push('acquisition_history_recovery_for_top_holdings')
   if (_nonTraderEarlyExit) _skipModuleForNonTrader('acquisition_history_recovery_for_top_holdings')
+  // LIVE-SPEED-3: a no-sell-path wallet (see _earlySkipHistoricalPreviewNoSellPath above) can never
+  // produce a closed lot from acquisition recovery either — it only recovers prior buys, which are
+  // useless without a sell to pair against — so skip the Moralis fetch instead of running it and
+  // discarding the result once the pricing/FIFO preview is skipped further below.
+  if (_earlySkipHistoricalPreviewNoSellPath && !_nonTraderEarlyExit) _skipReasons.push('no_sell_path_acquisition_recovery_skipped')
   const _acqMaxTargetTokens = (_walletValueTier === 'high_value' || _walletValueTier === 'whale' || deepScan) ? 4 : 3
   const _acquisitionTargetTokens = _rankedHistoricalTargets
     .filter(t => t.estimatedUsd >= ACQ_DUST_HOLDING_USD)
@@ -14975,7 +15030,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   let _acquisitionRecoveryDebug: AcquisitionRecoveryDebug = {
     acquisitionRecoveryAttempted: false,
     acquisitionRecoveryEligible: false,
-    acquisitionRecoveryReason: _acquisitionRecoveryEligible ? 'not_run' : 'not_eligible_for_acquisition_recovery',
+    acquisitionRecoveryReason: _acquisitionRecoveryEligible ? 'not_run' : _earlySkipHistoricalPreviewNoSellPath ? 'no_sell_path_acquisition_recovery_skipped' : 'not_eligible_for_acquisition_recovery',
     acquisitionTargetTokens: _acquisitionTargetTokens,
     acquisitionPagesUsed: 0,
     acquisitionEventsFetched: 0,
@@ -16560,6 +16615,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   if (_walletBehaviorReusedActivityEvents) _apiWarnings.push('wallet_behavior_reused_activity_events')
   if (_walletBehaviorSkippedDuplicateAlchemy) _apiWarnings.push('wallet_behavior_skipped_duplicate_alchemy')
   _apiWarnings.push('moralis_warmup_removed')
+  if (_moralisHoldingsTimedOut) _apiWarnings.push('moralis_holdings_timeout_fallback_used')
   const _moralisLiveCalls = _liveCalls('moralis')
   const _moralisLiveCount = _moralisLiveCalls.length
   const _grLiveCalls = _liveCalls('goldrush')
@@ -17463,7 +17519,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         fallbackUsed: _selectedHoldingsLayerFinal === 'fallback' && providerUsed === 'fallback_layer' && !_goldrushHoldingsUsed,
         tertiaryAttempted: _grPrimaryAttempted,
         tertiaryUsed: _goldrushHoldingsUsed,
-        fallbackReason: _selectedReasonForRouting,
+        fallbackReason: _moralisHoldingsTimedOut ? 'moralis_timeout_zerion_goldrush_fallback_used' : _selectedReasonForRouting,
         cacheHit: [..._moralisByChain.values()].some((r) => r.cacheHit),
         reason: _selectedHoldingsLayerFinal === 'moralis' || _selectedHoldingsLayerFinal === 'merged'
           ? 'moralis_holdings_used'
@@ -17480,6 +17536,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         deduped: false,
         durationMs: Date.now() - startedAt,
         skippedReason: [..._moralisByChain.values()].length === 0 ? 'fallback_not_needed' : null,
+        timeoutMs: _moralisHoldingsTimeoutRaceEligible ? MORALIS_WALLET_HOLDINGS_TIMEOUT_MS : null,
+        timedOut: _moralisHoldingsTimedOut,
       },
       providerFlow: {
         chainMode,

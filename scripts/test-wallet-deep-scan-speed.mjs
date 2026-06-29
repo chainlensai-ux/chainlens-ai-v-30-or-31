@@ -115,3 +115,70 @@ assert.match(route, /recoveryUnaccountedMs: Math\.max\(0, Number\(perf\?\.recove
 assert.match(route, /recoveryUnaccountedMs: timing\.recoveryUnaccountedMs \}/, 'attachWalletDeepScanTiming surfaces recoveryUnaccountedMs on the public payload.walletDeepScanTiming')
 
 console.log('wallet deep-scan live-speed timing and historical-preview skip-gate checks passed')
+
+// --- LIVE-SPEED-3: early no-sell-path skip gate prevents the acquisition-recovery Moralis fetch ---
+assert.match(
+  snap,
+  /const _earlySkipHistoricalPreviewNoSellPath = shouldSkipHistoricalPreviewForNoSellPath\(\{\s*\n\s*adminOverrideUsed: _adminOverrideUsed,\s*\n\s*closedLotsCount: _closedLots\.length,\s*\n\s*syntheticClosedLotsCount: _syntheticClosedLots\.length,\s*\n\s*unmatchedSells: _lotEngineDebug\.unmatchedSells \?\? 0,\s*\n\s*candidateEvidence: _swapEvidenceWithDetection,\s*\n\s*\}\)/,
+  'early no-sell-path skip gate is computed before target ranking, using only pre-recovery evidence',
+)
+assert.match(
+  snap,
+  /const _acquisitionRecoveryEligible = Boolean\(\s*\n\s*!_nonTraderEarlyExit &&\s*\n\s*!_earlySkipHistoricalPreviewNoSellPath &&/,
+  'acquisition recovery eligibility is gated off for no-sell-path wallets, before the Moralis fetch runs',
+)
+assert.match(
+  snap,
+  /if \(_earlySkipHistoricalPreviewNoSellPath && !_nonTraderEarlyExit\) _skipReasons\.push\('no_sell_path_acquisition_recovery_skipped'\)/,
+  'skip reason is surfaced in debug when the early gate fires',
+)
+assert.match(
+  snap,
+  /acquisitionRecoveryReason: _acquisitionRecoveryEligible \? 'not_run' : _earlySkipHistoricalPreviewNoSellPath \? 'no_sell_path_acquisition_recovery_skipped' : 'not_eligible_for_acquisition_recovery',/,
+  'acquisitionRecoveryReason distinguishes the no-sell-path skip from generic ineligibility',
+)
+
+// --- LIVE-SPEED-3: Moralis holdings timeout/race, only when Zerion/GoldRush fallback is usable ---
+assert.match(
+  snap,
+  /const MORALIS_WALLET_HOLDINGS_TIMEOUT_MS = Number\(process\.env\.MORALIS_WALLET_HOLDINGS_TIMEOUT_MS\) \|\| 2500/,
+  'Moralis wallet holdings timeout is env-overridable, defaulting to 2500ms',
+)
+assert.match(
+  snap,
+  /const _moralisHoldingsTimeoutRaceEligible = _fallbackHoldingsBeforeMoralis\.length > 0 && _fallbackTotalValueBeforeMoralis > 0/,
+  'timeout race is only enabled when a usable pre-Moralis fallback already exists',
+)
+assert.match(
+  snap,
+  /const _mbRes = await Promise\.race\(\[_mbPromise, _timeoutPromise\]\)/,
+  'Moralis holdings fetch is raced against the timeout instead of always being awaited directly',
+)
+assert.doesNotMatch(
+  snap,
+  /_mbPromise\.then\([^)]*\)\.catch\(\(\) => \{\}\)[^]*?_mbPromise\.then/,
+  'timed-out Moralis call is not retried — only the single in-flight promise is ever tracked',
+)
+assert.match(
+  snap,
+  /timeoutMs: _moralisHoldingsTimeoutRaceEligible \? MORALIS_WALLET_HOLDINGS_TIMEOUT_MS : null,\s*\n\s*timedOut: _moralisHoldingsTimedOut,/,
+  'moralisUsage debug exposes timeoutMs/timedOut — the timeout is never hidden from debug',
+)
+assert.match(
+  snap,
+  /fallbackReason: _moralisHoldingsTimedOut \? 'moralis_timeout_zerion_goldrush_fallback_used' : _selectedReasonForRouting,/,
+  'providerFallback.fallbackReason reflects the timeout-specific reason when it fires',
+)
+assert.match(
+  snap,
+  /if \(_moralisHoldingsTimedOut\) _apiWarnings\.push\('moralis_holdings_timeout_fallback_used'\)/,
+  'a real apiAudit.warnings entry is added when the Moralis holdings timeout fires',
+)
+// Provider PnL summary (fetchMoralisProfitabilitySummary) uses a separate code path and is untouched.
+assert.doesNotMatch(
+  snap,
+  /fetchMoralisProfitabilitySummary[^\n]*MORALIS_WALLET_HOLDINGS_TIMEOUT_MS/,
+  'the holdings timeout does not touch the Provider PnL summary call',
+)
+
+console.log('wallet live-speed pass: early no-sell skip + Moralis holdings timeout checks passed')
