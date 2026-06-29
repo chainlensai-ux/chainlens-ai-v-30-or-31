@@ -14921,11 +14921,22 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // COST-GUARD-FIX-1 (cont.): the broad pass being disabled BY the cost guard must not also block
   // the cheap, capped targeted recovery — that targeted recovery is exactly the mechanism allowed
   // to keep running per the cost guard's own rules (default: up to 2 synthetic target tokens).
-  else if (!_runHistoricalCoverage && !_missingCostBasisGuardActive) _syntheticTargetExtraSkippedReason = 'historical_recovery_not_run'
+  // RECOVERY-EXEC-FIX-1: a reserved recovery credit (see _recoveryBudgetReserved above) exists
+  // specifically so this targeted pass can run even when the broad pass never ran — this loop fetches
+  // its own GoldRush pages independently of _hcEvents, so there is no real dependency on the broad
+  // pass having executed. Blocking on !_runHistoricalCoverage here was exactly the bug: a wallet whose
+  // broad pass never ran (cost guard inactive, not enough closed lots to trigger it, etc.) had its
+  // reserved targeted-recovery credit stranded with a dishonest "historical_recovery_not_run" skip.
+  else if (!_runHistoricalCoverage && !_missingCostBasisGuardActive && !_recoveryBudgetReserved) _syntheticTargetExtraSkippedReason = 'historical_recovery_not_run'
   else if (!GOLDRUSH_KEY) _syntheticTargetExtraSkippedReason = 'provider_not_configured'
   else if (_syntheticLotTokenTargets.length === 0) _syntheticTargetExtraSkippedReason = 'no_synthetic_targets'
   else if (_syntheticTargetExtraEligibleTokens.length === 0) _syntheticTargetExtraSkippedReason = 'already_real_backed_lot_for_target'
   else if (_syntheticTargetExtraPriorBuysFoundSoFar > 0) _syntheticTargetExtraSkippedReason = 'prior_buy_already_found'
+  // RECOVERY-EXEC-FIX-1: distinguish "the reservation itself never got any credit" (e.g. the hard
+  // cap was already reached before reservation ran) from "there is genuinely no budget left for
+  // anyone" — both end up at _syntheticTargetExtraPagesAllowed <= 0, but the reserved-budget case has
+  // a more specific, honest reason than a bare 'budget_exhausted'.
+  else if (_syntheticTargetExtraPagesAllowed <= 0 && _recoveryReservationNeeded && !_recoveryBudgetReserved) _syntheticTargetExtraSkippedReason = 'reserved_recovery_budget_unavailable'
   else if (_syntheticTargetExtraPagesAllowed <= 0) _syntheticTargetExtraSkippedReason = 'budget_exhausted'
 
   const _syntheticTargetExtraRecoveryAttempted = _syntheticTargetExtraSkippedReason === null
@@ -15094,10 +15105,16 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     const c = normalizeChain(chain)
     return c === 'base' || c === 'eth' || c === 'polygon' || c === 'bsc' || c === 'arbitrum' || c === 'optimism' || c === 'avalanche' || c === 'fantom' || c === 'cronos' || c === 'gnosis' ? c as MoralisChain : null
   }
+  // RECOVERY-EXEC-FIX-1: _moralisHistoricalTargetTokens can read empty because every synthetic
+  // target already has a real-backed lot (an eligibility filter), which is NOT the same as "no
+  // synthetic targets exist" — _syntheticLotTokenTargets is the true source of that fact. Reporting
+  // 'no_synthetic_targets' in the eligible-filter case was the contradictory reason the engine
+  // surfaced next to a non-empty target token list.
   const _moralisHistoricalSkipReason = _nonTraderEarlyExit ? 'non_trader_early_exit'
     : !_syntheticLotsDetected ? 'no_synthetic_lots'
     : _earlyRealBackedClosedLots >= 10 ? 'recovery_attempted_no_public_grade_lots'
-    : _moralisHistoricalTargetTokens.length === 0 ? 'no_synthetic_targets'
+    : _syntheticLotTokenTargets.length === 0 ? 'no_synthetic_targets'
+    : _moralisHistoricalTargetTokens.length === 0 ? 'already_real_backed_lot_for_target'
     : !Boolean(process.env.MORALIS_API_KEY) ? 'recovery_budget_reserved_but_provider_unavailable'
     : _moralisHistoricalMaxPagesPerToken <= 0 ? 'recovery_budget_reserved_but_no_pages_allowed'
     : _sharedHistoricalBudgetRemaining() <= 0 ? 'budget_exhausted'
@@ -15654,15 +15671,22 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     : (_skipReasons.includes('budget_remaining_too_low') || _skipReasons.includes('broad_pass_budget_zeroed_by_cost_guard'))
       ? 'budget_remaining_too_low'
       : 'synthetic_lots_need_real_prior_buy'
+  // RECOVERY-EXEC-FIX-1: distinguish "recovery ran and found real prior buys but they still didn't
+  // become public-grade lots" from "recovery ran and found nothing" — both used to collapse into the
+  // same vague reason. Also: when recovery never ran solely because the reserved credit never
+  // materialized (hard cap before reservation), say that specifically instead of falling through to
+  // the generic budget/hard-cap fallback string.
   const _syntheticRecoverySkippedReason = !_syntheticLotsDetected
     ? null
     : _realPriorBuysRecoveredForSyntheticLots > 0
-      ? null
+      ? (walletHistoricalFifoPreviewSummary?.safeToPromoteToPublicStats ? null : 'targeted_recovery_attempted_no_public_grade_lots')
       : _anyTargetedRecoveryAttempted
-        ? 'targeted_recovery_attempted_no_prior_buy_found'
-        : !_runHistoricalCoverage
-          ? _syntheticRecoverySkipReasonFallback
-          : (Object.entries(_syntheticTargetRecovery?.debug.syntheticTargetDropBreakdown ?? {}).sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'no_prior_buy_found_in_window')
+        ? 'targeted_recovery_attempted_no_prior_buys_found'
+        : (_recoveryReservationNeeded && !_recoveryBudgetReserved)
+          ? 'reserved_recovery_budget_unavailable'
+          : !_runHistoricalCoverage
+            ? _syntheticRecoverySkipReasonFallback
+            : (Object.entries(_syntheticTargetRecovery?.debug.syntheticTargetDropBreakdown ?? {}).sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'no_prior_buy_found_in_window')
   const _syntheticLotRecoveryDebug = {
     syntheticLotsDetected: _syntheticLotsDetected,
     syntheticLotTokenTargets: _syntheticLotTokenTargets,
@@ -16748,6 +16772,13 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     pricingCreditsReducedForRecovery: _recoveryReservedCredits,
     targetedRecoveryAttemptedBeforeHardCap: _targetedRecoveryAttemptedBeforeHardCap,
     hardCapPreventedAfterReservation: _hardCapPreventedAfterReservation,
+    // RECOVERY-EXEC-FIX-1: the synthetic-target-extra pass (GoldRush-only, see _syntheticTargetExtra*
+    // above) always runs before the broad historical-pricing preview further down the pipeline — these
+    // fields make that ordering, and whether it actually drew from the reserved credit, explicit.
+    targetedRecoveryAttemptedBeforeBroadPricing: _syntheticTargetExtraRecoveryAttempted,
+    targetedRecoveryUsedReservedCredits: _recoveryBudgetReserved && _syntheticTargetExtraCreditUsed > 0,
+    targetedRecoveryReservedCreditsAvailable: _recoveryReservedCredits,
+    targetedRecoveryReservedCreditsUsed: Math.min(_syntheticTargetExtraCreditUsed, _recoveryReservedCredits),
   }
   _perfWalletTimings.recoveryPostProcessingMs += Date.now() - _recoveryPostProcessingStartedAt
   const _historicalScanDebugBuildStartedAt = Date.now()

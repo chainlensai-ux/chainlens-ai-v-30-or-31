@@ -338,3 +338,31 @@ assert.doesNotMatch(
 )
 
 console.log('wallet budget-reservation and moralis-transfer-leak fix checks passed')
+
+// RECOVERY-EXEC-FIX-1 checks: the targeted synthetic-target-extra recovery pass must actually be
+// allowed to run using the reserved credit, even when the broad historical pass never ran.
+assert.match(
+  snap,
+  /else if \(!_runHistoricalCoverage && !_missingCostBasisGuardActive && !_recoveryBudgetReserved\) _syntheticTargetExtraSkippedReason = 'historical_recovery_not_run'/,
+  'synthetic-target-extra recovery is not blocked by historical_recovery_not_run when recovery budget was reserved',
+)
+assert.match(
+  snap,
+  /const _moralisHistoricalSkipReason = _nonTraderEarlyExit \? 'non_trader_early_exit'\s*\n\s*: !_syntheticLotsDetected \? 'no_synthetic_lots'\s*\n\s*: _earlyRealBackedClosedLots >= 10 \? 'recovery_attempted_no_public_grade_lots'\s*\n\s*: _syntheticLotTokenTargets\.length === 0 \? 'no_synthetic_targets'\s*\n\s*: _moralisHistoricalTargetTokens\.length === 0 \? 'already_real_backed_lot_for_target'/,
+  'recoverySkippedReason never reports no_synthetic_targets when syntheticLotTokenTargets is non-empty',
+)
+assert.match(
+  snap,
+  /_realPriorBuysRecoveredForSyntheticLots > 0\s*\n\s*\? \(walletHistoricalFifoPreviewSummary\?\.safeToPromoteToPublicStats \? null : 'targeted_recovery_attempted_no_public_grade_lots'\)\s*\n\s*: _anyTargetedRecoveryAttempted\s*\n\s*\? 'targeted_recovery_attempted_no_prior_buys_found'\s*\n\s*: \(_recoveryReservationNeeded && !_recoveryBudgetReserved\)\s*\n\s*\? 'reserved_recovery_budget_unavailable'/,
+  'syntheticRecoverySkippedReason distinguishes attempted-no-prior-buys, attempted-no-public-grade-lots, and reserved-budget-unavailable',
+)
+for (const field of [
+  'targetedRecoveryAttemptedBeforeBroadPricing: _syntheticTargetExtraRecoveryAttempted',
+  'targetedRecoveryUsedReservedCredits: _recoveryBudgetReserved && _syntheticTargetExtraCreditUsed > 0',
+  'targetedRecoveryReservedCreditsAvailable: _recoveryReservedCredits',
+  'targetedRecoveryReservedCreditsUsed: Math.min(_syntheticTargetExtraCreditUsed, _recoveryReservedCredits)',
+]) {
+  assert.ok(snap.includes(field), `walletScanBudgetDebug must expose ${field.split(':')[0].trim()}`)
+}
+
+console.log('wallet targeted-recovery-execution fix checks passed')
