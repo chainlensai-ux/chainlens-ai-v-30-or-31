@@ -659,11 +659,11 @@ type WalletResult = {
     portfolio: { valueSource: string; holdingsSource: string; providersUsed: string[]; cacheHit: boolean; creditsUsed: number; confidence: string; fieldsPowered: string[]; canBeCached?: boolean; canBeMovedToFullRecovery?: boolean }
     activity: { source: string; chainsScanned: string[]; eventsIndexed: number; providersUsed: string[]; creditsUsed: number; skippedProviders: string[]; skippedReasons: string[]; fieldsPowered: string[]; canBeCached?: boolean; canBeMovedToFullRecovery?: boolean }
     swapDetection: { source: string; inputSource: string; providerCallsAdded: number; fieldsPowered: string[] }
-    priceEvidence: { sourcesUsed: string[]; stableLegPricedEvents: number; providerUsdPricedEvents: number; historicalPricedEvents: number; currentHoldingPricedEvents: number; creditsUsed: number; fieldsPowered: string[]; canBeCached?: boolean; canBeMovedToFullRecovery?: boolean }
+    priceEvidence: { sourcesUsed: string[]; stableLegPricedEvents: number; providerUsdPricedEvents: number; historicalPricedEvents: number; currentHoldingPricedEvents: number; priceAttempts?: number; priceAttemptLimitReached?: boolean; creditsUsed: number; fieldsPowered: string[]; canBeCached?: boolean; canBeMovedToFullRecovery?: boolean }
     fifoPnl: { source: string; inputSources: string[]; providerCallsAdded: number; publicGradeLots: number; excludedLots: number; lockedReasons: string[]; fieldsPowered: string[] }
     providerPnl: { source: string; attempted: boolean; used: boolean; skippedReason: string | null; creditsOrCuUsedEstimate: number; excludedFrom: string[]; fieldsPowered: string[]; canBeCached?: boolean; canBeMovedToFullRecovery?: boolean }
-    openPosition: { source: string; currentPriceSource: string; status: string; lockedReason: string | null; fieldsPowered: string[] }
-    walletScore: { source: string; pnlUsed: boolean; portfolioUsed: boolean; behaviorUsed: boolean; providerCallsAdded: number; fieldsPowered: string[] }
+    openPosition: { source: string; currentPriceSource: string; status: string; lockedReason: string | null; useInOfficialPnl?: boolean; fieldsPowered: string[] }
+    walletScore: { source: string; pnlUsed: boolean; profitSkillUsed?: boolean; portfolioUsed: boolean; behaviorUsed: boolean; providerCallsAdded: number; fieldsPowered: string[] }
     totalCost: { zerionCredits: number; goldrushCredits: number; moralisCalls: number; moralisCuEstimate: number; alchemyCalls: number; alchemyLoadUnits: number; totalProviderCredits: number; targetCredits: number; hardCap: number; exceededTarget: boolean; exceededReason: string | null }
   }
   walletScanBudget?: {
@@ -2306,15 +2306,16 @@ export default function WalletScannerPage() {
               </div>
               {showSourceAudit && (() => {
                 const audit = result.walletApiSourceAudit!
-                const rows: Array<{ feature: string; source: string; calls: string; credits: number; confidence: string; usedInPnl: boolean; notes: string }> = [
-                  { feature: 'Portfolio', source: audit.portfolio.valueSource, calls: audit.portfolio.providersUsed.join(', ') || 'none', credits: audit.portfolio.creditsUsed, confidence: audit.portfolio.confidence, usedInPnl: false, notes: `holdings: ${audit.portfolio.holdingsSource}, cacheHit: ${audit.portfolio.cacheHit}` },
-                  { feature: 'Activity', source: audit.activity.source, calls: audit.activity.providersUsed.join(', ') || 'none', credits: audit.activity.creditsUsed, confidence: 'medium', usedInPnl: true, notes: audit.activity.skippedReasons.join(', ') || `${audit.activity.eventsIndexed} events indexed` },
-                  { feature: 'Swap pairs', source: audit.swapDetection.source, calls: 'none', credits: 0, confidence: 'high', usedInPnl: false, notes: `input: ${audit.swapDetection.inputSource}` },
-                  { feature: 'Price evidence', source: audit.priceEvidence.sourcesUsed.join(', '), calls: 'goldrush', credits: audit.priceEvidence.creditsUsed, confidence: 'medium', usedInPnl: true, notes: `historical priced: ${audit.priceEvidence.historicalPricedEvents}, current: ${audit.priceEvidence.currentHoldingPricedEvents}` },
-                  { feature: 'FIFO PnL', source: audit.fifoPnl.source, calls: 'none', credits: 0, confidence: 'high', usedInPnl: true, notes: `public lots: ${audit.fifoPnl.publicGradeLots}, excluded: ${audit.fifoPnl.excludedLots}${audit.fifoPnl.lockedReasons.length ? `, locked: ${audit.fifoPnl.lockedReasons.join(', ')}` : ''}` },
-                  { feature: 'Provider PnL read', source: audit.providerPnl.source, calls: audit.providerPnl.attempted ? 'moralis' : 'none', credits: audit.providerPnl.creditsOrCuUsedEstimate, confidence: 'medium', usedInPnl: audit.providerPnl.used, notes: audit.providerPnl.skippedReason ? `skipped: ${audit.providerPnl.skippedReason}` : `excluded from: ${audit.providerPnl.excludedFrom.join(', ')}` },
-                  { feature: 'Open position read', source: audit.openPosition.source, calls: 'none', credits: 0, confidence: 'medium', usedInPnl: false, notes: audit.openPosition.lockedReason ? `locked: ${audit.openPosition.lockedReason}` : `status: ${audit.openPosition.status}` },
-                  { feature: 'Wallet profile / Bot score / Personality', source: audit.walletScore.source, calls: 'none', credits: 0, confidence: 'medium', usedInPnl: audit.walletScore.pnlUsed, notes: `portfolio used: ${audit.walletScore.portfolioUsed}, behavior used: ${audit.walletScore.behaviorUsed}` },
+                const publicPnlUnlocked = typeof result.publicRealizedPnlUsd === 'number' || typeof result.publicPerformanceRealizedPnlUsd === 'number' || typeof result.publicWinRatePercent === 'number'
+                const rows: Array<{ feature: string; source: string; calls: string; credits: number; confidence: string; usedInPnl: 'yes' | 'public no' | 'internal only' | 'locked'; notes: string }> = [
+                  { feature: 'Portfolio', source: audit.portfolio.valueSource, calls: audit.portfolio.providersUsed.join(', ') || 'none', credits: audit.portfolio.creditsUsed, confidence: audit.portfolio.confidence, usedInPnl: 'public no', notes: `holdings: ${audit.portfolio.holdingsSource}, cacheHit: ${audit.portfolio.cacheHit}` },
+                  { feature: 'Activity', source: audit.activity.source, calls: audit.activity.providersUsed.join(', ') || 'none', credits: audit.activity.creditsUsed, confidence: 'medium', usedInPnl: publicPnlUnlocked ? 'yes' : 'locked', notes: audit.activity.skippedReasons.join(', ') || `${audit.activity.eventsIndexed} events indexed` },
+                  { feature: 'Swap pairs', source: audit.swapDetection.source, calls: 'none', credits: 0, confidence: 'high', usedInPnl: 'internal only', notes: `input: ${audit.swapDetection.inputSource}` },
+                  { feature: 'Price evidence', source: audit.priceEvidence.sourcesUsed.join(', '), calls: 'goldrush', credits: audit.priceEvidence.creditsUsed, confidence: 'medium', usedInPnl: publicPnlUnlocked ? 'yes' : 'locked', notes: `historical priced: ${audit.priceEvidence.historicalPricedEvents}, current: ${audit.priceEvidence.currentHoldingPricedEvents}` },
+                  { feature: 'FIFO PnL', source: audit.fifoPnl.source, calls: 'none', credits: 0, confidence: 'high', usedInPnl: publicPnlUnlocked ? 'yes' : 'locked', notes: `public lots: ${audit.fifoPnl.publicGradeLots}, excluded: ${audit.fifoPnl.excludedLots}${audit.fifoPnl.lockedReasons.length ? `, locked: ${audit.fifoPnl.lockedReasons.join(', ')}` : ''}` },
+                  { feature: 'Provider PnL read', source: audit.providerPnl.source, calls: audit.providerPnl.attempted ? 'moralis' : 'none', credits: audit.providerPnl.creditsOrCuUsedEstimate, confidence: 'medium', usedInPnl: audit.providerPnl.used ? 'yes' : 'public no', notes: audit.providerPnl.skippedReason ? `skipped: ${audit.providerPnl.skippedReason}` : `excluded from: ${audit.providerPnl.excludedFrom.join(', ')}` },
+                  { feature: 'Open position read', source: audit.openPosition.source, calls: 'none', credits: 0, confidence: 'medium', usedInPnl: audit.openPosition.useInOfficialPnl ? 'yes' : (audit.openPosition.status === 'cost_basis_only' ? 'locked' : 'public no'), notes: audit.openPosition.lockedReason ? `locked: ${audit.openPosition.lockedReason}` : `status: ${audit.openPosition.status}` },
+                  { feature: 'Wallet profile / Bot score / Personality', source: audit.walletScore.source, calls: 'none', credits: 0, confidence: 'medium', usedInPnl: audit.walletScore.pnlUsed ? 'yes' : 'locked', notes: `portfolio used: ${audit.walletScore.portfolioUsed}, behavior used: ${audit.walletScore.behaviorUsed}` },
                 ]
                 return (
                   <>
@@ -2322,7 +2323,7 @@ export default function WalletScannerPage() {
                       <table style={{ width: '100%', fontSize: '10px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', borderCollapse: 'collapse' }}>
                         <thead>
                           <tr style={{ color: 'rgba(226,232,240,0.45)', textAlign: 'left' }}>
-                            {['Feature', 'Source', 'Provider calls', 'Credits/CU', 'Confidence', 'Used in official PnL?', 'Notes'].map(h => (
+                            {['Feature', 'Source', 'Provider calls', 'Credits/CU', 'Confidence', 'Used in public output', 'Notes'].map(h => (
                               <th key={h} style={{ padding: '4px 8px', borderBottom: '1px solid rgba(255,255,255,0.08)', whiteSpace: 'nowrap' }}>{h}</th>
                             ))}
                           </tr>
@@ -2335,7 +2336,7 @@ export default function WalletScannerPage() {
                               <td style={{ padding: '4px 8px', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>{r.calls}</td>
                               <td style={{ padding: '4px 8px', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>{r.credits}</td>
                               <td style={{ padding: '4px 8px', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>{r.confidence}</td>
-                              <td style={{ padding: '4px 8px', borderBottom: '1px solid rgba(255,255,255,0.04)', color: r.usedInPnl ? '#4ade80' : 'rgba(226,232,240,0.45)' }}>{r.usedInPnl ? 'yes' : 'no'}</td>
+                              <td style={{ padding: '4px 8px', borderBottom: '1px solid rgba(255,255,255,0.04)', color: r.usedInPnl === 'yes' ? '#4ade80' : r.usedInPnl === 'locked' ? '#facc15' : 'rgba(226,232,240,0.45)' }}>{r.usedInPnl}</td>
                               <td style={{ padding: '4px 8px', borderBottom: '1px solid rgba(255,255,255,0.04)', color: 'rgba(226,232,240,0.55)' }}>{r.notes}</td>
                             </tr>
                           ))}

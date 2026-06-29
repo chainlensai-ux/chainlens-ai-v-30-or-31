@@ -1559,7 +1559,8 @@ export async function POST(req: Request) {
     // walletScore section of the source/cost audit (built earlier in walletSnapshot.ts) is finalized
     // here rather than there — read-only, no new provider calls, no PnL behavior change.
     if ((snapshot as any).walletApiSourceAudit?.walletScore) {
-      (snapshot as any).walletApiSourceAudit.walletScore.pnlUsed = (snapshot as any).walletApiSourceAudit.walletScore.pnlUsed || Boolean(snapshot.walletBotScore)
+      ;(snapshot as any).walletApiSourceAudit.walletScore.pnlUsed = typeof (snapshot as any).publicRealizedPnlUsd === 'number' || typeof (snapshot as any).publicPerformanceRealizedPnlUsd === 'number' || typeof (snapshot as any).publicWinRatePercent === 'number'
+      ;(snapshot as any).walletApiSourceAudit.walletScore.profitSkillUsed = (snapshot as any).walletApiSourceAudit.walletScore.pnlUsed
       ;(snapshot as any).walletApiSourceAudit.walletScore.fieldsPowered = ['walletBotScore', 'walletPersonality', 'walletProfile']
     }
     // Windowed PnL is public-facing, so it must exclude synthetic/cost-basis-missing lots —
