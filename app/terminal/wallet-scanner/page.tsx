@@ -669,7 +669,7 @@ type WalletResult = {
     priceEvidence: { sourcesUsed: string[]; stableLegPricedEvents: number; providerUsdPricedEvents: number; historicalPricedEvents: number; currentHoldingPricedEvents: number; priceAttempts?: number; priceAttemptLimitReached?: boolean; creditsUsed: number; fieldsPowered: string[]; canBeCached?: boolean; canBeMovedToFullRecovery?: boolean }
     fifoPnl: { source: string; inputSources: string[]; providerCallsAdded: number; publicGradeLots: number; excludedLots: number; lockedReasons: string[]; fieldsPowered: string[] }
     providerPnl: { source: string; attempted: boolean; used: boolean; skippedReason: string | null; creditsOrCuUsedEstimate: number; excludedFrom: string[]; fieldsPowered: string[]; canBeCached?: boolean; canBeMovedToFullRecovery?: boolean }
-    openPosition: { source: string; currentPriceSource: string | null; status: string; lockedReason: string | null; useInOfficialPnl?: boolean; fieldsPowered: string[] }
+    openPosition: { source: string; currentPriceSource: string | null; status: string; lockedReason: string | null; useInOfficialPnl?: boolean; notes?: { matchedTokens?: number; unmatchedTokens?: number; unmatchedSymbols?: string[]; aggregateLockedReason?: string | null }; fieldsPowered: string[] }
     walletScore: { source: string; pnlUsed: boolean; profitSkillUsed?: boolean; portfolioUsed: boolean; behaviorUsed: boolean; providerCallsAdded: number; fieldsPowered: string[] }
     totalCost: { zerionCredits: number; goldrushCredits: number; moralisCalls: number; moralisCuEstimate: number; alchemyCalls: number; alchemyLoadUnits: number; totalProviderCredits: number; targetCredits: number; hardCap: number; exceededTarget: boolean; exceededReason: string | null }
   }
@@ -703,7 +703,7 @@ type WalletResult = {
     cacheHit?: boolean
   }
   walletLoadState?: {
-    mode: 'standard' | 'deep'
+    mode: 'standard' | 'deep' | 'full_recovery'
     stage: 'portfolio' | 'holdings' | 'activity' | 'pricing' | 'fifo' | 'recovery' | 'final'
     portfolioReady: boolean
     holdingsReady: boolean
@@ -740,6 +740,7 @@ type WalletResult = {
     recoveryMs?: number
     historicalMs: number
     totalMs: number
+    routeTotalMs?: number
     cacheReadMs: number
     cacheWriteMs: number
   }
