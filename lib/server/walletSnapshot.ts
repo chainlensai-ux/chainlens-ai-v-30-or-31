@@ -2410,6 +2410,27 @@ export type WalletSnapshot = {
       buyQuoteProofRejected?: number
       buyQuoteProofRejectedReasons?: Record<string, number>
       sampleBuyQuoteProofPromotions?: Array<{ txHash: string; symbol: string | null; quoteToken: string; nativeAmount: number; priceUsd: number }>
+      receiptsRequested?: number
+      receiptsFetched?: number
+      receiptsWithLogs?: number
+      receiptLogsSeen?: number
+      transferLogsSeen?: number
+      transferLogsDecoded?: number
+      transferLogsDecodeFailed?: number
+      nonTransferLogsSkipped?: number
+      malformedTransferLogsSkipped?: number
+      walletInboundLegs?: number
+      walletOutboundLegs?: number
+      quoteLegs?: number
+      reconstructedSwapEventsBuilt?: number
+      reconstructedSwapEventsMerged?: number
+      alchemyReconstructedEventsBuilt?: number
+      alchemyEventsMerged?: number
+      alchemyEventsEnriched?: number
+      alchemyDuplicatesSkipped?: number
+      sampleDecodedTransfers?: Array<{ txHash: string; tokenAddress: string; from: string; to: string; rawAmount: string; logIndex: number }>
+      sampleQuoteMatches?: Array<{ txHash: string; contract: string; amountHex: string; direction: string }>
+      rejectedBreakdown?: Record<string, number>
       sampleReconstructedSwaps: Array<{
         txHash: string
         chain: string
@@ -10346,8 +10367,50 @@ async function buildEthRouterSwapReconstructionPass(
 // the token leg — pricing fell back to plain historical token price instead of the stronger,
 // same-tx quote-leg-derived price. Capped to 3 receipts per scan; never touches unrelated txs.
 const SWAP_RECON_V1_TTL_MS = 50 * 60 * 1000
-type SwapReconV1Decode = { txFrom: string | null; txTo: string | null; logs: Array<{ topics?: string[]; address?: string; data?: unknown }> | null }
+type SwapReconV1Decode = { txHash: string | null; status: string | null; txFrom: string | null; txTo: string | null; logs: Array<{ topics?: string[]; address?: string; data?: unknown; logIndex?: unknown }> | null; shapeReason: string }
 const swapReconV1ReceiptCache = new Map<string, { data: SwapReconV1Decode; exp: number }>()
+
+
+type SwapReconV1Transfer = {
+  tokenAddress: string
+  from: string
+  to: string
+  rawAmount: string
+  logIndex: number
+  txHash: string
+}
+
+function normalizeAlchemyReceiptShape(raw: any, expectedTxHash: string): SwapReconV1Decode {
+  const receipt = raw && typeof raw === 'object' && raw.result && typeof raw.result === 'object' ? raw.result : raw
+  if (!receipt) return { txHash: expectedTxHash.toLowerCase(), status: null, txFrom: null, txTo: null, logs: null, shapeReason: 'receipt_null' }
+  if (typeof receipt !== 'object') return { txHash: expectedTxHash.toLowerCase(), status: null, txFrom: null, txTo: null, logs: null, shapeReason: 'receipt_shape_unexpected' }
+  const status = typeof receipt.status === 'string' ? receipt.status.toLowerCase() : null
+  const txHash = typeof receipt.transactionHash === 'string' ? receipt.transactionHash.toLowerCase() : expectedTxHash.toLowerCase()
+  if (status === '0x0') return { txHash, status, txFrom: typeof receipt.from === 'string' ? receipt.from.toLowerCase() : null, txTo: typeof receipt.to === 'string' ? receipt.to.toLowerCase() : null, logs: null, shapeReason: 'receipt_status_failed' }
+  if (!('logs' in receipt)) return { txHash, status, txFrom: typeof receipt.from === 'string' ? receipt.from.toLowerCase() : null, txTo: typeof receipt.to === 'string' ? receipt.to.toLowerCase() : null, logs: null, shapeReason: 'receipt_logs_missing' }
+  if (!Array.isArray(receipt.logs)) return { txHash, status, txFrom: typeof receipt.from === 'string' ? receipt.from.toLowerCase() : null, txTo: typeof receipt.to === 'string' ? receipt.to.toLowerCase() : null, logs: null, shapeReason: 'receipt_shape_unexpected' }
+  if (receipt.logs.length === 0) return { txHash, status, txFrom: typeof receipt.from === 'string' ? receipt.from.toLowerCase() : null, txTo: typeof receipt.to === 'string' ? receipt.to.toLowerCase() : null, logs: receipt.logs, shapeReason: 'receipt_logs_empty' }
+  return { txHash, status, txFrom: typeof receipt.from === 'string' ? receipt.from.toLowerCase() : null, txTo: typeof receipt.to === 'string' ? receipt.to.toLowerCase() : null, logs: receipt.logs, shapeReason: 'ok' }
+}
+
+function decodeSwapReconV1TransferLog(log: { topics?: string[]; address?: string; data?: unknown; logIndex?: unknown }, txHash: string): SwapReconV1Transfer | null {
+  if (!Array.isArray(log.topics) || log.topics.length < 3) return null
+  if (log.topics[0]?.toLowerCase() !== ERC20_TRANSFER_TOPIC) return null
+  if (typeof log.address !== 'string' || !log.address.startsWith('0x')) return null
+  if (typeof log.data !== 'string' || !/^0x[0-9a-fA-F]+$/.test(log.data)) return null
+  const fromTopic = log.topics[1]
+  const toTopic = log.topics[2]
+  if (typeof fromTopic !== 'string' || typeof toTopic !== 'string' || fromTopic.length < 42 || toTopic.length < 42) return null
+  const logIndex = typeof log.logIndex === 'number' ? log.logIndex : typeof log.logIndex === 'string' ? Number.parseInt(log.logIndex, 16) : 0
+  return {
+    tokenAddress: log.address.toLowerCase(),
+    from: `0x${fromTopic.toLowerCase().slice(-40)}`,
+    to: `0x${toTopic.toLowerCase().slice(-40)}`,
+    rawAmount: log.data,
+    logIndex: Number.isFinite(logIndex) ? logIndex : 0,
+    txHash: txHash.toLowerCase(),
+  }
+}
 const SWAP_RECON_V1_MAX_RECEIPTS = 3
 // ALCHEMY-WARNING-FIX: aggregate ceiling for INTENTIONAL receipt-reconstruction RPC load across all
 // capped passes (acquisition recovery ACQ_MAX_RECEIPT_CHECKS=15 + swap-recon-v1=3 + sell-side /
@@ -10421,6 +10484,7 @@ async function buildSwapReconstructionV1(
   alchemyUrl: string,
   reqCache: Map<string, number | null> | undefined,
   priceByContract: Map<string, number> | undefined,
+  receiptChecksBudget = SWAP_RECON_V1_MAX_RECEIPTS,
 ): Promise<{
   evidenceWithReconstruction: WalletTxEvidence[]
   debug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['swapReconstructionV1Debug']>
@@ -10444,6 +10508,7 @@ async function buildSwapReconstructionV1(
     swapReconstructionEventsRejected: 0,
     swapReconstructionRejectedReasons: [],
     sampleReconstructedSwaps: [],
+    receiptsRequested: 0, receiptsFetched: 0, receiptsWithLogs: 0, receiptLogsSeen: 0, transferLogsSeen: 0, transferLogsDecoded: 0, transferLogsDecodeFailed: 0, nonTransferLogsSkipped: 0, malformedTransferLogsSkipped: 0, walletInboundLegs: 0, walletOutboundLegs: 0, quoteLegs: 0, reconstructedSwapEventsBuilt: 0, reconstructedSwapEventsMerged: 0, alchemyReconstructedEventsBuilt: 0, alchemyEventsMerged: 0, alchemyEventsEnriched: 0, alchemyDuplicatesSkipped: 0, sampleDecodedTransfers: [], sampleQuoteMatches: [], rejectedBreakdown: {},
   })
 
   if (!alchemyUrl) return { evidenceWithReconstruction: evidenceWithDetection, debug: empty('no_alchemy_url') }
@@ -10460,14 +10525,20 @@ async function buildSwapReconstructionV1(
     if (seenTx.has(e.txHash)) continue
     seenTx.add(e.txHash)
     candidateTxHashes.push(e.txHash)
-    if (candidateTxHashes.length >= SWAP_RECON_V1_MAX_RECEIPTS) break
+    if (candidateTxHashes.length >= Math.max(0, receiptChecksBudget)) break
   }
 
   if (candidateTxHashes.length === 0) return { evidenceWithReconstruction: evidenceWithDetection, debug: empty('no_upgradeable_wallet_initiated_swap_candidates', true) }
 
   let receiptsFetched = 0
   let receiptCacheHits = 0
+  let receiptLogsSeen = 0
+  let receiptsWithLogs = 0
+  let transferLogsSeen = 0
   let transferLogsDecoded = 0
+  let transferLogsDecodeFailed = 0
+  let nonTransferLogsSkipped = 0
+  let malformedTransferLogsSkipped = 0
   let walletInboundLegsTotal = 0
   let walletOutboundLegsTotal = 0
   let quoteLegsTotal = 0
@@ -10495,6 +10566,8 @@ async function buildSwapReconstructionV1(
     buyQuoteProofRejectedReasons[reason] = (buyQuoteProofRejectedReasons[reason] ?? 0) + 1
   }
   const sampleReconstructedSwaps: ReconstructedSwapV1[] = []
+  const sampleDecodedTransfers: SwapReconV1Transfer[] = []
+  const sampleQuoteMatches: Array<{ txHash: string; contract: string; amountHex: string; direction: string }> = []
   const pricedPatches: Array<{ txHash: string; contract: string; priceUsd: number; reason: string; confidence: 'high' | 'medium' }> = []
 
   for (const txHash of candidateTxHashes) {
@@ -10509,21 +10582,20 @@ async function buildSwapReconstructionV1(
       try {
         const receipt = await getSharedTxReceipt(alchemyUrl, txHash)
         receiptsFetched++
-        decode = {
-          txFrom: typeof receipt?.from === 'string' ? (receipt.from as string).toLowerCase() : null,
-          txTo: typeof receipt?.to === 'string' ? (receipt.to as string).toLowerCase() : null,
-          logs: Array.isArray(receipt?.logs) ? receipt.logs : null,
-        }
+        decode = normalizeAlchemyReceiptShape(receipt, txHash)
         swapReconV1ReceiptCache.set(cacheKey, { data: decode, exp: now + SWAP_RECON_V1_TTL_MS })
       } catch {
         bumpRejected('receipt_fetch_error')
         continue
       }
     }
-    if (!decode?.logs) {
-      bumpRejected('no_receipt_or_logs')
+    if (!decode?.logs || decode.shapeReason !== 'ok') {
+      bumpRejected(decode?.shapeReason ?? 'receipt_shape_unexpected')
       continue
     }
+
+    if (decode.logs.length > 0) receiptsWithLogs++
+    receiptLogsSeen += decode.logs.length
 
     const txGroup = evidenceWithDetection.filter(e => e.txHash === txHash)
     const symbolByContract = new Map<string, string>()
@@ -10536,19 +10608,24 @@ async function buildSwapReconstructionV1(
     // quote legs — e.g. a router unwrapping WETH to native ETH before paying the wallet, which
     // leaves no ERC20 Transfer log to the wallet itself — can still be counted/used as evidence.
     const isQuote = (c: string) => Boolean(STABLE_USD_CONTRACTS[c]) || Boolean(WETH_CONTRACTS_PRICE[c]) || (symbolByContract.get(c) ?? '').toUpperCase() === 'VIRTUAL'
-    const walletOutboundLegs: Array<{ contract: string; amountHex: string }> = []
-    const walletInboundLegs: Array<{ contract: string; amountHex: string }> = []
-    const routerMediatedQuoteLegs: Array<{ contract: string; amountHex: string }> = []
+    const walletOutboundLegs: Array<{ contract: string; amountHex: string; logIndex?: number }> = []
+    const walletInboundLegs: Array<{ contract: string; amountHex: string; logIndex?: number }> = []
+    const routerMediatedQuoteLegs: Array<{ contract: string; amountHex: string; logIndex?: number }> = []
+    const decodedTransfers: SwapReconV1Transfer[] = []
     for (const log of decode.logs) {
-      if (!log.topics || log.topics[0]?.toLowerCase() !== ERC20_TRANSFER_TOPIC) continue
-      if (log.topics.length < 3) continue
+      if (!log.topics || log.topics[0]?.toLowerCase() !== ERC20_TRANSFER_TOPIC) { nonTransferLogsSkipped++; continue }
+      transferLogsSeen++
+      const decodedLog = decodeSwapReconV1TransferLog(log, decode.txHash ?? txHash)
+      if (!decodedLog) { transferLogsDecodeFailed++; malformedTransferLogsSkipped++; continue }
       transferLogsDecoded++
-      const fromAddr = '0x' + (log.topics[1]?.toLowerCase() ?? '').slice(-40)
-      const toAddr = '0x' + (log.topics[2]?.toLowerCase() ?? '').slice(-40)
-      const contractAddr = (log.address ?? '').toLowerCase()
-      const amountHex = typeof log.data === 'string' ? log.data : '0x0'
-      if (fromAddr === walletLower) walletOutboundLegs.push({ contract: contractAddr, amountHex })
-      if (toAddr === walletLower) walletInboundLegs.push({ contract: contractAddr, amountHex })
+      decodedTransfers.push(decodedLog)
+      if (sampleDecodedTransfers.length < 5) sampleDecodedTransfers.push(decodedLog)
+      const fromAddr = decodedLog.from
+      const toAddr = decodedLog.to
+      const contractAddr = decodedLog.tokenAddress
+      const amountHex = decodedLog.rawAmount
+      if (fromAddr === walletLower) walletOutboundLegs.push({ contract: contractAddr, amountHex, logIndex: decodedLog.logIndex })
+      if (toAddr === walletLower) walletInboundLegs.push({ contract: contractAddr, amountHex, logIndex: decodedLog.logIndex })
       // Router/pool-mediated quote leg: the router itself receives or sends a quote asset, but
       // the leg never touches the wallet directly (e.g. router -> pool, or pool -> router before
       // an ETH unwrap). Only counted as quote-leg evidence, never as a wallet-direct leg.
@@ -10559,7 +10636,7 @@ async function buildSwapReconstructionV1(
         routerAddr &&
         (fromAddr === routerAddr || toAddr === routerAddr)
       ) {
-        routerMediatedQuoteLegs.push({ contract: contractAddr, amountHex })
+        routerMediatedQuoteLegs.push({ contract: contractAddr, amountHex, logIndex: decodedLog.logIndex })
       }
     }
     walletOutboundLegsTotal += walletOutboundLegs.length
@@ -10570,6 +10647,9 @@ async function buildSwapReconstructionV1(
     const tokenOutbound = walletOutboundLegs.filter(l => !isQuote(l.contract))
     const tokenInbound = walletInboundLegs.filter(l => !isQuote(l.contract))
     quoteLegsTotal += quoteOutbound.length + quoteInbound.length + routerMediatedQuoteLegs.length
+    for (const l of quoteOutbound) if (sampleQuoteMatches.length < 5) sampleQuoteMatches.push({ txHash, contract: l.contract, amountHex: l.amountHex, direction: 'wallet_outbound' })
+    for (const l of quoteInbound) if (sampleQuoteMatches.length < 5) sampleQuoteMatches.push({ txHash, contract: l.contract, amountHex: l.amountHex, direction: 'wallet_inbound' })
+    for (const l of routerMediatedQuoteLegs) if (sampleQuoteMatches.length < 5) sampleQuoteMatches.push({ txHash, contract: l.contract, amountHex: l.amountHex, direction: 'router_mediated' })
     tokenLegsTotal += tokenOutbound.length + tokenInbound.length
 
     const candidateSymbols = Array.from(new Set(
@@ -10813,6 +10893,27 @@ async function buildSwapReconstructionV1(
       buyQuoteProofRejectedReasons,
       sampleBuyQuoteProofPromotions,
       sampleReconstructedSwaps,
+      receiptsRequested: candidateTxHashes.length,
+      receiptsFetched,
+      receiptsWithLogs,
+      receiptLogsSeen,
+      transferLogsSeen,
+      transferLogsDecoded,
+      transferLogsDecodeFailed,
+      nonTransferLogsSkipped,
+      malformedTransferLogsSkipped,
+      walletInboundLegs: walletInboundLegsTotal,
+      walletOutboundLegs: walletOutboundLegsTotal,
+      quoteLegs: quoteLegsTotal,
+      reconstructedSwapEventsBuilt: eventsBuilt,
+      reconstructedSwapEventsMerged: eventsPromoted,
+      alchemyReconstructedEventsBuilt: eventsBuilt,
+      alchemyEventsMerged: eventsPromoted,
+      alchemyEventsEnriched: eventsPromoted,
+      alchemyDuplicatesSkipped: 0,
+      sampleDecodedTransfers,
+      sampleQuoteMatches,
+      rejectedBreakdown,
     },
   }
 }
@@ -14096,9 +14197,10 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     swapReconstructionEventsPromoted: 0, swapReconstructionEventsPromotedBuy: 0, swapReconstructionEventsPromotedSell: 0,
     swapReconstructionEventsRejected: 0, swapReconstructionRejectedReasons: [],
     sampleReconstructedSwaps: [],
+    receiptsRequested: 0, receiptsFetched: 0, receiptsWithLogs: 0, receiptLogsSeen: 0, transferLogsSeen: 0, transferLogsDecoded: 0, transferLogsDecodeFailed: 0, nonTransferLogsSkipped: 0, malformedTransferLogsSkipped: 0, walletInboundLegs: 0, walletOutboundLegs: 0, quoteLegs: 0, reconstructedSwapEventsBuilt: 0, reconstructedSwapEventsMerged: 0, alchemyReconstructedEventsBuilt: 0, alchemyEventsMerged: 0, alchemyEventsEnriched: 0, alchemyDuplicatesSkipped: 0, sampleDecodedTransfers: [], sampleQuoteMatches: [], rejectedBreakdown: {},
   }
   if (activityRequested && walletSwapSummary.swapCandidateEvents > 0 && _enrichAlchemyUrl) {
-    const swapReconResult = await buildSwapReconstructionV1(_pricedEvidence, addrNorm, _enrichAlchemyUrl, _reqPriceCache, priceByContract)
+    const swapReconResult = await buildSwapReconstructionV1(_pricedEvidence, addrNorm, _enrichAlchemyUrl, _reqPriceCache, priceByContract, scanModeConfig?.receiptChecks ?? SWAP_RECON_V1_MAX_RECEIPTS)
     _swapReconstructionV1Debug = swapReconResult.debug
     tokenMeter.measure('priceInference', swapReconResult)
     for (let _ri = 0; _ri < swapReconResult.debug.swapReconstructionReceiptsFetched; _ri++) {
