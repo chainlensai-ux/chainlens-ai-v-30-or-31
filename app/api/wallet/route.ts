@@ -644,12 +644,18 @@ function buildWalletModuleCoverage(snap: any) {
       rawUnrealizedPnlUsd: number | null
       rawUnrealizedPnlPercent: number | null
     }
+    const normalizeOpenPositionChainKey = (chain: unknown): string => {
+      const c = String(chain ?? '').toLowerCase()
+      if (c === 'eth-mainnet' || c === 'ethereum' || c === 'mainnet' || c === '1' || c === 'eth') return 'eth'
+      if (c === 'base-mainnet' || c === '8453' || c === 'base') return 'base'
+      return c
+    }
     const perfTokens: PerfToken[] = walletOpenPositionSummary.tokens.map(t => {
       const tokenContract = t.contract.toLowerCase()
-      const tokenChain = (t.chain ?? '').toLowerCase()
+      const tokenChain = normalizeOpenPositionChainKey(t.chain)
       const matchedHolding = _snapHoldings.find(h => {
         if (!h?.contract) return false
-        const hChain = (h.chain ?? '').toLowerCase()
+        const hChain = normalizeOpenPositionChainKey(h.chain)
         return h.contract.toLowerCase() === tokenContract && hChain === tokenChain
       })
       const currentPriceUsd = matchedHolding?.price ?? null
@@ -666,7 +672,7 @@ function buildWalletModuleCoverage(snap: any) {
       const unrealizedPnlUsd = priceEstimateOnly ? null : rawUnrealizedPnlUsd
       const unrealizedPnlPercent = priceEstimateOnly ? null : rawUnrealizedPnlPercent
       return {
-        contract: t.contract, symbol: t.symbol, chain: t.chain, openLots: t.openLots,
+        contract: t.contract, symbol: t.symbol, chain: tokenChain, openLots: t.openLots,
         amountRemaining: t.totalAmount,
         avgEntryPriceUsd: t.avgEntryPriceUsd,
         currentPriceUsd, currentValueUsd, costBasisUsd,

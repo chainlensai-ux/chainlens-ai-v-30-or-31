@@ -2430,6 +2430,12 @@ export type WalletSnapshot = {
       alchemyDuplicatesSkipped?: number
       sampleDecodedTransfers?: Array<{ txHash: string; tokenAddress: string; from: string; to: string; rawAmount: string; logIndex: number }>
       sampleQuoteMatches?: Array<{ txHash: string; contract: string; amountHex: string; direction: string }>
+      receiptProofCandidates?: Array<{ txHash: string; candidateChainRaw: string | null; normalizedReceiptChain: string; rpcChainUsed: string | null; receiptStatus: 'ok' | 'null' | 'missing_logs' | 'empty_logs' | 'failed' | 'unexpected_shape'; logCount: number; transferLogCount: number; rejectReason: string | null }>
+      receiptProofCandidatesByChain?: Record<string, number>
+      receiptProofCallsByChain?: Record<string, number>
+      receiptProofNullByChain?: Record<string, number>
+      receiptProofChainMismatchCount?: number
+      sampleReceiptProofChainMismatches?: Array<{ txHash: string; candidateChainRaw: string | null; normalizedReceiptChain: string; rpcChainUsed: string | null }>
       rejectedBreakdown?: Record<string, number>
       sampleReconstructedSwaps: Array<{
         txHash: string
@@ -10380,6 +10386,26 @@ type SwapReconV1Transfer = {
   txHash: string
 }
 
+function normalizeReceiptProofChain(chain: string | null | undefined): 'eth' | 'base' | null {
+  const c = normalizeChain(String(chain ?? '').trim())
+  if (c === 'eth' || c === 'base') return c
+  return null
+}
+
+function alchemyReceiptRpcUrlForChain(chain: 'eth' | 'base', fallbackUrl: string): string | null {
+  if (chain === 'eth') return ALCHEMY_ETH_KEY ? `https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_ETH_KEY}` : null
+  return ALCHEMY_BASE_KEY ? `https://base-mainnet.g.alchemy.com/v2/${ALCHEMY_BASE_KEY}` : (fallbackUrl || PUBLIC_BASE_RPC)
+}
+
+function receiptStatusFromShapeReason(shapeReason: string): 'ok' | 'null' | 'missing_logs' | 'empty_logs' | 'failed' | 'unexpected_shape' {
+  if (shapeReason === 'ok') return 'ok'
+  if (shapeReason === 'receipt_null') return 'null'
+  if (shapeReason === 'receipt_logs_missing') return 'missing_logs'
+  if (shapeReason === 'receipt_logs_empty') return 'empty_logs'
+  if (shapeReason === 'receipt_status_failed') return 'failed'
+  return 'unexpected_shape'
+}
+
 function normalizeAlchemyReceiptShape(raw: any, expectedTxHash: string): SwapReconV1Decode {
   const receipt = raw && typeof raw === 'object' && raw.result && typeof raw.result === 'object' ? raw.result : raw
   if (!receipt) return { txHash: expectedTxHash.toLowerCase(), status: null, txFrom: null, txTo: null, logs: null, shapeReason: 'receipt_null' }
@@ -10508,7 +10534,7 @@ async function buildSwapReconstructionV1(
     swapReconstructionEventsRejected: 0,
     swapReconstructionRejectedReasons: [],
     sampleReconstructedSwaps: [],
-    receiptsRequested: 0, receiptsFetched: 0, receiptsWithLogs: 0, receiptLogsSeen: 0, transferLogsSeen: 0, transferLogsDecoded: 0, transferLogsDecodeFailed: 0, nonTransferLogsSkipped: 0, malformedTransferLogsSkipped: 0, walletInboundLegs: 0, walletOutboundLegs: 0, quoteLegs: 0, reconstructedSwapEventsBuilt: 0, reconstructedSwapEventsMerged: 0, alchemyReconstructedEventsBuilt: 0, alchemyEventsMerged: 0, alchemyEventsEnriched: 0, alchemyDuplicatesSkipped: 0, sampleDecodedTransfers: [], sampleQuoteMatches: [], rejectedBreakdown: {},
+    receiptsRequested: 0, receiptsFetched: 0, receiptsWithLogs: 0, receiptLogsSeen: 0, transferLogsSeen: 0, transferLogsDecoded: 0, transferLogsDecodeFailed: 0, nonTransferLogsSkipped: 0, malformedTransferLogsSkipped: 0, walletInboundLegs: 0, walletOutboundLegs: 0, quoteLegs: 0, reconstructedSwapEventsBuilt: 0, reconstructedSwapEventsMerged: 0, alchemyReconstructedEventsBuilt: 0, alchemyEventsMerged: 0, alchemyEventsEnriched: 0, alchemyDuplicatesSkipped: 0, sampleDecodedTransfers: [], sampleQuoteMatches: [], receiptProofCandidates: [], receiptProofCandidatesByChain: {}, receiptProofCallsByChain: {}, receiptProofNullByChain: {}, receiptProofChainMismatchCount: 0, sampleReceiptProofChainMismatches: [], rejectedBreakdown: {},
   })
 
   if (!alchemyUrl) return { evidenceWithReconstruction: evidenceWithDetection, debug: empty('no_alchemy_url') }
@@ -10518,6 +10544,7 @@ async function buildSwapReconstructionV1(
   const upgradeableSources = new Set<string | undefined>(['historical_price', 'provider_event_usd', 'unavailable', undefined])
   const seenTx = new Set<string>()
   const candidateTxHashes: string[] = []
+  const candidateChainByTxHash = new Map<string, string | null>()
   for (const e of evidenceWithDetection) {
     if (!e.txHash || !e.swapDetection?.isSwapCandidate) continue
     if (e.txFromAddress?.toLowerCase() !== walletLower) continue
@@ -10525,6 +10552,7 @@ async function buildSwapReconstructionV1(
     if (seenTx.has(e.txHash)) continue
     seenTx.add(e.txHash)
     candidateTxHashes.push(e.txHash)
+    candidateChainByTxHash.set(e.txHash.toLowerCase(), (e as any).chain ?? null)
     if (candidateTxHashes.length >= Math.max(0, receiptChecksBudget)) break
   }
 
@@ -10569,10 +10597,33 @@ async function buildSwapReconstructionV1(
   const sampleDecodedTransfers: SwapReconV1Transfer[] = []
   const sampleQuoteMatches: Array<{ txHash: string; contract: string; amountHex: string; direction: string }> = []
   const pricedPatches: Array<{ txHash: string; contract: string; priceUsd: number; reason: string; confidence: 'high' | 'medium' }> = []
+  const receiptProofCandidates: NonNullable<NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['swapReconstructionV1Debug']>['receiptProofCandidates']> = []
+  const receiptProofCandidatesByChain: Record<string, number> = {}
+  const receiptProofCallsByChain: Record<string, number> = {}
+  const receiptProofNullByChain: Record<string, number> = {}
+  let receiptProofChainMismatchCount = 0
+  const sampleReceiptProofChainMismatches: NonNullable<NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['swapReconstructionV1Debug']>['sampleReceiptProofChainMismatches']> = []
 
   for (const txHash of candidateTxHashes) {
+    const txGroup = evidenceWithDetection.filter(e => e.txHash === txHash)
+    const candidateChainRaw = candidateChainByTxHash.get(txHash.toLowerCase()) ?? txGroup.find(e => e.chain)?.chain ?? null
+    const normalizedReceiptChain = normalizeReceiptProofChain(candidateChainRaw) ?? normalizeReceiptProofChain(txGroup[0]?.chain) ?? normalizeReceiptProofChain(alchemyUrl.includes('eth-mainnet') ? 'eth' : alchemyUrl.includes('base-mainnet') ? 'base' : null) ?? 'base'
+    receiptProofCandidatesByChain[normalizedReceiptChain] = (receiptProofCandidatesByChain[normalizedReceiptChain] ?? 0) + 1
+    const receiptRpcUrl = alchemyReceiptRpcUrlForChain(normalizedReceiptChain, alchemyUrl)
+    const rpcChainUsed = receiptRpcUrl?.includes('eth-mainnet') ? 'eth' : receiptRpcUrl?.includes('base-mainnet') || receiptRpcUrl === PUBLIC_BASE_RPC ? 'base' : null
+    if (rpcChainUsed !== normalizedReceiptChain) {
+      receiptProofChainMismatchCount++
+      if (sampleReceiptProofChainMismatches.length < 5) sampleReceiptProofChainMismatches.push({ txHash, candidateChainRaw, normalizedReceiptChain, rpcChainUsed })
+    }
+    const candidateDebug: NonNullable<NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['swapReconstructionV1Debug']>['receiptProofCandidates']>[number] = { txHash, candidateChainRaw, normalizedReceiptChain, rpcChainUsed, receiptStatus: 'unexpected_shape', logCount: 0, transferLogCount: 0, rejectReason: null }
+    if (!receiptRpcUrl) {
+      candidateDebug.rejectReason = 'receipt_rpc_unavailable_for_chain'
+      receiptProofCandidates.push(candidateDebug)
+      bumpRejected('receipt_rpc_unavailable_for_chain')
+      continue
+    }
     const now = Date.now()
-    const cacheKey = `swap_recon_v1:${alchemyUrl.slice(-8)}:${txHash}`
+    const cacheKey = `swap_recon_v1:${normalizedReceiptChain}:${txHash}`
     let decode: SwapReconV1Decode | null = null
     const cached = swapReconV1ReceiptCache.get(cacheKey)
     if (cached && cached.exp > now) {
@@ -10580,16 +10631,25 @@ async function buildSwapReconstructionV1(
       decode = cached.data
     } else {
       try {
-        const receipt = await getSharedTxReceipt(alchemyUrl, txHash)
+        receiptProofCallsByChain[normalizedReceiptChain] = (receiptProofCallsByChain[normalizedReceiptChain] ?? 0) + 1
+        const receipt = await getSharedTxReceipt(receiptRpcUrl, txHash)
         receiptsFetched++
         decode = normalizeAlchemyReceiptShape(receipt, txHash)
         swapReconV1ReceiptCache.set(cacheKey, { data: decode, exp: now + SWAP_RECON_V1_TTL_MS })
       } catch {
+        candidateDebug.receiptStatus = 'failed'
+        candidateDebug.rejectReason = 'receipt_fetch_error'
+        receiptProofCandidates.push(candidateDebug)
         bumpRejected('receipt_fetch_error')
         continue
       }
     }
+    candidateDebug.receiptStatus = receiptStatusFromShapeReason(decode?.shapeReason ?? 'receipt_shape_unexpected')
+    candidateDebug.logCount = Array.isArray(decode?.logs) ? decode!.logs!.length : 0
+    if (candidateDebug.receiptStatus === 'null') receiptProofNullByChain[normalizedReceiptChain] = (receiptProofNullByChain[normalizedReceiptChain] ?? 0) + 1
     if (!decode?.logs || decode.shapeReason !== 'ok') {
+      candidateDebug.rejectReason = decode?.shapeReason ?? 'receipt_shape_unexpected'
+      receiptProofCandidates.push(candidateDebug)
       bumpRejected(decode?.shapeReason ?? 'receipt_shape_unexpected')
       continue
     }
@@ -10597,7 +10657,6 @@ async function buildSwapReconstructionV1(
     if (decode.logs.length > 0) receiptsWithLogs++
     receiptLogsSeen += decode.logs.length
 
-    const txGroup = evidenceWithDetection.filter(e => e.txHash === txHash)
     const symbolByContract = new Map<string, string>()
     for (const e of txGroup) if (e.contract) symbolByContract.set(e.contract.toLowerCase(), e.symbol)
     const chain = txGroup[0]?.chain ?? 'base'
@@ -10617,6 +10676,7 @@ async function buildSwapReconstructionV1(
       transferLogsSeen++
       const decodedLog = decodeSwapReconV1TransferLog(log, decode.txHash ?? txHash)
       if (!decodedLog) { transferLogsDecodeFailed++; malformedTransferLogsSkipped++; continue }
+      candidateDebug.transferLogCount++
       transferLogsDecoded++
       decodedTransfers.push(decodedLog)
       if (sampleDecodedTransfers.length < 5) sampleDecodedTransfers.push(decodedLog)
@@ -10664,6 +10724,7 @@ async function buildSwapReconstructionV1(
       candidateSymbols,
     }
     const pushRejectedSample = (rejectedReason: string) => {
+      if (!receiptProofCandidates.includes(candidateDebug)) { candidateDebug.rejectReason = rejectedReason; receiptProofCandidates.push(candidateDebug) }
       if (sampleReconstructedSwaps.length < 5) {
         sampleReconstructedSwaps.push({
           txHash, chain, timestamp,
@@ -10836,6 +10897,7 @@ async function buildSwapReconstructionV1(
     eventsPromoted++
     if (direction === 'sell') eventsPromotedSell++
     else if (direction === 'buy') eventsPromotedBuy++
+    receiptProofCandidates.push(candidateDebug)
     if (usedNativeBuyQuoteLeg) {
       buyQuoteProofPromoted++
       if (sampleBuyQuoteProofPromotions.length < 5) {
@@ -10913,6 +10975,12 @@ async function buildSwapReconstructionV1(
       alchemyDuplicatesSkipped: 0,
       sampleDecodedTransfers,
       sampleQuoteMatches,
+      receiptProofCandidates,
+      receiptProofCandidatesByChain,
+      receiptProofCallsByChain,
+      receiptProofNullByChain,
+      receiptProofChainMismatchCount,
+      sampleReceiptProofChainMismatches,
       rejectedBreakdown,
     },
   }
@@ -13601,9 +13669,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // with the average_cost_estimate method and prevents valid wallets from returning "unavailable".
   const priceByContract = new Map<string, number>()
   const _normalizeHoldingChainForPrice = (chain: string | null | undefined) => {
-    const c = String(chain ?? '').toLowerCase()
-    if (c === 'ethereum' || c === 'mainnet') return 'eth'
-    return c
+    return normalizeChain(String(chain ?? ''))
   }
   const priceByChainContract = new Map<string, number>()
   for (const h of holdings) {
@@ -14197,7 +14263,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     swapReconstructionEventsPromoted: 0, swapReconstructionEventsPromotedBuy: 0, swapReconstructionEventsPromotedSell: 0,
     swapReconstructionEventsRejected: 0, swapReconstructionRejectedReasons: [],
     sampleReconstructedSwaps: [],
-    receiptsRequested: 0, receiptsFetched: 0, receiptsWithLogs: 0, receiptLogsSeen: 0, transferLogsSeen: 0, transferLogsDecoded: 0, transferLogsDecodeFailed: 0, nonTransferLogsSkipped: 0, malformedTransferLogsSkipped: 0, walletInboundLegs: 0, walletOutboundLegs: 0, quoteLegs: 0, reconstructedSwapEventsBuilt: 0, reconstructedSwapEventsMerged: 0, alchemyReconstructedEventsBuilt: 0, alchemyEventsMerged: 0, alchemyEventsEnriched: 0, alchemyDuplicatesSkipped: 0, sampleDecodedTransfers: [], sampleQuoteMatches: [], rejectedBreakdown: {},
+    receiptsRequested: 0, receiptsFetched: 0, receiptsWithLogs: 0, receiptLogsSeen: 0, transferLogsSeen: 0, transferLogsDecoded: 0, transferLogsDecodeFailed: 0, nonTransferLogsSkipped: 0, malformedTransferLogsSkipped: 0, walletInboundLegs: 0, walletOutboundLegs: 0, quoteLegs: 0, reconstructedSwapEventsBuilt: 0, reconstructedSwapEventsMerged: 0, alchemyReconstructedEventsBuilt: 0, alchemyEventsMerged: 0, alchemyEventsEnriched: 0, alchemyDuplicatesSkipped: 0, sampleDecodedTransfers: [], sampleQuoteMatches: [], receiptProofCandidates: [], receiptProofCandidatesByChain: {}, receiptProofCallsByChain: {}, receiptProofNullByChain: {}, receiptProofChainMismatchCount: 0, sampleReceiptProofChainMismatches: [], rejectedBreakdown: {},
   }
   if (activityRequested && walletSwapSummary.swapCandidateEvents > 0 && _enrichAlchemyUrl) {
     const swapReconResult = await buildSwapReconstructionV1(_pricedEvidence, addrNorm, _enrichAlchemyUrl, _reqPriceCache, priceByContract, scanModeConfig?.receiptChecks ?? SWAP_RECON_V1_MAX_RECEIPTS)
