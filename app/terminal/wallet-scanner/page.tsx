@@ -143,6 +143,22 @@ type OpenPositionPerformanceSummary = {
   } | null
 
 type WalletResult = {
+
+  walletEstimatedPnlRead?: {
+    available: boolean
+    status: 'available' | 'partial' | 'unavailable'
+    confidence: 'low' | 'medium'
+    label: 'Estimated PnL Beta'
+    warning: string
+    realizedEstimateUsd: number | null
+    rawFifoRealizedEstimateUsd: number | null
+    historicalPreviewRealizedEstimateUsd: number | null
+    addedHistoricalPreviewPnlUsd: number | null
+    matchedOpenPositionUnrealizedUsd: number | null
+    totalEstimateUsd: number | null
+    basis: string[]
+    reasons: string[]
+  }
   address: string
   totalValue: number
   holdings: Holding[]
@@ -3325,6 +3341,37 @@ export default function WalletScannerPage() {
                       </div>
                       <p style={{ margin: '14px 0 0', fontSize: '11px', lineHeight: 1.55, color: 'rgba(251,191,36,0.86)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{typeof ph.warning === 'string' ? ph.warning : 'Mark-to-market portfolio movement. Not realized trader PnL.'}</p>
                     </div>
+                  </div>
+                )
+              })()}
+
+              {result.walletEstimatedPnlRead?.available && (() => {
+                const est = result.walletEstimatedPnlRead!
+                const rows = [
+                  ['Raw FIFO estimate', est.rawFifoRealizedEstimateUsd],
+                  ['Historical preview estimate', est.historicalPreviewRealizedEstimateUsd],
+                  ['Matched open-position estimate', est.matchedOpenPositionUnrealizedUsd],
+                  ['Total estimate', est.totalEstimateUsd],
+                ] as const
+                return (
+                  <div className="rounded-2xl border border-amber-400/30 bg-amber-950/20 p-4 shadow-lg shadow-amber-950/10">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="text-xs uppercase tracking-[0.3em] text-amber-200/70">Estimated PnL Beta</div>
+                        <div className="mt-1 text-lg font-semibold text-amber-50">Low confidence estimate</div>
+                      </div>
+                      <span className="rounded-full border border-amber-300/30 px-2 py-1 text-xs font-semibold uppercase text-amber-100">{est.confidence}</span>
+                    </div>
+                    <p className="mt-2 text-sm text-amber-100/80">Low confidence estimate — excluded from score, win rate, and profit skill.</p>
+                    <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                      {rows.map(([label, value]) => (
+                        <div key={label} className="rounded-xl border border-white/10 bg-black/20 p-3">
+                          <div className="text-xs text-white/50">{label}</div>
+                          <div className={`mt-1 text-base font-semibold ${typeof value === 'number' ? value >= 0 ? 'text-emerald-200' : 'text-rose-200' : 'text-white/40'}`}>{typeof value === 'number' ? fmtUSD(value) : 'Not available'}</div>
+                        </div>
+                      ))}
+                    </div>
+                    {est.reasons.length > 0 && <div className="mt-3 text-xs text-amber-100/60">{est.reasons[0]}</div>}
                   </div>
                 )
               })()}
