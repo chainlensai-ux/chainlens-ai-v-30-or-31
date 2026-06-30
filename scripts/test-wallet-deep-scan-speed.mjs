@@ -536,6 +536,35 @@ assert.match(
   'wallet scanner renders a clearly labeled Estimated PnL Beta card with component estimates',
 )
 
+
+assert.match(
+  route,
+  /const openPositionPnlStatus: 'priced' \| 'partial' \| 'estimate_only' \| 'cost_basis_only' = aggregateLocked[\s\S]*\? 'partial'[\s\S]*totalUnrealizedPnlUsd: aggregateLocked \|\| _allMatchedEstimateOnly \? null : totalUnrealizedPnlUsd[\s\S]*aggregateLockedReason/,
+  'route openPositionPerformanceSummary reports partial and null aggregate unrealized PnL when open-token current-price coverage is incomplete',
+)
+assert.match(
+  route,
+  /status: perf\.openPositionPnlStatus === 'cost_basis_only' \? 'cost_basis_only' : 'partial'[\s\S]*matchedTokenCount: perf\.matchedTokenCount[\s\S]*unmatchedTokenCount: perf\.unmatchedTokenCount[\s\S]*matchedUnrealizedPnlUsd: perf\.matchedUnrealizedPnlUsd[\s\S]*aggregateLocked: true[\s\S]*aggregateLockedReason: unmatchedReason/,
+  'walletOpenPositionPnlRead exposes matched partial read counts, matched unrealized estimate, and aggregate lock reason',
+)
+assert.match(
+  snap,
+  /openPosition:\s*\{[\s\S]*status: _walletOpenPositionPnlRead\.status[\s\S]*lockedReason: _walletOpenPositionPnlRead\.status === 'available' \? null : _walletOpenPositionPnlRead\.reason/,
+  'walletApiSourceAudit.openPosition mirrors walletOpenPositionPnlRead status so partial reads stay partial in source audit',
+)
+assert.ok(page.includes('Official PnL locked') && page.includes('Estimated PnL Beta'), 'wallet scanner keeps Estimated PnL Beta separate from the official locked PnL lane')
+assert.match(
+  page,
+  /Open-position PnL locked\/partial[\s\S]*blocked by \{unmatchedOpenSymbols\.join\(', '\)\} missing independent current price/,
+  'wallet scanner labels partial open-position PnL as locked by missing independent current price',
+)
+assert.ok(
+  page.includes('Matched open-position estimate:') &&
+  page.includes('on {matchedCount}/{totalTokenCount} tokens') &&
+  page.includes('Blocked by ${blockedSymbols.join(', ')} missing independent current price'),
+  'wallet scanner shows matched partial open-position estimate coverage and blocker symbols',
+)
+
 console.log('wallet provider gateway checks passed')
 
 // --- ALCHEMY-RECEIPT-RECON-FIX: receipt shapes, log decode debug, and mode caps ---

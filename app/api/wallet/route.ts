@@ -707,12 +707,13 @@ function buildWalletModuleCoverage(snap: any) {
       ? (matchedUnrealizedPnlUsd / matchedOpenCostBasisUsd) * 100
       : null
 
-    const coverageLabel: 'full' | 'partial' | 'cost_basis_only' =
-      matchedTokenCount === perfTokens.length && perfTokens.length > 0 ? 'full'
-      : matchedTokenCount > 0 ? 'partial'
-      : 'cost_basis_only'
-
-    const unmatchedSymbols = unmatchedTokens.map(t => t.symbol)
+    const allTokensMatched = matchedTokenCount === perfTokens.length && perfTokens.length > 0
+    const unmatchedSymbols = unmatchedTokens.map(t => t.symbol).filter(Boolean)
+    const aggregateLocked = !allTokensMatched || totalUnrealizedPnlUsd === null
+    const aggregateLockedReason = aggregateLocked
+      ? `${unmatchedSymbols.join(', ') || 'Some open tokens'} current price was not independently matched; aggregate unrealized PnL locked because partial coverage is not enough.`
+      : null
+    const coverageLabel: 'full' | 'partial' | 'cost_basis_only' = allTokensMatched ? 'full' : 'partial'
 
     // OPEN-POSITION-PNL-HONESTY: if every matched token is priced from a flat/estimate-only source
     // (current ≈ entry), the unrealized PnL is not public-grade — do not present $0/0% as a real
@@ -720,12 +721,15 @@ function buildWalletModuleCoverage(snap: any) {
     // keeping the raw aggregates for debug.
     const _matchedIndependentTokens = matchedTokens.filter(t => !t.priceEstimateOnly)
     const _allMatchedEstimateOnly = matchedTokenCount > 0 && _matchedIndependentTokens.length === 0
-    const openPositionPnlStatus: 'priced' | 'estimate_only' | 'cost_basis_only' =
-      matchedTokenCount === 0 ? 'cost_basis_only' : _allMatchedEstimateOnly ? 'estimate_only' : 'priced'
-    const openPositionPnlReason = openPositionPnlStatus === 'estimate_only'
-      ? 'Current value reuses estimate-only pricing; unrealized PnL is not public-grade.'
-      : openPositionPnlStatus === 'cost_basis_only'
-        ? 'No independent current price matched to open lots; only cost basis is known.'
+    const openPositionPnlStatus: 'priced' | 'partial' | 'estimate_only' | 'cost_basis_only' = aggregateLocked
+      ? 'partial'
+      : _allMatchedEstimateOnly
+        ? 'estimate_only'
+        : 'priced'
+    const openPositionPnlReason = openPositionPnlStatus === 'partial'
+      ? aggregateLockedReason
+      : openPositionPnlStatus === 'estimate_only'
+        ? 'Current value reuses estimate-only pricing; unrealized PnL is not public-grade.'
         : null
 
     return {
@@ -734,9 +738,9 @@ function buildWalletModuleCoverage(snap: any) {
       uniqueTokens: walletOpenPositionSummary.uniqueTokens,
       totalOpenCostBasisUsd: totalCostBasis > 0 ? totalCostBasis : null,
       totalCurrentValueUsd,
-      totalUnrealizedPnlUsd: _allMatchedEstimateOnly ? null : totalUnrealizedPnlUsd,
-      totalUnrealizedPnlPercent: _allMatchedEstimateOnly ? null : totalUnrealizedPnlPercent,
-      allTokensMatched: matchedTokenCount === perfTokens.length,
+      totalUnrealizedPnlUsd: aggregateLocked || _allMatchedEstimateOnly ? null : totalUnrealizedPnlUsd,
+      totalUnrealizedPnlPercent: aggregateLocked || _allMatchedEstimateOnly ? null : totalUnrealizedPnlPercent,
+      allTokensMatched,
       matchedTokenCount,
       unmatchedTokenCount,
       matchedOpenCostBasisUsd: matchedOpenCostBasisUsd > 0 ? matchedOpenCostBasisUsd : null,
@@ -747,6 +751,8 @@ function buildWalletModuleCoverage(snap: any) {
       openPositionPnlReason,
       rawTotalUnrealizedPnlUsd: totalUnrealizedPnlUsd,
       rawMatchedUnrealizedPnlUsd: matchedUnrealizedPnlUsd,
+      aggregateLocked,
+      aggregateLockedReason,
       coverageLabel,
       unmatchedSymbols,
       tokens: perfTokens,
@@ -1511,9 +1517,11 @@ export async function POST(req: Request) {
         const unmatchedSymbols = Array.isArray(perf.unmatchedSymbols)
           ? perf.unmatchedSymbols.filter((symbol: unknown): symbol is string => typeof symbol === 'string' && symbol.length > 0)
           : []
-        const unmatchedReason = unmatchedSymbols.length > 0
-          ? `${unmatchedSymbols.join(', ')} current price was not independently matched, so unrealized PnL is locked.`
-          : 'Current price was not independently matched for the open tokens, so unrealized PnL is locked.'
+        const unmatchedReason = typeof perf.aggregateLockedReason === 'string' && perf.aggregateLockedReason.length > 0
+          ? perf.aggregateLockedReason
+          : unmatchedSymbols.length > 0
+            ? `${unmatchedSymbols.join(', ')} current price was not independently matched; aggregate unrealized PnL locked because partial coverage is not enough.`
+            : 'Current price was not independently matched for the open tokens; aggregate unrealized PnL locked because partial coverage is not enough.'
         snapshot.walletOpenPositionPnlRead = {
           ...snapshot.walletOpenPositionPnlRead,
           status: perf.openPositionPnlStatus === 'cost_basis_only' ? 'cost_basis_only' : 'partial',
@@ -1525,6 +1533,12 @@ export async function POST(req: Request) {
           label: 'Open-position cost basis',
           warning: 'Current value unavailable — not real unrealized PnL.',
           reason: unmatchedReason,
+          matchedTokenCount: perf.matchedTokenCount ?? snapshot.walletOpenPositionPnlRead.matchedTokenCount ?? null,
+          unmatchedTokenCount: perf.unmatchedTokenCount ?? snapshot.walletOpenPositionPnlRead.unmatchedTokenCount ?? null,
+          unmatchedSymbols,
+          matchedUnrealizedPnlUsd: perf.matchedUnrealizedPnlUsd ?? null,
+          aggregateLocked: true,
+          aggregateLockedReason: unmatchedReason,
         }
         snapshot.pnlDisplayMode = 'open_position_only'
         snapshot.pnlDisplayLabel = 'Open-position PnL locked'
