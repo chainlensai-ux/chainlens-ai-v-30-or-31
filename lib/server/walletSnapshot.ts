@@ -1,4 +1,4 @@
-import { fetchMoralisBalances, fetchMoralisTransfers, fetchMoralisTransfersPaginated, fetchMoralisProfitabilitySummary, isUsableProviderPnlSummary, type MoralisFetchResult, type MoralisChain, type MoralisTransferItem, type MoralisProfitabilitySummary } from './moralis'
+import { fetchMoralisBalances, fetchMoralisTransfers, fetchMoralisTransfersPaginated, fetchMoralisProfitabilitySummary, fetchMoralisHistoricalTokenPrice, isUsableProviderPnlSummary, type MoralisFetchResult, type MoralisChain, type MoralisTransferItem, type MoralisProfitabilitySummary } from './moralis'
 import { computeWalletProfile, type WalletProfile } from './walletIdentity'
 import { canUseWalletProviderCall, createWalletProviderCallAudit, recordWalletProviderCall, type WalletProviderCallRequest, type WalletProviderPurpose } from './walletProviders'
 
@@ -3827,7 +3827,7 @@ async function fetchGoldrushBalances(address: string, chainName: string, apiKey:
 export type WalletSwapDetection = {
   isSwapCandidate: boolean
   confidence: 'high' | 'medium' | 'low'
-  eventKind: 'swap_candidate' | 'transfer' | 'airdrop_candidate' | 'bridge_candidate' | 'contract_interaction' | 'unknown' | 'recovered_swap_context'
+  eventKind: 'swap_candidate' | 'transfer' | 'airdrop_candidate' | 'bridge_candidate' | 'contract_interaction' | 'lp_event' | 'unknown' | 'recovered_swap_context'
   reason: string
   matchedProtocol: string | null
   matchedAddress: string | null
@@ -3835,6 +3835,11 @@ export type WalletSwapDetection = {
   // FIFO-RECON-FIX-1: marks swap candidates inferred purely from same-tx wallet balance
   // deltas (quote leg in/out + token leg in/out), not a router label. Additive/optional.
   reconstructionMethod?: 'tx_balance_delta'
+}
+
+function isLikelyLpTokenEvent(e: Pick<WalletTxEvidence, 'symbol' | 'contract'>): boolean {
+  const symbol = (e.symbol ?? '').toUpperCase()
+  return /\b(LP|UNI-V2|UNI-V3|SLP|AERO-LP|CL|POOL|POSITION)\b/.test(symbol) || /-\s*LP$|\/LP$/.test(symbol)
 }
 
 export type WalletTxEvidence = {
@@ -6297,8 +6302,19 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
     const thisContractLabel = KNOWN_STABLE_WETH_CONTRACTS[e.contract?.toLowerCase() ?? ''] ?? null
 
     let detection: WalletSwapDetection
+    const txHasLpTokenMovement = ctx.group.some(isLikelyLpTokenEvent)
+    const lpAddOrRemoveShape = txHasLpTokenMovement && hasInboundOutbound && hasMultipleDistinctTokens
 
-    if (txToKnownRouter && walletIsInitiator) {
+    if (lpAddOrRemoveShape) {
+      // LP adds/removes are liquidity accounting, not realized trades. If allowed through FIFO,
+      // inbound LP tokens can create false BUY cost basis and outbound underlying legs can create
+      // false SELL realized PnL. Quarantine the whole tx deterministically; do not invent a swap.
+      detection = {
+        isSwapCandidate: false, confidence: 'high', eventKind: 'lp_event',
+        reason: 'Liquidity add/remove shape detected (LP token movement plus paired underlying legs) — excluded from cost basis and realized PnL',
+        matchedProtocol: txRouterProtocol, matchedAddress: ctx.txToAddr,
+      }
+    } else if (txToKnownRouter && walletIsInitiator) {
       // High confidence: wallet called a known swap router directly
       detection = {
         isSwapCandidate: true, confidence: 'high', eventKind: 'swap_candidate',
@@ -7382,7 +7398,7 @@ function buildFifoLotEngine(
     // events (see buildSwapDetection), so this gate already excludes non-swap legs from cost
     // basis. Kept as an explicit, named check (rather than relying only on the upstream flag)
     // so an airdrop/rebate leg can never enter FIFO even if eventKind classification changes.
-    if (!e.swapDetection?.isSwapCandidate || e.swapDetection.eventKind === 'airdrop_candidate') continue
+    if (!e.swapDetection?.isSwapCandidate || e.swapDetection.eventKind === 'airdrop_candidate' || e.swapDetection.eventKind === 'lp_event') continue
     if (e.direction === 'unknown') { skippedUnknownSide++; continue }
     if (e.priceAtTime?.status !== 'priced' || !e.priceAtTime.priceUsd || !isFinite(e.priceAtTime.priceUsd) || e.priceAtTime.priceUsd <= 0) { skippedUnpricedEvents++; continue }
     // PHASE3-FIX-1: validate the canonical (raw/decimals-derived) amount, not the provider's
@@ -7458,6 +7474,41 @@ function buildFifoLotEngine(
       }
     }
     eligible = dedupedEligible
+  }
+
+  // MULTIHOP-MERGE-FIX: providers can return a single routed/aggregator swap as several
+  // same-tx fragments for the same wallet-side token and direction. FIFO should see one BUY or
+  // one SELL per token per transaction, not a stack of partial path legs that can orphan cost
+  // basis. This only merges identical token+direction economic legs with the same tx hash and
+  // preserves partial fills across different transactions.
+  {
+    const merged = new Map<string, WalletTxEvidence>()
+    const order: string[] = []
+    for (const e of eligible) {
+      const key = `${normalizeChain(e.chain)}:${(e.txHash ?? '').toLowerCase()}:${e.contract.toLowerCase()}:${e.direction}:${e.tokenDecimals ?? 'NA'}`
+      const amount = canonicalFifoAmount(e)
+      const existing = merged.get(key)
+      if (!existing) {
+        merged.set(key, e)
+        order.push(key)
+        continue
+      }
+      const existingAmount = canonicalFifoAmount(existing)
+      const totalAmount = existingAmount + amount
+      const existingPrice = existing.priceAtTime?.status === 'priced' ? existing.priceAtTime.priceUsd ?? 0 : 0
+      const nextPrice = e.priceAtTime?.status === 'priced' ? e.priceAtTime.priceUsd ?? 0 : 0
+      const weightedPrice = totalAmount > 0 ? ((existingAmount * existingPrice) + (amount * nextPrice)) / totalAmount : existingPrice
+      merged.set(key, {
+        ...existing,
+        amount: totalAmount,
+        amountRaw: null,
+        usdValue: (existing.usdValue ?? 0) + (e.usdValue ?? 0) || null,
+        priceAtTime: existing.priceAtTime?.status === 'priced'
+          ? { ...existing.priceAtTime, priceUsd: weightedPrice, reason: `${existing.priceAtTime.reason}; merged same-tx multi-hop fragments` }
+          : existing.priceAtTime,
+      })
+    }
+    eligible = order.map(k => merged.get(k)!).filter(Boolean)
   }
 
   const pricedSwapEvents = eligible.length
@@ -9226,6 +9277,21 @@ async function buildPriceAtTimeEvidence(
       return priced(e, histResult.priceUsd, 'historical_price', 'medium', `Historical token price from on-chain pricing data`)
     }
     skippedHistoricalUnavailable++
+
+    // PRICE-FALLBACK-FIX: GoldRush historical pricing is the primary deterministic source, but
+    // missing entry/exit priceAtTime is the exact blocker that makes otherwise reconstructed
+    // BUY/SELL lots disappear. Before dropping to low-confidence public fallbacks/current
+    // holding estimates, ask Moralis for the same token/day. This does not override existing
+    // prices, uses the event's own chain+timestamp, and remains source:'historical_price' so
+    // FIFO can compute PnL while diagnostics still show the fallback reason.
+    const moralisHist = await fetchMoralisHistoricalTokenPrice(e.contract, e.chain, e.timestamp)
+    if (moralisHist.attempted) providerAttempts++
+    if (moralisHist.cacheHit) cacheHits++
+    if (moralisHist.attempted && !moralisHist.usable) providerErrors++
+    if (moralisHist.priceUsd !== null) {
+      historicalPricePricedEvents++
+      return priced(e, moralisHist.priceUsd, 'historical_price', 'medium', `Moralis historical token price fallback after GoldRush miss (${moralisHist.reason || 'priced'})`)
+    }
 
     // FALLBACK-PRICEATTIME-1: GoldRush/provider historical price (tiers 1-2 above) is null —
     // try the tier-3 fallback (Dexscreener/Coingecko) before falling through to the current-
