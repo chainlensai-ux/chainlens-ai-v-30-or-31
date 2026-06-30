@@ -357,6 +357,34 @@ assert.match(
   'recovery recommendation remains true when excluded lots or missing cost basis still block public PnL',
 )
 
+
+
+// Zero-coverage high-value current-holdings-only wallets must not recommend targeted FIFO recovery
+// or present a $0 transfer-flow PnL headline when no wallet-side sell/open-lot/acquisition path exists.
+assert.ok(snap.includes("const _targetedRecoveryEligible = Boolean("), 'wallet recovery recommendation uses a canonical targeted recovery eligibility gate')
+assert.ok(snap.includes("const _recoveryBlockedReasonCanonical = _targetedRecoveryEligible ? null : 'no_sell_or_acquisition_path'"), 'top-holdings-only wallets expose the canonical no-sell/acquisition-path block reason')
+assert.match(
+  snap,
+  /if \(!_targetedRecoveryEligible\) \{[\s\S]*mode: 'not_recommended',[\s\S]*reason: 'no_sell_or_acquisition_path',[\s\S]*Current holdings exist, but ChainLens has no wallet-side sell\/open-lot\/acquisition path to recover FIFO cost basis safely\./,
+  'high-value current-top-holdings-only wallets do not receive targeted token recovery recommendations',
+)
+assert.doesNotMatch(
+  snap,
+  /reason: _missingCostBasisGuardActive \? 'missing_cost_basis_guard_active_targeted_only' : 'missing_cost_basis_for_top_value_tokens',[\s\S]*if \(!_targetedRecoveryEligible\)/,
+  'top-holdings-only fallback cannot bypass targetedRecoveryEligible',
+)
+assert.ok(snap.includes("const _zeroCoverageTransferFlowEstimateSuppressed = Number((estimatedPnl as any)?.coveragePercent ?? 0) <= 0"), 'zero-coverage transfer-flow estimates are explicitly suppressed')
+assert.match(
+  snap,
+  /_zeroCoverageTransferFlowEstimateSuppressed[\s\S]*\? 'official_locked'[\s\S]*label: 'Official PnL locked'[\s\S]*valueUsd: null[\s\S]*zero-coverage transfer-flow estimate is not shown/,
+  'zero-coverage estimated transfer-flow PnL displays as official locked with no $0 headline',
+)
+assert.match(
+  snap,
+  /realizedPnlUsd: _walletIsContractLikeForPnl \|\| _zeroCoverageTransferFlowEstimateSuppressed \? null/,
+  'suppressed zero-coverage transfer-flow realized PnL is null',
+)
+
 console.log('wallet budget-reservation and moralis-transfer-leak fix checks passed')
 
 // RECOVERY-EXEC-FIX-1 checks: the targeted synthetic-target-extra recovery pass must actually be

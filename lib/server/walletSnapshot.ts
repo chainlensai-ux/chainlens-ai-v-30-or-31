@@ -463,7 +463,7 @@ export type WalletSnapshot = {
     reasons: string[]
   }
   walletPnlRead?: {
-    displayMode: 'official_realized' | 'limited_sample' | 'open_position_only' | 'estimated_transfer_flow_only' | 'raw_reconstruction_locked' | 'activity_only' | 'not_applicable' | 'provider_summary' | 'official_locked_estimated_available'
+    displayMode: 'official_realized' | 'official_locked' | 'limited_sample' | 'open_position_only' | 'estimated_transfer_flow_only' | 'raw_reconstruction_locked' | 'activity_only' | 'not_applicable' | 'provider_summary' | 'official_locked_estimated_available'
     headlineLabel: string
     headlineValueUsd: number | null
     headlineWarning: string | null
@@ -481,6 +481,7 @@ export type WalletSnapshot = {
       label: 'Estimated transfer-flow PnL'
       warning: 'Estimated only — not verified from matched swap cost basis.'
       excludedFrom: ['official_realized_pnl', 'win_rate', 'profit_skill', 'wallet_score', 'verified_pnl']
+      reason?: string
     }
     estimatedBeta?: NonNullable<WalletSnapshot['walletEstimatedPnlRead']>
     rawReconstruction: {
@@ -1034,7 +1035,7 @@ export type WalletSnapshot = {
   pnlQualityReason?: string
   walletRecoveryRecommendation?: {
     recommended: boolean
-    mode: 'targeted_token_recovery' | 'targeted_recovery_attempted' | 'already_attempted_full_recovery' | 'attempted_light' | 'attempted_light_no_new_candidates' | 'attempted_provider_failed' | 'skipped_cost_guard' | 'skipped_micro_wallet' | 'none'
+    mode: 'targeted_token_recovery' | 'targeted_recovery_attempted' | 'not_recommended' | 'already_attempted_full_recovery' | 'attempted_light' | 'attempted_light_no_new_candidates' | 'attempted_provider_failed' | 'skipped_cost_guard' | 'skipped_micro_wallet' | 'none'
     targetTokens: Array<{ contract: string; symbol: string; chain: string; estimatedUsd: number }>
     reason: string
     // Human-readable explanation of the reason code, kept honest about whether the historical
@@ -17429,12 +17430,30 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     historicalRecoverySkippedBecauseNoBudgetAfterPricing: _recoveryReservationNeeded && _syntheticTargetExtraCreditUsed === 0 && _sharedHistoricalBudgetRemaining() <= 0,
   }
   _perfWalletTimings.recoveryPostProcessingMs += Date.now() - _recoveryPostProcessingStartedAt
+  const _hasUnmatchedSellLotsForTargetedRecovery = (_lotEngineDebug.unmatchedSells ?? 0) > 0
+  const _hasSyntheticCostBasisLotsForTargetedRecovery = _syntheticClosedLots.length > 0
+  const _hasOpenLotsNeedingTargetedRecovery = (walletLotSummary.openedLots ?? 0) > 0 || (_lotEngineDebug.openedLots ?? 0) > 0
+  const _hasWalletSideSwapCandidatesMissingQuoteOrCost = (walletSwapSummary.swapCandidateEvents ?? 0) > 0 && (_performanceClosedLotsFinal.length === 0 || _syntheticClosedLots.length > 0 || _excludedClosedLotsFinal > 0)
+  const _historicalPreviewHasCandidateSellOrAcquisitionPath = Boolean(
+    walletHistoricalCandidateSummary.readyForHistoricalFifoPreview ||
+    ((walletHistoricalCandidateSummary.historicalSwapCandidates ?? 0) > 0 && (walletHistoricalCandidateSummary.newSwapCandidateEvents ?? 0) > 0) ||
+    (_acquisitionRecoveryDebug.acquisitionRecoveryAttempted && _acquisitionRecoveryDebug.acquisitionQuoteLegVerified > 0)
+  )
+  const _targetedRecoveryEligible = Boolean(
+    _hasUnmatchedSellLotsForTargetedRecovery ||
+    _hasSyntheticCostBasisLotsForTargetedRecovery ||
+    _hasOpenLotsNeedingTargetedRecovery ||
+    _hasWalletSideSwapCandidatesMissingQuoteOrCost ||
+    _historicalPreviewHasCandidateSellOrAcquisitionPath
+  )
+  const _recoveryBlockedReasonCanonical = _targetedRecoveryEligible ? null : 'no_sell_or_acquisition_path'
+
   const _historicalScanDebugBuildStartedAt = Date.now()
   const _walletHistoricalScanDebug = {
     requested: historicalCoverage || _acquisitionRecoveryEligible,
     // WALLET-NO-PNL-UX-1: token-contract/treasury/distributor-like addresses are not trader
     // wallets — never report PnL-recovery eligibility for them, regardless of cost-guard state.
-    eligible: (walletFacts.sourceClassification?.walletAddressType !== 'token_contract_like' && walletFacts.sourceClassification?.walletAddressType !== 'treasury_or_distributor_like') && (_historicalEligible || _historicalNotRunDueToCostGuard || _acquisitionRecoveryEligible),
+    eligible: (walletFacts.sourceClassification?.walletAddressType !== 'token_contract_like' && walletFacts.sourceClassification?.walletAddressType !== 'treasury_or_distributor_like') && _targetedRecoveryEligible && (_historicalEligible || _historicalNotRunDueToCostGuard || _acquisitionRecoveryEligible),
     notRunDueToCostGuard: _historicalNotRunDueToCostGuard,
     eligibilityReasons: _eligibilityReasons,
     walletValueTier: _walletValueTier,
@@ -17476,7 +17495,9 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     // instead, even though the original GoldRush-coverage gate above remains unchanged for other wallets.
     stopReason: _historicalCoverageDebug?.stoppedReason
       ?? (_acquisitionRecoveryEligible ? (_historicalBudgetCapHit ? 'budget_cap' : _historicalNotRunDueToCostGuard ? 'budget_cap' : 'budget_cap') : (_skipReasons[0] ?? null)),
-    skippedReasons: _acquisitionRecoveryEligible
+    skippedReasons: _recoveryBlockedReasonCanonical
+      ? Array.from(new Set([..._skipReasons, 'no_sell_path_acquisition_recovery_skipped']))
+      : _acquisitionRecoveryEligible
       ? _skipReasons.filter(r => r !== 'no_swap_or_lot_evidence')
       : _skipReasons,
     sampleTargets: _rankedHistoricalTargets.slice(0, 5),
@@ -18126,6 +18147,16 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     }
     if (targetTokens.length === 0) {
       return { recommended: false, mode: 'none', targetTokens: [], reason: 'no_useful_token_contracts', estimatedExtraPages: 0 }
+    }
+    if (!_targetedRecoveryEligible) {
+      return {
+        recommended: false,
+        mode: 'not_recommended',
+        targetTokens,
+        reason: 'no_sell_or_acquisition_path',
+        detail: 'Current holdings exist, but ChainLens has no wallet-side sell/open-lot/acquisition path to recover FIFO cost basis safely.',
+        estimatedExtraPages: 0,
+      }
     }
     if (_realClosedLotsCount > 0) {
       const _hasExcludedLots = (promotedTradeStatsSummary.syntheticClosedLotsExcluded ?? 0) > 0 || (promotedTradeStatsSummary.estimateOnlyClosedLots ?? 0) > 0
@@ -19411,7 +19442,13 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     }
     if (_walletEstimatedPnlRead.available) snapshot.walletEstimatedPnlRead = _walletEstimatedPnlRead
     const _pnlReadEstimatedBetaAvailable = !_walletIsContractLikeForPnl && !_pnlReadOfficialAvailable && _walletEstimatedPnlRead.available
-    const _pnlReadEstimatedTransferAvailable = !_walletIsContractLikeForPnl && !_pnlReadOfficialAvailable && !_pnlReadLimitedSampleAvailable && !_pnlReadOpenPositionAvailable && !_pnlReadEstimatedBetaAvailable
+    const _zeroCoverageTransferFlowEstimateSuppressed = Number((estimatedPnl as any)?.coveragePercent ?? 0) <= 0 || (
+      _rawMatchedClosedLotsFinal === 0 &&
+      (walletLotSummary.openedLots ?? 0) === 0 &&
+      (_lotEngineDebug.unmatchedSells ?? 0) === 0 &&
+      (walletEvidenceSummary.walletSideEvents ?? 0) === 0
+    )
+    const _pnlReadEstimatedTransferAvailable = !_zeroCoverageTransferFlowEstimateSuppressed && !_walletIsContractLikeForPnl && !_pnlReadOfficialAvailable && !_pnlReadLimitedSampleAvailable && !_pnlReadOpenPositionAvailable && !_pnlReadEstimatedBetaAvailable
       && (Number.isFinite((estimatedPnl as any)?.realizedPnlUsd) || Number.isFinite((estimatedPnl as any)?.unrealizedPnlUsd))
       && _pnlReadIntegrityInvalid
     const _pnlReadRawReconstructionOnly = !_pnlReadOfficialAvailable && !_pnlReadLimitedSampleAvailable && !_pnlReadOpenPositionAvailable && !_pnlReadEstimatedTransferAvailable && !_pnlReadEstimatedBetaAvailable && _rawMatchedClosedLotsFinal > 0
@@ -19429,7 +19466,9 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
               ? 'estimated_transfer_flow_only'
               : _pnlReadRawReconstructionOnly
                 ? 'raw_reconstruction_locked'
-                : 'activity_only'
+                : _zeroCoverageTransferFlowEstimateSuppressed
+                  ? 'official_locked'
+                  : 'activity_only'
 
     const _pnlReadTopFailureReasons = Array.from(new Set([
       ..._syntheticLotsAfterSourceLots.some(l => l.evidence?.entrySource === 'synthetic') ? ['synthetic_cost_basis'] : [],
@@ -19455,6 +19494,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
             ? { label: 'Official PnL locked — estimated beta available', valueUsd: null, warning: _walletEstimatedPnlRead.warning }
           : _pnlReadDisplayMode === 'estimated_transfer_flow_only'
             ? { label: 'Estimated transfer-flow PnL', valueUsd: (estimatedPnl as any)?.realizedPnlUsd ?? null, warning: 'Estimated only — not verified from matched swap cost basis.' }
+            : _pnlReadDisplayMode === 'official_locked'
+              ? { label: 'Official PnL locked', valueUsd: null, warning: 'No wallet-side buy/sell lots available; zero-coverage transfer-flow estimate is not shown.' }
             : _pnlReadDisplayMode === 'raw_reconstruction_locked'
               ? { label: 'Raw lots found — locked', valueUsd: null, warning: _pnlReadLockedReason }
               : { label: 'Activity found — no PnL yet', valueUsd: null, warning: null }
@@ -19485,8 +19526,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       estimatedBeta: _walletEstimatedPnlRead,
       estimatedTransferFlow: {
         available: _pnlReadEstimatedTransferAvailable,
-        realizedPnlUsd: _walletIsContractLikeForPnl ? null : ((estimatedPnl as any)?.realizedPnlUsd ?? null),
-        unrealizedPnlUsd: _walletIsContractLikeForPnl ? null : ((estimatedPnl as any)?.unrealizedPnlUsd ?? null),
+        realizedPnlUsd: _walletIsContractLikeForPnl || _zeroCoverageTransferFlowEstimateSuppressed ? null : ((estimatedPnl as any)?.realizedPnlUsd ?? null),
+        unrealizedPnlUsd: _walletIsContractLikeForPnl || _zeroCoverageTransferFlowEstimateSuppressed ? null : ((estimatedPnl as any)?.unrealizedPnlUsd ?? null),
         coveragePercent: (estimatedPnl as any)?.coveragePercent ?? null,
         confidence: (estimatedPnl as any)?.confidence ?? null,
         source: (estimatedPnl as any)?.source ?? null,
@@ -19494,6 +19535,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         label: 'Estimated transfer-flow PnL',
         warning: 'Estimated only — not verified from matched swap cost basis.',
         excludedFrom: ['official_realized_pnl', 'win_rate', 'profit_skill', 'wallet_score', 'verified_pnl'],
+        reason: _zeroCoverageTransferFlowEstimateSuppressed ? 'No wallet-side buy/sell lots available; zero-coverage transfer-flow estimate is not shown.' : '',
       },
       rawReconstruction: {
         rawClosedLots: _rawMatchedClosedLotsFinal,

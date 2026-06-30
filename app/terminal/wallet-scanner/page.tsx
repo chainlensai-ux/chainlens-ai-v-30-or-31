@@ -327,7 +327,7 @@ type WalletResult = {
     usedForTraderPnLRead: boolean
   }
   walletPnlRead?: {
-    displayMode: 'official_realized' | 'limited_sample' | 'open_position_only' | 'estimated_transfer_flow_only' | 'raw_reconstruction_locked' | 'activity_only' | 'provider_summary'
+    displayMode: 'official_realized' | 'official_locked' | 'limited_sample' | 'open_position_only' | 'estimated_transfer_flow_only' | 'raw_reconstruction_locked' | 'activity_only' | 'provider_summary' | 'official_locked_estimated_available'
     headlineLabel: string
     headlineValueUsd: number | null
     headlineWarning: string | null
@@ -345,6 +345,7 @@ type WalletResult = {
       label: 'Estimated transfer-flow PnL'
       warning: string
       excludedFrom: string[]
+      reason?: string
     }
     rawReconstruction: {
       rawClosedLots: number
@@ -394,7 +395,7 @@ type WalletResult = {
   }
   walletRecoveryRecommendation?: {
     recommended: boolean
-    mode: 'targeted_token_recovery' | 'targeted_recovery_attempted' | 'attempted_light' | 'attempted_provider_failed' | 'skipped_cost_guard' | 'skipped_micro_wallet' | 'none'
+    mode: 'targeted_token_recovery' | 'targeted_recovery_attempted' | 'not_recommended' | 'attempted_light' | 'attempted_provider_failed' | 'skipped_cost_guard' | 'skipped_micro_wallet' | 'none'
     targetTokens: Array<{ contract: string; symbol: string; chain: string; estimatedUsd: number }>
     reason: string
     estimatedExtraPages: number
@@ -3131,6 +3132,8 @@ export default function WalletScannerPage() {
                 const fmtUsd = (v: number | null) => v === null ? null : `${v >= 0 ? '+' : ''}$${Math.abs(v).toLocaleString(undefined, { maximumFractionDigits: 0 })}`
                 const modeCopy: Record<typeof pr.displayMode, { title: string; body: string }> = {
                   official_realized: { title: 'Realized PnL', body: 'Verified realized PnL from matched closed lots.' },
+                  official_locked: { title: 'Official PnL locked', body: pr.estimatedTransferFlow.reason || pr.headlineWarning || 'Official PnL is locked.' },
+                  official_locked_estimated_available: { title: 'Official PnL locked — estimated beta available', body: pr.headlineWarning || 'Estimated beta is available but excluded from verified PnL.' },
                   limited_sample: { title: 'Limited public PnL sample', body: pr.limitedSample.reason || 'Limited sample — not enough to prove profit skill.' },
                   open_position_only: { title: pr.headlineValueUsd === null ? 'Open-position PnL locked' : 'Open-position PnL', body: pr.openPosition.reason || 'Unrealized only — open positions, not a closed trade result.' },
                   estimated_transfer_flow_only: { title: 'Estimated transfer-flow PnL', body: 'Estimated only — not verified from matched swap cost basis.' },
