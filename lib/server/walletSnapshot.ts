@@ -1053,7 +1053,7 @@ export type WalletSnapshot = {
     // was spent in an order beyond the engine's control, which is no longer true now that recovery
     // budget is reserved before the broad pricing pass runs. These four reasons are the exhaustive,
     // honest set for why a reserved-but-recommended recovery still didn't run this pass.
-    recoveryBlockedReason?: 'recovery_budget_reserved_but_provider_unavailable' | 'recovery_budget_reserved_but_no_targets' | 'recovery_budget_reserved_but_no_pages_allowed' | 'hard_cap_reached_before_reservation' | null
+    recoveryBlockedReason?: 'recovery_budget_reserved_but_provider_unavailable' | 'recovery_budget_reserved_but_no_targets' | 'recovery_budget_reserved_but_no_pages_allowed' | 'hard_cap_reached_before_reservation' | 'reservation_failed_hard_cap_already_consumed_by_pricing' | null
   }
   // WALLET-NO-PNL-UX-1/2: honest, specific explanation of why a wallet has no trader PnL, set
   // either because the address itself isn't a trader (non_trader_address_type) or because a
@@ -14107,8 +14107,28 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   tokenMeter.startTokenMeter('priceInference')
   const _pricingStartedAt = Date.now()
   tokenMeter.measure('priceInference', _swapEvidenceWithDetection)
-  const _prePricingRecoveryReserveCredits = deepScan && historicalCoverage && walletScanBudget?.adminOverrideUsed !== true
-    ? Math.max(0, Math.min(scanModeConfig?.targetedRecoveryPages ?? 0, scanModeConfig?.hardCapCredits ?? 18))
+  const _adminOverrideUsed = walletScanBudget?.adminOverrideUsed === true
+  const _tierTarget = _walletValueTier === 'micro' ? 6 : _walletValueTier === 'small' ? 12 : 15
+  const _totalCreditTarget = scanModeConfig?.targetCredits ?? (_adminOverrideUsed ? (walletScanBudget?.totalCreditTarget ?? 15) : Math.min(walletScanBudget?.totalCreditTarget ?? _tierTarget, _tierTarget))
+  const _totalCreditHardCap = scanModeConfig?.hardCapCredits ?? (_adminOverrideUsed ? (walletScanBudget?.totalCreditHardCap ?? 18) : Math.min(walletScanBudget?.totalCreditHardCap ?? 18, _walletValueTier === 'micro' ? 6 : 18))
+  const _prePricingKnownTargetContracts = new Set<string>()
+  for (const h of holdings) {
+    const c = (h.contract ?? '').toLowerCase()
+    if (/^0x[a-f0-9]{40}$/.test(c) && (h.value ?? 0) > 0) _prePricingKnownTargetContracts.add(c)
+  }
+  for (const ev of _swapEvidenceWithDetection) {
+    if (!ev.swapDetection?.isSwapCandidate) continue
+    const c = (ev.contract ?? '').toLowerCase()
+    if (/^0x[a-f0-9]{40}$/.test(c)) _prePricingKnownTargetContracts.add(c)
+  }
+  const _prePricingRecoveryEligible = deepScan && historicalCoverage && !_adminOverrideUsed &&
+    _walletValueTier === 'high_value' &&
+    (scanModeConfig?.targetedRecoveryPages ?? 0) > 0 &&
+    _prePricingKnownTargetContracts.size > 0 &&
+    (walletSwapSummary.swapCandidateEvents > 0 || holdings.some(h => (h.value ?? 0) >= 100))
+  const _prePricingCreditsAlreadyUsed = _apiCallLog.reduce((s, e) => s + (e.cacheHit || e.duplicate ? 0 : e.credits), 0)
+  const _prePricingRecoveryReserveCredits = _prePricingRecoveryEligible
+    ? Math.max(0, Math.min(scanModeConfig?.targetedRecoveryPages ?? 1, _totalCreditHardCap - _prePricingCreditsAlreadyUsed))
     : 0
   let { evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug, budgetDebug: _priceBudgetDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache, priceByContract, totalValue, scanModeConfig?.priceAttempts ?? (historicalCoverage ? 6 : null), deepScan, _prePricingRecoveryReserveCredits)
   // Track base evidence historical price calls
@@ -14124,10 +14144,6 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // re-price, broad coverage pages, synthetic-target extra pages, FIFO preview pricing) consults
   // and decrements from — replacing the previous pattern where each path independently recomputed
   // `hardCap - creditsBeforeHistorical` with no visibility into what sibling paths had already spent.
-  const _adminOverrideUsed = walletScanBudget?.adminOverrideUsed === true
-  const _tierTarget = _walletValueTier === 'micro' ? 6 : _walletValueTier === 'small' ? 12 : 15
-  const _totalCreditTarget = scanModeConfig?.targetCredits ?? (_adminOverrideUsed ? (walletScanBudget?.totalCreditTarget ?? 15) : Math.min(walletScanBudget?.totalCreditTarget ?? _tierTarget, _tierTarget))
-  const _totalCreditHardCap = scanModeConfig?.hardCapCredits ?? (_adminOverrideUsed ? (walletScanBudget?.totalCreditHardCap ?? 18) : Math.min(walletScanBudget?.totalCreditHardCap ?? 18, _walletValueTier === 'micro' ? 6 : 18))
   const _portfolioCreditsUsed = 1
   const _activityCreditsUsed = activityRequested ? 1 : 0
   const _pricingCreditsUsed = _priceBudgetDebug.finalPriceAttempts ?? _priceAtTimeDebug.priceAttempts ?? 0
@@ -15145,20 +15161,22 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // point, so this uses early proxy signals already available: known synthetic-lot targets plus "no
   // real-backed evidence yet" stands in for "recovery is needed and has real targets".
   const _highValueNeedsMorePublicLots = _walletValueTier === 'high_value' && _realBackedClosedLotsCountEarly < 10
-  const _recoveryReservationNeeded = deepScan && !_adminOverrideUsed && (
+  const _recoveryReservationNeeded = _prePricingRecoveryEligible || (deepScan && !_adminOverrideUsed && (
     _syntheticLotTokenTargets.length > 0 ||
     (_lotEngineDebug.unmatchedSells ?? 0) > 0 ||
     _highValueNeedsMorePublicLots
-  )
-  const _recoveryReservedCredits = _recoveryReservationNeeded
-    ? Math.max(0, Math.min(scanModeConfig?.targetedRecoveryPages ?? 1, Math.max(1, _syntheticLotTokenTargets.length || ((_lotEngineDebug.unmatchedSells ?? 0) > 0 ? 1 : 0) || (_highValueNeedsMorePublicLots ? 1 : 0)), _sharedHistoricalBudgetRemaining() + _prePricingRecoveryReserveCredits))
-    : 0
+  ))
+  const _recoveryReservedCredits = _prePricingRecoveryReserveCredits > 0
+    ? _prePricingRecoveryReserveCredits
+    : _recoveryReservationNeeded
+      ? Math.max(0, Math.min(scanModeConfig?.targetedRecoveryPages ?? 1, Math.max(1, _syntheticLotTokenTargets.length || ((_lotEngineDebug.unmatchedSells ?? 0) > 0 ? 1 : 0) || (_highValueNeedsMorePublicLots ? 1 : 0)), _sharedHistoricalBudgetRemaining()))
+      : 0
   const _recoveryBudgetReserved = _recoveryReservedCredits > 0
   const _recoveryReservationReason = !_recoveryReservationNeeded
     ? 'recovery_budget_reserved_but_no_targets'
     : _recoveryBudgetReserved
-      ? 'reserved_for_targeted_recovery'
-      : 'hard_cap_reached_before_reservation'
+      ? 'eligible_before_pricing'
+      : (_prePricingRecoveryEligible ? 'reservation_failed_hard_cap_already_consumed_by_pricing' : 'hard_cap_reached_before_reservation')
   // Only the broad/unscoped pass below reads from this reduced view of the shared budget — the
   // synthetic-target-extra and MORALIS-MISSING-BUY-RECOVERY paths further down keep calling the real
   // _sharedHistoricalBudgetRemaining() directly, so the reservation actually protects credits for
@@ -18123,16 +18141,16 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         // BUDGET-RESERVATION-FIX-1: 'hard_cap_reached_after_pricing' was dishonest about WHY recovery
         // didn't run — recovery budget is now reserved before the broad pricing pass, so when the cap
         // is still hit, attribute it to the specific reservation outcome instead.
-        const _recoveryBlockedReasonHonest: 'recovery_budget_reserved_but_provider_unavailable' | 'recovery_budget_reserved_but_no_targets' | 'recovery_budget_reserved_but_no_pages_allowed' | 'hard_cap_reached_before_reservation' | null =
+        const _recoveryBlockedReasonHonest: 'recovery_budget_reserved_but_provider_unavailable' | 'recovery_budget_reserved_but_no_targets' | 'recovery_budget_reserved_but_no_pages_allowed' | 'hard_cap_reached_before_reservation' | 'reservation_failed_hard_cap_already_consumed_by_pricing' | null =
           !_hardCapHitFinal ? null
           : !_recoveryReservationNeeded ? 'recovery_budget_reserved_but_no_targets'
-          : !_recoveryBudgetReserved ? 'hard_cap_reached_before_reservation'
+          : !_recoveryBudgetReserved ? (_prePricingRecoveryEligible ? 'reservation_failed_hard_cap_already_consumed_by_pricing' : 'hard_cap_reached_before_reservation')
           : !Boolean(process.env.MORALIS_API_KEY) ? 'recovery_budget_reserved_but_provider_unavailable'
           : 'recovery_budget_reserved_but_no_pages_allowed'
         return { recommended: true, mode: 'targeted_token_recovery', targetTokens, reason: 'high_activity_excluded_lots_no_public_evidence', estimatedExtraPages: _hardCapHitFinal ? Math.min(2, targetTokens.length) : Math.min(2, targetTokens.length), recoverable: true, recoveryBlockedReason: _recoveryBlockedReasonHonest }
       }
       if (_hasExcludedLots) {
-        return { recommended: true, mode: 'targeted_token_recovery', targetTokens, reason: 'excluded_lots_or_missing_cost_basis_remain', estimatedExtraPages: Math.max(1, Math.min(scanModeConfig?.targetedRecoveryPages ?? 1, targetTokens.length || 1)), recoverable: true, recoveryBlockedReason: _hardCapHitFinal && !_recoveryBudgetReserved ? 'hard_cap_reached_before_reservation' : null }
+        return { recommended: true, mode: 'targeted_token_recovery', targetTokens, reason: 'excluded_lots_or_missing_cost_basis_remain', estimatedExtraPages: Math.max(1, Math.min(scanModeConfig?.targetedRecoveryPages ?? 1, targetTokens.length || 1)), recoverable: true, recoveryBlockedReason: _hardCapHitFinal && !_recoveryBudgetReserved ? (_prePricingRecoveryEligible ? 'reservation_failed_hard_cap_already_consumed_by_pricing' : 'hard_cap_reached_before_reservation') : null }
       }
       return { recommended: false, mode: historicalAttempted ? 'attempted_light' : 'none', targetTokens, reason: 'closed_lots_already_found', estimatedExtraPages: 0 }
     }

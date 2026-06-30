@@ -245,13 +245,13 @@ assert.match(
 )
 assert.match(
   snap,
-  /recoverable\?: boolean[\s\S]{0,400}recoveryBlockedReason\?: 'recovery_budget_reserved_but_provider_unavailable' \| 'recovery_budget_reserved_but_no_targets' \| 'recovery_budget_reserved_but_no_pages_allowed' \| 'hard_cap_reached_before_reservation' \| null/,
-  'walletRecoveryRecommendation type declares the recoverable/recoveryBlockedReason fields with the four honest reservation-outcome reasons',
+  /recoverable\?: boolean[\s\S]{0,400}recoveryBlockedReason\?: 'recovery_budget_reserved_but_provider_unavailable' \| 'recovery_budget_reserved_but_no_targets' \| 'recovery_budget_reserved_but_no_pages_allowed' \| 'hard_cap_reached_before_reservation' \| 'reservation_failed_hard_cap_already_consumed_by_pricing' \| null/,
+  'walletRecoveryRecommendation type declares the recoverable/recoveryBlockedReason fields with the honest reservation-outcome reasons',
 )
 assert.doesNotMatch(
   snap,
   /recoveryBlockedReason: 'hard_cap_reached_after_pricing'/,
-  'hard_cap_reached_after_pricing must never be assigned — it is retired in favor of the four honest reservation-outcome reasons',
+  'hard_cap_reached_after_pricing must never be assigned — it is retired in favor of the honest reservation-outcome reasons',
 )
 
 // walletPnlBlockerSummary must treat a budget-capped-but-recommended recovery as recoverable, and
@@ -274,7 +274,7 @@ console.log('wallet pnl-recovery-exclusion pass: raw closed lots no longer block
 // 1. Recovery budget must be reserved before the broad pricing/historical pass spends the shared pool.
 assert.match(
   snap,
-  /const _prePricingRecoveryReserveCredits = deepScan && historicalCoverage && walletScanBudget\?\.adminOverrideUsed !== true[\s\S]*?buildPriceAtTimeEvidence\([^\n]*_prePricingRecoveryReserveCredits\)/,
+  /const _prePricingRecoveryEligible = deepScan && historicalCoverage && !_adminOverrideUsed[\s\S]*?const _prePricingRecoveryReserveCredits = _prePricingRecoveryEligible[\s\S]*?buildPriceAtTimeEvidence\([^\n]*_prePricingRecoveryReserveCredits\)/,
   'deep-mode recovery budget is reserved before the broad price-at-time pass can consume the hard cap',
 )
 assert.match(
