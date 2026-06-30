@@ -7540,7 +7540,9 @@ function buildFifoLotEngine(
   // Open lots keyed by normalizedChain:contract (FIFO queue — oldest first)
   // Using normalizeChain() prevents base-mainnet/8453/base mismatches from breaking lot matching.
   const openLotsMap = new Map<string, WalletLotOpen[]>()
-  // Estimate-only lots (current_holding_price_open_lot_estimate): counted in openedLots but NEVER matched against sells.
+  // Estimate-only lots (current_holding_price_open_lot_estimate): counted in openedLots for
+  // unrealized/open-position reads, but NEVER matched against sells. Realized PnL requires an
+  // actual historical buy/cost-basis leg; current-price estimates cannot be promoted into trades.
   const estimateLotsMap = new Map<string, WalletLotOpen[]>()
   const closedLots: WalletClosedLot[] = []
   let unmatchedBuys = 0
@@ -7553,13 +7555,11 @@ function buildFifoLotEngine(
   const sampleUnmatchedReasons: string[] = []
   const _abbr = (addr: string) => `${addr.slice(0, 8)}...${addr.slice(-6)}`
 
-  // PHASE3-FIX-3 bookkeeping: tracks which lotKeys have ever had a real (non-estimate) buy
-  // discovered, so a sell that arrives before any real buy can later be reconciled against an
-  // estimate lot instead of being left as a hard "no buy ever found" unmatched sell.
-  let backfilledFromEstimateLots = 0
-  // PHASE3-FIX-9 (items 1 & 5): counts sells where neither real nor estimate lots covered the
-  // full sold amount, requiring a synthetic backfilled buy lot for the shortfall.
-  let backfilledBuyLots = 0
+  // NO-FAKE-TRADES-FIX: count sells whose historical entry is still missing. Older code created
+  // same-tx synthetic buy lots (or closed against current-holding estimate lots) so PnL could be
+  // "complete"; that invented trades and false break-even realized PnL. We now preserve the sell
+  // as unmatched evidence only. Targeted recovery can still fetch the real prior buy later.
+  let missingCostBasisSellEvents = 0
 
   for (const e of eligible) {
     const normalChain = normalizeChain(e.chain)
@@ -7615,20 +7615,7 @@ function buildFifoLotEngine(
     } else if (e.direction === 'sell') {
       sellTokenKeySet.add(lotKey)
       if (sampleSellEvents.length < 5) sampleSellEvents.push({ tokenAddress: _abbr(e.contract), symbol: e.symbol ?? '?', chain: normalChain, amount, priceUsd })
-      let queue = openLotsMap.get(lotKey)
-      // PHASE3-FIX-3: no real lot exists for this token, but an estimate lot (opened from a
-      // current-holding-price guess) does — instead of declaring the position phantom, fall
-      // back to closing against the estimate lot. The resulting closed lot inherits 'low'
-      // confidence via lotConfidence() since entrySource is the estimate source, so it never
-      // masquerades as a high-confidence realized trade.
-      if (!queue || queue.length === 0) {
-        const estimateQueue = estimateLotsMap.get(lotKey)
-        if (estimateQueue && estimateQueue.length > 0) {
-          queue = estimateQueue
-          backfilledFromEstimateLots++
-        }
-      }
-      if (!queue) queue = []
+      const queue = openLotsMap.get(lotKey) ?? []
 
       let sellRemaining = amount
       // PHASE3-FIX-4: deterministic partial-lot allocation — close the minimum of the
@@ -7688,47 +7675,16 @@ function buildFifoLotEngine(
         if (lot.amountRemaining <= lotEpsilonFor(lot.amountOpened)) queue.shift()
       }
 
-      // PHASE3-FIX-9 (items 1 & 5): negative-balance protection. Real + estimate lots could not
-      // cover the full sell amount — multi-chain merges or missing historical buys can leave a
-      // genuine negative balance — so backfill a synthetic buy lot for exactly the missing
-      // amount instead of silently dropping cost basis. Priced at this sell's own priceAtTime
-      // (the best available price for that timestamp/token), then immediately closed against
-      // the same sell. Realized PnL on the backfilled portion is intentionally 0 (entry price
-      // == exit price) since there is no real historical entry price to compute a gain/loss
-      // against — the goal is completeness/visibility, not invented profit.
+      // NO-FAKE-TRADES-FIX: never create a synthetic entry for uncovered sells. A sell without
+      // real prior buy evidence is an unmatched sell / missing cost-basis condition, not a
+      // zero-PnL closed lot. This protects cost-basis integrity, FIFO/LIFO reconstruction, and
+      // public realized PnL from fabricated break-even trades while still keeping deterministic
+      // diagnostics for recovery and UI messaging.
       if (sellRemaining > lotEpsilonFor(amount)) {
-        const missingAmount = sellRemaining
-        const _synthOpenConf = lotConfidenceScore({ entrySource: 'synthetic', isEstimateLot: true })
-        const costBasisUsd = missingAmount * priceUsd
-        const proceedsUsd = missingAmount * priceUsd
-        backfilledBuyLots++
-        const _synthPriceIndependence = computePriceIndependence('synthetic', priceSource, priceUsd, priceUsd, e.txHash!, e.txHash!)
-        closedLots.push({
-          tokenAddress: e.contract.toLowerCase(),
-          tokenSymbol: e.symbol ?? null,
-          chain: normalChain,
-          openedTxHash: e.txHash,
-          closedTxHash: e.txHash,
-          openedAt: e.timestamp!,
-          closedAt: e.timestamp!,
-          amountClosed: missingAmount,
-          entryPriceUsd: priceUsd,
-          exitPriceUsd: priceUsd,
-          costBasisUsd,
-          proceedsUsd,
-          realizedPnlUsd: 0,
-          realizedPnlPercent: 0,
-          holdingTimeSeconds: 0,
-          confidence: 'low',
-          evidence: { entrySource: 'synthetic', exitSource: priceSource, method: 'fifo' },
-          confidenceScore: _synthOpenConf.score,
-          confidenceTier: _synthOpenConf.tier,
-          coveragePercent: Math.max(0, Math.min(100, ((amount - missingAmount) / amount) * 100)),
-          missingReasons: ['fifo_backfilled_buy', 'price_synthetic_fifo'],
-          ..._synthPriceIndependence,
-        })
+        unmatchedSells++
+        missingCostBasisSellEvents++
         sellRemaining = 0
-        if (sampleUnmatchedReasons.length < 10) sampleUnmatchedReasons.push(`fifo_backfilled_buy:${_abbr(e.contract)}(${e.symbol ?? '?'})`)
+        if (sampleUnmatchedReasons.length < 10) sampleUnmatchedReasons.push(`missing_cost_basis_sell:${_abbr(e.contract)}(${e.symbol ?? '?'})`)
       }
     }
     // direction === 'unknown' already filtered by eligible filter (swap candidates are buy/sell)
@@ -7779,14 +7735,7 @@ function buildFifoLotEngine(
   }
   if (unmatchedSells > 0) missing.push('unmatched_sells')
   if (unmatchedBuys > 0) missing.push('unmatched_buys')
-  // PHASE3-FIX-9 (items 1 & 5): debug-visible count of sells that needed a synthetic backfilled
-  // buy lot because real + estimate lots didn't cover the full sold amount. unmatchedSells can
-  // no longer be incremented for this case (it's now backfilled+closed instead of dropped), so
-  // this reason key is the only remaining signal that a negative-balance condition occurred.
-  if (backfilledBuyLots > 0) missing.push(`fifo_backfilled_buy:${backfilledBuyLots}`)
-  // PHASE3-FIX-3: debug-visible count of sells reconciled against estimate lots instead of
-  // being left as a hard "no buy ever found" unmatched sell.
-  if (backfilledFromEstimateLots > 0) missing.push(`backfilled_from_estimate_lots:${backfilledFromEstimateLots}`)
+  if (missingCostBasisSellEvents > 0) missing.push(`missing_cost_basis_sells:${missingCostBasisSellEvents}`)
 
   const abbr = (addr: string) => `${addr.slice(0, 8)}...${addr.slice(-6)}`
 
