@@ -683,8 +683,11 @@ type WalletResult = {
     signals?: string[]
   }
   walletScanCostMode?: 'basic' | 'basic_cached' | 'deep_cached' | 'deep_live' | 'historical_cached' | 'historical_live' | 'blocked_by_cooldown' | 'blocked_by_cost_guard'
-  walletScanModeRequested?: 'normal' | 'deep' | 'full_recovery'
-  walletScanModeResolved?: 'normal' | 'deep' | 'full_recovery'
+  walletScanModeRequested?: 'normal' | 'deep' | 'full_recovery' | 'smart_recovery'
+  walletScanModeResolved?: 'normal' | 'deep' | 'full_recovery' | 'smart_recovery'
+  smartRecoveryWindow?: { startTimestamp: string | null; endTimestamp: string | null; confidence: 'high' | 'medium' | 'low' | 'none'; pagesUsed: number; transfersSeen: number; reason: string | null }
+  smartRecoveryStatus?: 'ok' | 'no_window_found' | 'window_detection_skipped'
+  smartRecoveryCost?: { pagesUsed: number; maxPagesAllowed: number; maxPriceAttemptsAllowed: number }
   walletScanModeConfigUsed?: { targetCredits: number; hardCapCredits: number; activityChainsMax: number; priceAttempts: number; targetedRecoveryPages: number; receiptChecks: number; allowMoralisTransfers: boolean; allowMoralisProviderPnl: boolean }
   fullRecoveryAllowed?: boolean
   fullRecoveryBlockedReason?: 'admin_only' | null
@@ -1892,11 +1895,11 @@ export default function WalletScannerPage() {
     URL.revokeObjectURL(url)
   }
 
-  async function handleScan(mode: 'normal' | 'deep' | 'full_recovery' = 'normal') {
+  async function handleScan(mode: 'normal' | 'deep' | 'full_recovery' | 'smart_recovery' = 'normal') {
     const q = input.trim()
     if (!q) return
-    if (mode === 'full_recovery' && !isFullRecoveryAdmin) {
-      setError('Full Recovery is admin-only.')
+    if ((mode === 'full_recovery' || mode === 'smart_recovery') && !isFullRecoveryAdmin) {
+      setError(mode === 'smart_recovery' ? 'Smart Recovery is admin-only.' : 'Full Recovery is admin-only.')
       return
     }
     const useDeep = mode !== 'normal'
@@ -2288,6 +2291,17 @@ export default function WalletScannerPage() {
                 <span style={{ fontSize: '9px', fontWeight: 600, letterSpacing: 0, textTransform: 'none', color: 'rgba(251,191,36,0.78)' }}>Heavy recovery attempt. Uses extra provider budget. Not guaranteed.</span>
               </button>
             )}
+            {isFullRecoveryAdmin && (
+              <button
+                onClick={() => void handleScan('smart_recovery')}
+                disabled={loading || !input.trim()}
+                title="Window-detect first, then targeted recovery only inside the active trading window. Cheaper than Full Recovery."
+                style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'flex-start', gap: '2px', padding: '7px 13px', borderRadius: '8px', border: '1px solid rgba(168,85,247,0.55)', background: 'rgba(168,85,247,0.10)', color: '#a855f7', fontSize: '10px', fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase', cursor: (loading || !input.trim()) ? 'not-allowed' : 'pointer', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}
+              >
+                <span>Smart Recovery (Admin)</span>
+                <span style={{ fontSize: '9px', fontWeight: 600, letterSpacing: 0, textTransform: 'none', color: 'rgba(168,85,247,0.78)' }}>Window detection + targeted recovery. Not guaranteed.</span>
+              </button>
+            )}
 
             {showDebugCacheControls && (
               <div style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', padding: '7px 10px', borderRadius: '10px', border: '1px solid rgba(251,191,36,0.24)', background: 'rgba(251,191,36,0.055)' }}>
@@ -2510,6 +2524,12 @@ export default function WalletScannerPage() {
                     <div>Target credits: {budget?.targetCredits ?? result.walletScanBudget?.totalCreditTarget ?? '—'} · Hard cap: {budget?.hardCapCredits ?? result.walletScanBudget?.totalCreditHardCap ?? '—'} · Credits used: {result.walletScanBudget?.actualProviderCreditsUsed ?? result.walletScanBudget?.creditsUsed ?? '—'}</div>
                     <div>Providers touched: {providersTouched} · Moralis allowed: {budget?.moralisTransfersAllowed || budget?.moralisProviderPnlAllowed ? 'yes' : 'no'}</div>
                     <div>Recovery pages used: {recoveryPagesUsed} · Full Recovery {result.fullRecoveryAllowed ? 'allowed' : 'not allowed'}{result.fullRecoveryBlockedReason ? ` (${result.fullRecoveryBlockedReason})` : ''}</div>
+                    {result.walletScanModeResolved === 'smart_recovery' && result.smartRecoveryWindow && (
+                      <>
+                        <div>Window: {result.smartRecoveryWindow.startTimestamp ? new Date(result.smartRecoveryWindow.startTimestamp).toISOString().slice(0, 10) : '—'} → {result.smartRecoveryWindow.endTimestamp ? new Date(result.smartRecoveryWindow.endTimestamp).toISOString().slice(0, 10) : '—'} · Confidence: {result.smartRecoveryWindow.confidence}</div>
+                        <div>Pages used: {result.smartRecoveryCost?.pagesUsed ?? 0} · Price attempts allowed: {result.smartRecoveryCost?.maxPriceAttemptsAllowed ?? '—'} · Status: {result.smartRecoveryStatus ?? '—'}</div>
+                      </>
+                    )}
                   </div>
                 )
               })()}

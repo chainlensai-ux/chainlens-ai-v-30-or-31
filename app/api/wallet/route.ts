@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { fetchWalletSnapshot, WALLET_SCAN_MODE_CONFIG, type WalletScanMode, type WalletSnapshotOptions } from '@/lib/server/walletSnapshot'
+import { runSmartRecovery } from '@/lib/server/smartRecoveryEngine'
 import { computeWalletPersonality, computeWindowedPnl, computeBotScore } from '@/lib/server/walletIntelligence'
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import {
@@ -900,6 +901,33 @@ export async function POST(req: Request) {
     const key = String(address ?? '').toLowerCase()
     if (!/^0x[a-fA-F0-9]{40}$/.test(key)) {
       return json({ error: 'Invalid wallet address' }, { status: 400 })
+    }
+
+    // SMART-RECOVERY-MODE: isolated admin-only entry point. Does not touch the normal/deep/
+    // full_recovery pipeline below — it delegates to fetchWalletSnapshot via runSmartRecovery,
+    // which reuses the existing FIFO/price-evidence pipeline unmodified. Never reachable by
+    // non-admin callers, regardless of what the request body claims.
+    const smartRecoveryRequested = body?.walletScanMode === 'smart_recovery' || body?.scanMode === 'smart_recovery'
+    if (smartRecoveryRequested) {
+      if (!fullRecoveryAllowed) {
+        return json({ error: 'Smart Recovery is admin-only.', fullRecoveryAllowed: false, fullRecoveryBlockedReason: 'admin_only' }, { status: 403 })
+      }
+      const result = await runSmartRecovery(key, chain, {
+        adminForceWindowDetection: body?.admin_force_window_detection !== false,
+        adminTargetedRecoveryOnly: body?.admin_targeted_recovery_only === true,
+        adminDisableFullHistoryScan: body?.admin_disable_full_history_scan === true,
+        adminMaxPages: typeof body?.admin_max_pages === 'number' ? body.admin_max_pages : undefined,
+        adminMaxPriceAttempts: typeof body?.admin_max_price_attempts === 'number' ? body.admin_max_price_attempts : undefined,
+      })
+      const smartSnapshot: Record<string, unknown> = { ...result.snapshot }
+      smartSnapshot.walletScanModeRequested = 'smart_recovery'
+      smartSnapshot.walletScanModeResolved = 'smart_recovery'
+      smartSnapshot.smartRecoveryWindow = result.smartRecoveryWindow
+      smartSnapshot.smartRecoveryStatus = result.smartRecoveryStatus
+      smartSnapshot.smartRecoveryCost = { pagesUsed: result.smartRecoveryPagesUsed, maxPagesAllowed: result.smartRecoveryMaxPagesAllowed, maxPriceAttemptsAllowed: result.smartRecoveryMaxPriceAttemptsAllowed }
+      smartSnapshot.smartRecoveryLots = result.snapshot.walletLotSummary ?? null
+      smartSnapshot.smartRecoveryMissingCostBasis = result.snapshot.walletHistoricalCoverageSummary ?? null
+      return json(smartSnapshot)
     }
 
     // ETH scan gating: only upgrade to 'base_eth' for debug or explicit ETH scans.
