@@ -4469,7 +4469,7 @@ export default function WalletScannerPage() {
                     {/* Header */}
                     <div style={{ padding: '18px 24px 16px', borderBottom: '1px solid rgba(255,255,255,0.06)', display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
                       <div style={{ width: '3px', height: '16px', borderRadius: '2px', background: 'linear-gradient(180deg, #a78bfa, rgba(139,92,246,0.3))', flexShrink: 0 }} />
-                      <span className="ws-section-header" style={{ color: '#e2e8f0' }}>Trading Intelligence</span>
+                      <span className="ws-section-header" style={{ color: '#e2e8f0' }}>{hasClosedTradeEvidence ? 'Matched Trade Sample' : 'Trading Intelligence'}</span>
                       <span style={{ fontSize: '9px', fontWeight: 600, color: '#a78bfa', border: '1px solid rgba(139,92,246,0.22)', background: 'rgba(139,92,246,0.06)', borderRadius: '999px', padding: '2px 8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>FIFO lots</span>
                       {/* Trade Evidence State badge */}
                       {hasClosedTradeEvidence ? (
@@ -4487,7 +4487,7 @@ export default function WalletScannerPage() {
                     {/* Evidence state context block */}
                     {hasClosedTradeEvidence ? (
                       <div style={{ fontSize: '12px', color: 'rgba(74,222,128,0.70)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '14px', lineHeight: 1.5, background: 'rgba(74,222,128,0.04)', border: '1px solid rgba(74,222,128,0.10)', borderRadius: '8px', padding: '8px 11px' }}>
-                        CORTEX reconstructed {_tiClosedLots} closed buy → sell lot{_tiClosedLots !== 1 ? 's' : ''}.
+                        Behavior sample only — official PnL is locked until integrity checks pass.
                       </div>
                     ) : hasOpenLots ? (
                       <div style={{ fontSize: '12px', color: 'rgba(251,191,36,0.70)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '14px', lineHeight: 1.5, background: 'rgba(251,191,36,0.04)', border: '1px solid rgba(251,191,36,0.10)', borderRadius: '8px', padding: '8px 11px' }}>
@@ -4791,12 +4791,12 @@ export default function WalletScannerPage() {
                             // reads — when public PnL is locked they must not render as green profit.
                             const summaryPublicLocked = publicPnlLocked(result, ts)
                             return [
-                              { label: 'Closed Lots', value: String(ts.closedLots), neutral: false },
-                              { label: 'Matched Realized PnL', value: summaryPublicLocked ? 'Locked' : (pnlBreakEven ? '$0.00 break-even' : (ts.realizedPnlUsd !== null ? fmtSignedUSD(ts.realizedPnlUsd) : '—')), pnl: summaryPublicLocked || pnlBreakEven ? undefined : ts.realizedPnlUsd, neutral: summaryPublicLocked || pnlBreakEven },
-                              { label: 'Return', value: summaryPublicLocked ? 'Locked' : (ts.realizedPnlPercent !== null ? `${ts.realizedPnlPercent >= 0 ? '+' : ''}${ts.realizedPnlPercent.toFixed(1)}%` : '—'), pnl: summaryPublicLocked || isBreakEvenOnly ? undefined : ts.realizedPnlPercent, neutral: summaryPublicLocked || isBreakEvenOnly },
-                              { label: 'Tokens Traded', value: String(ts.uniqueTokensTraded), neutral: false },
-                              { label: 'Wins', value: isBreakEvenOnly ? 'No decisive winning lots yet' : String(ts.winningClosedLots), neutral: isBreakEvenOnly },
-                              { label: 'Losses', value: isBreakEvenOnly ? 'No decisive losing lots yet' : String(ts.losingClosedLots), neutral: isBreakEvenOnly },
+                              { label: 'Matched Lots', value: String(ts.closedLots), neutral: false, pnl: null },
+                              { label: 'Tokens Traded', value: String(ts.uniqueTokensTraded), neutral: false, pnl: null },
+                              { label: 'Positive Sample Lots', value: isBreakEvenOnly ? 'No decisive positive lots yet' : String(ts.winningClosedLots), neutral: isBreakEvenOnly, pnl: null },
+                              { label: 'Negative Sample Lots', value: isBreakEvenOnly ? 'No decisive negative lots yet' : String(ts.losingClosedLots), neutral: isBreakEvenOnly, pnl: null },
+                              { label: 'Avg Hold', value: fmtHoldTime(ts.avgHoldingTimeSeconds), neutral: false, pnl: null },
+                              { label: 'Median Hold', value: fmtHoldTime(ts.medianHoldingTimeSeconds), neutral: false, pnl: null },
                             ].map(card => (
                               <div key={card.label} style={{ background: card.neutral ? 'rgba(148,163,184,0.04)' : 'rgba(255,255,255,0.03)', border: `1px solid ${card.neutral ? 'rgba(148,163,184,0.14)' : 'rgba(255,255,255,0.07)'}`, borderRadius: '12px', padding: '12px' }}>
                                 <div style={{ fontSize: '9px', color: card.neutral ? 'rgba(148,163,184,0.55)' : 'rgba(255,255,255,0.28)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '7px' }}>{card.label}</div>
@@ -4830,96 +4830,53 @@ export default function WalletScannerPage() {
                         })()}
 
                         {(() => {
-                          const rawWinRate = ts.closedLots > 0 && !hasNoDecisiveClosedLots(ts) ? ts.winRatePercent ?? (ts.winningClosedLots / ts.closedLots) * 100 : null
-                          const isBreakEvenOnly = ts.isBreakEvenOnly === true || (ts.closedLots > 0 && ts.winningClosedLots === 0 && ts.losingClosedLots === 0 && ts.breakEvenClosedLots === ts.closedLots)
-                          const isSmallSample = ts.closedLots > 0 && !hasEnough
-                          // PUBLIC-PNL-CARD-GATING: when public PnL is locked (integrity invalid /
-                          // 0 public-grade lots / null public stats), raw win rate / avg PnL / avg
-                          // return / median return must NOT render as green public-looking numbers.
-                          // They are behavior-only estimates and must show "Locked" instead.
-                          // PUBLIC-SAMPLE-PNL-UNLOCK: publicLocked still gates profit skill / official
-                          // win rate / wallet score exactly as before (untouched 10-lot threshold via
-                          // publicPnlLocked). It no longer forces every PnL card to "Locked" — when a
-                          // public-grade sample exists (publicSamplePerformanceRead), the sample PnL is
-                          // shown with a "Limited sample" badge instead of a blanket lock.
-                          const publicLocked = publicPnlLocked(result, ts)
+                          const officialPnlLocked = publicPnlLocked(result, ts)
+                          const sampleTradeReadAvailable = ts.closedLots > 0
+                          const behaviorReadAvailable = sampleTradeReadAvailable || Boolean(result.tradeIntelligence)
+                          const showRawSampleStats = officialPnlLocked && sampleTradeReadAvailable
+                          const showOfficialStats = !officialPnlLocked
                           const fullyLocked = publicPnlFullyLocked(result, ts)
                           const sampleRead = getPublicSampleRead(result)
-                          const showSample = publicLocked && !fullyLocked && !!sampleRead
-                          const lockedPnlCard = (label: string) => ({ label, value: 'Locked', publicLock: true })
-                          const sampleCard = (label: string, value: string | null, pnl?: number | null) => ({ label, value: value ?? '—', pnl, sampleLock: true })
-                          const profitSkillCard = { label: 'Profit Skill', value: 'Not proven — sample below threshold', publicLock: true }
-                          const earlyCards: Array<{ label: string; value: string | null; locked?: boolean; lockNote?: string; pnl?: number | null; raw?: boolean; breakEven?: boolean; publicLock?: boolean; sampleLock?: boolean }> = [
-                            fullyLocked ? lockedPnlCard('Win Rate')
-                              : showSample ? sampleCard('Win Rate', sampleRead!.winRatePercent != null ? `${sampleRead!.winRatePercent.toFixed(1)}%` : null)
-                              : {
-                              label: 'Win Rate',
-                              value: isBreakEvenOnly ? 'Break-even only' : rawWinRate !== null ? `${rawWinRate.toFixed(1)}%` : null,
-                              locked: !isBreakEvenOnly && rawWinRate === null,
-                              lockNote: officialWinRateLockCopy(ts),
-                              raw: !isBreakEvenOnly && isSmallSample && rawWinRate !== null,
-                              breakEven: isBreakEvenOnly,
-                            },
-                            fullyLocked ? lockedPnlCard('Realized PnL')
-                              : showSample ? sampleCard('Realized PnL', fmtSignedUSD(sampleRead!.realizedPnlUsd), sampleRead!.realizedPnlUsd)
-                              : { label: 'Realized PnL', value: ts.publicRealizedPnlUsd !== null && ts.publicRealizedPnlUsd !== undefined ? fmtSignedUSD(ts.publicRealizedPnlUsd) : '—', pnl: ts.publicRealizedPnlUsd },
-                            fullyLocked ? lockedPnlCard('Avg PnL / Lot')
-                              : showSample ? sampleCard('Avg PnL / Lot', fmtSignedUSD(sampleRead!.avgPnlUsdPerLot), sampleRead!.avgPnlUsdPerLot)
-                              : { label: 'Avg PnL / Lot', value: ts.avgPnlUsdPerClosedLot !== null ? fmtSignedUSD(ts.avgPnlUsdPerClosedLot) : '—', pnl: ts.avgPnlUsdPerClosedLot },
-                            fullyLocked ? lockedPnlCard('Avg Return / Lot')
-                              : showSample ? sampleCard('Avg Return / Lot', sampleRead!.avgReturnPercentPerLot != null ? `${sampleRead!.avgReturnPercentPerLot >= 0 ? '+' : ''}${sampleRead!.avgReturnPercentPerLot.toFixed(1)}%` : null, sampleRead!.avgReturnPercentPerLot)
-                              : { label: 'Avg Return / Lot', value: ts.avgReturnPercentPerClosedLot !== null ? `${ts.avgReturnPercentPerClosedLot >= 0 ? '+' : ''}${ts.avgReturnPercentPerClosedLot.toFixed(1)}%` : '—', pnl: ts.avgReturnPercentPerClosedLot },
-                            fullyLocked ? lockedPnlCard('Median Return')
-                              : showSample ? sampleCard('Median Return', sampleRead!.medianReturnPercent != null ? `${sampleRead!.medianReturnPercent >= 0 ? '+' : ''}${sampleRead!.medianReturnPercent.toFixed(1)}%` : null, sampleRead!.medianReturnPercent)
-                              : { label: 'Median Return', value: ts.medianReturnPercentPerClosedLot !== null ? `${ts.medianReturnPercentPerClosedLot >= 0 ? '+' : ''}${ts.medianReturnPercentPerClosedLot.toFixed(1)}%` : '—', pnl: ts.medianReturnPercentPerClosedLot },
-                            publicLocked ? profitSkillCard : { label: 'Profit Skill', value: 'Public-grade', pnl: null },
-                            { label: 'Avg Hold Time', value: fmtHoldTime(ts.avgHoldingTimeSeconds) },
-                            { label: 'Median Hold Time', value: fmtHoldTime(ts.medianHoldingTimeSeconds) },
+                          const showSample = officialPnlLocked && !fullyLocked && !!sampleRead
+                          const sampleReadCards: Array<{ label: string; value: string | null; pnl?: number | null; sampleOnly?: boolean }> = [
+                            { label: 'Sample Positive Lots', value: String(ts.winningClosedLots), sampleOnly: true },
+                            { label: 'Sample Negative Lots', value: String(ts.losingClosedLots), sampleOnly: true },
+                            { label: 'Biggest Matched Win', value: ts.largestWinUsd != null ? fmtSignedUSD(ts.largestWinUsd) : 'No matched winning lot', pnl: ts.largestWinUsd, sampleOnly: true },
+                            { label: 'Biggest Matched Loss', value: ts.largestLossUsd != null ? fmtSignedUSD(ts.largestLossUsd) : 'No matched losing lot', pnl: ts.largestLossUsd, sampleOnly: true },
+                            { label: 'Avg Matched Hold', value: fmtHoldTime(ts.avgHoldingTimeSeconds), sampleOnly: true },
                           ]
+                          const officialCards: Array<{ label: string; value: string | null; pnl?: number | null; sampleOnly?: boolean }> = [
+                            { label: 'Official Win Rate', value: ts.publicWinRatePercent != null ? `${ts.publicWinRatePercent.toFixed(1)}%` : '—' },
+                            { label: 'Official Realized PnL', value: ts.publicRealizedPnlUsd != null ? fmtSignedUSD(ts.publicRealizedPnlUsd) : '—', pnl: ts.publicRealizedPnlUsd },
+                            { label: 'Avg PnL / Lot', value: ts.avgPnlUsdPerClosedLot != null ? fmtSignedUSD(ts.avgPnlUsdPerClosedLot) : '—', pnl: ts.avgPnlUsdPerClosedLot },
+                            { label: 'Avg Return / Lot', value: ts.avgReturnPercentPerClosedLot != null ? `${ts.avgReturnPercentPerClosedLot >= 0 ? '+' : ''}${ts.avgReturnPercentPerClosedLot.toFixed(1)}%` : '—', pnl: ts.avgReturnPercentPerClosedLot },
+                            { label: 'Median Return', value: ts.medianReturnPercentPerClosedLot != null ? `${ts.medianReturnPercentPerClosedLot >= 0 ? '+' : ''}${ts.medianReturnPercentPerClosedLot.toFixed(1)}%` : '—', pnl: ts.medianReturnPercentPerClosedLot },
+                            { label: 'Profit Skill', value: 'Public-grade' },
+                          ]
+                          const earlyCards = behaviorReadAvailable && showRawSampleStats ? sampleReadCards : showOfficialStats ? officialCards : []
                           const _rawLotsCopy = result.walletTradeReconstructionFunnel?.rawClosedLots ?? result.rawMatchedClosedLots ?? ts.rawClosedLots ?? ts.closedLots ?? 0
                           const _pubLotsCopy = result.publicPerformanceClosedLots ?? ts.publicPerformanceClosedLots ?? 0
                           return (
                             <>
                             {fullyLocked && (
                               <div style={{ fontSize: '11px', color: '#fbbf24', background: 'rgba(251,191,36,0.06)', border: '1px solid rgba(251,191,36,0.18)', borderRadius: '8px', padding: '9px 12px', marginBottom: '12px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', lineHeight: 1.55 }}>
-                                Raw matched lots found, but {_pubLotsCopy} passed public-grade performance checks. Trade behavior is usable; profit skill is not proven.
+                                Official PnL locked<div style={{ marginTop: '4px', color: 'rgba(251,191,36,0.72)' }}>{ts.closedLots} matched trade sample lots were found, but official realized PnL, win rate, and profit skill are locked because integrity checks failed.</div>
                                 {((result.limitedSampleClosedLots ?? ts.limitedSampleClosedLots ?? 0) > 0) && (
                                   <div style={{ marginTop: '5px', color: 'rgba(251,191,36,0.72)' }}>Limited sample: {result.limitedSampleClosedLots ?? ts.limitedSampleClosedLots} lot{(result.limitedSampleClosedLots ?? ts.limitedSampleClosedLots) === 1 ? '' : 's'}, {fmtSignedUSD(result.limitedSampleRealizedPnlUsd ?? ts.limitedSampleRealizedPnlUsd ?? null)}, not enough to publish.</div>
                                 )}
                               </div>
                             )}
-                            {showSample && (
+                            {showSample && !fullyLocked && (
                               <div style={{ fontSize: '11px', color: '#fbbf24', background: 'rgba(251,191,36,0.06)', border: '1px solid rgba(251,191,36,0.18)', borderRadius: '8px', padding: '9px 12px', marginBottom: '12px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', lineHeight: 1.55 }}>
                                 {_rawLotsCopy} raw matched lots found. {_pubLotsCopy} passed public-grade performance checks. Limited sample PnL is shown, but profit skill is not proven.
                               </div>
                             )}
                             <div className="wallet-intel-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: '10px', marginBottom: '14px' }}>
                               {earlyCards.map(card => (
-                                <div key={card.label} style={{ background: (card.publicLock || card.sampleLock) ? 'rgba(251,191,36,0.05)' : card.breakEven ? 'rgba(148,163,184,0.05)' : card.raw ? 'rgba(251,191,36,0.05)' : 'rgba(255,255,255,0.03)', border: `1px solid ${(card.publicLock || card.sampleLock) ? 'rgba(251,191,36,0.20)' : card.breakEven ? 'rgba(148,163,184,0.18)' : card.raw ? 'rgba(251,191,36,0.20)' : 'rgba(255,255,255,0.07)'}`, borderRadius: '12px', padding: '12px' }}>
-                                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '7px' }}>
-                                    <span style={{ fontSize: '9px', color: (card.publicLock || card.sampleLock) ? 'rgba(251,191,36,0.65)' : card.breakEven ? 'rgba(148,163,184,0.65)' : card.raw ? 'rgba(251,191,36,0.65)' : 'rgba(255,255,255,0.28)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{card.label}</span>
-                                    {card.sampleLock && <span style={{ fontSize: '8px', fontWeight: 700, color: '#fbbf24', border: '1px solid rgba(251,191,36,0.30)', background: 'rgba(251,191,36,0.06)', borderRadius: '999px', padding: '1px 6px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Limited sample</span>}
-                                  </div>
-                                  {card.publicLock ? (
-                                    <div style={{ fontSize: '14px', fontWeight: 800, color: '#fbbf24', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
-                                      Locked
-                                      <div style={{ fontSize: '9px', fontWeight: 600, color: 'rgba(251,191,36,0.55)', marginTop: '3px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Not public PnL · profit skill not proven</div>
-                                    </div>
-                                  ) : card.sampleLock ? (
-                                    <div style={{ fontSize: '16px', fontWeight: 800, color: '#fbbf24', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
-                                      {card.value}
-                                      <div style={{ fontSize: '9px', fontWeight: 600, color: 'rgba(251,191,36,0.55)', marginTop: '3px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{card.label === 'Win Rate' ? 'Not scored until enough public-grade lots pass.' : 'This uses limited public-grade FIFO lots. It is not enough to prove profit skill.'}</div>
-                                    </div>
-                                  ) : card.locked ? (
-                                    <div style={{ fontSize: '11px', color: '#7dd3fc', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', lineHeight: 1.4 }}>
-                                      Not calculated yet
-                                      <div style={{ fontSize: '9px', color: 'rgba(125,211,252,0.55)', marginTop: '3px' }}>{card.lockNote}</div>
-                                    </div>
-                                  ) : (
-                                    <div style={{ fontSize: card.breakEven ? '13px' : '16px', fontWeight: 800, fontFamily: 'var(--font-inter, Inter, sans-serif)', color: card.breakEven ? 'rgba(148,163,184,0.80)' : card.raw ? '#fbbf24' : ('pnl' in card && card.pnl !== null && card.pnl !== undefined ? (card.pnl >= 0 ? '#4ade80' : '#f87171') : '#e2e8f0') }}>{card.value}</div>
-                                  )}
-                                  {card.breakEven && <div style={{ fontSize: '9px', color: 'rgba(148,163,184,0.50)', marginTop: '3px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>no decisive trades · score unlocks at 10+</div>}
-                                  {card.raw && !card.breakEven && <div style={{ fontSize: '9px', color: 'rgba(251,191,36,0.50)', marginTop: '3px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>score unlocks at 10+</div>}
+                                <div key={card.label} style={{ background: card.sampleOnly ? 'rgba(251,191,36,0.05)' : 'rgba(255,255,255,0.03)', border: `1px solid ${card.sampleOnly ? 'rgba(251,191,36,0.20)' : 'rgba(255,255,255,0.07)'}`, borderRadius: '12px', padding: '12px' }}>
+                                  <div style={{ fontSize: '9px', color: card.sampleOnly ? 'rgba(251,191,36,0.65)' : 'rgba(255,255,255,0.28)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '7px' }}>{card.label}</div>
+                                  <div style={{ fontSize: '16px', fontWeight: 800, fontFamily: 'var(--font-inter, Inter, sans-serif)', color: card.pnl != null ? (card.pnl >= 0 ? '#4ade80' : '#f87171') : '#e2e8f0' }}>{card.value}</div>
+                                  {card.sampleOnly && <div style={{ fontSize: '9px', color: 'rgba(251,191,36,0.55)', marginTop: '3px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Sample only — excluded from official PnL and score.</div>}
                                 </div>
                               ))}
                             </div>
@@ -4976,7 +4933,7 @@ export default function WalletScannerPage() {
                                 <span style={{ fontSize: '9px', color: 'rgba(255,255,255,0.28)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Sample of reconstructed buy → sell lots. These are behavior evidence only unless they pass public-grade PnL checks.</span>
                               </div>
                               <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.28)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', lineHeight: 1.5, marginBottom: '10px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '8px', padding: '8px 10px' }}>
-                                Sample of reconstructed buy → sell lots. These are behavior evidence only unless they pass public-grade PnL checks. When public PnL is locked, per-lot PnL shows as “Locked”.
+                                Sample of reconstructed buy → sell lots. These are behavior evidence only unless they pass official PnL checks. Sample PnL is excluded from official PnL and score.
                               </div>
                               <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                                 {samples.map((s, i) => {
@@ -4984,11 +4941,13 @@ export default function WalletScannerPage() {
                                   // do not fall back to raw-labeled aliases in the public UI; raw values remain debug-only.
                                   const samplePnlLocked = publicPnlFullyLocked(result, ts) || s.includedInPublicStats === false || s.publicPnlStatus !== 'ok'
                                   const sampleBadgeShown = !samplePnlLocked && publicPnlLocked(result, ts)
+                                  const rawSamplePnlUsd = s.rawRealizedPnlUsd ?? s.realizedPnlUsd ?? null
                                   const lotPnlUsd = samplePnlLocked ? null : (s.realizedPnlUsd ?? null)
                                   const lotPnlPercent = samplePnlLocked ? null : (s.realizedPnlPercent ?? null)
                                   const pnlColor = lotPnlUsd === null ? '#94a3b8' : lotPnlUsd >= 0 ? '#4ade80' : '#f87171'
                                   const holdStr = fmtHoldTime(s.holdingTimeSeconds)
-                                  const pnlStr = lotPnlUsd !== null ? `${lotPnlUsd >= 0 ? '+' : '-'}$${Math.abs(lotPnlUsd).toFixed(2)}` : (samplePnlLocked ? 'Locked' : '—')
+                                  const pnlStr = lotPnlUsd !== null ? `${lotPnlUsd >= 0 ? '+' : '-'}$${Math.abs(lotPnlUsd).toFixed(2)}` : '—'
+                                  const samplePnlStr = rawSamplePnlUsd !== null ? `${rawSamplePnlUsd >= 0 ? '+' : '-'}$${Math.abs(rawSamplePnlUsd).toFixed(2)}` : null
                                   const pctStr = lotPnlPercent !== null ? ` (${lotPnlPercent >= 0 ? '+' : ''}${lotPnlPercent.toFixed(1)}%)` : ''
                                   // PUBLIC-PNL-ROW-GATING: explain WHY a locked row shows no public PnL — never
                                   // surface rawRealizedPnlUsd here. Verify-entry/exit buttons below stay intact.
@@ -5014,9 +4973,19 @@ export default function WalletScannerPage() {
                                       </div>
                                       <div style={{ minWidth: '90px' }} title={lockReason ?? undefined}>
                                         <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.28)', letterSpacing: '0.10em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '3px' }}>PnL{sampleBadgeShown && <span style={{ marginLeft: '5px', fontSize: '8px', color: '#fbbf24', textTransform: 'none', letterSpacing: 'normal' }}>Limited sample</span>}</div>
-                                        <div style={{ fontSize: '13px', fontWeight: 700, color: samplePnlLocked ? '#fbbf24' : sampleBadgeShown ? '#fbbf24' : pnlColor, fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{pnlStr}</div>
-                                        {pctStr && <div style={{ fontSize: '10px', color: pnlColor, fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', opacity: 0.7 }}>{pctStr}</div>}
-                                        {lockReason && <div style={{ fontSize: '8px', color: 'rgba(251,191,36,0.55)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginTop: '3px', lineHeight: 1.4, maxWidth: '150px' }}>{lockReason}</div>}
+                                        {samplePnlLocked ? (
+                                          <>
+                                            <div style={{ fontSize: '12px', fontWeight: 700, color: '#fbbf24', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>Official PnL locked</div>
+                                            <div style={{ fontSize: '8px', color: 'rgba(251,191,36,0.55)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginTop: '3px' }}>Integrity check failed</div>
+                                            <div style={{ fontSize: '10px', color: 'rgba(226,232,240,0.72)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginTop: '5px' }}>{samplePnlStr ? `Sample PnL: ${samplePnlStr}` : 'Sample PnL unavailable'}</div>
+                                            {samplePnlStr && <div style={{ fontSize: '8px', color: 'rgba(148,163,184,0.58)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginTop: '2px' }}>Not official</div>}
+                                          </>
+                                        ) : (
+                                          <>
+                                            <div style={{ fontSize: '13px', fontWeight: 700, color: sampleBadgeShown ? '#fbbf24' : pnlColor, fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{pnlStr}</div>
+                                            {pctStr && <div style={{ fontSize: '10px', color: pnlColor, fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', opacity: 0.7 }}>{pctStr}</div>}
+                                          </>
+                                        )}
                                       </div>
                                       <div style={{ minWidth: '70px' }}>
                                         <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.28)', letterSpacing: '0.10em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '3px' }}>Hold</div>
