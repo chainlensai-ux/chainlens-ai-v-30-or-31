@@ -1124,7 +1124,7 @@ export type WalletSnapshot = {
       targetedRecoveryPagesAttempted: number
     }
     possibleGapReasons: Array<{
-      reasonKey: 'provider_recent_window_limited' | 'provider_tx_count_below_external_trade_count' | 'unknown_direction_context_only_events' | 'receipt_reconstruction_failed' | 'historical_recovery_capped' | 'synthetic_cost_basis_remaining' | 'flat_price_estimate_only' | 'relayed_or_router_attribution_gap' | 'normal_scan_cost_cap_hit' | 'quote_or_price_independence_not_proven'
+      reasonKey: 'provider_recent_window_limited' | 'provider_tx_count_below_external_trade_count' | 'unknown_direction_context_only_events' | 'receipt_reconstruction_failed' | 'historical_recovery_capped' | 'missing_prior_buy_cost_basis' | 'estimate_only_flat_price' | 'coverage_below_public_threshold' | 'relayed_or_router_attribution_gap' | 'normal_scan_cost_cap_hit' | 'quote_or_price_independence_not_proven'
       label: string
       evidence: string
       canFixInNormalScan: boolean
@@ -1869,6 +1869,7 @@ export type WalletSnapshot = {
       finalPriceAttempts: number; finalPricedEvents: number; finalClosedLots: number
       budgetCapHit: boolean; skippedBecauseEnoughEvidence: boolean
       skippedBecauseDailyCap: boolean; estimatedExtraCredits: number
+      broadPricingStoppedForRecoveryReserve?: boolean; broadPricingSkippedAfterReserve?: number
       samplePrioritizedCandidates: Array<{ symbol: string | null; priority: number; hasStableLeg: boolean; hasWethLeg: boolean; usdValue: number | null }>
     }
     unmatchedSellBackfillDebug?: UnmatchedSellBackfillDebug
@@ -8883,6 +8884,7 @@ async function buildPriceAtTimeEvidence(
   totalValueUsd?: number | null,
   maxBudgetOverride?: number | null,
   deepScan = false,
+  reservedRecoveryCredits = 0,
 ): Promise<{
   evidenceWithPricing: WalletTxEvidence[]
   summary: WalletSnapshot['walletPriceEvidenceSummary']
@@ -8893,7 +8895,9 @@ async function buildPriceAtTimeEvidence(
   // maxBudgetOverride (numeric) takes priority; otherwise derive from totalValueUsd tier
   const _inferredTier = computeWalletValueTier(totalValueUsd)
   const _tierBudget = maxBudgetOverride != null ? maxBudgetOverride : TIER_PRICE_BUDGET[_inferredTier]
-  const BASE_BUDGET     = Math.max(1, _tierBudget)
+  const _reservedRecoveryCreditsForPricing = deepScan ? Math.max(0, Math.floor(reservedRecoveryCredits || 0)) : 0
+  const _pricingBudgetReducedForRecovery = _reservedRecoveryCreditsForPricing > 0
+  const BASE_BUDGET     = Math.max(1, _tierBudget - _reservedRecoveryCreditsForPricing)
   const EXPANDED_BUDGET = Math.max(BASE_BUDGET + 1, parseInt(process.env.CHAINLENS_WALLET_PRICE_ATTEMPT_EXPANDED ?? '10', 10) || 10)
   const PUBLIC_MAX_PRICE_BUDGET = Math.max(EXPANDED_BUDGET + 1, parseInt(process.env.CHAINLENS_WALLET_PRICE_ATTEMPT_MAX  ?? '12', 10) || 12)
   const MAX_BUDGET      = Math.max(BASE_BUDGET, Math.min(PUBLIC_MAX_PRICE_BUDGET, maxBudgetOverride ?? PUBLIC_MAX_PRICE_BUDGET))
@@ -8908,6 +8912,7 @@ async function buildPriceAtTimeEvidence(
     finalPriceAttempts: 0, finalPricedEvents: 0, finalClosedLots: 0,
     budgetCapHit: false, skippedBecauseEnoughEvidence: false,
     skippedBecauseDailyCap: false, estimatedExtraCredits: 0,
+    broadPricingStoppedForRecoveryReserve: false, broadPricingSkippedAfterReserve: 0,
     samplePrioritizedCandidates: [],
   })
 
@@ -9484,6 +9489,8 @@ async function buildPriceAtTimeEvidence(
       skippedBecauseEnoughEvidence: _skippedEnough,
       skippedBecauseDailyCap: false,
       estimatedExtraCredits: _pass2Attempts,
+      broadPricingStoppedForRecoveryReserve: _pricingBudgetReducedForRecovery && priceAttemptLimitReached,
+      broadPricingSkippedAfterReserve: _pricingBudgetReducedForRecovery ? Math.max(0, _sortedCandidates.length - pricedEvents - openCheckEvents) : 0,
       samplePrioritizedCandidates: _sortedCandidates.slice(0, 8).map(({ e }) => {
         const [tier] = getCandidatePriority(e)
         const cl = (e.contract ?? '').toLowerCase()
@@ -14100,7 +14107,10 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   tokenMeter.startTokenMeter('priceInference')
   const _pricingStartedAt = Date.now()
   tokenMeter.measure('priceInference', _swapEvidenceWithDetection)
-  let { evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug, budgetDebug: _priceBudgetDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache, priceByContract, totalValue, scanModeConfig?.priceAttempts ?? (historicalCoverage ? 6 : null), deepScan)
+  const _prePricingRecoveryReserveCredits = deepScan && historicalCoverage && walletScanBudget?.adminOverrideUsed !== true
+    ? Math.max(0, Math.min(scanModeConfig?.targetedRecoveryPages ?? 0, scanModeConfig?.hardCapCredits ?? 18))
+    : 0
+  let { evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug, budgetDebug: _priceBudgetDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested, _reqPriceCache, priceByContract, totalValue, scanModeConfig?.priceAttempts ?? (historicalCoverage ? 6 : null), deepScan, _prePricingRecoveryReserveCredits)
   // Track base evidence historical price calls
   for (let _pp = 0; _pp < (_priceAtTimeDebug?.providerAttempts ?? 0); _pp++) {
     _trackGatewayProviderCall('goldrush', 'historical_by_addresses_v2', false, `gr:price:base:${_pp}:${addrNorm}`)
@@ -15134,9 +15144,14 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // before pricing ran. Late Phase-6 fields (estimateOnlyClosedLots etc.) aren't computed yet at this
   // point, so this uses early proxy signals already available: known synthetic-lot targets plus "no
   // real-backed evidence yet" stands in for "recovery is needed and has real targets".
-  const _recoveryReservationNeeded = _syntheticLotTokenTargets.length > 0 && _realBackedClosedLotsCountEarly === 0 && !_adminOverrideUsed
+  const _highValueNeedsMorePublicLots = _walletValueTier === 'high_value' && _realBackedClosedLotsCountEarly < 10
+  const _recoveryReservationNeeded = deepScan && !_adminOverrideUsed && (
+    _syntheticLotTokenTargets.length > 0 ||
+    (_lotEngineDebug.unmatchedSells ?? 0) > 0 ||
+    _highValueNeedsMorePublicLots
+  )
   const _recoveryReservedCredits = _recoveryReservationNeeded
-    ? Math.max(0, Math.min(2, _syntheticLotTokenTargets.length, _sharedHistoricalBudgetRemaining()))
+    ? Math.max(0, Math.min(scanModeConfig?.targetedRecoveryPages ?? 1, Math.max(1, _syntheticLotTokenTargets.length || ((_lotEngineDebug.unmatchedSells ?? 0) > 0 ? 1 : 0) || (_highValueNeedsMorePublicLots ? 1 : 0)), _sharedHistoricalBudgetRemaining() + _prePricingRecoveryReserveCredits))
     : 0
   const _recoveryBudgetReserved = _recoveryReservedCredits > 0
   const _recoveryReservationReason = !_recoveryReservationNeeded
@@ -17381,7 +17396,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     recoveryBudgetReserved: _recoveryBudgetReserved,
     recoveryReservedCredits: _recoveryReservedCredits,
     recoveryReservationReason: _recoveryReservationReason,
-    pricingCreditsReducedForRecovery: _recoveryReservedCredits,
+    pricingCreditsReducedForRecovery: _prePricingRecoveryReserveCredits,
     targetedRecoveryAttemptedBeforeHardCap: _targetedRecoveryAttemptedBeforeHardCap,
     hardCapPreventedAfterReservation: _hardCapPreventedAfterReservation,
     // RECOVERY-EXEC-FIX-1: the synthetic-target-extra pass (GoldRush-only, see _syntheticTargetExtra*
@@ -17391,6 +17406,9 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     targetedRecoveryUsedReservedCredits: _recoveryBudgetReserved && _syntheticTargetExtraCreditUsed > 0,
     targetedRecoveryReservedCreditsAvailable: _recoveryReservedCredits,
     targetedRecoveryReservedCreditsUsed: Math.min(_syntheticTargetExtraCreditUsed, _recoveryReservedCredits),
+    broadPricingStoppedForRecoveryReserve: Boolean(_priceBudgetDebug.broadPricingStoppedForRecoveryReserve),
+    broadPricingSkippedAfterReserve: _priceBudgetDebug.broadPricingSkippedAfterReserve ?? 0,
+    historicalRecoverySkippedBecauseNoBudgetAfterPricing: _recoveryReservationNeeded && _syntheticTargetExtraCreditUsed === 0 && _sharedHistoricalBudgetRemaining() <= 0,
   }
   _perfWalletTimings.recoveryPostProcessingMs += Date.now() - _recoveryPostProcessingStartedAt
   const _historicalScanDebugBuildStartedAt = Date.now()
@@ -18113,7 +18131,10 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
           : 'recovery_budget_reserved_but_no_pages_allowed'
         return { recommended: true, mode: 'targeted_token_recovery', targetTokens, reason: 'high_activity_excluded_lots_no_public_evidence', estimatedExtraPages: _hardCapHitFinal ? Math.min(2, targetTokens.length) : Math.min(2, targetTokens.length), recoverable: true, recoveryBlockedReason: _recoveryBlockedReasonHonest }
       }
-      return { recommended: false, mode: historicalAttempted ? 'attempted_light' : 'none', targetTokens, reason: _hasExcludedLots ? 'verified_stats_available_excluded_lots_remain' : 'closed_lots_already_found', estimatedExtraPages: 0 }
+      if (_hasExcludedLots) {
+        return { recommended: true, mode: 'targeted_token_recovery', targetTokens, reason: 'excluded_lots_or_missing_cost_basis_remain', estimatedExtraPages: Math.max(1, Math.min(scanModeConfig?.targetedRecoveryPages ?? 1, targetTokens.length || 1)), recoverable: true, recoveryBlockedReason: _hardCapHitFinal && !_recoveryBudgetReserved ? 'hard_cap_reached_before_reservation' : null }
+      }
+      return { recommended: false, mode: historicalAttempted ? 'attempted_light' : 'none', targetTokens, reason: 'closed_lots_already_found', estimatedExtraPages: 0 }
     }
     // RECOVERY-REC-FIX-1: a wallet with synthetic closed lots excluded for missing cost basis,
     // plus known target token contracts, IS a real targeted-recovery candidate — the cost guard
@@ -18321,15 +18342,15 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         likelyCostImpact: 'high',
       },
       {
-        reasonKey: 'synthetic_cost_basis_remaining',
-        label: 'Some matched lots still lack real prior-buy cost basis',
-        evidence: `${_syntheticLotsExcludedFromStatsFinal} synthetic/missing-cost-basis lot(s) excluded from public stats.`,
+        reasonKey: 'missing_prior_buy_cost_basis',
+        label: 'Some sells still lack prior-buy cost basis',
+        evidence: `${_syntheticLotsExcludedFromStatsFinal} prior-buy cost-basis gap(s) and ${walletTradeStatsSummary.missing.filter(e => e.startsWith('missing_cost_basis_sells')).map(e => Number(e.split(':')[1] ?? 0)).find(n => Number.isFinite(n) && n > 0) ?? 0} missing-cost-basis sell(s) block public PnL.`,
         canFixInNormalScan: false,
         requiresFullRecovery: true,
         likelyCostImpact: 'medium',
       },
       {
-        reasonKey: 'flat_price_estimate_only',
+        reasonKey: 'estimate_only_flat_price',
         label: 'Flat/estimate-only pricing cannot unlock official PnL',
         evidence: `${_flatPriceClosedLotsExcludedFinal} flat-price lot(s) and ${_estimateOnlyClosedLotsFinal.length} estimate-only lot(s) excluded from public PnL.`,
         canFixInNormalScan: false,

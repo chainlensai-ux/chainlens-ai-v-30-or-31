@@ -274,8 +274,8 @@ console.log('wallet pnl-recovery-exclusion pass: raw closed lots no longer block
 // 1. Recovery budget must be reserved before the broad pricing/historical pass spends the shared pool.
 assert.match(
   snap,
-  /const _recoveryReservedCredits = _recoveryReservationNeeded\s*\n\s*\? Math\.max\(0, Math\.min\(2, _syntheticLotTokenTargets\.length, _sharedHistoricalBudgetRemaining\(\)\)\)/,
-  'recovery budget is reserved from the shared historical pool before the broad pass computes its own page allowance',
+  /const _prePricingRecoveryReserveCredits = deepScan && historicalCoverage && walletScanBudget\?\.adminOverrideUsed !== true[\s\S]*?buildPriceAtTimeEvidence\([^\n]*_prePricingRecoveryReserveCredits\)/,
+  'deep-mode recovery budget is reserved before the broad price-at-time pass can consume the hard cap',
 )
 assert.match(
   snap,
@@ -296,7 +296,7 @@ for (const field of [
   'recoveryBudgetReserved: _recoveryBudgetReserved',
   'recoveryReservedCredits: _recoveryReservedCredits',
   'recoveryReservationReason: _recoveryReservationReason',
-  'pricingCreditsReducedForRecovery: _recoveryReservedCredits',
+  'pricingCreditsReducedForRecovery: _prePricingRecoveryReserveCredits',
   'targetedRecoveryAttemptedBeforeHardCap: _targetedRecoveryAttemptedBeforeHardCap',
   'hardCapPreventedAfterReservation: _hardCapPreventedAfterReservation',
 ]) {
@@ -338,6 +338,23 @@ assert.doesNotMatch(
   snap,
   /Trade intelligence is ready: \$\{_verifiedIndependentClosedLotsFinal\} verified behavior lots detected/,
   'the stale verified-behavior-lots headline copy must be fully replaced',
+)
+
+
+for (const field of [
+  'broadPricingStoppedForRecoveryReserve: Boolean(_priceBudgetDebug.broadPricingStoppedForRecoveryReserve)',
+  'broadPricingSkippedAfterReserve: _priceBudgetDebug.broadPricingSkippedAfterReserve ?? 0',
+  'historicalRecoverySkippedBecauseNoBudgetAfterPricing: _recoveryReservationNeeded && _syntheticTargetExtraCreditUsed === 0 && _sharedHistoricalBudgetRemaining() <= 0',
+]) {
+  assert.ok(snap.includes(field), `walletScanBudgetDebug must expose ${field.split(':')[0].trim()}`)
+}
+assert.ok(snap.includes('estimate_only_flat_price'), 'external coverage gap uses estimate_only_flat_price label')
+assert.ok(snap.includes('missing_prior_buy_cost_basis'), 'external coverage gap uses missing_prior_buy_cost_basis label')
+assert.doesNotMatch(snap, /0 synthetic\/missing-cost-basis lot\(s\)/, 'coverage gap copy must not hard-code misleading zero synthetic/missing-cost-basis lots text')
+assert.match(
+  snap,
+  /return \{ recommended: true, mode: 'targeted_token_recovery',[\s\S]*reason: 'excluded_lots_or_missing_cost_basis_remain'/,
+  'recovery recommendation remains true when excluded lots or missing cost basis still block public PnL',
 )
 
 console.log('wallet budget-reservation and moralis-transfer-leak fix checks passed')
@@ -582,7 +599,7 @@ assert.match(
   /openPosition:\s*\{[\s\S]*status: _walletOpenPositionPnlRead\.status[\s\S]*lockedReason: _walletOpenPositionPnlRead\.status === 'available' \? null : _walletOpenPositionPnlRead\.reason/,
   'walletApiSourceAudit.openPosition mirrors walletOpenPositionPnlRead status so partial reads stay partial in source audit',
 )
-assert.ok(page.includes('Official PnL locked') && page.includes('Estimated PnL Beta'), 'wallet scanner keeps Estimated PnL Beta separate from the official locked PnL lane')
+assert.ok(page.includes('Estimated PnL Beta') && page.includes('official PnL'), 'wallet scanner keeps Estimated PnL Beta separate from the official locked PnL lane')
 assert.match(
   page,
   /Open-position PnL locked\/partial[\s\S]*blocked by \{unmatchedOpenSymbols\.join\(', '\)\} missing independent current price/,
