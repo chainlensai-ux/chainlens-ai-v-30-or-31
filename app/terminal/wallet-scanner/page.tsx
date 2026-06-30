@@ -217,7 +217,7 @@ type WalletResult = {
   publicPnlDisplayLabel?: string
   publicPnlDisplayReason?: string
   walletPnlBlockerSummary?: {
-    status: 'ready' | 'locked_recoverable' | 'locked_integrity' | 'locked_insufficient_evidence'
+    status: 'ready' | 'locked_recoverable' | 'locked_integrity' | 'locked_insufficient_evidence' | 'locked_no_trade_path'
     headline: string
     reasons: string[]
     recoverable: boolean
@@ -342,6 +342,7 @@ type WalletResult = {
       confidence: string | null
       source: string | null
       method: string | null
+      reason?: string | null
       label: 'Estimated transfer-flow PnL'
       warning: string
       excludedFrom: string[]
@@ -394,7 +395,7 @@ type WalletResult = {
   }
   walletRecoveryRecommendation?: {
     recommended: boolean
-    mode: 'targeted_token_recovery' | 'targeted_recovery_attempted' | 'attempted_light' | 'attempted_provider_failed' | 'skipped_cost_guard' | 'skipped_micro_wallet' | 'none'
+    mode: null | 'targeted_token_recovery' | 'targeted_recovery_attempted' | 'attempted_light' | 'attempted_provider_failed' | 'skipped_cost_guard' | 'skipped_micro_wallet' | 'none'
     targetTokens: Array<{ contract: string; symbol: string; chain: string; estimatedUsd: number }>
     reason: string
     estimatedExtraPages: number
@@ -2565,10 +2566,12 @@ export default function WalletScannerPage() {
 
                 return (
                   <div style={{ background: '#080c14', border: '1px solid rgba(125,211,252,0.18)', borderRadius: '18px', padding: '20px 22px' }}>
-                    <div style={{ fontSize: '15px', fontWeight: 800, color: '#7dd3fc', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{result.walletNoPnlReason === 'non_trader_address_type' ? 'Portfolio / Holder Read' : result.walletNoPnlReason === 'relayed_trader_needs_deeper_reconstruction' ? 'Trader PnL Open Check' : 'Behavior intelligence available'}</div>
+                    <div style={{ fontSize: '15px', fontWeight: 800, color: '#7dd3fc', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{result.walletNoPnlReason === 'non_trader_address_type' ? 'Portfolio / Holder Read' : blocker?.status === 'locked_no_trade_path' ? 'Trader PnL unavailable' : result.walletNoPnlReason === 'relayed_trader_needs_deeper_reconstruction' ? 'Trader PnL Open Check' : 'Behavior intelligence available'}</div>
                     <p style={{ fontSize: '12px', color: 'rgba(255,255,255,0.45)', marginTop: '4px', fontFamily: 'var(--font-inter, Inter, sans-serif)', lineHeight: 1.5 }}>
                       {result.walletNoPnlReason === 'non_trader_address_type'
                         ? 'Trader PnL not applicable — this wallet looks like a holder/distributor/treasury address, not an active trading wallet. Portfolio and flow read are available.'
+                        : blocker?.status === 'locked_no_trade_path'
+                        ? 'ChainLens found contract/relayer context logs, but not enough attribution to prove this wallet’s trades.'
                         : result.walletNoPnlReason === 'relayed_trader_needs_deeper_reconstruction'
                         ? 'Activity may be routed through contracts/relayers. ChainLens found portfolio and flow, but needs deeper trade reconstruction before showing realized PnL.'
                         : 'Profit skill is locked, but this wallet still has enough evidence for a behavior read.'}
@@ -3432,6 +3435,7 @@ export default function WalletScannerPage() {
                 // still be a real trader routed through a contract/relayer, so the checklist must say
                 // "open check", never "not applicable" or "token/distributor address".
                 const isRelayedTraderOpenCheck = result.walletNoPnlReason === 'relayed_trader_needs_deeper_reconstruction'
+                const flowReadAvailable = Boolean(mc.activity.eventCount > 0 || (result.walletFacts?.flowRead?.receivedTokens?.length ?? 0) > 0 || (result.walletFacts?.flowRead?.sentTokens?.length ?? 0) > 0 || (result.walletFacts?.flowRead?.topCounterparties?.length ?? 0) > 0)
                 const chips: { label: string; note: string; status: 'ok' | 'partial' | 'open_check' }[] = [
                   { label: 'Portfolio', note: mc.portfolio.status === 'ok' ? `${(mc.portfolio.evidence.includes('total_value') ? 'value + ' : '')}holdings` : mc.portfolio.reason.replace(/_/g, ' '), status: mc.portfolio.status },
                   { label: 'Activity', note: mc.activity.eventCount > 0 ? `${mc.activity.eventCount} events indexed` : mc.activity.status === 'open_check' && mc.activity.reason === 'provider_unavailable' ? 'unavailable' : 'not checked', status: mc.activity.status },
@@ -3444,8 +3448,8 @@ export default function WalletScannerPage() {
                     { label: 'Trade stats', note: 'Not evaluated for this address type', status: 'open_check' as const },
                   ] : isRelayedTraderOpenCheck ? [
                     { label: 'Trader PnL', note: 'Open check — may be routed through contracts/relayers', status: 'open_check' as const },
-                    { label: 'Flow read', note: 'available', status: 'ok' as const },
-                    { label: 'Trade stats', note: 'Needs deeper trade reconstruction', status: 'open_check' as const },
+                    { label: 'Flow read', note: flowReadAvailable ? 'available' : 'not enough attributed flows', status: flowReadAvailable ? 'ok' as const : 'open_check' as const },
+                    { label: 'Trade stats', note: result.walletPnlBlockerSummary?.status === 'locked_no_trade_path' ? 'No wallet-side buy/sell path found' : 'Needs deeper trade reconstruction', status: 'open_check' as const },
                   ] : [
                     { label: 'Swap pairs', note: mc.swapDetection.candidateCount > 0 ? `${mc.swapDetection.candidateCount} candidates` : mc.activity.eventCount > 0 ? 'none found in sample' : 'no activity', status: mc.swapDetection.status },
                     { label: 'FIFO PnL', note: (() => {
@@ -4167,7 +4171,7 @@ export default function WalletScannerPage() {
                             <p className="wpv3-support" style={{ marginBottom: '8px', color: '#fbbf24' }}>Performance classification remains locked until enough verified closed lots exist.</p>
                           )}
                           {wp.basis === 'behavior_only' && wp.profitSkillStatus !== 'unlocked' && (
-                            <p className="wpv3-support" style={{ marginBottom: '8px', color: '#fbbf24' }}>{result.walletNoPnlReason === 'provider_summary_available_fifo_missing' ? 'Provider trading performance is available. ChainLens trading personality remains locked until verified FIFO lots exist.' : result.walletNoPnlReason === 'non_trader_address_type' ? 'Trader PnL not applicable for this address type.' : result.walletNoPnlReason === 'relayed_trader_needs_deeper_reconstruction' ? 'Activity may be routed through contracts/relayers. Needs deeper trade reconstruction before showing realized PnL.' : `Behavior-only read. Profit skill locked because ${wp.profitSkillStatus === 'integrity_invalid_not_proven' ? 'PnL integrity failed' : 'public PnL sample is too small or partial'}.`}</p>
+                            <p className="wpv3-support" style={{ marginBottom: '8px', color: '#fbbf24' }}>{result.walletNoPnlReason === 'provider_summary_available_fifo_missing' ? 'Provider trading performance is available. ChainLens trading personality remains locked until verified FIFO lots exist.' : result.walletNoPnlReason === 'non_trader_address_type' ? 'Trader PnL not applicable for this address type.' : result.walletPnlBlockerSummary?.status === 'locked_no_trade_path' ? 'ChainLens found contract/relayer context logs, but not enough attribution to prove this wallet’s trades.' : result.walletNoPnlReason === 'relayed_trader_needs_deeper_reconstruction' ? 'Activity may be routed through contracts/relayers. Trade reconstruction remains an open attribution check before showing realized PnL.' : `Behavior-only read. Profit skill locked because ${wp.profitSkillStatus === 'integrity_invalid_not_proven' ? 'PnL integrity failed' : 'public PnL sample is too small or partial'}.`}</p>
                           )}
                           {scoreRows.length > 0 && (
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
