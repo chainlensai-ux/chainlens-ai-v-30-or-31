@@ -414,6 +414,12 @@ export type WalletSnapshot = {
     warning: string
     reason: string
     excludedFrom: ['realized_pnl', 'win_rate', 'profit_skill', 'wallet_score']
+    matchedTokenCount?: number | null
+    unmatchedTokenCount?: number | null
+    unmatchedSymbols?: string[]
+    matchedUnrealizedPnlUsd?: number | null
+    aggregateLocked?: boolean
+    aggregateLockedReason?: string | null
   }
   pnlDisplayMode?: 'realized' | 'open_position_only' | 'locked'
   pnlDisplayLabel?: string
@@ -16420,11 +16426,27 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     : null
   const _openPositionUnrealizedPnlUsd = _openPositionCurrentValueUsd !== null ? _openPositionCurrentValueUsd - _openPositionCostBasisUsd : null
   const _openPositionAvailable = _openLotsForRead.length > 0 && _openPositionUnrealizedPnlUsd !== null
+  const _openPositionUnmatchedSymbols = _openPositionUnmatchedTokens.map(t => t.symbol).filter(Boolean)
+  const _openPositionAggregateLockedReason = _openPositionUnmatchedTokens.length > 0
+    ? `${_openPositionUnmatchedSymbols.join(', ') || 'Some open tokens'} current price was not independently matched; aggregate unrealized PnL locked because partial coverage is not enough.`
+    : null
+  const _openPositionMatchedCostBasisUsd = _openLotsForRead
+    .filter(l => priceByChainContract.has(`${_normalizeHoldingChainForPrice(l.chain)}:${l.tokenAddress.toLowerCase()}`))
+    .reduce((sum, l) => sum + (l.amountOpened > 0 ? l.entryValueUsd * (l.amountRemaining / l.amountOpened) : l.entryValueUsd), 0)
+  const _openPositionMatchedCurrentValueUsd = _openPositionPricedTokenCount > 0
+    ? _openLotsForRead.reduce((sum, l) => {
+      const price = priceByChainContract.get(`${_normalizeHoldingChainForPrice(l.chain)}:${l.tokenAddress.toLowerCase()}`)
+      return price === undefined ? sum : sum + Math.max(0, l.amountRemaining) * price
+    }, 0)
+    : null
+  const _openPositionMatchedUnrealizedPnlUsd = _openPositionMatchedCurrentValueUsd === null ? null : _openPositionMatchedCurrentValueUsd - _openPositionMatchedCostBasisUsd
   const _openPositionAuditNotes = {
     matchedTokens: _openPositionPricedTokenCount,
     unmatchedTokens: _openPositionUnmatchedTokens.length,
-    unmatchedSymbols: _openPositionUnmatchedTokens.map(t => t.symbol).filter(Boolean),
-    aggregateLockedReason: _openPositionUnmatchedTokens.length > 0 ? 'aggregate unrealized PnL locked because partial coverage is not enough' : null,
+    unmatchedSymbols: _openPositionUnmatchedSymbols,
+    matchedUnrealizedPnlUsd: _openPositionMatchedUnrealizedPnlUsd,
+    aggregateLocked: _openPositionUnmatchedTokens.length > 0,
+    aggregateLockedReason: _openPositionAggregateLockedReason,
   }
   // OPEN-POSITION-ESTIMATE-ONLY-FIX: when every open lot's current pricing reuses the estimate-only
   // current-holding-price fallback (no real priced-token evidence backs it), the "unrealized PnL"
@@ -16484,8 +16506,14 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       estimateOnlyTokenCount: _openPositionEstimateOnlyTokenCount,
       label: 'Open-position PnL',
       warning: 'Unrealized only — open positions, not a closed trade result.',
-      reason: _openLotsForRead.length === 0 ? 'No open lots are currently tracked.' : `${_openPositionAuditNotes.unmatchedSymbols.join(', ') || 'Some open tokens'} current price was not independently matched; aggregate unrealized PnL locked because partial coverage is not enough.`,
+      reason: _openLotsForRead.length === 0 ? 'No open lots are currently tracked.' : (_openPositionAggregateLockedReason ?? 'Some open tokens current price was not independently matched; aggregate unrealized PnL locked because partial coverage is not enough.'),
       excludedFrom: ['realized_pnl', 'win_rate', 'profit_skill', 'wallet_score'],
+      matchedTokenCount: _openPositionPricedTokenCount,
+      unmatchedTokenCount: _openPositionUnmatchedTokens.length,
+      unmatchedSymbols: _openPositionUnmatchedSymbols,
+      matchedUnrealizedPnlUsd: _openPositionMatchedUnrealizedPnlUsd,
+      aggregateLocked: _openPositionUnmatchedTokens.length > 0,
+      aggregateLockedReason: _openPositionAggregateLockedReason,
     }
 
   // WALLET-OPEN-PNL-1 (#2): if realized PnL is locked but open-position PnL is available, surface

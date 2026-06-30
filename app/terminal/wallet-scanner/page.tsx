@@ -128,6 +128,10 @@ type OpenPositionPerformanceSummary = {
     matchedCurrentOpenValueUsd: number | null
     matchedUnrealizedPnlUsd: number | null
     matchedUnrealizedPnlPercent: number | null
+    openPositionPnlStatus?: 'priced' | 'partial' | 'estimate_only' | 'cost_basis_only'
+    openPositionPnlReason?: string | null
+    aggregateLocked?: boolean
+    aggregateLockedReason?: string | null
     coverageLabel: 'full' | 'partial' | 'cost_basis_only'
     unmatchedSymbols: string[]
     tokens: Array<{
@@ -281,6 +285,12 @@ type WalletResult = {
     warning: string
     reason: string
     excludedFrom: string[]
+    matchedTokenCount?: number | null
+    unmatchedTokenCount?: number | null
+    unmatchedSymbols?: string[]
+    matchedUnrealizedPnlUsd?: number | null
+    aggregateLocked?: boolean
+    aggregateLockedReason?: string | null
   }
   pnlDisplayMode?: 'realized' | 'open_position_only' | 'locked'
   pnlDisplayLabel?: string
@@ -3347,10 +3357,19 @@ export default function WalletScannerPage() {
 
               {result.walletEstimatedPnlRead?.available && (() => {
                 const est = result.walletEstimatedPnlRead!
+                const openRead = result.walletOpenPositionPnlRead
+                const perf = result.openPositionPerformanceSummary ?? result.walletModuleCoverage?.openPositionPerformanceSummary ?? null
+                const matchedOpenCount = openRead?.matchedTokenCount ?? perf?.matchedTokenCount ?? null
+                const unmatchedOpenCount = openRead?.unmatchedTokenCount ?? perf?.unmatchedTokenCount ?? null
+                const totalOpenTokenCount = matchedOpenCount !== null && unmatchedOpenCount !== null ? matchedOpenCount + unmatchedOpenCount : null
+                const unmatchedOpenSymbols = openRead?.unmatchedSymbols ?? perf?.unmatchedSymbols ?? []
+                const matchedOpenLabel = matchedOpenCount !== null && totalOpenTokenCount !== null
+                  ? `Matched open-position estimate (${matchedOpenCount}/${totalOpenTokenCount} tokens)`
+                  : 'Matched open-position estimate'
                 const rows = [
                   ['Raw FIFO estimate', est.rawFifoRealizedEstimateUsd],
                   ['Historical preview estimate', est.historicalPreviewRealizedEstimateUsd],
-                  ['Matched open-position estimate', est.matchedOpenPositionUnrealizedUsd],
+                  [matchedOpenLabel, openRead?.matchedUnrealizedPnlUsd ?? est.matchedOpenPositionUnrealizedUsd], // Matched open-position estimate
                   ['Total estimate', est.totalEstimateUsd],
                 ] as const
                 return (
@@ -3362,7 +3381,7 @@ export default function WalletScannerPage() {
                       </div>
                       <span className="rounded-full border border-amber-300/30 px-2 py-1 text-xs font-semibold uppercase text-amber-100">{est.confidence}</span>
                     </div>
-                    <p className="mt-2 text-sm text-amber-100/80">Low confidence estimate — excluded from score, win rate, and profit skill.</p>
+                    <p className="mt-2 text-sm text-amber-100/80">Official PnL locked. Estimated PnL Beta available. Low confidence estimate — excluded from score, win rate, and profit skill.</p>
                     <div className="mt-4 grid gap-2 sm:grid-cols-2">
                       {rows.map(([label, value]) => (
                         <div key={label} className="rounded-xl border border-white/10 bg-black/20 p-3">
@@ -3372,6 +3391,11 @@ export default function WalletScannerPage() {
                       ))}
                     </div>
                     {est.reasons.length > 0 && <div className="mt-3 text-xs text-amber-100/60">{est.reasons[0]}</div>}
+                    {unmatchedOpenSymbols.length > 0 && (
+                      <div className="mt-2 text-xs text-amber-100/70">
+                        Open-position PnL locked/partial — blocked by {unmatchedOpenSymbols.join(', ')} missing independent current price.
+                      </div>
+                    )}
                   </div>
                 )
               })()}
@@ -4640,8 +4664,13 @@ export default function WalletScannerPage() {
                               ]
 
                               const perfTokens = perf?.tokens ?? []
+                              const matchedEstimate = result.walletOpenPositionPnlRead?.matchedUnrealizedPnlUsd ?? perf?.matchedUnrealizedPnlUsd ?? null
+                              const matchedCount = result.walletOpenPositionPnlRead?.matchedTokenCount ?? perf?.matchedTokenCount ?? null
+                              const unmatchedCount = result.walletOpenPositionPnlRead?.unmatchedTokenCount ?? perf?.unmatchedTokenCount ?? null
+                              const totalTokenCount = matchedCount !== null && unmatchedCount !== null ? matchedCount + unmatchedCount : null
+                              const blockedSymbols = result.walletOpenPositionPnlRead?.unmatchedSymbols ?? perf?.unmatchedSymbols ?? []
                               const footerNote = openCostBasisOnly
-                                ? `${perf?.unmatchedSymbols?.length ? `${perf.unmatchedSymbols.join(', ')} current price was not independently matched` : 'Current value unavailable'}, so unrealized PnL is locked.`
+                                ? `${perf?.aggregateLockedReason ?? result.walletOpenPositionPnlRead?.aggregateLockedReason ?? (perf?.unmatchedSymbols?.length ? `${perf.unmatchedSymbols.join(', ')} current price was not independently matched; aggregate unrealized PnL locked because partial coverage is not enough.` : 'Current value unavailable, so unrealized PnL is locked.')}`
                                 : openEstimateOnly
                                 ? 'Current value uses estimate-only pricing, so unrealized PnL is not public-grade.'
                                 : coverage === 'full'
@@ -4699,9 +4728,14 @@ export default function WalletScannerPage() {
                                       })}
                                     </div>
                                   )}
+                                  {openCostBasisOnly && matchedEstimate !== null && matchedCount !== null && totalTokenCount !== null && (
+                                    <div style={{ fontSize: '12px', fontWeight: 800, color: matchedEstimate >= 0 ? '#4ade80' : '#f87171', lineHeight: 1.5, fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', background: 'rgba(251,191,36,0.04)', border: '1px solid rgba(251,191,36,0.12)', borderRadius: '7px', padding: '7px 10px', marginBottom: '6px' }}>
+                                      Matched open-position estimate: {matchedEstimate >= 0 ? '+' : '-'}{fmtUsd2(matchedEstimate)} on {matchedCount}/{totalTokenCount} tokens
+                                    </div>
+                                  )}
                                   {/* Footer note */}
                                   <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.28)', lineHeight: 1.5, fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', background: 'rgba(251,191,36,0.03)', border: '1px solid rgba(251,191,36,0.08)', borderRadius: '7px', padding: '7px 10px' }}>
-                                    {footerNote} Still open — not banked profit. Realized PnL locked until matched buy → sell closed lots exist.
+                                    {footerNote}{blockedSymbols.length > 0 ? ` Blocked by ${blockedSymbols.join(', ')} missing independent current price.` : ''} Still open — not banked profit. Realized PnL locked until matched buy → sell closed lots exist.
                                   </div>
                                   {/* Estimate-value honesty note */}
                                   <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.22)', lineHeight: 1.5, fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginTop: '5px' }}>
