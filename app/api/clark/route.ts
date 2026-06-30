@@ -5,6 +5,7 @@ import { fetchHoneypotSecurity } from "@/lib/server/honeypotSecurity";
 import { buildTokenFullReportPlan, executeClarkToolPlan as executeClarkToolLayerPlan, normalizeClarkScannerCacheKey } from "@/lib/clark/tools";
 import { buildTokenFullReport } from "@/lib/clark/reportBuilders";
 import { runWalletScanner } from "@/lib/server/walletScannerRunner";
+import { classifyClarkBasicIntent, buildClarkDirectAnswer, clarkMissingInputPrompt, CLARK_SAFE_FALLBACK, buildClarkRoutingDebug } from "@/lib/server/clarkBasicIntent";
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { getVerifiedUserPlan } from '@/lib/supabase/userSettings'
 import {
@@ -6946,6 +6947,42 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   const clarkDebugMode = Boolean((body as unknown as Record<string, unknown>).debug) || process.env.NODE_ENV !== 'production';
   const appIntentTools = appIntent.cta.map((a) => a.label).join(' · ');
 
+  // CLARK-BASIC-INTENT: classify and answer basic chat (greeting/basic_question/product_help/
+  // general_crypto_question) directly, with zero provider calls, before any tool routing.
+  // Scan requests without an address are asked for input here (also zero provider calls) instead
+  // of falling through to scan execution. Scan requests WITH an address, and whale/radar intents,
+  // fall through unchanged to the existing routing below — this never overrides that behavior.
+  {
+    const basicIntent = classifyClarkBasicIntent(prompt);
+    const directAnswer = buildClarkDirectAnswer(basicIntent, prompt);
+    if (directAnswer) {
+      return {
+        feature: "clark-ai", chain, mode: "chat", intent: basicIntent, toolsUsed: [],
+        analysis: directAnswer,
+        clarkToolPlan: null, clarkToolsExecuted: [], clarkToolStatuses: {}, clarkEvidenceMissing: [], clarkToolLatencyMs: 0,
+        clarkRoutingDebug: buildClarkRoutingDebug({
+          intent: basicIntent, answeredDirectly: true, providerCallsAdded: 0, routeUsed: null, missingInput: null,
+          reason: `Answered ${basicIntent} directly with no provider calls.`,
+        }),
+      };
+    }
+    if (basicIntent === 'token_scan_request' || basicIntent === 'wallet_scan_request' || basicIntent === 'ambiguous_scan_request') {
+      const missing = clarkMissingInputPrompt(basicIntent);
+      if (missing) {
+        const missingInputLabel = basicIntent === 'token_scan_request' ? 'token_contract' : basicIntent === 'wallet_scan_request' ? 'wallet_address' : 'token_or_wallet_address';
+        return {
+          feature: "clark-ai", chain, mode: "chat", intent: basicIntent, toolsUsed: [],
+          analysis: missing,
+          clarkToolPlan: null, clarkToolsExecuted: [], clarkToolStatuses: {}, clarkEvidenceMissing: [missingInputLabel], clarkToolLatencyMs: 0,
+          clarkRoutingDebug: buildClarkRoutingDebug({
+            intent: basicIntent, answeredDirectly: true, providerCallsAdded: 0, routeUsed: null, missingInput: missingInputLabel,
+            reason: `${basicIntent} requested without a valid address — asked for input instead of calling a scan API.`,
+          }),
+        };
+      }
+    }
+  }
+
   if (routedClassification.intent === "token_full_report") {
     if (!planAllows(verifiedPlan, "token_full_report")) {
       return {
@@ -10767,7 +10804,8 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     walletScan: evidence.walletSnapshot ?? {},
     analysis: body.context ?? {},
   };
-  // Do not call Anthropic generically when nothing was resolved and intent is unknown
+  // Do not call Anthropic generically when nothing was resolved and intent is unknown — safe
+  // fallback for normal chat that never empties out into a failed/empty response.
   if (replyMode === "unknown" && !resolvedAddress && !evidence.tokenScan && !evidence.walletSnapshot && !evidence.market?.ok) {
     return {
       feature: "clark-ai",
@@ -10775,7 +10813,11 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       mode: "casual_help",
       intent: plan.intent,
       toolsUsed,
-      analysis: "I can help with a token, wallet, liquidity, dev wallet, whale flow, pump alerts, or Base movers. I can also explain any crypto concept. Try 'scan BRETT', 'what\\'s pumping on Base?', or ask 'what is FDV?'.",
+      analysis: CLARK_SAFE_FALLBACK,
+      clarkRoutingDebug: buildClarkRoutingDebug({
+        intent: 'unsupported_request', answeredDirectly: true, providerCallsAdded: 0, routeUsed: null, missingInput: null,
+        reason: "No scan/tool intent matched — returned safe fallback instead of calling a provider.",
+      }),
     };
   }
   // Build page-aware prefix for Anthropic context
