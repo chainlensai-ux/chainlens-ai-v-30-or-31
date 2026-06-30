@@ -557,6 +557,17 @@ assert.match(
   /_rawMatchedClosedLotsFinal > 0 && _excludedClosedLotsFinal > 0[\s\S]*raw reconstructed lot\(s\) found,[\s\S]*No raw reconstructed lots are available yet/,
   'rawClosedLots > 0 uses an exclusion reason instead of saying no raw reconstructed lots are available yet',
 )
+
+assert.match(
+  snap,
+  /const _officialPnlUnlocked = \(snapshot as any\)\.publicPnlStatus === 'ok' && \(snapshot as any\)\.publicRealizedPnlUsd != null && \(snapshot as any\)\.publicPerformanceRealizedPnlUsd != null && \(snapshot as any\)\.publicPnlIntegrityGate\?\.hardInvalid !== true/,
+  'wallet PnL read uses the canonical officialPnlUnlocked boolean',
+)
+assert.match(snap, /displayMode: _pnlReadDisplayMode,[\s\S]*headlineLabel: _pnlReadHeadline\.label,[\s\S]*headlineValueUsd: _pnlReadHeadline\.valueUsd,[\s\S]*available: _pnlReadOfficialAvailable,[\s\S]*realizedPnlUsd: _pnlReadOfficialAvailable \? \(_performanceRealizedPnlUsd \?\? null\) : null/, 'locked official PnL read cannot expose stale official realized values')
+assert.match(snap, /'Profit skill not proven'/, 'integrity-invalid locked PnL headline does not say profit skill verified')
+assert.match(snap, /officialPnlStillLocked: _officialPnlStillLocked/, 'coverage audit exports canonical official locked status')
+assert.match(route, /const canonicalOpenPositionPerformanceSummary = \{[\s\S]*openLots: snapshot\.walletOpenPositionPnlRead\?\.openLots[\s\S]*uniqueTokens: snapshot\.walletOpenPositionPnlRead\?\.uniqueTokens[\s\S]*totalUnrealizedPnlUsd: snapshot\.walletOpenPositionPnlRead\?\.unrealizedPnlUsd[\s\S]*matchedTokenCount: snapshot\.walletOpenPositionPnlRead\?\.matchedTokenCount[\s\S]*unmatchedTokenCount: snapshot\.walletOpenPositionPnlRead\?\.unmatchedTokenCount[\s\S]*unmatchedSymbols: snapshot\.walletOpenPositionPnlRead\?\.unmatchedSymbols[\s\S]*matchedUnrealizedPnlUsd: snapshot\.walletOpenPositionPnlRead\?\.matchedUnrealizedPnlUsd/, 'open-position exported summaries mirror one canonical object')
+
 assert.match(
   snap,
   /realizedPnlUsd: _pnlReadOfficialAvailable \? \(_performanceRealizedPnlUsd \?\? null\) : null/,

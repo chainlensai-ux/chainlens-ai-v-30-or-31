@@ -1575,6 +1575,29 @@ export async function POST(req: Request) {
           }
         }
       }
+
+      const canonicalOpenPositionPerformanceSummary = {
+        ...perf,
+        openLots: snapshot.walletOpenPositionPnlRead?.openLots ?? perf.openLots,
+        uniqueTokens: snapshot.walletOpenPositionPnlRead?.uniqueTokens ?? perf.uniqueTokens,
+        totalUnrealizedPnlUsd: snapshot.walletOpenPositionPnlRead?.unrealizedPnlUsd ?? null,
+        matchedTokenCount: snapshot.walletOpenPositionPnlRead?.matchedTokenCount ?? perf.matchedTokenCount ?? null,
+        unmatchedTokenCount: snapshot.walletOpenPositionPnlRead?.unmatchedTokenCount ?? perf.unmatchedTokenCount ?? null,
+        unmatchedSymbols: snapshot.walletOpenPositionPnlRead?.unmatchedSymbols ?? perf.unmatchedSymbols ?? [],
+        matchedUnrealizedPnlUsd: snapshot.walletOpenPositionPnlRead?.matchedUnrealizedPnlUsd ?? perf.matchedUnrealizedPnlUsd ?? null,
+      }
+      snapshot.openPositionPerformanceSummary = canonicalOpenPositionPerformanceSummary
+      walletModuleCoverage.openPositionPerformanceSummary = canonicalOpenPositionPerformanceSummary
+      if ((snapshot as any).walletApiSourceAudit?.openPosition) {
+        ;(snapshot as any).walletApiSourceAudit.openPosition.notes = {
+          openLots: canonicalOpenPositionPerformanceSummary.openLots,
+          uniqueTokens: canonicalOpenPositionPerformanceSummary.uniqueTokens,
+          unrealizedPnlUsd: canonicalOpenPositionPerformanceSummary.totalUnrealizedPnlUsd,
+          matchedTokenCount: canonicalOpenPositionPerformanceSummary.matchedTokenCount,
+          unmatchedTokenCount: canonicalOpenPositionPerformanceSummary.unmatchedTokenCount,
+          unmatchedSymbols: canonicalOpenPositionPerformanceSummary.unmatchedSymbols,
+        }
+      }
     }
 
     // Wallet personality classification, time-windowed PnL, and bot detection — derived purely

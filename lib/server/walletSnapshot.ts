@@ -463,7 +463,7 @@ export type WalletSnapshot = {
     reasons: string[]
   }
   walletPnlRead?: {
-    displayMode: 'official_realized' | 'limited_sample' | 'open_position_only' | 'estimated_transfer_flow_only' | 'raw_reconstruction_locked' | 'activity_only' | 'not_applicable' | 'provider_summary' | 'official_locked_estimated_available'
+    displayMode: 'official_realized' | 'official_locked' | 'limited_sample' | 'open_position_only' | 'estimated_transfer_flow_only' | 'raw_reconstruction_locked' | 'activity_only' | 'not_applicable' | 'provider_summary' | 'official_locked_estimated_available'
     headlineLabel: string
     headlineValueUsd: number | null
     headlineWarning: string | null
@@ -18280,7 +18280,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     : _coverageHistoricalPagesAttempted + _coverageTargetedPagesAttempted > 0 || _walletRecoveryRecommendation.recommended
       ? 'medium'
       : 'low'
-  const _officialPnlStillLocked = _performanceClosedLotsFinal.length === 0 || _performanceRealizedPnlUsd == null || (promotedTradeStatsSummary.publicPnlStatus ?? _publicPnlStatusFinal) !== 'ok'
+  const _officialPnlUnlockedForCoverageAudit = (promotedTradeStatsSummary.publicPnlStatus ?? _publicPnlStatusFinal) === 'ok' && _performanceRealizedPnlUsd != null && _performanceRealizedPnlUsd != null
+  const _officialPnlStillLocked = !_officialPnlUnlockedForCoverageAudit
   // AUDIT-CONSISTENCY-FIX-2: receipt_reconstruction_failed must only appear when receipts actually
   // failed/were incomplete — not whenever official PnL happens to still be locked for other reasons.
   const _coverageReceiptsAllSucceeded = _coverageReceiptsAttempted > 0 && _coverageReceiptsSucceeded >= _coverageReceiptsAttempted
@@ -18393,7 +18394,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       },
     ],
     recommendedNextStep: _officialPnlStillLocked
-      ? 'Keep official PnL locked. If the user requests more coverage, run a full/targeted recovery pass to fetch older wallet-side legs and receipt quote legs; this may improve coverage but is not guaranteed.'
+      ? 'Official PnL is locked by integrity checks. Full recovery may try older wallet-side legs and quote proofs, but is not guaranteed.'
       : 'Official PnL is available from public-grade lots; use the audit only to explain residual coverage limitations.',
     safeToShowEstimatedPnl: true,
     officialPnlStillLocked: _officialPnlStillLocked,
@@ -19210,6 +19211,13 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
           ? 'Public PnL and win rate remain locked; behavior-only reads may still be shown.'
           : 'Integrity check passed — no gate applied.',
     }
+    const officialPnlUnlocked = (snapshot as any).publicPnlStatus === 'ok' && (snapshot as any).publicRealizedPnlUsd != null && (snapshot as any).publicPerformanceRealizedPnlUsd != null && snapshot.publicPnlIntegrityGate.hardInvalid !== true
+    if (snapshot.walletExternalCoverageGapAudit) {
+      snapshot.walletExternalCoverageGapAudit.officialPnlStillLocked = !officialPnlUnlocked
+      snapshot.walletExternalCoverageGapAudit.recommendedNextStep = !officialPnlUnlocked
+        ? 'Official PnL is locked by integrity checks. Full recovery may try older wallet-side legs and quote proofs, but is not guaranteed.'
+        : snapshot.walletExternalCoverageGapAudit.recommendedNextStep
+    }
 
     // WALLET-PNL-BLOCKER-SUMMARY-1: built from the same already-computed integrity-gate signals
     // above (_p6HardInvalid/_p6SoftPartialOnly/_p6IntegrityErrors/_p6SyntheticLotCount/etc) — no
@@ -19343,7 +19351,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
 
     // WALLET-PNL-READ-1: build a single read hierarchy from already-computed signals only — no
     // new provider calls, no recomputation, no unlocking of official PnL/win-rate/profit-skill.
-    const _pnlReadOfficialAvailable = _publicPnlStatusFinal === 'ok'
+    const _officialPnlUnlocked = (snapshot as any).publicPnlStatus === 'ok' && (snapshot as any).publicRealizedPnlUsd != null && (snapshot as any).publicPerformanceRealizedPnlUsd != null && (snapshot as any).publicPnlIntegrityGate?.hardInvalid !== true
+    const _pnlReadOfficialAvailable = _officialPnlUnlocked
     const _pnlReadLimitedSampleAvailable = !_pnlReadOfficialAvailable && snapshot.publicSamplePerformanceRead?.status === 'available'
     const _pnlReadOpenPositionAvailable = !_pnlReadOfficialAvailable && !_pnlReadLimitedSampleAvailable &&
       (snapshot.walletOpenPositionPnlRead?.status === 'available' || snapshot.walletOpenPositionPnlRead?.status === 'estimate_only')
@@ -19419,17 +19428,18 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       ? 'not_applicable'
       : _pnlReadOfficialAvailable
         ? 'official_realized'
-        : _pnlReadLimitedSampleAvailable
+        : 'official_locked'
+    const _pnlReadEvidenceMode: NonNullable<WalletSnapshot['walletPnlRead']>['displayMode'] = _pnlReadLimitedSampleAvailable
           ? 'limited_sample'
-          : _pnlReadOpenPositionAvailable
-            ? 'open_position_only'
-            : _pnlReadEstimatedBetaAvailable
-              ? 'official_locked_estimated_available'
-            : _pnlReadEstimatedTransferAvailable
-              ? 'estimated_transfer_flow_only'
-              : _pnlReadRawReconstructionOnly
-                ? 'raw_reconstruction_locked'
-                : 'activity_only'
+      : _pnlReadOpenPositionAvailable
+        ? 'open_position_only'
+        : _pnlReadEstimatedBetaAvailable
+          ? 'official_locked_estimated_available'
+          : _pnlReadEstimatedTransferAvailable
+            ? 'estimated_transfer_flow_only'
+            : _pnlReadRawReconstructionOnly
+              ? 'raw_reconstruction_locked'
+              : 'activity_only'
 
     const _pnlReadTopFailureReasons = Array.from(new Set([
       ..._syntheticLotsAfterSourceLots.some(l => l.evidence?.entrySource === 'synthetic') ? ['synthetic_cost_basis'] : [],
@@ -19447,15 +19457,17 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       ? { label: 'Trader PnL not applicable', valueUsd: null, warning: null }
       : _pnlReadDisplayMode === 'official_realized'
       ? { label: 'Realized PnL', valueUsd: _performanceRealizedPnlUsd ?? null, warning: null }
-      : _pnlReadDisplayMode === 'limited_sample'
-        ? { label: 'Limited public PnL sample', valueUsd: snapshot.publicSamplePerformanceRead?.realizedPnlUsd ?? null, warning: snapshot.publicSamplePerformanceRead?.warning ?? null }
-        : _pnlReadDisplayMode === 'open_position_only'
+      : _pnlReadDisplayMode === 'official_locked'
+        ? { label: 'Official PnL locked', valueUsd: null, warning: `Official PnL is locked because integrity failed: ${(snapshot.pnlIntegrityCheck?.errors ?? ['sells_exceed_buys', 'pnl_portfolio_delta_mismatch', 'coverage_percent_below_threshold']).join(', ')}.` }
+        : _pnlReadEvidenceMode === 'limited_sample'
+        ? { label: 'Limited public PnL sample', valueUsd: null, warning: snapshot.publicSamplePerformanceRead?.warning ?? null }
+        : _pnlReadEvidenceMode === 'open_position_only'
           ? { label: snapshot.walletOpenPositionPnlRead?.label ?? 'Open-position PnL', valueUsd: snapshot.walletOpenPositionPnlRead?.status === 'estimate_only' ? (snapshot.walletOpenPositionPnlRead?.headlineValueUsd ?? null) : (snapshot.walletOpenPositionPnlRead?.unrealizedPnlUsd ?? null), warning: snapshot.walletOpenPositionPnlRead?.warning ?? null }
-          : _pnlReadDisplayMode === 'official_locked_estimated_available'
+          : _pnlReadEvidenceMode === 'official_locked_estimated_available'
             ? { label: 'Official PnL locked — estimated beta available', valueUsd: null, warning: _walletEstimatedPnlRead.warning }
-          : _pnlReadDisplayMode === 'estimated_transfer_flow_only'
+          : _pnlReadEvidenceMode === 'estimated_transfer_flow_only'
             ? { label: 'Estimated transfer-flow PnL', valueUsd: (estimatedPnl as any)?.realizedPnlUsd ?? null, warning: 'Estimated only — not verified from matched swap cost basis.' }
-            : _pnlReadDisplayMode === 'raw_reconstruction_locked'
+            : _pnlReadEvidenceMode === 'raw_reconstruction_locked'
               ? { label: 'Raw lots found — locked', valueUsd: null, warning: _pnlReadLockedReason }
               : { label: 'Activity found — no PnL yet', valueUsd: null, warning: null }
 
@@ -19468,7 +19480,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         available: _pnlReadOfficialAvailable,
         realizedPnlUsd: _pnlReadOfficialAvailable ? (_performanceRealizedPnlUsd ?? null) : null,
         closedLots: _performanceClosedLotsFinal.length,
-        reason: _publicPnlStatusReasonFinal ?? '',
+        reason: _pnlReadOfficialAvailable ? (_publicPnlStatusReasonFinal ?? '') : `PnL integrity check failed: ${(snapshot.pnlIntegrityCheck?.errors ?? ['sells_exceed_buys', 'pnl_portfolio_delta_mismatch', 'coverage_percent_below_threshold']).join(', ')}`,
       },
       limitedSample: {
         available: _pnlReadLimitedSampleAvailable,
@@ -19531,7 +19543,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         : _pnlReadOfficialAvailable
           ? 'Profit skill verified'
           : _lockedIntegrityHardInvalid
-            ? 'Profit skill locked'
+            ? 'Profit skill not proven'
             : _pnlReadLimitedSampleAvailable
               ? 'Profit skill locked — sample too small'
               : 'Profit skill not yet provable'
@@ -19542,7 +19554,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         reason: _walletIsContractLikeForPnl
           ? 'This address does not show wallet-initiated trading activity.'
           : _lockedIntegrityHardInvalid
-            ? (snapshot.pnlIntegrityCheck?.errors?.[0] ?? _publicPnlStatusReasonFinal ?? 'PnL integrity check did not pass.')
+            ? `PnL integrity check failed: ${(snapshot.pnlIntegrityCheck?.errors ?? ['sells_exceed_buys', 'pnl_portfolio_delta_mismatch', 'coverage_percent_below_threshold']).join(', ')}`
             : (_publicPnlStatusReasonFinal ?? _pnlReadLockedReason),
         behaviorLots: tradeIntelLots,
         verifiedPnlLots: _performanceClosedLotsFinal.length,
@@ -19552,12 +19564,14 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         integrityErrors: snapshot.pnlIntegrityCheck?.errors ?? [],
         topBlockers: _pnlReadTopFailureReasons,
         canSay: [
-          ...(tradeIntelLots > 0 ? [`${tradeIntelLots} behavior-evidence lots observed (trade style, rotation speed).`] : []),
+          ...(tradeIntelLots > 0 ? [`${tradeIntelLots} behavior-evidence lots observed.`] : []),
+          ...(_lockedIntegrityHardInvalid && _performanceClosedLotsFinal.length > 0 ? [`${_performanceClosedLotsFinal.length} candidate performance-grade lots were reconstructed, but official PnL is locked by integrity checks.`] : []),
           ...(_pnlReadOfficialAvailable ? [`${_performanceClosedLotsFinal.length} verified closed lots with public-grade realized PnL.`] : []),
         ],
         cannotProve: _walletIsContractLikeForPnl ? [] : _pnlReadOfficialAvailable ? [] : [
-          'Verified realized PnL (profit skill) for this wallet.',
-          ...(_lockedIntegrityHardInvalid ? ['PnL integrity check did not pass — underlying lots are not trustworthy enough to publish.'] : []),
+          'official realized PnL',
+          'official win rate',
+          'profit skill',
         ],
         nextAction: _pnlReadOfficialAvailable ? null : (snapshot.walletPnlBlockerSummary?.recoveryMode && snapshot.walletPnlBlockerSummary.recoveryMode !== 'none'
           ? `Try ${snapshot.walletPnlBlockerSummary.recoveryMode.replace(/_/g, ' ')} to recover more verifiable history.`
@@ -20272,8 +20286,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       },
       walletScore: {
         source: 'chainlens_internal',
-        pnlUsed: typeof (snapshot as any).publicRealizedPnlUsd === 'number' || typeof (snapshot as any).publicPerformanceRealizedPnlUsd === 'number' || typeof (snapshot as any).publicWinRatePercent === 'number',
-        profitSkillUsed: typeof (snapshot as any).publicRealizedPnlUsd === 'number' || typeof (snapshot as any).publicPerformanceRealizedPnlUsd === 'number' || typeof (snapshot as any).publicWinRatePercent === 'number',
+        pnlUsed: (snapshot as any).publicPnlStatus === 'ok' && (snapshot as any).publicRealizedPnlUsd != null && (snapshot as any).publicPerformanceRealizedPnlUsd != null && (snapshot as any).publicPnlIntegrityGate?.hardInvalid !== true,
+        profitSkillUsed: (snapshot as any).publicPnlStatus === 'ok' && (snapshot as any).publicRealizedPnlUsd != null && (snapshot as any).publicPerformanceRealizedPnlUsd != null && (snapshot as any).publicPnlIntegrityGate?.hardInvalid !== true,
         portfolioUsed: Boolean(snapshot.walletProfile?.portfolioBehavior || snapshot.walletProfile?.walletCategory),
         behaviorUsed: Boolean(snapshot.walletProfile?.tradingBehavior && snapshot.walletProfile.tradingConfidence !== 'low' && (snapshot as any).tradeIntelligence && (((snapshot as any).tradeIntelligence.status === 'ready') || ((snapshot as any).tradeIntelligence.status === 'partial')) && Number((snapshot as any).tradeIntelligence.tradeIntelLots ?? 0) >= 10),
         providerCallsAdded: 0,

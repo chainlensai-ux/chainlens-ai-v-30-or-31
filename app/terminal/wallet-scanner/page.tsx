@@ -327,7 +327,7 @@ type WalletResult = {
     usedForTraderPnLRead: boolean
   }
   walletPnlRead?: {
-    displayMode: 'official_realized' | 'limited_sample' | 'open_position_only' | 'estimated_transfer_flow_only' | 'raw_reconstruction_locked' | 'activity_only' | 'provider_summary'
+    displayMode: 'official_realized' | 'official_locked' | 'limited_sample' | 'open_position_only' | 'estimated_transfer_flow_only' | 'raw_reconstruction_locked' | 'activity_only' | 'provider_summary' | 'official_locked_estimated_available'
     headlineLabel: string
     headlineValueUsd: number | null
     headlineWarning: string | null
@@ -3131,12 +3131,14 @@ export default function WalletScannerPage() {
                 const fmtUsd = (v: number | null) => v === null ? null : `${v >= 0 ? '+' : ''}$${Math.abs(v).toLocaleString(undefined, { maximumFractionDigits: 0 })}`
                 const modeCopy: Record<typeof pr.displayMode, { title: string; body: string }> = {
                   official_realized: { title: 'Realized PnL', body: 'Verified realized PnL from matched closed lots.' },
+                  official_locked: { title: 'Official PnL locked', body: pr.officialRealized.reason || pr.headlineWarning || 'Official PnL is locked by integrity checks.' },
                   limited_sample: { title: 'Limited public PnL sample', body: pr.limitedSample.reason || 'Limited sample — not enough to prove profit skill.' },
                   open_position_only: { title: pr.headlineValueUsd === null ? 'Open-position PnL locked' : 'Open-position PnL', body: pr.openPosition.reason || 'Unrealized only — open positions, not a closed trade result.' },
                   estimated_transfer_flow_only: { title: 'Estimated transfer-flow PnL', body: 'Estimated only — not verified from matched swap cost basis.' },
                   raw_reconstruction_locked: { title: 'Raw lots found, but locked', body: pr.rawReconstruction.lockedReason },
                   activity_only: { title: 'Activity found — no PnL yet', body: 'No closed lots or priced positions are available yet.' },
                   provider_summary: { title: 'Provider PnL Summary', body: 'Provider-level summary. ChainLens FIFO lot reconstruction still open check.' },
+                  official_locked_estimated_available: { title: 'Official PnL locked', body: pr.officialRealized.reason || 'Estimated beta evidence is available, but official PnL is locked.' },
                 }
                 const hasTitle = (x: unknown): x is { title: string; body: string } =>
                   !!x && typeof x === 'object' && typeof (x as any).title === 'string'
