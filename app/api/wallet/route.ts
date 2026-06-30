@@ -1543,6 +1543,26 @@ export async function POST(req: Request) {
         snapshot.pnlDisplayMode = 'open_position_only'
         snapshot.pnlDisplayLabel = 'Open-position PnL locked'
         snapshot.pnlDisplayReason = unmatchedReason
+        if (snapshot.walletEstimatedPnlRead?.matchedOpenPositionUnrealizedUsd != null) {
+          snapshot.walletEstimatedPnlRead = {
+            ...snapshot.walletEstimatedPnlRead,
+            matchedOpenPositionUnrealizedUsd: null,
+            reasons: [
+              ...(snapshot.walletEstimatedPnlRead.reasons ?? []),
+              'Matched open-position estimate omitted because aggregate open-position PnL is locked.',
+            ],
+          }
+        }
+        if (snapshot.walletPnlRead?.estimatedBeta?.matchedOpenPositionUnrealizedUsd != null) {
+          snapshot.walletPnlRead.estimatedBeta = {
+            ...snapshot.walletPnlRead.estimatedBeta,
+            matchedOpenPositionUnrealizedUsd: null,
+            reasons: [
+              ...(snapshot.walletPnlRead.estimatedBeta.reasons ?? []),
+              'Matched open-position estimate omitted because aggregate open-position PnL is locked.',
+            ],
+          }
+        }
         if (snapshot.walletPnlRead?.displayMode === 'open_position_only') {
           snapshot.walletPnlRead.headlineLabel = 'Open-position cost basis'
           snapshot.walletPnlRead.headlineValueUsd = null
