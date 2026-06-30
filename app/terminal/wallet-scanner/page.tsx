@@ -160,6 +160,12 @@ type WalletResult = {
     addedHistoricalPreviewPnlUsd: number | null
     matchedOpenPositionUnrealizedUsd: number | null
     totalEstimateUsd: number | null
+    baselineRawFifoEstimateUsd?: number | null
+    previewAfterRecoveryEstimateUsd?: number | null
+    previewDeltaUsd?: number | null
+    displayEstimateUsd?: number | null
+    displayEstimateBasis?: 'historical_preview_preferred' | 'raw_fifo_only' | 'raw_fifo_plus_matched_open_position'
+    mathWarning?: string
     basis: string[]
     reasons: string[]
   }
@@ -3359,18 +3365,12 @@ export default function WalletScannerPage() {
                 const est = result.walletEstimatedPnlRead!
                 const openRead = result.walletOpenPositionPnlRead
                 const perf = result.openPositionPerformanceSummary ?? result.walletModuleCoverage?.openPositionPerformanceSummary ?? null
-                const matchedOpenCount = openRead?.matchedTokenCount ?? perf?.matchedTokenCount ?? null
-                const unmatchedOpenCount = openRead?.unmatchedTokenCount ?? perf?.unmatchedTokenCount ?? null
-                const totalOpenTokenCount = matchedOpenCount !== null && unmatchedOpenCount !== null ? matchedOpenCount + unmatchedOpenCount : null
                 const unmatchedOpenSymbols = openRead?.unmatchedSymbols ?? perf?.unmatchedSymbols ?? []
-                const matchedOpenLabel = matchedOpenCount !== null && totalOpenTokenCount !== null
-                  ? `Matched open-position estimate (${matchedOpenCount}/${totalOpenTokenCount} tokens)`
-                  : 'Matched open-position estimate'
                 const rows = [
-                  ['Raw FIFO estimate', est.rawFifoRealizedEstimateUsd],
-                  ['Historical preview estimate', est.historicalPreviewRealizedEstimateUsd],
-                  [matchedOpenLabel, openRead?.matchedUnrealizedPnlUsd ?? est.matchedOpenPositionUnrealizedUsd], // Matched open-position estimate
-                  ['Total estimate', est.totalEstimateUsd],
+                  ['Baseline raw FIFO estimate', est.baselineRawFifoEstimateUsd ?? est.rawFifoRealizedEstimateUsd],
+                  ['Preview after recovery', est.previewAfterRecoveryEstimateUsd ?? est.historicalPreviewRealizedEstimateUsd],
+                  ['Preview delta', est.previewDeltaUsd ?? est.addedHistoricalPreviewPnlUsd],
+                  ['Display estimate', est.displayEstimateUsd ?? est.totalEstimateUsd],
                 ] as const
                 return (
                   <div className="rounded-2xl border border-amber-400/30 bg-amber-950/20 p-4 shadow-lg shadow-amber-950/10">
@@ -3381,7 +3381,7 @@ export default function WalletScannerPage() {
                       </div>
                       <span className="rounded-full border border-amber-300/30 px-2 py-1 text-xs font-semibold uppercase text-amber-100">{est.confidence}</span>
                     </div>
-                    <p className="mt-2 text-sm text-amber-100/80">Official PnL locked. Estimated PnL Beta available. Low confidence estimate — excluded from score, win rate, and profit skill.</p>
+                    <p className="mt-2 text-sm text-amber-100/80">Estimated only — preview replaces baseline; not official PnL.</p>
                     <div className="mt-4 grid gap-2 sm:grid-cols-2">
                       {rows.map(([label, value]) => (
                         <div key={label} className="rounded-xl border border-white/10 bg-black/20 p-3">
@@ -3390,7 +3390,7 @@ export default function WalletScannerPage() {
                         </div>
                       ))}
                     </div>
-                    {est.reasons.length > 0 && <div className="mt-3 text-xs text-amber-100/60">{est.reasons[0]}</div>}
+                    {(est.mathWarning || est.reasons.length > 0) && <div className="mt-3 text-xs text-amber-100/60">{est.mathWarning ?? est.reasons[0]}</div>}
                     {unmatchedOpenSymbols.length > 0 && (
                       <div className="mt-2 text-xs text-amber-100/70">
                         Open-position PnL locked/partial — blocked by {unmatchedOpenSymbols.join(', ')} missing independent current price.

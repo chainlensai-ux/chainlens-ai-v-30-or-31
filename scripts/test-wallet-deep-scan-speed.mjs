@@ -517,9 +517,35 @@ assert.ok(route.includes('walletProviderGatewayDebug') && route.includes('wallet
 
 assert.match(
   snap,
-  /walletEstimatedPnlRead\?: \{[\s\S]*Estimated PnL Beta[\s\S]*rawFifoRealizedEstimateUsd[\s\S]*historicalPreviewRealizedEstimateUsd[\s\S]*matchedOpenPositionUnrealizedUsd[\s\S]*excludedFrom: \['official_realized_pnl', 'win_rate', 'profit_skill', 'wallet_score', 'verified_pnl'\]/,
-  'walletEstimatedPnlRead exposes the separate low-confidence Estimated PnL Beta lane excluded from official metrics',
+  /walletEstimatedPnlRead\?: \{[\s\S]*Estimated PnL Beta[\s\S]*rawFifoRealizedEstimateUsd[\s\S]*historicalPreviewRealizedEstimateUsd[\s\S]*baselineRawFifoEstimateUsd[\s\S]*previewAfterRecoveryEstimateUsd[\s\S]*displayEstimateUsd[\s\S]*mathWarning[\s\S]*excludedFrom: \['official_realized_pnl', 'win_rate', 'profit_skill', 'wallet_score', 'verified_pnl'\]/,
+  'walletEstimatedPnlRead exposes the separate low-confidence Estimated PnL Beta lane excluded from official metrics with clear display math fields',
 )
+assert.ok(
+  snap.includes('Historical preview replaces baseline raw FIFO estimate for display; it is not added on top.'),
+  'walletEstimatedPnlRead documents that historical preview replaces baseline raw FIFO rather than being added to it',
+)
+assert.match(
+  snap,
+  /const _estimatedPnlTotal = _displayEstimateUsd/,
+  'totalEstimateUsd/displayEstimateUsd use the display estimate instead of raw FIFO plus historical preview',
+)
+assert.match(
+  snap,
+  /_previewAfterRecoveryEstimateUsd \?\? \(*/,
+  'displayEstimateUsd prefers previewAfterRecoveryEstimateUsd when historical preview exists',
+)
+
+assert.match(
+  snap,
+  /_rawMatchedClosedLotsFinal > 0 && _excludedClosedLotsFinal > 0[\s\S]*raw reconstructed lot\(s\) found,[\s\S]*No raw reconstructed lots are available yet/,
+  'rawClosedLots > 0 uses an exclusion reason instead of saying no raw reconstructed lots are available yet',
+)
+assert.match(
+  snap,
+  /realizedPnlUsd: _pnlReadOfficialAvailable \? \(_performanceRealizedPnlUsd \?\? null\) : null/,
+  'official PnL remains null when official PnL is locked',
+)
+
 assert.match(
   snap,
   /official_locked_estimated_available/,
@@ -532,8 +558,12 @@ assert.match(
 )
 assert.match(
   page,
-  /Estimated PnL Beta[\s\S]*Raw FIFO estimate[\s\S]*Historical preview estimate[\s\S]*Matched open-position estimate[\s\S]*Total estimate[\s\S]*Low confidence estimate — excluded from score, win rate, and profit skill\./,
-  'wallet scanner renders a clearly labeled Estimated PnL Beta card with component estimates',
+  /Estimated PnL Beta[\s\S]*Baseline raw FIFO estimate[\s\S]*Preview after recovery[\s\S]*Preview delta[\s\S]*Display estimate[\s\S]*Estimated only — preview replaces baseline; not official PnL\./,
+  'wallet scanner renders a clearly labeled Estimated PnL Beta card with honest replacement math',
+)
+assert.ok(
+  !page.includes('Total estimate'),
+  'wallet scanner does not render raw plus preview as a combined total label',
 )
 
 
