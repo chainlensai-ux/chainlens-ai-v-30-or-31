@@ -45,6 +45,88 @@ const CHAIN_PARAM: Record<MoralisChain, string> = {
   gnosis: 'gnosis',
 }
 
+export function moralisChainFromAny(chain: string | null | undefined): MoralisChain | null {
+  const c = (chain ?? '').toLowerCase()
+  if (c === 'eth' || c === 'ethereum' || c === 'eth-mainnet' || c === '1') return 'eth'
+  if (c === 'base' || c === 'base-mainnet' || c === '8453' || c === '0x2105') return 'base'
+  if (c === 'polygon' || c === 'matic' || c === '137') return 'polygon'
+  if (c === 'bsc' || c === 'bnb' || c === '56' || c.includes('binance')) return 'bsc'
+  if (c === 'arbitrum' || c === 'arb' || c === '42161') return 'arbitrum'
+  if (c === 'optimism' || c === 'op' || c === '10') return 'optimism'
+  if (c === 'avalanche' || c === 'avax' || c === '43114') return 'avalanche'
+  if (c === 'fantom' || c === 'ftm' || c === '250') return 'fantom'
+  if (c === 'cronos' || c === '25') return 'cronos'
+  if (c === 'gnosis' || c === 'xdai' || c === '100') return 'gnosis'
+  return null
+}
+
+export type MoralisHistoricalPriceResult = {
+  priceUsd: number | null
+  attempted: boolean
+  usable: boolean
+  cacheHit: boolean
+  reason: string
+  httpStatus?: number | null
+}
+
+const MORALIS_PRICE_TTL_MS = 30 * 60 * 1000
+const _priceCache = new Map<string, { priceUsd: number | null; cachedAt: number }>()
+const _priceInflight = new Map<string, Promise<MoralisHistoricalPriceResult>>()
+
+export async function fetchMoralisHistoricalTokenPrice(
+  contractAddress: string,
+  chainLike: string,
+  timestamp: string,
+): Promise<MoralisHistoricalPriceResult> {
+  const apiKey = process.env.MORALIS_API_KEY ?? ''
+  if (!apiKey) return { priceUsd: null, attempted: false, usable: false, cacheHit: false, reason: 'not_configured' }
+  const chain = moralisChainFromAny(chainLike)
+  if (!chain) return { priceUsd: null, attempted: false, usable: false, cacheHit: false, reason: 'unsupported_chain' }
+  const contract = (contractAddress ?? '').toLowerCase()
+  if (!/^0x[a-f0-9]{40}$/.test(contract)) return { priceUsd: null, attempted: false, usable: false, cacheHit: false, reason: 'invalid_contract' }
+  const date = new Date(timestamp)
+  if (!Number.isFinite(date.getTime())) return { priceUsd: null, attempted: false, usable: false, cacheHit: false, reason: 'invalid_timestamp' }
+  const toDate = date.toISOString()
+  const day = toDate.slice(0, 10)
+  const cacheKey = `moralis:price:${chain}:${contract}:${day}`
+  const hit = _priceCache.get(cacheKey)
+  if (hit && Date.now() - hit.cachedAt <= MORALIS_PRICE_TTL_MS) {
+    return { priceUsd: hit.priceUsd, attempted: false, usable: hit.priceUsd != null, cacheHit: true, reason: hit.priceUsd != null ? '' : 'cached_empty' }
+  }
+  const inflight = _priceInflight.get(cacheKey)
+  if (inflight) return inflight
+
+  const url = `https://deep-index.moralis.io/api/v2.2/erc20/${contract}/price?chain=${CHAIN_PARAM[chain]}&to_date=${encodeURIComponent(toDate)}`
+  const run = (async (): Promise<MoralisHistoricalPriceResult> => {
+    try {
+      const res = await fetch(url, {
+        headers: { 'X-API-Key': apiKey, Accept: 'application/json' },
+        cache: 'no-store',
+        signal: AbortSignal.timeout(5_000),
+      })
+      if (!res.ok) {
+        _priceCache.set(cacheKey, { priceUsd: null, cachedAt: Date.now() })
+        return { priceUsd: null, attempted: true, usable: false, cacheHit: false, reason: `http_${res.status}`, httpStatus: res.status }
+      }
+      const json = await res.json() as Record<string, unknown>
+      const raw =
+        typeof json.usdPrice === 'number' ? json.usdPrice :
+        typeof json.usd_price === 'number' ? json.usd_price :
+        typeof json.priceUsd === 'number' ? json.priceUsd :
+        typeof json.price_usd === 'number' ? json.price_usd :
+        null
+      const priceUsd = raw != null && Number.isFinite(raw) && raw > 1e-12 ? raw : null
+      _priceCache.set(cacheKey, { priceUsd, cachedAt: Date.now() })
+      return { priceUsd, attempted: true, usable: priceUsd != null, cacheHit: false, reason: priceUsd != null ? '' : 'no_price', httpStatus: res.status }
+    } catch {
+      _priceCache.set(cacheKey, { priceUsd: null, cachedAt: Date.now() })
+      return { priceUsd: null, attempted: true, usable: false, cacheHit: false, reason: 'fetch_failed' }
+    }
+  })()
+  _priceInflight.set(cacheKey, run)
+  try { return await run } finally { _priceInflight.delete(cacheKey) }
+}
+
 export async function fetchMoralisBalances(
   address: string,
   chain: MoralisChain,
