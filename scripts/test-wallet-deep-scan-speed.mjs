@@ -357,6 +357,38 @@ assert.match(
   'recovery recommendation remains true when excluded lots or missing cost basis still block public PnL',
 )
 
+
+
+// NO-TRADE-PATH-RECOVERY-FIX: contract/relayer context logs with no wallet-side buy/sell path
+// must not recommend top-holdings cost-basis recovery or show zero-coverage estimated PnL.
+for (const snippet of [
+  "const _hasRecoverableTradePath = Boolean(",
+  "return { recommended: false, mode: null, targetTokens: [], reason: 'no_sell_or_acquisition_path', estimatedExtraPages: 0 }",
+  "stopReason: _noWalletSideTradePathGap ? 'no_sell_path_acquisition_recovery_skipped'",
+  "? 'locked_no_trade_path'",
+  "No wallet-side buy/sell path was found.",
+  "Context-only contract/relayer logs cannot prove trader PnL.",
+  "No wallet-side transfer-flow PnL evidence is available.",
+  "walletNoPnlSubreason = 'no_wallet_side_trade_path'",
+]) {
+  assert.ok(snap.includes(snippet), `no-trade-path regression guard must include ${snippet}`)
+}
+assert.match(
+  snap,
+  /\.filter\(t => !\(t\.reasons\.length === 1 && t\.reasons\[0\] === 'top_holdings_by_value'\)\)/,
+  'top holdings alone are filtered out of recovery target tokens',
+)
+assert.match(
+  page,
+  /blocker\?\.status === 'locked_no_trade_path'[\s\S]*ChainLens found contract\/relayer context logs, but not enough attribution to prove this wallet’s trades\./,
+  'frontend explains locked_no_trade_path without promising normal deep recovery will fix it',
+)
+assert.match(
+  page,
+  /const flowReadAvailable = Boolean\([\s\S]*topCounterparties\?\.length/,
+  'frontend flow read only shows available when attributed received/sent/counterparty flow evidence exists',
+)
+
 console.log('wallet budget-reservation and moralis-transfer-leak fix checks passed')
 
 // RECOVERY-EXEC-FIX-1 checks: the targeted synthetic-target-extra recovery pass must actually be

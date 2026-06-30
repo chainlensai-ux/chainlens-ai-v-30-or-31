@@ -478,8 +478,9 @@ export type WalletSnapshot = {
       confidence: string | null
       source: string | null
       method: string | null
+      reason?: string | null
       label: 'Estimated transfer-flow PnL'
-      warning: 'Estimated only — not verified from matched swap cost basis.'
+      warning: string
       excludedFrom: ['official_realized_pnl', 'win_rate', 'profit_skill', 'wallet_score', 'verified_pnl']
     }
     estimatedBeta?: NonNullable<WalletSnapshot['walletEstimatedPnlRead']>
@@ -766,7 +767,7 @@ export type WalletSnapshot = {
   // integrity-gate/read-hierarchy signals above into "what is verified, what is locked, why,
   // and what (if anything) the user can do about it" — never changes the underlying gates.
   walletPnlBlockerSummary?: {
-    status: 'ready' | 'locked_recoverable' | 'locked_integrity' | 'locked_insufficient_evidence'
+    status: 'ready' | 'locked_recoverable' | 'locked_integrity' | 'locked_insufficient_evidence' | 'locked_no_trade_path'
     headline: string
     reasons: string[]
     recoverable: boolean
@@ -1034,7 +1035,7 @@ export type WalletSnapshot = {
   pnlQualityReason?: string
   walletRecoveryRecommendation?: {
     recommended: boolean
-    mode: 'targeted_token_recovery' | 'targeted_recovery_attempted' | 'already_attempted_full_recovery' | 'attempted_light' | 'attempted_light_no_new_candidates' | 'attempted_provider_failed' | 'skipped_cost_guard' | 'skipped_micro_wallet' | 'none'
+    mode: null | 'targeted_token_recovery' | 'targeted_recovery_attempted' | 'already_attempted_full_recovery' | 'attempted_light' | 'attempted_light_no_new_candidates' | 'attempted_provider_failed' | 'skipped_cost_guard' | 'skipped_micro_wallet' | 'none'
     targetTokens: Array<{ contract: string; symbol: string; chain: string; estimatedUsd: number }>
     reason: string
     // Human-readable explanation of the reason code, kept honest about whether the historical
@@ -1061,6 +1062,7 @@ export type WalletSnapshot = {
   // reasons. Never set when public PnL is actually available.
   walletNoPnlReason?: 'non_trader_address_type' | 'no_wallet_initiated_transactions' | 'no_swap_candidates' | 'transfer_or_airdrop_only_activity' | 'missing_counterparty_direction_data' | 'budget_capped_before_recovery' | 'historical_recovery_needed' | 'unsupported_router_or_unparsed_receipts' | 'relayed_trader_needs_deeper_reconstruction' | 'provider_summary_available_fifo_missing' | 'relayed_trader_provider_summary_available'
   walletNoPnlReasonLabel?: string
+  walletNoPnlSubreason?: 'no_wallet_side_trade_path' | string
   walletNoPnlNextAction?: string
   walletNoPnlCanRecover?: boolean
 
@@ -15266,6 +15268,22 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     return baseTargets
   })()
   _perfWalletTimings.historicalTargetRankingMs += Date.now() - _historicalTargetRankingStartedAt
+  const _hasPreAcqRecoverableTradePath = Boolean(
+    (_lotEngineDebug.unmatchedSells ?? 0) > 0 ||
+    (_lotEngineDebug.openedLots ?? 0) > 0 ||
+    (walletLotSummary.openedLots ?? 0) > 0 ||
+    (walletTradeStatsSummary.closedLots ?? 0) > 0 ||
+    (_swapEvidenceWithDetection ?? []).some(ev => ev.direction === 'buy' || ev.direction === 'sell') ||
+    (_swapReconstructionV1Debug.swapReconstructionEventsPromotedBuy ?? 0) > 0 ||
+    (_swapReconstructionV1Debug.swapReconstructionEventsPromotedSell ?? 0) > 0 ||
+    (_sellSideReconDebug.promotedSellEvents ?? _sellSideReconDebug.sellSideEventsPromoted ?? 0) > 0
+  )
+  const _onlyContextUnknownDirectionEvents = !_hasPreAcqRecoverableTradePath &&
+    (walletEvidenceSummary.walletSideEvents ?? 0) === 0 &&
+    (walletSwapSummary.swapCandidateEvents ?? 0) === 0 &&
+    (_relayedUnknownDirectionEvents ?? 0) > 0 &&
+    (walletEvidenceSummary.reconstructionContextEvents ?? (_swapDetectionDebug?.unknownDirectionUsedAsContextOnly ?? 0)) >= (_relayedUnknownDirectionEvents ?? 0)
+
   const _recoveryEligibilityStartedAt = Date.now()
   const _targetContracts = new Set(_rankedHistoricalTargets.map(t => t.contract))
   const _eligibilityReasons: string[] = []
@@ -15785,6 +15803,14 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     _trackGatewayProviderCall('moralis', 'erc20_transfers', false, `moralis:acquisitionRecovery:${addrNorm}`)
     _sharedHistoricalCreditsUsed += _acqResult.debug.acquisitionPagesUsed
   }
+  const _hasRecoverableTradePath = Boolean(
+    _hasPreAcqRecoverableTradePath ||
+    (_acquisitionRecoveryDebug.acquisitionRecoveryEventsAddedToFifo ?? 0) > 0 ||
+    (_acquisitionRecoveryDebug.acquisitionQuoteLegVerified ?? 0) > 0 ||
+    _acquisitionRecoveryNewEvidence.length > 0
+  )
+  const _noWalletSideTradePathGap = Boolean(_onlyContextUnknownDirectionEvents && !_hasRecoverableTradePath)
+
   // Task 6: more specific noTradesReason/noTradesMessage when acquisition recovery ran. Never
   // overwrites a wallet that already has real swap candidates from elsewhere.
   if (walletSwapSummary.swapCandidateEvents === 0) {
@@ -17474,11 +17500,13 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     // Task 1: a wallet eligible for top-holding acquisition recovery must never report
     // no_swap_or_lot_evidence as its blocking reason — surface acquisition_history_recovery_for_top_holdings
     // instead, even though the original GoldRush-coverage gate above remains unchanged for other wallets.
-    stopReason: _historicalCoverageDebug?.stoppedReason
-      ?? (_acquisitionRecoveryEligible ? (_historicalBudgetCapHit ? 'budget_cap' : _historicalNotRunDueToCostGuard ? 'budget_cap' : 'budget_cap') : (_skipReasons[0] ?? null)),
-    skippedReasons: _acquisitionRecoveryEligible
-      ? _skipReasons.filter(r => r !== 'no_swap_or_lot_evidence')
-      : _skipReasons,
+    stopReason: _noWalletSideTradePathGap ? 'no_sell_path_acquisition_recovery_skipped' : (_historicalCoverageDebug?.stoppedReason
+      ?? (_acquisitionRecoveryEligible ? (_historicalBudgetCapHit ? 'budget_cap' : _historicalNotRunDueToCostGuard ? 'budget_cap' : 'budget_cap') : (_skipReasons[0] ?? null))),
+    skippedReasons: _noWalletSideTradePathGap
+      ? Array.from(new Set([..._skipReasons, 'no_sell_path_acquisition_recovery_skipped']))
+      : _acquisitionRecoveryEligible
+        ? _skipReasons.filter(r => r !== 'no_swap_or_lot_evidence')
+        : _skipReasons,
     sampleTargets: _rankedHistoricalTargets.slice(0, 5),
     sampleRecoveredEvents: _historicalCandidateDebug?.sampleNewSwapCandidates ?? [],
   }
@@ -18095,7 +18123,12 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _walletRecoveryRecommendation: WalletSnapshot['walletRecoveryRecommendation'] = _walletIsNonTraderAddressType
     ? { recommended: false, mode: 'none', targetTokens: [], reason: 'non_trader_address_type', estimatedExtraPages: 0 }
     : (() => {
-    const rankedTargetTokens = _rankedHistoricalTargets.slice(0, 3).map(t => ({
+    if (!_hasRecoverableTradePath) {
+      return { recommended: false, mode: null, targetTokens: [], reason: 'no_sell_or_acquisition_path', estimatedExtraPages: 0 }
+    }
+    const rankedTargetTokens = _rankedHistoricalTargets
+      .filter(t => !(t.reasons.length === 1 && t.reasons[0] === 'top_holdings_by_value'))
+      .slice(0, 3).map(t => ({
       contract: t.contract, symbol: t.symbol, chain: t.chain, estimatedUsd: t.estimatedUsd,
     })).filter(t => t.estimatedUsd > 0)
     // PNL-RECOVERY-FIX-7: a synthetic lot's own target token (sold token contract) is a known,
@@ -19243,7 +19276,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       // BUDGET-RESERVATION-FIX-1: 'hard_cap_reached_after_pricing' is retired in favor of the four
       // honest reservation-outcome reasons — any of them still means "recommended but didn't run".
       const _blockerBudgetCappedRecovery = Boolean(snapshot.walletRecoveryRecommendation?.recoveryBlockedReason)
-      const _blockerRecoverable = _blockerLockedByGate && !_blockerHasNonRecoverableError && (_p6SyntheticLotCount > 0 || _blockerHistoricalCapHit || _blockerRecoverableViaTargetedRecovery)
+      const _blockerRecoverable = !_noWalletSideTradePathGap && _blockerLockedByGate && !_blockerHasNonRecoverableError && (_p6SyntheticLotCount > 0 || _blockerHistoricalCapHit || _blockerRecoverableViaTargetedRecovery)
       const _blockerAffectedTokens = Array.from(new Set(
         _p6ClosedLots
           .filter(l => l.evidence.entrySource === 'synthetic' || l.evidence.entrySource === 'current_holding_price_open_lot_estimate' || l.evidence.exitSource === 'current_holding_price_open_lot_estimate')
@@ -19251,7 +19284,9 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
           .filter((s): s is string => Boolean(s)),
       )).slice(0, 10)
 
-      const _blockerStatus: NonNullable<WalletSnapshot['walletPnlBlockerSummary']>['status'] = _walletIsContractLikeForPnl
+      const _blockerStatus: NonNullable<WalletSnapshot['walletPnlBlockerSummary']>['status'] = _noWalletSideTradePathGap
+        ? 'locked_no_trade_path'
+        : _walletIsContractLikeForPnl
         ? 'locked_insufficient_evidence'
         : _blockerOfficialAvailable
           ? 'ready'
@@ -19263,7 +19298,9 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       // available" — a full recovery pass can still try older wallet-side legs and quote proofs even
       // when the normal-scan recovery signals above are false. Only address types excluded from PnL
       // entirely (contract-like) genuinely have no recovery path.
-      const _blockerRecoveryMode: NonNullable<WalletSnapshot['walletPnlBlockerSummary']>['recoveryMode'] = _walletIsContractLikeForPnl
+      const _blockerRecoveryMode: NonNullable<WalletSnapshot['walletPnlBlockerSummary']>['recoveryMode'] = _noWalletSideTradePathGap
+        ? 'none'
+        : _walletIsContractLikeForPnl
         ? 'none'
         : !_blockerRecoverable
           ? (_blockerStatus === 'ready' ? 'none' : 'full_recovery_only')
@@ -19272,7 +19309,10 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
             : 'price_evidence'
 
       const _blockerReasons: string[] = []
-      if (_walletIsContractLikeForPnl) {
+      if (_noWalletSideTradePathGap) {
+        _blockerReasons.push('No wallet-side buy/sell path was found.')
+        _blockerReasons.push('Context-only contract/relayer logs cannot prove trader PnL.')
+      } else if (_walletIsContractLikeForPnl) {
         _blockerReasons.push('This address does not show wallet-initiated trading activity.')
       } else if (_blockerStatus !== 'ready') {
         if (_p6SyntheticLotCount > 0) _blockerReasons.push(`${_p6SyntheticLotCount} closed lots are missing real prior-buy cost basis`)
@@ -19286,7 +19326,9 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         if (_blockerReasons.length === 0) _blockerReasons.push('verified public-grade sample is too small to show public PnL')
       }
 
-      const _blockerHeadline = _walletIsContractLikeForPnl
+      const _blockerHeadline = _noWalletSideTradePathGap
+        ? 'Trader PnL unavailable — no wallet-side buy/sell path found.'
+        : _walletIsContractLikeForPnl
         ? 'Trader PnL not applicable.'
         : _blockerStatus === 'ready'
           ? 'Public PnL is verified and ready.'
@@ -19302,7 +19344,9 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       // PNL-RECOVERY-EXCL-FIX-1: a budget-capped-but-recommended targeted recovery is not "not
       // recoverable" — say plainly that the scan hit the cost cap, and name the actual next action.
       const _blockerTargetTokenSymbols = (snapshot.walletRecoveryRecommendation?.targetTokens ?? []).map(t => t.symbol).filter(Boolean)
-      const _blockerNextAction = _walletIsContractLikeForPnl
+      const _blockerNextAction = _noWalletSideTradePathGap
+        ? 'No verified wallet-side trade path found. Show portfolio read only unless full recovery is explicitly requested.'
+        : _walletIsContractLikeForPnl
         ? 'No action — this address type is not evaluated for trader PnL.'
         : _blockerStatus === 'ready'
           ? 'No action needed.'
@@ -19420,7 +19464,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     }
     if (_walletEstimatedPnlRead.available) snapshot.walletEstimatedPnlRead = _walletEstimatedPnlRead
     const _pnlReadEstimatedBetaAvailable = !_walletIsContractLikeForPnl && !_pnlReadOfficialAvailable && _walletEstimatedPnlRead.available
-    const _pnlReadEstimatedTransferAvailable = !_walletIsContractLikeForPnl && !_pnlReadOfficialAvailable && !_pnlReadLimitedSampleAvailable && !_pnlReadOpenPositionAvailable && !_pnlReadEstimatedBetaAvailable
+    const _estimatedTransferCoverageZeroNoEvidence = Number((estimatedPnl as any)?.coveragePercent ?? 0) === 0 && _rawMatchedClosedLotsFinal === 0 && (walletLotSummary.openedLots ?? 0) === 0 && ((snapshot.walletFacts as any)?.flowRead?.receivedTokens?.length ?? 0) === 0 && ((snapshot.walletFacts as any)?.flowRead?.sentTokens?.length ?? 0) === 0 && ((snapshot.walletFacts as any)?.flowRead?.topCounterparties?.length ?? 0) === 0
+    const _pnlReadEstimatedTransferAvailable = !_walletIsContractLikeForPnl && !_noWalletSideTradePathGap && !_estimatedTransferCoverageZeroNoEvidence && !_pnlReadOfficialAvailable && !_pnlReadLimitedSampleAvailable && !_pnlReadOpenPositionAvailable && !_pnlReadEstimatedBetaAvailable
       && (Number.isFinite((estimatedPnl as any)?.realizedPnlUsd) || Number.isFinite((estimatedPnl as any)?.unrealizedPnlUsd))
       && _pnlReadIntegrityInvalid
     const _pnlReadRawReconstructionOnly = !_pnlReadOfficialAvailable && !_pnlReadLimitedSampleAvailable && !_pnlReadOpenPositionAvailable && !_pnlReadEstimatedTransferAvailable && !_pnlReadEstimatedBetaAvailable && _rawMatchedClosedLotsFinal > 0
@@ -19497,14 +19542,15 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       estimatedBeta: _walletEstimatedPnlRead,
       estimatedTransferFlow: {
         available: _pnlReadEstimatedTransferAvailable,
-        realizedPnlUsd: _walletIsContractLikeForPnl ? null : ((estimatedPnl as any)?.realizedPnlUsd ?? null),
-        unrealizedPnlUsd: _walletIsContractLikeForPnl ? null : ((estimatedPnl as any)?.unrealizedPnlUsd ?? null),
+        realizedPnlUsd: (_walletIsContractLikeForPnl || !_pnlReadEstimatedTransferAvailable) ? null : ((estimatedPnl as any)?.realizedPnlUsd ?? null),
+        unrealizedPnlUsd: (_walletIsContractLikeForPnl || !_pnlReadEstimatedTransferAvailable) ? null : ((estimatedPnl as any)?.unrealizedPnlUsd ?? null),
         coveragePercent: (estimatedPnl as any)?.coveragePercent ?? null,
         confidence: (estimatedPnl as any)?.confidence ?? null,
         source: (estimatedPnl as any)?.source ?? null,
         method: (estimatedPnl as any)?.method ?? null,
         label: 'Estimated transfer-flow PnL',
-        warning: 'Estimated only — not verified from matched swap cost basis.',
+        warning: _pnlReadEstimatedTransferAvailable ? 'Estimated only — not verified from matched swap cost basis.' : 'No wallet-side transfer-flow PnL evidence is available.',
+        reason: _pnlReadEstimatedTransferAvailable ? null : 'No wallet-side transfer-flow PnL evidence is available.',
         excludedFrom: ['official_realized_pnl', 'win_rate', 'profit_skill', 'wallet_score', 'verified_pnl'],
       },
       rawReconstruction: {
@@ -19518,6 +19564,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       },
       lockedReasons: [
         ...(!_pnlReadOfficialAvailable ? [_publicPnlStatusReasonFinal ?? 'Official realized PnL is locked.'] : []),
+        ...(_noWalletSideTradePathGap ? ['No wallet-side buy/sell path was found.', 'Context-only contract/relayer logs cannot prove trader PnL.'] : []),
         ...(_pnlReadEstimatedTransferAvailable ? ['Estimated transfer-flow PnL is not verified from matched swap cost basis.'] : []),
         ...(_pnlReadRawReconstructionOnly ? [_pnlReadLockedReason] : []),
       ],
@@ -19681,6 +19728,11 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         ;(snapshot as any).walletNoPnlReasonLabel = _noPnlLabel
         ;(snapshot as any).walletNoPnlNextAction = _noPnlNextAction
         ;(snapshot as any).walletNoPnlCanRecover = _canRecover
+        if (_noWalletSideTradePathGap) {
+          ;(snapshot as any).walletNoPnlReason = 'relayed_trader_needs_deeper_reconstruction'
+          ;(snapshot as any).walletNoPnlSubreason = 'no_wallet_side_trade_path'
+          ;(snapshot as any).walletNoPnlCanRecover = false
+        }
       }
     }
 
