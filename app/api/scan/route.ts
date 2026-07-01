@@ -1,8 +1,9 @@
 // POST /api/scan — the real, reachable Next.js route for the ChainLens 90-Day Intelligence
-// Engine. Delegates entirely to src/deployment/router.ts's handleScanRequest(), which already
-// performs rate limiting, request validation, and calls runWalletScan() — this file adds no
-// additional logic of its own beyond translating between the Next.js Request/Response types and
-// that framework-agnostic handler's { status, body } result.
+// Engine (V2 — includes holdings + portfolio value). Delegates entirely to
+// src/deployment/router.ts's handleScanRequest(), which already performs rate limiting, request
+// validation, and calls runWalletScanV2() — this file adds no additional logic of its own beyond
+// translating between the Next.js Request/Response types and that framework-agnostic handler's
+// { status, body } result.
 //
 // NOTE: this repo's Next.js App Router lives at the root app/ directory (no src/app override —
 // confirmed via next.config.ts), so this route MUST live at app/api/scan/route.ts to be

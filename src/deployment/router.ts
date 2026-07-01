@@ -1,13 +1,16 @@
 // DEPLOYMENT LAYER — router
 //
-// Framework-agnostic handler for POST /scan. This file does not bind to any specific HTTP
-// framework (no Next.js Request/Response types) — a real route handler (e.g. an
-// app/api/.../route.ts, not part of this delivery) would call handleScanRequest() with the
-// parsed body and caller IP, and translate its { status, body } result into that framework's
-// response type. Keeping this framework-agnostic means this file has zero dependency on Next.js
-// internals and stays trivially testable.
+// Framework-agnostic handler for POST /scan (app/api/scan/route.ts). This file does not bind to
+// any specific HTTP framework (no Next.js Request/Response types) — a real route handler
+// translates its { status, body } result into that framework's response type. Keeping this
+// framework-agnostic means this file has zero dependency on Next.js internals and stays trivially
+// testable.
+//
+// V2 MIGRATION: this now calls runWalletScanV2() (src/pipeline/runWalletScanV2.ts) instead of the
+// plain runWalletScan() — production /api/scan now returns holdings + portfolio value alongside
+// the unchanged Step 5 report fields, all through this single call site.
 
-import { runWalletScan } from '../pipeline/index'
+import { runWalletScanV2 } from '../pipeline/runWalletScanV2'
 import { buildApiResponse, handleApiError } from './api'
 import { isRateLimited, recordRequest } from './rateLimiter'
 import { sanitizeInput, validateRequestShape } from './validator'
@@ -30,7 +33,7 @@ const RATE_LIMITED_RESPONSE: RouteResult = {
 //   2. record the request against the rate limit window
 //   3. sanitize + validate the request shape (never trusts any field beyond
 //      walletAddress/chains/scanMode)
-//   4. call runWalletScan() — the ONLY pipeline entry point this router calls
+//   4. call runWalletScanV2() — the ONLY pipeline entry point this router calls
 //   5. return a sanitized response (never a raw report, never an internal error)
 export async function handleScanRequest(rawBody: unknown, callerIp: string): Promise<RouteResult> {
   if (isRateLimited(callerIp)) {
@@ -45,7 +48,7 @@ export async function handleScanRequest(rawBody: unknown, callerIp: string): Pro
   }
 
   try {
-    const report = await runWalletScan(validation.sanitized)
+    const report = await runWalletScanV2(validation.sanitized)
     return { status: 200, body: buildApiResponse(report) }
   } catch (error) {
     return { status: 500, body: handleApiError(error) }

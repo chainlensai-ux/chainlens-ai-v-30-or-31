@@ -1,11 +1,12 @@
 // DEPLOYMENT LAYER — api
 //
-// Builds the outward-facing API response from a FinalReport, and turns any thrown error into a
-// safe, client-facing error payload. Never includes a stack trace, a raw provider event, or an
+// Builds the outward-facing API response from a V2 engine report, and turns any thrown error into
+// a safe, client-facing error payload. Never includes a stack trace, a raw provider event, or an
 // env value in anything returned from this file.
 
 import type { FinalReport } from '../modules/finalReportAssembler/types'
 import type { RecoveryEvaluationEntry } from '../modules/recoveryPolicy/types'
+import type { RunWalletScanV2Result } from '../pipeline/runWalletScanV2'
 import { classifyError, sanitizeError } from '../production/errorReporter'
 
 export type SanitizedRecoveryEvaluationEntry = Omit<RecoveryEvaluationEntry, 'recoveredEvents'> & {
@@ -18,9 +19,13 @@ export type SanitizedReport = Omit<FinalReport, 'recoveryPolicy'> & {
   }
 }
 
+export type SanitizedReportV2 = SanitizedReport & Pick<RunWalletScanV2Result, 'holdings' | 'portfolio'>
+
 // PURE. The only place recoveryPolicy.evaluation[].recoveredEvents (raw, provider-shaped
 // transfer data) is touched — replaced with a count so the client never receives raw provider
-// payloads, while still learning how much evidence recovery actually found for a token.
+// payloads, while still learning how much evidence recovery actually found for a token. Accepts
+// either the plain Step 5 report or the V2-extended report (holdings/portfolio, when present,
+// pass through untouched via the spread — this module never fabricates or drops them).
 export function sanitizeReport(report: FinalReport): SanitizedReport {
   return {
     ...report,
@@ -65,11 +70,16 @@ export function maskSensitiveFields<T>(value: T): T {
 
 export type ApiSuccessResponse = {
   success: true
-  data: SanitizedReport
+  data: SanitizedReportV2
 }
 
-export function buildApiResponse(report: FinalReport): ApiSuccessResponse {
-  return { success: true, data: maskSensitiveFields(sanitizeReport(report)) }
+// Builds the production /api/scan response — the V2 engine's holdings/portfolio fields are
+// carried through sanitizeReport's object spread (they're just plain data, no raw provider
+// payload among them) and explicitly re-typed here as SanitizedReportV2 so callers get accurate
+// static types for them, not just an untyped passthrough.
+export function buildApiResponse(report: RunWalletScanV2Result): ApiSuccessResponse {
+  const sanitized = sanitizeReport(report) as SanitizedReportV2
+  return { success: true, data: maskSensitiveFields(sanitized) }
 }
 
 export type ApiErrorResponse = {
