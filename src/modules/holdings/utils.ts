@@ -21,34 +21,44 @@ function goldrushApiKey(): string {
   return process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY ?? ''
 }
 
+// HyperEVM deliberately absent — no codebase-verified GoldRush/Alchemy slug exists for it (see
+// providerFetchWindow/types.ts's TODO). Holdings for a HyperEVM wallet honestly resolve to an
+// empty list from both providers rather than guessing a URL.
+const GOLDRUSH_VERIFIED_CHAIN_SLUGS: Partial<Record<SupportedChain, string>> = {
+  eth: 'eth-mainnet',
+  base: 'base-mainnet',
+  arbitrum: 'arbitrum-mainnet',
+}
+
+const ALCHEMY_VERIFIED_CHAINS: Partial<Record<SupportedChain, { keyNames: string[]; networkSlug: string }>> = {
+  eth: { keyNames: ALCHEMY_ETH_KEY_NAMES, networkSlug: 'eth-mainnet' },
+  base: { keyNames: ALCHEMY_BASE_KEY_NAMES, networkSlug: 'base-mainnet' },
+  arbitrum: { keyNames: ALCHEMY_ARBITRUM_KEY_NAMES, networkSlug: 'arb-mainnet' },
+}
+
 function alchemyApiKey(chain: SupportedChain): string {
-  if (chain === 'eth') return resolveEnvKey(ALCHEMY_ETH_KEY_NAMES)
-  if (chain === 'arbitrum') return resolveEnvKey(ALCHEMY_ARBITRUM_KEY_NAMES)
-  return resolveEnvKey(ALCHEMY_BASE_KEY_NAMES)
+  const verified = ALCHEMY_VERIFIED_CHAINS[chain]
+  return verified ? resolveEnvKey(verified.keyNames) : ''
 }
 
-function alchemyNetworkSlug(chain: SupportedChain): string {
-  if (chain === 'eth') return 'eth-mainnet'
-  if (chain === 'arbitrum') return 'arb-mainnet'
-  return 'base-mainnet'
-}
-
-function alchemyBaseUrl(chain: SupportedChain): string {
+function alchemyBaseUrl(chain: SupportedChain): string | null {
+  const verified = ALCHEMY_VERIFIED_CHAINS[chain]
+  if (!verified) return null
   const key = alchemyApiKey(chain)
-  return `https://${alchemyNetworkSlug(chain)}.g.alchemy.com/v2/${key}`
+  return `https://${verified.networkSlug}.g.alchemy.com/v2/${key}`
 }
 
-function goldrushChainName(chain: SupportedChain): string {
-  if (chain === 'eth') return 'eth-mainnet'
-  if (chain === 'arbitrum') return 'arbitrum-mainnet'
-  return 'base-mainnet'
+function goldrushChainName(chain: SupportedChain): string | null {
+  return GOLDRUSH_VERIFIED_CHAIN_SLUGS[chain] ?? null
 }
 
 export async function fetchGoldrushHoldings(chain: SupportedChain, walletAddress: string): Promise<{ ok: boolean; holdings: TokenHolding[] }> {
+  const chainSlug = goldrushChainName(chain)
+  if (!chainSlug) return { ok: false, holdings: [] }
   const apiKey = goldrushApiKey()
   if (!apiKey) return { ok: false, holdings: [] }
   try {
-    const url = `https://api.covalenthq.com/v1/${goldrushChainName(chain)}/address/${walletAddress}/balances_v2/?no-spam=true&no-nft-fetch=true`
+    const url = `https://api.covalenthq.com/v1/${chainSlug}/address/${walletAddress}/balances_v2/?no-spam=true&no-nft-fetch=true`
     const res = await fetch(url, { cache: 'no-store', headers: { Authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(10_000) })
     if (!res.ok) return { ok: false, holdings: [] }
     const json = await res.json()
@@ -84,10 +94,12 @@ export async function fetchGoldrushHoldings(chain: SupportedChain, walletAddress
 }
 
 export async function fetchAlchemyHoldings(chain: SupportedChain, walletAddress: string): Promise<{ ok: boolean; holdings: TokenHolding[] }> {
+  const url = alchemyBaseUrl(chain)
+  if (!url) return { ok: false, holdings: [] }
   const apiKey = alchemyApiKey(chain)
   if (!apiKey) return { ok: false, holdings: [] }
   try {
-    const res = await fetch(alchemyBaseUrl(chain), {
+    const res = await fetch(url, {
       method: 'POST',
       cache: 'no-store',
       headers: { 'Content-Type': 'application/json' },

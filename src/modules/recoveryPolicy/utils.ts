@@ -26,27 +26,35 @@ function goldrushApiKey(): string {
   return process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY ?? ''
 }
 
+// HyperEVM is deliberately absent from both maps below — no codebase-verified GoldRush/Alchemy
+// slug exists for it (see providerFetchWindow/types.ts's TODO). Recovery for a HyperEVM
+// (chain, token) pair honestly fetches zero historical events rather than guessing a URL.
+const GOLDRUSH_VERIFIED_CHAIN_SLUGS: Partial<Record<SupportedChain, string>> = {
+  eth: 'eth-mainnet',
+  base: 'base-mainnet',
+  arbitrum: 'arbitrum-mainnet',
+}
+
+const ALCHEMY_VERIFIED_CHAINS: Partial<Record<SupportedChain, { keyNames: string[]; networkSlug: string }>> = {
+  eth: { keyNames: ALCHEMY_ETH_KEY_NAMES, networkSlug: 'eth-mainnet' },
+  base: { keyNames: ALCHEMY_BASE_KEY_NAMES, networkSlug: 'base-mainnet' },
+  arbitrum: { keyNames: ALCHEMY_ARBITRUM_KEY_NAMES, networkSlug: 'arb-mainnet' },
+}
+
 function alchemyApiKey(chain: SupportedChain): string {
-  if (chain === 'eth') return resolveEnvKey(ALCHEMY_ETH_KEY_NAMES)
-  if (chain === 'arbitrum') return resolveEnvKey(ALCHEMY_ARBITRUM_KEY_NAMES)
-  return resolveEnvKey(ALCHEMY_BASE_KEY_NAMES)
+  const verified = ALCHEMY_VERIFIED_CHAINS[chain]
+  return verified ? resolveEnvKey(verified.keyNames) : ''
 }
 
-function alchemyNetworkSlug(chain: SupportedChain): string {
-  if (chain === 'eth') return 'eth-mainnet'
-  if (chain === 'arbitrum') return 'arb-mainnet'
-  return 'base-mainnet'
-}
-
-function alchemyBaseUrl(chain: SupportedChain): string {
+function alchemyBaseUrl(chain: SupportedChain): string | null {
+  const verified = ALCHEMY_VERIFIED_CHAINS[chain]
+  if (!verified) return null
   const key = alchemyApiKey(chain)
-  return `https://${alchemyNetworkSlug(chain)}.g.alchemy.com/v2/${key}`
+  return `https://${verified.networkSlug}.g.alchemy.com/v2/${key}`
 }
 
-function goldrushChainName(chain: SupportedChain): string {
-  if (chain === 'eth') return 'eth-mainnet'
-  if (chain === 'arbitrum') return 'arbitrum-mainnet'
-  return 'base-mainnet'
+function goldrushChainName(chain: SupportedChain): string | null {
+  return GOLDRUSH_VERIFIED_CHAIN_SLUGS[chain] ?? null
 }
 
 // Targeted GoldRush historical page — page-number offset beyond the base window's page 0. Caller
@@ -56,10 +64,12 @@ export async function fetchGoldrushHistoricalPage(
   walletAddress: string,
   pageNumber: number,
 ): Promise<RawProviderEvent[]> {
+  const chainSlug = goldrushChainName(chain)
+  if (!chainSlug) return []
   const apiKey = goldrushApiKey()
   if (!apiKey) return []
   try {
-    const url = new URL(`https://api.covalenthq.com/v1/${goldrushChainName(chain)}/address/${walletAddress}/transactions_v3/`)
+    const url = new URL(`https://api.covalenthq.com/v1/${chainSlug}/address/${walletAddress}/transactions_v3/`)
     url.searchParams.set('page-size', '100')
     url.searchParams.set('page-number', String(pageNumber))
     url.searchParams.set('with-logs', 'true')
@@ -107,9 +117,10 @@ export async function fetchAlchemyTokenHistory(
   walletAddress: string,
   token: string,
 ): Promise<RawProviderEvent[]> {
+  const url = alchemyBaseUrl(chain)
+  if (!url) return []
   const apiKey = alchemyApiKey(chain)
   if (!apiKey) return []
-  const url = alchemyBaseUrl(chain)
   const rpc = async (params: Record<string, unknown>): Promise<Record<string, unknown> | null> => {
     try {
       const res = await fetch(url, {

@@ -14,7 +14,24 @@ export type ProviderName = 'goldrush' | 'alchemy'
 
 export type ProviderStatus = 'ok' | 'partial' | 'provider_unavailable'
 
-export type SupportedChain = 'base' | 'eth' | 'arbitrum'
+export type SupportedChain = 'base' | 'eth' | 'arbitrum' | 'hyperevm'
+
+// HyperEVM (Hyperliquid's EVM), per its publicly documented chain registry entry — this is a
+// real, verifiable chain ID, not something invented for this codebase.
+export const HYPEREVM_CHAIN_ID = 999
+
+// GoldRush (Covalent) and Alchemy do not have a codebase-verified chain slug for HyperEVM (unlike
+// base/eth/arbitrum's slugs, which are documented, checkable provider conventions). Rather than
+// guess a slug and silently hit a wrong/broken URL, both provider fetchers (utils.ts in this
+// module, recoveryPolicy, and holdings) gate on this set and return an honest
+// 'chain_not_verified_for_provider' result for any chain not in it — see
+// GOLDRUSH_VERIFIED_CHAINS / ALCHEMY_VERIFIED_CHAINS in utils.ts.
+//
+// TODO: HyperEVM native-RPC-based event fetcher (using HYPEREVM_RPC_URL + eth_getLogs against the
+// standard ERC-20 Transfer topic) would let this module fetch real HyperEVM data without GoldRush/
+// Alchemy support, but requires a verified HyperEVM block-time/block-range estimate for windowing
+// 90 days of blocks, which is not available in this codebase or environment — not built here to
+// avoid guessing at a block range and silently mis-windowing the fetch.
 
 // Raw, provider-tagged transfer event. Deliberately NOT normalized yet (no computed `direction`,
 // no dedupe applied across providers) — normalization is module 2's responsibility only.

@@ -7,6 +7,12 @@
 // codebase, and inventing one here would be fabricating data this project's own conventions
 // forbid). A detected pair is always labeled a "candidate" with a confidence basis, never asserted
 // as a confirmed bridge transaction.
+//
+// Chain-agnostic by construction — chainFrom/chainTo are just whichever two distinct
+// SupportedChain values the matched legs happen to carry, so Base <-> Arbitrum <-> HyperEVM (and
+// any other pair among base/eth/arbitrum/hyperevm) are all already in scope with no code change.
+// In practice a HyperEVM leg only appears once real HyperEVM events exist to feed this module (see
+// providerFetchWindow's HyperEVM provider-support gap) — this module itself has no chain allowlist.
 
 import type { NormalizedEvent } from '../normalization/types'
 import type { SupportedChain } from '../providerFetchWindow/types'

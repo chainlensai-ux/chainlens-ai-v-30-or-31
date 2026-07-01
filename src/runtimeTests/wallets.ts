@@ -35,9 +35,14 @@ const WALLET_F = '0x5555555555555555555555555555555555555555'
 const WALLET_G = '0x6666666666666666666666666666666666666666'
 const WALLET_H = '0x7777777777777777777777777777777777777777'
 const WALLET_I = '0x8888888888888888888888888888888888888888'
+const WALLET_J = '0x9999999999999999999999999999999999999999'
 
 function isoMinusDays(days: number): string {
   return new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString()
+}
+
+function isoMinutesAgo(minutes: number): string {
+  return new Date(Date.now() - minutes * 60 * 1000).toISOString()
 }
 
 function buyEvent(overrides: Partial<RawProviderEvent> & { chain: SupportedChain; wallet: string }): RawProviderEvent {
@@ -184,6 +189,51 @@ const extremeActivityWallet: WalletTestConfig = {
   syntheticRawEvents: buildExtremeActivityEvents(),
 }
 
+// ── 10. hyperEvmBridgeWallet — synthetic, exercises HyperEVM end-to-end: a chainsScanned entry,
+// a same-tx-shaped buy on HyperEVM itself, and a cross-chain bridge candidate
+// (Arbitrum -> HyperEVM) for bridgeDetection to pick up. Demonstrates the full HyperEVM wiring
+// (chain selection, timelines, FIFO, bridgeTimeline, windowCoverage) via the synthetic path, since
+// no verified GoldRush/Alchemy provider integration exists yet to fetch a real HyperEVM wallet's
+// data (see providerFetchWindow's HyperEVM TODO) — this is the honest way to prove the mechanism
+// works without claiming a live-network result this environment cannot actually produce.
+const hyperEvmBridgeWallet: WalletTestConfig = {
+  name: 'hyperEvmBridgeWallet',
+  walletAddress: WALLET_J,
+  chains: ['base', 'arbitrum', 'hyperevm'],
+  scanMode: 'deep',
+  syntheticRawEvents: [
+    // Bridge leg 1: wallet sends BRT out on Arbitrum...
+    sellEvent({
+      chain: 'arbitrum',
+      wallet: WALLET_J,
+      contract: '0xb61d9e0000000000000000000000000000000a12',
+      symbol: 'BRT',
+      amountRaw: '1000000000000000000',
+      timestamp: isoMinutesAgo(30),
+    }),
+    // ...and receives it on HyperEVM ~6 minutes later (same symbol, near-identical amount, well
+    // inside the 60-minute match window) -> a high-confidence bridge candidate.
+    buyEvent({
+      chain: 'hyperevm',
+      wallet: WALLET_J,
+      contract: '0xb61d9e0000000000000000000000000000000e99',
+      symbol: 'BRT',
+      amountRaw: '1000000000000000000',
+      timestamp: isoMinutesAgo(24),
+    }),
+    // A second, unrelated buy on HyperEVM itself, so buyTimeline/fifoEngine have real HyperEVM
+    // activity to work with beyond just the bridge leg.
+    buyEvent({
+      chain: 'hyperevm',
+      wallet: WALLET_J,
+      contract: '0x4a91d9e000000000000000000000000000000091',
+      symbol: 'HYPT',
+      amountRaw: '5000000000000000000',
+      timestamp: isoMinusDays(4),
+    }),
+  ],
+}
+
 export const WALLET_TEST_CONFIGS: WalletTestConfig[] = [
   simpleWallet,
   multiChainWallet,
@@ -194,4 +244,5 @@ export const WALLET_TEST_CONFIGS: WalletTestConfig[] = [
   noRecoveryWallet,
   malformedEventsWallet,
   extremeActivityWallet,
+  hyperEvmBridgeWallet,
 ]

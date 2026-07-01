@@ -23,6 +23,15 @@ import {
 const ALCHEMY_BASE_KEY_NAMES = ['ALCHEMY_BASE_KEY', 'ALCHEMY_BASE_API_KEY', 'BASE_ALCHEMY_API_KEY', 'ALCHEMY_API_KEY', 'NEXT_PUBLIC_ALCHEMY_BASE_KEY']
 const ALCHEMY_ETH_KEY_NAMES = ['ALCHEMY_ETHEREUM_KEY', 'ALCHEMY_ETH_KEY', 'ALCHEMY_ETH_API_KEY', 'ALCHEMY_API_KEY']
 const ALCHEMY_ARBITRUM_KEY_NAMES = ['ALCHEMY_ARBITRUM_KEY', 'ALCHEMY_ARBITRUM_API_KEY', 'ARBITRUM_ALCHEMY_API_KEY', 'ALCHEMY_API_KEY']
+// HyperEVM: env var reserved/documented (.env.example) for whenever Alchemy adds verified
+// HyperEVM support, or for a future native-RPC fetcher (see HYPEREVM_RPC_URL /
+// providerFetchWindow/types.ts's TODO). Not read by alchemyApiKey below — see
+// ALCHEMY_VERIFIED_CHAINS: HyperEVM is deliberately excluded from the set of chains this function
+// will ever build a request URL for, so an unused-but-configured key can never silently produce a
+// broken request.
+const ALCHEMY_HYPEREVM_KEY_NAMES = ['ALCHEMY_HYPEREVM_KEY', 'ALCHEMY_HYPEREVM_API_KEY']
+// Reserved for a future native-RPC HyperEVM fetcher — not used by any function in this file yet.
+const HYPEREVM_RPC_URL_NAMES = ['HYPEREVM_RPC_URL', 'HYPEREVM_RPC']
 
 function resolveEnvKey(names: string[]): string {
   for (const name of names) {
@@ -36,30 +45,44 @@ function goldrushApiKey(): string {
   return process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY ?? ''
 }
 
-// Alchemy needs both a per-chain key and a per-chain URL slug (unlike GoldRush, whose key is
-// chain-agnostic — only its URL slug varies). Every chain this module supports must have an entry
-// in both alchemyApiKey and alchemyBaseUrl/goldrushChainName below.
+// Chains this file has a codebase-verified GoldRush (Covalent) URL slug / Alchemy subdomain for.
+// HyperEVM is intentionally absent from both — no verified slug/subdomain exists for it, and
+// guessing one risks silently hitting a wrong or nonexistent endpoint rather than honestly
+// reporting "not supported by this provider yet" (see fetchGoldrushRawEvents / fetchAlchemyRawEvents
+// below, which check membership here before ever building a URL).
+const GOLDRUSH_VERIFIED_CHAIN_SLUGS: Partial<Record<SupportedChain, string>> = {
+  eth: 'eth-mainnet',
+  base: 'base-mainnet',
+  arbitrum: 'arbitrum-mainnet',
+}
+
+const ALCHEMY_VERIFIED_CHAINS: Partial<Record<SupportedChain, { keyNames: string[]; networkSlug: string }>> = {
+  eth: { keyNames: ALCHEMY_ETH_KEY_NAMES, networkSlug: 'eth-mainnet' },
+  base: { keyNames: ALCHEMY_BASE_KEY_NAMES, networkSlug: 'base-mainnet' },
+  arbitrum: { keyNames: ALCHEMY_ARBITRUM_KEY_NAMES, networkSlug: 'arb-mainnet' },
+}
+
 function alchemyApiKey(chain: SupportedChain): string {
-  if (chain === 'eth') return resolveEnvKey(ALCHEMY_ETH_KEY_NAMES)
-  if (chain === 'arbitrum') return resolveEnvKey(ALCHEMY_ARBITRUM_KEY_NAMES)
-  return resolveEnvKey(ALCHEMY_BASE_KEY_NAMES)
+  const verified = ALCHEMY_VERIFIED_CHAINS[chain]
+  return verified ? resolveEnvKey(verified.keyNames) : ''
 }
 
-function alchemyNetworkSlug(chain: SupportedChain): string {
-  if (chain === 'eth') return 'eth-mainnet'
-  if (chain === 'arbitrum') return 'arb-mainnet'
-  return 'base-mainnet'
-}
-
-function alchemyBaseUrl(chain: SupportedChain): string {
+function alchemyBaseUrl(chain: SupportedChain): string | null {
+  const verified = ALCHEMY_VERIFIED_CHAINS[chain]
+  if (!verified) return null
   const key = alchemyApiKey(chain)
-  return `https://${alchemyNetworkSlug(chain)}.g.alchemy.com/v2/${key}`
+  return `https://${verified.networkSlug}.g.alchemy.com/v2/${key}`
 }
 
-function goldrushChainName(chain: SupportedChain): string {
-  if (chain === 'eth') return 'eth-mainnet'
-  if (chain === 'arbitrum') return 'arbitrum-mainnet'
-  return 'base-mainnet'
+function goldrushChainName(chain: SupportedChain): string | null {
+  return GOLDRUSH_VERIFIED_CHAIN_SLUGS[chain] ?? null
+}
+
+// Exported so recoveryPolicy/holdings' own copies of this gate stay in sync in code review, even
+// though (by the project's existing "no runtime coupling between modules" convention) they each
+// keep an independent literal copy rather than importing this one.
+export function isHyperEvmKeyReserved(): boolean {
+  return resolveEnvKey(ALCHEMY_HYPEREVM_KEY_NAMES).length > 0 || resolveEnvKey(HYPEREVM_RPC_URL_NAMES).length > 0
 }
 
 export function clampWindowDays(days?: number): number {
@@ -79,12 +102,16 @@ export async function fetchGoldrushRawEvents(
   walletAddress: string,
   windowDays: number,
 ): Promise<SingleProviderFetchResult> {
+  const chainSlug = goldrushChainName(chain)
+  if (!chainSlug) {
+    return { provider: 'goldrush', ok: false, events: [], errorReason: 'chain_not_verified_for_provider' }
+  }
   const apiKey = goldrushApiKey()
   if (!apiKey) {
     return { provider: 'goldrush', ok: false, events: [], errorReason: 'no_api_key_configured' }
   }
   try {
-    const url = new URL(`https://api.covalenthq.com/v1/${goldrushChainName(chain)}/address/${walletAddress}/transactions_v3/`)
+    const url = new URL(`https://api.covalenthq.com/v1/${chainSlug}/address/${walletAddress}/transactions_v3/`)
     url.searchParams.set('page-size', '200')
     url.searchParams.set('page-number', '0')
     url.searchParams.set('with-logs', 'true')
@@ -136,11 +163,14 @@ export async function fetchAlchemyRawEvents(
   walletAddress: string,
   windowDays: number,
 ): Promise<SingleProviderFetchResult> {
+  const url = alchemyBaseUrl(chain)
+  if (!url) {
+    return { provider: 'alchemy', ok: false, events: [], errorReason: 'chain_not_verified_for_provider' }
+  }
   const apiKey = alchemyApiKey(chain)
   if (!apiKey) {
     return { provider: 'alchemy', ok: false, events: [], errorReason: 'no_api_key_configured' }
   }
-  const url = alchemyBaseUrl(chain)
   const rpc = async (params: Record<string, unknown>): Promise<Record<string, unknown> | null> => {
     try {
       const res = await fetch(url, {

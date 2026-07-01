@@ -4,6 +4,12 @@
 // windowCoverage, an external coverage-fact input — no such module exists yet in this delivery,
 // see Architecture Step 1 for its shape) and an optional holdings input for concentration signals
 // (no portfolio-pricing module exists yet either). NEVER imports fifoEngine or recoveryPolicy.
+//
+// TODO: HyperEVM LP/staking/yield detection requires verified contract registry — this module has
+// no LP/staking/yield fields at all (no such detection exists for ANY chain yet), so it never
+// claims yield-farming activity on HyperEVM or anywhere else. Keep it that way until a verified
+// per-protocol contract-address registry exists; do not infer yield activity from generic
+// transfer patterns.
 
 import type { SupportedChain } from '../providerFetchWindow/types'
 

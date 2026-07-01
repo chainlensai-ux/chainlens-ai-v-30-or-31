@@ -10,6 +10,12 @@
 // `proceedsUsdEstimate` / `matchedBuyLotId` stay null placeholders — populating them for real is a
 // future module's job, not this one's, per Architecture Step 9 §4 ("fifoEngine must never guess
 // cost basis" applies equally to guessing evidence this module was never given).
+//
+// This same-tx heuristic is chain-agnostic and already applies to HyperEVM exactly as it does to
+// base/eth/arbitrum — no chain-specific branch exists or is needed here.
+// TODO: HyperEVM DEX router registry required for real swap detection (router-contract-address
+// matching, not just same-tx pairing) — no verified HyperEVM DEX router addresses exist in this
+// codebase or environment; do not fabricate one.
 
 import type { ChainSelectionResult } from '../chainSelection/types'
 import type { NormalizedEvent } from '../normalization/types'

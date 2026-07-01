@@ -31,7 +31,7 @@ export type PreScanValidation = {
 
 // Only chains the existing modules actually support (providerFetchWindow's SupportedChain union).
 // An unrecognized chain string in the request is dropped, never guessed at or force-coerced.
-export const SUPPORTED_CHAINS: SupportedChain[] = ['base', 'eth', 'arbitrum']
+export const SUPPORTED_CHAINS: SupportedChain[] = ['base', 'eth', 'arbitrum', 'hyperevm']
 
 // Architecture Step 1: intel window is a fixed architectural constant, never a per-request input.
 export const INTEL_WINDOW_DAYS = 180
