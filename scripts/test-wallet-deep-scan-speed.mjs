@@ -313,11 +313,21 @@ for (const field of [
   assert.ok(snap.includes(field), `walletMoralisHardGateDebug type must declare ${field.split(':')[0].trim()}`)
 }
 
-// 5. _shouldRunBaseFifoCoverage (Phase 5C) must never trigger when GoldRush activity is already usable.
+// 5. _shouldRunBaseFifoCoverage (Phase 5C) must never re-fetch Moralis transfers when GoldRush
+// activity was already usable AND actually produced swap candidates (the real Moralis-transfer-leak
+// case this gate exists to close). DEEP-SCAN-ESCALATION-FIX: "usable" alone (raw event count) is no
+// longer sufficient to block escalation — a wallet whose GoldRush events yielded zero swap candidates
+// must still be allowed to escalate into this pass, since raw-event-presence didn't produce real
+// swap evidence. See scripts/test-wallet-swap-detection-goldrush-usable-escalation.mjs.
 assert.match(
   snap,
-  /!_bfcFallbackBlocked &&\s*\n\s*!_goldrushActivityUsableForMoralisGate\s*\n\s*\)/,
-  'Phase 5C base-FIFO-coverage gate is blocked when GoldRush activity is already usable, closing the Moralis transfer leak',
+  /_goldrushActivityUsableAndHasSwapCandidates = _goldrushActivityUsableForMoralisGate && walletSwapSummary\.swapCandidateEvents > 0/,
+  'Phase 5C base-FIFO-coverage gate only treats GoldRush as "usable enough to skip" when it actually produced swap candidates, not merely raw events',
+)
+assert.match(
+  snap,
+  /walletSwapSummary\.swapCandidateEvents > 0 && !_goldrushActivityUsableForMoralisGate\) \|\|\s*\n\s*\(walletSwapSummary\.swapCandidateEvents === 0 && _goldrushActivityUsableForMoralisGate\)/,
+  'Phase 5C base-FIFO-coverage gate escalates when GoldRush activity produced zero swap candidates, even if GoldRush returned raw events',
 )
 
 // 6. MORALIS-MISSING-BUY-RECOVERY is capped to 1 page per target token unless an admin override exists.

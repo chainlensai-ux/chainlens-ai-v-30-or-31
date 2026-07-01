@@ -14762,25 +14762,39 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     l.pnlDisplayStatus !== 'estimate_only_price_flat' &&
     (l.coveragePercent ?? 100) !== 0
   const _realBackedClosedLotsCountEarly = _closedLots.filter(_isRealBackedClosedLotEarly).length
+  // DEEP-SCAN-ESCALATION-FIX: "GoldRush activity usable" (_goldrushActivityUsableForMoralisGate)
+  // only ever meant "GoldRush returned events" (grEvents.length > 0) — it says nothing about
+  // whether those events actually resolved into swap candidates. A wallet can have real GoldRush
+  // activity that, once run through swap detection, yields swapCandidateEvents === 0 (e.g. every
+  // grouped tx only has one wallet-side leg and no recognized router — see "no_router_matches").
+  // Treating raw-event-presence alone as "safe to stop" then blocked exactly the escalation this
+  // wallet needed. The rule is now two-part: stop early only when GoldRush is usable AND it
+  // actually produced swap candidates; otherwise escalate into the coverage/recovery pass below,
+  // regardless of raw event count.
+  const _goldrushActivityUsableAndHasSwapCandidates = _goldrushActivityUsableForMoralisGate && walletSwapSummary.swapCandidateEvents > 0
   // MORALIS-LEAK-FIX-1: this gate predates the PNL-RECOVERY-EXCL-FIX-1 change above and never checked
   // GoldRush usability — it relied on _realBackedClosedLotsCountEarly === 0 alone, which used to stay
   // false (and so never trigger) for wallets whose only lots were estimate-only/flat-price. Now that
   // those lots correctly count as not-real-backed, this gate fires for wallets where GoldRush activity
   // was already usable, re-fetching the same activity from Moralis for no reason. Every other Moralis
-  // erc20_transfers call site already gates on !_goldrushActivityUsableForMoralisGate; this one must too.
+  // erc20_transfers call site already gates on !_goldrushActivityUsableForMoralisGate; this one must too
+  // — except for the DEEP-SCAN-ESCALATION-FIX case above, where GoldRush activity being "usable" by
+  // raw event count did NOT actually produce any swap evidence, so re-fetching is not redundant.
   const _shouldRunBaseFifoCoverage = (
     deepActivity &&
     activityRequested &&
     _baseReconChainOk &&
     _realBackedClosedLotsCountEarly === 0 &&
-    walletSwapSummary.swapCandidateEvents > 0 &&
     walletEvidenceSummary.totalEvents > 0 &&
     Boolean(process.env.MORALIS_API_KEY) &&
     !historicalCoverage &&
     !_bfcFallbackBlocked &&
-    !_goldrushActivityUsableForMoralisGate
+    (
+      (walletSwapSummary.swapCandidateEvents > 0 && !_goldrushActivityUsableForMoralisGate) ||
+      (walletSwapSummary.swapCandidateEvents === 0 && _goldrushActivityUsableForMoralisGate)
+    )
   )
-  if (_goldrushActivityUsableForMoralisGate && _realBackedClosedLotsCountEarly === 0 && deepActivity && activityRequested && _baseReconChainOk && walletSwapSummary.swapCandidateEvents > 0 && walletEvidenceSummary.totalEvents > 0 && Boolean(process.env.MORALIS_API_KEY) && !historicalCoverage && !_bfcFallbackBlocked) {
+  if (_goldrushActivityUsableAndHasSwapCandidates && _realBackedClosedLotsCountEarly === 0 && deepActivity && activityRequested && _baseReconChainOk && walletEvidenceSummary.totalEvents > 0 && Boolean(process.env.MORALIS_API_KEY) && !historicalCoverage && !_bfcFallbackBlocked) {
     _walletMoralisHardGateDebug.transfersBlockedBecauseGoldRushUsable = true
     _walletMoralisHardGateDebug.transferLeakPath = 'base_fifo_coverage'
     _walletMoralisHardGateDebug.moralisTransferAttemptsBlocked += _BASE_FIFO_COVERAGE_MAX_PAGES
