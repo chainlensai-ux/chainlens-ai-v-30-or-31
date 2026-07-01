@@ -74,7 +74,11 @@ function buildPriceSources(): PriceSources {
   return { primary: goldrushPriceSource(client), fallback: noPriceSources().fallback }
 }
 
-const PRICE_SOURCES: PriceSources = buildPriceSources()
+// Exported (read-only) so standalone tools — currently only
+// src/modules/networkDiagnostics/networkDiagnostics.ts via app/api/diagnostics/pricing/route.ts —
+// can verify the exact same configured price sources runWalletScan() itself uses, without
+// duplicating buildPriceSources()'s logic or constructing a second GoldRushClient.
+export const PRICE_SOURCES: PriceSources = buildPriceSources()
 
 // ── Fallback-safe wrappers (Architecture Step 7) ──────────────────────────────────────────────
 // Each wrapper below is the ONLY place that catches its stage's failures — a thrown error inside
