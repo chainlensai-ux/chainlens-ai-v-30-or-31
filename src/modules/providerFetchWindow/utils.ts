@@ -85,7 +85,7 @@ export async function fetchGoldrushRawEvents(
   }
   try {
     const url = new URL(`https://api.covalenthq.com/v1/${goldrushChainName(chain)}/address/${walletAddress}/transactions_v3/`)
-    url.searchParams.set('page-size', '100')
+    url.searchParams.set('page-size', '200')
     url.searchParams.set('page-number', '0')
     url.searchParams.set('with-logs', 'true')
     url.searchParams.set('no-spam', 'true')
@@ -159,8 +159,8 @@ export async function fetchAlchemyRawEvents(
   }
   try {
     const [fromResult, toResult] = await Promise.all([
-      rpc({ fromBlock: '0x0', category: ['erc20'], withMetadata: true, maxCount: '0x64', order: 'desc', fromAddress: walletAddress }),
-      rpc({ fromBlock: '0x0', category: ['erc20'], withMetadata: true, maxCount: '0x64', order: 'desc', toAddress: walletAddress }),
+      rpc({ fromBlock: '0x0', category: ['erc20'], withMetadata: true, maxCount: '0xC8', order: 'desc', fromAddress: walletAddress }),
+      rpc({ fromBlock: '0x0', category: ['erc20'], withMetadata: true, maxCount: '0xC8', order: 'desc', toAddress: walletAddress }),
     ])
     if (!fromResult && !toResult) {
       return { provider: 'alchemy', ok: false, events: [], errorReason: 'no_usable_response' }

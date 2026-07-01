@@ -1,6 +1,6 @@
 // PRODUCTION HARDENING — logger
 //
-// Purely additive, structured logging for the 90-day intelligence engine. This module has NO
+// Purely additive, structured logging for the 180-day intelligence engine. This module has NO
 // dependency on, and makes NO change to, any file under src/modules or src/pipeline — it is an
 // optional instrumentation layer a caller can invoke around those modules, never a modification
 // of them. No provider calls, no pipeline behavior changes.

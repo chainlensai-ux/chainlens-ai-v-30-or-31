@@ -46,7 +46,7 @@ import {
 export type { PreScanValidation, RunWalletScanParams, RunWalletScanResult } from './types'
 export { INTEL_WINDOW_DAYS, SUPPORTED_CHAINS } from './types'
 
-const PROVIDER_FETCH_WINDOW_DAYS_USED = 35
+const PROVIDER_FETCH_WINDOW_DAYS_USED = 90
 
 // ── Fallback-safe wrappers (Architecture Step 7) ──────────────────────────────────────────────
 // Each wrapper below is the ONLY place that catches its stage's failures — a thrown error inside

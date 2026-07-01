@@ -21,7 +21,7 @@ function printFailureDetail(outcome: WalletTestOutcome): void {
 }
 
 async function main(): Promise<void> {
-  console.log('ChainLens 90-Day Intelligence Engine — Runtime Test Harness\n')
+  console.log('ChainLens 180-Day Intelligence Engine — Runtime Test Harness\n')
   const summary = await runAllWalletTests()
 
   console.log('\n============================================================')

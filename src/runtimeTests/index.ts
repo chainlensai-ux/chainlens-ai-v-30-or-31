@@ -1,6 +1,6 @@
 // Runtime test harness — main entry point.
 //
-// Runs the full ChainLens 90-Day Intelligence Engine pipeline end-to-end for every wallet in
+// Runs the full ChainLens 180-Day Intelligence Engine pipeline end-to-end for every wallet in
 // wallets.ts, logs structured results, and validates report shape / fallback / cost / integrity /
 // performance correctness for each run.
 

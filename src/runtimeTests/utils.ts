@@ -33,7 +33,7 @@ import {
 
 import type { WalletTestConfig } from './wallets'
 
-const PROVIDER_FETCH_WINDOW_DAYS_USED = 35
+const PROVIDER_FETCH_WINDOW_DAYS_USED = 90
 
 function usesSyntheticPath(wallet: WalletTestConfig): boolean {
   return wallet.syntheticRawEvents !== undefined || Boolean(wallet.forcedProviderStatusByChain)

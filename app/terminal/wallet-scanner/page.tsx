@@ -1,7 +1,7 @@
 'use client'
 
 // Wallet Scanner — restored Cortex-style UI (from commit 348d917) running on the ChainLens
-// 90-Day Intelligence Engine (V2). Layout, styling, header, Deep Scan / Admin Full Recovery /
+// 180-Day Intelligence Engine (V2). Layout, styling, header, Deep Scan / Admin Full Recovery /
 // Smart Recovery controls, CORTEX Wallet Read panel, and the Wallet Watchlist sidebar are all
 // restored. The scan handler and every results-rendering section were rebuilt against the V2
 // report shape — none of the old profiler fields (walletPnlRead, publicRealizedPnlUsd,
@@ -316,7 +316,7 @@ export default function WalletScannerPage() {
               </span>
             </div>
             <p style={{ fontSize: '14px', color: 'rgba(148,163,184,0.80)', margin: 0, fontFamily: 'var(--font-inter, Inter, sans-serif)', letterSpacing: '0.01em' }}>
-              Advanced on-chain intelligence · AI-powered wallet analysis · 90-Day Intelligence Engine
+              Advanced on-chain intelligence · AI-powered wallet analysis · 180-Day Intelligence Engine
             </p>
           </div>
 
@@ -359,7 +359,7 @@ export default function WalletScannerPage() {
             <button
               onClick={() => void handleScan('deep')}
               disabled={loading || !input.trim()}
-              title="Deep scan via the 90-Day Intelligence Engine — includes holdings, portfolio value, and recovery-policy evaluation."
+              title="Deep scan via the 180-Day Intelligence Engine — includes holdings, portfolio value, and recovery-policy evaluation."
               style={{
                 display: 'inline-flex', alignItems: 'center', gap: '6px',
                 padding: '6px 13px', borderRadius: '8px', border: '1px solid rgba(45,212,191,0.45)',
@@ -417,7 +417,7 @@ export default function WalletScannerPage() {
             <div className="ws-card ws-card-hover" style={{ textAlign: 'center', padding: '48px 24px', color: 'rgba(255,255,255,0.30)' }}>
               <div className="ws-section-header" style={{ color: 'rgba(45,212,191,0.55)', marginBottom: '10px' }}>CORTEX · Wallet Intelligence</div>
               <p style={{ fontSize: '13px', lineHeight: 1.7, margin: 0, fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
-                Enter a wallet address above to generate a CORTEX wallet read — portfolio value, holdings, and on-chain behavior via the 90-Day Intelligence Engine.
+                Enter a wallet address above to generate a CORTEX wallet read — portfolio value, holdings, and on-chain behavior via the 180-Day Intelligence Engine.
               </p>
             </div>
           )}

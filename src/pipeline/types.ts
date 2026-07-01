@@ -34,7 +34,7 @@ export type PreScanValidation = {
 export const SUPPORTED_CHAINS: SupportedChain[] = ['base', 'eth', 'arbitrum']
 
 // Architecture Step 1: intel window is a fixed architectural constant, never a per-request input.
-export const INTEL_WINDOW_DAYS = 90
+export const INTEL_WINDOW_DAYS = 180
 
 // Illustrative constant used only by computeWindowCoverage's honest-approximation formula (see
 // utils.ts) — converts recovered historical pages into an estimated number of additional

@@ -1,6 +1,6 @@
 // MODULE 1 — providerFetchWindow
 //
-// Fetches the shallow (30-40 day) provider window from GoldRush + Alchemy for a single chain.
+// Fetches the shallow (80-100 day) provider window from GoldRush + Alchemy for a single chain.
 // This is the ONLY module in /src/modules permitted to make a network call. Everything it
 // produces (RawProviderEvent[]) is inert data consumed by module 2 (normalization) onward.
 //

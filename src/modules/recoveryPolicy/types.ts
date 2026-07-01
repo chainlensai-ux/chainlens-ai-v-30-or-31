@@ -1,7 +1,7 @@
 // MODULE 5 — recoveryPolicy: type definitions.
 //
 // The ONLY module (besides providerFetchWindow) permitted to make a network call, and the ONLY
-// module allowed to fetch HISTORICAL pages beyond the base 30-40 day window (Architecture Step 4
+// module allowed to fetch HISTORICAL pages beyond the base 80-100 day window (Architecture Step 4
 // §5, Step 8 §3). Used strictly to unlock financial precision (cost basis / FIFO / PnL) for
 // high-value or behavior-critical tokens — never to extend behavioral coverage.
 
@@ -67,7 +67,12 @@ export const DEFAULT_TRIGGER_RECOVERY_WHEN: RecoveryPolicyTriggerConfig = {
 }
 
 // Architecture Step 4 §4 / Step 8 §3: fixed caps, never overridable by a request.
+//
+// WINDOW EXPANSION (intel window 90 -> 180 days, base fetch window 35 -> 90 days): the gap a
+// recovery pass may need to bridge grew from ~55 to ~90 days, so these caps were scaled up
+// proportionally (roughly the same recovered-days-per-page ratio as before) rather than left fixed
+// while the window they're covering doubled.
 export const DEFAULT_RECOVERY_CAPS: RecoveryPolicyCaps = {
-  maxHistoricalPagesPerWallet: 3,
-  maxHistoricalPagesPerToken: 2,
+  maxHistoricalPagesPerWallet: 6,
+  maxHistoricalPagesPerToken: 4,
 }

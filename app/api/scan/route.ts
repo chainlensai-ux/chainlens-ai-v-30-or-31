@@ -1,4 +1,4 @@
-// POST /api/scan — the real, reachable Next.js route for the ChainLens 90-Day Intelligence
+// POST /api/scan — the real, reachable Next.js route for the ChainLens 180-Day Intelligence
 // Engine (V2 — includes holdings + portfolio value). Delegates entirely to
 // src/deployment/router.ts's handleScanRequest(), which already performs rate limiting, request
 // validation, and calls runWalletScanV2() — this file adds no additional logic of its own beyond

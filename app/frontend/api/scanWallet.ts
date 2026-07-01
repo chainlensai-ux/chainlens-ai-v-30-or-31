@@ -1,4 +1,4 @@
-// API client for the ChainLens 90-Day Intelligence Engine (V2).
+// API client for the ChainLens 180-Day Intelligence Engine (V2).
 //
 // The V2 report is split into 9 modules, each served by its own endpoint under
 // /api/scan-v2/modules/<name>. scanWalletV2() fetches all 9 in parallel and reassembles them into
