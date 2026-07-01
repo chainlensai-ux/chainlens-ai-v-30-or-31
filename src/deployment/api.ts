@@ -34,7 +34,11 @@ export function sanitizeReport(report: FinalReport): SanitizedReport {
   }
 }
 
-const FORBIDDEN_KEY_PATTERN = /api[_-]?key|secret|token|password|private[_-]?key|stack|authorization|env(?:ironment)?vars?/i
+// Deliberately does NOT match the bare word "token" — this domain's report legitimately contains
+// ERC20-token fields (e.g. recoveryPolicy.triggerRecoveryWhen.token_value_usd_gte,
+// caps.maxHistoricalPagesPerToken) that must never be stripped. Only credential/session-shaped
+// "*token" compounds are treated as sensitive.
+const FORBIDDEN_KEY_PATTERN = /api[_-]?key|secret|password|private[_-]?key|stack|authorization|env(?:ironment)?vars?|(?:access|auth|bearer|session|refresh|api)[_-]?token/i
 
 // Recursively strips any object key matching a forbidden pattern. Defensive-in-depth: nothing in
 // today's FinalReport shape is expected to match, but this guards against a future field
