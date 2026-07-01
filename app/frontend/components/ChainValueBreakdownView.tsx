@@ -1,5 +1,5 @@
 // V2 SCANNER PREVIEW component — receives ONLY the new portfolioAssembler chain value breakdown.
-import type { ChainValueBreakdownEntry } from '@/src/modules/portfolioAssembler/types'
+import type { ChainValueBreakdownEntry } from '@/src/modules/portfolio/types'
 
 export function ChainValueBreakdownView({ data }: { data: ChainValueBreakdownEntry[] }) {
   return (

@@ -4,8 +4,8 @@
 // only reads what holdingsEngine and pricingEngine already produced.
 
 import type { SupportedChain } from '../providerFetchWindow/types'
-import type { TokenHolding } from '../holdingsEngine/types'
-import type { TokenPrice } from '../pricingEngine/types'
+import type { TokenHolding } from '../holdings/types'
+import type { TokenPrice } from '../pricing/types'
 import type { ChainValueBreakdownEntry, PortfolioSummary, TokenListEntry } from './types'
 import { buildPriceLookup, priceKey } from './utils'
 

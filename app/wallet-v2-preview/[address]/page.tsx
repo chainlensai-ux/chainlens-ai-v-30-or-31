@@ -1,20 +1,19 @@
 'use client'
 
-// V2 SCANNER PREVIEW — temporary page showcasing the new 90-Day Intelligence Engine, now
-// including holdings/portfolio value (holdingsEngine + pricingEngine + portfolioAssembler).
+// V2 SCANNER PREVIEW — temporary page showcasing the new 90-Day Intelligence Engine, including
+// holdings/portfolio value (src/modules/holdings + pricing + portfolio).
 //
 // IMPORTANT: this remains a preview surface only. It does NOT replace, and is not linked from, the
 // production Wallet Scanner (app/terminal/wallet-scanner), which keeps using its existing
-// /api/wallet backend and holdings/PnL UI, completely unchanged. This page now calls
-// /api/scan-preview (app/api/scan-preview/route.ts) instead of /api/scan — a separate,
-// preview-only route that layers holdings/portfolio data on top of the unmodified runWalletScan()
-// output. Production's /api/scan route is untouched and still returns exactly the Step 5 shape.
+// /api/wallet backend and holdings/PnL UI, completely unchanged. This page calls /api/scan-v2
+// (app/api/scan-v2/route.ts) — a separate route from production's /api/scan, which is untouched
+// and still returns exactly the Step 5 shape via the unmodified runWalletScan().
 //
-// Implemented as a Client Component because scanWalletWithHoldings() calls a relative fetch URL,
-// which only resolves in a browser context (a Server Component fetch would need an absolute URL).
+// Implemented as a Client Component because scanWalletV2() calls a relative fetch URL, which only
+// resolves in a browser context (a Server Component fetch would need an absolute URL).
 
 import { useEffect, useState } from 'react'
-import { scanWalletWithHoldings, type ScanWalletApiResponse } from '@/app/frontend/api/scanWallet'
+import { scanWalletV2, type ScanWalletApiResponse } from '@/app/frontend/api/scanWallet'
 import {
   BehaviorIntelView,
   BuyTimelineView,
@@ -28,8 +27,8 @@ import {
   WindowCoverageView,
 } from '@/app/frontend/components'
 import type { FinalReport } from '@/src/modules/finalReportAssembler/types'
-import type { TokenHolding } from '@/src/modules/holdingsEngine/types'
-import type { PortfolioSummary } from '@/src/modules/portfolioAssembler/types'
+import type { TokenHolding } from '@/src/modules/holdings/types'
+import type { PortfolioSummary } from '@/src/modules/portfolio/types'
 
 type PreviewReport = FinalReport & { holdings: TokenHolding[]; portfolio: PortfolioSummary }
 
@@ -44,7 +43,7 @@ export default function WalletV2PreviewPage({ params }: { params: { address: str
     setLoading(true)
     setError(null)
 
-    scanWalletWithHoldings(walletAddress, ['base', 'eth'], 'normal')
+    scanWalletV2(walletAddress, ['base', 'eth'], 'normal')
       .then((response: ScanWalletApiResponse) => {
         if (cancelled) return
         if (!response.success || !response.data) {
@@ -70,10 +69,11 @@ export default function WalletV2PreviewPage({ params }: { params: { address: str
   return (
     <div style={{ padding: 24, fontFamily: 'monospace' }}>
       <div style={{ marginBottom: 16, padding: 10, background: 'rgba(251,191,36,0.1)', border: '1px solid rgba(251,191,36,0.4)', borderRadius: 8 }}>
-        <strong>V2 Scanner Preview</strong> — new 90-Day Intelligence Engine, now with holdings and
-        portfolio value via holdingsEngine/pricingEngine/portfolioAssembler. Note:
-        chainSelection&apos;s own visible_value_usd gates are still 0 in this preview (that
-        integration is intentionally out of scope until it's done as a real, non-preview change) —
+        <strong>V2 Scanner Preview</strong> — new 90-Day Intelligence Engine, with holdings and
+        portfolio value via src/modules/holdings, pricing, and portfolio. Note:
+        chainSelection&apos;s own visible_value_usd gates are still 0 in this preview (wiring real
+        holdings value into chainSelection's gate evaluation would require modifying
+        src/pipeline/index.ts itself, which this V2 orchestration deliberately does not touch) —
         use the Holdings section below for actual portfolio value.
       </div>
 

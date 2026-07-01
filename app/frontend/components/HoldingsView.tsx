@@ -1,8 +1,8 @@
 // V2 SCANNER PREVIEW component — top-level holdings section, composing PortfolioValueView +
 // ChainValueBreakdownView + TokenListView. Receives ONLY the new holdingsEngine/portfolioAssembler
 // output (never anything from the old profiler's holdings shape).
-import type { TokenHolding } from '@/src/modules/holdingsEngine/types'
-import type { PortfolioSummary } from '@/src/modules/portfolioAssembler/types'
+import type { TokenHolding } from '@/src/modules/holdings/types'
+import type { PortfolioSummary } from '@/src/modules/portfolio/types'
 import { ChainValueBreakdownView } from './ChainValueBreakdownView'
 import { PortfolioValueView } from './PortfolioValueView'
 import { TokenListView } from './TokenListView'

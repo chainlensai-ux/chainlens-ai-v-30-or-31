@@ -1,5 +1,5 @@
 // V2 SCANNER PREVIEW component — receives ONLY the new portfolioAssembler token list.
-import type { TokenListEntry } from '@/src/modules/portfolioAssembler/types'
+import type { TokenListEntry } from '@/src/modules/portfolio/types'
 
 export function TokenListView({ data }: { data: TokenListEntry[] }) {
   return (

@@ -1,7 +1,7 @@
 // MODULE 12 — portfolioAssembler: pure helper functions.
 
 import type { SupportedChain } from '../providerFetchWindow/types'
-import type { TokenPrice } from '../pricingEngine/types'
+import type { TokenPrice } from '../pricing/types'
 
 export function priceKey(chain: SupportedChain, contract: string): string {
   return `${chain}:${contract.toLowerCase()}`

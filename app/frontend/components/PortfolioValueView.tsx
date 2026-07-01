@@ -1,5 +1,5 @@
 // V2 SCANNER PREVIEW component — receives ONLY the new portfolioAssembler summary.
-import type { PortfolioSummary } from '@/src/modules/portfolioAssembler/types'
+import type { PortfolioSummary } from '@/src/modules/portfolio/types'
 
 export function PortfolioValueView({ data }: { data: PortfolioSummary }) {
   return (
