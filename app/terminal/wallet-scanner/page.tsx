@@ -687,7 +687,7 @@ type WalletResult = {
   walletScanModeResolved?: 'normal' | 'deep' | 'full_recovery' | 'smart_recovery'
   smartRecoveryWindow?: { startTimestamp: string | null; endTimestamp: string | null; confidence: 'high' | 'medium' | 'low' | 'none'; pagesUsed: number; transfersSeen: number; reason: string | null }
   smartRecoveryStatus?: 'ok' | 'no_window_found' | 'window_detection_skipped'
-  smartRecoveryCost?: { pagesUsed: number; maxPagesAllowed: number; maxPriceAttemptsAllowed: number }
+  smartRecoveryCost?: { pagesUsed: number; actualPagesUsed?: number; maxPagesAllowed: number; maxPriceAttemptsAllowed: number }
   smartRecoveryConfidence?: 'high' | 'medium' | 'low' | 'none'
   smartRecoveryLots?: unknown
   smartRecoveryMissingCostBasis?: unknown

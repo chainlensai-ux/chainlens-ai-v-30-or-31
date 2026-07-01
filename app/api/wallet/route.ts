@@ -925,9 +925,66 @@ export async function POST(req: Request) {
       smartSnapshot.smartRecoveryWindow = result.smartRecoveryWindow
       smartSnapshot.smartRecoveryConfidence = result.smartRecoveryWindow.confidence
       smartSnapshot.smartRecoveryStatus = result.smartRecoveryStatus
-      smartSnapshot.smartRecoveryCost = { pagesUsed: result.smartRecoveryPagesUsed, maxPagesAllowed: result.smartRecoveryMaxPagesAllowed, maxPriceAttemptsAllowed: result.smartRecoveryMaxPriceAttemptsAllowed }
-      smartSnapshot.smartRecoveryLots = result.snapshot.walletLotSummary ?? null
-      smartSnapshot.smartRecoveryMissingCostBasis = result.snapshot.walletHistoricalCoverageSummary ?? null
+
+      // SMART-RECOVERY-COST-TRUTH-FIX: smartRecoveryPagesUsed from the engine is actually the
+      // max-allowed page cap, not pages actually consumed. Derive the real figure from what the
+      // scan itself reports it touched, preferring the cheapest/most-direct source first.
+      const historicalScanDebugPagesAttempted = (
+        (result.snapshot as { _debug?: { walletScannerDiagnostics?: { walletHistoricalScanDebug?: { pagesAttempted?: number } } } })
+          ._debug?.walletScannerDiagnostics?.walletHistoricalScanDebug?.pagesAttempted
+      )
+      const actualPagesUsed = [
+        result.smartRecoveryWindow.pagesUsed,
+        result.snapshot.walletHistoricalCoverageSummary?.pagesAttempted,
+        historicalScanDebugPagesAttempted,
+      ].find((v): v is number => typeof v === 'number' && Number.isFinite(v) && v > 0) ?? 0
+      smartSnapshot.smartRecoveryCost = {
+        pagesUsed: actualPagesUsed,
+        actualPagesUsed,
+        maxPagesAllowed: result.smartRecoveryMaxPagesAllowed,
+        maxPriceAttemptsAllowed: result.smartRecoveryMaxPriceAttemptsAllowed,
+      }
+
+      // SMART-RECOVERY-PNL-TRUTH-FIX: Smart Recovery evidence must never look like official
+      // realized PnL when the same integrity gate that locks walletPnlRead says PnL is invalid.
+      const officialPnlUnlocked = (
+        result.snapshot.publicPnlStatus === 'ok' &&
+        result.snapshot.publicRealizedPnlUsd != null &&
+        result.snapshot.publicPerformanceRealizedPnlUsd != null &&
+        result.snapshot.publicPnlIntegrityGate?.hardInvalid !== true
+      )
+
+      const rawLotSummary = result.snapshot.walletLotSummary ?? null
+      let smartRecoveryLots: Record<string, unknown> | null = null
+      if (rawLotSummary) {
+        smartRecoveryLots = { ...rawLotSummary }
+        if (!officialPnlUnlocked) {
+          smartRecoveryLots.rawPreviewRealizedPnlUsd = rawLotSummary.realizedPnlUsd ?? null
+          smartRecoveryLots.rawPreviewRealizedPnlPercent = rawLotSummary.realizedPnlPercent ?? null
+          smartRecoveryLots.previewClosedLots = rawLotSummary.closedLots ?? null
+          smartRecoveryLots.realizedPnlUsd = null
+          smartRecoveryLots.realizedPnlPercent = null
+          smartRecoveryLots.readyForTradeStats = false
+          smartRecoveryLots.publicUse = false
+          smartRecoveryLots.excludedFrom = ['official_realized_pnl', 'win_rate', 'profit_skill', 'wallet_score', 'verified_pnl']
+          smartRecoveryLots.warning = 'Smart Recovery preview only — official PnL remains locked by integrity checks.'
+        }
+      }
+      smartSnapshot.smartRecoveryLots = smartRecoveryLots
+
+      const rawMissingCostBasis = result.snapshot.walletHistoricalCoverageSummary ?? null
+      let smartRecoveryMissingCostBasis: Record<string, unknown> | null = null
+      if (rawMissingCostBasis) {
+        smartRecoveryMissingCostBasis = { ...rawMissingCostBasis }
+        const missingList = Array.isArray(rawLotSummary?.missing) ? rawLotSummary.missing : []
+        const unresolvedMissingCostBasis = (rawLotSummary?.unmatchedSells ?? 0) > 0 ||
+          missingList.some((m) => typeof m === 'string' && m.startsWith('missing_cost_basis_sells'))
+        if (rawMissingCostBasis.requested && unresolvedMissingCostBasis) {
+          smartRecoveryMissingCostBasis.status = 'partial'
+        }
+      }
+      smartSnapshot.smartRecoveryMissingCostBasis = smartRecoveryMissingCostBasis
+
       return json(smartSnapshot)
     }
 
