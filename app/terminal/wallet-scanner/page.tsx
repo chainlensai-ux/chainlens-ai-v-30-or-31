@@ -1719,6 +1719,7 @@ export default function WalletScannerPage() {
   const [showAllHoldings, setShowAllHoldings] = useState(false)
   const [deepActivity, setDeepActivity] = useState(false)
   const [signedInEmail, setSignedInEmail] = useState<string | null>(null)
+  const [sessionLoaded, setSessionLoaded] = useState(false)
   const [freshScanBypass, setFreshScanBypass] = useState(false)
   const [noCacheWrite, setNoCacheWrite] = useState(false)
   const [addressCopied, setAddressCopied] = useState(false)
@@ -1735,9 +1736,13 @@ export default function WalletScannerPage() {
   useEffect(() => {
     let cancelled = false
     supabase.auth.getSession().then(({ data }) => {
-      if (!cancelled) setSignedInEmail(data.session?.user?.email ?? null)
+      if (cancelled) return
+      setSignedInEmail(data.session?.user?.email ?? null)
+      setSessionLoaded(true)
     }).catch(() => {
-      if (!cancelled) setSignedInEmail(null)
+      if (cancelled) return
+      setSignedInEmail(null)
+      setSessionLoaded(true)
     })
     return () => { cancelled = true }
   }, [])
@@ -1901,9 +1906,19 @@ export default function WalletScannerPage() {
   async function handleScan(mode: 'normal' | 'deep' | 'full_recovery' | 'smart_recovery' = 'normal') {
     const q = input.trim()
     if (!q) return
-    if ((mode === 'full_recovery' || mode === 'smart_recovery') && !isFullRecoveryAdmin) {
-      setError(mode === 'smart_recovery' ? 'Smart Recovery is admin-only.' : 'Full Recovery is admin-only.')
-      return
+    if (mode === 'full_recovery' || mode === 'smart_recovery') {
+      // SESSION-RACE-GUARD: admin status (isFullRecoveryAdmin) is derived from a session that
+      // loads asynchronously on mount. Never resolve "not admin" from an unloaded session — wait
+      // for it, then re-check. The actual authorization always happens server-side via the
+      // Bearer token fetched fresh below; this only prevents a premature client-side rejection.
+      if (!sessionLoaded) {
+        setError('Verifying your session — try again in a moment.')
+        return
+      }
+      if (!isFullRecoveryAdmin) {
+        setError(mode === 'smart_recovery' ? 'Smart Recovery is admin-only.' : 'Full Recovery is admin-only.')
+        return
+      }
     }
     const useDeep = mode !== 'normal'
     setDeepActivity(useDeep)
