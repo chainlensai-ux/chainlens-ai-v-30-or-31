@@ -545,8 +545,12 @@ assert.match(
 )
 assert.match(
   snap,
-  /deep:\s*\{[\s\S]*?allowMoralisTransfers:\s*false,[\s\S]*?allowMoralisProviderPnl:\s*false,/,
-  'deep scan blocks Moralis transfers and provider PnL',
+  /deep:\s*\{[\s\S]*?allowMoralisTransfers:\s*true,[\s\S]*?allowMoralisProviderPnl:\s*false,/,
+  // SWAP-DETECT-REGRESSION-FIX: deep scans need the Moralis-transfers activity supplement to
+  // recover real (not synthetic) swap evidence for GoldRush-thin wallets — see
+  // scripts/test-wallet-swap-detection-moralis-fallback-fix.mjs. The Moralis provider-computed
+  // PnL shortcut (allowMoralisProviderPnl) stays false/admin-only; this is not a broader loosening.
+  'deep scan allows the Moralis transfers supplement (evidence gathering only) but still blocks the Moralis provider-computed PnL shortcut',
 )
 assert.match(
   route,

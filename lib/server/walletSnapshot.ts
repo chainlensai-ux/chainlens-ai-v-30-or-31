@@ -34,7 +34,22 @@ export const WALLET_SCAN_MODE_CONFIG: Record<WalletScanMode, WalletScanModeConfi
     priceAttempts: 11,
     targetedRecoveryPages: 1,
     receiptChecks: 3,
-    allowMoralisTransfers: false,
+    // SWAP-DETECT-REGRESSION-FIX: before scan modes were introduced, the Moralis-transfers
+    // supplement fired for any deepActivity request once GoldRush activity came back thin/zero
+    // (see _shouldTryMoralisFallback), independent of scan tier. "Simplify wallet scan modes"
+    // gated it behind allowMoralisTransfers and defaulted deep to false, silently cutting off
+    // that supplement for paying (non-admin) deep scans. This matters beyond raw event count:
+    // Moralis transfers always resolve direction from the literal to/from vs. wallet address and
+    // drop anything that doesn't (normalizeMoralisTransfers), so a same-tx buy+sell pair from
+    // Moralis satisfies the router-independent "Pairing" swap-candidate path (hasInboundOutbound
+    // && hasMultipleDistinctTokens) even when the router itself isn't in KNOWN_DEX_ROUTERS /
+    // EXTENDED_DEX_ROUTERS. Without it, a GoldRush-thin wallet whose router isn't recognized gets
+    // zero swap candidates and reports "no_router_matches" even though real trades exist. Restoring
+    // this for the deep tier only (not normal, not the Moralis provider-computed PnL shortcut)
+    // re-enables real evidence gathering without loosening any FIFO/pricing/PnL-integrity gate —
+    // everything gathered here still goes through the exact same downstream classification and
+    // public-PnL gates as any other evidence.
+    allowMoralisTransfers: true,
     allowMoralisProviderPnl: false,
   },
   full_recovery: {
