@@ -37,3 +37,29 @@ export async function scanWallet(
 
   return await res.json()
 }
+
+// Calls the PREVIEW-ONLY /api/scan-preview route (app/api/scan-preview/route.ts), which returns
+// everything scanWallet() does PLUS holdings + portfolio (from the new holdingsEngine /
+// pricingEngine / portfolioAssembler modules). Production's /api/scan and scanWallet() above are
+// completely unaffected by this — this is additive, not a replacement.
+export async function scanWalletWithHoldings(
+  walletAddress: string,
+  chains: string[],
+  scanMode: ScanMode = 'normal',
+): Promise<ScanWalletApiResponse> {
+  const res = await fetch('/api/scan-preview', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      walletAddress,
+      chains,
+      scanMode,
+    }),
+  })
+
+  if (!res.ok) {
+    throw new Error(`Scan failed: ${res.status}`)
+  }
+
+  return await res.json()
+}

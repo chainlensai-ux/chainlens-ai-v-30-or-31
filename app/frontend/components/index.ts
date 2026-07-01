@@ -1,4 +1,4 @@
-// V2 SCANNER PREVIEW — barrel export for all 9 view components.
+// V2 SCANNER PREVIEW — barrel export for all view components.
 export { ChainSelectionView } from './ChainSelectionView'
 export { BuyTimelineView } from './BuyTimelineView'
 export { SellTimelineView } from './SellTimelineView'
@@ -8,3 +8,7 @@ export { FifoAndPnlView } from './FifoAndPnlView'
 export { BehaviorIntelView } from './BehaviorIntelView'
 export { WindowCoverageView } from './WindowCoverageView'
 export { FinalSummaryView } from './FinalSummaryView'
+export { HoldingsView } from './HoldingsView'
+export { TokenListView } from './TokenListView'
+export { PortfolioValueView } from './PortfolioValueView'
+export { ChainValueBreakdownView } from './ChainValueBreakdownView'
