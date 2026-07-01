@@ -9,6 +9,7 @@ import type { FinalReport, FinalSummary, ScanMetadata } from '../modules/finalRe
 import { DEFAULT_RECOVERY_CAPS, DEFAULT_TRIGGER_RECOVERY_WHEN } from '../modules/recoveryPolicy/types'
 import type { SellTimelineResult } from '../modules/sellTimeline/types'
 import type { PnlSummaryResult } from '../modules/pnlEngine/types'
+import type { PriceSources, PricingAtTimeResult } from '../modules/pricingAtTimeEngine/types'
 import type { PreScanValidation, RunWalletScanParams } from './types'
 import { APPROX_DAYS_COVERED_PER_RECOVERED_PAGE, INTEL_WINDOW_DAYS, SUPPORTED_CHAINS } from './types'
 
@@ -139,8 +140,28 @@ export function pnlSummaryV2Fallback(): PnlSummaryResult {
     closedLots: [],
     winLossRate: { wins: 0, losses: 0, evaluated: 0, rate: null },
     chainBreakdown: [],
-    confidenceBasis: { high: 0, medium: 0, low: 0, aggregate: 'unavailable' },
+    confidenceBasis: { high: 0, medium: 0, low: 0, aggregate: 'unavailable' as const },
     evidenceMissingCount: 0,
+  }
+}
+
+// No real historical-price API (GoldRush price-at-timestamp, CoinGecko historical, etc.) is
+// integrated anywhere in this codebase — these sources honestly always return null rather than
+// fabricating a USD figure, until a verified real pricing integration exists to inject here
+// instead (see pricingAtTimeEngine/types.ts's header for the full rationale).
+export function noPriceSources(): PriceSources {
+  return { primary: () => null, fallback: () => null }
+}
+
+// Additive fallback shape — pricingAtTime unavailable/degraded mode. Every entry honestly missing
+// is the same outcome resolvePricingAtTime itself produces when given noPriceSources() — never a
+// fabricated price.
+export function pricingAtTimeFallback(): PricingAtTimeResult {
+  return {
+    costUsd: {},
+    proceedsUsd: {},
+    evidenceMissingCount: 0,
+    sourceBreakdown: { primary: 0, fallback: 0, failed: 0 },
   }
 }
 
@@ -184,5 +205,6 @@ export function buildFullyDegradedReport(
     finalSummary: finalSummaryFallback(),
     bridgeTimeline: bridgeTimelineFallback(),
     pnlSummaryV2: pnlSummaryV2Fallback(),
+    pricingAtTime: pricingAtTimeFallback(),
   }
 }

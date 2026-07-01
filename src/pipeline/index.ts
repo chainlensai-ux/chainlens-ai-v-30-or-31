@@ -32,6 +32,8 @@ import { buildSellTimeline } from '../modules/sellTimeline/index'
 import type { SellTimelineEntry, SellTimelineResult } from '../modules/sellTimeline/types'
 import { buildPnlSummary } from '../modules/pnlEngine/index'
 import type { BuildPnlSummaryParams, PnlSummaryResult } from '../modules/pnlEngine/types'
+import { resolvePricingAtTime } from '../modules/pricingAtTimeEngine/index'
+import type { PriceableEntry, PriceSources, PricingAtTimeResult } from '../modules/pricingAtTimeEngine/types'
 
 import type { PreScanValidation, RunWalletScanParams, RunWalletScanResult } from './types'
 import { INTEL_WINDOW_DAYS } from './types'
@@ -44,7 +46,9 @@ import {
   emptyTimelines,
   fifoEngineFallback,
   finalSummaryFallback,
+  noPriceSources,
   pnlSummaryV2Fallback,
+  pricingAtTimeFallback,
   recoveryPolicyFallback,
   sellTimelineV2Fallback,
   validatePreScan,
@@ -189,6 +193,27 @@ function safeRunPnlSummaryV2(params: {
   }
 }
 
+// Additive, async — resolves real historical USD pricing for buyTimeline + sellTimelineV2 entries
+// via injected priceSources (src/modules/pricingAtTimeEngine). No real historical-price API is
+// integrated anywhere in this codebase, so `priceSources` defaults to noPriceSources() (honestly
+// always null) unless a caller supplies a real one — never fabricated, never client-suppliable
+// (this pipeline never accepts priceSources from a request body). Never touches fifoEngine.
+async function safeRunPricingAtTime(params: {
+  buyEntries: PriceableEntry[]
+  sellEntries: PriceableEntry[]
+  priceSources?: PriceSources
+}): Promise<PricingAtTimeResult> {
+  try {
+    return await resolvePricingAtTime({
+      buyEntries: params.buyEntries,
+      sellEntries: params.sellEntries,
+      priceSources: params.priceSources ?? noPriceSources(),
+    })
+  } catch {
+    return pricingAtTimeFallback()
+  }
+}
+
 function safeAssembleReport(input: AssembleReportInput): FinalReport {
   try {
     return assembleReport(input)
@@ -207,6 +232,7 @@ function safeAssembleReport(input: AssembleReportInput): FinalReport {
       finalSummary: finalSummaryFallback(),
       bridgeTimeline: input.bridgeTimeline,
       pnlSummaryV2: input.pnlSummaryV2,
+      pricingAtTime: input.pricingAtTime,
     }
   }
 }
@@ -276,6 +302,15 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     buyEntries: timelines.buyTimeline.entries,
   })
 
+  // 5d. pricingAtTime — additive, async. Runs after sellTimelineV2 (5b)/recoveryPolicy (5), before
+  // behaviorIntel and final assembly, per the requested placement. priceSources defaults to
+  // noPriceSources() (honestly always null) — no real historical-price API is integrated anywhere
+  // in this codebase yet. Never touches fifoEngine's own, separate pricing mechanism.
+  const pricingAtTime = await safeRunPricingAtTime({
+    buyEntries: timelines.buyTimeline.entries,
+    sellEntries: sellTimelineV2.entries,
+  })
+
   // 6. fifoEngine — pure, no provider calls; consumes normalized events + recoveryPolicy's
   // already-fetched recoveredEvents only.
   const fifoAndPnl = safeRunFifoEngine({
@@ -324,6 +359,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     bridgeTimeline,
     sellTimelineV2,
     pnlSummaryV2,
+    pricingAtTime,
   })
 
   return { ...finalReport, normalizationErrors }

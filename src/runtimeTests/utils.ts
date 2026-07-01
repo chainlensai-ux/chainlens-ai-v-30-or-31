@@ -18,6 +18,7 @@ import type { BehaviorIntelResult } from '../modules/behaviorIntel/types'
 import { buildBridgeDetectionObject } from '../modules/bridgeDetection/index'
 import { buildSellTimeline } from '../modules/sellTimeline/index'
 import { buildPnlSummary } from '../modules/pnlEngine/index'
+import { resolvePricingAtTime } from '../modules/pricingAtTimeEngine/index'
 import { assembleReport } from '../modules/finalReportAssembler/index'
 import type { ScanMetadata } from '../modules/finalReportAssembler/types'
 import type { ProviderStatus, SupportedChain } from '../modules/providerFetchWindow/types'
@@ -122,6 +123,17 @@ async function runSyntheticPipeline(wallet: WalletTestConfig): Promise<RunWallet
     }
   }
 
+  let pricingAtTime: Awaited<ReturnType<typeof resolvePricingAtTime>>
+  try {
+    pricingAtTime = await resolvePricingAtTime({
+      buyEntries: timelines.buyTimeline.entries,
+      sellEntries: sellTimelineV2.entries,
+      priceSources: { primary: () => null, fallback: () => null },
+    })
+  } catch {
+    pricingAtTime = { costUsd: {}, proceedsUsd: {}, evidenceMissingCount: 0, sourceBreakdown: { primary: 0, fallback: 0, failed: 0 } }
+  }
+
   let fifoAndPnl: FifoOutput
   try {
     fifoAndPnl = buildFifoOutput({
@@ -169,6 +181,7 @@ async function runSyntheticPipeline(wallet: WalletTestConfig): Promise<RunWallet
     bridgeTimeline,
     sellTimelineV2,
     pnlSummaryV2,
+    pricingAtTime,
   })
 
   return { ...finalReport, normalizationErrors }

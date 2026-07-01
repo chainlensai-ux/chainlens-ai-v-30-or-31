@@ -13,6 +13,7 @@ import type { TimelineBuilderResult } from '../timelineBuilder/types'
 import type { BridgeCandidateEvent } from '../bridgeDetection/types'
 import type { SellTimelineResult } from '../sellTimeline/types'
 import type { PnlSummaryResult } from '../pnlEngine/types'
+import type { PricingAtTimeResult } from '../pricingAtTimeEngine/types'
 
 export type ScanMode = 'normal' | 'deep'
 
@@ -70,6 +71,11 @@ export type FinalReport = {
   // (the real, existing FIFO PnL engine) — see pnlEngine/types.ts for the full rationale. A caller
   // that ignores this field sees the exact same report shape the engine produced before it existed.
   pnlSummaryV2: PnlSummaryResult
+  // Additive section — real historical USD pricing for buyTimeline/sellTimelineV2 entries, keyed
+  // by txHash (src/modules/pricingAtTimeEngine). Does NOT modify fifoEngine's own separate pricing
+  // mechanism. A caller that ignores this field sees the exact same report shape the engine
+  // produced before it existed.
+  pricingAtTime: PricingAtTimeResult
 }
 
 export type AssembleReportInput = {
@@ -86,4 +92,6 @@ export type AssembleReportInput = {
   sellTimelineV2: SellTimelineResult
   // Additive — see FinalReport.pnlSummaryV2 above.
   pnlSummaryV2: PnlSummaryResult
+  // Additive — see FinalReport.pricingAtTime above.
+  pricingAtTime: PricingAtTimeResult
 }

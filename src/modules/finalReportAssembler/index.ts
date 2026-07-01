@@ -58,5 +58,6 @@ export function assembleReport(input: AssembleReportInput): FinalReport {
     finalSummary: buildFinalSummary(input),
     bridgeTimeline: input.bridgeTimeline,
     pnlSummaryV2: input.pnlSummaryV2,
+    pricingAtTime: input.pricingAtTime,
   }
 }
