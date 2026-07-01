@@ -688,6 +688,9 @@ type WalletResult = {
   smartRecoveryWindow?: { startTimestamp: string | null; endTimestamp: string | null; confidence: 'high' | 'medium' | 'low' | 'none'; pagesUsed: number; transfersSeen: number; reason: string | null }
   smartRecoveryStatus?: 'ok' | 'no_window_found' | 'window_detection_skipped'
   smartRecoveryCost?: { pagesUsed: number; maxPagesAllowed: number; maxPriceAttemptsAllowed: number }
+  smartRecoveryConfidence?: 'high' | 'medium' | 'low' | 'none'
+  smartRecoveryLots?: unknown
+  smartRecoveryMissingCostBasis?: unknown
   walletScanModeConfigUsed?: { targetCredits: number; hardCapCredits: number; activityChainsMax: number; priceAttempts: number; targetedRecoveryPages: number; receiptChecks: number; allowMoralisTransfers: boolean; allowMoralisProviderPnl: boolean }
   fullRecoveryAllowed?: boolean
   fullRecoveryBlockedReason?: 'admin_only' | null
@@ -2526,8 +2529,13 @@ export default function WalletScannerPage() {
                     <div>Recovery pages used: {recoveryPagesUsed} · Full Recovery {result.fullRecoveryAllowed ? 'allowed' : 'not allowed'}{result.fullRecoveryBlockedReason ? ` (${result.fullRecoveryBlockedReason})` : ''}</div>
                     {result.walletScanModeResolved === 'smart_recovery' && result.smartRecoveryWindow && (
                       <>
-                        <div>Window: {result.smartRecoveryWindow.startTimestamp ? new Date(result.smartRecoveryWindow.startTimestamp).toISOString().slice(0, 10) : '—'} → {result.smartRecoveryWindow.endTimestamp ? new Date(result.smartRecoveryWindow.endTimestamp).toISOString().slice(0, 10) : '—'} · Confidence: {result.smartRecoveryWindow.confidence}</div>
-                        <div>Pages used: {result.smartRecoveryCost?.pagesUsed ?? 0} · Price attempts allowed: {result.smartRecoveryCost?.maxPriceAttemptsAllowed ?? '—'} · Status: {result.smartRecoveryStatus ?? '—'}</div>
+                        <div>Scan Mode: Smart Recovery</div>
+                        <div>Window: {result.smartRecoveryWindow.startTimestamp ? new Date(result.smartRecoveryWindow.startTimestamp).toISOString().slice(0, 10) : '—'} → {result.smartRecoveryWindow.endTimestamp ? new Date(result.smartRecoveryWindow.endTimestamp).toISOString().slice(0, 10) : '—'}</div>
+                        <div>Confidence: {result.smartRecoveryConfidence ?? result.smartRecoveryWindow.confidence}</div>
+                        <div>Pages Used: {result.smartRecoveryCost?.pagesUsed ?? 0}</div>
+                        <div>Price Attempts: {result.smartRecoveryCost?.maxPriceAttemptsAllowed ?? '—'}</div>
+                        <div>Missing Cost Basis Sells: {(result.smartRecoveryLots as { unmatchedSells?: number } | null)?.unmatchedSells ?? '—'}</div>
+                        <div>Verified Lots: {(result.smartRecoveryLots as { closedLots?: number } | null)?.closedLots ?? '—'}</div>
                       </>
                     )}
                   </div>

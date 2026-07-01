@@ -923,6 +923,7 @@ export async function POST(req: Request) {
       smartSnapshot.walletScanModeRequested = 'smart_recovery'
       smartSnapshot.walletScanModeResolved = 'smart_recovery'
       smartSnapshot.smartRecoveryWindow = result.smartRecoveryWindow
+      smartSnapshot.smartRecoveryConfidence = result.smartRecoveryWindow.confidence
       smartSnapshot.smartRecoveryStatus = result.smartRecoveryStatus
       smartSnapshot.smartRecoveryCost = { pagesUsed: result.smartRecoveryPagesUsed, maxPagesAllowed: result.smartRecoveryMaxPagesAllowed, maxPriceAttemptsAllowed: result.smartRecoveryMaxPriceAttemptsAllowed }
       smartSnapshot.smartRecoveryLots = result.snapshot.walletLotSummary ?? null
