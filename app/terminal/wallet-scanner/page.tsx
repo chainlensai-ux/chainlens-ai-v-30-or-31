@@ -30,6 +30,7 @@ import {
   FifoAndPnlView,
   FinalSummaryView,
   HoldingsView,
+  PnlSummaryV2View,
   RecoveryPolicyView,
   SellTimelineV2View,
   SellTimelineView,
@@ -441,9 +442,10 @@ export default function WalletScannerPage() {
               <div className="ws-card"><SellTimelineView data={result.timelines?.sellTimeline} /></div>
               <div className="ws-card"><SellTimelineV2View entries={result.timelines?.sellTimelineV2?.entries} /></div>
               <div className="ws-card"><DistributionTimelineView data={result.timelines?.distributionTimeline} /></div>
+              <div className="ws-card"><BehaviorIntelView data={result.behaviorIntel} /></div>
+              <div className="ws-card"><PnlSummaryV2View pnl={result.pnlSummaryV2} /></div>
               <div className="ws-card"><RecoveryPolicyView data={result.recoveryPolicy} /></div>
               <div className="ws-card"><FifoAndPnlView data={result.fifoAndPnl} /></div>
-              <div className="ws-card"><BehaviorIntelView data={result.behaviorIntel} /></div>
               <div className="ws-card"><WindowCoverageView data={result.windowCoverage} /></div>
             </div>
           )}
