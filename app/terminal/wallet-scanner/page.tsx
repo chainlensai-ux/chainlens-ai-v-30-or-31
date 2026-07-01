@@ -32,6 +32,7 @@ import {
   HoldingsView,
   RecoveryPolicyView,
   SellTimelineView,
+  WalletProfileHeader,
   WindowCoverageView,
 } from '@/app/frontend/components'
 import type { FinalReport } from '@/src/modules/finalReportAssembler/types'
@@ -425,6 +426,13 @@ export default function WalletScannerPage() {
           {/* V2 engine results */}
           {!loading && result && (
             <div className="ws-result-fade">
+              <WalletProfileHeader
+                report={result}
+                loading={loading}
+                isFullRecoveryAdmin={isFullRecoveryAdmin}
+                onDeepScan={() => void handleScan('deep')}
+                onAdminAction={() => void handleScan('deep')}
+              />
               <div className="ws-card"><FinalSummaryView summary={result.finalSummary} /></div>
               <div className="ws-card"><HoldingsView holdings={result.holdings} portfolio={result.portfolio} /></div>
               <div className="ws-card"><ChainSelectionView data={result.chainSelection} /></div>
