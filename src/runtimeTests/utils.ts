@@ -19,6 +19,8 @@ import { buildBridgeDetectionObject } from '../modules/bridgeDetection/index'
 import { buildSellTimeline } from '../modules/sellTimeline/index'
 import { buildPnlSummary } from '../modules/pnlEngine/index'
 import { resolvePricingAtTime } from '../modules/pricingAtTimeEngine/index'
+import { goldrushPriceSource } from '../modules/pricingAtTimeEngine/sources/goldrushPriceSource'
+import type { GoldRushClient } from '@covalenthq/client-sdk'
 import { assembleReport } from '../modules/finalReportAssembler/index'
 import type { ScanMetadata } from '../modules/finalReportAssembler/types'
 import type { ProviderStatus, SupportedChain } from '../modules/providerFetchWindow/types'
@@ -37,6 +39,17 @@ import {
 import type { WalletTestConfig } from './wallets'
 
 const PROVIDER_FETCH_WINDOW_DAYS_USED = 90
+
+// Fake GoldRush client for the runtime test harness — exercises the REAL goldrushPriceSource
+// wrapper logic (chain-slug lookup, date conversion, response-shape handling, error catching)
+// without making any real network call. Always resolves to an error response, so every test
+// wallet run through this path proves evidenceMissingCount/sourceBreakdown.failed increment
+// correctly through the real wrapper, not just a hand-rolled `() => null` stub.
+const FAKE_GOLDRUSH_CLIENT = {
+  PricingService: {
+    getTokenPrices: async () => ({ data: null, error: true as const, error_code: 404, error_message: 'fake GoldRush client: no price data in runtime tests' }),
+  },
+} as unknown as GoldRushClient
 
 function usesSyntheticPath(wallet: WalletTestConfig): boolean {
   return wallet.syntheticRawEvents !== undefined || Boolean(wallet.forcedProviderStatusByChain)
@@ -128,7 +141,7 @@ async function runSyntheticPipeline(wallet: WalletTestConfig): Promise<RunWallet
     pricingAtTime = await resolvePricingAtTime({
       buyEntries: timelines.buyTimeline.entries,
       sellEntries: sellTimelineV2.entries,
-      priceSources: { primary: () => null, fallback: () => null },
+      priceSources: { primary: goldrushPriceSource(FAKE_GOLDRUSH_CLIENT), fallback: () => null },
     })
   } catch {
     pricingAtTime = { costUsd: {}, proceedsUsd: {}, evidenceMissingCount: 0, sourceBreakdown: { primary: 0, fallback: 0, failed: 0 } }

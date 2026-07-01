@@ -34,6 +34,8 @@ import { buildPnlSummary } from '../modules/pnlEngine/index'
 import type { BuildPnlSummaryParams, PnlSummaryResult } from '../modules/pnlEngine/types'
 import { resolvePricingAtTime } from '../modules/pricingAtTimeEngine/index'
 import type { PriceableEntry, PriceSources, PricingAtTimeResult } from '../modules/pricingAtTimeEngine/types'
+import { GoldRushClient } from '@covalenthq/client-sdk'
+import { goldrushPriceSource } from '../modules/pricingAtTimeEngine/sources/goldrushPriceSource'
 
 import type { PreScanValidation, RunWalletScanParams, RunWalletScanResult } from './types'
 import { INTEL_WINDOW_DAYS } from './types'
@@ -58,6 +60,21 @@ export type { PreScanValidation, RunWalletScanParams, RunWalletScanResult } from
 export { INTEL_WINDOW_DAYS, SUPPORTED_CHAINS } from './types'
 
 const PROVIDER_FETCH_WINDOW_DAYS_USED = 90
+
+// Real GoldRush SDK integration for pricingAtTime (src/modules/pricingAtTimeEngine). Built once at
+// module load, since the API key doesn't change per-request. Falls back to noPriceSources()
+// (honestly always null) when no real key is configured — this environment has no
+// GOLDRUSH_API_KEY/COVALENT_API_KEY set, so every real scan run here will honestly resolve every
+// price as null via this exact fallback, never a fabricated one. `fallback` stays noPriceSources()
+// always — no second real price provider is wired up in this codebase.
+function buildPriceSources(): PriceSources {
+  const apiKey = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY
+  if (!apiKey) return noPriceSources()
+  const client = new GoldRushClient(apiKey)
+  return { primary: goldrushPriceSource(client), fallback: noPriceSources().fallback }
+}
+
+const PRICE_SOURCES: PriceSources = buildPriceSources()
 
 // ── Fallback-safe wrappers (Architecture Step 7) ──────────────────────────────────────────────
 // Each wrapper below is the ONLY place that catches its stage's failures — a thrown error inside
@@ -194,10 +211,11 @@ function safeRunPnlSummaryV2(params: {
 }
 
 // Additive, async — resolves real historical USD pricing for buyTimeline + sellTimelineV2 entries
-// via injected priceSources (src/modules/pricingAtTimeEngine). No real historical-price API is
-// integrated anywhere in this codebase, so `priceSources` defaults to noPriceSources() (honestly
-// always null) unless a caller supplies a real one — never fabricated, never client-suppliable
-// (this pipeline never accepts priceSources from a request body). Never touches fifoEngine.
+// via injected priceSources (src/modules/pricingAtTimeEngine). The real call site below always
+// passes PRICE_SOURCES (real GoldRush integration when GOLDRUSH_API_KEY/COVALENT_API_KEY is
+// configured, honestly noPriceSources() otherwise) — the `?? noPriceSources()` default here is a
+// last-resort guard for any other caller (e.g. runtimeTests), never client-suppliable (this
+// pipeline never accepts priceSources from a request body). Never touches fifoEngine.
 async function safeRunPricingAtTime(params: {
   buyEntries: PriceableEntry[]
   sellEntries: PriceableEntry[]
@@ -309,6 +327,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   const pricingAtTime = await safeRunPricingAtTime({
     buyEntries: timelines.buyTimeline.entries,
     sellEntries: sellTimelineV2.entries,
+    priceSources: PRICE_SOURCES,
   })
 
   // 6. fifoEngine — pure, no provider calls; consumes normalized events + recoveryPolicy's
