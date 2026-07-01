@@ -17,6 +17,7 @@ import { buildBehaviorIntelObject } from '../modules/behaviorIntel/index'
 import type { BehaviorIntelResult } from '../modules/behaviorIntel/types'
 import { buildBridgeDetectionObject } from '../modules/bridgeDetection/index'
 import { buildSellTimeline } from '../modules/sellTimeline/index'
+import { buildPnlSummary } from '../modules/pnlEngine/index'
 import { assembleReport } from '../modules/finalReportAssembler/index'
 import type { ScanMetadata } from '../modules/finalReportAssembler/types'
 import type { ProviderStatus, SupportedChain } from '../modules/providerFetchWindow/types'
@@ -104,6 +105,23 @@ async function runSyntheticPipeline(wallet: WalletTestConfig): Promise<RunWallet
     sellTimelineV2 = { totalSells: 0, chainContext: { includedChains: [], excludedChains: [] }, entries: [] }
   }
 
+  let pnlSummaryV2: ReturnType<typeof buildPnlSummary>
+  try {
+    pnlSummaryV2 = buildPnlSummary({
+      sellEntries: sellTimelineV2.entries,
+      buyEntries: timelines.buyTimeline.entries,
+    })
+  } catch {
+    pnlSummaryV2 = {
+      realizedPnlUsd: null,
+      closedLots: [],
+      winLossRate: { wins: 0, losses: 0, evaluated: 0, rate: null },
+      chainBreakdown: [],
+      confidenceBasis: { high: 0, medium: 0, low: 0, aggregate: 'unavailable' },
+      evidenceMissingCount: 0,
+    }
+  }
+
   let fifoAndPnl: FifoOutput
   try {
     fifoAndPnl = buildFifoOutput({
@@ -150,6 +168,7 @@ async function runSyntheticPipeline(wallet: WalletTestConfig): Promise<RunWallet
     windowCoverage,
     bridgeTimeline,
     sellTimelineV2,
+    pnlSummaryV2,
   })
 
   return { ...finalReport, normalizationErrors }

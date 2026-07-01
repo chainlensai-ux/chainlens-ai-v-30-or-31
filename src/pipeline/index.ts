@@ -30,6 +30,8 @@ import { buildBridgeDetectionObject } from '../modules/bridgeDetection/index'
 import type { BridgeCandidateEvent } from '../modules/bridgeDetection/types'
 import { buildSellTimeline } from '../modules/sellTimeline/index'
 import type { SellTimelineEntry, SellTimelineResult } from '../modules/sellTimeline/types'
+import { buildPnlSummary } from '../modules/pnlEngine/index'
+import type { BuildPnlSummaryParams, PnlSummaryResult } from '../modules/pnlEngine/types'
 
 import type { PreScanValidation, RunWalletScanParams, RunWalletScanResult } from './types'
 import { INTEL_WINDOW_DAYS } from './types'
@@ -42,6 +44,7 @@ import {
   emptyTimelines,
   fifoEngineFallback,
   finalSummaryFallback,
+  pnlSummaryV2Fallback,
   recoveryPolicyFallback,
   sellTimelineV2Fallback,
   validatePreScan,
@@ -164,6 +167,28 @@ function safeRunSellTimelineV2(params: {
   }
 }
 
+// Additive, pure, zero-cost — read model over real sellTimelineV2.entries + buyTimeline.entries
+// (src/modules/pnlEngine). Never touches fifoEngine/fifoAndPnl (the real, existing PnL engine) at
+// all. Pricing resolvers default to undefined here, which buildPnlSummary itself treats as "read
+// each entry's own real (always-null today) field" — never a fabricated cost/proceeds value.
+function safeRunPnlSummaryV2(params: {
+  sellEntries: SellTimelineEntry[]
+  buyEntries: BuildPnlSummaryParams['buyEntries']
+  resolveCostUsdEstimate?: BuildPnlSummaryParams['resolveCostUsdEstimate']
+  resolveProceedsUsdEstimate?: BuildPnlSummaryParams['resolveProceedsUsdEstimate']
+}): PnlSummaryResult {
+  try {
+    return buildPnlSummary({
+      sellEntries: params.sellEntries,
+      buyEntries: params.buyEntries,
+      resolveCostUsdEstimate: params.resolveCostUsdEstimate,
+      resolveProceedsUsdEstimate: params.resolveProceedsUsdEstimate,
+    })
+  } catch {
+    return pnlSummaryV2Fallback()
+  }
+}
+
 function safeAssembleReport(input: AssembleReportInput): FinalReport {
   try {
     return assembleReport(input)
@@ -181,6 +206,7 @@ function safeAssembleReport(input: AssembleReportInput): FinalReport {
       windowCoverage: input.windowCoverage,
       finalSummary: finalSummaryFallback(),
       bridgeTimeline: input.bridgeTimeline,
+      pnlSummaryV2: input.pnlSummaryV2,
     }
   }
 }
@@ -241,6 +267,15 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     walletAddress: params.walletAddress,
   })
 
+  // 5c. pnlSummaryV2 — additive, pure, zero-cost. Runs after sellTimelineV2 (stage 5b) and
+  // recoveryPolicy (stage 5), before behaviorIntel and final assembly. Pricing resolvers are left
+  // undefined (buildPnlSummary's own default: read each entry's real, always-null field) — never
+  // a client-suppliable or fabricated value. Never touches fifoEngine/fifoAndPnl below.
+  const pnlSummaryV2 = safeRunPnlSummaryV2({
+    sellEntries: sellTimelineV2.entries,
+    buyEntries: timelines.buyTimeline.entries,
+  })
+
   // 6. fifoEngine — pure, no provider calls; consumes normalized events + recoveryPolicy's
   // already-fetched recoveredEvents only.
   const fifoAndPnl = safeRunFifoEngine({
@@ -288,6 +323,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     windowCoverage,
     bridgeTimeline,
     sellTimelineV2,
+    pnlSummaryV2,
   })
 
   return { ...finalReport, normalizationErrors }

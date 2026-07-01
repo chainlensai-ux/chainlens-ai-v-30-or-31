@@ -57,5 +57,6 @@ export function assembleReport(input: AssembleReportInput): FinalReport {
     windowCoverage: input.windowCoverage,
     finalSummary: buildFinalSummary(input),
     bridgeTimeline: input.bridgeTimeline,
+    pnlSummaryV2: input.pnlSummaryV2,
   }
 }

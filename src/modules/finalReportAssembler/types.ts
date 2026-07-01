@@ -12,6 +12,7 @@ import type { SupportedChain } from '../providerFetchWindow/types'
 import type { TimelineBuilderResult } from '../timelineBuilder/types'
 import type { BridgeCandidateEvent } from '../bridgeDetection/types'
 import type { SellTimelineResult } from '../sellTimeline/types'
+import type { PnlSummaryResult } from '../pnlEngine/types'
 
 export type ScanMode = 'normal' | 'deep'
 
@@ -64,6 +65,11 @@ export type FinalReport = {
   // required by any other section above; a caller that ignores this field sees the exact same
   // report shape the engine produced before this field existed.
   bridgeTimeline: BridgeCandidateEvent[]
+  // Additive section — real closedLots/winLossRate/chainBreakdown read model over sellTimelineV2 +
+  // buyTimeline entries (src/modules/pnlEngine). Does NOT replace or read from fifoAndPnl above
+  // (the real, existing FIFO PnL engine) — see pnlEngine/types.ts for the full rationale. A caller
+  // that ignores this field sees the exact same report shape the engine produced before it existed.
+  pnlSummaryV2: PnlSummaryResult
 }
 
 export type AssembleReportInput = {
@@ -78,4 +84,6 @@ export type AssembleReportInput = {
   // Additive — see ReportTimelines. Grafted onto `timelines` by assembleReport, never merged into
   // or read by timelineBuilder's own TimelineBuilderResult.
   sellTimelineV2: SellTimelineResult
+  // Additive — see FinalReport.pnlSummaryV2 above.
+  pnlSummaryV2: PnlSummaryResult
 }

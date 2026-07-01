@@ -8,6 +8,7 @@ import type { BuyTimeline, DistributionTimeline, SellTimeline, TimelineBuilderRe
 import type { FinalReport, FinalSummary, ScanMetadata } from '../modules/finalReportAssembler/types'
 import { DEFAULT_RECOVERY_CAPS, DEFAULT_TRIGGER_RECOVERY_WHEN } from '../modules/recoveryPolicy/types'
 import type { SellTimelineResult } from '../modules/sellTimeline/types'
+import type { PnlSummaryResult } from '../modules/pnlEngine/types'
 import type { PreScanValidation, RunWalletScanParams } from './types'
 import { APPROX_DAYS_COVERED_PER_RECOVERED_PAGE, INTEL_WINDOW_DAYS, SUPPORTED_CHAINS } from './types'
 
@@ -129,6 +130,20 @@ export function sellTimelineV2Fallback(): SellTimelineResult {
   return { totalSells: 0, chainContext: { includedChains: [], excludedChains: [] }, entries: [] }
 }
 
+// Additive fallback shape — pnlSummaryV2 unavailable/degraded mode. Empty closedLots + null
+// realizedPnlUsd is the same honest "no evidence" outcome buildPnlSummary itself produces when
+// given zero sellEntries — never a fabricated 0.
+export function pnlSummaryV2Fallback(): PnlSummaryResult {
+  return {
+    realizedPnlUsd: null,
+    closedLots: [],
+    winLossRate: { wins: 0, losses: 0, evaluated: 0, rate: null },
+    chainBreakdown: [],
+    confidenceBasis: { high: 0, medium: 0, low: 0, aggregate: 'unavailable' },
+    evidenceMissingCount: 0,
+  }
+}
+
 // Architecture Step 7 §9 fallback strings — used only when assembly itself cannot run (e.g. an
 // invalid pre-scan request). Fixed, non-committal language, never a fabricated narrative.
 export function finalSummaryFallback(): FinalSummary {
@@ -168,5 +183,6 @@ export function buildFullyDegradedReport(
     windowCoverage: computeWindowCoverage(providerFetchWindowDays, 0),
     finalSummary: finalSummaryFallback(),
     bridgeTimeline: bridgeTimelineFallback(),
+    pnlSummaryV2: pnlSummaryV2Fallback(),
   }
 }
