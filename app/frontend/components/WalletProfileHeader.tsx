@@ -20,6 +20,9 @@
 import type { FinalReport } from '@/src/modules/finalReportAssembler/types'
 import type { TokenHolding } from '@/src/modules/holdings/types'
 import type { PortfolioSummary } from '@/src/modules/portfolio/types'
+import { ChainBadge } from './ChainBadge'
+import { ConfidenceBadge } from './ConfidenceBadge'
+import { fmtSignedUsd } from '@/app/frontend/lib/holdingsHeuristics'
 
 export type WalletV2Report = FinalReport & { holdings: TokenHolding[]; portfolio: PortfolioSummary }
 
@@ -145,7 +148,7 @@ function PortfolioSnapshot({ report }: { report: WalletV2Report }) {
         <div style={{ marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
           {breakdown.map((entry) => (
             <div key={entry.chain} className="wph-chain-row" style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '12px' }}>
-              <span style={{ width: '84px', textTransform: 'capitalize', color: '#cbd5e1', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{entry.chain}</span>
+              <span style={{ width: '96px' }}><ChainBadge chain={entry.chain} /></span>
               <span style={{ flex: 1, height: '5px', borderRadius: '999px', background: 'rgba(255,255,255,0.06)', overflow: 'hidden' }}>
                 <span style={{ display: 'block', height: '100%', width: `${Math.max(0, Math.min(100, entry.percent))}%`, background: 'linear-gradient(90deg, #2DD4BF, #22c5ae)', borderRadius: '999px' }} />
               </span>
@@ -160,6 +163,29 @@ function PortfolioSnapshot({ report }: { report: WalletV2Report }) {
           ))}
         </div>
       )}
+    </div>
+  )
+}
+
+// Real fifoAndPnl.realizedPnlUsd/unrealizedPnlUsd (the actual FIFO engine) + real
+// behaviorIntel.confidence — never a redefinition of what "confidence" means elsewhere in the
+// report (see PnLTab.tsx's own note on this).
+function PnlAndConfidenceRow({ report }: { report: WalletV2Report }) {
+  const realized = report.fifoAndPnl?.realizedPnlUsd ?? null
+  const unrealized = report.fifoAndPnl?.unrealizedPnlUsd ?? null
+  const confidence = report.behaviorIntel?.confidence ?? 'low'
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: '18px', flexWrap: 'wrap', fontSize: '12px' }}>
+      <span>
+        <span style={{ color: '#64748b' }}>Realized PnL — </span>
+        <span style={{ fontWeight: 700, color: realized == null ? 'rgba(148,163,184,0.55)' : realized >= 0 ? '#4ade80' : '#f87171' }}>{fmtSignedUsd(realized)}</span>
+      </span>
+      <span>
+        <span style={{ color: '#64748b' }}>Unrealized PnL — </span>
+        <span style={{ fontWeight: 700, color: unrealized == null ? 'rgba(148,163,184,0.55)' : unrealized >= 0 ? '#4ade80' : '#f87171' }}>{fmtSignedUsd(unrealized)}</span>
+      </span>
+      <ConfidenceBadge level={confidence} />
     </div>
   )
 }
@@ -246,10 +272,12 @@ export function WalletProfileHeader({ report, loading, isFullRecoveryAdmin, onDe
   if (!report) return null
 
   return (
-    <div className="wph-root ws-result-fade" style={{ background: 'linear-gradient(160deg, rgba(45,212,191,0.05), rgba(6,10,18,0.97))', border: '1px solid rgba(45,212,191,0.18)', borderRadius: '18px', padding: '24px 26px', marginBottom: '20px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+    <div className="wph-root ws-result-fade" style={{ background: 'linear-gradient(160deg, rgba(45,212,191,0.05), rgba(6,10,18,0.97))', border: '1px solid rgba(45,212,191,0.18)', borderRadius: '18px', padding: '24px 26px', marginBottom: '20px', display: 'flex', flexDirection: 'column', gap: '20px', boxShadow: '0 12px 32px rgba(0,0,0,0.28)' }}>
       <WalletOverview report={report} />
       <div style={{ height: '1px', background: 'rgba(255,255,255,0.06)' }} />
       <PortfolioSnapshot report={report} />
+      <div style={{ height: '1px', background: 'rgba(255,255,255,0.06)' }} />
+      <PnlAndConfidenceRow report={report} />
       <div style={{ height: '1px', background: 'rgba(255,255,255,0.06)' }} />
       <BehaviorSummary report={report} />
       <Actions loading={loading} isFullRecoveryAdmin={isFullRecoveryAdmin} onDeepScan={onDeepScan} onAdminAction={onAdminAction} />

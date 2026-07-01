@@ -31,8 +31,9 @@ import {
   FinalSummaryView,
   HoldingsView,
   HoldingsViewV2,
-  PnlSummaryV2View,
+  PnLTab,
   RecoveryPolicyView,
+  SectionDivider,
   SellTimelineV2View,
   SellTimelineView,
   WalletProfileHeader,
@@ -436,15 +437,15 @@ export default function WalletScannerPage() {
                 onDeepScan={() => void handleScan('deep')}
                 onAdminAction={() => void handleScan('deep')}
               />
+              <SectionDivider label="Wallet Personality" />
               <div className="ws-card"><FinalSummaryView summary={result.finalSummary} /></div>
-              <div className="ws-card"><HoldingsView holdings={result.holdings} portfolio={result.portfolio} /></div>
-              <div className="ws-card"><ChainSelectionView data={result.chainSelection} /></div>
-              <div className="ws-card"><BuyTimelineView data={result.timelines?.buyTimeline} /></div>
-              <div className="ws-card"><SellTimelineView data={result.timelines?.sellTimeline} /></div>
-              <div className="ws-card"><SellTimelineV2View entries={result.timelines?.sellTimelineV2?.entries} /></div>
-              <div className="ws-card"><DistributionTimelineView data={result.timelines?.distributionTimeline} /></div>
-              <div className="ws-card"><BehaviorIntelView data={result.behaviorIntel} /></div>
-              <div className="ws-card"><PnlSummaryV2View pnl={result.pnlSummaryV2} /></div>
+
+              <SectionDivider label="PnL Summary" />
+              <div className="ws-card">
+                <PnLTab fifoAndPnl={result.fifoAndPnl} pnlSummaryV2={result.pnlSummaryV2} />
+              </div>
+
+              <SectionDivider label="Holdings" />
               <div className="ws-card">
                 <HoldingsViewV2
                   holdings={result.holdings}
@@ -452,6 +453,17 @@ export default function WalletScannerPage() {
                   bridgeEntries={result.bridgeTimeline}
                 />
               </div>
+              <div className="ws-card"><HoldingsView holdings={result.holdings} portfolio={result.portfolio} /></div>
+
+              <SectionDivider label="Behavior Intel" />
+              <div className="ws-card"><BehaviorIntelView data={result.behaviorIntel} /></div>
+
+              <SectionDivider label="Diagnostics" optional />
+              <div className="ws-card"><ChainSelectionView data={result.chainSelection} /></div>
+              <div className="ws-card"><BuyTimelineView data={result.timelines?.buyTimeline} /></div>
+              <div className="ws-card"><SellTimelineView data={result.timelines?.sellTimeline} /></div>
+              <div className="ws-card"><SellTimelineV2View entries={result.timelines?.sellTimelineV2?.entries} /></div>
+              <div className="ws-card"><DistributionTimelineView data={result.timelines?.distributionTimeline} /></div>
               <div className="ws-card"><RecoveryPolicyView data={result.recoveryPolicy} /></div>
               <div className="ws-card"><FifoAndPnlView data={result.fifoAndPnl} /></div>
               <div className="ws-card"><WindowCoverageView data={result.windowCoverage} /></div>
