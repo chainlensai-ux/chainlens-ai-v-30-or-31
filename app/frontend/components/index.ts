@@ -2,6 +2,7 @@
 export { ChainSelectionView } from './ChainSelectionView'
 export { BuyTimelineView } from './BuyTimelineView'
 export { SellTimelineView } from './SellTimelineView'
+export { SellTimelineV2View } from './SellTimelineV2View'
 export { DistributionTimelineView } from './DistributionTimelineView'
 export { RecoveryPolicyView } from './RecoveryPolicyView'
 export { FifoAndPnlView } from './FifoAndPnlView'

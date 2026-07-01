@@ -31,6 +31,7 @@ import {
   FinalSummaryView,
   HoldingsView,
   RecoveryPolicyView,
+  SellTimelineV2View,
   SellTimelineView,
   WalletProfileHeader,
   WindowCoverageView,
@@ -438,6 +439,7 @@ export default function WalletScannerPage() {
               <div className="ws-card"><ChainSelectionView data={result.chainSelection} /></div>
               <div className="ws-card"><BuyTimelineView data={result.timelines?.buyTimeline} /></div>
               <div className="ws-card"><SellTimelineView data={result.timelines?.sellTimeline} /></div>
+              <div className="ws-card"><SellTimelineV2View entries={result.timelines?.sellTimelineV2?.entries} /></div>
               <div className="ws-card"><DistributionTimelineView data={result.timelines?.distributionTimeline} /></div>
               <div className="ws-card"><RecoveryPolicyView data={result.recoveryPolicy} /></div>
               <div className="ws-card"><FifoAndPnlView data={result.fifoAndPnl} /></div>
