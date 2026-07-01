@@ -4984,10 +4984,10 @@ export default function WalletScannerPage() {
                             <div style={{ marginTop: '18px' }}>
                               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
                                 <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: 'rgba(255,255,255,0.55)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Matched Trade Evidence</div>
-                                <span style={{ fontSize: '9px', color: 'rgba(255,255,255,0.28)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Sample of reconstructed buy → sell lots. These are behavior evidence only unless they pass public-grade PnL checks.</span>
+                                <span style={{ fontSize: '9px', color: 'rgba(255,255,255,0.28)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Reconstructed trade samples. PnL shown here is estimated/sample evidence only.</span>
                               </div>
                               <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.28)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', lineHeight: 1.5, marginBottom: '10px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '8px', padding: '8px 10px' }}>
-                                Sample of reconstructed buy → sell lots. These are behavior evidence only unless they pass official PnL checks. Sample PnL is excluded from official PnL and score.
+                                Reconstructed trade samples. PnL shown here is estimated/sample evidence only and is excluded from official PnL, win rate, score, and profit skill unless public-grade checks pass.
                               </div>
                               <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                                 {samples.map((s, i) => {
@@ -5010,6 +5010,16 @@ export default function WalletScannerPage() {
                                     : s.verificationStatus === 'price_independence_missing' ? 'Not public-grade: missing independent entry price.'
                                     : s.verificationStatus === 'estimate_only_price_flat' ? 'Not public-grade: estimate-only / flat price.'
                                     : s.pnlLockedReason ?? 'Not public-grade: estimate-only price, missing independent entry price, synthetic cost basis, dust lot, or integrity lock.'
+                                  // SAMPLE-CARD-DISPLAY-FIX: token-level lots are estimated/sample evidence, not
+                                  // official wallet PnL — the card headline must read as an estimate, not a
+                                  // scary "locked" state, while the integrity badge stays visible but secondary.
+                                  const samplePnlLabel = 'Estimated PnL'
+                                  const samplePnlUsd = samplePnlLocked ? rawSamplePnlUsd : lotPnlUsd
+                                  const samplePnlPercent = samplePnlLocked ? (s.realizedPnlPercent ?? null) : lotPnlPercent
+                                  const officialStatusReason = lockReason
+                                  const integrityBadgeLabel = s.verificationStatus === 'synthetic_cost_basis_missing' || s.verificationStatus === 'price_independence_missing'
+                                    ? 'Integrity gated'
+                                    : 'Official locked'
                                   const vStatus = s.verificationStatus ?? 'not_available'
                                   const entryUrl = s.entryTxHash ? explorerBase(s.chain, s.entryTxHash) : null
                                   const exitUrl = s.exitTxHash ? explorerBase(s.chain, s.exitTxHash) : null
@@ -5029,10 +5039,20 @@ export default function WalletScannerPage() {
                                         <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.28)', letterSpacing: '0.10em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '3px' }}>PnL{sampleBadgeShown && <span style={{ marginLeft: '5px', fontSize: '8px', color: '#fbbf24', textTransform: 'none', letterSpacing: 'normal' }}>Limited sample</span>}</div>
                                         {samplePnlLocked ? (
                                           <>
-                                            <div style={{ fontSize: '12px', fontWeight: 700, color: '#fbbf24', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>Official PnL locked</div>
-                                            <div style={{ fontSize: '8px', color: 'rgba(251,191,36,0.55)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginTop: '3px' }}>Integrity check failed</div>
-                                            <div style={{ fontSize: '10px', color: 'rgba(226,232,240,0.72)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginTop: '5px' }}>{samplePnlStr ? `Sample PnL: ${samplePnlStr}` : 'Sample PnL unavailable'}</div>
-                                            {samplePnlStr && <div style={{ fontSize: '8px', color: 'rgba(148,163,184,0.58)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginTop: '2px' }}>Not official</div>}
+                                            {samplePnlUsd !== null ? (
+                                              <>
+                                                <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.45)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{samplePnlLabel}</div>
+                                                <div style={{ fontSize: '13px', fontWeight: 700, color: samplePnlUsd >= 0 ? '#4ade80' : '#f87171', fontFamily: 'var(--font-inter, Inter, sans-serif)', marginTop: '2px' }}>{samplePnlStr}{samplePnlPercent !== null ? ` (${samplePnlPercent >= 0 ? '+' : ''}${samplePnlPercent.toFixed(1)}%)` : ''}</div>
+                                                <div style={{ fontSize: '9px', color: 'rgba(148,163,184,0.65)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginTop: '3px' }}>Sample only · Not official</div>
+                                              </>
+                                            ) : (
+                                              <>
+                                                <div style={{ fontSize: '12px', fontWeight: 700, color: 'rgba(226,232,240,0.6)', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>Estimated PnL unavailable</div>
+                                                <div style={{ fontSize: '9px', color: 'rgba(148,163,184,0.65)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginTop: '3px' }}>Price/cost basis was not strong enough for this lot.</div>
+                                              </>
+                                            )}
+                                            <div style={{ fontSize: '8px', color: 'rgba(148,163,184,0.55)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginTop: '5px', display: 'inline-block', border: '1px solid rgba(148,163,184,0.22)', borderRadius: '4px', padding: '1px 6px' }} title={officialStatusReason ?? undefined}>{integrityBadgeLabel}</div>
+                                            <div style={{ fontSize: '8px', color: 'rgba(251,191,36,0.55)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginTop: '3px' }}>Excluded from official PnL, win rate, score, and profit skill.</div>
                                           </>
                                         ) : (
                                           <>
