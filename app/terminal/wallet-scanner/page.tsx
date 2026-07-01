@@ -57,29 +57,36 @@ function fmtUSD(v: number): string {
 // Replaces the old buildWalletVerdict(result) (which read profiler-only fields) with a small
 // V2-sourced equivalent for the CORTEX Wallet Read sidebar — every value here is a direct
 // restatement of report.finalSummary / report.behaviorIntel, never a new judgment.
-function buildCortexReadV2(report: WalletV2Report): {
+//
+// V2-SAFE GUARD: `report` is typed as non-optional, but that is a compile-time contract only —
+// a real API response can still be malformed/partial at runtime, so every nested access here is
+// defensively guarded rather than assumed present.
+function buildCortexReadV2(report: WalletV2Report | null | undefined): {
   verdict: string
   read: string
   keySignals: string[]
   risks: string[]
   nextAction: string
 } {
-  const b = report.behaviorIntel
-  const s = report.finalSummary
+  const b = report?.behaviorIntel
+  const s = report?.finalSummary
+  const activeChains = Array.isArray(b?.multiChainParticipation?.activeChains) ? b!.multiChainParticipation.activeChains : []
+  const totalValueUsd = report?.portfolio?.totalValueUsd ?? null
+
   return {
-    verdict: b.rotationStyle.value.toUpperCase(),
-    read: s.walletPersonality,
+    verdict: (b?.rotationStyle?.value ?? 'unknown').toUpperCase(),
+    read: s?.walletPersonality ?? 'Insufficient data to classify wallet behavior.',
     keySignals: [
-      `Risk posture: ${b.riskOnOff.value}`,
-      `Chains: ${b.multiChainParticipation.activeChains.join(', ') || 'none active'}`,
-      report.portfolio.totalValueUsd != null ? `Portfolio value: ${fmtUSD(report.portfolio.totalValueUsd)}` : 'Portfolio value: not available',
+      `Risk posture: ${b?.riskOnOff?.value ?? 'unknown'}`,
+      `Chains: ${activeChains.join(', ') || 'none active'}`,
+      totalValueUsd != null ? `Portfolio value: ${fmtUSD(totalValueUsd)}` : 'Portfolio value: not available',
     ],
     risks: [
-      s.financialStatus.headline,
-      b.automationSignals.suspectedBot ? 'Automation signal detected in trade timing.' : 'No automation signal detected.',
-      s.recoverySummary,
+      s?.financialStatus?.headline ?? 'PnL unavailable due to missing evidence.',
+      b?.automationSignals?.suspectedBot ? 'Automation signal detected in trade timing.' : 'No automation signal detected.',
+      s?.recoverySummary ?? 'No recovery attempted.',
     ],
-    nextAction: b.confidence === 'low'
+    nextAction: b?.confidence === 'low' || !b
       ? 'Confidence is low — coverage is thin (dust-heavy chains or a partial window). Treat this read as directional only.'
       : 'Scan additional chains or run a Deep Scan for broader coverage.',
   }
@@ -157,7 +164,7 @@ export default function WalletScannerPage() {
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({
           address: result.scanMetadata.walletAddress,
-          portfolio_value: result.portfolio.totalValueUsd,
+          portfolio_value: result.portfolio?.totalValueUsd ?? null,
         }),
       })
       const json = await res.json().catch(() => null)
@@ -421,9 +428,9 @@ export default function WalletScannerPage() {
               <div className="ws-card"><FinalSummaryView summary={result.finalSummary} /></div>
               <div className="ws-card"><HoldingsView holdings={result.holdings} portfolio={result.portfolio} /></div>
               <div className="ws-card"><ChainSelectionView data={result.chainSelection} /></div>
-              <div className="ws-card"><BuyTimelineView data={result.timelines.buyTimeline} /></div>
-              <div className="ws-card"><SellTimelineView data={result.timelines.sellTimeline} /></div>
-              <div className="ws-card"><DistributionTimelineView data={result.timelines.distributionTimeline} /></div>
+              <div className="ws-card"><BuyTimelineView data={result.timelines?.buyTimeline} /></div>
+              <div className="ws-card"><SellTimelineView data={result.timelines?.sellTimeline} /></div>
+              <div className="ws-card"><DistributionTimelineView data={result.timelines?.distributionTimeline} /></div>
               <div className="ws-card"><RecoveryPolicyView data={result.recoveryPolicy} /></div>
               <div className="ws-card"><FifoAndPnlView data={result.fifoAndPnl} /></div>
               <div className="ws-card"><BehaviorIntelView data={result.behaviorIntel} /></div>
@@ -448,7 +455,7 @@ export default function WalletScannerPage() {
                 CORTEX · Wallet Read
               </span>
             </div>
-            {result && (
+            {result?.scanMetadata?.walletAddress && (
               <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.22)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', letterSpacing: '0.04em' }}>
                 {result.scanMetadata.walletAddress.slice(0, 10)}…{result.scanMetadata.walletAddress.slice(-8)}
               </div>
