@@ -1,6 +1,7 @@
 import { fetchMoralisBalances, fetchMoralisTransfers, fetchMoralisTransfersPaginated, fetchMoralisProfitabilitySummary, fetchMoralisHistoricalTokenPrice, isUsableProviderPnlSummary, type MoralisFetchResult, type MoralisChain, type MoralisTransferItem, type MoralisProfitabilitySummary } from './moralis'
 import { computeWalletProfile, type WalletProfile } from './walletIdentity'
 import { canUseWalletProviderCall, createWalletProviderCallAudit, recordWalletProviderCall, type WalletProviderCallRequest, type WalletProviderPurpose } from './walletProviders'
+import { buildBuyTimeline, type BuyTimelineResult, type BuyTimelineSourceItem } from './buyTimeline'
 
 
 export type WalletScanMode = 'normal' | 'deep' | 'full_recovery'
@@ -329,6 +330,11 @@ export type WalletSnapshot = {
   hiddenDustCount: number
   unpricedHoldingsCount: number
   walletBehavior: WalletBehavior
+  // BUY-TIMELINE: informational-only acquisition history, reconstructed entirely from GoldRush +
+  // Alchemy (never Moralis, never synthetic). Only populated when swap detection found zero swap
+  // candidates — see buildBuyTimeline() in ./buyTimeline. Does not classify sells, does not run
+  // FIFO, and never feeds into or unlocks official/public PnL.
+  buyTimeline?: BuyTimelineResult
   // PHASE5-FIX-1: there is no `closedLots` or `coverage` (unqualified) field on estimatedPnl,
   // and no `walletOpenPositionSummary` field anywhere on WalletSnapshot — grep confirms zero
   // references to any of the three across this file. Every fallback site already reads
@@ -13199,6 +13205,14 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   // order, replacing dependence on whichever provider's array happened to come first above.
   events = deterministicEventOrder(events)
 
+  // BUY-TIMELINE: snapshot GoldRush+Alchemy events (with a per-event provider tag) before any
+  // Moralis merge below, so buildBuyTimeline() can never see Moralis-sourced evidence regardless
+  // of whether Moralis fallback fires later in this scan.
+  const _buyTimelineBaseEvents: BuyTimelineSourceItem[] = [
+    ...grEvents.map(event => ({ event, provider: 'goldrush' as const })),
+    ...alchemyEvents.map(event => ({ event, provider: 'alchemy' as const })),
+  ]
+
   // Moralis activity fallback: runs only when deepActivity requested and all primary providers returned nothing.
   // One request max, cached 5 min, in-flight deduped inside fetchMoralisTransfers, 8 s timeout, no pagination.
   const _grBaseFetchFailed = !GOLDRUSH_KEY
@@ -14120,6 +14134,37 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     _sellSideReconDebug = { ..._sellSideReconDebug, reason: 'no_unpromoted_outbound_sell_events' }
   }
   // ── End Base Sell-Side Reconstruction Pass ───────────────────────────────────────────────
+
+  // ── BUY-TIMELINE (Deep Scan / Full Recovery informational fallback) ──────────────────────
+  // Runs only when swap detection (including every pre-pricing enrichment/reconstruction pass
+  // above) still found zero swap candidates. GoldRush + Alchemy only — never Moralis, never
+  // synthetic. Informational only: does not classify sells, does not run FIFO, never feeds into
+  // or unlocks official/public PnL, which stays governed entirely by the unchanged pipeline below.
+  let _buyTimelineResult: BuyTimelineResult | undefined
+  let _buyTimelineEvents: BuyTimelineSourceItem[] = _buyTimelineBaseEvents
+  if (activityRequested && deepActivity && walletSwapSummary.swapCandidateEvents === 0) {
+    // Full Recovery only: pull one additional bounded GoldRush + Alchemy pull for the timeline —
+    // still GoldRush/Alchemy only, never Moralis fallback. Best-effort; failures never block the
+    // base (non-full-recovery) buy timeline computed below.
+    if (walletScanBudget?.scanMode === 'full_recovery') {
+      if (Boolean(GOLDRUSH_KEY)) {
+        try {
+          const _btGrPage = await fetchGoldrushHistoricalPage(addr, requestedChain === 'eth' ? 'eth-mainnet' : 'base-mainnet', GOLDRUSH_KEY, 1, 50)
+          _trackGatewayProviderCall('goldrush', 'transactions_v3', false, `gr:buytimeline:${addrNorm}`)
+          _buyTimelineEvents = [..._buyTimelineEvents, ..._btGrPage.events.map(event => ({ event, provider: 'goldrush' as const }))]
+        } catch { /* best-effort; buy timeline is informational only */ }
+      }
+      if (Boolean(ALCHEMY_BASE_KEY) && requestedChain !== 'eth') {
+        try {
+          const _btAlchemyEvents = await fetchAlchemyPnlEvents(addr, baseUrl)
+          _trackGatewayProviderCall('alchemy', 'alchemy_getAssetTransfers', false, `alchemy:buytimeline:${addrNorm}`)
+          _buyTimelineEvents = [..._buyTimelineEvents, ..._btAlchemyEvents.map(event => ({ event, provider: 'alchemy' as const }))]
+        } catch { /* best-effort; buy timeline is informational only */ }
+      }
+    }
+    _buyTimelineResult = buildBuyTimeline(_buyTimelineEvents, addrNorm)
+  }
+  // ── End BUY-TIMELINE ──────────────────────────────────────────────────────────────────────
 
   tokenMeter.startTokenMeter('priceInference')
   const _pricingStartedAt = Date.now()
@@ -18491,6 +18536,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   }
 
   const snapshot: WalletSnapshot = {
+    buyTimeline: _buyTimelineResult,
     pnlQuality: _pnlQuality,
     pnlQualityReason: _pnlQualityReason,
     tradeIntelligence,
