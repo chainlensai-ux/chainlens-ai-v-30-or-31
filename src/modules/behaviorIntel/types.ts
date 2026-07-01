@@ -61,6 +61,13 @@ export type MultiChainParticipation = {
     activeChainCount: number
     dustChainCount: number
   }
+  // Additive, sourced from real sellTimelineV2 entries (src/modules/sellTimeline) — distinct from
+  // `activeChains` above, which means "cleared the active-intelligence gate" and is NOT redefined
+  // by this migration (a buy-only wallet correctly keeps non-empty activeChains here). These two
+  // fields answer a narrower, genuinely new question: "which of chainSelection's chains actually
+  // have real sell evidence yet?"
+  chainsWithRealSells: SupportedChain[]
+  chainsPendingSellEvidence: SupportedChain[]
 }
 
 export type ConcentrationSignals = {
@@ -72,6 +79,25 @@ export type ConcentrationSignals = {
 export type ConfidenceBasis = {
   chainSelectionFactor: string
   windowCoverageFactor: string
+  // Additive — real breakdown of sellTimelineV2 entries by confidence level (e.g. "2 high / 1
+  // medium / 0 low confidence sells (via sellTimelineV2)"). `confidence`'s own value/meaning is
+  // NOT redefined by this (still chainSelection/windowCoverage-derived, per this module's existing
+  // documented semantics) — this is disclosure only, not a new derivation path for the field.
+  sellEvidenceFactor: string
+}
+
+export type ExitVelocity = {
+  // Median milliseconds between consecutive sellTimelineV2 entries, sorted by timestamp. null
+  // when there are fewer than 2 real sells to measure a gap from — never a guessed number.
+  medianMsBetweenSells: number | null
+  basis: string
+}
+
+export type ConvictionLevel = 'high' | 'medium' | 'low' | 'unknown'
+
+export type ConvictionScore = {
+  value: ConvictionLevel
+  basis: string
 }
 
 export type BehaviorIntelResult = {
@@ -82,4 +108,9 @@ export type BehaviorIntelResult = {
   automationSignals: AutomationSignals
   confidence: ConfidenceLevel
   confidenceBasis: ConfidenceBasis
+  // Additive fields — both sourced from real sellTimelineV2 entries (+ buyTimeline for
+  // convictionScore). Neither existed before this migration; adding them changes nothing about
+  // any pre-existing field.
+  exitVelocity: ExitVelocity
+  convictionScore: ConvictionScore
 }

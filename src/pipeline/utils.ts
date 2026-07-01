@@ -89,11 +89,15 @@ export function behaviorIntelFallback(chainSelection: ChainSelectionResult): Beh
       activeChains: chainSelection.chains.filter((c) => c.status === 'active_intelligence').map((c) => c.chain),
       primaryChain: null,
       chainSelectionRef: { activeChainCount: chainSelection.activeChainCount, dustChainCount: chainSelection.dustChainCount },
+      chainsWithRealSells: [],
+      chainsPendingSellEvidence: [],
     },
     concentrationSignals: null,
     automationSignals: { suspectedBot: false, signals: [] },
     confidence: 'low',
-    confidenceBasis: { chainSelectionFactor: 'unavailable', windowCoverageFactor: 'unavailable' },
+    confidenceBasis: { chainSelectionFactor: 'unavailable', windowCoverageFactor: 'unavailable', sellEvidenceFactor: 'unavailable' },
+    exitVelocity: { medianMsBetweenSells: null, basis: 'behaviorIntel could not be computed' },
+    convictionScore: { value: 'unknown', basis: 'behaviorIntel could not be computed' },
   }
 }
 

@@ -29,7 +29,7 @@ import type { AssembleReportInput, FinalReport, ScanMetadata } from '../modules/
 import { buildBridgeDetectionObject } from '../modules/bridgeDetection/index'
 import type { BridgeCandidateEvent } from '../modules/bridgeDetection/types'
 import { buildSellTimeline } from '../modules/sellTimeline/index'
-import type { SellTimelineResult } from '../modules/sellTimeline/types'
+import type { SellTimelineEntry, SellTimelineResult } from '../modules/sellTimeline/types'
 
 import type { PreScanValidation, RunWalletScanParams, RunWalletScanResult } from './types'
 import { INTEL_WINDOW_DAYS } from './types'
@@ -100,9 +100,14 @@ function safeRunFifoEngine(params: {
   }
 }
 
+// MIGRATION: behaviorIntel now reads sellTimelineV2.entries instead of the legacy
+// timelines.sellTimeline — this is the minimal wiring change required to thread that value in
+// (sellTimelineV2 is only merged into the final report's `timelines` object at assembly time,
+// stage 9, which runs after behaviorIntel at stage 8; the local `sellTimelineV2` variable computed
+// at stage 5b is what's passed here instead). No other stage's wiring changes.
 function safeRunBehaviorIntel(params: {
   buyTimeline: BuyTimeline
-  sellTimeline: SellTimeline
+  sellEntries: SellTimelineEntry[]
   distributionTimeline: TimelineBuilderResult['distributionTimeline']
   chainSelection: ChainSelectionResult
   windowCoverage: WindowCoverage
@@ -110,7 +115,7 @@ function safeRunBehaviorIntel(params: {
   try {
     return buildBehaviorIntelObject({
       buyTimeline: params.buyTimeline,
-      sellTimeline: params.sellTimeline,
+      sellEntries: params.sellEntries,
       distributionTimeline: params.distributionTimeline,
       chainSelection: params.chainSelection,
       windowCoverage: params.windowCoverage,
@@ -249,11 +254,15 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // 7. windowCoverage — pure arithmetic derived from the fixed fetch window and recovery pages used.
   const windowCoverage = computeWindowCoverage(PROVIDER_FETCH_WINDOW_DAYS_USED, recoveryPolicy.totalPagesUsedThisWallet)
 
-  // 8. behaviorIntel — pure, zero cost. Reads ONLY timelines + chainSelection + windowCoverage;
-  // has no access to recoveryPolicy or fifoAndPnl (they are never passed into this call).
+  // 8. behaviorIntel — pure, zero cost. Reads timelines (buyTimeline/distributionTimeline) +
+  // sellTimelineV2.entries + chainSelection + windowCoverage; has no access to recoveryPolicy or
+  // fifoAndPnl (they are never passed into this call). sellTimelineV2 was computed at stage 5b,
+  // itself derived only from normalizedEvents/chainSelection/bridgeTimeline/recoveryPolicy — this
+  // does not give behaviorIntel a backdoor into recoveryPolicy's own object, only its already-
+  // downstream-processed sell entries.
   const behaviorIntel = safeRunBehaviorIntel({
     buyTimeline: timelines.buyTimeline,
-    sellTimeline: timelines.sellTimeline,
+    sellEntries: sellTimelineV2.entries,
     distributionTimeline: timelines.distributionTimeline,
     chainSelection,
     windowCoverage,

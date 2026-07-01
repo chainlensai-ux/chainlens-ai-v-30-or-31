@@ -121,7 +121,7 @@ async function runSyntheticPipeline(wallet: WalletTestConfig): Promise<RunWallet
   try {
     behaviorIntel = buildBehaviorIntelObject({
       buyTimeline: timelines.buyTimeline,
-      sellTimeline: timelines.sellTimeline,
+      sellEntries: sellTimelineV2.entries,
       distributionTimeline: timelines.distributionTimeline,
       chainSelection,
       windowCoverage,

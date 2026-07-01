@@ -2,6 +2,7 @@
 
 import type { ChainSelectionResult } from '../chainSelection/types'
 import type { SupportedChain } from '../providerFetchWindow/types'
+import type { SellTimelineEntry } from '../sellTimeline/types'
 import type { HoldingForConcentration } from './types'
 
 // PURE. Basic uniform-spacing / clustering detection over a sorted list of millisecond
@@ -49,4 +50,42 @@ export function topHolding(holdings: HoldingForConcentration[]): { symbol: strin
   if (totalValue <= 0) return null
   const top = [...holdings].sort((a, b) => b.valueUsd - a.valueUsd)[0]
   return { symbol: top.symbol, percent: (top.valueUsd / totalValue) * 100 }
+}
+
+// PURE. Real chains from sellTimelineV2 entries — distinct from chainSelection's
+// active_intelligence set (see MultiChainParticipation's doc comment in types.ts).
+export function chainsWithRealSellsFrom(sellEntries: SellTimelineEntry[]): SupportedChain[] {
+  return [...new Set(sellEntries.map((e) => e.chain))]
+}
+
+// PURE. chainSelection's active chains that have zero corresponding sellTimelineV2 entries —
+// "we're watching this chain but haven't detected an exit on it yet", never a claim that no exit
+// ever happened.
+export function chainsPendingSellEvidenceFrom(chainSelection: ChainSelectionResult, sellEntries: SellTimelineEntry[]): SupportedChain[] {
+  const withSells = new Set(chainsWithRealSellsFrom(sellEntries))
+  return activeChainsFrom(chainSelection).filter((chain) => !withSells.has(chain))
+}
+
+// PURE. Median gap (ms) between consecutive sells, sorted by timestamp. null when fewer than 2
+// entries exist — a single sell (or zero) has no gap to measure, never a guessed value.
+export function medianMsBetweenSells(sellEntries: SellTimelineEntry[]): number | null {
+  if (sellEntries.length < 2) return null
+  const sortedTimestamps = [...sellEntries].map((e) => e.timestamp).sort((a, b) => a - b)
+  const gaps: number[] = []
+  for (let i = 1; i < sortedTimestamps.length; i++) gaps.push(sortedTimestamps[i] - sortedTimestamps[i - 1])
+  const sortedGaps = [...gaps].sort((a, b) => a - b)
+  const mid = Math.floor(sortedGaps.length / 2)
+  return sortedGaps.length % 2 === 0 ? (sortedGaps[mid - 1] + sortedGaps[mid]) / 2 : sortedGaps[mid]
+}
+
+// PURE. Breakdown of sellTimelineV2 entries by confidence level — real counts, never a guessed
+// distribution.
+export function sellConfidenceBreakdown(sellEntries: SellTimelineEntry[]): { high: number; medium: number; low: number } {
+  return sellEntries.reduce(
+    (acc, e) => {
+      acc[e.confidence] += 1
+      return acc
+    },
+    { high: 0, medium: 0, low: 0 },
+  )
 }
