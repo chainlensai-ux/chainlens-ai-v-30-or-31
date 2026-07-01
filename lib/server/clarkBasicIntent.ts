@@ -23,6 +23,9 @@ export type ClarkRoutingDebug = {
   routeUsed: string | null
   missingInput: string | null
   reason: string
+  userPlan?: string | null
+  plan?: string | null
+  blockedReason?: string | null
 }
 
 const ADDRESS_RE = /0x[a-fA-F0-9]{40}/
@@ -150,6 +153,9 @@ export function buildClarkRoutingDebug(input: {
   routeUsed: string | null
   missingInput: string | null
   reason: string
+  userPlan?: string | null
+  plan?: string | null
+  blockedReason?: string | null
 }): ClarkRoutingDebug {
   return { ...input }
 }
