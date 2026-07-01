@@ -3399,36 +3399,56 @@ export default function WalletScannerPage() {
                 const openRead = result.walletOpenPositionPnlRead
                 const perf = result.openPositionPerformanceSummary ?? result.walletModuleCoverage?.openPositionPerformanceSummary ?? null
                 const unmatchedOpenSymbols = openRead?.unmatchedSymbols ?? perf?.unmatchedSymbols ?? []
+                const displayEstimate = est.displayEstimateUsd ?? est.totalEstimateUsd
+                const displayTone = typeof displayEstimate === 'number' && Number.isFinite(displayEstimate)
+                  ? displayEstimate >= 0
+                    ? { text: '#86efac', glow: 'rgba(16,185,129,0.22)', label: 'Positive estimate' }
+                    : { text: '#fda4af', glow: 'rgba(244,63,94,0.24)', label: 'Negative estimate' }
+                  : { text: 'rgba(226,232,240,0.58)', glow: 'rgba(148,163,184,0.14)', label: 'Estimate unavailable' }
                 const rows = [
-                  ['Baseline raw FIFO estimate', est.baselineRawFifoEstimateUsd ?? est.rawFifoRealizedEstimateUsd],
-                  ['Preview after recovery', est.previewAfterRecoveryEstimateUsd ?? est.historicalPreviewRealizedEstimateUsd],
-                  ['Preview delta', est.previewDeltaUsd ?? est.addedHistoricalPreviewPnlUsd],
-                  ['Display estimate', est.displayEstimateUsd ?? est.totalEstimateUsd],
+                  ['Baseline raw FIFO estimate', est.baselineRawFifoEstimateUsd ?? est.rawFifoRealizedEstimateUsd, 'Existing matched lots before any recovery preview.'],
+                  ['Preview after recovery', est.previewAfterRecoveryEstimateUsd ?? est.historicalPreviewRealizedEstimateUsd, 'Recovered-history preview used instead of the baseline when present.'],
+                  ['Preview delta', est.previewDeltaUsd ?? est.addedHistoricalPreviewPnlUsd, 'Change introduced by the recovery preview.'],
+                  ['Display estimate', displayEstimate, 'The number shown for this beta lane.'],
                 ] as const
                 return (
-                  <div className="rounded-2xl border border-amber-400/30 bg-amber-950/20 p-4 shadow-lg shadow-amber-950/10">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <div className="text-xs uppercase tracking-[0.3em] text-amber-200/70">Estimated PnL Beta</div>
-                        <div className="mt-1 text-lg font-semibold text-amber-50">Low confidence estimate</div>
-                      </div>
-                      <span className="rounded-full border border-amber-300/30 px-2 py-1 text-xs font-semibold uppercase text-amber-100">{est.confidence}</span>
-                    </div>
-                    <p className="mt-2 text-sm text-amber-100/80">Estimated only — preview replaces baseline; not official PnL.</p>
-                    <div className="mt-4 grid gap-2 sm:grid-cols-2">
-                      {rows.map(([label, value]) => (
-                        <div key={label} className="rounded-xl border border-white/10 bg-black/20 p-3">
-                          <div className="text-xs text-white/50">{label}</div>
-                          <div className={`mt-1 text-base font-semibold ${typeof value === 'number' ? value >= 0 ? 'text-emerald-200' : 'text-rose-200' : 'text-white/40'}`}>{typeof value === 'number' ? fmtUSD(value) : 'Not available'}</div>
+                  <div style={{ position: 'relative', overflow: 'hidden', padding: '22px', background: 'linear-gradient(135deg, rgba(251,191,36,0.14), rgba(15,23,42,0.96) 34%, rgba(244,63,94,0.08))', border: '1px solid rgba(251,191,36,0.28)', borderRadius: '22px', boxShadow: `0 28px 90px rgba(0,0,0,0.34), 0 0 54px ${displayTone.glow}, inset 0 1px 0 rgba(255,255,255,0.08)` }}>
+                    <div style={{ position: 'absolute', inset: 0, background: 'radial-gradient(circle at 12% 8%, rgba(251,191,36,0.20), transparent 28%), radial-gradient(circle at 88% 18%, rgba(56,189,248,0.12), transparent 30%)', pointerEvents: 'none' }} />
+                    <div style={{ position: 'relative' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '18px', alignItems: 'flex-start', flexWrap: 'wrap' }}>
+                        <div>
+                          <div style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', padding: '6px 10px', borderRadius: '999px', border: '1px solid rgba(251,191,36,0.24)', background: 'rgba(251,191,36,0.10)', color: '#fde68a', fontSize: '10px', fontWeight: 900, letterSpacing: '0.18em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                            <span style={{ width: '6px', height: '6px', borderRadius: '999px', background: '#fbbf24', boxShadow: '0 0 14px rgba(251,191,36,0.8)' }} />
+                            Estimated PnL Beta
+                          </div>
+                          <h3 style={{ margin: '14px 0 0', fontSize: '24px', lineHeight: 1.05, fontWeight: 950, letterSpacing: '-0.04em', color: '#fff7ed', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>Low-confidence recovery preview</h3>
+                          <p style={{ margin: '8px 0 0', maxWidth: '680px', fontSize: '13px', lineHeight: 1.55, color: 'rgba(254,243,199,0.72)', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>Estimated only — preview replaces baseline; not official PnL.</p>
                         </div>
-                      ))}
-                    </div>
-                    {(est.mathWarning || est.reasons.length > 0) && <div className="mt-3 text-xs text-amber-100/60">{est.mathWarning ?? est.reasons[0]}</div>}
-                    {unmatchedOpenSymbols.length > 0 && (
-                      <div className="mt-2 text-xs text-amber-100/70">
-                        Open-position PnL locked/partial — blocked by {unmatchedOpenSymbols.join(', ')} missing independent current price.
+                        <div style={{ textAlign: 'right' }}>
+                          <div style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', border: '1px solid rgba(251,191,36,0.26)', background: 'rgba(2,6,23,0.42)', borderRadius: '999px', padding: '7px 10px', fontSize: '10px', fontWeight: 900, color: '#fde68a', letterSpacing: '0.10em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                            Confidence: {est.confidence ?? 'low'}
+                          </div>
+                          <div style={{ marginTop: '12px', fontSize: '34px', lineHeight: 1, fontWeight: 950, letterSpacing: '-0.05em', color: displayTone.text, textShadow: `0 0 28px ${displayTone.glow}`, fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{typeof displayEstimate === 'number' ? fmtUSD(displayEstimate) : '—'}</div>
+                          <div style={{ marginTop: '5px', fontSize: '10px', color: 'rgba(226,232,240,0.55)', textTransform: 'uppercase', letterSpacing: '0.12em', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{displayTone.label}</div>
+                        </div>
                       </div>
-                    )}
+                      <div style={{ marginTop: '18px', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px' }}>
+                        {rows.map(([label, value, hint]) => (
+                          <div key={label} style={{ border: '1px solid rgba(255,255,255,0.09)', background: 'linear-gradient(180deg, rgba(15,23,42,0.72), rgba(2,6,23,0.46))', borderRadius: '16px', padding: '14px', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.05)' }}>
+                            <div style={{ fontSize: '10px', color: 'rgba(226,232,240,0.54)', letterSpacing: '0.10em', textTransform: 'uppercase', fontWeight: 850, fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{label}</div>
+                            <div style={{ marginTop: '7px', fontSize: '20px', lineHeight: 1, fontWeight: 900, color: typeof value === 'number' ? (value >= 0 ? '#86efac' : '#fda4af') : 'rgba(226,232,240,0.42)', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{typeof value === 'number' ? fmtUSD(value) : 'Not available'}</div>
+                            <div style={{ marginTop: '8px', fontSize: '11px', lineHeight: 1.35, color: 'rgba(226,232,240,0.48)', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{hint}</div>
+                          </div>
+                        ))}
+                      </div>
+                      {(est.mathWarning || est.reasons.length > 0 || unmatchedOpenSymbols.length > 0) && (
+                        <div style={{ marginTop: '14px', border: '1px solid rgba(251,191,36,0.18)', background: 'rgba(251,191,36,0.08)', borderRadius: '14px', padding: '12px 14px', color: 'rgba(254,243,199,0.76)', fontSize: '12px', lineHeight: 1.5, fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
+                          <div style={{ fontWeight: 850, color: '#fde68a', marginBottom: '4px' }}>Why this is separate</div>
+                          <div>{est.mathWarning ?? est.reasons[0]}</div>
+                          {unmatchedOpenSymbols.length > 0 && <div style={{ marginTop: '4px' }}>Open-position PnL locked/partial — blocked by {unmatchedOpenSymbols.join(', ')} missing independent current price.</div>}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )
               })()}
