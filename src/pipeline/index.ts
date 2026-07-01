@@ -27,6 +27,9 @@ import type { BehaviorIntelResult, WindowCoverage } from '../modules/behaviorInt
 import { assembleReport } from '../modules/finalReportAssembler/index'
 import type { AssembleReportInput, FinalReport, ScanMetadata } from '../modules/finalReportAssembler/types'
 import { buildBridgeDetectionObject } from '../modules/bridgeDetection/index'
+import type { BridgeCandidateEvent } from '../modules/bridgeDetection/types'
+import { buildSellTimeline } from '../modules/sellTimeline/index'
+import type { SellTimelineResult } from '../modules/sellTimeline/types'
 
 import type { PreScanValidation, RunWalletScanParams, RunWalletScanResult } from './types'
 import { INTEL_WINDOW_DAYS } from './types'
@@ -40,6 +43,7 @@ import {
   fifoEngineFallback,
   finalSummaryFallback,
   recoveryPolicyFallback,
+  sellTimelineV2Fallback,
   validatePreScan,
 } from './utils'
 
@@ -129,6 +133,32 @@ function safeRunBridgeDetection(normalizedEvents: NormalizedEvent[]): FinalRepor
   }
 }
 
+// Pure, zero-cost — additive read model over already-computed normalizedEvents, chainSelection,
+// bridgeTimeline, and recoveryPolicy (mechanism 4 needs recoveryPolicy's recoveredEvents, so this
+// must run after stage 5, not alongside bridgeDetection at stage 4b). Never trusts a
+// client-supplied router registry — knownDexRouterAddresses is always the empty set here, exactly
+// as src/modules/sellTimeline's own doc comments assume until a real registry exists.
+function safeRunSellTimelineV2(params: {
+  normalizedEvents: NormalizedEvent[]
+  chainSelection: ChainSelectionResult
+  bridgeTimeline: BridgeCandidateEvent[]
+  recoveryPolicy: RecoveryPolicyResult
+  walletAddress: string
+}): SellTimelineResult {
+  try {
+    return buildSellTimeline({
+      normalizedEvents: params.normalizedEvents,
+      chainSelection: params.chainSelection,
+      bridgeTimeline: params.bridgeTimeline,
+      recoveryPolicy: params.recoveryPolicy,
+      walletAddress: params.walletAddress,
+      knownDexRouterAddresses: new Set<string>(),
+    })
+  } catch {
+    return sellTimelineV2Fallback()
+  }
+}
+
 function safeAssembleReport(input: AssembleReportInput): FinalReport {
   try {
     return assembleReport(input)
@@ -139,7 +169,7 @@ function safeAssembleReport(input: AssembleReportInput): FinalReport {
     return {
       scanMetadata: input.scanMetadata,
       chainSelection: input.chainSelection,
-      timelines: input.timelines,
+      timelines: { ...input.timelines, sellTimelineV2: input.sellTimelineV2 },
       recoveryPolicy: input.recoveryPolicy,
       fifoAndPnl: input.fifoAndPnl,
       behaviorIntel: input.behaviorIntel,
@@ -195,6 +225,17 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     scanMode: params.scanMode,
   })
 
+  // 5b. sellTimelineV2 — additive, pure, zero-cost. Runs after recoveryPolicy since mechanism 4
+  // (recovery-reconstructed sells) needs recoveryPolicy's real recoveredEvents. Never replaces or
+  // reads from report.timelines.sellTimeline (timelineBuilder's own output, produced at stage 4).
+  const sellTimelineV2 = safeRunSellTimelineV2({
+    normalizedEvents,
+    chainSelection,
+    bridgeTimeline,
+    recoveryPolicy,
+    walletAddress: params.walletAddress,
+  })
+
   // 6. fifoEngine — pure, no provider calls; consumes normalized events + recoveryPolicy's
   // already-fetched recoveredEvents only.
   const fifoAndPnl = safeRunFifoEngine({
@@ -237,6 +278,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     behaviorIntel,
     windowCoverage,
     bridgeTimeline,
+    sellTimelineV2,
   })
 
   return { ...finalReport, normalizationErrors }

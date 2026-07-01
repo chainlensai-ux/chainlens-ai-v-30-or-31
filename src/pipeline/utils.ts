@@ -7,6 +7,7 @@ import type { RecoveryPolicyResult } from '../modules/recoveryPolicy/types'
 import type { BuyTimeline, DistributionTimeline, SellTimeline, TimelineBuilderResult } from '../modules/timelineBuilder/types'
 import type { FinalReport, FinalSummary, ScanMetadata } from '../modules/finalReportAssembler/types'
 import { DEFAULT_RECOVERY_CAPS, DEFAULT_TRIGGER_RECOVERY_WHEN } from '../modules/recoveryPolicy/types'
+import type { SellTimelineResult } from '../modules/sellTimeline/types'
 import type { PreScanValidation, RunWalletScanParams } from './types'
 import { APPROX_DAYS_COVERED_PER_RECOVERED_PAGE, INTEL_WINDOW_DAYS, SUPPORTED_CHAINS } from './types'
 
@@ -117,6 +118,13 @@ export function bridgeTimelineFallback(): FinalReport['bridgeTimeline'] {
   return []
 }
 
+// Additive fallback shape — sellTimelineV2 unavailable/degraded mode. Same honesty rule: an empty
+// entries list means "no evidence found for a sell via any of the four mechanisms", never "no
+// sells happened".
+export function sellTimelineV2Fallback(): SellTimelineResult {
+  return { totalSells: 0, chainContext: { includedChains: [], excludedChains: [] }, entries: [] }
+}
+
 // Architecture Step 7 §9 fallback strings — used only when assembly itself cannot run (e.g. an
 // invalid pre-scan request). Fixed, non-committal language, never a fabricated narrative.
 export function finalSummaryFallback(): FinalSummary {
@@ -149,7 +157,7 @@ export function buildFullyDegradedReport(
   return {
     scanMetadata,
     chainSelection,
-    timelines: emptyTimelines(),
+    timelines: { ...emptyTimelines(), sellTimelineV2: sellTimelineV2Fallback() },
     recoveryPolicy: recoveryPolicyFallback(),
     fifoAndPnl: fifoEngineFallback(emptyTimelines().buyTimeline, emptyTimelines().sellTimeline),
     behaviorIntel: behaviorIntelFallback(chainSelection),

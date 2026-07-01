@@ -47,7 +47,10 @@ export function assembleReport(input: AssembleReportInput): FinalReport {
   return {
     scanMetadata: input.scanMetadata,
     chainSelection: input.chainSelection,
-    timelines: input.timelines,
+    // Existing timelineBuilder output spread through untouched, with sellTimelineV2 grafted on
+    // alongside it — report.timelines.sellTimeline (and buyTimeline/distributionTimeline) remain
+    // byte-for-byte what timelineBuilder produced; nothing here reshapes or reads them.
+    timelines: { ...input.timelines, sellTimelineV2: input.sellTimelineV2 },
     recoveryPolicy: input.recoveryPolicy,
     fifoAndPnl: input.fifoAndPnl,
     behaviorIntel: input.behaviorIntel,

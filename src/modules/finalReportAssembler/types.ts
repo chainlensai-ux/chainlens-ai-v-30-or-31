@@ -11,6 +11,7 @@ import type { BehaviorIntelResult, WindowCoverage } from '../behaviorIntel/types
 import type { SupportedChain } from '../providerFetchWindow/types'
 import type { TimelineBuilderResult } from '../timelineBuilder/types'
 import type { BridgeCandidateEvent } from '../bridgeDetection/types'
+import type { SellTimelineResult } from '../sellTimeline/types'
 
 export type ScanMode = 'normal' | 'deep'
 
@@ -41,10 +42,19 @@ export type FinalSummary = {
   recoverySummary: string
 }
 
+// timelineBuilder's own output (buyTimeline/sellTimeline/distributionTimeline) PLUS the additive
+// sellTimelineV2 field (src/modules/sellTimeline) grafted on alongside it. timelineBuilder itself
+// is never modified or made aware of sellTimeline — this type only exists at the report-assembly
+// layer, so `timelines.sellTimeline` (existing, still consumed by fifoEngine/behaviorIntel/UI)
+// stays byte-for-byte identical to what timelineBuilder produces.
+export type ReportTimelines = TimelineBuilderResult & {
+  sellTimelineV2: SellTimelineResult
+}
+
 export type FinalReport = {
   scanMetadata: ScanMetadata
   chainSelection: ChainSelectionResult
-  timelines: TimelineBuilderResult
+  timelines: ReportTimelines
   recoveryPolicy: RecoveryPolicyResult
   fifoAndPnl: FifoOutput
   behaviorIntel: BehaviorIntelResult
@@ -65,4 +75,7 @@ export type AssembleReportInput = {
   behaviorIntel: BehaviorIntelResult
   windowCoverage: WindowCoverage
   bridgeTimeline: BridgeCandidateEvent[]
+  // Additive — see ReportTimelines. Grafted onto `timelines` by assembleReport, never merged into
+  // or read by timelineBuilder's own TimelineBuilderResult.
+  sellTimelineV2: SellTimelineResult
 }

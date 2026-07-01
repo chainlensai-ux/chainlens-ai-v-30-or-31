@@ -16,6 +16,7 @@ import type { FifoOutput } from '../modules/fifoEngine/types'
 import { buildBehaviorIntelObject } from '../modules/behaviorIntel/index'
 import type { BehaviorIntelResult } from '../modules/behaviorIntel/types'
 import { buildBridgeDetectionObject } from '../modules/bridgeDetection/index'
+import { buildSellTimeline } from '../modules/sellTimeline/index'
 import { assembleReport } from '../modules/finalReportAssembler/index'
 import type { ScanMetadata } from '../modules/finalReportAssembler/types'
 import type { ProviderStatus, SupportedChain } from '../modules/providerFetchWindow/types'
@@ -89,6 +90,20 @@ async function runSyntheticPipeline(wallet: WalletTestConfig): Promise<RunWallet
     }
   }
 
+  let sellTimelineV2: ReturnType<typeof buildSellTimeline>
+  try {
+    sellTimelineV2 = buildSellTimeline({
+      normalizedEvents,
+      chainSelection,
+      bridgeTimeline,
+      recoveryPolicy,
+      walletAddress: wallet.walletAddress,
+      knownDexRouterAddresses: new Set<string>(),
+    })
+  } catch {
+    sellTimelineV2 = { totalSells: 0, chainContext: { includedChains: [], excludedChains: [] }, entries: [] }
+  }
+
   let fifoAndPnl: FifoOutput
   try {
     fifoAndPnl = buildFifoOutput({
@@ -134,6 +149,7 @@ async function runSyntheticPipeline(wallet: WalletTestConfig): Promise<RunWallet
     behaviorIntel,
     windowCoverage,
     bridgeTimeline,
+    sellTimelineV2,
   })
 
   return { ...finalReport, normalizationErrors }
