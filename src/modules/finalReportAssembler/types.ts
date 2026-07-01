@@ -10,6 +10,7 @@ import type { RecoveryPolicyResult } from '../recoveryPolicy/types'
 import type { BehaviorIntelResult, WindowCoverage } from '../behaviorIntel/types'
 import type { SupportedChain } from '../providerFetchWindow/types'
 import type { TimelineBuilderResult } from '../timelineBuilder/types'
+import type { BridgeCandidateEvent } from '../bridgeDetection/types'
 
 export type ScanMode = 'normal' | 'deep'
 
@@ -49,6 +50,10 @@ export type FinalReport = {
   behaviorIntel: BehaviorIntelResult
   windowCoverage: WindowCoverage
   finalSummary: FinalSummary
+  // Additive section — cross-chain bridge candidates (src/modules/bridgeDetection). Never
+  // required by any other section above; a caller that ignores this field sees the exact same
+  // report shape the engine produced before this field existed.
+  bridgeTimeline: BridgeCandidateEvent[]
 }
 
 export type AssembleReportInput = {
@@ -59,4 +64,5 @@ export type AssembleReportInput = {
   fifoAndPnl: FifoOutput
   behaviorIntel: BehaviorIntelResult
   windowCoverage: WindowCoverage
+  bridgeTimeline: BridgeCandidateEvent[]
 }

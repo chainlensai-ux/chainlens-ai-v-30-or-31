@@ -7,6 +7,7 @@ import type { TokenHolding } from './types'
 
 const ALCHEMY_BASE_KEY_NAMES = ['ALCHEMY_BASE_KEY', 'ALCHEMY_BASE_API_KEY', 'BASE_ALCHEMY_API_KEY', 'ALCHEMY_API_KEY', 'NEXT_PUBLIC_ALCHEMY_BASE_KEY']
 const ALCHEMY_ETH_KEY_NAMES = ['ALCHEMY_ETHEREUM_KEY', 'ALCHEMY_ETH_KEY', 'ALCHEMY_ETH_API_KEY', 'ALCHEMY_API_KEY']
+const ALCHEMY_ARBITRUM_KEY_NAMES = ['ALCHEMY_ARBITRUM_KEY', 'ALCHEMY_ARBITRUM_API_KEY', 'ARBITRUM_ALCHEMY_API_KEY', 'ALCHEMY_API_KEY']
 
 function resolveEnvKey(names: string[]): string {
   for (const name of names) {
@@ -21,17 +22,26 @@ function goldrushApiKey(): string {
 }
 
 function alchemyApiKey(chain: SupportedChain): string {
-  return chain === 'eth' ? resolveEnvKey(ALCHEMY_ETH_KEY_NAMES) : resolveEnvKey(ALCHEMY_BASE_KEY_NAMES)
+  if (chain === 'eth') return resolveEnvKey(ALCHEMY_ETH_KEY_NAMES)
+  if (chain === 'arbitrum') return resolveEnvKey(ALCHEMY_ARBITRUM_KEY_NAMES)
+  return resolveEnvKey(ALCHEMY_BASE_KEY_NAMES)
+}
+
+function alchemyNetworkSlug(chain: SupportedChain): string {
+  if (chain === 'eth') return 'eth-mainnet'
+  if (chain === 'arbitrum') return 'arb-mainnet'
+  return 'base-mainnet'
 }
 
 function alchemyBaseUrl(chain: SupportedChain): string {
   const key = alchemyApiKey(chain)
-  const network = chain === 'eth' ? 'eth-mainnet' : 'base-mainnet'
-  return `https://${network}.g.alchemy.com/v2/${key}`
+  return `https://${alchemyNetworkSlug(chain)}.g.alchemy.com/v2/${key}`
 }
 
 function goldrushChainName(chain: SupportedChain): string {
-  return chain === 'eth' ? 'eth-mainnet' : 'base-mainnet'
+  if (chain === 'eth') return 'eth-mainnet'
+  if (chain === 'arbitrum') return 'arbitrum-mainnet'
+  return 'base-mainnet'
 }
 
 export async function fetchGoldrushHoldings(chain: SupportedChain, walletAddress: string): Promise<{ ok: boolean; holdings: TokenHolding[] }> {

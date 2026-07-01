@@ -6,7 +6,7 @@ export type ProviderName = 'goldrush' | 'alchemy'
 
 export type ProviderStatus = 'ok' | 'partial' | 'provider_unavailable'
 
-export type SupportedChain = 'base' | 'eth'
+export type SupportedChain = 'base' | 'eth' | 'arbitrum'
 
 // Raw, provider-tagged transfer event. Deliberately NOT normalized yet (no computed `direction`,
 // no dedupe applied across providers) — normalization is module 2's responsibility only.

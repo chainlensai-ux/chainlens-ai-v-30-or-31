@@ -26,11 +26,13 @@ import { buildBehaviorIntelObject } from '../modules/behaviorIntel/index'
 import type { BehaviorIntelResult, WindowCoverage } from '../modules/behaviorIntel/types'
 import { assembleReport } from '../modules/finalReportAssembler/index'
 import type { AssembleReportInput, FinalReport, ScanMetadata } from '../modules/finalReportAssembler/types'
+import { buildBridgeDetectionObject } from '../modules/bridgeDetection/index'
 
 import type { PreScanValidation, RunWalletScanParams, RunWalletScanResult } from './types'
 import { INTEL_WINDOW_DAYS } from './types'
 import {
   behaviorIntelFallback,
+  bridgeTimelineFallback,
   buildFullyDegradedReport,
   computeWindowCoverage,
   emptyChainSelection,
@@ -117,6 +119,16 @@ function safeRunBehaviorIntel(params: {
   }
 }
 
+// Pure, zero-cost — operates only on already-normalized events from stage 2, no provider calls.
+// Runs for every scanMode (not deep-only), since it never fetches anything.
+function safeRunBridgeDetection(normalizedEvents: NormalizedEvent[]): FinalReport['bridgeTimeline'] {
+  try {
+    return buildBridgeDetectionObject(normalizedEvents).bridgeTimeline
+  } catch {
+    return bridgeTimelineFallback()
+  }
+}
+
 function safeAssembleReport(input: AssembleReportInput): FinalReport {
   try {
     return assembleReport(input)
@@ -133,6 +145,7 @@ function safeAssembleReport(input: AssembleReportInput): FinalReport {
       behaviorIntel: input.behaviorIntel,
       windowCoverage: input.windowCoverage,
       finalSummary: finalSummaryFallback(),
+      bridgeTimeline: input.bridgeTimeline,
     }
   }
 }
@@ -167,6 +180,11 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
 
   // 4. timelineBuilder — pure, scoped to active_intelligence chains only.
   const timelines: TimelineBuilderResult = buildTimelines(normalizedEvents, chainSelection)
+
+  // 4b. bridgeDetection — pure, zero-cost, operates over ALL normalized events (not gated by
+  // chainSelection) since a bridge candidate can legitimately involve a dust/low-activity chain
+  // on one leg.
+  const bridgeTimeline = safeRunBridgeDetection(normalizedEvents)
 
   // 5. recoveryPolicy — the ONLY other component permitted to fetch (historical pages), and only
   // reachable at all for scanMode === 'deep'.
@@ -218,6 +236,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     fifoAndPnl,
     behaviorIntel,
     windowCoverage,
+    bridgeTimeline,
   })
 
   return { ...finalReport, normalizationErrors }

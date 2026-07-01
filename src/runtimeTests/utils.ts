@@ -15,6 +15,7 @@ import { buildFifoOutput } from '../modules/fifoEngine/index'
 import type { FifoOutput } from '../modules/fifoEngine/types'
 import { buildBehaviorIntelObject } from '../modules/behaviorIntel/index'
 import type { BehaviorIntelResult } from '../modules/behaviorIntel/types'
+import { buildBridgeDetectionObject } from '../modules/bridgeDetection/index'
 import { assembleReport } from '../modules/finalReportAssembler/index'
 import type { ScanMetadata } from '../modules/finalReportAssembler/types'
 import type { ProviderStatus, SupportedChain } from '../modules/providerFetchWindow/types'
@@ -64,6 +65,13 @@ async function runSyntheticPipeline(wallet: WalletTestConfig): Promise<RunWallet
   )
 
   const timelines = buildTimelines(normalizedEvents, chainSelection)
+
+  let bridgeTimeline: ReturnType<typeof buildBridgeDetectionObject>['bridgeTimeline']
+  try {
+    bridgeTimeline = buildBridgeDetectionObject(normalizedEvents).bridgeTimeline
+  } catch {
+    bridgeTimeline = []
+  }
 
   let recoveryPolicy: RecoveryPolicyResult
   if (wallet.scanMode !== 'deep') {
@@ -125,6 +133,7 @@ async function runSyntheticPipeline(wallet: WalletTestConfig): Promise<RunWallet
     fifoAndPnl,
     behaviorIntel,
     windowCoverage,
+    bridgeTimeline,
   })
 
   return { ...finalReport, normalizationErrors }

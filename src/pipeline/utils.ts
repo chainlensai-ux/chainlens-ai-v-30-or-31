@@ -110,6 +110,13 @@ export function emptyChainSelection(): ChainSelectionResult {
   return { chains: [], activeChainCount: 0, dustChainCount: 0 }
 }
 
+// Additive fallback shape — bridgeDetection unavailable/degraded mode. An empty candidate list is
+// always a valid, honest outcome (it means "no cross-chain pair matched the heuristic", never
+// "bridging did not happen").
+export function bridgeTimelineFallback(): FinalReport['bridgeTimeline'] {
+  return []
+}
+
 // Architecture Step 7 §9 fallback strings — used only when assembly itself cannot run (e.g. an
 // invalid pre-scan request). Fixed, non-committal language, never a fabricated narrative.
 export function finalSummaryFallback(): FinalSummary {
@@ -148,5 +155,6 @@ export function buildFullyDegradedReport(
     behaviorIntel: behaviorIntelFallback(chainSelection),
     windowCoverage: computeWindowCoverage(providerFetchWindowDays, 0),
     finalSummary: finalSummaryFallback(),
+    bridgeTimeline: bridgeTimelineFallback(),
   }
 }

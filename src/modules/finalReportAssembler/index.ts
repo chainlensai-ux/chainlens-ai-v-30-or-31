@@ -53,5 +53,6 @@ export function assembleReport(input: AssembleReportInput): FinalReport {
     behaviorIntel: input.behaviorIntel,
     windowCoverage: input.windowCoverage,
     finalSummary: buildFinalSummary(input),
+    bridgeTimeline: input.bridgeTimeline,
   }
 }

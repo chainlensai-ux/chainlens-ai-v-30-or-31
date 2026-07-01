@@ -95,6 +95,7 @@ export const MODULE_FIELDS = {
   recoveryPolicy: 'recoveryPolicy',
   windowCoverage: 'windowCoverage',
   finalSummary: 'finalSummary',
+  bridgeTimeline: 'bridgeTimeline',
 } as const
 
 export type ModuleKey = keyof typeof MODULE_FIELDS
@@ -109,6 +110,7 @@ export type ScanModules = {
   recoveryPolicy: SanitizedReportV2['recoveryPolicy']
   windowCoverage: SanitizedReportV2['windowCoverage']
   finalSummary: SanitizedReportV2['finalSummary']
+  bridgeTimeline: SanitizedReportV2['bridgeTimeline']
 }
 
 // Splits an already-sanitized+masked V2 report into the 9 standalone modules. Pure reshaping —
@@ -124,6 +126,7 @@ export function buildModules(sanitized: SanitizedReportV2): ScanModules {
     recoveryPolicy: sanitized.recoveryPolicy,
     windowCoverage: sanitized.windowCoverage,
     finalSummary: sanitized.finalSummary,
+    bridgeTimeline: sanitized.bridgeTimeline,
   }
 }
 

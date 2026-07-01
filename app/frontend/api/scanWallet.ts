@@ -26,6 +26,7 @@ const MODULE_ENDPOINTS = [
   ['recoveryPolicy', 'recovery-policy'],
   ['windowCoverage', 'window-coverage'],
   ['finalSummary', 'final-summary'],
+  ['bridgeTimeline', 'bridge-timeline'],
 ] as const
 
 type ModuleApiResponse = {
