@@ -10,10 +10,11 @@
 // plain runWalletScan() — production /api/scan now returns holdings + portfolio value alongside
 // the unchanged Step 5 report fields, all through this single call site.
 
-import { runWalletScanV2 } from '../pipeline/runWalletScanV2'
-import { buildApiResponse, handleApiError } from './api'
+import { buildApiResponse, buildModulesResponse, buildSingleModuleResponse, handleApiError, type ModuleKey } from './api'
 import { isRateLimited, recordRequest } from './rateLimiter'
+import { getOrRunWalletScanV2 } from './scanCache'
 import { sanitizeInput, validateRequestShape } from './validator'
+import type { SanitizedScanRequest } from './validator'
 
 export type RouteResult = {
   status: number
@@ -35,21 +36,58 @@ const RATE_LIMITED_RESPONSE: RouteResult = {
 //      walletAddress/chains/scanMode)
 //   4. call runWalletScanV2() — the ONLY pipeline entry point this router calls
 //   5. return a sanitized response (never a raw report, never an internal error)
-export async function handleScanRequest(rawBody: unknown, callerIp: string): Promise<RouteResult> {
+// Shared by handleScanRequest / handleModulesRequest / handleModuleRequest — rate-limits, records,
+// sanitizes and validates the request the same way for every /scan-v2* entry point. Returns either
+// a ready-made error RouteResult, or the validated request for the caller to act on.
+function validateIncomingRequest(rawBody: unknown, callerIp: string): { errorResult: RouteResult } | { sanitized: SanitizedScanRequest } {
   if (isRateLimited(callerIp)) {
-    return RATE_LIMITED_RESPONSE
+    return { errorResult: RATE_LIMITED_RESPONSE }
   }
   recordRequest(callerIp)
 
   const sanitizedInput = sanitizeInput(rawBody)
   const validation = validateRequestShape(sanitizedInput)
   if (!validation.valid || !validation.sanitized) {
-    return { status: 400, body: { success: false, error: { message: 'Invalid request.', category: 'validation', details: validation.errors } } }
+    return { errorResult: { status: 400, body: { success: false, error: { message: 'Invalid request.', category: 'validation', details: validation.errors } } } }
   }
+  return { sanitized: validation.sanitized }
+}
+
+export async function handleScanRequest(rawBody: unknown, callerIp: string): Promise<RouteResult> {
+  const validated = validateIncomingRequest(rawBody, callerIp)
+  if ('errorResult' in validated) return validated.errorResult
 
   try {
-    const report = await runWalletScanV2(validation.sanitized)
+    const report = await getOrRunWalletScanV2(validated.sanitized)
     return { status: 200, body: buildApiResponse(report) }
+  } catch (error) {
+    return { status: 500, body: handleApiError(error) }
+  }
+}
+
+// POST /scan-v2 (all modules) — same scan as handleScanRequest, reshaped into { success, modules }.
+export async function handleModulesRequest(rawBody: unknown, callerIp: string): Promise<RouteResult> {
+  const validated = validateIncomingRequest(rawBody, callerIp)
+  if ('errorResult' in validated) return validated.errorResult
+
+  try {
+    const report = await getOrRunWalletScanV2(validated.sanitized)
+    return { status: 200, body: buildModulesResponse(report) }
+  } catch (error) {
+    return { status: 500, body: handleApiError(error) }
+  }
+}
+
+// POST /scan-v2/modules/<moduleKey> — one module. Uses the same cached-or-computed scan as every
+// other module request for the identical (walletAddress, chains, scanMode), so requesting all 9
+// modules for one wallet triggers exactly one runWalletScanV2() run, not nine.
+export async function handleModuleRequest(rawBody: unknown, callerIp: string, moduleKey: ModuleKey): Promise<RouteResult> {
+  const validated = validateIncomingRequest(rawBody, callerIp)
+  if ('errorResult' in validated) return validated.errorResult
+
+  try {
+    const report = await getOrRunWalletScanV2(validated.sanitized)
+    return { status: 200, body: buildSingleModuleResponse(report, moduleKey) }
   } catch (error) {
     return { status: 500, body: handleApiError(error) }
   }

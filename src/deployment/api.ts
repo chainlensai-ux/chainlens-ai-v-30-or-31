@@ -82,6 +82,79 @@ export function buildApiResponse(report: RunWalletScanV2Result): ApiSuccessRespo
   return { success: true, data: maskSensitiveFields(sanitized) }
 }
 
+// The 9 module keys this layer exposes, mapping each to its field on SanitizedReportV2. Splitting
+// is purely a reshaping of the already-sanitized report — no field is recomputed, renamed, or
+// dropped; each module is exactly `sanitized[field]`.
+export const MODULE_FIELDS = {
+  scanMetadata: 'scanMetadata',
+  chainSelection: 'chainSelection',
+  timelines: 'timelines',
+  holdings: 'holdings',
+  portfolio: 'portfolio',
+  behaviorIntel: 'behaviorIntel',
+  recoveryPolicy: 'recoveryPolicy',
+  windowCoverage: 'windowCoverage',
+  finalSummary: 'finalSummary',
+} as const
+
+export type ModuleKey = keyof typeof MODULE_FIELDS
+
+export type ScanModules = {
+  scanMetadata: SanitizedReportV2['scanMetadata']
+  chainSelection: SanitizedReportV2['chainSelection']
+  timelines: SanitizedReportV2['timelines']
+  holdings: SanitizedReportV2['holdings']
+  portfolio: SanitizedReportV2['portfolio']
+  behaviorIntel: SanitizedReportV2['behaviorIntel']
+  recoveryPolicy: SanitizedReportV2['recoveryPolicy']
+  windowCoverage: SanitizedReportV2['windowCoverage']
+  finalSummary: SanitizedReportV2['finalSummary']
+}
+
+// Splits an already-sanitized+masked V2 report into the 9 standalone modules. Pure reshaping —
+// runWalletScanV2's output and sanitizeReport/maskSensitiveFields are both untouched by this.
+export function buildModules(sanitized: SanitizedReportV2): ScanModules {
+  return {
+    scanMetadata: sanitized.scanMetadata,
+    chainSelection: sanitized.chainSelection,
+    timelines: sanitized.timelines,
+    holdings: sanitized.holdings,
+    portfolio: sanitized.portfolio,
+    behaviorIntel: sanitized.behaviorIntel,
+    recoveryPolicy: sanitized.recoveryPolicy,
+    windowCoverage: sanitized.windowCoverage,
+    finalSummary: sanitized.finalSummary,
+  }
+}
+
+function sanitizeAndMask(report: RunWalletScanV2Result): SanitizedReportV2 {
+  const sanitized = sanitizeReport(report) as SanitizedReportV2
+  return maskSensitiveFields(sanitized)
+}
+
+export type ApiModulesResponse = {
+  success: true
+  modules: ScanModules
+}
+
+// Builds the /api/scan-v2 response as split modules instead of one flat report — same
+// sanitize+mask pipeline as buildApiResponse, just reshaped at the end.
+export function buildModulesResponse(report: RunWalletScanV2Result): ApiModulesResponse {
+  return { success: true, modules: buildModules(sanitizeAndMask(report)) }
+}
+
+export type ApiModuleResponse = {
+  success: true
+  module: ModuleKey
+  data: ScanModules[ModuleKey]
+}
+
+// Builds the response for a single-module endpoint (e.g. /api/scan-v2/modules/holdings).
+export function buildSingleModuleResponse(report: RunWalletScanV2Result, moduleKey: ModuleKey): ApiModuleResponse {
+  const modules = buildModules(sanitizeAndMask(report))
+  return { success: true, module: moduleKey, data: modules[moduleKey] }
+}
+
 export type ApiErrorResponse = {
   success: false
   error: {
