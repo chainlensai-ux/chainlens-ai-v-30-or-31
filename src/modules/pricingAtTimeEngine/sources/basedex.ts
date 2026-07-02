@@ -17,6 +17,7 @@ import { createPublicClient, http, type PublicClient } from 'viem'
 import { base } from 'viem/chains'
 import type { SupportedChain } from '../../providerFetchWindow/types'
 import { fetchCoingeckoPriceDetailed } from './coingecko'
+import { logRpcCall } from '@/lib/server/rpcDebug'
 
 const WETH_BASE = '0x4200000000000000000000000000000000000006'
 const USDC_BASE = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
@@ -82,6 +83,7 @@ function getBaseClient(): PublicClient | null {
 // the final answer, only as the initial bisection bound (Base's ~2s block time is used purely to
 // pick a reasonable starting midpoint, not as the result itself).
 async function findBlockForTimestamp(client: PublicClient, targetTimestampSec: number): Promise<bigint | null> {
+  logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'getBlock:latest' })
   const latest = await client.getBlock({ blockTag: 'latest' })
   if (targetTimestampSec >= Number(latest.timestamp)) return latest.number
 
@@ -92,6 +94,7 @@ async function findBlockForTimestamp(client: PublicClient, targetTimestampSec: n
 
   for (let i = 0; i < 30 && low < high; i++) {
     const mid = (low + high + BigInt(1)) / two
+    logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'getBlock:bisect' })
     const block = await client.getBlock({ blockNumber: mid })
     if (Number(block.timestamp) <= targetTimestampSec) {
       low = mid
@@ -109,6 +112,7 @@ async function resolvePoolAddress(
 ): Promise<`0x${string}` | null> {
   for (const fee of UNISWAP_V3_FEE_TIERS) {
     try {
+      logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:getPool' })
       const pool = await client.readContract({
         address: UNISWAP_V3_FACTORY_BASE as `0x${string}`,
         abi: UNISWAP_V3_FACTORY_ABI,
@@ -130,6 +134,10 @@ async function readPoolPrice(
   pairedWith: `0x${string}`,
   blockNumber: bigint,
 ): Promise<number | null> {
+  logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:slot0' })
+  logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:token0' })
+  logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:decimals' })
+  logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:decimals' })
   const [slot0, token0, tokenDecimals, pairedDecimals] = await Promise.all([
     client.readContract({ address: poolAddress, abi: UNISWAP_V3_POOL_ABI, functionName: 'slot0', blockNumber }),
     client.readContract({ address: poolAddress, abi: UNISWAP_V3_POOL_ABI, functionName: 'token0', blockNumber }),

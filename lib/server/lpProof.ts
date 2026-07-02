@@ -3,6 +3,7 @@
 // No GoPlus, no paid providers. Unknowns are reported as "unverified", never fabricated.
 
 import { LP_LOCK_BURN_REGISTRY } from "./lpLockBurnIntel.ts";
+import { logRpcCall } from "./rpcDebug";
 
 export type LpChain = "eth" | "base";
 
@@ -49,6 +50,7 @@ async function lpRpcCall(chain: LpChain, method: string, params: unknown[]): Pro
   try {
     const rpcUrl = getLpRpcUrl(chain);
     if (!rpcUrl) return null;
+    logRpcCall({ route: "lpProof", chain, method });
     const res = await fetch(rpcUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
