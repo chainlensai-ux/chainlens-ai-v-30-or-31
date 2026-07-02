@@ -14,6 +14,7 @@ import type { BridgeCandidateEvent } from '../bridgeDetection/types'
 import type { SellTimelineResult } from '../sellTimeline/types'
 import type { PnlSummaryResult } from '../pnlEngine/types'
 import type { PricingAtTimeResult } from '../pricingAtTimeEngine/types'
+import type { ProviderFetchWindowResult } from '../providerFetchWindow/types'
 
 export type ScanMode = 'normal' | 'deep'
 
@@ -76,6 +77,28 @@ export type FinalReport = {
   // mechanism. A caller that ignores this field sees the exact same report shape the engine
   // produced before it existed.
   pricingAtTime: PricingAtTimeResult
+  // Additive section — real, honest summary of stage 1's per-chain provider fetch outcomes
+  // (ok/errorReason/event count for GoldRush and Alchemy independently). Never includes raw
+  // provider payloads (see ProviderDiagnosticsEntry's own doc comment) — this is a status/count
+  // summary only, for verifying "did the provider calls actually run", not a data dump.
+  providerDiagnostics: ProviderDiagnosticsEntry[]
+}
+
+// Real per-provider fetch outcome for one chain — ok/errorReason/count only, deliberately never the
+// raw events themselves (raw provider payloads are never returned to a client anywhere in this
+// codebase; recoveryPolicy's own response already strips recoveredEvents down to a count for the
+// same reason).
+export type ProviderCallDiagnostics = {
+  ok: boolean
+  errorReason: string | null
+  eventCount: number
+}
+
+export type ProviderDiagnosticsEntry = {
+  chain: SupportedChain
+  providerStatus: ProviderFetchWindowResult['providerStatus']
+  goldrush: ProviderCallDiagnostics
+  alchemy: ProviderCallDiagnostics
 }
 
 export type AssembleReportInput = {
@@ -94,4 +117,6 @@ export type AssembleReportInput = {
   pnlSummaryV2: PnlSummaryResult
   // Additive — see FinalReport.pricingAtTime above.
   pricingAtTime: PricingAtTimeResult
+  // Additive — see FinalReport.providerDiagnostics above.
+  providerDiagnostics: ProviderDiagnosticsEntry[]
 }

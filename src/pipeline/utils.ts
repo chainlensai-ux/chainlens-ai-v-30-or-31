@@ -206,5 +206,6 @@ export function buildFullyDegradedReport(
     bridgeTimeline: bridgeTimelineFallback(),
     pnlSummaryV2: pnlSummaryV2Fallback(),
     pricingAtTime: pricingAtTimeFallback(),
+    providerDiagnostics: [],
   }
 }

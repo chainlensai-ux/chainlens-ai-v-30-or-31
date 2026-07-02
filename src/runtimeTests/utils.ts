@@ -220,6 +220,9 @@ async function runSyntheticPipeline(wallet: WalletTestConfig): Promise<RunWallet
     sellTimelineV2,
     pnlSummaryV2,
     pricingAtTime,
+    // Honestly empty — the synthetic path bypasses providerFetchWindow entirely by design (see
+    // this file's own header comment), so there is no real per-provider fetch outcome to report.
+    providerDiagnostics: [],
   })
 
   return { ...finalReport, normalizationErrors }

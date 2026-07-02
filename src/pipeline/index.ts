@@ -295,6 +295,7 @@ function safeAssembleReport(input: AssembleReportInput): FinalReport {
       bridgeTimeline: input.bridgeTimeline,
       pnlSummaryV2: input.pnlSummaryV2,
       pricingAtTime: input.pricingAtTime,
+      providerDiagnostics: input.providerDiagnostics,
     }
   }
 }
@@ -311,13 +312,40 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     return { ...buildFullyDegradedReport(params, scanTimestamp, PROVIDER_FETCH_WINDOW_DAYS_USED), normalizationErrors: [] }
   }
 
+  // Diagnostic log — real env var presence for the two providers actually integrated in this
+  // codebase (GoldRush + Alchemy; there is no Moralis integration anywhere here — logging a
+  // "hasMoralis" flag would be fabricated, since no such provider is ever called).
+  // eslint-disable-next-line no-console
+  console.log('[pipeline] provider env check', {
+    hasGoldrush: Boolean(process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY),
+    hasAlchemyBase: Boolean(process.env.ALCHEMY_BASE_KEY ?? process.env.ALCHEMY_API_KEY),
+    hasAlchemyEth: Boolean(process.env.ALCHEMY_ETHEREUM_KEY ?? process.env.ALCHEMY_API_KEY),
+    hasAlchemyArbitrum: Boolean(process.env.ALCHEMY_ARBITRUM_KEY),
+  })
+
   // 1. providerFetchWindow — the ONLY per-chain network call in the base pipeline.
   const providerResults = await Promise.all(
     preScan.sanitizedChains.map((chain) => fetchProviderWindow(chain, params.walletAddress, PROVIDER_FETCH_WINDOW_DAYS_USED)),
   )
 
+  // Real, honest per-chain/per-provider fetch outcome summary — counts and error reasons only,
+  // never raw events (see ProviderDiagnosticsEntry's doc comment for why raw payloads are never
+  // surfaced). Additive report field, not a new provider call.
+  const providerDiagnostics: FinalReport['providerDiagnostics'] = providerResults.map((r) => ({
+    chain: r.chain,
+    providerStatus: r.providerStatus,
+    goldrush: { ok: r.providerResults.goldrush.ok, errorReason: r.providerResults.goldrush.errorReason, eventCount: r.providerResults.goldrush.events.length },
+    alchemy: { ok: r.providerResults.alchemy.ok, errorReason: r.providerResults.alchemy.errorReason, eventCount: r.providerResults.alchemy.events.length },
+  }))
+  // eslint-disable-next-line no-console
+  console.log('[pipeline] providerDiagnostics', providerDiagnostics)
+
   // 2. normalization — pure, zero provider calls.
   const allRawEvents = providerResults.flatMap((r) => r.rawEvents)
+  if (allRawEvents.length === 0) {
+    // eslint-disable-next-line no-console
+    console.warn('[pipeline] NO RAW EVENTS FETCHED for this scan', { providerDiagnostics })
+  }
   const { normalizedEvents, normalizationErrors } = normalizeEvents(allRawEvents, params.walletAddress)
 
   // 3. chainSelection — pure. visible_value_usd / swapCandidateEvents default to 0 (no
@@ -482,6 +510,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     sellTimelineV2,
     pnlSummaryV2,
     pricingAtTime,
+    providerDiagnostics,
   })
 
   return { ...finalReport, normalizationErrors }

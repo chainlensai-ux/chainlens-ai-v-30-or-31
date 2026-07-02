@@ -59,5 +59,6 @@ export function assembleReport(input: AssembleReportInput): FinalReport {
     bridgeTimeline: input.bridgeTimeline,
     pnlSummaryV2: input.pnlSummaryV2,
     pricingAtTime: input.pricingAtTime,
+    providerDiagnostics: input.providerDiagnostics,
   }
 }
