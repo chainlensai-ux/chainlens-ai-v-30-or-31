@@ -25,14 +25,13 @@ import { scanWalletV2, type ScanWalletApiResponse } from '@/app/frontend/api/sca
 import {
   BehaviorIntelView,
   ChainSelectionView,
-  FifoAndPnlView,
+  CoverageTimelineCard,
   FinalSummaryView,
   HoldingsViewV2,
-  PnLTab,
-  RecoveryPolicyView,
+  PnlStatusCard,
+  RecoveryHealthCard,
   SectionDivider,
   WalletProfileHeader,
-  WindowCoverageView,
 } from '@/app/frontend/components'
 import type { FinalReport } from '@/src/modules/finalReportAssembler/types'
 import type { TokenHolding } from '@/src/modules/holdings/types'
@@ -443,7 +442,7 @@ export default function WalletScannerPage() {
 
               <SectionDivider label="PnL Summary" />
               <div className="ws-card">
-                <PnLTab fifoAndPnl={result.fifoAndPnl} pnlSummaryV2={result.pnlSummaryV2} />
+                <PnlStatusCard fifoAndPnl={result.fifoAndPnl} pnlSummaryV2={result.pnlSummaryV2} />
               </div>
 
               <SectionDivider label="Holdings" />
@@ -457,14 +456,17 @@ export default function WalletScannerPage() {
               <SectionDivider label="Behavior Intel" />
               <div className="ws-card"><BehaviorIntelView data={result.behaviorIntel} /></div>
 
+              <SectionDivider label="Recovery Health" />
+              <div className="ws-card"><RecoveryHealthCard data={result.recoveryPolicy} /></div>
+
+              <SectionDivider label="Window Coverage" />
+              <div className="ws-card"><CoverageTimelineCard data={result.windowCoverage} /></div>
+
               {/* Buy/Sell/SellV2/Distribution timelines are intentionally not rendered — the raw
                   data is still returned in the scan API response (result.timelines.*), visible via
                   the browser's Network tab, but no longer shown in this UI. */}
               <SectionDivider label="Diagnostics" optional />
               <div className="ws-card"><ChainSelectionView data={result.chainSelection} /></div>
-              <div className="ws-card"><RecoveryPolicyView data={result.recoveryPolicy} /></div>
-              <div className="ws-card"><FifoAndPnlView data={result.fifoAndPnl} /></div>
-              <div className="ws-card"><WindowCoverageView data={result.windowCoverage} /></div>
             </div>
           )}
           </div>
