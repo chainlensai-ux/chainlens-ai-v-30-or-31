@@ -12,18 +12,6 @@ function getIp(req: Request): string {
   return req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown'
 }
 
-async function getServerPlan(req: Request): Promise<'free' | 'pro' | 'elite'> {
-  const auth = req.headers.get('authorization') ?? ''
-  const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : ''
-  if (!token) return 'free'
-  try {
-    const { plan } = await getCurrentUserPlanFromBearerToken(token)
-    return plan
-  } catch {
-    return 'free'
-  }
-}
-
 const EXCLUDED = new Set([
   'USDC', 'USDT', 'DAI', 'USDBC', 'WETH', 'ETH', 'CBBTC', 'BTC', 'WBTC',
   'BUSD', 'FRAX', 'CBETH', 'STETH', 'RETH', 'WSTETH', 'EURC', 'BSDETH', 'USD+', 'AXLUSDC',
@@ -66,8 +54,10 @@ const shownBatches: string[][] = []
 function parseNum(v: unknown): number | null {
   if (typeof v === 'number' && Number.isFinite(v)) return v
   if (typeof v === 'string') {
-    const n = Number(v.replace(/[$,\s]/g, ''))
-    return Number.isFinite(n) && n !== 0 ? n : null
+    const cleaned = v.replace(/[$,\s]/g, '')
+    if (cleaned === '') return null
+    const n = Number(cleaned)
+    return Number.isFinite(n) ? n : null
   }
   return null
 }
