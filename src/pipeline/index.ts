@@ -36,6 +36,7 @@ import { resolvePricingAtTime } from '../modules/pricingAtTimeEngine/index'
 import type { PriceableEntry, PriceSources, PricingAtTimeResult } from '../modules/pricingAtTimeEngine/types'
 import { GoldRushClient } from '@covalenthq/client-sdk'
 import { goldrushPriceSource } from '../modules/pricingAtTimeEngine/sources/goldrushPriceSource'
+import { multiProviderPriceSource } from '../modules/pricingAtTimeEngine/sources/multiProviderPriceSource'
 import { priceLotsForWallet } from './priceLotsForWallet'
 import type { MatchedLot } from '../modules/fifoEngine/types'
 
@@ -64,11 +65,13 @@ export { INTEL_WINDOW_DAYS, SUPPORTED_CHAINS } from './types'
 const PROVIDER_FETCH_WINDOW_DAYS_USED = 90
 
 // Real GoldRush SDK integration for pricingAtTime (src/modules/pricingAtTimeEngine). Built once at
-// module load, since the API key doesn't change per-request. Falls back to noPriceSources()
-// (honestly always null) when no real key is configured — this environment has no
-// GOLDRUSH_API_KEY/COVALENT_API_KEY set, so every real scan run here will honestly resolve every
-// price as null via this exact fallback, never a fabricated one. `fallback` stays noPriceSources()
-// always — no second real price provider is wired up in this codebase.
+// module load, since the API key doesn't change per-request.
+//
+// `fallback` is now the real multi-provider engine (DexScreener/CoinGecko/Base-native Uniswap V3 —
+// src/modules/pricingAtTimeEngine/sources/multiProviderPriceSource.ts) instead of always-null
+// noPriceSources().fallback — genuine additional real price coverage, tried only when GoldRush
+// (primary) has no data for a given token/timestamp. It never fabricates a value either: every
+// branch inside it is a real HTTP/RPC call or an honest null, exactly like goldrushPriceSource.
 function buildPriceSources(): PriceSources {
   const apiKey = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY
   // Diagnostic log (never prints the key itself) — the fastest way to confirm, from the actual
@@ -76,9 +79,10 @@ function buildPriceSources(): PriceSources {
   // process's env at module load, without needing a separate deployment-inspection tool.
   // eslint-disable-next-line no-console
   console.warn(`[pipeline] buildPriceSources: real GoldRush key present = ${Boolean(apiKey)}`)
-  if (!apiKey) return noPriceSources()
+  const fallback = multiProviderPriceSource()
+  if (!apiKey) return { primary: fallback, fallback: noPriceSources().fallback }
   const client = new GoldRushClient(apiKey)
-  return { primary: goldrushPriceSource(client), fallback: noPriceSources().fallback }
+  return { primary: goldrushPriceSource(client), fallback }
 }
 
 // Exported (read-only) so standalone tools — currently only
