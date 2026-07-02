@@ -29,7 +29,6 @@ import {
   DistributionTimelineView,
   FifoAndPnlView,
   FinalSummaryView,
-  HoldingsView,
   HoldingsViewV2,
   PnLTab,
   RecoveryPolicyView,
@@ -453,8 +452,6 @@ export default function WalletScannerPage() {
                   bridgeEntries={result.bridgeTimeline}
                 />
               </div>
-              <div className="ws-card"><HoldingsView holdings={result.holdings} portfolio={result.portfolio} /></div>
-
               <SectionDivider label="Behavior Intel" />
               <div className="ws-card"><BehaviorIntelView data={result.behaviorIntel} /></div>
 
