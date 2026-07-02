@@ -19,6 +19,7 @@ import { resolvePrices } from '../modules/pricing/index'
 import type { PricingRequest } from '../modules/pricing/types'
 import { buildPortfolioSummary } from '../modules/portfolio/index'
 import type { PortfolioSummary } from '../modules/portfolio/types'
+import { withStageCache } from '../../lib/server/cache/v2StageCache'
 
 export type RunWalletScanV2Result = RunWalletScanResult & {
   holdings: TokenHolding[]
@@ -34,10 +35,20 @@ function emptyPortfolio(): PortfolioSummary {
 export async function runWalletScanV2(params: RunWalletScanParams): Promise<RunWalletScanV2Result> {
   const preScan = validatePreScan(params)
 
+  // KV read-before/write-after (lib/server/cache/v2StageCache.ts) — pipeline-level caching only,
+  // fetchHoldings' own source is never touched. 20s TTL: shortest of the 4 wrapped stages, since
+  // current balances are the most time-sensitive of the cached data (a stale balance is more
+  // visibly wrong to a user than a slightly-stale historical event window).
   const [report, holdingsResults] = await Promise.all([
     runWalletScan(params),
     preScan.valid
-      ? Promise.all(preScan.sanitizedChains.map((chain) => fetchHoldings(chain, params.walletAddress)))
+      ? Promise.all(preScan.sanitizedChains.map((chain) =>
+          withStageCache(
+            `v2:holdings:${chain}:${params.walletAddress.toLowerCase()}`,
+            20,
+            () => fetchHoldings(chain, params.walletAddress),
+          ),
+        ))
       : Promise.resolve([]),
   ])
 

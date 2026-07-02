@@ -33,11 +33,13 @@ import type { SellTimelineEntry, SellTimelineResult } from '../modules/sellTimel
 import { buildPnlSummary } from '../modules/pnlEngine/index'
 import type { BuildPnlSummaryParams, PnlSummaryResult } from '../modules/pnlEngine/types'
 import { resolvePricingAtTime } from '../modules/pricingAtTimeEngine/index'
-import type { PriceableEntry, PriceSources, PricingAtTimeResult } from '../modules/pricingAtTimeEngine/types'
+import type { PriceableEntry, PriceSourceFn, PriceSources, PricingAtTimeResult } from '../modules/pricingAtTimeEngine/types'
 import { GoldRushClient } from '@covalenthq/client-sdk'
 import { goldrushPriceSource } from '../modules/pricingAtTimeEngine/sources/goldrushPriceSource'
 import { multiProviderPriceSource } from '../modules/pricingAtTimeEngine/sources/multiProviderPriceSource'
 import { priceLotsForWallet } from './priceLotsForWallet'
+import { withStageCache } from '../../lib/server/cache/v2StageCache'
+import { getTokenCache, setTokenCache } from '../../lib/server/cache/tokenCache'
 import type { MatchedLot } from '../modules/fifoEngine/types'
 
 import type { PreScanValidation, RunWalletScanParams, RunWalletScanResult } from './types'
@@ -72,6 +74,24 @@ const PROVIDER_FETCH_WINDOW_DAYS_USED = 90
 // noPriceSources().fallback — genuine additional real price coverage, tried only when GoldRush
 // (primary) has no data for a given token/timestamp. It never fabricates a value either: every
 // branch inside it is a real HTTP/RPC call or an honest null, exactly like goldrushPriceSource.
+// KV read-before/write-after for a price source function — "only safe paths" per the request: a
+// resolved price for a given (token, chain, timestamp) triple is the same answer for every caller
+// (a past timestamp's price is immutable; a "now" timestamp changes every call anyway, so it
+// naturally near-never collides in cache) — never wraps anything that could serve a stale price as
+// if it were still current beyond the TTL. 45s TTL, same as recoveryPolicy (the other real network
+// call in this pipeline). Never caches a null result — an honest "no price found" should keep
+// trying on the next request, not get stuck for 45s once a provider has a transient miss.
+function withPriceSourceCache(fn: PriceSourceFn, sourceLabel: string): PriceSourceFn {
+  return async (token, chain, timestamp) => {
+    const key = `v2:price:${sourceLabel}:${chain}:${token.toLowerCase()}:${timestamp}`
+    const cached = await getTokenCache<number>(key)
+    if (cached !== null) return cached
+    const result = await fn(token, chain, timestamp)
+    if (result !== null) await setTokenCache(key, result, 45)
+    return result
+  }
+}
+
 function buildPriceSources(): PriceSources {
   const apiKey = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY
   // Diagnostic log (never prints the key itself) — the fastest way to confirm, from the actual
@@ -79,10 +99,10 @@ function buildPriceSources(): PriceSources {
   // process's env at module load, without needing a separate deployment-inspection tool.
   // eslint-disable-next-line no-console
   console.warn(`[pipeline] buildPriceSources: real GoldRush key present = ${Boolean(apiKey)}`)
-  const fallback = multiProviderPriceSource()
+  const fallback = withPriceSourceCache(multiProviderPriceSource(), 'fallback')
   if (!apiKey) return { primary: fallback, fallback: noPriceSources().fallback }
   const client = new GoldRushClient(apiKey)
-  return { primary: goldrushPriceSource(client), fallback }
+  return { primary: withPriceSourceCache(goldrushPriceSource(client), 'primary'), fallback }
 }
 
 // Exported (read-only) so standalone tools — currently only
@@ -343,8 +363,18 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   })
 
   // 1. providerFetchWindow — the ONLY per-chain network call in the base pipeline.
+  // KV read-before/write-after (lib/server/cache/v2StageCache.ts) — pipeline-level caching only,
+  // fetchProviderWindow's own source is never touched. 30s TTL: this is the single most expensive
+  // real network call in the whole pipeline (per-chain provider fetch), so a short cache window
+  // still meaningfully cuts repeat-request CU without serving stale data for long.
   const providerResults = await Promise.all(
-    preScan.sanitizedChains.map((chain) => fetchProviderWindow(chain, params.walletAddress, PROVIDER_FETCH_WINDOW_DAYS_USED)),
+    preScan.sanitizedChains.map((chain) =>
+      withStageCache(
+        `v2:providerFetchWindow:${chain}:${params.walletAddress.toLowerCase()}`,
+        30,
+        () => fetchProviderWindow(chain, params.walletAddress, PROVIDER_FETCH_WINDOW_DAYS_USED),
+      ),
+    ),
   )
 
   // Real, honest per-chain/per-provider fetch outcome summary — counts and error reasons only,
@@ -384,12 +414,18 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
 
   // 5. recoveryPolicy — the ONLY other component permitted to fetch (historical pages), and only
   // reachable at all for scanMode === 'deep'.
-  const recoveryPolicy = await safeRunRecoveryPolicy({
-    buyTimeline: timelines.buyTimeline,
-    sellTimeline: timelines.sellTimeline,
-    walletAddress: params.walletAddress,
-    scanMode: params.scanMode,
-  })
+  // KV read-before/write-after — 45s TTL (longest of the 4 wrapped stages: recovery's historical
+  // page fetches are the most expensive real network calls this pipeline can make).
+  const recoveryPolicy = await withStageCache(
+    `v2:recoveryPolicy:${params.walletAddress.toLowerCase()}:${params.scanMode}`,
+    45,
+    () => safeRunRecoveryPolicy({
+      buyTimeline: timelines.buyTimeline,
+      sellTimeline: timelines.sellTimeline,
+      walletAddress: params.walletAddress,
+      scanMode: params.scanMode,
+    }),
+  )
 
   // 5b. sellTimelineV2 — additive, pure, zero-cost. Runs after recoveryPolicy since mechanism 4
   // (recovery-reconstructed sells) needs recoveryPolicy's real recoveredEvents. Never replaces or
