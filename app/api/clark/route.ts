@@ -4,7 +4,7 @@ import { getMergedTrendingTokens } from "@/app/api/trending/route";
 import { fetchHoneypotSecurity } from "@/lib/server/honeypotSecurity";
 import { buildTokenFullReportPlan, executeClarkToolPlan as executeClarkToolLayerPlan, normalizeClarkScannerCacheKey } from "@/lib/clark/tools";
 import { buildTokenFullReport } from "@/lib/clark/reportBuilders";
-import { runWalletScanner } from "@/lib/server/walletScannerRunner";
+import { getWalletLite } from "@/lib/server/walletScannerRunner";
 import { classifyClarkBasicIntent, buildClarkDirectAnswer, clarkMissingInputPrompt, CLARK_SAFE_FALLBACK, buildClarkRoutingDebug } from "@/lib/server/clarkBasicIntent";
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { getVerifiedUserPlan } from '@/lib/supabase/userSettings'
@@ -7531,7 +7531,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     }
     // Explicit refresh/deep/recover → re-run the existing deep scan path for the resolved address.
     const deepScan = true;
-    const w = await runWalletScanner({ address: targetAddr, deepScan: true, deepActivity: true, refresh: true, chainMode: "all_supported" })
+    const w = await getWalletLite(targetAddr)
       .catch((err) => ({ ok: false, error: err instanceof Error ? err.message : "wallet_scan_timeout" })) as Record<string, unknown>;
     const holdings = Array.isArray(w.holdings) ? (w.holdings as Array<Record<string, unknown>>) : [];
     const mappedResult = mapWalletRunnerResult(targetAddr, w, holdings);
@@ -7558,7 +7558,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     }
     const href = walletScannerDeepLink(walletAddress, deepScan);
     const reqBody = buildWalletApiRequestBody(walletAddress, deepScan);
-    const w = await runWalletScanner({ address: walletAddress, deepScan: reqBody.deepScan, deepActivity: deepScan, chainMode: reqBody.chainMode ?? "auto" })
+    const w = await getWalletLite(walletAddress)
       .catch((err) => ({ ok: false, error: err instanceof Error ? err.message : "wallet_scan_timeout" })) as Record<string, unknown>;
     const holdings = Array.isArray(w.holdings) ? (w.holdings as Array<Record<string, unknown>>) : [];
     const mappedResult = mapWalletRunnerResult(walletAddress, w, holdings);
@@ -8252,7 +8252,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
 
   if (routed.intent === "wallet_scan" && routed.address && routeHint !== 'token') {
     const reqBody = buildWalletApiRequestBody(routed.address, routed.deep);
-    const w = await runWalletScanner({ address: routed.address, deepScan: reqBody.deepScan, deepActivity: routed.deep, chainMode: reqBody.chainMode ?? "auto" }).catch((err) => ({ ok: false, error: err instanceof Error ? err.message : "Wallet Scanner authorization failed inside Clark execution. The direct Wallet Scanner page may still work." })) as Record<string, unknown>;
+    const w = await getWalletLite(routed.address).catch((err) => ({ ok: false, error: err instanceof Error ? err.message : "Wallet Scanner authorization failed inside Clark execution. The direct Wallet Scanner page may still work." })) as Record<string, unknown>;
     const ok = w.ok === true && Object.keys(w).length > 0 && w.error == null;
     const holdings = Array.isArray(w.holdings) ? (w.holdings as Array<Record<string, unknown>>) : [];
     const chainsActive = Array.from(new Set(

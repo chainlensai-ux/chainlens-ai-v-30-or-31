@@ -1,9 +1,11 @@
-// V1 ENGINE DISABLED: this previously called fetchWalletSnapshot() (lib/server/walletSnapshot.ts)
-// directly. Per an explicit, confirmed request to cut V1 CU usage ahead of a V2 integration that
-// hasn't landed yet, that call — and the import itself, so no V1 code path can execute from this
-// file — has been removed. This is Clark AI's only path into the V1 engine (app/api/clark/route.ts
-// calls runWalletScanner(), never fetchWalletSnapshot() directly), so stubbing it here disables V1
-// for Clark too. walletSnapshot.ts itself is untouched (not deleted).
+// V1 ENGINE REPLACED WITH A LIGHTWEIGHT V2-COMPATIBLE FALLBACK: this previously called
+// fetchWalletSnapshot() (lib/server/walletSnapshot.ts, which fires Alchemy RPC calls), then was
+// stubbed to always return { ok: false }. getWalletLite() below restores an { ok: true } response
+// WITHOUT calling walletSnapshot.ts or any Alchemy RPC — it is an honest empty placeholder (empty
+// arrays/object, not fabricated identity/balances), not a real data source. Real GoldRush/Zerion/
+// ENS wiring described in the parent task's own "Goal" section is NOT implemented here (the literal
+// shape specified for this function has zero provider calls) — flagged explicitly so this isn't
+// mistaken for "Clark's wallet lookup actually has data now."
 
 export type WalletScannerRunnerInput = {
   address: string
@@ -13,10 +15,29 @@ export type WalletScannerRunnerInput = {
   chainMode?: 'auto' | 'base' | 'eth' | 'base_eth' | 'all_supported'
 }
 
+export async function getWalletLite(address: string): Promise<{
+  ok: true
+  address: string
+  identity: Record<string, unknown>
+  balances: unknown[]
+  positions: unknown[]
+}> {
+  return {
+    ok: true,
+    address,
+    identity: {},
+    balances: [],
+    positions: [],
+  }
+}
+
+// Kept for any other caller of the old runWalletScanner() contract — delegates to getWalletLite()
+// so there is exactly one place (above) that defines what "lite" wallet data actually is.
 export async function runWalletScanner(input: WalletScannerRunnerInput) {
   const address = String(input.address ?? '').trim().toLowerCase()
   if (!/^0x[a-fA-F0-9]{40}$/.test(address)) {
     return { ok: false, status: 400, error: 'Invalid wallet address.' as const }
   }
-  return { ok: false, status: 200, error: 'V1 engine disabled' as const }
+  const lite = await getWalletLite(address)
+  return { ...lite, status: 200 as const }
 }

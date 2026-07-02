@@ -1,10 +1,25 @@
 import { NextResponse } from 'next/server'
 
-// V1 ENGINE DISABLED: this route previously called fetchWalletSnapshot()
-// (lib/server/walletSnapshot.ts) directly. Per an explicit, confirmed request to cut V1 CU usage
-// ahead of a V2 integration that hasn't landed yet, that call — and the import itself, so no V1
-// code path can execute from this file — has been removed. This route now always returns
-// { ok: false, error: "V1 engine disabled" }. walletSnapshot.ts itself is untouched (not deleted).
+// V1 ENGINE REPLACED WITH A LIGHTWEIGHT V2-COMPATIBLE FALLBACK: this route previously called
+// fetchWalletSnapshot() (lib/server/walletSnapshot.ts, which fires Alchemy RPC calls), then was
+// stubbed to always return { ok: false }. getPortfolioLite() below restores the { ok: true }
+// response contract WITHOUT calling walletSnapshot.ts or any Alchemy RPC — it is an honest empty
+// placeholder (empty arrays, not fabricated balances/positions), not a real data source. Real
+// GoldRush/Zerion/ENS wiring described in this task's own "Goal" section is NOT implemented here
+// (the literal shape specified for this function has zero provider calls) — flagged explicitly so
+// this isn't mistaken for "portfolio data actually works now."
+async function getPortfolioLite(address: string): Promise<{
+  ok: true
+  address: string
+  summary: { balances: unknown[]; positions: unknown[]; labels: unknown[]; chains: unknown[] }
+}> {
+  return {
+    ok: true,
+    address,
+    summary: { balances: [], positions: [], labels: [], chains: [] },
+  }
+}
+
 const PORTFOLIO_CACHE_TTL_MS = 3 * 60 * 1000
 const portfolioCache = new Map<string, { exp: number; payload: unknown; cachedAt: number }>()
 const portfolioRate = new Map<string, { count: number; resetAt: number }>()
@@ -41,7 +56,9 @@ export async function POST(req: Request) {
         : cached.payload
       return NextResponse.json(cp)
     }
-    return NextResponse.json({ ok: false, error: 'V1 engine disabled' })
+    const lite = await getPortfolioLite(address)
+    if (!refresh) portfolioCache.set(address, { exp: Date.now() + PORTFOLIO_CACHE_TTL_MS, payload: lite, cachedAt: Date.now() })
+    return NextResponse.json(lite)
   } catch {
     return NextResponse.json({ error: 'Portfolio data is currently unavailable.' }, { status: 200 })
   }
