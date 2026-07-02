@@ -1430,8 +1430,8 @@ async function fetchGoldRush(chain: ChainKey, contract: string): Promise<any> {
   try {
     const _grBase = (process.env.GOLDRUSH_BASE_URL ?? 'https://api.covalenthq.com').replace(/\/$/, '')
     const res = await fetch(
-      `${_grBase}/v1/${chain}/tokens/${contract}/?key=${process.env.COVALENT_API_KEY}`,
-      { signal: AbortSignal.timeout(5000) }
+      `${_grBase}/v1/${chain}/tokens/${contract}/`,
+      { headers: { Authorization: `Bearer ${process.env.COVALENT_API_KEY}` }, signal: AbortSignal.timeout(5000) }
     );
     return res.ok ? await res.json() : null;
   } catch {
@@ -2189,8 +2189,8 @@ async function fetchGMGN(contract: string): Promise<any> {
 async function fetchTokenMetadata(chain: ChainKey, contract: string): Promise<any> {
   try {
     const res = await fetch(
-      `https://api.covalenthq.com/v1/${chain}/address/0x0000000000000000000000000000000000000000/balances_v2/?key=${process.env.COVALENT_API_KEY}&contract-address=${contract}`,
-      { signal: AbortSignal.timeout(5000) }
+      `https://api.covalenthq.com/v1/${chain}/address/0x0000000000000000000000000000000000000000/balances_v2/?contract-address=${contract}`,
+      { headers: { Authorization: `Bearer ${process.env.COVALENT_API_KEY}` }, signal: AbortSignal.timeout(5000) }
     );
     return res.ok ? await res.json() : null;
   } catch {

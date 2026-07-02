@@ -16,11 +16,41 @@
 
 import { runPricingDiagnostics } from '@/src/modules/networkDiagnostics/networkDiagnostics'
 import { PRICE_SOURCES } from '@/src/pipeline/index'
+import { createRateLimiter, getClientIp } from '@/lib/server/rateLimit'
 
 const TEST_TOKEN_WETH_BASE = '0x4200000000000000000000000000000000000006'
 const TEST_CHAIN = 'base' as const
 
-export async function GET(): Promise<Response> {
+// SECURITY: same gating as app/api/diagnostics/pricing/route.ts — fixed inputs here, but this
+// still triggers a real GoldRush + fallback pricing call on every hit, so it's disabled in
+// production and gated behind an admin bearer secret + rate limits elsewhere.
+const perIpLimiter = createRateLimiter({ windowMs: 60_000, max: 5 })
+const globalLimiter = createRateLimiter({ windowMs: 60_000, max: 20 })
+
+export async function GET(req: Request): Promise<Response> {
+  if (process.env.NODE_ENV === 'production') {
+    return new Response(JSON.stringify({ success: false, error: 'Not available in production' }), {
+      status: 404,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
+
+  const auth = req.headers.get('authorization') ?? ''
+  const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : ''
+  if (!process.env.ADMIN_SECRET || token !== process.env.ADMIN_SECRET) {
+    return new Response(JSON.stringify({ success: false, error: 'Unauthorized' }), {
+      status: 401,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
+
+  if (!globalLimiter.check('__global__') || !perIpLimiter.check(getClientIp(req))) {
+    return new Response(JSON.stringify({ success: false, error: 'Too many requests' }), {
+      status: 429,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
+
   const hasKey = Boolean(process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY)
   // eslint-disable-next-line no-console
   console.log(`[pricing-source diagnostics] GOLDRUSH_API_KEY/COVALENT_API_KEY present = ${hasKey}`)

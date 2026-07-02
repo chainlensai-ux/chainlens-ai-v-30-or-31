@@ -14,8 +14,39 @@ import { runPricingDiagnostics } from '@/src/modules/networkDiagnostics/networkD
 import { PRICE_SOURCES } from '@/src/pipeline/index'
 import { SUPPORTED_CHAINS } from '@/src/pipeline/types'
 import type { SupportedChain } from '@/src/modules/providerFetchWindow/types'
+import { createRateLimiter, getClientIp } from '@/lib/server/rateLimit'
+
+// SECURITY: this route triggers real, billable GoldRush/fallback pricing calls (including, for
+// chain=base, the up-to-~44-RPC-call basedex fallback chain) from caller-supplied chain/contract/
+// timestamp params. Fully disabled in production; gated behind an admin bearer secret plus
+// per-IP + global rate limits everywhere else, so it can never be a public CU-burn vector.
+const perIpLimiter = createRateLimiter({ windowMs: 60_000, max: 5 })
+const globalLimiter = createRateLimiter({ windowMs: 60_000, max: 20 })
 
 export async function GET(req: Request): Promise<Response> {
+  if (process.env.NODE_ENV === 'production') {
+    return new Response(JSON.stringify({ success: false, error: 'Not available in production' }), {
+      status: 404,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
+
+  const auth = req.headers.get('authorization') ?? ''
+  const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : ''
+  if (!process.env.ADMIN_SECRET || token !== process.env.ADMIN_SECRET) {
+    return new Response(JSON.stringify({ success: false, error: 'Unauthorized' }), {
+      status: 401,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
+
+  if (!globalLimiter.check('__global__') || !perIpLimiter.check(getClientIp(req))) {
+    return new Response(JSON.stringify({ success: false, error: 'Too many requests' }), {
+      status: 429,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
+
   const { searchParams } = new URL(req.url)
   const chain = searchParams.get('chain')
   const contract = searchParams.get('contract')

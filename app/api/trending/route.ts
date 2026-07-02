@@ -67,23 +67,6 @@ type CGCoin = {
   }
 }
 
-/*
-// GoldRush trending (Base) — kept for future use
-const gr = await fetch(
-  "https://api.goldrushhq.io/v1/tokens/search?query=base",
-  { headers: { "x-api-key": process.env.GOLDRUSH_API_KEY || "" } }
-);
-const grData = await gr.json();
-const goldrushTokens = (grData?.results || []).map((t: {
-  address: string; symbol: string; name: string;
-  price_usd: number; liquidity_usd: number; volume_24h_usd: number; price_change_24h: number;
-}) => ({
-  address: t.address, symbol: t.symbol, name: t.name,
-  price: t.price_usd, liquidity: t.liquidity_usd,
-  volume24h: t.volume_24h_usd, change24h: t.price_change_24h, source: "goldrush"
-}));
-*/
-
 function extractTokenMeta(included: Array<{ id?: string; attributes?: { address?: string; symbol?: string; name?: string } }>, tokenId: string) {
   const item = included.find((i) => i.id === tokenId);
   if (!item) return null;
