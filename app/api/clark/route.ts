@@ -5,6 +5,7 @@ import { fetchHoneypotSecurity } from "@/lib/server/honeypotSecurity";
 import { buildTokenFullReportPlan, executeClarkToolPlan as executeClarkToolLayerPlan, normalizeClarkScannerCacheKey } from "@/lib/clark/tools";
 import { buildTokenFullReport } from "@/lib/clark/reportBuilders";
 import { getWalletLite } from "@/lib/server/walletLite";
+import { getWalletFromV2 } from "@/lib/server/v2Adapters";
 import { classifyClarkBasicIntent, buildClarkDirectAnswer, clarkMissingInputPrompt, CLARK_SAFE_FALLBACK, buildClarkRoutingDebug } from "@/lib/server/clarkBasicIntent";
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { getVerifiedUserPlan } from '@/lib/supabase/userSettings'
@@ -7531,8 +7532,8 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     }
     // Explicit refresh/deep/recover → re-run the existing deep scan path for the resolved address.
     const deepScan = true;
-    const w = await getWalletLite(targetAddr)
-      .catch((err) => ({ ok: false, error: err instanceof Error ? err.message : "wallet_scan_timeout" })) as Record<string, unknown>;
+    const w = (await getWalletFromV2(targetAddr) ?? await getWalletLite(targetAddr)
+      .catch((err) => ({ ok: false, error: err instanceof Error ? err.message : "wallet_scan_timeout" }))) as Record<string, unknown>;
     const holdings = Array.isArray(w.holdings) ? (w.holdings as Array<Record<string, unknown>>) : [];
     const mappedResult = mapWalletRunnerResult(targetAddr, w, holdings);
     const isDigDeeper = /\bdig\s+deeper\b/i.test(prompt);
@@ -7558,8 +7559,8 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     }
     const href = walletScannerDeepLink(walletAddress, deepScan);
     const reqBody = buildWalletApiRequestBody(walletAddress, deepScan);
-    const w = await getWalletLite(walletAddress)
-      .catch((err) => ({ ok: false, error: err instanceof Error ? err.message : "wallet_scan_timeout" })) as Record<string, unknown>;
+    const w = (await getWalletFromV2(walletAddress) ?? await getWalletLite(walletAddress)
+      .catch((err) => ({ ok: false, error: err instanceof Error ? err.message : "wallet_scan_timeout" }))) as Record<string, unknown>;
     const holdings = Array.isArray(w.holdings) ? (w.holdings as Array<Record<string, unknown>>) : [];
     const mappedResult = mapWalletRunnerResult(walletAddress, w, holdings);
     const profileBlock = mappedResult.ok ? buildWalletProfileBlock(mappedResult.walletProfile as Record<string, unknown> | null) : null;
@@ -8252,7 +8253,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
 
   if (routed.intent === "wallet_scan" && routed.address && routeHint !== 'token') {
     const reqBody = buildWalletApiRequestBody(routed.address, routed.deep);
-    const w = await getWalletLite(routed.address).catch((err) => ({ ok: false, error: err instanceof Error ? err.message : "Wallet Scanner authorization failed inside Clark execution. The direct Wallet Scanner page may still work." })) as Record<string, unknown>;
+    const w = (await getWalletFromV2(routed.address) ?? await getWalletLite(routed.address).catch((err) => ({ ok: false, error: err instanceof Error ? err.message : "Wallet Scanner authorization failed inside Clark execution. The direct Wallet Scanner page may still work." }))) as Record<string, unknown>;
     const ok = w.ok === true && Object.keys(w).length > 0 && w.error == null;
     const holdings = Array.isArray(w.holdings) ? (w.holdings as Array<Record<string, unknown>>) : [];
     const chainsActive = Array.from(new Set(

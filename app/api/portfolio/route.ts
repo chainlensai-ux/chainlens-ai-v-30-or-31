@@ -1,11 +1,12 @@
 import { NextResponse } from 'next/server'
 import { getPortfolioLite } from '@/lib/server/walletLite'
+import { getPortfolioFromV2 } from '@/lib/server/v2Adapters'
 
-// V1 ENGINE REPLACED WITH A LIGHTWEIGHT V2-COMPATIBLE FALLBACK: this route previously called
-// fetchWalletSnapshot() (lib/server/walletSnapshot.ts, which fires Alchemy RPC calls). It now
-// calls getPortfolioLite() (lib/server/walletLite.ts) instead — an honest, zero-RPC empty
-// placeholder, never a fabricated balance/position. See that file's own header for the full
-// rationale.
+// V2 ENGINE INTEGRATED (route-level only): this route previously called fetchWalletSnapshot()
+// (lib/server/walletSnapshot.ts, V1, Alchemy RPC), then was replaced with the zero-RPC
+// getPortfolioLite() fallback. It now tries the real V2 engine first (getPortfolioFromV2, KV-cached
+// 45s, see lib/server/v2Adapters.ts for the full CU-tradeoff disclosure), falling back to
+// getPortfolioLite() only when V2 is unavailable — never throws, always returns ok: true/false.
 const PORTFOLIO_CACHE_TTL_MS = 3 * 60 * 1000
 const portfolioCache = new Map<string, { exp: number; payload: unknown; cachedAt: number }>()
 const portfolioRate = new Map<string, { count: number; resetAt: number }>()
@@ -42,9 +43,10 @@ export async function POST(req: Request) {
         : cached.payload
       return NextResponse.json(cp)
     }
-    const lite = await getPortfolioLite(address)
-    if (!refresh) portfolioCache.set(address, { exp: Date.now() + PORTFOLIO_CACHE_TTL_MS, payload: lite, cachedAt: Date.now() })
-    return NextResponse.json(lite)
+    const v2 = await getPortfolioFromV2(address)
+    const result = v2 ?? await getPortfolioLite(address)
+    if (!refresh) portfolioCache.set(address, { exp: Date.now() + PORTFOLIO_CACHE_TTL_MS, payload: result, cachedAt: Date.now() })
+    return NextResponse.json(result)
   } catch {
     return NextResponse.json({ error: 'Portfolio data is currently unavailable.' }, { status: 200 })
   }
