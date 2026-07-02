@@ -22,6 +22,7 @@ import type { TokenHolding } from '@/src/modules/holdings/types'
 import type { PortfolioSummary } from '@/src/modules/portfolio/types'
 import { ChainBadge } from './ChainBadge'
 import { ConfidenceBadge } from './ConfidenceBadge'
+import { PortfolioIntelligenceCard } from './PortfolioIntelligenceCard'
 import { fmtSignedUsd } from '@/app/frontend/lib/holdingsHeuristics'
 
 export type WalletV2Report = FinalReport & { holdings: TokenHolding[]; portfolio: PortfolioSummary }
@@ -276,6 +277,11 @@ export function WalletProfileHeader({ report, loading, isFullRecoveryAdmin, onDe
       <WalletOverview report={report} />
       <div style={{ height: '1px', background: 'rgba(255,255,255,0.06)' }} />
       <PortfolioSnapshot report={report} />
+      <PortfolioIntelligenceCard
+        portfolio={report.portfolio}
+        chainsScanned={report.scanMetadata?.chainsScanned}
+        activeChain={report.behaviorIntel?.multiChainParticipation?.primaryChain}
+      />
       <div style={{ height: '1px', background: 'rgba(255,255,255,0.06)' }} />
       <PnlAndConfidenceRow report={report} />
       <div style={{ height: '1px', background: 'rgba(255,255,255,0.06)' }} />
