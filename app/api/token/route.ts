@@ -4,6 +4,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { fetchHoneypotSecurity } from "@/lib/server/honeypotSecurity";
 import { calculateTokenRiskScore } from "@/lib/server/riskScore";
 import { sanitizePublicTokenResponse } from "@/lib/server/tokenPublicResponse";
+import { getTokenCache, setTokenCache } from "@/lib/server/cache/tokenCache";
 import { buildLpControllerIntel, resolveLpControllerIdentity } from "@/lib/server/lpControllerIntel";
 import { buildLpMovementWatch } from "@/lib/server/lpMovementWatch";
 import { buildLpLockBurnIntel, LP_LOCK_BURN_REGISTRY } from "@/lib/server/lpLockBurnIntel";
@@ -3401,6 +3402,17 @@ export async function POST(req: Request) {
     }
 
     console.log("Incoming scan request:", contract);
+
+    // Shared response cache (lib/server/cache/tokenCache.ts) for the heavy full-scan path below —
+    // only for plain, non-debug requests, so a debug-augmented payload (_diagnostics/
+    // _tokenRouteDebug fields) never gets served back out to a normal caller from cache.
+    const _tokenCacheKey = `token:${chain}:${contract.toLowerCase()}`
+    if (debugMode !== true) {
+      const _cachedResponse = await getTokenCache(_tokenCacheKey)
+      if (_cachedResponse) {
+        return NextResponse.json(_cachedResponse)
+      }
+    }
 
     // ETH + BASE are the only chains with full provider support.
     // GoldRush, Moralis, Alchemy RPC, and DexScreener are gated to these chains.
@@ -8142,7 +8154,13 @@ export async function POST(req: Request) {
         totalMs: Date.now() - _t0,
       }
     }
-    return NextResponse.json(sanitizePublicTokenResponse(responsePayload as Record<string, any>, debugMode === true))
+    const _sanitizedResponse = sanitizePublicTokenResponse(responsePayload as Record<string, any>, debugMode === true)
+    // Only cache plain, non-debug, fully-completed successful scans — never an error, never a
+    // partial/debug-augmented payload (see the matching read-side guard above).
+    if (debugMode !== true) {
+      await setTokenCache(_tokenCacheKey, _sanitizedResponse, 45)
+    }
+    return NextResponse.json(_sanitizedResponse)
   } catch (err) {
     console.error("Fatal backend error:", err);
     const _failureReason = err instanceof Error ? err.message : 'unknown_error'
