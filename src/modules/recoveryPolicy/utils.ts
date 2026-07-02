@@ -9,6 +9,7 @@ import type { BuyTimelineEntry } from '../timelineBuilder/types'
 import type { SellTimelineEntry } from '../timelineBuilder/types'
 import type { RawProviderEvent, SupportedChain } from '../providerFetchWindow/types'
 import type { HoldingInput, RecoveryTriggerEvidenceRef } from './types'
+import { logRpcCall } from '@/lib/server/rpcDebug'
 
 const ALCHEMY_BASE_KEY_NAMES = ['ALCHEMY_BASE_KEY', 'ALCHEMY_BASE_API_KEY', 'BASE_ALCHEMY_API_KEY', 'ALCHEMY_API_KEY', 'NEXT_PUBLIC_ALCHEMY_BASE_KEY']
 const ALCHEMY_ETH_KEY_NAMES = ['ALCHEMY_ETHEREUM_KEY', 'ALCHEMY_ETH_KEY', 'ALCHEMY_ETH_API_KEY', 'ALCHEMY_API_KEY']
@@ -74,6 +75,7 @@ export async function fetchGoldrushHistoricalPage(
     url.searchParams.set('page-number', String(pageNumber))
     url.searchParams.set('with-logs', 'true')
     url.searchParams.set('no-spam', 'true')
+    logRpcCall({ route: 'recoveryPolicy', chain, method: 'goldrush_transactions_v3_historical' })
     const res = await fetch(url.toString(), {
       cache: 'no-store',
       headers: { Authorization: `Bearer ${apiKey}` },
@@ -123,6 +125,7 @@ export async function fetchAlchemyTokenHistory(
   if (!apiKey) return []
   const rpc = async (params: Record<string, unknown>): Promise<Record<string, unknown> | null> => {
     try {
+      logRpcCall({ route: 'recoveryPolicy', chain, method: 'alchemy_getAssetTransfers' })
       const res = await fetch(url, {
         method: 'POST',
         cache: 'no-store',

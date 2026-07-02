@@ -4,6 +4,7 @@
 
 import type { SupportedChain } from '../providerFetchWindow/types'
 import type { TokenHolding } from './types'
+import { logRpcCall } from '@/lib/server/rpcDebug'
 
 const ALCHEMY_BASE_KEY_NAMES = ['ALCHEMY_BASE_KEY', 'ALCHEMY_BASE_API_KEY', 'BASE_ALCHEMY_API_KEY', 'ALCHEMY_API_KEY', 'NEXT_PUBLIC_ALCHEMY_BASE_KEY']
 const ALCHEMY_ETH_KEY_NAMES = ['ALCHEMY_ETHEREUM_KEY', 'ALCHEMY_ETH_KEY', 'ALCHEMY_ETH_API_KEY', 'ALCHEMY_API_KEY']
@@ -59,6 +60,7 @@ export async function fetchGoldrushHoldings(chain: SupportedChain, walletAddress
   if (!apiKey) return { ok: false, holdings: [] }
   try {
     const url = `https://api.covalenthq.com/v1/${chainSlug}/address/${walletAddress}/balances_v2/?no-spam=true&no-nft-fetch=true`
+    logRpcCall({ route: 'holdings', chain, method: 'goldrush_balances_v2' })
     const res = await fetch(url, { cache: 'no-store', headers: { Authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(10_000) })
     if (!res.ok) return { ok: false, holdings: [] }
     const json = await res.json()
@@ -99,6 +101,7 @@ export async function fetchAlchemyHoldings(chain: SupportedChain, walletAddress:
   const apiKey = alchemyApiKey(chain)
   if (!apiKey) return { ok: false, holdings: [] }
   try {
+    logRpcCall({ route: 'holdings', chain, method: 'alchemy_getTokenBalances' })
     const res = await fetch(url, {
       method: 'POST',
       cache: 'no-store',

@@ -15,6 +15,7 @@ import {
   PROVIDER_FETCH_WINDOW_DAYS_MAX,
   PROVIDER_FETCH_WINDOW_DAYS_MIN,
 } from './types'
+import { logRpcCall } from '@/lib/server/rpcDebug'
 
 // Env var resolution mirrors the project's existing convention (multiple accepted names, server
 // vars checked before NEXT_PUBLIC_*). This module intentionally does not import from
@@ -116,6 +117,7 @@ export async function fetchGoldrushRawEvents(
     url.searchParams.set('page-number', '0')
     url.searchParams.set('with-logs', 'true')
     url.searchParams.set('no-spam', 'true')
+    logRpcCall({ route: 'providerFetchWindow', chain, method: 'goldrush_transactions_v3' })
     const res = await fetch(url.toString(), {
       cache: 'no-store',
       headers: { Authorization: `Bearer ${apiKey}` },
@@ -173,6 +175,7 @@ export async function fetchAlchemyRawEvents(
   }
   const rpc = async (params: Record<string, unknown>): Promise<Record<string, unknown> | null> => {
     try {
+      logRpcCall({ route: 'providerFetchWindow', chain, method: 'alchemy_getAssetTransfers' })
       const res = await fetch(url, {
         method: 'POST',
         cache: 'no-store',
