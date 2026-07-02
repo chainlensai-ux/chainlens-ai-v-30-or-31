@@ -24,17 +24,13 @@ import { supabase } from '@/lib/supabaseClient'
 import { scanWalletV2, type ScanWalletApiResponse } from '@/app/frontend/api/scanWallet'
 import {
   BehaviorIntelView,
-  BuyTimelineView,
   ChainSelectionView,
-  DistributionTimelineView,
   FifoAndPnlView,
   FinalSummaryView,
   HoldingsViewV2,
   PnLTab,
   RecoveryPolicyView,
   SectionDivider,
-  SellTimelineV2View,
-  SellTimelineView,
   WalletProfileHeader,
   WindowCoverageView,
 } from '@/app/frontend/components'
@@ -455,12 +451,11 @@ export default function WalletScannerPage() {
               <SectionDivider label="Behavior Intel" />
               <div className="ws-card"><BehaviorIntelView data={result.behaviorIntel} /></div>
 
+              {/* Buy/Sell/SellV2/Distribution timelines are intentionally not rendered — the raw
+                  data is still returned in the scan API response (result.timelines.*), visible via
+                  the browser's Network tab, but no longer shown in this UI. */}
               <SectionDivider label="Diagnostics" optional />
               <div className="ws-card"><ChainSelectionView data={result.chainSelection} /></div>
-              <div className="ws-card"><BuyTimelineView data={result.timelines?.buyTimeline} /></div>
-              <div className="ws-card"><SellTimelineView data={result.timelines?.sellTimeline} /></div>
-              <div className="ws-card"><SellTimelineV2View entries={result.timelines?.sellTimelineV2?.entries} /></div>
-              <div className="ws-card"><DistributionTimelineView data={result.timelines?.distributionTimeline} /></div>
               <div className="ws-card"><RecoveryPolicyView data={result.recoveryPolicy} /></div>
               <div className="ws-card"><FifoAndPnlView data={result.fifoAndPnl} /></div>
               <div className="ws-card"><WindowCoverageView data={result.windowCoverage} /></div>
