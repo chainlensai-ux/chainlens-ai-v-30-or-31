@@ -111,10 +111,10 @@ function WalletOverview({ report }: { report: WalletV2Report }) {
         {address ? shortenAddress(address) : 'Unknown wallet'}
       </div>
       <div style={{ display: 'flex', gap: '8px', marginTop: '10px', flexWrap: 'wrap' }}>
-        <span className="wph-badge" style={{ padding: '4px 11px', borderRadius: '999px', fontSize: '10px', fontWeight: 800, letterSpacing: '0.1em', textTransform: 'uppercase', background: 'rgba(45,212,191,0.10)', border: '1px solid rgba(45,212,191,0.30)', color: '#2DD4BF' }}>
+        <span className="wph-badge" style={{ padding: '4px 11px', borderRadius: '999px', fontSize: '10px', fontWeight: 800, letterSpacing: '0.1em', textTransform: 'uppercase', background: 'rgba(45,212,191,0.10)', border: '1px solid rgba(45,212,191,0.30)', color: '#2DD4BF', boxShadow: '0 0 14px rgba(45,212,191,0.16)' }}>
           {deriveBehaviorLabel(report)}
         </span>
-        <span className="wph-badge" style={{ padding: '4px 11px', borderRadius: '999px', fontSize: '10px', fontWeight: 800, letterSpacing: '0.1em', textTransform: 'uppercase', background: 'rgba(251,191,36,0.10)', border: '1px solid rgba(251,191,36,0.30)', color: '#fbbf24' }}>
+        <span className="wph-badge" style={{ padding: '4px 11px', borderRadius: '999px', fontSize: '10px', fontWeight: 800, letterSpacing: '0.1em', textTransform: 'uppercase', background: 'rgba(251,191,36,0.10)', border: '1px solid rgba(251,191,36,0.30)', color: '#fbbf24', boxShadow: '0 0 14px rgba(251,191,36,0.14)' }}>
           {deriveRiskProfile(report)}
         </span>
       </div>
@@ -146,11 +146,11 @@ function PortfolioSnapshot({ report }: { report: WalletV2Report }) {
       {breakdown.length === 0 && chainsWithoutData.length === 0 ? (
         <p style={{ fontSize: '12px', color: 'rgba(148,163,184,0.55)', marginTop: '10px' }}>No holdings data available for this scan.</p>
       ) : (
-        <div style={{ marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+        <div style={{ marginTop: '14px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
           {breakdown.map((entry) => (
             <div key={entry.chain} className="wph-chain-row" style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '12px' }}>
               <span style={{ width: '96px' }}><ChainBadge chain={entry.chain} /></span>
-              <span style={{ flex: 1, height: '5px', borderRadius: '999px', background: 'rgba(255,255,255,0.06)', overflow: 'hidden' }}>
+              <span style={{ flex: 1, height: '6px', borderRadius: '999px', background: 'rgba(255,255,255,0.06)', overflow: 'hidden' }}>
                 <span style={{ display: 'block', height: '100%', width: `${Math.max(0, Math.min(100, entry.percent))}%`, background: 'linear-gradient(90deg, #2DD4BF, #22c5ae)', borderRadius: '999px' }} />
               </span>
               <span style={{ color: '#94a3b8', minWidth: '110px', textAlign: 'right' }}>{fmtUsdFull(entry.valueUsd)} ({entry.percent.toFixed(0)}%)</span>
@@ -204,12 +204,12 @@ function BehaviorSummary({ report }: { report: WalletV2Report }) {
   const confidenceLabel: Record<string, string> = { high: 'High', medium: 'Medium', low: 'Low' }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '12px', color: '#cbd5e1' }}>
-      <div><span style={{ color: '#64748b' }}>Style — </span>{deriveBehaviorLabel(report)}</div>
-      <div><span style={{ color: '#64748b' }}>PnL — </span>{pnlHeadline}</div>
-      <div><span style={{ color: '#64748b' }}>Recovery — </span>{pagesUsed} page(s) used · {triggeredCount}/{evaluation.length} token(s) reconstructed</div>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '12px', color: '#cbd5e1', lineHeight: 1.6 }}>
+      <div><span style={{ color: '#64748b' }}>Style: </span>{deriveBehaviorLabel(report)}</div>
+      <div><span style={{ color: '#64748b' }}>PnL: </span>{pnlHeadline}</div>
+      <div><span style={{ color: '#64748b' }}>Recovery: </span>{pagesUsed} page(s) used, {triggeredCount}/{evaluation.length} token(s) reconstructed</div>
       <div>
-        <span style={{ color: '#64748b' }}>Confidence — </span>
+        <span style={{ color: '#64748b' }}>Confidence: </span>
         {confidenceLabel[confidence] ?? 'Low'}
         {activeChains.length > 0 ? ` (${activeChains.join(' + ')} evidence)` : ' (no chain met the active-intelligence gate this scan)'}
       </div>
@@ -220,15 +220,22 @@ function BehaviorSummary({ report }: { report: WalletV2Report }) {
 function Actions({ loading, isFullRecoveryAdmin, onDeepScan, onAdminAction }: Pick<WalletProfileHeaderProps, 'loading' | 'isFullRecoveryAdmin' | 'onDeepScan' | 'onAdminAction'>) {
   return (
     <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+      {/* Run Deep Scan is the one action every user (not just admins) sees, so it stays the sole
+          solid-filled primary CTA. Smart Recovery / Admin Full Recovery are admin-only and trigger
+          the exact same Deep Scan (see their titles) — kept as subtle, low-contrast secondary
+          actions rather than competing bright outlines, so they don't visually outrank the one
+          action that actually matters to most users. */}
       <button
         type="button"
         onClick={onDeepScan}
         disabled={loading}
         style={{
-          padding: '9px 16px', borderRadius: '10px', border: '1px solid rgba(45,212,191,0.45)',
-          background: 'rgba(45,212,191,0.10)', color: '#2DD4BF', fontSize: '11px', fontWeight: 800,
+          padding: '10px 18px', borderRadius: '10px', border: 'none',
+          background: loading ? 'rgba(45,212,191,0.25)' : 'linear-gradient(135deg, #2DD4BF, #22c5ae)',
+          color: '#03121e', fontSize: '11px', fontWeight: 800,
           letterSpacing: '0.08em', textTransform: 'uppercase', cursor: loading ? 'not-allowed' : 'pointer',
           fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+          boxShadow: loading ? 'none' : '0 0 20px rgba(45,212,191,0.25)',
         }}
       >
         Run Deep Scan
@@ -241,8 +248,8 @@ function Actions({ loading, isFullRecoveryAdmin, onDeepScan, onAdminAction }: Pi
             disabled={loading}
             title="V2 has no separate smart-recovery scan mode — this triggers the same Deep Scan."
             style={{
-              padding: '9px 16px', borderRadius: '10px', border: '1px solid rgba(168,85,247,0.5)',
-              background: 'rgba(168,85,247,0.10)', color: '#a855f7', fontSize: '11px', fontWeight: 800,
+              padding: '9px 16px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.10)',
+              background: 'transparent', color: 'rgba(203,213,225,0.75)', fontSize: '11px', fontWeight: 700,
               letterSpacing: '0.08em', textTransform: 'uppercase', cursor: loading ? 'not-allowed' : 'pointer',
               fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
             }}
@@ -255,8 +262,8 @@ function Actions({ loading, isFullRecoveryAdmin, onDeepScan, onAdminAction }: Pi
             disabled={loading}
             title="V2 has no separate full-recovery scan mode — this triggers the same Deep Scan."
             style={{
-              padding: '9px 16px', borderRadius: '10px', border: '1px solid rgba(251,191,36,0.5)',
-              background: 'rgba(251,191,36,0.10)', color: '#fbbf24', fontSize: '11px', fontWeight: 800,
+              padding: '9px 16px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.10)',
+              background: 'transparent', color: 'rgba(203,213,225,0.75)', fontSize: '11px', fontWeight: 700,
               letterSpacing: '0.08em', textTransform: 'uppercase', cursor: loading ? 'not-allowed' : 'pointer',
               fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
             }}
@@ -273,7 +280,7 @@ export function WalletProfileHeader({ report, loading, isFullRecoveryAdmin, onDe
   if (!report) return null
 
   return (
-    <div className="wph-root ws-result-fade" style={{ background: 'linear-gradient(160deg, rgba(45,212,191,0.05), rgba(6,10,18,0.97))', border: '1px solid rgba(45,212,191,0.18)', borderRadius: '18px', padding: '24px 26px', marginBottom: '20px', display: 'flex', flexDirection: 'column', gap: '20px', boxShadow: '0 12px 32px rgba(0,0,0,0.28)' }}>
+    <div className="wph-root ws-result-fade" style={{ background: 'linear-gradient(160deg, rgba(45,212,191,0.05), rgba(6,10,18,0.97))', border: '1px solid rgba(45,212,191,0.18)', borderRadius: '18px', padding: '24px 26px', marginBottom: '20px', display: 'flex', flexDirection: 'column', gap: '20px', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.06), 0 12px 32px rgba(0,0,0,0.28)' }}>
       <WalletOverview report={report} />
       <div style={{ height: '1px', background: 'rgba(255,255,255,0.06)' }} />
       <PortfolioSnapshot report={report} />

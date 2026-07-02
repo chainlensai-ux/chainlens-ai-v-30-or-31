@@ -50,14 +50,20 @@ function topHoldingsChips(tokens: PortfolioSummary['tokens']): { symbol: string;
     .map((t) => ({ symbol: t.symbol, percent: ((t.valueUsd ?? 0) / totalValue) * 100 }))
 }
 
+// Fixed minHeight + consistent label/value/sub sizing so all three stat boxes read as one unified
+// set regardless of how much (or little) content each one has.
 function StatBox({ label, value, sub, valueColor }: { label: string; value: React.ReactNode; sub?: string; valueColor?: string }) {
   return (
-    <div style={{ flex: '1 1 180px', minWidth: '160px', padding: '14px 16px', borderRadius: '13px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}>
-      <div style={{ fontSize: '9px', letterSpacing: '0.12em', textTransform: 'uppercase', color: 'rgba(148,163,184,0.55)', marginBottom: '6px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+    <div style={{
+      flex: '1 1 180px', minWidth: '160px', minHeight: '82px', padding: '14px 16px', borderRadius: '13px',
+      background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)',
+      display: 'flex', flexDirection: 'column', justifyContent: 'center',
+    }}>
+      <div style={{ fontSize: '9px', letterSpacing: '0.12em', textTransform: 'uppercase', color: 'rgba(148,163,184,0.72)', marginBottom: '6px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
         {label}
       </div>
-      <div style={{ fontSize: '18px', fontWeight: 800, color: valueColor ?? '#e2e8f0' }}>{value}</div>
-      {sub && <div style={{ fontSize: '11px', color: 'rgba(148,163,184,0.60)', marginTop: '4px' }}>{sub}</div>}
+      <div style={{ fontSize: '18px', fontWeight: 800, color: valueColor ?? '#e2e8f0', lineHeight: 1.2 }}>{value}</div>
+      <div style={{ fontSize: '11px', color: 'rgba(148,163,184,0.60)', marginTop: '4px', minHeight: '14px' }}>{sub ?? ' '}</div>
     </div>
   )
 }
@@ -71,11 +77,14 @@ export function PortfolioIntelligenceCard({ portfolio, chainsScanned, activeChai
   const chains = Array.isArray(chainsScanned) ? chainsScanned : []
 
   return (
-    <div style={{ padding: '18px 20px', borderRadius: '16px', background: 'rgba(255,255,255,0.015)', border: '1px solid rgba(255,255,255,0.06)' }}>
+    <div style={{
+      padding: '18px 20px', borderRadius: '16px', background: 'rgba(255,255,255,0.015)',
+      border: '1px solid rgba(255,255,255,0.06)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.05)',
+    }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px' }}>
         <span style={{ width: '6px', height: '14px', borderRadius: '3px', background: '#2DD4BF', display: 'inline-block' }} />
         <span style={{ fontSize: '11px', fontWeight: 800, letterSpacing: '0.1em', textTransform: 'uppercase', color: '#e2e8f0' }}>Portfolio Intelligence</span>
-        <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#4ade80', border: '1px solid rgba(74,222,128,0.3)', borderRadius: '999px', padding: '2px 8px' }}>
+        <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#4ade80', border: '1px solid rgba(74,222,128,0.3)', borderRadius: '999px', padding: '2px 8px', boxShadow: '0 0 12px rgba(74,222,128,0.20)' }}>
           Active
         </span>
         <span style={{ marginLeft: 'auto', fontSize: '10px', color: 'rgba(148,163,184,0.45)' }}>multi-chain holdings</span>
@@ -93,7 +102,7 @@ export function PortfolioIntelligenceCard({ portfolio, chainsScanned, activeChai
       </div>
 
       {topChips.length > 0 && (
-        <div style={{ marginBottom: '14px' }}>
+        <div style={{ marginBottom: '22px' }}>
           <div style={{ fontSize: '9px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(148,163,184,0.50)', marginBottom: '8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
             Top Holdings
           </div>

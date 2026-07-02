@@ -277,7 +277,12 @@ export default function WalletScannerPage() {
         .ws-result-fade { animation: fadeUp 0.3s ease both; }
         @keyframes fadeUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
         .ws-section-header { font-size: 11px; font-weight: 800; letter-spacing: 0.16em; text-transform: uppercase; font-family: var(--font-plex-mono, IBM Plex Mono, monospace); }
-        .ws-card { background: rgba(6,10,18,0.95); border: 1px solid rgba(255,255,255,0.07); border-radius: 16px; padding: 18px 20px; margin-bottom: 16px; }
+        .ws-card {
+          background: rgba(6,10,18,0.95); border: 1px solid rgba(255,255,255,0.08); border-radius: 16px;
+          padding: 18px 20px; margin-bottom: 16px;
+          box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), 0 8px 20px rgba(0,0,0,0.18);
+        }
+        .ws-content-col { max-width: 1180px; margin: 0 auto; }
         @media (max-width: 768px) {
           .wallet-main { padding: 52px 16px 100px !important; }
           .wallet-input-row { flex-direction: column; max-width: 100% !important; }
@@ -288,6 +293,7 @@ export default function WalletScannerPage() {
       <div className="flex h-full overflow-hidden" style={{ color: '#e2e8f0' }}>
         {/* ── Left: scrollable main area ─────────────────────────────────── */}
         <div className="mob-scan-main wallet-main" style={{ flex: 1, minWidth: 0, overflowY: 'auto', overflowX: 'hidden', padding: '36px 40px 120px', background: 'radial-gradient(ellipse 80% 35% at 50% 0%, rgba(45,212,191,0.035) 0%, transparent 65%)' }}>
+          <div className="ws-content-col">
 
           {/* Header */}
           <div style={{ marginBottom: '36px' }}>
@@ -461,6 +467,7 @@ export default function WalletScannerPage() {
               <div className="ws-card"><WindowCoverageView data={result.windowCoverage} /></div>
             </div>
           )}
+          </div>
         </div>
 
         {/* ── Right: CORTEX Wallet Read + Watchlist ─────────────────────────── */}
@@ -502,15 +509,15 @@ export default function WalletScannerPage() {
                   <p style={{ margin: '0 0 5px', fontSize: '9px', color: '#475569', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Portfolio Read</p>
                   <p style={{ margin: 0, fontSize: '12px', color: '#e2e8f0', lineHeight: 1.65 }}>{cortexRead.read}</p>
                 </div>
-                <div>
+                <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '10px', padding: '10px 12px' }}>
                   <p style={{ margin: '0 0 6px', fontSize: '9px', color: '#475569', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Key Signals</p>
                   {cortexRead.keySignals.map((line, i) => <p key={i} style={{ margin: '0 0 5px', fontSize: '12px', color: '#94a3b8', lineHeight: 1.5 }}>— {line}</p>)}
                 </div>
-                <div>
+                <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '10px', padding: '10px 12px' }}>
                   <p style={{ margin: '0 0 6px', fontSize: '9px', color: '#475569', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Risks / Missing Evidence</p>
                   {cortexRead.risks.map((line, i) => <p key={i} style={{ margin: '0 0 5px', fontSize: '12px', color: '#fca5a5', lineHeight: 1.5 }}>— {line}</p>)}
                 </div>
-                <div>
+                <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '10px', padding: '10px 12px' }}>
                   <p style={{ margin: '0 0 6px', fontSize: '9px', color: '#475569', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Next Action</p>
                   <p style={{ margin: 0, fontSize: '12px', color: '#94a3b8', lineHeight: 1.6 }}>{cortexRead.nextAction}</p>
                 </div>
