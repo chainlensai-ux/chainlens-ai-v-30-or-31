@@ -49,10 +49,13 @@ export function proxy(request: NextRequest) {
 
 export const config = {
   matcher: [
-    // Excludes: /api/* (never gated — this codebase's own API routes, including the wallet
-    // scanner, must keep working the same way on preview as on production), /preview-login itself
-    // (or every visit would redirect to itself), Next's internal static/image assets, and any
-    // request for a file with an extension (favicon.ico, robots.txt, images, fonts, etc.).
-    '/((?!api/|preview-login|_next/static|_next/image|.*\\..*).*)',
+    // Explicitly excludes every route named in this gate's spec: /api/* (never gated — this
+    // codebase's own API routes, including the wallet scanner, must keep working the same way on
+    // preview as on production), /_next/static/*, /_next/image/*, /favicon.ico, and /preview-login
+    // itself (or every visit would redirect to itself). The trailing `|.*\..*` is kept as
+    // defense-in-depth beyond that explicit list — it excludes every OTHER request for a file with
+    // an extension too (robots.txt, manifest.webmanifest, images, fonts, etc. under /public),
+    // which the literal named list alone would leave gated and broken.
+    '/((?!api/|_next/static/|_next/image/|favicon\\.ico|preview-login|.*\\..*).*)',
   ],
 }
