@@ -5110,8 +5110,10 @@ async function executeClarkToolPlan(input: {
         }
         const addrArg = String(tool.args.address ?? "").trim();
         const address = addrArg || String(resolvedAddress ?? "").trim();
-        const walletRes = await callInternalApi(input.origin, "/api/wallet", { address }, input.authHeader ?? undefined, input.verifiedPlan);
-        const w = (walletRes.json ?? {}) as Record<string, unknown>;
+        // /api/wallet was deleted (V1 engine migration) — no longer calling it; this call always
+        // 404'd, wasting a request every time. Stubbed directly instead.
+        const walletRes = { ok: false, reason: "wallet route removed" };
+        const w = {} as Record<string, unknown>;
         const normalized = normalizeWalletSnapshotEvidence(w, address);
         evidence.walletSnapshot = {
           ...normalized,
@@ -6231,8 +6233,10 @@ async function handleWalletScanner(body: ClarkRequestBody, origin: string, authH
   const isBalanceQuestion = /\b(balance|balances|holdings?|portfolio|what(?:'s| is) in|how much|show me)\b/i.test(t);
   const isQualityQuestion = /\b(good wallet|worth following|smart money|copy trad|is this|analyze|review|verdict)\b/i.test(t);
 
-  const wantsRefresh = /\b(refresh|rescan|re.?scan|force|reload|update)\b/i.test(userPrompt)
-  const { ok, json: walletData } = await callInternalApi(origin, "/api/wallet", { address: walletAddress, ...(wantsRefresh ? { refresh: true } : {}) }, authHeader ?? undefined);
+  // /api/wallet was deleted (V1 engine migration) — no longer calling it; this call always
+  // 404'd, wasting a request every time. Stubbed directly instead.
+  const walletData: { ok: false; reason: string } = { ok: false, reason: "wallet route removed" };
+  const ok = walletData.ok;
 
   if (!ok || (walletData as Record<string, unknown>)?.error) {
     return {
@@ -6243,7 +6247,7 @@ async function handleWalletScanner(body: ClarkRequestBody, origin: string, authH
     };
   }
 
-  const w = walletData as {
+  const w = walletData as unknown as {
     address: string;
     totalValue: number;
     holdings: Array<{ name: string; symbol: string; balance: number; value: number; chain: string | null; change24h: number | null }>;
@@ -9557,8 +9561,9 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     if (ensName) {
       const resolved = await resolveEnsOrBasename(ensName)
       if (resolved) {
-        const walletRes = await callInternalApi(origin, "/api/wallet", { address: resolved }, authHeader ?? undefined)
-        const w = (walletRes.json ?? {}) as Record<string, unknown>
+        // /api/wallet was deleted (V1 engine migration) — stubbed directly, no wasted 404 call.
+        const walletRes = { ok: false, reason: "wallet route removed" }
+        const w = {} as Record<string, unknown>
         const resolvedNote = `Resolved wallet: ${ensName} → \`${resolved}\`\n\n`
         if (walletRes.ok && Object.keys(w).length > 0) {
           const snapshot = normalizeWalletSnapshotEvidence(w, resolved)
@@ -9575,8 +9580,9 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         if (/\bshould\s+i\s+copy\b/i.test(prompt)) {
           return { feature: "clark-ai", chain, mode: "casual_help", intent: "casual", toolsUsed: [], analysis: "I can't tell you to copy-trade it. I can tell you whether it is worth monitoring.\n\nSend the wallet address and I'll run a WALLET READ — holdings, activity, concentration, and what's missing. No copy-trade call." };
         }
-        const walletRes = await callInternalApi(origin, "/api/wallet", { address: sessionMem.lastWallet.address }, authHeader ?? undefined);
-        const w = (walletRes.json ?? {}) as Record<string, unknown>;
+        // /api/wallet was deleted (V1 engine migration) — stubbed directly, no wasted 404 call.
+        const walletRes = { ok: false, reason: "wallet route removed" };
+        const w = {} as Record<string, unknown>;
         if (walletRes.ok && Object.keys(w).length > 0) {
           const snapshot = normalizeWalletSnapshotEvidence(w, sessionMem.lastWallet.address);
           const analysis = buildWalletQualityVerdict(snapshot, sessionMem.lastWallet.address, prompt);
@@ -9594,8 +9600,9 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: [],
         analysis: buildLockedResponse('wallet_scan', 'ask what makes a wallet worth monitoring.') };
     }
-    const walletRes = await callInternalApi(origin, "/api/wallet", { address: directIntent.address }, authHeader ?? undefined);
-    const w = (walletRes.json ?? {}) as Record<string, unknown>;
+    // /api/wallet was deleted (V1 engine migration) — stubbed directly, no wasted 404 call.
+    const walletRes = { ok: false, reason: "wallet route removed" };
+    const w = {} as Record<string, unknown>;
     if (walletRes.ok && Object.keys(w).length > 0) {
       const snapshot = normalizeWalletSnapshotEvidence(w, directIntent.address);
       const isBalanceQ = /\b(balance|balances|holdings?|portfolio|what(?:'s| is) in|how much|show me)\b/i.test(prompt);
@@ -9626,8 +9633,9 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   // Hard guard: bare 0x address after recent wallet-context turn → wallet analysis
   if (directIntent.address && isBareAddressPrompt(prompt) && hasRecentWalletContext(body.history) && routeHint !== 'token') {
     console.log("[clark-intent] detected=wallet_analysis reason=history_wallet_context");
-    const walletRes = await callInternalApi(origin, "/api/wallet", { address: directIntent.address }, authHeader ?? undefined);
-    const w = (walletRes.json ?? {}) as Record<string, unknown>;
+    // /api/wallet was deleted (V1 engine migration) — stubbed directly, no wasted 404 call.
+    const walletRes = { ok: false, reason: "wallet route removed" };
+    const w = {} as Record<string, unknown>;
     if (walletRes.ok && Object.keys(w).length > 0) {
       const snapshot = normalizeWalletSnapshotEvidence(w, directIntent.address);
       return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: ["wallet_get_snapshot"], analysis: formatWalletBalanceSummary(snapshot) };
@@ -10673,8 +10681,9 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     if (!token) {
       // Bare address paste — token scan found nothing. Try wallet scan before giving up.
       if (isBareAddressPrompt(prompt) && resolvedAddress) {
-        const walletRes = await callInternalApi(origin, "/api/wallet", { address: resolvedAddress }, authHeader ?? undefined);
-        const w = (walletRes.json ?? {}) as Record<string, unknown>;
+        // /api/wallet was deleted (V1 engine migration) — stubbed directly, no wasted 404 call.
+        const walletRes = { ok: false, reason: "wallet route removed" };
+        const w = {} as Record<string, unknown>;
         if (walletRes.ok && Array.isArray(w.holdings) && (w.holdings as unknown[]).length > 0) {
           const snapshot = normalizeWalletSnapshotEvidence(w, resolvedAddress);
           const walletAnalysis = buildWalletQualityVerdict(snapshot, resolvedAddress, prompt);
