@@ -82,6 +82,20 @@ export type FinalReport = {
   // provider payloads (see ProviderDiagnosticsEntry's own doc comment) — this is a status/count
   // summary only, for verifying "did the provider calls actually run", not a data dump.
   providerDiagnostics: ProviderDiagnosticsEntry[]
+  // Additive section — real status of the pricing source(s) actually wired up in this codebase.
+  // There is exactly ONE real pricing provider today (GoldRush/Covalent — same API key, either
+  // env var name), used as pricingAtTimeEngine's `primary` source; `fallback` is always
+  // noPriceSources()'s honest no-op (see pipeline/index.ts buildPriceSources()). This deliberately
+  // does NOT report an "alchemy" pricing provider — Alchemy is never used for pricing anywhere in
+  // this codebase (only for raw event fetching in providerFetchWindow/recoveryPolicy); reporting
+  // it here would be a fabricated capability claim.
+  pricingProvidersStatus: PricingProvidersStatus
+}
+
+export type PricingProvidersStatus = {
+  goldrush: { active: boolean; keyLoaded: boolean }
+  providerCount: number
+  pricingEnabled: boolean
 }
 
 // Real per-provider fetch outcome for one chain — ok/errorReason/count only, deliberately never the
@@ -119,4 +133,6 @@ export type AssembleReportInput = {
   pricingAtTime: PricingAtTimeResult
   // Additive — see FinalReport.providerDiagnostics above.
   providerDiagnostics: ProviderDiagnosticsEntry[]
+  // Additive — see FinalReport.pricingProvidersStatus above.
+  pricingProvidersStatus: PricingProvidersStatus
 }

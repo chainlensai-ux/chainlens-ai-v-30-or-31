@@ -28,7 +28,7 @@ import { assembleReport } from '../modules/finalReportAssembler/index'
 import type { ScanMetadata } from '../modules/finalReportAssembler/types'
 import type { ProviderStatus, SupportedChain } from '../modules/providerFetchWindow/types'
 
-import { buildFifoBackedPnlResolvers, runWalletScan } from '../pipeline/index'
+import { buildFifoBackedPnlResolvers, PRICING_PROVIDERS_STATUS, runWalletScan } from '../pipeline/index'
 import type { RunWalletScanResult } from '../pipeline/types'
 import { INTEL_WINDOW_DAYS, SUPPORTED_CHAINS } from '../pipeline/types'
 import {
@@ -223,6 +223,9 @@ async function runSyntheticPipeline(wallet: WalletTestConfig): Promise<RunWallet
     // Honestly empty — the synthetic path bypasses providerFetchWindow entirely by design (see
     // this file's own header comment), so there is no real per-provider fetch outcome to report.
     providerDiagnostics: [],
+    // Real, not synthetic — pricing-provider status reflects this process's actual env, same as
+    // the live pipeline's PRICING_PROVIDERS_STATUS.
+    pricingProvidersStatus: PRICING_PROVIDERS_STATUS,
   })
 
   return { ...finalReport, normalizationErrors }

@@ -145,6 +145,13 @@ export function pnlSummaryV2Fallback(): PnlSummaryResult {
   }
 }
 
+// Additive fallback shape — pricingProvidersStatus unavailable mode. Honestly reports zero active
+// providers (never a fabricated "active: true") — used only when pre-scan validation fails before
+// PRICING_PROVIDERS_STATUS's real env check would even matter.
+export function pricingProvidersStatusFallback(): FinalReport['pricingProvidersStatus'] {
+  return { goldrush: { active: false, keyLoaded: false }, providerCount: 0, pricingEnabled: false }
+}
+
 // No real historical-price API (GoldRush price-at-timestamp, CoinGecko historical, etc.) is
 // integrated anywhere in this codebase — these sources honestly always return null rather than
 // fabricating a USD figure, until a verified real pricing integration exists to inject here
@@ -207,5 +214,6 @@ export function buildFullyDegradedReport(
     pnlSummaryV2: pnlSummaryV2Fallback(),
     pricingAtTime: pricingAtTimeFallback(),
     providerDiagnostics: [],
+    pricingProvidersStatus: pricingProvidersStatusFallback(),
   }
 }

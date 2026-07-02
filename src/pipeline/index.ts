@@ -87,6 +87,20 @@ function buildPriceSources(): PriceSources {
 // duplicating buildPriceSources()'s logic or constructing a second GoldRushClient.
 export const PRICE_SOURCES: PriceSources = buildPriceSources()
 
+// Real pricing-provider status, computed once from the same env check buildPriceSources() itself
+// uses. Exactly one real pricing provider exists in this codebase — GoldRush/Covalent — so
+// providerCount is 0 or 1, never a fabricated multi-provider count. `active` and `keyLoaded` are
+// currently identical for this one provider (no separate "loaded but disabled" state exists), kept
+// as two fields to match the shape a future second provider would also need.
+export const PRICING_PROVIDERS_STATUS: FinalReport['pricingProvidersStatus'] = (() => {
+  const keyLoaded = Boolean(process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY)
+  return {
+    goldrush: { active: keyLoaded, keyLoaded },
+    providerCount: keyLoaded ? 1 : 0,
+    pricingEnabled: keyLoaded,
+  }
+})()
+
 // ── Fallback-safe wrappers (Architecture Step 7) ──────────────────────────────────────────────
 // Each wrapper below is the ONLY place that catches its stage's failures — a thrown error inside
 // module code degrades exactly one section of the report, never the whole scan.
@@ -296,6 +310,7 @@ function safeAssembleReport(input: AssembleReportInput): FinalReport {
       pnlSummaryV2: input.pnlSummaryV2,
       pricingAtTime: input.pricingAtTime,
       providerDiagnostics: input.providerDiagnostics,
+      pricingProvidersStatus: input.pricingProvidersStatus,
     }
   }
 }
@@ -511,6 +526,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     pnlSummaryV2,
     pricingAtTime,
     providerDiagnostics,
+    pricingProvidersStatus: PRICING_PROVIDERS_STATUS,
   })
 
   return { ...finalReport, normalizationErrors }
