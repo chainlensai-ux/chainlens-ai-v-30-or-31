@@ -11348,3 +11348,27 @@ function normalizeApiReplyShape(result: unknown, body: ClarkRequestBody) {
     ...(quotaConsumedOverride === false ? { quotaConsumedOverride: false } : {}),
   };
 }
+
+export const dynamic = 'force-dynamic'
+
+// GET ?address=0x... — additive only, NOT a replacement for POST above. POST is this route's
+// real interface — Clark AI's entire chat/intent-routing engine (11,000+ lines) — and every real
+// frontend call site (clark-ai page, MobileClarkDrawer, ClarkRadar, ClarkChat, the portfolio page)
+// calls it via POST with a JSON body, confirmed before adding this. This GET handler is a thin,
+// separate, read-only wallet-lookup surface (V2-first, zero-RPC lite fallback) added because SOME
+// caller in production may issue a GET request to this path and get a correct-but-unhelpful 405;
+// it does not touch, wrap, or alter the POST handler's logic in any way.
+export async function GET(req: NextRequest) {
+  try {
+    const { searchParams } = new URL(req.url)
+    const address = String(searchParams.get('address') ?? '').trim().toLowerCase()
+    if (!address) return NextResponse.json({ error: 'Wallet address required.' }, { status: 400 })
+    if (!/^0x[a-fA-F0-9]{40}$/.test(address)) return NextResponse.json({ error: 'Invalid wallet address.' }, { status: 400 })
+
+    const v2 = await getWalletFromV2(address)
+    const result = v2 ?? await getWalletLite(address)
+    return NextResponse.json(result)
+  } catch {
+    return NextResponse.json({ error: 'Wallet data is currently unavailable.' }, { status: 200 })
+  }
+}
