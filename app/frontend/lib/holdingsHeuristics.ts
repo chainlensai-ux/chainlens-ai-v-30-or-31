@@ -50,6 +50,15 @@ export function holdingKey(h: TokenHolding): string {
   return `${h.chain}:${h.contract.toLowerCase()}`
 }
 
+// A holding with a real, known USD value of exactly $0, or no priced value at all
+// (providerValueUsd null — the balances provider never returned a price for it). Distinct from
+// isDust below: isDust still includes small-but-priced or unpriced-but-tiny-amount tokens for the
+// collapsible dust bucket, whereas this is used to hide zero/unpriced noise entirely (per explicit
+// request) rather than just collapse it.
+export function hasNoUsdValue(holding: TokenHolding): boolean {
+  return holding.providerValueUsd == null || holding.providerValueUsd === 0
+}
+
 export function isDust(holding: TokenHolding): boolean {
   if (holding.amount < DUST_AMOUNT_THRESHOLD) return true
   if (holding.providerValueUsd !== null && holding.providerValueUsd < DUST_USD_THRESHOLD) return true

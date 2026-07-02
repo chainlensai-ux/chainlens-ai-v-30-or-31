@@ -23,7 +23,7 @@ import { useMemo, useState } from 'react'
 import type { TokenHolding } from '@/src/modules/holdings/types'
 import type { BuyTimelineEntry } from '@/src/modules/timelineBuilder/types'
 import type { BridgeCandidateEvent } from '@/src/modules/bridgeDetection/types'
-import { derivePersonality, fmtUsd, groupHoldingsByChain, isDust } from '@/app/frontend/lib/holdingsHeuristics'
+import { derivePersonality, fmtUsd, groupHoldingsByChain, hasNoUsdValue, isDust } from '@/app/frontend/lib/holdingsHeuristics'
 import { ChainBadge } from './ChainBadge'
 import { PersonalityCard } from './PersonalityCard'
 import { HoldingsTable } from './HoldingsTable'
@@ -72,10 +72,17 @@ export function HoldingsViewV2({ holdings, buyEntries, bridgeEntries }: Holdings
 
   const [showDust, setShowDust] = useState(false)
 
-  const byChain = useMemo(() => groupHoldingsByChain(safeHoldings), [safeHoldings])
-  const meaningfulTokens = useMemo(() => safeHoldings.filter((h) => !isDust(h)), [safeHoldings])
-  const dustTokens = useMemo(() => safeHoldings.filter(isDust), [safeHoldings])
-  const personality = useMemo(() => derivePersonality(safeHoldings, safeBuyEntries), [safeHoldings, safeBuyEntries])
+  // Tokens with no real known USD value (providerValueUsd null or exactly 0) are hidden entirely —
+  // not collapsed into the dust bucket, removed from the view altogether, per explicit request.
+  // Everything below (chain strip, meaningful table, dust bucket, personality) is derived only from
+  // the remaining priced holdings.
+  const pricedHoldings = useMemo(() => safeHoldings.filter((h) => !hasNoUsdValue(h)), [safeHoldings])
+  const zeroOrUnpricedCount = safeHoldings.length - pricedHoldings.length
+
+  const byChain = useMemo(() => groupHoldingsByChain(pricedHoldings), [pricedHoldings])
+  const meaningfulTokens = useMemo(() => pricedHoldings.filter((h) => !isDust(h)), [pricedHoldings])
+  const dustTokens = useMemo(() => pricedHoldings.filter(isDust), [pricedHoldings])
+  const personality = useMemo(() => derivePersonality(pricedHoldings, safeBuyEntries), [pricedHoldings, safeBuyEntries])
 
   return (
     <section>
@@ -84,14 +91,23 @@ export function HoldingsViewV2({ holdings, buyEntries, bridgeEntries }: Holdings
           Holdings (V2)
         </h3>
         <p style={{ margin: '4px 0 0', fontSize: '10px', letterSpacing: '0.08em', textTransform: 'uppercase', color: 'rgba(45,212,191,0.65)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
-          Sorted by value · Dust-collapsed · No fabricated USD or 24H data
+          Sorted by value · Zero/unpriced hidden · Dust-collapsed · No fabricated USD or 24H data
         </p>
       </div>
 
       {safeHoldings.length === 0 ? (
         <p style={{ fontSize: '12px', color: 'rgba(148,163,184,0.55)', margin: 0 }}>No holdings detected.</p>
+      ) : pricedHoldings.length === 0 ? (
+        <p style={{ fontSize: '12px', color: 'rgba(148,163,184,0.55)', margin: 0 }}>
+          {safeHoldings.length} token(s) detected, all with no known USD value — hidden. No priced holdings to show.
+        </p>
       ) : (
         <>
+          {zeroOrUnpricedCount > 0 && (
+            <p style={{ fontSize: '10px', color: 'rgba(148,163,184,0.40)', margin: '0 0 12px' }}>
+              {zeroOrUnpricedCount} token(s) with no known USD value (zero or unpriced) hidden from this view.
+            </p>
+          )}
           {personality && <PersonalityCard title="Holdings Personality" label={personality} />}
 
           <ChainSummaryStrip byChain={byChain} />
