@@ -4,7 +4,7 @@ import { getMergedTrendingTokens } from "@/app/api/trending/route";
 import { fetchHoneypotSecurity } from "@/lib/server/honeypotSecurity";
 import { buildTokenFullReportPlan, executeClarkToolPlan as executeClarkToolLayerPlan, normalizeClarkScannerCacheKey } from "@/lib/clark/tools";
 import { buildTokenFullReport } from "@/lib/clark/reportBuilders";
-import { getWalletLite } from "@/lib/server/walletScannerRunner";
+import { getWalletLite } from "@/lib/server/walletLite";
 import { classifyClarkBasicIntent, buildClarkDirectAnswer, clarkMissingInputPrompt, CLARK_SAFE_FALLBACK, buildClarkRoutingDebug } from "@/lib/server/clarkBasicIntent";
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { getVerifiedUserPlan } from '@/lib/supabase/userSettings'

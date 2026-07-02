@@ -1,25 +1,11 @@
 import { NextResponse } from 'next/server'
+import { getPortfolioLite } from '@/lib/server/walletLite'
 
 // V1 ENGINE REPLACED WITH A LIGHTWEIGHT V2-COMPATIBLE FALLBACK: this route previously called
-// fetchWalletSnapshot() (lib/server/walletSnapshot.ts, which fires Alchemy RPC calls), then was
-// stubbed to always return { ok: false }. getPortfolioLite() below restores the { ok: true }
-// response contract WITHOUT calling walletSnapshot.ts or any Alchemy RPC — it is an honest empty
-// placeholder (empty arrays, not fabricated balances/positions), not a real data source. Real
-// GoldRush/Zerion/ENS wiring described in this task's own "Goal" section is NOT implemented here
-// (the literal shape specified for this function has zero provider calls) — flagged explicitly so
-// this isn't mistaken for "portfolio data actually works now."
-async function getPortfolioLite(address: string): Promise<{
-  ok: true
-  address: string
-  summary: { balances: unknown[]; positions: unknown[]; labels: unknown[]; chains: unknown[] }
-}> {
-  return {
-    ok: true,
-    address,
-    summary: { balances: [], positions: [], labels: [], chains: [] },
-  }
-}
-
+// fetchWalletSnapshot() (lib/server/walletSnapshot.ts, which fires Alchemy RPC calls). It now
+// calls getPortfolioLite() (lib/server/walletLite.ts) instead — an honest, zero-RPC empty
+// placeholder, never a fabricated balance/position. See that file's own header for the full
+// rationale.
 const PORTFOLIO_CACHE_TTL_MS = 3 * 60 * 1000
 const portfolioCache = new Map<string, { exp: number; payload: unknown; cachedAt: number }>()
 const portfolioRate = new Map<string, { count: number; resetAt: number }>()
