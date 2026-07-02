@@ -30,6 +30,19 @@ import { runWalletScanV2 } from '@/src/pipeline/runWalletScanV2'
 import type { RunWalletScanV2Result } from '@/src/pipeline/runWalletScanV2'
 import { getTokenCache, setTokenCache } from '@/lib/server/cache/tokenCache'
 import type { WalletLiteResult } from '@/lib/server/walletLite'
+import { logRpcCall } from '@/lib/server/rpcDebug'
+
+// Strips this machine's absolute filesystem prefix from a stack trace before it's ever logged or
+// returned in a diagnostic JSON response — "sanitized" per the request. Capped to 5 frames; a full
+// raw stack isn't needed to see which adapter path triggered a scan.
+function sanitizeStack(stack: string | undefined): string {
+  if (!stack) return ''
+  return stack
+    .split('\n')
+    .slice(0, 5)
+    .map((line) => line.replace(process.cwd(), '.'))
+    .join('\n')
+}
 
 const V2_ADAPTER_TTL_SECONDS = 45
 const DEFAULT_CHAINS = ['base', 'eth', 'arbitrum']
@@ -70,7 +83,15 @@ async function writeToKv(cacheKey: string, value: WalletLiteResult): Promise<voi
   }
 }
 
-async function runV2Scan(address: string): Promise<RunWalletScanV2Result | null> {
+// `route` here identifies which v2Adapters function triggered this scan (getPortfolioFromV2 /
+// getWalletFromV2), NOT the literal HTTP route path — that context isn't threaded into this file
+// today, and adding it would mean modifying the 3 calling routes/runners, which this diagnostic
+// task's own scope excludes ("never modify existing API routes"). Disclosed as an honest proxy,
+// not a claim of full per-HTTP-route attribution.
+async function runV2Scan(address: string, route: string): Promise<RunWalletScanV2Result | null> {
+  for (const chain of DEFAULT_CHAINS) {
+    logRpcCall({ chain, method: 'runWalletScanV2', route, stack: sanitizeStack(new Error().stack) })
+  }
   try {
     return await runWalletScanV2({ walletAddress: address, chains: DEFAULT_CHAINS, scanMode: 'normal' })
   } catch (err) {
@@ -108,11 +129,12 @@ function toUnifiedShape(address: string, report: RunWalletScanV2Result): WalletL
 async function getCachedOrCompute(
   cacheKey: string,
   address: string,
+  route: string,
 ): Promise<WalletLiteResult | null> {
   const cached = await readFromKv(cacheKey)
   if (cached) return cached
 
-  const report = await runV2Scan(address)
+  const report = await runV2Scan(address, route)
   if (!report) return null
 
   const unified = toUnifiedShape(address, report)
@@ -125,7 +147,7 @@ async function getCachedOrCompute(
 
 export async function getPortfolioFromV2(address: string): Promise<WalletLiteResult | null> {
   try {
-    return await getCachedOrCompute(`v2:portfolio:${address.toLowerCase()}`, address)
+    return await getCachedOrCompute(`v2:portfolio:${address.toLowerCase()}`, address, 'getPortfolioFromV2')
   } catch (err) {
     console.warn('[v2Adapters] getPortfolioFromV2 failed', { address, error: err instanceof Error ? err.message : String(err) })
     return null
@@ -134,7 +156,7 @@ export async function getPortfolioFromV2(address: string): Promise<WalletLiteRes
 
 export async function getWalletFromV2(address: string): Promise<WalletLiteResult | null> {
   try {
-    return await getCachedOrCompute(`v2:wallet:${address.toLowerCase()}`, address)
+    return await getCachedOrCompute(`v2:wallet:${address.toLowerCase()}`, address, 'getWalletFromV2')
   } catch (err) {
     console.warn('[v2Adapters] getWalletFromV2 failed', { address, error: err instanceof Error ? err.message : String(err) })
     return null
