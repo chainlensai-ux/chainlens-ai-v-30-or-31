@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { logRpcCall } from "@/lib/server/rpcDebug";
 
 const rateMap = new Map<string, { count: number; resetAt: number }>();
 const MAX_PER_MINUTE = 3;
@@ -35,6 +36,7 @@ export async function GET(req: NextRequest) {
     const key = process.env.ALCHEMY_ETHEREUM_KEY;
     if (!key) return NextResponse.json({ ok: false, error: "Not configured" }, { status: 500 });
     const url = `https://eth-mainnet.g.alchemy.com/v2/${key}`;
+    logRpcCall({ route: "/api/test/alchemy", chain: "eth", method: "eth_blockNumber" });
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { logRpcCall } from "@/lib/server/rpcDebug";
 import { getBaseMarketUniverse, type BaseMarketCandidate, type BaseMarketMode } from "@/lib/server/baseMarketUniverse";
 import { getMergedTrendingTokens } from "@/app/api/trending/route";
 import { fetchHoneypotSecurity } from "@/lib/server/honeypotSecurity";
@@ -3016,6 +3017,7 @@ async function classifyAddressForClark(address: string, chain: SupportedChain | 
   const rpcUrl = getRpcUrlForClarkCodeCheck(chain);
   if (!rpcUrl) return "unknown";
   try {
+    logRpcCall({ route: "/api/clark", chain: chain === "ethereum" || chain === "eth" ? "eth" : "base", method: "eth_getCode" });
     const res = await fetch(rpcUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -3863,6 +3865,7 @@ async function isContractAddress(address: string, _origin: string): Promise<bool
     ? `https://base-mainnet.g.alchemy.com/v2/${key}`
     : "https://mainnet.base.org";
   try {
+    logRpcCall({ route: "/api/clark", chain: "base", method: "eth_getCode" });
     const res = await fetch(rpc, {
       method: "POST",
       headers: { "content-type": "application/json" },

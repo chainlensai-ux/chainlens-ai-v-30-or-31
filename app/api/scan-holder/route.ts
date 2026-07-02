@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createRateLimiter, getClientIp } from "@/lib/server/rateLimit";
+import { logRpcCall } from "@/lib/server/rpcDebug";
 
 export const dynamic = "force-dynamic";
 
@@ -14,6 +15,7 @@ async function getContractCode(address: string): Promise<string | null> {
     ? `https://base-mainnet.g.alchemy.com/v2/${key}`
     : "https://mainnet.base.org";
 
+  logRpcCall({ route: "/api/scan-holder", chain: "base", method: "eth_getCode" });
   const res = await fetch(rpc, {
     method: "POST",
     headers: { "content-type": "application/json" },

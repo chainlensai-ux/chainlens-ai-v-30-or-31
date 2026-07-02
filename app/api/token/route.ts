@@ -5,6 +5,7 @@ import { fetchHoneypotSecurity } from "@/lib/server/honeypotSecurity";
 import { calculateTokenRiskScore } from "@/lib/server/riskScore";
 import { sanitizePublicTokenResponse } from "@/lib/server/tokenPublicResponse";
 import { getTokenCache, setTokenCache } from "@/lib/server/cache/tokenCache";
+import { logRpcCall } from "@/lib/server/rpcDebug";
 import { buildLpControllerIntel, resolveLpControllerIdentity } from "@/lib/server/lpControllerIntel";
 import { buildLpMovementWatch } from "@/lib/server/lpMovementWatch";
 import { buildLpLockBurnIntel, LP_LOCK_BURN_REGISTRY } from "@/lib/server/lpLockBurnIntel";
@@ -299,6 +300,7 @@ async function checkRpcHealth(chain: ChainKey): Promise<{ ok: boolean; providerU
   const providerUrl = getAlchemyRpcUrl(chain)
   if (!providerUrl) return { ok: false, providerUrl: null, reason: "missing_rpc_url" }
   try {
+    logRpcCall({ route: "/api/token", chain, method: "eth_blockNumber" })
     const res = await fetch(providerUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -807,6 +809,7 @@ async function rpcCall(chain: ChainKey, method: string, params: unknown[]): Prom
   try {
     const rpcUrl = getAlchemyRpcUrl(chain);
     if (!rpcUrl) return null;
+    logRpcCall({ route: "/api/token", chain, method });
     const res = await fetch(rpcUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -864,6 +867,9 @@ async function fetchOnchainSupply(chain: ChainKey, contract: string): Promise<{
   const paddedZero = ZERO.slice(2).padStart(64, '0')
   const paddedDead = DEAD.slice(2).padStart(64, '0')
   try {
+    logRpcCall({ route: "/api/token", chain, method: "eth_call:totalSupply" })
+    logRpcCall({ route: "/api/token", chain, method: "eth_call:balanceOf(zero)" })
+    logRpcCall({ route: "/api/token", chain, method: "eth_call:balanceOf(dead)" })
     const [tsRes, bzRes, bdRes] = await Promise.all([
       fetch(rpcUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_call', params: [{ to: contract, data: '0x18160ddd' }, 'latest'] }),
@@ -888,6 +894,7 @@ async function fetchBytecode(chain: ChainKey, contract: string): Promise<string 
   try {
     const rpcUrl = getAlchemyRpcUrl(chain);
     if (!rpcUrl) return null;
+    logRpcCall({ route: "/api/token", chain, method: "eth_getCode" });
     const res = await fetch(rpcUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -911,6 +918,7 @@ async function rpcJson(chain: ChainKey, method: string, params: unknown[], timeo
   const rpcUrl = getAlchemyRpcUrl(chain)
   if (!rpcUrl) return null
   try {
+    logRpcCall({ route: "/api/token", chain, method })
     const res = await fetch(rpcUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

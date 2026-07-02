@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { getOrFetchCached } from '@/lib/coingeckoCache'
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
+import { logRpcCall } from '@/lib/server/rpcDebug'
 
 type WindowKey = '1h' | '6h' | '24h' | '7d'
 type RawRow = Record<string, unknown>
@@ -523,6 +524,7 @@ async function fetchOnChain(address: string): Promise<OnChainData> {
   if (cached && cached.exp > Date.now()) return cached.data
   let isContract: boolean | null = null, nativeBalanceEth: number | null = null, txCount: number | null = null
   try {
+    logRpcCall({ route: '/api/whale-alerts', chain: 'base', method: 'batch:eth_getBalance+eth_getTransactionCount+eth_getCode' })
     const res = await fetch(BASE_RPC, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify([

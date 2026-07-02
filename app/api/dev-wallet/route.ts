@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { type CanonicalStatus, toCanonical } from '@/lib/canonicalStatus'
 import { buildClusterMap } from '@/lib/clusterMap'
+import { logRpcCall } from '@/lib/server/rpcDebug'
 
 const COVALENT_BASE_URL = 'https://api.covalenthq.com/v1'
 function resolveBaseRpcUrl(): string | null {
@@ -312,6 +313,7 @@ type CovalentTxItem = {
 
 async function alchemyRpc(method: string, params: unknown[]): Promise<unknown> {
   if (!activeChainConfig.rpcUrl) throw new Error('rpc_not_configured')
+  logRpcCall({ route: '/api/dev-wallet', chain: activeChainConfig.chain, method })
   const res = await fetch(activeChainConfig.rpcUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
