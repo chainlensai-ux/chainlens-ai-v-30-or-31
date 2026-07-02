@@ -30,7 +30,7 @@ import { mergeNormalizedEvents } from '../modules/fifoEngine/utils'
 import type { CurrentPriceUsdLookup, PriceUsdLookup } from '../modules/fifoEngine/types'
 import type { NormalizedEvent } from '../modules/normalization/types'
 import { resolvePricingAtTime } from '../modules/pricingAtTimeEngine/index'
-import type { PriceableEntry, PriceSources } from '../modules/pricingAtTimeEngine/types'
+import type { PriceableEntry, PriceSources, SourceBreakdown } from '../modules/pricingAtTimeEngine/types'
 
 function toPriceableEntry(event: NormalizedEvent): PriceableEntry {
   return {
@@ -45,6 +45,11 @@ function toPriceableEntry(event: NormalizedEvent): PriceableEntry {
 export type WalletPriceLookups = {
   priceUsdLookup: PriceUsdLookup
   currentPriceUsdLookup: CurrentPriceUsdLookup
+  // Diagnostic-only, additive — real primary/fallback/failed counts from the at-trade-time pricing
+  // pass (the "current" price pass isn't included, to keep this a direct, honest reflection of
+  // real transaction pricing specifically). Never fabricated; a straight pass-through of
+  // pricingAtTimeEngine's own real sourceBreakdown.
+  sourceBreakdown: SourceBreakdown
 }
 
 // Real fix: pre-resolves historical USD pricing (at each event's own real timestamp) for every
@@ -85,5 +90,5 @@ export async function priceLotsForWallet(params: {
   const currentPriceUsdLookup: CurrentPriceUsdLookup = (token, chain) =>
     atNow.costUsd[`current:${chain}:${token.toLowerCase()}`] ?? null
 
-  return { priceUsdLookup, currentPriceUsdLookup }
+  return { priceUsdLookup, currentPriceUsdLookup, sourceBreakdown: atTradeTime.sourceBreakdown }
 }

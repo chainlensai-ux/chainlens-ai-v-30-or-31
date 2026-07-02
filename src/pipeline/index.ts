@@ -71,6 +71,11 @@ const PROVIDER_FETCH_WINDOW_DAYS_USED = 90
 // always — no second real price provider is wired up in this codebase.
 function buildPriceSources(): PriceSources {
   const apiKey = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY
+  // Diagnostic log (never prints the key itself) — the fastest way to confirm, from the actual
+  // runtime's own logs (e.g. Vercel's function logs), whether a real key was found in *that*
+  // process's env at module load, without needing a separate deployment-inspection tool.
+  // eslint-disable-next-line no-console
+  console.log(`[pipeline] buildPriceSources: real GoldRush key present = ${Boolean(apiKey)}`)
   if (!apiKey) return noPriceSources()
   const client = new GoldRushClient(apiKey)
   return { primary: goldrushPriceSource(client), fallback: noPriceSources().fallback }
@@ -349,6 +354,23 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     recoveryPolicy,
     walletAddress: params.walletAddress,
   })
+  // Diagnostic log — real counts, not a guess. outboundCount is every outbound normalized event
+  // fifoEngine will see; sellTimelineV2 entries are only the subset that cleared one of its four
+  // detection mechanisms (same-tx swap, transfer-to-known-router, bridge-exit, recovery-
+  // reconstructed) — a large gap between the two numbers is expected/honest, not a bug, since
+  // sellTimelineV2 is evidence-gated by design (see src/modules/sellTimeline's own scope notes).
+  {
+    const outboundCount = normalizedEvents.filter((e) => e.direction === 'outbound').length
+    const confidenceCounts = sellTimelineV2.entries.reduce(
+      (acc, e) => { acc[e.confidence] = (acc[e.confidence] ?? 0) + 1; return acc },
+      {} as Record<string, number>,
+    )
+    // eslint-disable-next-line no-console
+    console.log(
+      `[pipeline] sellTimelineV2: ${sellTimelineV2.entries.length}/${outboundCount} outbound event(s) detected as sells`,
+      { byConfidence: confidenceCounts, bridgeTimelineCandidates: bridgeTimeline.length },
+    )
+  }
 
   // 5c. priceLotsForWallet — REAL FIX, async. Pre-resolves real historical USD pricing (via
   // pricingAtTimeEngine + PRICE_SOURCES) for every normalized event fifoEngine is about to merge
@@ -364,6 +386,10 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     recoveredEvents: recoveredNormalizedForPricing,
     priceSources: PRICE_SOURCES,
   })
+  // Diagnostic log — real pricing call outcomes for this wallet's actual events (source breakdown
+  // exposed on the lookups themselves, see priceLotsForWallet.ts).
+  // eslint-disable-next-line no-console
+  console.log('[pipeline] priceLotsForWallet: pricing source breakdown', walletPriceLookups.sourceBreakdown)
 
   // 6. fifoEngine — pure, no provider calls; consumes normalized events + recoveryPolicy's
   // already-fetched recoveredEvents, now WITH real pricing (stage 5c) wired into its existing
@@ -378,6 +404,15 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     priceUsdLookup: walletPriceLookups.priceUsdLookup,
     currentPriceUsdLookup: walletPriceLookups.currentPriceUsdLookup,
   })
+  // Diagnostic log — real FIFO output counts, directly requested.
+  // eslint-disable-next-line no-console
+  console.log('[pipeline] fifoEngine result', {
+    matchedLots: fifoAndPnl.matchedLots.length,
+    unmatchedBuys: fifoAndPnl.unmatchedBuys,
+    unmatchedSells: fifoAndPnl.unmatchedSells,
+    publicPnlStatus: fifoAndPnl.publicPnlStatus,
+    hardInvalid: fifoAndPnl.integrityFlags.hardInvalid,
+  })
 
   // 6b. pnlSummaryV2 — additive, pure, zero-cost. Now runs AFTER fifoEngine (was before it) so it
   // can borrow fifoEngine's real, now-priced matchedLots for resolveCostUsdEstimate/
@@ -389,6 +424,13 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     buyEntries: timelines.buyTimeline.entries,
     resolveCostUsdEstimate: pnlResolvers.resolveCostUsdEstimate,
     resolveProceedsUsdEstimate: pnlResolvers.resolveProceedsUsdEstimate,
+  })
+  // Diagnostic log — real pnlSummaryV2 output counts.
+  // eslint-disable-next-line no-console
+  console.log('[pipeline] pnlSummaryV2 result', {
+    closedLots: pnlSummaryV2.closedLots.length,
+    evidenceMissingCount: pnlSummaryV2.evidenceMissingCount,
+    realizedPnlUsd: pnlSummaryV2.realizedPnlUsd,
   })
 
   // 6c. pricingAtTime — additive, async, unchanged from before (still its own independent real
