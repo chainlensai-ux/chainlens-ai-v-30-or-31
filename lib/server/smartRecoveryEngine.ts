@@ -1,9 +1,16 @@
-// SMART-RECOVERY-ENGINE: isolated, additive module, admin-only. Does NOT reimplement swap
-// detection, FIFO matching, or price evidence — it delegates entirely to the existing
-// fetchWalletSnapshot pipeline (lib/server/walletSnapshot.ts), only adding a cheap window-detection
-// pre-pass and admin-tunable page/price caps on top. Never invented trades or synthetic cost basis:
-// whatever fetchWalletSnapshot's own integrity gates allow is all that comes back here.
-import { fetchWalletSnapshot, WALLET_SCAN_MODE_CONFIG, type WalletSnapshot } from './walletSnapshot'
+// SMART-RECOVERY-ENGINE: isolated, additive module, admin-only.
+//
+// V1 ENGINE DISABLED: this previously delegated entirely to fetchWalletSnapshot()
+// (lib/server/walletSnapshot.ts). Per an explicit, confirmed request to cut V1 CU usage ahead of a
+// V2 integration that hasn't landed yet, that call — and its value import, so no V1 code path can
+// execute from this file — has been removed. (Verified before doing this: runSmartRecovery() has
+// zero live callers anywhere in the current codebase — its only caller was app/api/wallet/route.ts,
+// deleted earlier this session — so this change has zero user-facing blast radius.) The window
+// pre-pass below (detectTradingWindow, lib/server/smartRecoveryWindow.ts) is untouched — it calls
+// Moralis directly, not walletSnapshot.ts, so it isn't V1 and doesn't fire Alchemy RPC calls.
+// WalletSnapshot stays as a type-only import (erased at compile time, never executes) since
+// SmartRecoveryResult still needs to describe its real shape for the non-stub case.
+import { WALLET_SCAN_MODE_CONFIG, type WalletSnapshot } from './walletSnapshot'
 import { detectTradingWindow, type SmartRecoveryWindow } from './smartRecoveryWindow'
 
 export type SmartRecoveryAdminControls = {
@@ -20,7 +27,7 @@ export type SmartRecoveryResult = {
   smartRecoveryPagesUsed: number
   smartRecoveryMaxPagesAllowed: number
   smartRecoveryMaxPriceAttemptsAllowed: number
-  snapshot: WalletSnapshot
+  snapshot: WalletSnapshot | { ok: false; error: 'V1 engine disabled' }
 }
 
 export async function runSmartRecovery(
@@ -47,21 +54,7 @@ export async function runSmartRecovery(
   const targetedOnly = Boolean(controls.adminTargetedRecoveryOnly) || Boolean(controls.adminDisableFullHistoryScan)
   const effectivePages = targetedOnly && !window.startTimestamp ? 0 : maxPages
 
-  const snapshot = await fetchWalletSnapshot(address, {
-    chain,
-    deepActivity: true,
-    historicalCoverage: effectivePages > 0,
-    maxHistoricalPages: effectivePages,
-    maxFallbackPages: maxPriceAttempts,
-    walletScanBudget: {
-      scanMode: 'full_recovery',
-      requestedHistoricalScan: effectivePages > 0,
-      totalCreditTarget: baseConfig.targetCredits,
-      totalCreditHardCap: baseConfig.hardCapCredits,
-      adminOverrideUsed: true,
-      scanModeConfig: baseConfig,
-    },
-  })
+  const snapshot: SmartRecoveryResult['snapshot'] = { ok: false, error: 'V1 engine disabled' }
 
   return {
     smartRecoveryWindow: window,
