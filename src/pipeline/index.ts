@@ -75,7 +75,7 @@ function buildPriceSources(): PriceSources {
   // runtime's own logs (e.g. Vercel's function logs), whether a real key was found in *that*
   // process's env at module load, without needing a separate deployment-inspection tool.
   // eslint-disable-next-line no-console
-  console.log(`[pipeline] buildPriceSources: real GoldRush key present = ${Boolean(apiKey)}`)
+  console.warn(`[pipeline] buildPriceSources: real GoldRush key present = ${Boolean(apiKey)}`)
   if (!apiKey) return noPriceSources()
   const client = new GoldRushClient(apiKey)
   return { primary: goldrushPriceSource(client), fallback: noPriceSources().fallback }
@@ -316,7 +316,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // codebase (GoldRush + Alchemy; there is no Moralis integration anywhere here — logging a
   // "hasMoralis" flag would be fabricated, since no such provider is ever called).
   // eslint-disable-next-line no-console
-  console.log('[pipeline] provider env check', {
+  console.warn('[pipeline] provider env check', {
     hasGoldrush: Boolean(process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY),
     hasAlchemyBase: Boolean(process.env.ALCHEMY_BASE_KEY ?? process.env.ALCHEMY_API_KEY),
     hasAlchemyEth: Boolean(process.env.ALCHEMY_ETHEREUM_KEY ?? process.env.ALCHEMY_API_KEY),
@@ -338,7 +338,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     alchemy: { ok: r.providerResults.alchemy.ok, errorReason: r.providerResults.alchemy.errorReason, eventCount: r.providerResults.alchemy.events.length },
   }))
   // eslint-disable-next-line no-console
-  console.log('[pipeline] providerDiagnostics', providerDiagnostics)
+  console.warn('[pipeline] providerDiagnostics', providerDiagnostics)
 
   // 2. normalization — pure, zero provider calls.
   const allRawEvents = providerResults.flatMap((r) => r.rawEvents)
@@ -394,7 +394,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       {} as Record<string, number>,
     )
     // eslint-disable-next-line no-console
-    console.log(
+    console.warn(
       `[pipeline] sellTimelineV2: ${sellTimelineV2.entries.length}/${outboundCount} outbound event(s) detected as sells`,
       { byConfidence: confidenceCounts, bridgeTimelineCandidates: bridgeTimeline.length },
     )
@@ -417,7 +417,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // Diagnostic log — real pricing call outcomes for this wallet's actual events (source breakdown
   // exposed on the lookups themselves, see priceLotsForWallet.ts).
   // eslint-disable-next-line no-console
-  console.log('[pipeline] priceLotsForWallet: pricing source breakdown', walletPriceLookups.sourceBreakdown)
+  console.warn('[pipeline] priceLotsForWallet: pricing source breakdown', walletPriceLookups.sourceBreakdown)
 
   // 6. fifoEngine — pure, no provider calls; consumes normalized events + recoveryPolicy's
   // already-fetched recoveredEvents, now WITH real pricing (stage 5c) wired into its existing
@@ -434,7 +434,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   })
   // Diagnostic log — real FIFO output counts, directly requested.
   // eslint-disable-next-line no-console
-  console.log('[pipeline] fifoEngine result', {
+  console.warn('[pipeline] fifoEngine result', {
     matchedLots: fifoAndPnl.matchedLots.length,
     unmatchedBuys: fifoAndPnl.unmatchedBuys,
     unmatchedSells: fifoAndPnl.unmatchedSells,
@@ -455,7 +455,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   })
   // Diagnostic log — real pnlSummaryV2 output counts.
   // eslint-disable-next-line no-console
-  console.log('[pipeline] pnlSummaryV2 result', {
+  console.warn('[pipeline] pnlSummaryV2 result', {
     closedLots: pnlSummaryV2.closedLots.length,
     evidenceMissingCount: pnlSummaryV2.evidenceMissingCount,
     realizedPnlUsd: pnlSummaryV2.realizedPnlUsd,
