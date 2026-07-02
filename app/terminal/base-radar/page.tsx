@@ -52,6 +52,11 @@ interface RadarData {
   tokens: RadarToken[]
   stats: RadarStats
   fetchedAt: string
+  // Real fields the API always returns (app/api/radar/route.ts) but this interface previously
+  // didn't declare — forced an inline `as { limitedLiveFeed?: boolean }` cast at the one call site
+  // that read it instead of being properly typed.
+  limitedLiveFeed?: boolean
+  mode?: 'shallow' | 'full'
 }
 
 type RadarStatus = 'HOT' | 'WATCH' | 'EARLY' | 'UNVERIFIED' | 'RISKY' | 'DEAD'
@@ -1203,7 +1208,13 @@ export default function BaseRadarPage() {
               </div>
             )}
 
-            {!loading && tokens.length === 0 && !error && <EmptyFeed limited={Boolean((data as { limitedLiveFeed?: boolean } | null)?.limitedLiveFeed)} />}
+            {!loading && tokens.length === 0 && !error && <EmptyFeed limited={Boolean(data?.limitedLiveFeed)} />}
+
+            {!loading && tokens.length > 0 && Boolean(data?.limitedLiveFeed) && (
+              <div style={{ padding: '10px 14px', borderRadius: '10px', background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.20)', color: '#fbbf24', fontSize: '11px', marginBottom: '12px', fontFamily: 'var(--font-plex-mono)' }}>
+                Radar data partial — some metrics unavailable. Showing {tokens.length} result{tokens.length === 1 ? '' : 's'}.
+              </div>
+            )}
 
             {!loading && tokens.length > 0 && filteredAndSortedTokens.length === 0 && (
               <div style={{ borderRadius: '12px', border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(255,255,255,0.02)', padding: '16px', fontFamily: 'var(--font-plex-mono)', fontSize: '12px', color: '#64748b' }}>
