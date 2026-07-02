@@ -21,11 +21,14 @@ import { buildPnlSummary } from '../modules/pnlEngine/index'
 import { resolvePricingAtTime } from '../modules/pricingAtTimeEngine/index'
 import { goldrushPriceSource } from '../modules/pricingAtTimeEngine/sources/goldrushPriceSource'
 import type { GoldRushClient } from '@covalenthq/client-sdk'
+import { priceLotsForWallet } from '../pipeline/priceLotsForWallet'
+import type { MatchedLot } from '../modules/fifoEngine/types'
+import type { BuildPnlSummaryParams } from '../modules/pnlEngine/types'
 import { assembleReport } from '../modules/finalReportAssembler/index'
 import type { ScanMetadata } from '../modules/finalReportAssembler/types'
 import type { ProviderStatus, SupportedChain } from '../modules/providerFetchWindow/types'
 
-import { runWalletScan } from '../pipeline/index'
+import { buildFifoBackedPnlResolvers, runWalletScan } from '../pipeline/index'
 import type { RunWalletScanResult } from '../pipeline/types'
 import { INTEL_WINDOW_DAYS, SUPPORTED_CHAINS } from '../pipeline/types'
 import {
@@ -119,11 +122,44 @@ async function runSyntheticPipeline(wallet: WalletTestConfig): Promise<RunWallet
     sellTimelineV2 = { totalSells: 0, chainContext: { includedChains: [], excludedChains: [] }, entries: [] }
   }
 
+  const testPriceSources = { primary: goldrushPriceSource(FAKE_GOLDRUSH_CLIENT), fallback: () => null }
+
+  // Mirrors pipeline/index.ts's stage 5c: pre-resolve real (here, fake-client-backed) pricing for
+  // every normalized event before fifoEngine runs, so the synthetic path exercises the exact same
+  // priceUsdLookup/currentPriceUsdLookup wiring production does.
+  const { normalizedEvents: recoveredNormalizedForPricing } = normalizeEvents(
+    recoveryPolicy.evaluation.flatMap((e) => e.recoveredEvents),
+    wallet.walletAddress,
+  )
+  const walletPriceLookups = await priceLotsForWallet({
+    normalizedEvents,
+    recoveredEvents: recoveredNormalizedForPricing,
+    priceSources: testPriceSources,
+  })
+
+  let fifoAndPnl: FifoOutput
+  try {
+    fifoAndPnl = buildFifoOutput({
+      normalizedEvents,
+      recoveredRawEvents: recoveryPolicy.evaluation.flatMap((e) => e.recoveredEvents),
+      walletAddress: wallet.walletAddress,
+      priceUsdLookup: walletPriceLookups.priceUsdLookup,
+      currentPriceUsdLookup: walletPriceLookups.currentPriceUsdLookup,
+    })
+  } catch {
+    fifoAndPnl = fifoEngineFallback(timelines.buyTimeline, timelines.sellTimeline)
+  }
+
+  // Mirrors pipeline/index.ts's stage 6b: pnlSummaryV2 now runs after fifoAndPnl so it can borrow
+  // fifoEngine's real matched-lot cost basis/proceeds.
+  const pnlResolvers = buildFifoBackedPnlResolvers(fifoAndPnl.matchedLots as MatchedLot[])
   let pnlSummaryV2: ReturnType<typeof buildPnlSummary>
   try {
     pnlSummaryV2 = buildPnlSummary({
       sellEntries: sellTimelineV2.entries,
       buyEntries: timelines.buyTimeline.entries,
+      resolveCostUsdEstimate: pnlResolvers.resolveCostUsdEstimate as BuildPnlSummaryParams['resolveCostUsdEstimate'],
+      resolveProceedsUsdEstimate: pnlResolvers.resolveProceedsUsdEstimate as BuildPnlSummaryParams['resolveProceedsUsdEstimate'],
     })
   } catch {
     pnlSummaryV2 = {
@@ -141,21 +177,10 @@ async function runSyntheticPipeline(wallet: WalletTestConfig): Promise<RunWallet
     pricingAtTime = await resolvePricingAtTime({
       buyEntries: timelines.buyTimeline.entries,
       sellEntries: sellTimelineV2.entries,
-      priceSources: { primary: goldrushPriceSource(FAKE_GOLDRUSH_CLIENT), fallback: () => null },
+      priceSources: testPriceSources,
     })
   } catch {
     pricingAtTime = { costUsd: {}, proceedsUsd: {}, evidenceMissingCount: 0, sourceBreakdown: { primary: 0, fallback: 0, failed: 0 } }
-  }
-
-  let fifoAndPnl: FifoOutput
-  try {
-    fifoAndPnl = buildFifoOutput({
-      normalizedEvents,
-      recoveredRawEvents: recoveryPolicy.evaluation.flatMap((e) => e.recoveredEvents),
-      walletAddress: wallet.walletAddress,
-    })
-  } catch {
-    fifoAndPnl = fifoEngineFallback(timelines.buyTimeline, timelines.sellTimeline)
   }
 
   const windowCoverage = computeWindowCoverage(PROVIDER_FETCH_WINDOW_DAYS_USED, recoveryPolicy.totalPagesUsedThisWallet)

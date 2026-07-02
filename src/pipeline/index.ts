@@ -36,6 +36,8 @@ import { resolvePricingAtTime } from '../modules/pricingAtTimeEngine/index'
 import type { PriceableEntry, PriceSources, PricingAtTimeResult } from '../modules/pricingAtTimeEngine/types'
 import { GoldRushClient } from '@covalenthq/client-sdk'
 import { goldrushPriceSource } from '../modules/pricingAtTimeEngine/sources/goldrushPriceSource'
+import { priceLotsForWallet } from './priceLotsForWallet'
+import type { MatchedLot } from '../modules/fifoEngine/types'
 
 import type { PreScanValidation, RunWalletScanParams, RunWalletScanResult } from './types'
 import { INTEL_WINDOW_DAYS } from './types'
@@ -109,12 +111,18 @@ async function safeRunRecoveryPolicy(params: {
   }
 }
 
+// REAL FIX for "FIFO & PnL always unavailable": buildFifoOutput has always accepted optional
+// priceUsdLookup/currentPriceUsdLookup — this pipeline simply never supplied one before. Now wired
+// to the real pre-resolved lookups from priceLotsForWallet (src/pipeline/priceLotsForWallet.ts).
+// fifoEngine's own source is unmodified; these are its existing injection points.
 function safeRunFifoEngine(params: {
   normalizedEvents: NormalizedEvent[]
   recoveryPolicy: RecoveryPolicyResult
   walletAddress: string
   buyTimeline: BuyTimeline
   sellTimeline: SellTimeline
+  priceUsdLookup?: import('../modules/fifoEngine/types').PriceUsdLookup
+  currentPriceUsdLookup?: import('../modules/fifoEngine/types').CurrentPriceUsdLookup
 }): FifoOutput {
   try {
     const recoveredRawEvents: RawProviderEvent[] = params.recoveryPolicy.evaluation.flatMap((e) => e.recoveredEvents)
@@ -122,9 +130,33 @@ function safeRunFifoEngine(params: {
       normalizedEvents: params.normalizedEvents,
       recoveredRawEvents,
       walletAddress: params.walletAddress,
+      priceUsdLookup: params.priceUsdLookup,
+      currentPriceUsdLookup: params.currentPriceUsdLookup,
     })
   } catch {
     return fifoEngineFallback(params.buyTimeline, params.sellTimeline)
+  }
+}
+
+// PURE. Real cost basis / proceeds per sell, sourced from fifoEngine's own matched lots (grouped
+// by closedTxHash — a single sell transaction can consume more than one lot on a partial fill, so
+// this sums each portion's real costBasisUsd/proceedsUsd). A sell with no matched lots (or whose
+// lots are unpriced, evidenceQuality: 'unpriced') simply has no entry here — never a fabricated 0.
+export function buildFifoBackedPnlResolvers(matchedLots: MatchedLot[]): {
+  resolveCostUsdEstimate: NonNullable<BuildPnlSummaryParams['resolveCostUsdEstimate']>
+  resolveProceedsUsdEstimate: NonNullable<BuildPnlSummaryParams['resolveProceedsUsdEstimate']>
+} {
+  const costByTxHash = new Map<string, number>()
+  const proceedsByTxHash = new Map<string, number>()
+
+  for (const lot of matchedLots) {
+    if (lot.costBasisUsd != null) costByTxHash.set(lot.closedTxHash, (costByTxHash.get(lot.closedTxHash) ?? 0) + lot.costBasisUsd)
+    if (lot.proceedsUsd != null) proceedsByTxHash.set(lot.closedTxHash, (proceedsByTxHash.get(lot.closedTxHash) ?? 0) + lot.proceedsUsd)
+  }
+
+  return {
+    resolveCostUsdEstimate: (sell) => costByTxHash.get(sell.txHash) ?? null,
+    resolveProceedsUsdEstimate: (sell) => proceedsByTxHash.get(sell.txHash) ?? null,
   }
 }
 
@@ -192,10 +224,13 @@ function safeRunSellTimelineV2(params: {
   }
 }
 
-// Additive, pure, zero-cost — read model over real sellTimelineV2.entries + buyTimeline.entries
-// (src/modules/pnlEngine). Never touches fifoEngine/fifoAndPnl (the real, existing PnL engine) at
-// all. Pricing resolvers default to undefined here, which buildPnlSummary itself treats as "read
-// each entry's own real (always-null today) field" — never a fabricated cost/proceeds value.
+// REAL FIX: pnlEngine's own source is still never modified and still never imports fifoEngine —
+// but the PIPELINE now bridges the two via pnlEngine's existing resolveCostUsdEstimate/
+// resolveProceedsUsdEstimate injection points, sourced from fifoAndPnl.matchedLots (fifoEngine's
+// own real, quantity-matched, now-priced lots — see buildFifoBackedPnlResolvers below). This is
+// the correct way to give a sell's cost basis real FIFO lot-matching evidence: pnlEngine
+// deliberately never re-implements lot matching itself (see pnlEngine/types.ts's own honesty
+// note), so it borrows fifoEngine's real answer instead of leaving the resolver stubbed.
 function safeRunPnlSummaryV2(params: {
   sellEntries: SellTimelineEntry[]
   buyEntries: BuildPnlSummaryParams['buyEntries']
@@ -315,33 +350,55 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     walletAddress: params.walletAddress,
   })
 
-  // 5c. pnlSummaryV2 — additive, pure, zero-cost. Runs after sellTimelineV2 (stage 5b) and
-  // recoveryPolicy (stage 5), before behaviorIntel and final assembly. Pricing resolvers are left
-  // undefined (buildPnlSummary's own default: read each entry's real, always-null field) — never
-  // a client-suppliable or fabricated value. Never touches fifoEngine/fifoAndPnl below.
-  const pnlSummaryV2 = safeRunPnlSummaryV2({
-    sellEntries: sellTimelineV2.entries,
-    buyEntries: timelines.buyTimeline.entries,
-  })
-
-  // 5d. pricingAtTime — additive, async. Runs after sellTimelineV2 (5b)/recoveryPolicy (5), before
-  // behaviorIntel and final assembly, per the requested placement. priceSources defaults to
-  // noPriceSources() (honestly always null) — no real historical-price API is integrated anywhere
-  // in this codebase yet. Never touches fifoEngine's own, separate pricing mechanism.
-  const pricingAtTime = await safeRunPricingAtTime({
-    buyEntries: timelines.buyTimeline.entries,
-    sellEntries: sellTimelineV2.entries,
+  // 5c. priceLotsForWallet — REAL FIX, async. Pre-resolves real historical USD pricing (via
+  // pricingAtTimeEngine + PRICE_SOURCES) for every normalized event fifoEngine is about to merge
+  // and process (base + recovered), then hands back sync lookup functions for fifoEngine's
+  // existing priceUsdLookup/currentPriceUsdLookup injection points. Needs recoveredEvents already
+  // normalized — normalizeEvents is a pure, cheap re-use of the same real recoveryPolicy.evaluation
+  // output safeRunFifoEngine already normalizes internally; normalizing it here too (rather than
+  // reaching into fifoEngine's internals) keeps this module's "no runtime coupling" boundary intact.
+  const recoveredRawEventsForPricing = recoveryPolicy.evaluation.flatMap((e) => e.recoveredEvents)
+  const { normalizedEvents: recoveredNormalizedForPricing } = normalizeEvents(recoveredRawEventsForPricing, params.walletAddress)
+  const walletPriceLookups = await priceLotsForWallet({
+    normalizedEvents,
+    recoveredEvents: recoveredNormalizedForPricing,
     priceSources: PRICE_SOURCES,
   })
 
   // 6. fifoEngine — pure, no provider calls; consumes normalized events + recoveryPolicy's
-  // already-fetched recoveredEvents only.
+  // already-fetched recoveredEvents, now WITH real pricing (stage 5c) wired into its existing
+  // priceUsdLookup/currentPriceUsdLookup injection points — the actual fix for "PnL always
+  // unavailable". fifoEngine's own source is unmodified.
   const fifoAndPnl = safeRunFifoEngine({
     normalizedEvents,
     recoveryPolicy,
     walletAddress: params.walletAddress,
     buyTimeline: timelines.buyTimeline,
     sellTimeline: timelines.sellTimeline,
+    priceUsdLookup: walletPriceLookups.priceUsdLookup,
+    currentPriceUsdLookup: walletPriceLookups.currentPriceUsdLookup,
+  })
+
+  // 6b. pnlSummaryV2 — additive, pure, zero-cost. Now runs AFTER fifoEngine (was before it) so it
+  // can borrow fifoEngine's real, now-priced matchedLots for resolveCostUsdEstimate/
+  // resolveProceedsUsdEstimate (see buildFifoBackedPnlResolvers) instead of leaving them stubbed.
+  // pnlEngine's own source is still never modified and still never imports fifoEngine directly.
+  const pnlResolvers = buildFifoBackedPnlResolvers(fifoAndPnl.matchedLots)
+  const pnlSummaryV2 = safeRunPnlSummaryV2({
+    sellEntries: sellTimelineV2.entries,
+    buyEntries: timelines.buyTimeline.entries,
+    resolveCostUsdEstimate: pnlResolvers.resolveCostUsdEstimate,
+    resolveProceedsUsdEstimate: pnlResolvers.resolveProceedsUsdEstimate,
+  })
+
+  // 6c. pricingAtTime — additive, async, unchanged from before (still its own independent real
+  // pricing pass over just the UI-facing buyTimeline/sellTimelineV2 entries, keyed for
+  // report.pricingAtTime's existing consumers). priceSources is the same real PRICE_SOURCES stage
+  // 5c uses. Never touches fifoEngine's own, separate pricing mechanism.
+  const pricingAtTime = await safeRunPricingAtTime({
+    buyEntries: timelines.buyTimeline.entries,
+    sellEntries: sellTimelineV2.entries,
+    priceSources: PRICE_SOURCES,
   })
 
   // 7. windowCoverage — pure arithmetic derived from the fixed fetch window and recovery pages used.
