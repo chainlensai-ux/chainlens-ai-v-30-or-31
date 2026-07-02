@@ -34,6 +34,42 @@ import type { WalletLiteResult } from '@/lib/server/walletLite'
 const V2_ADAPTER_TTL_SECONDS = 45
 const DEFAULT_CHAINS = ['base', 'eth', 'arbitrum']
 
+// Mirrors tokenCache.ts's own internal env check — kept as a separate, explicit guard here too
+// (rather than relying solely on getTokenCache/setTokenCache's internal check) so this file's own
+// KV READ/KV WRITE log lines are never emitted when KV isn't actually configured, and so a
+// misconfigured deployment is diagnosable directly from this file's logs, not just tokenCache.ts's.
+function kvEnabled(): boolean {
+  return Boolean(process.env.KV_REST_API_URL) && Boolean(process.env.KV_REST_API_TOKEN)
+}
+
+async function readFromKv(cacheKey: string): Promise<WalletLiteResult | null> {
+  if (!kvEnabled()) {
+    console.warn('KV DISABLED')
+    return null
+  }
+  try {
+    const cached = await getTokenCache<WalletLiteResult>(cacheKey)
+    if (cached) console.log('KV READ', cacheKey)
+    return cached
+  } catch (err) {
+    console.error('KV ERROR', err)
+    return null
+  }
+}
+
+async function writeToKv(cacheKey: string, value: WalletLiteResult): Promise<void> {
+  if (!kvEnabled()) {
+    console.warn('KV DISABLED')
+    return
+  }
+  try {
+    await setTokenCache(cacheKey, value, V2_ADAPTER_TTL_SECONDS)
+    console.log('KV WRITE', cacheKey)
+  } catch (err) {
+    console.error('KV ERROR', err)
+  }
+}
+
 async function runV2Scan(address: string): Promise<RunWalletScanV2Result | null> {
   try {
     return await runWalletScanV2({ walletAddress: address, chains: DEFAULT_CHAINS, scanMode: 'normal' })
@@ -73,14 +109,14 @@ async function getCachedOrCompute(
   cacheKey: string,
   address: string,
 ): Promise<WalletLiteResult | null> {
-  const cached = await getTokenCache<WalletLiteResult>(cacheKey)
+  const cached = await readFromKv(cacheKey)
   if (cached) return cached
 
   const report = await runV2Scan(address)
   if (!report) return null
 
   const unified = toUnifiedShape(address, report)
-  await setTokenCache(cacheKey, unified, V2_ADAPTER_TTL_SECONDS)
+  await writeToKv(cacheKey, unified)
   return unified
 }
 
@@ -111,9 +147,7 @@ export async function getWalletFromV2(address: string): Promise<WalletLiteResult
 export async function getIdentityFromV2(address: string): Promise<WalletLiteResult | null> {
   try {
     const cacheKey = `v2:identity:${address.toLowerCase()}`
-    const cached = await getTokenCache<WalletLiteResult>(cacheKey)
-    if (cached) return cached
-    return null
+    return await readFromKv(cacheKey)
   } catch (err) {
     console.warn('[v2Adapters] getIdentityFromV2 failed', { address, error: err instanceof Error ? err.message : String(err) })
     return null

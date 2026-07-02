@@ -32,12 +32,20 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 // Returns the cached value, or null on a miss, misconfiguration, or any KV error — a caller never
 // needs to distinguish these cases; all of them mean "run the real scan."
 export async function getTokenCache<T = unknown>(key: string): Promise<T | null> {
-  if (!kvConfigured()) return null
+  if (!kvConfigured()) {
+    console.warn('KV DISABLED: missing env vars')
+    return null
+  }
   try {
     const value = await withTimeout(kv.get<T>(key), KV_CALL_TIMEOUT_MS)
-    return value ?? null
+    if (value == null) {
+      console.log('KV MISS', key)
+      return null
+    }
+    console.log('KV HIT', key)
+    return value
   } catch (err) {
-    console.warn('[tokenCache] getTokenCache failed, treating as cache miss', { key, error: err instanceof Error ? err.message : String(err) })
+    console.error('KV ERROR', err)
     return null
   }
 }
@@ -45,10 +53,13 @@ export async function getTokenCache<T = unknown>(key: string): Promise<T | null>
 // Best-effort write — a failure here must never surface to the caller or affect the response
 // already being returned to the client.
 export async function setTokenCache<T = unknown>(key: string, value: T, ttlSeconds: number): Promise<void> {
-  if (!kvConfigured()) return
+  if (!kvConfigured()) {
+    console.warn('KV DISABLED: missing env vars')
+    return
+  }
   try {
     await withTimeout(kv.set(key, value, { ex: ttlSeconds }), KV_CALL_TIMEOUT_MS)
   } catch (err) {
-    console.warn('[tokenCache] setTokenCache failed, response was still returned to the client', { key, error: err instanceof Error ? err.message : String(err) })
+    console.error('KV ERROR', err)
   }
 }
