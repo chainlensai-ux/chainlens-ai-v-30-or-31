@@ -8,9 +8,8 @@
     }
   ],
   "functions": {
-    "app/api/scan/route.ts": { "maxDuration": 60, "runtime": "nodejs20.x" },
-    "app/api/scan-v2/route.ts": { "maxDuration": 60, "runtime": "nodejs20.x" },
-    "app/api/scan-v2/modules/*/route.ts": { "maxDuration": 60, "runtime": "nodejs20.x" },
-    "app/api/diagnostics/*/route.ts": { "runtime": "nodejs20.x" }
+    "app/api/scan/route.ts": { "maxDuration": 60 },
+    "app/api/scan-v2/route.ts": { "maxDuration": 60 },
+    "app/api/scan-v2/modules/*/route.ts": { "maxDuration": 60 }
   }
 }
