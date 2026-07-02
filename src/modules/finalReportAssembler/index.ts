@@ -60,5 +60,6 @@ export function assembleReport(input: AssembleReportInput): FinalReport {
     pnlSummaryV2: input.pnlSummaryV2,
     pricingAtTime: input.pricingAtTime,
     providerDiagnostics: input.providerDiagnostics,
+    pricingProvidersStatus: input.pricingProvidersStatus,
   }
 }

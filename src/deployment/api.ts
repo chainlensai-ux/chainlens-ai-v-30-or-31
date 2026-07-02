@@ -99,6 +99,7 @@ export const MODULE_FIELDS = {
   providerDiagnostics: 'providerDiagnostics',
   pricingAtTime: 'pricingAtTime',
   pnlSummaryV2: 'pnlSummaryV2',
+  pricingProvidersStatus: 'pricingProvidersStatus',
 } as const
 
 export type ModuleKey = keyof typeof MODULE_FIELDS
@@ -117,6 +118,7 @@ export type ScanModules = {
   providerDiagnostics: SanitizedReportV2['providerDiagnostics']
   pricingAtTime: SanitizedReportV2['pricingAtTime']
   pnlSummaryV2: SanitizedReportV2['pnlSummaryV2']
+  pricingProvidersStatus: SanitizedReportV2['pricingProvidersStatus']
 }
 
 // Splits an already-sanitized+masked V2 report into the 9 standalone modules. Pure reshaping —
@@ -136,6 +138,7 @@ export function buildModules(sanitized: SanitizedReportV2): ScanModules {
     providerDiagnostics: sanitized.providerDiagnostics,
     pricingAtTime: sanitized.pricingAtTime,
     pnlSummaryV2: sanitized.pnlSummaryV2,
+    pricingProvidersStatus: sanitized.pricingProvidersStatus,
   }
 }
 
