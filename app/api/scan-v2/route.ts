@@ -1,21 +1,5 @@
-rrr/ POST /api/scan-v2 — returns the V2 engine's report split into modules: { success, modules }.
-// E
-ach module is exactly what a request to /api/scan-v2/modules/<name> would return fodddddddcurl -X POST \
-  -H "Content-Type: application/json" \
-  --data '{"walletAddress":"0x8a5adc20b7e17d6535e34ff31bc9549ac2771286","chains":["base"],"scanMode":"deep"}' \
-  https://chainlens-vthirty-7qssf81ek-chainlensai-3646s-projects.vercel.app//api/scan-v2 \
-  -o scan.json
-
-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-
-
-
-
-curl -X POST \
-  -H "Content-Type: application/json" \
-  --data '{"walletAddress":"0x8a5adc20b7e17d6535e34ff31bc9549ac2771286","chains":["base"],"scanMode":"deep"}' \
-  https://chainlens-vthirty-7qssf81ek-chainlensai-3646s-projects.vercel.app//api/scan-v2 \
-  -o scan.json
+// POST /api/scan-v2 — returns the V2 engine's report split into modules: { success, modules }.
+// Each module is exactly what a request to /api/scan-v2/modules/<name> would return for
 // `modules.<name>` — this route just runs one scan and returns all 9 at once, for callers that
 // want everything in a single round trip. runWalletScanV2 itself is unchanged; only the response
 // shape is a reshaping of the same sanitized report (see src/deployment/api.ts buildModulesResponse).
