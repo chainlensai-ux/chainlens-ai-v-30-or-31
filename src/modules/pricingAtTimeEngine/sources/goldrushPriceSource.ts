@@ -22,6 +22,7 @@
 import { GoldRushClient } from '@covalenthq/client-sdk'
 import type { Chain } from '@covalenthq/client-sdk'
 import type { PriceSourceFn } from '../types'
+import { logRpcCall } from '@/lib/server/rpcDebug'
 
 // Real, verified GoldRush chain slugs (confirmed against the installed SDK's Generic.types.d.ts
 // ChainName enum). Kept as this module's own literal copy — same "no runtime coupling between
@@ -64,6 +65,7 @@ export function goldrushPriceSource(client: GoldRushClient): PriceSourceFn {
     if (!dateString) return null
 
     try {
+      logRpcCall({ route: 'pricingAtTimeEngine:goldrushPriceSource', chain, method: 'goldrush_sdk_getTokenPrices' })
       const response = await client.PricingService.getTokenPrices(chainSlug, 'USD', token, {
         from: dateString,
         to: dateString,

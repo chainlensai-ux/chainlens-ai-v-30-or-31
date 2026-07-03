@@ -410,6 +410,7 @@ async function fetchTokenMetadata(contract: string, marketData?: Record<string, 
     const grKey = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY
     if (grKey) {
       try {
+        logRpcCall({ route: '/api/dev-wallet', chain: activeChainConfig.covalentChain, method: 'goldrush_balances_v2' })
         const grRes = await fetch(`https://api.covalenthq.com/v1/${activeChainConfig.covalentChain}/address/0x0000000000000000000000000000000000000000/balances_v2/?contract-address=${contract}`, {
           headers: { Authorization: `Bearer ${grKey}` },
           cache: 'no-store',
@@ -522,9 +523,10 @@ async function discoverOrigin(contract: string): Promise<{
   if (covalentKey) {
     diag.contract_transaction_history.attempted = true
     try {
+      logRpcCall({ route: '/api/dev-wallet', chain: activeChainConfig.covalentChain, method: 'goldrush_contract_transactions_v2' })
       const txRes = await fetch(
-        `${COVALENT_BASE_URL}/${activeChainConfig.covalentChain}/address/${contract}/transactions_v2/?key=${covalentKey}&page-size=5&block-signed-at-asc=true&no-logs=true`,
-        { cache: 'no-store', signal: AbortSignal.timeout(10000) }
+        `${COVALENT_BASE_URL}/${activeChainConfig.covalentChain}/address/${contract}/transactions_v2/?page-size=5&block-signed-at-asc=true&no-logs=true`,
+        { headers: { Authorization: `Bearer ${covalentKey}` }, cache: 'no-store', signal: AbortSignal.timeout(10000) }
       )
       diag.contract_transaction_history.httpStatus = txRes.status
       if (txRes.ok) {
@@ -784,6 +786,7 @@ async function getSupplyData(
   }
 
   try {
+    logRpcCall({ route: '/api/dev-wallet', chain: activeChainConfig.covalentChain, method: 'goldrush_token_holders_v2' })
     const res = await fetch(
       `${COVALENT_BASE_URL}/${activeChainConfig.covalentChain}/tokens/${contract}/token_holders_v2/?page-size=50`,
       { cache: 'no-store', signal: AbortSignal.timeout(9000), headers: { Authorization: `Bearer ${apiKey}` } }
@@ -852,9 +855,10 @@ async function getPreviousActivity(deployer: string | null, excludeContract?: st
   const covalentKey = process.env.COVALENT_API_KEY
   if (covalentKey) {
     try {
+      logRpcCall({ route: '/api/dev-wallet', chain: activeChainConfig.covalentChain, method: 'goldrush_deployer_transactions_v2' })
       const res = await fetch(
-        `${COVALENT_BASE_URL}/${activeChainConfig.covalentChain}/address/${deployer}/transactions_v2/?key=${covalentKey}&page-size=100&block-signed-at-asc=false&no-logs=true`,
-        { cache: 'no-store', signal: AbortSignal.timeout(10000) }
+        `${COVALENT_BASE_URL}/${activeChainConfig.covalentChain}/address/${deployer}/transactions_v2/?page-size=100&block-signed-at-asc=false&no-logs=true`,
+        { headers: { Authorization: `Bearer ${covalentKey}` }, cache: 'no-store', signal: AbortSignal.timeout(10000) }
       )
       if (res.ok) {
         const json = await res.json() as { data?: { items?: CovalentTxItem[] } }

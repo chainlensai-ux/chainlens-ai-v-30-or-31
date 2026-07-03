@@ -1,6 +1,7 @@
 // app/api/proxy/goldrush/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { createRateLimiter, getClientIp } from "@/lib/server/rateLimit";
+import { logRpcCall } from "@/lib/server/rpcDebug";
 
 const limiter = createRateLimiter({ windowMs: 60_000, max: 30 });
 
@@ -42,6 +43,7 @@ export async function GET(request: NextRequest) {
 
     const url = `https://api.covalenthq.com/${path}`;
 
+    logRpcCall({ route: "/api/proxy/goldrush", chain: path.split("/")[1] || "unknown", method: path });
     const response = await fetch(url, {
       headers: {
         Authorization: `Bearer ${process.env.GOLDRUSH_API_KEY}`,

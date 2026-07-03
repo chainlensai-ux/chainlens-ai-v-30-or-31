@@ -1429,6 +1429,7 @@ async function findTokenLinkedWallets(
 async function fetchGoldRush(chain: ChainKey, contract: string): Promise<any> {
   try {
     const _grBase = (process.env.GOLDRUSH_BASE_URL ?? 'https://api.covalenthq.com').replace(/\/$/, '')
+    logRpcCall({ route: "/api/token", chain, method: "goldrush_token_metadata" });
     const res = await fetch(
       `${_grBase}/v1/${chain}/tokens/${contract}/`,
       { headers: { Authorization: `Bearer ${process.env.COVALENT_API_KEY}` }, signal: AbortSignal.timeout(5000) }
@@ -1463,6 +1464,7 @@ async function fetchGoldRushContractIntel(chain: ChainKey, contract: string): Pr
     const apiKey = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY ?? ''
     if (!apiKey) return null
     const _grBase = (process.env.GOLDRUSH_BASE_URL ?? 'https://api.covalenthq.com').replace(/\/$/, '')
+    logRpcCall({ route: "/api/token", chain: chainSlug, method: "goldrush_contract_security" });
     const res = await fetch(
       `${_grBase}/v1/${chainSlug}/tokens/${contract}/security/`,
       {
@@ -2188,6 +2190,7 @@ async function fetchGMGN(contract: string): Promise<any> {
 
 async function fetchTokenMetadata(chain: ChainKey, contract: string): Promise<any> {
   try {
+    logRpcCall({ route: "/api/token", chain, method: "goldrush_balances_v2" });
     const res = await fetch(
       `https://api.covalenthq.com/v1/${chain}/address/0x0000000000000000000000000000000000000000/balances_v2/?contract-address=${contract}`,
       { headers: { Authorization: `Bearer ${process.env.COVALENT_API_KEY}` }, signal: AbortSignal.timeout(5000) }
@@ -2242,6 +2245,7 @@ async function fetchTokenHoldersUncached(_chain: ChainKey, contract: string): Pr
     const _grBase = (process.env.GOLDRUSH_BASE_URL ?? 'https://api.covalenthq.com').replace(/\/$/, '')
     const url = `${_grBase}${endpointPath}?page-number=0&page-size=100`
     console.log('[holder-debug] contract', contract, 'chain', chainSlug, 'path', endpointPath, 'params page-number=0&page-size=100')
+    logRpcCall({ route: "/api/token", chain: chainSlug, method: "goldrush_token_holders_v2" });
     const res = await fetch(url, {
       cache: 'no-store',
       headers: { Authorization: `Bearer ${apiKey}` },

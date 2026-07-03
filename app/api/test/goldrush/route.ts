@@ -11,6 +11,7 @@
 
 import { NextResponse } from 'next/server'
 import { GoldRushClient } from '@covalenthq/client-sdk'
+import { logRpcCall } from '@/lib/server/rpcDebug'
 
 export const dynamic = 'force-dynamic'
 
@@ -24,6 +25,7 @@ async function testGoldrush(): Promise<{ ok: boolean; data?: unknown; error?: st
 
   try {
     const client = new GoldRushClient(apiKey)
+    logRpcCall({ route: '/api/test/goldrush', chain: 'all', method: 'goldrush_sdk_getAllChains' })
     const response = await client.BaseService.getAllChains()
     if (response.error) return { ok: false, error: response.error_message ?? 'goldrush_api_error' }
     return { ok: true, data: { chainCount: response.data?.items?.length ?? 0 } }

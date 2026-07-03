@@ -13,6 +13,7 @@
 // export const dynamic = 'force-dynamic'.
 
 import { NextResponse } from 'next/server'
+import { logRpcCall } from '@/lib/server/rpcDebug'
 
 export const dynamic = 'force-dynamic'
 
@@ -25,6 +26,7 @@ async function testCovalent(): Promise<{ ok: boolean; data?: unknown; error?: st
   if (!apiKey) return { ok: false, error: 'no_api_key_configured' }
 
   try {
+    logRpcCall({ route: '/api/test/covalent', chain: 'all', method: 'covalent_chains' })
     const res = await fetch('https://api.covalenthq.com/v1/chains/', {
       headers: { Authorization: `Bearer ${apiKey}` },
       signal: AbortSignal.timeout(8_000),

@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { getVerifiedUserPlan } from '@/lib/supabase/userSettings'
+import { logRpcCall } from '@/lib/server/rpcDebug'
 
 type TrackedWallet = {
   address: string
@@ -314,6 +315,7 @@ async function fetchWalletTransactionsFromProvider(address: string, apiKey: stri
 
   let response: Response
   try {
+    logRpcCall({ route: '/api/whale-alerts/sync', chain: PROVIDER_CHAIN, method: 'goldrush_transactions_v3' })
     response = await fetch(url.toString(), {
       headers: {
         Authorization: `Bearer ${apiKey}`,

@@ -3691,6 +3691,7 @@ async function callGoldrush(
   const cacheKey = `gr:${url.toString()}`;
   if (_clarkGoldrushDedupeMap.has(cacheKey)) return _clarkGoldrushDedupeMap.get(cacheKey);
 
+  logRpcCall({ route: "/api/clark", chain: path.split("/")[0] || "unknown", method: `goldrush:${path.split("/").slice(1, 2).join("/") || path}` });
   const promise = fetch(url.toString(), {
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -3720,6 +3721,7 @@ async function callCovalent(
   const cacheKey = `cv:${url.toString()}`;
   if (_clarkGoldrushDedupeMap.has(cacheKey)) return _clarkGoldrushDedupeMap.get(cacheKey);
 
+  logRpcCall({ route: "/api/clark", chain: path.split("/")[0] || "unknown", method: `covalent:${path.split("/").slice(1, 2).join("/") || path}` });
   const promise = fetch(url.toString(), {
     headers: {
       Authorization: `Bearer ${apiKey}`,
