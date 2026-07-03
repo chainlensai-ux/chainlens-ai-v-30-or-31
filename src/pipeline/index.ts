@@ -101,8 +101,27 @@ function buildPriceSources(): PriceSources {
   console.warn(`[pipeline] buildPriceSources: real GoldRush key present = ${Boolean(apiKey)}`)
   const fallback = withPriceSourceCache(multiProviderPriceSource(), 'fallback')
   if (!apiKey) return { primary: fallback, fallback: noPriceSources().fallback }
-  const client = new GoldRushClient(apiKey)
-  return { primary: withPriceSourceCache(goldrushPriceSource(client), 'primary'), fallback }
+  // BUG FIX, DISCLOSED: `new GoldRushClient(apiKey)` throws synchronously (a plain object, not an
+  // Error instance — confirmed by reading the SDK's own source) when apiKey fails its local
+  // key-format regex check. Since this whole function runs at MODULE IMPORT TIME (PRICE_SOURCES
+  // below is a top-level `export const`), an unwrapped throw here would crash the entire module
+  // load for every route that imports this pipeline — not the graceful "fall back to
+  // multiProviderPriceSource" behavior this file otherwise guarantees everywhere else. A malformed
+  // (not just missing) key now degrades the same way a missing key already does, instead of taking
+  // down the whole V2 pipeline at cold start.
+  try {
+    const client = new GoldRushClient(apiKey)
+    return { primary: withPriceSourceCache(goldrushPriceSource(client), 'primary'), fallback }
+  } catch (err) {
+    // The SDK throws a plain { error_message } object here, not an Error instance (confirmed by
+    // reading its source) — extracted explicitly so this log is actually useful, not "[object Object]".
+    const reason = err instanceof Error
+      ? err.message
+      : (typeof err === 'object' && err !== null && 'error_message' in err ? String((err as { error_message: unknown }).error_message) : String(err))
+    // eslint-disable-next-line no-console
+    console.warn('[pipeline] buildPriceSources: GoldRushClient construction failed, falling back', { reason })
+    return { primary: fallback, fallback: noPriceSources().fallback }
+  }
 }
 
 // Exported (read-only) so standalone tools — currently only

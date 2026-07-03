@@ -7,11 +7,16 @@
 //
 // SCOPE NOTE, DISCLOSED: this buffer is in-memory only, per-serverless-instance (same limitation
 // as every other in-memory Map()-based cache this codebase used before KV caching was introduced —
-// it does not persist or aggregate across Vercel's instance fleet). It's also only fed by the one
-// call site this task's own scope was narrowed to instrument (lib/server/v2Adapters.ts) — see that
-// file's own comment for why the other ~13 real RPC call sites across this codebase (including 3
-// V2 engine internals and the legacy walletSnapshot.ts) are NOT wired into this buffer. This is a
-// genuine, disclosed narrowing of "log every RPC call app-wide", not a claim of full coverage.
+// it does not persist or aggregate across Vercel's instance fleet).
+//
+// COVERAGE (kept current — update this note whenever a new call site is instrumented, so it never
+// goes stale again the way the first version of this comment did): as of this update, every real
+// Alchemy/GoldRush/Covalent call site in the codebase logs here — lib/server/v2Adapters.ts,
+// lib/server/walletSnapshot.ts, lib/server/lpProof.ts, the 3 V2 engine fetch modules
+// (src/modules/providerFetchWindow, holdings, recoveryPolicy), src/modules/pricingAtTimeEngine's
+// basedex.ts (viem RPC) and goldrushPriceSource.ts (GoldRush SDK), and 7 legacy app/api/* routes
+// (token, clark, dev-wallet, scan-holder, whale-alerts, test/alchemy, test/alchemy-multichain) plus
+// app/api/whale-alerts/sync, app/api/proxy/goldrush, app/api/test/goldrush, app/api/test/covalent.
 
 export type RpcDebugEntry = {
   timestamp: number
