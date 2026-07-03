@@ -7,6 +7,7 @@ import { wagmiConfig, projectId, walletConnectEnabled } from '@/lib/wallet'
 import { useEffect, useState } from 'react'
 import '@/src/modules/swapNormalizer/normalizeTrades'
 import '@/src/modules/lotOpener/openLots.devtools'
+import '@/src/modules/lotCloser/closeLots.devtools'
 
 const queryClient = new QueryClient()
 
