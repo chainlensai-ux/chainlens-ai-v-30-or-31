@@ -8,6 +8,7 @@ import { useEffect, useState } from 'react'
 import '@/src/modules/swapNormalizer/normalizeTrades'
 import '@/src/modules/lotOpener/openLots.devtools'
 import '@/src/modules/lotCloser/closeLots.devtools'
+import '@/src/modules/realizedPnl/computeRealizedPnl.devtools'
 
 const queryClient = new QueryClient()
 
