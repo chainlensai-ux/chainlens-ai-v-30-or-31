@@ -5,7 +5,7 @@ import { createWeb3Modal } from '@web3modal/wagmi/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { wagmiConfig, projectId, walletConnectEnabled } from '@/lib/wallet'
 import { useEffect, useState } from 'react'
-import '@/lib/devtools/normalizeTrades'
+import '@/src/modules/swapNormalizer/normalizeTrades'
 
 const queryClient = new QueryClient()
 
