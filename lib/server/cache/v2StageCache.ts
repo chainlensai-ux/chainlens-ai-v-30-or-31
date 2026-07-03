@@ -19,6 +19,21 @@
 
 import { getTokenCache, setTokenCache } from './tokenCache'
 
+// DEV-ONLY KV WARM MODE: extends the effective TTL to at least 10 minutes when NODE_ENV is not
+// "production" — reduces repeat GoldRush/Alchemy CU burn while iteratively testing the same wallet
+// locally or on a preview deployment. Production behavior is byte-for-byte unchanged: when
+// NODE_ENV === "production" this always returns the caller's own ttlSeconds, untouched.
+// Read behavior (the cache-hit path in withStageCache below) never changes either way — this only
+// widens the window a value stays cached once written, it never fabricates a cache hit that
+// wouldn't otherwise occur.
+const DEV_WARM_TTL_SECONDS = 600 // 10 minutes
+
+// Exported as a pure, isolated function specifically so this TTL-selection logic can be unit
+// tested without needing to mock the real KV client.
+export function resolveEffectiveTtl(ttlSeconds: number, nodeEnv: string | undefined): number {
+  return nodeEnv !== 'production' ? Math.max(ttlSeconds, DEV_WARM_TTL_SECONDS) : ttlSeconds
+}
+
 // Reads cache, computes on a miss, writes cache only on a genuine success. Never caches an error:
 // if `compute` throws, the cache is left untouched and the error propagates to the caller exactly
 // as it did before this wrapper existed — every one of this pipeline's 4 wrapped call sites is
@@ -29,6 +44,6 @@ export async function withStageCache<T>(key: string, ttlSeconds: number, compute
   if (cached !== null) return cached
 
   const result = await compute()
-  await setTokenCache(key, result, ttlSeconds)
+  await setTokenCache(key, result, resolveEffectiveTtl(ttlSeconds, process.env.NODE_ENV))
   return result
 }
