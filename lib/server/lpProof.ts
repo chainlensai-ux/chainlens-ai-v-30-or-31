@@ -536,7 +536,13 @@ export function classifyPoolModel(dexId: string | null | undefined): PoolModelCl
     };
   }
   const isAerodrome = id.includes("aerodrome") || id.includes("velodrome");
-  const isConcentratedMarker = /(slipstream|concentrated|algebra|\bv4\b|[-_]v4|^v4|\bcl\b|[-_]cl[-_]?|[-_]cl$)|(?:^|[-_])v3(?:[-_]|$)/.test(id);
+  // BUG FIX: the previous pattern's `[-_]cl[-_]?` / `[-_]cl$` alternatives were unanchored on the
+  // right, so "-cl" matched as a mid-word SUBSTRING of any longer token (e.g. "aerodrome-classic",
+  // "uniswap-client-pool", "some-clone-dex", "pancake-clean") — silently misclassifying real V2
+  // pools as concentrated-liquidity and marking LP lock/burn proof "not_applicable" for them. Fixed
+  // with a lookahead requiring "cl" to be followed by a separator or end-of-string, same as the
+  // existing `v3`/`v4` alternatives already require.
+  const isConcentratedMarker = /(slipstream|concentrated|algebra|\bv4\b|[-_]v4|^v4|\bcl\b|[-_]cl(?=[-_]|$))|(?:^|[-_])v3(?:[-_]|$)/.test(id);
 
   if (isAerodrome && isConcentratedMarker) {
     return {
