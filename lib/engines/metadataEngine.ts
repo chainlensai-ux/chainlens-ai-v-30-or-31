@@ -265,11 +265,21 @@ export async function getTokenMetadata(chain: MetadataChain, tokenAddress: strin
 // intentional, literal application of that rule at the one place multiple lookups run together, so
 // one call's unexpected internal error (should it ever occur despite the guarantees above) can never
 // stop the batch's other results from being returned.
+//
+// BUG FOUND AND FIXED (full-system verification pass): `requests.map((r) => getTokenMetadata(r.chain,
+// r.tokenAddress))` reads `r.chain` synchronously INSIDE the .map() callback — if any single array
+// element is null/undefined (a malformed entry), that property access throws synchronously, which
+// crashes the whole .map() call before Promise.allSettled ever runs, taking down every other
+// request's result with it. This directly contradicted this function's own documented guarantee
+// above. Fixed by building each promise defensively — a malformed entry now resolves to a fallback
+// result instead of throwing during array construction.
 export async function getTokenMetadataBatch(
-  requests: Array<{ chain: MetadataChain; tokenAddress: string }>,
+  requests: Array<{ chain: MetadataChain; tokenAddress: string } | null | undefined>,
 ): Promise<TokenMetadataResult[]> {
-  const settled = await Promise.allSettled(requests.map((r) => getTokenMetadata(r.chain, r.tokenAddress)))
+  const settled = await Promise.allSettled(
+    requests.map((r) => (r ? getTokenMetadata(r.chain, r.tokenAddress) : Promise.resolve({ address: '', ...FALLBACK }))),
+  )
   return settled.map((s, i) =>
-    s.status === 'fulfilled' ? s.value : { address: requests[i].tokenAddress, ...FALLBACK },
+    s.status === 'fulfilled' ? s.value : { address: requests[i]?.tokenAddress ?? '', ...FALLBACK },
   )
 }
