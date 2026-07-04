@@ -10,6 +10,7 @@
   "functions": {
     "app/api/scan/route.ts": { "maxDuration": 60 },
     "app/api/scan-v2/route.ts": { "maxDuration": 60 },
-    "app/api/scan-v2/modules/*/route.ts": { "maxDuration": 60 }
+    "app/api/scan-v2/modules/*/route.ts": { "maxDuration": 60 },
+    "app/api/scan-v2/full-scan/route.ts": { "maxDuration": 60 }
   }
 }
