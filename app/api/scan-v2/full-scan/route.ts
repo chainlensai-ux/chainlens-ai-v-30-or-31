@@ -110,6 +110,12 @@
 // lib/engine/modules/activity/computeChainActivity.ts's own header for what's real and reused
 // instead (fetchRawEventsForChain, normalizeEvents + buildBridgeDetectionObject,
 // buildTradesWithIntentForChain — all real, already-used-elsewhere functions).
+//
+// RISK-MODULE WIRING, DISCLOSED (added per a later task): computeRisk(...) is called right after
+// chainActivityV2, additively, attaching `riskV2`/`riskStatus` as NEW response fields. NO FIELD
+// COLLISION HERE, DISCLOSED: unlike the earlier `holdings`/`portfolio` cases, no field named `risk`
+// (or any risk-related name) exists anywhere in this response today (verified by search) — there
+// was nothing to protect or rename around; `riskV2`/`riskStatus` are added exactly as specified.
 
 import { router } from '@/src/deployment/index'
 import { handleApiError } from '@/src/deployment/api'
@@ -118,6 +124,7 @@ import { priceHoldings } from '@/lib/engine/modules/pricing/fetchPricing'
 import { buildPortfolio } from '@/lib/engine/modules/portfolio/buildPortfolio'
 import { computePnl, fetchParsedTrades } from '@/lib/engine/modules/pnl/computePnl'
 import { computeChainActivity } from '@/lib/engine/modules/activity/computeChainActivity'
+import { computeRisk } from '@/lib/engine/modules/risk/computeRisk'
 
 export async function POST(req: Request): Promise<Response> {
   try {
@@ -195,6 +202,26 @@ export async function POST(req: Request): Promise<Response> {
         chainActivityOutput = { chainActivityV2: [], chainActivityStatus: 'empty' }
       }
 
+      let riskOutput: Awaited<ReturnType<typeof computeRisk>>
+      try {
+        riskOutput = await computeRisk(
+          portfolioOutput.portfolio,
+          pnlOutput.pnlV2,
+          chainActivityOutput.chainActivityV2,
+          pricing.pricedHoldings,
+          chainHoldings,
+        )
+      } catch {
+        // Same never-throw guarantee as every other new module above.
+        riskOutput = {
+          riskV2: {
+            score: 0, level: 'low', concentrationRisk: 0, stablecoinRatio: 0,
+            unrealizedPnlPressure: 0, chainRisk: 0, volatileExposure: 0, fragmentationRisk: 0,
+          },
+          riskStatus: 'empty',
+        }
+      }
+
       body = {
         ...body,
         data: {
@@ -210,6 +237,8 @@ export async function POST(req: Request): Promise<Response> {
           pnlStatus: pnlOutput.pnlStatus,
           chainActivityV2: chainActivityOutput.chainActivityV2,
           chainActivityStatus: chainActivityOutput.chainActivityStatus,
+          riskV2: riskOutput.riskV2,
+          riskStatus: riskOutput.riskStatus,
         },
       } as typeof body
     }
