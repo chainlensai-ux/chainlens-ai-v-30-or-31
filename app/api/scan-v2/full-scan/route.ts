@@ -144,6 +144,14 @@ import { computePersonality } from '@/lib/engine/modules/personality/computePers
 // cannot be fetched there; bridgingBehavior/farmingBehavior always honestly report "none" here as a
 // result, not a fabricated non-zero guess.
 import { computeBehavior } from '@/lib/engine/modules/behavior/computeBehavior'
+// SIGNALS-MODULE WIRING, DISCLOSED (added per a later task): computeSignals(...) is called right
+// after behaviorV2 — the top of this V2 intelligence chain — additively, attaching
+// `signalsV2`/`signalsStatus` as NEW response fields. No existing `signals`/`signalsV2` field
+// exists anywhere in this codebase (verified by search) — nothing to collide with. See
+// lib/engine/modules/signals/computeSignals.ts's own header for two disclosed, real gaps: rule B's
+// "vs previous scan" comparison and rule D's "bridging_out_of_base" both need data (scan history,
+// real bridge detection) this pipeline doesn't have — neither is faked to force a signal to fire.
+import { computeSignals } from '@/lib/engine/modules/signals/computeSignals'
 
 export async function POST(req: Request): Promise<Response> {
   try {
@@ -287,6 +295,24 @@ export async function POST(req: Request): Promise<Response> {
         }
       }
 
+      let signalsOutput: Awaited<ReturnType<typeof computeSignals>>
+      try {
+        signalsOutput = await computeSignals(
+          portfolioOutput.portfolio,
+          pnlOutput.pnlV2,
+          chainActivityOutput.chainActivityV2,
+          riskOutput.riskV2,
+          personalityOutput.personalityV2,
+          behaviorOutput.behaviorV2,
+          pricing.pricedHoldings,
+          chainHoldings,
+          trades,
+        )
+      } catch {
+        // Same never-throw guarantee as every other new module above.
+        signalsOutput = { signalsV2: [], signalsStatus: 'empty' }
+      }
+
       body = {
         ...body,
         data: {
@@ -308,6 +334,8 @@ export async function POST(req: Request): Promise<Response> {
           personalityStatus: personalityOutput.personalityStatus,
           behaviorV2: behaviorOutput.behaviorV2,
           behaviorStatus: behaviorOutput.behaviorStatus,
+          signalsV2: signalsOutput.signalsV2,
+          signalsStatus: signalsOutput.signalsStatus,
         },
       } as typeof body
     }
