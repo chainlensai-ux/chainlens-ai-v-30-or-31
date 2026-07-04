@@ -101,6 +101,15 @@
 // "existing tx indexer" by that name don't exist in this codebase — see lib/engine/modules/pnl/
 // types.ts's own header for what's real and reused instead (the real swapNormalizer/tradeIntent/
 // lotOpener/lotCloser chain, via walletChainPipeline.ts's buildTradeTimelineForChain).
+//
+// CHAIN-ACTIVITY-MODULE WIRING, DISCLOSED (added per a later task): computeChainActivity(...) is
+// called right after pnlV2, additively, attaching `chainActivityV2`/`chainActivityStatus` as NEW
+// response fields — neither collides with anything already in this response (the existing,
+// untouched field is `chainSelection`, a structurally different real object). "walletChainPipeline.
+// buildChainActivityTimeline" doesn't exist anywhere in this codebase — see
+// lib/engine/modules/activity/computeChainActivity.ts's own header for what's real and reused
+// instead (fetchRawEventsForChain, normalizeEvents + buildBridgeDetectionObject,
+// buildTradesWithIntentForChain — all real, already-used-elsewhere functions).
 
 import { router } from '@/src/deployment/index'
 import { handleApiError } from '@/src/deployment/api'
@@ -108,6 +117,7 @@ import { fetchAllHoldings } from '@/lib/engine/modules/holdings/fetchHoldings'
 import { priceHoldings } from '@/lib/engine/modules/pricing/fetchPricing'
 import { buildPortfolio } from '@/lib/engine/modules/portfolio/buildPortfolio'
 import { computePnl, fetchParsedTrades } from '@/lib/engine/modules/pnl/computePnl'
+import { computeChainActivity } from '@/lib/engine/modules/activity/computeChainActivity'
 
 export async function POST(req: Request): Promise<Response> {
   try {
@@ -150,9 +160,17 @@ export async function POST(req: Request): Promise<Response> {
         }
       }
 
+      // Fetched once, reused for both pnl and chain-activity computation below (per the later
+      // task's own "fetch trades (already done)" instruction).
+      let trades: Awaited<ReturnType<typeof fetchParsedTrades>> = []
+      try {
+        trades = await fetchParsedTrades(body.data.scanMetadata.walletAddress)
+      } catch {
+        trades = []
+      }
+
       let pnlOutput: Awaited<ReturnType<typeof computePnl>>
       try {
-        const trades = await fetchParsedTrades(body.data.scanMetadata.walletAddress)
         pnlOutput = await computePnl(pricing.pricedHoldings, chainHoldings, pricing.totalValueUsd, trades)
       } catch {
         // Same never-throw guarantee as chainHoldings/pricing/portfolio above.
@@ -160,6 +178,21 @@ export async function POST(req: Request): Promise<Response> {
           pnlV2: { realizedPnlUsd: 0, unrealizedPnlUsd: 0, costBasis: [], realized: [], unrealized: [], chainBreakdown: [] },
           pnlStatus: 'unavailable',
         }
+      }
+
+      let chainActivityOutput: Awaited<ReturnType<typeof computeChainActivity>>
+      try {
+        chainActivityOutput = await computeChainActivity(
+          body.data.scanMetadata.walletAddress,
+          chainHoldings,
+          pricing.pricedHoldings,
+          trades,
+          portfolioOutput.portfolio,
+          pnlOutput.pnlV2,
+        )
+      } catch {
+        // Same never-throw guarantee as every other new module above.
+        chainActivityOutput = { chainActivityV2: [], chainActivityStatus: 'empty' }
       }
 
       body = {
@@ -175,6 +208,8 @@ export async function POST(req: Request): Promise<Response> {
           portfolioStatus: portfolioOutput.portfolioStatus,
           pnlV2: pnlOutput.pnlV2,
           pnlStatus: pnlOutput.pnlStatus,
+          chainActivityV2: chainActivityOutput.chainActivityV2,
+          chainActivityStatus: chainActivityOutput.chainActivityStatus,
         },
       } as typeof body
     }
