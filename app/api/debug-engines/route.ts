@@ -4,11 +4,14 @@
 // end-to-end against one real wallet and returns the raw results for manual inspection. This is a
 // read-only smoke test wired for browser-console debugging (see NEXT_PUBLIC_ENABLE_DEV_TOOLS
 // pattern used by lib/modules/{swapNormalizer,lotOpener,lotCloser,realizedPnl}'s window.* exposure
-// elsewhere in this codebase) — no auth/rate-limit gate is added here since none of the other
-// debug/diagnostics routes' gating conventions were specified for this one, but this route makes
-// the SAME real provider calls app/api/{pnl,transactions,wallet-profile}/route.ts already make, so
-// it carries the same real GoldRush/Alchemy CU cost as those — it must not be linked from any
-// production UI page.
+// elsewhere in this codebase). Disabled with a 404 when NODE_ENV=production UNLESS the caller sends
+// header `x-chainlens-admin` matching env var CHAINLENS_ADMIN_KEY (see `isAdminOverride` below) — a
+// distinctly-named admin override, added per explicit request, alongside this repo's existing
+// ADMIN_SECRET convention (app/api/diagnostics/{pricing,pricing-source}/route.ts) rather than
+// replacing it. This route makes the SAME real provider calls app/api/{pnl,transactions,
+// wallet-profile}/route.ts already make, so it carries the same real GoldRush/Alchemy CU cost as
+// those, even when admin-unlocked — it must not be linked from any production UI page, and
+// CHAINLENS_ADMIN_KEY must never be exposed client-side (no NEXT_PUBLIC_ prefix).
 //
 // FABRICATED-SPEC DISCLOSURE (identical findings to the prior /api/{pnl,transactions,wallet-profile,
 // token-scan} task — see those routes' own headers for the full investigation):
@@ -122,8 +125,22 @@ function tradeWithIntentToTimelineInputs(trade: TradeWithIntent): { transfer?: N
   }
 }
 
+// ADMIN OVERRIDE, DISCLOSED: this session's ADMIN_SECRET convention (app/api/diagnostics/{pricing,
+// pricing-source}/route.ts) already exists for exactly this "safe production debugging" purpose —
+// this task asked for a distinctly-named env var (CHAINLENS_ADMIN_KEY) instead of reusing that one,
+// so a new one is added here rather than silently substituting the existing convention. Comparison
+// is a plain string equality (matching this repo's existing ADMIN_SECRET checks, which are also
+// plain equality, not timing-safe) — both sides must be non-empty so an unset env var can never be
+// bypassed by an absent/empty header.
+function isAdminOverride(req: Request): boolean {
+  const adminKey = process.env.CHAINLENS_ADMIN_KEY
+  if (!adminKey) return false
+  const header = req.headers.get('x-chainlens-admin')
+  return header === adminKey
+}
+
 export async function POST(req: Request) {
-  if (process.env.NODE_ENV === 'production') {
+  if (process.env.NODE_ENV === 'production' && !isAdminOverride(req)) {
     return NextResponse.json({ error: 'debug-engines is disabled in production' }, { status: 404 })
   }
 
