@@ -34,12 +34,40 @@
 // invocation, never throws, preserves the existing FinalReport shape, zero existing files
 // modified) without introducing a second, divergent orchestration implementation.
 //
-// NO EXISTING FILES MODIFIED: this is the only new file. app/api/scan/route.ts,
-// src/deployment/*, src/pipeline/*, and every module under src/modules/ are untouched — this route
-// only imports and calls the same real, already-exported function they already expose.
+// NO PIPELINE/MODULE FILES MODIFIED: app/api/scan/route.ts, src/deployment/*, src/pipeline/*, and
+// every module under src/modules/ remain untouched.
+//
+// NEW-HOLDINGS-MODULE WIRING, DISCLOSED (added per a later task): a real, previously-undiscovered
+// gap exists in src/pipeline/index.ts's runWalletScan — it currently passes a hardcoded
+// `holdings: []` into recoveryPolicy/behaviorIntel rather than ever calling any real
+// holdings-fetching module (confirmed by reading that file directly: no `fetchHoldings`/
+// `holdingsEngine` import exists there at all). That is the REAL reason this route's response
+// holdings-related data has always been empty — not a missing API key alone. Per that later task's
+// own explicit constraints ("do NOT touch... production scanner", "keep everything inside the V2
+// engine / lib path"), this gap is not fixed by modifying src/pipeline/index.ts itself (out of
+// scope) — instead, `fetchAllHoldings` (lib/engine/modules/holdings/fetchHoldings.ts, a new, thin
+// adapter over the real, existing src/modules/holdings fetch logic — no reimplemented network
+// calls) is called here, additively, and its result is attached to this response under a NEW field,
+// `chainHoldings`.
+//
+// FIELD-NAME DISCLOSURE: the requesting task said to add this under the response's existing
+// `holdings` field. That field already exists in this exact response (SanitizedReportV2's
+// `holdings: TokenHolding[]`, still always `[]` from the pipeline's own gap above) and is already
+// consumed by real frontend code (app/frontend/components/HoldingsViewV2.tsx expects TokenHolding's
+// real fields — `contract`, `amount`, `providerPriceUsd`, etc.) — overwriting it with the new,
+// structurally different `ChainHolding[]` shape (`tokenAddress`, `quantity: string`, no price
+// fields) would silently break that component's real prop contract, contradicting "existing engine
+// modules must still work" and "do not modify UI components" (a shape change forcing an unplanned
+// UI break is not the same as leaving the UI alone). Added as a new, additional `chainHoldings`
+// field instead — nothing existing is removed, renamed, or reshaped.
+//
+// NEVER THROWS: fetchAllHoldings failing (or partially failing per-chain) degrades to an honestly
+// empty/partial array here, wrapped in its own try/catch — a failure fetching this NEW data can
+// never crash or block the real scan response this route already correctly returns.
 
 import { router } from '@/src/deployment/index'
 import { handleApiError } from '@/src/deployment/api'
+import { fetchAllHoldings } from '@/lib/engine/modules/holdings/fetchHoldings'
 
 export async function POST(req: Request): Promise<Response> {
   try {
@@ -52,7 +80,19 @@ export async function POST(req: Request): Promise<Response> {
     // app/api/scan/route.ts already performs, at this new path.
     const result = await router.handleScanRequest(rawBody, ip)
 
-    return new Response(JSON.stringify(result.body), {
+    let body = result.body as { success: boolean; data?: { scanMetadata?: { walletAddress?: string } } }
+    if (body.success && body.data?.scanMetadata?.walletAddress) {
+      let chainHoldings: Awaited<ReturnType<typeof fetchAllHoldings>> = []
+      try {
+        chainHoldings = await fetchAllHoldings(body.data.scanMetadata.walletAddress)
+      } catch {
+        // Never let a failure in this new, additive fetch affect the real scan response below.
+        chainHoldings = []
+      }
+      body = { ...body, data: { ...body.data, chainHoldings } } as typeof body
+    }
+
+    return new Response(JSON.stringify(body), {
       status: result.status,
       headers: { 'Content-Type': 'application/json' },
     })
