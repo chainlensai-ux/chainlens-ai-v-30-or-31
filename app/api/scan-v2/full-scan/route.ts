@@ -125,6 +125,14 @@ import { buildPortfolio } from '@/lib/engine/modules/portfolio/buildPortfolio'
 import { computePnl, fetchParsedTrades } from '@/lib/engine/modules/pnl/computePnl'
 import { computeChainActivity } from '@/lib/engine/modules/activity/computeChainActivity'
 import { computeRisk } from '@/lib/engine/modules/risk/computeRisk'
+import { computePersonality } from '@/lib/engine/modules/personality/computePersonality'
+
+// PERSONALITY-MODULE WIRING, DISCLOSED (added per a later task): computePersonality(...) is called
+// right after riskV2, additively, attaching `personalityV2`/`personalityStatus` as NEW response
+// fields. "EXISTING personality FIELD", DISCLOSED: the real existing field is
+// `finalSummary.walletPersonality` (a plain string, nested under `finalSummary`, rendered by
+// app/frontend/components/FinalSummaryView.tsx) — a different key path entirely from the new
+// top-level `personalityV2`, so no collision/rename was needed; both coexist untouched.
 
 export async function POST(req: Request): Promise<Response> {
   try {
@@ -222,6 +230,28 @@ export async function POST(req: Request): Promise<Response> {
         }
       }
 
+      let personalityOutput: Awaited<ReturnType<typeof computePersonality>>
+      try {
+        personalityOutput = await computePersonality(
+          portfolioOutput.portfolio,
+          pnlOutput.pnlV2,
+          chainActivityOutput.chainActivityV2,
+          riskOutput.riskV2,
+          pricing.pricedHoldings,
+          chainHoldings,
+        )
+      } catch {
+        // Same never-throw guarantee as every other new module above.
+        personalityOutput = {
+          personalityV2: {
+            archetype: 'Unknown', riskAppetite: 'low', tradingStyle: 'passive', chainPreference: null,
+            volatilityTolerance: 0, stabilityPreference: 0, pnlBehavior: 'neutral', activityConsistency: 'dormant',
+            summary: 'Insufficient data to classify wallet personality.',
+          },
+          personalityStatus: 'empty',
+        }
+      }
+
       body = {
         ...body,
         data: {
@@ -239,6 +269,8 @@ export async function POST(req: Request): Promise<Response> {
           chainActivityStatus: chainActivityOutput.chainActivityStatus,
           riskV2: riskOutput.riskV2,
           riskStatus: riskOutput.riskStatus,
+          personalityV2: personalityOutput.personalityV2,
+          personalityStatus: personalityOutput.personalityStatus,
         },
       } as typeof body
     }
