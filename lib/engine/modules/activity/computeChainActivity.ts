@@ -48,7 +48,7 @@ function parseTimestampMs(timestamp: string | null): number | null {
   return Number.isNaN(ms) ? null : ms
 }
 
-type ChainSignals = {
+export type ChainSignals = {
   txCount30d: number
   lastActiveAt: string | null
   bridgeTxCount: number
@@ -59,7 +59,7 @@ type ChainSignals = {
 // Never throws: fetchRawEventsForChain/buildTradesWithIntentForChain already degrade to empty
 // arrays on any real failure (see walletChainPipeline.ts's own guarantees) — nothing here adds a
 // new network call that could fail differently.
-async function fetchChainSignals(chainId: number, walletAddress: string, nowMs: number): Promise<ChainSignals> {
+export async function fetchChainSignals(chainId: number, walletAddress: string, nowMs: number): Promise<ChainSignals> {
   const chain = CHAIN_ID_TO_SUPPORTED_CHAIN[chainId]
   if (!chain) return { txCount30d: 0, lastActiveAt: null, bridgeTxCount: 0, lpEventCount: 0, totalClassifiedEventCount: 0 }
 

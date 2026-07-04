@@ -133,6 +133,17 @@ import { computePersonality } from '@/lib/engine/modules/personality/computePers
 // `finalSummary.walletPersonality` (a plain string, nested under `finalSummary`, rendered by
 // app/frontend/components/FinalSummaryView.tsx) — a different key path entirely from the new
 // top-level `personalityV2`, so no collision/rename was needed; both coexist untouched.
+//
+// BEHAVIOR-MODULE WIRING, DISCLOSED (added per a later task): computeBehavior(...) is called right
+// after personalityV2, additively, attaching `behaviorV2`/`behaviorStatus` as NEW response fields.
+// "EXISTING behavior FIELD", DISCLOSED: the real existing field is `behaviorIntel`
+// (src/modules/behaviorIntel, a real BehaviorIntelResult already computed by the production
+// pipeline) — a different top-level key from `behaviorV2`, so no collision/rename was needed.
+// BRIDGING/FARMING GAP, DISCLOSED: see lib/engine/modules/behavior/computeBehavior.ts's own header
+// — that module's task-specified signature never receives a walletAddress, so real bridge/LP counts
+// cannot be fetched there; bridgingBehavior/farmingBehavior always honestly report "none" here as a
+// result, not a fabricated non-zero guess.
+import { computeBehavior } from '@/lib/engine/modules/behavior/computeBehavior'
 
 export async function POST(req: Request): Promise<Response> {
   try {
@@ -252,6 +263,30 @@ export async function POST(req: Request): Promise<Response> {
         }
       }
 
+      let behaviorOutput: Awaited<ReturnType<typeof computeBehavior>>
+      try {
+        behaviorOutput = await computeBehavior(
+          pnlOutput.pnlV2,
+          portfolioOutput.portfolio,
+          chainActivityOutput.chainActivityV2,
+          pricing.pricedHoldings,
+          chainHoldings,
+          trades,
+          riskOutput.riskV2,
+          personalityOutput.personalityV2,
+        )
+      } catch {
+        // Same never-throw guarantee as every other new module above.
+        behaviorOutput = {
+          behaviorV2: {
+            accumulationStyle: 'neutral', rotationStyle: 'inactive', bridgingBehavior: 'none',
+            farmingBehavior: 'none', stableRoutingBehavior: 'none', memeBehavior: 'none',
+            tradeFrequency: 'low', behaviorSummary: 'No trade activity found for this wallet.',
+          },
+          behaviorStatus: 'empty',
+        }
+      }
+
       body = {
         ...body,
         data: {
@@ -271,6 +306,8 @@ export async function POST(req: Request): Promise<Response> {
           riskStatus: riskOutput.riskStatus,
           personalityV2: personalityOutput.personalityV2,
           personalityStatus: personalityOutput.personalityStatus,
+          behaviorV2: behaviorOutput.behaviorV2,
+          behaviorStatus: behaviorOutput.behaviorStatus,
         },
       } as typeof body
     }
