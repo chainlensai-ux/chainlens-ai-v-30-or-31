@@ -1,16 +1,28 @@
 // API client for the ChainLens 180-Day Intelligence Engine (V2).
 //
-// UNIFIED ROUTE, DISCLOSED (current): `scanWalletV2()` now calls the single unified
-// `/api/scan-v2/full-scan` route (added in a prior task) instead of firing 9 separate
-// `/api/scan-v2/modules/<name>` requests. Root cause of the prior production symptom ("module-failed
-// for all modules"): that string is this file's OWN safety-wrapper fallback error message
-// (`moduleFetchFailed`, below `fetchScanModule`) — seeing it for every module meant all 9 concurrent
-// per-module fetches were failing in production, consistent with the previously-diagnosed
-// FUNCTION_INVOCATION_TIMEOUT failure mode (9 separate serverless invocations, each racing its own
-// independent execution timeout against one shared underlying computation — see
-// app/api/scan-v2/full-scan/route.ts's own header). The unified route collapses this to one request
-// and one function invocation, which is the actual, minimal, in-scope fix here — not a change to
-// route names, module keys, or the report shape.
+// BACKGROUND JOB, DISCLOSED (current): `scanWalletV2()` now calls
+// `/api/scan-v2/full-scan-job/start` and polls `/api/scan-v2/full-scan-job/status` instead of
+// calling the synchronous `/api/scan-v2/full-scan` route directly. See those two routes' own file
+// headers (app/api/scan-v2/full-scan-job/{start,status}/route.ts) for the full disclosure on the
+// job/poll design, KV-unconfigured graceful degradation, and honest limits (this does not
+// literally eliminate every Vercel time limit — it decouples the CLIENT's request lifetime from the
+// scan's real duration, which is the actual problem being solved).
+//
+// KV-UNCONFIGURED CASE, HANDLED HERE TOO: when KV isn't configured, `.../start` runs the scan
+// synchronously and returns `{success:true, jobId, status:'done', ...}` in its own response — this
+// function checks for that and returns immediately without ever starting a poll loop, since there
+// is nothing further to wait for.
+//
+// PRIOR ROUTE, DISCLOSED: `scanWalletV2()` previously called the single unified
+// `/api/scan-v2/full-scan` route (added in an earlier task) instead of firing 9 separate
+// `/api/scan-v2/modules/<name>` requests. That route still exists, untouched, and still works — it
+// just isn't what this function calls anymore. Root cause of the production symptom that led to
+// the unified route in the first place ("module-failed for all modules"): that string is this
+// file's OWN safety-wrapper fallback error message (`moduleFetchFailed`, below `fetchScanModule`)
+// — seeing it for every module meant all 9 concurrent per-module fetches were failing in
+// production, consistent with the FUNCTION_INVOCATION_TIMEOUT failure mode (9 separate serverless
+// invocations, each racing its own independent execution timeout against one shared underlying
+// computation). Not a change to route names, module keys, or the report shape.
 //
 // `fetchScanModule` (below) is left in place, unused by `scanWalletV2` now but still exported for
 // any caller that genuinely wants just one module's section (per its own existing doc comment) —
@@ -94,46 +106,104 @@ export async function fetchScanModule(
   }
 }
 
-// Matches Vercel Pro's own 60s serverless ceiling less a safety margin — this is a CLIENT-side
-// abort so the UI can report a clean "timeout" instead of hanging indefinitely if the server-side
-// invocation itself is ever killed without closing the connection cleanly.
+// Overall client-side ceiling for the whole start+poll sequence — matches the value used by the
+// prior synchronous version of this function, kept as the same reasonable "give up" point.
 const FULL_SCAN_TIMEOUT_MS = 55_000
 
-// Never throws. Calls the single unified /api/scan-v2/full-scan route (one request, one serverless
-// invocation, all 10 modules computed internally — see that route's own file header) instead of the
-// prior 9-separate-module fan-out. Network failures and client-side timeouts both resolve to a
-// structured {success:false, error:{...}} instead of propagating an exception or hanging forever.
+// How often to poll /status while a job is still 'pending'. Cheap KV reads — no cost concern with
+// a short interval, and a short interval keeps perceived latency low once the scan finishes.
+const POLL_INTERVAL_MS = 1_500
+
+type JobResultShape =
+  | { status: 'pending' }
+  | { status: 'done'; success: true; data: unknown }
+  | { status: 'done'; success: false; error: { message: string; category: string; details?: string[] } }
+
+// `success` here means "this HTTP request was handled" — deliberately never conflated with the
+// scan's own outcome, which is always nested under `job` instead (see .../full-scan-job/start/
+// route.ts's own header on why that separation matters).
+type JobStartResponse =
+  | { success: true; jobId: string; job: JobResultShape }
+  | { success: false; error: { message: string; category: string; details?: string[] } }
+
+type JobStatusResponse =
+  | JobResultShape
+  | { status: 'not-found'; error?: { message: string; category: string; details?: string[] } }
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+// Never throws. Starts a background scan job (/full-scan-job/start) and polls for completion
+// (/full-scan-job/status) instead of waiting on one long-lived synchronous request — see this
+// file's header for the full disclosure. Network failures and the overall client-side timeout both
+// resolve to a structured {success:false, error:{...}} instead of propagating an exception or
+// hanging forever.
 export async function scanWalletV2(
   walletAddress: string,
   chains: string[],
   scanMode: ScanMode = 'normal',
 ): Promise<ScanWalletApiResponse> {
-  const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), FULL_SCAN_TIMEOUT_MS)
+  const deadline = Date.now() + FULL_SCAN_TIMEOUT_MS
 
+  let started: JobStartResponse
   try {
-    const res = await fetch('/api/scan-v2/full-scan', {
+    const res = await fetch('/api/scan-v2/full-scan-job/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ walletAddress, chains, scanMode }),
-      signal: controller.signal,
     })
 
     if (!res.ok) {
       return { success: false, error: { message: 'network-failed', category: 'network', details: [`HTTP ${res.status}`] } }
     }
-
-    const body = (await res.json()) as ScanWalletApiResponse
-    // Trust the route's own {success, data, error} shape as-is (it already never throws and always
-    // returns this exact contract — see app/api/scan-v2/full-scan/route.ts) rather than re-deriving it.
-    return body
+    started = (await res.json()) as JobStartResponse
   } catch (err) {
-    if (err instanceof DOMException && err.name === 'AbortError') {
-      return { success: false, error: { message: 'timeout', category: 'network', details: [`exceeded ${FULL_SCAN_TIMEOUT_MS}ms`] } }
-    }
-    // Any other network failure (offline, DNS, CORS) or a malformed/non-JSON body — never throw.
     return { success: false, error: { message: 'network-failed', category: 'network', details: [err instanceof Error ? err.message : String(err)] } }
-  } finally {
-    clearTimeout(timeoutId)
   }
+
+  if (!started.success) {
+    return { success: false, error: started.error }
+  }
+
+  // KV-UNCONFIGURED GRACEFUL DEGRADATION (see .../full-scan-job/start/route.ts's own header): the
+  // start route already ran the scan synchronously and returned the finished result directly,
+  // nested under `job` — nothing to poll for.
+  if (started.job.status === 'done') {
+    return started.job.success
+      ? { success: true, data: started.job.data }
+      : { success: false, error: started.job.error }
+  }
+
+  const jobId = started.jobId
+
+  while (Date.now() < deadline) {
+    await sleep(POLL_INTERVAL_MS)
+
+    let statusBody: JobStatusResponse
+    try {
+      const res = await fetch(`/api/scan-v2/full-scan-job/status?jobId=${encodeURIComponent(jobId)}`)
+      if (!res.ok) {
+        return { success: false, error: { message: 'network-failed', category: 'network', details: [`HTTP ${res.status}`] } }
+      }
+      statusBody = (await res.json()) as JobStatusResponse
+    } catch (err) {
+      return { success: false, error: { message: 'network-failed', category: 'network', details: [err instanceof Error ? err.message : String(err)] } }
+    }
+
+    if (statusBody.status === 'pending') continue // keep polling until the deadline
+
+    if (statusBody.status === 'not-found') {
+      // Job expired, was never persisted, or KV became unavailable mid-poll — an honest, distinct
+      // failure from a plain network error, since the request itself succeeded.
+      return { success: false, error: statusBody.error ?? { message: 'job-not-found', category: 'unknown' } }
+    }
+
+    // status === 'done'
+    return statusBody.success
+      ? { success: true, data: statusBody.data }
+      : { success: false, error: statusBody.error }
+  }
+
+  return { success: false, error: { message: 'timeout', category: 'network', details: [`exceeded ${FULL_SCAN_TIMEOUT_MS}ms`] } }
 }
