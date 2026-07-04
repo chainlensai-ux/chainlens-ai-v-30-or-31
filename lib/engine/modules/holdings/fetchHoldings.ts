@@ -33,7 +33,9 @@ import type { ChainHolding } from './types'
 
 export type { ChainHolding, HoldingsEngineInput } from './types'
 
-const CHAIN_ID_TO_SUPPORTED_CHAIN: Record<number, SupportedChain> = {
+// Exported so lib/engine/modules/pricing/fetchPricing.ts can reuse the exact same mapping rather
+// than maintaining a second, potentially-drifting copy.
+export const CHAIN_ID_TO_SUPPORTED_CHAIN: Record<number, SupportedChain> = {
   1: 'eth',
   8453: 'base',
 }

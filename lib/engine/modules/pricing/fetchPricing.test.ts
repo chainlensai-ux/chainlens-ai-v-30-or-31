@@ -1,0 +1,79 @@
+// Tests for lib/engine/modules/pricing/fetchPricing.ts. Uses node:test, same convention as the
+// other module test files this session. NOT wired into `npm test` (which runs a single hardcoded
+// file — see package.json). Run directly with:
+//   npx tsx --test lib/engine/modules/pricing/fetchPricing.test.ts
+//
+// MOCKING DISCLOSURE: the task asked for "priceHoldings with one holding and mocked price". Tried
+// node:test's built-in `t.mock.module` first — actually ran it, and it threw
+// `t.mock.module is not a function` under this project's tsx-based test runner (not assumed to
+// work, verified and found broken). Rather than fight an unreliable experimental API, these tests
+// use `priceHoldings`'s own additive, optional second parameter (a plain price-function override,
+// added specifically to make this testable without reimplementing a mock-module system) to inject
+// a controlled fake price resolver — real production callers never pass this argument and get the
+// real `fetchTokenPriceUsd`/`resolvePrices` path unchanged.
+
+import { describe, it } from 'node:test'
+import assert from 'node:assert/strict'
+import { priceHoldings } from './fetchPricing'
+import type { ChainHolding } from '../holdings/types'
+
+function holding(overrides: Partial<ChainHolding>): ChainHolding {
+  return {
+    chainId: 1,
+    tokenAddress: '0xtoken',
+    symbol: 'TOKEN',
+    decimals: 18,
+    quantity: '10',
+    lastActivityAt: null,
+    classification: 'other',
+    ...overrides,
+  }
+}
+
+describe('priceHoldings', () => {
+  it('priceHoldings([]) -> totalValueUsd 0, chainValueUsd {}, priceStatus "unavailable"', async () => {
+    const result = await priceHoldings([])
+    assert.deepEqual(result.pricedHoldings, [])
+    assert.equal(result.totalValueUsd, 0)
+    assert.deepEqual(result.chainValueUsd, {})
+    assert.equal(result.priceStatus, 'unavailable')
+  })
+
+  it('one holding with a mocked known price -> correct valueUsd, priceStatus "ok"', async () => {
+    const fakePriceFn = async () => 2.5
+    const result = await priceHoldings([holding({ quantity: '10' })], fakePriceFn)
+
+    assert.equal(result.pricedHoldings.length, 1)
+    assert.equal(result.pricedHoldings[0].priceUsd, 2.5)
+    assert.equal(result.pricedHoldings[0].valueUsd, 25) // 10 * 2.5
+    assert.equal(result.totalValueUsd, 25)
+    assert.deepEqual(result.chainValueUsd, { 1: 25 })
+    assert.equal(result.priceStatus, 'ok')
+  })
+
+  it('partial pricing (one priced, one unpriced) -> priceStatus "partial"', async () => {
+    const fakePriceFn = async (_chainId: number, tokenAddress: string) => (tokenAddress === '0xpriced' ? 3 : null)
+
+    const result = await priceHoldings(
+      [
+        holding({ tokenAddress: '0xpriced', quantity: '4' }),
+        holding({ tokenAddress: '0xunpriced', quantity: '99' }),
+      ],
+      fakePriceFn,
+    )
+
+    assert.equal(result.priceStatus, 'partial')
+    const priced = result.pricedHoldings.find((p) => p.tokenAddress === '0xpriced')
+    const unpriced = result.pricedHoldings.find((p) => p.tokenAddress === '0xunpriced')
+    assert.equal(priced?.valueUsd, 12) // 4 * 3
+    assert.equal(unpriced?.valueUsd, null)
+    assert.equal(result.totalValueUsd, 12) // only the priced holding contributes
+  })
+
+  it('all holdings unpriced -> priceStatus "unavailable", totalValueUsd 0', async () => {
+    const fakePriceFn = async () => null
+    const result = await priceHoldings([holding({}), holding({ tokenAddress: '0xother' })], fakePriceFn)
+    assert.equal(result.priceStatus, 'unavailable')
+    assert.equal(result.totalValueUsd, 0)
+  })
+})

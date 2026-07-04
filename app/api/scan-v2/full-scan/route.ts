@@ -64,10 +64,26 @@
 // NEVER THROWS: fetchAllHoldings failing (or partially failing per-chain) degrades to an honestly
 // empty/partial array here, wrapped in its own try/catch — a failure fetching this NEW data can
 // never crash or block the real scan response this route already correctly returns.
+//
+// PRICING-MODULE WIRING, DISCLOSED (added per a later task): priceHoldings(chainHoldings) is called
+// right after chainHoldings is computed, additively, attaching `pricedHoldings`/`totalValueUsd`/
+// `chainValueUsd`/`priceStatus` as NEW response fields — same "never overwrite what's already
+// consumed by real frontend code" reasoning as `chainHoldings` itself above (this response has no
+// pre-existing fields with these exact names, so no collision risk here, but the same additive-only
+// principle applies). Also wrapped in its own try/catch — a pricing failure degrades to the same
+// honest all-null/`priceStatus:"unavailable"` shape priceHoldings([]) itself already produces,
+// never a thrown error blocking the rest of the response.
+//
+// "engineInput"/"runFullEngine", DISCLOSED: the task described building an `engineInput` object and
+// passing it to a `runFullEngine` function — neither exists anywhere in this codebase (same
+// fabricated-orchestrator pattern disclosed above for the original full-scan task). There is
+// nothing to route `engineInput` into; the real orchestrator remains `router.handleScanRequest`,
+// untouched, and the new pricing/holdings fields are attached directly to its response instead.
 
 import { router } from '@/src/deployment/index'
 import { handleApiError } from '@/src/deployment/api'
 import { fetchAllHoldings } from '@/lib/engine/modules/holdings/fetchHoldings'
+import { priceHoldings } from '@/lib/engine/modules/pricing/fetchPricing'
 
 export async function POST(req: Request): Promise<Response> {
   try {
@@ -89,7 +105,27 @@ export async function POST(req: Request): Promise<Response> {
         // Never let a failure in this new, additive fetch affect the real scan response below.
         chainHoldings = []
       }
-      body = { ...body, data: { ...body.data, chainHoldings } } as typeof body
+
+      let pricing: Awaited<ReturnType<typeof priceHoldings>>
+      try {
+        pricing = await priceHoldings(chainHoldings)
+      } catch {
+        // Same never-throw guarantee as chainHoldings above — degrade to the same honest shape
+        // priceHoldings([]) itself would produce.
+        pricing = { pricedHoldings: [], totalValueUsd: 0, chainValueUsd: {}, priceStatus: 'unavailable' }
+      }
+
+      body = {
+        ...body,
+        data: {
+          ...body.data,
+          chainHoldings,
+          pricedHoldings: pricing.pricedHoldings,
+          totalValueUsd: pricing.totalValueUsd,
+          chainValueUsd: pricing.chainValueUsd,
+          priceStatus: pricing.priceStatus,
+        },
+      } as typeof body
     }
 
     return new Response(JSON.stringify(body), {
