@@ -79,11 +79,26 @@
 // fabricated-orchestrator pattern disclosed above for the original full-scan task). There is
 // nothing to route `engineInput` into; the real orchestrator remains `router.handleScanRequest`,
 // untouched, and the new pricing/holdings fields are attached directly to its response instead.
+//
+// PORTFOLIO-MODULE WIRING, DISCLOSED (added per a later task): buildPortfolio(pricing.pricedHoldings,
+// pricing.totalValueUsd, pricing.chainValueUsd) is called right after pricing, additively.
+// FIELD-NAME COLLISION, DISCLOSED (same issue as the earlier `holdings` field, now recurring for
+// `portfolio`): the task said to attach this under a response field named `portfolio` — that field
+// ALREADY EXISTS in this exact response (SanitizedReportV2's real `portfolio: PortfolioSummary`,
+// `{totalValueUsd, tokens, chainValueBreakdown}` — confirmed real, non-empty-shape, and consumed by
+// TWO real frontend components: app/frontend/components/WalletProfileHeader.tsx reads
+// `report.portfolio.chainValueBreakdown`, and PortfolioIntelligenceCard.tsx reads
+// `report.portfolio.tokens`). Overwriting it with the new, structurally different `Portfolio` shape
+// (`categories`, `chains`, `topHoldings`, `stablecoinRatio`, `concentrationIndex` — no `tokens`/
+// `chainValueBreakdown` at all) would silently break both of those real components. Added as a new,
+// additional `portfolioV2` field instead — `portfolioStatus` is a genuinely new key with no
+// collision, added exactly as specified.
 
 import { router } from '@/src/deployment/index'
 import { handleApiError } from '@/src/deployment/api'
 import { fetchAllHoldings } from '@/lib/engine/modules/holdings/fetchHoldings'
 import { priceHoldings } from '@/lib/engine/modules/pricing/fetchPricing'
+import { buildPortfolio } from '@/lib/engine/modules/portfolio/buildPortfolio'
 
 export async function POST(req: Request): Promise<Response> {
   try {
@@ -115,6 +130,17 @@ export async function POST(req: Request): Promise<Response> {
         pricing = { pricedHoldings: [], totalValueUsd: 0, chainValueUsd: {}, priceStatus: 'unavailable' }
       }
 
+      let portfolioOutput: Awaited<ReturnType<typeof buildPortfolio>>
+      try {
+        portfolioOutput = await buildPortfolio(pricing.pricedHoldings, pricing.totalValueUsd, pricing.chainValueUsd)
+      } catch {
+        // Same never-throw guarantee as chainHoldings/pricing above.
+        portfolioOutput = {
+          portfolio: { totalValueUsd: 0, categories: [], chains: [], topHoldings: [], stablecoinRatio: 0, concentrationIndex: 0 },
+          portfolioStatus: 'empty',
+        }
+      }
+
       body = {
         ...body,
         data: {
@@ -124,6 +150,8 @@ export async function POST(req: Request): Promise<Response> {
           totalValueUsd: pricing.totalValueUsd,
           chainValueUsd: pricing.chainValueUsd,
           priceStatus: pricing.priceStatus,
+          portfolioV2: portfolioOutput.portfolio,
+          portfolioStatus: portfolioOutput.portfolioStatus,
         },
       } as typeof body
     }
