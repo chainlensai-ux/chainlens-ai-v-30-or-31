@@ -9,7 +9,9 @@
 // scan's real duration, which is the actual problem being solved).
 //
 // KV-UNCONFIGURED CASE, HANDLED HERE TOO: when KV isn't configured, `.../start` runs the scan
-// synchronously and returns `{success:true, jobId, status:'done', ...}` in its own response — this
+// synchronously and returns `{success:true, jobId, job:{status:'done', ...}}` in its own response
+// (the finished result nested under `job`, never flattened onto this response's own top-level
+// `success` — see `JobStartResponse`'s own comment below for why that separation matters) — this
 // function checks for that and returns immediately without ever starting a poll loop, since there
 // is nothing further to wait for.
 //
