@@ -91,6 +91,81 @@ export function clampWindowDays(days?: number): number {
   return Math.max(PROVIDER_FETCH_WINDOW_DAYS_MIN, Math.min(PROVIDER_FETCH_WINDOW_DAYS_MAX, value))
 }
 
+// ── Env-controlled window override ──────────────────────────────────────────────────────────────
+//
+// FABRICATED-NAME DISCLOSURE: a task requested `validateWindow()`/`computeWindow()`/
+// `enforceWindowBounds()` in index.ts — none of those exist, and this module's real bounds-checking
+// function is `clampWindowDays` above (already existed before this change, already accepted an
+// optional override and clamped it into [PROVIDER_FETCH_WINDOW_DAYS_MIN, ...MAX]). The two functions
+// below are new and additive; they do not replace or modify clampWindowDays — they build the
+// "read an opt-in env override, log if it's out of range, then hand it to the existing clamp" flow
+// on top of it.
+//
+// SPEC-AMBIGUITY DISCLOSURE: the requesting task also asked for env vars
+// `PROVIDER_FETCH_WINDOW_DAYS_MIN`/`_MAX` themselves, with a 3-way rule ("if OVERRIDE set -> use it;
+// else -> use MIN/MAX range; else -> fall back to 90-day default") that doesn't resolve to a single
+// window value on its own — "use the MIN/MAX range" isn't itself a number. Implemented here as the
+// closest safe, unambiguous reading: `PROVIDER_FETCH_WINDOW_DAYS_MIN`/`_MAX` env vars, if set, only
+// NARROW (never widen) the fixed code-level bounds in types.ts — they can raise the effective floor
+// or lower the effective ceiling for this deployment, but can never push the effective range outside
+// [80, 365], since that range is the actual architecture invariant enforced in code, not something
+// a misconfigured env var should be able to silently override wider. `PROVIDER_FETCH_WINDOW_OVERRIDE`
+// (if set) is then the requested window value, clamped into that (possibly narrowed) effective
+// range; if it isn't set at all, this falls back to PROVIDER_FETCH_WINDOW_DAYS_DEFAULT (90), exactly
+// per the task's stated final fallback rule.
+function parseEnvInt(name: string): number | undefined {
+  const raw = process.env[name]
+  if (raw === undefined || raw.trim() === '') return undefined
+  const parsed = Number(raw)
+  return Number.isFinite(parsed) ? parsed : undefined
+}
+
+// Effective [min, max] for this deployment: the env vars may only narrow the fixed code bounds
+// (PROVIDER_FETCH_WINDOW_DAYS_MIN/MAX from types.ts), never widen past them. An invalid narrowing
+// (env min > env max, or either outside the fixed bounds) is logged and ignored, falling back to the
+// fixed bounds unnarrowed — never silently producing a broken/inverted range.
+function getWindowBoundsFromEnv(): { min: number; max: number } {
+  const envMinRaw = parseEnvInt('PROVIDER_FETCH_WINDOW_DAYS_MIN')
+  const envMaxRaw = parseEnvInt('PROVIDER_FETCH_WINDOW_DAYS_MAX')
+
+  const envMin = envMinRaw !== undefined
+    ? Math.max(PROVIDER_FETCH_WINDOW_DAYS_MIN, Math.min(PROVIDER_FETCH_WINDOW_DAYS_MAX, envMinRaw))
+    : PROVIDER_FETCH_WINDOW_DAYS_MIN
+  const envMax = envMaxRaw !== undefined
+    ? Math.max(PROVIDER_FETCH_WINDOW_DAYS_MIN, Math.min(PROVIDER_FETCH_WINDOW_DAYS_MAX, envMaxRaw))
+    : PROVIDER_FETCH_WINDOW_DAYS_MAX
+
+  if (envMin > envMax) {
+    console.warn('[providerFetchWindow] PROVIDER_FETCH_WINDOW_DAYS_MIN/MAX env vars produce an invalid (min > max) range after clamping — ignoring both and using the fixed code bounds', {
+      envMinRaw, envMaxRaw, fixedMin: PROVIDER_FETCH_WINDOW_DAYS_MIN, fixedMax: PROVIDER_FETCH_WINDOW_DAYS_MAX,
+    })
+    return { min: PROVIDER_FETCH_WINDOW_DAYS_MIN, max: PROVIDER_FETCH_WINDOW_DAYS_MAX }
+  }
+  return { min: envMin, max: envMax }
+}
+
+// Reads PROVIDER_FETCH_WINDOW_OVERRIDE only — returns undefined if unset/unparseable (caller decides
+// the fallback). Does not clamp; getEffectiveFetchWindow() does that against the effective bounds.
+export function getWindowFromEnv(): number | undefined {
+  return parseEnvInt('PROVIDER_FETCH_WINDOW_OVERRIDE')
+}
+
+// Public entry point walletChainPipeline.ts now uses in place of its previous hardcoded 90-day
+// constant. Opt-in: with no PROVIDER_FETCH_WINDOW_OVERRIDE set, this returns exactly
+// PROVIDER_FETCH_WINDOW_DAYS_DEFAULT (90) — identical behavior to before this change existed.
+export function getEffectiveFetchWindow(): number {
+  const override = getWindowFromEnv()
+  if (override === undefined) return PROVIDER_FETCH_WINDOW_DAYS_DEFAULT
+
+  const { min, max } = getWindowBoundsFromEnv()
+  if (override < min || override > max) {
+    console.warn('[providerFetchWindow] PROVIDER_FETCH_WINDOW_OVERRIDE is outside the effective [min, max] range — clamping', {
+      override, min, max,
+    })
+  }
+  return Math.max(min, Math.min(max, override))
+}
+
 function windowCutoffMs(windowDays: number): number {
   return Date.now() - windowDays * 24 * 60 * 60 * 1000
 }

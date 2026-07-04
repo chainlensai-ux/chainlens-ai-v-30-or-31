@@ -69,8 +69,25 @@ export type ProviderFetchWindowResult = {
 }
 
 // Architecture Step 1: provider fetch window is fixed within [80, 100] days.
+//
+// WINDOW WIDENING (MAX 100 -> 365 days), DISCLOSED: raised per explicit request so deployments can
+// opt into a wider historical fetch window (e.g. to cover activity older than the prior 100-day
+// ceiling). This is safe in the specific sense that nothing downstream assumed a fixed 90-day
+// value — clampWindowDays() (utils.ts) already accepted an optional override and clamped it into
+// [MIN, MAX]; only the ceiling itself moves here. It is NOT free, though: MAX_RAW_EVENTS_PER_PROVIDER
+// below is still a single bounded page — this module still never deep-pages (Architecture Step 1/8
+// unchanged). Widening the window ceiling without widening the page size increases the real risk
+// that an active wallet's older events fall outside that one page and are silently missed — the
+// same truncation risk this module already discloses for the 90-day default, just larger at 365.
+// See providerFetchWindow/utils.ts's new getEffectiveFetchWindow() for the opt-in, env-controlled
+// way to choose a value inside [MIN, MAX], and app/api/_shared/walletChainPipeline.ts for where
+// it's now actually used (replacing a previously hardcoded 90-day constant there).
+//
+// MIN stays 80 and DEFAULT stays 90 (both unchanged) — only the upper bound was requested to widen;
+// narrowing MIN or changing the no-override fallback would be an unrequested behavior change for
+// every existing caller that never sets an override.
 export const PROVIDER_FETCH_WINDOW_DAYS_MIN = 80
-export const PROVIDER_FETCH_WINDOW_DAYS_MAX = 100
+export const PROVIDER_FETCH_WINDOW_DAYS_MAX = 365
 export const PROVIDER_FETCH_WINDOW_DAYS_DEFAULT = 90
 
 // Architecture Step 1/8: base fetch never deep-pages. One bounded page per provider per chain.

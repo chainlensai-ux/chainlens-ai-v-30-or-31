@@ -33,7 +33,7 @@
 // chain none of these real modules actually declare support for.
 
 import type { RawProviderEvent, SupportedChain } from '@/src/modules/providerFetchWindow/types'
-import { fetchProviderWindow } from '@/src/modules/providerFetchWindow/index'
+import { fetchProviderWindow, getEffectiveFetchWindow } from '@/src/modules/providerFetchWindow/index'
 import type { RawTransfer, RawTxBundle, SwapNormalizerChain } from '@/src/modules/swapNormalizer/types'
 import { normalizeTrades } from '@/src/modules/swapNormalizer'
 import { classifyTradeIntent, type TradeWithIntent } from '@/src/modules/tradeIntent/intentEngine'
@@ -44,9 +44,29 @@ import { computeUnrealizedPnl, type Holding, type UnrealizedPnlResult } from '@/
 import { UNKNOWN_TOKEN } from '@/src/modules/swapNormalizer'
 import { buildTradeTimelineV2, type NormalizedSwap, type NormalizedTransfer, type TradeEntry } from '@/lib/engines/tradeTimelineEngineV2'
 
-// Architecture Step 1's real, fixed provider-fetch window (see providerFetchWindow/types.ts) — the
-// same default value src/pipeline/index.ts uses for the base (non-deep) window.
-export const PROVIDER_FETCH_WINDOW_DAYS = 90
+// WINDOW WIDENING, DISCLOSED: this used to be a hardcoded `= 90` constant. It now resolves via
+// providerFetchWindow's new `getEffectiveFetchWindow()` (src/modules/providerFetchWindow/index.ts),
+// which returns exactly 90 (PROVIDER_FETCH_WINDOW_DAYS_DEFAULT, unchanged) unless the opt-in
+// PROVIDER_FETCH_WINDOW_OVERRIDE env var is set — so behavior is byte-for-byte identical to before
+// this change for every deployment that doesn't set that var. See that module's index.ts/utils.ts
+// for the full disclosure on how the override is validated/clamped/logged.
+//
+// SCOPE-OF-APPLICATION DISCLOSURE: a task asked for this window to be used for "transfer fetch, swap
+// fetch, pricing fetch, metadata fetch" as four separate things. In the real code, only ONE of those
+// is actually parameterized by a day-count window at all: the raw provider fetch below
+// (fetchRawEventsForChain -> fetchProviderWindow). swapNormalizer/tradeIntent/lotOpener/lotCloser
+// operate on whatever raw data that fetch already returned (no separate window param of their own);
+// getPriceAtTime (pricingAtTimeEngine) takes an explicit historical `timestamp`, not a window, so a
+// "pricing fetch window" isn't a real, distinct concept in this codebase; there is no separate
+// "metadata fetch" step at all (token metadata comes from the same raw provider events). This export
+// is kept as the SINGLE real place a wider window actually takes effect — every function in this
+// file that calls fetchRawEventsForChain (directly or via buildTradesWithIntentForChain /
+// buildLotsForChain / buildUnrealizedPnlForChain / buildTradeTimelineForChain) already benefits from
+// the widened value through that one shared call site, with no separate wiring needed for
+// swap/pricing/metadata since those steps have no window parameter to widen in the first place.
+export function getProviderFetchWindowDays(): number {
+  return getEffectiveFetchWindow()
+}
 
 const SWAP_NORMALIZER_CHAINS = new Set<SwapNormalizerChain>(['base', 'eth', 'arbitrum', 'optimism'])
 
@@ -65,7 +85,7 @@ export function isSwapNormalizerChain(chain: SupportedChain): chain is SwapNorma
 }
 
 export async function fetchRawEventsForChain(chain: SupportedChain, walletAddress: string): Promise<RawProviderEvent[]> {
-  const result = await fetchProviderWindow(chain, walletAddress, PROVIDER_FETCH_WINDOW_DAYS)
+  const result = await fetchProviderWindow(chain, walletAddress, getProviderFetchWindowDays())
   return result.rawEvents
 }
 
