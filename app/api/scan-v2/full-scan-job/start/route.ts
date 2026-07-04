@@ -3,29 +3,23 @@
 // Calls the exact same real orchestrator every other scan route uses
 // (router.handleScanRequest, src/deployment/router.ts) — not a reimplementation. Never throws.
 //
-// HONEST LIMITS DISCLOSURE (unchanged from the prior version of this file): "no time limits" is not
-// literally achievable on Vercel serverless — every plan has SOME upper bound on how long `after()`
-// (Next.js's real, built-in background-work primitive) can keep running after a response is sent.
-// What this genuinely fixes: the CLIENT's HTTP request no longer has to stay open for the full scan
-// duration — this route returns immediately, and the real computation continues via `after()`,
-// decoupled from that response. Polling (.../status/route.ts) then has no timeout coupling to the
-// scan's own duration.
+// REDIS MIGRATION, DISCLOSED: this route previously used lib/server/cache/tokenCache.ts's
+// @vercel/kv-backed getTokenCache/setTokenCache, with a synchronous fallback when KV wasn't
+// configured. Per explicit instruction, it now always uses the new lib/server/cache/redisClient.ts
+// client (REDIS_URL — a real redis:// TCP connection string, per that file's own header on why
+// ioredis, not @upstash/redis, is the correct client for it) and NEVER falls back to synchronous
+// execution, even if Redis is unreachable. If Redis is down/misconfigured, `safeRedisSet` below
+// degrades to a logged warning rather than throwing or silently switching back to sync mode — that
+// failure is surfaced as a real, diagnosable job outcome (the job simply never reaches "done" for a
+// later poll to find), per this task's explicit instruction not to paper over it with a fallback.
 //
-// KV-UNCONFIGURED GRACEFUL DEGRADATION, DISCLOSED: this route's whole design (enqueue + poll) only
-// works if the job's result can be PERSISTED somewhere between the `after()` background write and a
-// later poll request — that's Vercel KV (lib/server/cache/tokenCache.ts, reused here unmodified).
-// If KV isn't configured (e.g. local dev without KV_REST_API_URL/TOKEN — the same check that
-// module's own kvConfigured() already makes, duplicated here rather than exporting that private
-// helper, since modifying that file wasn't requested and this is a one-line, disclosed duplication
-// of an already-simple check), there is nowhere to persist a background result for later polling.
-// Rather than silently enqueue a job that can NEVER be found by a later poll (which would force
-// every dev-without-KV caller to wait out the full client-side polling timeout before failing),
-// this route detects that case and runs the scan SYNCHRONOUSLY instead, returning the completed
-// result directly in this response with `status: "done"` already set — the frontend checks for
-// this and skips polling entirely when it sees a `"done"` status here.
+// HONEST LIMITS DISCLOSURE (unchanged): "no time limits" is not literally achievable on Vercel
+// serverless — every plan has SOME upper bound on how long `after()` (Next.js's built-in
+// background-work primitive) can keep running after a response is sent. What this genuinely fixes:
+// the CLIENT's HTTP request no longer has to stay open for the full scan duration.
 
 import { NextResponse, after } from 'next/server'
-import { getTokenCache, setTokenCache } from '@/lib/server/cache/tokenCache'
+import { redis } from '@/lib/server/cache/redisClient'
 import { router } from '@/src/deployment/index'
 
 export type JobErrorShape = { message: string; category: string; details?: string[] }
@@ -41,11 +35,16 @@ export function jobKey(jobId: string): string {
   return `v1:full-scan-job:${jobId}`
 }
 
-// Same real env var names lib/server/cache/tokenCache.ts's own (private) kvConfigured() checks —
-// duplicated, not imported, since that helper isn't exported and this file doesn't modify that
-// module. Both copies checking the identical two env vars can never disagree in practice.
-function kvConfigured(): boolean {
-  return Boolean(process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN)
+// Never throws — a Redis write failure (including the protocol mismatch disclosed in
+// redisClient.ts's header) degrades to a logged warning, not a crashed request. Per this task's
+// explicit instruction, this does NOT fall back to synchronous execution.
+async function safeRedisSet(key: string, value: FullScanJobResult): Promise<void> {
+  try {
+    await redis.set(key, value, { ex: JOB_TTL_SECONDS })
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[full-scan-job/start] redis.set failed', { key, err: err instanceof Error ? err.message : String(err) })
+  }
 }
 
 async function runScanToJobResult(rawBody: unknown, ip: string): Promise<FullScanJobResult> {
@@ -72,32 +71,23 @@ export async function POST(req: Request): Promise<Response> {
     const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown'
     const jobId = crypto.randomUUID()
 
-    if (!kvConfigured()) {
-      // Graceful degradation — see file header. No persistence layer exists to poll against, so
-      // run synchronously and hand back the finished result immediately, nested under `job` (NOT
-      // spread over this response's own top-level `success`, which means "this HTTP request was
-      // handled" and must never be confused with — or overwritten by — the scan's own success/
-      // failure outcome).
-      const job = await runScanToJobResult(rawBody, ip)
-      return NextResponse.json({ success: true, jobId, job })
-    }
-
     // Mark pending BEFORE returning, so an immediate poll never sees "not found" for a job that was
-    // actually accepted.
-    await setTokenCache<FullScanJobResult>(jobKey(jobId), { status: 'pending' }, JOB_TTL_SECONDS)
+    // actually accepted. Always attempted, even if Redis is unreachable — see file header;
+    // safeRedisSet degrades to a logged warning rather than throwing or falling back to sync mode.
+    await safeRedisSet(jobKey(jobId), { status: 'pending' })
 
     // Runs AFTER this response is sent — the real mechanism that decouples the client's request
     // lifetime from the scan's actual duration. Never throws: runScanToJobResult already catches
-    // everything and always resolves to a valid FullScanJobResult.
+    // everything and always resolves to a valid FullScanJobResult; safeRedisSet never throws either.
     after(async () => {
       const job = await runScanToJobResult(rawBody, ip)
-      await setTokenCache(jobKey(jobId), job, JOB_TTL_SECONDS)
+      await safeRedisSet(jobKey(jobId), job)
     })
 
     return NextResponse.json({ success: true, jobId, job: { status: 'pending' } })
   } catch (err) {
-    // Last-resort guard — never throw out of this route even if request parsing or the initial KV
-    // write itself fails unexpectedly.
+    // Last-resort guard — never throw out of this route even if request parsing itself fails
+    // unexpectedly.
     return NextResponse.json(
       { success: false, error: { message: 'job-enqueue-failed', category: 'unknown', details: [err instanceof Error ? err.message : String(err)] } },
       { status: 500 },
