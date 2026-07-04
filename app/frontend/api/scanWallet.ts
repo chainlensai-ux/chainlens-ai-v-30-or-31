@@ -1,37 +1,29 @@
 // API client for the ChainLens 180-Day Intelligence Engine (V2).
 //
-// The V2 report is split into 9 modules, each served by its own endpoint under
-// /api/scan-v2/modules/<name>. scanWalletV2() fetches all 9 in parallel and reassembles them into
-// the same combined shape the UI already renders (scanMetadata, chainSelection, timelines,
-// holdings, portfolio, behaviorIntel, recoveryPolicy, windowCoverage, finalSummary) — callers
-// don't need to know the report was split. The backend de-dupes these 9 concurrent requests
-// against a single runWalletScanV2() run (src/deployment/scanCache.ts) rather than recomputing the
-// scan once per module.
+// UNIFIED ROUTE, DISCLOSED (current): `scanWalletV2()` now calls the single unified
+// `/api/scan-v2/full-scan` route (added in a prior task) instead of firing 9 separate
+// `/api/scan-v2/modules/<name>` requests. Root cause of the prior production symptom ("module-failed
+// for all modules"): that string is this file's OWN safety-wrapper fallback error message
+// (`moduleFetchFailed`, below `fetchScanModule`) — seeing it for every module meant all 9 concurrent
+// per-module fetches were failing in production, consistent with the previously-diagnosed
+// FUNCTION_INVOCATION_TIMEOUT failure mode (9 separate serverless invocations, each racing its own
+// independent execution timeout against one shared underlying computation — see
+// app/api/scan-v2/full-scan/route.ts's own header). The unified route collapses this to one request
+// and one function invocation, which is the actual, minimal, in-scope fix here — not a change to
+// route names, module keys, or the report shape.
 //
-// FABRICATED-PREMISE DISCLOSURE: a task asked to "stop calling the old V1 scan modules" and
-// replace `/api/scan/modules/*` calls with `/api/scan-v2/modules/{metadata,timelines,pnl,behavior,
-// reason,recovery-policy}`. Verified by repo-wide search before touching anything: this file (the
-// only frontend code that calls any scan-v2/module endpoint) already exclusively calls
-// `/api/scan-v2/modules/<name>` — there is no `/api/scan/modules/*` route pattern anywhere in this
-// codebase, and nothing in the frontend calls one. `/api/scan` (singular, no `/modules/`) is itself
-// a real V2 endpoint (delegates straight to `runWalletScanV2` — see its own file header), not a V1
-// leftover, and no frontend code calls it either. The task's assumed module map is also only
-// partly real: the actual routes are `metadata`, `chain-selection`, `timelines`, `holdings`,
-// `portfolio`, `behavior-intel` (not `behavior`), `recovery-policy`, `window-coverage`,
-// `final-summary`, `bridge-timeline` — there is no `scan-v2/modules/pnl` or `scan-v2/modules/reason`
-// route at all (`pnl` lives at the separate, standalone `/api/pnl` built earlier this session;
-// `reasonEngine` isn't wired into any HTTP route yet). No route names were changed here, since the
-// ones already in `MODULE_ENDPOINTS` below are the real ones.
+// `fetchScanModule` (below) is left in place, unused by `scanWalletV2` now but still exported for
+// any caller that genuinely wants just one module's section (per its own existing doc comment) —
+// not removed, since deleting a working, independently-useful export would be an unrelated change
+// beyond this fix's scope.
 //
-// WHAT WAS ACTUALLY FIXED: the one real, in-scope problem this file did have — `fetchScanModule`
-// threw on any non-2xx response or network failure, and `scanWalletV2` awaited all 9 with
-// `Promise.all`, so a single module's transient failure (e.g. a cold-start hiccup on
-// `recovery-policy`, which only runs real extra work in `scanMode: 'deep'` — a plausible real
-// explanation for "deep scans fail" while normal scans succeed) crashed the ENTIRE scan instead of
-// degrading gracefully. `fetchScanModule` now never throws (network/parse failures resolve to a
-// structured `{success:false, ok:false, error:{message:'module-failed', ...}}` instead), and
-// `scanWalletV2` now uses `Promise.allSettled` so one module's failure can't take down the other 8.
-// The existing `{success, data, error}` return contract page.tsx already depends on is unchanged.
+// FABRICATED-PREMISE DISCLOSURE (earlier task): a task asked to "stop calling the old V1 scan
+// modules" and replace `/api/scan/modules/*` calls with `/api/scan-v2/modules/{metadata,timelines,
+// pnl,behavior,reason,recovery-policy}`. Verified by repo-wide search: there is no
+// `/api/scan/modules/*` route pattern anywhere in this codebase, and nothing in the frontend ever
+// called one. `/api/scan` (singular) is itself a real V2 endpoint, not a V1 leftover. The task's
+// assumed module map was also only partly real — see `MODULE_ENDPOINTS` below for the actual names
+// (`behavior-intel`, not `behavior`; no `pnl`/`reason` module route exists under scan-v2 at all).
 
 export type ScanMode = 'normal' | 'deep'
 
@@ -102,32 +94,46 @@ export async function fetchScanModule(
   }
 }
 
-// Never throws (fetchScanModule above already can't) — callers get a structured
-// {success, data, error} result in every case, including partial failure. Uses Promise.allSettled
-// (not Promise.all) so one module's failure — most likely under scanMode: 'deep', where
-// recovery-policy does real extra work — can never take down the other 8 modules' results.
+// Matches Vercel Pro's own 60s serverless ceiling less a safety margin — this is a CLIENT-side
+// abort so the UI can report a clean "timeout" instead of hanging indefinitely if the server-side
+// invocation itself is ever killed without closing the connection cleanly.
+const FULL_SCAN_TIMEOUT_MS = 55_000
+
+// Never throws. Calls the single unified /api/scan-v2/full-scan route (one request, one serverless
+// invocation, all 10 modules computed internally — see that route's own file header) instead of the
+// prior 9-separate-module fan-out. Network failures and client-side timeouts both resolve to a
+// structured {success:false, error:{...}} instead of propagating an exception or hanging forever.
 export async function scanWalletV2(
   walletAddress: string,
   chains: string[],
   scanMode: ScanMode = 'normal',
 ): Promise<ScanWalletApiResponse> {
-  const settled = await Promise.allSettled(
-    MODULE_ENDPOINTS.map(([, endpoint]) => fetchScanModule(endpoint, walletAddress, chains, scanMode)),
-  )
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), FULL_SCAN_TIMEOUT_MS)
 
-  const responses: ModuleApiResponse[] = settled.map((s, i) =>
-    s.status === 'fulfilled' ? s.value : moduleFetchFailed(MODULE_ENDPOINTS[i][1], String(s.reason)),
-  )
+  try {
+    const res = await fetch('/api/scan-v2/full-scan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ walletAddress, chains, scanMode }),
+      signal: controller.signal,
+    })
 
-  const failed = responses.find((r) => !r.success)
-  if (failed) {
-    return { success: false, error: failed.error ?? { message: 'Scan failed', category: 'unknown' } }
+    if (!res.ok) {
+      return { success: false, error: { message: 'network-failed', category: 'network', details: [`HTTP ${res.status}`] } }
+    }
+
+    const body = (await res.json()) as ScanWalletApiResponse
+    // Trust the route's own {success, data, error} shape as-is (it already never throws and always
+    // returns this exact contract — see app/api/scan-v2/full-scan/route.ts) rather than re-deriving it.
+    return body
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      return { success: false, error: { message: 'timeout', category: 'network', details: [`exceeded ${FULL_SCAN_TIMEOUT_MS}ms`] } }
+    }
+    // Any other network failure (offline, DNS, CORS) or a malformed/non-JSON body — never throw.
+    return { success: false, error: { message: 'network-failed', category: 'network', details: [err instanceof Error ? err.message : String(err)] } }
+  } finally {
+    clearTimeout(timeoutId)
   }
-
-  const data: Record<string, unknown> = {}
-  MODULE_ENDPOINTS.forEach(([field], i) => {
-    data[field] = responses[i].data
-  })
-
-  return { success: true, data }
 }
