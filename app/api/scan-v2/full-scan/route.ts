@@ -93,12 +93,21 @@
 // `chainValueBreakdown` at all) would silently break both of those real components. Added as a new,
 // additional `portfolioV2` field instead — `portfolioStatus` is a genuinely new key with no
 // collision, added exactly as specified.
+//
+// PNL-MODULE WIRING, DISCLOSED (added per a later task): fetchParsedTrades(walletAddress) +
+// computePnl(...) are called right after portfolioV2, additively, attaching `pnlV2`/`pnlStatus` as
+// NEW response fields — neither name collides with anything already in this response (the existing,
+// untouched fields are `fifoAndPnl`/`pnlSummaryV2`, not `pnlV2`/`pnlStatus`). "ParsedTrade"/an
+// "existing tx indexer" by that name don't exist in this codebase — see lib/engine/modules/pnl/
+// types.ts's own header for what's real and reused instead (the real swapNormalizer/tradeIntent/
+// lotOpener/lotCloser chain, via walletChainPipeline.ts's buildTradeTimelineForChain).
 
 import { router } from '@/src/deployment/index'
 import { handleApiError } from '@/src/deployment/api'
 import { fetchAllHoldings } from '@/lib/engine/modules/holdings/fetchHoldings'
 import { priceHoldings } from '@/lib/engine/modules/pricing/fetchPricing'
 import { buildPortfolio } from '@/lib/engine/modules/portfolio/buildPortfolio'
+import { computePnl, fetchParsedTrades } from '@/lib/engine/modules/pnl/computePnl'
 
 export async function POST(req: Request): Promise<Response> {
   try {
@@ -141,6 +150,18 @@ export async function POST(req: Request): Promise<Response> {
         }
       }
 
+      let pnlOutput: Awaited<ReturnType<typeof computePnl>>
+      try {
+        const trades = await fetchParsedTrades(body.data.scanMetadata.walletAddress)
+        pnlOutput = await computePnl(pricing.pricedHoldings, chainHoldings, pricing.totalValueUsd, trades)
+      } catch {
+        // Same never-throw guarantee as chainHoldings/pricing/portfolio above.
+        pnlOutput = {
+          pnlV2: { realizedPnlUsd: 0, unrealizedPnlUsd: 0, costBasis: [], realized: [], unrealized: [], chainBreakdown: [] },
+          pnlStatus: 'unavailable',
+        }
+      }
+
       body = {
         ...body,
         data: {
@@ -152,6 +173,8 @@ export async function POST(req: Request): Promise<Response> {
           priceStatus: pricing.priceStatus,
           portfolioV2: portfolioOutput.portfolio,
           portfolioStatus: portfolioOutput.portfolioStatus,
+          pnlV2: pnlOutput.pnlV2,
+          pnlStatus: pnlOutput.pnlStatus,
         },
       } as typeof body
     }
