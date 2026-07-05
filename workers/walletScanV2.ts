@@ -97,6 +97,8 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string): Promi
     // try/catch degrade-shape was changed to add these.
     const chainOverallStart = performance.now()
 
+    // eslint-disable-next-line no-console
+    console.log('[V2-worker] starting holdings')
     let t0 = performance.now()
     let chainHoldings: Awaited<ReturnType<typeof fetchAllHoldings>> = []
     try {
@@ -105,8 +107,10 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string): Promi
       chainHoldings = []
     }
     // eslint-disable-next-line no-console
-    console.log('[V2-worker] holdings', performance.now() - t0, 'count=', chainHoldings.length)
+    console.log('[V2-worker] finished holdings in', performance.now() - t0, 'ms', 'count=', chainHoldings.length)
 
+    // eslint-disable-next-line no-console
+    console.log('[V2-worker] starting pricing')
     t0 = performance.now()
     let pricing: Awaited<ReturnType<typeof priceHoldings>>
     try {
@@ -115,8 +119,10 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string): Promi
       pricing = { pricedHoldings: [], totalValueUsd: 0, chainValueUsd: {}, priceStatus: 'unavailable' }
     }
     // eslint-disable-next-line no-console
-    console.log('[V2-worker] pricing', performance.now() - t0, 'count=', pricing.pricedHoldings.length)
+    console.log('[V2-worker] finished pricing in', performance.now() - t0, 'ms', 'count=', pricing.pricedHoldings.length)
 
+    // eslint-disable-next-line no-console
+    console.log('[V2-worker] starting portfolio')
     t0 = performance.now()
     let portfolioOutput: Awaited<ReturnType<typeof buildPortfolio>>
     try {
@@ -128,7 +134,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string): Promi
       }
     }
     // eslint-disable-next-line no-console
-    console.log('[V2-worker] portfolio', performance.now() - t0, 'holdings=', chainHoldings.length)
+    console.log('[V2-worker] finished portfolio in', performance.now() - t0, 'ms', 'holdings=', chainHoldings.length)
 
     // CU-DIAG, DISCLOSED SCOPE: this is the real provider-heavy step (fetchParsedTrades ->
     // walletChainPipeline.fetchRawEventsForChain -> the actual GoldRush/Alchemy calls) — but those
@@ -136,6 +142,8 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string): Promi
     // this entire session has treated as untouched, protected code (see this file's own header and
     // every prior commit's disclosures). Logging is added here, at the call site, instead — it
     // reveals trade-event volume per scan without modifying any module internals or outputs.
+    // eslint-disable-next-line no-console
+    console.log('[V2-worker] starting trades')
     t0 = performance.now()
     let trades: Awaited<ReturnType<typeof fetchParsedTrades>> = []
     try {
@@ -144,8 +152,10 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string): Promi
       trades = []
     }
     // eslint-disable-next-line no-console
-    console.log('[V2-worker] trades', performance.now() - t0, 'count=', trades.length, 'cacheHitsSoFar=', eventsCache.hitCount)
+    console.log('[V2-worker] finished trades in', performance.now() - t0, 'ms', 'count=', trades.length, 'cacheHitsSoFar=', eventsCache.hitCount)
 
+    // eslint-disable-next-line no-console
+    console.log('[V2-worker] starting pnl')
     t0 = performance.now()
     let pnlOutput: Awaited<ReturnType<typeof computePnl>>
     try {
@@ -157,8 +167,10 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string): Promi
       }
     }
     // eslint-disable-next-line no-console
-    console.log('[V2-worker] pnl', performance.now() - t0)
+    console.log('[V2-worker] finished pnl in', performance.now() - t0, 'ms')
 
+    // eslint-disable-next-line no-console
+    console.log('[V2-worker] starting chainActivity')
     t0 = performance.now()
     let chainActivityOutput: Awaited<ReturnType<typeof computeChainActivity>>
     try {
@@ -176,8 +188,10 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string): Promi
       chainActivityOutput = { chainActivityV2: [], chainActivityStatus: 'empty' }
     }
     // eslint-disable-next-line no-console
-    console.log('[V2-worker] chainActivity', performance.now() - t0, 'count=', chainActivityOutput.chainActivityV2.length)
+    console.log('[V2-worker] finished chainActivity in', performance.now() - t0, 'ms', 'count=', chainActivityOutput.chainActivityV2.length)
 
+    // eslint-disable-next-line no-console
+    console.log('[V2-worker] starting risk')
     t0 = performance.now()
     let riskOutput: Awaited<ReturnType<typeof computeRisk>>
     try {
@@ -198,8 +212,10 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string): Promi
       }
     }
     // eslint-disable-next-line no-console
-    console.log('[V2-worker] risk', performance.now() - t0)
+    console.log('[V2-worker] finished risk in', performance.now() - t0, 'ms')
 
+    // eslint-disable-next-line no-console
+    console.log('[V2-worker] starting personality')
     t0 = performance.now()
     let personalityOutput: Awaited<ReturnType<typeof computePersonality>>
     try {
@@ -222,8 +238,10 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string): Promi
       }
     }
     // eslint-disable-next-line no-console
-    console.log('[V2-worker] personality', performance.now() - t0)
+    console.log('[V2-worker] finished personality in', performance.now() - t0, 'ms')
 
+    // eslint-disable-next-line no-console
+    console.log('[V2-worker] starting behavior')
     t0 = performance.now()
     let behaviorOutput: Awaited<ReturnType<typeof computeBehavior>>
     try {
@@ -248,8 +266,10 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string): Promi
       }
     }
     // eslint-disable-next-line no-console
-    console.log('[V2-worker] behavior', performance.now() - t0)
+    console.log('[V2-worker] finished behavior in', performance.now() - t0, 'ms')
 
+    // eslint-disable-next-line no-console
+    console.log('[V2-worker] starting signals')
     t0 = performance.now()
     let signalsOutput: Awaited<ReturnType<typeof computeSignals>>
     try {
@@ -268,8 +288,10 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string): Promi
       signalsOutput = { signalsV2: [], signalsStatus: 'empty' }
     }
     // eslint-disable-next-line no-console
-    console.log('[V2-worker] signals', performance.now() - t0, 'count=', signalsOutput.signalsV2.length)
+    console.log('[V2-worker] finished signals in', performance.now() - t0, 'ms', 'count=', signalsOutput.signalsV2.length)
 
+    // eslint-disable-next-line no-console
+    console.log('[V2-worker] starting smartMoneyScore')
     t0 = performance.now()
     let smartMoneyScore: ReturnType<typeof computeSmartMoneyScore> | undefined
     try {
@@ -289,9 +311,11 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string): Promi
       smartMoneyScore = undefined
     }
     // eslint-disable-next-line no-console
-    console.log('[V2-worker] smartMoneyScore', performance.now() - t0)
+    console.log('[V2-worker] finished smartMoneyScore in', performance.now() - t0, 'ms')
     // eslint-disable-next-line no-console
     console.log('[V2-worker] total', performance.now() - chainOverallStart)
+    // eslint-disable-next-line no-console
+    console.log('[V2-worker] finished all modules')
     // CU-DIAG SUMMARY, DISCLOSED DEVIATION: the task's own snippet used a fabricated
     // `events.length * 0.7` estimate tracked in a new local variable. This worker already has a
     // real, exact provider-call counter (cuBudget.providerCalls, threaded through fetchParsedTrades/
