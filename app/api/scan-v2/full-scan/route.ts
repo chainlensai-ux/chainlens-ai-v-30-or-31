@@ -18,25 +18,40 @@
 // "Ensure route does NOT call external APIs directly": true both before and after this change — no
 // GoldRush/Alchemy/CoinGecko call has ever been made directly from this file; every provider call
 // happens inside the module chain (now in workers/walletScanV2.ts), same as it did inline before.
+//
+// LATEST TASK, DISCLOSED: this route already had no heavy post-processing after the worker call —
+// CU tracking, events-cache updates, and every module's post-processing already live entirely
+// inside workers/walletScanV2.ts from the prior refactor (see this file's git history). Tasks
+// 1/3 needed no changes here. Task 4's literal snippet (`Response.json({ success: true, data:
+// workerResult })`) is NOT applied: `body` returned by runWalletScanV2Worker already IS the full
+// `{success, data}` (or `{success:false, error}`) response shape — wrapping it again would
+// double-nest it (breaking every frontend consumer reading `body.data` directly) and would hardcode
+// `success: true` even on a genuine worker failure (status 500), masking real errors. The existing
+// direct pass-through below is kept as the correct behavior. Task 2's timing-scope request IS
+// applied: the timer now starts immediately before the worker call (not before request parsing) and
+// the log now includes response construction, tightening the measured span to "worker call +
+// building the final response" as asked.
 
 import { handleApiError } from '@/src/deployment/api'
 import { runWalletScanV2Worker, logDirectFailure } from '@/workers/walletScanV2'
 
 export async function POST(req: Request): Promise<Response> {
-  const start = performance.now()
   try {
     const rawBody = await req.json().catch(() => null)
     const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown'
 
+    const start = performance.now()
     const { status, body } = await runWalletScanV2Worker(rawBody, ip)
+
+    const response = new Response(JSON.stringify(body), {
+      status,
+      headers: { 'Content-Type': 'application/json' },
+    })
 
     // eslint-disable-next-line no-console
     console.log('[V2-route] total', performance.now() - start)
 
-    return new Response(JSON.stringify(body), {
-      status,
-      headers: { 'Content-Type': 'application/json' },
-    })
+    return response
   } catch (err) {
     // Last-resort guard only, matching app/api/scan/route.ts's own outer catch — fires only if
     // something fails before/outside runWalletScanV2Worker's own internal error handling (e.g. a
