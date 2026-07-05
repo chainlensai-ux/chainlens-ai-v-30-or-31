@@ -35,6 +35,7 @@
 import type { RawProviderEvent, SupportedChain } from '@/src/modules/providerFetchWindow/types'
 import { fetchProviderWindow, getEffectiveFetchWindow } from '@/src/modules/providerFetchWindow/index'
 import type { EventsCache } from './eventsCache'
+import { type CuBudget, recordProviderCall } from './cuBudget'
 import type { RawTransfer, RawTxBundle, SwapNormalizerChain } from '@/src/modules/swapNormalizer/types'
 import { normalizeTrades } from '@/src/modules/swapNormalizer'
 import { classifyTradeIntent, type TradeWithIntent } from '@/src/modules/tradeIntent/intentEngine'
@@ -91,13 +92,14 @@ export function isSwapNormalizerChain(chain: SupportedChain): chain is SwapNorma
 // (every pre-existing caller of this function) preserves the exact prior behavior — always a fresh
 // fetch, zero behavior change for anything not explicitly passing one. Verified safe: no output
 // shape change, same real fetchProviderWindow call, same real rawEvents value either way.
-export async function fetchRawEventsForChain(chain: SupportedChain, walletAddress: string, cache?: EventsCache): Promise<RawProviderEvent[]> {
+export async function fetchRawEventsForChain(chain: SupportedChain, walletAddress: string, cache?: EventsCache, cuBudget?: CuBudget): Promise<RawProviderEvent[]> {
   const cached = cache?.get(chain, walletAddress)
   if (cached) return cached
 
   // eslint-disable-next-line no-console
   if (cache) console.debug('[CU-HARDENING] Fetching provider events:', `${walletAddress.toLowerCase()}:${chain}`)
   const result = await fetchProviderWindow(chain, walletAddress, getProviderFetchWindowDays())
+  if (cuBudget) recordProviderCall(cuBudget)
   cache?.set(chain, walletAddress, result.rawEvents)
   return result.rawEvents
 }
@@ -149,11 +151,11 @@ export type TradesWithIntentForChainResult = {
 // swapNormalizer) -> classifyTradeIntent (real tradeIntent). See file header for disclosures.
 // CU-HARDENING: `cache` threaded through to fetchRawEventsForChain — optional, same
 // zero-behavior-change-when-omitted guarantee as that function's own comment.
-export async function buildTradesWithIntentForChain(chain: SupportedChain, walletAddress: string, cache?: EventsCache): Promise<TradesWithIntentForChainResult> {
+export async function buildTradesWithIntentForChain(chain: SupportedChain, walletAddress: string, cache?: EventsCache, cuBudget?: CuBudget): Promise<TradesWithIntentForChainResult> {
   if (!isSwapNormalizerChain(chain)) {
     return { chain, chainSupported: false, trades: [] }
   }
-  const rawEvents = await fetchRawEventsForChain(chain, walletAddress, cache)
+  const rawEvents = await fetchRawEventsForChain(chain, walletAddress, cache, cuBudget)
   const bundles = groupRawEventsIntoTxBundles(rawEvents, chain)
   const normalizedTrades = normalizeTrades(bundles, walletAddress)
   const trades = classifyTradeIntent(normalizedTrades)
@@ -172,8 +174,8 @@ export type LotsForChainResult = {
 // Real chain continued: openLots (real lotOpener) -> closeLots (real lotCloser).
 // CU-HARDENING: `cache` threaded through — optional, same zero-behavior-change-when-omitted
 // guarantee as fetchRawEventsForChain's own comment.
-export async function buildLotsForChain(chain: SupportedChain, walletAddress: string, cache?: EventsCache): Promise<LotsForChainResult> {
-  const { chainSupported, trades } = await buildTradesWithIntentForChain(chain, walletAddress, cache)
+export async function buildLotsForChain(chain: SupportedChain, walletAddress: string, cache?: EventsCache, cuBudget?: CuBudget): Promise<LotsForChainResult> {
+  const { chainSupported, trades } = await buildTradesWithIntentForChain(chain, walletAddress, cache, cuBudget)
   if (!chainSupported) {
     return { chain, chainSupported: false, trades: [], closedLots: [], remainingLots: [], unmatchedSells: [] }
   }
@@ -297,8 +299,8 @@ export type TradeTimelineForChainResult = {
 // computePnl.ts's fetchParsedTrades calls; passing the SAME cache instance
 // lib/engine/modules/activity/computeChainActivity.ts uses is what actually fixes docs/CU_AUDIT.md
 // Finding #1 — both modules now share one real fetchRawEventsForChain call per chain per request.
-export async function buildTradeTimelineForChain(chain: SupportedChain, walletAddress: string, cache?: EventsCache): Promise<TradeTimelineForChainResult> {
-  const { chainSupported, trades } = await buildTradesWithIntentForChain(chain, walletAddress, cache)
+export async function buildTradeTimelineForChain(chain: SupportedChain, walletAddress: string, cache?: EventsCache, cuBudget?: CuBudget): Promise<TradeTimelineForChainResult> {
+  const { chainSupported, trades } = await buildTradesWithIntentForChain(chain, walletAddress, cache, cuBudget)
   if (!chainSupported) return { chain, chainSupported: false, trades: [] }
 
   const transfers: NormalizedTransfer[] = []

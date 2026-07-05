@@ -29,6 +29,7 @@
 
 import { fetchRawEventsForChain, buildTradesWithIntentForChain } from '@/app/api/_shared/walletChainPipeline'
 import type { EventsCache } from '@/app/api/_shared/eventsCache'
+import type { CuBudget } from '@/app/api/_shared/cuBudget'
 import { normalizeEvents } from '@/src/modules/normalization'
 import { buildBridgeDetectionObject } from '@/src/modules/bridgeDetection'
 import { logCuRisk } from '@/lib/server/cuAudit'
@@ -78,7 +79,7 @@ export type ChainSignals = {
 // Never throws: fetchRawEventsForChain/buildTradesWithIntentForChain already degrade to empty
 // arrays on any real failure (see walletChainPipeline.ts's own guarantees) — nothing here adds a
 // new network call that could fail differently.
-export async function fetchChainSignals(chainId: number, walletAddress: string, nowMs: number, cache?: EventsCache): Promise<ChainSignals> {
+export async function fetchChainSignals(chainId: number, walletAddress: string, nowMs: number, cache?: EventsCache, cuBudget?: CuBudget): Promise<ChainSignals> {
   const chain = CHAIN_ID_TO_SUPPORTED_CHAIN[chainId]
   if (!chain) return { txCount30d: 0, lastActiveAt: null, bridgeTxCount: 0, lpEventCount: 0, totalClassifiedEventCount: 0 }
 
@@ -104,9 +105,11 @@ export async function fetchChainSignals(chainId: number, walletAddress: string, 
   // computeChainActivity, so by the time this function runs, both cache entries are already warm.
   // Not restructured to strictly-sequential fetch-then-classify here, since doing so would only
   // matter for a hypothetical future caller that reaches this function first — not a real gap today.
+  // eslint-disable-next-line no-console
+  console.debug('[CU-TRACK] chain-activity:', { walletAddress, chains: [chain] })
   const [rawEvents, tradesResult] = await Promise.all([
-    fetchRawEventsForChain(chain, walletAddress, cache),
-    buildTradesWithIntentForChain(chain, walletAddress, cache),
+    fetchRawEventsForChain(chain, walletAddress, cache, cuBudget),
+    buildTradesWithIntentForChain(chain, walletAddress, cache, cuBudget),
   ])
 
   const txHashesInWindow = new Set<string>()
@@ -183,13 +186,14 @@ export async function computeChainActivity(
   _portfolioV2: Portfolio,
   _pnlV2: PnlV2,
   cache?: EventsCache,
+  cuBudget?: CuBudget,
 ): Promise<ChainActivityEngineOutput> {
   const nowMs = Date.now()
   const chainIds = Object.keys(CHAIN_ID_TO_SUPPORTED_CHAIN).map(Number)
 
   const records: ChainActivityRecord[] = await Promise.all(
     chainIds.map(async (chainId): Promise<ChainActivityRecord> => {
-      const signals = await fetchChainSignals(chainId, walletAddress, nowMs, cache)
+      const signals = await fetchChainSignals(chainId, walletAddress, nowMs, cache, cuBudget)
 
       const chainHoldingsForChain = chainHoldings.filter((h) => h.chainId === chainId)
       const pricedHoldingsForChain = pricedHoldings.filter((h) => h.chainId === chainId)

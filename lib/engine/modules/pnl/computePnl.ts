@@ -24,6 +24,7 @@
 
 import { buildTradeTimelineForChain } from '@/app/api/_shared/walletChainPipeline'
 import type { EventsCache } from '@/app/api/_shared/eventsCache'
+import type { CuBudget } from '@/app/api/_shared/cuBudget'
 import { logCuRisk } from '@/lib/server/cuAudit'
 import type { PricedHolding } from '../pricing/types'
 import type { ChainHolding } from '../holdings/types'
@@ -57,7 +58,7 @@ const CHAIN_ID_TO_SUPPORTED_CHAIN: Record<number, 'eth' | 'base'> = {
 // `walletAddress`, as this task originally specified, are unaffected). Never throws:
 // buildTradeTimelineForChain's own real chain already degrades to an empty trades array on any
 // failure (see walletChainPipeline.ts's own guarantees) rather than throwing.
-export async function fetchParsedTrades(walletAddress: string, cache?: EventsCache): Promise<ParsedTrade[]> {
+export async function fetchParsedTrades(walletAddress: string, cache?: EventsCache, cuBudget?: CuBudget): Promise<ParsedTrade[]> {
   if (!walletAddress) {
     // eslint-disable-next-line no-console
     console.warn('[CU-AUDIT] Skipping external call: missing walletAddress')
@@ -74,7 +75,7 @@ export async function fetchParsedTrades(walletAddress: string, cache?: EventsCac
       } else {
         logCuRisk('goldrush+alchemy', `pnl.fetchParsedTrades chain=${chain} wallet=${walletAddress.slice(0, 8)}… (no cache passed — see CU-RISK comment above)`)
       }
-      const result = await buildTradeTimelineForChain(chain, walletAddress, cache)
+      const result = await buildTradeTimelineForChain(chain, walletAddress, cache, cuBudget)
       return result.trades
         .filter((t) => t.type === 'buy' || t.type === 'sell')
         .map((t): ParsedTrade => ({

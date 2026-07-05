@@ -153,6 +153,7 @@ import { computeBehavior } from '@/lib/engine/modules/behavior/computeBehavior'
 // real bridge detection) this pipeline doesn't have — neither is faked to force a signal to fire.
 import { computeSignals } from '@/lib/engine/modules/signals/computeSignals'
 import { createEventsCache } from '@/app/api/_shared/eventsCache'
+import { createCuBudget } from '@/app/api/_shared/cuBudget'
 
 // CU-HARDENING WIRING, DISCLOSED (fixes docs/CU_AUDIT.md Finding #1): a fresh, request-scoped
 // EventsCache is created below (NOT a shared module-level singleton — see eventsCache.ts's own
@@ -166,6 +167,7 @@ export async function POST(req: Request): Promise<Response> {
     const rawBody = await req.json().catch(() => null)
     const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown'
     const eventsCache = createEventsCache()
+    const cuBudget = createCuBudget()
     // eslint-disable-next-line no-console
     console.debug('[CU-HARDENING] Cache cleared for new request')
 
@@ -177,6 +179,8 @@ export async function POST(req: Request): Promise<Response> {
 
     let body = result.body as { success: boolean; data?: { scanMetadata?: { walletAddress?: string } } }
     if (body.success && body.data?.scanMetadata?.walletAddress) {
+      // eslint-disable-next-line no-console
+      console.debug('[CU-TRACK] deep-scan start:', { walletAddress: body.data.scanMetadata.walletAddress, chains: [1, 8453] })
       let chainHoldings: Awaited<ReturnType<typeof fetchAllHoldings>> = []
       try {
         chainHoldings = await fetchAllHoldings(body.data.scanMetadata.walletAddress)
@@ -209,7 +213,7 @@ export async function POST(req: Request): Promise<Response> {
       // task's own "fetch trades (already done)" instruction).
       let trades: Awaited<ReturnType<typeof fetchParsedTrades>> = []
       try {
-        trades = await fetchParsedTrades(body.data.scanMetadata.walletAddress, eventsCache)
+        trades = await fetchParsedTrades(body.data.scanMetadata.walletAddress, eventsCache, cuBudget)
       } catch {
         trades = []
       }
@@ -235,6 +239,7 @@ export async function POST(req: Request): Promise<Response> {
           portfolioOutput.portfolio,
           pnlOutput.pnlV2,
           eventsCache,
+          cuBudget,
         )
       } catch {
         // Same never-throw guarantee as every other new module above.
@@ -353,6 +358,8 @@ export async function POST(req: Request): Promise<Response> {
 
       // eslint-disable-next-line no-console
       console.debug('[CU-HARDENING] Total provider calls avoided:', eventsCache.hitCount)
+      // eslint-disable-next-line no-console
+      console.debug('[CU-TRACK] deep-scan end:', { providerCalls: cuBudget.providerCalls, cacheHits: eventsCache.hitCount })
     }
 
     return new Response(JSON.stringify(body), {
