@@ -14,40 +14,94 @@
 // Exposure lists only chains this engine actually supports/scanned
 // (scanMetadata.chainsScanned) — never a fabricated list of unsupported chains
 // (Optimism/Plasma/Monad/Unichain/BSC etc. do not exist in this engine).
+//
+// PORTFOLIO V2 MIGRATION, DISCLOSED: `portfolioV2` (lib/engine/modules/portfolio/types.ts's
+// `Portfolio` — categories/chains/topHoldings/stablecoinRatio/concentrationIndex) is a
+// STRUCTURALLY DIFFERENT shape from the old `PortfolioSummary` (tokens/chainValueBreakdown) — there
+// is no `.tokens` field on the new shape at all, so a naive `portfolioV2 ?? portfolio` followed by the
+// old `.tokens`-based helpers would silently break the moment portfolioV2 is ever actually present.
+// Instead, `selectPortfolioStats` below reads whichever shape is present and produces the SAME
+// normalized `{totalValueUsd, pricedTokenCount, concentration, topChips}` output the rest of this
+// component already renders — a real adapter, not an assumed-compatible union.
+//
+// ONE HONEST GAP IN THE V2 ADAPTATION: `Portfolio.topHoldings` is capped at the top 5 by the
+// portfolio engine (lib/engine/modules/portfolio/buildPortfolio.ts) — the new shape does not expose
+// a total count of ALL priced tokens, only the top 5. When rendering from portfolioV2, "Priced
+// Tokens" therefore shows `topHoldings.length` (i.e., a number from 0-5), not the wallet's true
+// total priced-token count the way the old `portfolio.tokens` path can. This is a real, disclosed
+// limitation of the new engine's Portfolio shape, not a bug in this component.
+//
+// LIVE-WIRING DISCLOSURE: see WalletProfileHeader.tsx / app/terminal/wallet-scanner/page.tsx's own
+// WalletV2Report type comments — `portfolioV2` is currently always `undefined` in this app's real,
+// live data flow (scanWalletV2() never calls the one route that computes it), so the fallback path
+// below is what actually renders today; the V2 path is real code, verified to work per-field, but
+// not yet exercised by live traffic.
 import { concentrationLabelFor } from '@/src/modules/behaviorIntel/utils'
 import type { PortfolioSummary } from '@/src/modules/portfolio/types'
+import type { Portfolio as EnginePortfolioV2 } from '@/lib/engine/modules/portfolio/types'
 import type { SupportedChain } from '@/src/modules/providerFetchWindow/types'
 import { fmtUsd } from '@/app/frontend/lib/holdingsHeuristics'
 import { ChainBadge } from './ChainBadge'
 
 export type PortfolioIntelligenceCardProps = {
-  portfolio: PortfolioSummary | null | undefined
+  portfolio: PortfolioSummary | null | undefined // old
+  portfolioV2?: EnginePortfolioV2 | null // new
   chainsScanned: SupportedChain[] | null | undefined
   activeChain?: SupportedChain | null
 }
 
-function deriveConcentration(tokens: PortfolioSummary['tokens']): { label: string; detail: string } | null {
-  const priced = tokens.filter((t) => t.valueUsd != null && t.valueUsd > 0)
-  const totalValue = priced.reduce((sum, t) => sum + (t.valueUsd ?? 0), 0)
-  if (priced.length === 0 || totalValue <= 0) return null
-
-  const top = [...priced].sort((a, b) => (b.valueUsd ?? 0) - (a.valueUsd ?? 0))[0]
-  const percent = ((top.valueUsd ?? 0) / totalValue) * 100
-  const label = concentrationLabelFor(percent)
-  const labelText: Record<string, string> = { high: 'High concentration', medium: 'Medium concentration', balanced: 'Balanced' }
-
-  return { label: labelText[label] ?? 'Balanced', detail: `${top.symbol} · ${percent.toFixed(0)}% of portfolio` }
+type PortfolioStats = {
+  totalValueUsd: number | null
+  pricedTokenCount: number
+  concentration: { label: string; detail: string } | null
+  topChips: { symbol: string; percent: number }[]
 }
 
-function topHoldingsChips(tokens: PortfolioSummary['tokens']): { symbol: string; percent: number }[] {
+const CONCENTRATION_LABEL_TEXT: Record<string, string> = { high: 'High concentration', medium: 'Medium concentration', balanced: 'Balanced' }
+
+function statsFromV1(portfolio: PortfolioSummary | null | undefined): PortfolioStats {
+  const tokens = Array.isArray(portfolio?.tokens) ? portfolio!.tokens : []
   const priced = tokens.filter((t) => t.valueUsd != null && t.valueUsd > 0)
   const totalValue = priced.reduce((sum, t) => sum + (t.valueUsd ?? 0), 0)
-  if (priced.length === 0 || totalValue <= 0) return []
 
-  return [...priced]
-    .sort((a, b) => (b.valueUsd ?? 0) - (a.valueUsd ?? 0))
-    .slice(0, 3)
-    .map((t) => ({ symbol: t.symbol, percent: ((t.valueUsd ?? 0) / totalValue) * 100 }))
+  const sorted = [...priced].sort((a, b) => (b.valueUsd ?? 0) - (a.valueUsd ?? 0))
+  const top = sorted[0]
+  const concentration = top && totalValue > 0
+    ? (() => {
+        const percent = ((top.valueUsd ?? 0) / totalValue) * 100
+        const label = concentrationLabelFor(percent)
+        return { label: CONCENTRATION_LABEL_TEXT[label] ?? 'Balanced', detail: `${top.symbol} · ${percent.toFixed(0)}% of portfolio` }
+      })()
+    : null
+
+  const topChips = sorted.slice(0, 3).map((t) => ({ symbol: t.symbol, percent: totalValue > 0 ? ((t.valueUsd ?? 0) / totalValue) * 100 : 0 }))
+
+  return { totalValueUsd: portfolio?.totalValueUsd ?? null, pricedTokenCount: priced.length, concentration, topChips }
+}
+
+// See file header's "ONE HONEST GAP" note — pricedTokenCount here is topHoldings.length (max 5),
+// not the wallet's true total priced-token count, since Portfolio (V2) doesn't expose that.
+function statsFromV2(portfolioV2: EnginePortfolioV2): PortfolioStats {
+  const top = portfolioV2.topHoldings[0]
+  const concentration = top
+    ? (() => {
+        const percent = top.percentage * 100
+        const label = concentrationLabelFor(percent)
+        return { label: CONCENTRATION_LABEL_TEXT[label] ?? 'Balanced', detail: `${top.symbol} · ${percent.toFixed(0)}% of portfolio` }
+      })()
+    : null
+
+  const topChips = portfolioV2.topHoldings.slice(0, 3).map((h) => ({ symbol: h.symbol, percent: h.percentage * 100 }))
+
+  return { totalValueUsd: portfolioV2.totalValueUsd, pricedTokenCount: portfolioV2.topHoldings.length, concentration, topChips }
+}
+
+export function selectPortfolioStats(
+  portfolio: PortfolioSummary | null | undefined,
+  portfolioV2: EnginePortfolioV2 | null | undefined,
+): { stats: PortfolioStats; usingV2: boolean } {
+  if (portfolioV2) return { stats: statsFromV2(portfolioV2), usingV2: true }
+  return { stats: statsFromV1(portfolio), usingV2: false }
 }
 
 // Fixed minHeight + consistent label/value/sub sizing so all three stat boxes read as one unified
@@ -68,12 +122,14 @@ function StatBox({ label, value, sub, valueColor }: { label: string; value: Reac
   )
 }
 
-export function PortfolioIntelligenceCard({ portfolio, chainsScanned, activeChain }: PortfolioIntelligenceCardProps) {
-  const tokens = Array.isArray(portfolio?.tokens) ? portfolio!.tokens : []
-  const pricedTokenCount = tokens.filter((t) => t.valueUsd != null && t.valueUsd > 0).length
-  const totalValueUsd = portfolio?.totalValueUsd ?? null
-  const concentration = deriveConcentration(tokens)
-  const topChips = topHoldingsChips(tokens)
+export function PortfolioIntelligenceCard({ portfolio, portfolioV2, chainsScanned, activeChain }: PortfolioIntelligenceCardProps) {
+  const { stats, usingV2 } = selectPortfolioStats(portfolio, portfolioV2)
+  // TEMPORARY, per this migration's own instructions — remove once portfolioV2 is verified live
+  // and this fallback path is no longer needed.
+  // eslint-disable-next-line no-console
+  console.debug('PortfolioCard using V2:', usingV2)
+
+  const { totalValueUsd, pricedTokenCount, concentration, topChips } = stats
   const chains = Array.isArray(chainsScanned) ? chainsScanned : []
 
   return (

@@ -20,12 +20,18 @@
 import type { FinalReport } from '@/src/modules/finalReportAssembler/types'
 import type { TokenHolding } from '@/src/modules/holdings/types'
 import type { PortfolioSummary } from '@/src/modules/portfolio/types'
+import type { Portfolio as EnginePortfolioV2 } from '@/lib/engine/modules/portfolio/types'
 import { ChainBadge } from './ChainBadge'
 import { ConfidenceBadge } from './ConfidenceBadge'
 import { PortfolioIntelligenceCard } from './PortfolioIntelligenceCard'
 import { fmtSignedUsd } from '@/app/frontend/lib/holdingsHeuristics'
 
-export type WalletV2Report = FinalReport & { holdings: TokenHolding[]; portfolio: PortfolioSummary }
+// PORTFOLIO V2 MIGRATION, DISCLOSED: see app/terminal/wallet-scanner/page.tsx's own local
+// WalletV2Report type (a separately-defined but structurally identical type — this file's own
+// export isn't imported by that page today) for the full disclosure on why `portfolioV2` is
+// currently always undefined in this app's real, live data flow. Only threaded through to
+// PortfolioIntelligenceCard below — no other rendering in this file changes.
+export type WalletV2Report = FinalReport & { holdings: TokenHolding[]; portfolio: PortfolioSummary; portfolioV2?: EnginePortfolioV2 }
 
 export type WalletProfileHeaderProps = {
   report: WalletV2Report | null | undefined
@@ -286,6 +292,7 @@ export function WalletProfileHeader({ report, loading, isFullRecoveryAdmin, onDe
       <PortfolioSnapshot report={report} />
       <PortfolioIntelligenceCard
         portfolio={report.portfolio}
+        portfolioV2={report.portfolioV2}
         chainsScanned={report.scanMetadata?.chainsScanned}
         activeChain={report.behaviorIntel?.multiChainParticipation?.primaryChain}
       />
