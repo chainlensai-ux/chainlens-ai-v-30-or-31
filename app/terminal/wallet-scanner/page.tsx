@@ -38,6 +38,7 @@ import type { TokenHolding } from '@/src/modules/holdings/types'
 import type { PortfolioSummary } from '@/src/modules/portfolio/types'
 import type { Portfolio as EnginePortfolioV2 } from '@/lib/engine/modules/portfolio/types'
 import type { PnlV2 } from '@/lib/engine/modules/pnl/types'
+import type { ChainActivityRecord } from '@/lib/engine/modules/activity/types'
 
 // PORTFOLIO V2 MIGRATION, DISCLOSED: `portfolioV2` (the new engine's Portfolio shape — categories/
 // chains/topHoldings/stablecoinRatio/concentrationIndex — structurally different from the old
@@ -51,7 +52,17 @@ import type { PnlV2 } from '@/lib/engine/modules/pnl/types'
 //
 // PNL V2 MIGRATION, DISCLOSED: same real gap applies to `pnlV2` — only ever populated by
 // app/api/scan-v2/full-scan/route.ts, never by the route scanWalletV2() actually calls today.
-type WalletV2Report = FinalReport & { holdings: TokenHolding[]; portfolio: PortfolioSummary; portfolioV2?: EnginePortfolioV2; pnlV2?: PnlV2 }
+//
+// CHAIN ACTIVITY V2 MIGRATION, DISCLOSED: same real gap applies to `chainActivityV2` — only ever
+// populated by app/api/scan-v2/full-scan/route.ts, never by the route scanWalletV2() actually calls
+// today.
+type WalletV2Report = FinalReport & {
+  holdings: TokenHolding[]
+  portfolio: PortfolioSummary
+  portfolioV2?: EnginePortfolioV2
+  pnlV2?: PnlV2
+  chainActivityV2?: ChainActivityRecord[]
+}
 
 type WatchlistWallet = {
   id?: string
@@ -480,7 +491,7 @@ export default function WalletScannerPage() {
                   data is still returned in the scan API response (result.timelines.*), visible via
                   the browser's Network tab, but no longer shown in this UI. */}
               <SectionDivider label="Diagnostics" optional />
-              <div className="ws-card"><ChainSelectionView data={result.chainSelection} /></div>
+              <div className="ws-card"><ChainSelectionView data={result.chainSelection} chainActivityV2={result.chainActivityV2} /></div>
             </div>
           )}
           </div>
