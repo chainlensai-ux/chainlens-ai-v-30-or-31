@@ -153,13 +153,54 @@ export async function findBlockForTimestamp(client: PublicClient, targetTimestam
 export function __resetBaseDexCachesForTest(): void {
   blockForTimestampCache.clear()
   latestBlockCache = null
+  poolAddressCache.clear()
+  poolPriceCache.clear()
 }
 
-async function resolvePoolAddress(
+// RPC-COST FIX, DISCLOSED (continuation of the findBlockForTimestamp fix above): resolvePoolAddress
+// and readPoolPrice each perform multiple uncached readContract calls (eth_call) on EVERY
+// invocation. Since pricingAtTimeEngine calls fetchBaseDexPrice once per distinct trade needing
+// Base historical pricing, this multiplies eth_call volume the same way the block search did
+// before its own fix — confirmed as the real remaining cost driver via a follow-up Alchemy
+// dashboard check (eth_call was the second-largest slice after eth_getBlockByNumber). Two more
+// safe, correctness-preserving caches added:
+//
+// 1. poolAddressCache: a Uniswap V3 pool's address for a given (tokenAddress, pairedWith) pair is
+//    permanent and deterministic (CREATE2) once it exists — caching a FOUND pool forever is exactly
+//    as safe as the block-timestamp cache above. A "no pool found" result is deliberately NOT
+//    cached, though (a disclosed refinement over a literal read of the task): a pool for a pair
+//    that doesn't exist yet at cold start COULD be deployed later, and this process can stay warm
+//    across many requests — caching a negative result indefinitely risks permanently hiding a pool
+//    that starts existing partway through this instance's lifetime. Caching only real hits has no
+//    such risk.
+// 2. poolPriceCache: a pool's price (sqrtPriceX96-derived) AT A SPECIFIC HISTORICAL BLOCK is a
+//    permanent, already-settled fact — historical chain state never changes — so this is cached
+//    indefinitely, keyed on (poolAddress, blockNumber). Same zero-precision-loss reasoning as the
+//    block-timestamp cache: a cache hit returns the exact value a fresh read would produce.
+//
+// VALUE-TYPE CORRECTION, DISCLOSED: the task's own suggested poolPriceCache type was
+// `Map<string, bigint>` — readPoolPrice's real, unmodified return type is `Promise<number | null>`
+// (a decimal-adjusted USD-denominated ratio, not a raw on-chain bigint), so the cache is typed
+// `Map<string, number>` to match what this function actually returns; no change to that return
+// type itself.
+const poolAddressCache = new Map<string, `0x${string}`>()
+const poolPriceCache = new Map<string, number>()
+
+// TEST-SUPPORT EXPORT, DISCLOSED: same reasoning as findBlockForTimestamp above — exported solely
+// so a test can assert the new caching behavior with a mocked client, no signature/behavior change.
+export async function resolvePoolAddress(
   client: PublicClient,
   tokenAddress: `0x${string}`,
   pairedWith: `0x${string}`,
 ): Promise<`0x${string}` | null> {
+  const cacheKey = `${tokenAddress.toLowerCase()}-${pairedWith.toLowerCase()}`
+  const cached = poolAddressCache.get(cacheKey)
+  if (cached !== undefined) {
+    // eslint-disable-next-line no-console
+    console.log('[CU-DIAG] basedex: poolAddress cache hit =', cacheKey)
+    return cached
+  }
+
   for (const fee of UNISWAP_V3_FEE_TIERS) {
     try {
       logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:getPool' })
@@ -169,7 +210,10 @@ async function resolvePoolAddress(
         functionName: 'getPool',
         args: [tokenAddress, pairedWith, fee],
       })
-      if (pool && pool !== '0x0000000000000000000000000000000000000000') return pool
+      if (pool && pool !== '0x0000000000000000000000000000000000000000') {
+        poolAddressCache.set(cacheKey, pool)
+        return pool
+      }
     } catch {
       // try the next fee tier
     }
@@ -177,13 +221,22 @@ async function resolvePoolAddress(
   return null
 }
 
-async function readPoolPrice(
+// TEST-SUPPORT EXPORT, DISCLOSED: same reasoning as resolvePoolAddress above.
+export async function readPoolPrice(
   client: PublicClient,
   poolAddress: `0x${string}`,
   tokenAddress: `0x${string}`,
   pairedWith: `0x${string}`,
   blockNumber: bigint,
 ): Promise<number | null> {
+  const cacheKey = `${poolAddress.toLowerCase()}-${blockNumber.toString()}`
+  const cachedPrice = poolPriceCache.get(cacheKey)
+  if (cachedPrice !== undefined) {
+    // eslint-disable-next-line no-console
+    console.log('[CU-DIAG] basedex: poolPrice cache hit =', cacheKey)
+    return cachedPrice
+  }
+
   logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:slot0' })
   logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:token0' })
   logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:decimals' })
@@ -203,7 +256,9 @@ async function readPoolPrice(
   // Adjust for each token's own decimals, then orient the ratio as "1 tokenAddress = X pairedWith".
   const decimalAdjustment = 10 ** (tokenDecimals - pairedDecimals)
   const token0PerToken1 = rawRatio * decimalAdjustment
-  return isTokenToken0 ? 1 / token0PerToken1 : token0PerToken1
+  const price = isTokenToken0 ? 1 / token0PerToken1 : token0PerToken1
+  poolPriceCache.set(cacheKey, price)
+  return price
 }
 
 export type BaseDexPriceResult = { priceUsd: number | null; reason: string | null }

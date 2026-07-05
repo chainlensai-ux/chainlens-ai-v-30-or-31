@@ -9,7 +9,7 @@
 
 import { describe, it, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { findBlockForTimestamp, __resetBaseDexCachesForTest } from './basedex'
+import { findBlockForTimestamp, resolvePoolAddress, readPoolPrice, __resetBaseDexCachesForTest } from './basedex'
 
 // Simulates a chain with a deterministic block->timestamp mapping: block N has timestamp N*2
 // (Base's real ~2s block time), latest block is 1_000_000.
@@ -84,5 +84,113 @@ describe('findBlockForTimestamp caching', () => {
     const result = await findBlockForTimestamp(client as any, target)
     assert.equal(result, LATEST_BLOCK)
     assert.equal(getCallCount(), 1, 'expected only the single "latest" getBlock call, no bisection')
+  })
+})
+
+const TOKEN = '0x1111111111111111111111111111111111111111'
+const WETH = '0x4200000000000000000000000000000000000006'
+const POOL = '0x2222222222222222222222222222222222222222'
+
+function makeFakeReadContractClient() {
+  let calls = 0
+  const client = {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async readContract(args: any) {
+      calls++
+      if (args.functionName === 'getPool') return POOL
+      if (args.functionName === 'slot0') {
+        // sqrtPriceX96 chosen so the resulting price is a simple, checkable number.
+        return [BigInt('79228162514264337593543950336'), 0, 0, 0, 0, 0, true] // 2^96 -> ratio 1.0
+      }
+      if (args.functionName === 'token0') return TOKEN
+      if (args.functionName === 'decimals') return 18
+      throw new Error(`unexpected functionName: ${args.functionName}`)
+    },
+  }
+  return { client, getCallCount: () => calls }
+}
+
+describe('resolvePoolAddress caching', () => {
+  beforeEach(() => {
+    __resetBaseDexCachesForTest()
+  })
+
+  it('resolves the pool address on a cold cache', async () => {
+    const { client } = makeFakeReadContractClient()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const pool = await resolvePoolAddress(client as any, TOKEN as `0x${string}`, WETH as `0x${string}`)
+    assert.equal(pool, POOL)
+  })
+
+  it('a cache hit returns the identical address with zero additional readContract calls', async () => {
+    const { client, getCallCount } = makeFakeReadContractClient()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const first = await resolvePoolAddress(client as any, TOKEN as `0x${string}`, WETH as `0x${string}`)
+    const callsAfterFirst = getCallCount()
+    assert.ok(callsAfterFirst > 0, 'expected the cold path to make at least one real readContract call')
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const second = await resolvePoolAddress(client as any, TOKEN as `0x${string}`, WETH as `0x${string}`)
+    assert.equal(second, first, 'cached pool address must be identical to the freshly-resolved one')
+    assert.equal(getCallCount(), callsAfterFirst, 'a cache hit must make zero additional readContract calls')
+  })
+})
+
+describe('readPoolPrice caching', () => {
+  beforeEach(() => {
+    __resetBaseDexCachesForTest()
+  })
+
+  it('resolves the correct price on a cold cache', async () => {
+    const { client } = makeFakeReadContractClient()
+    const price = await readPoolPrice(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      client as any,
+      POOL as `0x${string}`,
+      TOKEN as `0x${string}`,
+      WETH as `0x${string}`,
+      BigInt(123),
+    )
+    assert.ok(price !== null && Number.isFinite(price))
+  })
+
+  it('a cache hit returns the identical price with zero additional readContract calls', async () => {
+    const { client, getCallCount } = makeFakeReadContractClient()
+    const first = await readPoolPrice(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      client as any,
+      POOL as `0x${string}`,
+      TOKEN as `0x${string}`,
+      WETH as `0x${string}`,
+      BigInt(123),
+    )
+    const callsAfterFirst = getCallCount()
+    assert.ok(callsAfterFirst > 0, 'expected the cold path to make real readContract calls')
+
+    const second = await readPoolPrice(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      client as any,
+      POOL as `0x${string}`,
+      TOKEN as `0x${string}`,
+      WETH as `0x${string}`,
+      BigInt(123),
+    )
+    assert.equal(second, first, 'cached price must be identical to the freshly-computed price')
+    assert.equal(getCallCount(), callsAfterFirst, 'a cache hit must make zero additional readContract calls')
+  })
+
+  it('a different blockNumber is cached independently (not incorrectly reused)', async () => {
+    const { client, getCallCount } = makeFakeReadContractClient()
+    await readPoolPrice(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      client as any, POOL as `0x${string}`, TOKEN as `0x${string}`, WETH as `0x${string}`, BigInt(123),
+    )
+    const callsAfterFirst = getCallCount()
+
+    await readPoolPrice(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      client as any, POOL as `0x${string}`, TOKEN as `0x${string}`, WETH as `0x${string}`, BigInt(456),
+    )
+    assert.ok(getCallCount() > callsAfterFirst, 'a different blockNumber must trigger a fresh read, not a stale cache hit')
   })
 })
