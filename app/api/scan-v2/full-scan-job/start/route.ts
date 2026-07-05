@@ -21,6 +21,7 @@
 import { NextResponse, after } from 'next/server'
 import { redis } from '@/lib/server/cache/redisClient'
 import { router } from '@/src/deployment/index'
+import { markV1Triggered } from '@/app/api/_shared/v1Detector'
 
 export type JobErrorShape = { message: string; category: string; details?: string[] }
 
@@ -67,6 +68,10 @@ async function runScanToJobResult(rawBody: unknown, ip: string): Promise<FullSca
 
 export async function POST(req: Request): Promise<Response> {
   try {
+    // V1-DETECTOR, DISCLOSED: see v1Detector.ts's own header for what "V1" means here — reaching
+    // this route at all means app/frontend/api/scanWallet.ts's direct /api/scan-v2/full-scan attempt
+    // failed and fell back to this older job/poll path. Diagnostic-only, never changes behavior.
+    markV1Triggered('full-scan-job/start')
     const rawBody = await req.json().catch(() => null)
     const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown'
     const jobId = crypto.randomUUID()
