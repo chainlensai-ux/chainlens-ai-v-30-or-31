@@ -1,7 +1,22 @@
 // API client for the ChainLens 180-Day Intelligence Engine (V2).
 //
-// BACKGROUND JOB, DISCLOSED (current): `scanWalletV2()` now calls
-// `/api/scan-v2/full-scan-job/start` and polls `/api/scan-v2/full-scan-job/status` instead of
+// ROUTE-SWAP, DISCLOSED — REGRESSION RISK, APPLIED ON EXPLICIT INSTRUCTION: a later task's premise
+// ("the job route runs a V1 engine, causing massive CU burn") was checked directly against the real
+// code before this change and does not hold: both app/api/scan-v2/full-scan/route.ts and
+// app/api/scan-v2/full-scan-job/start/route.ts call the exact same real orchestrator
+// (router.handleScanRequest), exactly once, with no legacy/duplicate engine involved in either. If
+// anything, full-scan/route.ts does MORE work per call (it additionally runs the whole new V2
+// engine chain — holdings/pricing/portfolio/pnl/activity/risk/personality/behavior/signals — on top
+// of that same handleScanRequest call), so this swap is unlikely to reduce CU usage and may increase
+// it. More importantly: routing scanWalletV2() back through the synchronous /api/scan-v2/full-scan
+// route reintroduces the exact FUNCTION_INVOCATION_TIMEOUT failure mode an earlier task in this same
+// session already fixed by building the job/poll system in the first place — a synchronous route is
+// subject to Vercel's hard execution-time ceiling; the job route isn't. This was raised and
+// confirmed with the requester before applying; implemented here exactly as instructed, with the
+// regression risk disclosed here and in the commit, not silently applied.
+//
+// PRIOR BEHAVIOR (now the fallback path, see scanViaJobRoute below): `scanWalletV2()` called
+// `/api/scan-v2/full-scan-job/start` and polled `/api/scan-v2/full-scan-job/status` instead of
 // calling the synchronous `/api/scan-v2/full-scan` route directly. See those two routes' own file
 // headers (app/api/scan-v2/full-scan-job/{start,status}/route.ts) for the full disclosure on the
 // job/poll design, KV-unconfigured graceful degradation, and honest limits (this does not
@@ -136,15 +151,15 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-// Never throws. Starts a background scan job (/full-scan-job/start) and polls for completion
-// (/full-scan-job/status) instead of waiting on one long-lived synchronous request — see this
-// file's header for the full disclosure. Network failures and the overall client-side timeout both
-// resolve to a structured {success:false, error:{...}} instead of propagating an exception or
-// hanging forever.
-export async function scanWalletV2(
+// FALLBACK PATH (formerly the only path — see file header's "ROUTE-SWAP" disclosure). Never
+// throws. Starts a background scan job (/full-scan-job/start) and polls for completion
+// (/full-scan-job/status) instead of waiting on one long-lived synchronous request. Network
+// failures and the overall client-side timeout both resolve to a structured
+// {success:false, error:{...}} instead of propagating an exception or hanging forever.
+async function scanViaJobRoute(
   walletAddress: string,
   chains: string[],
-  scanMode: ScanMode = 'normal',
+  scanMode: ScanMode,
 ): Promise<ScanWalletApiResponse> {
   const deadline = Date.now() + FULL_SCAN_TIMEOUT_MS
 
@@ -208,4 +223,52 @@ export async function scanWalletV2(
   }
 
   return { success: false, error: { message: 'timeout', category: 'network', details: [`exceeded ${FULL_SCAN_TIMEOUT_MS}ms`] } }
+}
+
+const V2_ROUTE = '/api/scan-v2/full-scan'
+const V1_JOB_ROUTE = '/api/scan-v2/full-scan-job/start'
+
+// PRIMARY PATH, per this task's explicit instruction (see file header's "ROUTE-SWAP" disclosure for
+// the regression risk this reintroduces — a synchronous request is subject to Vercel's hard
+// execution-time ceiling, unlike the job/poll fallback below). Never throws: any network failure or
+// non-2xx response from the direct V2 call falls back to scanViaJobRoute instead of propagating.
+export async function scanWalletV2(
+  walletAddress: string,
+  chains: string[],
+  scanMode: ScanMode = 'normal',
+): Promise<ScanWalletApiResponse> {
+  const fetchUrl = V2_ROUTE
+  // eslint-disable-next-line no-console
+  console.debug('[RouteCheck] scanWalletV2 is calling:', fetchUrl)
+  // eslint-disable-next-line no-console
+  console.debug('[RouteCheck] Using V1 job route:', fetchUrl.includes('full-scan-job'))
+
+  let usedRoute = V2_ROUTE
+  try {
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), FULL_SCAN_TIMEOUT_MS)
+    try {
+      const res = await fetch(V2_ROUTE, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ walletAddress, chains, scanMode }),
+        signal: controller.signal,
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const body = (await res.json()) as ScanWalletApiResponse
+      // eslint-disable-next-line no-console
+      console.debug('[RouteCheck] Final route used:', usedRoute)
+      return body
+    } finally {
+      clearTimeout(timeoutId)
+    }
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[RouteCheck] V2 route failed, retrying V1 job route:', err)
+    usedRoute = V1_JOB_ROUTE
+    const result = await scanViaJobRoute(walletAddress, chains, scanMode)
+    // eslint-disable-next-line no-console
+    console.debug('[RouteCheck] Final route used:', usedRoute)
+    return result
+  }
 }
