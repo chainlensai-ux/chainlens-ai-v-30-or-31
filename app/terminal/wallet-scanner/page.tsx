@@ -37,6 +37,7 @@ import type { FinalReport } from '@/src/modules/finalReportAssembler/types'
 import type { TokenHolding } from '@/src/modules/holdings/types'
 import type { PortfolioSummary } from '@/src/modules/portfolio/types'
 import type { Portfolio as EnginePortfolioV2 } from '@/lib/engine/modules/portfolio/types'
+import type { PnlV2 } from '@/lib/engine/modules/pnl/types'
 
 // PORTFOLIO V2 MIGRATION, DISCLOSED: `portfolioV2` (the new engine's Portfolio shape — categories/
 // chains/topHoldings/stablecoinRatio/concentrationIndex — structurally different from the old
@@ -47,7 +48,10 @@ import type { Portfolio as EnginePortfolioV2 } from '@/lib/engine/modules/portfo
 // wiring, `result.portfolioV2` will always be undefined today — the fallback to the old `portfolio`
 // field below is not just a safety net, it is the only path that can actually render anything right
 // now. This is disclosed, not silently assumed to already work end-to-end.
-type WalletV2Report = FinalReport & { holdings: TokenHolding[]; portfolio: PortfolioSummary; portfolioV2?: EnginePortfolioV2 }
+//
+// PNL V2 MIGRATION, DISCLOSED: same real gap applies to `pnlV2` — only ever populated by
+// app/api/scan-v2/full-scan/route.ts, never by the route scanWalletV2() actually calls today.
+type WalletV2Report = FinalReport & { holdings: TokenHolding[]; portfolio: PortfolioSummary; portfolioV2?: EnginePortfolioV2; pnlV2?: PnlV2 }
 
 type WatchlistWallet = {
   id?: string
@@ -452,7 +456,7 @@ export default function WalletScannerPage() {
 
               <SectionDivider label="PnL Summary" />
               <div className="ws-card">
-                <PnlStatusCard fifoAndPnl={result.fifoAndPnl} pnlSummaryV2={result.pnlSummaryV2} />
+                <PnlStatusCard fifoAndPnl={result.fifoAndPnl} pnlSummaryV2={result.pnlSummaryV2} pnlV2={result.pnlV2} />
               </div>
 
               <SectionDivider label="Holdings" />

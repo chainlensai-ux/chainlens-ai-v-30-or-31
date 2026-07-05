@@ -15,8 +15,35 @@
 // match what's actually being measured); neither -> "Valid". "Buy price"/"sell price" per lot are
 // likewise derived as costUsdEstimate/amount and proceedsUsdEstimate/amount (real division, shown
 // as "—" when either input is missing) — pnlEngine has no such per-unit price fields.
+//
+// PNL V2 MIGRATION, DISCLOSED (added per a later task): a task assumed this component was nested
+// under WalletProfileHeader.tsx and named "PnlIntelligenceCard.tsx" — neither is real. This
+// component (PnlStatusCard.tsx) is rendered directly in app/terminal/wallet-scanner/page.tsx, as a
+// sibling of WalletProfileHeader, not a child of it — so WalletProfileHeader.tsx was not touched
+// for this migration (nothing to thread through it; "do not modify any other components" also
+// supports leaving it alone since it never renders this component).
+//
+// FIELD-NAME/SHAPE CORRECTIONS, DISCLOSED: the task's own pseudocode assumed
+// `pnlV2.totalPnlUsd`/`fifoAndPnl.realizedUsd`/`pnlSummaryV2.unrealizedUsd` — none of these exist.
+// Real fields: PnlV2 (lib/engine/modules/pnl/types.ts) has `realizedPnlUsd`/`unrealizedPnlUsd`, no
+// total (computed here as their sum). FifoOutput has `realizedPnlUsd`/`unrealizedPnlUsd`, both
+// `number | null`. PnlSummaryResult has ONLY `realizedPnlUsd` (`number | null`) — no unrealized or
+// total field at all, so it can never fully replace fifoAndPnl as an unrealized-PnL source; kept as
+// the lowest-priority fallback, exactly matching what this component's own pre-existing code
+// already preferred (fifoAndPnl for realized/unrealized, pnlSummaryV2 only ever fed the closed-lots
+// table below).
+//
+// SCOPE OF THIS MIGRATION, DISCLOSED: only the "Realized PnL"/"Unrealized PnL" MetricCards below are
+// re-sourced through `selectPnlData`. ROI, the Integrity badge, Matched/Unmatched Lots counts, and
+// the Closed Lots table all rely on FifoOutput/PnlSummaryResult fields (matchedLots, integrityFlags,
+// closedLots, costBasisUsd) that PnlV2 does not carry at all — those remain sourced from the old
+// fields regardless of whether pnlV2 is present, since there is no real V2 equivalent to migrate
+// them to. `totalUsd` is computed and returned by the adapter (for testability) but not rendered as
+// a new "Total PnL" card — this component had no such card before, and adding one would be a new
+// visual element, not the "renders identically" this migration asked for.
 import type { FifoOutput } from '@/src/modules/fifoEngine/types'
 import type { ClosedLot, PnlSummaryResult } from '@/src/modules/pnlEngine/types'
+import type { PnlV2 } from '@/lib/engine/modules/pnl/types'
 import { fmtSignedUsd, fmtUsd, fmtDate } from '@/app/frontend/lib/holdingsHeuristics'
 import { ChainBadge } from './ChainBadge'
 import { ConfidenceBadge } from './ConfidenceBadge'
@@ -28,6 +55,57 @@ import { TrendingDownIcon, TrendingUpIcon, WarningIcon } from './Icons'
 export type PnlStatusCardProps = {
   fifoAndPnl: FifoOutput | null | undefined
   pnlSummaryV2: PnlSummaryResult | null | undefined
+  pnlV2?: PnlV2 | null
+}
+
+export type SelectedPnlData = {
+  realizedUsd: number | null
+  unrealizedUsd: number | null
+  totalUsd: number | null
+  usingV2: boolean
+}
+
+// Pure, exported for direct testing. Priority: pnlV2 > fifoAndPnl > pnlSummaryV2 > all-null —
+// matches this component's own pre-existing real preference (fifoAndPnl already carried both
+// realized AND unrealized; pnlSummaryV2 only ever had realized, never unrealized, so it was already
+// the weaker fallback before this migration, not a new ordering invented for it).
+export function selectPnlData(params: {
+  pnlV2?: PnlV2 | null
+  fifoAndPnl?: FifoOutput | null
+  pnlSummaryV2?: PnlSummaryResult | null
+}): SelectedPnlData {
+  const { pnlV2, fifoAndPnl, pnlSummaryV2 } = params
+
+  if (pnlV2) {
+    return {
+      realizedUsd: pnlV2.realizedPnlUsd,
+      unrealizedUsd: pnlV2.unrealizedPnlUsd,
+      totalUsd: pnlV2.realizedPnlUsd + pnlV2.unrealizedPnlUsd,
+      usingV2: true,
+    }
+  }
+
+  if (fifoAndPnl) {
+    const { realizedPnlUsd, unrealizedPnlUsd } = fifoAndPnl
+    return {
+      realizedUsd: realizedPnlUsd,
+      unrealizedUsd: unrealizedPnlUsd,
+      totalUsd: realizedPnlUsd != null && unrealizedPnlUsd != null ? realizedPnlUsd + unrealizedPnlUsd : null,
+      usingV2: false,
+    }
+  }
+
+  if (pnlSummaryV2) {
+    // Real PnlSummaryResult has no unrealized/total field at all — honestly null, never fabricated.
+    return {
+      realizedUsd: pnlSummaryV2.realizedPnlUsd,
+      unrealizedUsd: null,
+      totalUsd: null,
+      usingV2: false,
+    }
+  }
+
+  return { realizedUsd: null, unrealizedUsd: null, totalUsd: null, usingV2: false }
 }
 
 function fmtPerUnit(totalUsd: number | null, amount: string): string {
@@ -97,13 +175,26 @@ function ClosedLotsTable({ closedLots }: { closedLots: ClosedLot[] }) {
   )
 }
 
-export function PnlStatusCard({ fifoAndPnl, pnlSummaryV2 }: PnlStatusCardProps) {
+export function PnlStatusCard({ fifoAndPnl, pnlSummaryV2, pnlV2 }: PnlStatusCardProps) {
+  const pnlData = selectPnlData({ pnlV2, fifoAndPnl, pnlSummaryV2 })
+  // TEMPORARY, per this migration's own instructions — remove once pnlV2 is verified live and this
+  // fallback path is no longer needed.
+  // eslint-disable-next-line no-console
+  console.debug('PnlCard using V2:', pnlData.usingV2)
+
   const closedLots = Array.isArray(pnlSummaryV2?.closedLots) ? pnlSummaryV2!.closedLots : []
+  // ROI/Integrity remain fifoAndPnl-only regardless of pnlV2 — see file header's "SCOPE OF THIS
+  // MIGRATION" disclosure (PnlV2 carries no costBasis total or integrityFlags equivalent to migrate
+  // these to). The "Active" badge/footer note IS extended to also recognize pnlV2 data (PnlV2 has
+  // no `publicPnlStatus` field to read directly, but real realized/unrealized numbers from V2 are
+  // just as much "active" PnL data as fifoAndPnl's own status flag) — deliberately, to avoid the
+  // confusing state of showing real V2 numbers in the metric cards below while this same badge
+  // still said "Unavailable" because it only ever looked at fifoAndPnl.
   const roi = computeRoi(fifoAndPnl)
   const integrity = deriveIntegrity(fifoAndPnl)
   const publicStatus = fifoAndPnl?.publicPnlStatus ?? 'unavailable'
-  const isActive = publicStatus !== 'unavailable'
-  const realized = fifoAndPnl?.realizedPnlUsd ?? null
+  const isActive = publicStatus !== 'unavailable' || pnlData.usingV2
+  const realized = pnlData.realizedUsd
 
   const headerIcon = realized == null ? <WarningIcon size={16} color="#fbbf24" /> : realized >= 0 ? <TrendingUpIcon size={16} color="#4ade80" /> : <TrendingDownIcon size={16} color="#f87171" />
 
@@ -123,8 +214,8 @@ export function PnlStatusCard({ fifoAndPnl, pnlSummaryV2 }: PnlStatusCardProps) 
       </div>
 
       <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '16px' }}>
-        <MetricCard label="Realized PnL" value={fmtSignedUsd(fifoAndPnl?.realizedPnlUsd)} tone={toneFromNumber(fifoAndPnl?.realizedPnlUsd)} index={0} />
-        <MetricCard label="Unrealized PnL" value={fmtSignedUsd(fifoAndPnl?.unrealizedPnlUsd)} tone={toneFromNumber(fifoAndPnl?.unrealizedPnlUsd)} index={1} />
+        <MetricCard label="Realized PnL" value={fmtSignedUsd(pnlData.realizedUsd)} tone={toneFromNumber(pnlData.realizedUsd)} index={0} />
+        <MetricCard label="Unrealized PnL" value={fmtSignedUsd(pnlData.unrealizedUsd)} tone={toneFromNumber(pnlData.unrealizedUsd)} index={1} />
         <MetricCard label="ROI" value={roi.display} tone={toneFromNumber(roi.value)} index={2} />
         <MetricCard label="Cost Basis" value={fmtUsd(fifoAndPnl?.costBasisUsd)} index={3} />
         <MetricCard label="Matched Lots" value={fifoAndPnl?.matchedLots?.length ?? 0} index={4} />
