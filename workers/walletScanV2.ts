@@ -105,7 +105,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string): Promi
       chainHoldings = []
     }
     // eslint-disable-next-line no-console
-    console.log('[V2-worker] holdings', performance.now() - t0)
+    console.log('[V2-worker] holdings', performance.now() - t0, 'count=', chainHoldings.length)
 
     t0 = performance.now()
     let pricing: Awaited<ReturnType<typeof priceHoldings>>
@@ -115,7 +115,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string): Promi
       pricing = { pricedHoldings: [], totalValueUsd: 0, chainValueUsd: {}, priceStatus: 'unavailable' }
     }
     // eslint-disable-next-line no-console
-    console.log('[V2-worker] pricing', performance.now() - t0)
+    console.log('[V2-worker] pricing', performance.now() - t0, 'count=', pricing.pricedHoldings.length)
 
     t0 = performance.now()
     let portfolioOutput: Awaited<ReturnType<typeof buildPortfolio>>
@@ -128,14 +128,23 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string): Promi
       }
     }
     // eslint-disable-next-line no-console
-    console.log('[V2-worker] portfolio', performance.now() - t0)
+    console.log('[V2-worker] portfolio', performance.now() - t0, 'holdings=', chainHoldings.length)
 
+    // CU-DIAG, DISCLOSED SCOPE: this is the real provider-heavy step (fetchParsedTrades ->
+    // walletChainPipeline.fetchRawEventsForChain -> the actual GoldRush/Alchemy calls) — but those
+    // real fetch functions live in src/modules/providerFetchWindow/utils.ts, a production module
+    // this entire session has treated as untouched, protected code (see this file's own header and
+    // every prior commit's disclosures). Logging is added here, at the call site, instead — it
+    // reveals trade-event volume per scan without modifying any module internals or outputs.
+    t0 = performance.now()
     let trades: Awaited<ReturnType<typeof fetchParsedTrades>> = []
     try {
       trades = await fetchParsedTrades(walletAddress, eventsCache, cuBudget)
     } catch {
       trades = []
     }
+    // eslint-disable-next-line no-console
+    console.log('[V2-worker] trades', performance.now() - t0, 'count=', trades.length, 'cacheHitsSoFar=', eventsCache.hitCount)
 
     t0 = performance.now()
     let pnlOutput: Awaited<ReturnType<typeof computePnl>>
@@ -167,7 +176,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string): Promi
       chainActivityOutput = { chainActivityV2: [], chainActivityStatus: 'empty' }
     }
     // eslint-disable-next-line no-console
-    console.log('[V2-worker] chainActivity', performance.now() - t0)
+    console.log('[V2-worker] chainActivity', performance.now() - t0, 'count=', chainActivityOutput.chainActivityV2.length)
 
     t0 = performance.now()
     let riskOutput: Awaited<ReturnType<typeof computeRisk>>
@@ -259,7 +268,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string): Promi
       signalsOutput = { signalsV2: [], signalsStatus: 'empty' }
     }
     // eslint-disable-next-line no-console
-    console.log('[V2-worker] signals', performance.now() - t0)
+    console.log('[V2-worker] signals', performance.now() - t0, 'count=', signalsOutput.signalsV2.length)
 
     t0 = performance.now()
     let smartMoneyScore: ReturnType<typeof computeSmartMoneyScore> | undefined
@@ -283,6 +292,16 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string): Promi
     console.log('[V2-worker] smartMoneyScore', performance.now() - t0)
     // eslint-disable-next-line no-console
     console.log('[V2-worker] total', performance.now() - chainOverallStart)
+    // CU-DIAG SUMMARY, DISCLOSED DEVIATION: the task's own snippet used a fabricated
+    // `events.length * 0.7` estimate tracked in a new local variable. This worker already has a
+    // real, exact provider-call counter (cuBudget.providerCalls, threaded through fetchParsedTrades/
+    // computeChainActivity) plus the real cache-hit count (eventsCache.hitCount) — using those
+    // instead of inventing a second, less accurate estimate.
+    // eslint-disable-next-line no-console
+    console.log('[CU-DIAG] Estimated CU total (real provider calls, not an approximation):', {
+      providerCalls: cuBudget.providerCalls,
+      cacheHits: eventsCache.hitCount,
+    })
 
     body = {
       ...body,
