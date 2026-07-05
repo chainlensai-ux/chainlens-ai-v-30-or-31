@@ -185,6 +185,21 @@ function logIfUnexpectedV2Shape(data: Record<string, unknown> | undefined): void
   }
 }
 
+// MINIMAL SHAPE GUARD, DISCLOSED SCOPE: checks only `scanMetadata`/`chainSelection` — both real,
+// non-optional fields on SanitizedReportV2 (src/deployment/api.ts:108-109), guaranteed present on
+// every successful handleScanRequest response. Deliberately does NOT check pnlV2/chainActivityV2/
+// personalityV2/etc. (the new V2-engine module fields added by later tasks) — those degrade to
+// honest empty/unavailable shapes on failure rather than being absent, so treating their absence as
+// "invalid" would be wrong; that's exactly what logIfUnexpectedV2Shape above already logs,
+// diagnostic-only, without gating the response.
+function isValidV2Result(data: Record<string, unknown> | undefined): boolean {
+  if (!data) return false
+  if (typeof data !== 'object') return false
+  if (!data.scanMetadata) return false
+  if (!data.chainSelection) return false
+  return true
+}
+
 // CU-HARDENING WIRING, DISCLOSED (fixes docs/CU_AUDIT.md Finding #1): a fresh, request-scoped
 // EventsCache is created below (NOT a shared module-level singleton — see eventsCache.ts's own
 // "DESIGN DEVIATION" disclosure for why) and threaded into both fetchParsedTrades and
@@ -209,6 +224,12 @@ export async function POST(req: Request): Promise<Response> {
     const result = await router.handleScanRequest(rawBody, ip)
 
     let body = result.body as { success: boolean; data?: { scanMetadata?: { walletAddress?: string } } }
+
+    if (body.success && !isValidV2Result(body.data as Record<string, unknown> | undefined)) {
+      logDirectFailure(new Error('Invalid V2 result shape'))
+      return Response.json({ success: false, error: 'invalid_v2_shape' }, { status: 500 })
+    }
+
     if (body.success && body.data?.scanMetadata?.walletAddress) {
       const walletAddress = body.data.scanMetadata.walletAddress
       // eslint-disable-next-line no-console
