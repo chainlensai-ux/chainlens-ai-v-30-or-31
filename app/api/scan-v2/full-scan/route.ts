@@ -152,6 +152,7 @@ import { computeBehavior } from '@/lib/engine/modules/behavior/computeBehavior'
 // "vs previous scan" comparison and rule D's "bridging_out_of_base" both need data (scan history,
 // real bridge detection) this pipeline doesn't have — neither is faked to force a signal to fire.
 import { computeSignals } from '@/lib/engine/modules/signals/computeSignals'
+import { computeSmartMoneyScore, deriveSmartMoneyInputs } from '@/lib/engine/modules/smartMoney/computeSmartMoneyScore'
 import { createEventsCache } from '@/app/api/_shared/eventsCache'
 import { createCuBudget } from '@/app/api/_shared/cuBudget'
 import { recordCuUsage } from '@/app/api/_shared/cuUsageStore'
@@ -333,10 +334,35 @@ export async function POST(req: Request): Promise<Response> {
         signalsOutput = { signalsV2: [], signalsStatus: 'empty' }
       }
 
+      // SMART-MONEY-SCORE WIRING, DISCLOSED (added per a later task): computeSmartMoneyScore(...) is
+      // called right after signalsV2, additively, attaching `smartMoneyScore` as a NEW response
+      // field. Uses only already-computed outputs from the modules above — zero new provider calls,
+      // zero new network I/O. See lib/engine/modules/smartMoney/computeSmartMoneyScore.ts's own
+      // header for the derivation heuristic and the risk-direction fix over the task's literal spec.
+      let smartMoneyScore: ReturnType<typeof computeSmartMoneyScore> | undefined
+      try {
+        smartMoneyScore = computeSmartMoneyScore(
+          deriveSmartMoneyInputs({
+            pnlV2: pnlOutput.pnlV2,
+            pnlStatus: pnlOutput.pnlStatus,
+            totalValueUsd: pricing.totalValueUsd,
+            behaviorV2: behaviorOutput.behaviorV2,
+            personalityV2: personalityOutput.personalityV2,
+            chainActivityV2: chainActivityOutput.chainActivityV2,
+            riskV2: riskOutput.riskV2,
+            signalsV2: signalsOutput.signalsV2,
+          }),
+        )
+      } catch {
+        // Same never-throw guarantee as every other new module above.
+        smartMoneyScore = undefined
+      }
+
       body = {
         ...body,
         data: {
           ...body.data,
+          smartMoneyScore,
           chainHoldings,
           pricedHoldings: pricing.pricedHoldings,
           totalValueUsd: pricing.totalValueUsd,

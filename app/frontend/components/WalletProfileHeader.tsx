@@ -21,9 +21,11 @@ import type { FinalReport } from '@/src/modules/finalReportAssembler/types'
 import type { TokenHolding } from '@/src/modules/holdings/types'
 import type { PortfolioSummary } from '@/src/modules/portfolio/types'
 import type { Portfolio as EnginePortfolioV2 } from '@/lib/engine/modules/portfolio/types'
+import type { SmartMoneyScore } from '@/lib/engine/modules/smartMoney/types'
 import { ChainBadge } from './ChainBadge'
 import { ConfidenceBadge } from './ConfidenceBadge'
 import { PortfolioIntelligenceCard } from './PortfolioIntelligenceCard'
+import { SmartMoneyScoreCard } from './SmartMoneyScoreCard'
 import { fmtSignedUsd } from '@/app/frontend/lib/holdingsHeuristics'
 
 // PORTFOLIO V2 MIGRATION, DISCLOSED: see app/terminal/wallet-scanner/page.tsx's own local
@@ -31,7 +33,7 @@ import { fmtSignedUsd } from '@/app/frontend/lib/holdingsHeuristics'
 // export isn't imported by that page today) for the full disclosure on why `portfolioV2` is
 // currently always undefined in this app's real, live data flow. Only threaded through to
 // PortfolioIntelligenceCard below — no other rendering in this file changes.
-export type WalletV2Report = FinalReport & { holdings: TokenHolding[]; portfolio: PortfolioSummary; portfolioV2?: EnginePortfolioV2 }
+export type WalletV2Report = FinalReport & { holdings: TokenHolding[]; portfolio: PortfolioSummary; portfolioV2?: EnginePortfolioV2; smartMoneyScore?: SmartMoneyScore }
 
 export type WalletProfileHeaderProps = {
   report: WalletV2Report | null | undefined
@@ -296,6 +298,12 @@ export function WalletProfileHeader({ report, loading, isFullRecoveryAdmin, onDe
         chainsScanned={report.scanMetadata?.chainsScanned}
         activeChain={report.behaviorIntel?.multiChainParticipation?.primaryChain}
       />
+      {report.smartMoneyScore && (
+        <>
+          <div style={{ height: '1px', background: 'rgba(255,255,255,0.06)' }} />
+          <SmartMoneyScoreCard smartMoneyScore={report.smartMoneyScore} />
+        </>
+      )}
       <div style={{ height: '1px', background: 'rgba(255,255,255,0.06)' }} />
       <PnlAndConfidenceRow report={report} />
       <div style={{ height: '1px', background: 'rgba(255,255,255,0.06)' }} />

@@ -39,6 +39,7 @@ import type { PortfolioSummary } from '@/src/modules/portfolio/types'
 import type { Portfolio as EnginePortfolioV2 } from '@/lib/engine/modules/portfolio/types'
 import type { PnlV2 } from '@/lib/engine/modules/pnl/types'
 import type { ChainActivityRecord } from '@/lib/engine/modules/activity/types'
+import type { SmartMoneyScore } from '@/lib/engine/modules/smartMoney/types'
 
 // PORTFOLIO V2 MIGRATION, DISCLOSED: `portfolioV2` (the new engine's Portfolio shape — categories/
 // chains/topHoldings/stablecoinRatio/concentrationIndex — structurally different from the old
@@ -62,6 +63,9 @@ type WalletV2Report = FinalReport & {
   portfolioV2?: EnginePortfolioV2
   pnlV2?: PnlV2
   chainActivityV2?: ChainActivityRecord[]
+  // SMART-MONEY-SCORE WIRING, DISCLOSED (added per a later task): same real gap as portfolioV2/
+  // chainActivityV2 above — only ever populated by app/api/scan-v2/full-scan/route.ts.
+  smartMoneyScore?: SmartMoneyScore
 }
 
 type WatchlistWallet = {
