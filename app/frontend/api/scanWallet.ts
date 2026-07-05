@@ -92,14 +92,18 @@ export async function fetchScanModule(
   }
 }
 
-// Client-side abort ceiling for the direct V2 call — kept from the pre-removal version as a plain
-// safety net (an unbounded client-side fetch is its own separate risk), not a job/poll timeout.
-const FULL_SCAN_TIMEOUT_MS = 55_000
-
 const V2_ROUTE = '/api/scan-v2/full-scan'
 
 // ONLY PATH NOW, PER EXPLICIT INSTRUCTION (see file header for the regression risk this carries —
 // no fallback if this route is genuinely too slow to finish inside Vercel's execution ceiling).
+//
+// ABORT-CONTROLLER REMOVED, DISCLOSED, PER EXPLICIT INSTRUCTION: this function previously used an
+// AbortController to enforce a 55s client-side timeout ceiling on the fetch (unrelated to the old
+// job-route polling — just a plain fetch safety net). Removed exactly as instructed. REAL TRADEOFF:
+// there is now no client-side ceiling on how long this fetch can hang — a genuinely stuck
+// connection will wait indefinitely rather than failing after ~55s. This is the requester's
+// explicit, informed choice, not silently absorbed.
+//
 // Never throws: a network failure or non-2xx response resolves to a structured
 // {success:false, error:{...}} instead of propagating an exception.
 export async function scanWalletV2(
@@ -107,14 +111,11 @@ export async function scanWalletV2(
   chains: string[],
   scanMode: ScanMode = 'normal',
 ): Promise<ScanWalletApiResponse> {
-  const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), FULL_SCAN_TIMEOUT_MS)
   try {
     const res = await fetch(V2_ROUTE, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ walletAddress, chains, scanMode }),
-      signal: controller.signal,
     })
     if (!res.ok) {
       return { success: false, error: { message: 'network-failed', category: 'network', details: [`HTTP ${res.status}`] } }
@@ -125,7 +126,5 @@ export async function scanWalletV2(
       success: false,
       error: { message: err instanceof Error ? err.message : String(err), category: 'network' },
     }
-  } finally {
-    clearTimeout(timeoutId)
   }
 }
