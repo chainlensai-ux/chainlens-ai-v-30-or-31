@@ -157,6 +157,34 @@ import { createEventsCache } from '@/app/api/_shared/eventsCache'
 import { createCuBudget } from '@/app/api/_shared/cuBudget'
 import { recordCuUsage } from '@/app/api/_shared/cuUsageStore'
 
+// V2-DIRECT-FAILURE LOGGER: genuinely additive/safe, added exactly as specified — never throws,
+// never changes any response, only tags real failures for grep-ability.
+function logDirectFailure(error: unknown): void {
+  const err = error as { message?: string; stack?: string } | null
+  // eslint-disable-next-line no-console
+  console.error('[V2-DIRECT-FAILURE]', { message: err?.message, stack: err?.stack })
+}
+
+// SHAPE-CHECK, DISCLOSED DEVIATION: the task's own `validateV2Shape` checked `result.modules.pnl` /
+// `result.modules.chainActivity` — no `modules` wrapper exists anywhere in this route's real
+// response (verified by reading the body-assembly code below: fields are flat, `pnlV2`/
+// `chainActivityV2` directly on `body.data`). Applied literally, `result.modules` is `undefined` on
+// EVERY real scan, so that check would fail every request. This corrected version checks the real
+// field names, and — per explicit instruction after flagging the literal version's blast radius —
+// is diagnostic-only: it logs a warning if the shape looks unexpected but never changes the status
+// code or body. A real enforcing validator would need a deliberate decision about what a genuinely
+// malformed response should return, which is a bigger, separate decision than "add logging now."
+function logIfUnexpectedV2Shape(data: Record<string, unknown> | undefined): void {
+  if (!data) return
+  if (data.pnlV2 === undefined || data.chainActivityV2 === undefined) {
+    // eslint-disable-next-line no-console
+    console.warn('[V2-DIRECT-FAILURE] unexpected response shape (missing pnlV2/chainActivityV2)', {
+      hasPnlV2: data.pnlV2 !== undefined,
+      hasChainActivityV2: data.chainActivityV2 !== undefined,
+    })
+  }
+}
+
 // CU-HARDENING WIRING, DISCLOSED (fixes docs/CU_AUDIT.md Finding #1): a fresh, request-scoped
 // EventsCache is created below (NOT a shared module-level singleton — see eventsCache.ts's own
 // "DESIGN DEVIATION" disclosure for why) and threaded into both fetchParsedTrades and
@@ -398,6 +426,7 @@ export async function POST(req: Request): Promise<Response> {
         elapsedMs: Date.now() - startTime,
       })
       recordCuUsage(cuBudget.providerCalls, eventsCache.hitCount)
+      logIfUnexpectedV2Shape(body.data as Record<string, unknown> | undefined)
     }
 
     return new Response(JSON.stringify(body), {
@@ -407,7 +436,9 @@ export async function POST(req: Request): Promise<Response> {
   } catch (err) {
     // Last-resort guard only, matching app/api/scan/route.ts's own outer catch — fires only if
     // something fails before/outside handleScanRequest's own internal error handling (e.g. a truly
-    // unexpected throw). Never leaks a raw stack trace or error object.
+    // unexpected throw). Never leaks a raw stack trace or error object. logDirectFailure() tags this
+    // specific failure path for grep-ability without changing the response shape below at all.
+    logDirectFailure(err)
     return new Response(JSON.stringify(handleApiError(err)), {
       status: 500,
       headers: { 'Content-Type': 'application/json' },
