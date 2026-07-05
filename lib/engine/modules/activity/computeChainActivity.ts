@@ -30,6 +30,7 @@
 import { fetchRawEventsForChain, buildTradesWithIntentForChain } from '@/app/api/_shared/walletChainPipeline'
 import { normalizeEvents } from '@/src/modules/normalization'
 import { buildBridgeDetectionObject } from '@/src/modules/bridgeDetection'
+import { logCuRisk } from '@/lib/server/cuAudit'
 import type { ChainHolding } from '../holdings/types'
 import type { PricedHolding } from '../pricing/types'
 import type { ParsedTrade } from '../pnl/types'
@@ -56,12 +57,33 @@ export type ChainSignals = {
   totalClassifiedEventCount: number
 }
 
+// CU-RISK: HIGH — external provider call duplicated across modules within one scan request.
+// CU-AUDIT FINDING (docs/CU_AUDIT.md): app/api/scan-v2/full-scan/route.ts calls BOTH
+// lib/engine/modules/pnl/computePnl.ts's fetchParsedTrades AND this function
+// (computeChainActivity -> fetchChainSignals) for the SAME wallet + same chains, in the SAME
+// request. fetchParsedTrades already calls buildTradeTimelineForChain -> buildTradesWithIntentForChain
+// (which itself calls fetchRawEventsForChain internally) per chain; this function independently
+// calls fetchRawEventsForChain AND buildTradesWithIntentForChain AGAIN, per chain, for the same
+// wallet/window. Net effect: within one /api/scan-v2/full-scan request, GoldRush/Alchemy raw-event
+// and trade-classification calls happen roughly 2x per chain instead of once. Not fixed here (a
+// real fix means either caching this result at the route layer and passing it into both modules, or
+// having computeChainActivity accept pre-fetched signals as a parameter — a real refactor, out of
+// this audit's "comments/logs/small guards only" scope) — logged so it's visible in practice.
+//
 // Never throws: fetchRawEventsForChain/buildTradesWithIntentForChain already degrade to empty
 // arrays on any real failure (see walletChainPipeline.ts's own guarantees) — nothing here adds a
 // new network call that could fail differently.
 export async function fetchChainSignals(chainId: number, walletAddress: string, nowMs: number): Promise<ChainSignals> {
   const chain = CHAIN_ID_TO_SUPPORTED_CHAIN[chainId]
   if (!chain) return { txCount30d: 0, lastActiveAt: null, bridgeTxCount: 0, lpEventCount: 0, totalClassifiedEventCount: 0 }
+
+  if (!walletAddress) {
+    // eslint-disable-next-line no-console
+    console.warn('[CU-AUDIT] Skipping external call: missing walletAddress', { chainId })
+    return { txCount30d: 0, lastActiveAt: null, bridgeTxCount: 0, lpEventCount: 0, totalClassifiedEventCount: 0 }
+  }
+
+  logCuRisk('goldrush+alchemy', `computeChainActivity.fetchChainSignals chain=${chain} wallet=${walletAddress.slice(0, 8)}… (duplicate of pnl.fetchParsedTrades — see CU-RISK comment above)`)
 
   const [rawEvents, tradesResult] = await Promise.all([
     fetchRawEventsForChain(chain, walletAddress),

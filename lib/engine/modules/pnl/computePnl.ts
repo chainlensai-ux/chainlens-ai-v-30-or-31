@@ -23,6 +23,7 @@
 // drives `pnlStatus` toward `"partial"` instead of `"ok"` (see step F below).
 
 import { buildTradeTimelineForChain } from '@/app/api/_shared/walletChainPipeline'
+import { logCuRisk } from '@/lib/server/cuAudit'
 import type { PricedHolding } from '../pricing/types'
 import type { ChainHolding } from '../holdings/types'
 import type {
@@ -42,14 +43,29 @@ const CHAIN_ID_TO_SUPPORTED_CHAIN: Record<number, 'eth' | 'base'> = {
   8453: 'base',
 }
 
+// CU-RISK: HIGH — external provider call duplicated across modules within one scan request.
+// CU-AUDIT FINDING (docs/CU_AUDIT.md): app/api/scan-v2/full-scan/route.ts calls this function AND
+// lib/engine/modules/activity/computeChainActivity.ts's fetchChainSignals for the SAME wallet +
+// chains, in the SAME request. Both independently reach fetchRawEventsForChain/
+// buildTradesWithIntentForChain per chain, roughly doubling GoldRush/Alchemy calls for that route.
+// Not fixed here — see the matching comment in computeChainActivity.ts for the real fix this would
+// need (shared caching/pre-fetch at the route layer), which is a refactor out of this audit's scope.
+//
 // Public entry point, exactly as specified (walletAddress only). Never throws:
 // buildTradeTimelineForChain's own real chain already degrades to an empty trades array on any
 // failure (see walletChainPipeline.ts's own guarantees) rather than throwing.
 export async function fetchParsedTrades(walletAddress: string): Promise<ParsedTrade[]> {
+  if (!walletAddress) {
+    // eslint-disable-next-line no-console
+    console.warn('[CU-AUDIT] Skipping external call: missing walletAddress')
+    return []
+  }
+
   const chainIds = [1, 8453]
   const perChain = await Promise.all(
     chainIds.map(async (chainId) => {
       const chain = CHAIN_ID_TO_SUPPORTED_CHAIN[chainId]
+      logCuRisk('goldrush+alchemy', `pnl.fetchParsedTrades chain=${chain} wallet=${walletAddress.slice(0, 8)}… (duplicate of computeChainActivity.fetchChainSignals — see CU-RISK comment above)`)
       const result = await buildTradeTimelineForChain(chain, walletAddress)
       return result.trades
         .filter((t) => t.type === 'buy' || t.type === 'sell')

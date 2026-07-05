@@ -149,6 +149,13 @@ export async function buildRecoveryPolicyObject(params: {
 
   const candidates = evaluateRecoveryTriggers(params.buyTimeline, params.sellTimeline, params.holdings, triggerConfig)
 
+  // CU-RISK: MEDIUM (bounded, not unbounded) — this is the one real per-token, multi-page deep
+  // historical fetch loop in this codebase (CU-AUDIT, docs/CU_AUDIT.md). It IS capped
+  // (maxHistoricalPagesPerWallet/maxHistoricalPagesPerToken, enforced below via
+  // remainingWalletBudget/pageBudget) and only ever runs for scanMode: 'deep' (never a normal scan
+  // — see src/pipeline/index.ts's safeRunRecoveryPolicy), so it does not qualify as HIGH RISK
+  // ("unbounded loop") — but it is real, variable-count, per-candidate-token GoldRush/Alchemy
+  // pagination, worth knowing about when reasoning about deep-scan cost.
   const evaluation: RecoveryEvaluationEntry[] = []
   let totalPagesUsedThisWallet = 0
 
