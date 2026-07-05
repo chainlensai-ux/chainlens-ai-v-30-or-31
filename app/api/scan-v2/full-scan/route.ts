@@ -23,11 +23,15 @@ import { handleApiError } from '@/src/deployment/api'
 import { runWalletScanV2Worker, logDirectFailure } from '@/workers/walletScanV2'
 
 export async function POST(req: Request): Promise<Response> {
+  const start = performance.now()
   try {
     const rawBody = await req.json().catch(() => null)
     const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown'
 
     const { status, body } = await runWalletScanV2Worker(rawBody, ip)
+
+    // eslint-disable-next-line no-console
+    console.log('[V2-route] total', performance.now() - start)
 
     return new Response(JSON.stringify(body), {
       status,

@@ -31,11 +31,10 @@
 // total priced-token count the way the old `portfolio.tokens` path can. This is a real, disclosed
 // limitation of the new engine's Portfolio shape, not a bug in this component.
 //
-// LIVE-WIRING DISCLOSURE: see WalletProfileHeader.tsx / app/terminal/wallet-scanner/page.tsx's own
-// WalletV2Report type comments — `portfolioV2` is currently always `undefined` in this app's real,
-// live data flow (scanWalletV2() never calls the one route that computes it), so the fallback path
-// below is what actually renders today; the V2 path is real code, verified to work per-field, but
-// not yet exercised by live traffic.
+// LIVE-WIRING UPDATE: see WalletProfileHeader.tsx / app/terminal/wallet-scanner/page.tsx's own
+// WalletV2Report type comments — `portfolioV2` is now genuinely populated in this app's real, live
+// data flow (scanWalletV2() calls the route that computes it directly and exclusively). The
+// fallback path below is kept as a real safety net, not because this field is unreachable.
 import { concentrationLabelFor } from '@/src/modules/behaviorIntel/utils'
 import type { PortfolioSummary } from '@/src/modules/portfolio/types'
 import type { Portfolio as EnginePortfolioV2 } from '@/lib/engine/modules/portfolio/types'

@@ -28,10 +28,11 @@ import { PortfolioIntelligenceCard } from './PortfolioIntelligenceCard'
 import { SmartMoneyScoreCard } from './SmartMoneyScoreCard'
 import { fmtSignedUsd } from '@/app/frontend/lib/holdingsHeuristics'
 
-// PORTFOLIO V2 MIGRATION, DISCLOSED: see app/terminal/wallet-scanner/page.tsx's own local
+// PORTFOLIO V2 MIGRATION, UPDATED: see app/terminal/wallet-scanner/page.tsx's own local
 // WalletV2Report type (a separately-defined but structurally identical type — this file's own
-// export isn't imported by that page today) for the full disclosure on why `portfolioV2` is
-// currently always undefined in this app's real, live data flow. Only threaded through to
+// export isn't imported by that page today) for the up-to-date disclosure — `portfolioV2` is now
+// genuinely populated in this app's real, live data flow (scanWalletV2() calls the route that
+// computes it directly and exclusively). Only threaded through to
 // PortfolioIntelligenceCard below — no other rendering in this file changes.
 export type WalletV2Report = FinalReport & { holdings: TokenHolding[]; portfolio: PortfolioSummary; portfolioV2?: EnginePortfolioV2; smartMoneyScore?: SmartMoneyScore }
 

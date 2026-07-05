@@ -91,20 +91,33 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string): Promi
     const walletAddress = body.data.scanMetadata.walletAddress
     // eslint-disable-next-line no-console
     console.debug('[CU-TRACK] deep-scan start:', { walletAddress, chains: [1, 8453] })
+    // WORKER OBSERVABILITY, DISCLOSED: per-module `performance.now()` timing logs added below, per
+    // explicit instruction — purely additive console.log calls wrapped around each already-existing
+    // module call, in the same order they already ran. No module's logic, arguments, ordering, or
+    // try/catch degrade-shape was changed to add these.
+    const chainOverallStart = performance.now()
+
+    let t0 = performance.now()
     let chainHoldings: Awaited<ReturnType<typeof fetchAllHoldings>> = []
     try {
       chainHoldings = await fetchAllHoldings(walletAddress)
     } catch {
       chainHoldings = []
     }
+    // eslint-disable-next-line no-console
+    console.log('[V2-worker] holdings', performance.now() - t0)
 
+    t0 = performance.now()
     let pricing: Awaited<ReturnType<typeof priceHoldings>>
     try {
       pricing = await priceHoldings(chainHoldings)
     } catch {
       pricing = { pricedHoldings: [], totalValueUsd: 0, chainValueUsd: {}, priceStatus: 'unavailable' }
     }
+    // eslint-disable-next-line no-console
+    console.log('[V2-worker] pricing', performance.now() - t0)
 
+    t0 = performance.now()
     let portfolioOutput: Awaited<ReturnType<typeof buildPortfolio>>
     try {
       portfolioOutput = await buildPortfolio(pricing.pricedHoldings, pricing.totalValueUsd, pricing.chainValueUsd)
@@ -114,6 +127,8 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string): Promi
         portfolioStatus: 'empty',
       }
     }
+    // eslint-disable-next-line no-console
+    console.log('[V2-worker] portfolio', performance.now() - t0)
 
     let trades: Awaited<ReturnType<typeof fetchParsedTrades>> = []
     try {
@@ -122,6 +137,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string): Promi
       trades = []
     }
 
+    t0 = performance.now()
     let pnlOutput: Awaited<ReturnType<typeof computePnl>>
     try {
       pnlOutput = await computePnl(pricing.pricedHoldings, chainHoldings, pricing.totalValueUsd, trades)
@@ -131,7 +147,10 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string): Promi
         pnlStatus: 'unavailable',
       }
     }
+    // eslint-disable-next-line no-console
+    console.log('[V2-worker] pnl', performance.now() - t0)
 
+    t0 = performance.now()
     let chainActivityOutput: Awaited<ReturnType<typeof computeChainActivity>>
     try {
       chainActivityOutput = await computeChainActivity(
@@ -147,7 +166,10 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string): Promi
     } catch {
       chainActivityOutput = { chainActivityV2: [], chainActivityStatus: 'empty' }
     }
+    // eslint-disable-next-line no-console
+    console.log('[V2-worker] chainActivity', performance.now() - t0)
 
+    t0 = performance.now()
     let riskOutput: Awaited<ReturnType<typeof computeRisk>>
     try {
       riskOutput = await computeRisk(
@@ -166,7 +188,10 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string): Promi
         riskStatus: 'empty',
       }
     }
+    // eslint-disable-next-line no-console
+    console.log('[V2-worker] risk', performance.now() - t0)
 
+    t0 = performance.now()
     let personalityOutput: Awaited<ReturnType<typeof computePersonality>>
     try {
       personalityOutput = await computePersonality(
@@ -187,7 +212,10 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string): Promi
         personalityStatus: 'empty',
       }
     }
+    // eslint-disable-next-line no-console
+    console.log('[V2-worker] personality', performance.now() - t0)
 
+    t0 = performance.now()
     let behaviorOutput: Awaited<ReturnType<typeof computeBehavior>>
     try {
       behaviorOutput = await computeBehavior(
@@ -210,7 +238,10 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string): Promi
         behaviorStatus: 'empty',
       }
     }
+    // eslint-disable-next-line no-console
+    console.log('[V2-worker] behavior', performance.now() - t0)
 
+    t0 = performance.now()
     let signalsOutput: Awaited<ReturnType<typeof computeSignals>>
     try {
       signalsOutput = await computeSignals(
@@ -227,7 +258,10 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string): Promi
     } catch {
       signalsOutput = { signalsV2: [], signalsStatus: 'empty' }
     }
+    // eslint-disable-next-line no-console
+    console.log('[V2-worker] signals', performance.now() - t0)
 
+    t0 = performance.now()
     let smartMoneyScore: ReturnType<typeof computeSmartMoneyScore> | undefined
     try {
       smartMoneyScore = computeSmartMoneyScore(
@@ -245,6 +279,10 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string): Promi
     } catch {
       smartMoneyScore = undefined
     }
+    // eslint-disable-next-line no-console
+    console.log('[V2-worker] smartMoneyScore', performance.now() - t0)
+    // eslint-disable-next-line no-console
+    console.log('[V2-worker] total', performance.now() - chainOverallStart)
 
     body = {
       ...body,

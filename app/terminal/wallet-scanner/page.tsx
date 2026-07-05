@@ -14,9 +14,10 @@
 // Both admin-only buttons remain visible (still gated on the same admin email check) and both
 // now trigger a V2 deep scan, since that is the closest real capability that exists.
 //
-// No backend changes: this file only calls scanWalletV2() (POST /api/scan-v2). runWalletScanV2,
-// holdingsEngine/pricingEngine/portfolioAssembler, /api/scan, /api/scan-v2, Clark AI, and
-// /api/portfolio are untouched.
+// No backend changes: this file only calls scanWalletV2() (POST /api/scan-v2/full-scan, the
+// direct V2 route — see app/frontend/api/scanWallet.ts for the job-route-fallback removal
+// disclosure). runWalletScanV2, holdingsEngine/pricingEngine/portfolioAssembler, /api/scan,
+// /api/scan-v2, Clark AI, and /api/portfolio are untouched.
 
 import { useEffect, useState } from 'react'
 import { usePlanWithLoading, LockedPanel, canAccessFeature } from '@/lib/usePlan'
@@ -41,22 +42,19 @@ import type { PnlV2 } from '@/lib/engine/modules/pnl/types'
 import type { ChainActivityRecord } from '@/lib/engine/modules/activity/types'
 import type { SmartMoneyScore } from '@/lib/engine/modules/smartMoney/types'
 
-// PORTFOLIO V2 MIGRATION, DISCLOSED: `portfolioV2` (the new engine's Portfolio shape — categories/
-// chains/topHoldings/stablecoinRatio/concentrationIndex — structurally different from the old
-// `portfolio: PortfolioSummary` above) is added here as a genuinely optional, additive field. It is
-// only ever populated by app/api/scan-v2/full-scan/route.ts's response — but scanWalletV2()
-// (app/frontend/api/scanWallet.ts) currently calls /api/scan-v2/full-scan-job/start, which invokes
-// router.handleScanRequest directly, NOT that route. That means in this app's real, currently-live
-// wiring, `result.portfolioV2` will always be undefined today — the fallback to the old `portfolio`
-// field below is not just a safety net, it is the only path that can actually render anything right
-// now. This is disclosed, not silently assumed to already work end-to-end.
+// PORTFOLIO V2 MIGRATION, UPDATED DISCLOSURE: `portfolioV2` (the new engine's Portfolio shape —
+// categories/chains/topHoldings/stablecoinRatio/concentrationIndex — structurally different from
+// the old `portfolio: PortfolioSummary` above) is a genuinely optional, additive field. Previously
+// this comment disclosed that it would always be undefined because scanWalletV2() called the V1
+// job route instead of /api/scan-v2/full-scan. That gap is now closed: scanWalletV2() (app/frontend/
+// api/scanWallet.ts) calls /api/scan-v2/full-scan directly and exclusively (its job-route fallback
+// was removed per explicit instruction — see that file's own header for the regression risk that
+// carries), and that route's dispatcher (workers/walletScanV2.ts) always computes portfolioV2. The
+// fallback to the old `portfolio` field below is kept as a genuine safety net (still real, still
+// used if this field is ever absent for any reason), not because this path is unreachable.
 //
-// PNL V2 MIGRATION, DISCLOSED: same real gap applies to `pnlV2` — only ever populated by
-// app/api/scan-v2/full-scan/route.ts, never by the route scanWalletV2() actually calls today.
-//
-// CHAIN ACTIVITY V2 MIGRATION, DISCLOSED: same real gap applies to `chainActivityV2` — only ever
-// populated by app/api/scan-v2/full-scan/route.ts, never by the route scanWalletV2() actually calls
-// today.
+// PNL V2 / CHAIN ACTIVITY V2, UPDATED DISCLOSURE: same fix applies to `pnlV2`/`chainActivityV2` —
+// both are now genuinely populated by the same always-called route.
 type WalletV2Report = FinalReport & {
   holdings: TokenHolding[]
   portfolio: PortfolioSummary
