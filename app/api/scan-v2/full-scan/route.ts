@@ -154,6 +154,7 @@ import { computeBehavior } from '@/lib/engine/modules/behavior/computeBehavior'
 import { computeSignals } from '@/lib/engine/modules/signals/computeSignals'
 import { createEventsCache } from '@/app/api/_shared/eventsCache'
 import { createCuBudget } from '@/app/api/_shared/cuBudget'
+import { recordCuUsage } from '@/app/api/_shared/cuUsageStore'
 
 // CU-HARDENING WIRING, DISCLOSED (fixes docs/CU_AUDIT.md Finding #1): a fresh, request-scoped
 // EventsCache is created below (NOT a shared module-level singleton — see eventsCache.ts's own
@@ -163,6 +164,7 @@ import { createCuBudget } from '@/app/api/_shared/cuBudget'
 // object per request achieves the same real goal as `eventsCache.clear()` would, without that
 // design's real concurrent-request corruption risk.
 export async function POST(req: Request): Promise<Response> {
+  const startTime = Date.now()
   try {
     const rawBody = await req.json().catch(() => null)
     const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown'
@@ -179,11 +181,12 @@ export async function POST(req: Request): Promise<Response> {
 
     let body = result.body as { success: boolean; data?: { scanMetadata?: { walletAddress?: string } } }
     if (body.success && body.data?.scanMetadata?.walletAddress) {
+      const walletAddress = body.data.scanMetadata.walletAddress
       // eslint-disable-next-line no-console
-      console.debug('[CU-TRACK] deep-scan start:', { walletAddress: body.data.scanMetadata.walletAddress, chains: [1, 8453] })
+      console.debug('[CU-TRACK] deep-scan start:', { walletAddress, chains: [1, 8453] })
       let chainHoldings: Awaited<ReturnType<typeof fetchAllHoldings>> = []
       try {
-        chainHoldings = await fetchAllHoldings(body.data.scanMetadata.walletAddress)
+        chainHoldings = await fetchAllHoldings(walletAddress)
       } catch {
         // Never let a failure in this new, additive fetch affect the real scan response below.
         chainHoldings = []
@@ -213,7 +216,7 @@ export async function POST(req: Request): Promise<Response> {
       // task's own "fetch trades (already done)" instruction).
       let trades: Awaited<ReturnType<typeof fetchParsedTrades>> = []
       try {
-        trades = await fetchParsedTrades(body.data.scanMetadata.walletAddress, eventsCache, cuBudget)
+        trades = await fetchParsedTrades(walletAddress, eventsCache, cuBudget)
       } catch {
         trades = []
       }
@@ -232,7 +235,7 @@ export async function POST(req: Request): Promise<Response> {
       let chainActivityOutput: Awaited<ReturnType<typeof computeChainActivity>>
       try {
         chainActivityOutput = await computeChainActivity(
-          body.data.scanMetadata.walletAddress,
+          walletAddress,
           chainHoldings,
           pricing.pricedHoldings,
           trades,
@@ -360,6 +363,15 @@ export async function POST(req: Request): Promise<Response> {
       console.debug('[CU-HARDENING] Total provider calls avoided:', eventsCache.hitCount)
       // eslint-disable-next-line no-console
       console.debug('[CU-TRACK] deep-scan end:', { providerCalls: cuBudget.providerCalls, cacheHits: eventsCache.hitCount })
+      // eslint-disable-next-line no-console
+      console.debug('[CU-SUMMARY]', {
+        wallet: walletAddress,
+        chains: [1, 8453],
+        providerCalls: cuBudget.providerCalls,
+        cacheHits: eventsCache.hitCount,
+        elapsedMs: Date.now() - startTime,
+      })
+      recordCuUsage(cuBudget.providerCalls, eventsCache.hitCount)
     }
 
     return new Response(JSON.stringify(body), {
