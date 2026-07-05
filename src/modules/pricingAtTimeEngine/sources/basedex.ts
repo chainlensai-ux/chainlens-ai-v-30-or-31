@@ -79,13 +79,55 @@ function getBaseClient(): PublicClient | null {
   return cachedBaseClient
 }
 
-// Real binary search against real block timestamps — never estimates/guesses a block number as
-// the final answer, only as the initial bisection bound (Base's ~2s block time is used purely to
-// pick a reasonable starting midpoint, not as the result itself).
-async function findBlockForTimestamp(client: PublicClient, targetTimestampSec: number): Promise<bigint | null> {
+// RPC-COST FIX, DISCLOSED: findBlockForTimestamp previously ran a full ~31-call sequence
+// (1 "latest" + up to 30 bisection getBlock calls) on EVERY invocation, with zero memoization —
+// confirmed by reading this file before this change (only the RPC *client* was cached, never a
+// lookup result). Since pricingAtTimeEngine calls this once per distinct trade needing Base-chain
+// historical pricing, a wallet with many such trades could trigger this dozens of times per scan,
+// each re-running the full binary search from scratch — a real, measured cost driver (per-route
+// Alchemy dashboard breakdown showed eth_getBlockByNumber at 72% of total call volume on a given
+// day), not a hypothetical one. Two safe, correctness-preserving caches added below:
+//
+// 1. blockForTimestampCache: a resolved (targetTimestampSec -> block number) mapping is a
+//    permanent historical fact — it can never change once computed — so this is cached
+//    indefinitely (for the lifetime of this process/instance), keyed on the exact requested
+//    second. This eliminates the entire binary search for any repeat lookup of the same
+//    timestamp (e.g. multiple distinct tokens traded in the same block/second), with zero
+//    precision loss: a cache hit returns the exact same value the full search would have
+//    computed.
+// 2. latestBlockCache: a short (5s) TTL cache for the "latest" block lookup only. This value is
+//    used solely to pick the search's STARTING bisection bounds (`approxBlocksAgo`/initial
+//    low/high) for a historical (necessarily past) timestamp — the search still bisects using
+//    each candidate block's own real on-chain timestamp at every step, so a few-seconds-stale
+//    "latest" cannot change the final, exact answer; it only avoids redundant identical fetches
+//    when many trades are resolved within the same short window.
+const blockForTimestampCache = new Map<number, bigint>()
+let latestBlockCache: { block: Awaited<ReturnType<PublicClient['getBlock']>>; fetchedAtMs: number } | null = null
+const LATEST_BLOCK_CACHE_TTL_MS = 5_000
+
+async function getLatestBlockCached(client: PublicClient): ReturnType<PublicClient['getBlock']> {
+  const now = Date.now()
+  if (latestBlockCache && now - latestBlockCache.fetchedAtMs < LATEST_BLOCK_CACHE_TTL_MS) {
+    return latestBlockCache.block
+  }
   logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'getBlock:latest' })
-  const latest = await client.getBlock({ blockTag: 'latest' })
-  if (targetTimestampSec >= Number(latest.timestamp)) return latest.number
+  const block = await client.getBlock({ blockTag: 'latest' })
+  latestBlockCache = { block, fetchedAtMs: now }
+  return block
+}
+
+// TEST-SUPPORT EXPORT, DISCLOSED: exported (alongside a cache-reset helper below) solely so a test
+// can inject a mocked PublicClient and assert the caching behavior without hitting real RPC/env
+// vars — does not change this function's real behavior or signature.
+export async function findBlockForTimestamp(client: PublicClient, targetTimestampSec: number): Promise<bigint | null> {
+  const cached = blockForTimestampCache.get(targetTimestampSec)
+  if (cached !== undefined) return cached
+
+  const latest = await getLatestBlockCached(client)
+  if (targetTimestampSec >= Number(latest.timestamp)) {
+    blockForTimestampCache.set(targetTimestampSec, latest.number)
+    return latest.number
+  }
 
   const two = BigInt(2)
   const approxBlocksAgo = BigInt(Math.max(0, Math.floor((Number(latest.timestamp) - targetTimestampSec) / 2)))
@@ -102,7 +144,15 @@ async function findBlockForTimestamp(client: PublicClient, targetTimestampSec: n
       high = mid - BigInt(1)
     }
   }
+  blockForTimestampCache.set(targetTimestampSec, low)
   return low
+}
+
+// TEST-SUPPORT EXPORT, DISCLOSED: lets a test start each case from a clean cache state. Not called
+// anywhere in real request handling.
+export function __resetBaseDexCachesForTest(): void {
+  blockForTimestampCache.clear()
+  latestBlockCache = null
 }
 
 async function resolvePoolAddress(
