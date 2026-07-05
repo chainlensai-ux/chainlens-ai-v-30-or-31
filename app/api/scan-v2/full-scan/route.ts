@@ -152,11 +152,22 @@ import { computeBehavior } from '@/lib/engine/modules/behavior/computeBehavior'
 // "vs previous scan" comparison and rule D's "bridging_out_of_base" both need data (scan history,
 // real bridge detection) this pipeline doesn't have — neither is faked to force a signal to fire.
 import { computeSignals } from '@/lib/engine/modules/signals/computeSignals'
+import { createEventsCache } from '@/app/api/_shared/eventsCache'
 
+// CU-HARDENING WIRING, DISCLOSED (fixes docs/CU_AUDIT.md Finding #1): a fresh, request-scoped
+// EventsCache is created below (NOT a shared module-level singleton — see eventsCache.ts's own
+// "DESIGN DEVIATION" disclosure for why) and threaded into both fetchParsedTrades and
+// computeChainActivity, so the second of the two calls hits the cache instead of re-fetching raw
+// provider events per chain. This is the "per-request cache reset" this task asked for — a fresh
+// object per request achieves the same real goal as `eventsCache.clear()` would, without that
+// design's real concurrent-request corruption risk.
 export async function POST(req: Request): Promise<Response> {
   try {
     const rawBody = await req.json().catch(() => null)
     const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown'
+    const eventsCache = createEventsCache()
+    // eslint-disable-next-line no-console
+    console.debug('[CU-HARDENING] Cache cleared for new request')
 
     // handleScanRequest already never throws internally (rate-limit/validation errors and any
     // runWalletScanV2 failure are both caught and returned as a structured RouteResult) — this
@@ -198,7 +209,7 @@ export async function POST(req: Request): Promise<Response> {
       // task's own "fetch trades (already done)" instruction).
       let trades: Awaited<ReturnType<typeof fetchParsedTrades>> = []
       try {
-        trades = await fetchParsedTrades(body.data.scanMetadata.walletAddress)
+        trades = await fetchParsedTrades(body.data.scanMetadata.walletAddress, eventsCache)
       } catch {
         trades = []
       }
@@ -223,6 +234,7 @@ export async function POST(req: Request): Promise<Response> {
           trades,
           portfolioOutput.portfolio,
           pnlOutput.pnlV2,
+          eventsCache,
         )
       } catch {
         // Same never-throw guarantee as every other new module above.
@@ -338,6 +350,9 @@ export async function POST(req: Request): Promise<Response> {
           signalsStatus: signalsOutput.signalsStatus,
         },
       } as typeof body
+
+      // eslint-disable-next-line no-console
+      console.debug('[CU-HARDENING] Total provider calls avoided:', eventsCache.hitCount)
     }
 
     return new Response(JSON.stringify(body), {

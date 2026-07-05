@@ -34,6 +34,7 @@
 
 import type { RawProviderEvent, SupportedChain } from '@/src/modules/providerFetchWindow/types'
 import { fetchProviderWindow, getEffectiveFetchWindow } from '@/src/modules/providerFetchWindow/index'
+import type { EventsCache } from './eventsCache'
 import type { RawTransfer, RawTxBundle, SwapNormalizerChain } from '@/src/modules/swapNormalizer/types'
 import { normalizeTrades } from '@/src/modules/swapNormalizer'
 import { classifyTradeIntent, type TradeWithIntent } from '@/src/modules/tradeIntent/intentEngine'
@@ -84,8 +85,20 @@ export function isSwapNormalizerChain(chain: SupportedChain): chain is SwapNorma
   return SWAP_NORMALIZER_CHAINS.has(chain as SwapNormalizerChain)
 }
 
-export async function fetchRawEventsForChain(chain: SupportedChain, walletAddress: string): Promise<RawProviderEvent[]> {
+// CU-HARDENING: optional `cache` param (docs/CU_AUDIT.md Finding #1 fix) — when provided, checks
+// for an already-fetched result for this exact (chain, walletAddress) before calling the real
+// provider, and stores the result for later callers within the same request. Omitting `cache`
+// (every pre-existing caller of this function) preserves the exact prior behavior — always a fresh
+// fetch, zero behavior change for anything not explicitly passing one. Verified safe: no output
+// shape change, same real fetchProviderWindow call, same real rawEvents value either way.
+export async function fetchRawEventsForChain(chain: SupportedChain, walletAddress: string, cache?: EventsCache): Promise<RawProviderEvent[]> {
+  const cached = cache?.get(chain, walletAddress)
+  if (cached) return cached
+
+  // eslint-disable-next-line no-console
+  if (cache) console.debug('[CU-HARDENING] Fetching provider events:', `${walletAddress.toLowerCase()}:${chain}`)
   const result = await fetchProviderWindow(chain, walletAddress, getProviderFetchWindowDays())
+  cache?.set(chain, walletAddress, result.rawEvents)
   return result.rawEvents
 }
 
@@ -134,11 +147,13 @@ export type TradesWithIntentForChainResult = {
 
 // Real chain: fetchProviderWindow -> groupRawEventsIntoTxBundles -> normalizeTrades (real
 // swapNormalizer) -> classifyTradeIntent (real tradeIntent). See file header for disclosures.
-export async function buildTradesWithIntentForChain(chain: SupportedChain, walletAddress: string): Promise<TradesWithIntentForChainResult> {
+// CU-HARDENING: `cache` threaded through to fetchRawEventsForChain — optional, same
+// zero-behavior-change-when-omitted guarantee as that function's own comment.
+export async function buildTradesWithIntentForChain(chain: SupportedChain, walletAddress: string, cache?: EventsCache): Promise<TradesWithIntentForChainResult> {
   if (!isSwapNormalizerChain(chain)) {
     return { chain, chainSupported: false, trades: [] }
   }
-  const rawEvents = await fetchRawEventsForChain(chain, walletAddress)
+  const rawEvents = await fetchRawEventsForChain(chain, walletAddress, cache)
   const bundles = groupRawEventsIntoTxBundles(rawEvents, chain)
   const normalizedTrades = normalizeTrades(bundles, walletAddress)
   const trades = classifyTradeIntent(normalizedTrades)
@@ -155,8 +170,10 @@ export type LotsForChainResult = {
 }
 
 // Real chain continued: openLots (real lotOpener) -> closeLots (real lotCloser).
-export async function buildLotsForChain(chain: SupportedChain, walletAddress: string): Promise<LotsForChainResult> {
-  const { chainSupported, trades } = await buildTradesWithIntentForChain(chain, walletAddress)
+// CU-HARDENING: `cache` threaded through — optional, same zero-behavior-change-when-omitted
+// guarantee as fetchRawEventsForChain's own comment.
+export async function buildLotsForChain(chain: SupportedChain, walletAddress: string, cache?: EventsCache): Promise<LotsForChainResult> {
+  const { chainSupported, trades } = await buildTradesWithIntentForChain(chain, walletAddress, cache)
   if (!chainSupported) {
     return { chain, chainSupported: false, trades: [], closedLots: [], remainingLots: [], unmatchedSells: [] }
   }
@@ -276,8 +293,12 @@ export type TradeTimelineForChainResult = {
 // Real chain continued (alternate branch from lots): TradeWithIntent[] -> adapter above ->
 // buildTradeTimelineV2 (real tradeTimelineEngineV2 — itself re-derives lots internally via its own
 // real swapNormalizer/lotOpener/lotCloser calls, see that file's own header).
-export async function buildTradeTimelineForChain(chain: SupportedChain, walletAddress: string): Promise<TradeTimelineForChainResult> {
-  const { chainSupported, trades } = await buildTradesWithIntentForChain(chain, walletAddress)
+// CU-HARDENING: `cache` threaded through — this is the exact function lib/engine/modules/pnl/
+// computePnl.ts's fetchParsedTrades calls; passing the SAME cache instance
+// lib/engine/modules/activity/computeChainActivity.ts uses is what actually fixes docs/CU_AUDIT.md
+// Finding #1 — both modules now share one real fetchRawEventsForChain call per chain per request.
+export async function buildTradeTimelineForChain(chain: SupportedChain, walletAddress: string, cache?: EventsCache): Promise<TradeTimelineForChainResult> {
+  const { chainSupported, trades } = await buildTradesWithIntentForChain(chain, walletAddress, cache)
   if (!chainSupported) return { chain, chainSupported: false, trades: [] }
 
   const transfers: NormalizedTransfer[] = []
