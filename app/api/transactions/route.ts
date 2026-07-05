@@ -22,7 +22,28 @@
 import { NextResponse } from 'next/server'
 import type { SupportedChain } from '@/src/modules/providerFetchWindow/types'
 import { SUPPORTED_CHAINS } from '@/src/pipeline/types'
-import { buildTradeTimelineForChain } from '@/app/api/_shared/walletChainPipeline'
+import { buildTradeTimelineForChain, type TradeTimelineForChainResult } from '@/app/api/_shared/walletChainPipeline'
+import { getTokenCache, setTokenCache } from '@/lib/server/cache/tokenCache'
+
+// CU REDUCTION, DISCLOSED (see app/api/wallet-profile/route.ts's own header for the full
+// disclosure): cached at THIS route's own call site, not inside buildTradeTimelineForChain/
+// walletChainPipeline.ts itself — that function is also called by lib/engine/modules/{pnl,
+// activity} for the real Deep Scan flow, so caching inside it would have affected Deep Scan too,
+// which this task explicitly said not to touch. No raw-event dedup applies here: this function
+// already returns processed trades (TradeTimelineForChainResult), not RawProviderEvent[] — the
+// task's dedup snippet is only meaningful on raw events (applied instead in
+// app/api/wallet-profile/route.ts, the one route here that actually receives raw events directly).
+const TRADE_TIMELINE_CACHE_TTL_SECONDS = 120
+
+async function buildTradeTimelineForChainCached(chain: SupportedChain, walletAddress: string): Promise<TradeTimelineForChainResult> {
+  const cacheKey = `trade-timeline-${walletAddress}-${chain}`
+  const cached = await getTokenCache<TradeTimelineForChainResult>(cacheKey)
+  if (cached) return cached
+
+  const result = await buildTradeTimelineForChain(chain, walletAddress)
+  await setTokenCache(cacheKey, result, TRADE_TIMELINE_CACHE_TTL_SECONDS)
+  return result
+}
 
 type TransactionsRequestBody = {
   walletAddress?: string
@@ -54,7 +75,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'none of the requested chains are supported' }, { status: 400 })
   }
 
-  const perChain = await Promise.all(sanitizedChains.map((chain) => buildTradeTimelineForChain(chain, walletAddress)))
+  const perChain = await Promise.all(sanitizedChains.map((chain) => buildTradeTimelineForChainCached(chain, walletAddress)))
 
   const transactions = perChain.flatMap((r) => r.trades).sort((a, b) => a.timestamp - b.timestamp)
 

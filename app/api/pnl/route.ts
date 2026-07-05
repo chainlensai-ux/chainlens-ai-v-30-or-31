@@ -40,7 +40,41 @@ import type { SupportedChain } from '@/src/modules/providerFetchWindow/types'
 import { SUPPORTED_CHAINS } from '@/src/pipeline/types'
 import type { ClosedLot } from '@/src/modules/lotCloser'
 import { computeRealizedPnl, type RealizedPnlSummary } from '@/src/modules/realizedPnl'
-import { buildLotsForChain, buildUnrealizedPnlForChain } from '@/app/api/_shared/walletChainPipeline'
+import {
+  buildLotsForChain,
+  buildUnrealizedPnlForChain,
+  type LotsForChainResult,
+  type UnrealizedForChainResult,
+} from '@/app/api/_shared/walletChainPipeline'
+import { getTokenCache, setTokenCache } from '@/lib/server/cache/tokenCache'
+
+// CU REDUCTION, DISCLOSED (see app/api/wallet-profile/route.ts's own header for the full
+// disclosure): cached at THIS route's own call site, not inside buildLotsForChain/
+// buildUnrealizedPnlForChain/walletChainPipeline.ts itself — buildLotsForChain is also called by
+// lib/engine/modules/pnl/computePnl.ts for the real Deep Scan flow, so caching inside the shared
+// function would have affected Deep Scan too. No raw-event dedup applies here: both functions
+// already return processed results (closed lots / unrealized positions), not RawProviderEvent[].
+const PNL_CACHE_TTL_SECONDS = 120
+
+async function buildLotsForChainCached(chain: SupportedChain, walletAddress: string): Promise<LotsForChainResult> {
+  const cacheKey = `pnl-lots-${walletAddress}-${chain}`
+  const cached = await getTokenCache<LotsForChainResult>(cacheKey)
+  if (cached) return cached
+
+  const result = await buildLotsForChain(chain, walletAddress)
+  await setTokenCache(cacheKey, result, PNL_CACHE_TTL_SECONDS)
+  return result
+}
+
+async function buildUnrealizedPnlForChainCached(chain: SupportedChain, walletAddress: string): Promise<UnrealizedForChainResult> {
+  const cacheKey = `pnl-unrealized-${walletAddress}-${chain}`
+  const cached = await getTokenCache<UnrealizedForChainResult>(cacheKey)
+  if (cached) return cached
+
+  const result = await buildUnrealizedPnlForChain(chain, walletAddress)
+  await setTokenCache(cacheKey, result, PNL_CACHE_TTL_SECONDS)
+  return result
+}
 
 type PnlRequestBody = {
   walletAddress?: string
@@ -74,13 +108,13 @@ export async function POST(req: Request) {
 
   // Realized PnL: real fetch -> normalize -> intent -> lot-open -> lot-close chain, per chain,
   // combined into one wallet-wide computeRealizedPnl call — see file header disclosure.
-  const lotsPerChain = await Promise.all(sanitizedChains.map((chain) => buildLotsForChain(chain, walletAddress)))
+  const lotsPerChain = await Promise.all(sanitizedChains.map((chain) => buildLotsForChainCached(chain, walletAddress)))
   const allClosedLots: ClosedLot[] = lotsPerChain.flatMap((r) => r.closedLots)
   const realizedSummary: RealizedPnlSummary = computeRealizedPnl(allClosedLots)
 
   // Unrealized PnL: real fetchHoldings + real open-lot cross-reference, per chain (single-chain
   // scoped engine — see file header disclosure).
-  const unrealizedPerChain = await Promise.all(sanitizedChains.map((chain) => buildUnrealizedPnlForChain(chain, walletAddress)))
+  const unrealizedPerChain = await Promise.all(sanitizedChains.map((chain) => buildUnrealizedPnlForChainCached(chain, walletAddress)))
 
   return NextResponse.json({
     realized: {

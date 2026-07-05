@@ -81,6 +81,54 @@ import {
   buildUnrealizedPnlForChain,
   fetchRawEventsForChain,
 } from '@/app/api/_shared/walletChainPipeline'
+import { dedupeRawEventKey } from '@/src/modules/providerFetchWindow/utils'
+import type { RawProviderEvent } from '@/src/modules/providerFetchWindow/types'
+import { getTokenCache, setTokenCache } from '@/lib/server/cache/tokenCache'
+
+// CU REDUCTION, DISCLOSED: this route (and app/api/transactions, app/api/pnl) previously called
+// into the shared fetch pipeline with no caching at all, unlike the Deep Scan flow's
+// request-scoped eventsCache — a wallet page hitting several of these panels in a short window
+// could re-fetch the exact same raw provider events per chain, per route, every time. Wrapped here
+// with a real, shared (cross-instance) KV cache — reusing lib/server/cache/tokenCache.ts's existing
+// getTokenCache/setTokenCache (fails open to a real fetch if KV isn't configured or errors, same as
+// its own real usage in app/api/token/route.ts) rather than a bare, unguarded kv.get/kv.set that
+// would throw and break every request wherever KV isn't provisioned (this sandbox included).
+//
+// SCOPED TO THIS ROUTE ONLY, DISCLOSED: fetchRawEventsForChain (walletChainPipeline.ts) is also
+// called directly by workers/walletScanV2.ts's dependencies (lib/engine/modules/{pnl,activity}) for
+// the real Deep Scan flow — caching was deliberately added HERE, at this route's own call site,
+// not inside fetchRawEventsForChain/walletChainPipeline.ts itself, so the Deep Scan flow is not
+// touched at all (per this task's explicit constraint).
+const RAW_EVENTS_CACHE_TTL_SECONDS = 120
+
+async function fetchRawEventsForChainCached(chain: SupportedChain, walletAddress: string): Promise<RawProviderEvent[]> {
+  const cacheKey = `provider-window-${walletAddress}-${chain}`
+  const cached = await getTokenCache<RawProviderEvent[]>(cacheKey)
+  if (cached) return cached
+
+  const events = await fetchRawEventsForChain(chain, walletAddress)
+
+  // DEDUP, DISCLOSED DEVIATION: the task's own snippet keyed on `${e.hash}-${e.logIndex}` — neither
+  // field exists on the real RawProviderEvent type (verified in src/modules/providerFetchWindow/
+  // types.ts: the real field is `txHash`, and there is no `logIndex` at all). Applying that literal
+  // key would have made every event collide (`undefined-undefined`), collapsing a wallet's entire
+  // real history down to one event. Using the real, already-exported dedupeRawEventKey
+  // (providerFetchWindow/utils.ts — the same key mergeProviderResults already uses to merge
+  // GoldRush+Alchemy) instead — a safe, correct no-op here since fetchRawEventsForChain's output is
+  // already deduped once at merge time, but a real guard against any future double-fetch path.
+  const seen = new Set<string>()
+  const deduped: RawProviderEvent[] = []
+  for (const e of events) {
+    const key = dedupeRawEventKey(e)
+    if (!seen.has(key)) {
+      seen.add(key)
+      deduped.push(e)
+    }
+  }
+
+  await setTokenCache(cacheKey, deduped, RAW_EVENTS_CACHE_TTL_SECONDS)
+  return deduped
+}
 
 type WalletProfileRequestBody = {
   walletAddress?: string
@@ -148,7 +196,7 @@ export async function POST(req: Request) {
   }
 
   // ── Wallet-wide (multi-chain) stages: fetch -> normalize -> chainSelection -> timelines ──────
-  const rawEventsPerChain = await Promise.all(sanitizedChains.map((chain) => fetchRawEventsForChain(chain, walletAddress)))
+  const rawEventsPerChain = await Promise.all(sanitizedChains.map((chain) => fetchRawEventsForChainCached(chain, walletAddress)))
   const allRawEvents = rawEventsPerChain.flat()
   const { normalizedEvents } = normalizeEvents(allRawEvents, walletAddress)
 
