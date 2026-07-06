@@ -36,9 +36,16 @@ export function scanJobKey(jobId: string): string {
 // app/api/scan-v2/full-scan-job/start/route.ts's own safeRedisSet convention (does not fall back to
 // any synchronous/in-memory alternative; a failed write here just means a later poll finds nothing,
 // a real and honestly-surfaced outcome rather than a papered-over one).
+//
+// updatedAt STAMPED HERE, DISCLOSED: every real call site already sets `updatedAt: Date.now()`
+// itself before calling this — stamping it again here too, unconditionally, so that invariant holds
+// even if a future call site forgets it, rather than relying solely on caller discipline.
 export async function setScanJob(jobId: string, job: ScanJob): Promise<void> {
+  const stamped: ScanJob = { ...job, updatedAt: Date.now() }
+  // eslint-disable-next-line no-console
+  console.log('[JOB] write', jobId, stamped.status)
   try {
-    await redis.set(scanJobKey(jobId), job, { ex: JOB_TTL_SECONDS })
+    await redis.set(scanJobKey(jobId), stamped, { ex: JOB_TTL_SECONDS })
   } catch (err) {
     // eslint-disable-next-line no-console
     console.warn('[scanJobs] setScanJob failed', { jobId, err: err instanceof Error ? err.message : String(err) })

@@ -23,6 +23,25 @@ import { NextResponse, after } from 'next/server'
 import { validateWalletAddress, validateChains, validateScanMode } from '@/src/deployment/validator'
 import { runWalletScanV2Worker } from '@/workers/walletScanV2'
 import { setScanJob, getScanJob, type ScanJob } from '@/src/modules/scanJobs'
+import { resetAlchemyAudit, printAlchemyAuditSummary } from '@/lib/server/alchemyAudit'
+
+// maxDuration, DISCLOSED — the real fix for "infinite running": Next.js's `after()` callback runs
+// INSIDE the same function invocation that already sent its response — it does not get its own,
+// separate execution budget. Whatever `maxDuration` this route is configured with is the ceiling
+// for the ENTIRE invocation, background work included. Without raising it, a genuinely long Deep
+// Scan can get killed by the platform mid-`after()` — after the job was already marked 'running'
+// but before anything ever writes 'completed'/'failed' — leaving it stuck at 'running' forever with
+// nothing left to update it. Set to 900s (Vercel's real maximum on plans that support it; a lower
+// real plan ceiling silently clamps this value rather than erroring, so setting it high is safe
+// everywhere).
+export const maxDuration = 900
+
+// RUNTIME, DISCLOSED: intentionally NOT edge. ioredis (lib/server/cache/redisClient.ts, used by
+// setScanJob/getScanJob) requires a raw TCP socket — the Edge runtime doesn't support raw sockets at
+// all, so `export const runtime = 'edge'` here would break every job read/write outright, not just
+// risk an "unverified" GoldRush SDK compatibility question. Kept on the default Node runtime, the
+// one this whole background-job flow (ioredis, plus every module in runWalletScanV2Worker) is
+// already written for.
 
 type ScanStartRequestBody = {
   walletAddress?: unknown
@@ -31,14 +50,29 @@ type ScanStartRequestBody = {
 }
 
 async function runJobInBackground(jobId: string, walletAddress: string, rawBody: unknown, ip: string): Promise<void> {
+  // eslint-disable-next-line no-console
+  console.log('[WORKER] started', jobId)
   const existing = await getScanJob(jobId)
-  if (!existing) return // job record vanished (TTL/eviction) — nothing to update
+  if (!existing) {
+    // eslint-disable-next-line no-console
+    console.log('[WORKER] finished', jobId, '(job record vanished — nothing to update)')
+    return
+  }
 
   await setScanJob(jobId, { ...existing, status: 'running', updatedAt: Date.now() })
+
+  // ALCHEMY-AUDIT WIRING, DISCLOSED: this is the real fix for the audit system going silent on
+  // Deep Scan. lib/server/alchemyAudit.ts's reset/print calls were wired into app/api/scan-v2/
+  // full-scan/route.ts two commits ago — but Deep Scan no longer calls that route at all (it goes
+  // through this background job path instead, added in the prior commit). Without moving the
+  // reset/print here, Deep Scan's own Alchemy call audit was silently orphaned — reset on a route
+  // Deep Scan never hits, so it never actually captured anything for a real Deep Scan.
+  resetAlchemyAudit()
 
   try {
     const { status, body } = await runWalletScanV2Worker(rawBody, ip)
     const parsed = body as { success: boolean; data?: unknown; error?: { message: string } }
+    printAlchemyAuditSummary()
     if (status >= 200 && status < 300 && parsed.success) {
       await setScanJob(jobId, {
         ...existing,
@@ -59,6 +93,9 @@ async function runJobInBackground(jobId: string, walletAddress: string, rawBody:
   } catch (err) {
     // runWalletScanV2Worker already never throws internally, but this is a final backstop in case
     // something fails before/outside its own error handling.
+    printAlchemyAuditSummary()
+    // eslint-disable-next-line no-console
+    console.error('[WORKER] crash', jobId, err)
     await setScanJob(jobId, {
       ...existing,
       status: 'failed',
@@ -67,6 +104,8 @@ async function runJobInBackground(jobId: string, walletAddress: string, rawBody:
       updatedAt: Date.now(),
     })
   }
+  // eslint-disable-next-line no-console
+  console.log('[WORKER] finished', jobId)
 }
 
 export async function POST(req: Request): Promise<Response> {
