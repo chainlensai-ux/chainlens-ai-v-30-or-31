@@ -197,7 +197,18 @@ export async function scanWalletV2(
 // new app/api/scan-start + app/api/scan-status routes (which run the same real, unchanged
 // runWalletScanV2Worker as the direct route) — never throws.
 export type ScanJobStatus = 'pending' | 'running' | 'completed' | 'failed'
-export type ScanJobStatusResponse = { jobId: string; status: ScanJobStatus; result: unknown; error: string | null }
+// `progress`, ADDED DISCLOSED (module-progress-reporting task): optional — matches
+// src/modules/scanJobs.ts's ScanJobProgress shape (see that file). No logic change needed in
+// pollScanJobOnce/pollScanJobUntilDone below to "forward" this to callers — both already pass the
+// full parsed status object straight through (pollScanJobOnce returns it as-is; onUpdate receives
+// it as-is), so widening this type is the only change required for progress to reach page.tsx.
+export type ScanJobStatusResponse = {
+  jobId: string
+  status: ScanJobStatus
+  result: unknown
+  error: string | null
+  progress?: { currentModule: number; totalModules: number; moduleName: string }
+}
 
 export async function startDeepScanJob(walletAddress: string, chains: string[]): Promise<{ jobId: string } | { error: string }> {
   return startScanJob('/api/scan-start', walletAddress, chains, 'deep')

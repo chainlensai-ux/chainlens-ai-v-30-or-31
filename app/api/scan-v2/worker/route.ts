@@ -91,7 +91,12 @@ export async function POST(req: Request): Promise<Response> {
   const controller = new AbortController()
 
   try {
-    const { status, body } = await withScanTimeout(runWalletScanV2Worker(job.rawBody, job.ip), SCAN_TIMEOUT_MS, controller)
+    // `jobId`, ADDED DISCLOSED (module-progress-reporting task): this route has no visibility into
+    // individual module boundaries itself (it awaits one runWalletScanV2Worker call) — passing
+    // jobId lets that function report real per-module progress into the job store as it runs (see
+    // workers/walletScanV2.ts's own reportProgress()/header for where the actual per-module calls
+    // live).
+    const { status, body } = await withScanTimeout(runWalletScanV2Worker(job.rawBody, job.ip, jobId), SCAN_TIMEOUT_MS, controller)
     const parsed = body as { success: boolean; data?: { providerDiagnostics?: unknown }; error?: { message: string } }
     printAlchemyAuditSummary()
 

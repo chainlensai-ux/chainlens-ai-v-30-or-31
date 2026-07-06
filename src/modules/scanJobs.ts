@@ -16,6 +16,16 @@ import { redis } from '@/lib/server/cache/redisClient'
 
 export type ScanJobStatus = 'pending' | 'running' | 'completed' | 'failed'
 
+// PROGRESS, DISCLOSED (module-progress-reporting task): optional so every existing job (created
+// before this field existed, or never updated because Redis is unconfigured) still deserializes
+// fine — getScanJob callers must treat its absence as "no progress info available yet", not as an
+// error.
+export type ScanJobProgress = {
+  currentModule: number
+  totalModules: number
+  moduleName: string
+}
+
 export interface ScanJob {
   id: string
   walletAddress: string
@@ -30,6 +40,7 @@ export interface ScanJob {
   // worker route can reconstruct the exact same runWalletScanV2Worker call.
   rawBody: unknown
   ip: string
+  progress?: ScanJobProgress
 }
 
 const JOB_TTL_SECONDS = 15 * 60 // 15 minutes — matches the existing full-scan-job system's convention
@@ -55,6 +66,26 @@ export async function setScanJob(jobId: string, job: ScanJob): Promise<void> {
   } catch (err) {
     // eslint-disable-next-line no-console
     console.warn('[scanJobs] setScanJob failed', { jobId, err: err instanceof Error ? err.message : String(err) })
+  }
+}
+
+// PROGRESS UPDATE, DISCLOSED (module-progress-reporting task): a plain read-modify-write over the
+// same setScanJob/getScanJob this whole job store already uses — no new storage primitive, no new
+// Redis client. NOT ATOMIC under concurrent writes (same disclosed tradeoff as
+// lib/server/divergenceStore.ts's appendCapped): if something else writes the job between this
+// function's read and write, that write could be lost. Acceptable here because progress is a
+// best-effort UI nicety, not a correctness-critical field — a dropped/stale progress update never
+// affects `status`/`result`/`error`, which every real completion path still writes directly via
+// setScanJob. Never throws — a missing job or a Redis failure is a silent no-op (there's nothing
+// useful to update).
+export async function setJobProgress(jobId: string, progress: ScanJobProgress): Promise<void> {
+  try {
+    const job = await getScanJob(jobId)
+    if (!job) return
+    await setScanJob(jobId, { ...job, progress })
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[scanJobs] setJobProgress failed', { jobId, err: err instanceof Error ? err.message : String(err) })
   }
 }
 

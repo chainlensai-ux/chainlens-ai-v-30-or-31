@@ -31,6 +31,7 @@ import { createEventsCache } from '@/app/api/_shared/eventsCache'
 import { createCuBudget } from '@/app/api/_shared/cuBudget'
 import { recordCuUsage } from '@/app/api/_shared/cuUsageStore'
 import { logFifoPricingDivergence, shouldSampleThisScan } from '@/lib/server/engineComparison'
+import { setJobProgress } from '@/src/modules/scanJobs'
 
 // V2-DIRECT-FAILURE LOGGER: moved here unchanged from the route file (still exported so the route
 // can also tag its own outer catch with the same log tag).
@@ -80,10 +81,32 @@ function sumProviderEventCount(providerDiagnostics: unknown): number {
   }, 0)
 }
 
+const TOTAL_MODULES = 11
+
+// PROGRESS REPORTING, DISCLOSED (module-progress-reporting task): fire-and-forget (never awaited),
+// wrapped so a Redis hiccup can never affect or slow down the real scan — matches this whole
+// module's own established "never let an added observability call affect the real response"
+// convention (see e.g. the engine-comparison call further down). No-ops entirely when `jobId` is
+// undefined (the synchronous /full-scan/legacy route has no job to report progress against).
+function reportProgress(jobId: string | undefined, currentModule: number, moduleName: string): void {
+  if (!jobId) return
+  setJobProgress(jobId, { currentModule, totalModules: TOTAL_MODULES, moduleName }).catch(() => {
+    // setJobProgress already logs its own failures; nothing further to do here.
+  })
+}
+
 // CU-HARDENING WIRING (unchanged from the route file's own history — fixes docs/CU_AUDIT.md
 // Finding #1): a fresh, request-scoped EventsCache is created per call (not a shared module-level
 // singleton) and threaded into both fetchParsedTrades and computeChainActivity.
-export async function runWalletScanV2Worker(rawBody: unknown, ip: string): Promise<WalletScanV2WorkerResult> {
+//
+// `jobId`, ADDED DISCLOSED (module-progress-reporting task): optional, third parameter — this is
+// the ONLY place the actual 11-module boundaries exist (app/api/scan-v2/worker/route.ts just does
+// one `await runWalletScanV2Worker(...)` with no visibility into individual modules), so real
+// per-module progress reporting has to happen here, not in the route file. Passed by
+// app/api/scan-v2/worker/route.ts (which has the real job id); left undefined by
+// app/api/scan-v2/full-scan/legacy/route.ts's call site (unchanged, still 2 args) and by any other
+// existing caller, so this is purely additive — no existing call site needed to change.
+export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?: string): Promise<WalletScanV2WorkerResult> {
   const startTime = Date.now()
   const eventsCache = createEventsCache()
   const cuBudget = createCuBudget()
@@ -124,6 +147,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string): Promi
     // try/catch degrade-shape was changed to add these.
     const chainOverallStart = performance.now()
 
+    reportProgress(jobId, 1, 'holdings')
     // eslint-disable-next-line no-console
     console.log('[V2-worker] starting holdings')
     let t0 = performance.now()
@@ -136,6 +160,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string): Promi
     // eslint-disable-next-line no-console
     console.log('[V2-worker] finished holdings in', performance.now() - t0, 'ms', 'count=', chainHoldings.length)
 
+    reportProgress(jobId, 2, 'pricing')
     // eslint-disable-next-line no-console
     console.log('[V2-worker] starting pricing')
     t0 = performance.now()
@@ -148,6 +173,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string): Promi
     // eslint-disable-next-line no-console
     console.log('[V2-worker] finished pricing in', performance.now() - t0, 'ms', 'count=', pricing.pricedHoldings.length)
 
+    reportProgress(jobId, 3, 'portfolio')
     // eslint-disable-next-line no-console
     console.log('[V2-worker] starting portfolio')
     t0 = performance.now()
@@ -169,6 +195,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string): Promi
     // this entire session has treated as untouched, protected code (see this file's own header and
     // every prior commit's disclosures). Logging is added here, at the call site, instead — it
     // reveals trade-event volume per scan without modifying any module internals or outputs.
+    reportProgress(jobId, 4, 'trades')
     // eslint-disable-next-line no-console
     console.log('[V2-worker] starting trades')
     t0 = performance.now()
@@ -181,6 +208,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string): Promi
     // eslint-disable-next-line no-console
     console.log('[V2-worker] finished trades in', performance.now() - t0, 'ms', 'count=', trades.length, 'cacheHitsSoFar=', eventsCache.hitCount)
 
+    reportProgress(jobId, 5, 'pnl')
     // eslint-disable-next-line no-console
     console.log('[V2-worker] starting pnl')
     t0 = performance.now()
@@ -219,6 +247,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string): Promi
       }
     }
 
+    reportProgress(jobId, 6, 'chainActivity')
     // eslint-disable-next-line no-console
     console.log('[V2-worker] starting chainActivity')
     t0 = performance.now()
@@ -240,6 +269,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string): Promi
     // eslint-disable-next-line no-console
     console.log('[V2-worker] finished chainActivity in', performance.now() - t0, 'ms', 'count=', chainActivityOutput.chainActivityV2.length)
 
+    reportProgress(jobId, 7, 'risk')
     // eslint-disable-next-line no-console
     console.log('[V2-worker] starting risk')
     t0 = performance.now()
@@ -264,6 +294,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string): Promi
     // eslint-disable-next-line no-console
     console.log('[V2-worker] finished risk in', performance.now() - t0, 'ms')
 
+    reportProgress(jobId, 8, 'personality')
     // eslint-disable-next-line no-console
     console.log('[V2-worker] starting personality')
     t0 = performance.now()
@@ -290,6 +321,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string): Promi
     // eslint-disable-next-line no-console
     console.log('[V2-worker] finished personality in', performance.now() - t0, 'ms')
 
+    reportProgress(jobId, 9, 'behavior')
     // eslint-disable-next-line no-console
     console.log('[V2-worker] starting behavior')
     t0 = performance.now()
@@ -318,6 +350,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string): Promi
     // eslint-disable-next-line no-console
     console.log('[V2-worker] finished behavior in', performance.now() - t0, 'ms')
 
+    reportProgress(jobId, 10, 'signals')
     // eslint-disable-next-line no-console
     console.log('[V2-worker] starting signals')
     t0 = performance.now()
@@ -340,6 +373,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string): Promi
     // eslint-disable-next-line no-console
     console.log('[V2-worker] finished signals in', performance.now() - t0, 'ms', 'count=', signalsOutput.signalsV2.length)
 
+    reportProgress(jobId, 11, 'smartMoneyScore')
     // eslint-disable-next-line no-console
     console.log('[V2-worker] starting smartMoneyScore')
     t0 = performance.now()

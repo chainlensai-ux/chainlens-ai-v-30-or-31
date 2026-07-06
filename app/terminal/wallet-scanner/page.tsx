@@ -124,6 +124,11 @@ export default function WalletScannerPage() {
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [jobStatusMessage, setJobStatusMessage] = useState<string | null>(null)
+  // PROGRESS, ADDED DISCLOSED (module-progress-reporting task): mirrors the optional `progress`
+  // field on ScanJobStatusResponse (app/frontend/api/scanWallet.ts) — populated by the same
+  // onUpdate callback that already sets jobStatusMessage, purely additive to the loading-state UI
+  // below; does not touch result/error rendering.
+  const [scanProgress, setScanProgress] = useState<{ currentModule: number; totalModules: number; moduleName: string } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<WalletV2Report | null>(null)
   const [signedInEmail, setSignedInEmail] = useState<string | null>(null)
@@ -269,6 +274,7 @@ export default function WalletScannerPage() {
     setError(null)
     setResult(null)
     setJobStatusMessage(null)
+    setScanProgress(null)
 
     try {
       // JOB/POLL WIRING, DISCLOSED (see app/frontend/api/scanWallet.ts's file header): both modes
@@ -283,7 +289,10 @@ export default function WalletScannerPage() {
       }
       setJobStatusMessage('pending')
       const response = await pollScanJobUntilDone(started.jobId, {
-        onUpdate: (status) => setJobStatusMessage(status.status),
+        onUpdate: (status) => {
+          setJobStatusMessage(status.status)
+          setScanProgress(status.progress ?? null)
+        },
         statusEndpoint: mode === 'deep' ? '/api/scan-status' : '/api/scan-v2/full-scan/status',
       })
       if (!response.success || !response.data) {
@@ -297,6 +306,7 @@ export default function WalletScannerPage() {
     } finally {
       setLoading(false)
       setJobStatusMessage(null)
+      setScanProgress(null)
     }
   }
 
@@ -458,6 +468,11 @@ export default function WalletScannerPage() {
           {loading && (
             <div className="ws-card" style={{ color: 'rgba(148,163,184,0.75)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', fontSize: '13px' }}>
               Scanning {input.trim()}…{jobStatusMessage ? ` (${jobStatusMessage})` : ''}
+              {scanProgress && (
+                <div style={{ marginTop: '6px', fontSize: '11px', color: 'rgba(148,163,184,0.55)' }}>
+                  Module {scanProgress.currentModule}/{scanProgress.totalModules}: {scanProgress.moduleName}
+                </div>
+              )}
             </div>
           )}
 

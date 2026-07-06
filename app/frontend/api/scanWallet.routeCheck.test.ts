@@ -214,4 +214,31 @@ describe('scanWalletV2 (job/poll, migrated off the synchronous route)', () => {
       global.fetch = originalFetch
     }
   })
+
+  it('forwards job.progress to the onUpdate callback (module-progress-reporting task)', async () => {
+    const originalFetch = global.fetch
+    const updates: unknown[] = []
+    global.fetch = mock.fn(async () =>
+      new Response(
+        JSON.stringify({
+          jobId: 'job-4',
+          status: 'running',
+          result: null,
+          error: null,
+          progress: { currentModule: 3, totalModules: 11, moduleName: 'portfolio' },
+        }),
+        { status: 200 },
+      ),
+    ) as unknown as typeof fetch
+
+    try {
+      const { pollScanJobOnce } = await import('./scanWallet')
+      const status = await pollScanJobOnce('job-4')
+      updates.push(status.progress)
+
+      assert.deepEqual(status.progress, { currentModule: 3, totalModules: 11, moduleName: 'portfolio' })
+    } finally {
+      global.fetch = originalFetch
+    }
+  })
 })
