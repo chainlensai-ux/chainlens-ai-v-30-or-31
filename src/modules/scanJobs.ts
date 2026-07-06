@@ -24,6 +24,12 @@ export interface ScanJob {
   status: ScanJobStatus
   result: unknown | null
   error: string | null
+  // rawBody/ip, ADDED DISCLOSED: the worker now runs as a separate HTTP-triggered route
+  // (app/api/scan-v2/worker/route.ts), a genuinely different function invocation with no closure
+  // access to the original request's rawBody/ip — they're persisted on the job itself so the
+  // worker route can reconstruct the exact same runWalletScanV2Worker call.
+  rawBody: unknown
+  ip: string
 }
 
 const JOB_TTL_SECONDS = 15 * 60 // 15 minutes — matches the existing full-scan-job system's convention
