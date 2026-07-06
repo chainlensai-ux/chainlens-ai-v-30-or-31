@@ -151,15 +151,9 @@ export async function scanWalletV2(
     }
     const body = (await res.json()) as ScanWalletApiResponse
     // eslint-disable-next-line no-console
-    console.log('[SCAN] response keys', Object.keys(body))
-    // DIAGNOSTIC ADDITION, DISCLOSED: the task's own log only shows the wrapper's top-level keys
-    // (always just ["success","data"] or ["success","error"]), which can't actually confirm which
-    // V2 modules populated — those live nested under `body.data`. Logging that too, since that's
-    // what this task's own stated goal ("confirm the pipeline stages are running") needs.
-    if (body.success && body.data && typeof body.data === 'object') {
-      // eslint-disable-next-line no-console
-      console.log('[SCAN] response data keys', Object.keys(body.data as Record<string, unknown>))
-    }
+    console.log('[SCAN] wrapper keys:', Object.keys(body))
+    // eslint-disable-next-line no-console
+    console.log('[SCAN] data keys:', Object.keys(body.data || {}))
     return body
   } catch (err) {
     return {

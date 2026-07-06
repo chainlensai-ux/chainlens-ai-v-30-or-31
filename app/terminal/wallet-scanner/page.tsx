@@ -251,6 +251,11 @@ export default function WalletScannerPage() {
     const address = input.trim()
     if (!address) return
 
+    if (mode === 'deep') {
+      // eslint-disable-next-line no-console
+      console.log('[SCAN] Deep Scan triggered for', address)
+    }
+
     if (mode === 'deep' && !sessionLoaded) {
       // SESSION-RACE-GUARD: never resolve "not admin" from an unloaded session.
       setError('Verifying your session — try again in a moment.')
