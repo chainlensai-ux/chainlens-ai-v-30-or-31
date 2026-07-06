@@ -34,11 +34,18 @@
 
 import { handleApiError } from '@/src/deployment/api'
 import { runWalletScanV2Worker, logDirectFailure } from '@/workers/walletScanV2'
+import { resetAlchemyAudit, printAlchemyAuditSummary } from '@/lib/server/alchemyAudit'
 
 export async function POST(req: Request): Promise<Response> {
   const routeStart = Date.now()
   // eslint-disable-next-line no-console
   console.log('[SCAN-V2] route start')
+  // ALCHEMY-AUDIT WIRING, DISCLOSED: reset here (a route file, not the worker/pipeline this task
+  // says not to touch) so each Deep Scan's printed summary below reflects only this request's own
+  // Alchemy calls, not everything accumulated since this instance's last cold start — see
+  // lib/server/alchemyAudit.ts's own header for why a request-scoped object couldn't be threaded
+  // through the real call sites instead (it would require changing their signatures).
+  resetAlchemyAudit()
   try {
     const rawBody = await req.json().catch(() => null)
     const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown'
@@ -53,6 +60,7 @@ export async function POST(req: Request): Promise<Response> {
 
     // eslint-disable-next-line no-console
     console.log('[V2-route] total', performance.now() - start)
+    printAlchemyAuditSummary()
     // eslint-disable-next-line no-console
     console.log('[SCAN-V2] route success in', Date.now() - routeStart, 'ms')
 

@@ -6,6 +6,7 @@ import type { SupportedChain } from '../providerFetchWindow/types'
 import type { TokenHolding } from './types'
 import { logRpcCall } from '@/lib/server/rpcDebug'
 import { profileGoldrush } from '@/lib/providers/goldrush'
+import { auditRPC } from '@/lib/server/alchemyAudit'
 
 const ALCHEMY_BASE_KEY_NAMES = ['ALCHEMY_BASE_KEY', 'ALCHEMY_BASE_API_KEY', 'BASE_ALCHEMY_API_KEY', 'ALCHEMY_API_KEY', 'NEXT_PUBLIC_ALCHEMY_BASE_KEY']
 const ALCHEMY_ETH_KEY_NAMES = ['ALCHEMY_ETHEREUM_KEY', 'ALCHEMY_ETH_KEY', 'ALCHEMY_ETH_API_KEY', 'ALCHEMY_API_KEY']
@@ -108,6 +109,7 @@ export async function fetchAlchemyHoldings(chain: SupportedChain, walletAddress:
   if (!apiKey) return { ok: false, holdings: [] }
   try {
     logRpcCall({ route: 'holdings', chain, method: 'alchemy_getTokenBalances' })
+    auditRPC('alchemy_getTokenBalances', [walletAddress, 'erc20'])
     const res = await fetch(url, {
       method: 'POST',
       cache: 'no-store',

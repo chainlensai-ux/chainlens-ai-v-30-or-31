@@ -16,6 +16,7 @@ import {
   PROVIDER_FETCH_WINDOW_DAYS_MIN,
 } from './types'
 import { logRpcCall } from '@/lib/server/rpcDebug'
+import { auditRPC } from '@/lib/server/alchemyAudit'
 
 // Env var resolution mirrors the project's existing convention (multiple accepted names, server
 // vars checked before NEXT_PUBLIC_*). This module intentionally does not import from
@@ -251,6 +252,7 @@ export async function fetchAlchemyRawEvents(
   const rpc = async (params: Record<string, unknown>): Promise<Record<string, unknown> | null> => {
     try {
       logRpcCall({ route: 'providerFetchWindow', chain, method: 'alchemy_getAssetTransfers' })
+      auditRPC('alchemy_getAssetTransfers', params)
       const res = await fetch(url, {
         method: 'POST',
         cache: 'no-store',
