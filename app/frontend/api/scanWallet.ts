@@ -180,17 +180,29 @@ export async function startDeepScanJob(walletAddress: string, chains: string[]):
   }
 }
 
-export async function pollScanJobOnce(jobId: string): Promise<ScanJobStatusResponse> {
+// TRANSIENT-POLL-ERROR MARKER, DISCLOSED (cost-audit finding): previously a single dropped
+// request/network blip during polling (a thrown fetch, or a non-2xx from a transient gateway
+// hiccup) was reported as `status:'failed'` — indistinguishable from the job itself genuinely
+// failing. pollScanJobUntilDone below would then give up immediately on the very first network
+// blip, showing the user "Scan failed" for a scan that was actually still running fine
+// server-side. `transient: true` marks these so the poll loop can retry a few times instead of
+// giving up on one hiccup — a real `status:'failed'` from the server (job.error) is never marked
+// transient and still ends the poll loop immediately, unchanged.
+type ScanJobPollResult = ScanJobStatusResponse & { transient?: boolean }
+
+export async function pollScanJobOnce(jobId: string): Promise<ScanJobPollResult> {
   try {
     const res = await fetch(`/api/scan-status?jobId=${encodeURIComponent(jobId)}`)
     if (!res.ok) {
-      return { jobId, status: 'failed', result: null, error: `HTTP ${res.status}` }
+      return { jobId, status: 'failed', result: null, error: `HTTP ${res.status}`, transient: true }
     }
     return (await res.json()) as ScanJobStatusResponse
   } catch (err) {
-    return { jobId, status: 'failed', result: null, error: err instanceof Error ? err.message : String(err) }
+    return { jobId, status: 'failed', result: null, error: err instanceof Error ? err.message : String(err), transient: true }
   }
 }
+
+const MAX_CONSECUTIVE_TRANSIENT_POLL_ERRORS = 3
 
 // Polls every `intervalMs` (default 2.5s, per the task's "every 2-3 seconds" request) until the job
 // reaches 'completed'/'failed' or `timeoutMs` elapses. Never throws.
@@ -201,9 +213,22 @@ export async function pollScanJobUntilDone(
   const intervalMs = opts.intervalMs ?? 2500
   const timeoutMs = opts.timeoutMs ?? 10 * 60 * 1000 // 10 minutes — generous headroom for a real Deep Scan
   const deadline = Date.now() + timeoutMs
+  let consecutiveTransientErrors = 0
 
   while (Date.now() < deadline) {
     const status = await pollScanJobOnce(jobId)
+
+    if (status.transient) {
+      consecutiveTransientErrors++
+      if (consecutiveTransientErrors < MAX_CONSECUTIVE_TRANSIENT_POLL_ERRORS) {
+        await new Promise((resolve) => setTimeout(resolve, intervalMs))
+        continue
+      }
+      // Exhausted retries — surface it for real now, same shape as before this fix.
+      opts.onUpdate?.(status)
+      return { success: false, error: { message: status.error ?? 'Scan failed', category: 'network' } }
+    }
+    consecutiveTransientErrors = 0
     opts.onUpdate?.(status)
 
     if (status.status === 'completed') {
