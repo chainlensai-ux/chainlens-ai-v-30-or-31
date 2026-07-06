@@ -254,6 +254,8 @@ export default function WalletScannerPage() {
     if (mode === 'deep') {
       // eslint-disable-next-line no-console
       console.log('[SCAN] Deep Scan triggered for', address)
+      // eslint-disable-next-line no-console
+      console.log('[SCAN] Deep Scan args:', address, ['base', 'eth'], mode)
     }
 
     if (mode === 'deep' && !sessionLoaded) {
