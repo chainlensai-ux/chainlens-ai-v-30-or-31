@@ -57,15 +57,33 @@ type ScanStartRequestBody = {
   scanMode?: unknown
 }
 
+// MISCONFIGURED WORKER_ENDPOINT, DISCLOSED: this is the real root cause of a malformed
+// ".../api/scan-v2/full-scan-worker/api/scan-v2/worker" trigger URL — verified by reading this
+// file's actual logic: "full-scan-worker" does not appear anywhere in this codebase's code, so a
+// concatenated path containing it can only come from WORKER_ENDPOINT itself already including a
+// path segment in the deployment's real env config (most likely a leftover from an earlier task
+// that proposed a "full-scan-worker" route name, which was never actually built at that path — the
+// real worker route is app/api/scan-v2/worker/route.ts, confirmed unchanged below). This warning
+// surfaces that misconfiguration at runtime instead of silently producing a broken URL.
 function workerBaseUrl(): string {
-  if (process.env.WORKER_ENDPOINT) return process.env.WORKER_ENDPOINT
+  const endpoint = process.env.WORKER_ENDPOINT
+  if (endpoint) {
+    if (endpoint.includes('/api')) {
+      // eslint-disable-next-line no-console
+      console.warn('[config] WORKER_ENDPOINT should be domain only, not a path:', endpoint)
+    }
+    return endpoint
+  }
   if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`
   return 'http://localhost:3000' // local dev fallback only
 }
 
 async function triggerWorker(jobId: string): Promise<void> {
   try {
-    const res = await fetch(`${workerBaseUrl()}/api/scan-v2/worker`, {
+    const workerUrl = `${workerBaseUrl()}/api/scan-v2/worker`
+    // eslint-disable-next-line no-console
+    console.log('[scan-start] workerUrl', workerUrl)
+    const res = await fetch(workerUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
