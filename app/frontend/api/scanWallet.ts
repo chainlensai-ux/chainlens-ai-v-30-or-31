@@ -123,12 +123,16 @@ export async function scanWalletV2(
   chains: string[],
   scanMode: ScanMode = 'normal',
 ): Promise<ScanWalletApiResponse> {
+  // eslint-disable-next-line no-console
+  console.log('[SCAN] calling scanWalletV2 with', walletAddress, chains, scanMode)
   try {
     const res = await fetch(V2_ROUTE, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ walletAddress, chains, scanMode }),
     })
+    // eslint-disable-next-line no-console
+    console.log('[SCAN] response status', res.status)
     if (!res.ok) {
       const bodyText = await res.text().catch(() => '')
       let parsed: ScanWalletApiResponse | null = null
@@ -145,7 +149,18 @@ export async function scanWalletV2(
         error: { message: 'network-failed', category: 'network', details: [`HTTP ${res.status}`, bodyText].filter(Boolean) },
       }
     }
-    return (await res.json()) as ScanWalletApiResponse
+    const body = (await res.json()) as ScanWalletApiResponse
+    // eslint-disable-next-line no-console
+    console.log('[SCAN] response keys', Object.keys(body))
+    // DIAGNOSTIC ADDITION, DISCLOSED: the task's own log only shows the wrapper's top-level keys
+    // (always just ["success","data"] or ["success","error"]), which can't actually confirm which
+    // V2 modules populated — those live nested under `body.data`. Logging that too, since that's
+    // what this task's own stated goal ("confirm the pipeline stages are running") needs.
+    if (body.success && body.data && typeof body.data === 'object') {
+      // eslint-disable-next-line no-console
+      console.log('[SCAN] response data keys', Object.keys(body.data as Record<string, unknown>))
+    }
+    return body
   } catch (err) {
     return {
       success: false,
