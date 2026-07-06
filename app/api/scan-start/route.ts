@@ -24,6 +24,35 @@ import { validateWalletAddress, validateChains, validateScanMode } from '@/src/d
 import { runWalletScanV2Worker } from '@/workers/walletScanV2'
 import { setScanJob, getScanJob, type ScanJob } from '@/src/modules/scanJobs'
 import { resetAlchemyAudit, printAlchemyAuditSummary } from '@/lib/server/alchemyAudit'
+import { withScanTimeout } from '@/src/utils/timeout'
+
+// SCAN_TIMEOUT_MS, DISCLOSED: an internal hard cap, deliberately shorter than `maxDuration` above
+// (60s vs 900s) — this is the real point of having both: maxDuration is the platform's own outer
+// ceiling (raised so the platform itself doesn't kill the background work silently, leaving a job
+// stuck at 'running'), while this internal timeout guarantees a job reaches 'failed' with a clear,
+// specific reason well before that outer ceiling would ever be hit, rather than relying on the
+// platform's own kill to be the only thing that ever stops a pathological scan.
+const SCAN_TIMEOUT_MS = 60_000
+
+// CU GUARD, DISCLOSED: providerDiagnostics's real shape (src/pipeline/index.ts) is an array of
+// `{chain, providerStatus, goldrush:{ok,errorReason,eventCount}, alchemy:{ok,errorReason,eventCount}}`
+// — not the task's own assumed `diagnostics.alchemyEventCountTotal` or `baseDiagnostics`/
+// `ethDiagnostics` object pair, neither of which exist anywhere in this codebase. Summed across the
+// real per-chain array instead. THRESHOLD, DISCLOSED: 500 is the task's own example number, kept as
+// specified — but it's a heuristic guess, not a value derived from this codebase's real, measured
+// per-chain page cap (MAX_RAW_EVENTS_PER_PROVIDER = 400, src/modules/providerFetchWindow/types.ts).
+// A wallet scanning 2 chains at the real per-provider cap could legitimately reach ~1600 events
+// (400 x 2 chains x 2 providers) without anything pathological happening — this threshold may need
+// real production tuning rather than being trusted as-is.
+const CU_GUARD_EVENT_THRESHOLD = 500
+
+function sumAlchemyEventCount(providerDiagnostics: unknown): number {
+  if (!Array.isArray(providerDiagnostics)) return 0
+  return providerDiagnostics.reduce((sum: number, entry) => {
+    const alchemy = (entry as { alchemy?: { eventCount?: number } })?.alchemy
+    return sum + (typeof alchemy?.eventCount === 'number' ? alchemy.eventCount : 0)
+  }, 0)
+}
 
 // maxDuration, DISCLOSED — the real fix for "infinite running": Next.js's `after()` callback runs
 // INSIDE the same function invocation that already sent its response — it does not get its own,
@@ -70,9 +99,17 @@ async function runJobInBackground(jobId: string, walletAddress: string, rawBody:
   resetAlchemyAudit()
 
   try {
-    const { status, body } = await runWalletScanV2Worker(rawBody, ip)
-    const parsed = body as { success: boolean; data?: unknown; error?: { message: string } }
+    const { status, body } = await withScanTimeout(runWalletScanV2Worker(rawBody, ip), SCAN_TIMEOUT_MS)
+    const parsed = body as { success: boolean; data?: { providerDiagnostics?: unknown }; error?: { message: string } }
     printAlchemyAuditSummary()
+
+    const totalAlchemyEvents = sumAlchemyEventCount(parsed.data?.providerDiagnostics)
+    if (totalAlchemyEvents > CU_GUARD_EVENT_THRESHOLD) {
+      // eslint-disable-next-line no-console
+      console.warn('[pipeline] CU guard triggered', { jobId, totalAlchemyEvents })
+      throw new Error('CU_GUARD_TRIGGERED')
+    }
+
     if (status >= 200 && status < 300 && parsed.success) {
       await setScanJob(jobId, {
         ...existing,
