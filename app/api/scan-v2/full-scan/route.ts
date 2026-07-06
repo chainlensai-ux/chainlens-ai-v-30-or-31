@@ -36,6 +36,9 @@ import { handleApiError } from '@/src/deployment/api'
 import { runWalletScanV2Worker, logDirectFailure } from '@/workers/walletScanV2'
 
 export async function POST(req: Request): Promise<Response> {
+  const routeStart = Date.now()
+  // eslint-disable-next-line no-console
+  console.log('[SCAN-V2] route start')
   try {
     const rawBody = await req.json().catch(() => null)
     const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown'
@@ -50,12 +53,23 @@ export async function POST(req: Request): Promise<Response> {
 
     // eslint-disable-next-line no-console
     console.log('[V2-route] total', performance.now() - start)
+    // eslint-disable-next-line no-console
+    console.log('[SCAN-V2] route success in', Date.now() - routeStart, 'ms')
 
     return response
   } catch (err) {
     // Last-resort guard only, matching app/api/scan/route.ts's own outer catch — fires only if
     // something fails before/outside runWalletScanV2Worker's own internal error handling (e.g. a
-    // truly unexpected throw). Never leaks a raw stack trace or error object.
+    // truly unexpected throw). Never leaks a raw stack trace or error object in the RESPONSE body —
+    // handleApiError(err) below is unchanged and stays the safe, redacted shape (see
+    // src/production/errorReporter.ts's sanitizeError, which already strips API keys/bearer
+    // tokens/private keys from the message before it ever reaches a client). The literal task's own
+    // snippet wanted `details: String(err)` in the JSON response itself — not applied, since that
+    // bypasses sanitizeError's redaction entirely and could leak a secret embedded in a raw error
+    // object/stack straight to the browser. The full, unredacted error is logged here instead
+    // (server-side only, never sent to the client) — real diagnostic value without the leak.
+    // eslint-disable-next-line no-console
+    console.error('[SCAN-V2] route error in', Date.now() - routeStart, 'ms', err)
     logDirectFailure(err)
     return new Response(JSON.stringify(handleApiError(err)), {
       status: 500,

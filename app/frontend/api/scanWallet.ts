@@ -104,6 +104,18 @@ const V2_ROUTE = '/api/scan-v2/full-scan'
 // connection will wait indefinitely rather than failing after ~55s. This is the requester's
 // explicit, informed choice, not silently absorbed.
 //
+// REAL-ERROR-VISIBILITY FIX, DISCLOSED: this function previously discarded the response body
+// entirely on any non-2xx status and replaced it with a hardcoded generic
+// {message:'network-failed'} — even though the route (see app/api/scan-v2/full-scan/route.ts's
+// catch block) always returns a real, redacted JSON error body via handleApiError/sanitizeError
+// (which already strips secrets like API keys before the message is ever produced — see
+// src/production/errorReporter.ts). That real body was simply never read. Fixed below to parse it
+// and surface the ACTUAL backend error message, falling back to the old generic message only when
+// the body genuinely isn't usable JSON with an error. No response-shape change (still the existing
+// `{success:false, error:{message,category,details?}}` object) — app/terminal/wallet-scanner/
+// page.tsx already correctly reads `error?.message` and displays it, so no frontend UI change was
+// needed beyond this one fix.
+//
 // Never throws: a network failure or non-2xx response resolves to a structured
 // {success:false, error:{...}} instead of propagating an exception.
 export async function scanWalletV2(
@@ -118,7 +130,20 @@ export async function scanWalletV2(
       body: JSON.stringify({ walletAddress, chains, scanMode }),
     })
     if (!res.ok) {
-      return { success: false, error: { message: 'network-failed', category: 'network', details: [`HTTP ${res.status}`] } }
+      const bodyText = await res.text().catch(() => '')
+      let parsed: ScanWalletApiResponse | null = null
+      try {
+        parsed = bodyText ? (JSON.parse(bodyText) as ScanWalletApiResponse) : null
+      } catch {
+        parsed = null
+      }
+      if (parsed?.error?.message) {
+        return { success: false, error: parsed.error }
+      }
+      return {
+        success: false,
+        error: { message: 'network-failed', category: 'network', details: [`HTTP ${res.status}`, bodyText].filter(Boolean) },
+      }
     }
     return (await res.json()) as ScanWalletApiResponse
   } catch (err) {

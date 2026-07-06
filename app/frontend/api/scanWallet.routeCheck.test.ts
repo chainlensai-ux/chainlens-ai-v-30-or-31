@@ -56,7 +56,7 @@ describe('scanWalletV2 (direct V2 route only, no fallback)', () => {
     }
   })
 
-  it('a non-2xx V2-route response resolves to a structured network error', async () => {
+  it('a non-2xx V2-route response with no usable JSON body resolves to a generic network error', async () => {
     const originalFetch = global.fetch
     global.fetch = mock.fn(async () => new Response('', { status: 500 })) as unknown as typeof fetch
 
@@ -67,6 +67,25 @@ describe('scanWalletV2 (direct V2 route only, no fallback)', () => {
       assert.equal(result.success, false)
       assert.equal(result.error?.message, 'network-failed')
       assert.deepEqual(result.error?.details, ['HTTP 500'])
+    } finally {
+      global.fetch = originalFetch
+    }
+  })
+
+  it('a non-2xx V2-route response WITH a real backend error body surfaces that real message (the actual bug this fixes)', async () => {
+    const originalFetch = global.fetch
+    global.fetch = mock.fn(async () => new Response(
+      JSON.stringify({ success: false, error: { message: 'goldrush_client_error: invalid api key', category: 'unknown' } }),
+      { status: 500 },
+    )) as unknown as typeof fetch
+
+    try {
+      const { scanWalletV2 } = await import('./scanWallet')
+      const result = await scanWalletV2('0xabc', ['base'], 'normal')
+
+      assert.equal(result.success, false)
+      assert.equal(result.error?.message, 'goldrush_client_error: invalid api key', 'expected the REAL backend error message, not a generic "network-failed"')
+      assert.equal(result.error?.category, 'unknown')
     } finally {
       global.fetch = originalFetch
     }
