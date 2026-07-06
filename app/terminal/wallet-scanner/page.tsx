@@ -129,6 +129,12 @@ export default function WalletScannerPage() {
   // onUpdate callback that already sets jobStatusMessage, purely additive to the loading-state UI
   // below; does not touch result/error rendering.
   const [scanProgress, setScanProgress] = useState<{ currentModule: number; totalModules: number; moduleName: string } | null>(null)
+  // MODULE ERRORS, ADDED DISCLOSED (stuck-at-module-11 task): mirrors the optional `moduleErrors`
+  // field the completed job's status carries (see app/frontend/api/scanWallet.ts) — captured off
+  // the same onUpdate callback that already fires on the final 'completed' status before
+  // pollScanJobUntilDone returns. Purely additive: rendered in its own small section, does not
+  // touch the existing result/error/loading blocks below.
+  const [moduleErrors, setModuleErrors] = useState<Record<string, string> | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<WalletV2Report | null>(null)
   const [signedInEmail, setSignedInEmail] = useState<string | null>(null)
@@ -275,6 +281,7 @@ export default function WalletScannerPage() {
     setResult(null)
     setJobStatusMessage(null)
     setScanProgress(null)
+    setModuleErrors(null)
 
     try {
       // JOB/POLL WIRING, DISCLOSED (see app/frontend/api/scanWallet.ts's file header): both modes
@@ -292,6 +299,9 @@ export default function WalletScannerPage() {
         onUpdate: (status) => {
           setJobStatusMessage(status.status)
           setScanProgress(status.progress ?? null)
+          if (status.moduleErrors && Object.keys(status.moduleErrors).length > 0) {
+            setModuleErrors(status.moduleErrors)
+          }
         },
         statusEndpoint: mode === 'deep' ? '/api/scan-status' : '/api/scan-v2/full-scan/status',
       })
@@ -490,6 +500,20 @@ export default function WalletScannerPage() {
               <p style={{ fontSize: '13px', lineHeight: 1.7, margin: 0, fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
                 Enter a wallet address above to generate a CORTEX wallet read — portfolio value, holdings, and on-chain behavior via the 180-Day Intelligence Engine.
               </p>
+            </div>
+          )}
+
+          {/* Module errors, non-blocking (stuck-at-module-11 task): a module that timed out/failed
+              still contributed a degrade-shape fallback to the result above it, so the scan itself
+              completed — this is informational only, never replaces the result view. */}
+          {!loading && result && moduleErrors && Object.keys(moduleErrors).length > 0 && (
+            <div className="ws-card" style={{ borderColor: 'rgba(234,179,8,0.35)', background: 'rgba(234,179,8,0.06)', color: '#facc15', fontSize: '12px', marginBottom: '12px' }}>
+              Some modules did not complete in time and used fallback data:
+              <ul style={{ margin: '6px 0 0', paddingLeft: '18px' }}>
+                {Object.entries(moduleErrors).map(([moduleName, message]) => (
+                  <li key={moduleName}>{moduleName}: {message}</li>
+                ))}
+              </ul>
             </div>
           )}
 

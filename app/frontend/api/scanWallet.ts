@@ -202,12 +202,17 @@ export type ScanJobStatus = 'pending' | 'running' | 'completed' | 'failed'
 // pollScanJobOnce/pollScanJobUntilDone below to "forward" this to callers — both already pass the
 // full parsed status object straight through (pollScanJobOnce returns it as-is; onUpdate receives
 // it as-is), so widening this type is the only change required for progress to reach page.tsx.
+// `moduleErrors`, ADDED DISCLOSED (stuck-at-module-11 task): optional, matches
+// app/api/scan-status/route.ts's own extraction of the same field out of `result`. No polling-
+// logic change needed here either — pollScanJobOnce/pollScanJobUntilDone already forward the full
+// parsed status object as-is.
 export type ScanJobStatusResponse = {
   jobId: string
   status: ScanJobStatus
   result: unknown
   error: string | null
   progress?: { currentModule: number; totalModules: number; moduleName: string }
+  moduleErrors?: Record<string, string>
 }
 
 export async function startDeepScanJob(walletAddress: string, chains: string[]): Promise<{ jobId: string } | { error: string }> {

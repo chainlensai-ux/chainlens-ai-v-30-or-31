@@ -32,6 +32,7 @@ import { createCuBudget } from '@/app/api/_shared/cuBudget'
 import { recordCuUsage } from '@/app/api/_shared/cuUsageStore'
 import { logFifoPricingDivergence, shouldSampleThisScan } from '@/lib/server/engineComparison'
 import { setJobProgress } from '@/src/modules/scanJobs'
+import { withScanTimeout } from '@/src/utils/timeout'
 
 // V2-DIRECT-FAILURE LOGGER: moved here unchanged from the route file (still exported so the route
 // can also tag its own outer catch with the same log tag).
@@ -82,6 +83,43 @@ function sumProviderEventCount(providerDiagnostics: unknown): number {
 }
 
 const TOTAL_MODULES = 11
+
+// PER-MODULE TIMEOUT, DISCLOSED (stuck-at-module-11 task): the existing per-module try/catch
+// blocks below only guard against a module REJECTING — they do nothing if a module's awaited call
+// never settles at all (e.g. a stuck provider fetch with no internal timeout), since `await` on a
+// promise that never resolves or rejects just waits forever. That's the real, literal cause of a
+// job appearing stuck at whatever module was running when the hang started: the OUTER whole-worker
+// timeout (app/api/scan-v2/worker/route.ts's withScanTimeout, 600s) still eventually fires and
+// marks the job 'failed' — so a job is never truly stuck forever — but a user watching the UI has
+// no way to tell "hung, will fail in a few minutes" from "actually stuck", and one hung module
+// blocks all 10 remaining ones from ever running. Wrapping each module in its own 20s race means a
+// single hang costs ~20s instead of blocking (up to) the full 600s, and the other modules still get
+// a chance to run and produce real data instead of the whole scan degrading to nothing.
+const MODULE_TIMEOUT_MS = 20_000
+
+// Runs one module's async call with its own timeout. On a real rejection OR a timeout, records the
+// failure into `moduleErrors[moduleName]` and returns the same degrade-shape fallback the original
+// try/catch already used for that module — no module's own logic, fallback shape, or field names
+// were changed, only HOW the call is awaited.
+// Exported for unit testing (workers/walletScanV2.runModuleWithTimeout.test.ts) — the rest of this
+// file has too large a real-provider dependency chain to unit-test directly, but this helper's own
+// timeout/error-recording logic is self-contained and worth locking in independently. `timeoutMs`
+// is an optional override so tests don't have to wait the real 20s default — every real call site
+// in this file omits it and gets MODULE_TIMEOUT_MS.
+export async function runModuleWithTimeout<T>(
+  moduleName: string,
+  fn: () => Promise<T>,
+  fallback: T,
+  moduleErrors: Record<string, string>,
+  timeoutMs: number = MODULE_TIMEOUT_MS,
+): Promise<T> {
+  try {
+    return await withScanTimeout(fn(), timeoutMs)
+  } catch (err) {
+    moduleErrors[moduleName] = err instanceof Error ? err.message : String(err)
+    return fallback
+  }
+}
 
 // PROGRESS REPORTING, DISCLOSED (module-progress-reporting task): fire-and-forget (never awaited),
 // wrapped so a Redis hiccup can never affect or slow down the real scan — matches this whole
@@ -146,17 +184,17 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     // module call, in the same order they already ran. No module's logic, arguments, ordering, or
     // try/catch degrade-shape was changed to add these.
     const chainOverallStart = performance.now()
+    // MODULE ERRORS, DISCLOSED (stuck-at-module-11 task): collects a real timeout/rejection message
+    // per module (see runModuleWithTimeout above), merged into the final response as `moduleErrors`
+    // — non-fatal, purely additive; a module recorded here still contributed its degrade-shape
+    // fallback to every downstream module exactly as it already did before this change.
+    const moduleErrors: Record<string, string> = {}
 
     reportProgress(jobId, 1, 'holdings')
     // eslint-disable-next-line no-console
     console.log('[V2-worker] starting holdings')
     let t0 = performance.now()
-    let chainHoldings: Awaited<ReturnType<typeof fetchAllHoldings>> = []
-    try {
-      chainHoldings = await fetchAllHoldings(walletAddress)
-    } catch {
-      chainHoldings = []
-    }
+    const chainHoldings = await runModuleWithTimeout('holdings', () => fetchAllHoldings(walletAddress), [] as Awaited<ReturnType<typeof fetchAllHoldings>>, moduleErrors)
     // eslint-disable-next-line no-console
     console.log('[V2-worker] finished holdings in', performance.now() - t0, 'ms', 'count=', chainHoldings.length)
 
@@ -164,12 +202,12 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     // eslint-disable-next-line no-console
     console.log('[V2-worker] starting pricing')
     t0 = performance.now()
-    let pricing: Awaited<ReturnType<typeof priceHoldings>>
-    try {
-      pricing = await priceHoldings(chainHoldings)
-    } catch {
-      pricing = { pricedHoldings: [], totalValueUsd: 0, chainValueUsd: {}, priceStatus: 'unavailable' }
-    }
+    const pricing = await runModuleWithTimeout(
+      'pricing',
+      () => priceHoldings(chainHoldings),
+      { pricedHoldings: [], totalValueUsd: 0, chainValueUsd: {}, priceStatus: 'unavailable' } as Awaited<ReturnType<typeof priceHoldings>>,
+      moduleErrors,
+    )
     // eslint-disable-next-line no-console
     console.log('[V2-worker] finished pricing in', performance.now() - t0, 'ms', 'count=', pricing.pricedHoldings.length)
 
@@ -177,15 +215,15 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     // eslint-disable-next-line no-console
     console.log('[V2-worker] starting portfolio')
     t0 = performance.now()
-    let portfolioOutput: Awaited<ReturnType<typeof buildPortfolio>>
-    try {
-      portfolioOutput = await buildPortfolio(pricing.pricedHoldings, pricing.totalValueUsd, pricing.chainValueUsd)
-    } catch {
-      portfolioOutput = {
+    const portfolioOutput = await runModuleWithTimeout(
+      'portfolio',
+      () => buildPortfolio(pricing.pricedHoldings, pricing.totalValueUsd, pricing.chainValueUsd),
+      {
         portfolio: { totalValueUsd: 0, categories: [], chains: [], topHoldings: [], stablecoinRatio: 0, concentrationIndex: 0 },
         portfolioStatus: 'empty',
-      }
-    }
+      } as Awaited<ReturnType<typeof buildPortfolio>>,
+      moduleErrors,
+    )
     // eslint-disable-next-line no-console
     console.log('[V2-worker] finished portfolio in', performance.now() - t0, 'ms', 'holdings=', chainHoldings.length)
 
@@ -199,12 +237,12 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     // eslint-disable-next-line no-console
     console.log('[V2-worker] starting trades')
     t0 = performance.now()
-    let trades: Awaited<ReturnType<typeof fetchParsedTrades>> = []
-    try {
-      trades = await fetchParsedTrades(walletAddress, eventsCache, cuBudget)
-    } catch {
-      trades = []
-    }
+    const trades = await runModuleWithTimeout(
+      'trades',
+      () => fetchParsedTrades(walletAddress, eventsCache, cuBudget),
+      [] as Awaited<ReturnType<typeof fetchParsedTrades>>,
+      moduleErrors,
+    )
     // eslint-disable-next-line no-console
     console.log('[V2-worker] finished trades in', performance.now() - t0, 'ms', 'count=', trades.length, 'cacheHitsSoFar=', eventsCache.hitCount)
 
@@ -212,15 +250,15 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     // eslint-disable-next-line no-console
     console.log('[V2-worker] starting pnl')
     t0 = performance.now()
-    let pnlOutput: Awaited<ReturnType<typeof computePnl>>
-    try {
-      pnlOutput = await computePnl(pricing.pricedHoldings, chainHoldings, pricing.totalValueUsd, trades)
-    } catch {
-      pnlOutput = {
+    const pnlOutput = await runModuleWithTimeout(
+      'pnl',
+      () => computePnl(pricing.pricedHoldings, chainHoldings, pricing.totalValueUsd, trades),
+      {
         pnlV2: { realizedPnlUsd: 0, unrealizedPnlUsd: 0, costBasis: [], realized: [], unrealized: [], chainBreakdown: [] },
         pnlStatus: 'unavailable',
-      }
-    }
+      } as Awaited<ReturnType<typeof computePnl>>,
+      moduleErrors,
+    )
     // eslint-disable-next-line no-console
     console.log('[V2-worker] finished pnl in', performance.now() - t0, 'ms')
 
@@ -251,9 +289,9 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     // eslint-disable-next-line no-console
     console.log('[V2-worker] starting chainActivity')
     t0 = performance.now()
-    let chainActivityOutput: Awaited<ReturnType<typeof computeChainActivity>>
-    try {
-      chainActivityOutput = await computeChainActivity(
+    const chainActivityOutput = await runModuleWithTimeout(
+      'chainActivity',
+      () => computeChainActivity(
         walletAddress,
         chainHoldings,
         pricing.pricedHoldings,
@@ -262,10 +300,10 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
         pnlOutput.pnlV2,
         eventsCache,
         cuBudget,
-      )
-    } catch {
-      chainActivityOutput = { chainActivityV2: [], chainActivityStatus: 'empty' }
-    }
+      ),
+      { chainActivityV2: [], chainActivityStatus: 'empty' } as Awaited<ReturnType<typeof computeChainActivity>>,
+      moduleErrors,
+    )
     // eslint-disable-next-line no-console
     console.log('[V2-worker] finished chainActivity in', performance.now() - t0, 'ms', 'count=', chainActivityOutput.chainActivityV2.length)
 
@@ -273,24 +311,24 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     // eslint-disable-next-line no-console
     console.log('[V2-worker] starting risk')
     t0 = performance.now()
-    let riskOutput: Awaited<ReturnType<typeof computeRisk>>
-    try {
-      riskOutput = await computeRisk(
+    const riskOutput = await runModuleWithTimeout(
+      'risk',
+      () => computeRisk(
         portfolioOutput.portfolio,
         pnlOutput.pnlV2,
         chainActivityOutput.chainActivityV2,
         pricing.pricedHoldings,
         chainHoldings,
-      )
-    } catch {
-      riskOutput = {
+      ),
+      {
         riskV2: {
           score: 0, level: 'low', concentrationRisk: 0, stablecoinRatio: 0,
           unrealizedPnlPressure: 0, chainRisk: 0, volatileExposure: 0, fragmentationRisk: 0,
         },
         riskStatus: 'empty',
-      }
-    }
+      } as Awaited<ReturnType<typeof computeRisk>>,
+      moduleErrors,
+    )
     // eslint-disable-next-line no-console
     console.log('[V2-worker] finished risk in', performance.now() - t0, 'ms')
 
@@ -298,26 +336,26 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     // eslint-disable-next-line no-console
     console.log('[V2-worker] starting personality')
     t0 = performance.now()
-    let personalityOutput: Awaited<ReturnType<typeof computePersonality>>
-    try {
-      personalityOutput = await computePersonality(
+    const personalityOutput = await runModuleWithTimeout(
+      'personality',
+      () => computePersonality(
         portfolioOutput.portfolio,
         pnlOutput.pnlV2,
         chainActivityOutput.chainActivityV2,
         riskOutput.riskV2,
         pricing.pricedHoldings,
         chainHoldings,
-      )
-    } catch {
-      personalityOutput = {
+      ),
+      {
         personalityV2: {
           archetype: 'Unknown', riskAppetite: 'low', tradingStyle: 'passive', chainPreference: null,
           volatilityTolerance: 0, stabilityPreference: 0, pnlBehavior: 'neutral', activityConsistency: 'dormant',
           summary: 'Insufficient data to classify wallet personality.',
         },
         personalityStatus: 'empty',
-      }
-    }
+      } as Awaited<ReturnType<typeof computePersonality>>,
+      moduleErrors,
+    )
     // eslint-disable-next-line no-console
     console.log('[V2-worker] finished personality in', performance.now() - t0, 'ms')
 
@@ -325,9 +363,9 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     // eslint-disable-next-line no-console
     console.log('[V2-worker] starting behavior')
     t0 = performance.now()
-    let behaviorOutput: Awaited<ReturnType<typeof computeBehavior>>
-    try {
-      behaviorOutput = await computeBehavior(
+    const behaviorOutput = await runModuleWithTimeout(
+      'behavior',
+      () => computeBehavior(
         pnlOutput.pnlV2,
         portfolioOutput.portfolio,
         chainActivityOutput.chainActivityV2,
@@ -336,17 +374,17 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
         trades,
         riskOutput.riskV2,
         personalityOutput.personalityV2,
-      )
-    } catch {
-      behaviorOutput = {
+      ),
+      {
         behaviorV2: {
           accumulationStyle: 'neutral', rotationStyle: 'inactive', bridgingBehavior: 'none',
           farmingBehavior: 'none', stableRoutingBehavior: 'none', memeBehavior: 'none',
           tradeFrequency: 'low', behaviorSummary: 'No trade activity found for this wallet.',
         },
         behaviorStatus: 'empty',
-      }
-    }
+      } as Awaited<ReturnType<typeof computeBehavior>>,
+      moduleErrors,
+    )
     // eslint-disable-next-line no-console
     console.log('[V2-worker] finished behavior in', performance.now() - t0, 'ms')
 
@@ -354,9 +392,9 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     // eslint-disable-next-line no-console
     console.log('[V2-worker] starting signals')
     t0 = performance.now()
-    let signalsOutput: Awaited<ReturnType<typeof computeSignals>>
-    try {
-      signalsOutput = await computeSignals(
+    const signalsOutput = await runModuleWithTimeout(
+      'signals',
+      () => computeSignals(
         portfolioOutput.portfolio,
         pnlOutput.pnlV2,
         chainActivityOutput.chainActivityV2,
@@ -366,10 +404,10 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
         pricing.pricedHoldings,
         chainHoldings,
         trades,
-      )
-    } catch {
-      signalsOutput = { signalsV2: [], signalsStatus: 'empty' }
-    }
+      ),
+      { signalsV2: [], signalsStatus: 'empty' } as Awaited<ReturnType<typeof computeSignals>>,
+      moduleErrors,
+    )
     // eslint-disable-next-line no-console
     console.log('[V2-worker] finished signals in', performance.now() - t0, 'ms', 'count=', signalsOutput.signalsV2.length)
 
@@ -435,6 +473,10 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
         behaviorStatus: behaviorOutput.behaviorStatus,
         signalsV2: signalsOutput.signalsV2,
         signalsStatus: signalsOutput.signalsStatus,
+        // `moduleErrors`, ADDED DISCLOSED (stuck-at-module-11 task): only present with real
+        // entries when at least one module actually timed out/rejected — an empty object here
+        // (the common case) means every module ran to real completion within its 20s budget.
+        moduleErrors,
       },
     } as typeof body
 

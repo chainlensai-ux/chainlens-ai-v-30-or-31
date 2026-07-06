@@ -26,6 +26,16 @@ export type ScanJobProgress = {
   moduleName: string
 }
 
+// `ScanModuleErrors`, DISCLOSED (stuck-at-module-11 task): NOT a new top-level field on ScanJob —
+// `result: unknown` intentionally stays untyped (see that field's own comment below; it mirrors
+// whatever shape src/pipeline + the V2 module chain produce, which isn't modeled here). This type
+// documents the shape workers/walletScanV2.ts merges into `result.moduleErrors` when one or more
+// modules time out or reject: a map of moduleName -> the real error/timeout message for that
+// module, present (possibly empty) on every completed job. Consumers (e.g.
+// app/api/scan-status/route.ts) read it back out of `job.result` at the point of use rather than
+// this file storing it separately, since it's already part of the same unknown result blob.
+export type ScanModuleErrors = Record<string, string>
+
 export interface ScanJob {
   id: string
   walletAddress: string
