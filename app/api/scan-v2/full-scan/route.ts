@@ -32,6 +32,21 @@
 // the log now includes response construction, tightening the measured span to "worker call +
 // building the final response" as asked.
 
+// TIMEOUT CEILING FIX, DISCLOSED: this route was previously missing its own `maxDuration` export,
+// so it fell back to vercel.json's 60s cap for this path — despite dispatching to the exact same
+// runWalletScanV2Worker() 11-module chain that app/api/scan-v2/worker/route.ts (maxDuration=900)
+// runs in the background job path. A cold/heavy `normal` scan can genuinely exceed 60s; when the
+// platform kills the invocation past that cap, it returns a non-JSON gateway response that
+// scanWalletV2() (app/frontend/api/scanWallet.ts) can't parse into a real error, so it falls back
+// to its generic "network-failed" message — this is the real root cause of "works in DevTools
+// (usually a lighter wallet or a warm-cache retry), fails from the UI button (a genuinely heavy
+// cold scan)". Raised to 300s (the standard synchronous-serverless-function ceiling on this
+// platform without Fluid Compute enabled) rather than 900s, since unlike the worker route this one
+// is NOT a fire-and-forget background invocation — the browser's own fetch is waiting on it
+// synchronously, so an unbounded ceiling would just leave the user staring at a spinner instead of
+// getting a clear timeout error.
+export const maxDuration = 300
+
 import { handleApiError } from '@/src/deployment/api'
 import { runWalletScanV2Worker, logDirectFailure } from '@/workers/walletScanV2'
 import { resetAlchemyAudit, printAlchemyAuditSummary } from '@/lib/server/alchemyAudit'

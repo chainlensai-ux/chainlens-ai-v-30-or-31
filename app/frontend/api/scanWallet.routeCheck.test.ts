@@ -58,7 +58,10 @@ describe('scanWalletV2 (direct V2 route only, no fallback)', () => {
 
   it('a non-2xx V2-route response with no usable JSON body resolves to a generic network error', async () => {
     const originalFetch = global.fetch
-    global.fetch = mock.fn(async () => new Response('', { status: 500 })) as unknown as typeof fetch
+    // A non-500 status with an empty body has no plausible gateway-timeout signal, so this still
+    // exercises the plain "network-failed" fallback path (see the 5xx-empty-body case below for the
+    // gateway-timeout-detection path this same fallback now also covers).
+    global.fetch = mock.fn(async () => new Response('', { status: 404 })) as unknown as typeof fetch
 
     try {
       const { scanWalletV2 } = await import('./scanWallet')
@@ -66,7 +69,22 @@ describe('scanWalletV2 (direct V2 route only, no fallback)', () => {
 
       assert.equal(result.success, false)
       assert.equal(result.error?.message, 'network-failed')
-      assert.deepEqual(result.error?.details, ['HTTP 500'])
+      assert.deepEqual(result.error?.details, ['HTTP 404'])
+    } finally {
+      global.fetch = originalFetch
+    }
+  })
+
+  it('a 5xx response with no JSON body (platform gateway timeout) surfaces a clear timeout message, not the generic one', async () => {
+    const originalFetch = global.fetch
+    global.fetch = mock.fn(async () => new Response('<html>504 Gateway Timeout</html>', { status: 504 })) as unknown as typeof fetch
+
+    try {
+      const { scanWalletV2 } = await import('./scanWallet')
+      const result = await scanWalletV2('0xabc', ['base'], 'normal')
+
+      assert.equal(result.success, false)
+      assert.match(result.error?.message ?? '', /took too long/)
     } finally {
       global.fetch = originalFetch
     }

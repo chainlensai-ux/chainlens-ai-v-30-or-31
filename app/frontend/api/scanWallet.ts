@@ -138,9 +138,23 @@ export async function scanWalletV2(
       if (parsed?.error?.message) {
         return { success: false, error: parsed.error }
       }
+      // NON-JSON BODY, DISCLOSED: this route (app/api/scan-v2/full-scan/route.ts) always returns a
+      // real JSON error body on a normal failure — a non-JSON body here (HTML, empty, etc.) means
+      // something outside that route handler produced this response, most likely the platform
+      // itself killing the invocation once it exceeds its own maxDuration (a real, cold heavy scan
+      // taking longer than the route's timeout ceiling). Surfacing that distinction instead of the
+      // previous always-identical "network-failed" so a genuinely stuck/slow scan reads differently
+      // from an actual network/CORS/offline failure.
+      const looksLikeGatewayTimeout = res.status >= 500 && !bodyText.trim().startsWith('{')
       return {
         success: false,
-        error: { message: 'network-failed', category: 'network', details: [`HTTP ${res.status}`, bodyText].filter(Boolean) },
+        error: {
+          message: looksLikeGatewayTimeout
+            ? 'The scan took too long and was stopped by the server. Try again, or try a lighter wallet.'
+            : 'network-failed',
+          category: 'network',
+          details: [`HTTP ${res.status}`, bodyText].filter(Boolean),
+        },
       }
     }
     const body = (await res.json()) as ScanWalletApiResponse
