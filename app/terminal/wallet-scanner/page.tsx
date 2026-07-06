@@ -22,7 +22,7 @@
 import { useEffect, useState } from 'react'
 import { usePlanWithLoading, LockedPanel, canAccessFeature } from '@/lib/usePlan'
 import { supabase } from '@/lib/supabaseClient'
-import { scanWalletV2, type ScanWalletApiResponse } from '@/app/frontend/api/scanWallet'
+import { scanWalletV2, startDeepScanJob, pollScanJobUntilDone, type ScanWalletApiResponse } from '@/app/frontend/api/scanWallet'
 import {
   BehaviorIntelView,
   ChainSelectionView,
@@ -123,6 +123,7 @@ export default function WalletScannerPage() {
 
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
+  const [jobStatusMessage, setJobStatusMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<WalletV2Report | null>(null)
   const [signedInEmail, setSignedInEmail] = useState<string | null>(null)
@@ -267,19 +268,40 @@ export default function WalletScannerPage() {
     setLoading(true)
     setError(null)
     setResult(null)
+    setJobStatusMessage(null)
 
     try {
-      const response: ScanWalletApiResponse = await scanWalletV2(address, ['base', 'eth'], mode)
-      if (!response.success || !response.data) {
-        throw new Error(response.error?.message ?? 'Scan failed')
+      // DEEP SCAN JOB/POLL WIRING, DISCLOSED (see app/frontend/api/scanWallet.ts's file header):
+      // Deep Scan now goes through the background job/poll system (POST /api/scan-start, then
+      // poll GET /api/scan-status) instead of the direct /api/scan-v2/full-scan call — scoped to
+      // mode==='deep' only; `normal` scans are completely unchanged below.
+      if (mode === 'deep') {
+        const started = await startDeepScanJob(address, ['base', 'eth'])
+        if ('error' in started) {
+          throw new Error(started.error)
+        }
+        setJobStatusMessage('pending')
+        const response = await pollScanJobUntilDone(started.jobId, {
+          onUpdate: (status) => setJobStatusMessage(status.status),
+        })
+        if (!response.success || !response.data) {
+          throw new Error(response.error?.message ?? 'Scan failed')
+        }
+        setResult(response.data as WalletV2Report)
+      } else {
+        const response: ScanWalletApiResponse = await scanWalletV2(address, ['base', 'eth'], mode)
+        if (!response.success || !response.data) {
+          throw new Error(response.error?.message ?? 'Scan failed')
+        }
+        setResult(response.data as WalletV2Report)
       }
-      setResult(response.data as WalletV2Report)
     } catch (err: unknown) {
       // eslint-disable-next-line no-console
       console.error('Scan failed', err)
       setError(err instanceof Error ? err.message : 'Scan failed — try again later')
     } finally {
       setLoading(false)
+      setJobStatusMessage(null)
     }
   }
 
@@ -440,7 +462,7 @@ export default function WalletScannerPage() {
           {/* Loading state */}
           {loading && (
             <div className="ws-card" style={{ color: 'rgba(148,163,184,0.75)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', fontSize: '13px' }}>
-              Scanning {input.trim()}…
+              Scanning {input.trim()}…{jobStatusMessage ? ` (${jobStatusMessage})` : ''}
             </div>
           )}
 

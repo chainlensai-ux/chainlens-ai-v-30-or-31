@@ -1,23 +1,17 @@
 // API client for the ChainLens 180-Day Intelligence Engine (V2).
 //
-// JOB-ROUTE FALLBACK REMOVED, DISCLOSED — REGRESSION RISK KNOWINGLY REINTRODUCED, PER EXPLICIT
-// INSTRUCTION: scanWalletV2() previously tried the direct, synchronous /api/scan-v2/full-scan route
-// first and fell back to the job/poll system (/full-scan-job/start + /full-scan-job/status) on
-// failure — see this file's git history for the full "ROUTE-SWAP" disclosure on why that fallback
-// existed. This task explicitly asked to remove the fallback entirely and call only the direct V2
-// route, since the "not-found" status the fallback could surface was being misread. That's now
-// moot: scanViaJobRoute (and its 'not-found' handling) is deleted outright, not left dead in this
-// file. The real, same regression risk already disclosed once in this file's history still applies
-// and is worth restating plainly: the direct route is a normal Vercel serverless function, subject
-// to its hard execution-time ceiling, and the job/poll system existed specifically to decouple the
-// client's request lifetime from a slow Deep Scan's real duration. Removing the fallback means a
-// genuinely slow scan can now hit FUNCTION_INVOCATION_TIMEOUT with no automatic recovery, where it
-// previously would have completed via the job route. Applied here exactly as instructed — this
-// tradeoff is the requester's explicit, informed choice, not something silently absorbed.
-//
-// The backend job routes themselves (app/api/scan-v2/full-scan-job/{start,status}/route.ts) are
-// untouched — only this file's frontend usage of them is removed. They remain real, working, unused
-// code, not deleted, in case a future task wants them back.
+// JOB-ROUTE FALLBACK REMOVED (for `normal` scans), THEN RE-ADDED (for Deep Scan only), DISCLOSED:
+// scanWalletV2() previously tried the direct route first, fell back to a job/poll system on
+// failure, then had that fallback removed entirely per an earlier explicit instruction (see this
+// file's git history for the "ROUTE-SWAP"/"JOB-ROUTE FALLBACK REMOVED" disclosures) — a real,
+// disclosed regression risk (no protection from FUNCTION_INVOCATION_TIMEOUT on a genuinely slow
+// scan) that was knowingly accepted at the time. A later, explicit task asked to move Deep Scan
+// specifically into a background job/poll system again — startDeepScanJob/pollScanJob below are
+// that reintroduction, scoped ONLY to Deep Scan (mode='deep'). scanWalletV2() itself is UNCHANGED
+// and still used as-is for `normal` scans — this isn't a revert of the earlier removal, it's a new,
+// separate job/poll path targeting the current worker (workers/walletScanV2.ts via
+// app/api/scan-start), not the old, now-unused /full-scan-job/{start,status} routes (still real,
+// working, untouched — genuinely unused now by either scan mode).
 //
 // `fetchScanModule` (below) is left in place, unused by `scanWalletV2`, still exported for any
 // caller that genuinely wants just one module's section (per its own existing doc comment) — not
@@ -161,4 +155,66 @@ export async function scanWalletV2(
       error: { message: err instanceof Error ? err.message : String(err), category: 'network' },
     }
   }
+}
+
+// DEEP SCAN JOB/POLL SYSTEM, DISCLOSED (see file header): scoped only to Deep Scan, calling the
+// new app/api/scan-start + app/api/scan-status routes (which run the same real, unchanged
+// runWalletScanV2Worker as the direct route) — never throws.
+export type ScanJobStatus = 'pending' | 'running' | 'completed' | 'failed'
+export type ScanJobStatusResponse = { jobId: string; status: ScanJobStatus; result: unknown; error: string | null }
+
+export async function startDeepScanJob(walletAddress: string, chains: string[]): Promise<{ jobId: string } | { error: string }> {
+  try {
+    const res = await fetch('/api/scan-start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ walletAddress, chains, scanMode: 'deep' }),
+    })
+    const body = await res.json().catch(() => null)
+    if (!res.ok || !body?.jobId) {
+      return { error: body?.error ?? `HTTP ${res.status}` }
+    }
+    return { jobId: body.jobId as string }
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+export async function pollScanJobOnce(jobId: string): Promise<ScanJobStatusResponse> {
+  try {
+    const res = await fetch(`/api/scan-status?jobId=${encodeURIComponent(jobId)}`)
+    if (!res.ok) {
+      return { jobId, status: 'failed', result: null, error: `HTTP ${res.status}` }
+    }
+    return (await res.json()) as ScanJobStatusResponse
+  } catch (err) {
+    return { jobId, status: 'failed', result: null, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+// Polls every `intervalMs` (default 2.5s, per the task's "every 2-3 seconds" request) until the job
+// reaches 'completed'/'failed' or `timeoutMs` elapses. Never throws.
+export async function pollScanJobUntilDone(
+  jobId: string,
+  opts: { intervalMs?: number; timeoutMs?: number; onUpdate?: (status: ScanJobStatusResponse) => void } = {},
+): Promise<ScanWalletApiResponse> {
+  const intervalMs = opts.intervalMs ?? 2500
+  const timeoutMs = opts.timeoutMs ?? 10 * 60 * 1000 // 10 minutes — generous headroom for a real Deep Scan
+  const deadline = Date.now() + timeoutMs
+
+  while (Date.now() < deadline) {
+    const status = await pollScanJobOnce(jobId)
+    opts.onUpdate?.(status)
+
+    if (status.status === 'completed') {
+      return { success: true, data: status.result }
+    }
+    if (status.status === 'failed') {
+      return { success: false, error: { message: status.error ?? 'Scan failed', category: 'unknown' } }
+    }
+    // 'pending' or 'running' — keep polling
+    await new Promise((resolve) => setTimeout(resolve, intervalMs))
+  }
+
+  return { success: false, error: { message: 'Deep Scan timed out waiting for a result', category: 'timeout' } }
 }

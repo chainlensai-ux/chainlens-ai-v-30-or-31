@@ -1,0 +1,23 @@
+// GET /api/scan-status?jobId=... — poll a Deep Scan job's current status/result.
+
+import { NextResponse } from 'next/server'
+import { getScanJob } from '@/src/modules/scanJobs'
+
+export async function GET(req: Request): Promise<Response> {
+  const jobId = new URL(req.url).searchParams.get('jobId')
+  if (!jobId) {
+    return NextResponse.json({ error: 'jobId query param is required' }, { status: 400 })
+  }
+
+  const job = await getScanJob(jobId)
+  if (!job) {
+    return NextResponse.json({ error: 'job not found' }, { status: 404 })
+  }
+
+  return NextResponse.json({
+    jobId: job.id,
+    status: job.status,
+    result: job.result,
+    error: job.error,
+  })
+}
