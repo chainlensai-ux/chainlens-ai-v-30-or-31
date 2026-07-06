@@ -30,6 +30,7 @@ import { computeSmartMoneyScore, deriveSmartMoneyInputs } from '@/lib/engine/mod
 import { createEventsCache } from '@/app/api/_shared/eventsCache'
 import { createCuBudget } from '@/app/api/_shared/cuBudget'
 import { recordCuUsage } from '@/app/api/_shared/cuUsageStore'
+import { logFifoPricingDivergence, shouldSampleThisScan } from '@/lib/server/engineComparison'
 
 // V2-DIRECT-FAILURE LOGGER: moved here unchanged from the route file (still exported so the route
 // can also tag its own outer catch with the same log tag).
@@ -168,6 +169,29 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string): Promi
     }
     // eslint-disable-next-line no-console
     console.log('[V2-worker] finished pnl in', performance.now() - t0, 'ms')
+
+    // DIAGNOSTIC-ONLY ENGINE COMPARISON, DISCLOSED: logs when the old pipeline's two real PnL
+    // outputs (fifoAndPnl/pnlSummaryV2, both already computed above via `body`, from
+    // router.handleScanRequest) disagree with this chain's own pnlV2 — see
+    // lib/server/engineComparison.ts's own header for the full disclosure on what's compared and
+    // why. ZERO behavior change: does not read from or write to `body`/`pnlOutput` in any way that
+    // affects the real response; wrapped so a bug in the comparison itself can never affect the
+    // scan. Sampled (default 1-in-5, per this task's own example) to bound log volume.
+    if (shouldSampleThisScan()) {
+      try {
+        const oldPipelineData = body.data as { fifoAndPnl?: unknown; pnlSummaryV2?: unknown } | undefined
+        logFifoPricingDivergence({
+          walletAddress,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          fifoAndPnl: oldPipelineData?.fifoAndPnl as any,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          pnlSummaryV2: oldPipelineData?.pnlSummaryV2 as any,
+          pnlV2: pnlOutput.pnlV2,
+        })
+      } catch {
+        // Never let the comparison itself affect the real scan.
+      }
+    }
 
     // eslint-disable-next-line no-console
     console.log('[V2-worker] starting chainActivity')
