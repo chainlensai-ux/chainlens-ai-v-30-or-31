@@ -263,6 +263,20 @@ export async function pollScanJobOnce(jobId: string, statusEndpoint = '/api/scan
 
 const MAX_CONSECUTIVE_TRANSIENT_POLL_ERRORS = 3
 
+// RAW-INTERNAL-TIMEOUT TRANSLATION, DISCLOSED: app/api/scan-v2/worker/route.ts's own internal
+// withScanTimeout can fail a job with the literal string `SCAN_TIMEOUT_<ms>ms` (see that route's
+// header) — previously surfaced to the user completely unformatted. Translated here into a real,
+// readable message instead of exposing an internal constant name.
+function humanizeJobError(error: string | null): string {
+  if (!error) return 'Scan failed'
+  const match = error.match(/^SCAN_TIMEOUT_(\d+)ms$/)
+  if (match) {
+    const seconds = Math.round(Number(match[1]) / 1000)
+    return `The scan took longer than ${seconds}s and was stopped. Try again, or try a lighter wallet.`
+  }
+  return error
+}
+
 // Polls every `intervalMs` (default 2.5s, per the task's "every 2-3 seconds" request) until the job
 // reaches 'completed'/'failed' or `timeoutMs` elapses. Never throws.
 export async function pollScanJobUntilDone(
@@ -275,7 +289,10 @@ export async function pollScanJobUntilDone(
   } = {},
 ): Promise<ScanWalletApiResponse> {
   const intervalMs = opts.intervalMs ?? 2500
-  const timeoutMs = opts.timeoutMs ?? 10 * 60 * 1000 // 10 minutes — generous headroom for a real Deep Scan
+  // 11 minutes — 60s of margin over app/api/scan-v2/worker/route.ts's own internal SCAN_TIMEOUT_MS
+  // (600s/10min), so the frontend doesn't give up polling at the exact instant the backend's own
+  // timeout could still be finishing its job-status write.
+  const timeoutMs = opts.timeoutMs ?? 11 * 60 * 1000
   const deadline = Date.now() + timeoutMs
   let consecutiveTransientErrors = 0
 
@@ -290,7 +307,7 @@ export async function pollScanJobUntilDone(
       }
       // Exhausted retries — surface it for real now, same shape as before this fix.
       opts.onUpdate?.(status)
-      return { success: false, error: { message: status.error ?? 'Scan failed', category: 'network' } }
+      return { success: false, error: { message: humanizeJobError(status.error), category: 'network' } }
     }
     consecutiveTransientErrors = 0
     opts.onUpdate?.(status)
@@ -299,11 +316,14 @@ export async function pollScanJobUntilDone(
       return { success: true, data: status.result }
     }
     if (status.status === 'failed') {
-      return { success: false, error: { message: status.error ?? 'Scan failed', category: 'unknown' } }
+      return { success: false, error: { message: humanizeJobError(status.error), category: 'unknown' } }
     }
     // 'pending' or 'running' — keep polling
     await new Promise((resolve) => setTimeout(resolve, intervalMs))
   }
 
-  return { success: false, error: { message: 'Deep Scan timed out waiting for a result', category: 'timeout' } }
+  // WORDING, DISCLOSED: this generic poll loop now serves both Deep Scan (startDeepScanJob) and
+  // normal-mode scans (scanWalletV2's job/poll path) — "Scan" rather than "Deep Scan" so a normal
+  // scan's own client-side poll timeout doesn't misreport its mode.
+  return { success: false, error: { message: 'Scan timed out waiting for a result', category: 'timeout' } }
 }

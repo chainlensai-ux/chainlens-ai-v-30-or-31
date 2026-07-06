@@ -14,15 +14,16 @@
 // Both admin-only buttons remain visible (still gated on the same admin email check) and both
 // now trigger a V2 deep scan, since that is the closest real capability that exists.
 //
-// No backend changes: this file only calls scanWalletV2() (POST /api/scan-v2/full-scan, the
-// direct V2 route — see app/frontend/api/scanWallet.ts for the job-route-fallback removal
-// disclosure). runWalletScanV2, holdingsEngine/pricingEngine/portfolioAssembler, /api/scan,
+// JOB/POLL, UPDATED DISCLOSURE (Fix-full-scan-timeout-and-UI-rendering task): this file now starts
+// + polls a background job for BOTH modes (startDeepScanJob/startFullScanJob +
+// pollScanJobUntilDone — see app/frontend/api/scanWallet.ts), rather than calling scanWalletV2()
+// directly. runWalletScanV2, holdingsEngine/pricingEngine/portfolioAssembler, /api/scan,
 // /api/scan-v2, Clark AI, and /api/portfolio are untouched.
 
 import { useEffect, useState } from 'react'
 import { usePlanWithLoading, LockedPanel, canAccessFeature } from '@/lib/usePlan'
 import { supabase } from '@/lib/supabaseClient'
-import { scanWalletV2, startDeepScanJob, pollScanJobUntilDone, type ScanWalletApiResponse } from '@/app/frontend/api/scanWallet'
+import { startDeepScanJob, startFullScanJob, pollScanJobUntilDone } from '@/app/frontend/api/scanWallet'
 import {
   BehaviorIntelView,
   ChainSelectionView,
@@ -46,12 +47,11 @@ import type { SmartMoneyScore } from '@/lib/engine/modules/smartMoney/types'
 // categories/chains/topHoldings/stablecoinRatio/concentrationIndex — structurally different from
 // the old `portfolio: PortfolioSummary` above) is a genuinely optional, additive field. Previously
 // this comment disclosed that it would always be undefined because scanWalletV2() called the V1
-// job route instead of /api/scan-v2/full-scan. That gap is now closed: scanWalletV2() (app/frontend/
-// api/scanWallet.ts) calls /api/scan-v2/full-scan directly and exclusively (its job-route fallback
-// was removed per explicit instruction — see that file's own header for the regression risk that
-// carries), and that route's dispatcher (workers/walletScanV2.ts) always computes portfolioV2. The
-// fallback to the old `portfolio` field below is kept as a genuine safety net (still real, still
-// used if this field is ever absent for any reason), not because this path is unreachable.
+// job route instead of /api/scan-v2/full-scan. That gap was closed, and both scan modes now go
+// through the job/poll system (see this file's own header) whose worker still ultimately dispatches
+// to workers/walletScanV2.ts, which always computes portfolioV2. The fallback to the old
+// `portfolio` field below is kept as a genuine safety net (still real, still used if this field is
+// ever absent for any reason), not because this path is unreachable.
 //
 // PNL V2 / CHAIN ACTIVITY V2, UPDATED DISCLOSURE: same fix applies to `pnlV2`/`chainActivityV2` —
 // both are now genuinely populated by the same always-called route.
@@ -271,30 +271,25 @@ export default function WalletScannerPage() {
     setJobStatusMessage(null)
 
     try {
-      // DEEP SCAN JOB/POLL WIRING, DISCLOSED (see app/frontend/api/scanWallet.ts's file header):
-      // Deep Scan now goes through the background job/poll system (POST /api/scan-start, then
-      // poll GET /api/scan-status) instead of the direct /api/scan-v2/full-scan call — scoped to
-      // mode==='deep' only; `normal` scans are completely unchanged below.
-      if (mode === 'deep') {
-        const started = await startDeepScanJob(address, ['base', 'eth'])
-        if ('error' in started) {
-          throw new Error(started.error)
-        }
-        setJobStatusMessage('pending')
-        const response = await pollScanJobUntilDone(started.jobId, {
-          onUpdate: (status) => setJobStatusMessage(status.status),
-        })
-        if (!response.success || !response.data) {
-          throw new Error(response.error?.message ?? 'Scan failed')
-        }
-        setResult(response.data as WalletV2Report)
-      } else {
-        const response: ScanWalletApiResponse = await scanWalletV2(address, ['base', 'eth'], mode)
-        if (!response.success || !response.data) {
-          throw new Error(response.error?.message ?? 'Scan failed')
-        }
-        setResult(response.data as WalletV2Report)
+      // JOB/POLL WIRING, DISCLOSED (see app/frontend/api/scanWallet.ts's file header): both modes
+      // now go through the same background job/poll system — Deep Scan via /api/scan-start +
+      // /api/scan-status, `normal` scans via /api/scan-v2/full-scan/start + /full-scan/status (see
+      // startFullScanJob/scanWalletV2's own disclosures). Both branches poll with the same
+      // onUpdate wiring so jobStatusMessage reflects real 'pending'/'running' progress for either
+      // mode, rather than `normal` scans showing only a bare spinner with no status text.
+      const started = mode === 'deep' ? await startDeepScanJob(address, ['base', 'eth']) : await startFullScanJob(address, ['base', 'eth'])
+      if ('error' in started) {
+        throw new Error(started.error)
       }
+      setJobStatusMessage('pending')
+      const response = await pollScanJobUntilDone(started.jobId, {
+        onUpdate: (status) => setJobStatusMessage(status.status),
+        statusEndpoint: mode === 'deep' ? '/api/scan-status' : '/api/scan-v2/full-scan/status',
+      })
+      if (!response.success || !response.data) {
+        throw new Error(response.error?.message ?? 'Scan failed')
+      }
+      setResult(response.data as WalletV2Report)
     } catch (err: unknown) {
       // eslint-disable-next-line no-console
       console.error('Scan failed', err)

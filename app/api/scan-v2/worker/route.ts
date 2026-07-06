@@ -29,10 +29,19 @@ import { setScanJob, getScanJob } from '@/src/modules/scanJobs'
 import { resetAlchemyAudit, printAlchemyAuditSummary } from '@/lib/server/alchemyAudit'
 import { withScanTimeout } from '@/src/utils/timeout'
 
-// TIMEOUT WINDOW, DISCLOSED: raised from 60s to 120s default per explicit instruction, to give
-// heavier wallets more real headroom before the (still-partial, see src/utils/timeout.ts's own
-// header) cancellation fires. Still overridable via SCAN_TIMEOUT_MS.
-const SCAN_TIMEOUT_MS = process.env.SCAN_TIMEOUT_MS ? Number(process.env.SCAN_TIMEOUT_MS) : 120_000
+// TIMEOUT WINDOW, DISCLOSED (raised again, this task): this is the REAL root cause of
+// "SCAN_TIMEOUT_120000ms" reaching the UI. This is an INTERNAL timeout on the worker's own call to
+// runWalletScanV2Worker — separate from, and previously far tighter than, this route's own 900s
+// maxDuration budget above. Both Deep Scan and full-scan (normal mode) jobs dispatch to this same
+// worker route; a normal scan on a real wallet can easily exceed 120s, at which point
+// withScanTimeout rejects with the literal string `SCAN_TIMEOUT_120000ms`, this route writes that
+// raw string as the job's `error`, and the frontend's poll loop (app/frontend/api/scanWallet.ts)
+// surfaced it byte-for-byte to the user. Raised to 600s — matching pollScanJobUntilDone's own
+// 600s poll ceiling (see that file), so the frontend doesn't give up waiting before this worker
+// would even time out — while still leaving 300s of real margin under this route's own 900s
+// maxDuration for the CU-guard check, audit summary, and job-status write that run after
+// withScanTimeout resolves. Still overridable via SCAN_TIMEOUT_MS.
+const SCAN_TIMEOUT_MS = process.env.SCAN_TIMEOUT_MS ? Number(process.env.SCAN_TIMEOUT_MS) : 600_000
 const CU_GUARD_EVENT_THRESHOLD = 800 // see app/api/scan-start/route.ts's own header for the full disclosure on this number
 
 function sumAlchemyEventCount(providerDiagnostics: unknown): number {

@@ -190,4 +190,28 @@ describe('scanWalletV2 (job/poll, migrated off the synchronous route)', () => {
       global.fetch = originalFetch
     }
   })
+
+  it('a raw SCAN_TIMEOUT_<ms>ms internal error is translated into a readable message (the actual bug this fixes)', async () => {
+    const originalFetch = global.fetch
+    global.fetch = mock.fn(async (url: string) => {
+      if (url === '/api/scan-v2/full-scan/start') {
+        return new Response(JSON.stringify({ jobId: 'job-3' }), { status: 200 })
+      }
+      return new Response(
+        JSON.stringify({ jobId: 'job-3', status: 'failed', result: null, error: 'SCAN_TIMEOUT_600000ms' }),
+        { status: 200 },
+      )
+    }) as unknown as typeof fetch
+
+    try {
+      const { scanWalletV2 } = await import('./scanWallet')
+      const result = await scanWalletV2('0xabc', ['base'], 'normal')
+
+      assert.equal(result.success, false)
+      assert.ok(!result.error?.message.includes('SCAN_TIMEOUT_'), 'must not leak the raw internal constant name')
+      assert.match(result.error?.message ?? '', /took longer than 600s/)
+    } finally {
+      global.fetch = originalFetch
+    }
+  })
 })
