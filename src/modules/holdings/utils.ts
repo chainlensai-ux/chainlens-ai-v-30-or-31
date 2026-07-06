@@ -5,6 +5,7 @@
 import type { SupportedChain } from '../providerFetchWindow/types'
 import type { TokenHolding } from './types'
 import { logRpcCall } from '@/lib/server/rpcDebug'
+import { profileGoldrush } from '@/lib/providers/goldrush'
 
 const ALCHEMY_BASE_KEY_NAMES = ['ALCHEMY_BASE_KEY', 'ALCHEMY_BASE_API_KEY', 'BASE_ALCHEMY_API_KEY', 'ALCHEMY_API_KEY', 'NEXT_PUBLIC_ALCHEMY_BASE_KEY']
 const ALCHEMY_ETH_KEY_NAMES = ['ALCHEMY_ETHEREUM_KEY', 'ALCHEMY_ETH_KEY', 'ALCHEMY_ETH_API_KEY', 'ALCHEMY_API_KEY']
@@ -54,6 +55,11 @@ function goldrushChainName(chain: SupportedChain): string | null {
 }
 
 export async function fetchGoldrushHoldings(chain: SupportedChain, walletAddress: string): Promise<{ ok: boolean; holdings: TokenHolding[] }> {
+  // PROFILER, DISCLOSED: "call" only, no caching added here — live balance data changes as a wallet
+  // trades, unlike fetchGoldrushHistoricalPrice's permanent historical-fact caching. Caching this
+  // would risk showing a stale portfolio value, a real correctness regression this task's own rules
+  // (only cache where redundant calls occur; never cache live, changing data) explicitly warn against.
+  profileGoldrush('fetchHoldings', { chain, walletAddress }, 'call')
   const chainSlug = goldrushChainName(chain)
   if (!chainSlug) return { ok: false, holdings: [] }
   const apiKey = goldrushApiKey()

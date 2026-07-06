@@ -48,15 +48,37 @@ function getGoldrushClient(apiKey: string): GoldRushClient {
   return cachedClient.client
 }
 
+// PROFILER, DISCLOSED: synchronous console.log only, zero network/latency impact — purely observes
+// the caching decision already made by fetchGoldrushHistoricalPrice below, never influences it.
+// Exported so src/modules/holdings/utils.ts's fetchGoldrushHoldings (a real, separate GoldRush call
+// site with no caching of its own — live balance data, not a historical fact, so nothing to cache)
+// can log its own "call" events with the same [GR-PROFILE] format instead of duplicating this
+// one-line logger in a second file.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function profileGoldrush(method: string, args: any, event: 'call' | 'hit' | 'miss'): void {
+  // eslint-disable-next-line no-console
+  console.log('[GR-PROFILE]', event, method, JSON.stringify(args))
+}
+
 // Gracefully returns { priceUsd: null } for any failure — missing key, malformed key, unverified
 // chain, unparseable timestamp, network error, or genuinely no price data. Never throws.
 export async function fetchGoldrushHistoricalPrice(req: GoldrushPriceRequest): Promise<GoldrushPriceResult> {
+  // FIELD-NAME CORRECTION, DISCLOSED: the task's own log snippet used `{ tokenId, timestamp }` —
+  // this function's real request shape (GoldrushPriceRequest, unchanged) is
+  // `{ chain, tokenAddress, timestamp }`; logging the real fields instead of a nonexistent one.
+  const profileArgs = { chain: req.chain, tokenAddress: req.tokenAddress, timestamp: req.timestamp }
+  profileGoldrush('fetchHistoricalPrice', profileArgs, 'call')
+
   const apiKey = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY
   if (!apiKey) return { priceUsd: null, timestamp: req.timestamp, notes: 'no_api_key_configured' }
 
   const cacheKey = `${req.chain}:${req.tokenAddress.toLowerCase()}:${req.timestamp}`
   const cached = priceCache.get(cacheKey)
-  if (cached) return cached
+  if (cached) {
+    profileGoldrush('fetchHistoricalPrice', profileArgs, 'hit')
+    return cached
+  }
+  profileGoldrush('fetchHistoricalPrice', profileArgs, 'miss')
 
   try {
     const client = getGoldrushClient(apiKey)
