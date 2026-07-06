@@ -1,4 +1,11 @@
-// POST /api/scan-v2/full-scan — thin dispatcher to workers/walletScanV2.ts.
+// POST /api/scan-v2/full-scan/legacy — thin dispatcher to workers/walletScanV2.ts, run SYNCHRONOUSLY.
+//
+// RELOCATED, DISCLOSED (Migrate-full-scan-to-job/poll task): this file is the exact, unchanged
+// content of the old app/api/scan-v2/full-scan/route.ts, kept as a temporary synchronous fallback
+// per explicit instruction while /api/scan-v2/full-scan/start + /status become the real path (see
+// those two routes' own headers, and app/frontend/api/scanWallet.ts's scanWalletV2Legacy export).
+// Nothing below this line was changed by the move — same maxDuration, same worker call, same
+// error handling.
 //
 // WORKER-DISPATCH MIGRATION, DISCLOSED (added per a later task): this route previously contained
 // the entire V2 module chain (holdings/pricing/portfolio/pnl/chainActivity/risk/personality/

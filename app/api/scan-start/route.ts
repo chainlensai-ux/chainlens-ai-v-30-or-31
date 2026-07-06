@@ -37,9 +37,8 @@
 // nanoid, DISCLOSED: not installed in this codebase (verified via package.json) — used
 // crypto.randomUUID() instead, the same real, already-used-elsewhere id generator.
 
-import { NextResponse, after } from 'next/server'
-import { validateWalletAddress, validateChains, validateScanMode } from '@/src/deployment/validator'
-import { setScanJob, type ScanJob } from '@/src/modules/scanJobs'
+import { NextResponse } from 'next/server'
+import { createAndEnqueueScanJob, type ScanStartRequestBody } from '@/src/modules/scanJobCreation'
 
 // maxDuration, DISCLOSED — unchanged reasoning from before this refactor: `after()`'s callback
 // shares this invocation's own execution budget, so it's raised to the platform's real maximum
@@ -51,100 +50,21 @@ export const maxDuration = 900
 // keeping it on the default Node runtime avoids introducing a new, unverified Edge-compatibility
 // question for no real benefit.
 
-type ScanStartRequestBody = {
-  walletAddress?: unknown
-  chains?: unknown
-  scanMode?: unknown
-}
-
-// MISCONFIGURED WORKER_ENDPOINT, DISCLOSED: this is the real root cause of a malformed
-// ".../api/scan-v2/full-scan-worker/api/scan-v2/worker" trigger URL — verified by reading this
-// file's actual logic: "full-scan-worker" does not appear anywhere in this codebase's code, so a
-// concatenated path containing it can only come from WORKER_ENDPOINT itself already including a
-// path segment in the deployment's real env config (most likely a leftover from an earlier task
-// that proposed a "full-scan-worker" route name, which was never actually built at that path — the
-// real worker route is app/api/scan-v2/worker/route.ts, confirmed unchanged below). This warning
-// surfaces that misconfiguration at runtime instead of silently producing a broken URL.
-function workerBaseUrl(): string {
-  const endpoint = process.env.WORKER_ENDPOINT
-  if (endpoint) {
-    if (endpoint.includes('/api')) {
-      // eslint-disable-next-line no-console
-      console.warn('[config] WORKER_ENDPOINT should be domain only, not a path:', endpoint)
-    }
-    return endpoint
-  }
-  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`
-  return 'http://localhost:3000' // local dev fallback only
-}
-
-async function triggerWorker(jobId: string): Promise<void> {
-  try {
-    const workerUrl = `${workerBaseUrl()}/api/scan-v2/worker`
-    // eslint-disable-next-line no-console
-    console.log('[scan-start] workerUrl', workerUrl)
-    const res = await fetch(workerUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(process.env.SCAN_WORKER_SECRET ? { 'x-worker-secret': process.env.SCAN_WORKER_SECRET } : {}),
-      },
-      body: JSON.stringify({ jobId }),
-    })
-    if (!res.ok) {
-      // eslint-disable-next-line no-console
-      console.error('[scan-start] worker trigger returned non-2xx', jobId, res.status)
-    }
-  } catch (err) {
-    // The worker route's own job-status write is the source of truth; a failed trigger dispatch
-    // just means the job stays 'pending' for a later poll to (currently) never resolve — logged
-    // here for visibility, not silently swallowed.
-    // eslint-disable-next-line no-console
-    console.error('[scan-start] worker trigger failed', jobId, err instanceof Error ? err.message : String(err))
-  }
-}
-
+// EXTRACTED, DISCLOSED (Migrate-full-scan-to-job/poll task): validation + job-persist +
+// after()-scheduled worker-trigger logic moved verbatim into src/modules/scanJobCreation.ts's
+// createAndEnqueueScanJob(), so app/api/scan-v2/full-scan/start/route.ts (new, normal-mode job
+// route) can reuse it instead of duplicating it. This route's own behavior/response shape is
+// UNCHANGED — same validation order, same {jobId} success shape, same error shapes, still defaults
+// scanMode to 'deep'. Nothing about Deep Scan's request/response contract or worker dispatch was
+// altered by this extraction.
 export async function POST(req: Request): Promise<Response> {
   try {
     const body: ScanStartRequestBody = await req.json().catch(() => ({}))
-    const addressCheck = validateWalletAddress(body.walletAddress)
-    if (!addressCheck.valid) {
-      return NextResponse.json({ success: false, error: addressCheck.error }, { status: 400 })
+    const result = await createAndEnqueueScanJob(req, body, 'deep')
+    if (!result.ok) {
+      return NextResponse.json({ success: false, error: result.error }, { status: result.status })
     }
-    const chainsCheck = validateChains(body.chains ?? ['base', 'eth'])
-    if (!chainsCheck.valid) {
-      return NextResponse.json({ success: false, error: chainsCheck.error }, { status: 400 })
-    }
-    const scanModeCheck = validateScanMode(body.scanMode ?? 'deep')
-    if (!scanModeCheck.valid) {
-      return NextResponse.json({ success: false, error: scanModeCheck.error }, { status: 400 })
-    }
-
-    const walletAddress = body.walletAddress as string
-    const rawBody = { walletAddress, chains: chainsCheck.sanitizedChains, scanMode: body.scanMode ?? 'deep' }
-    const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown'
-    const jobId = crypto.randomUUID()
-
-    const job: ScanJob = {
-      id: jobId,
-      walletAddress,
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-      status: 'pending',
-      result: null,
-      error: null,
-      rawBody,
-      ip,
-    }
-    // Stored BEFORE returning, so an immediate poll never sees "not found" for a job that was
-    // actually accepted, and so the worker route (a separate invocation) has something to load.
-    await setScanJob(jobId, job)
-
-    // Runs AFTER the {jobId} response below has already been sent to the client — awaiting the
-    // full worker round-trip here never blocks the client (see file header).
-    after(() => triggerWorker(jobId))
-
-    return NextResponse.json({ jobId })
+    return NextResponse.json({ jobId: result.jobId })
   } catch (err) {
     return NextResponse.json(
       { success: false, error: err instanceof Error ? err.message : String(err) },

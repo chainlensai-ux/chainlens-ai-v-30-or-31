@@ -86,41 +86,39 @@ export async function fetchScanModule(
   }
 }
 
-const V2_ROUTE = '/api/scan-v2/full-scan'
+const V2_LEGACY_ROUTE = '/api/scan-v2/full-scan/legacy'
 
-// ONLY PATH NOW, PER EXPLICIT INSTRUCTION (see file header for the regression risk this carries —
-// no fallback if this route is genuinely too slow to finish inside Vercel's execution ceiling).
+// LEGACY SYNCHRONOUS PATH, DISCLOSED (Migrate-full-scan-to-job/poll task): this was scanWalletV2()
+// itself before this task — a single synchronous POST that waits for the entire 11-module chain to
+// finish in one request/response round trip. Kept, renamed, and still exported (not deleted) per
+// explicit instruction to keep the old behavior available as a temporary fallback while
+// scanWalletV2() below switches to the job/poll flow. Points at the relocated
+// /api/scan-v2/full-scan/legacy route (see that route's own header) — otherwise byte-for-byte
+// unchanged from its prior form, including every disclosure below.
 //
-// ABORT-CONTROLLER REMOVED, DISCLOSED, PER EXPLICIT INSTRUCTION: this function previously used an
-// AbortController to enforce a 55s client-side timeout ceiling on the fetch (unrelated to the old
-// job-route polling — just a plain fetch safety net). Removed exactly as instructed. REAL TRADEOFF:
-// there is now no client-side ceiling on how long this fetch can hang — a genuinely stuck
-// connection will wait indefinitely rather than failing after ~55s. This is the requester's
-// explicit, informed choice, not silently absorbed.
+// ABORT-CONTROLLER REMOVED, DISCLOSED, PER EXPLICIT INSTRUCTION (earlier task): this function
+// previously used an AbortController to enforce a 55s client-side timeout ceiling on the fetch.
+// Removed exactly as instructed. REAL TRADEOFF: there is no client-side ceiling on how long this
+// fetch can hang — a genuinely stuck connection will wait indefinitely rather than failing after
+// ~55s.
 //
-// REAL-ERROR-VISIBILITY FIX, DISCLOSED: this function previously discarded the response body
-// entirely on any non-2xx status and replaced it with a hardcoded generic
-// {message:'network-failed'} — even though the route (see app/api/scan-v2/full-scan/route.ts's
-// catch block) always returns a real, redacted JSON error body via handleApiError/sanitizeError
-// (which already strips secrets like API keys before the message is ever produced — see
-// src/production/errorReporter.ts). That real body was simply never read. Fixed below to parse it
-// and surface the ACTUAL backend error message, falling back to the old generic message only when
-// the body genuinely isn't usable JSON with an error. No response-shape change (still the existing
-// `{success:false, error:{message,category,details?}}` object) — app/terminal/wallet-scanner/
-// page.tsx already correctly reads `error?.message` and displays it, so no frontend UI change was
-// needed beyond this one fix.
+// REAL-ERROR-VISIBILITY FIX, DISCLOSED (earlier task): this function previously discarded the
+// response body entirely on any non-2xx status and replaced it with a hardcoded generic
+// {message:'network-failed'} — even though the route always returns a real, redacted JSON error
+// body via handleApiError/sanitizeError. Fixed to parse it and surface the ACTUAL backend error
+// message, falling back to the old generic message only when the body genuinely isn't usable JSON.
 //
 // Never throws: a network failure or non-2xx response resolves to a structured
 // {success:false, error:{...}} instead of propagating an exception.
-export async function scanWalletV2(
+export async function scanWalletV2Legacy(
   walletAddress: string,
   chains: string[],
   scanMode: ScanMode = 'normal',
 ): Promise<ScanWalletApiResponse> {
   // eslint-disable-next-line no-console
-  console.log('[SCAN] calling scanWalletV2 with', walletAddress, chains, scanMode)
+  console.log('[SCAN] calling scanWalletV2Legacy with', walletAddress, chains, scanMode)
   try {
-    const res = await fetch(V2_ROUTE, {
+    const res = await fetch(V2_LEGACY_ROUTE, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ walletAddress, chains, scanMode }),
@@ -171,6 +169,30 @@ export async function scanWalletV2(
   }
 }
 
+// MIGRATED TO JOB/POLL, DISCLOSED (Migrate-full-scan-to-job/poll task): scanWalletV2() (the
+// function every real call site — app/terminal/wallet-scanner/page.tsx — actually calls for
+// `normal` scans) no longer runs the 11-module chain synchronously in one request. It now enqueues
+// a job via /api/scan-v2/full-scan/start and polls /api/scan-v2/full-scan/status until done, same
+// as Deep Scan's own startDeepScanJob/pollScanJobUntilDone. Public signature and return type
+// (Promise<ScanWalletApiResponse>) are UNCHANGED, so page.tsx needed no changes to keep working.
+// `scanMode` is passed through unchanged (still defaults to 'normal'); a caller that explicitly
+// passes 'deep' here would enqueue a deep-mode job through this same path — real, since the
+// underlying job/worker system is mode-agnostic, but every current caller only ever passes
+// 'normal', so this is a theoretical capability, not a behavior change for real traffic.
+// scanWalletV2Legacy() above remains available, unused by any real call site, as the temporary
+// synchronous fallback per explicit instruction.
+export async function scanWalletV2(
+  walletAddress: string,
+  chains: string[],
+  scanMode: ScanMode = 'normal',
+): Promise<ScanWalletApiResponse> {
+  const started = await startScanJob('/api/scan-v2/full-scan/start', walletAddress, chains, scanMode)
+  if ('error' in started) {
+    return { success: false, error: { message: started.error, category: 'network' } }
+  }
+  return pollScanJobUntilDone(started.jobId, { statusEndpoint: '/api/scan-v2/full-scan/status' })
+}
+
 // DEEP SCAN JOB/POLL SYSTEM, DISCLOSED (see file header): scoped only to Deep Scan, calling the
 // new app/api/scan-start + app/api/scan-status routes (which run the same real, unchanged
 // runWalletScanV2Worker as the direct route) — never throws.
@@ -178,11 +200,29 @@ export type ScanJobStatus = 'pending' | 'running' | 'completed' | 'failed'
 export type ScanJobStatusResponse = { jobId: string; status: ScanJobStatus; result: unknown; error: string | null }
 
 export async function startDeepScanJob(walletAddress: string, chains: string[]): Promise<{ jobId: string } | { error: string }> {
+  return startScanJob('/api/scan-start', walletAddress, chains, 'deep')
+}
+
+// NORMAL-MODE JOB/POLL, DISCLOSED (Migrate-full-scan-to-job/poll task): calls the new
+// /api/scan-v2/full-scan/start route (src/modules/scanJobCreation.ts under the hood — the same
+// shared logic startDeepScanJob's /api/scan-start already used). Factored startScanJob() below out
+// of what was startDeepScanJob's own body so both call sites share one implementation instead of
+// two near-identical copies — startDeepScanJob's behavior/signature is unchanged.
+export async function startFullScanJob(walletAddress: string, chains: string[]): Promise<{ jobId: string } | { error: string }> {
+  return startScanJob('/api/scan-v2/full-scan/start', walletAddress, chains, 'normal')
+}
+
+async function startScanJob(
+  endpoint: string,
+  walletAddress: string,
+  chains: string[],
+  scanMode: ScanMode,
+): Promise<{ jobId: string } | { error: string }> {
   try {
-    const res = await fetch('/api/scan-start', {
+    const res = await fetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ walletAddress, chains, scanMode: 'deep' }),
+      body: JSON.stringify({ walletAddress, chains, scanMode }),
     })
     const body = await res.json().catch(() => null)
     if (!res.ok || !body?.jobId) {
@@ -204,9 +244,14 @@ export async function startDeepScanJob(walletAddress: string, chains: string[]):
 // transient and still ends the poll loop immediately, unchanged.
 type ScanJobPollResult = ScanJobStatusResponse & { transient?: boolean }
 
-export async function pollScanJobOnce(jobId: string): Promise<ScanJobPollResult> {
+// `statusEndpoint`, DISCLOSED (Migrate-full-scan-to-job/poll task): defaults to the existing
+// '/api/scan-status' so every current Deep Scan call site (which never passes this arg) is
+// byte-for-byte unchanged; scanWalletV2()'s new normal-mode poll passes
+// '/api/scan-v2/full-scan/status' instead — the same underlying job store, just the requested URL
+// shape (see that route's own header: it re-exports /api/scan-status's handler directly).
+export async function pollScanJobOnce(jobId: string, statusEndpoint = '/api/scan-status'): Promise<ScanJobPollResult> {
   try {
-    const res = await fetch(`/api/scan-status?jobId=${encodeURIComponent(jobId)}`)
+    const res = await fetch(`${statusEndpoint}?jobId=${encodeURIComponent(jobId)}`)
     if (!res.ok) {
       return { jobId, status: 'failed', result: null, error: `HTTP ${res.status}`, transient: true }
     }
@@ -222,7 +267,12 @@ const MAX_CONSECUTIVE_TRANSIENT_POLL_ERRORS = 3
 // reaches 'completed'/'failed' or `timeoutMs` elapses. Never throws.
 export async function pollScanJobUntilDone(
   jobId: string,
-  opts: { intervalMs?: number; timeoutMs?: number; onUpdate?: (status: ScanJobStatusResponse) => void } = {},
+  opts: {
+    intervalMs?: number
+    timeoutMs?: number
+    onUpdate?: (status: ScanJobStatusResponse) => void
+    statusEndpoint?: string
+  } = {},
 ): Promise<ScanWalletApiResponse> {
   const intervalMs = opts.intervalMs ?? 2500
   const timeoutMs = opts.timeoutMs ?? 10 * 60 * 1000 // 10 minutes — generous headroom for a real Deep Scan
@@ -230,7 +280,7 @@ export async function pollScanJobUntilDone(
   let consecutiveTransientErrors = 0
 
   while (Date.now() < deadline) {
-    const status = await pollScanJobOnce(jobId)
+    const status = await pollScanJobOnce(jobId, opts.statusEndpoint)
 
     if (status.transient) {
       consecutiveTransientErrors++
