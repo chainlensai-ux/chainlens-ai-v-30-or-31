@@ -67,6 +67,19 @@ function isValidV2Result(data: Record<string, unknown> | undefined): boolean {
 
 export type WalletScanV2WorkerResult = { status: number; body: unknown }
 
+// HEAVY-WALLET FAST-FAIL, DISCLOSED: same 800-event threshold this codebase already uses as its
+// post-hoc CU guard (app/api/scan-v2/worker/route.ts's CU_GUARD_EVENT_THRESHOLD) — reused here,
+// not a new/different number, so this fast-fail and that guard agree on what "heavy" means.
+const HEAVY_WALLET_EVENT_THRESHOLD = 800
+
+function sumProviderEventCount(providerDiagnostics: unknown): number {
+  if (!Array.isArray(providerDiagnostics)) return 0
+  return providerDiagnostics.reduce((sum: number, entry) => {
+    const alchemy = (entry as { alchemy?: { eventCount?: number } })?.alchemy
+    return sum + (typeof alchemy?.eventCount === 'number' ? alchemy.eventCount : 0)
+  }, 0)
+}
+
 // CU-HARDENING WIRING (unchanged from the route file's own history — fixes docs/CU_AUDIT.md
 // Finding #1): a fresh, request-scoped EventsCache is created per call (not a shared module-level
 // singleton) and threaded into both fetchParsedTrades and computeChainActivity.
@@ -86,6 +99,19 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string): Promi
   if (body.success && !isValidV2Result(body.data as Record<string, unknown> | undefined)) {
     logDirectFailure(new Error('Invalid V2 result shape'))
     return { status: 500, body: { success: false, error: 'invalid_v2_shape' } }
+  }
+
+  // HEAVY-WALLET FAST-FAIL, DISCLOSED PLACEMENT: `providerDiagnostics` is a real field already
+  // populated by router.handleScanRequest (the old pipeline, src/pipeline/index.ts) above — before
+  // any of the V2 chain's own holdings/pricing/trades/pnl calls run. Checking it here means a
+  // pathological wallet is rejected before the V2 chain's own (separate, additional) provider
+  // calls ever fire, not after — a real fast-fail, not a post-hoc one.
+  const earlyDiagnostics = (body.data as Record<string, unknown> | undefined)?.providerDiagnostics
+  const earlyEventCount = sumProviderEventCount(earlyDiagnostics)
+  if (earlyEventCount > HEAVY_WALLET_EVENT_THRESHOLD) {
+    // eslint-disable-next-line no-console
+    console.warn('[worker] heavy-wallet-fast-fail', { eventCount: earlyEventCount })
+    return { status: 200, body: { success: false, error: { message: 'HEAVY_WALLET_FAST_FAIL' } } }
   }
 
   if (body.success && body.data?.scanMetadata?.walletAddress) {

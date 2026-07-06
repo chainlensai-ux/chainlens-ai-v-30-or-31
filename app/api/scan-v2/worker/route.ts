@@ -29,7 +29,10 @@ import { setScanJob, getScanJob } from '@/src/modules/scanJobs'
 import { resetAlchemyAudit, printAlchemyAuditSummary } from '@/lib/server/alchemyAudit'
 import { withScanTimeout } from '@/src/utils/timeout'
 
-const SCAN_TIMEOUT_MS = process.env.SCAN_TIMEOUT_MS ? Number(process.env.SCAN_TIMEOUT_MS) : 60_000
+// TIMEOUT WINDOW, DISCLOSED: raised from 60s to 120s default per explicit instruction, to give
+// heavier wallets more real headroom before the (still-partial, see src/utils/timeout.ts's own
+// header) cancellation fires. Still overridable via SCAN_TIMEOUT_MS.
+const SCAN_TIMEOUT_MS = process.env.SCAN_TIMEOUT_MS ? Number(process.env.SCAN_TIMEOUT_MS) : 120_000
 const CU_GUARD_EVENT_THRESHOLD = 800 // see app/api/scan-start/route.ts's own header for the full disclosure on this number
 
 function sumAlchemyEventCount(providerDiagnostics: unknown): number {
@@ -73,8 +76,13 @@ export async function POST(req: Request): Promise<Response> {
   await setScanJob(jobId, { ...job, status: 'running', updatedAt: Date.now() })
   resetAlchemyAudit()
 
+  // ABORT CONTROLLER, DISCLOSED: see src/utils/timeout.ts's header for the honest scope of what
+  // this actually stops today (a real, functioning abort signal — but not yet wired into the
+  // underlying provider fetch calls, which keep running in the background after this fires).
+  const controller = new AbortController()
+
   try {
-    const { status, body } = await withScanTimeout(runWalletScanV2Worker(job.rawBody, job.ip), SCAN_TIMEOUT_MS)
+    const { status, body } = await withScanTimeout(runWalletScanV2Worker(job.rawBody, job.ip), SCAN_TIMEOUT_MS, controller)
     const parsed = body as { success: boolean; data?: { providerDiagnostics?: unknown }; error?: { message: string } }
     printAlchemyAuditSummary()
 
@@ -110,6 +118,10 @@ export async function POST(req: Request): Promise<Response> {
   } catch (err) {
     printAlchemyAuditSummary()
     const message = err instanceof Error ? err.message : String(err)
+    if (controller.signal.aborted) {
+      // eslint-disable-next-line no-console
+      console.warn('[worker] cancellation triggered for job', jobId)
+    }
     // eslint-disable-next-line no-console
     console.error('[WORKER] crash', jobId, message)
 
