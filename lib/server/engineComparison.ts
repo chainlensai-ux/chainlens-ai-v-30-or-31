@@ -28,6 +28,13 @@
 // below are a real, if coarser, proxy: since all three systems consume the same underlying trade/
 // timeline inputs and differ mainly in pricing source + FIFO matching, a material PnL divergence
 // between them is generally downstream of either a pricing or a FIFO disagreement (or both).
+//
+// PERSISTENCE, DISCLOSED: divergence entries are also durably recorded via
+// lib/server/divergenceStore.ts's recordFifoDivergence() — fired WITHOUT awaiting (a `.catch()`
+// only, no `await`), so this diagnostic Redis write can never add latency to the real scan
+// response, matching this module's own "zero behavior/latency change" contract.
+
+import { recordFifoDivergence } from '@/lib/server/divergenceStore'
 
 export type FifoPricingComparisonInput = {
   walletAddress: string
@@ -70,12 +77,21 @@ export function logFifoPricingDivergence(input: FifoPricingComparisonInput): voi
 
     if (!diverges) return
 
+    const fifoA = { realizedPnlUsd: realizedA, closedLots: closedLotCount(fifoAndPnl) }
+    const fifoB = { realizedPnlUsd: realizedB, closedLots: closedLotCount(pnlSummaryV2) }
+    const fifoC = { realizedPnlUsd: realizedC, unrealizedPnlUsd: pnlV2?.unrealizedPnlUsd ?? null }
+
     // eslint-disable-next-line no-console
     console.warn('[fifo-compare] divergence detected', {
       wallet: walletAddress,
-      fifoA_fifoEngine: { realizedPnlUsd: realizedA, closedLots: closedLotCount(fifoAndPnl), unmatchedBuys: fifoAndPnl?.unmatchedBuys ?? null, unmatchedSells: fifoAndPnl?.unmatchedSells ?? null },
-      fifoB_pnlEngine: { realizedPnlUsd: realizedB, closedLots: closedLotCount(pnlSummaryV2) },
-      fifoC_computePnl: { realizedPnlUsd: realizedC, unrealizedPnlUsd: pnlV2?.unrealizedPnlUsd ?? null },
+      fifoA_fifoEngine: { ...fifoA, unmatchedBuys: fifoAndPnl?.unmatchedBuys ?? null, unmatchedSells: fifoAndPnl?.unmatchedSells ?? null },
+      fifoB_pnlEngine: fifoB,
+      fifoC_computePnl: fifoC,
+    })
+
+    // Fire-and-forget, disclosed above — never awaited, never throws into the caller.
+    recordFifoDivergence(walletAddress, fifoA, fifoB, fifoC).catch(() => {
+      // divergenceStore itself already logs its own failures; nothing further to do here.
     })
   } catch (err) {
     // eslint-disable-next-line no-console
