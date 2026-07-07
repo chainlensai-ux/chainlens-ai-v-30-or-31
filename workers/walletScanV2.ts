@@ -112,6 +112,51 @@ const MODULE_TIMEOUT_MS = 20_000
 const RPC_CALL_THRESHOLD = 200
 const RPC_POLL_INTERVAL_MS = 500
 
+// PER-SCAN RPC BUDGET, DISCLOSED (Alchemy-hard-limit task): distinct from RPC_CALL_THRESHOLD above
+// (which bounds ONE module's own calls) — this bounds the CUMULATIVE total across the whole scan.
+// INVESTIGATED FIRST, DISCLOSED: this task assumed src/modules/providerFetchWindow/utils.ts,
+// src/modules/holdings/utils.ts, and src/modules/recoveryPolicy/utils.ts each contain a
+// window/pagination loop that can grow unboundedly ("MAX_BLOCKS_PER_SCAN", "MAX_PAGES_PER_SCAN",
+// "stop even if pageKey is still present"). Verified by reading all three: none of them do.
+// fetchAlchemyRawEvents (providerFetchWindow) makes exactly 2 calls per invocation (from/to
+// address), single page, no pageKey follow-up — already commented "never deep-page".
+// fetchAlchemyHoldings (holdings/utils.ts) makes exactly 1 call per chain, no pagination.
+// recoveryPolicy's buildRecoveryPolicyObject (index.ts, not utils.ts) already enforces
+// maxHistoricalPagesPerWallet/maxHistoricalPagesPerToken via a running totalPagesUsedThisWallet
+// counter — already the exact "per-scan budget" pattern this task asks for, already shipped,
+// already disclosed in that file's own CU-RISK comment. recoveryPolicy also isn't even reachable
+// from this V2 chain — it only runs from the old pipeline (deep-scan only). computeChainActivity
+// makes zero direct provider calls (a pure transform). So the only two REAL Alchemy-touching
+// modules in this chain are `holdings` and `trades` (fetchParsedTrades -> providerFetchWindow),
+// normally totaling roughly 3 calls/chain across 2-3 chains — nowhere near a scale where per-file
+// pagination caps would matter. No fabricated caps were added to those three already-bounded files.
+//
+// What IS real and new: this cumulative check, gating the two actual Alchemy-touching modules so
+// that if the scan's total real call count (across whatever already ran) exceeds this budget —
+// which would only happen if something is genuinely misbehaving, e.g. the exact hung/looping-module
+// scenario RPC_CALL_THRESHOLD above already guards per-module — the REMAINING heavy module is
+// skipped entirely (never even attempted) rather than adding more real calls on top of an already-
+// abnormal scan.
+const MAX_CALLS_PER_SCAN = 500
+
+// Checks the scan's cumulative real Alchemy call count so far. On first crossing the budget,
+// records a single `moduleErrors.rpcBudget` entry (not overwritten on subsequent checks, so the
+// original crossing point is preserved) and returns true so the caller can skip the next heavy
+// module instead of attempting it. Exported for unit testing (same rationale as
+// runWithTimeoutAndRpcAudit above).
+export function scanRpcBudgetExceeded(moduleErrors: Record<string, string>): boolean {
+  const callsSoFar = alchemyAudit.calls.length
+  if (callsSoFar > MAX_CALLS_PER_SCAN) {
+    if (!moduleErrors.rpcBudget) {
+      moduleErrors.rpcBudget = `RPC_BUDGET_EXCEEDED_${callsSoFar}_CALLS`
+      // eslint-disable-next-line no-console
+      console.warn('[worker] scan-level RPC budget exceeded, skipping remaining heavy modules', { callsSoFar, MAX_CALLS_PER_SCAN })
+    }
+    return true
+  }
+  return false
+}
+
 // PREMISE CORRECTION, DISCLOSED: smartMoneyScore (the module this task specifically named) makes
 // ZERO provider calls — it's a synchronous pure scoring function over already-computed numbers
 // (see its own call site below and lib/engine/modules/smartMoney/computeSmartMoneyScore.ts's
@@ -240,7 +285,13 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     // eslint-disable-next-line no-console
     console.log('[V2-worker] starting holdings')
     let t0 = performance.now()
-    const chainHoldings = await runWithTimeoutAndRpcAudit('holdings', () => fetchAllHoldings(walletAddress), [] as Awaited<ReturnType<typeof fetchAllHoldings>>, moduleErrors)
+    // BUDGET CHECK, DISCLOSED: alchemyAudit is reset once per request before this chain starts, so
+    // at this point the count is whatever this scan itself has made so far (0 on a normal scan) —
+    // this check exists for defense-in-depth consistency with the trades check below, not because
+    // holdings is expected to ever trip it first.
+    const chainHoldings = scanRpcBudgetExceeded(moduleErrors)
+      ? ([] as Awaited<ReturnType<typeof fetchAllHoldings>>)
+      : await runWithTimeoutAndRpcAudit('holdings', () => fetchAllHoldings(walletAddress), [] as Awaited<ReturnType<typeof fetchAllHoldings>>, moduleErrors)
     // eslint-disable-next-line no-console
     console.log('[V2-worker] finished holdings in', performance.now() - t0, 'ms', 'count=', chainHoldings.length)
 
@@ -283,12 +334,18 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     // eslint-disable-next-line no-console
     console.log('[V2-worker] starting trades')
     t0 = performance.now()
-    const trades = await runWithTimeoutAndRpcAudit(
-      'trades',
-      () => fetchParsedTrades(walletAddress, eventsCache, cuBudget),
-      [] as Awaited<ReturnType<typeof fetchParsedTrades>>,
-      moduleErrors,
-    )
+    // BUDGET CHECK, DISCLOSED: if holdings (or anything before this point) already pushed the
+    // scan's cumulative real Alchemy call count past MAX_CALLS_PER_SCAN — only plausible if
+    // something is genuinely misbehaving — trades is skipped entirely rather than adding its own
+    // calls on top of an already-abnormal scan.
+    const trades = scanRpcBudgetExceeded(moduleErrors)
+      ? ([] as Awaited<ReturnType<typeof fetchParsedTrades>>)
+      : await runWithTimeoutAndRpcAudit(
+        'trades',
+        () => fetchParsedTrades(walletAddress, eventsCache, cuBudget),
+        [] as Awaited<ReturnType<typeof fetchParsedTrades>>,
+        moduleErrors,
+      )
     // eslint-disable-next-line no-console
     console.log('[V2-worker] finished trades in', performance.now() - t0, 'ms', 'count=', trades.length, 'cacheHitsSoFar=', eventsCache.hitCount)
 
