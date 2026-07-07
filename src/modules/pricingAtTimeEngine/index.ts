@@ -27,9 +27,17 @@ export type {
 // how many entries are about to fan out via Promise.all below with zero concurrency cap, which is
 // the real, statically-identified candidate for the reported call volume (see basedex.ts's own
 // counters for the downstream per-entry RPC cost).
+//
+// console.warn, NOT console.log, DISCLOSED (found live, this task): next.config's
+// `compiler.removeConsole` strips console.log/info/debug entirely out of the production build
+// (`exclude: ['error', 'warn']` is the only thing kept) — confirmed live by the user: this file's
+// original console.log version never appeared in Vercel logs on ANY deployment, while this exact
+// codebase's own pre-existing console.warn lines (e.g. "[pipeline] buildPriceSources...") did.
+// Using console.warn here so this instrumentation actually survives the real build, matching that
+// same real, pre-existing constraint.
 function logFanOutSize(kind: 'buys' | 'sells', count: number): void {
   // eslint-disable-next-line no-console
-  console.log('[RPC-INVESTIGATION] pricingAtTimeEngine.priceEntries fan-out', { kind, entryCount: count, timestamp: Date.now() })
+  console.warn('[RPC-INVESTIGATION] pricingAtTimeEngine.priceEntries fan-out', { kind, entryCount: count, timestamp: Date.now() })
 }
 
 async function priceEntries(

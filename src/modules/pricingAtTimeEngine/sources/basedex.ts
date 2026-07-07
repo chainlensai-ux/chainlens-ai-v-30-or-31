@@ -113,6 +113,12 @@ const LATEST_BLOCK_CACHE_TTL_MS = 5_000
 // watch the console," a burst from a single scan is still clearly visible as a tight cluster of
 // closely-spaced timestamps with a rapidly climbing count; true per-scan isolation would require
 // threading a scanId through this file's whole call chain, which is a larger, separate change.
+//
+// console.warn, NOT console.log, DISCLOSED (found live, this task): next.config's
+// `compiler.removeConsole` strips console.log/info/debug entirely out of the production build —
+// confirmed live: this instrumentation never appeared in Vercel logs on any deployment while this
+// codebase's own pre-existing console.warn lines did. Using console.warn so this survives the real
+// build.
 const rpcCallCounters: Record<string, { count: number; firstCallAt: number; lastCallAt: number }> = {}
 
 function trackRpcCall(method: string): void {
@@ -125,7 +131,7 @@ function trackRpcCall(method: string): void {
     rpcCallCounters[method] = { count: 1, firstCallAt: now, lastCallAt: now }
   }
   // eslint-disable-next-line no-console
-  console.log('[RPC-INVESTIGATION] basedex', {
+  console.warn('[RPC-INVESTIGATION] basedex', {
     method,
     module: 'pricingAtTimeEngine:basedex',
     count: rpcCallCounters[method].count,
