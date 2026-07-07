@@ -3827,44 +3827,78 @@ async function getFirstTxOnChain(address: string, alchemyUrl: string): Promise<D
   return result
 }
 
+// CACHING FIX, DISCLOSED (real-CU-fix, GoldRush audit): this had zero caching, unlike
+// historicalCoverageCache/historicalCoverageInFlight ~800 lines above in this same file, which
+// already use exactly this pattern (short TTL + in-flight coalescing) for the same reason — a
+// wallet's balances fetched moments ago being reused for a near-simultaneous repeat call (two
+// overlapping scans of the same wallet, or the eth-mainnet/base-mainnet pair each independently
+// triggering nearby work) is the same real data, not stale data, since real balances rarely change
+// meaningfully within a 30s window. SUCCESS-ONLY CACHE, DISCLOSED: only the genuine happy-path
+// result is cached — a transient failure (network error, non-OK response, provider error payload)
+// is deliberately NOT cached, so a real transient hiccup still gets a fresh retry on the very next
+// call instead of being "frozen" as an incorrect empty-balances result for the TTL window.
+const GOLDRUSH_BALANCES_CACHE_TTL_MS = 30 * 1000
+const goldrushBalancesCache = new Map<string, { data: Holding[]; cachedAt: number }>()
+const goldrushBalancesInFlight = new Map<string, Promise<{ result: Holding[]; cacheable: boolean }>>()
+
 async function fetchGoldrushBalances(address: string, chainName: string, apiKey: string): Promise<Holding[]> {
-  try {
-    const url = `https://api.covalenthq.com/v1/${chainName}/address/${address}/balances_v2/?no-spam=true&no-nft-fetch=true`
-    const res = await fetch(url, {
-      cache: 'no-store',
-      headers: { Authorization: `Bearer ${apiKey}` },
-      signal: AbortSignal.timeout(10_000),
-    })
-    if (!res.ok) return []
-    const json = await res.json()
-    if (json?.error) return []
-    const items: unknown[] = Array.isArray(json?.data?.items) ? json.data.items : []
-    const chainShort = chainName.replace(/-mainnet$/, '')
-    return items
-      .map((item) => {
-        const it = item as Record<string, unknown>
-        const decimals = typeof it.contract_decimals === 'number' ? it.contract_decimals : 18
-        const rawBal = String(it.balance ?? '0')
-        const balance = parseFloat(rawBal) / Math.pow(10, decimals)
-        const value = typeof it.quote === 'number' ? it.quote : 0
-        const price = typeof it.quote_rate === 'number' && it.quote_rate > 0 ? it.quote_rate : null
-        const logo = typeof it.logo_url === 'string' && it.logo_url.startsWith('http') ? it.logo_url : null
-        return {
-          contract: typeof it.contract_address === 'string' ? it.contract_address.toLowerCase() : undefined,
-          name: typeof it.contract_name === 'string' ? it.contract_name : 'Unknown',
-          symbol: typeof it.contract_ticker_symbol === 'string' ? it.contract_ticker_symbol : '?',
-          icon: logo,
-          chain: chainShort,
-          balance,
-          value,
-          price,
-          change24h: null,
-          verified: it.is_spam === false,
-        } as Holding
+  const cacheKey = `${address.toLowerCase()}:${chainName}`
+
+  const cached = goldrushBalancesCache.get(cacheKey)
+  if (cached && Date.now() - cached.cachedAt < GOLDRUSH_BALANCES_CACHE_TTL_MS) return cached.data
+
+  const inFlight = goldrushBalancesInFlight.get(cacheKey)
+  if (inFlight) return (await inFlight).result
+
+  const fetchPromise = (async (): Promise<{ result: Holding[]; cacheable: boolean }> => {
+    try {
+      const url = `https://api.covalenthq.com/v1/${chainName}/address/${address}/balances_v2/?no-spam=true&no-nft-fetch=true`
+      const res = await fetch(url, {
+        cache: 'no-store',
+        headers: { Authorization: `Bearer ${apiKey}` },
+        signal: AbortSignal.timeout(10_000),
       })
-      .filter(h => h.value > 0.01)
-  } catch {
-    return []
+      if (!res.ok) return { result: [], cacheable: false }
+      const json = await res.json()
+      if (json?.error) return { result: [], cacheable: false }
+      const items: unknown[] = Array.isArray(json?.data?.items) ? json.data.items : []
+      const chainShort = chainName.replace(/-mainnet$/, '')
+      const holdings = items
+        .map((item) => {
+          const it = item as Record<string, unknown>
+          const decimals = typeof it.contract_decimals === 'number' ? it.contract_decimals : 18
+          const rawBal = String(it.balance ?? '0')
+          const balance = parseFloat(rawBal) / Math.pow(10, decimals)
+          const value = typeof it.quote === 'number' ? it.quote : 0
+          const price = typeof it.quote_rate === 'number' && it.quote_rate > 0 ? it.quote_rate : null
+          const logo = typeof it.logo_url === 'string' && it.logo_url.startsWith('http') ? it.logo_url : null
+          return {
+            contract: typeof it.contract_address === 'string' ? it.contract_address.toLowerCase() : undefined,
+            name: typeof it.contract_name === 'string' ? it.contract_name : 'Unknown',
+            symbol: typeof it.contract_ticker_symbol === 'string' ? it.contract_ticker_symbol : '?',
+            icon: logo,
+            chain: chainShort,
+            balance,
+            value,
+            price,
+            change24h: null,
+            verified: it.is_spam === false,
+          } as Holding
+        })
+        .filter(h => h.value > 0.01)
+      return { result: holdings, cacheable: true }
+    } catch {
+      return { result: [], cacheable: false }
+    }
+  })()
+
+  goldrushBalancesInFlight.set(cacheKey, fetchPromise)
+  try {
+    const { result, cacheable } = await fetchPromise
+    if (cacheable) goldrushBalancesCache.set(cacheKey, { data: result, cachedAt: Date.now() })
+    return result
+  } finally {
+    goldrushBalancesInFlight.delete(cacheKey)
   }
 }
 
@@ -4238,6 +4272,17 @@ async function fetchGoldrushPnlEvents(address: string, chainName: string, apiKey
         diag.fetchErrorMessage = errHint || null
         lastAttemptDiag = finalizeDiag(diag)
         devLog(lastAttemptDiag)
+        // RATE-LIMIT FIX, DISCLOSED (real-CU-fix, GoldRush audit): a 429 means this account is
+        // already being throttled — retrying with the next chain-slug candidate (e.g. 'base-mainnet'
+        // -> '8453') hits the exact same rate-limited account/key and will almost certainly also
+        // fail, so the old unconditional `continue` here just doubled the wasted call for zero
+        // chance of recovery. Every OTHER non-OK status still falls through to `continue` unchanged
+        // (a different chain-slug format genuinely can behave differently for those).
+        if (res.status === 429) {
+          const out = finalizeDiag(diag)
+          devLog(out)
+          return { events: [], diag: out }
+        }
         continue
       }
       const json = await res.json()
