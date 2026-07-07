@@ -11,6 +11,7 @@ import type {
   SourceBreakdown,
 } from './types'
 import { multiplyAmount, resolvePriceForEntry } from './utils'
+import { logBaseDexFinalTotals } from './sources/basedex'
 
 export type {
   PriceableEntry,
@@ -126,6 +127,11 @@ export async function resolvePricingAtTime(params: ResolvePricingAtTimeParams): 
     priceEntries(params.buyEntries, params.priceSources),
     priceEntries(params.sellEntries, params.priceSources),
   ])
+
+  // FINAL-TOTALS SUMMARY, DISCLOSED: one line per scan reporting basedex's cumulative RPC counts,
+  // fired once this scan's whole pricing pass finishes — replaces scrolling through hundreds of
+  // per-call basedex lines to find the last one.
+  logBaseDexFinalTotals()
 
   return {
     costUsd: buys.usdByTxHash,

@@ -140,6 +140,20 @@ function trackRpcCall(method: string): void {
   })
 }
 
+// FINAL-TOTALS SUMMARY, DISCLOSED: one log line, callable once a scan's pricing pass finishes,
+// reporting the cumulative count for every RPC method tracked above. Added because the per-call
+// stream (one line per RPC call, hundreds/thousands per scan) is impractical to scroll through in
+// the Vercel log viewer — this gives a single line with the real final numbers to compare against a
+// prior baseline, with zero change to any cache/business logic.
+export function logBaseDexFinalTotals(): void {
+  const totals: Record<string, number> = {}
+  for (const [method, entry] of Object.entries(rpcCallCounters)) {
+    totals[method] = entry.count
+  }
+  // eslint-disable-next-line no-console
+  console.warn('[RPC-INVESTIGATION] basedex FINAL TOTALS', { totals, timestamp: Date.now() })
+}
+
 async function getLatestBlockCached(client: PublicClient): ReturnType<PublicClient['getBlock']> {
   const now = Date.now()
   if (latestBlockCache && now - latestBlockCache.fetchedAtMs < LATEST_BLOCK_CACHE_TTL_MS) {
