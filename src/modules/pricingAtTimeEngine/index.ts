@@ -22,6 +22,16 @@ export type {
   SourceBreakdown,
 } from './types'
 
+// INSTRUMENTATION, DISCLOSED (eth_getBlockByNumber/eth_call runaway-investigation task): a single,
+// non-invasive log per call — no timeout, budget, retry, or business-logic change. Reports exactly
+// how many entries are about to fan out via Promise.all below with zero concurrency cap, which is
+// the real, statically-identified candidate for the reported call volume (see basedex.ts's own
+// counters for the downstream per-entry RPC cost).
+function logFanOutSize(kind: 'buys' | 'sells', count: number): void {
+  // eslint-disable-next-line no-console
+  console.log('[RPC-INVESTIGATION] pricingAtTimeEngine.priceEntries fan-out', { kind, entryCount: count, timestamp: Date.now() })
+}
+
 async function priceEntries(
   entries: PriceableEntry[],
   priceSources: ResolvePricingAtTimeParams['priceSources'],
@@ -51,6 +61,9 @@ async function priceEntries(
 // price, a token/chain/timestamp, or a fallback source — a source that returns/throws null simply
 // leaves that entry's costUsd/proceedsUsd as null and counts toward evidenceMissingCount.
 export async function resolvePricingAtTime(params: ResolvePricingAtTimeParams): Promise<PricingAtTimeResult> {
+  logFanOutSize('buys', params.buyEntries.length)
+  logFanOutSize('sells', params.sellEntries.length)
+
   const [buys, sells] = await Promise.all([
     priceEntries(params.buyEntries, params.priceSources),
     priceEntries(params.sellEntries, params.priceSources),

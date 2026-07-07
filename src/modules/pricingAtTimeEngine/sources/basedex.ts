@@ -105,12 +105,42 @@ const blockForTimestampCache = new Map<number, bigint>()
 let latestBlockCache: { block: Awaited<ReturnType<PublicClient['getBlock']>>; fetchedAtMs: number } | null = null
 const LATEST_BLOCK_CACHE_TTL_MS = 5_000
 
+// INSTRUMENTATION, DISCLOSED (eth_getBlockByNumber/eth_call runaway-investigation task): additive
+// only — a running per-method call counter with first/last-call timestamps, logged alongside every
+// existing logRpcCall() below (none of which were changed or removed). No timeout, budget, retry,
+// or business-logic change. SCOPE, DISCLOSED: this counter is process-lifetime scoped (a warm
+// serverless instance may serve more than one request), not truly per-scan — for "run one scan and
+// watch the console," a burst from a single scan is still clearly visible as a tight cluster of
+// closely-spaced timestamps with a rapidly climbing count; true per-scan isolation would require
+// threading a scanId through this file's whole call chain, which is a larger, separate change.
+const rpcCallCounters: Record<string, { count: number; firstCallAt: number; lastCallAt: number }> = {}
+
+function trackRpcCall(method: string): void {
+  const now = Date.now()
+  const existing = rpcCallCounters[method]
+  if (existing) {
+    existing.count += 1
+    existing.lastCallAt = now
+  } else {
+    rpcCallCounters[method] = { count: 1, firstCallAt: now, lastCallAt: now }
+  }
+  // eslint-disable-next-line no-console
+  console.log('[RPC-INVESTIGATION] basedex', {
+    method,
+    module: 'pricingAtTimeEngine:basedex',
+    count: rpcCallCounters[method].count,
+    firstCallAt: rpcCallCounters[method].firstCallAt,
+    lastCallAt: now,
+  })
+}
+
 async function getLatestBlockCached(client: PublicClient): ReturnType<PublicClient['getBlock']> {
   const now = Date.now()
   if (latestBlockCache && now - latestBlockCache.fetchedAtMs < LATEST_BLOCK_CACHE_TTL_MS) {
     return latestBlockCache.block
   }
   logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'getBlock:latest' })
+  trackRpcCall('getBlock:latest')
   const block = await client.getBlock({ blockTag: 'latest' })
   latestBlockCache = { block, fetchedAtMs: now }
   return block
@@ -137,6 +167,7 @@ export async function findBlockForTimestamp(client: PublicClient, targetTimestam
   for (let i = 0; i < 30 && low < high; i++) {
     const mid = (low + high + BigInt(1)) / two
     logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'getBlock:bisect' })
+    trackRpcCall('getBlock:bisect')
     const block = await client.getBlock({ blockNumber: mid })
     if (Number(block.timestamp) <= targetTimestampSec) {
       low = mid
@@ -204,6 +235,7 @@ export async function resolvePoolAddress(
   for (const fee of UNISWAP_V3_FEE_TIERS) {
     try {
       logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:getPool' })
+      trackRpcCall('readContract:getPool')
       const pool = await client.readContract({
         address: UNISWAP_V3_FACTORY_BASE as `0x${string}`,
         abi: UNISWAP_V3_FACTORY_ABI,
@@ -238,9 +270,13 @@ export async function readPoolPrice(
   }
 
   logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:slot0' })
+  trackRpcCall('readContract:slot0')
   logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:token0' })
+  trackRpcCall('readContract:token0')
   logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:decimals' })
+  trackRpcCall('readContract:decimals')
   logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:decimals' })
+  trackRpcCall('readContract:decimals')
   const [slot0, token0, tokenDecimals, pairedDecimals] = await Promise.all([
     client.readContract({ address: poolAddress, abi: UNISWAP_V3_POOL_ABI, functionName: 'slot0', blockNumber }),
     client.readContract({ address: poolAddress, abi: UNISWAP_V3_POOL_ABI, functionName: 'token0', blockNumber }),
