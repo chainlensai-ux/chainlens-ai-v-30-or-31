@@ -76,7 +76,15 @@ function logDistinctTokenRatio(buyEntries: PriceableEntry[], sellEntries: Pricea
 // concurrency gives GoldRush/DexScreener/CoinGecko a real chance to succeed instead of being
 // rate-limited into failure, which should reduce how often basedex is even reached, in addition to
 // preventing the burst itself.
-const PRICE_ENTRY_CONCURRENCY_LIMIT = 15
+//
+// RAISED 15 -> 30, DISCLOSED (scan-latency task, per explicit user request to trade some of that
+// safety margin back for speed): since then, basedex.ts itself gained real negative-result caching,
+// Multicall3 batching, and a smarter block-search — so a given burst of concurrent entries now
+// drives meaningfully fewer real downstream calls than when 15 was chosen, leaving more headroom
+// before hitting the same false-429 risk this cap was originally guarding against. This is
+// explicitly a speed-for-safety-margin trade, not a free win — if it produces new rate-limit
+// failures in practice, that's the signal to dial it back down, not push it higher.
+const PRICE_ENTRY_CONCURRENCY_LIMIT = 30
 
 async function mapWithConcurrencyLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
   const results: R[] = new Array(items.length)
