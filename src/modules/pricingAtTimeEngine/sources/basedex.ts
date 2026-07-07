@@ -233,6 +233,8 @@ export function __resetBaseDexCachesForTest(): void {
   poolAddressCache.clear()
   poolPriceCache.clear()
   inFlightBlockSearches.clear()
+  negativePoolCache.clear()
+  inFlightPoolSearches.clear()
 }
 
 // RPC-COST FIX, DISCLOSED (continuation of the findBlockForTimestamp fix above): resolvePoolAddress
@@ -264,6 +266,33 @@ export function __resetBaseDexCachesForTest(): void {
 const poolAddressCache = new Map<string, `0x${string}`>()
 const poolPriceCache = new Map<string, number>()
 
+// NEGATIVE-RESULT CACHE, DISCLOSED (real-CU-fix, applied per user confirmation of measured
+// production evidence: distinct-token ratio logging showed avgLookupsPerToken=6.37 across 115
+// distinct tokens in one real scan, meaning most tokens are looked up several times each — and the
+// earlier basedex counters showed ~95% of resolvePoolAddress attempts fail to find a real pool.
+// Without this, EVERY one of those repeat lookups for the same no-pool token re-runs all 6 getPool
+// attempts (3 fee tiers x 2 paired assets) from scratch, every time that token reappears in the
+// trade history.
+//
+// TTL, NOT PERMANENT, DISCLOSED: a positive result is cached forever (a found pool's address is
+// permanent/deterministic) — a NEGATIVE result is different: a pool for this pair could be deployed
+// later, and this process can stay warm across many requests, so caching "no pool" forever risks
+// permanently hiding a pool that starts existing partway through this instance's lifetime (the same
+// concern the original code's own comment already raised, which is why it never cached negatives at
+// all). A short TTL is the middle ground: within one scan (or a few back-to-back scans), repeat
+// lookups for the same still-nonexistent pool are free; after the TTL expires, a fresh check runs
+// again, so a newly-deployed pool is still discovered within a bounded delay. 5 minutes matches the
+// same tolerance already used elsewhere in this file (BLOCK_TIMESTAMP_BUCKET_SECONDS,
+// DEXSCREENER_FRESHNESS_TOLERANCE_MS) — not a new or looser precision standard.
+const NEGATIVE_POOL_CACHE_TTL_MS = 5 * 60 * 1000
+const negativePoolCache = new Map<string, number>() // cacheKey -> expiresAtMs
+
+// IN-FLIGHT COALESCING, DISCLOSED: same reasoning as findBlockForTimestamp's own in-flight map —
+// concurrent lookups for the same (token, pairedWith) pair (now much more likely under the
+// concurrency-capped-but-still-parallel priceEntries()) share one search instead of each starting a
+// redundant duplicate one. Zero precision cost, pure dedup of identical concurrent work.
+const inFlightPoolSearches = new Map<string, Promise<`0x${string}` | null>>()
+
 // TEST-SUPPORT EXPORT, DISCLOSED: same reasoning as findBlockForTimestamp above — exported solely
 // so a test can assert the new caching behavior with a mocked client, no signature/behavior change.
 export async function resolvePoolAddress(
@@ -272,6 +301,7 @@ export async function resolvePoolAddress(
   pairedWith: `0x${string}`,
 ): Promise<`0x${string}` | null> {
   const cacheKey = `${tokenAddress.toLowerCase()}-${pairedWith.toLowerCase()}`
+
   const cached = poolAddressCache.get(cacheKey)
   if (cached !== undefined) {
     // eslint-disable-next-line no-console
@@ -279,25 +309,43 @@ export async function resolvePoolAddress(
     return cached
   }
 
-  for (const fee of UNISWAP_V3_FEE_TIERS) {
-    try {
-      logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:getPool' })
-      trackRpcCall('readContract:getPool')
-      const pool = await client.readContract({
-        address: UNISWAP_V3_FACTORY_BASE as `0x${string}`,
-        abi: UNISWAP_V3_FACTORY_ABI,
-        functionName: 'getPool',
-        args: [tokenAddress, pairedWith, fee],
-      })
-      if (pool && pool !== '0x0000000000000000000000000000000000000000') {
-        poolAddressCache.set(cacheKey, pool)
-        return pool
-      }
-    } catch {
-      // try the next fee tier
-    }
+  const negativeExpiresAt = negativePoolCache.get(cacheKey)
+  if (negativeExpiresAt !== undefined && Date.now() < negativeExpiresAt) {
+    return null
   }
-  return null
+
+  const inFlight = inFlightPoolSearches.get(cacheKey)
+  if (inFlight) return inFlight
+
+  const search = (async (): Promise<`0x${string}` | null> => {
+    for (const fee of UNISWAP_V3_FEE_TIERS) {
+      try {
+        logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:getPool' })
+        trackRpcCall('readContract:getPool')
+        const pool = await client.readContract({
+          address: UNISWAP_V3_FACTORY_BASE as `0x${string}`,
+          abi: UNISWAP_V3_FACTORY_ABI,
+          functionName: 'getPool',
+          args: [tokenAddress, pairedWith, fee],
+        })
+        if (pool && pool !== '0x0000000000000000000000000000000000000000') {
+          poolAddressCache.set(cacheKey, pool)
+          return pool
+        }
+      } catch {
+        // try the next fee tier
+      }
+    }
+    negativePoolCache.set(cacheKey, Date.now() + NEGATIVE_POOL_CACHE_TTL_MS)
+    return null
+  })()
+
+  inFlightPoolSearches.set(cacheKey, search)
+  try {
+    return await search
+  } finally {
+    inFlightPoolSearches.delete(cacheKey)
+  }
 }
 
 // TEST-SUPPORT EXPORT, DISCLOSED: same reasoning as resolvePoolAddress above.

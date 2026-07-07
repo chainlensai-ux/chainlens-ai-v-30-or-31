@@ -170,6 +170,51 @@ describe('resolvePoolAddress caching', () => {
     assert.equal(second, first, 'cached pool address must be identical to the freshly-resolved one')
     assert.equal(getCallCount(), callsAfterFirst, 'a cache hit must make zero additional readContract calls')
   })
+
+  it('a repeat lookup for a token with NO pool hits the negative cache instead of re-querying', async () => {
+    let calls = 0
+    const noPoolClient = {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      async readContract(args: any) {
+        calls++
+        if (args.functionName === 'getPool') return '0x0000000000000000000000000000000000000000'
+        throw new Error(`unexpected functionName: ${args.functionName}`)
+      },
+    }
+    const DEAD_TOKEN = '0x9999999999999999999999999999999999999999'
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const first = await resolvePoolAddress(noPoolClient as any, DEAD_TOKEN as `0x${string}`, WETH as `0x${string}`)
+    assert.equal(first, null)
+    const callsAfterFirst = calls
+    assert.equal(callsAfterFirst, 3, 'expected one getPool attempt per fee tier (3) on the cold, all-miss path')
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const second = await resolvePoolAddress(noPoolClient as any, DEAD_TOKEN as `0x${string}`, WETH as `0x${string}`)
+    assert.equal(second, null)
+    assert.equal(calls, callsAfterFirst, 'a repeat lookup for the same known-dead pair must hit the negative cache, not re-query')
+  })
+
+  it('in-flight coalescing: two concurrent lookups for the same pair share one search, not two', async () => {
+    let calls = 0
+    const client = {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      async readContract(args: any) {
+        calls++
+        if (args.functionName === 'getPool') return POOL
+        throw new Error(`unexpected functionName: ${args.functionName}`)
+      },
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const [a, b] = await Promise.all([
+      resolvePoolAddress(client as any, TOKEN as `0x${string}`, WETH as `0x${string}`),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      resolvePoolAddress(client as any, TOKEN as `0x${string}`, WETH as `0x${string}`),
+    ])
+    assert.equal(a, POOL)
+    assert.equal(b, POOL)
+    assert.equal(calls, 1, 'expected only one real getPool call for two concurrent identical lookups')
+  })
 })
 
 describe('readPoolPrice caching', () => {
