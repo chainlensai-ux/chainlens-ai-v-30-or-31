@@ -212,14 +212,29 @@ export async function runWithTimeoutAndRpcAudit<T>(
   }
 }
 
-// PROGRESS REPORTING, DISCLOSED (module-progress-reporting task): fire-and-forget (never awaited),
-// wrapped so a Redis hiccup can never affect or slow down the real scan — matches this whole
-// module's own established "never let an added observability call affect the real response"
-// convention (see e.g. the engine-comparison call further down). No-ops entirely when `jobId` is
-// undefined (the synchronous /full-scan/legacy route has no job to report progress against).
-function reportProgress(jobId: string | undefined, currentModule: number, moduleName: string): void {
-  if (!jobId) return
-  setJobProgress(jobId, { currentModule, totalModules: TOTAL_MODULES, moduleName }).catch(() => {
+// PROGRESS REPORTING, DISCLOSED (module-progress-reporting task): fire-and-forget by default (not
+// awaited by most call sites), wrapped so a Redis hiccup can never affect or slow down the real
+// scan — matches this whole module's own established "never let an added observability call affect
+// the real response" convention (see e.g. the engine-comparison call further down). No-ops entirely
+// when `jobId` is undefined (the synchronous /full-scan/legacy route has no job to report progress
+// against).
+//
+// RETURNS A PROMISE, DISCLOSED (stuck-at-module-11 race fix): previously returned void, with the
+// underlying setJobProgress() call never awaited by ANY caller. setJobProgress does a non-atomic
+// read-modify-write (getScanJob then setScanJob with the job snapshot it just read) — for modules
+// 1-10 there's enough real work afterward that this always resolves long before the scan finishes,
+// but for the LAST module (11), reportProgress() fires immediately before the worker's few remaining
+// synchronous statements and its return — leaving a real chance this call's own read-then-write is
+// still in flight when app/api/scan-v2/worker/route.ts writes the job's final `status:'completed'`
+// moments later. If that dangling write's own `setScanJob` call lands AFTER the completion write, it
+// clobbers `status` back to whatever this call's stale read saw ('running'), with `result` still
+// null — exactly the reported symptom (UI stuck at "11/11" forever, even though the backend actually
+// finished). Now returns the underlying promise so the call site for module 11 specifically can
+// await it, guaranteeing it fully resolves before the worker function returns — every other call
+// site is unchanged (still fire-and-forget, zero added latency for modules 1-10).
+function reportProgress(jobId: string | undefined, currentModule: number, moduleName: string): Promise<void> {
+  if (!jobId) return Promise.resolve()
+  return setJobProgress(jobId, { currentModule, totalModules: TOTAL_MODULES, moduleName }).catch(() => {
     // setJobProgress already logs its own failures; nothing further to do here.
   })
 }
@@ -514,7 +529,11 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     // eslint-disable-next-line no-console
     console.log('[V2-worker] finished signals in', performance.now() - t0, 'ms', 'count=', signalsOutput.signalsV2.length)
 
-    reportProgress(jobId, 11, 'smartMoneyScore')
+    // AWAITED, DISCLOSED: unlike every other reportProgress() call site (still fire-and-forget),
+    // this one is awaited — see reportProgress's own header comment for why: this is the LAST
+    // progress report, and letting it dangle unawaited is exactly what could race with (and
+    // clobber) the worker's final `status:'completed'` write moments later.
+    await reportProgress(jobId, 11, 'smartMoneyScore')
     // eslint-disable-next-line no-console
     console.log('[V2-worker] starting smartMoneyScore')
     t0 = performance.now()
