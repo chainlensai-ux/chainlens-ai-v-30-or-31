@@ -17,9 +17,17 @@ async function getContractCode(address: string): Promise<string | null> {
     : "https://mainnet.base.org";
 
   logRpcCall({ route: "/api/scan-holder", chain: "base", method: "eth_getCode" });
-  // Only audit as an Alchemy call when a key was actually configured — otherwise `rpc` fell back to
-  // the public mainnet.base.org endpoint, which never touches Alchemy.
-  if (key) {
+  // PRODUCTION-ONLY ALCHEMY-URL GUARD, DISCLOSED (browser-debug-stream task): in real production,
+  // only audit as an Alchemy call when a key was actually configured (otherwise `rpc` fell back to
+  // the public mainnet.base.org endpoint, which never touches Alchemy). In preview/dev, audit every
+  // RPC call regardless of URL, so the SSE debug stream always receives events to watch while
+  // testing — VERCEL_ENV is 'preview' on preview deployments and unset in local dev, so this only
+  // narrows in real production.
+  if (process.env.VERCEL_ENV === "production") {
+    if (key) {
+      auditGlobalAlchemyCall("eth_getCode", { chain: "base", route: "/api/scan-holder" });
+    }
+  } else {
     auditGlobalAlchemyCall("eth_getCode", { chain: "base", route: "/api/scan-holder" });
   }
   const res = await fetch(rpc, {

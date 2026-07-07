@@ -315,10 +315,16 @@ type CovalentTxItem = {
 async function alchemyRpc(method: string, params: unknown[]): Promise<unknown> {
   if (!activeChainConfig.rpcUrl) throw new Error('rpc_not_configured')
   logRpcCall({ route: '/api/dev-wallet', chain: activeChainConfig.chain, method })
-  // Only audit as an Alchemy call when the resolved URL actually is one — resolveBaseRpcUrl/
+  // PRODUCTION-ONLY ALCHEMY-URL GUARD, DISCLOSED (browser-debug-stream task): in real production,
+  // only audit as an Alchemy call when the resolved URL actually is one (resolveBaseRpcUrl/
   // resolveEthRpcUrl can also return an explicit ALCHEMY_*_RPC_URL/*_RPC_URL override pointed at a
-  // non-Alchemy provider.
-  if (activeChainConfig.rpcUrl.includes('g.alchemy.com')) {
+  // non-Alchemy provider). In preview/dev, audit every RPC call regardless of URL, so the SSE debug
+  // stream always receives events to watch while testing.
+  if (process.env.VERCEL_ENV === 'production') {
+    if (activeChainConfig.rpcUrl.includes('g.alchemy.com')) {
+      auditGlobalAlchemyCall(method, { chain: activeChainConfig.chain, route: '/api/dev-wallet', params })
+    }
+  } else {
     auditGlobalAlchemyCall(method, { chain: activeChainConfig.chain, route: '/api/dev-wallet', params })
   }
   const res = await fetch(activeChainConfig.rpcUrl, {

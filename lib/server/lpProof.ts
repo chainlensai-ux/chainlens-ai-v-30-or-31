@@ -52,10 +52,16 @@ async function lpRpcCall(chain: LpChain, method: string, params: unknown[]): Pro
     const rpcUrl = getLpRpcUrl(chain);
     if (!rpcUrl) return null;
     logRpcCall({ route: "lpProof", chain, method });
-    // Only audit as an Alchemy call when the resolved URL actually IS one — getLpRpcUrl can also
+    // PRODUCTION-ONLY ALCHEMY-URL GUARD, DISCLOSED (browser-debug-stream task): in real production,
+    // only audit as an Alchemy call when the resolved URL actually IS one (getLpRpcUrl can also
     // resolve to an explicit ETH_RPC_URL/BASE_RPC_URL override or the public mainnet.base.org
-    // fallback, neither of which burns Alchemy CU.
-    if (rpcUrl.includes("g.alchemy.com")) {
+    // fallback, neither of which burns Alchemy CU). In preview/dev, audit every RPC call regardless
+    // of URL, so the SSE debug stream always receives events to watch while testing.
+    if (process.env.VERCEL_ENV === "production") {
+      if (rpcUrl.includes("g.alchemy.com")) {
+        auditGlobalAlchemyCall(method, { chain, route: "lpProof" });
+      }
+    } else {
       auditGlobalAlchemyCall(method, { chain, route: "lpProof" });
     }
     const res = await fetch(rpcUrl, {

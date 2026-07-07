@@ -526,9 +526,16 @@ async function fetchOnChain(address: string): Promise<OnChainData> {
   let isContract: boolean | null = null, nativeBalanceEth: number | null = null, txCount: number | null = null
   try {
     logRpcCall({ route: '/api/whale-alerts', chain: 'base', method: 'batch:eth_getBalance+eth_getTransactionCount+eth_getCode' })
-    // Only audit as an Alchemy call when BASE_RPC actually resolved to one — resolveBaseRpc can
-    // also return an explicit override or the public mainnet.base.org fallback.
-    if (BASE_RPC.includes('g.alchemy.com')) {
+    // PRODUCTION-ONLY ALCHEMY-URL GUARD, DISCLOSED (browser-debug-stream task): in real production,
+    // only audit as an Alchemy call when BASE_RPC actually resolved to one (resolveBaseRpc can also
+    // return an explicit override or the public mainnet.base.org fallback). In preview/dev, audit
+    // every RPC call regardless of URL, so the SSE debug stream always receives events to watch
+    // while testing.
+    if (process.env.VERCEL_ENV === 'production') {
+      if (BASE_RPC.includes('g.alchemy.com')) {
+        auditGlobalAlchemyCall('batch:eth_getBalance+eth_getTransactionCount+eth_getCode', { chain: 'base', route: '/api/whale-alerts', address })
+      }
+    } else {
       auditGlobalAlchemyCall('batch:eth_getBalance+eth_getTransactionCount+eth_getCode', { chain: 'base', route: '/api/whale-alerts', address })
     }
     const res = await fetch(BASE_RPC, {
