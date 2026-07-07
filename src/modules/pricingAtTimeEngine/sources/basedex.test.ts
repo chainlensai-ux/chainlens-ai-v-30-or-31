@@ -309,6 +309,43 @@ describe('readPoolPrice caching', () => {
     )
     assert.ok(getCallCount() > callsAfterFirst, 'a different blockNumber must trigger a fresh read, not a stale cache hit')
   })
+
+  // REGRESSION TEST, DISCLOSED: this is the exact case that was never covered before — every other
+  // test in this file uses a fake pool where `tokenAddress` IS the pool's token0 (see
+  // makeFakeReadContractClient's `token0` returning TOKEN directly) AND equal decimals for both
+  // tokens, which happens to mask the real bug entirely (decimalAdjustment = 10^0 = 1 either way).
+  // Found live: a real scan priced an 18-decimal Base token against 6-decimal USDC and produced a
+  // price off by roughly 10^24x (realizedPnlUsd around -3.9e28), because the old formula
+  // reciprocated the WHOLE decimal-adjusted product instead of just the raw ratio's orientation.
+  // This test uses a concrete, hand-verified WETH(18dec)/USDC(6dec)-style pool where tokenAddress is
+  // the pool's token1 (pairedWith is token0) — the exact orientation the old code got wrong.
+  it('resolves the correct price when tokenAddress is the pool\'s token1 with differing decimals (the exact bug this regresses)', async () => {
+    const PAIRED_TOKEN0 = '0x3333333333333333333333333333333333333333' // plays the "USDC, 6 decimals" role, and IS the pool's token0
+    const TOKEN_AS_TOKEN1 = '0x4444444444444444444444444444444444444444' // plays the "WETH, 18 decimals" role, and is tokenAddress here
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const client: any = {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      async readContract(args: any) {
+        if (args.functionName === 'slot0') {
+          // Chosen so rawRatio = (sqrtPriceX96/2^96)^2 = 3.333333...e8 — matches "1 WETH = 3000 USDC"
+          // once decimal-adjusted (hand-verified: humanToken1PerToken0 = rawRatio*10^(6-18) ≈ 3.333e-4,
+          // i.e. 1 USDC = 0.0003333 WETH => 1 WETH = 3000 USDC).
+          const sqrtPriceX96 = BigInt(Math.round(Math.sqrt(3.333333333e8) * 2 ** 96))
+          return [sqrtPriceX96, 0, 0, 0, 0, 0, true]
+        }
+        if (args.functionName === 'token0') return PAIRED_TOKEN0 // tokenAddress is NOT token0 here
+        if (args.functionName === 'decimals') {
+          return args.address.toLowerCase() === TOKEN_AS_TOKEN1.toLowerCase() ? 18 : 6
+        }
+        throw new Error(`unexpected functionName: ${args.functionName}`)
+      },
+    }
+
+    const price = await readPoolPrice(client, POOL as `0x${string}`, TOKEN_AS_TOKEN1 as `0x${string}`, PAIRED_TOKEN0 as `0x${string}`, BigInt(1))
+    assert.ok(price !== null, 'expected a real price, not null')
+    // Correct answer is ~3000 (USDC per WETH). The pre-fix formula produced ~10^24x this value.
+    assert.ok(Math.abs((price as number) - 3000) < 1, `expected price ≈ 3000, got ${price}`)
+  })
 })
 
 // These tests exercise the ACTUAL multicall path (resolvePoolAddress/readPoolPrice's real,

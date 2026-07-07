@@ -619,10 +619,24 @@ export async function readPoolPrice(
   const rawRatio = (Number(sqrtPriceX96) / 2 ** 96) ** 2
   const isTokenToken0 = token0.toLowerCase() === tokenAddress.toLowerCase()
 
-  // Adjust for each token's own decimals, then orient the ratio as "1 tokenAddress = X pairedWith".
+  // PRICE-CORRUPTION FIX, DISCLOSED (found live: a real scan showed realizedPnlUsd around -3.9e28
+  // and unrealizedPnl around -2.7e29 — a wallet holding an 18-decimal Base token (Mog) priced
+  // against USDC (6 decimals) whenever it fell through to this on-chain fallback path). ROOT CAUSE:
+  // the previous version applied decimalAdjustment to rawRatio FIRST (`token0PerToken1 = rawRatio *
+  // decimalAdjustment`) and then reciprocated the WHOLE PRODUCT for the isTokenToken0 case
+  // (`1 / token0PerToken1`) — but 1/(rawRatio * decimalAdjustment) also reciprocates the decimal
+  // exponent itself, which is wrong. decimalAdjustment = 10^(tokenDecimals - pairedDecimals) is a
+  // pool-independent constant that must NEVER flip sign; only the RAW RATIO's orientation (rawRatio
+  // vs its reciprocal) depends on whether tokenAddress is the pool's token0 or token1. Verified by
+  // hand against a concrete WETH(18dec)/USDC(6dec) pool in both token-role orientations: the old
+  // formula computed the correct answer only when tokenAddress happened to BE the pool's token0 (by
+  // coincidence, both of this module's own test fixtures used that exact orientation, which is why
+  // this was never caught) — the other orientation (tokenAddress = pool's token1, roughly half of
+  // all real pools, decided purely by which contract address sorts higher) was off by
+  // 10^(2 * decimalsDifference), e.g. ~10^24x for an 18-vs-6-decimals pair.
   const decimalAdjustment = 10 ** (tokenDecimals - pairedDecimals)
-  const token0PerToken1 = rawRatio * decimalAdjustment
-  const price = isTokenToken0 ? 1 / token0PerToken1 : token0PerToken1
+  const orientedRatio = isTokenToken0 ? rawRatio : 1 / rawRatio
+  const price = decimalAdjustment * orientedRatio
   poolPriceCache.set(cacheKey, price)
   return price
 }
