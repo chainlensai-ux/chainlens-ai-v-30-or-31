@@ -22,6 +22,7 @@
 
 import { NextResponse } from 'next/server'
 import { logRpcCall } from '@/lib/server/rpcDebug'
+import { auditGlobalAlchemyCall } from '@/lib/server/globalRpcAudit'
 
 export const dynamic = 'force-dynamic'
 
@@ -56,6 +57,7 @@ export async function GET(req: Request) {
 
     const url = `https://${config.networkSlug}.g.alchemy.com/v2/${key}`
     logRpcCall({ route: '/api/test/alchemy-multichain', chain, method: 'eth_blockNumber' })
+    auditGlobalAlchemyCall('eth_blockNumber', { chain, route: '/api/test/alchemy-multichain' })
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

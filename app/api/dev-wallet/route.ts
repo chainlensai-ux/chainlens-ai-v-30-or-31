@@ -3,6 +3,7 @@ import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { type CanonicalStatus, toCanonical } from '@/lib/canonicalStatus'
 import { buildClusterMap } from '@/lib/clusterMap'
 import { logRpcCall } from '@/lib/server/rpcDebug'
+import { auditGlobalAlchemyCall } from '@/lib/server/globalRpcAudit'
 
 const COVALENT_BASE_URL = 'https://api.covalenthq.com/v1'
 function resolveBaseRpcUrl(): string | null {
@@ -314,6 +315,12 @@ type CovalentTxItem = {
 async function alchemyRpc(method: string, params: unknown[]): Promise<unknown> {
   if (!activeChainConfig.rpcUrl) throw new Error('rpc_not_configured')
   logRpcCall({ route: '/api/dev-wallet', chain: activeChainConfig.chain, method })
+  // Only audit as an Alchemy call when the resolved URL actually is one — resolveBaseRpcUrl/
+  // resolveEthRpcUrl can also return an explicit ALCHEMY_*_RPC_URL/*_RPC_URL override pointed at a
+  // non-Alchemy provider.
+  if (activeChainConfig.rpcUrl.includes('g.alchemy.com')) {
+    auditGlobalAlchemyCall(method, { chain: activeChainConfig.chain, route: '/api/dev-wallet', params })
+  }
   const res = await fetch(activeChainConfig.rpcUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

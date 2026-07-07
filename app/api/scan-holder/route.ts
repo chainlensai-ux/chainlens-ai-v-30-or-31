@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createRateLimiter, getClientIp } from "@/lib/server/rateLimit";
 import { logRpcCall } from "@/lib/server/rpcDebug";
+import { auditGlobalAlchemyCall } from "@/lib/server/globalRpcAudit";
 
 export const dynamic = "force-dynamic";
 
@@ -16,6 +17,11 @@ async function getContractCode(address: string): Promise<string | null> {
     : "https://mainnet.base.org";
 
   logRpcCall({ route: "/api/scan-holder", chain: "base", method: "eth_getCode" });
+  // Only audit as an Alchemy call when a key was actually configured — otherwise `rpc` fell back to
+  // the public mainnet.base.org endpoint, which never touches Alchemy.
+  if (key) {
+    auditGlobalAlchemyCall("eth_getCode", { chain: "base", route: "/api/scan-holder" });
+  }
   const res = await fetch(rpc, {
     method: "POST",
     headers: { "content-type": "application/json" },

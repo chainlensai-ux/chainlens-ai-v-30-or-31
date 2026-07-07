@@ -4,6 +4,7 @@
 
 import { LP_LOCK_BURN_REGISTRY } from "./lpLockBurnIntel.ts";
 import { logRpcCall } from "./rpcDebug";
+import { auditGlobalAlchemyCall } from "./globalRpcAudit";
 
 export type LpChain = "eth" | "base";
 
@@ -51,6 +52,12 @@ async function lpRpcCall(chain: LpChain, method: string, params: unknown[]): Pro
     const rpcUrl = getLpRpcUrl(chain);
     if (!rpcUrl) return null;
     logRpcCall({ route: "lpProof", chain, method });
+    // Only audit as an Alchemy call when the resolved URL actually IS one — getLpRpcUrl can also
+    // resolve to an explicit ETH_RPC_URL/BASE_RPC_URL override or the public mainnet.base.org
+    // fallback, neither of which burns Alchemy CU.
+    if (rpcUrl.includes("g.alchemy.com")) {
+      auditGlobalAlchemyCall(method, { chain, route: "lpProof" });
+    }
     const res = await fetch(rpcUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },

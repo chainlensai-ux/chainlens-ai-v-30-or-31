@@ -3,6 +3,7 @@ import { createClient } from '@supabase/supabase-js'
 import { getOrFetchCached } from '@/lib/coingeckoCache'
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { logRpcCall } from '@/lib/server/rpcDebug'
+import { auditGlobalAlchemyCall } from '@/lib/server/globalRpcAudit'
 
 type WindowKey = '1h' | '6h' | '24h' | '7d'
 type RawRow = Record<string, unknown>
@@ -525,6 +526,11 @@ async function fetchOnChain(address: string): Promise<OnChainData> {
   let isContract: boolean | null = null, nativeBalanceEth: number | null = null, txCount: number | null = null
   try {
     logRpcCall({ route: '/api/whale-alerts', chain: 'base', method: 'batch:eth_getBalance+eth_getTransactionCount+eth_getCode' })
+    // Only audit as an Alchemy call when BASE_RPC actually resolved to one — resolveBaseRpc can
+    // also return an explicit override or the public mainnet.base.org fallback.
+    if (BASE_RPC.includes('g.alchemy.com')) {
+      auditGlobalAlchemyCall('batch:eth_getBalance+eth_getTransactionCount+eth_getCode', { chain: 'base', route: '/api/whale-alerts', address })
+    }
     const res = await fetch(BASE_RPC, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify([

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { logRpcCall } from "@/lib/server/rpcDebug";
+import { auditGlobalAlchemyCall } from "@/lib/server/globalRpcAudit";
 
 const rateMap = new Map<string, { count: number; resetAt: number }>();
 const MAX_PER_MINUTE = 3;
@@ -37,6 +38,7 @@ export async function GET(req: NextRequest) {
     if (!key) return NextResponse.json({ ok: false, error: "Not configured" }, { status: 500 });
     const url = `https://eth-mainnet.g.alchemy.com/v2/${key}`;
     logRpcCall({ route: "/api/test/alchemy", chain: "eth", method: "eth_blockNumber" });
+    auditGlobalAlchemyCall("eth_blockNumber", { chain: "eth", route: "/api/test/alchemy" });
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
