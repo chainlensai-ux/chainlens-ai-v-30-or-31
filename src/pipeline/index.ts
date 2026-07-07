@@ -35,7 +35,7 @@ import type { BuildPnlSummaryParams, PnlSummaryResult } from '../modules/pnlEngi
 import { resolvePricingAtTime } from '../modules/pricingAtTimeEngine/index'
 import type { PriceableEntry, PriceSourceFn, PriceSources, PricingAtTimeResult } from '../modules/pricingAtTimeEngine/types'
 import { GoldRushClient } from '@covalenthq/client-sdk'
-import { goldrushPriceSource } from '../modules/pricingAtTimeEngine/sources/goldrushPriceSource'
+import { goldrushPriceSource, isKnownGoldrushNegative } from '../modules/pricingAtTimeEngine/sources/goldrushPriceSource'
 import { multiProviderPriceSource } from '../modules/pricingAtTimeEngine/sources/multiProviderPriceSource'
 import { priceLotsForWallet } from './priceLotsForWallet'
 import { withStageCache } from '../../lib/server/cache/v2StageCache'
@@ -81,8 +81,21 @@ const PROVIDER_FETCH_WINDOW_DAYS_USED = 90
 // if it were still current beyond the TTL. 45s TTL, same as recoveryPolicy (the other real network
 // call in this pipeline). Never caches a null result — an honest "no price found" should keep
 // trying on the next request, not get stuck for 45s once a provider has a transient miss.
-function withPriceSourceCache(fn: PriceSourceFn, sourceLabel: string): PriceSourceFn {
+// KV-ROUND-TRIP-SKIP, DISCLOSED (found live, latency-investigation task): a null result is
+// deliberately never written to KV (see this function's own header above this edit's diff context)
+// — an honest "no price found" shouldn't get stuck cached for the TTL. But that means a token this
+// price source already knows (in its own fast, in-memory, zero-network cache) has no data STILL
+// paid a full remote KV round-trip on every repeat occurrence, forever — confirmed live: a real
+// scan's External APIs showed a KV call and a 7s+ GoldRush call in the same request, and
+// avgLookupsPerToken of 6.71 with primary:0 every single time, meaning hundreds of guaranteed-miss
+// KV round-trips were stacked on top of the real work. `skipCacheCheck`, when supplied and it
+// returns true for a given (token, chain), skips the KV get/set entirely and calls straight through
+// to `fn` — which itself resolves near-instantly via its own in-memory negative-cache
+// short-circuit, no network at all. Optional and unused by the `fallback` source below (which has
+// no equivalent synchronous known-negative signal to offer), so its behavior is unchanged.
+function withPriceSourceCache(fn: PriceSourceFn, sourceLabel: string, skipCacheCheck?: (token: string, chain: string) => boolean): PriceSourceFn {
   return async (token, chain, timestamp) => {
+    if (skipCacheCheck?.(token, chain)) return fn(token, chain, timestamp)
     const key = `v2:price:${sourceLabel}:${chain}:${token.toLowerCase()}:${timestamp}`
     const cached = await getTokenCache<number>(key)
     if (cached !== null) return cached
@@ -111,7 +124,7 @@ function buildPriceSources(): PriceSources {
   // down the whole V2 pipeline at cold start.
   try {
     const client = new GoldRushClient(apiKey)
-    return { primary: withPriceSourceCache(goldrushPriceSource(client), 'primary'), fallback }
+    return { primary: withPriceSourceCache(goldrushPriceSource(client), 'primary', isKnownGoldrushNegative), fallback }
   } catch (err) {
     // The SDK throws a plain { error_message } object here, not an Error instance (confirmed by
     // reading its source) — extracted explicitly so this log is actually useful, not "[object Object]".

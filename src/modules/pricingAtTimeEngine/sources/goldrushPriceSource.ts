@@ -101,6 +101,23 @@ function toDateString(timestampMs: number): string | null {
   return date.toISOString().slice(0, 10)
 }
 
+// KV-ROUND-TRIP-SKIP EXPORT, DISCLOSED (found live, latency-investigation task): src/pipeline/
+// index.ts's withPriceSourceCache wraps this whole source in a remote KV get-before/set-after for
+// EVERY call — but since a null result is deliberately never written to that KV cache (an honest
+// "no price found" shouldn't get stuck cached), a token this module already knows is negatively
+// cached will ALWAYS miss that remote KV get too, paying a full network round-trip for a result we
+// already have for free, in memory, on every repeat occurrence (confirmed live: a real scan showed
+// avgLookupsPerToken of 6.71 with primary:0 every time — hundreds of guaranteed-miss KV round-trips
+// stacked on top of the real provider calls). Exported so the caller can check this FIRST and skip
+// the KV round-trip entirely when it's already known-negative, calling straight into this module's
+// own (synchronous-fast) negative-cache short-circuit instead. Read-only — asserts nothing, changes
+// no cache state itself.
+export function isKnownGoldrushNegative(token: string, chain: string): boolean {
+  const negativeCacheKey = `${chain}:${token.toLowerCase()}`
+  const expiresAt = negativeGoldrushPriceCache.get(negativeCacheKey)
+  return expiresAt !== undefined && Date.now() < expiresAt
+}
+
 // TEST-SUPPORT EXPORT, DISCLOSED: same reasoning as basedex.ts's own __resetBaseDexCachesForTest —
 // lets a test start each case from a clean cache state. Not called anywhere in real request handling.
 export function __resetGoldrushPriceSourceCachesForTest(): void {

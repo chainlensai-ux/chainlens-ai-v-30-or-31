@@ -13,7 +13,7 @@
 import { describe, it, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import type { GoldRushClient } from '@covalenthq/client-sdk'
-import { goldrushPriceSource, __resetGoldrushPriceSourceCachesForTest, getGoldrushPriceSourceCallCount } from './goldrushPriceSource'
+import { goldrushPriceSource, __resetGoldrushPriceSourceCachesForTest, getGoldrushPriceSourceCallCount, isKnownGoldrushNegative } from './goldrushPriceSource'
 
 const TOKEN = '0x1111111111111111111111111111111111111111'
 const CHAIN = 'base'
@@ -118,5 +118,22 @@ describe('goldrushPriceSource negative-result caching', () => {
     await fn(TOKEN, CHAIN, Date.parse('2024-01-01'))
     await fn(TOKEN, CHAIN, Date.parse('2024-01-02'))
     assert.equal(getGoldrushPriceSourceCallCount(), 2)
+  })
+
+  it('isKnownGoldrushNegative reflects the same negative-cache state a repeat lookup would use', async () => {
+    const { client } = makeFakeClient({ respond: () => ({ error: false, data: [{ items: [] }] }) })
+    const fn = goldrushPriceSource(client)
+
+    assert.equal(isKnownGoldrushNegative(TOKEN, CHAIN), false, 'expected no negative cache entry before any lookup')
+    await fn(TOKEN, CHAIN, Date.parse('2024-01-01'))
+    assert.equal(isKnownGoldrushNegative(TOKEN, CHAIN), true, 'expected a negative cache entry after a real "no data" response')
+  })
+
+  it('isKnownGoldrushNegative stays false after a positive result (never wrongly reports negative)', async () => {
+    const { client } = makeFakeClient({ respond: () => ({ error: false, data: [{ items: [{ price: 5 }] }] }) })
+    const fn = goldrushPriceSource(client)
+
+    await fn(TOKEN, CHAIN, Date.parse('2024-01-01'))
+    assert.equal(isKnownGoldrushNegative(TOKEN, CHAIN), false, 'expected no negative cache entry after a positive result')
   })
 })
