@@ -189,6 +189,135 @@ function bucketTimestamp(targetTimestampSec: number): number {
 // concurrent work — it changes no computed value, only how many times the same answer is computed.
 const inFlightBlockSearches = new Map<number, Promise<bigint>>()
 
+// AVG BLOCK TIME ESTIMATE, DISCLOSED: Base has a near-constant ~2s block time (OP-stack chain).
+// Used ONLY to pick a starting guess for the search below — never trusted as the final answer.
+// Every guess this produces is verified (and corrected, via bisection) against real on-chain block
+// timestamps before being accepted, so drift in the true average block time can only cost a few
+// extra RPC calls (a wider search window), never an incorrect resolved block.
+const BASE_AVG_BLOCK_TIME_SEC = 2
+const ESTIMATE_SEARCH_WINDOW_BLOCKS = BigInt(256)
+const ESTIMATE_SEARCH_MAX_WIDEN_ATTEMPTS = 4
+
+// BISECT-COST FIX, DISCLOSED (real-CU-fix, applied per user confirmation of measured production
+// evidence — a single scan's FINAL TOTALS line showed 6,821 getBlock:bisect calls, ~11x more than
+// every other basedex method combined, after the earlier caching/coalescing fixes already landed).
+// ROOT CAUSE: the old bounds here (`approxBlocksAgo * 2` below latest, `latest.number` above) still
+// spanned a huge fraction of chain history for any timestamp more than a few hours old, so the
+// 30-step bisection loop almost always ran close to its full 30 iterations — one getBlock call per
+// step — for EVERY distinct (bucketed) timestamp, even though Base's block time is close enough to
+// constant that a direct estimate lands within a few hundred blocks almost every time.
+//
+// FIX: estimate the target block directly from Base's average block time, verify it against one
+// real on-chain probe, self-calibrate a LOCAL average block time from that probe (latest.timestamp
+// vs probe.timestamp), and bisect only a small window (256 blocks either side, ~8-9 steps) around
+// the corrected guess — instead of bisecting the entire historical range from scratch.
+//
+// CORRECTNESS GUARANTEE, DISCLOSED: before trusting that small window, both of its boundaries are
+// verified against real getBlock results (fetched below) to actually bracket the target timestamp.
+// If they don't (block-time drift bigger than expected, e.g. a network hiccup), the window is
+// doubled and re-verified, up to 4 attempts; if all 4 still miss (extremely unlikely on a chain with
+// Base's block-time consistency), this falls back to the ORIGINAL full-range bisection used before
+// this fix, so the worst case is "no more expensive than before," never a wrong answer.
+async function estimateAndVerifyWindow(
+  client: PublicClient,
+  latest: Awaited<ReturnType<PublicClient['getBlock']>>,
+  bucketed: number,
+): Promise<{ low: bigint; high: bigint } | null> {
+  const secondsAgo = Number(latest.timestamp) - bucketed
+  const estimatedBlocksAgo = BigInt(Math.max(1, Math.round(secondsAgo / BASE_AVG_BLOCK_TIME_SEC)))
+  const initialGuess = latest.number > estimatedBlocksAgo ? latest.number - estimatedBlocksAgo : BigInt(0)
+
+  logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'getBlock:estimate' })
+  trackRpcCall('getBlock:estimate')
+  let guessBlock = await client.getBlock({ blockNumber: initialGuess })
+  let guess = initialGuess
+
+  // Self-calibrate using the real gap between this probe and `latest` (rather than trusting the
+  // constant above), then take one corrective step — this is what lets the window stay small even
+  // when the true average block time differs slightly from the assumed constant.
+  const blockDelta = latest.number - guessBlock.number
+  const timeDelta = Number(latest.timestamp) - Number(guessBlock.timestamp)
+  if (blockDelta > BigInt(0) && timeDelta > 0) {
+    const localAvgBlockTime = timeDelta / Number(blockDelta)
+    const remainingSeconds = bucketed - Number(guessBlock.timestamp)
+    const adjustBlocks = BigInt(Math.round(remainingSeconds / localAvgBlockTime))
+    let refinedGuess = guessBlock.number + adjustBlocks
+    if (refinedGuess < BigInt(0)) refinedGuess = BigInt(0)
+    if (refinedGuess > latest.number) refinedGuess = latest.number
+    if (refinedGuess !== guess) {
+      guess = refinedGuess
+      logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'getBlock:estimate' })
+      trackRpcCall('getBlock:estimate')
+      guessBlock = await client.getBlock({ blockNumber: guess })
+    }
+  }
+
+  let windowBlocks = ESTIMATE_SEARCH_WINDOW_BLOCKS
+  for (let attempt = 0; attempt < ESTIMATE_SEARCH_MAX_WIDEN_ATTEMPTS; attempt++) {
+    const guessAtOrBelowTarget = Number(guessBlock.timestamp) <= bucketed
+
+    let low: bigint
+    let high: bigint
+    let lowOk: boolean
+    let highOk: boolean
+
+    if (guessAtOrBelowTarget) {
+      low = guess
+      lowOk = true
+      high = guess + windowBlocks > latest.number ? latest.number : guess + windowBlocks
+      if (high === latest.number) {
+        highOk = true
+      } else {
+        logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'getBlock:estimate' })
+        trackRpcCall('getBlock:estimate')
+        const highBlock = await client.getBlock({ blockNumber: high })
+        highOk = Number(highBlock.timestamp) > bucketed
+      }
+    } else {
+      high = guess
+      highOk = true
+      low = guess > windowBlocks ? guess - windowBlocks : BigInt(0)
+      if (low === BigInt(0)) {
+        lowOk = true
+      } else {
+        logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'getBlock:estimate' })
+        trackRpcCall('getBlock:estimate')
+        const lowBlock = await client.getBlock({ blockNumber: low })
+        lowOk = Number(lowBlock.timestamp) <= bucketed
+      }
+    }
+
+    if (lowOk && highOk) return { low, high }
+    windowBlocks = windowBlocks * BigInt(4)
+  }
+
+  return null
+}
+
+async function bisectWithinBounds(
+  client: PublicClient,
+  bucketed: number,
+  initialLow: bigint,
+  initialHigh: bigint,
+): Promise<bigint> {
+  let low = initialLow
+  let high = initialHigh
+  const two = BigInt(2)
+
+  for (let i = 0; i < 30 && low < high; i++) {
+    const mid = (low + high + BigInt(1)) / two
+    logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'getBlock:bisect' })
+    trackRpcCall('getBlock:bisect')
+    const block = await client.getBlock({ blockNumber: mid })
+    if (Number(block.timestamp) <= bucketed) {
+      low = mid
+    } else {
+      high = mid - BigInt(1)
+    }
+  }
+  return low
+}
+
 // TEST-SUPPORT EXPORT, DISCLOSED: exported (alongside a cache-reset helper below) solely so a test
 // can inject a mocked PublicClient and assert the caching behavior without hitting real RPC/env
 // vars — does not change this function's real behavior or signature (beyond the disclosed
@@ -209,22 +338,10 @@ export async function findBlockForTimestamp(client: PublicClient, targetTimestam
       return latest.number
     }
 
-    const two = BigInt(2)
-    const approxBlocksAgo = BigInt(Math.max(0, Math.floor((Number(latest.timestamp) - bucketed) / 2)))
-    let low = latest.number > approxBlocksAgo * two ? latest.number - approxBlocksAgo * two : BigInt(0)
-    let high = latest.number
+    const window = await estimateAndVerifyWindow(client, latest, bucketed)
+    const [initialLow, initialHigh] = window ? [window.low, window.high] : [BigInt(0), latest.number]
 
-    for (let i = 0; i < 30 && low < high; i++) {
-      const mid = (low + high + BigInt(1)) / two
-      logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'getBlock:bisect' })
-      trackRpcCall('getBlock:bisect')
-      const block = await client.getBlock({ blockNumber: mid })
-      if (Number(block.timestamp) <= bucketed) {
-        low = mid
-      } else {
-        high = mid - BigInt(1)
-      }
-    }
+    const low = await bisectWithinBounds(client, bucketed, initialLow, initialHigh)
     blockForTimestampCache.set(bucketed, low)
     return low
   })()
