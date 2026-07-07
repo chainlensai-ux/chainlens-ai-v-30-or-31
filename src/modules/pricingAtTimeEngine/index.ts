@@ -40,6 +40,27 @@ function logFanOutSize(kind: 'buys' | 'sells', count: number): void {
   console.warn('[RPC-INVESTIGATION] pricingAtTimeEngine.priceEntries fan-out', { kind, entryCount: count, timestamp: Date.now() })
 }
 
+// DISTINCT-TOKEN CHECK, DISCLOSED (real-CU-fix investigation, applied per user request): read-only
+// diagnostic — no behavior change. Reports how much repeat-token trading exists in this scan's
+// entries, which decides whether a negative-result cache for basedex's resolvePoolAddress (real
+// fix candidate, not yet built) would meaningfully cut cost or not: it only helps for tokens that
+// get looked up more than once. Counts distinct (chain, token) pairs vs total entries across BOTH
+// buys and sells combined (a token traded on both sides counts once per side's own entry list here
+// — deliberately per-list, matching how priceEntries() itself processes buys/sells separately).
+function logDistinctTokenRatio(buyEntries: PriceableEntry[], sellEntries: PriceableEntry[]): void {
+  const allEntries = [...buyEntries, ...sellEntries]
+  const distinctTokens = new Set(allEntries.map((e) => `${e.chain}:${e.token.toLowerCase()}`))
+  // eslint-disable-next-line no-console
+  console.warn('[RPC-INVESTIGATION] pricingAtTimeEngine distinct-token ratio', {
+    totalEntries: allEntries.length,
+    distinctTokens: distinctTokens.size,
+    // How many times, on average, each distinct token is looked up — >1 means real repeat-token
+    // trading exists, and a negative-result cache would have real savings to offer.
+    avgLookupsPerToken: allEntries.length > 0 ? Number((allEntries.length / distinctTokens.size).toFixed(2)) : 0,
+    timestamp: Date.now(),
+  })
+}
+
 // CONCURRENCY CAP, DISCLOSED (real-CU-fix, applied live per user confirmation of the measured
 // production evidence — see this file's INSTRUMENTATION comment above for the confirmed numbers:
 // one scan queued 733 entries, fired all at once, and drove 250+ real Alchemy calls in under 2
@@ -99,6 +120,7 @@ async function priceEntries(
 export async function resolvePricingAtTime(params: ResolvePricingAtTimeParams): Promise<PricingAtTimeResult> {
   logFanOutSize('buys', params.buyEntries.length)
   logFanOutSize('sells', params.sellEntries.length)
+  logDistinctTokenRatio(params.buyEntries, params.sellEntries)
 
   const [buys, sells] = await Promise.all([
     priceEntries(params.buyEntries, params.priceSources),
