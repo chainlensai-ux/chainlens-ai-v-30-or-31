@@ -12,6 +12,7 @@ import type {
 } from './types'
 import { multiplyAmount, resolvePriceForEntry } from './utils'
 import { logBaseDexFinalTotals } from './sources/basedex'
+import { getGoldrushPriceSourceCallCount } from './sources/goldrushPriceSource'
 
 export type {
   PriceableEntry,
@@ -132,6 +133,16 @@ export async function resolvePricingAtTime(params: ResolvePricingAtTimeParams): 
   // fired once this scan's whole pricing pass finishes — replaces scrolling through hundreds of
   // per-call basedex lines to find the last one.
   logBaseDexFinalTotals()
+
+  // GOLDRUSH FINAL-TOTALS SUMMARY, DISCLOSED (GoldRush CU-investigation task): same pattern —
+  // reports the primary GoldRush price-source's cumulative real (cache-miss) call count for this
+  // scan's whole pricing pass, since this is the GoldRush call site most likely to fan out to real
+  // volume in a deep scan (one call per distinct token/timestamp not already cached).
+  // eslint-disable-next-line no-console
+  console.warn('[GOLDRUSH-INVESTIGATION] pricingAtTimeEngine FINAL TOTALS', {
+    goldrushPriceSourceCalls: getGoldrushPriceSourceCallCount(),
+    timestamp: Date.now(),
+  })
 
   return {
     costUsd: buys.usdByTxHash,

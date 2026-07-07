@@ -43,6 +43,21 @@ const GOLDRUSH_CHAIN_SLUGS: Record<string, Chain> = {
   hyperevm: 'hyperevm-mainnet',
 }
 
+// CALL-COUNTER INSTRUMENTATION, DISCLOSED (GoldRush CU-investigation task, same disclosed pattern
+// as basedex.ts): this is the PRIMARY price source, called once per distinct (token, chain,
+// timestamp) priced entry — i.e. it's the GoldRush call site most likely to fan out to real volume
+// in a deep scan (hundreds of buy/sell entries, dozens-to-hundreds of distinct tokens), unlike
+// providerFetchWindow's own goldrush call (a single bounded call per chain, already fully visible
+// via the existing providerDiagnostics log). Counting only, no console spam per call — the lesson
+// from basedex.ts's first version of this same instrumentation, which logged every call and blew
+// past Vercel's per-invocation log capture limit before the one summary line that mattered could
+// fire. One summary line per completed pricing pass (fired by the caller, pricingAtTimeEngine's
+// resolvePricingAtTime, right alongside its existing logBaseDexFinalTotals() call).
+let goldrushPriceSourceCallCount = 0
+export function getGoldrushPriceSourceCallCount(): number {
+  return goldrushPriceSourceCallCount
+}
+
 // YYYY-MM-DD, exactly what getTokenPrices' from/to params require. Never infers a missing/invalid
 // timestamp — an unparseable input returns null so the caller treats it as "no data", never a
 // guessed date.
@@ -66,6 +81,7 @@ export function goldrushPriceSource(client: GoldRushClient): PriceSourceFn {
 
     try {
       logRpcCall({ route: 'pricingAtTimeEngine:goldrushPriceSource', chain, method: 'goldrush_sdk_getTokenPrices' })
+      goldrushPriceSourceCallCount += 1
       const response = await client.PricingService.getTokenPrices(chainSlug, 'USD', token, {
         from: dateString,
         to: dateString,
