@@ -33,6 +33,7 @@ import { recordCuUsage } from '@/app/api/_shared/cuUsageStore'
 import { logFifoPricingDivergence, shouldSampleThisScan } from '@/lib/server/engineComparison'
 import { setJobProgress } from '@/src/modules/scanJobs'
 import { withScanTimeout } from '@/src/utils/timeout'
+import { alchemyAudit } from '@/lib/server/alchemyAudit'
 
 // V2-DIRECT-FAILURE LOGGER: moved here unchanged from the route file (still exported so the route
 // can also tag its own outer catch with the same log tag).
@@ -97,27 +98,72 @@ const TOTAL_MODULES = 11
 // a chance to run and produce real data instead of the whole scan degrading to nothing.
 const MODULE_TIMEOUT_MS = 20_000
 
-// Runs one module's async call with its own timeout. On a real rejection OR a timeout, records the
-// failure into `moduleErrors[moduleName]` and returns the same degrade-shape fallback the original
-// try/catch already used for that module — no module's own logic, fallback shape, or field names
-// were changed, only HOW the call is awaited.
-// Exported for unit testing (workers/walletScanV2.runModuleWithTimeout.test.ts) — the rest of this
-// file has too large a real-provider dependency chain to unit-test directly, but this helper's own
-// timeout/error-recording logic is self-contained and worth locking in independently. `timeoutMs`
-// is an optional override so tests don't have to wait the real 20s default — every real call site
-// in this file omits it and gets MODULE_TIMEOUT_MS.
-export async function runModuleWithTimeout<T>(
+// RPC-CALL AUDIT THRESHOLD, DISCLOSED (runaway-RPC task): reuses lib/server/alchemyAudit.ts's
+// existing global `alchemyAudit.calls` registry — the only real per-call record in this codebase
+// (see that file's own header: every real Alchemy call already goes through `auditRPC()` at its
+// three real call sites, src/modules/providerFetchWindow/utils.ts, src/modules/holdings/utils.ts,
+// src/modules/recoveryPolicy/utils.ts). There is no per-module tag on those calls today, and adding
+// one would mean threading a new parameter through three files this whole session has treated as
+// protected/untouched production code. Instead: snapshot `alchemyAudit.calls.length` right before a
+// module starts, then poll the delta — calls made WHILE this module is running are attributed to
+// it. `resetAlchemyAudit()` already runs once per request (both worker routes call it before
+// dispatching here), so this snapshot is a real per-module count within one scan, not stale data
+// from a previous request on a warm serverless instance.
+const RPC_CALL_THRESHOLD = 200
+const RPC_POLL_INTERVAL_MS = 500
+
+// PREMISE CORRECTION, DISCLOSED: smartMoneyScore (the module this task specifically named) makes
+// ZERO provider calls — it's a synchronous pure scoring function over already-computed numbers
+// (see its own call site below and lib/engine/modules/smartMoney/computeSmartMoneyScore.ts's
+// header). It is NOT wrapped here, same as it was never wrapped by the per-module timeout either —
+// there is nothing for it to loop or burn RPC calls on. The real, heavy provider-calling modules
+// are holdings/trades/chainActivity (and, via those, providerFetchWindow/holdings/recoveryPolicy's
+// real Alchemy call sites) — all 10 async modules below are wrapped, so whichever one is actually
+// looping gets caught regardless of which the task assumed.
+//
+// Runs one module's async call with its own timeout AND an RPC-call-count guard. Whichever fires
+// first — the 20s timeout, or the module's own real Alchemy calls exceeding RPC_CALL_THRESHOLD —
+// stops waiting on it, records the reason into `moduleErrors[moduleName]`, and returns the same
+// degrade-shape fallback the original try/catch already used for that module. HONEST LIMITATION,
+// DISCLOSED (matches this whole codebase's established convention — see src/utils/timeout.ts's own
+// header): this stops WAITING on the module, it does not forcibly cancel whatever fetch is
+// in-flight at the moment of abort (no AbortSignal threading into the three protected provider
+// call sites) — so it bounds how long a runaway loop can block the rest of the scan and makes the
+// problem visible via moduleErrors, but a small amount of additional CU from the one in-flight call
+// can still land after the abort. Real per-module cancellation would need the same wider,
+// out-of-scope change already disclosed in src/utils/timeout.ts.
+//
+// Exported for unit testing (workers/walletScanV2.runWithTimeoutAndRpcAudit.test.ts, renamed from
+// runModuleWithTimeout.test.ts along with this function) — the rest of this file has too large a
+// real-provider dependency chain to unit-test directly, but this helper's own timeout/RPC-threshold/
+// error-recording logic is self-contained and worth locking in independently. `timeoutMs` is an
+// optional override so tests don't have to wait the real 20s default — every real call site in this
+// file omits it and gets MODULE_TIMEOUT_MS.
+export async function runWithTimeoutAndRpcAudit<T>(
   moduleName: string,
   fn: () => Promise<T>,
   fallback: T,
   moduleErrors: Record<string, string>,
   timeoutMs: number = MODULE_TIMEOUT_MS,
 ): Promise<T> {
+  const startCallCount = alchemyAudit.calls.length
+  let rpcGuardTimer: ReturnType<typeof setInterval> | undefined
+  const rpcGuard = new Promise<never>((_, reject) => {
+    rpcGuardTimer = setInterval(() => {
+      const callsThisModule = alchemyAudit.calls.length - startCallCount
+      if (callsThisModule > RPC_CALL_THRESHOLD) {
+        reject(new Error(`RPC_THRESHOLD_EXCEEDED_${callsThisModule}_calls`))
+      }
+    }, RPC_POLL_INTERVAL_MS)
+  })
+
   try {
-    return await withScanTimeout(fn(), timeoutMs)
+    return await Promise.race([withScanTimeout(fn(), timeoutMs), rpcGuard])
   } catch (err) {
     moduleErrors[moduleName] = err instanceof Error ? err.message : String(err)
     return fallback
+  } finally {
+    clearInterval(rpcGuardTimer)
   }
 }
 
@@ -185,7 +231,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     // try/catch degrade-shape was changed to add these.
     const chainOverallStart = performance.now()
     // MODULE ERRORS, DISCLOSED (stuck-at-module-11 task): collects a real timeout/rejection message
-    // per module (see runModuleWithTimeout above), merged into the final response as `moduleErrors`
+    // per module (see runWithTimeoutAndRpcAudit above), merged into the final response as `moduleErrors`
     // — non-fatal, purely additive; a module recorded here still contributed its degrade-shape
     // fallback to every downstream module exactly as it already did before this change.
     const moduleErrors: Record<string, string> = {}
@@ -194,7 +240,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     // eslint-disable-next-line no-console
     console.log('[V2-worker] starting holdings')
     let t0 = performance.now()
-    const chainHoldings = await runModuleWithTimeout('holdings', () => fetchAllHoldings(walletAddress), [] as Awaited<ReturnType<typeof fetchAllHoldings>>, moduleErrors)
+    const chainHoldings = await runWithTimeoutAndRpcAudit('holdings', () => fetchAllHoldings(walletAddress), [] as Awaited<ReturnType<typeof fetchAllHoldings>>, moduleErrors)
     // eslint-disable-next-line no-console
     console.log('[V2-worker] finished holdings in', performance.now() - t0, 'ms', 'count=', chainHoldings.length)
 
@@ -202,7 +248,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     // eslint-disable-next-line no-console
     console.log('[V2-worker] starting pricing')
     t0 = performance.now()
-    const pricing = await runModuleWithTimeout(
+    const pricing = await runWithTimeoutAndRpcAudit(
       'pricing',
       () => priceHoldings(chainHoldings),
       { pricedHoldings: [], totalValueUsd: 0, chainValueUsd: {}, priceStatus: 'unavailable' } as Awaited<ReturnType<typeof priceHoldings>>,
@@ -215,7 +261,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     // eslint-disable-next-line no-console
     console.log('[V2-worker] starting portfolio')
     t0 = performance.now()
-    const portfolioOutput = await runModuleWithTimeout(
+    const portfolioOutput = await runWithTimeoutAndRpcAudit(
       'portfolio',
       () => buildPortfolio(pricing.pricedHoldings, pricing.totalValueUsd, pricing.chainValueUsd),
       {
@@ -237,7 +283,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     // eslint-disable-next-line no-console
     console.log('[V2-worker] starting trades')
     t0 = performance.now()
-    const trades = await runModuleWithTimeout(
+    const trades = await runWithTimeoutAndRpcAudit(
       'trades',
       () => fetchParsedTrades(walletAddress, eventsCache, cuBudget),
       [] as Awaited<ReturnType<typeof fetchParsedTrades>>,
@@ -250,7 +296,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     // eslint-disable-next-line no-console
     console.log('[V2-worker] starting pnl')
     t0 = performance.now()
-    const pnlOutput = await runModuleWithTimeout(
+    const pnlOutput = await runWithTimeoutAndRpcAudit(
       'pnl',
       () => computePnl(pricing.pricedHoldings, chainHoldings, pricing.totalValueUsd, trades),
       {
@@ -289,7 +335,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     // eslint-disable-next-line no-console
     console.log('[V2-worker] starting chainActivity')
     t0 = performance.now()
-    const chainActivityOutput = await runModuleWithTimeout(
+    const chainActivityOutput = await runWithTimeoutAndRpcAudit(
       'chainActivity',
       () => computeChainActivity(
         walletAddress,
@@ -311,7 +357,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     // eslint-disable-next-line no-console
     console.log('[V2-worker] starting risk')
     t0 = performance.now()
-    const riskOutput = await runModuleWithTimeout(
+    const riskOutput = await runWithTimeoutAndRpcAudit(
       'risk',
       () => computeRisk(
         portfolioOutput.portfolio,
@@ -336,7 +382,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     // eslint-disable-next-line no-console
     console.log('[V2-worker] starting personality')
     t0 = performance.now()
-    const personalityOutput = await runModuleWithTimeout(
+    const personalityOutput = await runWithTimeoutAndRpcAudit(
       'personality',
       () => computePersonality(
         portfolioOutput.portfolio,
@@ -363,7 +409,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     // eslint-disable-next-line no-console
     console.log('[V2-worker] starting behavior')
     t0 = performance.now()
-    const behaviorOutput = await runModuleWithTimeout(
+    const behaviorOutput = await runWithTimeoutAndRpcAudit(
       'behavior',
       () => computeBehavior(
         pnlOutput.pnlV2,
@@ -392,7 +438,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     // eslint-disable-next-line no-console
     console.log('[V2-worker] starting signals')
     t0 = performance.now()
-    const signalsOutput = await runModuleWithTimeout(
+    const signalsOutput = await runWithTimeoutAndRpcAudit(
       'signals',
       () => computeSignals(
         portfolioOutput.portfolio,
