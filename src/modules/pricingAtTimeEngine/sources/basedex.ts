@@ -121,6 +121,12 @@ const LATEST_BLOCK_CACHE_TTL_MS = 5_000
 // build.
 const rpcCallCounters: Record<string, { count: number; firstCallAt: number; lastCallAt: number }> = {}
 
+// LOG-VOLUME FIX, DISCLOSED (found live, this task): this used to console.warn on EVERY call, one
+// line per RPC — for a scan with hundreds/thousands of calls, that volume alone was blowing past
+// Vercel's per-invocation log capture limit, so the one line that actually matters (the final
+// summary below) never made it into what the dashboard showed. Counting still happens on every
+// call (unchanged); only the per-call console line is removed, since logBaseDexFinalTotals()
+// already reports the same counts in one line that's guaranteed to survive.
 function trackRpcCall(method: string): void {
   const now = Date.now()
   const existing = rpcCallCounters[method]
@@ -130,14 +136,6 @@ function trackRpcCall(method: string): void {
   } else {
     rpcCallCounters[method] = { count: 1, firstCallAt: now, lastCallAt: now }
   }
-  // eslint-disable-next-line no-console
-  console.warn('[RPC-INVESTIGATION] basedex', {
-    method,
-    module: 'pricingAtTimeEngine:basedex',
-    count: rpcCallCounters[method].count,
-    firstCallAt: rpcCallCounters[method].firstCallAt,
-    lastCallAt: now,
-  })
 }
 
 // FINAL-TOTALS SUMMARY, DISCLOSED: one log line, callable once a scan's pricing pass finishes,
