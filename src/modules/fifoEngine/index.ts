@@ -173,10 +173,32 @@ export function computePnl(
   return { realizedPnlUsd, unrealizedPnlUsd, costBasisUsd }
 }
 
-function derivePublicPnlStatus(verifiedMatchedCount: number, hardInvalid: boolean): PublicPnlStatus {
+// COVERAGE FIX, DISCLOSED (Clark-summary-confidence-mislabeling task): previously this only checked
+// `verifiedMatchedCount >= 10` (an absolute count) to return 'ok' — completely ignoring how much of
+// the wallet's real sell activity actually got matched at all. Found live: a wallet with 17 verified
+// closed lots but 118 unmatched sells (i.e. ~87% of its real sell events have NO cost-basis match at
+// all) was still labeled "Verified FIFO sample — official PnL available." — a real, honest-looking
+// confidence claim the underlying evidence doesn't support. Now also requires that verified lots
+// make up at least half of the wallet's total attempted sell activity (every matched lot, verified
+// or not, plus every completely unmatched sell) before granting the strongest confidence tier —
+// `totalSellAttempts` counts ALL matched lots (`matchedCount`, verified or lower-quality) plus
+// unmatched sells, so a wallet whose sells are mostly unresolved never crosses this bar regardless
+// of its absolute verified count.
+// TEST-SUPPORT EXPORT, DISCLOSED: exported solely so a test can assert this coverage-threshold
+// logic directly, without constructing full normalizedEvents/lot fixtures through buildFifoOutput —
+// no behavior change, same function real callers use.
+export function derivePublicPnlStatus(
+  verifiedMatchedCount: number,
+  matchedCount: number,
+  unmatchedSells: number,
+  hardInvalid: boolean,
+): PublicPnlStatus {
   if (hardInvalid) return 'unavailable'
   if (verifiedMatchedCount === 0) return 'unavailable'
   if (verifiedMatchedCount < 10) return 'limited_verified_sample'
+  const totalSellAttempts = matchedCount + unmatchedSells
+  const verifiedCoverageRatio = totalSellAttempts > 0 ? verifiedMatchedCount / totalSellAttempts : 1
+  if (verifiedCoverageRatio < 0.5) return 'limited_verified_sample'
   return 'ok'
 }
 
@@ -220,7 +242,7 @@ export function buildFifoOutput(params: {
     realizedPnlUsd,
     unrealizedPnlUsd,
     costBasisUsd,
-    publicPnlStatus: derivePublicPnlStatus(verifiedMatchedCount, hardInvalid),
+    publicPnlStatus: derivePublicPnlStatus(verifiedMatchedCount, matchedLots.length, unmatchedSells, hardInvalid),
     integrityFlags,
   }
 }
