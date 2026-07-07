@@ -17795,6 +17795,27 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     totalCredits: _apiTotalCredits,
     totalEstimatedCallsPrevented: _zerionCacheDebug.callsSavedByCache + _providerPnlSkippedChains.length,
   }
+
+  // GOLDRUSH FINAL-TOTALS LOG, DISCLOSED (CU-investigation task, same disclosed pattern already
+  // applied to src/modules/pricingAtTimeEngine/sources/basedex.ts): one summary line per completed
+  // deep wallet scan, reusing the _apiAudit numbers already computed above (the same numbers that
+  // already drive this scan's own credit-budget gating) rather than adding a second, parallel
+  // tracking mechanism that could drift out of sync with the real one. console.warn, not
+  // console.log, for the same confirmed-live reason as basedex.ts: next.config's
+  // compiler.removeConsole strips console.log/info/debug from the production build but keeps warn.
+  // eslint-disable-next-line no-console
+  console.warn('[GOLDRUSH-INVESTIGATION] walletSnapshot FINAL TOTALS', {
+    goldrushCalls: _apiAudit.goldrush.calls,
+    goldrushCredits: _apiAudit.goldrush.credits,
+    goldrushEndpointCounts: _apiAudit.goldrush.endpoints.reduce<Record<string, number>>((acc, e) => {
+      acc[e] = (acc[e] ?? 0) + 1
+      return acc
+    }, {}),
+    goldrushDuplicatesPrevented: _dupEntries.filter(e => e.provider === 'goldrush').length,
+    totalCreditsAllProviders: _apiTotalCredits,
+    timestamp: Date.now(),
+  })
+
   _walletProviderCallAudit.totals = {
     zerionCredits: _apiAudit.zerion.credits,
     goldrushCredits: _apiAudit.goldrush.credits,
