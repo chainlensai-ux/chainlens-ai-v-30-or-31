@@ -40,16 +40,44 @@ function logFanOutSize(kind: 'buys' | 'sells', count: number): void {
   console.warn('[RPC-INVESTIGATION] pricingAtTimeEngine.priceEntries fan-out', { kind, entryCount: count, timestamp: Date.now() })
 }
 
+// CONCURRENCY CAP, DISCLOSED (real-CU-fix, applied live per user confirmation of the measured
+// production evidence — see this file's INSTRUMENTATION comment above for the confirmed numbers:
+// one scan queued 733 entries, fired all at once, and drove 250+ real Alchemy calls in under 2
+// seconds via the basedex fallback). ZERO correctness/precision change: every entry still gets the
+// exact same resolvePriceForEntry() call, in the same order, with the same inputs — only how many
+// run AT ONCE changes. This also directly addresses part of the ROOT cause, not just basedex's own
+// cost: firing hundreds of concurrent requests at CoinGecko's public API (which has real,
+// well-known per-minute rate limits) very plausibly causes widespread false 429 "misses" that have
+// nothing to do with whether CoinGecko actually has the token's price — those false misses are
+// exactly what pushes so many entries into the expensive basedex path in the first place. Capping
+// concurrency gives GoldRush/DexScreener/CoinGecko a real chance to succeed instead of being
+// rate-limited into failure, which should reduce how often basedex is even reached, in addition to
+// preventing the burst itself.
+const PRICE_ENTRY_CONCURRENCY_LIMIT = 15
+
+async function mapWithConcurrencyLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = new Array(items.length)
+  let nextIndex = 0
+  async function worker(): Promise<void> {
+    for (;;) {
+      const i = nextIndex++
+      if (i >= items.length) return
+      results[i] = await fn(items[i])
+    }
+  }
+  const workerCount = Math.min(limit, items.length)
+  await Promise.all(Array.from({ length: workerCount }, () => worker()))
+  return results
+}
+
 async function priceEntries(
   entries: PriceableEntry[],
   priceSources: ResolvePricingAtTimeParams['priceSources'],
 ): Promise<{ usdByTxHash: Record<string, number | null>; breakdown: SourceBreakdown; missing: number }> {
-  const results = await Promise.all(
-    entries.map(async (entry) => {
-      const { price, source } = await resolvePriceForEntry(entry.token, entry.chain, entry.timestamp, priceSources)
-      return { txHash: entry.txHash, usd: multiplyAmount(price, entry.amount), source, missing: price === null }
-    }),
-  )
+  const results = await mapWithConcurrencyLimit(entries, PRICE_ENTRY_CONCURRENCY_LIMIT, async (entry) => {
+    const { price, source } = await resolvePriceForEntry(entry.token, entry.chain, entry.timestamp, priceSources)
+    return { txHash: entry.txHash, usd: multiplyAmount(price, entry.amount), source, missing: price === null }
+  })
 
   const usdByTxHash: Record<string, number | null> = {}
   const breakdown: SourceBreakdown = { primary: 0, fallback: 0, failed: 0 }

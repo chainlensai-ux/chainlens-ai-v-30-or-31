@@ -6,6 +6,13 @@
 // this never hits real RPC/env vars. Asserts two things: (1) a cache hit returns the exact same
 // value the full binary search would have computed — zero precision loss — and (2) it does so
 // without making any further `getBlock` calls.
+//
+// TIMESTAMP BUCKETING, DISCLOSED (real-CU-fix, applied per user confirmation of measured
+// production evidence): findBlockForTimestamp now rounds the requested timestamp down to a
+// 5-minute (300s) bucket before searching/caching, so nearby trades share one search instead of
+// each paying for their own. The exact-second assertions below were updated to expect the
+// resolved block for the BUCKETED timestamp, not the original exact one — this is the disclosed,
+// intentional precision tradeoff, not a regression.
 
 import { describe, it, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
@@ -38,13 +45,14 @@ describe('findBlockForTimestamp caching', () => {
     __resetBaseDexCachesForTest()
   })
 
-  it('resolves the correct block via binary search on a cold cache', async () => {
+  it('resolves the correct block via binary search on a cold cache (bucketed to the nearest 300s)', async () => {
     const { client } = makeFakeClient()
-    // targetTimestampSec corresponding to block 500_000 (500_000 * 2)
+    // targetTimestampSec corresponding to block 500_000 (500_000 * 2) — bucketed down to 999_900
+    // (the nearest 300s boundary at/below 1_000_000), which corresponds to block 499_950.
     const target = 1_000_000
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const result = await findBlockForTimestamp(client as any, target)
-    assert.equal(result, BigInt(500_000))
+    assert.equal(result, BigInt(499_950))
   })
 
   it('a cache hit returns the identical value with zero additional getBlock calls', async () => {
@@ -64,16 +72,18 @@ describe('findBlockForTimestamp caching', () => {
     assert.equal(callsAfterSecond, callsAfterFirst, 'a cache hit must make zero additional getBlock calls')
   })
 
-  it('different timestamps are cached independently and both resolve correctly', async () => {
+  it('different timestamps (far enough apart to land in different 300s buckets) are cached independently and both resolve correctly', async () => {
     const { client } = makeFakeClient()
 
+    // 200_000 buckets down to 199_800 -> block 99_900. 800_000 buckets down to 799_800 -> block
+    // 399_900. Still 600_000s apart, still land in entirely different buckets.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const a = await findBlockForTimestamp(client as any, 200_000) // block 100_000
+    const a = await findBlockForTimestamp(client as any, 200_000)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const b = await findBlockForTimestamp(client as any, 800_000) // block 400_000
+    const b = await findBlockForTimestamp(client as any, 800_000)
 
-    assert.equal(a, BigInt(100_000))
-    assert.equal(b, BigInt(400_000))
+    assert.equal(a, BigInt(99_900))
+    assert.equal(b, BigInt(399_900))
   })
 
   it('a timestamp at/after latest resolves to the latest block without a full search', async () => {
@@ -84,6 +94,32 @@ describe('findBlockForTimestamp caching', () => {
     const result = await findBlockForTimestamp(client as any, target)
     assert.equal(result, LATEST_BLOCK)
     assert.equal(getCallCount(), 1, 'expected only the single "latest" getBlock call, no bisection')
+  })
+
+  it('two timestamps within the same 300s bucket resolve to the identical block (the intended dedup)', async () => {
+    const { client } = makeFakeClient()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const a = await findBlockForTimestamp(client as any, 1_000_000)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const b = await findBlockForTimestamp(client as any, 1_000_050) // 50s later, same 300s bucket
+    assert.equal(a, b)
+  })
+
+  it('in-flight coalescing: two concurrent calls for the same bucket share one search, not two', async () => {
+    const { client, getCallCount } = makeFakeClient()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const [a, b] = await Promise.all([
+      findBlockForTimestamp(client as any, 1_000_000),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      findBlockForTimestamp(client as any, 1_000_010), // same 300s bucket, fired concurrently
+    ])
+    assert.equal(a, b)
+    const callsAfterBoth = getCallCount()
+
+    // A third call for the same (now-cached) bucket must make zero further calls.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await findBlockForTimestamp(client as any, 1_000_020)
+    assert.equal(getCallCount(), callsAfterBoth, 'expected the cached bucket to serve the third call with no new getBlock calls')
   })
 })
 

@@ -152,37 +152,77 @@ async function getLatestBlockCached(client: PublicClient): ReturnType<PublicClie
   return block
 }
 
+// TIMESTAMP BUCKETING, DISCLOSED PRECISION TRADEOFF (real-CU-fix, applied live per user
+// confirmation of measured production evidence): blockForTimestampCache was keyed on the EXACT
+// requested second, so two trades even a few seconds apart each paid the full ~20-30-call
+// bisection search from scratch. Rounding down to a 5-minute bucket before searching/caching means
+// every trade within the same 5-minute window shares one search — a real, order-of-magnitude cut
+// in eth_getBlockByNumber volume for any wallet with multiple trades close together in time (the
+// common case). The real tradeoff: the resolved block (and therefore the price read at it) is now
+// accurate to within this same 5-minute window, not the exact trade second. BUCKET SIZE CHOICE,
+// DISCLOSED: 5 minutes matches DEXSCREENER_FRESHNESS_TOLERANCE_MS above — this file already treats
+// a 5-minute price-staleness window as an acceptable tolerance elsewhere in this same pricing
+// chain, so this isn't a new or looser precision standard, just applying the same one here.
+const BLOCK_TIMESTAMP_BUCKET_SECONDS = 5 * 60
+
+function bucketTimestamp(targetTimestampSec: number): number {
+  return Math.floor(targetTimestampSec / BLOCK_TIMESTAMP_BUCKET_SECONDS) * BLOCK_TIMESTAMP_BUCKET_SECONDS
+}
+
+// IN-FLIGHT REQUEST COALESCING, DISCLOSED (real-CU-fix, zero precision cost): if multiple entries
+// (e.g. several transfer legs in the same transaction, or several trades in the same bucket priced
+// concurrently under the new concurrency cap in pricingAtTimeEngine/index.ts) request the same
+// bucketed timestamp while a search for it is already running, they now share that single in-flight
+// search instead of each starting a redundant duplicate one. This is purely deduplicating identical
+// concurrent work — it changes no computed value, only how many times the same answer is computed.
+const inFlightBlockSearches = new Map<number, Promise<bigint>>()
+
 // TEST-SUPPORT EXPORT, DISCLOSED: exported (alongside a cache-reset helper below) solely so a test
 // can inject a mocked PublicClient and assert the caching behavior without hitting real RPC/env
-// vars — does not change this function's real behavior or signature.
+// vars — does not change this function's real behavior or signature (beyond the disclosed
+// timestamp-bucketing precision tradeoff above, which applies uniformly to every caller).
 export async function findBlockForTimestamp(client: PublicClient, targetTimestampSec: number): Promise<bigint | null> {
-  const cached = blockForTimestampCache.get(targetTimestampSec)
+  const bucketed = bucketTimestamp(targetTimestampSec)
+
+  const cached = blockForTimestampCache.get(bucketed)
   if (cached !== undefined) return cached
 
-  const latest = await getLatestBlockCached(client)
-  if (targetTimestampSec >= Number(latest.timestamp)) {
-    blockForTimestampCache.set(targetTimestampSec, latest.number)
-    return latest.number
-  }
+  const inFlight = inFlightBlockSearches.get(bucketed)
+  if (inFlight) return inFlight
 
-  const two = BigInt(2)
-  const approxBlocksAgo = BigInt(Math.max(0, Math.floor((Number(latest.timestamp) - targetTimestampSec) / 2)))
-  let low = latest.number > approxBlocksAgo * two ? latest.number - approxBlocksAgo * two : BigInt(0)
-  let high = latest.number
-
-  for (let i = 0; i < 30 && low < high; i++) {
-    const mid = (low + high + BigInt(1)) / two
-    logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'getBlock:bisect' })
-    trackRpcCall('getBlock:bisect')
-    const block = await client.getBlock({ blockNumber: mid })
-    if (Number(block.timestamp) <= targetTimestampSec) {
-      low = mid
-    } else {
-      high = mid - BigInt(1)
+  const search = (async (): Promise<bigint> => {
+    const latest = await getLatestBlockCached(client)
+    if (bucketed >= Number(latest.timestamp)) {
+      blockForTimestampCache.set(bucketed, latest.number)
+      return latest.number
     }
+
+    const two = BigInt(2)
+    const approxBlocksAgo = BigInt(Math.max(0, Math.floor((Number(latest.timestamp) - bucketed) / 2)))
+    let low = latest.number > approxBlocksAgo * two ? latest.number - approxBlocksAgo * two : BigInt(0)
+    let high = latest.number
+
+    for (let i = 0; i < 30 && low < high; i++) {
+      const mid = (low + high + BigInt(1)) / two
+      logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'getBlock:bisect' })
+      trackRpcCall('getBlock:bisect')
+      const block = await client.getBlock({ blockNumber: mid })
+      if (Number(block.timestamp) <= bucketed) {
+        low = mid
+      } else {
+        high = mid - BigInt(1)
+      }
+    }
+    blockForTimestampCache.set(bucketed, low)
+    return low
+  })()
+
+  inFlightBlockSearches.set(bucketed, search)
+  try {
+    return await search
+  } finally {
+    inFlightBlockSearches.delete(bucketed)
   }
-  blockForTimestampCache.set(targetTimestampSec, low)
-  return low
 }
 
 // TEST-SUPPORT EXPORT, DISCLOSED: lets a test start each case from a clean cache state. Not called
@@ -192,6 +232,7 @@ export function __resetBaseDexCachesForTest(): void {
   latestBlockCache = null
   poolAddressCache.clear()
   poolPriceCache.clear()
+  inFlightBlockSearches.clear()
 }
 
 // RPC-COST FIX, DISCLOSED (continuation of the findBlockForTimestamp fix above): resolvePoolAddress
