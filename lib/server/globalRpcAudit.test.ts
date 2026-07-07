@@ -4,7 +4,7 @@
 
 import { describe, it, beforeEach, mock } from 'node:test'
 import assert from 'node:assert/strict'
-import { auditGlobalAlchemyCall, resetGlobalRpcAudit, getGlobalRpcAuditSnapshot } from './globalRpcAudit'
+import { auditGlobalAlchemyCall, resetGlobalRpcAudit, getGlobalRpcAuditSnapshot, drainAuditEventQueue } from './globalRpcAudit'
 
 describe('globalRpcAudit', () => {
   beforeEach(() => {
@@ -91,5 +91,46 @@ describe('globalRpcAudit', () => {
     }
     assert.equal(infoMock.mock.calls.length, 1)
     assert.equal(infoMock.mock.calls[0].arguments[0], '[GLOBAL-RPC-AUDIT]')
+  })
+
+  it('queues a "call" event for every audited call, alongside the existing console.info', () => {
+    auditGlobalAlchemyCall('eth_getCode', {})
+    const events = drainAuditEventQueue()
+    assert.equal(events.length, 1)
+    assert.equal(events[0].type, 'call')
+    assert.equal(events[0].method, 'eth_getCode')
+    assert.equal(events[0].count, 1)
+  })
+
+  it('drainAuditEventQueue empties the queue so events are not sent twice', () => {
+    auditGlobalAlchemyCall('eth_getCode', {})
+    const first = drainAuditEventQueue()
+    const second = drainAuditEventQueue()
+    assert.equal(first.length, 1)
+    assert.equal(second.length, 0)
+  })
+
+  it('queues a "burst" event (in addition to "call" events) once the burst threshold is exceeded', () => {
+    for (let i = 0; i < 60; i++) auditGlobalAlchemyCall('eth_getCode', { i })
+    const events = drainAuditEventQueue()
+    const burstEvents = events.filter((e) => e.type === 'burst')
+    const callEvents = events.filter((e) => e.type === 'call')
+    assert.equal(callEvents.length, 60)
+    assert.ok(burstEvents.length > 0)
+  })
+
+  it('queues a "poll" event once a fixed-interval pattern is detected', async () => {
+    for (let i = 0; i < 5; i++) {
+      auditGlobalAlchemyCall('eth_getBalance', { i })
+      await new Promise((r) => setTimeout(r, 1200))
+    }
+    const events = drainAuditEventQueue()
+    assert.ok(events.some((e) => e.type === 'poll'))
+  })
+
+  it('resetGlobalRpcAudit also clears the event queue', () => {
+    auditGlobalAlchemyCall('eth_getCode', {})
+    resetGlobalRpcAudit()
+    assert.deepEqual(drainAuditEventQueue(), [])
   })
 })

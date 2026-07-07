@@ -35,6 +35,27 @@ export type GlobalRpcAuditCall = {
   callerFile: string
 }
 
+// EVENT QUEUE, DISCLOSED (browser-visible-audit-feed task): additive only — every push here happens
+// alongside the existing console.info/console.warn calls below, never instead of them. Consumed by
+// app/api/debug/rpc-audit-stream/route.ts via drainAuditEventQueue(), which empties it on each SSE
+// flush; if nothing is draining it (no debug stream connected), MAX_QUEUE_SIZE bounds memory the
+// same way MAX_ENTRIES_PER_CALLER already does for callsByCaller.
+export type AuditEvent = {
+  type: 'call' | 'burst' | 'poll'
+  callerFile: string
+  method: string
+  timestamp: number
+  count: number
+}
+
+const MAX_QUEUE_SIZE = 1000
+const auditEventQueue: AuditEvent[] = []
+
+function pushAuditEvent(event: AuditEvent): void {
+  auditEventQueue.push(event)
+  if (auditEventQueue.length > MAX_QUEUE_SIZE) auditEventQueue.shift()
+}
+
 const MAX_ENTRIES_PER_CALLER = 500 // bounds memory on a long-lived warm instance; oldest entries drop first
 const BURST_WINDOW_MS = 5_000
 const BURST_THRESHOLD = 50
@@ -69,6 +90,7 @@ function detectBurst(callerFile: string, entries: GlobalRpcAuditCall[], method: 
   if (recent.length > BURST_THRESHOLD) {
     // eslint-disable-next-line no-console
     console.warn('[GLOBAL-RPC-AUDIT] BURST DETECTED', { callerFile, method, count: recent.length, windowMs: BURST_WINDOW_MS })
+    pushAuditEvent({ type: 'burst', callerFile, method, timestamp: Date.now(), count: recent.length })
   }
 }
 
@@ -88,6 +110,7 @@ function detectPollLoop(callerFile: string, entries: GlobalRpcAuditCall[], metho
   if (allWithinTolerance) {
     // eslint-disable-next-line no-console
     console.warn('[GLOBAL-RPC-AUDIT] POLL LOOP DETECTED', { callerFile, method, intervalMs: Math.round(avg) })
+    pushAuditEvent({ type: 'poll', callerFile, method, timestamp: Date.now(), count: entries.length })
   }
 }
 
@@ -106,6 +129,8 @@ export function auditGlobalAlchemyCall(method: string, params: unknown): void {
     if (existing.length > MAX_ENTRIES_PER_CALLER) existing.shift()
     callsByCaller.set(callerFile, existing)
 
+    pushAuditEvent({ type: 'call', callerFile, method, timestamp: entry.timestamp, count: existing.length })
+
     detectBurst(callerFile, existing, method)
     detectPollLoop(callerFile, existing, method)
   } catch (err) {
@@ -117,10 +142,20 @@ export function auditGlobalAlchemyCall(method: string, params: unknown): void {
 // Test/diagnostic support — not called anywhere in real request handling.
 export function resetGlobalRpcAudit(): void {
   callsByCaller.clear()
+  auditEventQueue.length = 0
 }
 
 export function getGlobalRpcAuditSnapshot(): Record<string, number> {
   const out: Record<string, number> = {}
   for (const [caller, entries] of callsByCaller.entries()) out[caller] = entries.length
   return out
+}
+
+// Called by app/api/debug/rpc-audit-stream/route.ts on each SSE flush — returns everything queued
+// since the last drain and empties the queue (per requirement 3, "clear events after sending to
+// avoid duplicates"). Safe to call with no SSE stream connected too (just returns []).
+export function drainAuditEventQueue(): AuditEvent[] {
+  const drained = auditEventQueue.slice()
+  auditEventQueue.length = 0
+  return drained
 }
