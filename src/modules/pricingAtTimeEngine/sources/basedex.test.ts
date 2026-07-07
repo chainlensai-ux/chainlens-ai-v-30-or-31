@@ -16,7 +16,42 @@
 
 import { describe, it, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
+import { decodeFunctionData, encodeFunctionResult } from 'viem'
 import { findBlockForTimestamp, resolvePoolAddress, readPoolPrice, __resetBaseDexCachesForTest } from './basedex'
+
+// Mirrors of basedex.ts's own (private) ABI fragments — standard, canonical interfaces
+// (Multicall3/Uniswap V3/ERC20), redefined here only so the multicall tests below can genuinely
+// encode/decode real calldata round-trip, without exporting internals from basedex.ts.
+const MULTICALL3_ADDRESS = '0xcA11bde05977b3631167028862bE2a173976CA11'
+const MULTICALL3_ABI = [
+  {
+    type: 'function', name: 'aggregate3', stateMutability: 'view',
+    inputs: [{ name: 'calls', type: 'tuple[]', components: [
+      { name: 'target', type: 'address' }, { name: 'allowFailure', type: 'bool' }, { name: 'callData', type: 'bytes' },
+    ] }],
+    outputs: [{ name: 'returnData', type: 'tuple[]', components: [
+      { name: 'success', type: 'bool' }, { name: 'returnData', type: 'bytes' },
+    ] }],
+  },
+] as const
+const FACTORY_ABI = [
+  { type: 'function', name: 'getPool', stateMutability: 'view',
+    inputs: [{ name: 'tokenA', type: 'address' }, { name: 'tokenB', type: 'address' }, { name: 'fee', type: 'uint24' }],
+    outputs: [{ name: 'pool', type: 'address' }] },
+] as const
+const POOL_ABI = [
+  { type: 'function', name: 'slot0', stateMutability: 'view', inputs: [],
+    outputs: [
+      { name: 'sqrtPriceX96', type: 'uint160' }, { name: 'tick', type: 'int24' },
+      { name: 'observationIndex', type: 'uint16' }, { name: 'observationCardinality', type: 'uint16' },
+      { name: 'observationCardinalityNext', type: 'uint16' }, { name: 'feeProtocol', type: 'uint8' },
+      { name: 'unlocked', type: 'bool' },
+    ] },
+  { type: 'function', name: 'token0', stateMutability: 'view', inputs: [], outputs: [{ type: 'address' }] },
+] as const
+const DECIMALS_ABI = [
+  { type: 'function', name: 'decimals', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint8' }] },
+] as const
 
 // Simulates a chain with a deterministic block->timestamp mapping: block N has timestamp N*2
 // (Base's real ~2s block time), latest block is 1_000_000.
@@ -273,5 +308,164 @@ describe('readPoolPrice caching', () => {
       client as any, POOL as `0x${string}`, TOKEN as `0x${string}`, WETH as `0x${string}`, BigInt(456),
     )
     assert.ok(getCallCount() > callsAfterFirst, 'a different blockNumber must trigger a fresh read, not a stale cache hit')
+  })
+})
+
+// These tests exercise the ACTUAL multicall path (resolvePoolAddress/readPoolPrice's real,
+// non-fallback branch) by giving the fake client a working `call` method that genuinely decodes
+// the incoming aggregate3 calldata and encodes a real aggregate3 response — a full round-trip
+// through real viem encode/decode, not a shortcut mock. This is what proves the batching actually
+// works, as opposed to the suites above (whose fake clients only implement `readContract`, so they
+// silently exercise the sequential FALLBACK path, not the multicall path itself).
+function makeFakeMulticallClient(opts: {
+  poolAddress: string | null
+  sqrtPriceX96?: bigint
+  token0?: string
+  tokenDecimals?: number
+  pairedDecimals?: number
+  failSubCalls?: boolean
+}) {
+  let callCount = 0
+  const client = {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async call({ to, data }: { to: string; data: `0x${string}` }) {
+      callCount++
+      assert.equal(to.toLowerCase(), MULTICALL3_ADDRESS.toLowerCase(), 'expected the multicall path to target Multicall3')
+      const { args } = decodeFunctionData({ abi: MULTICALL3_ABI, data })
+      const calls = args[0] as { target: `0x${string}`; allowFailure: boolean; callData: `0x${string}` }[]
+
+      const results = calls.map((call) => {
+        if (opts.failSubCalls) return { success: false, returnData: '0x' as `0x${string}` }
+        // Dispatch by selector: try each known ABI in turn (mirrors how a real chain would route
+        // by (target, selector) — here every sub-call's target/selector combination is unambiguous
+        // given the test's own fixed addresses).
+        try {
+          const decoded = decodeFunctionData({ abi: FACTORY_ABI, data: call.callData })
+          if (decoded.functionName === 'getPool') {
+            return {
+              success: true,
+              returnData: encodeFunctionResult({
+                abi: FACTORY_ABI, functionName: 'getPool',
+                result: (opts.poolAddress ?? '0x0000000000000000000000000000000000000000') as `0x${string}`,
+              }),
+            }
+          }
+        } catch { /* not a getPool call */ }
+        try {
+          const decoded = decodeFunctionData({ abi: POOL_ABI, data: call.callData })
+          if (decoded.functionName === 'slot0') {
+            return {
+              success: true,
+              returnData: encodeFunctionResult({
+                abi: POOL_ABI, functionName: 'slot0',
+                result: [opts.sqrtPriceX96 ?? BigInt('79228162514264337593543950336'), 0, 0, 0, 0, 0, true],
+              }),
+            }
+          }
+          if (decoded.functionName === 'token0') {
+            return {
+              success: true,
+              returnData: encodeFunctionResult({
+                abi: POOL_ABI, functionName: 'token0',
+                result: (opts.token0 ?? TOKEN) as `0x${string}`,
+              }),
+            }
+          }
+        } catch { /* not a pool call */ }
+        const decoded = decodeFunctionData({ abi: DECIMALS_ABI, data: call.callData })
+        assert.equal(decoded.functionName, 'decimals')
+        // Distinguish token vs pairedWith decimals by which target this sub-call was aimed at.
+        const isToken = call.target.toLowerCase() === TOKEN.toLowerCase()
+        return {
+          success: true,
+          returnData: encodeFunctionResult({
+            abi: DECIMALS_ABI, functionName: 'decimals',
+            result: isToken ? (opts.tokenDecimals ?? 18) : (opts.pairedDecimals ?? 18),
+          }),
+        }
+      })
+
+      return {
+        // WRAPPING NOTE: aggregate3 has exactly one output (`returnData`, itself an array), and
+        // viem's encodeFunctionResult only wraps `result` in `[result]` when `result` is NOT
+        // already an array — so passing our already-array `results` directly gets misinterpreted
+        // as "one value per output" instead of "the single output's array value". Wrapping once
+        // more (`[results]`) is what makes `Array.isArray(result)` see the correct outer shape.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        data: encodeFunctionResult({ abi: MULTICALL3_ABI, functionName: 'aggregate3', result: [results] as any }),
+      }
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async readContract(): Promise<any> {
+      throw new Error('unexpected readContract call — multicall path should not fall back here')
+    },
+  }
+  return { client, getCallCount: () => callCount }
+}
+
+describe('resolvePoolAddress via the real multicall path', () => {
+  beforeEach(() => {
+    __resetBaseDexCachesForTest()
+  })
+
+  it('resolves the pool address via a single batched aggregate3 call', async () => {
+    const { client, getCallCount } = makeFakeMulticallClient({ poolAddress: POOL })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const pool = await resolvePoolAddress(client as any, TOKEN as `0x${string}`, WETH as `0x${string}`)
+    assert.equal(pool, POOL)
+    assert.equal(getCallCount(), 1, 'expected all 3 fee-tier attempts to collapse into one multicall call')
+  })
+
+  it('a no-pool result via multicall still populates the negative cache correctly', async () => {
+    const { client, getCallCount } = makeFakeMulticallClient({ poolAddress: null })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const pool = await resolvePoolAddress(client as any, TOKEN as `0x${string}`, WETH as `0x${string}`)
+    assert.equal(pool, null)
+    const callsAfterFirst = getCallCount()
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const second = await resolvePoolAddress(client as any, TOKEN as `0x${string}`, WETH as `0x${string}`)
+    assert.equal(second, null)
+    assert.equal(getCallCount(), callsAfterFirst, 'a repeat lookup for the same known-dead pair must hit the negative cache')
+  })
+})
+
+describe('readPoolPrice via the real multicall path', () => {
+  beforeEach(() => {
+    __resetBaseDexCachesForTest()
+  })
+
+  it('resolves the identical price to the sequential path via a single batched aggregate3 call', async () => {
+    const multi = makeFakeMulticallClient({ poolAddress: POOL, token0: TOKEN, tokenDecimals: 18, pairedDecimals: 18 })
+    const sequential = makeFakeReadContractClient()
+
+    const priceViaMulticall = await readPoolPrice(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      multi.client as any, POOL as `0x${string}`, TOKEN as `0x${string}`, WETH as `0x${string}`, BigInt(123),
+    )
+    const priceViaSequential = await readPoolPrice(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      sequential.client as any, POOL as `0x${string}`, TOKEN as `0x${string}`, WETH as `0x${string}`, BigInt(456),
+    )
+
+    assert.equal(priceViaMulticall, priceViaSequential, 'multicall and sequential paths must compute the identical price')
+    assert.equal(multi.getCallCount(), 1, 'expected all 4 reads to collapse into one multicall call')
+  })
+
+  it('attempts the sequential fallback when a multicall sub-call fails (never fabricates a partial price)', async () => {
+    __resetBaseDexCachesForTest()
+    const multi = makeFakeMulticallClient({ poolAddress: POOL, failSubCalls: true })
+    // This fake client's readContract throws unconditionally (see makeFakeMulticallClient above),
+    // so a correct implementation reacts to the multicall's partial failure by attempting the
+    // sequential fallback — which then itself throws here, proving the fallback path was genuinely
+    // exercised (not skipped) and that no partial/fabricated price is ever silently returned.
+    await assert.rejects(
+      () => readPoolPrice(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        multi.client as any, POOL as `0x${string}`, TOKEN as `0x${string}`, WETH as `0x${string}`, BigInt(789),
+      ),
+      /unexpected readContract call/,
+      'expected the sequential fallback to have been attempted (and to surface its own real failure), never a fabricated price',
+    )
   })
 })

@@ -13,7 +13,7 @@
 // WETH/USDC/Uniswap V3 Factory addresses below are real, publicly documented, canonical contract
 // addresses on Base — not invented.
 
-import { createPublicClient, http, type PublicClient } from 'viem'
+import { createPublicClient, decodeFunctionResult, encodeFunctionData, http, type PublicClient } from 'viem'
 import { base } from 'viem/chains'
 import type { SupportedChain } from '../../providerFetchWindow/types'
 import { fetchCoingeckoPriceDetailed } from './coingecko'
@@ -23,6 +23,72 @@ const WETH_BASE = '0x4200000000000000000000000000000000000006'
 const USDC_BASE = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
 const UNISWAP_V3_FACTORY_BASE = '0x33128a8fC17869897dcE68Ed026d694621f6FDfD'
 const UNISWAP_V3_FEE_TIERS = [500, 3000, 10000] as const // 0.05% / 0.3% / 1% — standard tiers
+
+// MULTICALL-BATCHING FIX, DISCLOSED (real-CU-fix, applied per user confirmation of measured
+// production evidence): resolvePoolAddress made up to 3 separate eth_call requests per (token,
+// pairedWith) pair (one per fee tier, sequentially), and readPoolPrice made 4 separate eth_call
+// requests per pool (slot0, token0, and 2x decimals) — together the single largest remaining
+// basedex RPC cost after the block-search and negative-cache fixes (607 + 828 = 1,435 calls in one
+// measured scan). Multicall3 is a standard, canonical contract deployed at this same address on
+// virtually every EVM chain (including Base) that batches N read-only contract calls into ONE
+// eth_call, each with its own independent success/failure — same on-chain data, same explicit
+// historical block number per call, decoded exactly as the individual calls would decode, just
+// fewer RPC round-trips to get there. Zero precision/accuracy cost: nothing about which contracts,
+// functions, or block number get queried changes, only how many separate calls it takes.
+const MULTICALL3_ADDRESS = '0xcA11bde05977b3631167028862bE2a173976CA11' as const
+
+const MULTICALL3_ABI = [
+  {
+    type: 'function',
+    name: 'aggregate3',
+    stateMutability: 'view',
+    inputs: [
+      {
+        name: 'calls',
+        type: 'tuple[]',
+        components: [
+          { name: 'target', type: 'address' },
+          { name: 'allowFailure', type: 'bool' },
+          { name: 'callData', type: 'bytes' },
+        ],
+      },
+    ],
+    outputs: [
+      {
+        name: 'returnData',
+        type: 'tuple[]',
+        components: [
+          { name: 'success', type: 'bool' },
+          { name: 'returnData', type: 'bytes' },
+        ],
+      },
+    ],
+  },
+] as const
+
+type Multicall3Call = { target: `0x${string}`; allowFailure: boolean; callData: `0x${string}` }
+type Multicall3Result = { success: boolean; returnData: `0x${string}` }
+
+// FALLBACK SAFETY, DISCLOSED: Multicall3 wasn't deployed on Base from block 0 — it went live
+// shortly after Base's mainnet launch, at whatever block its CREATE2 deployment transaction landed
+// in. A scan pricing a trade from before that block would get a real eth_call failure (no contract
+// at that address yet at that historical block). Every caller of this helper below wraps it in a
+// try/catch and falls back to the original, pre-multicall sequential-calls implementation in that
+// case — so the worst case for very early Base history is "costs what it used to," never a wrong
+// or missing price.
+async function multicall(
+  client: PublicClient,
+  calls: Multicall3Call[],
+  blockNumber?: bigint,
+): Promise<Multicall3Result[]> {
+  const data = encodeFunctionData({ abi: MULTICALL3_ABI, functionName: 'aggregate3', args: [calls] })
+  const raw = blockNumber !== undefined
+    ? await client.call({ to: MULTICALL3_ADDRESS, data, blockNumber })
+    : await client.call({ to: MULTICALL3_ADDRESS, data })
+  if (!raw.data) throw new Error('multicall: no return data')
+  const decoded = decodeFunctionResult({ abi: MULTICALL3_ABI, functionName: 'aggregate3', data: raw.data })
+  return decoded as unknown as Multicall3Result[]
+}
 
 const UNISWAP_V3_FACTORY_ABI = [
   {
@@ -447,23 +513,12 @@ export async function resolvePoolAddress(
   if (inFlight) return inFlight
 
   const search = (async (): Promise<`0x${string}` | null> => {
-    for (const fee of UNISWAP_V3_FEE_TIERS) {
-      try {
-        logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:getPool' })
-        trackRpcCall('readContract:getPool')
-        const pool = await client.readContract({
-          address: UNISWAP_V3_FACTORY_BASE as `0x${string}`,
-          abi: UNISWAP_V3_FACTORY_ABI,
-          functionName: 'getPool',
-          args: [tokenAddress, pairedWith, fee],
-        })
-        if (pool && pool !== '0x0000000000000000000000000000000000000000') {
-          poolAddressCache.set(cacheKey, pool)
-          return pool
-        }
-      } catch {
-        // try the next fee tier
-      }
+    const pool = await resolvePoolAddressViaMulticall(client, tokenAddress, pairedWith)
+      .catch(() => resolvePoolAddressSequential(client, tokenAddress, pairedWith))
+
+    if (pool) {
+      poolAddressCache.set(cacheKey, pool)
+      return pool
     }
     negativePoolCache.set(cacheKey, Date.now() + NEGATIVE_POOL_CACHE_TTL_MS)
     return null
@@ -475,6 +530,68 @@ export async function resolvePoolAddress(
   } finally {
     inFlightPoolSearches.delete(cacheKey)
   }
+}
+
+// MULTICALL PATH, DISCLOSED: batches all 3 fee-tier getPool attempts into ONE eth_call via
+// Multicall3's aggregate3 (allowFailure: true per sub-call, so one reverting fee tier doesn't take
+// down the others — same as the try/catch-per-tier behavior the sequential fallback below has
+// always had). Picks the first non-zero pool address found, in the same fee-tier priority order as
+// before. Throws (letting the caller fall back to resolvePoolAddressSequential) if the multicall
+// itself fails — e.g. Multicall3 not yet deployed at this historical context.
+async function resolvePoolAddressViaMulticall(
+  client: PublicClient,
+  tokenAddress: `0x${string}`,
+  pairedWith: `0x${string}`,
+): Promise<`0x${string}` | null> {
+  const calls: Multicall3Call[] = UNISWAP_V3_FEE_TIERS.map((fee) => ({
+    target: UNISWAP_V3_FACTORY_BASE as `0x${string}`,
+    allowFailure: true,
+    callData: encodeFunctionData({
+      abi: UNISWAP_V3_FACTORY_ABI,
+      functionName: 'getPool',
+      args: [tokenAddress, pairedWith, fee],
+    }),
+  }))
+
+  logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:multicall:getPool' })
+  trackRpcCall('readContract:multicall:getPool')
+  const results = await multicall(client, calls)
+
+  for (const result of results) {
+    if (!result.success) continue
+    const pool = decodeFunctionResult({
+      abi: UNISWAP_V3_FACTORY_ABI,
+      functionName: 'getPool',
+      data: result.returnData,
+    })
+    if (pool && pool !== '0x0000000000000000000000000000000000000000') return pool
+  }
+  return null
+}
+
+// FALLBACK PATH, DISCLOSED: the original, pre-multicall sequential implementation — unchanged
+// logic, used only when the multicall attempt above throws.
+async function resolvePoolAddressSequential(
+  client: PublicClient,
+  tokenAddress: `0x${string}`,
+  pairedWith: `0x${string}`,
+): Promise<`0x${string}` | null> {
+  for (const fee of UNISWAP_V3_FEE_TIERS) {
+    try {
+      logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:getPool' })
+      trackRpcCall('readContract:getPool')
+      const pool = await client.readContract({
+        address: UNISWAP_V3_FACTORY_BASE as `0x${string}`,
+        abi: UNISWAP_V3_FACTORY_ABI,
+        functionName: 'getPool',
+        args: [tokenAddress, pairedWith, fee],
+      })
+      if (pool && pool !== '0x0000000000000000000000000000000000000000') return pool
+    } catch {
+      // try the next fee tier
+    }
+  }
+  return null
 }
 
 // TEST-SUPPORT EXPORT, DISCLOSED: same reasoning as resolvePoolAddress above.
@@ -493,20 +610,9 @@ export async function readPoolPrice(
     return cachedPrice
   }
 
-  logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:slot0' })
-  trackRpcCall('readContract:slot0')
-  logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:token0' })
-  trackRpcCall('readContract:token0')
-  logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:decimals' })
-  trackRpcCall('readContract:decimals')
-  logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:decimals' })
-  trackRpcCall('readContract:decimals')
-  const [slot0, token0, tokenDecimals, pairedDecimals] = await Promise.all([
-    client.readContract({ address: poolAddress, abi: UNISWAP_V3_POOL_ABI, functionName: 'slot0', blockNumber }),
-    client.readContract({ address: poolAddress, abi: UNISWAP_V3_POOL_ABI, functionName: 'token0', blockNumber }),
-    client.readContract({ address: tokenAddress, abi: ERC20_DECIMALS_ABI, functionName: 'decimals', blockNumber }),
-    client.readContract({ address: pairedWith, abi: ERC20_DECIMALS_ABI, functionName: 'decimals', blockNumber }),
-  ])
+  const [slot0, token0, tokenDecimals, pairedDecimals] = await readPoolPriceInputsViaMulticall(
+    client, poolAddress, tokenAddress, pairedWith, blockNumber,
+  ).catch(() => readPoolPriceInputsSequential(client, poolAddress, tokenAddress, pairedWith, blockNumber))
 
   const sqrtPriceX96 = slot0[0]
   // price of token1 in terms of token0, in raw (undecimalized) units:
@@ -519,6 +625,73 @@ export async function readPoolPrice(
   const price = isTokenToken0 ? 1 / token0PerToken1 : token0PerToken1
   poolPriceCache.set(cacheKey, price)
   return price
+}
+
+type PoolPriceInputs = [
+  readonly [bigint, number, number, number, number, number, boolean],
+  `0x${string}`,
+  number,
+  number,
+]
+
+// MULTICALL PATH, DISCLOSED: batches slot0 + token0 + both decimals() reads into ONE eth_call via
+// Multicall3's aggregate3 (allowFailure: true per sub-call). Throws (letting the caller fall back
+// to readPoolPriceInputsSequential) if the multicall itself fails, or if any individual sub-call
+// failed — readPoolPrice needs all four values to compute a price, so a partial result is treated
+// the same as a full failure, never a fabricated/partial price.
+async function readPoolPriceInputsViaMulticall(
+  client: PublicClient,
+  poolAddress: `0x${string}`,
+  tokenAddress: `0x${string}`,
+  pairedWith: `0x${string}`,
+  blockNumber: bigint,
+): Promise<PoolPriceInputs> {
+  const calls: Multicall3Call[] = [
+    { target: poolAddress, allowFailure: true, callData: encodeFunctionData({ abi: UNISWAP_V3_POOL_ABI, functionName: 'slot0' }) },
+    { target: poolAddress, allowFailure: true, callData: encodeFunctionData({ abi: UNISWAP_V3_POOL_ABI, functionName: 'token0' }) },
+    { target: tokenAddress, allowFailure: true, callData: encodeFunctionData({ abi: ERC20_DECIMALS_ABI, functionName: 'decimals' }) },
+    { target: pairedWith, allowFailure: true, callData: encodeFunctionData({ abi: ERC20_DECIMALS_ABI, functionName: 'decimals' }) },
+  ]
+
+  logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:multicall:poolPrice' })
+  trackRpcCall('readContract:multicall:poolPrice')
+  const results = await multicall(client, calls, blockNumber)
+
+  if (results.length !== 4 || results.some((r) => !r.success)) {
+    throw new Error('multicall: one or more poolPrice sub-calls failed')
+  }
+
+  const slot0 = decodeFunctionResult({ abi: UNISWAP_V3_POOL_ABI, functionName: 'slot0', data: results[0].returnData })
+  const token0 = decodeFunctionResult({ abi: UNISWAP_V3_POOL_ABI, functionName: 'token0', data: results[1].returnData })
+  const tokenDecimals = decodeFunctionResult({ abi: ERC20_DECIMALS_ABI, functionName: 'decimals', data: results[2].returnData })
+  const pairedDecimals = decodeFunctionResult({ abi: ERC20_DECIMALS_ABI, functionName: 'decimals', data: results[3].returnData })
+
+  return [slot0, token0, tokenDecimals, pairedDecimals]
+}
+
+// FALLBACK PATH, DISCLOSED: the original, pre-multicall sequential implementation — unchanged
+// logic, used only when the multicall attempt above throws.
+async function readPoolPriceInputsSequential(
+  client: PublicClient,
+  poolAddress: `0x${string}`,
+  tokenAddress: `0x${string}`,
+  pairedWith: `0x${string}`,
+  blockNumber: bigint,
+): Promise<PoolPriceInputs> {
+  logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:slot0' })
+  trackRpcCall('readContract:slot0')
+  logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:token0' })
+  trackRpcCall('readContract:token0')
+  logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:decimals' })
+  trackRpcCall('readContract:decimals')
+  logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:decimals' })
+  trackRpcCall('readContract:decimals')
+  return Promise.all([
+    client.readContract({ address: poolAddress, abi: UNISWAP_V3_POOL_ABI, functionName: 'slot0', blockNumber }),
+    client.readContract({ address: poolAddress, abi: UNISWAP_V3_POOL_ABI, functionName: 'token0', blockNumber }),
+    client.readContract({ address: tokenAddress, abi: ERC20_DECIMALS_ABI, functionName: 'decimals', blockNumber }),
+    client.readContract({ address: pairedWith, abi: ERC20_DECIMALS_ABI, functionName: 'decimals', blockNumber }),
+  ])
 }
 
 export type BaseDexPriceResult = { priceUsd: number | null; reason: string | null }
