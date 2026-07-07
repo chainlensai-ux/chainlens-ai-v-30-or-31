@@ -58,6 +58,39 @@ export function getGoldrushPriceSourceCallCount(): number {
   return goldrushPriceSourceCallCount
 }
 
+// NEGATIVE-RESULT CACHE, DISCLOSED (real-CU-fix, GoldRush CU-investigation task — same pattern as
+// basedex.ts's negativePoolCache): measured live on a real scan, this primary price source made
+// 1,045 real calls across one scan's pricing passes, and the pricing-source breakdown showed
+// `primary: 0` for every one of them — every single call returned null, yet each repeat occurrence
+// of the same token re-ran the exact same doomed call from scratch (avgLookupsPerToken measured at
+// 6.71 in that scan). The wrapping cache this function's caller applies (withPriceSourceCache in
+// src/pipeline/index.ts) only caches non-null results, so a token GoldRush has no data for was never
+// cached at any level.
+//
+// SCOPE, DISCLOSED (a real precision tradeoff, not free): cached per (token, chain), NOT per
+// (token, chain, day) — the underlying query is date-scoped, but tokens that hit this path
+// consistently look like ones GoldRush simply doesn't index at all (confirmed live: 100% null rate
+// across a whole scan spanning many distinct dates), not ones with occasional day-specific gaps. A
+// day-scoped cache would miss most of the measured repeat waste (the same token trading across
+// several different days would still cost one real call per day). The real risk this accepts: if a
+// token genuinely has data on some OTHER date than the one that first missed, this cache would
+// skip checking it for the TTL window below — the same accepted tradeoff basedex.ts's own negative
+// pool cache already uses, for the same reason (bounded staleness, not permanent).
+//
+// TTL, NOT PERMANENT, DISCLOSED: 5 minutes, matching basedex.ts's own negativePoolCache TTL — a
+// token GoldRush doesn't index yet could be indexed later, so this is a bounded delay, not a
+// permanent "never check again."
+const NEGATIVE_PRICE_CACHE_TTL_MS = 5 * 60 * 1000
+const negativeGoldrushPriceCache = new Map<string, number>() // `${chain}:${token}` -> expiresAtMs
+
+// IN-FLIGHT COALESCING, DISCLOSED: same reasoning as basedex.ts's inFlightPoolSearches — concurrent
+// lookups for the exact same (token, chain, date) under pricingAtTimeEngine's concurrency-capped
+// parallel priceEntries() share one real call instead of each starting a redundant duplicate one.
+// Keyed by the exact (token, chain, date) the real call itself uses (narrower than the negative
+// cache's per-token key above), since two concurrent lookups for the same token on DIFFERENT dates
+// must not be conflated into sharing one date's specific result.
+const inFlightGoldrushPriceLookups = new Map<string, Promise<number | null>>()
+
 // YYYY-MM-DD, exactly what getTokenPrices' from/to params require. Never infers a missing/invalid
 // timestamp — an unparseable input returns null so the caller treats it as "no data", never a
 // guessed date.
@@ -66,6 +99,14 @@ function toDateString(timestampMs: number): string | null {
   const date = new Date(timestampMs)
   if (Number.isNaN(date.getTime())) return null
   return date.toISOString().slice(0, 10)
+}
+
+// TEST-SUPPORT EXPORT, DISCLOSED: same reasoning as basedex.ts's own __resetBaseDexCachesForTest —
+// lets a test start each case from a clean cache state. Not called anywhere in real request handling.
+export function __resetGoldrushPriceSourceCachesForTest(): void {
+  negativeGoldrushPriceCache.clear()
+  inFlightGoldrushPriceLookups.clear()
+  goldrushPriceSourceCallCount = 0
 }
 
 // Builds a PriceSourceFn backed by a real GoldRushClient instance. Never fabricates a price: an
@@ -79,25 +120,54 @@ export function goldrushPriceSource(client: GoldRushClient): PriceSourceFn {
     const dateString = toDateString(timestamp)
     if (!dateString) return null
 
+    const tokenLower = token.toLowerCase()
+    const negativeCacheKey = `${chain}:${tokenLower}`
+    const negativeExpiresAt = negativeGoldrushPriceCache.get(negativeCacheKey)
+    if (negativeExpiresAt !== undefined && Date.now() < negativeExpiresAt) return null
+
+    const inFlightKey = `${negativeCacheKey}:${dateString}`
+    const inFlight = inFlightGoldrushPriceLookups.get(inFlightKey)
+    if (inFlight) return inFlight
+
+    const lookup = (async (): Promise<number | null> => {
+      try {
+        logRpcCall({ route: 'pricingAtTimeEngine:goldrushPriceSource', chain, method: 'goldrush_sdk_getTokenPrices' })
+        goldrushPriceSourceCallCount += 1
+        const response = await client.PricingService.getTokenPrices(chainSlug, 'USD', token, {
+          from: dateString,
+          to: dateString,
+        })
+
+        if (response.error || !response.data) {
+          negativeGoldrushPriceCache.set(negativeCacheKey, Date.now() + NEGATIVE_PRICE_CACHE_TTL_MS)
+          return null
+        }
+
+        const items = response.data[0]?.items
+        if (!Array.isArray(items) || items.length === 0) {
+          negativeGoldrushPriceCache.set(negativeCacheKey, Date.now() + NEGATIVE_PRICE_CACHE_TTL_MS)
+          return null
+        }
+
+        const price = items[0]?.price
+        if (typeof price === 'number' && Number.isFinite(price)) return price
+        negativeGoldrushPriceCache.set(negativeCacheKey, Date.now() + NEGATIVE_PRICE_CACHE_TTL_MS)
+        return null
+      } catch {
+        // GoldRush threw (network error, rate limit, invalid API key, etc.) — never a crash, never a
+        // fabricated price. Deliberately NOT added to the negative cache: a thrown error (as opposed
+        // to a genuine "no data" response) says nothing about whether this token has real price
+        // data, so caching it as a negative result could hide a token that would have resolved fine
+        // on a retry a moment later.
+        return null
+      }
+    })()
+
+    inFlightGoldrushPriceLookups.set(inFlightKey, lookup)
     try {
-      logRpcCall({ route: 'pricingAtTimeEngine:goldrushPriceSource', chain, method: 'goldrush_sdk_getTokenPrices' })
-      goldrushPriceSourceCallCount += 1
-      const response = await client.PricingService.getTokenPrices(chainSlug, 'USD', token, {
-        from: dateString,
-        to: dateString,
-      })
-
-      if (response.error || !response.data) return null
-
-      const items = response.data[0]?.items
-      if (!Array.isArray(items) || items.length === 0) return null
-
-      const price = items[0]?.price
-      return typeof price === 'number' && Number.isFinite(price) ? price : null
-    } catch {
-      // GoldRush threw (network error, rate limit, invalid API key, etc.) — never a crash, never a
-      // fabricated price.
-      return null
+      return await lookup
+    } finally {
+      inFlightGoldrushPriceLookups.delete(inFlightKey)
     }
   }
 }
