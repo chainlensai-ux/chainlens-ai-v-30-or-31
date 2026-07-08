@@ -179,4 +179,25 @@ const qstashConfigured = Boolean(process.env.QSTASH_CURRENT_SIGNING_KEY || proce
 if (!qstashConfigured) {
   console.warn('[WORKER] QSTASH_CURRENT_SIGNING_KEY/QSTASH_NEXT_SIGNING_KEY not configured — QStash signature verification is disabled; relying on SCAN_WORKER_SECRET only')
 }
-export const POST = qstashConfigured ? verifySignatureAppRouter(postHandler) : postHandler
+
+// SECOND CRASH VECTOR, DISCLOSED (Preview-stuck-at-Initializing diagnosis): the qstashConfigured
+// check above only protects against verifySignatureAppRouter's OWN documented throw condition
+// (missing signing keys). But verifySignatureAppRouter's real implementation
+// (node_modules/@upstash/qstash/nextjs.js) calls the SDK's internal `shouldUseDevelopmentMode()`
+// UNCONDITIONALLY, before it even checks the signing keys — and that function throws synchronously
+// if the QSTASH_DEV environment variable is set to anything other than
+// "true"/"false"/"1"/"0"/empty/unset. So even with signing keys correctly configured, a stray or
+// malformed QSTASH_DEV value would still make this exact call throw at module-import time. Wrapping
+// the call itself in try/catch closes this regardless of which internal check ends up throwing —
+// any failure here falls back to the unwrapped handler (still protected by SCAN_WORKER_SECRET)
+// instead of taking the whole route down.
+function buildPost(): typeof postHandler {
+  if (!qstashConfigured) return postHandler
+  try {
+    return verifySignatureAppRouter(postHandler)
+  } catch (err) {
+    console.error('[WORKER] verifySignatureAppRouter construction failed — falling back to the unwrapped handler; relying on SCAN_WORKER_SECRET only', err instanceof Error ? err.message : String(err))
+    return postHandler
+  }
+}
+export const POST = buildPost()

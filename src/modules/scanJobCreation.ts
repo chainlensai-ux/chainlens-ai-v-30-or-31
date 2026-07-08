@@ -51,7 +51,35 @@ function workerBaseUrl(): string {
 // version wrong a second way), this uses the official Client.publishJSON() from `@upstash/qstash`,
 // which targets the correct versioned endpoint internally and reads QSTASH_URL/QSTASH_TOKEN from
 // env automatically when not passed explicitly.
-const qstashClient = new QStashClient()
+//
+// MODULE-LOAD-TIME CRASH FIX, DISCLOSED (Preview-stuck-at-Initializing diagnosis): this used to be
+// `const qstashClient = new QStashClient()` at module scope, executed unconditionally the instant
+// this file is imported (by app/api/scan-start/route.ts and
+// app/api/scan-v2/full-scan/start/route.ts) — before any request arrives. The `Client` constructor
+// itself calls the SDK's internal `shouldUseDevelopmentMode()`, which THROWS SYNCHRONOUSLY if the
+// `QSTASH_DEV` environment variable is set to anything other than "true"/"false"/"1"/"0"/empty/unset
+// (confirmed by reading node_modules/@upstash/qstash/index.js directly — not assumed). This is a
+// real, distinct crash vector from the one already guarded in
+// app/api/scan-v2/worker/route.ts (that guard only covers verifySignatureAppRouter's own
+// signing-key check, a completely separate code path from this Client construction). If QSTASH_DEV
+// ever ends up set to an unexpected value in Preview (a stray/placeholder value, a copy-paste
+// mistake, anything non-boolean-ish), this constructor throws at IMPORT time, which crashes every
+// route that imports this module — exactly the "function fails to initialize" failure mode. Fixed
+// by constructing the client lazily, inside a function, on the first actual publish attempt (a real
+// request, never at import time) and wrapping construction in try/catch so ANY constructor failure
+// — this one or an unknown future one — degrades to the safe direct-fetch fallback below instead of
+// crashing the module.
+let qstashClient: QStashClient | null | undefined // undefined = not yet attempted, null = construction failed
+function getQstashClient(): QStashClient | null {
+  if (qstashClient !== undefined) return qstashClient
+  try {
+    qstashClient = new QStashClient()
+  } catch (err) {
+    console.error('[scan-job] QStash Client construction failed — falling back to direct worker calls', err instanceof Error ? err.message : String(err))
+    qstashClient = null
+  }
+  return qstashClient
+}
 
 // LOCAL-DEV FALLBACK, DISCLOSED CORRECTION: an earlier version of this function returned early
 // (never triggering the worker at all) when QSTASH_TOKEN wasn't set, reasoning that a silent
@@ -71,8 +99,14 @@ async function triggerWorker(jobId: string): Promise<void> {
 
   const secretHeaders = process.env.SCAN_WORKER_SECRET ? { 'x-worker-secret': process.env.SCAN_WORKER_SECRET } : undefined
 
-  if (!process.env.QSTASH_TOKEN) {
-    console.warn('[scan-job] QSTASH_TOKEN is not configured — falling back to a direct worker call (fine for local dev; set QSTASH_TOKEN in real deployments for queueing/retries/signed requests)')
+  const client = process.env.QSTASH_TOKEN ? getQstashClient() : null
+  if (!client) {
+    if (process.env.QSTASH_TOKEN) {
+      // QSTASH_TOKEN was set but getQstashClient() still returned null — construction itself threw
+      // (see getQstashClient's own header); already logged there, just falling back here.
+    } else {
+      console.warn('[scan-job] QSTASH_TOKEN is not configured — falling back to a direct worker call (fine for local dev; set QSTASH_TOKEN in real deployments for queueing/retries/signed requests)')
+    }
     try {
       const res = await fetch(workerUrl, {
         method: 'POST',
@@ -89,7 +123,7 @@ async function triggerWorker(jobId: string): Promise<void> {
   }
 
   try {
-    await qstashClient.publishJSON({
+    await client.publishJSON({
       url: workerUrl,
       body: { jobId },
       // Still forwarded through to the worker route as a real HTTP header on the request QStash
