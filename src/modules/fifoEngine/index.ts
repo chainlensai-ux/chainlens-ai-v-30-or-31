@@ -122,6 +122,12 @@ export function matchLotsFIFO(
         evidenceQuality: isVerified ? 'verified' : 'unpriced',
       })
 
+      // Shrink the lot's cost basis by the same proportion as the amount just consumed, so a
+      // partially-sold lot's remaining costBasisUsd reflects only its remaining amount — not the
+      // original full-lot cost basis. Without this, computePnl's remaining-open-lot cost basis
+      // double-counts the portion already realized above (costBasisForPortion).
+      if (lot.costBasisUsd != null) lot.costBasisUsd -= costBasisForPortion ?? 0
+      lot.amountOpened -= amountFromThisLot
       lot.amountRemaining -= amountFromThisLot
       remainingToMatch -= amountFromThisLot
       matchedAnyAmount = true

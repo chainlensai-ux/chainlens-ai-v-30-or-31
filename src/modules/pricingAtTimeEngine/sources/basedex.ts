@@ -456,10 +456,11 @@ export function __resetBaseDexCachesForTest(): void {
 // VALUE-TYPE CORRECTION, DISCLOSED: the task's own suggested poolPriceCache type was
 // `Map<string, bigint>` — readPoolPrice's real, unmodified return type is `Promise<number | null>`
 // (a decimal-adjusted USD-denominated ratio, not a raw on-chain bigint), so the cache is typed
-// `Map<string, number>` to match what this function actually returns; no change to that return
-// type itself.
+// `Map<string, number | null>` to match what this function actually returns — `null` is a real,
+// permanent, cacheable outcome too (an uninitialized pool's sqrtPriceX96 === 0 at a given historical
+// block is a settled fact, same as any other historical price at that block).
 const poolAddressCache = new Map<string, `0x${string}`>()
-const poolPriceCache = new Map<string, number>()
+const poolPriceCache = new Map<string, number | null>()
 
 // NEGATIVE-RESULT CACHE, DISCLOSED (real-CU-fix, applied per user confirmation of measured
 // production evidence: distinct-token ratio logging showed avgLookupsPerToken=6.37 across 115
@@ -615,6 +616,22 @@ export async function readPoolPrice(
   ).catch(() => readPoolPriceInputsSequential(client, poolAddress, tokenAddress, pairedWith, blockNumber))
 
   const sqrtPriceX96 = slot0[0]
+
+  // ZERO-PRICE FIX, DISCLOSED: a pool that exists on-chain (passes getPool) but has never had
+  // initialize() called has slot0().sqrtPriceX96 === 0 — a real, legitimate on-chain state, not a
+  // hypothetical. Previously, when tokenAddress was the pool's token0, rawRatio = 0 ** 2 = 0 sailed
+  // straight through as if it were a real price (Number.isFinite(0) is true, so every caller's
+  // finiteness guard accepted it), fabricating a $0 evidenced price instead of falling through to
+  // the next price source. The other orientation (token1) instead produced 1/0 = Infinity, which
+  // correctly failed the finiteness check — so this bug only ever fired for exactly half of
+  // uninitialized pools, purely depending on which address happens to sort as token0. Same failure
+  // category as the earlier -$39T decimal-orientation bug: an unchecked pool state silently
+  // producing a plausible-looking wrong price instead of null/evidence-missing.
+  if (sqrtPriceX96 === BigInt(0)) {
+    poolPriceCache.set(cacheKey, null)
+    return null
+  }
+
   // price of token1 in terms of token0, in raw (undecimalized) units:
   const rawRatio = (Number(sqrtPriceX96) / 2 ** 96) ** 2
   const isTokenToken0 = token0.toLowerCase() === tokenAddress.toLowerCase()

@@ -101,15 +101,7 @@ async function mapWithConcurrencyLimit<T, R>(items: T[], limit: number, fn: (ite
   return results
 }
 
-async function priceEntries(
-  entries: PriceableEntry[],
-  priceSources: ResolvePricingAtTimeParams['priceSources'],
-): Promise<{ usdByTxHash: Record<string, number | null>; breakdown: SourceBreakdown; missing: number }> {
-  const results = await mapWithConcurrencyLimit(entries, PRICE_ENTRY_CONCURRENCY_LIMIT, async (entry) => {
-    const { price, source } = await resolvePriceForEntry(entry.token, entry.chain, entry.timestamp, priceSources)
-    return { txHash: entry.txHash, usd: multiplyAmount(price, entry.amount), source, missing: price === null }
-  })
-
+function summarizeEntryResults(results: Array<{ txHash: string; usd: number | null; source: keyof SourceBreakdown; missing: boolean }>) {
   const usdByTxHash: Record<string, number | null> = {}
   const breakdown: SourceBreakdown = { primary: 0, fallback: 0, failed: 0 }
   let missing = 0
@@ -123,6 +115,38 @@ async function priceEntries(
   return { usdByTxHash, breakdown, missing }
 }
 
+// CONCURRENCY CAP FIX, DISCLOSED: previously, buys and sells each ran through their own independent
+// mapWithConcurrencyLimit(entries, PRICE_ENTRY_CONCURRENCY_LIMIT, ...) call, launched concurrently
+// via Promise.all below. Two pools of up to 30 workers each meant a scan with large buy AND sell
+// lists could drive up to ~60 simultaneous downstream price-source calls — silently double the
+// burst PRICE_ENTRY_CONCURRENCY_LIMIT was raised/tuned to allow, reintroducing exactly the
+// false-429 risk this cap exists to prevent. Fixed by combining buy+sell entries into one shared
+// worker pool capped at PRICE_ENTRY_CONCURRENCY_LIMIT total, tagging each entry with its list so
+// results can still be split back into separate buy/sell breakdowns afterward.
+async function priceAllEntries(
+  buyEntries: PriceableEntry[],
+  sellEntries: PriceableEntry[],
+  priceSources: ResolvePricingAtTimeParams['priceSources'],
+): Promise<{
+  buys: { usdByTxHash: Record<string, number | null>; breakdown: SourceBreakdown; missing: number }
+  sells: { usdByTxHash: Record<string, number | null>; breakdown: SourceBreakdown; missing: number }
+}> {
+  const tagged = [
+    ...buyEntries.map((entry) => ({ entry, list: 'buy' as const })),
+    ...sellEntries.map((entry) => ({ entry, list: 'sell' as const })),
+  ]
+
+  const results = await mapWithConcurrencyLimit(tagged, PRICE_ENTRY_CONCURRENCY_LIMIT, async ({ entry, list }) => {
+    const { price, source } = await resolvePriceForEntry(entry.token, entry.chain, entry.timestamp, priceSources)
+    return { list, txHash: entry.txHash, usd: multiplyAmount(price, entry.amount), source, missing: price === null }
+  })
+
+  return {
+    buys: summarizeEntryResults(results.filter((r) => r.list === 'buy')),
+    sells: summarizeEntryResults(results.filter((r) => r.list === 'sell')),
+  }
+}
+
 // PURE (given deterministic priceSources responses). Resolves real historical USD pricing for
 // every buy/sell entry independently, via caller-injected priceSources only. Never fabricates a
 // price, a token/chain/timestamp, or a fallback source — a source that returns/throws null simply
@@ -132,10 +156,7 @@ export async function resolvePricingAtTime(params: ResolvePricingAtTimeParams): 
   logFanOutSize('sells', params.sellEntries.length)
   logDistinctTokenRatio(params.buyEntries, params.sellEntries)
 
-  const [buys, sells] = await Promise.all([
-    priceEntries(params.buyEntries, params.priceSources),
-    priceEntries(params.sellEntries, params.priceSources),
-  ])
+  const { buys, sells } = await priceAllEntries(params.buyEntries, params.sellEntries, params.priceSources)
 
   // FINAL-TOTALS SUMMARY, DISCLOSED: one line per scan reporting basedex's cumulative RPC counts,
   // fired once this scan's whole pricing pass finishes — replaces scrolling through hundreds of
