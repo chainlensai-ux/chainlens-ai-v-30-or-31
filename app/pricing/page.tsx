@@ -6,14 +6,6 @@ import Navbar from '@/components/Navbar'
 import { supabase } from '@/lib/supabaseClient'
 import { AFFILIATE_REF_KEY, isValidReferralCode, normalizeReferralCode, readReferralCodeFromCookie } from '@/lib/affiliate/referral'
 import type { UserPlan } from '@/lib/planFeatures'
-import PayPalVerifyScreen from '@/app/frontend/components/PayPalVerifyScreen'
-
-// Static PayPal Native Checkout Page link, DISCLOSED: this link carries no per-app metadata and
-// has no webhook tied to it, so the app can't know automatically when someone pays through it —
-// that's exactly why the "Card" flow below opens this link AND then shows PayPalVerifyScreen,
-// which verifies the resulting transaction ID for real against PayPal's own Reporting API
-// (POST /api/paypal/verify) before granting anything.
-const PAYPAL_CHECKOUT_URL = 'https://www.paypal.com/ncp/payment/LA29DL2QZQSL'
 
 type PlanId = 'free' | 'pro' | 'elite'
 
@@ -113,25 +105,66 @@ export default function PricingPage() {
   const [planReady, setPlanReady] = useState(false)
   const [checkoutLoading, setCheckoutLoading] = useState<PlanId | null>(null)
   const [checkoutError, setCheckoutError] = useState<string | null>(null)
-  const [payPalVerifyPlan, setPayPalVerifyPlan] = useState<'pro' | 'elite' | null>(null)
+  const [awaitingPayPalActivation, setAwaitingPayPalActivation] = useState(false)
+
+  async function fetchCurrentPlan(token: string): Promise<UserPlan | null> {
+    try {
+      const res = await fetch('/api/user-settings', {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) return null
+      const json = await res.json() as Record<string, unknown>
+      const p = json?.plan ?? json?.effectivePlan ?? (json?.settings as Record<string, unknown>)?.plan
+      return p === 'pro' || p === 'elite' ? (p as UserPlan) : null
+    } catch {
+      return null
+    }
+  }
 
   useEffect(() => {
     supabase.auth.getSession().then(async ({ data }) => {
       setSessionReady(true)
       const token = data.session?.access_token
       if (!token) { setPlanReady(true); return }
-      try {
-        const res = await fetch('/api/user-settings', {
-          headers: { Authorization: `Bearer ${token}` },
-        })
-        if (res.ok) {
-          const json = await res.json() as Record<string, unknown>
-          const p = json?.plan ?? json?.effectivePlan ?? (json?.settings as Record<string, unknown>)?.plan
-          if (p === 'pro' || p === 'elite') setUserPlan(p as UserPlan)
-        }
-      } catch { /* stay on free */ }
+      const p = await fetchCurrentPlan(token)
+      if (p) setUserPlan(p)
       setPlanReady(true)
     })
+  }, [])
+
+  // After PayPal redirects back from the subscription approval flow (return_url set by
+  // /api/paypal/create-subscription), the plan hasn't been granted yet — that only happens once
+  // PayPal's BILLING.SUBSCRIPTION.ACTIVATED webhook lands at /api/paypal/webhook, which can take a
+  // few seconds after redirect. Poll /api/user-settings briefly so the UI reflects the real
+  // activation instead of silently staying on "Free" until the next full page load.
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const params = new URLSearchParams(window.location.search)
+    const subscriptionParam = params.get('paypal_subscription')
+    if (subscriptionParam !== 'approved') return
+    window.history.replaceState({}, '', '/pricing')
+
+    let cancelled = false
+    let attempts = 0
+    const poll = async () => {
+      if (cancelled) return
+      setAwaitingPayPalActivation(true)
+      const { data: { session } } = await supabase.auth.getSession()
+      const token = session?.access_token
+      if (!token || cancelled) { setAwaitingPayPalActivation(false); return }
+      const p = await fetchCurrentPlan(token)
+      if (cancelled) return
+      if (p) {
+        setUserPlan(p)
+        setAwaitingPayPalActivation(false)
+        return
+      }
+      attempts += 1
+      if (attempts >= 8) { setAwaitingPayPalActivation(false); return } // ~24s of polling, then give up quietly
+      window.setTimeout(poll, 3000)
+    }
+    poll()
+    return () => { cancelled = true }
   }, [])
 
   // Shared by both payment methods — redirects to sign-in and remembers where to return to.
@@ -180,18 +213,38 @@ export default function PricingPage() {
     }
   }
 
-  // Card/PayPal flow: this uses a STATIC PayPal link (no per-app metadata, no webhook), so the app
-  // can't know automatically when someone pays through it. Opens the link, then reveals
-  // PayPalVerifyScreen so the user can paste back their transaction ID — which IS verified for real
-  // against PayPal's own Reporting API (POST /api/paypal/verify) before anything is granted.
-  async function handleCardPay(planId: 'pro' | 'elite') {
-    const { data: { session } } = await supabase.auth.getSession()
-    if (!session?.access_token) {
-      redirectToAuth('/pricing')
-      return
+  // Real, connected PayPal Subscriptions flow: creates a recurring subscription against the live
+  // PAYPAL_PRO_PLAN_ID/PAYPAL_ELITE_PLAN_ID Billing Plan via /api/paypal/create-subscription, then
+  // redirects to PayPal's own approval URL. Once the user approves, PayPal fires
+  // BILLING.SUBSCRIPTION.ACTIVATED at /api/paypal/webhook, which is what actually grants the plan
+  // (see docs/paypal-verification.md's "Subscriptions" section) — there is no manual verification
+  // step in this flow at all.
+  async function handlePayPalPay(planId: 'pro' | 'elite') {
+    setCheckoutError(null)
+    setCheckoutLoading(planId)
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const token = session?.access_token
+      if (!token) {
+        redirectToAuth('/pricing')
+        return
+      }
+      const res = await fetch('/api/paypal/create-subscription', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ plan: planId }),
+      })
+      const json = await res.json() as { approvalUrl?: string; error?: string }
+      if (!res.ok || !json.approvalUrl) {
+        setCheckoutError(json.error ?? 'Could not start PayPal subscription. Try again.')
+        return
+      }
+      window.location.href = json.approvalUrl
+    } catch {
+      setCheckoutError('Could not start PayPal subscription. Try again.')
+    } finally {
+      setCheckoutLoading(null)
     }
-    window.open(PAYPAL_CHECKOUT_URL, '_blank', 'noopener,noreferrer')
-    setPayPalVerifyPlan(planId)
   }
 
   return (
@@ -390,31 +443,19 @@ export default function PricingPage() {
                         <button
                           className='cta-box cta-box-card'
                           disabled={isLoading || checkoutLoading !== null}
-                          onClick={() => handleCardPay(plan.id as 'pro' | 'elite')}
+                          onClick={() => handlePayPalPay(plan.id as 'pro' | 'elite')}
                           style={{ opacity: isLoading ? 0.7 : 1 }}
                         >
-                          {isLoading ? 'Opening…' : 'Card'}
-                          <small>PayPal</small>
+                          {isLoading ? 'Redirecting…' : 'PayPal'}
+                          <small>Subscription</small>
                         </button>
                       </div>
                     )}
 
                     {planReady && isPaid && !isCurrent && (
                       <p style={{ margin:'8px 0 0', fontSize:10, color:'#334155', lineHeight:1.4, textAlign:'center' }}>
-                        Crypto (USDC/ETH on Base) or card via PayPal
+                        Crypto (USDC/ETH on Base) or a recurring PayPal subscription
                       </p>
-                    )}
-
-                    {payPalVerifyPlan === plan.id && (
-                      <div style={{ marginTop: 14 }}>
-                        <PayPalVerifyScreen
-                          plan={plan.id as 'pro' | 'elite'}
-                          onVerified={(activatedPlan) => {
-                            setUserPlan(activatedPlan)
-                            setPayPalVerifyPlan(null)
-                          }}
-                        />
-                      </div>
                     )}
                   </div>
                 </div>
@@ -433,6 +474,13 @@ export default function PricingPage() {
             ))}
           </aside>
         </section>
+
+        {/* PayPal subscription approved, waiting for the webhook to activate the plan */}
+        {awaitingPayPalActivation && (
+          <div style={{ marginTop:16, maxWidth:480, marginLeft:'auto', marginRight:'auto', background:'rgba(45,212,191,0.08)', border:'1px solid rgba(45,212,191,0.30)', borderRadius:10, padding:'10px 16px', color:'#5eead4', fontSize:13, textAlign:'center' }}>
+            PayPal subscription approved — activating your plan…
+          </div>
+        )}
 
         {/* Global checkout error */}
         {checkoutError && (

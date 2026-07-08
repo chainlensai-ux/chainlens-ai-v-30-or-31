@@ -1,120 +1,101 @@
-# PayPal payments — static link + manual transaction verification
+# PayPal payments — recurring Subscriptions
 
-ChainLens offers PayPal as a second payment option next to crypto (NowPayments). Unlike crypto,
-this does **not** use PayPal's Orders v2 API or a webhook. It uses a pre-existing static PayPal
-Native Checkout Page link plus a manual "paste your transaction ID back" verification step, because
-the checkout link itself carries no per-app metadata and has no webhook attached to it.
+ChainLens offers PayPal as a second payment option next to crypto (NowPayments), as a real
+recurring **PayPal Subscriptions** integration — full Subscriptions API + signature-verified
+webhook. This is the only PayPal payment flow in the app.
+
+**REMOVED, DISCLOSED:** an earlier one-time-payment flow (a static PayPal checkout link + manual
+"paste your transaction ID" entry, verified via the Transaction Search/Reporting API) has been
+deleted entirely — its UI (`PayPalVerifyScreen`), API route (`/api/paypal/verify`), and the
+`lookupPayPalTransaction` code in `lib/paypal.ts` are all gone, per explicit instruction to replace
+manual verification with the Subscriptions flow below rather than keep both. The `paypal_transactions`
+table (`docs/supabase-paypal-transactions.sql`) is no longer written to by anything; drop it if you
+don't need the historical rows.
 
 ## Flow
 
-1. User clicks "Card" on `/pricing` (`handleCardPay` in `app/pricing/page.tsx`). If they're not
-   signed in, they're redirected to auth first — PayPal verification requires an authenticated
-   session (see "Why Bearer-derived userId" below).
-2. The static PayPal link (`https://www.paypal.com/ncp/payment/LA29DL2QZQSL`) opens in a new tab.
-   The user pays there, on PayPal's own hosted page.
-3. Back on `/pricing`, `<PayPalVerifyScreen />` is shown. The user copies the Transaction ID from
-   their PayPal receipt/email and pastes it in, then clicks "Verify Payment".
-4. That calls `POST /api/paypal/verify` with `{ transactionId, plan }` and the user's Supabase
-   session Bearer token.
-5. The route (`app/api/paypal/verify/route.ts`):
-   - Rate-limits the request.
-   - Derives `userId` from the authenticated session — **not** from any client-supplied field.
-   - Rejects malformed transaction IDs before calling out to PayPal.
-   - Checks `paypal_transactions` for an existing row with that `transaction_id`: if it already
-     belongs to this same user, returns success idempotently (e.g. the user double-clicked or
-     retried); if it belongs to a *different* user, rejects with a conflict (prevents transaction-ID
-     reuse across accounts).
-   - Calls `lookupPayPalTransaction()` (`lib/paypal.ts`), which gets an OAuth2 token via
-     client-credentials and calls PayPal's Transaction Search / Reporting API:
-     `GET /v1/reporting/transactions?transaction_id=...`. This endpoint is scoped to whichever
-     PayPal business account owns `PAYPAL_CLIENT_ID`/`PAYPAL_CLIENT_SECRET` — it can only ever
-     return a transaction that was actually paid *to that account*, which is what makes "this was
-     really paid to us" verifiable without a separate receiver-email field.
-   - Validates the transaction:
-     - `transaction_status === 'S'` (PayPal's real status codes are single letters — `S` success,
-       `D` denied, `P` pending, `V` reversed — not the string `"COMPLETED"`).
-     - A payer email is present on the transaction.
-     - Currency and amount match the plan's expected price (`PAYPAL_EXPECTED_CURRENCY`,
-       `PAYPAL_PRO_PRICE`/`PAYPAL_ELITE_PRICE`, with a small tolerance for PayPal fee rounding).
-   - On success: calls `activateUserPlanServerSide(userId, plan, transactionId)` — the exact same
-     function the crypto payment flow uses — then inserts a row into `paypal_transactions`.
-   - Returns `{ success: true, plan }`, and the UI updates the user's plan immediately.
-6. `/terminal/settings` reads `effectivePlan` from `/api/user-settings` and shows a "Current Plan"
-   badge (Free / Pro / Elite) with an upgrade link when on Free.
+1. User clicks "PayPal" on `/pricing` (`handlePayPalPay` in `app/pricing/page.tsx`). If they're not
+   signed in, they're redirected to auth first.
+2. The frontend calls `POST /api/paypal/create-subscription` with the user's Supabase session
+   Bearer token and `{ plan: 'pro' | 'elite' }`.
+3. The route (`app/api/paypal/create-subscription/route.ts`):
+   - Rate-limits the request, derives `userId` from the authenticated session (never trusts a
+     client-supplied user id).
+   - Looks up the real PayPal Billing Plan id for the requested plan from
+     `PAYPAL_PRO_PLAN_ID`/`PAYPAL_ELITE_PLAN_ID` — 503s with a clear error if not configured.
+   - Blocks creating a second subscription if the user already has a `pending` or `active` one on
+     file, so a double-click (or subscribing again while already subscribed) can't leave the user
+     with two live PayPal subscriptions both actually charging them while this app only tracks one.
+   - Calls `createPayPalSubscription()` (`lib/paypal.ts`), which does the real
+     `POST /v1/billing/subscriptions` call, tagging the subscription with
+     `custom_id = "<plan>:<userId>"` — this is how later webhook events get attributed back to the
+     right ChainLens account without trusting anything the client sends.
+   - Returns `{ approvalUrl, subscriptionId }`.
+4. The frontend redirects the browser to `approvalUrl` — PayPal's own hosted approval page.
+5. The user approves the subscription on PayPal's site, then is redirected back to
+   `/pricing?paypal_subscription=approved`.
+6. PayPal fires webhook events at `POST /api/paypal/webhook`. Every event is:
+   - Verified for a real PayPal signature (`verifyPayPalWebhookSignature`, PayPal's own
+     `verify-webhook-signature` API) before anything else happens.
+   - Checked against `paypal_webhook_events` (unique on PayPal's own event id) — a redelivered
+     event (PayPal retries on timeout/non-2xx) is detected and skipped rather than reprocessed.
+   - For `BILLING.SUBSCRIPTION.CREATED`/`ACTIVATED`, cross-checked: the event's own `resource.plan_id`
+     must match the plan its `custom_id` claims (via `PAYPAL_PRO_PLAN_ID`/`PAYPAL_ELITE_PLAN_ID`) —
+     defense-in-depth against a subscription created outside this app's own route with a
+     mismatched/forged `custom_id`.
 
-## Setup required (PayPal Developer Dashboard)
-
-The "Transaction Search" product must be added to your PayPal REST app (App → Add Products →
-Transaction Search). A plain REST app without it gets a 403 from the Reporting API.
-
-## Disclosed deviations from a literal "COMPLETED status, client-supplied userId" spec
-
-- **userId comes from the Bearer session token, never from the request body.** Trusting a
-  client-supplied `userId` would let anyone upgrade an arbitrary account by guessing/copying its ID.
-- **Status check is `'S'`, not `"COMPLETED"`.** PayPal's real Reporting API returns single-letter
-  status codes; there is no `"COMPLETED"` value to check for.
-- **Pricing defaults to the app's real $30/$60 USD**, not an example price — configurable via
-  `PAYPAL_PRO_PRICE`, `PAYPAL_ELITE_PRICE`, `PAYPAL_EXPECTED_CURRENCY` in case the PayPal link is
-  ever priced differently.
-- **A 31-day search window**, PayPal's maximum for the Reporting API — a transaction older than 31
-  days cannot be verified this way at all; this is a PayPal API limit, not something this code
-  can work around.
-
-## Database
-
-See `docs/supabase-paypal-transactions.sql` for the `paypal_transactions` table (unique
-`transaction_id` constraint enforces one-time use per transaction) and its RLS policies.
-
-## Subscriptions (recurring billing) — a separate flow
-
-Alongside the one-time flow above, ChainLens also supports real recurring PayPal Subscriptions —
-a genuine Orders/Subscriptions API + webhook integration, distinct from the static-link flow.
-
-### Flow
-
-1. `<PayPalSubscribeButton plan="pro" />` calls `POST /api/paypal/create-subscription` with the
-   user's Bearer session token.
-2. The route creates a real PayPal subscription (`POST /v1/billing/subscriptions`) against a
-   Billing Plan (`PAYPAL_PRO_PLAN_ID`/`PAYPAL_ELITE_PLAN_ID` — created ahead of time in the PayPal
-   Developer Dashboard; this code cannot create Billing Plans themselves), tagging it with
-   `custom_id = "<plan>:<userId>"` so later webhook events can be attributed back to the right
-   account without trusting anything the client sends.
-3. The browser is redirected to the returned PayPal approval URL. The user approves the
-   subscription on PayPal's own site, then is redirected back to `/pricing`.
-4. PayPal fires webhook events at `POST /api/paypal/webhook`, which verifies each event's signature
-   via PayPal's `verify-webhook-signature` API before acting on it:
+   Event handling:
    - `BILLING.SUBSCRIPTION.CREATED` — inserts a `pending` row into `paypal_subscriptions`.
-   - `BILLING.SUBSCRIPTION.ACTIVATED` — sets `plan`/`effectivePlan` to pro/elite via the same
-     `activateUserPlanServerSide()` the other two payment flows use, and updates
-     `paypal_subscriptions.status = 'active'` + `next_billing_date`.
+   - `BILLING.SUBSCRIPTION.ACTIVATED` — sets `plan`/`effectivePlan` to pro/elite via
+     `activateUserPlanServerSide()` (the exact same function the crypto payment flow uses), and
+     updates `paypal_subscriptions.status = 'active'` + `next_billing_date`.
    - `PAYMENT.SALE.COMPLETED` (recurring renewal charges) — looks up the subscription by
      `billing_agreement_id` and re-activates the plan, keeping it current on each billing cycle.
    - `BILLING.SUBSCRIPTION.CANCELLED` — marks the subscription row `cancelled`, and downgrades the
      user to free **only if** this subscription was the actual source of their paid plan (checked
      against the stored payment reference) — so cancelling a subscription never downgrades a user
-     who separately paid via crypto or the manual-verification PayPal flow.
-5. `/terminal/settings` shows the current plan and, when an active PayPal subscription exists, its
-   next billing date (via `nextBillingDate` from `/api/user-settings`).
+     who separately paid via crypto.
+7. Back on `/pricing`, since the plan isn't granted until the webhook lands (a few seconds after
+   redirect), the page polls `/api/user-settings` for up to ~24s after returning from
+   `?paypal_subscription=approved`, showing "activating your plan…" until it sees the real plan
+   change (or gives up quietly if the webhook is unusually slow — the plan will still show correctly
+   on the next page load once it lands).
+8. `/terminal/settings` reads `effectivePlan` from `/api/user-settings` and shows a "Current Plan"
+   badge (Free / Pro / Elite) plus, when an active PayPal subscription exists, its next billing date.
 
-### Setup required
+## Setup required (PayPal Developer Dashboard)
 
-- Two Billing Plans in the PayPal Developer Dashboard (or via the Billing Plans API out-of-band),
-  one per paid tier, with their IDs in `PAYPAL_PRO_PLAN_ID`/`PAYPAL_ELITE_PLAN_ID`.
-- A webhook in the PayPal Developer Dashboard pointed at `/api/paypal/webhook` on whichever domain
-  is live (preview: `https://chainlens-vthirty.vercel.app`, production:
-  `https://www.chainlensai.app`), subscribed to `BILLING.SUBSCRIPTION.CREATED`,
-  `BILLING.SUBSCRIPTION.ACTIVATED`, `BILLING.SUBSCRIPTION.CANCELLED`, `PAYMENT.SALE.COMPLETED`,
-  with its Webhook ID in `PAYPAL_SUBSCRIPTIONS_WEBHOOK_ID`.
-- `docs/supabase-paypal-subscriptions.sql` — the `paypal_subscriptions` table + RLS.
+- Two Billing Plans, one per paid tier, with their ids in `PAYPAL_PRO_PLAN_ID`/`PAYPAL_ELITE_PLAN_ID`.
+- A webhook pointed at `/api/paypal/webhook` on whichever domain is live (preview:
+  `https://chainlens-vthirty.vercel.app`, production: `https://www.chainlensai.app`), subscribed to
+  `BILLING.SUBSCRIPTION.CREATED`, `BILLING.SUBSCRIPTION.ACTIVATED`, `BILLING.SUBSCRIPTION.CANCELLED`,
+  `PAYMENT.SALE.COMPLETED`, with its Webhook ID in `PAYPAL_SUBSCRIPTIONS_WEBHOOK_ID`.
+- `docs/supabase-paypal-subscriptions.sql` — the `paypal_subscriptions` and `paypal_webhook_events`
+  tables + RLS.
 
-### Disclosed deviations from a literal "Prisma + Postgres" spec
+## Environment variables
 
-This app has no Prisma/PostgreSQL layer anywhere — everything is Supabase. Rather than introduce a
-second ORM/database alongside Supabase (a much larger, riskier change with its own migrations and
-connection pooling), the originally-requested `User.plan`/`effectivePlan` fields and `Subscription`
-model are implemented as Supabase columns/tables instead:
-- `user.plan` → the existing `user_settings.plan` column.
-- `user.effectivePlan` → **computed**, not stored, via the existing `resolveEffectivePlan()` (a
-  trial-aware plan resolver already used everywhere else in the app) — kept as computed rather than
-  adding a second source of truth that could drift from it.
-- `Subscription` model → the `paypal_subscriptions` table above.
+```
+PAYPAL_CLIENT_ID=<paypal-rest-app-client-id>
+PAYPAL_CLIENT_SECRET=<paypal-rest-app-client-secret>
+PAYPAL_ENV=live               # or 'sandbox' for testing — selects api-m.paypal.com vs api-m.sandbox.paypal.com
+PAYPAL_PRO_PLAN_ID=<paypal-billing-plan-id-for-pro>
+PAYPAL_ELITE_PLAN_ID=<paypal-billing-plan-id-for-elite>
+PAYPAL_SUBSCRIPTIONS_WEBHOOK_ID=<paypal-webhook-id>
+```
+
+## Disclosed deviations
+
+- **userId comes from the Bearer session token, never from the request body.** Trusting a
+  client-supplied `userId` would let anyone upgrade an arbitrary account by guessing/copying its id.
+- **`effectivePlan` stays computed**, not a stored `User.effectivePlan` column — via the existing
+  `resolveEffectivePlan()` (a trial-aware plan resolver already used everywhere else in the app) —
+  to avoid a second source of truth that could drift from it.
+- No Prisma/PostgreSQL layer — this app uses Supabase everywhere, so the requested `Subscription`
+  model is the `paypal_subscriptions` table, not a Prisma model.
+
+## Database
+
+See `docs/supabase-paypal-subscriptions.sql` for the `paypal_subscriptions` table (subscription
+state, keyed on PayPal's own subscription id) and the `paypal_webhook_events` table (webhook
+replay-protection, keyed on PayPal's own event id) + their RLS policies.

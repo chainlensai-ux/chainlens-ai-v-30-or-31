@@ -1,17 +1,18 @@
-// Server-only module — real PayPal REST API (OAuth2, Transaction Search/Reporting API, and
-// Subscriptions API). Never import from client components — PAYPAL_CLIENT_SECRET must never
-// reach the browser.
+// Server-only module — real PayPal REST API (OAuth2 + Subscriptions API). Never import from
+// client components — PAYPAL_CLIENT_SECRET must never reach the browser.
 //
-// TWO SEPARATE PAYPAL INTEGRATIONS LIVE HERE, DISCLOSED:
-// 1) One-time payments: a STATIC, pre-existing PayPal payment link (Native Checkout Page) plus
-//    manual transaction-ID verification via the Reporting API (lookupPayPalTransaction below).
-//    See docs/paypal-verification.md.
-// 2) Recurring subscriptions: the real PayPal Subscriptions API (createPayPalSubscription +
-//    verifyPayPalWebhookSignature below), reconciled via /api/paypal/webhook. This is a genuine
-//    Orders/Subscriptions + webhook flow — unlike (1), it requires a real Billing Plan (plan_id)
-//    configured in the PayPal Developer Dashboard, since PayPal has no API to create Billing
-//    Plans without one already existing in most REST app configurations; this code creates
-//    Subscriptions against that plan_id, not the plan itself.
+// PayPal is integrated as a real recurring Subscriptions flow: createPayPalSubscription creates a
+// subscription against a Billing Plan (plan_id) configured in the PayPal Developer Dashboard, the
+// user approves it on PayPal's own site, and verifyPayPalWebhookSignature gates every webhook event
+// at /api/paypal/webhook before it's allowed to change billing state. See
+// docs/paypal-verification.md.
+//
+// REMOVED, DISCLOSED: this module previously also supported a one-time-payment flow (a static
+// PayPal checkout link + manual transaction-ID entry, verified via the Transaction Search/Reporting
+// API — lookupPayPalTransaction/PayPalTransactionDetail/PayPalTransactionLookupResult). That flow
+// and its UI (PayPalVerifyScreen) and API route (/api/paypal/verify) have been deleted entirely per
+// explicit instruction to replace manual verification with the Subscriptions flow below — not kept
+// as a second, parallel PayPal integration.
 
 const PAYPAL_ENV = (process.env.PAYPAL_ENV ?? 'sandbox').toLowerCase()
 export const PAYPAL_API_BASE = PAYPAL_ENV === 'live' ? 'https://api-m.paypal.com' : 'https://api-m.sandbox.paypal.com'
@@ -48,67 +49,6 @@ export async function getPayPalAccessToken(): Promise<string | null> {
   }
 }
 
-export type PayPalTransactionDetail = {
-  transaction_info?: {
-    transaction_id?: string
-    transaction_status?: string // 'S' success | 'D' denied | 'P' pending | 'V' reversed
-    transaction_amount?: { currency_code?: string; value?: string }
-    transaction_initiation_date?: string
-    transaction_updated_date?: string
-    paypal_account_id?: string
-  }
-  payer_info?: {
-    email_address?: string
-    account_id?: string
-  }
-}
-
-export type PayPalTransactionLookupResult =
-  | { ok: true; transaction: PayPalTransactionDetail }
-  | { ok: false; reason: 'not_configured' | 'auth_failed' | 'not_found' | 'request_failed' }
-
-// Real call to PayPal's Transaction Search API (GET /v1/reporting/transactions). This endpoint is
-// scoped to the AUTHENTICATED merchant account's own transaction history — it can only ever return
-// transactions actually received by whichever PayPal business account PAYPAL_CLIENT_ID/SECRET
-// belong to, which is what makes "this transaction was paid to us" verifiable at all (there's no
-// separate raw "receiver email" field to check independently of that scoping).
-//
-// REQUIRES, DISCLOSED: the "Transaction Search" API product must be added to this REST app in the
-// PayPal Developer Dashboard (App → Add Products → Transaction Search) — a plain REST app without
-// it will get a 403 here. This is a real PayPal account/dashboard step, not something this code can
-// configure on your behalf.
-export async function lookupPayPalTransaction(transactionId: string): Promise<PayPalTransactionLookupResult> {
-  const token = await getPayPalAccessToken()
-  if (!token) return { ok: false, reason: process.env.PAYPAL_CLIENT_ID ? 'auth_failed' : 'not_configured' }
-
-  // Transaction Search requires a start/end date window (max 31 days per request). Search the
-  // widest safe window PayPal allows so a transaction from any time in the last 31 days resolves —
-  // a real, disclosed limitation of this API (not this code): a transaction older than 31 days
-  // cannot be found this way at all.
-  const end = new Date()
-  const start = new Date(end.getTime() - 31 * 24 * 60 * 60 * 1000)
-  const params = new URLSearchParams({
-    transaction_id: transactionId,
-    start_date: start.toISOString(),
-    end_date: end.toISOString(),
-    fields: 'transaction_info,payer_info',
-  })
-
-  try {
-    const res = await fetch(`${PAYPAL_API_BASE}/v1/reporting/transactions?${params.toString()}`, {
-      method: 'GET',
-      headers: { Authorization: `Bearer ${token}` },
-      signal: AbortSignal.timeout(10_000),
-    })
-    if (!res.ok) return { ok: false, reason: 'request_failed' }
-    const json = await res.json() as { transaction_details?: PayPalTransactionDetail[] }
-    const match = json.transaction_details?.find((t) => t.transaction_info?.transaction_id === transactionId)
-    if (!match) return { ok: false, reason: 'not_found' }
-    return { ok: true, transaction: match }
-  } catch {
-    return { ok: false, reason: 'request_failed' }
-  }
-}
 
 // ── Recurring Subscriptions (Billing Plans / Subscriptions API) ─────────────────────────────────
 

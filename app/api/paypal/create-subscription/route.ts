@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createPayPalSubscription } from '@/lib/paypal'
-import { createAnonSupabaseClient } from '@/lib/supabase/userSettings'
+import { createAnonSupabaseClient, createAuthedSupabaseClient } from '@/lib/supabase/userSettings'
 import { createRateLimiter, getClientIp } from '@/lib/server/rateLimit'
 
 const limiter = createRateLimiter({ windowMs: 60_000, max: 10 })
@@ -50,6 +50,26 @@ export async function POST(request: NextRequest) {
   const planId = PLAN_IDS[plan]
   if (!planId) {
     return NextResponse.json({ error: `PayPal Billing Plan for "${plan}" is not configured (missing PAYPAL_${plan.toUpperCase()}_PLAN_ID).` }, { status: 503 })
+  }
+
+  // DUPLICATE-SUBSCRIPTION GUARD, DISCLOSED: without this, nothing stops the same user clicking
+  // "Subscribe" twice (e.g. a double-click, or subscribing again after already having an active
+  // subscription) and ending up with two live PayPal subscriptions both actually charging them,
+  // with this app's DB only ever reflecting one. Block creating a new one while an active or
+  // pending subscription already exists for this user.
+  const authedSupabase = createAuthedSupabaseClient(token) ?? authSupabase
+  const { data: existingSubscription } = await authedSupabase
+    .from('paypal_subscriptions')
+    .select('status')
+    .eq('user_id', userId)
+    .in('status', ['pending', 'active'])
+    .limit(1)
+    .maybeSingle()
+  if (existingSubscription) {
+    return NextResponse.json(
+      { error: `You already have a ${existingSubscription.status} PayPal subscription. Cancel it in your PayPal account before starting a new one.` },
+      { status: 409 },
+    )
   }
 
   const appUrl = resolveAppUrl(request)
