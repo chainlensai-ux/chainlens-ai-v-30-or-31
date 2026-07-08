@@ -7,6 +7,8 @@ import { supabase } from '@/lib/supabaseClient'
 import { AFFILIATE_REF_KEY, isValidReferralCode, normalizeReferralCode, readReferralCodeFromCookie } from '@/lib/affiliate/referral'
 import type { UserPlan } from '@/lib/planFeatures'
 
+const PAYPAL_CHECKOUT_URL = 'https://www.paypal.com/ncp/payment/LA29DL2QZQSL'
+
 type PlanId = 'free' | 'pro' | 'elite'
 
 type Plan = {
@@ -201,6 +203,16 @@ export default function PricingPage() {
         @media(max-width:860px){.plan-grid{grid-template-columns:1fr !important}.pricing-card:hover{transform:translateY(-2px) !important}}
         @media(max-width:960px){.pf-footer-grid{grid-template-columns:1fr 1fr !important;gap:36px !important}}
         @media(max-width:560px){.pf-footer-grid{grid-template-columns:1fr !important}}
+
+        /* Split crypto/card payment boxes */
+        @keyframes payBoxGlow{0%{box-shadow:0 0 10px rgba(45,212,191,.35)}50%{box-shadow:0 0 20px rgba(139,92,246,.5)}100%{box-shadow:0 0 10px rgba(236,72,153,.35)}}
+        .cta-split-row{display:flex;gap:8px}
+        .cta-box{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;border-radius:11px;padding:10px 8px;font-weight:800;font-size:11px;letter-spacing:.06em;text-decoration:none;text-align:center;cursor:pointer;transition:.22s transform,.22s box-shadow,.22s border-color,.22s opacity;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);color:#e2e8f0}
+        .cta-box small{font-weight:600;font-size:9px;letter-spacing:.03em;color:#94a3b8;text-transform:none}
+        .cta-box-crypto{border-color:rgba(45,212,191,.4);background:linear-gradient(135deg,rgba(45,212,191,.14),rgba(139,92,246,.12))}
+        .cta-box-crypto:hover:not(:disabled){border-color:rgba(45,212,191,.75) !important;transform:translateY(-2px);animation:payBoxGlow 2.4s ease-in-out infinite}
+        .cta-box-card{border-color:rgba(139,92,246,.4);background:linear-gradient(135deg,rgba(139,92,246,.14),rgba(236,72,153,.12))}
+        .cta-box-card:hover{border-color:rgba(236,72,153,.75) !important;transform:translateY(-2px);animation:payBoxGlow 2.4s ease-in-out infinite}
       `}</style>
 
       <Navbar />
@@ -341,19 +353,31 @@ export default function PricingPage() {
                         GET STARTED
                       </Link>
                     ) : (
-                      <button
-                        className={`cta ${plan.ctaClass}`}
-                        disabled={isLoading || checkoutLoading !== null}
-                        onClick={() => handleCryptoPay(plan.id as 'pro' | 'elite')}
-                        style={{ opacity: isLoading ? 0.7 : 1 }}
-                      >
-                        {isLoading ? 'Opening checkout…' : 'PAY WITH CRYPTO'}
-                      </button>
+                      <div className='cta-split-row'>
+                        <button
+                          className='cta-box cta-box-crypto'
+                          disabled={isLoading || checkoutLoading !== null}
+                          onClick={() => handleCryptoPay(plan.id as 'pro' | 'elite')}
+                          style={{ opacity: isLoading ? 0.7 : 1 }}
+                        >
+                          {isLoading ? 'Opening…' : 'Crypto'}
+                          <small>USDC · Base</small>
+                        </button>
+                        <a
+                          href={PAYPAL_CHECKOUT_URL}
+                          target='_blank'
+                          rel='noopener noreferrer'
+                          className='cta-box cta-box-card'
+                        >
+                          Card
+                          <small>PayPal</small>
+                        </a>
+                      </div>
                     )}
 
                     {planReady && isPaid && !isCurrent && (
                       <p style={{ margin:'8px 0 0', fontSize:10, color:'#334155', lineHeight:1.4, textAlign:'center' }}>
-                        {plan.id === 'pro' ? 'Pay with crypto' : 'Crypto payments available'} · USDC or ETH on Base
+                        Crypto (USDC/ETH on Base) or card via PayPal
                       </p>
                     )}
                   </div>
