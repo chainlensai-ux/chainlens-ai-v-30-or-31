@@ -38,13 +38,24 @@ export async function getPayPalAccessToken(): Promise<string | null> {
       body: 'grant_type=client_credentials',
       signal: AbortSignal.timeout(10_000),
     })
-    if (!res.ok) return null
+    if (!res.ok) {
+      // DIAGNOSTIC FIX, DISCLOSED: previously discarded PayPal's real error body entirely, so an
+      // auth failure looked identical whether the cause was a bad client id/secret, a
+      // sandbox/live env mismatch, an IP restriction on the REST app, or something else — pure
+      // guesswork from the outside. Logging server-side only (never returned to the client, which
+      // still only ever sees the generic 'auth_failed' reason) so the real PayPal error (e.g.
+      // "invalid_client") is visible in server logs instead of silently swallowed.
+      const bodyText = await res.text().catch(() => '<unreadable>')
+      console.error(`[paypal] OAuth token request failed: ${res.status} ${res.statusText} — ${bodyText} (PAYPAL_ENV=${PAYPAL_ENV}, base=${PAYPAL_API_BASE})`)
+      return null
+    }
     const json = await res.json() as { access_token?: string; expires_in?: number }
     if (!json.access_token) return null
     const ttlMs = Math.max(0, ((json.expires_in ?? 300) - 60) * 1000)
     cachedToken = { accessToken: json.access_token, expiresAt: Date.now() + ttlMs }
     return json.access_token
-  } catch {
+  } catch (err) {
+    console.error('[paypal] OAuth token request threw:', err)
     return null
   }
 }
