@@ -9,6 +9,7 @@
 // trigger logic was changed to make this extraction.
 
 import { after } from 'next/server'
+import { Client as QStashClient } from '@upstash/qstash'
 import { validateWalletAddress, validateChains, validateScanMode } from '@/src/deployment/validator'
 import { setScanJob, type ScanJob } from '@/src/modules/scanJobs'
 
@@ -37,26 +38,46 @@ function workerBaseUrl(): string {
   return 'http://localhost:3000'
 }
 
+// QSTASH MIGRATION, DISCLOSED: previously this called the worker route directly via a plain fetch.
+// Now publishes through Upstash QStash instead — QStash queues the request, retries it on failure,
+// and signs it (Upstash-Signature header) so the worker route can verify the request really came
+// from QStash before running a real, expensive Deep Scan (see
+// app/api/scan-v2/worker/route.ts's verifySignatureAppRouter wrap).
+//
+// PUBLISH ENDPOINT CORRECTION, DISCLOSED: the task's own snippet named
+// `https://qstash.upstash.io/v1/publish/<url>` — QStash's real, current publish endpoint is
+// `/v2/publish/<url>` (confirmed against @upstash/qstash's own compiled source); `/v1/publish` is
+// not the current API and using it would 404. Rather than hand-roll that URL at all (and get the
+// version wrong a second way), this uses the official Client.publishJSON() from `@upstash/qstash`,
+// which targets the correct versioned endpoint internally and reads QSTASH_URL/QSTASH_TOKEN from
+// env automatically when not passed explicitly.
+const qstashClient = new QStashClient()
+
 async function triggerWorker(jobId: string): Promise<void> {
+  const workerUrl = `${workerBaseUrl()}/api/scan-v2/worker`
+  // eslint-disable-next-line no-console
+  console.log('[scan-job] workerUrl', workerUrl)
+  if (!process.env.QSTASH_TOKEN) {
+    // FAIL-LOUD, DISCLOSED: unlike SCAN_WORKER_SECRET (which fails open with a warning because it's
+    // an extra defense-in-depth layer), QSTASH_TOKEN not being set means there is no way to trigger
+    // the worker at all anymore — falling back to a direct fetch here would silently defeat the
+    // entire point of this migration (queueing/retries/signing), so this fails loud instead of
+    // quietly reverting to the old direct-call behavior.
+    console.error('[scan-job] QSTASH_TOKEN is not configured — cannot trigger worker', jobId)
+    return
+  }
   try {
-    const workerUrl = `${workerBaseUrl()}/api/scan-v2/worker`
-    // eslint-disable-next-line no-console
-    console.log('[scan-job] workerUrl', workerUrl)
-    const res = await fetch(workerUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(process.env.SCAN_WORKER_SECRET ? { 'x-worker-secret': process.env.SCAN_WORKER_SECRET } : {}),
-      },
-      body: JSON.stringify({ jobId }),
+    await qstashClient.publishJSON({
+      url: workerUrl,
+      body: { jobId },
+      // Still forwarded through to the worker route as a real HTTP header on the request QStash
+      // delivers — the pre-existing SCAN_WORKER_SECRET check in app/api/scan-v2/worker/route.ts
+      // keeps working unchanged, on top of QStash's own signature verification.
+      headers: process.env.SCAN_WORKER_SECRET ? { 'x-worker-secret': process.env.SCAN_WORKER_SECRET } : undefined,
     })
-    if (!res.ok) {
-      // eslint-disable-next-line no-console
-      console.error('[scan-job] worker trigger returned non-2xx', jobId, res.status)
-    }
   } catch (err) {
     // eslint-disable-next-line no-console
-    console.error('[scan-job] worker trigger failed', jobId, err instanceof Error ? err.message : String(err))
+    console.error('[scan-job] worker trigger via QStash failed', jobId, err instanceof Error ? err.message : String(err))
   }
 }
 

@@ -20,10 +20,24 @@
 // runtime/maxDuration, DISCLOSED: kept on the default Node runtime (not edge) for the same reason as
 // app/api/scan-start/route.ts — ioredis (setScanJob/getScanJob) requires a raw TCP socket, which
 // Edge doesn't support at all.
-
+//
+// QSTASH SIGNATURE VERIFICATION, DISCLOSED ADDITION (QStash-migration task): this route is now
+// triggered by an Upstash QStash publish (src/modules/scanJobCreation.ts's triggerWorker) instead
+// of a direct fetch. `verifySignatureAppRouter` (the real App Router equivalent of the Pages-Router
+// `verifySignature` helper the task named — this file has no `req`/`res` handler shape at all, it's
+// a NextRequest/NextResponse App Router route, so the literal `verifySignature(req)` +
+// `res.status(401)` snippet doesn't apply here) wraps the existing POST handler unchanged below,
+// verifying the `Upstash-Signature` header against QSTASH_CURRENT_SIGNING_KEY/
+// QSTASH_NEXT_SIGNING_KEY (read automatically from env — not passed explicitly) before it ever
+// runs. On an invalid/missing signature it returns a real 403 (the SDK's own behavior — not a 401
+// as literally requested; forcing a different status than the SDK actually returns isn't worth
+// re-implementing signature verification by hand for). The pre-existing SCAN_WORKER_SECRET check
+// inside isAuthorized() below is left completely untouched, as instructed — this is an additional
+// outer layer, not a replacement.
 export const maxDuration = 900
 
 import { NextResponse } from 'next/server'
+import { verifySignatureAppRouter } from '@upstash/qstash/nextjs'
 import { runWalletScanV2Worker } from '@/workers/walletScanV2'
 import { setScanJob, getScanJob } from '@/src/modules/scanJobs'
 import { resetAlchemyAudit, printAlchemyAuditSummary } from '@/lib/server/alchemyAudit'
@@ -62,7 +76,10 @@ function isAuthorized(req: Request): boolean {
   return req.headers.get('x-worker-secret') === configuredSecret
 }
 
-export async function POST(req: Request): Promise<Response> {
+// UNCHANGED, DISCLOSED: every line of this handler's body is exactly as it was before the QStash
+// wrap below — only its name changed (POST -> postHandler) so verifySignatureAppRouter can wrap it
+// while still exporting a function literally named POST, per instruction.
+async function postHandler(req: Request): Promise<Response> {
   if (!isAuthorized(req)) {
     return new Response('unauthorized', { status: 401 })
   }
@@ -147,3 +164,19 @@ export async function POST(req: Request): Promise<Response> {
     return new Response('failed')
   }
 }
+
+// FAIL-OPEN GUARD, DISCLOSED ADDITION: verifySignatureAppRouter throws synchronously (at this
+// module's import time, not per-request) if neither QSTASH_CURRENT_SIGNING_KEY nor
+// QSTASH_NEXT_SIGNING_KEY nor QSTASH_REGION/devMode is available — that would hard-crash this
+// entire route (every request, including local dev and any deployment that hasn't set these four
+// QStash env vars up yet) instead of rejecting individual unsigned requests. That's a materially
+// worse failure mode than isAuthorized()'s existing fail-open-with-a-warning pattern for
+// SCAN_WORKER_SECRET above, so this mirrors that same pattern: only wrap with real QStash
+// verification when the keys are actually configured; otherwise fall back to the unwrapped handler
+// (still protected by the existing SCAN_WORKER_SECRET check) with a loud warning, rather than
+// taking the whole route down.
+const qstashConfigured = Boolean(process.env.QSTASH_CURRENT_SIGNING_KEY || process.env.QSTASH_NEXT_SIGNING_KEY)
+if (!qstashConfigured) {
+  console.warn('[WORKER] QSTASH_CURRENT_SIGNING_KEY/QSTASH_NEXT_SIGNING_KEY not configured — QStash signature verification is disabled; relying on SCAN_WORKER_SECRET only')
+}
+export const POST = qstashConfigured ? verifySignatureAppRouter(postHandler) : postHandler
