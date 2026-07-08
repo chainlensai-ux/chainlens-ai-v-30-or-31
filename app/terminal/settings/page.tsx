@@ -166,6 +166,7 @@ export default function SettingsPage() {
   const [emailVerified, setEmailVerified] = useState<boolean | null>(null)
   const [authProvider, setAuthProvider] = useState<string | null>(null)
   const [resetState, setResetState] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle')
+  const [currentPlan, setCurrentPlan] = useState<'free' | 'pro' | 'elite'>('free')
 
   const [defaultChain, setDefaultChain] = useState<'base' | 'ethereum'>('base')
   const [clarkDetailLevel, setClarkDetailLevel] = useState<'concise' | 'normal' | 'detailed'>('normal')
@@ -292,6 +293,10 @@ export default function SettingsPage() {
         if (!res.ok) throw new Error('Failed to load settings')
         const data = await res.json() as { settings?: Record<string, unknown>; error?: string; effectivePlan?: string; betaEliteActive?: boolean }
         if (canceled) return
+
+        if (data.effectivePlan === 'pro' || data.effectivePlan === 'elite' || data.effectivePlan === 'free') {
+          setCurrentPlan(data.effectivePlan)
+        }
 
         if (data.settings) {
           hydrateFromSettings(data.settings)
@@ -483,6 +488,33 @@ export default function SettingsPage() {
                 </div>
                 <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.50)' }}>
                   Signed in as: {userEmail ?? 'Guest'}
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '10px' }}>
+                  <span style={{ fontSize: '11px', color: 'rgba(255,255,255,0.45)' }}>Current Plan:</span>
+                  <span
+                    style={{
+                      display: 'inline-flex', alignItems: 'center', gap: '5px',
+                      padding: '3px 11px', borderRadius: '999px',
+                      fontSize: '11px', fontWeight: 800, letterSpacing: '0.06em',
+                      fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+                      textTransform: 'uppercase',
+                      color: currentPlan === 'elite' ? '#fde68a' : currentPlan === 'pro' ? '#5eead4' : '#94a3b8',
+                      background: currentPlan === 'elite'
+                        ? 'rgba(251,191,36,0.12)'
+                        : currentPlan === 'pro'
+                          ? 'rgba(45,212,191,0.12)'
+                          : 'rgba(148,163,184,0.10)',
+                      border: `1px solid ${currentPlan === 'elite' ? 'rgba(251,191,36,0.35)' : currentPlan === 'pro' ? 'rgba(45,212,191,0.35)' : 'rgba(148,163,184,0.25)'}`,
+                      boxShadow: currentPlan !== 'free' ? `0 0 14px ${currentPlan === 'elite' ? 'rgba(251,191,36,0.25)' : 'rgba(45,212,191,0.25)'}` : undefined,
+                    }}
+                  >
+                    {currentPlan === 'elite' ? 'Elite' : currentPlan === 'pro' ? 'Pro' : 'Free'}
+                  </span>
+                  {currentPlan === 'free' && (
+                    <a href="/pricing" style={{ fontSize: '11px', color: '#5eead4', textDecoration: 'none', fontWeight: 700 }}>
+                      Upgrade →
+                    </a>
+                  )}
                 </div>
               </div>
             </div>

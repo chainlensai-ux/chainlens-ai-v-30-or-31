@@ -6,6 +6,14 @@ import Navbar from '@/components/Navbar'
 import { supabase } from '@/lib/supabaseClient'
 import { AFFILIATE_REF_KEY, isValidReferralCode, normalizeReferralCode, readReferralCodeFromCookie } from '@/lib/affiliate/referral'
 import type { UserPlan } from '@/lib/planFeatures'
+import PayPalVerifyScreen from '@/app/frontend/components/PayPalVerifyScreen'
+
+// Static PayPal Native Checkout Page link, DISCLOSED: this link carries no per-app metadata and
+// has no webhook tied to it, so the app can't know automatically when someone pays through it —
+// that's exactly why the "Card" flow below opens this link AND then shows PayPalVerifyScreen,
+// which verifies the resulting transaction ID for real against PayPal's own Reporting API
+// (POST /api/paypal/verify) before granting anything.
+const PAYPAL_CHECKOUT_URL = 'https://www.paypal.com/ncp/payment/LA29DL2QZQSL'
 
 type PlanId = 'free' | 'pro' | 'elite'
 
@@ -105,6 +113,7 @@ export default function PricingPage() {
   const [planReady, setPlanReady] = useState(false)
   const [checkoutLoading, setCheckoutLoading] = useState<PlanId | null>(null)
   const [checkoutError, setCheckoutError] = useState<string | null>(null)
+  const [payPalVerifyPlan, setPayPalVerifyPlan] = useState<'pro' | 'elite' | null>(null)
 
   useEffect(() => {
     supabase.auth.getSession().then(async ({ data }) => {
@@ -125,12 +134,17 @@ export default function PricingPage() {
     })
   }, [])
 
-  // Shared by both payment methods — same auth/referral-resolution logic, only the checkout
-  // endpoint differs. Real, connected flows for both: crypto hits /api/checkout/crypto (NOWPayments,
-  // confirmed by app/api/webhooks/crypto), card hits /api/checkout/paypal (real PayPal Orders v2,
-  // confirmed by app/api/webhooks/paypal) — both end in the exact same activateUserPlanServerSide
-  // call, so a Pro/Elite purchase via either method grants the exact same plan, nothing more or less.
-  async function startCheckout(planId: 'pro' | 'elite', endpoint: '/api/checkout/crypto' | '/api/checkout/paypal') {
+  // Shared by both payment methods — redirects to sign-in and remembers where to return to.
+  function redirectToAuth(returnPath: string) {
+    try { sessionStorage.setItem('cl_auth_next', returnPath) } catch {}
+    try { localStorage.setItem('cl_auth_next', returnPath) } catch {}
+    document.cookie = `cl_auth_next=${encodeURIComponent(returnPath)}; Max-Age=3600; Path=/; SameSite=Lax`
+    window.location.href = `/auth?next=${encodeURIComponent(returnPath)}`
+  }
+
+  // Real, connected crypto flow: creates a NOWPayments invoice, confirmed by
+  // app/api/webhooks/crypto, which calls activateUserPlanServerSide.
+  async function handleCryptoPay(planId: 'pro' | 'elite') {
     setCheckoutError(null)
     setCheckoutLoading(planId)
     try {
@@ -141,18 +155,11 @@ export default function PricingPage() {
       const cookieRef = typeof window !== 'undefined' ? readReferralCodeFromCookie(document.cookie) : null
       const rawRef = urlRef ?? storedRef ?? cookieRef
       const referralCode = rawRef && isValidReferralCode(rawRef) ? normalizeReferralCode(rawRef) : null
-      if (process.env.NODE_ENV !== 'production') {
-        console.info('[startCheckout] ref sources', { endpoint, urlRef, storedRef, cookieRef, referralCode })
-      }
       if (!token) {
-        const returnPath = referralCode ? `/pricing?ref=${encodeURIComponent(referralCode)}` : '/pricing'
-        try { sessionStorage.setItem('cl_auth_next', returnPath) } catch {}
-        try { localStorage.setItem('cl_auth_next', returnPath) } catch {}
-        document.cookie = `cl_auth_next=${encodeURIComponent(returnPath)}; Max-Age=3600; Path=/; SameSite=Lax`
-        window.location.href = `/auth?next=${encodeURIComponent(returnPath)}`
+        redirectToAuth(referralCode ? `/pricing?ref=${encodeURIComponent(referralCode)}` : '/pricing')
         return
       }
-      const res = await fetch(endpoint, {
+      const res = await fetch('/api/checkout/crypto', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -173,8 +180,19 @@ export default function PricingPage() {
     }
   }
 
-  const handleCryptoPay = (planId: 'pro' | 'elite') => startCheckout(planId, '/api/checkout/crypto')
-  const handleCardPay = (planId: 'pro' | 'elite') => startCheckout(planId, '/api/checkout/paypal')
+  // Card/PayPal flow: this uses a STATIC PayPal link (no per-app metadata, no webhook), so the app
+  // can't know automatically when someone pays through it. Opens the link, then reveals
+  // PayPalVerifyScreen so the user can paste back their transaction ID — which IS verified for real
+  // against PayPal's own Reporting API (POST /api/paypal/verify) before anything is granted.
+  async function handleCardPay(planId: 'pro' | 'elite') {
+    const { data: { session } } = await supabase.auth.getSession()
+    if (!session?.access_token) {
+      redirectToAuth('/pricing')
+      return
+    }
+    window.open(PAYPAL_CHECKOUT_URL, '_blank', 'noopener,noreferrer')
+    setPayPalVerifyPlan(planId)
+  }
 
   return (
     <div style={{ minHeight: '100vh', background: '#03060f', color: '#f8fafc', position: 'relative', overflow: 'hidden' }}>
@@ -385,6 +403,18 @@ export default function PricingPage() {
                       <p style={{ margin:'8px 0 0', fontSize:10, color:'#334155', lineHeight:1.4, textAlign:'center' }}>
                         Crypto (USDC/ETH on Base) or card via PayPal
                       </p>
+                    )}
+
+                    {payPalVerifyPlan === plan.id && (
+                      <div style={{ marginTop: 14 }}>
+                        <PayPalVerifyScreen
+                          plan={plan.id as 'pro' | 'elite'}
+                          onVerified={(activatedPlan) => {
+                            setUserPlan(activatedPlan)
+                            setPayPalVerifyPlan(null)
+                          }}
+                        />
+                      </div>
                     )}
                   </div>
                 </div>
