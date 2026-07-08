@@ -46,7 +46,7 @@ export type {
 } from './types'
 export { DEFAULT_RECOVERY_CAPS, DEFAULT_TRIGGER_RECOVERY_WHEN } from './types'
 
-type CandidateEvaluation = {
+export type CandidateEvaluation = {
   token: string
   chain: SupportedChain
   triggeredBy: RecoveryTriggeredBy[]
@@ -106,6 +106,13 @@ export function evaluateRecoveryTriggers(
 // The ONLY historical-fetch entry point in this module. Fetches at most `pageCount` pages total
 // (GoldRush + Alchemy combined), never more — caller (buildRecoveryPolicyObject) is responsible
 // for passing a pageCount that already respects both caps.
+//
+// PARALLELIZED, DISCLOSED (scan-latency task): page 1 (GoldRush) and page 2 (Alchemy) target
+// different providers/endpoints and have no data dependency on each other — the decision to fetch
+// page 2 at all depends only on `pageCount` (known up front), never on what page 1's response
+// contains. The old version awaited them back-to-back regardless, doubling this function's real
+// wall-clock latency for no correctness reason. Same two calls, same pagesUsed accounting, same
+// events collected — just fired concurrently instead of sequentially.
 export async function fetchHistoricalPages(
   chain: SupportedChain,
   token: string,
@@ -115,27 +122,58 @@ export async function fetchHistoricalPages(
   const cappedPageCount = Math.max(0, pageCount)
   if (cappedPageCount === 0) return { events: [] as Awaited<ReturnType<typeof fetchGoldrushHistoricalPage>>, pagesUsed: 0 }
 
+  const wantsPage2 = cappedPageCount >= 2
+
+  const [goldrushEvents, alchemyEvents] = await Promise.all([
+    // Page 1: one targeted GoldRush historical page (page-number 1, beyond the base window's page 0).
+    fetchGoldrushHistoricalPage(chain, walletAddress, 1),
+    // Page 2 (only if the cap allows it): one targeted Alchemy pull scoped to this token contract.
+    wantsPage2 ? fetchAlchemyTokenHistory(chain, walletAddress, token) : Promise.resolve([] as Awaited<ReturnType<typeof fetchAlchemyTokenHistory>>),
+  ])
+
   const events: Awaited<ReturnType<typeof fetchGoldrushHistoricalPage>> = []
-  let pagesUsed = 0
-
-  // Page 1: one targeted GoldRush historical page (page-number 1, beyond the base window's page 0).
-  const goldrushEvents = await fetchGoldrushHistoricalPage(chain, walletAddress, 1)
-  pagesUsed += 1
   events.push(...goldrushEvents.filter((e) => (e.contract ?? '').toLowerCase() === token.toLowerCase()))
+  if (wantsPage2) events.push(...alchemyEvents)
 
-  // Page 2 (only if the cap allows it): one targeted Alchemy pull scoped to this token contract.
-  if (cappedPageCount >= 2) {
-    const alchemyEvents = await fetchAlchemyTokenHistory(chain, walletAddress, token)
-    pagesUsed += 1
-    events.push(...alchemyEvents)
-  }
+  return { events, pagesUsed: wantsPage2 ? 2 : 1 }
+}
 
-  return { events, pagesUsed }
+// TEST-SUPPORT EXPORT, DISCLOSED: extracted as its own pure function (no network calls) so its
+// budget-allocation arithmetic can be unit-tested directly, without mocking fetchHistoricalPages'
+// real GoldRush/Alchemy network calls. Also used directly by buildRecoveryPolicyObject below — not
+// a test-only duplicate.
+//
+// PARALLELIZED, DISCLOSED (scan-latency task): fetchHistoricalPages' real pagesUsed is fully
+// deterministic from the pageBudget it's given (1 page if budget is 1, 2 pages if budget is >=2, 0
+// if budget is 0 — see that function's own header) — it never depends on what the real API
+// responses contain. That means every triggered candidate's page budget (and therefore its exact
+// pagesUsed) can be computed synchronously, up front, in one pass — before firing any network call
+// — instead of only being knowable after awaiting the previous candidate's fetch. This precompute
+// is the EXACT same running-total/capping arithmetic the old sequential version used (same caps,
+// same order-dependent allocation, byte-identical totalPagesUsedThisWallet), just computed ahead of
+// time so every candidate's real fetch can then run concurrently instead of one after another.
+export function planRecoveryFetches(
+  candidates: CandidateEvaluation[],
+  caps: RecoveryPolicyCaps,
+): Array<{ candidate: CandidateEvaluation; pageBudget: number }> {
+  let remainingWalletBudget = caps.maxHistoricalPagesPerWallet
+  return candidates.map((candidate) => {
+    if (!candidate.recoveryTriggered || remainingWalletBudget <= 0) {
+      return { candidate, pageBudget: 0 }
+    }
+    const pageBudget = Math.min(caps.maxHistoricalPagesPerToken, remainingWalletBudget)
+    // fetchHistoricalPages never actually consumes more than 2 pages regardless of pageBudget (see
+    // its own header) — mirror that exact cap here so the NEXT candidate's remainingWalletBudget
+    // matches what the old sequential code would have computed from the real pagesUsed it awaited.
+    const actualPagesForThisCandidate = Math.min(Math.max(0, pageBudget), 2)
+    remainingWalletBudget -= actualPagesForThisCandidate
+    return { candidate, pageBudget }
+  })
 }
 
 // Orchestrates evaluation + capped, triggered historical fetches into the final recoveryPolicy
 // object. This is the only function in the module that awaits network calls; everything above it
-// (evaluateRecoveryTriggers) is pure and synchronous.
+// (evaluateRecoveryTriggers, planRecoveryFetches) is pure and synchronous.
 export async function buildRecoveryPolicyObject(params: {
   buyTimeline: BuyTimeline
   sellTimeline: SellTimeline
@@ -151,30 +189,27 @@ export async function buildRecoveryPolicyObject(params: {
 
   // CU-RISK: MEDIUM (bounded, not unbounded) — this is the one real per-token, multi-page deep
   // historical fetch loop in this codebase (CU-AUDIT, docs/CU_AUDIT.md). It IS capped
-  // (maxHistoricalPagesPerWallet/maxHistoricalPagesPerToken, enforced below via
-  // remainingWalletBudget/pageBudget) and only ever runs for scanMode: 'deep' (never a normal scan
-  // — see src/pipeline/index.ts's safeRunRecoveryPolicy), so it does not qualify as HIGH RISK
-  // ("unbounded loop") — but it is real, variable-count, per-candidate-token GoldRush/Alchemy
-  // pagination, worth knowing about when reasoning about deep-scan cost.
-  const evaluation: RecoveryEvaluationEntry[] = []
-  let totalPagesUsedThisWallet = 0
+  // (maxHistoricalPagesPerWallet/maxHistoricalPagesPerToken, enforced in planRecoveryFetches above)
+  // and only ever runs for scanMode: 'deep' (never a normal scan — see src/pipeline/index.ts's
+  // safeRunRecoveryPolicy), so it does not qualify as HIGH RISK ("unbounded loop") — but it is real,
+  // variable-count, per-candidate-token GoldRush/Alchemy pagination, worth knowing about when
+  // reasoning about deep-scan cost.
+  const plan = planRecoveryFetches(candidates, caps)
 
-  for (const candidate of candidates) {
-    if (!candidate.recoveryTriggered || totalPagesUsedThisWallet >= caps.maxHistoricalPagesPerWallet) {
-      evaluation.push({ ...candidate, pagesUsed: 0, recoveredEvents: [] })
-      continue
-    }
+  const results = await Promise.all(
+    plan.map(({ candidate, pageBudget }) =>
+      pageBudget > 0
+        ? fetchHistoricalPages(candidate.chain, candidate.token, params.walletAddress, pageBudget)
+        : Promise.resolve({ events: [] as Awaited<ReturnType<typeof fetchHistoricalPages>>['events'], pagesUsed: 0 }),
+    ),
+  )
 
-    // Never exceed either cap — the per-token budget is also clamped by whatever wallet-level
-    // budget remains, so a late-evaluated token can never blow past the wallet ceiling even if
-    // its own per-token cap would otherwise allow more.
-    const remainingWalletBudget = caps.maxHistoricalPagesPerWallet - totalPagesUsedThisWallet
-    const pageBudget = Math.min(caps.maxHistoricalPagesPerToken, remainingWalletBudget)
-
-    const { events, pagesUsed } = await fetchHistoricalPages(candidate.chain, candidate.token, params.walletAddress, pageBudget)
-    totalPagesUsedThisWallet += pagesUsed
-    evaluation.push({ ...candidate, pagesUsed, recoveredEvents: events })
-  }
+  const evaluation: RecoveryEvaluationEntry[] = plan.map(({ candidate }, i) => ({
+    ...candidate,
+    pagesUsed: results[i].pagesUsed,
+    recoveredEvents: results[i].events,
+  }))
+  const totalPagesUsedThisWallet = results.reduce((sum, r) => sum + r.pagesUsed, 0)
 
   return { triggerRecoveryWhen: triggerConfig, caps, evaluation, totalPagesUsedThisWallet }
 }
