@@ -53,19 +53,41 @@ function workerBaseUrl(): string {
 // env automatically when not passed explicitly.
 const qstashClient = new QStashClient()
 
+// LOCAL-DEV FALLBACK, DISCLOSED CORRECTION: an earlier version of this function returned early
+// (never triggering the worker at all) when QSTASH_TOKEN wasn't set, reasoning that a silent
+// fallback would "defeat the point of the migration." That was wrong on reflection: QStash is a
+// remote cloud service that can never reach `http://localhost:3000` in the first place, so setting
+// QSTASH_TOKEN could never make local dev work either way — the real effect of failing loud was
+// that NO scan could ever be triggered locally anymore, jobs silently stuck in 'pending' forever,
+// which is a functional regression, not a safety improvement. Falls back to the exact pre-migration
+// direct fetch when QSTASH_TOKEN isn't configured (local dev, or any deployment that hasn't set up
+// QStash yet) — mirroring the same fail-open-with-a-warning pattern already used for
+// SCAN_WORKER_SECRET and the signing keys, instead of being the one place in this migration that
+// fails closed.
 async function triggerWorker(jobId: string): Promise<void> {
   const workerUrl = `${workerBaseUrl()}/api/scan-v2/worker`
   // eslint-disable-next-line no-console
   console.log('[scan-job] workerUrl', workerUrl)
+
+  const secretHeaders = process.env.SCAN_WORKER_SECRET ? { 'x-worker-secret': process.env.SCAN_WORKER_SECRET } : undefined
+
   if (!process.env.QSTASH_TOKEN) {
-    // FAIL-LOUD, DISCLOSED: unlike SCAN_WORKER_SECRET (which fails open with a warning because it's
-    // an extra defense-in-depth layer), QSTASH_TOKEN not being set means there is no way to trigger
-    // the worker at all anymore — falling back to a direct fetch here would silently defeat the
-    // entire point of this migration (queueing/retries/signing), so this fails loud instead of
-    // quietly reverting to the old direct-call behavior.
-    console.error('[scan-job] QSTASH_TOKEN is not configured — cannot trigger worker', jobId)
+    console.warn('[scan-job] QSTASH_TOKEN is not configured — falling back to a direct worker call (fine for local dev; set QSTASH_TOKEN in real deployments for queueing/retries/signed requests)')
+    try {
+      const res = await fetch(workerUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...secretHeaders },
+        body: JSON.stringify({ jobId }),
+      })
+      if (!res.ok) {
+        console.error('[scan-job] direct worker trigger returned non-2xx', jobId, res.status)
+      }
+    } catch (err) {
+      console.error('[scan-job] direct worker trigger failed', jobId, err instanceof Error ? err.message : String(err))
+    }
     return
   }
+
   try {
     await qstashClient.publishJSON({
       url: workerUrl,
@@ -73,10 +95,9 @@ async function triggerWorker(jobId: string): Promise<void> {
       // Still forwarded through to the worker route as a real HTTP header on the request QStash
       // delivers — the pre-existing SCAN_WORKER_SECRET check in app/api/scan-v2/worker/route.ts
       // keeps working unchanged, on top of QStash's own signature verification.
-      headers: process.env.SCAN_WORKER_SECRET ? { 'x-worker-secret': process.env.SCAN_WORKER_SECRET } : undefined,
+      headers: secretHeaders,
     })
   } catch (err) {
-    // eslint-disable-next-line no-console
     console.error('[scan-job] worker trigger via QStash failed', jobId, err instanceof Error ? err.message : String(err))
   }
 }
