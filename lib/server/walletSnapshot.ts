@@ -2883,6 +2883,25 @@ export type WalletSnapshotOptions = {
   historicalScan?: boolean
 }
 
+// UNBOUNDED-CACHE-GROWTH FIX, DISCLOSED (wallet-scanner audit): every module-level Map cache below
+// carries a TTL, but expired entries were only ever removed lazily (overwritten on the exact same
+// key being requested again) — nothing ever swept or capped total size. Since these caches are keyed
+// per-wallet/per-token/per-tx-hash (effectively unbounded cardinality), a long-lived warm server
+// instance scanning many distinct wallets over time would accumulate entries forever, growing memory
+// without bound toward an eventual OOM. capCacheSize() is called right after every persistent cache's
+// .set() below to bound each one to MAX_CACHE_ENTRIES_PER_MAP entries. Eviction is oldest-insertion-
+// order (Map iteration order), not true LRU — re-setting an existing key does not move it to the
+// end — but this is a real, cheap O(1)-amortized bound on unbounded growth, which is the actual risk
+// being addressed; it does not need to be a perfect recency policy to do that.
+const MAX_CACHE_ENTRIES_PER_MAP = 5000
+function capCacheSize<K, V>(cache: Map<K, V>, maxEntries: number = MAX_CACHE_ENTRIES_PER_MAP): void {
+  while (cache.size > maxEntries) {
+    const oldestKey = cache.keys().next().value
+    if (oldestKey === undefined) break
+    cache.delete(oldestKey)
+  }
+}
+
 const SNAPSHOT_TTL_MS         = 5  * 60 * 1000
 const SNAPSHOT_HISTORY_TTL_MS = 15 * 60 * 1000
 const SNAPSHOT_SCHEMA_VERSION = 'v47'
@@ -3280,6 +3299,7 @@ async function zerionGet(path: string, params: Record<string, string> = {}) {
     if (!res.ok) throw new Error(`Zerion ${res.status} ${path}`)
     const data = await res.json()
     _zerionMemCache.set(cacheKey, { exp: Date.now() + ZERION_CACHE_TTL_MS, data })
+    capCacheSize(_zerionMemCache)
     return data
   })()
   _zerionInFlight.set(cacheKey, promise)
@@ -3356,6 +3376,7 @@ async function getSharedTxReceipt(rpcUrl: string, txHash: string): Promise<any> 
     try {
       const receipt = await alchemyRpc(rpcUrl, 'eth_getTransactionReceipt', [txHash])
       sharedReceiptCache.set(key, { data: receipt, exp: Date.now() + SHARED_RECEIPT_CACHE_TTL_MS })
+      capCacheSize(sharedReceiptCache)
       return receipt
     } finally {
       sharedReceiptInFlight.delete(key)
@@ -3399,6 +3420,7 @@ async function getSharedTxByHash(rpcUrl: string, txHash: string): Promise<any> {
     try {
       const tx = await alchemyRpc(rpcUrl, 'eth_getTransactionByHash', [txHash])
       sharedTxByHashCache.set(key, { data: tx, exp: Date.now() + SHARED_TX_CACHE_TTL_MS })
+      capCacheSize(sharedTxByHashCache)
       return tx
     } finally {
       sharedTxByHashInFlight.delete(key)
@@ -3484,6 +3506,7 @@ async function enrichSwapCandidatesFromReceipts(
       receiptsFetched++
       if (!receipt) {
         swapEnrichmentReceiptCache.set(cacheKey, { data: { isSwap: false, reason: 'no_receipt' }, exp: now + SWAP_ENRICHMENT_TTL_MS })
+        capCacheSize(swapEnrichmentReceiptCache)
         continue
       }
       let isSwap = false
@@ -3525,6 +3548,7 @@ async function enrichSwapCandidatesFromReceipts(
         }
       }
       swapEnrichmentReceiptCache.set(cacheKey, { data: { isSwap, reason: enrichReason }, exp: now + SWAP_ENRICHMENT_TTL_MS })
+      capCacheSize(swapEnrichmentReceiptCache)
       if (isSwap) enrichedTxSet.add(txHash)
     } catch {
       errors++
@@ -3824,6 +3848,7 @@ async function getFirstTxOnChain(address: string, alchemyUrl: string): Promise<D
   }
   const result = dates.length > 0 ? new Date(Math.min(...dates.map(d => d.getTime()))) : null
   firstTxOnChainCache.set(cacheKey, { date: result, exp: Date.now() + FIRST_TX_CACHE_TTL_MS })
+  capCacheSize(firstTxOnChainCache)
   return result
 }
 
@@ -3896,6 +3921,7 @@ async function fetchGoldrushBalances(address: string, chainName: string, apiKey:
   try {
     const { result, cacheable } = await fetchPromise
     if (cacheable) goldrushBalancesCache.set(cacheKey, { data: result, cachedAt: Date.now() })
+    if (cacheable) capCacheSize(goldrushBalancesCache)
     return result
   } finally {
     goldrushBalancesInFlight.delete(cacheKey)
@@ -5188,6 +5214,7 @@ async function runTargetedUnmatchedSellBackfill(address: string, targets: Unmatc
   debug.reason = eventsToAdd.length > 0 ? 'prior_buy_found' : debug.stopReason
   debug.sampleStillUnmatched = targets.filter(t => !foundTargetKeys.has(`${t.chain}:${t.tokenContract}`)).map(t => `${t.chain}:${t.tokenContract}`).slice(0, 5)
   unmatchedSellBackfillCache.set(cacheKey, { data: { events: eventsToAdd, targetBuyKeys: [...targetBuyKeys], debug }, cachedAt: Date.now() })
+  capCacheSize(unmatchedSellBackfillCache)
   return { events: eventsToAdd, targetBuyKeys, debug }
 }
 
@@ -8832,6 +8859,7 @@ async function fetchGoldrushHistoricalPrice(chain: string, contractAddress: stri
     })
     if (!res.ok) {
       priceAtTimeMemCache.set(cacheKey, { exp: Date.now() + 5 * 60 * 1000, priceUsd: null })
+      capCacheSize(priceAtTimeMemCache)
       reqCache?.set(reqKey, null)
       return { priceUsd: null, cacheHit: false, providerAttempted: true, error: true }
     }
@@ -8860,10 +8888,12 @@ async function fetchGoldrushHistoricalPrice(chain: string, contractAddress: stri
     // symptom of a decimals mismatch upstream) rather than letting them corrupt cost basis.
     const priceUsd = (rawPriceUsd != null && Number.isFinite(rawPriceUsd) && rawPriceUsd > 1e-12) ? rawPriceUsd : null
     priceAtTimeMemCache.set(cacheKey, { exp: Date.now() + PRICE_AT_TIME_TTL_MS, priceUsd })
+    capCacheSize(priceAtTimeMemCache)
     reqCache?.set(reqKey, priceUsd)
     return { priceUsd, cacheHit: false, providerAttempted: true, error: false }
   } catch {
     priceAtTimeMemCache.set(cacheKey, { exp: Date.now() + 5 * 60 * 1000, priceUsd: null })
+    capCacheSize(priceAtTimeMemCache)
     reqCache?.set(reqKey, null)
     return { priceUsd: null, cacheHit: false, providerAttempted: true, error: true }
   }
@@ -8961,6 +8991,7 @@ async function fallbackPriceAtTime(
   let priceUsd = await fetchDexscreenerFallbackPrice(contractAddress)
   if (priceUsd == null) priceUsd = await fetchCoingeckoFallbackPrice(contractAddress, dateStr, chain)
   _fallbackPriceCache.set(cacheKey, { exp: Date.now() + FALLBACK_PRICE_TTL_MS, priceUsd })
+  capCacheSize(_fallbackPriceCache)
   return priceUsd != null ? { priceUsd, source: 'fallback', confidence: 'low' } : null
 }
 
@@ -10295,6 +10326,7 @@ async function buildEthRouterSwapReconstructionPass(
         if (!receipt) {
           const d: EthRouterReceiptDecode = { txFrom: null, txTo: null, isKnownRouter: false, routerProtocol: null, quoteLogs: [], totalTransferLogs: 0, decodeStatus: 'no_receipt', reason: 'receipt_null' }
           ethRouterReceiptCache.set(cacheKey, { data: d, exp: now + BASE_PNL_RECON_TTL_MS })
+          capCacheSize(ethRouterReceiptCache)
           receiptDecodes.set(cand.txHash, d)
           return
         }
@@ -10322,6 +10354,7 @@ async function buildEthRouterSwapReconstructionPass(
         }
         const d: EthRouterReceiptDecode = { txFrom, txTo, isKnownRouter, routerProtocol, quoteLogs, totalTransferLogs, decodeStatus: 'ok', reason: 'decoded' }
         ethRouterReceiptCache.set(cacheKey, { data: d, exp: now + BASE_PNL_RECON_TTL_MS })
+        capCacheSize(ethRouterReceiptCache)
         receiptDecodes.set(cand.txHash, d)
       } catch {
         providerErrors++
@@ -10341,6 +10374,7 @@ async function buildEthRouterSwapReconstructionPass(
         transactionsFetched++
         const value = typeof tx?.value === 'string' ? tx.value : '0x0'
         ethRouterTxValueCache.set(txValueCacheKey, { value, exp: now + BASE_PNL_RECON_TTL_MS })
+        capCacheSize(ethRouterTxValueCache)
         txNativeValues.set(cand.txHash, value)
       } catch {
         providerErrors++
@@ -10758,6 +10792,7 @@ async function buildSwapReconstructionV1(
         receiptsFetched++
         decode = normalizeAlchemyReceiptShape(receipt, txHash)
         swapReconV1ReceiptCache.set(cacheKey, { data: decode, exp: now + SWAP_RECON_V1_TTL_MS })
+        capCacheSize(swapReconV1ReceiptCache)
       } catch {
         candidateDebug.receiptStatus = 'failed'
         candidateDebug.rejectReason = 'receipt_fetch_error'
@@ -10893,6 +10928,7 @@ async function buildSwapReconstructionV1(
             const tx = await getSharedTxByHash(alchemyUrl, txHash)
             nativeHex = typeof tx?.value === 'string' ? tx.value : '0x0'
             ethRouterTxValueCache.set(txValueCacheKey, { value: nativeHex, exp: now + SWAP_RECON_V1_TTL_MS })
+            capCacheSize(ethRouterTxValueCache)
           }
           const nativeAmount = hexAmountToDecimal(nativeHex, 18)
           if (nativeAmount > 0) {
@@ -11196,6 +11232,7 @@ async function buildBasePnlReconstructionPass(
       if (!receipt) {
         const d: BasePnlReceiptDecode = { txFrom: null, txTo: null, walletInbound: [], walletOutbound: [], isKnownRouter: false, routerProtocol: null, hasStableLeg: false, hasWethLeg: false, totalTransferLogs: 0, decodeStatus: 'no_receipt', reason: 'receipt_null' }
         basePnlReceiptCache.set(cacheKey, { data: d, exp: now + BASE_PNL_RECON_TTL_MS })
+        capCacheSize(basePnlReceiptCache)
         txDecodes.set(txHash, d)
         return
       }
@@ -11234,6 +11271,7 @@ async function buildBasePnlReconstructionPass(
         totalTransferLogs: logCount, decodeStatus: 'ok', reason: 'decoded',
       }
       basePnlReceiptCache.set(cacheKey, { data: d, exp: now + BASE_PNL_RECON_TTL_MS })
+      capCacheSize(basePnlReceiptCache)
       txDecodes.set(txHash, d)
       totalTransferLogs += logCount
       walletInboundLegs += inbound.length
@@ -11477,6 +11515,7 @@ async function buildBaseSellSideReconstructionPass(
       }
       const d: SellDecode = { txTo, walletInbound: inbound, walletOutbound: outbound, decodeStatus: 'ok' }
       basePnlReceiptCache.set(cacheKey, { data: d as unknown as BasePnlReceiptDecode, exp: now + BASE_PNL_RECON_TTL_MS })
+      capCacheSize(basePnlReceiptCache)
       txDecodes.set(txHash, d)
       walletOutboundLegs += outbound.length
     } catch {
@@ -11653,6 +11692,7 @@ async function buildClosedLotPriceUpgradePass(
       }
       const d: ClosedLotReceiptDecode = { walletInbound: inbound, walletOutbound: outbound, decodeStatus: 'ok' }
       basePnlReceiptCache.set(cacheKey, { data: d as unknown as BasePnlReceiptDecode, exp: now + BASE_PNL_RECON_TTL_MS })
+      capCacheSize(basePnlReceiptCache)
       decodeCache.set(key, d)
     } catch {
       decodeCache.set(key, { walletInbound: [], walletOutbound: [], decodeStatus: 'no_receipt' })
@@ -11942,6 +11982,7 @@ async function buildBaseUnknownDirectionSwapReconstructionPass(
         if (!receipt) {
           const d: BasePnlReceiptDecode = { txFrom: null, txTo: null, walletInbound: [], walletOutbound: [], isKnownRouter: false, routerProtocol: null, hasStableLeg: false, hasWethLeg: false, totalTransferLogs: 0, decodeStatus: 'no_receipt', reason: 'receipt_null' }
           basePnlReceiptCache.set(cacheKey, { data: d, exp: now + BASE_PNL_RECON_TTL_MS })
+          capCacheSize(basePnlReceiptCache)
           base = d
         } else {
           const txFrom = typeof receipt.from === 'string' ? (receipt.from as string).toLowerCase() : null
@@ -11981,6 +12022,7 @@ async function buildBaseUnknownDirectionSwapReconstructionPass(
             totalTransferLogs: logCount, decodeStatus: 'ok', reason: 'decoded',
           }
           basePnlReceiptCache.set(cacheKey, { data: d, exp: now + BASE_PNL_RECON_TTL_MS })
+          capCacheSize(basePnlReceiptCache)
           base = d
           totalTransferLogs += logCount
           walletSideLegsFound += inbound.length + outbound.length
@@ -12028,6 +12070,7 @@ async function buildBaseUnknownDirectionSwapReconstructionPass(
       transactionsFetched++
       const val = txData && typeof txData.value === 'string' ? txData.value : '0x0'
       basePnlTxCache.set(txCacheKey, { value: val, exp: now + BASE_PNL_RECON_TTL_MS })
+      capCacheSize(basePnlTxCache)
       if (val && val !== '0x0' && val !== '0x' && hexAmountToDecimal(val, 18) > 0) txNativeValues.set(txHash, val)
     } catch {
       skippedReasons.push(`tx_value_fetch_error:${txHash.slice(0, 10)}`)
@@ -12287,6 +12330,7 @@ async function buildUnpricedCandidateReceiptPass(
       if (!receipt) {
         const d: BasePnlReceiptDecode = { txFrom: null, txTo: null, walletInbound: [], walletOutbound: [], isKnownRouter: false, routerProtocol: null, hasStableLeg: false, hasWethLeg: false, totalTransferLogs: 0, decodeStatus: 'no_receipt', reason: 'receipt_null' }
         basePnlReceiptCache.set(cacheKey, { data: d, exp: now + BASE_PNL_RECON_TTL_MS })
+        capCacheSize(basePnlReceiptCache)
         txDecodes.set(txHash, d)
         return
       }
@@ -12325,6 +12369,7 @@ async function buildUnpricedCandidateReceiptPass(
         totalTransferLogs: logCount, decodeStatus: 'ok', reason: 'decoded',
       }
       basePnlReceiptCache.set(cacheKey, { data: d, exp: now + BASE_PNL_RECON_TTL_MS })
+      capCacheSize(basePnlReceiptCache)
       txDecodes.set(txHash, d)
       totalTransferLogs += logCount
       walletInboundLegs += inbound.length
@@ -12353,6 +12398,7 @@ async function buildUnpricedCandidateReceiptPass(
       transactionsFetched++
       const val: string = (txData && typeof txData.value === 'string') ? txData.value : '0x0'
       basePnlTxCache.set(txCacheKey, { value: val, exp: now + BASE_PNL_RECON_TTL_MS })
+      capCacheSize(basePnlTxCache)
       if (val && val !== '0x0' && val !== '0x' && hexAmountToDecimal(val, 0) > 0) {
         txNativeValues.set(txHash, val)
       }
@@ -15498,6 +15544,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         try {
           hcResult = await hcPromise
           historicalCoverageCache.set(hcCacheKey, { data: hcResult, cachedAt: Date.now() })
+          capCacheSize(historicalCoverageCache)
         } finally {
           historicalCoverageInFlight.delete(hcCacheKey)
         }
@@ -20346,6 +20393,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         estimatedPnl: snapshot.estimatedPnl,
         walletHistoricalCoverageSummary: snapshot.walletHistoricalCoverageSummary,
       })
+      capCacheSize(verifiedEvidenceCache)
     }
   }
 
@@ -20525,5 +20573,6 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   }
 
   if (/^0x[0-9a-fA-F]{40}$/i.test(addrNorm)) snapshotMemCache.set(cacheKey, { snapshot, cachedAt: Date.now(), ttlMs: snapshotTtlMs })
+  if (/^0x[0-9a-fA-F]{40}$/i.test(addrNorm)) capCacheSize(snapshotMemCache)
   return snapshot
 }
