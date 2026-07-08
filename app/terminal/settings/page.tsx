@@ -167,6 +167,7 @@ export default function SettingsPage() {
   const [authProvider, setAuthProvider] = useState<string | null>(null)
   const [resetState, setResetState] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle')
   const [currentPlan, setCurrentPlan] = useState<'free' | 'pro' | 'elite'>('free')
+  const [nextBillingDate, setNextBillingDate] = useState<string | null>(null)
 
   const [defaultChain, setDefaultChain] = useState<'base' | 'ethereum'>('base')
   const [clarkDetailLevel, setClarkDetailLevel] = useState<'concise' | 'normal' | 'detailed'>('normal')
@@ -291,12 +292,13 @@ export default function SettingsPage() {
         })
 
         if (!res.ok) throw new Error('Failed to load settings')
-        const data = await res.json() as { settings?: Record<string, unknown>; error?: string; effectivePlan?: string; betaEliteActive?: boolean }
+        const data = await res.json() as { settings?: Record<string, unknown>; error?: string; effectivePlan?: string; betaEliteActive?: boolean; nextBillingDate?: string | null }
         if (canceled) return
 
         if (data.effectivePlan === 'pro' || data.effectivePlan === 'elite' || data.effectivePlan === 'free') {
           setCurrentPlan(data.effectivePlan)
         }
+        setNextBillingDate(data.nextBillingDate ?? null)
 
         if (data.settings) {
           hydrateFromSettings(data.settings)
@@ -516,6 +518,11 @@ export default function SettingsPage() {
                     </a>
                   )}
                 </div>
+                {nextBillingDate && (
+                  <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.40)', marginTop: '6px' }}>
+                    Next billing date: {new Date(nextBillingDate).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })}
+                  </div>
+                )}
               </div>
             </div>
 

@@ -76,6 +76,15 @@ export async function GET(request: NextRequest) {
   }
 
   const result = await getOrCreateUserSettings(auth.supabase, auth.userId);
+  const { data: activeSubscription } = await auth.supabase
+    .from('paypal_subscriptions')
+    .select('next_billing_date')
+    .eq('user_id', auth.userId)
+    .eq('status', 'active')
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  const nextBillingDate = activeSubscription?.next_billing_date ?? null;
   const betaAllElite = process.env.BETA_ALL_ELITE === 'true';
   const betaEliteActive = betaAllElite;
   const effectivePlan = betaEliteActive ? 'elite' : resolveEffectivePlan(result.settings);
@@ -105,6 +114,7 @@ export async function GET(request: NextRequest) {
         effectivePlan,
         verifiedPlan,
         subscription_status: result.settings.subscription_status ?? null,
+        nextBillingDate,
         trialActive,
         trialDaysLeft,
         error: 'settings_unavailable',
@@ -123,6 +133,7 @@ export async function GET(request: NextRequest) {
       effectivePlan,
       verifiedPlan,
       subscription_status: result.settings.subscription_status ?? null,
+      nextBillingDate,
       trialActive,
       trialDaysLeft,
       fallback: false,

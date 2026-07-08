@@ -64,3 +64,57 @@ Transaction Search). A plain REST app without it gets a 403 from the Reporting A
 
 See `docs/supabase-paypal-transactions.sql` for the `paypal_transactions` table (unique
 `transaction_id` constraint enforces one-time use per transaction) and its RLS policies.
+
+## Subscriptions (recurring billing) — a separate flow
+
+Alongside the one-time flow above, ChainLens also supports real recurring PayPal Subscriptions —
+a genuine Orders/Subscriptions API + webhook integration, distinct from the static-link flow.
+
+### Flow
+
+1. `<PayPalSubscribeButton plan="pro" />` calls `POST /api/paypal/create-subscription` with the
+   user's Bearer session token.
+2. The route creates a real PayPal subscription (`POST /v1/billing/subscriptions`) against a
+   Billing Plan (`PAYPAL_PRO_PLAN_ID`/`PAYPAL_ELITE_PLAN_ID` — created ahead of time in the PayPal
+   Developer Dashboard; this code cannot create Billing Plans themselves), tagging it with
+   `custom_id = "<plan>:<userId>"` so later webhook events can be attributed back to the right
+   account without trusting anything the client sends.
+3. The browser is redirected to the returned PayPal approval URL. The user approves the
+   subscription on PayPal's own site, then is redirected back to `/pricing`.
+4. PayPal fires webhook events at `POST /api/paypal/webhook`, which verifies each event's signature
+   via PayPal's `verify-webhook-signature` API before acting on it:
+   - `BILLING.SUBSCRIPTION.CREATED` — inserts a `pending` row into `paypal_subscriptions`.
+   - `BILLING.SUBSCRIPTION.ACTIVATED` — sets `plan`/`effectivePlan` to pro/elite via the same
+     `activateUserPlanServerSide()` the other two payment flows use, and updates
+     `paypal_subscriptions.status = 'active'` + `next_billing_date`.
+   - `PAYMENT.SALE.COMPLETED` (recurring renewal charges) — looks up the subscription by
+     `billing_agreement_id` and re-activates the plan, keeping it current on each billing cycle.
+   - `BILLING.SUBSCRIPTION.CANCELLED` — marks the subscription row `cancelled`, and downgrades the
+     user to free **only if** this subscription was the actual source of their paid plan (checked
+     against the stored payment reference) — so cancelling a subscription never downgrades a user
+     who separately paid via crypto or the manual-verification PayPal flow.
+5. `/terminal/settings` shows the current plan and, when an active PayPal subscription exists, its
+   next billing date (via `nextBillingDate` from `/api/user-settings`).
+
+### Setup required
+
+- Two Billing Plans in the PayPal Developer Dashboard (or via the Billing Plans API out-of-band),
+  one per paid tier, with their IDs in `PAYPAL_PRO_PLAN_ID`/`PAYPAL_ELITE_PLAN_ID`.
+- A webhook in the PayPal Developer Dashboard pointed at `/api/paypal/webhook` on whichever domain
+  is live (preview: `https://chainlens-vthirty.vercel.app`, production:
+  `https://www.chainlensai.app`), subscribed to `BILLING.SUBSCRIPTION.CREATED`,
+  `BILLING.SUBSCRIPTION.ACTIVATED`, `BILLING.SUBSCRIPTION.CANCELLED`, `PAYMENT.SALE.COMPLETED`,
+  with its Webhook ID in `PAYPAL_SUBSCRIPTIONS_WEBHOOK_ID`.
+- `docs/supabase-paypal-subscriptions.sql` — the `paypal_subscriptions` table + RLS.
+
+### Disclosed deviations from a literal "Prisma + Postgres" spec
+
+This app has no Prisma/PostgreSQL layer anywhere — everything is Supabase. Rather than introduce a
+second ORM/database alongside Supabase (a much larger, riskier change with its own migrations and
+connection pooling), the originally-requested `User.plan`/`effectivePlan` fields and `Subscription`
+model are implemented as Supabase columns/tables instead:
+- `user.plan` → the existing `user_settings.plan` column.
+- `user.effectivePlan` → **computed**, not stored, via the existing `resolveEffectivePlan()` (a
+  trial-aware plan resolver already used everywhere else in the app) — kept as computed rather than
+  adding a second source of truth that could drift from it.
+- `Subscription` model → the `paypal_subscriptions` table above.
