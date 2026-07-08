@@ -88,8 +88,21 @@ export function detectLpAddRemove(
   // 2-token airdrop/batch transfer as an LP operation).
   if (poolMetadata.length === 0) return null
 
-  const outbound = sorted.filter((t) => t.from.toLowerCase() === wallet && !isLpTokenTransfer(t, lpAddresses))
-  const inbound = sorted.filter((t) => t.to.toLowerCase() === wallet && !isLpTokenTransfer(t, lpAddresses))
+  // WRONG-PAIR FIX, DISCLOSED (wallet-scanner audit): previously took the first two transfers by
+  // logIndex as the pool pair, with no cross-check against which tokens the pool actually holds. A
+  // wallet with 3+ distinct outbound (or inbound) tokens in the same tx — e.g. the two real pool
+  // tokens plus an unrelated fee/dust transfer — could get the wrong pair reported as tokenIn/
+  // secondLeg. When poolMetadata names this pool's token0/token1, restrict candidates to exactly
+  // those two addresses first; only fall back to the unfiltered list when poolMetadata doesn't name
+  // them (preserves prior behavior for that case, which is the common one today).
+  const poolTokenAddresses = new Set(
+    poolMetadata.flatMap((p) => [p.token0?.toLowerCase(), p.token1?.toLowerCase()].filter((a): a is string => Boolean(a))),
+  )
+  const restrictToPoolTokens = (list: RawTransfer[]) =>
+    poolTokenAddresses.size >= 2 ? list.filter((t) => poolTokenAddresses.has(t.contract.toLowerCase())) : list
+
+  const outbound = restrictToPoolTokens(sorted.filter((t) => t.from.toLowerCase() === wallet && !isLpTokenTransfer(t, lpAddresses)))
+  const inbound = restrictToPoolTokens(sorted.filter((t) => t.to.toLowerCase() === wallet && !isLpTokenTransfer(t, lpAddresses)))
 
   const distinctContracts = (list: RawTransfer[]) => new Set(list.map((t) => t.contract.toLowerCase())).size
 

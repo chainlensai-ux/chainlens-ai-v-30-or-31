@@ -30,10 +30,21 @@ export function confidenceFor(outbound: NormalizedEvent, inbound: NormalizedEven
 // window and amount tolerance. Each raw event is consumed by at most one match (greedy, closest-
 // in-time-first) so a single transfer can never be double-counted across multiple candidate pairs.
 export function detectBridgeCandidates(normalizedEvents: NormalizedEvent[]): BridgeCandidateEvent[] {
+  // ORDER-DEPENDENCE FIX, DISCLOSED (wallet-scanner audit): previously iterated outboundLegs in
+  // whatever order normalizedEvents happened to supply them (not chronological), and each outbound
+  // leg greedily claimed its own closest-in-time unused inbound independently of the others. Because
+  // "best match" was computed per-outbound-leg rather than globally, a later-in-array (but
+  // later-in-time or arbitrary-order) outbound leg could claim an inbound leg that was actually the
+  // correct/closer match for an earlier-in-time outbound leg, cross-matching two similar bridge
+  // transactions (e.g. the same token/amount bridged twice within the match window) to the wrong
+  // counterpart. Processing outbound legs in chronological order — earliest first — means the
+  // earliest (and therefore most likely correct) outbound leg always gets first claim on its closest
+  // inbound, matching the same "closest-in-time-first" intent the module header already documents.
   const outboundLegs = normalizedEvents
     .filter((e) => e.direction === 'outbound')
     .map((e) => ({ event: e, ts: Date.parse(e.timestamp) }))
     .filter((e) => Number.isFinite(e.ts))
+    .sort((a, b) => a.ts - b.ts)
 
   const inboundLegs = normalizedEvents
     .filter((e) => e.direction === 'inbound')

@@ -58,8 +58,8 @@ export function outboundConfidence(sameTxPaired: boolean, counterpartyIsKnownRou
   return null // neither same-tx-shaped nor a known router — no real evidence this was a sell
 }
 
-export function dedupeKey(chain: string, txHash: string, contract: string, amount: string): string {
-  return `${chain}|${txHash}|${contract.toLowerCase()}|${amount}`
+export function dedupeKey(chain: string, txHash: string, contract: string, amount: string, counterparty: string | null): string {
+  return `${chain}|${txHash}|${contract.toLowerCase()}|${amount}|${counterparty ?? ''}`
 }
 
 // Recovers the real contract address for a bridge-exit's chainFrom leg by matching the candidate's

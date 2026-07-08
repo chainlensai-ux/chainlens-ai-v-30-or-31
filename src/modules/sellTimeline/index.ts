@@ -105,6 +105,7 @@ function buildEntriesFromOutboundEvents(
       confidence: confidenceOverride ?? confidence,
       txHash: event.txHash,
       chainSelectionRef: sellChainSelectionRefFor(event.chain, chainSelection),
+      counterparty: event.toAddress.toLowerCase(),
     })
   }
 
@@ -139,6 +140,7 @@ function buildBridgeExitEntries(
       confidence: 'high',
       txHash: candidate.txHashFrom,
       chainSelectionRef: sellChainSelectionRefFor(candidate.chainFrom, chainSelection),
+      counterparty: null,
     })
   }
 
@@ -178,7 +180,7 @@ export function buildSellTimeline(params: BuildSellTimelineParams): SellTimeline
   const entries: SellTimelineEntry[] = []
   for (const candidateEntries of [bridgeExitEntries, baseWindowEntries, recoveryEntries]) {
     for (const entry of candidateEntries) {
-      const key = dedupeKey(entry.chain, entry.txHash, entry.token, entry.amount)
+      const key = dedupeKey(entry.chain, entry.txHash, entry.token, entry.amount, entry.counterparty)
       if (seen.has(key)) continue
       seen.add(key)
       entries.push(entry)

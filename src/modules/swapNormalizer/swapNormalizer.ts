@@ -43,8 +43,22 @@ function reconstructFromTransfers(tx: RawTxBundle, walletAddress: string): Recon
     byLogIndex(a.transfer, b.transfer),
   )
 
-  const outgoing = classified.filter((c) => c.class === 'ROUTER_IN' || c.class === 'TRANSFER_OUT')
-  const incoming = classified.filter((c) => c.class === 'ROUTER_OUT' || c.class === 'TRANSFER_IN')
+  // WRONG-LEG FIX, DISCLOSED (wallet-scanner audit): previously outgoing/incoming pooled ROUTER_IN
+  // together with plain TRANSFER_OUT (and ROUTER_OUT with TRANSFER_IN), then picked the
+  // earliest/latest by logIndex across that combined set. When a known router IS present for this
+  // tx, ROUTER_IN/ROUTER_OUT are the actual swap legs (wallet <-> router) — a plain TRANSFER_OUT/IN
+  // in the same tx is, by definition, a transfer that did NOT touch the router (e.g. an unrelated
+  // fee, approval-adjacent transfer, or refund), so mixing it into the same pool let an unrelated
+  // transfer at an earlier/later logIndex than the real swap leg get picked as tokenIn/tokenOut
+  // instead, silently corrupting the token/amount and downstream BUY/SELL classification. Now: when
+  // a router is known and at least one ROUTER_IN/ROUTER_OUT leg exists, use ONLY the router-facing
+  // legs for that side. Falls back to the combined pool when no router is known at all (the common
+  // real case today, since this codebase's fetchers supply flat transfers with no router — same
+  // behavior as before in that case, so no regression there).
+  const routerOutgoing = classified.filter((c) => c.class === 'ROUTER_IN')
+  const routerIncoming = classified.filter((c) => c.class === 'ROUTER_OUT')
+  const outgoing = routerOutgoing.length > 0 ? routerOutgoing : classified.filter((c) => c.class === 'ROUTER_IN' || c.class === 'TRANSFER_OUT')
+  const incoming = routerIncoming.length > 0 ? routerIncoming : classified.filter((c) => c.class === 'ROUTER_OUT' || c.class === 'TRANSFER_IN')
 
   if (outgoing.length === 0 && incoming.length === 0) return null
 

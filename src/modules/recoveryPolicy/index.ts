@@ -46,6 +46,35 @@ export type {
 } from './types'
 export { DEFAULT_RECOVERY_CAPS, DEFAULT_TRIGGER_RECOVERY_WHEN } from './types'
 
+// CONCURRENCY CAP, DISCLOSED (wallet-scanner audit fix): buildRecoveryPolicyObject previously ran
+// ALL triggered candidates' fetchHistoricalPages concurrently via a single Promise.all — not just
+// page 1 (GoldRush) vs page 2 (Alchemy) within one candidate, which was the parallelism this module
+// was actually designed for. Each candidate itself fans out to 1 GoldRush + up to 1 Alchemy call, so
+// with maxHistoricalPagesPerWallet/maxHistoricalPagesPerToken allowing up to 3 triggered candidates
+// on one wallet, this could burst up to 3 concurrent GoldRush + 3 concurrent Alchemy requests against
+// one shared API key — with no cap like pricingAtTimeEngine's PRICE_ENTRY_CONCURRENCY_LIMIT, and
+// failures silently swallowed as "no history" by fetchGoldrushHistoricalPage/fetchAlchemyTokenHistory,
+// making a real 429 indistinguishable from "wallet genuinely has no history". Capped at 2 concurrent
+// candidates — this only ever affects deep scans with multiple triggered tokens, and this module's
+// own real fetch loop is already bounded (CU-AUDIT), so this is strictly a burst-shape fix, not a
+// new cap on total volume.
+const RECOVERY_CANDIDATE_CONCURRENCY_LIMIT = 2
+
+async function mapWithConcurrencyLimit<T, R>(items: T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
+  const results: R[] = new Array(items.length)
+  let nextIndex = 0
+  async function worker(): Promise<void> {
+    for (;;) {
+      const i = nextIndex++
+      if (i >= items.length) return
+      results[i] = await fn(items[i], i)
+    }
+  }
+  const workerCount = Math.min(limit, items.length)
+  await Promise.all(Array.from({ length: workerCount }, () => worker()))
+  return results
+}
+
 export type CandidateEvaluation = {
   token: string
   chain: SupportedChain
@@ -196,12 +225,10 @@ export async function buildRecoveryPolicyObject(params: {
   // reasoning about deep-scan cost.
   const plan = planRecoveryFetches(candidates, caps)
 
-  const results = await Promise.all(
-    plan.map(({ candidate, pageBudget }) =>
-      pageBudget > 0
-        ? fetchHistoricalPages(candidate.chain, candidate.token, params.walletAddress, pageBudget)
-        : Promise.resolve({ events: [] as Awaited<ReturnType<typeof fetchHistoricalPages>>['events'], pagesUsed: 0 }),
-    ),
+  const results = await mapWithConcurrencyLimit(plan, RECOVERY_CANDIDATE_CONCURRENCY_LIMIT, ({ candidate, pageBudget }) =>
+    pageBudget > 0
+      ? fetchHistoricalPages(candidate.chain, candidate.token, params.walletAddress, pageBudget)
+      : Promise.resolve({ events: [] as Awaited<ReturnType<typeof fetchHistoricalPages>>['events'], pagesUsed: 0 }),
   )
 
   const evaluation: RecoveryEvaluationEntry[] = plan.map(({ candidate }, i) => ({

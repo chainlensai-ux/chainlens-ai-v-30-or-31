@@ -36,6 +36,14 @@ export type SellTimelineEntry = {
   confidence: SellConfidence
   txHash: string
   chainSelectionRef: SellChainSelectionRef
+  // DEDUPE-KEY FIX, DISCLOSED (wallet-scanner audit): the recipient address this leg's tokens moved
+  // to (lowercased), when known — null for bridge-exit entries, which have no single "recipient"
+  // concept in the same sense. Without this, two genuinely distinct sell legs in the same tx with the
+  // same token/amount but different recipients (e.g. a sell split across two router calls) collapsed
+  // to one dedupe key and the second real sell was silently dropped. NormalizedEvent has no logIndex
+  // field today, so recipient address is the best available discriminator without a larger pipeline
+  // change to carry per-log ordering through RawProviderEvent -> NormalizedEvent -> here.
+  counterparty: string | null
 }
 
 export type SellChainContext = {
