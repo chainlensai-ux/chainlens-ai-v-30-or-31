@@ -7,8 +7,6 @@ import { supabase } from '@/lib/supabaseClient'
 import { AFFILIATE_REF_KEY, isValidReferralCode, normalizeReferralCode, readReferralCodeFromCookie } from '@/lib/affiliate/referral'
 import type { UserPlan } from '@/lib/planFeatures'
 
-const PAYPAL_CHECKOUT_URL = 'https://www.paypal.com/ncp/payment/LA29DL2QZQSL'
-
 type PlanId = 'free' | 'pro' | 'elite'
 
 type Plan = {
@@ -127,7 +125,12 @@ export default function PricingPage() {
     })
   }, [])
 
-  async function handleCryptoPay(planId: 'pro' | 'elite') {
+  // Shared by both payment methods — same auth/referral-resolution logic, only the checkout
+  // endpoint differs. Real, connected flows for both: crypto hits /api/checkout/crypto (NOWPayments,
+  // confirmed by app/api/webhooks/crypto), card hits /api/checkout/paypal (real PayPal Orders v2,
+  // confirmed by app/api/webhooks/paypal) — both end in the exact same activateUserPlanServerSide
+  // call, so a Pro/Elite purchase via either method grants the exact same plan, nothing more or less.
+  async function startCheckout(planId: 'pro' | 'elite', endpoint: '/api/checkout/crypto' | '/api/checkout/paypal') {
     setCheckoutError(null)
     setCheckoutLoading(planId)
     try {
@@ -139,7 +142,7 @@ export default function PricingPage() {
       const rawRef = urlRef ?? storedRef ?? cookieRef
       const referralCode = rawRef && isValidReferralCode(rawRef) ? normalizeReferralCode(rawRef) : null
       if (process.env.NODE_ENV !== 'production') {
-        console.info('[handleCryptoPay] ref sources', { urlRef, storedRef, cookieRef, referralCode })
+        console.info('[startCheckout] ref sources', { endpoint, urlRef, storedRef, cookieRef, referralCode })
       }
       if (!token) {
         const returnPath = referralCode ? `/pricing?ref=${encodeURIComponent(referralCode)}` : '/pricing'
@@ -149,7 +152,7 @@ export default function PricingPage() {
         window.location.href = `/auth?next=${encodeURIComponent(returnPath)}`
         return
       }
-      const res = await fetch('/api/checkout/crypto', {
+      const res = await fetch(endpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -169,6 +172,9 @@ export default function PricingPage() {
       setCheckoutLoading(null)
     }
   }
+
+  const handleCryptoPay = (planId: 'pro' | 'elite') => startCheckout(planId, '/api/checkout/crypto')
+  const handleCardPay = (planId: 'pro' | 'elite') => startCheckout(planId, '/api/checkout/paypal')
 
   return (
     <div style={{ minHeight: '100vh', background: '#03060f', color: '#f8fafc', position: 'relative', overflow: 'hidden' }}>
@@ -363,15 +369,15 @@ export default function PricingPage() {
                           {isLoading ? 'Opening…' : 'Crypto'}
                           <small>USDC · Base</small>
                         </button>
-                        <a
-                          href={PAYPAL_CHECKOUT_URL}
-                          target='_blank'
-                          rel='noopener noreferrer'
+                        <button
                           className='cta-box cta-box-card'
+                          disabled={isLoading || checkoutLoading !== null}
+                          onClick={() => handleCardPay(plan.id as 'pro' | 'elite')}
+                          style={{ opacity: isLoading ? 0.7 : 1 }}
                         >
-                          Card
+                          {isLoading ? 'Opening…' : 'Card'}
                           <small>PayPal</small>
-                        </a>
+                        </button>
                       </div>
                     )}
 

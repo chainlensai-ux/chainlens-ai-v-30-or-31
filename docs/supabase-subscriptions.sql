@@ -1,12 +1,18 @@
 -- ChainLens subscription plan sync
 -- Run in Supabase SQL editor AFTER supabase-user-settings.sql
--- Adds plan + Lemon Squeezy fields to the existing user_settings table.
+-- Adds plan + payment-reference fields to the existing user_settings table.
+--
+-- LEMON_* COLUMN NAMES, DISCLOSED: the lemon_customer_id/lemon_subscription_id/lemon_variant_id
+-- columns below predate this app's LemonSqueezy integration removal (that webhook — which was
+-- never actually wired to a working checkout flow — has been deleted in favor of a real PayPal
+-- integration; see docs/paypal-payments.md). lemon_subscription_id is kept and reused as a
+-- generic "payment reference" column by lib/supabase/userSettings.ts's activateUserPlanServerSide
+-- (used by BOTH the crypto and PayPal webhooks) — renaming a live, populated production column
+-- needs an actual coordinated migration, not a drive-by rename here, so the name stays legacy but
+-- the column itself is genuinely provider-agnostic today.
 --
 -- Required env vars (server-side only):
 --   SUPABASE_SERVICE_ROLE_KEY  — used by webhook and server helpers
---   LEMONSQUEEZY_WEBHOOK_SECRET — used to verify X-Signature header
---   LEMONSQUEEZY_PRO_VARIANT_ID — variant_id from Lemon Squeezy for Pro
---   LEMONSQUEEZY_ELITE_VARIANT_ID — variant_id from Lemon Squeezy for Elite
 --
 -- Client-side (safe to expose):
 --   NEXT_PUBLIC_SUPABASE_URL
