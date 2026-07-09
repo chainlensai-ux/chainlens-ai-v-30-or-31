@@ -69,11 +69,40 @@ function workerBaseUrl(): string {
 // request, never at import time) and wrapping construction in try/catch so ANY constructor failure
 // — this one or an unknown future one — degrades to the safe direct-fetch fallback below instead of
 // crashing the module.
+// ENV-VALUE SANITIZATION, DISCLOSED ("invalid token" despite a visually-correct QSTASH_TOKEN):
+// pasting a secret into a dashboard env-var field very commonly captures an invisible trailing
+// newline, a leading/trailing space, or a wrapping pair of quotes — none of which are visible when
+// you "double-check" the value by looking at it, but all of which are sent to QStash byte-for-byte
+// and rejected as "unable to authenticate: invalid token". The @upstash/qstash Client reads the raw
+// env value as-is, so it never noticed. This strips exactly those (whitespace + one layer of
+// wrapping quotes) before use, and passes the cleaned value to the Client explicitly rather than
+// relying on the SDK's raw env read. If anything was stripped, it logs that fact (never the token
+// itself) so the real cause is visible in logs instead of looking like a genuinely-wrong token.
+function sanitizeEnvValue(value: string | undefined | null): string | undefined {
+  if (value == null) return undefined
+  let v = value.trim()
+  if (v.length >= 2 && ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'")))) {
+    v = v.slice(1, -1).trim()
+  }
+  return v.length > 0 ? v : undefined
+}
+
 let qstashClient: QStashClient | null | undefined // undefined = not yet attempted, null = construction failed
 function getQstashClient(): QStashClient | null {
   if (qstashClient !== undefined) return qstashClient
   try {
-    qstashClient = new QStashClient()
+    const rawToken = process.env.QSTASH_TOKEN
+    const token = sanitizeEnvValue(rawToken)
+    if (rawToken != null && token != null && rawToken !== token) {
+      console.warn(`[scan-job] QSTASH_TOKEN had surrounding whitespace/quotes stripped (raw length ${rawToken.length} -> cleaned length ${token.length}) — this is a very common cause of "invalid token"; re-check the value in Vercel for a trailing newline/space or wrapping quotes`)
+    }
+    const baseUrl = sanitizeEnvValue(process.env.QSTASH_URL)
+    // Pass the sanitized token/baseUrl explicitly — do NOT let the SDK re-read the raw (possibly
+    // whitespace-corrupted) env values.
+    qstashClient = new QStashClient({
+      ...(token != null ? { token } : {}),
+      ...(baseUrl != null ? { baseUrl } : {}),
+    })
   } catch (err) {
     console.error('[scan-job] QStash Client construction failed — falling back to direct worker calls', err instanceof Error ? err.message : String(err))
     qstashClient = null
