@@ -104,11 +104,13 @@ function buildValuation(raw: AnyRecord, enrichment?: AnyRecord | null): { valuat
   const fdvUsd = positive(market.fdvUsd) ?? positive(raw.fdvUsd) ?? null
   const liquidityUsd = num(market.liquidityUsd) ?? num(raw.liquidityUsd)
   const basis = getRadarValuationBasis({ marketCapUsd, marketCapStatus, fdvUsd, liquidityUsd })
+  // getRadarValuationBasis now reports basis: 'verified_market_cap' for both a real market cap and
+  // an FDV-derived confirmed value (see that function's own header, and
+  // lib/baseRadarValuation.ts's) — always shown as a single confirmed "Market Cap", no separate
+  // FDV/fallback branch anymore.
   const valuation: BaseRadarDisplayValuation = basis.basis === 'verified_market_cap'
-    ? { label: 'Market Cap', valueUsd: basis.valueUsd, status: 'verified', sublabel: 'Verified', warning: null }
-    : basis.basis === 'fdv_fallback'
-      ? { label: 'FDV', valueUsd: basis.valueUsd, status: 'fdv_fallback', sublabel: 'Market cap unavailable', warning: 'FDV shown because verified market cap is unavailable.' }
-      : { label: 'Valuation', valueUsd: null, status: 'open_check', sublabel: 'Open check', warning: null }
+    ? { label: 'Market Cap', valueUsd: basis.valueUsd, status: 'verified', sublabel: 'Confirmed', warning: null }
+    : { label: 'Valuation', valueUsd: null, status: 'open_check', sublabel: 'Open check', warning: null }
   return { valuation, snapshot: { liquidityUsd: liquidityUsd ?? null, volume24hUsd: num(market.volume24hUsd) ?? num(raw.volume24h) ?? null, fdvUsd, marketCapUsd, marketCapStatus, valuationBasis: basis.basis } }
 }
 

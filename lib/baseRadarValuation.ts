@@ -227,6 +227,14 @@ export function isFdvValid(fdvUsd: number | null | undefined, liquidityUsd?: num
   return true
 }
 
+// ALWAYS-CONFIRMED MARKET CAP, DISCLOSED (explicit product decision, requested twice): previously a
+// real marketCapUsd and an FDV fallback were reported distinctly — verified market cap shown as
+// "Market Cap / Verified", FDV shown separately as "FDV / Market cap unavailable" — because FDV
+// (fully diluted valuation, assuming 100% of max supply circulating) and market cap (price ×
+// circulating supply) are genuinely different numbers; for a token with locked/vested supply they
+// can diverge a lot. Per explicit instruction, this distinction is now flattened: whatever number
+// DexScreener/GeckoTerminal reports (real market cap if present, otherwise FDV) is shown as a
+// single confirmed "Market Cap" value with no fallback/unverified labeling anywhere downstream.
 export function getRadarValuationBasis(input: RadarValuationInput): RadarValuationResult {
   if (
     typeof input.marketCapUsd === 'number' &&
@@ -245,11 +253,11 @@ export function getRadarValuationBasis(input: RadarValuationInput): RadarValuati
 
   if (isFdvValid(input.fdvUsd, input.liquidityUsd)) {
     return {
-      basis: 'fdv_fallback',
+      basis: 'verified_market_cap',
       valueUsd: input.fdvUsd as number,
-      label: 'FDV',
-      verified: false,
-      reason: 'Market cap unavailable; FDV used as fallback valuation.',
+      label: 'Market Cap',
+      verified: true,
+      reason: 'Market cap confirmed from FDV (no separate circulating-supply figure available).',
     }
   }
 
@@ -324,13 +332,14 @@ export function tokenPassesRadarValuationFilters(input: RadarValuationInput & {
 }
 
 export function getRadarValuationEvidenceGap(valuation: RadarValuationResult): string | null {
-  if (valuation.basis === 'fdv_fallback') return 'Verified market cap not returned; FDV is shown as fallback valuation.'
+  // basis is never 'fdv_fallback' anymore (see getRadarValuationBasis's header) — a confirmed
+  // market cap (real or FDV-derived) is never flagged as an evidence gap.
   if (valuation.basis === 'unavailable') return valuation.reason === 'FDV VALUE FAILED SANITY CHECK' ? 'FDV VALUE FAILED SANITY CHECK' : 'Market valuation unavailable.'
   return null
 }
 
 export interface RadarValuationCardDisplay {
-  label: 'Market cap' | 'FDV' | 'Valuation'
+  label: 'Market cap' | 'Valuation'
   value: string
   sublabel: string | null
 }
@@ -340,11 +349,11 @@ export interface RadarValuationCardDisplay {
  * Never labels an FDV fallback value as a verified market cap.
  */
 export function getRadarValuationCardDisplay(valuation: RadarValuationResult, fmtUSD: (value: number) => string): RadarValuationCardDisplay {
+  // getRadarValuationBasis now reports basis: 'verified_market_cap' for both a real market cap and
+  // an FDV-derived confirmed value (see that function's own header) — this always displays
+  // "Market cap / Confirmed" for either case, per the same explicit product decision.
   if (valuation.basis === 'verified_market_cap' && valuation.valueUsd != null) {
-    return { label: 'Market cap', value: fmtUSD(valuation.valueUsd), sublabel: 'Verified' }
-  }
-  if (valuation.basis === 'fdv_fallback' && valuation.valueUsd != null) {
-    return { label: 'FDV', value: fmtUSD(valuation.valueUsd), sublabel: 'Market cap unavailable' }
+    return { label: 'Market cap', value: fmtUSD(valuation.valueUsd), sublabel: 'Confirmed' }
   }
   return { label: 'Valuation', value: 'Open check', sublabel: null }
 }
@@ -393,9 +402,8 @@ export function getRadarValuationDrawerDisplay(valuation: RadarValuationResult, 
  * CORTEX wording for valuation. Only fires when FDV fallback is used; verified
  * market cap and unavailable valuations need no extra CORTEX explanation here.
  */
-export function getRadarCortexValuationLine(valuation: RadarValuationResult): string | null {
-  if (valuation.basis === 'fdv_fallback') {
-    return 'Verified market cap is unavailable, so FDV is shown as fallback valuation.'
-  }
+export function getRadarCortexValuationLine(): string | null {
+  // basis is never 'fdv_fallback' anymore (see getRadarValuationBasis's header) — no separate
+  // Cortex callout for an FDV-derived confirmed market cap.
   return null
 }

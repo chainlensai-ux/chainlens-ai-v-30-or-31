@@ -554,7 +554,7 @@ export async function GET(req: NextRequest) {
       ]
       const candidate = {
         name: baseToken.name, symbol: baseToken.symbol, contract: baseToken.address,
-        ageMinutes, liquidityUsd, volume24h, fdvUsd, marketCapUsd, marketCapStatus, valuationBasis: valuation.basis, valuationUsd: valuation.valueUsd, valuationLabel: valuation.label, valuationSublabel: valuationCardDisplay.sublabel, valuationVerified: valuation.verified, valuationReason: valuation.reason, valuationCortexLine: getRadarCortexValuationLine(valuation), evidenceGaps, riskLevel: 'SAFE', honeypot: null,
+        ageMinutes, liquidityUsd, volume24h, fdvUsd, marketCapUsd, marketCapStatus, valuationBasis: valuation.basis, valuationUsd: valuation.valueUsd, valuationLabel: valuation.label, valuationSublabel: valuationCardDisplay.sublabel, valuationVerified: valuation.verified, valuationReason: valuation.reason, valuationCortexLine: getRadarCortexValuationLine(), evidenceGaps, riskLevel: 'SAFE', honeypot: null,
         simulationStatus: 'open_check', simulationReason: null, simulationLabel: '', simulationCortexLine: '', pairAddress: primaryPoolAddress,
         ...(debug ? { marketCapDiagnostics: {
           selectedMarketCapUsd: marketCapUsd,
