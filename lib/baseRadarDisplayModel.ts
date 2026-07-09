@@ -63,8 +63,23 @@ function baseScore(raw: AnyRecord, simulation: BaseRadarDisplaySimulation): numb
   const liquidityUsd = num(raw.liquidityUsd) ?? 0
   const volume24hUsd = num(raw.volume24h ?? raw.volume24hUsd) ?? 0
   const poolAgeMinutes = num(raw.ageMinutes) ?? 0
-  const buyTax = simulation.buyTax ?? raw.honeypot?.buyTax ?? 0
-  const sellTax = simulation.sellTax ?? raw.honeypot?.sellTax ?? 0
+  // UNKNOWN-TAX FIX, DISCLOSED (all-radar-scores-stuck-at-49 bug): previously
+  // `simulation.buyTax ?? raw.honeypot?.buyTax ?? 0` treated a PENDING/unconfirmed simulation
+  // (buyTax/sellTax both null) identically to a CONFIRMED 0% tax — awarding the same +10 "clean
+  // tax" bonus to a token nobody has actually checked yet as to one that's genuinely verified
+  // clean. Since almost every brand-new pool has a pending simulation, this handed out the same
+  // free +10 to nearly the entire "new pool" segment of the feed, saturating baseScore near/at 100
+  // for most of them regardless of real differences in liquidity/volume/age — which then got
+  // compressed away entirely once applyBaseRadarScoreCaps's cap: 49 (both LP-burn-proof and
+  // simulation missing, also true for nearly every brand-new pool) became the binding constraint.
+  // Net effect: nearly every fresh token landed on the exact same score (49), regardless of how
+  // different their real underlying evidence was. Only awards the clean-tax bonus (and only
+  // evaluates a tax penalty at all) when the simulation actually confirmed a real value —
+  // "unknown" now stays neutral, the same "unknown ≠ safe" principle already used everywhere else
+  // in this codebase's risk scoring.
+  const taxConfirmed = simulation.status === 'passed'
+  const buyTax = taxConfirmed ? (simulation.buyTax ?? 0) : null
+  const sellTax = taxConfirmed ? (simulation.sellTax ?? 0) : null
   let score = 50
   if (liquidityUsd >= 10_000) score += 20
   if (liquidityUsd >= 30_000) score += 10
@@ -75,8 +90,8 @@ function baseScore(raw: AnyRecord, simulation: BaseRadarDisplaySimulation): numb
   if (poolAgeMinutes <= 120) score += 10
   if (poolAgeMinutes <= 5 && volume24hUsd <= 0) score -= 10
   if (buyTax === 0 && sellTax === 0) score += 10
-  if (buyTax > 5 || sellTax > 5) score -= 15
-  if (buyTax > 15 || sellTax > 15) score -= 25
+  if (buyTax != null && sellTax != null && (buyTax > 5 || sellTax > 5)) score -= 15
+  if (buyTax != null && sellTax != null && (buyTax > 15 || sellTax > 15)) score -= 25
   if (hasSuspiciousBranding(raw.name, raw.symbol)) score -= 10
   return Math.max(0, Math.min(100, Math.round(score)))
 }

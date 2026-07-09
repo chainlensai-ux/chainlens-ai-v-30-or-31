@@ -71,7 +71,22 @@ export function applyBaseRadarScoreCaps(input: RadarFeedScoreInput): { score: nu
   }
 
   if (criticalMissingCount >= 2) {
-    caps.push({ cap: 49, reason: 'LP/burn proof and simulation evidence are both missing.' })
+    // FLAT-CAP FIX, DISCLOSED (all-radar-scores-stuck-at-49 bug): this used to be a single flat
+    // `cap: 49` for every token with both critical categories missing — but that's the near-
+    // universal state for any pool under ~15-30 minutes old (simulation takes time to run, LP
+    // lock/burn proof takes time to resolve), so almost every fresh token in the feed hit this
+    // exact branch and, since their pre-cap penalizedScore was consistently well above 49 (see
+    // baseScore's own header on why it tends to saturate high), landed on the literal same score:
+    // 49, regardless of how different their real liquidity/volume actually were. Scaled the cap by
+    // liquidity/volume tier instead — still meaningfully below the 64/74/79 tiers reserved for
+    // better-evidenced tokens (this remains a real ceiling, not a way around the "both critical
+    // categories missing" penalty), but restores differentiation between, say, a $200k-liquidity/
+    // $600k-volume fresh pool and a $16k-liquidity/$5k-volume one, instead of collapsing both to
+    // the same number.
+    const liquidityTier = liquidity != null && liquidity >= 100_000 ? 10 : liquidity != null && liquidity >= 25_000 ? 5 : 0
+    const volumeTier = (input.volume24h ?? 0) >= 100_000 ? 5 : (input.volume24h ?? 0) >= 25_000 ? 3 : 0
+    const scaledCap = Math.min(64, 44 + liquidityTier + volumeTier)
+    caps.push({ cap: scaledCap, reason: 'LP/burn proof and simulation evidence are both missing.' })
   } else if (simulationUnconfirmed) {
     caps.push({ cap: 74, reason: 'Simulation or tax evidence is not confirmed.' })
   } else if (lpBurnMissing) {
