@@ -591,18 +591,43 @@ export async function GET(req: NextRequest) {
     })
     const toCheck = candidates.slice(0, 50)
 
-    // 2. Full mode runs honeypot/simulation enrichment; shallow mode keeps the
-    // feed to market data plus basic risk flags and does not invent evidence.
-    const hpCacheHitFlags = shallowMode ? [] : toCheck.map(t => { const c = honeypotCache.get(t.contract.toLowerCase()); return !!(c && Date.now() - c.cachedAt <= HONEYPOT_CACHE_TTL_MS) })
-    const hpResults = shallowMode ? [] : await Promise.allSettled(
-      toCheck.map(t => withTimeout(getCachedHoneypot(t.contract, true), 5000, null))
-    )
+    // 2. TAX-CHECK-ALWAYS-ATTEMPTED FIX, DISCLOSED (reported: every feed card stuck yellow/
+    // "SIMULATION PENDING"): previously shallow mode (the frontend's default) NEVER ran the
+    // buy/sell tax simulation at all, so every visible card showed "pending" even for tokens
+    // honeypot.is could actually verify clean — the feed simply never asked. Now the real
+    // simulation runs for the top SIM_TOP_N feed tokens (already ranked by the momentum/liquidity
+    // score blend above, so this is the visible/leading set), regardless of shallow vs full, with a
+    // bounded worker pool (not the prior unbounded Promise.allSettled over all 50, which was itself
+    // a rate-limit burst risk) and the existing 5-min honeypot cache. A token honeypot.is can
+    // simulate now shows a real confirmed tax (green); a genuinely-unsimulatable brand-new pool
+    // still honestly reports pending — this never fabricates a "safe" tax it didn't verify (same
+    // unknown-≠-safe principle as the rest of the risk scoring). Full mode additionally runs Clark
+    // AI verdicts (below); shallow skips only those.
+    const SIM_TOP_N = 14
+    const SIM_CONCURRENCY = 7
+    const simTargets = toCheck.slice(0, SIM_TOP_N)
+    const hpByContract = new Map<string, HoneypotResult | null>()
+    {
+      let nextIndex = 0
+      const worker = async () => {
+        for (;;) {
+          const i = nextIndex++
+          if (i >= simTargets.length) return
+          const t = simTargets[i]
+          // Single-attempt, cache-backed, tight-timeout check for the feed — the drawer runs the
+          // thorough retry version on demand. Successive polls hit the warm honeypot cache, so this
+          // real cost is only paid on a cold cache once per payload-cache window.
+          const hp = await withTimeout(getCachedHoneypot(t.contract, false), 2600, null)
+          hpByContract.set(t.contract.toLowerCase(), hp)
+        }
+      }
+      await Promise.all(Array.from({ length: Math.min(SIM_CONCURRENCY, simTargets.length) }, () => worker()))
+    }
+    const hpCacheHitFlags = simTargets.map(t => { const c = honeypotCache.get(t.contract.toLowerCase()); return !!(c && Date.now() - c.cachedAt <= HONEYPOT_CACHE_TTL_MS) })
 
-    const scored: Candidate[] = toCheck.map((token, i) => {
-      const hp = shallowMode ? null : hpResults[i]?.status === 'fulfilled' ? hpResults[i].value : null
-      const simulation = shallowMode
-        ? { status: 'open_check' as const, reason: null, label: 'Buy/sell simulation not checked in shallow mode', cortexLine: 'Simulation evidence not fetched in shallow mode.' }
-        : getRadarSimulationDisplay({ contract: token.contract, liquidityUsd: token.liquidityUsd, pairAddress: token.pairAddress ?? null, honeypot: hp })
+    const scored: Candidate[] = toCheck.map((token) => {
+      const hp = hpByContract.get(token.contract.toLowerCase()) ?? null
+      const simulation = getRadarSimulationDisplay({ contract: token.contract, liquidityUsd: token.liquidityUsd, pairAddress: token.pairAddress ?? null, honeypot: hp })
       return {
         ...token,
         honeypot: hp,

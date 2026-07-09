@@ -622,11 +622,11 @@ function ActionButton({
 
 function Metric({ label, value, accent, sublabel }: { label: string; value: string; accent?: string; sublabel?: string | null }) {
   return (
-    <div style={{ border: '1px solid rgba(148,163,184,0.12)', borderRadius: '12px', padding: '9px 10px', background: 'rgba(255,255,255,0.035)', minWidth: 0 }}>
+    <div style={{ border: `1px solid ${accent ? `${accent}33` : 'rgba(148,163,184,0.12)'}`, borderRadius: '12px', padding: '9px 10px', background: accent ? `${accent}0f` : 'rgba(255,255,255,0.035)', minWidth: 0, transition: 'border-color 0.4s ease, background 0.4s ease' }}>
       <p style={{ fontSize: '8px', fontWeight: 800, letterSpacing: '0.12em', color: '#64748b', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', margin: '0 0 5px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
         {label}
       </p>
-      <p style={{ fontSize: '13px', fontWeight: 850, color: accent ?? '#e2e8f0', margin: 0, fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+      <p style={{ fontSize: '13px', fontWeight: 850, color: accent ?? '#e2e8f0', margin: 0, fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', transition: 'color 0.4s ease' }}>
         {value}
       </p>
       {sublabel && (
@@ -1266,7 +1266,7 @@ export default function BaseRadarPage() {
 
             {!loading && tokens.length > 0 && Boolean(data?.limitedLiveFeed) && (
               <div style={{ padding: '10px 14px', borderRadius: '10px', background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.20)', color: '#fbbf24', fontSize: '11px', marginBottom: '12px', fontFamily: 'var(--font-plex-mono)' }}>
-                Radar data partial — some metrics unavailable. Showing {tokens.length} result{tokens.length === 1 ? '' : 's'}.
+                Radar data partial — some metrics unavailable. Showing {filteredAndSortedTokens.length} result{filteredAndSortedTokens.length === 1 ? '' : 's'}.
               </div>
             )}
 
