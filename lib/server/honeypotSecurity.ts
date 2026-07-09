@@ -173,8 +173,18 @@ export async function fetchHoneypotSecurity(tokenAddress: string, chainIdOrNetwo
   const endpoint = `/v2/IsHoneypot?address=${tokenAddress}&chainID=${chainID}`;
   const url = `https://api.honeypot.is${endpoint}`;
 
+  // TIMEOUT REDUCTION, DISCLOSED (Base Radar drawer speed issue): was 6000ms. Confirmed via a real
+  // user report — an 8-minute-old pool's drawer took ~7s to open, and even after that full wait,
+  // the simulation section still showed "pending" (i.e. the 6s timeout was hit with nothing to show
+  // for it). This function is shared by app/api/token/route.ts's full scan (itself the OTHER
+  // parallel cold-path cost the drawer waits on via app/api/base-radar/enrichment) and
+  // app/api/radar/simulation/route.ts (the drawer's separate live simulation query), so lowering it
+  // here cuts worst-case latency on both at once. 3500ms still gives a real simulation a fair chance
+  // to complete; anything slower than that was, in the observed case, timing out anyway with no
+  // useful result — this trades a narrow band of "would have succeeded between 3.5s-6s" cases for a
+  // faster, more honest "still pending" fallback in the common slow/never-responds case.
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 6000);
+  const timeout = setTimeout(() => controller.abort(), 3500);
   try {
     const response = await fetch(url, {
       method: "GET",
