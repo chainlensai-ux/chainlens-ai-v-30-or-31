@@ -469,11 +469,34 @@ export async function GET(req: NextRequest) {
       })
     }
 
-    const rescueResults = await Promise.all(
-      drafts.map((d) => d.needsRescue
-        ? getDexMarketCapRescue({ chain: 'base', token: d.baseToken.address, primaryPoolAddress: d.primaryPoolAddress })
-        : Promise.resolve(null)),
-    )
+    // CONCURRENCY-CAP FIX, DISCLOSED (real regression found while investigating a "market cap not
+    // confirming, feed nearly empty" report): the unbounded Promise.all above (kept here as a
+    // comment for context) fires every needed rescue call at once — on a batch with many pools
+    // missing a market cap, that's a burst of dozens of simultaneous requests to DexScreener's
+    // public API. getDexMarketCapRescue treats ANY non-OK response (including a 429 rate-limit)
+    // identically to "genuinely no market cap data" — silently returning 'unavailable' with no way
+    // to tell the two apart. Unlike the previous sequential-await version (naturally throttled one
+    // request at a time), this burst very plausibly trips DexScreener's own rate limiting, causing
+    // market cap resolution to fail far more often than before across an entire batch at once —
+    // exactly the symptom reported. Capped to a small bounded concurrency instead, preserving most
+    // of the original parallelization's speed win while not hammering DexScreener with a burst large
+    // enough to trigger rate limiting in the first place.
+    const RESCUE_CONCURRENCY_LIMIT = 6
+    const rescueResults: (DexScreenerMarketCapRescueResult & { cacheHit: boolean } | null)[] = new Array(drafts.length)
+    {
+      let nextIndex = 0
+      const worker = async () => {
+        for (;;) {
+          const i = nextIndex++
+          if (i >= drafts.length) return
+          const d = drafts[i]
+          rescueResults[i] = d.needsRescue
+            ? await getDexMarketCapRescue({ chain: 'base', token: d.baseToken.address, primaryPoolAddress: d.primaryPoolAddress })
+            : null
+        }
+      }
+      await Promise.all(Array.from({ length: Math.min(RESCUE_CONCURRENCY_LIMIT, drafts.length) }, () => worker()))
+    }
 
     for (let i = 0; i < drafts.length; i++) {
       const { baseToken, ageMinutes, liquidityUsd, volume24h, isPrimaryAgeWindow, isFallbackAgeWindow, fdvUsd, resolvedMarketCap, primaryPoolAddress } = drafts[i]
