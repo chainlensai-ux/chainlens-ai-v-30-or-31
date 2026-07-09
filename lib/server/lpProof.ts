@@ -124,20 +124,38 @@ export async function fetchPinkLockData(lpTokenAddress: string): Promise<PinkLoc
       if (entries.length === 0) {
         result = { lpLockStatus: "unverified", lpLockAmount: null, lpUnlockTime: null, lpLockProvider: null };
       } else {
+        // EXPIRED-LOCK FIX, DISCLOSED (token-scanner audit): previously this reported "locked"
+        // whenever entries.length > 0, with no check of unlockTime against the current time. A
+        // PinkLock record whose lock already expired (fully withdrawable liquidity right now) was
+        // indistinguishable from an active lock — the highest-confidence "safe" signal in the whole
+        // system (resolveLpProof -> lpController: "lockContract" -> deriveDataModeAndConfidence ->
+        // "strict"/"high" confidence). Fixed by only counting entries whose unlockTime is still in
+        // the future (or unknown) as "active" locks; only entries.length > 0 with at least one
+        // active entry is reported as "locked", and the reported unlockTime is the earliest among
+        // only the still-active entries (an already-passed entry can no longer be the meaningful
+        // "next unlock" — reporting its stale timestamp would itself be misleading).
+        // unlockTime is unix SECONDS (see this function's own caller at line ~380: `lpUnlockTime * 1000`).
+        const nowSeconds = Date.now() / 1000;
         let amountSum = 0;
-        let earliestUnlock: number | null = null;
+        let earliestActiveUnlock: number | null = null;
+        let hasActiveLock = false;
         for (const entry of entries) {
           const amount = toNum(entry.amount as string | number | null | undefined);
-          if (amount != null) amountSum += amount;
           const unlock = toNum(entry.unlockTime as string | number | null | undefined);
-          if (unlock != null && (earliestUnlock == null || unlock < earliestUnlock)) earliestUnlock = unlock;
+          const isActive = unlock == null || unlock > nowSeconds;
+          if (!isActive) continue; // expired entry — contributes neither to the lock status nor the amount
+          hasActiveLock = true;
+          if (amount != null) amountSum += amount;
+          if (unlock != null && (earliestActiveUnlock == null || unlock < earliestActiveUnlock)) earliestActiveUnlock = unlock;
         }
-        result = {
-          lpLockStatus: "locked",
-          lpLockAmount: amountSum > 0 ? amountSum : null,
-          lpUnlockTime: earliestUnlock,
-          lpLockProvider: "PinkLock",
-        };
+        result = hasActiveLock
+          ? {
+              lpLockStatus: "locked",
+              lpLockAmount: amountSum > 0 ? amountSum : null,
+              lpUnlockTime: earliestActiveUnlock,
+              lpLockProvider: "PinkLock",
+            }
+          : { lpLockStatus: "unverified", lpLockAmount: null, lpUnlockTime: null, lpLockProvider: null };
       }
     }
   } catch {
@@ -188,7 +206,14 @@ export async function scanLpHoldersOnChain(chain: LpChain, lpTokenAddress: strin
 
     if (totalSupply != null && totalSupply > BigInt(0)) {
       const burned = zeroBal + deadBal;
-      if (burned * BigInt(2) >= totalSupply) {
+      // BURN-THRESHOLD FIX, DISCLOSED (token-scanner audit): previously reported "burned" (the
+      // safest possible lpLockStatus — downstream treated as high-confidence proof liquidity can
+      // never be pulled) whenever burned >= 50% of total LP supply. Up to 49% could still sit with
+      // a normal wallet/contract with no lock at all, fully free to withdraw and materially affect
+      // price/liquidity depth — labeling that "burned" overstated safety. Raised to 99% (allowing
+      // only dust/rounding remainder) before reporting "burned"; anything short of that falls
+      // through to "unverified" rather than a fabricated safe/unsafe binary for the partial case.
+      if (burned * BigInt(100) >= totalSupply * BigInt(99)) {
         return { lpLockStatus: "burned", lpController: "burn" };
       }
     }

@@ -22,11 +22,17 @@ function kvConfigured(): boolean {
   return Boolean(process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN)
 }
 
+// TIMER-LEAK FIX, DISCLOSED (token-scanner audit): previously the timeout's setTimeout was never
+// cleared when `promise` won the race (the common case — most KV calls complete well under 2s), so
+// every successful call left a pending timer for up to KV_CALL_TIMEOUT_MS. Not observable to
+// callers, but needless timer/resource churn under load. Clears the timer on whichever path settles
+// first.
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  return Promise.race([
-    promise,
-    new Promise<T>((_, reject) => setTimeout(() => reject(new Error('kv_timeout')), ms)),
-  ])
+  let timer: ReturnType<typeof setTimeout>
+  const timeout = new Promise<T>((_, reject) => {
+    timer = setTimeout(() => reject(new Error('kv_timeout')), ms)
+  })
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer))
 }
 
 // Returns the cached value, or null on a miss, misconfiguration, or any KV error — a caller never

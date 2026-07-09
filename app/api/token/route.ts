@@ -317,7 +317,11 @@ async function checkRpcHealth(chain: ChainKey): Promise<{ ok: boolean; providerU
   }
 }
 
-const TOKEN_CACHE_TTL_MS = 3 * 60 * 1000
+// DEAD-CONSTANT FIX, DISCLOSED (token-scanner audit): TOKEN_CACHE_TTL_MS (3 min) was declared here
+// but never actually read anywhere — the real cache write below hardcodes a literal `45` (seconds),
+// 4x shorter than what this constant implied. Removed rather than "fixed" to 180s, since that would
+// be a real behavior change (4x longer cache) this audit wasn't asked to make; the literal at the
+// actual setTokenCache() call is the one real, live value.
 const TOKEN_RATE_WINDOW_MS = 60 * 1000
 const TOKEN_RATE_BY_PLAN: Record<string, number> = { free: 12, pro: 40, elite: 120 }
 // Token scanner caching intentionally disabled for full provider-run scans.
@@ -3263,7 +3267,6 @@ export async function POST(req: Request) {
       symbol: aliasHit?.symbol,
       confidence: (isAddressInput ? 'high' : 'high') as 'high' | 'medium' | 'low',
     } : null
-    const cacheKey = JSON.stringify({ contract: String(resolvedAddress ?? '').toLowerCase(), chain, _cv: 10, noCache: true })
 
     // Detect near-valid hex strings (0x prefix but wrong char count) and return a helpful error
     if (!resolvedAddress && /^0x[a-fA-F0-9]+$/i.test(originalInput) && originalInput.length !== 42) {
@@ -7643,6 +7646,10 @@ export async function POST(req: Request) {
         buyTax: hpResult.buyTax,
         sellTax: hpResult.sellTax,
         transferTax: hpResult.transferTax,
+        // WIRING FIX, DISCLOSED (token-scanner audit): the confirmed honeypot verdict was computed
+        // (hpResult.honeypot) but never passed into the risk score at all — only tax percentages
+        // were. See lib/server/riskScore.ts's own header on this same field for the fix.
+        isHoneypot: hpResult.honeypot ?? null,
       } : null,
       deployerProfile: riskEngine.deployerProfile,
       sniperActivity: riskEngine.sniperActivity,

@@ -75,6 +75,12 @@ export interface RiskScoreInput {
     buyTax?: number | null
     sellTax?: number | null
     transferTax?: number | null
+    // CONFIRMED-HONEYPOT WIRING FIX, DISCLOSED (token-scanner audit): this field did not exist here
+    // at all before — only buyTax/sellTax/transferTax were read, so a confirmed can't-sell honeypot
+    // (lib/server/honeypotSecurity.ts's own `honeypot: boolean` verdict) with low/no displayed tax
+    // contributed ZERO penalty to the risk score's "critical flags" section. See scoreContractSafety
+    // and calculateTokenRiskScore below for how this is now used.
+    isHoneypot?: boolean | null
   } | null
   sourceVerified?: boolean | null
 
@@ -173,9 +179,14 @@ function scoreMarketMaturity(input: RiskScoreInput): RiskScoreSectionResult {
   const top5 = input.holderDistribution?.top5 ?? null
   const top10 = input.holderDistribution?.top10 ?? null
 
+  // MISSING-DATA CONSISTENCY FIX, DISCLOSED (token-scanner audit): previously scored 3/10 (a
+  // middling default) when holder distribution is unavailable — inconsistent with every other
+  // "unknown" case in this file (e.g. liquidityScore just above scores 0, not a partial-credit
+  // average, when liquidityUsd is null). Missing holder data isn't evidence of moderate safety; it's
+  // an absence of evidence, so this now scores 0 like the rest of the file's unknown-data handling.
   let holderScore: number
   if (top1 == null && top5 == null && top10 == null) {
-    holderScore = 3
+    holderScore = 0
     reasons.push('holder_distribution_unavailable')
   } else if (top1 != null && top1 > 50) {
     holderScore = 0
@@ -367,6 +378,16 @@ function scoreContractSafety(input: RiskScoreInput): RiskScoreSectionResult {
     criticalScore -= 5
     reasons.push('transfer_tax_above_10_percent')
   }
+  // CONFIRMED-HONEYPOT FIX, DISCLOSED (token-scanner audit): a confirmed can't-sell verdict is the
+  // single most severe finding this scanner can produce — zeroes this section outright rather than
+  // the flat -5 used for the other flags, since a confirmed honeypot makes every other positive
+  // signal (market cap, liquidity depth, deployer reputation) irrelevant to whether the holder can
+  // ever sell at all. See calculateTokenRiskScore below for the additional hard cap this also
+  // triggers on the overall label, so this can't be diluted back up by unrelated section scores.
+  if (input.honeypot?.isHoneypot === true) {
+    criticalScore = 0
+    reasons.push('confirmed_honeypot')
+  }
   criticalScore = clamp(criticalScore, 0, 10)
   components.criticalFlags = criticalScore
 
@@ -457,6 +478,28 @@ function riskLabelFromScore(score: number): RiskLabel {
   return 'very_low'
 }
 
+// HARD-CAP FIX, DISCLOSED (token-scanner audit): previously the additive total let a confirmed
+// critical flag (mint/blacklist/pause/honeypot) get diluted by unrelated positive signals elsewhere
+// — e.g. a token with a confirmed mint function could still land in "moderate"/"low" risk if
+// liquidity depth and holder distribution looked fine, because that flag only ever cost 5-10 of the
+// 100 total points. A single confirmed critical flag is a real "can rug/drain/trap holders" signal
+// that no amount of liquidity depth or market cap should be able to outweigh, so this forces the
+// worst possible label when any of the following hold, regardless of the additive total:
+//   - a confirmed honeypot (can't sell at all), or
+//   - all three of mint + blacklist + pause are flagged together (contractSafety's own
+//     criticalScore already reached 0 — this checks the specific all-three case explicitly rather
+//     than inferring it from criticalScore alone, since criticalScore can also reach 0 purely from
+//     the transfer-tax check, which is real but not in the same severity class).
+function hasHardCriticalFlag(input: RiskScoreInput): boolean {
+  if (input.honeypot?.isHoneypot === true) return true
+  const flagDetected = (status?: string | null) => status === 'verified' || status === 'possible'
+  return (
+    flagDetected(input.contractFlags?.mint?.status) &&
+    flagDetected(input.contractFlags?.blacklist?.status) &&
+    flagDetected(input.contractFlags?.pause?.status)
+  )
+}
+
 export function calculateTokenRiskScore(input: RiskScoreInput): RiskScoreResult {
   const marketMaturity = scoreMarketMaturity(input)
   const liquiditySafety = scoreLiquiditySafety(input)
@@ -468,11 +511,12 @@ export function calculateTokenRiskScore(input: RiskScoreInput): RiskScoreResult 
     0,
     100,
   )
-  const riskScore = Math.round(total)
+  const hardCapped = hasHardCriticalFlag(input)
+  const riskScore = hardCapped ? Math.min(Math.round(total), 15) : Math.round(total)
 
   return {
     riskScore,
-    riskLabel: riskLabelFromScore(riskScore),
+    riskLabel: hardCapped ? 'extreme' : riskLabelFromScore(riskScore),
     riskBreakdown: {
       marketMaturity,
       liquiditySafety,

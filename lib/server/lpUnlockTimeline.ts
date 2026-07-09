@@ -1,4 +1,11 @@
-export type LpUnlockTimelineStatus = 'locked' | 'burned' | 'open_check' | 'not_applicable'
+// EXPIRED-LOCK-STATUS FIX, DISCLOSED (token-scanner audit): previously an expired lock (diffSeconds
+// <= 0 below) still reported `status: 'locked'` — only `unlockRisk` distinguished it ('expired' vs
+// a real active lock). Any consumer branching on `status === 'locked'` alone (the field literally
+// shown as the status label in app/terminal/token-scanner/page.tsx's cleanStatusLabel) displayed an
+// already-unlocked LP as "Locked" — the same misleading-safety-signal pattern as the fetchPinkLockData
+// fix in lpProof.ts. Added a distinct 'expired' status value so the label itself can no longer claim
+// an expired lock is still locked.
+export type LpUnlockTimelineStatus = 'locked' | 'expired' | 'burned' | 'open_check' | 'not_applicable'
 export type LpUnlockRisk = 'low' | 'watch' | 'high' | 'expired' | 'unknown' | 'none' | 'not_applicable'
 export type LpUnlockTimeStatus = 'known' | 'unknown' | 'not_applicable'
 
@@ -111,7 +118,7 @@ export function buildLpUnlockTimeline(input: LpUnlockTimelineInput): LpUnlockTim
 
   if (diffSeconds <= 0) {
     return {
-      status: 'locked', unlockRisk: 'expired', confidence, chain, lpTokenOrPool,
+      status: 'expired', unlockRisk: 'expired', confidence, chain, lpTokenOrPool,
       unlockTime: unlockTimeRaw, unlockTimeStatus: 'known', unlockCountdownSeconds: 0, unlockCountdownLabel: formatCountdownLabel(0),
       lockState,
       summary: 'The confirmed LP lock has reached its unlock time and may already be unlocked.',
