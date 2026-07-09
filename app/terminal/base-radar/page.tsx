@@ -857,6 +857,17 @@ export default function BaseRadarPage() {
   const [error, setError] = useState<string | null>(null)
   const [countdown, setCountdown] = useState(120)
   const [refreshKey, setRefreshKey] = useState(0)
+  // OVERLAPPING-FETCH FIX, DISCLOSED (Base Radar speed audit): fetchData() previously had no
+  // AbortController and no in-flight guard. Two independent triggers — the 120s interval poll and
+  // handleManualRefresh — could both call fetchData() concurrently (e.g. a manual refresh right as
+  // the interval tick fires), and since neither cancelled the other, whichever response happened to
+  // arrive LAST won via setData(), even if it was the stale (earlier-started) request. Also: the
+  // interval kept polling every 120s regardless of tab visibility, running the backend's full
+  // multi-token scoring pipeline for a tab nobody was looking at. fetchInFlightRef guards against
+  // overlapping requests; abortControllerRef lets a superseded request actually cancel its network
+  // call instead of just being ignored client-side.
+  const fetchInFlightRef = useRef(false)
+  const abortControllerRef = useRef<AbortController | null>(null)
   const [activeFilter, setActiveFilter] = useState<RadarFilter>('TRENDING')
   const [sortMode, setSortMode] = useState<SortMode>('NEWEST')
   const [trackedContracts, setTrackedContracts] = useState<Record<string, boolean>>({})
@@ -867,12 +878,21 @@ export default function BaseRadarPage() {
   const showUpsell = effectivePlan === 'free'
 
   const fetchData = useCallback(async () => {
+    // Cancel any still-in-flight request (e.g. manual refresh firing while the interval-driven
+    // fetch hasn't resolved yet) before starting a new one — the old request's response, once it
+    // arrives, is aborted rather than allowed to race the new one and potentially overwrite it with
+    // stale data.
+    abortControllerRef.current?.abort()
+    const controller = new AbortController()
+    abortControllerRef.current = controller
+    fetchInFlightRef.current = true
+
     setLoading(true)
     setError(null)
     try {
       const { data: _sd } = await supabase.auth.getSession()
       const _tok = _sd.session?.access_token
-      const res = await fetch('/api/radar', { cache: 'no-store', headers: _tok ? { Authorization: `Bearer ${_tok}` } : {} })
+      const res = await fetch('/api/radar', { cache: 'no-store', signal: controller.signal, headers: _tok ? { Authorization: `Bearer ${_tok}` } : {} })
       const json = await res.json()
       if (!res.ok || json.error) {
         setError(hasRadarDataRef.current ? 'Radar refresh failed. Showing last available read.' : 'Radar refresh failed. Try refreshing or scanning a token directly.')
@@ -880,10 +900,16 @@ export default function BaseRadarPage() {
         hasRadarDataRef.current = true
         setData(json as RadarData)
       }
-    } catch {
+    } catch (err) {
+      // AbortError means this request was superseded by a newer one (or the component unmounted) —
+      // the newer request already owns loading/error state, so this one must not touch it.
+      if (err instanceof Error && err.name === 'AbortError') return
       setError(hasRadarDataRef.current ? 'Radar refresh failed. Showing last available read.' : 'Radar refresh failed. Try refreshing or scanning a token directly.')
     } finally {
-      setLoading(false)
+      if (abortControllerRef.current === controller) {
+        fetchInFlightRef.current = false
+        setLoading(false)
+      }
     }
   }, [])
 
@@ -895,8 +921,31 @@ export default function BaseRadarPage() {
     }
   }, [effectivePlan, fetchData, planLoading])
 
+  // UNMOUNT-ABORT FIX, DISCLOSED (Base Radar speed audit): without this, navigating away mid-fetch
+  // left the network request running to completion server-side (the backend still did the full
+  // multi-token scoring work for a response nobody would ever read) and left setData/setLoading
+  // calls pending against an unmounted component.
+  useEffect(() => {
+    return () => { abortControllerRef.current?.abort() }
+  }, [])
+
+  // VISIBILITY-PAUSE FIX, DISCLOSED (Base Radar speed audit): previously the countdown interval
+  // kept ticking and triggering a full /api/radar refetch (the backend's multi-source fetch +
+  // per-token scoring pipeline) every 120s regardless of whether the tab was visible — a
+  // backgrounded/hidden tab still consumed a full radar cycle's worth of backend compute every 2
+  // minutes for nobody to see. The countdown effect below simply skips decrementing while hidden
+  // (freezing the countdown, not resetting it), so no separate "catch up" logic is needed here —
+  // the countdown naturally resumes and fires on schedule once the tab is visible again.
+  const isHiddenRef = useRef(false)
+  useEffect(() => {
+    function handleVisibilityChange() { isHiddenRef.current = document.hidden }
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange)
+  }, [])
+
   useEffect(() => {
     const id = setInterval(() => {
+      if (isHiddenRef.current) return
       setCountdown(c => {
         if (c <= 1) {
           setRefreshKey(k => k + 1)
@@ -918,6 +967,11 @@ export default function BaseRadarPage() {
   }, [effectivePlan, refreshKey, fetchData])
 
   function handleManualRefresh() {
+    // Repeated rapid clicks no longer each open a new network request — fetchData() itself would
+    // correctly abort-and-supersede them, but skipping outright avoids the redundant backend work
+    // that abort-after-the-fact can't prevent (the server has already started scoring by the time
+    // an abort signal reaches it).
+    if (fetchInFlightRef.current) return
     setCountdown(120)
     fetchData()
   }

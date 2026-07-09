@@ -204,8 +204,16 @@ async function getClarkVerdicts(tokens: Omit<RadarToken, 'clarkVerdict'>[]): Pro
 const EMPTY_STATS: RadarStats = { totalNewTokens: 0, averageLiquidity: 0, mostCommonRisk: 'SAFE', dangerCount: 0, cautionCount: 0, watchCount: 0, safeCount: 0 }
 
 const HONEYPOT_CACHE_TTL_MS = 5 * 60 * 1000
-const RADAR_FULL_CACHE_TTL_MS = 45 * 1000
-const RADAR_SHALLOW_CACHE_TTL_MS = 15 * 1000
+// CACHE-TTL-VS-POLL-INTERVAL FIX, DISCLOSED (Base Radar speed audit): the frontend
+// (app/terminal/base-radar/page.tsx) polls this endpoint every 120s per client. At the previous
+// 45s/15s TTLs, most polls still missed cache (TTL << 120s poll interval) and re-ran the full
+// multi-source fetch + scoring pipeline (including the Clark AI verdict call) on nearly every tick
+// from every connected client. Raised closer to — but still safely under — the 120s poll interval,
+// so a single client's own poll cadence still always sees fresh-enough data (never a full 2 cycles
+// stale) while multiple concurrent clients polling on staggered schedules now actually share the
+// cached result instead of each re-triggering the full pipeline independently.
+const RADAR_FULL_CACHE_TTL_MS = 100 * 1000
+const RADAR_SHALLOW_CACHE_TTL_MS = 30 * 1000
 export const DEX_MARKET_CAP_RESCUE_TTL_MS = 2 * 60 * 1000
 const radarPayloadCache = new Map<string, { cachedAt: number; ttlMs: number; payload: { tokens: RadarToken[]; stats: RadarStats; fetchedAt: string; limitedLiveFeed: boolean; mode: 'shallow' | 'full'; _debug?: Record<string, unknown> } }>()
 const honeypotCache = new Map<string, { result: HoneypotResult | null; cachedAt: number }>()
@@ -397,6 +405,26 @@ export async function GET(req: NextRequest) {
     const seenContracts = new Set<string>()
     const seenPools = new Set<string>()
 
+    // SERIAL-BOTTLENECK FIX, DISCLOSED (Base Radar speed audit): getDexMarketCapRescue() used to be
+    // awaited inline inside this loop, one pool at a time — for a batch of N pools all missing a
+    // resolved market cap on a cold cache, that's N sequential DexScreener round-trips (each with
+    // its own 3s timeout) serialized end-to-end, adding many seconds to every cache-miss request.
+    // Split into two passes instead: pass 1 runs every synchronous filter/dedup step exactly as
+    // before (identical order, identical seenPools/seenContracts semantics — nothing about which
+    // pools survive or in what order changes) and, instead of awaiting a needed rescue inline,
+    // records a draft with a `needsRescue` flag; pass 2 fires all needed rescues concurrently via
+    // Promise.all (each still individually capped by its own timeout and de-duped by
+    // getDexMarketCapRescue's own cache/in-flight map — see that function's header); pass 3 replays
+    // the exact original post-rescue logic per draft, in the original order, using the resolved
+    // rescue result instead of a fresh await.
+    type PoolDraft = {
+      baseToken: NonNullable<ReturnType<typeof tokenMap.get>>
+      ageMinutes: number; liquidityUsd: number; volume24h: number; isPrimaryAgeWindow: boolean; isFallbackAgeWindow: boolean
+      fdvUsd: number | null; resolvedMarketCap: ReturnType<typeof resolveBaseRadarMarketCap>; primaryPoolAddress: string | null
+      needsRescue: boolean
+    }
+    const drafts: PoolDraft[] = []
+
     for (const pool of pooled) {
       const poolId = String(pool.id ?? '').toLowerCase()
       if (poolId && seenPools.has(poolId)) continue
@@ -434,9 +462,22 @@ export async function GET(req: NextRequest) {
       const primaryPoolAddress = typeof attrs?.address === 'string'
         ? attrs.address
         : poolId.includes('_') ? poolId.split('_').pop() ?? null : null
-      const rescue = resolvedMarketCap.marketCapUsd == null
-        ? await getDexMarketCapRescue({ chain: 'base', token: baseToken.address, primaryPoolAddress })
-        : null
+
+      drafts.push({
+        baseToken, ageMinutes, liquidityUsd, volume24h, isPrimaryAgeWindow, isFallbackAgeWindow,
+        fdvUsd, resolvedMarketCap, primaryPoolAddress, needsRescue: resolvedMarketCap.marketCapUsd == null,
+      })
+    }
+
+    const rescueResults = await Promise.all(
+      drafts.map((d) => d.needsRescue
+        ? getDexMarketCapRescue({ chain: 'base', token: d.baseToken.address, primaryPoolAddress: d.primaryPoolAddress })
+        : Promise.resolve(null)),
+    )
+
+    for (let i = 0; i < drafts.length; i++) {
+      const { baseToken, ageMinutes, liquidityUsd, volume24h, isPrimaryAgeWindow, isFallbackAgeWindow, fdvUsd, resolvedMarketCap, primaryPoolAddress } = drafts[i]
+      const rescue = rescueResults[i]
       const marketCapUsd = resolvedMarketCap.marketCapUsd ?? rescue?.marketCapUsd ?? null
       const marketCapStatus = marketCapUsd != null ? 'verified' : resolvedMarketCap.marketCapStatus
       const marketCapFieldPath = resolvedMarketCap.marketCapUsd != null ? resolvedMarketCap.marketCapFieldPath : rescue?.marketCapFieldPath ?? resolvedMarketCap.marketCapFieldPath
