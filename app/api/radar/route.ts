@@ -262,7 +262,17 @@ async function getDexMarketCapRescue(input: { chain: string; token: string; prim
         cache: 'no-store',
         signal: ac.signal,
       })
-      if (!res.ok) throw new Error(`dex_rescue_unavailable_${res.status}`)
+      if (!res.ok) {
+        // DIAGNOSTIC FIX, DISCLOSED: previously a non-OK HTTP response (including a 429 rate-limit)
+        // was thrown and caught below, producing the exact same result/reason as "the request
+        // succeeded but no pair had an explicit market cap field" — indistinguishable from the
+        // outside. Tagging the real HTTP status here so a rate-limit burst is now visible in
+        // debugPayload (see rescueRateLimited/rescueHttpFailed counts below) instead of looking
+        // identical to an honest "no data" outcome.
+        const err = new Error(`dex_rescue_http_${res.status}`) as Error & { httpStatus?: number }
+        err.httpStatus = res.status
+        throw err
+      }
       const data = await res.json()
       const pairs: unknown[] = Array.isArray(data)
         ? data
@@ -272,8 +282,19 @@ async function getDexMarketCapRescue(input: { chain: string; token: string; prim
         chain,
         primaryPoolAddress: input.primaryPoolAddress,
       })
-    } catch {
-      return selectDexScreenerMarketCapRescuePair({ pairs: [], chain, primaryPoolAddress: input.primaryPoolAddress })
+    } catch (err) {
+      const httpStatus = (err as { httpStatus?: number } | undefined)?.httpStatus ?? null
+      const result = selectDexScreenerMarketCapRescuePair({ pairs: [], chain, primaryPoolAddress: input.primaryPoolAddress })
+      return {
+        ...result,
+        reason: httpStatus === 429
+          ? 'DexScreener rate-limited this rescue request (429).'
+          : httpStatus != null
+            ? `DexScreener rescue request failed (HTTP ${httpStatus}).`
+            : err instanceof Error && err.name === 'AbortError'
+              ? 'DexScreener rescue request timed out.'
+              : result.reason,
+      }
     } finally {
       clearTimeout(tid)
     }
@@ -498,6 +519,19 @@ export async function GET(req: NextRequest) {
       await Promise.all(Array.from({ length: Math.min(RESCUE_CONCURRENCY_LIMIT, drafts.length) }, () => worker()))
     }
 
+    // AGGREGATE DIAGNOSTIC, DISCLOSED: surfaces whether rescue failures this request were genuinely
+    // "no market cap data" vs. actual DexScreener rate-limiting/HTTP failures — visible via
+    // ?debug=1 without needing to guess from user reports again.
+    let rescueAttempts = 0, rescueVerified = 0, rescueRateLimited = 0, rescueHttpFailed = 0, rescueTimedOut = 0
+    for (const r of rescueResults) {
+      if (!r) continue
+      rescueAttempts++
+      if (r.marketCapStatus === 'verified') rescueVerified++
+      else if (r.reason?.includes('rate-limited')) rescueRateLimited++
+      else if (r.reason?.includes('timed out')) rescueTimedOut++
+      else if (r.reason?.includes('HTTP')) rescueHttpFailed++
+    }
+
     for (let i = 0; i < drafts.length; i++) {
       const { baseToken, ageMinutes, liquidityUsd, volume24h, isPrimaryAgeWindow, isFallbackAgeWindow, fdvUsd, resolvedMarketCap, primaryPoolAddress } = drafts[i]
       const rescue = rescueResults[i]
@@ -632,6 +666,7 @@ export async function GET(req: NextRequest) {
       mode: requestedMode,
       effectivePlan: plan,
       upsellVisible: false,
+      rescueAttempts, rescueVerified, rescueRateLimited, rescueHttpFailed, rescueTimedOut,
       honeypotCacheHits: hpHitCount,
       honeypotCacheMisses: hpCacheHitFlags.length - hpHitCount,
     }
