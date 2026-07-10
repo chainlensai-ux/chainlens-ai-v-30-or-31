@@ -76,17 +76,66 @@ function isAuthorized(req: Request): boolean {
   return req.headers.get('x-worker-secret') === configuredSecret
 }
 
-// UNCHANGED, DISCLOSED: every line of this handler's body is exactly as it was before the QStash
-// wrap below — only its name changed (POST -> postHandler) so verifySignatureAppRouter can wrap it
-// while still exporting a function literally named POST, per instruction.
+// UNCHANGED, DISCLOSED: every line of this handler's body from the jobId lookup onward is exactly
+// as it was before the QStash wrap below — only its name changed (POST -> postHandler) so
+// verifySignatureAppRouter can wrap it while still exporting a function literally named POST, per
+// instruction. The two health-check short-circuits below (HEALTH-CHECK SHORT-CIRCUITS, DISCLOSED)
+// are new, added for app/api/scan-health/route.ts, and return before any of that unchanged logic
+// runs — they do not alter existing scan behavior.
 async function postHandler(req: Request): Promise<Response> {
   if (!isAuthorized(req)) {
     return new Response('unauthorized', { status: 401 })
   }
 
-  const { jobId } = await req.json().catch(() => ({ jobId: undefined }))
+  const parsedBody = await req.json().catch(() => ({ jobId: undefined })) as {
+    jobId?: unknown
+    test?: unknown
+    mode?: unknown
+    wallet?: unknown
+  }
+  const { jobId, test, mode } = parsedBody
   if (typeof jobId !== 'string' || !jobId) {
     return NextResponse.json({ error: 'jobId is required' }, { status: 400 })
+  }
+
+  // HEALTH-CHECK SHORT-CIRCUITS, DISCLOSED (app/api/scan-health/route.ts): both return immediately,
+  // before the real job lookup/scan logic below ever runs — neither touches a real scan job.
+  if (test === true) {
+    // Trigger check: proves a QStash-delivered request actually reached this route. Written to the
+    // job store (keyed by the health check's own throwaway jobId) so scan-health, which isn't the
+    // one holding this HTTP request/response (QStash is), can observe receipt by polling for it.
+    await setScanJob(jobId, {
+      id: jobId,
+      walletAddress: 'health-check',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      status: 'completed',
+      result: 'trigger-check-ok',
+      error: null,
+      rawBody: parsedBody,
+      ip: 'health-check',
+    })
+    // eslint-disable-next-line no-console
+    console.log('[WORKER] health trigger-check received', jobId)
+    return NextResponse.json({ ok: true, received: 'trigger-check' })
+  }
+  if (mode === 'noop') {
+    // Pipeline check: writes a minimal completed status so GET /api/scan-status?jobId=... reports
+    // completion, without running any real scan logic (runWalletScanV2Worker is never called here).
+    await setScanJob(jobId, {
+      id: jobId,
+      walletAddress: typeof parsedBody.wallet === 'string' ? parsedBody.wallet : 'health-check',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      status: 'completed',
+      result: 'ok',
+      error: null,
+      rawBody: parsedBody,
+      ip: 'health-check',
+    })
+    // eslint-disable-next-line no-console
+    console.log('[WORKER] health pipeline-check received', jobId)
+    return NextResponse.json({ ok: true, received: 'pipeline-check' })
   }
 
   // eslint-disable-next-line no-console
@@ -201,3 +250,12 @@ function buildPost(): typeof postHandler {
   }
 }
 export const POST = buildPost()
+
+// LIVENESS CHECK, DISCLOSED (app/api/scan-health/route.ts): a plain, unauthenticated GET — no
+// signature verification, no SCAN_WORKER_SECRET check, no job lookup. Deliberately outside
+// postHandler/buildPost above: it must answer even if QStash signing keys or QSTASH_DEV are
+// misconfigured (exactly the conditions the rest of this file already guards POST against), since
+// the whole point is to prove the route itself is reachable/deployed before checking anything else.
+export async function GET(): Promise<Response> {
+  return NextResponse.json({ ok: true, ts: Date.now() })
+}

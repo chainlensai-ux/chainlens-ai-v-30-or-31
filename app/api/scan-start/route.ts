@@ -42,6 +42,23 @@
 import { NextResponse } from 'next/server'
 import { createAndEnqueueScanJob, type ScanStartRequestBody } from '@/src/modules/scanJobCreation'
 
+// OPTIONAL LIVENESS LOG, DISCLOSED (app/api/scan-health/route.ts companion): fire-and-forget only —
+// intentionally NOT awaited and NOT on the request's critical path. This exists purely so a real
+// scan-start failure and a worker-unreachable condition show up next to each other in logs; it must
+// never delay or alter the actual enqueue flow below, including on its own network failure (caught,
+// never thrown).
+function logWorkerLivenessNonBlocking(): void {
+  const endpoint = process.env.WORKER_ENDPOINT || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000')
+  fetch(`${endpoint}/api/scan-v2/worker`, { method: 'GET', cache: 'no-store', signal: AbortSignal.timeout(5_000) })
+    .then((res) => {
+      // eslint-disable-next-line no-console
+      console.log('[scan-start] worker liveness check', res.ok ? 'ok' : `unexpected status ${res.status}`)
+    })
+    .catch((err) => {
+      console.warn('[scan-start] worker liveness check failed (non-blocking, does not affect this scan)', err instanceof Error ? err.message : String(err))
+    })
+}
+
 // maxDuration, DISCLOSED — unchanged reasoning from before this refactor: `waitUntil()`'s callback
 // shares this invocation's own execution budget, so it's raised to the platform's real maximum
 // rather than left at a low default (a lower real plan ceiling silently clamps this instead of
@@ -61,6 +78,7 @@ export const maxDuration = 900
 // altered by this extraction.
 export async function POST(req: Request): Promise<Response> {
   try {
+    logWorkerLivenessNonBlocking()
     const body: ScanStartRequestBody = await req.json().catch(() => ({}))
     const result = await createAndEnqueueScanJob(req, body, 'deep')
     if (!result.ok) {
