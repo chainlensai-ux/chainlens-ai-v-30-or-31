@@ -8,7 +8,7 @@
 // the new full-scan/start route defaults to 'normal'. No validation rule, no job shape, no worker-
 // trigger logic was changed to make this extraction.
 
-import { after } from 'next/server'
+import { waitUntil } from '@vercel/functions'
 import { Client as QStashClient } from '@upstash/qstash'
 import { validateWalletAddress, validateChains, validateScanMode } from '@/src/deployment/validator'
 import { setScanJob, type ScanJob } from '@/src/modules/scanJobs'
@@ -199,7 +199,24 @@ export async function createAndEnqueueScanJob(
     ip,
   }
   await setScanJob(jobId, job)
-  after(() => triggerWorker(jobId))
+  // AFTER() -> WAITUNTIL() SWITCH, DISCLOSED ("QStash never triggers in production" diagnosis):
+  // this used to be `after(() => triggerWorker(jobId))` (next/server). Next's `after()` is
+  // documented to work by looking up `globalThis[Symbol.for('@next/request-context')]` and calling
+  // the `waitUntil` the platform put there — on Vercel that symbol is expected to be wired by the
+  // Next.js build output adapter, not set directly by Vercel's own runtime. `waitUntil` from
+  // `@vercel/functions` instead reads `globalThis[Symbol.for('@vercel/request-context')]` — the
+  // platform's OWN, first-party context, set directly by the Vercel Functions runtime, independent
+  // of any Next-version-specific bridging into the `@next/*` symbol. Since the reported symptom is
+  // that NO outgoing request happens at all (not even the direct-fetch fallback inside
+  // triggerWorker, which would still fire even without QSTASH_TOKEN configured), that points at the
+  // background callback never running in the first place, not at anything inside triggerWorker
+  // itself — switching to the lower-level, platform-native primitive removes that bridging layer as
+  // a possible cause. `console.log` immediately below and at the top of triggerWorker so a future
+  // deploy's logs can directly confirm whether this line, and then triggerWorker itself, actually
+  // ran — instead of inferring it from "no outgoing request was seen".
+  // eslint-disable-next-line no-console
+  console.log('[scan-job] scheduling worker trigger via waitUntil', jobId)
+  waitUntil(triggerWorker(jobId))
 
   return { ok: true, jobId }
 }

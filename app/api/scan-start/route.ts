@@ -19,16 +19,12 @@
 // matter how long the real scan takes (bounded by this route's own maxDuration=900, unchanged from
 // before).
 //
-// REMAINING LIMITATION, DISCLOSED: this still depends on `after()` firing at all to dispatch the
-// trigger fetch — if the real issue in production is that `after()` never invokes its callback (a
-// total non-firing, not just a duration/kill issue), this fix narrows but does not eliminate that
-// risk. What it DOES fix regardless: the actual heavy compute no longer runs "extra time squeezed
-// onto an already-finished request" — it runs as a real, freshly-invoked function
-// (app/api/scan-v2/worker/route.ts) with its own independent execution budget, which is the more
-// likely source of real platform-level kills for a 15-minute background task. If `after()` truly
-// never fires at all in this deployment, the next real step would be a durable queue or Vercel's
-// `waitUntil()` primitive (via the `@vercel/functions` package) — not added here since introducing a
-// new dependency for that is a bigger, separate decision than this task asked for.
+// UPDATE, DISCLOSED ("QStash never triggers in production" diagnosis): the limitation described
+// above (this depending on `after()` actually firing) turned out to be the real, reproduced cause —
+// see src/modules/scanJobCreation.ts's createAndEnqueueScanJob(), which now schedules the worker
+// trigger via `waitUntil()` from `@vercel/functions` (Vercel's own first-party request-context
+// primitive) instead of `next/server`'s `after()`, plus explicit log lines so the next deploy's logs
+// can directly confirm the callback ran instead of inferring it from "no outgoing request was seen".
 //
 // SECRET, DISCLOSED: SCAN_WORKER_SECRET must be set to the same value on both this route and
 // app/api/scan-v2/worker/route.ts for the worker to actually accept the trigger in production — see
