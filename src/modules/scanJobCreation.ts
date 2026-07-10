@@ -121,37 +121,44 @@ function getQstashClient(): QStashClient | null {
 // QStash yet) — mirroring the same fail-open-with-a-warning pattern already used for
 // SCAN_WORKER_SECRET and the signing keys, instead of being the one place in this migration that
 // fails closed.
-async function triggerWorker(jobId: string): Promise<void> {
-  const workerUrl = `${workerBaseUrl()}/api/scan-v2/worker`
-  // eslint-disable-next-line no-console
-  console.log('[scan-job] workerUrl', workerUrl)
-
-  const secretHeaders = process.env.SCAN_WORKER_SECRET ? { 'x-worker-secret': process.env.SCAN_WORKER_SECRET } : undefined
-
+// GUARANTEED-DISPATCH SPLIT, DISCLOSED ("triggerWorker never executes" diagnosis, follow-up to the
+// after()->waitUntil() switch above): that switch assumed the only failure mode was *which*
+// background-scheduling primitive to use. But `waitUntil()`'s own contract (see
+// node_modules/@vercel/functions/get-context.js: `getContext().waitUntil?.(promise)`) is an
+// OPTIONAL CALL — if `globalThis[Symbol.for('@vercel/request-context')]` isn't populated for this
+// runtime/build the way `after()`'s `@next/request-context` wasn't, `waitUntil?.()` just silently
+// does nothing: no throw, no log, nothing. The promise passed to it (triggerWorker(jobId)) still
+// starts running synchronously up to its first `await`, but nothing then keeps this invocation alive
+// long enough for that `await` (a real network call to QStash) to ever resolve — the function
+// returns, the response is sent, and the platform is free to freeze/kill the invocation before the
+// publish request's bytes ever leave the machine. That failure mode is indistinguishable from
+// "triggerWorker never ran" from the outside (no outgoing request, no error), which matches the
+// reported symptom exactly, and it is NOT something switching between after()/waitUntil() alone
+// can fix — both are "best-effort, ONLY if the platform kept us alive" primitives.
+//
+// FIX: split the QStash publish attempt out into its own function and AWAIT IT DIRECTLY in
+// createAndEnqueueScanJob(), in the main request path, before the response is returned — not
+// deferred to any background-scheduling primitive at all. This makes the actual `publishJSON` call
+// unconditionally reached and unconditionally completed (or its failure unconditionally logged)
+// every single time a scan is requested, independent of whether waitUntil()/after() are wired
+// correctly on this deployment. This is safe to await synchronously (unlike the old code's
+// direct-fetch fallback) because `publishJSON` only waits for QStash's own publish acknowledgement
+// (accepted-for-queueing) — a fast, ~100-300ms API call — NOT for the worker's scan to finish; QStash
+// delivers to the worker route asynchronously via its own retry engine afterward. Only the
+// local-dev-only direct-fetch fallback (which DOES await the worker's full response, and the worker
+// route runs the entire Deep Scan synchronously before responding — see
+// app/api/scan-v2/worker/route.ts) still needs to be non-blocking, so that one path alone stays on
+// waitUntil() below, same as before.
+async function publishToQstash(
+  jobId: string,
+  workerUrl: string,
+  secretHeaders: Record<string, string> | undefined,
+): Promise<boolean> {
   const client = process.env.QSTASH_TOKEN ? getQstashClient() : null
-  if (!client) {
-    if (process.env.QSTASH_TOKEN) {
-      // QSTASH_TOKEN was set but getQstashClient() still returned null — construction itself threw
-      // (see getQstashClient's own header); already logged there, just falling back here.
-    } else {
-      console.warn('[scan-job] QSTASH_TOKEN is not configured — falling back to a direct worker call (fine for local dev; set QSTASH_TOKEN in real deployments for queueing/retries/signed requests)')
-    }
-    try {
-      const res = await fetch(workerUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...secretHeaders },
-        body: JSON.stringify({ jobId }),
-      })
-      if (!res.ok) {
-        console.error('[scan-job] direct worker trigger returned non-2xx', jobId, res.status)
-      }
-    } catch (err) {
-      console.error('[scan-job] direct worker trigger failed', jobId, err instanceof Error ? err.message : String(err))
-    }
-    return
-  }
-
+  if (!client) return false
   try {
+    // eslint-disable-next-line no-console
+    console.log('[scan-job] publishing to QStash', jobId, workerUrl)
     await client.publishJSON({
       url: workerUrl,
       body: { jobId },
@@ -160,9 +167,35 @@ async function triggerWorker(jobId: string): Promise<void> {
       // keeps working unchanged, on top of QStash's own signature verification.
       headers: secretHeaders,
     })
+    // eslint-disable-next-line no-console
+    console.log('[scan-job] QStash publish acknowledged', jobId)
+    return true
   } catch (err) {
-    console.error('[scan-job] worker trigger via QStash failed', jobId, err instanceof Error ? err.message : String(err))
+    console.error('[scan-job] worker trigger via QStash failed — falling back to direct fetch', jobId, err instanceof Error ? err.message : String(err))
+    return false
   }
+}
+
+// LOCAL-DEV FALLBACK, kept non-blocking/deferred (see the header comment above for why this one
+// path, unlike the QStash publish above, must NOT be awaited in the main request path).
+function triggerWorkerDirectFallback(
+  jobId: string,
+  workerUrl: string,
+  secretHeaders: Record<string, string> | undefined,
+): Promise<void> {
+  // eslint-disable-next-line no-console
+  console.log('[scan-job] direct-fetch fallback dispatching', jobId, workerUrl)
+  return fetch(workerUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...secretHeaders },
+    body: JSON.stringify({ jobId }),
+  })
+    .then((res) => {
+      if (!res.ok) console.error('[scan-job] direct worker trigger returned non-2xx', jobId, res.status)
+    })
+    .catch((err) => {
+      console.error('[scan-job] direct worker trigger failed', jobId, err instanceof Error ? err.message : String(err))
+    })
 }
 
 // Validates, persists a `pending` ScanJob, and schedules the worker trigger inside `after()` (runs
@@ -199,24 +232,27 @@ export async function createAndEnqueueScanJob(
     ip,
   }
   await setScanJob(jobId, job)
-  // AFTER() -> WAITUNTIL() SWITCH, DISCLOSED ("QStash never triggers in production" diagnosis):
-  // this used to be `after(() => triggerWorker(jobId))` (next/server). Next's `after()` is
-  // documented to work by looking up `globalThis[Symbol.for('@next/request-context')]` and calling
-  // the `waitUntil` the platform put there — on Vercel that symbol is expected to be wired by the
-  // Next.js build output adapter, not set directly by Vercel's own runtime. `waitUntil` from
-  // `@vercel/functions` instead reads `globalThis[Symbol.for('@vercel/request-context')]` — the
-  // platform's OWN, first-party context, set directly by the Vercel Functions runtime, independent
-  // of any Next-version-specific bridging into the `@next/*` symbol. Since the reported symptom is
-  // that NO outgoing request happens at all (not even the direct-fetch fallback inside
-  // triggerWorker, which would still fire even without QSTASH_TOKEN configured), that points at the
-  // background callback never running in the first place, not at anything inside triggerWorker
-  // itself — switching to the lower-level, platform-native primitive removes that bridging layer as
-  // a possible cause. `console.log` immediately below and at the top of triggerWorker so a future
-  // deploy's logs can directly confirm whether this line, and then triggerWorker itself, actually
-  // ran — instead of inferring it from "no outgoing request was seen".
+
+  const workerUrl = `${workerBaseUrl()}/api/scan-v2/worker`
+  const secretHeaders = process.env.SCAN_WORKER_SECRET ? { 'x-worker-secret': process.env.SCAN_WORKER_SECRET } : undefined
   // eslint-disable-next-line no-console
-  console.log('[scan-job] scheduling worker trigger via waitUntil', jobId)
-  waitUntil(triggerWorker(jobId))
+  console.log('[scan-job] workerUrl', workerUrl)
+
+  // GUARANTEED DISPATCH, DISCLOSED: awaited directly in the request path, NOT deferred to
+  // waitUntil()/after() — see publishToQstash's own header for why this specific call is safe to
+  // await here (fast QStash-acknowledgement only, not the worker's full scan) and why deferring it
+  // to a background-scheduling primitive was the actual root cause of "no outgoing requests" ever
+  // being observed.
+  const published = await publishToQstash(jobId, workerUrl, secretHeaders)
+  if (!published) {
+    if (!process.env.QSTASH_TOKEN) {
+      console.warn('[scan-job] QSTASH_TOKEN is not configured — falling back to a direct worker call (fine for local dev; set QSTASH_TOKEN in real deployments for queueing/retries/signed requests)')
+    }
+    // Still deferred: this fallback DOES await the worker's full response, and the worker route
+    // runs the entire Deep Scan synchronously before responding — awaiting it in the main request
+    // path would block exactly as long as the scan takes.
+    waitUntil(triggerWorkerDirectFallback(jobId, workerUrl, secretHeaders))
+  }
 
   return { ok: true, jobId }
 }
