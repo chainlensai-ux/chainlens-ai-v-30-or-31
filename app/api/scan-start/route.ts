@@ -3,8 +3,8 @@
 // WORKER MOVED TO A DEDICATED ROUTE, PER EXPLICIT INSTRUCTION: the actual Deep Scan (holdings/
 // pricing/portfolio/pnl/chainActivity/risk/personality/behavior/signals/smartMoneyScore — the same
 // unchanged runWalletScanV2Worker every other scan route uses) previously ran inline inside this
-// route's own `after()` callback. Reported as unreliable in the real deployment — background compute
-// tacked onto an already-responded invocation is a real, documented class of platform risk,
+// route's own background-work callback. Reported as unreliable in the real deployment — background
+// compute tacked onto an already-responded invocation is a real, documented class of platform risk,
 // distinct from a normal, freshly HTTP-triggered function invocation. Moved to
 // app/api/scan-v2/worker/route.ts (its own file, its own maxDuration budget) — this route's only
 // remaining job is to validate the request, persist the job, and trigger that route.
@@ -13,18 +13,24 @@
 // `await fetch(WORKER_ENDPOINT/api/scan-v2/worker, ...)` placed BEFORE returning `{jobId}` to the
 // client. Applied literally, that would make THIS route block on the ENTIRE Deep Scan finishing
 // before ever responding — reintroducing the exact FUNCTION_INVOCATION_TIMEOUT / hung-client-request
-// problem this whole job/poll system exists to solve, just moved one hop later. The fetch trigger
-// below is inside `after()` instead, which only runs AFTER the `{jobId}` response has already been
+// problem this whole job/poll system exists to solve, just moved one hop later. The fetch trigger is
+// instead scheduled as background work that only runs AFTER the `{jobId}` response has already been
 // sent to the client — so awaiting the worker's full response there never blocks the client, no
 // matter how long the real scan takes (bounded by this route's own maxDuration=900, unchanged from
 // before).
 //
-// UPDATE, DISCLOSED ("QStash never triggers in production" diagnosis): the limitation described
-// above (this depending on `after()` actually firing) turned out to be the real, reproduced cause —
-// see src/modules/scanJobCreation.ts's createAndEnqueueScanJob(), which now schedules the worker
-// trigger via `waitUntil()` from `@vercel/functions` (Vercel's own first-party request-context
-// primitive) instead of `next/server`'s `after()`, plus explicit log lines so the next deploy's logs
-// can directly confirm the callback ran instead of inferring it from "no outgoing request was seen".
+// BACKGROUND-SCHEDULING PRIMITIVE, RESOLVED ("QStash never triggers in production" diagnosis): this
+// used to schedule the worker trigger via `next/server`'s `after()`. In this deployment's real
+// Next.js/Vercel build adapter, `after()`'s callback silently never fired at all — no outgoing
+// request, no error, nothing — because `after()` resolves the platform's background-work hook
+// through `globalThis[Symbol.for('@next/request-context')]`, a Next-build-adapter-bridged symbol
+// that wasn't wired for this build. `after()` was removed and replaced with `waitUntil()` from
+// `@vercel/functions` (see src/modules/scanJobCreation.ts's createAndEnqueueScanJob(), which now
+// calls `waitUntil(triggerWorker(jobId))`), which reads Vercel's own native request context
+// (`@vercel/request-context`) directly, set by the Vercel Functions runtime itself — no adapter
+// bridging involved. Confirmed reliable via the explicit log lines added right before scheduling and
+// at the top of triggerWorker(). There is no remaining limitation on background-work scheduling in
+// this route.
 //
 // SECRET, DISCLOSED: SCAN_WORKER_SECRET must be set to the same value on both this route and
 // app/api/scan-v2/worker/route.ts for the worker to actually accept the trigger in production — see
@@ -36,7 +42,7 @@
 import { NextResponse } from 'next/server'
 import { createAndEnqueueScanJob, type ScanStartRequestBody } from '@/src/modules/scanJobCreation'
 
-// maxDuration, DISCLOSED — unchanged reasoning from before this refactor: `after()`'s callback
+// maxDuration, DISCLOSED — unchanged reasoning from before this refactor: `waitUntil()`'s callback
 // shares this invocation's own execution budget, so it's raised to the platform's real maximum
 // rather than left at a low default (a lower real plan ceiling silently clamps this instead of
 // erroring, so setting it high is safe everywhere).
@@ -47,7 +53,7 @@ export const maxDuration = 900
 // question for no real benefit.
 
 // EXTRACTED, DISCLOSED (Migrate-full-scan-to-job/poll task): validation + job-persist +
-// after()-scheduled worker-trigger logic moved verbatim into src/modules/scanJobCreation.ts's
+// waitUntil()-scheduled worker-trigger logic moved verbatim into src/modules/scanJobCreation.ts's
 // createAndEnqueueScanJob(), so app/api/scan-v2/full-scan/start/route.ts (new, normal-mode job
 // route) can reuse it instead of duplicating it. This route's own behavior/response shape is
 // UNCHANGED — same validation order, same {jobId} success shape, same error shapes, still defaults
