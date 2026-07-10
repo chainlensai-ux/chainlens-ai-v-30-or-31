@@ -248,6 +248,25 @@ export async function createAndEnqueueScanJob(
     if (!process.env.QSTASH_TOKEN) {
       console.warn('[scan-job] QSTASH_TOKEN is not configured — falling back to a direct worker call (fine for local dev; set QSTASH_TOKEN in real deployments for queueing/retries/signed requests)')
     }
+    // DOOMED-FALLBACK DETECTION, DISCLOSED (worker POST 403 "invalid signature"/"missing header"
+    // diagnosis, reproduced live: Firewall allowed the request, the function ran, but NO postHandler
+    // log lines appeared — the exact signature of verifySignatureAppRouter rejecting a request
+    // BEFORE it ever reaches our own handler — and the request's own User-Agent was the plain "node"
+    // default, not a QStash delivery agent, confirming it was this direct-fetch fallback, unsigned,
+    // hitting a worker that requires a signature). If app/api/scan-v2/worker/route.ts's own
+    // QSTASH_CURRENT_SIGNING_KEY/QSTASH_NEXT_SIGNING_KEY ARE configured (same env, readable here
+    // too), that route wraps every POST in verifySignatureAppRouter and will reject ANY unsigned
+    // request — including this plain fetch — with a 403, before any of its own logging runs. In that
+    // exact configuration (signing keys present, but QSTASH_TOKEN missing/broken so publishToQstash
+    // above failed), this fallback is not a safety net at all — it is guaranteed to 403 every time.
+    // Logging that plainly here, since the resulting 403 alone (with zero logs from the worker side)
+    // is otherwise very hard to trace back to "QSTASH_TOKEN is broken" — the real, actionable fix is
+    // to correct QSTASH_TOKEN in this deployment's env vars, not the worker's signing keys (those are
+    // working as designed).
+    const workerRequiresSignature = Boolean(process.env.QSTASH_CURRENT_SIGNING_KEY || process.env.QSTASH_NEXT_SIGNING_KEY)
+    if (workerRequiresSignature) {
+      console.error('[scan-job] MISCONFIGURATION: QStash publish failed/unavailable, but the worker route has QSTASH_CURRENT_SIGNING_KEY/QSTASH_NEXT_SIGNING_KEY configured and requires a signed request. The direct-fetch fallback below is UNSIGNED and will be rejected with a 403 by the worker before it logs anything — this is not a transient error, it will happen on every scan until QSTASH_TOKEN is fixed. Check QSTASH_TOKEN in this deployment\'s env vars (see getQstashClient()\'s own logs above for why publish failed).', jobId)
+    }
     // Still deferred: this fallback DOES await the worker's full response, and the worker route
     // runs the entire Deep Scan synchronously before responding — awaiting it in the main request
     // path would block exactly as long as the scan takes.
