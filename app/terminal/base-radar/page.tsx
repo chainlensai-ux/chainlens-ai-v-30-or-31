@@ -499,11 +499,11 @@ function TokenCard({
         borderRadius: '18px',
         padding: '12px 13px',
         cursor: 'pointer',
-        transition: 'transform 0.18s ease, background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease',
-        transform: hovered ? 'translateY(-1px)' : 'translateY(0)',
-        boxShadow: highSignal ? `0 16px 48px rgba(0,0,0,0.26), 0 0 30px ${priorityAccent.glow}` : '0 14px 36px rgba(0,0,0,0.22)',
-        animation: 'radarSlideIn 0.35s ease both',
-        animationDelay: `${index * 45}ms`,
+        transition: 'transform 0.32s cubic-bezier(0.16,1,0.3,1), background 0.32s ease, border-color 0.32s ease, box-shadow 0.32s ease',
+        transform: hovered ? 'translateY(-3px)' : 'translateY(0)',
+        boxShadow: highSignal ? `0 22px 60px rgba(0,0,0,0.30), 0 0 42px ${priorityAccent.glow}` : '0 16px 42px rgba(0,0,0,0.24)',
+        animation: 'radarSlideIn 0.5s cubic-bezier(0.16,1,0.3,1) both',
+        animationDelay: `${index * 55}ms`,
         position: 'relative',
         overflow: 'hidden',
       }}
@@ -641,11 +641,13 @@ function Metric({ label, value, accent, sublabel }: { label: string; value: stri
 function OverviewMetric({ label, value, caption, accent = '#99f6e4' }: { label: string; value: string; caption: string; accent?: string }) {
   return (
     <div className="radar-overview-card" style={{
-      background: 'linear-gradient(180deg, rgba(8,13,24,0.82), rgba(10,18,32,0.58))',
+      background: 'linear-gradient(180deg, rgba(10,16,30,0.72), rgba(10,18,32,0.50))',
       border: '1px solid rgba(148, 163, 184, 0.14)',
       borderRadius: '16px',
       padding: '12px 13px',
       boxShadow: `inset 0 1px 0 rgba(255,255,255,0.05), 0 18px 45px rgba(0,0,0,0.22)`,
+      backdropFilter: 'blur(10px)',
+      WebkitBackdropFilter: 'blur(10px)',
       minWidth: 0,
     }}>
       <p style={{ margin: '0 0 7px', fontSize: '9px', color: '#64748b', letterSpacing: '0.14em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>{label}</p>
@@ -1117,7 +1119,11 @@ export default function BaseRadarPage() {
     <>
       <style>{`
         @keyframes radarSlideIn {
-          from { opacity: 0; transform: translateY(-10px); }
+          from { opacity: 0; transform: translateY(-12px) scale(0.985); }
+          to   { opacity: 1; transform: translateY(0) scale(1); }
+        }
+        @keyframes radarFadeUp {
+          from { opacity: 0; transform: translateY(14px); }
           to   { opacity: 1; transform: translateY(0); }
         }
         @keyframes livePulse {
@@ -1128,6 +1134,96 @@ export default function BaseRadarPage() {
           0%   { transform: rotate(0deg);   }
           100% { transform: rotate(360deg); }
         }
+        /* ── UI POLISH, DISCLOSED (frontend/CSS only — no data or backend logic touched): richer
+           motion + glass depth layered onto existing className hooks and pseudo-elements. All new
+           visual sugar is opt-out under prefers-reduced-motion (see media query below). ── */
+        @keyframes radarCardShine {
+          0%   { left: -60%; opacity: 0; }
+          14%  { opacity: 1; }
+          100% { left: 130%; opacity: 0; }
+        }
+        @keyframes radarTitleSheen {
+          to { background-position: 220% center; }
+        }
+        @keyframes radarStatSheen {
+          0%   { transform: translateX(-120%); }
+          100% { transform: translateX(120%); }
+        }
+
+        /* Smooth momentum + custom scrollbar on the scroll container */
+        .radar-main { scroll-behavior: smooth; }
+        .radar-main::-webkit-scrollbar { width: 10px; height: 10px; }
+        .radar-main::-webkit-scrollbar-track { background: transparent; }
+        .radar-main::-webkit-scrollbar-thumb { background: rgba(148,163,184,0.16); border-radius: 8px; border: 2px solid transparent; background-clip: padding-box; }
+        .radar-main::-webkit-scrollbar-thumb:hover { background: rgba(45,212,191,0.34); background-clip: padding-box; }
+
+        /* Accessible focus rings on all interactive controls */
+        .radar-main button:focus-visible, .radar-main select:focus-visible {
+          outline: 2px solid rgba(45,212,191,0.55); outline-offset: 2px; border-radius: 8px;
+        }
+
+        /* Feed cards — frosted glass + diagonal shine sweep on hover (card already has
+           position:relative + overflow:hidden inline, so the pseudo-element is clipped cleanly) */
+        .opportunity-card { backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); will-change: transform; }
+        .opportunity-card::after {
+          content: ''; position: absolute; top: 0; left: -60%; width: 45%; height: 100%;
+          background: linear-gradient(105deg, transparent, rgba(255,255,255,0.07), transparent);
+          transform: skewX(-16deg); opacity: 0; pointer-events: none; z-index: 2;
+        }
+        .opportunity-card:hover::after { animation: radarCardShine 0.85s cubic-bezier(0.16,1,0.3,1); }
+        .opportunity-card:hover { transform: translateY(-3px) !important; }
+        .opportunity-card:active { transform: translateY(-1px) !important; }
+
+        /* Stat tiles — staggered entrance, top accent line, hover lift + glow, sheen sweep */
+        .radar-overview-card {
+          position: relative; overflow: hidden; will-change: transform;
+          transition: transform 0.32s cubic-bezier(0.16,1,0.3,1), border-color 0.3s ease, box-shadow 0.3s ease;
+          animation: radarFadeUp 0.5s cubic-bezier(0.16,1,0.3,1) both;
+        }
+        .radar-overview-card::before {
+          content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px;
+          background: linear-gradient(90deg, transparent, rgba(148,163,184,0.45), transparent); opacity: 0.7;
+        }
+        .radar-overview-card:nth-child(1) { animation-delay: 0.02s; }
+        .radar-overview-card:nth-child(2) { animation-delay: 0.06s; }
+        .radar-overview-card:nth-child(3) { animation-delay: 0.10s; }
+        .radar-overview-card:nth-child(4) { animation-delay: 0.14s; }
+        .radar-overview-card:nth-child(5) { animation-delay: 0.18s; }
+        .radar-overview-card:nth-child(6) { animation-delay: 0.22s; }
+        .radar-overview-card:hover {
+          /* !important so the hover lift wins over the fill-mode:both entrance animation's
+             retained transform (CSS animations outrank normal author rules, but author !important
+             outranks animations). */
+          transform: translateY(-3px) !important;
+          border-color: rgba(45,212,191,0.32) !important;
+          box-shadow: inset 0 1px 0 rgba(255,255,255,0.08), 0 24px 55px rgba(0,0,0,0.34), 0 0 32px rgba(45,212,191,0.10) !important;
+        }
+        .radar-overview-card::after {
+          content: ''; position: absolute; inset: 0; pointer-events: none;
+          background: linear-gradient(105deg, transparent 40%, rgba(255,255,255,0.05), transparent 60%);
+          transform: translateX(-120%); opacity: 0;
+        }
+        .radar-overview-card:hover::after { opacity: 1; animation: radarStatSheen 0.9s cubic-bezier(0.16,1,0.3,1); }
+
+        /* Filter chips — soft lift + glow on hover */
+        .radar-chip {
+          transition: transform 0.2s cubic-bezier(0.16,1,0.3,1), box-shadow 0.22s ease, border-color 0.22s ease, background 0.22s ease, color 0.22s ease;
+          will-change: transform;
+        }
+        .radar-chip:hover { transform: translateY(-1px); box-shadow: 0 6px 16px rgba(0,0,0,0.28), 0 0 16px rgba(45,212,191,0.14); }
+        .radar-chip:active { transform: translateY(0); }
+
+        /* Buttons — subtle lift + brightness on hover across the feed */
+        .radar-main button { transition: transform 0.18s cubic-bezier(0.16,1,0.3,1), box-shadow 0.2s ease, filter 0.2s ease, background 0.2s ease, border-color 0.2s ease; }
+        .token-card-actions button:hover:not(:disabled),
+        .radar-controls button:hover:not(:disabled) { transform: translateY(-1px); filter: brightness(1.08); }
+        .token-card-actions button:active:not(:disabled),
+        .radar-controls button:active:not(:disabled) { transform: translateY(0); }
+
+        /* Sticky cortex panel — gentle entrance */
+        .radar-stats { animation: radarFadeUp 0.55s cubic-bezier(0.16,1,0.3,1) both; animation-delay: 0.12s; }
+        .radar-pulse-wrap { animation: radarFadeUp 0.5s cubic-bezier(0.16,1,0.3,1) both; }
+
         @media (max-width: 768px) {
           .radar-main { padding: 18px 12px 120px !important; overflow-x: hidden !important; }
           .opportunity-card { border-radius: 16px !important; padding: 12px !important; }
@@ -1144,14 +1240,15 @@ export default function BaseRadarPage() {
           .token-card-actions { flex-direction: column !important; align-items: stretch !important; }
         }
         @media (prefers-reduced-motion: reduce) {
-          .opportunity-card, .radar-mini-chart-svg *, .radar-main * { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+          .radar-main, .opportunity-card, .radar-mini-chart-svg *, .radar-main *,
+          .radar-main *::before, .radar-main *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
         }
       `}</style>
 
-      <div className="radar-main" style={{ minHeight: '100%', overflowY: 'auto', overflowX: 'hidden', padding: '28px 32px 120px', color: '#e2e8f0', fontFamily: 'var(--font-inter, Inter, sans-serif)', background: 'radial-gradient(circle at 18% 0%, rgba(34,211,238,0.11), transparent 34%), radial-gradient(circle at 88% 12%, rgba(168,85,247,0.10), transparent 30%), #030712' }}>
+      <div className="radar-main" style={{ minHeight: '100%', overflowY: 'auto', overflowX: 'hidden', padding: '28px 32px 120px', color: '#e2e8f0', fontFamily: 'var(--font-inter, Inter, sans-serif)', background: 'radial-gradient(1100px 520px at 16% -6%, rgba(34,211,238,0.13), transparent 46%), radial-gradient(900px 480px at 90% 6%, rgba(168,85,247,0.12), transparent 44%), radial-gradient(700px 500px at 62% 108%, rgba(45,212,191,0.07), transparent 50%), #05070f' }}>
         <div style={{ marginBottom: '20px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', marginBottom: '6px' }}>
-            <h1 style={{ fontSize: '24px', fontWeight: 700, color: '#f8fafc', margin: 0, letterSpacing: '-0.01em' }}>Base Radar</h1>
+            <h1 style={{ fontSize: '25px', fontWeight: 800, margin: 0, letterSpacing: '-0.02em', backgroundImage: 'linear-gradient(92deg, #f8fafc, #a5f3fc 38%, #c4b5fd 68%, #f8fafc)', backgroundSize: '220% auto', WebkitBackgroundClip: 'text', backgroundClip: 'text', WebkitTextFillColor: 'transparent', color: 'transparent', animation: 'radarTitleSheen 7s linear infinite' }}>Base Radar</h1>
 
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '4px 10px', borderRadius: '99px', background: 'rgba(236,72,153,0.12)', border: '1px solid rgba(236,72,153,0.30)', fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#ec4899', fontFamily: 'var(--font-plex-mono)' }}>
               <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#ec4899', animation: 'livePulse 1.8s ease-in-out infinite', flexShrink: 0 }} />
@@ -1219,6 +1316,7 @@ export default function BaseRadarPage() {
               return (
                 <button
                   key={chip.key}
+                  className="radar-chip"
                   onClick={() => setActiveFilter(chip.key)}
                   style={{
                     padding: '5px 9px',
@@ -1227,11 +1325,12 @@ export default function BaseRadarPage() {
                     fontWeight: 700,
                     letterSpacing: '0.10em',
                     textTransform: 'uppercase',
-                    border: `1px solid ${active ? 'rgba(45,212,191,0.35)' : 'rgba(255,255,255,0.10)'}`,
-                    background: active ? 'rgba(45,212,191,0.12)' : 'rgba(255,255,255,0.03)',
+                    border: `1px solid ${active ? 'rgba(45,212,191,0.40)' : 'rgba(255,255,255,0.10)'}`,
+                    background: active ? 'rgba(45,212,191,0.14)' : 'rgba(255,255,255,0.03)',
                     color: active ? '#2DD4BF' : '#94a3b8',
                     fontFamily: 'var(--font-plex-mono)',
                     cursor: 'pointer',
+                    boxShadow: active ? '0 0 18px rgba(45,212,191,0.16)' : 'none',
                   }}
                 >
                   {chip.label}
