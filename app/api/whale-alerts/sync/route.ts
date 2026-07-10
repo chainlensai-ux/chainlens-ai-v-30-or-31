@@ -32,7 +32,7 @@ type CovalentTx = {
 const COVALENT_BASE = 'https://api.covalenthq.com/v1/base-mainnet'
 const PROVIDER_CHAIN = 'base'
 const PROVIDER_PAGE_SIZE = 100
-const PROVIDER_ENDPOINT_PATH = `/v1/base-mainnet/address/{wallet}/transactions_v3/?page-number=0&page-size=${PROVIDER_PAGE_SIZE}`
+const PROVIDER_ENDPOINT_PATH = `/v1/base-mainnet/address/{wallet}/transactions_v3/?page-number=0&page-size=${PROVIDER_PAGE_SIZE}&with-logs=true`
 const DEFAULT_LIMIT = 10
 const MAX_LIMIT = 10
 const AUTO_BATCH_MAX_TOTAL = 25
@@ -312,6 +312,14 @@ async function fetchWalletTransactionsFromProvider(address: string, apiKey: stri
   const url = new URL(`${COVALENT_BASE}/address/${address}/transactions_v3/`)
   url.searchParams.set('page-number', '0')
   url.searchParams.set('page-size', String(PROVIDER_PAGE_SIZE))
+  // WITH-LOGS FIX, DISCLOSED (empty-whale-feed diagnosis): GoldRush's transactions_v3 endpoint does
+  // NOT include decoded log_events by default — without this param every tx comes back with no
+  // log_events, extractAlerts()'s `movements.size === 0` check below fires for every transaction on
+  // every wallet, and zero alerts are ever produced regardless of real whale activity (68/68 wallets
+  // "scanned" successfully, 0 candidates ever generated). Confirmed against this codebase's own
+  // working reference call (lib/server/walletSnapshot.ts's fetchGoldrushTransactionsPage), which
+  // already sets this same param on the same endpoint for the same reason.
+  url.searchParams.set('with-logs', 'true')
 
   let response: Response
   try {
