@@ -8,10 +8,29 @@
 
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { computeDustCandidateKeys, isSuppressibleDustToken } from './index'
+import { computeDustCandidateKeys, isSuppressibleDustToken, buildFilteredEventsForPricing, computeHeavyWalletFlag } from './index'
 import type { BuyTimelineEntry, SourceType } from '../modules/timelineBuilder/types'
 import type { SellTimelineEntry } from '../modules/sellTimeline/types'
+import type { NormalizedEvent } from '../modules/normalization/types'
 import type { CheapDustPriceResult } from '../../lib/server/dustPriceCheck'
+
+function makeNormalizedEvent(overrides: Partial<NormalizedEvent> = {}): NormalizedEvent {
+  return {
+    provider: 'goldrush',
+    chain: 'base',
+    txHash: '0xtx',
+    timestamp: new Date().toISOString(),
+    fromAddress: '0xfrom',
+    toAddress: '0xto',
+    contract: '0xtoken',
+    symbol: 'TOK',
+    amount: 10,
+    amountRaw: '10',
+    tokenDecimals: 18,
+    direction: 'inbound',
+    ...overrides,
+  }
+}
 
 function makeBuy(overrides: Partial<BuyTimelineEntry> & { sourceType: SourceType }): BuyTimelineEntry {
   return {
@@ -99,5 +118,57 @@ describe('isSuppressibleDustToken', () => {
   it('does NOT suppress for a well-priced, high-value token', () => {
     const cheap: CheapDustPriceResult = { hasAnyPriceSource: true, priceUsdPerToken: 3200, liquidityUsd: 900_000 }
     assert.equal(isSuppressibleDustToken(cheap), false)
+  })
+})
+
+describe('buildFilteredEventsForPricing', () => {
+  it('removes inbound events for a suppressed token', () => {
+    const events = [makeNormalizedEvent({ chain: 'base', contract: '0xDUST', direction: 'inbound' })]
+    const filtered = buildFilteredEventsForPricing(events, new Set(['base:0xdust']))
+    assert.equal(filtered.length, 0)
+  })
+
+  it('keeps events for a token NOT in the suppressed set', () => {
+    const events = [makeNormalizedEvent({ chain: 'base', contract: '0xreal', direction: 'inbound' })]
+    const filtered = buildFilteredEventsForPricing(events, new Set(['base:0xdust']))
+    assert.equal(filtered.length, 1)
+  })
+
+  it('never removes an outbound (sell) event, even for a token in the suppressed set', () => {
+    // Belt-and-suspenders: computeDustCandidateKeys already guarantees a suppressed token has no
+    // sell anywhere, but this function's own filter predicate is checked directly here too.
+    const events = [makeNormalizedEvent({ chain: 'base', contract: '0xdust', direction: 'outbound' })]
+    const filtered = buildFilteredEventsForPricing(events, new Set(['base:0xdust']))
+    assert.equal(filtered.length, 1)
+  })
+
+  it('is a no-op (returns the same data) when the suppressed set is empty', () => {
+    const events = [makeNormalizedEvent({ chain: 'base', contract: '0xreal' })]
+    const filtered = buildFilteredEventsForPricing(events, new Set())
+    assert.deepEqual(filtered, events)
+  })
+
+  it('is case-insensitive on the contract address', () => {
+    const events = [makeNormalizedEvent({ chain: 'base', contract: '0xDuSt', direction: 'inbound' })]
+    const filtered = buildFilteredEventsForPricing(events, new Set(['base:0xdust']))
+    assert.equal(filtered.length, 0)
+  })
+})
+
+describe('computeHeavyWalletFlag', () => {
+  it('is false for a small wallet', () => {
+    assert.equal(computeHeavyWalletFlag(10, 5), false)
+  })
+
+  it('is true when distinctBuyTokens exceeds 120', () => {
+    assert.equal(computeHeavyWalletFlag(121, 0), true)
+  })
+
+  it('is true when matchedLots exceeds 250', () => {
+    assert.equal(computeHeavyWalletFlag(0, 251), true)
+  })
+
+  it('is false exactly at the boundary (not "or equal")', () => {
+    assert.equal(computeHeavyWalletFlag(120, 250), false)
   })
 })

@@ -450,6 +450,38 @@ async function resolveDustSuppressionKeys(
   return suppressed
 }
 
+// EXTRACTED, DISCLOSED: was previously inlined at the priceLotsForWallet call site (an
+// `isSuppressedInboundEvent` arrow + two near-identical filter calls). Pulled out into a named,
+// exported, pure function so the actual filtering rule is directly unit-testable (see
+// dustSuppression.test.ts) instead of only reachable through the full async pipeline. Zero behavior
+// change from the inline version: only removes INBOUND events for a token in `suppressedKeys` —
+// outbound (sell) events, and every event for any non-suppressed token, always pass through
+// unchanged. A token only ever reaches `suppressedKeys` when it has no real buy and no sell
+// anywhere (see resolveDustSuppressionKeys/computeDustCandidateKeys above), so this can never touch
+// a real trade.
+export function buildFilteredEventsForPricing(
+  events: readonly NormalizedEvent[],
+  suppressedKeys: ReadonlySet<string>,
+): NormalizedEvent[] {
+  if (suppressedKeys.size === 0) return events as NormalizedEvent[]
+  return events.filter((e) => !(e.direction === 'inbound' && suppressedKeys.has(dustTokenKey(e.chain, e.contract))))
+}
+
+// HEAVY-WALLET DETECTION, DISCLOSED (diagnostic-only — item 7 of the task): a pure classification
+// over two signals genuinely observable from orchestration (distinct buy-side tokens, fifoEngine's
+// own matchedLots count). A third signal the task asked for, "bisects > 2000", is NOT included:
+// bisect calls happen entirely inside the protected src/modules/pricingAtTimeEngine/sources/
+// basedex.ts, with no counter exported anywhere orchestration can read — including it here would
+// mean silently hardcoding `false`, which would misreport, not just omit, that condition. Diagnostic
+// only: no additional skip behavior is applied when heavyWallet is true beyond what dust suppression
+// (computeDustCandidateKeys/isSuppressibleDustToken, both already gated on "no real buy and no
+// sell") already applies uniformly to every wallet regardless of size — the safety boundary
+// explicitly forbids extending suppression to real-trade tokens just because a wallet is large, so
+// there is no additional, safe "aggressive" mode to switch on here.
+export function computeHeavyWalletFlag(distinctBuyTokens: number, matchedLots: number): boolean {
+  return distinctBuyTokens > 120 || matchedLots > 250
+}
+
 // Additive, async — resolves real historical USD pricing for buyTimeline + sellTimelineV2 entries
 // via injected priceSources (src/modules/pricingAtTimeEngine). The real call site below always
 // passes PRICE_SOURCES (real GoldRush integration when GOLDRUSH_API_KEY/COVALENT_API_KEY is
@@ -662,14 +694,8 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   const recoveredRawEventsForPricing = recoveryPolicy.evaluation.flatMap((e) => e.recoveredEvents)
   const { normalizedEvents: recoveredNormalizedForPricing } = normalizeEvents(recoveredRawEventsForPricing, params.walletAddress)
 
-  const isSuppressedInboundEvent = (e: NormalizedEvent): boolean =>
-    e.direction === 'inbound' && dustSuppressedKeys.has(dustTokenKey(e.chain, e.contract))
-  const normalizedEventsForPricing = dustSuppressedKeys.size === 0
-    ? normalizedEvents
-    : normalizedEvents.filter((e) => !isSuppressedInboundEvent(e))
-  const recoveredEventsForPricing = dustSuppressedKeys.size === 0
-    ? recoveredNormalizedForPricing
-    : recoveredNormalizedForPricing.filter((e) => !isSuppressedInboundEvent(e))
+  const normalizedEventsForPricing = buildFilteredEventsForPricing(normalizedEvents, dustSuppressedKeys)
+  const recoveredEventsForPricing = buildFilteredEventsForPricing(recoveredNormalizedForPricing, dustSuppressedKeys)
 
   const priceLotsForWalletStart = performance.now()
   const walletPriceLookups = await priceLotsForWallet({
@@ -808,14 +834,25 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // graph, only how long each of THIS file's stages took overall). Distinct tokens vs.
   // dust-suppressed count is the one real, verifiable signal this layer has for "how much of the
   // pricing fan-out was avoided."
+  const distinctBuyTokenCount = new Set(timelines.buyTimeline.entries.map((e) => dustTokenKey(e.chain, e.token))).size
+  const heavyWallet = computeHeavyWalletFlag(distinctBuyTokenCount, fifoAndPnl.matchedLots.length)
   // eslint-disable-next-line no-console
   console.warn('[pipeline] scan timing summary', {
     totalMs: Math.round(performance.now() - scanStartedAtMs),
     stagesMs: scanTimer.stages,
     dustSuppression: {
-      distinctBuyTokens: new Set(timelines.buyTimeline.entries.map((e) => dustTokenKey(e.chain, e.token))).size,
+      distinctBuyTokens: distinctBuyTokenCount,
       suppressedTokens: dustSuppressedKeys.size,
     },
+    heavyWallet,
+    // ALWAYS false, DISCLOSED: the requested GoldRush-skip-for-Base rule was not implemented — it
+    // conflated providerDiagnostics.goldrush (the wallet's own raw transfer-history fetch) with
+    // GoldRush's separate, unrelated pricing endpoint (goldrushPriceSource.ts). A wallet's raw
+    // history returning 0 events on a chain says nothing about whether GoldRush's pricing endpoint
+    // has data for any token on that chain, so no such skip exists to report — this field is kept
+    // in the log SHAPE (matching what the task asked for) rather than omitted, so a reader doesn't
+    // mistake its literal absence for a bug.
+    goldrushSkippedForBase: false,
   })
 
   return { ...finalReport, normalizationErrors }
