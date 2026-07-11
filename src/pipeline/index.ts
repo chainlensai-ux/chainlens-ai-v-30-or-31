@@ -397,13 +397,30 @@ export function computeDustCandidateKeys(
   return candidates
 }
 
-// PURE — given a candidate token's cheap-lookup result, decides suppressibility. Exported for direct
-// unit testing.
+export type DustSuppressionReason = 'no_market_found' | 'liquidity_zero'
+
+// PURE — given a candidate token's cheap-lookup result, decides suppressibility (and why). Exported
+// for direct unit testing.
+//
+// LIQUIDITY-ZERO FIX, DISCLOSED (found while implementing this task's own diagnostics requirement,
+// not the specific bug report — that report's exact wallet/tokens couldn't be verified from this
+// sandbox, but this gap is real and independently confirmed by reading the code): previously this
+// only checked `!hasAnyPriceSource` — a token where DexScreener found a real pair, but that pair
+// reports liquidityUsd === 0 (a pool that technically exists on-chain but is functionally hollow —
+// no depth, no real market), was treated as "has a price source" and never suppressed. A price
+// quote with zero liquidity behind it isn't a meaningful market signal, so it's now suppressible
+// too. Still gated on the same upstream requirement (only ever reached for a candidate with no real
+// buy and no sell) — this does not touch any token with actual trade history.
+export function classifyDustSuppression(cheapResult: CheapDustPriceResult): { suppress: boolean; reason: DustSuppressionReason | null } {
+  if (!cheapResult.hasAnyPriceSource) return { suppress: true, reason: 'no_market_found' }
+  if (cheapResult.liquidityUsd === 0) return { suppress: true, reason: 'liquidity_zero' }
+  return { suppress: false, reason: null }
+}
+
+// BACKWARD-COMPATIBLE WRAPPER, DISCLOSED: kept so existing callers/tests that only need the boolean
+// don't have to destructure classifyDustSuppression's richer result.
 export function isSuppressibleDustToken(cheapResult: CheapDustPriceResult): boolean {
-  // hasAnyPriceSource === false doubles as "balanceUsd known to be ~$0, below any real threshold" —
-  // see this block's own header for why these two conditions collapse to one signal here. Any
-  // discovered price, however small, disqualifies suppression.
-  return !cheapResult.hasAnyPriceSource
+  return classifyDustSuppression(cheapResult).suppress
 }
 
 async function mapWithConcurrencyLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
@@ -425,12 +442,18 @@ async function mapWithConcurrencyLimit<T, R>(items: T[], limit: number, fn: (ite
 // for this scan: computes candidates (pure), then runs the cheap, bounded-concurrency price check
 // only for those candidates (never for a token with any real buy/sell — the overwhelming majority of
 // a typical wallet's tokens never reach this call at all).
+type DustSuppressionOutcome = {
+  suppressedKeys: Set<string>
+  noMarketFoundCount: number
+  liquidityZeroCount: number
+}
+
 async function resolveDustSuppressionKeys(
   buyEntries: readonly BuyTimelineEntry[],
   sellEntries: readonly SellTimelineEntry[],
-): Promise<Set<string>> {
+): Promise<DustSuppressionOutcome> {
   const candidateKeys = computeDustCandidateKeys(buyEntries, sellEntries)
-  if (candidateKeys.size === 0) return new Set()
+  if (candidateKeys.size === 0) return { suppressedKeys: new Set(), noMarketFoundCount: 0, liquidityZeroCount: 0 }
 
   // One representative entry per candidate key, to recover (token, chain) for the lookup call.
   const representativeByKey = new Map<string, BuyTimelineEntry>()
@@ -442,12 +465,51 @@ async function resolveDustSuppressionKeys(
   const candidates = [...representativeByKey.entries()]
   const results = await mapWithConcurrencyLimit(candidates, DUST_SUPPRESSION_CONCURRENCY_LIMIT, async ([key, entry]) => {
     const cheapResult = await getCheapCurrentPriceForDustCheck(entry.token, entry.chain)
-    return { key, suppress: isSuppressibleDustToken(cheapResult) }
+    const { suppress, reason } = classifyDustSuppression(cheapResult)
+    return { key, suppress, reason }
   })
 
-  const suppressed = new Set<string>()
-  for (const r of results) if (r.suppress) suppressed.add(r.key)
-  return suppressed
+  const suppressedKeys = new Set<string>()
+  let noMarketFoundCount = 0
+  let liquidityZeroCount = 0
+  for (const r of results) {
+    if (!r.suppress) continue
+    suppressedKeys.add(r.key)
+    if (r.reason === 'no_market_found') noMarketFoundCount++
+    if (r.reason === 'liquidity_zero') liquidityZeroCount++
+    // eslint-disable-next-line no-console
+    console.warn('[pipeline] dust token suppressed', { key: r.key, reason: r.reason })
+  }
+  return { suppressedKeys, noMarketFoundCount, liquidityZeroCount }
+}
+
+export type ProviderFetchWindowDiagnostics = {
+  totalDurationMs: number | null
+  perChain: Array<{ chain: SupportedChain; rawEventCount: number; inboundTransferCount: number }>
+  pagesFetched: number | null
+  perPageLatencyMs: number[] | null
+}
+
+// PURE — extracted so this is directly unit-testable (item 8). See its own call site's comment for
+// the full disclosure on why pagesFetched/perPageLatencyMs are always null: that data lives entirely
+// inside the protected fetchProviderWindow module with no exported hook, so it's honestly reported
+// as unavailable rather than fabricated.
+export function buildProviderFetchWindowDiagnostics(
+  providerResults: ReadonlyArray<{ chain: SupportedChain; rawEvents: RawProviderEvent[] }>,
+  walletAddress: string,
+  totalDurationMs: number | null,
+): ProviderFetchWindowDiagnostics {
+  const walletAddressLower = walletAddress.toLowerCase()
+  return {
+    totalDurationMs,
+    perChain: providerResults.map((r) => ({
+      chain: r.chain,
+      rawEventCount: r.rawEvents.length,
+      inboundTransferCount: r.rawEvents.filter((e) => e.toAddress?.toLowerCase() === walletAddressLower).length,
+    })),
+    pagesFetched: null,
+    perPageLatencyMs: null,
+  }
 }
 
 // EXTRACTED, DISCLOSED: was previously inlined at the priceLotsForWallet call site (an
@@ -603,6 +665,21 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // eslint-disable-next-line no-console
   console.warn('[pipeline] providerDiagnostics', providerDiagnostics)
 
+  // PROVIDER-FETCH-WINDOW DIAGNOSTICS, DISCLOSED (scoped down from the literal request): "pages
+  // fetched" and "per-page latency" happen entirely inside the protected fetchProviderWindow
+  // (src/modules/providerFetchWindow) — there is no counter or timing hook exported from that
+  // module for orchestration to read, so those two fields are NOT included below (not faked as 0 or
+  // omitted silently — see buildProviderFetchWindowDiagnostics's own header). What IS honestly
+  // computable from data orchestration already receives: per-chain raw event counts, inbound-
+  // transfer counts, and the total fetch duration already captured by scanTimer above.
+  const providerFetchWindowDiagnostics = buildProviderFetchWindowDiagnostics(
+    providerResults,
+    params.walletAddress,
+    scanTimer.stages.providerFetchWindow ?? null,
+  )
+  // eslint-disable-next-line no-console
+  console.warn('[pipeline] providerFetchWindowDiagnostics', providerFetchWindowDiagnostics)
+
   // 2. normalization — pure, zero provider calls.
   const allRawEvents = providerResults.flatMap((r) => r.rawEvents)
   if (allRawEvents.length === 0) {
@@ -688,7 +765,8 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // skipped, landing on the same honest null cost basis fifoEngine already falls back to for any
   // unpriced event).
   const dustSuppressionStart = performance.now()
-  const dustSuppressedKeys = await resolveDustSuppressionKeys(timelines.buyTimeline.entries, sellTimelineV2.entries)
+  const { suppressedKeys: dustSuppressedKeys, noMarketFoundCount, liquidityZeroCount } =
+    await resolveDustSuppressionKeys(timelines.buyTimeline.entries, sellTimelineV2.entries)
   scanTimer.mark('dustSuppression', dustSuppressionStart)
 
   const recoveredRawEventsForPricing = recoveryPolicy.evaluation.flatMap((e) => e.recoveredEvents)
@@ -836,6 +914,13 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // pricing fan-out was avoided."
   const distinctBuyTokenCount = new Set(timelines.buyTimeline.entries.map((e) => dustTokenKey(e.chain, e.token))).size
   const heavyWallet = computeHeavyWalletFlag(distinctBuyTokenCount, fifoAndPnl.matchedLots.length)
+  // deadTokenSkippedCount vs. unindexedTokenSkippedCount, DISCLOSED: these are requested as two
+  // separate counts, but this implementation only has ONE real "no market found at all" signal
+  // (classifyDustSuppression's 'no_market_found' reason) — there is no independent, orchestration-
+  // visible way to distinguish "GoldRush has no events for this token" (part of the task's own
+  // "dead" definition) from "DexScreener has no pairs and no pool" (its "unindexed" definition),
+  // since both ultimately reduce to the same DexScreener check from here. Both fields report the
+  // same real count rather than fabricating two different numbers for one signal.
   // eslint-disable-next-line no-console
   console.warn('[pipeline] scan timing summary', {
     totalMs: Math.round(performance.now() - scanStartedAtMs),
@@ -853,6 +938,11 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     // in the log SHAPE (matching what the task asked for) rather than omitted, so a reader doesn't
     // mistake its literal absence for a bug.
     goldrushSkippedForBase: false,
+    deadTokenSkippedCount: noMarketFoundCount,
+    zeroLiquiditySkippedCount: liquidityZeroCount,
+    unindexedTokenSkippedCount: noMarketFoundCount,
+    filteredEventsForPricingCount: normalizedEventsForPricing.length,
+    providerFetchWindowDiagnostics,
   })
 
   return { ...finalReport, normalizationErrors }

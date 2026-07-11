@@ -8,7 +8,14 @@
 
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { computeDustCandidateKeys, isSuppressibleDustToken, buildFilteredEventsForPricing, computeHeavyWalletFlag } from './index'
+import {
+  computeDustCandidateKeys,
+  isSuppressibleDustToken,
+  classifyDustSuppression,
+  buildFilteredEventsForPricing,
+  computeHeavyWalletFlag,
+  buildProviderFetchWindowDiagnostics,
+} from './index'
 import type { BuyTimelineEntry, SourceType } from '../modules/timelineBuilder/types'
 import type { SellTimelineEntry } from '../modules/sellTimeline/types'
 import type { NormalizedEvent } from '../modules/normalization/types'
@@ -170,5 +177,68 @@ describe('computeHeavyWalletFlag', () => {
 
   it('is false exactly at the boundary (not "or equal")', () => {
     assert.equal(computeHeavyWalletFlag(120, 250), false)
+  })
+})
+
+describe('classifyDustSuppression', () => {
+  it('suppresses with reason "no_market_found" when DexScreener finds no pair at all', () => {
+    const result = classifyDustSuppression({ hasAnyPriceSource: false, priceUsdPerToken: null, liquidityUsd: null })
+    assert.equal(result.suppress, true)
+    assert.equal(result.reason, 'no_market_found')
+  })
+
+  it('suppresses with reason "liquidity_zero" when a pair exists but reports zero liquidity (the fix)', () => {
+    const result = classifyDustSuppression({ hasAnyPriceSource: true, priceUsdPerToken: 0.5, liquidityUsd: 0 })
+    assert.equal(result.suppress, true)
+    assert.equal(result.reason, 'liquidity_zero')
+  })
+
+  it('does NOT suppress a real pair with real, non-zero liquidity', () => {
+    const result = classifyDustSuppression({ hasAnyPriceSource: true, priceUsdPerToken: 0.5, liquidityUsd: 500 })
+    assert.equal(result.suppress, false)
+    assert.equal(result.reason, null)
+  })
+
+  it('isSuppressibleDustToken stays consistent with classifyDustSuppression for the liquidity-zero case', () => {
+    const cheap: CheapDustPriceResult = { hasAnyPriceSource: true, priceUsdPerToken: 0.5, liquidityUsd: 0 }
+    assert.equal(isSuppressibleDustToken(cheap), true)
+  })
+})
+
+describe('buildProviderFetchWindowDiagnostics', () => {
+  it('counts raw events and inbound transfers per chain', () => {
+    const wallet = '0xWALLET'
+    const providerResults = [
+      {
+        chain: 'base' as const,
+        rawEvents: [
+          { provider: 'goldrush' as const, chain: 'base' as const, txHash: '0x1', timestamp: null, fromAddress: '0xother', toAddress: '0xWALLET', contract: '0xtok', symbol: 'TOK', amountRaw: '1', tokenDecimals: 18 },
+          { provider: 'goldrush' as const, chain: 'base' as const, txHash: '0x2', timestamp: null, fromAddress: '0xWALLET', toAddress: '0xother', contract: '0xtok', symbol: 'TOK', amountRaw: '1', tokenDecimals: 18 },
+        ],
+      },
+    ]
+    const diagnostics = buildProviderFetchWindowDiagnostics(providerResults, wallet, 1234)
+    assert.equal(diagnostics.totalDurationMs, 1234)
+    assert.equal(diagnostics.perChain[0].rawEventCount, 2)
+    assert.equal(diagnostics.perChain[0].inboundTransferCount, 1)
+  })
+
+  it('is case-insensitive when matching the wallet address', () => {
+    const providerResults = [
+      {
+        chain: 'base' as const,
+        rawEvents: [
+          { provider: 'goldrush' as const, chain: 'base' as const, txHash: '0x1', timestamp: null, fromAddress: '0xother', toAddress: '0xWaLLeT', contract: '0xtok', symbol: 'TOK', amountRaw: '1', tokenDecimals: 18 },
+        ],
+      },
+    ]
+    const diagnostics = buildProviderFetchWindowDiagnostics(providerResults, '0xwallet', null)
+    assert.equal(diagnostics.perChain[0].inboundTransferCount, 1)
+  })
+
+  it('honestly reports pagesFetched/perPageLatencyMs as null (not available from orchestration)', () => {
+    const diagnostics = buildProviderFetchWindowDiagnostics([], '0xwallet', 100)
+    assert.equal(diagnostics.pagesFetched, null)
+    assert.equal(diagnostics.perPageLatencyMs, null)
   })
 })
