@@ -87,21 +87,84 @@ function sanitizeEnvValue(value: string | undefined | null): string | undefined 
   return v.length > 0 ? v : undefined
 }
 
+// REGIONAL ENV VAR SUPPORT, DISCLOSED (US_EAST_1_QSTASH_* deployment): this Vercel deployment sets
+// QStash's URL/token/signing-keys under region-prefixed names (`US_EAST_1_QSTASH_TOKEN`, etc.)
+// instead of (or alongside) the plain global names this module originally read. Resolves regional
+// first, falling back to global per-field (not as an all-or-nothing pair) so a partially-migrated
+// env — e.g. only the regional token was renamed, the signing keys weren't yet — still works instead
+// of silently losing whichever field wasn't set regionally. Exported so
+// app/api/scan-v2/worker/route.ts can resolve the SAME signing keys for verifySignatureAppRouter,
+// which reads process.env directly and has no knowledge of the regional names on its own — without
+// this, only the token side (this file) would pick up US_EAST_1_*, and the worker's own signature
+// verification would still 403 every regionally-configured deployment, exactly the "no other logic"
+// instruction's blind spot: this genuinely can't be fixed correctly in one file alone.
+export type QstashEnvSource = 'regional_us_east_1' | 'global' | 'none'
+
+export interface ResolvedQstashEnv {
+  token: string | undefined
+  url: string | undefined
+  currentSigningKey: string | undefined
+  nextSigningKey: string | undefined
+  source: QstashEnvSource
+}
+
+export function resolveQstashEnv(): ResolvedQstashEnv {
+  const regionalToken = sanitizeEnvValue(process.env.US_EAST_1_QSTASH_TOKEN)
+  const regionalUrl = sanitizeEnvValue(process.env.US_EAST_1_QSTASH_URL)
+  const regionalCurrentSigningKey = sanitizeEnvValue(process.env.US_EAST_1_QSTASH_CURRENT_SIGNING_KEY)
+  const regionalNextSigningKey = sanitizeEnvValue(process.env.US_EAST_1_QSTASH_NEXT_SIGNING_KEY)
+  const hasAnyRegional = regionalToken != null || regionalUrl != null || regionalCurrentSigningKey != null || regionalNextSigningKey != null
+
+  const globalToken = sanitizeEnvValue(process.env.QSTASH_TOKEN)
+  const globalUrl = sanitizeEnvValue(process.env.QSTASH_URL)
+  const globalCurrentSigningKey = sanitizeEnvValue(process.env.QSTASH_CURRENT_SIGNING_KEY)
+  const globalNextSigningKey = sanitizeEnvValue(process.env.QSTASH_NEXT_SIGNING_KEY)
+  const hasAnyGlobal = globalToken != null || globalUrl != null || globalCurrentSigningKey != null || globalNextSigningKey != null
+
+  const resolved: ResolvedQstashEnv = {
+    token: regionalToken ?? globalToken,
+    url: regionalUrl ?? globalUrl,
+    currentSigningKey: regionalCurrentSigningKey ?? globalCurrentSigningKey,
+    nextSigningKey: regionalNextSigningKey ?? globalNextSigningKey,
+    source: hasAnyRegional ? 'regional_us_east_1' : hasAnyGlobal ? 'global' : 'none',
+  }
+
+  if (resolved.source === 'regional_us_east_1') {
+    console.log('[scan-job] QStash env resolved from regional US_EAST_1_QSTASH_* variables', {
+      usedGlobalFallbackFor: [
+        regionalToken == null && globalToken != null ? 'token' : null,
+        regionalUrl == null && globalUrl != null ? 'url' : null,
+        regionalCurrentSigningKey == null && globalCurrentSigningKey != null ? 'currentSigningKey' : null,
+        regionalNextSigningKey == null && globalNextSigningKey != null ? 'nextSigningKey' : null,
+      ].filter(Boolean),
+    })
+  } else if (resolved.source === 'global') {
+    console.log('[scan-job] QStash env resolved from global QSTASH_* variables (no US_EAST_1_QSTASH_* set)')
+  } else {
+    console.error('[scan-job] No QStash environment variables found — neither regional (US_EAST_1_QSTASH_*) nor global (QSTASH_*) variables are configured')
+  }
+
+  return resolved
+}
+
+export function hasQstashSigningKeys(): boolean {
+  const resolved = resolveQstashEnv()
+  return resolved.currentSigningKey != null || resolved.nextSigningKey != null
+}
+
 let qstashClient: QStashClient | null | undefined // undefined = not yet attempted, null = construction failed
 function getQstashClient(): QStashClient | null {
   if (qstashClient !== undefined) return qstashClient
   try {
-    const rawToken = process.env.QSTASH_TOKEN
-    const token = sanitizeEnvValue(rawToken)
-    if (rawToken != null && token != null && rawToken !== token) {
-      console.warn(`[scan-job] QSTASH_TOKEN had surrounding whitespace/quotes stripped (raw length ${rawToken.length} -> cleaned length ${token.length}) — this is a very common cause of "invalid token"; re-check the value in Vercel for a trailing newline/space or wrapping quotes`)
+    const resolved = resolveQstashEnv()
+    if (resolved.source === 'none') {
+      throw new Error('QStash is not configured: set either US_EAST_1_QSTASH_TOKEN (preferred) or QSTASH_TOKEN')
     }
-    const baseUrl = sanitizeEnvValue(process.env.QSTASH_URL)
     // Pass the sanitized token/baseUrl explicitly — do NOT let the SDK re-read the raw (possibly
-    // whitespace-corrupted) env values.
+    // whitespace-corrupted, or wrongly-named) env values itself.
     qstashClient = new QStashClient({
-      ...(token != null ? { token } : {}),
-      ...(baseUrl != null ? { baseUrl } : {}),
+      ...(resolved.token != null ? { token: resolved.token } : {}),
+      ...(resolved.url != null ? { baseUrl: resolved.url } : {}),
     })
   } catch (err) {
     console.error('[scan-job] QStash Client construction failed — falling back to direct worker calls', err instanceof Error ? err.message : String(err))
@@ -154,7 +217,7 @@ async function publishToQstash(
   workerUrl: string,
   secretHeaders: Record<string, string> | undefined,
 ): Promise<boolean> {
-  const client = process.env.QSTASH_TOKEN ? getQstashClient() : null
+  const client = resolveQstashEnv().token != null ? getQstashClient() : null
   if (!client) return false
   try {
     // eslint-disable-next-line no-console
@@ -245,8 +308,8 @@ export async function createAndEnqueueScanJob(
   // being observed.
   const published = await publishToQstash(jobId, workerUrl, secretHeaders)
   if (!published) {
-    if (!process.env.QSTASH_TOKEN) {
-      console.warn('[scan-job] QSTASH_TOKEN is not configured — falling back to a direct worker call (fine for local dev; set QSTASH_TOKEN in real deployments for queueing/retries/signed requests)')
+    if (resolveQstashEnv().token == null) {
+      console.warn('[scan-job] QStash token is not configured (checked US_EAST_1_QSTASH_TOKEN, then QSTASH_TOKEN) — falling back to a direct worker call (fine for local dev; set one of these in real deployments for queueing/retries/signed requests)')
     }
     // DOOMED-FALLBACK DETECTION, DISCLOSED (worker POST 403 "invalid signature"/"missing header"
     // diagnosis, reproduced live: Firewall allowed the request, the function ran, but NO postHandler
@@ -263,7 +326,7 @@ export async function createAndEnqueueScanJob(
     // is otherwise very hard to trace back to "QSTASH_TOKEN is broken" — the real, actionable fix is
     // to correct QSTASH_TOKEN in this deployment's env vars, not the worker's signing keys (those are
     // working as designed).
-    const workerRequiresSignature = Boolean(process.env.QSTASH_CURRENT_SIGNING_KEY || process.env.QSTASH_NEXT_SIGNING_KEY)
+    const workerRequiresSignature = hasQstashSigningKeys()
     if (workerRequiresSignature) {
       console.error('[scan-job] MISCONFIGURATION: QStash publish failed/unavailable, but the worker route has QSTASH_CURRENT_SIGNING_KEY/QSTASH_NEXT_SIGNING_KEY configured and requires a signed request. The direct-fetch fallback below is UNSIGNED and will be rejected with a 403 by the worker before it logs anything — this is not a transient error, it will happen on every scan until QSTASH_TOKEN is fixed. Check QSTASH_TOKEN in this deployment\'s env vars (see getQstashClient()\'s own logs above for why publish failed).', jobId)
     }

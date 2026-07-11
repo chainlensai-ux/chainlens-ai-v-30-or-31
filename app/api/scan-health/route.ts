@@ -33,10 +33,16 @@ function sanitizeEnvValue(value: string | undefined | null): string | undefined 
   return v.length > 0 ? v : undefined
 }
 
+// REGIONAL ENV VAR SUPPORT, DISCLOSED (US_EAST_1_QSTASH_* deployment): regional preferred, global
+// fallback — same resolution src/modules/scanJobCreation.ts's resolveQstashEnv() applies to the real
+// trigger path, duplicated here (not imported) for the same self-containment reason as
+// sanitizeEnvValue above: this endpoint verifies the real path independently, so it shouldn't share
+// a bug in how that path resolves its own env vars. Without this, a regionally-configured deployment
+// would report qstashPublish: false here even though the real scan-start path works correctly.
 function getHealthQstashClient(): QStashClient | null {
-  const token = sanitizeEnvValue(process.env.QSTASH_TOKEN)
+  const token = sanitizeEnvValue(process.env.US_EAST_1_QSTASH_TOKEN) ?? sanitizeEnvValue(process.env.QSTASH_TOKEN)
   if (!token) return null
-  const baseUrl = sanitizeEnvValue(process.env.QSTASH_URL)
+  const baseUrl = sanitizeEnvValue(process.env.US_EAST_1_QSTASH_URL) ?? sanitizeEnvValue(process.env.QSTASH_URL)
   try {
     return new QStashClient({ token, ...(baseUrl != null ? { baseUrl } : {}) })
   } catch (err) {

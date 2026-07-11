@@ -42,6 +42,7 @@ import { runWalletScanV2Worker } from '@/workers/walletScanV2'
 import { setScanJob, getScanJob } from '@/src/modules/scanJobs'
 import { resetAlchemyAudit, printAlchemyAuditSummary } from '@/lib/server/alchemyAudit'
 import { withScanTimeout } from '@/src/utils/timeout'
+import { resolveQstashEnv } from '@/src/modules/scanJobCreation'
 
 // TIMEOUT WINDOW, DISCLOSED (raised again, this task): this is the REAL root cause of
 // "SCAN_TIMEOUT_120000ms" reaching the UI. This is an INTERNAL timeout on the worker's own call to
@@ -224,9 +225,21 @@ async function postHandler(req: Request): Promise<Response> {
 // verification when the keys are actually configured; otherwise fall back to the unwrapped handler
 // (still protected by the existing SCAN_WORKER_SECRET check) with a loud warning, rather than
 // taking the whole route down.
-const qstashConfigured = Boolean(process.env.QSTASH_CURRENT_SIGNING_KEY || process.env.QSTASH_NEXT_SIGNING_KEY)
+// REGIONAL ENV VAR SUPPORT, DISCLOSED (US_EAST_1_QSTASH_* deployment): verifySignatureAppRouter
+// reads QSTASH_CURRENT_SIGNING_KEY/QSTASH_NEXT_SIGNING_KEY straight from process.env when not passed
+// explicit config — it has no idea this deployment may instead set them under
+// US_EAST_1_QSTASH_CURRENT_SIGNING_KEY/US_EAST_1_QSTASH_NEXT_SIGNING_KEY. Reusing
+// src/modules/scanJobCreation.ts's resolveQstashEnv() (regional-preferred, global-fallback, same
+// resolution the QStash publish side now uses) and passing the result explicitly as config below —
+// without this, a regionally-configured deployment would have qstashConfigured stay false here even
+// though publishToQstash() on the other side successfully finds and uses the regional keys, and
+// every real QStash-delivered request would 403 with no signature verification ever attempted.
+const resolvedQstashEnv = resolveQstashEnv()
+const qstashConfigured = resolvedQstashEnv.currentSigningKey != null || resolvedQstashEnv.nextSigningKey != null
 if (!qstashConfigured) {
-  console.warn('[WORKER] QSTASH_CURRENT_SIGNING_KEY/QSTASH_NEXT_SIGNING_KEY not configured — QStash signature verification is disabled; relying on SCAN_WORKER_SECRET only')
+  console.warn('[WORKER] No QStash signing keys configured (checked US_EAST_1_QSTASH_CURRENT_SIGNING_KEY/US_EAST_1_QSTASH_NEXT_SIGNING_KEY, then QSTASH_CURRENT_SIGNING_KEY/QSTASH_NEXT_SIGNING_KEY) — QStash signature verification is disabled; relying on SCAN_WORKER_SECRET only')
+} else {
+  console.log('[WORKER] QStash signing keys resolved from', resolvedQstashEnv.source, 'variables')
 }
 
 // SECOND CRASH VECTOR, DISCLOSED (Preview-stuck-at-Initializing diagnosis): the qstashConfigured
@@ -243,7 +256,10 @@ if (!qstashConfigured) {
 function buildPost(): typeof postHandler {
   if (!qstashConfigured) return postHandler
   try {
-    return verifySignatureAppRouter(postHandler)
+    return verifySignatureAppRouter(postHandler, {
+      currentSigningKey: resolvedQstashEnv.currentSigningKey,
+      nextSigningKey: resolvedQstashEnv.nextSigningKey,
+    })
   } catch (err) {
     console.error('[WORKER] verifySignatureAppRouter construction failed — falling back to the unwrapped handler; relying on SCAN_WORKER_SECRET only', err instanceof Error ? err.message : String(err))
     return postHandler
