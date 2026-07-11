@@ -544,6 +544,76 @@ export function computeHeavyWalletFlag(distinctBuyTokens: number, matchedLots: n
   return distinctBuyTokens > 120 || matchedLots > 250
 }
 
+// SLOW-PROVIDER DIAGNOSTICS, DISCLOSED — four pure, independently-testable signals over data
+// orchestration genuinely has (per-chain latency already captured around each chain's own fetch
+// call, and the same providerResults/errorReason data providerDiagnostics already exposes).
+
+const SLOW_PROVIDER_THRESHOLD_MS = 2500
+const JITTER_THRESHOLD_MS = 1500
+const COLD_START_FIRST_THRESHOLD_MS = 2000
+const COLD_START_SUBSEQUENT_THRESHOLD_MS = 500
+
+export type ChainLatency = { chain: SupportedChain; latencyMs: number }
+
+export function computeSlowProviderFlag(totalDurationMs: number): boolean {
+  return totalDurationMs > SLOW_PROVIDER_THRESHOLD_MS
+}
+
+// Only meaningful with 2+ chains — a single-chain scan has nothing to compare against, so this
+// returns false rather than a meaningless "jitter" verdict against nothing.
+export function computeJitterFlag(chainLatencies: readonly ChainLatency[]): boolean {
+  if (chainLatencies.length < 2) return false
+  const latencies = chainLatencies.map((c) => c.latencyMs)
+  return Math.max(...latencies) - Math.min(...latencies) > JITTER_THRESHOLD_MS
+}
+
+// COLD-START CAVEAT, HONESTLY DISCLOSED: providerFetchWindow fetches every chain CONCURRENTLY (see
+// the Promise.all call site above), not sequentially — there is no real temporal "first request,
+// then subsequent ones" the way there would be for a sequential loop, so this can't detect genuine
+// TCP/TLS connection warm-up the way the task's naming implies. What IS real and computable: given
+// array order (index 0 = the first-listed chain), whether that chain's own latency looks like an
+// outlier-slow request while every other chain resolved fast. Kept as a labeled, order-based
+// heuristic — a real, if weaker, signal (e.g. a cold Lambda/DNS-resolution effect isolated to
+// whichever request happens to be first in the array) — not a claim of verified connection warm-up.
+// Only meaningful with 2+ chains, same reasoning as jitter above.
+export function computeColdStartFlag(chainLatencies: readonly ChainLatency[]): boolean {
+  if (chainLatencies.length < 2) return false
+  const [first, ...rest] = chainLatencies.map((c) => c.latencyMs)
+  return first > COLD_START_FIRST_THRESHOLD_MS && rest.every((ms) => ms < COLD_START_SUBSEQUENT_THRESHOLD_MS)
+}
+
+// RATE-LIMIT DETECTION, CORRECTED, DISCLOSED: the literal string 'rate_limit' never appears
+// anywhere in src/modules/providerFetchWindow/utils.ts's real errorReason values (confirmed by
+// reading that file directly) — an HTTP 429 there resolves to errorReason: 'http_429' (a template
+// string built from the real response status), never a normalized 'rate_limit' label. Checking for
+// the literal string the task named would never match anything real; checks the actual value
+// instead.
+export function computeRateLimitFlag(
+  providerResults: ReadonlyArray<{ providerResults: { goldrush: { errorReason: string | null }; alchemy: { errorReason: string | null } } }>,
+): boolean {
+  return providerResults.some((r) => r.providerResults.goldrush.errorReason === 'http_429' || r.providerResults.alchemy.errorReason === 'http_429')
+}
+
+export type SlowProviderSignals = {
+  slowProviderDetected: boolean
+  jitterDetected: boolean
+  coldStartDetected: boolean
+  rateLimitDetected: boolean
+}
+
+export function computeSlowProviderSignals(
+  totalDurationMs: number,
+  chainLatencies: readonly ChainLatency[],
+  providerResults: ReadonlyArray<{ providerResults: { goldrush: { errorReason: string | null }; alchemy: { errorReason: string | null } } }>,
+): SlowProviderSignals {
+  return {
+    slowProviderDetected: computeSlowProviderFlag(totalDurationMs),
+    jitterDetected: computeJitterFlag(chainLatencies),
+    coldStartDetected: computeColdStartFlag(chainLatencies),
+    rateLimitDetected: computeRateLimitFlag(providerResults),
+  }
+}
+
 // Additive, async — resolves real historical USD pricing for buyTimeline + sellTimelineV2 entries
 // via injected priceSources (src/modules/pricingAtTimeEngine). The real call site below always
 // passes PRICE_SOURCES (real GoldRush integration when GOLDRUSH_API_KEY/COVALENT_API_KEY is
@@ -641,17 +711,46 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // fetchProviderWindow's own source is never touched. 30s TTL: this is the single most expensive
   // real network call in the whole pipeline (per-chain provider fetch), so a short cache window
   // still meaningfully cuts repeat-request CU without serving stale data for long.
+  // PER-CHAIN LATENCY, DISCLOSED: chains fetch CONCURRENTLY via Promise.all below, each wrapped
+  // with its own start/end timestamp taken right around its own await point — this measures each
+  // chain's own real wall-clock latency (which can differ even under concurrency: different
+  // provider response times, a cache hit vs. miss on that specific key, etc.), not a fabricated or
+  // evenly-divided share of the total. `chainLatencies` preserves array order (matching
+  // preScan.sanitizedChains), which coldStart detection below relies on and discloses the caveat of.
   const providerFetchStart = performance.now()
-  const providerResults = await Promise.all(
-    preScan.sanitizedChains.map((chain) =>
-      withStageCache(
+  const timedProviderResults = await Promise.all(
+    preScan.sanitizedChains.map(async (chain) => {
+      const chainStart = performance.now()
+      const result = await withStageCache(
         `v2:providerFetchWindow:${chain}:${params.walletAddress.toLowerCase()}`,
         30,
         () => fetchProviderWindow(chain, params.walletAddress, PROVIDER_FETCH_WINDOW_DAYS_USED),
-      ),
-    ),
+      )
+      return { result, chain, latencyMs: Math.round(performance.now() - chainStart) }
+    }),
   )
   scanTimer.mark('providerFetchWindow', providerFetchStart)
+
+  const providerResults = timedProviderResults.map((t) => t.result)
+  const chainLatencies = timedProviderResults.map((t) => ({ chain: t.chain, latencyMs: t.latencyMs }))
+  for (const cl of chainLatencies) {
+    // eslint-disable-next-line no-console
+    console.warn('[pipeline] per-chain provider latency', { chain: cl.chain, perChainLatencyMs: cl.latencyMs })
+  }
+
+  const slowProviderSignals = computeSlowProviderSignals(
+    scanTimer.stages.providerFetchWindow ?? 0,
+    chainLatencies,
+    providerResults,
+  )
+  if (slowProviderSignals.slowProviderDetected) {
+    // eslint-disable-next-line no-console
+    console.warn('[pipeline] slowProviderDetected', {
+      slowProviderDetected: true,
+      totalDurationMs: scanTimer.stages.providerFetchWindow,
+      perChainDiagnostics: chainLatencies,
+    })
+  }
 
   // Real, honest per-chain/per-provider fetch outcome summary — counts and error reasons only,
   // never raw events (see ProviderDiagnosticsEntry's doc comment for why raw payloads are never
@@ -943,6 +1042,13 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     unindexedTokenSkippedCount: noMarketFoundCount,
     filteredEventsForPricingCount: normalizedEventsForPricing.length,
     providerFetchWindowDiagnostics,
+    slowProviderDetected: slowProviderSignals.slowProviderDetected,
+    jitterDetected: slowProviderSignals.jitterDetected,
+    // COLD-START CAVEAT, DISCLOSED (see computeColdStartFlag's own header): an order-based
+    // heuristic, not verified TCP/TLS connection warm-up — chains fetch concurrently here.
+    coldStartDetected: slowProviderSignals.coldStartDetected,
+    rateLimitDetected: slowProviderSignals.rateLimitDetected,
+    perChainLatencyMs: chainLatencies,
   })
 
   return { ...finalReport, normalizationErrors }

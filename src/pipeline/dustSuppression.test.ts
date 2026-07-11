@@ -15,6 +15,11 @@ import {
   buildFilteredEventsForPricing,
   computeHeavyWalletFlag,
   buildProviderFetchWindowDiagnostics,
+  computeSlowProviderFlag,
+  computeJitterFlag,
+  computeColdStartFlag,
+  computeRateLimitFlag,
+  computeSlowProviderSignals,
 } from './index'
 import type { BuyTimelineEntry, SourceType } from '../modules/timelineBuilder/types'
 import type { SellTimelineEntry } from '../modules/sellTimeline/types'
@@ -240,5 +245,116 @@ describe('buildProviderFetchWindowDiagnostics', () => {
     const diagnostics = buildProviderFetchWindowDiagnostics([], '0xwallet', 100)
     assert.equal(diagnostics.pagesFetched, null)
     assert.equal(diagnostics.perPageLatencyMs, null)
+  })
+})
+
+function providerResult(goldrushErrorReason: string | null, alchemyErrorReason: string | null = null) {
+  return {
+    providerResults: {
+      goldrush: { errorReason: goldrushErrorReason },
+      alchemy: { errorReason: alchemyErrorReason },
+    },
+  }
+}
+
+describe('computeSlowProviderFlag', () => {
+  it('is true above the 2500ms threshold', () => {
+    assert.equal(computeSlowProviderFlag(2501), true)
+  })
+
+  it('is false at exactly the threshold (not "or equal")', () => {
+    assert.equal(computeSlowProviderFlag(2500), false)
+  })
+
+  it('is false for a fast fetch', () => {
+    assert.equal(computeSlowProviderFlag(300), false)
+  })
+})
+
+describe('computeJitterFlag', () => {
+  it('is true when the spread between chains exceeds 1500ms', () => {
+    const latencies = [{ chain: 'base' as const, latencyMs: 200 }, { chain: 'eth' as const, latencyMs: 1800 }]
+    assert.equal(computeJitterFlag(latencies), true)
+  })
+
+  it('is false when latencies are close together', () => {
+    const latencies = [{ chain: 'base' as const, latencyMs: 200 }, { chain: 'eth' as const, latencyMs: 400 }]
+    assert.equal(computeJitterFlag(latencies), false)
+  })
+
+  it('is false with only one chain (nothing to compare against)', () => {
+    assert.equal(computeJitterFlag([{ chain: 'base' as const, latencyMs: 5000 }]), false)
+  })
+})
+
+describe('computeColdStartFlag', () => {
+  it('is true when the first chain is slow and every subsequent chain is fast', () => {
+    const latencies = [
+      { chain: 'base' as const, latencyMs: 2500 },
+      { chain: 'eth' as const, latencyMs: 100 },
+      { chain: 'arbitrum' as const, latencyMs: 200 },
+    ]
+    assert.equal(computeColdStartFlag(latencies), true)
+  })
+
+  it('is false when the first chain is fast', () => {
+    const latencies = [{ chain: 'base' as const, latencyMs: 100 }, { chain: 'eth' as const, latencyMs: 100 }]
+    assert.equal(computeColdStartFlag(latencies), false)
+  })
+
+  it('is false when a later chain is also slow (not isolated to the first)', () => {
+    const latencies = [
+      { chain: 'base' as const, latencyMs: 2500 },
+      { chain: 'eth' as const, latencyMs: 600 },
+    ]
+    assert.equal(computeColdStartFlag(latencies), false)
+  })
+
+  it('is false with only one chain', () => {
+    assert.equal(computeColdStartFlag([{ chain: 'base' as const, latencyMs: 5000 }]), false)
+  })
+})
+
+describe('computeRateLimitFlag', () => {
+  it('detects a real HTTP 429 (the actual errorReason value, not the literal "rate_limit" string)', () => {
+    assert.equal(computeRateLimitFlag([providerResult('http_429')]), true)
+  })
+
+  it('detects a 429 on the alchemy side too', () => {
+    assert.equal(computeRateLimitFlag([providerResult(null, 'http_429')]), true)
+  })
+
+  it('is false for an unrelated error reason', () => {
+    assert.equal(computeRateLimitFlag([providerResult('no_api_key_configured')]), false)
+  })
+
+  it('is false for a successful fetch (errorReason null)', () => {
+    assert.equal(computeRateLimitFlag([providerResult(null, null)]), false)
+  })
+
+  it('is false for the literal string "rate_limit" (confirms that value never actually occurs)', () => {
+    assert.equal(computeRateLimitFlag([providerResult('rate_limit')]), false)
+  })
+})
+
+describe('computeSlowProviderSignals', () => {
+  it('combines all four signals correctly', () => {
+    const latencies = [{ chain: 'base' as const, latencyMs: 3000 }, { chain: 'eth' as const, latencyMs: 100 }]
+    const signals = computeSlowProviderSignals(3200, latencies, [providerResult('http_429')])
+    assert.equal(signals.slowProviderDetected, true)
+    assert.equal(signals.jitterDetected, true)
+    assert.equal(signals.coldStartDetected, true)
+    assert.equal(signals.rateLimitDetected, true)
+  })
+
+  it('is all-false for a healthy, fast scan', () => {
+    const latencies = [{ chain: 'base' as const, latencyMs: 200 }, { chain: 'eth' as const, latencyMs: 250 }]
+    const signals = computeSlowProviderSignals(500, latencies, [providerResult(null, null)])
+    assert.deepEqual(signals, {
+      slowProviderDetected: false,
+      jitterDetected: false,
+      coldStartDetected: false,
+      rateLimitDetected: false,
+    })
   })
 })
