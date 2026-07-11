@@ -1,15 +1,19 @@
-// Unit tests for isDustEligibleForDisplayPricing (src/pipeline/index.ts) — the pure decision
-// function behind dust suppression in the DISPLAY-ONLY pricingAtTime pass (stage 6c). Does not
-// drive the full pipeline (see that function's own header for why: real priceSources injection
-// isn't parameterized at the pipeline entry point, and this decision logic is fully testable in
-// isolation). Run with: npx tsx --test src/pipeline/dustSuppression.test.ts
+// Unit tests for upstream dust suppression (src/pipeline/index.ts) — the pure decision functions
+// (computeDustCandidateKeys, isSuppressibleDustToken) that gate what's excluded from
+// priceLotsForWallet's input and the display-only pricingAtTime pass, BEFORE either runs. The async
+// orchestrator (resolveDustSuppressionKeys) is not exported/driven directly here — it's a thin,
+// network-calling wrapper around these two pure pieces plus a bounded worker pool, so testing the
+// pure decision logic in isolation covers the actual behavior without needing to mock fetch/DNS.
+// Run with: npx tsx --test src/pipeline/dustSuppression.test.ts
 
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { isDustEligibleForDisplayPricing } from './index'
+import { computeDustCandidateKeys, isSuppressibleDustToken } from './index'
 import type { BuyTimelineEntry, SourceType } from '../modules/timelineBuilder/types'
+import type { SellTimelineEntry } from '../modules/sellTimeline/types'
+import type { CheapDustPriceResult } from '../../lib/server/dustPriceCheck'
 
-function makeEntry(overrides: Partial<BuyTimelineEntry> & { sourceType: SourceType }): BuyTimelineEntry {
+function makeBuy(overrides: Partial<BuyTimelineEntry> & { sourceType: SourceType }): BuyTimelineEntry {
   return {
     timestamp: Date.now(),
     chain: 'base',
@@ -23,60 +27,77 @@ function makeEntry(overrides: Partial<BuyTimelineEntry> & { sourceType: SourceTy
   }
 }
 
-describe('isDustEligibleForDisplayPricing', () => {
-  it('suppresses an airdrop-only entry with a known, sub-threshold current value', () => {
-    const entry = makeEntry({ sourceType: 'airdrop', amount: '10' })
-    const result = isDustEligibleForDisplayPricing(entry, new Set(), () => 0.01) // 10 * 0.01 = $0.10
-    assert.equal(result, true)
+function makeSell(overrides: Partial<SellTimelineEntry> = {}): SellTimelineEntry {
+  return {
+    timestamp: Date.now(),
+    chain: 'base',
+    token: '0xdust000000000000000000000000000000dust',
+    symbol: 'DUST',
+    amount: '10',
+    proceedsUsdEstimate: null,
+    matchedBuyLotId: null,
+    confidence: 'medium',
+    txHash: '0xsell',
+    chainSelectionRef: { status: 'active_intelligence', gatesPassed: [] },
+    recipient: null,
+    ...overrides,
+  } as SellTimelineEntry
+}
+
+describe('computeDustCandidateKeys', () => {
+  it('flags a pure airdrop-only token (no real buy, no sell) as a candidate', () => {
+    const buys = [makeBuy({ sourceType: 'airdrop', chain: 'base', token: '0xdust' })]
+    const candidates = computeDustCandidateKeys(buys, [])
+    assert.ok(candidates.has('base:0xdust'))
   })
 
-  it('never suppresses a real swap-sourced buy, regardless of value', () => {
-    const entry = makeEntry({ sourceType: 'swap', amount: '10' })
-    const result = isDustEligibleForDisplayPricing(entry, new Set(), () => 0.01)
-    assert.equal(result, false)
+  it('does NOT flag a token with any real (non-airdrop) buy', () => {
+    const buys = [
+      makeBuy({ sourceType: 'airdrop', chain: 'base', token: '0xtoken' }),
+      makeBuy({ sourceType: 'swap', chain: 'base', token: '0xtoken' }),
+    ]
+    const candidates = computeDustCandidateKeys(buys, [])
+    assert.ok(!candidates.has('base:0xtoken'))
   })
 
-  it('never suppresses a mint-sourced entry', () => {
-    const entry = makeEntry({ sourceType: 'mint', amount: '10' })
-    const result = isDustEligibleForDisplayPricing(entry, new Set(), () => 0.01)
-    assert.equal(result, false)
+  it('does NOT flag a mint-sourced token', () => {
+    const candidates = computeDustCandidateKeys([makeBuy({ sourceType: 'mint', chain: 'base', token: '0xtoken' })], [])
+    assert.ok(!candidates.has('base:0xtoken'))
   })
 
-  it('never suppresses a plain transfer-in', () => {
-    const entry = makeEntry({ sourceType: 'transfer', amount: '10' })
-    const result = isDustEligibleForDisplayPricing(entry, new Set(), () => 0.01)
-    assert.equal(result, false)
+  it('does NOT flag a plain transfer-in token', () => {
+    const candidates = computeDustCandidateKeys([makeBuy({ sourceType: 'transfer', chain: 'base', token: '0xtoken' })], [])
+    assert.ok(!candidates.has('base:0xtoken'))
   })
 
-  it('never suppresses an airdrop-sourced token that was later sold (protects the sold-dust case)', () => {
-    const entry = makeEntry({ sourceType: 'airdrop', chain: 'base', token: '0xToKeN', amount: '10' })
-    const neverSuppressKeys = new Set(['base:0xtoken']) // built from sells + non-airdrop buys elsewhere
-    const result = isDustEligibleForDisplayPricing(entry, neverSuppressKeys, () => 0.01)
-    assert.equal(result, false)
+  it('airdrop-then-sell token is NOT a candidate (protects the sold-dust case)', () => {
+    const buys = [makeBuy({ sourceType: 'airdrop', chain: 'base', token: '0xtoken' })]
+    const sells = [makeSell({ chain: 'base', token: '0xtoken' })]
+    const candidates = computeDustCandidateKeys(buys, sells)
+    assert.ok(!candidates.has('base:0xtoken'))
   })
 
-  it('never suppresses when the current price is unknown (null) — conservative default', () => {
-    const entry = makeEntry({ sourceType: 'airdrop', amount: '10' })
-    const result = isDustEligibleForDisplayPricing(entry, new Set(), () => null)
-    assert.equal(result, false)
+  it('is case-insensitive and chain-scoped for the token key', () => {
+    const buys = [makeBuy({ sourceType: 'airdrop', chain: 'base', token: '0xDUST' })]
+    const candidates = computeDustCandidateKeys(buys, [])
+    assert.ok(candidates.has('base:0xdust'))
+    assert.ok(!candidates.has('eth:0xdust'))
+  })
+})
+
+describe('isSuppressibleDustToken', () => {
+  it('suppresses when the cheap lookup finds no price source anywhere', () => {
+    const cheap: CheapDustPriceResult = { hasAnyPriceSource: false, priceUsdPerToken: null }
+    assert.equal(isSuppressibleDustToken(cheap), true)
   })
 
-  it('does not suppress once a real, non-negligible price exists (dust token later gets a real price)', () => {
-    const entry = makeEntry({ sourceType: 'airdrop', amount: '10' })
-    // 10 * 50 = $500 — well above the $5 threshold, so no longer dust-eligible.
-    const result = isDustEligibleForDisplayPricing(entry, new Set(), () => 50)
-    assert.equal(result, false)
+  it('does NOT suppress once the cheap lookup finds a real price (dust token later gets a real price)', () => {
+    const cheap: CheapDustPriceResult = { hasAnyPriceSource: true, priceUsdPerToken: 0.0000001 }
+    assert.equal(isSuppressibleDustToken(cheap), false)
   })
 
-  it('is a boundary check at exactly the threshold: $5.00 is NOT suppressed (< threshold, not <=)', () => {
-    const entry = makeEntry({ sourceType: 'airdrop', amount: '1' })
-    const result = isDustEligibleForDisplayPricing(entry, new Set(), () => 5)
-    assert.equal(result, false)
-  })
-
-  it('handles a non-finite estimated value (e.g. malformed amount) by not suppressing', () => {
-    const entry = makeEntry({ sourceType: 'airdrop', amount: 'not-a-number' })
-    const result = isDustEligibleForDisplayPricing(entry, new Set(), () => 0.01)
-    assert.equal(result, false)
+  it('does NOT suppress for a well-priced, high-value token', () => {
+    const cheap: CheapDustPriceResult = { hasAnyPriceSource: true, priceUsdPerToken: 3200 }
+    assert.equal(isSuppressibleDustToken(cheap), false)
   })
 })
