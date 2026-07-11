@@ -20,9 +20,17 @@ import {
   computeColdStartFlag,
   computeRateLimitFlag,
   computeSlowProviderSignals,
+  estimateAlchemyCu,
+  estimateGoldrushCu,
+  countRpcMethods,
+  buildPerTokenPricingAttempts,
+  buildCuEstimatorSummary,
+  type RpcMethodCounts,
 } from './index'
 import type { BuyTimelineEntry, SourceType } from '../modules/timelineBuilder/types'
 import type { SellTimelineEntry } from '../modules/sellTimeline/types'
+import type { RpcDebugEntry } from '../../lib/server/rpcDebug'
+import type { PriceableEntry } from '../modules/pricingAtTimeEngine/types'
 import type { NormalizedEvent } from '../modules/normalization/types'
 import type { CheapDustPriceResult } from '../../lib/server/dustPriceCheck'
 
@@ -356,5 +364,149 @@ describe('computeSlowProviderSignals', () => {
       coldStartDetected: false,
       rateLimitDetected: false,
     })
+  })
+})
+
+function zeroCounts(): RpcMethodCounts {
+  return { getBlockLatest: 0, getBlockEstimate: 0, bisect: 0, multicallGetPool: 0, multicallPoolPrice: 0, slot0: 0, token0: 0, decimals: 0 }
+}
+
+describe('estimateAlchemyCu', () => {
+  it('applies the exact stated CU weights per method', () => {
+    const cu = estimateAlchemyCu({
+      getBlockLatest: 1,
+      getBlockEstimate: 2,
+      bisect: 3,
+      multicallGetPool: 1,
+      multicallPoolPrice: 1,
+      slot0: 4,
+      token0: 4,
+      decimals: 4,
+    })
+    assert.equal(cu.getBlockLatest, 5)
+    assert.equal(cu.getBlockEstimate, 10)
+    assert.equal(cu.bisect, 30)
+    assert.equal(cu.multicallGetPool, 20)
+    assert.equal(cu.multicallPoolPrice, 20)
+    assert.equal(cu.slot0, 20)
+    assert.equal(cu.token0, 20)
+    assert.equal(cu.decimals, 20)
+    assert.equal(cu.total, 5 + 10 + 30 + 20 + 20 + 20 + 20 + 20)
+  })
+
+  it('is all-zero for zero counts', () => {
+    const cu = estimateAlchemyCu(zeroCounts())
+    assert.equal(cu.total, 0)
+  })
+})
+
+describe('estimateGoldrushCu', () => {
+  it('applies 12 CU per call', () => {
+    assert.deepEqual(estimateGoldrushCu(5), { priceCalls: 5, estimatedCu: 60 })
+  })
+
+  it('is zero for zero calls', () => {
+    assert.deepEqual(estimateGoldrushCu(0), { priceCalls: 0, estimatedCu: 0 })
+  })
+})
+
+function rpcEntry(method: string): RpcDebugEntry {
+  return { timestamp: Date.now(), method, route: 'pricingAtTimeEngine:basedex' }
+}
+
+describe('countRpcMethods', () => {
+  it('counts each real method string independently', () => {
+    const entries = [
+      rpcEntry('getBlock:latest'),
+      rpcEntry('getBlock:bisect'),
+      rpcEntry('getBlock:bisect'),
+      rpcEntry('readContract:multicall:getPool'),
+      rpcEntry('readContract:slot0'),
+      { timestamp: Date.now(), method: 'goldrush_sdk_getTokenPrices', route: 'pricingAtTimeEngine:goldrushPriceSource' },
+    ]
+    const counts = countRpcMethods(entries)
+    assert.equal(counts.alchemy.getBlockLatest, 1)
+    assert.equal(counts.alchemy.bisect, 2)
+    assert.equal(counts.alchemy.multicallGetPool, 1)
+    assert.equal(counts.alchemy.slot0, 1)
+    assert.equal(counts.alchemy.decimals, 0)
+    assert.equal(counts.goldrushPriceCalls, 1)
+  })
+
+  it('is all-zero for an empty slice (the cross-request leak guard case)', () => {
+    const counts = countRpcMethods([])
+    assert.equal(counts.alchemy.bisect, 0)
+    assert.equal(counts.goldrushPriceCalls, 0)
+  })
+
+  it('ignores entries with an unrelated method string', () => {
+    const counts = countRpcMethods([{ timestamp: Date.now(), method: 'alchemy_getAssetTransfers', route: 'providerFetchWindow' }])
+    assert.equal(counts.alchemy.bisect, 0)
+    assert.equal(counts.goldrushPriceCalls, 0)
+  })
+})
+
+function priceableEntry(overrides: Partial<PriceableEntry> = {}): PriceableEntry {
+  return { txHash: '0xtx', token: '0xtoken', chain: 'base', timestamp: Date.now(), amount: '10', ...overrides }
+}
+
+describe('buildPerTokenPricingAttempts', () => {
+  it('counts distinct pricing entries per (chain, token)', () => {
+    const entries = [
+      priceableEntry({ chain: 'base', token: '0xAAA', txHash: '0x1' }),
+      priceableEntry({ chain: 'base', token: '0xAAA', txHash: '0x2' }),
+      priceableEntry({ chain: 'eth', token: '0xBBB', txHash: '0x3' }),
+    ]
+    const perToken = buildPerTokenPricingAttempts(entries)
+    const aaa = perToken.find((p) => p.token === '0xAAA')
+    const bbb = perToken.find((p) => p.token === '0xBBB')
+    assert.equal(aaa?.entryCount, 2)
+    assert.equal(bbb?.entryCount, 1)
+  })
+
+  it('is case-insensitive on the token address for grouping', () => {
+    const entries = [priceableEntry({ token: '0xAAA' }), priceableEntry({ token: '0xaaa' })]
+    const perToken = buildPerTokenPricingAttempts(entries)
+    assert.equal(perToken.length, 1)
+    assert.equal(perToken[0].entryCount, 2)
+  })
+
+  it('is empty for no entries', () => {
+    assert.deepEqual(buildPerTokenPricingAttempts([]), [])
+  })
+})
+
+describe('buildCuEstimatorSummary', () => {
+  it('assembles alchemy, goldrush, perToken, perStage, and perProvider consistently', () => {
+    const priceLotsCounts: RpcMethodCounts = { ...zeroCounts(), bisect: 2, multicallPoolPrice: 1 }
+    const pricingAtTimeCounts = { alchemy: { ...zeroCounts(), slot0: 1, token0: 1, decimals: 1 }, goldrushPriceCalls: 3 }
+    const entries = [priceableEntry({ token: '0xAAA' })]
+
+    const summary = buildCuEstimatorSummary(priceLotsCounts, pricingAtTimeCounts, entries)
+
+    // priceLotsForWallet stage CU = bisect(2*10=20) + poolPrice(1*20=20) = 40
+    assert.equal(summary.perStage.priceLotsForWallet, 40)
+    // pricingAtTime stage CU = alchemy(slot0+token0+decimals = 5+5+5=15) + goldrush(3*12=36) = 51
+    assert.equal(summary.perStage.pricingAtTime, 51)
+    assert.equal(summary.perStage.providerFetchWindow, 0)
+    assert.equal(summary.perStage.dustSuppression, 0)
+
+    // Combined alchemy total across both stages: 40 (priceLots) + 15 (pricingAtTime's alchemy share) = 55
+    assert.equal(summary.alchemy.total, 55)
+    assert.equal(summary.goldrush.estimatedCu, 36)
+
+    assert.equal(summary.perProvider.alchemy, 55)
+    assert.equal(summary.perProvider.goldrush, 36)
+    assert.equal(summary.perProvider.total, 91)
+    assert.equal(summary.totalCu, 91)
+
+    assert.equal(summary.perToken.length, 1)
+    assert.equal(summary.perToken[0].entryCount, 1)
+  })
+
+  it('is all-zero for a scan with no observed RPC activity and no priced entries', () => {
+    const summary = buildCuEstimatorSummary(zeroCounts(), { alchemy: zeroCounts(), goldrushPriceCalls: 0 }, [])
+    assert.equal(summary.totalCu, 0)
+    assert.deepEqual(summary.perToken, [])
   })
 })
