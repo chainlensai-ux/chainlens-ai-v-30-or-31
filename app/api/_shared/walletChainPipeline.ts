@@ -36,6 +36,7 @@ import type { RawProviderEvent, SupportedChain } from '@/src/modules/providerFet
 import { fetchProviderWindow, getEffectiveFetchWindow } from '@/src/modules/providerFetchWindow/index'
 import type { EventsCache } from './eventsCache'
 import { type CuBudget, recordProviderCall } from './cuBudget'
+import { withStageCache } from '@/lib/server/cache/v2StageCache'
 import type { RawTransfer, RawTxBundle, SwapNormalizerChain } from '@/src/modules/swapNormalizer/types'
 import { normalizeTrades } from '@/src/modules/swapNormalizer'
 import { classifyTradeIntent, type TradeWithIntent } from '@/src/modules/tradeIntent/intentEngine'
@@ -92,13 +93,42 @@ export function isSwapNormalizerChain(chain: SupportedChain): chain is SwapNorma
 // (every pre-existing caller of this function) preserves the exact prior behavior — always a fresh
 // fetch, zero behavior change for anything not explicitly passing one. Verified safe: no output
 // shape change, same real fetchProviderWindow call, same real rawEvents value either way.
+//
+// CROSS-ENGINE REDIS READ-THROUGH, DISCLOSED (real duplicate-Alchemy-fetch fix): `cache` above only
+// dedupes within THIS engine's own request-scoped calls — it does nothing for the fact that
+// src/pipeline/index.ts (the old engine, run first on every scan) ALREADY fetched and cached the
+// exact same (chain, walletAddress) raw events into Redis moments earlier, via
+// `withStageCache('v2:providerFetchWindow:${chain}:${wallet}', 30, () => fetchProviderWindow(...))`.
+// This function previously called fetchProviderWindow directly, bypassing that cache entirely, so
+// every scan re-fetched from GoldRush+Alchemy live for data that was already sitting in Redis one
+// function call away — the single biggest real, avoidable source of duplicate Alchemy CU per scan
+// (confirmed by reading both call sites; not a guess). Wrapping this call in the SAME withStageCache
+// key/TTL the old pipeline uses means whichever engine runs first populates the cache and the other
+// reuses it — same real fetchProviderWindow result either way, just not fetched twice.
+//
+// WINDOW-DAYS GUARD, DISCLOSED: src/pipeline/index.ts always passes a hardcoded 90
+// (PROVIDER_FETCH_WINDOW_DAYS_USED) — it does not read the PROVIDER_FETCH_WINDOW_OVERRIDE env var
+// this engine's own getProviderFetchWindowDays() can honor. Sharing the cache key unconditionally
+// would silently serve the wrong window's data to whichever engine runs second if that override is
+// ever set. Only reads/writes the shared Redis key when this call's own resolved window is the same
+// 90 the old pipeline always uses (the default, override-unset case — the only case where the two
+// engines are actually asking for the same data); any deployment that sets the override falls back
+// to the exact prior behavior (a fresh, request-cache-only fetch), never a stale/wrong-window read.
+const OLD_PIPELINE_PROVIDER_FETCH_WINDOW_DAYS = 90
+
 export async function fetchRawEventsForChain(chain: SupportedChain, walletAddress: string, cache?: EventsCache, cuBudget?: CuBudget): Promise<RawProviderEvent[]> {
   const cached = cache?.get(chain, walletAddress)
   if (cached) return cached
 
   // eslint-disable-next-line no-console
   if (cache) console.debug('[CU-HARDENING] Fetching provider events:', `${walletAddress.toLowerCase()}:${chain}`)
-  const result = await fetchProviderWindow(chain, walletAddress, getProviderFetchWindowDays())
+
+  const windowDays = getProviderFetchWindowDays()
+  const fetchLive = () => fetchProviderWindow(chain, walletAddress, windowDays)
+  const result = windowDays === OLD_PIPELINE_PROVIDER_FETCH_WINDOW_DAYS
+    ? await withStageCache(`v2:providerFetchWindow:${chain}:${walletAddress.toLowerCase()}`, 30, fetchLive)
+    : await fetchLive()
+
   if (cuBudget) recordProviderCall(cuBudget)
   cache?.set(chain, walletAddress, result.rawEvents)
   return result.rawEvents
