@@ -17,7 +17,7 @@ import type { NormalizedEvent } from '../modules/normalization/types'
 import { buildChainSelectionObject } from '../modules/chainSelection/index'
 import type { ChainSelectionResult } from '../modules/chainSelection/types'
 import { buildTimelines } from '../modules/timelineBuilder/index'
-import type { BuyTimeline, SellTimeline, TimelineBuilderResult } from '../modules/timelineBuilder/types'
+import type { BuyTimeline, BuyTimelineEntry, SellTimeline, TimelineBuilderResult } from '../modules/timelineBuilder/types'
 import { buildRecoveryPolicyObject } from '../modules/recoveryPolicy/index'
 import type { RecoveryPolicyResult } from '../modules/recoveryPolicy/types'
 import { buildFifoOutput } from '../modules/fifoEngine/index'
@@ -40,7 +40,7 @@ import { multiProviderPriceSource } from '../modules/pricingAtTimeEngine/sources
 import { priceLotsForWallet } from './priceLotsForWallet'
 import { withStageCache } from '../../lib/server/cache/v2StageCache'
 import { getTokenCache, setTokenCache } from '../../lib/server/cache/tokenCache'
-import type { MatchedLot } from '../modules/fifoEngine/types'
+import type { CurrentPriceUsdLookup, MatchedLot } from '../modules/fifoEngine/types'
 
 import type { PreScanValidation, RunWalletScanParams, RunWalletScanResult } from './types'
 import { INTEL_WINDOW_DAYS } from './types'
@@ -324,6 +324,55 @@ function safeRunPnlSummaryV2(params: {
   }
 }
 
+// DUST SUPPRESSION, DISCLOSED (display-pricing-pass only — scope deliberately narrowed from the
+// literal task, confirmed with the user before implementing): this pipeline runs pricingAtTimeEngine
+// TWICE. Stage 5c (priceLotsForWallet, above) prices every merged event to feed fifoEngine's real
+// priceUsdLookup/currentPriceUsdLookup injection points — that pass is NEVER touched by this
+// suppression, so FIFO/pnlSummaryV2/matchedLots/evidenceMissingCount are byte-identical to before.
+// This stage (6c, safeRunPricingAtTime below) is a SEPARATE, purely additive, UI-facing pricing pass
+// over the same buyTimeline/sellTimelineV2 entries (see its own header) — it does not feed fifoEngine
+// or pnlSummaryV2 at all. Suppressing genuinely-dust entries from ONLY this pass's buyEntries reduces
+// pricingAtTimeEngine's fan-out with zero effect on FIFO/PnL correctness.
+//
+// AIRDROP RECLASSIFICATION, DISCLOSED (explicit user confirmation): timelineBuilder's
+// buildBuyTimeline() treats every inbound transfer as a buy-timeline entry — `sourceType` (mint/
+// swap/airdrop/transfer) is a descriptive label, not a filter, so an airdropped token already has a
+// "BUY event" by this codebase's real definition. To make dust suppression possible at all, only
+// entries whose sourceType is exactly 'airdrop' are ever considered — a real swap-sourced buy, a
+// mint, or a plain transfer-in are NEVER suppressed, matching "no BUY events" as closely as the real
+// data model allows.
+//
+// SELL EVENTS ARE NEVER TOUCHED: sellEntries passed to safeRunPricingAtTime below are always the
+// full, unfiltered sellTimelineV2.entries — this function only ever filters buyEntries. A token with
+// ANY sell anywhere (via `neverSuppressKeys`, built from non-airdrop buys AND all sells) is never
+// suppressed, protecting the exact case an airdropped token is later sold.
+//
+// NO-NEW-FETCH VALUE CHECK, DISCLOSED: `currentPriceUsdLookup` is priceLotsForWallet's own already-
+// resolved, synchronous lookup (stage 5c already ran pricing for this exact token) — calling it here
+// costs nothing new. A null/unknown current price is treated as NOT dust (conservative: never
+// suppress on absence of a value signal, only on a known, sub-threshold one).
+const DUST_DISPLAY_USD_THRESHOLD = 5
+
+// TEST-SUPPORT EXPORT, DISCLOSED: same reasoning as v2StageCache.ts's resolveEffectiveTtl and
+// basedex.ts's __resetBaseDexCachesForTest — exported as a pure, isolated function so this
+// suppression decision can be unit tested directly (see dustSuppression.test.ts) without needing
+// to drive the entire pipeline with injected priceSources. Not a new public API surface for any
+// real caller outside this file.
+export function isDustEligibleForDisplayPricing(
+  entry: BuyTimelineEntry,
+  neverSuppressKeys: ReadonlySet<string>,
+  currentPriceUsdLookup: CurrentPriceUsdLookup,
+): boolean {
+  if (entry.sourceType !== 'airdrop') return false
+  const key = `${entry.chain}:${entry.token.toLowerCase()}`
+  if (neverSuppressKeys.has(key)) return false
+  const currentPrice = currentPriceUsdLookup(entry.token, entry.chain)
+  if (currentPrice == null) return false
+  const estimatedUsd = currentPrice * Number(entry.amount)
+  if (!Number.isFinite(estimatedUsd)) return false
+  return estimatedUsd < DUST_DISPLAY_USD_THRESHOLD
+}
+
 // Additive, async — resolves real historical USD pricing for buyTimeline + sellTimelineV2 entries
 // via injected priceSources (src/modules/pricingAtTimeEngine). The real call site below always
 // passes PRICE_SOURCES (real GoldRush integration when GOLDRUSH_API_KEY/COVALENT_API_KEY is
@@ -548,12 +597,33 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     realizedPnlUsd: pnlSummaryV2.realizedPnlUsd,
   })
 
-  // 6c. pricingAtTime — additive, async, unchanged from before (still its own independent real
-  // pricing pass over just the UI-facing buyTimeline/sellTimelineV2 entries, keyed for
-  // report.pricingAtTime's existing consumers). priceSources is the same real PRICE_SOURCES stage
-  // 5c uses. Never touches fifoEngine's own, separate pricing mechanism.
+  // 6c. pricingAtTime — additive, async, still its own independent real pricing pass over just the
+  // UI-facing buyTimeline/sellTimelineV2 entries, keyed for report.pricingAtTime's existing
+  // consumers. priceSources is the same real PRICE_SOURCES stage 5c uses. Never touches fifoEngine's
+  // own, separate pricing mechanism.
+  //
+  // DUST SUPPRESSION, applied ONLY to this display-only pass's buyEntries — see
+  // isDustEligibleForDisplayPricing's own header above for the full disclosure (scope, airdrop
+  // reclassification, why sells are never touched, why this can't affect FIFO/PnL).
+  const neverSuppressKeys = new Set<string>([
+    ...timelines.buyTimeline.entries
+      .filter((e) => e.sourceType !== 'airdrop')
+      .map((e) => `${e.chain}:${e.token.toLowerCase()}`),
+    ...sellTimelineV2.entries.map((e) => `${e.chain}:${e.token.toLowerCase()}`),
+  ])
+  const displayBuyEntries = timelines.buyTimeline.entries.filter(
+    (e) => !isDustEligibleForDisplayPricing(e, neverSuppressKeys, walletPriceLookups.currentPriceUsdLookup),
+  )
+  // Diagnostic log — real dust-suppression counts, directly requested (verification step:
+  // "pricingAtTimeEngine.priceEntries total count decreases for dust-heavy wallets").
+  // eslint-disable-next-line no-console
+  console.warn('[pipeline] dust suppression (display pricingAtTime pass only)', {
+    totalBuyEntries: timelines.buyTimeline.entries.length,
+    suppressed: timelines.buyTimeline.entries.length - displayBuyEntries.length,
+  })
+
   const pricingAtTime = await safeRunPricingAtTime({
-    buyEntries: timelines.buyTimeline.entries,
+    buyEntries: displayBuyEntries,
     sellEntries: sellTimelineV2.entries,
     priceSources: PRICE_SOURCES,
   })
