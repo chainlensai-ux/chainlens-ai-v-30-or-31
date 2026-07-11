@@ -50,6 +50,11 @@ const CHEAP_PRICE_CACHE_TTL_MS = 5 * 60 * 1000 // 5 minutes — matches this cod
 export type CheapDustPriceResult = {
   hasAnyPriceSource: boolean
   priceUsdPerToken: number | null
+  // ADDITIVE, DISCLOSED: DexScreener's own response already carries this field — surfaced here
+  // (not a new fetch, not a new cache) so isDeadToken()/hasLiquidity() below can reuse the exact
+  // same cached lookup instead of this codebase ending up with a second, disconnected liquidity
+  // check that duplicates the same HTTP call.
+  liquidityUsd: number | null
 }
 
 const cheapPriceCache = new Map<string, { value: CheapDustPriceResult; expiresAt: number }>()
@@ -82,7 +87,7 @@ export async function getCheapCurrentPriceForDustCheck(
   const lookup = (async (): Promise<CheapDustPriceResult> => {
     const chainId = DEXSCREENER_CHAIN_IDS[chain]
     if (!chainId) {
-      const result: CheapDustPriceResult = { hasAnyPriceSource: false, priceUsdPerToken: null }
+      const result: CheapDustPriceResult = { hasAnyPriceSource: false, priceUsdPerToken: null, liquidityUsd: null }
       cheapPriceCache.set(key, { value: result, expiresAt: Date.now() + CHEAP_PRICE_CACHE_TTL_MS })
       return result
     }
@@ -94,7 +99,7 @@ export async function getCheapCurrentPriceForDustCheck(
         // never worth blocking the pipeline on; a timeout resolves to "no evidence found" below.
       })
       if (!res.ok) {
-        const result: CheapDustPriceResult = { hasAnyPriceSource: false, priceUsdPerToken: null }
+        const result: CheapDustPriceResult = { hasAnyPriceSource: false, priceUsdPerToken: null, liquidityUsd: null }
         cheapPriceCache.set(key, { value: result, expiresAt: Date.now() + CHEAP_PRICE_CACHE_TTL_MS })
         return result
       }
@@ -104,16 +109,17 @@ export async function getCheapCurrentPriceForDustCheck(
       }
       const candidates = (data.pairs ?? []).filter((p) => p.chainId === chainId && p.priceUsd)
       if (candidates.length === 0) {
-        const result: CheapDustPriceResult = { hasAnyPriceSource: false, priceUsdPerToken: null }
+        const result: CheapDustPriceResult = { hasAnyPriceSource: false, priceUsdPerToken: null, liquidityUsd: null }
         cheapPriceCache.set(key, { value: result, expiresAt: Date.now() + CHEAP_PRICE_CACHE_TTL_MS })
         return result
       }
 
       const best = candidates.reduce((a, b) => ((b.liquidity?.usd ?? 0) > (a.liquidity?.usd ?? 0) ? b : a))
       const price = Number(best.priceUsd)
+      const liquidityUsd = typeof best.liquidity?.usd === 'number' && Number.isFinite(best.liquidity.usd) ? best.liquidity.usd : null
       const result: CheapDustPriceResult = Number.isFinite(price)
-        ? { hasAnyPriceSource: true, priceUsdPerToken: price }
-        : { hasAnyPriceSource: false, priceUsdPerToken: null }
+        ? { hasAnyPriceSource: true, priceUsdPerToken: price, liquidityUsd }
+        : { hasAnyPriceSource: false, priceUsdPerToken: null, liquidityUsd: null }
       cheapPriceCache.set(key, { value: result, expiresAt: Date.now() + CHEAP_PRICE_CACHE_TTL_MS })
       return result
     } catch {
@@ -121,7 +127,7 @@ export async function getCheapCurrentPriceForDustCheck(
       // goldrushPriceSource.ts's own catch block: a transient failure says nothing about whether
       // this token genuinely has no market, so caching it as "no price" could wrongly suppress a
       // token that would resolve fine a moment later).
-      return { hasAnyPriceSource: false, priceUsdPerToken: null }
+      return { hasAnyPriceSource: false, priceUsdPerToken: null, liquidityUsd: null }
     }
   })()
 
@@ -131,4 +137,19 @@ export async function getCheapCurrentPriceForDustCheck(
   } finally {
     inFlightLookups.delete(key)
   }
+}
+
+// isDeadToken / hasLiquidity, ADDITIVE, DISCLOSED: thin, reusable wrappers over the exact same
+// cached lookup/cache above — not a second, disconnected check. "Dead" here means the one thing
+// this cheap, orchestration-layer signal can actually verify: no discoverable DexScreener market at
+// all. It is NOT a claim that GoldRush/basedex (both protected, both un-callable from here) would
+// also find nothing — see this file's own RESIDUAL RISK disclosure above.
+export async function isDeadToken(tokenAddress: string, chain: SupportedChain): Promise<boolean> {
+  const result = await getCheapCurrentPriceForDustCheck(tokenAddress, chain)
+  return !result.hasAnyPriceSource
+}
+
+export async function hasLiquidity(tokenAddress: string, chain: SupportedChain, minUsd = 0): Promise<boolean> {
+  const result = await getCheapCurrentPriceForDustCheck(tokenAddress, chain)
+  return result.liquidityUsd != null && result.liquidityUsd > minUsd
 }

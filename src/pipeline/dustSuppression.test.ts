@@ -87,17 +87,17 @@ describe('computeDustCandidateKeys', () => {
 
 describe('isSuppressibleDustToken', () => {
   it('suppresses when the cheap lookup finds no price source anywhere', () => {
-    const cheap: CheapDustPriceResult = { hasAnyPriceSource: false, priceUsdPerToken: null }
+    const cheap: CheapDustPriceResult = { hasAnyPriceSource: false, priceUsdPerToken: null, liquidityUsd: null }
     assert.equal(isSuppressibleDustToken(cheap), true)
   })
 
   it('does NOT suppress once the cheap lookup finds a real price (dust token later gets a real price)', () => {
-    const cheap: CheapDustPriceResult = { hasAnyPriceSource: true, priceUsdPerToken: 0.0000001 }
+    const cheap: CheapDustPriceResult = { hasAnyPriceSource: true, priceUsdPerToken: 0.0000001, liquidityUsd: 500 }
     assert.equal(isSuppressibleDustToken(cheap), false)
   })
 
   it('does NOT suppress for a well-priced, high-value token', () => {
-    const cheap: CheapDustPriceResult = { hasAnyPriceSource: true, priceUsdPerToken: 3200 }
+    const cheap: CheapDustPriceResult = { hasAnyPriceSource: true, priceUsdPerToken: 3200, liquidityUsd: 900_000 }
     assert.equal(isSuppressibleDustToken(cheap), false)
   })
 })

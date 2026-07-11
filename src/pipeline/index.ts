@@ -499,8 +499,30 @@ function safeAssembleReport(input: AssembleReportInput): FinalReport {
 
 // ── Main entry point ──────────────────────────────────────────────────────────────────────────
 
+// SCAN-TIMING DIAGNOSTICS, DISCLOSED (orchestration-layer-only "why did this scan take X seconds"
+// summary): a plain object, not a class/singleton — one instance per runWalletScan() call, so
+// concurrent scans (multiple requests in the same warm serverless instance) never share or clobber
+// each other's timings. Records elapsed ms around each of this file's own async stages (the only
+// ones that can plausibly dominate scan latency — every synchronous stage in between is pure/cheap
+// by Architecture Step 7's own cost guarantee, see this file's header). Does not, and cannot,
+// measure time spent INSIDE protected modules' own internal call graphs (e.g. how long
+// pricingAtTimeEngine itself spent on bisects vs GoldRush vs fallback) — only how long this
+// orchestration layer's own await points took, which is the real, honest limit of what's
+// observable from outside src/modules/*.
+function startStageTimer(): { stages: Record<string, number>; mark: (name: string, startedAtMs: number) => void } {
+  const stages: Record<string, number> = {}
+  return {
+    stages,
+    mark: (name: string, startedAtMs: number) => {
+      stages[name] = Math.round(performance.now() - startedAtMs)
+    },
+  }
+}
+
 export async function runWalletScan(params: RunWalletScanParams): Promise<RunWalletScanResult> {
   const scanTimestamp = new Date().toISOString()
+  const scanStartedAtMs = performance.now()
+  const scanTimer = startStageTimer()
 
   // 0. Pre-scan validation (Architecture Step 6 §1). An invalid request never reaches any
   // provider call — it degrades immediately to a fully-shaped, honestly-labeled report.
@@ -525,6 +547,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // fetchProviderWindow's own source is never touched. 30s TTL: this is the single most expensive
   // real network call in the whole pipeline (per-chain provider fetch), so a short cache window
   // still meaningfully cuts repeat-request CU without serving stale data for long.
+  const providerFetchStart = performance.now()
   const providerResults = await Promise.all(
     preScan.sanitizedChains.map((chain) =>
       withStageCache(
@@ -534,6 +557,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       ),
     ),
   )
+  scanTimer.mark('providerFetchWindow', providerFetchStart)
 
   // Real, honest per-chain/per-provider fetch outcome summary — counts and error reasons only,
   // never raw events (see ProviderDiagnosticsEntry's doc comment for why raw payloads are never
@@ -574,6 +598,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // reachable at all for scanMode === 'deep'.
   // KV read-before/write-after — 45s TTL (longest of the 4 wrapped stages: recovery's historical
   // page fetches are the most expensive real network calls this pipeline can make).
+  const recoveryPolicyStart = performance.now()
   const recoveryPolicy = await withStageCache(
     `v2:recoveryPolicy:${params.walletAddress.toLowerCase()}:${params.scanMode}`,
     45,
@@ -584,6 +609,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       scanMode: params.scanMode,
     }),
   )
+  scanTimer.mark('recoveryPolicy', recoveryPolicyStart)
 
   // 5b. sellTimelineV2 — additive, pure, zero-cost. Runs after recoveryPolicy since mechanism 4
   // (recovery-reconstructed sells) needs recoveryPolicy's real recoveredEvents. Never replaces or
@@ -629,7 +655,9 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // unchanged (it still opens the same lot; only the pricing ATTEMPT for that lot's cost is
   // skipped, landing on the same honest null cost basis fifoEngine already falls back to for any
   // unpriced event).
+  const dustSuppressionStart = performance.now()
   const dustSuppressedKeys = await resolveDustSuppressionKeys(timelines.buyTimeline.entries, sellTimelineV2.entries)
+  scanTimer.mark('dustSuppression', dustSuppressionStart)
 
   const recoveredRawEventsForPricing = recoveryPolicy.evaluation.flatMap((e) => e.recoveredEvents)
   const { normalizedEvents: recoveredNormalizedForPricing } = normalizeEvents(recoveredRawEventsForPricing, params.walletAddress)
@@ -643,11 +671,13 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     ? recoveredNormalizedForPricing
     : recoveredNormalizedForPricing.filter((e) => !isSuppressedInboundEvent(e))
 
+  const priceLotsForWalletStart = performance.now()
   const walletPriceLookups = await priceLotsForWallet({
     normalizedEvents: normalizedEventsForPricing,
     recoveredEvents: recoveredEventsForPricing,
     priceSources: PRICE_SOURCES,
   })
+  scanTimer.mark('priceLotsForWallet', priceLotsForWalletStart)
   // Diagnostic log — real pricing call outcomes for this wallet's actual events (source breakdown
   // exposed on the lookups themselves, see priceLotsForWallet.ts), plus dust-suppression counts
   // (verification requirement: confirm the fan-out actually shrinks for dust-heavy wallets).
@@ -720,11 +750,13 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     suppressed: timelines.buyTimeline.entries.length - displayBuyEntries.length,
   })
 
+  const pricingAtTimeStart = performance.now()
   const pricingAtTime = await safeRunPricingAtTime({
     buyEntries: displayBuyEntries,
     sellEntries: sellTimelineV2.entries,
     priceSources: PRICE_SOURCES,
   })
+  scanTimer.mark('pricingAtTime', pricingAtTimeStart)
 
   // 7. windowCoverage — pure arithmetic derived from the fixed fetch window and recovery pages used.
   const windowCoverage = computeWindowCoverage(PROVIDER_FETCH_WINDOW_DAYS_USED, recoveryPolicy.totalPagesUsedThisWallet)
@@ -767,6 +799,23 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     pricingAtTime,
     providerDiagnostics,
     pricingProvidersStatus: PRICING_PROVIDERS_STATUS,
+  })
+
+  // "WHY DID THIS SCAN TAKE X SECONDS", DISCLOSED (orchestration-layer-only diagnostic summary):
+  // total wall-clock time plus a per-stage breakdown of this file's own async await points — see
+  // startStageTimer's own header for the honest limit of what this can and can't observe (nothing
+  // about time spent INSIDE pricingAtTimeEngine's own bisect/poolPrice/GoldRush/fallback call
+  // graph, only how long each of THIS file's stages took overall). Distinct tokens vs.
+  // dust-suppressed count is the one real, verifiable signal this layer has for "how much of the
+  // pricing fan-out was avoided."
+  // eslint-disable-next-line no-console
+  console.warn('[pipeline] scan timing summary', {
+    totalMs: Math.round(performance.now() - scanStartedAtMs),
+    stagesMs: scanTimer.stages,
+    dustSuppression: {
+      distinctBuyTokens: new Set(timelines.buyTimeline.entries.map((e) => dustTokenKey(e.chain, e.token))).size,
+      suppressedTokens: dustSuppressedKeys.size,
+    },
   })
 
   return { ...finalReport, normalizationErrors }
