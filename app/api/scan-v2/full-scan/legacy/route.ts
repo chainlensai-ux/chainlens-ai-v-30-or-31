@@ -1,11 +1,14 @@
 // POST /api/scan-v2/full-scan/legacy — thin dispatcher to workers/walletScanV2.ts, run SYNCHRONOUSLY.
 //
-// RELOCATED, DISCLOSED (Migrate-full-scan-to-job/poll task): this file is the exact, unchanged
-// content of the old app/api/scan-v2/full-scan/route.ts, kept as a temporary synchronous fallback
-// per explicit instruction while /api/scan-v2/full-scan/start + /status become the real path (see
-// those two routes' own headers, and app/frontend/api/scanWallet.ts's scanWalletV2Legacy export).
-// Nothing below this line was changed by the move — same maxDuration, same worker call, same
-// error handling.
+// THE ONLY FULL-SCAN PATH AGAIN, DISCLOSED (explicit instruction: remove all QStash/worker/job-poll
+// infrastructure without touching scanner logic): this route was briefly kept only as a fallback
+// while /api/scan-v2/full-scan/start + /status (a QStash-triggered background job/poll system) were
+// the primary path. That job/poll system, QStash, and the separate worker route have all been
+// deleted entirely — this route (kept at its existing path/name to avoid unnecessary churn to a
+// working, tested endpoint) is once again the one and only way a full scan runs, for both `normal`
+// and `deep` scanMode, called directly by app/frontend/api/scanWallet.ts's scanWalletV2(). Nothing
+// below this line was changed by any of that — same maxDuration, same worker call, same error
+// handling this route already had.
 //
 // WORKER-DISPATCH MIGRATION, DISCLOSED (added per a later task): this route previously contained
 // the entire V2 module chain (holdings/pricing/portfolio/pnl/chainActivity/risk/personality/

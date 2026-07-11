@@ -3,18 +3,19 @@
 // see package.json). Run directly with:
 //   npx tsx --test app/frontend/api/scanWallet.routeCheck.test.ts
 //
-// RENAMED, DISCLOSED (Migrate-full-scan-to-job/poll task): this file previously tested
-// `scanWalletV2`'s old synchronous-direct-route behavior. That behavior now lives, unchanged, in
-// `scanWalletV2Legacy` (see scanWallet.ts's own header) — the tests below were repointed at that
-// renamed function rather than deleted, since the behavior itself is still real and still exported.
-// A new suite was added for `scanWalletV2`'s new job/poll behavior (the function every real call
-// site actually uses now).
+// QSTASH/WORKER REMOVAL, DISCLOSED (explicit instruction: remove all QStash/worker/job-poll
+// infrastructure without touching scanner logic): the job/poll suite that previously tested
+// `scanWalletV2`'s background-job behavior (enqueue via /api/scan-v2/full-scan/start, poll
+// /api/scan-v2/full-scan/status) is removed along with that system — those routes no longer exist.
+// The suite that tested `scanWalletV2Legacy`'s direct-route behavior is kept, unchanged in
+// substance, repointed at the renamed `scanWalletV2` (now the only exported scan function, per
+// scanWallet.ts's own header).
 
 import { describe, it, mock } from 'node:test'
 import assert from 'node:assert/strict'
 
-describe('scanWalletV2Legacy (direct V2 route only, no fallback)', () => {
-  it('calls only the legacy V2 route (/api/scan-v2/full-scan/legacy) on success', async () => {
+describe('scanWalletV2 (direct V2 route only, no job/poll, no QStash)', () => {
+  it('calls only the V2 route (/api/scan-v2/full-scan/legacy) on success', async () => {
     const calls: string[] = []
     const originalFetch = global.fetch
     global.fetch = mock.fn(async (url: string) => {
@@ -23,12 +24,12 @@ describe('scanWalletV2Legacy (direct V2 route only, no fallback)', () => {
     }) as unknown as typeof fetch
 
     try {
-      const { scanWalletV2Legacy } = await import('./scanWallet')
-      const result = await scanWalletV2Legacy('0xabc', ['base'], 'normal')
+      const { scanWalletV2 } = await import('./scanWallet')
+      const result = await scanWalletV2('0xabc', ['base'], 'normal')
 
       assert.equal(calls.length, 1)
       assert.equal(calls[0], '/api/scan-v2/full-scan/legacy')
-      assert.ok(!calls.some((c) => c.includes('full-scan-job')), 'expected the job route to never be called')
+      assert.ok(!calls.some((c) => c.includes('full-scan-job') || c.includes('scan-start') || c.includes('scan-status')), 'expected no job/poll route to ever be called')
       assert.equal(result.success, true)
       assert.deepEqual(result.data, { fromV2: true })
     } finally {
@@ -45,8 +46,8 @@ describe('scanWalletV2Legacy (direct V2 route only, no fallback)', () => {
     }) as unknown as typeof fetch
 
     try {
-      const { scanWalletV2Legacy } = await import('./scanWallet')
-      const result = await scanWalletV2Legacy('0xabc', ['base'], 'normal')
+      const { scanWalletV2 } = await import('./scanWallet')
+      const result = await scanWalletV2('0xabc', ['base'], 'normal')
 
       assert.equal(calls.length, 1, 'expected exactly one call attempt, no fallback retry')
       assert.equal(result.success, false)
@@ -64,8 +65,8 @@ describe('scanWalletV2Legacy (direct V2 route only, no fallback)', () => {
     global.fetch = mock.fn(async () => new Response('', { status: 404 })) as unknown as typeof fetch
 
     try {
-      const { scanWalletV2Legacy } = await import('./scanWallet')
-      const result = await scanWalletV2Legacy('0xabc', ['base'], 'normal')
+      const { scanWalletV2 } = await import('./scanWallet')
+      const result = await scanWalletV2('0xabc', ['base'], 'normal')
 
       assert.equal(result.success, false)
       assert.equal(result.error?.message, 'network-failed')
@@ -80,8 +81,8 @@ describe('scanWalletV2Legacy (direct V2 route only, no fallback)', () => {
     global.fetch = mock.fn(async () => new Response('<html>504 Gateway Timeout</html>', { status: 504 })) as unknown as typeof fetch
 
     try {
-      const { scanWalletV2Legacy } = await import('./scanWallet')
-      const result = await scanWalletV2Legacy('0xabc', ['base'], 'normal')
+      const { scanWalletV2 } = await import('./scanWallet')
+      const result = await scanWalletV2('0xabc', ['base'], 'normal')
 
       assert.equal(result.success, false)
       assert.match(result.error?.message ?? '', /took too long/)
@@ -98,8 +99,8 @@ describe('scanWalletV2Legacy (direct V2 route only, no fallback)', () => {
     )) as unknown as typeof fetch
 
     try {
-      const { scanWalletV2Legacy } = await import('./scanWallet')
-      const result = await scanWalletV2Legacy('0xabc', ['base'], 'normal')
+      const { scanWalletV2 } = await import('./scanWallet')
+      const result = await scanWalletV2('0xabc', ['base'], 'normal')
 
       assert.equal(result.success, false)
       assert.equal(result.error?.message, 'goldrush_client_error: invalid api key', 'expected the REAL backend error message, not a generic "network-failed"')
@@ -108,135 +109,22 @@ describe('scanWalletV2Legacy (direct V2 route only, no fallback)', () => {
       global.fetch = originalFetch
     }
   })
-})
 
-describe('scanWalletV2 (job/poll, migrated off the synchronous route)', () => {
-  it('enqueues via /api/scan-v2/full-scan/start, then polls /api/scan-v2/full-scan/status, and returns the completed result', async () => {
-    const calls: string[] = []
-    const originalFetch = global.fetch
-    let pollCount = 0
-    global.fetch = mock.fn(async (url: string) => {
-      calls.push(url)
-      if (url === '/api/scan-v2/full-scan/start') {
-        return new Response(JSON.stringify({ jobId: 'job-1' }), { status: 200 })
-      }
-      if (url.startsWith('/api/scan-v2/full-scan/status')) {
-        pollCount++
-        if (pollCount < 2) {
-          return new Response(JSON.stringify({ jobId: 'job-1', status: 'running', result: null, error: null }), { status: 200 })
-        }
-        return new Response(
-          JSON.stringify({ jobId: 'job-1', status: 'completed', result: { fromJob: true }, error: null }),
-          { status: 200 },
-        )
-      }
-      throw new Error(`unexpected fetch to ${url}`)
-    }) as unknown as typeof fetch
-
-    try {
-      const { scanWalletV2 } = await import('./scanWallet')
-      const result = await scanWalletV2('0xabc', ['base'], 'normal')
-
-      assert.ok(calls.includes('/api/scan-v2/full-scan/start'))
-      assert.ok(calls.some((c) => c.startsWith('/api/scan-v2/full-scan/status')))
-      assert.ok(!calls.some((c) => c === '/api/scan-v2/full-scan/legacy'), 'the legacy synchronous route must never be called by the new path')
-      assert.equal(result.success, true)
-      assert.deepEqual(result.data, { fromJob: true })
-    } finally {
-      global.fetch = originalFetch
-    }
-  })
-
-  it('does not run the 11-module chain inline: a failed enqueue never calls the status route', async () => {
+  it('calls the same route for scanMode "deep" (no separate job-based Deep Scan path anymore)', async () => {
     const calls: string[] = []
     const originalFetch = global.fetch
     global.fetch = mock.fn(async (url: string) => {
       calls.push(url)
-      return new Response(JSON.stringify({ error: 'invalid wallet address' }), { status: 400 })
+      return new Response(JSON.stringify({ success: true, data: { fromV2: true } }), { status: 200 })
     }) as unknown as typeof fetch
 
     try {
       const { scanWalletV2 } = await import('./scanWallet')
-      const result = await scanWalletV2('not-a-wallet', ['base'], 'normal')
+      const result = await scanWalletV2('0xabc', ['base'], 'deep')
 
       assert.equal(calls.length, 1)
-      assert.equal(calls[0], '/api/scan-v2/full-scan/start')
-      assert.equal(result.success, false)
-      assert.equal(result.error?.message, 'invalid wallet address')
-    } finally {
-      global.fetch = originalFetch
-    }
-  })
-
-  it('a failed job status surfaces the real backend error message', async () => {
-    const originalFetch = global.fetch
-    global.fetch = mock.fn(async (url: string) => {
-      if (url === '/api/scan-v2/full-scan/start') {
-        return new Response(JSON.stringify({ jobId: 'job-2' }), { status: 200 })
-      }
-      return new Response(
-        JSON.stringify({ jobId: 'job-2', status: 'failed', result: null, error: 'goldrush_client_error: invalid api key' }),
-        { status: 200 },
-      )
-    }) as unknown as typeof fetch
-
-    try {
-      const { scanWalletV2 } = await import('./scanWallet')
-      const result = await scanWalletV2('0xabc', ['base'], 'normal')
-
-      assert.equal(result.success, false)
-      assert.equal(result.error?.message, 'goldrush_client_error: invalid api key')
-    } finally {
-      global.fetch = originalFetch
-    }
-  })
-
-  it('a raw SCAN_TIMEOUT_<ms>ms internal error is translated into a readable message (the actual bug this fixes)', async () => {
-    const originalFetch = global.fetch
-    global.fetch = mock.fn(async (url: string) => {
-      if (url === '/api/scan-v2/full-scan/start') {
-        return new Response(JSON.stringify({ jobId: 'job-3' }), { status: 200 })
-      }
-      return new Response(
-        JSON.stringify({ jobId: 'job-3', status: 'failed', result: null, error: 'SCAN_TIMEOUT_600000ms' }),
-        { status: 200 },
-      )
-    }) as unknown as typeof fetch
-
-    try {
-      const { scanWalletV2 } = await import('./scanWallet')
-      const result = await scanWalletV2('0xabc', ['base'], 'normal')
-
-      assert.equal(result.success, false)
-      assert.ok(!result.error?.message.includes('SCAN_TIMEOUT_'), 'must not leak the raw internal constant name')
-      assert.match(result.error?.message ?? '', /took longer than 600s/)
-    } finally {
-      global.fetch = originalFetch
-    }
-  })
-
-  it('forwards job.progress to the onUpdate callback (module-progress-reporting task)', async () => {
-    const originalFetch = global.fetch
-    const updates: unknown[] = []
-    global.fetch = mock.fn(async () =>
-      new Response(
-        JSON.stringify({
-          jobId: 'job-4',
-          status: 'running',
-          result: null,
-          error: null,
-          progress: { currentModule: 3, totalModules: 11, moduleName: 'portfolio' },
-        }),
-        { status: 200 },
-      ),
-    ) as unknown as typeof fetch
-
-    try {
-      const { pollScanJobOnce } = await import('./scanWallet')
-      const status = await pollScanJobOnce('job-4')
-      updates.push(status.progress)
-
-      assert.deepEqual(status.progress, { currentModule: 3, totalModules: 11, moduleName: 'portfolio' })
+      assert.equal(calls[0], '/api/scan-v2/full-scan/legacy')
+      assert.equal(result.success, true)
     } finally {
       global.fetch = originalFetch
     }

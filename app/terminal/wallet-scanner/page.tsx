@@ -14,16 +14,22 @@
 // Both admin-only buttons remain visible (still gated on the same admin email check) and both
 // now trigger a V2 deep scan, since that is the closest real capability that exists.
 //
-// JOB/POLL, UPDATED DISCLOSURE (Fix-full-scan-timeout-and-UI-rendering task): this file now starts
-// + polls a background job for BOTH modes (startDeepScanJob/startFullScanJob +
-// pollScanJobUntilDone — see app/frontend/api/scanWallet.ts), rather than calling scanWalletV2()
-// directly. runWalletScanV2, holdingsEngine/pricingEngine/portfolioAssembler, /api/scan,
-// /api/scan-v2, Clark AI, and /api/portfolio are untouched.
+// QSTASH/WORKER REMOVAL, DISCLOSED (explicit instruction: remove all QStash/worker/job-poll
+// infrastructure without touching scanner logic): this file previously started + polled a
+// background job for BOTH modes (startDeepScanJob/startFullScanJob + pollScanJobUntilDone). That
+// job/poll system (and QStash entirely) has been removed — both modes now call scanWalletV2()
+// directly, a single synchronous request/response round trip, same as before the job/poll system
+// existed. The incremental jobStatusMessage/scanProgress UI below has nothing left to populate it
+// (no poll loop produces status updates anymore) — it now just shows a single loading state for
+// the whole scan duration; the state variables are left in place, harmlessly always null, rather
+// than touching the surrounding render/JSX structure. runWalletScanV2, runWalletScanV2Worker,
+// holdingsEngine/pricingEngine/portfolioAssembler, /api/scan, /api/scan-v2, Clark AI, and
+// /api/portfolio are untouched.
 
 import { useEffect, useState } from 'react'
 import { usePlanWithLoading, LockedPanel, canAccessFeature } from '@/lib/usePlan'
 import { supabase } from '@/lib/supabaseClient'
-import { startDeepScanJob, startFullScanJob, pollScanJobUntilDone } from '@/app/frontend/api/scanWallet'
+import { scanWalletV2 } from '@/app/frontend/api/scanWallet'
 import {
   BehaviorIntelView,
   ChainSelectionView,
@@ -284,27 +290,11 @@ export default function WalletScannerPage() {
     setModuleErrors(null)
 
     try {
-      // JOB/POLL WIRING, DISCLOSED (see app/frontend/api/scanWallet.ts's file header): both modes
-      // now go through the same background job/poll system — Deep Scan via /api/scan-start +
-      // /api/scan-status, `normal` scans via /api/scan-v2/full-scan/start + /full-scan/status (see
-      // startFullScanJob/scanWalletV2's own disclosures). Both branches poll with the same
-      // onUpdate wiring so jobStatusMessage reflects real 'pending'/'running' progress for either
-      // mode, rather than `normal` scans showing only a bare spinner with no status text.
-      const started = mode === 'deep' ? await startDeepScanJob(address, ['base', 'eth']) : await startFullScanJob(address, ['base', 'eth'])
-      if ('error' in started) {
-        throw new Error(started.error)
-      }
-      setJobStatusMessage('pending')
-      const response = await pollScanJobUntilDone(started.jobId, {
-        onUpdate: (status) => {
-          setJobStatusMessage(status.status)
-          setScanProgress(status.progress ?? null)
-          if (status.moduleErrors && Object.keys(status.moduleErrors).length > 0) {
-            setModuleErrors(status.moduleErrors)
-          }
-        },
-        statusEndpoint: mode === 'deep' ? '/api/scan-status' : '/api/scan-v2/full-scan/status',
-      })
+      // DIRECT SYNCHRONOUS CALL, DISCLOSED (see file header): no job/poll, no queue, no worker —
+      // a single request that waits for the whole scan to finish. Both modes go through the same
+      // route; scanMode is passed straight through and the route dispatches to the identical
+      // runWalletScanV2Worker chain regardless of mode.
+      const response = await scanWalletV2(address, ['base', 'eth'], mode)
       if (!response.success || !response.data) {
         throw new Error(response.error?.message ?? 'Scan failed')
       }
