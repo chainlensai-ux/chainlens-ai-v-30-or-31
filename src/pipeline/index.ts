@@ -14,6 +14,7 @@ import { fetchProviderWindow } from '../modules/providerFetchWindow/index'
 import type { RawProviderEvent, SupportedChain } from '../modules/providerFetchWindow/types'
 import { normalizeEvents } from '../modules/normalization/index'
 import { buildCounterpartyStats, classifyRouterLikeEvent, recordRouterCandidate } from './routerDiscovery'
+import { adaptPnlSummaryForUi } from './pnlSummaryAdapter'
 import type { NormalizedEvent } from '../modules/normalization/types'
 import { buildChainSelectionObject } from '../modules/chainSelection/index'
 import type { ChainSelectionResult } from '../modules/chainSelection/types'
@@ -1227,6 +1228,14 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     realizedPnlUsd: pnlSummaryV2.realizedPnlUsd,
   })
 
+  // PNL OVERFLOW GUARD, DISCLOSED: defensive-only (src/pipeline/pnlSummaryAdapter.ts). Never
+  // changes pnlEngine's own computation — only clamps a genuinely-garbage realizedPnlUsd to null
+  // before it reaches the final report / UI. `adaptedPnlSummary` replaces the raw `pnlSummaryV2`
+  // everywhere downstream in this function (final report + walletCondition inputs) so both stay
+  // consistent; closedLots/winLossRate/chainBreakdown/confidenceBasis/evidenceMissingCount are
+  // untouched (spread straight through).
+  const adaptedPnlSummary = adaptPnlSummaryForUi(pnlSummaryV2)
+
   // 6c. pricingAtTime — additive, async, still its own independent real pricing pass over just the
   // UI-facing buyTimeline/sellTimelineV2 entries, keyed for report.pricingAtTime's existing
   // consumers. priceSources is the same real PRICE_SOURCES stage 5c uses. Never touches fifoEngine's
@@ -1294,7 +1303,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     windowCoverage,
     bridgeTimeline,
     sellTimelineV2,
-    pnlSummaryV2,
+    pnlSummaryV2: adaptedPnlSummary,
     pricingAtTime,
     providerDiagnostics,
     pricingProvidersStatus: PRICING_PROVIDERS_STATUS,
@@ -1400,10 +1409,10 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     fallbackAttempts: walletPriceLookups.sourceBreakdown.fallback,
     providerErrors: providerErrorCount,
     suppressionSkipped: dustSuppressedKeys.size,
-    closedLots: pnlSummaryV2.closedLots.length,
+    closedLots: adaptedPnlSummary.closedLots.length,
     totalSells: sellTimelineV2.totalSells,
     previousPnL: undefined,
-    currentPnL: pnlSummaryV2.realizedPnlUsd,
+    currentPnL: adaptedPnlSummary.realizedPnlUsd,
     excludedTokens,
   }
   // eslint-disable-next-line no-console
