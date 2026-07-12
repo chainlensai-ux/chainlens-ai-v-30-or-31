@@ -228,7 +228,11 @@ async function runSyntheticPipeline(wallet: WalletTestConfig): Promise<RunWallet
     pricingProvidersStatus: PRICING_PROVIDERS_STATUS,
   })
 
-  return { ...finalReport, normalizationErrors }
+  // walletConditionMessages: [], DISCLOSED — this synthetic path deliberately bypasses
+  // runWalletScan() entirely (see this file's own header), so none of the real metrics
+  // buildWalletConditionMessages() needs (dust-suppression counts, pnlSummaryV2.closedLots, etc.)
+  // are computed here. Empty, not fabricated.
+  return { ...finalReport, normalizationErrors, walletConditionMessages: [] }
 }
 
 export type PipelineRunOutcome = {

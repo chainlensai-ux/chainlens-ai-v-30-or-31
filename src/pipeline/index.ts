@@ -43,6 +43,7 @@ import { getTokenCache, setTokenCache } from '../../lib/server/cache/tokenCache'
 import type { MatchedLot } from '../modules/fifoEngine/types'
 import { getCheapCurrentPriceForDustCheck, type CheapDustPriceResult } from '../../lib/server/dustPriceCheck'
 import { rpcDebugLog, type RpcDebugEntry } from '../../lib/server/rpcDebug'
+import { buildWalletConditionMessages } from './walletConditionMessages'
 
 import type { PreScanValidation, RunWalletScanParams, RunWalletScanResult } from './types'
 import { INTEL_WINDOW_DAYS } from './types'
@@ -894,7 +895,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // provider call — it degrades immediately to a fully-shaped, honestly-labeled report.
   const preScan: PreScanValidation = validatePreScan(params)
   if (!preScan.valid) {
-    return { ...buildFullyDegradedReport(params, scanTimestamp, PROVIDER_FETCH_WINDOW_DAYS_USED), normalizationErrors: [] }
+    return { ...buildFullyDegradedReport(params, scanTimestamp, PROVIDER_FETCH_WINDOW_DAYS_USED), normalizationErrors: [], walletConditionMessages: [] }
   }
 
   // Diagnostic log — real env var presence for the two providers actually integrated in this
@@ -1273,7 +1274,60 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // eslint-disable-next-line no-console
   console.warn('[pipeline] cuEstimatorSummary', cuEstimatorSummary)
 
-  return { ...finalReport, normalizationErrors }
+  // ===========================================================================================
+  // WALLET CONDITION MESSAGES — UI-LAYER WIRING, DISCLOSED
+  // ===========================================================================================
+  // Maps buildWalletConditionMessages()'s inputs onto real fields this scan already computed.
+  // Several of the task's own suggested mappings don't match the real data model — corrected here
+  // (each one verified by reading the actual type, not assumed):
+  //   - closedLots: the task named `fifo.closedLots`, but fifoEngine's own output has no such
+  //     field (its shape is matchedLots/unmatchedBuys/unmatchedSells — a lot-matching count,
+  //     independent of whether a price was ever found for it). The real "how many sells got
+  //     verifiable pricing" concept lives in pnlSummaryV2.closedLots (ClosedLot[]) instead — that's
+  //     what's used below.
+  //   - totalSells: the task named `sellTimelineV2.outboundSellCount`, which doesn't exist;
+  //     SellTimelineResult's real field is `totalSells` directly.
+  //   - excludedTokens: the task named `dustSuppressedKeys + deadTokenKeys` — there is no separate
+  //     "deadTokenKeys" set in this implementation; classifyDustSuppression's two reasons
+  //     ('no_market_found' | 'liquidity_zero') both live in the ONE real dustSuppressedKeys set.
+  //     Mapped from that single set, resolved to human-readable symbols via buyTimeline's own
+  //     `symbol` field where available (falling back to the raw chain:token key otherwise — never
+  //     a fabricated symbol).
+  //   - previousPnL/microcaps/lowLiquidityTokens: NOT available — RunWalletScanParams has no
+  //     "lastScan" concept anywhere (confirmed by reading src/pipeline/types.ts), and this
+  //     (old-engine) pipeline never computes per-token marketCap/liquidity at all — that data only
+  //     exists in the separate V2 holdings/pricing chain (workers/walletScanV2.ts), which isn't in
+  //     scope here. Left undefined so their dependent sections hide, never fabricated.
+  const tokenSymbolByKey = new Map<string, string>()
+  for (const e of timelines.buyTimeline.entries) {
+    const key = dustTokenKey(e.chain, e.token)
+    if (!tokenSymbolByKey.has(key)) tokenSymbolByKey.set(key, e.symbol || key)
+  }
+  const excludedTokens = [...dustSuppressedKeys].map((key) => tokenSymbolByKey.get(key) ?? key)
+  const providerErrorCount = providerDiagnostics.filter((d) => d.goldrush.errorReason != null || d.alchemy.errorReason != null).length
+
+  const walletConditionInputs = {
+    tokenCount: distinctBuyTokenCount,
+    deadTokens: noMarketFoundCount,
+    unindexedTokens: noMarketFoundCount,
+    zeroLiquidityTokens: liquidityZeroCount,
+    failedPricingAttempts: walletPriceLookups.sourceBreakdown.failed,
+    fallbackAttempts: walletPriceLookups.sourceBreakdown.fallback,
+    providerErrors: providerErrorCount,
+    suppressionSkipped: dustSuppressedKeys.size,
+    closedLots: pnlSummaryV2.closedLots.length,
+    totalSells: sellTimelineV2.totalSells,
+    previousPnL: undefined,
+    currentPnL: pnlSummaryV2.realizedPnlUsd,
+    excludedTokens,
+  }
+  // eslint-disable-next-line no-console
+  console.log('[walletCondition] inputs', walletConditionInputs)
+  const walletConditionMessages = buildWalletConditionMessages(walletConditionInputs)
+  // eslint-disable-next-line no-console
+  console.log('[walletCondition] output', walletConditionMessages)
+
+  return { ...finalReport, normalizationErrors, walletConditionMessages }
 }
 
 export type { SupportedChain }

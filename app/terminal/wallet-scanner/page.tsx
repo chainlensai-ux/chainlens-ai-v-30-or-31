@@ -48,6 +48,7 @@ import type { Portfolio as EnginePortfolioV2 } from '@/lib/engine/modules/portfo
 import type { PnlV2 } from '@/lib/engine/modules/pnl/types'
 import type { ChainActivityRecord } from '@/lib/engine/modules/activity/types'
 import type { SmartMoneyScore } from '@/lib/engine/modules/smartMoney/types'
+import type { WalletConditionSection } from '@/src/pipeline/walletConditionMessages'
 
 // PORTFOLIO V2 MIGRATION, UPDATED DISCLOSURE: `portfolioV2` (the new engine's Portfolio shape —
 // categories/chains/topHoldings/stablecoinRatio/concentrationIndex — structurally different from
@@ -70,6 +71,12 @@ type WalletV2Report = FinalReport & {
   // SMART-MONEY-SCORE WIRING, DISCLOSED (added per a later task): same real gap as portfolioV2/
   // chainActivityV2 above — only ever populated by app/api/scan-v2/full-scan/route.ts.
   smartMoneyScore?: SmartMoneyScore
+  // WALLET CONDITION MESSAGES, DISCLOSED: additive top-level field on RunWalletScanResult (src/
+  // pipeline/types.ts), populated by runWalletScan() itself — not part of FinalReport's own
+  // protected type, same pattern as normalizationErrors. Optional because the synthetic runtime-
+  // test harness path (unrelated to this real route) returns an empty array, and any older cached
+  // response predating this field simply won't have it.
+  walletConditionMessages?: WalletConditionSection[]
 }
 
 type WatchlistWallet = {
@@ -524,6 +531,26 @@ export default function WalletScannerPage() {
               <div className="ws-card">
                 <PnlStatusCard fifoAndPnl={result.fifoAndPnl} pnlSummaryV2={result.pnlSummaryV2} pnlV2={result.pnlV2} />
               </div>
+
+              {/* WALLET CONDITION PANEL, DISCLOSED: renders exactly what
+                  buildWalletConditionMessages() (src/pipeline/walletConditionMessages.ts) returned —
+                  no extra assumptions, no client-side re-derivation of any condition. Only rendered
+                  at all when the array is non-empty; each entry is shown as-is (the module itself
+                  already decided which sections apply to this wallet). */}
+              {result.walletConditionMessages && result.walletConditionMessages.length > 0 && (
+                <>
+                  <SectionDivider label="Wallet Condition" />
+                  <div className="ws-card">
+                    <ul style={{ display: 'flex', flexDirection: 'column', gap: '8px', margin: 0, padding: 0, listStyle: 'none' }}>
+                      {result.walletConditionMessages.map((section) => (
+                        <li key={section.id} style={{ fontSize: '0.9rem', lineHeight: 1.5, color: '#cbd5e1' }}>
+                          {section.text}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </>
+              )}
 
               <SectionDivider label="Holdings" />
               <div className="ws-card">

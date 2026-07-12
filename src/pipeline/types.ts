@@ -8,6 +8,7 @@
 import type { SupportedChain } from '../modules/providerFetchWindow/types'
 import type { NormalizationError } from '../modules/normalization/types'
 import type { FinalReport } from '../modules/finalReportAssembler/types'
+import type { WalletConditionSection } from './walletConditionMessages'
 
 export type ScanModeInput = 'normal' | 'deep'
 
@@ -18,9 +19,12 @@ export type RunWalletScanParams = {
 }
 
 // Architecture Step 9's "output shape" for the orchestrator's public entry point: the exact
-// Step 5 unified report shape, PLUS normalizationErrors as a sibling top-level field.
+// Step 5 unified report shape, PLUS normalizationErrors and walletConditionMessages as sibling
+// top-level fields — same additive pattern as normalizationErrors, not a change to FinalReport's
+// own protected type (src/modules/finalReportAssembler/types.ts is never touched).
 export type RunWalletScanResult = FinalReport & {
   normalizationErrors: NormalizationError[]
+  walletConditionMessages: WalletConditionSection[]
 }
 
 export type PreScanValidation = {
