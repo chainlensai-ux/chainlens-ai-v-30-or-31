@@ -135,6 +135,23 @@ async function computeTokenPnl(holding: Holding, fetchPriceAtTime: GetPriceAtTim
   const historicalPriceOk = priceResult.priceUsd != null && isSanePrice(priceResult.priceUsd)
 
   function logVerification(integrity: PnlIntegrity, costBasisUsd: number | null, unrealizedPnlUsd: number | null): void {
+    // Extra verification checks, ADDED: real, boolean, log-only signals — none of these change
+    // behavior (the $1e9 clamp and ($0, $1e6] price guard already enforce the hard limits); these
+    // exist so a log reader can see PRECISELY which property failed, e.g. distinguishing "PnL is
+    // absurd relative to a tiny cost basis" (the "-3.8e+34"-style explosion this task described)
+    // from "PnL is null because evidence is missing" — both currently look similar in a raw diff.
+    const costBasisFiniteAndNonNegative = costBasisUsd == null || (Number.isFinite(costBasisUsd) && costBasisUsd >= 0)
+    const unrealizedPnlFinite = unrealizedPnlUsd == null || Number.isFinite(unrealizedPnlUsd)
+    // "Reasonable range relative to cost basis": a real, if extreme, PnL should be within a large
+    // but bounded multiple of the position's own cost basis — flags a magnitude/unit-scale bug
+    // (e.g. an accidental extra multiplication) even for values still under the flat $1e9 clamp.
+    // $1 floor avoids dividing by ~0 for a near-zero cost basis; 1e6x is deliberately generous
+    // (this is a diagnostic signal, not a second clamp).
+    const unrealizedPnlWithinReasonableRangeOfCostBasis =
+      unrealizedPnlUsd == null || costBasisUsd == null
+        ? true
+        : Math.abs(unrealizedPnlUsd) <= Math.max(costBasisUsd, 1) * 1e6
+
     // eslint-disable-next-line no-console
     console.warn('[verify_pnl_engine]', {
       token: holding.tokenAddress,
@@ -143,6 +160,9 @@ async function computeTokenPnl(holding: Holding, fetchPriceAtTime: GetPriceAtTim
       unrealizedPnlUsd,
       integrity,
       excluded: integrity !== 'ok',
+      costBasisFiniteAndNonNegative,
+      unrealizedPnlFinite,
+      unrealizedPnlWithinReasonableRangeOfCostBasis,
     })
     // eslint-disable-next-line no-console
     console.warn('[verify_price_fetch]', {
@@ -254,13 +274,30 @@ export async function computeUnrealizedPnl(
   // integrity (not inferred from nullness) so the two can never drift apart.
   const excludedFromPnl = tokens.filter((t) => t.integrity !== 'ok').map((t) => t.tokenAddress)
 
-  const integritySummary = {
+  const integrityCounts = {
     ok: tokens.filter((t) => t.integrity === 'ok').length,
     missing_cost_basis: tokens.filter((t) => t.integrity === 'missing_cost_basis').length,
     missing_evidence: tokens.filter((t) => t.integrity === 'missing_evidence').length,
   }
+  // Simple string classification, ADDED alongside the existing per-integrity counts (kept, not
+  // replaced — nothing currently reading integrityCounts should break): 'ok' when every token
+  // priced cleanly, 'failed' when every token failed, 'partial' otherwise. Only meaningful for a
+  // non-empty holdings list — an empty wallet is reported as 'ok' (vacuously true, nothing failed).
+  const integritySummary: 'ok' | 'partial' | 'failed' =
+    tokens.length === 0 || integrityCounts.ok === tokens.length
+      ? 'ok'
+      : integrityCounts.ok === 0
+        ? 'failed'
+        : 'partial'
+
   // eslint-disable-next-line no-console
-  console.warn('[pnl_final_verification]', { totalUnrealizedPnlUsd, excludedFromPnl, integritySummary })
+  console.warn('[pnl_final_verification]', {
+    totalUnrealizedPnlUsd,
+    excludedFromPnl,
+    tokensProcessed: tokens.length,
+    integrityCounts,
+    integritySummary,
+  })
 
   return { totalUnrealizedPnlUsd, tokens, excludedFromPnl }
 }
