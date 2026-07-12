@@ -29,15 +29,22 @@
 
 import { fetchHoldings as fetchRealHoldings } from '@/src/modules/holdings'
 import type { SupportedChain } from '@/src/modules/providerFetchWindow/types'
+import { HYPEREVM_CHAIN_ID } from '@/src/modules/providerFetchWindow/types'
 import type { ChainHolding } from './types'
 
 export type { ChainHolding, HoldingsEngineInput } from './types'
 
-// Exported so lib/engine/modules/pricing/fetchPricing.ts can reuse the exact same mapping rather
-// than maintaining a second, potentially-drifting copy.
+// CHAIN COVERAGE, EXTENDED, DISCLOSED: originally only chainId 1 (eth) and 8453 (base) were wired
+// ("per the task's explicit scope" at the time) — this V2 holdings/pricing/portfolio chain never
+// covered Arbitrum or HyperEVM at all, unlike the older src/modules/holdings this adapts, which
+// already supports all 4. 42161 is Arbitrum One's real, standard, public chainId (not invented);
+// 999 is this codebase's own already-defined HYPEREVM_CHAIN_ID (src/modules/providerFetchWindow/
+// types.ts), reused here rather than a second, potentially-drifting copy.
 export const CHAIN_ID_TO_SUPPORTED_CHAIN: Record<number, SupportedChain> = {
   1: 'eth',
   8453: 'base',
+  42161: 'arbitrum',
+  [HYPEREVM_CHAIN_ID]: 'hyperevm',
 }
 
 const STABLE_SYMBOLS = new Set(['USDC', 'USDT', 'DAI', 'FDUSD', 'USDBC', 'TUSD'])
@@ -71,13 +78,16 @@ export async function fetchChainBalances(walletAddress: string, chainId: number)
       quantity: String(h.amount),
       lastActivityAt: null,
       classification: classify(h.symbol),
+      // See this file's ChainHolding type comment — previously dropped here entirely.
+      providerPriceUsd: h.providerPriceUsd,
+      providerValueUsd: h.providerValueUsd,
     }))
 }
 
-// Public entry point, exactly as specified. Runs both chains in parallel; never throws (each
+// Public entry point. Runs all 4 supported chains in parallel; never throws (each
 // fetchChainBalances call above already can't).
 export async function fetchAllHoldings(walletAddress: string): Promise<ChainHolding[]> {
-  const chains = [1, 8453]
+  const chains = Object.keys(CHAIN_ID_TO_SUPPORTED_CHAIN).map(Number)
   const results = await Promise.all(chains.map((c) => fetchChainBalances(walletAddress, c)))
   return results.flat()
 }

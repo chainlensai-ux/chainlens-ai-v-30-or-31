@@ -10,18 +10,21 @@
 // timestamp into a historical-pricing engine, which would silently misuse that engine's real
 // contract.
 //
-// TOKEN METADATA, DISCLOSED: the task also allowed "token metadata price helpers" — no separate
-// metadata-carried price exists independent of what a holding already has; `resolvePrices` already
-// accepts an optional `knownPriceUsd` (a price the caller already has for free, e.g. from a
-// balances provider) and prefers it over a fallback lookup — this module doesn't have one at the
-// point it calls this (ChainHolding carries no price field at all), so every request here goes
-// through `resolvePrices`'s own real fallback (DexScreener) path, capped by that module's own
-// MAX_FALLBACK_PRICE_LOOKUPS — a real, existing cost bound, not something reimplemented here.
+// TOKEN METADATA, UPDATED — PORTFOLIO-INTELLIGENCE $0 BUG FIX, DISCLOSED: this module previously
+// never used `resolvePrices`'s own `knownPriceUsd` preference because "ChainHolding carries no
+// price field at all" — that was true until lib/engine/modules/holdings/fetchHoldings.ts's own fix
+// (same task): ChainHolding now carries `providerPriceUsd`/`providerValueUsd`, populated for free
+// by the balances provider (GoldRush's balances_v2 call). `priceHoldings` below now short-circuits
+// on that known price BEFORE ever calling `fetchTokenPriceUsd`'s DexScreener-only fallback — this
+// was the actual root cause of Portfolio Intelligence showing $0/0 priced tokens for wallets whose
+// tokens (e.g. low-liquidity Base tokens) failed that fallback, while the older src/modules/
+// holdings-backed "Holdings V2" display showed real values because it never went through this
+// weaker second lookup in the first place.
 //
-// CHAIN SUPPORT, DISCLOSED: only chainId 1 (eth) and 8453 (base) are mapped (same
-// CHAIN_ID_TO_SUPPORTED_CHAIN reused from lib/engine/modules/holdings/fetchHoldings.ts) — matching
-// this task's own holdings module scope. An unmapped chainId honestly prices as null, never a
-// guessed value.
+// CHAIN SUPPORT, DISCLOSED: chainId 1 (eth), 8453 (base), 42161 (arbitrum), and HYPEREVM_CHAIN_ID
+// (999) are now all mapped (same CHAIN_ID_TO_SUPPORTED_CHAIN reused from lib/engine/modules/
+// holdings/fetchHoldings.ts, extended there in this same fix). An unmapped chainId still honestly
+// prices as null, never a guessed value.
 
 import { resolvePrices } from '@/src/modules/pricing'
 import { CHAIN_ID_TO_SUPPORTED_CHAIN } from '../holdings/fetchHoldings'
@@ -54,7 +57,11 @@ export async function priceHoldings(
 ): Promise<PricingEngineOutput> {
   const pricedHoldings: PricedHolding[] = await Promise.all(
     holdings.map(async (h): Promise<PricedHolding> => {
-      const priceUsd = await priceFn(h.chainId, h.tokenAddress)
+      // Prefer the balances provider's own real, free price (see file header) — only fall through
+      // to the weaker, capped DexScreener-only lookup when the provider genuinely didn't supply one.
+      const priceUsd = h.providerPriceUsd != null && h.providerPriceUsd > 0
+        ? h.providerPriceUsd
+        : await priceFn(h.chainId, h.tokenAddress)
       const valueUsd = priceUsd != null ? Number(h.quantity) * priceUsd : null
       return {
         chainId: h.chainId,

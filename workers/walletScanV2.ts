@@ -338,6 +338,17 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     )
     // eslint-disable-next-line no-console
     console.log('[V2-worker] finished portfolio in', performance.now() - t0, 'ms', 'holdings=', chainHoldings.length)
+    // DIAGNOSTIC, DISCLOSED (portfolio-intelligence $0 bug fix): real counts only — pricedTokens
+    // here is the actual number of pricing.pricedHoldings with a non-null valueUsd (not
+    // portfolioOutput.portfolio.topHoldings.length, which the frontend's PortfolioIntelligenceCard
+    // caps at 5 — see that component's own "ONE HONEST GAP" comment).
+    // eslint-disable-next-line no-console
+    console.log('[V2-worker] portfolioIntelligenceInputs', {
+      totalValueUsd: portfolioOutput.portfolio.totalValueUsd,
+      pricedTokens: pricing.pricedHoldings.filter((h) => h.valueUsd != null).length,
+      holdingsWithUsdValue: pricing.pricedHoldings.filter((h) => h.valueUsd != null).length,
+      totalHoldings: pricing.pricedHoldings.length,
+    })
 
     // CU-DIAG, DISCLOSED SCOPE: this is the real provider-heavy step (fetchParsedTrades ->
     // walletChainPipeline.fetchRawEventsForChain -> the actual GoldRush/Alchemy calls) — but those
