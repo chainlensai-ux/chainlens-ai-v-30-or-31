@@ -278,9 +278,32 @@ function safeRunBridgeDetection(normalizedEvents: NormalizedEvent[]): FinalRepor
 
 // Pure, zero-cost — additive read model over already-computed normalizedEvents, chainSelection,
 // bridgeTimeline, and recoveryPolicy (mechanism 4 needs recoveryPolicy's recoveredEvents, so this
-// must run after stage 5, not alongside bridgeDetection at stage 4b). Never trusts a
-// client-supplied router registry — knownDexRouterAddresses is always the empty set here, exactly
-// as src/modules/sellTimeline's own doc comments assume until a real registry exists.
+// must run after stage 5, not alongside bridgeDetection at stage 4b).
+//
+// REAL ROUTER REGISTRY WIRED IN, DISCLOSED (previously the empty-set bug this file's own comment
+// used to describe): src/modules/sellTimeline's own header says mechanism 2 (transfer-out to a
+// known router) "honestly produces nothing until a real registry is supplied" — but a real,
+// already-vetted registry has existed all along at src/modules/swapNormalizer/routers.ts, it was
+// simply never wired to this call site. That module doesn't export its raw address table (only
+// per-chain lookup functions: isKnownRouter/detectRouterType/routerName), and sellTimeline's own
+// `knownDexRouterAddresses` contract is a flat, chain-unaware ReadonlySet<string> — so rather than
+// modify either protected module to bridge that shape mismatch, KNOWN_DEX_ROUTER_ADDRESSES below is
+// a literal copy of the same real addresses (same "no runtime coupling, keep your own copy"
+// convention already used elsewhere in this codebase for GOLDRUSH_VERIFIED_CHAIN_SLUGS,
+// DEXSCREENER_CHAIN_IDS, etc.) — these are public, well-documented contract addresses, not
+// invented ones. SAME CONFIDENCE CAVEAT AS THE SOURCE REGISTRY: Uniswap V2/V3 (all chains) and
+// SushiSwap (eth) are long-standing, widely-documented canonical deployments; Aerodrome and
+// BaseSwap are real but were not re-verified against a live block explorer from this sandbox (no
+// network access) — treat those two specifically as best-effort pending re-confirmation.
+const KNOWN_DEX_ROUTER_ADDRESSES = new Set<string>([
+  '0x7a250d5630b4cf539739df2c5dacb4c659f2488d', // Uniswap V2 Router02 (eth)
+  '0xe592427a0aece92de3edee1f18e0157c05861564', // Uniswap V3 SwapRouter (eth)
+  '0x2626664c2603336e57b271c5c0b26f421741e481', // Uniswap V3 SwapRouter02 (eth/base/arbitrum/optimism — same address)
+  '0xd9e1ce17f2641f24ae83637ab66a2cca9c378b9f', // SushiSwap Router (eth)
+  '0xcf77a3ba9a5ca399b7c97c74d54e5b1beb874e43', // Aerodrome Router (base) — best-effort, see caveat above
+  '0x327df1e6de05895d2ab08513aadd9313fe505d86', // BaseSwap Router (base) — best-effort, see caveat above
+])
+
 function safeRunSellTimelineV2(params: {
   normalizedEvents: NormalizedEvent[]
   chainSelection: ChainSelectionResult
@@ -295,7 +318,7 @@ function safeRunSellTimelineV2(params: {
       bridgeTimeline: params.bridgeTimeline,
       recoveryPolicy: params.recoveryPolicy,
       walletAddress: params.walletAddress,
-      knownDexRouterAddresses: new Set<string>(),
+      knownDexRouterAddresses: KNOWN_DEX_ROUTER_ADDRESSES,
     })
   } catch {
     return sellTimelineV2Fallback()
