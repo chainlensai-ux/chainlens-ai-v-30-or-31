@@ -302,6 +302,8 @@ const KNOWN_DEX_ROUTER_ADDRESSES = new Set<string>([
   '0xd9e1ce17f2641f24ae83637ab66a2cca9c378b9f', // SushiSwap Router (eth)
   '0xcf77a3ba9a5ca399b7c97c74d54e5b1beb874e43', // Aerodrome Router (base) — best-effort, see caveat above
   '0x327df1e6de05895d2ab08513aadd9313fe505d86', // BaseSwap Router (base) — best-effort, see caveat above
+  '0x6ff5693b99212da76ad316178a184ab56d299b43', // Base router — protocol/name not verified from this sandbox, added per explicit task instruction only
+  '0xd0a40c6526acdebd4f6d87931098ff37a9f8e4bf', // Base router — protocol/name not verified from this sandbox, added per explicit task instruction only
 ])
 
 function safeRunSellTimelineV2(params: {
