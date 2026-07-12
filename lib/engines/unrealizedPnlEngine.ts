@@ -149,14 +149,19 @@ async function computeTokenPnl(holding: Holding): Promise<TokenUnrealizedPnl> {
 
   // CLAMP: an absurd/astronomical value past +-$1e9 is treated as a computation artifact, not a
   // real PnL figure — clamped, not nulled (a real, if extreme, gain/loss direction is preserved).
+  // Structured log includes both the raw (pre-clamp) and clamped value, plus an explicit `reason`
+  // field, alongside the event-name convention (first console.warn arg) already used throughout
+  // this codebase's other safety-hardening logs (kv_timeout_safe, kv_disabled_for_request, etc.).
   if (unrealizedPnlUsd > UNREALIZED_PNL_CLAMP_USD) {
-    // eslint-disable-next-line no-console
-    console.warn('pnl_clamped_high', { tokenAddress: holding.tokenAddress, chain: holding.chain, unrealizedPnlUsd })
+    const rawValue = unrealizedPnlUsd
     unrealizedPnlUsd = UNREALIZED_PNL_CLAMP_USD
-  } else if (unrealizedPnlUsd < -UNREALIZED_PNL_CLAMP_USD) {
     // eslint-disable-next-line no-console
-    console.warn('pnl_clamped_low', { tokenAddress: holding.tokenAddress, chain: holding.chain, unrealizedPnlUsd })
+    console.warn('pnl_clamped_high', { tokenAddress: holding.tokenAddress, chain: holding.chain, rawValue, clampedValue: unrealizedPnlUsd, reason: 'pnl_clamped_high' })
+  } else if (unrealizedPnlUsd < -UNREALIZED_PNL_CLAMP_USD) {
+    const rawValue = unrealizedPnlUsd
     unrealizedPnlUsd = -UNREALIZED_PNL_CLAMP_USD
+    // eslint-disable-next-line no-console
+    console.warn('pnl_clamped_low', { tokenAddress: holding.tokenAddress, chain: holding.chain, rawValue, clampedValue: unrealizedPnlUsd, reason: 'pnl_clamped_low' })
   }
 
   return {
@@ -177,7 +182,17 @@ async function computeTokenPnl(holding: Holding): Promise<TokenUnrealizedPnl> {
 // already gracefully resolves to a "none confidence" result on any failure.
 export async function computeUnrealizedPnl(req: UnrealizedPnlRequest): Promise<UnrealizedPnlResult> {
   const tokens = await Promise.all(req.holdings.map(computeTokenPnl))
-  const totalUnrealizedPnlUsd = tokens.reduce((sum, t) => sum + (t.unrealizedPnlUsd ?? 0), 0)
-  const excludedFromPnl = tokens.filter((t) => t.unrealizedPnlUsd == null).map((t) => t.tokenAddress)
+
+  // Sum strictly over integrity === 'ok' tokens — never a null-coalesced 0 for an excluded token,
+  // per this task's explicit "never treat null as 0" requirement. `okTokens` narrows
+  // unrealizedPnlUsd to `number` (not `number | null`), so this is a real number the whole way
+  // through, not an incidental effect of ?? 0 summing to the same total.
+  const okTokens = tokens.filter((t): t is TokenUnrealizedPnl & { unrealizedPnlUsd: number } => t.integrity === 'ok')
+  const totalUnrealizedPnlUsd = okTokens.reduce((sum, t) => sum + t.unrealizedPnlUsd, 0)
+
+  // excludedFromPnl MUST include every token with integrity !== 'ok' — defined directly against
+  // integrity (not inferred from nullness) so the two can never drift apart.
+  const excludedFromPnl = tokens.filter((t) => t.integrity !== 'ok').map((t) => t.tokenAddress)
+
   return { totalUnrealizedPnlUsd, tokens, excludedFromPnl }
 }
