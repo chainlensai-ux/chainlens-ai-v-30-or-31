@@ -1,27 +1,18 @@
 // tests/pnl/unrealizedPnlEngine.verify.ts — self-test for lib/engines/unrealizedPnlEngine.ts.
 //
-// Uses computeUnrealizedPnl's injectable `fetchPriceAtTime` seam (added alongside this test —
-// same additive-testing-seam convention as priceLotsForWallet.ts's `priceFn`) so every branch can
-// be exercised deterministically, with no live network call.
+// Uses computeUnrealizedPnl's injectable `fetchPriceAtTime` seam (GetPriceAtTimeFn — the real
+// getPriceAtTime/PricingAtTimeResult contract, not a narrower invented one) so every branch can be
+// exercised deterministically, with no live network call.
 //
-// SCOPE LIMITATIONS, DISCLOSED (both confirmed by reading the real code, not assumed):
-//
-// 1. "huge price (1e12) -> clamped + missing_evidence" is not testable as a single case: a
-//    CURRENT price of 1e12 fails the sanity guard ($0 < price <= $1e6) immediately and returns
-//    integrity 'missing_evidence' — it never reaches the clamp step at all (clamping only applies
-//    to the COMPUTED unrealizedPnlUsd of an already-'ok' token, not to a raw price). A token can't
-//    be both clamped and missing_evidence in this design; those are two different, non-overlapping
-//    failure/success paths. Tested separately below: one case with an out-of-range current price
-//    (-> missing_evidence), and one case with valid prices whose resulting PnL is itself extreme
-//    (-> clamped, integrity 'ok').
-//
-// 2. "circuit breaker triggered -> auto-reset + retry" is not implemented as a 5th test case:
-//    lib/engines/unrealizedPnlEngine.ts has no circuit breaker, no KV dependency, and no retry
-//    logic of any kind (confirmed by grep — its only dependency is getPriceAtTime ->
-//    lib/providers/{goldrush,coingecko,onchainDex}.ts, none of which touch KV). The real circuit
-//    breaker lives in lib/server/cache/tokenCache.ts, a completely separate module this engine
-//    never calls. Fabricating a fake "circuit breaker" behavior inside this file's test would
-//    test something that doesn't exist in the code under test.
+// KV / CIRCUIT-BREAKER SCOPE, EXPLICITLY DISCLOSED (do not remove this note): lib/engines/
+// unrealizedPnlEngine.ts has NO circuit breaker, NO KV dependency, and NO retry logic of any kind
+// — confirmed by reading its actual imports: its only price path is getPriceAtTime() ->
+// lib/providers/{goldrush,coingecko,onchainDex}.ts, none of which import KV, a circuit breaker, or
+// providerFetchWindow. `circuit_breaker_open`, `kv_disabled_for_request`, and
+// `kv_skip_large_payload` are real log strings, but they belong to lib/server/cache/tokenCache.ts
+// and lib/server/cache/v2StageCache.ts — a completely separate module this engine never calls.
+// There is therefore no "circuit breaker triggered -> auto-reset + retry" test case here: writing
+// one would test behavior that does not exist in the code under test.
 
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
@@ -52,8 +43,8 @@ function priceResult(priceUsd: number | null): PricingAtTimeResult {
   }
 }
 
-describe('computeUnrealizedPnl — valid price', () => {
-  it('computes real, non-null unrealizedPnlUsd and integrity "ok"', async () => {
+describe('Case 1 — normal, sane prices', () => {
+  it('produces a finite, non-negative cost basis, a finite/reasonable PnL, and integritySummary "ok"', async () => {
     const fetchPriceAtTime: GetPriceAtTimeFn = async () => priceResult(2) // bought at $2, now $5
     const result = await computeUnrealizedPnl(
       { chain: 'base', walletAddress: '0xwallet', holdings: [holding({ tokenAddress: '0xvalid', currentPriceUsd: 5, currentValueUsd: 50 })] },
@@ -62,52 +53,87 @@ describe('computeUnrealizedPnl — valid price', () => {
     const token = result.tokens[0]
     assert.equal(token.integrity, 'ok')
     assert.equal(token.costBasisUsd, 20) // 10 * $2
+    assert.ok(token.costBasisUsd != null && Number.isFinite(token.costBasisUsd) && token.costBasisUsd >= 0)
+    assert.ok(token.currentValueUsd > 0 && token.currentValueUsd <= 1e6 * holding({}).amount)
     assert.equal(token.unrealizedPnlUsd, 30) // $50 - $20
+    assert.ok(token.unrealizedPnlUsd != null && Number.isFinite(token.unrealizedPnlUsd))
     assert.equal(result.totalUnrealizedPnlUsd, 30)
     assert.deepEqual(result.excludedFromPnl, [])
+    assert.equal(result.integritySummary, 'ok')
+    assert.deepEqual(result.integrityCounts, { ok: 1, missing_cost_basis: 0, missing_evidence: 0 })
   })
 })
 
-describe('computeUnrealizedPnl — invalid current price (<= 0)', () => {
-  it('marks integrity "missing_evidence", nulls costBasis/unrealizedPnl, excludes from total', async () => {
+describe('Case 2 — corrupted cost basis (negative amount -> negative cost basis)', () => {
+  it('marks integrity "missing_cost_basis" instead of fabricating a negative/NaN PnL, integritySummary "partial" or "failed"', async () => {
     const fetchPriceAtTime: GetPriceAtTimeFn = async () => priceResult(2)
     const result = await computeUnrealizedPnl(
-      { chain: 'base', walletAddress: '0xwallet', holdings: [holding({ tokenAddress: '0xzero', currentPriceUsd: 0, currentValueUsd: 0 })] },
+      {
+        chain: 'base',
+        walletAddress: '0xwallet',
+        holdings: [holding({ tokenAddress: '0xnegative', amount: -10, currentPriceUsd: 5, currentValueUsd: -50 })],
+      },
       fetchPriceAtTime,
     )
     const token = result.tokens[0]
-    assert.equal(token.integrity, 'missing_evidence')
+    assert.equal(token.integrity, 'missing_cost_basis')
     assert.equal(token.costBasisUsd, null)
     assert.equal(token.unrealizedPnlUsd, null)
-    assert.equal(result.totalUnrealizedPnlUsd, 0)
-    assert.deepEqual(result.excludedFromPnl, ['0xzero'])
+    assert.ok(result.excludedFromPnl.includes('0xnegative'))
+    assert.ok(result.integritySummary === 'partial' || result.integritySummary === 'failed')
+    // Only one token in this wallet and it failed -> deterministically 'failed' here, not just
+    // "one of the two allowed values" by luck.
+    assert.equal(result.integritySummary, 'failed')
   })
 })
 
-describe('computeUnrealizedPnl — current price out of range (> 1e6)', () => {
-  it('marks integrity "missing_evidence" (never reaches the clamp step — see file header)', async () => {
+describe('Case 3 — absurd current price (1e20) -> missing_evidence, never "clamped and ok"', () => {
+  it('rejects the price via the sanity guard rather than clamping it', async () => {
     const fetchPriceAtTime: GetPriceAtTimeFn = async () => priceResult(2)
     const result = await computeUnrealizedPnl(
-      { chain: 'base', walletAddress: '0xwallet', holdings: [holding({ tokenAddress: '0xhuge', currentPriceUsd: 1e12, currentValueUsd: 1e13 })] },
+      { chain: 'base', walletAddress: '0xwallet', holdings: [holding({ tokenAddress: '0xabsurd', currentPriceUsd: 1e20, currentValueUsd: 1e21 })] },
       fetchPriceAtTime,
     )
     const token = result.tokens[0]
     assert.equal(token.integrity, 'missing_evidence')
     assert.equal(token.unrealizedPnlUsd, null)
-    assert.ok(result.excludedFromPnl.includes('0xhuge'))
+    assert.ok(result.excludedFromPnl.includes('0xabsurd'))
+    assert.equal(result.integritySummary, 'failed') // only token in this wallet, and it failed
   })
 })
 
-describe('computeUnrealizedPnl — genuinely extreme PnL from valid prices (clamp)', () => {
-  it('clamps to +-1e9 while keeping integrity "ok"', async () => {
-    // Valid, in-range prices whose resulting PnL is itself extreme: amount large enough that
-    // (currentValueUsd - costBasisUsd) exceeds 1e9.
+describe('Case 4 — explosion-style unrealized PnL via injected price', () => {
+  it('flags unrealizedPnlWithinReasonableRangeOfCostBasis as false (via integritySummary) even though the token itself is integrity "ok"', async () => {
+    // Valid, in-range prices (both pass the ($0, $1e6] sanity guard) whose resulting PnL is
+    // itself extreme relative to its own tiny cost basis — the "-3.8e34"-style bug class this
+    // task described, reproduced with real numbers rather than asserted by fiat.
+    const fetchPriceAtTime: GetPriceAtTimeFn = async () => priceResult(1e-10) // bought at a near-zero historical price
+    const result = await computeUnrealizedPnl(
+      {
+        chain: 'base',
+        walletAddress: '0xwallet',
+        holdings: [holding({ tokenAddress: '0xexplosion', amount: 1e9, currentPriceUsd: 1e6, currentValueUsd: 1e15 })],
+      },
+      fetchPriceAtTime,
+    )
+    const token = result.tokens[0]
+    assert.equal(token.integrity, 'ok') // real cost basis WAS found — this isn't a missing-evidence case
+    assert.equal(token.unrealizedPnlUsd, 1e9) // clamped from the raw ~1e15
+    // costBasisUsd here is 1e9 * 1e-10 = 0.1 -> reasonableness threshold = max(0.1, 1) * 1e6 = 1e6,
+    // and the clamped PnL (1e9) still exceeds it -> not "reasonable" even post-clamp.
+    assert.ok(token.costBasisUsd != null && token.costBasisUsd < 1)
+    assert.equal(result.integritySummary, 'failed') // integrity 'ok' alone isn't enough for 'ok' overall
+  })
+})
+
+describe('Case 5 — separate clamp test (does not overlap with missing_evidence)', () => {
+  it('clamps a genuinely extreme but sanity-guard-passing PnL to +-1e9 while integrity stays "ok"', async () => {
     const fetchPriceAtTime: GetPriceAtTimeFn = async () => priceResult(0.0001) // bought near-zero
     const result = await computeUnrealizedPnl(
       {
         chain: 'base',
         walletAddress: '0xwallet',
-        holdings: [holding({ tokenAddress: '0xextreme', amount: 1_000_000_000, currentPriceUsd: 5, currentValueUsd: 5_000_000_000 })],
+        holdings: [holding({ tokenAddress: '0xclamped', amount: 1_000_000_000, currentPriceUsd: 5, currentValueUsd: 5_000_000_000 })],
       },
       fetchPriceAtTime,
     )
@@ -116,6 +142,9 @@ describe('computeUnrealizedPnl — genuinely extreme PnL from valid prices (clam
     assert.equal(token.unrealizedPnlUsd, 1e9) // clamped, not the raw ~$5B
     assert.equal(result.totalUnrealizedPnlUsd, 1e9)
     assert.deepEqual(result.excludedFromPnl, [])
+    // Here costBasisUsd = 1e9 * 0.0001 = $100,000 -> threshold = 1e11, clamped 1e9 is within it ->
+    // genuinely "reasonable" (unlike Case 4's tiny cost basis) -> integritySummary really is 'ok'.
+    assert.equal(result.integritySummary, 'ok')
   })
 })
 
@@ -154,5 +183,6 @@ describe('computeUnrealizedPnl — total/exclusion aggregation across mixed toke
     )
     assert.equal(result.totalUnrealizedPnlUsd, 30) // only the one 'ok' token contributes
     assert.deepEqual(result.excludedFromPnl.sort(), ['0xmissing1', '0xmissing2'])
+    assert.equal(result.integritySummary, 'partial') // one ok, two failed
   })
 })

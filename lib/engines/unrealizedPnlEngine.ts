@@ -117,10 +117,22 @@ export type UnrealizedPnlResult = {
   // concentration concept of its own to exclude these from (it isn't wired to one — see file
   // header), so this is as far as "requirement 5" can honestly reach from here.
   excludedFromPnl: string[]
+  // Per-integrity-classification counts and the derived 'ok'/'partial'/'failed' summary — same
+  // values as the [pnl_final_verification] log emits, also returned so a caller/test doesn't have
+  // to scrape console output to observe them.
+  integrityCounts: { ok: number; missing_cost_basis: number; missing_evidence: number }
+  integritySummary: 'ok' | 'partial' | 'failed'
 }
 
 function isSanePrice(price: number): boolean {
   return Number.isFinite(price) && price > 0 && price <= MAX_VALID_USD_PRICE
+}
+
+// Shared pure helper, used both per-token (inside computeTokenPnl's diagnostic log) and in the
+// aggregate integritySummary derivation below — one formula, not two copies that could drift.
+function isWithinReasonableRangeOfCostBasis(costBasisUsd: number | null, unrealizedPnlUsd: number | null): boolean {
+  if (unrealizedPnlUsd == null || costBasisUsd == null) return true
+  return Math.abs(unrealizedPnlUsd) <= Math.max(costBasisUsd, 1) * 1e6
 }
 
 async function computeTokenPnl(holding: Holding, fetchPriceAtTime: GetPriceAtTimeFn): Promise<TokenUnrealizedPnl> {
@@ -146,11 +158,8 @@ async function computeTokenPnl(holding: Holding, fetchPriceAtTime: GetPriceAtTim
     // but bounded multiple of the position's own cost basis — flags a magnitude/unit-scale bug
     // (e.g. an accidental extra multiplication) even for values still under the flat $1e9 clamp.
     // $1 floor avoids dividing by ~0 for a near-zero cost basis; 1e6x is deliberately generous
-    // (this is a diagnostic signal, not a second clamp).
-    const unrealizedPnlWithinReasonableRangeOfCostBasis =
-      unrealizedPnlUsd == null || costBasisUsd == null
-        ? true
-        : Math.abs(unrealizedPnlUsd) <= Math.max(costBasisUsd, 1) * 1e6
+    // (this is a diagnostic signal, not a second clamp — see isWithinReasonableRangeOfCostBasis).
+    const unrealizedPnlWithinReasonableRangeOfCostBasis = isWithinReasonableRangeOfCostBasis(costBasisUsd, unrealizedPnlUsd)
 
     // eslint-disable-next-line no-console
     console.warn('[verify_pnl_engine]', {
@@ -220,6 +229,31 @@ async function computeTokenPnl(holding: Holding, fetchPriceAtTime: GetPriceAtTim
   }
 
   const costBasisUsd = holding.amount * (priceResult.priceUsd as number)
+
+  // NEGATIVE/NON-FINITE COST BASIS GUARD, ADDED: both currentPriceUsd and priceResult.priceUsd are
+  // already sanity-checked above (positive, <= $1e6), so a negative/NaN/Infinity costBasisUsd here
+  // can only come from a corrupted `holding.amount` (e.g. a negative or NaN balance slipping
+  // through from an upstream bug) — a real, if rare, failure mode this guard exists for, distinct
+  // from "no price evidence." Treated the same as missing_cost_basis: never fabricate a PnL number
+  // from a cost basis that isn't itself trustworthy.
+  if (!Number.isFinite(costBasisUsd) || costBasisUsd < 0) {
+    logPriceDiagnostics(holding.chain, holding.tokenAddress, 'historical_price_out_of_range')
+    // eslint-disable-next-line no-console
+    console.warn('pnl_missing_cost_basis', { tokenAddress: holding.tokenAddress, chain: holding.chain, reason: 'cost_basis_not_finite_or_negative', costBasisUsd })
+    logVerification('missing_cost_basis', costBasisUsd, null)
+    return {
+      tokenAddress: holding.tokenAddress,
+      chain: holding.chain,
+      amount: holding.amount,
+      costBasisUsd: null,
+      currentValueUsd,
+      unrealizedPnlUsd: null,
+      confidence: priceResult.confidence,
+      evidence: priceResult.evidence,
+      integrity: 'missing_cost_basis',
+    }
+  }
+
   let unrealizedPnlUsd = currentValueUsd - costBasisUsd
 
   // CLAMP: an absurd/astronomical value past +-$1e9 is treated as a computation artifact, not a
@@ -279,19 +313,30 @@ export async function computeUnrealizedPnl(
     missing_cost_basis: tokens.filter((t) => t.integrity === 'missing_cost_basis').length,
     missing_evidence: tokens.filter((t) => t.integrity === 'missing_evidence').length,
   }
-  // Simple string classification, ADDED alongside the existing per-integrity counts (kept, not
-  // replaced — nothing currently reading integrityCounts should break): 'ok' when every token
-  // priced cleanly, 'failed' when every token failed, 'partial' otherwise. Only meaningful for a
+
+  // "Core integrity checks" (per this task's own definition of integritySummary) means BOTH real
+  // evidence availability (per-token `integrity === 'ok'`) AND passing the reasonableness check —
+  // a token can be integrity:'ok' (real cost basis found) yet still have an implausible clamped
+  // PnL relative to that cost basis, and the AGGREGATE summary should reflect that even though the
+  // per-token `integrity` field itself stays a pure evidence-availability classification (kept
+  // diagnostic-only, unmutated, per this task's own instruction not to let these new flags change
+  // business logic at the per-token level).
+  const fullyTrustworthyCount = okTokens.filter((t) => isWithinReasonableRangeOfCostBasis(t.costBasisUsd, t.unrealizedPnlUsd)).length
+
+  // Simple string classification: 'ok' when every token both priced cleanly AND passed the
+  // reasonableness check, 'failed' when none did, 'partial' otherwise. Only meaningful for a
   // non-empty holdings list — an empty wallet is reported as 'ok' (vacuously true, nothing failed).
   const integritySummary: 'ok' | 'partial' | 'failed' =
-    tokens.length === 0 || integrityCounts.ok === tokens.length
+    tokens.length === 0 || fullyTrustworthyCount === tokens.length
       ? 'ok'
-      : integrityCounts.ok === 0
+      : fullyTrustworthyCount === 0
         ? 'failed'
         : 'partial'
 
   // eslint-disable-next-line no-console
   console.warn('[pnl_final_verification]', {
+    walletAddress: req.walletAddress,
+    chain: req.chain,
     totalUnrealizedPnlUsd,
     excludedFromPnl,
     tokensProcessed: tokens.length,
@@ -299,5 +344,5 @@ export async function computeUnrealizedPnl(
     integritySummary,
   })
 
-  return { totalUnrealizedPnlUsd, tokens, excludedFromPnl }
+  return { totalUnrealizedPnlUsd, tokens, excludedFromPnl, integrityCounts, integritySummary }
 }

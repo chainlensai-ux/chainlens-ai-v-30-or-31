@@ -276,15 +276,20 @@ export async function buildUnrealizedPnlForChain(chain: SupportedChain, walletAd
 
   const result = await computeUnrealizedPnl({ chain, walletAddress, holdings: usableHoldings })
   // DIAGNOSTIC, DISCLOSED (audit task): real counts only, no behavior change — surfaces exactly
-  // what computeUnrealizedPnl already computed for this chain, for this specific call site.
+  // what computeUnrealizedPnl already computed for this chain, for this specific call site,
+  // including its own integritySummary/integrityCounts (now returned by that function directly,
+  // not just logged internally — see unrealizedPnlEngine.ts).
   // eslint-disable-next-line no-console
   console.warn('[walletChainPipeline] unrealizedPnl integrity summary', {
     chain,
     walletAddress,
+    unrealizedPnlEngineRan: true,
     totalUnrealizedPnlUsd: result.totalUnrealizedPnlUsd,
     tokenCount: result.tokens.length,
     excludedFromPnlCount: result.excludedFromPnl.length,
     unresolvedHoldingsCount: unresolvedHoldings.length,
+    integritySummary: result.integritySummary,
+    integrityCounts: result.integrityCounts,
   })
   return { chain, result, unresolvedHoldings }
 }
