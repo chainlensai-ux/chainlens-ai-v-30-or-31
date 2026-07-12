@@ -15,7 +15,7 @@ import type { RawProviderEvent, SupportedChain } from '../modules/providerFetchW
 import { normalizeEvents } from '../modules/normalization/index'
 import { buildCounterpartyStats, classifyRouterLikeEvent, recordRouterCandidate } from './routerDiscovery'
 import { adaptPnlSummaryForUi } from './pnlSummaryAdapter'
-import { withGeckoTerminalFallback, withSanePriceGuard } from './pricingAtTimeAdapter'
+import { buildChainAwareHistoricalPriceSource } from './pricingAtTimeAdapter'
 import type { NormalizedEvent } from '../modules/normalization/types'
 import { buildChainSelectionObject } from '../modules/chainSelection/index'
 import type { ChainSelectionResult } from '../modules/chainSelection/types'
@@ -39,7 +39,6 @@ import { resolvePricingAtTime } from '../modules/pricingAtTimeEngine/index'
 import type { PriceableEntry, PriceSourceFn, PriceSources, PricingAtTimeResult } from '../modules/pricingAtTimeEngine/types'
 import { GoldRushClient } from '@covalenthq/client-sdk'
 import { goldrushPriceSource, isKnownGoldrushNegative } from '../modules/pricingAtTimeEngine/sources/goldrushPriceSource'
-import { multiProviderPriceSource } from '../modules/pricingAtTimeEngine/sources/multiProviderPriceSource'
 import { priceLotsForWallet } from './priceLotsForWallet'
 import { withStageCache } from '../../lib/server/cache/v2StageCache'
 import { getTokenCache, setTokenCache } from '../../lib/server/cache/tokenCache'
@@ -118,34 +117,30 @@ function buildPriceSources(): PriceSources {
   // process's env at module load, without needing a separate deployment-inspection tool.
   // eslint-disable-next-line no-console
   console.warn(`[pipeline] buildPriceSources: real GoldRush key present = ${Boolean(apiKey)}`)
-  // FREE HISTORICAL PRICING, DISCLOSED (src/pipeline/pricingAtTimeAdapter.ts +
-  // src/pipeline/providers/geckoTerminalPriceSource.ts): the existing multiProviderPriceSource chain
-  // (DexScreener/CoinGecko/basedex) now additionally falls through to a real GeckoTerminal
-  // historical lookup when it finds nothing, and every price this function returns (both primary
-  // and fallback) is sanity-guarded against out-of-range garbage ($0 < price <= $1e6) before it can
-  // ever reach fifoEngine/pnlEngine.
-  const fallback = withSanePriceGuard(
-    withPriceSourceCache(withGeckoTerminalFallback(multiProviderPriceSource()), 'fallback'),
-    'fallback',
-  )
-  if (!apiKey) return { primary: fallback, fallback: noPriceSources().fallback }
-  // BUG FIX, DISCLOSED: `new GoldRushClient(apiKey)` throws synchronously (a plain object, not an
-  // Error instance — confirmed by reading the SDK's own source) when apiKey fails its local
-  // key-format regex check. Since this whole function runs at MODULE IMPORT TIME (PRICE_SOURCES
-  // below is a top-level `export const`), an unwrapped throw here would crash the entire module
-  // load for every route that imports this pipeline — not the graceful "fall back to
-  // multiProviderPriceSource" behavior this file otherwise guarantees everywhere else. A malformed
-  // (not just missing) key now degrades the same way a missing key already does, instead of taking
-  // down the whole V2 pipeline at cold start.
+  // CHAIN-AWARE ROUTING, DISCLOSED (src/pipeline/pricingAtTimeAdapter.ts's
+  // buildChainAwareHistoricalPriceSource): Base tries GeckoTerminal -> DexScreener -> GoldRush;
+  // every other chain tries GoldRush -> DexScreener -> GeckoTerminal; CoinGecko/basedex remain a
+  // final safety net for every chain (see that file's own header for the full disclosure on both
+  // points, including the false "GoldRush returns null for Base" premise this ordering was
+  // requested under). The full router is assembled as a SINGLE `primary` source — `fallback` is
+  // intentionally the always-null noPriceSources().fallback below, since the router already
+  // encapsulates every real provider attempt itself; pricingAtTimeEngine would otherwise call a
+  // second, redundant fallback after this one already tried everything.
+  const goldrushFn: PriceSourceFn = apiKey ? (buildGoldrushSourceFn(apiKey) ?? noPriceSources().fallback) : noPriceSources().fallback
+  const chainAwareHistorical = withPriceSourceCache(buildChainAwareHistoricalPriceSource(goldrushFn), 'chain-aware-historical')
+  return { primary: chainAwareHistorical, fallback: noPriceSources().fallback }
+}
+
+// BUG FIX, DISCLOSED: `new GoldRushClient(apiKey)` throws synchronously (a plain object, not an
+// Error instance — confirmed by reading the SDK's own source) when apiKey fails its local
+// key-format regex check. Since buildPriceSources() runs at MODULE IMPORT TIME (PRICE_SOURCES below
+// is a top-level `export const`), an unwrapped throw here would crash the entire module load for
+// every route that imports this pipeline. A malformed (not just missing) key degrades to null
+// (handled by the caller) instead of taking down the whole V2 pipeline at cold start.
+function buildGoldrushSourceFn(apiKey: string): PriceSourceFn | null {
   try {
     const client = new GoldRushClient(apiKey)
-    return {
-      primary: withSanePriceGuard(
-        withPriceSourceCache(goldrushPriceSource(client), 'primary', isKnownGoldrushNegative),
-        'primary',
-      ),
-      fallback,
-    }
+    return withPriceSourceCache(goldrushPriceSource(client), 'primary', isKnownGoldrushNegative)
   } catch (err) {
     // The SDK throws a plain { error_message } object here, not an Error instance (confirmed by
     // reading its source) — extracted explicitly so this log is actually useful, not "[object Object]".
@@ -154,7 +149,7 @@ function buildPriceSources(): PriceSources {
       : (typeof err === 'object' && err !== null && 'error_message' in err ? String((err as { error_message: unknown }).error_message) : String(err))
     // eslint-disable-next-line no-console
     console.warn('[pipeline] buildPriceSources: GoldRushClient construction failed, falling back', { reason })
-    return { primary: fallback, fallback: noPriceSources().fallback }
+    return null
   }
 }
 

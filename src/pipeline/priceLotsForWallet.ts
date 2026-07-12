@@ -31,6 +31,7 @@ import type { CurrentPriceUsdLookup, PriceUsdLookup } from '../modules/fifoEngin
 import type { NormalizedEvent } from '../modules/normalization/types'
 import { resolvePricingAtTime } from '../modules/pricingAtTimeEngine/index'
 import type { PriceableEntry, PriceSources, SourceBreakdown } from '../modules/pricingAtTimeEngine/types'
+import { pricingRouteLog, type PricingRouteRecord } from './pricingAtTimeAdapter'
 
 function toPriceableEntry(event: NormalizedEvent): PriceableEntry {
   return {
@@ -59,6 +60,13 @@ export type WalletPriceLookups = {
   // priceUsdLookup/currentPriceUsdLookup's existing behavior (which already returns null for these
   // honestly, same as before this change).
   pricingUnavailableTokens: string[]
+  // HISTORICAL PRICING ATTEMPT LOG, DISCLOSED: real per-attempt records from
+  // pricingAtTimeAdapter.ts's chain-aware router (src/pipeline/pricingAtTimeAdapter.ts's
+  // pricingRouteLog) — a snapshot/delta slice scoped to exactly this call's own two
+  // resolvePricingAtTime passes (at-trade-time + current), same cross-request-leak guard pattern
+  // already used around lib/server/rpcDebug.ts's rpcDebugLog elsewhere in this pipeline.
+  historicalPricingAttempts: PricingRouteRecord[]
+  historicalPricingFailures: PricingRouteRecord[]
 }
 
 // Real fix: pre-resolves historical USD pricing (at each event's own real timestamp) for every
@@ -73,6 +81,8 @@ export async function priceLotsForWallet(params: {
   const merged = mergeNormalizedEvents(params.normalizedEvents, params.recoveredEvents)
   const buys = merged.filter((e) => e.direction === 'inbound')
   const sells = merged.filter((e) => e.direction === 'outbound')
+
+  const routeLogSnapshotBefore = pricingRouteLog.length
 
   const atTradeTime = await resolvePricingAtTime({
     buyEntries: buys.map(toPriceableEntry),
@@ -107,5 +117,16 @@ export async function priceLotsForWallet(params: {
     console.warn('[priceLotsForWallet] tokens with no price from any source', { count: pricingUnavailableTokens.length, tokens: pricingUnavailableTokens })
   }
 
-  return { priceUsdLookup, currentPriceUsdLookup, sourceBreakdown: atTradeTime.sourceBreakdown, pricingUnavailableTokens }
+  const routeRecordsThisCall = pricingRouteLog.slice(routeLogSnapshotBefore)
+  const historicalPricingAttempts = routeRecordsThisCall.filter((r) => r.route !== 'none')
+  const historicalPricingFailures = routeRecordsThisCall.filter((r) => r.route === 'none')
+
+  return {
+    priceUsdLookup,
+    currentPriceUsdLookup,
+    sourceBreakdown: atTradeTime.sourceBreakdown,
+    pricingUnavailableTokens,
+    historicalPricingAttempts,
+    historicalPricingFailures,
+  }
 }
