@@ -13,6 +13,7 @@
 import { fetchProviderWindow } from '../modules/providerFetchWindow/index'
 import type { RawProviderEvent, SupportedChain } from '../modules/providerFetchWindow/types'
 import { normalizeEvents } from '../modules/normalization/index'
+import { buildCounterpartyStats, classifyRouterLikeEvent, recordRouterCandidate } from './routerDiscovery'
 import type { NormalizedEvent } from '../modules/normalization/types'
 import { buildChainSelectionObject } from '../modules/chainSelection/index'
 import type { ChainSelectionResult } from '../modules/chainSelection/types'
@@ -1040,6 +1041,38 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
         isKnownRouter: KNOWN_DEX_ROUTER_ADDRESSES.has(e.toAddress.toLowerCase()),
       })),
     })
+  }
+
+  // ROUTER DISCOVERY, DISCLOSED: additive-only, log-only observability aid (src/pipeline/
+  // routerDiscovery.ts). Flags outbound events whose counterparty isn't already in
+  // KNOWN_DEX_ROUTER_ADDRESSES but matches a real pattern (repeated counterparty across this scan,
+  // or same-tx swap shape) — never auto-added to the registry, never consulted by
+  // safeRunSellTimelineV2/dust suppression/FIFO/pricing below. Purely for a human to review in logs
+  // and manually promote a real candidate later.
+  {
+    const eventsByTx = new Map<string, NormalizedEvent[]>()
+    for (const e of normalizedEvents) {
+      const list = eventsByTx.get(e.txHash) ?? []
+      list.push(e)
+      eventsByTx.set(e.txHash, list)
+    }
+    const counterpartyStats = buildCounterpartyStats(normalizedEvents.filter((e) => e.direction === 'outbound'))
+
+    for (const event of normalizedEvents) {
+      if (event.direction !== 'outbound') continue
+      if (KNOWN_DEX_ROUTER_ADDRESSES.has(event.toAddress.toLowerCase())) continue
+
+      const sameTxEvents = eventsByTx.get(event.txHash) ?? [event]
+      const { isRouterLike, heuristic } = classifyRouterLikeEvent(event, sameTxEvents, counterpartyStats)
+      if (isRouterLike && heuristic) {
+        recordRouterCandidate(event.chain, event.toAddress, {
+          tokensInvolved: [event.contract],
+          txHash: event.txHash,
+          chain: event.chain,
+          heuristic,
+        })
+      }
+    }
   }
 
   // 3. chainSelection — pure. visible_value_usd / swapCandidateEvents default to 0 (no
