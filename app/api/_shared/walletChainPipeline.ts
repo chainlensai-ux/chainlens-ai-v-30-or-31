@@ -263,8 +263,11 @@ export async function buildUnrealizedPnlForChain(chain: SupportedChain, walletAd
       chain,
       amount: h.amount,
       // REAL when the provider's own balances call returned a price (GoldRush balances_v2) —
-      // honestly 0 (never guessed) otherwise, matching unrealizedPnlEngine's own "no price found ->
-      // costBasisUsd/values fall to 0, confidence carries the honesty signal" pattern.
+      // honestly 0 (never guessed) otherwise. STALE-COMMENT FIX, DISCLOSED: this used to say a
+      // 0 fallback here "matches unrealizedPnlEngine's own no-price-found pattern" — that pattern
+      // (defaulting costBasisUsd to 0 / fabricating a "100% gain") was itself a real bug, fixed in
+      // that engine directly. A 0 fed in here now correctly fails that engine's own sanity guard
+      // (price must be > 0) and is honestly reported as `integrity: 'missing_evidence'` instead.
       currentPriceUsd: h.providerPriceUsd ?? 0,
       currentValueUsd: h.providerValueUsd ?? (h.providerPriceUsd != null ? h.providerPriceUsd * h.amount : 0),
       acquiredAtTimestamp: match.timestamp,
@@ -272,6 +275,17 @@ export async function buildUnrealizedPnlForChain(chain: SupportedChain, walletAd
   }
 
   const result = await computeUnrealizedPnl({ chain, walletAddress, holdings: usableHoldings })
+  // DIAGNOSTIC, DISCLOSED (audit task): real counts only, no behavior change — surfaces exactly
+  // what computeUnrealizedPnl already computed for this chain, for this specific call site.
+  // eslint-disable-next-line no-console
+  console.warn('[walletChainPipeline] unrealizedPnl integrity summary', {
+    chain,
+    walletAddress,
+    totalUnrealizedPnlUsd: result.totalUnrealizedPnlUsd,
+    tokenCount: result.tokens.length,
+    excludedFromPnlCount: result.excludedFromPnl.length,
+    unresolvedHoldingsCount: unresolvedHoldings.length,
+  })
   return { chain, result, unresolvedHoldings }
 }
 

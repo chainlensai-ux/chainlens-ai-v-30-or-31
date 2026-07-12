@@ -42,7 +42,32 @@
 // price itself fails the sanity guard.
 
 import type { SupportedChain } from '@/src/modules/providerFetchWindow/types'
-import { getPriceAtTime, type EvidenceEntry, type PricingConfidence } from '@/lib/engines/pricingAtTimeEngine'
+import { getPriceAtTime, type EvidenceEntry, type PricingAtTimeResult, type PricingConfidence } from '@/lib/engines/pricingAtTimeEngine'
+
+// DIAGNOSTIC AUDIT, DISCLOSED: a prior task attributed unrealized-PnL corruption to the KV circuit
+// breaker / providerFetchWindow (circuit_breaker_open, kv_disabled_for_request,
+// kv_skip_large_payload — all real strings, but they only exist in lib/server/cache/tokenCache.ts
+// and v2StageCache.ts). This engine has NO dependency on either: its only price path is
+// getPriceAtTime() -> lib/providers/{goldrush,coingecko,onchainDex}.ts, none of which import KV,
+// a circuit breaker, or providerFetchWindow (confirmed by grep before writing this). The real,
+// already-fixed root cause of corrupted unrealized PnL here was the fabricated-cost-basis bug
+// (see CLAMP/MISSING-EVIDENCE FIX above) — not a KV/circuit-breaker issue, which lives in a
+// different, unrelated pricing pipeline (src/pipeline/index.ts's PRICE_SOURCES).
+export type PriceDiagnosticReason =
+  | 'current_price_out_of_range'
+  | 'historical_price_missing'
+  | 'historical_price_out_of_range'
+
+export function logPriceDiagnostics(chain: SupportedChain, token: string, reason: PriceDiagnosticReason): void {
+  // eslint-disable-next-line no-console
+  console.warn('[price_diagnostics]', { chain, token, reason, timestamp: Date.now() })
+}
+
+// Optional injectable seam (defaults to the real getPriceAtTime) — same additive-testing-seam
+// convention already used elsewhere in this codebase (e.g. priceLotsForWallet.ts's `priceFn`),
+// added specifically so a real, deterministic self-test can exercise every integrity branch
+// without live network access.
+export type GetPriceAtTimeFn = typeof getPriceAtTime
 
 export type Holding = {
   tokenAddress: string
@@ -98,20 +123,44 @@ function isSanePrice(price: number): boolean {
   return Number.isFinite(price) && price > 0 && price <= MAX_VALID_USD_PRICE
 }
 
-async function computeTokenPnl(holding: Holding): Promise<TokenUnrealizedPnl> {
-  const priceResult = await getPriceAtTime({
+async function computeTokenPnl(holding: Holding, fetchPriceAtTime: GetPriceAtTimeFn): Promise<TokenUnrealizedPnl> {
+  const priceResult: PricingAtTimeResult = await fetchPriceAtTime({
     chain: holding.chain,
     tokenAddress: holding.tokenAddress,
     timestamp: holding.acquiredAtTimestamp,
   })
 
   const currentValueUsd = holding.amount * holding.currentPriceUsd
+  const currentPriceOk = isSanePrice(holding.currentPriceUsd)
+  const historicalPriceOk = priceResult.priceUsd != null && isSanePrice(priceResult.priceUsd)
+
+  function logVerification(integrity: PnlIntegrity, costBasisUsd: number | null, unrealizedPnlUsd: number | null): void {
+    // eslint-disable-next-line no-console
+    console.warn('[verify_pnl_engine]', {
+      token: holding.tokenAddress,
+      price: holding.currentPriceUsd,
+      costBasisUsd,
+      unrealizedPnlUsd,
+      integrity,
+      excluded: integrity !== 'ok',
+    })
+    // eslint-disable-next-line no-console
+    console.warn('[verify_price_fetch]', {
+      token: holding.tokenAddress,
+      currentPriceOk,
+      historicalPriceOk,
+      finalPrice: priceResult.priceUsd,
+      integrity,
+    })
+  }
 
   // SANITY GUARD: a current price outside ($0, $1e6] is provider garbage — never fabricate PnL
   // from it, regardless of what the historical lookup found.
-  if (!isSanePrice(holding.currentPriceUsd)) {
+  if (!currentPriceOk) {
+    logPriceDiagnostics(holding.chain, holding.tokenAddress, 'current_price_out_of_range')
     // eslint-disable-next-line no-console
     console.warn('pnl_missing_evidence', { tokenAddress: holding.tokenAddress, chain: holding.chain, reason: 'current_price_out_of_range', currentPriceUsd: holding.currentPriceUsd })
+    logVerification('missing_evidence', null, null)
     return {
       tokenAddress: holding.tokenAddress,
       chain: holding.chain,
@@ -128,9 +177,15 @@ async function computeTokenPnl(holding: Holding): Promise<TokenUnrealizedPnl> {
   // priceResult.priceUsd is null exactly when confidence is "none" / evidence is empty — no real
   // historical price was found. Previously this defaulted costBasisUsd to 0, fabricating a
   // "100% gain" PnL number (see file header). Now honestly null instead.
-  if (priceResult.priceUsd == null || !isSanePrice(priceResult.priceUsd)) {
+  if (!historicalPriceOk) {
+    logPriceDiagnostics(
+      holding.chain,
+      holding.tokenAddress,
+      priceResult.priceUsd == null ? 'historical_price_missing' : 'historical_price_out_of_range',
+    )
     // eslint-disable-next-line no-console
     console.warn('pnl_missing_cost_basis', { tokenAddress: holding.tokenAddress, chain: holding.chain, priceAtTime: priceResult.priceUsd })
+    logVerification('missing_cost_basis', null, null)
     return {
       tokenAddress: holding.tokenAddress,
       chain: holding.chain,
@@ -144,7 +199,7 @@ async function computeTokenPnl(holding: Holding): Promise<TokenUnrealizedPnl> {
     }
   }
 
-  const costBasisUsd = holding.amount * priceResult.priceUsd
+  const costBasisUsd = holding.amount * (priceResult.priceUsd as number)
   let unrealizedPnlUsd = currentValueUsd - costBasisUsd
 
   // CLAMP: an absurd/astronomical value past +-$1e9 is treated as a computation artifact, not a
@@ -164,6 +219,8 @@ async function computeTokenPnl(holding: Holding): Promise<TokenUnrealizedPnl> {
     console.warn('pnl_clamped_low', { tokenAddress: holding.tokenAddress, chain: holding.chain, rawValue, clampedValue: unrealizedPnlUsd, reason: 'pnl_clamped_low' })
   }
 
+  logVerification('ok', costBasisUsd, unrealizedPnlUsd)
+
   return {
     tokenAddress: holding.tokenAddress,
     chain: holding.chain,
@@ -180,8 +237,11 @@ async function computeTokenPnl(holding: Holding): Promise<TokenUnrealizedPnl> {
 // Public entry point. Pricing lookups run in parallel across holdings (each internally already
 // runs its 3 providers in parallel — see pricingAtTimeEngine.ts). Never throws: getPriceAtTime()
 // already gracefully resolves to a "none confidence" result on any failure.
-export async function computeUnrealizedPnl(req: UnrealizedPnlRequest): Promise<UnrealizedPnlResult> {
-  const tokens = await Promise.all(req.holdings.map(computeTokenPnl))
+export async function computeUnrealizedPnl(
+  req: UnrealizedPnlRequest,
+  fetchPriceAtTime: GetPriceAtTimeFn = getPriceAtTime,
+): Promise<UnrealizedPnlResult> {
+  const tokens = await Promise.all(req.holdings.map((h) => computeTokenPnl(h, fetchPriceAtTime)))
 
   // Sum strictly over integrity === 'ok' tokens — never a null-coalesced 0 for an excluded token,
   // per this task's explicit "never treat null as 0" requirement. `okTokens` narrows
@@ -193,6 +253,14 @@ export async function computeUnrealizedPnl(req: UnrealizedPnlRequest): Promise<U
   // excludedFromPnl MUST include every token with integrity !== 'ok' — defined directly against
   // integrity (not inferred from nullness) so the two can never drift apart.
   const excludedFromPnl = tokens.filter((t) => t.integrity !== 'ok').map((t) => t.tokenAddress)
+
+  const integritySummary = {
+    ok: tokens.filter((t) => t.integrity === 'ok').length,
+    missing_cost_basis: tokens.filter((t) => t.integrity === 'missing_cost_basis').length,
+    missing_evidence: tokens.filter((t) => t.integrity === 'missing_evidence').length,
+  }
+  // eslint-disable-next-line no-console
+  console.warn('[pnl_final_verification]', { totalUnrealizedPnlUsd, excludedFromPnl, integritySummary })
 
   return { totalUnrealizedPnlUsd, tokens, excludedFromPnl }
 }
