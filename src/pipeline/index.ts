@@ -1013,6 +1013,33 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   }
   const { normalizedEvents, normalizationErrors } = normalizeEvents(allRawEvents, params.walletAddress)
 
+  // TEMPORARY DEBUG INSTRUMENTATION (router-transfer normalizedEvents trace), DISCLOSED: added to
+  // answer a specific question — does normalizedEvents actually contain the outbound router
+  // transfers FIFO/pricing see, right after normalizeEvents() and before any filtering (dust
+  // suppression, chainSelection gating) touches the array. Read-only: computes derived counts from
+  // the already-produced `normalizedEvents`, logs them, and does not affect `normalizedEvents`,
+  // `normalizationErrors`, or anything downstream. Remove once the question above is answered.
+  {
+    const outboundEvents = normalizedEvents.filter((e) => e.direction === 'outbound')
+    const outboundToKnownRouter = outboundEvents.filter((e) => KNOWN_DEX_ROUTER_ADDRESSES.has(e.toAddress.toLowerCase()))
+    // eslint-disable-next-line no-console
+    console.warn('[debug] normalizedEvents trace', {
+      rawEventsCount: allRawEvents.length,
+      normalizedEventsCount: normalizedEvents.length,
+      outboundEventsCount: outboundEvents.length,
+      outboundToKnownRouterCount: outboundToKnownRouter.length,
+      outboundEvents: outboundEvents.map((e) => ({
+        chain: e.chain,
+        from: e.fromAddress,
+        to: e.toAddress,
+        token: e.contract,
+        amount: e.amount,
+        counterparty: e.toAddress.toLowerCase(),
+        isKnownRouter: KNOWN_DEX_ROUTER_ADDRESSES.has(e.toAddress.toLowerCase()),
+      })),
+    })
+  }
+
   // 3. chainSelection — pure. visible_value_usd / swapCandidateEvents default to 0 (no
   // holdings-pricing or swap-detection module exists yet in this delivery — Architecture Step 7 §3).
   const chainSelection: ChainSelectionResult = buildChainSelectionObject(
