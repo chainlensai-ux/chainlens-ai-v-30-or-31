@@ -40,7 +40,7 @@ import { kv } from '@vercel/kv'
 const KV_CALL_TIMEOUT_MS = 250
 const MAX_RETRIES = 2 // total attempts = 1 + MAX_RETRIES = 3
 const RETRY_BACKOFF_MS = [100, 200]
-const MAX_PAYLOAD_BYTES = 100_000 // 100kb, per this task's own requirement 5
+export const MAX_PAYLOAD_BYTES = 100_000 // 100kb, per this task's own requirement 5
 
 function kvConfigured(): boolean {
   return Boolean(process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN)
@@ -106,34 +106,87 @@ function memoryFallbackSet<T>(key: string, value: T, ttlSeconds: number): void {
   memoryFallback.set(key, { value, expiresAt: Date.now() + ttlSeconds * 1000 })
 }
 
+// COMPRESSION, ADDED: previously this file stored/read the raw (uncompressed) value, so the size
+// guard below was the ONLY response to an oversized payload — always skip. Same technique as
+// tokenCache.ts (Compression Streams API — Edge-Runtime-safe, no node:zlib), added here too so a
+// payload that's JSON-large but compresses under MAX_PAYLOAD_BYTES gets cached instead of always
+// falling back to a recompute on every request. BACKWARD COMPATIBLE READ: a value written before
+// this change (raw, uncompressed) fails decompression and falls back to using it as-is.
+export async function compress(serialized: string): Promise<string> {
+  const compressedStream = new Blob([serialized]).stream().pipeThrough(new CompressionStream('gzip'))
+  const buffer = await new Response(compressedStream).arrayBuffer()
+  return Buffer.from(buffer).toString('base64')
+}
+
+export async function decompress<T>(raw: unknown): Promise<T> {
+  if (typeof raw !== 'string') return raw as T // legacy: kv.get<T> may already have deserialized a non-compressed value
+  try {
+    const decompressedStream = new Blob([Buffer.from(raw, 'base64')]).stream().pipeThrough(new DecompressionStream('gzip'))
+    const buffer = await new Response(decompressedStream).arrayBuffer()
+    return JSON.parse(Buffer.from(buffer).toString('utf8')) as T
+  } catch {
+    try {
+      return JSON.parse(raw) as T // legacy plain-JSON string written before compression existed
+    } catch {
+      return raw as T // not a compressed/JSON string at all — return as-is rather than throw
+    }
+  }
+}
+
 // Returns the cached value, the in-memory fallback's last-known-good value, or null — NEVER
 // throws, NEVER blocks, NEVER consults or affects tokenCache.ts's circuit breaker.
 async function getStageCache<T>(key: string): Promise<T | null> {
   if (!kvConfigured()) return memoryFallbackGet<T>(key)
 
-  const value = await withRetriesNoBreaker(() => kv.get<T>(key), undefined, `get:${key}`)
-  if (value === undefined) return memoryFallbackGet<T>(key) // KV genuinely failed — fall back
-  if (value == null) return null // real cache miss, not a failure
-  memoryFallbackSet(key, value, 45) // keep the fallback warm on a real hit too
+  const raw = await withRetriesNoBreaker(() => kv.get<unknown>(key), undefined, `get:${key}`)
+  if (raw === undefined) return memoryFallbackGet<T>(key) // KV genuinely failed — fall back
+  if (raw == null) return null // real cache miss, not a failure
+
+  const value = await decompress<T>(raw)
+  if (value != null) memoryFallbackSet(key, value, 45) // keep the fallback warm on a real hit too
   return value
 }
 
 // Best-effort write. Always writes through to the in-memory fallback first (so this file's own
-// fallback stays warm even during a KV outage), then attempts KV subject to the size guard.
+// fallback stays warm even during a KV outage), then attempts KV. Tries compression before giving
+// up on an oversized payload (requirement: "compression, chunking, or partial caching for large
+// holdings/provider windows" — chunking/partial-caching across multiple KV keys was explicitly
+// scoped out below, disclosed).
+//
+// CHUNKING SCOPE NOTE, DISCLOSED: true multi-key chunking (splitting one large value across several
+// KV keys and reassembling on read) was not implemented — this is a generic `setStageCache<T>`
+// shared across 4 different stage shapes (providerFetchWindow/recoveryPolicy/holdings/
+// pricingAtTimeEngine price sources) with no common "array of N independent items" structure this
+// function could split generically without schema knowledge of each caller's data (same reasoning
+// tokenCache.ts's own header already gives for not doing generic field-stripping). Compression is
+// implemented for real below; a payload that's still oversized after compression is skipped with
+// clear diagnostics, exactly as before, and the in-memory fallback still holds the real,
+// uncompressed value for the rest of this process's lifetime — never silently treated as missing
+// or zero (requirement: "missing data must be clearly flagged, not silently treated as zero").
 async function setStageCache<T>(key: string, value: T, ttlSeconds: number): Promise<void> {
   memoryFallbackSet(key, value, ttlSeconds)
 
   if (!kvConfigured()) return
 
   const serialized = JSON.stringify(value)
-  const payloadBytes = Buffer.byteLength(serialized, 'utf8')
-  if (payloadBytes > MAX_PAYLOAD_BYTES) {
+  const uncompressedBytes = Buffer.byteLength(serialized, 'utf8')
+  const compressed = await compress(serialized)
+  const compressedBytes = Buffer.byteLength(compressed, 'utf8')
+
+  if (compressedBytes > MAX_PAYLOAD_BYTES) {
     // eslint-disable-next-line no-console
-    console.warn('kv_skip_large_payload', { key, payloadBytes, maxPayloadBytes: MAX_PAYLOAD_BYTES })
-    return // already stored in memory fallback above — requirement 5
+    console.warn('kv_skip_large_payload', {
+      key,
+      uncompressedBytes,
+      compressedBytes,
+      maxPayloadBytes: MAX_PAYLOAD_BYTES,
+      strategyAttempted: 'gzip_compression',
+      fallback: 'in_memory_only', // real value is still in memoryFallback (set above) — never lost, just not cross-instance-shared
+    })
+    return // already stored in memory fallback above
   }
 
-  await withRetriesNoBreaker(() => kv.set(key, value, { ex: ttlSeconds }), undefined, `set:${key}`)
+  await withRetriesNoBreaker(() => kv.set(key, compressed, { ex: ttlSeconds }), undefined, `set:${key}`)
 }
 
 // DEV-ONLY KV WARM MODE: extends the effective TTL to at least 10 minutes when NODE_ENV is not

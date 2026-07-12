@@ -131,6 +131,9 @@ export type UnrealizedPnlResult = {
   // to it; kept in the type only because it was explicitly requested.
   integrityCounts: { ok: number; partial: number; failed: number; missing_cost_basis: number; missing_evidence: number }
   integritySummary: 'ok' | 'partial' | 'failed'
+  // Same value as `tokens.length` — returned directly (not just logged) so a caller/test doesn't
+  // need to derive it from the tokens array itself.
+  tokensProcessed: number
 }
 
 function isSanePrice(price: number): boolean {
@@ -377,5 +380,5 @@ export async function computeUnrealizedPnl(
     anyUnreasonablePnL,
   })
 
-  return { totalUnrealizedPnlUsd, tokens, excludedFromPnl, integrityCounts, integritySummary }
+  return { totalUnrealizedPnlUsd, tokens, excludedFromPnl, integrityCounts, integritySummary, tokensProcessed: tokens.length }
 }

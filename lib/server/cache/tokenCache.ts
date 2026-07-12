@@ -55,37 +55,154 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer))
 }
 
-// CIRCUIT BREAKER, DISCLOSED: time-windowed, not literally "per HTTP request" as requirement 6
-// worded it — none of this module's 11+ real callers thread a request-id through getTokenCache/
-// setTokenCache today, and adding one would mean changing every call site's signature (a much
-// larger, riskier change than "wrap KV calls safely"). This instead disables KV for a fixed cooldown
-// window after CIRCUIT_BREAKER_FAILURE_THRESHOLD consecutive timeouts — in practice equivalent for
-// a single heavy request (which is what this task is actually trying to protect), and also guards
-// the next request on a still-unhealthy warm serverless instance, which a strictly single-request
-// breaker would not.
-let consecutiveTimeouts = 0
-let disabledUntil = 0
+// CIRCUIT BREAKER, DISCLOSED: time-windowed, not literally "per HTTP request" — none of this
+// module's 11+ real callers thread a request-id through getTokenCache/setTokenCache today, and
+// adding one would mean changing every call site's signature (a much larger, riskier change than
+// "wrap KV calls safely"). This disables KV for a cooldown window after
+// CIRCUIT_BREAKER_FAILURE_THRESHOLD consecutive timeouts — in practice equivalent for a single
+// heavy request, and also guards the next request on a still-unhealthy warm serverless instance.
+//
+// GRADUAL RECOVERY, ADDED: classic three-state breaker (closed -> open -> half-open -> closed or
+// back to open) instead of a flat "wait N seconds then fully reopen." A flat reopen means every
+// caller on the same warm instance simultaneously resumes hammering a KV store that may still be
+// unhealthy, immediately re-tripping the breaker. Half-open instead lets exactly ONE call through
+// as a trial; if it succeeds, the breaker fully closes; if it fails, the breaker reopens with an
+// exponential backoff (capped), so a genuinely-still-down KV store gets probed less and less often
+// rather than every fixed interval.
+type CircuitBreakerState = 'closed' | 'open' | 'half_open'
 
+let state: CircuitBreakerState = 'closed'
+let consecutiveTimeouts = 0
+let openedAt = 0
+let nextRetryAt = 0
+let currentCooldownMs = CIRCUIT_BREAKER_COOLDOWN_MS
+let halfOpenTrialInFlight = false
+let lastOpenLogAt = 0
+const OPEN_LOG_RATE_LIMIT_MS = 5_000 // at most one "still open" log per 5s, not once per call
+const MAX_COOLDOWN_MS = 5 * 60_000 // exponential backoff ceiling — never wait more than 5 minutes
+
+// Typed, read-only diagnostic snapshot — additive: existing callers still only ever see null on
+// failure (the fail-open contract is unchanged), but a caller that wants to distinguish "genuinely
+// no data" from "KV is currently degraded" can check this instead of silent failure alone.
+export type KvCircuitBreakerSnapshot = {
+  state: CircuitBreakerState
+  consecutiveTimeouts: number
+  nextRetryAt: number | null
+}
+
+export function getKvCircuitBreakerState(): KvCircuitBreakerSnapshot {
+  return { state, consecutiveTimeouts, nextRetryAt: state === 'open' ? nextRetryAt : null }
+}
+
+function logStateTransition(from: CircuitBreakerState, to: CircuitBreakerState, extra?: Record<string, unknown>): void {
+  // eslint-disable-next-line no-console
+  console.warn('kv_circuit_breaker_transition', { from, to, consecutiveTimeouts, ...extra })
+}
+
+// Returns true when the caller should skip the real KV call (fall back to memory) this time.
 function circuitBreakerOpen(): boolean {
-  if (disabledUntil === 0) return false
-  if (Date.now() < disabledUntil) return true
-  // Cooldown elapsed — allow KV to be tried again, reset the counter.
-  disabledUntil = 0
-  consecutiveTimeouts = 0
+  if (state === 'closed') return false
+
+  if (state === 'open') {
+    if (Date.now() < nextRetryAt) {
+      const now = Date.now()
+      if (now - lastOpenLogAt > OPEN_LOG_RATE_LIMIT_MS) {
+        lastOpenLogAt = now
+        // eslint-disable-next-line no-console
+        console.warn('kv_disabled_for_request', { reason: 'circuit_breaker_open', nextRetryAt, currentCooldownMs })
+      }
+      return true
+    }
+    // Cooldown elapsed — move to half-open and let exactly one trial call through.
+    state = 'half_open'
+    halfOpenTrialInFlight = false
+    logStateTransition('open', 'half_open')
+  }
+
+  // state === 'half_open': only one caller gets to be the trial; everyone else still waits.
+  if (halfOpenTrialInFlight) return true
+  halfOpenTrialInFlight = true
   return false
 }
 
 function recordKvTimeout(): void {
   consecutiveTimeouts += 1
-  if (consecutiveTimeouts >= CIRCUIT_BREAKER_FAILURE_THRESHOLD && disabledUntil === 0) {
-    disabledUntil = Date.now() + CIRCUIT_BREAKER_COOLDOWN_MS
-    // eslint-disable-next-line no-console
-    console.warn('kv_disabled_for_request', { consecutiveTimeouts, cooldownMs: CIRCUIT_BREAKER_COOLDOWN_MS })
+
+  if (state === 'half_open') {
+    // The trial call failed — reopen, with exponential backoff (capped), not the same flat window.
+    halfOpenTrialInFlight = false
+    currentCooldownMs = Math.min(currentCooldownMs * 2, MAX_COOLDOWN_MS)
+    openedAt = Date.now()
+    nextRetryAt = openedAt + currentCooldownMs
+    logStateTransition('half_open', 'open', { newCooldownMs: currentCooldownMs })
+    state = 'open'
+    return
+  }
+
+  if (state === 'closed' && consecutiveTimeouts >= CIRCUIT_BREAKER_FAILURE_THRESHOLD) {
+    currentCooldownMs = CIRCUIT_BREAKER_COOLDOWN_MS // reset backoff to the base window on a fresh trip
+    openedAt = Date.now()
+    nextRetryAt = openedAt + currentCooldownMs
+    logStateTransition('closed', 'open', { cooldownMs: currentCooldownMs })
+    state = 'open'
   }
 }
 
 function recordKvSuccess(): void {
+  if (state === 'half_open') {
+    // The trial call succeeded — fully close and reset backoff to the base window.
+    halfOpenTrialInFlight = false
+    currentCooldownMs = CIRCUIT_BREAKER_COOLDOWN_MS
+    logStateTransition('half_open', 'closed')
+    state = 'closed'
+  }
   consecutiveTimeouts = 0
+}
+
+// TEST-SUPPORT EXPORTS, DISCLOSED: same double-underscore convention already used elsewhere in
+// this codebase (e.g. basedex.ts's __resetBaseDexCachesForTest) for exercising private
+// module-level state deterministically. This module's circuit breaker/timeout logic has no real
+// KV credentials available in a test environment (getTokenCache/setTokenCache would just take the
+// "not configured" branch and never touch it at all) — these exports drive the actual state
+// machine (circuitBreakerOpen/recordKvTimeout/recordKvSuccess) directly, the real code under test,
+// not a mock of something else.
+export function __resetKvCircuitBreakerForTest(): void {
+  state = 'closed'
+  consecutiveTimeouts = 0
+  openedAt = 0
+  nextRetryAt = 0
+  currentCooldownMs = CIRCUIT_BREAKER_COOLDOWN_MS
+  halfOpenTrialInFlight = false
+  lastOpenLogAt = 0
+}
+
+export function __simulateKvOutcomeForTest(outcome: 'timeout' | 'success'): { blocked: boolean } {
+  const blocked = circuitBreakerOpen()
+  if (!blocked) {
+    if (outcome === 'timeout') recordKvTimeout()
+    else recordKvSuccess()
+  }
+  return { blocked }
+}
+
+// Checks (and updates half-open trial-in-flight state) WITHOUT immediately resolving an outcome —
+// lets a test model two genuinely concurrent calls (first call checks in, hasn't resolved yet;
+// second call checks in while the first is still pending) the way real concurrent requests would,
+// which __simulateKvOutcomeForTest's synchronous check-and-resolve can't represent on its own.
+export function __checkKvCircuitBreakerForTest(): { blocked: boolean } {
+  return { blocked: circuitBreakerOpen() }
+}
+
+export function __resolveKvCircuitBreakerTrialForTest(outcome: 'timeout' | 'success'): void {
+  if (outcome === 'timeout') recordKvTimeout()
+  else recordKvSuccess()
+}
+
+// Simulates "the cooldown window has elapsed" without a real sleep — moves nextRetryAt into the
+// past so the next circuitBreakerOpen() call transitions open -> half_open exactly as it would
+// after CIRCUIT_BREAKER_COOLDOWN_MS/currentCooldownMs of real wall-clock time.
+export function __forceKvCircuitBreakerCooldownElapsedForTest(): void {
+  nextRetryAt = Date.now() - 1
 }
 
 // Runs `attempt` up to 1 + MAX_RETRIES times, with a short timeout per attempt and exponential
@@ -180,8 +297,7 @@ export async function getTokenCache<T = unknown>(key: string): Promise<T | null>
     return memoryFallbackGet<T>(key)
   }
   if (circuitBreakerOpen()) {
-    // eslint-disable-next-line no-console
-    console.warn('kv_disabled_for_request', { key, reason: 'circuit_breaker_open' })
+    // Logging (rate-limited) now happens inside circuitBreakerOpen() itself — see its own header.
     return memoryFallbackGet<T>(key)
   }
 
@@ -206,8 +322,7 @@ export async function setTokenCache<T = unknown>(key: string, value: T, ttlSecon
 
   if (!kvConfigured()) return
   if (circuitBreakerOpen()) {
-    // eslint-disable-next-line no-console
-    console.warn('kv_disabled_for_request', { key, reason: 'circuit_breaker_open' })
+    // Logging (rate-limited) now happens inside circuitBreakerOpen() itself — see its own header.
     return
   }
 

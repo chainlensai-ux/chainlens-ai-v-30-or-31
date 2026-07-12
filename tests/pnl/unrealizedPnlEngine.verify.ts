@@ -20,7 +20,11 @@
 // >1e9 can ever pass a (0, 1e6] guard, so that clamp branch is structurally unreachable and was not
 // implemented (no fake/dead code, and no test for an input that cannot exist under the guard this
 // file also verifies). The engine still has a real, tested clamp — on the COMPUTED
-// unrealizedPnlUsd, not on the raw price — covered by Case 5 below.
+// unrealizedPnlUsd, not on the raw price — covered by the "Clamp behavior test" below.
+//
+// CASE NUMBERING NOTE: an earlier task's "Case 5" meant "mixed portfolio" (kept below, still
+// covered) — a later task separately defined "Case 5" as "empty token set." Both are real, useful,
+// non-conflicting scenarios; kept both, with descriptive (not renumbered) names to avoid confusion.
 
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
@@ -235,5 +239,21 @@ describe('computeUnrealizedPnl — total/exclusion aggregation across mixed toke
     assert.equal(result.totalUnrealizedPnlUsd, 30) // only the one 'ok' token contributes
     assert.deepEqual(result.excludedFromPnl.sort(), ['0xmissing1', '0xmissing2'])
     assert.equal(result.integritySummary, 'partial') // one ok, two failed
+  })
+})
+
+describe('Empty token set', () => {
+  it('returns integritySummary "ok" and tokensProcessed 0 for an empty holdings list', async () => {
+    const fetchPriceAtTime: GetPriceAtTimeFn = async () => priceResult(2)
+    const result = await computeUnrealizedPnl(
+      { chain: 'base', walletAddress: '0xwallet', holdings: [] },
+      fetchPriceAtTime,
+    )
+    assert.equal(result.integritySummary, 'ok') // vacuously true — nothing failed
+    assert.equal(result.tokensProcessed, 0)
+    assert.equal(result.tokens.length, 0)
+    assert.equal(result.totalUnrealizedPnlUsd, 0)
+    assert.deepEqual(result.excludedFromPnl, [])
+    assert.deepEqual(result.integrityCounts, { ok: 0, partial: 0, failed: 0, missing_cost_basis: 0, missing_evidence: 0 })
   })
 })
