@@ -99,4 +99,26 @@ export function recordRouterCandidate(chain: string, address: string, evidence: 
     address: addr,
     evidence,
   })
+  // eslint-disable-next-line no-console
+  console.warn('[router-discovery] candidate requires review')
+}
+
+// MANUAL PROMOTION, DISCLOSED: the task's own snippet assumed KNOWN_DEX_ROUTER_ADDRESSES is a
+// `{ [chainId]: Set<string> }` map, but the real registry (src/pipeline/index.ts) is a single flat
+// `Set<string>`, deliberately chain-unaware (see that file's own comment on why: sellTimelineV2's
+// `knownDexRouterAddresses` contract is flat too). Restructuring it into a per-chain map would be a
+// materially bigger change than "add a promotion function" and would also require updating the
+// sellTimelineV2 call site's wiring — out of scope here. This takes the real registry Set as an
+// explicit argument (rather than importing it from './index', which would create a circular
+// import, since index.ts already imports this file) so the caller in index.ts passes its own
+// KNOWN_DEX_ROUTER_ADDRESSES directly.
+//
+// Never called automatically anywhere in this codebase — the only way this runs is if a human
+// (or a future explicit tool/script) calls it by hand with a specific address. No code path in
+// runWalletScan() calls this.
+export function promoteRouterCandidate(knownRouters: Set<string>, chain: string, address: string): void {
+  const addr = address.toLowerCase()
+  knownRouters.add(addr)
+  // eslint-disable-next-line no-console
+  console.warn('[router-discovery] promoted router (manual)', { chain, address: addr })
 }
