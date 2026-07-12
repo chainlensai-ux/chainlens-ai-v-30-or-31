@@ -50,6 +50,15 @@ export type WalletPriceLookups = {
   // real transaction pricing specifically). Never fabricated; a straight pass-through of
   // pricingAtTimeEngine's own real sourceBreakdown.
   sourceBreakdown: SourceBreakdown
+  // PRICING-UNAVAILABLE TOKENS, DISCLOSED: this file has no "pricedTokens"/"portfolio value"
+  // concept to exclude a token from — those live in a completely separate module chain
+  // (workers/walletScanV2.ts's own fetchAllHoldings/priceHoldings/buildPortfolio), not here. What
+  // this file CAN honestly report: the distinct (chain:token) keys where every held token's
+  // "current" price lookup came back null (all real sources — GoldRush, DexScreener, CoinGecko,
+  // basedex, GeckoTerminal — genuinely found nothing). Purely additive diagnostic; does not change
+  // priceUsdLookup/currentPriceUsdLookup's existing behavior (which already returns null for these
+  // honestly, same as before this change).
+  pricingUnavailableTokens: string[]
 }
 
 // Real fix: pre-resolves historical USD pricing (at each event's own real timestamp) for every
@@ -90,5 +99,13 @@ export async function priceLotsForWallet(params: {
   const currentPriceUsdLookup: CurrentPriceUsdLookup = (token, chain) =>
     atNow.costUsd[`current:${chain}:${token.toLowerCase()}`] ?? null
 
-  return { priceUsdLookup, currentPriceUsdLookup, sourceBreakdown: atTradeTime.sourceBreakdown }
+  const pricingUnavailableTokens = nowEntries
+    .filter((entry) => atNow.costUsd[entry.txHash] == null)
+    .map((entry) => `${entry.chain}:${entry.token.toLowerCase()}`)
+  if (pricingUnavailableTokens.length > 0) {
+    // eslint-disable-next-line no-console
+    console.warn('[priceLotsForWallet] tokens with no price from any source', { count: pricingUnavailableTokens.length, tokens: pricingUnavailableTokens })
+  }
+
+  return { priceUsdLookup, currentPriceUsdLookup, sourceBreakdown: atTradeTime.sourceBreakdown, pricingUnavailableTokens }
 }

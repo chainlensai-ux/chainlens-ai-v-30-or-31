@@ -15,6 +15,7 @@ import type { RawProviderEvent, SupportedChain } from '../modules/providerFetchW
 import { normalizeEvents } from '../modules/normalization/index'
 import { buildCounterpartyStats, classifyRouterLikeEvent, recordRouterCandidate } from './routerDiscovery'
 import { adaptPnlSummaryForUi } from './pnlSummaryAdapter'
+import { withGeckoTerminalFallback, withSanePriceGuard } from './pricingAtTimeAdapter'
 import type { NormalizedEvent } from '../modules/normalization/types'
 import { buildChainSelectionObject } from '../modules/chainSelection/index'
 import type { ChainSelectionResult } from '../modules/chainSelection/types'
@@ -117,7 +118,16 @@ function buildPriceSources(): PriceSources {
   // process's env at module load, without needing a separate deployment-inspection tool.
   // eslint-disable-next-line no-console
   console.warn(`[pipeline] buildPriceSources: real GoldRush key present = ${Boolean(apiKey)}`)
-  const fallback = withPriceSourceCache(multiProviderPriceSource(), 'fallback')
+  // FREE HISTORICAL PRICING, DISCLOSED (src/pipeline/pricingAtTimeAdapter.ts +
+  // src/pipeline/providers/geckoTerminalPriceSource.ts): the existing multiProviderPriceSource chain
+  // (DexScreener/CoinGecko/basedex) now additionally falls through to a real GeckoTerminal
+  // historical lookup when it finds nothing, and every price this function returns (both primary
+  // and fallback) is sanity-guarded against out-of-range garbage ($0 < price <= $1e6) before it can
+  // ever reach fifoEngine/pnlEngine.
+  const fallback = withSanePriceGuard(
+    withPriceSourceCache(withGeckoTerminalFallback(multiProviderPriceSource()), 'fallback'),
+    'fallback',
+  )
   if (!apiKey) return { primary: fallback, fallback: noPriceSources().fallback }
   // BUG FIX, DISCLOSED: `new GoldRushClient(apiKey)` throws synchronously (a plain object, not an
   // Error instance — confirmed by reading the SDK's own source) when apiKey fails its local
@@ -129,7 +139,13 @@ function buildPriceSources(): PriceSources {
   // down the whole V2 pipeline at cold start.
   try {
     const client = new GoldRushClient(apiKey)
-    return { primary: withPriceSourceCache(goldrushPriceSource(client), 'primary', isKnownGoldrushNegative), fallback }
+    return {
+      primary: withSanePriceGuard(
+        withPriceSourceCache(goldrushPriceSource(client), 'primary', isKnownGoldrushNegative),
+        'primary',
+      ),
+      fallback,
+    }
   } catch (err) {
     // The SDK throws a plain { error_message } object here, not an Error instance (confirmed by
     // reading its source) — extracted explicitly so this log is actually useful, not "[object Object]".
