@@ -120,7 +120,16 @@ export type UnrealizedPnlResult = {
   // Per-integrity-classification counts and the derived 'ok'/'partial'/'failed' summary — same
   // values as the [pnl_final_verification] log emits, also returned so a caller/test doesn't have
   // to scrape console output to observe them.
-  integrityCounts: { ok: number; missing_cost_basis: number; missing_evidence: number }
+  //
+  // `partial` / `failed` FIELDS, DISCLOSED: per-token `integrity` only ever takes 3 real values
+  // (ok / missing_cost_basis / missing_evidence) — no per-token classification is ever literally
+  // 'partial' or 'failed' (those exist only as the AGGREGATE integritySummary). `partial` here
+  // means something real and distinct instead of a fabricated always-0 field: the count of
+  // evidence-'ok' tokens that still FAIL the reasonableness check (a real cost basis was found,
+  // but the resulting PnL is implausible relative to it — the actual "-3.8e34-style" bug class).
+  // `failed` is always 0 — disclosed rather than silently omitted, since no per-token state maps
+  // to it; kept in the type only because it was explicitly requested.
+  integrityCounts: { ok: number; partial: number; failed: number; missing_cost_basis: number; missing_evidence: number }
   integritySummary: 'ok' | 'partial' | 'failed'
 }
 
@@ -135,7 +144,7 @@ function isWithinReasonableRangeOfCostBasis(costBasisUsd: number | null, unreali
   return Math.abs(unrealizedPnlUsd) <= Math.max(costBasisUsd, 1) * 1e6
 }
 
-async function computeTokenPnl(holding: Holding, fetchPriceAtTime: GetPriceAtTimeFn): Promise<TokenUnrealizedPnl> {
+async function computeTokenPnl(holding: Holding, walletAddress: string, fetchPriceAtTime: GetPriceAtTimeFn): Promise<TokenUnrealizedPnl> {
   const priceResult: PricingAtTimeResult = await fetchPriceAtTime({
     chain: holding.chain,
     tokenAddress: holding.tokenAddress,
@@ -161,8 +170,14 @@ async function computeTokenPnl(holding: Holding, fetchPriceAtTime: GetPriceAtTim
     // (this is a diagnostic signal, not a second clamp — see isWithinReasonableRangeOfCostBasis).
     const unrealizedPnlWithinReasonableRangeOfCostBasis = isWithinReasonableRangeOfCostBasis(costBasisUsd, unrealizedPnlUsd)
 
+    // NOTE ON `symbol`, DISCLOSED: the requested log fields included a token `symbol` — Holding
+    // has no such field (only tokenAddress/chain/amount/currentPriceUsd/currentValueUsd/
+    // acquiredAtTimestamp — confirmed by reading the type above). Omitted rather than logging a
+    // fabricated/undefined value.
     // eslint-disable-next-line no-console
     console.warn('[verify_pnl_engine]', {
+      walletAddress,
+      chain: holding.chain,
       token: holding.tokenAddress,
       price: holding.currentPriceUsd,
       costBasisUsd,
@@ -175,6 +190,8 @@ async function computeTokenPnl(holding: Holding, fetchPriceAtTime: GetPriceAtTim
     })
     // eslint-disable-next-line no-console
     console.warn('[verify_price_fetch]', {
+      walletAddress,
+      chain: holding.chain,
       token: holding.tokenAddress,
       currentPriceOk,
       historicalPriceOk,
@@ -295,7 +312,7 @@ export async function computeUnrealizedPnl(
   req: UnrealizedPnlRequest,
   fetchPriceAtTime: GetPriceAtTimeFn = getPriceAtTime,
 ): Promise<UnrealizedPnlResult> {
-  const tokens = await Promise.all(req.holdings.map((h) => computeTokenPnl(h, fetchPriceAtTime)))
+  const tokens = await Promise.all(req.holdings.map((h) => computeTokenPnl(h, req.walletAddress, fetchPriceAtTime)))
 
   // Sum strictly over integrity === 'ok' tokens — never a null-coalesced 0 for an excluded token,
   // per this task's explicit "never treat null as 0" requirement. `okTokens` narrows
@@ -308,12 +325,6 @@ export async function computeUnrealizedPnl(
   // integrity (not inferred from nullness) so the two can never drift apart.
   const excludedFromPnl = tokens.filter((t) => t.integrity !== 'ok').map((t) => t.tokenAddress)
 
-  const integrityCounts = {
-    ok: tokens.filter((t) => t.integrity === 'ok').length,
-    missing_cost_basis: tokens.filter((t) => t.integrity === 'missing_cost_basis').length,
-    missing_evidence: tokens.filter((t) => t.integrity === 'missing_evidence').length,
-  }
-
   // "Core integrity checks" (per this task's own definition of integritySummary) means BOTH real
   // evidence availability (per-token `integrity === 'ok'`) AND passing the reasonableness check —
   // a token can be integrity:'ok' (real cost basis found) yet still have an implausible clamped
@@ -321,7 +332,19 @@ export async function computeUnrealizedPnl(
   // per-token `integrity` field itself stays a pure evidence-availability classification (kept
   // diagnostic-only, unmutated, per this task's own instruction not to let these new flags change
   // business logic at the per-token level).
-  const fullyTrustworthyCount = okTokens.filter((t) => isWithinReasonableRangeOfCostBasis(t.costBasisUsd, t.unrealizedPnlUsd)).length
+  const reasonableOkTokens = okTokens.filter((t) => isWithinReasonableRangeOfCostBasis(t.costBasisUsd, t.unrealizedPnlUsd))
+  const unreasonableOkTokens = okTokens.filter((t) => !isWithinReasonableRangeOfCostBasis(t.costBasisUsd, t.unrealizedPnlUsd))
+  const fullyTrustworthyCount = reasonableOkTokens.length
+
+  const integrityCounts = {
+    ok: okTokens.length,
+    // See UnrealizedPnlResult's own field comment: this is evidence-'ok' tokens that still fail
+    // the reasonableness check, not a fabricated always-0 placeholder.
+    partial: unreasonableOkTokens.length,
+    failed: 0,
+    missing_cost_basis: tokens.filter((t) => t.integrity === 'missing_cost_basis').length,
+    missing_evidence: tokens.filter((t) => t.integrity === 'missing_evidence').length,
+  }
 
   // Simple string classification: 'ok' when every token both priced cleanly AND passed the
   // reasonableness check, 'failed' when none did, 'partial' otherwise. Only meaningful for a
@@ -333,6 +356,14 @@ export async function computeUnrealizedPnl(
         ? 'failed'
         : 'partial'
 
+  // Diagnostic-only aggregate flags. `anyUnrealizedPnlClamped` (NOT "anyPriceClamped" — see file
+  // header disclosure: a price clamp at 1e9 is unreachable given the ($0, $1e6] sanity guard this
+  // task also asked to keep, so it isn't implemented; this instead reports the real, existing
+  // clamp on the COMPUTED unrealizedPnlUsd). Detected by re-checking the clamp boundary rather than
+  // threading a new per-token flag through TokenUnrealizedPnl's public shape.
+  const anyUnrealizedPnlClamped = okTokens.some((t) => Math.abs(t.unrealizedPnlUsd) === UNREALIZED_PNL_CLAMP_USD)
+  const anyUnreasonablePnL = unreasonableOkTokens.length > 0
+
   // eslint-disable-next-line no-console
   console.warn('[pnl_final_verification]', {
     walletAddress: req.walletAddress,
@@ -342,6 +373,8 @@ export async function computeUnrealizedPnl(
     tokensProcessed: tokens.length,
     integrityCounts,
     integritySummary,
+    anyUnrealizedPnlClamped,
+    anyUnreasonablePnL,
   })
 
   return { totalUnrealizedPnlUsd, tokens, excludedFromPnl, integrityCounts, integritySummary }

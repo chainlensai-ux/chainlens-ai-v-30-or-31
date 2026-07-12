@@ -13,6 +13,14 @@
 // and lib/server/cache/v2StageCache.ts — a completely separate module this engine never calls.
 // There is therefore no "circuit breaker triggered -> auto-reset + retry" test case here: writing
 // one would test behavior that does not exist in the code under test.
+//
+// PRICE-CLAMP-AT-1E9 CONTRADICTION, DISCLOSED: a later task asked to keep the existing ($0, $1e6]
+// sanity guard (reject anything outside it as missing_evidence) AND ALSO clamp a price ">1e9 but
+// still passing the sanity guard" to 1e9. Those two requirements are mutually exclusive — nothing
+// >1e9 can ever pass a (0, 1e6] guard, so that clamp branch is structurally unreachable and was not
+// implemented (no fake/dead code, and no test for an input that cannot exist under the guard this
+// file also verifies). The engine still has a real, tested clamp — on the COMPUTED
+// unrealizedPnlUsd, not on the raw price — covered by Case 5 below.
 
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
@@ -60,7 +68,10 @@ describe('Case 1 — normal, sane prices', () => {
     assert.equal(result.totalUnrealizedPnlUsd, 30)
     assert.deepEqual(result.excludedFromPnl, [])
     assert.equal(result.integritySummary, 'ok')
-    assert.deepEqual(result.integrityCounts, { ok: 1, missing_cost_basis: 0, missing_evidence: 0 })
+    assert.deepEqual(result.integrityCounts, { ok: 1, partial: 0, failed: 0, missing_cost_basis: 0, missing_evidence: 0 })
+    assert.equal(result.integrityCounts.failed, 0) // never a per-token 'failed' — see engine's own field comment
+    assert.equal(result.integrityCounts.missing_cost_basis, 0)
+    assert.equal(result.integrityCounts.missing_evidence, 0)
   })
 })
 
@@ -123,11 +134,50 @@ describe('Case 4 — explosion-style unrealized PnL via injected price', () => {
     // and the clamped PnL (1e9) still exceeds it -> not "reasonable" even post-clamp.
     assert.ok(token.costBasisUsd != null && token.costBasisUsd < 1)
     assert.equal(result.integritySummary, 'failed') // integrity 'ok' alone isn't enough for 'ok' overall
+    // integrityCounts.ok still counts this token (evidence-based classification is unchanged);
+    // integrityCounts.partial captures the "ok but unreasonable" distinction instead.
+    assert.equal(result.integrityCounts.ok, 1)
+    assert.equal(result.integrityCounts.partial, 1)
+    assert.equal(result.integrityCounts.failed, 0)
   })
 })
 
-describe('Case 5 — separate clamp test (does not overlap with missing_evidence)', () => {
-  it('clamps a genuinely extreme but sanity-guard-passing PnL to +-1e9 while integrity stays "ok"', async () => {
+describe('Case 5 — mixed portfolio (normal + missing_cost_basis + missing_evidence + implausible)', () => {
+  it('produces integritySummary "partial" with counts reflecting the exact mix', async () => {
+    const fetchPriceAtTime: GetPriceAtTimeFn = async (req) => {
+      if (req.tokenAddress === '0xnormal') return priceResult(2)
+      if (req.tokenAddress === '0xmissingcost') return priceResult(null)
+      if (req.tokenAddress === '0ximplausible') return priceResult(1e-10)
+      return priceResult(2)
+    }
+    const result = await computeUnrealizedPnl(
+      {
+        chain: 'base',
+        walletAddress: '0xwallet',
+        holdings: [
+          holding({ tokenAddress: '0xnormal', currentPriceUsd: 5, currentValueUsd: 50 }),
+          holding({ tokenAddress: '0xmissingcost' }),
+          holding({ tokenAddress: '0xmissingevidence', currentPriceUsd: 1e20, currentValueUsd: 1e21 }),
+          holding({ tokenAddress: '0ximplausible', amount: 1e9, currentPriceUsd: 1e6, currentValueUsd: 1e15 }),
+        ],
+      },
+      fetchPriceAtTime,
+    )
+    assert.equal(result.integritySummary, 'partial')
+    // 0xnormal AND 0ximplausible are both evidence-'ok' (ok: 2) — 0ximplausible just also fails
+    // the reasonableness check (partial: 1, counted alongside, not instead of, ok).
+    assert.deepEqual(result.integrityCounts, { ok: 2, partial: 1, failed: 0, missing_cost_basis: 1, missing_evidence: 1 })
+    // 0xnormal contributes 30; 0ximplausible is integrity 'ok' too, so its CLAMPED 1e9 is summed
+    // into the total as well (integrity, not reasonableness, gates totalUnrealizedPnlUsd).
+    assert.equal(result.totalUnrealizedPnlUsd, 30 + 1e9)
+    assert.ok(result.excludedFromPnl.includes('0xmissingcost'))
+    assert.ok(result.excludedFromPnl.includes('0xmissingevidence'))
+    assert.ok(!result.excludedFromPnl.includes('0xnormal'))
+  })
+})
+
+describe('Clamp behavior test (separate from missing_evidence)', () => {
+  it('clamps a genuinely extreme but sanity-guard-passing PnL to +-1e9 while integrity stays "ok" and integritySummary stays "ok"', async () => {
     const fetchPriceAtTime: GetPriceAtTimeFn = async () => priceResult(0.0001) // bought near-zero
     const result = await computeUnrealizedPnl(
       {
@@ -145,6 +195,7 @@ describe('Case 5 — separate clamp test (does not overlap with missing_evidence
     // Here costBasisUsd = 1e9 * 0.0001 = $100,000 -> threshold = 1e11, clamped 1e9 is within it ->
     // genuinely "reasonable" (unlike Case 4's tiny cost basis) -> integritySummary really is 'ok'.
     assert.equal(result.integritySummary, 'ok')
+    assert.equal(result.integrityCounts.partial, 0)
   })
 })
 
