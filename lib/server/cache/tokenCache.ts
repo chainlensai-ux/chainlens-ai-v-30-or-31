@@ -23,7 +23,6 @@
 // (requirement 4) still protects against any payload that ends up oversized regardless of cause.
 
 import { kv } from '@vercel/kv'
-import { gzipSync, gunzipSync } from 'node:zlib'
 
 const KV_CALL_TIMEOUT_MS = 250
 const MAX_RETRIES = 2 // total attempts = 1 + MAX_RETRIES = 3
@@ -141,19 +140,29 @@ function memoryFallbackSet<T>(key: string, value: T, ttlSeconds: number): void {
   memoryFallback.set(key, { value, expiresAt: Date.now() + ttlSeconds * 1000 })
 }
 
-// COMPRESSION, DISCLOSED: gzip (Node's built-in zlib, no new dependency) + base64, since KV values
-// here are always JSON. BACKWARD COMPATIBLE READ: a value written before this change (raw JSON
-// string, not gzip+base64) fails gunzip and falls back to a direct JSON.parse of the raw stored
-// value, so existing cached entries aren't treated as corrupt the moment this ships.
-function compress(serialized: string): string {
-  return gzipSync(Buffer.from(serialized, 'utf8')).toString('base64')
+// COMPRESSION, DISCLOSED — EDGE RUNTIME FIX: originally used Node's built-in `node:zlib`
+// (gzipSync/gunzipSync), which broke the production build: this module is transitively imported
+// by an Edge Runtime route (app/api/scan-v2/full-scan-edge/route.ts -> src/deployment/router.ts ->
+// src/deployment/scanCache.ts -> src/pipeline/runWalletScanV2.ts -> v2StageCache.ts ->
+// tokenCache.ts), and `node:zlib` is not supported there ("Failed to load external module
+// node:zlib: Native module not found"). Replaced with the Compression Streams API
+// (CompressionStream/DecompressionStream) — a standard Web API, not a Node built-in — which both
+// the Node.js runtime and Vercel's Edge Runtime support natively, no import required. Still
+// gzip + base64, since KV values here are always JSON. BACKWARD COMPATIBLE READ: a value written
+// before either compression change (raw JSON string) fails decompression and falls back to a
+// direct JSON.parse of the raw stored value, so existing cached entries aren't treated as corrupt.
+async function compress(serialized: string): Promise<string> {
+  const compressedStream = new Blob([serialized]).stream().pipeThrough(new CompressionStream('gzip'))
+  const buffer = await new Response(compressedStream).arrayBuffer()
+  return Buffer.from(buffer).toString('base64')
 }
 
-function decompress<T>(raw: unknown): T | null {
+async function decompress<T>(raw: unknown): Promise<T | null> {
   if (typeof raw !== 'string') return raw as T // legacy: kv.get<T> may already have deserialized a non-gzip value
   try {
-    const decompressed = gunzipSync(Buffer.from(raw, 'base64')).toString('utf8')
-    return JSON.parse(decompressed) as T
+    const decompressedStream = new Blob([Buffer.from(raw, 'base64')]).stream().pipeThrough(new DecompressionStream('gzip'))
+    const buffer = await new Response(decompressedStream).arrayBuffer()
+    return JSON.parse(Buffer.from(buffer).toString('utf8')) as T
   } catch {
     try {
       return JSON.parse(raw) as T // legacy plain-JSON value written before compression existed
@@ -183,7 +192,7 @@ export async function getTokenCache<T = unknown>(key: string): Promise<T | null>
   }
   if (raw == null) return null // real cache miss, not a failure
 
-  const value = decompress<T>(raw)
+  const value = await decompress<T>(raw)
   if (value != null) memoryFallbackSet(key, value, 45) // keep the fallback layer warm on a real hit too
   return value
 }
@@ -203,7 +212,7 @@ export async function setTokenCache<T = unknown>(key: string, value: T, ttlSecon
   }
 
   const serialized = JSON.stringify(value)
-  const compressed = compress(serialized)
+  const compressed = await compress(serialized)
   const payloadBytes = Buffer.byteLength(compressed, 'utf8')
   if (payloadBytes > MAX_PAYLOAD_BYTES) {
     // eslint-disable-next-line no-console
