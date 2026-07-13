@@ -76,6 +76,12 @@ describe('Case 1 — normal, sane prices', () => {
     assert.equal(result.integrityCounts.failed, 0) // never a per-token 'failed' — see engine's own field comment
     assert.equal(result.integrityCounts.missing_cost_basis, 0)
     assert.equal(result.integrityCounts.missing_evidence, 0)
+    // AUDIT FIX assertions: walletAddress/chain/anyUnrealizedPnlClamped/anyUnreasonablePnL are now
+    // genuinely returned (not just logged) — asserted directly against the return value.
+    assert.equal(result.walletAddress, '0xwallet')
+    assert.equal(result.chain, 'base')
+    assert.equal(result.anyUnrealizedPnlClamped, false)
+    assert.equal(result.anyUnreasonablePnL, false)
   })
 })
 
@@ -99,6 +105,11 @@ describe('Case 2 — corrupted cost basis (negative amount -> negative cost basi
     // Only one token in this wallet and it failed -> deterministically 'failed' here, not just
     // "one of the two allowed values" by luck.
     assert.equal(result.integritySummary, 'failed')
+    assert.equal(result.walletAddress, '0xwallet')
+    assert.equal(result.chain, 'base')
+    // No 'ok' tokens at all here -> neither aggregate flag can be true (both derive from okTokens).
+    assert.equal(result.anyUnrealizedPnlClamped, false)
+    assert.equal(result.anyUnreasonablePnL, false)
   })
 })
 
@@ -114,6 +125,10 @@ describe('Case 3 — absurd current price (1e20) -> missing_evidence, never "cla
     assert.equal(token.unrealizedPnlUsd, null)
     assert.ok(result.excludedFromPnl.includes('0xabsurd'))
     assert.equal(result.integritySummary, 'failed') // only token in this wallet, and it failed
+    assert.equal(result.walletAddress, '0xwallet')
+    assert.equal(result.chain, 'base')
+    assert.equal(result.anyUnrealizedPnlClamped, false)
+    assert.equal(result.anyUnreasonablePnL, false)
   })
 })
 
@@ -143,6 +158,12 @@ describe('Case 4 — explosion-style unrealized PnL via injected price', () => {
     assert.equal(result.integrityCounts.ok, 1)
     assert.equal(result.integrityCounts.partial, 1)
     assert.equal(result.integrityCounts.failed, 0)
+    assert.equal(result.walletAddress, '0xwallet')
+    assert.equal(result.chain, 'base')
+    // The one 'ok' token's PnL was both clamped (raw ~1e15 -> 1e9) AND unreasonable relative to
+    // its own tiny cost basis — both flags real and true here, not fabricated.
+    assert.equal(result.anyUnrealizedPnlClamped, true)
+    assert.equal(result.anyUnreasonablePnL, true)
   })
 })
 
@@ -177,6 +198,12 @@ describe('Case 5 — mixed portfolio (normal + missing_cost_basis + missing_evid
     assert.ok(result.excludedFromPnl.includes('0xmissingcost'))
     assert.ok(result.excludedFromPnl.includes('0xmissingevidence'))
     assert.ok(!result.excludedFromPnl.includes('0xnormal'))
+    assert.equal(result.walletAddress, '0xwallet')
+    assert.equal(result.chain, 'base')
+    // 0ximplausible is the one 'ok' token whose PnL was clamped and unreasonable; 0xnormal is
+    // 'ok', not clamped, reasonable — the aggregate flags are true because at least one qualifies.
+    assert.equal(result.anyUnrealizedPnlClamped, true)
+    assert.equal(result.anyUnreasonablePnL, true)
   })
 })
 

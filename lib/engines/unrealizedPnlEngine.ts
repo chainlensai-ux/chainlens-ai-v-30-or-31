@@ -108,6 +108,12 @@ export type TokenUnrealizedPnl = {
 }
 
 export type UnrealizedPnlResult = {
+  // AUDIT FIX, DISCLOSED: walletAddress/chain/anyUnrealizedPnlClamped/anyUnreasonablePnL were
+  // previously computed and included in the [pnl_final_verification] log only, never threaded into
+  // this returned type/object — a real gap an audit caught (no test asserted on these via the
+  // return value, which is exactly how it went unnoticed). Now genuinely returned, not just logged.
+  walletAddress: string
+  chain: SupportedChain
   // Sum over only tokens with integrity 'ok' (real cost basis, non-null PnL) — a token excluded
   // for missing evidence/cost-basis never silently contributes 0 or a fabricated value here.
   totalUnrealizedPnlUsd: number
@@ -134,6 +140,9 @@ export type UnrealizedPnlResult = {
   // Same value as `tokens.length` — returned directly (not just logged) so a caller/test doesn't
   // need to derive it from the tokens array itself.
   tokensProcessed: number
+  // Diagnostic-only aggregate flags — see their own computation site below for what each means.
+  anyUnrealizedPnlClamped: boolean
+  anyUnreasonablePnL: boolean
 }
 
 function isSanePrice(price: number): boolean {
@@ -380,5 +389,16 @@ export async function computeUnrealizedPnl(
     anyUnreasonablePnL,
   })
 
-  return { totalUnrealizedPnlUsd, tokens, excludedFromPnl, integrityCounts, integritySummary, tokensProcessed: tokens.length }
+  return {
+    walletAddress: req.walletAddress,
+    chain: req.chain,
+    totalUnrealizedPnlUsd,
+    tokens,
+    excludedFromPnl,
+    integrityCounts,
+    integritySummary,
+    tokensProcessed: tokens.length,
+    anyUnrealizedPnlClamped,
+    anyUnreasonablePnL,
+  }
 }

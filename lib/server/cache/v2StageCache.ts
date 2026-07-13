@@ -35,15 +35,39 @@
 // failed/timed-out call always falls through to `compute()`, never throws, never blocks the
 // caller (requirements 3 and 6).
 
-import { kv } from '@vercel/kv'
+import { kv as realKv } from '@vercel/kv'
 
 const KV_CALL_TIMEOUT_MS = 250
 const MAX_RETRIES = 2 // total attempts = 1 + MAX_RETRIES = 3
 const RETRY_BACKOFF_MS = [100, 200]
 export const MAX_PAYLOAD_BYTES = 100_000 // 100kb, per this task's own requirement 5
 
+// TEST-ONLY KV CLIENT OVERRIDE, DISCLOSED: `@vercel/kv`'s real `kv` export is a lazy-initializing
+// Proxy (its `get` trap throws if KV_REST_API_URL/TOKEN aren't set, and reassigning a property on
+// it does not reliably override what a later `kv.set`/`kv.get` call actually resolves to —
+// confirmed empirically: monkey-patching `kv.set` directly still let the real network call through
+// to a fake URL, producing genuine timeouts instead of using the mock). Same "explicit optional
+// injectable" convention already used elsewhere in this codebase (e.g. priceLotsForWallet.ts's
+// `priceFn`) — `kv` below resolves to this override when a test has set one, and to the real
+// client otherwise; production code path and behavior are completely unchanged.
+let kvOverrideForTest: typeof realKv | null = null
+const kv = new Proxy(realKv, {
+  get(target, prop, receiver) {
+    const source = kvOverrideForTest ?? target
+    return Reflect.get(source, prop, receiver)
+  },
+})
+
+export function __setKvClientForTest(mockKv: Pick<typeof realKv, 'get' | 'set'>): void {
+  kvOverrideForTest = mockKv as typeof realKv
+}
+
+export function __resetKvClientForTest(): void {
+  kvOverrideForTest = null
+}
+
 function kvConfigured(): boolean {
-  return Boolean(process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN)
+  return Boolean(kvOverrideForTest) || Boolean(process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN)
 }
 
 function sleep(ms: number): Promise<void> {
@@ -215,9 +239,17 @@ async function setStageCache<T>(key: string, value: T, ttlSeconds: number): Prom
   }
 
   // eslint-disable-next-line no-console
-  console.warn('kv_payload_compressed', { key, uncompressedBytes, compressedBytes, strategyUsed: 'gzip_base64' })
+  console.warn('kv_payload_compressed', { key, uncompressedBytes, compressedBytes, strategyAttempted: 'gzip_base64', fallback: 'none' })
   await withRetriesNoBreaker(() => kv.set(key, compressedBase64, { ex: ttlSeconds }), undefined, `set:${key}`)
 }
+
+// TEST-ONLY EXPORTS, DISCLOSED: setStageCache/getStageCache themselves stay private (not part of
+// this module's real public API — withStageCache is) — these are thin aliases exported solely so
+// tests/cache/v2StageCache.test.ts can exercise the real write/read branching (small-vs-large
+// payload, compression, skip, logging) directly, same __xForTest naming convention already used
+// throughout this codebase (e.g. lib/server/cache/tokenCache.ts's own test-only exports).
+export const __setStageCacheForTest = setStageCache
+export const __getStageCacheForTest = getStageCache
 
 // DEV-ONLY KV WARM MODE: extends the effective TTL to at least 10 minutes when NODE_ENV is not
 // "production" — reduces repeat GoldRush/Alchemy CU burn while iteratively testing the same wallet
