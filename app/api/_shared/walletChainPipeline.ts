@@ -275,21 +275,38 @@ export async function buildUnrealizedPnlForChain(chain: SupportedChain, walletAd
   }
 
   const result = await computeUnrealizedPnl({ chain, walletAddress, holdings: usableHoldings })
+
+  // realizedPnlUsd, DISCLOSED: computeUnrealizedPnl has no realized-PnL concept at all (it only
+  // computes unrealized PnL on open holdings) — this sums the real `realizedPnl` field already
+  // computed by lotCloser's closeLots() (via `lots.closedLots`, already fetched above in this same
+  // function for the acquiredAtTimestamp bridge), not a fabricated or re-derived number. CAVEAT,
+  // per ClosedLot's own type comment: `pnlCurrency` may honestly be a non-USD label on a real
+  // currency mismatch — this sum assumes USD throughout, same assumption this log's other USD
+  // fields already make; not re-verified per-lot here.
+  const realizedPnlUsd = lots.closedLots.reduce((sum, lot) => sum + lot.realizedPnl, 0)
+
   // DIAGNOSTIC, DISCLOSED (audit task): real counts only, no behavior change — surfaces exactly
-  // what computeUnrealizedPnl already computed for this chain, for this specific call site,
-  // including its own integritySummary/integrityCounts (now returned by that function directly,
-  // not just logged internally — see unrealizedPnlEngine.ts).
+  // what computeUnrealizedPnl already computed for this chain, for this specific call site.
+  // NOTE: this is a pipeline-level SUMMARY, distinct from and additive to the
+  // [pnl_final_verification]/[verify_pnl_engine]/[verify_price_fetch] logs — those already fire
+  // unconditionally, per call and per token, from inside computeUnrealizedPnl/computeTokenPnl
+  // themselves (lib/engines/unrealizedPnlEngine.ts), regardless of KV circuit-breaker state,
+  // priceLotsForWallet's own evidence, fifoEngine's match status, or dust suppression (none of
+  // which this engine has any dependency on) — never duplicated here.
   // eslint-disable-next-line no-console
   console.warn('[walletChainPipeline] unrealizedPnl integrity summary', {
     chain,
     walletAddress,
     unrealizedPnlEngineRan: true,
+    realizedPnlUsd,
     totalUnrealizedPnlUsd: result.totalUnrealizedPnlUsd,
-    tokenCount: result.tokens.length,
+    tokensProcessed: result.tokensProcessed,
     excludedFromPnlCount: result.excludedFromPnl.length,
     unresolvedHoldingsCount: unresolvedHoldings.length,
     integritySummary: result.integritySummary,
     integrityCounts: result.integrityCounts,
+    anyUnrealizedPnlClamped: result.anyUnrealizedPnlClamped,
+    anyUnreasonablePnL: result.anyUnreasonablePnL,
   })
   return { chain, result, unresolvedHoldings }
 }
