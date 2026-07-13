@@ -35,6 +35,7 @@ import {
   ChainSelectionView,
   CoverageTimelineCard,
   FinalSummaryView,
+  SellActivitySummary,
   HoldingsViewV2,
   PnlStatusCard,
   RecoveryHealthCard,
@@ -525,7 +526,9 @@ export default function WalletScannerPage() {
                 onAdminAction={() => void handleScan('deep')}
               />
               <SectionDivider label="Wallet Personality" />
-              <div className="ws-card"><FinalSummaryView summary={result.finalSummary} /></div>
+              <div className="ws-card">
+                <FinalSummaryView summary={result.finalSummary} sellTimeline={result.timelines?.sellTimelineV2} />
+              </div>
 
               <SectionDivider label="PnL Summary" />
               <div className="ws-card">
@@ -534,6 +537,15 @@ export default function WalletScannerPage() {
                     result.pnlSummaryV2 (old pipeline sources) are intentionally no longer passed;
                     this component has no fallback/merge logic across multiple PnL sources anymore. */}
                 <PnlStatusCard pnlV2={result.pnlV2} />
+              </div>
+
+              {/* SELL ACTIVITY, ADDITIVE/DISCLOSED: sourced from result.timelines.sellTimelineV2 —
+                  real data the scan API already returns but this page never rendered before. This
+                  never merges into PnlStatusCard's pnlV2-derived numbers above (separate section,
+                  separate data source, no fallback either direction). */}
+              <SectionDivider label="Sell Activity" />
+              <div className="ws-card">
+                <SellActivitySummary sellTimeline={result.timelines?.sellTimelineV2} />
               </div>
 
               {/* WALLET CONDITION PANEL, DISCLOSED: renders exactly what
@@ -573,9 +585,10 @@ export default function WalletScannerPage() {
               <SectionDivider label="Window Coverage" />
               <div className="ws-card"><CoverageTimelineCard data={result.windowCoverage} /></div>
 
-              {/* Buy/Sell/SellV2/Distribution timelines are intentionally not rendered — the raw
-                  data is still returned in the scan API response (result.timelines.*), visible via
-                  the browser's Network tab, but no longer shown in this UI. */}
+              {/* Buy/Sell(legacy)/Distribution timelines are still intentionally not rendered — the
+                  raw data is still returned in the scan API response (result.timelines.*), visible
+                  via the browser's Network tab. sellTimelineV2 is the one exception, now rendered
+                  above via SellActivitySummary. */}
               <SectionDivider label="Diagnostics" optional />
               <div className="ws-card"><ChainSelectionView data={result.chainSelection} chainActivityV2={result.chainActivityV2} /></div>
             </div>

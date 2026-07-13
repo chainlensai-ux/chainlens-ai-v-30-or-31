@@ -11,8 +11,22 @@
 // text.
 import { motion } from 'framer-motion'
 import type { FinalSummary } from '@/src/modules/finalReportAssembler/types'
+import type { SellTimelineResult } from '@/src/modules/sellTimeline/types'
 import { StatusBadge, type StatusTone } from './StatusBadge'
 import { HeartbeatIcon, TrendingUpIcon, TrendingDownIcon } from './Icons'
+
+// SELL-ACTIVITY BADGE, ADDITIVE/DISCLOSED: derives "Active Seller"/"Distributor with Sell Activity"
+// purely from real sellTimelineV2.totalSells (never fabricated, never a re-derivation of
+// swapNormalizer's own classification — sellTimelineV2 already comes from the protected
+// src/modules/sellTimeline module). This is a UI-only label alongside the existing, untouched
+// walletPersonality string from finalSummary — it does not replace or alter that string.
+const ACTIVE_SELLER_THRESHOLD = 5
+
+function sellActivityLabel(totalSells: number): { label: string; tone: StatusTone } | null {
+  if (totalSells <= 0) return null
+  if (totalSells >= ACTIVE_SELLER_THRESHOLD) return { label: 'Active Seller', tone: 'warning' }
+  return { label: 'Distributor with Sell Activity', tone: 'neutral' }
+}
 
 function pnlStatusTone(status: string): StatusTone {
   if (status === 'ok') return 'success'
@@ -51,8 +65,16 @@ function SummaryRow({ label, children, index }: { label: string; children: React
   )
 }
 
-export function FinalSummaryView({ summary }: { summary: FinalSummary | null | undefined }) {
+export function FinalSummaryView({
+  summary,
+  sellTimeline,
+}: {
+  summary: FinalSummary | null | undefined
+  // Optional, additive — omitting it simply skips the sell-activity badge (no fabricated default).
+  sellTimeline?: SellTimelineResult | null
+}) {
   const walletPersonality = summary?.walletPersonality ?? 'Insufficient data to classify wallet behavior.'
+  const sellActivity = sellActivityLabel(sellTimeline?.totalSells ?? 0)
   const financialHeadline = summary?.financialStatus?.headline ?? 'PnL unavailable due to missing evidence.'
   const officialPnlStatus = summary?.financialStatus?.officialPnlStatus ?? 'unavailable'
   const rotationStyle = summary?.behavioralStatus?.rotationStyle ?? 'unknown'
@@ -79,6 +101,7 @@ export function FinalSummaryView({ summary }: { summary: FinalSummary | null | u
           Wallet Personality
         </h3>
         <StatusBadge label={officialPnlStatus.replace(/_/g, ' ')} tone={pnlStatusTone(officialPnlStatus)} glow />
+        {sellActivity && <StatusBadge label={sellActivity.label} tone={sellActivity.tone} />}
       </motion.div>
 
       <motion.p
