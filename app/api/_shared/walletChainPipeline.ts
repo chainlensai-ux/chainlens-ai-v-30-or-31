@@ -420,6 +420,74 @@ export async function buildUnrealizedPnlForChain(chain: SupportedChain, walletAd
   return { chain, result, unresolvedHoldings }
 }
 
+// EVENT CLASSIFICATION LAYER, DISCLOSED: the requested "detect a swap-to-ETH/stablecoin as a sell"
+// behavior ALREADY EXISTS, for real, in the protected swapNormalizer module
+// (src/modules/swapNormalizer/buySellDetector.ts's detectBuySell/isQuoteAsset — "tokenOut is a
+// quote asset [ETH/WETH/USDC/USDT/DAI/USDBC/CBETH], tokenIn is not -> SELL", already flowing
+// through NormalizedTrade.type/isBuy/isSell into TradeWithIntent, already reaching this file via
+// `trade.isSell`/`trade.isBuy`). Nothing here re-implements that classification or duplicates its
+// own ETH/stablecoin list (a second, drifting definition would be worse than reusing the real one)
+// — this is a thin, additive UI-facing label over data that's already real and already correct,
+// gated by two more real, already-computed fields this task also asked for: `trade.wallet` (the
+// real initiator) and `trade.meta.routerType` (non-null only when swapNormalizer's own
+// detectRouterType recognized the counterparty as a real, known DEX router — a raw, unrecognized
+// `trade.router` address alone does NOT count as "a known router").
+export type NormalizedEventType = 'transfer' | 'swap_sell' | 'swap_buy' | 'other'
+
+export function classifyEventType(trade: TradeWithIntent, walletAddress: string): NormalizedEventType {
+  const walletIsInitiator = trade.wallet.toLowerCase() === walletAddress.toLowerCase()
+  const counterpartyIsKnownRouter = trade.meta.routerType != null
+  const tokenInUnknown = trade.tokenIn.address === UNKNOWN_TOKEN.address
+  const tokenOutUnknown = trade.tokenOut.address === UNKNOWN_TOKEN.address
+
+  // Requirement 7: never classify a swap_sell/swap_buy without BOTH real tokenIn and tokenOut —
+  // an unresolved side means there's no real pair to classify as a sell/buy swap.
+  if (tokenInUnknown || tokenOutUnknown) return 'other'
+
+  if (walletIsInitiator && counterpartyIsKnownRouter && trade.isSell) return 'swap_sell'
+  if (walletIsInitiator && counterpartyIsKnownRouter && trade.isBuy) return 'swap_buy'
+  return 'other'
+}
+
+// UI-SAFE SELL CANDIDATE, DISCLOSED: requirement 5's lot-building shape — sellToken/sellAmount are
+// real (trade.tokenIn/trade.amountIn, the side the wallet actually parted with). `proceedsUsd` is
+// deliberately NOT computed here: this file has no real historical-price lookup of its own (the
+// only real one is pricingAtTimeEngine, explicitly protected/off-limits for this task) — an
+// optional `priceAtTime` callback is accepted so a caller CAN supply a real price if it has one,
+// but this never fabricates a price when none is given (requirement 7's "never fabricate" applies
+// to price data just as much as to the sell classification itself).
+export type SellCandidate = {
+  sellToken: string
+  sellAmount: number
+  proceedsUsd: number | null
+  counterparty: string | null
+  chain: SwapNormalizerChain
+  timestamp: number
+  txHash: string
+}
+
+export function buildSellCandidatesFromTrades(
+  trades: TradeWithIntent[],
+  walletAddress: string,
+  priceAtTime?: (tokenAddress: string, chain: SwapNormalizerChain, timestamp: number) => number | null,
+): SellCandidate[] {
+  const candidates: SellCandidate[] = []
+  for (const trade of trades) {
+    if (classifyEventType(trade, walletAddress) !== 'swap_sell') continue
+    const priceUsd = priceAtTime?.(trade.tokenOut.address, trade.chain, trade.timestamp) ?? null
+    candidates.push({
+      sellToken: trade.tokenIn.address,
+      sellAmount: trade.amountIn,
+      proceedsUsd: priceUsd != null ? priceUsd * trade.amountOut : null,
+      counterparty: trade.router,
+      chain: trade.chain,
+      timestamp: trade.timestamp,
+      txHash: trade.txHash,
+    })
+  }
+  return candidates
+}
+
 // SHAPE-ADAPTER DISCLOSURE (shared by app/api/transactions/route.ts and app/api/wallet-profile/
 // route.ts): TradeWithIntent (swapNormalizer/tradeIntent's real output — full TokenRef objects, an
 // `intent` of BUY/SELL/SWAP/LP_ADD/LP_REMOVE) does not match the simpler NormalizedTransfer/
@@ -432,21 +500,29 @@ export async function buildUnrealizedPnlForChain(chain: SupportedChain, walletAd
 //   - otherwise (both sides resolved, whatever the intent) -> a NormalizedSwap using the trade's own
 //     real tokenIn/tokenOut/amountIn/amountOut. LP_ADD/LP_REMOVE are treated the same as a swap here
 //     — buildTradeTimelineV2's own contract has no LP concept at all — a disclosed simplification,
-//     never a fabricated amount/token.
-export function tradeWithIntentToTimelineInputs(trade: TradeWithIntent): { transfer?: NormalizedTransfer; swap?: NormalizedSwap } {
+//     never a fabricated amount/token. `eventType` (see classifyEventType above) is returned
+//     alongside, as an ADDITIVE parallel field — NormalizedSwap/NormalizedTransfer themselves
+//     (lib/engines/tradeTimelineEngineV2.ts) are never modified or extended with a new field.
+export function tradeWithIntentToTimelineInputs(
+  trade: TradeWithIntent,
+  walletAddress: string,
+): { transfer?: NormalizedTransfer; swap?: NormalizedSwap; eventType: NormalizedEventType } {
+  const eventType = classifyEventType(trade, walletAddress)
   const tokenInUnknown = trade.tokenIn.address === UNKNOWN_TOKEN.address
   const tokenOutUnknown = trade.tokenOut.address === UNKNOWN_TOKEN.address
 
-  if (tokenInUnknown && tokenOutUnknown) return {}
+  if (tokenInUnknown && tokenOutUnknown) return { eventType }
 
   if (tokenOutUnknown) {
     return {
       transfer: { tokenAddress: trade.tokenIn.address, amount: trade.amountIn, direction: 'out', timestamp: trade.timestamp, chain: trade.chain },
+      eventType,
     }
   }
   if (tokenInUnknown) {
     return {
       transfer: { tokenAddress: trade.tokenOut.address, amount: trade.amountOut, direction: 'in', timestamp: trade.timestamp, chain: trade.chain },
+      eventType,
     }
   }
   return {
@@ -458,13 +534,25 @@ export function tradeWithIntentToTimelineInputs(trade: TradeWithIntent): { trans
       timestamp: trade.timestamp,
       chain: trade.chain,
     },
+    eventType,
   }
 }
 
 export type TradeTimelineForChainResult = {
   chain: SupportedChain
   chainSupported: boolean
+  // UNCHANGED — buildTradeTimelineV2's own real FIFO-derived buy/sell entries (its own separate
+  // classification, `type: 'buy' | 'sell'`), exactly as before this task. Never touched, never
+  // reordered, never re-derived. This IS the "existing direct sells" requirement 6 refers to
+  // (`trades.filter(t => t.type === 'sell')`).
   trades: TradeEntry[]
+  // ADDITIVE, DISCLOSED: real, evidence-gated swap-sell candidates (see classifyEventType /
+  // buildSellCandidatesFromTrades above) — a SEPARATE, additive list, not merged into `trades` and
+  // not replacing it. UI-level sell detection per requirement 6 is `trades` (direct sells) UNION
+  // these `sellCandidates` (swap_sell events), never fabricated, never double-counted by this file
+  // (de-duplication across the two lists, if a caller needs it, is a UI-layer concern — this file
+  // only supplies both real lists honestly).
+  sellCandidates: SellCandidate[]
 }
 
 // Real chain continued (alternate branch from lots): TradeWithIntent[] -> adapter above ->
@@ -476,16 +564,17 @@ export type TradeTimelineForChainResult = {
 // Finding #1 — both modules now share one real fetchRawEventsForChain call per chain per request.
 export async function buildTradeTimelineForChain(chain: SupportedChain, walletAddress: string, cache?: EventsCache, cuBudget?: CuBudget): Promise<TradeTimelineForChainResult> {
   const { chainSupported, trades } = await buildTradesWithIntentForChain(chain, walletAddress, cache, cuBudget)
-  if (!chainSupported) return { chain, chainSupported: false, trades: [] }
+  if (!chainSupported) return { chain, chainSupported: false, trades: [], sellCandidates: [] }
 
   const transfers: NormalizedTransfer[] = []
   const swaps: NormalizedSwap[] = []
   for (const trade of trades) {
-    const { transfer, swap } = tradeWithIntentToTimelineInputs(trade)
+    const { transfer, swap } = tradeWithIntentToTimelineInputs(trade, walletAddress)
     if (transfer) transfers.push(transfer)
     if (swap) swaps.push(swap)
   }
 
   const timeline = await buildTradeTimelineV2({ chain, walletAddress, transfers, swaps })
-  return { chain, chainSupported: true, trades: timeline.trades }
+  const sellCandidates = buildSellCandidatesFromTrades(trades, walletAddress)
+  return { chain, chainSupported: true, trades: timeline.trades, sellCandidates }
 }
