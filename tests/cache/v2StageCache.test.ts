@@ -21,6 +21,7 @@ import {
   __resetKvClientForTest,
   MAX_PAYLOAD_BYTES,
 } from '../../lib/server/cache/v2StageCache'
+import { __resetKvCircuitBreakerForTest, __simulateKvOutcomeForTest } from '../../lib/server/cache/tokenCache'
 
 let kvStore: Map<string, unknown>
 let kvSetCalls: Array<{ key: string; value: unknown }>
@@ -52,6 +53,45 @@ function captureWarnings(): { calls: unknown[][]; restore: () => void } {
   console.warn = (...args: unknown[]) => { calls.push(args) }
   return { calls, restore: () => { console.warn = original } }
 }
+
+describe('getStageCache — read-only circuit-breaker consult on v2:providerFetchWindow:* keys', () => {
+  afterEach(() => {
+    __resetKvCircuitBreakerForTest()
+  })
+
+  it('skips the KV read (falls to memory fallback) for a providerFetchWindow key when tokenCache\'s breaker is open', async () => {
+    const key = `v2:providerFetchWindow:base:0xwallet:${Date.now()}`
+    // Prime the real KV path so a value genuinely exists, then confirm a normal read finds it.
+    await __setStageCacheForTest(key, { window: 'real' }, 60)
+    kvSetCalls.length = 0 // reset call tracking, not the store
+
+    // Trip tokenCache's real circuit breaker (5 consecutive timeouts, per its own re-tuned spec).
+    for (let i = 0; i < 5; i++) __simulateKvOutcomeForTest('timeout')
+
+    const { calls, restore } = captureWarnings()
+    let result: unknown
+    try {
+      result = await __getStageCacheForTest(key)
+    } finally {
+      restore()
+    }
+
+    // The real KV `get` was never attempted — falls straight to the in-memory fallback that
+    // __setStageCacheForTest above also populated, so the value is still correctly returned.
+    assert.deepEqual(result, { window: 'real' })
+    assert.ok(calls.some((c) => c[0] === 'kv_disabled_for_request'), 'expected a kv_disabled_for_request log for the skipped read')
+  })
+
+  it('a non-providerFetchWindow key is unaffected by tokenCache\'s breaker being open', async () => {
+    const key = `v2:holdings:base:0xwallet:${Date.now()}`
+    await __setStageCacheForTest(key, { holdings: 'real' }, 60)
+
+    for (let i = 0; i < 5; i++) __simulateKvOutcomeForTest('timeout')
+
+    const result = await __getStageCacheForTest(key)
+    assert.deepEqual(result, { holdings: 'real' }) // still reads through the real (mocked) KV path
+  })
+})
 
 describe('setStageCache — small payload (requirement 1)', () => {
   it('stores raw JSON uncompressed, with no compression/skip logs', async () => {

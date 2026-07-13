@@ -32,15 +32,19 @@ describe('KV circuit breaker — opens under sustained failure', () => {
     assert.equal(getKvCircuitBreakerState().state, 'closed')
   })
 
-  it('opens after 3 consecutive timeouts', () => {
+  it('opens after 5 consecutive timeouts', () => {
+    __simulateKvOutcomeForTest('timeout')
+    __simulateKvOutcomeForTest('timeout')
     __simulateKvOutcomeForTest('timeout')
     __simulateKvOutcomeForTest('timeout')
     const { blocked } = __simulateKvOutcomeForTest('timeout')
-    assert.equal(blocked, false) // the 3rd call itself still gets attempted — it's what trips the breaker
+    assert.equal(blocked, false) // the 5th call itself still gets attempted — it's what trips the breaker
     assert.equal(getKvCircuitBreakerState().state, 'open')
   })
 
   it('blocks calls while open (before the cooldown elapses)', () => {
+    __simulateKvOutcomeForTest('timeout')
+    __simulateKvOutcomeForTest('timeout')
     __simulateKvOutcomeForTest('timeout')
     __simulateKvOutcomeForTest('timeout')
     __simulateKvOutcomeForTest('timeout')
@@ -60,6 +64,8 @@ describe('KV circuit breaker — opens under sustained failure', () => {
 
 describe('KV circuit breaker — gradual (half-open) auto-recovery', () => {
   function tripBreaker(): void {
+    __simulateKvOutcomeForTest('timeout')
+    __simulateKvOutcomeForTest('timeout')
     __simulateKvOutcomeForTest('timeout')
     __simulateKvOutcomeForTest('timeout')
     __simulateKvOutcomeForTest('timeout')
@@ -121,9 +127,11 @@ describe('getKvCircuitBreakerState — typed diagnostic snapshot', () => {
     __simulateKvOutcomeForTest('timeout')
     __simulateKvOutcomeForTest('timeout')
     __simulateKvOutcomeForTest('timeout')
+    __simulateKvOutcomeForTest('timeout')
+    __simulateKvOutcomeForTest('timeout')
     snapshot = getKvCircuitBreakerState()
     assert.equal(snapshot.state, 'open')
-    assert.equal(snapshot.currentCooldownMs, 10_000) // base cooldown, per this task's own spec
+    assert.equal(snapshot.currentCooldownMs, 5_000) // base cooldown, per this task's own spec
     assert.ok(snapshot.nextRetryAt !== null && snapshot.nextRetryAt > Date.now())
 
     __forceKvCircuitBreakerCooldownElapsedForTest()
@@ -134,12 +142,14 @@ describe('getKvCircuitBreakerState — typed diagnostic snapshot', () => {
     snapshot = getKvCircuitBreakerState()
     assert.equal(snapshot.state, 'closed')
     assert.equal(snapshot.nextRetryAt, null)
-    assert.equal(snapshot.currentCooldownMs, 10_000) // reset to base after a successful recovery
+    assert.equal(snapshot.currentCooldownMs, 5_000) // reset to base after a successful recovery
   })
 })
 
 describe('__overrideKvCooldownForTest — direct cooldown control', () => {
   it('lets a test shrink the cooldown to a small value instead of only force-expiring it', () => {
+    __simulateKvOutcomeForTest('timeout')
+    __simulateKvOutcomeForTest('timeout')
     __simulateKvOutcomeForTest('timeout')
     __simulateKvOutcomeForTest('timeout')
     __simulateKvOutcomeForTest('timeout')
@@ -154,6 +164,8 @@ describe('__overrideKvCooldownForTest — direct cooldown control', () => {
 
 describe('kv_disabled_for_request — includes key, rate-limited', () => {
   it('includes the real key in the logged payload while open', () => {
+    __simulateKvOutcomeForTest('timeout')
+    __simulateKvOutcomeForTest('timeout')
     __simulateKvOutcomeForTest('timeout')
     __simulateKvOutcomeForTest('timeout')
     __simulateKvOutcomeForTest('timeout')
@@ -178,6 +190,8 @@ describe('kv_disabled_for_request — includes key, rate-limited', () => {
   })
 
   it('does not log again for a second blocked call within the 5s rate-limit window', () => {
+    __simulateKvOutcomeForTest('timeout')
+    __simulateKvOutcomeForTest('timeout')
     __simulateKvOutcomeForTest('timeout')
     __simulateKvOutcomeForTest('timeout')
     __simulateKvOutcomeForTest('timeout')

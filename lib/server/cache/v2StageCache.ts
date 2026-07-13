@@ -36,11 +36,32 @@
 // caller (requirements 3 and 6).
 
 import { kv as realKv } from '@vercel/kv'
+import { getKvCircuitBreakerState } from './tokenCache'
 
-const KV_CALL_TIMEOUT_MS = 250
-const MAX_RETRIES = 2 // total attempts = 1 + MAX_RETRIES = 3
-const RETRY_BACKOFF_MS = [100, 200]
-export const MAX_PAYLOAD_BYTES = 100_000 // 100kb, per this task's own requirement 5
+// CIRCUIT-BREAKER READ-ONLY CONSULT, DISCLOSED (this task's own request, requirement 5 — "when the
+// circuit breaker is OPEN, skip providerFetchWindow KV reads"): this file's header (above) already
+// disclosed a deliberate, previously-requested decision that v2StageCache must NEVER trip or be
+// tripped by tokenCache.ts's circuit breaker, to stop one file's KV traffic from disabling KV for
+// the other. That isolation is preserved here — this does not call tokenCache's
+// circuitBreakerOpen()/recordKvTimeout()/recordKvSuccess() (all private, unexported) and does not
+// add a breaker of its own. It only READS tokenCache's already-public, already-exported
+// getKvCircuitBreakerState() snapshot before attempting a `v2:providerFetchWindow:*` read — a
+// one-way, read-only signal ("KV looks broadly unhealthy right now") that can never cause
+// tokenCache's breaker to trip and is never itself tripped by v2StageCache's own calls.
+const PROVIDER_FETCH_WINDOW_KEY_PREFIX = 'v2:providerFetchWindow:'
+
+// KV RESILIENCE RE-TUNING, DISCLOSED (this task's own request — see tokenCache.ts's own header for
+// the identical totalAttempts-vs-3-backoff-delays ambiguity and how it's resolved here the same
+// way): 300ms per-attempt timeout, 3 retries (4 total attempts), backoff 100/200/400ms.
+const KV_CALL_TIMEOUT_MS = 300
+const MAX_RETRIES = 3
+const RETRY_BACKOFF_MS = [100, 200, 400]
+export const MAX_COMPRESSED_BYTES = 150_000 // renamed from MAX_PAYLOAD_BYTES (150kb, was 100kb) —
+// this guard measures the COMPRESSED (post-gzip) payload size for the large-payload branch; the
+// small-payload branch below still compares against the same constant on the UNCOMPRESSED size,
+// unchanged from before this rename.
+export const MAX_PAYLOAD_BYTES = MAX_COMPRESSED_BYTES // kept as an alias — tests/cache/v2StageCache.test.ts
+// and lib/server/cache/v2StageCache.test.ts both import this exact name.
 
 // TEST-ONLY KV CLIENT OVERRIDE, DISCLOSED: `@vercel/kv`'s real `kv` export is a lazy-initializing
 // Proxy (its `get` trap throws if KV_REST_API_URL/TOKEN aren't set, and reassigning a property on
@@ -182,6 +203,12 @@ export async function decompressStageValue<T>(raw: unknown): Promise<T> {
 // throws, NEVER blocks, NEVER consults or affects tokenCache.ts's circuit breaker.
 async function getStageCache<T>(key: string): Promise<T | null> {
   if (!kvConfigured()) return memoryFallbackGet<T>(key)
+
+  if (key.startsWith(PROVIDER_FETCH_WINDOW_KEY_PREFIX) && getKvCircuitBreakerState().state === 'open') {
+    // eslint-disable-next-line no-console
+    console.warn('kv_disabled_for_request', { reason: 'circuit_breaker_open_readonly_consult', key })
+    return memoryFallbackGet<T>(key)
+  }
 
   const raw = await withRetriesNoBreaker(() => kv.get<unknown>(key), undefined, `get:${key}`)
   if (raw === undefined) return memoryFallbackGet<T>(key) // KV genuinely failed — fall back
