@@ -45,23 +45,29 @@ describe('selectSellActivity — Profit Skill unlock', () => {
     assert.equal(result.profitSkillUnlocked, false)
   })
 
-  it('total sells > 5 and pnlV2 has a real realizedPnlUsd -> unlocked, verified sample (not limited)', () => {
+  it('total sells > 0, real realizedPnlUsd, and publicPnlStatus "ok" -> unlocked with a verified sample', () => {
     const entries = Array.from({ length: 6 }, (_, i) => entry({ txHash: `0xtx${i}` }))
     const result = selectSellActivity(timeline(entries), pnlV2({ realizedPnlUsd: 1234 }), 'ok')
     assert.equal(result.totalSells, 6)
     assert.equal(result.profitSkillUnlocked, true)
-    assert.equal(result.showLimitedLabel, false)
+    assert.equal(result.sampleLabel, 'verified_sample')
   })
 
-  it('caller omits pnlV2 entirely -> falls back to totalSells-only unlock rule (no fabricated default)', () => {
+  it('caller omits pnlV2 entirely -> locked (a real realizedPnlUsd value is required, never assumed)', () => {
     const result = selectSellActivity(timeline([entry({})]))
-    assert.equal(result.profitSkillUnlocked, true)
+    assert.equal(result.profitSkillUnlocked, false)
   })
 
-  it('real backend publicPnlStatus != "ok" always shows the limited label, even with a large sample', () => {
-    const entries = Array.from({ length: 10 }, (_, i) => entry({ txHash: `0xtx${i}` }))
-    const result = selectSellActivity(timeline(entries), pnlV2({ realizedPnlUsd: 1 }), 'limited_verified_sample')
-    assert.equal(result.showLimitedLabel, true)
+  it('sells + real realizedPnlUsd + publicPnlStatus "limited_verified_sample" -> unlocked, labeled "Limited verified sample"', () => {
+    const result = selectSellActivity(timeline([entry({})]), pnlV2({ realizedPnlUsd: 1 }), 'limited_verified_sample')
+    assert.equal(result.profitSkillUnlocked, true)
+    assert.equal(result.sampleLabel, 'limited_verified_sample')
+  })
+
+  it('publicPnlStatus "unavailable" -> locked regardless of sells or realizedPnlUsd', () => {
+    const result = selectSellActivity(timeline([entry({})]), pnlV2({ realizedPnlUsd: 1234 }), 'unavailable')
+    assert.equal(result.profitSkillUnlocked, false)
+    assert.equal(result.sampleLabel, 'not_verified')
   })
 })
 

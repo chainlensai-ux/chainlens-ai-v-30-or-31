@@ -549,7 +549,7 @@ export default function WalletScannerPage() {
                     (the V2 engine's self-contained realized+unrealized PnL) — result.fifoAndPnl and
                     result.pnlSummaryV2 (old pipeline sources) are intentionally no longer passed;
                     this component has no fallback/merge logic across multiple PnL sources anymore. */}
-                <PnlStatusCard pnlV2={result.pnlV2} />
+                <PnlStatusCard pnlV2={result.pnlV2} publicPnlStatus={result.finalSummary?.financialStatus?.officialPnlStatus} />
               </div>
 
               {/* SELL ACTIVITY, ADDITIVE/DISCLOSED: sourced from result.timelines.sellTimelineV2 —

@@ -11,7 +11,7 @@
 
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { selectVerifiedPnlData } from './PnlStatusCard'
+import { selectVerifiedPnlData, shouldShowLimitedSampleBadge } from './PnlStatusCard'
 import type { PnlV2 } from '@/lib/engine/modules/pnl/types'
 
 function pnlV2(overrides: Partial<PnlV2>): PnlV2 {
@@ -90,5 +90,24 @@ describe('selectVerifiedPnlData — display-only guardrail (unreliable magnitude
       chainBreakdown: [{ chainId: 8453, realizedPnlUsd: 1e15, unrealizedPnlUsd: 0 }],
     }))
     assert.equal(result.unreliable, true)
+  })
+})
+
+describe('shouldShowLimitedSampleBadge — real backend publicPnlStatus classification', () => {
+  it("publicPnlStatus 'ok' -> no badge", () => {
+    assert.equal(shouldShowLimitedSampleBadge('ok'), false)
+  })
+
+  it("publicPnlStatus 'limited_verified_sample' -> badge shown", () => {
+    assert.equal(shouldShowLimitedSampleBadge('limited_verified_sample'), true)
+  })
+
+  it("publicPnlStatus 'unavailable' -> badge shown", () => {
+    assert.equal(shouldShowLimitedSampleBadge('unavailable'), true)
+  })
+
+  it('publicPnlStatus omitted -> no badge (never a fabricated default)', () => {
+    assert.equal(shouldShowLimitedSampleBadge(null), false)
+    assert.equal(shouldShowLimitedSampleBadge(undefined), false)
   })
 })

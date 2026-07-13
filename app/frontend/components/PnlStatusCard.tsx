@@ -26,6 +26,7 @@
 //   - ROI: now computed purely from PnlV2 — realizedPnlUsd / sum(costBasis[].totalCostUsd), a real
 //     total cost basis PnlV2 does carry (per-token, summed here), never fifoAndPnl.costBasisUsd.
 import type { PnlV2 } from '@/lib/engine/modules/pnl/types'
+import type { PublicPnlStatus } from '@/src/modules/fifoEngine/types'
 import { fmtSignedUsd, fmtUsd } from '@/app/frontend/lib/holdingsHeuristics'
 import { StatusBadge } from './StatusBadge'
 import { MetricCard, toneFromNumber } from './MetricCard'
@@ -33,6 +34,12 @@ import { TrendingDownIcon, TrendingUpIcon, WarningIcon } from './Icons'
 
 export type PnlStatusCardProps = {
   pnlV2: PnlV2 | null | undefined
+  // Optional, additive — the REAL field lives at
+  // result.finalSummary.financialStatus.officialPnlStatus (FifoOutput['publicPnlStatus'] =
+  // 'ok' | 'limited_verified_sample' | 'unavailable'; there is no `publicPnlStatus` directly on
+  // pnlV2 or on the report's top level, despite a later task describing one there). Omitting this
+  // prop simply skips the badge below — no fabricated default value.
+  publicPnlStatus?: PublicPnlStatus | null
 }
 
 export type VerifiedPnlData = {
@@ -142,9 +149,15 @@ function ChainBreakdownTable({ chainBreakdown, unreliable }: { chainBreakdown: P
   )
 }
 
-export function PnlStatusCard({ pnlV2 }: PnlStatusCardProps) {
+// Pure, exported for direct testing — real backend classification only, no UI-only heuristic.
+export function shouldShowLimitedSampleBadge(publicPnlStatus: PublicPnlStatus | null | undefined): boolean {
+  return publicPnlStatus != null && publicPnlStatus !== 'ok'
+}
+
+export function PnlStatusCard({ pnlV2, publicPnlStatus }: PnlStatusCardProps) {
   const pnl = selectVerifiedPnlData(pnlV2)
   const isActive = pnlV2 != null
+  const showLimitedSampleBadge = shouldShowLimitedSampleBadge(publicPnlStatus)
 
   const headerIcon = pnl.realizedPnlUsd == null
     ? <WarningIcon size={16} color="#fbbf24" />
@@ -156,7 +169,11 @@ export function PnlStatusCard({ pnlV2 }: PnlStatusCardProps) {
         <span style={{ display: 'inline-flex' }}>{headerIcon}</span>
         <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 800, color: '#e2e8f0', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>PnL (Verified V2)</h3>
         <StatusBadge label={isActive ? 'Active' : 'Unavailable'} tone={isActive ? 'success' : 'neutral'} glow={isActive} />
-        {pnl.unreliable && <StatusBadge label="Limited verified sample" tone="warning" glow />}
+        {pnl.unreliable && <StatusBadge label="Not reliable (magnitude)" tone="warning" glow />}
+        {/* REAL backend classification (fifoEngine's publicPnlStatus, via
+            finalSummary.financialStatus.officialPnlStatus) — a SEPARATE signal from the UI-only
+            magnitude clamp above; shown whenever it isn't 'ok', regardless of magnitude. */}
+        {showLimitedSampleBadge && <StatusBadge label="Limited verified sample" tone="warning" />}
       </div>
 
       {pnl.unreliable && (

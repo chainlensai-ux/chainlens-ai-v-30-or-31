@@ -23,21 +23,23 @@
 // enough to describe as more than "limited" in this specific card's own wording — it does NOT alter
 // `finalSummary.financialStatus.officialPnlStatus`, the real backend-computed badge shown elsewhere.
 //
-// PROFIT SKILL UNLOCK RULE, DISCLOSED: unlocked when totalSells > 0 AND pnlV2.realizedPnlUsd is a
-// real, non-null number (i.e. the verified V2 engine actually produced a realized-PnL figure for
-// this wallet) — a wallet with sells but no verified realized PnL still can't back the "skill" claim
-// with a real number. `publicPnlStatus` (the REAL field is
-// FifoOutput['publicPnlStatus'] = 'ok' | 'limited_verified_sample' | 'unavailable' — note this is
-// NOT a `'fully_verified'` value as an earlier task description assumed) drives a separate
-// "Limited verified sample" label whenever it isn't `'ok'`, exactly mirroring the real backend
-// classification's own wording rather than inventing a new one.
+// PROFIT SKILL UNLOCK RULE, DISCLOSED: unlocked when ALL of —
+//   1. totalSells > 0
+//   2. pnlV2.realizedPnlUsd is a real, non-null number (the verified V2 engine actually produced a
+//      realized-PnL figure for this wallet — a wallet with sells but no verified realized PnL still
+//      can't back the "skill" claim with a real number)
+//   3. publicPnlStatus !== 'unavailable' (when the caller supplies it at all)
+// `publicPnlStatus` — the REAL field is `FifoOutput['publicPnlStatus']` (accessible at
+// `result.finalSummary.financialStatus.officialPnlStatus`; there is no `publicPnlStatus` directly
+// on pnlV2 or on the report's top level, despite a later task description assuming one there) —
+// drives a three-way label mirroring the real backend classification's own wording:
+//   'ok' -> "Verified sample", 'limited_verified_sample' -> "Limited verified sample",
+//   'unavailable' -> "Sample too small / not verified".
 import type { SellTimelineResult, SellTimelineEntry } from '@/src/modules/sellTimeline/types'
 import type { PnlV2 } from '@/lib/engine/modules/pnl/types'
 import type { PublicPnlStatus } from '@/src/modules/fifoEngine/types'
 import { StatusBadge } from './StatusBadge'
 import { SellTimelineV2View } from './SellTimelineV2View'
-
-const VERIFIED_SAMPLE_THRESHOLD = 3
 
 function topSoldTokens(entries: SellTimelineEntry[], limit = 3): { symbol: string; count: number }[] {
   const counts = new Map<string, number>()
@@ -51,13 +53,30 @@ function topSoldTokens(entries: SellTimelineEntry[], limit = 3): { symbol: strin
     .map(([symbol, count]) => ({ symbol, count }))
 }
 
+export type SampleLabel = 'verified_sample' | 'limited_verified_sample' | 'not_verified'
+
+const SAMPLE_LABEL_TEXT: Record<SampleLabel, string> = {
+  verified_sample: 'Verified sample',
+  limited_verified_sample: 'Limited verified sample',
+  not_verified: 'Sample too small / not verified',
+}
+
 export type SellActivitySelection = {
   entries: SellTimelineEntry[]
   totalSells: number
   totalProceedsUsd: number
   hasAnyProceeds: boolean
   profitSkillUnlocked: boolean
-  showLimitedLabel: boolean
+  sampleLabel: SampleLabel
+}
+
+// Real backend classification only (fifoEngine's publicPnlStatus) — no UI-only threshold. Absent
+// entirely (caller didn't pass it) defaults to the most conservative label rather than inventing a
+// verified claim with no backend signal behind it.
+function sampleLabelFor(publicPnlStatus: PublicPnlStatus | null | undefined): SampleLabel {
+  if (publicPnlStatus === 'ok') return 'verified_sample'
+  if (publicPnlStatus === 'limited_verified_sample') return 'limited_verified_sample'
+  return 'not_verified'
 }
 
 // Pure, exported for direct testing — the ONLY selector this component uses for the Profit Skill /
@@ -73,14 +92,9 @@ export function selectSellActivity(
   const totalProceedsUsd = entriesWithProceeds.reduce((sum, e) => sum + (e.proceedsUsdEstimate as number), 0)
   const hasAnyProceeds = entriesWithProceeds.length > 0
   const hasVerifiedRealizedPnl = typeof pnlV2?.realizedPnlUsd === 'number'
-  const profitSkillUnlocked = totalSells > 0 && (pnlV2 === undefined || hasVerifiedRealizedPnl)
-  const verifiedSample = totalSells >= VERIFIED_SAMPLE_THRESHOLD
-  // Real backend classification (fifoEngine's publicPnlStatus) drives this label when supplied;
-  // falls back to the UI-only totalSells threshold above when the caller doesn't pass it.
-  const limitedByBackendStatus = publicPnlStatus != null && publicPnlStatus !== 'ok'
-  const showLimitedLabel = publicPnlStatus != null ? limitedByBackendStatus : !verifiedSample
+  const profitSkillUnlocked = totalSells > 0 && hasVerifiedRealizedPnl && publicPnlStatus !== 'unavailable'
 
-  return { entries, totalSells, totalProceedsUsd, hasAnyProceeds, profitSkillUnlocked, showLimitedLabel }
+  return { entries, totalSells, totalProceedsUsd, hasAnyProceeds, profitSkillUnlocked, sampleLabel: sampleLabelFor(publicPnlStatus) }
 }
 
 export function SellActivitySummary({
@@ -94,7 +108,7 @@ export function SellActivitySummary({
   pnlV2?: PnlV2 | null
   publicPnlStatus?: PublicPnlStatus | null
 }) {
-  const { entries, totalSells, totalProceedsUsd, hasAnyProceeds, profitSkillUnlocked, showLimitedLabel } =
+  const { entries, totalSells, totalProceedsUsd, hasAnyProceeds, profitSkillUnlocked, sampleLabel } =
     selectSellActivity(sellTimeline, pnlV2, publicPnlStatus)
 
   return (
@@ -109,8 +123,8 @@ export function SellActivitySummary({
         />
         {profitSkillUnlocked && (
           <StatusBadge
-            label={showLimitedLabel ? 'Limited verified sample' : 'Verified sample'}
-            tone={showLimitedLabel ? 'warning' : 'success'}
+            label={SAMPLE_LABEL_TEXT[sampleLabel]}
+            tone={sampleLabel === 'verified_sample' ? 'success' : 'warning'}
           />
         )}
       </div>
