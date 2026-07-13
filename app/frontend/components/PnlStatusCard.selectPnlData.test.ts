@@ -11,7 +11,7 @@
 
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { selectVerifiedPnlData, shouldShowLimitedSampleBadge } from './PnlStatusCard'
+import { selectVerifiedPnlData, shouldShowLimitedSampleBadge, GUARDRAIL_ABS_LIMIT } from './PnlStatusCard'
 import type { PnlV2 } from '@/lib/engine/modules/pnl/types'
 
 function pnlV2(overrides: Partial<PnlV2>): PnlV2 {
@@ -83,6 +83,27 @@ describe('selectVerifiedPnlData — display-only guardrail (unreliable magnitude
     assert.equal(result.unreliable, false)
   })
 
+  it('an extreme 1e30 unrealizedPnlUsd is flagged unreliable (the task\'s own example magnitude)', () => {
+    const result = selectVerifiedPnlData(pnlV2({ realizedPnlUsd: 0, unrealizedPnlUsd: 1e30 }))
+    assert.equal(result.unreliable, true)
+    assert.equal(result.unrealizedPnlUsd, 1e30) // raw pnlV2 value still returned untouched
+  })
+
+  it('exactly at GUARDRAIL_ABS_LIMIT (1e9) is NOT flagged — the clamp is a strict "exceeds" check', () => {
+    const result = selectVerifiedPnlData(pnlV2({ realizedPnlUsd: 0, unrealizedPnlUsd: GUARDRAIL_ABS_LIMIT }))
+    assert.equal(result.unreliable, false)
+  })
+
+  it('just above GUARDRAIL_ABS_LIMIT (1e9 + 1) is flagged unreliable', () => {
+    const result = selectVerifiedPnlData(pnlV2({ realizedPnlUsd: 0, unrealizedPnlUsd: GUARDRAIL_ABS_LIMIT + 1 }))
+    assert.equal(result.unreliable, true)
+  })
+
+  it('just below GUARDRAIL_ABS_LIMIT is not flagged', () => {
+    const result = selectVerifiedPnlData(pnlV2({ realizedPnlUsd: 0, unrealizedPnlUsd: GUARDRAIL_ABS_LIMIT - 1 }))
+    assert.equal(result.unreliable, false)
+  })
+
   it('flags unreliable from a per-chain breakdown value alone, even if aggregate totals look sane', () => {
     const result = selectVerifiedPnlData(pnlV2({
       realizedPnlUsd: 10,
@@ -95,19 +116,19 @@ describe('selectVerifiedPnlData — display-only guardrail (unreliable magnitude
 
 describe('shouldShowLimitedSampleBadge — real backend publicPnlStatus classification', () => {
   it("publicPnlStatus 'ok' -> no badge", () => {
-    assert.equal(shouldShowLimitedSampleBadge('ok'), false)
+    assert.equal(shouldShowLimitedSampleBadge('ok'), null)
   })
 
-  it("publicPnlStatus 'limited_verified_sample' -> badge shown", () => {
-    assert.equal(shouldShowLimitedSampleBadge('limited_verified_sample'), true)
+  it("publicPnlStatus 'limited_verified_sample' -> 'Limited verified sample' badge", () => {
+    assert.equal(shouldShowLimitedSampleBadge('limited_verified_sample'), 'Limited verified sample')
   })
 
-  it("publicPnlStatus 'unavailable' -> badge shown", () => {
-    assert.equal(shouldShowLimitedSampleBadge('unavailable'), true)
+  it("publicPnlStatus 'unavailable' -> distinct 'Not verified' badge (not the same string as limited_verified_sample)", () => {
+    assert.equal(shouldShowLimitedSampleBadge('unavailable'), 'Not verified')
   })
 
   it('publicPnlStatus omitted -> no badge (never a fabricated default)', () => {
-    assert.equal(shouldShowLimitedSampleBadge(null), false)
-    assert.equal(shouldShowLimitedSampleBadge(undefined), false)
+    assert.equal(shouldShowLimitedSampleBadge(null), null)
+    assert.equal(shouldShowLimitedSampleBadge(undefined), null)
   })
 })

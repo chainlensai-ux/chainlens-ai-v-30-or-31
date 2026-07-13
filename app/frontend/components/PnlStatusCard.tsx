@@ -150,14 +150,19 @@ function ChainBreakdownTable({ chainBreakdown, unreliable }: { chainBreakdown: P
 }
 
 // Pure, exported for direct testing — real backend classification only, no UI-only heuristic.
-export function shouldShowLimitedSampleBadge(publicPnlStatus: PublicPnlStatus | null | undefined): boolean {
-  return publicPnlStatus != null && publicPnlStatus !== 'ok'
+// Returns null for 'ok' (no badge) or when publicPnlStatus wasn't supplied at all (no fabricated
+// default); otherwise returns the exact label to show, distinguishing the two non-'ok' real
+// statuses rather than collapsing them into one generic string.
+export function shouldShowLimitedSampleBadge(publicPnlStatus: PublicPnlStatus | null | undefined): string | null {
+  if (publicPnlStatus == null || publicPnlStatus === 'ok') return null
+  if (publicPnlStatus === 'limited_verified_sample') return 'Limited verified sample'
+  return 'Not verified' // publicPnlStatus === 'unavailable'
 }
 
 export function PnlStatusCard({ pnlV2, publicPnlStatus }: PnlStatusCardProps) {
   const pnl = selectVerifiedPnlData(pnlV2)
   const isActive = pnlV2 != null
-  const showLimitedSampleBadge = shouldShowLimitedSampleBadge(publicPnlStatus)
+  const limitedSampleBadgeLabel = shouldShowLimitedSampleBadge(publicPnlStatus)
 
   const headerIcon = pnl.realizedPnlUsd == null
     ? <WarningIcon size={16} color="#fbbf24" />
@@ -173,7 +178,7 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus }: PnlStatusCardProps) {
         {/* REAL backend classification (fifoEngine's publicPnlStatus, via
             finalSummary.financialStatus.officialPnlStatus) — a SEPARATE signal from the UI-only
             magnitude clamp above; shown whenever it isn't 'ok', regardless of magnitude. */}
-        {showLimitedSampleBadge && <StatusBadge label="Limited verified sample" tone="warning" />}
+        {limitedSampleBadgeLabel && <StatusBadge label={limitedSampleBadgeLabel} tone="warning" />}
       </div>
 
       {pnl.unreliable && (
