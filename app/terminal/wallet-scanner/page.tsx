@@ -529,7 +529,11 @@ export default function WalletScannerPage() {
 
               <SectionDivider label="PnL Summary" />
               <div className="ws-card">
-                <PnlStatusCard fifoAndPnl={result.fifoAndPnl} pnlSummaryV2={result.pnlSummaryV2} pnlV2={result.pnlV2} />
+                {/* SINGLE-VERIFIED-SOURCE PNL, DISCLOSED: PnlStatusCard now reads ONLY result.pnlV2
+                    (the V2 engine's self-contained realized+unrealized PnL) — result.fifoAndPnl and
+                    result.pnlSummaryV2 (old pipeline sources) are intentionally no longer passed;
+                    this component has no fallback/merge logic across multiple PnL sources anymore. */}
+                <PnlStatusCard pnlV2={result.pnlV2} />
               </div>
 
               {/* WALLET CONDITION PANEL, DISCLOSED: renders exactly what
