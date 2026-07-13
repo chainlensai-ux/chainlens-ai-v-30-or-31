@@ -15,7 +15,7 @@ import type { RawProviderEvent, SupportedChain } from '../modules/providerFetchW
 import { normalizeEvents } from '../modules/normalization/index'
 import { buildCounterpartyStats, classifyRouterLikeEvent, recordRouterCandidate } from './routerDiscovery'
 import { adaptPnlSummaryForUi } from './pnlSummaryAdapter'
-import { buildChainAwareHistoricalPriceSource } from './pricingAtTimeAdapter'
+import { buildChainAwareHistoricalPriceSource, pricingRouteLog } from './pricingAtTimeAdapter'
 import type { NormalizedEvent } from '../modules/normalization/types'
 import { buildChainSelectionObject } from '../modules/chainSelection/index'
 import type { ChainSelectionResult } from '../modules/chainSelection/types'
@@ -461,6 +461,15 @@ export function classifyDustSuppression(cheapResult: CheapDustPriceResult): { su
 // don't have to destructure classifyDustSuppression's richer result.
 export function isSuppressibleDustToken(cheapResult: CheapDustPriceResult): boolean {
   return classifyDustSuppression(cheapResult).suppress
+}
+
+// ROUTER-DISTRIBUTOR MODE, DISCLOSED. PURE, exported for direct testing — the real call site
+// (runWalletScan, below) reuses the same outboundEvents/outboundToKnownRouter counts an existing
+// debug trace already computes, never re-derived. See that call site's own comment for the full
+// disclosure on what this toggles (display-pricing-pass dust-suppression widening only — never
+// holdings, never priceLotsForWallet/fifoEngine/pnlV2).
+export function computeRouterDistributorMode(outboundEventsCount: number, outboundToKnownRouterCount: number): boolean {
+  return outboundEventsCount > 150 && outboundToKnownRouterCount > 150
 }
 
 async function mapWithConcurrencyLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
@@ -1034,9 +1043,9 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // suppression, chainSelection gating) touches the array. Read-only: computes derived counts from
   // the already-produced `normalizedEvents`, logs them, and does not affect `normalizedEvents`,
   // `normalizationErrors`, or anything downstream. Remove once the question above is answered.
+  const outboundEvents = normalizedEvents.filter((e) => e.direction === 'outbound')
+  const outboundToKnownRouter = outboundEvents.filter((e) => KNOWN_DEX_ROUTER_ADDRESSES.has(e.toAddress.toLowerCase()))
   {
-    const outboundEvents = normalizedEvents.filter((e) => e.direction === 'outbound')
-    const outboundToKnownRouter = outboundEvents.filter((e) => KNOWN_DEX_ROUTER_ADDRESSES.has(e.toAddress.toLowerCase()))
     // eslint-disable-next-line no-console
     console.warn('[debug] normalizedEvents trace', {
       rawEventsCount: allRawEvents.length,
@@ -1054,6 +1063,15 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       })),
     })
   }
+
+  // ROUTER-DISTRIBUTOR MODE, DISCLOSED (additive, observability + display-pricing-only toggle):
+  // reuses the outboundEvents/outboundToKnownRouter counts the debug trace above already computes
+  // — no re-derivation, no new event classification. A wallet whose outbound activity is
+  // overwhelmingly router-mediated swaps (>150 outbound events, >150 of them to a known router)
+  // gets this real, named signal. Used below ONLY to widen the token set fed to the ADDITIVE display
+  // pricingAtTime pass (stage 6c) — never priceLotsForWallet's fifoEngine-feeding input, never
+  // holdings' own separate dust-suppression computation, never fifoEngine/pnlV2 themselves.
+  const routerDistributorMode = computeRouterDistributorMode(outboundEvents.length, outboundToKnownRouter.length)
 
   // ROUTER DISCOVERY, DISCLOSED: additive-only, log-only observability aid (src/pipeline/
   // routerDiscovery.ts). Flags outbound events whose counterparty isn't already in
@@ -1255,19 +1273,36 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // DUST SUPPRESSION reuses the SAME dustSuppressedKeys already resolved once, upstream, before
   // stage 5c — no second round of cheap lookups here. Consistent by construction: a token excluded
   // from priceLotsForWallet's input is excluded from this display pass too.
-  const displayBuyEntries = dustSuppressedKeys.size === 0
+  //
+  // ROUTER-DISTRIBUTOR EXCEPTION, DISCLOSED (additive): when routerDistributorMode is true, this
+  // display-only pass uses the FULL, unfiltered buyTimeline instead of the dust-filtered copy —
+  // holdings' own separate dust-suppression computation (elsewhere in this function, untouched) and
+  // priceLotsForWallet's fifoEngine-feeding input (stage 5c, above, untouched) are NOT affected
+  // either way. A wallet with heavy router-mediated distribution activity is exactly the case this
+  // codebase's own dust suppression (a cheap "does any market exist" check) is most likely to
+  // misclassify a genuinely-traded token as dust — widening coverage here is a display-only
+  // trade-off, not a claim that dust suppression's real definition changed.
+  const displayBuyEntries = routerDistributorMode || dustSuppressedKeys.size === 0
     ? timelines.buyTimeline.entries
     : timelines.buyTimeline.entries.filter((e) => !dustSuppressedKeys.has(dustTokenKey(e.chain, e.token)))
+  const dustSkippedCount = timelines.buyTimeline.entries.length - displayBuyEntries.length
   // Diagnostic log — real dust-suppression counts, directly requested (verification step:
   // "pricingAtTimeEngine.priceEntries total count decreases for dust-heavy wallets").
   // eslint-disable-next-line no-console
   console.warn('[pipeline] dust suppression (display pricingAtTime pass)', {
     totalBuyEntries: timelines.buyTimeline.entries.length,
-    suppressed: timelines.buyTimeline.entries.length - displayBuyEntries.length,
+    suppressed: dustSkippedCount,
+    routerDistributorMode,
   })
 
   const pricingAtTimeStart = performance.now()
   const rpcLogSnapshotBeforePricingAtTime = rpcDebugLog.length
+  // FALLBACK-PRICING OBSERVABILITY, DISCLOSED: pricingRouteLog (pricingAtTimeAdapter.ts) already
+  // records which real provider (goldrush/geckoterminal/dexscreener/coingecko_or_basedex/none)
+  // answered every pricing attempt — it was written but never read back anywhere in this file until
+  // now. Same snapshot-before/slice-after pattern already used around rpcDebugLog just above, so
+  // this reads only THIS scan's own attempts, not the whole process-lifetime log.
+  const pricingRouteLogSnapshotBefore = pricingRouteLog.length
   const pricingAtTime = await safeRunPricingAtTime({
     buyEntries: displayBuyEntries,
     sellEntries: sellTimelineV2.entries,
@@ -1276,6 +1311,23 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   scanTimer.mark('pricingAtTime', pricingAtTimeStart)
   // CU-ESTIMATOR SNAPSHOT, DISCLOSED: same delta pattern as priceLotsForWallet's own snapshot above.
   const pricingAtTimeRpcCounts = countRpcMethods(rpcDebugLog.slice(rpcLogSnapshotBeforePricingAtTime))
+
+  // FALLBACK-PRICING-USED, DISCLOSED: 'goldrush' or 'none' means GoldRush either answered directly
+  // or nothing did — 'geckoterminal'/'dexscreener'/'coingecko_or_basedex' mean a real non-GoldRush
+  // provider (already wired inside PRICE_SOURCES.primary's chain-aware router, see buildPriceSources
+  // above — no BaseScan client exists anywhere in this codebase; GeckoTerminal + the on-chain Base
+  // DEX source already serve that role for Base) actually answered instead.
+  const fallbackPricingUsed = pricingRouteLog
+    .slice(pricingRouteLogSnapshotBefore)
+    .some((r) => r.route !== 'goldrush' && r.route !== 'none')
+
+  // DEV-ONLY OBSERVABILITY, DISCLOSED: never added to FinalReport / any API response — console-only,
+  // matching this codebase's own established "dev-only" pattern elsewhere (e.g.
+  // lib/server/cache/v2StageCache.ts's DEV_WARM_TTL_SECONDS gate). Not shown to end users.
+  if (process.env.NODE_ENV !== 'production') {
+    // eslint-disable-next-line no-console
+    console.warn('[pipeline] scanPricingDiagnostics (dev-only)', { fallbackPricingUsed, dustSkippedCount, routerDistributorMode })
+  }
 
   // 7. windowCoverage — pure arithmetic derived from the fixed fetch window and recovery pages used.
   const windowCoverage = computeWindowCoverage(PROVIDER_FETCH_WINDOW_DAYS_USED, recoveryPolicy.totalPagesUsedThisWallet)

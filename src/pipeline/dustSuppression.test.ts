@@ -25,6 +25,7 @@ import {
   countRpcMethods,
   buildPerTokenPricingAttempts,
   buildCuEstimatorSummary,
+  computeRouterDistributorMode,
   type RpcMethodCounts,
 } from './index'
 import type { BuyTimelineEntry, SourceType } from '../modules/timelineBuilder/types'
@@ -508,5 +509,28 @@ describe('buildCuEstimatorSummary', () => {
     const summary = buildCuEstimatorSummary(zeroCounts(), { alchemy: zeroCounts(), goldrushPriceCalls: 0 }, [])
     assert.equal(summary.totalCu, 0)
     assert.deepEqual(summary.perToken, [])
+  })
+})
+
+describe('computeRouterDistributorMode', () => {
+  it('is false when neither threshold is exceeded', () => {
+    assert.equal(computeRouterDistributorMode(50, 50), false)
+  })
+
+  it('is false when only outboundEventsCount exceeds 150 but outboundToKnownRouterCount does not', () => {
+    assert.equal(computeRouterDistributorMode(200, 100), false)
+  })
+
+  it('is false when only outboundToKnownRouterCount exceeds 150 (impossible in practice, but the AND must hold)', () => {
+    assert.equal(computeRouterDistributorMode(100, 200), false)
+  })
+
+  it('is true when both exceed 150 (real reported case: 262 outbound, 198 to known routers)', () => {
+    assert.equal(computeRouterDistributorMode(262, 198), true)
+  })
+
+  it('is false exactly at the 150 boundary — strict "exceeds" check, not >=', () => {
+    assert.equal(computeRouterDistributorMode(150, 150), false)
+    assert.equal(computeRouterDistributorMode(151, 151), true)
   })
 })
