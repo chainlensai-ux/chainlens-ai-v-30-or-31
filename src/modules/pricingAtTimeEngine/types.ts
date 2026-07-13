@@ -54,8 +54,40 @@ export type PriceableEntry = {
   amount: string
 }
 
+// EXTERNAL FALLBACK, ADDITIVE/OPTIONAL, DISCLOSED: `resolvePricingAtTime` below is called from TWO
+// real sites — src/pipeline/priceLotsForWallet.ts (feeds fifoEngine's cost basis, MUST stay
+// byte-identical) and src/pipeline/index.ts's own display-only pricingAtTime pass (stage 6c,
+// additive). This entire `fallbackPricing` config is optional and defaults to unused — when a
+// caller doesn't pass it (priceLotsForWallet.ts never does), behavior is 100% identical to before
+// this type existed. Only the display pass (src/pipeline/index.ts) is authorized to pass one,
+// wired to src/modules/fallbackPricing (BaseScan/GeckoTerminal, current-price-only). A plain
+// function type, not a concrete import of that module's class, matching this file's own existing
+// "caller-injected function" convention (PriceSourceFn/PriceSources above) — keeps this module
+// with zero compile-time coupling to fallbackPricing.
+export type FallbackPricingRoute = 'BaseScan' | 'GeckoTerminal' | 'failed'
+
+export type FallbackPricingAttemptFn = (params: {
+  chain: SupportedChain
+  tokenAddress: string
+  timestampMs?: number
+}) => Promise<
+  | { ok: true; priceUsd: number; source: 'BaseScan' | 'GeckoTerminal' }
+  | { ok: false; errorReason: string }
+>
+
+export type FallbackPricingConfig = {
+  attempt: FallbackPricingAttemptFn
+  // Router-distributor-mode signal, threaded through for observability/disclosure — see
+  // resolvePricingAtTime's own header for why this doesn't change the attempt logic today (the
+  // fallback is already attempted on every primary miss regardless; there is no existing
+  // budget/cap this flag would need to bypass).
+  routerDistributorMode?: boolean
+  onRouteRecorded?: (info: { token: string; chain: SupportedChain; timestamp: number; route: FallbackPricingRoute }) => void
+}
+
 export type ResolvePricingAtTimeParams = {
   buyEntries: PriceableEntry[]
   sellEntries: PriceableEntry[]
   priceSources: PriceSources
+  fallbackPricing?: FallbackPricingConfig
 }

@@ -5,6 +5,7 @@
 // standalone read model (see types.ts header for the full rationale).
 
 import type {
+  FallbackPricingConfig,
   PriceableEntry,
   PricingAtTimeResult,
   ResolvePricingAtTimeParams,
@@ -15,6 +16,9 @@ import { logBaseDexFinalTotals } from './sources/basedex'
 import { getGoldrushPriceSourceCallCount } from './sources/goldrushPriceSource'
 
 export type {
+  FallbackPricingAttemptFn,
+  FallbackPricingConfig,
+  FallbackPricingRoute,
   PriceableEntry,
   PriceSourceFn,
   PriceSources,
@@ -148,6 +152,7 @@ async function priceAllEntries(
   buyEntries: PriceableEntry[],
   sellEntries: PriceableEntry[],
   priceSources: ResolvePricingAtTimeParams['priceSources'],
+  fallbackPricing: FallbackPricingConfig | undefined,
 ): Promise<{
   buys: { usdByTxHash: Record<string, number | null>; breakdown: SourceBreakdown; missing: number }
   sells: { usdByTxHash: Record<string, number | null>; breakdown: SourceBreakdown; missing: number }
@@ -175,6 +180,21 @@ async function priceAllEntries(
     lookupCountByToken.set(tokenKey, priorLookups + 1)
 
     const { price, source } = await resolvePriceForEntry(entry.token, entry.chain, entry.timestamp, priceSources)
+
+    // EXTERNAL FALLBACK, OPTIONAL/ADDITIVE, DISCLOSED: only reached when `fallbackPricing` was
+    // supplied (never true for priceLotsForWallet.ts's calls — see types.ts's own disclosure) AND
+    // priceSources' own primary+fallback both already missed. Never overrides a real price
+    // priceSources itself found; never a third attempt beyond primary+fallback in the sense that
+    // matters for cost-basis (this whole branch is unreachable for the fifoEngine-feeding caller).
+    if (price === null && fallbackPricing) {
+      const attempt = await fallbackPricing.attempt({ chain: entry.chain, tokenAddress: entry.token, timestampMs: entry.timestamp })
+      const route = attempt.ok ? attempt.source : 'failed'
+      fallbackPricing.onRouteRecorded?.({ token: entry.token, chain: entry.chain, timestamp: entry.timestamp, route })
+      if (attempt.ok) {
+        return { list, txHash: entry.txHash, usd: multiplyAmount(attempt.priceUsd, entry.amount), source: 'fallback' as const, missing: false }
+      }
+    }
+
     return { list, txHash: entry.txHash, usd: multiplyAmount(price, entry.amount), source, missing: price === null }
   })
 
@@ -200,7 +220,7 @@ export async function resolvePricingAtTime(params: ResolvePricingAtTimeParams): 
   logFanOutSize('sells', params.sellEntries.length)
   logDistinctTokenRatio(params.buyEntries, params.sellEntries)
 
-  const { buys, sells } = await priceAllEntries(params.buyEntries, params.sellEntries, params.priceSources)
+  const { buys, sells } = await priceAllEntries(params.buyEntries, params.sellEntries, params.priceSources, params.fallbackPricing)
 
   // FINAL-TOTALS SUMMARY, DISCLOSED: one line per scan reporting basedex's cumulative RPC counts,
   // fired once this scan's whole pricing pass finishes — replaces scrolling through hundreds of

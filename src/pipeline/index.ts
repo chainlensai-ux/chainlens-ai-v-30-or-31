@@ -36,7 +36,8 @@ import type { SellTimelineEntry, SellTimelineResult } from '../modules/sellTimel
 import { buildPnlSummary } from '../modules/pnlEngine/index'
 import type { BuildPnlSummaryParams, PnlSummaryResult } from '../modules/pnlEngine/types'
 import { resolvePricingAtTime } from '../modules/pricingAtTimeEngine/index'
-import type { PriceableEntry, PriceSourceFn, PriceSources, PricingAtTimeResult } from '../modules/pricingAtTimeEngine/types'
+import type { FallbackPricingConfig, FallbackPricingRoute, PriceableEntry, PriceSourceFn, PriceSources, PricingAtTimeResult } from '../modules/pricingAtTimeEngine/types'
+import { fallbackPricingService } from '../modules/fallbackPricing/index'
 import { GoldRushClient } from '@covalenthq/client-sdk'
 import { goldrushPriceSource, isKnownGoldrushNegative } from '../modules/pricingAtTimeEngine/sources/goldrushPriceSource'
 import { priceLotsForWallet } from './priceLotsForWallet'
@@ -874,12 +875,14 @@ async function safeRunPricingAtTime(params: {
   buyEntries: PriceableEntry[]
   sellEntries: PriceableEntry[]
   priceSources?: PriceSources
+  fallbackPricing?: FallbackPricingConfig
 }): Promise<PricingAtTimeResult> {
   try {
     return await resolvePricingAtTime({
       buyEntries: params.buyEntries,
       sellEntries: params.sellEntries,
       priceSources: params.priceSources ?? noPriceSources(),
+      fallbackPricing: params.fallbackPricing,
     })
   } catch {
     return pricingAtTimeFallback()
@@ -1303,30 +1306,71 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // now. Same snapshot-before/slice-after pattern already used around rpcDebugLog just above, so
   // this reads only THIS scan's own attempts, not the whole process-lifetime log.
   const pricingRouteLogSnapshotBefore = pricingRouteLog.length
+
+  // NEW FALLBACK-PRICING MODULE WIRING, DISCLOSED (src/modules/fallbackPricing — BaseScan for base,
+  // GeckoTerminal for eth, current-price-only). Passed as `fallbackPricing` — an OPTIONAL config
+  // resolvePricingAtTime only honors when supplied (see pricingAtTimeEngine/types.ts's own
+  // disclosure). Only reached per-entry when PRICE_SOURCES' own primary+fallback (the existing
+  // chain-aware router) BOTH already missed — never a third historical-price attempt in the sense
+  // that matters for cost basis, and never called at all from priceLotsForWallet.ts (fifoEngine's
+  // input), which never passes this config. `onRouteRecorded` populates the counters below AND
+  // pushes into the same pricingRouteLog the existing router already uses, so both fallback layers
+  // show up in one place.
+  const newFallbackRoutes: FallbackPricingRoute[] = []
+  const fallbackPricingConfig: FallbackPricingConfig = {
+    attempt: (p) => fallbackPricingService.getFallbackPrice({ chainId: p.chain === 'base' ? 8453 : p.chain === 'eth' ? 1 : -1, tokenAddress: p.tokenAddress, timestampMs: p.timestampMs }),
+    routerDistributorMode,
+    onRouteRecorded: (info) => {
+      newFallbackRoutes.push(info.route)
+      pricingRouteLog.push({
+        token: info.token, chain: info.chain, timestamp: info.timestamp,
+        route: info.route === 'failed' ? 'none' : 'geckoterminal',
+        // NOTE, DISCLOSED: pricingRouteLog's own PricingRouteUsed union (pricingAtTimeAdapter.ts)
+        // has no 'basescan' member — reusing 'geckoterminal' as the closest existing "a real
+        // non-goldrush provider answered" bucket rather than widening that file's own protected
+        // union type. The dedicated fallbackPricingSources counters below (this module's own,
+        // real Part-4 requirement) are the authoritative BaseScan-vs-GeckoTerminal breakdown.
+      })
+    },
+  }
+
   const pricingAtTime = await safeRunPricingAtTime({
     buyEntries: displayBuyEntries,
     sellEntries: sellTimelineV2.entries,
     priceSources: PRICE_SOURCES,
+    fallbackPricing: fallbackPricingConfig,
   })
   scanTimer.mark('pricingAtTime', pricingAtTimeStart)
   // CU-ESTIMATOR SNAPSHOT, DISCLOSED: same delta pattern as priceLotsForWallet's own snapshot above.
   const pricingAtTimeRpcCounts = countRpcMethods(rpcDebugLog.slice(rpcLogSnapshotBeforePricingAtTime))
 
-  // FALLBACK-PRICING-USED, DISCLOSED: 'goldrush' or 'none' means GoldRush either answered directly
-  // or nothing did — 'geckoterminal'/'dexscreener'/'coingecko_or_basedex' mean a real non-GoldRush
-  // provider (already wired inside PRICE_SOURCES.primary's chain-aware router, see buildPriceSources
-  // above — no BaseScan client exists anywhere in this codebase; GeckoTerminal + the on-chain Base
-  // DEX source already serve that role for Base) actually answered instead.
-  const fallbackPricingUsed = pricingRouteLog
+  // EXISTING-ROUTER FALLBACK USAGE, DISCLOSED: 'goldrush' or 'none' means GoldRush either answered
+  // directly or nothing did — 'geckoterminal'/'dexscreener'/'coingecko_or_basedex' mean a real
+  // non-GoldRush provider inside PRICE_SOURCES.primary's own chain-aware router (buildPriceSources
+  // above) answered instead. Kept separate from the NEW fallbackPricing module's own counters below
+  // — two different fallback layers, both real.
+  const pricingRouteFallbackUsed = pricingRouteLog
     .slice(pricingRouteLogSnapshotBefore)
     .some((r) => r.route !== 'goldrush' && r.route !== 'none')
+
+  // PART 4 OBSERVABILITY, DISCLOSED: real counts from the NEW fallbackPricing module's own
+  // onRouteRecorded calls above — never fabricated, never estimated.
+  const fallbackPricingUsed = newFallbackRoutes.some((r) => r !== 'failed')
+  const fallbackPricingCount = newFallbackRoutes.filter((r) => r !== 'failed').length
+  const fallbackPricingSources = {
+    baseScan: newFallbackRoutes.filter((r) => r === 'BaseScan').length,
+    geckoTerminal: newFallbackRoutes.filter((r) => r === 'GeckoTerminal').length,
+  }
 
   // DEV-ONLY OBSERVABILITY, DISCLOSED: never added to FinalReport / any API response — console-only,
   // matching this codebase's own established "dev-only" pattern elsewhere (e.g.
   // lib/server/cache/v2StageCache.ts's DEV_WARM_TTL_SECONDS gate). Not shown to end users.
   if (process.env.NODE_ENV !== 'production') {
     // eslint-disable-next-line no-console
-    console.warn('[pipeline] scanPricingDiagnostics (dev-only)', { fallbackPricingUsed, dustSkippedCount, routerDistributorMode })
+    console.warn('[pipeline] scanPricingDiagnostics (dev-only)', {
+      fallbackPricingUsed, fallbackPricingCount, fallbackPricingSources,
+      pricingRouteFallbackUsed, dustSkippedCount, routerDistributorMode,
+    })
   }
 
   // 7. windowCoverage — pure arithmetic derived from the fixed fetch window and recovery pages used.

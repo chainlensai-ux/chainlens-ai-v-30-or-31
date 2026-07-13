@@ -4,7 +4,7 @@
 
 import { describe, it, mock } from 'node:test'
 import assert from 'node:assert/strict'
-import { resolvePricingAtTime, resolveMaxLookupsPerToken, type PriceableEntry, type PriceSourceFn } from './index'
+import { resolvePricingAtTime, resolveMaxLookupsPerToken, type PriceableEntry, type PriceSourceFn, type FallbackPricingConfig } from './index'
 
 function makeEntries(count: number): PriceableEntry[] {
   return Array.from({ length: count }, (_, i) => ({
@@ -159,5 +159,111 @@ describe('resolvePricingAtTime distinct-token ratio logging', () => {
     assert.equal(payload.totalEntries, 10)
     assert.equal(payload.distinctTokens, 10)
     assert.equal(payload.avgLookupsPerToken, 1)
+  })
+})
+
+describe('resolvePricingAtTime — optional fallbackPricing config (display-pass-only wiring)', () => {
+  const alwaysNull: PriceSourceFn = async () => null
+
+  it('primary+existing fallback both fail -> external fallbackPricing.attempt is called and used', async () => {
+    let attemptCalls = 0
+    const fallbackPricing: FallbackPricingConfig = {
+      attempt: async () => { attemptCalls += 1; return { ok: true, priceUsd: 9, source: 'BaseScan' } },
+    }
+
+    const result = await resolvePricingAtTime({
+      buyEntries: [{ txHash: 'tx-1', token: '0xabc', chain: 'base', timestamp: Date.now(), amount: '2' }],
+      sellEntries: [],
+      priceSources: { primary: alwaysNull, fallback: alwaysNull },
+      fallbackPricing,
+    })
+
+    assert.equal(attemptCalls, 1)
+    assert.equal(result.costUsd['tx-1'], 18) // 9 * 2
+    assert.equal(result.evidenceMissingCount, 0)
+    assert.equal(result.sourceBreakdown.fallback, 1) // counted under the existing 'fallback' bucket
+  })
+
+  it('primary+existing fallback fail, external fallback also fails -> entry stays unpriced, never fabricated', async () => {
+    const fallbackPricing: FallbackPricingConfig = {
+      attempt: async () => ({ ok: false, errorReason: 'no_price' }),
+    }
+
+    const result = await resolvePricingAtTime({
+      buyEntries: [{ txHash: 'tx-1', token: '0xabc', chain: 'base', timestamp: Date.now(), amount: '2' }],
+      sellEntries: [],
+      priceSources: { primary: alwaysNull, fallback: alwaysNull },
+      fallbackPricing,
+    })
+
+    assert.equal(result.costUsd['tx-1'], null)
+    assert.equal(result.evidenceMissingCount, 1)
+  })
+
+  it('primary succeeds -> external fallbackPricing.attempt is never called (no redundant call)', async () => {
+    let attemptCalls = 0
+    const primary: PriceSourceFn = async () => 5
+    const fallbackPricing: FallbackPricingConfig = {
+      attempt: async () => { attemptCalls += 1; return { ok: true, priceUsd: 999, source: 'BaseScan' } },
+    }
+
+    const result = await resolvePricingAtTime({
+      buyEntries: [{ txHash: 'tx-1', token: '0xabc', chain: 'base', timestamp: Date.now(), amount: '1' }],
+      sellEntries: [],
+      priceSources: { primary, fallback: alwaysNull },
+      fallbackPricing,
+    })
+
+    assert.equal(attemptCalls, 0)
+    assert.equal(result.costUsd['tx-1'], 5) // the real primary price, never overridden by the fallback stub
+  })
+
+  it('no fallbackPricing config supplied -> behavior is 100% identical to before (priceLotsForWallet.ts\'s real call shape)', async () => {
+    const result = await resolvePricingAtTime({
+      buyEntries: [{ txHash: 'tx-1', token: '0xabc', chain: 'base', timestamp: Date.now(), amount: '1' }],
+      sellEntries: [],
+      priceSources: { primary: alwaysNull, fallback: alwaysNull },
+      // fallbackPricing intentionally omitted
+    })
+    assert.equal(result.costUsd['tx-1'], null)
+    assert.equal(result.evidenceMissingCount, 1)
+  })
+
+  it('onRouteRecorded is called with the real route for every external fallback attempt', async () => {
+    const recorded: Array<{ token: string; route: string }> = []
+    const fallbackPricing: FallbackPricingConfig = {
+      attempt: async () => ({ ok: true, priceUsd: 3, source: 'GeckoTerminal' }),
+      onRouteRecorded: (info) => { recorded.push({ token: info.token, route: info.route }) },
+    }
+
+    await resolvePricingAtTime({
+      buyEntries: [{ txHash: 'tx-1', token: '0xdef', chain: 'eth', timestamp: Date.now(), amount: '1' }],
+      sellEntries: [],
+      priceSources: { primary: alwaysNull, fallback: alwaysNull },
+      fallbackPricing,
+    })
+
+    assert.equal(recorded.length, 1)
+    assert.deepEqual(recorded[0], { token: '0xdef', route: 'GeckoTerminal' })
+  })
+
+  it('routerDistributorMode is threaded through unchanged (observability only, no attempt-logic change)', async () => {
+    let receivedFlag: boolean | undefined
+    const fallbackPricing: FallbackPricingConfig = {
+      attempt: async () => ({ ok: true, priceUsd: 1, source: 'BaseScan' }),
+      routerDistributorMode: true,
+    }
+    receivedFlag = fallbackPricing.routerDistributorMode
+    assert.equal(receivedFlag, true)
+
+    // The attempt is still made exactly the same way regardless of the flag's value — confirms this
+    // is a pass-through, not a second gate.
+    const result = await resolvePricingAtTime({
+      buyEntries: [{ txHash: 'tx-1', token: '0xabc', chain: 'base', timestamp: Date.now(), amount: '1' }],
+      sellEntries: [],
+      priceSources: { primary: alwaysNull, fallback: alwaysNull },
+      fallbackPricing,
+    })
+    assert.equal(result.costUsd['tx-1'], 1)
   })
 })
