@@ -86,6 +86,27 @@ function logDistinctTokenRatio(buyEntries: PriceableEntry[], sellEntries: Pricea
 // failures in practice, that's the signal to dial it back down, not push it higher.
 const PRICE_ENTRY_CONCURRENCY_LIMIT = 30
 
+// PER-TOKEN LOOKUP CAP, DISCLOSED (fan-out throttle, additive/scoped to this module only): once a
+// given (chain,token) pair has been resolved MAX_LOOKUPS_PER_TOKEN times within one
+// resolvePricingAtTime call, every FURTHER entry for that same token is left unpriced
+// (costUsd/proceedsUsd null, counted in evidenceMissingCount) instead of either (a) making another
+// real downstream call — the exact fan-out this cap exists to reduce — or (b) reusing an earlier
+// lookup's price for a DIFFERENT timestamp, which would be exactly the "never fabricate a price"
+// violation this codebase has refused everywhere else (a token's price at 9am is not its price at
+// 3pm). Real tradeoff, not a free win: a heavily-repeat-traded token's later entries go from
+// "possibly priced" to "definitely unpriced" once the cap is hit — logged per-scan so this is
+// visible, not silent. This module has NO connection to pnlV2/fifoEngine (see this module's own
+// types.ts header) — only pricingAtTime's own additive costUsd/proceedsUsd/evidenceMissingCount
+// read model is affected, never any pnlV2/FIFO/cost-basis number.
+const MAX_LOOKUPS_PER_TOKEN_DEFAULT = 2
+const MAX_LOOKUPS_PER_TOKEN_DENSE = 1 // used when distinctTokenCount > DENSE_TOKEN_THRESHOLD
+const DENSE_TOKEN_THRESHOLD = 120
+
+// Pure, exported for direct testing.
+export function resolveMaxLookupsPerToken(distinctTokenCount: number): number {
+  return distinctTokenCount > DENSE_TOKEN_THRESHOLD ? MAX_LOOKUPS_PER_TOKEN_DENSE : MAX_LOOKUPS_PER_TOKEN_DEFAULT
+}
+
 async function mapWithConcurrencyLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
   const results: R[] = new Array(items.length)
   let nextIndex = 0
@@ -136,10 +157,33 @@ async function priceAllEntries(
     ...sellEntries.map((entry) => ({ entry, list: 'sell' as const })),
   ]
 
+  const distinctTokenCount = new Set(tagged.map(({ entry }) => `${entry.chain}:${entry.token.toLowerCase()}`)).size
+  const maxLookupsPerToken = resolveMaxLookupsPerToken(distinctTokenCount)
+  const lookupCountByToken = new Map<string, number>()
+  let cappedCount = 0
+
+  // Synchronous increment-and-check BEFORE the `await` below — safe/atomic within JS's single
+  // event loop even though many of these workers run "concurrently": no other worker's code runs
+  // between this increment and the cap comparison, only between one worker's `await` and the next.
   const results = await mapWithConcurrencyLimit(tagged, PRICE_ENTRY_CONCURRENCY_LIMIT, async ({ entry, list }) => {
+    const tokenKey = `${entry.chain}:${entry.token.toLowerCase()}`
+    const priorLookups = lookupCountByToken.get(tokenKey) ?? 0
+    if (priorLookups >= maxLookupsPerToken) {
+      cappedCount += 1
+      return { list, txHash: entry.txHash, usd: null, source: 'failed' as const, missing: true }
+    }
+    lookupCountByToken.set(tokenKey, priorLookups + 1)
+
     const { price, source } = await resolvePriceForEntry(entry.token, entry.chain, entry.timestamp, priceSources)
     return { list, txHash: entry.txHash, usd: multiplyAmount(price, entry.amount), source, missing: price === null }
   })
+
+  if (cappedCount > 0) {
+    // eslint-disable-next-line no-console
+    console.warn('[RPC-INVESTIGATION] pricingAtTimeEngine per-token lookup cap applied', {
+      distinctTokenCount, maxLookupsPerToken, cappedCount, timestamp: Date.now(),
+    })
+  }
 
   return {
     buys: summarizeEntryResults(results.filter((r) => r.list === 'buy')),
