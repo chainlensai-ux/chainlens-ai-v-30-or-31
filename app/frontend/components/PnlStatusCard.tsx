@@ -44,6 +44,31 @@ export type VerifiedPnlData = {
   // Honest placeholders — PnlV2 (the one verified source this component now reads) carries neither.
   // Never derived from the excluded fifoAndPnl/pnlSummaryV2 sources.
   integritySummary: 'not_available_in_v2_engine'
+  // DISPLAY-ONLY GUARDRAIL, DISCLOSED: true when unrealizedPnlUsd or totalCostBasisUsd exceeds
+  // GUARDRAIL_ABS_LIMIT. This flag never changes pnlV2 itself or any number returned above — it
+  // only tells the component below to swap the numeric MetricCards for a "Not reliable" placeholder
+  // and a warning badge. The underlying pnlV2 data is untouched and still fully present in this
+  // object for any caller (e.g. a test) that wants the raw number regardless of the clamp.
+  unreliable: boolean
+}
+
+// UI-ONLY HEURISTIC, DISCLOSED: not a backend-computed threshold. pnlV2 (lib/engine/modules/pnl)
+// has no evidence-count/confidence field of its own, so the only defensive signal available at this
+// layer is magnitude — a real wallet's realistic USD PnL/cost-basis does not reach $1e9. This value
+// existing at all almost always means a missing/duplicate-decimals price or a pathological token
+// slipped past pricingAtTimeEngine, not a real gain/loss. Chosen for THIS card only; does not alter
+// pricingAtTimeEngine, fifoEngine, or pnlV2's own semantics anywhere else in the codebase.
+export const GUARDRAIL_ABS_LIMIT = 1e9
+
+function isUnreliableMagnitude(pnlV2: PnlV2, totalCostBasisUsd: number): boolean {
+  const magnitudes = [
+    pnlV2.realizedPnlUsd,
+    pnlV2.unrealizedPnlUsd,
+    totalCostBasisUsd,
+    ...pnlV2.chainBreakdown.map((c) => c.realizedPnlUsd),
+    ...pnlV2.chainBreakdown.map((c) => c.unrealizedPnlUsd),
+  ]
+  return magnitudes.some((v) => Math.abs(v) > GUARDRAIL_ABS_LIMIT)
 }
 
 // Pure, exported for direct testing. The ONLY selector this component uses — no priority list, no
@@ -57,6 +82,7 @@ export function selectVerifiedPnlData(pnlV2: PnlV2 | null | undefined): Verified
       totalCostBasisUsd: null,
       roi: { value: null, display: 'No verified PnL data' },
       integritySummary: 'not_available_in_v2_engine',
+      unreliable: false,
     }
   }
 
@@ -73,10 +99,11 @@ export function selectVerifiedPnlData(pnlV2: PnlV2 | null | undefined): Verified
     totalCostBasisUsd,
     roi,
     integritySummary: 'not_available_in_v2_engine',
+    unreliable: isUnreliableMagnitude(pnlV2, totalCostBasisUsd),
   }
 }
 
-function ChainBreakdownTable({ chainBreakdown }: { chainBreakdown: PnlV2['chainBreakdown'] }) {
+function ChainBreakdownTable({ chainBreakdown, unreliable }: { chainBreakdown: PnlV2['chainBreakdown']; unreliable: boolean }) {
   if (chainBreakdown.length === 0) {
     return <p style={{ fontSize: '12px', color: 'rgba(148,163,184,0.55)', margin: 0 }}>No per-chain PnL breakdown from the verified V2 engine.</p>
   }
@@ -91,13 +118,24 @@ function ChainBreakdownTable({ chainBreakdown }: { chainBreakdown: PnlV2['chainB
           </tr>
         </thead>
         <tbody>
-          {chainBreakdown.map((c) => (
-            <tr key={c.chainId} style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}>
-              <td style={{ padding: '9px 10px', fontWeight: 700, color: '#e2e8f0' }}>{c.chainId}</td>
-              <td style={{ padding: '9px 10px', fontWeight: 700, color: c.realizedPnlUsd >= 0 ? '#4ade80' : '#f87171' }}>{fmtSignedUsd(c.realizedPnlUsd)}</td>
-              <td style={{ padding: '9px 10px', fontWeight: 700, color: c.unrealizedPnlUsd >= 0 ? '#4ade80' : '#f87171' }}>{fmtSignedUsd(c.unrealizedPnlUsd)}</td>
-            </tr>
-          ))}
+          {chainBreakdown.map((c) => {
+            // Same GUARDRAIL_ABS_LIMIT clamp applied per-chain-row, per task requirement — the
+            // per-chain breakdown must not leak an absurd number even if the aggregate is clamped.
+            const rowUnreliable = unreliable && (Math.abs(c.realizedPnlUsd) > GUARDRAIL_ABS_LIMIT || Math.abs(c.unrealizedPnlUsd) > GUARDRAIL_ABS_LIMIT)
+            return (
+              <tr key={c.chainId} style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+                <td style={{ padding: '9px 10px', fontWeight: 700, color: '#e2e8f0' }}>{c.chainId}</td>
+                {rowUnreliable ? (
+                  <td colSpan={2} style={{ padding: '9px 10px', fontWeight: 700, color: '#fbbf24' }}>Not reliable — sample too incomplete</td>
+                ) : (
+                  <>
+                    <td style={{ padding: '9px 10px', fontWeight: 700, color: c.realizedPnlUsd >= 0 ? '#4ade80' : '#f87171' }}>{fmtSignedUsd(c.realizedPnlUsd)}</td>
+                    <td style={{ padding: '9px 10px', fontWeight: 700, color: c.unrealizedPnlUsd >= 0 ? '#4ade80' : '#f87171' }}>{fmtSignedUsd(c.unrealizedPnlUsd)}</td>
+                  </>
+                )}
+              </tr>
+            )
+          })}
         </tbody>
       </table>
     </div>
@@ -118,14 +156,23 @@ export function PnlStatusCard({ pnlV2 }: PnlStatusCardProps) {
         <span style={{ display: 'inline-flex' }}>{headerIcon}</span>
         <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 800, color: '#e2e8f0', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>PnL (Verified V2)</h3>
         <StatusBadge label={isActive ? 'Active' : 'Unavailable'} tone={isActive ? 'success' : 'neutral'} glow={isActive} />
+        {pnl.unreliable && <StatusBadge label="Limited verified sample" tone="warning" glow />}
       </div>
 
+      {pnl.unreliable && (
+        <p style={{ fontSize: '12px', color: '#fbbf24', margin: '0 0 12px' }}>
+          PnL sample too incomplete to show a reliable number — one or more values from the verified
+          V2 engine exceeded a sane magnitude (likely a missing/duplicate-decimals price rather than
+          a real gain or loss). The underlying data is unchanged; only this display is clamped.
+        </p>
+      )}
+
       <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '16px' }}>
-        <MetricCard label="Realized PnL" value={fmtSignedUsd(pnl.realizedPnlUsd)} tone={toneFromNumber(pnl.realizedPnlUsd)} index={0} />
-        <MetricCard label="Unrealized PnL" value={fmtSignedUsd(pnl.unrealizedPnlUsd)} tone={toneFromNumber(pnl.unrealizedPnlUsd)} index={1} />
-        <MetricCard label="Total PnL" value={fmtSignedUsd(pnl.totalPnlUsd)} tone={toneFromNumber(pnl.totalPnlUsd)} index={2} />
-        <MetricCard label="ROI" value={pnl.roi.display} tone={toneFromNumber(pnl.roi.value)} index={3} />
-        <MetricCard label="Cost Basis" value={fmtUsd(pnl.totalCostBasisUsd)} index={4} />
+        <MetricCard label="Realized PnL" value={pnl.unreliable ? 'Not reliable' : fmtSignedUsd(pnl.realizedPnlUsd)} tone={pnl.unreliable ? 'neutral' : toneFromNumber(pnl.realizedPnlUsd)} index={0} />
+        <MetricCard label="Unrealized PnL" value={pnl.unreliable ? 'Not reliable' : fmtSignedUsd(pnl.unrealizedPnlUsd)} tone={pnl.unreliable ? 'neutral' : toneFromNumber(pnl.unrealizedPnlUsd)} index={1} />
+        <MetricCard label="Total PnL" value={pnl.unreliable ? 'Not reliable' : fmtSignedUsd(pnl.totalPnlUsd)} tone={pnl.unreliable ? 'neutral' : toneFromNumber(pnl.totalPnlUsd)} index={2} />
+        <MetricCard label="ROI" value={pnl.unreliable ? 'Not reliable' : pnl.roi.display} tone={pnl.unreliable ? 'neutral' : toneFromNumber(pnl.roi.value)} index={3} />
+        <MetricCard label="Cost Basis" value={pnl.unreliable ? 'Not reliable' : fmtUsd(pnl.totalCostBasisUsd)} index={4} />
         <MetricCard label="Integrity" value={<StatusBadge label="Not available (V2 engine)" tone="neutral" />} index={5} />
       </div>
 
@@ -133,7 +180,7 @@ export function PnlStatusCard({ pnlV2 }: PnlStatusCardProps) {
         <div style={{ fontSize: '10px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(148,163,184,0.55)', marginBottom: '8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
           Per-Chain Breakdown
         </div>
-        <ChainBreakdownTable chainBreakdown={pnlV2?.chainBreakdown ?? []} />
+        <ChainBreakdownTable chainBreakdown={pnlV2?.chainBreakdown ?? []} unreliable={pnl.unreliable} />
       </div>
 
       {!isActive && (

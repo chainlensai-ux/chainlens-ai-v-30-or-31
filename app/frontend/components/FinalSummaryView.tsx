@@ -28,6 +28,17 @@ function sellActivityLabel(totalSells: number): { label: string; tone: StatusTon
   return { label: 'Distributor with Sell Activity', tone: 'neutral' }
 }
 
+// SELL-ACTIVITY SENTENCE, ADDITIVE/DISCLOSED: real per-chain counts from sellTimelineV2.entries —
+// never invents a chain name that isn't actually present in a real sell entry.
+function sellActivitySentence(sellTimeline: SellTimelineResult | null | undefined): string | null {
+  const entries = sellTimeline?.entries ?? []
+  if (entries.length === 0) return null
+  const chains = Array.from(new Set(entries.map((e) => e.chain))).sort()
+  const style = entries.length >= ACTIVE_SELLER_THRESHOLD ? 'active sell activity' : 'sell activity'
+  const scope = chains.length > 1 ? 'Multi-chain distributor wallet' : 'Wallet'
+  return `${scope} with ${style} on ${chains.join('/')}.`
+}
+
 function pnlStatusTone(status: string): StatusTone {
   if (status === 'ok') return 'success'
   if (status === 'limited_verified_sample') return 'warning'
@@ -75,6 +86,7 @@ export function FinalSummaryView({
 }) {
   const walletPersonality = summary?.walletPersonality ?? 'Insufficient data to classify wallet behavior.'
   const sellActivity = sellActivityLabel(sellTimeline?.totalSells ?? 0)
+  const sellSentence = sellActivitySentence(sellTimeline)
   const financialHeadline = summary?.financialStatus?.headline ?? 'PnL unavailable due to missing evidence.'
   const officialPnlStatus = summary?.financialStatus?.officialPnlStatus ?? 'unavailable'
   const rotationStyle = summary?.behavioralStatus?.rotationStyle ?? 'unknown'
@@ -112,6 +124,12 @@ export function FinalSummaryView({
       >
         {walletPersonality}
       </motion.p>
+
+      {sellSentence && (
+        <p style={{ margin: '0 0 10px', fontSize: '12px', color: 'rgba(148,163,184,0.75)' }}>
+          {sellSentence}
+        </p>
+      )}
 
       <div>
         <SummaryRow label="Financial" index={0}>

@@ -62,3 +62,33 @@ describe('selectVerifiedPnlData', () => {
     assert.equal(result.totalPnlUsd, 60)
   })
 })
+
+describe('selectVerifiedPnlData — display-only guardrail (unreliable magnitude clamp)', () => {
+  it('flags unreliable when unrealizedPnlUsd is absurdly large, but leaves the raw pnlV2 numbers untouched', () => {
+    const result = selectVerifiedPnlData(pnlV2({ realizedPnlUsd: 10, unrealizedPnlUsd: 5e12 }))
+    assert.equal(result.unreliable, true)
+    // The underlying number is still returned honestly — only the component's rendering clamps it.
+    assert.equal(result.unrealizedPnlUsd, 5e12)
+  })
+
+  it('flags unreliable when total cost basis is absurdly large', () => {
+    const result = selectVerifiedPnlData(pnlV2({
+      costBasis: [{ tokenAddress: '0xa', chainId: 8453, totalQuantity: 1, totalCostUsd: 2e9, averageCostUsd: 2e9 }],
+    }))
+    assert.equal(result.unreliable, true)
+  })
+
+  it('a normal, realistic wallet is never flagged unreliable', () => {
+    const result = selectVerifiedPnlData(pnlV2({ realizedPnlUsd: 500, unrealizedPnlUsd: -120 }))
+    assert.equal(result.unreliable, false)
+  })
+
+  it('flags unreliable from a per-chain breakdown value alone, even if aggregate totals look sane', () => {
+    const result = selectVerifiedPnlData(pnlV2({
+      realizedPnlUsd: 10,
+      unrealizedPnlUsd: 10,
+      chainBreakdown: [{ chainId: 8453, realizedPnlUsd: 1e15, unrealizedPnlUsd: 0 }],
+    }))
+    assert.equal(result.unreliable, true)
+  })
+})

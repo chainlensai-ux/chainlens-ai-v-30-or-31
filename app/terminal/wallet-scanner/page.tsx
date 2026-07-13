@@ -30,12 +30,14 @@ import { useEffect, useState } from 'react'
 import { usePlanWithLoading, LockedPanel, canAccessFeature } from '@/lib/usePlan'
 import { supabase } from '@/lib/supabaseClient'
 import { scanWalletV2 } from '@/app/frontend/api/scanWallet'
+import { logEngineConsistencyIfDev } from '@/app/frontend/lib/engineConsistencyCheck'
 import {
   BehaviorIntelView,
   ChainSelectionView,
   CoverageTimelineCard,
   FinalSummaryView,
   SellActivitySummary,
+  ScanDiagnosticsCard,
   HoldingsViewV2,
   PnlStatusCard,
   RecoveryHealthCard,
@@ -151,6 +153,12 @@ export default function WalletScannerPage() {
   const [moduleErrors, setModuleErrors] = useState<Record<string, string> | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<WalletV2Report | null>(null)
+  // SCAN DIAGNOSTICS, ADDITIVE/DISCLOSED: WalletV2Report carries no timing fields at all (no
+  // totalMs/stagesMs/slowProviderDetected/jitterDetected — verified by search of
+  // src/modules/finalReportAssembler/types.ts; a task once assumed these existed, they don't). The
+  // only REAL timing signal available at this layer is this page's own measured wall-clock duration
+  // around the scanWalletV2() call below — a real Date.now() delta, never a fabricated number.
+  const [scanDurationMs, setScanDurationMs] = useState<number | null>(null)
   const [signedInEmail, setSignedInEmail] = useState<string | null>(null)
   const [sessionLoaded, setSessionLoaded] = useState(false)
   const [watchlistStatus, setWatchlistStatus] = useState<'idle' | 'saving' | 'success' | 'exists' | 'error'>('idle')
@@ -296,17 +304,22 @@ export default function WalletScannerPage() {
     setJobStatusMessage(null)
     setScanProgress(null)
     setModuleErrors(null)
+    setScanDurationMs(null)
 
+    const scanStartedAt = Date.now()
     try {
       // DIRECT SYNCHRONOUS CALL, DISCLOSED (see file header): no job/poll, no queue, no worker —
       // a single request that waits for the whole scan to finish. Both modes go through the same
       // route; scanMode is passed straight through and the route dispatches to the identical
       // runWalletScanV2Worker chain regardless of mode.
       const response = await scanWalletV2(address, ['base', 'eth'], mode)
+      setScanDurationMs(Date.now() - scanStartedAt)
       if (!response.success || !response.data) {
         throw new Error(response.error?.message ?? 'Scan failed')
       }
-      setResult(response.data as WalletV2Report)
+      const report = response.data as WalletV2Report
+      setResult(report)
+      logEngineConsistencyIfDev(report)
     } catch (err: unknown) {
       // eslint-disable-next-line no-console
       console.error('Scan failed', err)
@@ -545,7 +558,16 @@ export default function WalletScannerPage() {
                   separate data source, no fallback either direction). */}
               <SectionDivider label="Sell Activity" />
               <div className="ws-card">
-                <SellActivitySummary sellTimeline={result.timelines?.sellTimelineV2} />
+                <SellActivitySummary
+                  sellTimeline={result.timelines?.sellTimelineV2}
+                  pnlV2={result.pnlV2}
+                  publicPnlStatus={result.finalSummary?.financialStatus?.officialPnlStatus}
+                />
+              </div>
+
+              <SectionDivider label="Scan Diagnostics" optional />
+              <div className="ws-card">
+                <ScanDiagnosticsCard scanDurationMs={scanDurationMs} providerDiagnostics={result.providerDiagnostics} />
               </div>
 
               {/* WALLET CONDITION PANEL, DISCLOSED: renders exactly what

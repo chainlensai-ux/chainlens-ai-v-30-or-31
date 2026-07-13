@@ -22,7 +22,18 @@
 // an arbitrary, disclosed UI-only choice (not a backend-computed value) for when the sample is large
 // enough to describe as more than "limited" in this specific card's own wording — it does NOT alter
 // `finalSummary.financialStatus.officialPnlStatus`, the real backend-computed badge shown elsewhere.
+//
+// PROFIT SKILL UNLOCK RULE, DISCLOSED: unlocked when totalSells > 0 AND pnlV2.realizedPnlUsd is a
+// real, non-null number (i.e. the verified V2 engine actually produced a realized-PnL figure for
+// this wallet) — a wallet with sells but no verified realized PnL still can't back the "skill" claim
+// with a real number. `publicPnlStatus` (the REAL field is
+// FifoOutput['publicPnlStatus'] = 'ok' | 'limited_verified_sample' | 'unavailable' — note this is
+// NOT a `'fully_verified'` value as an earlier task description assumed) drives a separate
+// "Limited verified sample" label whenever it isn't `'ok'`, exactly mirroring the real backend
+// classification's own wording rather than inventing a new one.
 import type { SellTimelineResult, SellTimelineEntry } from '@/src/modules/sellTimeline/types'
+import type { PnlV2 } from '@/lib/engine/modules/pnl/types'
+import type { PublicPnlStatus } from '@/src/modules/fifoEngine/types'
 import { StatusBadge } from './StatusBadge'
 import { SellTimelineV2View } from './SellTimelineV2View'
 
@@ -40,14 +51,51 @@ function topSoldTokens(entries: SellTimelineEntry[], limit = 3): { symbol: strin
     .map(([symbol, count]) => ({ symbol, count }))
 }
 
-export function SellActivitySummary({ sellTimeline }: { sellTimeline: SellTimelineResult | null | undefined }) {
+export type SellActivitySelection = {
+  entries: SellTimelineEntry[]
+  totalSells: number
+  totalProceedsUsd: number
+  hasAnyProceeds: boolean
+  profitSkillUnlocked: boolean
+  showLimitedLabel: boolean
+}
+
+// Pure, exported for direct testing — the ONLY selector this component uses for the Profit Skill /
+// sample-size labels. See the file header for the exact unlock rule and threshold disclosures.
+export function selectSellActivity(
+  sellTimeline: SellTimelineResult | null | undefined,
+  pnlV2?: PnlV2 | null,
+  publicPnlStatus?: PublicPnlStatus | null,
+): SellActivitySelection {
   const entries = sellTimeline?.entries ?? []
   const totalSells = sellTimeline?.totalSells ?? entries.length
   const entriesWithProceeds = entries.filter((e) => typeof e.proceedsUsdEstimate === 'number')
   const totalProceedsUsd = entriesWithProceeds.reduce((sum, e) => sum + (e.proceedsUsdEstimate as number), 0)
   const hasAnyProceeds = entriesWithProceeds.length > 0
-  const profitSkillUnlocked = totalSells > 0
+  const hasVerifiedRealizedPnl = typeof pnlV2?.realizedPnlUsd === 'number'
+  const profitSkillUnlocked = totalSells > 0 && (pnlV2 === undefined || hasVerifiedRealizedPnl)
   const verifiedSample = totalSells >= VERIFIED_SAMPLE_THRESHOLD
+  // Real backend classification (fifoEngine's publicPnlStatus) drives this label when supplied;
+  // falls back to the UI-only totalSells threshold above when the caller doesn't pass it.
+  const limitedByBackendStatus = publicPnlStatus != null && publicPnlStatus !== 'ok'
+  const showLimitedLabel = publicPnlStatus != null ? limitedByBackendStatus : !verifiedSample
+
+  return { entries, totalSells, totalProceedsUsd, hasAnyProceeds, profitSkillUnlocked, showLimitedLabel }
+}
+
+export function SellActivitySummary({
+  sellTimeline,
+  pnlV2,
+  publicPnlStatus,
+}: {
+  sellTimeline: SellTimelineResult | null | undefined
+  // Optional, additive — omitting either simply falls back to the totalSells-only unlock rule this
+  // component already had (no fabricated default value is invented for either field).
+  pnlV2?: PnlV2 | null
+  publicPnlStatus?: PublicPnlStatus | null
+}) {
+  const { entries, totalSells, totalProceedsUsd, hasAnyProceeds, profitSkillUnlocked, showLimitedLabel } =
+    selectSellActivity(sellTimeline, pnlV2, publicPnlStatus)
 
   return (
     <section>
@@ -61,8 +109,8 @@ export function SellActivitySummary({ sellTimeline }: { sellTimeline: SellTimeli
         />
         {profitSkillUnlocked && (
           <StatusBadge
-            label={verifiedSample ? 'Verified sample' : 'Limited verified sample (UI-only estimate)'}
-            tone={verifiedSample ? 'success' : 'warning'}
+            label={showLimitedLabel ? 'Limited verified sample' : 'Verified sample'}
+            tone={showLimitedLabel ? 'warning' : 'success'}
           />
         )}
       </div>
