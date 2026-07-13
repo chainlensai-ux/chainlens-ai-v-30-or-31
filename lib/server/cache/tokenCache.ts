@@ -88,7 +88,11 @@ export type KvCircuitBreakerSnapshot = {
   state: CircuitBreakerState
   consecutiveTimeouts: number
   nextRetryAt: number | null
-  currentCooldownMs: number
+  // Type widened to `number | null` per spec, though this always holds a real number in practice
+  // (initialized to the base cooldown at module load, updated on every state transition) — never
+  // actually null, but the type stays compatible with a caller that treats "no cooldown info yet"
+  // as a real possibility.
+  currentCooldownMs: number | null
 }
 
 export function getKvCircuitBreakerState(): KvCircuitBreakerSnapshot {
@@ -101,7 +105,9 @@ function logStateTransition(from: CircuitBreakerState, to: CircuitBreakerState, 
 }
 
 // Returns true when the caller should skip the real KV call (fall back to memory) this time.
-function circuitBreakerOpen(): boolean {
+// `key` is optional (purely for the rate-limited diagnostic log below) so this can still be called
+// from contexts with no specific key in scope (e.g. the test-only exports).
+function circuitBreakerOpen(key?: string): boolean {
   if (state === 'closed') return false
 
   if (state === 'open') {
@@ -110,7 +116,7 @@ function circuitBreakerOpen(): boolean {
       if (now - lastOpenLogAt > OPEN_LOG_RATE_LIMIT_MS) {
         lastOpenLogAt = now
         // eslint-disable-next-line no-console
-        console.warn('kv_disabled_for_request', { reason: 'circuit_breaker_open', state, nextRetryAt, currentCooldownMs })
+        console.warn('kv_disabled_for_request', { reason: 'circuit_breaker_open', state, nextRetryAt, currentCooldownMs, key })
       }
       return true
     }
@@ -177,8 +183,8 @@ export function __resetKvCircuitBreakerForTest(): void {
   lastOpenLogAt = 0
 }
 
-export function __simulateKvOutcomeForTest(outcome: 'timeout' | 'success'): { blocked: boolean } {
-  const blocked = circuitBreakerOpen()
+export function __simulateKvOutcomeForTest(outcome: 'timeout' | 'success', key?: string): { blocked: boolean } {
+  const blocked = circuitBreakerOpen(key)
   if (!blocked) {
     if (outcome === 'timeout') recordKvTimeout()
     else recordKvSuccess()
@@ -306,7 +312,7 @@ export async function getTokenCache<T = unknown>(key: string): Promise<T | null>
   if (!kvConfigured()) {
     return memoryFallbackGet<T>(key)
   }
-  if (circuitBreakerOpen()) {
+  if (circuitBreakerOpen(key)) {
     // Logging (rate-limited) now happens inside circuitBreakerOpen() itself — see its own header.
     return memoryFallbackGet<T>(key)
   }
@@ -331,7 +337,7 @@ export async function setTokenCache<T = unknown>(key: string, value: T, ttlSecon
   memoryFallbackSet(key, value, ttlSeconds)
 
   if (!kvConfigured()) return
-  if (circuitBreakerOpen()) {
+  if (circuitBreakerOpen(key)) {
     // Logging (rate-limited) now happens inside circuitBreakerOpen() itself — see its own header.
     return
   }

@@ -151,3 +151,49 @@ describe('__overrideKvCooldownForTest — direct cooldown control', () => {
     assert.equal(getKvCircuitBreakerState().currentCooldownMs, 1)
   })
 })
+
+describe('kv_disabled_for_request — includes key, rate-limited', () => {
+  it('includes the real key in the logged payload while open', () => {
+    __simulateKvOutcomeForTest('timeout')
+    __simulateKvOutcomeForTest('timeout')
+    __simulateKvOutcomeForTest('timeout')
+    assert.equal(getKvCircuitBreakerState().state, 'open')
+
+    const originalWarn = console.warn
+    const calls: unknown[][] = []
+    console.warn = (...args: unknown[]) => { calls.push(args) }
+    try {
+      __simulateKvOutcomeForTest('timeout', 'v2:price:chain-aware-historical:base:0xtoken:123')
+    } finally {
+      console.warn = originalWarn
+    }
+
+    const disabledCall = calls.find((args) => args[0] === 'kv_disabled_for_request')
+    assert.ok(disabledCall, 'expected a kv_disabled_for_request log call')
+    const payload = disabledCall![1] as Record<string, unknown>
+    assert.equal(payload.key, 'v2:price:chain-aware-historical:base:0xtoken:123')
+    assert.equal(payload.state, 'open')
+    assert.ok('nextRetryAt' in payload)
+    assert.ok('currentCooldownMs' in payload)
+  })
+
+  it('does not log again for a second blocked call within the 5s rate-limit window', () => {
+    __simulateKvOutcomeForTest('timeout')
+    __simulateKvOutcomeForTest('timeout')
+    __simulateKvOutcomeForTest('timeout')
+    assert.equal(getKvCircuitBreakerState().state, 'open')
+
+    const originalWarn = console.warn
+    const calls: unknown[][] = []
+    console.warn = (...args: unknown[]) => { calls.push(args) }
+    try {
+      __simulateKvOutcomeForTest('timeout', 'key-a') // first blocked call after open — logs
+      __simulateKvOutcomeForTest('timeout', 'key-b') // immediately after — rate-limited, no log
+    } finally {
+      console.warn = originalWarn
+    }
+
+    const disabledCalls = calls.filter((args) => args[0] === 'kv_disabled_for_request')
+    assert.equal(disabledCalls.length, 1)
+  })
+})
