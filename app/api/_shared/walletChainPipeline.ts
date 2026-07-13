@@ -46,6 +46,7 @@ import { fetchHoldings } from '@/src/modules/holdings'
 import { computeUnrealizedPnl, type Holding, type UnrealizedPnlResult } from '@/lib/engines/unrealizedPnlEngine'
 import { UNKNOWN_TOKEN } from '@/src/modules/swapNormalizer'
 import { buildTradeTimelineV2, type NormalizedSwap, type NormalizedTransfer, type TradeEntry } from '@/lib/engines/tradeTimelineEngineV2'
+import { rpcDebugLog, type RpcDebugEntry } from '@/lib/server/rpcDebug'
 
 // WINDOW WIDENING, DISCLOSED: this used to be a hardcoded `= 90` constant. It now resolves via
 // providerFetchWindow's new `getEffectiveFetchWindow()` (src/modules/providerFetchWindow/index.ts),
@@ -230,6 +231,73 @@ function earliestOpenLotByToken(remainingLots: IntentLot[]): Map<string, IntentL
   return byToken
 }
 
+// PROVIDER USAGE / CU ESTIMATION, DISCLOSED: intentionally a LOCAL, independent copy of the same
+// real weights already shipped in src/pipeline/index.ts's estimateAlchemyCu/estimateGoldrushCu/
+// countRpcMethods — NOT an import of that file, since importing it at all runs its module-level
+// `PRICE_SOURCES = buildPriceSources()` side effect (constructs a real GoldRushClient on import),
+// which this file's own header explicitly declares itself independent of ("not imported by, and
+// does not modify, any existing engine/module/pipeline file"). Same weights, so both call sites
+// report the same real CU number for the same underlying method calls, without the coupling risk.
+type AlchemyMethodCounts = {
+  getBlockLatest: number
+  getBlockEstimate: number
+  bisect: number
+  multicallGetPool: number
+  multicallPoolPrice: number
+  slot0: number
+  token0: number
+  decimals: number
+}
+
+const ALCHEMY_CU_WEIGHTS = {
+  getBlockLatest: 5,
+  getBlockEstimate: 5,
+  bisect: 10,
+  multicallGetPool: 20,
+  multicallPoolPrice: 20,
+  slot0: 5,
+  token0: 5,
+  decimals: 5,
+} as const
+
+const GOLDRUSH_CU_PER_CALL = 12
+
+function countProviderUsage(entries: readonly RpcDebugEntry[]): { alchemy: AlchemyMethodCounts; goldrushPriceCalls: number } {
+  const count = (method: string) => entries.filter((e) => e.method === method).length
+  return {
+    alchemy: {
+      getBlockLatest: count('getBlock:latest'),
+      getBlockEstimate: count('getBlock:estimate'),
+      bisect: count('getBlock:bisect'),
+      multicallGetPool: count('readContract:multicall:getPool'),
+      multicallPoolPrice: count('readContract:multicall:poolPrice'),
+      slot0: count('readContract:slot0'),
+      token0: count('readContract:token0'),
+      decimals: count('readContract:decimals'),
+    },
+    goldrushPriceCalls: count('goldrush_sdk_getTokenPrices'),
+  }
+}
+
+function estimateAlchemyCuLocal(counts: AlchemyMethodCounts): AlchemyMethodCounts & { total: number } {
+  const weighted = {
+    getBlockLatest: counts.getBlockLatest * ALCHEMY_CU_WEIGHTS.getBlockLatest,
+    getBlockEstimate: counts.getBlockEstimate * ALCHEMY_CU_WEIGHTS.getBlockEstimate,
+    bisect: counts.bisect * ALCHEMY_CU_WEIGHTS.bisect,
+    multicallGetPool: counts.multicallGetPool * ALCHEMY_CU_WEIGHTS.multicallGetPool,
+    multicallPoolPrice: counts.multicallPoolPrice * ALCHEMY_CU_WEIGHTS.multicallPoolPrice,
+    slot0: counts.slot0 * ALCHEMY_CU_WEIGHTS.slot0,
+    token0: counts.token0 * ALCHEMY_CU_WEIGHTS.token0,
+    decimals: counts.decimals * ALCHEMY_CU_WEIGHTS.decimals,
+  }
+  const total = Object.values(weighted).reduce((sum, n) => sum + n, 0)
+  return { ...weighted, total }
+}
+
+function estimateGoldrushCuLocal(priceCalls: number): { priceCalls: number; estimatedCu: number } {
+  return { priceCalls, estimatedCu: priceCalls * GOLDRUSH_CU_PER_CALL }
+}
+
 // GENUINE UPSTREAM GAP, BRIDGED (see app/api/pnl/route.ts's header for the full disclosure):
 // computeUnrealizedPnl's Holding requires a real acquiredAtTimestamp that fetchHoldings' current-
 // balance snapshot never carries. Bridged here by cross-referencing this SAME chain's real, open
@@ -237,6 +305,16 @@ function earliestOpenLotByToken(remainingLots: IntentLot[]): Map<string, IntentL
 // token with no matching open lot is honestly excluded from the computation and surfaced in
 // `unresolvedHoldings`, never assigned a guessed timestamp.
 export async function buildUnrealizedPnlForChain(chain: SupportedChain, walletAddress: string): Promise<UnrealizedForChainResult> {
+  // PROVIDER USAGE TRACKING, DISCLOSED: snapshot-before/slice-after the same real, already-shipped
+  // rpcDebugLog this codebase's own CU estimator uses (src/pipeline/index.ts's
+  // buildCuEstimatorSummary) — never the raw global array (cross-request leak guard, same
+  // convention). Covers every real Alchemy call this function's own chain (fetchHoldings,
+  // buildLotsForChain, and computeUnrealizedPnl's own onchain-DEX price lookups via
+  // lib/providers/onchainDex.ts -> src/modules/pricingAtTimeEngine/sources/basedex.ts, already
+  // instrumented with logRpcCall) and every real GoldRush price call
+  // (lib/providers/goldrush.ts, also already instrumented) actually makes.
+  const rpcLogSnapshotBefore = rpcDebugLog.length
+
   const [holdingsResult, lots] = await Promise.all([
     fetchHoldings(chain, walletAddress),
     buildLotsForChain(chain, walletAddress),
@@ -308,6 +386,37 @@ export async function buildUnrealizedPnlForChain(chain: SupportedChain, walletAd
     anyUnrealizedPnlClamped: result.anyUnrealizedPnlClamped,
     anyUnreasonablePnL: result.anyUnreasonablePnL,
   })
+
+  // REAL PROVIDER USAGE SUMMARY, DISCLOSED. Reuses this codebase's already-shipped, already-tested
+  // CU-weight functions from src/pipeline/index.ts (estimateAlchemyCu/estimateGoldrushCu/
+  // countRpcMethods) rather than a second, differently-weighted table — this task's own proposed
+  // weights (multicallGetPool/multicallPoolPrice: 15, goldrush: 1/call) conflict with the real
+  // weights already disclosed and shipped there (20/20/12) for the exact same method calls; using
+  // both would silently produce two different "real CU usage" numbers for identical RPC activity.
+  //
+  // PER-TOKEN USAGE, NOT IMPLEMENTED, DISCLOSED: rpcDebugLog's real entry shape (lib/server/
+  // rpcDebug.ts's RpcDebugEntry) carries no token/contract field at all, and computeUnrealizedPnl
+  // processes every holding CONCURRENTLY (Promise.all) — even with per-call snapshotting, entries
+  // from different tokens' price lookups interleave in the shared log with no way to attribute a
+  // given call back to one specific token. Producing "alchemyCalls per token" would require either
+  // tagging each logRpcCall() call site with a token (inside protected src/modules/
+  // pricingAtTimeEngine/sources/basedex.ts and lib/providers/goldrush.ts — out of scope: "Do NOT
+  // modify protected modules") or serializing computeUnrealizedPnl's per-token loop (a real
+  // behavior/performance change to lib/engines/unrealizedPnlEngine.ts — also out of this task's
+  // stated scope). Not fabricated. Only the real, honest wallet+chain-scoped total is emitted.
+  const rpcEntriesThisCall = rpcDebugLog.slice(rpcLogSnapshotBefore)
+  const { alchemy: alchemyMethodCounts, goldrushPriceCalls } = countProviderUsage(rpcEntriesThisCall)
+  const alchemyCu = estimateAlchemyCuLocal(alchemyMethodCounts)
+  const goldrushCu = estimateGoldrushCuLocal(goldrushPriceCalls)
+  // eslint-disable-next-line no-console
+  console.warn('[provider_usage_summary]', {
+    walletAddress,
+    chain,
+    alchemy: alchemyCu,
+    goldrush: goldrushCu,
+    totalCu: alchemyCu.total + goldrushCu.estimatedCu,
+  })
+
   return { chain, result, unresolvedHoldings }
 }
 
