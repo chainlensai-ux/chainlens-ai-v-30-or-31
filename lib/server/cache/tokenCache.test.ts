@@ -16,6 +16,7 @@ import {
   __resetKvCircuitBreakerForTest,
   __simulateKvOutcomeForTest,
   __forceKvCircuitBreakerCooldownElapsedForTest,
+  __overrideKvCooldownForTest,
   __checkKvCircuitBreakerForTest,
   __resolveKvCircuitBreakerTrialForTest,
 } from './tokenCache'
@@ -108,5 +109,45 @@ describe('KV circuit breaker — gradual (half-open) auto-recovery', () => {
       __simulateKvOutcomeForTest('success')
     }
     assert.equal(getKvCircuitBreakerState().state, 'closed')
+  })
+})
+
+describe('getKvCircuitBreakerState — typed diagnostic snapshot', () => {
+  it('reports state/currentCooldownMs/nextRetryAt correctly across closed -> open -> half_open -> closed', () => {
+    let snapshot = getKvCircuitBreakerState()
+    assert.equal(snapshot.state, 'closed')
+    assert.equal(snapshot.nextRetryAt, null)
+
+    __simulateKvOutcomeForTest('timeout')
+    __simulateKvOutcomeForTest('timeout')
+    __simulateKvOutcomeForTest('timeout')
+    snapshot = getKvCircuitBreakerState()
+    assert.equal(snapshot.state, 'open')
+    assert.equal(snapshot.currentCooldownMs, 10_000) // base cooldown, per this task's own spec
+    assert.ok(snapshot.nextRetryAt !== null && snapshot.nextRetryAt > Date.now())
+
+    __forceKvCircuitBreakerCooldownElapsedForTest()
+    __checkKvCircuitBreakerForTest() // becomes the half-open trial, transitions open -> half_open
+    assert.equal(getKvCircuitBreakerState().state, 'half_open')
+
+    __resolveKvCircuitBreakerTrialForTest('success')
+    snapshot = getKvCircuitBreakerState()
+    assert.equal(snapshot.state, 'closed')
+    assert.equal(snapshot.nextRetryAt, null)
+    assert.equal(snapshot.currentCooldownMs, 10_000) // reset to base after a successful recovery
+  })
+})
+
+describe('__overrideKvCooldownForTest — direct cooldown control', () => {
+  it('lets a test shrink the cooldown to a small value instead of only force-expiring it', () => {
+    __simulateKvOutcomeForTest('timeout')
+    __simulateKvOutcomeForTest('timeout')
+    __simulateKvOutcomeForTest('timeout')
+    assert.equal(getKvCircuitBreakerState().state, 'open')
+
+    __overrideKvCooldownForTest(1) // 1ms — effectively immediate
+    // A tiny real sleep-free wait: nextRetryAt is now Date.now() + 1 at the moment of the override,
+    // so by the time this assertion runs it has almost certainly already elapsed.
+    assert.equal(getKvCircuitBreakerState().currentCooldownMs, 1)
   })
 })

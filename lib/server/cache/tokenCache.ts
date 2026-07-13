@@ -88,10 +88,11 @@ export type KvCircuitBreakerSnapshot = {
   state: CircuitBreakerState
   consecutiveTimeouts: number
   nextRetryAt: number | null
+  currentCooldownMs: number
 }
 
 export function getKvCircuitBreakerState(): KvCircuitBreakerSnapshot {
-  return { state, consecutiveTimeouts, nextRetryAt: state === 'open' ? nextRetryAt : null }
+  return { state, consecutiveTimeouts, nextRetryAt: state === 'open' ? nextRetryAt : null, currentCooldownMs }
 }
 
 function logStateTransition(from: CircuitBreakerState, to: CircuitBreakerState, extra?: Record<string, unknown>): void {
@@ -109,7 +110,7 @@ function circuitBreakerOpen(): boolean {
       if (now - lastOpenLogAt > OPEN_LOG_RATE_LIMIT_MS) {
         lastOpenLogAt = now
         // eslint-disable-next-line no-console
-        console.warn('kv_disabled_for_request', { reason: 'circuit_breaker_open', nextRetryAt, currentCooldownMs })
+        console.warn('kv_disabled_for_request', { reason: 'circuit_breaker_open', state, nextRetryAt, currentCooldownMs })
       }
       return true
     }
@@ -203,6 +204,15 @@ export function __resolveKvCircuitBreakerTrialForTest(outcome: 'timeout' | 'succ
 // after CIRCUIT_BREAKER_COOLDOWN_MS/currentCooldownMs of real wall-clock time.
 export function __forceKvCircuitBreakerCooldownElapsedForTest(): void {
   nextRetryAt = Date.now() - 1
+}
+
+// Overrides the CURRENT cooldown duration a test is working with (does not itself change state) —
+// lets a test control the exact cooldown value in effect (e.g. shrink it to a few ms) rather than
+// only being able to force-expire it. If the breaker is already 'open', also re-derives
+// nextRetryAt from `openedAt` so the override takes effect immediately, not just for the next trip.
+export function __overrideKvCooldownForTest(ms: number): void {
+  currentCooldownMs = ms
+  if (state === 'open') nextRetryAt = openedAt + ms
 }
 
 // Runs `attempt` up to 1 + MAX_RETRIES times, with a short timeout per attempt and exponential

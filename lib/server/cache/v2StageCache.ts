@@ -110,23 +110,44 @@ function memoryFallbackSet<T>(key: string, value: T, ttlSeconds: number): void {
 // guard below was the ONLY response to an oversized payload — always skip. Same technique as
 // tokenCache.ts (Compression Streams API — Edge-Runtime-safe, no node:zlib), added here too so a
 // payload that's JSON-large but compresses under MAX_PAYLOAD_BYTES gets cached instead of always
-// falling back to a recompute on every request. BACKWARD COMPATIBLE READ: a value written before
-// this change (raw, uncompressed) fails decompression and falls back to using it as-is.
-export async function compress(serialized: string): Promise<string> {
+// falling back to a recompute on every request.
+//
+// SIGNATURE, DISCLOSED: `compress` takes the raw `unknown` value (not a pre-serialized string) and
+// returns both the base64 payload and its byte length together — the caller no longer needs to
+// separately JSON.stringify or compute Buffer.byteLength itself. Pure, no KV/network dependency —
+// safe to call directly in tests.
+export async function compress(value: unknown): Promise<{ compressedBase64: string; compressedBytes: number }> {
+  const serialized = JSON.stringify(value)
   const compressedStream = new Blob([serialized]).stream().pipeThrough(new CompressionStream('gzip'))
   const buffer = await new Response(compressedStream).arrayBuffer()
-  return Buffer.from(buffer).toString('base64')
+  const compressedBase64 = Buffer.from(buffer).toString('base64')
+  return { compressedBase64, compressedBytes: Buffer.byteLength(compressedBase64, 'utf8') }
 }
 
-export async function decompress<T>(raw: unknown): Promise<T> {
+// Pure, assumes valid gzip+base64 input (the shape `compress` produces) — throws on malformed
+// input rather than guessing, consistent with "must be pure" (requirement 3). Legacy/non-compressed
+// stored values (written before this change, or small payloads stored uncompressed — see
+// setStageCache below) are handled separately in getStageCache, not by this function itself.
+export async function decompress(base64: string): Promise<unknown> {
+  const decompressedStream = new Blob([Buffer.from(base64, 'base64')]).stream().pipeThrough(new DecompressionStream('gzip'))
+  const buffer = await new Response(decompressedStream).arrayBuffer()
+  return JSON.parse(Buffer.from(buffer).toString('utf8'))
+}
+
+// Internal, backward-compatible read helper — NOT the same as the pure, test-facing `decompress`
+// above. Handles every real shape this cache might contain: a legacy raw (already-deserialized,
+// never-compressed) value from before this change, a small payload stored uncompressed (see
+// setStageCache's SMALL-PAYLOAD note), or a real gzip+base64 compressed value.
+// Exported for testing the backward-compatible fallback behavior (legacy plain-JSON values,
+// non-string legacy values) — not part of the requirement-3 "pure test API" (compress/decompress/
+// MAX_PAYLOAD_BYTES), but real, exercised production logic worth testing directly.
+export async function decompressStageValue<T>(raw: unknown): Promise<T> {
   if (typeof raw !== 'string') return raw as T // legacy: kv.get<T> may already have deserialized a non-compressed value
   try {
-    const decompressedStream = new Blob([Buffer.from(raw, 'base64')]).stream().pipeThrough(new DecompressionStream('gzip'))
-    const buffer = await new Response(decompressedStream).arrayBuffer()
-    return JSON.parse(Buffer.from(buffer).toString('utf8')) as T
+    return (await decompress(raw)) as T
   } catch {
     try {
-      return JSON.parse(raw) as T // legacy plain-JSON string written before compression existed
+      return JSON.parse(raw) as T // small payload stored as plain JSON (uncompressed), or legacy plain-JSON string
     } catch {
       return raw as T // not a compressed/JSON string at all — return as-is rather than throw
     }
@@ -142,7 +163,7 @@ async function getStageCache<T>(key: string): Promise<T | null> {
   if (raw === undefined) return memoryFallbackGet<T>(key) // KV genuinely failed — fall back
   if (raw == null) return null // real cache miss, not a failure
 
-  const value = await decompress<T>(raw)
+  const value = await decompressStageValue<T>(raw)
   if (value != null) memoryFallbackSet(key, value, 45) // keep the fallback warm on a real hit too
   return value
 }
@@ -168,10 +189,17 @@ async function setStageCache<T>(key: string, value: T, ttlSeconds: number): Prom
 
   if (!kvConfigured()) return
 
+  // SMALL-PAYLOAD NOTE, DISCLOSED (requirement: "small payloads stored without compression"): a
+  // payload that already fits under MAX_PAYLOAD_BYTES uncompressed is stored as-is — compression
+  // has real CPU cost for zero benefit when the value was never going to be skipped anyway.
   const serialized = JSON.stringify(value)
   const uncompressedBytes = Buffer.byteLength(serialized, 'utf8')
-  const compressed = await compress(serialized)
-  const compressedBytes = Buffer.byteLength(compressed, 'utf8')
+  if (uncompressedBytes <= MAX_PAYLOAD_BYTES) {
+    await withRetriesNoBreaker(() => kv.set(key, value, { ex: ttlSeconds }), undefined, `set:${key}`)
+    return
+  }
+
+  const { compressedBase64, compressedBytes } = await compress(value)
 
   if (compressedBytes > MAX_PAYLOAD_BYTES) {
     // eslint-disable-next-line no-console
@@ -180,13 +208,15 @@ async function setStageCache<T>(key: string, value: T, ttlSeconds: number): Prom
       uncompressedBytes,
       compressedBytes,
       maxPayloadBytes: MAX_PAYLOAD_BYTES,
-      strategyAttempted: 'gzip_compression',
+      strategyAttempted: 'gzip_base64',
       fallback: 'in_memory_only', // real value is still in memoryFallback (set above) — never lost, just not cross-instance-shared
     })
     return // already stored in memory fallback above
   }
 
-  await withRetriesNoBreaker(() => kv.set(key, compressed, { ex: ttlSeconds }), undefined, `set:${key}`)
+  // eslint-disable-next-line no-console
+  console.warn('kv_payload_compressed', { key, uncompressedBytes, compressedBytes, strategyUsed: 'gzip_base64' })
+  await withRetriesNoBreaker(() => kv.set(key, compressedBase64, { ex: ttlSeconds }), undefined, `set:${key}`)
 }
 
 // DEV-ONLY KV WARM MODE: extends the effective TTL to at least 10 minutes when NODE_ENV is not
