@@ -21,9 +21,9 @@
 
 import type { NormalizedEvent } from '../normalization/types'
 import { reconstructRouterTrades, classifyPoolLiquidity } from '../routerTradeReconstruction/index'
-import type { PoolDataMap, SyntheticTrade, SyntheticTradeConfidence, SyntheticPnlSummary, SyntheticChainPnl, SyntheticIntegrity } from './types'
+import type { PoolDataMap, SyntheticTrade, SyntheticTradeConfidence, SyntheticPnlSummary, SyntheticChainPnl, SyntheticIntegrity, InferSyntheticTradesResult } from './types'
 
-export type { SyntheticTrade, SyntheticTradeConfidence, SyntheticPnlSummary, SyntheticChainPnl, SyntheticIntegrity, PoolDataMap, PoolPriceData } from './types'
+export type { SyntheticTrade, SyntheticTradeConfidence, SyntheticPnlSummary, SyntheticChainPnl, SyntheticIntegrity, InferSyntheticTradesResult, PoolDataMap, PoolPriceData } from './types'
 
 // INTEGRITY, DISCLOSED (this task's own request — "surface LOW/PARTIAL rather than silently
 // masquerading as fully trusted"): a real, pure function of (a) this chain's OWN trade confidence
@@ -75,39 +75,73 @@ function poolKey(chain: string, token: string): string {
 // produces is exactly as real as before (same-tx pairing, same confidence tiers, same pool-liquidity
 // exclusion) — relaxing this gate does not relax any of the "never fabricate" rules, only whether
 // reconstruction is ATTEMPTED for a lighter-activity wallet.
+// RATIO FALLBACK, DISCLOSED (this task's own "router-level fallback using swap ratios from the same
+// txHash" request): when exactly ONE leg of a candidate trade has a real pool price and the other
+// has none at all, the missing leg's price is derived from THIS trade's own real, already-observed
+// amountIn/amountOut against the known leg — i.e. "this swap moved $X of the known token, so the
+// unknown token's implied price is $X / itsAmount." This is a REAL, derived number (the actual
+// on-chain swap ratio for this exact transaction), never an invented or averaged one — but it is one
+// step further removed from an independent market quote than a direct pool price, so trades priced
+// this way are downgraded to 'low' confidence regardless of their pairing confidence. Both legs
+// missing a price still means honest exclusion — there is no anchor to derive a ratio from.
+function deriveRatioFallbackPrice(knownPriceUsd: number, knownAmount: number, unknownAmount: number): number | null {
+  if (!Number.isFinite(knownPriceUsd) || !Number.isFinite(knownAmount) || knownAmount <= 0) return null
+  if (!Number.isFinite(unknownAmount) || unknownAmount <= 0) return null
+  return (knownPriceUsd * knownAmount) / unknownAmount
+}
+
 export function inferSyntheticTrades(
   normalizedEvents: readonly NormalizedEvent[],
   knownDexRouterAddresses: ReadonlySet<string>,
   poolData: PoolDataMap,
   routerDistributorMode: boolean,
-): SyntheticTrade[] {
+): InferSyntheticTradesResult {
   void routerDistributorMode // no longer gates reconstruction — see this function's own header
   const { candidateTrades } = reconstructRouterTrades(normalizedEvents, knownDexRouterAddresses, true)
 
-  const result: SyntheticTrade[] = []
+  const trades: SyntheticTrade[] = []
   for (const trade of candidateTrades) {
     const tokenInPool = poolData[poolKey(trade.chain, trade.tokenIn)]
     const tokenOutPool = poolData[poolKey(trade.chain, trade.tokenOut)]
 
-    const tokenInClass = classifyPoolLiquidity(tokenInPool?.liquidityUsd ?? null)
-    const tokenOutClass = classifyPoolLiquidity(tokenOutPool?.liquidityUsd ?? null)
+    // Liquidity classification only applies to a pool that actually EXISTS in poolData — a missing
+    // pool is a "no price yet, maybe the ratio fallback below can supply one" case, not the same as
+    // a known, confirmed-dead pool. Conflating the two would wrongly exclude every ratio-fallback
+    // candidate before it got a chance to be priced.
+    const tokenInClass = tokenInPool ? classifyPoolLiquidity(tokenInPool.liquidityUsd) : null
+    const tokenOutClass = tokenOutPool ? classifyPoolLiquidity(tokenOutPool.liquidityUsd) : null
 
-    // No real price for either leg at all -> cannot honestly value this trade; excluded entirely
-    // (never fabricated as a $0 or default price).
-    if (!tokenInPool || !tokenOutPool) continue
+    // Either KNOWN pool is abandoned (near-zero real liquidity) -> excluded entirely, ratio fallback
+    // included — a dead pool's implied ratio is no more honest than its own price would have been.
     if (tokenInClass === 'abandoned' || tokenOutClass === 'abandoned') continue
 
-    const confidence: SyntheticTradeConfidence =
-      (tokenInClass === 'dust' || tokenOutClass === 'dust') ? 'low' : trade.confidence
+    let tokenInPriceUsd: number | null = tokenInPool?.midPriceUsd ?? null
+    let tokenOutPriceUsd: number | null = tokenOutPool?.midPriceUsd ?? null
+    let pricedViaRatioFallback = false
 
-    // ENTRY-TIME PRICING BAKED IN, DISCLOSED: resolved once, here, from THIS poolData snapshot —
-    // never re-looked-up with a possibly-different snapshot later. This is what lets
-    // computeSyntheticPnl's realized-PnL math use a genuinely different, later `currentPrices`
-    // snapshot for still-open positions without also silently drifting the cost basis of trades
-    // this function already priced.
-    result.push({ ...trade, confidence, tokenInPriceUsd: tokenInPool.midPriceUsd, tokenOutPriceUsd: tokenOutPool.midPriceUsd })
+    if (tokenInPriceUsd == null && tokenOutPriceUsd != null) {
+      tokenInPriceUsd = deriveRatioFallbackPrice(tokenOutPriceUsd, trade.amountOut, trade.amountIn)
+      if (tokenInPriceUsd != null) pricedViaRatioFallback = true
+    } else if (tokenOutPriceUsd == null && tokenInPriceUsd != null) {
+      tokenOutPriceUsd = deriveRatioFallbackPrice(tokenInPriceUsd, trade.amountIn, trade.amountOut)
+      if (tokenOutPriceUsd != null) pricedViaRatioFallback = true
+    }
+
+    // No real price for either leg, and no anchor to derive one from -> cannot honestly value this
+    // trade; excluded entirely (never fabricated as a $0 or default price).
+    if (tokenInPriceUsd == null || tokenOutPriceUsd == null) continue
+
+    const confidence: SyntheticTradeConfidence =
+      pricedViaRatioFallback ? 'low' : (tokenInClass === 'dust' || tokenOutClass === 'dust') ? 'low' : trade.confidence
+
+    // ENTRY-TIME PRICING BAKED IN, DISCLOSED: resolved once, here, from THIS poolData snapshot (or
+    // this trade's own ratio fallback) — never re-looked-up with a possibly-different snapshot
+    // later. This is what lets computeSyntheticPnl's realized-PnL math use a genuinely different,
+    // later `currentPrices` snapshot for still-open positions without also silently drifting the
+    // cost basis of trades this function already priced.
+    trades.push({ ...trade, confidence, tokenInPriceUsd, tokenOutPriceUsd, pricedViaRatioFallback })
   }
-  return result
+  return { trades, candidateTradeCount: candidateTrades.length }
 }
 
 // PURE, exported for direct testing. WEIGHTED-AVERAGE-COST approximation (disclosed above, NOT
@@ -147,6 +181,12 @@ export function computeSyntheticPnl(
   // treated as a failure — a caller with no such data simply gets the same behavior as before this
   // field existed).
   chainProviderStatus: Readonly<Record<string, 'ok' | 'partial' | 'provider_unavailable'>> = {},
+  // ADDITIVE, OPTIONAL, DISCLOSED (this task's own "coverage scoring" request): the real candidate
+  // count inferSyntheticTrades() drew `trades` from (InferSyntheticTradesResult.candidateTradeCount)
+  // — used only to compute the honest `coverage` field below and to further downgrade integrity
+  // when most candidates couldn't be priced. Omitted -> coverage is reported null (no candidate
+  // count to score against), never a fabricated 100%/0%.
+  candidateTradeCount?: number,
 ): SyntheticPnlSummary {
   const ordered = [...trades].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
 
@@ -241,9 +281,24 @@ export function computeSyntheticPnl(
   // separately-derived number, so it can't disagree with what the per-chain breakdown itself shows.
   // 'low' when there are no trades/chains at all (nothing to be confident about, not a fabricated
   // default of 'high').
-  const integrity: SyntheticIntegrity = perChain.length === 0
+  let integrity: SyntheticIntegrity = perChain.length === 0
     ? 'low'
     : perChain.reduce<SyntheticIntegrity>((worst, c) => (INTEGRITY_RANK[c.integrity] < INTEGRITY_RANK[worst] ? c.integrity : worst), 'high')
+
+  // COVERAGE, DISCLOSED: real fraction of same-tx-paired candidate trades this run actually had
+  // enough real pool/ratio pricing to include — see SyntheticPnlSummary.coverage's own doc comment.
+  // `candidateTradeCount` is optional/caller-supplied; a candidate count of 0 (nothing to reconstruct
+  // at all) reports coverage null, same as when the caller omits it entirely — neither is a
+  // fabricated 0% or 100%.
+  const coverage = candidateTradeCount == null || candidateTradeCount <= 0
+    ? null
+    : trades.length / candidateTradeCount
+
+  // LOW-COVERAGE DOWNGRADE, DISCLOSED: most of this wallet's router activity had no real market data
+  // to price -> whatever DID get priced deserves a lower confidence label, even if every individual
+  // priced trade was itself high-confidence. Never affects the PnL numbers themselves, only the
+  // label — same "surface, don't hide" principle as the provider-status downgrade above.
+  if (coverage != null && coverage < 0.5 && integrity === 'high') integrity = 'medium'
 
   return {
     totalRealizedPnlUsd,
@@ -257,5 +312,6 @@ export function computeSyntheticPnl(
     mediumConfidenceCount: trades.filter((t) => t.confidence === 'medium').length,
     lowConfidenceCount: trades.filter((t) => t.confidence === 'low').length,
     integrity,
+    coverage,
   }
 }

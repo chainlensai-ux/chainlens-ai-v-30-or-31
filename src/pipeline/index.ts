@@ -1457,7 +1457,11 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   }
   recordSyntheticPoolPrice(displayBuyEntries, pricingAtTime.costUsd)
   recordSyntheticPoolPrice(sellTimelineV2.entries, pricingAtTime.proceedsUsd)
-  const syntheticTrades = inferSyntheticTrades(normalizedEvents, KNOWN_DEX_ROUTER_ADDRESSES, syntheticPoolData, routerDistributorMode)
+  // RETURN-SHAPE CHANGE, DISCLOSED: inferSyntheticTrades now returns { trades, candidateTradeCount }
+  // instead of a bare array — the extra count is what lets computeSyntheticPnl report an honest
+  // coverage ratio below (this task's own "coverage scoring" request).
+  const { trades: syntheticTrades, candidateTradeCount: syntheticCandidateTradeCount } =
+    inferSyntheticTrades(normalizedEvents, KNOWN_DEX_ROUTER_ADDRESSES, syntheticPoolData, routerDistributorMode)
   // PARTIAL-PROVIDER-DATA INTEGRITY, DISCLOSED (this task's own request): real per-chain
   // providerStatus from providerResults (already computed above for providerDiagnostics/
   // chainSelection) — no new fetch, just reused. Lets computeSyntheticPnl mark a chain's synthetic
@@ -1467,7 +1471,9 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   for (const r of providerResults) {
     syntheticChainProviderStatus[r.chain] = r.providerStatus
   }
-  const syntheticPnl = syntheticTrades.length > 0 ? computeSyntheticPnl(syntheticTrades, syntheticPoolData, syntheticChainProviderStatus) : null
+  const syntheticPnl = syntheticTrades.length > 0
+    ? computeSyntheticPnl(syntheticTrades, syntheticPoolData, syntheticChainProviderStatus, syntheticCandidateTradeCount)
+    : null
   if (process.env.NODE_ENV !== 'production') {
     // eslint-disable-next-line no-console
     console.warn('[pipeline] syntheticPnl (dev-only)', {

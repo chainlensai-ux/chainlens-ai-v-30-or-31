@@ -38,6 +38,9 @@ export function SyntheticPnlBlock({ syntheticPnl }: { syntheticPnl: SyntheticPnl
       <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '10px', flexWrap: 'wrap' }}>
         <StatusBadge label="SYNTHETIC · INFERRED · NOT ENGINE VERIFIED" tone="warning" glow />
         <StatusBadge label={`Integrity: ${syntheticPnl.integrity.toUpperCase()}`} tone={integrityTone(syntheticPnl.integrity)} />
+        {syntheticPnl.coverage != null && (
+          <StatusBadge label={`Coverage: ${(syntheticPnl.coverage * 100).toFixed(0)}%`} tone="neutral" />
+        )}
         <span style={{ fontSize: '11px', color: 'rgba(148,163,184,0.6)' }}>
           {syntheticPnl.tradeCount} inferred trade{syntheticPnl.tradeCount === 1 ? '' : 's'}
           {' '}({syntheticPnl.highConfidenceCount} high / {syntheticPnl.mediumConfidenceCount} medium / {syntheticPnl.lowConfidenceCount} low confidence)

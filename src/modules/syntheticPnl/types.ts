@@ -30,6 +30,19 @@ export type SyntheticTrade = {
   // historical price-series feed (out of scope here; see index.ts's own disclosure).
   tokenInPriceUsd: number
   tokenOutPriceUsd: number
+  // DISCLOSED: true when either price above came from the same-tx swap-ratio fallback (see
+  // inferSyntheticTrades's own header) rather than directly from poolData — a real, derived number
+  // (this trade's own actual amountIn/amountOut against the ONE leg that did have a real pool
+  // price), never a fabricated one, but one step further removed from an independent market quote.
+  pricedViaRatioFallback: boolean
+}
+
+// Real return shape of inferSyntheticTrades — the trade list PLUS the real candidate count it was
+// drawn from, so a caller can compute an honest coverage ratio (pricedTrades / totalCandidates)
+// without re-running reconstructRouterTrades itself.
+export type InferSyntheticTradesResult = {
+  trades: SyntheticTrade[]
+  candidateTradeCount: number
 }
 
 // Caller-injected, real pool pricing data — this module never fetches anything itself. Keyed by
@@ -82,4 +95,11 @@ export type SyntheticPnlSummary = {
   // could otherwise inspect. 'low' when there is no perChain data at all (nothing to be confident
   // about). See computeSyntheticPnl's own header.
   integrity: SyntheticIntegrity
+  // ADDITIVE, DISCLOSED (this task's own "coverage scoring" request): pricedTrades / totalCandidates
+  // — the real fraction of same-tx-paired candidate trades this run actually had enough real
+  // pool/ratio pricing to include (see inferSyntheticTrades). null when there were zero candidates
+  // to begin with (nothing to score, not a fabricated 0% or 100%). 1 means every candidate got
+  // priced; a low value is an honest "most of this wallet's router activity had no real market data
+  // available," never hidden behind a confident-looking PnL number.
+  coverage: number | null
 }
