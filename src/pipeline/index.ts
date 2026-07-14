@@ -1423,20 +1423,40 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // (non-dust, non-abandoned) liquidity — a defensible inference (dexscreener/geckoterminal/
   // coingecko/basedex/goldrush don't quote a price for a pool with no real market) rather than a
   // measured number, disclosed here rather than presented as precise.
+  // BUG FIX, DISCLOSED (found via static trace, diagnostic task): the previous version built this
+  // map from `Object.entries({ ...pricingAtTime.costUsd, ...pricingAtTime.proceedsUsd })` — both
+  // dictionaries are keyed by txHash, so a transaction that has BOTH a buy leg (in
+  // pricingAtTime.costUsd) and a sell leg (in pricingAtTime.proceedsUsd) sharing the same txHash —
+  // exactly what a real router swap produces, the core case this whole feature targets — silently
+  // collided: the object spread let proceedsUsd's entry overwrite costUsd's for that key, and the
+  // subsequent `.find((e) => e.txHash === txHash)` over `[...displayBuyEntries,
+  // ...sellTimelineV2.entries]` always returned the FIRST match (the buy entry), so a sell's real
+  // resolved proceeds got divided by the WRONG token's amount — either corrupting that pool's price
+  // or (via the `key in syntheticPoolData` first-write-wins guard) losing the correct token's price
+  // entirely. Net effect: `syntheticPoolData` was frequently missing or wrong for exactly the
+  // router-swap transactions synthetic reconstruction needs, so `inferSyntheticTrades` excluded
+  // those candidates (missing/wrong poolData -> excluded, per its own "never fabricate a price"
+  // rule) and `syntheticPnl` stayed null far more often than it should have.
+  //
+  // Fixed by processing costUsd against ONLY displayBuyEntries and proceedsUsd against ONLY
+  // sellTimelineV2.entries, each keyed by (txHash + chain + token) instead of txHash alone — no
+  // merged dictionary, no ambiguous txHash-only lookup, no cross-leg collision possible.
   const SYNTHETIC_POOL_LIQUIDITY_PROXY_USD = 5_000 // comfortably above classifyPoolLiquidity's dust threshold
   const syntheticPoolData: SyntheticPoolDataMap = {}
-  const syntheticPricingSourceEvents = [...displayBuyEntries, ...sellTimelineV2.entries]
-  for (const [txHash, usd] of Object.entries({ ...pricingAtTime.costUsd, ...pricingAtTime.proceedsUsd })) {
-    if (usd == null) continue
-    const sourceEvent = syntheticPricingSourceEvents.find((e) => e.txHash === txHash)
-    if (!sourceEvent) continue
-    const amount = Number(sourceEvent.amount)
-    if (!Number.isFinite(amount) || amount <= 0) continue
-    const key = `${sourceEvent.chain}:${sourceEvent.token.toLowerCase()}`
-    if (!(key in syntheticPoolData)) {
-      syntheticPoolData[key] = { midPriceUsd: usd / amount, liquidityUsd: SYNTHETIC_POOL_LIQUIDITY_PROXY_USD }
+  function recordSyntheticPoolPrice(entries: readonly { chain: string; token: string; txHash: string; amount: string }[], usdByTxHash: Record<string, number | null>): void {
+    for (const entry of entries) {
+      const usd = usdByTxHash[entry.txHash]
+      if (usd == null) continue
+      const amount = Number(entry.amount)
+      if (!Number.isFinite(amount) || amount <= 0) continue
+      const key = `${entry.chain}:${entry.token.toLowerCase()}`
+      if (!(key in syntheticPoolData)) {
+        syntheticPoolData[key] = { midPriceUsd: usd / amount, liquidityUsd: SYNTHETIC_POOL_LIQUIDITY_PROXY_USD }
+      }
     }
   }
+  recordSyntheticPoolPrice(displayBuyEntries, pricingAtTime.costUsd)
+  recordSyntheticPoolPrice(sellTimelineV2.entries, pricingAtTime.proceedsUsd)
   const syntheticTrades = inferSyntheticTrades(normalizedEvents, KNOWN_DEX_ROUTER_ADDRESSES, syntheticPoolData, routerDistributorMode)
   const syntheticPnl = syntheticTrades.length > 0 ? computeSyntheticPnl(syntheticTrades, syntheticPoolData) : null
   if (process.env.NODE_ENV !== 'production') {
