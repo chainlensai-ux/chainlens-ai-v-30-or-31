@@ -14,6 +14,7 @@ import { fetchProviderWindow } from '../modules/providerFetchWindow/index'
 import type { RawProviderEvent, SupportedChain } from '../modules/providerFetchWindow/types'
 import { normalizeEvents } from '../modules/normalization/index'
 import { buildCounterpartyStats, classifyRouterLikeEvent, recordRouterCandidate } from './routerDiscovery'
+import { analyzeDistributorRouterFlows } from '../modules/distributorRecovery/index'
 import { adaptPnlSummaryForUi } from './pnlSummaryAdapter'
 import { buildChainAwareHistoricalPriceSource, pricingRouteLog } from './pricingAtTimeAdapter'
 import type { NormalizedEvent } from '../modules/normalization/types'
@@ -1075,6 +1076,23 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // pricingAtTime pass (stage 6c) — never priceLotsForWallet's fifoEngine-feeding input, never
   // holdings' own separate dust-suppression computation, never fifoEngine/pnlV2 themselves.
   const routerDistributorMode = computeRouterDistributorMode(outboundEvents.length, outboundToKnownRouter.length)
+
+  // DISTRIBUTOR RECOVERY, DISCLOSED (src/modules/distributorRecovery — read-only observability, not
+  // reconstruction): see that module's own header for the full disclosure on why this never touches
+  // fifoEngine's or priceLotsForWallet's real inputs. Classifies every outbound-to-known-router
+  // event (for distributor wallets only) as evidence-complete (a real same-tx inbound leg exists)
+  // or evidence-missing, purely for logging — `normalizedEvents` itself is passed through untouched
+  // to every downstream stage exactly as it always was.
+  const distributorRecovery = analyzeDistributorRouterFlows(normalizedEvents, KNOWN_DEX_ROUTER_ADDRESSES, routerDistributorMode)
+  if (distributorRecovery.applied) {
+    // eslint-disable-next-line no-console
+    console.warn('[pipeline] distributorRecovery', {
+      distributorRecoveryApplied: distributorRecovery.applied,
+      distributorRecoveryMissingEvidenceCount: distributorRecovery.missingEvidenceCount,
+      distributorRecoveryStablePnlCandidate: distributorRecovery.stablePnlCandidate,
+      totalOutboundToKnownRouter: distributorRecovery.totalOutboundToKnownRouter,
+    })
+  }
 
   // ROUTER DISCOVERY, DISCLOSED: additive-only, log-only observability aid (src/pipeline/
   // routerDiscovery.ts). Flags outbound events whose counterparty isn't already in
