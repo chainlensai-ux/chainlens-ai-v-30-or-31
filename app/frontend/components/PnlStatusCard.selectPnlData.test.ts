@@ -11,7 +11,7 @@
 
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { selectVerifiedPnlData, shouldShowLimitedSampleBadge, GUARDRAIL_ABS_LIMIT } from './PnlStatusCard'
+import { selectVerifiedPnlData, shouldShowLimitedSampleBadge, GUARDRAIL_ABS_LIMIT, isStablePnl, PNL_UNAVAILABLE_MESSAGE } from './PnlStatusCard'
 import type { PnlV2 } from '@/lib/engine/modules/pnl/types'
 
 function pnlV2(overrides: Partial<PnlV2>): PnlV2 {
@@ -130,5 +130,86 @@ describe('shouldShowLimitedSampleBadge — real backend publicPnlStatus classifi
   it('publicPnlStatus omitted -> no badge (never a fabricated default)', () => {
     assert.equal(shouldShowLimitedSampleBadge(null), null)
     assert.equal(shouldShowLimitedSampleBadge(undefined), null)
+  })
+})
+
+describe('isStablePnl — this task\'s stable-PnL display guard', () => {
+  it('evidenceMissingCount > 0 -> unstable', () => {
+    assert.equal(isStablePnl({ realizedPnlUsd: 100, unrealizedPnlUsd: 50, evidenceMissingCount: 1 }), false)
+  })
+
+  it('evidenceMissingCount omitted -> defaults to 0 (does not fail by itself)', () => {
+    assert.equal(isStablePnl({ realizedPnlUsd: 100, unrealizedPnlUsd: 50 }), true)
+  })
+
+  it('realizedPnlUsd is NaN -> unstable', () => {
+    assert.equal(isStablePnl({ realizedPnlUsd: NaN, unrealizedPnlUsd: 50 }), false)
+  })
+
+  it('realizedPnlUsd is Infinity -> unstable', () => {
+    assert.equal(isStablePnl({ realizedPnlUsd: Infinity, unrealizedPnlUsd: 50 }), false)
+  })
+
+  it('realizedPnlUsd is -Infinity -> unstable', () => {
+    assert.equal(isStablePnl({ realizedPnlUsd: -Infinity, unrealizedPnlUsd: 50 }), false)
+  })
+
+  it('realizedPnlUsd is null -> unstable', () => {
+    assert.equal(isStablePnl({ realizedPnlUsd: null, unrealizedPnlUsd: 50 }), false)
+  })
+
+  it('realizedPnlUsd is undefined -> unstable', () => {
+    assert.equal(isStablePnl({ realizedPnlUsd: undefined, unrealizedPnlUsd: 50 }), false)
+  })
+
+  it('unrealizedPnlUsd is NaN/Infinity/null/undefined -> unstable (same checks, other field)', () => {
+    assert.equal(isStablePnl({ realizedPnlUsd: 10, unrealizedPnlUsd: NaN }), false)
+    assert.equal(isStablePnl({ realizedPnlUsd: 10, unrealizedPnlUsd: Infinity }), false)
+    assert.equal(isStablePnl({ realizedPnlUsd: 10, unrealizedPnlUsd: -Infinity }), false)
+    assert.equal(isStablePnl({ realizedPnlUsd: 10, unrealizedPnlUsd: null }), false)
+    assert.equal(isStablePnl({ realizedPnlUsd: 10, unrealizedPnlUsd: undefined }), false)
+  })
+
+  it("publicPnlStatus 'ok' -> stable (real equivalent of the spec's 'available')", () => {
+    assert.equal(isStablePnl({ realizedPnlUsd: 10, unrealizedPnlUsd: 5, publicPnlStatus: 'ok' }), true)
+  })
+
+  it("publicPnlStatus 'limited_verified_sample' -> unstable", () => {
+    assert.equal(isStablePnl({ realizedPnlUsd: 10, unrealizedPnlUsd: 5, publicPnlStatus: 'limited_verified_sample' }), false)
+  })
+
+  it("publicPnlStatus 'unavailable' -> unstable", () => {
+    assert.equal(isStablePnl({ realizedPnlUsd: 10, unrealizedPnlUsd: 5, publicPnlStatus: 'unavailable' }), false)
+  })
+
+  it('publicPnlStatus omitted -> does not fail by itself (caller has no such data wired)', () => {
+    assert.equal(isStablePnl({ realizedPnlUsd: 10, unrealizedPnlUsd: 5 }), true)
+  })
+
+  it('valid finite numbers, no missing evidence, publicPnlStatus ok -> stable', () => {
+    assert.equal(isStablePnl({ realizedPnlUsd: 1234.56, unrealizedPnlUsd: -789.01, evidenceMissingCount: 0, publicPnlStatus: 'ok' }), true)
+  })
+})
+
+describe('selectVerifiedPnlData — stable field wiring', () => {
+  it('a real, finite pnlV2 with publicPnlStatus "ok" is marked stable', () => {
+    const result = selectVerifiedPnlData(pnlV2({ realizedPnlUsd: 500, unrealizedPnlUsd: -100 }), 'ok')
+    assert.equal(result.stable, true)
+  })
+
+  it('publicPnlStatus "unavailable" marks otherwise-valid numbers unstable', () => {
+    const result = selectVerifiedPnlData(pnlV2({ realizedPnlUsd: 500, unrealizedPnlUsd: -100 }), 'unavailable')
+    assert.equal(result.stable, false)
+  })
+
+  it('no pnlV2 at all -> stable is honestly false (nothing to be confident about)', () => {
+    const result = selectVerifiedPnlData(null)
+    assert.equal(result.stable, false)
+  })
+})
+
+describe('PNL_UNAVAILABLE_MESSAGE — exact literal text', () => {
+  it('matches this task\'s required exact string', () => {
+    assert.equal(PNL_UNAVAILABLE_MESSAGE, 'PnL unavailable due to missing evidence')
   })
 })

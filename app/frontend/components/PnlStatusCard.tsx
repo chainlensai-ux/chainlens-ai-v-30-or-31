@@ -57,6 +57,11 @@ export type VerifiedPnlData = {
   // and a warning badge. The underlying pnlV2 data is untouched and still fully present in this
   // object for any caller (e.g. a test) that wants the raw number regardless of the clamp.
   unreliable: boolean
+  // STABLE-PNL GUARD, DISCLOSED (this task's own request) — see isStablePnl's own header for the
+  // exact rule and the two real-field corrections applied. `unreliable` (the magnitude heuristic
+  // above) and `!stable` are two INDEPENDENT reasons a display can be blocked; either one alone is
+  // enough (see PnlStatusCard's own `blocked` combination below).
+  stable: boolean
 }
 
 // UI-ONLY HEURISTIC, DISCLOSED: not a backend-computed threshold. pnlV2 (lib/engine/modules/pnl)
@@ -78,9 +83,43 @@ function isUnreliableMagnitude(pnlV2: PnlV2, totalCostBasisUsd: number): boolean
   return magnitudes.some((v) => Math.abs(v) > GUARDRAIL_ABS_LIMIT)
 }
 
+// isStablePnl — PURE, exported for direct testing, adapted from this task's own literal spec with
+// two real-field corrections, both disclosed:
+//   1. `evidenceMissingCount` does not exist on PnlV2 (the single verified source this card reads —
+//      see this file's own header). It's a real field on the OLD pipeline's pnlSummaryV2/
+//      PnlSummaryResult, which this component deliberately excluded (single-verified-source
+//      decision, an earlier task this session). Rather than re-introduce that excluded source just
+//      for this one field, it's accepted here as an OPTIONAL parameter — a caller with real access
+//      to it (none currently wire it) can supply it; omitted defaults to 0 (pass), never a
+//      fabricated failure for a caller that has no such data.
+//   2. `publicPnlStatus !== 'available'`: the REAL enum (FifoOutput['publicPnlStatus'],
+//      src/modules/fifoEngine/types.ts) is `'ok' | 'limited_verified_sample' | 'unavailable'` — it
+//      can never equal the literal string `'available'`. Taking the spec literally would mean this
+//      guard ALWAYS fails, permanently hiding every wallet's PnL regardless of data quality — not
+//      the intent. `'ok'` is treated as the real equivalent (same mapping this codebase's own
+//      FinalSummaryView.tsx already uses for its officialPnlStatus tone). `publicPnlStatus` is
+//      already an optional prop on this component (see PnlStatusCardProps) for callers that don't
+//      wire it — omitted/undefined does not fail this check by itself, so this guard's addition
+//      never silently blocks every existing caller that hasn't been updated to pass it.
+export function isStablePnl(params: {
+  realizedPnlUsd: number | null | undefined
+  unrealizedPnlUsd: number | null | undefined
+  evidenceMissingCount?: number
+  publicPnlStatus?: PublicPnlStatus | null
+}): boolean {
+  if ((params.evidenceMissingCount ?? 0) > 0) return false
+  if (!Number.isFinite(params.realizedPnlUsd)) return false
+  if (!Number.isFinite(params.unrealizedPnlUsd)) return false
+  if (params.publicPnlStatus != null && params.publicPnlStatus !== 'ok') return false
+  return true
+}
+
 // Pure, exported for direct testing. The ONLY selector this component uses — no priority list, no
 // merge, no averaging: pnlV2 present -> real numbers; pnlV2 absent -> honestly all-null.
-export function selectVerifiedPnlData(pnlV2: PnlV2 | null | undefined): VerifiedPnlData {
+export function selectVerifiedPnlData(
+  pnlV2: PnlV2 | null | undefined,
+  publicPnlStatus?: PublicPnlStatus | null,
+): VerifiedPnlData {
   if (!pnlV2) {
     return {
       realizedPnlUsd: null,
@@ -90,6 +129,7 @@ export function selectVerifiedPnlData(pnlV2: PnlV2 | null | undefined): Verified
       roi: { value: null, display: 'No verified PnL data' },
       integritySummary: 'not_available_in_v2_engine',
       unreliable: false,
+      stable: false,
     }
   }
 
@@ -107,6 +147,7 @@ export function selectVerifiedPnlData(pnlV2: PnlV2 | null | undefined): Verified
     roi,
     integritySummary: 'not_available_in_v2_engine',
     unreliable: isUnreliableMagnitude(pnlV2, totalCostBasisUsd),
+    stable: isStablePnl({ realizedPnlUsd: pnlV2.realizedPnlUsd, unrealizedPnlUsd: pnlV2.unrealizedPnlUsd, publicPnlStatus }),
   }
 }
 
@@ -159,10 +200,21 @@ export function shouldShowLimitedSampleBadge(publicPnlStatus: PublicPnlStatus | 
   return 'Not verified' // publicPnlStatus === 'unavailable'
 }
 
+// Literal message text, per this task's own spec — exported so tests can assert on the exact
+// string rather than a substring guess.
+export const PNL_UNAVAILABLE_MESSAGE = 'PnL unavailable due to missing evidence'
+
 export function PnlStatusCard({ pnlV2, publicPnlStatus }: PnlStatusCardProps) {
-  const pnl = selectVerifiedPnlData(pnlV2)
+  const pnl = selectVerifiedPnlData(pnlV2, publicPnlStatus)
   const isActive = pnlV2 != null
   const limitedSampleBadgeLabel = shouldShowLimitedSampleBadge(publicPnlStatus)
+  // BLOCKED, DISCLOSED: `pnl.unreliable` (the pre-existing magnitude heuristic) and
+  // `!pnl.stable` (this task's new isStablePnl guard) are two independent reasons to hide the
+  // numeric display — either alone is enough. Applies uniformly to Realized/Unrealized/Total/ROI
+  // (this task's requirement 4); Cost Basis is a real, always-finite sum of costBasis[] entries
+  // with no NaN/Infinity failure mode of its own, so it is not blocked by this guard, only by the
+  // separate magnitude heuristic already applied to it below.
+  const blocked = isActive && (pnl.unreliable || !pnl.stable)
 
   const headerIcon = pnl.realizedPnlUsd == null
     ? <WarningIcon size={16} color="#fbbf24" />
@@ -175,25 +227,24 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus }: PnlStatusCardProps) {
         <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 800, color: '#e2e8f0', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>PnL (Verified V2)</h3>
         <StatusBadge label={isActive ? 'Active' : 'Unavailable'} tone={isActive ? 'success' : 'neutral'} glow={isActive} />
         {pnl.unreliable && <StatusBadge label="Not reliable (magnitude)" tone="warning" glow />}
+        {!pnl.stable && isActive && <StatusBadge label="PnL unavailable" tone="warning" glow />}
         {/* REAL backend classification (fifoEngine's publicPnlStatus, via
             finalSummary.financialStatus.officialPnlStatus) — a SEPARATE signal from the UI-only
             magnitude clamp above; shown whenever it isn't 'ok', regardless of magnitude. */}
         {limitedSampleBadgeLabel && <StatusBadge label={limitedSampleBadgeLabel} tone="warning" />}
       </div>
 
-      {pnl.unreliable && (
-        <p style={{ fontSize: '12px', color: '#fbbf24', margin: '0 0 12px' }}>
-          PnL sample too incomplete to show a reliable number — one or more values from the verified
-          V2 engine exceeded a sane magnitude (likely a missing/duplicate-decimals price rather than
-          a real gain or loss). The underlying data is unchanged; only this display is clamped.
+      {blocked && (
+        <p style={{ fontSize: '13px', fontWeight: 700, color: '#fbbf24', margin: '0 0 12px' }}>
+          {PNL_UNAVAILABLE_MESSAGE}
         </p>
       )}
 
       <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '16px' }}>
-        <MetricCard label="Realized PnL" value={pnl.unreliable ? 'Not reliable' : fmtSignedUsd(pnl.realizedPnlUsd)} tone={pnl.unreliable ? 'neutral' : toneFromNumber(pnl.realizedPnlUsd)} index={0} />
-        <MetricCard label="Unrealized PnL" value={pnl.unreliable ? 'Not reliable' : fmtSignedUsd(pnl.unrealizedPnlUsd)} tone={pnl.unreliable ? 'neutral' : toneFromNumber(pnl.unrealizedPnlUsd)} index={1} />
-        <MetricCard label="Total PnL" value={pnl.unreliable ? 'Not reliable' : fmtSignedUsd(pnl.totalPnlUsd)} tone={pnl.unreliable ? 'neutral' : toneFromNumber(pnl.totalPnlUsd)} index={2} />
-        <MetricCard label="ROI" value={pnl.unreliable ? 'Not reliable' : pnl.roi.display} tone={pnl.unreliable ? 'neutral' : toneFromNumber(pnl.roi.value)} index={3} />
+        <MetricCard label="Realized PnL" value={blocked ? PNL_UNAVAILABLE_MESSAGE : fmtSignedUsd(pnl.realizedPnlUsd)} tone={blocked ? 'neutral' : toneFromNumber(pnl.realizedPnlUsd)} index={0} />
+        <MetricCard label="Unrealized PnL" value={blocked ? PNL_UNAVAILABLE_MESSAGE : fmtSignedUsd(pnl.unrealizedPnlUsd)} tone={blocked ? 'neutral' : toneFromNumber(pnl.unrealizedPnlUsd)} index={1} />
+        <MetricCard label="Total PnL" value={blocked ? PNL_UNAVAILABLE_MESSAGE : fmtSignedUsd(pnl.totalPnlUsd)} tone={blocked ? 'neutral' : toneFromNumber(pnl.totalPnlUsd)} index={2} />
+        <MetricCard label="ROI" value={blocked ? PNL_UNAVAILABLE_MESSAGE : pnl.roi.display} tone={blocked ? 'neutral' : toneFromNumber(pnl.roi.value)} index={3} />
         <MetricCard label="Cost Basis" value={pnl.unreliable ? 'Not reliable' : fmtUsd(pnl.totalCostBasisUsd)} index={4} />
         <MetricCard label="Integrity" value={<StatusBadge label="Not available (V2 engine)" tone="neutral" />} index={5} />
       </div>
@@ -202,7 +253,7 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus }: PnlStatusCardProps) {
         <div style={{ fontSize: '10px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(148,163,184,0.55)', marginBottom: '8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
           Per-Chain Breakdown
         </div>
-        <ChainBreakdownTable chainBreakdown={pnlV2?.chainBreakdown ?? []} unreliable={pnl.unreliable} />
+        <ChainBreakdownTable chainBreakdown={pnlV2?.chainBreakdown ?? []} unreliable={pnl.unreliable || blocked} />
       </div>
 
       {!isActive && (
