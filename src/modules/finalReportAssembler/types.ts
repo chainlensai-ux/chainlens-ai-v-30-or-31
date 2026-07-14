@@ -15,6 +15,7 @@ import type { SellTimelineResult } from '../sellTimeline/types'
 import type { PnlSummaryResult } from '../pnlEngine/types'
 import type { PricingAtTimeResult } from '../pricingAtTimeEngine/types'
 import type { ProviderFetchWindowResult } from '../providerFetchWindow/types'
+import type { SyntheticPnlSummary } from '../syntheticPnl/types'
 
 export type ScanMode = 'normal' | 'deep'
 
@@ -90,6 +91,13 @@ export type FinalReport = {
   // this codebase (only for raw event fetching in providerFetchWindow/recoveryPolicy); reporting
   // it here would be a fabricated capability claim.
   pricingProvidersStatus: PricingProvidersStatus
+  // Additive, OPTIONAL section (deliberately not required, unlike the fields above — this task's
+  // own request) — src/modules/syntheticPnl's UI-DISPLAY-ONLY, inferred/unverified PnL read model.
+  // null/undefined when not computed (e.g. no router-mediated activity this scan) or genuinely no
+  // synthetic trades could be inferred. NEVER derived from, and never feeds, fifoAndPnl/pnlSummaryV2
+  // above — see src/modules/syntheticPnl/index.ts's own header for the full reasoning. A caller
+  // that ignores this field sees the exact same report shape the engine produced before it existed.
+  syntheticPnl?: SyntheticPnlSummary | null
 }
 
 export type PricingProvidersStatus = {
@@ -135,4 +143,6 @@ export type AssembleReportInput = {
   providerDiagnostics: ProviderDiagnosticsEntry[]
   // Additive — see FinalReport.pricingProvidersStatus above.
   pricingProvidersStatus: PricingProvidersStatus
+  // Additive, OPTIONAL — see FinalReport.syntheticPnl above.
+  syntheticPnl?: SyntheticPnlSummary | null
 }

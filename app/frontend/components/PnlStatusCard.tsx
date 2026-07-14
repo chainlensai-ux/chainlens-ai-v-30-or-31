@@ -27,6 +27,7 @@
 //     total cost basis PnlV2 does carry (per-token, summed here), never fifoAndPnl.costBasisUsd.
 import type { PnlV2 } from '@/lib/engine/modules/pnl/types'
 import type { PublicPnlStatus } from '@/src/modules/fifoEngine/types'
+import type { SyntheticPnlSummary } from '@/src/modules/syntheticPnl/types'
 import { fmtSignedUsd, fmtUsd } from '@/app/frontend/lib/holdingsHeuristics'
 import { StatusBadge } from './StatusBadge'
 import { MetricCard, toneFromNumber } from './MetricCard'
@@ -40,6 +41,11 @@ export type PnlStatusCardProps = {
   // pnlV2 or on the report's top level, despite a later task describing one there). Omitting this
   // prop simply skips the badge below — no fabricated default value.
   publicPnlStatus?: PublicPnlStatus | null
+  // Optional, additive — the real field lives at result.syntheticPnl (src/modules/syntheticPnl,
+  // UI-DISPLAY-ONLY — never derived from or fed into fifoEngine/pnlV2, see that module's own
+  // header). Only ever rendered when publicPnlStatus === 'unavailable' AND pnlV2's own display is
+  // blocked — never overlaid on top of a real, verified number.
+  syntheticPnl?: SyntheticPnlSummary | null
 }
 
 export type VerifiedPnlData = {
@@ -204,10 +210,42 @@ export function shouldShowLimitedSampleBadge(publicPnlStatus: PublicPnlStatus | 
 // string rather than a substring guess.
 export const PNL_UNAVAILABLE_MESSAGE = 'PnL unavailable due to missing evidence'
 
-export function PnlStatusCard({ pnlV2, publicPnlStatus }: PnlStatusCardProps) {
+// Pure, exported for direct testing — the exact condition for showing the synthetic block at all.
+// Only when the REAL engine's own display is blocked AND real synthetic data exists — never shown
+// alongside a real, verified number, never shown from an empty/zero-trade synthetic summary.
+export function shouldShowSyntheticPnl(publicPnlStatus: PublicPnlStatus | null | undefined, syntheticPnl: SyntheticPnlSummary | null | undefined): boolean {
+  return publicPnlStatus === 'unavailable' && syntheticPnl != null && syntheticPnl.tradeCount > 0
+}
+
+function SyntheticPnlBlock({ syntheticPnl }: { syntheticPnl: SyntheticPnlSummary }) {
+  const roiDisplay = syntheticPnl.syntheticRoiPct == null
+    ? 'No cost-basis evidence'
+    : `${syntheticPnl.syntheticRoiPct >= 0 ? '+' : ''}${syntheticPnl.syntheticRoiPct.toFixed(1)}%`
+
+  return (
+    <div style={{ marginTop: '12px', paddingTop: '12px', borderTop: '1px dashed rgba(251,191,36,0.35)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '10px', flexWrap: 'wrap' }}>
+        <StatusBadge label="SYNTHETIC · INFERRED · NOT ENGINE VERIFIED" tone="warning" glow />
+        <span style={{ fontSize: '11px', color: 'rgba(148,163,184,0.6)' }}>
+          {syntheticPnl.tradeCount} inferred trade{syntheticPnl.tradeCount === 1 ? '' : 's'}
+          {' '}({syntheticPnl.highConfidenceCount} high / {syntheticPnl.mediumConfidenceCount} medium / {syntheticPnl.lowConfidenceCount} low confidence)
+        </span>
+      </div>
+      <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+        <MetricCard label="Synthetic Realized PnL" value={fmtSignedUsd(syntheticPnl.syntheticRealizedPnlUsd)} tone={toneFromNumber(syntheticPnl.syntheticRealizedPnlUsd)} index={0} />
+        <MetricCard label="Synthetic Unrealized PnL" value={fmtSignedUsd(syntheticPnl.syntheticUnrealizedPnlUsd)} tone={toneFromNumber(syntheticPnl.syntheticUnrealizedPnlUsd)} index={1} />
+        <MetricCard label="Synthetic Total PnL" value={fmtSignedUsd(syntheticPnl.syntheticTotalPnlUsd)} tone={toneFromNumber(syntheticPnl.syntheticTotalPnlUsd)} index={2} />
+        <MetricCard label="Synthetic ROI" value={roiDisplay} tone={toneFromNumber(syntheticPnl.syntheticRoiPct)} index={3} />
+      </div>
+    </div>
+  )
+}
+
+export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl }: PnlStatusCardProps) {
   const pnl = selectVerifiedPnlData(pnlV2, publicPnlStatus)
   const isActive = pnlV2 != null
   const limitedSampleBadgeLabel = shouldShowLimitedSampleBadge(publicPnlStatus)
+  const showSyntheticPnl = shouldShowSyntheticPnl(publicPnlStatus, syntheticPnl)
   // BLOCKED, DISCLOSED: `pnl.unreliable` (the pre-existing magnitude heuristic) and
   // `!pnl.stable` (this task's new isStablePnl guard) are two independent reasons to hide the
   // numeric display — either alone is enough. Applies uniformly to Realized/Unrealized/Total/ROI
@@ -239,6 +277,8 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus }: PnlStatusCardProps) {
           {PNL_UNAVAILABLE_MESSAGE}
         </p>
       )}
+
+      {showSyntheticPnl && syntheticPnl && <SyntheticPnlBlock syntheticPnl={syntheticPnl} />}
 
       <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '16px' }}>
         <MetricCard label="Realized PnL" value={blocked ? PNL_UNAVAILABLE_MESSAGE : fmtSignedUsd(pnl.realizedPnlUsd)} tone={blocked ? 'neutral' : toneFromNumber(pnl.realizedPnlUsd)} index={0} />

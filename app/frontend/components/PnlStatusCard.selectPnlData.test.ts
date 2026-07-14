@@ -11,7 +11,7 @@
 
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { selectVerifiedPnlData, shouldShowLimitedSampleBadge, GUARDRAIL_ABS_LIMIT, isStablePnl, PNL_UNAVAILABLE_MESSAGE } from './PnlStatusCard'
+import { selectVerifiedPnlData, shouldShowLimitedSampleBadge, GUARDRAIL_ABS_LIMIT, isStablePnl, PNL_UNAVAILABLE_MESSAGE, shouldShowSyntheticPnl } from './PnlStatusCard'
 import type { PnlV2 } from '@/lib/engine/modules/pnl/types'
 
 function pnlV2(overrides: Partial<PnlV2>): PnlV2 {
@@ -211,5 +211,38 @@ describe('selectVerifiedPnlData — stable field wiring', () => {
 describe('PNL_UNAVAILABLE_MESSAGE — exact literal text', () => {
   it('matches this task\'s required exact string', () => {
     assert.equal(PNL_UNAVAILABLE_MESSAGE, 'PnL unavailable due to missing evidence')
+  })
+})
+
+describe('shouldShowSyntheticPnl — Part 4 UI gating', () => {
+  const syntheticPnl = {
+    syntheticRealizedPnlUsd: 10, syntheticUnrealizedPnlUsd: 5, syntheticTotalPnlUsd: 15, syntheticRoiPct: 20,
+    tradeCount: 3, highConfidenceCount: 2, mediumConfidenceCount: 1, lowConfidenceCount: 0,
+  }
+
+  it("shows synthetic PnL when publicPnlStatus is 'unavailable' and real synthetic trades exist", () => {
+    assert.equal(shouldShowSyntheticPnl('unavailable', syntheticPnl), true)
+  })
+
+  it("does NOT show synthetic PnL when publicPnlStatus is 'ok' (a real, verified number is available)", () => {
+    assert.equal(shouldShowSyntheticPnl('ok', syntheticPnl), false)
+  })
+
+  it("does NOT show synthetic PnL when publicPnlStatus is 'limited_verified_sample'", () => {
+    assert.equal(shouldShowSyntheticPnl('limited_verified_sample', syntheticPnl), false)
+  })
+
+  it('does NOT show synthetic PnL when syntheticPnl is null/undefined (nothing to show)', () => {
+    assert.equal(shouldShowSyntheticPnl('unavailable', null), false)
+    assert.equal(shouldShowSyntheticPnl('unavailable', undefined), false)
+  })
+
+  it('does NOT show synthetic PnL when tradeCount is 0 (an empty synthetic summary is not worth displaying)', () => {
+    assert.equal(shouldShowSyntheticPnl('unavailable', { ...syntheticPnl, tradeCount: 0 }), false)
+  })
+
+  it('publicPnlStatus omitted -> does not show synthetic PnL (never assumes unavailable)', () => {
+    assert.equal(shouldShowSyntheticPnl(null, syntheticPnl), false)
+    assert.equal(shouldShowSyntheticPnl(undefined, syntheticPnl), false)
   })
 })

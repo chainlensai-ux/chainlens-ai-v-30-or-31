@@ -16,6 +16,8 @@ import { normalizeEvents } from '../modules/normalization/index'
 import { buildCounterpartyStats, classifyRouterLikeEvent, recordRouterCandidate } from './routerDiscovery'
 import { analyzeDistributorRouterFlows } from '../modules/distributorRecovery/index'
 import { reconstructRouterTrades } from '../modules/routerTradeReconstruction/index'
+import { inferSyntheticTrades, computeSyntheticPnl } from '../modules/syntheticPnl/index'
+import type { PoolDataMap as SyntheticPoolDataMap } from '../modules/syntheticPnl/index'
 import { adaptPnlSummaryForUi } from './pnlSummaryAdapter'
 import { buildChainAwareHistoricalPriceSource, pricingRouteLog } from './pricingAtTimeAdapter'
 import type { NormalizedEvent } from '../modules/normalization/types'
@@ -1408,6 +1410,46 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     })
   }
 
+  // SYNTHETIC PNL, DISCLOSED (src/modules/syntheticPnl — UI-DISPLAY-ONLY, see that module's own
+  // header for the full reasoning on why it never touches fifoEngine/priceLotsForWallet/pnlV2).
+  //
+  // POOLDATA SOURCE, DISCLOSED — no new network calls: `poolData` is built entirely from
+  // pricingAtTime's ALREADY-RESOLVED costUsd/proceedsUsd (real per-tx USD values this scan already
+  // paid for, just above) rather than a fresh pool-liquidity fetch — adding a new, uncapped
+  // per-token network-calling loop here would risk reintroducing the exact scan-latency/fan-out
+  // problem this session's earlier KV/pricing-throttle work fixed. LIQUIDITY PROXY, DISCLOSED: this
+  // module's dead-pool exclusion needs a liquidityUsd figure this pipeline doesn't independently
+  // have; a token pricingAtTime successfully resolved a real price for is treated as having "real"
+  // (non-dust, non-abandoned) liquidity — a defensible inference (dexscreener/geckoterminal/
+  // coingecko/basedex/goldrush don't quote a price for a pool with no real market) rather than a
+  // measured number, disclosed here rather than presented as precise.
+  const SYNTHETIC_POOL_LIQUIDITY_PROXY_USD = 5_000 // comfortably above classifyPoolLiquidity's dust threshold
+  const syntheticPoolData: SyntheticPoolDataMap = {}
+  const syntheticPricingSourceEvents = [...displayBuyEntries, ...sellTimelineV2.entries]
+  for (const [txHash, usd] of Object.entries({ ...pricingAtTime.costUsd, ...pricingAtTime.proceedsUsd })) {
+    if (usd == null) continue
+    const sourceEvent = syntheticPricingSourceEvents.find((e) => e.txHash === txHash)
+    if (!sourceEvent) continue
+    const amount = Number(sourceEvent.amount)
+    if (!Number.isFinite(amount) || amount <= 0) continue
+    const key = `${sourceEvent.chain}:${sourceEvent.token.toLowerCase()}`
+    if (!(key in syntheticPoolData)) {
+      syntheticPoolData[key] = { midPriceUsd: usd / amount, liquidityUsd: SYNTHETIC_POOL_LIQUIDITY_PROXY_USD }
+    }
+  }
+  const syntheticTrades = inferSyntheticTrades(normalizedEvents, KNOWN_DEX_ROUTER_ADDRESSES, syntheticPoolData, routerDistributorMode)
+  const syntheticPnl = syntheticTrades.length > 0 ? computeSyntheticPnl(syntheticTrades, syntheticPoolData) : null
+  if (process.env.NODE_ENV !== 'production') {
+    // eslint-disable-next-line no-console
+    console.warn('[pipeline] syntheticPnl (dev-only)', {
+      syntheticPnlComputed: syntheticPnl !== null,
+      syntheticTradeCount: syntheticTrades.length,
+      syntheticHighConfidenceCount: syntheticTrades.filter((t) => t.confidence === 'high').length,
+      syntheticMediumConfidenceCount: syntheticTrades.filter((t) => t.confidence === 'medium').length,
+      syntheticLowConfidenceCount: syntheticTrades.filter((t) => t.confidence === 'low').length,
+    })
+  }
+
   // 7. windowCoverage — pure arithmetic derived from the fixed fetch window and recovery pages used.
   const windowCoverage = computeWindowCoverage(PROVIDER_FETCH_WINDOW_DAYS_USED, recoveryPolicy.totalPagesUsedThisWallet)
 
@@ -1449,6 +1491,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     pricingAtTime,
     providerDiagnostics,
     pricingProvidersStatus: PRICING_PROVIDERS_STATUS,
+    syntheticPnl,
   })
 
   // "WHY DID THIS SCAN TAKE X SECONDS", DISCLOSED (orchestration-layer-only diagnostic summary):
