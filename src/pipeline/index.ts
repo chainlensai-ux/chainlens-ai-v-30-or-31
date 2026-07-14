@@ -15,6 +15,7 @@ import type { RawProviderEvent, SupportedChain } from '../modules/providerFetchW
 import { normalizeEvents } from '../modules/normalization/index'
 import { buildCounterpartyStats, classifyRouterLikeEvent, recordRouterCandidate } from './routerDiscovery'
 import { analyzeDistributorRouterFlows } from '../modules/distributorRecovery/index'
+import { reconstructRouterTrades } from '../modules/routerTradeReconstruction/index'
 import { adaptPnlSummaryForUi } from './pnlSummaryAdapter'
 import { buildChainAwareHistoricalPriceSource, pricingRouteLog } from './pricingAtTimeAdapter'
 import type { NormalizedEvent } from '../modules/normalization/types'
@@ -1091,6 +1092,22 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       distributorRecoveryMissingEvidenceCount: distributorRecovery.missingEvidenceCount,
       distributorRecoveryStablePnlCandidate: distributorRecovery.stablePnlCandidate,
       totalOutboundToKnownRouter: distributorRecovery.totalOutboundToKnownRouter,
+    })
+  }
+
+  // ROUTER TRADE RECONSTRUCTION, DISCLOSED (src/modules/routerTradeReconstruction — read-only
+  // observability, same category as distributorRecovery just above; see that new module's own
+  // header for the full reasoning on why candidate trades are NEVER fed into priceLotsForWallet's
+  // or fifoEngine's real event inputs). `normalizedEvents` is passed through completely unchanged
+  // to every downstream stage — this block only derives a logging-only view over it.
+  const routerTradeReconstruction = reconstructRouterTrades(normalizedEvents, KNOWN_DEX_ROUTER_ADDRESSES, routerDistributorMode)
+  if (routerTradeReconstruction.applied) {
+    // eslint-disable-next-line no-console
+    console.warn('[pipeline] routerTradeReconstruction', {
+      routerTradeReconstructionApplied: routerTradeReconstruction.applied,
+      routerTradeCandidateCount: routerTradeReconstruction.candidateTrades.length,
+      routerTradeHighConfidenceCount: routerTradeReconstruction.highConfidenceCount,
+      routerTradeAmbiguousCount: routerTradeReconstruction.ambiguousCount,
     })
   }
 
