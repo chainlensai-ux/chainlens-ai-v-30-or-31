@@ -32,6 +32,7 @@ import { fmtSignedUsd, fmtUsd } from '@/app/frontend/lib/holdingsHeuristics'
 import { StatusBadge } from './StatusBadge'
 import { MetricCard, toneFromNumber } from './MetricCard'
 import { TrendingDownIcon, TrendingUpIcon, WarningIcon } from './Icons'
+import { SyntheticPnlBlock } from './SyntheticPnlBlock'
 
 export type PnlStatusCardProps = {
   pnlV2: PnlV2 | null | undefined
@@ -217,28 +218,21 @@ export function shouldShowSyntheticPnl(publicPnlStatus: PublicPnlStatus | null |
   return publicPnlStatus === 'unavailable' && syntheticPnl != null && syntheticPnl.tradeCount > 0
 }
 
-function SyntheticPnlBlock({ syntheticPnl }: { syntheticPnl: SyntheticPnlSummary }) {
-  const roiDisplay = syntheticPnl.syntheticRoiPct == null
-    ? 'No cost-basis evidence'
-    : `${syntheticPnl.syntheticRoiPct >= 0 ? '+' : ''}${syntheticPnl.syntheticRoiPct.toFixed(1)}%`
+export type PnlDisplayMode = 'synthetic' | 'unavailable' | 'real' | 'inactive'
 
-  return (
-    <div style={{ marginTop: '12px', paddingTop: '12px', borderTop: '1px dashed rgba(251,191,36,0.35)' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '10px', flexWrap: 'wrap' }}>
-        <StatusBadge label="SYNTHETIC · INFERRED · NOT ENGINE VERIFIED" tone="warning" glow />
-        <span style={{ fontSize: '11px', color: 'rgba(148,163,184,0.6)' }}>
-          {syntheticPnl.tradeCount} inferred trade{syntheticPnl.tradeCount === 1 ? '' : 's'}
-          {' '}({syntheticPnl.highConfidenceCount} high / {syntheticPnl.mediumConfidenceCount} medium / {syntheticPnl.lowConfidenceCount} low confidence)
-        </span>
-      </div>
-      <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-        <MetricCard label="Synthetic Realized PnL" value={fmtSignedUsd(syntheticPnl.syntheticRealizedPnlUsd)} tone={toneFromNumber(syntheticPnl.syntheticRealizedPnlUsd)} index={0} />
-        <MetricCard label="Synthetic Unrealized PnL" value={fmtSignedUsd(syntheticPnl.syntheticUnrealizedPnlUsd)} tone={toneFromNumber(syntheticPnl.syntheticUnrealizedPnlUsd)} index={1} />
-        <MetricCard label="Synthetic Total PnL" value={fmtSignedUsd(syntheticPnl.syntheticTotalPnlUsd)} tone={toneFromNumber(syntheticPnl.syntheticTotalPnlUsd)} index={2} />
-        <MetricCard label="Synthetic ROI" value={roiDisplay} tone={toneFromNumber(syntheticPnl.syntheticRoiPct)} index={3} />
-      </div>
-    </div>
-  )
+// Pure, exported for direct testing — the exact combinatorial decision PnlStatusCard renders from.
+// REPLACE, NOT APPEND, DISCLOSED (this task's own request): 'synthetic' and 'unavailable' are
+// mutually exclusive — when a real synthetic summary is available, it REPLACES the "PnL
+// unavailable" banner and the blocked numeric MetricCards, never rendered alongside them.
+export function resolvePnlDisplayMode(params: {
+  isActive: boolean
+  blocked: boolean
+  showSyntheticPnl: boolean
+}): PnlDisplayMode {
+  if (!params.isActive) return 'inactive'
+  if (params.blocked && params.showSyntheticPnl) return 'synthetic'
+  if (params.blocked) return 'unavailable'
+  return 'real'
 }
 
 export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl }: PnlStatusCardProps) {
@@ -253,6 +247,8 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl }: PnlStatu
   // with no NaN/Infinity failure mode of its own, so it is not blocked by this guard, only by the
   // separate magnitude heuristic already applied to it below.
   const blocked = isActive && (pnl.unreliable || !pnl.stable)
+  const displayMode = resolvePnlDisplayMode({ isActive, blocked, showSyntheticPnl })
+  const showUnavailableBanner = displayMode === 'unavailable'
 
   const headerIcon = pnl.realizedPnlUsd == null
     ? <WarningIcon size={16} color="#fbbf24" />
@@ -272,22 +268,24 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl }: PnlStatu
         {limitedSampleBadgeLabel && <StatusBadge label={limitedSampleBadgeLabel} tone="warning" />}
       </div>
 
-      {blocked && (
+      {showUnavailableBanner && (
         <p style={{ fontSize: '13px', fontWeight: 700, color: '#fbbf24', margin: '0 0 12px' }}>
           {PNL_UNAVAILABLE_MESSAGE}
         </p>
       )}
 
-      {showSyntheticPnl && syntheticPnl && <SyntheticPnlBlock syntheticPnl={syntheticPnl} />}
-
-      <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '16px' }}>
-        <MetricCard label="Realized PnL" value={blocked ? PNL_UNAVAILABLE_MESSAGE : fmtSignedUsd(pnl.realizedPnlUsd)} tone={blocked ? 'neutral' : toneFromNumber(pnl.realizedPnlUsd)} index={0} />
-        <MetricCard label="Unrealized PnL" value={blocked ? PNL_UNAVAILABLE_MESSAGE : fmtSignedUsd(pnl.unrealizedPnlUsd)} tone={blocked ? 'neutral' : toneFromNumber(pnl.unrealizedPnlUsd)} index={1} />
-        <MetricCard label="Total PnL" value={blocked ? PNL_UNAVAILABLE_MESSAGE : fmtSignedUsd(pnl.totalPnlUsd)} tone={blocked ? 'neutral' : toneFromNumber(pnl.totalPnlUsd)} index={2} />
-        <MetricCard label="ROI" value={blocked ? PNL_UNAVAILABLE_MESSAGE : pnl.roi.display} tone={blocked ? 'neutral' : toneFromNumber(pnl.roi.value)} index={3} />
-        <MetricCard label="Cost Basis" value={pnl.unreliable ? 'Not reliable' : fmtUsd(pnl.totalCostBasisUsd)} index={4} />
-        <MetricCard label="Integrity" value={<StatusBadge label="Not available (V2 engine)" tone="neutral" />} index={5} />
-      </div>
+      {showSyntheticPnl && syntheticPnl ? (
+        <SyntheticPnlBlock syntheticPnl={syntheticPnl} />
+      ) : (
+        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '16px' }}>
+          <MetricCard label="Realized PnL" value={blocked ? PNL_UNAVAILABLE_MESSAGE : fmtSignedUsd(pnl.realizedPnlUsd)} tone={blocked ? 'neutral' : toneFromNumber(pnl.realizedPnlUsd)} index={0} />
+          <MetricCard label="Unrealized PnL" value={blocked ? PNL_UNAVAILABLE_MESSAGE : fmtSignedUsd(pnl.unrealizedPnlUsd)} tone={blocked ? 'neutral' : toneFromNumber(pnl.unrealizedPnlUsd)} index={1} />
+          <MetricCard label="Total PnL" value={blocked ? PNL_UNAVAILABLE_MESSAGE : fmtSignedUsd(pnl.totalPnlUsd)} tone={blocked ? 'neutral' : toneFromNumber(pnl.totalPnlUsd)} index={2} />
+          <MetricCard label="ROI" value={blocked ? PNL_UNAVAILABLE_MESSAGE : pnl.roi.display} tone={blocked ? 'neutral' : toneFromNumber(pnl.roi.value)} index={3} />
+          <MetricCard label="Cost Basis" value={pnl.unreliable ? 'Not reliable' : fmtUsd(pnl.totalCostBasisUsd)} index={4} />
+          <MetricCard label="Integrity" value={<StatusBadge label="Not available (V2 engine)" tone="neutral" />} index={5} />
+        </div>
+      )}
 
       <div style={{ marginBottom: '10px' }}>
         <div style={{ fontSize: '10px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(148,163,184,0.55)', marginBottom: '8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>

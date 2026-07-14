@@ -11,7 +11,7 @@
 
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { selectVerifiedPnlData, shouldShowLimitedSampleBadge, GUARDRAIL_ABS_LIMIT, isStablePnl, PNL_UNAVAILABLE_MESSAGE, shouldShowSyntheticPnl } from './PnlStatusCard'
+import { selectVerifiedPnlData, shouldShowLimitedSampleBadge, GUARDRAIL_ABS_LIMIT, isStablePnl, PNL_UNAVAILABLE_MESSAGE, shouldShowSyntheticPnl, resolvePnlDisplayMode } from './PnlStatusCard'
 import type { PnlV2 } from '@/lib/engine/modules/pnl/types'
 
 function pnlV2(overrides: Partial<PnlV2>): PnlV2 {
@@ -244,5 +244,59 @@ describe('shouldShowSyntheticPnl — Part 4 UI gating', () => {
   it('publicPnlStatus omitted -> does not show synthetic PnL (never assumes unavailable)', () => {
     assert.equal(shouldShowSyntheticPnl(null, syntheticPnl), false)
     assert.equal(shouldShowSyntheticPnl(undefined, syntheticPnl), false)
+  })
+})
+
+describe('PnlStatusCard end-to-end display mode — this task\'s 3 required scenarios', () => {
+  const realSyntheticPnl = {
+    syntheticRealizedPnlUsd: 42, syntheticUnrealizedPnlUsd: -7, syntheticTotalPnlUsd: 35, syntheticRoiPct: 12,
+    tradeCount: 5, highConfidenceCount: 3, mediumConfidenceCount: 2, lowConfidenceCount: 0,
+  }
+
+  it("publicPnlStatus = 'unavailable', syntheticPnl present -> synthetic block renders (mode 'synthetic')", () => {
+    const pnl = selectVerifiedPnlData(pnlV2({ realizedPnlUsd: 100, unrealizedPnlUsd: 50 }), 'unavailable')
+    const isActive = true
+    const showSynthetic = shouldShowSyntheticPnl('unavailable', realSyntheticPnl)
+    assert.equal(showSynthetic, true)
+    const mode = resolvePnlDisplayMode({ isActive, blocked: pnl.unreliable || !pnl.stable, showSyntheticPnl: showSynthetic })
+    assert.equal(mode, 'synthetic')
+  })
+
+  it("publicPnlStatus = 'unavailable', syntheticPnl missing -> fallback unavailable block renders (mode 'unavailable')", () => {
+    const pnl = selectVerifiedPnlData(pnlV2({ realizedPnlUsd: 100, unrealizedPnlUsd: 50 }), 'unavailable')
+    const isActive = true
+    const showSynthetic = shouldShowSyntheticPnl('unavailable', null)
+    assert.equal(showSynthetic, false)
+    const mode = resolvePnlDisplayMode({ isActive, blocked: pnl.unreliable || !pnl.stable, showSyntheticPnl: showSynthetic })
+    assert.equal(mode, 'unavailable')
+  })
+
+  it("publicPnlStatus = 'ok' -> real PnL renders, synthetic ignored even if present (mode 'real')", () => {
+    const pnl = selectVerifiedPnlData(pnlV2({ realizedPnlUsd: 100, unrealizedPnlUsd: 50 }), 'ok')
+    const isActive = true
+    const showSynthetic = shouldShowSyntheticPnl('ok', realSyntheticPnl)
+    assert.equal(showSynthetic, false) // synthetic never even considered when the real engine says 'ok'
+    const mode = resolvePnlDisplayMode({ isActive, blocked: pnl.unreliable || !pnl.stable, showSyntheticPnl: showSynthetic })
+    assert.equal(mode, 'real')
+  })
+})
+
+describe('resolvePnlDisplayMode — pure combinatorial logic', () => {
+  it('inactive (no pnlV2 at all) always wins, regardless of blocked/synthetic', () => {
+    assert.equal(resolvePnlDisplayMode({ isActive: false, blocked: true, showSyntheticPnl: true }), 'inactive')
+    assert.equal(resolvePnlDisplayMode({ isActive: false, blocked: false, showSyntheticPnl: false }), 'inactive')
+  })
+
+  it('synthetic REPLACES unavailable — never both blocked and unavailable when synthetic is available', () => {
+    assert.equal(resolvePnlDisplayMode({ isActive: true, blocked: true, showSyntheticPnl: true }), 'synthetic')
+  })
+
+  it('blocked without synthetic -> unavailable', () => {
+    assert.equal(resolvePnlDisplayMode({ isActive: true, blocked: true, showSyntheticPnl: false }), 'unavailable')
+  })
+
+  it('not blocked -> real, regardless of showSyntheticPnl (should never happen together, but real wins if it does)', () => {
+    assert.equal(resolvePnlDisplayMode({ isActive: true, blocked: false, showSyntheticPnl: true }), 'real')
+    assert.equal(resolvePnlDisplayMode({ isActive: true, blocked: false, showSyntheticPnl: false }), 'real')
   })
 })
