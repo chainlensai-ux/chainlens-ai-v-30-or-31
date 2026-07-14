@@ -21,9 +21,9 @@
 
 import type { NormalizedEvent } from '../normalization/types'
 import { reconstructRouterTrades, classifyPoolLiquidity } from '../routerTradeReconstruction/index'
-import type { PoolDataMap, SyntheticTrade, SyntheticTradeConfidence, SyntheticPnlSummary } from './types'
+import type { PoolDataMap, SyntheticTrade, SyntheticTradeConfidence, SyntheticPnlSummary, SyntheticChainPnl } from './types'
 
-export type { SyntheticTrade, SyntheticTradeConfidence, SyntheticPnlSummary, PoolDataMap, PoolPriceData } from './types'
+export type { SyntheticTrade, SyntheticTradeConfidence, SyntheticPnlSummary, SyntheticChainPnl, PoolDataMap, PoolPriceData } from './types'
 
 function poolKey(chain: string, token: string): string {
   return `${chain}:${token.toLowerCase()}`
@@ -82,16 +82,35 @@ export function inferSyntheticTrades(
 //
 // A token sold beyond this run's own tracked position (no prior synthetic acquisition seen in this
 // SAME set of trades — typically the wallet's own starting capital, e.g. ETH/USDC used to buy into
-// a memecoin, never itself "bought" via a synthetic trade here) contributes NOTHING to
-// syntheticRealizedPnlUsd — never proceeds-as-profit (which would silently assume a fabricated $0
-// cost basis) and never a fabricated cost. Same "unknown cost basis is excluded, never assumed
-// zero" principle the real engines already apply.
+// a memecoin, never itself "bought" via a synthetic trade here) contributes NOTHING to realized
+// PnL — never proceeds-as-profit (which would silently assume a fabricated $0 cost basis) and never
+// a fabricated cost. Same "unknown cost basis is excluded, never assumed zero" principle the real
+// engines already apply.
+//
+// PER-CHAIN, DISCLOSED (this task's own request): realized/unrealized/cost-basis are accumulated
+// BOTH globally and per-chain from the exact same trade-by-trade pass — never a second, divergent
+// computation. `perChain` is populated independently of whether the global totals end up non-null;
+// nothing here requires one to gate the other. REAL LIMITATION, DISCLOSED: in the current pipeline
+// wiring (src/pipeline/index.ts), `routerDistributorMode` — the gate that decides whether
+// inferSyntheticTrades runs AT ALL — is computed GLOBALLY across every chain combined, not per
+// chain. So today, a wallet whose router activity is concentrated on one chain (e.g. all on Base)
+// but doesn't clear the global threshold gets NO synthetic trades on any chain, `perChain` included
+// — this module can only report per-chain figures for trades it was actually given; it cannot
+// itself decide to reconstruct Base in isolation when the caller never invoked
+// inferSyntheticTrades. Fixing that would mean changing the pipeline's routerDistributorMode
+// semantics, out of scope for this task (which only asked for the type/computation/UI plumbing).
 export function computeSyntheticPnl(trades: readonly SyntheticTrade[], currentPrices: PoolDataMap): SyntheticPnlSummary {
   const ordered = [...trades].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
 
-  const positions = new Map<string, { qty: number; costUsd: number }>()
-  let syntheticRealizedPnlUsd = 0
+  const positions = new Map<string, { qty: number; costUsd: number; chain: string }>()
+  let totalRealizedPnlUsd = 0
   let totalCostBasisEverUsd = 0
+  const realizedByChain = new Map<string, number>()
+  const costBasisByChain = new Map<string, number>()
+
+  const addToChain = (map: Map<string, number>, chain: string, delta: number) => {
+    map.set(chain, (map.get(chain) ?? 0) + delta)
+  }
 
   for (const trade of ordered) {
     const inKey = poolKey(trade.chain, trade.tokenIn)
@@ -103,7 +122,9 @@ export function computeSyntheticPnl(trades: readonly SyntheticTrade[], currentPr
       const soldQty = Math.min(trade.amountIn, existingPosition.qty)
       const avgCostPerUnit = existingPosition.costUsd / existingPosition.qty
       const costOfSoldQty = avgCostPerUnit * soldQty
-      syntheticRealizedPnlUsd += proceedsUsd - costOfSoldQty
+      const realizedThisLeg = proceedsUsd - costOfSoldQty
+      totalRealizedPnlUsd += realizedThisLeg
+      addToChain(realizedByChain, trade.chain, realizedThisLeg)
       existingPosition.qty -= soldQty
       existingPosition.costUsd -= costOfSoldQty
     }
@@ -112,7 +133,8 @@ export function computeSyntheticPnl(trades: readonly SyntheticTrade[], currentPr
     // trade-time price.
     const acquisitionCostUsd = trade.amountOut * trade.tokenOutPriceUsd
     totalCostBasisEverUsd += acquisitionCostUsd
-    const outPosition = positions.get(outKey) ?? { qty: 0, costUsd: 0 }
+    addToChain(costBasisByChain, trade.chain, acquisitionCostUsd)
+    const outPosition = positions.get(outKey) ?? { qty: 0, costUsd: 0, chain: trade.chain }
     outPosition.qty += trade.amountOut
     outPosition.costUsd += acquisitionCostUsd
     positions.set(outKey, outPosition)
@@ -121,22 +143,47 @@ export function computeSyntheticPnl(trades: readonly SyntheticTrade[], currentPr
   // Open positions valued at `currentPrices` — a real, caller-supplied snapshot, never fabricated;
   // a position whose token has no entry in `currentPrices` is left out of unrealized PnL entirely
   // (never assumed flat/unchanged).
-  let syntheticUnrealizedPnlUsd = 0
+  let totalUnrealizedPnlUsd = 0
+  const unrealizedByChain = new Map<string, number>()
   for (const [key, position] of positions) {
     if (position.qty <= 0) continue
     const currentPrice = currentPrices[key]?.midPriceUsd
     if (currentPrice == null) continue
-    syntheticUnrealizedPnlUsd += position.qty * currentPrice - position.costUsd
+    const unrealizedThisPosition = position.qty * currentPrice - position.costUsd
+    totalUnrealizedPnlUsd += unrealizedThisPosition
+    addToChain(unrealizedByChain, position.chain, unrealizedThisPosition)
   }
 
-  const syntheticTotalPnlUsd = syntheticRealizedPnlUsd + syntheticUnrealizedPnlUsd
-  const syntheticRoiPct = totalCostBasisEverUsd > 0 ? (syntheticTotalPnlUsd / totalCostBasisEverUsd) * 100 : null
+  const totalPnlUsd = totalRealizedPnlUsd + totalUnrealizedPnlUsd
+  const roiPercent = totalCostBasisEverUsd > 0 ? (totalPnlUsd / totalCostBasisEverUsd) * 100 : null
+
+  const chainIds = new Set<string>([...realizedByChain.keys(), ...unrealizedByChain.keys(), ...costBasisByChain.keys()])
+  const perChain: SyntheticChainPnl[] = [...chainIds].sort().map((chainId) => {
+    // A chain only appears here at all if it contributed at least one trade leg — realized/
+    // unrealized default to 0 (a real, computed zero for that leg type), never null, for a chain
+    // that DID contribute trades; costBasisUsd similarly. roiPercent is null only when this chain's
+    // own cost basis is 0 (no divide-by-zero, no fabricated percentage).
+    const chainRealized = realizedByChain.get(chainId) ?? 0
+    const chainUnrealized = unrealizedByChain.get(chainId) ?? 0
+    const chainCostBasis = costBasisByChain.get(chainId) ?? 0
+    const chainTotal = chainRealized + chainUnrealized
+    return {
+      chainId,
+      realizedPnlUsd: chainRealized,
+      unrealizedPnlUsd: chainUnrealized,
+      totalPnlUsd: chainTotal,
+      roiPercent: chainCostBasis > 0 ? (chainTotal / chainCostBasis) * 100 : null,
+      costBasisUsd: chainCostBasis,
+    }
+  })
 
   return {
-    syntheticRealizedPnlUsd,
-    syntheticUnrealizedPnlUsd,
-    syntheticTotalPnlUsd,
-    syntheticRoiPct,
+    totalRealizedPnlUsd,
+    totalUnrealizedPnlUsd,
+    totalPnlUsd,
+    roiPercent,
+    costBasisUsd: totalCostBasisEverUsd,
+    perChain,
     tradeCount: trades.length,
     highConfidenceCount: trades.filter((t) => t.confidence === 'high').length,
     mediumConfidenceCount: trades.filter((t) => t.confidence === 'medium').length,

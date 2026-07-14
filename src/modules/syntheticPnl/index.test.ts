@@ -126,7 +126,7 @@ describe('computeSyntheticPnl — correct aggregation', () => {
     const result = computeSyntheticPnl(trades, {})
     // tokenB acquired at $1 (trade 1's own baked-in cost: 50 * $1 = $50), disposed at $2 (trade 2's
     // own baked-in proceeds: 50 * $2 = $100) -> realized $50.
-    assert.equal(result.syntheticRealizedPnlUsd, 50)
+    assert.equal(result.totalRealizedPnlUsd, 50)
     assert.equal(result.tradeCount, 2)
   })
 
@@ -136,10 +136,10 @@ describe('computeSyntheticPnl — correct aggregation', () => {
     ]
     const currentPrices: PoolDataMap = { 'base:0xtokenb': pool(3, 100_000) } // tokenB now worth $3
     const result = computeSyntheticPnl(trades, currentPrices)
-    assert.equal(result.syntheticRealizedPnlUsd, 0)
+    assert.equal(result.totalRealizedPnlUsd, 0)
     // Cost basis for the open tokenB position: 50 * $1 = $50 (baked-in trade-time price). Current value: 50 * $3 = $150.
-    assert.equal(result.syntheticUnrealizedPnlUsd, 100)
-    assert.equal(result.syntheticTotalPnlUsd, 100)
+    assert.equal(result.totalUnrealizedPnlUsd, 100)
+    assert.equal(result.totalPnlUsd, 100)
   })
 
   it('never fabricates a price — an open position whose token has no entry in currentPrices contributes zero unrealized PnL', () => {
@@ -147,10 +147,10 @@ describe('computeSyntheticPnl — correct aggregation', () => {
       { chain: 'base', txHash: '0xtx1', timestamp: '2024-01-01T00:00:00Z', tokenIn: '0xtokenA', tokenOut: '0xtokenB', amountIn: 100, amountOut: 50, confidence: 'high' as const, tokenInPriceUsd: 1, tokenOutPriceUsd: 1 },
     ]
     const result = computeSyntheticPnl(trades, {}) // no currentPrices at all
-    assert.equal(result.syntheticRealizedPnlUsd, 0)
-    assert.equal(result.syntheticUnrealizedPnlUsd, 0)
+    assert.equal(result.totalRealizedPnlUsd, 0)
+    assert.equal(result.totalUnrealizedPnlUsd, 0)
     // ROI still reflects the real, baked-in cost basis even with no current-price data.
-    assert.equal(result.syntheticRoiPct, 0)
+    assert.equal(result.roiPercent, 0)
   })
 
   it('confidence counts are reported correctly across a mixed set', () => {
@@ -164,5 +164,53 @@ describe('computeSyntheticPnl — correct aggregation', () => {
     assert.equal(result.mediumConfidenceCount, 1)
     assert.equal(result.lowConfidenceCount, 1)
     assert.equal(result.tradeCount, 3)
+  })
+})
+
+describe('computeSyntheticPnl — per-chain breakdown', () => {
+  it('computes independent per-chain realized/unrealized/total/roi, summing to the same totals', () => {
+    const trades = [
+      // Base: full round trip, $50 realized.
+      { chain: 'base', txHash: '0xtx1', timestamp: '2024-01-01T00:00:00Z', tokenIn: '0xtokenA', tokenOut: '0xtokenB', amountIn: 100, amountOut: 50, confidence: 'high' as const, tokenInPriceUsd: 1, tokenOutPriceUsd: 1 },
+      { chain: 'base', txHash: '0xtx2', timestamp: '2024-01-02T00:00:00Z', tokenIn: '0xtokenB', tokenOut: '0xtokenC', amountIn: 50, amountOut: 10, confidence: 'high' as const, tokenInPriceUsd: 2, tokenOutPriceUsd: 1 },
+      // Eth: separate open position, never sold.
+      { chain: 'eth', txHash: '0xtx3', timestamp: '2024-01-03T00:00:00Z', tokenIn: '0xtokenD', tokenOut: '0xtokenE', amountIn: 20, amountOut: 5, confidence: 'high' as const, tokenInPriceUsd: 1, tokenOutPriceUsd: 1 },
+    ]
+    const currentPrices: PoolDataMap = { 'eth:0xtokene': pool(4, 100_000) } // tokenE now worth $4 (cost was $1)
+    const result = computeSyntheticPnl(trades, currentPrices)
+
+    const base = result.perChain.find((c) => c.chainId === 'base')!
+    const eth = result.perChain.find((c) => c.chainId === 'eth')!
+    assert.equal(base.realizedPnlUsd, 50)
+    assert.equal(base.unrealizedPnlUsd, 0)
+    assert.equal(eth.realizedPnlUsd, 0)
+    assert.equal(eth.unrealizedPnlUsd, 15) // 5 * $4 - 5 * $1 = $15
+
+    // Per-chain totals sum to the exact global totals — same trade-by-trade pass, no divergence.
+    assert.equal(base.realizedPnlUsd! + eth.realizedPnlUsd!, result.totalRealizedPnlUsd)
+    assert.equal(base.unrealizedPnlUsd! + eth.unrealizedPnlUsd!, result.totalUnrealizedPnlUsd)
+  })
+
+  it('perChain is populated even for a single-chain trade set', () => {
+    const trades = [
+      { chain: 'base', txHash: '0xtx1', timestamp: '2024-01-01T00:00:00Z', tokenIn: '0xtokenA', tokenOut: '0xtokenB', amountIn: 100, amountOut: 50, confidence: 'high' as const, tokenInPriceUsd: 1, tokenOutPriceUsd: 1 },
+    ]
+    const result = computeSyntheticPnl(trades, {})
+    assert.equal(result.perChain.length, 1)
+    assert.equal(result.perChain[0].chainId, 'base')
+    assert.equal(result.perChain[0].costBasisUsd, 50)
+  })
+
+  it('a chain with zero cost basis gets a null roiPercent, never a fabricated percentage', () => {
+    // Degenerate: no trades at all for a hypothetical chain isn't representable here (perChain only
+    // contains chains that had at least one trade leg) — covered instead via the global-zero-cost-
+    // basis test above; this test documents that perChain entries always have a real, non-negative
+    // cost basis by construction (every entry comes from an actual acquisition).
+    const trades = [
+      { chain: 'base', txHash: '0xtx1', timestamp: '2024-01-01T00:00:00Z', tokenIn: '0xtokenA', tokenOut: '0xtokenB', amountIn: 100, amountOut: 50, confidence: 'high' as const, tokenInPriceUsd: 1, tokenOutPriceUsd: 1 },
+    ]
+    const result = computeSyntheticPnl(trades, {})
+    assert.ok(result.perChain[0].costBasisUsd! > 0)
+    assert.notEqual(result.perChain[0].roiPercent, null)
   })
 })

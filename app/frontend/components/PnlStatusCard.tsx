@@ -33,6 +33,7 @@ import { StatusBadge } from './StatusBadge'
 import { MetricCard, toneFromNumber } from './MetricCard'
 import { TrendingDownIcon, TrendingUpIcon, WarningIcon } from './Icons'
 import { SyntheticPnlBlock } from './SyntheticPnlBlock'
+import { SyntheticPerChainPnlBlock } from './SyntheticPerChainPnlBlock'
 
 export type PnlStatusCardProps = {
   pnlV2: PnlV2 | null | undefined
@@ -211,26 +212,54 @@ export function shouldShowLimitedSampleBadge(publicPnlStatus: PublicPnlStatus | 
 // string rather than a substring guess.
 export const PNL_UNAVAILABLE_MESSAGE = 'PnL unavailable due to missing evidence'
 
-// Pure, exported for direct testing — the exact condition for showing the synthetic block at all.
-// Only when the REAL engine's own display is blocked AND real synthetic data exists — never shown
-// alongside a real, verified number, never shown from an empty/zero-trade synthetic summary.
-export function shouldShowSyntheticPnl(publicPnlStatus: PublicPnlStatus | null | undefined, syntheticPnl: SyntheticPnlSummary | null | undefined): boolean {
-  return publicPnlStatus === 'unavailable' && syntheticPnl != null && syntheticPnl.tradeCount > 0
+// GLOBAL-VS-PER-CHAIN SYNTHETIC GATING, DISCLOSED (this task's own spec, field names adapted to
+// this task's own rename — totalPnlUsd/realizedPnlUsd/unrealizedPnlUsd, not the prior
+// syntheticTotalPnlUsd/etc.): `hasGlobalSynthetic` requires the wallet-wide total to carry a real
+// number; `hasPerChainSynthetic` requires at least one chain entry to carry ANY real number (total,
+// realized, or unrealized) even when the wallet-wide total itself is null. These two are checked in
+// this exact priority order below — per-chain is only ever a FALLBACK when the global number isn't
+// available, never shown alongside it.
+export function hasGlobalSynthetic(syntheticPnl: SyntheticPnlSummary | null | undefined): boolean {
+  return syntheticPnl != null && syntheticPnl.totalPnlUsd !== null
 }
 
-export type PnlDisplayMode = 'synthetic' | 'unavailable' | 'real' | 'inactive'
+export function hasPerChainSynthetic(syntheticPnl: SyntheticPnlSummary | null | undefined): boolean {
+  return syntheticPnl != null && Array.isArray(syntheticPnl.perChain) && syntheticPnl.perChain.length > 0 &&
+    syntheticPnl.perChain.some((c) => c.totalPnlUsd !== null || c.realizedPnlUsd !== null || c.unrealizedPnlUsd !== null)
+}
+
+// Pure, exported for direct testing — the exact condition for showing the GLOBAL synthetic block.
+export function shouldShowSyntheticGlobal(publicPnlStatus: PublicPnlStatus | null | undefined, syntheticPnl: SyntheticPnlSummary | null | undefined): boolean {
+  return publicPnlStatus === 'unavailable' && hasGlobalSynthetic(syntheticPnl)
+}
+
+// Pure, exported for direct testing — the exact condition for showing the PER-CHAIN fallback block:
+// only when the global block is NOT shown (mutually exclusive by construction, not just by render
+// order) AND at least one chain has real evidence.
+export function shouldShowSyntheticPerChain(publicPnlStatus: PublicPnlStatus | null | undefined, syntheticPnl: SyntheticPnlSummary | null | undefined): boolean {
+  return publicPnlStatus === 'unavailable' && !hasGlobalSynthetic(syntheticPnl) && hasPerChainSynthetic(syntheticPnl)
+}
+
+// DEPRECATED ALIAS, kept for backward compatibility with existing tests/callers from a prior
+// commit — identical to shouldShowSyntheticGlobal (this task's canonical name going forward).
+export const shouldShowSyntheticPnl = shouldShowSyntheticGlobal
+
+export type PnlDisplayMode = 'synthetic' | 'synthetic_per_chain' | 'unavailable' | 'real' | 'inactive'
 
 // Pure, exported for direct testing — the exact combinatorial decision PnlStatusCard renders from.
-// REPLACE, NOT APPEND, DISCLOSED (this task's own request): 'synthetic' and 'unavailable' are
-// mutually exclusive — when a real synthetic summary is available, it REPLACES the "PnL
-// unavailable" banner and the blocked numeric MetricCards, never rendered alongside them.
+// REPLACE, NOT APPEND, DISCLOSED (this task's own request): 'synthetic'/'synthetic_per_chain' and
+// 'unavailable' are mutually exclusive — when either synthetic summary is available, it REPLACES
+// the "PnL unavailable" banner and the blocked numeric MetricCards, never rendered alongside them.
+// 'synthetic' (global) always wins over 'synthetic_per_chain' when both would otherwise apply.
 export function resolvePnlDisplayMode(params: {
   isActive: boolean
   blocked: boolean
-  showSyntheticPnl: boolean
+  showSyntheticGlobal: boolean
+  showSyntheticPerChain: boolean
 }): PnlDisplayMode {
   if (!params.isActive) return 'inactive'
-  if (params.blocked && params.showSyntheticPnl) return 'synthetic'
+  if (params.blocked && params.showSyntheticGlobal) return 'synthetic'
+  if (params.blocked && params.showSyntheticPerChain) return 'synthetic_per_chain'
   if (params.blocked) return 'unavailable'
   return 'real'
 }
@@ -239,7 +268,8 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl }: PnlStatu
   const pnl = selectVerifiedPnlData(pnlV2, publicPnlStatus)
   const isActive = pnlV2 != null
   const limitedSampleBadgeLabel = shouldShowLimitedSampleBadge(publicPnlStatus)
-  const showSyntheticPnl = shouldShowSyntheticPnl(publicPnlStatus, syntheticPnl)
+  const showSyntheticGlobal = shouldShowSyntheticGlobal(publicPnlStatus, syntheticPnl)
+  const showSyntheticPerChain = shouldShowSyntheticPerChain(publicPnlStatus, syntheticPnl)
   // BLOCKED, DISCLOSED: `pnl.unreliable` (the pre-existing magnitude heuristic) and
   // `!pnl.stable` (this task's new isStablePnl guard) are two independent reasons to hide the
   // numeric display — either alone is enough. Applies uniformly to Realized/Unrealized/Total/ROI
@@ -247,7 +277,7 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl }: PnlStatu
   // with no NaN/Infinity failure mode of its own, so it is not blocked by this guard, only by the
   // separate magnitude heuristic already applied to it below.
   const blocked = isActive && (pnl.unreliable || !pnl.stable)
-  const displayMode = resolvePnlDisplayMode({ isActive, blocked, showSyntheticPnl })
+  const displayMode = resolvePnlDisplayMode({ isActive, blocked, showSyntheticGlobal, showSyntheticPerChain })
   const showUnavailableBanner = displayMode === 'unavailable'
 
   const headerIcon = pnl.realizedPnlUsd == null
@@ -274,8 +304,10 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl }: PnlStatu
         </p>
       )}
 
-      {showSyntheticPnl && syntheticPnl ? (
+      {displayMode === 'synthetic' && syntheticPnl ? (
         <SyntheticPnlBlock syntheticPnl={syntheticPnl} />
+      ) : displayMode === 'synthetic_per_chain' && syntheticPnl ? (
+        <SyntheticPerChainPnlBlock perChain={syntheticPnl.perChain} />
       ) : (
         <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '16px' }}>
           <MetricCard label="Realized PnL" value={blocked ? PNL_UNAVAILABLE_MESSAGE : fmtSignedUsd(pnl.realizedPnlUsd)} tone={blocked ? 'neutral' : toneFromNumber(pnl.realizedPnlUsd)} index={0} />

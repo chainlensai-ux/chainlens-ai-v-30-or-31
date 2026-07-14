@@ -11,7 +11,7 @@
 
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { selectVerifiedPnlData, shouldShowLimitedSampleBadge, GUARDRAIL_ABS_LIMIT, isStablePnl, PNL_UNAVAILABLE_MESSAGE, shouldShowSyntheticPnl, resolvePnlDisplayMode } from './PnlStatusCard'
+import { selectVerifiedPnlData, shouldShowLimitedSampleBadge, GUARDRAIL_ABS_LIMIT, isStablePnl, PNL_UNAVAILABLE_MESSAGE, hasGlobalSynthetic, hasPerChainSynthetic, shouldShowSyntheticGlobal, shouldShowSyntheticPerChain, resolvePnlDisplayMode } from './PnlStatusCard'
 import type { PnlV2 } from '@/lib/engine/modules/pnl/types'
 
 function pnlV2(overrides: Partial<PnlV2>): PnlV2 {
@@ -214,89 +214,133 @@ describe('PNL_UNAVAILABLE_MESSAGE — exact literal text', () => {
   })
 })
 
-describe('shouldShowSyntheticPnl — Part 4 UI gating', () => {
-  const syntheticPnl = {
-    syntheticRealizedPnlUsd: 10, syntheticUnrealizedPnlUsd: 5, syntheticTotalPnlUsd: 15, syntheticRoiPct: 20,
-    tradeCount: 3, highConfidenceCount: 2, mediumConfidenceCount: 1, lowConfidenceCount: 0,
+function syntheticPnlFixture(overrides: Partial<{
+  totalRealizedPnlUsd: number | null
+  totalUnrealizedPnlUsd: number | null
+  totalPnlUsd: number | null
+  roiPercent: number | null
+  costBasisUsd: number | null
+  perChain: Array<{ chainId: string; realizedPnlUsd: number | null; unrealizedPnlUsd: number | null; totalPnlUsd: number | null; roiPercent: number | null; costBasisUsd: number | null }>
+  tradeCount: number
+  highConfidenceCount: number
+  mediumConfidenceCount: number
+  lowConfidenceCount: number
+}>) {
+  return {
+    totalRealizedPnlUsd: 42, totalUnrealizedPnlUsd: -7, totalPnlUsd: 35, roiPercent: 12, costBasisUsd: 300,
+    perChain: [{ chainId: 'base', realizedPnlUsd: 42, unrealizedPnlUsd: -7, totalPnlUsd: 35, roiPercent: 12, costBasisUsd: 300 }],
+    tradeCount: 5, highConfidenceCount: 3, mediumConfidenceCount: 2, lowConfidenceCount: 0,
+    ...overrides,
   }
+}
 
-  it("shows synthetic PnL when publicPnlStatus is 'unavailable' and real synthetic trades exist", () => {
-    assert.equal(shouldShowSyntheticPnl('unavailable', syntheticPnl), true)
+describe('hasGlobalSynthetic / hasPerChainSynthetic / shouldShowSyntheticGlobal / shouldShowSyntheticPerChain', () => {
+  it('hasGlobalSynthetic is true only when totalPnlUsd is a real number', () => {
+    assert.equal(hasGlobalSynthetic(syntheticPnlFixture({})), true)
+    assert.equal(hasGlobalSynthetic(syntheticPnlFixture({ totalPnlUsd: null })), false)
+    assert.equal(hasGlobalSynthetic(null), false)
+    assert.equal(hasGlobalSynthetic(undefined), false)
   })
 
-  it("does NOT show synthetic PnL when publicPnlStatus is 'ok' (a real, verified number is available)", () => {
-    assert.equal(shouldShowSyntheticPnl('ok', syntheticPnl), false)
+  it('hasPerChainSynthetic is true when at least one chain entry has any real number', () => {
+    assert.equal(hasPerChainSynthetic(syntheticPnlFixture({ totalPnlUsd: null })), true)
+    assert.equal(hasPerChainSynthetic(syntheticPnlFixture({
+      totalPnlUsd: null,
+      perChain: [{ chainId: 'base', realizedPnlUsd: null, unrealizedPnlUsd: null, totalPnlUsd: null, roiPercent: null, costBasisUsd: null }],
+    })), false)
+    assert.equal(hasPerChainSynthetic(syntheticPnlFixture({ totalPnlUsd: null, perChain: [] })), false)
+    assert.equal(hasPerChainSynthetic(null), false)
   })
 
-  it("does NOT show synthetic PnL when publicPnlStatus is 'limited_verified_sample'", () => {
-    assert.equal(shouldShowSyntheticPnl('limited_verified_sample', syntheticPnl), false)
+  it("shouldShowSyntheticGlobal requires publicPnlStatus === 'unavailable' AND hasGlobalSynthetic", () => {
+    assert.equal(shouldShowSyntheticGlobal('unavailable', syntheticPnlFixture({})), true)
+    assert.equal(shouldShowSyntheticGlobal('ok', syntheticPnlFixture({})), false)
+    assert.equal(shouldShowSyntheticGlobal('unavailable', syntheticPnlFixture({ totalPnlUsd: null })), false)
   })
 
-  it('does NOT show synthetic PnL when syntheticPnl is null/undefined (nothing to show)', () => {
-    assert.equal(shouldShowSyntheticPnl('unavailable', null), false)
-    assert.equal(shouldShowSyntheticPnl('unavailable', undefined), false)
-  })
-
-  it('does NOT show synthetic PnL when tradeCount is 0 (an empty synthetic summary is not worth displaying)', () => {
-    assert.equal(shouldShowSyntheticPnl('unavailable', { ...syntheticPnl, tradeCount: 0 }), false)
-  })
-
-  it('publicPnlStatus omitted -> does not show synthetic PnL (never assumes unavailable)', () => {
-    assert.equal(shouldShowSyntheticPnl(null, syntheticPnl), false)
-    assert.equal(shouldShowSyntheticPnl(undefined, syntheticPnl), false)
+  it('shouldShowSyntheticPerChain requires global to be UNAVAILABLE (not just present) AND per-chain evidence', () => {
+    assert.equal(shouldShowSyntheticPerChain('unavailable', syntheticPnlFixture({ totalPnlUsd: null })), true)
+    assert.equal(shouldShowSyntheticPerChain('unavailable', syntheticPnlFixture({})), false) // global already available -> per-chain fallback not needed
+    assert.equal(shouldShowSyntheticPerChain('ok', syntheticPnlFixture({ totalPnlUsd: null })), false)
+    assert.equal(shouldShowSyntheticPerChain('unavailable', syntheticPnlFixture({ totalPnlUsd: null, perChain: [] })), false)
   })
 })
 
-describe('PnlStatusCard end-to-end display mode — this task\'s 3 required scenarios', () => {
-  const realSyntheticPnl = {
-    syntheticRealizedPnlUsd: 42, syntheticUnrealizedPnlUsd: -7, syntheticTotalPnlUsd: 35, syntheticRoiPct: 12,
-    tradeCount: 5, highConfidenceCount: 3, mediumConfidenceCount: 2, lowConfidenceCount: 0,
-  }
-
-  it("publicPnlStatus = 'unavailable', syntheticPnl present -> synthetic block renders (mode 'synthetic')", () => {
+describe('PnlStatusCard end-to-end display mode — Cases A/B/C/D', () => {
+  it("Case A: publicPnlStatus = 'unavailable', global synthetic present -> global synthetic block renders", () => {
     const pnl = selectVerifiedPnlData(pnlV2({ realizedPnlUsd: 100, unrealizedPnlUsd: 50 }), 'unavailable')
-    const isActive = true
-    const showSynthetic = shouldShowSyntheticPnl('unavailable', realSyntheticPnl)
-    assert.equal(showSynthetic, true)
-    const mode = resolvePnlDisplayMode({ isActive, blocked: pnl.unreliable || !pnl.stable, showSyntheticPnl: showSynthetic })
+    const syntheticPnl = syntheticPnlFixture({})
+    const mode = resolvePnlDisplayMode({
+      isActive: true,
+      blocked: pnl.unreliable || !pnl.stable,
+      showSyntheticGlobal: shouldShowSyntheticGlobal('unavailable', syntheticPnl),
+      showSyntheticPerChain: shouldShowSyntheticPerChain('unavailable', syntheticPnl),
+    })
     assert.equal(mode, 'synthetic')
   })
 
-  it("publicPnlStatus = 'unavailable', syntheticPnl missing -> fallback unavailable block renders (mode 'unavailable')", () => {
+  it("Case B: publicPnlStatus = 'unavailable', global synthetic null, perChain synthetic present -> per-chain synthetic block renders", () => {
     const pnl = selectVerifiedPnlData(pnlV2({ realizedPnlUsd: 100, unrealizedPnlUsd: 50 }), 'unavailable')
-    const isActive = true
-    const showSynthetic = shouldShowSyntheticPnl('unavailable', null)
-    assert.equal(showSynthetic, false)
-    const mode = resolvePnlDisplayMode({ isActive, blocked: pnl.unreliable || !pnl.stable, showSyntheticPnl: showSynthetic })
-    assert.equal(mode, 'unavailable')
+    const syntheticPnl = syntheticPnlFixture({ totalRealizedPnlUsd: null, totalUnrealizedPnlUsd: null, totalPnlUsd: null, roiPercent: null })
+    const mode = resolvePnlDisplayMode({
+      isActive: true,
+      blocked: pnl.unreliable || !pnl.stable,
+      showSyntheticGlobal: shouldShowSyntheticGlobal('unavailable', syntheticPnl),
+      showSyntheticPerChain: shouldShowSyntheticPerChain('unavailable', syntheticPnl),
+    })
+    assert.equal(mode, 'synthetic_per_chain')
   })
 
-  it("publicPnlStatus = 'ok' -> real PnL renders, synthetic ignored even if present (mode 'real')", () => {
+  it("Case C: publicPnlStatus = 'unavailable', syntheticPnl missing or empty -> unavailable block renders", () => {
+    const pnl = selectVerifiedPnlData(pnlV2({ realizedPnlUsd: 100, unrealizedPnlUsd: 50 }), 'unavailable')
+    const mode1 = resolvePnlDisplayMode({
+      isActive: true, blocked: pnl.unreliable || !pnl.stable,
+      showSyntheticGlobal: shouldShowSyntheticGlobal('unavailable', null),
+      showSyntheticPerChain: shouldShowSyntheticPerChain('unavailable', null),
+    })
+    assert.equal(mode1, 'unavailable')
+
+    const emptySynthetic = syntheticPnlFixture({ totalPnlUsd: null, perChain: [] })
+    const mode2 = resolvePnlDisplayMode({
+      isActive: true, blocked: pnl.unreliable || !pnl.stable,
+      showSyntheticGlobal: shouldShowSyntheticGlobal('unavailable', emptySynthetic),
+      showSyntheticPerChain: shouldShowSyntheticPerChain('unavailable', emptySynthetic),
+    })
+    assert.equal(mode2, 'unavailable')
+  })
+
+  it("Case D: publicPnlStatus = 'ok' -> real engine PnL renders, both synthetic blocks hidden", () => {
     const pnl = selectVerifiedPnlData(pnlV2({ realizedPnlUsd: 100, unrealizedPnlUsd: 50 }), 'ok')
-    const isActive = true
-    const showSynthetic = shouldShowSyntheticPnl('ok', realSyntheticPnl)
-    assert.equal(showSynthetic, false) // synthetic never even considered when the real engine says 'ok'
-    const mode = resolvePnlDisplayMode({ isActive, blocked: pnl.unreliable || !pnl.stable, showSyntheticPnl: showSynthetic })
+    const syntheticPnl = syntheticPnlFixture({})
+    const showGlobal = shouldShowSyntheticGlobal('ok', syntheticPnl)
+    const showPerChain = shouldShowSyntheticPerChain('ok', syntheticPnl)
+    assert.equal(showGlobal, false)
+    assert.equal(showPerChain, false)
+    const mode = resolvePnlDisplayMode({ isActive: true, blocked: pnl.unreliable || !pnl.stable, showSyntheticGlobal: showGlobal, showSyntheticPerChain: showPerChain })
     assert.equal(mode, 'real')
   })
 })
 
 describe('resolvePnlDisplayMode — pure combinatorial logic', () => {
   it('inactive (no pnlV2 at all) always wins, regardless of blocked/synthetic', () => {
-    assert.equal(resolvePnlDisplayMode({ isActive: false, blocked: true, showSyntheticPnl: true }), 'inactive')
-    assert.equal(resolvePnlDisplayMode({ isActive: false, blocked: false, showSyntheticPnl: false }), 'inactive')
+    assert.equal(resolvePnlDisplayMode({ isActive: false, blocked: true, showSyntheticGlobal: true, showSyntheticPerChain: true }), 'inactive')
+    assert.equal(resolvePnlDisplayMode({ isActive: false, blocked: false, showSyntheticGlobal: false, showSyntheticPerChain: false }), 'inactive')
   })
 
-  it('synthetic REPLACES unavailable — never both blocked and unavailable when synthetic is available', () => {
-    assert.equal(resolvePnlDisplayMode({ isActive: true, blocked: true, showSyntheticPnl: true }), 'synthetic')
+  it('global synthetic REPLACES unavailable and takes priority over per-chain', () => {
+    assert.equal(resolvePnlDisplayMode({ isActive: true, blocked: true, showSyntheticGlobal: true, showSyntheticPerChain: true }), 'synthetic')
   })
 
-  it('blocked without synthetic -> unavailable', () => {
-    assert.equal(resolvePnlDisplayMode({ isActive: true, blocked: true, showSyntheticPnl: false }), 'unavailable')
+  it('per-chain synthetic REPLACES unavailable when global is not shown', () => {
+    assert.equal(resolvePnlDisplayMode({ isActive: true, blocked: true, showSyntheticGlobal: false, showSyntheticPerChain: true }), 'synthetic_per_chain')
   })
 
-  it('not blocked -> real, regardless of showSyntheticPnl (should never happen together, but real wins if it does)', () => {
-    assert.equal(resolvePnlDisplayMode({ isActive: true, blocked: false, showSyntheticPnl: true }), 'real')
-    assert.equal(resolvePnlDisplayMode({ isActive: true, blocked: false, showSyntheticPnl: false }), 'real')
+  it('blocked without any synthetic -> unavailable', () => {
+    assert.equal(resolvePnlDisplayMode({ isActive: true, blocked: true, showSyntheticGlobal: false, showSyntheticPerChain: false }), 'unavailable')
+  })
+
+  it('not blocked -> real, regardless of synthetic flags (should never happen together, but real wins if it does)', () => {
+    assert.equal(resolvePnlDisplayMode({ isActive: true, blocked: false, showSyntheticGlobal: true, showSyntheticPerChain: true }), 'real')
+    assert.equal(resolvePnlDisplayMode({ isActive: true, blocked: false, showSyntheticGlobal: false, showSyntheticPerChain: false }), 'real')
   })
 })

@@ -37,11 +37,30 @@ export type PoolPriceData = {
 
 export type PoolDataMap = Record<string, PoolPriceData>
 
+// RENAMED, DISCLOSED (this task's own field names, replacing syntheticRealizedPnlUsd/
+// syntheticUnrealizedPnlUsd/syntheticTotalPnlUsd/syntheticRoiPct from the prior version — every
+// consumer, SyntheticPnlBlock.tsx included, updated in the same commit). Fields are now nullable:
+// null means "no evidence to compute this," never a fabricated 0.
+export type SyntheticChainPnl = {
+  chainId: string
+  realizedPnlUsd: number | null
+  unrealizedPnlUsd: number | null
+  totalPnlUsd: number | null
+  roiPercent: number | null
+  costBasisUsd: number | null
+}
+
 export type SyntheticPnlSummary = {
-  syntheticRealizedPnlUsd: number
-  syntheticUnrealizedPnlUsd: number
-  syntheticTotalPnlUsd: number
-  syntheticRoiPct: number | null
+  totalRealizedPnlUsd: number | null
+  totalUnrealizedPnlUsd: number | null
+  totalPnlUsd: number | null
+  roiPercent: number | null
+  costBasisUsd: number | null
+  // PER-CHAIN, ADDITIVE (this task's own request): independently computed from the same trade set
+  // as the totals above — never gated on the totals being non-null, and vice versa. See index.ts's
+  // own header for the real, disclosed limitation on when this can actually diverge from the totals
+  // given how routerDistributorMode is currently computed (globally, not per chain).
+  perChain: SyntheticChainPnl[]
   tradeCount: number
   highConfidenceCount: number
   mediumConfidenceCount: number

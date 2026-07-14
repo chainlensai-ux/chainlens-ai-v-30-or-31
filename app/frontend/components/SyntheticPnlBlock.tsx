@@ -15,10 +15,13 @@ import { fmtSignedUsd } from '@/app/frontend/lib/holdingsHeuristics'
 import { StatusBadge } from './StatusBadge'
 import { MetricCard, toneFromNumber } from './MetricCard'
 
+// FIELD RENAME, DISCLOSED: syntheticRealizedPnlUsd/syntheticUnrealizedPnlUsd/syntheticTotalPnlUsd/
+// syntheticRoiPct -> totalRealizedPnlUsd/totalUnrealizedPnlUsd/totalPnlUsd/roiPercent (this task's
+// own field names, now also nullable — null means no evidence, never a fabricated 0/undefined).
 export function SyntheticPnlBlock({ syntheticPnl }: { syntheticPnl: SyntheticPnlSummary }) {
-  const roiDisplay = syntheticPnl.syntheticRoiPct == null
+  const roiDisplay = syntheticPnl.roiPercent == null
     ? 'No cost-basis evidence'
-    : `${syntheticPnl.syntheticRoiPct >= 0 ? '+' : ''}${syntheticPnl.syntheticRoiPct.toFixed(1)}%`
+    : `${syntheticPnl.roiPercent >= 0 ? '+' : ''}${syntheticPnl.roiPercent.toFixed(1)}%`
 
   return (
     <div style={{ marginBottom: '16px' }}>
@@ -30,10 +33,10 @@ export function SyntheticPnlBlock({ syntheticPnl }: { syntheticPnl: SyntheticPnl
         </span>
       </div>
       <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-        <MetricCard label="Synthetic Realized PnL" value={fmtSignedUsd(syntheticPnl.syntheticRealizedPnlUsd)} tone={toneFromNumber(syntheticPnl.syntheticRealizedPnlUsd)} index={0} />
-        <MetricCard label="Synthetic Unrealized PnL" value={fmtSignedUsd(syntheticPnl.syntheticUnrealizedPnlUsd)} tone={toneFromNumber(syntheticPnl.syntheticUnrealizedPnlUsd)} index={1} />
-        <MetricCard label="Synthetic Total PnL" value={fmtSignedUsd(syntheticPnl.syntheticTotalPnlUsd)} tone={toneFromNumber(syntheticPnl.syntheticTotalPnlUsd)} index={2} />
-        <MetricCard label="Synthetic ROI" value={roiDisplay} tone={toneFromNumber(syntheticPnl.syntheticRoiPct)} index={3} />
+        <MetricCard label="Synthetic Realized PnL" value={fmtSignedUsd(syntheticPnl.totalRealizedPnlUsd)} tone={toneFromNumber(syntheticPnl.totalRealizedPnlUsd)} index={0} />
+        <MetricCard label="Synthetic Unrealized PnL" value={fmtSignedUsd(syntheticPnl.totalUnrealizedPnlUsd)} tone={toneFromNumber(syntheticPnl.totalUnrealizedPnlUsd)} index={1} />
+        <MetricCard label="Synthetic Total PnL" value={fmtSignedUsd(syntheticPnl.totalPnlUsd)} tone={toneFromNumber(syntheticPnl.totalPnlUsd)} index={2} />
+        <MetricCard label="Synthetic ROI" value={roiDisplay} tone={toneFromNumber(syntheticPnl.roiPercent)} index={3} />
       </div>
     </div>
   )
