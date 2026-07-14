@@ -221,13 +221,29 @@ export const PNL_UNAVAILABLE_MESSAGE = 'PnL unavailable due to missing evidence'
 // is now correspondingly rare in practice (only reachable if the pipeline ever supplies a
 // summary object with a genuinely empty/null-only perChain array) — kept for that edge case and for
 // callers/tests that construct a summary by hand.
+// COHERENCE GUARD, DISCLOSED (this task's own "safe against absurd spikes" requirement): a null
+// field is honest ("no evidence") and passes; a genuinely non-finite one (NaN/±Infinity — the same
+// failure mode isStablePnl already guards against for the real pnlV2 source) does not. This never
+// happens in the normal path (computeSyntheticPnl only ever divides by real, positive quantities),
+// but a caller-supplied or malformed summary object should not silently render "Infinity" as a
+// dollar figure.
+function isCoherentNullableNumber(n: number | null): boolean {
+  return n === null || Number.isFinite(n)
+}
+
 export function hasGlobalSynthetic(syntheticPnl: SyntheticPnlSummary | null | undefined): boolean {
-  return syntheticPnl !== null && syntheticPnl !== undefined
+  if (syntheticPnl === null || syntheticPnl === undefined) return false
+  return isCoherentNullableNumber(syntheticPnl.totalRealizedPnlUsd) &&
+    isCoherentNullableNumber(syntheticPnl.totalUnrealizedPnlUsd) &&
+    isCoherentNullableNumber(syntheticPnl.totalPnlUsd)
 }
 
 export function hasPerChainSynthetic(syntheticPnl: SyntheticPnlSummary | null | undefined): boolean {
   return syntheticPnl != null && Array.isArray(syntheticPnl.perChain) && syntheticPnl.perChain.length > 0 &&
-    syntheticPnl.perChain.some((c) => c.totalPnlUsd !== null || c.realizedPnlUsd !== null || c.unrealizedPnlUsd !== null)
+    syntheticPnl.perChain.some((c) =>
+      (c.totalPnlUsd !== null && isCoherentNullableNumber(c.totalPnlUsd)) ||
+      (c.realizedPnlUsd !== null && isCoherentNullableNumber(c.realizedPnlUsd)) ||
+      (c.unrealizedPnlUsd !== null && isCoherentNullableNumber(c.unrealizedPnlUsd)))
 }
 
 // Pure, exported for direct testing — the exact condition for showing the GLOBAL synthetic block.

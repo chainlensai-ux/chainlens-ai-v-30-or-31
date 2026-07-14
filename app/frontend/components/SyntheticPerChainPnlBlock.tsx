@@ -38,6 +38,7 @@ export function SyntheticPerChainPnlBlock({ perChain }: { perChain: SyntheticCha
                 <th style={{ padding: '6px 10px' }}>Synthetic Unrealized PnL</th>
                 <th style={{ padding: '6px 10px' }}>Synthetic Total PnL</th>
                 <th style={{ padding: '6px 10px' }}>Synthetic ROI</th>
+                <th style={{ padding: '6px 10px' }}>Integrity</th>
               </tr>
             </thead>
             <tbody>
@@ -54,6 +55,7 @@ export function SyntheticPerChainPnlBlock({ perChain }: { perChain: SyntheticCha
                     {c.totalPnlUsd == null ? 'No evidence' : fmtSignedUsd(c.totalPnlUsd)}
                   </td>
                   <td style={{ padding: '9px 10px', fontWeight: 700, color: '#e2e8f0' }}>{fmtRoi(c.roiPercent)}</td>
+                  <td style={{ padding: '9px 10px', fontWeight: 700, color: '#e2e8f0' }}>{c.integrity.toUpperCase()}</td>
                 </tr>
               ))}
             </tbody>

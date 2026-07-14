@@ -21,9 +21,34 @@
 
 import type { NormalizedEvent } from '../normalization/types'
 import { reconstructRouterTrades, classifyPoolLiquidity } from '../routerTradeReconstruction/index'
-import type { PoolDataMap, SyntheticTrade, SyntheticTradeConfidence, SyntheticPnlSummary, SyntheticChainPnl } from './types'
+import type { PoolDataMap, SyntheticTrade, SyntheticTradeConfidence, SyntheticPnlSummary, SyntheticChainPnl, SyntheticIntegrity } from './types'
 
-export type { SyntheticTrade, SyntheticTradeConfidence, SyntheticPnlSummary, SyntheticChainPnl, PoolDataMap, PoolPriceData } from './types'
+export type { SyntheticTrade, SyntheticTradeConfidence, SyntheticPnlSummary, SyntheticChainPnl, SyntheticIntegrity, PoolDataMap, PoolPriceData } from './types'
+
+// INTEGRITY, DISCLOSED (this task's own request — "surface LOW/PARTIAL rather than silently
+// masquerading as fully trusted"): a real, pure function of (a) this chain's OWN trade confidence
+// distribution — never a fabricated score — and (b) that chain's real providerStatus, when the
+// caller has one to supply (src/pipeline/index.ts does; unit tests that don't care can omit it and
+// get the confidence-only rule). Ranked so a caller can compare/aggregate with a plain number
+// comparison rather than string equality checks.
+const INTEGRITY_RANK: Record<SyntheticIntegrity, number> = { high: 2, medium: 1, low: 0 }
+
+function baseIntegrityFromConfidence(high: number, medium: number, low: number): SyntheticIntegrity {
+  if (high > 0 && medium === 0 && low === 0) return 'high'
+  if (high === 0 && medium === 0 && low > 0) return 'low'
+  return 'medium'
+}
+
+// Real providerStatus values mirror src/modules/providerFetchWindow/types.ts's ProviderStatus
+// ('ok' | 'partial' | 'provider_unavailable') — see this module's types.ts for why it's duplicated
+// rather than imported. 'partial' downgrades one tier (some real events fetched, just not all);
+// 'provider_unavailable' forces 'low' (whatever trades got reconstructed here came from a chain
+// this scan couldn't actually fetch — never presented as trustworthy regardless of confidence tier).
+function applyProviderDowngrade(level: SyntheticIntegrity, providerStatus: 'ok' | 'partial' | 'provider_unavailable' | undefined): SyntheticIntegrity {
+  if (providerStatus === 'provider_unavailable') return 'low'
+  if (providerStatus === 'partial') return level === 'high' ? 'medium' : 'low'
+  return level
+}
 
 function poolKey(chain: string, token: string): string {
   return `${chain}:${token.toLowerCase()}`
@@ -113,7 +138,16 @@ export function inferSyntheticTrades(
 // (src/pipeline/index.ts) still decides whether to call this function at all — `trades.length === 0`
 // there means literally nothing to reconstruct, which is the one case this module has no data to
 // report from, not a case this function itself special-cases to null.
-export function computeSyntheticPnl(trades: readonly SyntheticTrade[], currentPrices: PoolDataMap): SyntheticPnlSummary {
+export function computeSyntheticPnl(
+  trades: readonly SyntheticTrade[],
+  currentPrices: PoolDataMap,
+  // ADDITIVE, OPTIONAL, DISCLOSED (this task's own "partial provider data" request): real
+  // providerStatus per chain, e.g. { base: 'partial', eth: 'ok' } from the pipeline's own
+  // providerResults. Omitted/absent chains fall back to the confidence-only integrity rule (never
+  // treated as a failure — a caller with no such data simply gets the same behavior as before this
+  // field existed).
+  chainProviderStatus: Readonly<Record<string, 'ok' | 'partial' | 'provider_unavailable'>> = {},
+): SyntheticPnlSummary {
   const ordered = [...trades].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
 
   const positions = new Map<string, { qty: number; costUsd: number; chain: string }>()
@@ -121,6 +155,12 @@ export function computeSyntheticPnl(trades: readonly SyntheticTrade[], currentPr
   let totalCostBasisEverUsd = 0
   const realizedByChain = new Map<string, number>()
   const costBasisByChain = new Map<string, number>()
+  const confidenceCountsByChain = new Map<string, { high: number; medium: number; low: number }>()
+  for (const trade of trades) {
+    const counts = confidenceCountsByChain.get(trade.chain) ?? { high: 0, medium: 0, low: 0 }
+    counts[trade.confidence] += 1
+    confidenceCountsByChain.set(trade.chain, counts)
+  }
 
   const addToChain = (map: Map<string, number>, chain: string, delta: number) => {
     map.set(chain, (map.get(chain) ?? 0) + delta)
@@ -181,6 +221,11 @@ export function computeSyntheticPnl(trades: readonly SyntheticTrade[], currentPr
     const chainUnrealized = unrealizedByChain.get(chainId) ?? 0
     const chainCostBasis = costBasisByChain.get(chainId) ?? 0
     const chainTotal = chainRealized + chainUnrealized
+    const chainCounts = confidenceCountsByChain.get(chainId) ?? { high: 0, medium: 0, low: 0 }
+    const chainIntegrity = applyProviderDowngrade(
+      baseIntegrityFromConfidence(chainCounts.high, chainCounts.medium, chainCounts.low),
+      chainProviderStatus[chainId],
+    )
     return {
       chainId,
       realizedPnlUsd: chainRealized,
@@ -188,8 +233,17 @@ export function computeSyntheticPnl(trades: readonly SyntheticTrade[], currentPr
       totalPnlUsd: chainTotal,
       roiPercent: chainCostBasis > 0 ? (chainTotal / chainCostBasis) * 100 : null,
       costBasisUsd: chainCostBasis,
+      integrity: chainIntegrity,
     }
   })
+
+  // GLOBAL INTEGRITY, DISCLOSED: the worst of the perChain integrities actually present — never a
+  // separately-derived number, so it can't disagree with what the per-chain breakdown itself shows.
+  // 'low' when there are no trades/chains at all (nothing to be confident about, not a fabricated
+  // default of 'high').
+  const integrity: SyntheticIntegrity = perChain.length === 0
+    ? 'low'
+    : perChain.reduce<SyntheticIntegrity>((worst, c) => (INTEGRITY_RANK[c.integrity] < INTEGRITY_RANK[worst] ? c.integrity : worst), 'high')
 
   return {
     totalRealizedPnlUsd,
@@ -202,5 +256,6 @@ export function computeSyntheticPnl(trades: readonly SyntheticTrade[], currentPr
     highConfidenceCount: trades.filter((t) => t.confidence === 'high').length,
     mediumConfidenceCount: trades.filter((t) => t.confidence === 'medium').length,
     lowConfidenceCount: trades.filter((t) => t.confidence === 'low').length,
+    integrity,
   }
 }

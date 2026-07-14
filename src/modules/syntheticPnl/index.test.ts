@@ -263,3 +263,68 @@ describe('inferSyntheticTrades — Nansen-style always-on: missing costUsd/proce
     assert.equal(trades.length, 0)
   })
 })
+
+describe('computeSyntheticPnl — integrity, partial-provider-data handling (this task\'s own request)', () => {
+  it('all-high-confidence trades on a fully-fetched chain -> integrity high', () => {
+    const trades = [
+      { chain: 'base', txHash: '0xtx1', timestamp: '2024-01-01T00:00:00Z', tokenIn: '0xtokenA', tokenOut: '0xtokenB', amountIn: 100, amountOut: 50, confidence: 'high' as const, tokenInPriceUsd: 1, tokenOutPriceUsd: 1 },
+    ]
+    const result = computeSyntheticPnl(trades, {}, { base: 'ok' })
+    assert.equal(result.integrity, 'high')
+    assert.equal(result.perChain[0].integrity, 'high')
+  })
+
+  it('a chain with providerStatus partial downgrades that chain\'s integrity even with high-confidence trades', () => {
+    const trades = [
+      { chain: 'base', txHash: '0xtx1', timestamp: '2024-01-01T00:00:00Z', tokenIn: '0xtokenA', tokenOut: '0xtokenB', amountIn: 100, amountOut: 50, confidence: 'high' as const, tokenInPriceUsd: 1, tokenOutPriceUsd: 1 },
+      { chain: 'eth', txHash: '0xtx2', timestamp: '2024-01-02T00:00:00Z', tokenIn: '0xtokenC', tokenOut: '0xtokenD', amountIn: 1, amountOut: 1, confidence: 'high' as const, tokenInPriceUsd: 1, tokenOutPriceUsd: 1 },
+    ]
+    // base's GoldRush fetch timed out (partial), eth fetched cleanly (ok) — matches this task's own log pattern.
+    const result = computeSyntheticPnl(trades, {}, { base: 'partial', eth: 'ok' })
+    const base = result.perChain.find((c) => c.chainId === 'base')!
+    const eth = result.perChain.find((c) => c.chainId === 'eth')!
+    assert.equal(base.integrity, 'medium') // high confidence, downgraded one tier by partial fetch
+    assert.equal(eth.integrity, 'high')
+    // Global integrity is the worst of the two chains present — never independently computed.
+    assert.equal(result.integrity, 'medium')
+  })
+
+  it('provider_unavailable forces that chain to low integrity regardless of trade confidence', () => {
+    const trades = [
+      { chain: 'base', txHash: '0xtx1', timestamp: '2024-01-01T00:00:00Z', tokenIn: '0xtokenA', tokenOut: '0xtokenB', amountIn: 100, amountOut: 50, confidence: 'high' as const, tokenInPriceUsd: 1, tokenOutPriceUsd: 1 },
+    ]
+    const result = computeSyntheticPnl(trades, {}, { base: 'provider_unavailable' })
+    assert.equal(result.perChain[0].integrity, 'low')
+    assert.equal(result.integrity, 'low')
+  })
+
+  it('omitting chainProviderStatus entirely falls back to confidence-only integrity (backward compatible)', () => {
+    const trades = [
+      { chain: 'base', txHash: '0xtx1', timestamp: '2024-01-01T00:00:00Z', tokenIn: '0xtokenA', tokenOut: '0xtokenB', amountIn: 100, amountOut: 50, confidence: 'low' as const, tokenInPriceUsd: 1, tokenOutPriceUsd: 1 },
+    ]
+    const result = computeSyntheticPnl(trades, {})
+    assert.equal(result.perChain[0].integrity, 'low')
+    assert.equal(result.integrity, 'low')
+  })
+
+  it('no trades at all -> integrity low, never a fabricated high/medium default', () => {
+    const result = computeSyntheticPnl([], {})
+    assert.equal(result.integrity, 'low')
+    assert.equal(result.perChain.length, 0)
+  })
+
+  it('one chain partial, another fully ok -> per-chain integrity diverges instead of one bad chain sinking a wallet-wide flag to the same value everywhere', () => {
+    const trades = [
+      { chain: 'base', txHash: '0xtx1', timestamp: '2024-01-01T00:00:00Z', tokenIn: '0xtokenA', tokenOut: '0xtokenB', amountIn: 100, amountOut: 50, confidence: 'high' as const, tokenInPriceUsd: 1, tokenOutPriceUsd: 1 },
+      { chain: 'eth', txHash: '0xtx2', timestamp: '2024-01-02T00:00:00Z', tokenIn: '0xtokenC', tokenOut: '0xtokenD', amountIn: 1, amountOut: 1, confidence: 'high' as const, tokenInPriceUsd: 1, tokenOutPriceUsd: 1 },
+    ]
+    const result = computeSyntheticPnl(trades, {}, { base: 'partial', eth: 'ok' })
+    const base = result.perChain.find((c) => c.chainId === 'base')!
+    const eth = result.perChain.find((c) => c.chainId === 'eth')!
+    assert.notEqual(base.integrity, eth.integrity)
+    // Real numbers (realized/unrealized/cost basis) are UNAFFECTED by integrity — never zeroed or
+    // hidden by this flag; it is a label, not a gate, per this task's own "surface, don't hide" rule.
+    assert.equal(typeof base.costBasisUsd, 'number')
+    assert.ok(base.costBasisUsd! > 0)
+  })
+})

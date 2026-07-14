@@ -15,6 +15,16 @@ import { fmtSignedUsd } from '@/app/frontend/lib/holdingsHeuristics'
 import { StatusBadge } from './StatusBadge'
 import { MetricCard, toneFromNumber } from './MetricCard'
 
+// INTEGRITY BADGE, DISCLOSED (this task's own request): computeSyntheticPnl's real, disclosed
+// integrity signal (confidence distribution + real providerStatus downgrade, see that module's own
+// header) — never a separate UI-only guess. Shown alongside the existing "not engine verified"
+// badge, never replacing it.
+function integrityTone(integrity: SyntheticPnlSummary['integrity']): 'success' | 'warning' | 'neutral' {
+  if (integrity === 'high') return 'success'
+  if (integrity === 'medium') return 'warning'
+  return 'neutral'
+}
+
 // FIELD RENAME, DISCLOSED: syntheticRealizedPnlUsd/syntheticUnrealizedPnlUsd/syntheticTotalPnlUsd/
 // syntheticRoiPct -> totalRealizedPnlUsd/totalUnrealizedPnlUsd/totalPnlUsd/roiPercent (this task's
 // own field names, now also nullable — null means no evidence, never a fabricated 0/undefined).
@@ -27,6 +37,7 @@ export function SyntheticPnlBlock({ syntheticPnl }: { syntheticPnl: SyntheticPnl
     <div style={{ marginBottom: '16px' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '10px', flexWrap: 'wrap' }}>
         <StatusBadge label="SYNTHETIC · INFERRED · NOT ENGINE VERIFIED" tone="warning" glow />
+        <StatusBadge label={`Integrity: ${syntheticPnl.integrity.toUpperCase()}`} tone={integrityTone(syntheticPnl.integrity)} />
         <span style={{ fontSize: '11px', color: 'rgba(148,163,184,0.6)' }}>
           {syntheticPnl.tradeCount} inferred trade{syntheticPnl.tradeCount === 1 ? '' : 's'}
           {' '}({syntheticPnl.highConfidenceCount} high / {syntheticPnl.mediumConfidenceCount} medium / {syntheticPnl.lowConfidenceCount} low confidence)

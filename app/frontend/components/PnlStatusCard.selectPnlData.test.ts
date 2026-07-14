@@ -220,16 +220,17 @@ function syntheticPnlFixture(overrides: Partial<{
   totalPnlUsd: number | null
   roiPercent: number | null
   costBasisUsd: number | null
-  perChain: Array<{ chainId: string; realizedPnlUsd: number | null; unrealizedPnlUsd: number | null; totalPnlUsd: number | null; roiPercent: number | null; costBasisUsd: number | null }>
+  perChain: Array<{ chainId: string; realizedPnlUsd: number | null; unrealizedPnlUsd: number | null; totalPnlUsd: number | null; roiPercent: number | null; costBasisUsd: number | null; integrity: 'high' | 'medium' | 'low' }>
   tradeCount: number
   highConfidenceCount: number
   mediumConfidenceCount: number
   lowConfidenceCount: number
+  integrity: 'high' | 'medium' | 'low'
 }>) {
   return {
     totalRealizedPnlUsd: 42, totalUnrealizedPnlUsd: -7, totalPnlUsd: 35, roiPercent: 12, costBasisUsd: 300,
-    perChain: [{ chainId: 'base', realizedPnlUsd: 42, unrealizedPnlUsd: -7, totalPnlUsd: 35, roiPercent: 12, costBasisUsd: 300 }],
-    tradeCount: 5, highConfidenceCount: 3, mediumConfidenceCount: 2, lowConfidenceCount: 0,
+    perChain: [{ chainId: 'base', realizedPnlUsd: 42, unrealizedPnlUsd: -7, totalPnlUsd: 35, roiPercent: 12, costBasisUsd: 300, integrity: 'high' as const }],
+    tradeCount: 5, highConfidenceCount: 3, mediumConfidenceCount: 2, lowConfidenceCount: 0, integrity: 'high' as const,
     ...overrides,
   }
 }
@@ -252,7 +253,7 @@ describe('hasGlobalSynthetic / hasPerChainSynthetic / shouldShowSyntheticGlobal 
     assert.equal(hasPerChainSynthetic(syntheticPnlFixture({ totalPnlUsd: null })), true)
     assert.equal(hasPerChainSynthetic(syntheticPnlFixture({
       totalPnlUsd: null,
-      perChain: [{ chainId: 'base', realizedPnlUsd: null, unrealizedPnlUsd: null, totalPnlUsd: null, roiPercent: null, costBasisUsd: null }],
+      perChain: [{ chainId: 'base', realizedPnlUsd: null, unrealizedPnlUsd: null, totalPnlUsd: null, roiPercent: null, costBasisUsd: null, integrity: 'low' as const }],
     })), false)
     assert.equal(hasPerChainSynthetic(syntheticPnlFixture({ totalPnlUsd: null, perChain: [] })), false)
     assert.equal(hasPerChainSynthetic(null), false)
@@ -270,6 +271,30 @@ describe('hasGlobalSynthetic / hasPerChainSynthetic / shouldShowSyntheticGlobal 
     assert.equal(shouldShowSyntheticPerChain('unavailable', syntheticPnlFixture({})), false)
     assert.equal(shouldShowSyntheticPerChain('ok', syntheticPnlFixture({ totalPnlUsd: null })), false)
     assert.equal(shouldShowSyntheticPerChain('unavailable', null), false) // hasGlobalSynthetic(null) is false, but hasPerChainSynthetic(null) is also false
+  })
+
+  // COHERENCE GUARD, DISCLOSED (this task's own "safe against absurd spikes" requirement): a
+  // non-finite total (NaN/Infinity — never produced by the real computeSyntheticPnl, but a
+  // malformed/hand-built summary shouldn't render "Infinity" as a dollar figure) makes
+  // hasGlobalSynthetic false, falling back to per-chain (or unavailable) instead.
+  it('hasGlobalSynthetic is false when a total is non-finite (NaN/Infinity), even though the object exists', () => {
+    assert.equal(hasGlobalSynthetic(syntheticPnlFixture({ totalPnlUsd: Infinity })), false)
+    assert.equal(hasGlobalSynthetic(syntheticPnlFixture({ totalRealizedPnlUsd: NaN })), false)
+    assert.equal(hasGlobalSynthetic(syntheticPnlFixture({ totalUnrealizedPnlUsd: -Infinity })), false)
+    // null remains a valid "no evidence" value, distinct from non-finite.
+    assert.equal(hasGlobalSynthetic(syntheticPnlFixture({ totalPnlUsd: null })), true)
+  })
+
+  it('hasPerChainSynthetic ignores a chain whose only real-looking field is non-finite', () => {
+    assert.equal(hasPerChainSynthetic(syntheticPnlFixture({
+      perChain: [{ chainId: 'base', realizedPnlUsd: Infinity, unrealizedPnlUsd: null, totalPnlUsd: null, roiPercent: null, costBasisUsd: null, integrity: 'low' }],
+    })), false)
+  })
+
+  it('a non-finite global total correctly falls back to a coherent per-chain summary', () => {
+    const syntheticPnl = syntheticPnlFixture({ totalPnlUsd: Infinity })
+    assert.equal(shouldShowSyntheticGlobal('unavailable', syntheticPnl), false)
+    assert.equal(shouldShowSyntheticPerChain('unavailable', syntheticPnl), true)
   })
 })
 

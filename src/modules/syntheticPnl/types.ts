@@ -6,6 +6,12 @@
 
 export type SyntheticTradeConfidence = 'high' | 'medium' | 'low'
 
+// MIRRORS src/modules/providerFetchWindow/types.ts's ProviderStatus ('ok' | 'partial' |
+// 'provider_unavailable'), duplicated intentionally rather than imported: this module stays
+// decoupled from the pipeline/provider-fetch layer (UI-display-only, see index.ts's own header),
+// and the caller (src/pipeline/index.ts) already has the real value to pass in.
+export type SyntheticIntegrity = 'high' | 'medium' | 'low'
+
 export type SyntheticTrade = {
   chain: string
   txHash: string
@@ -48,6 +54,12 @@ export type SyntheticChainPnl = {
   totalPnlUsd: number | null
   roiPercent: number | null
   costBasisUsd: number | null
+  // ADDITIVE, DISCLOSED: derived purely from this chain's OWN trade confidence distribution
+  // (never a fabricated score) and, when the caller supplies it, downgraded further by that
+  // chain's real providerStatus ('partial'/'provider_unavailable' fetches produce fewer/no real
+  // events, so any trades that DID get reconstructed deserve a lower confidence label, not a
+  // silent "high" that hides the gap). See computeSyntheticPnl's own header for the exact rule.
+  integrity: SyntheticIntegrity
 }
 
 export type SyntheticPnlSummary = {
@@ -65,4 +77,9 @@ export type SyntheticPnlSummary = {
   highConfidenceCount: number
   mediumConfidenceCount: number
   lowConfidenceCount: number
+  // ADDITIVE, DISCLOSED: the worst (lowest) of the perChain integrities present — never computed
+  // independently of them, so it can't silently disagree with the per-chain breakdown a caller
+  // could otherwise inspect. 'low' when there is no perChain data at all (nothing to be confident
+  // about). See computeSyntheticPnl's own header.
+  integrity: SyntheticIntegrity
 }

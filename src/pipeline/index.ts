@@ -1458,7 +1458,16 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   recordSyntheticPoolPrice(displayBuyEntries, pricingAtTime.costUsd)
   recordSyntheticPoolPrice(sellTimelineV2.entries, pricingAtTime.proceedsUsd)
   const syntheticTrades = inferSyntheticTrades(normalizedEvents, KNOWN_DEX_ROUTER_ADDRESSES, syntheticPoolData, routerDistributorMode)
-  const syntheticPnl = syntheticTrades.length > 0 ? computeSyntheticPnl(syntheticTrades, syntheticPoolData) : null
+  // PARTIAL-PROVIDER-DATA INTEGRITY, DISCLOSED (this task's own request): real per-chain
+  // providerStatus from providerResults (already computed above for providerDiagnostics/
+  // chainSelection) — no new fetch, just reused. Lets computeSyntheticPnl mark a chain's synthetic
+  // PnL as lower-integrity when its own fetch was partial/unavailable, rather than presenting a
+  // GoldRush-timeout chain's thin trade sample with the same confidence as a fully-fetched one.
+  const syntheticChainProviderStatus: Record<string, 'ok' | 'partial' | 'provider_unavailable'> = {}
+  for (const r of providerResults) {
+    syntheticChainProviderStatus[r.chain] = r.providerStatus
+  }
+  const syntheticPnl = syntheticTrades.length > 0 ? computeSyntheticPnl(syntheticTrades, syntheticPoolData, syntheticChainProviderStatus) : null
   if (process.env.NODE_ENV !== 'production') {
     // eslint-disable-next-line no-console
     console.warn('[pipeline] syntheticPnl (dev-only)', {
