@@ -235,9 +235,15 @@ function syntheticPnlFixture(overrides: Partial<{
 }
 
 describe('hasGlobalSynthetic / hasPerChainSynthetic / shouldShowSyntheticGlobal / shouldShowSyntheticPerChain', () => {
-  it('hasGlobalSynthetic is true only when totalPnlUsd is a real number', () => {
+  // RELAXED, DISCLOSED (this task's own request): hasGlobalSynthetic no longer requires
+  // totalPnlUsd !== null — computeSyntheticPnl (src/modules/syntheticPnl) never returns a null
+  // totalPnlUsd anymore (missing cost basis/price contributes a real 0), so the object's mere
+  // presence is now sufficient. A hand-constructed fixture with totalPnlUsd: null (not something
+  // the real computeSyntheticPnl produces, but still a valid SyntheticPnlSummary shape) is STILL
+  // "present" and therefore still shown — this is the intended, disclosed relaxation.
+  it('hasGlobalSynthetic is true whenever a real SyntheticPnlSummary object exists, regardless of its field values', () => {
     assert.equal(hasGlobalSynthetic(syntheticPnlFixture({})), true)
-    assert.equal(hasGlobalSynthetic(syntheticPnlFixture({ totalPnlUsd: null })), false)
+    assert.equal(hasGlobalSynthetic(syntheticPnlFixture({ totalPnlUsd: null })), true)
     assert.equal(hasGlobalSynthetic(null), false)
     assert.equal(hasGlobalSynthetic(undefined), false)
   })
@@ -252,17 +258,18 @@ describe('hasGlobalSynthetic / hasPerChainSynthetic / shouldShowSyntheticGlobal 
     assert.equal(hasPerChainSynthetic(null), false)
   })
 
-  it("shouldShowSyntheticGlobal requires publicPnlStatus === 'unavailable' AND hasGlobalSynthetic", () => {
+  it("shouldShowSyntheticGlobal requires publicPnlStatus === 'unavailable' AND a real synthetic object (relaxed: any object, not just non-null totals)", () => {
     assert.equal(shouldShowSyntheticGlobal('unavailable', syntheticPnlFixture({})), true)
     assert.equal(shouldShowSyntheticGlobal('ok', syntheticPnlFixture({})), false)
-    assert.equal(shouldShowSyntheticGlobal('unavailable', syntheticPnlFixture({ totalPnlUsd: null })), false)
+    assert.equal(shouldShowSyntheticGlobal('unavailable', syntheticPnlFixture({ totalPnlUsd: null })), true)
+    assert.equal(shouldShowSyntheticGlobal('unavailable', null), false)
   })
 
-  it('shouldShowSyntheticPerChain requires global to be UNAVAILABLE (not just present) AND per-chain evidence', () => {
-    assert.equal(shouldShowSyntheticPerChain('unavailable', syntheticPnlFixture({ totalPnlUsd: null })), true)
-    assert.equal(shouldShowSyntheticPerChain('unavailable', syntheticPnlFixture({})), false) // global already available -> per-chain fallback not needed
+  it('shouldShowSyntheticPerChain is now rare: only reachable when syntheticPnl itself is null/undefined (global always wins otherwise)', () => {
+    assert.equal(shouldShowSyntheticPerChain('unavailable', syntheticPnlFixture({ totalPnlUsd: null })), false) // global object present -> global wins even with null totals
+    assert.equal(shouldShowSyntheticPerChain('unavailable', syntheticPnlFixture({})), false)
     assert.equal(shouldShowSyntheticPerChain('ok', syntheticPnlFixture({ totalPnlUsd: null })), false)
-    assert.equal(shouldShowSyntheticPerChain('unavailable', syntheticPnlFixture({ totalPnlUsd: null, perChain: [] })), false)
+    assert.equal(shouldShowSyntheticPerChain('unavailable', null), false) // hasGlobalSynthetic(null) is false, but hasPerChainSynthetic(null) is also false
   })
 })
 
@@ -279,34 +286,40 @@ describe('PnlStatusCard end-to-end display mode — Cases A/B/C/D', () => {
     assert.equal(mode, 'synthetic')
   })
 
-  it("Case B: publicPnlStatus = 'unavailable', global synthetic null, perChain synthetic present -> per-chain synthetic block renders", () => {
+  // RELAXED, DISCLOSED (this task's own request, Step 4: "per-chain synthetic remains fallback
+  // only when global synthetic is null (should now be rare)"): with hasGlobalSynthetic relaxed to
+  // "the object exists" (see that function's own header), shouldShowSyntheticPerChain is now
+  // effectively unreachable via the gating functions in practice — the ONLY way hasGlobalSynthetic
+  // is false is when syntheticPnl itself is null/undefined, and hasPerChainSynthetic requires the
+  // object to be non-null too. Case B is therefore tested directly against resolvePnlDisplayMode's
+  // own pure logic (proving the 'synthetic_per_chain' mode itself still works correctly if the
+  // pipeline or a future caller ever produces that combination), rather than via the real gating
+  // functions, which correctly no longer reach it given today's relaxed rules.
+  it("Case B (mode-level): resolvePnlDisplayMode still supports 'synthetic_per_chain' as a mode, even though shouldShowSyntheticGlobal now makes it rare in practice", () => {
     const pnl = selectVerifiedPnlData(pnlV2({ realizedPnlUsd: 100, unrealizedPnlUsd: 50 }), 'unavailable')
-    const syntheticPnl = syntheticPnlFixture({ totalRealizedPnlUsd: null, totalUnrealizedPnlUsd: null, totalPnlUsd: null, roiPercent: null })
     const mode = resolvePnlDisplayMode({
       isActive: true,
       blocked: pnl.unreliable || !pnl.stable,
-      showSyntheticGlobal: shouldShowSyntheticGlobal('unavailable', syntheticPnl),
-      showSyntheticPerChain: shouldShowSyntheticPerChain('unavailable', syntheticPnl),
+      showSyntheticGlobal: false, // hypothetical: global unavailable
+      showSyntheticPerChain: true, // hypothetical: per-chain evidence exists
     })
     assert.equal(mode, 'synthetic_per_chain')
   })
 
-  it("Case C: publicPnlStatus = 'unavailable', syntheticPnl missing or empty -> unavailable block renders", () => {
+  it("Case B (gating-level, this task's own relaxation): a real SyntheticPnlSummary object with null totals now shows GLOBAL, not per-chain (global always wins when the object exists)", () => {
+    const syntheticPnl = syntheticPnlFixture({ totalRealizedPnlUsd: null, totalUnrealizedPnlUsd: null, totalPnlUsd: null, roiPercent: null })
+    assert.equal(shouldShowSyntheticGlobal('unavailable', syntheticPnl), true)
+    assert.equal(shouldShowSyntheticPerChain('unavailable', syntheticPnl), false)
+  })
+
+  it("Case C: publicPnlStatus = 'unavailable', syntheticPnl missing (null) -> unavailable block renders", () => {
     const pnl = selectVerifiedPnlData(pnlV2({ realizedPnlUsd: 100, unrealizedPnlUsd: 50 }), 'unavailable')
-    const mode1 = resolvePnlDisplayMode({
+    const mode = resolvePnlDisplayMode({
       isActive: true, blocked: pnl.unreliable || !pnl.stable,
       showSyntheticGlobal: shouldShowSyntheticGlobal('unavailable', null),
       showSyntheticPerChain: shouldShowSyntheticPerChain('unavailable', null),
     })
-    assert.equal(mode1, 'unavailable')
-
-    const emptySynthetic = syntheticPnlFixture({ totalPnlUsd: null, perChain: [] })
-    const mode2 = resolvePnlDisplayMode({
-      isActive: true, blocked: pnl.unreliable || !pnl.stable,
-      showSyntheticGlobal: shouldShowSyntheticGlobal('unavailable', emptySynthetic),
-      showSyntheticPerChain: shouldShowSyntheticPerChain('unavailable', emptySynthetic),
-    })
-    assert.equal(mode2, 'unavailable')
+    assert.equal(mode, 'unavailable')
   })
 
   it("Case D: publicPnlStatus = 'ok' -> real engine PnL renders, both synthetic blocks hidden", () => {

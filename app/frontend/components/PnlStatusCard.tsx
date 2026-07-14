@@ -212,15 +212,17 @@ export function shouldShowLimitedSampleBadge(publicPnlStatus: PublicPnlStatus | 
 // string rather than a substring guess.
 export const PNL_UNAVAILABLE_MESSAGE = 'PnL unavailable due to missing evidence'
 
-// GLOBAL-VS-PER-CHAIN SYNTHETIC GATING, DISCLOSED (this task's own spec, field names adapted to
-// this task's own rename — totalPnlUsd/realizedPnlUsd/unrealizedPnlUsd, not the prior
-// syntheticTotalPnlUsd/etc.): `hasGlobalSynthetic` requires the wallet-wide total to carry a real
-// number; `hasPerChainSynthetic` requires at least one chain entry to carry ANY real number (total,
-// realized, or unrealized) even when the wallet-wide total itself is null. These two are checked in
-// this exact priority order below — per-chain is only ever a FALLBACK when the global number isn't
-// available, never shown alongside it.
+// GLOBAL-VS-PER-CHAIN SYNTHETIC GATING, DISCLOSED. RELAXED, DISCLOSED (this task's own request —
+// Nansen-style "always show a number when the real engine can't"): `hasGlobalSynthetic` previously
+// additionally required `syntheticPnl.totalPnlUsd !== null` — since computeSyntheticPnl (see that
+// module's own header) NEVER returns a null totalPnlUsd anymore (missing cost basis/price
+// contributes a real 0, never null), that extra check was already almost always true and is now
+// removed entirely: any real, computed SyntheticPnlSummary object is sufficient. `hasPerChainSynthetic`
+// is now correspondingly rare in practice (only reachable if the pipeline ever supplies a
+// summary object with a genuinely empty/null-only perChain array) — kept for that edge case and for
+// callers/tests that construct a summary by hand.
 export function hasGlobalSynthetic(syntheticPnl: SyntheticPnlSummary | null | undefined): boolean {
-  return syntheticPnl != null && syntheticPnl.totalPnlUsd !== null
+  return syntheticPnl !== null && syntheticPnl !== undefined
 }
 
 export function hasPerChainSynthetic(syntheticPnl: SyntheticPnlSummary | null | undefined): boolean {

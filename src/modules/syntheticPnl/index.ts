@@ -38,13 +38,26 @@ function poolKey(chain: string, token: string): string {
 //     just a shallower, less reliable market to price it against).
 //   - both legs' pools are 'real' -> the original high/medium confidence from
 //     reconstructRouterTrades is kept unchanged.
+// RELAXED GATE, DISCLOSED (this task's own request — "syntheticPnl MUST be returned even when
+// routerDistributorMode is false"): routerTradeReconstruction.reconstructRouterTrades has its own
+// `routerDistributorMode` gate (a hard no-op when false) — correct and UNCHANGED for its real
+// caller, distributorRecovery, which is specifically about detecting/observing the heavy-distributor
+// pattern. Synthetic PnL has a different job (Nansen-style "always show a number when the real
+// engine can't"), so it always asks reconstructRouterTrades to attempt pairing (passes `true`
+// unconditionally) regardless of the `routerDistributorMode` parameter received here — that
+// parameter is kept only so callers/logs still know whether THIS wallet matched the heavy-
+// distributor pattern, never as a gate on whether reconstruction runs. Every trade this still
+// produces is exactly as real as before (same-tx pairing, same confidence tiers, same pool-liquidity
+// exclusion) — relaxing this gate does not relax any of the "never fabricate" rules, only whether
+// reconstruction is ATTEMPTED for a lighter-activity wallet.
 export function inferSyntheticTrades(
   normalizedEvents: readonly NormalizedEvent[],
   knownDexRouterAddresses: ReadonlySet<string>,
   poolData: PoolDataMap,
   routerDistributorMode: boolean,
 ): SyntheticTrade[] {
-  const { candidateTrades } = reconstructRouterTrades(normalizedEvents, knownDexRouterAddresses, routerDistributorMode)
+  void routerDistributorMode // no longer gates reconstruction — see this function's own header
+  const { candidateTrades } = reconstructRouterTrades(normalizedEvents, knownDexRouterAddresses, true)
 
   const result: SyntheticTrade[] = []
   for (const trade of candidateTrades) {
@@ -87,18 +100,19 @@ export function inferSyntheticTrades(
 // a fabricated cost. Same "unknown cost basis is excluded, never assumed zero" principle the real
 // engines already apply.
 //
-// PER-CHAIN, DISCLOSED (this task's own request): realized/unrealized/cost-basis are accumulated
-// BOTH globally and per-chain from the exact same trade-by-trade pass — never a second, divergent
-// computation. `perChain` is populated independently of whether the global totals end up non-null;
-// nothing here requires one to gate the other. REAL LIMITATION, DISCLOSED: in the current pipeline
-// wiring (src/pipeline/index.ts), `routerDistributorMode` — the gate that decides whether
-// inferSyntheticTrades runs AT ALL — is computed GLOBALLY across every chain combined, not per
-// chain. So today, a wallet whose router activity is concentrated on one chain (e.g. all on Base)
-// but doesn't clear the global threshold gets NO synthetic trades on any chain, `perChain` included
-// — this module can only report per-chain figures for trades it was actually given; it cannot
-// itself decide to reconstruct Base in isolation when the caller never invoked
-// inferSyntheticTrades. Fixing that would mean changing the pipeline's routerDistributorMode
-// semantics, out of scope for this task (which only asked for the type/computation/UI plumbing).
+// PER-CHAIN, DISCLOSED: realized/unrealized/cost-basis are accumulated BOTH globally and per-chain
+// from the exact same trade-by-trade pass — never a second, divergent computation. `perChain` is
+// populated independently of whether the global totals end up "empty" (0 trades); nothing here
+// requires one to gate the other.
+//
+// NEVER RETURNS NULL FIELDS, DISCLOSED (this task's own relaxation request): every numeric field
+// below is a real, computed number — missing cost basis or missing price simply contributes 0 (see
+// the per-leg comments below), never a fabricated non-zero value and never a null placeholder.
+// `roiPercent` (global and per-chain) is the one exception — null ONLY when the relevant cost basis
+// is exactly 0 (an honest "can't compute a percentage of zero," not a confidence signal). The caller
+// (src/pipeline/index.ts) still decides whether to call this function at all — `trades.length === 0`
+// there means literally nothing to reconstruct, which is the one case this module has no data to
+// report from, not a case this function itself special-cases to null.
 export function computeSyntheticPnl(trades: readonly SyntheticTrade[], currentPrices: PoolDataMap): SyntheticPnlSummary {
   const ordered = [...trades].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
 
