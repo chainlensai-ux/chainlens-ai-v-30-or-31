@@ -16,7 +16,7 @@ import { normalizeEvents } from '../modules/normalization/index'
 import { buildCounterpartyStats, classifyRouterLikeEvent, recordRouterCandidate } from './routerDiscovery'
 import { analyzeDistributorRouterFlows } from '../modules/distributorRecovery/index'
 import { reconstructRouterTrades } from '../modules/routerTradeReconstruction/index'
-import { inferSyntheticTrades, computeSyntheticPnl, buildSyntheticPnlLogSummary } from '../modules/syntheticPnl/index'
+import { inferSyntheticTrades, computeSyntheticPnl, logSyntheticPnlSummary } from '../modules/syntheticPnl/index'
 import type { PoolDataMap as SyntheticPoolDataMap } from '../modules/syntheticPnl/index'
 import { adaptPnlSummaryForUi } from './pnlSummaryAdapter'
 import { buildChainAwareHistoricalPriceSource, pricingRouteLog } from './pricingAtTimeAdapter'
@@ -1489,17 +1489,9 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   await recordSyntheticPoolPrice(sellTimelineV2.entries, pricingAtTime.proceedsUsd)
   const syntheticTrades = inferSyntheticTrades(normalizedEvents, KNOWN_DEX_ROUTER_ADDRESSES, syntheticPoolData, routerDistributorMode)
   const syntheticPnl = syntheticTrades.length > 0 ? computeSyntheticPnl(syntheticTrades, syntheticPoolData) : null
-  if (process.env.NODE_ENV !== 'production') {
-    // eslint-disable-next-line no-console
-    console.warn('[pipeline] syntheticPnl (dev-only)', {
-      syntheticPnlComputed: syntheticPnl !== null,
-      syntheticTradeCount: syntheticTrades.length,
-      syntheticHighConfidenceCount: syntheticTrades.filter((t) => t.confidence === 'high').length,
-      syntheticMediumConfidenceCount: syntheticTrades.filter((t) => t.confidence === 'medium').length,
-      syntheticLowConfidenceCount: syntheticTrades.filter((t) => t.confidence === 'low').length,
-      ...buildSyntheticPnlLogSummary(syntheticPnl),
-    })
-  }
+  // Final observability only: emitted after price resolution, metadata/attribution propagation,
+  // and computeSyntheticPnl's coverage and integrity scoring. It never feeds either PnL engine.
+  logSyntheticPnlSummary(syntheticPnl)
 
   // 7. windowCoverage — pure arithmetic derived from the fixed fetch window and recovery pages used.
   const windowCoverage = computeWindowCoverage(PROVIDER_FETCH_WINDOW_DAYS_USED, recoveryPolicy.totalPagesUsedThisWallet)

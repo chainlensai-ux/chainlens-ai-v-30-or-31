@@ -93,9 +93,13 @@ export function inferSyntheticTrades(
   return result
 }
 
-/** Stable final-log shape; keeping this pure makes observability regression-testable. */
+/** Stable final-log shape; nulls disclose that scoring did not run when no trades were assembled. */
 export function buildSyntheticPnlLogSummary(summary: SyntheticPnlSummary | null) {
   return {
+    coveragePercent: summary?.pricingCoveragePercent ?? null,
+    integrityTier: summary?.pricingIntegrity ?? null,
+    pricedLegsCount: summary?.pricedLegsCount ?? 0,
+    totalLegsCount: summary?.totalLegsCount ?? 0,
     pricedViaDexScreenerCount: summary?.pricedViaDexScreenerCount ?? 0,
     pricedViaUniswapCount: summary?.pricedViaUniswapCount ?? 0,
     pricedViaAerodromeCount: summary?.pricedViaAerodromeCount ?? 0,
@@ -104,9 +108,13 @@ export function buildSyntheticPnlLogSummary(summary: SyntheticPnlSummary | null)
     pricedViaBalancerCount: summary?.pricedViaBalancerCount ?? 0,
     pricedViaRatioFallbackCount: summary?.pricedViaRatioFallbackCount ?? 0,
     pricedViaSyntheticCount: summary?.pricedViaSyntheticCount ?? 0,
-    coveragePercent: summary?.pricingCoveragePercent ?? 0,
-    integrityTier: summary?.pricingIntegrity ?? 'low',
   }
+}
+
+/** Emits the one production-visible synthetic-PnL summary entry for a completed assembly. */
+export function logSyntheticPnlSummary(summary: SyntheticPnlSummary | null): void {
+  // eslint-disable-next-line no-console
+  console.info('[pipeline] syntheticPnl summary', buildSyntheticPnlLogSummary(summary))
 }
 
 // PURE, exported for direct testing. WEIGHTED-AVERAGE-COST approximation (disclosed above, NOT
@@ -237,6 +245,8 @@ export function computeSyntheticPnl(trades: readonly SyntheticTrade[], currentPr
     lowConfidenceCount: trades.filter((t) => t.confidence === 'low').length,
     pricingCoveragePercent,
     pricingIntegrity,
+    pricedLegsCount: validPriceCount,
+    totalLegsCount: pricedLegs.length,
     pricedViaDexScreenerCount: trades.filter((t) => t.pricedViaDexScreener).length,
     pricedViaUniswapCount: trades.filter((t) => t.pricedViaUniswap).length,
     pricedViaAerodromeCount: trades.filter((t) => t.pricedViaAerodrome).length,
