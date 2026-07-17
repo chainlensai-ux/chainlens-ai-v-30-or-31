@@ -1443,6 +1443,11 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // merged dictionary, no ambiguous txHash-only lookup, no cross-leg collision possible.
   const SYNTHETIC_POOL_LIQUIDITY_PROXY_USD = 5_000 // comfortably above classifyPoolLiquidity's dust threshold
   const syntheticPoolData: SyntheticPoolDataMap = {}
+  const dexScreenerPricedTokens = new Set(
+    pricingRouteLog.slice(pricingRouteLogSnapshotBefore)
+      .filter((record) => record.route === 'dexscreener')
+      .map((record) => `${record.chain}:${record.token.toLowerCase()}`),
+  )
   function recordSyntheticPoolPrice(entries: readonly { chain: string; token: string; txHash: string; amount: string }[], usdByTxHash: Record<string, number | null>): void {
     for (const entry of entries) {
       const usd = usdByTxHash[entry.txHash]
@@ -1451,7 +1456,11 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       if (!Number.isFinite(amount) || amount <= 0) continue
       const key = `${entry.chain}:${entry.token.toLowerCase()}`
       if (!(key in syntheticPoolData)) {
-        syntheticPoolData[key] = { midPriceUsd: usd / amount, liquidityUsd: SYNTHETIC_POOL_LIQUIDITY_PROXY_USD }
+        syntheticPoolData[key] = {
+          midPriceUsd: usd / amount,
+          liquidityUsd: SYNTHETIC_POOL_LIQUIDITY_PROXY_USD,
+          pricedViaDexScreener: dexScreenerPricedTokens.has(key),
+        }
       }
     }
   }

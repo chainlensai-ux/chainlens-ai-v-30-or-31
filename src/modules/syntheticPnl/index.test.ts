@@ -47,6 +47,18 @@ describe('inferSyntheticTrades — router flows produce inferred trades', () => 
   })
 })
 
+describe('inferSyntheticTrades — DexScreener attribution', () => {
+  it('preserves the provider badge field without changing trade confidence', () => {
+    const trades = inferSyntheticTrades(cleanSwapEvents, ROUTERS, {
+      'base:0xtokena': { midPriceUsd: 1, liquidityUsd: 10_000, pricedViaDexScreener: true },
+      'base:0xtokenb': { midPriceUsd: 2, liquidityUsd: 10_000 },
+    }, false)
+    assert.equal(trades[0].pricedViaDexScreener, true)
+    assert.equal(trades[0].confidence, 'high')
+    assert.equal(computeSyntheticPnl(trades, {}).pricedViaDexScreenerCount, 1)
+  })
+})
+
 describe('inferSyntheticTrades — multi-leg router flows still produce inferred trades (medium confidence)', () => {
   it('multiple inbound legs in one tx -> medium confidence, still included when pools are real', () => {
     const events = [
