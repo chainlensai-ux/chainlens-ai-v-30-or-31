@@ -30,6 +30,11 @@ export function SyntheticPnlBlock({ syntheticPnl }: { syntheticPnl: SyntheticPnl
         {syntheticPnl.pricedViaDexScreenerCount > 0 ? (
           <StatusBadge label={`DexScreener priced · ${syntheticPnl.pricedViaDexScreenerCount}`} tone="neutral" />
         ) : null}
+        {syntheticPnl.pricedViaUniswapCount > 0 ? <StatusBadge label={`Uniswap priced · ${syntheticPnl.pricedViaUniswapCount}`} tone="neutral" /> : null}
+        {syntheticPnl.pricedViaAerodromeCount > 0 ? <StatusBadge label={`Aerodrome priced · ${syntheticPnl.pricedViaAerodromeCount}`} tone="neutral" /> : null}
+        {syntheticPnl.pricedViaSushiCount > 0 ? <StatusBadge label={`Sushi priced · ${syntheticPnl.pricedViaSushiCount}`} tone="neutral" /> : null}
+        {syntheticPnl.pricedViaCurveCount > 0 ? <StatusBadge label={`Curve priced · ${syntheticPnl.pricedViaCurveCount}`} tone="neutral" /> : null}
+        {syntheticPnl.pricedViaBalancerCount > 0 ? <StatusBadge label={`Balancer priced · ${syntheticPnl.pricedViaBalancerCount}`} tone="neutral" /> : null}
         <span style={{ fontSize: '11px', color: 'rgba(148,163,184,0.6)' }}>
           {syntheticPnl.tradeCount} inferred trade{syntheticPnl.tradeCount === 1 ? '' : 's'}
           {' '}({syntheticPnl.highConfidenceCount} high / {syntheticPnl.mediumConfidenceCount} medium / {syntheticPnl.lowConfidenceCount} low confidence)

@@ -25,6 +25,11 @@ export type SyntheticTrade = {
   tokenInPriceUsd: number
   tokenOutPriceUsd: number
   pricedViaDexScreener?: boolean
+  pricedViaUniswap?: boolean
+  pricedViaAerodrome?: boolean
+  pricedViaSushi?: boolean
+  pricedViaCurve?: boolean
+  pricedViaBalancer?: boolean
 }
 
 // Caller-injected, real pool pricing data — this module never fetches anything itself. Keyed by
@@ -35,6 +40,11 @@ export type PoolPriceData = {
   midPriceUsd: number
   liquidityUsd: number | null
   pricedViaDexScreener?: boolean
+  pricedViaUniswap?: boolean
+  pricedViaAerodrome?: boolean
+  pricedViaSushi?: boolean
+  pricedViaCurve?: boolean
+  pricedViaBalancer?: boolean
 }
 
 export type PoolDataMap = Record<string, PoolPriceData>
@@ -68,4 +78,9 @@ export type SyntheticPnlSummary = {
   mediumConfidenceCount: number
   lowConfidenceCount: number
   pricedViaDexScreenerCount: number
+  pricedViaUniswapCount: number
+  pricedViaAerodromeCount: number
+  pricedViaSushiCount: number
+  pricedViaCurveCount: number
+  pricedViaBalancerCount: number
 }

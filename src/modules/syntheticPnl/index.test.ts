@@ -49,13 +49,19 @@ describe('inferSyntheticTrades — router flows produce inferred trades', () => 
 
 describe('inferSyntheticTrades — DexScreener attribution', () => {
   it('preserves the provider badge field without changing trade confidence', () => {
-    const trades = inferSyntheticTrades(cleanSwapEvents, ROUTERS, {
-      'base:0xtokena': { midPriceUsd: 1, liquidityUsd: 10_000, pricedViaDexScreener: true },
+    const events = [
+      event({ contract: '0xtokenA', direction: 'outbound', amount: 100 }),
+      event({ contract: '0xtokenB', direction: 'inbound', fromAddress: ROUTER, toAddress: WALLET, amount: 50 }),
+    ]
+    const trades = inferSyntheticTrades(events, KNOWN_ROUTERS, {
+      'base:0xtokena': { midPriceUsd: 1, liquidityUsd: 10_000, pricedViaDexScreener: true, pricedViaUniswap: true },
       'base:0xtokenb': { midPriceUsd: 2, liquidityUsd: 10_000 },
     }, false)
     assert.equal(trades[0].pricedViaDexScreener, true)
+    assert.equal(trades[0].pricedViaUniswap, true)
     assert.equal(trades[0].confidence, 'high')
     assert.equal(computeSyntheticPnl(trades, {}).pricedViaDexScreenerCount, 1)
+    assert.equal(computeSyntheticPnl(trades, {}).pricedViaUniswapCount, 1)
   })
 })
 
