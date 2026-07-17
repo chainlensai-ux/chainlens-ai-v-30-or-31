@@ -24,6 +24,8 @@ export type SyntheticTrade = {
   // historical price-series feed (out of scope here; see index.ts's own disclosure).
   tokenInPriceUsd: number
   tokenOutPriceUsd: number
+  tokenInPriceConfidence?: SyntheticTradeConfidence
+  tokenOutPriceConfidence?: SyntheticTradeConfidence
   pricedViaDexScreener?: boolean
   pricedViaUniswap?: boolean
   pricedViaAerodrome?: boolean
@@ -38,7 +40,14 @@ export type SyntheticTrade = {
 // drives the dead/dust/real pool classification (reused from routerTradeReconstruction).
 export type PoolPriceData = {
   midPriceUsd: number
-  liquidityUsd: number | null
+  liquidityUsd?: number | null
+  priceConfidence?: SyntheticTradeConfidence
+  token0?: string
+  token1?: string
+  reserve0?: number
+  reserve1?: number
+  feeTier?: number
+  poolType?: string
   pricedViaDexScreener?: boolean
   pricedViaUniswap?: boolean
   pricedViaAerodrome?: boolean
@@ -77,6 +86,8 @@ export type SyntheticPnlSummary = {
   highConfidenceCount: number
   mediumConfidenceCount: number
   lowConfidenceCount: number
+  pricingCoveragePercent: number
+  pricingIntegrity: SyntheticTradeConfidence
   pricedViaDexScreenerCount: number
   pricedViaUniswapCount: number
   pricedViaAerodromeCount: number

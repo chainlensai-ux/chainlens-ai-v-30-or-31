@@ -51,6 +51,7 @@ import type { MatchedLot } from '../modules/fifoEngine/types'
 import { getCheapCurrentPriceForDustCheck, type CheapDustPriceResult } from '../../lib/server/dustPriceCheck'
 import { rpcDebugLog, type RpcDebugEntry } from '../../lib/server/rpcDebug'
 import { buildWalletConditionMessages } from './walletConditionMessages'
+import { buildSyntheticPoolPriceData, resolvePipelinePrice } from './pricing'
 
 import type { PreScanValidation, RunWalletScanParams, RunWalletScanResult } from './types'
 import { INTEL_WINDOW_DAYS } from './types'
@@ -1417,12 +1418,8 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // pricingAtTime's ALREADY-RESOLVED costUsd/proceedsUsd (real per-tx USD values this scan already
   // paid for, just above) rather than a fresh pool-liquidity fetch — adding a new, uncapped
   // per-token network-calling loop here would risk reintroducing the exact scan-latency/fan-out
-  // problem this session's earlier KV/pricing-throttle work fixed. LIQUIDITY PROXY, DISCLOSED: this
-  // module's dead-pool exclusion needs a liquidityUsd figure this pipeline doesn't independently
-  // have; a token pricingAtTime successfully resolved a real price for is treated as having "real"
-  // (non-dust, non-abandoned) liquidity — a defensible inference (dexscreener/geckoterminal/
-  // coingecko/basedex/goldrush don't quote a price for a pool with no real market) rather than a
-  // measured number, disclosed here rather than presented as precise.
+  // problem this session's earlier KV/pricing-throttle work fixed. Missing liquidity remains
+  // undefined: a price is evidence of a price, not evidence of $5,000 (or any other depth).
   // BUG FIX, DISCLOSED (found via static trace, diagnostic task): the previous version built this
   // map from `Object.entries({ ...pricingAtTime.costUsd, ...pricingAtTime.proceedsUsd })` — both
   // dictionaries are keyed by txHash, so a transaction that has BOTH a buy leg (in
@@ -1441,31 +1438,31 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // Fixed by processing costUsd against ONLY displayBuyEntries and proceedsUsd against ONLY
   // sellTimelineV2.entries, each keyed by (txHash + chain + token) instead of txHash alone — no
   // merged dictionary, no ambiguous txHash-only lookup, no cross-leg collision possible.
-  const SYNTHETIC_POOL_LIQUIDITY_PROXY_USD = 5_000 // comfortably above classifyPoolLiquidity's dust threshold
   const syntheticPoolData: SyntheticPoolDataMap = {}
-  const dexScreenerPricedTokens = new Set(
-    pricingRouteLog.slice(pricingRouteLogSnapshotBefore)
-      .filter((record) => record.route === 'dexscreener')
-      .map((record) => `${record.chain}:${record.token.toLowerCase()}`),
-  )
-  function recordSyntheticPoolPrice(entries: readonly { chain: string; token: string; txHash: string; amount: string }[], usdByTxHash: Record<string, number | null>): void {
+  const scanPricingRoutes = pricingRouteLog.slice(pricingRouteLogSnapshotBefore)
+  async function recordSyntheticPoolPrice(entries: readonly { chain: string; token: string; txHash: string; amount: string; timestamp: number }[], usdByTxHash: Record<string, number | null>): Promise<void> {
     for (const entry of entries) {
       const usd = usdByTxHash[entry.txHash]
-      if (usd == null) continue
       const amount = Number(entry.amount)
-      if (!Number.isFinite(amount) || amount <= 0) continue
       const key = `${entry.chain}:${entry.token.toLowerCase()}`
-      if (!(key in syntheticPoolData)) {
-        syntheticPoolData[key] = {
-          midPriceUsd: usd / amount,
-          liquidityUsd: SYNTHETIC_POOL_LIQUIDITY_PROXY_USD,
-          pricedViaDexScreener: dexScreenerPricedTokens.has(key),
-        }
-      }
+      if (key in syntheticPoolData) continue
+      const route = scanPricingRoutes.find((record) => record.chain === entry.chain && record.token.toLowerCase() === entry.token.toLowerCase() && record.timestamp === entry.timestamp)?.route
+      const observedUnitPrice = Number.isFinite(usd) && Number.isFinite(amount) && (usd ?? 0) > 0 && amount > 0 ? (usd as number) / amount : null
+      const resolved = (await resolvePipelinePrice(entry.timestamp, {
+        goldrush: () => route === 'goldrush' ? observedUnitPrice : null,
+        dexscreener: () => route === 'dexscreener' ? observedUnitPrice : null,
+        // No pool address/metadata exists in normalized transfer evidence, so subgraph attempts
+        // are intentionally absent rather than guessing an address or fabricating pool fields.
+        external: () => route && route !== 'none' && route !== 'goldrush' && route !== 'dexscreener' ? observedUnitPrice : null,
+        ratio: () => null,
+        synthetic: () => null,
+      }))[entry.timestamp] ?? null
+      const data = buildSyntheticPoolPriceData(usd, amount, resolved, [])
+      if (data) syntheticPoolData[key] = data
     }
   }
-  recordSyntheticPoolPrice(displayBuyEntries, pricingAtTime.costUsd)
-  recordSyntheticPoolPrice(sellTimelineV2.entries, pricingAtTime.proceedsUsd)
+  await recordSyntheticPoolPrice(displayBuyEntries, pricingAtTime.costUsd)
+  await recordSyntheticPoolPrice(sellTimelineV2.entries, pricingAtTime.proceedsUsd)
   const syntheticTrades = inferSyntheticTrades(normalizedEvents, KNOWN_DEX_ROUTER_ADDRESSES, syntheticPoolData, routerDistributorMode)
   const syntheticPnl = syntheticTrades.length > 0 ? computeSyntheticPnl(syntheticTrades, syntheticPoolData) : null
   if (process.env.NODE_ENV !== 'production') {

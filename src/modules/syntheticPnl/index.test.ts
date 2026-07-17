@@ -63,6 +63,35 @@ describe('inferSyntheticTrades — DexScreener attribution', () => {
     assert.equal(computeSyntheticPnl(trades, {}).pricedViaDexScreenerCount, 1)
     assert.equal(computeSyntheticPnl(trades, {}).pricedViaUniswapCount, 1)
   })
+
+  it('counts every provider attribution and scores external pricing coverage', () => {
+    const events = [
+      event({ contract: '0xtokenA', direction: 'outbound', amount: 100 }),
+      event({ contract: '0xtokenB', direction: 'inbound', fromAddress: ROUTER, toAddress: WALLET, amount: 50 }),
+    ]
+    const trades = inferSyntheticTrades(events, KNOWN_ROUTERS, {
+      'base:0xtokena': { midPriceUsd: 1, priceConfidence: 'medium', pricedViaAerodrome: true, pricedViaSushi: true },
+      'base:0xtokenb': { midPriceUsd: 2, priceConfidence: 'medium', pricedViaCurve: true, pricedViaBalancer: true },
+    }, false)
+    const summary = computeSyntheticPnl(trades, {})
+    assert.equal(summary.pricingCoveragePercent, 100)
+    assert.equal(summary.pricingIntegrity, 'medium')
+    assert.equal(summary.pricedViaAerodromeCount, 1)
+    assert.equal(summary.pricedViaSushiCount, 1)
+    assert.equal(summary.pricedViaCurveCount, 1)
+    assert.equal(summary.pricedViaBalancerCount, 1)
+  })
+
+  it('downgrades pricing integrity by one tier below fifty-percent coverage', () => {
+    const trade = {
+      chain: 'base', txHash: '0x1', timestamp: '2024-01-01T00:00:00Z', tokenIn: '0xa', tokenOut: '0xb',
+      amountIn: 1, amountOut: 1, confidence: 'high' as const, tokenInPriceUsd: 1, tokenOutPriceUsd: 1,
+      tokenInPriceConfidence: 'high' as const,
+    }
+    const summary = computeSyntheticPnl([trade, { ...trade, txHash: '0x2', tokenInPriceConfidence: undefined }], {})
+    assert.equal(summary.pricingCoveragePercent, 25)
+    assert.equal(summary.pricingIntegrity, 'medium')
+  })
 })
 
 describe('inferSyntheticTrades — multi-leg router flows still produce inferred trades (medium confidence)', () => {

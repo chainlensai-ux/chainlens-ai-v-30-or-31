@@ -226,11 +226,15 @@ function syntheticPnlFixture(overrides: Partial<{
   mediumConfidenceCount: number
   lowConfidenceCount: number
   pricedViaDexScreenerCount: number
+  pricingCoveragePercent: number
+  pricingIntegrity: 'high' | 'medium' | 'low'
 }>) {
   return {
     totalRealizedPnlUsd: 42, totalUnrealizedPnlUsd: -7, totalPnlUsd: 35, roiPercent: 12, costBasisUsd: 300,
     perChain: [{ chainId: 'base', realizedPnlUsd: 42, unrealizedPnlUsd: -7, totalPnlUsd: 35, roiPercent: 12, costBasisUsd: 300 }],
     tradeCount: 5, highConfidenceCount: 3, mediumConfidenceCount: 2, lowConfidenceCount: 0, pricedViaDexScreenerCount: 0,
+    pricingCoveragePercent: 100, pricingIntegrity: 'high' as const,
+    pricedViaUniswapCount: 0, pricedViaAerodromeCount: 0, pricedViaSushiCount: 0, pricedViaCurveCount: 0, pricedViaBalancerCount: 0,
     ...overrides,
   }
 }

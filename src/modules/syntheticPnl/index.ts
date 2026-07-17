@@ -64,12 +64,11 @@ export function inferSyntheticTrades(
     const tokenInPool = poolData[poolKey(trade.chain, trade.tokenIn)]
     const tokenOutPool = poolData[poolKey(trade.chain, trade.tokenOut)]
 
-    const tokenInClass = classifyPoolLiquidity(tokenInPool?.liquidityUsd ?? null)
-    const tokenOutClass = classifyPoolLiquidity(tokenOutPool?.liquidityUsd ?? null)
-
     // No real price for either leg at all -> cannot honestly value this trade; excluded entirely
     // (never fabricated as a $0 or default price).
     if (!tokenInPool || !tokenOutPool) continue
+    const tokenInClass = tokenInPool.liquidityUsd === undefined ? undefined : classifyPoolLiquidity(tokenInPool.liquidityUsd)
+    const tokenOutClass = tokenOutPool.liquidityUsd === undefined ? undefined : classifyPoolLiquidity(tokenOutPool.liquidityUsd)
     if (tokenInClass === 'abandoned' || tokenOutClass === 'abandoned') continue
 
     const confidence: SyntheticTradeConfidence =
@@ -81,6 +80,7 @@ export function inferSyntheticTrades(
     // snapshot for still-open positions without also silently drifting the cost basis of trades
     // this function already priced.
     result.push({ ...trade, confidence, tokenInPriceUsd: tokenInPool.midPriceUsd, tokenOutPriceUsd: tokenOutPool.midPriceUsd,
+      tokenInPriceConfidence: tokenInPool.priceConfidence, tokenOutPriceConfidence: tokenOutPool.priceConfidence,
       pricedViaDexScreener: Boolean(tokenInPool.pricedViaDexScreener || tokenOutPool.pricedViaDexScreener),
       pricedViaUniswap: Boolean(tokenInPool.pricedViaUniswap || tokenOutPool.pricedViaUniswap),
       pricedViaAerodrome: Boolean(tokenInPool.pricedViaAerodrome || tokenOutPool.pricedViaAerodrome),
@@ -197,6 +197,15 @@ export function computeSyntheticPnl(trades: readonly SyntheticTrade[], currentPr
     }
   })
 
+  const pricedLegs = trades.flatMap((trade) => [trade.tokenInPriceConfidence, trade.tokenOutPriceConfidence])
+  const validPriceCount = pricedLegs.filter(Boolean).length
+  const pricingCoveragePercent = pricedLegs.length === 0 ? 100 : (validPriceCount / pricedLegs.length) * 100
+  const validConfidences = pricedLegs.filter((value): value is SyntheticTradeConfidence => value !== undefined)
+  let pricingIntegrity: SyntheticTradeConfidence = validConfidences.includes('low')
+    ? 'low'
+    : validConfidences.includes('medium') ? 'medium' : 'high'
+  if (pricingCoveragePercent < 50) pricingIntegrity = pricingIntegrity === 'high' ? 'medium' : 'low'
+
   return {
     totalRealizedPnlUsd,
     totalUnrealizedPnlUsd,
@@ -208,6 +217,8 @@ export function computeSyntheticPnl(trades: readonly SyntheticTrade[], currentPr
     highConfidenceCount: trades.filter((t) => t.confidence === 'high').length,
     mediumConfidenceCount: trades.filter((t) => t.confidence === 'medium').length,
     lowConfidenceCount: trades.filter((t) => t.confidence === 'low').length,
+    pricingCoveragePercent,
+    pricingIntegrity,
     pricedViaDexScreenerCount: trades.filter((t) => t.pricedViaDexScreener).length,
     pricedViaUniswapCount: trades.filter((t) => t.pricedViaUniswap).length,
     pricedViaAerodromeCount: trades.filter((t) => t.pricedViaAerodrome).length,
