@@ -81,7 +81,12 @@ export function inferSyntheticTrades(
     // snapshot for still-open positions without also silently drifting the cost basis of trades
     // this function already priced.
     result.push({ ...trade, confidence, tokenInPriceUsd: tokenInPool.midPriceUsd, tokenOutPriceUsd: tokenOutPool.midPriceUsd,
-      pricedViaDexScreener: Boolean(tokenInPool.pricedViaDexScreener || tokenOutPool.pricedViaDexScreener) })
+      pricedViaDexScreener: Boolean(tokenInPool.pricedViaDexScreener || tokenOutPool.pricedViaDexScreener),
+      pricedViaUniswap: Boolean(tokenInPool.pricedViaUniswap || tokenOutPool.pricedViaUniswap),
+      pricedViaAerodrome: Boolean(tokenInPool.pricedViaAerodrome || tokenOutPool.pricedViaAerodrome),
+      pricedViaSushi: Boolean(tokenInPool.pricedViaSushi || tokenOutPool.pricedViaSushi),
+      pricedViaCurve: Boolean(tokenInPool.pricedViaCurve || tokenOutPool.pricedViaCurve),
+      pricedViaBalancer: Boolean(tokenInPool.pricedViaBalancer || tokenOutPool.pricedViaBalancer) })
   }
   return result
 }
@@ -204,5 +209,10 @@ export function computeSyntheticPnl(trades: readonly SyntheticTrade[], currentPr
     mediumConfidenceCount: trades.filter((t) => t.confidence === 'medium').length,
     lowConfidenceCount: trades.filter((t) => t.confidence === 'low').length,
     pricedViaDexScreenerCount: trades.filter((t) => t.pricedViaDexScreener).length,
+    pricedViaUniswapCount: trades.filter((t) => t.pricedViaUniswap).length,
+    pricedViaAerodromeCount: trades.filter((t) => t.pricedViaAerodrome).length,
+    pricedViaSushiCount: trades.filter((t) => t.pricedViaSushi).length,
+    pricedViaCurveCount: trades.filter((t) => t.pricedViaCurve).length,
+    pricedViaBalancerCount: trades.filter((t) => t.pricedViaBalancer).length,
   }
 }
