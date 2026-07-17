@@ -86,9 +86,27 @@ export function inferSyntheticTrades(
       pricedViaAerodrome: Boolean(tokenInPool.pricedViaAerodrome || tokenOutPool.pricedViaAerodrome),
       pricedViaSushi: Boolean(tokenInPool.pricedViaSushi || tokenOutPool.pricedViaSushi),
       pricedViaCurve: Boolean(tokenInPool.pricedViaCurve || tokenOutPool.pricedViaCurve),
-      pricedViaBalancer: Boolean(tokenInPool.pricedViaBalancer || tokenOutPool.pricedViaBalancer) })
+      pricedViaBalancer: Boolean(tokenInPool.pricedViaBalancer || tokenOutPool.pricedViaBalancer),
+      pricedViaRatioFallback: Boolean(tokenInPool.pricedViaRatioFallback || tokenOutPool.pricedViaRatioFallback),
+      pricedViaSynthetic: Boolean(tokenInPool.pricedViaSynthetic || tokenOutPool.pricedViaSynthetic) })
   }
   return result
+}
+
+/** Stable final-log shape; keeping this pure makes observability regression-testable. */
+export function buildSyntheticPnlLogSummary(summary: SyntheticPnlSummary | null) {
+  return {
+    pricedViaDexScreenerCount: summary?.pricedViaDexScreenerCount ?? 0,
+    pricedViaUniswapCount: summary?.pricedViaUniswapCount ?? 0,
+    pricedViaAerodromeCount: summary?.pricedViaAerodromeCount ?? 0,
+    pricedViaSushiCount: summary?.pricedViaSushiCount ?? 0,
+    pricedViaCurveCount: summary?.pricedViaCurveCount ?? 0,
+    pricedViaBalancerCount: summary?.pricedViaBalancerCount ?? 0,
+    pricedViaRatioFallbackCount: summary?.pricedViaRatioFallbackCount ?? 0,
+    pricedViaSyntheticCount: summary?.pricedViaSyntheticCount ?? 0,
+    coveragePercent: summary?.pricingCoveragePercent ?? 0,
+    integrityTier: summary?.pricingIntegrity ?? 'low',
+  }
 }
 
 // PURE, exported for direct testing. WEIGHTED-AVERAGE-COST approximation (disclosed above, NOT
@@ -225,5 +243,7 @@ export function computeSyntheticPnl(trades: readonly SyntheticTrade[], currentPr
     pricedViaSushiCount: trades.filter((t) => t.pricedViaSushi).length,
     pricedViaCurveCount: trades.filter((t) => t.pricedViaCurve).length,
     pricedViaBalancerCount: trades.filter((t) => t.pricedViaBalancer).length,
+    pricedViaRatioFallbackCount: trades.filter((t) => t.pricedViaRatioFallback).length,
+    pricedViaSyntheticCount: trades.filter((t) => t.pricedViaSynthetic).length,
   }
 }

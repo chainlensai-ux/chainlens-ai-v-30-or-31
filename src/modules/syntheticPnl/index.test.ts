@@ -4,7 +4,7 @@
 
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { inferSyntheticTrades, computeSyntheticPnl } from './index'
+import { inferSyntheticTrades, computeSyntheticPnl, buildSyntheticPnlLogSummary } from './index'
 import type { PoolDataMap } from './types'
 import type { NormalizedEvent } from '../normalization/types'
 
@@ -48,6 +48,10 @@ describe('inferSyntheticTrades — router flows produce inferred trades', () => 
 })
 
 describe('inferSyntheticTrades — DexScreener attribution', () => {
+  it('emits every required final summary log field', () => {
+    const log = buildSyntheticPnlLogSummary(null)
+    assert.deepEqual(Object.keys(log), ['pricedViaDexScreenerCount', 'pricedViaUniswapCount', 'pricedViaAerodromeCount', 'pricedViaSushiCount', 'pricedViaCurveCount', 'pricedViaBalancerCount', 'pricedViaRatioFallbackCount', 'pricedViaSyntheticCount', 'coveragePercent', 'integrityTier'])
+  })
   it('preserves the provider badge field without changing trade confidence', () => {
     const events = [
       event({ contract: '0xtokenA', direction: 'outbound', amount: 100 }),
