@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { afterEach, describe, it } from 'node:test'
-import { fetchDexScreenerPool, fetchUniswapPool, mergePoolMetadata, resolvePipelinePrice, scorePricingCoverage, scorePricingIntegrity } from './pricing'
+import { buildSyntheticPoolPriceData, fetchDexScreenerPool, fetchUniswapPool, mergePoolMetadata, resolvePipelinePrice, scorePricingCoverage, scorePricingIntegrity } from './pricing'
 const originalFetch = globalThis.fetch
 afterEach(() => { globalThis.fetch = originalFetch })
 
@@ -62,5 +62,33 @@ describe('DexScreener pipeline pricing', () => {
       { source: 'aerodrome', token0: 'ignored', token1: '0xb', poolType: 'stable' },
       { source: 'balancer', feeTier: 0.003, liquidity: 500 },
     ]), { token0: '0xa', reserve0: 10, token1: '0xb', poolType: 'stable', feeTier: 0.003, liquidity: 500 })
+  })
+
+  it('wires resolver output and merged metadata into safe synthetic pool data', async () => {
+    const resolved = (await resolvePipelinePrice(789, {
+      goldrush: () => null,
+      dexscreener: () => null,
+      subgraphs: { aerodrome: () => ({ source: 'aerodrome', priceUsd: 2 }) },
+      ratio: () => 3,
+      synthetic: () => 4,
+    }))[789]!
+    assert.deepEqual(buildSyntheticPoolPriceData(20, 10, resolved, [
+      { source: 'aerodrome', token0: '0xa', token1: '0xb', reserve0: 10, liquidity: 900, feeTier: 0.003, poolType: 'stable' },
+      { source: 'sushi', reserve1: 30 },
+    ]), {
+      token0: '0xa', token1: '0xb', reserve0: 10, reserve1: 30, liquidity: 900,
+      feeTier: 0.003, poolType: 'stable', midPriceUsd: 2, liquidityUsd: 900,
+      priceConfidence: 'medium', pricedViaAerodrome: true,
+    })
+  })
+
+  it('rejects invalid mid-price operands and never fabricates liquidity', () => {
+    const resolved = { priceUsd: 2, source: 'goldrush', confidence: 'high' } as const
+    for (const [usd, amount] of [[NaN, 1], [1, Infinity], [-1, 1], [1, 0]]) {
+      assert.equal(buildSyntheticPoolPriceData(usd, amount, resolved, []), undefined)
+    }
+    assert.deepEqual(buildSyntheticPoolPriceData(10, 2, resolved, []), {
+      midPriceUsd: 5, priceConfidence: 'high',
+    })
   })
 })

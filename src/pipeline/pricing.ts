@@ -3,7 +3,7 @@ export type DexScreenerChain = 'ethereum' | 'bsc' | 'polygon' | 'arbitrum' | 'op
 export type ExternalPoolSource = 'dexscreener' | 'uniswap' | 'aerodrome' | 'sushi' | 'curve' | 'balancer'
 export type PipelinePrice = {
   priceUsd: number
-  source: 'goldrush' | ExternalPoolSource | 'ratio' | 'synthetic'
+  source: 'goldrush' | ExternalPoolSource | 'external' | 'ratio' | 'synthetic'
   confidence: 'high' | 'medium' | 'low'
   pricedViaExternal?: true
   pricedViaDexScreener?: true
@@ -18,6 +18,18 @@ export type PoolMetadata = {
   liquidity?: number
   feeTier?: number
   poolType?: string
+}
+
+export type SyntheticPoolPriceData = PoolMetadata & {
+  midPriceUsd: number
+  liquidityUsd?: number
+  priceConfidence: PipelinePrice['confidence']
+  pricedViaDexScreener?: boolean
+  pricedViaUniswap?: boolean
+  pricedViaAerodrome?: boolean
+  pricedViaSushi?: boolean
+  pricedViaCurve?: boolean
+  pricedViaBalancer?: boolean
 }
 export type ExternalPool = PoolMetadata & { source: ExternalPoolSource; priceUsd?: number }
 
@@ -99,17 +111,20 @@ export async function resolvePipelinePrice(ts: number, attempts: {
   goldrush: PriceAttempt
   dexscreener: PriceAttempt | ExternalPoolAttempt
   subgraphs?: Partial<Record<Exclude<ExternalPoolSource, 'dexscreener'>, PriceAttempt | ExternalPoolAttempt>>
+  external?: PriceAttempt
   ratio: PriceAttempt
   synthetic: PriceAttempt
 }): Promise<TimestampedPipelinePrice> {
   const external = async (source: ExternalPoolSource, attempt: PriceAttempt | ExternalPoolAttempt): Promise<PipelinePrice | null> => {
     const result = await attempt()
     const priceUsd = typeof result === 'object' && result !== null ? result.priceUsd : result
-    if (!positive(priceUsd)) return null
-    return { priceUsd, source, confidence: 'medium', pricedViaExternal: true, ...(source === 'dexscreener' ? { pricedViaDexScreener: true } : {}) }
+    const validPrice = positive(priceUsd)
+    if (!validPrice) return null
+    return { priceUsd: validPrice, source, confidence: 'medium', pricedViaExternal: true, ...(source === 'dexscreener' ? { pricedViaDexScreener: true } : {}) }
   }
   const goldrush = await attempts.goldrush()
-  if (positive(goldrush)) return { [ts]: { priceUsd: goldrush, source: 'goldrush', confidence: 'high' } }
+  const goldrushPrice = positive(goldrush)
+  if (goldrushPrice) return { [ts]: { priceUsd: goldrushPrice, source: 'goldrush', confidence: 'high' } }
   const dex = await external('dexscreener', attempts.dexscreener)
   if (dex) return { [ts]: dex }
   for (const source of ['uniswap', 'aerodrome', 'sushi', 'curve', 'balancer'] as const) {
@@ -118,9 +133,15 @@ export async function resolvePipelinePrice(ts: number, attempts: {
     const found = await external(source, attempt)
     if (found) return { [ts]: found }
   }
+  if (attempts.external) {
+    const priceUsd = await attempts.external()
+    const validPrice = positive(priceUsd)
+    if (validPrice) return { [ts]: { priceUsd: validPrice, source: 'external', confidence: 'medium', pricedViaExternal: true } }
+  }
   for (const [source, attempt] of [['ratio', attempts.ratio], ['synthetic', attempts.synthetic]] as const) {
     const priceUsd = await attempt()
-    if (positive(priceUsd)) return { [ts]: { priceUsd, source, confidence: 'low' } }
+    const validPrice = positive(priceUsd)
+    if (validPrice) return { [ts]: { priceUsd: validPrice, source, confidence: 'low' } }
   }
   return {}
 }
@@ -132,6 +153,31 @@ export function mergePoolMetadata(pools: ReadonlyArray<ExternalPool | null>): Po
     if (merged[key] === undefined && pool[key] !== undefined) Object.assign(merged, { [key]: pool[key] })
   }
   return merged
+}
+
+/** Converts resolved USD evidence into synthetic-pipeline data without inventing price or depth. */
+export function buildSyntheticPoolPriceData(
+  usd: unknown,
+  amount: unknown,
+  resolved: PipelinePrice | null,
+  pools: ReadonlyArray<ExternalPool | null>,
+): SyntheticPoolPriceData | undefined {
+  const validUsd = positive(usd)
+  const validAmount = positive(amount)
+  if (!validUsd || !validAmount || !resolved || !positive(resolved.priceUsd)) return undefined
+  const metadata = mergePoolMetadata(pools)
+  return {
+    ...metadata,
+    midPriceUsd: validUsd / validAmount,
+    priceConfidence: resolved.confidence,
+    ...(metadata.liquidity !== undefined ? { liquidityUsd: metadata.liquidity } : {}),
+    ...(resolved.source === 'dexscreener' ? { pricedViaDexScreener: true } : {}),
+    ...(resolved.source === 'uniswap' ? { pricedViaUniswap: true } : {}),
+    ...(resolved.source === 'aerodrome' ? { pricedViaAerodrome: true } : {}),
+    ...(resolved.source === 'sushi' ? { pricedViaSushi: true } : {}),
+    ...(resolved.source === 'curve' ? { pricedViaCurve: true } : {}),
+    ...(resolved.source === 'balancer' ? { pricedViaBalancer: true } : {}),
+  }
 }
 
 export type PricingIntegrity = 'high' | 'medium' | 'low'
