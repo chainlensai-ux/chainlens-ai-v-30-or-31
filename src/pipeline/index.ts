@@ -16,7 +16,7 @@ import { normalizeEvents } from '../modules/normalization/index'
 import { buildCounterpartyStats, classifyRouterLikeEvent, recordRouterCandidate } from './routerDiscovery'
 import { analyzeDistributorRouterFlows } from '../modules/distributorRecovery/index'
 import { reconstructRouterTrades } from '../modules/routerTradeReconstruction/index'
-import { inferSyntheticTrades, computeSyntheticPnl } from '../modules/syntheticPnl/index'
+import { inferSyntheticTrades, computeSyntheticPnl, buildSyntheticPnlLogSummary } from '../modules/syntheticPnl/index'
 import type { PoolDataMap as SyntheticPoolDataMap } from '../modules/syntheticPnl/index'
 import { adaptPnlSummaryForUi } from './pnlSummaryAdapter'
 import { buildChainAwareHistoricalPriceSource, pricingRouteLog } from './pricingAtTimeAdapter'
@@ -51,7 +51,8 @@ import type { MatchedLot } from '../modules/fifoEngine/types'
 import { getCheapCurrentPriceForDustCheck, type CheapDustPriceResult } from '../../lib/server/dustPriceCheck'
 import { rpcDebugLog, type RpcDebugEntry } from '../../lib/server/rpcDebug'
 import { buildWalletConditionMessages } from './walletConditionMessages'
-import { buildSyntheticPoolPriceData, resolvePipelinePrice } from './pricing'
+import { buildSyntheticPoolPriceData, discoverAerodromePools, mapAerodromeToken, priceBaseTokenFromAerodrome, resolvePipelinePrice } from './pricing'
+import type { AerodromePool } from './metadata'
 
 import type { PreScanValidation, RunWalletScanParams, RunWalletScanResult } from './types'
 import { INTEL_WINDOW_DAYS } from './types'
@@ -1440,6 +1441,15 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // merged dictionary, no ambiguous txHash-only lookup, no cross-leg collision possible.
   const syntheticPoolData: SyntheticPoolDataMap = {}
   const scanPricingRoutes = pricingRouteLog.slice(pricingRouteLogSnapshotBefore)
+  const knownObservedPrices: Record<string, number> = {}
+  for (const [entries, values] of [[displayBuyEntries, pricingAtTime.costUsd], [sellTimelineV2.entries, pricingAtTime.proceedsUsd]] as const) {
+    for (const entry of entries) {
+      const usd = values[entry.txHash]
+      const amount = Number(entry.amount)
+      if (usd != null && Number.isFinite(usd) && usd > 0 && Number.isFinite(amount) && amount > 0) knownObservedPrices[entry.token.toLowerCase()] = usd / amount
+    }
+  }
+  const aerodromeDiscovery = new Map<string, Promise<AerodromePool[]>>()
   async function recordSyntheticPoolPrice(entries: readonly { chain: string; token: string; txHash: string; amount: string; timestamp: number }[], usdByTxHash: Record<string, number | null>): Promise<void> {
     for (const entry of entries) {
       const usd = usdByTxHash[entry.txHash]
@@ -1448,16 +1458,30 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       if (key in syntheticPoolData) continue
       const route = scanPricingRoutes.find((record) => record.chain === entry.chain && record.token.toLowerCase() === entry.token.toLowerCase() && record.timestamp === entry.timestamp)?.route
       const observedUnitPrice = Number.isFinite(usd) && Number.isFinite(amount) && (usd ?? 0) > 0 && amount > 0 ? (usd as number) / amount : null
+      let aerodromePool: AerodromePool | null = null
+      let aerodromePrice: number | null = null
+      if (entry.chain === 'base') {
+        const eventMetadata = normalizedEvents.find((event) => event.chain === entry.chain && event.contract.toLowerCase() === entry.token.toLowerCase())
+        const token = { address: entry.token, decimals: eventMetadata?.tokenDecimals, symbol: eventMetadata?.symbol }
+        let discovery = aerodromeDiscovery.get(entry.token.toLowerCase())
+        if (!discovery) {
+          discovery = discoverAerodromePools(entry.token)
+          aerodromeDiscovery.set(entry.token.toLowerCase(), discovery)
+        }
+        aerodromePool = mapAerodromeToken(token, await discovery)
+        aerodromePrice = priceBaseTokenFromAerodrome(token, aerodromePool, knownObservedPrices)
+      }
       const resolved = (await resolvePipelinePrice(entry.timestamp, {
         goldrush: () => route === 'goldrush' ? observedUnitPrice : null,
         dexscreener: () => route === 'dexscreener' ? observedUnitPrice : null,
-        // No pool address/metadata exists in normalized transfer evidence, so subgraph attempts
-        // are intentionally absent rather than guessing an address or fabricating pool fields.
+        subgraphs: { ...(entry.chain === 'base' ? { aerodrome: () => aerodromePrice } : {}) },
         external: () => route && route !== 'none' && route !== 'goldrush' && route !== 'dexscreener' ? observedUnitPrice : null,
         ratio: () => null,
         synthetic: () => null,
       }))[entry.timestamp] ?? null
-      const data = buildSyntheticPoolPriceData(usd, amount, resolved, [])
+      const resolvedUsd = usd ?? (aerodromePrice !== null ? aerodromePrice * amount : null)
+      const poolMetadata = aerodromePool ? [{ ...aerodromePool, poolAddress: aerodromePool.address }] : []
+      const data = buildSyntheticPoolPriceData(resolvedUsd, amount, resolved, poolMetadata)
       if (data) syntheticPoolData[key] = data
     }
   }
@@ -1473,6 +1497,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       syntheticHighConfidenceCount: syntheticTrades.filter((t) => t.confidence === 'high').length,
       syntheticMediumConfidenceCount: syntheticTrades.filter((t) => t.confidence === 'medium').length,
       syntheticLowConfidenceCount: syntheticTrades.filter((t) => t.confidence === 'low').length,
+      ...buildSyntheticPnlLogSummary(syntheticPnl),
     })
   }
 

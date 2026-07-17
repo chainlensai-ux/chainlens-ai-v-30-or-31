@@ -32,6 +32,8 @@ export type SyntheticTrade = {
   pricedViaSushi?: boolean
   pricedViaCurve?: boolean
   pricedViaBalancer?: boolean
+  pricedViaRatioFallback?: boolean
+  pricedViaSynthetic?: boolean
 }
 
 // Caller-injected, real pool pricing data — this module never fetches anything itself. Keyed by
@@ -54,6 +56,8 @@ export type PoolPriceData = {
   pricedViaSushi?: boolean
   pricedViaCurve?: boolean
   pricedViaBalancer?: boolean
+  pricedViaRatioFallback?: boolean
+  pricedViaSynthetic?: boolean
 }
 
 export type PoolDataMap = Record<string, PoolPriceData>
@@ -94,4 +98,6 @@ export type SyntheticPnlSummary = {
   pricedViaSushiCount: number
   pricedViaCurveCount: number
   pricedViaBalancerCount: number
+  pricedViaRatioFallbackCount?: number
+  pricedViaSyntheticCount?: number
 }

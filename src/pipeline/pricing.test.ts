@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { afterEach, describe, it } from 'node:test'
-import { buildSyntheticPoolPriceData, fetchDexScreenerPool, fetchUniswapPool, mergePoolMetadata, resolvePipelinePrice, scorePricingCoverage, scorePricingIntegrity } from './pricing'
+import { buildSyntheticPoolPriceData, discoverAerodromePools, fetchDexScreenerPool, fetchUniswapPool, mapAerodromeToken, mergePoolMetadata, priceBaseTokenFromAerodrome, resolvePipelinePrice, scorePricingCoverage, scorePricingIntegrity } from './pricing'
 const originalFetch = globalThis.fetch
 afterEach(() => { globalThis.fetch = originalFetch })
 
@@ -90,5 +90,41 @@ describe('DexScreener pipeline pricing', () => {
     assert.deepEqual(buildSyntheticPoolPriceData(10, 2, resolved, []), {
       midPriceUsd: 5, priceConfidence: 'high',
     })
+  })
+})
+
+describe('Aerodrome Base fallback', () => {
+  it('discovers both token sides and rejects rows with invalid reserves', async () => {
+    globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      const request = JSON.parse(String(init?.body)) as { query: string; variables: { token: string } }
+      assert.match(request.query, /token0Pools/)
+      assert.equal(request.variables.token, '0xtoken')
+      return new Response(JSON.stringify({ data: {
+        token0Pools: [{ id: '0xpool', token0: { id: '0xtoken', decimals: '18', symbol: 'TOKEN' }, token1: { id: '0xusd', decimals: '6', symbol: 'USDC' }, reserve0: '10', reserve1: '25', reserveUSD: '50' }],
+        token1Pools: [{ id: '0xbad', token0: { id: '0xusd' }, token1: { id: '0xtoken' }, reserve0: 'NaN', reserve1: '2' }],
+      } }))
+    }) as typeof fetch
+    assert.deepEqual(await discoverAerodromePools('0xTOKEN'), [{ source: 'aerodrome', address: '0xpool', token0: '0xtoken', token1: '0xusd', reserve0: 10, reserve1: 25, liquidity: 50, token0Decimals: 18, token1Decimals: 6, token0Symbol: 'TOKEN', token1Symbol: 'USDC' }])
+  })
+
+  it('uses TWAP before reserve ratio, maps metadata strictly, and rejects ambiguity', () => {
+    const token = { address: '0xtoken', decimals: 18, symbol: 'TOKEN' }
+    const pool = { source: 'aerodrome' as const, address: '0xpool', token0: '0xtoken', token1: '0xusd', reserve0: 10, reserve1: 25, token0Decimals: 18, token0Symbol: 'TOKEN', twapPriceUsd: 2.4 }
+    assert.equal(mapAerodromeToken(token, [pool]), pool)
+    assert.equal(priceBaseTokenFromAerodrome(token, pool, { '0xusd': 1 }), 2.4)
+    assert.equal(priceBaseTokenFromAerodrome(token, { ...pool, twapPriceUsd: undefined }, { '0xusd': 1 }), 2.5)
+    assert.equal(mapAerodromeToken(token, [pool, { ...pool, address: '0xother' }]), null)
+    assert.equal(priceBaseTokenFromAerodrome(token, { ...pool, twapPriceUsd: undefined }, {}), null)
+  })
+
+  it('falls back to the alternative pair query when pools are empty', async () => {
+    let calls = 0
+    globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      calls++
+      const query = (JSON.parse(String(init?.body)) as { query: string }).query
+      return new Response(JSON.stringify({ data: query.includes('token0Pairs') ? { token0Pairs: [{ id: '0xpair', token0: { id: '0xtoken' }, token1: { id: '0xusd' }, reserve0: '2', reserve1: '4' }], token1Pairs: [] } : { token0Pools: [], token1Pools: [] } }))
+    }) as typeof fetch
+    assert.equal((await discoverAerodromePools('0xtoken'))[0]?.address, '0xpair')
+    assert.equal(calls, 3)
   })
 })

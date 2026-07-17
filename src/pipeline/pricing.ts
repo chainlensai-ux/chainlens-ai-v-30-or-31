@@ -1,4 +1,6 @@
 /** Pipeline-only, non-authoritative pricing and pool metadata helpers. */
+import type { AerodromePool, AerodromeToken } from './metadata'
+
 export type DexScreenerChain = 'ethereum' | 'bsc' | 'polygon' | 'arbitrum' | 'optimism' | 'avalanche' | 'fantom' | 'base'
 export type ExternalPoolSource = 'dexscreener' | 'uniswap' | 'aerodrome' | 'sushi' | 'curve' | 'balancer'
 export type PipelinePrice = {
@@ -8,9 +10,11 @@ export type PipelinePrice = {
   pricedViaExternal?: true
   pricedViaDexScreener?: true
 }
+export { discoverAerodromePools, mapAerodromeToken } from './metadata'
 export type TimestampedPipelinePrice = Record<number, PipelinePrice>
 
 export type PoolMetadata = {
+  poolAddress?: string
   token0?: string
   token1?: string
   reserve0?: number
@@ -30,8 +34,29 @@ export type SyntheticPoolPriceData = PoolMetadata & {
   pricedViaSushi?: boolean
   pricedViaCurve?: boolean
   pricedViaBalancer?: boolean
+  pricedViaRatioFallback?: boolean
+  pricedViaSynthetic?: boolean
 }
 export type ExternalPool = PoolMetadata & { source: ExternalPoolSource; priceUsd?: number }
+
+/** Historical Base fallback: provider TWAP first, otherwise reserve ratio with a real quote USD price. */
+export function priceBaseTokenFromAerodrome(
+  token: AerodromeToken,
+  pool: AerodromePool | null,
+  quotePricesUsd: Readonly<Record<string, number>>,
+): number | null {
+  if (!pool) return null
+  if (pool.twapPriceUsd !== undefined && Number.isFinite(pool.twapPriceUsd) && pool.twapPriceUsd > 0) return pool.twapPriceUsd
+  const tokenIs0 = pool.token0?.toLowerCase() === token.address.toLowerCase()
+  const tokenIs1 = pool.token1?.toLowerCase() === token.address.toLowerCase()
+  if (!tokenIs0 && !tokenIs1) return null
+  const quote = tokenIs0 ? pool.token1 : pool.token0
+  const tokenReserve = tokenIs0 ? pool.reserve0 : pool.reserve1
+  const quoteReserve = tokenIs0 ? pool.reserve1 : pool.reserve0
+  const quotePrice = quote ? positive(quotePricesUsd[quote.toLowerCase()]) : undefined
+  if (!positive(tokenReserve) || !positive(quoteReserve) || !quotePrice) return null
+  return (quoteReserve! / tokenReserve!) * quotePrice
+}
 
 const SUBGRAPH_URLS = {
   uniswap: process.env.UNISWAP_SUBGRAPH_URL ?? 'https://api.thegraph.com/subgraphs/name/uniswap/uniswap-v3',
@@ -59,6 +84,7 @@ function normalizePool(source: ExternalPoolSource, raw: Record<string, unknown>)
   const explicitPrice = positive(raw.priceUsd ?? raw.priceUSD ?? raw.token0PriceUSD ?? raw.usdPrice)
   return {
     source,
+    ...(text(raw.id ?? raw.address) ? { poolAddress: text(raw.id ?? raw.address) } : {}),
     ...(explicitPrice ? { priceUsd: explicitPrice } : {}),
     ...(address(raw.token0 ?? raw.coin0) ? { token0: address(raw.token0 ?? raw.coin0) } : {}),
     ...(address(raw.token1 ?? raw.coin1) ? { token1: address(raw.token1 ?? raw.coin1) } : {}),
@@ -149,7 +175,7 @@ export async function resolvePipelinePrice(ts: number, attempts: {
 /** Earlier sources win; later sources only fill metadata that is genuinely absent. */
 export function mergePoolMetadata(pools: ReadonlyArray<ExternalPool | null>): PoolMetadata {
   const merged: PoolMetadata = {}
-  for (const pool of pools) if (pool) for (const key of ['token0', 'token1', 'reserve0', 'reserve1', 'liquidity', 'feeTier', 'poolType'] as const) {
+  for (const pool of pools) if (pool) for (const key of ['poolAddress', 'token0', 'token1', 'reserve0', 'reserve1', 'liquidity', 'feeTier', 'poolType'] as const) {
     if (merged[key] === undefined && pool[key] !== undefined) Object.assign(merged, { [key]: pool[key] })
   }
   return merged
@@ -177,6 +203,8 @@ export function buildSyntheticPoolPriceData(
     ...(resolved.source === 'sushi' ? { pricedViaSushi: true } : {}),
     ...(resolved.source === 'curve' ? { pricedViaCurve: true } : {}),
     ...(resolved.source === 'balancer' ? { pricedViaBalancer: true } : {}),
+    ...(resolved.source === 'ratio' ? { pricedViaRatioFallback: true } : {}),
+    ...(resolved.source === 'synthetic' ? { pricedViaSynthetic: true } : {}),
   }
 }
 
