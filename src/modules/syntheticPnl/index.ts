@@ -80,7 +80,8 @@ export function inferSyntheticTrades(
     // computeSyntheticPnl's realized-PnL math use a genuinely different, later `currentPrices`
     // snapshot for still-open positions without also silently drifting the cost basis of trades
     // this function already priced.
-    result.push({ ...trade, confidence, tokenInPriceUsd: tokenInPool.midPriceUsd, tokenOutPriceUsd: tokenOutPool.midPriceUsd })
+    result.push({ ...trade, confidence, tokenInPriceUsd: tokenInPool.midPriceUsd, tokenOutPriceUsd: tokenOutPool.midPriceUsd,
+      pricedViaDexScreener: Boolean(tokenInPool.pricedViaDexScreener || tokenOutPool.pricedViaDexScreener) })
   }
   return result
 }
@@ -202,5 +203,6 @@ export function computeSyntheticPnl(trades: readonly SyntheticTrade[], currentPr
     highConfidenceCount: trades.filter((t) => t.confidence === 'high').length,
     mediumConfidenceCount: trades.filter((t) => t.confidence === 'medium').length,
     lowConfidenceCount: trades.filter((t) => t.confidence === 'low').length,
+    pricedViaDexScreenerCount: trades.filter((t) => t.pricedViaDexScreener).length,
   }
 }

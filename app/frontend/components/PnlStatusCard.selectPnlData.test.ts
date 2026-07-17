@@ -225,11 +225,12 @@ function syntheticPnlFixture(overrides: Partial<{
   highConfidenceCount: number
   mediumConfidenceCount: number
   lowConfidenceCount: number
+  pricedViaDexScreenerCount: number
 }>) {
   return {
     totalRealizedPnlUsd: 42, totalUnrealizedPnlUsd: -7, totalPnlUsd: 35, roiPercent: 12, costBasisUsd: 300,
     perChain: [{ chainId: 'base', realizedPnlUsd: 42, unrealizedPnlUsd: -7, totalPnlUsd: 35, roiPercent: 12, costBasisUsd: 300 }],
-    tradeCount: 5, highConfidenceCount: 3, mediumConfidenceCount: 2, lowConfidenceCount: 0,
+    tradeCount: 5, highConfidenceCount: 3, mediumConfidenceCount: 2, lowConfidenceCount: 0, pricedViaDexScreenerCount: 0,
     ...overrides,
   }
 }

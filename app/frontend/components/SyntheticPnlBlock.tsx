@@ -27,6 +27,9 @@ export function SyntheticPnlBlock({ syntheticPnl }: { syntheticPnl: SyntheticPnl
     <div style={{ marginBottom: '16px' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '10px', flexWrap: 'wrap' }}>
         <StatusBadge label="SYNTHETIC · INFERRED · NOT ENGINE VERIFIED" tone="warning" glow />
+        {syntheticPnl.pricedViaDexScreenerCount > 0 ? (
+          <StatusBadge label={`DexScreener priced · ${syntheticPnl.pricedViaDexScreenerCount}`} tone="neutral" />
+        ) : null}
         <span style={{ fontSize: '11px', color: 'rgba(148,163,184,0.6)' }}>
           {syntheticPnl.tradeCount} inferred trade{syntheticPnl.tradeCount === 1 ? '' : 's'}
           {' '}({syntheticPnl.highConfidenceCount} high / {syntheticPnl.mediumConfidenceCount} medium / {syntheticPnl.lowConfidenceCount} low confidence)

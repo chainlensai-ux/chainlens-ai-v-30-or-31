@@ -24,6 +24,7 @@ export type SyntheticTrade = {
   // historical price-series feed (out of scope here; see index.ts's own disclosure).
   tokenInPriceUsd: number
   tokenOutPriceUsd: number
+  pricedViaDexScreener?: boolean
 }
 
 // Caller-injected, real pool pricing data — this module never fetches anything itself. Keyed by
@@ -33,6 +34,7 @@ export type SyntheticTrade = {
 export type PoolPriceData = {
   midPriceUsd: number
   liquidityUsd: number | null
+  pricedViaDexScreener?: boolean
 }
 
 export type PoolDataMap = Record<string, PoolPriceData>
@@ -65,4 +67,5 @@ export type SyntheticPnlSummary = {
   highConfidenceCount: number
   mediumConfidenceCount: number
   lowConfidenceCount: number
+  pricedViaDexScreenerCount: number
 }
