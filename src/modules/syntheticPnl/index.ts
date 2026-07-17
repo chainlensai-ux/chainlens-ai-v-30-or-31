@@ -21,9 +21,9 @@
 
 import type { NormalizedEvent } from '../normalization/types'
 import { reconstructRouterTrades, classifyPoolLiquidity } from '../routerTradeReconstruction/index'
-import type { PoolDataMap, SyntheticTrade, SyntheticTradeConfidence, SyntheticPnlSummary, SyntheticChainPnl } from './types'
+import type { PoolDataMap, SyntheticTrade, SyntheticTradeConfidence, SyntheticPnlSummary, SyntheticChainPnl, SyntheticPnlAssemblyInput } from './types'
 
-export type { SyntheticTrade, SyntheticTradeConfidence, SyntheticPnlSummary, SyntheticChainPnl, PoolDataMap, PoolPriceData } from './types'
+export type { SyntheticTrade, SyntheticTradeConfidence, SyntheticPnlSummary, SyntheticChainPnl, SyntheticPnlAssemblyInput, PoolDataMap, PoolPriceData } from './types'
 
 function poolKey(chain: string, token: string): string {
   return `${chain}:${token.toLowerCase()}`
@@ -115,6 +115,37 @@ export function buildSyntheticPnlLogSummary(summary: SyntheticPnlSummary | null)
 export function logSyntheticPnlSummary(summary: SyntheticPnlSummary | null): void {
   // eslint-disable-next-line no-console
   console.info('[pipeline] syntheticPnl summary', buildSyntheticPnlLogSummary(summary))
+}
+
+/**
+ * Mandatory post-pricing assembly boundary.
+ *
+ * Every scan path calls this after pricingAtTime, including paths that otherwise stop after
+ * provider collection or diagnostics. The additional pricing inputs are intentionally part of
+ * this boundary even though inference consumes their already-combined `metadata.poolData`; this
+ * prevents callers from silently assembling synthetic PnL from an incomplete pricing hand-off.
+ */
+export function syntheticPnlAssembly(input: SyntheticPnlAssemblyInput): SyntheticPnlSummary | null {
+  // These inputs supplied the resolved pool data and remain explicit assembly dependencies. They
+  // are not recomputed here, which avoids changing pricing, PnL, or confidence behavior.
+  void input.priceLotsForWalletOutput
+  void input.resolvedPrices
+  void input.attribution
+
+  let summary: SyntheticPnlSummary | null = null
+  try {
+    const trades = inferSyntheticTrades(
+      input.normalizedEvents,
+      input.metadata.knownDexRouterAddresses,
+      input.metadata.poolData,
+      input.metadata.routerDistributorMode,
+    )
+    summary = trades.length > 0 ? computeSyntheticPnl(trades, input.metadata.poolData) : null
+    return summary
+  } finally {
+    // The final summary is an invariant of reaching assembly, including empty and failed assembly.
+    logSyntheticPnlSummary(summary)
+  }
 }
 
 // PURE, exported for direct testing. WEIGHTED-AVERAGE-COST approximation (disclosed above, NOT

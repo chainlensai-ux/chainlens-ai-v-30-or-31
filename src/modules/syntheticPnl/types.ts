@@ -4,6 +4,8 @@
 // task requested — never fed into fifoEngine, priceLotsForWallet, or PRICE_SOURCES, never used to
 // compute pnlV2. See index.ts's own header for the full reasoning.
 
+import type { NormalizedEvent } from '../normalization/types'
+
 export type SyntheticTradeConfidence = 'high' | 'medium' | 'low'
 
 export type SyntheticTrade = {
@@ -61,6 +63,31 @@ export type PoolPriceData = {
 }
 
 export type PoolDataMap = Record<string, PoolPriceData>
+
+/**
+ * Complete hand-off from pricingAtTime to the synthetic-PnL assembly stage.
+ *
+ * The price-lot output, resolved prices, metadata, and attribution are deliberately kept as
+ * separate fields: this makes the orchestration dependency explicit and prevents abbreviated
+ * scan paths from treating pricingAtTime as a terminal stage. `poolData` is the already-resolved
+ * combination of those inputs; synthetic-PnL does not perform another provider lookup.
+ */
+export type SyntheticPnlAssemblyInput = {
+  normalizedEvents: readonly NormalizedEvent[]
+  priceLotsForWalletOutput: {
+    sourceBreakdown: Readonly<Record<string, number>>
+  }
+  resolvedPrices: {
+    costUsd: Readonly<Record<string, number | null>>
+    proceedsUsd: Readonly<Record<string, number | null>>
+  }
+  metadata: {
+    poolData: PoolDataMap
+    knownDexRouterAddresses: ReadonlySet<string>
+    routerDistributorMode: boolean
+  }
+  attribution: readonly unknown[]
+}
 
 // RENAMED, DISCLOSED (this task's own field names, replacing syntheticRealizedPnlUsd/
 // syntheticUnrealizedPnlUsd/syntheticTotalPnlUsd/syntheticRoiPct from the prior version — every
