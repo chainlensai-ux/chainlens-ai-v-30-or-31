@@ -92,6 +92,8 @@ export type SyntheticPnlSummary = {
   lowConfidenceCount: number
   pricingCoveragePercent: number
   pricingIntegrity: SyntheticTradeConfidence
+  pricedLegsCount?: number
+  totalLegsCount?: number
   pricedViaDexScreenerCount: number
   pricedViaUniswapCount: number
   pricedViaAerodromeCount: number

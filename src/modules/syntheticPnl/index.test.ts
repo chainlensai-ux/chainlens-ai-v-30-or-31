@@ -4,7 +4,7 @@
 
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { inferSyntheticTrades, computeSyntheticPnl, buildSyntheticPnlLogSummary } from './index'
+import { inferSyntheticTrades, computeSyntheticPnl, buildSyntheticPnlLogSummary, logSyntheticPnlSummary } from './index'
 import type { PoolDataMap } from './types'
 import type { NormalizedEvent } from '../normalization/types'
 
@@ -50,7 +50,16 @@ describe('inferSyntheticTrades — router flows produce inferred trades', () => 
 describe('inferSyntheticTrades — DexScreener attribution', () => {
   it('emits every required final summary log field', () => {
     const log = buildSyntheticPnlLogSummary(null)
-    assert.deepEqual(Object.keys(log), ['pricedViaDexScreenerCount', 'pricedViaUniswapCount', 'pricedViaAerodromeCount', 'pricedViaSushiCount', 'pricedViaCurveCount', 'pricedViaBalancerCount', 'pricedViaRatioFallbackCount', 'pricedViaSyntheticCount', 'coveragePercent', 'integrityTier'])
+    assert.deepEqual(Object.keys(log), ['coveragePercent', 'integrityTier', 'pricedLegsCount', 'totalLegsCount', 'pricedViaDexScreenerCount', 'pricedViaUniswapCount', 'pricedViaAerodromeCount', 'pricedViaSushiCount', 'pricedViaCurveCount', 'pricedViaBalancerCount', 'pricedViaRatioFallbackCount', 'pricedViaSyntheticCount'])
+    assert.equal(log.coveragePercent, null)
+    assert.equal(log.integrityTier, null)
+  })
+  it('writes the consolidated pipeline summary log entry', (t) => {
+    let entry: unknown[] = []
+    t.mock.method(console, 'info', (...args: unknown[]) => { entry = args })
+    logSyntheticPnlSummary(null)
+    assert.equal(entry[0], '[pipeline] syntheticPnl summary')
+    assert.deepEqual(entry[1], buildSyntheticPnlLogSummary(null))
   })
   it('preserves the provider badge field without changing trade confidence', () => {
     const events = [
@@ -80,6 +89,8 @@ describe('inferSyntheticTrades — DexScreener attribution', () => {
     const summary = computeSyntheticPnl(trades, {})
     assert.equal(summary.pricingCoveragePercent, 100)
     assert.equal(summary.pricingIntegrity, 'medium')
+    assert.equal(summary.pricedLegsCount, 2)
+    assert.equal(summary.totalLegsCount, 2)
     assert.equal(summary.pricedViaAerodromeCount, 1)
     assert.equal(summary.pricedViaSushiCount, 1)
     assert.equal(summary.pricedViaCurveCount, 1)
