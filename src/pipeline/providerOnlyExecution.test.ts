@@ -31,6 +31,31 @@ const finalReportPosition = position(
   'const finalReport = safeAssembleReport({',
 )
 
+const topSyntheticPnlSummaryPosition = position(
+  'top syntheticPnl summary',
+  `logSyntheticPnlSummary(syntheticPnl)
+
+  // Deferred until after the mandatory synthetic-PnL summary above;`,
+)
+const providerFetchWindowDiagnosticsLogPosition = position(
+  'providerFetchWindowDiagnostics log',
+  "console.warn('[pipeline] providerFetchWindowDiagnostics', providerFetchWindowDiagnostics)",
+)
+const normalizedEventsTraceLogPosition = position(
+  'normalizedEvents trace log',
+  "console.warn('[debug] normalizedEvents trace', normalizedEventsTrace)",
+)
+const bottomSyntheticPnlSummaryPosition = position(
+  'bottom syntheticPnl summary',
+  `logSyntheticPnlSummary(syntheticPnl)
+
+  return { ...finalReport, normalizationErrors, walletConditionMessages }`,
+)
+const finalReturnPosition = position(
+  'final return',
+  'return { ...finalReport, normalizationErrors, walletConditionMessages }',
+)
+
 test('provider-only scans cannot return after normalization before pricingAtTime', () => {
   const postNormalizationPrefix = pipelineSource.slice(normalizedEventsPosition, pricingAtTimePosition)
 
@@ -51,7 +76,34 @@ test('provider-only scans use the assembly boundary that always prints the synth
   const assemblyCall = pipelineSource.slice(syntheticPnlAssemblyPosition, finalReportPosition)
 
   assert.match(assemblyCall, /normalizedEvents,/)
+  assert.match(assemblyCall, /priceLotsForWalletOutput: walletPriceLookups,/)
   assert.match(assemblyCall, /resolvedPrices: pricingAtTime,/)
+  assert.match(assemblyCall, /poolData: syntheticPoolData,/)
   assert.match(assemblyCall, /attribution: scanPricingRoutes,/)
   assert.doesNotMatch(assemblyCall, /if\s*\([^)]*(?:provider|diagnostic)/i)
+})
+
+test('syntheticPnl summary prints at the top before truncation-prone diagnostics', () => {
+  assert.ok(syntheticPnlAssemblyPosition < topSyntheticPnlSummaryPosition)
+  assert.ok(topSyntheticPnlSummaryPosition < providerFetchWindowDiagnosticsLogPosition)
+  assert.ok(topSyntheticPnlSummaryPosition < normalizedEventsTraceLogPosition)
+})
+
+test('syntheticPnl summary prints again at the bottom after all stages', () => {
+  assert.ok(finalReportPosition < bottomSyntheticPnlSummaryPosition)
+  assert.ok(bottomSyntheticPnlSummaryPosition < finalReturnPosition)
+})
+
+test('extremely large normalizedEvents logs cannot precede the first syntheticPnl summary', () => {
+  assert.ok(position('normalizedEvents trace object', 'const normalizedEventsTrace = {') < syntheticPnlAssemblyPosition)
+  assert.ok(topSyntheticPnlSummaryPosition < normalizedEventsTraceLogPosition)
+})
+
+test('provider-only, diagnostics, and full scans share the same syntheticPnl assembly path', () => {
+  const runBodyBeforeAssembly = pipelineSource.slice(normalizedEventsPosition, syntheticPnlAssemblyPosition)
+  const runBodyThroughReturn = pipelineSource.slice(normalizedEventsPosition, finalReturnPosition)
+
+  assert.doesNotMatch(runBodyBeforeAssembly, /^  return\b/m)
+  assert.doesNotMatch(runBodyThroughReturn, /if\s*\([^)]*params\.scanMode[^)]*\)\s*return/m)
+  assert.match(runBodyThroughReturn, /scanMode: params\.scanMode,/)
 })

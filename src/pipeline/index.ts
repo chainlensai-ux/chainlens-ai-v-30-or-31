@@ -16,7 +16,7 @@ import { normalizeEvents } from '../modules/normalization/index'
 import { buildCounterpartyStats, classifyRouterLikeEvent, recordRouterCandidate } from './routerDiscovery'
 import { analyzeDistributorRouterFlows } from '../modules/distributorRecovery/index'
 import { reconstructRouterTrades } from '../modules/routerTradeReconstruction/index'
-import { syntheticPnlAssembly } from '../modules/syntheticPnl/index'
+import { logSyntheticPnlSummary, syntheticPnlAssembly } from '../modules/syntheticPnl/index'
 import type { PoolDataMap as SyntheticPoolDataMap } from '../modules/syntheticPnl/index'
 import { adaptPnlSummaryForUi } from './pnlSummaryAdapter'
 import { buildChainAwareHistoricalPriceSource, pricingRouteLog } from './pricingAtTimeAdapter'
@@ -1035,8 +1035,6 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     params.walletAddress,
     scanTimer.stages.providerFetchWindow ?? null,
   )
-  // eslint-disable-next-line no-console
-  console.warn('[pipeline] providerFetchWindowDiagnostics', providerFetchWindowDiagnostics)
 
   // 2. normalization — pure, zero provider calls.
   const allRawEvents = providerResults.flatMap((r) => r.rawEvents)
@@ -1054,23 +1052,20 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // `normalizationErrors`, or anything downstream. Remove once the question above is answered.
   const outboundEvents = normalizedEvents.filter((e) => e.direction === 'outbound')
   const outboundToKnownRouter = outboundEvents.filter((e) => KNOWN_DEX_ROUTER_ADDRESSES.has(e.toAddress.toLowerCase()))
-  {
-    // eslint-disable-next-line no-console
-    console.warn('[debug] normalizedEvents trace', {
-      rawEventsCount: allRawEvents.length,
-      normalizedEventsCount: normalizedEvents.length,
-      outboundEventsCount: outboundEvents.length,
-      outboundToKnownRouterCount: outboundToKnownRouter.length,
-      outboundEvents: outboundEvents.map((e) => ({
-        chain: e.chain,
-        from: e.fromAddress,
-        to: e.toAddress,
-        token: e.contract,
-        amount: e.amount,
-        counterparty: e.toAddress.toLowerCase(),
-        isKnownRouter: KNOWN_DEX_ROUTER_ADDRESSES.has(e.toAddress.toLowerCase()),
-      })),
-    })
+  const normalizedEventsTrace = {
+    rawEventsCount: allRawEvents.length,
+    normalizedEventsCount: normalizedEvents.length,
+    outboundEventsCount: outboundEvents.length,
+    outboundToKnownRouterCount: outboundToKnownRouter.length,
+    outboundEvents: outboundEvents.map((e) => ({
+      chain: e.chain,
+      from: e.fromAddress,
+      to: e.toAddress,
+      token: e.contract,
+      amount: e.amount,
+      counterparty: e.toAddress.toLowerCase(),
+      isKnownRouter: KNOWN_DEX_ROUTER_ADDRESSES.has(e.toAddress.toLowerCase()),
+    })),
   }
 
   // ROUTER-DISTRIBUTOR MODE, DISCLOSED (additive, observability + display-pricing-only toggle):
@@ -1502,6 +1497,16 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     },
     attribution: scanPricingRoutes,
   })
+  // TOP-OF-LOG GUARANTEE: emit immediately after assembly and before the deferred heavy diagnostics
+  // below, so terminal truncation of normalizedEvents/provider-window details cannot hide it.
+  logSyntheticPnlSummary(syntheticPnl)
+
+  // Deferred until after the mandatory synthetic-PnL summary above; these can be very large on
+  // provider-only/heavy-wallet scans and must never be the first thing a truncated terminal keeps.
+  // eslint-disable-next-line no-console
+  console.warn('[pipeline] providerFetchWindowDiagnostics', providerFetchWindowDiagnostics)
+  // eslint-disable-next-line no-console
+  console.warn('[debug] normalizedEvents trace', normalizedEventsTrace)
 
   // 7. windowCoverage — pure arithmetic derived from the fixed fetch window and recovery pages used.
   const windowCoverage = computeWindowCoverage(PROVIDER_FETCH_WINDOW_DAYS_USED, recoveryPolicy.totalPagesUsedThisWallet)
@@ -1658,6 +1663,10 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   const walletConditionMessages = buildWalletConditionMessages(walletConditionInputs)
   // eslint-disable-next-line no-console
   console.log('[walletCondition] output', walletConditionMessages)
+
+  // END-OF-PIPELINE FALLBACK GUARANTEE: repeat the compact synthetic-PnL summary after every stage
+  // has completed, independent of the earlier immediate post-assembly log.
+  logSyntheticPnlSummary(syntheticPnl)
 
   return { ...finalReport, normalizationErrors, walletConditionMessages }
 }
