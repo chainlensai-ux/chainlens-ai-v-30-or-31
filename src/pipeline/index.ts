@@ -46,7 +46,7 @@ import { GoldRushClient } from '@covalenthq/client-sdk'
 import { goldrushPriceSource, isKnownGoldrushNegative } from '../modules/pricingAtTimeEngine/sources/goldrushPriceSource'
 import { priceLotsForWallet } from './priceLotsForWallet'
 import { withStageCache } from '../../lib/server/cache/v2StageCache'
-import { getTokenCache, setTokenCache } from '../../lib/server/cache/tokenCache'
+import { createRequestPriceKvClient } from '../lib/kvClient'
 import type { MatchedLot } from '../modules/fifoEngine/types'
 import { getCheapCurrentPriceForDustCheck, type CheapDustPriceResult } from '../../lib/server/dustPriceCheck'
 import { rpcDebugLog, type RpcDebugEntry } from '../../lib/server/rpcDebug'
@@ -105,16 +105,12 @@ const PROVIDER_FETCH_WINDOW_DAYS_USED = 90
 // to `fn` — which itself resolves near-instantly via its own in-memory negative-cache
 // short-circuit, no network at all. Optional and unused by the `fallback` source below (which has
 // no equivalent synchronous known-negative signal to offer), so its behavior is unchanged.
-function withPriceSourceCache(fn: PriceSourceFn, sourceLabel: string, skipCacheCheck?: (token: string, chain: string) => boolean): PriceSourceFn {
-  return async (token, chain, timestamp) => {
-    if (skipCacheCheck?.(token, chain)) return fn(token, chain, timestamp)
-    const key = `v2:price:${sourceLabel}:${chain}:${token.toLowerCase()}:${timestamp}`
-    const cached = await getTokenCache<number>(key)
-    if (cached !== null) return cached
-    const result = await fn(token, chain, timestamp)
-    if (result !== null) await setTokenCache(key, result, 45)
-    return result
-  }
+function withPriceSourceCache(fn: PriceSourceFn, _sourceLabel: string, _skipCacheCheck?: (token: string, chain: string) => boolean): PriceSourceFn {
+  // Request-scoped KV caching is applied by createRequestPriceKvClient() at each pipeline run.
+  // Keep this helper as a no-op compatibility shim so PRICE_SOURCES remains raw/deterministic at
+  // module scope and the same request client can be shared between priceLotsForWallet and the
+  // display-only pricingAtTime pass.
+  return fn
 }
 
 function buildPriceSources(): PriceSources {
@@ -1231,10 +1227,15 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
 
   const priceLotsForWalletStart = performance.now()
   const rpcLogSnapshotBeforePriceLots = rpcDebugLog.length
+  const requestPriceKvClient = createRequestPriceKvClient()
+  const requestPriceSources: PriceSources = {
+    primary: requestPriceKvClient.wrapPriceSource(PRICE_SOURCES.primary, 'chain-aware-historical'),
+    fallback: PRICE_SOURCES.fallback,
+  }
   const walletPriceLookups = await priceLotsForWallet({
     normalizedEvents: normalizedEventsForPricing,
     recoveredEvents: recoveredEventsForPricing,
-    priceSources: PRICE_SOURCES,
+    priceSources: requestPriceSources,
   })
   scanTimer.mark('priceLotsForWallet', priceLotsForWalletStart)
   // CU-ESTIMATOR SNAPSHOT, DISCLOSED: delta over rpcDebugLog taken specifically around this stage's
@@ -1371,10 +1372,11 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   const pricingAtTime = await safeRunPricingAtTime({
     buyEntries: displayBuyEntries,
     sellEntries: sellTimelineV2.entries,
-    priceSources: PRICE_SOURCES,
+    priceSources: requestPriceSources,
     fallbackPricing: fallbackPricingConfig,
   })
   scanTimer.mark('pricingAtTime', pricingAtTimeStart)
+  requestPriceKvClient.logStats('[pipeline] price KV stats')
   // CU-ESTIMATOR SNAPSHOT, DISCLOSED: same delta pattern as priceLotsForWallet's own snapshot above.
   const pricingAtTimeRpcCounts = countRpcMethods(rpcDebugLog.slice(rpcLogSnapshotBeforePricingAtTime))
 
