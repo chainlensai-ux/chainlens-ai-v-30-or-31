@@ -111,7 +111,7 @@ export function buildSyntheticPnlLogSummary(summary: SyntheticPnlSummary | null)
   }
 }
 
-/** Emits the one production-visible synthetic-PnL summary entry for a completed assembly. */
+/** Emits a compact production-visible synthetic-PnL summary entry. */
 export function logSyntheticPnlSummary(summary: SyntheticPnlSummary | null): void {
   // eslint-disable-next-line no-console
   console.info('[pipeline] syntheticPnl summary', buildSyntheticPnlLogSummary(summary))
@@ -132,20 +132,13 @@ export function syntheticPnlAssembly(input: SyntheticPnlAssemblyInput): Syntheti
   void input.resolvedPrices
   void input.attribution
 
-  let summary: SyntheticPnlSummary | null = null
-  try {
-    const trades = inferSyntheticTrades(
-      input.normalizedEvents,
-      input.metadata.knownDexRouterAddresses,
-      input.metadata.poolData,
-      input.metadata.routerDistributorMode,
-    )
-    summary = trades.length > 0 ? computeSyntheticPnl(trades, input.metadata.poolData) : null
-    return summary
-  } finally {
-    // The final summary is an invariant of reaching assembly, including empty and failed assembly.
-    logSyntheticPnlSummary(summary)
-  }
+  const trades = inferSyntheticTrades(
+    input.normalizedEvents,
+    input.metadata.knownDexRouterAddresses,
+    input.metadata.poolData,
+    input.metadata.routerDistributorMode,
+  )
+  return trades.length > 0 ? computeSyntheticPnl(trades, input.metadata.poolData) : null
 }
 
 // PURE, exported for direct testing. WEIGHTED-AVERAGE-COST approximation (disclosed above, NOT
