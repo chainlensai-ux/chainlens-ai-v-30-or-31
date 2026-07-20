@@ -16,6 +16,7 @@ import type { PnlSummaryResult } from '../pnlEngine/types'
 import type { PricingAtTimeResult } from '../pricingAtTimeEngine/types'
 import type { ProviderFetchWindowResult } from '../providerFetchWindow/types'
 import type { SyntheticPnlSummary } from '../syntheticPnl/types'
+import type { AyriAttributionOutput } from '../../lib/ayriAttribution'
 
 export type ScanMode = 'normal' | 'deep'
 
@@ -98,6 +99,8 @@ export type FinalReport = {
   // above — see src/modules/syntheticPnl/index.ts's own header for the full reasoning. A caller
   // that ignores this field sees the exact same report shape the engine produced before it existed.
   syntheticPnl?: SyntheticPnlSummary | null
+  // Additive section — request-scoped AYRI attribution over reconciled PnL lots.
+  ayriAttribution?: AyriAttributionOutput
 }
 
 export type PricingProvidersStatus = {
@@ -145,4 +148,6 @@ export type AssembleReportInput = {
   pricingProvidersStatus: PricingProvidersStatus
   // Additive, OPTIONAL — see FinalReport.syntheticPnl above.
   syntheticPnl?: SyntheticPnlSummary | null
+  // Additive section — request-scoped AYRI attribution over reconciled PnL lots.
+  ayriAttribution?: AyriAttributionOutput
 }

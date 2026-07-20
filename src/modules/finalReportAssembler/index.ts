@@ -62,5 +62,6 @@ export function assembleReport(input: AssembleReportInput): FinalReport {
     providerDiagnostics: input.providerDiagnostics,
     pricingProvidersStatus: input.pricingProvidersStatus,
     syntheticPnl: input.syntheticPnl,
+    ayriAttribution: input.ayriAttribution,
   }
 }
