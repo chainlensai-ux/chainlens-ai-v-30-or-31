@@ -3,9 +3,8 @@ import { resetAlchemyAudit, printAlchemyAuditSummary } from '@/lib/server/alchem
 import { runWalletScanV2Worker } from '@/workers/walletScanV2'
 import {
   readWalletScanJob,
-  walletScanPayloadKey,
+  walletScanPendingJobKey,
   walletScanPendingKey,
-  walletScanResultKey,
   writeWalletScanJob,
   type WalletScanJobMetadata,
   type WalletScanJobPayload,
@@ -28,7 +27,17 @@ async function claimNextPayload(): Promise<WalletScanJobPayload | null> {
   if (!jobId) return null
 
   await writePendingJobIds(remaining)
-  return await redis.get<WalletScanJobPayload>(walletScanPayloadKey(jobId))
+  const job = await readWalletScanJob(jobId)
+  if (!job) return null
+
+  await redis.set(walletScanPendingJobKey(jobId), false, { ex: 60 })
+  return {
+    jobId,
+    walletAddress: job.wallet,
+    chains: job.chains ?? ['base', 'eth'],
+    scanMode: job.scanMode ?? 'normal',
+    ip: job.ip ?? 'unknown',
+  }
 }
 
 async function runWalletScanJob(payload: WalletScanJobPayload): Promise<void> {
@@ -39,19 +48,21 @@ async function runWalletScanJob(payload: WalletScanJobPayload): Promise<void> {
     status: 'queued',
     createdAt: Date.now(),
     updatedAt: Date.now(),
+    chains: payload.chains,
+    scanMode: payload.scanMode,
+    ip: payload.ip,
   }
 
   await writeWalletScanJob({ ...baseJob, status: 'running', error: undefined })
+  console.log('[wallet-scan-worker] job started', { jobId: payload.jobId })
   resetAlchemyAudit()
 
   try {
-    const { body } = await runWalletScanV2Worker(
+    await runWalletScanV2Worker(
       { walletAddress: payload.walletAddress, chains: payload.chains, scanMode: payload.scanMode },
       payload.ip,
       payload.jobId,
     )
-    await redis.set(walletScanResultKey(payload.jobId), body, { ex: 30 * 60 })
-    await writeWalletScanJob({ ...baseJob, status: 'done', error: undefined })
     printAlchemyAuditSummary()
   } catch (err) {
     await writeWalletScanJob({
@@ -59,13 +70,18 @@ async function runWalletScanJob(payload: WalletScanJobPayload): Promise<void> {
       status: 'failed',
       error: err instanceof Error ? err.message : String(err),
     })
+    console.error('[wallet-scan-worker] job failed', err)
   }
 }
 
 export default async function walletScanBackgroundWorker(): Promise<void> {
   for (;;) {
-    const payload = await claimNextPayload()
-    if (!payload) return
-    await runWalletScanJob(payload)
+    try {
+      const payload = await claimNextPayload()
+      if (!payload) return
+      await runWalletScanJob(payload)
+    } catch (err) {
+      console.error('[wallet-scan-worker] loop failed', err)
+    }
   }
 }

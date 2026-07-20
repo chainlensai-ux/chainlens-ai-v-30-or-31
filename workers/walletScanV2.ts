@@ -34,6 +34,8 @@ import { logFifoPricingDivergence, shouldSampleThisScan } from '@/lib/server/eng
 import { setJobProgress } from '@/src/modules/scanJobs'
 import { withScanTimeout } from '@/src/utils/timeout'
 import { alchemyAudit } from '@/lib/server/alchemyAudit'
+import { redis as kv } from '@/lib/server/cache/redisClient'
+import { readWalletScanJob, walletScanResultKey, walletScanJobKey } from '@/src/modules/walletScanQueue'
 
 // V2-DIRECT-FAILURE LOGGER: moved here unchanged from the route file (still exported so the route
 // can also tag its own outer catch with the same log tag).
@@ -69,6 +71,21 @@ function isValidV2Result(data: Record<string, unknown> | undefined): boolean {
 }
 
 export type WalletScanV2WorkerResult = { status: number; body: unknown }
+
+async function writeFinalWalletScanJobResult(jobId: string | undefined, result: WalletScanV2WorkerResult): Promise<void> {
+  if (!jobId) return
+
+  const job = await readWalletScanJob(jobId)
+  const completedJob = {
+    ...(job ?? { jobId, wallet: '', createdAt: Date.now(), updatedAt: Date.now() }),
+    status: 'done' as const,
+    error: undefined,
+  }
+
+  await kv.set(walletScanResultKey(jobId), result.body, { ex: 30 * 60 })
+  await kv.set(walletScanJobKey(jobId), { ...completedJob, updatedAt: Date.now() }, { ex: 30 * 60 })
+  console.log('[wallet-scan-worker] job completed', { jobId })
+}
 
 // HEAVY-WALLET FAST-FAIL, DISCLOSED: same 800-event threshold this codebase already uses as its
 // post-hoc CU guard (app/api/scan-v2/worker/route.ts's CU_GUARD_EVENT_THRESHOLD) — reused here,
@@ -265,7 +282,9 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
 
   if (body.success && !isValidV2Result(body.data as Record<string, unknown> | undefined)) {
     logDirectFailure(new Error('Invalid V2 result shape'))
-    return { status: 500, body: { success: false, error: 'invalid_v2_shape' } }
+    const finalResult = { status: 500, body: { success: false, error: 'invalid_v2_shape' } }
+    await writeFinalWalletScanJobResult(jobId, finalResult)
+    return finalResult
   }
 
   // HEAVY-WALLET FAST-FAIL, DISCLOSED PLACEMENT: `providerDiagnostics` is a real field already
@@ -278,7 +297,9 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
   if (earlyEventCount > HEAVY_WALLET_EVENT_THRESHOLD) {
     // eslint-disable-next-line no-console
     console.warn('[worker] heavy-wallet-fast-fail', { eventCount: earlyEventCount })
-    return { status: 200, body: { success: false, error: { message: 'HEAVY_WALLET_FAST_FAIL' } } }
+    const finalResult = { status: 200, body: { success: false, error: { message: 'HEAVY_WALLET_FAST_FAIL' } } }
+    await writeFinalWalletScanJobResult(jobId, finalResult)
+    return finalResult
   }
 
   if (body.success && body.data?.scanMetadata?.walletAddress) {
@@ -629,5 +650,8 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     logIfUnexpectedV2Shape(body.data as Record<string, unknown> | undefined)
   }
 
-  return { status: result.status, body }
+  const finalResult = { status: result.status, body }
+  await writeFinalWalletScanJobResult(jobId, finalResult)
+  return finalResult
 }
+
