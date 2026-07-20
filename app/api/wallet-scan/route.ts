@@ -27,7 +27,7 @@ export async function POST(req: Request): Promise<Response> {
   const job: WalletScanJobMetadata = { jobId, wallet, status: 'queued', createdAt: now, updatedAt: now }
 
   await writeWalletScanJob(job)
-  enqueueWalletScanJob({
+  await enqueueWalletScanJob({
     jobId,
     walletAddress: wallet,
     chains,
