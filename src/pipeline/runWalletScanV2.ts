@@ -19,7 +19,7 @@ import { resolvePrices } from '../modules/pricing/index'
 import type { PricingRequest } from '../modules/pricing/types'
 import { buildPortfolioSummary } from '../modules/portfolio/index'
 import type { PortfolioSummary } from '../modules/portfolio/types'
-import { withStageCache } from '../../lib/server/cache/v2StageCache'
+import { createHoldingsKvWriter, withStageCache } from '../../lib/server/cache/v2StageCache'
 
 export type RunWalletScanV2Result = RunWalletScanResult & {
   holdings: TokenHolding[]
@@ -34,6 +34,7 @@ function emptyPortfolio(): PortfolioSummary {
 // independently and merged into a new object at the end.
 export async function runWalletScanV2(params: RunWalletScanParams): Promise<RunWalletScanV2Result> {
   const preScan = validatePreScan(params)
+  const holdingsKvWriter = createHoldingsKvWriter()
 
   // KV read-before/write-after (lib/server/cache/v2StageCache.ts) — pipeline-level caching only,
   // fetchHoldings' own source is never touched. 20s TTL: shortest of the 4 wrapped stages, since
@@ -47,6 +48,7 @@ export async function runWalletScanV2(params: RunWalletScanParams): Promise<RunW
             `v2:holdings:${chain}:${params.walletAddress.toLowerCase()}`,
             20,
             () => fetchHoldings(chain, params.walletAddress),
+            { writer: holdingsKvWriter },
           ),
         ))
       : Promise.resolve([]),

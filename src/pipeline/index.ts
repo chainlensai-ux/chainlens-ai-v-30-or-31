@@ -48,7 +48,7 @@ import { fallbackPricingService } from '../modules/fallbackPricing/index'
 import { GoldRushClient } from '@covalenthq/client-sdk'
 import { goldrushPriceSource, isKnownGoldrushNegative } from '../modules/pricingAtTimeEngine/sources/goldrushPriceSource'
 import { priceLotsForWallet } from './priceLotsForWallet'
-import { withStageCache } from '../../lib/server/cache/v2StageCache'
+import { createProviderWindowKvWriter, withStageCache } from '../../lib/server/cache/v2StageCache'
 import { createRequestPriceKvClient } from '../lib/kvClient'
 import type { MatchedLot } from '../modules/fifoEngine/types'
 import { getCheapCurrentPriceForDustCheck, type CheapDustPriceResult } from '../../lib/server/dustPriceCheck'
@@ -919,6 +919,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   const scanTimestamp = new Date().toISOString()
   const scanStartedAtMs = performance.now()
   const scanTimer = startStageTimer()
+  const providerFetchWindowKvWriter = createProviderWindowKvWriter()
 
   // 0. Pre-scan validation (Architecture Step 6 §1). An invalid request never reaches any
   // provider call — it degrades immediately to a fully-shaped, honestly-labeled report.
@@ -957,6 +958,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
         `v2:providerFetchWindow:${chain}:${params.walletAddress.toLowerCase()}`,
         30,
         () => fetchProviderWindow(chain, params.walletAddress, PROVIDER_FETCH_WINDOW_DAYS_USED),
+        { skipWrite: true },
       )
       return { result, chain, latencyMs: Math.round(performance.now() - chainStart) }
     }),
@@ -982,6 +984,15 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       totalDurationMs: scanTimer.stages.providerFetchWindow,
       perChainDiagnostics: chainLatencies,
     })
+  }
+
+  for (const r of providerResults) {
+    void providerFetchWindowKvWriter.write(
+      `v2:providerFetchWindow:${r.chain}:${params.walletAddress.toLowerCase()}`,
+      r,
+      30,
+      { degradedMode: slowProviderSignals.slowProviderDetected },
+    )
   }
 
   // Real, honest per-chain/per-provider fetch outcome summary — counts and error reasons only,
