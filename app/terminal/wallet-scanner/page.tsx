@@ -308,11 +308,11 @@ export default function WalletScannerPage() {
 
     const scanStartedAt = Date.now()
     try {
-      // DIRECT SYNCHRONOUS CALL, DISCLOSED (see file header): no job/poll, no queue, no worker —
-      // a single request that waits for the whole scan to finish. Both modes go through the same
-      // route; scanMode is passed straight through and the route dispatches to the identical
-      // runWalletScanV2Worker chain regardless of mode.
-      const response = await scanWalletV2(address, ['base', 'eth'], mode)
+      // JOB/POLL CALL: scanWalletV2() enqueues immediately, then polls status while the
+      // background queue runs the unchanged full scan worker outside this HTTP request.
+      const response = await scanWalletV2(address, ['base', 'eth'], mode, ({ status }) => {
+        setJobStatusMessage(status === 'queued' ? 'queued — still scanning…' : status === 'running' ? 'running — still scanning…' : status)
+      })
       setScanDurationMs(Date.now() - scanStartedAt)
       if (!response.success || !response.data) {
         throw new Error(response.error?.message ?? 'Scan failed')
@@ -488,7 +488,7 @@ export default function WalletScannerPage() {
           {/* Loading state */}
           {loading && (
             <div className="ws-card" style={{ color: 'rgba(148,163,184,0.75)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', fontSize: '13px' }}>
-              Scanning {input.trim()}…{jobStatusMessage ? ` (${jobStatusMessage})` : ''}
+              Scanning {input.trim()}…{jobStatusMessage ? ` (${jobStatusMessage})` : ' (queued — still scanning…)'}
               {scanProgress && (
                 <div style={{ marginTop: '6px', fontSize: '11px', color: 'rgba(148,163,184,0.55)' }}>
                   Module {scanProgress.currentModule}/{scanProgress.totalModules}: {scanProgress.moduleName}

@@ -97,71 +97,77 @@ export async function fetchScanModule(
   }
 }
 
-const V2_SCAN_ROUTE = '/api/scan-v2/full-scan/legacy'
+const WALLET_SCAN_ROUTE = '/api/wallet-scan'
+const POLL_INTERVAL_MS = 2_500
+const MAX_POLL_ATTEMPTS = 80
 
-// THE ONLY SCAN PATH, DISCLOSED (see file header): a single synchronous POST that waits for the
-// entire module chain (runWalletScanV2Worker, unchanged) to finish in one request/response round
-// trip — no job, no queue, no worker, no QStash, no auth beyond whatever the route itself already
-// enforces. Handles both `normal` and `deep` scanMode identically; the route itself dispatches to
-// the same runWalletScanV2Worker chain regardless of mode.
-//
-// ABORT-CONTROLLER: intentionally absent — there is no client-side ceiling on how long this fetch
-// can hang; a genuinely stuck connection waits indefinitely rather than failing after some fixed
-// timeout. The route's own maxDuration=300 is the real backstop.
-//
-// Never throws: a network failure or non-2xx response resolves to a structured
-// {success:false, error:{...}} instead of propagating an exception.
+type WalletScanJobStatus = 'queued' | 'running' | 'done' | 'failed' | 'not-found'
+
+type WalletScanJobResponse = {
+  jobId: string
+  status: WalletScanJobStatus
+  result?: ScanWalletApiResponse
+  error?: string | { message?: string }
+}
+
+export type ScanWalletStatusUpdate = {
+  jobId: string
+  status: WalletScanJobStatus
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => globalThis.setTimeout(resolve, ms))
+}
+
+function toErrorResponse(message: string, details?: string[]): ScanWalletApiResponse {
+  return { success: false, error: { message, category: 'network', details } }
+}
+
+// JOB/POLL SCAN PATH: POST returns immediately with a jobId, then this client polls the status
+// endpoint every 2.5s until the background worker stores the full scan response. The heavy
+// runWalletScanV2Worker call is never made by this client-facing HTTP request.
 export async function scanWalletV2(
   walletAddress: string,
   chains: string[],
   scanMode: ScanMode = 'normal',
+  onUpdate?: (update: ScanWalletStatusUpdate) => void,
 ): Promise<ScanWalletApiResponse> {
-  // eslint-disable-next-line no-console
-  console.log('[SCAN] calling scanWalletV2 with', walletAddress, chains, scanMode)
   try {
-    const res = await fetch(V2_SCAN_ROUTE, {
+    const startRes = await fetch(WALLET_SCAN_ROUTE, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ walletAddress, chains, scanMode }),
     })
-    // eslint-disable-next-line no-console
-    console.log('[SCAN] response status', res.status)
-    if (!res.ok) {
-      const bodyText = await res.text().catch(() => '')
-      let parsed: ScanWalletApiResponse | null = null
-      try {
-        parsed = bodyText ? (JSON.parse(bodyText) as ScanWalletApiResponse) : null
-      } catch {
-        parsed = null
+
+    const startBody = await startRes.json().catch(() => null) as WalletScanJobResponse | null
+    if (!startRes.ok || !startBody?.jobId) {
+      return toErrorResponse(startBody?.error && typeof startBody.error === 'object' && startBody.error.message ? startBody.error.message : 'scan-enqueue-failed')
+    }
+
+    onUpdate?.({ jobId: startBody.jobId, status: startBody.status })
+
+    for (let attempt = 0; attempt < MAX_POLL_ATTEMPTS; attempt += 1) {
+      await sleep(POLL_INTERVAL_MS)
+      const pollRes = await fetch(`${WALLET_SCAN_ROUTE}/${encodeURIComponent(startBody.jobId)}`)
+      const pollBody = await pollRes.json().catch(() => null) as WalletScanJobResponse | null
+
+      if (!pollRes.ok || !pollBody) {
+        return toErrorResponse('scan-status-unavailable', [`HTTP ${pollRes.status}`])
       }
-      if (parsed?.error?.message) {
-        return { success: false, error: parsed.error }
+
+      onUpdate?.({ jobId: pollBody.jobId, status: pollBody.status })
+
+      if (pollBody.status === 'done') {
+        return pollBody.result ?? toErrorResponse('scan-result-missing')
       }
-      // NON-JSON BODY, DISCLOSED: this route (app/api/scan-v2/full-scan/legacy/route.ts) always
-      // returns a real JSON error body on a normal failure — a non-JSON body here (HTML, empty,
-      // etc.) means something outside that route handler produced this response, most likely the
-      // platform itself killing the invocation once it exceeds its own maxDuration (a real, cold
-      // heavy scan taking longer than the route's timeout ceiling). Surfacing that distinction
-      // instead of an always-identical "network-failed" so a genuinely stuck/slow scan reads
-      // differently from an actual network/CORS/offline failure.
-      const looksLikeGatewayTimeout = res.status >= 500 && !bodyText.trim().startsWith('{')
-      return {
-        success: false,
-        error: {
-          message: looksLikeGatewayTimeout
-            ? 'The scan took too long and was stopped by the server. Try again, or try a lighter wallet.'
-            : 'network-failed',
-          category: 'network',
-          details: [`HTTP ${res.status}`, bodyText].filter(Boolean),
-        },
+
+      if (pollBody.status === 'failed') {
+        const message = typeof pollBody.error === 'string' ? pollBody.error : pollBody.error?.message
+        return toErrorResponse(message ?? 'scan-failed')
       }
     }
-    const body = (await res.json()) as ScanWalletApiResponse
-    // eslint-disable-next-line no-console
-    console.log('[SCAN] wrapper keys:', Object.keys(body))
-    // eslint-disable-next-line no-console
-    console.log('[SCAN] data keys:', Object.keys(body.data || {}))
-    return body
+
+    return toErrorResponse('scan-still-running', [`Timed out after ${Math.round((POLL_INTERVAL_MS * MAX_POLL_ATTEMPTS) / 1000)}s of polling.`])
   } catch (err) {
     return {
       success: false,
