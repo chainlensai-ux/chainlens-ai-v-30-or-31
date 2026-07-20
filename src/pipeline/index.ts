@@ -17,6 +17,7 @@ import { buildCounterpartyStats, classifyRouterLikeEvent, recordRouterCandidate 
 import { createRouterInference } from '../lib/routerInference'
 import { createPnlReconciliation } from '../lib/pnlReconciliation'
 import { createAyriAttribution } from '../lib/ayriAttribution'
+import { createFinalReportAssembler } from '../lib/finalReportAssembler'
 import { analyzeDistributorRouterFlows } from '../modules/distributorRecovery/index'
 import { reconstructRouterTrades } from '../modules/routerTradeReconstruction/index'
 import { logSyntheticPnlSummary, syntheticPnlAssembly } from '../modules/syntheticPnl/index'
@@ -34,8 +35,7 @@ import { buildFifoOutput } from '../modules/fifoEngine/index'
 import type { FifoOutput } from '../modules/fifoEngine/types'
 import { buildBehaviorIntelObject } from '../modules/behaviorIntel/index'
 import type { BehaviorIntelResult, WindowCoverage } from '../modules/behaviorIntel/types'
-import { assembleReport } from '../modules/finalReportAssembler/index'
-import type { AssembleReportInput, FinalReport, ScanMetadata } from '../modules/finalReportAssembler/types'
+import type { FinalReport, ScanMetadata } from '../modules/finalReportAssembler/types'
 import { buildBridgeDetectionObject } from '../modules/bridgeDetection/index'
 import type { BridgeCandidateEvent } from '../modules/bridgeDetection/types'
 import { buildSellTimeline } from '../modules/sellTimeline/index'
@@ -67,7 +67,6 @@ import {
   emptyChainSelection,
   emptyTimelines,
   fifoEngineFallback,
-  finalSummaryFallback,
   noPriceSources,
   pnlSummaryV2Fallback,
   pricingAtTimeFallback,
@@ -894,31 +893,6 @@ async function safeRunPricingAtTime(params: {
   }
 }
 
-function safeAssembleReport(input: AssembleReportInput): FinalReport {
-  try {
-    return assembleReport(input)
-  } catch {
-    // assembleReport is a pure merge and should never throw in practice; this is a last-resort
-    // guard so a truly unexpected failure still yields a shape-complete report rather than an
-    // unhandled exception reaching the caller.
-    return {
-      scanMetadata: input.scanMetadata,
-      chainSelection: input.chainSelection,
-      timelines: { ...input.timelines, sellTimelineV2: input.sellTimelineV2 },
-      recoveryPolicy: input.recoveryPolicy,
-      fifoAndPnl: input.fifoAndPnl,
-      behaviorIntel: input.behaviorIntel,
-      windowCoverage: input.windowCoverage,
-      finalSummary: finalSummaryFallback(),
-      bridgeTimeline: input.bridgeTimeline,
-      pnlSummaryV2: input.pnlSummaryV2,
-      pricingAtTime: input.pricingAtTime,
-      providerDiagnostics: input.providerDiagnostics,
-      pricingProvidersStatus: input.pricingProvidersStatus,
-    }
-  }
-}
-
 // ── Main entry point ──────────────────────────────────────────────────────────────────────────
 
 // SCAN-TIMING DIAGNOSTICS, DISCLOSED (orchestration-layer-only "why did this scan take X seconds"
@@ -1579,24 +1553,6 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     chainsScanned: preScan.sanitizedChains,
   }
 
-  const finalReport = safeAssembleReport({
-    scanMetadata,
-    chainSelection,
-    timelines,
-    recoveryPolicy,
-    fifoAndPnl: reconciledFifoAndPnl,
-    behaviorIntel,
-    windowCoverage,
-    bridgeTimeline,
-    sellTimelineV2,
-    pnlSummaryV2: reconciledPnlSummaryV2,
-    pricingAtTime,
-    providerDiagnostics,
-    pricingProvidersStatus: PRICING_PROVIDERS_STATUS,
-    syntheticPnl,
-    ayriAttribution,
-  })
-
   // "WHY DID THIS SCAN TAKE X SECONDS", DISCLOSED (orchestration-layer-only diagnostic summary):
   // total wall-clock time plus a per-stage breakdown of this file's own async await points — see
   // startStageTimer's own header for the honest limit of what this can and can't observe (nothing
@@ -1700,9 +1656,32 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     closedLots: reconciledPnlSummary.closedLots,
     totalSells: sellTimelineV2.totalSells,
     previousPnL: undefined,
-    currentPnL: ayriAttribution.realizedPnlUsd,
+    currentPnL: reconciledPnlSummary.realizedPnlUsd,
     excludedTokens,
   }
+  const finalReportAssembler = createFinalReportAssembler()
+  const finalReport = finalReportAssembler.assemble({
+    scanMetadata,
+    chainSelection,
+    timelines,
+    recoveryPolicy,
+    fifoAndPnl: reconciledFifoAndPnl,
+    behaviorIntel,
+    windowCoverage,
+    bridgeTimeline,
+    sellTimelineV2,
+    pnlSummaryV2: reconciledPnlSummaryV2,
+    pricingAtTime,
+    providerDiagnostics,
+    pricingProvidersStatus: PRICING_PROVIDERS_STATUS,
+    syntheticPnl,
+    ayriAttribution,
+    reconciledPnL: reconciledPnlSummary,
+    routerInferenceOutput: routerInferenceResult,
+    syntheticPnlAssemblyOutput: syntheticPnl,
+    pricingSourceBreakdown: walletPriceLookups.sourceBreakdown,
+    walletConditionInputs,
+  })
   // eslint-disable-next-line no-console
   console.log('[walletCondition] inputs', walletConditionInputs)
   const walletConditionMessages = buildWalletConditionMessages(walletConditionInputs)
