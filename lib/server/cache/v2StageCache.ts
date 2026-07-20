@@ -214,7 +214,16 @@ async function getStageCache<T>(key: string): Promise<T | null> {
   if (raw === undefined) return memoryFallbackGet<T>(key) // KV genuinely failed — fall back
   if (raw == null) return null // real cache miss, not a failure
 
-  const value = await decompressStageValue<T>(raw)
+  let value: T
+  if (typeof raw === 'object' && raw !== null && (raw as Partial<ChunkedKvManifest>).__chainlensChunkedKv === true) {
+    const manifest = raw as ChunkedKvManifest
+    const compressedChunks = await Promise.all(Array.from({ length: manifest.chunkCount }, (_, i) => withRetriesNoBreaker(() => kv.get<string>(`${key}:chunk:${i}`), null, `get:${key}:chunk:${i}`)))
+    if (compressedChunks.some((chunk) => typeof chunk !== 'string')) return memoryFallbackGet<T>(key)
+    const serializedChunks = await Promise.all((compressedChunks as string[]).map((chunk) => decompressString(chunk)))
+    value = JSON.parse(serializedChunks.join('')) as T
+  } else {
+    value = await decompressStageValue<T>(raw)
+  }
   if (value != null) memoryFallbackSet(key, value, 45) // keep the fallback warm on a real hit too
   return value
 }
@@ -270,6 +279,159 @@ async function setStageCache<T>(key: string, value: T, ttlSeconds: number): Prom
   await withRetriesNoBreaker(() => kv.set(key, compressedBase64, { ex: ttlSeconds }), undefined, `set:${key}`)
 }
 
+
+export type ChunkedKvWriteOptions = { degradedMode?: boolean }
+export type ChunkedKvWriter = {
+  write: (key: string, value: unknown, ttlSeconds: number, options?: ChunkedKvWriteOptions) => Promise<void>
+}
+export type ChunkedKvWriterConfig = {
+  kv?: Pick<typeof realKv, 'set'>
+  maxChunkBytes?: number
+  maxTotalWriteTimeMs?: number
+  now?: () => number
+  sleep?: (ms: number) => Promise<void>
+}
+
+const SAFE_WRITE_CHUNK_BYTES = 50_000
+const SAFE_WRITE_MAX_TOTAL_MS = 1500
+const SAFE_WRITE_BACKOFF_MS = [50, 100, 200]
+
+export type ChunkedKvManifest = {
+  __chainlensChunkedKv: true
+  version: 1
+  hash: string
+  encoding: 'gzip_base64'
+  chunkCount: number
+}
+
+async function sha256Hex(input: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(input))
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('')
+}
+
+export function chunkStringByUtf8Bytes(input: string, maxChunkBytes = SAFE_WRITE_CHUNK_BYTES): string[] {
+  const chunks: string[] = []
+  let current = ''
+  let currentBytes = 0
+  for (const char of input) {
+    const charBytes = Buffer.byteLength(char, 'utf8')
+    if (current && currentBytes + charBytes > maxChunkBytes) {
+      chunks.push(current)
+      current = ''
+      currentBytes = 0
+    }
+    current += char
+    currentBytes += charBytes
+  }
+  if (current || input.length === 0) chunks.push(current)
+  return chunks
+}
+
+async function compressString(value: string): Promise<string> {
+  const compressedStream = new Blob([value]).stream().pipeThrough(new CompressionStream('gzip'))
+  const buffer = await new Response(compressedStream).arrayBuffer()
+  return Buffer.from(buffer).toString('base64')
+}
+
+async function decompressString(base64: string): Promise<string> {
+  const decompressedStream = new Blob([Buffer.from(base64, 'base64')]).stream().pipeThrough(new DecompressionStream('gzip'))
+  const buffer = await new Response(decompressedStream).arrayBuffer()
+  return Buffer.from(buffer).toString('utf8')
+}
+
+async function writeWithBudget(params: {
+  kvClient: Pick<typeof realKv, 'set'>
+  key: string
+  value: unknown
+  ttlSeconds: number
+  label: string
+  maxTotalWriteTimeMs: number
+  startedAt: number
+  now: () => number
+  sleepFn: (ms: number) => Promise<void>
+}): Promise<boolean> {
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    if (params.now() - params.startedAt >= params.maxTotalWriteTimeMs) return false
+    try {
+      const remainingMs = Math.max(1, params.maxTotalWriteTimeMs - (params.now() - params.startedAt))
+      await withTimeout(params.kvClient.set(params.key, params.value, { ex: params.ttlSeconds }), Math.min(KV_CALL_TIMEOUT_MS, remainingMs))
+      return true
+    } catch (err) {
+      const isTimeout = err instanceof Error && err.message === 'kv_timeout'
+      // eslint-disable-next-line no-console
+      console[isTimeout ? 'warn' : 'error'](isTimeout ? 'kv_timeout_safe' : 'KV ERROR', { label: params.label, attempt: attempt + 1, totalAttempts: MAX_RETRIES + 1, ...(isTimeout ? {} : { error: err instanceof Error ? err.message : String(err) }) })
+      const backoffMs = SAFE_WRITE_BACKOFF_MS[attempt] ?? SAFE_WRITE_BACKOFF_MS[SAFE_WRITE_BACKOFF_MS.length - 1]
+      if (attempt < MAX_RETRIES && params.now() - params.startedAt + backoffMs < params.maxTotalWriteTimeMs) await params.sleepFn(backoffMs)
+    }
+  }
+  return false
+}
+
+export function createChunkedKvWriter(kind: 'holdings' | 'providerFetchWindow', config: ChunkedKvWriterConfig = {}): ChunkedKvWriter {
+  const kvClient = config.kv ?? kv
+  const maxChunkBytes = config.maxChunkBytes ?? SAFE_WRITE_CHUNK_BYTES
+  const maxTotalWriteTimeMs = config.maxTotalWriteTimeMs ?? SAFE_WRITE_MAX_TOTAL_MS
+  const now = config.now ?? (() => performance.now())
+  const sleepFn = config.sleep ?? sleep
+  const seenHashes = new Map<string, string>()
+  let queue = Promise.resolve()
+
+  async function runWrite(key: string, value: unknown, ttlSeconds: number, options?: ChunkedKvWriteOptions): Promise<void> {
+    if (options?.degradedMode) {
+      // eslint-disable-next-line no-console
+      console.warn(`[${kind === 'holdings' ? 'holdings-kv' : 'provider-window-kv'}] write-skipped`, { reason: 'degraded_mode', key })
+      return
+    }
+    if (!config.kv && !kvConfigured()) return
+
+    const serialized = JSON.stringify(value)
+    const hash = await sha256Hex(serialized)
+    if (seenHashes.get(key) === hash) {
+      // eslint-disable-next-line no-console
+      console.warn(`[${kind === 'holdings' ? 'holdings-kv' : 'provider-window-kv'}] write-skipped`, { reason: 'unchanged', key })
+      return
+    }
+
+    const startedAt = now()
+    const chunks = chunkStringByUtf8Bytes(serialized, maxChunkBytes)
+    const compressedChunks = [] as string[]
+    for (const chunk of chunks) compressedChunks.push(await compressString(chunk))
+
+    for (let i = 0; i < compressedChunks.length; i++) {
+      const ok = await writeWithBudget({ kvClient, key: `${key}:chunk:${i}`, value: compressedChunks[i], ttlSeconds, label: `set:${key}:chunk:${i}`, maxTotalWriteTimeMs, startedAt, now, sleepFn })
+      if (!ok) {
+        // eslint-disable-next-line no-console
+        console.warn(`[${kind === 'holdings' ? 'holdings-kv' : 'provider-window-kv'}] write-skipped`, { reason: 'budget_exceeded', key })
+        return
+      }
+    }
+
+    const manifest: ChunkedKvManifest = { __chainlensChunkedKv: true, version: 1, hash, encoding: 'gzip_base64', chunkCount: compressedChunks.length }
+    const ok = await writeWithBudget({ kvClient, key, value: manifest, ttlSeconds, label: `set:${key}`, maxTotalWriteTimeMs, startedAt, now, sleepFn })
+    if (!ok) {
+      // eslint-disable-next-line no-console
+      console.warn(`[${kind === 'holdings' ? 'holdings-kv' : 'provider-window-kv'}] write-skipped`, { reason: 'budget_exceeded', key })
+      return
+    }
+    seenHashes.set(key, hash)
+  }
+
+  return {
+    write(key, value, ttlSeconds, options) {
+      queue = queue.then(() => runWrite(key, value, ttlSeconds, options)).catch(() => undefined)
+      return queue
+    },
+  }
+}
+
+export function createHoldingsKvWriter(config: ChunkedKvWriterConfig = {}): ChunkedKvWriter {
+  return createChunkedKvWriter('holdings', config)
+}
+
+export function createProviderWindowKvWriter(config: ChunkedKvWriterConfig = {}): ChunkedKvWriter {
+  return createChunkedKvWriter('providerFetchWindow', config)
+}
+
 // TEST-ONLY EXPORTS, DISCLOSED: setStageCache/getStageCache themselves stay private (not part of
 // this module's real public API — withStageCache is) — these are thin aliases exported solely so
 // tests/cache/v2StageCache.test.ts can exercise the real write/read branching (small-vs-large
@@ -301,11 +463,24 @@ export function resolveEffectiveTtl(ttlSeconds: number, nodeEnv: string | undefi
 // cache miss/failure — this function NEVER returns a defaulted/zeroed value because of a KV
 // problem (requirements 3 and 6): the caller's own real computation is the only source of truth
 // when the cache can't help.
-export async function withStageCache<T>(key: string, ttlSeconds: number, compute: () => Promise<T>): Promise<T> {
+export async function withStageCache<T>(
+  key: string,
+  ttlSeconds: number,
+  compute: () => Promise<T>,
+  options?: { writer?: ChunkedKvWriter; degradedMode?: boolean; awaitWrite?: boolean; skipWrite?: boolean },
+): Promise<T> {
   const cached = await getStageCache<T>(key)
   if (cached !== null) return cached
 
   const result = await compute()
-  await setStageCache(key, result, resolveEffectiveTtl(ttlSeconds, process.env.NODE_ENV))
+  if (options?.skipWrite) return result
+
+  const effectiveTtl = resolveEffectiveTtl(ttlSeconds, process.env.NODE_ENV)
+  if (options?.writer) {
+    const writePromise = options.writer.write(key, result, effectiveTtl, { degradedMode: options.degradedMode })
+    if (options.awaitWrite) await writePromise
+  } else {
+    await setStageCache(key, result, effectiveTtl)
+  }
   return result
 }

@@ -8,7 +8,14 @@
 
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { resolveEffectiveTtl, compress, decompress, decompressStageValue, MAX_PAYLOAD_BYTES } from './v2StageCache'
+import { resolveEffectiveTtl, compress, decompress, decompressStageValue, MAX_PAYLOAD_BYTES, createHoldingsKvWriter, chunkStringByUtf8Bytes } from './v2StageCache'
+
+async function decompressChunkForTest(base64: unknown): Promise<string> {
+  assert.equal(typeof base64, 'string')
+  const decompressedStream = new Blob([Buffer.from(base64 as string, 'base64')]).stream().pipeThrough(new DecompressionStream('gzip'))
+  const buffer = await new Response(decompressedStream).arrayBuffer()
+  return Buffer.from(buffer).toString('utf8')
+}
 
 describe('resolveEffectiveTtl — production behavior unchanged', () => {
   it('returns the caller-supplied ttlSeconds exactly, untouched, when NODE_ENV is production', () => {
@@ -104,5 +111,68 @@ describe('decompressStageValue — backward-compatible read (internal fallback h
     const { compressedBase64 } = await compress(original)
     const result = await decompressStageValue<typeof original>(compressedBase64)
     assert.deepEqual(result, original)
+  })
+})
+
+describe('chunked holdings/provider KV writer', () => {
+  it('chunks deterministically into <=50KB serialized segments and compresses each chunk', async () => {
+    const input = 'x'.repeat(120_000)
+    const chunks = chunkStringByUtf8Bytes(input, 50_000)
+    assert.deepEqual(chunks.map((c) => Buffer.byteLength(c, 'utf8')), [50_000, 50_000, 20_000])
+    assert.deepEqual(chunkStringByUtf8Bytes(input, 50_000), chunks)
+  })
+
+  it('writes compressed chunks plus a deterministic manifest that reassembles correctly', async () => {
+    const writes: Array<{ key: string; value: unknown }> = []
+    const writer = createHoldingsKvWriter({ kv: { set: async (key: string, value: unknown) => { writes.push({ key, value }); return 'OK' } } as never, sleep: async () => undefined })
+    const value = { items: Array.from({ length: 2000 }, (_, i) => ({ i, token: '0xabc', amount: String(i) })) }
+
+    await writer.write('v2:holdings:base:0xabc', value, 20)
+
+    assert.ok(writes.length > 1, 'expected chunk writes plus manifest')
+    const manifest = writes.at(-1)!.value as { __chainlensChunkedKv: boolean; chunkCount: number; hash: string }
+    assert.equal(manifest.__chainlensChunkedKv, true)
+    assert.equal(manifest.chunkCount, writes.length - 1)
+    assert.equal(typeof manifest.hash, 'string')
+    const serialized = (await Promise.all(writes.slice(0, -1).map((w) => decompressChunkForTest(w.value)))).join('')
+    assert.deepEqual(JSON.parse(serialized), value)
+  })
+
+  it('enforces total write budget and logs budget_exceeded without throwing', async () => {
+    let nowMs = 0
+    const writes: string[] = []
+    const calls: unknown[][] = []
+    const original = console.warn
+    console.warn = (...args: unknown[]) => { calls.push(args) }
+    try {
+      const writer = createHoldingsKvWriter({
+        kv: { set: async (key: string) => { writes.push(key); nowMs += 1000; return 'OK' } } as never,
+        now: () => nowMs,
+        sleep: async (ms) => { nowMs += ms },
+        maxTotalWriteTimeMs: 1,
+        maxChunkBytes: 10,
+      })
+      await writer.write('v2:holdings:base:0xabc', { text: 'x'.repeat(100) }, 20)
+    } finally {
+      console.warn = original
+    }
+    assert.ok(writes.length <= 1)
+    assert.ok(calls.some((c) => c[0] === '[holdings-kv] write-skipped' && (c[1] as { reason: string }).reason === 'budget_exceeded'))
+  })
+
+  it('skips unchanged payloads by hash within the request-scoped writer', async () => {
+    const writes: Array<{ key: string; value: unknown }> = []
+    const writer = createHoldingsKvWriter({ kv: { set: async (key: string, value: unknown) => { writes.push({ key, value }); return 'OK' } } as never, sleep: async () => undefined })
+    await writer.write('v2:holdings:base:0xabc', { same: true }, 20)
+    const firstWriteCount = writes.length
+    await writer.write('v2:holdings:base:0xabc', { same: true }, 20)
+    assert.equal(writes.length, firstWriteCount)
+  })
+
+  it('skips writes in degraded mode', async () => {
+    const writes: unknown[] = []
+    const writer = createHoldingsKvWriter({ kv: { set: async (...args: unknown[]) => { writes.push(args); return 'OK' } } as never })
+    await writer.write('v2:holdings:base:0xabc', { skipped: true }, 20, { degradedMode: true })
+    assert.equal(writes.length, 0)
   })
 })
