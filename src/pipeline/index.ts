@@ -15,6 +15,7 @@ import type { RawProviderEvent, SupportedChain } from '../modules/providerFetchW
 import { normalizeEvents } from '../modules/normalization/index'
 import { buildCounterpartyStats, classifyRouterLikeEvent, recordRouterCandidate } from './routerDiscovery'
 import { createRouterInference } from '../lib/routerInference'
+import { createPnlReconciliation } from '../lib/pnlReconciliation'
 import { analyzeDistributorRouterFlows } from '../modules/distributorRecovery/index'
 import { reconstructRouterTrades } from '../modules/routerTradeReconstruction/index'
 import { logSyntheticPnlSummary, syntheticPnlAssembly } from '../modules/syntheticPnl/index'
@@ -1507,6 +1508,32 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // below, so terminal truncation of normalizedEvents/provider-window details cannot hide it.
   logSyntheticPnlSummary(syntheticPnl)
 
+  const pnlReconciliation = createPnlReconciliation({
+    priceKvClient: requestPriceKvClient,
+    priceSources: requestPriceSources,
+    dustSuppressedKeys,
+  })
+  const reconciledPnlSummary = await pnlReconciliation.reconcile({
+    fifoEngineResult: fifoAndPnl,
+    pnlEngineResult: adaptedPnlSummary,
+    computePnlResult: syntheticPnl ? { realizedPnlUsd: syntheticPnl.totalRealizedPnlUsd, unrealizedPnlUsd: syntheticPnl.totalUnrealizedPnlUsd } : null,
+    routerInferenceOutput: routerInferenceResult,
+    syntheticPnlAssemblyOutput: syntheticPnl,
+  })
+  const reconciledFifoAndPnl: FifoOutput = {
+    ...fifoAndPnl,
+    unmatchedBuys: reconciledPnlSummary.unmatchedBuys,
+    unmatchedSells: reconciledPnlSummary.unmatchedSells,
+    realizedPnlUsd: reconciledPnlSummary.realizedPnlUsd,
+    unrealizedPnlUsd: reconciledPnlSummary.unrealizedPnlUsd,
+    publicPnlStatus: reconciledPnlSummary.publicPnlStatus === 'available' ? 'ok' : reconciledPnlSummary.publicPnlStatus === 'partial' ? 'limited_verified_sample' : 'unavailable',
+  }
+  const reconciledPnlSummaryV2: PnlSummaryResult = {
+    ...adaptedPnlSummary,
+    realizedPnlUsd: reconciledPnlSummary.realizedPnlUsd,
+    evidenceMissingCount: reconciledPnlSummary.missingEvidenceCount,
+  }
+
   // Deferred until after the mandatory synthetic-PnL summary above; these can be very large on
   // provider-only/heavy-wallet scans and must never be the first thing a truncated terminal keeps.
   // eslint-disable-next-line no-console
@@ -1546,12 +1573,12 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     chainSelection,
     timelines,
     recoveryPolicy,
-    fifoAndPnl,
+    fifoAndPnl: reconciledFifoAndPnl,
     behaviorIntel,
     windowCoverage,
     bridgeTimeline,
     sellTimelineV2,
-    pnlSummaryV2: adaptedPnlSummary,
+    pnlSummaryV2: reconciledPnlSummaryV2,
     pricingAtTime,
     providerDiagnostics,
     pricingProvidersStatus: PRICING_PROVIDERS_STATUS,
@@ -1566,7 +1593,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // dust-suppressed count is the one real, verifiable signal this layer has for "how much of the
   // pricing fan-out was avoided."
   const distinctBuyTokenCount = new Set(timelines.buyTimeline.entries.map((e) => dustTokenKey(e.chain, e.token))).size
-  const heavyWallet = computeHeavyWalletFlag(distinctBuyTokenCount, fifoAndPnl.matchedLots.length)
+  const heavyWallet = computeHeavyWalletFlag(distinctBuyTokenCount, reconciledFifoAndPnl.matchedLots.length)
   // deadTokenSkippedCount vs. unindexedTokenSkippedCount, DISCLOSED: these are requested as two
   // separate counts, but this implementation only has ONE real "no market found at all" signal
   // (classifyDustSuppression's 'no_market_found' reason) — there is no independent, orchestration-
@@ -1658,10 +1685,10 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     fallbackAttempts: walletPriceLookups.sourceBreakdown.fallback,
     providerErrors: providerErrorCount,
     suppressionSkipped: dustSuppressedKeys.size,
-    closedLots: adaptedPnlSummary.closedLots.length,
+    closedLots: reconciledPnlSummary.closedLots,
     totalSells: sellTimelineV2.totalSells,
     previousPnL: undefined,
-    currentPnL: adaptedPnlSummary.realizedPnlUsd,
+    currentPnL: reconciledPnlSummary.realizedPnlUsd,
     excludedTokens,
   }
   // eslint-disable-next-line no-console
