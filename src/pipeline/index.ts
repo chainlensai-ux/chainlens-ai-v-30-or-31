@@ -16,6 +16,7 @@ import { normalizeEvents } from '../modules/normalization/index'
 import { buildCounterpartyStats, classifyRouterLikeEvent, recordRouterCandidate } from './routerDiscovery'
 import { createRouterInference } from '../lib/routerInference'
 import { createPnlReconciliation } from '../lib/pnlReconciliation'
+import { createAyriAttribution } from '../lib/ayriAttribution'
 import { analyzeDistributorRouterFlows } from '../modules/distributorRecovery/index'
 import { reconstructRouterTrades } from '../modules/routerTradeReconstruction/index'
 import { logSyntheticPnlSummary, syntheticPnlAssembly } from '../modules/syntheticPnl/index'
@@ -1533,6 +1534,16 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     realizedPnlUsd: reconciledPnlSummary.realizedPnlUsd,
     evidenceMissingCount: reconciledPnlSummary.missingEvidenceCount,
   }
+  const priceRecoveryMap = new Set(reconciledPnlSummary.mismatches.filter((m) => m.classification === 'priceRecovered').map((m) => m.key))
+  const ayriAttribution = createAyriAttribution().build({
+    reconciledPnL: reconciledPnlSummary,
+    reconciledLots: reconciledFifoAndPnl.matchedLots,
+    routerInferenceOutput: routerInferenceResult,
+    syntheticPnlAssemblyOutput: syntheticPnl,
+    priceRecoveryMap,
+    pricingSourceBreakdown: walletPriceLookups.sourceBreakdown,
+    pricingRoutes: walletPriceLookups.historicalPricingAttempts,
+  })
 
   // Deferred until after the mandatory synthetic-PnL summary above; these can be very large on
   // provider-only/heavy-wallet scans and must never be the first thing a truncated terminal keeps.
@@ -1583,6 +1594,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     providerDiagnostics,
     pricingProvidersStatus: PRICING_PROVIDERS_STATUS,
     syntheticPnl,
+    ayriAttribution,
   })
 
   // "WHY DID THIS SCAN TAKE X SECONDS", DISCLOSED (orchestration-layer-only diagnostic summary):
@@ -1688,7 +1700,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     closedLots: reconciledPnlSummary.closedLots,
     totalSells: sellTimelineV2.totalSells,
     previousPnL: undefined,
-    currentPnL: reconciledPnlSummary.realizedPnlUsd,
+    currentPnL: ayriAttribution.realizedPnlUsd,
     excludedTokens,
   }
   // eslint-disable-next-line no-console
