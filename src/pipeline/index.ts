@@ -14,6 +14,7 @@ import { fetchProviderWindow } from '../modules/providerFetchWindow/index'
 import type { RawProviderEvent, SupportedChain } from '../modules/providerFetchWindow/types'
 import { normalizeEvents } from '../modules/normalization/index'
 import { buildCounterpartyStats, classifyRouterLikeEvent, recordRouterCandidate } from './routerDiscovery'
+import { createRouterInference } from '../lib/routerInference'
 import { analyzeDistributorRouterFlows } from '../modules/distributorRecovery/index'
 import { reconstructRouterTrades } from '../modules/routerTradeReconstruction/index'
 import { logSyntheticPnlSummary, syntheticPnlAssembly } from '../modules/syntheticPnl/index'
@@ -1047,7 +1048,10 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // the already-produced `normalizedEvents`, logs them, and does not affect `normalizedEvents`,
   // `normalizationErrors`, or anything downstream. Remove once the question above is answered.
   const outboundEvents = normalizedEvents.filter((e) => e.direction === 'outbound')
-  const outboundToKnownRouter = outboundEvents.filter((e) => KNOWN_DEX_ROUTER_ADDRESSES.has(e.toAddress.toLowerCase()))
+  const routerInference = createRouterInference({ knownRouterAddresses: KNOWN_DEX_ROUTER_ADDRESSES })
+  const routerInferenceResult = routerInference.build(normalizedEvents)
+  const inferredRouterAddresses = routerInferenceResult.highConfidenceRouters
+  const outboundToKnownRouter = outboundEvents.filter((e) => inferredRouterAddresses.has(e.toAddress.toLowerCase()))
   const normalizedEventsTrace = {
     rawEventsCount: allRawEvents.length,
     normalizedEventsCount: normalizedEvents.length,
@@ -1060,7 +1064,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       token: e.contract,
       amount: e.amount,
       counterparty: e.toAddress.toLowerCase(),
-      isKnownRouter: KNOWN_DEX_ROUTER_ADDRESSES.has(e.toAddress.toLowerCase()),
+      isKnownRouter: inferredRouterAddresses.has(e.toAddress.toLowerCase()),
     })),
   }
 
@@ -1071,7 +1075,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // gets this real, named signal. Used below ONLY to widen the token set fed to the ADDITIVE display
   // pricingAtTime pass (stage 6c) — never priceLotsForWallet's fifoEngine-feeding input, never
   // holdings' own separate dust-suppression computation, never fifoEngine/pnlV2 themselves.
-  const routerDistributorMode = computeRouterDistributorMode(outboundEvents.length, outboundToKnownRouter.length)
+  const routerDistributorMode = inferredRouterAddresses.size > 0 && computeRouterDistributorMode(outboundEvents.length, outboundToKnownRouter.length)
 
   // DISTRIBUTOR RECOVERY, DISCLOSED (src/modules/distributorRecovery — read-only observability, not
   // reconstruction): see that module's own header for the full disclosure on why this never touches
@@ -1079,7 +1083,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // event (for distributor wallets only) as evidence-complete (a real same-tx inbound leg exists)
   // or evidence-missing, purely for logging — `normalizedEvents` itself is passed through untouched
   // to every downstream stage exactly as it always was.
-  const distributorRecovery = analyzeDistributorRouterFlows(normalizedEvents, KNOWN_DEX_ROUTER_ADDRESSES, routerDistributorMode)
+  const distributorRecovery = analyzeDistributorRouterFlows(normalizedEvents, inferredRouterAddresses, routerDistributorMode)
   if (distributorRecovery.applied) {
     // eslint-disable-next-line no-console
     console.warn('[pipeline] distributorRecovery', {
@@ -1095,7 +1099,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // header for the full reasoning on why candidate trades are NEVER fed into priceLotsForWallet's
   // or fifoEngine's real event inputs). `normalizedEvents` is passed through completely unchanged
   // to every downstream stage — this block only derives a logging-only view over it.
-  const routerTradeReconstruction = reconstructRouterTrades(normalizedEvents, KNOWN_DEX_ROUTER_ADDRESSES, routerDistributorMode)
+  const routerTradeReconstruction = reconstructRouterTrades(normalizedEvents, inferredRouterAddresses, routerDistributorMode)
   if (routerTradeReconstruction.applied) {
     // eslint-disable-next-line no-console
     console.warn('[pipeline] routerTradeReconstruction', {
@@ -1123,7 +1127,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
 
     for (const event of normalizedEvents) {
       if (event.direction !== 'outbound') continue
-      if (KNOWN_DEX_ROUTER_ADDRESSES.has(event.toAddress.toLowerCase())) continue
+      if (inferredRouterAddresses.has(event.toAddress.toLowerCase())) continue
 
       const sameTxEvents = eventsByTx.get(event.txHash) ?? [event]
       const { isRouterLike, heuristic } = classifyRouterLikeEvent(event, sameTxEvents, counterpartyStats)
