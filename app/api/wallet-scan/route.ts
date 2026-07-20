@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { isAddress } from 'viem'
-import { enqueueWalletScanJob, writeWalletScanJob, type WalletScanJobMetadata } from '@/src/modules/walletScanQueue'
+import { enqueueWalletScanJob } from '@/src/modules/walletScanQueue'
 
 export const maxDuration = 10
 
@@ -23,11 +23,7 @@ export async function POST(req: Request): Promise<Response> {
     : ['base', 'eth']
   const scanMode: ScanMode = body?.scanMode === 'deep' ? 'deep' : 'normal'
   const jobId = crypto.randomUUID()
-  const now = Date.now()
-  const job: WalletScanJobMetadata = { jobId, wallet, status: 'queued', createdAt: now, updatedAt: now }
-
-  await writeWalletScanJob(job)
-  await enqueueWalletScanJob({
+  await enqueueWalletScanJob(jobId, {
     jobId,
     walletAddress: wallet,
     chains,

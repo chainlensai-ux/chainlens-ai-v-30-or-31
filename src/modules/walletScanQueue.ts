@@ -8,6 +8,9 @@ export type WalletScanJobMetadata = {
   status: WalletScanJobStatus
   createdAt: number
   updatedAt: number
+  chains?: string[]
+  scanMode?: 'normal' | 'deep'
+  ip?: string
   error?: string
 }
 
@@ -30,8 +33,8 @@ export function walletScanResultKey(jobId: string): string {
   return `walletScanResult:${jobId}`
 }
 
-export function walletScanPayloadKey(jobId: string): string {
-  return `walletScanPayload:${jobId}`
+export function walletScanPendingJobKey(jobId: string): string {
+  return `walletScanPending:${jobId}`
 }
 
 export function walletScanPendingKey(): string {
@@ -70,9 +73,20 @@ async function triggerWalletScanWorker(): Promise<void> {
   }
 }
 
-export async function enqueueWalletScanJob(payload: WalletScanJobPayload): Promise<void> {
-  await redis.set(walletScanPayloadKey(payload.jobId), payload, { ex: JOB_TTL_SECONDS })
+export async function enqueueWalletScanJob(jobId: string, payload: WalletScanJobPayload): Promise<void> {
+  const now = Date.now()
+  await writeWalletScanJob({
+    jobId,
+    wallet: payload.walletAddress,
+    status: 'queued',
+    createdAt: now,
+    updatedAt: now,
+    chains: payload.chains,
+    scanMode: payload.scanMode,
+    ip: payload.ip,
+  })
+  await redis.set(walletScanPendingJobKey(jobId), true, { ex: JOB_TTL_SECONDS })
   const pending = (await redis.get<string[]>(walletScanPendingKey())) ?? []
-  await redis.set(walletScanPendingKey(), [...pending, payload.jobId], { ex: JOB_TTL_SECONDS })
+  await redis.set(walletScanPendingKey(), [...new Set([...pending, jobId])], { ex: JOB_TTL_SECONDS })
   void triggerWalletScanWorker()
 }
