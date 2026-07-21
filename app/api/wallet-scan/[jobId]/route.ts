@@ -20,9 +20,11 @@ export async function GET(_req: Request, context: { params: Promise<{ jobId: str
   if (job.status === 'done') {
     try {
       const result = await readWalletScanResult(jobId)
-      return NextResponse.json({ jobId, status: job.status, result: result ?? walletScanResultMissingFallback(jobId, job) })
+      const fallback = result ?? walletScanResultMissingFallback(jobId, job)
+      const degraded = fallback && typeof fallback === 'object' && 'degraded' in fallback
+      return NextResponse.json({ jobId, status: job.status, ...(degraded ? { degraded: true } : {}), result: fallback })
     } catch {
-      return NextResponse.json(WALLET_SCAN_STATUS_UNAVAILABLE, { status: 503 })
+      return NextResponse.json({ jobId, status: 'done', degraded: true, result: walletScanResultMissingFallback(jobId, job) })
     }
   }
 

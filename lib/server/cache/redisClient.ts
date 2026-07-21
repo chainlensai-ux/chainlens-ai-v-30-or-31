@@ -17,6 +17,14 @@ function restToken(): string {
   return process.env.UPSTASH_REDIS_REST_TOKEN ?? process.env.KV_REST_API_TOKEN ?? ''
 }
 
+function fallbackRestUrl(): string {
+  return process.env.UPSTASH_REDIS_REST_URL_FALLBACK ?? process.env.UPSTASH_REDIS_GLOBAL_REST_URL ?? process.env.VERCEL_KV_REST_API_URL ?? ''
+}
+
+function fallbackRestToken(): string {
+  return process.env.UPSTASH_REDIS_REST_TOKEN_FALLBACK ?? process.env.UPSTASH_REDIS_GLOBAL_REST_TOKEN ?? process.env.VERCEL_KV_REST_API_TOKEN ?? ''
+}
+
 function readOnlyRestToken(): string {
   return process.env.UPSTASH_REDIS_REST_READ_ONLY_TOKEN ?? process.env.KV_REST_API_READ_ONLY_TOKEN ?? ''
 }
@@ -54,6 +62,10 @@ export function restTokensConfigured(): boolean {
 
 export function redisConfigured(): boolean {
   return Boolean(restUrl() && restToken())
+}
+
+export function redisFallbackConfigured(): boolean {
+  return Boolean(fallbackRestUrl() && fallbackRestToken())
 }
 
 export function redisEndpoint(): string | undefined {
@@ -110,7 +122,30 @@ export function isRedisRestTimeout(error: unknown): boolean {
   return details.code === 'ETIMEDOUT' || details.name === 'TimeoutError' || message.includes('timeout') || message.includes('timed out')
 }
 
+export function isRedisRestRateLimited(error: unknown): boolean {
+  const details = errorDetails(error)
+  const message = details.message.toLowerCase()
+  return details.code === 'budget_exceeded' || message.includes('budget_exceeded') || message.includes('rate limit') || message.includes('too many requests') || message.includes('max requests') || message.includes('bandwidth')
+}
+
+export function logRedisRestUsageDiagnostics(label: string, error?: unknown): void {
+  const err = error as { remainingRps?: unknown; remainingBandwidth?: unknown; remainingPipelineBudget?: unknown; latencyMs?: unknown; clusterHealth?: unknown; headers?: { get?: (name: string) => string | null } } | null
+  const headers = err?.headers
+  console.warn(label, {
+    remainingRps: err?.remainingRps ?? headers?.get?.('x-ratelimit-remaining') ?? 'unknown',
+    remainingBandwidth: err?.remainingBandwidth ?? headers?.get?.('x-upstash-remaining-bandwidth') ?? 'unknown',
+    remainingPipelineBudget: err?.remainingPipelineBudget ?? headers?.get?.('x-upstash-remaining-pipeline') ?? 'unknown',
+    regionLatencyMs: err?.latencyMs ?? 'unknown',
+    clusterHealth: err?.clusterHealth ?? (redisRegionAligned() ? 'aligned' : 'region-mismatch'),
+    endpoint: redisEndpoint(),
+    fallbackConfigured: redisFallbackConfigured(),
+    region: redisRegion(),
+    deploymentRegion: deploymentRegion(),
+  })
+}
+
 let client: Redis | null = null
+let fallbackClient: Redis | null = null
 
 function getClient(): Redis | null {
   if (!redisConfigured()) return null
@@ -120,6 +155,26 @@ function getClient(): Redis | null {
     console.warn('[redis-rest] region-mismatch', { endpoint: redisEndpoint(), region: redisRegion(), expectedRegion: EXPECTED_REDIS_REGION, vercelRegion: deploymentRegion() })
   }
   return client
+}
+
+function getFallbackClient(): Redis | null {
+  if (!redisFallbackConfigured()) return null
+  if (fallbackClient) return fallbackClient
+  fallbackClient = new Redis({ url: fallbackRestUrl(), token: fallbackRestToken() })
+  console.warn('[redis-rest] fallback-client-enabled', { endpoint: fallbackRestUrl() ? new URL(fallbackRestUrl()).origin : undefined, region: 'global' })
+  return fallbackClient
+}
+
+async function withFallback<T>(label: string, primary: () => Promise<T>, fallback: () => Promise<T>): Promise<T> {
+  try {
+    return await primary()
+  } catch (err) {
+    logRedisRestUsageDiagnostics(`[redis-rest] ${label} primary failure diagnostics`, err)
+    const c = getFallbackClient()
+    if (!c) throw err
+    console.warn('[redis-rest] using fallback kv write path', { label, fallbackRegion: 'global' })
+    return await fallback()
+  }
 }
 
 async function withTimeout<T>(promise: Promise<T>, kind: 'normal' | 'critical'): Promise<T> {
@@ -140,18 +195,16 @@ export const redis = {
   async get<T = unknown>(key: string): Promise<T | null> {
     const c = getClient()
     if (!c) throw new RedisRestUnavailableError('redis_rest_client_unavailable', { endpoint: redisEndpoint() })
-    return await withTimeout(c.get<T>(key), 'normal')
+    return await withFallback(`get:${key}`, () => withTimeout(c.get<T>(key), 'normal'), async () => { const f = getFallbackClient(); if (!f) throw new RedisRestUnavailableError('redis_rest_fallback_unavailable'); return await withTimeout(f.get<T>(key), 'normal') })
   },
   async set(key: string, value: unknown, opts?: { ex?: number }): Promise<void> {
     const c = getClient()
     if (!c) throw new RedisRestUnavailableError('redis_rest_client_unavailable', { endpoint: redisEndpoint() })
-    if (opts?.ex) await withTimeout(c.set(key, value, { ex: opts.ex }), 'normal')
-    else await withTimeout(c.set(key, value), 'normal')
+    await withFallback(`set:${key}`, () => opts?.ex ? withTimeout(c.set(key, value, { ex: opts.ex }), 'normal') : withTimeout(c.set(key, value), 'normal'), async () => { const f = getFallbackClient(); if (!f) throw new RedisRestUnavailableError('redis_rest_fallback_unavailable'); return opts?.ex ? await withTimeout(f.set(key, value, { ex: opts.ex }), 'normal') : await withTimeout(f.set(key, value), 'normal') })
   },
   async setCritical(key: string, value: unknown, opts?: { ex?: number }): Promise<void> {
     const c = getClient()
     if (!c) throw new RedisRestUnavailableError('redis_rest_client_unavailable', { endpoint: redisEndpoint() })
-    if (opts?.ex) await withTimeout(c.set(key, value, { ex: opts.ex }), 'critical')
-    else await withTimeout(c.set(key, value), 'critical')
+    await withFallback(`setCritical:${key}`, () => opts?.ex ? withTimeout(c.set(key, value, { ex: opts.ex }), 'critical') : withTimeout(c.set(key, value), 'critical'), async () => { const f = getFallbackClient(); if (!f) throw new RedisRestUnavailableError('redis_rest_fallback_unavailable'); return opts?.ex ? await withTimeout(f.set(key, value, { ex: opts.ex }), 'critical') : await withTimeout(f.set(key, value), 'critical') })
   },
 }
