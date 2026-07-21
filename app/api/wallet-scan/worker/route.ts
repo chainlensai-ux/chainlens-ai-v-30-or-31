@@ -1,3 +1,4 @@
+import { NextResponse, after } from 'next/server'
 import type { WalletScanJobMetadata, WalletScanJobPayload } from '@/src/modules/walletScanQueue'
 
 export const runtime = 'edge'
@@ -74,9 +75,7 @@ async function runWalletScanJob(payload: WalletScanJobPayload): Promise<void> {
   }
 }
 
-export default async function worker(request: Request): Promise<void> {
-  void request
-
+async function drainWalletScanQueue(): Promise<void> {
   for (;;) {
     try {
       const payload = await claimNextPayload()
@@ -86,6 +85,16 @@ export default async function worker(request: Request): Promise<void> {
       console.error('[wallet-scan-worker] loop failed', err)
     }
   }
+}
+
+export default async function worker(request: Request): Promise<Response> {
+  void request
+
+  after(async () => {
+    await drainWalletScanQueue()
+  })
+
+  return NextResponse.json({ accepted: true })
 }
 
 export const POST = worker
