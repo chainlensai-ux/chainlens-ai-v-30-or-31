@@ -7,10 +7,10 @@ export type KVResult<T> = { ok: true; value: T | null; cacheHit: boolean } | { o
 
 type KvLike = Pick<typeof realKv, 'get' | 'set'>
 type BreakerConfig = { maxConsecutiveTimeouts: number; cooldownMs: number; halfOpenMaxRequests: number; timeoutMs: number; maxRetries: number }
-export type PriceKvClientOptions = Partial<BreakerConfig> & { maxConcurrent?: number; ttlSeconds?: number; kv?: KvLike; now?: () => number; random?: () => number; maxLookupsPerToken?: number }
+export type PriceKvClientOptions = Partial<BreakerConfig> & { maxConcurrent?: number; ttlSeconds?: number; kv?: KvLike; now?: () => number; random?: () => number; maxLookupsPerToken?: number; historicalReadOnly?: boolean }
 export type PriceKvStats = { totalCalls: number; remoteGets: number; remoteSets: number; cacheHits: number; coalesced: number; timeouts: number; breakerSkips: number; cappedLookups: number }
 
-const DEFAULTS: BreakerConfig = { maxConsecutiveTimeouts: 5, cooldownMs: 5000, halfOpenMaxRequests: 2, timeoutMs: 300, maxRetries: 3 }
+const DEFAULTS: BreakerConfig = { maxConsecutiveTimeouts: 5, cooldownMs: 5000, halfOpenMaxRequests: 2, timeoutMs: 300, maxRetries: 0 }
 const DEFAULT_MAX_CONCURRENT = 8
 const DEFAULT_TTL_SECONDS = 45
 const DEFAULT_MAX_LOOKUPS_PER_TOKEN = 2
@@ -76,6 +76,7 @@ export class RequestPriceKvClient {
   private readonly lookupsByToken = new Map<string, number>()
   readonly stats: PriceKvStats = { totalCalls: 0, remoteGets: 0, remoteSets: 0, cacheHits: 0, coalesced: 0, timeouts: 0, breakerSkips: 0, cappedLookups: 0 }
   readonly maxLookupsPerToken: number
+  private readonly historicalReadOnly: boolean
   constructor(options: PriceKvClientOptions = {}) {
     this.cfg = { ...DEFAULTS, ...options }
     this.kv = options.kv ?? realKv
@@ -86,13 +87,14 @@ export class RequestPriceKvClient {
     this.readBreaker = new CircuitBreaker(this.cfg, now)
     this.writeBreaker = new CircuitBreaker(this.cfg, now)
     this.maxLookupsPerToken = options.maxLookupsPerToken ?? DEFAULT_MAX_LOOKUPS_PER_TOKEN
+    this.historicalReadOnly = options.historicalReadOnly ?? false
   }
   async getPricePrimary(token: string, chain: string, timestamp: number, fetcher: PriceSourceFn): Promise<number | null> { return this.getWithCache(priceKey('primary', token, chain, timestamp), token, chain, timestamp, fetcher) }
-  async getPriceHistorical(token: string, chain: string, timestamp: number, fetcher: PriceSourceFn): Promise<number | null> { return this.getWithCache(priceKey('chain-aware-historical', token, chain, timestamp), token, chain, timestamp, fetcher) }
+  async getPriceHistorical(token: string, chain: string, timestamp: number, fetcher: PriceSourceFn): Promise<number | null> { return this.getWithCache(priceKey('chain-aware-historical', token, chain, timestamp), token, chain, timestamp, fetcher, this.historicalReadOnly) }
   async setPriceHistorical(token: string, chain: string, timestamp: number, price: number): Promise<void> { await this.setRemote(priceKey('chain-aware-historical', token, chain, timestamp), price) }
   wrapPriceSource(fetcher: PriceSourceFn, label: 'primary' | 'chain-aware-historical'): PriceSourceFn { return (token, chain, timestamp) => label === 'primary' ? this.getPricePrimary(token, chain, timestamp, fetcher) : this.getPriceHistorical(token, chain, timestamp, fetcher) }
   logStats(label = 'price_kv_client_stats'): void { console.warn(label, { ...this.stats }) }
-  private async getWithCache(key: string, token: string, chain: string, timestamp: number, fetcher: PriceSourceFn): Promise<number | null> {
+  private async getWithCache(key: string, token: string, chain: string, timestamp: number, fetcher: PriceSourceFn, readOnly = false): Promise<number | null> {
     this.stats.totalCalls++
     if (this.memory.has(key)) { this.stats.cacheHits++; return this.memory.get(key) ?? null }
     const existing = this.inFlight.get(key)
@@ -100,13 +102,14 @@ export class RequestPriceKvClient {
     const tk = tokenCapKey(token, chain); const prior = this.lookupsByToken.get(tk) ?? 0
     if (prior >= this.maxLookupsPerToken) { this.stats.cappedLookups++; return null }
     this.lookupsByToken.set(tk, prior + 1)
-    const promise = this.resolveMiss(key, token, chain, timestamp, fetcher).finally(() => this.inFlight.delete(key))
+    const promise = this.resolveMiss(key, token, chain, timestamp, fetcher, readOnly).finally(() => this.inFlight.delete(key))
     this.inFlight.set(key, promise)
     return promise
   }
-  private async resolveMiss(key: string, token: string, chain: string, timestamp: number, fetcher: PriceSourceFn): Promise<number | null> {
+  private async resolveMiss(key: string, token: string, chain: string, timestamp: number, fetcher: PriceSourceFn, readOnly: boolean): Promise<number | null> {
     const cached = await this.getRemote<number>(key)
     if (cached.ok && cached.value !== null) { this.memory.set(key, cached.value); return cached.value }
+    if (readOnly) return null
     const price = await fetcher(token, chain as Parameters<PriceSourceFn>[1], timestamp)
     const safe = typeof price === 'number' && Number.isFinite(price) ? price : null
     this.memory.set(key, safe)
@@ -119,7 +122,7 @@ export class RequestPriceKvClient {
   }
   private async setRemote(key: string, value: number): Promise<void> {
     if (!this.writeBreaker.allow(key)) { this.stats.breakerSkips++; return }
-    await this.semaphore.run(async () => { this.stats.remoteSets++; await this.withRetries(() => this.kv.set(key, value, { ex: this.ttlSeconds }), `set:${key}`, this.writeBreaker) })
+    await this.semaphore.run(async () => { this.stats.remoteSets++; try { await this.withTimeout(this.kv.set(key, value, { ex: this.ttlSeconds })) } catch {} })
   }
   private async withRetries<T>(attempt: () => Promise<T>, label: string, breaker: CircuitBreaker): Promise<T | undefined> {
     for (let i = 0; i <= this.cfg.maxRetries; i++) {

@@ -53,7 +53,9 @@ function getClient(): Redis | null {
 
   client = new Redis(REDIS_URL, {
     lazyConnect: true,
-    maxRetriesPerRequest: 1,
+    maxRetriesPerRequest: 0,
+    commandTimeout: 300,
+    connectTimeout: 300,
     retryStrategy: () => null, // never auto-reconnect in the background; callers already fail open
   })
 

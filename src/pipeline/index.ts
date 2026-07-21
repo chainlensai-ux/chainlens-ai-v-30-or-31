@@ -1218,7 +1218,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
 
   const priceLotsForWalletStart = performance.now()
   const rpcLogSnapshotBeforePriceLots = rpcDebugLog.length
-  const requestPriceKvClient = createRequestPriceKvClient()
+  const requestPriceKvClient = createRequestPriceKvClient({ historicalReadOnly: true })
   const requestPriceSources: PriceSources = {
     primary: requestPriceKvClient.wrapPriceSource(PRICE_SOURCES.primary, 'chain-aware-historical'),
     fallback: PRICE_SOURCES.fallback,
