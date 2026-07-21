@@ -1,10 +1,8 @@
-import type { NextApiRequest, NextApiResponse } from 'next'
 import type { WalletScanJobMetadata, WalletScanJobPayload } from '@/src/modules/walletScanQueue'
 
-export const config = {
-  regions: ['iad1'],
-  background: true,
-}
+export const runtime = 'nodejs'
+export const preferredRegion = 'iad1'
+export const maxDuration = 300
 
 async function readPendingJobIds(): Promise<string[]> {
   const { redis } = await import('@/lib/server/cache/redisClient')
@@ -97,7 +95,7 @@ async function drainWalletScanQueue(): Promise<void> {
   }
 }
 
-export default async function handler(_req: NextApiRequest, res: NextApiResponse): Promise<void> {
+export async function POST(): Promise<Response> {
   await drainWalletScanQueue()
-  res.status(204).end()
+  return new Response(null, { status: 204 })
 }
