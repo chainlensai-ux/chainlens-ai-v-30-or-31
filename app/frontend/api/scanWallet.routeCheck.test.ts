@@ -71,4 +71,28 @@ describe('scanWalletV2 (wallet-scan background job + polling)', () => {
       global.setTimeout = originalSetTimeout
     }
   })
+
+  it('returns degraded final-result-unavailable as a terminal result', async () => {
+    global.setTimeout = ((cb: (...args: unknown[]) => void) => originalSetTimeout(cb, 0)) as typeof setTimeout
+    const originalFetch = global.fetch
+    global.fetch = mock.fn(async (url: string) => {
+      if (url === '/api/wallet-scan') {
+        return new Response(JSON.stringify({ jobId: 'job-3', status: 'queued' }), { status: 200 })
+      }
+      return new Response(JSON.stringify({ jobId: 'job-3', status: 'done', result: { error: 'scan-final-result-unavailable', degraded: true } }), { status: 200 })
+    }) as unknown as typeof fetch
+
+    try {
+      const { scanWalletV2 } = await import('./scanWallet.ts')
+      const result = await scanWalletV2('0xabc', ['base'], 'normal')
+
+      assert.equal(result.degraded, true)
+      assert.equal(result.success, false)
+      assert.equal(result.error?.message, 'scan-final-result-unavailable')
+    } finally {
+      global.fetch = originalFetch
+      global.setTimeout = originalSetTimeout
+    }
+  })
+
 })

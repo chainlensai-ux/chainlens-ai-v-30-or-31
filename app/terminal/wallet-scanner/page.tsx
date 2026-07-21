@@ -317,6 +317,10 @@ export default function WalletScannerPage() {
         setJobStatusMessage(status === 'queued' ? 'queued — still scanning…' : status === 'running' ? 'running — still scanning…' : status)
       })
       setScanDurationMs(Date.now() - scanStartedAt)
+      if (response.degraded) {
+        setError(response.error?.message ?? 'scan-final-result-unavailable')
+        return
+      }
       if (!response.success || !response.data) {
         throw new Error(response.error?.message ?? 'Scan failed')
       }
