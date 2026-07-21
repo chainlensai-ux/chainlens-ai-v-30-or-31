@@ -1,10 +1,17 @@
 import { NextResponse } from 'next/server'
 import { isAddress } from 'viem'
-import { enqueueWalletScanJob } from '@/src/modules/walletScanQueue'
+import { redis } from '@/lib/server/cache/redisClient'
+import {
+  walletScanJobKey,
+  walletScanPendingJobKey,
+  walletScanPendingKey,
+} from '@/src/modules/walletScanQueue'
 
 export const maxDuration = 10
 
 type ScanMode = 'normal' | 'deep'
+
+const JOB_TTL_SECONDS = 30 * 60
 
 export async function POST(req: Request): Promise<Response> {
   const body = await req.json().catch(() => null) as { walletAddress?: unknown; wallet?: unknown; chains?: unknown; scanMode?: unknown } | null
@@ -23,13 +30,26 @@ export async function POST(req: Request): Promise<Response> {
     : ['base', 'eth']
   const scanMode: ScanMode = body?.scanMode === 'deep' ? 'deep' : 'normal'
   const jobId = crypto.randomUUID()
-  await enqueueWalletScanJob(jobId, {
+  const now = Date.now()
+  const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown'
+  const base = process.env.VERCEL_URL
+    ? `https://${process.env.VERCEL_URL}`
+    : 'http://localhost:3000'
+
+  await redis.set(walletScanJobKey(jobId), {
     jobId,
-    walletAddress: wallet,
+    wallet,
+    status: 'queued',
+    createdAt: now,
+    updatedAt: now,
     chains,
     scanMode,
-    ip: req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown',
-  })
+    ip,
+  }, { ex: JOB_TTL_SECONDS })
+  await redis.set(walletScanPendingJobKey(jobId), true, { ex: JOB_TTL_SECONDS })
+  const pending = (await redis.get<string[]>(walletScanPendingKey())) ?? []
+  await redis.set(walletScanPendingKey(), [...new Set([...pending, jobId])], { ex: JOB_TTL_SECONDS })
+  await fetch(`${base}/api/wallet-scan/worker`, { method: 'POST' });
 
   return NextResponse.json({ jobId, wallet, status: 'queued' })
 }
