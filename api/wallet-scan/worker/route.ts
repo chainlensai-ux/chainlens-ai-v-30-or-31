@@ -64,6 +64,7 @@ async function runWalletScanJob(payload: WalletScanJobPayload): Promise<void> {
       payload.jobId,
     )
     printAlchemyAuditSummary()
+    console.log('[wallet-scan-worker] job completed', { jobId: payload.jobId })
   } catch (err) {
     await writeWalletScanJob({
       ...baseJob,
