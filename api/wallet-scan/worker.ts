@@ -1,8 +1,10 @@
-import { NextResponse, after } from 'next/server'
 import type { WalletScanJobMetadata, WalletScanJobPayload } from '@/src/modules/walletScanQueue'
 
-export const runtime = 'edge'
-export const preferredRegion = 'iad1'
+export const config = {
+  runtime: 'edge',
+  regions: ['iad1'],
+  background: true,
+}
 
 async function readPendingJobIds(): Promise<string[]> {
   const { redis } = await import('@/lib/server/cache/redisClient')
@@ -40,7 +42,8 @@ async function claimNextPayload(): Promise<WalletScanJobPayload | null> {
 async function runWalletScanJob(payload: WalletScanJobPayload): Promise<void> {
   const { resetAlchemyAudit, printAlchemyAuditSummary } = await import('@/lib/server/alchemyAudit')
   const { runWalletScanV2Worker } = await import('@/workers/walletScanV2')
-  const { readWalletScanJob, writeWalletScanJob } = await import('@/src/modules/walletScanQueue')
+  const { redis } = await import('@/lib/server/cache/redisClient')
+  const { readWalletScanJob, walletScanJobKey, walletScanResultKey, writeWalletScanJob } = await import('@/src/modules/walletScanQueue')
   const existing = await readWalletScanJob(payload.jobId)
   const baseJob: WalletScanJobMetadata = existing ?? {
     jobId: payload.jobId,
@@ -58,11 +61,18 @@ async function runWalletScanJob(payload: WalletScanJobPayload): Promise<void> {
   resetAlchemyAudit()
 
   try {
-    await runWalletScanV2Worker(
+    const result = await runWalletScanV2Worker(
       { walletAddress: payload.walletAddress, chains: payload.chains, scanMode: payload.scanMode },
       payload.ip,
       payload.jobId,
     )
+    await redis.set(walletScanResultKey(payload.jobId), result.body, { ex: 30 * 60 })
+    await redis.set(walletScanJobKey(payload.jobId), {
+      ...baseJob,
+      status: 'done',
+      error: undefined,
+      updatedAt: Date.now(),
+    }, { ex: 30 * 60 })
     printAlchemyAuditSummary()
     console.log('[wallet-scan-worker] job completed', { jobId: payload.jobId })
   } catch (err) {
@@ -87,14 +97,8 @@ async function drainWalletScanQueue(): Promise<void> {
   }
 }
 
-export default async function worker(request: Request): Promise<Response> {
+export default async function handler(request: Request): Promise<void> {
   void request
 
-  after(async () => {
-    await drainWalletScanQueue()
-  })
-
-  return NextResponse.json({ accepted: true })
+  await drainWalletScanQueue()
 }
-
-export const POST = worker

@@ -34,7 +34,7 @@ export async function POST(req: Request): Promise<Response> {
   const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown'
   const base = process.env.VERCEL_URL
     ? `https://${process.env.VERCEL_URL}`
-    : 'http://localhost:3000'
+    : new URL(req.url).origin
 
   await redis.set(walletScanJobKey(jobId), {
     jobId,
@@ -49,7 +49,7 @@ export async function POST(req: Request): Promise<Response> {
   await redis.set(walletScanPendingJobKey(jobId), true, { ex: JOB_TTL_SECONDS })
   const pending = (await redis.get<string[]>(walletScanPendingKey())) ?? []
   await redis.set(walletScanPendingKey(), [...new Set([...pending, jobId])], { ex: JOB_TTL_SECONDS })
-  await fetch(`${base}/api/wallet-scan/worker`, { method: 'POST' });
+  await fetch(new URL('/api/wallet-scan/worker', base).toString(), { method: 'POST' })
 
   return NextResponse.json({ jobId, wallet, status: 'queued' })
 }
