@@ -98,7 +98,11 @@ const TOTAL_MODULES = 11
 // a chance to run and produce real data instead of the whole scan degrading to nothing.
 const MODULE_TIMEOUT_MS = 20_000
 
-const WORKER_GLOBAL_TIMEOUT_MS = 45_000
+// Keep the in-process scan budget aligned with the 300s wallet-scan route maxDuration.
+// The previous 45s cap returned worker_global_timeout for normal production scans before
+// the background route had a chance to finish its full V2 module chain. Leave a safety
+// margin for final Redis publication and the HTTP response.
+export const WORKER_GLOBAL_TIMEOUT_MS = 270_000
 
 function timedOutPartialResult(error = 'worker_global_timeout'): WalletScanV2WorkerResult {
   return { status: 200, body: { success: false, error, partial: true } }
