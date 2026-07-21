@@ -1,4 +1,17 @@
 import { redis } from '@/lib/server/cache/redisClient'
+import {
+  walletScanJobKey,
+  walletScanPendingJobKey,
+  walletScanPendingKey,
+  walletScanResultKey,
+} from '@/src/modules/walletScanQueueKeys'
+
+export {
+  walletScanJobKey,
+  walletScanPendingJobKey,
+  walletScanPendingKey,
+  walletScanResultKey,
+} from '@/src/modules/walletScanQueueKeys'
 
 export type WalletScanJobStatus = 'queued' | 'running' | 'done' | 'failed'
 
@@ -23,23 +36,6 @@ export type WalletScanJobPayload = {
 }
 
 const JOB_TTL_SECONDS = 30 * 60
-const WALLET_SCAN_PENDING_KEY = 'walletScanPendingJobs'
-
-export function walletScanJobKey(jobId: string): string {
-  return `walletScanJob:${jobId}`
-}
-
-export function walletScanResultKey(jobId: string): string {
-  return `walletScanResult:${jobId}`
-}
-
-export function walletScanPendingJobKey(jobId: string): string {
-  return `walletScanPending:${jobId}`
-}
-
-export function walletScanPendingKey(): string {
-  return WALLET_SCAN_PENDING_KEY
-}
 
 export async function writeWalletScanJob(job: WalletScanJobMetadata): Promise<void> {
   await redis.set(walletScanJobKey(job.jobId), { ...job, updatedAt: Date.now() }, { ex: JOB_TTL_SECONDS })

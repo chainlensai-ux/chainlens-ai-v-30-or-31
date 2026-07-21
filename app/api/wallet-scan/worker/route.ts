@@ -1,3 +1,4 @@
+import { after } from 'next/server'
 import type { WalletScanJobMetadata, WalletScanJobPayload } from '@/src/modules/walletScanQueue'
 
 export const runtime = 'nodejs'
@@ -6,19 +7,20 @@ export const maxDuration = 300
 
 async function readPendingJobIds(): Promise<string[]> {
   const { redis } = await import('@/lib/server/cache/redisClient')
-  const { walletScanPendingKey } = await import('@/src/modules/walletScanQueue')
+  const { walletScanPendingKey } = await import('@/src/modules/walletScanQueueKeys')
   return (await redis.get<string[]>(walletScanPendingKey())) ?? []
 }
 
 async function writePendingJobIds(jobIds: string[]): Promise<void> {
   const { redis } = await import('@/lib/server/cache/redisClient')
-  const { walletScanPendingKey } = await import('@/src/modules/walletScanQueue')
+  const { walletScanPendingKey } = await import('@/src/modules/walletScanQueueKeys')
   await redis.set(walletScanPendingKey(), jobIds, { ex: 30 * 60 })
 }
 
 async function claimNextPayload(): Promise<WalletScanJobPayload | null> {
   const { redis } = await import('@/lib/server/cache/redisClient')
-  const { readWalletScanJob, walletScanPendingJobKey } = await import('@/src/modules/walletScanQueue')
+  const { readWalletScanJob } = await import('@/src/modules/walletScanQueue')
+  const { walletScanPendingJobKey } = await import('@/src/modules/walletScanQueueKeys')
   const pending = await readPendingJobIds()
   const [jobId, ...remaining] = pending
   if (!jobId) return null
@@ -41,7 +43,8 @@ async function runWalletScanJob(payload: WalletScanJobPayload): Promise<void> {
   const { resetAlchemyAudit, printAlchemyAuditSummary } = await import('@/lib/server/alchemyAudit')
   const { runWalletScanV2Worker } = await import('@/workers/walletScanV2')
   const { redis } = await import('@/lib/server/cache/redisClient')
-  const { readWalletScanJob, walletScanJobKey, walletScanResultKey, writeWalletScanJob } = await import('@/src/modules/walletScanQueue')
+  const { readWalletScanJob, writeWalletScanJob } = await import('@/src/modules/walletScanQueue')
+  const { walletScanJobKey, walletScanResultKey } = await import('@/src/modules/walletScanQueueKeys')
   const existing = await readWalletScanJob(payload.jobId)
   const baseJob: WalletScanJobMetadata = existing ?? {
     jobId: payload.jobId,
@@ -96,6 +99,9 @@ async function drainWalletScanQueue(): Promise<void> {
 }
 
 export async function POST(): Promise<Response> {
-  await drainWalletScanQueue()
-  return new Response(null, { status: 204 })
+  after(async () => {
+    await drainWalletScanQueue()
+  })
+
+  return new Response(null, { status: 202 })
 }
