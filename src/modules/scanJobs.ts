@@ -1,9 +1,8 @@
 // src/modules/scanJobs.ts — job model + storage for the Deep Scan background job system.
 //
 // STORAGE, DISCLOSED: reuses the real, already-shipped, already-battle-tested
-// lib/server/cache/redisClient.ts (ioredis, REDIS_URL) rather than building a second Redis/KV
-// client — that file's own header explains why ioredis (not @upstash/redis) is the correct client
-// for this deployment's REDIS_URL shape, and its `redis.get`/`redis.set` already fail open (resolve
+// lib/server/cache/redisClient.ts (@upstash/redis REST) rather than building a second Redis/KV
+// client — that file now uses @upstash/redis in REST mode, and its `redis.get`/`redis.set` already fail open (resolve
 // to null / a no-op) when Redis isn't configured or reachable, exactly the behavior this job store
 // needs. Building a second client here would just duplicate that same reasoning.
 //

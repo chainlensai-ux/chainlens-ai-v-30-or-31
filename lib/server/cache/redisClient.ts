@@ -1,151 +1,157 @@
-// lib/server/cache/redisClient.ts — Redis client for the background-job system
-// (app/api/scan-v2/full-scan-job/*).
+// lib/server/cache/redisClient.ts — Upstash Redis REST client for serverless-safe job storage.
 //
-// CLIENT CHOICE, DISCLOSED (verified before writing this file, not assumed): the original spec for
-// this file asked for `@upstash/redis` (an HTTPS REST client) constructed with `url:
-// process.env.REDIS_URL`. Checked directly against @upstash/redis's own type definitions
-// (node_modules/@upstash/redis's Redis class constructor doc comment): that client requires an
-// https:// REST endpoint (its own documented example is `UPSTASH_REDIS_REST_URL`), not a `redis://`
-// TCP connection string. `REDIS_URL`, as Vercel's native Redis/Upstash marketplace integration
-// provisions it, is confirmed (per this session's direction) to be the raw `redis://` TCP
-// connection string — the two are incompatible; pairing them would compile cleanly but fail to
-// connect at runtime. `ioredis` is the correct client for a genuine `redis://` connection string
-// (a real TCP Redis client, not an HTTP one), so it's used here instead.
-//
-// ENV VARS, UNCHANGED PER INSTRUCTION ("do not rename any environment variables"):
-//   - REDIS_URL is the sole connection string ioredis needs — a `redis://` (or `rediss://` for
-//     TLS) URL already carries its own auth (username/password) embedded in the URL itself, per
-//     the standard Redis connection-string format. That's a real, structural difference from a
-//     REST client, which needs a separate bearer token — it's not this file dropping or ignoring
-//     KV_REST_API_TOKEN/KV_REST_API_READ_ONLY_TOKEN, those two vars simply have no equivalent
-//     concept in a TCP client's connection model. They are read and exported below (via
-//     `restTokensConfigured`) purely as an honest diagnostic signal — e.g. to tell whether this
-//     deployment still has REST-style Redis vars set alongside REDIS_URL — but they are never
-//     passed into the ioredis client itself, since there is nowhere in ioredis's API for a REST
-//     bearer token to go.
-//
-// FAIL-OPEN, DISCLOSED: `lazyConnect: true` means ioredis does not attempt a connection until the
-// first real command — so importing this module never blocks or throws just because REDIS_URL is
-// unset (e.g. local dev without Redis configured at all). A `maxRetriesPerRequest` cap and an
-// attached `'error'` listener are both required specifically because ioredis otherwise (a) retries
-// forever by default, which would leave a request hanging, and (b) emits unhandled `'error'` events
-// that crash the Node process if nothing is listening for them — both are real ioredis behaviors,
-// not hypothetical.
+// Vercel Serverless Functions cannot reliably use long-lived Redis TCP sockets. This module is
+// intentionally limited to @upstash/redis's HTTPS REST client and never imports ioredis or any
+// TCP-based Redis client. Configure the database with a REST endpoint/token in the same region as
+// the Vercel deployment (`iad1`) or use an Upstash Global database.
 
-import Redis from 'ioredis'
-import { kv } from '@vercel/kv'
+import { Redis } from '@upstash/redis'
 
-const REDIS_URL = process.env.REDIS_URL ?? ''
+const EXPECTED_REDIS_REGION = 'iad1'
 
-// Diagnostic only — see file header. Never passed to the ioredis client itself.
+function restUrl(): string {
+  return process.env.UPSTASH_REDIS_REST_URL ?? process.env.KV_REST_API_URL ?? ''
+}
+
+function restToken(): string {
+  return process.env.UPSTASH_REDIS_REST_TOKEN ?? process.env.KV_REST_API_TOKEN ?? ''
+}
+
+function readOnlyRestToken(): string {
+  return process.env.UPSTASH_REDIS_REST_READ_ONLY_TOKEN ?? process.env.KV_REST_API_READ_ONLY_TOKEN ?? ''
+}
+
+function deploymentRegion(): string {
+  return process.env.VERCEL_REGION ?? EXPECTED_REDIS_REGION
+}
+
+export type RedisRestErrorLog = {
+  code?: string
+  name?: string
+  message: string
+  endpoint?: string
+  region: string
+}
+
+export class RedisRestUnavailableError extends Error {
+  code?: string
+  endpoint?: string
+  region: string
+
+  constructor(message: string, details?: { code?: string; endpoint?: string; region?: string; cause?: unknown }) {
+    super(message)
+    this.name = 'RedisRestUnavailableError'
+    this.code = details?.code
+    this.endpoint = details?.endpoint
+    this.region = details?.region ?? redisRegion()
+    if (details?.cause) this.cause = details.cause
+  }
+}
+
 export function restTokensConfigured(): boolean {
-  return Boolean(process.env.KV_REST_API_TOKEN || process.env.KV_REST_API_READ_ONLY_TOKEN)
+  return Boolean(restToken() || readOnlyRestToken())
 }
 
 export function redisConfigured(): boolean {
-  return Boolean(REDIS_URL || (process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN))
+  return Boolean(restUrl() && restToken())
+}
+
+export function redisEndpoint(): string | undefined {
+  const endpoint = restUrl()
+  if (!endpoint) return undefined
+  try {
+    const url = new URL(endpoint)
+    return url.origin
+  } catch {
+    return endpoint
+  }
+}
+
+export function redisRegion(): string {
+  const configured = process.env.UPSTASH_REDIS_REGION ?? process.env.KV_REST_API_REGION
+  if (configured) return configured
+  const endpoint = redisEndpoint()?.toLowerCase() ?? ''
+  if (endpoint.includes('global')) return 'global'
+  const match = endpoint.match(/\b([a-z]{3}\d)\b/)
+  return match?.[1] ?? EXPECTED_REDIS_REGION
+}
+
+export function redisRegionAligned(): boolean {
+  const region = redisRegion()
+  return region === 'global' || region === deploymentRegion()
+}
+
+function timeoutMs(kind: 'normal' | 'critical'): number {
+  const raw = kind === 'critical' ? process.env.REDIS_FINAL_WRITE_COMMAND_TIMEOUT_MS : process.env.REDIS_COMMAND_TIMEOUT_MS
+  const parsed = Number(raw)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : kind === 'critical' ? 10_000 : 2_000
+}
+
+function errorDetails(error: unknown): RedisRestErrorLog {
+  const err = error as { code?: unknown; name?: unknown; message?: unknown } | null
+  return {
+    code: typeof err?.code === 'string' ? err.code : undefined,
+    name: typeof err?.name === 'string' ? err.name : undefined,
+    message: String(err?.message ?? error),
+    endpoint: redisEndpoint(),
+    region: redisRegion(),
+  }
+}
+
+export function logRedisRestError(label: string, error: unknown): RedisRestErrorLog {
+  const details = errorDetails(error)
+  console.error(label, details)
+  return details
+}
+
+export function isRedisRestTimeout(error: unknown): boolean {
+  const details = errorDetails(error)
+  const message = details.message.toLowerCase()
+  return details.code === 'ETIMEDOUT' || details.name === 'TimeoutError' || message.includes('timeout') || message.includes('timed out')
 }
 
 let client: Redis | null = null
-let criticalClient: Redis | null = null
-
-function positiveInt(value: string | undefined, fallback: number): number {
-  const parsed = Number(value)
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
-}
-
-function createRedisClient(kind: 'normal' | 'critical'): Redis | null {
-  if (!REDIS_URL) return null
-  return new Redis(REDIS_URL, {
-    lazyConnect: true,
-    maxRetriesPerRequest: 0,
-    commandTimeout: positiveInt(
-      kind === 'critical' ? process.env.REDIS_FINAL_WRITE_COMMAND_TIMEOUT_MS : process.env.REDIS_COMMAND_TIMEOUT_MS,
-      kind === 'critical' ? 10000 : 2000,
-    ),
-    connectTimeout: positiveInt(
-      kind === 'critical' ? process.env.REDIS_FINAL_WRITE_CONNECT_TIMEOUT_MS : process.env.REDIS_CONNECT_TIMEOUT_MS,
-      kind === 'critical' ? 5000 : 2000,
-    ),
-    retryStrategy: null,
-    enableOfflineQueue: false,
-  })
-}
-
-function attachRedisErrorLogger(c: Redis, kind: 'normal' | 'critical'): Redis {
-  c.on('error', (err) => {
-    console.warn('[redisClient] connection error', { kind, message: err instanceof Error ? err.message : String(err) })
-  })
-  return c
-}
 
 function getClient(): Redis | null {
-  if (!REDIS_URL) return null
+  if (!redisConfigured()) return null
   if (client) return client
-
-  client = createRedisClient('normal')
-  return client ? attachRedisErrorLogger(client, 'normal') : null
+  client = new Redis({ url: restUrl(), token: restToken() })
+  if (!redisRegionAligned()) {
+    console.warn('[redis-rest] region-mismatch', { endpoint: redisEndpoint(), region: redisRegion(), expectedRegion: EXPECTED_REDIS_REGION, vercelRegion: deploymentRegion() })
+  }
+  return client
 }
 
-function getCriticalClient(): Redis | null {
-  if (!REDIS_URL) return null
-  if (criticalClient) return criticalClient
-  criticalClient = createRedisClient('critical')
-  return criticalClient ? attachRedisErrorLogger(criticalClient, 'critical') : null
+async function withTimeout<T>(promise: Promise<T>, kind: 'normal' | 'critical'): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new RedisRestUnavailableError('redis_rest_timeout', { code: 'ETIMEDOUT' })), timeoutMs(kind))
+      }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
 }
 
-// Thin, disclosed adapter matching the small subset of the API this codebase's job routes use —
-// JSON-serializes on write, JSON-parses on read, so callers don't need to know this is ioredis
-// rather than a REST client with built-in object (de)serialization.
 export const redis = {
   async get<T = unknown>(key: string): Promise<T | null> {
     const c = getClient()
-    if (c) {
-      const raw = await c.get(key)
-      if (raw == null) return null
-      try {
-        return JSON.parse(raw) as T
-      } catch {
-        return null // malformed stored value — treat as a miss, never throw
-      }
-    }
-    if (!process.env.KV_REST_API_URL || !process.env.KV_REST_API_TOKEN) return null
-    return await kv.get<T>(key)
+    if (!c) throw new RedisRestUnavailableError('redis_rest_client_unavailable', { endpoint: redisEndpoint() })
+    return await withTimeout(c.get<T>(key), 'normal')
   },
   async set(key: string, value: unknown, opts?: { ex?: number }): Promise<void> {
     const c = getClient()
-    if (c) {
-      const serialized = JSON.stringify(value)
-      if (opts?.ex) {
-        await c.set(key, serialized, 'EX', opts.ex)
-      } else {
-        await c.set(key, serialized)
-      }
-      return
-    }
-    if (!process.env.KV_REST_API_URL || !process.env.KV_REST_API_TOKEN) throw new Error('redis_client_unavailable')
-    if (opts?.ex) {
-      await kv.set(key, value, { ex: opts.ex })
-    } else {
-      await kv.set(key, value)
-    }
+    if (!c) throw new RedisRestUnavailableError('redis_rest_client_unavailable', { endpoint: redisEndpoint() })
+    if (opts?.ex) await withTimeout(c.set(key, value, { ex: opts.ex }), 'normal')
+    else await withTimeout(c.set(key, value), 'normal')
   },
   async setCritical(key: string, value: unknown, opts?: { ex?: number }): Promise<void> {
-    const c = getCriticalClient()
-    if (c) {
-      const serialized = JSON.stringify(value)
-      if (opts?.ex) {
-        await c.set(key, serialized, 'EX', opts.ex)
-      } else {
-        await c.set(key, serialized)
-      }
-      return
-    }
-    if (!process.env.KV_REST_API_URL || !process.env.KV_REST_API_TOKEN) throw new Error('redis_critical_client_unavailable')
-    if (opts?.ex) {
-      await kv.set(key, value, { ex: opts.ex })
-    } else {
-      await kv.set(key, value)
-    }
+    const c = getClient()
+    if (!c) throw new RedisRestUnavailableError('redis_rest_client_unavailable', { endpoint: redisEndpoint() })
+    if (opts?.ex) await withTimeout(c.set(key, value, { ex: opts.ex }), 'critical')
+    else await withTimeout(c.set(key, value), 'critical')
   },
 }

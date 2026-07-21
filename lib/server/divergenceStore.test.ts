@@ -1,7 +1,7 @@
 // Tests for lib/server/divergenceStore.ts. NOT wired into `npm test`. Run directly with:
 //   npx tsx --test lib/server/divergenceStore.test.ts
 //
-// This sandbox has no REDIS_URL configured, so the underlying redis.get/set fail open (no-op /
+// This sandbox has no Redis REST configuration, so the underlying redis.get/set fail open (no-op /
 // null) — these tests verify the store's OWN logic (never throws, degrades gracefully) rather
 // than real Redis persistence, which needs a real deployment to verify (same disclosed limitation
 // as every other Redis-backed addition this session).

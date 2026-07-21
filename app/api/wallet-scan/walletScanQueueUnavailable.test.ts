@@ -3,20 +3,22 @@ import assert from 'node:assert/strict'
 
 const VALID_WALLET = '0x0000000000000000000000000000000000000001'
 
-async function withoutRedisUrl<T>(fn: () => Promise<T>): Promise<T> {
-  const original = process.env.REDIS_URL
-  delete process.env.REDIS_URL
+async function withoutRedisRest<T>(fn: () => Promise<T>): Promise<T> {
+  const original = { ...process.env }
+  delete process.env.UPSTASH_REDIS_REST_URL
+  delete process.env.UPSTASH_REDIS_REST_TOKEN
+  delete process.env.KV_REST_API_URL
+  delete process.env.KV_REST_API_TOKEN
   try {
     return await fn()
   } finally {
-    if (original === undefined) delete process.env.REDIS_URL
-    else process.env.REDIS_URL = original
+    process.env = original
   }
 }
 
 describe('wallet-scan queue unavailable behavior', () => {
   it('queue unavailable makes the enqueue route return a degraded terminal error without a jobId', async () => {
-    await withoutRedisUrl(async () => {
+    await withoutRedisRest(async () => {
       const { POST } = await import('./route.ts')
       const res = await POST(new Request('http://localhost/api/wallet-scan', {
         method: 'POST',
@@ -32,7 +34,7 @@ describe('wallet-scan queue unavailable behavior', () => {
   })
 
   it('worker queue claim unavailable returns a degraded terminal error', async () => {
-    await withoutRedisUrl(async () => {
+    await withoutRedisRest(async () => {
       const { POST } = await import('./worker/route.ts')
       const res = await POST()
       const body = await res.json()
@@ -44,7 +46,7 @@ describe('wallet-scan queue unavailable behavior', () => {
   })
 
   it('poll route returns degraded status-unavailable when Redis cannot read job keys', async () => {
-    await withoutRedisUrl(async () => {
+    await withoutRedisRest(async () => {
       const { GET } = await import('./[jobId]/route.ts')
       const res = await GET(new Request('http://localhost/api/wallet-scan/job-1'), { params: Promise.resolve({ jobId: 'job-1' }) })
       const body = await res.json() as { error: string; degraded: boolean; status?: string }

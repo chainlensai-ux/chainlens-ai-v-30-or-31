@@ -4,8 +4,7 @@
 // cutover, not a unification — just a durable record of what lib/server/engineComparison.ts
 // already logs, so divergence rate can be analyzed over time instead of only via ephemeral logs.
 //
-// STORAGE, DISCLOSED: reuses the real, existing lib/server/cache/redisClient.ts (ioredis over
-// REDIS_URL) rather than a new client — same reasoning as src/modules/scanJobs.ts. That client
+// STORAGE, DISCLOSED: reuses the real, existing lib/server/cache/redisClient.ts (@upstash/redis REST) rather than a new client — same reasoning as src/modules/scanJobs.ts. That client
 // only exposes get/set (no native Redis list primitives like LPUSH/LTRIM), so the capped list
 // below is a plain read-modify-write over a single JSON array value — not atomic under concurrent
 // writes (two simultaneous divergence events could race and one could be dropped), which is an

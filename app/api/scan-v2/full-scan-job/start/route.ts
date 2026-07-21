@@ -6,8 +6,7 @@
 // REDIS MIGRATION, DISCLOSED: this route previously used lib/server/cache/tokenCache.ts's
 // @vercel/kv-backed getTokenCache/setTokenCache, with a synchronous fallback when KV wasn't
 // configured. Per explicit instruction, it now always uses the new lib/server/cache/redisClient.ts
-// client (REDIS_URL — a real redis:// TCP connection string, per that file's own header on why
-// ioredis, not @upstash/redis, is the correct client for it) and NEVER falls back to synchronous
+// client (Upstash Redis REST endpoint/token) and NEVER falls back to synchronous
 // execution, even if Redis is unreachable. If Redis is down/misconfigured, `safeRedisSet` below
 // degrades to a logged warning rather than throwing or silently switching back to sync mode — that
 // failure is surfaced as a real, diagnosable job outcome (the job simply never reaches "done" for a
