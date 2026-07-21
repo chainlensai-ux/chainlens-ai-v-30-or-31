@@ -132,7 +132,7 @@ export async function scanWalletV2(
       const pollBody = await pollRes.json().catch(() => null) as WalletScanJobResponse | null
 
       if (!pollRes.ok || !pollBody) {
-        return toErrorResponse('scan-status-unavailable', [`HTTP ${pollRes.status}`])
+        return toErrorResponse('Scan status is temporarily unavailable. Please rescan in a moment.', [`HTTP ${pollRes.status}`])
       }
 
       onUpdate?.({ jobId: pollBody.jobId, status: pollBody.status })
@@ -143,7 +143,7 @@ export async function scanWalletV2(
           const degradedError = typeof result.error === 'string' ? result.error : result.error?.message
           return { success: false, degraded: true, error: { message: degradedError ?? 'scan-final-result-unavailable', category: 'network' } }
         }
-        return result ?? toErrorResponse('scan-final-result-unavailable')
+        return result ?? { success: false, degraded: true, error: { message: 'Final scan result is temporarily unavailable. Please rescan in a moment.', category: 'network' } }
       }
 
       if (pollBody.status === 'failed') {

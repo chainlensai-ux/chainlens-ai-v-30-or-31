@@ -5,37 +5,29 @@ export const runtime = 'nodejs'
 export const preferredRegion = 'iad1'
 export const maxDuration = 300
 
-async function readPendingJobIds(): Promise<string[]> {
-  const { redis } = await import('@/lib/server/cache/redisClient')
-  const { walletScanPendingKey } = await import('@/src/modules/walletScanQueueKeys')
-  return (await redis.get<string[]>(walletScanPendingKey()).catch(() => null)) ?? []
+function timeoutResultBody(timeoutMs: number): unknown {
+  return { success: false, error: 'wallet-scan-timeout', timeoutMs, partial: true }
 }
 
-async function writePendingJobIds(jobIds: string[]): Promise<void> {
-  const { redis } = await import('@/lib/server/cache/redisClient')
-  const { walletScanPendingKey } = await import('@/src/modules/walletScanQueueKeys')
-  try { await redis.set(walletScanPendingKey(), jobIds, { ex: 30 * 60 }) } catch {}
+function invalidShapeResultBody(): unknown {
+  return { success: false, error: 'wallet-scan-invalid-result-shape', partial: true }
 }
 
-async function claimNextPayload(): Promise<WalletScanJobPayload | null> {
-  const { redis } = await import('@/lib/server/cache/redisClient')
-  const { readWalletScanJob } = await import('@/src/modules/walletScanQueue')
-  const { walletScanPendingJobKey } = await import('@/src/modules/walletScanQueueKeys')
-  const pending = await readPendingJobIds()
-  const [jobId, ...remaining] = pending
-  if (!jobId) return null
+function errorResultBody(err: unknown): unknown {
+  return { success: false, error: err instanceof Error ? err.message : String(err), partial: true }
+}
 
-  await writePendingJobIds(remaining)
-  const job = await readWalletScanJob(jobId)
-  if (!job) return null
-
-  try { await redis.set(walletScanPendingJobKey(jobId), false, { ex: 60 }) } catch {}
-  return {
-    jobId,
-    walletAddress: job.wallet,
-    chains: job.chains ?? ['base', 'eth'],
-    scanMode: job.scanMode ?? 'normal',
-    ip: job.ip ?? 'unknown',
+async function runWithTimeout<T>(work: Promise<T>, timeoutMs: number): Promise<T | { timedOut: true }> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      work,
+      new Promise<{ timedOut: true }>((resolve) => {
+        timer = setTimeout(() => resolve({ timedOut: true }), timeoutMs)
+      }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
   }
 }
 
@@ -59,27 +51,49 @@ async function runWalletScanJob(payload: WalletScanJobPayload): Promise<void> {
   console.log('[wallet-scan-worker] job started', { jobId: payload.jobId })
   resetAlchemyAudit()
 
+  let finalBody: unknown
+  let completedSuccessfully = false
+  const timeoutMs = 285_000
+
   try {
-    const result = await runWalletScanV2Worker(
-      { walletAddress: payload.walletAddress, chains: payload.chains, scanMode: payload.scanMode },
-      payload.ip,
-      payload.jobId,
+    const result = await runWithTimeout(
+      runWalletScanV2Worker(
+        { walletAddress: payload.walletAddress, chains: payload.chains, scanMode: payload.scanMode },
+        payload.ip,
+        payload.jobId,
+      ),
+      timeoutMs,
     )
-    await publishFinalWalletScanResult(payload.jobId, result.body)
+
+    if (typeof result === 'object' && result !== null && 'timedOut' in result) {
+      finalBody = timeoutResultBody(timeoutMs)
+      console.error('[wallet-scan-worker] job timed out before finalization', { jobId: payload.jobId, timeoutMs })
+    } else if (!result || typeof result !== 'object' || !('body' in result)) {
+      finalBody = invalidShapeResultBody()
+      console.error('[wallet-scan-worker] job returned invalid result shape', { jobId: payload.jobId })
+    } else {
+      finalBody = result.body ?? invalidShapeResultBody()
+      completedSuccessfully = true
+    }
+  } catch (err) {
+    finalBody = errorResultBody(err)
+    console.error('[wallet-scan-worker] job completed with partial failure', err)
+  }
+
+  await publishFinalWalletScanResult(payload.jobId, finalBody)
+
+  if (completedSuccessfully) {
     printAlchemyAuditSummary()
     console.log('[wallet-scan-worker] job completed', { jobId: payload.jobId })
-  } catch (err) {
-    const errorMessage = err instanceof Error ? err.message : String(err)
-    const errorBody = { success: false, error: errorMessage, partial: true }
-    await publishFinalWalletScanResult(payload.jobId, errorBody)
-    console.error('[wallet-scan-worker] job completed with partial failure', err)
   }
 }
 
 async function drainWalletScanQueue(): Promise<void> {
+  const { claimNextWalletScanPayload } = await import('@/src/modules/walletScanQueue')
+
   for (;;) {
     try {
-      const payload = await claimNextPayload()
+      const payload = await claimNextWalletScanPayload()
       if (!payload) return
       await runWalletScanJob(payload)
     } catch (err) {

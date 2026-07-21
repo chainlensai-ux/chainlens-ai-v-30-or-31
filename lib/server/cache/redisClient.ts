@@ -120,7 +120,7 @@ export const redis = {
   },
   async setCritical(key: string, value: unknown, opts?: { ex?: number }): Promise<void> {
     const c = getCriticalClient()
-    if (!c) return
+    if (!c) throw new Error('redis_critical_client_unavailable')
     const serialized = JSON.stringify(value)
     if (opts?.ex) {
       await c.set(key, serialized, 'EX', opts.ex)

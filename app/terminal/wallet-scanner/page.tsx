@@ -318,7 +318,7 @@ export default function WalletScannerPage() {
       })
       setScanDurationMs(Date.now() - scanStartedAt)
       if (response.degraded) {
-        setError(response.error?.message ?? 'scan-final-result-unavailable')
+        setError('Final scan result is temporarily unavailable. The scan reached a terminal degraded state; please rescan in a moment.')
         return
       }
       if (!response.success || !response.data) {
