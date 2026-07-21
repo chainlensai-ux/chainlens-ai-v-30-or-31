@@ -81,8 +81,8 @@ export async function publishFinalWalletScanResult(jobId: string, result: unknow
   const writeWithClient = async (client: FinalPublishClient): Promise<void> => {
     const set = client === 'critical' ? redis.setCritical.bind(redis) : redis.set.bind(redis)
     await Promise.all([
-      set(walletScanResultKey(jobId), finalResult, { ex: JOB_TTL_SECONDS }),
-      set(walletScanJobKey(jobId), finalJob, { ex: JOB_TTL_SECONDS }),
+      set(walletScanResultKey(jobId), finalResult),
+      set(walletScanJobKey(jobId), finalJob),
     ])
   }
 
@@ -93,6 +93,8 @@ export async function publishFinalWalletScanResult(jobId: string, result: unknow
   } catch (criticalError) {
     console.error('[walletScanQueue] final publish failed', { jobId, ...redisErrorDetails(criticalError, 'critical') })
   }
+
+  console.warn('[walletScanQueue] final publish falling back to normal client', { jobId })
 
   try {
     await writeWithClient('normal')
