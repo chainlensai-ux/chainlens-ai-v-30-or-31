@@ -1,7 +1,7 @@
+import type { NextApiRequest, NextApiResponse } from 'next'
 import type { WalletScanJobMetadata, WalletScanJobPayload } from '@/src/modules/walletScanQueue'
 
 export const config = {
-  runtime: 'edge',
   regions: ['iad1'],
   background: true,
 }
@@ -97,8 +97,7 @@ async function drainWalletScanQueue(): Promise<void> {
   }
 }
 
-export default async function handler(request: Request): Promise<void> {
-  void request
-
+export default async function handler(_req: NextApiRequest, res: NextApiResponse): Promise<void> {
   await drainWalletScanQueue()
+  res.status(204).end()
 }
