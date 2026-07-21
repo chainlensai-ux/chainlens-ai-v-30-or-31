@@ -5,7 +5,7 @@ import {
   walletScanJobKey,
   walletScanPendingJobKey,
   walletScanPendingKey,
-} from '@/src/modules/walletScanQueue'
+} from '@/src/modules/walletScanQueueKeys'
 
 export const maxDuration = 10
 
@@ -49,7 +49,7 @@ export async function POST(req: Request): Promise<Response> {
   await redis.set(walletScanPendingJobKey(jobId), true, { ex: JOB_TTL_SECONDS })
   const pending = (await redis.get<string[]>(walletScanPendingKey())) ?? []
   await redis.set(walletScanPendingKey(), [...new Set([...pending, jobId])], { ex: JOB_TTL_SECONDS })
-  await fetch(new URL('/api/wallet-scan/worker', base).toString(), { method: 'POST' })
+  await fetch(`${base}/api/wallet-scan/worker`, { method: 'POST' })
 
   return NextResponse.json({ jobId, wallet, status: 'queued' })
 }
