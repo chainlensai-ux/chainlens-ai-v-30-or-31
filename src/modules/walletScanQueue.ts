@@ -55,7 +55,11 @@ export async function readWalletScanResult(jobId: string): Promise<unknown | nul
 
 async function triggerWalletScanWorker(): Promise<void> {
   try {
-    await fetch('/api/wallet-scan/worker', { method: 'POST' })
+    const base = process.env.VERCEL_URL
+      ? `https://${process.env.VERCEL_URL}`
+      : 'http://localhost:3000'
+
+    await fetch(`${base}/api/wallet-scan/worker`, { method: 'POST' })
   } catch (err) {
     // Enqueue must stay lightweight and never run the scan inline. If the trigger fails, the
     // persisted pending job remains in KV for the next worker invocation/retry.
