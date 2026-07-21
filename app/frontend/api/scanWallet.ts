@@ -126,6 +126,10 @@ export async function scanWalletV2(
 
     onUpdate?.({ jobId: startBody.jobId, status: startBody.status })
 
+    if (startBody.status === 'done') {
+      return startBody.result ?? { success: false, degraded: true, error: { message: 'Final scan result is temporarily unavailable. Please rescan in a moment.', category: 'network' } }
+    }
+
     for (;;) {
       await sleep(POLL_INTERVAL_MS)
       const pollRes = await fetch(`${WALLET_SCAN_ROUTE}/${encodeURIComponent(startBody.jobId)}`)
