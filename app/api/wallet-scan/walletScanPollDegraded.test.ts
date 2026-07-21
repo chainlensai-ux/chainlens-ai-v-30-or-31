@@ -31,7 +31,7 @@ describe('wallet-scan poll degraded final result behavior', () => {
     const store = new Map<string, Stored>()
     store.set(walletScanJobKey('degraded-job'), { value: { jobId: 'degraded-job', wallet: '0x1', status: 'done', createdAt: 1, updatedAt: 2, finishedAt: 3 } })
     redis.get = async <T = unknown>(key: string): Promise<T | null> => {
-      if (key === walletScanResultKey('degraded-job')) throw Object.assign(new Error('budget_exceeded'), { code: 'budget_exceeded' })
+      if (key === walletScanResultKey('degraded-job')) throw Object.assign(new Error('read failed'), { code: 'READ_FAILED' })
       return (store.get(key)?.value as T | undefined) ?? null
     }
 

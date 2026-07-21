@@ -990,8 +990,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     void providerFetchWindowKvWriter.write(
       `v2:providerFetchWindow:${r.chain}:${params.walletAddress.toLowerCase()}`,
       r,
-      30,
-      { degradedMode: slowProviderSignals.slowProviderDetected },
+      30
     )
   }
 
