@@ -80,6 +80,7 @@ export async function fetchScanModule(
 
 const WALLET_SCAN_ROUTE = '/api/wallet-scan'
 const POLL_INTERVAL_MS = 2_500
+const POLL_TIMEOUT_MS = 295_000
 
 type WalletScanJobStatus = 'queued' | 'running' | 'done' | 'failed' | 'not-found'
 
@@ -130,12 +131,19 @@ export async function scanWalletV2(
       return startBody.result ?? { success: false, degraded: true, error: { message: 'Final scan result is temporarily unavailable. Please rescan in a moment.', category: 'network' } }
     }
 
+    const pollStartedAt = Date.now()
+
     for (;;) {
       await sleep(POLL_INTERVAL_MS)
       const pollRes = await fetch(`${WALLET_SCAN_ROUTE}/${encodeURIComponent(startBody.jobId)}`)
       const pollBody = await pollRes.json().catch(() => null) as WalletScanJobResponse | null
 
       if (!pollRes.ok || !pollBody) {
+        const stillWithinPollWindow = Date.now() - pollStartedAt < POLL_TIMEOUT_MS
+        const transientMissingJob = pollRes.status === 404 && pollBody?.status === 'not-found'
+        if (stillWithinPollWindow && transientMissingJob) {
+          continue
+        }
         return toErrorResponse('Scan status is temporarily unavailable. Please rescan in a moment.', [`HTTP ${pollRes.status}`])
       }
 
@@ -153,6 +161,10 @@ export async function scanWalletV2(
       if (pollBody.status === 'failed') {
         const message = typeof pollBody.error === 'string' ? pollBody.error : pollBody.error?.message
         return toErrorResponse(message ?? 'scan-failed')
+      }
+
+      if (Date.now() - pollStartedAt >= POLL_TIMEOUT_MS) {
+        return toErrorResponse('Scan timed out before a final result was available. Please rescan in a moment.', [`timeout ${POLL_TIMEOUT_MS}ms`])
       }
     }
   } catch (err) {

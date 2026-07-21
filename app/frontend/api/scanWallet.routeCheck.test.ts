@@ -96,6 +96,38 @@ describe('scanWalletV2 (wallet-scan background job + polling)', () => {
   })
 
 
+  it('keeps polling through a transient not-found status response', async () => {
+    const calls: string[] = []
+    const updates: string[] = []
+    global.setTimeout = ((cb: (...args: unknown[]) => void) => originalSetTimeout(cb, 0)) as typeof setTimeout
+    const originalFetch = global.fetch
+    global.fetch = mock.fn(async (url: string) => {
+      calls.push(url)
+      if (url === '/api/wallet-scan') {
+        return new Response(JSON.stringify({ jobId: 'job-transient', status: 'queued' }), { status: 200 })
+      }
+      const pollCount = calls.filter((call) => call === '/api/wallet-scan/job-transient').length
+      if (pollCount === 1) {
+        return new Response(JSON.stringify({ jobId: 'job-transient', status: 'not-found' }), { status: 404 })
+      }
+      return new Response(JSON.stringify({ jobId: 'job-transient', status: 'done', result: { success: true, data: { recovered: true } } }), { status: 200 })
+    }) as unknown as typeof fetch
+
+    try {
+      const { scanWalletV2 } = await import('./scanWallet.ts')
+      const result = await scanWalletV2('0xabc', ['base'], 'normal', ({ status }) => updates.push(status))
+
+      assert.deepEqual(calls, ['/api/wallet-scan', '/api/wallet-scan/job-transient', '/api/wallet-scan/job-transient'])
+      assert.deepEqual(updates, ['queued', 'done'])
+      assert.equal(result.success, true)
+      assert.deepEqual(result.data, { recovered: true })
+    } finally {
+      global.fetch = originalFetch
+      global.setTimeout = originalSetTimeout
+    }
+  })
+
+
   it('returns an immediate done result when the enqueue route falls back to synchronous scan', async () => {
     const calls: string[] = []
     const updates: string[] = []
