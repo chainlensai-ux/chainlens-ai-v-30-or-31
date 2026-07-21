@@ -25,6 +25,7 @@ export type WalletScanJobMetadata = {
   scanMode?: 'normal' | 'deep'
   ip?: string
   error?: string
+  finishedAt?: number
 }
 
 export type WalletScanJobPayload = {
@@ -48,7 +49,7 @@ export function walletScanResultMissingFallback(jobId: string, job: WalletScanJo
 
 type FinalPublishClient = 'critical' | 'normal'
 
-function redisErrorDetails(error: unknown, client: FinalPublishClient): Record<string, unknown> {
+function redisErrorDetails(error: unknown): { code?: string; name?: string; timeoutType?: 'command' | 'connect' | 'unknown'; message: string } {
   const err = error as { code?: unknown; name?: unknown; message?: unknown } | null
   const message = err?.message ?? String(error)
   const code = typeof err?.code === 'string' ? err.code : undefined
@@ -62,45 +63,36 @@ function redisErrorDetails(error: unknown, client: FinalPublishClient): Record<s
         ? 'unknown'
         : undefined
 
-  return { client, code, name, timeoutType, message }
+  return { code, name, timeoutType, message: String(message) }
 }
 
 export async function publishFinalWalletScanResult(jobId: string, result: unknown): Promise<void> {
-  const now = Date.now()
-  const existing = await readWalletScanJob(jobId).catch(() => null)
-  const finalJob: WalletScanJobMetadata = {
-    ...(existing ?? { jobId, wallet: '', createdAt: now, updatedAt: now }),
-    status: 'done',
-    error: undefined,
-    updatedAt: now,
-  }
-
-  const finalResult = result ?? walletScanResultMissingFallback(jobId, existing)
-  console.log('[walletScanQueue] final publish start', { jobId })
+  const finishedAt = Date.now()
+  const finalJob = { jobId, status: 'done' as const, finishedAt }
+  const finalResult = result ?? walletScanResultMissingFallback(jobId, null)
+  console.log('[final-publish] start', { jobId })
 
   const writeWithClient = async (client: FinalPublishClient): Promise<void> => {
     const set = client === 'critical' ? redis.setCritical.bind(redis) : redis.set.bind(redis)
-    await Promise.all([
-      set(walletScanResultKey(jobId), finalResult),
-      set(walletScanJobKey(jobId), finalJob),
-    ])
+    await set(walletScanResultKey(jobId), finalResult)
+    await set(walletScanJobKey(jobId), finalJob)
   }
 
   try {
     await writeWithClient('critical')
-    console.log('[walletScanQueue] final publish success', { jobId, client: 'critical' })
+    console.log('[final-publish] success', { jobId, client: 'critical' })
     return
   } catch (criticalError) {
-    console.error('[walletScanQueue] final publish failed', { jobId, ...redisErrorDetails(criticalError, 'critical') })
+    console.error('[final-publish] failure-critical', { jobId, ...redisErrorDetails(criticalError) })
   }
 
-  console.warn('[walletScanQueue] final publish falling back to normal client', { jobId })
+  console.warn('[final-publish] fallback-normal-client', { jobId })
 
   try {
     await writeWithClient('normal')
-    console.log('[walletScanQueue] final publish success', { jobId, client: 'normal' })
+    console.log('[final-publish] success', { jobId, client: 'normal' })
   } catch (normalError) {
-    console.error('[walletScanQueue] final publish failed', { jobId, ...redisErrorDetails(normalError, 'normal') })
+    console.error('[final-publish] failure-normal', { jobId, ...redisErrorDetails(normalError) })
     throw new Error('wallet_scan_final_publish_failed')
   }
 }
@@ -115,6 +107,28 @@ export async function readWalletScanJob(jobId: string): Promise<WalletScanJobMet
 
 export async function readWalletScanResult(jobId: string): Promise<unknown | null> {
   return await redis.get(walletScanResultKey(jobId)).catch(() => null)
+}
+
+
+export async function claimNextWalletScanPayload(): Promise<WalletScanJobPayload | null> {
+  const pending = (await redis.get<string[]>(walletScanPendingKey()).catch(() => null)) ?? []
+  const [jobId, ...remaining] = pending
+  if (!jobId) return null
+
+  try { await redis.set(walletScanPendingKey(), remaining, { ex: JOB_TTL_SECONDS }) } catch {}
+
+  const job = await readWalletScanJob(jobId)
+  if (!job) return null
+
+  try { await redis.set(walletScanPendingJobKey(jobId), false, { ex: 60 }) } catch {}
+
+  return {
+    jobId,
+    walletAddress: job.wallet,
+    chains: job.chains ?? ['base', 'eth'],
+    scanMode: job.scanMode ?? 'normal',
+    ip: job.ip ?? 'unknown',
+  }
 }
 
 async function triggerWalletScanWorker(): Promise<void> {
