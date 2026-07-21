@@ -34,8 +34,7 @@ import { logFifoPricingDivergence, shouldSampleThisScan } from '@/lib/server/eng
 import { setJobProgress } from '@/src/modules/scanJobs'
 import { withScanTimeout } from '@/src/utils/timeout'
 import { alchemyAudit } from '@/lib/server/alchemyAudit'
-import { redis as kv } from '@/lib/server/cache/redisClient'
-import { readWalletScanJob, walletScanResultKey, walletScanJobKey } from '@/src/modules/walletScanQueue'
+import { publishFinalWalletScanResult } from '@/src/modules/walletScanQueue'
 
 // V2-DIRECT-FAILURE LOGGER: moved here unchanged from the route file (still exported so the route
 // can also tag its own outer catch with the same log tag).
@@ -74,16 +73,7 @@ export type WalletScanV2WorkerResult = { status: number; body: unknown }
 
 async function writeFinalWalletScanJobResult(jobId: string | undefined, result: WalletScanV2WorkerResult): Promise<void> {
   if (!jobId) return
-
-  const job = await readWalletScanJob(jobId).catch(() => null)
-  const completedJob = {
-    ...(job ?? { jobId, wallet: '', createdAt: Date.now(), updatedAt: Date.now() }),
-    status: 'done' as const,
-    error: undefined,
-  }
-
-  try { await kv.set(walletScanResultKey(jobId), result.body, { ex: 30 * 60 }) } catch {}
-  try { await kv.set(walletScanJobKey(jobId), { ...completedJob, updatedAt: Date.now() }, { ex: 30 * 60 }) } catch {}
+  await publishFinalWalletScanResult(jobId, result.body)
   console.log('[wallet-scan-worker] job completed', { jobId })
 }
 
@@ -687,4 +677,3 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
   await writeFinalWalletScanJobResult(jobId, finalResult)
   return finalResult
 }
-

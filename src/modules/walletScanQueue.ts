@@ -37,6 +37,50 @@ export type WalletScanJobPayload = {
 
 const JOB_TTL_SECONDS = 30 * 60
 
+export function walletScanResultMissingFallback(jobId: string, job: WalletScanJobMetadata | null): unknown {
+  return {
+    success: false,
+    partial: true,
+    error: 'scan-final-result-unavailable',
+    jobId,
+    wallet: job?.wallet ?? '',
+  }
+}
+
+export async function publishFinalWalletScanResult(jobId: string, result: unknown): Promise<void> {
+  const now = Date.now()
+  const existing = await readWalletScanJob(jobId).catch(() => null)
+  const finalJob: WalletScanJobMetadata = {
+    ...(existing ?? { jobId, wallet: '', createdAt: now, updatedAt: now }),
+    status: 'done',
+    error: undefined,
+    updatedAt: now,
+  }
+
+  const finalResult = result ?? walletScanResultMissingFallback(jobId, existing)
+  let writes = await Promise.allSettled([
+    redis.setCritical(walletScanResultKey(jobId), finalResult, { ex: JOB_TTL_SECONDS }),
+    redis.setCritical(walletScanJobKey(jobId), finalJob, { ex: JOB_TTL_SECONDS }),
+  ])
+
+  if (writes.some((write) => write.status === 'rejected')) {
+    writes = await Promise.allSettled([
+      redis.set(walletScanResultKey(jobId), finalResult, { ex: JOB_TTL_SECONDS }),
+      redis.set(walletScanJobKey(jobId), finalJob, { ex: JOB_TTL_SECONDS }),
+    ])
+  }
+
+  const failed = writes.filter((write) => write.status === 'rejected')
+  if (failed.length > 0) {
+    console.error('[walletScanQueue] final publish failed', {
+      jobId,
+      failedWrites: failed.length,
+      errors: failed.map((write) => write.status === 'rejected' ? (write.reason instanceof Error ? write.reason.message : String(write.reason)) : ''),
+    })
+    throw new Error(`wallet_scan_final_publish_failed_${failed.length}`)
+  }
+}
+
 export async function writeWalletScanJob(job: WalletScanJobMetadata): Promise<void> {
   try { await redis.set(walletScanJobKey(job.jobId), { ...job, updatedAt: Date.now() }, { ex: JOB_TTL_SECONDS }) } catch {}
 }
