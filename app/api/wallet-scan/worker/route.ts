@@ -77,12 +77,16 @@ async function runWalletScanJob(payload: WalletScanJobPayload): Promise<void> {
     printAlchemyAuditSummary()
     console.log('[wallet-scan-worker] job completed', { jobId: payload.jobId })
   } catch (err) {
-    await writeWalletScanJob({
+    const errorMessage = err instanceof Error ? err.message : String(err)
+    const errorBody = { success: false, error: errorMessage, partial: true }
+    try { await redis.set(walletScanResultKey(payload.jobId), errorBody, { ex: 30 * 60 }) } catch {}
+    try { await redis.set(walletScanJobKey(payload.jobId), {
       ...baseJob,
-      status: 'failed',
-      error: err instanceof Error ? err.message : String(err),
-    })
-    console.error('[wallet-scan-worker] job failed', err)
+      status: 'done',
+      error: undefined,
+      updatedAt: Date.now(),
+    }, { ex: 30 * 60 }) } catch {}
+    console.error('[wallet-scan-worker] job completed with partial failure', err)
   }
 }
 

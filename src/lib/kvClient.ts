@@ -109,11 +109,10 @@ export class RequestPriceKvClient {
   private async resolveMiss(key: string, token: string, chain: string, timestamp: number, fetcher: PriceSourceFn, readOnly: boolean): Promise<number | null> {
     const cached = await this.getRemote<number>(key)
     if (cached.ok && cached.value !== null) { this.memory.set(key, cached.value); return cached.value }
-    if (readOnly) return null
     const price = await fetcher(token, chain as Parameters<PriceSourceFn>[1], timestamp)
     const safe = typeof price === 'number' && Number.isFinite(price) ? price : null
     this.memory.set(key, safe)
-    if (safe !== null) await this.setRemote(key, safe)
+    if (safe !== null && !readOnly) await this.setRemote(key, safe)
     return safe
   }
   private async getRemote<T>(key: string): Promise<KVResult<T>> {
