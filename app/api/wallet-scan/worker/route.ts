@@ -8,13 +8,13 @@ export const maxDuration = 300
 async function readPendingJobIds(): Promise<string[]> {
   const { redis } = await import('@/lib/server/cache/redisClient')
   const { walletScanPendingKey } = await import('@/src/modules/walletScanQueueKeys')
-  return (await redis.get<string[]>(walletScanPendingKey())) ?? []
+  return (await redis.get<string[]>(walletScanPendingKey()).catch(() => null)) ?? []
 }
 
 async function writePendingJobIds(jobIds: string[]): Promise<void> {
   const { redis } = await import('@/lib/server/cache/redisClient')
   const { walletScanPendingKey } = await import('@/src/modules/walletScanQueueKeys')
-  await redis.set(walletScanPendingKey(), jobIds, { ex: 30 * 60 })
+  try { await redis.set(walletScanPendingKey(), jobIds, { ex: 30 * 60 }) } catch {}
 }
 
 async function claimNextPayload(): Promise<WalletScanJobPayload | null> {
@@ -29,7 +29,7 @@ async function claimNextPayload(): Promise<WalletScanJobPayload | null> {
   const job = await readWalletScanJob(jobId)
   if (!job) return null
 
-  await redis.set(walletScanPendingJobKey(jobId), false, { ex: 60 })
+  try { await redis.set(walletScanPendingJobKey(jobId), false, { ex: 60 }) } catch {}
   return {
     jobId,
     walletAddress: job.wallet,
@@ -67,13 +67,13 @@ async function runWalletScanJob(payload: WalletScanJobPayload): Promise<void> {
       payload.ip,
       payload.jobId,
     )
-    await redis.set(walletScanResultKey(payload.jobId), result.body, { ex: 30 * 60 })
-    await redis.set(walletScanJobKey(payload.jobId), {
+    try { await redis.set(walletScanResultKey(payload.jobId), result.body, { ex: 30 * 60 }) } catch {}
+    try { await redis.set(walletScanJobKey(payload.jobId), {
       ...baseJob,
       status: 'done',
       error: undefined,
       updatedAt: Date.now(),
-    }, { ex: 30 * 60 })
+    }, { ex: 30 * 60 }) } catch {}
     printAlchemyAuditSummary()
     console.log('[wallet-scan-worker] job completed', { jobId: payload.jobId })
   } catch (err) {

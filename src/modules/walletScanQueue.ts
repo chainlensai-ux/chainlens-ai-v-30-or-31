@@ -38,15 +38,15 @@ export type WalletScanJobPayload = {
 const JOB_TTL_SECONDS = 30 * 60
 
 export async function writeWalletScanJob(job: WalletScanJobMetadata): Promise<void> {
-  await redis.set(walletScanJobKey(job.jobId), { ...job, updatedAt: Date.now() }, { ex: JOB_TTL_SECONDS })
+  try { await redis.set(walletScanJobKey(job.jobId), { ...job, updatedAt: Date.now() }, { ex: JOB_TTL_SECONDS }) } catch {}
 }
 
 export async function readWalletScanJob(jobId: string): Promise<WalletScanJobMetadata | null> {
-  return await redis.get<WalletScanJobMetadata>(walletScanJobKey(jobId))
+  return await redis.get<WalletScanJobMetadata>(walletScanJobKey(jobId)).catch(() => null)
 }
 
 export async function readWalletScanResult(jobId: string): Promise<unknown | null> {
-  return await redis.get(walletScanResultKey(jobId))
+  return await redis.get(walletScanResultKey(jobId)).catch(() => null)
 }
 
 async function triggerWalletScanWorker(): Promise<void> {
@@ -75,8 +75,8 @@ export async function enqueueWalletScanJob(jobId: string, payload: WalletScanJob
     scanMode: payload.scanMode,
     ip: payload.ip,
   })
-  await redis.set(walletScanPendingJobKey(jobId), true, { ex: JOB_TTL_SECONDS })
-  const pending = (await redis.get<string[]>(walletScanPendingKey())) ?? []
-  await redis.set(walletScanPendingKey(), [...new Set([...pending, jobId])], { ex: JOB_TTL_SECONDS })
+  try { await redis.set(walletScanPendingJobKey(jobId), true, { ex: JOB_TTL_SECONDS }) } catch {}
+  const pending = (await redis.get<string[]>(walletScanPendingKey()).catch(() => null)) ?? []
+  try { await redis.set(walletScanPendingKey(), [...new Set([...pending, jobId])], { ex: JOB_TTL_SECONDS }) } catch {}
   await triggerWalletScanWorker()
 }

@@ -52,10 +52,10 @@ const PROVIDER_FETCH_WINDOW_KEY_PREFIX = 'v2:providerFetchWindow:'
 
 // KV RESILIENCE RE-TUNING, DISCLOSED (this task's own request — see tokenCache.ts's own header for
 // the identical totalAttempts-vs-3-backoff-delays ambiguity and how it's resolved here the same
-// way): 300ms per-attempt timeout, 3 retries (4 total attempts), backoff 100/200/400ms.
+// way): 300ms bounded call, no retries/backoff for worker-safe best-effort KV.
 const KV_CALL_TIMEOUT_MS = 300
-const MAX_RETRIES = 3
-const RETRY_BACKOFF_MS = [100, 200, 400]
+const MAX_RETRIES = 0
+const RETRY_BACKOFF_MS: number[] = []
 export const MAX_COMPRESSED_BYTES = 150_000 // renamed from MAX_PAYLOAD_BYTES (150kb, was 100kb) —
 // this guard measures the COMPRESSED (post-gzip) payload size for the large-payload branch; the
 // small-payload branch below still compares against the same constant on the UNCOMPRESSED size,
@@ -103,8 +103,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer))
 }
 
-// Runs `attempt` up to 1 + MAX_RETRIES times with a short per-attempt timeout and backoff between
-// retries. Never throws, and — deliberately, per this file's header — never trips any circuit
+// Runs `attempt` once with a short per-attempt timeout. No retries or cooldown waits. Never throws, and — deliberately, per this file's header — never trips any circuit
 // breaker or otherwise remembers past failures across calls. Returns `onFailure` if every attempt
 // fails.
 async function withRetriesNoBreaker<T>(attempt: () => Promise<T>, onFailure: T, label: string): Promise<T> {
@@ -294,7 +293,7 @@ export type ChunkedKvWriterConfig = {
 
 const SAFE_WRITE_CHUNK_BYTES = 50_000
 const SAFE_WRITE_MAX_TOTAL_MS = 1500
-const SAFE_WRITE_BACKOFF_MS = [50, 100, 200]
+const SAFE_WRITE_BACKOFF_MS: number[] = []
 
 export type ChunkedKvManifest = {
   __chainlensChunkedKv: true
@@ -480,7 +479,7 @@ export async function withStageCache<T>(
     const writePromise = options.writer.write(key, result, effectiveTtl, { degradedMode: options.degradedMode })
     if (options.awaitWrite) await writePromise
   } else {
-    await setStageCache(key, result, effectiveTtl)
+    void setStageCache(key, result, effectiveTtl).catch(() => undefined)
   }
   return result
 }
