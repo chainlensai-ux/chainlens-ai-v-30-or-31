@@ -8,7 +8,7 @@
 
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { resolveEffectiveTtl, compress, decompress, decompressStageValue, MAX_PAYLOAD_BYTES, createHoldingsKvWriter, chunkStringByUtf8Bytes } from './v2StageCache'
+import { resolveEffectiveTtl, compress, decompress, decompressStageValue, MAX_PAYLOAD_BYTES, createHoldingsKvWriter, createProviderWindowKvWriter, chunkStringByUtf8Bytes } from './v2StageCache'
 
 async function decompressChunkForTest(base64: unknown): Promise<string> {
   assert.equal(typeof base64, 'string')
@@ -157,7 +157,7 @@ describe('chunked holdings/provider KV writer', () => {
       console.warn = original
     }
     assert.ok(writes.length <= 1)
-    assert.ok(calls.some((c) => c[0] === '[holdings-kv] write-skipped' && (c[1] as { reason: string }).reason === 'budget_exceeded'))
+    assert.ok(calls.some((c) => c[0] === '[holdings-kv] partial-write-mode' && (c[1] as { reason: string }).reason === 'budget_exceeded'))
   })
 
   it('skips unchanged payloads by hash within the request-scoped writer', async () => {
@@ -169,10 +169,32 @@ describe('chunked holdings/provider KV writer', () => {
     assert.equal(writes.length, firstWriteCount)
   })
 
-  it('skips writes in degraded mode', async () => {
+  it('switches degraded mode to partial writes instead of skipping', async () => {
     const writes: unknown[] = []
-    const writer = createHoldingsKvWriter({ kv: { set: async (...args: unknown[]) => { writes.push(args); return 'OK' } } as never })
-    await writer.write('v2:holdings:base:0xabc', { skipped: true }, 20, { degradedMode: true })
+    const writer = createHoldingsKvWriter({ kv: { set: async (...args: unknown[]) => { writes.push(args); return 'OK' } } as never, sleep: async () => undefined })
+    await writer.write('v2:holdings:base:0xabc', { degraded: true, text: 'x'.repeat(2000) }, 20, { degradedMode: true })
+    assert.ok(writes.length > 0)
+  })
+
+  it('backs off on budget_exceeded and eventually writes the final manifest', async () => {
+    const writes: Array<{ key: string; value: unknown }> = []
+    const slept: number[] = []
+    let attempts = 0
+    const writer = createHoldingsKvWriter({
+      kv: { set: async (key: string, value: unknown) => { attempts++; if (attempts <= 2) throw Object.assign(new Error('budget_exceeded'), { code: 'budget_exceeded', remainingRps: 0, remainingBandwidth: 0, remainingPipelineBudget: 0, latencyMs: 30, clusterHealth: 'degraded' }); writes.push({ key, value }); return 'OK' } } as never,
+      sleep: async (ms) => { slept.push(ms) },
+    })
+    await writer.write('v2:holdings:base:0xdef', { ok: true }, 20)
+    assert.deepEqual(slept.slice(0, 2), [50, 100])
+    assert.equal((writes.at(-1)?.value as { __chainlensChunkedKv?: boolean }).__chainlensChunkedKv, true)
+  })
+
+  it('reduces provider-window write frequency after degraded pressure', async () => {
+    const writes: unknown[] = []
+    const writer = createProviderWindowKvWriter({ kv: { set: async (...args: unknown[]) => { writes.push(args); return 'OK' } } as never, sleep: async () => undefined })
+    await writer.write('v2:providerFetchWindow:base:0xabc:1', { a: 1 }, 20, { degradedMode: true })
     assert.equal(writes.length, 0)
+    await writer.write('v2:providerFetchWindow:base:0xabc:2', { a: 2 }, 20)
+    assert.ok(writes.length > 0)
   })
 })

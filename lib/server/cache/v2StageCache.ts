@@ -52,10 +52,10 @@ const PROVIDER_FETCH_WINDOW_KEY_PREFIX = 'v2:providerFetchWindow:'
 
 // KV RESILIENCE RE-TUNING, DISCLOSED (this task's own request — see tokenCache.ts's own header for
 // the identical totalAttempts-vs-3-backoff-delays ambiguity and how it's resolved here the same
-// way): 300ms bounded call, no retries/backoff for worker-safe best-effort KV.
+// way): 300ms bounded call, with adaptive 50/100/200/400ms backoff for worker-safe best-effort KV.
 const KV_CALL_TIMEOUT_MS = 300
-const MAX_RETRIES = 0
-const RETRY_BACKOFF_MS: number[] = []
+const MAX_RETRIES = 4
+const RETRY_BACKOFF_MS: number[] = [50, 100, 200, 400]
 export const MAX_COMPRESSED_BYTES = 150_000 // renamed from MAX_PAYLOAD_BYTES (150kb, was 100kb) —
 // this guard measures the COMPRESSED (post-gzip) payload size for the large-payload branch; the
 // small-payload branch below still compares against the same constant on the UNCOMPRESSED size,
@@ -103,7 +103,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer))
 }
 
-// Runs `attempt` once with a short per-attempt timeout. No retries or cooldown waits. Never throws, and — deliberately, per this file's header — never trips any circuit
+// Runs `attempt` with a short per-attempt timeout and bounded adaptive backoff. Never throws, and — deliberately, per this file's header — never trips any circuit
 // breaker or otherwise remembers past failures across calls. Returns `onFailure` if every attempt
 // fails.
 async function withRetriesNoBreaker<T>(attempt: () => Promise<T>, onFailure: T, label: string): Promise<T> {
@@ -293,7 +293,7 @@ export type ChunkedKvWriterConfig = {
 
 const SAFE_WRITE_CHUNK_BYTES = 50_000
 const SAFE_WRITE_MAX_TOTAL_MS = 1500
-const SAFE_WRITE_BACKOFF_MS: number[] = []
+const SAFE_WRITE_BACKOFF_MS: number[] = [50, 100, 200, 400]
 
 export type ChunkedKvManifest = {
   __chainlensChunkedKv: true
@@ -338,12 +338,41 @@ async function decompressString(base64: string): Promise<string> {
   return Buffer.from(buffer).toString('utf8')
 }
 
+function isAdaptiveWriteError(err: unknown): boolean {
+  const detail = err as { code?: unknown; message?: unknown; name?: unknown } | null
+  const message = String(detail?.message ?? err).toLowerCase()
+  return detail?.code === 'budget_exceeded'
+    || detail?.code === 'ETIMEDOUT'
+    || detail?.name === 'TimeoutError'
+    || message.includes('budget_exceeded')
+    || message.includes('kv_timeout_safe')
+    || message.includes('kv_timeout')
+    || message.includes('rate limit')
+    || message.includes('too many requests')
+    || message.includes('bandwidth')
+}
+
+function logAdaptiveWriteDiagnostics(label: string, err: unknown, kind: 'holdings' | 'providerFetchWindow'): void {
+  const detail = err as { remainingRps?: unknown; remainingBandwidth?: unknown; remainingPipelineBudget?: unknown; latencyMs?: unknown; clusterHealth?: unknown; headers?: { get?: (name: string) => string | null } } | null
+  const headers = detail?.headers
+  // eslint-disable-next-line no-console
+  console.warn(`[${kind === 'holdings' ? 'holdings-kv' : 'provider-window-kv'}] usage-diagnostics`, {
+    label,
+    remainingRps: detail?.remainingRps ?? headers?.get?.('x-ratelimit-remaining') ?? 'unknown',
+    remainingBandwidth: detail?.remainingBandwidth ?? headers?.get?.('x-upstash-remaining-bandwidth') ?? 'unknown',
+    remainingPipelineBudget: detail?.remainingPipelineBudget ?? headers?.get?.('x-upstash-remaining-pipeline') ?? 'unknown',
+    regionLatencyMs: detail?.latencyMs ?? 'unknown',
+    clusterHealth: detail?.clusterHealth ?? 'unknown',
+  })
+}
+
 async function writeWithBudget(params: {
   kvClient: Pick<typeof realKv, 'set'>
   key: string
   value: unknown
   ttlSeconds: number
   label: string
+  kind: 'holdings' | 'providerFetchWindow'
   maxTotalWriteTimeMs: number
   startedAt: number
   now: () => number
@@ -359,6 +388,7 @@ async function writeWithBudget(params: {
       const isTimeout = err instanceof Error && err.message === 'kv_timeout'
       // eslint-disable-next-line no-console
       console[isTimeout ? 'warn' : 'error'](isTimeout ? 'kv_timeout_safe' : 'KV ERROR', { label: params.label, attempt: attempt + 1, totalAttempts: MAX_RETRIES + 1, ...(isTimeout ? {} : { error: err instanceof Error ? err.message : String(err) }) })
+      if (isAdaptiveWriteError(err)) logAdaptiveWriteDiagnostics(params.label, err, params.kind)
       const backoffMs = SAFE_WRITE_BACKOFF_MS[attempt] ?? SAFE_WRITE_BACKOFF_MS[SAFE_WRITE_BACKOFF_MS.length - 1]
       if (attempt < MAX_RETRIES && params.now() - params.startedAt + backoffMs < params.maxTotalWriteTimeMs) await params.sleepFn(backoffMs)
     }
@@ -373,13 +403,17 @@ export function createChunkedKvWriter(kind: 'holdings' | 'providerFetchWindow', 
   const now = config.now ?? (() => performance.now())
   const sleepFn = config.sleep ?? sleep
   const seenHashes = new Map<string, string>()
+  let adaptiveChunkBytes = maxChunkBytes
+  let providerWindowWriteStride = 1
+  let providerWindowWriteCount = 0
   let queue = Promise.resolve()
 
   async function runWrite(key: string, value: unknown, ttlSeconds: number, options?: ChunkedKvWriteOptions): Promise<void> {
     if (options?.degradedMode) {
-      // eslint-disable-next-line no-console
-      console.warn(`[${kind === 'holdings' ? 'holdings-kv' : 'provider-window-kv'}] write-skipped`, { reason: 'degraded_mode', key })
-      return
+      // Degraded mode now switches to partial writes instead of skipping entirely.
+      adaptiveChunkBytes = Math.max(1024, Math.floor(adaptiveChunkBytes / 2))
+      providerWindowWriteStride = kind === 'providerFetchWindow' ? Math.min(8, providerWindowWriteStride * 2) : providerWindowWriteStride
+      console.warn(`[${kind === 'holdings' ? 'holdings-kv' : 'provider-window-kv'}] degraded-partial-write-mode`, { key, adaptiveChunkBytes, providerWindowWriteStride })
     }
     if (!config.kv && !kvConfigured()) return
 
@@ -392,24 +426,38 @@ export function createChunkedKvWriter(kind: 'holdings' | 'providerFetchWindow', 
     }
 
     const startedAt = now()
-    const chunks = chunkStringByUtf8Bytes(serialized, maxChunkBytes)
-    const compressedChunks = [] as string[]
-    for (const chunk of chunks) compressedChunks.push(await compressString(chunk))
-
-    for (let i = 0; i < compressedChunks.length; i++) {
-      const ok = await writeWithBudget({ kvClient, key: `${key}:chunk:${i}`, value: compressedChunks[i], ttlSeconds, label: `set:${key}:chunk:${i}`, maxTotalWriteTimeMs, startedAt, now, sleepFn })
-      if (!ok) {
-        // eslint-disable-next-line no-console
-        console.warn(`[${kind === 'holdings' ? 'holdings-kv' : 'provider-window-kv'}] write-skipped`, { reason: 'budget_exceeded', key })
+    if (kind === 'providerFetchWindow') {
+      providerWindowWriteCount++
+      if (providerWindowWriteStride > 1 && providerWindowWriteCount % providerWindowWriteStride !== 0) {
+        console.warn('[provider-window-kv] write-frequency-reduced', { key, providerWindowWriteStride, partialWriteMode: true })
         return
       }
     }
 
-    const manifest: ChunkedKvManifest = { __chainlensChunkedKv: true, version: 1, hash, encoding: 'gzip_base64', chunkCount: compressedChunks.length }
-    const ok = await writeWithBudget({ kvClient, key, value: manifest, ttlSeconds, label: `set:${key}`, maxTotalWriteTimeMs, startedAt, now, sleepFn })
+    const chunks = chunkStringByUtf8Bytes(serialized, adaptiveChunkBytes)
+    const compressedChunks = [] as string[]
+    for (const chunk of chunks) compressedChunks.push(await compressString(chunk))
+
+    let writtenChunkCount = 0
+    for (let i = 0; i < compressedChunks.length; i++) {
+      const ok = await writeWithBudget({ kvClient, key: `${key}:chunk:${i}`, value: compressedChunks[i], ttlSeconds, label: `set:${key}:chunk:${i}`, kind, maxTotalWriteTimeMs, startedAt, now, sleepFn })
+      if (!ok) {
+        // eslint-disable-next-line no-console
+        adaptiveChunkBytes = Math.max(1024, Math.floor(adaptiveChunkBytes / 2))
+        if (kind === 'providerFetchWindow') providerWindowWriteStride = Math.min(8, providerWindowWriteStride * 2)
+        console.warn(`[${kind === 'holdings' ? 'holdings-kv' : 'provider-window-kv'}] partial-write-mode`, { reason: 'budget_exceeded', key, writtenChunkCount, totalChunkCount: compressedChunks.length, adaptiveChunkBytes, providerWindowWriteStride })
+        return
+      }
+      writtenChunkCount++
+    }
+
+    const manifest: ChunkedKvManifest = { __chainlensChunkedKv: true, version: 1, hash, encoding: 'gzip_base64', chunkCount: writtenChunkCount }
+    const ok = await writeWithBudget({ kvClient, key, value: manifest, ttlSeconds, label: `set:${key}`, kind, maxTotalWriteTimeMs, startedAt, now, sleepFn })
     if (!ok) {
       // eslint-disable-next-line no-console
-      console.warn(`[${kind === 'holdings' ? 'holdings-kv' : 'provider-window-kv'}] write-skipped`, { reason: 'budget_exceeded', key })
+      adaptiveChunkBytes = Math.max(1024, Math.floor(adaptiveChunkBytes / 2))
+      if (kind === 'providerFetchWindow') providerWindowWriteStride = Math.min(8, providerWindowWriteStride * 2)
+      console.warn(`[${kind === 'holdings' ? 'holdings-kv' : 'provider-window-kv'}] partial-write-mode`, { reason: 'budget_exceeded', key, adaptiveChunkBytes, providerWindowWriteStride })
       return
     }
     seenHashes.set(key, hash)
