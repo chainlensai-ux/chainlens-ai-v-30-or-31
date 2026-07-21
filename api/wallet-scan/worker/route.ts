@@ -74,7 +74,9 @@ async function runWalletScanJob(payload: WalletScanJobPayload): Promise<void> {
   }
 }
 
-export default async function walletScanBackgroundWorker(): Promise<void> {
+export default async function worker(request: Request): Promise<void> {
+  void request
+
   for (;;) {
     try {
       const payload = await claimNextPayload()

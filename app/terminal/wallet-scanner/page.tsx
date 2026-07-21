@@ -140,6 +140,7 @@ export default function WalletScannerPage() {
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [jobStatusMessage, setJobStatusMessage] = useState<string | null>(null)
+  const [currentJobId, setCurrentJobId] = useState<string | null>(null)
   // PROGRESS, ADDED DISCLOSED (module-progress-reporting task): mirrors the optional `progress`
   // field on ScanJobStatusResponse (app/frontend/api/scanWallet.ts) — populated by the same
   // onUpdate callback that already sets jobStatusMessage, purely additive to the loading-state UI
@@ -302,6 +303,7 @@ export default function WalletScannerPage() {
     setError(null)
     setResult(null)
     setJobStatusMessage(null)
+    setCurrentJobId(null)
     setScanProgress(null)
     setModuleErrors(null)
     setScanDurationMs(null)
@@ -310,7 +312,8 @@ export default function WalletScannerPage() {
     try {
       // JOB/POLL CALL: scanWalletV2() enqueues immediately, then polls status while the
       // background queue runs the unchanged full scan worker outside this HTTP request.
-      const response = await scanWalletV2(address, ['base', 'eth'], mode, ({ status }) => {
+      const response = await scanWalletV2(address, ['base', 'eth'], mode, ({ jobId, status }) => {
+        setCurrentJobId(jobId)
         setJobStatusMessage(status === 'queued' ? 'queued — still scanning…' : status === 'running' ? 'running — still scanning…' : status)
       })
       setScanDurationMs(Date.now() - scanStartedAt)
@@ -327,6 +330,7 @@ export default function WalletScannerPage() {
     } finally {
       setLoading(false)
       setJobStatusMessage(null)
+      setCurrentJobId(null)
       setScanProgress(null)
     }
   }
@@ -489,6 +493,11 @@ export default function WalletScannerPage() {
           {loading && (
             <div className="ws-card" style={{ color: 'rgba(148,163,184,0.75)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', fontSize: '13px' }}>
               Scanning {input.trim()}…{jobStatusMessage ? ` (${jobStatusMessage})` : ' (queued — still scanning…)'}
+              {currentJobId && (
+                <div style={{ marginTop: '6px', fontSize: '11px', color: 'rgba(148,163,184,0.55)' }}>
+                  Job {currentJobId}
+                </div>
+              )}
               {scanProgress && (
                 <div style={{ marginTop: '6px', fontSize: '11px', color: 'rgba(148,163,184,0.55)' }}>
                   Module {scanProgress.currentModule}/{scanProgress.totalModules}: {scanProgress.moduleName}
