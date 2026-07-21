@@ -121,38 +121,37 @@ describe('wallet scan queue with Upstash REST Redis', () => {
     assert.equal(outcome.degraded, true)
   })
 
-  it('retries budget_exceeded final writes with adaptive backoff and still publishes', async () => {
+  it('does not retry final writes or inject budget/degraded result state', async () => {
     const store = installMemoryRedis()
     let attempts = 0
     redis.setCritical = async (key: string, value: unknown, opts?: { ex?: number }): Promise<void> => {
       attempts++
-      if (attempts <= 2) throw Object.assign(new Error('budget_exceeded'), { code: 'budget_exceeded', remainingRps: 0, remainingBandwidth: 0, remainingPipelineBudget: 0, latencyMs: 42, clusterHealth: 'degraded' })
+      if (attempts === 1) throw Object.assign(new Error('write failed'), { code: 'BUDGET_TEST' })
       store.set(key, { value, opts })
     }
 
-    const outcome = await publishFinalWalletScanResult('budget-job', { success: true, data: { moduleErrors: {} } })
+    const outcome = await publishFinalWalletScanResult('budget-job', { success: true, data: { moduleErrors: {} } }) as { error?: string; degraded?: boolean }
 
-    assert.equal(outcome, undefined)
-    assert.ok(attempts >= 3)
-    assert.deepEqual(store.get(walletScanResultKey('budget-job'))?.value, { success: true, data: { moduleErrors: {} } })
-    assert.equal((store.get(walletScanJobKey('budget-job'))?.value as { status?: string } | undefined)?.status, 'done')
+    assert.equal(outcome.error, WALLET_SCAN_FINAL_RESULT_UNAVAILABLE.error)
+    assert.equal(outcome.degraded, true)
+    assert.equal(attempts, 1)
+    assert.equal(store.has(walletScanResultKey('budget-job')), false)
+    assert.equal(store.has(walletScanJobKey('budget-job')), false)
   })
 
-  it('keeps final publish in degraded partial-write mode when one key exhausts retries', async () => {
+  it('does not rewrite failed final results', async () => {
     const store = installMemoryRedis()
     redis.setCritical = async (key: string, value: unknown, opts?: { ex?: number }): Promise<void> => {
-      if (key === walletScanResultKey('partial-job')) throw Object.assign(new Error('kv_timeout_safe'), { code: 'ETIMEDOUT' })
+      if (key === walletScanResultKey('partial-job')) throw Object.assign(new Error('plain timeout'), { code: 'ETIMEDOUT' })
       store.set(key, { value, opts })
     }
 
-    const outcome = await publishFinalWalletScanResult('partial-job', { success: true, data: { moduleErrors: {} } }) as { degraded?: boolean; finalResult?: { degraded?: boolean; data?: { degraded?: boolean; degradedModules?: string[] } } }
+    const outcome = await publishFinalWalletScanResult('partial-job', { success: true, data: { moduleErrors: {} } }) as { error?: string; degraded?: boolean; finalResult?: unknown }
 
+    assert.equal(outcome.error, WALLET_SCAN_FINAL_RESULT_UNAVAILABLE.error)
     assert.equal(outcome.degraded, true)
-    assert.equal(outcome.finalResult?.degraded, true)
-    assert.equal(outcome.finalResult?.data?.degraded, true)
-    assert.ok(outcome.finalResult?.data?.degradedModules?.includes('holdings'))
-    assert.ok(outcome.finalResult?.data?.degradedModules?.includes('provider-window'))
-    assert.equal((store.get(walletScanJobKey('partial-job'))?.value as { status?: string } | undefined)?.status, 'done')
+    assert.equal(outcome.finalResult, undefined)
+    assert.equal(store.has(walletScanJobKey('partial-job')), false)
   })
 
 })

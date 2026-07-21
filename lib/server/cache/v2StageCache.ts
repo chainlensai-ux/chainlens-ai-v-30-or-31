@@ -1,68 +1,11 @@
 // Shared KV read-before/write-after wrapper for V2 engine hot paths (providerFetchWindow,
 // recoveryPolicy, holdings, pricingAtTimeEngine's price sources).
 //
-// SCOPE NOTE, DISCLOSED: the literal request was to add KV caching "inside" those 4 modules
-// (src/modules/providerFetchWindow, src/modules/recoveryPolicy, src/modules/holdings,
-// src/modules/pricingAtTimeEngine). That was explicitly declined and reconfirmed with the user —
-// it would mean editing V2 engine internals, contradicting the standing "do not modify V2 engine
-// internals (src/pipeline, src/modules/*)" rule set one turn earlier in this same session, and
-// these modules are pure, carefully tested (Architecture Step contract + a dedicated runtime test
-// suite) — adding I/O inside them would change their signatures and risk breaking that contract.
-// The user chose the alternative: cache each of these 4 stages from the PIPELINE orchestration
-// layer instead (src/pipeline/index.ts, src/pipeline/runWalletScanV2.ts — the only two files this
-// touches), wrapping each stage's existing call site with KV read-before/write-after. No module's
-// own source file is modified anywhere in this change.
-//
-// CIRCUIT-BREAKER ISOLATION, DISCLOSED (this task's own request): this file previously reused
-// lib/server/cache/tokenCache.ts's getTokenCache/setTokenCache directly — but that module's
-// circuit breaker is a single GLOBAL counter shared by all 11+ real callers across this codebase.
-// When v2:providerFetchWindow:*/v2:holdings:* keys (this file's own traffic) racked up 3
-// consecutive timeouts, the breaker tripped and disabled KV for every OTHER caller too (pricing
-// lookups, dust checks, etc.) for the rest of that breaker's cooldown window — the actual root
-// cause of the cascading pricedTokens/portfolioValue-reset symptoms in the reported logs. Per this
-// task's explicit requirement 4 ("circuit breaker should only apply to tokenCache.ts, not
-// v2StageCache"), this file now has its own small, independent, timeout+retry+memory-fallback
-// layer directly over `@vercel/kv` — deliberately NOT sharing any state with tokenCache.ts, and
-// deliberately WITHOUT a circuit breaker, so nothing this file does can ever disable KV for
-// anything else, and nothing else can ever disable KV for this file.
-//
-// LATENCY TRADEOFF, DISCLOSED: removing the circuit breaker means a KV outage costs this file's
-// own bounded per-call retry budget (~1050ms worst case: 3 attempts x 250ms + backoff) on EVERY
-// call for as long as the outage lasts, rather than short-circuiting after 3 failures the way
-// tokenCache.ts's breaker does. That's the direct, unavoidable cost of requirement 4 — trading
-// "protect against compounding per-call latency during an outage" for "never let this file's KV
-// health affect any other caller, or vice versa." Still fail-open and non-blocking either way: a
-// failed/timed-out call always falls through to `compute()`, never throws, never blocks the
-// caller (requirements 3 and 6).
+// The wallet-scan stage cache intentionally uses a simple KV layer: direct get(key) and
+// direct set(key, value). Holdings and provider-window writers always write the full payload to
+// one key; they do not chunk, throttle, degrade, enforce budgets, or partially write.
 
 import { kv as realKv } from '@vercel/kv'
-import { getKvCircuitBreakerState } from './tokenCache'
-
-// CIRCUIT-BREAKER READ-ONLY CONSULT, DISCLOSED (this task's own request, requirement 5 — "when the
-// circuit breaker is OPEN, skip providerFetchWindow KV reads"): this file's header (above) already
-// disclosed a deliberate, previously-requested decision that v2StageCache must NEVER trip or be
-// tripped by tokenCache.ts's circuit breaker, to stop one file's KV traffic from disabling KV for
-// the other. That isolation is preserved here — this does not call tokenCache's
-// circuitBreakerOpen()/recordKvTimeout()/recordKvSuccess() (all private, unexported) and does not
-// add a breaker of its own. It only READS tokenCache's already-public, already-exported
-// getKvCircuitBreakerState() snapshot before attempting a `v2:providerFetchWindow:*` read — a
-// one-way, read-only signal ("KV looks broadly unhealthy right now") that can never cause
-// tokenCache's breaker to trip and is never itself tripped by v2StageCache's own calls.
-const PROVIDER_FETCH_WINDOW_KEY_PREFIX = 'v2:providerFetchWindow:'
-
-// KV RESILIENCE RE-TUNING, DISCLOSED (this task's own request — see tokenCache.ts's own header for
-// the identical totalAttempts-vs-3-backoff-delays ambiguity and how it's resolved here the same
-// way): 300ms bounded call, with adaptive 50/100/200/400ms backoff for worker-safe best-effort KV.
-const KV_CALL_TIMEOUT_MS = 300
-const MAX_RETRIES = 4
-const RETRY_BACKOFF_MS: number[] = [50, 100, 200, 400]
-export const MAX_COMPRESSED_BYTES = 150_000 // renamed from MAX_PAYLOAD_BYTES (150kb, was 100kb) —
-// this guard measures the COMPRESSED (post-gzip) payload size for the large-payload branch; the
-// small-payload branch below still compares against the same constant on the UNCOMPRESSED size,
-// unchanged from before this rename.
-export const MAX_PAYLOAD_BYTES = MAX_COMPRESSED_BYTES // kept as an alias — tests/cache/v2StageCache.test.ts
-// and lib/server/cache/v2StageCache.test.ts both import this exact name.
-
 // TEST-ONLY KV CLIENT OVERRIDE, DISCLOSED: `@vercel/kv`'s real `kv` export is a lazy-initializing
 // Proxy (its `get` trap throws if KV_REST_API_URL/TOKEN aren't set, and reassigning a property on
 // it does not reliably override what a later `kv.set`/`kv.get` call actually resolves to —
@@ -91,392 +34,46 @@ function kvConfigured(): boolean {
   return Boolean(kvOverrideForTest) || Boolean(process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN)
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  let timer: ReturnType<typeof setTimeout>
-  const timeout = new Promise<T>((_, reject) => {
-    timer = setTimeout(() => reject(new Error('kv_timeout')), ms)
-  })
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer))
-}
-
-// Runs `attempt` with a short per-attempt timeout and bounded adaptive backoff. Never throws, and — deliberately, per this file's header — never trips any circuit
-// breaker or otherwise remembers past failures across calls. Returns `onFailure` if every attempt
-// fails.
-async function withRetriesNoBreaker<T>(attempt: () => Promise<T>, onFailure: T, label: string): Promise<T> {
-  for (let i = 0; i <= MAX_RETRIES; i++) {
-    try {
-      return await withTimeout(attempt(), KV_CALL_TIMEOUT_MS)
-    } catch (err) {
-      const isTimeout = err instanceof Error && err.message === 'kv_timeout'
-      // eslint-disable-next-line no-console
-      console[isTimeout ? 'warn' : 'error'](isTimeout ? 'kv_timeout_safe' : 'KV ERROR', {
-        label,
-        attempt: i + 1,
-        totalAttempts: MAX_RETRIES + 1,
-        ...(isTimeout ? {} : { error: err instanceof Error ? err.message : String(err) }),
-      })
-      if (i < MAX_RETRIES) await sleep(RETRY_BACKOFF_MS[i] ?? RETRY_BACKOFF_MS[RETRY_BACKOFF_MS.length - 1])
-    }
-  }
-  return onFailure
-}
-
-// IN-MEMORY FALLBACK, DISCLOSED: process-lifetime, size-capped (same convention as
-// tokenCache.ts's own fallback layer, but a fully separate Map — no shared state). Holds the last
-// successful value per key, TTL-respecting, so a KV outage still returns real, recent data instead
-// of forcing a full recompute on every single request for as long as the outage lasts.
-const MEMORY_FALLBACK_MAX_ENTRIES = 500
-const memoryFallback = new Map<string, { value: unknown; expiresAt: number }>()
-
-function memoryFallbackGet<T>(key: string): T | null {
-  const entry = memoryFallback.get(key)
-  if (!entry) return null
-  if (Date.now() > entry.expiresAt) {
-    memoryFallback.delete(key)
-    return null
-  }
-  return entry.value as T
-}
-
-function memoryFallbackSet<T>(key: string, value: T, ttlSeconds: number): void {
-  if (memoryFallback.size >= MEMORY_FALLBACK_MAX_ENTRIES && !memoryFallback.has(key)) {
-    const oldestKey = memoryFallback.keys().next().value
-    if (oldestKey !== undefined) memoryFallback.delete(oldestKey)
-  }
-  memoryFallback.set(key, { value, expiresAt: Date.now() + ttlSeconds * 1000 })
-}
-
-// COMPRESSION, ADDED: previously this file stored/read the raw (uncompressed) value, so the size
-// guard below was the ONLY response to an oversized payload — always skip. Same technique as
-// tokenCache.ts (Compression Streams API — Edge-Runtime-safe, no node:zlib), added here too so a
-// payload that's JSON-large but compresses under MAX_PAYLOAD_BYTES gets cached instead of always
-// falling back to a recompute on every request.
-//
-// SIGNATURE, DISCLOSED: `compress` takes the raw `unknown` value (not a pre-serialized string) and
-// returns both the base64 payload and its byte length together — the caller no longer needs to
-// separately JSON.stringify or compute Buffer.byteLength itself. Pure, no KV/network dependency —
-// safe to call directly in tests.
-export async function compress(value: unknown): Promise<{ compressedBase64: string; compressedBytes: number }> {
-  const serialized = JSON.stringify(value)
-  const compressedStream = new Blob([serialized]).stream().pipeThrough(new CompressionStream('gzip'))
-  const buffer = await new Response(compressedStream).arrayBuffer()
-  const compressedBase64 = Buffer.from(buffer).toString('base64')
-  return { compressedBase64, compressedBytes: Buffer.byteLength(compressedBase64, 'utf8') }
-}
-
-// Pure, assumes valid gzip+base64 input (the shape `compress` produces) — throws on malformed
-// input rather than guessing, consistent with "must be pure" (requirement 3). Legacy/non-compressed
-// stored values (written before this change, or small payloads stored uncompressed — see
-// setStageCache below) are handled separately in getStageCache, not by this function itself.
-export async function decompress(base64: string): Promise<unknown> {
-  const decompressedStream = new Blob([Buffer.from(base64, 'base64')]).stream().pipeThrough(new DecompressionStream('gzip'))
-  const buffer = await new Response(decompressedStream).arrayBuffer()
-  return JSON.parse(Buffer.from(buffer).toString('utf8'))
-}
-
-// Internal, backward-compatible read helper — NOT the same as the pure, test-facing `decompress`
-// above. Handles every real shape this cache might contain: a legacy raw (already-deserialized,
-// never-compressed) value from before this change, a small payload stored uncompressed (see
-// setStageCache's SMALL-PAYLOAD note), or a real gzip+base64 compressed value.
-// Exported for testing the backward-compatible fallback behavior (legacy plain-JSON values,
-// non-string legacy values) — not part of the requirement-3 "pure test API" (compress/decompress/
-// MAX_PAYLOAD_BYTES), but real, exercised production logic worth testing directly.
-export async function decompressStageValue<T>(raw: unknown): Promise<T> {
-  if (typeof raw !== 'string') return raw as T // legacy: kv.get<T> may already have deserialized a non-compressed value
-  try {
-    return (await decompress(raw)) as T
-  } catch {
-    try {
-      return JSON.parse(raw) as T // small payload stored as plain JSON (uncompressed), or legacy plain-JSON string
-    } catch {
-      return raw as T // not a compressed/JSON string at all — return as-is rather than throw
-    }
-  }
-}
-
-// Returns the cached value, the in-memory fallback's last-known-good value, or null — NEVER
-// throws, NEVER blocks, NEVER consults or affects tokenCache.ts's circuit breaker.
+// Returns the cached value or null using a direct KV get. No timeouts, retries, throttling,
+// degraded-mode handling, budget checks, chunk reassembly, or fallback substitution are applied.
 async function getStageCache<T>(key: string): Promise<T | null> {
-  if (!kvConfigured()) return memoryFallbackGet<T>(key)
-
-  if (key.startsWith(PROVIDER_FETCH_WINDOW_KEY_PREFIX) && getKvCircuitBreakerState().state === 'open') {
-    // eslint-disable-next-line no-console
-    console.warn('kv_disabled_for_request', { reason: 'circuit_breaker_open_readonly_consult', key })
-    return memoryFallbackGet<T>(key)
-  }
-
-  const raw = await withRetriesNoBreaker(() => kv.get<unknown>(key), undefined, `get:${key}`)
-  if (raw === undefined) return memoryFallbackGet<T>(key) // KV genuinely failed — fall back
-  if (raw == null) return null // real cache miss, not a failure
-
-  let value: T
-  if (typeof raw === 'object' && raw !== null && (raw as Partial<ChunkedKvManifest>).__chainlensChunkedKv === true) {
-    const manifest = raw as ChunkedKvManifest
-    const compressedChunks = await Promise.all(Array.from({ length: manifest.chunkCount }, (_, i) => withRetriesNoBreaker(() => kv.get<string>(`${key}:chunk:${i}`), null, `get:${key}:chunk:${i}`)))
-    if (compressedChunks.some((chunk) => typeof chunk !== 'string')) return memoryFallbackGet<T>(key)
-    const serializedChunks = await Promise.all((compressedChunks as string[]).map((chunk) => decompressString(chunk)))
-    value = JSON.parse(serializedChunks.join('')) as T
-  } else {
-    value = await decompressStageValue<T>(raw)
-  }
-  if (value != null) memoryFallbackSet(key, value, 45) // keep the fallback warm on a real hit too
-  return value
+  if (!kvConfigured()) return null
+  const raw = await kv.get<unknown>(key)
+  if (raw == null) return null
+  return raw as T
 }
 
-// Best-effort write. Always writes through to the in-memory fallback first (so this file's own
-// fallback stays warm even during a KV outage), then attempts KV. Tries compression before giving
-// up on an oversized payload (requirement: "compression, chunking, or partial caching for large
-// holdings/provider windows" — chunking/partial-caching across multiple KV keys was explicitly
-// scoped out below, disclosed).
-//
-// CHUNKING SCOPE NOTE, DISCLOSED: true multi-key chunking (splitting one large value across several
-// KV keys and reassembling on read) was not implemented — this is a generic `setStageCache<T>`
-// shared across 4 different stage shapes (providerFetchWindow/recoveryPolicy/holdings/
-// pricingAtTimeEngine price sources) with no common "array of N independent items" structure this
-// function could split generically without schema knowledge of each caller's data (same reasoning
-// tokenCache.ts's own header already gives for not doing generic field-stripping). Compression is
-// implemented for real below; a payload that's still oversized after compression is skipped with
-// clear diagnostics, exactly as before, and the in-memory fallback still holds the real,
-// uncompressed value for the rest of this process's lifetime — never silently treated as missing
-// or zero (requirement: "missing data must be clearly flagged, not silently treated as zero").
+// Simple direct KV write. Every caller writes the complete payload to the single requested key.
+// There is no chunking, throttling, budget enforcement, degraded mode, adaptive sizing,
+// write-frequency reduction, partial write mode, or large-payload skipping.
 async function setStageCache<T>(key: string, value: T, ttlSeconds: number): Promise<void> {
-  memoryFallbackSet(key, value, ttlSeconds)
-
   if (!kvConfigured()) return
-
-  // SMALL-PAYLOAD NOTE, DISCLOSED (requirement: "small payloads stored without compression"): a
-  // payload that already fits under MAX_PAYLOAD_BYTES uncompressed is stored as-is — compression
-  // has real CPU cost for zero benefit when the value was never going to be skipped anyway.
-  const serialized = JSON.stringify(value)
-  const uncompressedBytes = Buffer.byteLength(serialized, 'utf8')
-  if (uncompressedBytes <= MAX_PAYLOAD_BYTES) {
-    await withRetriesNoBreaker(() => kv.set(key, value, { ex: ttlSeconds }), undefined, `set:${key}`)
-    return
-  }
-
-  const { compressedBase64, compressedBytes } = await compress(value)
-
-  if (compressedBytes > MAX_PAYLOAD_BYTES) {
-    // eslint-disable-next-line no-console
-    console.warn('kv_skip_large_payload', {
-      key,
-      uncompressedBytes,
-      compressedBytes,
-      maxPayloadBytes: MAX_PAYLOAD_BYTES,
-      strategyAttempted: 'gzip_base64',
-      fallback: 'in_memory_only', // real value is still in memoryFallback (set above) — never lost, just not cross-instance-shared
-    })
-    return // already stored in memory fallback above
-  }
-
-  // eslint-disable-next-line no-console
-  console.warn('kv_payload_compressed', { key, uncompressedBytes, compressedBytes, strategyAttempted: 'gzip_base64', fallback: 'none' })
-  await withRetriesNoBreaker(() => kv.set(key, compressedBase64, { ex: ttlSeconds }), undefined, `set:${key}`)
+  await kv.set(key, value, { ex: ttlSeconds })
 }
 
-
-export type ChunkedKvWriteOptions = { degradedMode?: boolean }
-export type ChunkedKvWriter = {
-  write: (key: string, value: unknown, ttlSeconds: number, options?: ChunkedKvWriteOptions) => Promise<void>
+export type SimpleKvWriter = {
+  write: (key: string, value: unknown, ttlSeconds: number) => Promise<void>
 }
-export type ChunkedKvWriterConfig = {
+export type SimpleKvWriterConfig = {
   kv?: Pick<typeof realKv, 'set'>
-  maxChunkBytes?: number
-  maxTotalWriteTimeMs?: number
-  now?: () => number
-  sleep?: (ms: number) => Promise<void>
 }
 
-const SAFE_WRITE_CHUNK_BYTES = 50_000
-const SAFE_WRITE_MAX_TOTAL_MS = 1500
-const SAFE_WRITE_BACKOFF_MS: number[] = [50, 100, 200, 400]
-
-export type ChunkedKvManifest = {
-  __chainlensChunkedKv: true
-  version: 1
-  hash: string
-  encoding: 'gzip_base64'
-  chunkCount: number
-}
-
-async function sha256Hex(input: string): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(input))
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('')
-}
-
-export function chunkStringByUtf8Bytes(input: string, maxChunkBytes = SAFE_WRITE_CHUNK_BYTES): string[] {
-  const chunks: string[] = []
-  let current = ''
-  let currentBytes = 0
-  for (const char of input) {
-    const charBytes = Buffer.byteLength(char, 'utf8')
-    if (current && currentBytes + charBytes > maxChunkBytes) {
-      chunks.push(current)
-      current = ''
-      currentBytes = 0
-    }
-    current += char
-    currentBytes += charBytes
-  }
-  if (current || input.length === 0) chunks.push(current)
-  return chunks
-}
-
-async function compressString(value: string): Promise<string> {
-  const compressedStream = new Blob([value]).stream().pipeThrough(new CompressionStream('gzip'))
-  const buffer = await new Response(compressedStream).arrayBuffer()
-  return Buffer.from(buffer).toString('base64')
-}
-
-async function decompressString(base64: string): Promise<string> {
-  const decompressedStream = new Blob([Buffer.from(base64, 'base64')]).stream().pipeThrough(new DecompressionStream('gzip'))
-  const buffer = await new Response(decompressedStream).arrayBuffer()
-  return Buffer.from(buffer).toString('utf8')
-}
-
-function isAdaptiveWriteError(err: unknown): boolean {
-  const detail = err as { code?: unknown; message?: unknown; name?: unknown } | null
-  const message = String(detail?.message ?? err).toLowerCase()
-  return detail?.code === 'budget_exceeded'
-    || detail?.code === 'ETIMEDOUT'
-    || detail?.name === 'TimeoutError'
-    || message.includes('budget_exceeded')
-    || message.includes('kv_timeout_safe')
-    || message.includes('kv_timeout')
-    || message.includes('rate limit')
-    || message.includes('too many requests')
-    || message.includes('bandwidth')
-}
-
-function logAdaptiveWriteDiagnostics(label: string, err: unknown, kind: 'holdings' | 'providerFetchWindow'): void {
-  const detail = err as { remainingRps?: unknown; remainingBandwidth?: unknown; remainingPipelineBudget?: unknown; latencyMs?: unknown; clusterHealth?: unknown; headers?: { get?: (name: string) => string | null } } | null
-  const headers = detail?.headers
-  // eslint-disable-next-line no-console
-  console.warn(`[${kind === 'holdings' ? 'holdings-kv' : 'provider-window-kv'}] usage-diagnostics`, {
-    label,
-    remainingRps: detail?.remainingRps ?? headers?.get?.('x-ratelimit-remaining') ?? 'unknown',
-    remainingBandwidth: detail?.remainingBandwidth ?? headers?.get?.('x-upstash-remaining-bandwidth') ?? 'unknown',
-    remainingPipelineBudget: detail?.remainingPipelineBudget ?? headers?.get?.('x-upstash-remaining-pipeline') ?? 'unknown',
-    regionLatencyMs: detail?.latencyMs ?? 'unknown',
-    clusterHealth: detail?.clusterHealth ?? 'unknown',
-  })
-}
-
-async function writeWithBudget(params: {
-  kvClient: Pick<typeof realKv, 'set'>
-  key: string
-  value: unknown
-  ttlSeconds: number
-  label: string
-  kind: 'holdings' | 'providerFetchWindow'
-  maxTotalWriteTimeMs: number
-  startedAt: number
-  now: () => number
-  sleepFn: (ms: number) => Promise<void>
-}): Promise<boolean> {
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-    if (params.now() - params.startedAt >= params.maxTotalWriteTimeMs) return false
-    try {
-      const remainingMs = Math.max(1, params.maxTotalWriteTimeMs - (params.now() - params.startedAt))
-      await withTimeout(params.kvClient.set(params.key, params.value, { ex: params.ttlSeconds }), Math.min(KV_CALL_TIMEOUT_MS, remainingMs))
-      return true
-    } catch (err) {
-      const isTimeout = err instanceof Error && err.message === 'kv_timeout'
-      // eslint-disable-next-line no-console
-      console[isTimeout ? 'warn' : 'error'](isTimeout ? 'kv_timeout_safe' : 'KV ERROR', { label: params.label, attempt: attempt + 1, totalAttempts: MAX_RETRIES + 1, ...(isTimeout ? {} : { error: err instanceof Error ? err.message : String(err) }) })
-      if (isAdaptiveWriteError(err)) logAdaptiveWriteDiagnostics(params.label, err, params.kind)
-      const backoffMs = SAFE_WRITE_BACKOFF_MS[attempt] ?? SAFE_WRITE_BACKOFF_MS[SAFE_WRITE_BACKOFF_MS.length - 1]
-      if (attempt < MAX_RETRIES && params.now() - params.startedAt + backoffMs < params.maxTotalWriteTimeMs) await params.sleepFn(backoffMs)
-    }
-  }
-  return false
-}
-
-export function createChunkedKvWriter(kind: 'holdings' | 'providerFetchWindow', config: ChunkedKvWriterConfig = {}): ChunkedKvWriter {
+export function createSimpleKvWriter(config: SimpleKvWriterConfig = {}): SimpleKvWriter {
   const kvClient = config.kv ?? kv
-  const maxChunkBytes = config.maxChunkBytes ?? SAFE_WRITE_CHUNK_BYTES
-  const maxTotalWriteTimeMs = config.maxTotalWriteTimeMs ?? SAFE_WRITE_MAX_TOTAL_MS
-  const now = config.now ?? (() => performance.now())
-  const sleepFn = config.sleep ?? sleep
-  const seenHashes = new Map<string, string>()
-  let adaptiveChunkBytes = maxChunkBytes
-  let providerWindowWriteStride = 1
-  let providerWindowWriteCount = 0
-  let queue = Promise.resolve()
-
-  async function runWrite(key: string, value: unknown, ttlSeconds: number, options?: ChunkedKvWriteOptions): Promise<void> {
-    if (options?.degradedMode) {
-      // Degraded mode now switches to partial writes instead of skipping entirely.
-      adaptiveChunkBytes = Math.max(1024, Math.floor(adaptiveChunkBytes / 2))
-      providerWindowWriteStride = kind === 'providerFetchWindow' ? Math.min(8, providerWindowWriteStride * 2) : providerWindowWriteStride
-      console.warn(`[${kind === 'holdings' ? 'holdings-kv' : 'provider-window-kv'}] degraded-partial-write-mode`, { key, adaptiveChunkBytes, providerWindowWriteStride })
-    }
-    if (!config.kv && !kvConfigured()) return
-
-    const serialized = JSON.stringify(value)
-    const hash = await sha256Hex(serialized)
-    if (seenHashes.get(key) === hash) {
-      // eslint-disable-next-line no-console
-      console.warn(`[${kind === 'holdings' ? 'holdings-kv' : 'provider-window-kv'}] write-skipped`, { reason: 'unchanged', key })
-      return
-    }
-
-    const startedAt = now()
-    if (kind === 'providerFetchWindow') {
-      providerWindowWriteCount++
-      if (providerWindowWriteStride > 1 && providerWindowWriteCount % providerWindowWriteStride !== 0) {
-        console.warn('[provider-window-kv] write-frequency-reduced', { key, providerWindowWriteStride, partialWriteMode: true })
-        return
-      }
-    }
-
-    const chunks = chunkStringByUtf8Bytes(serialized, adaptiveChunkBytes)
-    const compressedChunks = [] as string[]
-    for (const chunk of chunks) compressedChunks.push(await compressString(chunk))
-
-    let writtenChunkCount = 0
-    for (let i = 0; i < compressedChunks.length; i++) {
-      const ok = await writeWithBudget({ kvClient, key: `${key}:chunk:${i}`, value: compressedChunks[i], ttlSeconds, label: `set:${key}:chunk:${i}`, kind, maxTotalWriteTimeMs, startedAt, now, sleepFn })
-      if (!ok) {
-        // eslint-disable-next-line no-console
-        adaptiveChunkBytes = Math.max(1024, Math.floor(adaptiveChunkBytes / 2))
-        if (kind === 'providerFetchWindow') providerWindowWriteStride = Math.min(8, providerWindowWriteStride * 2)
-        console.warn(`[${kind === 'holdings' ? 'holdings-kv' : 'provider-window-kv'}] partial-write-mode`, { reason: 'budget_exceeded', key, writtenChunkCount, totalChunkCount: compressedChunks.length, adaptiveChunkBytes, providerWindowWriteStride })
-        return
-      }
-      writtenChunkCount++
-    }
-
-    const manifest: ChunkedKvManifest = { __chainlensChunkedKv: true, version: 1, hash, encoding: 'gzip_base64', chunkCount: writtenChunkCount }
-    const ok = await writeWithBudget({ kvClient, key, value: manifest, ttlSeconds, label: `set:${key}`, kind, maxTotalWriteTimeMs, startedAt, now, sleepFn })
-    if (!ok) {
-      // eslint-disable-next-line no-console
-      adaptiveChunkBytes = Math.max(1024, Math.floor(adaptiveChunkBytes / 2))
-      if (kind === 'providerFetchWindow') providerWindowWriteStride = Math.min(8, providerWindowWriteStride * 2)
-      console.warn(`[${kind === 'holdings' ? 'holdings-kv' : 'provider-window-kv'}] partial-write-mode`, { reason: 'budget_exceeded', key, adaptiveChunkBytes, providerWindowWriteStride })
-      return
-    }
-    seenHashes.set(key, hash)
-  }
-
   return {
-    write(key, value, ttlSeconds, options) {
-      queue = queue.then(() => runWrite(key, value, ttlSeconds, options)).catch(() => undefined)
-      return queue
+    async write(key, value, ttlSeconds) {
+      if (!config.kv && !kvConfigured()) return
+      await kvClient.set(key, value, { ex: ttlSeconds })
     },
   }
 }
 
-export function createHoldingsKvWriter(config: ChunkedKvWriterConfig = {}): ChunkedKvWriter {
-  return createChunkedKvWriter('holdings', config)
+export function createHoldingsKvWriter(config: SimpleKvWriterConfig = {}): SimpleKvWriter {
+  return createSimpleKvWriter(config)
 }
 
-export function createProviderWindowKvWriter(config: ChunkedKvWriterConfig = {}): ChunkedKvWriter {
-  return createChunkedKvWriter('providerFetchWindow', config)
+export function createProviderWindowKvWriter(config: SimpleKvWriterConfig = {}): SimpleKvWriter {
+  return createSimpleKvWriter(config)
 }
 
 // TEST-ONLY EXPORTS, DISCLOSED: setStageCache/getStageCache themselves stay private (not part of
@@ -514,7 +111,7 @@ export async function withStageCache<T>(
   key: string,
   ttlSeconds: number,
   compute: () => Promise<T>,
-  options?: { writer?: ChunkedKvWriter; degradedMode?: boolean; awaitWrite?: boolean; skipWrite?: boolean },
+  options?: { writer?: SimpleKvWriter; awaitWrite?: boolean; skipWrite?: boolean },
 ): Promise<T> {
   const cached = await getStageCache<T>(key)
   if (cached !== null) return cached
@@ -524,7 +121,7 @@ export async function withStageCache<T>(
 
   const effectiveTtl = resolveEffectiveTtl(ttlSeconds, process.env.NODE_ENV)
   if (options?.writer) {
-    const writePromise = options.writer.write(key, result, effectiveTtl, { degradedMode: options.degradedMode })
+    const writePromise = options.writer.write(key, result, effectiveTtl)
     if (options.awaitWrite) await writePromise
   } else {
     void setStageCache(key, result, effectiveTtl).catch(() => undefined)
