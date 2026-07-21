@@ -53,16 +53,15 @@ function getClient(): Redis | null {
 
   client = new Redis(REDIS_URL, {
     lazyConnect: true,
-    maxRetriesPerRequest: 0,
-    commandTimeout: 300,
-    connectTimeout: 300,
-    retryStrategy: () => null, // never auto-reconnect in the background; callers already fail open
+    maxRetriesPerRequest: 1,
+    commandTimeout: Number(process.env.REDIS_COMMAND_TIMEOUT_MS ?? 2000),
+    connectTimeout: Number(process.env.REDIS_CONNECT_TIMEOUT_MS ?? 2000),
+    retryStrategy: (times) => (times <= 1 ? 100 : null), // one fast reconnect for transient Vercel/Redis socket closes
   })
 
   // Required: an ioredis client with no 'error' listener crashes the process on connection failure
   // instead of letting the caller's own try/catch handle it. Logged, never rethrown here.
   client.on('error', (err) => {
-    // eslint-disable-next-line no-console
     console.warn('[redisClient] connection error', { message: err instanceof Error ? err.message : String(err) })
   })
 
