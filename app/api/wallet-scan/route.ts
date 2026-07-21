@@ -1,10 +1,11 @@
 import { NextResponse } from 'next/server'
 import { isAddress } from 'viem'
 import { enqueueWalletScanJob } from '@/src/modules/walletScanQueue'
+import { runWalletScanV2Worker } from '@/workers/walletScanV2'
 
 export const runtime = 'nodejs'
 export const preferredRegion = 'iad1'
-export const maxDuration = 10
+export const maxDuration = 300
 
 type ScanMode = 'normal' | 'deep'
 
@@ -31,10 +32,8 @@ export async function POST(req: Request): Promise<Response> {
     await enqueueWalletScanJob(jobId, { jobId, walletAddress: wallet, chains, scanMode, ip })
   } catch (err) {
     console.error('[wallet-scan] failed to enqueue job', { jobId, error: err instanceof Error ? err.message : String(err) })
-    return NextResponse.json(
-      { error: { message: 'scan-enqueue-unavailable', category: 'storage', details: ['Wallet scan queue is temporarily unavailable.'] } },
-      { status: 503 },
-    )
+    const result = await runWalletScanV2Worker({ walletAddress: wallet, chains, scanMode }, ip, jobId)
+    return NextResponse.json({ jobId, wallet, status: 'done', result: result.body }, { status: result.status })
   }
 
   return NextResponse.json({ jobId, wallet, status: 'queued' })

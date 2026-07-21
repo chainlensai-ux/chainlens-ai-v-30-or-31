@@ -95,4 +95,31 @@ describe('scanWalletV2 (wallet-scan background job + polling)', () => {
     }
   })
 
+
+  it('returns an immediate done result when the enqueue route falls back to synchronous scan', async () => {
+    const calls: string[] = []
+    const updates: string[] = []
+    const originalFetch = global.fetch
+    global.fetch = mock.fn(async (url: string) => {
+      calls.push(url)
+      return new Response(JSON.stringify({
+        jobId: 'job-inline',
+        status: 'done',
+        result: { success: true, data: { inlineFallback: true } },
+      }), { status: 200 })
+    }) as unknown as typeof fetch
+
+    try {
+      const { scanWalletV2 } = await import('./scanWallet.ts')
+      const result = await scanWalletV2('0xabc', ['base'], 'normal', ({ status }) => updates.push(status))
+
+      assert.deepEqual(calls, ['/api/wallet-scan'])
+      assert.deepEqual(updates, ['done'])
+      assert.equal(result.success, true)
+      assert.deepEqual(result.data, { inlineFallback: true })
+    } finally {
+      global.fetch = originalFetch
+    }
+  })
+
 })
