@@ -12,14 +12,12 @@ import {
   walletScanPendingJobKey,
   walletScanPendingKey,
   walletScanResultKey,
-  writeWalletScanJob,
 } from './walletScanQueue'
 
 const originalEnv = { ...process.env }
 const originalFetch = globalThis.fetch
 const originalGet = redis.get
 const originalSet = redis.set
-const originalSetCritical = redis.setCritical
 
 type Stored = { value: unknown; opts?: { ex?: number } }
 
@@ -28,7 +26,6 @@ function restore(): void {
   globalThis.fetch = originalFetch
   redis.get = originalGet
   redis.set = originalSet
-  redis.setCritical = originalSetCritical
 }
 
 function configureRestEnv(): void {
@@ -41,7 +38,6 @@ function installMemoryRedis(): Map<string, Stored> {
   const store = new Map<string, Stored>()
   redis.get = async <T = unknown>(key: string): Promise<T | null> => (store.get(key)?.value as T | undefined) ?? null
   redis.set = async (key: string, value: unknown, opts?: { ex?: number }): Promise<void> => { store.set(key, { value, opts }) }
-  redis.setCritical = async (key: string, value: unknown, opts?: { ex?: number }): Promise<void> => { store.set(key, { value, opts }) }
   return store
 }
 
@@ -85,10 +81,6 @@ describe('wallet scan queue with Upstash REST Redis', () => {
     const payload = await claimNextWalletScanPayload()
     assert.equal(payload?.jobId, 'job-flow')
 
-    const queued = await readWalletScanJob('job-flow')
-    assert.equal(queued?.status, 'queued')
-
-    await writeWalletScanJob({ ...queued!, status: 'running' })
     const running = await readWalletScanJob('job-flow')
     assert.equal(running?.status, 'running')
 
@@ -113,7 +105,7 @@ describe('wallet scan queue with Upstash REST Redis', () => {
 
   it('returns degraded final-result-unavailable when REST final publish fails', async () => {
     installMemoryRedis()
-    redis.setCritical = async (): Promise<void> => { throw Object.assign(new Error('REST timeout'), { code: 'ETIMEDOUT' }) }
+    redis.set = async (): Promise<void> => { throw Object.assign(new Error('REST timeout'), { code: 'ETIMEDOUT' }) }
 
     const outcome = await publishFinalWalletScanResult('final-fail', { ok: false }) as { error?: string; degraded?: boolean }
 
@@ -124,7 +116,7 @@ describe('wallet scan queue with Upstash REST Redis', () => {
   it('does not retry final writes or inject budget/degraded result state', async () => {
     const store = installMemoryRedis()
     let attempts = 0
-    redis.setCritical = async (key: string, value: unknown, opts?: { ex?: number }): Promise<void> => {
+    redis.set = async (key: string, value: unknown, opts?: { ex?: number }): Promise<void> => {
       attempts++
       if (attempts === 1) throw Object.assign(new Error('write failed'), { code: 'BUDGET_TEST' })
       store.set(key, { value, opts })
@@ -141,7 +133,7 @@ describe('wallet scan queue with Upstash REST Redis', () => {
 
   it('does not rewrite failed final results', async () => {
     const store = installMemoryRedis()
-    redis.setCritical = async (key: string, value: unknown, opts?: { ex?: number }): Promise<void> => {
+    redis.set = async (key: string, value: unknown, opts?: { ex?: number }): Promise<void> => {
       if (key === walletScanResultKey('partial-job')) throw Object.assign(new Error('plain timeout'), { code: 'ETIMEDOUT' })
       store.set(key, { value, opts })
     }
