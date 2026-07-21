@@ -1,27 +1,23 @@
-import { redis } from '@/lib/server/cache/redisClient'
-import { resetAlchemyAudit, printAlchemyAuditSummary } from '@/lib/server/alchemyAudit'
-import { runWalletScanV2Worker } from '@/workers/walletScanV2'
-import {
-  readWalletScanJob,
-  walletScanPendingJobKey,
-  walletScanPendingKey,
-  writeWalletScanJob,
-  type WalletScanJobMetadata,
-  type WalletScanJobPayload,
-} from '@/src/modules/walletScanQueue'
+import type { WalletScanJobMetadata, WalletScanJobPayload } from '@/src/modules/walletScanQueue'
 
 export const runtime = 'edge'
 export const preferredRegion = 'iad1'
 
 async function readPendingJobIds(): Promise<string[]> {
+  const { redis } = await import('@/lib/server/cache/redisClient')
+  const { walletScanPendingKey } = await import('@/src/modules/walletScanQueue')
   return (await redis.get<string[]>(walletScanPendingKey())) ?? []
 }
 
 async function writePendingJobIds(jobIds: string[]): Promise<void> {
+  const { redis } = await import('@/lib/server/cache/redisClient')
+  const { walletScanPendingKey } = await import('@/src/modules/walletScanQueue')
   await redis.set(walletScanPendingKey(), jobIds, { ex: 30 * 60 })
 }
 
 async function claimNextPayload(): Promise<WalletScanJobPayload | null> {
+  const { redis } = await import('@/lib/server/cache/redisClient')
+  const { readWalletScanJob, walletScanPendingJobKey } = await import('@/src/modules/walletScanQueue')
   const pending = await readPendingJobIds()
   const [jobId, ...remaining] = pending
   if (!jobId) return null
@@ -41,6 +37,9 @@ async function claimNextPayload(): Promise<WalletScanJobPayload | null> {
 }
 
 async function runWalletScanJob(payload: WalletScanJobPayload): Promise<void> {
+  const { resetAlchemyAudit, printAlchemyAuditSummary } = await import('@/lib/server/alchemyAudit')
+  const { runWalletScanV2Worker } = await import('@/workers/walletScanV2')
+  const { readWalletScanJob, writeWalletScanJob } = await import('@/src/modules/walletScanQueue')
   const existing = await readWalletScanJob(payload.jobId)
   const baseJob: WalletScanJobMetadata = existing ?? {
     jobId: payload.jobId,
@@ -88,3 +87,5 @@ export default async function worker(request: Request): Promise<void> {
     }
   }
 }
+
+export const POST = worker

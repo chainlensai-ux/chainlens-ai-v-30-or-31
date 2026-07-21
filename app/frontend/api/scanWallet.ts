@@ -1,32 +1,12 @@
 // API client for the ChainLens 180-Day Intelligence Engine (V2).
 //
-// QSTASH/WORKER REMOVAL, DISCLOSED (explicit instruction: remove all QStash/worker/job-poll
-// infrastructure without touching scanner logic): this file previously had two paths —
-// scanWalletV2() (background job/poll via /api/scan-start, /api/scan-v2/full-scan/start +
-// /api/scan-status, /api/scan-v2/full-scan/status, all QStash-triggered) and
-// scanWalletV2Legacy() (a single synchronous POST to /api/scan-v2/full-scan/legacy, kept as a
-// fallback). The job/poll path and everything behind it (src/modules/scanJobCreation.ts,
-// app/api/scan-start, app/api/scan-status, app/api/scan-v2/worker, app/api/scan-v2/full-scan/
-// {start,status}, app/api/scan-health, app/api/qstash-env-debug) has been deleted entirely. The
-// synchronous path is renamed to scanWalletV2() below and is now the only path for both `normal`
-// and `deep` scanMode — startDeepScanJob/startFullScanJob/pollScanJobOnce/pollScanJobUntilDone and
-// their associated types are removed along with it (no callers remain; app/terminal/
-// wallet-scanner/page.tsx was updated to call scanWalletV2() directly for both modes).
+// WALLET-SCAN JOB/POLL PATH: scanWalletV2() enqueues exactly one wallet-scan job through
+// /api/wallet-scan, stores the returned jobId in the caller via onUpdate, and polls
+// /api/wallet-scan/:jobId every 2.5 seconds until the worker writes the final result. The
+// client-facing enqueue request never runs runWalletScanV2Worker inline.
 //
-// REAL TRADEOFF, DISCLOSED: this reintroduces exactly the risk the job/poll system was built to
-// remove — a genuinely slow/cold scan can hit app/api/scan-v2/full-scan/legacy/route.ts's own
-// maxDuration=300 ceiling and get killed mid-request, and the UI's incremental
-// "pending"/"running"/per-module progress display (jobStatusMessage/scanProgress in page.tsx) has
-// nothing left to populate it, since there is no longer a poll loop producing status updates — the
-// user now sees a single loading state for the whole scan duration instead. This was an explicit,
-// informed tradeoff (confirmed before making this change), not an oversight.
-//
-// runWalletScanV2, runWalletScanV2Worker, holdingsEngine/pricingEngine/portfolioAssembler,
-// /api/scan, /api/scan-v2, /api/token-scan, Clark AI, /api/portfolio, and Redis caching are
-// completely untouched by this change.
-//
-// `fetchScanModule` (below) is unrelated to the job/poll system removed above — still exported,
-// unchanged, for any caller that wants just one module's section.
+// QSTASH REMOVAL, DISCLOSED: this path intentionally avoids the deleted QStash-backed
+// /api/scan-start, /api/scan-status, /api/scan-v2/worker, and full-scan start/status routes.
 
 export type ScanMode = 'normal' | 'deep'
 
@@ -99,7 +79,6 @@ export async function fetchScanModule(
 
 const WALLET_SCAN_ROUTE = '/api/wallet-scan'
 const POLL_INTERVAL_MS = 2_500
-const MAX_POLL_ATTEMPTS = 80
 
 type WalletScanJobStatus = 'queued' | 'running' | 'done' | 'failed' | 'not-found'
 
@@ -146,7 +125,7 @@ export async function scanWalletV2(
 
     onUpdate?.({ jobId: startBody.jobId, status: startBody.status })
 
-    for (let attempt = 0; attempt < MAX_POLL_ATTEMPTS; attempt += 1) {
+    for (;;) {
       await sleep(POLL_INTERVAL_MS)
       const pollRes = await fetch(`${WALLET_SCAN_ROUTE}/${encodeURIComponent(startBody.jobId)}`)
       const pollBody = await pollRes.json().catch(() => null) as WalletScanJobResponse | null
@@ -166,8 +145,6 @@ export async function scanWalletV2(
         return toErrorResponse(message ?? 'scan-failed')
       }
     }
-
-    return toErrorResponse('scan-still-running', [`Timed out after ${Math.round((POLL_INTERVAL_MS * MAX_POLL_ATTEMPTS) / 1000)}s of polling.`])
   } catch (err) {
     return {
       success: false,
