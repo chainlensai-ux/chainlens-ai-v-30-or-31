@@ -1,57 +1,118 @@
-// POST /api/scan-v2/full-scan-edge — Edge Function variant of the unified full scan.
+// POST /api/scan-v2/full-scan-edge — Edge-compatible thin wrapper for the Node full-scan route.
 //
-// STATUS: ADDITIVE, NOT WIRED UP. This is a new, parallel route — the frontend (`scanWalletV2` in
-// app/frontend/api/scanWallet.ts) still calls the existing synchronous
-// `/api/scan-v2/full-scan/route.ts` (Node runtime), which is left completely untouched. Switching
-// the frontend to call this route instead is a separate, deliberate decision this task didn't ask
-// for ("do not modify frontend UI components") — this file exists so that decision CAN be made
-// later, once its real Edge-compatibility (see below) is confirmed against an actual Vercel Edge
-// deployment, which this sandbox cannot do.
-//
-// EDGE COMPATIBILITY, HONESTLY DISCLOSED (not just asserted): Vercel's Edge runtime forbids Node
-// built-ins (`fs`, `net`, `Buffer`-heavy code, etc.) and only supports a subset of the Node API.
-// Two real dependencies sit in this route's call graph:
-//   - viem (used by src/modules/pricingAtTimeEngine/sources/basedex.ts for on-chain DEX pricing) —
-//     genuinely Edge-safe. viem's `http()` transport is fetch-based with no Node-only APIs; this is
-//     a well-established, widely-used-on-Edge library, not a guess.
-//   - @covalenthq/client-sdk (GoldRushClient, used by src/pipeline/index.ts's buildPriceSources and
-//     lib/providers/goldrush.ts) — checked its dist/ output directly: `graphql-ws`/`graphqurl` (its
-//     only WebSocket/Node-flavored dependencies) are referenced ONLY by its separate
-//     `StreamingService` module, which nothing in this codebase imports or calls. The REST-based
-//     methods this codebase actually uses (balances/pricing) appear to be plain fetch/HTTP calls.
-//     This is a real, code-verified signal that the SDK's core methods are LIKELY Edge-compatible —
-//     but "likely, based on static inspection of the bundled dist output" is not the same as
-//     "verified," since bundler behavior and any deeper transitive Node dependency can only be
-//     confirmed by an actual Edge deployment test, which is outside what this sandbox can perform.
-// No `fs`/`net`/`Buffer` usage was found anywhere in the real V2 scan call graph itself (the one
-// `Buffer.from(...)` call in this codebase lives in lib/server/walletSnapshot.ts, the disabled V1
-// legacy engine — not part of runWalletScanV2 at all).
-//
-// Recommendation: treat this as a promising, best-effort candidate to validate in a real staging
-// deployment before relying on it — not a guaranteed drop-in replacement.
+// This file intentionally imports nothing. Edge routes must not pull server-side modules into their
+// bundle: Redis clients, queues, scanner workers, RPC clients, Node streams, Node crypto, and other
+// Node-only code all live behind the Node-runtime `/api/scan-v2/full-scan/legacy` route. This route
+// only validates the request body enough to reject malformed input, forwards the original JSON to
+// that server route with fetch(), and relays the server route's JSON/status back to the caller.
 
 export const runtime = 'edge'
 
-import { router } from '@/src/deployment/index'
-import { handleApiError } from '@/src/deployment/api'
+const SERVER_FULL_SCAN_PATH = '/api/scan-v2/full-scan/legacy'
+
+type JsonObject = Record<string, unknown>
+
+type ValidationResult =
+  | { ok: true; body: JsonObject }
+  | { ok: false; status: number; message: string; category: string }
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+
+function validationError(status: number, message: string, category = 'validation'): ValidationResult {
+  return { ok: false, status, message, category }
+}
+
+function validateBody(rawBody: unknown): ValidationResult {
+  if (!rawBody || typeof rawBody !== 'object' || Array.isArray(rawBody)) {
+    return validationError(400, 'Request body must be a JSON object')
+  }
+
+  const body = rawBody as JsonObject
+  const walletAddress = body.walletAddress ?? body.address
+
+  if (typeof walletAddress !== 'string' || walletAddress.trim().length === 0) {
+    return validationError(400, 'walletAddress is required')
+  }
+
+  return { ok: true, body }
+}
+
+function forwardedHeaders(req: Request): Headers {
+  const headers = new Headers({ 'Content-Type': 'application/json' })
+  const forwardedFor = req.headers.get('x-forwarded-for')
+  const realIp = req.headers.get('x-real-ip')
+
+  if (forwardedFor) headers.set('x-forwarded-for', forwardedFor)
+  if (realIp) headers.set('x-real-ip', realIp)
+
+  return headers
+}
+
+async function parseJsonResponse(response: Response): Promise<unknown> {
+  const text = await response.text()
+
+  if (!text) {
+    return null
+  }
+
+  try {
+    return JSON.parse(text)
+  } catch {
+    return {
+      success: false,
+      error: {
+        message: 'Server full scan returned a non-JSON response',
+        category: 'upstream',
+      },
+    }
+  }
+}
 
 export async function POST(req: Request): Promise<Response> {
+  let rawBody: unknown
+
   try {
-    const rawBody = await req.json().catch(() => null)
-    const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown'
+    rawBody = await req.json()
+  } catch {
+    return jsonResponse(
+      { success: false, error: { message: 'Invalid JSON body', category: 'validation' } },
+      400,
+    )
+  }
 
-    // Identical call to the existing Node-runtime full-scan route — same real, single-invocation
-    // orchestrator, same never-throwing internal guarantees, same FinalReport-shaped response.
-    const result = await router.handleScanRequest(rawBody, ip)
+  const validation = validateBody(rawBody)
+  if (!validation.ok) {
+    return jsonResponse(
+      { success: false, error: { message: validation.message, category: validation.category } },
+      validation.status,
+    )
+  }
 
-    return new Response(JSON.stringify(result.body), {
-      status: result.status,
-      headers: { 'Content-Type': 'application/json' },
+  try {
+    const upstreamUrl = new URL(SERVER_FULL_SCAN_PATH, req.url)
+    const upstreamResponse = await fetch(upstreamUrl, {
+      method: 'POST',
+      headers: forwardedHeaders(req),
+      body: JSON.stringify(validation.body),
     })
-  } catch (err) {
-    return new Response(JSON.stringify(handleApiError(err)), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json' },
-    })
+    const upstreamBody = await parseJsonResponse(upstreamResponse)
+
+    return jsonResponse(upstreamBody, upstreamResponse.status)
+  } catch {
+    return jsonResponse(
+      {
+        success: false,
+        error: {
+          message: 'Unable to reach server full scan route',
+          category: 'upstream',
+        },
+      },
+      502,
+    )
   }
 }
