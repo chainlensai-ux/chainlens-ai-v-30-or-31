@@ -1,4 +1,4 @@
-import { isRedisRestTimeout, logRedisRestError, redis, redisConfigured } from '@/lib/server/cache/redisClient'
+import { isRedisRestRateLimited, isRedisRestTimeout, logRedisRestError, logRedisRestUsageDiagnostics, redis, redisConfigured } from '@/lib/server/cache/redisClient'
 import {
   walletScanJobKey,
   walletScanPendingJobKey,
@@ -14,6 +14,8 @@ export {
 } from '@/src/modules/walletScanQueueKeys'
 
 export type WalletScanJobStatus = 'queued' | 'running' | 'done' | 'failed'
+export type WalletScanDegradedModule = 'holdings' | 'provider-window' | 'final-publish' | 'job-status'
+export type WalletScanKvWriteOutcome = { ok: boolean; degraded: boolean; partial: boolean; failedKeys: string[]; reason?: string }
 
 export type WalletScanJobMetadata = {
   jobId: string
@@ -37,6 +39,97 @@ export type WalletScanJobPayload = {
 }
 
 const JOB_TTL_SECONDS = 30 * 60
+
+const KV_WRITE_BACKOFF_MS = [50, 100, 200, 400] as const
+let adaptiveHoldingsBatchSize = 50
+let adaptiveProviderWindowBatchSize = 50
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function isAdaptiveKvWriteError(err: unknown): boolean {
+  if (isRedisRestTimeout(err) || isRedisRestRateLimited(err)) return true
+  const message = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase()
+  return message.includes('kv_timeout_safe') || message.includes('budget_exceeded')
+}
+
+function reduceAdaptiveKvBatchSizes(reason: string): void {
+  adaptiveHoldingsBatchSize = Math.max(1, Math.floor(adaptiveHoldingsBatchSize / 2))
+  adaptiveProviderWindowBatchSize = Math.max(1, Math.floor(adaptiveProviderWindowBatchSize / 2))
+  console.warn('[wallet-scan-kv] adaptive batch size reduced', {
+    reason,
+    holdingsBatchSize: adaptiveHoldingsBatchSize,
+    providerWindowBatchSize: adaptiveProviderWindowBatchSize,
+    partialWriteMode: true,
+  })
+}
+
+function degradedResultBody(result: unknown, outcome: WalletScanKvWriteOutcome): unknown {
+  if (!outcome.degraded || !result || typeof result !== 'object') return result
+  const record = result as Record<string, unknown>
+  const data = record.data && typeof record.data === 'object' ? record.data as Record<string, unknown> : undefined
+  const kvDegraded = {
+    degraded: true,
+    partialWrite: outcome.partial,
+    failedKeys: outcome.failedKeys,
+    reason: outcome.reason ?? 'kv_write_degraded',
+  }
+  return {
+    ...record,
+    degraded: true,
+    kvDegraded,
+    data: data ? {
+      ...data,
+      degraded: true,
+      kvDegraded,
+      moduleErrors: {
+        ...(data.moduleErrors && typeof data.moduleErrors === 'object' ? data.moduleErrors as Record<string, unknown> : {}),
+        kvWrites: outcome.reason ?? 'kv_write_degraded',
+      },
+      degradedModules: Array.from(new Set([...
+        (Array.isArray(data.degradedModules) ? data.degradedModules.filter((m): m is string => typeof m === 'string') : []),
+        'holdings',
+        'provider-window',
+      ])),
+    } : undefined,
+  }
+}
+
+async function adaptiveCriticalSet(key: string, value: unknown): Promise<void> {
+  for (let attempt = 0; attempt <= KV_WRITE_BACKOFF_MS.length; attempt++) {
+    try {
+      await redis.setCritical(key, value)
+      return
+    } catch (err) {
+      if (!isAdaptiveKvWriteError(err) || attempt === KV_WRITE_BACKOFF_MS.length) throw err
+      const reason = err instanceof Error ? err.message : String(err)
+      reduceAdaptiveKvBatchSizes(reason)
+      logRedisRestUsageDiagnostics('[wallet-scan-kv] adaptive retry diagnostics', err)
+      await sleep(KV_WRITE_BACKOFF_MS[attempt])
+    }
+  }
+}
+
+async function publishCriticalWritesPartial(writes: Array<{ key: string; value: unknown }>): Promise<WalletScanKvWriteOutcome> {
+  const failedKeys: string[] = []
+  let reason: string | undefined
+  for (const write of writes) {
+    try {
+      await adaptiveCriticalSet(write.key, write.value)
+    } catch (err) {
+      failedKeys.push(write.key)
+      reason = err instanceof Error ? err.message : String(err)
+      if (isAdaptiveKvWriteError(err)) {
+        reduceAdaptiveKvBatchSizes(reason)
+        console.warn('[wallet-scan-kv] partial-write mode retained after rate-limit failure', { key: write.key, reason })
+      } else {
+        logQueueFailure('[wallet-scan-kv] partial-write failure', err)
+      }
+    }
+  }
+  return { ok: failedKeys.length === 0, degraded: failedKeys.length > 0, partial: failedKeys.length > 0 && failedKeys.length < writes.length, failedKeys, reason }
+}
 
 export const WALLET_SCAN_QUEUE_UNAVAILABLE = { error: 'scan-queue-unavailable', degraded: true } as const
 export const WALLET_SCAN_STATUS_UNAVAILABLE = { error: 'scan-status-unavailable', degraded: true } as const
@@ -99,15 +192,28 @@ export async function publishFinalWalletScanResult(jobId: string, result: unknow
     return WALLET_SCAN_FINAL_RESULT_UNAVAILABLE
   }
 
-  try {
-    await redis.setCritical(walletScanResultKey(jobId), finalResult)
-    await redis.setCritical(walletScanJobKey(jobId), finalJob)
+  const firstOutcome = await publishCriticalWritesPartial([
+    { key: walletScanResultKey(jobId), value: finalResult },
+    { key: walletScanJobKey(jobId), value: finalJob },
+  ])
+  if (firstOutcome.ok) {
     console.log('[final-publish] success', { jobId, client: 'rest' })
     return
-  } catch (err) {
-    logQueueFailure('[final-publish] rest-failure', err)
-    return WALLET_SCAN_FINAL_RESULT_UNAVAILABLE
   }
+
+  const degradedFinalResult = degradedResultBody(finalResult, firstOutcome)
+  const retryOutcome = await publishCriticalWritesPartial([
+    ...(firstOutcome.failedKeys.includes(walletScanResultKey(jobId)) ? [{ key: walletScanResultKey(jobId), value: degradedFinalResult }] : []),
+    ...(firstOutcome.failedKeys.includes(walletScanJobKey(jobId)) ? [{ key: walletScanJobKey(jobId), value: { ...finalJob, degraded: true, error: firstOutcome.reason } }] : []),
+  ])
+
+  if (retryOutcome.ok) {
+    console.warn('[final-publish] degraded success', { jobId, failedKeys: firstOutcome.failedKeys, reason: firstOutcome.reason })
+    return firstOutcome
+  }
+
+  console.error('[final-publish] degraded partial failure', { jobId, failedKeys: retryOutcome.failedKeys, reason: retryOutcome.reason })
+  return { ...WALLET_SCAN_FINAL_RESULT_UNAVAILABLE, finalResult: degradedFinalResult, kvWrite: retryOutcome }
 }
 
 export async function writeWalletScanJob(job: WalletScanJobMetadata): Promise<void> {
