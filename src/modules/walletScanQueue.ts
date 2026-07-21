@@ -53,19 +53,9 @@ export async function readWalletScanResult(jobId: string): Promise<unknown | nul
   return await redis.get(walletScanResultKey(jobId))
 }
 
-function walletScanWorkerUrl(): string {
-  const configured = process.env.WALLET_SCAN_WORKER_URL
-  if (configured) return configured
-
-  const vercelUrl = process.env.VERCEL_URL
-  if (vercelUrl) return `https://${vercelUrl}/api/wallet-scan/worker`
-
-  return 'http://localhost:3000/api/wallet-scan/worker'
-}
-
 async function triggerWalletScanWorker(): Promise<void> {
   try {
-    await fetch(walletScanWorkerUrl(), { method: 'POST' })
+    await fetch('/api/wallet-scan/worker', { method: 'POST' })
   } catch (err) {
     // Enqueue must stay lightweight and never run the scan inline. If the trigger fails, the
     // persisted pending job remains in KV for the next worker invocation/retry.
@@ -88,5 +78,5 @@ export async function enqueueWalletScanJob(jobId: string, payload: WalletScanJob
   await redis.set(walletScanPendingJobKey(jobId), true, { ex: JOB_TTL_SECONDS })
   const pending = (await redis.get<string[]>(walletScanPendingKey())) ?? []
   await redis.set(walletScanPendingKey(), [...new Set([...pending, jobId])], { ex: JOB_TTL_SECONDS })
-  void triggerWalletScanWorker()
+  await triggerWalletScanWorker()
 }
