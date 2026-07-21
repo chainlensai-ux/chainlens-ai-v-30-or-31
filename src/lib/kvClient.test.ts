@@ -6,6 +6,19 @@ import type { PriceSourceFn } from '../modules/pricingAtTimeEngine/types'
 function neverHitKv() { return { get: async () => null, set: async () => 'OK' } }
 
 describe('RequestPriceKvClient high fan-out controls', () => {
+  it('allows provider fetches but suppresses historical KV writes in historicalReadOnly mode', async () => {
+    let fetchCalls = 0
+    let setCalls = 0
+    const kv = { get: async () => null, set: async () => { setCalls++; return 'OK' } }
+    const source: PriceSourceFn = async () => { fetchCalls++; return 9 }
+    const client = createRequestPriceKvClient({ kv: kv as never, historicalReadOnly: true, maxLookupsPerToken: 10, random: () => 0 })
+
+    assert.equal(await client.getPriceHistorical('0xReadOnly', 'base', 123, source), 9)
+    assert.equal(fetchCalls, 1)
+    assert.equal(setCalls, 0)
+    assert.equal(client.stats.remoteSets, 0)
+  })
+
   it('coalesces duplicate historical price requests and reuses the in-request cache', async () => {
     let fetchCalls = 0
     const source: PriceSourceFn = async () => { fetchCalls++; await new Promise((r) => setTimeout(r, 5)); return 7 }
