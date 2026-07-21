@@ -46,26 +46,51 @@ export function redisConfigured(): boolean {
 }
 
 let client: Redis | null = null
+let criticalClient: Redis | null = null
+
+function positiveInt(value: string | undefined, fallback: number): number {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
+}
+
+function createRedisClient(kind: 'normal' | 'critical'): Redis | null {
+  if (!REDIS_URL) return null
+  return new Redis(REDIS_URL, {
+    lazyConnect: true,
+    maxRetriesPerRequest: 0,
+    commandTimeout: positiveInt(
+      kind === 'critical' ? process.env.REDIS_FINAL_WRITE_COMMAND_TIMEOUT_MS : process.env.REDIS_COMMAND_TIMEOUT_MS,
+      kind === 'critical' ? 10000 : 2000,
+    ),
+    connectTimeout: positiveInt(
+      kind === 'critical' ? process.env.REDIS_FINAL_WRITE_CONNECT_TIMEOUT_MS : process.env.REDIS_CONNECT_TIMEOUT_MS,
+      kind === 'critical' ? 5000 : 2000,
+    ),
+    retryStrategy: null,
+    enableOfflineQueue: false,
+  })
+}
+
+function attachRedisErrorLogger(c: Redis, kind: 'normal' | 'critical'): Redis {
+  c.on('error', (err) => {
+    console.warn('[redisClient] connection error', { kind, message: err instanceof Error ? err.message : String(err) })
+  })
+  return c
+}
 
 function getClient(): Redis | null {
   if (!REDIS_URL) return null
   if (client) return client
 
-  client = new Redis(REDIS_URL, {
-    lazyConnect: true,
-    maxRetriesPerRequest: 1,
-    commandTimeout: Number(process.env.REDIS_COMMAND_TIMEOUT_MS ?? 2000),
-    connectTimeout: Number(process.env.REDIS_CONNECT_TIMEOUT_MS ?? 2000),
-    retryStrategy: (times) => (times <= 1 ? 100 : null), // one fast reconnect for transient Vercel/Redis socket closes
-  })
+  client = createRedisClient('normal')
+  return client ? attachRedisErrorLogger(client, 'normal') : null
+}
 
-  // Required: an ioredis client with no 'error' listener crashes the process on connection failure
-  // instead of letting the caller's own try/catch handle it. Logged, never rethrown here.
-  client.on('error', (err) => {
-    console.warn('[redisClient] connection error', { message: err instanceof Error ? err.message : String(err) })
-  })
-
-  return client
+function getCriticalClient(): Redis | null {
+  if (!REDIS_URL) return null
+  if (criticalClient) return criticalClient
+  criticalClient = createRedisClient('critical')
+  return criticalClient ? attachRedisErrorLogger(criticalClient, 'critical') : null
 }
 
 // Thin, disclosed adapter matching the small subset of the API this codebase's job routes use —
@@ -85,6 +110,16 @@ export const redis = {
   },
   async set(key: string, value: unknown, opts?: { ex?: number }): Promise<void> {
     const c = getClient()
+    if (!c) return
+    const serialized = JSON.stringify(value)
+    if (opts?.ex) {
+      await c.set(key, serialized, 'EX', opts.ex)
+    } else {
+      await c.set(key, serialized)
+    }
+  },
+  async setCritical(key: string, value: unknown, opts?: { ex?: number }): Promise<void> {
+    const c = getCriticalClient()
     if (!c) return
     const serialized = JSON.stringify(value)
     if (opts?.ex) {

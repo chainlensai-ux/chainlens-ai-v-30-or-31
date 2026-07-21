@@ -137,7 +137,7 @@ export async function scanWalletV2(
       onUpdate?.({ jobId: pollBody.jobId, status: pollBody.status })
 
       if (pollBody.status === 'done') {
-        return pollBody.result ?? toErrorResponse('scan-result-missing')
+        return pollBody.result ?? toErrorResponse('scan-final-result-unavailable')
       }
 
       if (pollBody.status === 'failed') {

@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { readWalletScanJob, readWalletScanResult } from '@/src/modules/walletScanQueue'
+import { readWalletScanJob, readWalletScanResult, walletScanResultMissingFallback } from '@/src/modules/walletScanQueue'
 
 export async function GET(_req: Request, context: { params: Promise<{ jobId: string }> }): Promise<Response> {
   const { jobId } = await context.params
@@ -11,7 +11,7 @@ export async function GET(_req: Request, context: { params: Promise<{ jobId: str
 
   if (job.status === 'done') {
     const result = await readWalletScanResult(jobId)
-    return NextResponse.json({ jobId, status: job.status, result })
+    return NextResponse.json({ jobId, status: job.status, result: result ?? walletScanResultMissingFallback(jobId, job) })
   }
 
   return NextResponse.json({ jobId, status: job.status, ...(job.error ? { error: job.error } : {}) })

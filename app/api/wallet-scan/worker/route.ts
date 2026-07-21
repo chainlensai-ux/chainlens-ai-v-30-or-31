@@ -42,9 +42,7 @@ async function claimNextPayload(): Promise<WalletScanJobPayload | null> {
 async function runWalletScanJob(payload: WalletScanJobPayload): Promise<void> {
   const { resetAlchemyAudit, printAlchemyAuditSummary } = await import('@/lib/server/alchemyAudit')
   const { runWalletScanV2Worker } = await import('@/workers/walletScanV2')
-  const { redis } = await import('@/lib/server/cache/redisClient')
-  const { readWalletScanJob, writeWalletScanJob } = await import('@/src/modules/walletScanQueue')
-  const { walletScanJobKey, walletScanResultKey } = await import('@/src/modules/walletScanQueueKeys')
+  const { readWalletScanJob, writeWalletScanJob, publishFinalWalletScanResult } = await import('@/src/modules/walletScanQueue')
   const existing = await readWalletScanJob(payload.jobId)
   const baseJob: WalletScanJobMetadata = existing ?? {
     jobId: payload.jobId,
@@ -67,25 +65,13 @@ async function runWalletScanJob(payload: WalletScanJobPayload): Promise<void> {
       payload.ip,
       payload.jobId,
     )
-    try { await redis.set(walletScanResultKey(payload.jobId), result.body, { ex: 30 * 60 }) } catch {}
-    try { await redis.set(walletScanJobKey(payload.jobId), {
-      ...baseJob,
-      status: 'done',
-      error: undefined,
-      updatedAt: Date.now(),
-    }, { ex: 30 * 60 }) } catch {}
+    await publishFinalWalletScanResult(payload.jobId, result.body)
     printAlchemyAuditSummary()
     console.log('[wallet-scan-worker] job completed', { jobId: payload.jobId })
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err)
     const errorBody = { success: false, error: errorMessage, partial: true }
-    try { await redis.set(walletScanResultKey(payload.jobId), errorBody, { ex: 30 * 60 }) } catch {}
-    try { await redis.set(walletScanJobKey(payload.jobId), {
-      ...baseJob,
-      status: 'done',
-      error: undefined,
-      updatedAt: Date.now(),
-    }, { ex: 30 * 60 }) } catch {}
+    await publishFinalWalletScanResult(payload.jobId, errorBody)
     console.error('[wallet-scan-worker] job completed with partial failure', err)
   }
 }
