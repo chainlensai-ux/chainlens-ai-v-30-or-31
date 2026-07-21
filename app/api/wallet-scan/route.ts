@@ -1,7 +1,6 @@
 import { NextResponse } from 'next/server'
 import { isAddress } from 'viem'
-import { enqueueWalletScanJob } from '@/src/modules/walletScanQueue'
-import { runWalletScanV2Worker } from '@/workers/walletScanV2'
+import { WALLET_SCAN_QUEUE_UNAVAILABLE, WalletScanQueueUnavailableError, enqueueWalletScanJob, walletScanRedisConfigured } from '@/src/modules/walletScanQueue'
 
 export const runtime = 'nodejs'
 export const preferredRegion = 'iad1'
@@ -25,15 +24,22 @@ export async function POST(req: Request): Promise<Response> {
     ? body.chains
     : ['base', 'eth']
   const scanMode: ScanMode = body?.scanMode === 'deep' ? 'deep' : 'normal'
-  const jobId = crypto.randomUUID()
   const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown'
+
+  if (!walletScanRedisConfigured()) {
+    return NextResponse.json(WALLET_SCAN_QUEUE_UNAVAILABLE, { status: 503 })
+  }
+
+  const jobId = crypto.randomUUID()
 
   try {
     await enqueueWalletScanJob(jobId, { jobId, walletAddress: wallet, chains, scanMode, ip })
   } catch (err) {
-    console.error('[wallet-scan] failed to enqueue job', { jobId, error: err instanceof Error ? err.message : String(err) })
-    const result = await runWalletScanV2Worker({ walletAddress: wallet, chains, scanMode }, ip, jobId)
-    return NextResponse.json({ jobId, wallet, status: 'done', result: result.body }, { status: result.status })
+    console.error('[wallet-scan] failed to enqueue job', { error: err instanceof Error ? err.message : String(err) })
+    if (err instanceof WalletScanQueueUnavailableError) {
+      return NextResponse.json(WALLET_SCAN_QUEUE_UNAVAILABLE, { status: 503 })
+    }
+    return NextResponse.json(WALLET_SCAN_QUEUE_UNAVAILABLE, { status: 503 })
   }
 
   return NextResponse.json({ jobId, wallet, status: 'queued' })

@@ -154,4 +154,54 @@ describe('scanWalletV2 (wallet-scan background job + polling)', () => {
     }
   })
 
+
+  it('treats queue unavailable as terminal and does not poll', async () => {
+    const calls: string[] = []
+    const originalFetch = global.fetch
+    global.fetch = mock.fn(async (url: string) => {
+      calls.push(url)
+      return new Response(JSON.stringify({ error: 'scan-queue-unavailable', degraded: true }), { status: 503 })
+    }) as unknown as typeof fetch
+
+    try {
+      const { scanWalletV2 } = await import('./scanWallet.ts')
+      const result = await scanWalletV2('0xabc', ['base'], 'normal')
+
+      assert.deepEqual(calls, ['/api/wallet-scan'])
+      assert.equal(result.success, false)
+      assert.equal(result.degraded, true)
+      assert.equal(result.error?.message, 'Scan is currently unavailable. Please try again later.')
+    } finally {
+      global.fetch = originalFetch
+    }
+  })
+
+  it('treats status unavailable as terminal without queued/not-found retry loops', async () => {
+    const calls: string[] = []
+    const updates: string[] = []
+    global.setTimeout = ((cb: (...args: unknown[]) => void) => originalSetTimeout(cb, 0)) as typeof setTimeout
+    const originalFetch = global.fetch
+    global.fetch = mock.fn(async (url: string) => {
+      calls.push(url)
+      if (url === '/api/wallet-scan') {
+        return new Response(JSON.stringify({ jobId: 'job-unavailable', status: 'queued' }), { status: 200 })
+      }
+      return new Response(JSON.stringify({ error: 'scan-status-unavailable', degraded: true }), { status: 503 })
+    }) as unknown as typeof fetch
+
+    try {
+      const { scanWalletV2 } = await import('./scanWallet.ts')
+      const result = await scanWalletV2('0xabc', ['base'], 'normal', ({ status }) => updates.push(status))
+
+      assert.deepEqual(calls, ['/api/wallet-scan', '/api/wallet-scan/job-unavailable'])
+      assert.deepEqual(updates, ['queued'])
+      assert.equal(result.success, false)
+      assert.equal(result.degraded, true)
+      assert.equal(result.error?.message, 'Scan is currently unavailable. Please try again later.')
+    } finally {
+      global.fetch = originalFetch
+      global.setTimeout = originalSetTimeout
+    }
+  })
+
 })

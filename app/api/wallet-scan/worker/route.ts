@@ -1,4 +1,5 @@
-import { after } from 'next/server'
+import { after, NextResponse } from 'next/server'
+import { WALLET_SCAN_QUEUE_UNAVAILABLE, WalletScanQueueUnavailableError } from '@/src/modules/walletScanQueue'
 import type { WalletScanJobMetadata, WalletScanJobPayload } from '@/src/modules/walletScanQueue'
 
 export const runtime = 'nodejs'
@@ -98,14 +99,31 @@ async function drainWalletScanQueue(): Promise<void> {
       await runWalletScanJob(payload)
     } catch (err) {
       console.error('[wallet-scan-worker] loop failed', err)
+      if (err instanceof WalletScanQueueUnavailableError) return
     }
   }
 }
 
 export async function POST(): Promise<Response> {
-  after(async () => {
-    await drainWalletScanQueue()
-  })
+  const { claimNextWalletScanPayload } = await import('@/src/modules/walletScanQueue')
+
+  let firstPayload: WalletScanJobPayload | null
+  try {
+    firstPayload = await claimNextWalletScanPayload()
+  } catch (err) {
+    console.error('[wallet-scan-worker] queue claim failed', err)
+    if (err instanceof WalletScanQueueUnavailableError) {
+      return NextResponse.json(WALLET_SCAN_QUEUE_UNAVAILABLE, { status: 503 })
+    }
+    return NextResponse.json(WALLET_SCAN_QUEUE_UNAVAILABLE, { status: 503 })
+  }
+
+  if (firstPayload) {
+    after(async () => {
+      await runWalletScanJob(firstPayload)
+      await drainWalletScanQueue()
+    })
+  }
 
   return new Response(null, { status: 202 })
 }
