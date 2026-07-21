@@ -33,6 +33,7 @@
 // not hypothetical.
 
 import Redis from 'ioredis'
+import { kv } from '@vercel/kv'
 
 const REDIS_URL = process.env.REDIS_URL ?? ''
 
@@ -42,7 +43,7 @@ export function restTokensConfigured(): boolean {
 }
 
 export function redisConfigured(): boolean {
-  return Boolean(REDIS_URL)
+  return Boolean(REDIS_URL || (process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN))
 }
 
 let client: Redis | null = null
@@ -99,33 +100,52 @@ function getCriticalClient(): Redis | null {
 export const redis = {
   async get<T = unknown>(key: string): Promise<T | null> {
     const c = getClient()
-    if (!c) return null
-    const raw = await c.get(key)
-    if (raw == null) return null
-    try {
-      return JSON.parse(raw) as T
-    } catch {
-      return null // malformed stored value — treat as a miss, never throw
+    if (c) {
+      const raw = await c.get(key)
+      if (raw == null) return null
+      try {
+        return JSON.parse(raw) as T
+      } catch {
+        return null // malformed stored value — treat as a miss, never throw
+      }
     }
+    if (!process.env.KV_REST_API_URL || !process.env.KV_REST_API_TOKEN) return null
+    return await kv.get<T>(key)
   },
   async set(key: string, value: unknown, opts?: { ex?: number }): Promise<void> {
     const c = getClient()
-    if (!c) return
-    const serialized = JSON.stringify(value)
+    if (c) {
+      const serialized = JSON.stringify(value)
+      if (opts?.ex) {
+        await c.set(key, serialized, 'EX', opts.ex)
+      } else {
+        await c.set(key, serialized)
+      }
+      return
+    }
+    if (!process.env.KV_REST_API_URL || !process.env.KV_REST_API_TOKEN) throw new Error('redis_client_unavailable')
     if (opts?.ex) {
-      await c.set(key, serialized, 'EX', opts.ex)
+      await kv.set(key, value, { ex: opts.ex })
     } else {
-      await c.set(key, serialized)
+      await kv.set(key, value)
     }
   },
   async setCritical(key: string, value: unknown, opts?: { ex?: number }): Promise<void> {
     const c = getCriticalClient()
-    if (!c) throw new Error('redis_critical_client_unavailable')
-    const serialized = JSON.stringify(value)
+    if (c) {
+      const serialized = JSON.stringify(value)
+      if (opts?.ex) {
+        await c.set(key, serialized, 'EX', opts.ex)
+      } else {
+        await c.set(key, serialized)
+      }
+      return
+    }
+    if (!process.env.KV_REST_API_URL || !process.env.KV_REST_API_TOKEN) throw new Error('redis_critical_client_unavailable')
     if (opts?.ex) {
-      await c.set(key, serialized, 'EX', opts.ex)
+      await kv.set(key, value, { ex: opts.ex })
     } else {
-      await c.set(key, serialized)
+      await kv.set(key, value)
     }
   },
 }
