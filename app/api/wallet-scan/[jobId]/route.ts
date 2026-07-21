@@ -1,17 +1,29 @@
 import { NextResponse } from 'next/server'
-import { readWalletScanJob, readWalletScanResult, walletScanResultMissingFallback } from '@/src/modules/walletScanQueue'
+import { WALLET_SCAN_STATUS_UNAVAILABLE, WalletScanStatusUnavailableError, readWalletScanJob, readWalletScanResult, walletScanResultMissingFallback } from '@/src/modules/walletScanQueue'
 
 export async function GET(_req: Request, context: { params: Promise<{ jobId: string }> }): Promise<Response> {
   const { jobId } = await context.params
-  const job = await readWalletScanJob(jobId)
+  let job
+  try {
+    job = await readWalletScanJob(jobId)
+  } catch (err) {
+    if (err instanceof WalletScanStatusUnavailableError) {
+      return NextResponse.json(WALLET_SCAN_STATUS_UNAVAILABLE, { status: 503 })
+    }
+    return NextResponse.json(WALLET_SCAN_STATUS_UNAVAILABLE, { status: 503 })
+  }
 
   if (!job) {
-    return NextResponse.json({ jobId, status: 'not-found' }, { status: 404 })
+    return NextResponse.json(WALLET_SCAN_STATUS_UNAVAILABLE, { status: 503 })
   }
 
   if (job.status === 'done') {
-    const result = await readWalletScanResult(jobId)
-    return NextResponse.json({ jobId, status: job.status, result: result ?? walletScanResultMissingFallback(jobId, job) })
+    try {
+      const result = await readWalletScanResult(jobId)
+      return NextResponse.json({ jobId, status: job.status, result: result ?? walletScanResultMissingFallback(jobId, job) })
+    } catch {
+      return NextResponse.json(WALLET_SCAN_STATUS_UNAVAILABLE, { status: 503 })
+    }
   }
 
   return NextResponse.json({ jobId, status: job.status, ...(job.error ? { error: job.error } : {}) })

@@ -85,10 +85,11 @@ const POLL_TIMEOUT_MS = 295_000
 type WalletScanJobStatus = 'queued' | 'running' | 'done' | 'failed' | 'not-found'
 
 type WalletScanJobResponse = {
-  jobId: string
-  status: WalletScanJobStatus
+  jobId?: string
+  status?: WalletScanJobStatus
   result?: ScanWalletApiResponse
   error?: string | { message?: string }
+  degraded?: boolean
 }
 
 export type ScanWalletStatusUpdate = {
@@ -102,6 +103,14 @@ function sleep(ms: number): Promise<void> {
 
 function toErrorResponse(message: string, details?: string[]): ScanWalletApiResponse {
   return { success: false, error: { message, category: 'network', details } }
+}
+
+function isTerminalScanUnavailable(body: WalletScanJobResponse | null): boolean {
+  return body?.degraded === true && (body.error === 'scan-queue-unavailable' || body.error === 'scan-status-unavailable')
+}
+
+function scanUnavailableResponse(): ScanWalletApiResponse {
+  return { success: false, degraded: true, error: { message: 'Scan is currently unavailable. Please try again later.', category: 'network' } }
 }
 
 // JOB/POLL SCAN PATH: POST returns immediately with a jobId, then this client polls the status
@@ -121,7 +130,11 @@ export async function scanWalletV2(
     })
 
     const startBody = await startRes.json().catch(() => null) as WalletScanJobResponse | null
-    if (!startRes.ok || !startBody?.jobId) {
+    if (isTerminalScanUnavailable(startBody)) {
+      return scanUnavailableResponse()
+    }
+
+    if (!startRes.ok || !startBody?.jobId || !startBody.status) {
       return toErrorResponse(startBody?.error && typeof startBody.error === 'object' && startBody.error.message ? startBody.error.message : 'scan-enqueue-failed')
     }
 
@@ -138,6 +151,10 @@ export async function scanWalletV2(
       const pollRes = await fetch(`${WALLET_SCAN_ROUTE}/${encodeURIComponent(startBody.jobId)}`)
       const pollBody = await pollRes.json().catch(() => null) as WalletScanJobResponse | null
 
+      if (isTerminalScanUnavailable(pollBody)) {
+        return scanUnavailableResponse()
+      }
+
       if (!pollRes.ok || !pollBody) {
         const stillWithinPollWindow = Date.now() - pollStartedAt < POLL_TIMEOUT_MS
         const transientMissingJob = pollRes.status === 404 && pollBody?.status === 'not-found'
@@ -145,6 +162,10 @@ export async function scanWalletV2(
           continue
         }
         return toErrorResponse('Scan status is temporarily unavailable. Please rescan in a moment.', [`HTTP ${pollRes.status}`])
+      }
+
+      if (!pollBody.jobId || !pollBody.status) {
+        return toErrorResponse('Scan status is temporarily unavailable. Please rescan in a moment.')
       }
 
       onUpdate?.({ jobId: pollBody.jobId, status: pollBody.status })
