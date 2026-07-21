@@ -38,13 +38,31 @@ export type WalletScanJobPayload = {
 const JOB_TTL_SECONDS = 30 * 60
 
 export function walletScanResultMissingFallback(jobId: string, job: WalletScanJobMetadata | null): unknown {
+  void jobId
+  void job
   return {
-    success: false,
-    partial: true,
     error: 'scan-final-result-unavailable',
-    jobId,
-    wallet: job?.wallet ?? '',
+    degraded: true,
   }
+}
+
+type FinalPublishClient = 'critical' | 'normal'
+
+function redisErrorDetails(error: unknown, client: FinalPublishClient): Record<string, unknown> {
+  const err = error as { code?: unknown; name?: unknown; message?: unknown } | null
+  const message = err?.message ?? String(error)
+  const code = typeof err?.code === 'string' ? err.code : undefined
+  const name = typeof err?.name === 'string' ? err.name : undefined
+  const lowerMessage = String(message).toLowerCase()
+  const timeoutType = code === 'ETIMEDOUT' || lowerMessage.includes('command timed out')
+    ? 'command'
+    : lowerMessage.includes('connect') && lowerMessage.includes('timeout')
+      ? 'connect'
+      : lowerMessage.includes('timeout')
+        ? 'unknown'
+        : undefined
+
+  return { client, code, name, timeoutType, message }
 }
 
 export async function publishFinalWalletScanResult(jobId: string, result: unknown): Promise<void> {
@@ -58,26 +76,30 @@ export async function publishFinalWalletScanResult(jobId: string, result: unknow
   }
 
   const finalResult = result ?? walletScanResultMissingFallback(jobId, existing)
-  let writes = await Promise.allSettled([
-    redis.setCritical(walletScanResultKey(jobId), finalResult, { ex: JOB_TTL_SECONDS }),
-    redis.setCritical(walletScanJobKey(jobId), finalJob, { ex: JOB_TTL_SECONDS }),
-  ])
+  console.log('[walletScanQueue] final publish start', { jobId })
 
-  if (writes.some((write) => write.status === 'rejected')) {
-    writes = await Promise.allSettled([
-      redis.set(walletScanResultKey(jobId), finalResult, { ex: JOB_TTL_SECONDS }),
-      redis.set(walletScanJobKey(jobId), finalJob, { ex: JOB_TTL_SECONDS }),
+  const writeWithClient = async (client: FinalPublishClient): Promise<void> => {
+    const set = client === 'critical' ? redis.setCritical.bind(redis) : redis.set.bind(redis)
+    await Promise.all([
+      set(walletScanResultKey(jobId), finalResult, { ex: JOB_TTL_SECONDS }),
+      set(walletScanJobKey(jobId), finalJob, { ex: JOB_TTL_SECONDS }),
     ])
   }
 
-  const failed = writes.filter((write) => write.status === 'rejected')
-  if (failed.length > 0) {
-    console.error('[walletScanQueue] final publish failed', {
-      jobId,
-      failedWrites: failed.length,
-      errors: failed.map((write) => write.status === 'rejected' ? (write.reason instanceof Error ? write.reason.message : String(write.reason)) : ''),
-    })
-    throw new Error(`wallet_scan_final_publish_failed_${failed.length}`)
+  try {
+    await writeWithClient('critical')
+    console.log('[walletScanQueue] final publish success', { jobId, client: 'critical' })
+    return
+  } catch (criticalError) {
+    console.error('[walletScanQueue] final publish failed', { jobId, ...redisErrorDetails(criticalError, 'critical') })
+  }
+
+  try {
+    await writeWithClient('normal')
+    console.log('[walletScanQueue] final publish success', { jobId, client: 'normal' })
+  } catch (normalError) {
+    console.error('[walletScanQueue] final publish failed', { jobId, ...redisErrorDetails(normalError, 'normal') })
+    throw new Error('wallet_scan_final_publish_failed')
   }
 }
 

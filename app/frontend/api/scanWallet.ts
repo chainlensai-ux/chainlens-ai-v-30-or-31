@@ -14,6 +14,7 @@ export type ScanWalletApiResponse = {
   success: boolean
   data?: unknown
   error?: { message: string; category: string; details?: string[] }
+  degraded?: boolean
 }
 
 const MODULE_ENDPOINTS = [
@@ -137,7 +138,12 @@ export async function scanWalletV2(
       onUpdate?.({ jobId: pollBody.jobId, status: pollBody.status })
 
       if (pollBody.status === 'done') {
-        return pollBody.result ?? toErrorResponse('scan-final-result-unavailable')
+        const result = pollBody.result
+        if (result?.degraded) {
+          const degradedError = typeof result.error === 'string' ? result.error : result.error?.message
+          return { success: false, degraded: true, error: { message: degradedError ?? 'scan-final-result-unavailable', category: 'network' } }
+        }
+        return result ?? toErrorResponse('scan-final-result-unavailable')
       }
 
       if (pollBody.status === 'failed') {
