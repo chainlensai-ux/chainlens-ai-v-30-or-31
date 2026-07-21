@@ -5,9 +5,7 @@
 // underlying scan takes.
 //
 // REDIS MIGRATION, DISCLOSED: replaced lib/server/cache/tokenCache.ts's @vercel/kv-backed
-// getTokenCache with lib/server/cache/redisClient.ts's redis.get (ioredis-backed — see that file's
-// header for why ioredis, not @upstash/redis, is the correct client for a real REDIS_URL
-// connection string). A failed/unreachable Redis read degrades to the same honest "not-found" a
+// getTokenCache with lib/server/cache/redisClient.ts's redis.get (@upstash/redis REST-backed). A failed/unreachable Redis read degrades to the same honest "not-found" a
 // genuinely missing job would produce — never a thrown error, never a fabricated "pending" guess.
 //
 // Response shape (flat, exactly as required by the caller — app/frontend/api/scanWallet.ts):

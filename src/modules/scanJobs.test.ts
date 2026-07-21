@@ -2,7 +2,7 @@
 // into `npm test`. Run directly with:
 //   npx tsx --test src/modules/scanJobs.test.ts
 //
-// This sandbox has no REDIS_URL configured, so getScanJob/setScanJob fail open (null / no-op) —
+// This sandbox has no Redis REST configuration, so getScanJob/setScanJob fail open (null / no-op) —
 // these tests verify setJobProgress's own branching (no-op on a missing job, never throws), not
 // real persistence (same disclosed limitation as every other Redis-backed piece of this codebase).
 
@@ -11,7 +11,7 @@ import assert from 'node:assert/strict'
 import { setJobProgress } from './scanJobs'
 
 describe('setJobProgress', () => {
-  it('never throws when the job does not exist (no REDIS_URL in this sandbox)', async () => {
+  it('never throws when the job does not exist (no Redis REST config in this sandbox)', async () => {
     await assert.doesNotReject(() =>
       setJobProgress('nonexistent-job-id', { currentModule: 1, totalModules: 11, moduleName: 'holdings' }),
     )
