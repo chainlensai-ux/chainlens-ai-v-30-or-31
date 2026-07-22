@@ -1,6 +1,6 @@
 import { after, NextResponse } from 'next/server'
 import { WALLET_SCAN_QUEUE_UNAVAILABLE, WalletScanQueueUnavailableError } from '@/src/modules/walletScanQueue'
-import type { WalletScanJobMetadata, WalletScanJobPayload } from '@/src/modules/walletScanQueue'
+import type { WalletScanJobPayload } from '@/src/modules/walletScanQueue'
 
 export const runtime = 'nodejs'
 export const preferredRegion = 'iad1'
@@ -35,20 +35,7 @@ async function runWithTimeout<T>(work: Promise<T>, timeoutMs: number): Promise<T
 async function runWalletScanJob(payload: WalletScanJobPayload): Promise<void> {
   const { resetAlchemyAudit, printAlchemyAuditSummary } = await import('@/lib/server/alchemyAudit')
   const { runWalletScanV2Worker } = await import('@/workers/walletScanV2')
-  const { readWalletScanJob, writeWalletScanJob, publishFinalWalletScanResult } = await import('@/src/modules/walletScanQueue')
-  const existing = await readWalletScanJob(payload.jobId)
-  const baseJob: WalletScanJobMetadata = existing ?? {
-    jobId: payload.jobId,
-    wallet: payload.walletAddress,
-    status: 'queued',
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
-    chains: payload.chains,
-    scanMode: payload.scanMode,
-    ip: payload.ip,
-  }
-
-  await writeWalletScanJob({ ...baseJob, status: 'running', error: undefined })
+  const { publishFinalWalletScanResult } = await import('@/src/modules/walletScanQueue')
   console.log('[wallet-scan-worker] job started', { jobId: payload.jobId })
   resetAlchemyAudit()
 

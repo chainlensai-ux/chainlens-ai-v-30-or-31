@@ -1,18 +1,18 @@
 import { NextResponse } from 'next/server'
-import { WALLET_SCAN_STATUS_UNAVAILABLE, WalletScanStatusUnavailableError, readWalletScanJob, readWalletScanResult, walletScanJobKey, walletScanResultKey, walletScanResultMissingFallback } from '@/src/modules/walletScanQueue'
+import { redis as kv } from '@/lib/server/cache/redisClient'
+import { WALLET_SCAN_STATUS_UNAVAILABLE, walletScanResultMissingFallback } from '@/src/modules/walletScanQueue'
+import type { WalletScanJobMetadata } from '@/src/modules/walletScanQueue'
 
 export async function GET(_req: Request, context: { params: Promise<{ jobId: string }> }): Promise<Response> {
   const { jobId } = await context.params
-  const pollResultKey = walletScanResultKey(jobId)
-  const pollJobKey = walletScanJobKey(jobId)
+  const pollResultKey = `walletScanResult:${jobId}`
+  const pollJobKey = `walletScanJob:${jobId}`
   console.warn('[wallet-scan-poll]', { pollResultKey, pollJobKey })
-  let job
+
+  let job: WalletScanJobMetadata | null
   try {
-    job = await readWalletScanJob(jobId)
-  } catch (err) {
-    if (err instanceof WalletScanStatusUnavailableError) {
-      return NextResponse.json(WALLET_SCAN_STATUS_UNAVAILABLE, { status: 503 })
-    }
+    job = await kv.get<WalletScanJobMetadata>(pollJobKey)
+  } catch {
     return NextResponse.json(WALLET_SCAN_STATUS_UNAVAILABLE, { status: 503 })
   }
 
@@ -22,7 +22,7 @@ export async function GET(_req: Request, context: { params: Promise<{ jobId: str
 
   if (job.status === 'done') {
     try {
-      const result = await readWalletScanResult(jobId)
+      const result = await kv.get(pollResultKey)
       if (result !== null) {
         return NextResponse.json(result)
       }
@@ -32,9 +32,5 @@ export async function GET(_req: Request, context: { params: Promise<{ jobId: str
     }
   }
 
-  if (job.status === 'running') {
-    return NextResponse.json({ status: 'running' })
-  }
-
-  return NextResponse.json({ jobId, status: job.status, ...(job.error ? { error: job.error } : {}) })
+  return NextResponse.json({ status: 'running' })
 }
