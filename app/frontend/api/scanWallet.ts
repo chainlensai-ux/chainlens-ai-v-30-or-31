@@ -164,11 +164,15 @@ export async function scanWalletV2(
         return toErrorResponse('Scan status is temporarily unavailable. Please rescan in a moment.', [`HTTP ${pollRes.status}`])
       }
 
-      if (!pollBody.jobId || !pollBody.status) {
+      // The poll endpoint returns only { status } / { status, result } and never echoes jobId back
+      // (see app/api/wallet-scan/[jobId]/route.ts and its key-alignment tests). We already know the
+      // jobId from the enqueue response, so only `status` is required here — requiring pollBody.jobId
+      // made every scan fail on its first poll.
+      if (!pollBody.status) {
         return toErrorResponse('Scan status is temporarily unavailable. Please rescan in a moment.')
       }
 
-      onUpdate?.({ jobId: pollBody.jobId, status: pollBody.status })
+      onUpdate?.({ jobId: startBody.jobId, status: pollBody.status })
 
       if (pollBody.status === 'done') {
         const result = pollBody.result
