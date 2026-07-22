@@ -1,4 +1,4 @@
-import { WALLET_SCAN_STATUS_UNAVAILABLE } from '@/src/modules/walletScanQueue'
+import { WALLET_SCAN_STATUS_UNAVAILABLE, walletScanJobKey, walletScanResultKey } from '@/src/modules/walletScanQueue'
 import { kv } from '@/lib/server/kv'
 
 type WalletScanJobState = {
@@ -7,8 +7,8 @@ type WalletScanJobState = {
 
 export async function GET(_req: Request, context: { params: Promise<{ jobId: string }> }): Promise<Response> {
   const { jobId } = await context.params
-  const jobKey = `walletScanJob:${jobId}`
-  const resultKey = `walletScanResult:${jobId}`
+  const jobKey = walletScanJobKey(jobId)
+  const resultKey = walletScanResultKey(jobId)
 
   let job: WalletScanJobState | null
   let result: unknown | null

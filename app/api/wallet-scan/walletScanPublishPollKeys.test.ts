@@ -2,7 +2,7 @@ import { describe, it, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { kv } from '@/lib/server/kv'
 import { walletScanJobKey, walletScanResultKey } from '@/src/modules/walletScanQueue'
-import { publishFinal } from '@/src/modules/walletScanWorker'
+import { publishFinal, verifyWalletScanKvConnection } from '@/src/modules/walletScanWorker'
 
 const originalEnv = { ...process.env }
 const originalGet = kv.get
@@ -50,6 +50,15 @@ describe('wallet-scan final publish and poll key alignment', () => {
   })
 
   afterEach(restore)
+
+
+  it('worker KV verification writes and reads walletScanTestKey', async () => {
+    const store = installMemoryKv()
+
+    await verifyWalletScanKvConnection()
+
+    assert.deepEqual(store.get('walletScanTestKey'), { value: 'ok', opts: undefined })
+  })
 
   it('publish → poll returns the full successful result', async () => {
     installMemoryKv()

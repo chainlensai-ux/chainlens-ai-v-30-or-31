@@ -1,5 +1,10 @@
 import { kv } from '@/lib/server/kv'
-import { WALLET_SCAN_QUEUE_UNAVAILABLE, WalletScanQueueUnavailableError } from '@/src/modules/walletScanQueue'
+import {
+  WALLET_SCAN_QUEUE_UNAVAILABLE,
+  WalletScanQueueUnavailableError,
+  walletScanJobKey,
+  walletScanResultKey,
+} from '@/src/modules/walletScanQueue'
 import type { WalletScanJobPayload } from '@/src/modules/walletScanQueue'
 
 type WalletScanJobState = {
@@ -36,8 +41,17 @@ async function readWorkerJobId(req: Request): Promise<string | null> {
 }
 
 export async function publishFinal(jobId: string, jobState: WalletScanJobState, result: unknown): Promise<void> {
-  await kv.set(`walletScanJob:${jobId}`, jobState)
-  await kv.set(`walletScanResult:${jobId}`, result)
+  await kv.set(walletScanJobKey(jobId), jobState)
+  await kv.set(walletScanResultKey(jobId), result)
+}
+
+export async function verifyWalletScanKvConnection(): Promise<void> {
+  await kv.set('walletScanTestKey', 'ok')
+  const value = await kv.get<string>('walletScanTestKey')
+  if (value !== 'ok') {
+    throw new Error('wallet-scan-kv-verification-failed')
+  }
+  console.log('[wallet-scan-worker] kv verification succeeded', { key: 'walletScanTestKey' })
 }
 
 async function executeWalletScanJob(payload: WalletScanJobPayload): Promise<{ jobState: WalletScanJobState; result: unknown }> {
@@ -93,6 +107,16 @@ export async function runWalletScanWorker(req: Request): Promise<Response> {
 
   if (!jobId) {
     return Response.json({ status: 'missing-job-id' }, { status: 400 })
+  }
+
+  try {
+    await verifyWalletScanKvConnection()
+  } catch (err) {
+    console.error('[wallet-scan-worker] kv verification failed', err)
+    if (err instanceof WalletScanQueueUnavailableError) {
+      return Response.json(WALLET_SCAN_QUEUE_UNAVAILABLE, { status: 503 })
+    }
+    return Response.json(WALLET_SCAN_QUEUE_UNAVAILABLE, { status: 503 })
   }
 
   let payload: WalletScanJobPayload | null
