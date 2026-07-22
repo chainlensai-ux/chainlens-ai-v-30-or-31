@@ -65,7 +65,15 @@ function deriveActivityWindow(report: WalletV2Report): { firstSeenMs: number | n
   const timestamps: number[] = []
 
   const buyEntries = Array.isArray(report.timelines?.buyTimeline?.entries) ? report.timelines.buyTimeline.entries : []
-  const sellEntries = Array.isArray(report.timelines?.sellTimeline?.entries) ? report.timelines.sellTimeline.entries : []
+  // WRONG-SELL-TIMELINE FIX, DISCLOSED (same bug class as recoveryPolicy's trigger, real-scan
+  // evidence): this previously read report.timelines.sellTimeline — timelineBuilder's narrow
+  // same-tx-swap-pairing-only heuristic — instead of sellTimelineV2 (the richer read model that also
+  // detects transfer-to-known-router sells). For a wallet whose real sells are all router-transfer
+  // shaped, timelines.sellTimeline.entries is empty even though sellTimelineV2 correctly finds e.g.
+  // 198 real sells — so "Last Active" silently excluded every one of those real, timestamped sell
+  // events, understating the wallet's true last-activity date whenever its most recent event was a
+  // sell rather than a buy/distribution/bridge.
+  const sellEntries = Array.isArray(report.timelines?.sellTimelineV2?.entries) ? report.timelines.sellTimelineV2.entries : []
   const distEntries = Array.isArray(report.timelines?.distributionTimeline?.entries) ? report.timelines.distributionTimeline.entries : []
   const bridgeEntries = Array.isArray(report.bridgeTimeline) ? report.bridgeTimeline : []
 
