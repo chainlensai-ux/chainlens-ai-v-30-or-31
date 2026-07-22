@@ -13,10 +13,14 @@
 import { describe, it, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import type { GoldRushClient } from '@covalenthq/client-sdk'
-import { goldrushPriceSource, __resetGoldrushPriceSourceCachesForTest, getGoldrushPriceSourceCallCount, isKnownGoldrushNegative } from './goldrushPriceSource'
+import { goldrushPriceSource, __resetGoldrushPriceSourceCachesForTest, getGoldrushPriceSourceCallCount, isKnownGoldrushNegative, isGoldrushBreakerOpenForTest } from './goldrushPriceSource'
 
 const TOKEN = '0x1111111111111111111111111111111111111111'
 const CHAIN = 'base'
+
+function tokenAddress(i: number): string {
+  return `0x${i.toString(16).padStart(40, '0')}`
+}
 
 function makeFakeClient(opts: {
   respond: (dateStr: string) => { error: boolean; data: unknown }
@@ -135,5 +139,67 @@ describe('goldrushPriceSource negative-result caching', () => {
 
     await fn(TOKEN, CHAIN, Date.parse('2024-01-01'))
     assert.equal(isKnownGoldrushNegative(TOKEN, CHAIN), false, 'expected no negative cache entry after a positive result')
+  })
+})
+
+describe('goldrushPriceSource — scan-level circuit breaker', () => {
+  beforeEach(() => {
+    __resetGoldrushPriceSourceCachesForTest()
+  })
+
+  it('opens after enough consecutive distinct-token misses and short-circuits the next lookup without a real call', async () => {
+    const { client, getCallCount } = makeFakeClient({ respond: () => ({ error: false, data: [{ items: [] }] }) })
+    const fn = goldrushPriceSource(client)
+
+    // 20 distinct tokens, each a genuine miss (negative cache is per-token, so each of these makes
+    // its own real call rather than hitting an earlier token's cache entry).
+    for (let i = 0; i < 20; i++) {
+      await fn(tokenAddress(i), CHAIN, Date.parse('2024-01-01'))
+    }
+    assert.equal(getCallCount(), 20, 'expected all 20 distinct-token lookups to make real calls')
+    assert.equal(isGoldrushBreakerOpenForTest(), true, 'expected the breaker to be open after 20 consecutive misses')
+
+    const price = await fn(tokenAddress(999), CHAIN, Date.parse('2024-01-01'))
+    assert.equal(price, null)
+    assert.equal(getCallCount(), 20, 'expected the breaker-open lookup to skip the real call entirely')
+  })
+
+  it('never opens when misses are interspersed with a success (counter resets on any real answer)', async () => {
+    let calls = 0
+    const client = {
+      PricingService: {
+        async getTokenPrices(_chainSlug: string, _quote: string, contract: string) {
+          calls++
+          // Every 5th distinct token (by trailing hex digit) resolves with real data — keeps the
+          // consecutive-miss streak from ever reaching the threshold.
+          return contract.endsWith('4') || contract.endsWith('9')
+            ? { error: false, data: [{ items: [{ price: 1.5 }] }] }
+            : { error: false, data: [{ items: [] }] }
+        },
+      },
+    } as unknown as GoldRushClient
+    const fn = goldrushPriceSource(client)
+
+    for (let i = 0; i < 30; i++) {
+      await fn(tokenAddress(i), CHAIN, Date.parse('2024-01-01'))
+    }
+    assert.equal(calls, 30, 'expected every distinct token to make a real call (breaker never tripped)')
+    assert.equal(isGoldrushBreakerOpenForTest(), false, 'expected the breaker to stay closed when successes keep resetting the streak')
+  })
+
+  it('a timeout/thrown error counts toward the breaker exactly like a clean "no data" miss', async () => {
+    const client = {
+      PricingService: {
+        async getTokenPrices() {
+          throw new Error('network error')
+        },
+      },
+    } as unknown as GoldRushClient
+    const fn = goldrushPriceSource(client)
+
+    for (let i = 0; i < 20; i++) {
+      await fn(tokenAddress(i), CHAIN, Date.parse('2024-01-01'))
+    }
+    assert.equal(isGoldrushBreakerOpenForTest(), true, 'expected 20 consecutive thrown errors to trip the breaker exactly like clean misses')
   })
 })

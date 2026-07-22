@@ -114,6 +114,44 @@ function withGoldrushTimeout<T>(promise: Promise<T>): Promise<T> {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer))
 }
 
+// SCAN-LEVEL CIRCUIT BREAKER, DISCLOSED (real-latency-fix, follow-up to the timeout bound above):
+// bounding each call at 8s stops an individual call from hanging forever, but this file's own
+// earlier comment already discloses a real, measured scan where GoldRush made 1,045 real calls and
+// returned null for every single one — at this module's own 8s bound and pricingAtTimeEngine's
+// fixed concurrency pool (see index.ts's mapWithConcurrencyLimit), that's roughly
+// (1045 / concurrency) * 8s of WALL-CLOCK time paid to a source that never once had an answer, which
+// alone can approach or exceed the outer 270s worker-global timeout — not a hang, just a source
+// that's clearly not going to answer, being retried at full cost for every distinct token anyway.
+// This breaker tracks CONSECUTIVE misses (null results OR timeouts) across calls within one process:
+// once GOLDRUSH_BREAKER_THRESHOLD consecutive misses are seen, it opens for
+// GOLDRUSH_BREAKER_COOLDOWN_MS and every call during that window short-circuits straight to null —
+// no real network call, no 8s wait — falling through to this source's own real fallback chain
+// (dexscreener/coingecko/basedex, wired by src/pipeline/index.ts) exactly as a normal miss already
+// would. NEVER FABRICATES: this only ever produces the same `null` a real miss already produces,
+// just faster, and any real success immediately resets the counter and lets subsequent calls through
+// again — this never permanently disables the source, and a temporarily-degraded GoldRush that
+// recovers mid-scan resumes being tried again once the cooldown elapses.
+const GOLDRUSH_BREAKER_THRESHOLD = 20
+const GOLDRUSH_BREAKER_COOLDOWN_MS = 30_000
+let goldrushConsecutiveMisses = 0
+let goldrushBreakerOpenUntilMs = 0
+
+function goldrushBreakerOpen(): boolean {
+  return Date.now() < goldrushBreakerOpenUntilMs
+}
+
+function recordGoldrushMiss(): void {
+  goldrushConsecutiveMisses += 1
+  if (goldrushConsecutiveMisses >= GOLDRUSH_BREAKER_THRESHOLD) {
+    goldrushBreakerOpenUntilMs = Date.now() + GOLDRUSH_BREAKER_COOLDOWN_MS
+  }
+}
+
+function recordGoldrushSuccess(): void {
+  goldrushConsecutiveMisses = 0
+  goldrushBreakerOpenUntilMs = 0
+}
+
 // YYYY-MM-DD, exactly what getTokenPrices' from/to params require. Never infers a missing/invalid
 // timestamp — an unparseable input returns null so the caller treats it as "no data", never a
 // guessed date.
@@ -147,6 +185,15 @@ export function __resetGoldrushPriceSourceCachesForTest(): void {
   negativeGoldrushPriceCache.clear()
   inFlightGoldrushPriceLookups.clear()
   goldrushPriceSourceCallCount = 0
+  goldrushConsecutiveMisses = 0
+  goldrushBreakerOpenUntilMs = 0
+}
+
+// TEST-SUPPORT EXPORT, DISCLOSED: read-only observability into the circuit breaker's state, same
+// convention as isKnownGoldrushNegative above — lets a test assert the breaker actually opened
+// without needing to reach into this module's private state directly.
+export function isGoldrushBreakerOpenForTest(): boolean {
+  return goldrushBreakerOpen()
 }
 
 // Builds a PriceSourceFn backed by a real GoldRushClient instance. Never fabricates a price: an
@@ -159,6 +206,14 @@ export function goldrushPriceSource(client: GoldRushClient): PriceSourceFn {
 
     const dateString = toDateString(timestamp)
     if (!dateString) return null
+
+    // BREAKER SHORT-CIRCUIT: checked before the negative-cache lookup below (cheapest possible
+    // check first) — if GoldRush has just shown GOLDRUSH_BREAKER_THRESHOLD consecutive misses
+    // across this process, skip straight to null (no real call, no 8s wait) rather than paying
+    // this source's full cost on every one of potentially hundreds of distinct tokens it's already
+    // demonstrated it won't answer for. See this breaker's own declaration above for the full
+    // reasoning and the real, measured scan (1,045 calls, 100% null) that motivated it.
+    if (goldrushBreakerOpen()) return null
 
     const tokenLower = token.toLowerCase()
     const negativeCacheKey = `${chain}:${tokenLower}`
@@ -180,25 +235,34 @@ export function goldrushPriceSource(client: GoldRushClient): PriceSourceFn {
 
         if (response.error || !response.data) {
           negativeGoldrushPriceCache.set(negativeCacheKey, Date.now() + NEGATIVE_PRICE_CACHE_TTL_MS)
+          recordGoldrushMiss()
           return null
         }
 
         const items = response.data[0]?.items
         if (!Array.isArray(items) || items.length === 0) {
           negativeGoldrushPriceCache.set(negativeCacheKey, Date.now() + NEGATIVE_PRICE_CACHE_TTL_MS)
+          recordGoldrushMiss()
           return null
         }
 
         const price = items[0]?.price
-        if (typeof price === 'number' && Number.isFinite(price)) return price
+        if (typeof price === 'number' && Number.isFinite(price)) {
+          recordGoldrushSuccess()
+          return price
+        }
         negativeGoldrushPriceCache.set(negativeCacheKey, Date.now() + NEGATIVE_PRICE_CACHE_TTL_MS)
+        recordGoldrushMiss()
         return null
       } catch {
         // GoldRush threw (network error, rate limit, invalid API key, etc.) — never a crash, never a
         // fabricated price. Deliberately NOT added to the negative cache: a thrown error (as opposed
         // to a genuine "no data" response) says nothing about whether this token has real price
         // data, so caching it as a negative result could hide a token that would have resolved fine
-        // on a retry a moment later.
+        // on a retry a moment later. Still counts toward the breaker above: a timeout or thrown
+        // error is exactly the "GoldRush isn't answering" signal the breaker exists to short-circuit,
+        // regardless of whether it's a clean "no data" response or a network-level failure.
+        recordGoldrushMiss()
         return null
       }
     })()
