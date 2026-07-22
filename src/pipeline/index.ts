@@ -1671,7 +1671,19 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     fallbackAttempts: walletPriceLookups.sourceBreakdown.fallback,
     providerErrors: providerErrorCount,
     suppressionSkipped: dustSuppressedKeys.size,
-    closedLots: reconciledPnlSummary.closedLots,
+    // CONFIRMED BUG FIX, DISCLOSED: this previously passed reconciledPnlSummary.closedLots, which
+    // is `Math.max(fifoLots.length, pnlLots.length)` — the count of reconstructed lots regardless
+    // of whether pricing actually succeeded for them. Since pnlLots/fifoLots are both derived from
+    // the same sell-event set, this count is structurally always equal to totalSells below, so
+    // walletConditionMessages.ts's "closedLots < totalSells" evidence-gap check could never fire —
+    // it always reported "PnL Evidence Level: FULL" / "PnL Confidence: 100%" even when the real,
+    // authoritative PnL was 'unavailable due to missing evidence' (missingEvidenceCount: 724 in a
+    // real production run), a direct, user-visible contradiction between this message and the
+    // actual PnL card. ayriAttribution.attributedLots is the already-computed, correct count of
+    // lots that a real price source (primary/fallback/ratio/synthetic/recovered) actually priced —
+    // exactly what "sells with verifiable pricing" means — and already matches ayriAttribution's
+    // own coveragePercent for the same run.
+    closedLots: ayriAttribution.attributedLots,
     totalSells: sellTimelineV2.totalSells,
     previousPnL: undefined,
     currentPnL: reconciledPnlSummary.realizedPnlUsd,
