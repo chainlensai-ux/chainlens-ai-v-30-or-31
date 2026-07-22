@@ -202,6 +202,41 @@ function trackRpcCall(method: string): void {
   } else {
     rpcCallCounters[method] = { count: 1, firstCallAt: now, lastCallAt: now }
   }
+  totalBaseDexRpcCallsThisScan += 1
+}
+
+// SCAN-LEVEL RPC BUDGET, DISCLOSED (real-latency-fix): a real, measured scan showed this file's
+// FINAL TOTALS line reporting 600-900+ RPC calls per pricing pass (getBlock:estimate/bisect,
+// readContract:multicall), repeated across multiple passes in one scan — this deployment's own
+// Vercel region (syd1, Sydney) is geographically distant from Alchemy's Base RPC infrastructure, so
+// each of those calls pays real cross-continent round-trip latency; even the already-reduced ~8-9
+// step bisection window (see estimateAndVerifyWindow's own header above) compounds across ~130+
+// distinct tokens into a real, measured contributor to exceeding the outer 270s worker-global
+// timeout (workers/walletScanV2.ts). Earlier fixes in this file already cut per-token call count
+// substantially (bucketing, window estimation, in-flight coalescing) — this budget is the backstop
+// for what's left: once TOTAL calls across this whole scan (all methods combined) cross
+// MAX_BASEDEX_RPC_CALLS_PER_SCAN, findBlockForTimestamp stops making further real calls and returns
+// null for any NOT-YET-CACHED bucket, same as a genuine "no data" answer from this source — pricing
+// falls through to whatever this token's real upstream evidence already produced (or stays
+// unpriced, the same honest outcome an unindexed token already gets). NEVER FABRICATES: this only
+// ever produces the same null an exhausted/failed search would, just without paying for the rest of
+// it. A bucket already resolved and cached is still served instantly regardless of the budget.
+const MAX_BASEDEX_RPC_CALLS_PER_SCAN = 300
+let totalBaseDexRpcCallsThisScan = 0
+
+function baseDexScanBudgetExceeded(): boolean {
+  return totalBaseDexRpcCallsThisScan >= MAX_BASEDEX_RPC_CALLS_PER_SCAN
+}
+
+// SCAN-BOUNDARY RESET, DISCLOSED: called once per scan (see src/modules/walletScanWorker.ts,
+// alongside its existing resetAlchemyAudit() call) so this budget is genuinely per-scan, not
+// process-lifetime — a warm serverless instance serving a second, unrelated scan must start this
+// budget fresh rather than inheriting the previous scan's exhausted counter. Deliberately does NOT
+// clear blockForTimestampCache/poolAddressCache/poolPriceCache (this file's own
+// __resetBaseDexCachesForTest already does that, test-only) — a resolved historical block or pool
+// address is a permanent fact that stays valid and worth keeping warm across scans.
+export function resetBaseDexRpcBudgetForScan(): void {
+  totalBaseDexRpcCallsThisScan = 0
 }
 
 // FINAL-TOTALS SUMMARY, DISCLOSED: one log line, callable once a scan's pricing pass finishes,
@@ -396,6 +431,11 @@ export async function findBlockForTimestamp(client: PublicClient, targetTimestam
 
   const inFlight = inFlightBlockSearches.get(bucketed)
   if (inFlight) return inFlight
+
+  // BUDGET SHORT-CIRCUIT: checked after the cache/in-flight checks above (a bucket this scan
+  // already resolved, or is already resolving concurrently, is always served regardless of the
+  // budget) — see MAX_BASEDEX_RPC_CALLS_PER_SCAN's own declaration for the full reasoning.
+  if (baseDexScanBudgetExceeded()) return null
 
   const search = (async (): Promise<bigint> => {
     const latest = await getLatestBlockCached(client)

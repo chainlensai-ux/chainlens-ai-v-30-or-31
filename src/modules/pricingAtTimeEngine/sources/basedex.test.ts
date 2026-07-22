@@ -17,7 +17,7 @@
 import { describe, it, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { decodeFunctionData, encodeFunctionResult } from 'viem'
-import { findBlockForTimestamp, resolvePoolAddress, readPoolPrice, __resetBaseDexCachesForTest } from './basedex'
+import { findBlockForTimestamp, resolvePoolAddress, readPoolPrice, __resetBaseDexCachesForTest, resetBaseDexRpcBudgetForScan } from './basedex'
 
 // Mirrors of basedex.ts's own (private) ABI fragments — standard, canonical interfaces
 // (Multicall3/Uniswap V3/ERC20), redefined here only so the multicall tests below can genuinely
@@ -155,6 +155,58 @@ describe('findBlockForTimestamp caching', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await findBlockForTimestamp(client as any, 1_000_020)
     assert.equal(getCallCount(), callsAfterBoth, 'expected the cached bucket to serve the third call with no new getBlock calls')
+  })
+})
+
+describe('findBlockForTimestamp scan-level RPC budget', () => {
+  beforeEach(() => {
+    __resetBaseDexCachesForTest()
+    resetBaseDexRpcBudgetForScan()
+  })
+
+  it('stops making real getBlock calls once the scan-level budget is exhausted, returning null for any new bucket', async () => {
+    const { client, getCallCount } = makeFakeClient()
+
+    // Each iteration uses a timestamp far enough apart (10_000s) to land in a brand new 300s
+    // bucket — every one is a genuine cold search, no cache hits — so this reliably drives the
+    // cumulative real-call count past the budget within a bounded number of iterations.
+    let lastResult: bigint | null = null
+    let callsBeforeExhaustion = 0
+    for (let i = 1; i <= 150; i++) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      lastResult = await findBlockForTimestamp(client as any, i * 10_000)
+      if (lastResult === null) {
+        callsBeforeExhaustion = getCallCount()
+        break
+      }
+    }
+
+    assert.equal(lastResult, null, 'expected the budget to exhaust within 150 distinct cold buckets and the exceeding call to return null')
+
+    // A further call for yet another brand-new bucket must also short-circuit to null with zero
+    // additional real getBlock calls — the budget stays open, not a one-shot trip.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const further = await findBlockForTimestamp(client as any, 999_999_000)
+    assert.equal(further, null)
+    assert.equal(getCallCount(), callsBeforeExhaustion, 'expected the budget-exceeded path to make zero further real getBlock calls')
+  })
+
+  it('a bucket already resolved before the budget exhausted is still served from cache afterward', async () => {
+    const { client, getCallCount } = makeFakeClient()
+
+    const firstResolved = await findBlockForTimestamp(client as any, 10_000)
+    assert.notEqual(firstResolved, null)
+
+    // Exhaust the budget with brand-new buckets.
+    for (let i = 1; i <= 150; i++) {
+      const result = await findBlockForTimestamp(client as any, i * 20_000 + 5)
+      if (result === null) break
+    }
+
+    const callsAfterExhaustion = getCallCount()
+    const cachedAgain = await findBlockForTimestamp(client as any, 10_000)
+    assert.equal(cachedAgain, firstResolved, 'expected the pre-exhaustion bucket to still resolve correctly from cache')
+    assert.equal(getCallCount(), callsAfterExhaustion, 'expected zero new getBlock calls for an already-cached bucket, budget notwithstanding')
   })
 })
 

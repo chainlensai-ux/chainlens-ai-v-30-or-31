@@ -62,10 +62,16 @@ export async function verifyWalletScanKvConnection(): Promise<void> {
 async function executeWalletScanJob(payload: WalletScanJobPayload): Promise<{ jobState: WalletScanJobState; result: unknown }> {
   const { resetAlchemyAudit, printAlchemyAuditSummary } = await import('@/lib/server/alchemyAudit')
   const { runWalletScanV2Worker } = await import('@/workers/walletScanV2')
+  const { resetBaseDexRpcBudgetForScan } = await import('@/src/modules/pricingAtTimeEngine/sources/basedex')
 
   const startedAt = Date.now()
   console.log('[wallet-scan-worker] job started', { jobId: payload.jobId })
   resetAlchemyAudit()
+  // SCAN-LEVEL RPC BUDGET RESET, DISCLOSED: same reasoning as resetAlchemyAudit() above — a warm
+  // serverless instance serving a second, unrelated scan must start basedex's own RPC-call budget
+  // fresh (see basedex.ts's resetBaseDexRpcBudgetForScan for the full reasoning), not inherit the
+  // previous scan's exhausted counter.
+  resetBaseDexRpcBudgetForScan()
 
   let finalBody: unknown
   let completedSuccessfully = false
