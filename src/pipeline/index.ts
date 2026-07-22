@@ -182,6 +182,50 @@ export const PRICING_PROVIDERS_STATUS: FinalReport['pricingProvidersStatus'] = (
 // Each wrapper below is the ONLY place that catches its stage's failures — a thrown error inside
 // module code degrades exactly one section of the report, never the whole scan.
 
+// RECOVERY-TRIGGER BLIND SPOT, DISCLOSED AND FIXED (real-scan evidence): recoveryPolicy's trigger
+// evaluation (specifically repeated_in_sell_timeline_min_count) was always checking
+// timelines.sellTimeline — timelineBuilder's own, narrower same-tx-pairing-only sell heuristic —
+// never sellTimelineV2 (the richer, additive read model that also detects transfer-out-to-known-
+// router sells, mechanism 2). For a wallet whose real sells are all router-transfer-shaped rather
+// than same-tx swaps, timelines.sellTimeline.totalSells is 0 even though sellTimelineV2 correctly
+// finds e.g. 198 real sells — so recovery's repeated-sell trigger could never fire for any of that
+// wallet's tokens, confirmed via totalPagesUsedThisWallet: 0 despite a large missingEvidenceCount.
+//
+// sellTimelineV2's own mechanisms 1-3 (same-tx swap, transfer-to-known-router, bridge-exit) need
+// only normalizedEvents/chainSelection/bridgeTimeline/knownDexRouterAddresses — NOT recoveryPolicy
+// — only mechanism 4 (recovery-reconstructed) needs recoveryPolicy's output, and it naturally
+// returns nothing when recoveryPolicy.evaluation is empty. So calling buildSellTimeline once, early,
+// with recoveryPolicyFallback() as its recoveryPolicy input yields exactly mechanisms 1-3 — the same
+// real, router/swap/bridge-detected sells the pipeline already trusts elsewhere — with zero network
+// cost (this module is pure/CPU-only) and no dependency ordering violation.
+//
+// This adapter maps that richer SellTimelineResult onto timelineBuilder's narrower SellTimeline
+// shape so it can be handed to buildRecoveryPolicyObject unchanged (recoveryPolicy only ever reads
+// .chain/.token/.txHash/.timestamp off entries — confirmed in recoveryPolicy/utils.ts — so the
+// placeholder values below for fields it never inspects are inert, never fabricated data).
+function adaptSellTimelineV2ForRecoveryTrigger(sellTimelineV2: SellTimelineResult): SellTimeline {
+  return {
+    totalSells: sellTimelineV2.totalSells,
+    // Never read by recoveryPolicy (only .entries' chain/token/txHash/timestamp are inspected — see
+    // this function's header comment) — includedChains/excludedChains shapes differ structurally
+    // between the two modules' ChainContext types, so this is an inert, always-empty placeholder
+    // rather than a lossy/incorrect reshape of data nothing downstream reads.
+    chainContext: { includedChains: [], excludedChains: [] },
+    entries: sellTimelineV2.entries.map((e) => ({
+      timestamp: e.timestamp,
+      chain: e.chain,
+      token: e.token,
+      symbol: e.symbol ?? '',
+      amount: e.amount,
+      proceedsUsdEstimate: e.proceedsUsdEstimate,
+      matchedBuyLotId: e.matchedBuyLotId,
+      confidence: e.confidence,
+      txHash: e.txHash,
+      chainSelectionRef: { status: e.chainSelectionRef.status === 'excluded' ? 'dust_low_signal' : 'active_intelligence', gatesPassed: e.chainSelectionRef.gatesPassed },
+    })),
+  }
+}
+
 async function safeRunRecoveryPolicy(params: {
   buyTimeline: BuyTimeline
   sellTimeline: SellTimeline
@@ -1151,6 +1195,20 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // on one leg.
   const bridgeTimeline = safeRunBridgeDetection(normalizedEvents)
 
+  // 4c. Pre-recovery sell pass — pure, zero-cost, recovery-independent. Computes exactly
+  // sellTimelineV2's mechanisms 1-3 (same-tx swap, transfer-to-known-router, bridge-exit) by
+  // passing recoveryPolicyFallback() as its own recoveryPolicy input (mechanism 4 naturally yields
+  // nothing against an empty evaluation array). Feeds recoveryPolicy's repeated-sell trigger with
+  // sellTimelineV2's real detected sells instead of timelines.sellTimeline's narrower same-tx-only
+  // heuristic — see safeRunRecoveryPolicy's adaptSellTimelineV2ForRecoveryTrigger comment above.
+  const preRecoverySellTimelineV2 = safeRunSellTimelineV2({
+    normalizedEvents,
+    chainSelection,
+    bridgeTimeline,
+    recoveryPolicy: recoveryPolicyFallback(),
+    walletAddress: params.walletAddress,
+  })
+
   // 5. recoveryPolicy — the ONLY other component permitted to fetch (historical pages), and only
   // reachable at all for scanMode === 'deep'.
   // KV read-before/write-after — 45s TTL (longest of the 4 wrapped stages: recovery's historical
@@ -1161,7 +1219,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     45,
     () => safeRunRecoveryPolicy({
       buyTimeline: timelines.buyTimeline,
-      sellTimeline: timelines.sellTimeline,
+      sellTimeline: adaptSellTimelineV2ForRecoveryTrigger(preRecoverySellTimelineV2),
       walletAddress: params.walletAddress,
       scanMode: params.scanMode,
     }),
