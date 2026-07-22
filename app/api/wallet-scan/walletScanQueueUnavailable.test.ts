@@ -17,7 +17,7 @@ async function withoutRedisRest<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 describe('wallet-scan queue unavailable behavior', () => {
-  it('queue unavailable makes the enqueue route return a degraded terminal error without a jobId', async () => {
+  it('queue unavailable makes the enqueue route return an error without a jobId', async () => {
     await withoutRedisRest(async () => {
       const { POST } = await import('./route.ts')
       const res = await POST(new Request('http://localhost/api/wallet-scan', {
@@ -28,31 +28,31 @@ describe('wallet-scan queue unavailable behavior', () => {
       const body = await res.json()
 
       assert.equal(res.status, 503)
-      assert.deepEqual(body, { error: 'scan-queue-unavailable', degraded: true })
+      assert.deepEqual(body, { error: 'scan-queue-unavailable' })
       assert.equal('jobId' in body, false)
     })
   })
 
-  it('worker queue claim unavailable returns a degraded terminal error', async () => {
+  it('worker queue claim unavailable returns an error', async () => {
     await withoutRedisRest(async () => {
       const { POST } = await import('./worker/route.ts')
-      const res = await POST()
+      const res = await POST(new Request('http://localhost/api/wallet-scan/worker', { method: 'POST' }))
       const body = await res.json()
 
       assert.equal(res.status, 503)
-      assert.deepEqual(body, { error: 'scan-queue-unavailable', degraded: true })
+      assert.deepEqual(body, { error: 'scan-queue-unavailable' })
       assert.equal('jobId' in body, false)
     })
   })
 
-  it('poll route returns degraded status-unavailable when Redis cannot read job keys', async () => {
+  it('poll route returns status-unavailable when KV cannot read job keys', async () => {
     await withoutRedisRest(async () => {
       const { GET } = await import('./[jobId]/route.ts')
       const res = await GET(new Request('http://localhost/api/wallet-scan/job-1'), { params: Promise.resolve({ jobId: 'job-1' }) })
-      const body = await res.json() as { error: string; degraded: boolean; status?: string }
+      const body = await res.json() as { error: string; status?: string }
 
       assert.equal(res.status, 503)
-      assert.deepEqual(body, { error: 'scan-status-unavailable', degraded: true })
+      assert.deepEqual(body, { error: 'scan-status-unavailable' })
       assert.equal(body.status, undefined)
     })
   })

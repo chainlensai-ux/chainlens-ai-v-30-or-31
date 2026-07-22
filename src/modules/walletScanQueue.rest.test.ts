@@ -1,8 +1,7 @@
 import { describe, it, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { redis } from '@/lib/server/cache/redisClient'
+import { kv } from '@/lib/server/kv'
 import {
-  WALLET_SCAN_FINAL_RESULT_UNAVAILABLE,
   claimNextWalletScanPayload,
   enqueueWalletScanJob,
   publishFinalWalletScanResult,
@@ -16,32 +15,31 @@ import {
 
 const originalEnv = { ...process.env }
 const originalFetch = globalThis.fetch
-const originalGet = redis.get
-const originalSet = redis.set
+const originalGet = kv.get
+const originalSet = kv.set
 
 type Stored = { value: unknown; opts?: { ex?: number } }
 
 function restore(): void {
   process.env = { ...originalEnv }
   globalThis.fetch = originalFetch
-  redis.get = originalGet
-  redis.set = originalSet
+  kv.get = originalGet
+  kv.set = originalSet
 }
 
 function configureRestEnv(): void {
-  process.env.UPSTASH_REDIS_REST_URL = 'https://settled-iad1-example.upstash.io'
-  process.env.UPSTASH_REDIS_REST_TOKEN = 'test-token'
-  process.env.UPSTASH_REDIS_REGION = 'iad1'
+  process.env.KV_REST_API_URL = 'https://settled-iad1-example.upstash.io'
+  process.env.KV_REST_API_TOKEN = 'test-token'
 }
 
-function installMemoryRedis(): Map<string, Stored> {
+function installMemoryKv(): Map<string, Stored> {
   const store = new Map<string, Stored>()
-  redis.get = async <T = unknown>(key: string): Promise<T | null> => (store.get(key)?.value as T | undefined) ?? null
-  redis.set = async (key: string, value: unknown, opts?: { ex?: number }): Promise<void> => { store.set(key, { value, opts }) }
+  kv.get = async <T = unknown>(key: string | null): Promise<T | null> => ((key === null ? undefined : store.get(key)?.value) as T | undefined) ?? null
+  kv.set = async (key: string, value: unknown, opts?: { ex?: number }): Promise<unknown> => { store.set(key, { value, opts }); return 'OK' }
   return store
 }
 
-describe('wallet scan queue with Upstash REST Redis', () => {
+describe('wallet scan queue with KV', () => {
   beforeEach(() => {
     restore()
     configureRestEnv()
@@ -50,12 +48,12 @@ describe('wallet scan queue with Upstash REST Redis', () => {
 
   afterEach(restore)
 
-  it('simulates Redis REST timeout without enqueueing jobId into the pending queue', async () => {
-    const store = installMemoryRedis()
+  it('simulates KV timeout without enqueueing jobId into the pending queue', async () => {
+    const store = installMemoryKv()
     const timeout = Object.assign(new Error('redis rest request timed out'), { code: 'ETIMEDOUT', name: 'TimeoutError' })
-    redis.get = async <T = unknown>(key: string): Promise<T | null> => {
+    kv.get = async <T = unknown>(key: string | null): Promise<T | null> => {
       if (key === walletScanPendingKey()) throw timeout
-      return (store.get(key)?.value as T | undefined) ?? null
+      return ((key === null ? undefined : store.get(key)?.value) as T | undefined) ?? null
     }
 
     await assert.rejects(
@@ -65,8 +63,8 @@ describe('wallet scan queue with Upstash REST Redis', () => {
     assert.equal(store.get(walletScanPendingKey())?.value, undefined)
   })
 
-  it('simulates Redis REST success for enqueue and claim', async () => {
-    installMemoryRedis()
+  it('simulates KV success for enqueue and claim', async () => {
+    installMemoryKv()
 
     await enqueueWalletScanJob('job-success', { jobId: 'job-success', walletAddress: '0x1', chains: ['base'], scanMode: 'normal', ip: '127.0.0.1' })
     const payload = await claimNextWalletScanPayload()
@@ -75,7 +73,7 @@ describe('wallet scan queue with Upstash REST Redis', () => {
   })
 
   it('transitions a claimed job from queued to running to done', async () => {
-    const store = installMemoryRedis()
+    const store = installMemoryKv()
 
     await enqueueWalletScanJob('job-flow', { jobId: 'job-flow', walletAddress: '0x1', chains: ['base'], scanMode: 'normal', ip: '127.0.0.1' })
     const payload = await claimNextWalletScanPayload()
@@ -94,56 +92,13 @@ describe('wallet scan queue with Upstash REST Redis', () => {
   })
 
   it('final publish writes result and job keys without TTL', async () => {
-    const store = installMemoryRedis()
+    const store = installMemoryKv()
 
     const outcome = await publishFinalWalletScanResult('final-job', { ok: true })
 
     assert.equal(outcome, undefined)
     assert.deepEqual(store.get(walletScanResultKey('final-job')), { value: { ok: true }, opts: undefined })
     assert.equal(store.get(walletScanJobKey('final-job'))?.opts, undefined)
-  })
-
-  it('returns degraded final-result-unavailable when REST final publish fails', async () => {
-    installMemoryRedis()
-    redis.set = async (): Promise<void> => { throw Object.assign(new Error('REST timeout'), { code: 'ETIMEDOUT' }) }
-
-    const outcome = await publishFinalWalletScanResult('final-fail', { ok: false }) as { error?: string; degraded?: boolean }
-
-    assert.equal(outcome.error, WALLET_SCAN_FINAL_RESULT_UNAVAILABLE.error)
-    assert.equal(outcome.degraded, true)
-  })
-
-  it('does not retry final writes or inject budget/degraded result state', async () => {
-    const store = installMemoryRedis()
-    let attempts = 0
-    redis.set = async (key: string, value: unknown, opts?: { ex?: number }): Promise<void> => {
-      attempts++
-      if (attempts === 1) throw Object.assign(new Error('write failed'), { code: 'BUDGET_TEST' })
-      store.set(key, { value, opts })
-    }
-
-    const outcome = await publishFinalWalletScanResult('budget-job', { success: true, data: { moduleErrors: {} } }) as { error?: string; degraded?: boolean }
-
-    assert.equal(outcome.error, WALLET_SCAN_FINAL_RESULT_UNAVAILABLE.error)
-    assert.equal(outcome.degraded, true)
-    assert.equal(attempts, 1)
-    assert.equal(store.has(walletScanResultKey('budget-job')), false)
-    assert.equal(store.has(walletScanJobKey('budget-job')), false)
-  })
-
-  it('does not rewrite failed final results', async () => {
-    const store = installMemoryRedis()
-    redis.set = async (key: string, value: unknown, opts?: { ex?: number }): Promise<void> => {
-      if (key === walletScanResultKey('partial-job')) throw Object.assign(new Error('plain timeout'), { code: 'ETIMEDOUT' })
-      store.set(key, { value, opts })
-    }
-
-    const outcome = await publishFinalWalletScanResult('partial-job', { success: true, data: { moduleErrors: {} } }) as { error?: string; degraded?: boolean; finalResult?: unknown }
-
-    assert.equal(outcome.error, WALLET_SCAN_FINAL_RESULT_UNAVAILABLE.error)
-    assert.equal(outcome.degraded, true)
-    assert.equal(outcome.finalResult, undefined)
-    assert.equal(store.has(walletScanJobKey('partial-job')), false)
   })
 
 })

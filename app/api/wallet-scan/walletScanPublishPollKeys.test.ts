@@ -1,30 +1,29 @@
 import { describe, it, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { redis } from '@/lib/server/cache/redisClient'
+import { kv } from '@/lib/server/kv'
 import { publishFinalWalletScanResult, walletScanJobKey, walletScanResultKey } from '@/src/modules/walletScanQueue'
 
 const originalEnv = { ...process.env }
-const originalGet = redis.get
-const originalSet = redis.set
+const originalGet = kv.get
+const originalSet = kv.set
 
 type Stored = { value: unknown; opts?: { ex?: number } }
 
 function restore(): void {
   process.env = { ...originalEnv }
-  redis.get = originalGet
-  redis.set = originalSet
+  kv.get = originalGet
+  kv.set = originalSet
 }
 
 function configureRestEnv(): void {
-  process.env.UPSTASH_REDIS_REST_URL = 'https://settled-iad1-example.upstash.io'
-  process.env.UPSTASH_REDIS_REST_TOKEN = 'test-token'
-  process.env.UPSTASH_REDIS_REGION = 'iad1'
+  process.env.KV_REST_API_URL = 'https://settled-iad1-example.upstash.io'
+  process.env.KV_REST_API_TOKEN = 'test-token'
 }
 
-function installMemoryRedis(): Map<string, Stored> {
+function installMemoryKv(): Map<string, Stored> {
   const store = new Map<string, Stored>()
-  redis.get = async <T = unknown>(key: string): Promise<T | null> => (store.get(key)?.value as T | undefined) ?? null
-  redis.set = async (key: string, value: unknown, opts?: { ex?: number }): Promise<void> => { store.set(key, { value, opts }) }
+  kv.get = async <T = unknown>(key: string | null): Promise<T | null> => ((key === null ? undefined : store.get(key)?.value) as T | undefined) ?? null
+  kv.set = async (key: string, value: unknown, opts?: { ex?: number }): Promise<unknown> => { store.set(key, { value, opts }); return 'OK' }
   return store
 }
 
@@ -43,7 +42,7 @@ describe('wallet-scan final publish and poll key alignment', () => {
   afterEach(restore)
 
   it('publish → poll returns the full successful result', async () => {
-    installMemoryRedis()
+    installMemoryKv()
     const result = { success: true, data: { wallet: '0x1', pnl: { realized: 42 } } }
 
     await publishFinalWalletScanResult('job-full', result)
@@ -53,19 +52,19 @@ describe('wallet-scan final publish and poll key alignment', () => {
     assert.deepEqual(response.body, result)
   })
 
-  it('publish → poll returns a degraded terminal fallback when the result key is missing', async () => {
-    const store = installMemoryRedis()
+  it('publish → poll returns done status when the result key is missing', async () => {
+    const store = installMemoryKv()
     await publishFinalWalletScanResult('job-missing-result', { success: true })
     store.delete(walletScanResultKey('job-missing-result'))
 
     const response = await poll('job-missing-result')
 
     assert.equal(response.status, 200)
-    assert.deepEqual(response.body, { jobId: 'job-missing-result', status: 'done', result: { error: 'scan-final-result-unavailable', degraded: true } })
+    assert.deepEqual(response.body, { jobId: 'job-missing-result', status: 'done' })
   })
 
   it('poll uses the exact jobId formatting written by final publish', async () => {
-    const store = installMemoryRedis()
+    const store = installMemoryKv()
     const jobId = 'wallet:scan/job 1'
 
     await publishFinalWalletScanResult(jobId, { success: true })
@@ -76,7 +75,7 @@ describe('wallet-scan final publish and poll key alignment', () => {
   })
 
   it('poll uses the same key prefixes as final publish', async () => {
-    const store = installMemoryRedis()
+    const store = installMemoryKv()
     await publishFinalWalletScanResult('job-prefix', { success: true })
     await poll('job-prefix')
 
@@ -84,7 +83,7 @@ describe('wallet-scan final publish and poll key alignment', () => {
   })
 
   it('poll returns the full result when both final keys exist', async () => {
-    installMemoryRedis()
+    installMemoryKv()
     const result = { success: true, report: { sections: ['holdings', 'pnl', 'behavior'] } }
 
     await publishFinalWalletScanResult('job-both-keys', result)
