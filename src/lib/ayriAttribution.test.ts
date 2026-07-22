@@ -71,4 +71,37 @@ describe('ayriAttribution', () => {
     assert.equal(output.realizedPnlUsd, 123.45)
     assert.equal(output.unrealizedPnlUsd, 67.89)
   })
+
+  it('selects the correct route for a lot among many candidates for other tokens/timestamps (grouped-index lookup, not a linear scan)', () => {
+    const pricingRoutes = [
+      { token: 'other-token', chain: 'base', timestamp: 999, route: 'goldrush' },
+      { token: '0xtoken', chain: 'base', timestamp: 999, route: 'goldrush' }, // wrong timestamp, same token
+      { token: '0xtoken', chain: 'eth', timestamp: 1, route: 'dexscreener' }, // wrong chain
+      { token: '0xtoken', chain: 'base', timestamp: 1, route: 'dexscreener' }, // the real match (openedAt=1)
+    ] as never
+    const output = createAyriAttribution({ logger: quiet }).build({
+      reconciledPnL: reconciled(),
+      reconciledLots: [lot()],
+      pricingRoutes,
+      pricingSourceBreakdown: {},
+    })
+    assert.equal(output.records[0].attributionSource, 'ratioPrice', 'expected the dexscreener route at openedAt to be selected, driving ratioPrice attribution')
+  })
+
+  it('handles a large pricingRoutes array and many lots without behavior change (regression guard for the per-lot full-array-sort performance bug)', () => {
+    const manyRoutes = Array.from({ length: 2000 }, (_, i) => ({
+      token: `0xtoken${i % 50}`, chain: 'base', timestamp: i, route: 'goldrush',
+    })) as never
+    const manyLots = Array.from({ length: 300 }, (_, i) => lot({ lotId: `lot-${i}`, openedTxHash: `0xbuy${i}`, token: `0xtoken${i % 50}`, openedAt: i }))
+    const start = performance.now()
+    const output = createAyriAttribution({ logger: quiet }).build({
+      reconciledPnL: reconciled({ closedLots: 300 }),
+      reconciledLots: manyLots,
+      pricingRoutes: manyRoutes,
+      pricingSourceBreakdown: { primary: 300 },
+    })
+    const elapsedMs = performance.now() - start
+    assert.equal(output.attributedLots, 300)
+    assert.ok(elapsedMs < 2000, `expected grouped-index lookup to stay fast even at this scale, took ${elapsedMs}ms`)
+  })
 })

@@ -73,10 +73,39 @@ function recoveryHas(map: PriceRecoveryMapLike, lot: MatchedLot): boolean {
   return keys.some((k) => Object.prototype.hasOwnProperty.call(map, k))
 }
 
-function routeForLot(routes: readonly PricingRouteRecord[] | undefined, lot: MatchedLot): PricingRouteRecord | undefined {
-  return [...(routes ?? [])]
-    .sort((a, b) => `${a.chain}:${a.token}:${a.timestamp}:${a.route}`.localeCompare(`${b.chain}:${b.token}:${b.timestamp}:${b.route}`))
-    .find((r) => r.chain === lot.chain && r.token.toLowerCase() === lot.token.toLowerCase() && (r.timestamp === lot.openedAt || r.timestamp === lot.closedAt))
+// PERFORMANCE FIX, DISCLOSED (confirmed bug — a real production run's job-finished log reported
+// durationMs almost exactly equal to WORKER_GLOBAL_TIMEOUT_MS, with the entire ~245s unaccounted
+// gap bounded to this file's build() call): routeForLot previously did `[...routes].sort(...)` —
+// a FULL sort of the entire pricingRoutes array, using localeCompare on freshly-templated strings
+// (locale-aware comparison is dramatically more expensive than ordinal comparison in V8) — and it
+// was called ONCE PER LOT inside build()'s main loop (up to ~200 lots for a real wallet), each
+// call re-sorting the SAME, unchanged array from scratch. That's O(lots × routes × log(routes))
+// work that should have been O(routes × log(routes)) once, total. Removing the log-volume issue
+// this session already fixed elsewhere did not close this gap, which is the direct evidence this —
+// not the logging — is the real cost.
+//
+// FIX: group `routes` by (chain, token) ONCE (buildRouteIndex, called once per build()), then this
+// function does a map lookup into that (typically small) per-token bucket instead of re-sorting
+// the whole array. Each bucket is still sorted with the exact same tie-break key/order as before —
+// selection behavior for a lot with multiple candidate routes is byte-identical to the old code,
+// just computed once instead of `lots.length` times.
+function buildRouteIndex(routes: readonly PricingRouteRecord[] | undefined): Map<string, PricingRouteRecord[]> {
+  const index = new Map<string, PricingRouteRecord[]>()
+  for (const route of routes ?? []) {
+    const key = `${route.chain}:${route.token.toLowerCase()}`
+    const bucket = index.get(key)
+    if (bucket) bucket.push(route)
+    else index.set(key, [route])
+  }
+  for (const bucket of index.values()) {
+    bucket.sort((a, b) => `${a.chain}:${a.token}:${a.timestamp}:${a.route}`.localeCompare(`${b.chain}:${b.token}:${b.timestamp}:${b.route}`))
+  }
+  return index
+}
+
+function routeForLot(routeIndex: Map<string, PricingRouteRecord[]>, lot: MatchedLot): PricingRouteRecord | undefined {
+  const bucket = routeIndex.get(`${lot.chain}:${lot.token.toLowerCase()}`)
+  return bucket?.find((r) => r.timestamp === lot.openedAt || r.timestamp === lot.closedAt)
 }
 
 function routerForLot(routerInferenceOutput: RouterInferenceResult | null | undefined, lot: MatchedLot): string | undefined {
@@ -108,6 +137,7 @@ export function createAyriAttribution(config: Config = {}) {
     build(input: BuildInput): AyriAttributionOutput {
       state = input
       const lots = [...input.reconciledLots].sort((a, b) => lotKey(a).localeCompare(lotKey(b)))
+      const routeIndex = buildRouteIndex(input.pricingRoutes)
       const mismatchClasses = new Map(input.reconciledPnL.mismatches.map((m) => [m.key, m.classification]))
       let syntheticBudget = input.reconciledPnL.syntheticAlignedCount
       let routerBudget = input.reconciledPnL.routerCorrectedCount
@@ -136,7 +166,7 @@ export function createAyriAttribution(config: Config = {}) {
         const syntheticOnly = syntheticAligned && (lot.costBasisUsd === null || lot.proceedsUsd === null)
         const routerCorrected = routerBudget > 0
         const routerAddress = routerForLot(input.routerInferenceOutput, lot)
-        const route = routeForLot(input.pricingRoutes, lot)
+        const route = routeForLot(routeIndex, lot)
         const attributionSource = sourceForLot({ lot, recovered: priceRecovered, synthetic: syntheticAligned, route, breakdown: input.pricingSourceBreakdown })
 
         if (!attributionSource) {
