@@ -10,7 +10,7 @@ type RouterInferenceLike = { highConfidenceRouters?: ReadonlySet<string>; tokenF
 type PriceKvLike = { getPriceHistorical?: (token: string, chain: string, timestamp: number, fetcher: PriceSourceFn) => Promise<number | null>; getPricePrimary?: (token: string, chain: string, timestamp: number, fetcher: PriceSourceFn) => Promise<number | null> }
 
 type Config = { logger?: Pick<Console, 'warn'>; priceKvClient?: PriceKvLike; priceSources?: { primary?: PriceSourceFn; fallback?: PriceSourceFn }; dustSuppressedKeys?: ReadonlySet<string> }
-export type PnlReconciliationInput = { fifoEngineResult: FifoOutput; pnlEngineResult: PnlSummaryResult; computePnlResult?: { realizedPnlUsd?: number | null; unrealizedPnlUsd?: number | null } | null; routerInferenceOutput?: RouterInferenceLike | null; syntheticPnlAssemblyOutput?: SyntheticPnlSummary | null }
+export type PnlReconciliationInput = { fifoEngineResult: FifoOutput; pnlEngineResult: PnlSummaryResult; routerInferenceOutput?: RouterInferenceLike | null; syntheticPnlAssemblyOutput?: SyntheticPnlSummary | null }
 export type PnlReconciliationSummary = { closedLots: number; unmatchedBuys: number; unmatchedSells: number; realizedPnlUsd: number | null; unrealizedPnlUsd: number | null; priceRecoveredCount: number; routerCorrectedCount: number; syntheticAlignedCount: number; missingEvidenceCount: number; publicPnlStatus: ReconciledPublicPnlStatus; mismatches: Array<{ key: string; classification: PnlMismatchClass }> }
 
 const roundUsd = (n: number | null | undefined) => typeof n === 'number' && Number.isFinite(n) ? Math.round(n * 100) / 100 : null
@@ -124,10 +124,38 @@ export function createPnlReconciliation(config: Config = {}) {
       const correctedUnmatchedBuys = Math.max(0, input.fifoEngineResult.unmatchedBuys - Math.max(0, syntheticAlignedCount - input.fifoEngineResult.unmatchedSells))
       const priceUnavailableCount = [...mismatches.values()].filter((v) => v === 'priceUnavailable').length
       const missingEvidenceCount = input.pnlEngineResult.evidenceMissingCount + correctedUnmatchedBuys + correctedUnmatchedSells + Math.max(0, priceUnavailableCount - recovered.size)
-      const structuralConsistent = fifoLots.length === pnlLots.length && correctedUnmatchedBuys === 0 && correctedUnmatchedSells === 0 && missingEvidenceCount === 0
+      // SYNTHETIC-PNL LEAK INTO OFFICIAL REALIZED PNL, DISCLOSED AND FIXED (confirmed, critical
+      // severity): this previously had a third fallback tier, `?? input.computePnlResult?.realizedPnlUsd`
+      // — computePnlResult was wired at the pipeline call site directly from syntheticPnl's totals
+      // (src/pipeline/index.ts: `computePnlResult: syntheticPnl ? { realizedPnlUsd:
+      // syntheticPnl.totalRealizedPnlUsd, ... } : null`) — syntheticPnl's own module header
+      // explicitly documents it as "UI-display-only... never a replacement for or an input to the
+      // real, verified engines." Whenever both real engines (fifoEngineResult, pnlEngineResult) had
+      // no verified realizedPnlUsd (fifoEngine's computePnl() returns null realizedPnlUsd whenever
+      // zero matched lots are fully verified — a common, honest state, not an edge case), this
+      // fallback silently substituted syntheticPnl's inferred/estimated figure instead. That number
+      // then flows into officialPnlStatus: 'ok' via finalReportAssembler — the exact field the "PnL
+      // (Verified V2) — ACTIVE" UI badge reads. Fixed by removing computePnlResult as a source
+      // entirely: official realizedPnlUsd/unrealizedPnlUsd now come ONLY from the two real, verified
+      // engines, never synthetic — strictly strengthening (never weakening) the existing integrity
+      // gate. computePnlResult is now unused; removed from PnlReconciliationInput and its call site.
+      const realizedPnlUsd = roundUsd(input.fifoEngineResult.realizedPnlUsd ?? input.pnlEngineResult.realizedPnlUsd)
+      // STATUS/VALUE CONTRADICTION GUARD, DISCLOSED (closes a residual gap the fix above would
+      // otherwise still leave open): structuralConsistent previously checked ONLY lot-count/missing-
+      // evidence consistency, never whether realizedPnlUsd itself is actually non-null. Price
+      // recovery (recoverPrices above) can zero out missingEvidenceCount's priceUnavailable term for
+      // lots it successfully re-priced without those lots ever becoming fifoEngine's own
+      // evidenceQuality: 'verified' (recovery only informs this function's own evidence-count
+      // bookkeeping, it does not feed back into fifoEngine's matched-lot pricing) — so
+      // structuralConsistent could theoretically be true while both real engines still genuinely
+      // have no priced realized figure, producing publicPnlStatus: 'available' next to
+      // realizedPnlUsd: null — the same "status claims more than the value backs up" contradiction
+      // already fixed elsewhere this session (walletConditionMessages, SellActivitySummary).
+      // Requiring realizedPnlUsd !== null here closes that gap explicitly rather than relying on it
+      // being merely unlikely.
+      const structuralConsistent = fifoLots.length === pnlLots.length && correctedUnmatchedBuys === 0 && correctedUnmatchedSells === 0 && missingEvidenceCount === 0 && realizedPnlUsd !== null
       const publicPnlStatus: ReconciledPublicPnlStatus = structuralConsistent ? 'available' : missingEvidenceCount <= 3 && fifoLots.length > 0 ? 'partial' : 'unavailable'
-      const realizedPnlUsd = roundUsd(input.fifoEngineResult.realizedPnlUsd ?? input.pnlEngineResult.realizedPnlUsd ?? input.computePnlResult?.realizedPnlUsd)
-      const summary: PnlReconciliationSummary = { closedLots: Math.max(fifoLots.length, pnlLots.length), unmatchedBuys: correctedUnmatchedBuys, unmatchedSells: correctedUnmatchedSells, realizedPnlUsd, unrealizedPnlUsd: roundUsd(input.fifoEngineResult.unrealizedPnlUsd ?? input.computePnlResult?.unrealizedPnlUsd), priceRecoveredCount: recovered.size, routerCorrectedCount, syntheticAlignedCount, missingEvidenceCount, publicPnlStatus, mismatches: [...mismatches.entries()].map(([key, classification]) => ({ key, classification })).sort((a, b) => a.key.localeCompare(b.key)) }
+      const summary: PnlReconciliationSummary = { closedLots: Math.max(fifoLots.length, pnlLots.length), unmatchedBuys: correctedUnmatchedBuys, unmatchedSells: correctedUnmatchedSells, realizedPnlUsd, unrealizedPnlUsd: roundUsd(input.fifoEngineResult.unrealizedPnlUsd), priceRecoveredCount: recovered.size, routerCorrectedCount, syntheticAlignedCount, missingEvidenceCount, publicPnlStatus, mismatches: [...mismatches.entries()].map(([key, classification]) => ({ key, classification })).sort((a, b) => a.key.localeCompare(b.key)) }
       logger.warn('[pnl-reconciliation] finalSummary', summary)
       return summary
     },

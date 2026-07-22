@@ -194,10 +194,20 @@ export function computeSyntheticPnl(trades: readonly SyntheticTrade[], currentPr
     const inKey = poolKey(trade.chain, trade.tokenIn)
     const outKey = poolKey(trade.chain, trade.tokenOut)
 
-    const proceedsUsd = trade.amountIn * trade.tokenInPriceUsd
     const existingPosition = positions.get(inKey)
     if (existingPosition && existingPosition.qty > 0) {
       const soldQty = Math.min(trade.amountIn, existingPosition.qty)
+      // PARTIAL-POSITION PROCEEDS FIX, DISCLOSED (confirmed bug): proceeds were previously computed
+      // on the FULL trade.amountIn while cost was capped to soldQty (the tracked quantity). When a
+      // trade sells more than this run's own tracked position (0 < tracked qty < amountIn — e.g.
+      // part of the token came from an airdrop/transfer/out-of-window buy this reconstruction never
+      // saw), the untracked excess's proceeds were counted as pure profit against an implicit $0
+      // cost basis — exactly the "proceeds-as-profit" fabrication this module's own header rule
+      // ("A token sold beyond this run's own tracked position... contributes NOTHING to realized
+      // PnL") disclaims, which was previously only honored when the position was ENTIRELY absent.
+      // Fixed by scoping proceeds to the same soldQty the cost side already uses — the untracked
+      // excess now contributes nothing, matching the documented rule for the partial case too.
+      const proceedsUsd = soldQty * trade.tokenInPriceUsd
       const avgCostPerUnit = existingPosition.costUsd / existingPosition.qty
       const costOfSoldQty = avgCostPerUnit * soldQty
       const realizedThisLeg = proceedsUsd - costOfSoldQty

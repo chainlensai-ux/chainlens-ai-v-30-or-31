@@ -43,6 +43,35 @@ function toPriceableEntry(event: NormalizedEvent): PriceableEntry {
   }
 }
 
+// PURE. Exported for direct unit testing (this project's test runner can't reliably mock module
+// imports — see fetchPricing.ts's own header for the same disclosed limitation — so the fix below
+// is pulled out as an isolated, directly-callable function instead).
+//
+// DIRECTION-BLIND LOOKUP BUG, DISCLOSED AND FIXED (confirmed, high-severity): costUsd/proceedsUsd
+// are both keyed purely by txHash (resolvePricingAtTime's usdByTxHash — see
+// pricingAtTimeEngine/index.ts). A single swap transaction produces one inbound (buy) leg and one
+// outbound (sell) leg of DIFFERENT tokens sharing that same txHash — the standard shape of virtually
+// every on-chain swap. fifoEngine calls this exact lookup for BOTH buy events (buildLots) and sell
+// events (matchLotsFIFO) — see fifoEngine/index.ts. The previous
+// `costUsd[event.txHash] ?? proceedsUsd[event.txHash]` tried costUsd FIRST regardless of the event's
+// own direction: for a sell whose transaction also had a paired buy leg (i.e. almost every real
+// sell), costUsd[txHash] was already non-null (the DIFFERENT, paired token's cost), so the ??
+// short-circuited and returned that wrong value instead of ever consulting proceedsUsd[txHash] — the
+// sell's own correct price. This silently corrupted realized PnL with a different token's price
+// whenever PnL actually computed a number, rather than leaving it honestly null. Fixed by dispatching
+// on event.direction so each event only ever consults its own correct dictionary — no cross-
+// dictionary fallback, matching this codebase's "unpriced stays null, never borrowed from elsewhere"
+// convention.
+export function resolveEventPriceUsd(
+  event: Pick<NormalizedEvent, 'txHash' | 'direction'>,
+  costUsd: Record<string, number | null>,
+  proceedsUsd: Record<string, number | null>,
+): number | null {
+  if (event.direction === 'inbound') return costUsd[event.txHash] ?? null
+  if (event.direction === 'outbound') return proceedsUsd[event.txHash] ?? null
+  return null // 'unknown' direction — never guess which dictionary applies
+}
+
 export type WalletPriceLookups = {
   priceUsdLookup: PriceUsdLookup
   currentPriceUsdLookup: CurrentPriceUsdLookup
@@ -103,8 +132,7 @@ export async function priceLotsForWallet(params: {
   }))
   const atNow = await resolvePricingAtTime({ buyEntries: nowEntries, sellEntries: [], priceSources: params.priceSources })
 
-  const priceUsdLookup: PriceUsdLookup = (event) =>
-    atTradeTime.costUsd[event.txHash] ?? atTradeTime.proceedsUsd[event.txHash] ?? null
+  const priceUsdLookup: PriceUsdLookup = (event) => resolveEventPriceUsd(event, atTradeTime.costUsd, atTradeTime.proceedsUsd)
 
   const currentPriceUsdLookup: CurrentPriceUsdLookup = (token, chain) =>
     atNow.costUsd[`current:${chain}:${token.toLowerCase()}`] ?? null

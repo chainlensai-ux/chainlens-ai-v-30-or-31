@@ -107,6 +107,25 @@ describe('inferSyntheticTrades — DexScreener attribution', () => {
     assert.equal(summary.pricingCoveragePercent, 25)
     assert.equal(summary.pricingIntegrity, 'medium')
   })
+
+  it('regression guard: selling more than the tracked position never counts the untracked excess as profit', () => {
+    // Confirmed real bug: proceeds were previously computed on the FULL sell amount while cost was
+    // capped to the tracked quantity — the untracked excess (e.g. tokens from an airdrop/transfer
+    // this reconstruction never saw) counted as pure profit against an implicit $0 cost basis.
+    // Trade 1: buy 20 tokenB at $1/unit (tracked position: 20 units, $20 cost).
+    // Trade 2: sell 100 tokenB (only 20 tracked) at $1/unit — realized PnL for the 20 tracked units
+    // is (20 * $1) - $20 = $0; the 80 untracked units must contribute NOTHING (previously: +$80).
+    const buy = {
+      chain: 'base', txHash: '0xbuy', timestamp: '2024-01-01T00:00:00Z', tokenIn: '0xusdc', tokenOut: '0xtokenb',
+      amountIn: 20, amountOut: 20, confidence: 'high' as const, tokenInPriceUsd: 1, tokenOutPriceUsd: 1,
+    }
+    const sell = {
+      chain: 'base', txHash: '0xsell', timestamp: '2024-01-02T00:00:00Z', tokenIn: '0xtokenb', tokenOut: '0xusdc',
+      amountIn: 100, amountOut: 100, confidence: 'high' as const, tokenInPriceUsd: 1, tokenOutPriceUsd: 1,
+    }
+    const summary = computeSyntheticPnl([buy, sell], {})
+    assert.equal(summary.totalRealizedPnlUsd, 0, 'untracked excess (80 units) must contribute nothing — previously fabricated +$80')
+  })
 })
 
 describe('inferSyntheticTrades — multi-leg router flows still produce inferred trades (medium confidence)', () => {

@@ -209,8 +209,17 @@ export async function fetchGoldrushRawEvents(
       const txHash = typeof tx.tx_hash === 'string' ? tx.tx_hash : null
       const timestamp = typeof tx.block_signed_at === 'string' ? tx.block_signed_at : null
       if (timestamp && Date.parse(timestamp) < cutoff) continue // shallow window only
+      // UNDISCLOSED PER-TX TRUNCATION FIX, DISCLOSED (confirmed bug): this loop previously capped
+      // itself to the first 12 transfer legs per transaction (`transfers.slice(0, 12)`) with no
+      // comment explaining the number and no relation to MAX_RAW_EVENTS_PER_PROVIDER (the real,
+      // already-disclosed total cap enforced by the break below). A wallet whose window contains a
+      // complex multi-hop/aggregator swap with more than 12 ERC20 legs in one transaction silently
+      // lost legs 13+ even when nowhere near the 400-event total cap, with no error/partial signal
+      // raised (the provider call still reported ok: true). Removed: every transfer already present
+      // in this same, already-fetched HTTP response is now considered, still bounded by the existing
+      // MAX_RAW_EVENTS_PER_PROVIDER check inside the loop below — zero added provider calls or cost.
       const transfers: unknown[] = Array.isArray(tx.transfers) ? tx.transfers : []
-      for (const transfer of transfers.slice(0, 12)) {
+      for (const transfer of transfers) {
         if (events.length >= MAX_RAW_EVENTS_PER_PROVIDER) break
         const tr = transfer as Record<string, unknown>
         events.push({
@@ -232,6 +241,41 @@ export async function fetchGoldrushRawEvents(
   } catch (err) {
     return { provider: 'goldrush', ok: false, events: [], errorReason: err instanceof Error ? err.message : 'unknown_error' }
   }
+}
+
+// PURE. Exported for direct unit testing.
+//
+// CROSS-PROVIDER DEDUPE FIX, DISCLOSED (confirmed bug): Alchemy's rawContract.value is a hex-string
+// raw amount (e.g. "0xde0b6b3a7640000"), while GoldRush's `delta` (fetchGoldrushRawEvents above) is a
+// plain decimal string for the identical real transfer. dedupeRawEventKey/normalizedDedupeKey
+// compare amountRaw as a raw string, so leaving this un-normalized made the same on-chain transfer
+// produce two different-looking dedupe keys depending on which provider reported it — defeating
+// mergeProviderResults' own documented "deduplicating by (txHash, contract, fromAddress, toAddress,
+// amountRaw)" contract, and double-counting every transfer both providers successfully report.
+// Normalized to the same decimal-string format GoldRush already uses so both providers' keys for the
+// same real transfer now match.
+export function alchemyHexAmountToDecimalString(hexValue: string | null): string | null {
+  if (hexValue == null) return null
+  try {
+    return BigInt(hexValue).toString()
+  } catch {
+    return null // malformed hex — honestly unparseable, never guessed
+  }
+}
+
+// PURE. Exported for direct unit testing.
+//
+// TOKEN-DECIMALS FIX, DISCLOSED (confirmed bug): rawContract.decimal (a hex string, e.g. "0x12") is
+// a real, documented field on this same Alchemy response (already read elsewhere in this codebase —
+// see app/api/token/route.ts's AlchemyTransfer type) that was never read here, hardcoding
+// tokenDecimals to null instead — normalization/utils.ts's parseAmount then silently defaulted to 18
+// for every Alchemy-sourced event, producing a wrong (often near-zero) `amount` for any non-18-
+// decimal token (USDC/USDT=6, WBTC=8, etc.) whenever this event wasn't also matched/overridden by a
+// GoldRush copy of the same transfer.
+export function alchemyHexDecimalToNumber(hexDecimal: string | null): number | null {
+  if (hexDecimal == null) return null
+  const parsed = Number(hexDecimal)
+  return Number.isFinite(parsed) ? parsed : null
 }
 
 // Fetches a SINGLE bounded pull from Alchemy (both from- and to-wallet batches, one page each).
@@ -284,6 +328,9 @@ export async function fetchAlchemyRawEvents(
         const meta = t.metadata as Record<string, unknown> | undefined
         const timestamp = typeof meta?.blockTimestamp === 'string' ? meta.blockTimestamp : null
         if (timestamp && Date.parse(timestamp) < cutoff) continue // shallow window only
+        const rawContract = t.rawContract as Record<string, unknown> | undefined
+        const rawValueHex = typeof rawContract?.value === 'string' ? rawContract.value : null
+        const rawDecimalHex = typeof rawContract?.decimal === 'string' ? rawContract.decimal : null
         events.push({
           provider: 'alchemy',
           chain,
@@ -291,14 +338,10 @@ export async function fetchAlchemyRawEvents(
           timestamp,
           fromAddress: typeof t.from === 'string' ? t.from.toLowerCase() : null,
           toAddress: typeof t.to === 'string' ? (t.to as string).toLowerCase() : null,
-          contract: typeof (t.rawContract as Record<string, unknown> | undefined)?.address === 'string'
-            ? ((t.rawContract as Record<string, unknown>).address as string).toLowerCase()
-            : null,
+          contract: typeof rawContract?.address === 'string' ? (rawContract.address as string).toLowerCase() : null,
           symbol: typeof t.asset === 'string' ? t.asset : null,
-          amountRaw: typeof (t.rawContract as Record<string, unknown> | undefined)?.value === 'string'
-            ? ((t.rawContract as Record<string, unknown>).value as string)
-            : null,
-          tokenDecimals: null,
+          amountRaw: alchemyHexAmountToDecimalString(rawValueHex),
+          tokenDecimals: alchemyHexDecimalToNumber(rawDecimalHex),
         })
       }
     }

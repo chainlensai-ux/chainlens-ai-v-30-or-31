@@ -1213,9 +1213,18 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // reachable at all for scanMode === 'deep'.
   // KV read-before/write-after — 45s TTL (longest of the 4 wrapped stages: recovery's historical
   // page fetches are the most expensive real network calls this pipeline can make).
+  //
+  // CACHE-KEY CHAINS FIX, DISCLOSED (confirmed bug): the key previously omitted the request's chain
+  // set entirely (`v2:recoveryPolicy:${wallet}:${scanMode}` only) — but the computed result's real
+  // inputs (buyTimeline / preRecoverySellTimelineV2) derive from normalizedEvents, which is fetched
+  // per preScan.sanitizedChains. Two scans of the same wallet+scanMode with DIFFERENT chain
+  // selections within the TTL window (e.g. the user re-scans after changing chains — a normal UI
+  // flow) collided on the same key, silently serving the first request's narrower-chain-set recovery
+  // result to the second. The codebase's own sibling cache (src/deployment/scanCache.ts's cacheKey)
+  // already sorts+joins params.chains into its key — same convention applied here.
   const recoveryPolicyStart = performance.now()
   const recoveryPolicy = await withStageCache(
-    `v2:recoveryPolicy:${params.walletAddress.toLowerCase()}:${params.scanMode}`,
+    `v2:recoveryPolicy:${params.walletAddress.toLowerCase()}:${[...preScan.sanitizedChains].sort().join(',')}:${params.scanMode}`,
     45,
     () => safeRunRecoveryPolicy({
       buyTimeline: timelines.buyTimeline,
@@ -1564,10 +1573,16 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     priceSources: requestPriceSources,
     dustSuppressedKeys,
   })
+  // SYNTHETIC-PNL LEAK FIX, DISCLOSED (confirmed, critical severity — see pnlReconciliation.ts's own
+  // header comment on the realizedPnlUsd computation for the full trace): this previously also
+  // passed a `computePnlResult` field built directly from syntheticPnl's UI-display-only totals,
+  // which pnlReconciliation.reconcile() would silently fall back to as the "official" realizedPnlUsd
+  // whenever both real engines (fifoAndPnl, adaptedPnlSummary) had none — contradicting syntheticPnl's
+  // own documented "never an input to the real, verified engines" contract. Removed entirely; official
+  // PnL now comes only from the two real engines below.
   const reconciledPnlSummary = await pnlReconciliation.reconcile({
     fifoEngineResult: fifoAndPnl,
     pnlEngineResult: adaptedPnlSummary,
-    computePnlResult: syntheticPnl ? { realizedPnlUsd: syntheticPnl.totalRealizedPnlUsd, unrealizedPnlUsd: syntheticPnl.totalUnrealizedPnlUsd } : null,
     routerInferenceOutput: routerInferenceResult,
     syntheticPnlAssemblyOutput: syntheticPnl,
   })

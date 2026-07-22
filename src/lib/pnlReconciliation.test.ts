@@ -52,6 +52,41 @@ describe('pnlReconciliation', () => {
     assert.equal((await r.reconcile({ fifoEngineResult: fifo({ unmatchedBuys: 10 }), pnlEngineResult: pnl(), syntheticPnlAssemblyOutput: null })).publicPnlStatus, 'unavailable')
   })
 
+  it('regression guard: syntheticPnlAssemblyOutput never becomes the official realizedPnlUsd, even when both real engines have none', async () => {
+    // Confirmed real bug: a prior version of this function accepted a third field
+    // (computePnlResult), wired at the pipeline layer directly from syntheticPnl's UI-display-only
+    // totals, and silently fell back to it as the "official" realizedPnlUsd whenever both real
+    // engines (fifoEngineResult, pnlEngineResult) had no verified figure. That field no longer
+    // exists on this function's input type at all — this test proves a wallet with zero verified
+    // real lots (both engines null) and a large, unrelated synthetic PnL figure still reports
+    // realizedPnlUsd: null and publicPnlStatus: 'unavailable', never the synthetic number.
+    const r = createPnlReconciliation({ logger: quiet })
+    const summary = await r.reconcile({
+      fifoEngineResult: fifo({ matchedLots: [], realizedPnlUsd: null, unrealizedPnlUsd: null, publicPnlStatus: 'unavailable' }),
+      pnlEngineResult: pnl(0, { realizedPnlUsd: null }),
+      // A syntheticPnlAssemblyOutput carrying a large, unrelated inferred PnL figure — this must
+      // never leak into the reconciliation's own realizedPnlUsd/unrealizedPnlUsd/publicPnlStatus.
+      syntheticPnlAssemblyOutput: { totalLegsCount: 0, pricedLegsCount: 0, realizedPnlUsd: 987654.32, unrealizedPnlUsd: -4321 } as never,
+    })
+    assert.equal(summary.realizedPnlUsd, null, 'realizedPnlUsd must stay null, never borrowed from synthetic')
+    assert.equal(summary.unrealizedPnlUsd, null, 'unrealizedPnlUsd must stay null, never borrowed from synthetic')
+    assert.equal(summary.publicPnlStatus, 'unavailable')
+  })
+
+  it('regression guard: publicPnlStatus never reports "available" when realizedPnlUsd is null (status/value contradiction guard)', async () => {
+    // Even with zero unmatched buys/sells and zero missingEvidenceCount (e.g. via price-recovery
+    // bookkeeping that reduces the evidence-count without ever repricing the underlying lots), the
+    // status must never claim "available" next to a null value.
+    const r = createPnlReconciliation({ logger: quiet })
+    const summary = await r.reconcile({
+      fifoEngineResult: fifo({ matchedLots: [], realizedPnlUsd: null, unrealizedPnlUsd: null, unmatchedBuys: 0, unmatchedSells: 0 }),
+      pnlEngineResult: pnl(0, { realizedPnlUsd: null, evidenceMissingCount: 0 }),
+      syntheticPnlAssemblyOutput: null,
+    })
+    assert.equal(summary.realizedPnlUsd, null)
+    assert.notEqual(summary.publicPnlStatus, 'available')
+  })
+
   it('regression guard: price recovery runs with bounded concurrency, not a fully sequential await-per-lot loop', async () => {
     // Confirmed root cause of a real multi-minute hang: recoverPrices previously awaited one lot
     // at a time with zero concurrency. This proves many lots resolve in roughly one fetcher-latency
