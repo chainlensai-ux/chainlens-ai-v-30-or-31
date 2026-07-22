@@ -37,11 +37,10 @@ describe('wallet-scan poll degraded final result behavior', () => {
 
     const { GET } = await import('./[jobId]/route.ts')
     const res = await GET(new Request('http://localhost/api/wallet-scan/degraded-job'), { params: Promise.resolve({ jobId: 'degraded-job' }) })
-    const body = await res.json() as { status?: string; degraded?: boolean; result?: { error?: string; degraded?: boolean } }
+    const body = await res.json() as { status?: string; result?: { error?: string; degraded?: boolean } }
 
     assert.equal(res.status, 200)
     assert.equal(body.status, 'done')
-    assert.equal(body.degraded, true)
     assert.deepEqual(body.result, { error: 'scan-final-result-unavailable', degraded: true })
   })
 
@@ -53,12 +52,11 @@ describe('wallet-scan poll degraded final result behavior', () => {
 
     const { GET } = await import('./[jobId]/route.ts')
     const res = await GET(new Request('http://localhost/api/wallet-scan/stored-degraded-job'), { params: Promise.resolve({ jobId: 'stored-degraded-job' }) })
-    const body = await res.json() as { status?: string; degraded?: boolean; result?: { success?: boolean; degraded?: boolean } }
+    const body = await res.json() as { success?: boolean; degraded?: boolean; data?: { degraded?: boolean } }
 
     assert.equal(res.status, 200)
-    assert.equal(body.status, 'done')
+    assert.equal(body.success, true)
     assert.equal(body.degraded, true)
-    assert.equal(body.result?.success, true)
-    assert.equal(body.result?.degraded, true)
+    assert.equal(body.data?.degraded, true)
   })
 })

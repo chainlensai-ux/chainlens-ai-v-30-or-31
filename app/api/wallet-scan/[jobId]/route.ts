@@ -17,20 +17,23 @@ export async function GET(_req: Request, context: { params: Promise<{ jobId: str
   }
 
   if (!job) {
-    return NextResponse.json({ jobId, status: 'not-found' }, { status: 404 })
+    return NextResponse.json({ status: 'not-found' }, { status: 404 })
   }
 
   if (job.status === 'done') {
     try {
       const result = await readWalletScanResult(jobId)
       if (result !== null) {
-        const degraded = typeof result === 'object' && result !== null && 'degraded' in result
-        return NextResponse.json({ jobId, status: job.status, ...(degraded ? { degraded: true } : {}), result })
+        return NextResponse.json(result)
       }
-      return NextResponse.json({ jobId, status: 'done', degraded: true, result: walletScanResultMissingFallback(jobId, job) })
+      return NextResponse.json({ jobId, status: 'done', result: walletScanResultMissingFallback(jobId, job) })
     } catch {
-      return NextResponse.json({ jobId, status: 'done', degraded: true, result: walletScanResultMissingFallback(jobId, job) })
+      return NextResponse.json({ jobId, status: 'done', result: walletScanResultMissingFallback(jobId, job) })
     }
+  }
+
+  if (job.status === 'running') {
+    return NextResponse.json({ status: 'running' })
   }
 
   return NextResponse.json({ jobId, status: job.status, ...(job.error ? { error: job.error } : {}) })
