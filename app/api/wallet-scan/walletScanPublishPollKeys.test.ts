@@ -1,7 +1,8 @@
 import { describe, it, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { kv } from '@/lib/server/kv'
-import { publishFinalWalletScanResult, walletScanJobKey, walletScanResultKey } from '@/src/modules/walletScanQueue'
+import { walletScanJobKey, walletScanResultKey } from '@/src/modules/walletScanQueue'
+import { publishFinal } from '@/src/modules/walletScanWorker'
 
 const originalEnv = { ...process.env }
 const originalGet = kv.get
@@ -27,6 +28,15 @@ function installMemoryKv(): Map<string, Stored> {
   return store
 }
 
+
+function doneState() {
+  return { status: 'done' as const, startedAt: 1, finishedAt: 3, durationMs: 2, pipelineDiagnostics: null }
+}
+
+async function publishFinalResultForTest(jobId: string, result: unknown): Promise<void> {
+  await publishFinal(jobId, doneState(), result)
+}
+
 async function poll(jobId: string): Promise<{ status: number; body: unknown }> {
   const { GET } = await import('./[jobId]/route.ts')
   const res = await GET(new Request(`http://localhost/api/wallet-scan/${encodeURIComponent(jobId)}`), { params: Promise.resolve({ jobId }) })
@@ -45,29 +55,29 @@ describe('wallet-scan final publish and poll key alignment', () => {
     installMemoryKv()
     const result = { success: true, data: { wallet: '0x1', pnl: { realized: 42 } } }
 
-    await publishFinalWalletScanResult('job-full', result)
+    await publishFinalResultForTest('job-full', result)
     const response = await poll('job-full')
 
     assert.equal(response.status, 200)
     assert.deepEqual(response.body, { status: 'done', result })
   })
 
-  it('publish → poll returns done status when the result key is missing', async () => {
+  it('publish → poll stays running when the result key is missing', async () => {
     const store = installMemoryKv()
-    await publishFinalWalletScanResult('job-missing-result', { success: true })
+    await publishFinalResultForTest('job-missing-result', { success: true })
     store.delete(walletScanResultKey('job-missing-result'))
 
     const response = await poll('job-missing-result')
 
     assert.equal(response.status, 200)
-    assert.deepEqual(response.body, { status: 'done', result: { error: 'scan-final-result-missing', degraded: true } })
+    assert.deepEqual(response.body, { status: 'done' })
   })
 
   it('poll uses the exact jobId formatting written by final publish', async () => {
     const store = installMemoryKv()
     const jobId = 'wallet:scan/job 1'
 
-    await publishFinalWalletScanResult(jobId, { success: true })
+    await publishFinalResultForTest(jobId, { success: true })
     await poll(jobId)
 
     assert.equal(store.has(walletScanJobKey(jobId)), true)
@@ -76,7 +86,7 @@ describe('wallet-scan final publish and poll key alignment', () => {
 
   it('poll uses the same key prefixes as final publish', async () => {
     const store = installMemoryKv()
-    await publishFinalWalletScanResult('job-prefix', { success: true })
+    await publishFinalResultForTest('job-prefix', { success: true })
     await poll('job-prefix')
 
     assert.deepEqual([...store.keys()].sort(), ['walletScanJob:job-prefix', 'walletScanResult:job-prefix'])
@@ -86,7 +96,7 @@ describe('wallet-scan final publish and poll key alignment', () => {
     installMemoryKv()
     const result = { success: true, report: { sections: ['holdings', 'pnl', 'behavior'] } }
 
-    await publishFinalWalletScanResult('job-both-keys', result)
+    await publishFinalResultForTest('job-both-keys', result)
     const response = await poll('job-both-keys')
 
     assert.equal(response.status, 200)
