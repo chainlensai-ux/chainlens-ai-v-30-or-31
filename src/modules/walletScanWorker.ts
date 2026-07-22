@@ -15,12 +15,17 @@ type WalletScanJobState = {
   pipelineDiagnostics: unknown
 }
 
+// SHAPE, DISCLOSED: the client (app/frontend/api/scanWallet.ts's ScanWalletApiResponse, and
+// app/terminal/wallet-scanner/page.tsx's `response.error?.message` read) requires `error` to be an
+// object with a `message` field, never a bare string — a bare string previously made
+// `response.error?.message` resolve to `undefined` client-side, silently swallowing the real error
+// behind a generic "Scan failed" fallback.
 function invalidShapeResultBody(): unknown {
-  return { success: false, error: 'wallet-scan-invalid-result-shape' }
+  return { success: false, error: { message: 'wallet-scan-invalid-result-shape', category: 'pipeline' } }
 }
 
 function errorResultBody(err: unknown): unknown {
-  return { success: false, error: err instanceof Error ? err.message : String(err) }
+  return { success: false, error: { message: err instanceof Error ? err.message : String(err), category: 'pipeline' } }
 }
 
 function pipelineDiagnosticsFrom(result: unknown): unknown {
