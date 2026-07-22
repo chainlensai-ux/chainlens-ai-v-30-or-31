@@ -156,9 +156,21 @@ export async function scanWalletV2(
       }
 
       if (!pollRes.ok || !pollBody) {
+        // TRANSIENT-POLL-FAILURE RETRY, DISCLOSED (confirmed bug — real production evidence): this
+        // previously only retried a 404 "not-found" (a job not yet visible to a cold KV read) —
+        // every OTHER non-OK response (in particular a 503 { error: 'scan-status-unavailable' },
+        // the poll route's own catch-all for a single transient kv.get() failure) was treated as an
+        // immediate, permanent failure, aborting an otherwise-healthy scan on one isolated blip. This
+        // exact deployment's KV reads have repeatedly shown occasional transient slowness elsewhere
+        // in this same investigation (kv_timeout_safe warnings scattered through real pricing logs) —
+        // a single bad poll is expected background noise, not proof the scan itself failed. The
+        // isTerminalScanUnavailable() check above already carves out the one case that SHOULD stop
+        // immediately (an explicit, repeated degraded-queue signal from the server); every other
+        // non-OK/unparsable response now retries like the 404 case already did, bounded by the same
+        // overall POLL_TIMEOUT_MS this loop already enforces — a genuinely dead backend still times
+        // out honestly, it just no longer gives up on the first isolated hiccup.
         const stillWithinPollWindow = Date.now() - pollStartedAt < POLL_TIMEOUT_MS
-        const transientMissingJob = pollRes.status === 404 && pollBody?.status === 'not-found'
-        if (stillWithinPollWindow && transientMissingJob) {
+        if (stillWithinPollWindow) {
           continue
         }
         return toErrorResponse('Scan status is temporarily unavailable. Please rescan in a moment.', [`HTTP ${pollRes.status}`])

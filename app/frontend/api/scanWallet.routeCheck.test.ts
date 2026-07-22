@@ -176,6 +176,41 @@ describe('scanWalletV2 (wallet-scan background job + polling)', () => {
     }
   })
 
+  it('retries through a transient poll 503 lacking the degraded flag, instead of failing immediately', async () => {
+    // Confirmed real production shape: the poll route's own catch-all for a single transient
+    // kv.get() failure returns { error: 'scan-status-unavailable' } with NO `degraded` field (see
+    // WALLET_SCAN_STATUS_UNAVAILABLE in src/modules/walletScanQueue.ts) — this must NOT match
+    // isTerminalScanUnavailable() (which requires degraded === true) and must retry within budget,
+    // unlike the always-terminal shape covered by the test above.
+    const calls: string[] = []
+    const updates: string[] = []
+    global.setTimeout = ((cb: (...args: unknown[]) => void) => originalSetTimeout(cb, 0)) as typeof setTimeout
+    const originalFetch = global.fetch
+    global.fetch = mock.fn(async (url: string) => {
+      calls.push(url)
+      if (url === '/api/wallet-scan') {
+        return new Response(JSON.stringify({ jobId: 'job-transient-503', status: 'queued' }), { status: 200 })
+      }
+      const pollCount = calls.filter((call) => call === '/api/wallet-scan/job-transient-503').length
+      if (pollCount === 1) {
+        return new Response(JSON.stringify({ error: 'scan-status-unavailable' }), { status: 503 })
+      }
+      return new Response(JSON.stringify({ jobId: 'job-transient-503', status: 'done', result: { success: true, data: { recovered: true } } }), { status: 200 })
+    }) as unknown as typeof fetch
+
+    try {
+      const { scanWalletV2 } = await import('./scanWallet.ts')
+      const result = await scanWalletV2('0xabc', ['base'], 'normal', ({ status }) => updates.push(status))
+
+      assert.deepEqual(calls, ['/api/wallet-scan', '/api/wallet-scan/job-transient-503', '/api/wallet-scan/job-transient-503'])
+      assert.equal(result.success, true)
+      assert.deepEqual(result.data, { recovered: true })
+    } finally {
+      global.fetch = originalFetch
+      global.setTimeout = originalSetTimeout
+    }
+  })
+
   it('treats status unavailable as terminal without queued/not-found retry loops', async () => {
     const calls: string[] = []
     const updates: string[] = []
