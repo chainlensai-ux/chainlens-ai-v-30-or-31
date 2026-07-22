@@ -104,8 +104,13 @@ const MODULE_TIMEOUT_MS = 20_000
 // margin for final Redis publication and the HTTP response.
 export const WORKER_GLOBAL_TIMEOUT_MS = 270_000
 
+// SHAPE, DISCLOSED: the client (app/frontend/api/scanWallet.ts's ScanWalletApiResponse, read via
+// wallet-scanner page.tsx's `response.error?.message`) requires `error` to be an object with a
+// `message` field — a bare string here made `.message` resolve to `undefined`, so a real timeout
+// (or any other failure returned from this file) surfaced only as the generic "Scan failed" text,
+// with no indication of what actually happened.
 function timedOutPartialResult(error = 'worker_global_timeout'): WalletScanV2WorkerResult {
-  return { status: 200, body: { success: false, error, partial: true } }
+  return { status: 200, body: { success: false, error: { message: error, category: 'timeout' }, partial: true } }
 }
 
 function remainingWorkerMs(startTime: number): number {
@@ -291,7 +296,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
 
   if (body.success && !isValidV2Result(body.data as Record<string, unknown> | undefined)) {
     logDirectFailure(new Error('Invalid V2 result shape'))
-    return { status: 500, body: { success: false, error: 'invalid_v2_shape' } }
+    return { status: 500, body: { success: false, error: { message: 'invalid_v2_shape', category: 'pipeline' } } }
   }
 
   // HEAVY-WALLET FAST-FAIL, DISCLOSED PLACEMENT: `providerDiagnostics` is a real field already
