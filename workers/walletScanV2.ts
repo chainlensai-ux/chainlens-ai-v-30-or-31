@@ -278,7 +278,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
   const eventsCache = createEventsCache()
   const cuBudget = createCuBudget()
   // eslint-disable-next-line no-console
-  console.debug('[CU-HARDENING] Cache cleared for new request')
+  console.warn('[CU-HARDENING] Cache cleared for new request')
 
   // handleScanRequest already never throws internally (rate-limit/validation errors and any
   // runWalletScanV2 failure are both caught and returned as a structured RouteResult).
@@ -315,7 +315,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
   if (body.success && body.data?.scanMetadata?.walletAddress) {
     const walletAddress = body.data.scanMetadata.walletAddress
     // eslint-disable-next-line no-console
-    console.debug('[CU-TRACK] deep-scan start:', { walletAddress, chains: [1, 8453] })
+    console.warn('[CU-TRACK] deep-scan start:', { walletAddress, chains: [1, 8453] })
     // WORKER OBSERVABILITY, DISCLOSED: per-module `performance.now()` timing logs added below, per
     // explicit instruction — purely additive console.log calls wrapped around each already-existing
     // module call, in the same order they already ran. No module's logic, arguments, ordering, or
@@ -329,7 +329,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
 
     reportProgress(jobId, 1, 'holdings')
     // eslint-disable-next-line no-console
-    console.log('[V2-worker] starting holdings')
+    console.warn('[V2-worker] starting holdings')
     let t0 = performance.now()
     // BUDGET CHECK, DISCLOSED: alchemyAudit is reset once per request before this chain starts, so
     // at this point the count is whatever this scan itself has made so far (0 on a normal scan) —
@@ -339,11 +339,11 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
       ? ([] as Awaited<ReturnType<typeof fetchAllHoldings>>)
       : await runWithTimeoutAndRpcAudit('holdings', () => fetchAllHoldings(walletAddress), [] as Awaited<ReturnType<typeof fetchAllHoldings>>, moduleErrors, moduleTimeoutMs(startTime))
     // eslint-disable-next-line no-console
-    console.log('[V2-worker] finished holdings in', performance.now() - t0, 'ms', 'count=', chainHoldings.length)
+    console.warn('[V2-worker] finished holdings in', performance.now() - t0, 'ms', 'count=', chainHoldings.length)
 
     reportProgress(jobId, 2, 'pricing')
     // eslint-disable-next-line no-console
-    console.log('[V2-worker] starting pricing')
+    console.warn('[V2-worker] starting pricing')
     t0 = performance.now()
     const pricing = await runWithTimeoutAndRpcAudit(
       'pricing',
@@ -353,11 +353,11 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
       moduleTimeoutMs(startTime),
     )
     // eslint-disable-next-line no-console
-    console.log('[V2-worker] finished pricing in', performance.now() - t0, 'ms', 'count=', pricing.pricedHoldings.length)
+    console.warn('[V2-worker] finished pricing in', performance.now() - t0, 'ms', 'count=', pricing.pricedHoldings.length)
 
     reportProgress(jobId, 3, 'portfolio')
     // eslint-disable-next-line no-console
-    console.log('[V2-worker] starting portfolio')
+    console.warn('[V2-worker] starting portfolio')
     t0 = performance.now()
     const portfolioOutput = await runWithTimeoutAndRpcAudit(
       'portfolio',
@@ -370,13 +370,13 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
       moduleTimeoutMs(startTime),
     )
     // eslint-disable-next-line no-console
-    console.log('[V2-worker] finished portfolio in', performance.now() - t0, 'ms', 'holdings=', chainHoldings.length)
+    console.warn('[V2-worker] finished portfolio in', performance.now() - t0, 'ms', 'holdings=', chainHoldings.length)
     // DIAGNOSTIC, DISCLOSED (portfolio-intelligence $0 bug fix): real counts only — pricedTokens
     // here is the actual number of pricing.pricedHoldings with a non-null valueUsd (not
     // portfolioOutput.portfolio.topHoldings.length, which the frontend's PortfolioIntelligenceCard
     // caps at 5 — see that component's own "ONE HONEST GAP" comment).
     // eslint-disable-next-line no-console
-    console.log('[V2-worker] portfolioIntelligenceInputs', {
+    console.warn('[V2-worker] portfolioIntelligenceInputs', {
       totalValueUsd: portfolioOutput.portfolio.totalValueUsd,
       pricedTokens: pricing.pricedHoldings.filter((h) => h.valueUsd != null).length,
       holdingsWithUsdValue: pricing.pricedHoldings.filter((h) => h.valueUsd != null).length,
@@ -391,7 +391,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     // reveals trade-event volume per scan without modifying any module internals or outputs.
     reportProgress(jobId, 4, 'trades')
     // eslint-disable-next-line no-console
-    console.log('[V2-worker] starting trades')
+    console.warn('[V2-worker] starting trades')
     t0 = performance.now()
     // BUDGET CHECK, DISCLOSED: if holdings (or anything before this point) already pushed the
     // scan's cumulative real Alchemy call count past MAX_CALLS_PER_SCAN — only plausible if
@@ -407,11 +407,11 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
         moduleTimeoutMs(startTime),
       )
     // eslint-disable-next-line no-console
-    console.log('[V2-worker] finished trades in', performance.now() - t0, 'ms', 'count=', trades.length, 'cacheHitsSoFar=', eventsCache.hitCount)
+    console.warn('[V2-worker] finished trades in', performance.now() - t0, 'ms', 'count=', trades.length, 'cacheHitsSoFar=', eventsCache.hitCount)
 
     reportProgress(jobId, 5, 'pnl')
     // eslint-disable-next-line no-console
-    console.log('[V2-worker] starting pnl')
+    console.warn('[V2-worker] starting pnl')
     t0 = performance.now()
     const pnlOutput = await runWithTimeoutAndRpcAudit(
       'pnl',
@@ -424,7 +424,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
       moduleTimeoutMs(startTime),
     )
     // eslint-disable-next-line no-console
-    console.log('[V2-worker] finished pnl in', performance.now() - t0, 'ms')
+    console.warn('[V2-worker] finished pnl in', performance.now() - t0, 'ms')
 
     // DIAGNOSTIC-ONLY ENGINE COMPARISON, DISCLOSED: logs when the old pipeline's two real PnL
     // outputs (fifoAndPnl/pnlSummaryV2, both already computed above via `body`, from
@@ -451,7 +451,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
 
     reportProgress(jobId, 6, 'chainActivity')
     // eslint-disable-next-line no-console
-    console.log('[V2-worker] starting chainActivity')
+    console.warn('[V2-worker] starting chainActivity')
     t0 = performance.now()
     const chainActivityOutput = await runWithTimeoutAndRpcAudit(
       'chainActivity',
@@ -470,11 +470,11 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
       moduleTimeoutMs(startTime),
     )
     // eslint-disable-next-line no-console
-    console.log('[V2-worker] finished chainActivity in', performance.now() - t0, 'ms', 'count=', chainActivityOutput.chainActivityV2.length)
+    console.warn('[V2-worker] finished chainActivity in', performance.now() - t0, 'ms', 'count=', chainActivityOutput.chainActivityV2.length)
 
     reportProgress(jobId, 7, 'risk')
     // eslint-disable-next-line no-console
-    console.log('[V2-worker] starting risk')
+    console.warn('[V2-worker] starting risk')
     t0 = performance.now()
     const riskOutput = await runWithTimeoutAndRpcAudit(
       'risk',
@@ -496,11 +496,11 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
       moduleTimeoutMs(startTime),
     )
     // eslint-disable-next-line no-console
-    console.log('[V2-worker] finished risk in', performance.now() - t0, 'ms')
+    console.warn('[V2-worker] finished risk in', performance.now() - t0, 'ms')
 
     reportProgress(jobId, 8, 'personality')
     // eslint-disable-next-line no-console
-    console.log('[V2-worker] starting personality')
+    console.warn('[V2-worker] starting personality')
     t0 = performance.now()
     const personalityOutput = await runWithTimeoutAndRpcAudit(
       'personality',
@@ -524,11 +524,11 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
       moduleTimeoutMs(startTime),
     )
     // eslint-disable-next-line no-console
-    console.log('[V2-worker] finished personality in', performance.now() - t0, 'ms')
+    console.warn('[V2-worker] finished personality in', performance.now() - t0, 'ms')
 
     reportProgress(jobId, 9, 'behavior')
     // eslint-disable-next-line no-console
-    console.log('[V2-worker] starting behavior')
+    console.warn('[V2-worker] starting behavior')
     t0 = performance.now()
     const behaviorOutput = await runWithTimeoutAndRpcAudit(
       'behavior',
@@ -554,11 +554,11 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
       moduleTimeoutMs(startTime),
     )
     // eslint-disable-next-line no-console
-    console.log('[V2-worker] finished behavior in', performance.now() - t0, 'ms')
+    console.warn('[V2-worker] finished behavior in', performance.now() - t0, 'ms')
 
     reportProgress(jobId, 10, 'signals')
     // eslint-disable-next-line no-console
-    console.log('[V2-worker] starting signals')
+    console.warn('[V2-worker] starting signals')
     t0 = performance.now()
     const signalsOutput = await runWithTimeoutAndRpcAudit(
       'signals',
@@ -578,7 +578,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
       moduleTimeoutMs(startTime),
     )
     // eslint-disable-next-line no-console
-    console.log('[V2-worker] finished signals in', performance.now() - t0, 'ms', 'count=', signalsOutput.signalsV2.length)
+    console.warn('[V2-worker] finished signals in', performance.now() - t0, 'ms', 'count=', signalsOutput.signalsV2.length)
 
     // AWAITED, DISCLOSED: unlike every other reportProgress() call site (still fire-and-forget),
     // this one is awaited — see reportProgress's own header comment for why: this is the LAST
@@ -586,7 +586,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     // clobber) the worker's final `status:'completed'` write moments later.
     void reportProgress(jobId, 11, 'smartMoneyScore')
     // eslint-disable-next-line no-console
-    console.log('[V2-worker] starting smartMoneyScore')
+    console.warn('[V2-worker] starting smartMoneyScore')
     t0 = performance.now()
     let smartMoneyScore: ReturnType<typeof computeSmartMoneyScore> | undefined
     try {
@@ -606,18 +606,18 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
       smartMoneyScore = undefined
     }
     // eslint-disable-next-line no-console
-    console.log('[V2-worker] finished smartMoneyScore in', performance.now() - t0, 'ms')
+    console.warn('[V2-worker] finished smartMoneyScore in', performance.now() - t0, 'ms')
     // eslint-disable-next-line no-console
-    console.log('[V2-worker] total', performance.now() - chainOverallStart)
+    console.warn('[V2-worker] total', performance.now() - chainOverallStart)
     // eslint-disable-next-line no-console
-    console.log('[V2-worker] finished all modules')
+    console.warn('[V2-worker] finished all modules')
     // CU-DIAG SUMMARY, DISCLOSED DEVIATION: the task's own snippet used a fabricated
     // `events.length * 0.7` estimate tracked in a new local variable. This worker already has a
     // real, exact provider-call counter (cuBudget.providerCalls, threaded through fetchParsedTrades/
     // computeChainActivity) plus the real cache-hit count (eventsCache.hitCount) — using those
     // instead of inventing a second, less accurate estimate.
     // eslint-disable-next-line no-console
-    console.log('[CU-DIAG] Estimated CU total (real provider calls, not an approximation):', {
+    console.warn('[CU-DIAG] Estimated CU total (real provider calls, not an approximation):', {
       providerCalls: cuBudget.providerCalls,
       cacheHits: eventsCache.hitCount,
     })
@@ -654,11 +654,11 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     } as typeof body
 
     // eslint-disable-next-line no-console
-    console.debug('[CU-HARDENING] Total provider calls avoided:', eventsCache.hitCount)
+    console.warn('[CU-HARDENING] Total provider calls avoided:', eventsCache.hitCount)
     // eslint-disable-next-line no-console
-    console.debug('[CU-TRACK] deep-scan end:', { providerCalls: cuBudget.providerCalls, cacheHits: eventsCache.hitCount })
+    console.warn('[CU-TRACK] deep-scan end:', { providerCalls: cuBudget.providerCalls, cacheHits: eventsCache.hitCount })
     // eslint-disable-next-line no-console
-    console.debug('[CU-SUMMARY]', {
+    console.warn('[CU-SUMMARY]', {
       wallet: walletAddress,
       chains: [1, 8453],
       providerCalls: cuBudget.providerCalls,

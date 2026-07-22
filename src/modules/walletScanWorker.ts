@@ -83,7 +83,15 @@ export async function verifyWalletScanKvConnection(): Promise<void> {
   if (value !== 'ok') {
     throw new Error('wallet-scan-kv-verification-failed')
   }
-  console.log('[wallet-scan-worker] kv verification succeeded', { key: 'walletScanTestKey' })
+  // OBSERVABILITY FIX, DISCLOSED (confirmed bug — next.config's compiler.removeConsole strips
+  // console.log/info/debug entirely from production builds, exclude: ['error','warn'] only; see
+  // basedex.ts's own identical fix for the same reason): this line, and every other diagnostic
+  // console.log/console.debug call in this file and workers/walletScanV2.ts, NEVER appeared in any
+  // production deployment's logs — the entire per-module timing chain (V2-worker
+  // starting/finished X, job started/completed) was a complete, silent black box this whole time,
+  // which is why prior diagnosis kept finding the (fast, ~20s) base pipeline and never the actual
+  // bottleneck. console.warn survives the production strip; message content is unchanged.
+  console.warn('[wallet-scan-worker] kv verification succeeded', { key: 'walletScanTestKey' })
 }
 
 async function executeWalletScanJob(payload: WalletScanJobPayload): Promise<{ jobState: WalletScanJobState; result: unknown }> {
@@ -92,7 +100,7 @@ async function executeWalletScanJob(payload: WalletScanJobPayload): Promise<{ jo
   const { resetBaseDexRpcBudgetForScan } = await import('@/src/modules/pricingAtTimeEngine/sources/basedex')
 
   const startedAt = Date.now()
-  console.log('[wallet-scan-worker] job started', { jobId: payload.jobId })
+  console.warn('[wallet-scan-worker] job started', { jobId: payload.jobId })
   resetAlchemyAudit()
   // SCAN-LEVEL RPC BUDGET RESET, DISCLOSED: same reasoning as resetAlchemyAudit() above — a warm
   // serverless instance serving a second, unrelated scan must start basedex's own RPC-call budget
@@ -133,8 +141,11 @@ async function executeWalletScanJob(payload: WalletScanJobPayload): Promise<{ jo
 
   if (completedSuccessfully) {
     printAlchemyAuditSummary()
-    console.log('[wallet-scan-worker] job completed', { jobId: payload.jobId })
   }
+  // Unconditional (success or failure) durationMs log via console.warn — the single most direct
+  // way to answer "how long did the whole worker actually take, and did it finish or throw" on the
+  // next real attempt, regardless of outcome.
+  console.warn('[wallet-scan-worker] job finished', { jobId: payload.jobId, completedSuccessfully, durationMs: jobState.durationMs })
 
   return { jobState, result: finalBody }
 }
