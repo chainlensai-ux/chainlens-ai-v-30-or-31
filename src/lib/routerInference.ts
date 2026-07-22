@@ -226,9 +226,17 @@ export function createRouterInference(config: RouterInferenceConfig = {}) {
         }
       }).sort((a, b) => b.score - a.score || a.address.localeCompare(b.address))
 
-      for (const candidate of candidates) {
-        logger.warn('[router-inference] candidate', { address: candidate.address, score: candidate.score, reasons: candidate.reasons, confidenceTier: candidate.confidenceTier })
-      }
+      // LOG-VOLUME FIX, DISCLOSED (confirmed bug — same pattern basedex.ts/goldrushPriceSource.ts
+      // already fixed for themselves): this logged one line per candidate — for a wallet with
+      // dozens of candidates (this run alone had ~80), that volume, combined with the per-token
+      // dust-suppression logging below, was large enough to plausibly exceed Vercel's
+      // per-invocation log capture limit, pushing the actually-critical LATER diagnostics
+      // ([V2-worker] per-module timing, "job finished") out of what the dashboard ever showed —
+      // exactly the failure mode that made this whole area impossible to diagnose. Every candidate
+      // this logged is already captured, per-candidate, in the returned `candidates`/
+      // `evidenceByAddress` data, and the meaningful subsets (accepted, ambiguous) are already
+      // logged individually below — this loop added no diagnostic signal the summary line at the
+      // end of this function doesn't already cover.
 
       for (let i = 0; i < candidates.length; i += 1) {
         const candidate = candidates[i]

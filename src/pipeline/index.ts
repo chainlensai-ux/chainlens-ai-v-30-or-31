@@ -523,6 +523,16 @@ async function resolveDustSuppressionKeys(
     return { key, suppress, reason }
   })
 
+  // LOG-VOLUME FIX, DISCLOSED (confirmed bug — same pattern basedex.ts/goldrushPriceSource.ts
+  // already fixed for themselves): this previously logged one line per suppressed token — for a
+  // wallet with dozens of dust tokens (this run alone had ~38, across two separate call sites),
+  // that volume was large enough to plausibly exceed Vercel's per-invocation log capture limit,
+  // pushing actually-critical LATER diagnostics out of what the dashboard ever showed. Both call
+  // sites already log a real summary line immediately after this returns
+  // ("[pipeline] dust suppression (upstream, before priceLotsForWallet)" /
+  // "...(display pricingAtTime pass)", with totalDistinctBuyTokens/suppressedTokens counts) — the
+  // per-key line added no signal that summary doesn't already cover; noMarketFoundCount/
+  // liquidityZeroCount below are still accumulated exactly as before, just never logged per-key.
   const suppressedKeys = new Set<string>()
   let noMarketFoundCount = 0
   let liquidityZeroCount = 0
@@ -531,8 +541,6 @@ async function resolveDustSuppressionKeys(
     suppressedKeys.add(r.key)
     if (r.reason === 'no_market_found') noMarketFoundCount++
     if (r.reason === 'liquidity_zero') liquidityZeroCount++
-    // eslint-disable-next-line no-console
-    console.warn('[pipeline] dust token suppressed', { key: r.key, reason: r.reason })
   }
   return { suppressedKeys, noMarketFoundCount, liquidityZeroCount }
 }
