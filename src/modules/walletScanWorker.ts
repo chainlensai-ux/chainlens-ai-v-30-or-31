@@ -8,11 +8,14 @@ import {
 import type { WalletScanJobPayload } from '@/src/modules/walletScanQueue'
 
 type WalletScanJobState = {
-  status: 'done'
+  status: 'done' | 'failed'
   startedAt: number
   finishedAt: number
   durationMs: number
   pipelineDiagnostics: unknown
+  // Safe stage-specific code, present only on failed publication — surfaced by the poll route so
+  // the UI can distinguish "the pipeline failed" from "the result could not be stored".
+  error?: string
 }
 
 // SHAPE, DISCLOSED: the client (app/frontend/api/scanWallet.ts's ScanWalletApiResponse, and
@@ -45,9 +48,33 @@ async function readWorkerJobId(req: Request): Promise<string | null> {
   return typeof body?.jobId === 'string' && body.jobId.trim() ? body.jobId.trim() : null
 }
 
+// SERIALIZATION GUARD, DISCLOSED: the V2 pipeline result flows through many modules and can carry
+// values plain JSON cannot represent — BigInt (viem block numbers in diagnostics), circular
+// references, or class instances — any of which makes the KV client's own JSON.stringify THROW,
+// which (before the publish-failure handling below existed) left the job stuck 'running' forever.
+// This normalizes the result through one JSON round-trip: BigInt → decimal string (real value
+// preserved, never dropped), non-finite numbers (NaN/±Infinity — already unrepresentable in JSON)
+// → null, everything JSON-representable passes through byte-identical. A still-unserializable
+// result (circular refs) throws here, deliberately — caught by the publish-failure path below and
+// recorded as a real failure, never silently published as a corrupted result.
+export function toSerializableResult(result: unknown): unknown {
+  const json = JSON.stringify(result, (_key, value) => {
+    if (typeof value === 'bigint') return value.toString()
+    if (typeof value === 'number' && !Number.isFinite(value)) return null
+    return value
+  })
+  return json === undefined ? null : JSON.parse(json)
+}
+
+// PUBLICATION ORDER, FIXED (confirmed ordering bug): this previously wrote the job key (status
+// 'done') FIRST and the result key SECOND — so a failed/interrupted result write, or a poll
+// landing between the two writes, produced a job marked done with no result: exactly the
+// "Final scan result is temporarily unavailable" degraded state the UI reported after otherwise
+// successful pipeline runs. Correct order — write the result, THEN mark done — makes "done"
+// mean "the full result is already safely stored", closing that window entirely.
 export async function publishFinal(jobId: string, jobState: WalletScanJobState, result: unknown): Promise<void> {
-  await kv.set(walletScanJobKey(jobId), jobState)
   await kv.set(walletScanResultKey(jobId), result)
+  await kv.set(walletScanJobKey(jobId), jobState)
 }
 
 export async function verifyWalletScanKvConnection(): Promise<void> {
@@ -146,6 +173,43 @@ export async function runWalletScanWorker(req: Request): Promise<Response> {
   }
 
   const { jobState, result } = await executeWalletScanJob(payload)
-  await publishFinal(jobId, jobState, result)
-  return Response.json({ status: 'done', jobId })
+
+  // FINAL PUBLICATION, HARDENED (confirmed stuck-running bug): publishFinal was previously awaited
+  // bare — a throw anywhere in serialization or either KV write propagated straight out of this
+  // handler, so the job (already marked 'running' by the claim) stayed 'running' FOREVER with no
+  // failure record, and the UI polled until its own client-side timeout. Now: serialization and
+  // publication failures each get a distinct stage code, the job is explicitly marked 'failed'
+  // (best-effort — if even that write fails, the error is logged with the jobId and stage so the
+  // stuck job is at least diagnosable), and the route reports the failure honestly instead of
+  // returning 'done'.
+  let serializableResult: unknown
+  try {
+    serializableResult = toSerializableResult(result)
+  } catch (err) {
+    console.error('[wallet-scan-worker] result serialization failed', { jobId, error: err instanceof Error ? err.message : String(err) })
+    await markJobFailed(jobId, jobState, 'worker_result_serialization_failed')
+    return Response.json({ status: 'failed', jobId, resultPublished: false, error: 'worker_result_serialization_failed' }, { status: 500 })
+  }
+
+  try {
+    await publishFinal(jobId, jobState, serializableResult)
+  } catch (err) {
+    console.error('[wallet-scan-worker] result publication failed', { jobId, error: err instanceof Error ? err.message : String(err) })
+    await markJobFailed(jobId, jobState, 'worker_result_publish_failed')
+    return Response.json({ status: 'failed', jobId, resultPublished: false, error: 'worker_result_publish_failed' }, { status: 500 })
+  }
+
+  return Response.json({ status: 'done', jobId, resultPublished: true })
+}
+
+// Best-effort terminal-failure write: a job must never be left 'running' after a publication
+// failure. Never throws — if this write also fails (full KV outage), the console.error above plus
+// this one leave a complete jobId+stage trail, and the poll route's existing not-found/unavailable
+// handling covers the client side.
+async function markJobFailed(jobId: string, jobState: WalletScanJobState, errorCode: string): Promise<void> {
+  try {
+    await kv.set(walletScanJobKey(jobId), { ...jobState, status: 'failed', error: errorCode })
+  } catch (err) {
+    console.error('[wallet-scan-worker] failed to mark job failed', { jobId, errorCode, error: err instanceof Error ? err.message : String(err) })
+  }
 }

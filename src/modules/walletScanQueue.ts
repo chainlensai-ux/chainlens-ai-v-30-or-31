@@ -115,7 +115,10 @@ export async function readWalletScanResult(jobId: string): Promise<unknown | nul
 
 export async function claimWalletScanPayload(jobId: string): Promise<WalletScanJobPayload | null> {
   assertWalletScanRedisConfigured('queue')
-  const jobKey = `walletScanJob:${jobId}`
+  // KEY HELPER, FIXED (audit: key consistency): this previously rebuilt the job key as an inline
+  // template literal — the one place in the whole enqueue/worker/poll chain that bypassed
+  // walletScanJobKey(), so a future prefix change would silently desynchronize the claim path.
+  const jobKey = walletScanJobKey(jobId)
   const pendingJobKey = walletScanPendingJobKey(jobId)
 
   let job: WalletScanJobMetadata | null
@@ -127,6 +130,14 @@ export async function claimWalletScanPayload(jobId: string): Promise<WalletScanJ
   }
 
   if (!job) return null
+
+  // IDEMPOTENCY GUARD, FIXED (audit: duplicate worker invocation): a repeated worker invocation
+  // for a job that already reached a terminal state previously re-claimed it (rewriting status
+  // back to 'running') and re-ran the entire expensive scan, overwriting the already-published
+  // result. A terminal job is now never re-claimed — the repeat invocation gets null (the same
+  // "nothing to do" the worker route already reports as not-found) and the original result stays
+  // exactly as published.
+  if (job.status === 'done' || job.status === 'failed') return null
 
   try {
     await kv.set(jobKey, { ...job, status: 'running', updatedAt: Date.now() })

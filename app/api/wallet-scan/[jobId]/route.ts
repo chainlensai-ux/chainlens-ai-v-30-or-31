@@ -3,6 +3,7 @@ import { kv } from '@/lib/server/kv'
 
 type WalletScanJobState = {
   status?: string
+  error?: string
 }
 
 export async function GET(_req: Request, context: { params: Promise<{ jobId: string }> }): Promise<Response> {
@@ -27,6 +28,14 @@ export async function GET(_req: Request, context: { params: Promise<{ jobId: str
 
   if (job.status === 'done' && result !== null) {
     return Response.json({ status: 'done', result })
+  }
+
+  // FAILED-STATE ERROR PASS-THROUGH, FIXED (audit: poll route): a failed job previously polled as
+  // a bare { status: 'failed' } — the safe stage code the worker recorded (e.g.
+  // worker_result_publish_failed) never reached the client, so the UI could only show a generic
+  // "scan-failed". Only the job's own safe `error` code string is exposed — never the payload.
+  if (job.status === 'failed') {
+    return Response.json({ status: 'failed', ...(typeof job.error === 'string' && job.error ? { error: job.error } : {}) })
   }
 
   return Response.json({ status: job.status ?? 'running' })

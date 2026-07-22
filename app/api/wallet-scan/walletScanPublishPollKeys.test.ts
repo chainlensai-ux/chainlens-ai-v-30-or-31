@@ -2,7 +2,7 @@ import { describe, it, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { kv } from '@/lib/server/kv'
 import { walletScanJobKey, walletScanResultKey } from '@/src/modules/walletScanQueue'
-import { publishFinal, verifyWalletScanKvConnection } from '@/src/modules/walletScanWorker'
+import { publishFinal, verifyWalletScanKvConnection, toSerializableResult } from '@/src/modules/walletScanWorker'
 
 const originalEnv = { ...process.env }
 const originalGet = kv.get
@@ -110,5 +110,71 @@ describe('wallet-scan final publish and poll key alignment', () => {
 
     assert.equal(response.status, 200)
     assert.deepEqual(response.body, { status: 'done', result })
+  })
+
+  it('final publish writes the RESULT key before marking the job done (a poll can never observe done-without-result mid-publish)', async () => {
+    installMemoryKv()
+    const writeOrder: string[] = []
+    const innerSet = kv.set
+    kv.set = async (key: string, value: unknown, opts?: { ex?: number }): Promise<unknown> => {
+      writeOrder.push(key)
+      return innerSet(key, value, opts)
+    }
+
+    await publishFinalResultForTest('job-order', { success: true })
+
+    assert.deepEqual(writeOrder, [walletScanResultKey('job-order'), walletScanJobKey('job-order')],
+      'expected the result write to happen strictly before the job-done write')
+  })
+
+  it('a failed result write leaves the job key untouched — never marked done with a missing result', async () => {
+    const store = installMemoryKv()
+    const innerSet = kv.set
+    kv.set = async (key: string, value: unknown, opts?: { ex?: number }): Promise<unknown> => {
+      if (key === walletScanResultKey('job-pubfail')) throw new Error('kv write failed')
+      return innerSet(key, value, opts)
+    }
+
+    await assert.rejects(() => publishFinalResultForTest('job-pubfail', { success: true }), /kv write failed/)
+    assert.equal(store.has(walletScanJobKey('job-pubfail')), false,
+      'a failed result write must not have marked the job done')
+    const response = await poll('job-pubfail')
+    assert.equal(response.status, 404)
+    assert.deepEqual(response.body, { status: 'not-found' })
+  })
+
+  it('poll surfaces the safe stage error code for a failed job', async () => {
+    const store = installMemoryKv()
+    store.set(walletScanJobKey('job-failed'), { value: { status: 'failed', error: 'worker_result_publish_failed' } })
+
+    const response = await poll('job-failed')
+
+    assert.equal(response.status, 200)
+    assert.deepEqual(response.body, { status: 'failed', error: 'worker_result_publish_failed' })
+  })
+})
+
+describe('wallet-scan result serialization guard', () => {
+  it('converts BigInt to decimal strings and non-finite numbers to null; JSON-safe values pass through identically', () => {
+    const raw = {
+      blockNumber: BigInt('123456789012345678901234567890'),
+      pnl: { realized: 42.5, broken: Number.NaN, alsoBroken: Infinity, negBroken: -Infinity },
+      list: [1, 'two', null, true],
+    }
+    assert.deepEqual(toSerializableResult(raw), {
+      blockNumber: '123456789012345678901234567890',
+      pnl: { realized: 42.5, broken: null, alsoBroken: null, negBroken: null },
+      list: [1, 'two', null, true],
+    })
+  })
+
+  it('an undefined result becomes null, never the string "undefined"', () => {
+    assert.equal(toSerializableResult(undefined), null)
+  })
+
+  it('a circular result throws (caught by the worker publish-failure path) rather than publishing corrupted data', () => {
+    const circular: Record<string, unknown> = {}
+    circular.self = circular
+    assert.throws(() => toSerializableResult(circular))
   })
 })

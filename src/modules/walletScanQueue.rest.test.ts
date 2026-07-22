@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { kv } from '@/lib/server/kv'
 import {
   claimNextWalletScanPayload,
+  claimWalletScanPayload,
   enqueueWalletScanJob,
   readWalletScanJob,
   readWalletScanResult,
@@ -99,6 +100,34 @@ describe('wallet scan queue with KV', () => {
     assert.equal(outcome, undefined)
     assert.deepEqual(store.get(walletScanResultKey('final-job')), { value: { ok: true }, opts: undefined })
     assert.equal(store.get(walletScanJobKey('final-job'))?.opts, undefined)
+  })
+
+  it('a repeated worker invocation for an already-done job is NOT re-claimed and its published result survives untouched', async () => {
+    installMemoryKv()
+
+    await enqueueWalletScanJob('job-idem', { jobId: 'job-idem', walletAddress: '0x1', chains: ['base'], scanMode: 'normal', ip: '127.0.0.1' })
+    const first = await claimWalletScanPayload('job-idem')
+    assert.equal(first?.jobId, 'job-idem')
+
+    await publishFinal('job-idem', { status: 'done', startedAt: 1, finishedAt: 3, durationMs: 2, pipelineDiagnostics: null }, { success: true, real: 'result' })
+
+    const second = await claimWalletScanPayload('job-idem')
+    assert.equal(second, null, 'expected a done job to never be re-claimed by a duplicate worker invocation')
+
+    const job = await readWalletScanJob('job-idem')
+    const result = await readWalletScanResult('job-idem')
+    assert.equal(job?.status, 'done', 'expected the duplicate invocation to leave the done status untouched (not reset to running)')
+    assert.deepEqual(result, { success: true, real: 'result' })
+  })
+
+  it('a failed job is likewise never re-claimed', async () => {
+    installMemoryKv()
+
+    await enqueueWalletScanJob('job-failed-idem', { jobId: 'job-failed-idem', walletAddress: '0x1', chains: ['base'], scanMode: 'normal', ip: '127.0.0.1' })
+    await kv.set(walletScanJobKey('job-failed-idem'), { jobId: 'job-failed-idem', wallet: '0x1', status: 'failed', createdAt: 1, updatedAt: 2 })
+
+    const claimed = await claimWalletScanPayload('job-failed-idem')
+    assert.equal(claimed, null)
   })
 
 })
