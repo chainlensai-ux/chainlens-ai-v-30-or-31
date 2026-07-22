@@ -14,8 +14,6 @@ export {
 } from '@/src/modules/walletScanQueueKeys'
 
 export type WalletScanJobStatus = 'queued' | 'running' | 'done' | 'failed'
-export type WalletScanDegradedModule = 'holdings' | 'provider-window' | 'final-publish' | 'job-status'
-export type WalletScanKvWriteOutcome = { ok: boolean; degraded: boolean; partial: boolean; failedKeys: string[]; reason?: string }
 
 export type WalletScanJobMetadata = {
   jobId: string
@@ -92,8 +90,8 @@ function logQueueFailure(label: string, err: unknown): void {
 
 export async function publishFinalWalletScanResult(jobId: string, result: unknown): Promise<unknown | void> {
   const finishedAt = Date.now()
-  const finalResultKey = walletScanResultKey(jobId)
-  const finalJobKey = walletScanJobKey(jobId)
+  const finalResultKey = `walletScanResult:${jobId}`
+  const finalJobKey = `walletScanJob:${jobId}`
   const finalJob = { jobId, status: 'done' as const, finishedAt }
   const finalResult = result ?? walletScanResultMissingFallback(jobId, null)
   console.warn('[wallet-scan-publish]', { finalResultKey, finalJobKey })
