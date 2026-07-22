@@ -91,6 +91,29 @@ const negativeGoldrushPriceCache = new Map<string, number>() // `${chain}:${toke
 // must not be conflated into sharing one date's specific result.
 const inFlightGoldrushPriceLookups = new Map<string, Promise<number | null>>()
 
+// BOUNDED TIMEOUT, DISCLOSED: `client.PricingService.getTokenPrices(...)` (the real Covalent SDK
+// call below) has no timeout of its own — this is the PRIMARY price source (src/pipeline/index.ts's
+// `withPriceSourceCache(goldrushPriceSource(client), 'primary', ...)`), called for every priced
+// entry before any fallback source runs. An unbounded await here means a single slow/degraded
+// GoldRush response (rate-limit backoff, TCP stall, etc.) hangs that call indefinitely — and since
+// pricingAtTimeEngine runs entries through a fixed concurrency pool (mapWithConcurrencyLimit), a
+// GoldRush-wide slowdown can stall every worker in the pool at once, well past the outer 270s
+// worker-global timeout (workers/walletScanV2.ts's WORKER_GLOBAL_TIMEOUT_MS) — with no per-entry
+// symptom to point at, since every entry is just "still awaiting". Same 8s bound already used by
+// this module's own sibling sources (dexscreener.ts, coingecko.ts) for the same reason. A timeout
+// here is treated exactly like the existing thrown-error path below: resolves to null, is NOT
+// added to the negative cache (a slow response says nothing about whether real data exists — see
+// this file's own "a thrown error... is NOT cached as negative" test and comment).
+const GOLDRUSH_CALL_TIMEOUT_MS = 8_000
+
+function withGoldrushTimeout<T>(promise: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>
+  const timeout = new Promise<T>((_, reject) => {
+    timer = setTimeout(() => reject(new Error('goldrush_timeout')), GOLDRUSH_CALL_TIMEOUT_MS)
+  })
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer))
+}
+
 // YYYY-MM-DD, exactly what getTokenPrices' from/to params require. Never infers a missing/invalid
 // timestamp — an unparseable input returns null so the caller treats it as "no data", never a
 // guessed date.
@@ -150,10 +173,10 @@ export function goldrushPriceSource(client: GoldRushClient): PriceSourceFn {
       try {
         logRpcCall({ route: 'pricingAtTimeEngine:goldrushPriceSource', chain, method: 'goldrush_sdk_getTokenPrices' })
         goldrushPriceSourceCallCount += 1
-        const response = await client.PricingService.getTokenPrices(chainSlug, 'USD', token, {
+        const response = await withGoldrushTimeout(client.PricingService.getTokenPrices(chainSlug, 'USD', token, {
           from: dateString,
           to: dateString,
-        })
+        }))
 
         if (response.error || !response.data) {
           negativeGoldrushPriceCache.set(negativeCacheKey, Date.now() + NEGATIVE_PRICE_CACHE_TTL_MS)
