@@ -49,7 +49,7 @@ describe('wallet-scan final publish and poll key alignment', () => {
     const response = await poll('job-full')
 
     assert.equal(response.status, 200)
-    assert.deepEqual(response.body, result)
+    assert.deepEqual(response.body, { status: 'done', result })
   })
 
   it('publish → poll returns done status when the result key is missing', async () => {
@@ -60,7 +60,7 @@ describe('wallet-scan final publish and poll key alignment', () => {
     const response = await poll('job-missing-result')
 
     assert.equal(response.status, 200)
-    assert.deepEqual(response.body, { jobId: 'job-missing-result', status: 'done' })
+    assert.deepEqual(response.body, { status: 'done', result: { error: 'scan-final-result-missing', degraded: true } })
   })
 
   it('poll uses the exact jobId formatting written by final publish', async () => {
@@ -90,6 +90,6 @@ describe('wallet-scan final publish and poll key alignment', () => {
     const response = await poll('job-both-keys')
 
     assert.equal(response.status, 200)
-    assert.deepEqual(response.body, result)
+    assert.deepEqual(response.body, { status: 'done', result })
   })
 })
