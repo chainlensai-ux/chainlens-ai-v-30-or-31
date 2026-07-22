@@ -60,10 +60,19 @@ export type RecoveryPolicyResult = {
   totalPagesUsedThisWallet: number
 }
 
+// repeated_in_sell_timeline_min_count LOWERED 2 -> 1, DISCLOSED (real-scan evidence): a
+// "distributor" wallet pattern — many distinct low-value tokens, each sold exactly once, never
+// repeated — never triggered recovery under the old threshold of 2, because none of its sold
+// tokens appear twice in the sell timeline. Confirmed via a real production scan: totalPagesUsedThisWallet
+// was 0 despite missingEvidenceCount: 724, i.e. recovery was never attempted for any of the 92
+// distinct tokens. Lowering to 1 lets a single real sell of a token also qualify for a targeted
+// history fetch. token_value_usd_gte and in_top_3_holdings are untouched — those two, plus the
+// existing maxHistoricalPagesPerWallet/maxHistoricalPagesPerToken caps below (also untouched),
+// remain the real cost guardrails bounding how much this can grow provider spend.
 export const DEFAULT_TRIGGER_RECOVERY_WHEN: RecoveryPolicyTriggerConfig = {
   token_value_usd_gte: 1000,
   in_top_3_holdings: true,
-  repeated_in_sell_timeline_min_count: 2,
+  repeated_in_sell_timeline_min_count: 1,
 }
 
 // Architecture Step 4 §4 / Step 8 §3: fixed caps, never overridable by a request.
