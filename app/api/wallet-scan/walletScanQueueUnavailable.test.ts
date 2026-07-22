@@ -3,10 +3,8 @@ import assert from 'node:assert/strict'
 
 const VALID_WALLET = '0x0000000000000000000000000000000000000001'
 
-async function withoutRedisRest<T>(fn: () => Promise<T>): Promise<T> {
+async function withoutKvRest<T>(fn: () => Promise<T>): Promise<T> {
   const original = { ...process.env }
-  delete process.env.UPSTASH_REDIS_REST_URL
-  delete process.env.UPSTASH_REDIS_REST_TOKEN
   delete process.env.KV_REST_API_URL
   delete process.env.KV_REST_API_TOKEN
   try {
@@ -18,7 +16,7 @@ async function withoutRedisRest<T>(fn: () => Promise<T>): Promise<T> {
 
 describe('wallet-scan queue unavailable behavior', () => {
   it('queue unavailable makes the enqueue route return an error without a jobId', async () => {
-    await withoutRedisRest(async () => {
+    await withoutKvRest(async () => {
       const { POST } = await import('./route.ts')
       const res = await POST(new Request('http://localhost/api/wallet-scan', {
         method: 'POST',
@@ -34,9 +32,9 @@ describe('wallet-scan queue unavailable behavior', () => {
   })
 
   it('worker queue claim unavailable returns an error', async () => {
-    await withoutRedisRest(async () => {
+    await withoutKvRest(async () => {
       const { POST } = await import('./worker/route.ts')
-      const res = await POST(new Request('http://localhost/api/wallet-scan/worker', { method: 'POST' }))
+      const res = await POST(new Request('http://localhost/api/wallet-scan/worker', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ jobId: 'job-1' }) }))
       const body = await res.json()
 
       assert.equal(res.status, 503)
@@ -46,7 +44,7 @@ describe('wallet-scan queue unavailable behavior', () => {
   })
 
   it('poll route returns status-unavailable when KV cannot read job keys', async () => {
-    await withoutRedisRest(async () => {
+    await withoutKvRest(async () => {
       const { GET } = await import('./[jobId]/route.ts')
       const res = await GET(new Request('http://localhost/api/wallet-scan/job-1'), { params: Promise.resolve({ jobId: 'job-1' }) })
       const body = await res.json() as { error: string; status?: string }

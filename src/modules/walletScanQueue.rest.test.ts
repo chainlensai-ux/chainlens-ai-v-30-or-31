@@ -4,7 +4,6 @@ import { kv } from '@/lib/server/kv'
 import {
   claimNextWalletScanPayload,
   enqueueWalletScanJob,
-  publishFinalWalletScanResult,
   readWalletScanJob,
   readWalletScanResult,
   walletScanJobKey,
@@ -12,6 +11,7 @@ import {
   walletScanPendingKey,
   walletScanResultKey,
 } from './walletScanQueue'
+import { publishFinal } from './walletScanWorker'
 
 const originalEnv = { ...process.env }
 const originalFetch = globalThis.fetch
@@ -82,7 +82,7 @@ describe('wallet scan queue with KV', () => {
     const running = await readWalletScanJob('job-flow')
     assert.equal(running?.status, 'running')
 
-    await publishFinalWalletScanResult('job-flow', { success: true })
+    await publishFinal('job-flow', { status: 'done', startedAt: 1, finishedAt: 3, durationMs: 2, pipelineDiagnostics: null }, { success: true })
     const done = await readWalletScanJob('job-flow')
     const result = await readWalletScanResult('job-flow')
 
@@ -94,7 +94,7 @@ describe('wallet scan queue with KV', () => {
   it('final publish writes result and job keys without TTL', async () => {
     const store = installMemoryKv()
 
-    const outcome = await publishFinalWalletScanResult('final-job', { ok: true })
+    const outcome = await publishFinal('final-job', { status: 'done', startedAt: 1, finishedAt: 3, durationMs: 2, pipelineDiagnostics: null }, { ok: true })
 
     assert.equal(outcome, undefined)
     assert.deepEqual(store.get(walletScanResultKey('final-job')), { value: { ok: true }, opts: undefined })

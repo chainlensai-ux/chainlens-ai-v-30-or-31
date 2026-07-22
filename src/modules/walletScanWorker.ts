@@ -1,12 +1,33 @@
+import { kv } from '@/lib/server/kv'
 import { WALLET_SCAN_QUEUE_UNAVAILABLE, WalletScanQueueUnavailableError } from '@/src/modules/walletScanQueue'
 import type { WalletScanJobPayload } from '@/src/modules/walletScanQueue'
 
+type WalletScanJobState = {
+  status: 'done'
+  startedAt: number
+  finishedAt: number
+  durationMs: number
+  pipelineDiagnostics: unknown
+}
+
 function invalidShapeResultBody(): unknown {
-  return { success: false, error: 'wallet-scan-invalid-result-shape', partial: true }
+  return { success: false, error: 'wallet-scan-invalid-result-shape' }
 }
 
 function errorResultBody(err: unknown): unknown {
-  return { success: false, error: err instanceof Error ? err.message : String(err), partial: true }
+  return { success: false, error: err instanceof Error ? err.message : String(err) }
+}
+
+function pipelineDiagnosticsFrom(result: unknown): unknown {
+  if (!result || typeof result !== 'object') return null
+  const body = result as Record<string, unknown>
+  const data = body.data && typeof body.data === 'object' ? body.data as Record<string, unknown> : body
+  return {
+    moduleErrors: data.moduleErrors ?? null,
+    providerDiagnostics: data.providerDiagnostics ?? null,
+    pricingProvidersStatus: data.pricingProvidersStatus ?? null,
+    scanMetadata: data.scanMetadata ?? null,
+  }
 }
 
 async function readWorkerJobId(req: Request): Promise<string | null> {
@@ -14,11 +35,16 @@ async function readWorkerJobId(req: Request): Promise<string | null> {
   return typeof body?.jobId === 'string' && body.jobId.trim() ? body.jobId.trim() : null
 }
 
-async function executeWalletScanJob(payload: WalletScanJobPayload): Promise<unknown> {
+export async function publishFinal(jobId: string, jobState: WalletScanJobState, result: unknown): Promise<void> {
+  await kv.set(`walletScanJob:${jobId}`, jobState)
+  await kv.set(`walletScanResult:${jobId}`, result)
+}
+
+async function executeWalletScanJob(payload: WalletScanJobPayload): Promise<{ jobState: WalletScanJobState; result: unknown }> {
   const { resetAlchemyAudit, printAlchemyAuditSummary } = await import('@/lib/server/alchemyAudit')
   const { runWalletScanV2Worker } = await import('@/workers/walletScanV2')
-  const { publishFinalWalletScanResult } = await import('@/src/modules/walletScanQueue')
 
+  const startedAt = Date.now()
   console.log('[wallet-scan-worker] job started', { jobId: payload.jobId })
   resetAlchemyAudit()
 
@@ -44,14 +70,21 @@ async function executeWalletScanJob(payload: WalletScanJobPayload): Promise<unkn
     console.error('[wallet-scan-worker] job completed with failure result', err)
   }
 
-  await publishFinalWalletScanResult(payload.jobId, finalBody)
+  const finishedAt = Date.now()
+  const jobState: WalletScanJobState = {
+    status: 'done',
+    startedAt,
+    finishedAt,
+    durationMs: finishedAt - startedAt,
+    pipelineDiagnostics: pipelineDiagnosticsFrom(finalBody),
+  }
 
   if (completedSuccessfully) {
     printAlchemyAuditSummary()
     console.log('[wallet-scan-worker] job completed', { jobId: payload.jobId })
   }
 
-  return finalBody
+  return { jobState, result: finalBody }
 }
 
 export async function runWalletScanWorker(req: Request): Promise<Response> {
@@ -77,6 +110,7 @@ export async function runWalletScanWorker(req: Request): Promise<Response> {
     return Response.json({ jobId, status: 'not-found' }, { status: 404 })
   }
 
-  const result = await executeWalletScanJob(payload)
-  return Response.json({ jobId, status: 'done', result })
+  const { jobState, result } = await executeWalletScanJob(payload)
+  await publishFinal(jobId, jobState, result)
+  return Response.json({ status: 'done', jobId })
 }

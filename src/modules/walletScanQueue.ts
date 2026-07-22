@@ -81,25 +81,6 @@ function logQueueFailure(label: string, err: unknown): void {
   console.error(label, err)
 }
 
-export async function publishFinalWalletScanResult(jobId: string, result: unknown): Promise<void> {
-  const finishedAt = Date.now()
-  const finalResultKey = `walletScanResult:${jobId}`
-  const finalJobKey = `walletScanJob:${jobId}`
-  const previousJob = await kv.get<WalletScanJobMetadata>(finalJobKey)
-  const finalJob: WalletScanJobMetadata = {
-    ...(previousJob ?? { jobId, wallet: 'unknown', createdAt: finishedAt }),
-    jobId,
-    status: 'done',
-    finishedAt,
-    updatedAt: finishedAt,
-  }
-
-  console.warn('[wallet-scan-publish]', { finalResultKey, finalJobKey })
-  await kv.set(finalJobKey, finalJob)
-  await kv.set(finalResultKey, result)
-  console.log('[final-publish] success', { jobId })
-}
-
 export async function writeWalletScanJob(job: WalletScanJobMetadata): Promise<void> {
   assertWalletScanRedisConfigured('queue')
   try {
