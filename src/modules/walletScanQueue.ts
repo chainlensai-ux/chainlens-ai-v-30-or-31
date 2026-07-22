@@ -1,4 +1,4 @@
-import { isRedisRestTimeout, logRedisRestError, redis, redisConfigured } from '@/lib/server/cache/redisClient'
+import { isRedisRestTimeout, logRedisRestError, redis as kv, redisConfigured } from '@/lib/server/cache/redisClient'
 import {
   walletScanJobKey,
   walletScanPendingJobKey,
@@ -105,8 +105,8 @@ export async function publishFinalWalletScanResult(jobId: string, result: unknow
   }
 
   try {
-    await redis.set(finalResultKey, finalResult)
-    await redis.set(finalJobKey, finalJob)
+    await kv.set(finalResultKey, finalResult)
+    await kv.set(finalJobKey, finalJob)
     console.log('[final-publish] success', { jobId, client: 'rest' })
   } catch (err) {
     logQueueFailure('[final-publish] failure', err)
@@ -117,7 +117,7 @@ export async function publishFinalWalletScanResult(jobId: string, result: unknow
 export async function writeWalletScanJob(job: WalletScanJobMetadata): Promise<void> {
   assertWalletScanRedisConfigured('queue')
   try {
-    await redis.set(walletScanJobKey(job.jobId), { ...job, updatedAt: Date.now() }, { ex: JOB_TTL_SECONDS })
+    await kv.set(walletScanJobKey(job.jobId), { ...job, updatedAt: Date.now() }, { ex: JOB_TTL_SECONDS })
   } catch (err) {
     logQueueFailure('[wallet-scan-queue] write-job-failure', err)
     throw queueUnavailable(err)
@@ -127,7 +127,7 @@ export async function writeWalletScanJob(job: WalletScanJobMetadata): Promise<vo
 export async function readWalletScanJob(jobId: string): Promise<WalletScanJobMetadata | null> {
   assertWalletScanRedisConfigured('status')
   try {
-    return await redis.get<WalletScanJobMetadata>(walletScanJobKey(jobId))
+    return await kv.get<WalletScanJobMetadata>(walletScanJobKey(jobId))
   } catch (err) {
     logQueueFailure('[wallet-scan-queue] read-job-failure', err)
     throw statusUnavailable(err)
@@ -137,7 +137,7 @@ export async function readWalletScanJob(jobId: string): Promise<WalletScanJobMet
 export async function readWalletScanResult(jobId: string): Promise<unknown | null> {
   assertWalletScanRedisConfigured('status')
   try {
-    return await redis.get(walletScanResultKey(jobId))
+    return await kv.get(walletScanResultKey(jobId))
   } catch (err) {
     logQueueFailure('[wallet-scan-queue] read-result-failure', err)
     throw statusUnavailable(err)
@@ -149,7 +149,7 @@ export async function claimNextWalletScanPayload(): Promise<WalletScanJobPayload
   assertWalletScanRedisConfigured('queue')
   let pending: string[]
   try {
-    pending = (await redis.get<string[]>(walletScanPendingKey())) ?? []
+    pending = (await kv.get<string[]>(walletScanPendingKey())) ?? []
   } catch (err) {
     logQueueFailure('[wallet-scan-queue] claim-read-pending-failure', err)
     if (isRedisRestTimeout(err)) console.warn('[wallet-scan-worker] queue claim network timeout', { error: 'scan-queue-unavailable', degraded: true })
@@ -158,14 +158,14 @@ export async function claimNextWalletScanPayload(): Promise<WalletScanJobPayload
   const [jobId, ...remaining] = pending
   if (!jobId) return null
 
-  try { await redis.set(walletScanPendingKey(), remaining, { ex: JOB_TTL_SECONDS }) } catch (err) { logQueueFailure('[wallet-scan-queue] claim-write-pending-failure', err); if (isRedisRestTimeout(err)) console.warn('[wallet-scan-worker] queue claim network timeout', { error: 'scan-queue-unavailable', degraded: true }); throw queueUnavailable(err) }
+  try { await kv.set(walletScanPendingKey(), remaining, { ex: JOB_TTL_SECONDS }) } catch (err) { logQueueFailure('[wallet-scan-queue] claim-write-pending-failure', err); if (isRedisRestTimeout(err)) console.warn('[wallet-scan-worker] queue claim network timeout', { error: 'scan-queue-unavailable', degraded: true }); throw queueUnavailable(err) }
 
   const job = await readWalletScanJob(jobId).catch((err) => { throw queueUnavailable(err) })
   if (!job) return null
 
-  try { await redis.set(walletScanPendingJobKey(jobId), false, { ex: 60 }) } catch (err) { logQueueFailure('[wallet-scan-queue] claim-write-pending-job-failure', err); if (isRedisRestTimeout(err)) console.warn('[wallet-scan-worker] queue claim network timeout', { error: 'scan-queue-unavailable', degraded: true }); throw queueUnavailable(err) }
+  try { await kv.set(walletScanPendingJobKey(jobId), false, { ex: 60 }) } catch (err) { logQueueFailure('[wallet-scan-queue] claim-write-pending-job-failure', err); if (isRedisRestTimeout(err)) console.warn('[wallet-scan-worker] queue claim network timeout', { error: 'scan-queue-unavailable', degraded: true }); throw queueUnavailable(err) }
 
-  try { await redis.set(walletScanJobKey(jobId), { jobId, status: 'running' }, { ex: JOB_TTL_SECONDS }) } catch (err) { logQueueFailure('[wallet-scan-queue] claim-write-running-job-failure', err); if (isRedisRestTimeout(err)) console.warn('[wallet-scan-worker] queue claim network timeout', { error: 'scan-queue-unavailable', degraded: true }); throw queueUnavailable(err) }
+  try { await kv.set(walletScanJobKey(jobId), { jobId, status: 'running' }) } catch (err) { logQueueFailure('[wallet-scan-queue] claim-write-running-job-failure', err); if (isRedisRestTimeout(err)) console.warn('[wallet-scan-worker] queue claim network timeout', { error: 'scan-queue-unavailable', degraded: true }); throw queueUnavailable(err) }
 
   return {
     jobId,
@@ -204,9 +204,9 @@ export async function enqueueWalletScanJob(jobId: string, payload: WalletScanJob
     ip: payload.ip,
   })
   try {
-    await redis.set(walletScanPendingJobKey(jobId), true, { ex: JOB_TTL_SECONDS })
-    const pending = (await redis.get<string[]>(walletScanPendingKey())) ?? []
-    await redis.set(walletScanPendingKey(), [...new Set([...pending, jobId])], { ex: JOB_TTL_SECONDS })
+    await kv.set(walletScanPendingJobKey(jobId), true, { ex: JOB_TTL_SECONDS })
+    const pending = (await kv.get<string[]>(walletScanPendingKey())) ?? []
+    await kv.set(walletScanPendingKey(), [...new Set([...pending, jobId])], { ex: JOB_TTL_SECONDS })
   } catch (err) {
     logQueueFailure('[wallet-scan-queue] enqueue-pending-failure', err)
     throw queueUnavailable(err)

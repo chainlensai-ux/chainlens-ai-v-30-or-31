@@ -28,7 +28,7 @@ function installMemoryRedis(): Map<string, Stored> {
   return store
 }
 
-async function poll(jobId: string): Promise<{ status: number; body: any }> {
+async function poll(jobId: string): Promise<{ status: number; body: unknown }> {
   const { GET } = await import('./[jobId]/route.ts')
   const res = await GET(new Request(`http://localhost/api/wallet-scan/${encodeURIComponent(jobId)}`), { params: Promise.resolve({ jobId }) })
   return { status: res.status, body: await res.json() }
@@ -50,7 +50,7 @@ describe('wallet-scan final publish and poll key alignment', () => {
     const response = await poll('job-full')
 
     assert.equal(response.status, 200)
-    assert.deepEqual(response.body, { jobId: 'job-full', status: 'done', result })
+    assert.deepEqual(response.body, result)
   })
 
   it('publish → poll returns a degraded terminal fallback when the result key is missing', async () => {
@@ -61,7 +61,7 @@ describe('wallet-scan final publish and poll key alignment', () => {
     const response = await poll('job-missing-result')
 
     assert.equal(response.status, 200)
-    assert.deepEqual(response.body, { jobId: 'job-missing-result', status: 'done', degraded: true, result: { error: 'scan-final-result-unavailable', degraded: true } })
+    assert.deepEqual(response.body, { jobId: 'job-missing-result', status: 'done', result: { error: 'scan-final-result-unavailable', degraded: true } })
   })
 
   it('poll uses the exact jobId formatting written by final publish', async () => {
@@ -91,7 +91,6 @@ describe('wallet-scan final publish and poll key alignment', () => {
     const response = await poll('job-both-keys')
 
     assert.equal(response.status, 200)
-    assert.equal(response.body.status, 'done')
-    assert.deepEqual(response.body.result, result)
+    assert.deepEqual(response.body, result)
   })
 })
