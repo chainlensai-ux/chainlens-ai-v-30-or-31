@@ -34,21 +34,50 @@ function kvConfigured(): boolean {
   return Boolean(kvOverrideForTest) || Boolean(process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN)
 }
 
-// Returns the cached value or null using a direct KV get. No timeouts, retries, throttling,
-// degraded-mode handling, budget checks, chunk reassembly, or fallback substitution are applied.
+// BOUNDED, FAIL-OPEN TIMEOUT, DISCLOSED: this file's own header still means what it says — no
+// retries, no circuit breaker, no chunking, no degraded-mode handling — but an UNBOUNDED await on
+// a real network call (kv.get()/kv.set() have no built-in timeout) means a single slow/unreachable
+// KV endpoint hangs every caller of withStageCache indefinitely, which — for
+// `v2:providerFetchWindow:*` (called once per chain, per scan, at the very start of the pipeline,
+// see src/pipeline/index.ts) — stalls the ENTIRE scan on a single stuck await until the outer
+// 270s worker-global timeout fires. A single bounded timeout per call (matching this codebase's
+// other KV-adjacent timeout of 300ms, e.g. src/lib/kvClient.ts's own default) preserves "always
+// fail open, compute() is the only source of truth" while removing the possibility of an
+// indefinite hang. This adds a ceiling, not new retry/backoff/breaker complexity.
+const KV_CALL_TIMEOUT_MS = 300
+
+function withKvTimeout<T>(promise: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>
+  const timeout = new Promise<T>((_, reject) => {
+    timer = setTimeout(() => reject(new Error('kv_timeout')), KV_CALL_TIMEOUT_MS)
+  })
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer))
+}
+
+// Returns the cached value or null using a direct KV get. No retries, throttling, degraded-mode
+// handling, budget checks, chunk reassembly, or fallback substitution are applied — only a bounded
+// timeout (see withKvTimeout above) so a slow/unreachable KV endpoint can never hang the caller.
 async function getStageCache<T>(key: string): Promise<T | null> {
   if (!kvConfigured()) return null
-  const raw = await kv.get<unknown>(key)
-  if (raw == null) return null
-  return raw as T
+  try {
+    const raw = await withKvTimeout(kv.get<unknown>(key))
+    if (raw == null) return null
+    return raw as T
+  } catch {
+    return null
+  }
 }
 
 // Simple direct KV write. Every caller writes the complete payload to the single requested key.
 // There is no chunking, throttling, budget enforcement, degraded mode, adaptive sizing,
-// write-frequency reduction, partial write mode, or large-payload skipping.
+// write-frequency reduction, partial write mode, or large-payload skipping — only a bounded
+// timeout (see withKvTimeout above) so a slow/unreachable KV endpoint can never HANG the caller.
+// Genuine KV set failures still propagate untouched (this function's own test,
+// "propagates KV set failures without retrying", requires this) — its only caller
+// (withStageCache's no-writer branch, below) already attaches its own `.catch()`.
 async function setStageCache<T>(key: string, value: T, ttlSeconds: number): Promise<void> {
   if (!kvConfigured()) return
-  await kv.set(key, value, { ex: ttlSeconds })
+  await withKvTimeout(kv.set(key, value, { ex: ttlSeconds }))
 }
 
 export type SimpleKvWriter = {
@@ -122,7 +151,19 @@ export async function withStageCache<T>(
   const effectiveTtl = resolveEffectiveTtl(ttlSeconds, process.env.NODE_ENV)
   if (options?.writer) {
     const writePromise = options.writer.write(key, result, effectiveTtl)
-    if (options.awaitWrite) await writePromise
+    if (options.awaitWrite) {
+      await writePromise
+    } else {
+      // UNHANDLED-REJECTION GUARD, DISCLOSED: `writer.write()` is intentionally left free to
+      // propagate real KV failures when its caller awaits it (see this file's own writer tests —
+      // "propagates KV set failures without retrying" — writer.write() itself must never swallow
+      // errors). But when NOT awaited (the default here, e.g. holdings — see
+      // src/pipeline/runWalletScanV2.ts), an unhandled `writePromise` rejection becomes a process-
+      // level unhandled promise rejection, not just a lost cache write — this `.catch()` only
+      // prevents that at the fire-and-forget call site; it does not change writer.write()'s own
+      // throwing behavior for any caller that does await it.
+      writePromise.catch(() => undefined)
+    }
   } else {
     void setStageCache(key, result, effectiveTtl).catch(() => undefined)
   }
