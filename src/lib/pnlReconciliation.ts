@@ -17,31 +17,69 @@ const roundUsd = (n: number | null | undefined) => typeof n === 'number' && Numb
 const tokenKey = (chain: string, token: string) => `${chain}:${token.toLowerCase()}`
 const lotKey = (lot: Pick<MatchedLot, 'chain' | 'token' | 'openedTxHash' | 'closedTxHash' | 'openedAt' | 'closedAt'>) => [lot.chain, lot.token.toLowerCase(), lot.openedTxHash, lot.closedTxHash, lot.openedAt, lot.closedAt].join(':')
 
+// CONFIRMED ROOT CAUSE, DISCLOSED (real production evidence): recoverPrices previously ran a
+// FULLY SEQUENTIAL for-loop — one lot at a time, each `await`ing a real KV-backed price lookup
+// (falling through to a real provider fetcher on a KV miss) — over every lot missing a price, with
+// no concurrency and no cap. A real production run confirmed this exact gap: reconcile()'s own
+// "[pnl-reconciliation] routerCorrected" log fired, but its OWN final log
+// ("[pnl-reconciliation] finalSummary", at the very end of reconcile() below) never appeared at
+// all — across four separate real runs — while the worker's own job-finished log reported
+// durationMs almost exactly equal to WORKER_GLOBAL_TIMEOUT_MS every time. The ONLY code between
+// those two log lines is `await recoverPrices(fifoLots)`. For a wallet with hundreds of lots
+// missing a price (this session's own test wallet showed "failed: 373" in
+// priceLotsForWallet's own pricing-source breakdown), a fully sequential loop of real network
+// calls — each paying the same real-provider latency already documented elsewhere in this
+// pipeline (GoldRush/basedex, both already found and fixed for cost/latency this session) — is a
+// direct, sufficient explanation for a multi-minute hang with zero console output the whole time.
+//
+// FIX: bounded concurrency (mapWithConcurrencyLimit, same simple worker-pool pattern already used
+// by pricingAtTimeEngine/index.ts for the identical reason) plus a hard cap on how many lots this
+// best-effort recovery pass will even attempt. Recovery is optional and additive — a lot recovery
+// doesn't reach for stays exactly as honest as it already was (`priceUnavailable`, never a
+// fabricated recovered price) — so capping the attempt count only bounds cost, it never changes
+// correctness for any lot recovery DOES reach.
+const RECOVERY_CONCURRENCY_LIMIT = 8
+const MAX_RECOVERY_ATTEMPTS = 40
+
+async function mapWithConcurrencyLimit<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = new Array(items.length)
+  let nextIndex = 0
+  async function worker(): Promise<void> {
+    for (;;) {
+      const i = nextIndex++
+      if (i >= items.length) return
+      results[i] = await fn(items[i])
+    }
+  }
+  const workerCount = Math.min(limit, items.length)
+  await Promise.all(Array.from({ length: workerCount }, () => worker()))
+  return results
+}
+
 export function createPnlReconciliation(config: Config = {}) {
   const logger = config.logger ?? console
   let state: PnlReconciliationInput | null = null
 
-  // LOG-VOLUME FIX, DISCLOSED (confirmed bug — same class of issue this session already found and
-  // fixed in ayriAttribution.ts/basedex.ts/goldrushPriceSource.ts/routerInference.ts/pipeline/
-  // index.ts's dust-suppression logging): this previously logged one line per recovered lot inside
-  // the loop below — for a wallet with many price-recovered lots, that's the same per-item log
-  // volume risk already confirmed elsewhere in this exact call chain (reconcile() is invoked
-  // directly before ayriAttribution.build(), whose own per-lot logging was the confirmed root
-  // cause of a real 270s hang). Recovery still returns the exact same `recovered` Set the caller
-  // uses — only the per-lot console line was removed; the caller (reconcile(), below) still logs
-  // a real count via priceRecoveredCount in its own summary.
+  // Recovery still returns the exact same semantics as before: a lot this function reaches and
+  // successfully prices ends up in the returned Set (marked 'priceRecovered' by the caller); any
+  // lot it doesn't reach (beyond MAX_RECOVERY_ATTEMPTS) or can't price simply stays
+  // 'priceUnavailable' — exactly as honest as before, never a fabricated recovered price.
   async function recoverPrices(lots: readonly MatchedLot[]): Promise<Set<string>> {
     const recovered = new Set<string>()
     const fetchers = [config.priceSources?.primary, config.priceSources?.fallback].filter(Boolean) as PriceSourceFn[]
     if (!config.priceKvClient || fetchers.length === 0) return recovered
-    for (const lot of [...lots].sort((a, b) => lotKey(a).localeCompare(lotKey(b)))) {
-      if (lot.costBasisUsd !== null && lot.proceedsUsd !== null) continue
+    const priceKvClient = config.priceKvClient
+    const candidates = [...lots]
+      .sort((a, b) => lotKey(a).localeCompare(lotKey(b)))
+      .filter((lot) => !(lot.costBasisUsd !== null && lot.proceedsUsd !== null))
+      .slice(0, MAX_RECOVERY_ATTEMPTS)
+    await mapWithConcurrencyLimit(candidates, RECOVERY_CONCURRENCY_LIMIT, async (lot) => {
       for (const fetcher of fetchers) {
-        const buy = lot.costBasisUsd === null && config.priceKvClient.getPriceHistorical ? await config.priceKvClient.getPriceHistorical(lot.token, lot.chain, lot.openedAt, fetcher) : null
-        const sell = lot.proceedsUsd === null && config.priceKvClient.getPricePrimary ? await config.priceKvClient.getPricePrimary(lot.token, lot.chain, lot.closedAt, fetcher) : null
-        if (buy !== null || sell !== null) { recovered.add(lotKey(lot)); break }
+        const buy = lot.costBasisUsd === null && priceKvClient.getPriceHistorical ? await priceKvClient.getPriceHistorical(lot.token, lot.chain, lot.openedAt, fetcher) : null
+        const sell = lot.proceedsUsd === null && priceKvClient.getPricePrimary ? await priceKvClient.getPricePrimary(lot.token, lot.chain, lot.closedAt, fetcher) : null
+        if (buy !== null || sell !== null) { recovered.add(lotKey(lot)); return }
       }
-    }
+    })
     return recovered
   }
 

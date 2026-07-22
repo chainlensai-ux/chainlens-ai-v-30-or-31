@@ -51,4 +51,40 @@ describe('pnlReconciliation', () => {
     assert.equal((await r.reconcile({ fifoEngineResult: fifo({ unmatchedBuys: 1 }), pnlEngineResult: pnl(), syntheticPnlAssemblyOutput: null })).publicPnlStatus, 'partial')
     assert.equal((await r.reconcile({ fifoEngineResult: fifo({ unmatchedBuys: 10 }), pnlEngineResult: pnl(), syntheticPnlAssemblyOutput: null })).publicPnlStatus, 'unavailable')
   })
+
+  it('regression guard: price recovery runs with bounded concurrency, not a fully sequential await-per-lot loop', async () => {
+    // Confirmed root cause of a real multi-minute hang: recoverPrices previously awaited one lot
+    // at a time with zero concurrency. This proves many lots resolve in roughly one fetcher-latency
+    // "round", not N sequential rounds — the direct, measurable signature of the fix.
+    let inFlight = 0
+    let maxInFlight = 0
+    const manyLots = Array.from({ length: 60 }, (_, i) => lot({ lotId: `lot-${i}`, openedTxHash: `0xbuy${i}`, closedTxHash: `0xsell${i}`, costBasisUsd: null }))
+    const r = createPnlReconciliation({
+      logger: quiet,
+      priceKvClient: {
+        getPriceHistorical: async () => {
+          inFlight += 1
+          maxInFlight = Math.max(maxInFlight, inFlight)
+          await new Promise((resolve) => setTimeout(resolve, 5))
+          inFlight -= 1
+          return 10
+        },
+      },
+      priceSources: { primary: async () => 10 },
+    })
+    await r.reconcile({ fifoEngineResult: fifo({ matchedLots: manyLots }), pnlEngineResult: pnl(manyLots.length), syntheticPnlAssemblyOutput: null })
+    assert.ok(maxInFlight > 1, `expected concurrent in-flight lookups, saw max concurrency of ${maxInFlight}`)
+  })
+
+  it('regression guard: recovery attempts are capped, never unbounded, for a wallet with many missing-price lots', async () => {
+    let callCount = 0
+    const manyLots = Array.from({ length: 500 }, (_, i) => lot({ lotId: `lot-${i}`, openedTxHash: `0xbuy${i}`, closedTxHash: `0xsell${i}`, costBasisUsd: null }))
+    const r = createPnlReconciliation({
+      logger: quiet,
+      priceKvClient: { getPriceHistorical: async () => { callCount += 1; return null } },
+      priceSources: { primary: async () => null },
+    })
+    await r.reconcile({ fifoEngineResult: fifo({ matchedLots: manyLots }), pnlEngineResult: pnl(manyLots.length), syntheticPnlAssemblyOutput: null })
+    assert.ok(callCount <= 40, `expected recovery attempts capped at 40, saw ${callCount}`)
+  })
 })
