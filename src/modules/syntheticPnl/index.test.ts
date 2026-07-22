@@ -54,9 +54,9 @@ describe('inferSyntheticTrades — DexScreener attribution', () => {
     assert.equal(log.coveragePercent, null)
     assert.equal(log.integrityTier, null)
   })
-  it('writes the consolidated pipeline summary log entry', (t) => {
+  it('writes the consolidated pipeline summary log entry via console.warn (console.info/log/debug are stripped from production builds by next.config)', (t) => {
     let entry: unknown[] = []
-    t.mock.method(console, 'info', (...args: unknown[]) => { entry = args })
+    t.mock.method(console, 'warn', (...args: unknown[]) => { entry = args })
     logSyntheticPnlSummary(null)
     assert.equal(entry[0], '[pipeline] syntheticPnl summary')
     assert.deepEqual(entry[1], buildSyntheticPnlLogSummary(null))

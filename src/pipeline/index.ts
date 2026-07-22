@@ -1700,11 +1700,14 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     pricingSourceBreakdown: walletPriceLookups.sourceBreakdown,
     walletConditionInputs,
   })
+  // OBSERVABILITY FIX, DISCLOSED (same confirmed bug found and fixed repeatedly this session —
+  // next.config's compiler.removeConsole strips console.log/info/debug from production builds,
+  // exclude: ['error','warn'] only): console.warn survives the strip, message content unchanged.
   // eslint-disable-next-line no-console
-  console.log('[walletCondition] inputs', walletConditionInputs)
+  console.warn('[walletCondition] inputs', walletConditionInputs)
   const walletConditionMessages = buildWalletConditionMessages(walletConditionInputs)
   // eslint-disable-next-line no-console
-  console.log('[walletCondition] output', walletConditionMessages)
+  console.warn('[walletCondition] output', walletConditionMessages)
 
   // END-OF-PIPELINE FALLBACK GUARANTEE: repeat the compact synthetic-PnL summary after every stage
   // has completed, independent of the earlier immediate post-assembly log.

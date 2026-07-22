@@ -112,9 +112,17 @@ export function buildSyntheticPnlLogSummary(summary: SyntheticPnlSummary | null)
 }
 
 /** Emits a compact production-visible synthetic-PnL summary entry. */
+// OBSERVABILITY FIX, DISCLOSED (confirmed bug — same class this session already found and fixed in
+// workers/walletScanV2.ts, src/modules/walletScanWorker.ts, src/lib/routerInference.ts, and
+// src/pipeline/index.ts's dust-suppression logging): next.config's compiler.removeConsole strips
+// console.log/info/debug entirely from production builds (exclude: ['error','warn'] only) — this
+// line's own comment claims "production-visible" but console.info is one of the stripped methods,
+// so this summary — the one line that would show WHY syntheticPnl.ts produced zero trades / null
+// for a given scan (coverage%, integrity tier, priced-leg counts) — has never actually appeared in
+// any production log. console.warn survives the strip; message content is unchanged.
 export function logSyntheticPnlSummary(summary: SyntheticPnlSummary | null): void {
   // eslint-disable-next-line no-console
-  console.info('[pipeline] syntheticPnl summary', buildSyntheticPnlLogSummary(summary))
+  console.warn('[pipeline] syntheticPnl summary', buildSyntheticPnlLogSummary(summary))
 }
 
 /**
