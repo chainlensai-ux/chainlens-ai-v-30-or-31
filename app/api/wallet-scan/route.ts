@@ -44,3 +44,16 @@ export async function POST(req: Request): Promise<Response> {
 
   return NextResponse.json({ jobId, wallet, status: 'queued' })
 }
+
+
+export async function GET(req: Request): Promise<Response> {
+  const { searchParams } = new URL(req.url)
+  const jobId = searchParams.get('jobId')
+
+  if (!jobId) {
+    return NextResponse.json({ error: { message: 'Missing jobId', category: 'validation' } }, { status: 400 })
+  }
+
+  const { GET: pollWalletScanJob } = await import('@/app/api/wallet-scan/[jobId]/route')
+  return await pollWalletScanJob(req, { params: Promise.resolve({ jobId }) })
+}
