@@ -114,6 +114,21 @@ export function createAyriAttribution(config: Config = {}) {
       const records: AyriAttributionRecord[] = []
       const criticalMismatches: string[] = []
 
+      // LOG-VOLUME FIX, DISCLOSED (confirmed bug — same class of issue basedex.ts/
+      // goldrushPriceSource.ts/routerInference.ts/pipeline/index.ts's dust-suppression logging
+      // already independently fixed for themselves this session): this loop previously logged one
+      // full "[ayri] attributionRecord" object per matched lot via logger.warn — up to ~200 lot
+      // records for a real wallet (see fifoEngine's own matchedLots/pnlSummaryV2's own closedLots
+      // counts). A real production run confirmed the entire pipeline call hung for the full 270s
+      // worker-global timeout with ZERO console output between this build() call's caller logging
+      // "[pnl-reconciliation] routerCorrected" and the very next line after this function returns
+      // ("[pipeline] providerFetchWindowDiagnostics") — i.e. everything between those two lines,
+      // including this loop, is exactly where the unaccounted time went. High-volume synchronous
+      // console writes to a piped stdout (which is what serverless log capture is) can genuinely
+      // block on backpressure, not merely get dropped from a dashboard view. The aggregate summary
+      // logged right after this loop ([ayri] coverage / [ayri] summary, already present below)
+      // already reports every meaningful category count (primaryCount/fallbackCount/
+      // routerCorrectedCount/etc.) — the per-lot dump added no signal that summary doesn't cover.
       for (const lot of lots) {
         const key = lotKey(lot)
         const priceRecovered = recoveryHas(input.priceRecoveryMap, lot) || mismatchClasses.get(key) === 'priceRecovered'
@@ -145,7 +160,6 @@ export function createAyriAttribution(config: Config = {}) {
           routerCorrected,
         }
         records.push(record)
-        logger.warn('[ayri] attributionRecord', record)
         if (syntheticBudget > 0) syntheticBudget -= 1
         if (routerBudget > 0) routerBudget -= 1
       }

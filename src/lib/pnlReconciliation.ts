@@ -21,6 +21,15 @@ export function createPnlReconciliation(config: Config = {}) {
   const logger = config.logger ?? console
   let state: PnlReconciliationInput | null = null
 
+  // LOG-VOLUME FIX, DISCLOSED (confirmed bug — same class of issue this session already found and
+  // fixed in ayriAttribution.ts/basedex.ts/goldrushPriceSource.ts/routerInference.ts/pipeline/
+  // index.ts's dust-suppression logging): this previously logged one line per recovered lot inside
+  // the loop below — for a wallet with many price-recovered lots, that's the same per-item log
+  // volume risk already confirmed elsewhere in this exact call chain (reconcile() is invoked
+  // directly before ayriAttribution.build(), whose own per-lot logging was the confirmed root
+  // cause of a real 270s hang). Recovery still returns the exact same `recovered` Set the caller
+  // uses — only the per-lot console line was removed; the caller (reconcile(), below) still logs
+  // a real count via priceRecoveredCount in its own summary.
   async function recoverPrices(lots: readonly MatchedLot[]): Promise<Set<string>> {
     const recovered = new Set<string>()
     const fetchers = [config.priceSources?.primary, config.priceSources?.fallback].filter(Boolean) as PriceSourceFn[]
@@ -30,7 +39,7 @@ export function createPnlReconciliation(config: Config = {}) {
       for (const fetcher of fetchers) {
         const buy = lot.costBasisUsd === null && config.priceKvClient.getPriceHistorical ? await config.priceKvClient.getPriceHistorical(lot.token, lot.chain, lot.openedAt, fetcher) : null
         const sell = lot.proceedsUsd === null && config.priceKvClient.getPricePrimary ? await config.priceKvClient.getPricePrimary(lot.token, lot.chain, lot.closedAt, fetcher) : null
-        if (buy !== null || sell !== null) { recovered.add(lotKey(lot)); logger.warn('[pnl-reconciliation] priceRecovered', { lot: lotKey(lot), token: lot.token, chain: lot.chain }); break }
+        if (buy !== null || sell !== null) { recovered.add(lotKey(lot)); break }
       }
     }
     return recovered
