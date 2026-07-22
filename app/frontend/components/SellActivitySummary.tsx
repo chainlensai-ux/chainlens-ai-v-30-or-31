@@ -118,7 +118,7 @@ export function SellActivitySummary({
           Sell Activity
         </h3>
         <StatusBadge
-          label={profitSkillUnlocked ? 'Profit Skill unlocked' : 'Profit Skill locked — no sells detected'}
+          label={profitSkillUnlocked ? 'Profit Skill unlocked' : `Profit Skill locked — ${totalSells > 0 ? 'PnL not verified' : 'no sells detected'}`}
           tone={profitSkillUnlocked ? 'success' : 'neutral'}
         />
         {profitSkillUnlocked && (
