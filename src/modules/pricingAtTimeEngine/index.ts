@@ -103,7 +103,22 @@ const PRICE_ENTRY_CONCURRENCY_LIMIT = 30
 // types.ts header) — only pricingAtTime's own additive costUsd/proceedsUsd/evidenceMissingCount
 // read model is affected, never any pnlV2/FIFO/cost-basis number.
 const MAX_LOOKUPS_PER_TOKEN_DEFAULT = 2
-const MAX_LOOKUPS_PER_TOKEN_DENSE = 1 // used when distinctTokenCount > DENSE_TOKEN_THRESHOLD
+// DENSE-CAP FIX, DISCLOSED (confirmed bug, real production evidence — distinctTokenCount: 128 with
+// cappedCount: 225): this was previously 1, meaning a wallet above DENSE_TOKEN_THRESHOLD got exactly
+// ONE lookup per token TOTAL, across its combined buy+sell entries (buys are listed first in the
+// tagged array below, so a token's own SELL entry — needed for a closed lot's proceedsUsd — always
+// lost the cap to that same token's earlier BUY entry). A closed lot structurally needs at minimum
+// two distinct timestamp lookups (its buy AND its sell) to ever become fully priced; capping at 1
+// made it IMPOSSIBLE for any lot of a dense wallet to ever get both costUsd and proceedsUsd, which is
+// a direct, sufficient explanation for realizedPnlUsd staying null despite hundreds of real matched
+// lots. Raised to 2 — the minimum needed for one round-trip (buy+sell) per token to both price — a
+// token traded more than twice still has its 3rd+ occurrence honestly capped/unpriced, same
+// disclosed tradeoff as before, just no longer structurally guaranteed to block 100% of proceeds.
+// Cost impact: bounded, proportional to the wallet's own distinct token count — up to
+// +distinctTokenCount additional real provider calls in the worst case for dense wallets specifically
+// (previously-capped second-occurrence lookups can now proceed instead of returning null instantly);
+// non-dense wallets (<=120 distinct tokens) are unaffected, this only raises the DENSE tier.
+const MAX_LOOKUPS_PER_TOKEN_DENSE = 2 // used when distinctTokenCount > DENSE_TOKEN_THRESHOLD
 const DENSE_TOKEN_THRESHOLD = 120
 
 // Pure, exported for direct testing.

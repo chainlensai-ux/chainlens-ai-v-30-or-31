@@ -69,11 +69,74 @@ describe('resolvePricingAtTime concurrency cap', () => {
 })
 
 describe('resolvePricingAtTime per-token lookup cap', () => {
-  it('resolveMaxLookupsPerToken returns 2 by default, 1 when distinctTokenCount > 120', () => {
+  it('resolveMaxLookupsPerToken returns 2 both at/below and above the dense threshold (120)', () => {
+    // DENSE-CAP FIX, DISCLOSED (confirmed real bug, real production evidence: distinctTokenCount:
+    // 128, cappedCount: 225): the dense tier was previously 1 — exactly one lookup per token TOTAL,
+    // across a token's combined buy+sell entries. Since buys are always listed before sells in the
+    // combined lookup order, a token's own SELL entry (needed for a closed lot's proceedsUsd) always
+    // lost the cap to that SAME token's earlier BUY entry — making it structurally impossible for any
+    // lot of a >120-distinct-token wallet to ever become fully priced (both cost AND proceeds), which
+    // is a direct, sufficient explanation for realizedPnlUsd staying null despite hundreds of real
+    // matched lots. Raised to 2 — the minimum needed for one buy+sell round-trip per token to both
+    // price — while a 3rd+ occurrence of the same token is still honestly capped (see the round-trip
+    // tests below).
     assert.equal(resolveMaxLookupsPerToken(1), 2)
     assert.equal(resolveMaxLookupsPerToken(120), 2)
-    assert.equal(resolveMaxLookupsPerToken(121), 1)
-    assert.equal(resolveMaxLookupsPerToken(500), 1)
+    assert.equal(resolveMaxLookupsPerToken(121), 2)
+    assert.equal(resolveMaxLookupsPerToken(500), 2)
+  })
+
+  it('a token\'s BUY and SELL entries BOTH price under the dense cap (>120 distinct tokens) — the confirmed production bug, fixed', async () => {
+    // Simulates a dense wallet (128 distinct tokens, matching real production evidence) where one
+    // specific token has both a buy and a sell entry sharing the token but different txHashes. Before
+    // the fix, the sell entry — processed after ALL buy entries, since priceAllEntries' `tagged`
+    // array is `[...buyEntries, ...sellEntries]` — always lost the per-token cap to its own paired
+    // buy entry, leaving proceedsUsd permanently null for every lot in a dense wallet regardless of
+    // real price availability.
+    const otherTokenBuys: PriceableEntry[] = Array.from({ length: 127 }, (_, i) => ({
+      txHash: `0xbuy${i}`, token: `0xother${i}`, chain: 'base', timestamp: Date.now() + i, amount: '1',
+    }))
+    const targetBuy: PriceableEntry = { txHash: '0xtargetbuy', token: '0xtarget', chain: 'base', timestamp: Date.now(), amount: '1' }
+    const targetSell: PriceableEntry = { txHash: '0xtargetsell', token: '0xtarget', chain: 'base', timestamp: Date.now() + 1000, amount: '1' }
+    const source: PriceSourceFn = async (token) => (token === '0xtarget' ? 5 : 1)
+
+    const result = await resolvePricingAtTime({
+      buyEntries: [...otherTokenBuys, targetBuy], // 128 distinct tokens total -> dense tier
+      sellEntries: [targetSell],
+      priceSources: { primary: source, fallback: source },
+    })
+
+    assert.equal(result.costUsd['0xtargetbuy'], 5, 'buy entry must price')
+    assert.equal(result.proceedsUsd['0xtargetsell'], 5, 'sell entry must ALSO price — previously always null under the old dense cap of 1')
+  })
+
+  it('a token bought TWICE then sold once in a dense wallet still caps the sell as the 3rd occurrence (disclosed residual limit, never fabricated)', async () => {
+    // Honest disclosure: the fix guarantees a simple one-buy+one-sell round-trip prices fully (see
+    // the test above). It does NOT guarantee every case — buyEntries are always listed before
+    // sellEntries in priceAllEntries' `tagged` array, so a token bought twice before being sold still
+    // has both its buy occurrences consume the cap of 2 before its sell is ever reached, leaving that
+    // sell (the 3rd occurrence of the token) honestly capped. A larger fix (e.g. prioritizing entries
+    // that belong to an already-known closed lot) would require pricingAtTimeEngine to know FIFO's
+    // lot-matching result before it runs — but pricing intentionally runs BEFORE lot-matching, since
+    // fifoEngine's own priceUsdLookup is synchronous by design (see priceLotsForWallet.ts's header) —
+    // so that reordering is out of scope for this surgical fix.
+    const otherTokenBuys: PriceableEntry[] = Array.from({ length: 126 }, (_, i) => ({
+      txHash: `0xbuy${i}`, token: `0xother${i}`, chain: 'base', timestamp: Date.now() + i, amount: '1',
+    }))
+    const buy1: PriceableEntry = { txHash: '0xb1', token: '0xtarget', chain: 'base', timestamp: 1, amount: '1' }
+    const buy2: PriceableEntry = { txHash: '0xb2', token: '0xtarget', chain: 'base', timestamp: 2, amount: '1' }
+    const sell1: PriceableEntry = { txHash: '0xs1', token: '0xtarget', chain: 'base', timestamp: 3, amount: '1' }
+    const source: PriceSourceFn = async () => 5
+
+    const result = await resolvePricingAtTime({
+      buyEntries: [...otherTokenBuys, buy1, buy2], // 128 distinct tokens -> dense; target token bought twice
+      sellEntries: [sell1],
+      priceSources: { primary: source, fallback: source },
+    })
+
+    assert.equal(result.costUsd['0xb1'], 5, 'first occurrence (buy 1) prices')
+    assert.equal(result.costUsd['0xb2'], 5, 'second occurrence (buy 2) prices — both buy slots consume the cap of 2')
+    assert.equal(result.proceedsUsd['0xs1'], null, 'third occurrence (the sell) is honestly capped, never fabricated — a real, disclosed residual limit')
   })
 
   it('caps a heavily-repeated single token at 2 real lookups, leaving later entries unpriced (never fabricated)', async () => {

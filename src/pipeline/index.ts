@@ -1292,7 +1292,18 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
 
   const priceLotsForWalletStart = performance.now()
   const rpcLogSnapshotBeforePriceLots = rpcDebugLog.length
-  const requestPriceKvClient = createRequestPriceKvClient({ historicalReadOnly: true })
+  // HISTORICAL-PRICE CACHE WRITE FIX, DISCLOSED (confirmed, real production evidence: remoteGets:
+  // 229, remoteSets: 0): this previously passed historicalReadOnly: true with no comment anywhere
+  // explaining why — every real historical price this pipeline successfully resolved was computed,
+  // used for this one request, then discarded, never persisted to KV for reuse by a LATER scan. A
+  // historical price at a fixed past timestamp is an immutable fact (unlike a "current" price, which
+  // genuinely changes) — the same "safe to cache across requests, unlike live-changing data"
+  // distinction already established elsewhere in this codebase (e.g. holdings.ts's own comment on
+  // why current balances are deliberately never cached). Removed: writes now happen through the same
+  // existing writeBreaker/semaphore/timeout protections the write path already has, so this is a pure
+  // efficiency gain (fewer real provider calls needed on repeat historical lookups across scans),
+  // never a correctness change to what gets priced.
+  const requestPriceKvClient = createRequestPriceKvClient()
   const requestPriceSources: PriceSources = {
     primary: requestPriceKvClient.wrapPriceSource(PRICE_SOURCES.primary, 'chain-aware-historical'),
     fallback: PRICE_SOURCES.fallback,

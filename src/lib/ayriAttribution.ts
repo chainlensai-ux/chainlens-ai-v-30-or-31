@@ -29,6 +29,15 @@ export type AyriAttributionRecord = {
 export type AyriAttributionSummary = {
   totalLots: number
   attributedLots: number
+  // coveragePercent = attributedLots / totalLots: this measures ATTRIBUTION coverage — how many
+  // lots got any attribution record at all (a lot can be attributed via routerCorrected/
+  // syntheticAligned/priceRecovered bookkeeping without ever having a real priced realizedUsd).
+  // COVERAGE-SEPARATION FIX, DISCLOSED (confirmed, real production evidence: coveragePercent: 1,
+  // integrityTier: 'high' shown alongside realizedPnlUsd: 0 with zero fully priced lots — a
+  // misleading "100% coverage" claim when historical pricing coverage was actually poor).
+  // fullyPricedLots/historicalPricingCoveragePercent below are the separate, explicit PRICING
+  // coverage this summary was previously conflating with attribution coverage. coveragePercent and
+  // attributedLots are kept as-is (unrenamed) for existing consumers — only additive fields below.
   coveragePercent: number
   integrityTier: AyriIntegrityTier
   primaryCount: number
@@ -38,6 +47,12 @@ export type AyriAttributionSummary = {
   recoveredCount: number
   routerCorrectedCount: number
   syntheticAlignedCount: number
+  // Count of records with a REAL priced realizedUsd (i.e. lot.realizedPnlUsd !== null at the source)
+  // — distinct from attributedLots, which counts any attribution record regardless of pricing.
+  fullyPricedLots: number
+  // fullyPricedLots / totalLots — the real historical-pricing completeness, never to be confused
+  // with coveragePercent (attribution coverage) above.
+  historicalPricingCoveragePercent: number
   realizedPnlUsd: number | null
   unrealizedPnlUsd: number | null
 }
@@ -198,7 +213,20 @@ export function createAyriAttribution(config: Config = {}) {
       const attributedLots = records.length
       const coveragePercent = totalLots === 0 ? 1 : round(attributedLots / totalLots)
       const integrityTier: AyriIntegrityTier = coveragePercent >= 0.95 && criticalMismatches.length === 0 ? 'high' : coveragePercent >= 0.75 ? 'medium' : 'low'
-      const realizedPnlUsd = input.reconciledPnL.realizedPnlUsd ?? (records.length ? records.reduce((sum, r) => sum + (r.realizedUsd ?? 0), 0) : null)
+      // FALSE-ZERO FIX, DISCLOSED (confirmed bug, real production evidence: realizedPnlUsd: 0 shown
+      // with totalLots: 290, attributedLots: 290, but zero lots actually fully priced). The previous
+      // `records.length ? records.reduce((sum, r) => sum + (r.realizedUsd ?? 0), 0) : null` only
+      // guarded against an EMPTY records array — but every record whose lot has no priced
+      // realizedPnlUsd simply omits the `realizedUsd` field (see the record construction above),
+      // making it `undefined`, and `(r.realizedUsd ?? 0)` silently coalesced that to 0 for the sum.
+      // So 290 attributed-but-unpriced records summed to 0 + 0 + ... + 0 = 0 — a fabricated "$0
+      // realized PnL" that looked identical to a real, legitimately-zero result. Fixed by filtering
+      // to only records with a REAL priced realizedUsd first: zero such records -> null (honest
+      // "nothing priced"); one or more -> the real sum, which may legitimately equal 0.
+      const pricedRecords = records.filter((r) => r.realizedUsd !== undefined)
+      const fullyPricedLots = pricedRecords.length
+      const historicalPricingCoveragePercent = totalLots === 0 ? 1 : round(fullyPricedLots / totalLots)
+      const realizedPnlUsd = input.reconciledPnL.realizedPnlUsd ?? (fullyPricedLots > 0 ? pricedRecords.reduce((sum, r) => sum + (r.realizedUsd as number), 0) : null)
       const unrealizedPnlUsd = input.reconciledPnL.unrealizedPnlUsd
       const summary: AyriAttributionSummary = {
         totalLots,
@@ -212,6 +240,8 @@ export function createAyriAttribution(config: Config = {}) {
         recoveredCount: records.filter((r) => r.attributionSource === 'recoveredPrice').length,
         routerCorrectedCount: records.filter((r) => r.routerCorrected).length,
         syntheticAlignedCount: records.filter((r) => r.syntheticAligned).length,
+        fullyPricedLots,
+        historicalPricingCoveragePercent,
         realizedPnlUsd,
         unrealizedPnlUsd,
       }
