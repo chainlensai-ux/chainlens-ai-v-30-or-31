@@ -72,8 +72,11 @@ describe('pnlReconciliation', () => {
 
   it('regression guard: when fifoEngine has a real total, it is used exactly as-is regardless of what pnlEngine independently computed', async () => {
     const r = createPnlReconciliation({ logger: quiet })
+    // realizedPnlUsd is now recomputed from the actual matchedLots (see the recovery-inclusive
+    // canonical sum) rather than trusted blindly from the summary field — so the fixture's lot(s)
+    // must actually sum to the expected total.
     const summary = await r.reconcile({
-      fifoEngineResult: fifo({ realizedPnlUsd: 174.01 }),
+      fifoEngineResult: fifo({ realizedPnlUsd: 174.01, matchedLots: [lot({ realizedPnlUsd: 174.01 })] }),
       pnlEngineResult: pnl(1, { realizedPnlUsd: 270.02 }), // a different, independently-matched total
       syntheticPnlAssemblyOutput: null,
     })
@@ -149,5 +152,95 @@ describe('pnlReconciliation', () => {
     })
     await r.reconcile({ fifoEngineResult: fifo({ matchedLots: manyLots }), pnlEngineResult: pnl(manyLots.length), syntheticPnlAssemblyOutput: null })
     assert.ok(callCount <= 40, `expected recovery attempts capped at 40, saw ${callCount}`)
+  })
+
+  it('regression guard: provider-call count stays bounded (<= 2x the candidate cap) even with a mix of one-side and both-sides-missing lots', async () => {
+    let callCount = 0
+    const oneSideLots = Array.from({ length: 30 }, (_, i) => lot({ lotId: `one-${i}`, openedTxHash: `0xb1-${i}`, closedTxHash: `0xs1-${i}`, costBasisUsd: 10, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced' }))
+    const bothSideLots = Array.from({ length: 30 }, (_, i) => lot({ lotId: `both-${i}`, openedTxHash: `0xb2-${i}`, closedTxHash: `0xs2-${i}`, costBasisUsd: null, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced' }))
+    const r = createPnlReconciliation({
+      logger: quiet,
+      priceKvClient: {
+        getPriceHistorical: async () => { callCount += 1; return 5 },
+        getPricePrimary: async () => { callCount += 1; return 5 },
+      },
+      priceSources: { primary: async () => 5 },
+    })
+    await r.reconcile({
+      fifoEngineResult: fifo({ matchedLots: [...oneSideLots, ...bothSideLots] }),
+      pnlEngineResult: pnl(60),
+      syntheticPnlAssemblyOutput: null,
+    })
+    // At most MAX_RECOVERY_ATTEMPTS (40) candidates, each needing at most 2 real calls (one per
+    // missing side) — the cap itself was never raised or bypassed by the priority reordering.
+    assert.ok(callCount <= 80, `expected <= 80 real provider calls (40 candidates x 2 sides max), saw ${callCount}`)
+  })
+
+  it('regression guard: a one-side-missing lot is prioritized over a both-sides-missing lot in recovery attempt order', async () => {
+    // Confirmed real bug fix target: a lot missing only ONE side needs exactly one more successful
+    // lookup to become fully priced; a lot missing BOTH sides needs two. Prioritizing one-side-
+    // missing candidates first yields more fully-priced lots per attempt within any bounded budget.
+    const oneSideMissing = lot({ lotId: 'one-side', openedTxHash: '0xbuy-oneside', closedTxHash: '0xsell-oneside', openedAt: 100, closedAt: 200, costBasisUsd: 10, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced' })
+    const bothSidesMissing = lot({ lotId: 'both-sides', openedTxHash: '0xbuy-both', closedTxHash: '0xsell-both', openedAt: 300, closedAt: 400, costBasisUsd: null, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced' })
+    const calls: string[] = []
+    const r = createPnlReconciliation({
+      logger: quiet,
+      priceKvClient: {
+        getPriceHistorical: async (token, chain, ts) => { calls.push(`historical:${ts}`); return 5 },
+        getPricePrimary: async (token, chain, ts) => { calls.push(`primary:${ts}`); return 5 },
+      },
+      priceSources: { primary: async () => 5 },
+    })
+    // Both-sides-missing lot listed FIRST in the raw array — priority ordering must still put the
+    // one-side-missing lot's attempt first, proving it's not just raw array or chronological order
+    // (bothSidesMissing's openedAt=300 comes after oneSideMissing's own timestamps either way, so
+    // this also rules out "earliest timestamp wins" as the explanation).
+    const summary = await r.reconcile({
+      fifoEngineResult: fifo({ matchedLots: [bothSidesMissing, oneSideMissing], realizedPnlUsd: null }),
+      pnlEngineResult: pnl(2),
+      syntheticPnlAssemblyOutput: null,
+    })
+    assert.ok(calls.length > 0, 'sanity: recovery attempted at least one lookup')
+    assert.equal(calls[0], 'primary:200', 'the one-side-missing lot\'s missing side (sell, closedAt=200) must be attempted first, ahead of the both-sides-missing lot')
+    // Both lots ultimately complete (budget of 40 comfortably covers 2 candidates): oneSideMissing =
+    // recovered proceeds(5) - existing cost(10) = -5; bothSidesMissing = recovered proceeds(5) -
+    // recovered cost(5) = 0. Sum = -5.
+    assert.equal(summary.realizedPnlUsd, -5)
+  })
+
+  it('regression guard: a successfully recovered price actually flows into the official realizedPnlUsd — recovery is no longer cosmetic-only', async () => {
+    // Confirmed real bug fix: recovery previously fetched a real price, then DISCARDED it — only
+    // affecting evidence-count optics, never the official sum. This proves the recovered price now
+    // genuinely completes the lot and contributes to realizedPnlUsd.
+    const partiallyPriced = lot({ costBasisUsd: 10, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced' })
+    const r = createPnlReconciliation({
+      logger: quiet,
+      priceKvClient: { getPricePrimary: async () => 15 }, // real, successful recovery of the missing sell price
+      priceSources: { primary: async () => 15 },
+    })
+    const summary = await r.reconcile({
+      fifoEngineResult: fifo({ matchedLots: [partiallyPriced], realizedPnlUsd: null }),
+      pnlEngineResult: pnl(1),
+      syntheticPnlAssemblyOutput: null,
+    })
+    assert.equal(summary.priceRecoveredCount, 1)
+    assert.equal(summary.realizedPnlUsd, 5, 'recovered proceeds (15) - existing cost (10) = 5, must reach the official total, not be discarded')
+  })
+
+  it('regression guard: a provider returning null for the missing side leaves the lot honestly unpriced — never a fabricated value', async () => {
+    const partiallyPriced = lot({ costBasisUsd: 10, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced' })
+    const r = createPnlReconciliation({
+      logger: quiet,
+      priceKvClient: { getPricePrimary: async () => null }, // genuine provider failure
+      priceSources: { primary: async () => null },
+    })
+    const summary = await r.reconcile({
+      fifoEngineResult: fifo({ matchedLots: [partiallyPriced], realizedPnlUsd: null }),
+      pnlEngineResult: pnl(1, { realizedPnlUsd: null }),
+      syntheticPnlAssemblyOutput: null,
+    })
+    assert.equal(summary.priceRecoveredCount, 0)
+    assert.equal(summary.realizedPnlUsd, null, 'no fabricated value — stays honestly null when the provider genuinely has nothing')
+    assert.notEqual(summary.publicPnlStatus, 'available', 'status must never claim "available" while realizedPnlUsd is null')
   })
 })

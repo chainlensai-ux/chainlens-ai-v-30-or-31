@@ -60,27 +60,71 @@ export function createPnlReconciliation(config: Config = {}) {
   const logger = config.logger ?? console
   let state: PnlReconciliationInput | null = null
 
-  // Recovery still returns the exact same semantics as before: a lot this function reaches and
-  // successfully prices ends up in the returned Set (marked 'priceRecovered' by the caller); any
-  // lot it doesn't reach (beyond MAX_RECOVERY_ATTEMPTS) or can't price simply stays
-  // 'priceUnavailable' — exactly as honest as before, never a fabricated recovered price.
-  async function recoverPrices(lots: readonly MatchedLot[]): Promise<Set<string>> {
-    const recovered = new Set<string>()
+  // RECOVERED-PRICE-DISCARDED FIX, DISCLOSED (confirmed root cause of stalled pricing coverage —
+  // real production evidence: 283 closed lots, 7 fully priced, 2.47% coverage, unchanged by whether
+  // recovery ran or not): this previously returned only a Set<string> of lot keys "recovery reached
+  // and found something for" — the ACTUAL resolved price number was discarded the moment it was
+  // fetched. reconcile() below only ever used that Set to (a) relabel a mismatch as 'priceRecovered'
+  // and (b) shrink missingEvidenceCount's optics — the real, successfully-fetched USD figure never
+  // flowed into a lot's costBasisUsd/proceedsUsd/realizedPnlUsd, and therefore never into the
+  // official realizedPnlUsd sum (which came from input.fifoEngineResult.realizedPnlUsd, computed
+  // upstream in fifoEngine BEFORE this recovery pass ever runs). Recovery was, in effect, cosmetic —
+  // it could make the evidence-count LOOK better without ever making one more lot actually eligible
+  // for realized PnL. Fixed: now returns the real resolved price per lot, and reconcile() below
+  // merges it into an updated lot list and recomputes realizedPnlUsd from that — same bounded
+  // candidate cap (MAX_RECOVERY_ATTEMPTS), same concurrency limit, same real priceSources (including
+  // the on-chain fallback already reused here under existing policy) — this is strictly about
+  // applying what recovery already, legitimately found, never about fetching more or fabricating
+  // anything. A lot recovery doesn't reach, or genuinely can't price, stays exactly as honest as
+  // before: null, never a fabricated value.
+  //
+  // ONE-SIDE-MISSING PRIORITY, DISCLOSED: a lot already missing only ONE side needs exactly one more
+  // successful lookup to become fully priced; a lot missing BOTH sides needs two. Within the same
+  // fixed candidate budget, completing one-side-missing lots first yields more newly-fully-priced
+  // lots per attempt than starting new lots from zero — sorted first (tie-broken by lotKey for
+  // determinism), never changing which fetchers or how many attempts are used per lot.
+  type RecoveredPrice = { costBasisUsd: number | null; proceedsUsd: number | null }
+  async function recoverPrices(lots: readonly MatchedLot[]): Promise<{
+    recoveredByLotKey: Map<string, RecoveredPrice>
+    oneSideMissingCandidates: number
+    bothSidesMissingCandidates: number
+    candidatesAttempted: number
+    candidatesCappedByBudget: number
+  }> {
+    const recoveredByLotKey = new Map<string, RecoveredPrice>()
     const fetchers = [config.priceSources?.primary, config.priceSources?.fallback].filter(Boolean) as PriceSourceFn[]
-    if (!config.priceKvClient || fetchers.length === 0) return recovered
+    const missingLots = lots.filter((lot) => !(lot.costBasisUsd !== null && lot.proceedsUsd !== null))
+    const oneSideMissingCandidates = missingLots.filter((l) => l.costBasisUsd !== null || l.proceedsUsd !== null).length
+    const bothSidesMissingCandidates = missingLots.length - oneSideMissingCandidates
+    if (!config.priceKvClient || fetchers.length === 0) {
+      return { recoveredByLotKey, oneSideMissingCandidates, bothSidesMissingCandidates, candidatesAttempted: 0, candidatesCappedByBudget: missingLots.length }
+    }
     const priceKvClient = config.priceKvClient
-    const candidates = [...lots]
-      .sort((a, b) => lotKey(a).localeCompare(lotKey(b)))
-      .filter((lot) => !(lot.costBasisUsd !== null && lot.proceedsUsd !== null))
-      .slice(0, MAX_RECOVERY_ATTEMPTS)
+    const sorted = [...missingLots].sort((a, b) => {
+      const aOneSide = a.costBasisUsd !== null || a.proceedsUsd !== null ? 0 : 1
+      const bOneSide = b.costBasisUsd !== null || b.proceedsUsd !== null ? 0 : 1
+      return aOneSide !== bOneSide ? aOneSide - bOneSide : lotKey(a).localeCompare(lotKey(b))
+    })
+    const candidates = sorted.slice(0, MAX_RECOVERY_ATTEMPTS)
     await mapWithConcurrencyLimit(candidates, RECOVERY_CONCURRENCY_LIMIT, async (lot) => {
+      const needsBuy = lot.costBasisUsd === null
+      const needsSell = lot.proceedsUsd === null
+      let recoveredBuy: number | null = null
+      let recoveredSell: number | null = null
       for (const fetcher of fetchers) {
-        const buy = lot.costBasisUsd === null && priceKvClient.getPriceHistorical ? await priceKvClient.getPriceHistorical(lot.token, lot.chain, lot.openedAt, fetcher) : null
-        const sell = lot.proceedsUsd === null && priceKvClient.getPricePrimary ? await priceKvClient.getPricePrimary(lot.token, lot.chain, lot.closedAt, fetcher) : null
-        if (buy !== null || sell !== null) { recovered.add(lotKey(lot)); return }
+        if (needsBuy && recoveredBuy === null && priceKvClient.getPriceHistorical) {
+          recoveredBuy = await priceKvClient.getPriceHistorical(lot.token, lot.chain, lot.openedAt, fetcher)
+        }
+        if (needsSell && recoveredSell === null && priceKvClient.getPricePrimary) {
+          recoveredSell = await priceKvClient.getPricePrimary(lot.token, lot.chain, lot.closedAt, fetcher)
+        }
+        if ((!needsBuy || recoveredBuy !== null) && (!needsSell || recoveredSell !== null)) break
+      }
+      if (recoveredBuy !== null || recoveredSell !== null) {
+        recoveredByLotKey.set(lotKey(lot), { costBasisUsd: recoveredBuy, proceedsUsd: recoveredSell })
       }
     })
-    return recovered
+    return { recoveredByLotKey, oneSideMissingCandidates, bothSidesMissingCandidates, candidatesAttempted: candidates.length, candidatesCappedByBudget: sorted.length - candidates.length }
   }
 
   return {
@@ -106,8 +150,43 @@ export function createPnlReconciliation(config: Config = {}) {
         logger.warn('[pnl-reconciliation] routerCorrected', { routerCorrectedCount, acceptedRouters: [...acceptedRouters].sort() })
       }
 
-      const recovered = await recoverPrices(fifoLots)
+      const recovery = await recoverPrices(fifoLots)
+      const recovered = new Set(recovery.recoveredByLotKey.keys())
       for (const key of recovered) mismatches.set(key, 'priceRecovered')
+
+      // Merge recovery's real, resolved prices into a copy of the lots — never mutating fifoEngine's
+      // own matchedLots — so the canonical realizedPnlUsd below actually reflects what recovery
+      // found, instead of discarding it (see recoverPrices' own header for the full trace). A lot
+      // recovery didn't touch is returned unchanged; a lot recovery reached but genuinely couldn't
+      // price stays exactly as unpriced as before — never a fabricated value.
+      let recoveredBuyOnly = 0
+      let recoveredSellOnly = 0
+      let recoveredBoth = 0
+      const updatedFifoLots = fifoLots.map((lot) => {
+        const recoveredPrice = recovery.recoveredByLotKey.get(lotKey(lot))
+        if (!recoveredPrice) return lot
+        const costBasisUsd = lot.costBasisUsd ?? recoveredPrice.costBasisUsd
+        const proceedsUsd = lot.proceedsUsd ?? recoveredPrice.proceedsUsd
+        const nowFullyPriced = costBasisUsd !== null && proceedsUsd !== null
+        if (recoveredPrice.costBasisUsd !== null && recoveredPrice.proceedsUsd !== null) recoveredBoth += 1
+        else if (recoveredPrice.costBasisUsd !== null) recoveredBuyOnly += 1
+        else recoveredSellOnly += 1
+        return {
+          ...lot,
+          costBasisUsd,
+          proceedsUsd,
+          realizedPnlUsd: nowFullyPriced ? proceedsUsd! - costBasisUsd! : lot.realizedPnlUsd,
+          evidenceQuality: nowFullyPriced ? ('verified' as const) : lot.evidenceQuality,
+        }
+      })
+      logger.warn('[pnl-reconciliation] recovery', {
+        oneSideMissingCandidates: recovery.oneSideMissingCandidates,
+        bothSidesMissingCandidates: recovery.bothSidesMissingCandidates,
+        candidatesAttempted: recovery.candidatesAttempted,
+        candidatesCappedByBudget: recovery.candidatesCappedByBudget,
+        recoveredBuyOnly, recoveredSellOnly, recoveredBoth,
+        attemptedButStillUnpriced: recovery.candidatesAttempted - recovery.recoveredByLotKey.size,
+      })
 
       let syntheticAlignedCount = 0
       const synthetic = input.syntheticPnlAssemblyOutput
@@ -161,7 +240,19 @@ export function createPnlReconciliation(config: Config = {}) {
       // of truth. This can only ever make official PnL MORE conservative (more honest nulls when
       // fifoEngine alone has no verified figure), never less — strengthening, not weakening, the
       // gate.
-      const realizedPnlUsd = roundUsd(input.fifoEngineResult.realizedPnlUsd)
+      //
+      // RECOVERY-INCLUSIVE CANONICAL SUM, DISCLOSED: recomputed from updatedFifoLots (fifoEngine's
+      // own lots, with recovery's real resolved prices merged in above) rather than trusting the
+      // stale input.fifoEngineResult.realizedPnlUsd, which predates recovery entirely. Mirrors
+      // fifoEngine's own computePnl formula exactly (sum of evidenceQuality: 'verified' lots' own
+      // realizedPnlUsd, null when none) — when recovery finds nothing new, this is numerically
+      // identical to the old value; it only ever adds real, newly-recovered lots to the sum, never
+      // changes or removes an already-verified one.
+      const verifiedUpdatedLots = updatedFifoLots.filter((l) => l.evidenceQuality === 'verified')
+      const recoveryInclusiveRealizedPnlUsd = verifiedUpdatedLots.length > 0
+        ? verifiedUpdatedLots.reduce((sum, l) => sum + (l.realizedPnlUsd ?? 0), 0)
+        : null
+      const realizedPnlUsd = roundUsd(recoveryInclusiveRealizedPnlUsd)
       // STATUS/VALUE CONTRADICTION GUARD, DISCLOSED (closes a residual gap the fix above would
       // otherwise still leave open): structuralConsistent previously checked ONLY lot-count/missing-
       // evidence consistency, never whether realizedPnlUsd itself is actually non-null. Price
