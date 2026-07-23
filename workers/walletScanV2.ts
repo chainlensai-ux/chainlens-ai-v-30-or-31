@@ -34,6 +34,8 @@ import { logFifoPricingDivergence, shouldSampleThisScan } from '@/lib/server/eng
 import { setJobProgress } from '@/src/modules/scanJobs'
 import { withScanTimeout } from '@/src/utils/timeout'
 import { alchemyAudit } from '@/lib/server/alchemyAudit'
+import { getGoldrushPriceSourceCallCount } from '@/src/modules/pricingAtTimeEngine/sources/goldrushPriceSource'
+import { getDexscreenerCallCount } from '@/src/modules/pricingAtTimeEngine/sources/dexscreener'
 
 // V2-DIRECT-FAILURE LOGGER: moved here unchanged from the route file (still exported so the route
 // can also tag its own outer catch with the same log tag).
@@ -255,6 +257,31 @@ export async function runWithTimeoutAndRpcAudit<T>(
 // finished). Now returns the underlying promise so the call site for module 11 specifically can
 // await it, guaranteeing it fully resolves before the worker function returns — every other call
 // site is unchanged (still fire-and-forget, zero added latency for modules 1-10).
+// PER-STAGE PROVIDER-CALL COUNTERS, DISCLOSED (provider-call-audit task): reads the same real,
+// already-existing process-global counters this file already reads/resets elsewhere (alchemyAudit,
+// goldrushPriceSourceCallCount, dexscreenerCallCount) and logs the DELTA attributable to one module
+// — same snapshot-before/diff-after pattern already used by runWithTimeoutAndRpcAudit's own RPC
+// guard above, extended to cover every real provider this scan can call, not just Alchemy. Never
+// throws, never affects module output — a pure read-only diagnostic.
+function providerCallSnapshot(): { alchemy: number; goldrush: number; dexscreener: number } {
+  return {
+    alchemy: alchemyAudit.calls.length,
+    goldrush: getGoldrushPriceSourceCallCount(),
+    dexscreener: getDexscreenerCallCount(),
+  }
+}
+
+function logProviderCallsForStage(stage: string, before: ReturnType<typeof providerCallSnapshot>): void {
+  const after = providerCallSnapshot()
+  // eslint-disable-next-line no-console
+  console.warn('[provider-call-audit] per-stage provider calls', {
+    stage,
+    alchemy: after.alchemy - before.alchemy,
+    goldrush: after.goldrush - before.goldrush,
+    dexscreener: after.dexscreener - before.dexscreener,
+  })
+}
+
 function reportProgress(jobId: string | undefined, currentModule: number, moduleName: string): Promise<void> {
   if (!jobId) return Promise.resolve()
   return setJobProgress(jobId, { currentModule, totalModules: TOTAL_MODULES, moduleName }).catch(() => {
@@ -331,6 +358,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     // eslint-disable-next-line no-console
     console.warn('[V2-worker] starting holdings')
     let t0 = performance.now()
+    let providerCallsBefore = providerCallSnapshot()
     // BUDGET CHECK, DISCLOSED: alchemyAudit is reset once per request before this chain starts, so
     // at this point the count is whatever this scan itself has made so far (0 on a normal scan) —
     // this check exists for defense-in-depth consistency with the trades check below, not because
@@ -340,11 +368,13 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
       : await runWithTimeoutAndRpcAudit('holdings', () => fetchAllHoldings(walletAddress), [] as Awaited<ReturnType<typeof fetchAllHoldings>>, moduleErrors, moduleTimeoutMs(startTime))
     // eslint-disable-next-line no-console
     console.warn('[V2-worker] finished holdings in', performance.now() - t0, 'ms', 'count=', chainHoldings.length)
+    logProviderCallsForStage('holdings', providerCallsBefore)
 
     reportProgress(jobId, 2, 'pricing')
     // eslint-disable-next-line no-console
     console.warn('[V2-worker] starting pricing')
     t0 = performance.now()
+    providerCallsBefore = providerCallSnapshot()
     const pricing = await runWithTimeoutAndRpcAudit(
       'pricing',
       () => priceHoldings(chainHoldings),
@@ -354,6 +384,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     )
     // eslint-disable-next-line no-console
     console.warn('[V2-worker] finished pricing in', performance.now() - t0, 'ms', 'count=', pricing.pricedHoldings.length)
+    logProviderCallsForStage('pricing', providerCallsBefore)
 
     reportProgress(jobId, 3, 'portfolio')
     // eslint-disable-next-line no-console
@@ -393,6 +424,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     // eslint-disable-next-line no-console
     console.warn('[V2-worker] starting trades')
     t0 = performance.now()
+    providerCallsBefore = providerCallSnapshot()
     // BUDGET CHECK, DISCLOSED: if holdings (or anything before this point) already pushed the
     // scan's cumulative real Alchemy call count past MAX_CALLS_PER_SCAN — only plausible if
     // something is genuinely misbehaving — trades is skipped entirely rather than adding its own
@@ -408,6 +440,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
       )
     // eslint-disable-next-line no-console
     console.warn('[V2-worker] finished trades in', performance.now() - t0, 'ms', 'count=', trades.length, 'cacheHitsSoFar=', eventsCache.hitCount)
+    logProviderCallsForStage('trades', providerCallsBefore)
 
     reportProgress(jobId, 5, 'pnl')
     // eslint-disable-next-line no-console
@@ -453,6 +486,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     // eslint-disable-next-line no-console
     console.warn('[V2-worker] starting chainActivity')
     t0 = performance.now()
+    providerCallsBefore = providerCallSnapshot()
     const chainActivityOutput = await runWithTimeoutAndRpcAudit(
       'chainActivity',
       () => computeChainActivity(
@@ -471,6 +505,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     )
     // eslint-disable-next-line no-console
     console.warn('[V2-worker] finished chainActivity in', performance.now() - t0, 'ms', 'count=', chainActivityOutput.chainActivityV2.length)
+    logProviderCallsForStage('chainActivity', providerCallsBefore)
 
     reportProgress(jobId, 7, 'risk')
     // eslint-disable-next-line no-console

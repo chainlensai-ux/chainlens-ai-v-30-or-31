@@ -98,6 +98,13 @@ async function executeWalletScanJob(payload: WalletScanJobPayload): Promise<{ jo
   const { resetAlchemyAudit, printAlchemyAuditSummary } = await import('@/lib/server/alchemyAudit')
   const { runWalletScanV2Worker } = await import('@/workers/walletScanV2')
   const { resetBaseDexRpcBudgetForScan } = await import('@/src/modules/pricingAtTimeEngine/sources/basedex')
+  // PER-SCAN RESET, DISCLOSED (provider-call-audit task): same reasoning as resetAlchemyAudit/
+  // resetBaseDexRpcBudgetForScan above — these two counters are process-global, so a warm
+  // serverless instance serving a second, unrelated scan must start each fresh, not inherit the
+  // previous scan's cumulative total. Without this, the new per-stage provider-call diagnostic
+  // (workers/walletScanV2.ts) would report stale cross-request counts on any warm instance.
+  const { resetGoldrushPriceSourceCallCount } = await import('@/src/modules/pricingAtTimeEngine/sources/goldrushPriceSource')
+  const { resetDexscreenerCallCount } = await import('@/src/modules/pricingAtTimeEngine/sources/dexscreener')
 
   const startedAt = Date.now()
   console.warn('[wallet-scan-worker] job started', { jobId: payload.jobId })
@@ -107,6 +114,8 @@ async function executeWalletScanJob(payload: WalletScanJobPayload): Promise<{ jo
   // fresh (see basedex.ts's resetBaseDexRpcBudgetForScan for the full reasoning), not inherit the
   // previous scan's exhausted counter.
   resetBaseDexRpcBudgetForScan()
+  resetGoldrushPriceSourceCallCount()
+  resetDexscreenerCallCount()
 
   let finalBody: unknown
   let completedSuccessfully = false

@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import type { FifoOutput, MatchedLot } from '../modules/fifoEngine/types'
 import type { PnlSummaryResult } from '../modules/pnlEngine/types'
 import { createPnlReconciliation } from './pnlReconciliation'
@@ -242,5 +244,19 @@ describe('pnlReconciliation', () => {
     assert.equal(summary.priceRecoveredCount, 0)
     assert.equal(summary.realizedPnlUsd, null, 'no fabricated value — stays honestly null when the provider genuinely has nothing')
     assert.notEqual(summary.publicPnlStatus, 'available', 'status must never claim "available" while realizedPnlUsd is null')
+  })
+
+  it('regression guard: pnlReconciliation.ts never imports a wallet-activity-fetching function — recovery can only use already-supplied prices, never refetch history', () => {
+    // Static-source guard, not a runtime mock: the surest way to prove recovery structurally
+    // CANNOT refetch wallet history is that this file never even imports the functions that fetch
+    // it (fetchProviderWindow / fetchRawEventsForChain / fetchAlchemyRawEvents /
+    // fetchGoldrushRawEvents) — every import here is either a pure type or a price-only source
+    // (PriceSourceFn). A future change accidentally wiring in a history-fetch import would fail
+    // this test immediately, before it could ever reach production.
+    const sourcePath = fileURLToPath(new URL('./pnlReconciliation.ts', import.meta.url))
+    const source = readFileSync(sourcePath, 'utf8')
+    for (const forbidden of ['fetchProviderWindow', 'fetchRawEventsForChain', 'fetchAlchemyRawEvents', 'fetchGoldrushRawEvents']) {
+      assert.ok(!source.includes(forbidden), `pnlReconciliation.ts must never reference ${forbidden} — recovery must only use already-supplied prices/events, never refetch wallet history`)
+    }
   })
 })

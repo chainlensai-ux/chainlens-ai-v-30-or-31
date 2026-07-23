@@ -24,6 +24,20 @@ const DEXSCREENER_FRESHNESS_TOLERANCE_MS = 5 * 60 * 1000 // 5 minutes
 
 export type DexscreenerPriceResult = { priceUsd: number | null; reason: string | null }
 
+// CALL COUNTER, DISCLOSED (provider-call-audit task): same pattern as
+// goldrushPriceSource.ts's getGoldrushPriceSourceCallCount/resetGoldrushPriceSourceCallCount — a
+// real, per-process count of actual outbound DexScreener HTTP calls, incremented only in the real
+// fetch path below (never on the two early-return honest-null branches above it, since those never
+// call fetch at all). Lets callers (e.g. walletScanV2.ts's per-stage provider-call diagnostic) log
+// a real DexScreener call count without adding a second, divergent counter.
+let dexscreenerCallCount = 0
+export function getDexscreenerCallCount(): number {
+  return dexscreenerCallCount
+}
+export function resetDexscreenerCallCount(): void {
+  dexscreenerCallCount = 0
+}
+
 // Detailed variant — used by the orchestrator (getPriceAtTime) for structured debug output.
 export async function fetchDexscreenerPriceDetailed(
   token: string,
@@ -39,6 +53,7 @@ export async function fetchDexscreenerPriceDetailed(
   }
 
   try {
+    dexscreenerCallCount += 1
     const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${token}`, {
       signal: AbortSignal.timeout(8_000),
     })

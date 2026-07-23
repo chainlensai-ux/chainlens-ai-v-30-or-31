@@ -179,6 +179,16 @@ export function isKnownGoldrushNegative(token: string, chain: string): boolean {
   return expiresAt !== undefined && Date.now() < expiresAt
 }
 
+// PER-SCAN COUNTER RESET, DISCLOSED (provider-call-audit task): unlike the test-only reset below,
+// this ONLY zeroes the call counter — never the negative-result cache, in-flight dedupe map, or
+// circuit-breaker state, all of which are deliberately process-lifetime (see this file's own
+// caching/breaker headers) and must survive across scans on a warm serverless instance for their
+// real cost-saving purpose. Called once per real scan (walletScanWorker.ts) purely so the
+// per-stage provider-call diagnostic reports THIS scan's own count, not a stale cumulative total.
+export function resetGoldrushPriceSourceCallCount(): void {
+  goldrushPriceSourceCallCount = 0
+}
+
 // TEST-SUPPORT EXPORT, DISCLOSED: same reasoning as basedex.ts's own __resetBaseDexCachesForTest —
 // lets a test start each case from a clean cache state. Not called anywhere in real request handling.
 export function __resetGoldrushPriceSourceCachesForTest(): void {

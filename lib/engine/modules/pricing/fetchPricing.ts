@@ -44,6 +44,28 @@ export async function fetchTokenPriceUsd(chainId: number, tokenAddress: string):
   return result?.priceUsd ?? null
 }
 
+// FALLBACK-LOOKUP CONCURRENCY CAP, DISCLOSED (provider-call-audit task): only the holdings that
+// genuinely need `priceFn`'s DexScreener-only fallback (no free `providerPriceUsd`) reach this —
+// previously ALL of them fired via one unbounded `Promise.all`, so a wallet with dozens of
+// low-liquidity tokens with no provider price drove dozens of simultaneous DexScreener HTTP calls
+// in one burst. Same bounded-concurrency pattern already used for the historical pricing pass
+// (pricingAtTimeEngine/index.ts's PRICE_ENTRY_CONCURRENCY_LIMIT) — zero correctness change, every
+// holding still gets the exact same lookup, only how many run AT ONCE changes.
+const FALLBACK_PRICE_CONCURRENCY_LIMIT = 10
+
+async function mapWithConcurrencyLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = new Array(items.length)
+  let nextIndex = 0
+  async function worker(): Promise<void> {
+    while (nextIndex < items.length) {
+      const i = nextIndex++
+      results[i] = await fn(items[i])
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => worker()))
+  return results
+}
+
 // Public entry point. `priceHoldings(holdings)` — exactly the signature specified; the second
 // parameter is an ADDITIVE, optional testing seam (defaults to the real fetchTokenPriceUsd above),
 // added because node:test's `t.mock.module` proved unreliable under this project's tsx-based test
@@ -51,30 +73,53 @@ export async function fetchTokenPriceUsd(chainId: number, tokenAddress: string):
 // assumed) and a fabricated network-call double would be worse than a plain, explicit, optional
 // parameter. Never throws: fetchTokenPriceUsd above already can't, and every step below is pure
 // arithmetic over its result.
+//
+// DEDUPE + BOUNDED FALLBACK, DISCLOSED (provider-call-audit task, confirmed real duplicate-call
+// source): holdings sharing the exact same (chainId, tokenAddress) — e.g. the same token tracked
+// under two classification buckets — previously each fired their OWN independent `priceFn` call
+// for an identical current-price lookup. Deduped here by resolving each distinct (chainId,
+// tokenAddress) pair's fallback price exactly ONCE and reusing it across every holding that shares
+// it — same real value either way, since it's the same token at the same instant, never a
+// fabricated or stale substitute.
 export async function priceHoldings(
   holdings: ChainHolding[],
   priceFn: (chainId: number, tokenAddress: string) => Promise<number | null> = fetchTokenPriceUsd,
 ): Promise<PricingEngineOutput> {
-  const pricedHoldings: PricedHolding[] = await Promise.all(
-    holdings.map(async (h): Promise<PricedHolding> => {
-      // Prefer the balances provider's own real, free price (see file header) — only fall through
-      // to the weaker, capped DexScreener-only lookup when the provider genuinely didn't supply one.
-      const priceUsd = h.providerPriceUsd != null && h.providerPriceUsd > 0
-        ? h.providerPriceUsd
-        : await priceFn(h.chainId, h.tokenAddress)
-      const valueUsd = priceUsd != null ? Number(h.quantity) * priceUsd : null
-      return {
-        chainId: h.chainId,
-        tokenAddress: h.tokenAddress,
-        symbol: h.symbol,
-        decimals: h.decimals,
-        quantity: h.quantity,
-        priceUsd,
-        valueUsd,
-        classification: h.classification,
-      }
-    }),
+  // Only holdings genuinely eligible for the fallback (no free provider price) ever reach priceFn.
+  const fallbackKeyOf = (h: ChainHolding) => `${h.chainId}:${h.tokenAddress.toLowerCase()}`
+  const distinctFallbackKeys = Array.from(
+    new Set(
+      holdings
+        .filter((h) => !(h.providerPriceUsd != null && h.providerPriceUsd > 0))
+        .map(fallbackKeyOf),
+    ),
   )
+  const fallbackPriceByKey = new Map<string, number | null>()
+  const resolvedPrices = await mapWithConcurrencyLimit(distinctFallbackKeys, FALLBACK_PRICE_CONCURRENCY_LIMIT, async (key) => {
+    const [chainIdStr, tokenAddress] = key.split(':')
+    return priceFn(Number(chainIdStr), tokenAddress)
+  })
+  distinctFallbackKeys.forEach((key, i) => fallbackPriceByKey.set(key, resolvedPrices[i]))
+
+  const pricedHoldings: PricedHolding[] = holdings.map((h): PricedHolding => {
+    // Prefer the balances provider's own real, free price (see file header) — only fall through
+    // to the weaker, capped, deduped DexScreener-only lookup when the provider genuinely didn't
+    // supply one.
+    const priceUsd = h.providerPriceUsd != null && h.providerPriceUsd > 0
+      ? h.providerPriceUsd
+      : fallbackPriceByKey.get(fallbackKeyOf(h)) ?? null
+    const valueUsd = priceUsd != null ? Number(h.quantity) * priceUsd : null
+    return {
+      chainId: h.chainId,
+      tokenAddress: h.tokenAddress,
+      symbol: h.symbol,
+      decimals: h.decimals,
+      quantity: h.quantity,
+      priceUsd,
+      valueUsd,
+      classification: h.classification,
+    }
+  })
 
   const totalValueUsd = pricedHoldings.reduce((sum, p) => sum + (p.valueUsd ?? 0), 0)
 

@@ -1038,13 +1038,39 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     })
   }
 
-  for (const r of providerResults) {
-    void providerFetchWindowKvWriter.write(
-      `v2:providerFetchWindow:${r.chain}:${params.walletAddress.toLowerCase()}`,
-      r,
-      30
+  // AWAITED, DISCLOSED (provider-call-audit task, confirmed root cause of Base transaction history
+  // being fetched multiple times per scan): this write populates the SAME Redis key
+  // app/api/_shared/walletChainPipeline.ts's fetchRawEventsForChain reads through for the V2 engine
+  // chain (holdings/trades/chainActivity), which runs synchronously right after this old pipeline
+  // finishes (see workers/walletScanV2.ts — `await router.handleScanRequest(...)` completes, THEN
+  // the V2 chain's own fetchAllHoldings/fetchParsedTrades calls begin). Previously this write was
+  // fire-and-forget (`void ...write(...)`, never awaited) — router.handleScanRequest could return,
+  // and the V2 chain's read could land, before the write had actually reached Redis, so the V2 chain
+  // cache-missed and re-fetched the exact same wallet+chain window LIVE from GoldRush/Alchemy a
+  // second time. Awaiting here (bounded — setStageCache's own 300ms KV_CALL_TIMEOUT_MS already caps
+  // each call, and all chains write in parallel via Promise.all) guarantees the cache is genuinely
+  // populated before this function returns, so the V2 chain's read reliably hits instead of racing.
+  // BOUNDED, DISCLOSED: createProviderWindowKvWriter's underlying write has no built-in timeout
+  // (unlike withStageCache's own read path) — awaiting it unprotected could stall the whole scan on
+  // a slow/unreachable KV endpoint. A 300ms cap (same KV_CALL_TIMEOUT_MS convention used elsewhere
+  // in lib/server/cache/v2StageCache.ts) plus a swallowed catch preserves the original
+  // "never let a KV hiccup affect the real scan" guarantee — this only removes the RACE (not
+  // awaiting at all), it does not turn a KV failure into a scan failure.
+  await Promise.all(
+    providerResults.map((r) =>
+      Promise.race([
+        providerFetchWindowKvWriter.write(
+          `v2:providerFetchWindow:${r.chain}:${params.walletAddress.toLowerCase()}`,
+          r,
+          30
+        ),
+        new Promise<void>((resolve) => setTimeout(resolve, 300)),
+      ]).catch(() => {
+        // Never let a KV write failure affect the real scan — same fail-open guarantee this writer
+        // already had when it was fire-and-forget.
+      })
     )
-  }
+  )
 
   // Real, honest per-chain/per-provider fetch outcome summary — counts and error reasons only,
   // never raw events (see ProviderDiagnosticsEntry's doc comment for why raw payloads are never
