@@ -27,19 +27,21 @@
 // the lookup, exactly like fifoEngine's own default.
 
 import { mergeNormalizedEvents } from '../modules/fifoEngine/utils'
+import { buildLots, matchLotsFIFO } from '../modules/fifoEngine/index'
 import type { CurrentPriceUsdLookup, PriceUsdLookup } from '../modules/fifoEngine/types'
 import type { NormalizedEvent } from '../modules/normalization/types'
 import { resolvePricingAtTime } from '../modules/pricingAtTimeEngine/index'
 import type { PriceableEntry, PriceSources, SourceBreakdown } from '../modules/pricingAtTimeEngine/types'
 import { pricingRouteLog, type PricingRouteRecord } from './pricingAtTimeAdapter'
 
-function toPriceableEntry(event: NormalizedEvent): PriceableEntry {
+function toPriceableEntry(event: NormalizedEvent, priority: boolean): PriceableEntry {
   return {
     txHash: event.txHash,
     token: event.contract,
     chain: event.chain,
     timestamp: Date.parse(event.timestamp),
     amount: String(event.amount),
+    priority,
   }
 }
 
@@ -111,12 +113,36 @@ export async function priceLotsForWallet(params: {
   const buys = merged.filter((e) => e.direction === 'inbound')
   const sells = merged.filter((e) => e.direction === 'outbound')
 
+  // PHASE A — STRUCTURAL (PRICE-FREE) FIFO PRE-PASS, DISCLOSED (confirmed bug fix: fullyPricedLots
+  // stayed 0 even after the dense per-token cap was raised, because ALL buys were dispatched before
+  // ANY sells — see pricingAtTimeEngine/index.ts's priceAllEntries — so a token bought more than once
+  // before being sold had its own repeat buys consume every cap slot ahead of its own sell).
+  // fifoEngine's buildLots/matchLotsFIFO already match purely by quantity + chronology — a real price
+  // is only ATTACHED afterward, never required to determine which buy pairs with which sell (both
+  // default their priceUsdLookup param to "always null" — see fifoEngine/index.ts). Reusing those
+  // exact, unmodified, already-exported functions here with no price lookup costs zero network calls
+  // and produces the same structural pairing FIFO will use for real once prices exist — exactly
+  // enough to know, in advance, which specific (openedTxHash, closedTxHash) pairs are the decisive
+  // pricing requirements a verified closed lot actually needs.
+  const structuralLots = buildLots(params.normalizedEvents, params.recoveredEvents)
+  const { matchedLots: structuralMatchedLots } = matchLotsFIFO(structuralLots, sells)
+  const closedLotEntryTxHashes = new Set(structuralMatchedLots.map((l) => l.openedTxHash))
+  const closedLotExitTxHashes = new Set(structuralMatchedLots.map((l) => l.closedTxHash))
+
   const routeLogSnapshotBefore = pricingRouteLog.length
 
   const atTradeTime = await resolvePricingAtTime({
-    buyEntries: buys.map(toPriceableEntry),
-    sellEntries: sells.map(toPriceableEntry),
+    buyEntries: buys.map((e) => toPriceableEntry(e, closedLotEntryTxHashes.has(e.txHash))),
+    sellEntries: sells.map((e) => toPriceableEntry(e, closedLotExitTxHashes.has(e.txHash))),
     priceSources: params.priceSources,
+  })
+  // eslint-disable-next-line no-console
+  console.warn('[priceLotsForWallet] closed-lot pricing requirement selection', {
+    structuralClosedLots: structuralMatchedLots.length,
+    closedLotEntryRequirements: closedLotEntryTxHashes.size,
+    closedLotExitRequirements: closedLotExitTxHashes.size,
+    totalBuyEntries: buys.length,
+    totalSellEntries: sells.length,
   })
 
   // "Current" price for open lots — pricingAtTimeEngine only prices at a given timestamp, so "now"

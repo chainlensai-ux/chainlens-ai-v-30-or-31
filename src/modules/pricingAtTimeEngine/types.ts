@@ -52,6 +52,13 @@ export type PriceableEntry = {
   chain: SupportedChain
   timestamp: number
   amount: string
+  // PRIORITY, ADDITIVE/OPTIONAL, DISCLOSED: when true, this entry is a verified FIFO closed lot's own
+  // entry or exit requirement (see priceLotsForWallet.ts's structural pre-pass) — priceAllEntries
+  // dispatches all priority entries (combined across buys+sells) before any non-priority entry of the
+  // same token, so the shared per-token lookup cap is spent on the decisive buy+sell pair a real
+  // closed lot needs, not crowded out by unrelated/lower-value activity for the same token. Omitted
+  // (undefined) is the same as false — every existing caller that doesn't set this is unaffected.
+  priority?: boolean
 }
 
 // EXTERNAL FALLBACK, ADDITIVE/OPTIONAL, DISCLOSED: `resolvePricingAtTime` below is called from TWO

@@ -172,15 +172,38 @@ async function priceAllEntries(
   buys: { usdByTxHash: Record<string, number | null>; breakdown: SourceBreakdown; missing: number }
   sells: { usdByTxHash: Record<string, number | null>; breakdown: SourceBreakdown; missing: number }
 }> {
-  const tagged = [
+  const combined = [
     ...buyEntries.map((entry) => ({ entry, list: 'buy' as const })),
     ...sellEntries.map((entry) => ({ entry, list: 'sell' as const })),
   ]
+
+  // PRIORITY-ORDERING FIX, DISCLOSED (confirmed bug, real production evidence: fullyPricedLots: 0
+  // despite fifoClosedLots: 282 and dense cap already raised to 2): `tagged` previously placed ALL
+  // buys before ANY sells, unconditionally. The shared per-token lookup cap below is consumed in
+  // this array's order — so a token bought more than once before being sold (the common case, e.g.
+  // accumulating a position across several buys) had its OWN multiple buy occurrences consume every
+  // available cap slot before its own sell was ever reached, leaving that closed lot's exit price
+  // permanently null regardless of real availability — even after the dense-cap fix confirmed a
+  // simple single-buy+single-sell round trip already worked.
+  //
+  // Fixed by dispatching every `priority: true` entry (a verified FIFO closed lot's own entry/exit
+  // requirement — set by priceLotsForWallet.ts's structural, price-free pre-pass) before any
+  // non-priority entry of the same token, combined across buys AND sells (not just reordered within
+  // one side) — so the closed lot's decisive buy+sell pair wins the shared cap ahead of unrelated,
+  // lower-value activity for that same token. Stable partition: relative order is preserved within
+  // each tier, so behavior for non-priority entries (or when nothing is marked priority — every
+  // existing caller/test) is unchanged.
+  const tagged = [
+    ...combined.filter(({ entry }) => entry.priority),
+    ...combined.filter(({ entry }) => !entry.priority),
+  ]
+  const priorityRequirementCount = combined.filter(({ entry }) => entry.priority).length
 
   const distinctTokenCount = new Set(tagged.map(({ entry }) => `${entry.chain}:${entry.token.toLowerCase()}`)).size
   const maxLookupsPerToken = resolveMaxLookupsPerToken(distinctTokenCount)
   const lookupCountByToken = new Map<string, number>()
   let cappedCount = 0
+  let priorityCappedCount = 0
 
   // Synchronous increment-and-check BEFORE the `await` below — safe/atomic within JS's single
   // event loop even though many of these workers run "concurrently": no other worker's code runs
@@ -190,6 +213,7 @@ async function priceAllEntries(
     const priorLookups = lookupCountByToken.get(tokenKey) ?? 0
     if (priorLookups >= maxLookupsPerToken) {
       cappedCount += 1
+      if (entry.priority) priorityCappedCount += 1
       return { list, txHash: entry.txHash, usd: null, source: 'failed' as const, missing: true }
     }
     lookupCountByToken.set(tokenKey, priorLookups + 1)
@@ -217,6 +241,17 @@ async function priceAllEntries(
     // eslint-disable-next-line no-console
     console.warn('[RPC-INVESTIGATION] pricingAtTimeEngine per-token lookup cap applied', {
       distinctTokenCount, maxLookupsPerToken, cappedCount, timestamp: Date.now(),
+    })
+  }
+  // BOUNDED PRIORITY-SELECTION SUMMARY, DISCLOSED, ADDITIVE: one line per scan — real counts only,
+  // no per-event arrays or secrets. priorityCappedCount > 0 would mean even priority (closed-lot)
+  // requirements got capped, i.e. a single token had more distinct closed-lot requirements than
+  // maxLookupsPerToken allows (e.g. two closed lots for the same token) — a real, disclosed residual
+  // limit, never silently hidden.
+  if (priorityRequirementCount > 0) {
+    // eslint-disable-next-line no-console
+    console.warn('[pricingAtTimeEngine] closed-lot requirement priority summary', {
+      priorityRequirementCount, priorityCappedCount, totalRequirements: tagged.length, cappedCount, maxLookupsPerToken, timestamp: Date.now(),
     })
   }
 
