@@ -1370,6 +1370,29 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     evidenceMissingCount: pnlSummaryV2.evidenceMissingCount,
     realizedPnlUsd: pnlSummaryV2.realizedPnlUsd,
   })
+  // ENGINE-DIVERGENCE DIAGNOSTIC, DISCLOSED, ADDITIVE (confirmed real bug this makes visible instead
+  // of confusing: real production evidence showed a "[pipeline] pnlSummaryV2 result" log reporting
+  // realizedPnlUsd: $270.02 that readers understandably mistook for THE official total, while the
+  // real official total — src/lib/pnlReconciliation.ts's reconciledPnlSummary.realizedPnlUsd, which
+  // is now (see pnlReconciliation.ts's own "TWO-DISAGREEING-ENGINES FIX" comment) sourced ONLY from
+  // fifoEngine, never pnlEngine — was $174.01 for the same wallet. fifoEngine and pnlEngine are two
+  // independently-matched closed-lot models over different (only partly-overlapping) input sets, so
+  // their own raw totals can legitimately differ — this log makes that divergence explicit and
+  // explains WHY (different closed-lot counts = different eligible-lot filters) rather than leaving
+  // two same-shaped numbers to be silently compared as if they were the same claim. Only
+  // fifoEngine's own total ever becomes official; pnlEngine's stays a disclosed, informational
+  // cross-check.
+  if (fifoAndPnl.realizedPnlUsd != null && pnlSummaryV2.realizedPnlUsd != null && fifoAndPnl.realizedPnlUsd !== pnlSummaryV2.realizedPnlUsd) {
+    // eslint-disable-next-line no-console
+    console.warn('[pipeline] engine divergence: fifoEngine and pnlEngine disagree on realizedPnlUsd', {
+      fifoEngineRealizedPnlUsd: fifoAndPnl.realizedPnlUsd,
+      fifoEngineClosedLots: fifoAndPnl.matchedLots.length,
+      pnlEngineRealizedPnlUsd: pnlSummaryV2.realizedPnlUsd,
+      pnlEngineClosedLots: pnlSummaryV2.closedLots.length,
+      canonicalSource: 'fifoEngine',
+      note: 'These are two independently-matched closed-lot models over different input sets; only fifoEngine feeds the official total.',
+    })
+  }
 
   // PNL OVERFLOW GUARD, DISCLOSED: defensive-only (src/pipeline/pnlSummaryAdapter.ts). Never
   // changes pnlEngine's own computation — only clamps a genuinely-garbage realizedPnlUsd to null

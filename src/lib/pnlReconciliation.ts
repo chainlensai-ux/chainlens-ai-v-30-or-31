@@ -139,7 +139,29 @@ export function createPnlReconciliation(config: Config = {}) {
       // entirely: official realizedPnlUsd/unrealizedPnlUsd now come ONLY from the two real, verified
       // engines, never synthetic — strictly strengthening (never weakening) the existing integrity
       // gate. computePnlResult is now unused; removed from PnlReconciliationInput and its call site.
-      const realizedPnlUsd = roundUsd(input.fifoEngineResult.realizedPnlUsd ?? input.pnlEngineResult.realizedPnlUsd)
+      //
+      // TWO-DISAGREEING-ENGINES FIX, DISCLOSED (confirmed, real production evidence: pnlSummaryV2
+      // reported $270.02 while this reconciliation reported $174.01 for the same wallet): the
+      // remaining `?? input.pnlEngineResult.realizedPnlUsd` fallback below still meant the "official"
+      // total COULD silently come from a completely different closed-lot model whenever
+      // fifoEngineResult.realizedPnlUsd happened to be null — fifoEngine (real, quantity-based FIFO
+      // matching over normalized events) and pnlEngine (a separate read model over sellTimelineV2/
+      // buyTimeline entries — see pnlEngine/index.ts's own header: "Does NOT replace... fifoEngine
+      // (the real PnL engine)") are two INDEPENDENT matching implementations over different, only
+      // partly-overlapping input sets, so their own totals can legitimately diverge even before
+      // accounting for pnlEngine's now-fixed duplicate-sell-entry bug (see
+      // pnlEngine/index.ts's dedupeSellEntries). "Falling back" to a different model's total is not
+      // reconciliation, it's silently swapping which model is authoritative — exactly the "select
+      // one canonical total, do not average/mix models" requirement. Fixed by dropping
+      // pnlEngineResult as a source for the official figure entirely: realizedPnlUsd now comes ONLY
+      // from fifoEngineResult — the single model every other per-lot mechanism in this pipeline
+      // (structural closed-lot pre-pass, pair-rank pricing, ayriAttribution's per-lot records) is
+      // already built around. pnlEngineResult remains a real, useful independent cross-check
+      // (surfaced via the engine-divergence diagnostic in src/pipeline/index.ts), never the source
+      // of truth. This can only ever make official PnL MORE conservative (more honest nulls when
+      // fifoEngine alone has no verified figure), never less — strengthening, not weakening, the
+      // gate.
+      const realizedPnlUsd = roundUsd(input.fifoEngineResult.realizedPnlUsd)
       // STATUS/VALUE CONTRADICTION GUARD, DISCLOSED (closes a residual gap the fix above would
       // otherwise still leave open): structuralConsistent previously checked ONLY lot-count/missing-
       // evidence consistency, never whether realizedPnlUsd itself is actually non-null. Price

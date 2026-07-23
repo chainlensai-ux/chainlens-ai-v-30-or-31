@@ -52,6 +52,34 @@ describe('pnlReconciliation', () => {
     assert.equal((await r.reconcile({ fifoEngineResult: fifo({ unmatchedBuys: 10 }), pnlEngineResult: pnl(), syntheticPnlAssemblyOutput: null })).publicPnlStatus, 'unavailable')
   })
 
+  it('regression guard: official realizedPnlUsd comes ONLY from fifoEngine — pnlEngine\'s independently-matched total is never used, even as a fallback', async () => {
+    // Confirmed real bug, real production evidence: pnlSummaryV2 reported $270.02 while this
+    // reconciliation (correctly, since fifoEngine had a real value) reported $174.01 for the same
+    // wallet — but the OLD code still had `?? input.pnlEngineResult.realizedPnlUsd` as a fallback,
+    // meaning the official total COULD have silently come from pnlEngine's own, differently-matched
+    // closed-lot model whenever fifoEngine's own total happened to be null. Fixed: pnlEngineResult is
+    // never consulted for the official figure, under any circumstance.
+    const r = createPnlReconciliation({ logger: quiet })
+    const summary = await r.reconcile({
+      fifoEngineResult: fifo({ matchedLots: [], realizedPnlUsd: null, unrealizedPnlUsd: null }),
+      // pnlEngine independently found a real, non-null total from its own (different) matching —
+      // this must NEVER leak into the official realizedPnlUsd.
+      pnlEngineResult: pnl(1, { realizedPnlUsd: 270.02 }),
+      syntheticPnlAssemblyOutput: null,
+    })
+    assert.equal(summary.realizedPnlUsd, null, 'realizedPnlUsd must stay null, never borrowed from pnlEngine\'s independent total')
+  })
+
+  it('regression guard: when fifoEngine has a real total, it is used exactly as-is regardless of what pnlEngine independently computed', async () => {
+    const r = createPnlReconciliation({ logger: quiet })
+    const summary = await r.reconcile({
+      fifoEngineResult: fifo({ realizedPnlUsd: 174.01 }),
+      pnlEngineResult: pnl(1, { realizedPnlUsd: 270.02 }), // a different, independently-matched total
+      syntheticPnlAssemblyOutput: null,
+    })
+    assert.equal(summary.realizedPnlUsd, 174.01, 'fifoEngine\'s own total is the sole canonical source, unaffected by pnlEngine\'s disagreement')
+  })
+
   it('regression guard: syntheticPnlAssemblyOutput never becomes the official realizedPnlUsd, even when both real engines have none', async () => {
     // Confirmed real bug: a prior version of this function accepted a third field
     // (computePnlResult), wired at the pipeline layer directly from syntheticPnl's UI-display-only
