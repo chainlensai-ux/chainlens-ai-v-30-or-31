@@ -109,7 +109,7 @@ async function executeWalletScanJob(payload: WalletScanJobPayload): Promise<{ jo
   // per-job reset convention as the counters above — see providerFetchWindow/index.ts's own header
   // for why this must be cleared at the start of every scan job (never leak a coalesced result
   // across unrelated wallets/scans on a warm serverless instance).
-  const { resetProviderFetchWindowRequestCache } = await import('@/src/modules/providerFetchWindow/index')
+  const { resetProviderFetchWindowRequestCache, getProviderFetchWindowCoalescingCounters } = await import('@/src/modules/providerFetchWindow/index')
 
   const startedAt = Date.now()
   console.warn('[wallet-scan-worker] job started', { jobId: payload.jobId })
@@ -144,6 +144,9 @@ async function executeWalletScanJob(payload: WalletScanJobPayload): Promise<{ jo
     finalBody = errorResultBody(err)
     console.error('[wallet-scan-worker] job completed with failure result', err)
   }
+
+  // eslint-disable-next-line no-console
+  console.warn('[provider-call-audit] providerFetchWindow coalescing summary', { jobId: payload.jobId, ...getProviderFetchWindowCoalescingCounters() })
 
   const finishedAt = Date.now()
   const jobState: WalletScanJobState = {

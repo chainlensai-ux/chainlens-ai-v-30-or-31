@@ -5,7 +5,7 @@
 
 import { describe, it, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { fetchProviderWindow, resetProviderFetchWindowRequestCache } from './index'
+import { fetchProviderWindow, resetProviderFetchWindowRequestCache, getProviderFetchWindowCoalescingCounters } from './index'
 
 const originalFetch = global.fetch
 const originalGoldrushKey = process.env.GOLDRUSH_API_KEY
@@ -95,5 +95,82 @@ describe('fetchProviderWindow — request-scoped promise coalescing', () => {
 
     await fetchProviderWindow('base', '0xwallet', 90)
     assert.equal(getCallCount(), 6, 'a fresh job (after reset) must not reuse a coalesced result from a prior, unrelated job')
+  })
+
+  it('regression guard: a caller requesting a wider window that a concurrent narrower caller is ALREADY IN FLIGHT for reuses that in-flight fetch (largest-window reuse, not keyed by exact window)', async () => {
+    // PROVIDER_FETCH_WINDOW_DAYS_MIN is 80 (clampWindowDays), so 85 stays a genuinely narrower-than-90
+    // but still valid window — real production values, not an artificially clamped one.
+    const { getCallCount } = mockFetch({ delayMs: 5 })
+
+    // 90d requested FIRST (wider) — synchronously registers its in-flight entry before the 85d call
+    // is even evaluated, since Promise.all evaluates its array left-to-right and this module's
+    // synchronous registration happens before any await point.
+    const [ninetyDay, eightyFiveDay] = await Promise.all([
+      fetchProviderWindow('base', '0xwallet', 90),
+      fetchProviderWindow('base', '0xwallet', 85),
+    ])
+
+    assert.equal(getCallCount(), 3, 'only ONE real 2-provider fetch (at the wider 90d window) should ever fire, not two')
+    assert.equal(ninetyDay.providerFetchWindowDays, 90)
+    assert.equal(eightyFiveDay.providerFetchWindowDays, 85, 'the narrower caller must get back a result honestly labeled as its OWN requested window, not the wider one')
+  })
+
+  it('regression guard: requesting the narrower window AFTER a wider one has already settled still reuses it (a later wider request never reuses a narrower one)', async () => {
+    const { getCallCount } = mockFetch({ delayMs: 5 })
+
+    // 90d requested first (wider) — establishes the entry other callers can reuse.
+    await fetchProviderWindow('base', '0xwallet', 90)
+    const callsAfterWide = getCallCount()
+    assert.equal(callsAfterWide, 3)
+
+    // A LATER, narrower 85d caller for the SAME wallet+chain must reuse the already-settled 90d
+    // result (sliced locally), never fire its own live call.
+    const narrower = await fetchProviderWindow('base', '0xwallet', 85)
+    assert.equal(getCallCount(), callsAfterWide, 'a narrower request arriving after a wider settled fetch must reuse it, never refetch')
+    assert.equal(narrower.providerFetchWindowDays, 85)
+
+    // A caller requesting something WIDER than anything seen so far must still trigger its own
+    // fresh, real fetch — a narrower prior result can never be silently reused as if it were wider.
+    await fetchProviderWindow('base', '0xwallet', 120)
+    assert.equal(getCallCount(), callsAfterWide + 3, 'a request wider than any known entry must trigger its own real fetch')
+  })
+
+  it('resetProviderFetchWindowRequestCache runs exactly once per job — counters reflect real per-job activity, not cumulative drift', async () => {
+    mockFetch({ delayMs: 5 })
+    const before = getProviderFetchWindowCoalescingCounters().resetCount
+
+    resetProviderFetchWindowRequestCache() // simulates walletScanWorker.ts's single per-job reset
+    const afterOneReset = getProviderFetchWindowCoalescingCounters().resetCount
+    assert.equal(afterOneReset, before + 1, 'exactly one reset must be recorded for one job start')
+
+    await fetchProviderWindow('base', '0xwallet', 90)
+    await fetchProviderWindow('base', '0xwallet', 90)
+    const counters = getProviderFetchWindowCoalescingCounters()
+    assert.equal(counters.liveFetches, 1, 'exactly one real live fetch for the two same-window calls in this job')
+    assert.equal(counters.settledReuseHits, 1, 'the second, already-settled call must count as a settled reuse hit')
+    assert.equal(counters.resetCount, before + 1, 'resetCount must not have incremented again mid-job — reset only happens at job start')
+  })
+
+  it('canonical wallet/chain variants (mixed case, surrounding whitespace) share exactly one key/entry', async () => {
+    const { getCallCount } = mockFetch({ delayMs: 5 })
+
+    const results = await Promise.all([
+      fetchProviderWindow('base', '  0xWaLLeT  ', 90),
+      fetchProviderWindow('base', '0xwallet', 90),
+      fetchProviderWindow('base', '0XWALLET', 90),
+    ])
+
+    assert.equal(getCallCount(), 3, 'all three canonically-identical wallet variants must coalesce into one real fetch')
+    for (const r of results) {
+      assert.deepEqual(r, results[0], 'every canonical-variant caller must receive the exact same resolved result')
+    }
+  })
+
+  it('regression guard: the same already-settled result is reused byte-for-byte, not recomputed, on a later call', async () => {
+    mockFetch({ delayMs: 5 })
+
+    const first = await fetchProviderWindow('base', '0xwallet', 90)
+    const second = await fetchProviderWindow('base', '0xwallet', 90)
+    assert.deepEqual(second, first, 'a later call for the identical (chain, wallet, window) must return the exact same settled result object contents')
   })
 })

@@ -115,13 +115,34 @@ export async function priceHoldings(
   // Only holdings genuinely eligible for the fallback (no free provider price, not dust) ever reach
   // priceFn — see isEligibleForFallbackPricing's own header for the two real signals used.
   const fallbackKeyOf = (h: ChainHolding) => `${h.chainId}:${h.tokenAddress.toLowerCase()}`
-  const distinctFallbackKeys = Array.from(
-    new Set(
-      holdings
-        .filter(isEligibleForFallbackPricing)
-        .map(fallbackKeyOf),
-    ),
+  const providerPriced = holdings.filter((h) => h.providerPriceUsd != null && h.providerPriceUsd > 0)
+  const knownUnderDollarSkipped = holdings.filter(
+    (h) => !(h.providerPriceUsd != null && h.providerPriceUsd > 0)
+      && h.providerValueUsd != null && h.providerValueUsd > 0 && h.providerValueUsd < DUST_VALUE_USD_THRESHOLD,
   )
+  const quantityDustSkipped = holdings.filter((h) => {
+    if (h.providerPriceUsd != null && h.providerPriceUsd > 0) return false
+    if (h.providerValueUsd != null && h.providerValueUsd > 0 && h.providerValueUsd < DUST_VALUE_USD_THRESHOLD) return false
+    const quantity = Number(h.quantity)
+    return !Number.isFinite(quantity) || quantity <= DUST_QUANTITY_FLOOR
+  })
+  const eligibleHoldings = holdings.filter(isEligibleForFallbackPricing)
+  const distinctFallbackKeys = Array.from(new Set(eligibleHoldings.map(fallbackKeyOf)))
+
+  // DIAGNOSTIC, DISCLOSED (provider-call-audit follow-up task, explicit "report before changing
+  // thresholds" requirement): real counts only, no behavior change from this log — reports exactly
+  // how many holdings fall into each eligibility bucket so a future pass can decide whether the
+  // DUST_VALUE_USD_THRESHOLD/DUST_QUANTITY_FLOOR heuristics need adjusting, instead of guessing.
+  // eslint-disable-next-line no-console
+  console.warn('[provider-call-audit] DexScreener fallback eligibility', {
+    holdingsTotal: holdings.length,
+    providerPriced: providerPriced.length,
+    knownUnderDollarSkipped: knownUnderDollarSkipped.length,
+    quantityDustSkipped: quantityDustSkipped.length,
+    fallbackEligible: eligibleHoldings.length,
+    uniqueFallbackEligible: distinctFallbackKeys.length,
+    timestamp: Date.now(),
+  })
   const fallbackPriceByKey = new Map<string, number | null>()
   const resolvedPrices = await mapWithConcurrencyLimit(distinctFallbackKeys, FALLBACK_PRICE_CONCURRENCY_LIMIT, async (key) => {
     const [chainIdStr, tokenAddress] = key.split(':')

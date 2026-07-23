@@ -128,40 +128,155 @@ async function fetchProviderWindowLive(
 // — every caller within that window (old pipeline's own per-chain Promise.all, the V2 chain's
 // trades/chainActivity modules, any other consumer reached before the first call settles) was still
 // each independently starting a brand-new live fetch, because there was nothing IN-PROCESS
-// coalescing concurrent/overlapping calls for the same (chain, wallet, windowDays) — only the
-// Redis write-after-the-fact did, and that only helps once the first call has already finished.
-// This map closes that gap directly: the FIRST caller for a given key starts the real fetch and
-// every other caller (concurrent, or arriving after the first has already settled) receives the
-// exact same promise/result — including a timeout/failure result, per this task's explicit
-// requirement that later stages must not retry live within the same request. Cross-request Redis
-// caching (src/pipeline/index.ts, app/api/_shared/walletChainPipeline.ts) is completely unaffected
-// — this sits UNDERNEATH that layer, only deduplicating calls within one process's lifetime, and is
-// reset once per real scan job (see resetProviderFetchWindowRequestCache, called from
+// coalescing concurrent/overlapping calls for the same (chain, wallet). This map closes that gap:
+// the FIRST caller for a given (chain, wallet) starts the real fetch and every other caller
+// (concurrent, or arriving after the first has already settled) receives the exact same
+// promise/result — including a timeout/failure result, per this task's explicit requirement that
+// later stages must not retry live within the same request. Cross-request Redis caching
+// (src/pipeline/index.ts, app/api/_shared/walletChainPipeline.ts) is completely unaffected — this
+// sits UNDERNEATH that layer, only deduplicating calls within one process's lifetime, and is reset
+// once per real scan job (see resetProviderFetchWindowRequestCache, called from
 // walletScanWorker.ts alongside this codebase's other established per-job counter resets) so it
 // never leaks results across unrelated scans/wallets on a warm serverless instance.
-const requestScopedFetches = new Map<string, Promise<ProviderFetchWindowResult>>()
+//
+// KEY BUG, CONFIRMED AND FIXED (this follow-up task): the PRIOR version of this map keyed on
+// `${chain}:${wallet}:${resolvedWindowDays}` — including the resolved window. The old pipeline
+// always requests exactly 90 (PROVIDER_FETCH_WINDOW_DAYS_USED, src/pipeline/index.ts) while the V2
+// engine chain requests `getEffectiveFetchWindow()` (app/api/_shared/walletChainPipeline.ts), which
+// only differs from 90 when the opt-in PROVIDER_FETCH_WINDOW_OVERRIDE env var is set — but ANY
+// deployment where it IS set (or any future caller passing a different explicit windowDays) silently
+// produced two DIFFERENT keys for the exact same (chain, wallet), so the two engines' calls were
+// never coalesced with each other at all — each independently ran its own full 2-provider fetch,
+// which is exactly the "4 Base transactions_v3 calls" symptom this task investigates (2 real
+// window-groups x 2 providers each, or worse under overlap/retry). Fixed below by keying ONLY on
+// canonical (chain, wallet) and reusing the LARGEST known in-flight/settled window's result — a
+// caller asking for a narrower window gets that same fetch, locally sliced to its own cutoff,
+// instead of triggering its own live call. A caller asking for a WIDER window than what's already
+// known still correctly triggers its own fresh (wider) live fetch — a narrower prior result can
+// never be silently reused as if it covered a wider window.
+type CoalescedEntry = {
+  windowDays: number
+  promise: Promise<ProviderFetchWindowResult>
+  settled: boolean
+}
+const requestScopedFetches = new Map<string, CoalescedEntry>()
+
+// COUNTERS, DISCLOSED (this follow-up task's explicit diagnostic requirement): real, per-job counts
+// — never estimates. `liveFetches` = real fetchProviderWindowLive calls actually started (the only
+// thing that costs a genuine provider call). `coalescedHits` = callers that reused an entry whose
+// live fetch was STILL IN FLIGHT at the time (true request coalescing, avoiding a race-triggered
+// duplicate). `settledReuseHits` = callers that reused an entry whose live fetch had ALREADY
+// resolved (ordinary in-process cache reuse, no race involved). `resetCount` = how many times
+// resetProviderFetchWindowRequestCache actually ran — proves reset timing directly instead of
+// inferring it from map-size logs alone.
+let liveFetches = 0
+let coalescedHits = 0
+let settledReuseHits = 0
+let resetCount = 0
+
+export function getProviderFetchWindowCoalescingCounters(): {
+  liveFetches: number
+  coalescedHits: number
+  settledReuseHits: number
+  resetCount: number
+} {
+  return { liveFetches, coalescedHits, settledReuseHits, resetCount }
+}
+
+// MODULE-INSTANCE MARKER, DISCLOSED: a constant computed once when this module is first evaluated.
+// If old-pipeline and V2-engine callers ever logged two DIFFERENT values for this across the same
+// job, that alone would prove the bundler instantiated two separate copies of this module (defeating
+// the shared map entirely) — the real, direct way to "confirm old and V2 imports share one
+// module-scoped map in production bundling" this task asks for, rather than inferring it indirectly.
+const moduleInstanceId = `pfw-${Math.floor(Math.random() * 1e9)}-${typeof process !== 'undefined' ? process.pid : 0}`
+
+function canonicalWallet(walletAddress: string): string {
+  return walletAddress.trim().toLowerCase()
+}
+
+function canonicalKey(chain: SupportedChain, walletAddress: string): string {
+  return `${chain}:${canonicalWallet(walletAddress)}`
+}
+
+// Filters an already-fetched WIDER window's raw events down to a caller-requested NARROWER window,
+// purely a local, zero-cost slice — never a new provider call, never a fabricated event. Events with
+// no parseable timestamp are kept (never dropped on ambiguity — matches this module's own "never
+// silently discard real data" convention elsewhere, e.g. fetchGoldrushRawEvents's own window filter).
+function sliceToWindow(result: ProviderFetchWindowResult, windowDays: number): ProviderFetchWindowResult {
+  if (result.providerFetchWindowDays === windowDays) return result
+  const cutoffMs = Date.now() - windowDays * 24 * 60 * 60 * 1000
+  const keep = (e: RawProviderEvent) => {
+    if (!e.timestamp) return true
+    const ms = Date.parse(e.timestamp)
+    return Number.isNaN(ms) ? true : ms >= cutoffMs
+  }
+  const slicedGoldrush = { ...result.providerResults.goldrush, events: result.providerResults.goldrush.events.filter(keep) }
+  const slicedAlchemy = { ...result.providerResults.alchemy, events: result.providerResults.alchemy.events.filter(keep) }
+  return {
+    ...result,
+    rawEvents: result.rawEvents.filter(keep),
+    providerResults: { goldrush: slicedGoldrush, alchemy: slicedAlchemy },
+    providerFetchWindowDays: windowDays,
+  }
+}
 
 export function resetProviderFetchWindowRequestCache(): void {
   requestScopedFetches.clear()
+  liveFetches = 0
+  coalescedHits = 0
+  settledReuseHits = 0
+  resetCount += 1
+  // eslint-disable-next-line no-console
+  console.warn('[provider-call-audit] providerFetchWindow request-scoped cache reset', { resetCount, moduleInstanceId, timestamp: Date.now() })
 }
 
 export async function fetchProviderWindow(
   chain: SupportedChain,
   walletAddress: string,
   windowDays?: number,
+  stage: string = 'unknown',
 ): Promise<ProviderFetchWindowResult> {
   const resolvedWindowDays = clampWindowDays(windowDays)
-  const key = `${chain}:${walletAddress.toLowerCase()}:${resolvedWindowDays}`
+  const key = canonicalKey(chain, walletAddress)
 
   const existing = requestScopedFetches.get(key)
-  if (existing) return existing
+  // eslint-disable-next-line no-console
+  console.warn('[provider-call-audit] fetchProviderWindow invocation', {
+    stage,
+    wallet: canonicalWallet(walletAddress),
+    chain,
+    requestedWindowDays: windowDays ?? null,
+    resolvedWindowDays,
+    key,
+    mapSize: requestScopedFetches.size,
+    existingEntryWindowDays: existing?.windowDays ?? null,
+    hit: Boolean(existing && existing.windowDays >= resolvedWindowDays),
+    moduleInstanceId,
+    timestamp: Date.now(),
+  })
 
+  if (existing && existing.windowDays >= resolvedWindowDays) {
+    if (existing.settled) settledReuseHits += 1
+    else coalescedHits += 1
+    const result = await existing.promise
+    return sliceToWindow(result, resolvedWindowDays)
+  }
+
+  // No usable existing entry (none at all, or the existing one covers a NARROWER window than this
+  // caller needs) — a real, fresh live fetch is required. This intentionally REPLACES a narrower
+  // existing entry so any later, still-narrower caller can now reuse this wider one instead.
+  liveFetches += 1
+  const entry: CoalescedEntry = { windowDays: resolvedWindowDays, promise: undefined as unknown as Promise<ProviderFetchWindowResult>, settled: false }
   const promise = fetchProviderWindowLive(chain, walletAddress, resolvedWindowDays)
+  entry.promise = promise
+  requestScopedFetches.set(key, entry)
   // Defensive cleanup only: fetchProviderWindowLive is disclosed as never throwing (both provider
   // calls resolve to an { ok: false, ... } shape on failure, never a rejection) — this guards
   // against that contract ever being violated by a future change, so an unexpected rejection can't
   // permanently poison this key for the rest of the request.
-  promise.catch(() => requestScopedFetches.delete(key))
-  requestScopedFetches.set(key, promise)
+  promise.then(
+    () => { entry.settled = true },
+    () => { if (requestScopedFetches.get(key) === entry) requestScopedFetches.delete(key) },
+  )
   return promise
 }

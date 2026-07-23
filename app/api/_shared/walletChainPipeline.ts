@@ -125,7 +125,7 @@ export async function fetchRawEventsForChain(chain: SupportedChain, walletAddres
   if (cache) console.debug('[CU-HARDENING] Fetching provider events:', `${walletAddress.toLowerCase()}:${chain}`)
 
   const windowDays = getProviderFetchWindowDays()
-  const fetchLive = () => fetchProviderWindow(chain, walletAddress, windowDays)
+  const fetchLive = () => fetchProviderWindow(chain, walletAddress, windowDays, 'v2-engine')
   const result = windowDays === OLD_PIPELINE_PROVIDER_FETCH_WINDOW_DAYS
     ? await withStageCache(`v2:providerFetchWindow:${chain}:${walletAddress.toLowerCase()}`, 30, fetchLive)
     : await fetchLive()

@@ -1009,7 +1009,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       const result = await withStageCache(
         `v2:providerFetchWindow:${chain}:${params.walletAddress.toLowerCase()}`,
         30,
-        () => fetchProviderWindow(chain, params.walletAddress, PROVIDER_FETCH_WINDOW_DAYS_USED),
+        () => fetchProviderWindow(chain, params.walletAddress, PROVIDER_FETCH_WINDOW_DAYS_USED, 'old-pipeline'),
         { skipWrite: true },
       )
       return { result, chain, latencyMs: Math.round(performance.now() - chainStart) }
