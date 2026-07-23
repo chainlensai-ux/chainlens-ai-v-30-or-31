@@ -28,21 +28,67 @@
 
 import { mergeNormalizedEvents } from '../modules/fifoEngine/utils'
 import { buildLots, matchLotsFIFO } from '../modules/fifoEngine/index'
-import type { CurrentPriceUsdLookup, PriceUsdLookup } from '../modules/fifoEngine/types'
+import type { CurrentPriceUsdLookup, MatchedLot, PriceUsdLookup } from '../modules/fifoEngine/types'
 import type { NormalizedEvent } from '../modules/normalization/types'
 import { resolvePricingAtTime } from '../modules/pricingAtTimeEngine/index'
 import type { PriceableEntry, PriceSources, SourceBreakdown } from '../modules/pricingAtTimeEngine/types'
 import { pricingRouteLog, type PricingRouteRecord } from './pricingAtTimeAdapter'
 
-function toPriceableEntry(event: NormalizedEvent, priority: boolean): PriceableEntry {
+function toPriceableEntry(event: NormalizedEvent, pairRank: number | undefined): PriceableEntry {
   return {
     txHash: event.txHash,
     token: event.contract,
     chain: event.chain,
     timestamp: Date.parse(event.timestamp),
     amount: String(event.amount),
-    priority,
+    pairRank,
   }
+}
+
+// PURE. Exported for direct unit testing.
+//
+// COMPLETE-PAIR RANKING, DISCLOSED (confirmed follow-up bug — see pricingAtTimeEngine/index.ts's own
+// "COMPLETE-PAIR FIX" comment for the full trace): a flat priority boolean still let a token's
+// several closed-lot BUYS all outrank every one of that same token's closed-lot SELLS (buys always
+// listed first), so a token with more than one closed lot spent its shared cap on 2 buys and zero
+// sells ever priced. This assigns each closed lot a per-token rank (0 = highest priority for that
+// token) so its own entry+exit share one rank — priceAllEntries then finishes rank 0's complete pair
+// before ever spending a slot on rank 1's, so a bounded cap yields "N complete pairs" rather than
+// "2N half pairs." A buy or sell txHash appearing in more than one matched-lot row (a single lot
+// partially consumed across multiple sells, or a single sell drawing from multiple lots) keeps the
+// LOWEST (best) rank it's needed at across every row — it is never de-prioritized by a later, lower-
+// priority appearance.
+//
+// TIE-BREAK, DISCLOSED: no USD value exists yet at this pre-pricing stage to rank by real
+// "meaningfulness" — amount (raw token quantity) is used as a best-effort, honestly-labeled proxy
+// for "larger position, more likely meaningful," never a price. Ties broken by earliest closedAt
+// (matches FIFO's own oldest-first philosophy), then closedTxHash for full determinism.
+export function assignClosedLotPairRanks(
+  matchedLots: readonly Pick<MatchedLot, 'token' | 'chain' | 'openedTxHash' | 'closedTxHash' | 'closedAt' | 'amount'>[],
+): { entryRankByTxHash: Map<string, number>; exitRankByTxHash: Map<string, number> } {
+  const byToken = new Map<string, typeof matchedLots[number][]>()
+  for (const lot of matchedLots) {
+    const key = `${lot.chain}:${lot.token.toLowerCase()}`
+    const list = byToken.get(key) ?? []
+    list.push(lot)
+    byToken.set(key, list)
+  }
+
+  const entryRankByTxHash = new Map<string, number>()
+  const exitRankByTxHash = new Map<string, number>()
+
+  for (const lots of byToken.values()) {
+    const sorted = [...lots].sort((a, b) =>
+      b.amount - a.amount || a.closedAt - b.closedAt || a.closedTxHash.localeCompare(b.closedTxHash))
+    sorted.forEach((lot, rank) => {
+      const priorEntryRank = entryRankByTxHash.get(lot.openedTxHash)
+      if (priorEntryRank === undefined || rank < priorEntryRank) entryRankByTxHash.set(lot.openedTxHash, rank)
+      const priorExitRank = exitRankByTxHash.get(lot.closedTxHash)
+      if (priorExitRank === undefined || rank < priorExitRank) exitRankByTxHash.set(lot.closedTxHash, rank)
+    })
+  }
+
+  return { entryRankByTxHash, exitRankByTxHash }
 }
 
 // PURE. Exported for direct unit testing (this project's test runner can't reliably mock module
@@ -126,21 +172,43 @@ export async function priceLotsForWallet(params: {
   // pricing requirements a verified closed lot actually needs.
   const structuralLots = buildLots(params.normalizedEvents, params.recoveredEvents)
   const { matchedLots: structuralMatchedLots } = matchLotsFIFO(structuralLots, sells)
-  const closedLotEntryTxHashes = new Set(structuralMatchedLots.map((l) => l.openedTxHash))
-  const closedLotExitTxHashes = new Set(structuralMatchedLots.map((l) => l.closedTxHash))
+  const { entryRankByTxHash, exitRankByTxHash } = assignClosedLotPairRanks(structuralMatchedLots)
 
   const routeLogSnapshotBefore = pricingRouteLog.length
 
   const atTradeTime = await resolvePricingAtTime({
-    buyEntries: buys.map((e) => toPriceableEntry(e, closedLotEntryTxHashes.has(e.txHash))),
-    sellEntries: sells.map((e) => toPriceableEntry(e, closedLotExitTxHashes.has(e.txHash))),
+    buyEntries: buys.map((e) => toPriceableEntry(e, entryRankByTxHash.get(e.txHash))),
+    sellEntries: sells.map((e) => toPriceableEntry(e, exitRankByTxHash.get(e.txHash))),
     priceSources: params.priceSources,
   })
+
+  // CLOSED-LOT PRICING COVERAGE DIAGNOSTICS, DISCLOSED, ADDITIVE — bounded (one summary object, no
+  // per-event dump). Splits every structural closed lot by exactly which side(s) resolved a real
+  // price, so "fullyPricedClosedLots" (both) is never confused with "attributed" (present) or with a
+  // lot that only got half its evidence. Computed AFTER resolvePricingAtTime so it reflects the real
+  // outcome, not the request.
+  let bothPriced = 0
+  let entryOnlyPriced = 0
+  let exitOnlyPriced = 0
+  let neitherPriced = 0
+  for (const lot of structuralMatchedLots) {
+    const hasEntry = atTradeTime.costUsd[lot.openedTxHash] != null
+    const hasExit = atTradeTime.proceedsUsd[lot.closedTxHash] != null
+    if (hasEntry && hasExit) bothPriced += 1
+    else if (hasEntry) entryOnlyPriced += 1
+    else if (hasExit) exitOnlyPriced += 1
+    else neitherPriced += 1
+  }
   // eslint-disable-next-line no-console
-  console.warn('[priceLotsForWallet] closed-lot pricing requirement selection', {
+  console.warn('[priceLotsForWallet] closed-lot pricing coverage', {
     structuralClosedLots: structuralMatchedLots.length,
-    closedLotEntryRequirements: closedLotEntryTxHashes.size,
-    closedLotExitRequirements: closedLotExitTxHashes.size,
+    distinctTokensWithClosedLots: new Set(structuralMatchedLots.map((l) => `${l.chain}:${l.token.toLowerCase()}`)).size,
+    fullyPricedClosedLots: bothPriced,
+    entryOnlyPriced,
+    exitOnlyPriced,
+    neitherPriced,
+    closedLotEntryRequirements: entryRankByTxHash.size,
+    closedLotExitRequirements: exitRankByTxHash.size,
     totalBuyEntries: buys.length,
     totalSellEntries: sells.length,
   })

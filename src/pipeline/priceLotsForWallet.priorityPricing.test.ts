@@ -138,4 +138,74 @@ describe('priceLotsForWallet — closed-lot pricing requirement priority (confir
     assert.equal(lookups.priceUsdLookup(buy), 42)
     assert.equal(lookups.priceUsdLookup(sell), 42)
   })
+
+  it('regression guard: THREE closed lots for one token, cap 2 — completes ONE full pair, never two half-pairs (confirmed follow-up bug, fixed)', async () => {
+    // Confirmed real production evidence: 283 closed lots, only 1 fully priced (0.35% coverage) even
+    // after the previous round's boolean-priority fix. Root cause: a flat priority flag still let
+    // ALL of a token's closed-lot BUYS outrank ALL of that same token's closed-lot SELLS (buys always
+    // listed first in priceAllEntries' combined array) — a token with 3 closed lots (3 buys + 3
+    // sells) spent its cap of 2 on 2 buys, leaving all 3 sells capped: zero fully priced lots for
+    // that token. Fixed via assignClosedLotPairRanks: each lot's entry+exit share one rank, so rank
+    // 0's complete pair is dispatched (and therefore priced) before rank 1/2 are ever reached.
+    const noiseBuys = Array.from({ length: 121 }, (_, i) =>
+      event({ txHash: `0xnoise${i}`, contract: `0xnoise${i}`, direction: 'inbound', timestamp: '2026-01-01T00:00:00.000Z' }))
+    // Three independent buy->sell round trips for the SAME token, largest amount first by our
+    // deterministic tie-break so lot "amount:3" becomes rank 0 (the pair actually completed).
+    const buy1 = event({ txHash: '0xbuy1', contract: '0xtarget', direction: 'inbound', timestamp: '2026-01-01T00:00:00.000Z', amount: 1 })
+    const sell1 = event({ txHash: '0xsell1', contract: '0xtarget', direction: 'outbound', timestamp: '2026-01-02T00:00:00.000Z', amount: 1 })
+    const buy2 = event({ txHash: '0xbuy2', contract: '0xtarget', direction: 'inbound', timestamp: '2026-01-03T00:00:00.000Z', amount: 3 })
+    const sell2 = event({ txHash: '0xsell2', contract: '0xtarget', direction: 'outbound', timestamp: '2026-01-04T00:00:00.000Z', amount: 3 })
+    const buy3 = event({ txHash: '0xbuy3', contract: '0xtarget', direction: 'inbound', timestamp: '2026-01-05T00:00:00.000Z', amount: 2 })
+    const sell3 = event({ txHash: '0xsell3', contract: '0xtarget', direction: 'outbound', timestamp: '2026-01-06T00:00:00.000Z', amount: 2 })
+    const { sources } = countingPriceSources()
+
+    const lookups = await priceLotsForWallet({
+      normalizedEvents: [...noiseBuys, buy1, sell1, buy2, sell2, buy3, sell3], // 122 distinct tokens -> dense tier
+      recoveredEvents: [],
+      priceSources: sources,
+    })
+
+    // priceUsdLookup returns price * amount (see pricingAtTimeEngine's multiplyAmount) — checking
+    // != null (not a fixed value) is correct since these events use different amounts (1, 3, 2).
+    const priced = (e: NormalizedEvent) => lookups.priceUsdLookup(e) != null
+    const pairs = [
+      { buy: buy1, sell: sell1, label: 'lot 1 (amount 1)' },
+      { buy: buy2, sell: sell2, label: 'lot 2 (amount 3, rank 0 — largest amount)' },
+      { buy: buy3, sell: sell3, label: 'lot 3 (amount 2)' },
+    ]
+    const fullyPricedPairs = pairs.filter((p) => priced(p.buy) && priced(p.sell))
+    const halfPricedPairs = pairs.filter((p) => priced(p.buy) !== priced(p.sell))
+
+    assert.equal(fullyPricedPairs.length, 1, 'exactly one complete pair should be fully priced under cap 2, not zero and not multiple half-pairs')
+    assert.equal(halfPricedPairs.length, 0, 'no pair should end up with only its buy OR only its sell priced — that is the exact "half-pair" bug being fixed')
+    assert.equal(fullyPricedPairs[0]!.label, 'lot 2 (amount 3, rank 0 — largest amount)', 'the deterministically highest-ranked pair (largest amount) is the one that completes')
+  })
+
+  it('regression guard: provider-call count for a single token stays bounded (never exceeds the per-token cap) even as competing closed lots increase', async () => {
+    const noiseBuys = Array.from({ length: 121 }, (_, i) =>
+      event({ txHash: `0xnoise${i}`, contract: `0xnoise${i}`, direction: 'inbound', timestamp: '2026-01-01T00:00:00.000Z' }))
+    // FOUR competing closed lots for one token (double the 2-lot case already tested above) — proves
+    // the cap holds regardless of how many pairs compete, not just for a specific small count.
+    const pairs = Array.from({ length: 4 }, (_, i) => ({
+      buy: event({ txHash: `0xb${i}`, contract: '0xtarget', direction: 'inbound', timestamp: `2026-01-0${i * 2 + 1}T00:00:00.000Z` }),
+      sell: event({ txHash: `0xs${i}`, contract: '0xtarget', direction: 'outbound', timestamp: `2026-01-0${i * 2 + 2}T00:00:00.000Z` }),
+    }))
+    const targetEvents = pairs.flatMap((p) => [p.buy, p.sell])
+
+    let realCallsForTarget = 0
+    const source: PriceSourceFn = (token) => { if (token === '0xtarget') realCallsForTarget += 1; return 1 }
+
+    await priceLotsForWallet({
+      normalizedEvents: [...noiseBuys, ...targetEvents],
+      recoveredEvents: [],
+      priceSources: { primary: source, fallback: source },
+    })
+
+    // Per priceLotsForWallet's two internal pricing passes: the at-trade-time pass caps 'target' at
+    // maxLookupsPerToken (2, dense tier — 122 distinct tokens here), and the separate "current price"
+    // pass makes exactly 1 more real call for 'target' (one distinct-held-token entry, cap never
+    // binds for a single entry) — 3 total, regardless of whether 1, 2, or 4 closed lots compete for
+    // that token's budget. The cap itself was never raised; only dispatch order changed.
+    assert.equal(realCallsForTarget, 3, 'the target token\'s real provider-call count must stay bounded at cap(2) + current-price(1) = 3, never scaling up with the number of competing closed lots')
+  })
 })

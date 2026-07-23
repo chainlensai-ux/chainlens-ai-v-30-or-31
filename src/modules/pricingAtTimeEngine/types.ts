@@ -52,13 +52,19 @@ export type PriceableEntry = {
   chain: SupportedChain
   timestamp: number
   amount: string
-  // PRIORITY, ADDITIVE/OPTIONAL, DISCLOSED: when true, this entry is a verified FIFO closed lot's own
-  // entry or exit requirement (see priceLotsForWallet.ts's structural pre-pass) — priceAllEntries
-  // dispatches all priority entries (combined across buys+sells) before any non-priority entry of the
-  // same token, so the shared per-token lookup cap is spent on the decisive buy+sell pair a real
-  // closed lot needs, not crowded out by unrelated/lower-value activity for the same token. Omitted
-  // (undefined) is the same as false — every existing caller that doesn't set this is unaffected.
-  priority?: boolean
+  // PAIR-RANK, ADDITIVE/OPTIONAL, DISCLOSED: when set, this entry is a verified FIFO closed lot's own
+  // entry or exit requirement (see priceLotsForWallet.ts's structural pre-pass). Lower rank = higher
+  // priority. COMPLETE-PAIR FIX, DISCLOSED (confirmed bug: a boolean `priority` flag alone still let
+  // ALL priority buys dispatch before ANY priority sell for a token with multiple closed lots — the
+  // cap of 2 was spent on 2 unrelated buys, leaving every sell capped, i.e. 0 fully priced lots for
+  // that token, despite the boolean version already fixing the single-closed-lot case). A numeric
+  // rank groups a pair's own buy+sell adjacently (same rank = same closed lot) and orders pairs for
+  // the same token deterministically, so priceAllEntries can finish rank 0's complete pair before
+  // ever touching rank 1's — "one full pair" beats "two half pairs" under the same bounded cap.
+  // Omitted (undefined) means "not a closed-lot requirement" — sorts after every ranked entry, same
+  // relative order as before this field existed. Every existing caller that doesn't set this is
+  // unaffected.
+  pairRank?: number
 }
 
 // EXTERNAL FALLBACK, ADDITIVE/OPTIONAL, DISCLOSED: `resolvePricingAtTime` below is called from TWO

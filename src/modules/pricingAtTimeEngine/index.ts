@@ -183,21 +183,30 @@ async function priceAllEntries(
   // this array's order — so a token bought more than once before being sold (the common case, e.g.
   // accumulating a position across several buys) had its OWN multiple buy occurrences consume every
   // available cap slot before its own sell was ever reached, leaving that closed lot's exit price
-  // permanently null regardless of real availability — even after the dense-cap fix confirmed a
-  // simple single-buy+single-sell round trip already worked.
+  // permanently null regardless of real availability.
   //
-  // Fixed by dispatching every `priority: true` entry (a verified FIFO closed lot's own entry/exit
-  // requirement — set by priceLotsForWallet.ts's structural, price-free pre-pass) before any
-  // non-priority entry of the same token, combined across buys AND sells (not just reordered within
-  // one side) — so the closed lot's decisive buy+sell pair wins the shared cap ahead of unrelated,
-  // lower-value activity for that same token. Stable partition: relative order is preserved within
-  // each tier, so behavior for non-priority entries (or when nothing is marked priority — every
-  // existing caller/test) is unchanged.
-  const tagged = [
-    ...combined.filter(({ entry }) => entry.priority),
-    ...combined.filter(({ entry }) => !entry.priority),
-  ]
-  const priorityRequirementCount = combined.filter(({ entry }) => entry.priority).length
+  // COMPLETE-PAIR FIX, DISCLOSED (confirmed follow-up bug: fullyPricedLots stayed at ~1/283 even
+  // after the above fix, for wallets where most tokens have MORE THAN ONE closed lot): a plain
+  // priority partition still preserved combined's buy-then-sell order WITHIN the priority tier
+  // itself (all priority buys still came from buyEntries, listed before all priority sells from
+  // sellEntries) — so a token with e.g. 3 closed lots (3 buys + 3 sells, all "priority") spent its
+  // cap of 2 on the first 2 BUYS, leaving all 3 sells capped: zero fully priced lots for that token,
+  // same failure mode at a smaller scale. Fixed by sorting on `pairRank` (set by
+  // priceLotsForWallet.ts's structural pre-pass so a lot's own entry+exit requirement share the same
+  // rank) instead of a flat boolean: entries are ordered by rank ascending, so rank 0's buy AND sell
+  // are both dispatched (in their original relative order, buy-before-sell, but adjacent to each
+  // other) before rank 1's entries are ever reached — "complete one pair before spending slots
+  // across multiple incomplete pairs," exactly as required. Unranked (pairRank undefined) entries
+  // sort after every ranked entry, in their original relative order — unchanged behavior for every
+  // existing caller/test that never sets this field.
+  // Finite sentinel, not Infinity: `Infinity - Infinity` is NaN, an invalid sort comparator result
+  // for two unranked entries (undefined behavior) — a finite sentinel larger than any real rank
+  // keeps every comparison a well-defined finite number, so Array.prototype.sort's stability
+  // guarantee (ES2019+) actually holds and unranked entries keep their original relative order.
+  const UNRANKED = Number.MAX_SAFE_INTEGER
+  const rankOf = (entry: PriceableEntry) => entry.pairRank ?? UNRANKED
+  const tagged = [...combined].sort((a, b) => rankOf(a.entry) - rankOf(b.entry))
+  const priorityRequirementCount = combined.filter(({ entry }) => entry.pairRank !== undefined).length
 
   const distinctTokenCount = new Set(tagged.map(({ entry }) => `${entry.chain}:${entry.token.toLowerCase()}`)).size
   const maxLookupsPerToken = resolveMaxLookupsPerToken(distinctTokenCount)
@@ -213,7 +222,7 @@ async function priceAllEntries(
     const priorLookups = lookupCountByToken.get(tokenKey) ?? 0
     if (priorLookups >= maxLookupsPerToken) {
       cappedCount += 1
-      if (entry.priority) priorityCappedCount += 1
+      if (entry.pairRank !== undefined) priorityCappedCount += 1
       return { list, txHash: entry.txHash, usd: null, source: 'failed' as const, missing: true }
     }
     lookupCountByToken.set(tokenKey, priorLookups + 1)
