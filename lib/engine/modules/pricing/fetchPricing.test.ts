@@ -77,6 +77,39 @@ describe('priceHoldings', () => {
     assert.equal(result.totalValueUsd, 0)
   })
 
+  it('regression guard: a holding with a known-negligible providerValueUsd (dust) never reaches the DexScreener fallback', async () => {
+    let callCount = 0
+    const fakePriceFn = async () => { callCount += 1; return 42 }
+    const result = await priceHoldings(
+      [holding({ tokenAddress: '0xdust', quantity: '1000', providerValueUsd: 0.02 })],
+      fakePriceFn,
+    )
+    assert.equal(callCount, 0, 'a known-negligible providerValueUsd must skip the fallback entirely')
+    assert.equal(result.pricedHoldings[0].priceUsd, null, 'dust stays honestly unpriced, never fabricated')
+  })
+
+  it('regression guard: a holding with a near-zero quantity and no provider value signal at all is treated as dust', async () => {
+    let callCount = 0
+    const fakePriceFn = async () => { callCount += 1; return 42 }
+    const result = await priceHoldings(
+      [holding({ tokenAddress: '0xdustqty', quantity: '0.0000001' })], // below the dust floor, no providerValueUsd
+      fakePriceFn,
+    )
+    assert.equal(callCount, 0, 'a near-zero quantity with no provider value signal must be treated as dust')
+    assert.equal(result.pricedHoldings[0].priceUsd, null)
+  })
+
+  it('regression guard: a meaningful holding lacking provider USD still reaches the fallback (dust filtering must not become a blanket suppression)', async () => {
+    let callCount = 0
+    const fakePriceFn = async () => { callCount += 1; return 7 }
+    const result = await priceHoldings(
+      [holding({ tokenAddress: '0xmeaningful', quantity: '500' })], // no providerValueUsd at all, real quantity
+      fakePriceFn,
+    )
+    assert.equal(callCount, 1, 'a holding with a real quantity and no provider value signal must still be eligible for the fallback')
+    assert.equal(result.pricedHoldings[0].priceUsd, 7)
+  })
+
   it('regression guard: two holdings sharing the same (chainId, tokenAddress) fall-back lookup exactly once, not once per holding', async () => {
     // Real production shape: the same token address can appear more than once in chainHoldings
     // (e.g. two classification buckets for the same contract). Both previously fired their OWN

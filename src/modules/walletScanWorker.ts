@@ -105,6 +105,11 @@ async function executeWalletScanJob(payload: WalletScanJobPayload): Promise<{ jo
   // (workers/walletScanV2.ts) would report stale cross-request counts on any warm instance.
   const { resetGoldrushPriceSourceCallCount } = await import('@/src/modules/pricingAtTimeEngine/sources/goldrushPriceSource')
   const { resetDexscreenerCallCount } = await import('@/src/modules/pricingAtTimeEngine/sources/dexscreener')
+  // REQUEST-SCOPED FETCH COALESCING RESET, DISCLOSED (provider-call-audit follow-up task): same
+  // per-job reset convention as the counters above — see providerFetchWindow/index.ts's own header
+  // for why this must be cleared at the start of every scan job (never leak a coalesced result
+  // across unrelated wallets/scans on a warm serverless instance).
+  const { resetProviderFetchWindowRequestCache } = await import('@/src/modules/providerFetchWindow/index')
 
   const startedAt = Date.now()
   console.warn('[wallet-scan-worker] job started', { jobId: payload.jobId })
@@ -116,6 +121,7 @@ async function executeWalletScanJob(payload: WalletScanJobPayload): Promise<{ jo
   resetBaseDexRpcBudgetForScan()
   resetGoldrushPriceSourceCallCount()
   resetDexscreenerCallCount()
+  resetProviderFetchWindowRequestCache()
 
   let finalBody: unknown
   let completedSuccessfully = false

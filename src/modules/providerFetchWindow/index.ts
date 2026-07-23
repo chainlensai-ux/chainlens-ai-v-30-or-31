@@ -96,13 +96,11 @@ export function detectProviderUnavailable(
 // the results. Never throws — each provider call is individually failure-isolated inside
 // fetchGoldrushRawEvents/fetchAlchemyRawEvents, so one provider failing never prevents the other
 // from being used (Architecture Step 7 §1).
-export async function fetchProviderWindow(
+async function fetchProviderWindowLive(
   chain: SupportedChain,
   walletAddress: string,
-  windowDays?: number,
+  resolvedWindowDays: number,
 ): Promise<ProviderFetchWindowResult> {
-  const resolvedWindowDays = clampWindowDays(windowDays)
-
   const [goldrushResult, alchemyResult] = await Promise.all([
     fetchGoldrushRawEvents(chain, walletAddress, resolvedWindowDays),
     fetchAlchemyRawEvents(chain, walletAddress, resolvedWindowDays),
@@ -120,4 +118,50 @@ export async function fetchProviderWindow(
     providerResults: { goldrush: goldrushResult, alchemy: alchemyResult },
     providerFetchWindowDays: resolvedWindowDays,
   }
+}
+
+// REQUEST-SCOPED PROMISE COALESCING, DISCLOSED (provider-call-audit follow-up task, confirmed real
+// duplicate-call source): a prior fix made src/pipeline/index.ts AWAIT its Redis cache write before
+// returning, so the V2 engine chain's later read would normally hit that cache instead of
+// re-fetching. That closed the common case but not a slow/timing-out provider: fetchProviderWindow
+// can legitimately take up to 12s (per-provider AbortSignal timeout, see utils.ts) to even RESOLVE
+// — every caller within that window (old pipeline's own per-chain Promise.all, the V2 chain's
+// trades/chainActivity modules, any other consumer reached before the first call settles) was still
+// each independently starting a brand-new live fetch, because there was nothing IN-PROCESS
+// coalescing concurrent/overlapping calls for the same (chain, wallet, windowDays) — only the
+// Redis write-after-the-fact did, and that only helps once the first call has already finished.
+// This map closes that gap directly: the FIRST caller for a given key starts the real fetch and
+// every other caller (concurrent, or arriving after the first has already settled) receives the
+// exact same promise/result — including a timeout/failure result, per this task's explicit
+// requirement that later stages must not retry live within the same request. Cross-request Redis
+// caching (src/pipeline/index.ts, app/api/_shared/walletChainPipeline.ts) is completely unaffected
+// — this sits UNDERNEATH that layer, only deduplicating calls within one process's lifetime, and is
+// reset once per real scan job (see resetProviderFetchWindowRequestCache, called from
+// walletScanWorker.ts alongside this codebase's other established per-job counter resets) so it
+// never leaks results across unrelated scans/wallets on a warm serverless instance.
+const requestScopedFetches = new Map<string, Promise<ProviderFetchWindowResult>>()
+
+export function resetProviderFetchWindowRequestCache(): void {
+  requestScopedFetches.clear()
+}
+
+export async function fetchProviderWindow(
+  chain: SupportedChain,
+  walletAddress: string,
+  windowDays?: number,
+): Promise<ProviderFetchWindowResult> {
+  const resolvedWindowDays = clampWindowDays(windowDays)
+  const key = `${chain}:${walletAddress.toLowerCase()}:${resolvedWindowDays}`
+
+  const existing = requestScopedFetches.get(key)
+  if (existing) return existing
+
+  const promise = fetchProviderWindowLive(chain, walletAddress, resolvedWindowDays)
+  // Defensive cleanup only: fetchProviderWindowLive is disclosed as never throwing (both provider
+  // calls resolve to an { ok: false, ... } shape on failure, never a rejection) — this guards
+  // against that contract ever being violated by a future change, so an unexpected rejection can't
+  // permanently poison this key for the rest of the request.
+  promise.catch(() => requestScopedFetches.delete(key))
+  requestScopedFetches.set(key, promise)
+  return promise
 }

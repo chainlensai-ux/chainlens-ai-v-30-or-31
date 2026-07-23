@@ -66,6 +66,33 @@ async function mapWithConcurrencyLimit<T, R>(items: T[], limit: number, fn: (ite
   return results
 }
 
+// DUST ELIGIBILITY, DISCLOSED (provider-call-audit follow-up task, confirmed real cause of "very
+// large" DexScreener fan-out): every holding lacking a free `providerPriceUsd` was previously
+// eligible for the fallback lookup, including obvious dust — a wallet can hold dozens of
+// near-zero-quantity or already-known-negligible-value tokens (airdrops, LP dust, failed-swap
+// remainders), each burning a real DexScreener call for a price that can never matter to the
+// wallet's totals either way. Two REAL signals, never a fabricated one, decide eligibility:
+//   1. `providerValueUsd` — when GoldRush's own balances_v2 call already reports SOME USD value
+//      (even though `providerPriceUsd` itself didn't pass the `> 0` gate above, e.g. a value present
+//      with a zero/negative rate edge case), a value under DUST_VALUE_USD_THRESHOLD is already known
+//      to be negligible — no need to ask DexScreener too.
+//   2. `quantity` — when there is NO provider value signal at all, an honest, disclosed limitation:
+//      true USD-value dust can't be determined without a price (the exact thing being looked up), so
+//      this only filters holdings whose human-readable quantity itself is at or near zero
+//      (DUST_QUANTITY_FLOOR) — a real, bounded heuristic, not a substitute for an actual valuation.
+// A holding this excludes gets priceUsd: null, same as any other honestly-unpriced holding — never
+// zero, never fabricated.
+const DUST_VALUE_USD_THRESHOLD = 1
+const DUST_QUANTITY_FLOOR = 1e-6
+
+function isEligibleForFallbackPricing(h: ChainHolding): boolean {
+  if (h.providerPriceUsd != null && h.providerPriceUsd > 0) return false // already has a free price
+  if (h.providerValueUsd != null && h.providerValueUsd > 0 && h.providerValueUsd < DUST_VALUE_USD_THRESHOLD) return false
+  const quantity = Number(h.quantity)
+  if (!Number.isFinite(quantity) || quantity <= DUST_QUANTITY_FLOOR) return false
+  return true
+}
+
 // Public entry point. `priceHoldings(holdings)` — exactly the signature specified; the second
 // parameter is an ADDITIVE, optional testing seam (defaults to the real fetchTokenPriceUsd above),
 // added because node:test's `t.mock.module` proved unreliable under this project's tsx-based test
@@ -85,12 +112,13 @@ export async function priceHoldings(
   holdings: ChainHolding[],
   priceFn: (chainId: number, tokenAddress: string) => Promise<number | null> = fetchTokenPriceUsd,
 ): Promise<PricingEngineOutput> {
-  // Only holdings genuinely eligible for the fallback (no free provider price) ever reach priceFn.
+  // Only holdings genuinely eligible for the fallback (no free provider price, not dust) ever reach
+  // priceFn — see isEligibleForFallbackPricing's own header for the two real signals used.
   const fallbackKeyOf = (h: ChainHolding) => `${h.chainId}:${h.tokenAddress.toLowerCase()}`
   const distinctFallbackKeys = Array.from(
     new Set(
       holdings
-        .filter((h) => !(h.providerPriceUsd != null && h.providerPriceUsd > 0))
+        .filter(isEligibleForFallbackPricing)
         .map(fallbackKeyOf),
     ),
   )
