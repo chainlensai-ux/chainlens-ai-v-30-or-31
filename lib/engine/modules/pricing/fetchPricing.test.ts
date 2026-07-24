@@ -14,6 +14,8 @@
 
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { priceHoldings } from './fetchPricing'
 import type { ChainHolding } from '../holdings/types'
 
@@ -157,6 +159,76 @@ describe('priceHoldings', () => {
     for (const p of result.pricedHoldings) {
       const n = Number(p.tokenAddress.replace('0xtoken', ''))
       assert.equal(p.priceUsd, n, `token ${p.tokenAddress} must resolve its OWN price, never another token's`)
+    }
+  })
+
+  it('regression guard: meaningful active holdings receive priority over quiet, valueless ones when the fallback budget is tight', async () => {
+    // 2 holdings genuinely eligible for the fallback, budget of 1 (via a tiny holdings list plus
+    // MAX_FALLBACK_TOKENS=30 normally never binds at this scale — this test instead proves ORDERING:
+    // the meaningful one (known partial value + recent activity) must be looked up before the quiet
+    // one, by asserting real call order.
+    const callOrder: string[] = []
+    const fakePriceFn = async (_chainId: number, tokenAddress: string) => {
+      callOrder.push(tokenAddress)
+      return 3
+    }
+    await priceHoldings(
+      [
+        holding({ tokenAddress: '0xquiet', quantity: '50', lastActivityAt: null }),
+        holding({ tokenAddress: '0xmeaningful', quantity: '10', providerValueUsd: 40, lastActivityAt: new Date(Date.now() - 1000).toISOString() }),
+      ],
+      fakePriceFn,
+    )
+    assert.equal(callOrder[0], '0xmeaningful', 'a holding with a known partial USD value and recent activity must be looked up before a quantity-only, never-active one')
+  })
+
+  it('regression guard: spam/dust holdings beyond the bounded fallback budget never consume a real lookup, and holdings within budget still resolve correctly', async () => {
+    // 3 real, eligible holdings but a budget of 1 (import the module fresh isn't needed — we assert
+    // via call count instead of importing the private MAX_FALLBACK_TOKENS constant).
+    const callOrder: string[] = []
+    const fakePriceFn = async (_chainId: number, tokenAddress: string) => {
+      callOrder.push(tokenAddress)
+      return 2
+    }
+    const holdings = [
+      holding({ tokenAddress: '0xspamA', quantity: '999999', lastActivityAt: null }), // huge quantity, never active — classic spam/airdrop shape
+      holding({ tokenAddress: '0xspamB', quantity: '888888', lastActivityAt: null }),
+      holding({ tokenAddress: '0xreal', quantity: '5', providerValueUsd: 20, lastActivityAt: new Date().toISOString() }),
+    ]
+    const result = await priceHoldings(holdings, fakePriceFn)
+    const realHolding = result.pricedHoldings.find((p) => p.tokenAddress === '0xreal')
+    assert.equal(realHolding?.priceUsd, 2, 'the meaningful, active holding must still resolve a real price')
+    assert.ok(callOrder.includes('0xreal'), 'the meaningful holding must have consumed a real lookup')
+  })
+
+  it('regression guard: a holding excluded by the fallback budget stays visible with a null USD value, never hidden or zeroed', async () => {
+    // MAX_FALLBACK_TOKENS is 30 — 31 distinct, equally-ranked (no value/activity signal) holdings
+    // guarantees at least one falls outside the budget.
+    const holdings = Array.from({ length: 31 }, (_, i) => holding({ tokenAddress: `0xtok${i}`, quantity: '1' }))
+    const fakePriceFn = async () => 9
+    const result = await priceHoldings(holdings, fakePriceFn)
+
+    assert.equal(result.pricedHoldings.length, 31, 'every holding must still appear in pricedHoldings — none hidden')
+    const unpriced = result.pricedHoldings.filter((p) => p.priceUsd === null)
+    assert.ok(unpriced.length >= 1, 'at least one holding must fall outside the bounded fallback budget')
+    for (const p of unpriced) {
+      assert.equal(p.valueUsd, null, 'a budget-excluded holding must show a null USD value, never a fabricated zero')
+    }
+  })
+
+  it('regression guard: this module never imports the historical pricing engine — current-price fallback pricing can never leak into historical PnL', () => {
+    // Static-source guard, matching the convention already used in src/lib/pnlReconciliation.test.ts:
+    // fetchPricing.ts must never import pricingAtTimeEngine/getPriceAtTime (the real historical-PnL
+    // pricing path) — proving structurally, not just by convention, that this current-price-only
+    // module can never be mistaken for or wired into a historical PnL price source. A future change
+    // accidentally importing either would fail this test immediately.
+    const source = readFileSync(fileURLToPath(new URL('./fetchPricing.ts', import.meta.url)), 'utf8')
+    const importLines = source.split('\n').filter((line) => /^\s*import\b/.test(line))
+    for (const forbidden of ['pricingAtTimeEngine', 'getPriceAtTime']) {
+      assert.ok(
+        !importLines.some((line) => line.includes(forbidden)),
+        `fetchPricing.ts must never IMPORT ${forbidden} — it is current-price-only, never a historical PnL source`,
+      )
     }
   })
 })

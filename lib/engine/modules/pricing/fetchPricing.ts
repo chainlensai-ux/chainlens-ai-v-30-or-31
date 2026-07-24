@@ -93,6 +93,41 @@ function isEligibleForFallbackPricing(h: ChainHolding): boolean {
   return true
 }
 
+// BOUNDED FALLBACK BUDGET, DISCLOSED (provider-call-audit follow-up task, confirmed cause of
+// remaining "80-90 DexScreener lookups"): the dust filter above only catches near-zero-quantity or
+// already-known-negligible-value holdings — it does NOT bound the total count of genuinely
+// eligible-but-unverified holdings, and a wallet holding dozens of low-liquidity/airdropped/spam
+// tokens (real, nonzero quantities the dust filter can't distinguish from a real position without a
+// price — the exact chicken-and-egg limitation already disclosed above) still sent every one of
+// them to DexScreener. This caps the real fallback lookups per scan and PRIORITIZES which holdings
+// get one, using three real signals already present on ChainHolding — never a fabricated one:
+//   1. providerValueUsd — a real (if partial) USD signal from the balances provider outranks having
+//      none at all.
+//   2. quantity — a weak but real proxy when there's no value signal (can't rank across tokens by
+//      true value without a price, which is what's being looked up — same honest limitation as the
+//      dust floor above).
+//   3. lastActivityAt — a token this wallet has interacted with recently is far more likely a real,
+//      meaningful position than an untouched airdrop/spam drop sitting in the wallet.
+// A holding that doesn't make the cut is NEVER hidden and NEVER defaulted to zero — it stays in
+// pricedHoldings with priceUsd/valueUsd: null, exactly like any other honestly-unpriced holding.
+const MAX_FALLBACK_TOKENS = 30
+
+function fallbackPriorityScore(h: ChainHolding): [number, number, number] {
+  const valueSignal = h.providerValueUsd != null && h.providerValueUsd > 0 ? h.providerValueUsd : -1
+  const quantity = Number(h.quantity)
+  const quantitySignal = Number.isFinite(quantity) ? quantity : -1
+  const activityMs = h.lastActivityAt ? Date.parse(h.lastActivityAt) : NaN
+  const activitySignal = Number.isFinite(activityMs) ? activityMs : -Infinity
+  return [valueSignal, quantitySignal, activitySignal]
+}
+
+function compareFallbackPriority(a: [number, number, number], b: [number, number, number]): number {
+  for (let i = 0; i < a.length; i += 1) {
+    if (b[i] !== a[i]) return b[i] - a[i] // descending: highest signal first
+  }
+  return 0
+}
+
 // Public entry point. `priceHoldings(holdings)` — exactly the signature specified; the second
 // parameter is an ADDITIVE, optional testing seam (defaults to the real fetchTokenPriceUsd above),
 // added because node:test's `t.mock.module` proved unreliable under this project's tsx-based test
@@ -129,6 +164,21 @@ export async function priceHoldings(
   const eligibleHoldings = holdings.filter(isEligibleForFallbackPricing)
   const distinctFallbackKeys = Array.from(new Set(eligibleHoldings.map(fallbackKeyOf)))
 
+  // Best (highest-priority) score across every holding sharing a key — a token appearing under two
+  // classification buckets is ranked by whichever bucket carries the strongest real signal.
+  const bestScoreByKey = new Map<string, [number, number, number]>()
+  for (const h of eligibleHoldings) {
+    const key = fallbackKeyOf(h)
+    const score = fallbackPriorityScore(h)
+    const existing = bestScoreByKey.get(key)
+    if (!existing || compareFallbackPriority(score, existing) < 0) bestScoreByKey.set(key, score)
+  }
+  const rankedFallbackKeys = [...distinctFallbackKeys].sort((a, b) =>
+    compareFallbackPriority(bestScoreByKey.get(a)!, bestScoreByKey.get(b)!),
+  )
+  const budgetedFallbackKeys = rankedFallbackKeys.slice(0, MAX_FALLBACK_TOKENS)
+  const overBudgetKeys = rankedFallbackKeys.slice(MAX_FALLBACK_TOKENS)
+
   // DIAGNOSTIC, DISCLOSED (provider-call-audit follow-up task, explicit "report before changing
   // thresholds" requirement): real counts only, no behavior change from this log — reports exactly
   // how many holdings fall into each eligibility bucket so a future pass can decide whether the
@@ -141,14 +191,19 @@ export async function priceHoldings(
     quantityDustSkipped: quantityDustSkipped.length,
     fallbackEligible: eligibleHoldings.length,
     uniqueFallbackEligible: distinctFallbackKeys.length,
+    fallbackBudget: MAX_FALLBACK_TOKENS,
+    budgetedForLookup: budgetedFallbackKeys.length,
+    overBudgetUnpriced: overBudgetKeys.length,
     timestamp: Date.now(),
   })
   const fallbackPriceByKey = new Map<string, number | null>()
-  const resolvedPrices = await mapWithConcurrencyLimit(distinctFallbackKeys, FALLBACK_PRICE_CONCURRENCY_LIMIT, async (key) => {
+  const resolvedPrices = await mapWithConcurrencyLimit(budgetedFallbackKeys, FALLBACK_PRICE_CONCURRENCY_LIMIT, async (key) => {
     const [chainIdStr, tokenAddress] = key.split(':')
     return priceFn(Number(chainIdStr), tokenAddress)
   })
-  distinctFallbackKeys.forEach((key, i) => fallbackPriceByKey.set(key, resolvedPrices[i]))
+  budgetedFallbackKeys.forEach((key, i) => fallbackPriceByKey.set(key, resolvedPrices[i]))
+  // Holdings whose key didn't make the cut stay honestly unpriced (priceUsd/valueUsd: null below) —
+  // never hidden from pricedHoldings, never defaulted to zero.
 
   const pricedHoldings: PricedHolding[] = holdings.map((h): PricedHolding => {
     // Prefer the balances provider's own real, free price (see file header) — only fall through
