@@ -33,6 +33,64 @@ import type { PricedHolding, PricingEngineOutput } from './types'
 
 export type { PricedHolding, PricingEngineOutput } from './types'
 
+// SCAN-TO-SCAN DIFF, DISCLOSED (portfolio-total-stability audit task, "compare the final priced
+// holdings between two scans by chain+token" / "find the exact token responsible for the delta"
+// requirements): a real, callable comparison — not just a hope that two separately-logged
+// snapshots get manually diffed by a human. Pure and side-effect-free; logs nothing itself (the
+// caller decides whether/how to log its result, matching this module's own "compact reason
+// counters, not raw responses" convention elsewhere in this codebase).
+export type MissingPricedHoldingDiagnostic = {
+  missingPricedHolding: string // `${chainId}:${tokenAddress}`
+  previousValueUsd: number
+  currentValueUsd: number | null
+  providerPriceUsd: number | null
+  quantity: string
+  pricingSource: 'provider' | 'fallback' | 'unpriced'
+  exclusionReason: 'absent_from_current_scan' | 'price_lost_between_scans'
+}
+
+function holdingKey(chainId: number, tokenAddress: string): string {
+  return `${chainId}:${tokenAddress.toLowerCase()}`
+}
+
+function pricingSourceOf(h: Pick<PricedHolding, 'priceUsd'>, chainHolding?: Pick<ChainHolding, 'providerPriceUsd'>): 'provider' | 'fallback' | 'unpriced' {
+  if (h.priceUsd == null) return 'unpriced'
+  if (chainHolding?.providerPriceUsd != null && chainHolding.providerPriceUsd > 0) return 'provider'
+  return 'fallback'
+}
+
+// Compares two scans' priced-holdings lists by (chainId, tokenAddress) and returns one compact
+// diagnostic per holding that had a real, non-trivial USD value in the PREVIOUS scan but does not
+// in the CURRENT one (either missing entirely, or present but unpriced/lower) — the exact
+// "responsible token(s)" for a total-value drop, without ever logging a full holdings dump.
+// `minValueUsdToReport` bounds noise from dust-level differences (default $1, matching this
+// module's own DUST_VALUE_USD_THRESHOLD convention) — never used to hide a real, meaningful loss.
+export function diffPricedHoldingsForRegression(
+  previous: readonly PricedHolding[],
+  current: readonly PricedHolding[],
+  minValueUsdToReport = 1,
+): MissingPricedHoldingDiagnostic[] {
+  const currentByKey = new Map(current.map((h) => [holdingKey(h.chainId, h.tokenAddress), h]))
+  const diagnostics: MissingPricedHoldingDiagnostic[] = []
+  for (const prev of previous) {
+    if (prev.valueUsd == null || prev.valueUsd < minValueUsdToReport) continue
+    const key = holdingKey(prev.chainId, prev.tokenAddress)
+    const curr = currentByKey.get(key)
+    const currentValueUsd = curr?.valueUsd ?? null
+    if (currentValueUsd != null && currentValueUsd >= prev.valueUsd) continue // unchanged or improved — not a regression
+    diagnostics.push({
+      missingPricedHolding: key,
+      previousValueUsd: prev.valueUsd,
+      currentValueUsd,
+      providerPriceUsd: curr?.priceUsd ?? null,
+      quantity: curr?.quantity ?? prev.quantity,
+      pricingSource: curr ? pricingSourceOf(curr) : 'unpriced',
+      exclusionReason: curr ? 'price_lost_between_scans' : 'absent_from_current_scan',
+    })
+  }
+  return diagnostics.sort((a, b) => (b.previousValueUsd - (b.currentValueUsd ?? 0)) - (a.previousValueUsd - (a.currentValueUsd ?? 0)))
+}
+
 // Never throws: resolvePrices already resolves every request to a real result (priceUsd: null,
 // source: 'unavailable' on any failure — see src/modules/pricing/index.ts's own guarantees), and
 // this function adds no additional network call of its own.
@@ -239,6 +297,27 @@ export async function priceHoldings(
       : pricedCount === pricedHoldings.length
         ? 'ok'
         : 'partial'
+
+  // DIAGNOSTIC, DISCLOSED (portfolio-total-stability audit task): a compact snapshot of the actual
+  // priced holdings this scan produced — real per-chain totals (chainValueUsd, restated here under
+  // its requested diagnostic name) and the top-N priced holdings by value (symbol/chain/valueUsd/
+  // priceUsd only — never a raw provider response). Comparing this log between two scans of the
+  // SAME wallet is exactly what lets a real total-value regression (like the confirmed one this
+  // task traces — one token's price silently dropped during holdings merge) be pinpointed to the
+  // exact token responsible, without needing to log every holding's full row on every scan.
+  const topValueHoldings = [...pricedHoldings]
+    .filter((p) => p.valueUsd != null)
+    .sort((a, b) => (b.valueUsd ?? 0) - (a.valueUsd ?? 0))
+    .slice(0, 10)
+    .map((p) => ({ chainId: p.chainId, tokenAddress: p.tokenAddress, symbol: p.symbol, valueUsd: p.valueUsd, priceUsd: p.priceUsd }))
+  // eslint-disable-next-line no-console
+  console.warn('[portfolio-total-audit] priced holdings snapshot', {
+    totalValueUsd: Math.round(totalValueUsd * 100) / 100,
+    portfolioTotalByChain: chainValueUsd,
+    pricedHoldingsCount: pricedCount,
+    topValueHoldings,
+    timestamp: Date.now(),
+  })
 
   return { pricedHoldings, totalValueUsd, chainValueUsd, priceStatus }
 }

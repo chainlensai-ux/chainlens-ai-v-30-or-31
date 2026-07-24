@@ -16,8 +16,9 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { priceHoldings } from './fetchPricing'
+import { priceHoldings, diffPricedHoldingsForRegression } from './fetchPricing'
 import type { ChainHolding } from '../holdings/types'
+import type { PricedHolding } from './types'
 
 function holding(overrides: Partial<ChainHolding>): ChainHolding {
   return {
@@ -230,5 +231,50 @@ describe('priceHoldings', () => {
         `fetchPricing.ts must never IMPORT ${forbidden} — it is current-price-only, never a historical PnL source`,
       )
     }
+  })
+})
+
+function pricedHolding(overrides: Partial<PricedHolding> = {}): PricedHolding {
+  return { chainId: 8453, tokenAddress: '0xtoken', symbol: 'TOK', decimals: 18, quantity: '1', priceUsd: 1, valueUsd: 1, classification: 'other', ...overrides }
+}
+
+describe('diffPricedHoldingsForRegression — cross-scan portfolio-total regression diagnosis', () => {
+  it('one missing high-value token is clearly diagnosed — matches the real ~$8,335 production regression', () => {
+    const previous: PricedHolding[] = [
+      pricedHolding({ tokenAddress: '0xhighvalue', symbol: 'HIGH', priceUsd: 8335, valueUsd: 8335, quantity: '1' }),
+      pricedHolding({ tokenAddress: '0xstable', symbol: 'STABLE', priceUsd: 1, valueUsd: 5196.59, quantity: '5196.59' }),
+    ]
+    const current: PricedHolding[] = [
+      // 0xhighvalue is now gone entirely from the priced list — the exact confirmed regression shape.
+      pricedHolding({ tokenAddress: '0xstable', symbol: 'STABLE', priceUsd: 1, valueUsd: 5196.59, quantity: '5196.59' }),
+    ]
+
+    const diffs = diffPricedHoldingsForRegression(previous, current)
+    assert.equal(diffs.length, 1, 'exactly the one affected token must be flagged, never the whole holdings list')
+    assert.equal(diffs[0].missingPricedHolding, '8453:0xhighvalue')
+    assert.equal(diffs[0].previousValueUsd, 8335)
+    assert.equal(diffs[0].currentValueUsd, null)
+    assert.equal(diffs[0].exclusionReason, 'absent_from_current_scan')
+  })
+
+  it('a token whose price dropped (present but unpriced now) is diagnosed distinctly from one that vanished entirely', () => {
+    const previous = [pricedHolding({ tokenAddress: '0xdim', priceUsd: 50, valueUsd: 500 })]
+    const current = [pricedHolding({ tokenAddress: '0xdim', priceUsd: null, valueUsd: null })]
+    const diffs = diffPricedHoldingsForRegression(previous, current)
+    assert.equal(diffs.length, 1)
+    assert.equal(diffs[0].exclusionReason, 'price_lost_between_scans')
+    assert.equal(diffs[0].currentValueUsd, null)
+  })
+
+  it('an unchanged or improved holding is never flagged as a regression', () => {
+    const previous = [pricedHolding({ tokenAddress: '0xok', valueUsd: 10 })]
+    const current = [pricedHolding({ tokenAddress: '0xok', valueUsd: 12 })]
+    assert.deepEqual(diffPricedHoldingsForRegression(previous, current), [])
+  })
+
+  it('dust-level differences below minValueUsdToReport are not reported as noise', () => {
+    const previous = [pricedHolding({ tokenAddress: '0xdust', valueUsd: 0.5 })]
+    const current: PricedHolding[] = []
+    assert.deepEqual(diffPricedHoldingsForRegression(previous, current, 1), [])
   })
 })
