@@ -6973,6 +6973,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         clarkRoutingDebug: buildClarkRoutingDebug({
           intent: basicIntent, answeredDirectly: true, providerCallsAdded: 0, routeUsed: null, missingInput: null,
           reason: `Answered ${basicIntent} directly with no provider calls.`,
+          userPlan: verifiedPlan ?? null, plan: verifiedPlan ?? null, blockedReason: null,
         }),
       };
     }
@@ -6987,6 +6988,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
           clarkRoutingDebug: buildClarkRoutingDebug({
             intent: basicIntent, answeredDirectly: true, providerCallsAdded: 0, routeUsed: null, missingInput: missingInputLabel,
             reason: `${basicIntent} requested without a valid address — asked for input instead of calling a scan API.`,
+            userPlan: verifiedPlan ?? null, plan: verifiedPlan ?? null, blockedReason: null,
           }),
         };
       }
@@ -6998,6 +7000,11 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       return {
         feature: "clark-ai", chain, mode: "analysis", intent: "token.fullReport", toolsUsed: [],
         analysis: buildLockedResponse("token_full_report", "ask about token concepts or request a basic preview."),
+        clarkRoutingDebug: buildClarkRoutingDebug({
+          intent: 'token_scan_request', answeredDirectly: true, providerCallsAdded: 0, routeUsed: null, missingInput: null,
+          reason: 'Blocked token_full_report for the resolved user plan before provider calls.',
+          userPlan: verifiedPlan ?? null, plan: verifiedPlan ?? null, blockedReason: 'plan_locked:token_full_report',
+        }),
         clarkToolPlan: null, clarkToolsExecuted: [], clarkToolStatuses: {}, clarkEvidenceMissing: [], clarkToolLatencyMs: 0,
       };
     }
@@ -10832,6 +10839,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       clarkRoutingDebug: buildClarkRoutingDebug({
         intent: 'unsupported_request', answeredDirectly: true, providerCallsAdded: 0, routeUsed: null, missingInput: null,
         reason: "No scan/tool intent matched — returned safe fallback instead of calling a provider.",
+        userPlan: verifiedPlan ?? null, plan: verifiedPlan ?? null, blockedReason: null,
       }),
     };
   }
@@ -10993,7 +11001,19 @@ export async function POST(req: NextRequest) {
     const lockedFeature = INTENT_FEATURE_MAP[earlyIntent];
     if (lockedFeature && !planAllows(effectivePlan, lockedFeature)) {
       const lockedMsg = buildLockedResponse(lockedFeature, LOCKED_ALTERNATIVES[lockedFeature] ?? 'ask about token data and market moves');
-      return NextResponse.json({ ok: true, feature: 'clark-ai', data: { reply: lockedMsg }, quotaConsumed: false }, { status: 200 });
+      return NextResponse.json({
+        ok: true,
+        feature: 'clark-ai',
+        data: {
+          reply: lockedMsg,
+          clarkRoutingDebug: buildClarkRoutingDebug({
+            intent: 'unsupported_request', answeredDirectly: true, providerCallsAdded: 0, routeUsed: null, missingInput: null,
+            reason: `Blocked ${lockedFeature} for resolved server-side plan before rate limiting or provider calls.`,
+            userPlan: effectivePlan, plan: effectivePlan, blockedReason: `plan_locked:${lockedFeature}`,
+          }),
+        },
+        quotaConsumed: false,
+      }, { status: 200 });
     }
   }
 
