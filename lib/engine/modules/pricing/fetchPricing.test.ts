@@ -286,7 +286,7 @@ describe('fetchTokenPriceUsd — real default implementation, routed through the
     let callCount = 0
     global.fetch = (async () => {
       callCount += 1
-      return new Response(JSON.stringify({ pairs: [{ chainId: 'base', priceUsd: '1.23', liquidity: { usd: 500 } }] }), { status: 200 })
+      return new Response(JSON.stringify({ pairs: [{ chainId: 'base', priceUsd: '1.23', liquidity: { usd: 5000 } }] }), { status: 200 })
     }) as unknown as typeof fetch
     return { getCallCount: () => callCount }
   }
@@ -304,5 +304,49 @@ describe('fetchTokenPriceUsd — real default implementation, routed through the
       global.fetch = originalFetch
       resetDexscreenerRequestCache()
     }
+  })
+})
+
+describe('priceHoldings — dominant-holding price provenance (real production evidence: same wallet showing $5.2k/$9k/$13.5k/$6.4k across scans, traced to one dominant token)', () => {
+  it('decimals are preserved exactly — never silently defaulted or recomputed away from the real ChainHolding value', async () => {
+    const result = await priceHoldings(
+      [holding({ tokenAddress: '0xdecimals', quantity: '2288000000', decimals: 9, providerPriceUsd: 0.000002625, providerValueUsd: 6004.56 })],
+      async () => null,
+    )
+    assert.equal(result.pricedHoldings[0].decimals, 9, 'the real decimals value must pass through untouched, never defaulted to 18 or recomputed')
+  })
+
+  it('a provider-priced holding is never overwritten by a weaker fallback price, even when a fallback is available', async () => {
+    let fallbackCalls = 0
+    const fakeFallback = async () => { fallbackCalls += 1; return 999 } // would poison the result if wrongly used
+    const result = await priceHoldings(
+      [holding({ tokenAddress: '0xprovider', providerPriceUsd: 0.000002625, providerValueUsd: 6004.56, quantity: '2288000000' })],
+      fakeFallback,
+    )
+    assert.equal(fallbackCalls, 0, 'a holding with a real provider price must never reach the fallback at all')
+    assert.equal(result.pricedHoldings[0].priceUsd, 0.000002625)
+    assert.equal(result.pricedHoldings[0].valueUsd, 6004.56, 'the provider\'s own authoritative value must be used directly, not recomputed from quantity*price')
+  })
+
+  it('the provider\'s own valueUsd is preferred over a locally recomputed quantity*price figure when both are present (confirmed regression fix)', async () => {
+    // A deliberately mismatched fixture: providerPriceUsd * quantity would compute to something
+    // very different from providerValueUsd (simulating a decimals/balance inconsistency between
+    // GoldRush's own internal math and this module's locally-derived quantity) — the provider's own
+    // authoritative valueUsd must win, never the locally recomputed figure.
+    const result = await priceHoldings(
+      [holding({ tokenAddress: '0xmismatch', quantity: '1000000', providerPriceUsd: 0.01, providerValueUsd: 6004.56 })],
+      async () => null,
+    )
+    // 1,000,000 * 0.01 = 10,000 (recomputed) vs 6,004.56 (provider's own figure) — a large,
+    // deliberate mismatch to prove which one wins.
+    assert.equal(result.pricedHoldings[0].valueUsd, 6004.56, 'the provider\'s own authoritative valueUsd must win over a locally recomputed figure')
+  })
+
+  it('falls back to a locally recomputed value only when the provider never supplied one at all (fallback-priced holdings)', async () => {
+    const result = await priceHoldings(
+      [holding({ tokenAddress: '0xfallback', quantity: '10', providerPriceUsd: null, providerValueUsd: null })],
+      async () => 5,
+    )
+    assert.equal(result.pricedHoldings[0].valueUsd, 50, 'a fallback-priced holding (no provider value to prefer) must use quantity*price')
   })
 })

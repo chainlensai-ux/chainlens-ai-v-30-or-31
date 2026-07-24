@@ -31,6 +31,7 @@
 // answer either way), so coalescing is always safe, never a weakened gate.
 
 import { fetchDexscreenerPriceDetailed, DEXSCREENER_FRESHNESS_TOLERANCE_MS } from '../modules/pricingAtTimeEngine/sources/dexscreener'
+import type { DexscreenerPriceResult } from '../modules/pricingAtTimeEngine/sources/dexscreener'
 import type { SupportedChain } from '../modules/providerFetchWindow/types'
 
 export type DexscreenerCaller = 'holdings' | 'historical'
@@ -46,7 +47,7 @@ export type DexscreenerCaller = 'holdings' | 'historical'
 // historical/recovery lane touches.
 const HISTORICAL_DEXSCREENER_BUDGET_DEFAULT = 60
 
-type CacheEntry = Promise<{ priceUsd: number | null; reason: string | null }>
+type CacheEntry = Promise<DexscreenerPriceResult>
 
 const cache = new Map<string, CacheEntry>()
 const liveFetchesByCaller: Record<string, number> = {}
@@ -108,7 +109,7 @@ export async function fetchDexscreenerPriceShared(
   chain: SupportedChain,
   timestamp: number,
   caller: DexscreenerCaller,
-): Promise<{ priceUsd: number | null; reason: string | null }> {
+): Promise<DexscreenerPriceResult> {
   const key = cacheKey(chain, token, timestamp)
   uniqueTokens.add(`${chain}:${token.toLowerCase()}`)
 
@@ -123,7 +124,7 @@ export async function fetchDexscreenerPriceShared(
     // ever applies to the historical/recovery lane, per this task's explicit requirement.
     if (historicalBudgetUsed >= historicalBudget) {
       budgetCappedByCaller[caller] = (budgetCappedByCaller[caller] ?? 0) + 1
-      return { priceUsd: null, reason: 'dexscreener_shared_historical_budget_exhausted' }
+      return { priceUsd: null, reason: 'dexscreener_shared_historical_budget_exhausted', pairAddress: null, dexId: null, liquidityUsd: null, pairAgeMs: null, quoteTokenSymbol: null, alternatePairs: [], winnerReason: null }
     }
     historicalBudgetUsed += 1
   }
