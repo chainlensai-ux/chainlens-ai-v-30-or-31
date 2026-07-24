@@ -1628,9 +1628,31 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // below, so terminal truncation of normalizedEvents/provider-window details cannot hide it.
   logSyntheticPnlSummary(syntheticPnl)
 
+  // DOUBLE-KV-WRAP DEADLOCK, CONFIRMED AND FIXED (provider-call-audit follow-up task, root cause
+  // of "recovery attempted 40 candidates, recovered prices: 0" / "10 one-side-missing candidates
+  // all failed" despite live price sources genuinely being reachable): this previously passed
+  // `requestPriceSources` here — the SAME object whose `.primary` is ALREADY
+  // `requestPriceKvClient.wrapPriceSource(PRICE_SOURCES.primary, 'chain-aware-historical')` (see its
+  // own definition above), i.e. a function that, when called, invokes
+  // `requestPriceKvClient.getPriceHistorical(token, chain, timestamp, PRICE_SOURCES.primary)` on
+  // this SAME KV client instance. pnlReconciliation.recoverPrices (src/lib/pnlReconciliation.ts)
+  // ALSO calls `priceKvClient.getPriceHistorical(lot.token, lot.chain, lot.openedAt, fetcher)` —
+  // passing that already-wrapped function back in as `fetcher`. On a KV miss/timeout/breaker-open,
+  // resolveMiss falls through to `await fetcher(token, chain, timestamp)` — which, since token/
+  // chain/timestamp are identical, recomputes the EXACT SAME cache key and finds the outer call's
+  // own still-pending promise sitting in `inFlight`, returning that same promise as its own result.
+  // The outer call is then `await`ing the very promise it is itself in the process of producing — a
+  // genuine, silent (no error, no rejection) forever-pending deadlock, real and reproducible for
+  // every recovery candidate needing a buy-side price (`needsBuy`, tried before `needsSell` in
+  // recoverPrices' fetcher loop) — matching the reported "0 recovered" outcome even though the real
+  // underlying providers were never actually the problem. Fixed: pass the RAW, un-wrapped
+  // `PRICE_SOURCES` here instead — recoverPrices already receives `priceKvClient` (requestPriceKvClient)
+  // separately and is RESPONSIBLE for wrapping a raw fetcher in the KV layer itself; it must never be
+  // handed a fetcher that already performs that wrapping on its own. This is the exact same real KV
+  // client (shared breaker/dedupe/cache state, no new cache layer), just no longer double-wrapped.
   const pnlReconciliation = createPnlReconciliation({
     priceKvClient: requestPriceKvClient,
-    priceSources: requestPriceSources,
+    priceSources: PRICE_SOURCES,
     dustSuppressedKeys,
   })
   // SYNTHETIC-PNL LEAK FIX, DISCLOSED (confirmed, critical severity — see pnlReconciliation.ts's own
