@@ -24,7 +24,7 @@ import type { Portfolio as EnginePortfolioV2 } from '@/lib/engine/modules/portfo
 import type { SmartMoneyScore } from '@/lib/engine/modules/smartMoney/types'
 import { ChainBadge } from './ChainBadge'
 import { ConfidenceBadge } from './ConfidenceBadge'
-import { PortfolioIntelligenceCard } from './PortfolioIntelligenceCard'
+import { PortfolioIntelligenceCard, selectPortfolioStats } from './PortfolioIntelligenceCard'
 import { SmartMoneyScoreCard } from './SmartMoneyScoreCard'
 import { fmtSignedUsd } from '@/app/frontend/lib/holdingsHeuristics'
 
@@ -143,8 +143,43 @@ function WalletOverview({ report }: { report: WalletV2Report }) {
   )
 }
 
+// CONFIRMED REGRESSION, FIXED (provider-call-audit follow-up task, real production evidence: header
+// showed ~$300 while the backend's own portfolioIntelligenceInputs.totalValueUsd diagnostic logged
+// $13,531.40 for the SAME scan): this previously read `report.portfolio?.totalValueUsd` directly —
+// the OLD, V1 `src/modules/portfolio` field — completely bypassing `selectPortfolioStats()`
+// (PortfolioIntelligenceCard.tsx), which ALREADY correctly prefers the new, canonical
+// `portfolioV2.totalValueUsd` (computed by workers/walletScanV2.ts's pricing/portfolio stage — the
+// same real total that diagnostic log line reports). The result: two different dollar figures were
+// shown on the SAME page for the SAME scan — this hero total (stale/wrong) and the Portfolio
+// Intelligence card's "Total Value" stat (correct) just below it. Fixed by using the exact same
+// selection function, so both figures are now guaranteed to agree — never realizedPnlUsd (a
+// completely separate field, read only by PnlAndConfidenceRow below), never a client-side sum of a
+// filtered/top-holdings/fallback-budgeted subset (selectPortfolioStats reads the single
+// already-computed totalValueUsd field either way, it never re-sums holdings for this purpose).
 function PortfolioSnapshot({ report }: { report: WalletV2Report }) {
-  const totalValueUsd = report.portfolio?.totalValueUsd ?? null
+  const { stats, usingV2 } = selectPortfolioStats(report.portfolio, report.portfolioV2)
+  const totalValueUsd = stats.totalValueUsd
+
+  // DIAGNOSTICS, DISCLOSED (this task's explicit requirement): compares what the backend actually
+  // computed against what this card is about to render, plus a LOCAL, comparison-only recomputation
+  // from whatever priced-holdings list this report shape exposes — purely for audit logging, never
+  // used to override `totalValueUsd` above. A real, future mismatch between backendTotalValueUsd and
+  // locallyRecomputedTotalValueUsd would surface here immediately instead of silently drifting.
+  if (process.env.NODE_ENV !== 'production') {
+    const backendTotalValueUsd = usingV2 ? report.portfolioV2?.totalValueUsd ?? null : report.portfolio?.totalValueUsd ?? null
+    const holdingsForRecompute = Array.isArray(report.portfolio?.tokens) ? report.portfolio!.tokens : []
+    const pricedHoldings = holdingsForRecompute.filter((t) => t.valueUsd != null)
+    const locallyRecomputedTotalValueUsd = pricedHoldings.reduce((sum, t) => sum + (t.valueUsd ?? 0), 0)
+    // eslint-disable-next-line no-console
+    console.debug('[wallet-profile-header] portfolio total diagnostics', {
+      usingV2,
+      backendTotalValueUsd,
+      frontendRenderedTotalValueUsd: totalValueUsd,
+      locallyRecomputedTotalValueUsd,
+      pricedHoldingsCount: pricedHoldings.length,
+    })
+  }
+
   const breakdown = Array.isArray(report.portfolio?.chainValueBreakdown) ? report.portfolio.chainValueBreakdown : []
   const chainsScanned = Array.isArray(report.scanMetadata?.chainsScanned) ? report.scanMetadata.chainsScanned : []
   const chainsWithoutData = chainsScanned.filter((c) => !breakdown.some((b) => b.chain === c))

@@ -65,7 +65,7 @@ import type { WalletConditionSection } from '@/src/pipeline/walletConditionMessa
 //
 // PNL V2 / CHAIN ACTIVITY V2, UPDATED DISCLOSURE: same fix applies to `pnlV2`/`chainActivityV2` —
 // both are now genuinely populated by the same always-called route.
-type WalletV2Report = FinalReport & {
+export type WalletV2Report = FinalReport & {
   holdings: TokenHolding[]
   portfolio: PortfolioSummary
   portfolioV2?: EnginePortfolioV2
@@ -113,7 +113,11 @@ function buildCortexReadV2(report: WalletV2Report | null | undefined): {
   const b = report?.behaviorIntel
   const s = report?.finalSummary
   const activeChains = Array.isArray(b?.multiChainParticipation?.activeChains) ? b!.multiChainParticipation.activeChains : []
-  const totalValueUsd = report?.portfolio?.totalValueUsd ?? null
+  // CONFIRMED REGRESSION, FIXED (same root cause as WalletProfileHeader.tsx's PortfolioSnapshot —
+  // see that file's own header comment for the full trace): prefer the canonical, real
+  // portfolioV2.totalValueUsd over the stale V1 `portfolio.totalValueUsd` field, so this sidebar
+  // readout can never disagree with the main hero total for the same scan.
+  const totalValueUsd = report?.portfolioV2?.totalValueUsd ?? report?.portfolio?.totalValueUsd ?? null
 
   return {
     verdict: (b?.rotationStyle?.value ?? 'unknown').toUpperCase(),
@@ -132,6 +136,23 @@ function buildCortexReadV2(report: WalletV2Report | null | undefined): {
       ? 'Confidence is low — coverage is thin (dust-heavy chains or a partial window). Treat this read as directional only.'
       : 'Scan additional chains or run a Deep Scan for broader coverage.',
   }
+}
+
+// STAGED-REFRESH FIX, DISCLOSED (provider-call-audit follow-up task, explicit "refresh keeps
+// previous total until canonical portfolio stage resolves" requirement, and "staged refresh does
+// not replace prior total with partial subtotal" test requirement): pure so it can be unit-tested
+// directly. A scan of the SAME wallet already on screen keeps its last-known-good, fully-resolved
+// report visible (never a partial/staged intermediate — this only decides whether to keep the PRIOR
+// complete result, it never constructs a new partial one); a scan of a genuinely different wallet
+// (or no prior result at all) starts from null, so a wallet's total can never be shown while a
+// DIFFERENT wallet is being scanned.
+export function resolvePreservedResultOnScanStart(
+  prevResult: WalletV2Report | null,
+  newScanAddress: string,
+): WalletV2Report | null {
+  const prevAddress = prevResult?.scanMetadata?.walletAddress
+  if (typeof prevAddress === 'string' && prevAddress.toLowerCase() === newScanAddress.toLowerCase()) return prevResult
+  return null
 }
 
 export default function WalletScannerPage() {
@@ -225,7 +246,9 @@ export default function WalletScannerPage() {
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({
           address: result.scanMetadata.walletAddress,
-          portfolio_value: result.portfolio?.totalValueUsd ?? null,
+          // Same canonical-total fix as PortfolioSnapshot/buildCortexReadV2 above — never persist
+          // the stale V1 total to the watchlist.
+          portfolio_value: result.portfolioV2?.totalValueUsd ?? result.portfolio?.totalValueUsd ?? null,
         }),
       })
       const json = await res.json().catch(() => null)
@@ -301,7 +324,18 @@ export default function WalletScannerPage() {
 
     setLoading(true)
     setError(null)
-    setResult(null)
+    // STAGED-REFRESH FIX, DISCLOSED (provider-call-audit follow-up task, explicit "refresh keeps
+    // previous total until canonical portfolio stage resolves" requirement): this previously
+    // unconditionally cleared `result` to null the instant ANY scan (including a plain refresh of
+    // the SAME wallet already on screen) started, blanking the whole results view — including the
+    // correct, already-displayed total — for the full duration of the new scan, only to show the
+    // exact same wallet's numbers again once it finished. Now only clears when the scan target is a
+    // DIFFERENT wallet than the one currently displayed — a genuinely new lookup still starts from a
+    // clean slate (never shows wallet A's total while scanning wallet B), but a refresh of the same
+    // wallet keeps its last-known-good, fully-resolved total on screen until the new scan's own
+    // canonical result replaces it wholesale (never a partial/staged intermediate value — the poll
+    // loop below still only ever calls setResult once, with the final complete report).
+    setResult((prev) => resolvePreservedResultOnScanStart(prev, address))
     setJobStatusMessage(null)
     setCurrentJobId(null)
     setScanProgress(null)
@@ -541,8 +575,13 @@ export default function WalletScannerPage() {
             </div>
           )}
 
-          {/* V2 engine results */}
-          {!loading && result && (
+          {/* V2 engine results — DISCLOSED: intentionally rendered whenever `result` exists,
+              regardless of `loading` (see the "STAGED-REFRESH FIX" comment on the setResult() call
+              above) — a refresh of the SAME wallet keeps its last-known-good total and full report
+              visible under the "Scanning…" banner above, instead of blanking to the idle placeholder
+              for the whole duration of the new scan. `result` is only ever null here for a genuinely
+              new wallet with nothing to show yet. */}
+          {result && (
             <div className="ws-result-fade">
               <WalletProfileHeader
                 report={result}
