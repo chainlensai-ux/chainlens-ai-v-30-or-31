@@ -110,6 +110,11 @@ async function executeWalletScanJob(payload: WalletScanJobPayload): Promise<{ jo
   // for why this must be cleared at the start of every scan job (never leak a coalesced result
   // across unrelated wallets/scans on a warm serverless instance).
   const { resetProviderFetchWindowRequestCache, getProviderFetchWindowCoalescingCounters } = await import('@/src/modules/providerFetchWindow/index')
+  // RECOVERY-PAGE COALESCING RESET, DISCLOSED (provider-call-audit follow-up task, confirmed
+  // duplicate-call cause): same per-job reset convention as the counters/coalescing above — see
+  // recoveryPolicy/utils.ts's own header for why multiple triggered candidates on one chain must
+  // share ONE real GoldRush historical-page fetch, and why that sharing must reset per job.
+  const { resetRecoveryHistoricalPageRequestCache } = await import('@/src/modules/recoveryPolicy/utils')
 
   const startedAt = Date.now()
   console.warn('[wallet-scan-worker] job started', { jobId: payload.jobId })
@@ -122,6 +127,7 @@ async function executeWalletScanJob(payload: WalletScanJobPayload): Promise<{ jo
   resetGoldrushPriceSourceCallCount()
   resetDexscreenerCallCount()
   resetProviderFetchWindowRequestCache()
+  resetRecoveryHistoricalPageRequestCache()
 
   let finalBody: unknown
   let completedSuccessfully = false

@@ -97,6 +97,31 @@ describe('fetchProviderWindow — request-scoped promise coalescing', () => {
     assert.equal(getCallCount(), 6, 'a fresh job (after reset) must not reuse a coalesced result from a prior, unrelated job')
   })
 
+  it('mixed 30/60/90-day consumers reuse ONE 90-day live fetch, in any order among the narrower consumers, once the canonical (widest) window is established', async () => {
+    // 30 and 60 both clamp to PROVIDER_FETCH_WINDOW_DAYS_MIN (80) via clampWindowDays — real
+    // production behavior, not a test artifact. This mirrors this codebase's real architecture: the
+    // old pipeline (always requesting the canonical 90-day window) runs to completion BEFORE the V2
+    // engine chain's own, possibly-narrower requests ever start (workers/walletScanV2.ts awaits
+    // router.handleScanRequest first) — so the widest window is always established first in real
+    // production call order, and every later consumer, regardless of ITS OWN relative order, reuses
+    // it rather than re-fetching.
+    for (const laterOrder of [[30, 60], [60, 30]] as const) {
+      resetProviderFetchWindowRequestCache()
+      const { getCallCount } = mockFetch({ delayMs: 5 })
+
+      const canonical = await fetchProviderWindow('base', '0xwallet', 90, 'old-pipeline')
+      assert.equal(getCallCount(), 3, 'the canonical 90-day fetch must be the only real call so far')
+
+      const laterResults = await Promise.all(laterOrder.map((d) => fetchProviderWindow('base', '0xwallet', d, 'v2-engine')))
+
+      assert.equal(getCallCount(), 3, `later order ${laterOrder.join(',')}: narrower consumers must reuse the canonical fetch, never re-fetch`)
+      assert.equal(canonical.providerFetchWindowDays, 90)
+      for (const r of laterResults) {
+        assert.ok(r.providerFetchWindowDays <= 90, `later order ${laterOrder.join(',')}: a narrower consumer must never receive a window wider than what it asked for`)
+      }
+    }
+  })
+
   it('regression guard: a caller requesting a wider window that a concurrent narrower caller is ALREADY IN FLIGHT for reuses that in-flight fetch (largest-window reuse, not keyed by exact window)', async () => {
     // PROVIDER_FETCH_WINDOW_DAYS_MIN is 80 (clampWindowDays), so 85 stays a genuinely narrower-than-90
     // but still valid window — real production values, not an artificially clamped one.

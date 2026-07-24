@@ -59,9 +59,54 @@ function goldrushChainName(chain: SupportedChain): string | null {
   return GOLDRUSH_VERIFIED_CHAIN_SLUGS[chain] ?? null
 }
 
+// REQUEST-SCOPED PROMISE COALESCING, DISCLOSED (provider-call-audit follow-up, CONFIRMED root cause
+// of the "4 Base transactions_v3 calls" symptom surviving the earlier fetchProviderWindow-level
+// fix): this function's URL depends ONLY on (chain, walletAddress, pageNumber) — it has NO token
+// parameter, and fetchHistoricalPages (index.ts) already filters the SAME returned events down to
+// one candidate's token AFTER the fact (`goldrushEvents.filter(e => e.contract === token)`). But
+// buildRecoveryPolicyObject calls fetchHistoricalPages ONCE PER TRIGGERED CANDIDATE (up to
+// RECOVERY_CANDIDATE_CONCURRENCY_LIMIT=2 concurrently, up to maxHistoricalPagesPerWallet candidates
+// total) — every one of those candidates on the SAME chain was independently firing this exact same
+// byte-for-byte GoldRush request (same wallet, same chain, same page-number=1), each burning a real
+// 12s-capped Covalent call for data that was already fetched, or being fetched, by another candidate
+// on the same chain. That directly explains a Base wallet with 2-3 triggered candidates producing
+// 2-3 duplicate "Base transactions_v3" calls in addition to the (already-coalesced)
+// fetchProviderWindow window fetch — bypassing that coalescer entirely, since this is a completely
+// separate module/function never routed through it (this module is intentionally self-contained,
+// per this file's own header). Fixed the same way fetchProviderWindow was: the first candidate for
+// a given (chain, wallet, pageNumber) starts the real fetch; every other candidate reusing the same
+// key gets the identical in-flight/settled result and does its own token-filtering locally — same
+// real events either way, zero new network calls. NOT a persistent/Redis cache layer — purely an
+// in-process map, reset once per scan job alongside providerFetchWindow's own reset (see
+// resetRecoveryHistoricalPageRequestCache, called from walletScanWorker.ts).
+const requestScopedHistoricalPages = new Map<string, Promise<RawProviderEvent[]>>()
+
+export function resetRecoveryHistoricalPageRequestCache(): void {
+  requestScopedHistoricalPages.clear()
+}
+
 // Targeted GoldRush historical page — page-number offset beyond the base window's page 0. Caller
 // (index.ts) is responsible for enforcing the page cap; this function fetches exactly one page.
 export async function fetchGoldrushHistoricalPage(
+  chain: SupportedChain,
+  walletAddress: string,
+  pageNumber: number,
+): Promise<RawProviderEvent[]> {
+  const key = `${chain}:${walletAddress.trim().toLowerCase()}:${pageNumber}`
+  const existing = requestScopedHistoricalPages.get(key)
+  if (existing) return existing
+
+  const promise = fetchGoldrushHistoricalPageLive(chain, walletAddress, pageNumber)
+  requestScopedHistoricalPages.set(key, promise)
+  // Defensive cleanup only: fetchGoldrushHistoricalPageLive is disclosed as never throwing (every
+  // failure path below resolves to []) — guards against that contract ever being violated by a
+  // future change, so an unexpected rejection can't permanently poison this key for the rest of the
+  // request.
+  promise.catch(() => { if (requestScopedHistoricalPages.get(key) === promise) requestScopedHistoricalPages.delete(key) })
+  return promise
+}
+
+async function fetchGoldrushHistoricalPageLive(
   chain: SupportedChain,
   walletAddress: string,
   pageNumber: number,
